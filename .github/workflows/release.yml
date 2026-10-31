@@ -126,7 +126,7 @@ jobs:
     permissions:
       contents: write   # 建 Release 需要写权限（其余 job 只读）
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
