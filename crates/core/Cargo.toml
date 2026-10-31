@@ -36,4 +36,4 @@ tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 libc = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-axum-server = { version = "0.7.1", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
