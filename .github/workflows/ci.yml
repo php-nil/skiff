@@ -48,7 +48,7 @@ jobs:
     name: 格式（rustfmt）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -59,7 +59,7 @@ jobs:
     name: Clippy（-D warnings）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
         run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
@@ -76,7 +76,7 @@ jobs:
     name: 单测（Linux）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -94,7 +94,7 @@ jobs:
     name: MSRV（${{ env.MSRV }}）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -109,7 +109,7 @@ jobs:
     name: 契约校验（xtask check）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -129,7 +129,7 @@ jobs:
     name: 插件包链路（签 → 打包 → 验签）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -197,7 +197,7 @@ jobs:
     name: 部署脚本（shellcheck + LF）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 行尾检查（CRLF 的 .sh 在 Linux 上会直接跑不起来）
         run: |
           set -eu
@@ -220,7 +220,7 @@ jobs:
     name: 冒烟（真起服务）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -288,7 +288,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:

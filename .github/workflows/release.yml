@@ -46,7 +46,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             arch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 解析版本号
         id: ver
@@ -155,7 +155,7 @@ jobs:
     name: Docker 镜像可构建（可选形态）
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build -f deploy/Dockerfile -t skiff:ci .
       - name: 自检镜像
         run: |
