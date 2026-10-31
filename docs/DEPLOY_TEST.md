@@ -76,21 +76,22 @@ cd /root && sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
 
 **路径 C：已经有发布物** → 直接进 §2.1 校验，不要跳。
 
-**路径 D：GitHub Actions 出包（推了 `v*` 标签之后）**
+**路径 D：GitHub Actions 出包（开发阶段：手动 dispatch，不发版）**
+
+开发阶段 `release.yml` 仅手动触发且默认不建 Release（见 [CI.md](CI.md) §4），
+产物在 run 页 Artifacts 里下载（7 天保留），拉到目标机校验即可：
 
 ```sh
-# 目标机上：拿 Release 里的三件套
-curl -LO https://github.com/<owner>/<repo>/releases/download/v0.1.0/skiff-0.1.0-linux-amd64.tar.gz
-curl -LO .../skiff-0.1.0-linux-amd64.tar.gz.sha256
-curl -LO .../skiff-0.1.0-linux-amd64.tar.gz.sig
+# 目标机上：三件套来自 workflow 产物（publish 勾选后也可从 Release 下载）
+# curl -LO https://github.com/<owner>/<repo>/releases/download/v0.1.0/skiff-0.1.0-linux-amd64.tar.gz
 sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
 ```
 
 CI 出的包与 `deploy/pack-release.sh` 手工出包**是同一份脚本、同一套布局**（CI 只是把
 `CARGO` 换成 `cross` 并传入架构与版本号），所以 §2 的装机步骤不用改。
-注意区分两种产物：`release.yml`（标签触发）给的是完整三件套；`ci.yml` 的 `build` job
-只给裸二进制（**没有 `.sha256` / `.sig`**），仅用于验证"能在 musl 下静态编出来"，
-不要拿它装机。签名密钥没配 `RELEASE_SIGNING_KEY_HEX` 时 Release 里的包是未签名的，
+注意区分两种产物：`release.yml`（手动 dispatch）给的是完整三件套；`ci.yml` 的 `build` job
+（仅手动触发）只给裸二进制（**没有 `.sha256` / `.sig`**），仅用于验证"能在 musl 下静态编出来"，
+不要拿它装机。签名密钥没配 `RELEASE_SIGNING_KEY_HEX` 时包是未签名的，
 日志里会有 `::warning::`，别当成已签。见 [CI.md](CI.md) §4。
 
 ### 0.3 传到目标机的文件

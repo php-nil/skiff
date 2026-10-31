@@ -14,6 +14,12 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
+    # groups.update-types 只决定「哪些更新能被并进分组 PR」，并不阻止
+    # Dependabot 给分组外的 major 各开一条独立分支。必须显式 ignore，
+    # 否则 5+3 的 open-pull-requests-limit 会被一堆 major 吃干净。
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       cargo-minor-patch:
         patterns: ["*"]
@@ -29,6 +35,10 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "ci"
+    # 同上：不 ignore major，actions/checkout 4→7 这类会各占一条配额。
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       actions-minor-patch:
         patterns: ["*"]

@@ -18,8 +18,9 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
         run: rm -f .cargo/config.toml
       - uses: taiki-e/install-action@v2

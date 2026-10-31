@@ -21,3 +21,6 @@ crates/web/static/*.gz
 .idea/
 *.swp
 .DS_Store
+
+# 本地 agent 工作数据（记忆/临时备份），不入库
+.workbuddy/

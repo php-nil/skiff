@@ -1,5 +1,7 @@
 # Skiff（轻舟）项目记忆
 
+- **执行约定（哥定，长期有效）：任何任务动手前必须先读根目录 `AGENTS.md`**，再按其「四、文档索引」选读专项文档执行。AGENTS.md 于 2026-10-31 由模板填成仓库规范（交付门槛命令、四条红线、文档索引）；详细变更记 `docs/changes/YYYY-MM-DD.md`。
+
 - 主文档：`docs/DESIGN.md`，当前 **v1.0（MVP 实施稿）**；**MVP 代码已落地**（13 个 crate + xtask，Windows 上 149 项测试全绿、fmt/clippy `-D warnings` 干净）。Linux 专属能力与资源数字仍未实测；GitHub CI 已配置但**尚未首次运行**。
 - 架构审查：`docs/ARCH_REVIEW.md` 四轮（§1–9 初审，§10 二轮复审，§11 三轮代码优化，§12 四轮把 §11.2 遗留四项做完，均 2026-10-31）。第三轮修掉的真缺陷：**`/plugins/install` 受 axum 默认 2MB body 上限，>2MB 的 .wbpkg 根本装不上**（`map_err` 还会把它伪装成「上传解析失败」）。第四轮落地：exec 单连票据、API Token scope、按路由分组的请求超时、`AppState` 下沉 `skiff-app`。
 - 文档结构（2026-10-30 起）：DESIGN.md 只保留一页结论 + 文档地图 + 文档约定 + 变更记录（索引三节不占正文编号）；正文在 `docs/sections/`，**文件名前缀号 = 章号**（01–12 共 13 个文件，§4 分 `04-plugin-package` / `04-plugin-publish` 两册）。章节号 `§x.y` 全局唯一、拆分不重编号；每篇顶部导航行同构（主文档/本文件/上一章/下一章）。
@@ -16,7 +18,7 @@
 - 打包纪律：`.wbpkg` 只收 `bin/ ui/ migrations/` + manifest（`PAYLOAD_DIRS`）。整目录打包会把签名私钥和 `target/` 塞进分发包。
 - Linux 目标类型检查（Windows 上唯一可行的子集）：`cargo check -p skiff-model -p skiff-policy -p skiff-wire --target x86_64-unknown-linux-gnu`（需 `RUSTUP_DIST_SERVER=https://rsproxy.cn` 装 std）；含 C 依赖的 crate 必须在真 Linux 上编。
 - 看警告要用 `CARGO_INCREMENTAL=0`：MSYS 增量模式会刷「删除 lock 文件 拒绝访问」的假 warning。
-- CI（2026-10-31 起，`docs/CI.md`）：三个工作流 = `ci.yml`（fmt / clippy `-D warnings` / test / msrv / xtask verify / 插件包真签真验 / shellcheck+LF / smoke / musl 静态构建）、`release.yml`（`v*` 标签 → `cross` 编 amd64+arm64 musl → `gh release create`）、`audit.yml`（周更）。**没有 continue-on-error**。
+- CI（2026-10-31 起，`docs/CI.md`）：三个工作流 = `ci.yml`（fmt / clippy `-D warnings` / test / msrv / xtask verify / 插件包真签真验 / shellcheck+LF / smoke；musl `build` **仅手动**）、`release.yml`（**仅手动 dispatch**，`v*` 标签触发已摘；`publish` 开关默认 false = 不建 Release，只出 workflow 产物）、`audit.yml`（周更）。**没有 continue-on-error**。开发阶段取舍：纯文档改动 `paths-ignore` 不触发；ubuntu-24.04 预装 gcc/pkg-config/shellcheck，CI 不再 apt-get（shellcheck 有 `command -v` 断言兜底）；同工具链 job 共用 rust-cache `shared-key: ci`；全 job 有 `timeout-minutes`。
 - CI 三条硬规矩：① 工具链锁在 workflow 顶部 `RUST_VERSION`（现 1.98.1），不跟 stable 浮动；② **MSRV = 1.89**（1.85 实测连依赖解析都过不去，rusqlite 0.41 要 1.89）；③ 每个跑 cargo 的 job 先 `rm -f .cargo/config.toml` 走 crates.io（仓库那份是国内镜像，只给开发机）。
 - 发布：签名私钥走仓库 secret `RELEASE_SIGNING_KEY_HEX`，没配只 `::warning::` 不伪造已签名；产物是 musl 静态（不绑 glibc），打包统一走 `deploy/pack-release.sh`（支持 `CARGO=cross` 覆写）。
 - 提交前本地对齐 CI：`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --locked`（现 149 项）。`.gitattributes` 已锁全仓 LF。

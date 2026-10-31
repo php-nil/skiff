@@ -11,16 +11,40 @@
 #   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验）
 #   scripts     sh 脚本 shellcheck（错误级）+ 行尾必须 LF
 #   smoke       真起一个服务进程：/healthz、入口跳转、404、退出码
-#   build       release 静态产物（x86_64 musl），仅 main / 手动触发
+#   build       release 静态产物（x86_64 musl），**仅手动触发**
 #
-# 打标签发布走 release.yml；依赖安全公告走 audit.yml（周更）。
+# 开发/测试阶段取舍（2026-10-31，都在验证概念、不发版）：
+#   - build 不随 push/PR 跑：musl 交叉编译是发布物验证，不是代码门槛，
+#     要产物就手动 dispatch 一次（整条流水线会一起跑完）
+#   - docs/**、**.md、.gitignore、.workbuddy/** 改动不触发（纯文档不该烧 Rust 编译）
+#     ⚠ 若分支保护把 CI 设为 required，md-only 的 PR 会因「检查没跑」被卡住——
+#       那种情况把 required 检查挪到 build 或干脆去掉 paths-ignore
+#   - runner 镜像（ubuntu-24.04）已预装 gcc/make/pkg-config/shellcheck，
+#     删掉原来的 apt-get 步骤（每次 job 省 30~60s；预装清单见 runner-images 的
+#     Ubuntu2404-Readme，不是猜的）
+#   - 同工具链的 job 共用 rust-cache（shared-key）：依赖只在一处存，
+#     避免 5 份 target 目录把 10GB 缓存配额吃满
+#
+# 打标签发布走 release.yml（开发阶段已断电，仅手动、默认不建 Release）；
+# 依赖安全公告走 audit.yml（周更）。
 name: CI
 
 on:
   push:
     branches: [main, master]
     tags-ignore: ["**"]
+    paths-ignore:
+      - "docs/**"
+      # `**.md` 匹配任意层级的 .md（含根目录 README）；写成 `**/*.md` 会漏掉根目录那份
+      - "**.md"
+      - ".gitignore"
+      - ".workbuddy/**"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".gitignore"
+      - ".workbuddy/**"
   workflow_dispatch:
 
 # 只读：CI 不改仓库
@@ -39,16 +63,19 @@ env:
   RUST_BACKTRACE: "1"
   # 工具链固定在验证过的版本：浮动 stable 会让某个新 lint 隔着 PR 把 CI 变红
   RUST_VERSION: "1.98.1"
-  # 与 Cargo.toml 的 rust-version 保持一致（1.85 已不够：rusqlite 0.41 要 1.89）
-  MSRV: "1.89"
+  # 注意：MSRV 不能写成这里的 env.MSRV。`jobs.<id>.name` 的可用上下文里没有 env
+  # （只有 github/needs/strategy/matrix/vars/inputs），写进去整份工作流会被判为
+  # 非法、一个 job 都不创建，表现是「每次 push 都红、点进去没有步骤」。
+  # 所以 MSRV 放在 msrv job 的 matrix 里（matrix 上下文在 name 里是合法的）。
 
 jobs:
   # ── 静态检查 ────────────────────────────────────────────────
   fmt:
     name: 格式（rustfmt）
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -58,8 +85,9 @@ jobs:
   clippy:
     name: Clippy（-D warnings）
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
         run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
@@ -68,39 +96,46 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: clippy
+          shared-key: ci
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # ── 测试 ────────────────────────────────────────────────────
   test:
     name: 单测（Linux）
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test
-      - name: 依赖（rusqlite bundled / zstd-sys / ring 都要 C 工具链）
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+          shared-key: ci
       # 全量单测 + 文档测试；crates/sdk/tests/kernel_contract.rs 是 unix-only，
       # 这条 job 是它第一次真正运行的地方（开发机是 Windows，只编译不执行）
+      # C 工具链（rusqlite bundled / zstd-sys / ring）用镜像预装的 gcc/make/pkg-config
       - run: cargo test --workspace --locked --no-fail-fast
 
   msrv:
-    name: MSRV（${{ env.MSRV }}）
+    # 版本号走 matrix：既让运行列表里直接看见 MSRV，又避开 `env` 在 job name 里非法的问题
+    name: MSRV（${{ matrix.msrv }}）
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        # 与 Cargo.toml 的 rust-version 保持一致（1.85 已不够：rusqlite 0.41 要 1.89）
+        msrv: ["1.89"]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.MSRV }}
+          toolchain: ${{ matrix.msrv }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # 不与 ci 共用：工具链不同，target 产物对不上，共用只会互相顶掉
           key: msrv
       - run: cargo check --workspace --all-targets --locked
 
@@ -108,15 +143,16 @@ jobs:
   verify:
     name: 契约校验（xtask check）
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: verify
+          shared-key: ci
       - run: cargo run --locked -p xtask -- check
       # 空参数也不能炸（曾出过 keygen --help 真的写出私钥这种事）：
       # 帮助要打得出、没给包时 verify-pkg 要「跳过」而不是报错
@@ -128,21 +164,23 @@ jobs:
   pkg-chain:
     name: 插件包链路（签 → 打包 → 验签）
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: pkg
-      - run: cargo build --release --locked -p skiff-sdk --bin skiff-plugin
+          shared-key: ci
+      # debug 构建就够：这里验的是签名语义，不是性能；release 的 opt 编译纯属烧时间
+      - run: cargo build --locked -p skiff-sdk --bin skiff-plugin
       - name: 发布物签名 / 验签（pack-release.sh 用的那两条）
         run: |
           set -eu
           WORK=$(mktemp -d)
-          TOOL="$PWD/target/release/skiff-plugin"
+          TOOL="$PWD/target/debug/skiff-plugin"
 
           "$TOOL" keygen --out "$WORK/release.key" | tee "$WORK/keygen.log"
           # 公钥从输出里取。锚点只用 ASCII 的 `hex)`，不认中文前缀（runner 的 locale 不可控）；
@@ -163,7 +201,7 @@ jobs:
         run: |
           set -eu
           WORK=$(mktemp -d)
-          TOOL="$PWD/target/release/skiff-plugin"
+          TOOL="$PWD/target/debug/skiff-plugin"
 
           # `new` 会**自己生成**签名密钥（$WORK/demo/skiff-signing.key）并把指纹写进
           # manifest.key_id —— 所以后面 pack 必须用这把，换成 keygen 的钥匙会因指纹
@@ -196,8 +234,9 @@ jobs:
   scripts:
     name: 部署脚本（shellcheck + LF）
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 行尾检查（CRLF 的 .sh 在 Linux 上会直接跑不起来）
         run: |
           set -eu
@@ -209,26 +248,28 @@ jobs:
             fi
           done < <(git ls-files '*.sh' '*.service')
           exit $bad
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      # 只看 error 级：warning/info 留给人工，不为风格问题卡发布
-      - run: |
+      # shellcheck 镜像预装；万一哪天镜像真拿掉了，宁可红也不要静默跳过
+      - name: shellcheck（error 级）
+        run: |
           set -eu
+          command -v shellcheck >/dev/null || { echo "::error::runner 上没有 shellcheck，检查被跳过等于没查"; exit 1; }
+          # 只看 error 级：warning/info 留给人工，不为风格问题卡发布
           git ls-files -z '*.sh' | xargs -0 shellcheck -S error
 
   # ── 冒烟：真起进程，探 HTTP ───────────────────────────────────
   smoke:
     name: 冒烟（真起服务）
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: smoke
-      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+          shared-key: ci
       - run: cargo build --locked -p skiff --bin skiff
       - name: 起服务并探测
         run: |
@@ -282,19 +323,21 @@ jobs:
           fi
           echo "冒烟通过"
 
-  # ── release 静态产物（不上传 Release，只给 main 一个可下载的验证物）──
+  # ── release 静态产物：开发阶段只手动跑（要下载验证物时 dispatch 一次）──
   build:
     name: 编译（x86_64 musl 静态）
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # musl 目标单独缓存，别把交叉产物混进 host 的 shared-key
           key: build-musl
       - name: 交叉到 musl（静态链接，不绑 glibc 版本）
         run: |
@@ -317,10 +360,10 @@ jobs:
             fi
           done
           du -h target/x86_64-unknown-linux-musl/release/skiff
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skiff-x86_64-linux-musl
           path: |
             target/x86_64-unknown-linux-musl/release/skiff
             target/x86_64-unknown-linux-musl/release/skiff-plugin
-          retention-days: 14
+          retention-days: 7

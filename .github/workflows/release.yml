@@ -1,6 +1,12 @@
 # Skiff（轻舟）· 发布流水线
 #
-# 触发：推 `v*` 标签（如 `v0.1.0`），或手动 dispatch 指定版本号。
+# 【开发/测试阶段 · 2026-10-31】不发新版，这条流水线只作「概念验证」：
+#   - 触发只剩手动 dispatch，`v*` 标签触发先摘掉（注释保留在下面，
+#     真要发版时连同 publish 默认值一起放开）
+#   - 默认**只构建 + 自检 + 传 workflow 产物**，不建 GitHub Release；
+#     要真发布，手动 dispatch 时把 `publish` 勾成 true
+#   这样跑这条流水线零副作用：能验 musl/cross/pack-release.sh/签名全链路，
+#   但不会把半成品挂到 Release 页上。
 #
 # 产物（每个架构一套，与 deploy/pack-release.sh 的布局一致）：
 #   skiff-<ver>-linux-<arch>.tar.gz          主程序 + skiff-plugin + install.sh + docker-bootstrap.sh + systemd 单元
@@ -16,16 +22,26 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
         description: "版本号（不带 v 前缀，如 0.1.0）"
         required: true
+      publish:
+        description: "建 GitHub Release（开发阶段默认关，只出 workflow 产物）"
+        type: boolean
+        default: false
+  # 真要发版时放开这段（并把上面 publish 的 default 改回 true，或发版时手动勾选）：
+  # push:
+  #   tags: ["v*"]
 
 permissions:
   contents: read
+
+# 同一 ref 上的新 dispatch 顶掉旧的：交叉编译动辄十几分钟，别让两轮排队互踩
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # 发布链路不取消进行中的构建，防止发出去半个包
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,6 +52,7 @@ jobs:
   build:
     name: 构建 ${{ matrix.target }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       # 一个架构失败不影响另一个的产物，但整体仍然报红
       fail-fast: false
@@ -46,18 +63,14 @@ jobs:
           - target: aarch64-unknown-linux-musl
             arch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 解析版本号
         id: ver
         run: |
           set -eu
-          input='${{ github.event.inputs.version }}'
-          if [ -n "$input" ]; then
-            v="${input#v}"
-          else
-            v="${GITHUB_REF_NAME#v}"
-          fi
+          v="${{ inputs.version }}"
+          v="${v#v}"
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "版本: $v"
 
@@ -112,21 +125,31 @@ jobs:
             echo "签名文件: $(ls dist/*.sig)"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.arch }}
           path: dist/*
           retention-days: 7
           if-no-files-found: error
+      # 注意：这里 @v7 与下面 download 的 @v8 版本号故意不对齐 ——
+      #      download v8 与 upload v7 是同期发布的一对（v8 才认得 v7 新增的 direct upload），
+      #      别按「上传下载要同版本号」的直觉去改。
 
+  # 只在 inputs.publish 为 true 时跑。开发阶段跑 release 流水线 =
+  # 只到 build + workflow 产物为止，GitHub Release 页保持干净。
   publish:
     name: 发布到 GitHub Release
     needs: build
+    if: inputs.publish
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write   # 建 Release 需要写权限（其余 job 只读）
     steps:
-      - uses: actions/download-artifact@v4
+      # v8 起：① 迁移到 ESM；② 校验和不匹配默认直接报错；③ 不再无条件解包，
+      #     先看 Content-Type，非 zip 就跳过（就是为配合上面 v7 的 direct upload）。
+      #     默认 false 的 merge-multiple 仍在，多产物合并进同一目录的用法不变。
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -138,9 +161,12 @@ jobs:
       - name: 建/改 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', github.event.inputs.version) }}
+          # 标签触发已摘（见文件头），这里只认 dispatch 的 version 输入
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -eu
+          # 输入允许带/不带 v 前缀，统一成恰好一个 v 开头
+          TAG="v${VERSION_INPUT#v}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
@@ -154,8 +180,9 @@ jobs:
   docker:
     name: Docker 镜像可构建（可选形态）
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build -f deploy/Dockerfile -t skiff:ci .
       - name: 自检镜像
         run: |
