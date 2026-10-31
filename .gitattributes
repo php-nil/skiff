@@ -1,0 +1,20 @@
+# 行尾统一：仓库内一律 LF。
+#
+# 开发机是 Windows，若不锁死，autocrlf 会把 .sh 提交成 CRLF —— Linux 上
+# `sh install.sh` 直接报 `$'\r': command not found`，是 CI 与真机都踩过的坑。
+* text=auto eol=lf
+
+# 部署脚本 / systemd 单元必须是 LF，且不要被 git 改动
+*.sh text eol=lf
+*.service text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+
+# 二进制：不参与行尾转换与文本 diff
+*.wbpkg binary
+*.tar.gz binary
+*.sig -text
+*.png binary
+*.ico binary

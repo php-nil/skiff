@@ -1,0 +1,39 @@
+[package]
+name = "skiff"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 极简 Linux 服务器管理面板"
+
+[[bin]]
+name = "skiff"
+path = "src/main.rs"
+
+[dependencies]
+skiff-store = { workspace = true }
+skiff-model = { workspace = true }
+skiff-identity = { workspace = true }
+skiff-docker = { workspace = true }
+skiff-plugin = { workspace = true }
+skiff-pkgfmt = { workspace = true }
+skiff-wire = { workspace = true }
+skiff-app = { workspace = true }
+skiff-web = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand = { workspace = true }
+libc = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+axum-server = { version = "0.7.1", default-features = false, features = ["tls-rustls-no-provider"] }

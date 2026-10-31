@@ -1,0 +1,35 @@
+[package]
+name = "skiff-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+skiff-app = { workspace = true }
+skiff-store = { workspace = true }
+skiff-model = { workspace = true }
+skiff-identity = { workspace = true }
+skiff-docker = { workspace = true }
+skiff-plugin = { workspace = true }
+skiff-pkgfmt = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+askama = "0.16"
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+futures-util = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+flate2 = "1"
+tempfile = { workspace = true }
+
+[build-dependencies]
+# 前端资源预压缩由 build.rs 完成（§2.2）：为 crates/web/static 生成 .gz 变体并 embed
+flate2 = "1"

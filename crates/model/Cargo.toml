@@ -1,0 +1,9 @@
+[package]
+name = "skiff-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 跨 crate 共享词汇：角色与授权项（零 I/O、零依赖）"
+
+[dependencies]

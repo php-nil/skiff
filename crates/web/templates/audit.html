@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}审计 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head"><h1>审计日志</h1><span class="muted small">最近 200 条</span></div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+<section class="panel">
+  {% if rows.is_empty() %}
+    <div class="empty">暂无审计记录</div>
+  {% else %}
+  <table class="grid compact">
+    <thead><tr><th>时间</th><th>操作者</th><th>IP</th><th>动作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="muted">{{ r.ts }}</td>
+        <td>{{ r.actor }}</td>
+        <td class="muted">{{ r.ip }}</td>
+        <td><code>{{ r.action }}</code></td>
+        <td>{{ r.target }}</td>
+        <td><span class="state {{ r.result }}">{{ r.result }}</span></td>
+        <td class="muted small">{{ r.detail }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

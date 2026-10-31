@@ -1,0 +1,3 @@
+# askama 模板目录（相对本 crate 根：crates/web）
+[general]
+dirs = ["templates"]

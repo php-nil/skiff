@@ -1,0 +1,68 @@
+# 4. 扩展体系（一）包格式 · 生命周期 · 信任模型
+
+> 主文档：[DESIGN.md](../DESIGN.md) ｜ 本文件：§4.1–4.3 ｜ 上一章：[§3 总体架构](03-architecture.md) ｜ 下一章：[§4 扩展体系（二）](04-plugin-publish.md)
+
+## 4.1 包格式与 manifest
+
+`.wbpkg` = tar.zst：
+
+```
+manifest.toml          # 包内原始字节参与签名（不做规范化重排）
+bin/{arch}/plugin      # amd64 / arm64 可执行文件
+ui/                    # 静态资源（由内核托管，CSP 收紧）
+migrations/            # 声明式迁移输入，由新版插件迁移 RPC 使用（§4.5）
+files.sha256           # 载荷哈希清单；明确排除自身与 sig
+sig                    # ed25519 签名（manifest.toml 与 files.sha256 的包内原始字节）
+```
+
+**包编码契约**：`files.sha256` 覆盖 `manifest.toml`、`bin/`、`ui/`、`migrations/` 等全部载荷普通文件（目录不单独列哈希），但不得包含 `files.sha256` 与 `sig`。每行格式为 `<64 位小写 sha256 hex><两个空格><UTF-8 相对路径>\n`，按路径 UTF-8 字节升序排列；路径统一使用 `/`，禁止绝对路径、`..`、空路径、重复路径、符号链接、硬链接与特殊文件。签名输入为 `b"SKIFF-WBPKG-v1\0" || u64be(len(manifest.toml)) || manifest.toml || u64be(len(files.sha256)) || files.sha256`，避免拼接歧义；`sig` 只存 64 字节原始 ed25519 签名，验签前不得规范化 TOML 或重排清单。
+
+manifest 字段分两组：**包标识与兼容性**、**能力、权限与运行配置**。
+
+**表 1｜包标识与兼容性**
+
+| 字段 | 说明 |
+|---|---|
+| `id` / `name` / `version` | 反向域名风格唯一 id、展示名、插件版本 |
+| `key_id` | 签名公钥指纹（SHA-256(raw public key) 的小写 hex）；仅用于选择信任库中的公钥，最终信任仍以验签与用户确认的指纹为准 |
+| `api` | 插件 API 版本（semver，取值形如 `"1.0"`）。内核声明支持区间，不匹配**拒绝加载** |
+| `run` | 取值 `on-demand`（默认）或 `resident`；`resident` 须写 `resident_reason` 且计入资源预算 |
+| `requires_full_sandbox` | 默认 `true`；需要完整 §4.2 隔离时，在 reduced sandbox 形态装前拒装，只有显式声明 `false` 才可降级运行 |
+
+**表 2｜能力、权限与运行配置**
+
+| 字段 | 说明 |
+|---|---|
+| `requires` | 必需内核能力数组（内核提供 `docker`、`identity`、`fs`、`net`）。**安装时**校验是否提供，未提供直接拒装（而不是装上再坏） |
+| `permissions` | 调用范围：`docker` / `identity` / `fs` / `net` 动词白名单（Broker 逐次校验）。安装时逐条向用户确认；Docker 动词还须叠加 §6 对象 grant |
+| `network_egress` | 可选出网目标范围（MVP 仅 IP/CIDR + 端口，不做动态域名放行；`unrestricted` 表示接受完全开放）；默认空集即拒绝出网，安装时单独确认。reduced sandbox 无法保证执行时，见 §5.4 |
+| `ui` | 菜单注册项；内核托管后以**沙箱 iframe**（opaque origin）加载，通信限版本化窄接口 `window.__SKIFF__`（postMessage 桥）——DOM/API 隔离由沙箱强制 |
+| `idle_timeout_sec` / `max_restarts` | 空闲回收秒数与重启次数上限，默认 300 / 3 |
+| `config_schema` | 键值表（类型 + `secret` 标记），UI 自动渲染配置表单；`secret` 项不落日志与审计（落盘口径见 §5.2） |
+| `cron` | 周期任务：5 段 cron 表达式数组；到点拉起插件调 `tick`，跑完即回收（§4.2） |
+| `memory_limit_mb` | 内存上限（MB）。**声明已入 manifest、当前未生效**——cgroups v2 未实现，只有 `setrlimit` 兜底（§12） |
+| `pids_limit` | 进程/线程数上限，映射到 `RLIMIT_NPROC`（默认 128）；cgroups `pids.max` 未实现 |
+
+`requires` 与 `permissions` 的区别：前者是“这个插件离了某能力就废”（装前拦），后者是“这个插件被允许碰哪些东西”（每次调用拦）。
+
+## 4.2 生命周期与资源兜底
+
+- **启动**：首次请求拉起，经继承 FD 一次性交付插件身份 token（绑定插件 id + 权限集，**与进程同生命周期**，退出即吊销）+ socket 路径；5s 内 `GET /healthz` 不通过即判失败。
+- **回收**：空闲 300s SIGTERM（`resident` 除外）；崩溃退避 0.5s/2s/8s，连续 3 次熔断 + UI 告警。
+- **周期任务**：manifest 声明 cron 表达式，内核到点拉起插件调 `tick` RPC，跑完即回收——不让定时器把插件钉成常驻；**停机错过的 tick 不补跑**（要对账的插件在 tick 内自行幂等处理）。
+- **进程降权**：每个插件使用按插件 id 稳定分配的独立 UID/GID（不进 docker 组），拉起后依次重置 supplementary groups（仅保留 `skiff-plugins`）、`setgid`/`setuid`、清空 capabilities 并设 `PR_SET_NO_NEW_PRIVS`；独立 UID 同时防止同 UID 插件互发信号、ptrace 或读取 `/proc/<pid>/environ`。`skiff.db`/`/etc/skiff/config.toml`/`initial-admin.txt` 保持 0600 root，插件仅自身目录（`/var/lib/skiff/plugins/{id}/`）可写，目录内部分层 `versions/`（代码，只读）/ `data/` / `cache/` / `run/`（语义见 §5.2），SDK 注入 `SKIFF_PLUGIN_DATA_DIR` / `SKIFF_PLUGIN_CACHE_DIR` 约定路径、插件不硬编码——直连 `docker.sock`（root:docker 0660）与读内核数据两条旁路封死，越权只剩「经 Broker」一条路。
+- **内核崩溃兜底**：拉起时 `prctl(PR_SET_PDEATHSIG)` + 插件端约定 UDS 断连即退出；每个插件及其子孙放在独立 cgroup，正常回收或内核重启发现遗留实例时用 cgroup 清理整棵进程树，不只杀直接子进程。
+- **沙箱**：landlock fs 白名单（仅自身目录 + manifest 声明且用户授权的目录）+ cgroups v2 `memory.max`（默认 256MB，manifest 可配）、`pids.max`（默认 128）、`cpu.max` + `setrlimit`（AS/NOFILE/NPROC/FSIZE）兜底。`data/` 与 `cache/` 在文件系统支持时启用 project quota；不支持时必须标注“磁盘仅软限额”，不得宣称完整资源隔离。出网按插件 UID 用 nftables owner-match 收口，**默认拒绝**，仅开放 manifest 声明且用户授权的目标范围。landlock 需内核 ≥5.13，不可用时默认禁止启动第三方插件；只有 admin 显式开启 `allow_reduced_sandbox` 且插件声明 `requires_full_sandbox=false` 时才降级为独立 UID + 文件权限，并在 UI 持续标红。RLIMIT_AS 计虚拟地址空间，Go/JVM/.NET 等托管运行时预留大地址空间易误伤——**支持矩阵以 M4 实测为准，未验证前只承诺 C/Rust 插件**。不做自定义 seccomp（manifest 预留开关）。**诚实声明**：沙箱 = 降权 + landlock + cgroups；插件自身 exec/文件/网络不经内核，manifest 权限只约束**经内核的调用**——装插件 = 信任作者进程，沙箱降低事故与越权面，但不承诺抵抗内核漏洞或沙箱逃逸（§10 风险 9）。
+- **IPC**：Supervisor 预建每插件运行目录 `/run/skiff/plugins/{id}/`（插件 UID 0700），插件服务 socket 为其中的 `plugin.sock`（0600），避免共享可写目录内互相删除 socket；插件仅暴露 `GET /healthz` 与 `POST /rpc`（JSON-RPC 2.0）；插件回调内核走 `/run/skiff/kernel.sock` 上**同一套 `/api/v1`**，不开放 TCP 端口。`kernel.sock` 为 root:skiff-plugins 0660，父目录 0711（可穿越不可列），插件靠附加组 `skiff-plugins` 连接；内核同时校验 `SO_PEERCRED` 的 UID ↔ 插件 id 映射和进程级 Bearer token，不能只凭 socket 可达或 token 单一因素授权。身份 token 经继承 FD 一次性交付，不写环境变量；Broker 每次调用查库校验权限（不做长缓存），未授权 403 + 审计。默认单消息帧 ≤1MiB、RPC 超时 30s、单插件并发 8、等待队列 32，超限快速失败；持续超时进入熔断。插件 API 是**请求-响应控制面**；流式场景（终端/日志流）不经过插件——UI 直连内核 API，插件只发控制指令，属 API 契约的一部分。
+- **UI 托管**：内核托管 `/plugins/{id}/ui/*`，前端读 `/api/v1/plugins/ui` 后以**沙箱 iframe**（`sandbox="allow-scripts"`，不给 `allow-same-origin` / `allow-forms` / `allow-top-navigation`）加载——插件脚本拿不到面板会话与 DOM。`window.__SKIFF__` 是 iframe 内 SDK 对 postMessage 的客户端封装，不是父页面跨 origin 注入的对象；每次加载由父页面生成随机 channel nonce，桥接层同时校验 `event.source === iframe.contentWindow`、nonce、消息 schema、API 版本和该插件 granted 集，不能只校验 opaque origin 下的 `"null"`。父向子回包虽需 `targetOrigin="*"`，仍绑定同一 source+nonce 且不得携带面板凭据。插件 CSP 至少收紧 `connect-src 'none'`、`form-action 'none'`、`base-uri 'none'`、`object-src 'none'`，桥接调用另做速率限制与审计。
+- **热插拔的定义**：安装 / 卸载 / 升级不需要重启内核（不是运行中代码热替换）。
+
+## 4.3 信任模型（第三方插件的前提）
+
+第三方插件 = 任意原生可执行代码，属于高信任工作负载。威胁模型只承诺：隔离普通崩溃、封住已列出的权限旁路、在沙箱机制正常且无内核/运行时漏洞时限制越权；不承诺抵抗恶意 admin、宿主内核 0day 或未知沙箱逃逸。签名证明来源，不证明代码安全；没有信任链就谈不上“第三方发布”：
+
+1. **完整性与安全解包**：上传先流式写入 root 0700 临时目录并限制压缩包大小；第一遍只解析、不释放条目，校验 §4.1 路径规则、条目类型、哈希与签名，默认上限为压缩包 100MiB / 解压总量 512MiB / 4096 条目 / manifest 1MiB。全部通过后第二遍解到 root 所有的 staging 目录，只允许目录和普通文件、拒绝链接与特殊文件、文件一律排他新建、禁止覆盖已有条目并检查剩余磁盘，最后原子切换版本目录。任何一步失败都清理临时目录，不得留下“部分安装成功”。
+2. **信任源**：内置官方公钥；第三方公钥由用户通过带外渠道取得并在安装确认对话框中导入（TOFU——首次信任），UI 展示的指纹须与 manifest `key_id` 和实际公钥一致。**不自建中心 PKI**：极简定位，信任决策留给用户。
+3. **未签名包默认拒装**；`allow_unsigned = true` 仅为开发配置项，UI 上标红提示。
+4. **升级同源**：新包签名公钥须与已装版本一致；更换密钥视为新信任，需用户重新确认指纹。密钥撤销本期用本地信任库手动撤销，不承诺在线 CRL/OCSP。
+5. 权限确认与签名确认是**两道独立闸**：签名回答“这个包是不是宣称的作者发布的”，权限回答“这个包被允许做什么”；二者都不能把恶意原生代码变成可信代码。

@@ -1,0 +1,25 @@
+name: Skiff
+tags:
+  - Server
+  - Tool
+title: 轻舟 · 极简 Linux 服务器管理面板
+description: 极简 Linux 面板：Web 管理、Docker 容器管理与外部插件体系。容器形态为受限形态，能力面收缩为 docker/identity。
+additionalProperties:
+  key: skiff
+  name: Skiff
+  tags:
+    - Server
+    - Tool
+  type: tool
+  crossVersionUpdate: true
+  limit: 0
+  recommend: 0
+  website: https://example.com/skiff
+  github: https://github.com/example/skiff
+  document: https://example.com/skiff/docs
+  memoryRequired: 256
+  architectures:
+    - amd64
+    - arm64
+  shortDescZh: 极简 Linux 服务器管理面板（受限容器形态）
+  shortDescEn: Minimal Linux server panel (restricted container form)

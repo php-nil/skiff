@@ -1,0 +1,35 @@
+# MVP Compose 子集样例（§6.5）
+#
+# 只允许顶层 services / volumes / networks（+ 可选 version，仅接受并忽略）。
+# 服务字段限：image / command / entrypoint / environment / ports / restart /
+#            depends_on / healthcheck / volumes / networks / labels。
+# 其余字段（build / extends / profiles / env_file / secrets / configs ...）会**明确报错**，
+# 不是被忽略 —— 由 `cargo run -p xtask -- check-compose` 固化校验。
+version: "3.8"
+
+services:
+  web:
+    image: nginx:1.27-alpine
+    command: ["nginx", "-g", "daemon off;"]
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "18081:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - html:/usr/share/nginx/html
+    networks:
+      - skiff-demo
+    labels:
+      app: demo
+
+volumes:
+  html:
+
+networks:
+  skiff-demo:

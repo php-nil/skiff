@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/store", "crates/identity", "crates/docker", "crates/plugin", "crates/pkgfmt", "crates/wire", "crates/model", "crates/policy", "crates/compose", "crates/sdk", "crates/app", "crates/web", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://example.com/skiff"
+
+[workspace.dependencies]
+# 运行时 / Web
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
+tower = "0.5"
+# 只用到 CatchPanic：gzip 是 build.rs 预压缩（见 crates/web/build.rs），
+# 没有 CompressionLayer / TimeoutLayer / RequestBodyLimitLayer 的实际挂载点，
+# 因此不再启用 compression-gzip / timeout / limit 三个特性。
+tower-http = { version = "0.6", features = ["catch-panic"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "http1", "tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+futures-util = "0.3"
+async-stream = "0.3"
+
+# 序列化 / 配置
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+serde_yaml = "0.9"
+
+# 存储
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
+
+# 密码 / 签名
+argon2 = "0.5"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+subtle = "2"
+rand = "0.8"
+hex = "0.4"
+base64 = "0.22"
+
+# 包格式
+tar = "0.4"
+zstd = "0.13"
+
+# 其它
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rust-embed = "8"
+mime_guess = "2"
+tempfile = "3"
+# 默认特性 = http + pipe（unix socket 需要 pipe）；不引 socket-proxy，也不转发任意 Engine 路径
+bollard = { version = "0.21" }
+libc = "0.2"
+
+skiff-store = { path = "crates/store" }
+skiff-identity = { path = "crates/identity" }
+skiff-docker = { path = "crates/docker" }
+skiff-pkgfmt = { path = "crates/pkgfmt" }
+skiff-plugin = { path = "crates/plugin" }
+skiff-app = { path = "crates/app" }
+skiff-web = { path = "crates/web" }
+skiff-sdk = { path = "crates/sdk" }
+skiff-wire = { path = "crates/wire" }
+skiff-model = { path = "crates/model" }
+skiff-policy = { path = "crates/policy" }
+skiff-compose = { path = "crates/compose" }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = true

@@ -1,0 +1,37 @@
+services:
+  skiff:
+    image: ghcr.io/example/skiff:0.1.0
+    container_name: ${CONTAINER_NAME}
+    restart: always
+    ports:
+      - ${PANEL_APP_PORT_HTTP}:18080
+    environment:
+      - TZ=${TZ}
+      - SKIFF_LOG_LEVEL=${SKIFF_LOG_LEVEL}
+      - SKIFF_DATA_DIR=/data
+      - SKIFF_RUN_DIR=/run/skiff
+      - SKIFF_LISTEN=0.0.0.0:18080
+      # 受限形态：能力面收缩为 docker / identity（§5.4）
+      - SKIFF_FORM=docker
+      # 明文监听前提是「反代确实终止了 TLS」，因此必须同时给可信反代白名单，
+      # 否则内核拒绝启动（§6.2 的显式开关规则）。
+      - SKIFF_ALLOW_INSECURE_HTTP=${SKIFF_ALLOW_INSECURE_HTTP}
+      - SKIFF_TRUSTED_PROXIES=${SKIFF_TRUSTED_PROXIES}
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "/skiff", "health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    labels:
+      createdBy: "Apps"
+    networks:
+      - 1panel-network
+
+networks:
+  1panel-network:
+    external: true

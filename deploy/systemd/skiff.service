@@ -1,0 +1,46 @@
+[Unit]
+Description=Skiff (轻舟) — 极简 Linux 服务器管理面板
+Documentation=https://github.com/example/skiff
+After=network-online.target docker.service
+Wants=network-online.target
+# 不 Wants=docker.service：Docker 可以由用户后装，面板在无 Docker 时应能起来
+# 并在 UI 中显示「Docker 不可用」（方案 §3.3 优雅降级）。
+
+[Service]
+Type=simple
+User=root
+# 主形态固定 root（方案 §5.1）：需要创建独立插件 UID/GID、访问 docker.sock、
+# 后续 nftables/cgroups 操作。插件的降权由面板自身 setuid/gid 完成，不靠 unit。
+Group=skiff-plugins
+ExecStart=/usr/local/bin/skiff serve --config /etc/skiff/config.toml
+Restart=always
+RestartSec=3
+
+# /run/skiff 由 systemd 创建，属组 skiff-plugins。
+# 0711 而不是 0710：插件的主 gid 是自己的独立 gid，只靠「其他位」穿越目录；
+# kernel.sock 本身是 0660 + 附加组 skiff-plugins，那才是真正的闸门。
+RuntimeDirectory=skiff
+RuntimeDirectoryMode=0711
+# /var/lib/skiff 首启由 install.sh 建；这里声明给 systemd 记住属组。
+# 同样要 other-x，否则降权后的插件进不去自己的 data/。
+StateDirectory=skiff
+StateDirectoryMode=0711
+
+# 插件 Supervisor 需要在自己的 cgroup 下放子进程；delegate 让容器/沙箱后续可控。
+# 注：cgroups v2 限额在 MVP 未实现（见 docs/sections/12-pending-tests.md）。
+Delegate=yes
+
+# 停服时先 SIGTERM 主进程，由面板自己停插件；超时再 SIGKILL 整组。
+KillMode=mixed
+TimeoutStopSec=20
+LimitNOFILE=65535
+
+# 基础加固：插件已被 setuid 降权，主进程不应再获得新特权。
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectControlGroups=no
+ProtectKernelTunables=no
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target

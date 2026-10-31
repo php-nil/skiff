@@ -1,0 +1,69 @@
+additionalProperties:
+  formFields:
+    - default: skiff
+      edit: true
+      envKey: CONTAINER_NAME
+      labelEn: Container name
+      labelZh: 容器名称
+      required: true
+      type: text
+      rule: paramCommon
+
+    - default: 18080
+      edit: true
+      envKey: PANEL_APP_PORT_HTTP
+      labelEn: HTTP port
+      labelZh: 面板端口
+      required: true
+      rule: paramPort
+      type: number
+
+    - default: Asia/Shanghai
+      edit: true
+      envKey: TZ
+      labelEn: Timezone
+      labelZh: 时区
+      required: true
+      type: text
+      rule: paramCommon
+
+    - default: info
+      edit: true
+      envKey: SKIFF_LOG_LEVEL
+      labelEn: Log level
+      labelZh: 日志级别
+      required: true
+      type: select
+      values:
+        - label: debug
+          value: debug
+        - label: info
+          value: info
+        - label: warn
+          value: warn
+        - label: error
+          value: error
+
+    # 容器形态的监听地址在容器网络内，TLS 由 1Panel 的网站反向代理终止。
+    # 这两个字段必须成对出现：只开明文、不给可信反代白名单，内核会拒绝启动（§6.2）。
+    - default: "1"
+      edit: true
+      envKey: SKIFF_ALLOW_INSECURE_HTTP
+      labelEn: Allow plaintext (TLS terminated by reverse proxy)
+      labelZh: 允许明文（由反代终止 TLS）
+      required: true
+      type: select
+      values:
+        - label: 是（反代已启用 HTTPS）
+          value: "1"
+        - label: 否
+          value: "0"
+
+    - default: 172.16.0.0/12
+      edit: true
+      envKey: SKIFF_TRUSTED_PROXIES
+      labelEn: Trusted proxy CIDR
+      labelZh: 可信反代网段
+      required: true
+      type: text
+      rule: paramCommon

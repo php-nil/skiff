@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}确认安装 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head"><h1>确认安装插件</h1></div>
+{% if !error.is_empty() %}<div class="notice-line">{{ error }}</div>{% endif %}
+<section class="panel">
+  <dl class="kv">
+    <dt>插件</dt><dd><strong>{{ name }}</strong>（{{ id }}）</dd>
+    <dt>版本 / API</dt><dd><code>{{ version }}</code> / <code>{{ api }}</code></dd>
+    <dt>签名指纹</dt><dd><code>{{ key_id }}</code> {% if signed %}<span class="state ok">已验签</span>{% else %}<span class="state fail">未验签</span>{% endif %}</dd>
+    <dt>需要能力</dt><dd>{{ requires }}</dd>
+    <dt>出网范围</dt><dd>{{ egress }}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>权限确认（逐条）</h2>
+  <p class="hint">签名回答“这个包是不是宣称的作者发布的”，权限回答“这个包被允许做什么”——两道独立闸。<strong>权限确认防误用不防恶意</strong>：防恶意靠签名信任 + 降权沙箱。装插件 = 信任作者。</p>
+  <form method="post" action="/{{ ctx.prefix }}/plugins/confirm">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    {% if permissions.is_empty() %}
+      <div class="empty">该插件未声明任何能力权限（纯 UI/本地逻辑）。</div>
+    {% else %}
+      <ul class="perms">
+      {% for p in permissions %}
+        <li>
+          <label>
+            <input type="checkbox" name="grant" value="{{ p.value }}" checked>
+            <code>{{ p.capability }}</code> · <span>{{ p.verb }}</span>
+          </label>
+        </li>
+      {% endfor %}
+      </ul>
+    {% endif %}
+    <div class="row">
+      <button class="primary" type="submit">确认并安装</button>
+      <a class="ghost" href="/{{ ctx.prefix }}/plugins">取消</a>
+    </div>
+  </form>
+  <p class="hint">拒绝某项权限后，该权限不会进入 granted 集，插件可通过 <code>SKIFF_GRANTED_PERMS</code> 查询并降级适配。</p>
+</section>
+{% endblock %}

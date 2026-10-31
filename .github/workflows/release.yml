@@ -1,0 +1,164 @@
+# Skiff（轻舟）· 发布流水线
+#
+# 触发：推 `v*` 标签（如 `v0.1.0`），或手动 dispatch 指定版本号。
+#
+# 产物（每个架构一套，与 deploy/pack-release.sh 的布局一致）：
+#   skiff-<ver>-linux-<arch>.tar.gz          主程序 + skiff-plugin + install.sh + docker-bootstrap.sh + systemd 单元
+#   skiff-<ver>-linux-<arch>.tar.gz.sha256   装机前先校验
+#   skiff-<ver>-linux-<arch>.tar.gz.sig      detached ed25519 签名（配了密钥才有）
+#
+# 为什么用 musl 静态：发行物要能在 Debian 11 / Ubuntu 22.04 / Rocky 9 上直接跑，
+# 动态链接会把宿主 glibc 版本变成隐形依赖。aarch64 用 cross（自带交叉工具链镜像，
+# 避免在 runner 上手工拼 aarch64 的 C 交叉编译器）。
+#
+# 签名：仓库 secret `RELEASE_SIGNING_KEY_HEX` 存私钥的 hex（keygen 产出的那一行）。
+# 没配也能出包，但会打 `::warning::` 并把这一步标成未签名 —— 不伪造"已签名"。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带 v 前缀，如 0.1.0）"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_VERSION: "1.98.1"
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      # 一个架构失败不影响另一个的产物，但整体仍然报红
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本号
+        id: ver
+        run: |
+          set -eu
+          input='${{ github.event.inputs.version }}'
+          if [ -n "$input" ]; then
+            v="${input#v}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本: $v"
+
+      - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
+        run: rm -f .cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # cross 用它自己的镜像做交叉编译，runner 上只需要 docker
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: 打包（构建 + 摘要 + 签名由 pack-release.sh 统一负责）
+        env:
+          SIGN_KEY_HEX: ${{ secrets.RELEASE_SIGNING_KEY_HEX }}
+        run: |
+          set -eu
+          if [ -n "${SIGN_KEY_HEX:-}" ]; then
+            printf '%s' "$SIGN_KEY_HEX" > "$RUNNER_TEMP/release.key"
+            chmod 600 "$RUNNER_TEMP/release.key"
+            KEY_ARGS="--key $RUNNER_TEMP/release.key"
+          else
+            echo "::warning::未配置 RELEASE_SIGNING_KEY_HEX，产物未签名（正式发布必须补签）"
+            KEY_ARGS=""
+          fi
+          # shellcheck disable=SC2086
+          CARGO=cross sh deploy/pack-release.sh \
+            --version "${{ steps.ver.outputs.version }}" \
+            --target "${{ matrix.target }}" \
+            --out dist \
+            $KEY_ARGS
+
+      - name: 自检产物（解包结构 + 静态链接）
+        run: |
+          set -eu
+          tar tzf dist/*.tar.gz | sort
+          ( cd dist && sha256sum -c ./*.tar.gz.sha256 )
+          mkdir -p "$RUNNER_TEMP/x" && tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/x"
+          bin=$(find "$RUNNER_TEMP/x" -name skiff -type f | head -1)
+          file "$bin"
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::${{ matrix.target }} 产物不是静态链接"
+            exit 1
+          fi
+          if [ -f dist/*.tar.gz.sig ]; then
+            echo "签名文件: $(ls dist/*.sig)"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: 发布到 GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # 建 Release 需要写权限（其余 job 只读）
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 汇总摘要
+        run: |
+          set -eu
+          ls -l dist
+          ( cd dist && sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS )
+      - name: 建/改 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', github.event.inputs.version) }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "Skiff（轻舟）$TAG" \
+              --notes '装机：先 sha256sum -c 校摘要，再解包执行 sh install.sh。发布公钥指纹与 .sig 一并核对。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
+          fi
+
+  # Dockerfile 是可选形态，但"能不能构建"必须有人验：这一步不 gate publish，
+  # 失败会红但不拦发布（主形态是 systemd 直装）。
+  docker:
+    name: Docker 镜像可构建（可选形态）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile -t skiff:ci .
+      - name: 自检镜像
+        run: |
+          set -eu
+          docker run --rm skiff:ci version
+          docker run --rm skiff:ci --help >/dev/null

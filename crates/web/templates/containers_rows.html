@@ -1,0 +1,38 @@
+{% if containers.is_empty() %}
+  <div class="empty">没有容器</div>
+{% else %}
+<table class="grid">
+  <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>操作</th></tr></thead>
+  <tbody>
+  {% for c in containers %}
+    <tr>
+      <td>
+        <a href="/{{ ctx.prefix }}/containers/{{ c.id }}">{{ c.name }}</a>
+        <code>{{ c.short_id }}</code>
+        {% if c.protected %}<span class="tag warn-tag">受保护</span>{% endif %}
+      </td>
+      <td class="muted">{{ c.image }}</td>
+      <td><span class="state {{ c.state }}">{{ c.state }}</span><div class="muted small">{{ c.status }}</div></td>
+      <td class="actions">
+        {% if can_operate %}
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/start" hx-target="#rows" hx-swap="innerHTML" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini" type="submit">启动</button>
+        </form>
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/restart" hx-target="#rows" hx-swap="innerHTML" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini" type="submit">重启</button>
+        </form>
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/stop" hx-target="#rows" hx-swap="innerHTML" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini" type="submit">停止</button>
+        </form>
+        {% else %}
+        <span class="muted small">只读</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

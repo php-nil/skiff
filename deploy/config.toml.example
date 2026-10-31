@@ -1,0 +1,55 @@
+# Skiff（轻舟）配置文件示例
+#
+# 唯一规范路径：/etc/skiff/config.toml（方案 §5.2）
+# 优先级：环境变量 > 本文件 > 内置默认
+# 本文件全部字段可选；未知字段会导致启动失败（deny_unknown_fields），
+# 这是刻意的——拼写错误不应静默降级。
+
+# ── 监听 ────────────────────────────────────────────────────────
+# 默认 127.0.0.1:18080。对外提供服务有两种正路：
+#   A) 本进程直接终止 TLS：配 tls_cert / tls_key
+#   B) 反代终止 TLS：监听 loopback，并显式 allow_insecure_http = true + trusted_proxies
+# 非 loopback 且无 TLS 时启动会被拒绝（方案 §6.2）。
+listen = "127.0.0.1:18080"
+
+# ── 路径 ────────────────────────────────────────────────────────
+# data_dir = "/var/lib/skiff"
+# run_dir = "/run/skiff"
+# docker_socket = "/var/run/docker.sock"
+
+# ── 形态与档位 ──────────────────────────────────────────────────
+# native（默认，宿主机直装）| docker（1Panel 商店容器形态，能力面收缩为 docker/identity）
+# form = "native"
+# basic（M2 基础档）| lifecycle（默认，M3 含 Compose 子集）
+# docker_tier = "lifecycle"
+
+# ── TLS ─────────────────────────────────────────────────────────
+# tls_cert = "/etc/skiff/tls/fullchain.pem"
+# tls_key  = "/etc/skiff/tls/privkey.pem"
+
+# 明文 HTTP 仅用于 loopback 调试或「反代已终止 TLS」的显式确认。
+# 配了 tls_cert/tls_key 时本项无意义。远程裸奔不会被允许。
+# allow_insecure_http = true
+
+# ── 可信反向代理（方案 §6.4）────────────────────────────────────
+# 只有来源 IP 命中这些 CIDR 时才采信 X-Forwarded-For / -Proto / -Host，
+# 否则一律清除伪造头。留空 = 不信任任何代转头。
+# trusted_proxies = ["127.0.0.1/32", "::1/128"]
+
+# 面板对外访问地址，用于生成绝对链接与 Cookie 安全策略的兜底判断。
+# external_url = "https://panel.example.com"
+
+# ── 安全开关（默认全关，开了要能说清为什么）────────────────────
+# 允许安装未签名插件。默认 false：未签名一律拒装（方案 §4.3）。
+# allow_unsigned = false
+
+# 允许在沙箱降级的环境装插件（容器形态常见）。
+# 默认 false：landlock/cgroups 不可用即拒装，而不是静默降级（方案 §4.2）。
+# allow_reduced_sandbox = false
+
+# login_concurrency = 2
+
+# ── Docker 宿主绑定挂载授权根（native 形态，方案 §5.5）──────────
+# 只有位于这些根内的路径才允许作为 bind 源。留空 = 允许创建的容器不能有宿主绑定挂载。
+# 路径各组件须由 root 管理，不接受插件可写目录内的 bind 源。
+# authorized_roots = ["/srv", "/opt/stacks"]

@@ -1,0 +1,20 @@
+[package]
+name = "skiff-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "skiff-plugin"
+path = "src/bin/skiff-plugin.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+skiff-pkgfmt = { workspace = true }
+skiff-wire = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

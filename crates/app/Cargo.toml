@@ -1,0 +1,15 @@
+[package]
+name = "skiff-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "应用上下文：AppState / WebConfig（装配层，依赖全部下层，不含表现层）"
+
+[dependencies]
+skiff-model = { workspace = true }
+skiff-store = { workspace = true }
+skiff-identity = { workspace = true }
+skiff-docker = { workspace = true }
+skiff-plugin = { workspace = true }
+tokio = { workspace = true }

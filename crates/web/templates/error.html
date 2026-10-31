@@ -1,0 +1,21 @@
+{# 错误页：不依赖 PageCtx（登录前、404、500 都可能用到） #}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ code }} {{ title }} · Skiff</title>
+  <link rel="stylesheet" href="/static/skiff.css">
+</head>
+<body class="error-page">
+  <main class="error-box">
+    <div class="error-code">{{ code }}</div>
+    <h1>{{ title }}</h1>
+    <p class="muted">{{ message }}</p>
+    <p><a class="button" href="/{{ prefix }}/">返回首页</a></p>
+    <p class="muted small">
+      安全入口提示：面板只在随机前缀下响应，请使用启动日志或设置页给出的完整地址。
+    </p>
+  </main>
+</body>
+</html>

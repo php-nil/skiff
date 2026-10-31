@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}插件 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head"><h1>插件</h1></div>
+{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !reduced_allowed %}
+<div class="banner warn">沙箱降级未开启（<code>allow_reduced_sandbox = false</code>）：landlock / cgroups 尚未实现，要求完整沙箱的插件会被拒装。</div>
+{% endif %}
+{% if allow_unsigned %}
+<div class="banner danger">allow_unsigned = true：未签名包可安装，仅限开发环境。</div>
+{% endif %}
+
+<section class="panel">
+  {% if plugins.is_empty() %}
+    <div class="empty">还没有安装插件</div>
+  {% else %}
+  <table class="grid">
+    <thead><tr><th>插件</th><th>版本 / API</th><th>状态</th><th>信任</th><th>已授权</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for p in plugins %}
+      <tr>
+        <td><strong>{{ p.name }}</strong><div class="muted small">{{ p.id }}</div></td>
+        <td><code>{{ p.version }}</code> <span class="muted small">api {{ p.api }}</span></td>
+        <td>
+          <span class="state {{ p.status }}">{{ p.status }}</span>
+          {% if p.running %}<span class="tag">运行中</span>{% endif %}
+          {% if p.reduced %}<span class="tag warn-tag">reduced sandbox</span>{% endif %}
+        </td>
+        <td>
+          {% if p.signed %}<span class="state ok">已验签</span>{% else %}<span class="state fail">未验签</span>{% endif %}
+          <div class="muted small"><code>{{ p.key_id }}…</code></div>
+        </td>
+        <td class="muted small">{{ p.grants }}</td>
+        <td class="actions">
+          {% if can_admin %}
+          <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/toggle" class="inline">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+            <button class="mini" type="submit">{% if p.enabled %}停用{% else %}启用{% endif %}</button>
+          </form>
+          <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/remove" class="inline" onsubmit="return confirm('确认卸载？插件数据默认保留。')">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+            <button class="mini danger" type="submit">卸载</button>
+          </form>
+          {% else %}<span class="muted small">只读</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+{% if can_admin %}
+<section class="panel">
+  <h2>安装插件（.wbpkg）</h2>
+  <form method="post" action="/{{ ctx.prefix }}/plugins/install" enctype="multipart/form-data" class="row">
+    <input type="file" name="package" accept=".wbpkg" required>
+    <button class="primary" type="submit">上传并校验</button>
+  </form>
+  <p class="hint">校验顺序：结构 → 哈希清单 → 签名（TOFU 公钥）→ API 兼容 → 能力可用 → 权限逐条确认。全程不出网。</p>
+</section>
+{% endif %}
+{% endblock %}

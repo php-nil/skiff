@@ -1,0 +1,12 @@
+[package]
+name = "skiff-compose"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· Compose MVP 子集解析（纯 serde_yaml 演算，零 I/O）"
+
+[dependencies]
+skiff-policy = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }

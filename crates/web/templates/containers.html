@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}容器 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>容器</h1>
+  <button class="ghost" hx-get="/{{ ctx.prefix }}/containers/rows" hx-target="#rows" hx-swap="innerHTML">刷新</button>
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !docker_reason.is_empty() %}<div class="empty">Docker 不可用：{{ docker_reason }}</div>{% endif %}
+<section class="panel">
+  <div id="rows">
+    {% include "containers_rows.html" %}
+  </div>
+</section>
+<script src="/static/xterm.min.js" defer></script>
+{% endblock %}

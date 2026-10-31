@@ -1,0 +1,23 @@
+# Rust 产物
+/target
+/dist
+
+# 本地开发数据（--dev 冒烟用）
+/tmp-data
+/tmp-run
+/skiff-data
+/skiff-run
+skiff-config.toml
+
+# 签名私钥：绝不入库（发布私钥应离线保存）
+*.key
+!deploy/**/*.example
+
+# 前端资源预压缩生成物（build.rs 每次构建重生成）
+crates/web/static/*.gz
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}概览 · Skiff{% endblock %}
+{% block content %}
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+<section class="stats">
+  <div class="stat"><span class="k">运行中容器</span><span class="v">{{ running }}<small>/{{ total }}</small></span></div>
+  <div class="stat"><span class="k">镜像</span><span class="v">{{ image_count }}</span></div>
+  <div class="stat"><span class="k">已装插件</span><span class="v">{{ plugin_count }}</span></div>
+  <div class="stat"><span class="k">面板运行</span><span class="v">{{ uptime }}</span></div>
+</section>
+
+{% if !ctx.docker_ok %}
+<div class="empty">Docker 不可用：{{ docker_reason }}<br>容器、镜像、网络、卷相关操作会返回 503；面板其余功能不受影响。</div>
+{% endif %}
+
+<section class="panel">
+  <h2>容器 <a class="more" href="/{{ ctx.prefix }}/containers">全部 →</a></h2>
+  {% if containers.is_empty() %}
+    <div class="empty">没有容器（或 Docker 不可用）</div>
+  {% else %}
+  <table class="grid">
+    <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>项目</th></tr></thead>
+    <tbody>
+    {% for c in containers %}
+      <tr>
+        <td><a href="/{{ ctx.prefix }}/containers/{{ c.id }}">{{ c.name }}</a> <code>{{ c.short_id }}</code>{% if c.protected %} <span class="tag warn-tag">受保护</span>{% endif %}</td>
+        <td class="muted">{{ c.image }}</td>
+        <td><span class="state {{ c.state }}">{{ c.state }}</span></td>
+        <td class="muted">{{ c.project }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>最近审计 <a class="more" href="/{{ ctx.prefix }}/audit">全部 →</a></h2>
+  {% if audit.is_empty() %}
+    <div class="empty">暂无记录</div>
+  {% else %}
+  <table class="grid">
+    <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead>
+    <tbody>
+    {% for a in audit %}
+      <tr><td class="muted">{{ a.ts }}</td><td>{{ a.actor }}</td><td><code>{{ a.action }}</code></td><td>{{ a.target }}</td><td><span class="state {{ a.result }}">{{ a.result }}</span></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

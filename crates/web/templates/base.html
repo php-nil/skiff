@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Skiff{% endblock %}</title>
+  <link rel="stylesheet" href="/static/skiff.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/skiff.js" defer></script>
+</head>
+<body>
+{% if ctx.dev_http %}
+<div class="banner danger">明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure、会话前缀非 __Host-。不可用于远程生产。</div>
+{% endif %}
+{% if ctx.must_change %}
+<div class="banner warn">首次登录必须修改口令后才能继续使用面板。<a href="/{{ ctx.prefix }}/settings?force=1">去修改</a></div>
+{% endif %}
+{% if !ctx.docker_ok %}
+<div class="banner warn">Docker 不可用：容器相关页面只渲染空态，操作会返回 503。</div>
+{% endif %}
+<header class="topbar">
+  <div class="brand"><span class="logo">▚</span> Skiff <span class="ver">v{{ ctx.version }}</span></div>
+  <nav>
+    <a class="{% if ctx.active == "dashboard" %}on{% endif %}" href="/{{ ctx.prefix }}">概览</a>
+    <a class="{% if ctx.active == "containers" %}on{% endif %}" href="/{{ ctx.prefix }}/containers">容器</a>
+    <a class="{% if ctx.active == "images" %}on{% endif %}" href="/{{ ctx.prefix }}/images">镜像</a>
+    <a class="{% if ctx.active == "networks" %}on{% endif %}" href="/{{ ctx.prefix }}/networks">网络</a>
+    <a class="{% if ctx.active == "volumes" %}on{% endif %}" href="/{{ ctx.prefix }}/volumes">卷</a>
+    <a class="{% if ctx.active == "plugins" %}on{% endif %}" href="/{{ ctx.prefix }}/plugins">插件</a>
+    <a class="{% if ctx.active == "audit" %}on{% endif %}" href="/{{ ctx.prefix }}/audit">审计</a>
+    <a class="{% if ctx.active == "settings" %}on{% endif %}" href="/{{ ctx.prefix }}/settings">设置</a>
+  </nav>
+  <div class="who">
+    <span class="chip">{{ ctx.username }} · {{ ctx.role }}</span>
+    <form method="post" action="/{{ ctx.prefix }}/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="link" type="submit">退出</button>
+    </form>
+  </div>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer class="foot">Skiff（轻舟）· 单二进制 · Docker {% if ctx.docker_ok %}可用{% else %}不可用{% endif %} · CLI：<code>skiff --help</code></footer>
+</body>
+</html>

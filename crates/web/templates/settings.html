@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}设置 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head"><h1>设置</h1></div>
+{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if force_change %}<div class="banner warn">首次登录必须修改口令；修改前其他页面会被强制跳转到这里。</div>{% endif %}
+
+<section class="panel">
+  <h2>口令</h2>
+  <form method="post" action="/{{ ctx.prefix }}/password" class="col">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <label>当前口令<input type="password" name="old_password" required autocomplete="current-password"></label>
+    <label>新口令（≥8 位）<input type="password" name="new_password" required minlength="8" autocomplete="new-password"></label>
+    <label>再次输入<input type="password" name="confirm_password" required minlength="8" autocomplete="new-password"></label>
+    <button class="primary" type="submit">修改口令</button>
+  </form>
+  <p class="hint">哈希参数 argon2id(m=64MiB, t=3, p=4)；改密后撤销全部会话（当前会话会换新）。</p>
+</section>
+
+<section class="panel">
+  <h2>两步验证（TOTP）</h2>
+  {% if totp_enabled %}
+    <p>已启用。登录时需输入动态码；备份码在启用时只显示一次。</p>
+    <form method="post" action="/{{ ctx.prefix }}/totp" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="mini" type="submit">重新生成密钥</button>
+    </form>
+  {% else %}
+    {% if totp_secret.is_empty() %}
+      <p>未启用。生成密钥后用认证器录入，再输入动态码完成启用。</p>
+      <form method="post" action="/{{ ctx.prefix }}/totp" class="inline">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+        <button class="primary" type="submit">生成密钥</button>
+      </form>
+    {% else %}
+      <p>密钥（手动录入）：<code class="secret">{{ totp_secret }}</code></p>
+      <p class="hint">otpauth URI：<code>{{ totp_uri }}</code></p>
+      <form method="post" action="/{{ ctx.prefix }}/totp/enable" class="row">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+        <input name="code" placeholder="6 位动态码" inputmode="numeric" required>
+        <button class="primary" type="submit">启用 TOTP</button>
+      </form>
+    {% endif %}
+  {% endif %}
+  {% if !backup_codes.is_empty() %}
+    <h3>备份码（只显示这一次）</h3>
+    <ul class="codes">
+    {% for c in backup_codes %}<li><code>{{ c }}</code></li>{% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>安全入口</h2>
+  <p>当前前缀：<code>/{{ entry_prefix }}</code>（首启随机生成并持久化；非此前缀一律 404）。</p>
+</section>
+
+{% if is_admin %}
+<section class="panel">
+  <h2>信任公钥（TOFU）</h2>
+  <p class="hint">第三方公钥必须通过带外渠道取得并逐位核对指纹。不自建中心 PKI；撤销即在此删除。</p>
+  {% if keys.is_empty() %}
+    <div class="empty">信任库为空：未签名包默认拒装</div>
+  {% else %}
+  <table class="grid">
+    <thead><tr><th>指纹</th><th>备注</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for k in keys %}
+      <tr>
+        <td><code>{{ k.fingerprint_short }}…</code><div class="muted small">{{ k.key_id }}</div></td>
+        <td>{{ k.label }}</td>
+        <td>
+          <form method="post" action="/{{ ctx.prefix }}/settings/keys/{{ k.key_id }}/remove" class="inline">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+            <button class="mini danger" type="submit">撤销</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <form method="post" action="/{{ ctx.prefix }}/settings/keys" class="col">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <label>公钥（32 字节 hex）<input name="public_key" placeholder="hex" required></label>
+    <label>备注<input name="label" placeholder="如：某作者 / 发布页"></label>
+    <button class="primary" type="submit">导入公钥</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

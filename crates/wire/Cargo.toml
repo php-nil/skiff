@@ -1,0 +1,11 @@
+[package]
+name = "skiff-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 插件↔内核 UDS 协议：帧编解码与路由常量（纯函数，无 I/O）"
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }

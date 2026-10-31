@@ -1,0 +1,17 @@
+[package]
+name = "skiff-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 三层策略判定：动词白名单 / 对象授权 / 参数字段白名单（零数据库、零 Docker；路径校验触碰文件系统）"
+
+[dependencies]
+skiff-model = { workspace = true }
+serde = { workspace = true }
+# `open_dir_nofollow` 用 openat/O_NOFOLLOW 逐段打开，只在 Linux 目标编译
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }

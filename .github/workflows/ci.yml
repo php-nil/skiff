@@ -1,0 +1,326 @@
+# Skiff（轻舟）· 持续集成
+#
+# 判定口径（§8 工程结构：宁可红也不要假绿）——每个 job 对应一条可复核的验收项，
+# 全部是硬门槛，没有 continue-on-error 的兜底：
+#
+#   fmt         rustfmt 干净，零格式漂移
+#   clippy      -D warnings，任何告警即红（"release 零警告"是验收项）
+#   test        全量单测 + 文档测试；unix-only 用例在 Linux runner 上**真正执行**
+#   msrv        用 workspace 的 rust-version（1.89）做类型检查，防止悄悄抬高 MSRV
+#   verify      xtask check：1Panel 变量对齐 / Compose 字段子集 / 包格式
+#   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验）
+#   scripts     sh 脚本 shellcheck（错误级）+ 行尾必须 LF
+#   smoke       真起一个服务进程：/healthz、入口跳转、404、退出码
+#   build       release 静态产物（x86_64 musl），仅 main / 手动触发
+#
+# 打标签发布走 release.yml；依赖安全公告走 audit.yml（周更）。
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 只读：CI 不改仓库
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 增量编译会刷出 `删除 lock 文件 ... 拒绝访问` 这类假告警（Windows 上尤其明显），
+  # 判读日志时先把噪音关掉
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # 工具链固定在验证过的版本：浮动 stable 会让某个新 lint 隔着 PR 把 CI 变红
+  RUST_VERSION: "1.98.1"
+  # 与 Cargo.toml 的 rust-version 保持一致（1.85 已不够：rusqlite 0.41 要 1.89）
+  MSRV: "1.89"
+
+jobs:
+  # ── 静态检查 ────────────────────────────────────────────────
+  fmt:
+    name: 格式（rustfmt）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy（-D warnings）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
+        run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  # ── 测试 ────────────────────────────────────────────────────
+  test:
+    name: 单测（Linux）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+      - name: 依赖（rusqlite bundled / zstd-sys / ring 都要 C 工具链）
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+      # 全量单测 + 文档测试；crates/sdk/tests/kernel_contract.rs 是 unix-only，
+      # 这条 job 是它第一次真正运行的地方（开发机是 Windows，只编译不执行）
+      - run: cargo test --workspace --locked --no-fail-fast
+
+  msrv:
+    name: MSRV（${{ env.MSRV }}）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.MSRV }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo check --workspace --all-targets --locked
+
+  # ── 契约校验（xtask 与运行时共用同一份实现）────────────────────
+  verify:
+    name: 契约校验（xtask check）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: verify
+      - run: cargo run --locked -p xtask -- check
+      # 空参数也不能炸（曾出过 keygen --help 真的写出私钥这种事）：
+      # 帮助要打得出、没给包时 verify-pkg 要「跳过」而不是报错
+      - run: |
+          cargo run --locked -p xtask -- --help
+          cargo run --locked -p xtask -- verify-pkg
+
+  # ── 插件包全链路：这一步只有真签真验才算过 ──────────────────────
+  pkg-chain:
+    name: 插件包链路（签 → 打包 → 验签）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pkg
+      - run: cargo build --release --locked -p skiff-sdk --bin skiff-plugin
+      - name: 发布物签名 / 验签（pack-release.sh 用的那两条）
+        run: |
+          set -eu
+          WORK=$(mktemp -d)
+          TOOL="$PWD/target/release/skiff-plugin"
+
+          "$TOOL" keygen --out "$WORK/release.key" | tee "$WORK/keygen.log"
+          # 公钥从输出里取。锚点只用 ASCII 的 `hex)`，不认中文前缀（runner 的 locale 不可控）；
+          # 同一份输出里 key_id 那行是 `(key_id)`，不会被这条规则命中
+          PK=$(sed -n 's/.*hex) *: *\([0-9a-f]\{64\}\).*/\1/p' "$WORK/keygen.log")
+          [ "${#PK}" = 64 ] || { echo "::error::没能从 keygen 输出里取到 64 位公钥"; exit 1; }
+
+          printf 'skiff release smoke\n' > "$WORK/artifact.bin"
+          "$TOOL" sign-file "$WORK/artifact.bin" --key "$WORK/release.key"
+          "$TOOL" verify-file "$WORK/artifact.bin" --pubkey "$PK"
+          # 反例：错公钥必须被拒
+          if "$TOOL" verify-file "$WORK/artifact.bin" --pubkey "$(echo "$PK" | tr '0-9a-f' '1-9a-f0')"; then
+            echo "::error::错误公钥竟然验签通过"
+            exit 1
+          fi
+
+      - name: 插件包链路（new → build → pack → verify）
+        run: |
+          set -eu
+          WORK=$(mktemp -d)
+          TOOL="$PWD/target/release/skiff-plugin"
+
+          # `new` 会**自己生成**签名密钥（$WORK/demo/skiff-signing.key）并把指纹写进
+          # manifest.key_id —— 所以后面 pack 必须用这把，换成 keygen 的钥匙会因指纹
+          # 不一致被拒（这正是 pack 的设计）。公钥从 new 的输出里取。
+          "$TOOL" new "$WORK/demo" --id com.example.ci --name "CI Demo" \
+            --sdk-path "$PWD/crates/sdk" | tee "$WORK/new.log"
+          PUB=$(sed -n 's/.*hex) *= *\([0-9a-f]\{64\}\).*/\1/p' "$WORK/new.log")
+          [ "${#PUB}" = 64 ] || { echo "::error::没能从 new 输出里取到 64 位公钥"; exit 1; }
+
+          "$TOOL" build --dir "$WORK/demo"
+          # 不给 --key：默认用插件目录里的 skiff-signing.key，与 manifest 指纹同源
+          "$TOOL" pack --dir "$WORK/demo" --out "$WORK/demo.wbpkg"
+
+          # 正例：公钥对 → 通过
+          "$TOOL" verify "$WORK/demo.wbpkg" --pubkey "$PUB"
+          # 反例：公钥错 → 必须被拒（验签真的在起作用，而不是摆设）
+          if "$TOOL" verify "$WORK/demo.wbpkg" --pubkey "$(echo "$PUB" | tr '0-9a-f' '1-9a-f0')"; then
+            echo "::error::错误公钥竟然验签通过"
+            exit 1
+          fi
+          # 反例：缺公钥且未允许未签名 → 必须被拒
+          if "$TOOL" verify "$WORK/demo.wbpkg"; then
+            echo "::error::没有公钥却验签通过了"
+            exit 1
+          fi
+          # 「包里不能有签名私钥 / target/」由 pkgfmt 的回归用例守着
+          # （pack_excludes_build_dir_and_signing_key，在 test job 里跑）
+
+  # ── 脚本：行尾必须是 LF，shellcheck 错误级不得有 ─────────────────
+  scripts:
+    name: 部署脚本（shellcheck + LF）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: 行尾检查（CRLF 的 .sh 在 Linux 上会直接跑不起来）
+        run: |
+          set -eu
+          bad=0
+          while IFS= read -r f; do
+            if grep -qU $'\r' "$f"; then
+              echo "::error file=$f::存在 CRLF 行尾"
+              bad=1
+            fi
+          done < <(git ls-files '*.sh' '*.service')
+          exit $bad
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # 只看 error 级：warning/info 留给人工，不为风格问题卡发布
+      - run: |
+          set -eu
+          git ls-files -z '*.sh' | xargs -0 shellcheck -S error
+
+  # ── 冒烟：真起进程，探 HTTP ───────────────────────────────────
+  smoke:
+    name: 冒烟（真起服务）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke
+      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+      - run: cargo build --locked -p skiff --bin skiff
+      - name: 起服务并探测
+        run: |
+          set -eu
+          export SKIFF_DATA_DIR="$PWD/.smoke/data"
+          export SKIFF_RUN_DIR="$PWD/.smoke/run"
+          export SKIFF_LISTEN=127.0.0.1:18080
+          export SKIFF_FORM=docker
+          mkdir -p .smoke
+
+          ./target/debug/skiff version
+          ./target/debug/skiff doctor || true   # 只打印，不作为门槛（CI 上没有 docker）
+
+          ./target/debug/skiff --dev serve > .smoke/server.log 2>&1 &
+          PID=$!
+          # 等服务起来：最多 20s，进程提前退出就立刻报错并打印日志
+          ok=0
+          for _ in $(seq 1 100); do
+            if curl -fsS -o /dev/null http://127.0.0.1:18080/healthz; then ok=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::服务进程提前退出"; cat .smoke/server.log; exit 1
+            fi
+            sleep 0.2
+          done
+          [ "$ok" = 1 ] || { echo "::error::/healthz 20s 内没起来"; cat .smoke/server.log; exit 1; }
+
+          echo "-- /healthz --"; curl -fsS http://127.0.0.1:18080/healthz; echo
+
+          # 首屏：未登录访问 / 必须跳到 /<随机前缀>/login（入口前缀是隐藏面）
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/)
+          loc=$(curl -s -o /dev/null -w '%{redirect_url}' http://127.0.0.1:18080/)
+          echo "GET / → $code $loc"
+          case "$code" in 301|302|303|307|308) ;; *)
+            echo "::error::未登录访问 / 应重定向，实得 $code"; exit 1 ;;
+          esac
+          case "$loc" in */login*) ;; *)
+            echo "::error::重定向目标不像登录页: $loc"; exit 1 ;;
+          esac
+
+          # 不存在的路径：必须给错误页而不是空 200
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/definitely-not-a-route)
+          echo "GET /definitely-not-a-route → $code"
+          [ "$code" = 404 ] || { echo "::error::未知路径应 404，实得 $code"; exit 1; }
+
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          # 注意用 if 而不是 `grep && { exit 1; }`：后者在 set -e 下，
+          # grep 不匹配（= 正常情况）本身就会让脚本退出 1
+          if grep -qi "panic" .smoke/server.log; then
+            echo "::error::日志里有 panic"; cat .smoke/server.log; exit 1
+          fi
+          echo "冒烟通过"
+
+  # ── release 静态产物（不上传 Release，只给 main 一个可下载的验证物）──
+  build:
+    name: 编译（x86_64 musl 静态）
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-musl
+      - name: 交叉到 musl（静态链接，不绑 glibc 版本）
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p skiff --bin skiff
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p skiff-sdk --bin skiff-plugin
+      - name: 校验真的是静态链接
+        run: |
+          set -eu
+          for f in skiff skiff-plugin; do
+            bin="target/x86_64-unknown-linux-musl/release/$f"
+            echo "-- $f（$(stat -c%s "$bin") 字节）"
+            file "$bin"
+            # 有 INTERP 段 = 动态链接 = 目标机上会挑 glibc 版本，直接失败
+            if readelf -l "$bin" | grep -q "INTERP"; then
+              echo "::error::$f 不是静态链接（存在 PT_INTERP）"
+              exit 1
+            fi
+          done
+          du -h target/x86_64-unknown-linux-musl/release/skiff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skiff-x86_64-linux-musl
+          path: |
+            target/x86_64-unknown-linux-musl/release/skiff
+            target/x86_64-unknown-linux-musl/release/skiff-plugin
+          retention-days: 14
