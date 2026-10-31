@@ -298,16 +298,27 @@ jobs:
 
           echo "-- /healthz --"; curl -fsS http://127.0.0.1:18080/healthz; echo
 
-          # 首屏：未登录访问 / 必须跳到 /<随机前缀>/login（入口前缀是隐藏面）
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/)
-          loc=$(curl -s -o /dev/null -w '%{redirect_url}' http://127.0.0.1:18080/)
-          echo "GET / → $code $loc"
+          # 首屏：未登录访问 /<安全入口> 必须跳到登录页；裸 / 必须 404。
+          # 注意不能让 / 跳转到 /<前缀>/login——302 会把随机前缀直接递给扫描器，
+          # 「隐蔽入口」当场作废（§6.3：非该前缀返回 404 而非 403）。
+          # 前缀是随机的，从启动 banner 的登录地址行取；锚点只用 ASCII
+          #（runner locale 不可控，中文标签不进 sed 模式）。
+          prefix=$(sed -n 's|.*http://[^/]*/\([a-z0-9]*\)/login.*|\1|p' .smoke/server.log | head -1)
+          [ -n "$prefix" ] || { echo "::error::没能从启动日志取到安全入口前缀"; cat .smoke/server.log; exit 1; }
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080/$prefix")
+          loc=$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:18080/$prefix")
+          echo "GET /$prefix → $code $loc"
           case "$code" in 301|302|303|307|308) ;; *)
-            echo "::error::未登录访问 / 应重定向，实得 $code"; exit 1 ;;
+            echo "::error::未登录访问 /<安全入口> 应重定向，实得 $code"; exit 1 ;;
           esac
           case "$loc" in */login*) ;; *)
             echo "::error::重定向目标不像登录页: $loc"; exit 1 ;;
           esac
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/)
+          echo "GET / → $code"
+          [ "$code" = 404 ] || { echo "::error::非前缀访问 / 应 404（隐蔽入口），实得 $code"; exit 1; }
 
           # 不存在的路径：必须给错误页而不是空 200
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/definitely-not-a-route)
