@@ -112,7 +112,7 @@ jobs:
             echo "签名文件: $(ls dist/*.sig)"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.arch }}
           path: dist/*

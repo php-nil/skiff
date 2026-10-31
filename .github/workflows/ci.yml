@@ -317,7 +317,7 @@ jobs:
             fi
           done
           du -h target/x86_64-unknown-linux-musl/release/skiff
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skiff-x86_64-linux-musl
           path: |
