@@ -263,7 +263,7 @@ fn prune_versions(root: &Path, keep: usize) -> Result<()> {
 #[cfg(unix)]
 fn set_plugin_ownership(root: &Path, id: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let uid = plugin_uid(id) as u32;
+    let uid = plugin_uid(id);
     // 插件数据目录归插件 UID 所有；versions/ 仅 root 可写（插件只读）。
     for sub in ["data", "cache", "run"] {
         let p = root.join(sub);

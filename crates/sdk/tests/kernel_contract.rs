@@ -21,7 +21,6 @@ use skiff_wire::routes;
 
 /// 假内核：记录收到的 (path, authorization)，并按路径返回固定响应。
 struct FakeKernel {
-    socket: std::path::PathBuf,
     seen: Arc<Mutex<Vec<(String, String)>>>,
 }
 
@@ -40,7 +39,7 @@ impl FakeKernel {
                 });
             }
         });
-        FakeKernel { socket, seen }
+        FakeKernel { seen }
     }
 
     fn paths(&self) -> Vec<String> {
