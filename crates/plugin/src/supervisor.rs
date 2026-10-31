@@ -241,7 +241,6 @@ impl Supervisor {
         rec: &PluginRecord,
         manifest: &skiff_pkgfmt::Manifest,
     ) -> Result<Running, SupervisorError> {
-        use std::os::unix::process::CommandExt;
         use std::process::Stdio;
 
         if !self.cfg.allow_reduced_sandbox && manifest.requires_full_sandbox {
@@ -278,7 +277,7 @@ impl Supervisor {
                         libc::chown(c.as_ptr(), plugin_uid(&rec.id), plugin_uid(&rec.id))
                     };
                     if rc != 0 {
-                        warn!(dir = %parent.display(), "运行目录 chown 失败（非 root 运行？）");
+                        tracing::warn!(dir = %parent.display(), "运行目录 chown 失败（非 root 运行？）");
                     }
                 }
             }
