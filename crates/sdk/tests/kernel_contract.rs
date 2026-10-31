@@ -188,7 +188,10 @@ fn unreachable_kernel_is_an_error_not_a_panic() {
 fn plugin_serve_answers_healthz_and_rpc() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("plugin.sock");
-    let p = plugin(&sock);
+    let mut p = plugin(&sock);
+    // serve 绑的是 Plugin::socket（插件自身 socket），不是 kernel_socket；
+    // helper 的参数语义是 kernel_socket，这里显式对齐，否则轮询和 connect 都在等一个永远不会出现的文件。
+    p.socket = sock.clone();
     let (tx, rx) = mpsc::channel::<()>();
     let p2 = p.clone();
     thread::spawn(move || {

@@ -181,7 +181,7 @@ fn serve(config_path: Option<std::path::PathBuf>, dev: bool) -> Result<ExitCode>
 
         let router = skiff_web::router(state.clone());
         server::spawn_supervisor_reaper(state.clone());
-        kernel::spawn(state.clone(), cfg.run_dir.clone()).await;
+        kernel::spawn(state.clone(), cfg.run_dir.clone());
 
         let result = server::serve(&cfg, router).await;
         state.supervisor.stop_all().await;

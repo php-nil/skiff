@@ -3,7 +3,7 @@
 //! Docker Engine 只认**宿主路径**。面板代用户创建挂载时，授权与下传必须同一种语义：
 //! - 目标存在：`canonicalize` 后必须仍在授权根内（符号链接逃逸因此被拒）；
 //! - 目标不存在：规范化最近的已存在祖先，拒绝 `..` 与非目录组件，再按相对安全路径创建；
-//! - 授权根及其组件须由 root 管理、不可被插件重命名/替换（unix 下检查 uid/权限位）。
+//! - 授权根及其组件须由管理员（root 或 skiff 进程属主）管理、不可被插件重命名/替换（unix 下检查 uid/权限位）。
 //!
 //! 已知局限（写进 §12 待测）：检查与使用之间仍有窗口。`open_dir_nofollow`（openat +
 //! O_NOFOLLOW 逐段走）已实现但**未接入**判定链——`canonicalize` 只能保证「校验这一刻」
@@ -20,7 +20,7 @@ pub enum PathError {
     OutsideRoots(String),
     NotADirectory(String),
     Io(String),
-    /// 授权根本身不安全（非 root 所有 / 组或其他人可写）
+    /// 授权根本身不安全（非管理员所有 / 组或其他人可写）
     UnsafeRoot(String),
 }
 
@@ -33,7 +33,10 @@ impl std::fmt::Display for PathError {
             PathError::NotADirectory(p) => write!(f, "不是目录: {p}"),
             PathError::Io(m) => write!(f, "io: {m}"),
             PathError::UnsafeRoot(p) => {
-                write!(f, "授权根不安全（须 root 拥有且组/其他人不可写）: {p}")
+                write!(
+                    f,
+                    "授权根不安全（须 root/进程属主拥有且组/其他人不可写）: {p}"
+                )
             }
         }
     }
@@ -178,7 +181,12 @@ fn check_root_safety(root: &Path) -> Result<(), PathError> {
     use std::os::unix::fs::MetadataExt;
     let meta = fs::metadata(root).map_err(|e| PathError::Io(e.to_string()))?;
     let mode = meta.mode();
-    if meta.uid() != 0 || mode & 0o022 != 0 {
+    // SAFETY: geteuid 只读当前进程凭证，无副作用。
+    let euid = unsafe { libc::geteuid() };
+    // 拥有者须是管理员身份：root，或 skiff 进程自身属主（非 root 的开发/测试运行）。
+    // 生产以 root 跑时 euid == 0，判定与「必须 root 拥有」等价；插件独立 UID
+    // 自建的根仍然被拒——防的正是插件重命名/替换授权根。
+    if (meta.uid() != 0 && meta.uid() != euid) || mode & 0o022 != 0 {
         return Err(PathError::UnsafeRoot(root.display().to_string()));
     }
     Ok(())
@@ -312,6 +320,21 @@ mod tests {
         let link = dir.path().join("authorized").join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(g.validate_bind_source(&link).is_err());
+    }
+
+    /// 授权根组/其他人可写 → 必须拒（root 检查在 unix 真正生效的那半边）。
+    #[cfg(unix)]
+    #[test]
+    fn world_writable_root_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loose");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(matches!(
+            PathGuard::new(vec![root]).unwrap_err(),
+            PathError::UnsafeRoot(_)
+        ));
     }
 
     #[test]

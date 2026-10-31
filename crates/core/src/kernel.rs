@@ -15,15 +15,19 @@ use std::sync::Arc;
 use skiff_app::AppState;
 
 #[cfg(unix)]
-pub async fn spawn(state: Arc<AppState>, run_dir: std::path::PathBuf) {
-    match imp::run(state, run_dir).await {
-        Ok(()) => {}
-        Err(e) => tracing::warn!(error = %e, "kernel.sock 服务未启动（插件回调能力不可用）"),
-    }
+pub fn spawn(state: Arc<AppState>, run_dir: std::path::PathBuf) {
+    // 必须真后台：imp::run 是常驻 accept 循环，被调用方 .await 会永远堵在这，
+    // HTTP serve 就排不到（Windows 的 stub 立即返回，掩盖过这个问题）。
+    tokio::spawn(async move {
+        match imp::run(state, run_dir).await {
+            Ok(()) => {}
+            Err(e) => tracing::warn!(error = %e, "kernel.sock 服务未启动（插件回调能力不可用）"),
+        }
+    });
 }
 
 #[cfg(not(unix))]
-pub async fn spawn(_state: Arc<AppState>, _run_dir: std::path::PathBuf) {
+pub fn spawn(_state: Arc<AppState>, _run_dir: std::path::PathBuf) {
     tracing::info!("非 unix 平台：跳过 kernel.sock（插件进程外隔离不可用）");
 }
 
