@@ -1,7 +1,8 @@
 # 持续集成与发布流水线
 
-> 状态：**工作流已就绪，尚未在 GitHub 上跑过第一次**。本文件记的是“设计上要卡什么”与
-> “哪些地方是推上去才知道”。首次运行结果回来后，把 §5 的实测列回填，再删掉这句。
+> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804，最新 41268216736）。
+> Release 流水线首跑 2026-11-01（run 41268959656）：musl 双架构全绿，`docker` job
+> 暴露 Dockerfile 过期 COPY（已修，见 2026-11-01 变更记录）。§5 实测列已按 run 结果回填。
 >
 > 相关：工程结构与 `xtask` 三类固化校验见 [§8 工程结构](sections/08-engineering.md)；
 > 装机步骤与真机验收用例见 [DEPLOY_TEST.md](DEPLOY_TEST.md)。
@@ -33,7 +34,7 @@
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / 包格式 |
 | `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify | 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒 |
-| `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF | 部署脚本在 Linux 上跑得起来 |
+| `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |
 | `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
 | `build` | musl 静态编译 + `readelf` 查 `PT_INTERP` | 产物不挑宿主 glibc（**仅 workflow_dispatch**，不随 push 跑） |
 
@@ -54,6 +55,9 @@ PR 突然变红，排查成本很高。升级方式：改 `ci.yml` / `release.ym
 **CI 里删掉 `.cargo/config.toml`。** 仓库自带的那份把 crates.io 换成了国内镜像（开发机直连被阻），
 而 CI runner 在境外、也没有镜像可用性保证。所以每个跑 cargo 的 job 先 `rm -f .cargo/config.toml`
 走 crates.io。**只删工作区里的这一份，不动仓库内容**；本地开发照旧用镜像。
+`release.yml` 的 `docker` job 是同一口径的变体：镜像内 cargo 构建也必须走 crates.io，
+但不能 `rm`——Dockerfile 的 `COPY .cargo ./.cargo` 要求源存在，删掉会死在 COPY。
+所以 build 前把文件**置空**（保留空文件），效果等同。
 
 **开发阶段省 runner 时间（2026-10-31）。** 三处：
 
@@ -104,16 +108,16 @@ git tag v0.1.0 && git push origin v0.1.0
 | `.tar.gz.sha256` | 装机前先校验 |
 | `.tar.gz.sig` | detached ed25519 签名（hex），`skiff-plugin verify-file` 验 |
 
-## 5. 哪些地方是“推上去才知道”
+## 5. 哪些地方是“推上去才知道”（实测列已回填）
 
-| 项 | 风险 | 首次运行的判断依据 |
-|---|---|---|
-| unix-only 用例 | `crates/sdk/tests/kernel_contract.rs` 在 Windows 上只编译不执行，CI 是**首次真跑** | `test` job 红 → 看具体断言，多半是 UDS 路径/时序假设 |
-| `cross` 拉镜像 | 首次要拉 `ghcr.io/cross-rs/*` 镜像，arm64 尤其慢（可能 10 分钟以上） | `release.yml` 的 `build` 矩阵卡在 “Pulling image” 属正常 |
-| arm64 musl + ring | `ring` 的汇编在 aarch64-musl 下需要正确的 clang 目标；cross 镜像通常自带 | 报 `unknown target triple` 之类 = 交叉工具链问题，不是代码问题 |
-| `smoke` 非 root 启动 | 首次在非 root 下起服务：`kernel.sock` / 数据目录 chown 失败只应告警，不应退出 | 日志里出现 `kernel.sock 服务未启动` 是**预期**（无插件即无影响） |
-| Dockerfile | 本次改动前它有两处**必崩**：`-p skiff-core`（包名不存在）、少 `COPY xtask`（workspace 成员缺失） | `docker` job 首次运行即验证 |
-| 预装假设 | 删掉 `apt-get` 后押注镜像预装 gcc/pkg-config/shellcheck；镜像升级可能拿掉某个 | 对应 job 红在「找不到命令」→ 把安装步骤加回去，别改成静默跳过 |
+| 项 | 风险 | 首次运行的判断依据 | 实测结论 |
+|---|---|---|---|
+| unix-only 用例 | `crates/sdk/tests/kernel_contract.rs` 在 Windows 上只编译不执行，CI 是**首次真跑** | `test` job 红 → 看具体断言，多半是 UDS 路径/时序假设 | 2026-10-31 首绿（run 41219623804）起 `test` job 多轮全绿，用例真跑通过 |
+| `cross` 拉镜像 | 首次要拉 `ghcr.io/cross-rs/*` 镜像，arm64 尤其慢（可能 10 分钟以上） | `release.yml` 的 `build` 矩阵卡在 “Pulling image” 属正常 | Release 首跑（41268959656）两套 build job 均绿，拉镜像+编译在 60min 超时内完成 |
+| arm64 musl + ring | `ring` 的汇编在 aarch64-musl 下需要正确的 clang 目标；cross 镜像通常自带 | 报 `unknown target triple` 之类 = 交叉工具链问题，不是代码问题 | 41268959656 的 aarch64 build 绿：ring 交叉编译过，产物过静态链接自检 |
+| `smoke` 非 root 启动 | 首次在非 root 下起服务：`kernel.sock` / 数据目录 chown 失败只应告警，不应退出 | 日志里出现 `kernel.sock 服务未启动` 是**预期**（无插件即无影响） | 41268216736 等多轮 smoke 全绿：`/healthz` 20s 内就绪，服务非 root 起得来 |
+| Dockerfile | 此前两处**必崩**（`-p skiff-core` 包名不存在、少 `COPY xtask`）已修；第三次是资源挪位类 | `docker` job 红在 `COPY ... not found` = 仓库布局变了、Dockerfile 引用没跟上 | Release 首跑（41268959656）暴露第三处：`COPY web-assets` 过期（10-31 迁位未同步）→ 已修复，并给 CI 加 COPY 源静态校验兜住此类 |
+| 预装假设 | 删掉 `apt-get` 后押注镜像预装 gcc/pkg-config/shellcheck；镜像升级可能拿掉某个 | 对应 job 红在「找不到命令」→ 把安装步骤加回去，别改成静默跳过 | 截至 41268216736 全绿，预装清单成立（shellcheck 仍有 `command -v` 断言兜底） |
 
 ## 6. 本地复现 CI
 

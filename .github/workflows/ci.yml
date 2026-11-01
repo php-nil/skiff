@@ -257,7 +257,7 @@ jobs:
 
   # ── 脚本：行尾必须是 LF，shellcheck 错误级不得有 ─────────────────
   scripts:
-    name: 部署脚本（shellcheck + LF）
+    name: 部署物料（shellcheck + LF + Dockerfile 源）
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -280,6 +280,37 @@ jobs:
           command -v shellcheck >/dev/null || { echo "::error::runner 上没有 shellcheck，检查被跳过等于没查"; exit 1; }
           # 只看 error 级：warning/info 留给人工，不为风格问题卡发布
           git ls-files -z '*.sh' | xargs -0 shellcheck -S error
+      # Dockerfile 的 COPY 源必须真实存在。这类「资源挪位、Dockerfile 引用没跟上」
+      # 已经踩过三次（-p skiff-core 包名、少 COPY xtask、COPY web-assets 过期），
+      # 而 docker 构建只在 release.yml 验证，坏了要到发版才发现——用秒级静态检查拦住。
+      # 覆盖面：单行 COPY 的上下文源（跳过 --from= 阶段间拷贝）；续行 COPY 不在覆盖面。
+      - name: Dockerfile 的 COPY 源必须存在
+        run: |
+          set -eu
+          bad=0
+          while IFS= read -r line; do
+            case "$line" in
+              "COPY "*) ;;
+              *) continue ;;
+            esac
+            rest=${line#COPY }
+            case "$rest" in
+              *--from=*) continue ;;   # 阶段间拷贝，源是前一阶段不是上下文
+            esac
+            set -f; set -- $rest; set +f
+            n=$#
+            i=1
+            for a in "$@"; do
+              if [ "$i" -eq "$n" ]; then break; fi   # 最后一个参数是目标
+              i=$((i + 1))
+              case "$a" in --*) continue ;; esac      # 跳过 --chown/--chmod 之类的旗标
+              if [ ! -e "$a" ] && ! compgen -G "$a" >/dev/null; then
+                echo "::error file=deploy/Dockerfile::COPY 源不存在: $a（资源挪位后 Dockerfile 没跟上？）"
+                bad=1
+              fi
+            done
+          done < deploy/Dockerfile
+          exit $bad
 
   # ── 冒烟：真起进程，探 HTTP ───────────────────────────────────
   smoke:

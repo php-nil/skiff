@@ -195,6 +195,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # 镜像内 cargo 构建同样要走 crates.io：仓库 .cargo/config.toml 是给国内开发机的
+      # 镜像源，不能让 CI 依赖 rsproxy 的可用性。清成空配置（不是删文件）——
+      # Dockerfile 里 `COPY .cargo ./.cargo` 要求源存在，删掉会在 COPY 就炸。
+      - name: 清掉国内镜像源（与其余 cargo job 的 rm -f 口径一致）
+        run: printf '# CI 置空：走 crates.io（rsproxy 镜像仅供国内开发机，见 .cargo/config.toml 原文）\n' > .cargo/config.toml
       - run: docker build -f deploy/Dockerfile -t skiff:ci .
       - name: 自检镜像
         run: |
