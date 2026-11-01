@@ -33,6 +33,44 @@
       {% endfor %}
       </ul>
     {% endif %}
+
+    <h2>对象授权</h2>
+    <p class="hint">权限串回答“能做哪类操作”，对象授权回答“能对谁做”。宿主路径额外要求 <code>path:</code> 授权根命中，Docker 对象按容器/项目逐条授权，插件间调用要求 <code>plugin:&lt;插件 id&gt;</code>（或 <code>plugin:*</code>）；均未授权一律拒。</p>
+    {% if resources.is_empty() %}
+      <div class="empty">该插件未声明需要确认的宿主资源（只用自己的 data/）。</div>
+    {% else %}
+      <ul class="perms">
+      {% for r in resources %}
+        <li>
+          <label>
+            <input type="checkbox" name="resource" value="{{ r }}" checked>
+            <code>{{ r }}</code>
+          </label>
+        </li>
+      {% endfor %}
+      </ul>
+    {% endif %}
+    <label class="field">额外授权（可选，每行/逗号一条；例如 <code>path:/etc/nginx/conf.d</code>、<code>container:nginx</code>、<code>plugin:com.skiff.cron</code>）
+      <textarea name="extra_resource" rows="2" placeholder="path:/etc/nginx/conf.d&#10;container:nginx&#10;plugin:com.skiff.cron"></textarea>
+    </label>
+
+    <h2>插件间接口</h2>
+    <p class="hint">接口调用走内核 <code>/capability/interop/call</code>：调用方要有 <code>interop:call</code> 权限与 <code>plugin:</code> 授权，还要在 manifest 里声明 <code>consumes</code>；目标必须在 manifest 里声明 <code>provides</code>。<strong>跳转（<code>skiff.open</code>）只改地址，不给任何能力；调用则逐次审计。</strong></p>
+    {% if interop_provides.is_empty() && interop_consumes.is_empty() %}
+      <div class="empty">该插件不参与插件间调用（既不对外开放接口，也不调用其他插件）。</div>
+    {% else %}
+      <dl class="kv">
+        <dt>对外开放</dt><dd>
+          {% for p in interop_provides %}<div><code>{{ p }}</code></div>{% endfor %}
+          {% if interop_provides.is_empty() %}<span class="muted">无</span>{% endif %}
+        </dd>
+        <dt>允许调用</dt><dd>
+          {% for c in interop_consumes %}<div><code>{{ c }}</code></div>{% endfor %}
+          {% if interop_consumes.is_empty() %}<span class="muted">无</span>{% endif %}
+        </dd>
+      </dl>
+    {% endif %}
+
     <div class="row">
       <button class="primary" type="submit">确认并安装</button>
       <a class="ghost" href="/{{ ctx.prefix }}/plugins">取消</a>

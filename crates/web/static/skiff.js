@@ -64,21 +64,58 @@
     });
   }
 
+  // 插件 id 的语法校验：只允许 `com.x.y` 这类可打印字符，避免把消息里的字符串
+  // 直接拼进跳转 URL。
+  var PLUGIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+  /// 面板级跳转：插件请父页面切到另一个插件的界面（插件间来回切）。
+  ///
+  /// 这条消息**不转发**给任何插件进程，只由父页面改浏览器地址；`path` 是给目标
+  /// 插件的定位建议（例如「跳到文件管理并打开 /etc/nginx/conf.d」），能否读仍由
+  /// 目标插件自己的 `path:` 授权根判定——跳转本身不授予任何能力。
+  /// 目标必须在白名单里（详情页渲染的「已启用且有 UI 的插件」）。
+  function openFromPlugin(win, nonce, msg, allowed, prefix) {
+    var id = msg.id;
+    function fail(why) {
+      win.postMessage({ type: "skiff.open.result", nonce: nonce, id: id, ok: false, error: why }, "*");
+    }
+    var target = typeof msg.plugin === "string" ? msg.plugin : "";
+    if (!PLUGIN_ID_RE.test(target)) return fail("目标插件 id 非法");
+    if (allowed.indexOf(target) < 0) return fail("目标插件未启用或没有界面");
+    var open = "";
+    if (typeof msg.path === "string" && msg.path) {
+      if (msg.path.length > 512) return fail("定位路径过长");
+      if (/[\u0000-\u001f\u007f]/.test(msg.path)) return fail("定位路径含控制字符");
+      open = msg.path;
+    }
+    var url = "/" + prefix + "/plugins/" + encodeURIComponent(target);
+    if (open) url += "?open=" + encodeURIComponent(open);
+    window.location.assign(url);
+  }
+
   // ---- 插件 UI 沙箱桥 ----
   // 父页面校验 event.source === iframe.contentWindow、nonce、消息 schema，
   // 再代发到 /{prefix}/plugins/{id}/rpc（携带 CSRF 头），回包 targetOrigin="*"
   // 但绑定同一 source+nonce，且不携带任何面板凭据。
   function attachPluginBridges() {
+    var prefix = (document.body && document.body.dataset.prefix) || "";
     document.querySelectorAll("iframe[data-plugin]").forEach(function (frame) {
       var plugin = frame.dataset.plugin;
       var nonce = frame.dataset.nonce;
       var endpoint = frame.dataset.rpc;
       var csrf = frame.dataset.csrf;
+      var allowed = (frame.dataset.plugins || "").split(",").filter(function (s) { return s; });
       if (!plugin || !nonce || !endpoint) return;
       window.addEventListener("message", function (ev) {
         if (ev.source !== frame.contentWindow) return;
         var msg = ev.data;
-        if (!msg || msg.type !== "skiff.rpc" || msg.nonce !== nonce) return;
+        if (!msg) return;
+        if (msg.type === "skiff.open") {
+          if (msg.nonce !== nonce) return;
+          openFromPlugin(frame.contentWindow, nonce, msg, allowed, prefix);
+          return;
+        }
+        if (msg.type !== "skiff.rpc" || msg.nonce !== nonce) return;
         if (typeof msg.method !== "string" || msg.method.length > 64) return;
         var id = msg.id;
         fetch(endpoint, {

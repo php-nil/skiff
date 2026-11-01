@@ -18,6 +18,7 @@ skiff-docker = { workspace = true }
 skiff-plugin = { workspace = true }
 skiff-pkgfmt = { workspace = true }
 skiff-wire = { workspace = true }
+skiff-cron = { workspace = true }
 skiff-app = { workspace = true }
 skiff-web = { workspace = true }
 tokio = { workspace = true }

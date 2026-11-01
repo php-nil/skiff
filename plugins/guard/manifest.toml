@@ -1,0 +1,57 @@
+# 容器守护：零内核改动版
+#
+# 只用既有能力面 docker(containers.list/inspect/restart) + 自身 data/，不引入任何
+# 新内核接口。逐容器对象授权（container:NAME / container:ID / project:P）：
+# 未授权容器只展示、不重启。
+id = "com.skiff.guard"
+name = "容器守护"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.0"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+requires = ["docker", "identity", "fs"]
+network_egress = []
+# 每分钟巡检一次；内核按分钟去重（30s 扫描不会触发两次）。
+cron = ["* * * * *"]
+# 守护对象由管理员在安装确认页逐条勾选（guard 是通用插件，不预设某台容器）。
+resource_hints = []
+
+[[permissions]]
+capability = "docker"
+verbs = ["containers.list", "containers.inspect", "containers.restart"]
+
+[[permissions]]
+capability = "fs"
+verbs = ["read", "write", "list"]
+
+[[ui]]
+label = "容器守护"
+path = "index.html"
+
+[config_schema.cooldown_sec]
+type = "number"
+default = "300"
+label = "同一容器两次重启的最小间隔（秒）"
+
+[config_schema.max_per_hour]
+type = "number"
+default = "6"
+label = "每小时最多重启次数（0 = 不限）"
+
+[config_schema.dry_run]
+type = "bool"
+default = "false"
+label = "演练模式（只记录不重启）"
+
+[config_schema.restart_exited]
+type = "bool"
+default = "false"
+label = "已退出（Exited）容器也重启"
+
+[config_schema.watch]
+type = "text"
+default = ""
+label = "监视的容器名（逗号分隔；空 = 所有已授权容器）"

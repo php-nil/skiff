@@ -40,6 +40,14 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
 }
 .topbar nav a:hover { background: var(--panel-2); color: var(--text); text-decoration: none; }
 .topbar nav a.on { background: rgba(90, 209, 164, .12); color: var(--accent); }
+/* 插件菜单（manifest `[[ui]].label`）：比内核导航小一号并靠右成一组，
+   让「核心功能」与「插件功能」在视觉上有区分，同时保持同一行可点切换。 */
+.topbar nav a.nav-plugin {
+  font-size: 12.5px; padding: 5px 9px;
+  border: 1px dashed rgba(140, 170, 200, .22);
+}
+.topbar nav a.nav-plugin:hover { border-style: solid; }
+.topbar nav a.nav-plugin.on { border-style: solid; border-color: rgba(90, 209, 164, .5); }
 .who { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 20px; }
@@ -156,6 +164,12 @@ ul.perms li { background: var(--panel-2); border: 1px solid var(--line); border-
 ul.perms label { flex-direction: row; align-items: center; gap: 10px; color: var(--text); }
 ul.codes { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 ul.codes li { background: var(--panel-2); padding: 6px 10px; border-radius: 6px; text-align: center; }
+
+/* 插件 UI：沙箱 iframe（不持有面板凭据，能力调用走父页面 RPC 桥） */
+iframe.plugin-frame {
+  width: 100%; height: 70vh; min-height: 360px; border: 1px solid var(--line);
+  border-radius: 8px; background: #0b0d11;
+}
 
 /* 登录页 */
 body.login-body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }

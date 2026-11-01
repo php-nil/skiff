@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use skiff_policy::{ContainerSpec, Healthcheck, Mount, PortMapping};
+use skiff_model::{is_posix_absolute, ContainerSpec, Healthcheck, Mount, PortMapping};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposeError {
@@ -164,12 +164,9 @@ pub fn parse(text: &str, project: &str) -> Result<ComposeProject, ComposeError> 
         }
 
         let mut labels: BTreeMap<String, String> = parse_map(svc.labels.as_ref(), "labels")?;
-        labels.insert(
-            skiff_policy::LABEL_PROJECT.to_string(),
-            project_name.clone(),
-        );
+        labels.insert(skiff_model::LABEL_PROJECT.to_string(), project_name.clone());
         // owner 由内核写入：compose 项目归内核（skiff），插件不能借此认领。
-        labels.insert(skiff_policy::LABEL_OWNER.to_string(), "skiff".to_string());
+        labels.insert(skiff_model::LABEL_OWNER.to_string(), "skiff".to_string());
 
         let mut mounts = Vec::new();
         for v in &svc.volumes {
@@ -509,12 +506,13 @@ fn parse_volume(
             "volume 模式只支持 ro: {spec}"
         )));
     }
-    if !target.starts_with('/') {
+    if !is_posix_absolute(target) {
         return Err(ComposeError::Invalid(format!(
             "容器内路径必须是绝对路径: {spec}"
         )));
     }
-    if source.starts_with('/') || source.starts_with('.') || source.contains('~') {
+    // 宿主绑定挂载的 source：POSIX 绝对路径 / `./x` / `~/x`；其余按 named volume。
+    if is_posix_absolute(source) || source.starts_with('.') || source.contains('~') {
         return Ok(Mount::Bind {
             source: source.to_string(),
             target: target.to_string(),

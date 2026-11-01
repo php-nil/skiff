@@ -5,6 +5,10 @@
 //!
 //! 放在 model 而不是 identity：策略判定（`skiff-policy`）需要角色→动作的映射，
 //! 但不需要口令哈希、TOTP、数据库。identity 仍以 `pub use` 转出，调用方无需改。
+//!
+//! **这张表是全仓唯一的角色→权限矩阵**：判定（`skiff-policy`）、UI 按钮显隐
+//! （`skiff-web`）都查它。此前 `policy` 内联写了一份 `Action` 三分法、web 侧
+//! 又手写了 `is_admin() || role == Operator`，三份规则各改各的。
 
 use crate::Role;
 
@@ -26,6 +30,22 @@ pub enum Permission {
     HostPathGrant,
     /// 用户与设置管理
     Admin,
+}
+
+impl Permission {
+    /// 稳定字符串：审计与错误信息用。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Permission::DockerRead => "docker.read",
+            Permission::DockerOperate => "docker.operate",
+            Permission::DockerLifecycle => "docker.lifecycle",
+            Permission::DockerExec => "docker.exec",
+            Permission::AuditRead => "audit.read",
+            Permission::PluginManage => "plugin.manage",
+            Permission::HostPathGrant => "hostpath.grant",
+            Permission::Admin => "admin",
+        }
+    }
 }
 
 pub trait RoleExt {

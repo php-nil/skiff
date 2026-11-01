@@ -1821,6 +1821,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-app",
+ "skiff-cron",
  "skiff-docker",
  "skiff-identity",
  "skiff-model",
@@ -1855,7 +1856,14 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_yaml",
- "skiff-policy",
+ "skiff-model",
+]
+
+[[package]]
+name = "skiff-cron"
+version = "0.1.0"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]
@@ -1868,6 +1876,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-compose",
+ "skiff-model",
  "skiff-policy",
 ]
 
@@ -1890,6 +1899,10 @@ dependencies = [
 [[package]]
 name = "skiff-model"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "skiff-pkgfmt"
@@ -1901,6 +1914,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "sha2 0.10.9",
+ "skiff-cron",
  "skiff-model",
  "tar",
  "tempfile",
@@ -1913,17 +1927,23 @@ dependencies = [
 name = "skiff-plugin"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64",
  "chrono",
+ "http-body-util",
  "libc",
  "rand 0.8.8",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "skiff-model",
  "skiff-pkgfmt",
  "skiff-store",
  "skiff-wire",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -1942,6 +1962,7 @@ dependencies = [
 name = "skiff-sdk"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde_json",
  "skiff-pkgfmt",
  "skiff-wire",

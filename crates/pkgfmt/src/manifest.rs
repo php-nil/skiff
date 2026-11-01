@@ -17,6 +17,11 @@ pub enum Capability {
     Identity,
     Fs,
     Net,
+    /// 插件间接口调用（`[interop]` + `/capability/interop/*`）。
+    ///
+    /// 不是宿主能力：它只让插件调用**另一个插件**声明过的接口，
+    /// 仍受 `interop:call` 权限与 `plugin:<id>` 对象授权双闸约束。
+    Interop,
 }
 
 impl Capability {
@@ -26,6 +31,7 @@ impl Capability {
             Capability::Identity => "identity",
             Capability::Fs => "fs",
             Capability::Net => "net",
+            Capability::Interop => "interop",
         }
     }
 
@@ -36,6 +42,7 @@ impl Capability {
             Capability::Identity,
             Capability::Fs,
             Capability::Net,
+            Capability::Interop,
         ]
     }
 
@@ -48,7 +55,13 @@ impl Capability {
     pub fn available_in(form: skiff_model::Form) -> Vec<Capability> {
         match form {
             skiff_model::Form::Native => Capability::all().to_vec(),
-            skiff_model::Form::DockerRestricted => vec![Capability::Docker, Capability::Identity],
+            // 受限形态收缩为 docker/identity；interop 只在插件进程之间转发，
+            // 不触碰宿主路径/出网，两种形态都提供。
+            skiff_model::Form::DockerRestricted => vec![
+                Capability::Docker,
+                Capability::Identity,
+                Capability::Interop,
+            ],
         }
     }
 }
@@ -69,6 +82,52 @@ pub enum RunMode {
 pub struct ManifestPerm {
     pub capability: Capability,
     pub verbs: Vec<String>,
+}
+
+/// 插件对外暴露的一个接口。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteropProvide {
+    /// 目标插件 RPC 方法名（如 `backup`、`jobs.create`）
+    pub method: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// 插件间接口声明（manifest `[interop]`）。
+///
+/// `provides` 是「我允许别人调用什么」，`consumes` 是「我要调用别人的什么」。
+/// 调用是**单向、单层**的：A 调 B 时，B 不能再发起 interop（防环见内核）。
+/// `consumes` 每项写成 `<插件 id>:<方法>`，也支持 `<插件 id>:*` 与 `*`。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteropDecl {
+    #[serde(default)]
+    pub provides: Vec<InteropProvide>,
+    #[serde(default)]
+    pub consumes: Vec<String>,
+}
+
+impl InteropDecl {
+    pub fn is_empty(&self) -> bool {
+        self.provides.is_empty() && self.consumes.is_empty()
+    }
+
+    /// `consumes` 是否允许调用 `target:method`。空清单 = 什么都不能调。
+    pub fn allows(&self, target: &str, method: &str) -> bool {
+        self.consumes.iter().any(|raw| {
+            let raw = raw.trim();
+            if raw == "*" {
+                return true;
+            }
+            match raw.split_once(':') {
+                Some((p, m)) => p == target && (m == "*" || m == method),
+                None => false,
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -163,6 +222,17 @@ pub struct Manifest {
     pub network_egress: Vec<String>,
     #[serde(default)]
     pub ui: Vec<UiEntry>,
+    /// 安装确认页的**默认资源授权建议**（`path:/abs` / `container:<name|id>` /
+    /// `project:<p>` / `plugin:<id>`）。
+    ///
+    /// 这里只是「建议」，装不装由 admin 在确认页勾选；内核只认安装时落库的
+    /// `object:` grant。`path:` 项要求 `requires` 含 `fs`，`container:`/`project:`
+    /// 要求含 `docker`，`plugin:` 要求含 `interop`。
+    #[serde(default)]
+    pub resource_hints: Vec<String>,
+    /// 插件间接口声明：`provides`（对外接口）/ `consumes`（调用白名单）
+    #[serde(default)]
+    pub interop: InteropDecl,
     #[serde(default = "default_idle")]
     pub idle_timeout_sec: u64,
     #[serde(default = "default_restarts")]
@@ -244,7 +314,12 @@ impl Manifest {
         }
 
         for u in &self.ui {
-            if u.path.starts_with('/') || u.path.contains("..") || u.path.is_empty() {
+            // ui.path 是包内相对路径：不是 POSIX 绝对路径、不含 .. 段
+            // （组件级判定，`a..b` 这种普通文件名不算越界）。
+            if skiff_model::is_posix_absolute(&u.path)
+                || skiff_model::has_parent_segment(&u.path)
+                || u.path.is_empty()
+            {
                 return Err(PkgError::Manifest(format!(
                     "ui.path 必须是 ui/ 下的相对路径: {}",
                     u.path
@@ -255,6 +330,26 @@ impl Manifest {
         for c in &self.cron {
             validate_cron(c)?;
         }
+
+        for h in &self.resource_hints {
+            validate_resource(h)?;
+            let needs = if h.starts_with("path:") {
+                Capability::Fs
+            } else if h.starts_with("plugin:") {
+                Capability::Interop
+            } else {
+                Capability::Docker
+            };
+            if !requires.contains(&needs) {
+                return Err(PkgError::Manifest(format!(
+                    "resource_hints 声明了 {}，但 requires 里没有 {}",
+                    h,
+                    needs.as_str()
+                )));
+            }
+        }
+
+        self.validate_interop(&requires)?;
 
         for (k, f) in &self.config_schema {
             if k.is_empty()
@@ -271,6 +366,96 @@ impl Manifest {
             return Err(PkgError::Manifest("idle_timeout_sec 不得小于 30".into()));
         }
         Ok(())
+    }
+
+    /// `[interop]` 的形式与联动校验。
+    fn validate_interop(&self, requires: &BTreeSet<Capability>) -> Result<()> {
+        if self.interop.is_empty() {
+            return Ok(());
+        }
+        if !requires.contains(&Capability::Interop) {
+            return Err(PkgError::Manifest(
+                "声明了 [interop] 但 requires 里没有 interop".into(),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for p in &self.interop.provides {
+            validate_verb(&p.method)?;
+            if !seen.insert(p.method.clone()) {
+                return Err(PkgError::Manifest(format!(
+                    "interop.provides 重复声明方法: {}",
+                    p.method
+                )));
+            }
+            if let Some(label) = &p.label {
+                if label.trim().is_empty() || label.len() > 64 {
+                    return Err(PkgError::Manifest(format!(
+                        "interop.provides.{} 的 label 长度必须 1–64",
+                        p.method
+                    )));
+                }
+            }
+        }
+        for raw in &self.interop.consumes {
+            let raw = raw.trim();
+            // 全量白名单：`*` 单独成项，不写成 `<插件>:<方法>`。
+            if raw == "*" {
+                continue;
+            }
+            let Some((plugin, method)) = raw.split_once(':') else {
+                return Err(PkgError::Manifest(format!(
+                    "interop.consumes 必须是 <插件 id>:<方法>（或 * ）: {raw:?}"
+                )));
+            };
+            if plugin.is_empty() || method.is_empty() {
+                return Err(PkgError::Manifest(format!(
+                    "interop.consumes 的插件 id/方法不能为空: {raw:?}"
+                )));
+            }
+            if plugin != "*" {
+                validate_id(plugin)
+                    .map_err(|e| PkgError::Manifest(format!("interop.consumes {raw:?}: {e}")))?;
+            }
+            if method != "*" {
+                validate_verb(method)
+                    .map_err(|e| PkgError::Manifest(format!("interop.consumes {raw:?}: {e}")))?;
+            }
+        }
+        if !self.interop.consumes.is_empty()
+            && !self
+                .permissions
+                .iter()
+                .any(|p| p.capability == Capability::Interop && p.verbs.iter().any(|v| v == "call"))
+        {
+            return Err(PkgError::Manifest(
+                "声明了 interop.consumes，必须同时申请 permissions: interop:call".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 由 `interop.consumes` 派生的对象授权建议（`plugin:<id>` / `plugin:*`）。
+    ///
+    /// 调用方必须拿到 `plugin:` 授权才能跨插件调用；这里把白名单翻译成安装
+    /// 确认页的默认勾选项，避免「装完才发现少勾一条」。
+    pub fn interop_resource_hints(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .interop
+            .consumes
+            .iter()
+            .filter_map(|raw| {
+                let raw = raw.trim();
+                let plugin = raw.split_once(':').map(|(p, _)| p).unwrap_or(raw);
+                if plugin.is_empty() {
+                    None
+                } else {
+                    Some(format!("plugin:{plugin}"))
+                }
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// 已声明的权限串（`cap:verb`），安装时逐条向用户确认。
@@ -426,21 +611,71 @@ fn parse_cidr(s: &str) -> Option<()> {
     Some(())
 }
 
-fn validate_cron(expr: &str) -> Result<()> {
-    let fields: Vec<&str> = expr.split_whitespace().collect();
-    if fields.len() != 5 {
-        return Err(PkgError::Manifest(format!(
-            "cron 只支持 5 段表达式（分 时 日 月 周）: {expr}"
-        )));
+/// 校验一条资源授权值（安装确认页、CLI 与 manifest `resource_hints` 共用一份）。
+///
+/// 四种形态：`path:<绝对路径>`（宿主路径授权根）、`container:<id|name>`、
+/// `project:<name>`、`plugin:<插件 id>`（或 `plugin:*`）。这里只做形式校验：
+/// 路径是否存在、目标插件是否安装，都由内核在**每次调用**时判定。
+pub fn validate_resource(value: &str) -> Result<()> {
+    let bad = |why: &str| {
+        Err(PkgError::Manifest(format!(
+            "资源授权 {value:?} 非法：{why}"
+        )))
+    };
+    if value.is_empty() || value.len() > 1024 || value.contains('\0') {
+        return bad("长度或字符非法");
     }
-    for f in fields {
-        if f.is_empty()
-            || !f
-                .chars()
-                .all(|c| c.is_ascii_digit() || matches!(c, '*' | '/' | ',' | '-' | '?'))
-        {
-            return Err(PkgError::Manifest(format!("cron 字段非法: {expr}")));
+    let Some((kind, rest)) = value.split_once(':') else {
+        return bad("缺类型前缀（path: / container: / project:）");
+    };
+    match kind {
+        "path" => {
+            if skiff_model::has_parent_segment(rest) {
+                return bad("路径不得含 ..");
+            }
+            if rest.trim_matches('/').is_empty() {
+                return bad("不得把文件系统根 / 整棵授权");
+            }
+            // 生产环境只跑 Linux（`/` 即绝对）；同时接受平台 `Path::is_absolute()`，
+            // 免得开发/CI 在 Windows 上把 `path:/proc` 这类合法 Linux 路径判成相对路径
+            // （与 `skiff_model::path::is_absolute` 同一口径）。
+            if !skiff_model::is_absolute(rest) {
+                return bad("必须是绝对路径");
+            }
+            Ok(())
         }
+        "container" | "project" => {
+            let ok = !rest.is_empty()
+                && rest.len() <= 128
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'));
+            if ok {
+                Ok(())
+            } else {
+                bad("对象名非法")
+            }
+        }
+        "plugin" => {
+            if rest == "*" {
+                return Ok(());
+            }
+            if rest.is_empty() || rest.contains('*') {
+                return bad("插件 id 非法（通配只能整条写成 plugin:*）");
+            }
+            validate_id(rest)
+        }
+        other => bad(&format!("未知类型 {other}")),
+    }
+}
+
+fn validate_cron(expr: &str) -> Result<()> {
+    // 语义校验与运行时共用 `skiff-cron`：只查字符会在 `60 * * * *`、`*/0` 这类
+    // 「装了但永远不触发」的表达式上放行，错误要到用户发现任务没跑才暴露。
+    if skiff_cron::CronExpr::parse(expr).is_none() {
+        return Err(PkgError::Manifest(format!(
+            "cron 表达式非法（只支持 5 段：分 时 日 月 周）: {expr}"
+        )));
     }
     Ok(())
 }
@@ -554,5 +789,132 @@ secret = true
             "network_egress = [\"10.0.0.0/8:443\"]\ncron = [\"*/5 * *\"]",
         );
         assert!(Manifest::parse(&bad_cron).is_err());
+    }
+
+    /// 资源授权建议：形式要合法，且与 `requires` 对得上（少了对应能力就等于装完必拒）。
+    #[test]
+    fn resource_hints_must_match_requires() {
+        let with_docker_hint = OK.replace(
+            "network_egress = [\"10.0.0.0/8:443\"]",
+            "network_egress = [\"10.0.0.0/8:443\"]\nresource_hints = [\"container:nginx\"]",
+        );
+        assert_ne!(with_docker_hint, OK, "样例里找不到插入点，测试本身要修");
+        assert!(Manifest::parse(&with_docker_hint).is_ok());
+
+        // `path:` 建议需要 fs 能力；requires 只有 docker 时必须报错而不是静默忽略
+        let abs = std::env::temp_dir().join("skiff-hint-root");
+        // Windows 的 temp 路径带反斜杠，直接拼进 TOML 会被当成转义序列（
+        // `C:\Users` 里的 `\U`），解析直接失败——先按 TOML 基本字符串转义。
+        let abs_lit = abs.display().to_string().replace('\\', "\\\\");
+        let bad = OK.replace(
+            "network_egress = [\"10.0.0.0/8:443\"]",
+            &format!(
+                "network_egress = [\"10.0.0.0/8:443\"]\nresource_hints = [\"path:{abs_lit}\"]"
+            ),
+        );
+        let e = Manifest::parse(&bad).unwrap_err().to_string();
+        assert!(e.contains("requires"), "{e}");
+
+        let bad_shape = OK.replace(
+            "network_egress = [\"10.0.0.0/8:443\"]",
+            "network_egress = [\"10.0.0.0/8:443\"]\nresource_hints = [\"path:etc\"]",
+        );
+        assert!(Manifest::parse(&bad_shape).is_err());
+    }
+
+    #[test]
+    fn validate_resource_shapes() {
+        let abs = std::env::temp_dir().join("skiff-hint-ok");
+        assert!(validate_resource(&format!("path:{}", abs.display())).is_ok());
+        // 官方插件的 Linux 路径在 Windows 开发机上同样要过（否则 monitor 的
+        // `path:/proc` 会在根 `cargo test` 里被误判）
+        assert!(validate_resource("path:/proc").is_ok());
+        assert!(validate_resource("container:web").is_ok());
+        assert!(validate_resource("project:app").is_ok());
+        assert!(validate_resource("plugin:com.skiff.cron").is_ok());
+        assert!(validate_resource("plugin:*").is_ok());
+        // 相对路径、保留 `..`、根目录、空对象名、未知类型一律拒
+        assert!(validate_resource("path:relative/conf").is_err());
+        assert!(validate_resource("path:/etc/../passwd").is_err());
+        assert!(validate_resource("path:/").is_err());
+        assert!(validate_resource("container:").is_err());
+        assert!(validate_resource("container:a b").is_err());
+        assert!(validate_resource("volume:data").is_err());
+        assert!(validate_resource("container").is_err());
+        // 插件 id 必须反向域名风格；通配只能整条写
+        assert!(validate_resource("plugin:cron").is_err());
+        assert!(validate_resource("plugin:com.*").is_err());
+        assert!(validate_resource("plugin:").is_err());
+    }
+
+    fn interop_manifest(consumes: &str, call_perm: bool) -> String {
+        let perm = if call_perm {
+            "[[permissions]]\ncapability = \"interop\"\nverbs = [\"call\"]\n"
+        } else {
+            ""
+        };
+        format!(
+            r#"
+id = "com.example.caller"
+name = "Caller"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000001"
+api = "1.0"
+requires = ["interop", "identity"]
+{perm}
+[[permissions]]
+capability = "identity"
+verbs = ["self"]
+
+[interop]
+provides = [{{ method = "backup", label = "立即备份" }}]
+consumes = [{consumes}]
+"#
+        )
+    }
+
+    #[test]
+    fn interop_decl_is_validated_with_requires_and_permissions() {
+        let m = Manifest::parse(&interop_manifest("\"com.skiff.cron:jobs.create\"", true)).unwrap();
+        assert_eq!(m.interop.provides[0].method, "backup");
+        assert!(m.interop.allows("com.skiff.cron", "jobs.create"));
+        assert!(!m.interop.allows("com.skiff.cron", "jobs.remove"));
+        assert_eq!(
+            m.interop_resource_hints(),
+            vec!["plugin:com.skiff.cron".to_string()]
+        );
+
+        // consumes 不给方法通配：只有精确方法放行
+        let m = Manifest::parse(&interop_manifest("\"com.skiff.cron:*\"", true)).unwrap();
+        assert!(m.interop.allows("com.skiff.cron", "jobs.remove"));
+
+        // 声明了 consumes 却没申请 interop:call → 装完必然调不通，装前就拒
+        let e = Manifest::parse(&interop_manifest("\"com.skiff.cron:jobs.create\"", false))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("interop:call"), "{e}");
+
+        // `[interop]` 但 requires 缺 interop：能力面没声明
+        let bad = interop_manifest("\"com.skiff.cron:jobs.create\"", true).replace(
+            "requires = [\"interop\", \"identity\"]",
+            "requires = [\"identity\"]",
+        );
+        let e = Manifest::parse(&bad).unwrap_err().to_string();
+        assert!(e.contains("requires"), "{e}");
+
+        // consumes 形式非法
+        for bad in ["\"cron\"", "\"com.skiff.cron\"", "\"com.skiff.cron:\""] {
+            let e = Manifest::parse(&interop_manifest(bad, true))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("interop.consumes"), "{bad} -> {e}");
+        }
+    }
+
+    /// 通配白名单派生出 `plugin:*`：安装确认页必须让 admin 看见这条宽授权。
+    #[test]
+    fn wildcard_consume_derives_plugin_star_hint() {
+        let m = Manifest::parse(&interop_manifest("\"*\"", true)).unwrap();
+        assert_eq!(m.interop_resource_hints(), vec!["plugin:*".to_string()]);
     }
 }

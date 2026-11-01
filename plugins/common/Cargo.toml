@@ -1,0 +1,15 @@
+[package]
+name = "skiff-plugin-common"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+skiff-sdk = { path = "../../crates/sdk" }
+# 路径代数与内核同源（`skiff_model::path`）：插件侧做字符串级快筛，
+# 内核侧做 canonical 级判定，两边共用同一套前缀/边界规则。
+skiff-model = { path = "../../crates/model" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -34,13 +34,22 @@
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / 包格式 |
-| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒 |
+| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 5 个官方插件真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
+| `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |
 | `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
 | `build` | musl 静态编译 + `readelf` 查 `PT_INTERP` | 产物不挑宿主 glibc（**仅 workflow_dispatch**，不随 push 跑） |
 
 `pkg-chain` 的两条反例是重点：只测“正例通过”会把验签写成摆设——错公钥也过、缺公钥也过，
 直到有一天有人把私钥打进包才发现。反例断言的是**必须失败**。
+
+**官方插件是第二个 workspace，根 `--workspace` 管不到它。** 根 `Cargo.toml` 里有
+`exclude = ["plugins"]`，所以 `cargo fmt/clippy/test --workspace` 的三关对 `plugins/`
+**完全没有覆盖**——漏了 `plugins` 这个 job，插件代码就是没人复核的盲区。
+插件 crate 的 `--locked` 依赖 `plugins/Cargo.lock`（必须入库）。
+注意 `cargo fmt --manifest-path plugins/Cargo.toml --all` 会顺着 path 依赖格式化到根
+workspace（插件依赖 `crates/sdk`），所以本地跑它等于把根和插件一起格式化，`--check` 也可能
+报根 crate 的漂移：这是预期，不是插件 workspace 的错。
 
 ## 3. 刻意决策
 
@@ -79,6 +88,7 @@ PR 突然变红，排查成本很高。升级方式：改 `ci.yml` / `release.ym
 # GitHub → Actions → Release → Run workflow
 #   version: 留空即可（开发阶段没有版本号，产物自动用 night 占位命名）
 #   publish: 保持 false → 只构建 + 自检 + 传 workflow 产物，不建 Release
+#   skip_plugins: 保持 false → 发布包带已签名的官方插件（见下）
 ```
 
 产物在 run 页的 Artifacts 里下载（7 天保留），验证包结构与摘要即可，
@@ -92,6 +102,15 @@ git tag v0.1.0 && git push origin v0.1.0
 #   （night 占位版本会被 publish job 直接拒绝）
 ```
 
+**官方插件随包携带，必须真签名。** `build` job 先把 `secrets.PLUGIN_SIGNING_KEY`
+（ed25519 私钥种子，64 位 hex）写进 `$RUNNER_TEMP/plugin-signing.key`（`umask 077`），
+再交给 `pack-release.sh --plugin-key`，由 `plugins/pack.sh` 在临时目录回填
+`manifest.key_id` 后打包；私钥不进产物、不进仓库。
+Secret 缺失时 job **直接失败**（宁可红也不要出个缺插件却看不出来的包）；只想调试打包链路
+时手动勾选 `skip_plugins`，那会打警告并产出「裸包」，不能作为正式发布物。
+`build` 的自检会数 `official/` 里是不是 4 个 `.wbpkg`，并用打包日志里的公钥逐个验签，
+`--arch` 按矩阵架构走——这条同时复核「载荷架构没错位」。
+
 `build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与
 `aarch64-unknown-linux-musl`（用 `cross`，自带交叉工具链镜像），逐个跑
 `deploy/pack-release.sh`；`publish`（仅 `publish=true` 时跑）汇总两套产物 +
@@ -99,7 +118,8 @@ git tag v0.1.0 && git push origin v0.1.0
 
 **发布物不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏，
 装机前 `sha256sum -c`。此前的 `RELEASE_SIGNING_KEY_HEX` secret、`.sig` 产物与
-`skiff-plugin verify-file` 链路已整体移除——插件包 `.wbpkg` 的签名/TOFU 不受影响（§4.3）。
+`skiff-plugin verify-file` 链路已整体移除——插件包 `.wbpkg` 的签名/TOFU 不受影响（§4.3），
+官方插件走的正是 `.wbpkg` 自己的 ed25519 签名。
 
 发布物结构（与手工 `pack-release.sh` 完全一致，同一份脚本产出）：
 
@@ -107,6 +127,8 @@ git tag v0.1.0 && git push origin v0.1.0
 |---|---|
 | `skiff-<ver>-linux-<arch>.tar.gz` | `skiff` + `skiff-plugin` + `install.sh` / `uninstall.sh` / `skiff.service` / `config.toml.example` |
 | `.tar.gz.sha256` | 装机前先校验 |
+| `official/*.wbpkg` | 官方插件 5 个（guard / monitor / nginx / files / cron），已签名；`install.sh` 只复制到 `/var/lib/skiff/official/`，**不自动安装** |
+| `official/public-key.txt` | 上面那批包的签名公钥；装机后要导入面板「设置 → 信任公钥」才能装（TOFU 首次信任） |
 
 ## 5. 哪些地方是“推上去才知道”（实测列已回填）
 
@@ -127,7 +149,12 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test  --workspace --locked
 cargo check --workspace --all-targets --locked     # 想验 MSRV 就加 `+1.89.0`
 cargo run --locked -p xtask -- check
-shellcheck -S error deploy/*.sh
+shellcheck -S error deploy/*.sh plugins/*.sh
+
+# 官方插件（第二 workspace）：根三关不覆盖，必须单独跑
+cargo fmt    --manifest-path plugins/Cargo.toml --all --check
+cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings
+cargo test   --manifest-path plugins/Cargo.toml --locked
 ```
 
 CLI flag 有变（如某天要 `--all-features` 之外的新组合），以 CI 的命令为准——本文件只是索引。

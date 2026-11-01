@@ -1,4 +1,4 @@
-//! 跨 crate 共享的**词汇表**：角色、授权项、部署形态。
+//! 跨 crate 共享的**词汇表**：角色、授权项、容器规格、动词白名单、部署形态。
 //!
 //! 为什么单独一个 crate：`Role`/`Grant` 只被当作枚举值使用，却因为定义在 `store`
 //! 里，导致「策略判定」这种纯计算模块不得不依赖 rusqlite（SQLite bundled）。
@@ -6,15 +6,30 @@
 //!
 //! 只放**没有行为、没有 I/O** 的东西；领域对象（User/Session/PluginRecord）
 //! 留在 `store`，谁存谁定义。
+//!
+//! 边界：**判定**在 `skiff-policy`（`Policy::check`、`PathGuard`），**词汇**在这里。
+//! `impl` 与类型同 crate——所以 `ContainerSpec` 的校验方法是
+//! `skiff_policy::Policy::validate_spec`，不是 `ContainerSpec::validate`。
 
 use std::fmt;
 
 mod cidr;
+mod container;
+mod path;
 mod rbac;
 mod scope;
+mod verb;
 pub use cidr::Cidr;
+pub use container::{
+    short_id, Actor, ContainerSpec, Healthcheck, Mount, ObjectRef, PortMapping, SHORT_ID_LEN,
+};
+pub use path::{
+    any_root_contains, has_parent_segment, hits_a_root_itself, is_absolute, is_posix_absolute,
+    is_root_path, normalize_dir, parent_within, within, within_any, within_root,
+};
 pub use rbac::{Permission, RoleExt};
 pub use scope::{Scope, ScopeSet};
+pub use verb::{Tier, Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED};
 
 /// RBAC 三种角色（§6.3）。危险操作（插件安装、对象 grant、宿主路径授权、
 /// Docker 删除/exec）仅 admin。

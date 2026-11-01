@@ -37,6 +37,14 @@ pub enum SdkError {
 
 pub type Result<T> = std::result::Result<T, SdkError>;
 
+/// 宿主路径单次读写上限。插件↔内核走 `skiff_wire::MAX_FRAME`（1MiB）单帧，
+/// 这里取 256KiB：base64 膨胀 4/3 后仍在帧内，且留足 JSON 头部余量。
+pub const HOST_IO_MAX: usize = 256 * 1024;
+
+/// `fs_host_read_bytes` / `fs_host_write_bytes` 的整文件上限（常规用例够用，
+/// 再大的文件请自己按页读写，别让插件把整文件塞进内存）。
+pub const HOST_WHOLE_MAX: usize = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct RpcError {
     pub code: i64,
@@ -161,6 +169,170 @@ impl Plugin {
         self.call_kernel(skiff_wire::routes::CAP_FS_LIST, json!({ "path": path }))
     }
 
+    /// 宿主路径读取的一页（base64），`path` 必须是安装时确认过的 `path:` 根内绝对路径。
+    ///
+    /// 返回 `(b64, offset, size, eof)`。单页上限 [`HOST_IO_MAX`]——插件↔内核是单帧
+    /// 1MiB 的 UDS 协议，大文件必须分页，SDK 不替调用方猜「多大算大」。
+    pub fn fs_host_read_b64(
+        &self,
+        path: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<(String, u64, u64, bool)> {
+        let v = self.call_kernel(
+            skiff_wire::routes::CAP_FS_READ,
+            json!({
+                "path": path,
+                "offset": offset,
+                "max_bytes": max_bytes.min(HOST_IO_MAX),
+                "encoding": "base64",
+            }),
+        )?;
+        let b64 = v
+            .get("b64")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let off = v.get("offset").and_then(|x| x.as_u64()).unwrap_or(0);
+        let size = v.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+        let eof = v.get("eof").and_then(|x| x.as_bool()).unwrap_or(true);
+        Ok((b64, off, size, eof))
+    }
+
+    /// 宿主路径写一页（base64）。`offset = None` 表示从 0 覆盖写；`append = true`
+    /// 表示追加（分块上传的最后一块之外都用追加）。
+    pub fn fs_host_write_b64(
+        &self,
+        path: &str,
+        b64: &str,
+        offset: Option<u64>,
+        append: bool,
+    ) -> Result<Value> {
+        let mut body = json!({ "path": path, "b64": b64 });
+        if let Some(o) = offset {
+            body["offset"] = json!(o);
+        }
+        if append {
+            body["append"] = json!(true);
+        }
+        self.call_kernel(skiff_wire::routes::CAP_FS_WRITE, body)
+    }
+
+    /// 宿主路径读文本（整文件，超过 [`HOST_IO_MAX`] 时报错而不是静默截断）。
+    pub fn fs_host_read_text(&self, path: &str) -> Result<String> {
+        let v = self.call_kernel(
+            skiff_wire::routes::CAP_FS_READ,
+            json!({ "path": path, "max_bytes": HOST_IO_MAX }),
+        )?;
+        if !v.get("eof").and_then(|x| x.as_bool()).unwrap_or(true) {
+            return Err(SdkError::Protocol(format!(
+                "文件超过 {} 字节，请改用 fs_host_read_b64 分页读取",
+                HOST_IO_MAX
+            )));
+        }
+        Ok(v.get("data")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string())
+    }
+
+    /// 宿主路径写文本（整文件覆盖）。
+    pub fn fs_host_write_text(&self, path: &str, text: &str) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_FS_WRITE,
+            json!({ "path": path, "data": text }),
+        )
+    }
+
+    /// 列宿主目录（`items` 含 name/dir/size/mtime/mode）。
+    pub fn fs_host_list(&self, path: &str) -> Result<Value> {
+        self.call_kernel(skiff_wire::routes::CAP_FS_LIST, json!({ "path": path }))
+    }
+
+    pub fn fs_host_mkdir(&self, path: &str) -> Result<Value> {
+        self.call_kernel(skiff_wire::routes::CAP_FS_MKDIR, json!({ "path": path }))
+    }
+
+    pub fn fs_host_remove(&self, path: &str) -> Result<Value> {
+        self.call_kernel(skiff_wire::routes::CAP_FS_REMOVE, json!({ "path": path }))
+    }
+
+    pub fn fs_host_rename(&self, from: &str, to: &str) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_FS_RENAME,
+            json!({ "path": from, "to": to }),
+        )
+    }
+
+    /// 已授予的对象（`container:<id|name>` / `project:<p>` / `path:<abs>`）。
+    ///
+    /// 来自内核 `identity/self`，不是本地猜测——对象授权只在内核库里，env 里只有权限串。
+    pub fn objects(&self) -> Result<Vec<String>> {
+        let v = self.identity()?;
+        Ok(v.get("objects")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// 已授予的 `path:` 授权根（原始字符串，未 canonicalize）。
+    pub fn path_roots(&self) -> Result<Vec<String>> {
+        Ok(self
+            .objects()?
+            .into_iter()
+            .filter_map(|o| o.strip_prefix("path:").map(str::to_string))
+            .collect())
+    }
+
+    /// 整文件读字节（内部按 [`HOST_IO_MAX`] 分页，超过 [`HOST_WHOLE_MAX`] 报错）。
+    pub fn fs_host_read_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let mut out = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            let (b64, _, _, eof) = self.fs_host_read_b64(path, offset, HOST_IO_MAX)?;
+            let page = engine
+                .decode(b64.as_bytes())
+                .map_err(|e| SdkError::Protocol(format!("base64 解码失败: {e}")))?;
+            offset += page.len() as u64;
+            out.extend_from_slice(&page);
+            if out.len() > HOST_WHOLE_MAX {
+                return Err(SdkError::Protocol(format!(
+                    "文件超过 {HOST_WHOLE_MAX} 字节，请改用分页接口"
+                )));
+            }
+            if eof {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// 整文件写字节（内部按 [`HOST_IO_MAX`] 分页，第一页覆盖写、其余追加）。
+    pub fn fs_host_write_bytes(&self, path: &str, data: &[u8]) -> Result<Value> {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        if data.len() > HOST_WHOLE_MAX {
+            return Err(SdkError::Protocol(format!(
+                "写入超过 {HOST_WHOLE_MAX} 字节，请改用分页接口"
+            )));
+        }
+        // 空文件也必须显式写一次，否则「新建空文件」会变成「什么都不做」。
+        if data.is_empty() {
+            return self.fs_host_write_b64(path, "", None, false);
+        }
+        let mut last = Value::Null;
+        for (i, chunk) in data.chunks(HOST_IO_MAX).enumerate() {
+            let b64 = engine.encode(chunk);
+            last = self.fs_host_write_b64(path, &b64, None, i > 0)?;
+        }
+        Ok(last)
+    }
+
     /// Docker 白名单动词（三层策略在内核侧判定，SDK 不做本地放行）。
     pub fn docker_call(&self, verb: &str, target: Value) -> Result<Value> {
         self.call_kernel(
@@ -172,6 +344,28 @@ impl Plugin {
     /// 出网收口申请。**内核当前一律 501**（nftables 收口属 M4 门禁）。
     pub fn net_apply(&self, spec: Value) -> Result<Value> {
         self.call_kernel(skiff_wire::routes::CAP_NET_APPLY, spec)
+    }
+
+    /// 调用另一个插件声明过的接口（manifest `[interop].consumes` + `interop:call` + `plugin:` 授权）。
+    ///
+    /// 内核在 `params` 里注入 `_interop.caller`（调用方插件 id），目标插件据此做来源
+    /// 展示/幂等键；调用方传的同名字段会被内核覆盖。
+    ///
+    /// 返回目标插件 RPC 的 `result`（不是 `{"result": …}` 信封）。只有**单层**转发：
+    /// 目标插件在自己的 handler 里再次发起 interop 会被内核以「环」拒绝。
+    pub fn interop_call(&self, plugin: &str, method: &str, params: Value) -> Result<Value> {
+        let v = self.call_kernel(
+            skiff_wire::routes::CAP_INTEROP_CALL,
+            json!({ "plugin": plugin, "method": method, "params": params }),
+        )?;
+        Ok(v.get("result").cloned().unwrap_or(v))
+    }
+
+    /// 列出已启用插件对外暴露的接口（`{plugins:[{id,name,methods:[…]}]}`）。
+    ///
+    /// 需要 `interop:call` 权限；不返回目标插件的授权/配置等敏感信息。
+    pub fn interop_catalog(&self) -> Result<Value> {
+        self.call_kernel(skiff_wire::routes::CAP_INTEROP_CATALOG, json!({}))
     }
 
     /// 回调内核能力面（`/api/v1/capability/*`），带进程级 Bearer token。
@@ -255,7 +449,15 @@ fn handle_conn<F>(
 where
     F: Fn(&str, Value) -> std::result::Result<Value, RpcError>,
 {
-    let (method, path, body) = read_request(stream)?;
+    let (method, path, body, protocol) = read_request(stream)?;
+    // 协议版本先判：内核与插件不同步时，明确拒绝比让插件按旧语义处理要安全。
+    if let Err(e) = skiff_wire::check_protocol(protocol) {
+        return write_response(
+            stream,
+            426,
+            &json!({"error": {"code": -32000, "message": e.to_string()}}),
+        );
+    }
     let (status, payload) = match (method.as_str(), path.as_str()) {
         ("GET", skiff_wire::routes::PLUGIN_HEALTHZ) => {
             (200, json!({ "ok": true, "plugin": plugin.id }))
@@ -292,7 +494,9 @@ where
 }
 
 #[cfg(unix)]
-fn read_request(stream: &mut std::os::unix::net::UnixStream) -> Result<(String, String, Vec<u8>)> {
+fn read_request(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> Result<(String, String, Vec<u8>, Option<u32>)> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     // 头部解析与上限交给 skiff-wire，和内核侧同一份实现
@@ -317,7 +521,7 @@ fn read_request(stream: &mut std::os::unix::net::UnixStream) -> Result<(String, 
         body.extend_from_slice(&chunk[..n]);
     }
     body.truncate(head.content_length);
-    Ok((head.method, head.path, body))
+    Ok((head.method, head.path, body, head.protocol))
 }
 
 #[cfg(unix)]

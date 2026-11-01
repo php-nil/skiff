@@ -152,7 +152,7 @@ fn normalize_entry_path(raw: &str) -> Result<String> {
     if raw.contains('\0') || raw.contains('\\') {
         return Err(PkgError::Format(format!("包内路径含非法字符: {raw}")));
     }
-    if raw.starts_with('/') {
+    if skiff_model::is_posix_absolute(raw) {
         return Err(PkgError::Format(format!("包内路径不得是绝对路径: {raw}")));
     }
     let trimmed = raw.trim_end_matches('/');

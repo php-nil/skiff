@@ -9,20 +9,27 @@
 配套工具链（`crates/sdk` 内的 `skiff-plugin` CLI，独立 semver 发布）：
 
 ```
-skiff-plugin new my-plugin                  # 脚手架：manifest + src + ui 骨架
-skiff-plugin build --arch amd64,arm64       # 交叉编译出 bin/{arch}/plugin
-skiff-plugin pack                           # 哈希清单 → 私钥签名（包内原始字节）→ my-plugin-0.1.0.wbpkg
-skiff-plugin verify ./my-plugin-0.1.0.wbpkg # 结构/签名/manifest 自检（装前自查）
+skiff-plugin new my-plugin                    # 脚手架：manifest + src + ui 骨架（自带开发密钥）
+skiff-plugin build --dir my-plugin            # 本机架构出 bin/<arch>/plugin；交叉编译先自行 --target
+skiff-plugin pack --dir my-plugin --arch amd64
+                                              # 哈希清单 → 私钥签名（包内原始字节）→ my-plugin-0.1.0.wbpkg
+                                              # --arch 指定要校验的载荷（交叉打包必需）
+skiff-plugin verify ./my-plugin-0.1.0.wbpkg   # 结构/签名/manifest 自检（装前自查），同样支持 --arch
+skiff-plugin stamp --dir my-plugin --key k    # 用私钥派生的指纹回填 manifest.key_id
 ```
 
+- **`stamp` 的用途**：源码里的 `key_id` 只是占位，打包前用发布私钥回填指纹，让「仓库不含任何一把密钥的指纹」与「`pack` 的指纹一致性校验」同时成立。官方插件走这条（`plugins/pack.sh` 在**临时目录**回填，不弄脏工作树）。
 - **SDK 独立 semver**（与内核版本解耦），窄接口文档 `docs/PLUGIN_API.md` 只声明兼容的插件 API 区间；破坏性变更升 API 主版本，内核并行兼容 **N-1 API 主版本**。
-- **官方示范插件（Nginx 管理，经 docker exec 操作目标容器）即范本**：脚手架、签名、打包、权限声明全链路可对照抄；目标容器须由 admin 显式授予对象 grant 与 exec 动词，不能凭插件标签自行认领。
+- **官方示范插件是 `plugins/` 下的 4 个**（`guard` / `monitor` / `nginx` / `files`，见 [`plugins/README.md`](../../plugins/README.md)）：脚手架、签名、打包、权限声明、分页读写、cron tick 全链路可对照抄。注意 `nginx` 走的是「写授权目录 + `containers.restart`」，**没有**用 `containers.exec`（exec 属 M3 门禁）；目标容器仍须由 admin 显式授予 `container:<NAME>` grant，插件不能凭标签自行认领。
 - 对外发布（无论什么渠道）必须附两样东西：**权限清单** + **签名指纹**（供用户导入公钥时核对）。
 - 多架构是发布者的责任：`bin/` 下缺哪个架构，该架构上就拒装（不静默降级）。
+- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 4 个已签名 `.wbpkg` 放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/CI.md`](../CI.md) §4）。
 
 ## 4.5 用户侧如何部署
 
 **UI（主路径）**：插件页 → 上传 `.wbpkg` → 内核校验（结构 / 签名 / `api` 兼容 / `requires` 能力可用）→ **权限确认对话框**（权限逐条列出，可部分拒绝；拒绝项从 granted 集剔除并以 `SKIFF_GRANTED_PERMS` 注入启动环境，插件可查询以便降级适配）→ 安装 → 启用。对话框明示：**权限确认防误用不防恶意**——防恶意靠签名信任 + 降权沙箱，装插件 = 信任作者。**全程不出网，离线可用**。
+
+**装好之后怎么用**：每个已启用且有 `[[ui]]` 的插件会以自己的 `label` 出现在主界面顶栏（插件菜单），点一下直接进插件界面，不必每次经「插件」列表页中转；顶栏当前项高亮。插件界面之间也能互跳：插件发父页面消息 `skiff.open`（如 NGINX 站点页的「在文件管理里打开该目录」），面板按白名单只改地址，定位路径能否读仍由目标插件自己的 `path:` 授权根判定（口径见 [§4.2「UI 托管 / 插件间跳转」](04-plugin-package.md)）。
 
 **CLI（批量 / 无人值守）**：服务器本地执行 `skiff plugin install ./foo.wbpkg`，校验流程与 UI 完全一致；`--yes` 跳过交互确认，但权限**默认全拒**，需显式 `--grant` 指定允许的 docker / identity / fs / net 动词；管理既有 Docker 对象还须重复指定 `--resource <type:id>`，默认不含任何外部对象。
 

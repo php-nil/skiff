@@ -26,7 +26,7 @@ fn page(
         section: section.to_string(),
         title: title.to_string(),
         rows,
-        can_admin: user.is_admin(),
+        can_admin: user.can(skiff_model::Permission::DockerLifecycle),
         docker_reason: state.docker_unavailable_reason().to_string(),
         error: error.to_string(),
         notice: notice.to_string(),
@@ -37,13 +37,13 @@ pub async fn images(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    let rows = match state.docker.list_images().await {
+    let rows = match state.docker().list_images().await {
         Ok(items) => items
             .into_iter()
             .map(|i| ResourceRow {
                 id: i.id.clone(),
                 name: if i.tags.is_empty() {
-                    format!("<none> ({})", i.id.chars().take(12).collect::<String>())
+                    format!("<none> ({})", i.short_id())
                 } else {
                     i.tags.join(", ")
                 },
@@ -66,24 +66,25 @@ pub async fn pull_image(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    handlers::require_admin(&user)?;
-    let image = form_first(&form, "image").trim().to_string();
-    if image.is_empty() {
-        return Err(AppError::BadRequest("镜像名不能为空".into()));
-    }
+    // 授权先于参数校验：未授权者不该拿到参数层面的反馈。
+    // 判定走 `policy.check`（内部查 `Permission` 矩阵），不再另设 `require_admin`。
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::ImagePull, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    let image = form_first(&form, "image").trim().to_string();
+    if image.is_empty() {
+        return Err(AppError::BadRequest("镜像名不能为空".into()));
+    }
 
-    let result = state.docker.pull_image(&image).await;
+    let result = state.docker().pull_image(&image).await;
     let ip = handlers::client_ip(&state, &parts);
     let (result_str, detail) = match &result {
         Ok(()) => ("ok", String::new()),
         Err(e) => ("fail", e.to_string()),
     };
-    let _ = state.db.audit(
+    let _ = state.db().audit(
         &user.user.username,
         &ip,
         &Verb::ImagePull.audit_action(),
@@ -93,7 +94,7 @@ pub async fn pull_image(
     );
 
     let rows = state
-        .docker
+        .docker()
         .list_images()
         .await
         .unwrap_or_default()
@@ -127,15 +128,14 @@ pub async fn remove_image(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    handlers::require_admin(&user)?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::ImageRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker.remove_image(&id, false).await;
+    let result = state.docker().remove_image(&id, false).await;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db.audit(
+    let _ = state.db().audit(
         &user.user.username,
         &ip,
         &Verb::ImageRemove.audit_action(),
@@ -156,7 +156,7 @@ pub async fn networks(
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
     let rows = state
-        .docker
+        .docker()
         .list_networks()
         .await
         .unwrap_or_default()
@@ -179,7 +179,11 @@ pub async fn create_network(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    handlers::require_admin(&user)?;
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), Verb::NetworkCreate, None)
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
     let name = form_first(&form, "name").trim().to_string();
     if name.is_empty()
         || !name
@@ -188,15 +192,9 @@ pub async fn create_network(
     {
         return Err(AppError::BadRequest("网络名只允许字母数字与 _-. ".into()));
     }
-    // MVP 只允许默认 bridge 网络（§6.4.3）
-    state
-        .cfg
-        .policy
-        .check(&handlers::actor(&user), Verb::NetworkCreate, None)
-        .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker.create_network(&name).await;
+    let result = state.docker().create_network(&name).await;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db.audit(
+    let _ = state.db().audit(
         &user.user.username,
         &ip,
         &Verb::NetworkCreate.audit_action(),
@@ -221,15 +219,14 @@ pub async fn remove_network(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    handlers::require_admin(&user)?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::NetworkRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker.remove_network(&id).await;
+    let result = state.docker().remove_network(&id).await;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db.audit(
+    let _ = state.db().audit(
         &user.user.username,
         &ip,
         &Verb::NetworkRemove.audit_action(),
@@ -250,7 +247,7 @@ pub async fn volumes(
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
     let rows = state
-        .docker
+        .docker()
         .list_volumes()
         .await
         .unwrap_or_default()
@@ -277,7 +274,11 @@ pub async fn create_volume(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    handlers::require_admin(&user)?;
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), Verb::VolumeCreate, None)
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
     let name = form_first(&form, "name").trim().to_string();
     if name.is_empty()
         || !name
@@ -286,14 +287,9 @@ pub async fn create_volume(
     {
         return Err(AppError::BadRequest("卷名只允许字母数字与 _-. ".into()));
     }
-    state
-        .cfg
-        .policy
-        .check(&handlers::actor(&user), Verb::VolumeCreate, None)
-        .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker.create_volume(&name).await;
+    let result = state.docker().create_volume(&name).await;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db.audit(
+    let _ = state.db().audit(
         &user.user.username,
         &ip,
         &Verb::VolumeCreate.audit_action(),
@@ -318,15 +314,14 @@ pub async fn remove_volume(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    handlers::require_admin(&user)?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::VolumeRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker.remove_volume(&name).await;
+    let result = state.docker().remove_volume(&name).await;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db.audit(
+    let _ = state.db().audit(
         &user.user.username,
         &ip,
         &Verb::VolumeRemove.audit_action(),

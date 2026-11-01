@@ -1,0 +1,278 @@
+// 插件 UI 的 RPC 桥客户端 + 跨插件跳转（协议见 crates/web/static/skiff.js）。
+(function () {
+  "use strict";
+
+  var nonce = new URLSearchParams(location.search).get("nonce") || "";
+  // `?open=job:<id>`：其他插件（如 NGINX「新增备份任务」）创建任务后直接定位过来。
+  var open = new URLSearchParams(location.search).get("open") || "";
+  var focusId = open.indexOf("job:") === 0 ? open.slice(4) : "";
+
+  var pending = {};
+  var seq = 0;
+  var targets = [];
+  var jobs = [];
+
+  function rpc(method, params) {
+    return new Promise(function (resolve, reject) {
+      if (!nonce) {
+        reject(new Error("缺少 nonce：请从面板插件详情页打开"));
+        return;
+      }
+      var id = String(++seq);
+      pending[id] = { resolve: resolve, reject: reject };
+      parent.postMessage(
+        { type: "skiff.rpc", nonce: nonce, id: id, method: method, params: params || null },
+        "*"
+      );
+    });
+  }
+
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== parent) return;
+    var msg = ev.data;
+    if (!msg || msg.type !== "skiff.rpc.result" || msg.nonce !== nonce) return;
+    var p = pending[msg.id];
+    if (!p) return;
+    delete pending[msg.id];
+    if (msg.error) p.reject(msg.error.message || msg.error);
+    else p.resolve(msg.result);
+  });
+
+  function openPlugin(plugin, path) {
+    return new Promise(function (resolve, reject) {
+      if (!nonce) {
+        reject(new Error("缺少 nonce：请从面板插件详情页打开"));
+        return;
+      }
+      var id = "open-" + (++seq);
+      pending[id] = { resolve: resolve, reject: reject };
+      parent.postMessage(
+        { type: "skiff.open", nonce: nonce, id: id, plugin: plugin, path: path || "" },
+        "*"
+      );
+    });
+  }
+
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== parent) return;
+    var msg = ev.data;
+    if (!msg || msg.type !== "skiff.open.result" || msg.nonce !== nonce) return;
+    var p = pending[msg.id];
+    if (!p) return;
+    delete pending[msg.id];
+    if (msg.ok) p.resolve(true);
+    else p.reject(new Error(msg.error || "跳转被拒绝"));
+  });
+
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function when(ts) {
+    if (!ts) return "-";
+    return new Date(Number(ts) * 1000).toLocaleString();
+  }
+  function say(text, bad) {
+    var m = el("msg");
+    m.textContent = text;
+    m.className = bad ? "bad" : "muted";
+  }
+  function isPluginId(s) {
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(s);
+  }
+
+  function renderTargets() {
+    var sel = el("new-target");
+    sel.innerHTML = "";
+    if (targets.length === 0) {
+      sel.innerHTML = '<option value="">（无可调用目标）</option>';
+      return;
+    }
+    targets.forEach(function (t) {
+      var o = document.createElement("option");
+      o.value = t.id;
+      o.textContent = (t.name || t.id) + "（" + t.id + "）";
+      sel.appendChild(o);
+    });
+    var first = targets[0];
+    if (first && first.methods && first.methods.length) {
+      el("new-method").value = first.methods[0].method;
+    }
+  }
+
+  function pickTarget() {
+    var id = el("new-target").value;
+    var t = targets.filter(function (x) { return x.id === id; })[0];
+    if (t && t.methods && t.methods.length) {
+      el("new-method").value = t.methods[0].method;
+      var desc = t.methods[0].description || t.methods[0].label || "";
+      el("targets-note").textContent = desc;
+    }
+  }
+
+  function render() {
+    var body = el("jobs");
+    if (jobs.length === 0) {
+      body.innerHTML = '<tr><td colspan="6" class="muted">还没有任务。可在此新建，或从其他插件的界面一键添加。</td></tr>';
+      return;
+    }
+    body.innerHTML = jobs.map(function (j) {
+      var next = j.next_run && j.next_run.text ? j.next_run.text : "（表达式无效）";
+      var src = j.source || "ui";
+      var srcText = src === "ui" ? "本面板" : src;
+      var jump = src !== "ui" && isPluginId(src)
+        ? ' <button class="mini" data-jump="' + esc(src) + '">打开</button>'
+        : "";
+      var last = j.last;
+      var lastText = "从未执行";
+      var cls = "muted";
+      if (last && last.at) {
+        lastText = when(last.at) + " · " + (last.result === "ok" ? "成功" : "失败");
+        cls = last.result === "ok" ? "ok" : "bad";
+        if (last.detail) lastText += "：" + esc(last.detail);
+      }
+      var toggle = j.enabled
+        ? '<button class="mini" data-toggle="' + esc(j.id) + '" data-enabled="0">停用</button>'
+        : '<button class="mini" data-toggle="' + esc(j.id) + '" data-enabled="1">启用</button>';
+      return '<tr data-id="' + esc(j.id) + '"' + (j.id === focusId ? ' class="hit"' : "") + ">" +
+        "<td><strong>" + esc(j.name) + "</strong>" +
+          '<div class="muted"><code>' + esc(j.id) + "</code>" +
+          (j.key ? " · key " + esc(j.key) : "") + "</div></td>" +
+        "<td><code>" + esc(j.expr) + "</code><div class=\"muted\">下次 " + esc(next) + "</div></td>" +
+        "<td><code>" + esc(j.target) + "</code><div class=\"muted\">" + esc(j.method) + "</div></td>" +
+        "<td>" + esc(srcText) + jump + "</td>" +
+        '<td class="' + cls + '">' + lastText + "</td>" +
+        '<td><button class="mini" data-run="' + esc(j.id) + '">立即执行</button> ' +
+          toggle + ' <button class="mini danger" data-remove="' + esc(j.id) + '">删除</button></td>' +
+        "</tr>";
+    }).join("");
+
+    if (focusId) {
+      var hit = body.querySelector('tr[data-id="' + focusId.replace(/"/g, "") + '"]');
+      if (hit && hit.scrollIntoView) hit.scrollIntoView({ block: "center" });
+    }
+  }
+
+  function load() {
+    return rpc("list").then(function (r) {
+      jobs = (r && r.jobs) || [];
+      render();
+    }).catch(function (e) {
+      say("读取任务失败：" + e, true);
+    });
+  }
+
+  function loadTargets() {
+    return rpc("targets").then(function (r) {
+      targets = (r && r.interfaces) || [];
+      renderTargets();
+    }).catch(function (e) {
+      targets = [];
+      renderTargets();
+      say("读取可调用目标失败：" + e, true);
+    });
+  }
+
+  function refreshAll() {
+    return Promise.all([load(), loadTargets()]);
+  }
+
+  el("refresh").addEventListener("click", function () {
+    say("刷新中…");
+    refreshAll().then(function () { say("已刷新"); });
+  });
+
+  el("new-target").addEventListener("change", pickTarget);
+
+  el("create").addEventListener("click", function () {
+    var name = el("new-name").value.trim();
+    var expr = el("new-expr").value.trim() || "0 3 * * *";
+    var target = el("new-target").value;
+    var method = el("new-method").value.trim();
+    var key = el("new-key").value.trim();
+    var rawParams = el("new-params").value.trim();
+    if (!target || !method) {
+      say("请选择目标插件并填写方法名", true);
+      return;
+    }
+    var params = {};
+    if (rawParams) {
+      try {
+        params = JSON.parse(rawParams);
+      } catch (e) {
+        say("参数不是合法 JSON：" + e, true);
+        return;
+      }
+      if (params === null || typeof params !== "object" || Array.isArray(params)) {
+        say("参数必须是 JSON 对象", true);
+        return;
+      }
+    }
+    say("保存中…");
+    rpc("create", {
+      name: name, expr: expr, target: target, method: method, key: key, params: params, enabled: true
+    }).then(function (r) {
+      var next = r && r.next_run && r.next_run.text ? "，下次 " + r.next_run.text : "";
+      say((r && r.created ? "已新增任务 " : "已更新任务 ") + (r.id || "") + next);
+      return load();
+    }).catch(function (e) {
+      say("保存失败：" + e, true);
+    });
+  });
+
+  el("jobs").addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("button") : null;
+    if (!btn) return;
+    var runId = btn.getAttribute("data-run");
+    var toggleId = btn.getAttribute("data-toggle");
+    var removeId = btn.getAttribute("data-remove");
+    var jump = btn.getAttribute("data-jump");
+
+    if (jump) {
+      say("正在切到 " + jump + "…");
+      openPlugin(jump).catch(function (e) {
+        say("跳转失败：" + (e && e.message ? e.message : e), true);
+      });
+      return;
+    }
+    if (runId) {
+      say("执行中…");
+      rpc("run", { id: runId }).then(function () {
+        say("任务已执行");
+        return load();
+      }).catch(function (e) {
+        say("执行失败：" + e, true);
+        return load();
+      });
+      return;
+    }
+    if (toggleId) {
+      var enabled = btn.getAttribute("data-enabled") === "1";
+      rpc("toggle", { id: toggleId, enabled: enabled }).then(function () {
+        say(enabled ? "任务已启用" : "任务已停用");
+        return load();
+      }).catch(function (e) {
+        say("操作失败：" + e, true);
+      });
+      return;
+    }
+    if (removeId) {
+      if (!window.confirm("删除任务 " + removeId + "？")) return;
+      rpc("remove", { id: removeId }).then(function () {
+        say("任务已删除");
+        return load();
+      }).catch(function (e) {
+        say("删除失败：" + e, true);
+      });
+    }
+  });
+
+  rpc("config").then(function (c) {
+    if (c && c.default_expr && !el("new-expr").value) {
+      el("new-expr").value = c.default_expr;
+    }
+  }).catch(function () {});
+  refreshAll();
+})();

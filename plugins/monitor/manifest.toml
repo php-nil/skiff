@@ -1,0 +1,33 @@
+# 主机监控：只读 /proc，不执行任何命令，不引入内核改动。
+id = "com.skiff.monitor"
+name = "主机监控"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.0"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+requires = ["fs"]
+network_egress = []
+# 5 分钟一个采样点，环形缓冲保留最近 240 个（约 20 小时）。
+cron = ["*/5 * * * *"]
+resource_hints = ["path:/proc"]
+
+[[permissions]]
+capability = "fs"
+verbs = ["read", "list"]
+
+[[ui]]
+label = "主机监控"
+path = "index.html"
+
+[config_schema.alert_cpu]
+type = "number"
+default = "90"
+label = "CPU 使用率告警阈值（%，仅 UI 标红，不发通知）"
+
+[config_schema.alert_mem]
+type = "number"
+default = "90"
+label = "内存使用率告警阈值（%）"

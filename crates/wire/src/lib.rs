@@ -17,6 +17,16 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 /// 请求头上限。头部不可能接近帧上限，单独卡死以免慢速灌头。
 pub const MAX_HEAD: usize = 64 * 1024;
 
+/// 协议版本（内核 ↔ 插件必须一致）。
+///
+/// 插件是**独立发布**的 `.wbpkg`：同一台机器上内核已升级、插件还停在旧版是常态。
+/// 没有版本号时，「路由改了 / 字段变了」只会在运行期表现为 404 或字段缺失，
+/// 排查成本远高于握手时的一次显式拒绝。
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// 协议版本请求头名（两端共用，取值是十进制版本号）。
+pub const PROTOCOL_HEADER: &str = "x-skiff-protocol";
+
 /// 能力面与插件自带端点。**两端只能引用这里的常量**，不得再写字面量。
 pub mod routes {
     // ---- 内核提供、插件回调（kernel.sock）----
@@ -25,8 +35,18 @@ pub mod routes {
     pub const CAP_FS_READ: &str = "/api/v1/capability/fs/read";
     pub const CAP_FS_WRITE: &str = "/api/v1/capability/fs/write";
     pub const CAP_FS_LIST: &str = "/api/v1/capability/fs/list";
+    /// 宿主路径类操作（官方插件 files/nginx 用）：路径必须是绝对路径，
+    /// 且落在安装时确认过的 `path:` 对象授权根内。
+    pub const CAP_FS_MKDIR: &str = "/api/v1/capability/fs/mkdir";
+    pub const CAP_FS_REMOVE: &str = "/api/v1/capability/fs/remove";
+    pub const CAP_FS_RENAME: &str = "/api/v1/capability/fs/rename";
     pub const CAP_DOCKER_CALL: &str = "/api/v1/capability/docker/call";
     pub const CAP_NET_APPLY: &str = "/api/v1/capability/net/apply";
+    /// 跨插件接口调用：`{plugin, method, params}` → 内核转发到目标插件 RPC。
+    /// 只做**单层**转发（被调用方不能再发起 interop，防 A→B→A 环路）。
+    pub const CAP_INTEROP_CALL: &str = "/api/v1/capability/interop/call";
+    /// 已启用插件对外暴露的接口清单（供插件 UI 选择目标，不返回实现细节）。
+    pub const CAP_INTEROP_CATALOG: &str = "/api/v1/capability/interop/catalog";
 
     // ---- 插件提供、内核调用（plugin.sock）----
     pub const PLUGIN_HEALTHZ: &str = "/healthz";
@@ -49,6 +69,25 @@ pub enum WireError {
     Json(String),
     #[error("对端返回错误 {code}: {message}")]
     Rpc { code: i64, message: String },
+    #[error("协议版本不匹配（本端 {expected}，对端 {got}）")]
+    ProtocolMismatch { expected: u32, got: u32 },
+    #[error("对端未声明协议版本")]
+    ProtocolMissing,
+}
+
+/// 校验对端声明的协议版本。
+///
+/// `None` = 对端没带版本头（协议头是后加的，老插件没有）：与其放行一个语义
+/// 可能已经错位的对端，不如在握手处明确拒绝。
+pub fn check_protocol(declared: Option<u32>) -> Result<(), WireError> {
+    match declared {
+        Some(v) if v == PROTOCOL_VERSION => Ok(()),
+        Some(v) => Err(WireError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            got: v,
+        }),
+        None => Err(WireError::ProtocolMissing),
+    }
 }
 
 /// 解析后的请求头（请求体由调用方按 `content_length` 继续读）。
@@ -59,6 +98,8 @@ pub struct RequestHead {
     pub content_length: usize,
     /// `Authorization` 原值（含 `Bearer ` 前缀），由调用方决定怎么校验。
     pub authorization: Option<String>,
+    /// 对端声明的协议版本（`None` = 没带版本头）。
+    pub protocol: Option<u32>,
 }
 
 /// 解析后的响应。
@@ -99,10 +140,13 @@ fn content_length_of(head: &[u8]) -> usize {
 }
 
 /// 构造请求头（不含请求体）。`content-length` 取自 `body_len`。
+///
+/// 总是带上协议版本头：内核据此在握手处拒绝版本不符的插件。
 pub fn build_request(method: &str, path: &str, body_len: usize, token: Option<&str>) -> String {
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: skiff\r\nConnection: close\r\n\
-         Content-Type: application/json\r\nContent-Length: {body_len}\r\n"
+         Content-Type: application/json\r\n{PROTOCOL_HEADER}: {PROTOCOL_VERSION}\r\n\
+         Content-Length: {body_len}\r\n"
     );
     if let Some(t) = token {
         head.push_str(&format!("Authorization: Bearer {t}\r\n"));
@@ -152,6 +196,7 @@ pub fn parse_request_head(buf: &[u8]) -> Result<Option<(RequestHead, usize)>, Wi
             path: path.to_string(),
             content_length,
             authorization: header_value(head, "authorization"),
+            protocol: header_value(head, PROTOCOL_HEADER).and_then(|v| v.parse().ok()),
         },
         end,
     )))
@@ -242,6 +287,37 @@ mod tests {
         assert_eq!(parsed.1, head.len());
     }
 
+    /// 构造出来的请求必须自带协议版本：内核靠这个头在握手处拒绝旧插件。
+    #[test]
+    fn request_declares_protocol_version() {
+        let head = build_request("GET", routes::PLUGIN_HEALTHZ, 0, None);
+        let parsed = parse_request_head(head.as_bytes()).unwrap().unwrap();
+        assert_eq!(parsed.0.protocol, Some(PROTOCOL_VERSION));
+        assert!(check_protocol(parsed.0.protocol).is_ok());
+    }
+
+    /// 版本不符与版本缺失都要在握手处被拒。
+    #[test]
+    fn protocol_mismatch_and_missing_are_rejected() {
+        assert!(matches!(
+            check_protocol(Some(PROTOCOL_VERSION + 1)),
+            Err(WireError::ProtocolMismatch { .. })
+        ));
+        assert!(matches!(
+            check_protocol(None),
+            Err(WireError::ProtocolMissing)
+        ));
+    }
+
+    /// 老插件（没有版本头）不应被当成「版本 0」而蒙混过关。
+    #[test]
+    fn request_without_version_header_is_detected() {
+        let raw = b"GET /healthz HTTP/1.1\r\nHost: skiff\r\nContent-Length: 0\r\n\r\n";
+        let parsed = parse_request_head(raw).unwrap().unwrap();
+        assert_eq!(parsed.0.protocol, None);
+        assert!(check_protocol(parsed.0.protocol).is_err());
+    }
+
     #[test]
     fn response_waits_for_full_body() {
         let head = build_response_head(200, 7);
@@ -299,7 +375,16 @@ mod tests {
             "/api/v1/capability/identity/self"
         );
         assert_eq!(routes::CAP_DOCKER_CALL, "/api/v1/capability/docker/call");
+        assert_eq!(routes::CAP_INTEROP_CALL, "/api/v1/capability/interop/call");
+        assert_eq!(
+            routes::CAP_INTEROP_CATALOG,
+            "/api/v1/capability/interop/catalog"
+        );
         assert_eq!(routes::PLUGIN_RPC, "/rpc");
         assert!(routes::CAP_FS_READ.starts_with("/api/v1/capability/"));
+        // 宿主路径类操作与 data/ 类操作必须在不同路由上：两者权限名与解析规则不同
+        assert_eq!(routes::CAP_FS_MKDIR, "/api/v1/capability/fs/mkdir");
+        assert_eq!(routes::CAP_FS_REMOVE, "/api/v1/capability/fs/remove");
+        assert_eq!(routes::CAP_FS_RENAME, "/api/v1/capability/fs/rename");
     }
 }

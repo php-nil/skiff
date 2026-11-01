@@ -23,17 +23,17 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    let docker_ok = state.docker.available();
+    let docker_ok = state.docker().available();
     let containers = if docker_ok {
         state
-            .docker
+            .docker()
             .list_containers()
             .await
             .map_err(|e| AppError::Unavailable(e.to_string()))?
     } else {
         Vec::new()
     };
-    let can_operate = user.is_admin() || user.role() == skiff_store::Role::Operator;
+    let can_operate = user.can(skiff_model::Permission::DockerOperate);
     let page = ContainersPage {
         ctx: handlers::page_ctx(&state, &user, "containers"),
         can_operate,
@@ -49,14 +49,14 @@ pub async fn rows(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    let containers = if state.docker.available() {
-        state.docker.list_containers().await.unwrap_or_default()
+    let containers = if state.docker().available() {
+        state.docker().list_containers().await.unwrap_or_default()
     } else {
         Vec::new()
     };
     let page = ContainerRows {
         ctx: handlers::page_ctx(&state, &user, "containers"),
-        can_operate: user.is_admin() || user.role() == skiff_store::Role::Operator,
+        can_operate: user.can(skiff_model::Permission::DockerOperate),
         containers: containers.iter().map(handlers::container_view).collect(),
     };
     handlers::render(page)
@@ -81,7 +81,7 @@ pub async fn detail(
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
 
     let inspect = state
-        .docker
+        .docker()
         .inspect_container(&row.id)
         .await
         .map_err(|e| AppError::Unavailable(e.to_string()))?;
@@ -166,8 +166,8 @@ pub async fn detail(
         networks,
         labels,
         health,
-        can_exec: user.is_admin(),
-        can_operate: user.is_admin() || user.role() == skiff_store::Role::Operator,
+        can_exec: user.can(skiff_model::Permission::DockerExec),
+        can_operate: user.can(skiff_model::Permission::DockerOperate),
         docker_reason: state.docker_unavailable_reason().to_string(),
         error: String::new(),
     };
@@ -200,7 +200,7 @@ pub async fn action(
         .policy
         .check(&handlers::actor(&user), verb, Some(&obj))
         .map_err(|e| {
-            let _ = state.db.audit(
+            let _ = state.db().audit(
                 &user.user.username,
                 &handlers::client_ip(&state, &parts),
                 &verb.audit_action(),
@@ -212,26 +212,22 @@ pub async fn action(
         })?;
 
     // 分发只在 Docker::execute 一处；这里拿到的 Ok 值（动作类动词为 null）用不上
-    let result = state.docker.execute(verb, Some(&obj)).await.map(|_| ());
+    let result = state.docker().execute(verb, Some(&obj)).await.map(|_| ());
 
     let ip = handlers::client_ip(&state, &parts);
     match &result {
         Ok(()) => {
-            let _ = state.db.audit(
+            let _ = state.db().audit(
                 &user.user.username,
                 &ip,
                 &verb.audit_action(),
-                &format!(
-                    "{} ({})",
-                    row.name,
-                    row.id.chars().take(12).collect::<String>()
-                ),
+                &format!("{} ({})", row.name, row.short_id()),
                 "ok",
                 verb.http_path(),
             );
         }
         Err(e) => {
-            let _ = state.db.audit(
+            let _ = state.db().audit(
                 &user.user.username,
                 &ip,
                 &verb.audit_action(),
@@ -269,7 +265,7 @@ pub async fn logs_sse(
         )
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
 
-    let stream = state.docker.stream_logs(row.id.clone(), 200).map(|item| {
+    let stream = state.docker().stream_logs(row.id.clone(), 200).map(|item| {
         let ev = match item {
             Ok(line) => Event::default().data(line.trim_end()),
             Err(e) => Event::default().event("error").data(e.to_string()),
@@ -373,8 +369,8 @@ pub async fn exec_ws(
     authorize_exec(&state, &user, &row, query.ticket.as_deref()).await?;
 
     let username = user.user.username.clone();
-    let db = state.db.clone();
-    let docker = state.docker.clone();
+    let db = state.db().clone();
+    let docker = state.docker().clone();
     let cid = row.id.clone();
     let cname = row.name.clone();
 
@@ -465,9 +461,5 @@ async fn run_exec(
 
 /// 供 UI 列表用：把 ObjectRef 转回展示名。
 pub fn describe(obj: &ObjectRef) -> String {
-    format!(
-        "{} ({})",
-        obj.name,
-        obj.id.chars().take(12).collect::<String>()
-    )
+    format!("{} ({})", obj.name, obj.short_id())
 }

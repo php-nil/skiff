@@ -1,7 +1,8 @@
 # 官方插件集规划：竞品对照、首批选型与目录落地
 
-> 状态：**分析建议稿（未拍板）** ｜ 日期：2026-11-01
+> 状态：**首批已落地（2026-11-01）** ｜ 日期：2026-11-01
 > 关联：[§1.4 分层边界](sections/01-requirements.md)、[§3.3 原子能力](sections/03-architecture.md)、[§4 扩展体系](sections/04-plugin-package.md)、[§9 里程碑](sections/09-milestones.md)
+> 落地细节（目录约定、构建自检、装机授权方法）见 [`plugins/README.md`](../plugins/README.md)，此处不重复。
 > 数字纪律：竞品能力只做定性对照，未核实的具体数量不写；本仓库现状结论均附代码位置，便于复核。
 
 ## 0. 一页结论
@@ -9,21 +10,23 @@
 | 维度 | 结论 |
 |---|---|
 | 选型依据 | 竞品把面板做成「服务器操作系统」，Skiff 只做三核心，**官方插件集就是产品完整度的上限** |
-| 首批 3 个 | **主机监控**、**Nginx 网站管理**、**文件管理器**（按落地难度排序，不是价值排序） |
-| 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级 |
-| 最大前置 | 能力面缺口：`fs` 无宿主授权目录、`docker` 缺 exec/compose、`net` 一律 501 |
-| 开箱即用 | 内置官方公钥 + 随发布包携带官方 `.wbpkg` + 面板一键安装（**权限确认不跳过**） |
+| 首批 5 个 | **容器守护**（零内核改动，链路验证）→ **主机监控** → **Nginx 站点** → **文件管理** → **计划任务**（按落地难度排序） |
+| 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
+| 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 仍缺 exec/compose；`net` 一律 501 |
+| 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/var/lib/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
 
-**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。首批 3 个必须与内核能力补齐**捆绑交付**，否则插件只是空壳；目录上按独立发布物组织，不混进内核 workspace。
+**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。首批 5 个已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
+
 
 ## 1. 能力现状核对（选型的硬约束）
 
 | 能力 | 代码现状 | 位置 | 对官方插件集的含义 |
 |---|---|---|---|
 | `docker` | 白名单 26 个动词；Broker 实际只执行 `containers.list/inspect/logs`、`images.list`、`networks.list`、`volumes.list`、`info`、`version`、`containers.start/stop/restart/kill`；exec、create、remove、pull、compose 一律返回 Unsupported | `crates/docker/src/client.rs` 的 `Docker::execute` | Nginx 管理、一键部署、数据库管理、备份导出全部卡在 exec/compose |
-| `fs` | 只允许插件**自身 `data/`** 下的相对路径 read/write/list；没有宿主目录授权；TOCTOU 的 `open_dir_nofollow` 已实现但未接入判定链 | `crates/core/src/kernel.rs` 的 `resolve_in_data` / `fs_read` / `fs_write` / `fs_list` | 文件管理器、主机监控、日志类插件全部缺前置 |
-| `net` | 一律 501 + 审计 | `crates/core/src/kernel.rs` 的 `net_unimplemented` | 防火墙、ACME 证书不可做 |
-| `identity` | 仅 `capability/identity/self` | `crates/core/src/kernel.rs` 的 `identity_self` | 用户同步/SSO 暂缓 |
+| `fs` | 两条分支：相对路径落插件自身 `data/`；**绝对路径**须命中安装时确认的 `path:` 对象授权根（`fsops::resolve` + `skiff_plugin::fsgrant`），动词 `read/write/list/mkdir/remove/rename`；单次读写 256KiB 分页 | `crates/plugin/src/{capability.rs,fsops.rs,fsgrant.rs}` | 文件管理器、主机监控、Nginx 站点已可做；大文件靠分页而非流式 |
+| `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | 防火墙、ACME 证书不可做 |
+| `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
+| `interop` | 两个路由：`capability/interop/call`（跨插件接口调用，四道闸 + 15s 超时 + busy 防环）、`capability/interop/catalog`（只列**调得通**的接口）；转发时注入 `params._interop.caller` | `crates/core/src/kernel/{routes.rs,interop.rs}`、manifest `[interop]`（`crates/pkgfmt/src/manifest.rs`）、`crates/plugin/src/interop.rs` | 计划任务（调度插件接口）、站点页「一键新增备份任务」这类**插件间协作**可做；不需要给插件宿主 shell |
 | 插件 UI | 沙箱 iframe（无 same-origin）+ 父页面 postMessage 桥 + CSP `connect-src 'none'`；单帧上限 1MiB | `crates/web/src/handlers/plugins.rs` 的 `plugin_ui` / `rpc`、`crates/web/static/skiff.js` 的 `attachPluginBridges` | 插件 UI 不能直连内核，所有数据走插件 RPC；**大文件上传下载会被帧上限卡死**，文件管理器需要新增传输契约 |
 | 信任 | DB 信任库 + TOFU 三段式；**没有内置官方公钥**（§4.3 承诺「内置官方公钥」尚未落地） | `crates/plugin/src/trust.rs` 的 `resolve` / `decide` | 官方插件「开箱即用」的第一道门未开：现在仍要手动导入公钥 |
 | 分发 | 渠道未决策（§1.4），安装全程离线可用 | [§4.4](sections/04-plugin-publish.md) | 开箱即用只能靠「随包携带 + 本地官方源」，不能依赖在线商店 |
@@ -39,7 +42,7 @@
 | 数据库管理 | ✅ | ✅ | ✅ | ❌ | ❌ | ⭕ 应用自带 | ❌ | 官方插件 |
 | 主机监控 | ✅ | ✅ | ⭕ | ✅ | ⭕ | ❌ | ❌ | 官方插件 |
 | 防火墙 | ✅ | ✅ | ❌ | ❌ | ❌ | ⭕ | ❌ | 官方插件（net 就绪后） |
-| 计划任务与备份 | ✅ | ✅ | ✅ | ⭕ | ❌ | ✅ | ❌ | 官方插件 |
+| 计划任务与备份 | ✅ | ✅ | ✅ | ⭕ | ❌ | ✅ | ⭕ 插件（只调度插件接口） | 官方插件 |
 | 应用一键部署 | ✅ | ✅ | ✅ | ✅ | ⭕ 模板 | ✅ | ❌ | 官方插件 |
 | 用户与 RBAC | ✅ | ⭕ | ✅ | ✅ | ✅ | ✅ | ✅ 内核 | ✅ 内核 |
 
@@ -53,119 +56,120 @@
 
 ## 3. 官方插件清单
 
-| 优先级 | 插件 id | 名称 | 能力面 | 内核前置 | 竞品对标 | 备注 |
+| 优先级 | 插件 id | 名称 | 能力面 | 内核前置 | 竞品对标 | 状态 |
 |---|---|---|---|---|---|---|
-| P0 | `com.skiff.monitor` | 主机监控 | `fs`（只读） | fs 宿主只读授权 + cron 采样 | 1Panel/宝塔 监控 | 首页刚需，只读、无写风险 |
-| P0 | `com.skiff.nginx` | 网站管理 | `docker` | `containers.exec` 命令模板 + 对象 grant | 1Panel/宝塔 网站 | §4.4 已承诺的官方示范插件 |
-| P0 | `com.skiff.files` | 文件管理器 | `fs` | fs 宿主目录授权 + 大文件传输契约 | 1Panel/宝塔 文件 | 最高频入口，风险面最大 |
-| P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 不做在线商店 |
-| P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | net 未就绪前不排期 |
-| P1 | `com.skiff.backup` | 备份与恢复 | `docker` + `fs` | exec、fs 授权、流式导出 | 1Panel/宝塔 备份 | 大文件同样受传输契约约束 |
-| P1 | `com.skiff.db` | 数据库管理 | `docker` | exec + fs 导入导出 | 1Panel/宝塔 数据库 | 先做 MySQL 或 Redis 单点 |
-| P1 | `com.skiff.cron` | 计划任务 | 待定 | 宿主命令执行能力（当前不存在） | 1Panel/宝塔 计划任务 | 宿主 root 执行风险高，先只做容器内命令 |
-| P2 | `com.skiff.logs` | 日志查看与清理 | `fs` | fs 授权（只读 + 截断） | 1Panel/宝塔 日志 | 依赖 fs 授权落地 |
-| P2 | `com.skiff.guard` | 容器守护/自愈 | `docker` | **零内核改动**（读 + restart） | 部分竞品无 | 可作第一批的链路验证插件 |
-| P2 | `com.skiff.notify` | 告警通知 | `net` | 出网收口 + 出网授权 | 1Panel 告警 | 需要 net 能力 |
-| P2 | `com.skiff.sso` | 身份同步/SSO | `identity` | identity 能力扩展 | YunoHost/Portainer | 非面板刚需 |
+| P0 | `com.skiff.guard` | 容器守护 | `docker` + 自身 `data/` | **零内核改动**（`containers.list/inspect/restart`） | 部分竞品无 | ✅ 0.1.0 已实现 |
+| P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读） | `path:` 只读授权 + cron `tick`（均已就绪） | 1Panel/宝塔 监控 | ✅ 0.1.0 已实现 |
+| P0 | `com.skiff.nginx` | Nginx 站点 | `fs` + `docker` | `path:` 写授权 + `containers.list/restart`；**不需要 exec** | 1Panel/宝塔 网站 | ✅ 0.1.0 已实现（无 `nginx -t`） |
+| P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
+| P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
+| P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
+| P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | 未开始（卡 net） |
+| P1 | `com.skiff.backup` | 备份与恢复 | `docker` + `fs` | exec、fs 授权、流式导出 | 1Panel/宝塔 备份 | 未开始 |
+| P1 | `com.skiff.db` | 数据库管理 | `docker` | exec + fs 导入导出 | 1Panel/宝塔 数据库 | 未开始 |
+| P2 | `com.skiff.logs` | 日志查看与清理 | `fs` | 已具备（`read/list` + `remove`） | 1Panel/宝塔 日志 | 可做，未排期 |
+| P2 | `com.skiff.notify` | 告警通知 | `net` | 出网收口 + 出网授权 | 1Panel 告警 | 未开始（卡 net） |
+| P2 | `com.skiff.sso` | 身份同步/SSO | `identity` | identity 能力扩展 | YunoHost/Portainer | 未开始 |
 
 **明确不做 / 暂缓**：
 
-- **不做宿主 root 命令执行插件**（计划任务类）：当前没有对应能力面，给插件 root 等于绕开整套权限模型；先只支持容器内命令。
+- **不做宿主 root 命令执行能力**（不给插件 shell 面）：计划任务改为「调度**插件接口**」（`interop.call` + 四道闸），要跑命令的插件自己声明 `provides`；给插件 root 等于绕开整套权限模型。真要执行容器内命令仍走 §6 的容器 exec 白名单。
 - **不在本期做在线商店**：渠道未决策（§1.4），官方包先随发布物离线分发。
 - **不把终端/日志流做成插件**：内核已有容器 exec 终端与日志 SSE，流式场景按 §4.2 不进插件。
 
-## 4. 首批 3 个：选型与前置
+## 4. 首批 5 个：实现与前置
 
-### 4.1 为什么首批不是「现在就能跑」的三个
+### 4.1 实现顺序（按落地难度，已全部落地）
 
-零内核改动就能跑的是容器读操作类（容器守护、资产盘点），但它们解决不了「装完没有文件管理」的落差，只能用来验证打包与 UI 链路。官方首批应按**产品完整度**选，并接受它们带着内核前置一起做。
+**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ Nginx 站点（fs 写 + 容器重启，中）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）**。
 
-**实现顺序按难度排**：主机监控（只读 fs，最小）→ Nginx（exec 白名单，中等）→ 文件管理器（fs 授权 + 大文件传输 + TOCTOU，最重）。
+`guard` 排在第一位是因为它**不需要任何内核改动**：只用既有 `containers.list/inspect/restart` 与自身 `data/`，可以先把「manifest → 打包 → 装包 → RPC → UI」整条链路验穿，再往上叠能力面。
 
-### 4.2 主机监控 `com.skiff.monitor`
+`cron` 排最后不是为了难度，而是它**依赖别的插件先存在**才有被调度对象；它的内核前置是 `interop`（`[interop]` 声明 + `interop:call` + `capability/interop/call`），属内核统一契约，不在插件里各写一份。
+
+> 下面每节只写「实现口径 + 与规划的差异」；manifest 全文与 UI 说明见 [`plugins/README.md`](../plugins/README.md)。
+
+### 4.2 容器守护 `com.skiff.guard`
 
 ```toml
-id = "com.skiff.monitor"
-name = "主机监控"
-version = "0.1.0"
-key_id = "<官方公钥指纹>"
-api = "1.0"
+run = "on-demand"
+requires = ["docker", "identity", "fs"]
+cron = ["* * * * *"]                 # 每分钟巡检；内核按分钟去重
+resource_hints = []                 # 守护对象由管理员逐条勾选
+# docker: containers.list / containers.inspect / containers.restart
+# fs: read / write / list（只写自身 data/ 的冷却与计数状态）
+```
+
+- **功能面**：每次 `tick` 列出容器 → 只对**已授权对象**（`container:NAME` / `container:ID` / `project:P`）判定是否 `unhealthy` / `exited` → 按 `cooldown_sec`、`max_per_hour` 限流后 `restart`；支持 `dry_run`、`restart_exited`、`watch` 白名单。
+- **零内核改动口径**：新增代码只落在 `plugins/guard/`，内核侧没有任何新路由、新动词、新授权类型。
+- **取舍**：未授权容器只展示、不重启（「先授权再动手」；跳过确认等于给了个万能重启器）。
+- **坑（已修）**：内核 `docker` 回调把结果包成 `{"result": …}`，插件必须脱一层（`common::unwrap_result`），否则永远读不到容器行。
+
+### 4.3 主机监控 `com.skiff.monitor`
+
+```toml
 run = "on-demand"
 requires = ["fs"]
-cron = ["* * * * *"]
-network_egress = []
-
-[[permissions]]
-capability = "fs"
-verbs = ["host.read"]
-
-[[ui]]
-label = "监控"
-path = "index.html"
-
-[config_schema.retention_points]
-type = "number"
-label = "保留采样点"
-default = "720"
+cron = ["*/5 * * * *"]              # 5 分钟一个采样点
+resource_hints = ["path:/proc"]
+# fs: read / list（只读）
 ```
 
-- **功能面**：采样 CPU、内存、负载、磁盘、网络，写入插件自身 `data/` 环形缓冲；UI 经 RPC 取最近 N 点绘制曲线。
-- **内核前置**：`fs` 宿主只读授权（manifest 声明路径 + 安装时确认 + Broker 逐次校验）；只读 `/proc/stat`、`/proc/meminfo`、`/proc/loadavg`、`/proc/diskstats`、`/proc/net/dev` 等。
-- **设计取舍**：用 `cron` 每分钟 `tick` 采样、跑完回收，避免 `resident` 常驻吃资源预算；停机错过的 tick 不补跑，曲线允许断点。
-- **风险**：采集间隔与保留点数直接影响进程开销，**数字待实测**，不写资源承诺。
+- **功能面**：读 `/proc/{stat,meminfo,loadavg,uptime,net/dev,cpuinfo}`，算 CPU 使用率（按两次采样的 `total/idle` 差值）、内存、负载、网卡累计与速率、在线时长、CPU 核数；采样点写入插件自身 `data/` 环形缓冲（`ring_max` 由返回体告知 UI）。
+- **写盘口径**：采样只有 cron `tick` 时才追加历史；UI 打开时只算实时值不写盘，避免「刷页面就落盘」。
+- **前置**：`path:/proc` 只读授权（安装时勾选）+ cron 运行时（内核 30s 巡检、按分钟去重）。未授权时 RPC 会返回「缺少 path:/proc 授权」而不是空数据。
+- **风险**：采集频率与保留点数直接影响进程开销，**数字待实测**，不写资源承诺。
 
-### 4.3 Nginx 网站管理 `com.skiff.nginx`
+### 4.4 Nginx 站点 `com.skiff.nginx`
 
 ```toml
-id = "com.skiff.nginx"
-name = "Nginx 管理"
-version = "0.1.0"
-key_id = "<官方公钥指纹>"
-api = "1.0"
 run = "on-demand"
-requires = ["docker"]
-network_egress = []
-
-[[permissions]]
-capability = "docker"
-verbs = ["containers.list", "containers.inspect", "containers.logs", "containers.exec"]
-
-[[ui]]
-label = "网站"
-path = "index.html"
+requires = ["fs", "docker", "identity", "interop"]
+resource_hints = ["path:/etc/nginx/conf.d", "container:nginx", "plugin:com.skiff.cron"]
+# fs: read / write / list / remove / rename
+# docker: containers.list / containers.restart
+# interop: call（点「新增备份任务」时写计划任务）
+# 不再声明 cron：定时备份改由计划任务插件调度本插件的 backup 接口（避免两套定时各备份一次）
 ```
 
-- **功能面**：站点列表、配置读写、`nginx -t` + reload、访问/错误日志、证书文件挂载。
-- **内核前置**：`docker.call` 支持 `containers.exec`，且必须是**命令模板白名单**（固定子命令 + 参数校验与转义），不是透传任意命令；带输出上限、超时、并发与审计。动词枚举里已有 `containers.exec`，但 `Docker::execute` 未实现。
-- **对象授权**：目标容器须由 admin 显式授予 `container:<id>` grant，插件不能凭标签自行认领（§4.4）。
-- **风险**：exec 白名单设计失败 = 把容器 root 交给插件。模板、参数校验、输出上限三件事必须一起做。
+- **功能面**：站点列表（`site_dir` 下的 `*.conf`）、读写、新建（仅新建已存在的站点才走 create-only）、改名、删除、手动/每日备份、重载。
+- **与规划的关键差异**：规划写的是 `containers.exec` + `nginx -t`，实际**不需要 exec**——改完配置文件后由「重载」= `containers.restart` 让容器自己去加载。代价是没有 `nginx -t` 的语法预检（exec 属 M3 门禁）：配置写坏了表现为容器起不来，面板本身不受影响。
+- **前置**：`path:` 写授权（`site_dir` 必须绝对路径且落在授权根内）+ `container:<NAME>` 授权。403 的错误文案会直接告诉管理员该勾哪个授权。
+- **备份**：`data/backups/<12 位补零 Unix 秒>/<file>.conf`，按字典序保留最近 `backup_keep`（clamp 1..=90）份。
+- **定时备份（插件间协作）**：页面上的「新增备份任务」不再由 NGINX 自己排定时，而是用 `interop_call("com.skiff.cron", "jobs.create", …)` 在计划任务插件里登记一条「调用 `com.skiff.nginx` 的 `backup` 方法」的任务；成功后再发 `skiff.open` 跳到计划任务页并高亮 `?open=job:<id>`。幂等键固定为 `(source=com.skiff.nginx, key="nightly")`，重复点击只会更新表达式/启停，不会堆任务。403 文案分别提示「先装计划任务插件」「勾 `plugin:com.skiff.cron` 与 `interop:call`」。
 
-### 4.4 文件管理器 `com.skiff.files`
+### 4.5 文件管理 `com.skiff.files`
 
 ```toml
-id = "com.skiff.files"
-name = "文件管理"
-version = "0.1.0"
-key_id = "<官方公钥指纹>"
-api = "1.0"
 run = "on-demand"
-requires = ["fs"]
-network_egress = []
-
-[[permissions]]
-capability = "fs"
-verbs = ["host.read", "host.write", "host.list"]
-
-[[ui]]
-label = "文件"
-path = "index.html"
+requires = ["fs", "identity"]
+resource_hints = []                 # 授权哪些目录由管理员在安装确认页填写
+# fs: read / write / list / mkdir / remove / rename（全 6 动词）
 ```
 
-- **功能面**：授权根内的浏览、编辑、上传、下载、权限位查看；不做跨根操作。
-- **内核前置**：
-  1. **宿主路径授权**：新增 `path:` 对象 grant（目录粒度），安装时由 admin 选择/确认；Broker 逐次校验，`..`、符号链接、未授权根一律 403 + 审计。当前 `object_grants` 只接受 `container:` 与 `project:`，manifest 也没有声明授权目录的字段，两处都要补。
-  2. **大文件传输契约**：插件 UI 走 postMessage RPC 且单帧 1MiB、`connect-src 'none'`，无法承载文件上传下载。需要内核提供受限流式传输（经父页面桥、绑定插件 grant 与路径），或由内核直接向面板 UI 提供 fs 流式接口（插件只发控制指令）。
-- **风险**：TOCTOU 判定链未接入（§10.1 #4），必须在文件管理器上线前补齐；写宿主路径的误伤面大，建议授权根默认只读，写权限单独确认。
+- **功能面**：授权根内浏览、读（256KiB 分页）、写（覆盖 / 追加 / 按 offset 续写）、新建目录、删除、改名；UI 带文本编辑器与手写 UTF-8 ⇄ base64（不依赖 `atob` 的 Latin-1 语义）。
+- **刻意不预设路径**：`resource_hints` 为空，不给「顺手放权」的默认建议；`start_dir` 留空等于第一个授权根。
+- **限制（未做）**：大文件仍是分页 + 文本编辑，**没有**二进制上传/下载与流式传输契约——那需要新的内核传输面（规划见 §7）。
+- **风险**：写宿主路径的误伤面大，建议授权根默认只读、写权限单独确认；越权一律 403 + 审计。
+
+### 4.6 计划任务 `com.skiff.cron`
+
+```toml
+run = "on-demand"
+requires = ["identity", "interop"]
+cron = ["* * * * *"]                # 每分钟醒一次，按分钟去重后批量执行到期任务
+resource_hints = []                 # 「能调谁」由管理员在安装页勾 plugin:<目标>
+# identity: self
+# interop: call
+# [interop] provides: jobs.create / jobs.list / jobs.remove / jobs.run；consumes = ["*"]
+```
+
+- **功能面**：任务 = `{表达式, 目标插件, 方法, 参数}`；页面支持新建、改表达式、启停、立即执行、删除，并展示「下次触发」「来源」「上次结果」。任务落插件自身 `data/jobs.json`（上限 200 条），`tick` 时按当前分钟批量执行到期任务（单次上限 `tick_batch`）。
+- **不执行宿主 shell**：这是与 1Panel/宝塔「计划任务」最大的口径差异。任务只能调用**插件接口**，能力仍由目标插件的 manifest 权限与授权对象约束；因此内核不必开放 root 命令执行面（见 §3「明确不做」）。
+- **幂等与归属**：`jobs.create` 按 `(source, key)` upsert——`source` 由内核注入的 `params._interop.caller` 决定（插件伪造无效），`key` 由调用方给。同一来源只能用同一个 key 维护这一条；插件来源的任务不能改/删手动创建的任务。
+- **目标选择器**：读 `capability/interop/catalog`，只列「当前真的调得通」的 `插件:方法`（四道闸全过才出现），避免用户选了再吃 403。
+- **表达式单一来源**：内核装包校验、内核 `tick` 调度、本插件执行全部走 `crates/cron`（`skiff-cron`），三处同一份解析器，不各写一份。
+- **风险**：任务数量 × 表达式频率决定调用量；「每分钟最多调用几次」这类数字**待实测**，不写资源承诺。禁用/删除任务即时生效，但已开始的调用不能中断（15s 超时兜底）。
 
 ## 5. 目录落地：放在哪里
 
@@ -173,59 +177,68 @@ path = "index.html"
 
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
-| 顶层 `plugins/`（独立 workspace） | 插件是独立发布物；与内核边界清晰；CI 可单独跑；第三方可整目录对照 | 需要第二 workspace、独立 CI job 与独立 lock/target | **推荐** |
+| 顶层 `plugins/`（独立 workspace） | 插件是独立发布物；与内核边界清晰；CI 可单独跑；第三方可整目录对照 | 需要第二 workspace、独立 CI job 与独立 lock/target | **已采用（2026-11-01）** |
 | `crates/plugins/*`（根 workspace 成员） | 复用现有三关 | 破坏「`crates/` = 内核 crate」的边界；插件测试/构建被内核发布节奏绑定 | 不推荐 |
 | 独立仓库 `skiff-plugins` | 发版与 CI 最干净，社区贡献隔离 | SDK 未发布到 crates.io，跨仓库同步 SDK 变更成本高 | 中期 |
 | `deploy/plugins/` | 无额外结构 | `deploy/` 只放部署物料，不含源码 | 不可 |
 
-### 5.2 推荐结构
+### 5.2 实际结构
 
 ```
 plugins/
-├── Cargo.toml              # 第二 workspace：members + workspace.dependencies（skiff-sdk 走 path）
-├── README.md               # 官方插件集约定：id、版本、签名、构建、多架构、发布
+├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/nginx/files/cron
+├── Cargo.lock              # 必须入库（CI 与 pack.sh 都用 --locked）
+├── pack.sh                 # 官方插件打包：build → stamp → pack → verify → official/
+├── README.md               # 官方插件集约定（id、构建自检、打包、装机授权、多架构）
+├── common/                 # skiff-plugin-common：共享小工具（unwrap_result / path / 状态读写 / base64）
+├── guard/                  # com.skiff.guard
+│   ├── Cargo.toml          # name = skiff-plugin-guard，[[bin]] name = "plugin"
+│   ├── manifest.toml       # key_id = 64 个 0 的占位（打包时回填）
+│   ├── src/main.rs
+│   └── ui/                 # index.html + app.js（只经 postMessage）
 ├── monitor/                # com.skiff.monitor
-│   ├── Cargo.toml          # name = skiff-plugin-monitor，[[bin]] name = "plugin"
-│   ├── manifest.toml       # key_id = 官方公钥指纹（公开信息，可入库）
-│   ├── src/                # main.rs + rpc.rs + 采集实现
-│   ├── ui/                 # index.html + app.js（只经 postMessage）
-│   └── migrations/
-├── nginx/                  # com.skiff.nginx
-└── files/                  # com.skiff.files
+├── nginx/                  # com.skiff.nginx（provides backup；consumes com.skiff.cron:jobs.create）
+├── files/                  # com.skiff.files
+└── cron/                   # com.skiff.cron（provides jobs.create/list/remove/run；consumes *）
 ```
 
 约定：
 
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/{arch}/plugin` 收）。
 - id 用 `com.skiff.<x>`；版本独立 semver；`api = "1.0"`，内核并行兼容 N-1 主版本。
-- 插件 UI 只经 `window.__SKIFF__` 桥取数，不携带面板凭据、不发同源请求。
-- **私钥不入库**：manifest 的 `key_id` 是公钥指纹，可公开；私钥只在 CI secret 或离线发布机。
+- 插件 UI 只经父页面 postMessage 桥取数（`skiff.rpc` / `skiff.rpc.result`），不携带面板凭据、不发同源请求；`[[ui]].label` 直接进主界面顶栏菜单，插件间切换用面板级消息 `skiff.open`（只改地址，不授予能力）。
+- **第三方前端库必须 vendor 进 `ui/`**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，CDN 与内联脚本都加载不了（例：`plugins/files/ui/vendor/` 里的 highlight.js 11.9.0 + LICENSE）。
+- **仓库里不含任何密钥的指纹**：manifest `key_id` 是 64 个 0 的占位，打包时才用 `skiff-plugin stamp --key` 在**临时目录**回填；私钥只在 CI secret 或离线发布机。
 
-### 5.3 构建、签名与发布
+### 5.3 构建、签名与发布（已实现）
 
-- 根 `Cargo.toml` 增加 `exclude = ["plugins"]`，显式声明第二 workspace，避免被根 workspace 误纳入。
-- `plugins/Cargo.toml` 作为 workspace 根，`workspace.dependencies` 统一 `skiff-sdk = { path = "../crates/sdk" }`，三个插件共享 lock 与 target。
-- CI 新增两个 job：`plugins-check`（Linux：`fmt --check`、`clippy -D warnings`、`test`，只跑插件 workspace）；`plugins-release`（musl amd64/arm64 双架构构建 → `skiff-plugin pack` → `verify`）。
-- 开发密钥与发布密钥分离：开发机用 `skiff-plugin new` 生成的临时密钥时，manifest 的 `key_id` 与官方指纹不一致，`pack` 会拒。建议给 `skiff-plugin pack` 增加 `--manifest <dev-manifest>` 开关（SDK 小改），避免开发包与发布包 manifest 分叉。
+- 根 `Cargo.toml` 增加 `exclude = ["plugins"]`，显式声明第二 workspace（已完成）。
+- 每个插件 crate 直接 `skiff-sdk = { path = "../../crates/sdk" }`；不设 `workspace.dependencies`（各有依赖，收敛收益不大）。
+- `plugins/pack.sh`：`build`（`CARGO`/`--target` 交叉）→ 复制 `manifest.toml` + `ui/` + `migrations/` + `bin/<arch>/plugin` 到临时目录 → `stamp` 回填指纹 → `pack --arch` → `verify --arch` 自检 → 输出 `com.skiff.<name>-<version>.wbpkg` 与 `public-key.txt`。
+- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥打 5 个包并逐个验签）。
+- 发布：`deploy/pack-release.sh --plugin-key <私钥>` 调 `pack.sh`，产物塞进发布包 `official/`；不给私钥且未 `--skip-plugins` 时**拒绝出包**（详见 [`docs/CI.md`](CI.md) §4）。
+- 交叉打包需要 `skiff-plugin pack/verify --arch`（否则按打包机架构找载荷，arm64 包在 amd64 机上会被误判缺载荷）。
 - 多架构是发布者责任：缺哪个架构，该架构上就拒装（§4.4）。
 
-### 5.4 开箱即用的三条交付线
+### 5.4 开箱即用的三条交付线（1/3 已落地）
 
-1. **内置官方公钥**：命中内置指纹时显示「官方」徽章并免去手动导入（权限确认仍逐条）。当前代码缺口：信任库只有 TOFU，没有内置官方公钥。
-2. **随包携带**：`install.sh` 把官方 `.wbpkg` 放到 `/var/lib/skiff/official/`（root 只读），**不自动安装**。
-3. **面板「官方插件」列表 + 一键安装**：从本地官方源读取，离线可用，安装流程仍走权限确认对话框。
+1. **内置官方公钥**：命中内置指纹时显示「官方」徽章并免去手动导入（权限确认仍逐条）。**当前仍是缺口**：信任库只有 TOFU，发布包只带 `official/public-key.txt`，需要管理员手动导入。
+2. **随包携带（已落地）**：发布包内有 `official/`（5 个已签名 `.wbpkg` + `public-key.txt`）；`install.sh` 复制到 `/var/lib/skiff/official/`（0755），**不自动安装**。
+3. **面板「官方插件」列表 + 一键安装**：从本地官方源读取、离线可用、安装仍走权限确认对话框。**未做**（现在只能 `skiff plugin install` 或面板上传）。
 
-> 只把 `.wbpkg` 放 GitHub Release、让用户手动上传，不算「开箱即用」。
+> 只把 `.wbpkg` 放 GitHub Release、让用户手动上传，不算「开箱即用」——第 3 条是下一步。
 
-## 6. 建议实施顺序
+## 6. 实施顺序（含进度）
 
-| 阶段 | 内容 | 验收 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| 0 决策与目录 | 本文件评审 + 建 `plugins/` 第二 workspace | 目录、构建与 CI 门禁就位 |
-| 1 能力补齐 | fs 宿主授权（`path:` grant、manifest 字段、Broker 校验、TOCTOU 接入）；docker exec 命令模板；内置官方公钥 | `cargo test -p skiff-policy` 越权用例零 Docker/SQLite 通过 |
-| 2 首批插件 | monitor → nginx → files | Linux 真机：安装、权限确认、启用、UI、RPC、越权、卸载 |
-| 3 分发 | 官方源目录 + 面板列表 + 随包携带 | 断网一键安装且权限确认不被跳过 |
-| 4 第二批 | 防火墙（net #17 通过后）、计划任务/备份、应用模板、数据库 | 待定 |
+| 0 决策与目录 | 建 `plugins/` 第二 workspace + 三关门禁 | ✅ 2026-11-01（`exclude`、CI `plugins` job、`plugins/Cargo.lock`） |
+| 1 能力补齐 | fs 宿主授权（`path:` grant、`resolve_data`/`resolve` 双分支、manifests 的 `resource_hints`、Broker 复验）；cron 运行时；interop 契约（manifest `[interop]`、`plugin:` 对象授权、`capability/interop/{call,catalog}`、审计） | ✅ fs / cron / interop 就绪；❌ docker exec、内置官方公钥仍未做 |
+| 2 首批插件 | guard → monitor → nginx → files → cron | ✅ 代码 + UI + 单测（guard 3 / monitor 5 / nginx 4 / files 2 / cron 8 / common 7） |
+| 3 分发 | 官方源目录 + 随包携带 | ✅ 随包携带（`official/` + `public-key.txt`）；❌ 面板内官方插件列表 |
+| 4 第二批 | 防火墙（net #17 通过后）、备份与恢复、应用模板、数据库 | 未开始 |
+
+> 首批 5 个的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）尚未记录实测，见 [`docs/sections/12-pending-tests.md`](sections/12-pending-tests.md) 口径；Windows 上只验证了编译与单测，装机链路待 Linux 实测。
 
 > 能力补齐与插件开发并行时，先冻结 manifest 字段与协议契约再写插件，否则三份插件要返工。
 
@@ -234,10 +247,11 @@ plugins/
 | 风险 | 说明 | 处理 |
 |---|---|---|
 | exec 白名单形同虚设 | 透传任意命令等于把容器 root 交给插件 | 命令模板 + 参数校验 + 输出/超时/并发上限 + 审计 |
-| fs 授权越权 | 路径穿越、符号链接、TOCTOU | 授权根目录粒度；接入 `openat` + `O_NOFOLLOW`；越权 403 + 审计 |
-| 大文件传输 | 插件 UI 单帧 1MiB 且 `connect-src 'none'` | 新增受限流式传输契约，或分片 RPC（需评估开销） |
+| fs 授权越权 | 路径穿越、符号链接、TOCTOU | 已做：授权根目录粒度（`path:` grant）+ 插件侧预检 + 内核侧复验 + 目标存在时按 `canonicalize` 重判 + 越权 403 并审计；未做：全程 `O_NOFOLLOW` 持有句柄（判定与具体 IO 之间仍有窗口） |
+| 大文件传输 | 插件 UI 单帧 1MiB 且 `connect-src 'none'` | 现状：256KiB 分页够文本编辑，**没有**二进制上传/下载；需要新增受限流式传输契约（未排期） |
 | 资源预算 | 每个插件是独立进程 | 采集频率与保留点数设下限；数字待实测，不写承诺 |
-| 信任与分发 | 无内置官方公钥、渠道未决策 | 先做内置公钥 + 随包本地源，不动商店 |
+| 信任与分发 | 无内置官方公钥、渠道未决策 | 已做随包携带（`official/` + `public-key.txt`）；内置公钥与面板官方列表未做；不动商店 |
+| 插件间调用 | 一个插件拉着另一个插件跑，失败会顺链传播 | 四道闸 + 禁止自调 + busy 集合单层防环 + 15s 超时 + 逐次审计 `interop.call`；目标被停用时 409 |
 | 插件 UI 静态资源 | opaque origin 下相对 `fetch` 会失败（§12） | UI 只经 postMessage，数据文件随包自包含 |
 
-未决：商店/分发渠道（§1.4）；计划任务是否开放宿主命令执行能力；监控是否改 `resident`；文件管理器默认写权限还是默认只读。
+未决：商店/分发渠道（§1.4）；监控是否改 `resident`；文件管理器默认写权限还是默认只读；计划任务是否支持「按秒」触发（当前 5 段表达式最小粒度 1 分钟）。

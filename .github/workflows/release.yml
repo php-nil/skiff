@@ -32,6 +32,10 @@ on:
         description: "建 GitHub Release（开发阶段默认关，只出 workflow 产物）"
         type: boolean
         default: false
+      skip_plugins:
+        description: "不带官方插件出包（仅调试打包链路；正式发布物必须带插件）"
+        type: boolean
+        default: false
   # 真要发版时放开这段（并把上面 publish 的 default 改回 true，或发版时手动勾选）：
   # push:
   #   tags: ["v*"]
@@ -94,15 +98,51 @@ jobs:
         with:
           tool: cross
 
-      - name: 打包（构建 + 摘要由 pack-release.sh 统一负责）
+      # 官方插件必须真签名才随包发出（plugins/pack.sh 用 0600 临时文件里的私钥
+      # 回填 manifest.key_id 再打包）；私钥只在这台 runner 的内存/临时目录里存在。
+      - name: 准备插件签名私钥
+        env:
+          PLUGIN_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+          SKIP_PLUGINS: ${{ inputs.skip_plugins }}
         run: |
           set -eu
-          CARGO=cross sh deploy/pack-release.sh \
-            --version "${{ steps.ver.outputs.version }}" \
-            --target "${{ matrix.target }}" \
-            --out dist
+          if [ "$SKIP_PLUGINS" = "true" ]; then
+            echo "::warning::skip_plugins=true：本次产物不带官方插件，不能当作正式发布物"
+            exit 0
+          fi
+          if [ -z "$PLUGIN_KEY" ]; then
+            echo "::error::缺少 secrets.PLUGIN_SIGNING_KEY：发布包必须携带已签名的官方插件（guard/monitor/nginx/files/cron）。"
+            echo "::error::请在仓库 Settings → Secrets 配置该私钥；只是调试打包链路时可 dispatch 时勾选 skip_plugins。"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$PLUGIN_KEY" > "$RUNNER_TEMP/plugin-signing.key"
+          # 不打印内容，只确认落盘成功（32 字节 hex 种子 = 64 字符 + 换行）
+          wc -c < "$RUNNER_TEMP/plugin-signing.key"
 
-      - name: 自检产物（解包结构 + 静态链接）
+      - name: 打包（构建 + 摘要由 pack-release.sh 统一负责）
+        env:
+          SKIP_PLUGINS: ${{ inputs.skip_plugins }}
+        run: |
+          set -eu
+          set -- --version "${{ steps.ver.outputs.version }}" \
+                 --target "${{ matrix.target }}" \
+                 --out dist
+          if [ "$SKIP_PLUGINS" = "true" ]; then
+            set -- "$@" --skip-plugins
+          else
+            set -- "$@" --plugin-key "$RUNNER_TEMP/plugin-signing.key"
+          fi
+          # 输出落盘再回显：失败时也要把完整日志打出来（cargo/cross 的报错在 stderr）
+          if ! CARGO=cross sh deploy/pack-release.sh "$@" > "$RUNNER_TEMP/pack.log" 2>&1; then
+            cat "$RUNNER_TEMP/pack.log"
+            exit 1
+          fi
+          tail -n 15 "$RUNNER_TEMP/pack.log"
+
+      - name: 自检产物（解包结构 + 静态链接 + 官方插件）
+        env:
+          SKIP_PLUGINS: ${{ inputs.skip_plugins }}
         run: |
           set -eu
           tar tzf dist/*.tar.gz | sort
@@ -114,6 +154,23 @@ jobs:
             echo "::error::${{ matrix.target }} 产物不是静态链接"
             exit 1
           fi
+
+          # 官方插件：五个一个都不能少，且必须能用发布公钥验签通过。
+          # 公钥从打包日志里取（pack.sh 末行打印，仅此一处给），不依赖任何密钥文件。
+          if [ "$SKIP_PLUGINS" = "true" ]; then
+            echo "::warning::skip_plugins=true：本产物不带官方插件（结构自检跳过）"
+            exit 0
+          fi
+          n=$(ls -1 "$RUNNER_TEMP/x"/skiff-*/official/*.wbpkg | wc -l)
+          [ "$n" = 5 ] || { echo "::error::发布包应带 5 个官方插件包（guard/monitor/nginx/files/cron/cron），实得 $n"; exit 1; }
+          PUB=$(grep -o 'hex): [0-9a-f]\{64\}' "$RUNNER_TEMP/pack.log" | tail -1 | awk '{print $2}')
+          [ "${#PUB}" = 64 ] || { echo "::error::没能从打包日志里取到官方插件公钥"; exit 1; }
+          for p in "$RUNNER_TEMP/x"/skiff-*/official/*.wbpkg; do
+            # 打包机架构 != 载荷架构，必须 --arch；这条也是在验「架构没错位」
+            ./target/release/skiff-plugin verify "$p" --pubkey "$PUB" \
+              --arch "${{ matrix.arch }}" >/dev/null
+            echo "验签通过：$(basename "$p")"
+          done
 
       - uses: actions/upload-artifact@v7
         with:
@@ -168,7 +225,7 @@ jobs:
           else
             gh release create "$TAG" dist/* \
               --title "Skiff（轻舟）$TAG" \
-              --notes '装机：先 sha256sum -c 校摘要，再解包执行 sh install.sh。发布公钥指纹与 .sig 一并核对。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
+              --notes '装机：先 sha256sum -c 校摘要，再解包执行 sh install.sh。包内 official/ 是已签名的官方插件（guard/monitor/nginx/files/cron），装机只复制到 /var/lib/skiff/official/、不自动安装；安装前把打包日志里的「官方插件签名公钥(hex)」导入面板「设置 → 信任公钥」。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
           fi
 
   # Dockerfile 是可选形态，但"能不能构建"必须有人验：这一步不 gate publish，

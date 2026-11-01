@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Skiff（轻舟）· 跨 crate 共享词汇：角色与授权项（零 I/O、零依赖）"
+description = "Skiff（轻舟）· 跨 crate 共享词汇：角色与授权项、容器规格与动词白名单（零 I/O、零数据库/Docker 依赖）"
 
 [dependencies]
+# 只有 derive：容器规格需要 `deny_unknown_fields` 才能在类型层面拒绝未列字段。
+# serde 是编译期依赖，不引入任何 I/O。
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

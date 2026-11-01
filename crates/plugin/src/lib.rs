@@ -9,12 +9,19 @@
 //!   `allow_reduced_sandbox = true` 时安装，并在 UI 持续标红（§4.2 降级路径）。
 //!   这三项是 M4 的硬门槛，见 §9.1 与 docs/DEPLOY_TEST.md「未验证项」。
 
+pub mod capability;
+pub mod fsgrant;
+pub mod fsops;
 pub mod install;
+pub mod interop;
 pub mod ipc;
 pub mod supervisor;
 pub mod trust;
 
-pub use install::{install_package, uninstall_package, InstallOptions, InstalledInfo, PluginError};
+pub use capability::CapabilityHost;
+pub use install::{
+    install_options, install_package, uninstall_package, InstallOptions, InstalledInfo, PluginError,
+};
 // 清单词汇的 canonical 定义在 skiff-pkgfmt；此处转出仅为兼容，新代码请直接 `use skiff_pkgfmt::…`。
 pub use skiff_pkgfmt::manifest::{Capability, Manifest, RunMode};
 pub use supervisor::{Supervisor, SupervisorConfig};

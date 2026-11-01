@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>NGINX 站点</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: #0b0d11; color: #d7dee8; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  h2 { font-size: 14px; margin: 16px 0 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  button { background: #1b2230; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+           padding: 5px 12px; cursor: pointer; }
+  button:hover { background: #232c3c; }
+  button.danger { border-color: #5a2226; color: #ff9b90; }
+  input[type=text] { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+                     padding: 5px 8px; min-width: 200px; }
+  textarea { width: 100%; min-height: 320px; box-sizing: border-box; background: #121722; color: #d7dee8;
+             border: 1px solid #2a3444; border-radius: 8px; padding: 10px; font: 13px/1.5 ui-monospace,
+             SFMono-Regular, Consolas, monospace; resize: vertical; }
+  .muted { color: #8a97a8; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1c2532; font-size: 13px; }
+  th { color: #8a97a8; font-weight: 500; }
+  code { background: #121722; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .ok { color: #7ee787; } .warn { color: #f0b429; } .bad { color: #ff7b72; }
+  .mini { padding: 2px 8px; font-size: 12px; }
+  #msg { min-height: 20px; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>NGINX 站点</h1>
+<p class="muted">
+  配置目录：<code id="dir">-</code>　容器：<code id="container">-</code>
+</p>
+<p class="muted">
+  只写已授权的 <code>path:</code> 目录；改完点「重载容器」生效。容器起不来说明配置有误，可用每日备份回滚。
+</p>
+<div class="row">
+  <button id="refresh">刷新</button>
+  <button id="backup">立即备份</button>
+  <button id="schedule-backup">新增备份任务</button>
+  <button id="open-cron" class="mini" disabled>查看计划任务</button>
+  <button id="reload">重载容器</button>
+  <button id="open-files">在文件管理里打开该目录</button>
+  <span id="msg" class="muted"></span>
+</div>
+<p class="muted">
+  「新增备份任务」会通过插件接口在「计划任务」里写一条 <code>backup</code> 任务（重复点只更新同一条）。
+  需要已安装并启用计划任务插件，且本插件被授予 <code>plugin:com.skiff.cron</code>。
+</p>
+
+<h2>站点列表</h2>
+<table>
+  <thead><tr><th>站点</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead>
+  <tbody id="sites"><tr><td colspan="4" class="muted">加载中…</td></tr></tbody>
+</table>
+
+<h2>新建站点</h2>
+<div class="row">
+  <input type="text" id="new-name" placeholder="站点名，例如 example.com">
+  <button id="create">新建</button>
+  <span class="muted">文件写入 &lt;配置目录&gt;/&lt;站点名&gt;.conf</span>
+</div>
+
+<h2>编辑 <code id="editing">（未选中）</code></h2>
+<div class="row">
+  <button id="save">保存</button>
+  <button id="rename" class="mini">改名</button>
+  <input type="text" id="to-name" placeholder="新站点名" style="min-width:150px">
+  <button id="remove" class="mini danger">删除</button>
+</div>
+<textarea id="content" spellcheck="false" placeholder="选中站点后在这里编辑；新建站点时这里的内容会作为初始配置"></textarea>
+<script src="app.js"></script>
+</body>
+</html>

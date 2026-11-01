@@ -12,6 +12,7 @@ path = "src/bin/skiff-plugin.rs"
 [dependencies]
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+base64 = { workspace = true }
 skiff-pkgfmt = { workspace = true }
 skiff-wire = { workspace = true }
 

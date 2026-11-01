@@ -93,8 +93,8 @@ pub fn plugin_install(
         ),
         other => anyhow::anyhow!(other.to_string()),
     })?;
-    let trusted = trust.trusted_key.clone();
-    let meta = trust.meta;
+    // 借用而非移出：`trust` 后面还要交给 `install_options` 组装安装选项。
+    let meta = &trust.meta;
 
     println!("插件: {} ({})", meta.manifest.name, meta.manifest.id);
     println!(
@@ -141,18 +141,43 @@ pub fn plugin_install(
         }
     }
 
-    let available = skiff_pkgfmt::manifest::Capability::available_in(cfg.form);
-
-    let opts = skiff_plugin::InstallOptions {
-        trusted_public_key: trusted,
+    let opts = skiff_plugin::install_options(
+        &trust,
+        granted.clone(),
+        resources,
         allow_unsigned,
-        granted_permissions: granted.clone(),
-        object_grants: resources,
-        available_capabilities: available,
-        allow_reduced_sandbox: cfg.allow_reduced_sandbox,
-        arch: skiff_pkgfmt::host_arch(),
+        cfg.form,
+        cfg.allow_reduced_sandbox,
+    );
+    let info = match skiff_plugin::install_package(&db, &cfg.data_dir, package, &opts) {
+        Ok(info) => info,
+        Err(e) => {
+            let _ = db.audit(
+                "cli",
+                "local",
+                "plugin.install",
+                &meta.manifest.id,
+                "fail",
+                &e.to_string(),
+            );
+            return Err(anyhow::anyhow!(e.to_string()));
+        }
     };
-    let info = skiff_plugin::install_package(&db, &cfg.data_dir, package, &opts)?;
+
+    // 与 Web 装包同口径留痕：谁在什么时候装了哪个版本、授了哪些权限。
+    let _ = db.audit(
+        "cli",
+        "local",
+        "plugin.install",
+        &info.id,
+        "ok",
+        &format!(
+            "version={} key_id={} grants={}",
+            info.version,
+            info.key_id,
+            info.grants.len()
+        ),
+    );
 
     println!(
         "已安装 {} {}（grants={}）",

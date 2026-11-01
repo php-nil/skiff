@@ -140,6 +140,7 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 | `/var/lib/skiff/plugins/{id}/cache` | 0700 | 插件 UID | 缓存 |
 | `/var/lib/skiff/plugins/{id}/run` | 0700 | 插件 UID | pid/临时文件；**每次重启重建后要重新 chown** |
 | `/var/lib/skiff/backup` | 0700 | root:root | 库快照 |
+| `/var/lib/skiff/official` | 0755 | root:root | 随发布包携带的官方插件 `.wbpkg` 与 `public-key.txt`；**只有安装器写**，插件不可写（否则等于给插件一个改信任源的位置） |
 | `/var/lib/skiff/skiff.db` | 0600 | root:root | 插件读不到库（E8） |
 | `/etc/skiff/config.toml` | 0644 | root:root | 不含密钥；TLS 私钥另放 `/etc/skiff/tls/` |
 | `/run/skiff` | 0711 | root:skiff-plugins | 可穿越；socket 本身仍按组判权 |
@@ -179,6 +180,7 @@ sh install.sh
 | 放示例配置 | `/etc/skiff/config.toml`（仅当不存在时） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/var/lib/skiff/official/`（4 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
 | 启动 | `systemctl restart skiff`（`--no-start` 可跳过） |
 
@@ -338,6 +340,38 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
   --grant docker:containers.logs
 skiff plugin list
 ```
+
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 4 个已签名的包，装机时已复制到 `/var/lib/skiff/official/`：
+
+```sh
+ls /var/lib/skiff/official            # com.skiff.{guard,monitor,nginx,files}-0.1.0.wbpkg + public-key.txt
+cat /var/lib/skiff/official/public-key.txt   # 先把这个 hex 导入面板「设置 → 信任公钥」
+
+# 主机监控：只读 /proc
+skiff plugin install /var/lib/skiff/official/com.skiff.monitor-0.1.0.wbpkg --yes \
+  --grant fs:read --grant fs:list --resource path:/proc
+
+# 容器守护：零内核改动，按容器逐条授权
+skiff plugin install /var/lib/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
+  --grant docker:containers.list --grant docker:containers.inspect \
+  --grant docker:containers.restart \
+  --grant fs:read --grant fs:write --grant fs:list \
+  --resource container:nginx
+
+# NGINX 站点：写授权目录 + 重启容器（没有 exec）
+skiff plugin install /var/lib/skiff/official/com.skiff.nginx-0.1.0.wbpkg --yes \
+  --grant fs:read --grant fs:write --grant fs:list --grant fs:remove --grant fs:rename \
+  --grant docker:containers.list --grant docker:containers.restart \
+  --resource path:/etc/nginx/conf.d --resource container:nginx
+
+# 文件管理：目录由你决定（不给默认值）
+skiff plugin install /var/lib/skiff/official/com.skiff.files-0.1.0.wbpkg --yes \
+  --grant fs:read --grant fs:write --grant fs:list \
+  --grant fs:mkdir --grant fs:remove --grant fs:rename \
+  --resource path:/var/www
+```
+
+> `--grant` 少一项就是运行时 403（插件会把「该去勾哪个授权」写进错误文案）；`guard`/`files` 的 `resource_hints` 为空，**必须显式给 `--resource`**。
 
 ### 2.10 权限链自检（装完必查）
 

@@ -13,7 +13,7 @@ skiff-core (单进程 · systemd · 宿主机)
   应用上下文: AppState/WebConfig（db · docker · supervisor · policy · 限流表 · exec 票据）
                                               ← 装配层（crates/app）
   api::v1 │ ui(SSR) │ static(embed)             ← 核心① Web 管理服务（crates/web）
-  Capability Broker (鉴权/审计/配额；能力面 docker/identity/fs/net)
+  Capability Broker (鉴权/审计/配额；能力面 docker/identity/fs/net) ← 服务端在 core/src/kernel/，能力面实现在 crates/plugin
   Plugin Supervisor (签名/拉起/退避/熔断/回收/降权/沙箱) ← 核心③ 插件体系（crates/plugin）
   docker (bollard/三层策略/路径校验/Compose/exec/日志) ← 核心② Docker 管理（crates/docker）
         │ Unix Socket /run/skiff/ + JSON-RPC 2.0

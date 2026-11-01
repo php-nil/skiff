@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/store", "crates/identity", "crates/docker", "crates/plugin", "crates/pkgfmt", "crates/wire", "crates/model", "crates/policy", "crates/compose", "crates/sdk", "crates/app", "crates/web", "xtask"]
+members = ["crates/core", "crates/store", "crates/identity", "crates/docker", "crates/plugin", "crates/pkgfmt", "crates/wire", "crates/model", "crates/policy", "crates/compose", "crates/sdk", "crates/app", "crates/web", "crates/cron", "xtask"]
+# 官方插件是第二个 workspace（见 plugins/README.md），不并进根 workspace：
+# 否则根三关会把插件构建一起拖进来，且发布物与开发产物同 target 互相顶掉。
+exclude = ["plugins"]
 
 [workspace.package]
 version = "0.1.0"
@@ -73,6 +76,7 @@ skiff-sdk = { path = "crates/sdk" }
 skiff-wire = { path = "crates/wire" }
 skiff-model = { path = "crates/model" }
 skiff-policy = { path = "crates/policy" }
+skiff-cron = { path = "crates/cron" }
 skiff-compose = { path = "crates/compose" }
 
 [profile.release]

@@ -15,14 +15,19 @@ pub mod client;
 // Compose 子集解析已独立为 `skiff-compose`（纯 serde_yaml，零引擎依赖）；
 // 这里转出保持 `skiff_docker::compose::parse` 既有写法成立。
 pub use skiff_compose as compose;
+// 容器引用解析（完整 id / 名称 / id 前缀）属于 Docker 领域语义，住在这里。
+pub mod resolve;
 
 pub use client::{DockerError, DockerService};
+pub use resolve::{match_container, MatchError};
 
 // 策略与路径校验在 `skiff-policy`（零 Docker / 零 SQLite）；这里转出，
 // 让 `skiff_docker::Policy`、`skiff_docker::Form` 这些既有写法继续成立。
 // 内部还有 `crate::policy::x` 的写法，保留模块别名
 pub use skiff_policy as policy;
-pub use skiff_policy::{
-    Action, Actor, ContainerSpec, Form, ObjectRef, PathError, PathGuard, Policy, PolicyError, Tier,
-    Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED,
+pub use skiff_policy::{PathError, PathGuard, Policy, PolicyError};
+// 词汇层在 `skiff-model`：动词、容器规格、调用主体等纯值类型。
+pub use skiff_model::{
+    Actor, ContainerSpec, Form, Healthcheck, Mount, ObjectRef, PortMapping, Tier, Verb,
+    LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED,
 };

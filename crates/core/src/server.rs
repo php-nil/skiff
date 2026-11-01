@@ -98,12 +98,89 @@ pub fn probe(addr: SocketAddr) -> Result<String> {
 pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
+        // 插件 cron 的去重表：`{id}|{expr}` → 已触发的分钟序号。
+        // 30s 一次的巡检如果不去重，`* * * * *` 会变成每分钟两次。
+        let mut last_fired: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
         loop {
             tick.tick().await;
-            state.supervisor.reap_idle().await;
-            let _ = state.db.purge_expired_sessions();
+            state.supervisor().reap_idle().await;
+            let _ = state.db().purge_expired_sessions();
+            run_cron(&state, &mut last_fired, chrono::Local::now().naive_local()).await;
         }
     });
+}
+
+/// 分钟序号（去重键的一部分）：同一分钟内重复巡检只触发一次。
+fn minute_index(t: &chrono::NaiveDateTime) -> i64 {
+    t.and_utc().timestamp() / 60
+}
+
+/// 单轮 cron 调度：按 manifest 的 `cron` 表达式调用插件 `tick`。
+///
+/// 只对「已启用且 manifest 可解析」的插件触发；表达式非法由
+/// [`skiff_cron::expr_matches`] 判为不命中（不 panic、不刷审计）。
+pub async fn run_cron(
+    state: &skiff_app::AppState,
+    last_fired: &mut std::collections::HashMap<String, i64>,
+    now: chrono::NaiveDateTime,
+) {
+    let minute = minute_index(&now);
+    let Ok(recs) = state.db().list_plugins() else {
+        return;
+    };
+    for rec in recs {
+        if !rec.enabled {
+            continue;
+        }
+        let Ok(manifest) = skiff_plugin::install::manifest_of(&rec) else {
+            continue;
+        };
+        for expr in manifest.cron.iter() {
+            if !skiff_cron::expr_matches(expr, &now) {
+                continue;
+            }
+            let key = format!("{}|{expr}", rec.id);
+            if last_fired.get(&key).copied() == Some(minute) {
+                continue;
+            }
+            // 先记账再调用：单次 tick 若超过一分钟，下一轮也不会补发一次。
+            last_fired.insert(key, minute);
+
+            let params = serde_json::json!({ "cron": expr, "minute": minute });
+            let call = state.supervisor().call(&rec, "tick", params);
+            // 拉起 + 健康检查本身要 5s，再给一次调用留出余量。
+            match tokio::time::timeout(Duration::from_secs(30), call).await {
+                Ok(Ok(_)) => {
+                    let _ = state
+                        .db()
+                        .audit("system", "cron", "plugin.cron", &rec.id, "ok", expr);
+                }
+                Ok(Err(e)) => {
+                    let _ = state.db().audit(
+                        "system",
+                        "cron",
+                        "plugin.cron",
+                        &rec.id,
+                        "fail",
+                        &format!("{expr}: {e}"),
+                    );
+                }
+                Err(_) => {
+                    let _ = state.db().audit(
+                        "system",
+                        "cron",
+                        "plugin.cron",
+                        &rec.id,
+                        "fail",
+                        &format!("{expr}: 30s 超时"),
+                    );
+                }
+            }
+        }
+    }
+    // 避免长期运行后表里堆积已卸载插件的键。
+    last_fired.retain(|_, m| minute - *m <= 1440);
 }
 
 #[cfg(test)]
@@ -136,6 +213,20 @@ mod tests {
             dev_http: true,
             plaintext_behind_proxy: false,
         }
+    }
+
+    /// 30s 巡检同一分钟内只该产生一个去重键，否则每分钟会触发两次。
+    #[test]
+    fn minute_index_groups_a_whole_minute() {
+        let base = chrono::NaiveDate::from_ymd_opt(2026, 11, 1)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap();
+        let a = base;
+        let b = base + chrono::Duration::seconds(29);
+        let c = base + chrono::Duration::seconds(60);
+        assert_eq!(minute_index(&a), minute_index(&b));
+        assert_ne!(minute_index(&a), minute_index(&c));
     }
 
     /// 端口被占：必须立刻带明确原因返回 Err，不得 panic、不得挂住。

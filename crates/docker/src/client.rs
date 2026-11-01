@@ -68,11 +68,25 @@ pub struct ContainerRow {
     pub protected: bool,
 }
 
+impl ContainerRow {
+    /// 短 id（Docker 惯例前 12 位）。展示与审计详情统一用它。
+    pub fn short_id(&self) -> String {
+        skiff_model::short_id(&self.id)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageRow {
     pub id: String,
     pub tags: Vec<String>,
     pub size: i64,
+}
+
+impl ImageRow {
+    /// 短 id（Docker 惯例前 12 位）。
+    pub fn short_id(&self) -> String {
+        skiff_model::short_id(&self.id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

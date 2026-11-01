@@ -111,6 +111,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
         .route(
+            &format!("/{p}/plugins/{{id}}"),
+            get(handlers::plugins::detail),
+        )
+        .route(
             &format!("/{p}/plugins/install"),
             // axum 默认 body 上限 2MB，而 .wbpkg 内含插件二进制，必然超过——
             // 之前 3MB 的包会在 Multipart 解析阶段就被掐断，handler 里那条
@@ -205,7 +209,7 @@ fn panic_response(
             .to_string();
         tracing::error!(error = %msg, "handler panic，已由 CatchPanic 捕获");
         let _ = state
-            .db
+            .db()
             .audit("system", "-", "web.panic", "-", "error", &msg);
         crate::error::AppError::Internal("服务器内部错误".into()).into_response()
     }
@@ -329,7 +333,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let entries = state.db.recent_audit(10).unwrap();
+        let entries = state.db().recent_audit(10).unwrap();
         assert!(
             entries
                 .iter()

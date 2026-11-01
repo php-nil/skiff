@@ -1,0 +1,228 @@
+//! 容器规格与调用主体：跨 crate 共享的**值类型**（零 I/O、零判定逻辑）。
+//!
+//! 这些类型原本住在 `skiff-policy`。但它们全是纯数据 + 自描述的解析规则，
+//! 判定引擎才是 policy 的职责——`skiff-compose` 为了 `ContainerSpec` 依赖
+//! `skiff-policy`，等于把 `libc`（路径校验用）拖进一个「纯 serde_yaml 演算」的解析器。
+//! 迁到 `skiff-model` 后，依赖关系变成 `compose → model`、`docker → model + policy`。
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Grant, Role};
+
+/// 短 id 长度（Docker CLI 惯例：完整 id 的前 12 位）。
+pub const SHORT_ID_LEN: usize = 12;
+
+/// 取短 id。展示层与审计详情统一用它，避免各处各截各的长度。
+pub fn short_id(id: &str) -> String {
+    id.chars().take(SHORT_ID_LEN).collect()
+}
+
+// ---------------- 第三层：参数字段白名单的类型面 ----------------
+
+/// MVP 容器创建的参数面（§6.4.3）。`deny_unknown_fields` 让未列字段**显式报错**
+/// 而不是被忽略；`Privileged`/`CapAdd`/`Devices`/`SecurityOpt`/`VolumesFrom`/
+/// 自定义 `Runtime`/host 命名空间等字段在类型层面根本不存在。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerSpec {
+    pub image: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub entrypoint: Option<Vec<String>>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub ports: Vec<PortMapping>,
+    #[serde(default)]
+    pub restart: Option<String>,
+    #[serde(default)]
+    pub healthcheck: Option<Healthcheck>,
+    #[serde(default)]
+    pub networks: Vec<String>,
+    #[serde(default)]
+    pub mounts: Vec<Mount>,
+    #[serde(default)]
+    pub memory_limit_mb: Option<i64>,
+    #[serde(default)]
+    pub nano_cpus: Option<i64>,
+    #[serde(default)]
+    pub pids_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortMapping {
+    pub host: u16,
+    pub container: u16,
+    #[serde(default)]
+    pub protocol: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Healthcheck {
+    pub test: Vec<String>,
+    #[serde(default)]
+    pub interval_secs: Option<i64>,
+    #[serde(default)]
+    pub timeout_secs: Option<i64>,
+    #[serde(default)]
+    pub retries: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Mount {
+    /// named volume（只允许默认 local driver，且 driver_opts 为空）
+    Volume {
+        source: String,
+        target: String,
+        #[serde(default)]
+        read_only: bool,
+    },
+    /// 宿主绑定挂载（native 形态 + 授权根内）
+    Bind {
+        source: String,
+        target: String,
+        #[serde(default)]
+        read_only: bool,
+    },
+}
+
+impl Mount {
+    pub fn read_only(&self) -> bool {
+        match self {
+            Mount::Bind { read_only, .. } | Mount::Volume { read_only, .. } => *read_only,
+        }
+    }
+}
+
+// ---------------- 调用主体与对象视图 ----------------
+
+/// 三层策略的调用主体。
+#[derive(Debug, Clone)]
+pub enum Actor {
+    User { username: String, role: Role },
+    Plugin { id: String, grants: Vec<Grant> },
+}
+
+impl Actor {
+    pub fn label(&self) -> String {
+        match self {
+            Actor::User { username, .. } => format!("user:{username}"),
+            Actor::Plugin { id, .. } => format!("plugin:{id}"),
+        }
+    }
+}
+
+/// 容器/网络/卷的可见对象视图（来自 bollard，策略只看这几个字段）。
+#[derive(Debug, Clone, Default)]
+pub struct ObjectRef {
+    pub id: String,
+    pub name: String,
+    pub labels: BTreeMap<String, String>,
+}
+
+impl ObjectRef {
+    /// 短 id（Docker 惯例前 12 位）。
+    pub fn short_id(&self) -> String {
+        short_id(&self.id)
+    }
+
+    pub fn is_protected(&self) -> bool {
+        self.labels
+            .get(crate::verb::LABEL_PROTECTED)
+            .map(|v| v == "true")
+            .unwrap_or(false)
+            // Skiff 自身容器（compose 服务名 skiff）与内核数据卷恒拒绝
+            || self.name == "skiff"
+            || self.name.starts_with("skiff_")
+    }
+
+    pub fn owner(&self) -> Option<&str> {
+        self.labels
+            .get(crate::verb::LABEL_OWNER)
+            .map(|s| s.as_str())
+    }
+
+    pub fn project(&self) -> Option<&str> {
+        self.labels
+            .get(crate::verb::LABEL_PROJECT)
+            .map(|s| s.as_str())
+    }
+
+    /// 1Panel / 宝塔托管资源：插件默认不可写（§6.4.2）。
+    pub fn is_foreign_panel(&self) -> bool {
+        self.labels.contains_key("createdBy")
+            || self.name.starts_with("1panel")
+            || self.name.starts_with("baota")
+            || self.name.starts_with("bt_")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spec_rejects_unknown_fields() {
+        // 未列字段（privileged / cap_add）必须在**反序列化**就失败，
+        // 而不是等到某个 handler 想起来检查。
+        let json = r#"{"image":"nginx","privileged":true}"#;
+        assert!(serde_json::from_str::<ContainerSpec>(json).is_err());
+        let json = r#"{"image":"nginx","cap_add":["SYS_ADMIN"]}"#;
+        assert!(serde_json::from_str::<ContainerSpec>(json).is_err());
+    }
+
+    #[test]
+    fn spec_accepts_whitelisted_fields() {
+        let json = r#"{
+            "image":"nginx:1.27-alpine",
+            "name":"web",
+            "env":{"TZ":"Asia/Shanghai"},
+            "ports":[{"host":18081,"container":80}],
+            "restart":"unless-stopped",
+            "memory_limit_mb":128
+        }"#;
+        let spec: ContainerSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec.image, "nginx:1.27-alpine");
+        assert_eq!(spec.ports[0].host, 18081);
+    }
+
+    #[test]
+    fn mount_read_only_flag() {
+        let m = Mount::Bind {
+            source: "/etc".into(),
+            target: "/data".into(),
+            read_only: true,
+        };
+        assert!(m.read_only());
+    }
+
+    #[test]
+    fn object_ref_protection_rules() {
+        let mut obj = ObjectRef {
+            id: "abc".into(),
+            name: "web".into(),
+            labels: BTreeMap::new(),
+        };
+        assert!(!obj.is_protected());
+        obj.labels
+            .insert(crate::verb::LABEL_PROTECTED.to_string(), "true".to_string());
+        assert!(obj.is_protected());
+
+        let skiff = ObjectRef {
+            id: "x".into(),
+            name: "skiff".into(),
+            labels: BTreeMap::new(),
+        };
+        assert!(skiff.is_protected(), "Skiff 自身容器恒受保护");
+    }
+}

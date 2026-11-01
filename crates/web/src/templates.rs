@@ -14,6 +14,17 @@ pub struct PageCtx {
     pub docker_ok: bool,
     pub must_change: bool,
     pub active: String,
+    /// 顶栏「插件菜单」：已启用且有 UI 入口的插件（manifest `[[ui]].label` 当菜单名）。
+    pub nav_plugins: Vec<PluginNav>,
+}
+
+/// 顶栏里的一条插件菜单项。
+#[derive(Debug, Clone)]
+pub struct PluginNav {
+    pub id: String,
+    pub label: String,
+    /// 当前页是否就是这个插件（`active` 记作 `plugin:<id>`）。
+    pub active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +52,15 @@ pub struct PluginView {
     pub signed: bool,
     pub reduced: bool,
     pub running: bool,
+    /// manifest `ui[[ui]]` 的第一个入口（相对 `ui/` 的路径）；空串表示无 UI。
+    pub ui_path: String,
+    pub ui_label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GrantRow {
+    pub kind: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -191,8 +211,35 @@ pub struct PluginConfirmPage {
     pub key_id: String,
     pub signed: bool,
     pub permissions: Vec<PermissionRow>,
+    /// manifest `resource_hints` + 由 `[interop].consumes` 派生的 `plugin:` 授权：
+    /// 安装时逐条确认的对象授权（`path:` / `container:` / `project:` / `plugin:`）
+    pub resources: Vec<String>,
+    /// 已声明（可被其他插件调用）的接口，每项 `method · label`。
+    pub interop_provides: Vec<String>,
+    /// 已声明允许调用的目标接口，每项 `<plugin-id>:<method>`。
+    pub interop_consumes: Vec<String>,
     pub requires: String,
     pub egress: String,
+    pub error: String,
+}
+
+#[derive(Template)]
+#[template(path = "plugin_detail.html")]
+pub struct PluginDetailPage {
+    pub ctx: PageCtx,
+    pub plugin: PluginView,
+    /// 沙箱 iframe 的 URL（已带 `?nonce=`，跨插件跳转时另带 `&open=`）
+    pub iframe_src: String,
+    pub rpc_url: String,
+    pub nonce: String,
+    /// 允许 iframe 请求跳转的目标插件白名单（逗号分隔的 id），供 `skiff.open` 校验
+    pub nav_plugins: String,
+    /// 本插件对外提供的接口（`method · label`），空表示不供其他插件调用。
+    pub interop_provides: Vec<String>,
+    /// 本插件声明的可调用目标（`<plugin-id>:<method>`），空表示不调别的插件。
+    pub interop_consumes: Vec<String>,
+    pub grants: Vec<GrantRow>,
+    pub can_admin: bool,
     pub error: String,
 }
 

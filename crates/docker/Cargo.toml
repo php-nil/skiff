@@ -9,6 +9,7 @@ license.workspace = true
 bollard = { workspace = true }
 skiff-policy = { workspace = true }
 skiff-compose = { workspace = true }
+skiff-model = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }

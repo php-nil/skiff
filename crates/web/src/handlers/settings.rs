@@ -20,7 +20,7 @@ pub async fn render_settings(
     force: bool,
 ) -> Result<Response, AppError> {
     let keys = state
-        .db
+        .db()
         .list_trusted_keys()?
         .into_iter()
         .map(|(key_id, _pk, label)| KeyRow {
@@ -31,7 +31,7 @@ pub async fn render_settings(
         .collect();
 
     let user_row = state
-        .db
+        .db()
         .user_by_id(user.user.id)?
         .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
 
@@ -43,7 +43,7 @@ pub async fn render_settings(
         totp_uri: totp.as_ref().map(|(_, u)| u.clone()).unwrap_or_default(),
         backup_codes,
         keys,
-        is_admin: user.is_admin(),
+        is_admin: user.can(skiff_model::Permission::Admin),
         error: error.to_string(),
         notice: notice.to_string(),
         force_change: force || user.must_change_password(),
@@ -72,8 +72,8 @@ pub async fn import_key(
     let vk = skiff_pkgfmt::decode_public_key(&public_hex)
         .map_err(|e| AppError::BadRequest(format!("公钥非法: {e}")))?;
     let key_id = skiff_pkgfmt::key_id_of(&vk.to_bytes());
-    state.db.trust_key(&key_id, &public_hex, &label)?;
-    let _ = state.db.audit(
+    state.db().trust_key(&key_id, &public_hex, &label)?;
+    let _ = state.db().audit(
         &user.user.username,
         "local",
         "settings.key.import",
@@ -101,8 +101,8 @@ pub async fn remove_key(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    state.db.remove_trusted_key(&key_id)?;
-    let _ = state.db.audit(
+    state.db().remove_trusted_key(&key_id)?;
+    let _ = state.db().audit(
         &user.user.username,
         "local",
         "settings.key.remove",
@@ -117,8 +117,11 @@ pub async fn audit(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
+    // 审计读取对应 `Permission::AuditRead`（operator/admin），viewer 不可见。
+    // 此前只用 `AuthUser`，等于把矩阵里的这一行架空了。
+    handlers::require_permission(&user, skiff_model::Permission::AuditRead)?;
     let rows = state
-        .db
+        .db()
         .recent_audit(200)?
         .into_iter()
         .map(|a| AuditRow {

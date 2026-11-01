@@ -121,6 +121,25 @@ if [ -f "$SRC_DIR/skiff-plugin" ]; then
     log "已安装 $BIN_DIR/skiff-plugin（插件打包/验签工具）"
 fi
 
+# 官方插件包（随发布包携带）：只放到本地官方源，**不自动安装**——
+# 权限与对象授权必须由管理员逐条确认，跳过确认就等于装了个万能插件。
+OFFICIAL_DIR="$DATA_DIR/official"
+if [ -d "$SRC_DIR/official" ]; then
+    mkdir -p "$OFFICIAL_DIR"
+    chmod 0755 "$OFFICIAL_DIR"
+    COPIED=0
+    for pkg in "$SRC_DIR"/official/*.wbpkg; do
+        [ -f "$pkg" ] || continue
+        install -m 0644 "$pkg" "$OFFICIAL_DIR/"
+        COPIED=$((COPIED + 1))
+    done
+    # 公钥只是公开信息：复制过去方便管理员导入信任库，不构成泄密
+    if [ -f "$SRC_DIR/official/public-key.txt" ]; then
+        install -m 0644 "$SRC_DIR/official/public-key.txt" "$OFFICIAL_DIR/public-key.txt"
+    fi
+    log "官方插件包已放入 $OFFICIAL_DIR（$COPIED 个，未自动安装）"
+fi
+
 # 4. Docker 前置
 #
 # 必须排在 systemd 之前：DockerService 只在进程启动时 connect 一次，先起面板再装
@@ -192,4 +211,12 @@ echo "       docker info"
 echo "     未就绪时容器页显示空态，可补跑 sh docker-bootstrap.sh"
 echo "     镜像拉不动多半是网络：用 --registry-mirror <host> 配加速器"
 echo "  5) 默认只监听 127.0.0.1:18080；对外请配 TLS 或反代（见 config.toml.example）"
+if [ -d "$OFFICIAL_DIR" ]; then
+echo "  6) 官方插件（随包携带，安装时逐条确认权限）："
+echo "       先把 $OFFICIAL_DIR/public-key.txt 里的公钥导入面板「设置 → 信任公钥」"
+echo "       ls $OFFICIAL_DIR"
+echo "       $BIN_DIR/skiff plugin install $OFFICIAL_DIR/com.skiff.<x>-<ver>.wbpkg \\"
+echo "           --resource path:/var/www"
+echo "     也可在面板「插件 → 安装」上传同一份 .wbpkg。"
+fi
 echo "────────────────────────────────────────────────────────"

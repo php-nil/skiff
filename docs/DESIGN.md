@@ -2,7 +2,7 @@
 
 > 版本：**v1.0（MVP 实施稿）** ｜ 产品名：**Skiff（轻舟）** ｜ 交付形态：**宿主机 systemd 直装（主）**；1Panel 商店 Docker 包为可选受限形态
 > 本方案 = **MVP 方案**，只覆盖三核心：**Web 管理服务 / Docker 管理 / 插件体系**。文件管理、防火墙、网站管理、主机监控等宿主能力**内核不内置，由插件层在宿主能力面上实现**（§1.4、§3.3）。
-> 状态：**MVP 代码已落地**（M0–M4 代码面完成：`cargo clippy --workspace --all-targets -- -D warnings` 干净、`cargo test --workspace` **149 项全绿**、Windows 开发机 HTTP 冒烟通过）。结构为 **13 个 crate + `xtask`**（`skiff-app` 承载 `AppState`，`core → web::AppState` 反向依赖已消除）；两轮架构审查的 P0/P1/P2 与后续三轮优化（[ARCH_REVIEW.md](ARCH_REVIEW.md) §9、§10.4、§11、§12）已闭环，§11.2 遗留四项（exec 单连票据、Token scope、请求超时、AppState 下沉）全部落地。上机前复查修掉 9 个只在 Linux 暴露的问题（[DEPLOY_TEST.md](DEPLOY_TEST.md) §9.4）；GitHub CI 与发布流水线已配置（[CI.md](CI.md)），**尚未在 GitHub 上跑过第一次**。**Linux 专属能力（setuid 降权 / landlock / cgroups / Unix socket / docker.sock / systemd 安装）与全部资源数字尚未实测**，逐项见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §8。目标读者：决策者（哥）。
+> 状态：**MVP 代码已落地**（M0–M4 代码面完成：`cargo clippy --workspace --all-targets -- -D warnings` 干净、`cargo test --workspace` **212 项通过**、插件 workspace 29 项全绿、Windows 开发机 HTTP 冒烟通过）。结构为 **14 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）；五轮架构审查的 P0/P1/P2 与后续优化（[ARCH_REVIEW.md](ARCH_REVIEW.md) §9、§10.4、§11、§12、§13）已闭环。上机前复查修掉 9 个只在 Linux 暴露的问题（[DEPLOY_TEST.md](DEPLOY_TEST.md) §9.4）；GitHub CI 与发布流水线已配置（[CI.md](CI.md)），**尚未在 GitHub 上跑过第一次**。**Linux 专属能力（setuid 降权 / landlock / cgroups / Unix socket / docker.sock / systemd 安装）与全部资源数字尚未实测**，逐项见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §8。目标读者：决策者（哥）。
 > **文档结构**：本文件是索引与一页结论；正文按章节拆在 `docs/sections/` 下（13 个文件覆盖 §1–§12，§4 分两册）。**文件名前缀 = 章号**，章节号 `§x.y` 全局唯一、拆分不重编号，跨文件引用直接按编号跳转（见下方文档地图）。
 
 ---
@@ -47,7 +47,7 @@
 | 部署与测试（非章节） | [DEPLOY_TEST.md](DEPLOY_TEST.md) | 两种部署形态的装机步骤、配置矩阵、7 组验收用例（A–G）、未实现清单、实测记录与排查表 |
 | 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、首次运行前的已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
-| 官方插件集规划（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与首批 3 个、`plugins/` 目录落地、开箱即用交付线（分析建议稿） |
+| 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与首批 4 个（已落地）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
 
 ### 按角色选读
 
@@ -91,3 +91,5 @@
 | 2026-11-01 | §11 新增决策 11（crate 拆分粒度）：复核 13 crate 拆分后**拍板维持现状、暂不动**，重审触发条件见该行；详 `docs/changes/2026-11-01.md`。 |
 | 2026-11-01 | 新增非章节文档 [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md)（官方插件集分析建议稿）：竞品对照、官方插件清单、首批 3 个（monitor/nginx/files）、`plugins/` 第二 workspace 目录方案与开箱即用交付线；**未拍板、未建目录、不改代码**。 |
 | 2026-11-01 | **发布物去签名（§11 决策 12）**：发布物只验 detached `SHA-256` 摘要，不做签名。移除 `RELEASE_SIGNING_KEY_HEX` secret 流程、`.sig` 产物、`skiff-plugin sign-file/verify-file` 子命令与 `pkgfmt::sign_bytes`（`.wbpkg` 签名/TOFU 不动，决策 2 不变）；`pack-release.sh` 去掉 `--key`，CI 的 `pkg-chain` 首步改为 keygen 落盘/公钥输出冒烟（含「`--help` 不落盘」回归）。安装口径由「先验摘要与签名」改为「先验摘要」。理由与对照见 §11 决策 12；详 `docs/changes/2026-11-01.md`。 |
+| 2026-11-01 | **官方插件集落地（首批 4 个）+ 发布包携带**：新增顶层 `plugins/`（**第二 cargo workspace**，根 `Cargo.toml` `exclude`）；`com.skiff.guard`（容器守护，**零内核改动**，纯既有 `docker`/`fs`/`identity` 能力组合）、`com.skiff.monitor`、`com.skiff.nginx`（不用 `containers.exec`，写授权目录 + 重启容器）、`com.skiff.files`。内核侧只补 `fs` 能力面（`crates/core/src/{capability,fsops}.rs`：`path:` 授权根 + 256KiB 分页读写）与 cron tick 调度（`crates/plugin/src/cron.rs`）；插件侧新增插件详情页与授权根展示。发布物：`deploy/pack-release.sh --plugin-key` 调 `plugins/pack.sh` 把 4 个已签名 `.wbpkg` + `public-key.txt` 塞进 `official/`（缺私钥且未 `--skip-plugins` 拒绝出包），`install.sh` 复制到 `/var/lib/skiff/official`（不自动安装）。CI 新增 `plugins` job 与 `pkg-chain` 官方插件真打包冒烟；`release.yml` 增 `PLUGIN_SIGNING_KEY` 注入与「产物恰好 4 个包 + 逐个验签」自检。详见 `docs/changes/2026-11-01.md` 与 [`plugins/README.md`](../plugins/README.md)。 |
+| 2026-11-01 | **架构审查第五轮结构收敛「全部执行」**（ARCH_REVIEW §13）：角色→权限矩阵统一到 `skiff_model::Permission`（唯一一份，删除 `policy` 内联判定与 `web` 手写 `require_admin`）；路径授权代数统一到 `skiff_model::path`（11 个零 I/O 原语，policy / fsgrant / 插件侧快筛共用）；插件能力面（`fsops`/`fsgrant`/`capability`/`interop`）从 `core` 迁回 `crates/plugin`，宿主上下文经 `CapabilityHost` trait 注入（依赖倒置，解开 `plugin → app` 环）；值类型（`ContainerSpec`/`Verb`/`Actor` 等）下沉零 I/O 的 `skiff_model`，`policy` 只留判定；`AppState` 收口 + 登录用例统一到 `skiff_app::AppState::login`（API 侧限流现在也写审计、错误文案与 UI 对齐）；`core/kernel.rs` 拆为 `core/src/kernel/` 子模块并修正 axum `Router::layer`「后加的先跑」导致的协议版本闸顺序倒置。§8 工程结构（目录树 + 依赖表）与 AGENTS.md 单一来源红线同步。根 212 项测试通过、plugins 29 项全绿。 |

@@ -8,7 +8,7 @@
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/skiff.js" defer></script>
 </head>
-<body>
+<body data-prefix="{{ ctx.prefix }}">
 {% if ctx.dev_http %}
 <div class="banner danger">明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure、会话前缀非 __Host-。不可用于远程生产。</div>
 {% endif %}
@@ -27,6 +27,11 @@
     <a class="{% if ctx.active == "networks" %}on{% endif %}" href="/{{ ctx.prefix }}/networks">网络</a>
     <a class="{% if ctx.active == "volumes" %}on{% endif %}" href="/{{ ctx.prefix }}/volumes">卷</a>
     <a class="{% if ctx.active == "plugins" %}on{% endif %}" href="/{{ ctx.prefix }}/plugins">插件</a>
+    {# 插件注册的菜单项（manifest 的 [[ui]]）：直接挂到顶栏，省得每次经「插件」列表页中转。
+       只列已启用且有 ui 入口的插件；用各自 manifest 的 label 当菜单名。 #}
+    {% for p in ctx.nav_plugins %}
+    <a class="nav-plugin{% if p.active %} on{% endif %}" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">{{ p.label }}</a>
+    {% endfor %}
     <a class="{% if ctx.active == "audit" %}on{% endif %}" href="/{{ ctx.prefix }}/audit">审计</a>
     <a class="{% if ctx.active == "settings" %}on{% endif %}" href="/{{ ctx.prefix }}/settings">设置</a>
   </nav>

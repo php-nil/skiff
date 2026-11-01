@@ -169,7 +169,7 @@ fn serve(config_path: Option<std::path::PathBuf>, dev: bool) -> Result<ExitCode>
                 fr.username
             );
         }
-        if !state.docker.available() {
+        if !state.docker().available() {
             warn!(reason = %state.docker_unavailable_reason(), "Docker 不可用：容器功能降级为只读空态");
         }
         if cfg.allow_unsigned {
@@ -184,7 +184,7 @@ fn serve(config_path: Option<std::path::PathBuf>, dev: bool) -> Result<ExitCode>
         kernel::spawn(state.clone(), cfg.run_dir.clone());
 
         let result = server::serve(&cfg, router).await;
-        state.supervisor.stop_all().await;
+        state.supervisor().stop_all().await;
         if let Err(e) = &result {
             error!("服务退出: {e:#}");
         }

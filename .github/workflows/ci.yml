@@ -10,7 +10,10 @@
 #               「Windows 本地三关」这条交付口径在 CI 也有复核
 #   msrv        用 workspace 的 rust-version（1.89）做类型检查，防止悄悄抬高 MSRV
 #   verify      xtask check：1Panel 变量对齐 / Compose 字段子集 / 包格式
-#   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验）
+#   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验），
+#              并用 plugins/pack.sh 把 5 个官方插件真打一遍（发布包靠它出 official/）
+#   plugins     官方插件 workspace（plugins/）的 fmt / clippy / test；
+#              plugins/ 是第二个 workspace，根 workspace 的 --workspace **不覆盖**它
 #   scripts     sh 脚本 shellcheck（错误级）+ 行尾必须 LF
 #   smoke       真起一个服务进程：/healthz、入口跳转、404、退出码
 #   build       release 静态产物（x86_64 musl），**仅手动触发**
@@ -189,7 +192,7 @@ jobs:
   pkg-chain:
     name: 插件包链路（签 → 打包 → 验签）
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - run: rm -f .cargo/config.toml
@@ -253,6 +256,51 @@ jobs:
           fi
           # 「包里不能有签名私钥 / target/」由 pkgfmt 的回归用例守着
           # （pack_excludes_build_dir_and_signing_key，在 test job 里跑）
+
+      # 发布包里的 official/ 是这条脚本产出的，它坏了要到发版才暴露：
+      # 这里用临时密钥把 5 个官方插件真打一遍，并逐个验签。--out 指到临时目录，
+      # 不污染工作树（plugins/official 也在 .gitignore 里）。
+      - name: 官方插件真打包（plugins/pack.sh → 5 个 .wbpkg）
+        run: |
+          set -eu
+          WORK=$(mktemp -d)
+          TOOL="$PWD/target/debug/skiff-plugin"
+
+          "$TOOL" keygen --out "$WORK/release.key" > "$WORK/keygen.log"
+          PUB=$(sed -n 's/.*hex) *: *\([0-9a-f]\{64\}\).*/\1/p' "$WORK/keygen.log")
+          [ "${#PUB}" = 64 ] || { echo "::error::没能从 keygen 输出里取到 64 位公钥"; exit 1; }
+
+          sh plugins/pack.sh --key "$WORK/release.key" --out "$WORK/official"
+
+          n=$(ls -1 "$WORK/official"/*.wbpkg | wc -l)
+          [ "$n" = 5 ] || { echo "::error::官方插件应产出 5 个包（guard/monitor/nginx/files/cron/cron），实得 $n"; exit 1; }
+          for p in "$WORK/official"/*.wbpkg; do
+            "$TOOL" verify "$p" --pubkey "$PUB" >/dev/null
+            echo "验签通过：$(basename "$p")"
+          done
+
+  # ── 官方插件：第二个 workspace，根 workspace 的三关管不到它 ─────────
+  plugins:
+    name: 官方插件（fmt + clippy + test）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
+        run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # 不共用 ci：plugins/ 有自己的 target 与产物，混进来只会互相顶掉
+          key: plugins
+      # 根 Cargo.toml 里 `exclude = ["plugins"]`，所以上面 fmt/clippy/test 三条
+      # 对 plugins/ 完全无效——这里必须单独跑，否则插件代码是没人复核的盲区。
+      - run: cargo fmt --manifest-path plugins/Cargo.toml --all --check
+      - run: cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path plugins/Cargo.toml --locked --no-fail-fast
 
   # ── 脚本：行尾必须是 LF，shellcheck 错误级不得有 ─────────────────
   scripts:

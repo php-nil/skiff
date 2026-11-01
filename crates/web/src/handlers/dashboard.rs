@@ -18,24 +18,24 @@ pub async fn index(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    let docker_ok = state.docker.available();
+    let docker_ok = state.docker().available();
     let containers = if docker_ok {
-        state.docker.list_containers().await.unwrap_or_default()
+        state.docker().list_containers().await.unwrap_or_default()
     } else {
         Vec::new()
     };
     let running = containers.iter().filter(|c| c.state == "running").count();
     let image_count = if docker_ok {
-        match state.docker.list_images().await {
+        match state.docker().list_images().await {
             Ok(v) => v.len().to_string(),
             Err(_) => "-".into(),
         }
     } else {
         "-".into()
     };
-    let plugins = state.db.list_plugins()?;
+    let plugins = state.db().list_plugins()?;
     let audit = state
-        .db
+        .db()
         .recent_audit(6)?
         .into_iter()
         .map(|a| AuditRow {

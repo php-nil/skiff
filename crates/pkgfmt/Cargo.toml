@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+skiff-cron = { workspace = true }
 skiff-model = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
@@ -16,5 +17,8 @@ rand = { workspace = true }
 hex = { workspace = true }
 tar = { workspace = true }
 zstd = { workspace = true }
-tempfile = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+# 只在测试里用：解包/验签的用例需要临时目录。
+tempfile = { workspace = true }

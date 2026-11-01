@@ -9,6 +9,10 @@ license.workspace = true
 skiff-store = { workspace = true }
 skiff-pkgfmt = { workspace = true }
 skiff-wire = { workspace = true }
+# 路径代数与内核判定同源（`skiff_model::path`）：`fsgrant` / `fsops` 不再各自
+# 实现前缀匹配、`..` 段判定与绝对路径判定。
+skiff-model = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
@@ -17,6 +21,11 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }
 tokio = { workspace = true }
+# 能力面在 kernel.sock 上以 HTTP/JSON 对插件说话，需要 HTTP 栈。
+axum = { workspace = true }
+http-body-util = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+toml = { workspace = true }

@@ -15,6 +15,7 @@ skiff/
 │   │               #   路径校验(§5.5)、Compose 生命周期、容器 exec 终端(hijack)、日志流
 │   ├── plugin/     # ★核心③ 插件体系（内核侧）：manifest / ed25519 签名校验、Supervisor
 │   │               #   （拉起/退避/熔断/回收/降权/沙箱）、UDS JSON-RPC、权限接 Broker（§4）
+│   │               #   + 能力面实现（fsops/capability/interop/fsgrant，能力面的正确归属地）
 │   ├── sdk/        # ★核心③（第三方侧）：插件 SDK + skiff-plugin CLI（脚手架/构建/打包/签名/自检）
 │   ├── policy/     # 支撑：三层策略判定（动词白名单/对象授权/参数字段白名单）+ 宿主路径校验
 │   │               #   零数据库、零 Docker（路径校验触碰文件系统）——`cargo test -p skiff-policy` 即可跑全量判定
@@ -22,9 +23,12 @@ skiff/
 │   ├── identity/   # 支撑：用户/会话/TOTP/API Token/RBAC（web 与插件调用共用）
 │   ├── store/      # 支撑：SQLite 迁移与仓储
 │   ├── pkgfmt/     # 支撑：.wbpkg 包格式/manifest/签名编解码（内核与 SDK 共用，禁止各写一份）
-│   ├── wire/       # 支撑：插件↔内核 UDS 协议帧编解码 + 路由常量（纯函数，无运行时）
-│   ├── model/      # 支撑：跨 crate 共享词汇（Role/Grant/Form/Permission/Cidr），零依赖
-│   └── core/       # 支撑：单二进制入口与装配、Capability Broker（鉴权/审计/配额）、配置优先级
+│   ├── cron/       # 支撑：5 段 cron 表达式解析/匹配/下次触发（装包校验、内核调度、计划任务插件共用）
+│   ├── wire/       # 支撑：插件↔内核 UDS 协议帧编解码 + 路由常量 + 协议版本闸（纯函数，无运行时）
+│   ├── model/      # 支撑：跨 crate 共享词汇（Role/Grant/Form/Permission/Cidr/Verb/ContainerSpec/Actor）
+│   │               #   + 路径代数（within/normalize/..段判定），零 I/O（纯值类型，不碰文件系统）
+│   ├── app/        # 支撑：应用上下文（AppState/WebConfig）与用例层（登录流程），core 与 web 共同依赖
+│   └── core/       # 支撑：单二进制入口与装配、kernel.sock 能力面服务端（core/src/kernel/）、配置优先级
 ├── deploy/
 │   ├── systemd/skiff.service + install.sh + uninstall.sh   # 主交付：宿主直装
 │   ├── Dockerfile                                  # 可选 Docker 形态
@@ -46,23 +50,34 @@ skiff/
 
 | crate | 直接依赖 | 明确禁止 |
 |---|---|---|
-| `model` | 无（仅 std） | — |
+| `model` | serde（仅 derive，零 I/O） | `store`、`docker`、`web` |
 | `policy` | `model` | `store`、`docker`、`web` |
-| `compose` | `policy` | `store`、`docker`、`web` |
+| `compose` | `model` | `store`、`docker`、`web` |
 | `store` | `model`、rusqlite | `policy`、`docker`、`web` |
 | `identity` | `model`、`store` | `docker`、`web` |
-| `pkgfmt` | `model` | `store`、`docker`、`web` |
+| `pkgfmt` | `model`、`cron` | `store`、`docker`、`web` |
+| `cron` | chrono | `store`、`docker`、`web` |
 | `wire` | serde_json | `store`、`docker`、`web` |
-| `docker` | `policy`、`compose`、bollard | `web`、`core` |
-| `plugin` | `pkgfmt`、`wire`、`store` | `docker`、`web`、`core` |
+| `docker` | `policy`、`compose`、`model`、bollard | `web`、`core` |
+| `plugin` | `pkgfmt`、`wire`、`store`、`model` | `docker`、`web`、`core`、`app` |
 | `sdk` | `pkgfmt`、`wire` | `store`、`docker`、`web` |
-| `web` | `model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt` | `core` |
+| `app` | `model`、`store`、`identity`、`docker`、`plugin` | `web`、`core` |
+| `web` | `app`、`model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt` | `core` |
 | `core`(bin) | 以上全部 | — |
 
 判定类代码（`policy`）与格式/协议类代码（`pkgfmt`/`wire`）都不允许依赖 `store`/`docker`：
 它们的安全结论必须能在没有数据库、没有 Docker 的环境里被单独验证。
 
-与 §3.3 的关系：内核原子能力是 `docker`/`identity`/`fs`/`net` 四项（运行时能力面）；上面三块是**产品形态面**——Docker 管理 = 内置主业（白名单/路径安全/Compose 全在 `crates/docker`），Web 管理服务 = 管理面（承载 `identity` 与 api/ui），插件体系 = 开放能力面（宿主上的第三方扩展）。`crates/docker` 独立成包正因为它是主业，不是普通适配器。
+`model` 只放**没有行为、没有 I/O** 的词汇与纯值类型（`Role`/`Grant`/`Form`/`Permission`/
+`Verb`/`ContainerSpec`/`Actor`/路径代数）：判定在 `policy`，领域对象在 `store`。
+`compose` 为拿 `ContainerSpec` 而依赖 `policy` 会把 `libc` 拖进一个「纯 serde_yaml 演算」的
+解析器，因此这类值类型一律走 `model`。
+
+`app` 是装配层（`AppState`/`WebConfig` + 用例层），不含路由与模板：`web` 与 `core` 都依赖它，
+它不依赖 `web`。插件能力面住在 `plugin`（能力面的正确归属地），但 `plugin` 不得反向依赖
+`app`——宿主上下文经 `plugin::CapabilityHost` 这个 trait 注入（依赖倒置）。
+
+与 §3.3 的关系：内核原子能力是 `docker`/`identity`/`fs`/`net`/`interop` 五项（运行时能力面，`interop` 是插件间调用的转发面）；上面三块是**产品形态面**——Docker 管理 = 内置主业（白名单/路径安全/Compose 全在 `crates/docker`），Web 管理服务 = 管理面（承载 `identity` 与 api/ui），插件体系 = 开放能力面（宿主上的第三方扩展）。`crates/docker` 独立成包正因为它是主业，不是普通适配器。
 
 **最小可用版本 = 三块核心跑通**：能登录、能管容器、能装插件且崩不了内核。支撑层跟着三块成形，不单独立项。
 

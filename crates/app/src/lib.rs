@@ -4,7 +4,9 @@
 //! 拿到 db / docker / policy，如果上下文住在 `web`，内核就被迫反向依赖表现层，
 //! 既编译更重，也没法脱离 axum 单测。层序是 `app` → 下层，`web` → `app`。
 
-use std::collections::HashMap;
+pub mod auth;
+
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,7 +17,7 @@ use skiff_plugin::Supervisor;
 use skiff_store::{Db, Role, User};
 use tokio::sync::{Mutex, Semaphore};
 
-use skiff_model::{Cidr, Scope, ScopeSet};
+use skiff_model::{Cidr, Permission, RoleExt, Scope, ScopeSet};
 
 /// Web 层需要的配置子集（由 `skiff` 主 crate 从 env > config.toml > 默认 构造）。
 #[derive(Debug, Clone)]
@@ -37,19 +39,30 @@ pub struct WebConfig {
     pub login_concurrency: usize,
 }
 
+/// 装配层持有的三根服务句柄。
+///
+/// 这三个字段**私有**：上层（`web` / `core`）只应通过应用服务方法（`auth::login`
+/// 等）与只读访问器取用，而不是随手 `state.db.audit(...)` 把存储层的细节漏进
+/// 表现层与内核服务。`cfg` 是纯数据（不可变配置），保持公开。
 pub struct AppState {
-    pub db: Arc<Db>,
-    pub docker: Arc<DockerService>,
-    pub supervisor: Arc<Supervisor>,
+    db: Arc<Db>,
+    docker: Arc<DockerService>,
+    supervisor: Arc<Supervisor>,
     pub cfg: WebConfig,
     pub started_at: Instant,
     pub version: String,
     /// CSRF 派生密钥：持久化在 settings，重启后已发出的页面仍有效
     pub csrf_secret: String,
-    pub login_limiter: Mutex<HashMap<String, LoginAttempt>>,
-    pub login_semaphore: Semaphore,
+    login_limiter: Mutex<HashMap<String, LoginAttempt>>,
+    login_semaphore: Semaphore,
     /// exec 单连票据（§6.2）：短 TTL、一次性、绑定会话与容器
-    pub exec_tickets: Mutex<HashMap<String, ExecTicket>>,
+    exec_tickets: Mutex<HashMap<String, ExecTicket>>,
+    /// 正在作为 interop 目标执行的插件 id。
+    ///
+    /// 跨插件调用是**单层**的：A 调 B 期间，B 不能再发起 interop（否则 A→B→A
+    /// 会无限递归）。这里用「进入/离开」标记，而不是调用栈深度计数——目标插件
+    /// 并发处理两个请求时，任一请求尝试再调用都应当被拒。
+    interop_busy: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +231,36 @@ impl AppState {
             login_limiter: Mutex::new(HashMap::new()),
             login_semaphore: Semaphore::new(permits),
             exec_tickets: Mutex::new(HashMap::new()),
+            interop_busy: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// 存储层句柄（只读访问）。上层要写审计/查插件记录时用这个入口，
+    /// 而不是直接摸存储句柄——字段私有是刻意的：跨层直接调用存储 API
+    /// 会让「谁负责这条业务规则」变得没有答案。
+    pub fn db(&self) -> &Arc<Db> {
+        &self.db
+    }
+
+    /// Docker 服务句柄（只读访问）。
+    pub fn docker(&self) -> &Arc<DockerService> {
+        &self.docker
+    }
+
+    /// 插件进程监管器（只读访问）。
+    pub fn supervisor(&self) -> &Arc<Supervisor> {
+        &self.supervisor
+    }
+
+    /// 标记插件进入「作为 interop 目标执行」状态；返回 `false` 表示已在执行中
+    /// （即出现了环或并发重入，调用方应拒绝）。
+    pub async fn enter_interop(&self, id: &str) -> bool {
+        self.interop_busy.lock().await.insert(id.to_string())
+    }
+
+    /// 离开 interop 目标状态。无论调用成功、失败还是超时都必须调用。
+    pub async fn leave_interop(&self, id: &str) {
+        self.interop_busy.lock().await.remove(id);
     }
 
     /// 签发 exec 单连票据：明文只返回这一次，库里存 sha256。
@@ -289,6 +331,41 @@ impl AppState {
     }
 }
 
+/// `AppState` 实现插件能力面的宿主上下文。
+///
+/// 能力面（`skiff-plugin::capability`）住在插件 crate，但插件 crate 不能反向依赖
+/// `skiff-app`（否则成环）。这里实现 trait，把「数据根在哪」「授了哪些权限」
+/// 「审计往哪写」三件事交出去，能力面因此不碰数据库与状态装配。
+impl skiff_plugin::capability::CapabilityHost for AppState {
+    fn data_dir(&self) -> &std::path::Path {
+        &self.cfg.data_dir
+    }
+
+    fn plugin_grants(&self, plugin_id: &str) -> Vec<skiff_store::Grant> {
+        self.db
+            .plugin(plugin_id)
+            .ok()
+            .flatten()
+            .map(|p| p.grants)
+            .unwrap_or_default()
+    }
+
+    fn audit(
+        &self,
+        actor: &str,
+        channel: &str,
+        action: &str,
+        target: &str,
+        result: &str,
+        detail: &str,
+    ) {
+        // 审计写失败不阻断能力调用：调用结果已由 handler 决定，审计只是流水。
+        let _ = self
+            .db
+            .audit(actor, channel, action, target, result, detail);
+    }
+}
+
 /// 已认证请求的上下文。
 #[derive(Debug, Clone)]
 pub struct CurrentUser {
@@ -307,6 +384,13 @@ impl CurrentUser {
     }
     pub fn is_admin(&self) -> bool {
         self.user.role == Role::Admin
+    }
+    /// 角色→权限判定：查 `skiff_model::Permission` 这张唯一的矩阵。
+    ///
+    /// 判定层（`skiff_policy::Policy::check`）、UI 层（按钮显隐）、路由层
+    /// （`AdminUser` 提取器）都走这一个入口，避免同一规则写在三处。
+    pub fn can(&self, perm: Permission) -> bool {
+        self.role().can(perm)
     }
     pub fn must_change_password(&self) -> bool {
         self.user.must_change_password

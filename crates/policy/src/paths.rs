@@ -13,6 +13,8 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use skiff_model::within_root;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathError {
     NotAbsolute(String),
@@ -85,7 +87,7 @@ impl PathGuard {
     }
 
     fn within_roots(&self, canon: &Path) -> bool {
-        self.roots.iter().any(|r| canon.starts_with(r))
+        self.roots.iter().any(|r| within_root(r, canon))
     }
 
     /// 校验并返回可下传给 Engine 的宿主路径。

@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use crate::error::AppError;
 use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::util::parse_cookies;
-use skiff_model::ScopeSet;
+use skiff_model::{Permission, ScopeSet};
 
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; \
@@ -159,8 +159,11 @@ pub async fn load_session(
     let cookies = parse_cookies(req.headers().get(COOKIE).and_then(|v| v.to_str().ok()));
     if let Some(token) = cookies.get(state.cookie_name()) {
         let hash = skiff_identity::sha256_hex(token);
-        if let Ok(Some(session)) = state.db.verify_session(&hash, state.cfg.session.idle_secs) {
-            if let Ok(Some(user)) = state.db.user_by_id(session.user_id) {
+        if let Ok(Some(session)) = state
+            .db()
+            .verify_session(&hash, state.cfg.session.idle_secs)
+        {
+            if let Ok(Some(user)) = state.db().user_by_id(session.user_id) {
                 let current = CurrentUser {
                     user,
                     session_id: session.id.clone(),
@@ -212,7 +215,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             if let Some(tok) = auth.strip_prefix("Bearer ") {
                 let token = tok.trim().to_string();
                 let hash = skiff_identity::sha256_hex(&token);
-                if let Ok(Some((user, scopes))) = state.db.verify_api_token(&hash) {
+                if let Ok(Some((user, scopes))) = state.db().verify_api_token(&hash) {
                     // scope 解析是严格的（§6.1）：拼错的 token 必须立刻失败并留审计，
                     // 而不是被当成「空权限」或（更糟）「全权限」。
                     match ScopeSet::parse(&scopes) {
@@ -230,7 +233,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                                 .get::<ClientInfo>()
                                 .map(|c| c.ip.clone())
                                 .unwrap_or_else(|| "unknown".into());
-                            let _ = state.db.audit(
+                            let _ = state.db().audit(
                                 &user.username,
                                 &ip,
                                 "auth.token_scope",
@@ -243,10 +246,11 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                     }
                 }
                 // API 登录签发的会话令牌同样可作为 Bearer 使用
-                if let Ok(Some(session)) =
-                    state.db.verify_session(&hash, state.cfg.session.idle_secs)
+                if let Ok(Some(session)) = state
+                    .db()
+                    .verify_session(&hash, state.cfg.session.idle_secs)
                 {
-                    if let Ok(Some(user)) = state.db.user_by_id(session.user_id) {
+                    if let Ok(Some(user)) = state.db().user_by_id(session.user_id) {
                         return Ok(AuthUser(CurrentUser {
                             user,
                             session_id: session.id,
@@ -275,6 +279,27 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
     }
 }
 
+/// 权限提取器的公共实现：判定走 `skiff_model::Permission` 这张唯一矩阵。
+///
+/// 此前这里写的是 `role == Admin`，与 `model::rbac` 的矩阵、`containers.rs` 的
+/// `is_admin() || role == Operator` 各写一份；现在全部收敛到一处。
+async fn require_permission_extractor(
+    parts: &mut axum::http::request::Parts,
+    state: &Arc<AppState>,
+    perm: Permission,
+) -> Result<CurrentUser, AppError> {
+    let AuthUser(u) = AuthUser::from_request_parts(parts, state).await?;
+    if u.can(perm) {
+        Ok(u)
+    } else {
+        Err(AppError::Forbidden(format!(
+            "角色 {} 无权执行 {}",
+            u.role(),
+            perm.as_str()
+        )))
+    }
+}
+
 /// 仅 admin 可用的提取器（§6.3：危险操作 admin 专属）。
 pub struct AdminUser(pub CurrentUser);
 
@@ -285,12 +310,28 @@ impl FromRequestParts<Arc<AppState>> for AdminUser {
         parts: &mut axum::http::request::Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
-        let AuthUser(u) = AuthUser::from_request_parts(parts, state).await?;
-        if u.is_admin() {
-            Ok(AdminUser(u))
-        } else {
-            Err(AppError::Forbidden("该操作仅限管理员".into()))
-        }
+        Ok(AdminUser(
+            require_permission_extractor(parts, state, Permission::Admin).await?,
+        ))
+    }
+}
+
+/// 插件管理权限的提取器（安装 / 启停 / 卸载 / RPC）。
+///
+/// 语义上对应 `Permission::PluginManage` 而不是笼统的 admin——矩阵放开
+/// 「谁能管插件」时，这里自动跟随，不必再改一遍路由。
+pub struct PluginManagerUser(pub CurrentUser);
+
+impl FromRequestParts<Arc<AppState>> for PluginManagerUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(PluginManagerUser(
+            require_permission_extractor(parts, state, Permission::PluginManage).await?,
+        ))
     }
 }
 

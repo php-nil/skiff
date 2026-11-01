@@ -33,6 +33,9 @@
         </td>
         <td class="muted small">{{ p.grants }}</td>
         <td class="actions">
+          {% if !p.ui_path.is_empty() %}
+          <a class="mini" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">打开</a>
+          {% endif %}
           {% if can_admin %}
           <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/toggle" class="inline">
             <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

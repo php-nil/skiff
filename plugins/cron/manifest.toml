@@ -1,0 +1,58 @@
+# 计划任务：只调度**插件接口**，不执行宿主 shell。
+#
+# 内核每分钟调一次 tick，本插件按任务表达式逐条匹配，再用 `interop:call` 调目标
+# 插件的 RPC（如 nginx 的 `backup`）。任务不写 crontab、不 spawn 进程——这是
+# 「计划任务不做宿主 root 执行」的落地方式（见 docs/PLUGIN_CATALOG.md）。
+#
+# 两个来源：
+# - 用户在「计划任务」界面新增（source = ui）；
+# - 其他插件通过 `jobs.create` 写入（source = 调用方 id，由内核注入，不可伪造）。
+# 同一 (source, key) 再写一次是**更新**而不是新增，插件重复点击不会堆任务。
+id = "com.skiff.cron"
+name = "计划任务"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.0"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+requires = ["identity", "interop"]
+network_egress = []
+# 每分钟巡检一次（内核按分钟去重）；单个任务的红线由任务表决定。
+cron = ["* * * * *"]
+# 可调度目标在安装时**不在**白名单里预设：任务目标是动态的。
+# 想让它调度别人，安装时需额外勾 `plugin:<目标 id>`（或 `plugin:*` 全量）。
+resource_hints = []
+
+[[permissions]]
+capability = "identity"
+verbs = ["self"]
+
+[[permissions]]
+capability = "interop"
+verbs = ["call"]
+
+[[ui]]
+label = "计划任务"
+path = "index.html"
+
+[interop]
+# 调度器需要能调任意插件（具体能否调通仍由对象授权 + 目标 provides 决定）。
+consumes = ["*"]
+provides = [
+  { method = "jobs.create", label = "新增/更新计划任务", description = "按 source+key 幂等 upsert，返回任务 id 与下次触发时间" },
+  { method = "jobs.list", label = "列出计划任务", description = "返回全部任务（可按 source/target 过滤）" },
+  { method = "jobs.remove", label = "删除计划任务", description = "只允许删除调用方自己来源的任务" },
+  { method = "jobs.run", label = "立即执行任务", description = "跳过表达式直接执行一次，不影响下次触发时间" },
+]
+
+[config_schema.tick_batch]
+type = "number"
+default = "5"
+label = "每轮 tick 最多执行的任务数（防止单分钟任务挤在一起）"
+
+[config_schema.default_expr]
+type = "string"
+default = "0 3 * * *"
+label = "新建任务时预填的表达式"

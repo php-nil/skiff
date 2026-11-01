@@ -12,6 +12,6 @@ pub async fn healthz(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
         "status": "ok",
         "version": state.version,
         "uptime_secs": state.started_at.elapsed().as_secs(),
-        "docker": if state.docker.available() { "available" } else { "unavailable" },
+        "docker": if state.docker().available() { "available" } else { "unavailable" },
     }))
 }

@@ -20,15 +20,21 @@ skiff-plugin — Skiff 插件工具链（与内核共用同一份包格式实现
   skiff-plugin keygen [--out skiff-signing.key]
   skiff-plugin new <dir> [--id com.example.demo] [--name 展示名] [--sdk-path <sdk 目录>]
   skiff-plugin build [--dir <插件目录>] [--debug]
-  skiff-plugin pack [--dir <插件目录>] [--key <私钥文件>] [--out <输出.wbpkg>]
-  skiff-plugin verify <pkg> [--pubkey <hex>] [--allow-unsigned]
+  skiff-plugin pack [--dir <插件目录>] [--key <私钥文件>] [--arch amd64|arm64] [--out <输出.wbpkg>]
+  skiff-plugin verify <pkg> [--pubkey <hex>] [--arch amd64|arm64] [--allow-unsigned]
+  skiff-plugin stamp [--dir <插件目录>] [--key <私钥文件>]
 
 说明:
   - 私钥只放在打包机器上，0600；发布物只有 .wbpkg + 公钥指纹。
   - SDK 未发布到 crates.io：`new` 默认找 cwd 下的 `crates/sdk`，或用 --sdk-path /
     SKIFF_SDK_PATH 指定；都没有时写成版本依赖（会解析失败，需手工改 Cargo.toml）。
-  - `pack` 会校验 manifest.key_id 与私钥派生公钥的指纹一致。
-  - `verify` 是装前自查，校验逻辑与内核安装时完全一致。
+  - `stamp` 用私钥派生的指纹回填 manifest 的 `key_id`（官方插件仓库里统一占位，
+    打包时按发布密钥回填，避免把某把私钥的指纹写进源码）。
+  - `pack` 会校验 manifest.key_id 与私钥派生公钥的指纹一致；`--arch` 指定要校验
+    的载荷架构（默认当前主机，交叉打包时显式给），包内该架构的 `bin/<arch>/plugin`
+    必须存在。
+  - `verify` 是装前自查，校验逻辑与内核安装时完全一致；`--arch` 与 `pack` 同义，
+    用于在一种架构的打包机上校验另一种架构的包（默认按当前主机架构找载荷）。
 ";
 
 fn main() {
@@ -53,6 +59,7 @@ fn main() {
         "build" => build(&args[1..]),
         "pack" => pack(&args[1..]),
         "verify" => verify(&args[1..]),
+        "stamp" => stamp(&args[1..]),
         other => Err(format!("未知子命令: {other}\n\n{HELP}")),
     };
     if let Err(e) = result {
@@ -319,10 +326,11 @@ fn pack(args: &[String]) -> Result<(), String> {
     let manifest_text = std::fs::read_to_string(dir.join("manifest.toml"))
         .map_err(|e| format!("读取 manifest 失败: {e}"))?;
     let manifest = Manifest::parse(&manifest_text).map_err(|e| e.to_string())?;
-    let arch = skiff_pkgfmt::host_arch();
+    // 交叉打包时产物架构与打包机不同：用 `--arch` 指定要校验的那一份载荷。
+    let arch = opt(args, "--arch").unwrap_or_else(skiff_pkgfmt::host_arch);
     if !dir.join("bin").join(&arch).join("plugin").exists() {
         return Err(format!(
-            "缺少 bin/{arch}/plugin，请先执行 skiff-plugin build"
+            "缺少 bin/{arch}/plugin，请先执行 skiff-plugin build（交叉构建时用 --arch 指定目标架构）"
         ));
     }
     let out = opt(args, "--out").map(PathBuf::from).unwrap_or_else(|| {
@@ -345,6 +353,52 @@ fn pack(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// 回填 `manifest.key_id` 为给私钥派生公钥的指纹。
+///
+/// 官方插件源码里 `key_id` 是 64 个 0 的占位；发布时用本命令按发布私钥回填，
+/// 让「源码里没有任何一把密钥的指纹」这件事成立，同时 `pack` 的一致性校验仍能通过。
+fn stamp(args: &[String]) -> Result<(), String> {
+    let dir = PathBuf::from(opt(args, "--dir").unwrap_or_else(|| ".".into()));
+    let key_path = PathBuf::from(
+        opt(args, "--key")
+            .or_else(|| std::env::var("SKIFF_SIGNING_KEY").ok())
+            .unwrap_or_else(|| dir.join("skiff-signing.key").display().to_string()),
+    );
+    let seed = std::fs::read_to_string(&key_path)
+        .map_err(|e| format!("读取私钥失败 {}: {e}", key_path.display()))?;
+    let key = SigningKey::from_seed_hex(seed.trim()).map_err(|e| e.to_string())?;
+    let key_id = key.key_id();
+
+    let manifest_path = dir.join("manifest.toml");
+    let text =
+        std::fs::read_to_string(&manifest_path).map_err(|e| format!("读取 manifest 失败: {e}"))?;
+    let out = stamp_manifest_text(&text, &key_id).ok_or("manifest.toml 缺少 key_id 行")?;
+    // 回填后必须仍是一份能通过校验的 manifest，否则宁可不写。
+    Manifest::parse(&out).map_err(|e| format!("回填后的 manifest 非法: {e}"))?;
+    std::fs::write(&manifest_path, &out).map_err(|e| format!("写入 manifest 失败: {e}"))?;
+    println!("已回填 {}: key_id = {}", manifest_path.display(), key_id);
+    println!("公钥(hex): {}", key.public_hex());
+    Ok(())
+}
+
+/// 把 manifest 顶层的 `key_id` 行替换成给定指纹；没有这一行返回 `None`。
+///
+/// 只认行首（允许缩进）的 `key_id`，不会误伤值里恰好出现 `key_id` 的字符串。
+fn stamp_manifest_text(text: &str, key_id: &str) -> Option<String> {
+    let mut replaced = false;
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        if !replaced && line.trim_start().starts_with("key_id") && line.contains('=') {
+            out.push_str(&format!("key_id = \"{key_id}\"\n"));
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    replaced.then_some(out)
+}
+
 fn verify(args: &[String]) -> Result<(), String> {
     let pkg = positional(args)
         .into_iter()
@@ -352,13 +406,15 @@ fn verify(args: &[String]) -> Result<(), String> {
         .ok_or("verify 需要 .wbpkg 路径")?;
     let pubkey = opt(args, "--pubkey");
     let allow_unsigned = args.iter().any(|a| a == "--allow-unsigned");
+    // 交叉打包时载荷架构与打包机不同：与 `pack` 同口径，允许显式指定要校验哪一份。
+    let arch = opt(args, "--arch").unwrap_or_else(skiff_pkgfmt::host_arch);
     let meta = verify_file(
         Path::new(&pkg),
         &VerifyOptions {
             trusted_public_key: pubkey,
             allow_unsigned,
             limits: DEFAULT_LIMITS,
-            arch: skiff_pkgfmt::host_arch(),
+            arch,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -418,5 +474,23 @@ mod tests {
     fn plugin_id_takes_last_component() {
         assert_eq!(sanitize(&dir_tail("/opt/plugins/demo")), "demo");
         assert_eq!(sanitize(&dir_tail("demo")), "demo");
+    }
+
+    /// `stamp` 只替换 `key_id` 那一行，其它行逐字保留（含 CRLF 之外的空白形态）。
+    #[test]
+    fn stamp_replaces_only_the_key_id_line() {
+        let before = "id = \"com.example.demo\"\nkey_id = \"0000\"\napi = \"1.0\"\n";
+        let after = stamp_manifest_text(before, "abc").unwrap();
+        assert!(after.contains("key_id = \"abc\""));
+        assert!(after.contains("id = \"com.example.demo\""));
+        assert!(after.contains("api = \"1.0\""));
+        assert!(!after.contains("0000"));
+
+        // 没有 key_id 行时返回 None（不静默造一份）
+        assert!(stamp_manifest_text("id = \"x\"\n", "abc").is_none());
+        // 值里出现 key_id 字样但行首不是 key_id 时不动它
+        let text = "note = \"key_id = 1\"\nkey_id = \"0000\"\n";
+        let out = stamp_manifest_text(text, "abc").unwrap();
+        assert!(out.contains("note = \"key_id = 1\""));
     }
 }

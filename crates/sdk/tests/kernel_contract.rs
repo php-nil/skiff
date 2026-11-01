@@ -102,6 +102,25 @@ fn handle(mut stream: UnixStream, seen: &Arc<Mutex<Vec<(String, String)>>>) -> s
             let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             (200, json!({ "result": v }))
         }
+        // 内核把目标插件的 RPC `result` 放在信封的 `result` 键里；SDK 负责剥壳。
+        routes::CAP_INTEROP_CALL => {
+            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            (
+                200,
+                json!({
+                    "plugin": v["plugin"],
+                    "method": v["method"],
+                    "result": { "ok": true, "ticket": v["params"]["name"] }
+                }),
+            )
+        }
+        routes::CAP_INTEROP_CATALOG => (
+            200,
+            json!({
+                "permission": "interop:call",
+                "interfaces": [{ "id": "com.skiff.cron", "name": "计划任务", "methods": [] }]
+            }),
+        ),
         // 内核当前对 net.apply 一律 501（nftables 收口属 M4 门禁）
         routes::CAP_NET_APPLY => (501, json!({ "error": "not implemented" })),
         other => (404, json!({ "error": format!("no route {other}") })),
@@ -154,6 +173,19 @@ fn sdk_capabilities_match_kernel_routes() {
     let r = p.docker_call("containers.list", json!({})).unwrap();
     assert_eq!(r["result"]["verb"], "containers.list");
 
+    // 插件间调用：SDK 直接拿到目标 RPC 的 result（不是内核信封）
+    let r = p
+        .interop_call(
+            "com.skiff.cron",
+            "jobs.create",
+            json!({ "name": "站点备份" }),
+        )
+        .unwrap();
+    assert_eq!(r["ok"], true);
+    assert_eq!(r["ticket"], "站点备份");
+    let cat = p.interop_catalog().unwrap();
+    assert_eq!(cat["interfaces"][0]["id"], "com.skiff.cron");
+
     // net 未实现：必须是可读的错误，而不是「响应不是 JSON」
     let err = p.net_apply(json!({})).unwrap_err().to_string();
     assert!(err.contains("501"), "期望 501，实际: {err}");
@@ -169,6 +201,8 @@ fn sdk_capabilities_match_kernel_routes() {
             routes::CAP_FS_WRITE.to_string(),
             routes::CAP_FS_LIST.to_string(),
             routes::CAP_DOCKER_CALL.to_string(),
+            routes::CAP_INTEROP_CALL.to_string(),
+            routes::CAP_INTEROP_CATALOG.to_string(),
             routes::CAP_NET_APPLY.to_string(),
         ]
     );

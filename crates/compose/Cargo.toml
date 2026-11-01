@@ -7,6 +7,9 @@ license.workspace = true
 description = "Skiff（轻舟）· Compose MVP 子集解析（纯 serde_yaml 演算，零 I/O）"
 
 [dependencies]
-skiff-policy = { workspace = true }
+# 只依赖词汇层 `skiff-model`（`ContainerSpec` 等值类型）。
+# 此前依赖 `skiff-policy` 是为了拿几个值类型，等于把判定引擎（带 libc）
+# 拖进一个「纯 serde_yaml 演算、零 I/O」的解析器。
+skiff-model = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

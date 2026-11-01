@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>文件管理</title>
+<!-- 语法高亮：highlight.js（BSD-3-Clause，随插件包本地分发，见 vendor/LICENSE）。
+     插件 UI 的 CSP 是 script-src 'self' / connect-src 'none'，只能加载包内同源脚本，
+     所以这里不能引 CDN，也不许内联脚本（逻辑全在 app.js）。 -->
+<link rel="stylesheet" href="vendor/theme-dark.min.css">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: #0b0d11; color: #d7dee8; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  h2 { font-size: 14px; margin: 16px 0 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  button { background: #1b2230; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+           padding: 5px 12px; cursor: pointer; }
+  button:hover { background: #232c3c; }
+  button.danger { border-color: #5a2226; color: #ff9b90; }
+  button.mini { padding: 2px 8px; font-size: 12px; }
+  input[type=text] { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+                     padding: 5px 8px; min-width: 200px; }
+  select { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+           padding: 5px 8px; font: inherit; }
+  .muted { color: #8a97a8; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1c2532; font-size: 13px; }
+  th { color: #8a97a8; font-weight: 500; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #121722; }
+  tbody tr.sel { background: #16202e; }
+  code { background: #121722; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .bad { color: #ff7b72; } .warn { color: #f0b429; }
+  #msg { min-height: 20px; font-size: 12px; }
+
+  /* 高亮叠加层：<pre> 画颜色、<textarea> 收键盘。两层的字体/行高/内边距必须逐字一致，
+     否则光标会和文字错位；<pre> 只做显示（pointer-events:none），滚动由 textarea 驱动后同步。 */
+  .editor { position: relative; width: 100%; min-height: 320px; box-sizing: border-box;
+            border: 1px solid #2a3444; border-radius: 8px; background: #121722; overflow: hidden; }
+  .editor .hl { position: absolute; inset: 0; margin: 0; padding: 10px; overflow: hidden;
+                white-space: pre; tab-size: 4; font: 13px/1.5 ui-monospace, SFMono-Regular,
+                Consolas, "Courier New", monospace; color: #d7dee8; }
+  .editor .hl code { display: block; padding: 0; background: transparent; font: inherit; }
+  .editor textarea { display: block; width: 100%; min-height: 320px; margin: 0; padding: 10px;
+                     box-sizing: border-box; border: 0; border-radius: 0; resize: vertical;
+                     background: transparent; color: transparent; caret-color: #e6edf3;
+                     white-space: pre; tab-size: 4; overflow: auto;
+                     font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .editor textarea::selection { background: #264a7a; color: transparent; }
+  .editor textarea:read-only { caret-color: transparent; }
+</style>
+</head>
+<body>
+<h1>文件管理</h1>
+<p class="muted">只能浏览/修改安装时授权的 <code>path:</code> 目录；大文件按 256KiB 分页，编辑上限约 256KiB。</p>
+
+<div class="row">
+  <button id="up" class="mini">↑ 上级</button>
+  <input type="text" id="path-input" placeholder="/var/www">
+  <button id="go">打开</button>
+  <button id="refresh">刷新</button>
+  <span class="muted">授权根：<code id="roots">-</code></span>
+</div>
+<p class="muted">当前目录：<code id="cwd">-</code></p>
+
+<table>
+  <thead><tr><th>名称</th><th>类型</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead>
+  <tbody id="items"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+</table>
+
+<h2>选中条目 <code id="selected">（未选中）</code></h2>
+<div class="row">
+  <input type="text" id="entry-name" placeholder="新条目名 / 改名后的名字">
+  <button id="mkfile">新建文件</button>
+  <button id="mkdir">新建目录</button>
+  <button id="rename" class="mini">改名选中</button>
+  <button id="remove" class="mini danger">删除选中</button>
+</div>
+
+<h2>编辑 <code id="editing">（未打开文件）</code></h2>
+<div class="row">
+  <button id="save">保存</button>
+  <button id="close" class="mini">关闭</button>
+  <select id="lang" title="语法高亮：默认按扩展名识别，也可手动指定"></select>
+  <span class="muted">按 UTF-8 文本编辑；二进制文件请勿在此修改。</span>
+</div>
+<div class="editor" id="editor">
+  <pre class="hl" id="hl" aria-hidden="true"><code id="hl-code"></code></pre>
+  <textarea id="content" spellcheck="false" wrap="off" placeholder="点击列表里的「编辑」打开文件"></textarea>
+</div>
+<div id="msg" class="muted"></div>
+
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/languages/nginx.min.js"></script>
+<script src="vendor/languages/dockerfile.min.js"></script>
+<script src="vendor/languages/apache.min.js"></script>
+<script src="vendor/languages/powershell.min.js"></script>
+<script src="vendor/languages/properties.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

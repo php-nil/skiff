@@ -21,7 +21,6 @@ use crate::error::AppError;
 use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::templates::PageCtx;
 use crate::util::{form_first, parse_form};
-use skiff_store::Role;
 
 pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
     PageCtx {
@@ -31,10 +30,40 @@ pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
         csrf: state.csrf_token(&user.session_token),
         dev_http: state.cfg.dev_http,
         version: state.version.clone(),
-        docker_ok: state.docker.available(),
+        docker_ok: state.docker().available(),
         must_change: user.must_change_password(),
         active: active.to_string(),
+        nav_plugins: nav_plugins(state, active),
     }
+}
+
+/// 顶栏「插件菜单」：把 manifest `[[ui]].label` 直接挂到导航栏，省得每次切换都
+/// 经「插件」列表页中转。
+///
+/// 只列**已启用且有 UI 入口**的插件。DB 读失败或某个 manifest 解析失败时跳过该项
+/// （导航少几项不影响页面本身渲染，坏包也不该拖垮整站导航）。
+pub fn nav_plugins(state: &AppState, active: &str) -> Vec<crate::templates::PluginNav> {
+    let Ok(list) = state.db().list_plugins() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|p| p.enabled)
+        .filter_map(|p| {
+            let m = skiff_pkgfmt::Manifest::parse(&p.manifest).ok()?;
+            let ui = m.ui.first()?;
+            let label = if ui.label.is_empty() {
+                p.name.clone()
+            } else {
+                ui.label.clone()
+            };
+            Some(crate::templates::PluginNav {
+                // 详情页把 active 记作 `plugin:<id>`，其余页面不会命中。
+                active: active == format!("plugin:{}", p.id),
+                id: p.id.clone(),
+                label,
+            })
+        })
+        .collect()
 }
 
 pub fn render<T: Template>(t: T) -> Result<Response, AppError> {
@@ -180,11 +209,24 @@ pub fn content_type(parts: &Parts) -> String {
         .to_string()
 }
 
-pub fn require_admin(user: &CurrentUser) -> Result<(), AppError> {
-    if user.role() == Role::Admin {
+/// 角色→权限判定：查 `skiff_model::Permission` 这张唯一的矩阵。
+///
+/// 这里**不再**有「仅限管理员」之类的独立判断——那类判断此前散在
+/// `require_admin`（粗粒度 admin）、`containers.rs` 的 `is_admin() || role == Operator`
+/// （UI 按钮显隐）三处，各改各的。现在统一问 `Permission`：
+/// 判定层（`skiff_policy::Policy::check`）与 UI 层（按钮显隐）读同一张表。
+pub fn require_permission(
+    user: &CurrentUser,
+    perm: skiff_model::Permission,
+) -> Result<(), AppError> {
+    if user.can(perm) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("该操作仅限管理员".into()))
+        Err(AppError::Forbidden(format!(
+            "角色 {} 无权执行 {}",
+            user.role(),
+            perm.as_str()
+        )))
     }
 }
 
@@ -195,48 +237,22 @@ pub fn actor(user: &CurrentUser) -> skiff_docker::Actor {
     }
 }
 
-/// 容器解析（id 全称 / 名称 / id 前缀）：全仓唯一实现。
-/// 替换掉此前散在 containers.rs / api.rs 的 6 处相同闭包——改匹配规则只改这里。
+/// 容器解析（id 全称 / 名称 / id 前缀）：匹配规则在 `skiff-docker::resolve`，
+/// 这里只负责取列表并把领域错误翻成 HTTP 错误。
 pub async fn resolve_container(
     state: &AppState,
     id: &str,
 ) -> Result<skiff_docker::client::ContainerRow, AppError> {
     let containers = state
-        .docker
+        .docker()
         .list_containers()
         .await
         .map_err(|e| AppError::Unavailable(e.to_string()))?;
-    match_container(containers, id)
-}
-
-/// 纯匹配逻辑（与 Docker 列表解耦，便于单测）。
-///
-/// 顺序是语义的一部分：**精确 id / 名称优先于前缀**。此前单趟 `find` 让列表顺序决定结果，
-/// 会出现「查 `abc` 却操作了 `abc123`」——精确命中被前面的前缀命中吃掉。前缀不唯一时
-/// 报歧义而不是静默取第一个：容器操作是破坏性的，猜错比拒绝更糟。
-pub fn match_container(
-    containers: Vec<skiff_docker::client::ContainerRow>,
-    id: &str,
-) -> Result<skiff_docker::client::ContainerRow, AppError> {
-    if id.is_empty() {
-        return Err(AppError::BadRequest("容器引用不能为空".into()));
-    }
-    // 阶段一：精确 id / 名称。必须扫完整份列表才能进下一阶段，否则「前缀命中在前、
-    // 精确命中在后」时仍会先返回前缀那个。
-    if let Some(pos) = containers.iter().position(|c| c.id == id || c.name == id) {
-        return Ok(containers[pos].clone());
-    }
-    // 阶段二：id 前缀，且要求唯一
-    let mut hits = containers.iter().filter(|c| c.id.starts_with(id));
-    let first = hits
-        .next()
-        .ok_or_else(|| AppError::NotFound(format!("容器不存在: {id}")))?;
-    if hits.next().is_some() {
-        return Err(AppError::BadRequest(format!(
-            "容器引用有歧义，请提供更长的 id 前缀: {id}"
-        )));
-    }
-    Ok(first.clone())
+    skiff_docker::match_container(&containers, id).map_err(|e| match e {
+        skiff_docker::MatchError::Empty => AppError::BadRequest(e.to_string()),
+        skiff_docker::MatchError::NotFound(_) => AppError::NotFound(e.to_string()),
+        skiff_docker::MatchError::Ambiguous(_) => AppError::BadRequest(e.to_string()),
+    })
 }
 
 pub fn container_view(
@@ -244,7 +260,7 @@ pub fn container_view(
 ) -> crate::templates::ContainerRowView {
     crate::templates::ContainerRowView {
         id: c.id.clone(),
-        short_id: c.id.chars().take(12).collect(),
+        short_id: c.short_id(),
         name: c.name.clone(),
         image: crate::util::truncate(&c.image, 60),
         state: c.state.clone(),
@@ -265,69 +281,9 @@ pub fn object_ref(c: &skiff_docker::client::ContainerRow) -> skiff_docker::Objec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_docker::client::ContainerRow;
 
-    fn row(id: &str, name: &str) -> ContainerRow {
-        ContainerRow {
-            id: id.into(),
-            name: name.into(),
-            image: "img".into(),
-            state: "running".into(),
-            status: "Up".into(),
-            labels: Default::default(),
-            project: None,
-            owner: None,
-            protected: false,
-        }
-    }
-
-    /// 列表顺序里前缀命中的排在精确命中之前，必须仍返回精确的那个。
-    #[test]
-    fn exact_id_wins_over_earlier_prefix_hit() {
-        let list = vec![row("abc1234", "web"), row("abc", "api")];
-        let got = match_container(list, "abc").unwrap();
-        assert_eq!(got.id, "abc");
-    }
-
-    #[test]
-    fn exact_name_match_wins() {
-        let list = vec![row("aaa111", "api"), row("bbb222", "web")];
-        let got = match_container(list, "web").unwrap();
-        assert_eq!(got.id, "bbb222");
-    }
-
-    #[test]
-    fn unique_prefix_resolves() {
-        let list = vec![row("deadbeef", "web"), row("cafe0000", "api")];
-        let got = match_container(list, "dead").unwrap();
-        assert_eq!(got.id, "deadbeef");
-    }
-
-    /// 前缀歧义必须拒绝：猜错会把操作打到另一个容器上。
-    #[test]
-    fn ambiguous_prefix_is_rejected() {
-        let list = vec![row("abc111", "web"), row("abc222", "api")];
-        let err = match_container(list, "abc").unwrap_err();
-        assert!(matches!(err, AppError::BadRequest(_)), "实际: {err:?}");
-    }
-
-    #[test]
-    fn unknown_reference_is_not_found() {
-        let list = vec![row("abc111", "web")];
-        assert!(matches!(
-            match_container(list, "zzz").unwrap_err(),
-            AppError::NotFound(_)
-        ));
-    }
-
-    #[test]
-    fn empty_reference_is_rejected() {
-        let list = vec![row("abc111", "web")];
-        assert!(matches!(
-            match_container(list, "").unwrap_err(),
-            AppError::BadRequest(_)
-        ));
-    }
+    // 容器引用匹配（精确优先 / 前缀歧义 / 空引用）的用例在
+    // `skiff-docker::resolve`——规则下沉到领域 crate 后，判定与用例同处一地。
 
     // ---- WebSocket Origin 校验 ----
 

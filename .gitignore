@@ -1,6 +1,9 @@
 # Rust 产物
 /target
 /dist
+# 官方插件（第二个 workspace）的构建产物与本地打包结果
+/plugins/target
+/plugins/official
 
 # 本地开发数据（--dev 冒烟用）
 /tmp-data
@@ -25,3 +28,4 @@ crates/web/static/*.gz
 # 本地 agent 工作数据（记忆/临时备份），不入库
 .workbuddy/
 .trae/
+.trae-html-share-packages/

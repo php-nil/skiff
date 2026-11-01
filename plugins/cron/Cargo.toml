@@ -1,0 +1,16 @@
+[package]
+name = "skiff-plugin-cron"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "plugin"
+path = "src/main.rs"
+
+[dependencies]
+skiff-sdk = { path = "../../crates/sdk" }
+skiff-plugin-common = { path = "../common" }
+skiff-cron = { path = "../../crates/cron" }
+serde_json = "1"
+chrono = "0.4"

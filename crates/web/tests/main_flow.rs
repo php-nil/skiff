@@ -243,7 +243,7 @@ async fn wrong_password_renders_error_and_audits() {
         .unwrap();
     let text = body_text(resp).await;
     assert!(text.contains("不正确"), "错误页应提示口令不正确: {text}");
-    let audit = h.state.db.recent_audit(10).unwrap();
+    let audit = h.state.db().recent_audit(10).unwrap();
     assert!(
         audit
             .iter()
@@ -375,7 +375,7 @@ async fn plugin_install_confirm_main_flow() {
     let csrf = h.state.csrf_token(&token);
     let (pkg, pubkey, kid) = build_package(&h.data_dir);
     // 预导入作者公钥（对应 UI 的「设置 → 信任公钥」）
-    h.state.db.trust_key(&kid, &pubkey, "测试作者").unwrap();
+    h.state.db().trust_key(&kid, &pubkey, "测试作者").unwrap();
 
     let bytes = std::fs::read(&pkg).unwrap();
     let (ct, body) = multipart(&bytes);
@@ -432,7 +432,7 @@ async fn plugin_install_confirm_main_flow() {
 
     let rec = h
         .state
-        .db
+        .db()
         .plugin("com.example.demo")
         .unwrap()
         .expect("安装后插件记录必须落库");
@@ -445,7 +445,7 @@ async fn plugin_install_confirm_main_flow() {
         "确认页勾选的 grant 必须落库: {:?}",
         rec.grants
     );
-    let audit = h.state.db.recent_audit(20).unwrap();
+    let audit = h.state.db().recent_audit(20).unwrap();
     assert!(
         audit
             .iter()
@@ -563,7 +563,7 @@ async fn api_token_scopes_are_enforced() {
     let h = harness();
     let admin_id = h
         .state
-        .db
+        .db()
         .user_by_name("admin")
         .unwrap()
         .expect("harness 应建好 admin")
@@ -572,7 +572,7 @@ async fn api_token_scopes_are_enforced() {
     // 建两个 token：只有 plugins:read 的、以及 scope 写错的
     let read_only = "tok-plugins-only";
     h.state
-        .db
+        .db()
         .create_api_token(
             "t-plugins",
             admin_id,
@@ -583,7 +583,7 @@ async fn api_token_scopes_are_enforced() {
         .unwrap();
     let broken = "tok-broken-scope";
     h.state
-        .db
+        .db()
         .create_api_token(
             "t-broken",
             admin_id,
@@ -644,7 +644,7 @@ async fn api_token_scopes_are_enforced() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert!(h
         .state
-        .db
+        .db()
         .recent_audit(20)
         .unwrap()
         .iter()
@@ -748,7 +748,7 @@ async fn restricted_form_rejects_plugins_beyond_capability_surface() {
 
     // 需要 fs 能力的包：受限形态没有 fs
     let (pkg, pubkey, kid) = build_package_with(&h.data_dir, "fs", "fs");
-    h.state.db.trust_key(&kid, &pubkey, "测试作者").unwrap();
+    h.state.db().trust_key(&kid, &pubkey, "测试作者").unwrap();
 
     let bytes = std::fs::read(&pkg).unwrap();
     let (ct, body) = multipart(&bytes);
@@ -810,7 +810,7 @@ async fn restricted_form_rejects_plugins_beyond_capability_surface() {
         "拒绝原因应指明能力面收缩，实际: {text}"
     );
     assert!(
-        h.state.db.plugin("com.example.demo").unwrap().is_none(),
+        h.state.db().plugin("com.example.demo").unwrap().is_none(),
         "被拒的插件不得落库"
     );
     let leftover: Vec<_> = std::fs::read_dir(&incoming)
@@ -823,7 +823,7 @@ async fn restricted_form_rejects_plugins_beyond_capability_surface() {
 
     // 对照组：docker 能力的包在受限形态下照常可装
     let (pkg2, pubkey2, kid2) = build_package_with(&h.data_dir, "docker", "docker");
-    h.state.db.trust_key(&kid2, &pubkey2, "测试作者").unwrap();
+    h.state.db().trust_key(&kid2, &pubkey2, "测试作者").unwrap();
     let bytes = std::fs::read(&pkg2).unwrap();
     let (ct, body) = multipart(&bytes);
     let resp = h
@@ -870,5 +870,114 @@ async fn restricted_form_rejects_plugins_beyond_capability_surface() {
         resp.status(),
         StatusCode::SEE_OTHER,
         "docker 能力的插件在受限形态下应可装"
+    );
+}
+
+/// 插件详情页的两条 UI 约定（跨插件跳转 + 顶栏插件菜单）：
+/// 1. `?open=` 只作为「定位建议」被清洗后原样透传（控制字符清掉、百分号编码）；
+/// 2. `data-plugins` 白名单只含「已启用且有 UI 入口」的插件——iframe 的
+///    `skiff.open` 只能往这些目标跳，跳转本身不授予任何能力。
+#[tokio::test]
+async fn plugin_detail_passes_open_hint_and_whitelists_enabled_plugins() {
+    use skiff_store::PluginRecord;
+
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let manifest = |id: &str, label: &str| {
+        format!(
+            r#"id = "{id}"
+name = "{label}"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.0"
+requires = ["docker"]
+[[permissions]]
+capability = "docker"
+verbs = ["list"]
+[[ui]]
+label = "{label}"
+path = "index.html"
+"#
+        )
+    };
+    let seed = |id: &str, label: &str, enabled: bool| PluginRecord {
+        id: id.into(),
+        name: label.into(),
+        version: "0.1.0".into(),
+        api: "1.0".into(),
+        key_id: "0".repeat(64),
+        manifest: manifest(id, label),
+        enabled,
+        status: if enabled { "enabled" } else { "disabled" }.into(),
+        status_detail: String::new(),
+        active_version: "0.1.0".into(),
+        installed_at: 0,
+        grants: vec![],
+    };
+    // 一个启用、一个停用：后者不得出现在白名单里。
+    h.state
+        .db()
+        .upsert_plugin(&seed("com.example.ui", "示例界面", true))
+        .unwrap();
+    h.state
+        .db()
+        .upsert_plugin(&seed("com.example.off", "已停用界面", false))
+        .unwrap();
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.ui?open=%2Fvar%2Fwww%2Fsite%20one")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+
+    // open 建议按 RFC 3986 百分号编码后进 iframe src
+    assert!(
+        html.contains("open=%2Fvar%2Fwww%2Fsite%20one"),
+        "open 建议应编码后透传: {html}"
+    );
+    // 白名单只含启用的那个插件
+    assert!(
+        html.contains(r#"data-plugins="com.example.ui""#),
+        "白名单应只含已启用且有 UI 的插件: {html}"
+    );
+    // 沙箱属性必须下发：没有它「opaque origin / 不持面板凭据」只是文案
+    assert!(
+        html.contains(r#"sandbox="allow-scripts allow-modals""#),
+        "插件 iframe 必须带 sandbox: {html}"
+    );
+    // 顶栏插件菜单：启用项的 label 进导航并高亮当前项
+    assert!(
+        html.contains(r#"class="nav-plugin on""#) && html.contains("示例界面"),
+        "当前插件的菜单项应在顶栏高亮: {html}"
+    );
+
+    // 控制字符（%0A）必须被清掉，否则会被拼进 URL / 日志
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.ui?open=%2Fetc%2F%0Apasswd")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("open=%2Fetc%2Fpasswd") && !html.contains("%0A"),
+        "定位串里的控制字符应被清掉: {html}"
     );
 }

@@ -5,7 +5,7 @@
 **初审基线（2026-10-30）**：`crates/` 下 8 个 crate + `xtask`，12,013 行、90 个测试标记（执行 88，全过）。
 **§0–§9 是初审与首轮执行的存档**，其中的行号、行数、测试数均已随改动腐化，只作对照基线；**当前实测基线见 §10**。
 
-> **2026-10-31 首轮执行快照**：P0 四项与 P1 五项已按 §7 顺序落地（见 §9；逐项复核见 §10.1）。彼时结构 11 个 crate + `xtask`、**14,755 行**（54 个 `.rs`）、**107 项测试全绿**。**第二轮执行（§10.4）又拆出 `skiff-compose` 并把测试推到 118 项**，当前基线一律以 §10.4 的收口数字为准。读代码以符号名为准，勿引用正文行号。
+> **2026-10-31 首轮执行快照**：P0 四项与 P1 五项已按 §7 顺序落地（见 §9；逐项复核见 §10.1）。彼时结构 11 个 crate + `xtask`、**14,755 行**（54 个 `.rs`）、**107 项测试全绿**。**第二轮执行（§10.4）又拆出 `skiff-compose` 并把测试推到 118 项**，**第五轮（§13）再把能力面迁回 `crates/plugin`、值类型下沉 `skiff-model`**，当前基线一律以 §13 的收口数字为准。读代码以符号名为准，勿引用正文行号。
 
 审查维度：模块划分 / 职责边界 / 依赖关系 / 复用性。所有判断都附 `文件:行号`；凡属推断而非代码事实，显式标「推断」。
 
@@ -379,13 +379,54 @@ P2 三项与 `AppState` 下沉仍未动（与 §9 一致）：`db.rs` 1023 行�
 | token 默认 scope 是 `docker:read` | 最小权限默认；要用 `restart` 之类必须显式 `--scope docker:write`，help 与创建输出都已写明 |
 | Linux 真机上的 SSE 不断连验证 | 需要真 Docker 与真实连接，归 [DEPLOY_TEST.md](DEPLOY_TEST.md) 上机清单 |
 
+## 13. 第五轮：结构收敛「全部执行」（2026-11-01）
+
+前四轮修的是「缺陷」与「局部边界」，`crates/` 的骨架没动：能力面寄居在 `core`、
+角色判定写三份、路径代数写三份、值类型散落在判定 crate 里。本轮把这些一次性收口，
+**P0 三项 + P1 四项 + P2 五项全部落地**。逐项明细见
+[docs/changes/2026-11-01.md](changes/2026-11-01.md)。
+
+### 13.1 四条收敛主线
+
+| 主线 | 收敛前 | 收敛后 |
+|---|---|---|
+| **角色→权限矩阵** | `policy` 内联 `Action` 三分法 + `web` 手写 `is_admin() \|\| role == Operator` + `Verb::permission()` 手写，三份各改各的 | `skiff_model::Permission` + `RoleExt::can()` 唯一一份；`Verb::permission()` 由 `all()` 派生 |
+| **路径授权代数** | `policy::PathGuard` / `plugin::fsgrant` / 插件侧快筛各写一遍前缀匹配 | `skiff_model::path` 11 个零 I/O 原语；三处共用（字符串级快筛 vs canonical 级判定分工写进注释） |
+| **能力面归属** | `crates/core/src/kernel.rs`（992 行）混着能力面实现 + socket 监听 | 能力面搬回 `crates/plugin`（`fsops`/`fsgrant`/`capability`/`interop`），`core` 只剩装配；宿主上下文经 `CapabilityHost` trait 注入（依赖倒置，解开 `plugin → app` 环） |
+| **值类型下沉** | `ContainerSpec` 在 `policy`（带 `libc`）、`compose` 为了拿它而依赖 `policy` | 值类型一律进零 I/O 的 `skiff_model`（`container.rs` / `verb.rs` / `path.rs`）；`policy` 只留判定 |
+
+### 13.2 顺带修掉的两个真实缺陷
+
+- **中间件顺序反了**：axum 0.8 的 `Router::layer` 是**后加的先跑**（后加 = 更外层）。
+  原 `.layer(protocol_guard).layer(plugin_auth)` 的注释声称「协议版本先于鉴权判定」，
+  实际执行顺序相反。已改为先挂鉴权、最后挂版本闸（版本闸真正先于鉴权），顺序用
+  一次性探针实测确认。
+- **CLI 装包不留审计**：Web 侧装包写 `plugin.install` 审计，CLI 侧不写——两条安装
+  路径留痕口径不一。已补齐（actor=`cli`、channel=`local`）。
+
+### 13.3 收口数字（实测）
+
+根 workspace **212 项测试通过**，3 项红均为既存 Windows 环境限制
+（`pkgfmt` staging 清理断言与 `plugin::install` 两条迁移恢复用例的 `os error 145`），
+以 Linux CI 为准；插件 workspace **29 项全绿**。`cargo fmt --all` 与
+`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` 干净。
+
+### 13.4 仍未做（诚实标注）
+
+| 项 | 理由 |
+|---|---|
+| Linux 目标交叉编译与真机验收 | 本机无 `x86_64-linux-gnu-gcc`，`kernel` 的 unix-only socket 层（90 行）只能由 Linux CI 复核 |
+| `policy::PathGuard` 的 TOCTOU 窗口 | 与 §12.3 同因：`open_dir_nofollow` 已实现但未接入判定链，对外不得声称已消除 |
+| 路径原语的字符串级 / canonical 级双口径 | 有意保留：插件侧快筛与内核判定本就该分层，不合并成一套 |
+
 ## 变更记录
 
 | 日期 | 变更 |
-|---|---|
+|---|---|---|
 | 2026-10-30 | 初版：按模块划分 / 职责边界 / 依赖关系 / 复用性四维审查，附 4 个结构性结论、8 项重复实现、4 个已致缺陷、6 步收敛路径 |
 | 2026-10-31 | 追加 §9：P0 四项 + P1 五项的执行结果与验收证据；新增 3 个 crate（`wire`/`model`/`policy`），`plugin::trust` 收口 TOFU；测试 88 → 104 |
 | 2026-10-31 | 第二轮复审 §10：上轮 9 项逐条重验全部属实（`Cidr` 下沉除外，属静默缩水）；实测基线 14,755 行 / 107 测试；新发现死依赖 31 条（含 `docker→skiff-store`）、承诺未兑现 2 项（CatchPanic、gzip 预压缩）；头部过期数字清理为初审快照标注 |
 | 2026-10-31 | 「全部执行」§10.4：§10.3 行动清单 P0/P1/P2 全闭环——CatchPanic 接线、预压缩落地、`skiff-compose` 拆出、`Cidr` 下沉+非法拒启、28 条死依赖清理、`db.rs` 按聚合拆分、`resolve_container` 收口、6 项主干集成测试、`ManifestPerm` 改名与 `web-assets` 入 crate。测试 107 → 118，fmt/clippy `-D warnings` 干净 |
 | 2026-10-31 | 第三轮 §11 代码优化：容器解析精确优先+歧义拒绝、WS Origin 缺失即拒、登录限流表有界、**插件上传 body 上限修复（>2MB 包此前无法安装）**、安全头去每请求解析、`Verb::parse` 由 `all()` 派生、tower-http 死特性收敛。测试 118 → 136 |
 | 2026-10-31 | 第四轮 §12：§11.2 四项全部落地——exec 单连票据（30s/一次性/绑定会话与容器）、API Token scope 语义与强制（角色权限 ∩ scope）、按路由分组的请求超时（SSE/WS 排除，504 错误页）、`AppState` 下沉 `skiff-app`（kernel 不再依赖 `skiff-web`）。13 crate + xtask，测试 136 → 149 |
+| 2026-11-01 | 第五轮 §13：结构收敛「全部执行」——角色矩阵统一到 `skiff_model::Permission`、路径代数统一到 `skiff_model::path`、能力面迁回 `crates/plugin`（`CapabilityHost` 解环）、值类型下沉 `model`、`AppState` 收口 + 登录用例统一、`core/kernel.rs` 拆为 `kernel/` 子模块并修正中间件顺序。根 212 项通过、plugins 29 项全绿 |

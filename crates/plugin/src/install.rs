@@ -8,6 +8,8 @@ use skiff_pkgfmt::Manifest;
 use skiff_store::{Db, Grant, PluginRecord};
 use tracing::{info, warn};
 
+use crate::trust::TrustDecision;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PluginError {
     #[error("包校验失败: {0}")]
@@ -50,6 +52,35 @@ pub struct InstalledInfo {
     pub grants: Vec<Grant>,
     pub reduced_sandbox: bool,
     pub warnings: Vec<String>,
+}
+
+/// 组装安装选项（CLI 与 Web 共用同一份）。
+///
+/// 能力集随**部署形态**、架构随**宿主**、降级沙箱开关来自**配置**——这三项
+/// 过去在 CLI（`skiff plugin install`）与 Web（上传 → 确认页 → 安装）各写一遍，
+/// 漏改一处就会让「同一个包在两个入口装出不同结果」，而且事后极难复现。
+///
+/// 两条链路的差别只有两处，由调用方给定：
+/// - 用户确认了哪些权限与对象（CLI 来自 `--grant`/交互，Web 来自确认页表单）；
+/// - 有效未签名开关（CLI 是 `--allow-unsigned || cfg.allow_unsigned`，
+///   Web 是 `cfg.allow_unsigned`）。
+pub fn install_options(
+    trust: &TrustDecision,
+    granted_permissions: Vec<String>,
+    object_grants: Vec<String>,
+    allow_unsigned: bool,
+    form: skiff_model::Form,
+    allow_reduced_sandbox: bool,
+) -> InstallOptions {
+    InstallOptions {
+        trusted_public_key: trust.trusted_key.clone(),
+        allow_unsigned,
+        granted_permissions,
+        object_grants,
+        available_capabilities: skiff_pkgfmt::manifest::Capability::available_in(form),
+        allow_reduced_sandbox,
+        arch: skiff_pkgfmt::host_arch(),
+    }
 }
 
 /// 插件目录布局（§5.2）：`versions/` 代码只读、`data/` 业务数据、`cache/`、`run/`。
@@ -161,9 +192,11 @@ pub fn install_package(
         grants.push(Grant::perm(p.clone()));
     }
     for o in &opts.object_grants {
-        if !(o.starts_with("container:") || o.starts_with("project:")) {
-            return Err(PluginError::Rejected(format!("对象 grant 形式非法: {o}")));
-        }
+        // 对象 grant 的三形态与 manifest `resource_hints` 共用同一份形式校验：
+        // `path:` 只做形式校验（绝对路径 / 无 .. / 非 `/`），存在性由内核每次调用
+        // canonicalize 判定——允许「先装插件、后建目录」。
+        skiff_pkgfmt::manifest::validate_resource(o)
+            .map_err(|e| PluginError::Rejected(format!("对象 grant {o} 非法: {e}")))?;
         grants.push(Grant::object(o.clone()));
     }
 
