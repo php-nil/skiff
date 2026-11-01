@@ -1,9 +1,9 @@
 # 持续集成与发布流水线
 
-> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804，最新 41270386660）。
+> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804，最新 41278450106）。
 > Release 流水线首跑 2026-11-01（run 41268959656）musl 双架构全绿、`docker` job 暴露
-> Dockerfile 过期 COPY；修复后复跑 **run 41270406760 全绿**（含 docker 构建 + 自检，
-> 产物 release-amd64 / release-arm64 已上传）。§5 实测列已按 run 结果回填。
+> Dockerfile 过期 COPY；修复后复跑 **run 41270406760 全绿**；发布物去签名（决策 12）后
+> **run 41278461323 全绿**（产物两件套：tar.gz + .sha256，无 `.sig`）。§5 实测列已按 run 结果回填。
 >
 > 相关：工程结构与 `xtask` 三类固化校验见 [§8 工程结构](sections/08-engineering.md)；
 > 装机步骤与真机验收用例见 [DEPLOY_TEST.md](DEPLOY_TEST.md)。
