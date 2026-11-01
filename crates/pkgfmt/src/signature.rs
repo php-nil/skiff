@@ -91,10 +91,6 @@ pub fn verify_bytes(public_hex: &str, msg: &[u8], sig: &[u8]) -> Result<()> {
         .map_err(|e| PkgError::Signature(format!("ed25519 验签失败: {e}")))
 }
 
-pub fn sign_bytes(seed_hex: &str, msg: &[u8]) -> Result<Vec<u8>> {
-    Ok(SigningKey::from_seed_hex(seed_hex)?.sign(msg))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

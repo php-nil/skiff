@@ -1,7 +1,11 @@
-//! `skiff-plugin` CLI：脚手架 / 构建 / 打包 / 签名 / 自检（§4.4）。
+//! `skiff-plugin` CLI：脚手架 / 密钥 / 构建 / 打包 / 自检（§4.4）。
 //!
 //! 与内核共用 `skiff-pkgfmt`，因此哈希清单排序、签名输入编码不会出现「打包器与
 //! 校验器各写一遍」的偏差。
+//!
+//! 注：发布物（tar.gz）的 detached 签名链路（`sign-file` / `verify-file`）已于
+//! 2026-11-01 移除（§11 决策 12）——发布物只用 SHA-256 摘要。插件包 `.wbpkg`
+//! 的签名/验签不在此列，仍是产品安全内核（§4.3）。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,8 +22,6 @@ skiff-plugin — Skiff 插件工具链（与内核共用同一份包格式实现
   skiff-plugin build [--dir <插件目录>] [--debug]
   skiff-plugin pack [--dir <插件目录>] [--key <私钥文件>] [--out <输出.wbpkg>]
   skiff-plugin verify <pkg> [--pubkey <hex>] [--allow-unsigned]
-  skiff-plugin sign-file <file> [--key <私钥文件>] [--out <file.sig>]
-  skiff-plugin verify-file <file> [--sig <file.sig>] [--pubkey <hex>]
 
 说明:
   - 私钥只放在打包机器上，0600；发布物只有 .wbpkg + 公钥指纹。
@@ -27,8 +29,6 @@ skiff-plugin — Skiff 插件工具链（与内核共用同一份包格式实现
     SKIFF_SDK_PATH 指定；都没有时写成版本依赖（会解析失败，需手工改 Cargo.toml）。
   - `pack` 会校验 manifest.key_id 与私钥派生公钥的指纹一致。
   - `verify` 是装前自查，校验逻辑与内核安装时完全一致。
-  - `sign-file` / `verify-file` 给发布包（tar.gz）做 detached 签名，与 .wbpkg 用同一套
-    ed25519 原语：签名 = 对文件原始字节签名，输出 hex（64 字节）到 <file>.sig。
 ";
 
 fn main() {
@@ -53,8 +53,6 @@ fn main() {
         "build" => build(&args[1..]),
         "pack" => pack(&args[1..]),
         "verify" => verify(&args[1..]),
-        "sign-file" => sign_file(&args[1..]),
-        "verify-file" => verify_file_cmd(&args[1..]),
         other => Err(format!("未知子命令: {other}\n\n{HELP}")),
     };
     if let Err(e) = result {
@@ -391,49 +389,6 @@ fn verify(args: &[String]) -> Result<(), String> {
         println!("  - {p}");
     }
     println!("出网: {:?}", meta.manifest.network_egress);
-    Ok(())
-}
-
-fn sign_file(args: &[String]) -> Result<(), String> {
-    let file = positional(args)
-        .into_iter()
-        .next()
-        .ok_or("sign-file 需要文件路径")?;
-    let key_path = PathBuf::from(
-        opt(args, "--key")
-            .or_else(|| std::env::var("SKIFF_SIGNING_KEY").ok())
-            .ok_or("sign-file 需要 --key <私钥文件> 或环境变量 SKIFF_SIGNING_KEY")?,
-    );
-    let seed = std::fs::read_to_string(&key_path)
-        .map_err(|e| format!("读取私钥失败 {}: {e}", key_path.display()))?;
-    let bytes = std::fs::read(&file).map_err(|e| format!("读取文件失败: {e}"))?;
-    let sig = skiff_pkgfmt::sign_bytes(seed.trim(), &bytes).map_err(|e| e.to_string())?;
-    let out = PathBuf::from(opt(args, "--out").unwrap_or_else(|| format!("{file}.sig")));
-    std::fs::write(&out, hex::encode(&sig)).map_err(|e| format!("写签名失败: {e}"))?;
-    println!("已签名: {file}");
-    println!("签名文件: {}（hex，{} 字节）", out.display(), sig.len());
-    Ok(())
-}
-
-fn verify_file_cmd(args: &[String]) -> Result<(), String> {
-    let file = positional(args)
-        .into_iter()
-        .next()
-        .ok_or("verify-file 需要文件路径")?;
-    let sig_path = PathBuf::from(
-        opt(args, "--sig")
-            .or_else(|| std::env::var("SKIFF_SIG_FILE").ok())
-            .unwrap_or_else(|| format!("{file}.sig")),
-    );
-    let pubkey = opt(args, "--pubkey")
-        .or_else(|| std::env::var("SKIFF_RELEASE_PUBKEY").ok())
-        .ok_or("verify-file 需要 --pubkey <hex> 或环境变量 SKIFF_RELEASE_PUBKEY")?;
-    let sig_hex = std::fs::read_to_string(&sig_path)
-        .map_err(|e| format!("读取签名失败 {}: {e}", sig_path.display()))?;
-    let sig = hex::decode(sig_hex.trim()).map_err(|_| "签名不是 hex".to_string())?;
-    let bytes = std::fs::read(&file).map_err(|e| format!("读取文件失败: {e}"))?;
-    skiff_pkgfmt::verify_bytes(&pubkey, &bytes, &sig).map_err(|e| e.to_string())?;
-    println!("✓ 验签通过: {file}");
     Ok(())
 }
 

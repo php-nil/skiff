@@ -13,8 +13,8 @@
 skiff.service                  # systemd unit：Type=simple, Restart=always
 ```
 
-- **交付物**：多架构 tar.gz（二进制 + `install.sh` + `docker-bootstrap.sh` + `skiff.service` + `uninstall.sh`）+ detached `SHA-256` 摘要与独立 ed25519 签名（发布公钥/指纹随发布说明提供）。**安装顺序固定**：先校验 tarball 摘要与签名，校验失败立即退出；再解包并执行包内 `install.sh`。包内脚本不负责校验包含自身的压缩包，避免自校验悖论。
-- **install.sh**（验签解包后执行）：创建 `skiff-plugins` 运行组与数据目录（数据根与 `plugins/` 均为 **0711 root**）→ 装 unit → `systemctl enable --now` → 打印 `initial-admin.txt` 路径。
+- **交付物**：多架构 tar.gz（二进制 + `install.sh` + `docker-bootstrap.sh` + `skiff.service` + `uninstall.sh`）+ detached `SHA-256` 摘要（**不做签名**，§11 决策 12：2026-11-01 起发布物只验摘要）。**安装顺序固定**：先校验 tarball 摘要，校验失败立即退出；再解包并执行包内 `install.sh`。包内脚本不负责校验包含自身的压缩包，避免自校验悖论。
+- **install.sh**（摘要校验后执行）：创建 `skiff-plugins` 运行组与数据目录（数据根与 `plugins/` 均为 **0711 root**）→ 装 unit → `systemctl enable --now` → 打印 `initial-admin.txt` 路径。
 - **目录为什么不是 0700**：插件降权到独立 UID 后，要打开自己的 `data/` 必须能穿越所有祖先目录（缺 x 位即不可达）。0711 表示「可穿越、不可列目录」，配合 `skiff.db` 0600 / `backup/` 0700，「看不见、打不开」两个目标都成立；写成 0700 会让插件一启动就 EACCES。同理 `/run/skiff` 取 0711，`kernel.sock` 仍是 0660 root:skiff-plugins，插件靠**附加组** `skiff-plugins` 拿到组权限（`setgroups` 在 `setgid/setuid` 之前执行）。
 - **升级** = 换二进制 + `systemctl restart`；数据不动，SQLite 迁移**幂等、向前**，启动自动执行并写 schema 版本。
 - **MVP 主形态内核固定以 root 运行**：需要创建独立插件 UID/GID、管理 nftables/cgroups，并访问 docker.sock；systemd unit 配独立插件运行组与 cgroup delegation。插件全部降权（§4.2）。不提供“专用管理 UID + docker 组”的半支持选项——它既已等价 root，又无法在未补 capabilities/目录属主规则前满足上述操作。

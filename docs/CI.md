@@ -11,12 +11,12 @@
 ## 1. 三个工作流各管什么
 
 **当前是开发/测试阶段（2026-10-31 起）：不发新版。** 发布链路改成「可跑但默认不发」——
-用来验证 musl/cross/打包/签名全链路，而不是产出对外发行物。
+用来验证 musl/cross/打包全链路，而不是产出对外发行物。
 
 | 文件 | 触发 | 管什么 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push（main/master）、PR、手动；**纯文档改动不触发** | 质量门槛：格式、lint、单测、MSRV、契约校验、插件包链路、脚本、冒烟；musl 静态产物**仅手动** |
-| `.github/workflows/release.yml` | **仅手动**（`v*` 标签触发已摘） | 出发布物验证包：amd64 / arm64 静态包 + 摘要 + 签名。默认只传 workflow 产物，`publish` 勾选才建 GitHub Release |
+| `.github/workflows/release.yml` | **仅手动**（`v*` 标签触发已摘） | 出发布物验证包：amd64 / arm64 静态包 + 摘要。默认只传 workflow 产物，`publish` 勾选才建 GitHub Release |
 | `.github/workflows/audit.yml` | 每周一 03:00 UTC、手动 | `cargo audit` 查 RustSec 公告 |
 
 依赖升级不走 Dependabot：`dependabot.yml` 已删（2026-10-31），minor/patch 升级人工按需
@@ -34,7 +34,7 @@
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / 包格式 |
-| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify | 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒 |
+| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |
 | `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
 | `build` | musl 静态编译 + `readelf` 查 `PT_INTERP` | 产物不挑宿主 glibc（**仅 workflow_dispatch**，不随 push 跑） |
@@ -81,7 +81,7 @@ PR 突然变红，排查成本很高。升级方式：改 `ci.yml` / `release.ym
 #   publish: 保持 false → 只构建 + 自检 + 传 workflow 产物，不建 Release
 ```
 
-产物在 run 页的 Artifacts 里下载（7 天保留），验证包结构/摘要/签名即可，
+产物在 run 页的 Artifacts 里下载（7 天保留），验证包结构与摘要即可，
 Release 页保持干净。等真要发版时：
 
 ```sh
@@ -97,9 +97,9 @@ git tag v0.1.0 && git push origin v0.1.0
 `deploy/pack-release.sh`；`publish`（仅 `publish=true` 时跑）汇总两套产物 +
 `SHA256SUMS` 建成 GitHub Release。
 
-签名靠仓库 secret **`RELEASE_SIGNING_KEY_HEX`**：内容是 `skiff-plugin keygen` 打印的私钥那 32 字节 hex。
-没配也能出包，但会打 `::warning::` 并把产物标成未签名——**不伪造“已签名”**。
-正式发布前必须配上，并且把公钥指纹与公钥一起公布。
+**发布物不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏，
+装机前 `sha256sum -c`。此前的 `RELEASE_SIGNING_KEY_HEX` secret、`.sig` 产物与
+`skiff-plugin verify-file` 链路已整体移除——插件包 `.wbpkg` 的签名/TOFU 不受影响（§4.3）。
 
 发布物结构（与手工 `pack-release.sh` 完全一致，同一份脚本产出）：
 
@@ -107,7 +107,6 @@ git tag v0.1.0 && git push origin v0.1.0
 |---|---|
 | `skiff-<ver>-linux-<arch>.tar.gz` | `skiff` + `skiff-plugin` + `install.sh` / `uninstall.sh` / `skiff.service` / `config.toml.example` |
 | `.tar.gz.sha256` | 装机前先校验 |
-| `.tar.gz.sig` | detached ed25519 签名（hex），`skiff-plugin verify-file` 验 |
 
 ## 5. 哪些地方是“推上去才知道”（实测列已回填）
 

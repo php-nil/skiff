@@ -11,7 +11,7 @@ pub use manifest::{Manifest, ManifestPerm, RunMode, UiEntry};
 pub use package::{
     host_arch, pack_dir, verify_file, PackageLimits, PackageMeta, UnpackedPackage, DEFAULT_LIMITS,
 };
-pub use signature::{decode_public_key, key_id_of, sign_bytes, verify_bytes, SigningKey};
+pub use signature::{decode_public_key, key_id_of, verify_bytes, SigningKey};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PkgError {

@@ -5,20 +5,19 @@
 #     真要发版时连同 publish 默认值一起放开）
 #   - 默认**只构建 + 自检 + 传 workflow 产物**，不建 GitHub Release；
 #     要真发布，手动 dispatch 时把 `publish` 勾成 true
-#   这样跑这条流水线零副作用：能验 musl/cross/pack-release.sh/签名全链路，
+#   这样跑这条流水线零副作用：能验 musl/cross/pack-release.sh 全链路，
 #   但不会把半成品挂到 Release 页上。
 #
 # 产物（每个架构一套，与 deploy/pack-release.sh 的布局一致）：
 #   skiff-<ver>-linux-<arch>.tar.gz          主程序 + skiff-plugin + install.sh + docker-bootstrap.sh + systemd 单元
 #   skiff-<ver>-linux-<arch>.tar.gz.sha256   装机前先校验
-#   skiff-<ver>-linux-<arch>.tar.gz.sig      detached ed25519 签名（配了密钥才有）
+#
+# 发布物**不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要。
+# 原 `RELEASE_SIGNING_KEY_HEX` / `.sig` / `verify-file` 链路已整体移除。
 #
 # 为什么用 musl 静态：发行物要能在 Debian 11 / Ubuntu 22.04 / Rocky 9 上直接跑，
 # 动态链接会把宿主 glibc 版本变成隐形依赖。aarch64 用 cross（自带交叉工具链镜像，
 # 避免在 runner 上手工拼 aarch64 的 C 交叉编译器）。
-#
-# 签名：仓库 secret `RELEASE_SIGNING_KEY_HEX` 存私钥的 hex（keygen 产出的那一行）。
-# 没配也能出包，但会打 `::warning::` 并把这一步标成未签名 —— 不伪造"已签名"。
 name: Release
 
 on:
@@ -95,25 +94,13 @@ jobs:
         with:
           tool: cross
 
-      - name: 打包（构建 + 摘要 + 签名由 pack-release.sh 统一负责）
-        env:
-          SIGN_KEY_HEX: ${{ secrets.RELEASE_SIGNING_KEY_HEX }}
+      - name: 打包（构建 + 摘要由 pack-release.sh 统一负责）
         run: |
           set -eu
-          if [ -n "${SIGN_KEY_HEX:-}" ]; then
-            printf '%s' "$SIGN_KEY_HEX" > "$RUNNER_TEMP/release.key"
-            chmod 600 "$RUNNER_TEMP/release.key"
-            KEY_ARGS="--key $RUNNER_TEMP/release.key"
-          else
-            echo "::warning::未配置 RELEASE_SIGNING_KEY_HEX，产物未签名（正式发布必须补签）"
-            KEY_ARGS=""
-          fi
-          # shellcheck disable=SC2086
           CARGO=cross sh deploy/pack-release.sh \
             --version "${{ steps.ver.outputs.version }}" \
             --target "${{ matrix.target }}" \
-            --out dist \
-            $KEY_ARGS
+            --out dist
 
       - name: 自检产物（解包结构 + 静态链接）
         run: |
@@ -126,9 +113,6 @@ jobs:
           if readelf -l "$bin" | grep -q INTERP; then
             echo "::error::${{ matrix.target }} 产物不是静态链接"
             exit 1
-          fi
-          if [ -f dist/*.tar.gz.sig ]; then
-            echo "签名文件: $(ls dist/*.sig)"
           fi
 
       - uses: actions/upload-artifact@v7

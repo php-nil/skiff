@@ -18,7 +18,7 @@
 - net 能力（端口规则）在主流发行版的适配实测；失败降级只读路径（M4）。
 - 与 1Panel / 宝塔同机共存实测（M3/M5）。
 - 备份在新环境真实恢复并核对核心数据库与插件数据，而非只检查备份文件存在（M5）。
-- 发布 tar.gz / Docker 包的 detached `SHA-256` 摘要、独立签名，以及**解包前验签失败即退出**的安装链路（M5）。
+- 发布 tar.gz / Docker 包的 detached `SHA-256` 摘要与**解包前摘要不符即退出**的安装链路（M5）。发布物**不做签名**（§11 决策 12，2026-11-01），原「独立签名 / 验签失败即退出」项随链路移除一并作废。
 - Docker 引导脚本（`docker-bootstrap.sh`）在真实 Linux 上仅做过 Windows 分支级验证（mock daemon），以下均未实测：全新安装走 apt/dnf + LinuxMirrors `docker.sh`、Alpine 走 `apk`、无 tty 环境下不卡交互；以及「已有 docker 不重装」「已有 docker 且 daemon 挂时拒绝安装（exit 3）」两条行为（M5，交叉 §5.1）。
 
 ## 12.1 架构层缺口（本轮审查补充，未实测前同样不得当事实引用）

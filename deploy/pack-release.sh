@@ -4,28 +4,28 @@
 # 产出（与 §5.1 交付物一致）：
 #   dist/skiff-<ver>-linux-<arch>.tar.gz
 #   dist/skiff-<ver>-linux-<arch>.tar.gz.sha256     # 摘要，装机前先校验
-#   dist/skiff-<ver>-linux-<arch>.tar.gz.sig        # detached ed25519 签名（hex）
 #
-# 安装顺序固定：先校验摘要与签名，再解包执行 install.sh。
+# 发布物**不做 detached 签名**（§11 决策 12）：只用 SHA-256 摘要防传输损坏，
+# 签名链路（--key / .sig / verify-file）已于 2026-11-01 整体移除。
+#
+# 安装顺序固定：先校验摘要，再解包执行 install.sh。
 # 包内脚本不校验包含自己的压缩包（自校验悖论）。
 #
 # 用法:
 #   deploy/pack-release.sh [--version 0.1.0] [--target x86_64-unknown-linux-musl] \
-#                          [--key release.key] [--out dist]
+#                          [--out dist]
 set -eu
 
 VERSION=0.1.0
 TARGET=""
-KEY=""
 OUT=dist
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
         --target) TARGET="$2"; shift 2 ;;
-        --key) KEY="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
 done
@@ -34,8 +34,6 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 # 交叉编译时用 `CARGO=cross` 覆写（CI 里 aarch64 / musl 都走这条）。
-# 注意：签名工具始终用**宿主**的 `cargo` 构建 —— 它要在本机签本机的文件，
-# 交叉出来的 aarch64 二进制 runner 上跑不了。
 CARGO_BIN=${CARGO:-cargo}
 
 case "${TARGET:-host}" in
@@ -64,7 +62,7 @@ fi
 BIN="$ROOT/target/${TARGET:+$TARGET/}release/skiff"
 if [ ! -f "$BIN" ] && [ -f "$BIN.exe" ]; then
     # 开发机（Windows/MSYS）上产物带 .exe：允许跑通打包流程做冒烟，
-    # 但这样打出来的包**不是 Linux 发行物**，只能用于校验脚本与签名链路。
+    # 但这样打出来的包**不是 Linux 发行物**，只能用于校验脚本本身。
     BIN="$BIN.exe"
     echo "注意：当前是 $(uname -s) 主机，用 $(basename "$BIN") 做打包冒烟；正式发布请在 Linux 上执行。" >&2
 fi
@@ -88,10 +86,8 @@ chmod 0755 "$STAGE/skiff" "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/dock
 cat > "$STAGE/README.txt" <<EOF
 Skiff（轻舟）$VERSION — linux/$ARCH
 
-安装（先校验，再解包）：
+安装（先校验摘要，再解包）：
   sha256sum -c $NAME.tar.gz.sha256
-  # 有发布公钥时：
-  #   skiff-plugin verify-file $NAME.tar.gz --pubkey <发布公钥hex>
   tar xzf $NAME.tar.gz && cd $NAME && sh install.sh
 
 包内文件：
@@ -119,20 +115,6 @@ tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2026-01-01' \
 echo "== 摘要 =="
 ( cd "$OUT" && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
 cat "$OUT/$NAME.tar.gz.sha256"
-
-if [ -n "$KEY" ]; then
-    echo "== 签名 =="
-    SIGNER="${SIGNER:-target/release/skiff-plugin}"
-    if [ ! -x "$SIGNER" ] && [ ! -x "$SIGNER.exe" ]; then
-        cargo build --release --locked -p skiff-sdk --bin skiff-plugin
-    fi
-    # 开发机上的可执行文件带 .exe 后缀
-    [ -x "$SIGNER" ] || SIGNER="$SIGNER.exe"
-    "$SIGNER" sign-file "$TARBALL" --key "$KEY"
-    echo "签名: $TARBALL.sig"
-else
-    echo "跳过签名（未提供 --key）。**正式发布必须签名**：没有 .sig 的包属于未签名发布物。"
-fi
 
 echo
 echo "完成: $TARBALL"

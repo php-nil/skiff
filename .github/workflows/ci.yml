@@ -201,26 +201,25 @@ jobs:
           shared-key: ci
       # debug 构建就够：这里验的是签名语义，不是性能；release 的 opt 编译纯属烧时间
       - run: cargo build --locked -p skiff-sdk --bin skiff-plugin
-      - name: 发布物签名 / 验签（pack-release.sh 用的那两条）
+      - name: keygen 冒烟（含「--help 不落盘」回归）
         run: |
           set -eu
           WORK=$(mktemp -d)
           TOOL="$PWD/target/debug/skiff-plugin"
+
+          # 回归：keygen --help 曾真的写出私钥——帮助必须只打帮助
+          "$TOOL" keygen --help >/dev/null
+          if [ -e "$WORK/skiff-signing.key" ] || [ -e skiff-signing.key ]; then
+            echo "::error::keygen --help 竟然写出了私钥文件"
+            exit 1
+          fi
 
           "$TOOL" keygen --out "$WORK/release.key" | tee "$WORK/keygen.log"
           # 公钥从输出里取。锚点只用 ASCII 的 `hex)`，不认中文前缀（runner 的 locale 不可控）；
           # 同一份输出里 key_id 那行是 `(key_id)`，不会被这条规则命中
           PK=$(sed -n 's/.*hex) *: *\([0-9a-f]\{64\}\).*/\1/p' "$WORK/keygen.log")
           [ "${#PK}" = 64 ] || { echo "::error::没能从 keygen 输出里取到 64 位公钥"; exit 1; }
-
-          printf 'skiff release smoke\n' > "$WORK/artifact.bin"
-          "$TOOL" sign-file "$WORK/artifact.bin" --key "$WORK/release.key"
-          "$TOOL" verify-file "$WORK/artifact.bin" --pubkey "$PK"
-          # 反例：错公钥必须被拒
-          if "$TOOL" verify-file "$WORK/artifact.bin" --pubkey "$(echo "$PK" | tr '0-9a-f' '1-9a-f0')"; then
-            echo "::error::错误公钥竟然验签通过"
-            exit 1
-          fi
+          [ -s "$WORK/release.key" ] || { echo "::error::keygen 没有写出私钥文件"; exit 1; }
 
       - name: 插件包链路（new → build → pack → verify）
         run: |

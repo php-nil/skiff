@@ -1,7 +1,7 @@
 #!/bin/sh
 # Skiff（轻舟）宿主机直装脚本（POSIX sh，方案 §5.1）
 #
-# 由发布包内执行，前提：外层已校验 tar.gz 的 SHA-256 与 ed25519 签名。
+# 由发布包内执行，前提：外层已校验 tar.gz 的 SHA-256 摘要（§11 决策 12：发布物不签名）。
 # 本脚本不负责校验包含自身的压缩包（自校验悖论，§5.1）。
 #
 # 用法: sh install.sh [--prefix /usr/local] [--no-start] [--no-systemd]

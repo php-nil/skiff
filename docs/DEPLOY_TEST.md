@@ -26,7 +26,7 @@
 | 2 单测 | `cargo test --workspace` | 149 项全 ok、0 failed | 同上；失败项按输出定位，别整体重跑蒙过去 |
 | 3 结构 | `cargo run -p xtask -- check` | 结尾「全部通过 ✅」 | 商店包变量/Compose 字段对齐被改坏了 |
 
-三道都过再往下走。只拿预编译二进制、机器上没有 Rust 的话，跳过这三闸，但**必须**做 §2.1 的三件套校验和 §2.10 的权限链自检。
+三道都过再往下走。只拿预编译二进制、机器上没有 Rust 的话，跳过这三闸，但**必须**做 §2.1 的摘要校验和 §2.10 的权限链自检。
 
 ### 0.1 编译环境依赖
 
@@ -54,9 +54,8 @@ cargo check --workspace   # 闸 1
 cargo test  --workspace   # 闸 2
 cargo run -p xtask -- check   # 闸 3
 
-# 出包：tar.gz + .sha256 + .sig 三件套
-./target/debug/skiff-plugin keygen --out /root/release-test.key
-sh deploy/pack-release.sh --key /root/release-test.key
+# 出包：tar.gz + .sha256 两件套（发布物不签名，§11 决策 12）
+sh deploy/pack-release.sh
 ls -l dist/
 ```
 
@@ -67,7 +66,7 @@ ls -l dist/
 
 ```sh
 # 构建机
-sh deploy/pack-release.sh --key release.key
+sh deploy/pack-release.sh
 scp dist/skiff-0.1.0-linux-amd64.tar.gz* root@<目标机>:/root/
 
 # 目标机（无需 Rust）
@@ -82,17 +81,16 @@ cd /root && sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
 产物在 run 页 Artifacts 里下载（7 天保留），拉到目标机校验即可：
 
 ```sh
-# 目标机上：三件套来自 workflow 产物（publish 勾选后也可从 Release 下载）
+# 目标机上：两件套来自 workflow 产物（publish 勾选后也可从 Release 下载）
 # curl -LO https://github.com/<owner>/<repo>/releases/download/v0.1.0/skiff-0.1.0-linux-amd64.tar.gz
 sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
 ```
 
 CI 出的包与 `deploy/pack-release.sh` 手工出包**是同一份脚本、同一套布局**（CI 只是把
 `CARGO` 换成 `cross` 并传入架构与版本号），所以 §2 的装机步骤不用改。
-注意区分两种产物：`release.yml`（手动 dispatch）给的是完整三件套；`ci.yml` 的 `build` job
-（仅手动触发）只给裸二进制（**没有 `.sha256` / `.sig`**），仅用于验证"能在 musl 下静态编出来"，
-不要拿它装机。签名密钥没配 `RELEASE_SIGNING_KEY_HEX` 时包是未签名的，
-日志里会有 `::warning::`，别当成已签。见 [CI.md](CI.md) §4。
+注意区分两种产物：`release.yml`（手动 dispatch）给的是完整两件套；`ci.yml` 的 `build` job
+（仅手动触发）只给裸二进制（**没有 `.sha256`**），仅用于验证"能在 musl 下静态编出来"，
+不要拿它装机。见 [CI.md](CI.md) §4。
 
 ### 0.3 传到目标机的文件
 
@@ -100,7 +98,6 @@ CI 出的包与 `deploy/pack-release.sh` 手工出包**是同一份脚本、同�
 |---|---|---|
 | `skiff-<ver>-linux-<arch>.tar.gz` | 是 | 主程序与安装脚本 |
 | 同名 `.sha256` | 是 | 安装前校验，缺了等于没有发布物 |
-| 同名 `.sig` | 正式发布必需 | detached ed25519 签名（hex），用 `skiff-plugin verify-file` 验 |
 | 源码目录（路径 A） | 视情况 | 就地编译、以及给插件测试物编 demo |
 | `demo-0.1.0.wbpkg`（构建机产物） | 视情况 | 目标机没 Rust 时，用它跑 E 组 |
 
@@ -155,20 +152,15 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 
 ### 2.1 取得发布物并校验
 
-发布物三件套：`skiff-<ver>-linux-<arch>.tar.gz`、同名 `.sha256`、同名 `.sig`（detached ed25519，hex）。
+发布物两件套：`skiff-<ver>-linux-<arch>.tar.gz`、同名 `.sha256`。
+**不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏；
+`.sig` / `verify-file` 链路已移除。
 
-**安装顺序固定：先验摘要与签名，失败立即停手。** 包内 `install.sh` 不校验包含自己的压缩包（自校验悖论）。
+**安装顺序固定：先验摘要，失败立即停手。** 包内 `install.sh` 不校验包含自己的压缩包（自校验悖论）。
 
 ```sh
-# 1) 摘要
 sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
-
-# 2) 签名（用发布说明里给出的公钥 hex 与指纹，逐位核对）
-skiff-plugin verify-file skiff-0.1.0-linux-amd64.tar.gz --pubkey <发布公钥hex>
 ```
-
-没有 `skiff-plugin` 时，用任意一台装了 Rust 的机器 `cargo build --release -p skiff-sdk --bin skiff-plugin` 生成；
-只有 `sha256sum` 时能验摘要、**不能**验签名——签名验不了就等于这包来源不明，别装。
 
 ### 2.2 解包安装
 
@@ -453,7 +445,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | 编号 | 前置 | 步骤 | 预期 | 实测 | 结论 |
 |---|---|---|---|---|---|
 | A1 | 干净机器 | 改一个字节后跑 `sha256sum -c` | 校验失败并退出 | | |
-| A2 | 发布物 | `skiff-plugin verify-file` 用错误公钥 | 验签失败 | | |
+| A2 | 发布物 | 只给 tar.gz、不给 `.sha256` | 不得安装（缺摘要 = 没有发布物，§0.3） | | |
 | A3 | root | `sh install.sh` | unit 已 enable 且 active | | |
 | A4 | 已装 | 再跑一次 `install.sh` | 幂等，无报错，数据不丢 | | |
 | A5 | 已装 | `systemctl stop` 后 `start` | 自动恢复，前缀不变 | | |
@@ -607,8 +599,8 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | 备份恢复演练 | **未做** | “备份成功”不等于可恢复 | §12 |
 | 与 1Panel/宝塔共存实测 | **未做** | 仅设计上不冲突 | §12 |
 | **Linux 发行包的二进制体积** | **未实测** | 本机只产出 Windows PE（6.65 MB）；Linux x86_64 的实测体积与 `≤14MB` 目标的对照要在目标机上补 | §7、§12 |
-| 发布包（Linux）实跑 | 打包链路**已验证**，Linux 产物**未产出** | `pack-release.sh` 的构建→打包→摘要→签名→验签链路已在开发机跑通（§9.3）；但产物是 Windows 二进制，**不是可发布物** | §5.1 |
-| 多架构发布包（arm64） | 脚本支持，**未实测** | `deploy/pack-release.sh --target aarch64-...` 未跑过 | §12 |
+| 发布包（Linux）实跑 | 打包链路**已验证**，Linux 产物**已产出未装机** | `pack-release.sh` 的构建→打包→摘要链路在开发机与 CI（run 41270406760，双 musl）均跑通；产物为 musl 静态、过 `readelf` 自检，**但尚未在目标机实跑安装** | §5.1 |
+| 多架构发布包（arm64） | CI 已出包，**装机未实测** | `CARGO=cross sh deploy/pack-release.sh --target aarch64-...` 已在 run 41270406760 跑通；目标机实跑待补 | §12 |
 | 1Panel 商店上架 | 包结构就绪，**未上架** | `xtask check-1panel` 只校验变量对齐 | §5.4 |
 | 插件配置的管理界面 | **未实现**（`config_schema` 渲染表单没有） | 只能用 `skiff plugin config <id> <key> <value>` 写；插件侧 `Plugin::config()` 与内核 `capability/config` 路由已通 | §5.2 |
 
@@ -669,8 +661,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 ### 9.3 发布打包链路（开发机，产物不可发布）
 
 ```sh
-./target/release/skiff-plugin keygen --out dist/release-test.key   # 仅测试用
-sh deploy/pack-release.sh --key dist/release-test.key
+sh deploy/pack-release.sh
 ```
 
 | 步骤 | 观测 | 结论 |
@@ -678,8 +669,10 @@ sh deploy/pack-release.sh --key dist/release-test.key
 | 打包 | `dist/skiff-0.1.0-linux-amd64.tar.gz` 内含 `skiff` + `skiff-plugin` + 4 个安装脚本/样例 | 通过（2026-10-31 起含插件工具） |
 | 摘要 | `sha256sum -c` → `OK` | 通过 |
 | 确定性 | 同一输入重复打包，`sha256` 前后一致 | 通过（`--sort=name --mtime` 生效） |
-| 验签（正确公钥） | `✓ 验签通过`，退出码 0 | 通过 |
-| 验签（错误公钥 / 追加 1 字节） | 失败，退出码 **1** | 通过（不是「警告后继续」） |
+
+> 发布物签名（`.sig` / `verify-file`）已于 2026-11-01 移除（§11 决策 12）。移除前该链路
+> 曾实测通过（正/错公钥、篡改包结论均正确，2026-10-30），历史记录见 `docs/changes/`；
+> 验签不再是交付要求。
 
 **这批产物不能发布**：`uname -s` 是 MSYS，包内是 `skiff.exe`。它只证明脚本链路可用；正式包必须在 Linux 上重跑。
 
