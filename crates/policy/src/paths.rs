@@ -277,7 +277,15 @@ mod tests {
         let inside = dir.path().join("authorized").join("data");
         fs::create_dir_all(&inside).unwrap();
         let out = g.validate_bind_source(&inside).unwrap();
-        assert!(out.starts_with(dir.path().join("authorized")));
+        // 期望值也要走 canonicalize + normalize：Windows runner 的临时目录可能带
+        // 8.3 短名（RUNNER~1）或大小写差异，直接 starts_with 未规范化的拼接路径会误红。
+        let expect = normalize_display(&fs::canonicalize(dir.path().join("authorized")).unwrap());
+        assert!(
+            out.starts_with(&expect),
+            "out={} expect={}",
+            out.display(),
+            expect.display()
+        );
     }
 
     #[test]

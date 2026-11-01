@@ -235,7 +235,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bootstrap_permission_bits_match_red_line() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("data");
         let run_dir = tmp.path().join("run");
