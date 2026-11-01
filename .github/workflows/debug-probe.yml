@@ -1,0 +1,44 @@
+# 临时诊断工作流（用完即删）：定位 Release 打包时「plugins workspace 找不到根」的差异
+name: DebugProbe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      - run: rustup target add x86_64-unknown-linux-musl
+
+      - name: 环境
+        run: |
+          set -x
+          pwd
+          cargo --version
+          git rev-parse --short HEAD
+          ls -la | head -20
+          ls -la plugins | head -20
+
+      - name: P1 根目录 --manifest-path
+        run: cargo metadata --manifest-path plugins/Cargo.toml --format-version 1 > /dev/null && echo P1_OK
+
+      - name: P2 进 plugins 后 metadata
+        run: cd plugins && pwd && cargo metadata --format-version 1 > /dev/null && echo P2_OK
+
+      - name: P3 进 plugins 后 metadata --locked
+        run: cd plugins && cargo metadata --locked --format-version 1 > /dev/null && echo P3_OK
+
+      - name: P4 进 plugins 后 host 构建单插件
+        run: cd plugins && cargo build --release --locked -p skiff-plugin-guard && echo P4_OK
+
+      - name: P5 进 plugins 后 musl 构建单插件
+        run: cd plugins && cargo build --release --locked -p skiff-plugin-guard --target x86_64-unknown-linux-musl && echo P5_OK
+
+      - name: P6 根目录 --manifest-path musl 构建单插件
+        run: cargo build --release --locked --manifest-path plugins/Cargo.toml -p skiff-plugin-guard --target x86_64-unknown-linux-musl && echo P6_OK
