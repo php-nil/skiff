@@ -47,6 +47,7 @@
 | 部署与测试（非章节） | [DEPLOY_TEST.md](DEPLOY_TEST.md) | 两种部署形态的装机步骤、配置矩阵、7 组验收用例（A–G）、未实现清单、实测记录与排查表 |
 | 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、首次运行前的已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
+| 官方插件集规划（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与首批 3 个、`plugins/` 目录落地、开箱即用交付线（分析建议稿） |
 
 ### 按角色选读
 
@@ -88,3 +89,4 @@
 | 2026-10-31 | **文档与注释一致性校正**：清掉随改动腐化的数字（测试 107 → 118、crate 11 → 12、源码 15,475 行 / 65 文件）与不存在的文件引用（`docs/` 曾列 `PLUGIN_API.md` / `SECURITY.md` / `REVERSE_PROXY.md`）；修正两处「注释照抄设计图」——`crates/web/src/lib.rs` 与 §3.1 原写「可信代理 → 限流 → 安全入口 → 会话 → CSRF → RBAC → 审计」七层链，实际是四层 axum 中间件（`client_info`/`load_session`/`entry_guard`/`CatchPanic`），CSRF、RBAC、审计在 handler 内，限流只在登录路径；`templates.rs` 的 `web-assets/` 旧路径改为 `crates/web/templates/`。变更记录按日期正序重排。 |
 | 2026-10-31 | **工作流按开发阶段收编（不发新版）**：`release.yml` 摘掉 `v*` 标签触发、新增 `publish` 开关（默认 false：只构建 + 自检 + 传 workflow 产物，不建 GitHub Release）；`ci.yml` 的 musl `build` 改为仅 `workflow_dispatch`，纯文档改动（`docs/**`、`**.md` 等）不触发 CI；删掉 `apt-get install build-essential/pkg-config/shellcheck`（`ubuntu-24.04` 镜像已预装，shellcheck 加 `command -v` 存在性断言，宁可红也不静默跳过）；`pkg-chain` 由 release 改 debug 构建（验签名语义不需 opt）；同工具链 job 共用 rust-cache `shared-key: ci`；全 job 补 `timeout-minutes`。仍无 `continue-on-error`。同步更新 [CI.md](CI.md) 与 [DEPLOY_TEST.md](DEPLOY_TEST.md) 的发布表述。 |
 | 2026-11-01 | §11 新增决策 11（crate 拆分粒度）：复核 13 crate 拆分后**拍板维持现状、暂不动**，重审触发条件见该行；详 `docs/changes/2026-11-01.md`。 |
+| 2026-11-01 | 新增非章节文档 [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md)（官方插件集分析建议稿）：竞品对照、官方插件清单、首批 3 个（monitor/nginx/files）、`plugins/` 第二 workspace 目录方案与开箱即用交付线；**未拍板、未建目录、不改代码**。 |
