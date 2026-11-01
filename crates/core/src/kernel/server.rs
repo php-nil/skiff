@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
 use axum::http::Request;
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
