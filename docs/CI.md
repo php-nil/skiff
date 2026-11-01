@@ -108,8 +108,24 @@ git tag v0.1.0 && git push origin v0.1.0
 `manifest.key_id` 后打包；私钥不进产物、不进仓库。
 Secret 缺失时 job **直接失败**（宁可红也不要出个缺插件却看不出来的包）；只想调试打包链路
 时手动勾选 `skip_plugins`，那会打警告并产出「裸包」，不能作为正式发布物。
-`build` 的自检会数 `official/` 里是不是 4 个 `.wbpkg`，并用打包日志里的公钥逐个验签，
+`build` 的自检会数 `official/` 里是不是 5 个 `.wbpkg`，并用打包日志里的公钥逐个验签，
 `--arch` 按矩阵架构走——这条同时复核「载荷架构没错位」。
+
+**首次配置（只做一次；私钥只存在离线机与 secret 里）**：
+
+```sh
+# 1. 生成「官方插件签名身份」（0600；打印 公钥(hex) 与 指纹(key_id)，公钥随包发、指纹对外公布）
+skiff-plugin keygen --out skiff-official-signing.key
+# 2. 值 = 私钥文件里的 64 位 hex 种子（一行，不加引号）
+gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
+
+# 没有 gh 时走 REST：GET /repos/{owner}/{repo}/actions/secrets/public-key 取公钥，
+# 用它对种子做 crypto_box_seal，再 PUT .../actions/secrets/PLUGIN_SIGNING_KEY
+# （body = {"encrypted_value": <base64>, "key_id": <上一步的 key_id>}）
+```
+
+这把私钥是**发布身份**：换掉它等于换签名人，已导入旧公钥的用户会拒装新包，换之前想清楚。
+缺失时 `build` 第一步就红（报「缺少 secrets.PLUGIN_SIGNING_KEY」），不会静默出裸包。
 
 `build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与
 `aarch64-unknown-linux-musl`（用 `cross`，自带交叉工具链镜像），逐个跑

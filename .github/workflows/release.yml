@@ -162,7 +162,7 @@ jobs:
             exit 0
           fi
           n=$(ls -1 "$RUNNER_TEMP/x"/skiff-*/official/*.wbpkg | wc -l)
-          [ "$n" = 5 ] || { echo "::error::发布包应带 5 个官方插件包（guard/monitor/nginx/files/cron/cron），实得 $n"; exit 1; }
+          [ "$n" = 5 ] || { echo "::error::发布包应带 5 个官方插件包（guard/monitor/nginx/files/cron），实得 $n"; exit 1; }
           PUB=$(grep -o 'hex): [0-9a-f]\{64\}' "$RUNNER_TEMP/pack.log" | tail -1 | awk '{print $2}')
           [ "${#PUB}" = 64 ] || { echo "::error::没能从打包日志里取到官方插件公钥"; exit 1; }
           for p in "$RUNNER_TEMP/x"/skiff-*/official/*.wbpkg; do

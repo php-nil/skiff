@@ -47,7 +47,7 @@
 | 部署与测试（非章节） | [DEPLOY_TEST.md](DEPLOY_TEST.md) | 两种部署形态的装机步骤、配置矩阵、7 组验收用例（A–G）、未实现清单、实测记录与排查表 |
 | 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、首次运行前的已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
-| 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与首批 4 个（已落地）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
+| 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与首批 5 个（guard/monitor/nginx/files/cron，已落地）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
 
 ### 按角色选读
 
