@@ -25,8 +25,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（不带 v 前缀，如 0.1.0）"
-        required: true
+        # 开发阶段没有版本号：留空即可，产物用 night 占位（只影响命名）。
+        # 真发版（publish=true）必须填真实版本，占位版本会被 publish job 拒绝。
+        description: "版本号（不带 v 前缀，如 0.1.0）；开发阶段留空即可"
+        required: false
       publish:
         description: "建 GitHub Release（开发阶段默认关，只出 workflow 产物）"
         type: boolean
@@ -71,6 +73,10 @@ jobs:
           set -eu
           v="${{ inputs.version }}"
           v="${v#v}"
+          # 开发阶段留空：占位版本，只用于产物命名
+          if [ -z "$v" ]; then
+            v="night"
+          fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "版本: $v"
 
@@ -166,7 +172,13 @@ jobs:
         run: |
           set -eu
           # 输入允许带/不带 v 前缀，统一成恰好一个 v 开头
-          TAG="v${VERSION_INPUT#v}"
+          v="${VERSION_INPUT#v}"
+          # 发布必须是真实版本号，开发占位版本不允许挂上 Release 页
+          if [ -z "$v" ] || [ "$v" = "night" ]; then
+            echo "::error::publish=true 时 version 必须填真实版本号（night 占位版本拒绝发布）"
+            exit 1
+          fi
+          TAG="v$v"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else

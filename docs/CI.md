@@ -72,7 +72,7 @@ PR 突然变红，排查成本很高。升级方式：改 `ci.yml` / `release.ym
 
 ```sh
 # GitHub → Actions → Release → Run workflow
-#   version: 任意（如 0.1.0-dev，仅用于产物命名）
+#   version: 留空即可（开发阶段没有版本号，产物自动用 night 占位命名）
 #   publish: 保持 false → 只构建 + 自检 + 传 workflow 产物，不建 Release
 ```
 
@@ -83,7 +83,8 @@ Release 页保持干净。等真要发版时：
 # 1. 改版本（Cargo.toml 的 workspace.package.version）
 # 2. 打标签推送（先把 release.yml 里注释掉的 push.tags 放开）
 git tag v0.1.0 && git push origin v0.1.0
-# 或仍然手动 dispatch，但把 publish 勾成 true
+# 或仍然手动 dispatch，但 version 必须填真实版本号、publish 勾成 true
+#   （night 占位版本会被 publish job 直接拒绝）
 ```
 
 `build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与
