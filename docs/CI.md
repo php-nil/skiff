@@ -127,6 +127,12 @@ gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
 这把私钥是**发布身份**：换掉它等于换签名人，已导入旧公钥的用户会拒装新包，换之前想清楚。
 缺失时 `build` 第一步就红（报「缺少 secrets.PLUGIN_SIGNING_KEY」），不会静默出裸包。
 
+**插件构建一律从仓库根用 `--manifest-path plugins/Cargo.toml` 调**，不能先 `cd plugins`
+再 build：`cross` 按 cwd 判定要把哪个 cargo 项目挂进容器，cwd 落在子 workspace 时
+`../../crates/{model,sdk}` 这些跨 workspace 的 path 依赖解析不到根 workspace，直接报
+`failed to find a workspace root`（run 41309171057 双架构同红就是这个）。产物仍在
+`plugins/target/<triple>/release/plugin`。
+
 `build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与
 `aarch64-unknown-linux-musl`（用 `cross`，自带交叉工具链镜像），逐个跑
 `deploy/pack-release.sh`；`publish`（仅 `publish=true` 时跑）汇总两套产物 +

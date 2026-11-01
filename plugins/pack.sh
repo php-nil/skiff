@@ -67,11 +67,15 @@ for name in $PLUGINS; do
     [ -f "$dir/manifest.toml" ] || die "缺少 $dir/manifest.toml"
 
     log "构建 skiff-plugin-$name（${TARGET:-host}）"
-    (
-        cd plugins
-        # shellcheck disable=SC2086
-        "$PLUGIN_CARGO" build --release --locked -p "skiff-plugin-$name" ${TARGET:+--target "$TARGET"}
-    )
+    # 必须在**仓库根**用 --manifest-path 调，不能 `cd plugins` 再 build：
+    # cross 按 cwd 判定要把哪个 cargo 项目挂进容器，cwd 进到 plugins 后它只挂子
+    # workspace，`../../crates/{model,sdk}` 这些跨 workspace 的 path 依赖解析不到
+    # 根 workspace，直接报 `failed to find a workspace root`（CI run 41309171057
+    # 双架构同红）。产物仍在 plugins/target/<triple>/release/plugin（target 目录
+    # 跟着被选中的 workspace 走，不随 cwd 变）。
+    # shellcheck disable=SC2086
+    "$PLUGIN_CARGO" build --release --locked --manifest-path plugins/Cargo.toml \
+        -p "skiff-plugin-$name" ${TARGET:+--target "$TARGET"}
 
     src="plugins/target${TARGET:+/$TARGET}/release/plugin"
     [ -f "$src" ] || src="$src.exe"
