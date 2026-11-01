@@ -37,7 +37,7 @@ pub async fn serve(cfg: &Config, router: axum::Router) -> Result<()> {
                 .handle(handle)
                 .serve(app)
                 .await
-                .context("HTTPS 服务异常退出")?;
+                .map_err(|e| serve_error(e, addr))?;
         }
         _ => {
             if !cfg.dev_http {
@@ -48,10 +48,20 @@ pub async fn serve(cfg: &Config, router: axum::Router) -> Result<()> {
                 .handle(handle)
                 .serve(app)
                 .await
-                .context("HTTP 服务异常退出")?;
+                .map_err(|e| serve_error(e, addr))?;
         }
     }
     Ok(())
+}
+
+/// 监听失败要给运维能看懂的原因（端口被占是最常见的一种），
+/// 不能笼统一句「服务异常退出」就完了。
+fn serve_error(e: std::io::Error, addr: SocketAddr) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::AddrInUse {
+        anyhow::anyhow!("监听 {addr} 失败：地址已被占用（换 listen 或停掉占用进程）")
+    } else {
+        anyhow::anyhow!("监听 {addr} 失败: {e}")
+    }
 }
 
 async fn shutdown_signal() {
@@ -94,4 +104,58 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             let _ = state.db.purge_expired_sessions();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    use axum::Router;
+    use skiff_docker::{Form, Tier};
+
+    fn test_cfg(listen: SocketAddr) -> Config {
+        let tmp = std::env::temp_dir().join(format!("skiff-server-test-{}", std::process::id()));
+        Config {
+            listen,
+            data_dir: tmp.join("data"),
+            run_dir: tmp.join("run"),
+            config_path: tmp.join("config.toml"),
+            docker_socket: "/nonexistent/docker.sock".into(),
+            form: Form::Native,
+            tier: Tier::Basic,
+            tls_cert: None,
+            tls_key: None,
+            allow_insecure_http: true,
+            allow_unsigned: true,
+            allow_reduced_sandbox: true,
+            trusted_proxies: vec![],
+            authorized_roots: vec![],
+            external_url: None,
+            login_concurrency: 1,
+            dev_http: true,
+            plaintext_behind_proxy: false,
+        }
+    }
+
+    /// 端口被占：必须立刻带明确原因返回 Err，不得 panic、不得挂住。
+    #[tokio::test]
+    async fn occupied_port_reports_address_in_use() {
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+
+        let res = tokio::time::timeout(
+            Duration::from_secs(5),
+            serve(&test_cfg(addr), Router::new()),
+        )
+        .await
+        .expect("端口被占应立即返回错误，而不是挂住");
+
+        let err = res.expect_err("端口被占时 serve 必须返回 Err");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("已被占用"),
+            "错误信息应指明端口占用，实际: {msg}"
+        );
+    }
 }

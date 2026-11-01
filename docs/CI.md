@@ -17,7 +17,8 @@
 | `.github/workflows/release.yml` | **仅手动**（`v*` 标签触发已摘） | 出发布物验证包：amd64 / arm64 静态包 + 摘要 + 签名。默认只传 workflow 产物，`publish` 勾选才建 GitHub Release |
 | `.github/workflows/audit.yml` | 每周一 03:00 UTC、手动 | `cargo audit` 查 RustSec 公告 |
 
-`dependabot.yml` 每周提 cargo 与 actions 的 minor/patch 升级 PR（major 不自动提，要人读 changelog）。
+依赖升级不走 Dependabot：`dependabot.yml` 已删（2026-10-31），minor/patch 升级人工按需
+`cargo update` + 合入前三关；漏洞通报仍由 `audit.yml` 周扫兜底。
 
 ## 2. 门槛与判定口径
 
@@ -27,12 +28,13 @@
 |---|---|---|
 | `fmt` | `cargo fmt --all --check` | 零格式漂移 |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 零告警（“release 零警告”是验收项，所以这里 `-D warnings`） |
-| `test` | `cargo test --workspace --locked --no-fail-fast` | 全量单测（当前 149 项）+ 文档测试；**unix-only 用例第一次真正执行**（见 §3） |
+| `test` | `cargo test --workspace --locked --no-fail-fast` | 全量单测 + 文档测试；**unix-only 用例第一次真正执行**（见 §3） |
+| `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / 包格式 |
 | `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify | 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF | 部署脚本在 Linux 上跑得起来 |
-| `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/` 跳登录、未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
+| `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
 | `build` | musl 静态编译 + `readelf` 查 `PT_INTERP` | 产物不挑宿主 glibc（**仅 workflow_dispatch**，不随 push 跑） |
 
 `pkg-chain` 的两条反例是重点：只测“正例通过”会把验签写成摆设——错公钥也过、缺公钥也过，

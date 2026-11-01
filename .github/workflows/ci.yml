@@ -6,6 +6,8 @@
 #   fmt         rustfmt 干净，零格式漂移
 #   clippy      -D warnings，任何告警即红（"release 零警告"是验收项）
 #   test        全量单测 + 文档测试；unix-only 用例在 Linux runner 上**真正执行**
+#   test-win    同一套单测在 Windows 上跑：守 cfg(not(unix)) stub，并让
+#               「Windows 本地三关」这条交付口径在 CI 也有复核
 #   msrv        用 workspace 的 rust-version（1.89）做类型检查，防止悄悄抬高 MSRV
 #   verify      xtask check：1Panel 变量对齐 / Compose 字段子集 / 包格式
 #   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验）
@@ -116,6 +118,29 @@ jobs:
       # 全量单测 + 文档测试；crates/sdk/tests/kernel_contract.rs 是 unix-only，
       # 这条 job 是它第一次真正运行的地方（开发机是 Windows，只编译不执行）
       # C 工具链（rusqlite bundled / zstd-sys / ring）用镜像预装的 gcc/make/pkg-config
+      - run: cargo test --workspace --locked --no-fail-fast
+
+  # ── 同一套单测的 Windows 口径 ──────────────────────────────────
+  test-win:
+    name: 单测（Windows）
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: 走 crates.io（仓库里的 .cargo/config.toml 是给国内开发机用的镜像）
+        shell: bash
+        run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # 不与 Linux 共用：平台不同 target 产物对不上，共用只会互相顶掉
+          key: windows
+      # 为什么要有这条：cfg(not(unix)) 的 stub 路径（kernel::spawn 等）只有
+      # Windows 编得到，而交付门槛「本地三关」就是 Windows 口径——CI 不跑
+      # 等于没人复核。2026-10-31 那批缺陷正是「Windows 绿、Linux 红」的
+      # 平台盲区，反方向同样成立。
       - run: cargo test --workspace --locked --no-fail-fast
 
   msrv:

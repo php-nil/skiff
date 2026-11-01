@@ -359,3 +359,135 @@ mod tests {
         assert!((200_000..201_000).contains(&a));
     }
 }
+
+#[cfg(test)]
+mod migrate_restore_tests {
+    use super::*;
+
+    fn build_pkg(dir: &Path, id: &str, version: &str) -> PathBuf {
+        use skiff_pkgfmt::SigningKey;
+        let key = SigningKey::generate();
+        let src = dir.join(format!("src-{version}"));
+        let arch = skiff_pkgfmt::host_arch();
+        std::fs::create_dir_all(src.join("bin").join(&arch)).unwrap();
+        std::fs::write(src.join("bin").join(&arch).join("plugin"), b"test-binary").unwrap();
+        let manifest = format!(
+            r#"id = "{id}"
+name = "Demo"
+version = "{version}"
+key_id = "{key_id}"
+api = "1.0"
+requires_full_sandbox = false
+requires = ["docker"]
+[[permissions]]
+capability = "docker"
+verbs = ["list"]
+"#,
+            id = id,
+            version = version,
+            key_id = key.key_id()
+        );
+        std::fs::write(src.join("manifest.toml"), manifest).unwrap();
+        let out = dir.join(format!("pkg-{version}.wbpkg"));
+        skiff_pkgfmt::package::pack_dir(&src, &out, &key.seed_hex()).unwrap();
+        out
+    }
+
+    fn opts() -> InstallOptions {
+        InstallOptions {
+            trusted_public_key: None,
+            allow_unsigned: true,
+            granted_permissions: vec!["docker:list".into()],
+            object_grants: vec![],
+            available_capabilities: skiff_pkgfmt::manifest::Capability::all().to_vec(),
+            allow_reduced_sandbox: true,
+            arch: skiff_pkgfmt::host_arch(),
+        }
+    }
+
+    fn installed_versions(root: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(root.join("versions"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// 升级保 data、版本目录只留 N-1 窗口（§4.5 迁移恢复口径）。
+    #[test]
+    fn upgrade_preserves_data_and_keeps_n_minus_1_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        install_package(&db, data_dir, &build_pkg(data_dir, id, "0.1.0"), &opts()).unwrap();
+        let root = plugin_root(data_dir, id);
+        let user_data = root.join("data").join("user.json");
+        std::fs::write(&user_data, b"{\"keep\":true}").unwrap();
+
+        install_package(&db, data_dir, &build_pkg(data_dir, id, "0.2.0"), &opts()).unwrap();
+        assert!(user_data.exists(), "升级不得清掉插件 data/");
+        assert_eq!(installed_versions(&root), vec!["0.1.0", "0.2.0"]);
+        assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.2.0");
+
+        install_package(&db, data_dir, &build_pkg(data_dir, id, "0.3.0"), &opts()).unwrap();
+        assert!(user_data.exists(), "二次升级 data/ 仍须保留");
+        assert_eq!(
+            installed_versions(&root),
+            vec!["0.2.0", "0.3.0"],
+            "只保留 N-1 窗口：最早的 0.1.0 应被清理"
+        );
+    }
+
+    /// 同版与降级必须拒（灾难恢复入口另设，不在安装路径里偷偷降级）。
+    #[test]
+    fn downgrade_and_same_version_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        install_package(&db, data_dir, &build_pkg(data_dir, id, "0.2.0"), &opts()).unwrap();
+        let e = install_package(&db, data_dir, &build_pkg(data_dir, id, "0.2.0"), &opts())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("升级只接受更高版本"), "同版应拒: {e}");
+        let e = install_package(&db, data_dir, &build_pkg(data_dir, id, "0.1.0"), &opts())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("升级只接受更高版本"), "降级应拒: {e}");
+    }
+
+    /// 卸载默认保 data/（§4.5）；显式 delete_data 才清干净。
+    #[test]
+    fn uninstall_keeps_data_unless_delete_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        install_package(&db, data_dir, &build_pkg(data_dir, id, "0.1.0"), &opts()).unwrap();
+        let root = plugin_root(data_dir, id);
+        let user_data = root.join("data").join("user.json");
+        std::fs::write(&user_data, b"{}").unwrap();
+
+        uninstall_package(&db, data_dir, id, false).unwrap();
+        assert!(user_data.exists(), "默认卸载必须保留 data/");
+        // 卸载会清掉版本内容（允许留下空的 versions/ 占位）
+        assert!(
+            !root.join("versions").exists()
+                || std::fs::read_dir(root.join("versions"))
+                    .unwrap()
+                    .next()
+                    .is_none(),
+            "版本内容应清空"
+        );
+        assert!(db.plugin(id).unwrap().is_none(), "库记录应删除");
+
+        uninstall_package(&db, data_dir, id, true).unwrap();
+        assert!(!root.exists(), "delete_data 应清掉整个插件目录");
+    }
+}

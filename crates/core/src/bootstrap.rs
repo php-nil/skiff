@@ -205,4 +205,66 @@ mod tests {
         assert_eq!(pw.len(), 16);
         assert!(!pw.contains('0') && !pw.contains('O'));
     }
+
+    fn test_config(data_dir: PathBuf, run_dir: PathBuf, config_path: PathBuf) -> Config {
+        Config {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            data_dir,
+            run_dir,
+            config_path,
+            docker_socket: "/nonexistent/docker.sock".into(),
+            form: Form::Native,
+            tier: Tier::Basic,
+            tls_cert: None,
+            tls_key: None,
+            allow_insecure_http: true,
+            allow_unsigned: true,
+            allow_reduced_sandbox: true,
+            trusted_proxies: vec![],
+            authorized_roots: vec![],
+            external_url: None,
+            login_concurrency: 1,
+            dev_http: true,
+            plaintext_behind_proxy: false,
+        }
+    }
+
+    /// 权限口径回归（红线）：数据根与 plugins/ 必须 0711（可穿越不可列），
+    /// 改回 0700 会让降权到独立 UID 的插件全线 EACCES；backup 0700、
+    /// 库文件与初始口令 0600。Windows 上 restrict_mode 是 no-op，只在 unix 断言。
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_permission_bits_match_red_line() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let run_dir = tmp.path().join("run");
+        let cfg = test_config(data_dir.clone(), run_dir, tmp.path().join("config.toml"));
+        let boot = bootstrap(&cfg).expect("bootstrap 应成功");
+        assert!(boot.first_run.is_some(), "空库首启应生成初始管理员");
+        drop(boot);
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().mode() & 0o7777;
+        assert_eq!(
+            mode(&data_dir),
+            0o711,
+            "数据根必须 0711：改回 0700 会让降权插件全线 EACCES"
+        );
+        assert_eq!(mode(&data_dir.join("plugins")), 0o711);
+        assert_eq!(mode(&data_dir.join("backup")), 0o700);
+        assert_eq!(mode(&data_dir.join("skiff.db")), 0o600);
+        assert_eq!(mode(&data_dir.join("initial-admin.txt")), 0o600);
+    }
+
+    /// 跨平台烟测：bootstrap 全流程（建目录、开库、首启管理员）必须能跑完。
+    #[test]
+    fn bootstrap_succeeds_and_creates_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(
+            tmp.path().join("data"),
+            tmp.path().join("run"),
+            tmp.path().join("config.toml"),
+        );
+        bootstrap(&cfg).expect("bootstrap 应成功");
+    }
 }

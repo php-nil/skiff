@@ -25,6 +25,11 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_with(Form::Native)
+}
+
+/// 指定部署形态的 harness：受限形态（1Panel Docker 包）能力面收缩用它。
+fn harness_with(form: Form) -> Harness {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_path_buf();
     let db = Arc::new(Db::open_in_memory().unwrap());
@@ -44,10 +49,10 @@ fn harness() -> Harness {
         trusted_proxies: vec![],
         external_url: None,
         tier: Tier::Basic,
-        form: Form::Native,
+        form,
         allow_unsigned: false,
         allow_reduced_sandbox: true,
-        policy: Policy::new(Tier::Basic, Form::Native, vec![]).unwrap(),
+        policy: Policy::new(Tier::Basic, form, vec![]).unwrap(),
         session: skiff_identity::SessionLimits::default(),
         login_concurrency: 2,
     };
@@ -121,6 +126,15 @@ async fn login(app: &Router, username: &str, password: &str) -> String {
 
 /// 构造一个签名的 .wbpkg（`bin/<arch>/plugin` + manifest），返回（包路径、公钥 hex、key_id）。
 fn build_package(root: &std::path::Path) -> (PathBuf, String, String) {
+    build_package_with(root, "docker", "docker")
+}
+
+/// 同上，但可指定 manifest 的 `requires` 能力与权限 capability（受限形态测试用）。
+fn build_package_with(
+    root: &std::path::Path,
+    requires: &str,
+    cap: &str,
+) -> (PathBuf, String, String) {
     use skiff_pkgfmt::SigningKey;
     let key = SigningKey::generate();
     let src = root.join("pkg-src");
@@ -134,12 +148,14 @@ version = "0.1.0"
 key_id = "{}"
 api = "1.0"
 requires_full_sandbox = false
-requires = ["docker"]
+requires = ["{}"]
 [[permissions]]
-capability = "docker"
+capability = "{}"
 verbs = ["list"]
 "#,
-        key.key_id()
+        key.key_id(),
+        requires,
+        cap
     );
     std::fs::write(src.join("manifest.toml"), manifest).unwrap();
     let out = root.join("demo.wbpkg");
@@ -652,4 +668,207 @@ async fn api_token_scopes_are_enforced() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "会话认证不应被 scope 收窄");
+}
+
+/// 契约（§6.3）：裸 `/` 必须 404 而不是跳登录——302 会把随机安全入口前缀
+/// 直接递给扫描器，隐蔽入口当场作废。前缀路径未登录才跳登录页。
+///
+/// 曾经只有冒烟脚本盯着这件事，而脚本期望写反过（写成 / 应跳转）；
+/// 把契约固化在这里，脚本与测试互为对拍。
+#[tokio::test]
+async fn bare_root_is_hidden_404_and_prefix_redirects_to_login() {
+    let h = harness();
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "裸 / 必须 404（隐蔽入口），跳转会泄露安全入口前缀"
+    );
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(Request::builder().uri("/p").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "前缀路径未登录应跳登录"
+    );
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(loc.contains("/p/login"), "跳转目标应是登录页: {loc}");
+}
+
+/// 并发票据复用：同一张 exec 票据被并发出示两次，必须只核销成功一次。
+/// 顺序版已有（app 层 ticket_is_single_use），这条守「查重与作废不在同一临界区」
+/// 这类并发回归。
+#[tokio::test]
+async fn exec_ticket_concurrent_reuse_wins_exactly_once() {
+    let h = harness();
+    let (ticket, _) = h.state.issue_exec_ticket("sess-a", "cid-1").await;
+
+    let a = {
+        let st = h.state.clone();
+        let t = ticket.clone();
+        tokio::spawn(async move { st.consume_exec_ticket(&t, "sess-a", "cid-1").await })
+    };
+    let b = {
+        let st = h.state.clone();
+        let t = ticket.clone();
+        tokio::spawn(async move { st.consume_exec_ticket(&t, "sess-a", "cid-1").await })
+    };
+    let (ra, rb) = tokio::join!(a, b);
+    let (ra, rb) = (ra.unwrap(), rb.unwrap());
+    assert!(
+        ra.is_ok() ^ rb.is_ok(),
+        "并发下同一票据必须恰好核销一次: ({ra:?}, {rb:?})"
+    );
+}
+
+/// 受限形态（1Panel Docker 包）能力面收缩（§5.4）：只提供 docker/identity，
+/// 需要 fs/net 能力的插件必须在确认安装时被拒，不能装上再坏。
+#[tokio::test]
+async fn restricted_form_rejects_plugins_beyond_capability_surface() {
+    let h = harness_with(Form::DockerRestricted);
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+
+    // 需要 fs 能力的包：受限形态没有 fs
+    let (pkg, pubkey, kid) = build_package_with(&h.data_dir, "fs", "fs");
+    h.state.db.trust_key(&kid, &pubkey, "测试作者").unwrap();
+
+    let bytes = std::fs::read(&pkg).unwrap();
+    let (ct, body) = multipart(&bytes);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/install")
+                .header(header::CONTENT_TYPE, ct)
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "上传校验应通过（问题在能力面）"
+    );
+
+    let incoming = h.data_dir.join("plugins").join(".incoming");
+    let staged: Vec<_> = std::fs::read_dir(&incoming)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".wbpkg"))
+        .collect();
+    let confirm_token = staged[0].trim_end_matches(".wbpkg").to_string();
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/confirm")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(form_body(&[
+                    ("token", &confirm_token),
+                    ("csrf", &csrf),
+                    ("grant", "fs:list"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "受限形态装 fs 插件必须被拒"
+    );
+    let text = body_text(resp).await;
+    assert!(
+        text.contains("能力"),
+        "拒绝原因应指明能力面收缩，实际: {text}"
+    );
+    assert!(
+        h.state.db.plugin("com.example.demo").unwrap().is_none(),
+        "被拒的插件不得落库"
+    );
+    let leftover: Vec<_> = std::fs::read_dir(&incoming)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".wbpkg"))
+        .collect();
+    assert!(leftover.is_empty(), "确认后暂存包应清理: {leftover:?}");
+
+    // 对照组：docker 能力的包在受限形态下照常可装
+    let (pkg2, pubkey2, kid2) = build_package_with(&h.data_dir, "docker", "docker");
+    h.state.db.trust_key(&kid2, &pubkey2, "测试作者").unwrap();
+    let bytes = std::fs::read(&pkg2).unwrap();
+    let (ct, body) = multipart(&bytes);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/install")
+                .header(header::CONTENT_TYPE, ct)
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let staged: Vec<_> = std::fs::read_dir(&incoming)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".wbpkg"))
+        .collect();
+    let confirm_token = staged[0].trim_end_matches(".wbpkg").to_string();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/confirm")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(form_body(&[
+                    ("token", &confirm_token),
+                    ("csrf", &csrf),
+                    ("grant", "docker:list"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "docker 能力的插件在受限形态下应可装"
+    );
 }

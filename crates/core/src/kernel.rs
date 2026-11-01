@@ -534,3 +534,114 @@ mod imp {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use skiff_app::WebConfig;
+    use skiff_docker::{DockerService, Form, Policy, Tier};
+    use skiff_plugin::{Supervisor, SupervisorConfig};
+    use skiff_store::Db;
+    use tower::ServiceExt;
+
+    fn test_state(data_dir: std::path::PathBuf) -> Arc<AppState> {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let docker = Arc::new(DockerService::connect("/nonexistent/docker.sock"));
+        let sup = Arc::new(Supervisor::new(
+            SupervisorConfig::new(data_dir.clone(), data_dir.join("run")),
+            db.clone(),
+        ));
+        let cfg = WebConfig {
+            data_dir,
+            entry_prefix: "p".into(),
+            dev_http: true,
+            trusted_proxies: vec![],
+            external_url: None,
+            tier: Tier::Basic,
+            form: Form::Native,
+            allow_unsigned: false,
+            allow_reduced_sandbox: true,
+            policy: Policy::new(Tier::Basic, Form::Native, vec![]).unwrap(),
+            session: skiff_identity::SessionLimits::default(),
+            login_concurrency: 1,
+        };
+        AppState::new(db, docker, sup, cfg, "csrf-test-secret".into(), "test")
+    }
+
+    fn healthz_req() -> Request<Body> {
+        Request::builder()
+            .uri("/healthz")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// 回归：`kernel::spawn` 必须立即返回、真后台跑 accept 循环，且不拖死 HTTP。
+    ///
+    /// 历史缺陷：unix 版曾是常驻 accept 循环，被 `main` `.await` 后 HTTP serve
+    /// 永远排不到（Windows stub 立即返回，掩盖了整个问题，最后是冒烟抓到的）。
+    /// 这里用独立线程 + 超时把「阻塞调用方」变成 2s 内的红灯，而不是挂死测试。
+    #[tokio::test]
+    async fn spawn_does_not_block_and_http_serves_alongside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_dir = tmp.path().join("run");
+        let state = test_state(tmp.path().to_path_buf());
+
+        let handle = tokio::runtime::Handle::current();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let st = state.clone();
+            let rd = run_dir.clone();
+            std::thread::spawn(move || {
+                let _guard = handle.enter();
+                spawn(st, rd);
+                tx.send(()).ok();
+            });
+        }
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("kernel::spawn 必须立即返回，不得阻塞调用方");
+
+        // HTTP 侧必须同时可用（oneshot 不占端口；真 TCP 探测由冒烟 job 负责）
+        let resp = skiff_web::router(state)
+            .oneshot(healthz_req())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        #[cfg(unix)]
+        {
+            let sock = run_dir.join("kernel.sock");
+            let mut ok = false;
+            for _ in 0..20 {
+                if tokio::net::UnixStream::connect(&sock).await.is_ok() {
+                    ok = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(ok, "kernel.sock 2s 内应可连接: {}", sock.display());
+        }
+    }
+
+    /// kernel.sock 绑不上（路径被占）时：不得 panic，HTTP 侧照常服务。
+    #[tokio::test]
+    async fn kernel_bind_failure_degrades_but_http_stays_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run_dir = tmp.path().join("run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        // 用目录占住 socket 路径：remove_file 删不掉目录，bind 必失败
+        std::fs::create_dir_all(run_dir.join("kernel.sock")).unwrap();
+
+        let state = test_state(tmp.path().to_path_buf());
+        spawn(state.clone(), run_dir);
+
+        let resp = skiff_web::router(state)
+            .oneshot(healthz_req())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "kernel 起不来不能拖死 HTTP");
+    }
+}
