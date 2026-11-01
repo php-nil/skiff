@@ -1,8 +1,9 @@
 # 持续集成与发布流水线
 
-> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804，最新 41268216736）。
-> Release 流水线首跑 2026-11-01（run 41268959656）：musl 双架构全绿，`docker` job
-> 暴露 Dockerfile 过期 COPY（已修，见 2026-11-01 变更记录）。§5 实测列已按 run 结果回填。
+> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804，最新 41270386660）。
+> Release 流水线首跑 2026-11-01（run 41268959656）musl 双架构全绿、`docker` job 暴露
+> Dockerfile 过期 COPY；修复后复跑 **run 41270406760 全绿**（含 docker 构建 + 自检，
+> 产物 release-amd64 / release-arm64 已上传）。§5 实测列已按 run 结果回填。
 >
 > 相关：工程结构与 `xtask` 三类固化校验见 [§8 工程结构](sections/08-engineering.md)；
 > 装机步骤与真机验收用例见 [DEPLOY_TEST.md](DEPLOY_TEST.md)。
@@ -116,7 +117,7 @@ git tag v0.1.0 && git push origin v0.1.0
 | `cross` 拉镜像 | 首次要拉 `ghcr.io/cross-rs/*` 镜像，arm64 尤其慢（可能 10 分钟以上） | `release.yml` 的 `build` 矩阵卡在 “Pulling image” 属正常 | Release 首跑（41268959656）两套 build job 均绿，拉镜像+编译在 60min 超时内完成 |
 | arm64 musl + ring | `ring` 的汇编在 aarch64-musl 下需要正确的 clang 目标；cross 镜像通常自带 | 报 `unknown target triple` 之类 = 交叉工具链问题，不是代码问题 | 41268959656 的 aarch64 build 绿：ring 交叉编译过，产物过静态链接自检 |
 | `smoke` 非 root 启动 | 首次在非 root 下起服务：`kernel.sock` / 数据目录 chown 失败只应告警，不应退出 | 日志里出现 `kernel.sock 服务未启动` 是**预期**（无插件即无影响） | 41268216736 等多轮 smoke 全绿：`/healthz` 20s 内就绪，服务非 root 起得来 |
-| Dockerfile | 此前两处**必崩**（`-p skiff-core` 包名不存在、少 `COPY xtask`）已修；第三次是资源挪位类 | `docker` job 红在 `COPY ... not found` = 仓库布局变了、Dockerfile 引用没跟上 | Release 首跑（41268959656）暴露第三处：`COPY web-assets` 过期（10-31 迁位未同步）→ 已修复，并给 CI 加 COPY 源静态校验兜住此类 |
+| Dockerfile | 此前两处**必崩**（`-p skiff-core` 包名不存在、少 `COPY xtask`）已修；第三次是资源挪位类 | `docker` job 红在 `COPY ... not found` = 仓库布局变了、Dockerfile 引用没跟上 | Release 首跑（41268959656）暴露第三处：`COPY web-assets` 过期（10-31 迁位未同步）→ 已修复并加 COPY 源静态校验，复跑 41270406760 的 docker job 全绿（构建 + `version`/`--help` 自检） |
 | 预装假设 | 删掉 `apt-get` 后押注镜像预装 gcc/pkg-config/shellcheck；镜像升级可能拿掉某个 | 对应 job 红在「找不到命令」→ 把安装步骤加回去，别改成静默跳过 | 截至 41268216736 全绿，预装清单成立（shellcheck 仍有 `command -v` 断言兜底） |
 
 ## 6. 本地复现 CI
