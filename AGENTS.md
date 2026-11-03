@@ -17,7 +17,8 @@
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
-| `.github/workflows/` | CI/CD | `ci.yml` / `release.yml` / `audit.yml` 三个工作流 | `docs/CI.md` |
+| `tools/` | 开发机工具 | `linux-check.sh`（本地 Linux 目标编译级复核）、`iter.sh`（单轮迭代编排：门禁/取包/装/验收/回滚协同） | `docs/ITERATION.md` |
+| `.github/workflows/` | CI/CD | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml` 四个工作流 | `docs/CI.md` |
 
 > 顶层目录变动时，须同步更新上表；子项目新增独立规范（`crates/<name>/AGENTS.md`）须在上表登记入口。`target/`、`skiff-run/`、`.workbuddy/` 等是本地产物/工作数据，已被 gitignore，不得入库。
 

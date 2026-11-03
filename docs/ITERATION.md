@@ -1,6 +1,6 @@
 # 迭代验证回路
 
-> 状态：**方案定稿，待上机**（2026-11-03，同日三次修订后收敛）。  
+> 状态：**已上机**。首装轮 2026-11-03 通过（PASS 47 / FAIL 0 / SKIP 1），工具见 §8；回滚与升级轮尚未执行。  
 > 本文是「改代码 → 上机验证」的唯一依据。交付门槛见 [AGENTS.md](../AGENTS.md) §3，工作流见 [CI.md](CI.md)，  
 > 验收用例原文见 [DEPLOY\_TEST.md](DEPLOY_TEST.md)（本文 §5 是其可执行版）。
 
@@ -106,19 +106,35 @@ root（`id -u`=0）· systemd 为 PID 1 · 与真实时间偏差 < 30 s · 端�
 
 **每条断言必须断言具体文案或数值，不能只看状态码。** 历史教训：`Multipart` 超限被 `map_err` 包成 400，与业务校验的 400 撞在一起，只看状态码分辨不出哪一层拒的。
 
+`deploy/accept.sh` 当前覆盖 **preflight / A / B / D0** 四组（2026-11-03）；D1/D2/E/F/C/G 尚未实现，
+调用时会明确报 SKIP 而不是悄悄跳过——**SKIP 不算通过**。
+
+> 一轮只能跑**一次** B 组：改密会消耗 `initial-admin.txt`，重跑 B2 必然失败。要再验一次就重装（`rm -rf /var/lib/skiff` 后跑 `install.sh`，约 1 s）。
+> `B4` 登录限流会把 admin 锁 5 分钟，只有首装轮末尾建议开 `--with-rate-limit`。
+
 ## 6. 已知问题
 
-### 6.1 P0：按发布包装机，服务起不来
+### 6.1 已修：按发布包装机，服务起不来（P0，2026-11-03 上机复现并修复）
 
-`install.sh` 把 `config.toml.example` 原样拷成 `/etc/skiff/config.toml`，其中 `allow_insecure_http` 是注释态（默认 `false`），systemd 的 `ExecStart` 不带 `--dev`，`listen` 默认 loopback → `Config::validate` 直接 bail：
+`install.sh` 把 `config.toml.example` 原样拷成 `/etc/skiff/config.toml`，其中 `allow_insecure_http` 是注释态（默认 `false`），systemd 的 `ExecStart` 不带 `--dev`，`listen` 默认 loopback → `Config::validate` 直接 bail。
+
+**上机复现证据**（首装轮，包为 release run 41311345915 的 amd64 产物 + 当轮 `install.sh`）：
 
 ```
-错误: 未配置 TLS：loopback 调试请显式加 --dev 或 allow_insecure_http = true（§6.2）。
+skiff[7648]: 错误: 未配置 TLS：loopback 调试请显式加 --dev 或 allow_insecure_http = true（§6.2）…
+systemd[1]: skiff.service: Scheduled restart job, restart counter is at 9.
 ```
 
-2026-11-03 用等价配置实跑 `skiff serve --config` 复现，进程启动即退出。之所以至今未暴露，是因为装机链路**从未在真机执行过**（`DEPLOY_TEST.md` §9.5 自述"仍未验证"）。
+`install.sh` 当时仍打印「已启动 skiff.service」并退出 0 —— 这是比 bug 更坏的一层：**装失败被判成装成功**。
 
-候选修法：① `install.sh` 在"无 TLS + loopback"时写入 `allow_insecure_http = true` 并告警；② 示例配置默认打开该行；③ 装完生成自签证书。**上机复现后再定，不基于推断改码。**
+**修法（两处，都已在 2026-11-03 应用到首轮）**
+
+1. `install.sh` 新增 `ensure_insecure_http`：拷贝示例配置后，仅当「未配 TLS **且** `listen` 是 loopback」时追加
+   `allow_insecure_http = true` 并告警；非 loopback 明文保持拒绝启动（不绕过 §6.2 裸奔防护）。
+2. `install.sh` 启动段改为**验证 active**：`systemctl restart` 后轮询 20 s，仍非 active 就打印 journal 尾部并 `exit 1`。
+   安装脚本不再能「报告成功但服务在 crash loop」。
+
+**修后实测**：`INSTALL_EXIT=0`、`systemctl is-active=active`、`/healthz` 4 s 内 200、A 组 24 条与 B 组 12 条全绿（见 §9 与 `docs/changes/2026-11-03.md`）。
 
 ### 6.2 约束：明文 HTTP 下测不了登录
 
@@ -127,6 +143,15 @@ root（`id -u`=0）· systemd 为 PID 1 · 与真实时间偏差 < 30 s · 端�
 ### 6.3 已消除：Docker 外网依赖
 
 `docker-bootstrap.sh` 依赖 `linuxmirrors.cn` 与 `mirrors.tencent.com`，原为最大未知；现已确认测试机可出外网，走现成链路，`exit 4` 路径仅作降级断言。
+
+### 6.4 已修：systemd 静默改掉数据根属主（只有上机才看得见）
+
+首轮 A 组权限断言 A6a/A6b/A6c 全红：`/var/lib/skiff` 实得 `711 root:skiff-plugins`，而 §1.1 写的是 `root:root`。
+根因是 unit 里的 `StateDirectory=skiff`：systemd 按 `User=/Group=` 把它 chown 成 `root:skiff-plugins`，**把 install.sh 的 chown 变成空操作**。
+
+已删掉 `StateDirectory=`，数据根口径回归「单一来源 = install.sh」（`root:root 0711`）；`RuntimeDirectory=` 保留（`/run/skiff` 在 tmpfs 上，必须由 systemd 建，属组正好是 `skiff-plugins`，与 §1.1 一致）。
+
+同时修正一处**文档口径**（不是代码缺陷）：服务进程创建的文件（`skiff.db`、`initial-admin.txt`）属组是 `skiff-plugins`——unit 的 `Group=` 决定进程主 gid。权限闸门是 `0600`（组位为 0），不是属主。`DEPLOY_TEST.md` §1.1 已按实测改正。
 
 ## 7. 测试机与凭据
 
@@ -149,14 +174,14 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 
 首连只做环境探测、不装任何东西：`uname -m/-r`、`/etc/os-release`、`nproc`、`free -h`、`df -h`、`id -u`、`sudo -n true`、`ss -lntp`、`curl -I linuxmirrors.cn`、`apt-get -s update`、landlock ABI、cgroups v2、`systemd --version`。结果回填 §9。
 
-## 8. 工具落点（待建）
+## 8. 工具落点
 
-| 文件                           | 作用                                                                            |
-| ---------------------------- | ----------------------------------------------------------------------------- |
-| `deploy/accept.sh`           | §5 可执行版，PASS/FAIL/SKIP + 退出码                                                  |
-| `tools/iter.sh`              | 单轮编排：门禁 → 同步 → 取包 → 回滚协同 → 装 → 验收 → 报告                                        |
-| `tools/linux-check.sh`       | 本地 `cargo check --target x86_64-unknown-linux-gnu`，30 s 挡 `cfg(unix)` 错       |
-| `.github/workflows/iter.yml` | 迭代包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 |
+| 文件                           | 作用                                                                            | 状态 |
+| ---------------------------- | ----------------------------------------------------------------------------- | --- |
+| `deploy/accept.sh`           | §5 可执行版，PASS/FAIL/SKIP + 退出码                                                  | **已建并实跑**（preflight / A / B / D0；D1/D2/E/F/C/G 未实现，缺则报 SKIP） |
+| `tools/iter.sh`              | 单轮编排：门禁 → 取包 → 回滚协同 → 装 → 验收 → 报告                                        | **已建**；gate/fetch/run 三档实跑过，`rollback-wait` 未实测 |
+| `tools/linux-check.sh`       | 本地 `cargo check --target x86_64-unknown-linux-gnu`，30 s 挡 `cfg(unix)` 错       | **已建** |
+| `.github/workflows/iter.yml` | 迭代包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 | **已建，尚未跑过一次**（本机推不上 GitHub，见 §9.2） |
 
 `release.yml` **不动**（已修四轮，里程碑才跑）。单独建 `iter.yml` 而非加参数：`release.yml` 的 `cancel-in-progress: false` 是刻意防"发出半个包"的，每轮 dispatch 会累积排队并污染发布历史。
 
@@ -172,12 +197,24 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 | CPU / 内存 / 磁盘                                  | 4 vCPU / 3.9 GB（可用 3.5 GB）/ 120 GB 根分区，可用 113 GB | 2026-11-03 实测 |
 | systemd 是否 PID 1                               | 是（systemd 257，257.13-1~deb13u1） | 2026-11-03 实测 |
 | landlock ABI / cgroups v2                      | landlock 在 LSM 列表内（内核 6.12，ABI ≥ 1；`/sys/kernel/security/landlock` 目录未出现，以 LSM 列表为准）/ cgroups v2 | 2026-11-03 实测 |
-| Docker 安装耗时                                    | 待测        |                        |
-| 回滚耗时                                           | 待测        |                        |
-| 单轮墙钟（升级轮 / 首装轮）                                | 待测        |                        |
-| `install.sh` 装完是否即起                            | 待测（本轮上机执行中，§6.1 预期红） | 2026-11-03 代码审读 + 本地实跑 |
+| Docker 安装耗时                                    | apt 装包 5 s（16:22:14→16:22:19，114 MB 下载 6 s）；整段含 `docker.sh` 拉取约 2 min（起止未精确打点） | 2026-11-03 实测 |
+| 回滚耗时                                           | 未测（本轮机器本身是干净的，没有触发回滚） |                        |
+| 单轮墙钟（升级轮 / 首装轮）                                | 升级型（Docker 已装）：`install.sh` **≤1 s**、`accept.sh` **7 s**；首装轮含 Docker 约 2.5 min | 2026-11-03 实测 |
+| `install.sh` 装完是否即起                            | **已修，修后绿**：`INSTALL_EXIT=0`、`is-active=active`、`/healthz` 4 s 内 200 | 2026-11-03 实测（§6.1） |
 
-### 9.1 首连发现的两处基线偏差（不是代码问题，但会挡住自动化）
+### 9.1 环境限制：github.com 不通，只有 api.github.com 通
+
+本机与测试机**都**只能访问 `api.github.com`（200）；`github.com:443` 在两边都失败（本机 schannel 握手失败 / openssl `unexpected eof`；测试机超时）。
+后果与绕行：
+
+* `git push` 走不通 → 本轮**没有**用 `iter.yml` 出包，改为「取已有 `release.yml` run 的 artifact」：
+  `GET /repos/:o/:r/actions/artifacts/:id/zip`（302 到 blob）可用，且在**测试机上下载**（13 MB 十几秒）比本机（十几 KB/s）快两个数量级。
+* 包内 `install.sh` / `config.toml.example` / `skiff.service` / `uninstall.sh` / `docker-bootstrap.sh` 与当轮工作区
+  **md5 逐一比对完全一致**，所以这轮验的是「当前脚本 + 11-01 的二进制」，脚本相关结论有效；二进制差异只影响功能面，不影响安装链路。
+* 推送能力恢复后，`iter.yml` 可直接 workflow_dispatch，`tools/iter.sh` 无需改（它只取 artifact）。
+
+
+### 9.2 首连发现的两处基线偏差（不是代码问题，但会挡住自动化）
 
 1. **公钥没进 `authorized_keys`。** 首次连接受 `Permission denied (publickey,password)`，改用密码
    （`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`）登入后才补上 §7 那把公钥。
@@ -193,3 +230,4 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 | 2026-11-03 | 初稿：分层、回滚协同、验收口径                                                                     |
 | 2026-11-03 | 按「内网 VM + 全量回滚 + Docker 需测」复审：基线分 T0/T1，Docker 升为待测（D0/D1/D2），回滚加强制校时，新建 `iter.yml` |
 | 2026-11-03 | 按「可出外网 + 本机可达 + 可打 T0/T1」定稿：Docker 外网依赖降级为已消除；凭据改为直接写入本文；全文精简                       |
+| 2026-11-03 | **首次上机（首装轮）**：§6.1 P0 复现并修复（`install.sh` 追加 `allow_insecure_http` + 启动后验 active）；§6.4 删 `StateDirectory=`（systemd 静默改掉数据根属主）；建 `accept.sh` / `iter.sh` / `linux-check.sh` / `iter.yml`；回填 §9 环境数字；记 §9.1 github.com 不通与绕行。结果 **PASS 47 / FAIL 0 / SKIP 1**（SKIP = 装后阶段不查端口占用） |

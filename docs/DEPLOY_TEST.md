@@ -141,13 +141,20 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 | `/var/lib/skiff/plugins/{id}/run` | 0700 | 插件 UID | pid/临时文件；**每次重启重建后要重新 chown** |
 | `/var/lib/skiff/backup` | 0700 | root:root | 库快照 |
 | `/var/lib/skiff/official` | 0755 | root:root | 随发布包携带的官方插件 `.wbpkg` 与 `public-key.txt`；**只有安装器写**，插件不可写（否则等于给插件一个改信任源的位置） |
-| `/var/lib/skiff/skiff.db` | 0600 | root:root | 插件读不到库（E8） |
+| `/var/lib/skiff/skiff.db` | 0600 | root:skiff-plugins | 插件读不到库（E8）。**属组是 `skiff-plugins` 不是 `root`**：unit 里 `Group=skiff-plugins` 决定进程主 gid，服务创建的文件随它落组；真正的闸门是 0600（组位为 0）。2026-11-03 上机实测改正，见下注 |
 | `/etc/skiff/config.toml` | 0644 | root:root | 不含密钥；TLS 私钥另放 `/etc/skiff/tls/` |
 | `/run/skiff` | 0711 | root:skiff-plugins | 可穿越；socket 本身仍按组判权 |
 | `/run/skiff/kernel.sock` | 0660 | root:skiff-plugins | 插件靠**附加组**进来，不是靠 umask |
 | `/run/skiff/plugins/{id}/plugin.sock` | 0600 | 插件 UID | 只允许内核连这个插件的 RPC |
 
 > 插件 UID 是 `sha256(id)` 取模分配的 200000–200999，**不是**系统 passwd 里的用户；`getent passwd` 查不到是正常的。
+
+> **两处 2026-11-03 上机实测驱动的修正**（不是缺陷，是口径与实现对齐）：
+> 1. **服务创建的文件属组是 `skiff-plugins`**（`skiff.db`、`initial-admin.txt`）——unit 的 `Group=` 决定进程主 gid，
+>    文件随它落组。权限闸门是 `0600`（组与其他人都是 0），属主仍是 root。原表写 `root:root` 已按实测改。
+> 2. **数据根的属主只由 `install.sh` 决定。** unit 里原本还有 `StateDirectory=skiff`，systemd 会按 `User=/Group=`
+>    把它 chown 成 `root:skiff-plugins`，**静默覆盖 install.sh 设的 `root:root 0711`**（实测 A6a/A6b/A6c 三条全红）。
+>    已删掉该行：数据根由安装器建、口径单一来源；`/run/skiff` 仍在 unit 里（tmpfs，重启即失，必须由 systemd 建）。
 
 ## 2. 形态 A：宿主机 systemd 直装（主形态）
 
@@ -478,6 +485,11 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 
 记录方式：每条填「实测」「结论」两列；失败即阻断该里程碑，不要“先放过去”。角色列 `v/o/a` 依次为 viewer / operator / admin。
 
+> **2026-11-03 首装轮已把 A 组（除依赖特定前置的几条）、B 组 12 条、D0 四条跑成脚本**：`deploy/accept.sh`
+> （`--group preflight,a,b,d0`）。脚本里的编号（A3/A5/A6a…/B2a/B3e/D0c…）与下表逐条对应，
+> 结果 **PASS 47 / FAIL 0 / SKIP 1**（SKIP 是「装后阶段不查端口占用」，按设计跳过）。
+> 首轮还抓出两个真缺陷，见 [ITERATION.md](ITERATION.md) §6.1（install.sh 装完服务起不来）与 §6.4（systemd 改掉数据根属主）。
+
 ### 6.1 A 组：安装与启动
 
 | 编号 | 前置 | 步骤 | 预期 | 实测 | 结论 |
@@ -743,9 +755,13 @@ sh deploy/pack-release.sh
 
 ### 9.5 仍未验证（明确留下）
 
-- 全部 Linux 运行期行为：setuid 链、`SO_PEERCRED`、`kernel.sock` 组权限、systemd 安装、docker.sock 管理。**这一轮的目标就是把它们测掉**。
-- 含 C 依赖 crate 的 Linux 编译（`plugin` / `sdk` / `core` / `web` / `store` / `docker`）：只能在目标机 `cargo check --workspace` 时确认。
-- 资源数字（RSS、CPU、Linux 二进制体积）、备份恢复演练、与 1Panel 共存。
+- **已测掉一部分**（2026-11-03 首装轮，Debian 13 / 内核 6.12）：systemd 安装与 enable、`kernel.sock` 组权限、`/run/skiff` 0711、
+  首启产物与权限位、安全入口 303 与裸 `/` 404、`healthz`、`doctor`、`kill -9` 拉起、首登强制改密与改密后旧会话失效、
+  登录限流 503 文案、Docker CE 安装链路与 `--check-only` 不重装。逐条结果见
+  [`docs/ITERATION.md`](ITERATION.md) §9 与 [`docs/changes/2026-11-03.md`](changes/2026-11-03.md)。
+- **仍未测**：插件降权链路（setuid / `SO_PEERCRED` / 插件 `data` 目录 EACCES 边界）、docker.sock 实际管理动作、
+  备份恢复演练、N-1 升级窗口、C 组 TLS/反代、资源数字（RSS / CPU / 二进制体积）、与 1Panel 共存。
+- 含 C 依赖 crate 的 Linux **运行**仍只能靠 CI 的 `test` job；本地只能做到 `cargo check --target`（不链接）。
 
 ## 变更记录
 

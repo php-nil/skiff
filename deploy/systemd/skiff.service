@@ -21,10 +21,11 @@ RestartSec=3
 # kernel.sock 本身是 0660 + 附加组 skiff-plugins，那才是真正的闸门。
 RuntimeDirectory=skiff
 RuntimeDirectoryMode=0711
-# /var/lib/skiff 首启由 install.sh 建；这里声明给 systemd 记住属组。
-# 同样要 other-x，否则降权后的插件进不去自己的 data/。
-StateDirectory=skiff
-StateDirectoryMode=0711
+# 刻意**不写** StateDirectory=skiff：systemd 会把 StateDirectory 按 User=/Group= chown，
+# 于是 /var/lib/skiff 变成 root:skiff-plugins，覆盖 install.sh 设的 root:root 0711，
+# 和 DEPLOY_TEST.md §1.1 的权限口径对不上（2026-11-03 上机实测：装完 A6a/A6b/A6c 三条
+# 权限断言全红，原因就在这里）。数据根由 install.sh 建并固定 0711 root:root；
+# 运行目录 /run/skiff 仍由 systemd 建（tmpfs，重启即失，必须由它来建）。
 
 # 插件 Supervisor 需要在自己的 cgroup 下放子进程；delegate 让容器/沙箱后续可控。
 # 注：cgroups v2 限额在 MVP 未实现（见 docs/sections/12-pending-tests.md）。

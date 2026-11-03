@@ -108,6 +108,43 @@ if [ ! -f "$CONF_DIR/config.toml" ] && [ -f "$SRC_DIR/config.toml.example" ]; th
     log "已放置示例配置 $CONF_DIR/config.toml（请按需修改）"
 fi
 
+# 2.1 「示例配置装完即起不来」的收口
+#
+# 示例配置里 allow_insecure_http 是**注释态**（默认 false），而 listen 默认 loopback：
+# 这个组合会被 Config::validate 直接 bail，服务装完就是 crash loop。2026-11-03 上机
+# 实测确认（docs/ITERATION.md §6.1，restart counter 一路涨到 9）。
+#
+# 只在「loopback + 未配 TLS」这一种明确安全的前提下补上，并告警；非 loopback 明文
+# 仍保持拒绝启动（§6.2 裸奔防护不许被安装脚本绕过）。
+ensure_insecure_http() {
+    conf=$1
+    [ -f "$conf" ] || return 0
+    # 配了 TLS 就不需要（且该项无意义）
+    if grep -qE '^[[:space:]]*tls_cert[[:space:]]*=' "$conf"; then
+        return 0
+    fi
+    if grep -qE '^[[:space:]]*allow_insecure_http[[:space:]]*=[[:space:]]*true' "$conf"; then
+        return 0
+    fi
+    listen=$(sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$conf" | head -1)
+    case "$listen" in
+        127.0.0.1:*|localhost:*|localhost|\[::1\]:*) ;;
+        *)
+            warn "未配 TLS 且 listen=$listen 不是 loopback：面板启动会被拒绝（§6.2）。"
+            warn "请配 tls_cert/tls_key（§2.4 A）或改回 loopback + 可信反代（§2.4 B）；未自动改写配置。"
+            return 0
+            ;;
+    esac
+    {
+        printf '\n# ── 由 install.sh 追加 ──\n'
+        printf '# 示例配置里本项是注释态（默认 false），而 loopback + 无 TLS 时不开它会拒绝启动。\n'
+        printf '# 配好 tls_cert/tls_key 或改为可信反代后，建议删掉下面这行（见 DEPLOY_TEST.md §2.4）。\n'
+        printf 'allow_insecure_http = true\n'
+    } >> "$conf"
+    warn "已在 $conf 启用明文 HTTP（仅 loopback）。对外提供访问前必须配 TLS 或可信反代（§2.4）。"
+}
+ensure_insecure_http "$CONF_DIR/config.toml"
+
 # 3. 二进制（先写临时文件再原子替换，避免升级瞬间的半个可执行文件）
 mkdir -p "$BIN_DIR"
 install -m 0755 "$SRC_DIR/skiff" "$BIN_DIR/.skiff.new"
@@ -181,7 +218,21 @@ if [ "$DO_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null 2>&1 && [ -f "$SRC
     log "已安装并 enable skiff.service"
     if [ "$DO_START" -eq 1 ]; then
         systemctl restart skiff
-        log "已启动 skiff.service"
+        # 「起不起来的安装」不能报成功：以前这里无条件打印"已启动"，把 §6.1 那个 P0
+        # 藏了一个多月——装完 crash loop，验收和环境都以为装好了。
+        i=0
+        while [ "$i" -lt 20 ]; do
+            [ "$(systemctl is-active skiff 2>/dev/null)" = "active" ] && break
+            i=$((i + 1))
+            sleep 1
+        done
+        if [ "$(systemctl is-active skiff 2>/dev/null)" != "active" ]; then
+            printf '[install] 错误: skiff.service 20 秒内没有进入 active\n' >&2
+            journalctl -u skiff -n 20 --no-pager 2>/dev/null >&2 || true
+            printf '[install] 修好 %s 后执行 systemctl restart skiff；排障见 docs/DEPLOY_TEST.md §7\n' "$CONF_DIR/config.toml" >&2
+            exit 1
+        fi
+        log "已启动 skiff.service（active）"
     fi
 else
     log "跳过 systemd 安装（--no-systemd 或无 systemctl）"

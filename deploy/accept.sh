@@ -27,7 +27,7 @@ set -u
 PORT=18080
 DATA_DIR=/var/lib/skiff
 CONF=/etc/skiff/config.toml
-GROUPS="all"
+GROUP_SEL="all"
 INSTALL_EXIT=""
 PREFIX=""
 NOW_EPOCH=""
@@ -37,8 +37,8 @@ PKG_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --group) GROUPS="${2:?--group 需要参数}"; shift 2 ;;
-        --group=*) GROUPS="${1#*=}"; shift ;;
+        --group) GROUP_SEL="${2:?--group 需要参数}"; shift 2 ;;
+        --group=*) GROUP_SEL="${1#*=}"; shift ;;
         --install-exit) INSTALL_EXIT="${2:?}"; shift 2 ;;
         --install-exit=*) INSTALL_EXIT="${1#*=}"; shift ;;
         --port) PORT="${2:?}"; shift 2 ;;
@@ -145,9 +145,9 @@ preflight() {
     [ -n "${avail:-}" ] || avail=$(df -Pk /var | awk 'NR==2{print $4}')
     if [ "$avail" -ge 2097152 ]; then pass PF5 "磁盘可用 ≥ 2 GB" "$((avail / 1024)) MB"; else fail PF5 "磁盘可用 ≥ 2 GB" "$((avail / 1024)) MB"; fi
 
-    kv=$(uname -r | sed 's/^\([0-9]*\)\.\([0-9]*\).*/\1 \2/')
-    set -- $kv
-    if [ "$1" -gt 5 ] || { [ "$1" -eq 5 ] && [ "$2" -ge 13 ]; }; then
+    major=$(uname -r | cut -d. -f1)
+    minor=$(uname -r | cut -d. -f2)
+    if [ "$major" -gt 5 ] || { [ "$major" -eq 5 ] && [ "$minor" -ge 13 ]; }; then
         pass PF6 "内核 ≥ 5.13（landlock 前提）" "$(uname -r)"
     else
         fail PF6 "内核 ≥ 5.13（landlock 前提）" "$(uname -r)"
@@ -214,16 +214,22 @@ group_a() {
     fi
 
     # 首启产物与权限位（§1.1）
+    # 注：由**服务进程**创建的文件（skiff.db / initial-admin.txt）属组是 skiff-plugins，
+    # 因为 unit 里 Group=skiff-plugins 决定了进程的主 gid。真正的闸门是 0600（组无任何权限），
+    # 不是属主。2026-11-03 上机实测确认，DEPLOY_TEST.md §1.1 已按实测改正。
     check_perm A6a "$DATA_DIR" 711 "root:root"
     check_perm A6b "$DATA_DIR/plugins" 711 "root:root"
     check_perm A6c "$DATA_DIR/backup" 700 "root:root"
-    check_perm A6d "$DATA_DIR/skiff.db" 600 "root:root"
+    check_perm A6d "$DATA_DIR/skiff.db" 600 "root:skiff-plugins"
     check_perm A6e "$CONF" 644 "root:root"
     check_perm A6f "/run/skiff" 711 "root:skiff-plugins"
-    [ -S /run/skiff/kernel.sock ] && check_perm A6g "/run/skiff/kernel.sock" 660 "root:skiff-plugins" \
-        || skip A6g "kernel.sock 0660 root:skiff-plugins" "socket 不存在（未启或未创建）"
+    if [ -S /run/skiff/kernel.sock ]; then
+        check_perm A6g "/run/skiff/kernel.sock" 660 "root:skiff-plugins"
+    else
+        skip A6g "kernel.sock 0660 root:skiff-plugins" "socket 不存在（未启或未创建）"
+    fi
     if [ -f "$DATA_DIR/initial-admin.txt" ]; then
-        check_perm A6h "$DATA_DIR/initial-admin.txt" 600 "root:root"
+        check_perm A6h "$DATA_DIR/initial-admin.txt" 600 "root:skiff-plugins"
     else
         skip A6h "initial-admin.txt 0600" "文件不在（本机已改过密？）"
     fi
@@ -239,10 +245,12 @@ group_a() {
     fi
 
     # 重启恢复，且入口前缀不变（前缀持久化在库里，不该每次变）
-    before=$(systemctl show -p MainPID --value skiff)
     systemctl restart skiff >/dev/null 2>&1
-    wait_health 20 && pass A9a "systemctl restart 后自恢复" "health 200" \
-        || fail A9a "systemctl restart 后自恢复" "20 s 未就绪"
+    if wait_health 20; then
+        pass A9a "systemctl restart 后自恢复" "health 200"
+    else
+        fail A9a "systemctl restart 后自恢复" "20 s 未就绪"
+    fi
     p2=$(journalctl -u skiff --no-pager -n 200 2>/dev/null | tr -d '\r' \
          | sed -n 's#.*/\([A-Za-z0-9_-]\{4,\}\)/login.*#\1#p' | tail -1)
     if [ -n "$P" ] && [ -n "$p2" ]; then
@@ -361,14 +369,18 @@ group_b() {
         while [ "$i" -le 6 ]; do
             last_code=$(curl -s -o "$TMP/b4.html" -b "$TMP/jar2" -c "$TMP/jar2" -w '%{http_code}' \
                 -d "csrf=$csrf3" -d "username=admin" -d "password=wrong-$i" "$BASE/$P/login")
-            last_body=$(tr -d '\n' < "$TMP/b4.html" | head -c 300)
+            # 整页保留：错误页把文案渲染在 <p class="muted"> 里，截断到 300 字节会切在
+            # <title> 之后、正文之前，把要断言的文案自己丢掉（2026-11-03 首次跑就踩了）
+            last_body=$(tr -d '\n' < "$TMP/b4.html")
             i=$((i + 1))
         done
         assert_eq B4 "第 6 次错误口令被限流" "$last_code" "503"
-        case "$last_body" in
-            *秒后重试*) pass B4a "限流文案含剩余秒数" "$(echo "$last_body" | grep -o '请 [0-9]* 秒后重试' | head -1)" ;;
-            *) fail B4a "限流文案含剩余秒数" "$last_body" ;;
-        esac
+        if printf '%s' "$last_body" | grep -q '秒后重试'; then
+            pass B4a "限流文案含剩余秒数" \
+                "$(printf '%s' "$last_body" | sed -n 's/.*\(请 [0-9]* 秒后重试\).*/\1/p' | head -1)"
+        else
+            fail B4a "限流文案含剩余秒数" "$(printf '%s' "$last_body" | head -c 200)"
+        fi
         echo "[accept] 注意：B4 已把 admin 锁 5 分钟，后续登录断言会一直被拒" >&2
     else
         skip B4 "登录限流（5 次/5 min）" "未开 --with-rate-limit（会锁 admin 5 分钟）"
@@ -428,9 +440,9 @@ summary() {
     fi
 }
 
-case ",$GROUPS," in
+case ",$GROUP_SEL," in
     *,all,*) RUN="preflight a b d0" ;;
-    *) RUN=$(echo "$GROUPS" | tr ',' ' ') ;;
+    *) RUN=$(echo "$GROUP_SEL" | tr ',' ' ') ;;
 esac
 
 for g in $RUN; do
