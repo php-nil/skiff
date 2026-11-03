@@ -2,7 +2,7 @@
 
 > 版本：**v1.0（MVP 实施稿）** ｜ 产品名：**Skiff（轻舟）** ｜ 交付形态：**宿主机 systemd 直装（主）**；1Panel 商店 Docker 包为可选受限形态
 > 本方案 = **MVP 方案**，只覆盖三核心：**Web 管理服务 / Docker 管理 / 插件体系**。文件管理、防火墙、网站管理、主机监控等宿主能力**内核不内置，由插件层在宿主能力面上实现**（§1.4、§3.3）。
-> 状态：**MVP 代码已落地**（M0–M4 代码面完成：`cargo clippy --workspace --all-targets -- -D warnings` 干净、`cargo test --workspace` **212 项通过**、插件 workspace 29 项全绿、Windows 开发机 HTTP 冒烟通过）。结构为 **14 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）；五轮架构审查的 P0/P1/P2 与后续优化（[ARCH_REVIEW.md](ARCH_REVIEW.md) §9、§10.4、§11、§12、§13）已闭环。上机前复查修掉 9 个只在 Linux 暴露的问题（[DEPLOY_TEST.md](DEPLOY_TEST.md) §9.4）；GitHub CI 与发布流水线已配置（[CI.md](CI.md)），**尚未在 GitHub 上跑过第一次**。**Linux 专属能力（setuid 降权 / landlock / cgroups / Unix socket / docker.sock / systemd 安装）与全部资源数字尚未实测**，逐项见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §8。目标读者：决策者（哥）。
+> 状态：**MVP 代码已落地**（M0–M4 主体代码面完成，M4 的 landlock/cgroups/nftables 与 net 收口尚未实现：`cargo clippy --workspace --all-targets -- -D warnings` 干净、`cargo test --workspace` **215 项（Windows 本机 212 通过 + 3 项既存文件锁红；Linux CI 待复跑）**、插件 workspace 29 项全绿、Windows 开发机 HTTP 冒烟通过）。结构为 **14 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）；五轮架构审查的 P0/P1/P2 与后续优化（[ARCH_REVIEW.md](ARCH_REVIEW.md) §9、§10.4、§11、§12、§13）已闭环，**第六轮全量复审（§14）为只审不修**：分层已稳，剩余问题集中在「授权→执行→留痕」缺少唯一入口（判权拒绝 11/13 不留痕、装/卸包各写两条审计），行动清单见该节 14.7。上机前复查修掉 9 个只在 Linux 暴露的问题（[DEPLOY_TEST.md](DEPLOY_TEST.md) §9.4）；GitHub CI 与发布流水线已配置（[CI.md](CI.md)），CI 已首绿并完成 Release 流水线验证。**Linux 专属能力中，setuid 降权 / Unix socket 已在 Linux CI 跑过单测；docker.sock 与 systemd 安装尚未真机验证；landlock / cgroups / nftables 尚未实现**；全部资源数字尚未实测，逐项见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §8。目标读者：决策者（哥）。
 > **文档结构**：本文件是索引与一页结论；正文按章节拆在 `docs/sections/` 下（13 个文件覆盖 §1–§12，§4 分两册）。**文件名前缀 = 章号**，章节号 `§x.y` 全局唯一、拆分不重编号，跨文件引用直接按编号跳转（见下方文档地图）。
 
 ---
@@ -16,7 +16,7 @@
 | HTTP | `axum` + `tower` | 生态稳、体积可控 |
 | 前端 | `askama` SSR + `htmx` + 懒加载 ESM（xterm.js） | 免 Node 构建链，首屏 < 100KB gzip |
 | 存储 | `rusqlite`(bundled) + TOML | 单文件、可外部审计 |
-| 扩展 | **进程外插件（宿主机原生）+ Unix Socket JSON-RPC**，ed25519 签名、权限逐条确认、UI 沙箱 iframe、降权 + landlock/cgroups | 崩溃隔离，越权收敛到 Broker；插件体系 = 开放能力面（§4） |
+| 扩展 | **进程外插件（宿主机原生）+ Unix Socket JSON-RPC**，ed25519 签名、权限逐条确认、UI 沙箱 iframe、降权；landlock/cgroups 属设计目标（未实现） | 崩溃隔离，越权收敛到 Broker；插件体系 = 开放能力面（§4） |
 | 部署 | **主形态：systemd 直装宿主机**；可选：1Panel 商店 Docker 包（受限，能力面收缩为 docker/identity） | 插件必须落宿主才撑得起第二核心；容器内 fork 不出宿主进程 |
 | 基础镜像 | **alpine:3.23**（仅可选 Docker 形态；3.20 已 EOL，禁用） | 排障（docker exec 进面板）需要 shell；跟随受支持分支（3.23 支持到 2027-11） |
 | 资源目标 | 空闲 RSS ≤ 25MB，CPU < 0.3%，二进制 ≤ 14MB | **设计目标，待 M5 实测回填**（口径见 §7） |
@@ -39,13 +39,13 @@
 | §5 部署 | [sections/05-deploy.md](sections/05-deploy.md) | systemd 直装、数据与升级、与 1Panel/宝塔共存、1Panel Docker 包、路径与卷校验 |
 | §6 安全 | [sections/06-security.md](sections/06-security.md) | 认证、传输与反代、暴露面与 RBAC、Docker Socket 三层控制、Compose 子集、插件安全 |
 | §7 资源预算 | [sections/07-budget.md](sections/07-budget.md) | 资源目标表、手法、登录峰值口径（与空闲 RSS 目标的关系） |
-| §8 工程结构 | [sections/08-engineering.md](sections/08-engineering.md) | crates 布局、核心 ↔ 代码对照、`xtask` 三类固化校验 |
+| §8 工程结构 | [sections/08-engineering.md](sections/08-engineering.md) | crates 布局、核心 ↔ 代码对照、`xtask` 两类固化校验（另有独立 `.wbpkg` 校验子命令） |
 | §9 里程碑 | [sections/09-milestones.md](sections/09-milestones.md) | M0–M5 交付物与通过标准、MVP 边界、9.1 架构核实门（原型挂里程碑） |
 | §10 风险 | [sections/10-risks.md](sections/10-risks.md) | 21 条风险（带 架构/契约/实现/运营 层级）、10.1 架构支柱级 6 条原型、10.2 契约级 5 条 |
 | §11 已拍板决策 | [sections/11-decisions.md](sections/11-decisions.md) | 10 条默认值（可推翻），不留阻塞实施的开放问题 |
 | §12 待实测清单 | [sections/12-pending-tests.md](sections/12-pending-tests.md) | 17 条实测项 + 12.1 架构层缺口 5 条，逐项挂里程碑 |
 | 部署与测试（非章节） | [DEPLOY_TEST.md](DEPLOY_TEST.md) | 两种部署形态的装机步骤、配置矩阵、7 组验收用例（A–G）、未实现清单、实测记录与排查表 |
-| 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、首次运行前的已知风险 |
+| 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、实测结果与已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
 | 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与首批 5 个（guard/monitor/nginx/files/cron，已落地）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
 
@@ -93,3 +93,5 @@
 | 2026-11-01 | **发布物去签名（§11 决策 12）**：发布物只验 detached `SHA-256` 摘要，不做签名。移除 `RELEASE_SIGNING_KEY_HEX` secret 流程、`.sig` 产物、`skiff-plugin sign-file/verify-file` 子命令与 `pkgfmt::sign_bytes`（`.wbpkg` 签名/TOFU 不动，决策 2 不变）；`pack-release.sh` 去掉 `--key`，CI 的 `pkg-chain` 首步改为 keygen 落盘/公钥输出冒烟（含「`--help` 不落盘」回归）。安装口径由「先验摘要与签名」改为「先验摘要」。理由与对照见 §11 决策 12；详 `docs/changes/2026-11-01.md`。 |
 | 2026-11-01 | **官方插件集落地（首批 4 个）+ 发布包携带**：新增顶层 `plugins/`（**第二 cargo workspace**，根 `Cargo.toml` `exclude`）；`com.skiff.guard`（容器守护，**零内核改动**，纯既有 `docker`/`fs`/`identity` 能力组合）、`com.skiff.monitor`、`com.skiff.nginx`（不用 `containers.exec`，写授权目录 + 重启容器）、`com.skiff.files`。内核侧只补 `fs` 能力面（`crates/core/src/{capability,fsops}.rs`：`path:` 授权根 + 256KiB 分页读写）与 cron tick 调度（`crates/plugin/src/cron.rs`）；插件侧新增插件详情页与授权根展示。发布物：`deploy/pack-release.sh --plugin-key` 调 `plugins/pack.sh` 把 4 个已签名 `.wbpkg` + `public-key.txt` 塞进 `official/`（缺私钥且未 `--skip-plugins` 拒绝出包），`install.sh` 复制到 `/var/lib/skiff/official`（不自动安装）。CI 新增 `plugins` job 与 `pkg-chain` 官方插件真打包冒烟；`release.yml` 增 `PLUGIN_SIGNING_KEY` 注入与「产物恰好 4 个包 + 逐个验签」自检。详见 `docs/changes/2026-11-01.md` 与 [`plugins/README.md`](../plugins/README.md)。 |
 | 2026-11-01 | **架构审查第五轮结构收敛「全部执行」**（ARCH_REVIEW §13）：角色→权限矩阵统一到 `skiff_model::Permission`（唯一一份，删除 `policy` 内联判定与 `web` 手写 `require_admin`）；路径授权代数统一到 `skiff_model::path`（11 个零 I/O 原语，policy / fsgrant / 插件侧快筛共用）；插件能力面（`fsops`/`fsgrant`/`capability`/`interop`）从 `core` 迁回 `crates/plugin`，宿主上下文经 `CapabilityHost` trait 注入（依赖倒置，解开 `plugin → app` 环）；值类型（`ContainerSpec`/`Verb`/`Actor` 等）下沉零 I/O 的 `skiff_model`，`policy` 只留判定；`AppState` 收口 + 登录用例统一到 `skiff_app::AppState::login`（API 侧限流现在也写审计、错误文案与 UI 对齐）；`core/kernel.rs` 拆为 `core/src/kernel/` 子模块并修正 axum `Router::layer`「后加的先跑」导致的协议版本闸顺序倒置。§8 工程结构（目录树 + 依赖表）与 AGENTS.md 单一来源红线同步。根 212 项测试通过、plugins 29 项全绿。 |
+| 2026-11-02 | **架构审查第六轮（全量复审，只审不修）**（ARCH_REVIEW §14）：实测基线 14 crate + `xtask`、21,536 行 / 83 个 `.rs`、**215 项测试（Windows 本机 212 通过 + 3 项既存文件锁红，Linux CI 待复跑）**、内部依赖死声明 0 条。四维评级 模块划分 A− / 职责边界 B / 依赖关系 A− / 复用性 B−。核心结论：分层与判定层已稳，**剩余缺陷同源于「授权 → 执行 → 留痕」没有唯一入口**——13 个 `policy.check` 点仅 2 个留越权痕迹，`restart` 在 `containers::action` 与 `api::restart_container` 各一份；装/卸包在域函数与调用方各写一条审计（每次操作 2 条）；CLI `plugin enable/disable` 不停进程、不写审计；插件 UI 静态文件无认证且被 `is_exempt` 豁免入口前缀。另列 10 项重复实现与 P0×2 / P1×3 / P2×4 行动清单。**本轮未改代码**。 |
+| 2026-11-02 | **文档与注释一致性校正（不改行为）**：修正 `xtask check` 口径（实际只跑 1Panel + Compose，`verify-pkg` 为独立子命令）、架构审查轮次、`common` 非插件定位、Web 中间件层数、landlock/cgroups/nftables 的「未实现」标注、官方插件 4 → 5、全量测试 215 项（212 通过 + 3 项 Windows 限制）与逐包用例表，并删除不存在的 `PLUGIN_API.md` 引用。详 `docs/changes/2026-11-02.md`。 |

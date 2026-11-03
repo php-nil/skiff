@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde_json::Value;
 use skiff_wire::{routes, WireError};
 
-/// 帧上限（转出自 `skiff-wire`，保留旧路径以免外部改动）。
+/// 帧上限（实现唯一来源是 `skiff-wire`；此处转出以保留 `skiff_plugin::ipc::MAX_FRAME` 旧路径）。
 pub const MAX_FRAME: usize = skiff_wire::MAX_FRAME;
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 

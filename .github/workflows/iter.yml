@@ -1,0 +1,98 @@
+# Skiff（轻舟）· 迭代包流水线
+#
+# 与 release.yml 的分工（docs/ITERATION.md §8）：
+#   - iter.yml：每轮迭代手动 dispatch，只编 musl x86_64 裸包（不带 official/），
+#     产物留 3 天，`cancel-in-progress: true`——新 dispatch 直接顶掉旧构建。
+#   - release.yml：里程碑才跑，带 5 个已签名官方插件，`cancel-in-progress: false`。
+# 不把迭代合进 release.yml 的原因：后者的 cancel-in-progress=false 是刻意防
+# 「发出半个包」的，每轮 dispatch 会累积排队并污染发布 run 历史。
+#
+# 产物：dist/skiff-<ver>-linux-amd64.tar.gz(+.sha256)，布局与 pack-release.sh 一致，
+# 因此 install.sh / docs/DEPLOY_TEST.md §2 的装机步骤不需要任何改动。
+name: Iter
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本占位（只影响产物命名，留空即 night）"
+        required: false
+        default: "night"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iter-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_VERSION: "1.98.1"
+
+jobs:
+  pack:
+    name: 迭代包 musl amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # 仓库里的 .cargo/config.toml 是国内镜像源，只给开发机；CI 一律走 crates.io
+      - name: 走 crates.io
+        run: rm -f .cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: iter-musl
+
+      # 不用 cross：单架构、且 musl-tools 已在 runner 源里。
+      # cc crate 对 musl 目标会自动挑 musl-gcc（ring / zstd-sys / rusqlite 都靠它编 C）。
+      - name: 装 musl C 工具链
+        run: |
+          set -eu
+          command -v musl-gcc || { sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools; }
+          musl-gcc --version | head -1
+
+      - name: 出包（不带官方插件）
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          v="${VERSION:-night}"
+          if ! sh deploy/pack-release.sh --version "$v" \
+                 --target x86_64-unknown-linux-musl --skip-plugins --out dist \
+                 > "$RUNNER_TEMP/pack.log" 2>&1; then
+            cat "$RUNNER_TEMP/pack.log"
+            exit 1
+          fi
+          tail -n 12 "$RUNNER_TEMP/pack.log"
+
+      # 迭代包也要挡「拿动态链接的包上机」：静态是 musl 形态的唯一价值
+      - name: 自检产物
+        run: |
+          set -eu
+          tar tzf dist/*.tar.gz | sort
+          ( cd dist && sha256sum -c ./*.tar.gz.sha256 )
+          mkdir -p "$RUNNER_TEMP/x" && tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/x"
+          bin=$(find "$RUNNER_TEMP/x" -name skiff -type f | head -1)
+          file "$bin"
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::迭代包不是静态链接"
+            exit 1
+          fi
+          test -x "$bin" || { echo "::error::skiff 没有执行位"; exit 1; }
+          echo "sha256: $(cd dist && cat ./*.tar.gz.sha256)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iter-amd64
+          path: dist/*
+          retention-days: 3
+          if-no-files-found: error

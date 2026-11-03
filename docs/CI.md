@@ -1,11 +1,11 @@
 # 持续集成与发布流水线
 
-> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804，最新 41278450106）。
+> 状态：**CI 已在 GitHub 全绿**（首绿 2026-10-31 run 41219623804；CI 最新 41278450106）。
 > Release 流水线首跑 2026-11-01（run 41268959656）musl 双架构全绿、`docker` job 暴露
 > Dockerfile 过期 COPY；修复后复跑 **run 41270406760 全绿**；发布物去签名（决策 12）后
 > **run 41278461323 全绿**（产物两件套：tar.gz + .sha256，无 `.sig`）。§5 实测列已按 run 结果回填。
 >
-> 相关：工程结构与 `xtask` 三类固化校验见 [§8 工程结构](sections/08-engineering.md)；
+> 相关：工程结构与 `xtask` 固化校验见 [§8 工程结构](sections/08-engineering.md)；
 > 装机步骤与真机验收用例见 [DEPLOY_TEST.md](DEPLOY_TEST.md)。
 
 ## 1. 三个工作流各管什么
@@ -33,7 +33,7 @@
 | `test` | `cargo test --workspace --locked --no-fail-fast` | 全量单测 + 文档测试；**unix-only 用例第一次真正执行**（见 §3） |
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
-| `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / 包格式 |
+| `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
 | `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 5 个官方插件真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
 | `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |

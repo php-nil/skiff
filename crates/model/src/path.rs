@@ -1,10 +1,13 @@
 //! 路径词汇：纯代数，**零 I/O**（不碰文件系统）。
 //!
-//! 为什么单独抽一层：仓库里有三处各写各的路径判定——内核的 `policy::PathGuard`
+//! 为什么单独抽一层：仓库里曾有三处各写各的路径判定——内核的 `policy::PathGuard`
 //! （Docker 绑定挂载）、内核的 `plugin::fsgrant`（插件 `path:` 授权）、插件侧的
-//! `skiff-plugin-common`（插件自己的前置快筛）。三处各写一遍前缀匹配，最容易出的
-//! 事故是「字符串前缀相同但不是目录包含」：`/etc/nginx/conf.d-evil` 落在
-//! `/etc/nginx/conf.d` 的字符串前缀下，却**不在**该目录内。
+//! `skiff-plugin-common`（插件自己的前置快筛）。现已全部改调本 crate：`PathGuard`
+//! 用 [`within_root`]；`fsgrant` 用 [`any_root_contains`] / [`hits_a_root_itself`]
+//! （二者再落到 [`within_root`] / [`is_root_path`]）；
+//! `skiff-plugin-common` 再转出 [`within`] / [`within_any`] 做快筛。
+//! 过去各写一遍前缀匹配，最容易出的事故是「字符串前缀相同但不是目录包含」：
+//! `/etc/nginx/conf.d-evil` 落在 `/etc/nginx/conf.d` 的字符串前缀下，却**不在**该目录内。
 //!
 //! 口径分工（不要混用）：
 //! - **字符串级**（[`within`] / [`within_any`]）：两侧都当作已规范化的绝对路径，

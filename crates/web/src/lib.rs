@@ -1,7 +1,8 @@
 //! Web 管理服务（核心①）：axum 路由 + 中间件 + SSR + SSE/WS。
 //!
-//! 中间件只有四层（§3.1）：`client_info`（可信代理解析）→ `load_session`（会话）
-//! → `entry_guard`（安全入口）→ `CatchPanic`（最外层安全网）。
+//! 全局中间件四层（由内到外，§3.1）：`client_info`（可信代理解析）→ `load_session`（会话）
+//! → `entry_guard`（安全入口）→ `CatchPanic`（最外层安全网）；非流式路由组另挂
+//! `request_timeout`（长连接路由不挂）。
 //! CSRF、RBAC（`policy.check`）与审计**在 handler 内**逐请求调用：它们需要资源对象
 //! 与表单字段，放不进 layer。登录限流同理，只在 `handlers/auth` 路径生效。
 

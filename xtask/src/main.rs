@@ -1,6 +1,6 @@
 //! 固化校验（§8）：把「上架与安装链路最高频的失败原因」用代码堵住。
 //!
-//! 三个子命令，`xtask check` 一次跑完：
+//! 三个子命令：`check` 跑前两项，`verify-pkg` 是独立的包校验入口。
 //! 1. `check-1panel`：compose 里每个 `${VAR}` 必须在版本级 data.yml 的 formFields 有同名
 //!    `envKey`；反向也查（声明了却没用到 = 用户填了不生效，同样是坑）。
 //! 2. `check-compose`：用内核同一个解析器（`skiff_compose`）解析样例 compose，
@@ -9,7 +9,7 @@
 //! 3. `verify-pkg`：`.wbpkg` 的结构/哈希清单/签名输入编码与内核安装路径完全一致
 //!    （同一份 `skiff_pkgfmt` 实现）。
 //!
-//! 退出码：0 全通过，1 有失败项。CI 直接用 `cargo run -p xtask -- check`。
+//! 退出码：0 全通过，1 有失败项。CI 默认跑 `cargo run -p xtask -- check`。
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ const HELP: &str = "\
 xtask — Skiff 发布与上架校验
 
 用法:
-  xtask check                       依次跑下面所有检查（CI 用这个）
+  xtask check                       依次跑 check-1panel 与 check-compose（CI 用这个）
   xtask check-1panel [--dir <apps/skiff>]
                                     商店包 compose ↔ data.yml 变量对齐
   xtask check-compose <file.yml...>   Compose MVP 字段子集校验（含未支持字段报错）

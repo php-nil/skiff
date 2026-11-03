@@ -30,7 +30,7 @@ skiff-core (单进程 · systemd · 宿主机)
 |---|---|
 | `docker` | 容器/镜像/网络/卷/Compose/日志流/exec 终端（白名单见 §6） |
 | `identity` | 用户/会话/TOTP/API Token/RBAC |
-| `fs` | 路径白名单内文件读/写/列表/元数据（白名单 = 插件自身目录 + 用户授权目录，Broker 逐次校验） |
-| `net` | 主机防火墙端口规则（放行/拒绝；nftables 适配，探测 firewalld/ufw；按 UID owner-match 收口插件出网） |
+| `fs` | 路径白名单内文件读/写/列表/建目录/删除/重命名（白名单 = 插件自身目录 + 用户授权目录，Broker 逐次校验；无独立 `stat` 动词） |
+| `net` | 主机防火墙端口规则（放行/拒绝；nftables 适配，探测 firewalld/ufw；按 UID owner-match 收口插件出网）——**尚未实现**：`net.apply` 一律返回 501，属 M4 门槛 |
 
-> 内核之外一律插件。这是硬约束。文件管理器/防火墙管理/网站管理/主机监控等是**插件层产物**（能力面已开放，`requires` 点单），内核不内置任何一项。官方示范插件（Nginx 管理）走 `docker` 能力；fs/net 类官方插件排在 MVP 之后。
+> 内核之外一律插件。这是硬约束。文件管理器/防火墙管理/网站管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置任何一项。官方首批 5 个插件已落地：`nginx` / `guard` 走 `docker`，`files` / `monitor` 走 `fs`，`cron` 走 `interop`（见 [PLUGIN_CATALOG.md](../PLUGIN_CATALOG.md)）。

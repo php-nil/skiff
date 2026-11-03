@@ -7,14 +7,14 @@
 ```
 skiff/
 ├── crates/
-│   ├── web/        # ★核心① Web 管理服务：axum 路由、四层中间件（可信代理→会话→安全入口→CatchPanic）、
-│   │               #   SSR、WS/SSE（终端/日志流）、静态托管、反代 X-Forwarded-* 处理；
+│   ├── web/        # ★核心① Web 管理服务：axum 路由、四个全局中间件（由内到外：可信代理→会话→安全入口→CatchPanic）
+│   │               #   + 非流式路由组的 request_timeout；SSR、WS/SSE（终端/日志流）、静态托管、反代 X-Forwarded-* 处理；
 │   │               #   CSRF/RBAC/审计在 handler 内，限流只在登录路径；
 │   │               #   static/ + templates/ 前端资源（无 node，rust-embed / askama，build.rs 做 gzip 预压缩）
 │   ├── docker/     # ★核心② Docker 管理：bollard 封装、动词白名单 + 对象 grant + 参数字段策略、
 │   │               #   路径校验(§5.5)、Compose 生命周期、容器 exec 终端(hijack)、日志流
 │   ├── plugin/     # ★核心③ 插件体系（内核侧）：manifest / ed25519 签名校验、Supervisor
-│   │               #   （拉起/退避/熔断/回收/降权/沙箱）、UDS JSON-RPC、权限接 Broker（§4）
+│   │               #   （拉起/退避/熔断/回收/降权；landlock/cgroups 未实现）、UDS JSON-RPC、权限接 Broker（§4）
 │   │               #   + 能力面实现（fsops/capability/interop/fsgrant，能力面的正确归属地）
 │   ├── sdk/        # ★核心③（第三方侧）：插件 SDK + skiff-plugin CLI（脚手架/构建/打包/签名/自检）
 │   ├── policy/     # 支撑：三层策略判定（动词白名单/对象授权/参数字段白名单）+ 宿主路径校验
@@ -33,9 +33,11 @@ skiff/
 │   ├── systemd/skiff.service + install.sh + uninstall.sh   # 主交付：宿主直装
 │   ├── Dockerfile                                  # 可选 Docker 形态
 │   └── 1panel/apps/skiff/                          # 可选：商店包（受限形态，§5.4）
+├── plugins/        # 第二个 workspace（根 Cargo.toml exclude）：common 共享库 + 5 个官方插件
 ├── docs/           # DESIGN.md（索引+一页结论）+ sections/（§1–§12 正文）
 │                   # + ARCH_REVIEW.md（架构审查）/ CI.md（流水线）/ DEPLOY_TEST.md（装机与验收）
-└── xtask/         # 多架构构建、安装包/商店包打包、校验
+│                   # + PLUGIN_CATALOG.md（官方插件集）/ changes/（按日期变更记录）
+└── xtask/          # 工程校验：check（1Panel 变量 + Compose 子集）、verify-pkg（.wbpkg 结构/摘要/签名）
 ```
 
 **核心 ↔ 代码对照**：
@@ -81,4 +83,4 @@ skiff/
 
 **最小可用版本 = 三块核心跑通**：能登录、能管容器、能装插件且崩不了内核。支撑层跟着三块成形，不单独立项。
 
-`xtask` 必须固化三类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）；校验发布物摘要/签名与 `.wbpkg` 结构、哈希清单和签名输入编码一致。这些是上架与安装链路最高频的失败原因，值得用代码堵住。
+`xtask check` 固化两类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。

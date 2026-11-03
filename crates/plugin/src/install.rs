@@ -149,17 +149,17 @@ pub fn install_package(
             )));
         }
     }
-    // 沙箱降级：landlock/cgroups 未实现，只有显式声明不需要完整沙箱才允许装
+    // 沙箱降级：landlock/cgroups 未实现，完整沙箱插件默认拒装，allow_reduced_sandbox 打开后放行
     let reduced_sandbox = !meta.manifest.requires_full_sandbox;
     if meta.manifest.requires_full_sandbox && !opts.allow_reduced_sandbox {
         return Err(PluginError::Rejected(
             "该插件要求完整沙箱（requires_full_sandbox = true），当前实现尚未提供 landlock/cgroups；\
-             需 admin 显式开启 allow_reduced_sandbox 且插件声明 false 才可降级安装"
+             需 admin 显式开启 allow_reduced_sandbox 才可降级安装"
                 .into(),
         ));
     }
     if meta.manifest.requires_full_sandbox && opts.allow_reduced_sandbox {
-        warnings.push("沙箱降级：仅独立 UID + 文件权限，UI 需持续标红".into());
+        warnings.push("沙箱降级：仅独立 UID + 文件权限（landlock/cgroups 未实现）".into());
     }
     if !meta.signature_verified {
         warnings.push("包未经验签（allow_unsigned）：仅限开发调试，生产环境必须导入公钥".into());

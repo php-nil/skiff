@@ -23,7 +23,7 @@
 | 闸 | 命令（在目标机或同架构 Linux 上） | 通过标准 | 不过怎么办 |
 |---|---|---|---|
 | 1 编译 | `cargo check --workspace` | 0 error、0 warning | 停下来修，不要带着编译错误上机 |
-| 2 单测 | `cargo test --workspace` | 149 项全 ok、0 failed | 同上；失败项按输出定位，别整体重跑蒙过去 |
+| 2 单测 | `cargo test --workspace` | Linux 目标机复跑应为 215 项全过（待实测）；Windows 上 212 ok、3 项 `remove_dir_all` 文件锁红（既存限制，见 §9.4） | 同上；失败项按输出定位，别整体重跑蒙过去 |
 | 3 结构 | `cargo run -p xtask -- check` | 结尾「全部通过 ✅」 | 商店包变量/Compose 字段对齐被改坏了 |
 
 三道都过再往下走。只拿预编译二进制、机器上没有 Rust 的话，跳过这三闸，但**必须**做 §2.1 的摘要校验和 §2.10 的权限链自检。
@@ -180,7 +180,7 @@ sh install.sh
 | 放示例配置 | `/etc/skiff/config.toml`（仅当不存在时） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
-| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/var/lib/skiff/official/`（4 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认 |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/var/lib/skiff/official/`（5 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
 | 启动 | `systemctl restart skiff`（`--no-start` 可跳过） |
 
@@ -341,10 +341,10 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
 skiff plugin list
 ```
 
-**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 4 个已签名的包，装机时已复制到 `/var/lib/skiff/official/`：
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 5 个已签名的包，装机时已复制到 `/var/lib/skiff/official/`：
 
 ```sh
-ls /var/lib/skiff/official            # com.skiff.{guard,monitor,nginx,files}-0.1.0.wbpkg + public-key.txt
+ls /var/lib/skiff/official            # com.skiff.{guard,monitor,nginx,files,cron}-0.1.0.wbpkg + public-key.txt
 cat /var/lib/skiff/official/public-key.txt   # 先把这个 hex 导入面板「设置 → 信任公钥」
 
 # 主机监控：只读 /proc
@@ -369,6 +369,10 @@ skiff plugin install /var/lib/skiff/official/com.skiff.files-0.1.0.wbpkg --yes \
   --grant fs:read --grant fs:write --grant fs:list \
   --grant fs:mkdir --grant fs:remove --grant fs:rename \
   --resource path:/var/www
+
+# 计划任务：只调插件接口，不执行宿主 shell；要调度别的插件再加 --resource plugin:<id>
+skiff plugin install /var/lib/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
+  --grant identity:self --grant interop:call
 ```
 
 > `--grant` 少一项就是运行时 403（插件会把「该去勾哪个授权」写进错误文案）；`guard`/`files` 的 `resource_hints` 为空，**必须显式给 `--resource`**。
@@ -649,28 +653,30 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | 项 | 命令 | 结果 |
 |---|---|---|
 | 工作区编译 | `cargo check --workspace` | 通过：0 error、0 warning |
-| 全量单测 | `cargo test --workspace` | **118 passed / 0 failed**（P0/P1/P2 全执行后的最近一次） |
+| 全量单测 | `cargo test --workspace` | **215 项；Linux 目标机待复跑**。Windows 复跑为 212 passed / 3 failed（3 项为既存 `remove_dir_all` 文件锁限制，见 §9.4） |
 | Linux 目标类型检查（纯 Rust 部分） | `cargo check -p skiff-model -p skiff-policy -p skiff-wire --target x86_64-unknown-linux-gnu` | 通过（0 warning）；含 C 依赖的 crate 无法在 Windows 上为该目标编译 |
 | 上架与包校验 | `cargo run -p xtask -- check` | 商店包变量 ↔ formFields 对齐；Compose 样例字段全在 MVP 子集内 |
 | 二进制构建（release） | `cargo build --release -p skiff` | 通过；**6.65 MB**（Windows PE） |
 | 插件脚手架全链路 | `skiff-plugin new/build/pack/verify` | 通过：demo 插件编出 1.45MB 二进制，包 461KB，验签通过 |
 
-逐包用例数：
+逐包用例数（合计 215；Windows 本机 3 项文件锁红，Linux 目标机待复跑）：
 
 | 包 | 用例数 | 覆盖内容 |
 |---|---|---|
-| `skiff`（core） | 10 | CLI 解析（含 `plugin config`）、配置校验矩阵（非 loopback 明文拒绝、可信反代白名单、非法 CIDR 拒启） |
-| `skiff-model` | 8 | 角色序、grant kind、Form 拼写、Permission 映射、CIDR 解析与拒绝 |
-| `skiff-policy` | 20 | 三层策略、受保护对象（含改状态动词）、bind 授权根、项目名规范化、路径校验 |
+| `skiff`（core） | 18 | CLI 解析（含 `plugin config`）、配置校验矩阵（非 loopback 明文拒绝、可信反代白名单、非法 CIDR 拒启）、启动装配 |
+| `skiff-model` | 28 | 角色序、grant kind、Form 拼写、Permission 映射、CIDR 解析与拒绝、路径代数 |
+| `skiff-policy` | 18 | 三层策略、受保护对象（含改状态动词）、bind 授权根、项目名规范化、路径校验 |
 | `skiff-store` | 10 | 迁移幂等、用户/会话续期、API Token 联表、TOFU 首用、插件配置 secret、备份快照 |
 | `skiff-identity` | 11 | argon2id、TOTP RFC 6238 向量、RBAC、Cookie 名切换、备份码 |
-| `skiff-pkgfmt` | 19 | 签名输入编码、篡改载荷拦截、未签名/缺架构拒装、staging 清理、**打包只收载荷目录** |
-| `skiff-plugin` | 6 | 版本比较、UID 分配与范围、IPC 帧上限、TOFU 矩阵 |
-| `skiff-wire` | 6 | 帧编解码、请求头解析、RPC 封装 |
-| `skiff-web` | 14 | 8 单元（gzip 协商与变体、CatchPanic→500+审计、表单/CSRF/CIDR/转义/URI 编码）+ 6 集成（`tests/main_flow.rs` 主干） |
-| `skiff-docker` | 4 | 创建参数只映射白名单字段、Docker 不可用降级、保护对象标签、env 排序可复现 |
-| `skiff-sdk` | 4 | SDK 侧 grant 查询与 JSON-RPC 错误码；`skiff-plugin` 的插件 id 取末段、crate 名合法性 |
+| `skiff-pkgfmt` | 24 | 签名输入编码、篡改载荷拦截、未签名/缺架构拒装、staging 清理、**打包只收载荷目录** |
+| `skiff-plugin` | 24 | 版本比较、UID 分配与范围、IPC 帧上限、TOFU 矩阵、安装/沙箱降级、fsgrant |
+| `skiff-wire` | 9 | 帧编解码、请求头解析、RPC 封装 |
+| `skiff-web` | 30 | gzip 协商与变体、CatchPanic→500+审计、表单/CSRF/CIDR/转义/URI 编码 + `tests/main_flow.rs` 主干集成 |
+| `skiff-docker` | 10 | 创建参数只映射白名单字段、Docker 不可用降级、保护对象标签、env 排序可复现 |
+| `skiff-sdk` | 5 | SDK 侧 grant 查询与 JSON-RPC 错误码；插件 id 取末段、crate 名合法性 |
 | `skiff-compose` | 6 | MVP 子集解析、未支持字段报错、依赖成环、项目名规范化 |
+| `skiff-app` | 14 | 登录用例、限流表有界、exec 票据（单次/过期/跨会话/跨容器） |
+| `skiff-cron` | 8 | 5 段表达式解析/匹配/下次触发（含闰年与周字段） |
 
 ### 9.2 HTTP 冒烟（真实二进制，非 mock）
 
@@ -700,7 +706,7 @@ sh deploy/pack-release.sh
 
 | 步骤 | 观测 | 结论 |
 |---|---|---|
-| 打包 | `dist/skiff-0.1.0-linux-amd64.tar.gz` 内含 `skiff` + `skiff-plugin` + 4 个安装脚本/样例 | 通过（2026-10-31 起含插件工具） |
+| 打包 | `dist/skiff-0.1.0-linux-amd64.tar.gz` 内含 `skiff` + `skiff-plugin` + `install.sh` / `uninstall.sh` / `docker-bootstrap.sh` / `skiff.service` / `config.toml.example` | 通过（2026-10-31 起含插件工具） |
 | 摘要 | `sha256sum -c` → `OK` | 通过 |
 | 确定性 | 同一输入重复打包，`sha256` 前后一致 | 通过（`--sort=name --mtime` 生效） |
 

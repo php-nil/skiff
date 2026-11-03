@@ -21,11 +21,11 @@
 | 13 | 签名输入字节边界不清，跨实现对 manifest/哈希清单拼接不一致 | 中 | 契约 | §4.1 固定 domain-separated 原始字节编码与长度前缀，不做 TOML 规范化重排；golden vectors 见 §10.2 |
 | 14 | RLIMIT_AS 误伤 Go/JVM/.NET 等托管运行时 | 中 | 契约 | manifest 可配 + M4 支持矩阵实测；未验证前只承诺 C/Rust（§4.2）；与 cgroup 双轨冲突见 §12.1 |
 | 15 | 拥有 `containers/create` 的插件经绑定挂载、named volume bind 或其他 HostConfig 字段逃逸 | 严重 | 架构 | §6 对象 grant + 参数字段白名单 + §5.5 路径/volume 校验 + Skiff 自保护；grant 绑定语义见 §10.1 |
-| 16 | 宿主插件沙箱逃逸（landlock/降权被绕过） | 严重 | 架构 | 每插件独立 UID/GID + no_new_privs + landlock + cgroups + 默认拒绝出网；不支持 landlock 时默认不启动第三方插件；ABI 与网络维度见 §10.1 |
+| 16 | 宿主插件沙箱逃逸（landlock/降权被绕过） | 严重 | 架构 | 每插件独立 UID/GID + no_new_privs 已落地；landlock + cgroups + 默认拒绝出网尚属设计目标。完整沙箱落地前，所有插件都以 reduced sandbox 运行：`requires_full_sandbox=true` 默认拒装，admin 开启 `allow_reduced_sandbox` 后放行并显式告警；ABI 与网络维度见 §10.1 |
 | 17 | net 能力（nftables 适配）跨发行版/防火墙共存差异 | 中 | 架构 | 探测 firewalld/ufw/nftables，M4 主流发行版实测；失败降级为只读并标注；规则生命周期与 DNS 见 §10.1 |
 | 18 | 插件迁移修改数据或外部资源后失败，旧代码无法直接使用新数据 | 数据不可用/假回滚 | 架构 | §4.5 停插件快照 + 沙箱迁移 RPC + schema 兼容判断；不兼容保持停用并恢复备份；外部资源不可回滚见 §10.1 |
 | 19 | 恶意 `.wbpkg` 使用路径穿越、链接、重复条目或解压炸弹攻击 root 安装器 | 严重 | 架构 | §4.1 条目规范 + §4.3 两遍校验/安全解包/总量上限 + M4 恶意包用例；资源峰值见 §10.2 |
-| 20 | 插件或 Docker 流通过 PID/CPU/FD/磁盘/慢 IPC 耗尽宿主或内核资源 | 高 | 架构 | §4.2 cgroup/rlimit/帧/队列/超时 + §6 流取消；内核侧背压见 §10.2 |
+| 20 | 插件或 Docker 流通过 PID/CPU/FD/磁盘/慢 IPC 耗尽宿主或内核资源 | 高 | 架构 | `setrlimit` + 帧/队列/超时已生效；cgroup 限额属设计目标（未实现），§4.2 / §6 流取消为配套约束；内核侧背压见 §10.2 |
 | 21 | 反代头伪造来源 IP/scheme，绕过限流或污染审计；WS 被跨站复用会话 | 高 | 契约 | §6 trusted_proxies + Origin/短期票据 + 远程 HTTPS 强制；多级反代取值见 §10.2 |
 
 ---

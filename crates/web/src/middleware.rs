@@ -1,5 +1,5 @@
-//! 请求级中间件：可信代理解析（`client_info`）→ 会话（`load_session`）→ 安全入口（`entry_guard`）。
-//! `CatchPanic` 在 `lib.rs::router()` 挂最外层，不在此文件。
+//! 请求级中间件（由内到外）：可信代理解析（`client_info`）→ 会话（`load_session`）→ 安全入口（`entry_guard`），
+//! 以及仅挂在非流式路由组的 `request_timeout`。`CatchPanic` 在 `lib.rs::router()` 挂最外层，不在此文件。
 //!
 //! CSRF 只提供 `check_csrf` 给 handler 调用，不做成 layer：token 在表单 body 里，
 //! 做成中间件就得在校验前把 body 读一遍，handler 再用还得重新解析。

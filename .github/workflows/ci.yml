@@ -9,7 +9,7 @@
 #   test-win    同一套单测在 Windows 上跑：守 cfg(not(unix)) stub，并让
 #               「Windows 本地三关」这条交付口径在 CI 也有复核
 #   msrv        用 workspace 的 rust-version（1.89）做类型检查，防止悄悄抬高 MSRV
-#   verify      xtask check：1Panel 变量对齐 / Compose 字段子集 / 包格式
+#   verify      xtask check（1Panel 变量对齐 / Compose 字段子集）；另跑空参 verify-pkg，验证「缺包跳过」
 #   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验），
 #              并用 plugins/pack.sh 把 5 个官方插件真打一遍（发布包靠它出 official/）
 #   plugins     官方插件 workspace（plugins/）的 fmt / clippy / test；

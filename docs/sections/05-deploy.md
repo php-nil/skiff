@@ -29,7 +29,7 @@ skiff.service                  # systemd unit：Type=simple, Restart=always
 
 - 唯一数据根 `/var/lib/skiff`：`skiff.db`、`plugins/`、`logs/`、`initial-admin.txt`、`backup/`。配置文件唯一规范路径是 `/etc/skiff/config.toml`，不在数据根重复维护；可选 Docker 形态以环境变量为主。
 
-**插件存储分层**（`/var/lib/skiff/plugins/{id}/`；`versions/` 仅 root 写入、插件只读，`data/`/`cache/`/`run/` 插件可写；landlock 按层授权）：
+**插件存储分层**（`/var/lib/skiff/plugins/{id}/`；`versions/` 仅 root 写入、插件只读，`data/`/`cache/`/`run/` 插件可写；landlock 按层授权属设计目标，当前未实现）：
 
 ```
 versions/   # 代码：root 写入、插件只读，N-1 回滚（§4.5）
@@ -62,7 +62,7 @@ run/        # 运行时临时（锁/临时文件），重启即清
 
 ## 5.4 可选形态：1Panel 商店 Docker 包（受限）
 
-**受限声明**：该形态能力面收缩为 `docker`/`identity`（`fs`/`net` 不可用，需要它们的插件装前拒装）；插件在容器内运行。默认可承诺独立 UID/GID 与可用的 landlock，但容器内通常没有可写 cgroup delegation、宿主 project quota 或 nftables owner-match 权限，因此这些限制不默认可用，UI 必须标为 reduced sandbox。由于网络出网收口同样无法默认兑付，该形态**只允许显式声明 `requires_full_sandbox=false` 且 `network_egress=unrestricted` 的插件**；其余插件装前拒装。容器内 Supervisor fork 不出宿主进程——这是把它定位为受限形态的根本原因。
+**受限声明**：该形态能力面收缩为 `docker`/`identity`（`fs`/`net` 不可用，需要它们的插件装前拒装）；插件在容器内运行。可承诺独立 UID/GID；**landlock / cgroups / project quota / nftables owner-match 均未实现**，因此该形态与主形态一样按 reduced sandbox 运行。`requires_full_sandbox=true` 的插件默认拒装，admin 显式开启 `allow_reduced_sandbox` 后才可降级安装；`network_egress` 的实际收口未实现，当前仅作 manifest 声明与展示（§4.2）。容器内 Supervisor fork 不出宿主进程——这是把它定位为受限形态的根本原因。
 
 包结构（严格按官方规范）：
 
@@ -135,7 +135,7 @@ networks:
 
 Docker Engine 只认**宿主路径**（Portainer 等面板在此翻过车）。面板代用户创建 volume / 容器挂载时，路径授权与 Engine 下传必须使用同一种宿主语义：
 
-- **主形态（native）**：绑定挂载只接受 admin 预先配置的宿主授权根。目标存在时 `canonicalize` 后校验仍在授权根内；目标不存在时规范化最近的已存在祖先并拒绝符号链接逃逸，随后按相对安全路径创建。禁止 `..`、绝对授权根外路径和检查—使用间的符号链接切换；授权根及路径各组件须由 root（或 skiff 进程属主，供非 root 开发/测试运行）管理且插件不可重命名/替换，不接受位于插件可写目录内的 bind 源。实现优先使用 `openat2(RESOLVE_BENEATH)` 等等价原语，而非只做一次字符串 `canonicalize`。
+- **主形态（native）**：绑定挂载只接受 admin 预先配置的宿主授权根。目标存在时 `canonicalize` 后校验仍在授权根内；目标不存在时规范化最近的已存在祖先并拒绝符号链接逃逸，随后按相对安全路径创建。禁止 `..`、绝对授权根外路径和检查—使用间的符号链接切换；授权根及路径各组件须由 root（或 skiff 进程属主，供非 root 开发/测试运行）管理且插件不可重命名/替换，不接受位于插件可写目录内的 bind 源。当前实现是 `canonicalize` + `openat(O_NOFOLLOW)` 的检查链；`open_dir_nofollow` 已实现但**尚未接入**判定链，检查—使用窗口仍在（§12.3），对外不得声称已消除。`openat2(RESOLVE_BENEATH)` 是后续目标，不是现状。
 - **可选 Docker 形态**：面板容器看到的 `/data` 不等于 Engine 所在宿主的 `./data` 源路径，语法校验无法建立这个映射。因此该形态**关闭宿主绑定挂载**，Compose/容器 API 收到 bind 或带宿主绑定语义的 volume 一律 403；只允许通过 §6 检查的 named volume，禁止把面板容器内路径直接传给 Docker。
 - 从 Docker 读到的 volume 宿主路径 → 展示给用户时保持原样，但“可展示”不代表“可挂载”；挂载仍须重新过对象与参数策略。
 

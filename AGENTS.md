@@ -12,9 +12,9 @@
 
 | 路径 | 类型 | 说明 | 文档入口 |
 | --- | --- | --- | --- |
-| `crates/` | 子项目 | Rust workspace 全部 crate（14 个 crate + `xtask`），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
-| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：官方插件 `common` / `guard` / `monitor` / `nginx` / `files` / `cron` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
-| `xtask/` | 工程校验 | `cargo run -p xtask -- check` 一次跑完三类固化校验：1Panel 变量、Compose 子集解析、`.wbpkg` 验签一致性 | `docs/sections/08-engineering.md` |
+| `crates/` | 子项目 | Rust workspace 的 14 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
+| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `nginx` / `files` / `cron` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
+| `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
 | `.github/workflows/` | CI/CD | `ci.yml` / `release.yml` / `audit.yml` 三个工作流 | `docs/CI.md` |
@@ -58,9 +58,10 @@
 | --- | --- | --- |
 | 设计主文档 | `docs/DESIGN.md` | 一页结论、文档地图、文档约定与变更记录（总入口） |
 | 设计正文 | `docs/sections/` | §1–§12 共 13 个文件，文件名前缀 = 章号，章节增删以 `docs/DESIGN.md` 文档地图为准 |
-| 架构审查 | `docs/ARCH_REVIEW.md` | 五轮审查记录与 P0–P2 行动清单 |
+| 架构审查 | `docs/ARCH_REVIEW.md` | 六轮审查记录与 P0–P2 行动清单 |
 | 部署与测试 | `docs/DEPLOY_TEST.md` | 两种部署形态装机、配置矩阵、验收用例、实测记录与权限口径 |
 | 持续集成 | `docs/CI.md` | 工作流门槛、工具链与 MSRV、发布产物流向 |
+| 迭代验证回路 | `docs/ITERATION.md` | 自动化迭代方案：分层编译位置、回滚协同协议、验收口径、测试机凭据约定 |
 | 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、首批 5 个（guard/monitor/nginx/files/cron）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
