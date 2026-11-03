@@ -1,6 +1,6 @@
 # 迭代验证回路
 
-> 状态：**已上机**。首装轮 2026-11-03 通过（PASS 47 / FAIL 0 / SKIP 1），工具见 §8；回滚与升级轮尚未执行。  
+> 状态：**已上机**。2026-11-03 已完成首装轮、升级轮、重装轮（PASS 47 / 34 / 47，FAIL 全 0），工具见 §8；**回滚协同仍未实测**（测试机从未触发过回滚）。  
 > 本文是「改代码 → 上机验证」的唯一依据。交付门槛见 [AGENTS.md](../AGENTS.md) §3，工作流见 [CI.md](CI.md)，  
 > 验收用例原文见 [DEPLOY\_TEST.md](DEPLOY_TEST.md)（本文 §5 是其可执行版）。
 
@@ -205,7 +205,7 @@ curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
 | `deploy/accept.sh`           | §5 可执行版，PASS/FAIL/SKIP + 退出码                                                  | **已建并实跑**（preflight / A / B / D0；D1/D2/E/F/C/G 未实现，缺则报 SKIP） |
 | `tools/iter.sh`              | 单轮编排：门禁 → 取包 → 回滚协同 → 装 → 验收 → 报告                                        | **已建**；gate/fetch/run 三档实跑过，`rollback-wait` 未实测 |
 | `tools/linux-check.sh`       | 本地 `cargo check --target x86_64-unknown-linux-gnu`，挡 `cfg(unix)` 编译错          | **已建并实跑**：全量（含 `plugins/` 第二 workspace）**50 s**；`--quick` 只查主 workspace |
-| `.github/workflows/iter.yml` | 迭代包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 | **已建并推上分支**；靠 §7.1 代理解决出网，待首次 dispatch |
+| `.github/workflows/iter.yml` | 迭代包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 | **已首次 dispatch 实跑**：main@41beba5 / run 41616343492，出包 **118 s**、产物 9.4 MB |
 
 `release.yml` **不动**（已修四轮，里程碑才跑）。单独建 `iter.yml` 而非加参数：`release.yml` 的 `cancel-in-progress: false` 是刻意防"发出半个包"的，每轮 dispatch 会累积排队并污染发布历史。
 
@@ -223,7 +223,10 @@ curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
 | landlock ABI / cgroups v2                      | landlock 在 LSM 列表内（内核 6.12，ABI ≥ 1；`/sys/kernel/security/landlock` 目录未出现，以 LSM 列表为准）/ cgroups v2 | 2026-11-03 实测 |
 | Docker 安装耗时                                    | apt 装包 5 s（16:22:14→16:22:19，114 MB 下载 6 s）；整段含 `docker.sh` 拉取约 2 min（起止未精确打点） | 2026-11-03 实测 |
 | 回滚耗时                                           | 未测（本轮机器本身是干净的，没有触发回滚） |                        |
-| 单轮墙钟（升级轮 / 首装轮）                                | 升级型（Docker 已装）：`install.sh` **≤1 s**、`accept.sh` **7 s**；首装轮含 Docker 约 2.5 min | 2026-11-03 实测 |
+| 单轮墙钟（升级轮 / 首装轮）                                | 升级型（Docker 已装）：`install.sh` **0.8~0.9 s**、`accept.sh` **5.6 s**；重装轮（`rm -rf` + 装）：`install.sh` 0.9 s、`accept.sh` 6.8 s；首装轮含 Docker 约 2.5 min | 2026-11-03 实测（`/` 前值 ≤1 s / 7 s 同轮量级一致） |
+| 迭代包出包（`iter.yml` musl amd64 裸包）                  | **118 s**，产物 9.4 MB（run 41616343492，main@41beba5） | 2026-11-03 实测 |
+| 升级轮（换二进制，数据保留）                                | 二进制 sha `ae7153ef…`→`5ed37d21…`（8.48→8.52 MB）；`skiff.db` 表与行数不变、入口前缀不变、`config.toml` 与 `official/` 6 个文件 md5 全同、`plugins/` 仍空；验收 **PASS 34 / FAIL 0 / SKIP 3** | 2026-11-03 实测 |
+| 重装轮（`rm -rf /var/lib/skiff` + 装）                  | 新库迁移 `from=0 to=1`、`initial-admin.txt` 0600、新前缀；验收 **PASS 47 / FAIL 0 / SKIP 1**（含 B4 限流 `503`+「请 299 秒后重试」） | 2026-11-03 实测 |
 | `install.sh` 装完是否即起                            | **已修，修后绿**：`INSTALL_EXIT=0`、`is-active=active`、`/healthz` 4 s 内 200 | 2026-11-03 实测（§6.1） |
 
 ### 9.1 已解决：`git push` 走内网代理（原「github.com 不通」）
@@ -247,6 +250,21 @@ curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
 2. **`/etc/skiff-baseline` 不存在。** §4.1 第 4 步的基线名校验目前只能降级为「有则校验、无则告警」，
    等下一次打检查点时补上（内容建议 `name=T0 commit=<sha> ts=<iso>`）。
 
+### 9.3 本机门禁的一处环境性红灯（不是代码缺陷）
+
+2026-11-03 升级轮前跑 L1 门禁，`cargo test --workspace` 在本机 Windows 上
+`skiff-pkgfmt` 的 `package::tests::staging_extracts_files_and_cleans_on_drop` 连续 4 次失败
+（`未认领的 staging 必须被清理`）。定位：`UnpackedPackage::drop` 里 `remove_dir_all` 返回
+`ERROR_DIR_NOT_EMPTY (os error 145)`——解包刚写完的文件被杀毒/索引**短暂占用**，
+不是 staging 里有残留（同样的目录用 `Remove-Item -Recurse -Force` 秒删成功）。
+
+临时把清理改成「重试 5 次 × 100 ms」后同一测试立即通过（已还原，工作区无改动），
+说明是瞬时占用。同 commit 的 CI `单测（Windows）` job 全绿（run 41608812184），
+故判定为**本机环境性**，不作为返工项；`fmt` / `clippy -D warnings` /
+Linux target check（含 `plugins/` 第二 workspace）三项本轮全绿。
+
+> 若以后这条在本机反复红，再考虑给 `drop` 加 Windows 重试（属鲁棒性改进，需同时补测试与文档）。
+
 
 ## 10. 变更记录
 
@@ -257,3 +275,4 @@ curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
 | 2026-11-03 | 按「可出外网 + 本机可达 + 可打 T0/T1」定稿：Docker 外网依赖降级为已消除；凭据改为直接写入本文；全文精简                       |
 | 2026-11-03 | **首次上机（首装轮）**：§6.1 P0 复现并修复（`install.sh` 追加 `allow_insecure_http` + 启动后验 active）；§6.4 删 `StateDirectory=`（systemd 静默改掉数据根属主）；建 `accept.sh` / `iter.sh` / `linux-check.sh` / `iter.yml`；回填 §9 环境数字；记 §9.1 github.com 不通与绕行。结果 **PASS 47 / FAIL 0 / SKIP 1**（SKIP = 装后阶段不查端口占用） |
 | 2026-11-03 | **GitHub 出网打通**：内网五个 HTTP 代理实测可用（§7.1），`iter/first-install` 推送成功，`iter.yml` 恢复可 dispatch；§9.1 从「环境限制」改写为「已解决」并留经验 |
+| 2026-11-03 | **升级轮 + 重装轮（main@41beba5）**：`iter.yml` 首次 dispatch 实跑（118 s / 9.4 MB），包内脚本与 HEAD md5 全同；升级轮 PASS 34 / FAIL 0 / SKIP 3（数据与入口前缀保留）；重装轮 PASS 47 / FAIL 0 / SKIP 1（含 B4 限流）。回填 §9 升级/重装/出包墙钟；记 §9.3 本机 Windows 单测环境性红灯 |
