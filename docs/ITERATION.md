@@ -174,6 +174,30 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 
 首连只做环境探测、不装任何东西：`uname -m/-r`、`/etc/os-release`、`nproc`、`free -h`、`df -h`、`id -u`、`sudo -n true`、`ss -lntp`、`curl -I linuxmirrors.cn`、`apt-get -s update`、landlock ABI、cgroups v2、`systemd --version`。结果回填 §9。
 
+### 7.1 内网 HTTP 代理（GitHub 出网缺口就靠它）
+
+内网有五个 HTTP 代理，都能到 `github.com:443`。2026-11-03 实测（HEAD 一个空响应，**只验通断不跑流量**）：
+
+| 代理              | 本机→github.com | 测试机→github.com | 备注            |
+| --------------- | ------------- | ------------- | ------------- |
+| `10.66.10.22:1010` | 200 / 0.53 s  | 200 / 1.85 s  | **首选**        |
+| `10.66.10.12:1010` | 200 / 0.69 s  | 200 / 0.68 s（偶发 403，重试即可） | 次选 |
+| `10.66.10.9:1010`  | 200 / 1.37 s  | 200 / 1.89 s  | 可用          |
+| `10.66.10.21:1010` | 200 / 4.83 s  | 200 / 2.34 s  | 偏慢，兜底       |
+| `10.66.10.13:1010` | 200 / 1.42 s  | **超时 8 s**    | 本机可用、测试机到不了 |
+
+用法：`git` 只认环境变量，不认 `curl -x`；**必须**加 `-c http.sslBackend=openssl`，否则 Windows 的 schannel 过代理会握手失败（就是 §9.1 记的那个报错）。
+
+```sh
+export HTTPS_PROXY=http://10.66.10.22:1010
+export HTTP_PROXY=$HTTPS_PROXY
+git -c http.sslBackend=openssl push origin <branch>
+curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
+```
+
+实测旁证：同一条 `git push` 之前用本机代理端口（`127.0.0.1:50121` 之类）一直失败，换成 `10.66.10.22:1010` 后**一次成功**
+（`* [new branch] iter/first-install -> iter/first-install`）。`git ls-remote` 也通，返回 `main` 的 commit。
+
 ## 8. 工具落点
 
 | 文件                           | 作用                                                                            | 状态 |
@@ -181,7 +205,7 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 | `deploy/accept.sh`           | §5 可执行版，PASS/FAIL/SKIP + 退出码                                                  | **已建并实跑**（preflight / A / B / D0；D1/D2/E/F/C/G 未实现，缺则报 SKIP） |
 | `tools/iter.sh`              | 单轮编排：门禁 → 取包 → 回滚协同 → 装 → 验收 → 报告                                        | **已建**；gate/fetch/run 三档实跑过，`rollback-wait` 未实测 |
 | `tools/linux-check.sh`       | 本地 `cargo check --target x86_64-unknown-linux-gnu`，挡 `cfg(unix)` 编译错          | **已建并实跑**：全量（含 `plugins/` 第二 workspace）**50 s**；`--quick` 只查主 workspace |
-| `.github/workflows/iter.yml` | 迭代包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 | **已建，尚未跑过一次**（本机推不上 GitHub，见 §9.2） |
+| `.github/workflows/iter.yml` | 迭代包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 | **已建并推上分支**；靠 §7.1 代理解决出网，待首次 dispatch |
 
 `release.yml` **不动**（已修四轮，里程碑才跑）。单独建 `iter.yml` 而非加参数：`release.yml` 的 `cancel-in-progress: false` 是刻意防"发出半个包"的，每轮 dispatch 会累积排队并污染发布历史。
 
@@ -202,17 +226,18 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 | 单轮墙钟（升级轮 / 首装轮）                                | 升级型（Docker 已装）：`install.sh` **≤1 s**、`accept.sh` **7 s**；首装轮含 Docker 约 2.5 min | 2026-11-03 实测 |
 | `install.sh` 装完是否即起                            | **已修，修后绿**：`INSTALL_EXIT=0`、`is-active=active`、`/healthz` 4 s 内 200 | 2026-11-03 实测（§6.1） |
 
-### 9.1 环境限制：github.com 不通，只有 api.github.com 通
+### 9.1 已解决：`git push` 走内网代理（原「github.com 不通」）
 
-本机与测试机**都**只能访问 `api.github.com`（200）；`github.com:443` 在两边都失败（本机 schannel 握手失败 / openssl `unexpected eof`；测试机超时）。
-后果与绕行：
+**现象**（2026-11-03 上机前）：本机与测试机都只有 `api.github.com` 通，`github.com:443` 两边都失败
+（本机 schannel 握手失败 / openssl `unexpected eof`；测试机超时）。后果是 `git push` 推不上去，`iter.yml` 没法 dispatch，
+首装轮只能「取已有 `release.yml` run 的 artifact + 在测试机上下载」（13 MB 十几秒，本机到 blob 只有十几 KB/s）。
 
-* `git push` 走不通 → 本轮**没有**用 `iter.yml` 出包，改为「取已有 `release.yml` run 的 artifact」：
-  `GET /repos/:o/:r/actions/artifacts/:id/zip`（302 到 blob）可用，且在**测试机上下载**（13 MB 十几秒）比本机（十几 KB/s）快两个数量级。
-* 包内 `install.sh` / `config.toml.example` / `skiff.service` / `uninstall.sh` / `docker-bootstrap.sh` 与当轮工作区
-  **md5 逐一比对完全一致**，所以这轮验的是「当前脚本 + 11-01 的二进制」，脚本相关结论有效；二进制差异只影响功能面，不影响安装链路。
-* 推送能力恢复后，`iter.yml` 可直接 workflow_dispatch，`tools/iter.sh` 无需改（它只取 artifact）。
+**解法**：走内网 HTTP 代理，五个地址与实测延迟见 [§7.1](#71-内网-http-代理github-出网缺口就靠它)，首选 `10.66.10.22:1010`。
+加上 `-c http.sslBackend=openssl` 后 `git push` / `git ls-remote` 一次通过，分支 `iter/first-install` 已推上去，
+`iter.yml` 恢复可用。
 
+**留下的经验**：以后本机任何「GitHub 出网」问题，先按 §7.1 探一遍那五个代理再找别的绕行，不要在 `127.0.0.1:xxxxx` 的
+本地代理端口上反复试——那一路本来就不稳（端口还会轮换）。
 
 ### 9.2 首连发现的两处基线偏差（不是代码问题，但会挡住自动化）
 
@@ -231,3 +256,4 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh
 | 2026-11-03 | 按「内网 VM + 全量回滚 + Docker 需测」复审：基线分 T0/T1，Docker 升为待测（D0/D1/D2），回滚加强制校时，新建 `iter.yml` |
 | 2026-11-03 | 按「可出外网 + 本机可达 + 可打 T0/T1」定稿：Docker 外网依赖降级为已消除；凭据改为直接写入本文；全文精简                       |
 | 2026-11-03 | **首次上机（首装轮）**：§6.1 P0 复现并修复（`install.sh` 追加 `allow_insecure_http` + 启动后验 active）；§6.4 删 `StateDirectory=`（systemd 静默改掉数据根属主）；建 `accept.sh` / `iter.sh` / `linux-check.sh` / `iter.yml`；回填 §9 环境数字；记 §9.1 github.com 不通与绕行。结果 **PASS 47 / FAIL 0 / SKIP 1**（SKIP = 装后阶段不查端口占用） |
+| 2026-11-03 | **GitHub 出网打通**：内网五个 HTTP 代理实测可用（§7.1），`iter/first-install` 推送成功，`iter.yml` 恢复可 dispatch；§9.1 从「环境限制」改写为「已解决」并留经验 |

@@ -22,6 +22,12 @@
 依赖升级不走 Dependabot：`dependabot.yml` 已删（2026-10-31），minor/patch 升级人工按需
 `cargo update` + 合入前三关；漏洞通报仍由 `audit.yml` 周扫兜底。
 
+**audit 首次报红（2026-11-02 schedule run 41428921272）**：`zstd 0.13.3` / `zstd-safe 7.3.0` 命中三条 RUSTSEC
+（0391 复用 context 时残留流数据串到下一流、0403 legacy 帧流式解压失败暴露未初始化内存、0398 `Seekable::decompress`
+把 `Vec` 长度设过容量）。修复版分别为 `zstd ^0.13.4` / `zstd-safe ^7.4.0`，2026-11-03 执行 `cargo update -p zstd`
+（只动这两个包，`zstd-sys 2.1.2` 未变）后消除。`zstd` 是 `pkgfmt` 解 `.wbpkg` 的直接依赖，属**不可信输入路径**，
+不是纯工具链组件，不能按「只是编译期依赖」放过。
+
 ## 2. 门槛与判定口径
 
 **没有一个 job 用 `continue-on-error`。** 红了就是没通过，不存在“失败也算过”的兜底。
