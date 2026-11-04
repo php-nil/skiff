@@ -1,44 +1,50 @@
 # Skiff（轻舟）· 发布流水线
 #
-# 【开发/测试阶段 · 2026-10-31】不发新版，这条流水线只作「概念验证」：
-#   - 触发只剩手动 dispatch，`v*` 标签触发先摘掉（注释保留在下面，
-#     真要发版时连同 publish 默认值一起放开）
-#   - 默认**只构建 + 自检 + 传 workflow 产物**，不建 GitHub Release；
-#     要真发布，手动 dispatch 时把 `publish` 勾成 true
-#   这样跑这条流水线零副作用：能验 musl/cross/pack-release.sh 全链路，
-#   但不会把半成品挂到 Release 页上。
+# 交付链路固定为「从 GitHub Release 下载安装包 → 解压 → 执行 install.sh」。
+# 不再把开发机工作树直接搬到测试机当常态部署（源码拷贝/自编译只算开发调试）。
 #
-# 产物（每个架构一套，与 deploy/pack-release.sh 的布局一致）：
-#   skiff-<ver>-linux-<arch>.tar.gz          主程序 + skiff-plugin + install.sh + docker-bootstrap.sh + systemd 单元
-#   skiff-<ver>-linux-<arch>.tar.gz.sha256   装机前先校验
+# 触发：
+#   - `v*` 标签推送（正式发版用；日常测试**不要打新 tag**）
+#   - workflow_dispatch 手动触发（测试期唯一入口：版本沿用 0.1.0，
+#     产物上传/覆盖到同一个既有 Release，不新建 tag）
+#
+# 产物（每个架构一套，与 deploy/pack-release.sh 布局完全一致）：
+#   skiff-<ver>-<target>.tar.gz           主程序 + skiff-plugin + install/uninstall +
+#                                         skiff.service + config.toml.example + official/ +
+#                                         checksums.txt + README.txt
+#   skiff-<ver>-<target>.tar.gz.sha256    装机前先校验（单包摘要）
+#   checksums.txt                         所有安装包的汇总摘要（Release 资产）
 #
 # 发布物**不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要。
-# 原 `RELEASE_SIGNING_KEY_HEX` / `.sig` / `verify-file` 链路已整体移除。
+# 插件签名私钥缺失**不阻塞出包**：pack-release.sh 会生成临时签名身份并告警，
+# 产物仅供测试；正式发行请配置 secrets.PLUGIN_SIGNING_KEY 以保持签名身份稳定。
 #
 # 为什么用 musl 静态：发行物要能在 Debian 11 / Ubuntu 22.04 / Rocky 9 上直接跑，
-# 动态链接会把宿主 glibc 版本变成隐形依赖。aarch64 用 cross（自带交叉工具链镜像，
-# 避免在 runner 上手工拼 aarch64 的 C 交叉编译器）。
+# 动态链接会把宿主 glibc 版本变成隐形依赖。aarch64 用 cross（自带交叉工具链镜像）。
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        # 开发阶段没有版本号：留空即可，产物用 night 占位（只影响命名）。
-        # 真发版（publish=true）必须填真实版本，占位版本会被 publish job 拒绝。
-        description: "版本号（不带 v 前缀，如 0.1.0）；开发阶段留空即可"
+        # 测试期沿用 0.1.0；留空只影响命名（用 night 占位，不挂 Release）
+        description: "版本号（不带 v 前缀，如 0.1.0）；测试期沿用现有版本"
         required: false
+        default: "0.1.0"
       publish:
-        description: "建 GitHub Release（开发阶段默认关，只出 workflow 产物）"
+        description: "上传到既有 GitHub Release（默认关，只出 workflow 产物）"
         type: boolean
         default: false
+      release_tag:
+        description: "目标 Release 标签（留空则用 v<version>）；标签必须已存在，本流水线不新建 tag"
+        required: false
+        default: ""
       skip_plugins:
         description: "不带官方插件出包（仅调试打包链路；正式发布物必须带插件）"
         type: boolean
         default: false
-  # 真要发版时放开这段（并把上面 publish 的 default 改回 true，或发版时手动勾选）：
-  # push:
-  #   tags: ["v*"]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -74,9 +80,14 @@ jobs:
         id: ver
         run: |
           set -eu
-          v="${{ inputs.version }}"
+          # 标签触发优先用标签名；dispatch 用输入
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            v="$GITHUB_REF_NAME"
+          else
+            v="${{ inputs.version }}"
+          fi
           v="${v#v}"
-          # 开发阶段留空：占位版本，只用于产物命名
+          # 测试期留空：占位版本，只用于产物命名（不会挂 Release）
           if [ -z "$v" ]; then
             v="night"
           fi
@@ -98,9 +109,9 @@ jobs:
         with:
           tool: cross
 
-      # 官方插件必须真签名才随包发出（plugins/pack.sh 用 0600 临时文件里的私钥
-      # 回填 manifest.key_id 再打包）；私钥只在这台 runner 的内存/临时目录里存在。
-      - name: 准备插件签名私钥
+      # 官方插件随包发出时优先用正式签名身份；私钥缺失只告警、不阻塞出包
+      # （pack-release.sh 会用临时身份签名并显著标记，产物仅供测试）。
+      - name: 准备插件签名私钥（可选）
         env:
           PLUGIN_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
           SKIP_PLUGINS: ${{ inputs.skip_plugins }}
@@ -111,9 +122,8 @@ jobs:
             exit 0
           fi
           if [ -z "$PLUGIN_KEY" ]; then
-            echo "::error::缺少 secrets.PLUGIN_SIGNING_KEY：发布包必须携带已签名的官方插件（guard/monitor/nginx/files/cron）。"
-            echo "::error::请在仓库 Settings → Secrets 配置该私钥；只是调试打包链路时可 dispatch 时勾选 skip_plugins。"
-            exit 1
+            echo "::warning::缺少 secrets.PLUGIN_SIGNING_KEY：按当前决定不阻塞出包，将使用临时签名身份（仅测试可用，正式发行前请配置该 secret）"
+            exit 0
           fi
           umask 077
           printf '%s\n' "$PLUGIN_KEY" > "$RUNNER_TEMP/plugin-signing.key"
@@ -130,7 +140,7 @@ jobs:
                  --out dist
           if [ "$SKIP_PLUGINS" = "true" ]; then
             set -- "$@" --skip-plugins
-          else
+          elif [ -f "$RUNNER_TEMP/plugin-signing.key" ]; then
             set -- "$@" --plugin-key "$RUNNER_TEMP/plugin-signing.key"
           fi
           # 输出落盘再回显：失败时也要把完整日志打出来（cargo/cross 的报错在 stderr）
@@ -140,7 +150,13 @@ jobs:
           fi
           tail -n 15 "$RUNNER_TEMP/pack.log"
 
-      - name: 自检产物（解包结构 + 静态链接 + 官方插件）
+      # 验签工具要用宿主二进制：pack-release.sh 里的 skiff-plugin 是按目标架构编的
+      # （musl 包内工具），arm64 那份 runner 上跑不起来。这里单独编宿主版本。
+      - name: 构建宿主验签工具
+        if: ${{ !inputs.skip_plugins }}
+        run: cargo build --release --locked -p skiff-sdk --bin skiff-plugin
+
+      - name: 自检产物（解包结构 + 静态链接 + 包内摘要 + 官方插件）
         env:
           SKIP_PLUGINS: ${{ inputs.skip_plugins }}
         run: |
@@ -148,24 +164,31 @@ jobs:
           tar tzf dist/*.tar.gz | sort
           ( cd dist && sha256sum -c ./*.tar.gz.sha256 )
           mkdir -p "$RUNNER_TEMP/x" && tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/x"
-          bin=$(find "$RUNNER_TEMP/x" -name skiff -type f | head -1)
+          root=$(dirname "$(find "$RUNNER_TEMP/x" -name skiff -type f | head -1)")
+          bin="$root/skiff"
           file "$bin"
           if readelf -l "$bin" | grep -q INTERP; then
             echo "::error::${{ matrix.target }} 产物不是静态链接"
             exit 1
           fi
 
-          # 官方插件：五个一个都不能少，且必须能用发布公钥验签通过。
-          # 公钥从打包日志里取（pack.sh 末行打印，仅此一处给），不依赖任何密钥文件。
+          # 安装包必备件：缺一件就不算可交付的安装包
+          for f in install.sh uninstall.sh skiff.service config.toml.example README.txt checksums.txt; do
+            [ -f "$root/$f" ] || { echo "::error::安装包缺少 $f"; exit 1; }
+          done
+          # 包内摘要自校验（checksums.txt 覆盖包内除自身外的所有文件）
+          ( cd "$root" && sha256sum -c checksums.txt )
+
           if [ "$SKIP_PLUGINS" = "true" ]; then
             echo "::warning::skip_plugins=true：本产物不带官方插件（结构自检跳过）"
             exit 0
           fi
-          n=$(ls -1 "$RUNNER_TEMP/x"/skiff-*/official/*.wbpkg | wc -l)
-          [ "$n" = 5 ] || { echo "::error::发布包应带 5 个官方插件包（guard/monitor/nginx/files/cron），实得 $n"; exit 1; }
-          PUB=$(grep -o 'hex): [0-9a-f]\{64\}' "$RUNNER_TEMP/pack.log" | tail -1 | awk '{print $2}')
-          [ "${#PUB}" = 64 ] || { echo "::error::没能从打包日志里取到官方插件公钥"; exit 1; }
-          for p in "$RUNNER_TEMP/x"/skiff-*/official/*.wbpkg; do
+          n=$(ls -1 "$root"/official/*.wbpkg | wc -l)
+          [ "$n" = 4 ] || { echo "::error::发布包应带 4 个官方插件包（guard/monitor/files/cron），实得 $n"; exit 1; }
+          [ -f "$root/official/public-key.txt" ] || { echo "::error::发布包缺少 official/public-key.txt"; exit 1; }
+          PUB=$(tr -d '[:space:]' < "$root/official/public-key.txt")
+          [ "${#PUB}" = 64 ] || { echo "::error::official/public-key.txt 不是 64 位 hex 公钥"; exit 1; }
+          for p in "$root"/official/*.wbpkg; do
             # 打包机架构 != 载荷架构，必须 --arch；这条也是在验「架构没错位」
             ./target/release/skiff-plugin verify "$p" --pubkey "$PUB" \
               --arch "${{ matrix.arch }}" >/dev/null
@@ -178,16 +201,14 @@ jobs:
           path: dist/*
           retention-days: 7
           if-no-files-found: error
-      # 注意：这里 @v7 与下面 download 的 @v8 版本号故意不对齐 ——
-      #      download v8 与 upload v7 是同期发布的一对（v8 才认得 v7 新增的 direct upload），
-      #      别按「上传下载要同版本号」的直觉去改。
 
-  # 只在 inputs.publish 为 true 时跑。开发阶段跑 release 流水线 =
-  # 只到 build + workflow 产物为止，GitHub Release 页保持干净。
+  # 只在 inputs.publish 为 true 或标签推送时跑。
+  # **不新建 tag**：目标 Release 的标签必须已存在；同名资产先删后传（--clobber），
+  # 测试期反复 dispatch 覆盖同一 Release 不会因资产冲突失败。
   publish:
     name: 发布到 GitHub Release
     needs: build
-    if: inputs.publish
+    if: inputs.publish || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -204,28 +225,44 @@ jobs:
         run: |
           set -eu
           ls -l dist
-          ( cd dist && sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS )
-      - name: 建/改 Release
+          # Release 级 checksums.txt：覆盖所有安装包（装机第一步校验）
+          ( cd dist && sha256sum -- *.tar.gz > checksums.txt && cat checksums.txt )
+      - name: 建/改 Release（只覆盖资产，不建 tag）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 标签触发已摘（见文件头），这里只认 dispatch 的 version 输入
           VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           set -eu
-          # 输入允许带/不带 v 前缀，统一成恰好一个 v 开头
-          v="${VERSION_INPUT#v}"
-          # 发布必须是真实版本号，开发占位版本不允许挂上 Release 页
-          if [ -z "$v" ] || [ "$v" = "night" ]; then
-            echo "::error::publish=true 时 version 必须填真实版本号（night 占位版本拒绝发布）"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ -n "$RELEASE_TAG_INPUT" ]; then
+            TAG="${RELEASE_TAG_INPUT#v}"
+            TAG="v$TAG"
+          else
+            v="${VERSION_INPUT#v}"
+            [ -n "$v" ] || v="night"
+            TAG="v$v"
+          fi
+
+          # 测试期 / 正式发版都不允许这里新建 tag：标签必须已在仓库里
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::标签 $TAG 不存在。本流水线不新建 tag：请先在仓库里创建（或改用 release_tag 指向既有 Release）。"
             exit 1
           fi
-          TAG="v$v"
+          if [ "$TAG" = "vnight" ]; then
+            echo "::error::publish 需要真实版本号（night 占位版本拒绝发布）"
+            exit 1
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
+            # 先删同名资产再传，避免不同平台/审批策略下的资产冲突
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* \
+            # 标签已存在、Release 还没建：用 --verify-tag，绝不创建标签
+            gh release create "$TAG" dist/* --verify-tag \
               --title "Skiff（轻舟）$TAG" \
-              --notes '装机：先 sha256sum -c 校摘要，再解包执行 sh install.sh。包内 official/ 是已签名的官方插件（guard/monitor/nginx/files/cron），装机只复制到 /var/lib/skiff/official/、不自动安装；安装前把打包日志里的「官方插件签名公钥(hex)」导入面板「设置 → 信任公钥」。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
+              --notes '交付路径固定为「从 Release 下载安装包 → 解压 → 执行 install.sh」。装机：先 sha256sum -c checksums.txt，再解压、cd 进解压目录、sh install.sh。包内 official/ 是已签名的官方插件（guard/monitor/files/cron），安装时只复制到 /www/skiff/official/、不自动安装；公钥由首启自动信任。测试期沿用同一版本与同一 Release，手动 dispatch 覆盖资产，不新建 tag。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
           fi
 
   # Dockerfile 是可选形态，但"能不能构建"必须有人验：这一步不 gate publish，

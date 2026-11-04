@@ -1,4 +1,4 @@
-//! 命令行入口：`skiff serve|health|doctor|version|plugin|token|audit|backup`。
+//! 命令行入口：`skiff serve|health|doctor|version|plugin|trust|token|audit|backup`。
 
 use std::path::PathBuf;
 
@@ -23,6 +23,11 @@ pub enum Command {
         allow_unsigned: bool,
     },
     PluginList,
+    /// 把公钥文件写入信任库（安装第三方/官方插件前的显式一步）
+    TrustImport {
+        key_file: PathBuf,
+        label: String,
+    },
     PluginRemove {
         id: String,
         delete_data: bool,
@@ -71,6 +76,9 @@ Skiff（轻舟）· 极简 Linux 服务器管理面板
   plugin config <id>        列出 config_schema 声明项与当前值（secret 打码）
   plugin config <id> <key> <value>
                             写入一项配置（secret 与否由 manifest 决定）
+  trust import <公钥文件> [--label <标签>]
+                            把公钥写入信任库（发布包自带的
+                            official/public-key.txt 已由首启自动信任）
   token create <name> [--scope <s>]
                             创建 API Token（仅在创建时打印一次）。scope 取值
                             docker:read|docker:write|plugins:read|*，可重复或用逗号分隔；
@@ -96,6 +104,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
     let mut scopes: Vec<String> = Vec::new();
     let mut allow_unsigned = false;
     let mut out: Option<PathBuf> = None;
+    let mut label = "manual".to_string();
 
     while i < args.len() {
         let a = &args[i];
@@ -123,6 +132,10 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
             "--out" => {
                 i += 1;
                 out = Some(PathBuf::from(args.get(i).ok_or("--out 缺少参数")?));
+            }
+            "--label" => {
+                i += 1;
+                label = args.get(i).ok_or("--label 缺少参数")?.clone();
             }
             "-h" | "--help" => return Err(HELP.into()),
             other if other.starts_with("--") => {
@@ -197,6 +210,13 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
             }
             other => return Err(format!("未知 plugin 子命令: {other:?}\n\n{HELP}")),
         },
+        "trust" => match positional.get(1).map(|s| s.as_str()) {
+            Some("import") => Command::TrustImport {
+                key_file: PathBuf::from(positional.get(2).ok_or("trust import 需要公钥文件路径")?),
+                label,
+            },
+            other => return Err(format!("未知 trust 子命令: {other:?}\n\n{HELP}")),
+        },
         "token" => match positional.get(1).map(|s| s.as_str()) {
             Some("create") => Command::TokenCreate {
                 name: positional.get(2).cloned().unwrap_or_else(|| "cli".into()),
@@ -262,6 +282,32 @@ mod tests {
             _ => panic!("wrong command"),
         }
         assert_eq!(c.config, Some(PathBuf::from("x.toml")));
+    }
+
+    /// `trust import` 是插件安装报错里提示的一步命令，参数必须能原样解析。
+    #[test]
+    fn parses_trust_import_with_label() {
+        let c = parse(args(&[
+            "trust",
+            "import",
+            "/www/skiff/official/public-key.txt",
+            "--label",
+            "official",
+        ]))
+        .unwrap();
+        match c.command {
+            Command::TrustImport { key_file, label } => {
+                assert_eq!(
+                    key_file,
+                    PathBuf::from("/www/skiff/official/public-key.txt")
+                );
+                assert_eq!(label, "official");
+            }
+            _ => panic!("wrong command"),
+        }
+        // 缺公钥文件路径必须报错，不能静默落到 serve。
+        assert!(parse(args(&["trust", "import"])).is_err());
+        assert!(parse(args(&["trust", "nope"])).is_err());
     }
 
     #[test]

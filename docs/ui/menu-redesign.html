@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skiff 菜单与导航重设计 · A/B/C 预览</title>
+<style>
+/* ==========================================================================
+   预览外壳：零外链、纯静态，双击即可打开
+   三套方案共用同一份 DOM / 交互，只切换 CSS 变量与少量装饰规则
+   ========================================================================== */
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:#e9ebef;color:#101828;
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+button{font:inherit;color:inherit}
+a{text-decoration:none}
+:focus-visible{outline:2px solid #0f766e;outline-offset:2px}
+
+.preview-bar{
+  position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 20px;background:#fff;border-bottom:1px solid #dfe3e8;
+  box-shadow:0 1px 2px rgba(16,24,40,.05);
+  font-size:12px;
+}
+.preview-bar .title{font-weight:650;font-size:13px;letter-spacing:.01em}
+.preview-bar .hint{color:#667085;margin-right:auto}
+.seg{display:inline-flex;align-items:center;border:1px solid #dfe3e8;border-radius:8px;overflow:hidden;background:#f7f8fa}
+.seg button{
+  border:0;background:transparent;padding:6px 11px;font-size:12px;color:#667085;cursor:pointer;
+  border-right:1px solid #e7eaee;white-space:nowrap;
+}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:#f0f2f5;color:#344054}
+.seg button.on{background:#0f766e;color:#fff;font-weight:600}
+.stage{padding:24px 20px 40px;display:flex;justify-content:center}
+.frame{
+  width:1180px;max-width:100%;height:780px;position:relative;overflow:hidden;
+  border:1px solid #cfd5dd;border-radius:14px;background:var(--bg);
+  box-shadow:0 18px 50px rgba(16,24,40,.16);
+  transition:width .18s ease;
+  /* 内容区主题 */
+  --bg:#f3f5f7;--surface:#fff;--surface-2:#f7f9fb;--surface-3:#eef1f5;
+  --line:#e3e7ed;--line-strong:#cfd6df;--text:#101828;--text-2:#344054;--muted:#667085;
+  --content-accent:#0f766e;--content-accent-soft:#e9f4f1;
+}
+.frame[data-theme=dark]{
+  --bg:#0d1014;--surface:#151a20;--surface-2:#1a2027;--surface-3:#202730;
+  --line:#29313b;--line-strong:#3b4653;--text:#e6ebf2;--text-2:#c4cdd9;--muted:#8b97a6;
+  --content-accent:#5fd4b5;--content-accent-soft:rgba(95,212,181,.12);
+}
+.frame[data-width=narrow]{width:430px}
+
+/* ---- 方案 A：舱线（连续导航带 + 单一强调标记） ---- */
+.frame[data-scheme=a]{
+  --nav-bg:#ffffff;--nav-panel:#fbfcfd;--nav-line:#e7eaef;
+  --nav-text:#475467;--nav-strong:#101828;--nav-muted:#7a8798;--nav-caption:#98a2b3;
+  --nav-accent:#0f766e;--nav-active-soft:#e9f4f1;--nav-hover:#f4f6f8;
+  --nav-fill:transparent;--nav-fill-strong:transparent;
+  --nav-top-row:56px;--nav-side-row:44px;--nav-l2-h:32px;--nav-w:248px;
+  --nav-icon:18px;--nav-font:13px;--nav-indent:20px;
+}
+.frame[data-scheme=a][data-theme=dark]{
+  --nav-bg:#151a21;--nav-panel:#12171d;--nav-line:#232b35;
+  --nav-text:#b8c2d0;--nav-strong:#eef2f6;--nav-muted:#8d99a8;--nav-caption:#6f7c8c;
+  --nav-accent:#5fd4b5;--nav-active-soft:rgba(95,212,181,.1);--nav-hover:#1a2028;
+}
+/* ---- 方案 B：舵面（常暗导航面 + 行内填充） ---- */
+.frame[data-scheme=b]{
+  --nav-bg:#1c232b;--nav-panel:#1c232b;--nav-line:rgba(255,255,255,.08);
+  --nav-text:#c7d2df;--nav-strong:#ffffff;--nav-muted:#93a2b3;--nav-caption:#768494;
+  --nav-accent:#7de3c6;--nav-active-soft:rgba(125,227,198,.12);--nav-hover:rgba(255,255,255,.06);
+  --nav-fill:rgba(255,255,255,.075);--nav-fill-strong:rgba(255,255,255,.11);
+  --nav-top-row:58px;--nav-side-row:46px;--nav-l2-h:38px;--nav-w:264px;
+  --nav-icon:18px;--nav-font:13.5px;--nav-indent:22px;
+}
+.frame[data-scheme=b][data-theme=dark]{
+  --nav-bg:#0f1419;--nav-panel:#0f1419;--nav-line:rgba(255,255,255,.07);
+  --nav-accent:#63dcbb;
+}
+/* ---- 方案 C：纸面（低装饰 + 左侧细轨） ---- */
+.frame[data-scheme=c]{
+  --nav-bg:#faf9f6;--nav-panel:#f6f5f1;--nav-line:#e8e5df;
+  --nav-text:#5d636d;--nav-strong:#1f2329;--nav-muted:#8b9099;--nav-caption:#a0a5ad;
+  --nav-accent:#0f766e;--nav-active-soft:transparent;--nav-hover:#efece6;
+  --nav-fill:transparent;--nav-fill-strong:transparent;
+  --nav-top-row:50px;--nav-side-row:40px;--nav-l2-h:34px;--nav-w:236px;
+  --nav-icon:16px;--nav-font:13px;--nav-indent:18px;
+}
+.frame[data-scheme=c][data-theme=dark]{
+  --nav-bg:#15161a;--nav-panel:#121317;--nav-line:#27292f;
+  --nav-text:#b9bdc5;--nav-strong:#f1f2f4;--nav-muted:#898e97;--nav-caption:#6d727b;
+  --nav-accent:#6fe0c2;--nav-hover:#1c1e23;
+}
+
+/* ==========================================================================
+   应用骨架
+   ========================================================================== */
+.app{height:100%;display:flex;flex-direction:column;background:var(--bg);color:var(--text)}
+.brand{
+  display:inline-flex;align-items:center;gap:9px;flex:none;color:var(--nav-strong);
+  font-weight:650;letter-spacing:.01em;white-space:nowrap;
+}
+.brand .mark{display:inline-flex;width:26px;height:26px;color:var(--nav-accent)}
+.brand .mark svg{width:26px;height:26px;display:block}
+.brand .ver{color:var(--nav-caption);font-size:11px;font-weight:500;letter-spacing:.03em}
+.avatar{
+  display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;flex:none;
+  border-radius:50%;background:var(--nav-active-soft);color:var(--nav-accent);
+}
+.avatar svg{width:14px;height:14px}
+.ico{display:inline-flex;width:var(--nav-icon);height:var(--nav-icon);flex:none;color:currentColor;opacity:.82}
+.ico svg{width:100%;height:100%;display:block}
+.menu-ico{display:inline-flex;align-items:center;justify-content:center;width:var(--nav-icon);height:var(--nav-icon);flex:none;color:currentColor;opacity:.8}
+.menu-ico svg{width:100%;height:100%;display:block}
+
+/* ---- 上下布局 ---- */
+.topbar{
+  display:flex;align-items:center;gap:16px;flex:none;min-width:0;
+  min-height:var(--nav-top-row);padding:0 20px;background:var(--nav-bg);border-bottom:1px solid var(--nav-line);
+  color:var(--nav-text);
+}
+.frame[data-layout=top] .topbar{position:sticky;top:0;z-index:30}
+.brand{height:var(--nav-top-row)}
+.nav{display:flex;align-items:center;flex-wrap:nowrap;gap:0;flex:1 1 auto;min-width:0}
+.frame[data-layout=top] .nav{overflow-x:auto;scrollbar-width:none}
+.frame[data-layout=top] .nav::-webkit-scrollbar{display:none}
+.nav-link{
+  display:inline-flex;align-items:center;gap:8px;padding:0 12px;border:0;background:none;
+  color:var(--nav-text);font-size:var(--nav-font);font-weight:500;white-space:nowrap;cursor:pointer;
+  border-radius:8px;transition:background .14s ease,color .14s ease;
+}
+.nav-link:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.nav-group{display:inline-flex;flex-direction:column;min-width:0;position:relative}
+.nav-row{display:inline-flex;align-items:center;gap:1px;border-radius:8px;transition:background .14s ease}
+.nav-row:hover{background:var(--nav-hover)}
+.nav-row:hover .nav-link{background:transparent}
+.nav-label{padding-right:2px}
+.nav-caret{
+  display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;flex:none;
+  border:0;background:transparent;border-radius:6px;color:var(--nav-muted);cursor:pointer;
+  transition:color .14s ease,background .14s ease;
+}
+.nav-caret:hover{color:var(--nav-strong);background:var(--nav-hover)}
+.nav-caret .caret{width:13px;height:13px;display:block;transition:transform .18s ease}
+.nav-group.open .nav-caret .caret{transform:rotate(180deg)}
+.nav-group.open .nav-caret{color:var(--nav-accent)}
+
+/* 一级当前态：A/C 只在上下布局用下划线；B 用行内填充 */
+.frame[data-scheme=a][data-layout=top] .nav-link[aria-current=page],
+.frame[data-scheme=a][data-layout=top] .nav-group.current>.nav-row .nav-label,
+.frame[data-scheme=c][data-layout=top] .nav-link[aria-current=page],
+.frame[data-scheme=c][data-layout=top] .nav-group.current>.nav-row .nav-label{color:var(--nav-accent);font-weight:600}
+.frame[data-scheme=a][data-layout=top] .nav-link[aria-current=page],
+.frame[data-scheme=a][data-layout=top] .nav-group.current>.nav-row,
+.frame[data-scheme=c][data-layout=top] .nav-link[aria-current=page],
+.frame[data-scheme=c][data-layout=top] .nav-group.current>.nav-row{position:relative;background:transparent}
+.frame[data-scheme=a][data-layout=top] .nav-link[aria-current=page]::after,
+.frame[data-scheme=a][data-layout=top] .nav-group.current>.nav-row::after,
+.frame[data-scheme=c][data-layout=top] .nav-link[aria-current=page]::after,
+.frame[data-scheme=c][data-layout=top] .nav-group.current>.nav-row::after{
+  content:"";position:absolute;left:12px;right:12px;bottom:0;height:2px;border-radius:2px;background:var(--nav-accent);
+}
+.frame[data-scheme=a][data-layout=top] .nav-group.open>.nav-row .nav-label,
+.frame[data-scheme=c][data-layout=top] .nav-group.open>.nav-row .nav-label{color:var(--nav-strong);font-weight:600}
+.frame[data-scheme=b][data-layout=top] .nav-group.current>.nav-row,
+.frame[data-scheme=b][data-layout=top] .nav-group.open>.nav-row{background:var(--nav-fill);border-radius:8px}
+.frame[data-scheme=b][data-layout=top] .nav-link[aria-current=page]{background:var(--nav-fill);color:var(--nav-accent)}
+.frame[data-scheme=b][data-layout=top] .nav-group.current>.nav-row .nav-label,
+.frame[data-scheme=b][data-layout=top] .nav-group.open>.nav-row .nav-label{color:var(--nav-strong);font-weight:600}
+
+/* 一级行高度：上下布局吃满顶栏，侧栏固定行高 */
+.frame[data-layout=top] .nav-row,.frame[data-layout=top] .nav>.nav-link{height:var(--nav-top-row);min-height:var(--nav-top-row)}
+.frame[data-layout=top] .nav>.nav-link,.frame[data-layout=top] .nav-row{border-radius:0}
+.frame[data-layout=top] .nav-row:hover,.frame[data-layout=top] .nav>.nav-link:hover{background:var(--nav-hover)}
+.frame[data-scheme=a][data-layout=top] .nav-group.current>.nav-row:hover,
+.frame[data-scheme=c][data-layout=top] .nav-group.current>.nav-row:hover{background:var(--nav-hover)}
+
+/* ---- 上下布局的二级通栏：顶栏下方通栏，不随分组左右跳 ---- */
+.subnav{
+  flex:none;height:0;overflow:hidden;background:var(--nav-bg);
+  border-bottom:0;transition:height .18s ease;
+}
+.subnav.open{height:48px;border-bottom:1px solid var(--nav-line)}
+.subnav-inner{display:flex;align-items:center;height:48px;padding:0 20px;gap:4px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.subnav-inner::-webkit-scrollbar{display:none}
+.subnav-inner .nav-menu{display:flex;flex-direction:row;flex-wrap:nowrap;gap:2px;margin:0;padding:0}
+.subnav-inner .nav-menu a{position:relative;display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:8px;color:var(--nav-muted);font-size:var(--nav-font);white-space:nowrap}
+.subnav-inner .menu-ico{display:none}
+.subnav-inner .nav-menu a:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.subnav-inner .nav-menu a.on{color:var(--nav-accent);font-weight:600;background:transparent}
+.frame[data-scheme=a] .subnav-inner .nav-menu a.on::after,
+.frame[data-scheme=c] .subnav-inner .nav-menu a.on::after{
+  content:"";position:absolute;left:12px;right:12px;bottom:1px;height:2px;border-radius:2px;background:var(--nav-accent);
+}
+.frame[data-scheme=b] .subnav-inner{background:var(--nav-panel)}
+.frame[data-scheme=b] .subnav-inner .nav-menu a.on{background:var(--nav-active-soft);color:var(--nav-accent)}
+.subnav-inner .nav-menu[hidden]{display:none}
+
+/* 顶栏右侧 */
+.who{display:flex;align-items:center;gap:10px;flex:none;margin-left:auto;color:var(--nav-muted);font-size:12px;height:var(--nav-top-row)}
+.who-user,.who-actions{display:flex;align-items:center;gap:8px;min-width:0}
+.chip{display:inline-flex;align-items:center;max-width:200px;color:var(--nav-text);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.theme-toggle{
+  display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 8px;border:0;border-radius:6px;
+  background:transparent;color:var(--nav-muted);font-size:12px;cursor:pointer;white-space:nowrap;
+}
+.theme-toggle:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.link-btn{border:0;background:none;padding:4px 6px;color:var(--nav-muted);font-size:12px;cursor:pointer;border-radius:6px}
+.link-btn:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.menu-toggle{display:none;align-items:center;gap:6px;height:32px;margin-left:auto;padding:0 10px;border:1px solid var(--nav-line);border-radius:8px;background:transparent;color:var(--nav-text);font-size:12px;cursor:pointer}
+
+/* ---- 左右布局：品牌固定 / 中间滚动 / 用户区固定 ---- */
+.frame[data-layout=left] .app{padding-left:var(--nav-w);display:block;position:relative;overflow:hidden}
+.frame[data-layout=left] .topbar{
+  position:absolute;inset:0 auto 0 0;width:var(--nav-w);min-height:0;flex-direction:column;align-items:stretch;gap:0;
+  padding:0;background:var(--nav-bg);border-right:1px solid var(--nav-line);border-bottom:0;overflow:hidden;
+}
+.frame[data-layout=left] .brand{height:56px;padding:0 16px;font-size:14px;background:var(--nav-bg);border-bottom:1px solid var(--nav-line)}
+.frame[data-layout=left] .nav{
+  flex:1 1 auto;min-height:0;width:100%;flex-direction:column;align-items:stretch;flex-wrap:nowrap;
+  gap:1px;padding:10px 8px 14px;overflow-y:auto;overflow-x:hidden;background:var(--nav-panel);
+  -webkit-overflow-scrolling:touch;
+}
+.frame[data-layout=left] .nav::-webkit-scrollbar{width:6px}
+.frame[data-layout=left] .nav::-webkit-scrollbar-track{background:transparent;margin:4px 0}
+.frame[data-layout=left] .nav::-webkit-scrollbar-thumb{background:rgba(16,24,40,.2);border-radius:999px}
+.frame[data-scheme=b][data-layout=left] .nav::-webkit-scrollbar-thumb{background:rgba(235,241,248,.24)}
+.frame[data-layout=left] .nav::-webkit-scrollbar-thumb:hover{background:rgba(16,24,40,.38)}
+.frame[data-scheme=b][data-layout=left] .nav::-webkit-scrollbar-thumb:hover{background:rgba(235,241,248,.42)}
+@supports not selector(::-webkit-scrollbar){
+  .frame[data-layout=left] .nav{scrollbar-width:thin;scrollbar-color:rgba(16,24,40,.2) transparent}
+  .frame[data-scheme=b][data-layout=left] .nav{scrollbar-color:rgba(235,241,248,.24) transparent}
+}
+.nav-caption{display:none}
+.frame[data-layout=left] .nav-caption{
+  display:block;padding:0 10px 7px;color:var(--nav-caption);font-size:10px;font-weight:600;letter-spacing:.16em;
+}
+.frame[data-layout=left] .nav-group{display:block;width:100%}
+.frame[data-layout=left] .nav-row{display:flex;width:100%;height:var(--nav-side-row);padding:0;border-radius:8px}
+.frame[data-layout=left] .nav-link{
+  display:flex;align-items:center;justify-content:flex-start;gap:9px;width:auto;height:var(--nav-side-row);
+  min-height:var(--nav-side-row);padding:0 10px;border:0;border-radius:8px;text-align:left;font-size:var(--nav-font);font-weight:500;
+}
+.frame[data-layout=left] .nav-label{flex:1 1 auto;min-width:0;width:auto}
+.frame[data-layout=left] .nav-caret{margin-left:auto;width:24px;height:24px}
+
+/* 侧栏当前态：A/C 左侧 3px 轨；B 行内填充 */
+.frame[data-scheme=a][data-layout=left] .nav-group.current>.nav-row,
+.frame[data-scheme=c][data-layout=left] .nav-group.current>.nav-row{position:relative;background:transparent}
+.frame[data-scheme=a][data-layout=left] .nav-group.current>.nav-row::before,
+.frame[data-scheme=c][data-layout=left] .nav-group.current>.nav-row::before{
+  content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 2px 2px 0;background:var(--nav-accent);
+}
+.frame[data-scheme=a][data-layout=left] .nav-group.current>.nav-row .nav-label,
+.frame[data-scheme=c][data-layout=left] .nav-group.current>.nav-row .nav-label{color:var(--nav-accent);font-weight:600}
+.frame[data-scheme=a][data-layout=left] .nav-group.open:not(.current)>.nav-row .nav-label,
+.frame[data-scheme=c][data-layout=left] .nav-group.open:not(.current)>.nav-row .nav-label{color:var(--nav-strong);font-weight:600}
+.frame[data-scheme=b][data-layout=left] .nav-group.current>.nav-row{background:var(--nav-fill)}
+.frame[data-scheme=b][data-layout=left] .nav-group.open>.nav-row{background:var(--nav-fill)}
+.frame[data-scheme=b][data-layout=left] .nav-group.current>.nav-row .nav-label,
+.frame[data-scheme=b][data-layout=left] .nav-group.open>.nav-row .nav-label{color:var(--nav-strong);font-weight:600}
+.frame[data-scheme=b][data-layout=left] .nav-group.current>.nav-row .nav-caret{color:var(--nav-accent)}
+
+/* 二级（侧栏/抽屉）：缩进、低一档字号、低一级颜色 */
+.nav-menu{display:flex;flex-direction:column;gap:1px;min-width:0}
+.nav-menu[hidden]{display:none}
+.frame[data-layout=left] .nav-menu{
+  display:flex;flex-direction:column;flex-wrap:nowrap;gap:1px;margin:1px 0 7px;padding:0 0 0 var(--nav-indent);
+  border:0;background:transparent;box-shadow:none;
+}
+.frame[data-layout=left] .nav-menu a{
+  display:flex;align-items:center;gap:8px;width:100%;height:var(--nav-l2-h);min-height:var(--nav-l2-h);padding:0 10px;
+  border-radius:8px;color:var(--nav-muted);font-size:12.5px;white-space:normal;
+}
+.frame[data-layout=left] .nav-menu a:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.frame[data-scheme=a][data-layout=left] .nav-menu a.on{background:var(--nav-active-soft);color:var(--nav-accent);font-weight:600}
+.frame[data-scheme=b][data-layout=left] .nav-menu a.on{background:var(--nav-active-soft);color:var(--nav-accent);font-weight:600}
+.frame[data-scheme=c][data-layout=left] .nav-menu a.on{position:relative;background:transparent;color:var(--nav-accent);font-weight:600}
+.frame[data-scheme=c][data-layout=left] .nav-menu a.on::before{
+  content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:var(--nav-accent);
+}
+.frame[data-layout=left] .nav-menu .menu-ico{opacity:.68}
+.frame[data-layout=left] .nav-menu a.on .menu-ico{opacity:1}
+
+/* 固定菜单 */
+.nav-pinned{display:flex;align-items:center;gap:2px;flex:none;margin-right:6px;padding-right:8px;border-right:1px solid var(--nav-line)}
+.nav-pin-caption{color:var(--nav-caption);font-size:10px;letter-spacing:.1em;padding:0 6px 0 2px}
+.nav-pin{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 9px;border-radius:7px;color:var(--nav-muted);font-size:12px;white-space:nowrap}
+.nav-pin:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.nav-pin[aria-current=page]{color:var(--nav-accent);background:var(--nav-active-soft)}
+.frame[data-layout=left] .nav-pinned{flex-direction:column;align-items:stretch;width:100%;margin:0 0 8px;padding:0 0 8px;border-right:0;border-bottom:1px solid var(--nav-line)}
+.frame[data-layout=left] .nav-pin{width:100%}
+
+/* 侧栏底部用户区固定 */
+.frame[data-layout=left] .who{
+  flex:none;display:flex;flex-direction:column;align-items:stretch;gap:6px;width:100%;height:auto;margin:0;
+  padding:11px 12px 12px;border-top:1px solid var(--nav-line);background:var(--nav-bg);
+  box-shadow:0 -8px 12px -12px rgba(16,24,40,.28);
+}
+.frame[data-layout=left] .who-user{gap:9px}
+.frame[data-layout=left] .who-user .chip{flex:1 1 auto;min-width:0}
+.frame[data-layout=left] .who-actions{justify-content:space-between}
+.frame[data-layout=left] .menu-toggle{display:none}
+
+/* ==========================================================================
+   窄屏 ≤860px：抽屉（预览用 data-width=narrow 模拟）
+   ========================================================================== */
+.frame[data-width=narrow] .topbar{position:sticky;top:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 16px;min-height:0}
+.frame[data-width=narrow] .brand{height:36px;margin-right:auto}
+.frame[data-width=narrow] .brand .ver{display:none}
+.frame[data-width=narrow] .menu-toggle{display:inline-flex;margin-left:0}
+.frame[data-width=narrow] .who{order:2;margin-left:0;height:auto;min-height:0}
+.frame[data-width=narrow] .who .chip{max-width:120px}
+.frame[data-width=narrow] .nav{
+  order:3;display:none;flex-basis:100%;width:100%;flex-direction:column;align-items:stretch;flex-wrap:nowrap;
+  gap:1px;padding:8px 0 2px;border-top:1px solid var(--nav-line);overflow:visible;
+}
+.frame[data-width=narrow].nav-open .nav{display:flex}
+.frame[data-width=narrow].nav-open .menu-toggle{color:var(--nav-accent);border-color:var(--nav-accent)}
+.frame[data-width=narrow] .nav-caption{display:none}
+.frame[data-width=narrow] .nav-group{display:block;width:100%}
+.frame[data-width=narrow] .nav-row{display:flex;width:100%;height:44px;padding:0;border-radius:8px}
+.frame[data-width=narrow] .nav-link{display:flex;justify-content:flex-start;width:auto;height:44px;min-height:44px;padding:0 10px;text-align:left}
+.frame[data-width=narrow] .nav-label{flex:1 1 auto;min-width:0}
+.frame[data-width=narrow] .nav-caret{margin-left:auto}
+.frame[data-width=narrow] .nav-menu{display:flex;flex-direction:column;margin:1px 0 8px;padding:0 0 0 20px}
+.frame[data-width=narrow] .nav-menu a{height:36px;min-height:36px;white-space:normal}
+.frame[data-width=narrow] .nav-menu .menu-ico{display:none}
+.frame[data-width=narrow] .subnav{display:none}
+.frame[data-width=narrow] .nav-pinned{flex-direction:column;align-items:stretch;width:100%;border-right:0;border-bottom:1px solid var(--nav-line);margin:0 0 8px;padding:0 0 8px}
+.frame[data-width=narrow] .nav-pin{width:100%}
+.frame[data-width=narrow][data-layout=left] .app{padding-left:0}
+.frame[data-width=narrow][data-layout=left] .topbar{position:sticky;inset:auto;width:auto;flex-direction:row;flex-wrap:wrap;align-items:center;padding:10px 16px;border-right:0;border-bottom:1px solid var(--nav-line);overflow:visible}
+.frame[data-width=narrow][data-layout=left] .brand{height:36px;padding:0;border-bottom:0}
+.frame[data-width=narrow][data-layout=left] .who{flex-direction:row;flex-wrap:wrap;align-items:center;padding:0;border-top:0;box-shadow:none}
+.frame[data-width=narrow][data-layout=left] .who-user,.frame[data-width=narrow][data-layout=left] .who-actions{flex:none}
+.frame[data-width=narrow] .nav-group.current>.nav-row::before{display:none}
+.frame[data-width=narrow] .nav-group.current>.nav-row{position:relative}
+.frame[data-width=narrow] .nav-group.current>.nav-row .nav-label{color:var(--nav-accent);font-weight:600}
+.frame[data-width=narrow] .nav-menu a.on{background:var(--nav-active-soft);color:var(--nav-accent);font-weight:600}
+
+/* ==========================================================================
+   模拟内容区：用于判断导航与内容的比例、密度是否协调
+   ========================================================================== */
+main{flex:1 1 auto;padding:22px 24px;background:var(--bg);overflow:auto}
+.frame[data-layout=left] main{height:100%;overflow:auto}
+.page-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.page-head h1{margin:0;font-size:20px;font-weight:650;letter-spacing:-.01em}
+.page-head .sub{color:var(--muted);font-size:12.5px}
+.page-head .btn{margin-left:auto}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;margin-bottom:14px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.toolbar .field{display:flex;align-items:center;gap:6px;flex:1 1 240px;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line-strong);border-radius:8px;color:var(--muted);font-size:12.5px;background:var(--surface-2)}
+.toolbar .field svg{width:14px;height:14px;flex:none}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 13px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:12.5px;font-weight:600;cursor:pointer}
+.btn:hover{background:var(--surface-2);border-color:var(--text-2)}
+.btn.primary{border-color:var(--content-accent);background:var(--content-accent);color:#fff}
+.frame[data-theme=dark] .btn.primary{color:#08130f}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.stat{padding:14px 15px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.stat .k{color:var(--muted);font-size:11.5px}
+.stat .v{display:block;margin-top:4px;font-size:22px;font-weight:650;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:12px;font-weight:400;color:var(--muted)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.panel h2{margin:0;padding:13px 15px;border-bottom:1px solid var(--line);font-size:14px;font-weight:620}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;padding:9px 12px;color:var(--muted);font-size:11.5px;font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:11px 12px;border-bottom:1px solid var(--line);color:var(--text-2);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:var(--surface-2)}
+.name{display:flex;align-items:center;gap:9px;min-width:0}
+.dot{width:7px;height:7px;border-radius:50%;background:#12b76a;flex:none}
+.dot.idle{background:#98a2b3}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;background:var(--surface-3);color:var(--muted);font-size:11px;white-space:nowrap}
+.badge.ok{background:var(--content-accent-soft);color:var(--content-accent)}
+.actions{display:flex;gap:2px;white-space:nowrap}
+.actions .btn{height:26px;padding:0 7px;font-size:11.5px;font-weight:500;border-color:transparent;background:transparent;color:var(--muted)}
+.actions .btn:hover{background:var(--surface-3);color:var(--text)}
+.note{display:flex;align-items:center;gap:10px;margin-top:14px;padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);color:var(--muted);font-size:12px}
+.note strong{color:var(--text)}
+@media (max-width:900px){.frame[data-width=desktop]{width:100%}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.001ms!important;animation-duration:.001ms!important}}
+</style>
+</head>
+<body>
+
+<div class="preview-bar">
+  <span class="title">Skiff 菜单重设计</span>
+  <span class="hint">同一份 DOM，只换视觉规则；点击/键盘行为完全一致</span>
+  <span class="seg" aria-label="方案">
+    <button type="button" data-scheme="a" class="on">A 舱线</button>
+    <button type="button" data-scheme="b">B 舵面</button>
+    <button type="button" data-scheme="c">C 纸面</button>
+  </span>
+  <span class="seg" aria-label="布局">
+    <button type="button" data-layout="top" class="on">上下布局</button>
+    <button type="button" data-layout="left">侧栏布局</button>
+  </span>
+  <span class="seg" aria-label="主题">
+    <button type="button" data-theme="light" class="on">浅色</button>
+    <button type="button" data-theme="dark">深色</button>
+  </span>
+  <span class="seg" aria-label="屏宽">
+    <button type="button" data-width="desktop" class="on">桌面</button>
+    <button type="button" data-width="narrow">窄屏 ≤860</button>
+  </span>
+</div>
+
+<div class="stage">
+<div class="frame" id="frame" data-scheme="a" data-layout="top" data-theme="light" data-width="desktop">
+
+  <!-- 内联 SVG 精灵：零外链、零图标库 -->
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden" focusable="false">
+    <symbol id="i-overview" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></g></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.6 12h16.8M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5S9.6 5.9 12 3.5z"/></g></symbol>
+    <symbol id="i-docker" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="9" width="5" height="5" rx="1"/><rect x="9.5" y="9" width="5" height="5" rx="1"/><rect x="9.5" y="3.8" width="5" height="5" rx="1"/><rect x="15.5" y="9" width="5" height="5" rx="1"/><path d="M2.5 17.5c1.6 2.3 4.2 3.5 7.6 3.5 4.6 0 8.3-2.2 10.4-6.1"/><path d="M18.5 14.9c1.1-.2 2.2-.1 3 .4"/></g></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 3v4.5M15 3v4.5"/><path d="M7 7.5h10v3.2a5 5 0 0 1-5 5v0a5 5 0 0 1-5-5z"/><path d="M12 15.7V21"/></g></symbol>
+    <symbol id="i-tools" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M14.3 6.2a4.2 4.2 0 0 0 5.4 5.4L9.4 21.9a3 3 0 0 1-4.2-4.2z"/><path d="M15.9 3.1 21 8.2"/></g></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6.5h10M18 6.5h2M4 12h2M10 12h10M4 17.5h7M15 17.5h5"/><circle cx="16" cy="6.5" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="17.5" r="2"/></g></symbol>
+    <symbol id="i-container" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 8.2 12 4l8.5 4.2L12 12.5z"/><path d="M3.5 8.2v7.6L12 20l8.5-4.2V8.2"/><path d="M12 12.5V20"/></g></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="9.5" r="1.6"/><path d="m4 17 5-5 4 4 3-2.5 4 3.5"/></g></symbol>
+    <symbol id="i-network" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="5" r="2.3"/><circle cx="5" cy="18" r="2.3"/><circle cx="19" cy="18" r="2.3"/><path d="M12 7.3v3.4M7 16.2l3.5-3.2M17 16.2l-3.5-3.2"/></g></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="4.5" width="17" height="6.5" rx="1.8"/><rect x="3.5" y="13" width="17" height="6.5" rx="1.8"/><path d="M7 7.8h.1M7 16.3h.1"/></g></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M4.5 6.5h.1M4.5 12h.1M4.5 17.5h.1"/></g></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 7.5h17v3h-17z"/><path d="M5 10.5v8.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-8.5"/><path d="M10 14h4"/></g></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3.2 19 6v5.3c0 4.3-2.9 7.5-7 9.5-4.1-2-7-5.2-7-9.5V6z"/><path d="m9 12 2 2 4-4.2"/></g></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10M12 14.2v2"/></g></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3.5 12h4l2.5-6 4 12 2.5-6h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></g></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 3.5h7L18.5 8v12.5h-12z"/><path d="M13 3.8V8h4.3M9 12h6M9 15.5h6"/></g></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v8.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></g></symbol>
+    <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c.7-3.6 3.8-5.5 7.5-5.5s6.8 1.9 7.5 5.5"/></g></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4.5 4.5"/></g></symbol>
+  </svg>
+
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"><svg viewBox="0 0 28 28"><rect x="1.2" y="1.2" width="25.6" height="25.6" rx="7" fill="none" stroke="currentColor" stroke-width="1.4" opacity=".5"/><path d="M7 16.5h14l-2.8 4.5H9.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M13.4 14V7l5.2 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span>
+        <span>Skiff</span><span class="ver">v0.1.0</span>
+      </div>
+      <button type="button" class="menu-toggle" data-menu-toggle aria-expanded="false" aria-controls="demo-nav">菜单</button>
+      <nav class="nav" id="demo-nav" aria-label="主导航">
+        <div class="nav-caption" aria-hidden="true">导航</div>
+        <a class="nav-link" href="#" data-page-link data-key="overview"><span class="menu-ico" data-icon="overview" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-overview"></use></svg></span>概览</a>
+        <div class="nav-group" data-nav-group data-nav-key="sites">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="menu-ico" data-icon="globe" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-globe"></use></svg></span>网站</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-sites" aria-label="展开或收起「网站」"><svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+          </div>
+          <div class="nav-menu" id="ng-sites" data-nav-menu hidden>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="globe" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-globe"></use></svg></span>网站列表</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="container" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-container"></use></svg></span>运行环境</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="settings" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-settings"></use></svg></span>设置</a>
+          </div>
+        </div>
+        <div class="nav-group current open" data-nav-group data-nav-key="docker">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="menu-ico" data-icon="docker" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-docker"></use></svg></span>Docker</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="true" aria-controls="ng-docker" aria-label="展开或收起「Docker」"><svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+          </div>
+          <div class="nav-menu" id="ng-docker" data-nav-menu>
+            <a class="on" href="#" data-page-link aria-current="page"><span class="menu-ico" data-icon="container" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-container"></use></svg></span>容器</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="image" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-image"></use></svg></span>镜像</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="network" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-network"></use></svg></span>网络</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="disk" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-disk"></use></svg></span>卷</a>
+          </div>
+        </div>
+        <div class="nav-group" data-nav-group data-nav-key="plugins">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="menu-ico" data-icon="plug" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-plug"></use></svg></span>插件</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-plugins" aria-label="展开或收起「插件」"><svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+          </div>
+          <div class="nav-menu" id="ng-plugins" data-nav-menu hidden>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="list" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-list"></use></svg></span>已安装</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="activity" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-activity"></use></svg></span>发现</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="archive" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-archive"></use></svg></span>可更新</a>
+          </div>
+        </div>
+        <div class="nav-group" data-nav-group data-nav-key="tools">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="menu-ico" data-icon="tools" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-tools"></use></svg></span>工具</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-tools" aria-label="展开或收起「工具」"><svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+          </div>
+          <div class="nav-menu" id="ng-tools" data-nav-menu hidden>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="folder" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-folder"></use></svg></span>文件管理</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="clock" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-clock"></use></svg></span>计划任务</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="activity" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-activity"></use></svg></span>主机监控</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="shield" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-shield"></use></svg></span>容器守护</a>
+          </div>
+        </div>
+        <div class="nav-group" data-nav-group data-nav-key="settings">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="menu-ico" data-icon="settings" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-settings"></use></svg></span>设置</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-settings" aria-label="展开或收起「设置」"><svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+          </div>
+          <div class="nav-menu" id="ng-settings" data-nav-menu hidden>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="shield" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-shield"></use></svg></span>安全设置</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="settings" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-settings"></use></svg></span>菜单设置</a>
+            <a href="#" data-page-link><span class="menu-ico" data-icon="list" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-list"></use></svg></span>审计日志</a>
+          </div>
+        </div>
+      </nav>
+      <div class="who">
+        <div class="who-user">
+          <span class="avatar" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-user"></use></svg></span>
+          <span class="chip">admin · admin</span>
+        </div>
+        <div class="who-actions">
+          <button type="button" class="theme-toggle" data-theme-toggle>深色</button>
+          <button type="button" class="link-btn">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="subnav" data-subnav aria-hidden="true"><div class="subnav-inner"></div></div>
+
+    <main>
+      <div class="page-head">
+        <h1>容器</h1>
+        <span class="sub">12 个容器 · 3 个运行中 · 1 个异常</span>
+        <button type="button" class="btn ghost">刷新</button>
+        <button type="button" class="btn primary">新建容器</button>
+      </div>
+      <div class="toolbar">
+        <span class="field"><svg viewBox="0 0 24 24"><use href="#i-search"></use></svg>按名称或镜像筛选…</span>
+        <button type="button" class="btn">全部状态</button>
+        <button type="button" class="btn">仅异常</button>
+      </div>
+      <section class="stats">
+        <div class="stat"><span class="k">运行中</span><span class="v">3</span></div>
+        <div class="stat"><span class="k">已停止</span><span class="v">8</span></div>
+        <div class="stat"><span class="k">异常</span><span class="v">1</span></div>
+        <div class="stat"><span class="k">镜像占用</span><span class="v">6.2<small> GB</small></span></div>
+      </section>
+      <section class="panel">
+        <h2>容器列表</h2>
+        <table>
+          <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>端口</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr><td><span class="name"><span class="dot"></span><strong>skiff-nginx</strong></span></td><td class="mono">openresty/openresty:alpine</td><td><span class="badge ok">运行中</span></td><td class="mono">80, 443</td><td><span class="actions"><button class="btn">日志</button><button class="btn">终端</button><button class="btn">停止</button></span></td></tr>
+            <tr><td><span class="name"><span class="dot"></span><strong>skiff-php</strong></span></td><td class="mono">php:8.5-fpm-alpine</td><td><span class="badge ok">运行中</span></td><td class="mono">9000</td><td><span class="actions"><button class="btn">日志</button><button class="btn">终端</button><button class="btn">停止</button></span></td></tr>
+            <tr><td><span class="name"><span class="dot idle"></span><strong>watchtower</strong></span></td><td class="mono">containrrr/watchtower</td><td><span class="badge">已停止</span></td><td class="mono">—</td><td><span class="actions"><button class="btn">日志</button><button class="btn">启动</button></span></td></tr>
+            <tr><td><span class="name"><span class="dot"></span><strong>redis-cache</strong></span></td><td class="mono">redis:7-alpine</td><td><span class="badge ok">运行中</span></td><td class="mono">6379</td><td><span class="actions"><button class="btn">日志</button><button class="btn">终端</button><button class="btn">停止</button></span></td></tr>
+          </tbody>
+        </table>
+      </section>
+      <div class="note"><strong>交互约定</strong><span>一级「标签 + 独立箭头」；同一时间只展开一个分组；点内容区不收起；Escape 收起并把焦点还给箭头。</span></div>
+    </main>
+  </div>
+</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var frame = document.getElementById("frame");
+  var nav = document.getElementById("demo-nav");
+  var subnav = frame.querySelector("[data-subnav]");
+  var subnavInner = subnav.querySelector(".subnav-inner");
+  var groups = Array.prototype.slice.call(nav.querySelectorAll("[data-nav-group]"));
+  var drawer = nav.parentNode.querySelector("[data-menu-toggle]");
+  var NAV_NONE = "none";
+
+  function isNarrow() { return frame.getAttribute("data-width") === "narrow"; }
+  function barMode() { return frame.getAttribute("data-layout") !== "left" && !isNarrow(); }
+
+  function menuOf(key) {
+    var all = nav.querySelectorAll("[data-nav-menu]");
+    for (var i = 0; i < all.length; i++) {
+      var host = all[i].parentNode;
+      if (all[i].getAttribute("data-nav-key") || (host && host.getAttribute("data-nav-key") === key)) return all[i];
+    }
+    return null;
+  }
+
+  function setOpen(group, open) {
+    var toggle = group.querySelector("[data-nav-toggle]");
+    var menu = group.querySelector("[data-nav-menu]");
+    if (!toggle || !menu) return;
+    if (open) { menu.removeAttribute("hidden"); group.classList.add("open"); }
+    else { menu.setAttribute("hidden", ""); group.classList.remove("open"); }
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function syncSubnav() {
+    var anyOpen = groups.some(function (g) { return g.classList.contains("open"); });
+    var show = barMode() && anyOpen;
+    subnav.classList.toggle("open", show);
+    subnav.setAttribute("aria-hidden", show ? "false" : "true");
+  }
+
+  function openKey(key) {
+    groups.forEach(function (g) { setOpen(g, !!key && g.getAttribute("data-nav-key") === key); });
+    syncSubnav();
+  }
+
+  function placeMenus() {
+    var inBar = barMode();
+    groups.forEach(function (g) {
+      var menu = g.querySelector("[data-nav-menu]");
+      if (!menu) return;
+      if (inBar) subnavInner.appendChild(menu);
+      else g.appendChild(menu);
+    });
+    syncSubnav();
+  }
+
+  function setDrawer(open) {
+    frame.classList.toggle("nav-open", open);
+    if (drawer) drawer.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  groups.forEach(function (group) {
+    var caret = group.querySelector("[data-nav-toggle]");
+    var label = group.querySelector("[data-nav-label]");
+    var toggle = function () {
+      if (group.classList.contains("open")) openKey(null);
+      else openKey(group.getAttribute("data-nav-key"));
+    };
+    if (caret) {
+      caret.addEventListener("click", toggle);
+      caret.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          openKey(group.getAttribute("data-nav-key"));
+          var first = group.querySelector("[data-nav-menu] a");
+          if (first) first.focus();
+        }
+      });
+    }
+    if (label && label.tagName === "BUTTON") label.addEventListener("click", toggle);
+  });
+
+  if (drawer) drawer.addEventListener("click", function () { setDrawer(!frame.classList.contains("nav-open")); });
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!(t instanceof Element)) return;
+    if (t.closest("[data-menu-toggle]")) return;
+    if (isNarrow() && !t.closest(".topbar") && frame.classList.contains("nav-open")) setDrawer(false);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var openGroup = groups.filter(function (g) { return g.classList.contains("open"); })[0];
+    var changed = false;
+    if (openGroup) {
+      openKey(null);
+      var caret = openGroup.querySelector("[data-nav-toggle]");
+      if (caret) caret.focus();
+      changed = true;
+    }
+    if (frame.classList.contains("nav-open")) { setDrawer(false); if (drawer) drawer.focus(); changed = true; }
+    if (changed) e.preventDefault();
+  });
+
+  // 页面内链接只切换高亮，便于观察当前态与展开态的组合
+  nav.addEventListener("click", function (e) {
+    var a = e.target.closest ? e.target.closest("a[data-page-link]") : null;
+    if (!a) return;
+    e.preventDefault();
+    nav.querySelectorAll("[data-page-link]").forEach(function (x) {
+      x.classList.toggle("on", x === a);
+      if (x === a) x.setAttribute("aria-current", "page"); else x.removeAttribute("aria-current");
+    });
+  });
+
+  // 预览开关
+  document.querySelectorAll(".preview-bar .seg").forEach(function (seg) {
+    seg.addEventListener("click", function (e) {
+      var b = e.target.closest ? e.target.closest("button") : null;
+      if (!b) return;
+      seg.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
+      var attr = b.hasAttribute("data-scheme") ? "data-scheme"
+        : b.hasAttribute("data-layout") ? "data-layout"
+        : b.hasAttribute("data-theme") ? "data-theme" : "data-width";
+      frame.setAttribute(attr, b.getAttribute(attr));
+      if (attr === "data-layout" || attr === "data-width") {
+        setDrawer(false);
+        placeMenus();
+      }
+      if (attr === "data-theme") syncThemeButton();
+    });
+  });
+
+  var themeBtn = frame.querySelector("[data-theme-toggle]");
+  function syncThemeButton() {
+    var dark = frame.getAttribute("data-theme") === "dark";
+    themeBtn.textContent = dark ? "浅色" : "深色";
+    themeBtn.setAttribute("aria-pressed", dark ? "true" : "false");
+    themeBtn.setAttribute("aria-label", dark ? "切换到浅色主题" : "切换到深色主题");
+  }
+  themeBtn.addEventListener("click", function () {
+    var next = frame.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    frame.setAttribute("data-theme", next);
+    document.querySelectorAll(".preview-bar [data-theme]").forEach(function (b) {
+      b.classList.toggle("on", b.getAttribute("data-theme") === next);
+    });
+    syncThemeButton();
+  });
+
+  placeMenus();
+  // 初始展开当前分组；上下布局要把菜单先搬进通栏
+  openKey("docker");
+  syncThemeButton();
+})();
+</script>
+</body>
+</html>

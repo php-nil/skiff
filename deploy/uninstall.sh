@@ -1,23 +1,29 @@
 #!/bin/sh
 # Skiff（轻舟）卸载脚本（POSIX sh，方案 §5.1）
 #
-# 默认保留数据（/var/lib/skiff）。彻底删除必须显式 --purge。
-# 用法: sh uninstall.sh [--purge] [--prefix /usr/local]
+# 默认保留数据（/www/skiff）。彻底删除必须显式 --purge。
+# --datadir 与 install.sh 同名参数一致：自定义数据根时用同一值，默认 /www/skiff。
+# 用法: sh uninstall.sh [--purge] [--prefix /usr/local] [--datadir /www/skiff]
 set -eu
 
 PREFIX=/usr/local
+DATA_DIR_OVERRIDE=""
 PURGE=0
 
-for arg in "$@"; do
-    case "$arg" in
-        --purge) PURGE=1 ;;
+# 带值选项必须用 while + shift：`for arg in "$@"` 在循环前就固定了列表，
+# shift 跳位不生效，`--prefix /opt` 的第二个词会被当成未知参数。
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --purge) PURGE=1; shift ;;
         --prefix) PREFIX="${2:?--prefix 需要参数}"; shift 2 ;;
-        --prefix=*) PREFIX="${arg#*=}" ;;
+        --prefix=*) PREFIX="${1#*=}"; shift ;;
+        --datadir) DATA_DIR_OVERRIDE="${2:?--datadir 需要参数}"; shift 2 ;;
+        --datadir=*) DATA_DIR_OVERRIDE="${1#*=}"; shift ;;
         -h|--help)
-            echo "用法: sh uninstall.sh [--purge] [--prefix /usr/local]"
-            echo "  默认保留 /var/lib/skiff（数据库与插件数据），--purge 才会删除"
+            echo "用法: sh uninstall.sh [--purge] [--prefix /usr/local] [--datadir /www/skiff]"
+            echo "  默认保留 /www/skiff（数据库与插件数据），--purge 才会删除"
             exit 0 ;;
-        *) echo "未知参数: $arg" >&2; exit 2 ;;
+        *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
 done
 
@@ -26,7 +32,7 @@ die() { printf '[uninstall] 错误: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "需要 root 权限运行"
 
-DATA_DIR=/var/lib/skiff
+DATA_DIR=${DATA_DIR_OVERRIDE:-/www/skiff}
 CONF_DIR=/etc/skiff
 UNIT=/etc/systemd/system/skiff.service
 

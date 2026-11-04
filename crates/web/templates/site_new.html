@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}新建网站 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>新建网站</h1>
+  <span class="sub">三步完成：域名与目录 → PHP 版本 → 确认</span>
+  <a class="ghost" href="/{{ ctx.prefix }}/sites">返回网站列表</a>
+</div>
+
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+
+{% if !env.ready %}
+<div class="alert warn">
+  运行环境未就绪，创建按钮已禁用。请先安装并启动 nginx + PHP 运行环境。
+  <a href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+</div>
+{% endif %}
+<section class="panel">
+  <div class="wizard" data-wizard data-wizard-start="{{ wizard_start }}">
+    <div class="wizard-steps" aria-label="创建步骤">
+      <span class="wizard-step" data-wizard-step="1"><span class="n">1</span>域名与目录</span>
+      <span class="wizard-step" data-wizard-step="2"><span class="n">2</span>PHP 版本</span>
+      <span class="wizard-step" data-wizard-step="3"><span class="n">3</span>确认</span>
+    </div>
+
+    <form method="post" action="/{{ ctx.prefix }}/sites/create" novalidate>
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+
+      <div class="wizard-panel" data-wizard-panel="1">
+        <h2>域名与根目录</h2>
+        <p class="hint">主域名用于 vhost 与目录命名；别名会一并写入 <code>server_name</code>。根目录留空时默认 <code>/www/sites/&lt;主域名&gt;</code>。</p>
+        <div class="form-grid">
+          <label>主域名
+            <input name="domain" value="{{ form.domain }}" placeholder="example.com" autocomplete="off"
+                   aria-describedby="err-domain">
+            <p class="field-error" id="err-domain" data-error-for="domain"
+               {% if error_field == "domain" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          </label>
+          <label>别名域名（可选，多个用逗号或空格分隔）
+            <input name="aliases" value="{{ form.aliases }}" placeholder="www.example.com, api.example.com" autocomplete="off"
+                   aria-describedby="err-aliases">
+            <p class="field-error" id="err-aliases" data-error-for="aliases"
+               {% if error_field == "aliases" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          </label>
+          <label>根目录
+            <input name="root_dir" value="{{ form.root_dir }}" placeholder="/www/sites/example.com" autocomplete="off"
+                   aria-describedby="err-root">
+            <p class="field-error" id="err-root" data-error-for="root_dir"
+               {% if error_field == "root_dir" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          </label>
+        </div>
+        <div class="wizard-nav">
+          <button class="btn primary next" type="button" data-wizard-next>下一步：选择 PHP</button>
+        </div>
+      </div>
+
+      <div class="wizard-panel" data-wizard-panel="2" hidden>
+        <h2>PHP 版本</h2>
+        <div class="form-grid">
+          <label>PHP 版本
+            <select name="php_version">
+              <option value="8.5" {% if form.php_version == "8.5" || form.php_version.is_empty() %}selected{% endif %}>PHP 8.5（当前运行环境）</option>
+            </select>
+            <p class="hint">运行环境当前只提供 PHP 8.5；其他版本在后续阶段接入。</p>
+          </label>
+        </div>
+        <div class="not-implemented">
+          <div><strong>数据库</strong><br>建站向导中的数据库创建尚未实现，下一阶段接入。</div>
+          <span class="badge warn">未实现</span>
+        </div>
+        <div class="wizard-nav">
+          <button class="btn ghost" type="button" data-wizard-back>上一步</button>
+          <button class="btn primary next" type="button" data-wizard-next>下一步：确认</button>
+        </div>
+      </div>
+
+      <div class="wizard-panel" data-wizard-panel="3" hidden>
+        <h2>确认创建</h2>
+        <dl class="summary">
+          <dt>主域名</dt><dd class="mono" data-summary="domain">—</dd>
+          <dt>别名</dt><dd class="mono" data-summary="aliases">—</dd>
+          <dt>根目录</dt><dd class="mono" data-summary="root">—</dd>
+          <dt>PHP 版本</dt><dd class="mono" data-summary="php">—</dd>
+          <dt>证书</dt><dd>未配置（HTTPS 下一阶段接入）</dd>
+        </dl>
+        <div class="not-implemented">
+          <div><strong>数据库与 SSL</strong><br>这两步已明确标注为未实现，不会创建数据库或申请证书；创建后仅生成 nginx vhost、站点目录与 PHP 探针。</div>
+          <span class="badge warn">未实现</span>
+        </div>
+        <div class="wizard-nav">
+          <button class="btn ghost" type="button" data-wizard-back>上一步</button>
+          <button class="btn primary next" type="submit"{% if !env.ready %} disabled{% endif %}>创建网站</button>
+          {% if !env.ready %}<span class="hint">运行环境未就绪，无法提交。</span>{% endif %}
+        </div>
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}

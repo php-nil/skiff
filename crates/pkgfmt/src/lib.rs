@@ -7,7 +7,9 @@ pub mod manifest;
 pub mod package;
 pub mod signature;
 
-pub use manifest::{Manifest, ManifestPerm, RunMode, UiEntry};
+pub use manifest::{
+    Manifest, ManifestMenu, ManifestMount, ManifestPerm, MenuItem, MenuTarget, RunMode, UiEntry,
+};
 pub use package::{
     host_arch, pack_dir, verify_file, PackageLimits, PackageMeta, UnpackedPackage, DEFAULT_LIMITS,
 };

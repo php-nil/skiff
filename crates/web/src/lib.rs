@@ -9,6 +9,7 @@
 pub mod assets;
 pub mod error;
 pub mod handlers;
+pub mod menu;
 pub mod middleware;
 mod templates;
 pub mod util;
@@ -141,7 +142,56 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/plugins/{{id}}/rpc"),
             post(handlers::plugins::rpc),
         )
+        .route(
+            &format!("/{p}/settings/menu"),
+            get(handlers::settings::menu_page).post(handlers::settings::menu_update),
+        )
         .route(&format!("/{p}/settings"), get(handlers::settings::page))
+        // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
+        .route(&format!("/{p}/sites"), get(handlers::sites::list))
+        .route(
+            &format!("/{p}/sites/new"),
+            get(handlers::sites::new_page_get),
+        )
+        .route(&format!("/{p}/sites/batch"), post(handlers::sites::batch))
+        .route(&format!("/{p}/sites/create"), post(handlers::sites::create))
+        .route(&format!("/{p}/sites/env"), get(handlers::sites::env_page))
+        .route(
+            &format!("/{p}/sites/env/install"),
+            post(handlers::sites::env_install),
+        )
+        .route(
+            &format!("/{p}/sites/settings"),
+            get(handlers::sites::env_settings_page).post(handlers::sites::env_settings_save),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}"),
+            get(handlers::sites::detail),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/logs"),
+            get(handlers::sites::logs),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/config/save"),
+            post(handlers::sites::save_config),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/delete"),
+            get(handlers::sites::delete_confirm).post(handlers::sites::delete),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/default"),
+            post(handlers::sites::set_default),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/ssl"),
+            post(handlers::sites::ssl_action),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/{{action}}"),
+            post(handlers::sites::action),
+        )
         .route(
             &format!("/{p}/settings/keys"),
             post(handlers::settings::import_key),
@@ -151,6 +201,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::settings::remove_key),
         )
         .route(&format!("/{p}/audit"), get(handlers::settings::audit))
+        // 契约里的规范深链：旧路由继续可用，这里只是内部转发到同一 handler。
+        .route(&format!("/{p}/m/{{*rest}}"), get(handlers::menu::dispatch))
+        // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。
+        .route(&format!("/{p}/static/{{*path}}"), get(assets::static_file))
+        .route(
+            &format!("/{p}/plugins/{{id}}/ui/{{*path}}"),
+            get(handlers::plugins::plugin_ui),
+        )
         // ---- JSON API v1（与 UI 共用同一套 RBAC 与审计）----
         .route("/api/v1/session", post(handlers::api::login))
         .route("/api/v1/docker/containers", get(handlers::api::containers))
@@ -182,11 +240,6 @@ pub fn router(state: Arc<AppState>) -> Router {
     // handler panic 若不拦，会直接吞掉请求——无 500、无审计。这里统一转错误页 + 审计。
     Router::new()
         .route("/healthz", get(handlers::meta::healthz))
-        .route("/static/{*path}", get(assets::static_file))
-        .route(
-            "/plugins/{id}/ui/{*path}",
-            get(handlers::plugins::plugin_ui),
-        )
         .merge(ui)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -238,6 +291,7 @@ mod tests {
         ));
         let cfg = crate::state::WebConfig {
             data_dir: PathBuf::from("skiff-test-data"),
+            web_root: PathBuf::from("skiff-test-web"),
             entry_prefix: "p".into(),
             dev_http: true,
             trusted_proxies: vec![],

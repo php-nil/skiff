@@ -1842,12 +1842,16 @@ dependencies = [
 name = "skiff-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "serde_json",
  "skiff-docker",
  "skiff-identity",
  "skiff-model",
  "skiff-plugin",
  "skiff-store",
+ "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

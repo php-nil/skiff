@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{
     ContainerCreateBody, ContainerCreateResponse, ContainerInspectResponse, ContainerSummary,
-    ContainerSummaryStateEnum, HealthConfig, HostConfig, Mount as DockerMount, MountType,
-    NetworkCreateRequest, NetworkCreateResponse, NetworkingConfig, PortBinding, RestartPolicy,
-    RestartPolicyNameEnum, Volume, VolumeCreateRequest,
+    ContainerSummaryStateEnum, HealthConfig, HostConfig, HostConfigLogConfig, Mount as DockerMount,
+    MountType, NetworkCreateRequest, NetworkCreateResponse, NetworkingConfig, PortBinding,
+    RestartPolicy, RestartPolicyNameEnum, Volume, VolumeCreateRequest,
 };
 use bollard::query_parameters as qp;
 use bollard::Docker;
@@ -53,6 +53,22 @@ impl From<bollard::errors::Error> for DockerError {
 
 fn api_err(e: bollard::errors::Error) -> DockerError {
     DockerError::Api(e.to_string())
+}
+
+/// 镜像引用拆成 Docker `fromImage` + `tag`。
+///
+/// 带 `@sha256:` 的引用整体交给 `fromImage`（Docker 的 `fromImage` 允许包含
+/// digest），不能按最后的冒号拆——否则会把 `sha256:...` 当成 tag，Docker 直接
+/// 返回 `invalid reference format`。
+fn image_pull_ref(image: &str) -> (String, Option<String>) {
+    if image.contains('@') {
+        return (image.to_string(), None);
+    }
+    match image.rsplit_once(':') {
+        // 只有形如 repo:tag 才拆；带 registry 端口的 host:5000/img 交给 Docker 自己判
+        Some((n, t)) if !t.contains('/') => (n.to_string(), Some(t.to_string())),
+        _ => (image.to_string(), Some("latest".to_string())),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +120,19 @@ pub struct NetworkRow {
     pub name: String,
     pub driver: String,
     pub scope: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum DockerParams {
+    /// 只靠动词 + 目标 id 就能执行的操作。
+    #[default]
+    None,
+    /// `images.pull` 的镜像引用（`nginx:alpine`）。
+    ImagePull(String),
+    /// `containers.create` 的强类型规格（字段白名单在 `ContainerSpec`）。
+    ContainerCreate(Box<ContainerSpec>),
+    /// `containers.remove` 是否强制删除。
+    ContainerRemove { force: bool },
 }
 
 pub struct DockerService {
@@ -296,15 +325,11 @@ impl DockerService {
 
     /// 只允许 `fromImage` 拉取，不走 `/build`（§6.5）。
     pub async fn pull_image(&self, image: &str) -> Result<(), DockerError> {
-        let (name, tag) = match image.rsplit_once(':') {
-            // 只有形如 repo:tag 才拆；带 registry 端口的 host:5000/img 交给 Docker 自己判
-            Some((n, t)) if !t.contains('/') => (n.to_string(), t.to_string()),
-            _ => (image.to_string(), "latest".to_string()),
-        };
+        let (name, tag) = image_pull_ref(image);
         let mut stream = self.client()?.create_image(
             Some(qp::CreateImageOptions {
                 from_image: Some(name),
-                tag: Some(tag),
+                tag,
                 ..Default::default()
             }),
             None,
@@ -477,19 +502,13 @@ impl DockerService {
             .map_err(api_err)
     }
 
-    /// 按白名单动词**单点分发**，返回已序列化的结果。
-    ///
-    /// 调用方（UI、JSON API、插件回调）只做三件事：策略判定、调这里、写审计。
-    /// 之前 `Verb` → Docker 方法的匹配在 web 的两处和 kernel 一处各写了一遍，
-    /// 第三处还有 `unreachable!()`——新增动词漏改就是 panic。现在只有这一份。
-    ///
-    /// 需要额外参数（镜像名、Compose 定义、exec 命令）的动词不在此处理，
-    /// 返回 `Unsupported`，由调用方走各自的类型化接口；这是「不猜参数」的取舍，
-    /// 免得通道里塞进一个 `args: Value` 又把参数白名单绕过去。
+    /// 需要额外参数（镜像名、容器规格、删除选项）的动词也在这里分发；
+    /// 参数走 `DockerParams` 强类型枚举，而不是 `args: Value`，字段白名单不可绕过。
     pub async fn execute(
         &self,
         verb: Verb,
         target: Option<&ObjectRef>,
+        params: DockerParams,
     ) -> Result<serde_json::Value, DockerError> {
         let need_target = || DockerError::Unsupported(format!("{} 需要指定对象", verb.as_str()));
         let id = || -> Result<String, DockerError> {
@@ -544,6 +563,31 @@ impl DockerService {
                 self.kill_container(&id()?).await?;
                 Ok(serde_json::Value::Null)
             }
+            Verb::ContainerCreate => match params {
+                DockerParams::ContainerCreate(spec) => {
+                    let created = self.create_container(&spec).await?;
+                    Ok(serde_json::json!({ "id": created }))
+                }
+                _ => Err(DockerError::Unsupported(
+                    "containers.create 需要容器规格".into(),
+                )),
+            },
+            Verb::ContainerRemove => match params {
+                DockerParams::ContainerRemove { force } => {
+                    self.remove_container(&id()?, force).await?;
+                    Ok(serde_json::Value::Null)
+                }
+                _ => Err(DockerError::Unsupported(
+                    "containers.remove 需要显式删除选项".into(),
+                )),
+            },
+            Verb::ImagePull => match params {
+                DockerParams::ImagePull(image) if !image.trim().is_empty() => {
+                    self.pull_image(&image).await?;
+                    Ok(serde_json::Value::Null)
+                }
+                _ => Err(DockerError::Unsupported("images.pull 需要镜像引用".into())),
+            },
             other => Err(DockerError::Unsupported(format!(
                 "{} 需要专用参数，走类型化接口（不在通用分发内）",
                 other.as_str()
@@ -558,6 +602,27 @@ impl DockerService {
             .await
             .map_err(api_err)?;
         serde_json::to_value(r).map_err(|e| DockerError::Api(e.to_string()))
+    }
+
+    /// 在容器内跑一条只读命令并收集输出与退出码（用于 `nginx -t` 等校验）。
+    pub async fn exec_capture(
+        &self,
+        container: &str,
+        cmd: Vec<String>,
+    ) -> Result<(i64, String), DockerError> {
+        let exec_id = self.create_exec(container, cmd).await?;
+        let mut out = String::new();
+        if let StartExecResults::Attached { mut output, .. } = self.start_exec(&exec_id).await? {
+            while let Some(chunk) = output.next().await {
+                match chunk {
+                    Ok(v) => out.push_str(&v.to_string()),
+                    Err(e) => return Err(api_err(e)),
+                }
+            }
+        }
+        let info = self.inspect_exec(&exec_id).await?;
+        let code = info.get("ExitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
+        Ok((code, out))
     }
 }
 
@@ -684,7 +749,7 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
         start_interval: None,
     });
 
-    let networking_config = if spec.networks.is_empty() {
+    let networking_config = if spec.networks.is_empty() || spec.network_mode.is_some() {
         None
     } else {
         let mut endpoints = HashMap::new();
@@ -695,6 +760,18 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
             endpoints_config: Some(endpoints),
         })
     };
+
+    let log_config = spec.log_driver.as_ref().map(|driver| HostConfigLogConfig {
+        typ: Some(driver.clone()),
+        config: Some({
+            let mut opts = HashMap::new();
+            if let Some(size) = &spec.log_max_size {
+                opts.insert("max-size".to_string(), size.clone());
+                opts.insert("max-file".to_string(), "3".to_string());
+            }
+            opts
+        }),
+    });
 
     ContainerCreateBody {
         image: Some(spec.image.clone()),
@@ -713,9 +790,15 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
                 .collect(),
         ),
         host_config: Some(HostConfig {
-            port_bindings: Some(port_bindings),
+            port_bindings: if spec.network_mode.is_some() {
+                None
+            } else {
+                Some(port_bindings)
+            },
             mounts: Some(mounts),
             restart_policy,
+            network_mode: spec.network_mode.clone(),
+            log_config,
             memory: spec.memory_limit_mb.map(|m| m * 1024 * 1024),
             nano_cpus: spec.nano_cpus,
             pids_limit: spec.pids_limit,
@@ -732,6 +815,25 @@ mod tests {
     use super::*;
     use crate::policy::{ContainerSpec, Mount, PortMapping};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn image_pull_ref_keeps_digest_in_from_image() {
+        let digest = "openresty/openresty:alpine@sha256:2cb90d64192934c26b3749cf744f47edd59277787fe761bd109eeebdc3e2214a";
+        assert_eq!(image_pull_ref(digest), (digest.to_string(), None));
+        assert_eq!(
+            image_pull_ref("php:8.5-fpm-alpine"),
+            ("php".to_string(), Some("8.5-fpm-alpine".to_string()))
+        );
+        assert_eq!(
+            image_pull_ref("nginx"),
+            ("nginx".to_string(), Some("latest".to_string()))
+        );
+        // registry 端口里的冒号不能被当成 tag 分隔符。
+        assert_eq!(
+            image_pull_ref("localhost:5000/img"),
+            ("localhost:5000/img".to_string(), Some("latest".to_string()))
+        );
+    }
 
     fn spec() -> ContainerSpec {
         ContainerSpec {
@@ -753,11 +855,14 @@ mod tests {
             restart: Some("unless-stopped".into()),
             healthcheck: None,
             networks: vec![],
+            network_mode: None,
             mounts: vec![Mount::Volume {
                 source: "html".into(),
                 target: "/usr/share/nginx/html".into(),
                 read_only: false,
             }],
+            log_driver: None,
+            log_max_size: None,
             memory_limit_mb: Some(128),
             nano_cpus: None,
             pids_limit: Some(64),
@@ -780,6 +885,77 @@ mod tests {
         assert!(json.get("privileged").is_none());
         assert!(json.get("CapAdd").is_none());
         assert!(json.get("cap_add").is_none());
+    }
+
+    #[test]
+    fn host_network_and_log_config_are_mapped() {
+        let mut sp = spec();
+        sp.network_mode = Some("host".into());
+        sp.log_driver = Some("local".into());
+        sp.log_max_size = Some("10m".into());
+        let c = build_config(&sp);
+        let hc = c.host_config.as_ref().unwrap();
+        assert_eq!(hc.network_mode.as_deref(), Some("host"));
+        // host 网络下不能再带端口映射，否则 Docker 直接拒绝。
+        assert!(hc.port_bindings.is_none());
+        let lc = hc.log_config.as_ref().unwrap();
+        assert_eq!(lc.typ.as_deref(), Some("local"));
+        let opts = lc.config.as_ref().unwrap();
+        assert_eq!(opts.get("max-size").map(String::as_str), Some("10m"));
+        assert_eq!(opts.get("max-file").map(String::as_str), Some("3"));
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json.get("NetworkingConfig").is_none());
+    }
+
+    #[test]
+    fn execute_rejects_missing_params_without_touching_engine() {
+        let svc = DockerService::connect("/nonexistent/docker.sock");
+        let rt = futures_util::FutureExt::now_or_never(svc.execute(
+            Verb::ImagePull,
+            None,
+            DockerParams::None,
+        ));
+        match rt {
+            Some(Err(DockerError::Unsupported(m))) => assert!(m.contains("镜像引用")),
+            other => panic!("应返回 Unsupported，实得 {other:?}"),
+        }
+        let rt = futures_util::FutureExt::now_or_never(svc.execute(
+            Verb::ContainerCreate,
+            None,
+            DockerParams::None,
+        ));
+        assert!(matches!(rt, Some(Err(DockerError::Unsupported(_)))));
+        let rt = futures_util::FutureExt::now_or_never(svc.execute(
+            Verb::ContainerRemove,
+            None,
+            DockerParams::ContainerRemove { force: true },
+        ));
+        assert!(matches!(rt, Some(Err(DockerError::Unsupported(_)))));
+    }
+
+    #[test]
+    fn execute_dispatches_lifecycle_verbs() {
+        // 白名单里的生命周期动词不再落入「需专用参数」的兜底分支。
+        let handled = [
+            Verb::ContainerCreate,
+            Verb::ContainerRemove,
+            Verb::ImagePull,
+            Verb::Start,
+            Verb::Stop,
+            Verb::Restart,
+            Verb::Kill,
+        ];
+        for v in handled {
+            assert!(!v.as_str().is_empty());
+        }
+        // 未实现的动词仍必须显式 Unsupported，而不是 panic。
+        let svc = DockerService::connect("/nonexistent/docker.sock");
+        let rt = futures_util::FutureExt::now_or_never(svc.execute(
+            Verb::ComposeUp,
+            None,
+            DockerParams::None,
+        ));
+        assert!(matches!(rt, Some(Err(DockerError::Unsupported(_)))));
     }
 
     #[test]

@@ -41,6 +41,34 @@ pub fn open_db(cfg: &Config) -> Result<Arc<Db>> {
     })?))
 }
 
+/// 把公钥文件写入信任库（`skiff trust import`）。
+///
+/// 这是插件安装报错里给出的一步命令；发布包自带的
+/// `official/public-key.txt` 已由首启自动信任，通常不需要手动执行。
+pub fn trust_import(cfg: &Config, key_file: &Path, label: &str) -> Result<()> {
+    let db = open_db(cfg)?;
+    let raw = std::fs::read_to_string(key_file)
+        .with_context(|| format!("读取公钥文件失败: {}", key_file.display()))?;
+    let hex = raw.trim();
+    if hex.is_empty() {
+        bail!("公钥文件为空: {}", key_file.display());
+    }
+    let key =
+        skiff_pkgfmt::decode_public_key(hex).map_err(|e| anyhow::anyhow!("公钥格式无效: {e}"))?;
+    let key_id = skiff_pkgfmt::key_id_of(&key.to_bytes());
+    let existed = db.trusted_key(&key_id)?.is_some();
+    db.trust_key(&key_id, hex, label)?;
+    if existed {
+        println!("公钥已存在（key_id {key_id}），未覆盖");
+    } else {
+        println!(
+            "已导入公钥 key_id={key_id} label={label} 文件={}",
+            key_file.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn plugin_list(cfg: &Config) -> Result<()> {
     let db = open_db(cfg)?;
     let plugins = db.list_plugins()?;
@@ -70,6 +98,34 @@ pub fn plugin_list(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// 把「公钥未信任」翻译成可直接执行的下一步。
+///
+/// 区分两种情况：
+/// - 包目录自带 `public-key.txt`：给出真实路径 + `skiff trust import` 一步命令；
+/// - 包里没带公钥：给出预期路径，提示先把公钥放到该处，再执行同一命令。
+fn trust_hint(package: &Path, key_id: &str) -> String {
+    let key_path = package
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("public-key.txt");
+    if key_path.is_file() {
+        format!(
+            "包自带公钥但尚未信任（fingerprint {key_id}）。执行以下命令后重试：\n  \
+             skiff trust import {} --label official",
+            key_path.display()
+        )
+    } else {
+        format!(
+            "未导入公钥（fingerprint {key_id}），且包目录未自带 public-key.txt（预期路径：{}）。\n\
+             请从发布方取得公钥并放到该路径，然后执行：\n  \
+             skiff trust import {} --label official\n\
+             （也可在面板「设置 → 信任公钥」导入；开发环境可加 --allow-unsigned）",
+            key_path.display(),
+            key_path.display()
+        )
+    }
+}
+
 pub fn plugin_install(
     cfg: &Config,
     package: &Path,
@@ -87,10 +143,9 @@ pub fn plugin_install(
     // 这里只负责把「未导入公钥」翻成 CLI 语境下的提示。
     let allow_unsigned = allow_unsigned_flag || cfg.allow_unsigned;
     let trust = skiff_plugin::resolve_trust(package, &db, allow_unsigned).map_err(|e| match e {
-        skiff_plugin::TrustError::UnverifiedKey { key_id } => anyhow::anyhow!(
-            "未导入公钥（fingerprint {key_id}）。请先在面板「设置 → 信任公钥」导入，\
-                 或开发环境加 --allow-unsigned"
-        ),
+        skiff_plugin::TrustError::UnverifiedKey { key_id } => {
+            anyhow::anyhow!(trust_hint(package, &key_id))
+        }
         other => anyhow::anyhow!(other.to_string()),
     })?;
     // 借用而非移出：`trust` 后面还要交给 `install_options` 组装安装选项。
@@ -419,4 +474,35 @@ fn is_tty() -> bool {
 #[cfg(not(unix))]
 fn is_tty() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 安装报错必须把「包自带公钥」与「包里没带公钥」分开，并给出可复制命令。
+    #[test]
+    fn trust_hint_distinguishes_bundled_and_missing_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let official = tmp.path().join("official");
+        std::fs::create_dir_all(&official).unwrap();
+        let pkg = official.join("demo.wbpkg");
+        std::fs::write(&pkg, b"pkg").unwrap();
+
+        // 情况一：包目录自带 public-key.txt → 报错给出真实路径与一步命令
+        std::fs::write(official.join("public-key.txt"), "aa").unwrap();
+        let hint = trust_hint(&pkg, "key-123");
+        assert!(hint.contains("包自带公钥但尚未信任"), "{hint}");
+        assert!(hint.contains("key-123"));
+        assert!(hint.contains("skiff trust import"));
+        assert!(hint.contains(&official.join("public-key.txt").display().to_string()));
+
+        // 情况二：包里没带公钥 → 报错说明缺失，并给出预期路径，不能谎称「包自带」
+        std::fs::remove_file(official.join("public-key.txt")).unwrap();
+        let hint = trust_hint(&pkg, "key-123");
+        assert!(hint.contains("包目录未自带 public-key.txt"), "{hint}");
+        assert!(hint.contains("skiff trust import"));
+        assert!(hint.contains(&official.join("public-key.txt").display().to_string()));
+        assert!(!hint.contains("包自带公钥但尚未信任"));
+    }
 }

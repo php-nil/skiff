@@ -13,7 +13,7 @@
 | 首批 5 个 | **容器守护**（零内核改动，链路验证）→ **主机监控** → **Nginx 站点** → **文件管理** → **计划任务**（按落地难度排序） |
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
 | 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 仍缺 exec/compose；`net` 一律 501 |
-| 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/var/lib/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
+| 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
 
 **主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。首批 5 个已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
 
@@ -60,7 +60,6 @@
 |---|---|---|---|---|---|---|
 | P0 | `com.skiff.guard` | 容器守护 | `docker` + 自身 `data/` | **零内核改动**（`containers.list/inspect/restart`） | 部分竞品无 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读） | `path:` 只读授权 + cron `tick`（均已就绪） | 1Panel/宝塔 监控 | ✅ 0.1.0 已实现 |
-| P0 | `com.skiff.nginx` | Nginx 站点 | `fs` + `docker` | `path:` 写授权 + `containers.list/restart`；**不需要 exec** | 1Panel/宝塔 网站 | ✅ 0.1.0 已实现（无 `nginx -t`） |
 | P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
 | P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
@@ -70,6 +69,9 @@
 | P2 | `com.skiff.logs` | 日志查看与清理 | `fs` | 已具备（`read/list` + `remove`） | 1Panel/宝塔 日志 | 可做，未排期 |
 | P2 | `com.skiff.notify` | 告警通知 | `net` | 出网收口 + 出网授权 | 1Panel 告警 | 未开始（卡 net） |
 | P2 | `com.skiff.sso` | 身份同步/SSO | `identity` | identity 能力扩展 | YunoHost/Portainer | 未开始 |
+
+> 原 `com.skiff.nginx` 插件已**内核化**：网站（站点列表 / 运行环境 / 设置）由内核直接提供，
+> nginx + PHP-FPM 容器的安装、vhost 生成、启停与日志都在内核侧完成，不再作为官方插件发布。
 
 **明确不做 / 暂缓**：
 
@@ -120,23 +122,12 @@ resource_hints = ["path:/proc"]
 - **前置**：`path:/proc` 只读授权（安装时勾选）+ cron 运行时（内核 30s 巡检、按分钟去重）。未授权时 RPC 会返回「缺少 path:/proc 授权」而不是空数据。
 - **风险**：采集频率与保留点数直接影响进程开销，**数字待实测**，不写资源承诺。
 
-### 4.4 Nginx 站点 `com.skiff.nginx`
+### 4.4 网站（已内核化，不再作为插件）
 
-```toml
-run = "on-demand"
-requires = ["fs", "docker", "identity", "interop"]
-resource_hints = ["path:/etc/nginx/conf.d", "container:nginx", "plugin:com.skiff.cron"]
-# fs: read / write / list / remove / rename
-# docker: containers.list / containers.restart
-# interop: call（点「新增备份任务」时写计划任务）
-# 不再声明 cron：定时备份改由计划任务插件调度本插件的 backup 接口（避免两套定时各备份一次）
-```
-
-- **功能面**：站点列表（`site_dir` 下的 `*.conf`）、读写、新建（仅新建已存在的站点才走 create-only）、改名、删除、手动/每日备份、重载。
-- **与规划的关键差异**：规划写的是 `containers.exec` + `nginx -t`，实际**不需要 exec**——改完配置文件后由「重载」= `containers.restart` 让容器自己去加载。代价是没有 `nginx -t` 的语法预检（exec 属 M3 门禁）：配置写坏了表现为容器起不来，面板本身不受影响。
-- **前置**：`path:` 写授权（`site_dir` 必须绝对路径且落在授权根内）+ `container:<NAME>` 授权。403 的错误文案会直接告诉管理员该勾哪个授权。
-- **备份**：`data/backups/<12 位补零 Unix 秒>/<file>.conf`，按字典序保留最近 `backup_keep`（clamp 1..=90）份。
-- **定时备份（插件间协作）**：页面上的「新增备份任务」不再由 NGINX 自己排定时，而是用 `interop_call("com.skiff.cron", "jobs.create", …)` 在计划任务插件里登记一条「调用 `com.skiff.nginx` 的 `backup` 方法」的任务；成功后再发 `skiff.open` 跳到计划任务页并高亮 `?open=job:<id>`。幂等键固定为 `(source=com.skiff.nginx, key="nightly")`，重复点击只会更新表达式/启停，不会堆任务。403 文案分别提示「先装计划任务插件」「勾 `plugin:com.skiff.cron` 与 `interop:call`」。
+原 `com.skiff.nginx` 已迁移为内核「网站」能力：运行环境安装（nginx + PHP-FPM 容器）、站点表、
+vhost 生成、启停 / 删除 / 日志都由内核实现，菜单归属固定为「网站 → 网站列表 / 运行环境 / 设置」。
+插件侧不再维护该 manifest、UI 与备份接口；定时备份仍可复用 `com.skiff.cron` 对内核站点的能力
+（待后续提供 interop 入口）。
 
 ### 4.5 文件管理 `com.skiff.files`
 
@@ -171,6 +162,21 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 - **表达式单一来源**：内核装包校验、内核 `tick` 调度、本插件执行全部走 `crates/cron`（`skiff-cron`），三处同一份解析器，不各写一份。
 - **风险**：任务数量 × 表达式频率决定调用量；「每分钟最多调用几次」这类数字**待实测**，不写资源承诺。禁用/删除任务即时生效，但已开始的调用不能中断（15s 超时兜底）。
 
+### 4.7 菜单与槽位归属（P2 已迁移）
+
+4 个官方插件均改为 `api = "1.1"` + `[[menu]]` 声明式菜单，内核渲染全部导航；插件只负责 `ui/` 内容。完整契约见 `docs/MENU_CONTRACT.md`。
+
+| 插件 | 一级 → 二级 | 三级标签 | 固定页槽位 |
+| --- | --- | --- | --- |
+| `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样 | `overview.health`（`sm`，30s 刷新） |
+| `com.skiff.files` | 工具 → 文件管理 | 无（单视图） | — |
+| `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
+| `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件 | — |
+
+- 原有 `[[ui]].path` 全部保留：插件中心直接打开仍是旧入口；老包（`api = "1.0"`、无 `[[menu]]`）继续走 legacy 降级。
+- 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。
+- `monitor` 的 `ui/health.html` 是槽位专用紧凑卡；无采样时显示明确空态，内核负责外框、标题与失败降级。
+
 ## 5. 目录落地：放在哪里
 
 ### 5.1 方案对比
@@ -186,7 +192,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ```
 plugins/
-├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/nginx/files/cron
+├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron
 ├── Cargo.lock              # 必须入库（CI 与 pack.sh 都用 --locked）
 ├── pack.sh                 # 官方插件打包：build → stamp → pack → verify → official/
 ├── README.md               # 官方插件集约定（id、构建自检、打包、装机授权、多架构）
@@ -197,7 +203,6 @@ plugins/
 │   ├── src/main.rs
 │   └── ui/                 # index.html + app.js（只经 postMessage）
 ├── monitor/                # com.skiff.monitor
-├── nginx/                  # com.skiff.nginx（provides backup；consumes com.skiff.cron:jobs.create）
 ├── files/                  # com.skiff.files
 └── cron/                   # com.skiff.cron（provides jobs.create/list/remove/run；consumes *）
 ```
@@ -223,7 +228,7 @@ plugins/
 ### 5.4 开箱即用的三条交付线（1/3 已落地）
 
 1. **内置官方公钥**：命中内置指纹时显示「官方」徽章并免去手动导入（权限确认仍逐条）。**当前仍是缺口**：信任库只有 TOFU，发布包只带 `official/public-key.txt`，需要管理员手动导入。
-2. **随包携带（已落地）**：发布包内有 `official/`（5 个已签名 `.wbpkg` + `public-key.txt`）；`install.sh` 复制到 `/var/lib/skiff/official/`（0755），**不自动安装**。
+2. **随包携带（已落地）**：发布包内有 `official/`（5 个已签名 `.wbpkg` + `public-key.txt`）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
 3. **面板「官方插件」列表 + 一键安装**：从本地官方源读取、离线可用、安装仍走权限确认对话框。**未做**（现在只能 `skiff plugin install` 或面板上传）。
 
 > 只把 `.wbpkg` 放 GitHub Release、让用户手动上传，不算「开箱即用」——第 3 条是下一步。
@@ -234,11 +239,11 @@ plugins/
 |---|---|---|
 | 0 决策与目录 | 建 `plugins/` 第二 workspace + 三关门禁 | ✅ 2026-11-01（`exclude`、CI `plugins` job、`plugins/Cargo.lock`） |
 | 1 能力补齐 | fs 宿主授权（`path:` grant、`resolve_data`/`resolve` 双分支、manifests 的 `resource_hints`、Broker 复验）；cron 运行时；interop 契约（manifest `[interop]`、`plugin:` 对象授权、`capability/interop/{call,catalog}`、审计） | ✅ fs / cron / interop 就绪；❌ docker exec、内置官方公钥仍未做 |
-| 2 首批插件 | guard → monitor → nginx → files → cron | ✅ 代码 + UI + 单测（guard 3 / monitor 5 / nginx 4 / files 2 / cron 8 / common 7） |
+| 2 首批插件 | guard → monitor → files → cron（nginx 已内核化） | ✅ 代码 + UI + 单测（guard 3 / monitor 5 / files 2 / cron 8 / common 7） |
 | 3 分发 | 官方源目录 + 随包携带 | ✅ 随包携带（`official/` + `public-key.txt`）；❌ 面板内官方插件列表 |
 | 4 第二批 | 防火墙（net #17 通过后）、备份与恢复、应用模板、数据库 | 未开始 |
 
-> 首批 5 个的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）尚未记录实测，见 [`docs/sections/12-pending-tests.md`](sections/12-pending-tests.md) 口径；Windows 上只验证了编译与单测，装机链路待 Linux 实测。
+> 首批 4 个的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）尚未记录实测，见 [`docs/sections/12-pending-tests.md`](sections/12-pending-tests.md) 口径；Windows 上只验证了编译与单测，装机链路待 Linux 实测。
 
 > 能力补齐与插件开发并行时，先冻结 manifest 字段与协议契约再写插件，否则三份插件要返工。
 

@@ -1,0 +1,77 @@
+//! 菜单深链 `/{p}/m/...`：解析到既有页面 handler，旧路由保持可用（契约 §7.2）。
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::extract::{Path, Query, State};
+use axum::response::Response;
+
+use crate::error::AppError;
+use crate::handlers;
+use crate::middleware::AuthUser;
+use crate::state::AppState;
+
+pub async fn dispatch(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(rest): Path<String>,
+) -> Result<Response, AppError> {
+    let rest = rest.trim_matches('/');
+    let mut q: HashMap<String, String> = HashMap::new();
+    match rest {
+        "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
+        "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
+        "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
+        "core/sites/settings" => {
+            handlers::sites::env_settings_page(State(state), AuthUser(user), Query(q)).await
+        }
+        "core/docker/containers" => {
+            handlers::containers::list(State(state), AuthUser(user), Query(q)).await
+        }
+        "core/docker/images" => handlers::resources::images(State(state), AuthUser(user)).await,
+        "core/docker/networks" => handlers::resources::networks(State(state), AuthUser(user)).await,
+        "core/docker/volumes" => handlers::resources::volumes(State(state), AuthUser(user)).await,
+        "core/plugins/installed" | "core/plugins/discover" | "core/plugins/updates" => {
+            let tab = rest.rsplit('/').next().unwrap_or("installed");
+            q.insert("tab".into(), tab.into());
+            handlers::plugins::list(State(state), AuthUser(user), Query(q)).await
+        }
+        "core/settings/security" => {
+            handlers::settings::page(State(state), AuthUser(user), Query(HashMap::new())).await
+        }
+        "core/settings/menu" => {
+            handlers::settings::menu_page(State(state), AuthUser(user), Query(HashMap::new())).await
+        }
+        "core/settings/audit" => handlers::settings::audit(State(state), AuthUser(user)).await,
+        other if other.starts_with("plugin/") => {
+            let mut parts = other.split('/');
+            let _ = parts.next();
+            let Some(id) = parts.next() else {
+                return Err(AppError::NotFound("菜单不存在".into()));
+            };
+            let local = parts.next().unwrap_or("");
+            if local.is_empty() {
+                // `plugin/<id>` 是合法的插件工作台入口：不带 `menu` 时由详情页
+                // 回落到插件主 UI，与 `plugin:<id>` 的当前态判定一致。
+                return handlers::plugins::detail(
+                    State(state),
+                    AuthUser(user),
+                    Path(id.to_string()),
+                    Query(q),
+                )
+                .await;
+            }
+            q.insert("menu".into(), local.into());
+            // L3 深链（契约 §3.3）：内核渲染标签栏，插件只渲染 iframe 内容。
+            if let Some(l3) = parts.next().filter(|s| !s.is_empty()) {
+                q.insert("l3".into(), l3.into());
+            }
+            if parts.next().is_some() {
+                return Err(AppError::NotFound("菜单层级超过三级".into()));
+            }
+            handlers::plugins::detail(State(state), AuthUser(user), Path(id.to_string()), Query(q))
+                .await
+        }
+        _ => Err(AppError::NotFound("菜单不存在".into())),
+    }
+}

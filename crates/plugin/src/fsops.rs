@@ -181,7 +181,7 @@ pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError
     }
     let size = meta.len();
     let max = max.clamp(1, MAX_IO);
-    if offset >= size {
+    if size > 0 && offset >= size {
         return Ok(Chunk {
             bytes: Vec::new(),
             offset,
@@ -192,13 +192,23 @@ pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError
     let mut f = File::open(path).map_err(io_err)?;
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| FsError::Io(e.to_string()))?;
-    let want = (size - offset).min(max as u64) as usize;
+    // procfs（如 `/proc/stat`）的 `metadata.len()` 恒为 0，但内容非空：
+    // 不能按 size 提前返回空页，否则 monitor 等插件永远读不到 /proc。
+    let want = if size == 0 {
+        max
+    } else {
+        (size - offset).min(max as u64) as usize
+    };
     let mut bytes = Vec::with_capacity(want);
     (&mut f)
         .take(want as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| FsError::Io(e.to_string()))?;
-    let eof = offset + bytes.len() as u64 >= size;
+    let eof = if size == 0 {
+        bytes.len() < max
+    } else {
+        offset + bytes.len() as u64 >= size
+    };
     Ok(Chunk {
         bytes,
         offset,
@@ -447,6 +457,17 @@ mod tests {
         assert_eq!(fs::metadata(&file).unwrap().len(), data.len() as u64);
         let head = read_chunk(&file, 0, 2).unwrap();
         assert_eq!(head.bytes, b"XY");
+    }
+
+    /// procfs 文件的 `metadata.len()` 为 0，但内容非空；读一页必须能拿到正文。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_procfs_file_with_zero_reported_size() {
+        let path = Path::new("/proc/stat");
+        assert_eq!(fs::metadata(path).unwrap().len(), 0);
+        let c = read_chunk(path, 0, 64 * 1024).unwrap();
+        assert!(!c.bytes.is_empty(), "/proc/stat 应读到内容");
+        assert!(c.eof, "单页应能读完");
     }
 
     #[test]

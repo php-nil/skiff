@@ -59,7 +59,7 @@ mkdir -p "$OUT"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT INT TERM
 
-PLUGINS="guard monitor nginx files cron"
+PLUGINS="guard monitor files cron"
 BUILT=0
 PUBKEY=""
 for name in $PLUGINS; do

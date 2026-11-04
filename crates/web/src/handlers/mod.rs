@@ -5,10 +5,12 @@ pub mod api;
 pub mod auth;
 pub mod containers;
 pub mod dashboard;
+pub mod menu;
 pub mod meta;
 pub mod plugins;
 pub mod resources;
 pub mod settings;
+pub mod sites;
 
 use std::collections::HashMap;
 
@@ -23,6 +25,8 @@ use crate::templates::PageCtx;
 use crate::util::{form_first, parse_form};
 
 pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
+    let nav_plugins = nav_plugins(state, active);
+    let is_admin = user.can(skiff_model::Permission::Admin);
     PageCtx {
         prefix: state.cfg.entry_prefix.clone(),
         username: user.user.username.clone(),
@@ -33,12 +37,14 @@ pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
         docker_ok: state.docker().available(),
         must_change: user.must_change_password(),
         active: active.to_string(),
-        nav_plugins: nav_plugins(state, active),
+        menu: crate::menu::build(state, user, active),
+        is_admin,
+        nav_plugins,
     }
 }
 
-/// 顶栏「插件菜单」：把 manifest `[[ui]].label` 直接挂到导航栏，省得每次切换都
-/// 经「插件」列表页中转。
+/// 顶栏「应用」菜单的数据源：把 manifest `[[ui]].label` 直接挂到导航栏，
+/// 省得每次切换都经「插件中心」中转。
 ///
 /// 只列**已启用且有 UI 入口**的插件。DB 读失败或某个 manifest 解析失败时跳过该项
 /// （导航少几项不影响页面本身渲染，坏包也不该拖垮整站导航）。
@@ -176,15 +182,68 @@ pub fn ws_origin_allowed(
     origin == format!("https://{host}") || (dev_http && origin == format!("http://{host}"))
 }
 
-/// 登录页 CSRF：双提交 Cookie（匿名会话）。
+/// 登录页 CSRF：签名表单 token 为主、Cookie 仅作兼容信号。
 pub const LOGIN_CSRF_COOKIE: &str = "skiff_login";
 
 pub fn simple_cookie(name: &str, value: &str, max_age: i64, secure: bool) -> String {
-    let mut c = format!("{name}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}");
+    let mut c = format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
     if secure {
         c.push_str("; Secure");
     }
     c
+}
+
+/// 登录 POST 的来源判定（返回 `None` 表示浏览器未提供任何来源信息）。
+///
+/// 优先看 `Sec-Fetch-Site`：`same-origin`/`none` 放行，`cross-site`/`same-site`
+/// 拒绝；没有该头时退回 `Origin` / `Referer` 与当前 Host 比较。这样即使
+/// `skiff_login` Cookie 被浏览器丢弃，签名表单 token + 同源判定仍能登录；
+/// 而跨站表单即使带着合法 token 也会被拒。
+pub fn login_origin_allowed(state: &AppState, parts: &Parts) -> Option<bool> {
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(site) = header("sec-fetch-site") {
+        return Some(matches!(site, "same-origin" | "none"));
+    }
+    if let Some(origin) = header("origin") {
+        return Some(origin_is_panel(
+            state,
+            origin.trim_end_matches('/'),
+            &host_header(parts),
+        ));
+    }
+    if let Some(referer) = header("referer") {
+        if let Some((scheme, rest)) = referer.split_once("://") {
+            let host = rest.split('/').next().unwrap_or("");
+            if host.is_empty() {
+                return Some(false);
+            }
+            return Some(origin_is_panel(
+                state,
+                &format!("{scheme}://{host}"),
+                &host_header(parts),
+            ));
+        }
+        return Some(false);
+    }
+    None
+}
+
+fn origin_is_panel(state: &AppState, origin: &str, host: &str) -> bool {
+    if let Some(ext) = state.cfg.external_url.as_deref() {
+        let ext = ext.trim_end_matches('/');
+        if !ext.is_empty() && origin == ext {
+            return true;
+        }
+    }
+    !host.is_empty()
+        && (origin == format!("https://{host}")
+            || (state.cfg.dev_http && origin == format!("http://{host}")))
 }
 
 pub fn cookie_header(name: &str, value: &str) -> (axum::http::HeaderName, String) {
@@ -270,6 +329,14 @@ pub fn container_view(
     }
 }
 
+/// 「异常容器」的唯一判定：概览待办、异常列表与 `?filter=error` 共用。
+///
+/// `created` 是尚未启动的新容器，不算异常；除 `running` / `created` 外的
+/// exited / dead / restarting / paused / removing 都需要人工确认。
+pub fn container_abnormal(state: &str) -> bool {
+    !matches!(state, "running" | "created")
+}
+
 pub fn object_ref(c: &skiff_docker::client::ContainerRow) -> skiff_docker::ObjectRef {
     skiff_docker::ObjectRef {
         id: c.id.clone(),
@@ -281,6 +348,15 @@ pub fn object_ref(c: &skiff_docker::client::ContainerRow) -> skiff_docker::Objec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_abnormal_excludes_running_and_created() {
+        assert!(!container_abnormal("running"));
+        assert!(!container_abnormal("created"));
+        for state in ["exited", "dead", "restarting", "paused", "removing"] {
+            assert!(container_abnormal(state), "{state} 应判为异常");
+        }
+    }
 
     // 容器引用匹配（精确优先 / 前缀歧义 / 空引用）的用例在
     // `skiff-docker::resolve`——规则下沉到领域 crate 后，判定与用例同处一地。

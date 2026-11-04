@@ -12,7 +12,18 @@ use crate::state::auth::{LoginError, LoginRequest};
 use crate::state::AppState;
 use crate::templates::LoginPage;
 use crate::util::{form_first, parse_cookies, parse_form};
-use skiff_identity::token_matches;
+use skiff_identity::{token_matches, SignedTokenError};
+
+/// 登录页 CSRF token 有效期（与 Cookie Max-Age 一致）。
+const LOGIN_CSRF_TTL_SECS: i64 = 600;
+
+/// 签发登录页 CSRF token。
+///
+/// 签名密钥取持久化的 `security.csrf_secret`（重启后不变），所以重启前打开、
+/// 尚未提交的登录页仍能通过校验。
+fn issue_login_csrf(state: &AppState) -> String {
+    skiff_identity::signed_token(&state.csrf_secret, "login", chrono::Utc::now().timestamp())
+}
 
 pub async fn login_page(
     State(state): State<Arc<AppState>>,
@@ -26,8 +37,11 @@ pub async fn login_page(
     {
         return Ok(handlers::redirect(format!("/{}", state.cfg.entry_prefix)));
     }
-    let csrf = skiff_identity::new_token();
-    let secure = !state.cfg.dev_http;
+    let csrf = issue_login_csrf(&state);
+    // `Secure` 只在客户端到面板确实是 HTTPS 时才加：浏览器会直接丢弃「在明文响应里
+    // 收到」的 Secure Cookie。这里读可信代理解析后的 scheme（`X-Forwarded-Proto`），
+    // 而不是只看 `dev_http` 开关。
+    let secure = handlers::is_secure_request(&state, &parts);
     let page = LoginPage {
         dev_http: state.cfg.dev_http,
         prefix: state.cfg.entry_prefix.clone(),
@@ -40,7 +54,7 @@ pub async fn login_page(
     let mut resp = body;
     resp.headers_mut().append(
         SET_COOKIE,
-        handlers::simple_cookie(LOGIN_CSRF_COOKIE, &csrf, 600, secure)
+        handlers::simple_cookie(LOGIN_CSRF_COOKIE, &csrf, LOGIN_CSRF_TTL_SECS, secure)
             .parse()
             .unwrap(),
     );
@@ -54,14 +68,54 @@ pub async fn login_submit(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     let ip = handlers::client_ip(&state, &parts);
-    let secure = !state.cfg.dev_http;
+    let secure = handlers::is_secure_request(&state, &parts);
 
-    // CSRF 双提交（匿名会话）
-    let cookies = parse_cookies(parts.headers.get("cookie").and_then(|v| v.to_str().ok()));
-    let cookie_csrf = cookies.get(LOGIN_CSRF_COOKIE).cloned().unwrap_or_default();
+    // 登录 CSRF：**表单里的签名 token 是唯一权威来源**。
+    //
+    // 旧实现要求 `skiff_login` Cookie 必须存在且与表单值一致（双提交）。浏览器可能
+    // 因为 Secure/SameSite 策略、Cookie 过期（10 分钟）、bfcache 回退复用旧页面、
+    // 多标签页覆盖等原因不回传该 Cookie，一旦缺失登录就必然失败且只给「刷新重试」。
+    // 现在 Cookie 降级为兼容信号，缺失也不再影响校验。
     let form_csrf = form_first(&form, "csrf");
-    if cookie_csrf.is_empty() || !token_matches(&cookie_csrf, &form_csrf) {
-        return Err(AppError::Forbidden("CSRF 校验失败，请刷新页面重试".into()));
+    let now = chrono::Utc::now().timestamp();
+    match skiff_identity::verify_signed_token(
+        &state.csrf_secret,
+        "login",
+        &form_csrf,
+        LOGIN_CSRF_TTL_SECS,
+        now,
+    ) {
+        Ok(()) => {}
+        Err(SignedTokenError::Expired) => {
+            return Err(AppError::Forbidden(
+                "登录页已过期（超过 10 分钟），请刷新页面后重试".into(),
+            ));
+        }
+        Err(SignedTokenError::Invalid) => {
+            return Err(AppError::Forbidden(
+                "CSRF 校验失败，请刷新页面后重试".into(),
+            ));
+        }
+    }
+
+    // 来源判定：优先看浏览器自带的 `Sec-Fetch-Site` / `Origin` / `Referer`；
+    // 三者都没有（老客户端、命令行）时退回双提交兼容路径。
+    let cookie_csrf = parse_cookies(parts.headers.get("cookie").and_then(|v| v.to_str().ok()))
+        .get(LOGIN_CSRF_COOKIE)
+        .cloned()
+        .unwrap_or_default();
+    match handlers::login_origin_allowed(&state, &parts) {
+        Some(true) => {}
+        Some(false) => {
+            return Err(AppError::Forbidden("跨站登录请求被拒绝".into()));
+        }
+        None => {
+            if cookie_csrf.is_empty() || !token_matches(&cookie_csrf, &form_csrf) {
+                return Err(AppError::Forbidden(
+                    "CSRF 校验失败，请刷新页面后重试".into(),
+                ));
+            }
+        }
     }
 
     let username = form_first(&form, "username");
@@ -84,15 +138,25 @@ pub async fn login_submit(
             )));
         }
         Err(LoginError::Invalid(message)) => {
+            // 错误页换一张新 token，并同步刷新兼容 Cookie（旧 token 可能已接近过期，
+            // 直接沿用会让用户的下一次提交卡在时效边界上）。
+            let csrf = issue_login_csrf(&state);
             let page = LoginPage {
                 dev_http: state.cfg.dev_http,
                 prefix: state.cfg.entry_prefix.clone(),
                 error: message,
-                csrf: cookie_csrf,
+                csrf: csrf.clone(),
                 username,
                 next,
             };
-            return handlers::render(page);
+            let mut resp = handlers::render(page)?;
+            resp.headers_mut().append(
+                SET_COOKIE,
+                handlers::simple_cookie(LOGIN_CSRF_COOKIE, &csrf, LOGIN_CSRF_TTL_SECS, secure)
+                    .parse()
+                    .unwrap(),
+            );
+            return Ok(resp);
         }
         Err(LoginError::Internal(msg)) => return Err(AppError::Internal(msg)),
     };
@@ -137,9 +201,12 @@ pub async fn logout(
     let mut resp = handlers::redirect(format!("/{}/login", state.cfg.entry_prefix));
     resp.headers_mut().append(
         SET_COOKIE,
-        skiff_identity::clear_cookie(state.cookie_name(), !state.cfg.dev_http)
-            .parse()
-            .unwrap(),
+        skiff_identity::clear_cookie(
+            state.cookie_name(),
+            handlers::is_secure_request(&state, &parts),
+        )
+        .parse()
+        .unwrap(),
     );
     Ok(resp)
 }
@@ -200,7 +267,7 @@ pub async fn change_password(
             state.cookie_name(),
             &tokens.session_token,
             state.cfg.session.abs_secs,
-            !state.cfg.dev_http,
+            handlers::is_secure_request(&state, &parts),
         )
         .parse()
         .unwrap(),

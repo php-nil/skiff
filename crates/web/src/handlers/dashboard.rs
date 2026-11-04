@@ -7,7 +7,7 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::AuthUser;
 use crate::state::AppState;
-use crate::templates::{AuditRow, DashboardPage};
+use crate::templates::{AuditRow, DashboardPage, DashboardTodo};
 
 /// `/{prefix}/` → `/{prefix}`（307 保留方法与查询串）。
 pub async fn root_redirect(State(state): State<Arc<AppState>>) -> Response {
@@ -25,6 +25,10 @@ pub async fn index(
         Vec::new()
     };
     let running = containers.iter().filter(|c| c.state == "running").count();
+    let abnormal: Vec<_> = containers
+        .iter()
+        .filter(|c| handlers::container_abnormal(&c.state))
+        .collect();
     let image_count = if docker_ok {
         match state.docker().list_images().await {
             Ok(v) => v.len().to_string(),
@@ -34,6 +38,27 @@ pub async fn index(
         "-".into()
     };
     let plugins = state.db().list_plugins()?;
+    let plugin_enabled = plugins.iter().filter(|p| p.enabled).count();
+    let plugin_disabled = plugins.len().saturating_sub(plugin_enabled);
+    let sites = state.db().list_sites()?;
+    let site_abnormal = sites.iter().filter(|s| s.status != "running").count();
+    let totp_enabled = state
+        .db()
+        .user_by_id(user.user.id)?
+        .map(|u| u.totp_enabled)
+        .unwrap_or(false);
+    let prefix = state.cfg.entry_prefix.clone();
+    let docker_reason = state.docker_unavailable_reason().to_string();
+    let todos = dashboard_todos(
+        &prefix,
+        user.must_change_password(),
+        docker_ok,
+        &docker_reason,
+        abnormal.len(),
+        plugin_disabled,
+        totp_enabled,
+        site_abnormal,
+    );
     let audit = state
         .db()
         .recent_audit(6)?
@@ -51,23 +76,134 @@ pub async fn index(
         })
         .collect();
 
+    // 固定页槽位（P2）：插件停用/未授权时返回空表，模板自动回落内核默认内容。
+    let mounts_health = crate::menu::mount_views(&state, &user, "overview.health");
+    let mounts_actions = crate::menu::mount_views(&state, &user, "overview.actions");
+    let mounts_side = crate::menu::mount_views(&state, &user, "overview.side");
+
     let page = DashboardPage {
         ctx: handlers::page_ctx(&state, &user, "dashboard"),
         running,
         total: containers.len(),
         image_count,
-        plugin_count: plugins.len(),
-        uptime: format_uptime(state.started_at.elapsed().as_secs()),
-        docker_reason: state.docker_unavailable_reason().to_string(),
-        containers: containers
+        plugin_total: plugins.len(),
+        plugin_enabled,
+        site_total: sites.len(),
+        site_abnormal,
+        abnormal_total: abnormal.len(),
+        abnormal: abnormal
             .iter()
-            .take(8)
-            .map(handlers::container_view)
+            .take(6)
+            .map(|c| handlers::container_view(c))
             .collect(),
+        uptime: format_uptime(state.started_at.elapsed().as_secs()),
+        docker_reason,
+        todos,
         audit,
+        mounts_health,
+        mounts_actions,
+        mounts_side,
         error: String::new(),
     };
     handlers::render(page)
+}
+
+/// 概览待办：只由**真实信号**生成（会话强制改密、Docker 可用性、异常容器、
+/// 停用插件、TOTP 状态）。按影响排序：危险 → 警告；同级保持生成顺序。
+#[allow(clippy::too_many_arguments)]
+fn dashboard_todos(
+    prefix: &str,
+    must_change: bool,
+    docker_ok: bool,
+    docker_reason: &str,
+    abnormal_containers: usize,
+    disabled_plugins: usize,
+    totp_enabled: bool,
+    abnormal_sites: usize,
+) -> Vec<DashboardTodo> {
+    let link = |path: &str| {
+        if path.is_empty() {
+            format!("/{prefix}")
+        } else {
+            format!("/{prefix}/{path}")
+        }
+    };
+    let todo =
+        |level: &str, title: String, detail: String, href: String, action: &str| DashboardTodo {
+            level: level.into(),
+            title,
+            detail,
+            href,
+            action: action.into(),
+        };
+
+    let mut todos = Vec::new();
+    if must_change {
+        todos.push(todo(
+            "danger",
+            "首次登录必须修改口令".into(),
+            "当前会话在改密前不能执行其他管理操作。".into(),
+            link("settings?force=1"),
+            "去改口令",
+        ));
+    }
+    if !docker_ok {
+        let reason = if docker_reason.trim().is_empty() {
+            "Docker 守护进程当前不可达"
+        } else {
+            docker_reason
+        };
+        todos.push(todo(
+            "danger",
+            "Docker 不可用".into(),
+            format!("{reason}；容器、镜像、网络、卷操作会返回 503。"),
+            link("containers"),
+            "查看容器页",
+        ));
+    }
+    if abnormal_containers > 0 {
+        todos.push(todo(
+            "danger",
+            format!("{abnormal_containers} 个容器处于异常状态"),
+            "exited / dead / restarting / paused 需要人工确认；进容器详情可看日志与重启。".into(),
+            link("containers?filter=error"),
+            "查看异常容器",
+        ));
+    }
+    if abnormal_sites > 0 {
+        todos.push(todo(
+            "danger",
+            format!("{abnormal_sites} 个站点已停止或异常"),
+            "站点配置未启用或 nginx 重载失败；进「网站列表」可启动站点并查看日志。".into(),
+            link("m/core/sites/list"),
+            "查看站点",
+        ));
+    }
+    if disabled_plugins > 0 {
+        todos.push(todo(
+            "warn",
+            format!("{disabled_plugins} 个插件已停用"),
+            "停用的插件不会出现在「应用」菜单；需要时到插件中心重新启用。".into(),
+            link("plugins"),
+            "去插件中心",
+        ));
+    }
+    if !totp_enabled {
+        todos.push(todo(
+            "warn",
+            "两步验证未开启".into(),
+            "账号目前只靠口令保护；开启 TOTP 后登录会多一步校验。".into(),
+            link("settings#totp"),
+            "去开启",
+        ));
+    }
+
+    todos.sort_by_key(|t| match t.level.as_str() {
+        "danger" => 0,
+        "warn" => 1,
+        _ => 2,
+    });
+    todos
 }
 
 fn format_uptime(secs: u64) -> String {
@@ -80,5 +216,39 @@ fn format_uptime(secs: u64) -> String {
         format!("{h}小时 {m}分")
     } else {
         format!("{m}分")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn todos_are_empty_when_everything_is_healthy() {
+        let todos = dashboard_todos("p", false, true, "", 0, 0, true, 0);
+        assert!(todos.is_empty());
+    }
+
+    #[test]
+    fn todos_are_impact_ordered_and_deep_linked() {
+        let todos = dashboard_todos("p", true, false, "socket missing", 2, 1, false, 1);
+        let levels: Vec<&str> = todos.iter().map(|t| t.level.as_str()).collect();
+        assert_eq!(
+            levels,
+            ["danger", "danger", "danger", "danger", "warn", "warn"]
+        );
+
+        let hrefs: Vec<&str> = todos.iter().map(|t| t.href.as_str()).collect();
+        assert_eq!(
+            hrefs,
+            [
+                "/p/settings?force=1",
+                "/p/containers",
+                "/p/containers?filter=error",
+                "/p/m/core/sites/list",
+                "/p/plugins",
+                "/p/settings#totp",
+            ]
+        );
     }
 }

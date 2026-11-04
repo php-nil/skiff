@@ -7,20 +7,19 @@
 | --- | --- | --- | --- |
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
-| `nginx/` | `com.skiff.nginx` | fs + docker + identity | NGINX 站点：写授权目录 + 重启容器（一期不做 `nginx -t`，exec 属 M3） |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
 | `cron/` | `com.skiff.cron` | identity + interop | 计划任务：按 cron 表达式调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记 |
 
 ## 约定
 
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/<arch>/plugin` 收）。
-- id 用 `com.skiff.<x>`；`api = "1.0"`；版本独立 semver。
+- id 用 `com.skiff.<x>`；声明菜单/槽位用 `api = "1.1"`，未迁移的老包保持 `"1.0"` 并走 `[[ui]]` 降级。版本独立 semver。
 - `manifest.toml` 的 `key_id` 在源码里是 **64 个 0 的占位**：发布私钥只在打包机/CI secret，
   打包时 `skiff-plugin stamp` 在临时目录回填指纹（仓库里不含任何密钥指纹）。
-- 权限遵循最小化：guard 只要 `containers.list/inspect/restart`，nginx 不要 `exec`，
+- 权限遵循最小化：guard 只要 `containers.list/inspect/restart`，
   monitor/files 只读或按需读写，具体见各自 manifest。
 - 插件 UI 只经父页面 postMessage 桥取数（`skiff.rpc`），不持有面板凭据、不发同源请求。
-  `manifest.toml` 的 `[[ui]] label` 会直接进主界面顶栏（插件菜单），`path` 是 `ui/` 下的入口文件。
+  菜单由 manifest 的 `[[menu]]` 声明、内核渲染；`[[ui]].path` 只是插件中心入口与默认内容页。
 - **UI 资源全部同源随包分发**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，
   CDN 与内联脚本都加载不了。第三方前端库（如 `files/ui/vendor/` 里的 highlight.js）
   必须把文件 vendor 进 `ui/` 并在页面里用相对路径引用，同时保留其 LICENSE。
@@ -38,6 +37,64 @@
     同一任务用 `(source, key)` 幂等 upsert，重复点击不会堆出多条。
   - 调用方与目标都不能在同一调用链里重复进入（内核 busy 集合），单次转发上限 15s。
   - 目标选择器不要写死插件列表：`interop_catalog` 只返回**真正调得通**的接口，UI 按它渲染。
+
+## 菜单与槽位声明（P2）
+
+一级固定六项，插件只能挂到固定一级下；二级/三级都由内核渲染，插件只负责 `ui/` 内容。
+完整规则见 `docs/MENU_CONTRACT.md`。
+
+| 插件 | 二级归属 | 三级标签 | 固定页槽位 |
+| --- | --- | --- | --- |
+| guard | 工具 → 容器守护 | 容器 / 事件 | — |
+| monitor | 工具 → 主机监控 | 总览 / 历史采样 | `overview.health` |
+| files | 工具 → 文件管理 | 无（单视图） | — |
+| cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
+
+cron（完整 L2 + L3；`tab` 是传给插件的视图名）：
+
+```toml
+api = "1.1"
+
+[[menu]]
+id = "jobs"
+parent = "tools"          # 只能是固定一级 id
+label = "计划任务"
+order = 20
+icon = "clock"
+target = { kind = "plugin_ui", ui = "index.html" }
+
+  [[menu.items]]
+  id = "list"
+  label = "任务列表"
+  order = 10
+  ui = "index.html"
+  tab = "list"
+
+  [[menu.items]]
+  id = "new"
+  label = "新建任务"
+  order = 20
+  ui = "index.html"
+  tab = "new"
+```
+
+> 原 `com.skiff.nginx` 已内核化，网站一级与「网站列表 / 运行环境 / 设置」由内核提供，
+> 不再随官方插件发布。
+
+monitor（固定页槽位；内核负责外框/标题/失败降级）：
+
+```toml
+[[mount]]
+slot = "overview.health"
+ui = "health.html"       # 必须存在于包内 ui/
+height = "sm"            # sm / md / lg
+refresh = 30             # 0 / 30 / 60 / 300 秒
+roles = ["admin", "operator", "viewer"]
+```
+
+插件 UI 收到 `?tab=<view>` 后切换内部视图；切换标签时父页面只在同一 iframe 内
+`postMessage({type:"skiff.menu", nonce, menu, tab})`，不重载页面。无 `tab` 时保持旧行为
+（插件中心直接打开时全部视图可见）。
 
 ## 构建与自检
 
@@ -62,22 +119,27 @@ sh plugins/pack.sh --key /path/to/skiff-signing.key \
 
 产物在 `plugins/official/com.skiff.<x>-<ver>.wbpkg`，每个包都做过一次 `verify` 自检。
 `deploy/pack-release.sh --plugin-key <文件>` 会自动调用本脚本，并把 `.wbpkg` 放进发布包的
-`official/` 目录；`install.sh` 再把它们复制到 `/var/lib/skiff/official/`（**不自动安装**，
+`official/` 目录；`install.sh` 再把它们复制到 `/www/skiff/official/`（**不自动安装**，
 权限确认不能跳过）。
 
 ## 装机后安装
 
+**第一步先导入官方公钥**：`official/` 里的 `.wbpkg` 只是分发物，`install.sh` 只负责复制、
+不自动安装，也不会自动进信任库；未导入时安装会被 TOFU 直接拒掉（`key_id` 不在信任列表）。
+
+- UI：`/{入口前缀}/settings` → 「信任公钥」→ 粘贴 `/www/skiff/official/public-key.txt` 全文 → 保存；
+- 安装：插件页上传 `.wbpkg` → 确认页逐条勾权限与对象授权 → 「确认并安装」；
+- 非交互（测试机实际用法）：
+
 ```sh
-ls /var/lib/skiff/official
-skiff plugin install /var/lib/skiff/official/com.skiff.files-0.1.0.wbpkg \
+ls /www/skiff/official
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg \
     --resource path:/var/www          # 交互逐条确认；非交互用 --yes --grant ... --resource ...
 ```
 
 各插件的授权要点：
 
 - `monitor`：必须勾 `path:/proc`（否则采样 403）。
-- `nginx`：勾 `path:<站点目录>`（默认 `/etc/nginx/conf.d`）与 `container:<容器名>`（默认 `nginx`）；
-  要一键「新增备份任务」，还需勾 `plugin:com.skiff.cron`（或 `plugin:*`），否则调用计划任务会 403。
 - `cron`：每装一个「被调度」的插件，勾一次对应的 `plugin:<插件 id>`（或 `plugin:*`）；
   只勾了 `plugin:` 却不给目标插件 `interop:call` 权限的一侧，内核按四道闸拒绝，不影响其他调用。
   `cron` 本身不需要 `fs`/`docker`：它只调插件接口，**不执行宿主 shell**。

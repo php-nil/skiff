@@ -18,7 +18,7 @@ pub use skiff_compose as compose;
 // 容器引用解析（完整 id / 名称 / id 前缀）属于 Docker 领域语义，住在这里。
 pub mod resolve;
 
-pub use client::{DockerError, DockerService};
+pub use client::{ContainerRow, DockerError, DockerParams, DockerService};
 pub use resolve::{match_container, MatchError};
 
 // 策略与路径校验在 `skiff-policy`（零 Docker / 零 SQLite）；这里转出，

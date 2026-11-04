@@ -1,19 +1,24 @@
 #!/bin/sh
 # Skiff 发布打包（POSIX sh）
 #
-# 产出（与 §5.1 交付物一致）：
-#   dist/skiff-<ver>-linux-<arch>.tar.gz
-#   dist/skiff-<ver>-linux-<arch>.tar.gz.sha256     # 摘要，装机前先校验
+# 产出（与 §5.1 交付物一致；交付路径 = 从 Release 下载 → 解压 → 跑 install.sh）：
+#   dist/skiff-<ver>-<target>.tar.gz
+#   dist/skiff-<ver>-<target>.tar.gz.sha256     # 单包摘要，装机前先校验
+#   （<target> 未指定时退化为 linux-<arch>）
+#
+# 安装包内至少含：skiff、skiff-plugin、install.sh、uninstall.sh、skiff.service、
+# config.toml.example、official/*.wbpkg、official/public-key.txt、checksums.txt、
+# README.txt。checksums.txt 覆盖包内除自身外的所有文件。
 #
 # 发布物**不做 detached 签名**（§11 决策 12）：只用 SHA-256 摘要防传输损坏，
 # 签名链路（--key / .sig / verify-file）已于 2026-11-01 整体移除。
 #
-# 官方插件（guard/monitor/nginx/files/cron）随包携带：调用 plugins/pack.sh 产出已签名
-# `.wbpkg`，放进发布包的 official/；install.sh 再复制到 /var/lib/skiff/official/
-# （不自动安装，权限确认不能跳过）。插件打包必须给 --plugin-key，否则本脚本拒绝
-# 出包（要出「不带插件」的包请显式 --skip-plugins）。
+# 官方插件（guard/monitor/files/cron）随包携带：调用 plugins/pack.sh 产出已签名
+# `.wbpkg`，放进发布包的 official/；install.sh 再复制到 /www/skiff/official/
+# （不自动安装，权限确认不能跳过）。插件签名私钥按当前决定**非强制**：
+# 给了 --plugin-key 用正式身份，没给则生成临时身份并告警（产物仅供测试）。
 #
-# 安装顺序固定：先校验摘要，再解包执行 install.sh。
+# 安装顺序固定：先校验 checksums.txt，再解包执行 install.sh。
 # 包内脚本不校验包含自己的压缩包（自校验悖论）。
 #
 # 用法:
@@ -78,7 +83,8 @@ if [ ! -f "$BIN" ] && [ -f "$BIN.exe" ]; then
 fi
 [ -f "$BIN" ] || { echo "未找到产物: $BIN" >&2; exit 1; }
 
-NAME="skiff-$VERSION-linux-$ARCH"
+# 命名带 target（与 CI 产物一致）：skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
+NAME="skiff-$VERSION-${TARGET:-linux-$ARCH}"
 STAGE="$OUT/$NAME"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
@@ -88,11 +94,22 @@ TOOL="$ROOT/target/${TARGET:+$TARGET/}release/skiff-plugin"
 
 # 官方插件：与主程序同架构构建 → 发布私钥回填指纹 → 打包 → 自检验签。
 if [ "$SKIP_PLUGINS" -eq 0 ]; then
-    [ -n "$PLUGIN_KEY" ] || {
-        echo "错误: 发布包必须携带官方插件（guard/monitor/nginx/files/cron）。" >&2
-        echo "      请给 --plugin-key <发布私钥>；确实要出裸包请显式 --skip-plugins。" >&2
-        exit 2
-    }
+    [ -f "$TOOL" ] || { echo "错误: 缺少打包工具 skiff-plugin: $TOOL" >&2; exit 2; }
+    EPHEMERAL_KEY=""
+    EPHEMERAL_DIR=""
+    if [ -z "$PLUGIN_KEY" ]; then
+        # 按当前决定：插件签名非强制，缺私钥不阻塞出包。临时身份可让包直接装，
+        # 但签名人不稳定（每次出包都变），仅供测试/验证打包链路。
+        # 注意：keygen 拒绝覆盖已存在的文件，所以用临时目录 + 不存在的文件名。
+        EPHEMERAL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/skiff-ephemeral-key.XXXXXX")
+        EPHEMERAL_KEY="$EPHEMERAL_DIR/official.key"
+        # shellcheck disable=SC2064
+        trap 'rm -rf "$EPHEMERAL_DIR"' EXIT INT TERM
+        "$TOOL" keygen --out "$EPHEMERAL_KEY" >/dev/null 2>&1 \
+            || { echo "错误: 生成临时插件签名身份失败（$TOOL keygen --out <文件>）" >&2; exit 2; }
+        PLUGIN_KEY="$EPHEMERAL_KEY"
+        echo "警告: 未提供 --plugin-key，已生成临时签名身份；产物仅供测试，正式发布请配置正式私钥。" >&2
+    fi
     [ -f "$PLUGIN_KEY" ] || { echo "错误: 插件私钥不存在: $PLUGIN_KEY" >&2; exit 2; }
     # 先清掉上一轮产物：amd64 / arm64 是两台机器（或同一台的两轮）分别打，
     # 残留的别架构 .wbpkg 会被一起塞进发布包，装机时按 bin/<arch>/plugin 找载荷
@@ -128,36 +145,45 @@ if [ "$SKIP_PLUGINS" -eq 0 ]; then
 fi
 
 cat > "$STAGE/README.txt" <<EOF
-Skiff（轻舟）$VERSION — linux/$ARCH
+Skiff（轻舟）$VERSION — ${TARGET:-linux-$ARCH}
 
-安装（先校验摘要，再解包）：
-  sha256sum -c $NAME.tar.gz.sha256
-  tar xzf $NAME.tar.gz && cd $NAME && sh install.sh
+安装（交付路径固定：下载 → 校验 → 解压 → 安装）：
+  sha256sum -c $NAME.tar.gz.sha256          # 也可用 Release 的 checksums.txt 一起校
+  tar xzf $NAME.tar.gz
+  cd $NAME && sh install.sh                 # 在解压目录内直接执行，不依赖仓库结构
 
 包内文件：
   skiff                 面板主程序（/usr/local/bin/skiff）
   skiff-plugin          插件打包/验签工具（可选，install.sh 会一并装上）
-  official/             官方插件包（guard/monitor/nginx/files/cron，install.sh 复制到
-                        /var/lib/skiff/official/，不自动安装）
-  install.sh            安装器
+  official/             官方插件包（guard/monitor/files/cron，install.sh 复制到
+                        /www/skiff/official/，不自动安装）+ public-key.txt
+  install.sh            安装器（支持 --datadir / --listen / SKIFF_LISTEN / 幂等重装）
   docker-bootstrap.sh   Docker 前置引导（install.sh 会调用；也可单独补跑）
   uninstall.sh / skiff.service / config.toml.example
+  checksums.txt         本包内所有文件的 SHA-256（解压后 sha256sum -c 可复核）
 
 Docker：装机时默认检测并补装（缺才装，已有 docker 绝不重装）。
   sh install.sh --registry-mirror <加速器地址>   # 配镜像加速（无默认值，按需给）
   sh install.sh --no-docker                      # 完全不碰 Docker
   sh docker-bootstrap.sh --check-only            # 只检测，不改动
 
-升级：替换 /usr/local/bin/skiff 后 systemctl restart skiff（数据不动）。
-卸载：sh uninstall.sh（默认保留 /var/lib/skiff，--purge 才删除）。
+升级：从 Release 取同架构新包 → 解压 → sh install.sh（数据与配置不动）。
+卸载：sh uninstall.sh（默认保留 /www/skiff，--purge 才删除）。
 
 官方插件（随包携带，安装时才逐条确认权限）：
-  导入公钥：把 official/public-key.txt 里的 hex 填进面板「设置 → 信任公钥」
-            （TOFU 首次信任；不导入会被拒装，指纹见各包 manifest.key_id）
-  ls /var/lib/skiff/official
-  skiff plugin install /var/lib/skiff/official/com.skiff.<x>-<ver>.wbpkg \
+  公钥由首启自动信任（official/public-key.txt，TOFU 首次信任），无需手动导入
+  ls /www/skiff/official
+  skiff plugin install /www/skiff/official/com.skiff.<x>-<ver>.wbpkg \\
       --resource path:/var/www          # 也可以直接在面板插件页上传安装
+  注：若本次出包未提供正式签名私钥，official/ 内的包由临时身份签名，
+      仅用于测试；正式发行请使用正式私钥重新出包。
 EOF
+
+# 包内摘要：覆盖包内除 checksums.txt 自身以外的所有文件（自校验悖论）
+echo "== 包内摘要 =="
+( cd "$STAGE" && find . -type f ! -name checksums.txt -print | sed 's|^\./||' | sort \
+    | xargs sha256sum > checksums.txt )
+cat "$STAGE/checksums.txt"
 
 TARBALL="$OUT/$NAME.tar.gz"
 echo "== 打包 =="

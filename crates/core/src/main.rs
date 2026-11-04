@@ -82,6 +82,11 @@ fn run() -> Result<ExitCode> {
             commands::plugin_install(&cfg, &package, yes, grants, resources, allow_unsigned)?;
             Ok(ExitCode::SUCCESS)
         }
+        cli::Command::TrustImport { key_file, label } => {
+            let cfg = config::Config::load(config_path, dev)?;
+            commands::trust_import(&cfg, &key_file, &label)?;
+            Ok(ExitCode::SUCCESS)
+        }
         cli::Command::PluginRemove { id, delete_data } => {
             let cfg = config::Config::load(config_path, dev)?;
             commands::plugin_remove(&cfg, &id, delete_data)?;

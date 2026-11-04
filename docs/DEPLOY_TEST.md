@@ -44,62 +44,64 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 rustc --version    # 需要 ≥ 1.89
 ```
 
-### 0.2 三条取得发布物的路径
+### 0.2 取得发布物：标准路径是「从 Release 下载安装包」
 
-**路径 A：目标机就地编译（首测推荐）**
+**交付链路（唯一标准路径）：GitHub Release 下载 → 校验 → 解压 → `install.sh`。**
+不再把开发机工作树拷到测试机当常态部署；源码拷贝/本机编译只算开发调试（见本节末尾）。
 
 ```sh
-cd /root/skiff            # git clone 或 scp 源码
-cargo check --workspace   # 闸 1
-cargo test  --workspace   # 闸 2
-cargo run -p xtask -- check   # 闸 3
-
-# 出包：tar.gz + .sha256 两件套（发布物不签名，§11 决策 12）
-sh deploy/pack-release.sh
-ls -l dist/
+# 目标机（无需 Rust；把 <ver> 换成实际版本、<target> 换成 triples）
+curl -LO https://github.com/<owner>/<repo>/releases/download/v<ver>/checksums.txt
+curl -LO https://github.com/<owner>/<repo>/releases/download/v<ver>/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
+sha256sum -c checksums.txt                       # 先校 Release 级摘要
 ```
 
-`pack-release.sh` 会把 `skiff`、`skiff-plugin`、`install.sh`、`uninstall.sh`、`skiff.service`、`config.toml.example` 打进 `dist/skiff-<ver>-linux-<arch>.tar.gz`。
+内网/无 GitHub 出网时，用临时 HTTP 静态服务把同一份安装包下发（**这是模拟真实用户路径**，
+不要用 scp 传单个二进制替代）：
+
+```sh
+# 构建机（装包所在目录）
+python3 -m http.server 8000
+# 目标机
+curl -O http://<构建机内网IP>:8000/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
+```
+
+包内自带 `checksums.txt`（覆盖包内所有文件），解压后可再复核一次：
+
+```sh
+tar xzf skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
+cd skiff-<ver>-x86_64-unknown-linux-musl && sha256sum -c checksums.txt
+```
+
+**构建/调试用路径（非交付路径，不得作为测试机常态部署）**
+
+```sh
+# 开发机就地出包（等价于 CI 的同一份 pack-release.sh；Windows 产物不能装 Linux）
+sh deploy/pack-release.sh --version 0.1.0 --target x86_64-unknown-linux-musl --skip-plugins
+
+# 或 Linux 构建机上编译后手工出包
+rustup target add x86_64-unknown-linux-musl
+apt-get install -y musl-tools
+sh deploy/pack-release.sh --version 0.1.0 --target x86_64-unknown-linux-musl
+```
+
+`pack-release.sh` 产出 `dist/skiff-<ver>-<target>.tar.gz` + 同名 `.sha256`，并在包内生成
+`checksums.txt`。包内含 `skiff`、`skiff-plugin`、`install.sh`、`uninstall.sh`、`skiff.service`、
+`config.toml.example`、`docker-bootstrap.sh`、`official/*.wbpkg`（4 个）、
+`official/public-key.txt`、`README.txt`。
 在非 Linux 主机上跑也能出包，但产物是 PE/ELF 混合的假包，脚本会明确警告——**那种包不能装到 Linux 上**。
 
-**路径 B：Linux 构建机出包，传到目标机**
-
-```sh
-# 构建机
-sh deploy/pack-release.sh
-scp dist/skiff-0.1.0-linux-amd64.tar.gz* root@<目标机>:/root/
-
-# 目标机（无需 Rust）
-cd /root && sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
-```
-
-**路径 C：已经有发布物** → 直接进 §2.1 校验，不要跳。
-
-**路径 D：GitHub Actions 出包（开发阶段：手动 dispatch，不发版）**
-
-开发阶段 `release.yml` 仅手动触发且默认不建 Release（见 [CI.md](CI.md) §4），
-产物在 run 页 Artifacts 里下载（7 天保留），拉到目标机校验即可：
-
-```sh
-# 目标机上：两件套来自 workflow 产物（publish 勾选后也可从 Release 下载）
-# curl -LO https://github.com/<owner>/<repo>/releases/download/v0.1.0/skiff-0.1.0-linux-amd64.tar.gz
-sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
-```
-
-CI 出的包与 `deploy/pack-release.sh` 手工出包**是同一份脚本、同一套布局**（CI 只是把
-`CARGO` 换成 `cross` 并传入架构与版本号），所以 §2 的装机步骤不用改。
-注意区分两种产物：`release.yml`（手动 dispatch）给的是完整两件套；`ci.yml` 的 `build` job
-（仅手动触发）只给裸二进制（**没有 `.sha256`**），仅用于验证"能在 musl 下静态编出来"，
-不要拿它装机。见 [CI.md](CI.md) §4。
+CI 出的包与手工出包**是同一份脚本、同一套布局**（CI 只是把 `CARGO` 换成 `cross` 并传入版本与 target），
+所以 §2 的装机步骤不用改。见 [CI.md](CI.md) §4。
 
 ### 0.3 传到目标机的文件
 
 | 文件 | 必需 | 用途 |
 |---|---|---|
-| `skiff-<ver>-linux-<arch>.tar.gz` | 是 | 主程序与安装脚本 |
-| 同名 `.sha256` | 是 | 安装前校验，缺了等于没有发布物 |
-| 源码目录（路径 A） | 视情况 | 就地编译、以及给插件测试物编 demo |
-| `demo-0.1.0.wbpkg`（构建机产物） | 视情况 | 目标机没 Rust 时，用它跑 E 组 |
+| `skiff-<ver>-<target>.tar.gz` | 是 | 主程序、安装脚本、官方插件与包内摘要 |
+| 同名 `.tar.gz.sha256` | 是 | 单包摘要校验 |
+| `checksums.txt`（Release 资产） | 是 | 多架构汇总摘要；与单包 `.sha256` 二选一即可，推荐都存 |
+| 源码目录 | 否 | 仅开发调试（本机编译、给插件测试物编 demo），不属交付路径 |
 
 ## 1. 环境与前置条件
 
@@ -132,16 +134,18 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 
 | 路径 | 模式 | 属主:属组 | 为什么是这个值 |
 |---|---|---|---|
-| `/var/lib/skiff` | 0711 | root:root | 可穿越、**不可列目录**。设成 0700 会让降权后的插件走不到自己的 `data/`（ancestor 缺 x 位 = 路径不可达） |
-| `/var/lib/skiff/plugins` | 0711 | root:root | 同上 |
-| `/var/lib/skiff/plugins/{id}` | 0755 | root:root | 目录名可见无妨，插件代码在下一层 |
-| `/var/lib/skiff/plugins/{id}/versions` | 0755 | root:root | 代码目录**只读**：插件不得改自己的二进制 |
-| `/var/lib/skiff/plugins/{id}/data` | 0700 | 插件 UID | 业务数据，只有该插件能进 |
-| `/var/lib/skiff/plugins/{id}/cache` | 0700 | 插件 UID | 缓存 |
-| `/var/lib/skiff/plugins/{id}/run` | 0700 | 插件 UID | pid/临时文件；**每次重启重建后要重新 chown** |
-| `/var/lib/skiff/backup` | 0700 | root:root | 库快照 |
-| `/var/lib/skiff/official` | 0755 | root:root | 随发布包携带的官方插件 `.wbpkg` 与 `public-key.txt`；**只有安装器写**，插件不可写（否则等于给插件一个改信任源的位置） |
-| `/var/lib/skiff/skiff.db` | 0600 | root:skiff-plugins | 插件读不到库（E8）。**属组是 `skiff-plugins` 不是 `root`**：unit 里 `Group=skiff-plugins` 决定进程主 gid，服务创建的文件随它落组；真正的闸门是 0600（组位为 0）。2026-11-03 上机实测改正，见下注 |
+| `/www/skiff` | 0711 | root:root | 可穿越、**不可列目录**。设成 0700 会让降权后的插件走不到自己的 `data/`（ancestor 缺 x 位 = 路径不可达） |
+| `/www/skiff/plugins` | 0711 | root:root | 同上 |
+| `/www/skiff/plugins/{id}` | 0755 | root:root | 目录名可见无妨，插件代码在下一层 |
+| `/www/skiff/plugins/{id}/versions` | 0755 | root:root | 代码目录**只读**：插件不得改自己的二进制 |
+| `/www/skiff/plugins/{id}/versions/{ver}` | 0755 | root:root | 降权进程要能**穿越**这层；曾因 staging 带 `0700` 而全线 `Permission denied`（2026-11-03 修复） |
+| `/www/skiff/plugins/{id}/versions/{ver}/bin/**` | 0755 | root:root | 二进制与库必须可执行；`.wbpkg` 解包不落 tar 的 mode 位，安装时必须显式置位 |
+| `/www/skiff/plugins/{id}/data` | 0700 | 插件 UID | 业务数据，只有该插件能进 |
+| `/www/skiff/plugins/{id}/cache` | 0700 | 插件 UID | 缓存 |
+| `/www/skiff/plugins/{id}/run` | 0700 | 插件 UID | pid/临时文件；**每次重启重建后要重新 chown** |
+| `/www/skiff/backup` | 0700 | root:root | 库快照 |
+| `/www/skiff/official` | 0755 | root:root | 随发布包携带的官方插件 `.wbpkg` 与 `public-key.txt`；**只有安装器写**，插件不可写（否则等于给插件一个改信任源的位置） |
+| `/www/skiff/skiff.db` | 0600 | root:skiff-plugins | 插件读不到库（E8）。**属组是 `skiff-plugins` 不是 `root`**：unit 里 `Group=skiff-plugins` 决定进程主 gid，服务创建的文件随它落组；真正的闸门是 0600（组位为 0）。2026-11-03 上机实测改正，见下注 |
 | `/etc/skiff/config.toml` | 0644 | root:root | 不含密钥；TLS 私钥另放 `/etc/skiff/tls/` |
 | `/run/skiff` | 0711 | root:skiff-plugins | 可穿越；socket 本身仍按组判权 |
 | `/run/skiff/kernel.sock` | 0660 | root:skiff-plugins | 插件靠**附加组**进来，不是靠 umask |
@@ -160,36 +164,40 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 
 ### 2.1 取得发布物并校验
 
-发布物两件套：`skiff-<ver>-linux-<arch>.tar.gz`、同名 `.sha256`。
+Release 资产三件：`skiff-<ver>-<target>.tar.gz`、同名 `.sha256`、`checksums.txt`（全架构汇总）。
 **不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏；
 `.sig` / `verify-file` 链路已移除。
 
 **安装顺序固定：先验摘要，失败立即停手。** 包内 `install.sh` 不校验包含自己的压缩包（自校验悖论）。
 
 ```sh
-sha256sum -c skiff-0.1.0-linux-amd64.tar.gz.sha256
+sha256sum -c checksums.txt                                   # Release 级汇总
+sha256sum -c skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256   # 单包摘要（二选一即可）
 ```
 
 ### 2.2 解包安装
 
+**在解压目录内直接执行即可**，不依赖仓库的 `deploy/` 相对路径：
+
 ```sh
-tar xzf skiff-0.1.0-linux-amd64.tar.gz
-cd skiff-0.1.0-linux-amd64
-sh install.sh
+tar xzf skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz
+cd skiff-0.1.0-x86_64-unknown-linux-musl
+sha256sum -c checksums.txt        # 包内摘要再复核一次（可选，已含在 Releases 校验内）
+sh install.sh                     # 可加 --datadir / --listen / --no-docker 等
 ```
 
-`install.sh` 做的事（幂等）：
+`install.sh` 做的事（幂等，可重复执行）：
 
 | 步骤 | 结果 |
 |---|---|
 | 建运行组 | `skiff-plugins`（system 组，已存在则跳过） |
-| 建数据目录 | `/var/lib/skiff` 0711 root:root，含 `plugins/ logs/ backup/` |
-| 放示例配置 | `/etc/skiff/config.toml`（仅当不存在时） |
+| 建数据目录 | `/www/skiff` 0711 root:root，含 `plugins/ logs/ backup/` |
+| 放示例配置 | `/etc/skiff/config.toml`（**仅当不存在时**，已有配置只读不改） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
-| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/var/lib/skiff/official/`（5 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认 |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（4 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
-| 启动 | `systemctl restart skiff`（`--no-start` 可跳过） |
+| 启动 | `systemctl restart skiff` 并验 active（20 s 不起即失败退出；`--no-start` 可跳过） |
 
 `--no-systemd` 只装二进制（容器/CI 用）；`--prefix /opt/skiff` 改安装前缀时，**unit 里的 `ExecStart` 要同步改**，否则 systemd 找不到可执行文件。
 
@@ -207,17 +215,17 @@ journalctl -u skiff -n 40 --no-pager
 ```text
 Skiff 已启动
   监听      : 127.0.0.1:18080（明文开发模式）
-  数据根    : /var/lib/skiff
+  数据根    : /www/skiff
   安全入口  : /a1b2c3d4
   配置      : /etc/skiff/config.toml
   登录地址  : http://127.0.0.1:18080/a1b2c3d4/login
-  初始口令  : /var/lib/skiff/initial-admin.txt（用户 admin，首次登录后强制改密）
+  初始口令  : /www/skiff/initial-admin.txt（用户 admin，首次登录后强制改密）
 ```
 
 `grep` 关键字是「安全入口」：`journalctl -u skiff --no-pager | grep 安全入口`。
 监听写成 `0.0.0.0` 时日志里的地址不能直接点，换成真实 IP/域名访问。
 
-初始口令在 `/var/lib/skiff/initial-admin.txt`（0600），首登强制改密，改密成功后该文件自动删除。安全入口前缀首启随机生成并持久化到库（`settings.security.entry_prefix`）；**非该前缀的路径返回 404**（不是 403）。
+初始口令在 `/www/skiff/initial-admin.txt`（0600），首登强制改密，改密成功后该文件自动删除。安全入口前缀首启随机生成并持久化到库（`settings.security.entry_prefix`）；**非该前缀的路径返回 404**（不是 403）。
 
 ### 2.4 打开 TLS（对外前必做）
 
@@ -232,6 +240,22 @@ tls_key  = "/etc/skiff/tls/privkey.pem"
 ```
 
 证书文件须 root 可读、非全局可写。启动时校验文件存在性，缺失直接退出。
+
+自签只用于内网复核（2026-11-03 已实测）。**SAN 必须含实际访问的 IP/域名**，否则浏览器会报名称不匹配：
+
+```sh
+mkdir -p /etc/skiff/tls && chmod 0755 /etc/skiff/tls
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout /etc/skiff/tls/privkey.pem \
+  -out    /etc/skiff/tls/fullchain.pem \
+  -subj "/CN=10.10.15.4" \
+  -addext "subjectAltName=IP:10.10.15.4,IP:127.0.0.1,DNS:skiff.local"
+chmod 0600 /etc/skiff/tls/privkey.pem
+chmod 0644 /etc/skiff/tls/fullchain.pem
+```
+
+私钥只放 `/etc/skiff/tls/`（0600 root），不要留在 `/root` 或临时目录。生产请换正式证书
+（Let's Encrypt 等）或让反代终止 TLS；自签仅限内网复核，浏览器需手动忽略警告。
 
 **B. 可信反代终止 TLS**
 
@@ -255,6 +279,66 @@ external_url        = "https://panel.example.com"
 
 只有直连 peer 命中 `trusted_proxies` 才采信 `X-Forwarded-For/Proto/Host`，否则一律清除伪造头。
 
+#### 2.4.1 内网直连（明文、无 TLS）——仅测试/隔离内网
+
+```toml
+listen              = "0.0.0.0:18080"
+allow_insecure_http = true
+trusted_proxies     = ["127.0.0.1/32"]   # 只为通过启动校验；不要填真实客户端网段
+```
+
+- `trusted_proxies` 的唯一作用是决定**采信哪些 peer 的 `X-Forwarded-*`**。填 `127.0.0.1/32`
+  时，内网客户端伪造的 `X-Forwarded-For` 一律被清除，审计记真实 peer IP；**不要**为了让
+  “更多来源能用”把客户端网段填进去，那等于允许它们伪造源地址。
+- 该模式在 `serve` 里走「明文、假定反代已终止 TLS」分支（`dev_http=false`,
+  `plaintext_behind_proxy=true`）。2026-11-03 前这里有个判据缺陷：`serve` 只认 `dev_http`，
+  非 loopback 明文在配置校验通过后仍会以「未通过 TLS 校验却进入明文模式」退出；已修并补单测。
+- **Cookie / Secure 口径（重要）**：该模式会话 Cookie 与登录页 CSRF Cookie 都带 `Secure`。
+  浏览器从 `http://` 打开时不会回传这两个 Cookie → 登录表单的 CSRF 校验会失败；
+  `curl` 与 `/api/v1`（`Authorization: Bearer`）不受影响。2026-11-03 起测试机已改为**同端口
+  TLS**（§2.4.2），浏览器登录不在这个模式下进行；纯明文内网直连只适合看到登录页与 API 联调。
+- 重装/升级：`sh install.sh --listen 0.0.0.0:18080`（或 `SKIFF_LISTEN=0.0.0.0:18080`）。
+  不给该参数时脚本**不改**已有 `listen`；只有 `/etc/skiff/config.toml` 被删掉才会回到示例默认
+  `127.0.0.1:18080`。`skiff.service` 不含任何监听覆盖项。
+- 防火墙（宿主机实测是 iptables，无 firewalld/ufw）：放行回环、`10.10.15.0/24` 与指定开发机 `/32` 的
+  面板 18080、站点 80/443，其余 `DROP`；由 `skiff-firewall.service`（oneshot + enabled）在开机时重放，
+  iptables 自身不持久。
+
+#### 2.4.2 同端口 TLS 人工复核（自签，2026-11-03 已实测）
+
+配置（`listen` 保持同端口，不再走明文分支；有 TLS 时 `allow_insecure_http` 无意义，已移除）：
+
+```toml
+listen   = "0.0.0.0:18080"
+tls_cert = "/etc/skiff/tls/fullchain.pem"
+tls_key  = "/etc/skiff/tls/privkey.pem"
+```
+
+实测环境：`/etc/skiff/tls/fullchain.pem` 0644 root、`privkey.pem` 0600 root；subject `CN=10.10.15.4`；
+SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`；有效期 2026-11-03 → 2036-10-31（10 年）；
+SHA-256 指纹 `D7:49:D0:06:BC:64:70:3C:E9:D2:AE:D5:D6:62:07:25:B9:97:60:CE:54:0C:57:D8:27:5B:FB:5B:D3:92:67:78`。
+
+| 项 | 实测结果 |
+|---|---|
+| `curl -k https://10.10.15.4:18080/6gp3m9vq/login` | **200** |
+| `curl -k https://10.10.15.4:18080/healthz` | **200** |
+| 错前缀 `/xxxx/login` | **404** |
+| `curl http://10.10.15.4:18080/6gp3m9vq/login` | curl `000`（`Received HTTP/0.9 when not allowed`：收到 TLS 告警字节，**不返回页面**） |
+| `ss -ltnp` / 日志 | `0.0.0.0:18080`；`INFO HTTPS 监听中 addr=0.0.0.0:18080` |
+| cookie-jar 全流程 | GET 登录页 → `skiff_login=<csrf>; Secure`；POST → **303** `/{p}/settings?force=1` + `__Host-skiff_session=…; HttpOnly; SameSite=Strict; Secure`（CSRF 不再 403）；改密 POST → **303** `/6gp3m9vq` + 新 Secure 会话；首页 **200**（`概览 · Skiff`） |
+| 重启测试机 | 服务 active、`0.0.0.0:18080`、证书两文件、`initial-admin.txt`、HTTPS 200、iptables 规则全部保持 |
+| 重装 `install.sh` | 只在 `config.toml` 不存在时拷贝示例，且见 `tls_cert` 时 `ensure_insecure_http` 直接返回；实测重装前后 `config.toml` sha256 **相同**，HTTPS 200、明文仍被拒 |
+
+复核后的状态恢复：用停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 回滚数据根（入口前缀存库
+`settings.entry_prefix`，清库重装会换前缀，不能替代快照）；恢复后 `initial-admin.txt`（0600 root:skiff-plugins）
+回来，登录页 200。初始口令只从该文件取，不在聊天/工单里贴明文。
+
+**HSTS 未实现**：`crates/` 内没有下发 `Strict-Transport-Security` 的代码（实测响应头也没有该字段）。
+所以本节的结论是「TLS 链路已实测」，**不等于 HSTS 已启用**。
+
+**18081 明文端口不涉及本轮**：内核配置只有单一 `listen`，`Config` 无第二监听字段；要给 API 联调提供
+loopback 明文入口，需要单独加一个监听（未实现，也没有临时 hack）。本轮 18081 未改动。
+
 ### 2.5 升级
 
 ```sh
@@ -274,10 +358,10 @@ systemctl stop skiff
 # 1) 换回旧二进制
 install -m 0755 skiff-<旧版本>/skiff /usr/local/bin/skiff
 # 2) 数据库若已被新版本迁移过，需要回滚备份（备份里带版本与校验和）
-ls /var/lib/skiff/backup/
+ls /www/skiff/backup/
 # 3) 用备份替换（停机状态下操作，禁止对活动库直接覆盖）
-cp /var/lib/skiff/backup/skiff-<ts>.db /var/lib/skiff/skiff.db
-rm -f /var/lib/skiff/skiff.db-wal /var/lib/skiff/skiff.db-shm
+cp /www/skiff/backup/skiff-<ts>.db /www/skiff/skiff.db
+rm -f /www/skiff/skiff.db-wal /www/skiff/skiff.db-shm
 systemctl start skiff
 ```
 
@@ -286,7 +370,7 @@ systemctl start skiff
 ### 2.7 卸载
 
 ```sh
-sh uninstall.sh            # 保留 /var/lib/skiff 与 /etc/skiff
+sh uninstall.sh            # 保留 /www/skiff 与 /etc/skiff
 sh uninstall.sh --purge    # 删程序 + 数据 + 配置（需手输 YES 确认）
 ```
 
@@ -348,37 +432,33 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
 skiff plugin list
 ```
 
-**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 5 个已签名的包，装机时已复制到 `/var/lib/skiff/official/`：
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 4 个已签名的包（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
 
 ```sh
-ls /var/lib/skiff/official            # com.skiff.{guard,monitor,nginx,files,cron}-0.1.0.wbpkg + public-key.txt
-cat /var/lib/skiff/official/public-key.txt   # 先把这个 hex 导入面板「设置 → 信任公钥」
+ls /www/skiff/official            # com.skiff.{guard,monitor,files,cron}-0.1.0.wbpkg + public-key.txt
+# public-key.txt 不需要手动导入：首次启动会自动写入信任库（见 §2.11 注）
+# 仅在公钥缺失/指纹不符时，才需显式执行：
+#   skiff trust import /www/skiff/official/public-key.txt --label official
 
 # 主机监控：只读 /proc
-skiff plugin install /var/lib/skiff/official/com.skiff.monitor-0.1.0.wbpkg --yes \
+skiff plugin install /www/skiff/official/com.skiff.monitor-0.1.0.wbpkg --yes \
   --grant fs:read --grant fs:list --resource path:/proc
 
 # 容器守护：零内核改动，按容器逐条授权
-skiff plugin install /var/lib/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
+skiff plugin install /www/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
   --grant docker:containers.list --grant docker:containers.inspect \
   --grant docker:containers.restart \
   --grant fs:read --grant fs:write --grant fs:list \
   --resource container:nginx
 
-# NGINX 站点：写授权目录 + 重启容器（没有 exec）
-skiff plugin install /var/lib/skiff/official/com.skiff.nginx-0.1.0.wbpkg --yes \
-  --grant fs:read --grant fs:write --grant fs:list --grant fs:remove --grant fs:rename \
-  --grant docker:containers.list --grant docker:containers.restart \
-  --resource path:/etc/nginx/conf.d --resource container:nginx
-
 # 文件管理：目录由你决定（不给默认值）
-skiff plugin install /var/lib/skiff/official/com.skiff.files-0.1.0.wbpkg --yes \
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg --yes \
   --grant fs:read --grant fs:write --grant fs:list \
   --grant fs:mkdir --grant fs:remove --grant fs:rename \
   --resource path:/var/www
 
 # 计划任务：只调插件接口，不执行宿主 shell；要调度别的插件再加 --resource plugin:<id>
-skiff plugin install /var/lib/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
+skiff plugin install /www/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
   --grant identity:self --grant interop:call
 ```
 
@@ -390,12 +470,16 @@ skiff plugin install /var/lib/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
 
 ```sh
 # 目录与 socket
-ls -ld /var/lib/skiff /var/lib/skiff/plugins /run/skiff
+ls -ld /www/skiff /www/skiff/plugins /run/skiff
 stat -c '%a %U:%G %n' /run/skiff/kernel.sock
 # 期望：drwx--x--x root root …；660 root skiff-plugins
 
 # 插件装好后，逐段看路径可达性
-namei -l /var/lib/skiff/plugins/com.example.demo/data
+namei -l /www/skiff/plugins/com.example.demo/data
+# 代码目录与二进制必须可穿越/可执行（缺这一条 = 降权进程 Permission denied）
+ls -ld /www/skiff/plugins/com.example.demo/versions/*/
+ls -l /www/skiff/plugins/com.example.demo/versions/*/bin/*/plugin
+# 期望：目录 755 root:root；二进制至少 owner 有 x 位（修后为 755）
 
 # 插件跑起来后看它的真实身份（不是 passwd 用户，是哈希 UID）
 pid=$(pgrep -f 'plugins/com.example.demo/versions' | head -1)
@@ -406,6 +490,160 @@ getent group skiff-plugins | cut -d: -f3
 # 主进程仍是 root（它要能 setuid）
 ps -o user,group,args -p $(systemctl show -p MainPID --value skiff)
 ```
+
+### 2.11 官方插件：导入公钥 → 安装 → 复核（2026-11-03 已实测）
+
+> **历史记录**：以下内容记录 2026-11-03 的实测过程。其中 `com.skiff.nginx` 已于 2026-11-04 内核化为「网站」一级功能（见 [`docs/changes/2026-11-04.md`](changes/2026-11-04.md)），其安装命令、`/etc/nginx/conf.d` 授权与 RPC 复核步骤不再适用；其余 4 个插件（guard/monitor/files/cron）的步骤仍有效。
+
+**为什么会出现「一个插件都看不到」**（本机逐项实测）：
+
+- 列表页 `GET /{prefix}/plugins` 读的是 SQLite 的 `plugins` 表（`state.db().plugins()`），**不扫描目录**；
+  顶部导航的插件入口也由这些行生成。表为空时页面显示「还没有安装插件」，导航里没有插件项。
+- `install.sh` 只把发布包里的 `official/` 复制到 `/www/skiff/official/`，**不自动安装**（脚本随后只打印提示）。
+  `official/` 下的 `.wbpkg` 是分发物，不等于已安装。
+- 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
+- `allow_reduced_sandbox = false` 时，官方 4 个包的 manifest 没有显式关闭 `requires_full_sandbox`
+  （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
+- 停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 内的库是 **0 插件 / 0 公钥**，且不含 `official/`；
+  回到该快照就是回到「未装插件」状态。
+
+结论：当前实例是「库空 + 公钥空 + official 未落盘」，**插件列表入口与路由本身没有缺失**，也不需要新增页面。
+
+**实际落地（本机命令，仓库外无改动）**
+
+```sh
+# 0) 发布物落到数据根（install.sh 的布局；只复制，不安装）
+install -d /www/skiff/official
+cp -a /root/iter/official/. /www/skiff/official/
+
+# 1) 官方公钥：首启已自动信任（无需手动）；若缺失/不符，才需
+#    skiff trust import /www/skiff/official/public-key.txt --label official
+#    或 UI 设置页「信任公钥」/ Bearer Token POST /{p}/settings/keys
+
+# 2) 安装（非交互逐条授权；安装默认 enabled=true）
+cd /www/skiff/official
+skiff plugin install com.skiff.monitor-0.1.0.wbpkg --yes \
+  --grant fs:read --grant fs:list --resource path:/proc
+skiff plugin install com.skiff.files-0.1.0.wbpkg --yes \
+  --grant fs:read --grant fs:write --grant fs:list --grant fs:mkdir \
+  --grant fs:remove --grant fs:rename \
+  --resource path:/var/www --resource path:/etc/nginx/conf.d
+skiff plugin install com.skiff.guard-0.1.0.wbpkg --yes \
+  --grant docker:containers.list --grant docker:containers.inspect \
+  --grant docker:containers.restart --grant fs:read --grant fs:write --grant fs:list \
+  --resource container:nginx
+skiff plugin install com.skiff.cron-0.1.0.wbpkg --yes \
+  --grant identity:self --grant interop:call --resource plugin:*
+# 历史记录（2026-11-03）：com.skiff.nginx 已于 2026-11-04 内核化为「网站」，不再安装
+#skiff plugin install com.skiff.nginx-0.1.0.wbpkg --yes \
+#  --grant fs:read --grant fs:write --grant fs:list --grant fs:remove --grant fs:rename \
+#  --grant docker:containers.list --grant docker:containers.restart --grant interop:call \
+#  --resource path:/etc/nginx/conf.d --resource container:nginx --resource plugin:com.skiff.cron
+
+skiff plugin list   # 当时 5 行 signed/enabled/running（nginx 内核化后为 4 行）
+```
+
+**systemd 沙箱缺口（历史，部署侧，未改 unit 模板）**：`deploy/systemd/skiff.service` 用 `ProtectSystem=full`，
+整个进程对 `/etc` 只读，当时 nginx 插件写 `/etc/nginx/conf.d` 会报 `Read-only file system`。测试机用 drop-in 放开：
+
+```sh
+mkdir -p /etc/systemd/system/skiff.service.d
+printf '[Service]\nReadWritePaths=/etc/nginx/conf.d\n' \
+  > /etc/systemd/system/skiff.service.d/nginx-sites.conf
+systemctl daemon-reload && systemctl restart skiff
+```
+
+**UI 复核**（Bearer 绕过登录仅用于验证；正常用户走浏览器会话）：
+
+| 项 | 结果 |
+|---|---|
+| 插件列表 `GET /{p}/plugins` | 200，当时 5 行在列、导航出现 5 个插件项（nginx 内核化后为 4 行） |
+| 详情页 `GET /{p}/plugins/com.skiff.nginx`（历史） | 200 |
+| 托管 UI `GET /plugins/com.skiff.nginx/ui/index.html`（历史） | 200，带 CSP `default-src 'none'; script-src 'self'` |
+| nginx RPC `sites` / `create` / `read` / `backup` / `scheduleBackup`（历史） | 200；`/etc/nginx/conf.d/example.com.conf` 落盘；备份与 cron 任务创建成功 |
+| nginx `reload`（历史） | 400「找不到容器 nginx」（本机无 Docker 容器；不再是授权 403） |
+
+**顺带修复的内核缺陷**：`kernel/capability.rs` 把 `target: null` 当成 id/name 全空的容器，
+导致 `containers.list` 去匹配永远不存在的 `object:container:` 授权（nginx `reload`、guard 拉取容器列表被 403）。
+已改为「缺省或 null = 无目标」并补两个单测；**测试机二进制按源码现编（glibc 动态）**，仍不是 musl 发布包。
+
+### 2.12 网站 vhost：默认站与兜底站语义（2026-11-04 实测）
+
+生成物（均落在 `conf_dir`，默认 `/www/nginx/conf.d/`）：
+
+| 文件 | 何时存在 | 关键配置 |
+| --- | --- | --- |
+| `00-skiff-fallback.conf` | **始终存在** | `listen 80; server_name skiff-fallback; return 404;` |
+| `00-skiff-default.conf` | **仅当设置了默认站点** | `listen 80 default_server; server_name _;` + 站点 root |
+
+未知 Host / 裸 IP 访问分两种状态，**不要混为一谈**：
+
+1. **无默认站点**：80 端口没有 `default_server`，nginx 取第一个 server（按文件名是兜底站），裸 IP 与未知 Host 都返回 **404**。
+2. **有默认站点**：`default_server` 由默认站接管，裸 IP 与未知 Host 都落到默认站并返回 **200**（1Panel 行为）；兜底站此时不参与匹配。
+
+兜底站不使用 `server_name _`（默认站已占用 `_`），因此 `nginx -t` 与 reload 不应再出现
+`conflicting server name "_" on 0.0.0.0:80` 警告。
+
+### 2.13 站点 HTTPS（2026-11-04 已实测）
+
+一句话：证书按站点落 `/www/certs/<域名>/{cert.pem,key.pem}`，vhost 追加 `listen 443 ssl`，
+强制跳转把 80 块换成 `return 301 https://$host$request_uri;`；所有改动先写盘、再
+`nginx -t`，通过才 reload，失败按文件快照与库开关回滚。
+
+| 操作 | 面板入口 | 落盘效果 |
+|---|---|---|
+| 生成自签 | 站点详情 → SSL → 生成自签证书 | `openssl req -x509 -newkey rsa:2048 -sha256 -days 825 -nodes`，`CN=<域名>`、`subjectAltName=DNS:<域名>[,DNS:<别名>]`；`cert.pem` 0644、`key.pem` **0600** |
+| 上传 PEM | 同页 `<details>` 表单 | 先校验 CERTIFICATE / PRIVATE KEY 标记与公钥配对，再原子替换；不匹配直接拒绝，不动现网文件 |
+| 强制 HTTPS | 同页「强制切换」 | `force_https=1` 且必须已启用 HTTPS；80 返回 **301** 到 `https://$host$request_uri` |
+| 关闭 / 删除 | 同页「关闭 HTTPS」「删除证书」 | 关闭保留文件；删除先关 TLS 再删目录 |
+
+真机实测（Debian 13，`demo.local` 为默认站，域名解析到 `10.10.15.4`）：
+
+```sh
+# 生成自签 + 启用
+curl -sk https://10.10.15.4/ -o /dev/null -w '%{http_code}\n'      # 200
+grep -o 'PHP Version 8.5.12' <响应体>                               # 命中
+openssl x509 -in /www/certs/demo.local/cert.pem -noout -subject -ext subjectAltName
+stat -c '%a' /www/certs/demo.local/key.pem                          # 600
+docker exec skiff-web-nginx nginx -t                                # syntax ok，无 warning
+
+# 强制跳转
+curl -s -o /dev/null -D - http://10.10.15.4/ | head -2               # 301 + Location: https://10.10.15.4/
+curl -sk https://10.10.15.4/ -o /dev/null -w '%{http_code}\n'       # 200
+```
+
+回滚实测：手工塞入一个坏 conf（`zz-bad.conf`）后点「关闭 HTTPS」，接口返回
+`?error=nginx -t 失败…`，站点 conf 的 md5 与库内 `https/force_https` **均未变化**；
+坏 conf 移除后 `nginx -t` 通过、HTTPS 仍是 200。非法 PEM 上传同样被拒且现有证书不受影响。
+
+> 注意：校验失败时**不得重启 nginx**——若坏 conf 来自外部，重启会让现网 nginx 起不来。
+> 实现里「`nginx -t` 失败」分支只恢复文件与库开关；只有「重启动作本身失败」才重试重启。
+
+### 2.14 镜像源自动落盘（2026-11-04 已实测）
+
+「网站 → 设置」里的 `registry_mirror` 保存后不再只是写库，而是合并进 `/etc/docker/daemon.json`：
+
+1. 解析：逗号（含中文逗号）/空白分隔，必须带 `http(s)://`，去掉尾部 `/`；
+2. 合并：保留 `daemon.json` 其它顶层键，只替换 `registry-mirrors`；空值删除该键但保留文件合法；
+3. 备份：内容有变化时先写 `daemon.json.bak.<时间戳>`，再临时文件 + `rename` 原子替换；
+4. 重启：**有运行中容器**时只落盘不重启，页面明确提示；无运行中容器才 `systemctl restart docker`，
+   等 socket 就绪并按最多 8 次、每次 1 s 重试列表接口（避开面板旧连接池的首个失败请求）；
+5. 回滚：重启或可用性检查失败则恢复备份并再次重启，接口返回 `?error=`，库内设置不更新。
+
+真机实测（原有 `daemon.json` 含 `log-driver` 等键）：
+
+```sh
+# 有运行中容器：只落盘
+docker ps --format '{{.Names}}'          # skiff-web-nginx / skiff-web-php 在跑
+# 页面保存后：notice 提示「有运行中容器，未重启」；备份文件出现；JSON 合并成功
+
+# 停容器后再保存：写入并重启
+docker stop skiff-web-nginx skiff-web-php
+# 页面保存后：notice 提示「Docker 已重启」；docker active；docker pull hello-world:latest 成功
+docker start skiff-web-nginx skiff-web-php
+```
+
+重启 docker 后，面板容器列表页仍为 **200**（连接池自动重建），网站 HTTPS 恢复 200。
 
 ## 3. 形态 B：Docker 受限形态（1Panel 商店包，可选）
 
@@ -464,7 +702,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | 环境变量 | 配置文件键 | 默认 | 作用 |
 |---|---|---|---|
 | `SKIFF_LISTEN` | `listen` | `127.0.0.1:18080` | 监听地址 |
-| `SKIFF_DATA_DIR` | `data_dir` | `/var/lib/skiff` | 唯一数据根 |
+| `SKIFF_DATA_DIR` | `data_dir` | `/www/skiff` | 唯一数据根 |
 | `SKIFF_RUN_DIR` | `run_dir` | `/run/skiff` | 运行目录（含 kernel.sock） |
 | `SKIFF_DOCKER_SOCKET` | `docker_socket` | `/var/run/docker.sock` | Engine socket |
 | `SKIFF_FORM` | `form` | `native` | `native` / `docker`（受限） |
@@ -544,7 +782,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | C4 | 反代白名单外 IP | 伪造 `X-Forwarded-For: 1.2.3.4` 登录失败 | 审计里记录的是真实 peer IP，不是 1.2.3.4 | | |
 | C5 | 已登录 | 从异源页面发起 WS 连接 | 拒绝（Origin 校验） | | |
 | C6 | 已登录 | 打开容器终端后强制断开网络 | 后端 exec 流被回收，不残留 | | |
-| C7 | 配了 `tls_cert/tls_key` | `curl -I https://<host>:18080/healthz` | 200；HTTP 访问同端口被拒 | | |
+| C7 | 配了 `tls_cert/tls_key` | `curl -I https://<host>:18080/healthz` | 200；HTTP 访问同端口被拒 | `https` 登录页/`/healthz` **200**、错前缀 **404**；`http` 同端口 curl `000`（`Received HTTP/0.9`，无页面）；`ss` 仍 `0.0.0.0:18080`（2026-11-03 实测） | 通过 |
 
 ### 6.4 D 组：Docker 管理（三层策略）
 
@@ -575,7 +813,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | E5 | 同上 | 包内重复路径 | 拒装 | | |
 | E6 | 同上 | 构造高压缩比解压炸弹 | 拒装（解压总量/条目数上限） | | |
 | E7 | 已装插件 | 运行中 `kill -9` 插件进程 | 面板 100% 可用；按 0.5s/2s/8s 退避重启，3 次失败熔断 | | |
-| E8 | 已装插件 | 插件尝试读 `/var/lib/skiff/skiff.db` | 权限拒绝（独立 UID，库 0600 root） | | |
+| E8 | 已装插件 | 插件尝试读 `/www/skiff/skiff.db` | 权限拒绝（独立 UID，库 0600 root） | | |
 | E9 | 已装插件 | 插件绕过 Broker 直连 `docker.sock` | 拒绝（不在插件可访问路径/无权限） | | |
 | E10 | 已装插件 | 插件访问另一个插件的 `data/` | 拒绝（独立 UID + 0700） | | |
 | E11 | 已装插件 | 卸载（不勾删数据） | 代码删除、`data/` 保留；重装后数据还在 | | |
@@ -636,6 +874,9 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 
 | 项 | 现状 | 影响 | 对应 §12 |
 |---|---|---|---|
+| **插件安装后的代码目录可执行位** | **已修（2026-11-03），未上机复验** | 修前官方插件装完即 `Permission denied`（`versions/{ver}` 0700、`bin/plugin` 0644）；修后仅过本机门禁，需重新出包复验 | §4.2 |
+| **Docker 容器生命周期 / 资源限制 / Compose 运行时** | **未实测**：测试机无镜像（registry 443 超时），且 Web 无 create/remove 路由 | 只验到「非法动词 400 / 不存在容器 404 / 列表与 `docker ps` 一致」；不得说「容器管理已可用」 | §5.3、§12 |
+| **HSTS 响应头** | **未实现**：`crates/` 内无 `Strict-Transport-Security` 下发，实测响应头也没有 | 浏览器首次仍可被诱导到同端口明文地址（该地址不返回页面）；不得声称已启用 HSTS | §12 |
 | landlock 隔离 | **未实现** | 插件隔离主力是“独立 UID + 目录权限 + 附加组” | §12、§9.1 #16 |
 | cgroups v2 限额（内存/PID/CPU） | **未实现** | 只有 `setrlimit`（AS 256MB / NOFILE 256 / NPROC / FSIZE / CORE） | §12 |
 | nftables 出网收口（net 能力） | **未实现**，kernel RPC 返回 501 | 插件出网不受控；`net` 能力插件不可用 | §9.1 #17 |
@@ -759,9 +1000,46 @@ sh deploy/pack-release.sh
   首启产物与权限位、安全入口 303 与裸 `/` 404、`healthz`、`doctor`、`kill -9` 拉起、首登强制改密与改密后旧会话失效、
   登录限流 503 文案、Docker CE 安装链路与 `--check-only` 不重装。逐条结果见
   [`docs/ITERATION.md`](ITERATION.md) §9 与 [`docs/changes/2026-11-03.md`](changes/2026-11-03.md)。
-- **仍未测**：插件降权链路（setuid / `SO_PEERCRED` / 插件 `data` 目录 EACCES 边界）、docker.sock 实际管理动作、
-  备份恢复演练、N-1 升级窗口、C 组 TLS/反代、资源数字（RSS / CPU / 二进制体积）、与 1Panel 共存。
+- **仍未测**：docker.sock 实际管理动作（测试机无镜像，容器起不来）、备份恢复演练、N-1 升级窗口、
+  C 组反代路径（可信代理正向采信 `X-Forwarded-Proto/For`、WS Origin）、HSTS（代码未实现）、
+  资源数字（RSS / CPU / 二进制体积）、与 1Panel 共存。
 - 含 C 依赖 crate 的 Linux **运行**仍只能靠 CI 的 `test` job；本地只能做到 `cargo check --target`（不链接）。
+
+### 9.6 覆盖轮（2026-11-03，逐项）
+
+| 面 | 结论 | 关键证据 |
+|---|---|---|
+| 装机与运行 | 安装 / 幂等重装 / 卸载 / 重启自愈 / 权限口径 / `deny_unknown_fields` 全部实测通过 | `install.sh` 0.9 s、卸载保留数据、重启后 `/healthz` 200；`bogus_key` 被拒（`serve` 退出 1） |
+| 认证会话 | 首登强制改密、改密后旧会话失效、限流、CSRF、伪造转发头全部通过 | 改密后旧 Bearer 401；第 6 次登录 503「请 299 秒后重试」；`X-Forwarded-For` 伪造不影响审计源地址 |
+| Docker 管理 | **部分**：非法动词 400、不存在容器 404、列表一致；**生命周期/资源限制/Compose 运行时未测** | 机上无镜像；Web 无 create/remove 路由 |
+| 内网明文直连 | 监听、防火墙、直连、重启持久化、重装不丢 全部实测通过 | `ss` = `0.0.0.0:18080`；开发机 `/login` 200、错前缀 404、根 307、`/healthz` 200；重启后规则与监听仍在 |
+| 同端口 TLS（自签） | 证书 SAN/权限、18080 仅 HTTPS、cookie-jar 登录与改密、重启与重装保留 全部实测通过；**HSTS 未实现** | `https` `/login` 200、`/healthz` 200、错前缀 404；`http` 同端口 `000`；`skiff_login` 与 `__Host-skiff_session` 均 `Secure`；改密 303 → 首页 200；重装前后 `config.toml` sha256 相同 |
+| 官方插件导入与 UI（2026-11-03，历史） | 快照内 0 插件/0 公钥 → 导入官方公钥后 5 包安装成功（signed/enabled/running；nginx 已于 2026-11-04 内核化，现为 4 包）；列表页 200、导航 5 项、详情页 200、托管 UI 200 + CSP；nginx RPC 站点增删读、备份、定时备份成功 | `skiff plugin list` 5 行（现为 4 行）；`official/` 已落盘；nginx 写 `/etc/nginx/conf.d` 需 `ReadWritePaths` drop-in；`reload` 因无容器 400（已修复 `target:null` 授权误判） |
+| fs 能力面 | 路径授权代数、越界拒绝、256 KiB 分页、覆盖写通过 | 越界 400、`page_max=262144`、300 KiB 写 400 |
+| 迭代包自检 | 旧包（main@41beba5）静态链接、sha256、8 文件布局通过；本轮改动未出包 | `ldd skiff` 非动态可执行；sha `5ed37d21…`，8.52 MB |
+| 网站寄宿迁 `/www`（2026-11-04） | 数据根搬 `/www/skiff` 与 `/www/sites`、旧目录零写入；nginx/php 重建为 host 网络 + unix socket；OpenResty 固定 digest 拉取；默认站/兜底/站点 vhost 全部上盘；日志落宿主且面板可读 全部实测通过 | 旧 `skiff.db` mtime 停在迁移前 10:17:35；`docker inspect` = `NetworkMode=host`、`LogConfig local max-size=10m`；`ss` = `*:80`；裸访问 200 + `PHP Version 8.5`；`Host: demo.local` 200；`/www/logs/nginx/demo.local.access.log` 持续增长；socket `660 root:nogroup`，其他 uid 连接 `Permission denied`；80 被 `python3 -m http.server` 占用时安装步骤 0 失败并报 `pid … python3`，释放后重装恢复 200 |
+
+### 9.7 闭环轮（2026-11-04，逐项）
+
+| 面 | 结论 | 关键证据 |
+|---|---|---|
+| 站点 HTTPS | 自签生成 / 上传 PEM / 强制跳转 / 关闭删除 / `nginx -t` 回滚 全部实测通过 | `curl -k https://10.10.15.4/` **200** 且含 `PHP Version 8.5.12`；`key.pem` **0600**；`http://` **301** → `https://`；`nginx -t` syntax ok 无 warning；坏 conf 注入后接口报错、conf md5 与库开关不变 |
+| 镜像源落盘 | 合并 / 备份 / JSON 校验 / 条件重启 / 失败回滚 全部实测通过 | 有容器时只写盘 + 提示；停容器后 `systemctl restart docker`，`docker pull hello-world` 成功，`daemon.json` 保留其它键、备份文件存在；重启 docker 后面板容器页仍 200 |
+| musl 静态包 | 主二进制与 4 个插件包均产出并试跑通过 | `file` = `static-pie linked`、`ldd` = not a dynamic executable；`skiff` 9,404,208 B、sha `6595a1f8…`；临时数据目录 `/<入口>/login` **200**；现网 glibc 二进制 sha 未变 |
+| 重启自恢复 | `skiff` / `docker` / 防火墙 / 网站容器 / HTTPS 站点全部自动恢复 | 重启命令 → HTTPS 200 用时 **11.2 s**；开机 → 首个外部 HTTPS 200 约 **6 s**（access log 时间戳）；`systemctl is-active` 三项 active；`iptables -S INPUT` 规则仍在；`docker info` 镜像源仍在 |
+
+### 9.8 round4/round5 部署（2026-11-04，逐项）
+
+| 面 | 结论 | 关键证据 |
+|---|---|---|
+| 静态资源两种路径 | 根路径与前缀别名均匿名可取 | `/static/skiff.js` 与 `/{p}/static/skiff.js` 均 **200**；`main_flow::prefixed_static_assets_are_served` 对拍 |
+| 站点列表列宽合并 | 单表、无独立域名列 | `/swn4nbhe/sites` **200**；`sites-grid` 表计数 **1**；无 `<th>域名</th>` / `col-domain` |
+| 插件 UI 主题覆盖 | 5 个 HTML 均带浅色兜底，同目录 JS 均发主题请求 | `index.html`×4 + `health.html` 含 `data-theme="light"`；`app.js`×4 + `health.js` 含 `skiff.theme.request`；5 个托管页 **200** |
+| 页面回归 | 概览/插件/菜单设置/深链全部 200 | 4 个插件详情与 `/m/overview`、`/m/core/sites/list`、`/m/core/plugins/installed`、`/m/core/docker/containers`、`/m/core/settings/menu`、`/m/plugin/<id>` 均 **200** |
+| 部署态 | 二进制 round4 → round5，服务稳定 | round4 sha `8f74fabe…` 9,272,296 B；round5 sha `da544b5f…` 9,271,912 B；备份 `20261104-202700-round4` / `20261104-203455-round5`；`/var/lib/skiff` 不存在 |
+| 深色主题下 iframe 内部 | 未验证（curl 无法执行脚本） | 留待真实浏览器复测 |
+
+未闭环项统一登记在 [`docs/TEST_LEDGER.md`](TEST_LEDGER.md)。
 
 ## 变更记录
 
@@ -771,3 +1049,10 @@ sh deploy/pack-release.sh
 | 2026-10-30 | 补 release 构建实测与 §9.3 发布打包链路实测（三件套、确定性、正负验签）；修 2 处缺陷（`keygen --help` 落私钥、`pack-release.sh` 包名写错）；§1 内核行改为「不依赖 `openat2`」的实情 |
 | 2026-10-31 | **上机就绪复查**：新增 §0 上机前闸门（编译/单测/结构）与三条取得发布物的路径、§1.1 权限口径表、§2.9 插件测试物准备、§2.10 权限链自检；修 9 个只会在 Linux 暴露的问题（3 个编译错误 + 6 个权限/打包缺陷，见 §9.4）；D8 改为「窗口仍在、不作阻断项」，§8 新增 TOCTOU / Linux 完整编译 / 备份一致性 / UID 槽位四项；测试 104 → 105 |
 | 2026-10-31 | **同步第二轮执行（ARCH_REVIEW §10.4）后的实测值**：§9.1 全量单测 107 → **118**，逐包表补齐 `skiff-docker`（4）与 `skiff-compose`（6）并更新各包用例数（合计 118）；§0 闸门与 CI.md 的单测口径同步。测试链条：88 → 104 → 105 → 107 → 118 |
+| 2026-11-03 | **覆盖轮**：§1.1 补 `versions/{ver}` 与 `bin/**` 的可穿越/可执行口径；§2.10 增加代码目录权限自检；§8 新增「插件代码目录可执行位（已修未复验）」与「Docker 生命周期未实测」两项；新增 §9.6 逐项结论 |
+| 2026-11-03 | **内网直连**：新增 §2.4.1（明文直连配置、`trusted_proxies` 口径、Cookie/Secure 限制、`install.sh --listen`、iptables 白名单与持久化）；§9.6 增补实测行 |
+| 2026-11-03 | **同端口 TLS**：§2.4 A 补自签证书步骤（SAN 必须含实际访问地址、私钥 0600 只放 `/etc/skiff/tls/`、自签仅限内网复核）；新增 §2.4.2（实测状态码、cookie-jar 登录/改密、指纹、重启与重装保留、HSTS 未实现、18081 说明）；C7 回填；§8 把原「明文浏览器登录不可用」替换为「HSTS 未实现」；§9.5/§9.6 同步 |
+| 2026-11-03 | **官方插件落地**：新增 §2.11（空列表根因、导入公钥、5 包安装命令与授权、systemd `ProtectSystem` 缺口与 drop-in、UI/CSP/RPC 实测、`target:null` 内核缺陷修复）；§9.6 增补实测行 |
+| 2026-11-04 | **网站寄宿迁 `/www`**：数据根改 `/www/skiff`、站点 `/www/sites`、vhost `/www/nginx/conf.d`、日志 `/www/logs/nginx`、socket `/www/php`；nginx/php 改 host 网络，镜像固定 OpenResty digest；防火墙 80/443 + 18080；§1.1 权限表与 §9.6 同步，迁移实测见本条 |
+| 2026-11-04 | **闭环轮**：新增 §2.13 站点 HTTPS（证书目录/自签/上传/强制跳转/`nginx -t` 回滚）、§2.14 镜像源自动落盘、§0.2 路径 E（目标机 musl 静态包）、§9.7 逐项实测；同步 §9.6 插件由 5 包更正为 4 包 |
+| 2026-11-04 | **round4/round5**：新增 §9.8；静态资源增加带安全入口前缀的别名路由 `/{p}/static/{*path}`（与根路径共用 handler），站点列表单表合并、插件 UI 主题兜底与 `skiff.theme.request` 实测通过；两轮备份与二进制 sha 记录在 §9.8 |

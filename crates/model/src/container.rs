@@ -46,8 +46,16 @@ pub struct ContainerSpec {
     pub healthcheck: Option<Healthcheck>,
     #[serde(default)]
     pub networks: Vec<String>,
+    /// Docker 网络模式。当前只允许 `host`（宿主机直装形态由内核自用；插件禁止）。
+    #[serde(default)]
+    pub network_mode: Option<String>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// 容器日志驱动（只允许 `local` / `json-file`），配合 `log_max_size` 控制单文件大小。
+    #[serde(default)]
+    pub log_driver: Option<String>,
+    #[serde(default)]
+    pub log_max_size: Option<String>,
     #[serde(default)]
     pub memory_limit_mb: Option<i64>,
     #[serde(default)]

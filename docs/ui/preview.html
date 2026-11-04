@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skiff 视觉与交互预览</title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#f4f5f7;--surface:#fff;--surface-2:#f9fafb;--surface-3:#eef1f4;
+  --line:#e4e7ec;--line-strong:#cfd5dd;--text:#101828;--text-2:#344054;--muted:#667085;
+  --accent:#0f766e;--accent-hover:#0b5f59;--accent-soft:#e7f4f1;--accent-line:#9fd3ca;
+  --danger:#b42318;--danger-soft:#fef3f2;--danger-line:#f3b4ae;
+  --warn:#b54708;--warn-soft:#fffaeb;--warn-line:#f6d48f;
+  --info:#175cd3;--info-soft:#eff6ff;--info-line:#b2ccf7;
+  --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-8:32px;
+  --radius-sm:6px;--radius:8px;--radius-lg:12px;
+  --shadow-sm:0 1px 2px rgba(16,24,40,.05);--shadow-md:0 8px 24px rgba(16,24,40,.10);--shadow-pop:0 12px 32px rgba(16,24,40,.16);
+  --fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:20px;--fs-2xl:26px;
+  --ctl-h:36px;--ctl-h-sm:28px;--sidebar-w:248px;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+html[data-theme=dark]{
+  color-scheme:dark;--bg:#0e1116;--surface:#151a21;--surface-2:#1a2028;--surface-3:#202832;
+  --line:#2a3340;--line-strong:#3a4655;--text:#e4e9f0;--text-2:#c3ccd9;--muted:#8d99a8;
+  --accent:#5fd4b5;--accent-hover:#82e6ca;--accent-soft:rgba(95,212,181,.12);--accent-line:rgba(95,212,181,.38);
+  --danger:#ff8f87;--danger-soft:rgba(255,107,107,.1);--danger-line:rgba(255,107,107,.36);
+  --warn:#f2c56b;--warn-soft:rgba(245,185,66,.1);--warn-line:rgba(245,185,66,.34);
+  --info:#8db8ff;--info-soft:rgba(99,164,255,.12);--info-line:rgba(99,164,255,.36);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35);--shadow-md:0 8px 24px rgba(0,0,0,.45);--shadow-pop:0 12px 36px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 var(--sans);overflow-wrap:break-word}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--accent);text-decoration:none}
+h1,h2,h3{margin:0;line-height:1.35}
+h1{font-size:var(--fs-xl);font-weight:650;letter-spacing:-.01em}
+h2{font-size:var(--fs-lg);font-weight:620}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}.small{font-size:var(--fs-xs)}.wrap{overflow-wrap:anywhere}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* 预览外壳 */
+.preview-bar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 18px;background:var(--surface);border-bottom:1px solid var(--line);box-shadow:var(--shadow-sm)}
+.preview-bar .title{font-weight:650}
+.preview-bar .spacer{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface-2)}
+.seg button{border:0;background:transparent;padding:6px 11px;font-size:12px;color:var(--muted);cursor:pointer}
+.seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.stage{padding:22px;display:flex;justify-content:center;gap:18px;flex-wrap:wrap}
+.frame{width:1180px;max-width:100%;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--bg);box-shadow:var(--shadow-md);transition:width .2s ease}
+.frame.narrow{width:400px}
+.frame .panel-page{min-height:640px}
+/* 面板骨架 */
+.topbar{display:flex;align-items:flex-start;gap:16px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{display:inline-flex;align-items:center;gap:8px;height:36px;flex:none;font-weight:700}
+.brand .logo{color:var(--accent);font-size:18px}
+.brand .ver{color:var(--muted);font-weight:400;font-size:12px}
+/* ---------- 导航 · 上下布局：一级在顶栏，二级是顶栏下方独立全宽栏 ---------- */
+.nav{display:flex;align-items:center;flex-wrap:wrap;gap:2px 4px;flex:1 1 auto;min-width:0}
+.nav-link{display:inline-flex;align-items:center;gap:8px;height:36px;min-height:36px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:none;color:var(--text-2);font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;text-decoration:none}
+.nav-link:hover{background:var(--surface-2);color:var(--text)}
+.nav-link[aria-current=page]{color:var(--accent);background:var(--accent-soft)}
+.nav-group{display:inline-flex;min-width:0}
+/* 一级行 = 标签 + 独立箭头按钮；箭头只管展开/收起，不跳转 */
+.nav-row{display:inline-flex;align-items:center;gap:2px;padding-right:4px;border-radius:8px;transition:background .16s}
+.nav-row:hover{background:var(--surface-2)}
+.nav-row:hover .nav-link,.nav-row:hover .nav-link:hover{background:transparent}
+.nav-label{padding-right:2px}
+.nav-group.open>.nav-row{background:var(--surface-2)}
+.nav-group.current>.nav-row{background:var(--accent-soft)}
+.nav-group.current>.nav-row .nav-label{color:var(--accent);font-weight:600}
+.nav-group.open>.nav-row .nav-label{color:var(--text);font-weight:600}
+.nav-caret{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;flex:none}
+.nav-caret span{display:block;font-size:10px;line-height:1;transition:transform .16s}
+.nav-caret:hover{color:var(--text)}
+.nav-group.current .nav-caret{color:var(--accent)}
+.nav-group.open .nav-caret span{transform:rotate(180deg)}
+.ic{display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;font-size:14px;line-height:1;color:var(--muted)}
+.nav-link:hover .ic,.nav-row:hover .ic,.nav-group.current .ic{color:currentColor}
+.nav-menu{display:flex;flex-direction:column;gap:2px}
+.nav-menu a{display:flex;align-items:center;height:32px;padding:0 9px;border-radius:6px;color:var(--muted);font-size:13px;white-space:nowrap}
+.nav-menu a:hover{background:var(--surface-2);color:var(--text)}
+.nav-menu a.on{background:var(--accent-soft);color:var(--accent)}
+
+/* 二级独立栏：固定在全宽条上，横向排列、左对齐，不挂在一级按钮下方 */
+.subnav{height:0;overflow:hidden;background:var(--surface);box-shadow:inset 0 -1px 0 var(--line);transition:height .18s ease}
+.subnav.open{height:44px}
+.subnav-inner{display:flex;align-items:center;height:44px;padding:0 20px;gap:2px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+.subnav-inner .nav-menu{flex-direction:row;flex-wrap:nowrap;gap:2px;padding:0}
+.subnav-inner .nav-menu a{position:relative;height:36px;padding:0 12px;border-radius:6px;font-size:13px;color:var(--muted)}
+.subnav-inner .nav-menu a:hover{background:var(--surface-2);color:var(--text)}
+.subnav-inner .nav-menu a.on{background:transparent;color:var(--accent);font-weight:600}
+.subnav-inner .nav-menu a.on::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:2px;border-radius:2px;background:var(--accent)}
+.subnav-inner .nav-menu[hidden]{display:none}
+.frame.layout-left .subnav,.frame.narrow .subnav{display:none}
+
+/* ---------- 侧栏布局：248px 固定宽，顶部/底部固定，只有中间菜单可滚动 ---------- */
+.frame.layout-left .panel-page{position:relative;padding-left:var(--sidebar-w)}
+.frame.layout-left .topbar{position:absolute;inset:0 auto 0 0;width:var(--sidebar-w);flex-direction:column;align-items:stretch;gap:0;padding:0;background:var(--surface);border-right:1px solid var(--line);border-bottom:0;overflow:hidden}
+.frame.layout-left .brand{flex:none;height:48px;padding:0 20px;font-size:15px;background:var(--surface);border-bottom:1px solid var(--line);box-shadow:0 8px 12px -12px rgba(16,24,40,.35);position:relative;z-index:2}
+/* 中间滚动区：6px 自绘滚动条，拇指半透明中性色，滑轨透明，两端 4px 内缩 */
+.frame.layout-left .nav{flex:1 1 auto;min-height:0;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:2px;width:100%;padding:10px 10px 14px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:rgba(16,24,40,.22) transparent}
+.frame.layout-left .nav::-webkit-scrollbar{width:6px}
+.frame.layout-left .nav::-webkit-scrollbar-track{background:transparent;margin:4px 0}
+.frame.layout-left .nav::-webkit-scrollbar-thumb{background:rgba(16,24,40,.22);border-radius:999px}
+.frame.layout-left .nav::-webkit-scrollbar-thumb:hover{background:rgba(16,24,40,.4)}
+html[data-theme=dark] .frame.layout-left .nav{scrollbar-color:rgba(233,238,245,.26) transparent}
+html[data-theme=dark] .frame.layout-left .nav::-webkit-scrollbar-thumb{background:rgba(233,238,245,.26)}
+html[data-theme=dark] .frame.layout-left .nav::-webkit-scrollbar-thumb:hover{background:rgba(233,238,245,.46)}
+.frame.layout-left .nav-group{display:block;width:100%}
+.frame.layout-left .nav-row{display:flex;width:100%;padding-right:2px;border-radius:8px}
+.frame.layout-left .nav-link{display:flex;align-items:center;gap:10px;height:36px;min-height:36px;padding:0 12px;border:0;border-radius:8px;justify-content:flex-start;text-align:left;font-size:13px;font-weight:500;color:var(--text-2);background:transparent}
+.frame.layout-left .nav-label{flex:1 1 auto;min-width:0;width:auto}
+.frame.layout-left .nav-caret{margin-left:auto;width:28px;height:28px;border-radius:6px}
+.frame.layout-left .nav-row:hover{background:var(--surface-2)}
+.frame.layout-left .nav-row:hover .nav-link{background:transparent}
+.frame.layout-left .nav-group.open>.nav-row{background:var(--surface-2)}
+.frame.layout-left .nav-group.open>.nav-row .nav-label{color:var(--text);font-weight:600}
+.frame.layout-left .nav-group.current>.nav-row{position:relative;background:var(--accent-soft)}
+.frame.layout-left .nav-group.current>.nav-row .nav-label{color:var(--accent);font-weight:600}
+.frame.layout-left .nav-group.current>.nav-row::before,
+.frame.layout-left .nav-menu a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 2px 2px 0;background:var(--accent)}
+.frame.layout-left .nav-menu{display:flex;flex-direction:column;flex-wrap:nowrap;gap:1px;margin:2px 0 8px 12px;padding:0;border:0;background:transparent;box-shadow:none}
+.frame.layout-left .nav-menu a{display:flex;align-items:center;height:32px;padding:0 12px;border-radius:8px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+.frame.layout-left .nav-menu a:hover{background:var(--surface-2);color:var(--text)}
+.frame.layout-left .nav-menu a.on{position:relative;background:var(--accent-soft);color:var(--accent);font-weight:600}
+.frame.layout-left .who{flex:none;margin:0;flex-direction:column;align-items:stretch;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--surface);box-shadow:0 -8px 12px -12px rgba(16,24,40,.35)}
+.frame.layout-left .who .chip{max-width:none;justify-content:center}
+.frame.layout-left .who .meta{display:block;color:var(--muted);font-size:11.5px;text-align:center}
+.frame.layout-left .menu-toggle{display:none}
+.who{margin-left:auto;display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:none;min-height:36px;color:var(--muted);font-size:12px}
+.who .meta{display:none}
+.chip{display:inline-flex;align-items:center;max-width:220px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);color:var(--text-2);font-size:12px}
+.theme-toggle{min-height:28px;padding:2px 10px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);font-size:12px;cursor:pointer}
+.menu-toggle{display:none;min-height:36px;margin-left:auto;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--text-2);font-size:13px}
+main{padding:20px;max-width:1240px;margin:0 auto}
+.page-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.page-head .sub{color:var(--muted);font-size:13px}
+.page-head .btn{margin-left:auto}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px;margin-bottom:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-sm)}
+.toolbar .search{display:flex;gap:8px;flex:1 1 240px;min-width:0}
+.toolbar .search input{flex:1;min-width:0}
+.toolbar .sep{flex:1 1 12px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+.panel.flush{padding:0;overflow:hidden}
+.panel.flush h2{padding:16px;border-bottom:1px solid var(--line);margin:0}
+.panel h2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.table-wrap{overflow-x:auto}
+table.grid{width:100%;border-collapse:collapse;font-size:13px}
+table.grid th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:10px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.grid td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle;color:var(--text-2)}
+table.grid tr:last-child td{border-bottom:0}
+table.grid tr:hover td{background:var(--surface-2)}
+table.grid .num{text-align:right;font-variant-numeric:tabular-nums}
+table.grid .nowrap{white-space:nowrap}
+.site-name{display:flex;flex-direction:column;gap:2px}
+.site-name a{font-weight:600;color:var(--text)}
+.site-name .sub{color:var(--muted);font-size:12px}
+.site-domains{display:flex;flex-direction:column;gap:2px}
+.site-domains .alias{color:var(--muted);font-size:12px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);color:var(--text-2);font-size:12px;white-space:nowrap}
+.badge.ok{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.badge.warn{border-color:var(--warn-line);background:var(--warn-soft);color:var(--warn)}
+.badge.danger{border-color:var(--danger-line);background:var(--danger-soft);color:var(--danger)}
+.badge.info{border-color:var(--info-line);background:var(--info-soft);color:var(--info)}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+.status-dot.ok{background:var(--accent)}.status-dot.danger{background:var(--danger)}
+.actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.btn,button{border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);min-height:36px;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background .14s,border-color .14s,box-shadow .14s}
+button:hover,.btn:hover{border-color:var(--text-2);background:var(--surface-2)}
+button:active,.btn:active{background:var(--surface-3)}
+button:disabled,.btn:disabled{opacity:.48;cursor:not-allowed}
+.btn.primary,button.primary{border-color:var(--accent);background:var(--accent);color:#fff}
+.btn.primary:hover,button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+html[data-theme=dark] .btn.primary,html[data-theme=dark] button.primary{color:#08130f}
+.btn.danger,button.danger{border-color:var(--danger-line);background:var(--danger-soft);color:var(--danger)}
+.btn.ghost,button.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:0 8px}
+.btn.ghost:hover,button.ghost:hover{background:var(--surface-2);color:var(--text)}
+.mini{min-height:28px;padding:0 9px;font-size:12px;font-weight:550}
+input[type=text],input[type=search],select,textarea{width:100%;min-width:0;min-height:36px;padding:7px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+input:disabled,select:disabled,textarea:disabled{background:var(--surface-3);color:var(--muted);cursor:not-allowed}
+label{display:flex;flex-direction:column;gap:5px;color:var(--text-2);font-size:12px;font-weight:500}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;align-items:end}
+.form-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.hint{color:var(--muted);font-size:12px;margin-top:8px}
+.field-error{color:var(--danger);font-size:12px;margin:0}
+.field-error[hidden]{display:none}
+.empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:24px 16px;border:1px dashed var(--line-strong);border-radius:12px;background:var(--surface-2);color:var(--muted);text-align:center;font-size:13px}
+.empty strong{color:var(--text);font-size:14px}
+.alert{display:flex;align-items:flex-start;gap:8px;padding:10px 12px;margin-bottom:12px;border:1px solid var(--danger-line);border-radius:8px;background:var(--danger-soft);color:var(--danger);font-size:13px}
+.alert.ok{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.alert.warn{border-color:var(--warn-line);background:var(--warn-soft);color:var(--warn)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-size:13px}
+.tab.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 20px}
+.kv>div{display:flex;flex-direction:column;gap:3px;font-size:13px}
+.detail-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.detail-head .meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.detail-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
+/* 向导 */
+.wizard{display:grid;gap:16px}
+.wizard-steps{display:flex;gap:8px;flex-wrap:wrap}
+.wizard-step{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--muted);font-size:12px}
+.wizard-step .n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--surface-3);color:var(--text-2);font-size:11px}
+.wizard-step.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.wizard-step.on .n{background:var(--accent);color:#fff}
+.wizard-step.done{border-color:var(--accent-line);color:var(--accent)}
+.wizard-panel{display:grid;gap:12px}
+.wizard-panel[hidden]{display:none}
+.wizard-nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--line)}
+.wizard-nav .next{margin-left:auto}
+.summary{display:grid;grid-template-columns:130px 1fr;gap:8px 16px;padding:16px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;font-size:13px;margin:0}
+.summary dt{color:var(--muted)}.summary dd{margin:0;overflow-wrap:anywhere}
+.not-implemented{display:flex;align-items:flex-start;gap:12px;padding:12px;border:1px dashed var(--line-strong);border-radius:8px;background:var(--surface-3);color:var(--muted);font-size:13px}
+.not-implemented strong{color:var(--text-2)}
+.not-implemented .badge{margin-left:auto;flex:none}
+.config-path{display:flex;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-bottom:12px}
+textarea.code{min-height:220px;font-family:var(--mono);font-size:12px;line-height:1.55;resize:vertical}
+.dir-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.dir-head .crumb{font-family:var(--mono);font-size:12px;color:var(--muted)}
+/* 弹窗 */
+dialog.modal{width:min(460px,calc(100vw - 32px));padding:0;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-pop)}
+dialog.modal::backdrop{background:rgba(16,24,40,.45)}
+.modal-head{padding:16px 16px 0}.modal-head h2{font-size:16px}
+.modal-body{padding:8px 16px 16px;color:var(--text-2);font-size:13px}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line);background:var(--surface-2);border-radius:0 0 12px 12px}
+.toast{position:fixed;top:64px;right:20px;z-index:40;max-width:420px;padding:10px 12px;border:1px solid var(--accent-line);border-radius:8px;background:var(--surface);color:var(--text-2);box-shadow:var(--shadow-md);font-size:13px;opacity:0;transform:translateY(-6px);transition:.18s}
+.toast.show{opacity:1;transform:none}
+/* 窄屏 */
+.frame.narrow .topbar{flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 16px}
+.frame.narrow .brand{margin-right:auto}
+.frame.narrow .menu-toggle{display:inline-flex;margin-left:0}
+.frame.narrow .who{order:2;margin-left:0;min-height:0}
+.frame.narrow .who .chip{max-width:132px}
+.frame.narrow .brand .ver{display:none}
+.frame.narrow .nav{order:3;display:none;flex-basis:100%;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:2px;padding-top:8px}
+.frame.narrow.nav-open .nav{display:flex}
+.frame.narrow .nav-group{display:block;width:100%}
+.frame.narrow .nav-row{display:flex;width:100%;align-items:center;gap:2px;padding-right:2px;border-radius:8px}
+.frame.narrow .nav-link{display:flex;align-items:center;gap:10px;width:100%;height:36px;min-height:36px;padding:0 12px;border:0;border-radius:8px;justify-content:flex-start;text-align:left}
+.frame.narrow .nav-label{flex:1 1 auto;min-width:0;width:auto}
+.frame.narrow .nav-caret{margin-left:auto;width:28px;height:28px}
+.frame.narrow .nav-row:hover{background:var(--surface-2)}
+.frame.narrow .nav-group.current>.nav-row{position:relative;background:var(--accent-soft)}
+.frame.narrow .nav-group.current>.nav-row::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 2px 2px 0;background:var(--accent)}
+.frame.narrow .nav-menu{display:flex;flex-direction:column;flex-wrap:nowrap;gap:1px;margin:2px 0 8px 12px;padding:0;border:0;background:transparent;box-shadow:none}
+.frame.narrow .nav-menu a{display:flex;align-items:center;height:32px;padding:0 12px;border-radius:8px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+.frame.narrow .nav-menu a:hover{background:var(--surface-2);color:var(--text)}
+.frame.narrow .nav-menu a.on{position:relative;background:var(--accent-soft);color:var(--accent);font-weight:600}
+.frame.narrow .nav-menu a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 2px 2px 0;background:var(--accent)}
+.frame.narrow main{padding:16px}
+.frame.narrow.layout-left .panel-page{padding-left:0}
+.frame.narrow.layout-left .topbar{position:static;inset:auto;width:auto;flex-direction:row;flex-wrap:wrap;align-items:center;padding:10px 16px;border-right:0;border-bottom:1px solid var(--line);overflow:visible}
+.frame.narrow.layout-left .menu-toggle{display:inline-flex}
+.frame.narrow.layout-left .nav{width:100%}
+.frame.narrow.layout-left .who{margin-left:0;flex-direction:row;flex-wrap:wrap;align-items:center}
+.frame.narrow .toolbar{flex-direction:column;align-items:stretch}
+.frame.narrow .toolbar .search{flex-basis:100%}
+.frame.narrow .detail-actions{margin-left:0}
+.frame.narrow .form-grid{grid-template-columns:1fr}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.001ms!important;animation-duration:.001ms!important}}
+</style>
+</head>
+<body>
+<div class="preview-bar">
+  <span class="title">Skiff · 视觉与交互预览</span>
+  <span class="seg" aria-label="预览视图">
+    <button type="button" class="on" data-view="list">网站列表</button>
+    <button type="button" data-view="wizard">创建向导</button>
+    <button type="button" data-view="detail">站点详情</button>
+  </span>
+  <span class="spacer"></span>
+  <span class="seg" aria-label="布局">
+    <button type="button" class="on" data-layout="top">上下布局</button>
+    <button type="button" data-layout="left">侧栏布局</button>
+  </span>
+  <span class="seg" aria-label="屏宽">
+    <button type="button" class="on" data-width="desktop">桌面</button>
+    <button type="button" data-width="narrow">窄屏</button>
+  </span>
+  <button type="button" class="theme-toggle" data-theme-toggle>深色</button>
+</div>
+
+<div class="stage">
+<div class="frame" id="frame">
+  <div class="panel-page">
+    <header class="topbar">
+      <div class="brand"><span class="logo">▚</span> Skiff <span class="ver">v0.1.0</span></div>
+      <button type="button" class="menu-toggle" data-menu-toggle aria-expanded="false" aria-controls="demo-nav">菜单</button>
+      <nav class="nav" id="demo-nav" aria-label="主导航">
+        <a class="nav-link" href="#" data-page-link aria-current="page"><span class="ic" aria-hidden="true">▤</span>概览</a>
+        <div class="nav-group open current" data-nav-group data-nav-key="sites">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="ic" aria-hidden="true">◎</span>网站</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="true" aria-controls="ng-sites" aria-label="展开或收起「网站」"><span aria-hidden="true">▾</span></button>
+          </div>
+          <div class="nav-menu" id="ng-sites" data-nav-menu>
+            <a class="on" href="#" aria-current="page">网站列表</a>
+            <a href="#">运行环境</a>
+            <a href="#">设置</a>
+          </div>
+        </div>
+        <div class="nav-group" data-nav-group data-nav-key="docker">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="ic" aria-hidden="true">⬡</span>Docker</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-docker" aria-label="展开或收起「Docker」"><span aria-hidden="true">▾</span></button>
+          </div>
+          <div class="nav-menu" id="ng-docker" data-nav-menu hidden>
+            <a href="#">容器</a><a href="#">镜像</a><a href="#">网络</a><a href="#">存储卷</a>
+          </div>
+        </div>
+        <a class="nav-link" href="#" data-page-link><span class="ic" aria-hidden="true">◧</span>插件中心</a>
+        <div class="nav-group" data-nav-group data-nav-key="tools">
+          <div class="nav-row">
+            <button type="button" class="nav-link nav-label" data-nav-label><span class="ic" aria-hidden="true">⚒</span>工具</button>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-tools" aria-label="展开或收起「工具」"><span aria-hidden="true">▾</span></button>
+          </div>
+          <div class="nav-menu" id="ng-tools" data-nav-menu hidden>
+            <a href="#">文件</a><a href="#">计划任务</a><a href="#">终端</a>
+          </div>
+        </div>
+        <div class="nav-group" data-nav-group data-nav-key="settings">
+          <div class="nav-row">
+            <a class="nav-link nav-label" href="#" data-page-link><span class="ic" aria-hidden="true">⚙</span>设置</a>
+            <button type="button" class="nav-caret" data-nav-toggle aria-expanded="false" aria-controls="ng-settings" aria-label="展开或收起「设置」"><span aria-hidden="true">▾</span></button>
+          </div>
+          <div class="nav-menu" id="ng-settings" data-nav-menu hidden>
+            <a href="#">安全设置</a><a href="#">审计日志</a><a href="#">菜单设置</a>
+          </div>
+        </div>
+      </nav>
+      <div class="who"><span class="chip">admin · admin</span><span class="meta">v0.1.0 · Docker 可用</span><button type="button" class="theme-toggle" data-theme-toggle>深色</button><button type="button" class="btn ghost mini">退出</button></div>
+    </header>
+    <div class="subnav" data-subnav aria-hidden="true"><div class="subnav-inner"></div></div>
+
+    <main>
+      <!-- 列表 -->
+      <div data-view-panel="list">
+        <div class="page-head">
+          <h1>网站</h1><span class="sub">3 个站点</span>
+          <a class="btn primary" href="#" data-noop>新建网站</a>
+        </div>
+        <div class="alert ok" data-demo-alert hidden>站点已创建</div>
+        <div class="toolbar">
+          <div class="search">
+            <input type="search" placeholder="搜索域名、根目录或 PHP 版本" aria-label="搜索站点">
+            <button class="btn" type="button">搜索</button>
+          </div>
+          <span class="sep"></span>
+          <button class="btn" type="button" data-bulk>批量启动</button>
+          <button class="btn" type="button" data-bulk>批量停止</button>
+          <button class="btn danger" type="button" data-confirm-demo="将删除所选站点：nginx vhost 与站点目录都会被移除，不可撤销。确认继续？">批量删除</button>
+        </div>
+        <section class="panel flush">
+          <h2>站点列表</h2>
+          <div class="table-wrap">
+            <table class="grid">
+              <thead><tr><th>名称</th><th>域名</th><th>状态</th><th>PHP 版本</th><th>证书</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><div class="site-name"><a href="#" data-noop>demo.local <span class="badge ok">默认</span></a><span class="sub mono">/www/sites/demo.local</span></div></td>
+                  <td><div class="site-domains"><span class="mono">demo.local</span><span class="alias">别名：www.demo.local</span></div></td>
+                  <td><span class="badge ok"><span class="status-dot ok"></span>运行中</span></td>
+                  <td class="mono">8.5</td><td><span class="badge">未配置</span></td>
+                  <td><div class="actions nowrap">
+                    <button class="mini" type="button">停止</button><button class="mini" type="button" data-noop>取消默认</button>
+                    <button class="btn ghost mini" type="button" data-noop>日志</button><button class="btn ghost mini" type="button" data-noop>访问</button>
+                    <button class="mini danger" type="button" data-confirm-demo="删除站点 demo.local？将删除 nginx vhost 与站点目录 /www/sites/demo.local，不可撤销。确认继续？">删除</button>
+                  </div></td>
+                </tr>
+                <tr>
+                  <td><div class="site-name"><a href="#" data-noop>blog.example.com</a><span class="sub mono">/www/sites/blog.example.com</span></div></td>
+                  <td><div class="site-domains"><span class="mono">blog.example.com</span><span class="alias">无别名</span></div></td>
+                  <td><span class="badge"><span class="status-dot"></span>已停止</span></td>
+                  <td class="mono">8.5</td><td><span class="badge">未配置</span></td>
+                  <td><div class="actions nowrap">
+                    <button class="mini" type="button">启动</button><button class="mini" type="button">设为默认</button>
+                    <button class="btn ghost mini" type="button" data-noop>日志</button><button class="btn ghost mini" type="button" data-noop>访问</button>
+                    <button class="mini danger" type="button" data-confirm-demo="删除站点 blog.example.com？将删除 nginx vhost 与站点目录 /www/sites/blog.example.com，不可撤销。确认继续？">删除</button>
+                  </div></td>
+                </tr>
+                <tr>
+                  <td><div class="site-name"><a href="#" data-noop>shop.example.cn</a><span class="sub mono">/www/sites/shop.example.cn</span></div></td>
+                  <td><div class="site-domains"><span class="mono">shop.example.cn</span><span class="alias">别名：m.shop.example.cn</span></div></td>
+                  <td><span class="badge ok"><span class="status-dot ok"></span>运行中</span></td>
+                  <td class="mono">8.5</td><td><span class="badge">未配置</span></td>
+                  <td><div class="actions nowrap">
+                    <button class="mini" type="button">停止</button><button class="mini" type="button">设为默认</button>
+                    <button class="btn ghost mini" type="button" data-noop>日志</button><button class="btn ghost mini" type="button" data-noop>访问</button>
+                    <button class="mini danger" type="button" data-confirm-demo="删除站点 shop.example.cn？将删除 nginx vhost 与站点目录 /www/sites/shop.example.cn，不可撤销。确认继续？">删除</button>
+                  </div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- 向导 -->
+      <div data-view-panel="wizard" hidden>
+        <div class="page-head"><h1>新建网站</h1><span class="sub">三步完成：域名与目录 → PHP 版本 → 确认</span><button class="btn ghost" type="button" data-view="list">返回网站列表</button></div>
+        <section class="panel">
+          <div class="wizard" data-wizard>
+            <div class="wizard-steps">
+              <span class="wizard-step" data-wizard-step="1"><span class="n">1</span>域名与目录</span>
+              <span class="wizard-step" data-wizard-step="2"><span class="n">2</span>PHP 版本</span>
+              <span class="wizard-step" data-wizard-step="3"><span class="n">3</span>确认</span>
+            </div>
+            <div class="wizard-panel" data-wizard-panel="1">
+              <h2>域名与根目录</h2>
+              <p class="hint" style="margin:0">主域名用于 vhost 与目录命名；别名会一并写入 server_name。</p>
+              <div class="form-grid">
+                <label>主域名
+                  <input name="domain" placeholder="example.com" value="example.com">
+                  <p class="field-error" data-error-for="domain" hidden></p>
+                </label>
+                <label>别名域名（可选，逗号或空格分隔）
+                  <input name="aliases" placeholder="www.example.com, api.example.com" value="www.example.com">
+                  <p class="field-error" data-error-for="aliases" hidden></p>
+                </label>
+                <label>根目录
+                  <input name="root_dir" placeholder="/www/sites/example.com" value="/www/sites/example.com">
+                  <p class="field-error" data-error-for="root_dir" hidden></p>
+                </label>
+              </div>
+              <div class="wizard-nav"><button class="btn primary next" type="button" data-wizard-next>下一步：选择 PHP</button></div>
+            </div>
+            <div class="wizard-panel" data-wizard-panel="2" hidden>
+              <h2>PHP 版本</h2>
+              <div class="form-grid">
+                <label>PHP 版本<select name="php_version"><option>PHP 8.5（当前运行环境）</option></select></label>
+              </div>
+              <div class="not-implemented"><div><strong>数据库</strong><br>建站向导中的数据库创建尚未实现，下一阶段接入。</div><span class="badge warn">未实现</span></div>
+              <div class="wizard-nav"><button class="btn ghost" type="button" data-wizard-back>上一步</button><button class="btn primary next" type="button" data-wizard-next>下一步：确认</button></div>
+            </div>
+            <div class="wizard-panel" data-wizard-panel="3" hidden>
+              <h2>确认创建</h2>
+              <dl class="summary">
+                <dt>主域名</dt><dd class="mono" data-summary="domain">—</dd>
+                <dt>别名</dt><dd class="mono" data-summary="aliases">—</dd>
+                <dt>根目录</dt><dd class="mono" data-summary="root">—</dd>
+                <dt>PHP 版本</dt><dd class="mono" data-summary="php">—</dd>
+                <dt>证书</dt><dd>未配置（HTTPS 下一阶段接入）</dd>
+              </dl>
+              <div class="not-implemented"><div><strong>数据库与 SSL</strong><br>这两步已明确标注为未实现，不会创建数据库或申请证书。</div><span class="badge warn">未实现</span></div>
+              <div class="wizard-nav"><button class="btn ghost" type="button" data-wizard-back>上一步</button><button class="btn primary next" type="button" data-demo-create>创建网站</button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 详情 -->
+      <div data-view-panel="detail" hidden>
+        <div class="detail-head">
+          <div><h1>demo.local</h1><div class="meta"><span class="badge ok"><span class="status-dot ok"></span>运行中</span><span class="badge info">默认站点</span><span class="mono">/www/sites/demo.local</span><span>创建于 2026-11-04 10:20</span></div></div>
+          <div class="detail-actions"><button class="btn" type="button">访问</button><button class="btn" type="button" data-detail-tab="logs">日志</button><button class="btn" type="button">停止</button><button class="btn danger" type="button" data-confirm-demo="删除站点 demo.local？将删除 nginx vhost 与站点目录 /www/sites/demo.local，不可撤销。确认继续？">删除站点</button><button class="btn ghost" type="button" data-view="list">返回列表</button></div>
+        </div>
+        <nav class="tabs">
+          <button class="tab on" type="button" data-detail-tab="overview">概览</button>
+          <button class="tab" type="button" data-detail-tab="domains">域名</button>
+          <button class="tab" type="button" data-detail-tab="config">配置文件</button>
+          <button class="tab" type="button" data-detail-tab="logs">日志</button>
+          <button class="tab" type="button" data-detail-tab="dir">目录</button>
+          <button class="tab" type="button" data-detail-tab="ssl">SSL</button>
+        </nav>
+        <section class="panel" data-detail-panel="overview">
+          <h2>站点概览</h2>
+          <div class="kv">
+            <div><span class="muted">主域名</span><span class="mono">demo.local</span></div>
+            <div><span class="muted">别名</span><span class="mono">www.demo.local</span></div>
+            <div><span class="muted">根目录</span><span class="mono">/www/sites/demo.local</span></div>
+            <div><span class="muted">PHP 版本</span><span class="mono">8.5</span></div>
+            <div><span class="muted">状态</span><span>运行中</span></div>
+            <div><span class="muted">默认站点</span><span>是</span></div>
+            <div><span class="muted">证书</span><span>未配置（HTTPS 下一阶段接入）</span></div>
+            <div><span class="muted">访问入口</span><span class="mono">http://demo.local/</span></div>
+          </div>
+        </section>
+        <section class="panel" data-detail-panel="domains" hidden>
+          <h2>域名</h2>
+          <table class="grid"><thead><tr><th>类型</th><th>域名</th><th>用途</th></tr></thead><tbody>
+            <tr><td><span class="badge info">主域名</span></td><td class="mono">demo.local</td><td>站点目录与 vhost 命名</td></tr>
+            <tr><td><span class="badge">别名</span></td><td class="mono">www.demo.local</td><td>写入 vhost server_name</td></tr>
+          </tbody></table>
+          <p class="hint">别名在创建向导中设置；单独增删别名的界面在下一阶段接入。</p>
+        </section>
+        <section class="panel" data-detail-panel="config" hidden>
+          <h2>nginx 配置文件</h2>
+          <div class="config-path"><span class="mono">/www/nginx/conf.d/demo.local.conf</span><span class="badge ok">已启用</span></div>
+          <label>vhost 内容<textarea class="code" spellcheck="false">server {
+    listen 80;
+    server_name demo.local www.demo.local;
+    root /www/sites/demo.local/public;
+
+    index index.php index.html;
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/www/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+}</textarea></label>
+          <div class="form-actions"><button class="btn primary" type="button" data-confirm-demo="保存后将重载 nginx；如果重载失败会回滚到保存前内容。确认保存？">保存并重载 nginx</button><span class="hint" style="margin:0">保存失败会自动回滚，并在页面顶部给出失败原因。</span></div>
+        </section>
+        <section class="panel" data-detail-panel="logs" hidden>
+          <h2>日志过滤</h2>
+          <div class="form-grid"><label>关键字<input type="search" placeholder="例如 404 或某个 IP"></label><div class="form-actions" style="margin:0"><button class="btn primary" type="button">过滤</button></div></div>
+          <h2 style="margin-top:20px">访问日志（最新 200 行，时间倒序）</h2>
+          <textarea class="code" readonly style="min-height:240px">10.10.15.9 - - [04/Nov/2026:10:29:11 +0800] "GET / HTTP/1.1" 200 4823
+10.10.15.9 - - [04/Nov/2026:10:29:12 +0800] "GET /index.php HTTP/1.1" 200 512
+10.10.15.9 - - [04/Nov/2026:10:29:14 +0800] "GET /favicon.ico HTTP/1.1" 404 153</textarea>
+        </section>
+        <section class="panel" data-detail-panel="dir" hidden>
+          <h2>站点目录（只读）</h2>
+          <div class="dir-head"><button class="btn mini" type="button">根目录</button><span class="crumb">/www/sites/demo.local</span></div>
+          <table class="grid"><thead><tr><th>名称</th><th>类型</th><th class="num">大小</th><th>修改时间</th></tr></thead><tbody>
+            <tr><td class="mono">public/</td><td><span class="badge">目录</span></td><td class="num mono">—</td><td class="mono muted">2026-11-04 10:20</td></tr>
+            <tr><td class="mono">logs/</td><td><span class="badge">目录</span></td><td class="num mono">—</td><td class="mono muted">2026-11-04 10:20</td></tr>
+          </tbody></table>
+        </section>
+        <section class="panel" data-detail-panel="ssl" hidden>
+          <h2>SSL 证书</h2>
+          <div class="not-implemented"><div><strong>SSL 未启用，下一阶段接入</strong><br>当前 vhost 只监听 80 明文端口，没有证书、没有 443、也没有强制跳转。本页不会提供可点击的假开关。</div><span class="badge warn">未实现</span></div>
+          <div class="form-actions"><button class="btn" type="button" disabled>申请证书（未实现）</button><button class="btn" type="button" disabled>强制 HTTPS（未实现）</button></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</div>
+
+<dialog class="modal" id="confirm">
+  <div class="modal-head"><h2>请确认操作</h2></div>
+  <p class="modal-body" id="confirm-msg"></p>
+  <div class="modal-actions"><button class="btn ghost" type="button" data-cancel>取消</button><button class="btn danger" type="button" data-ok>确认执行</button></div>
+</dialog>
+
+<script>
+(function(){
+  var frame=document.getElementById('frame');
+  var root=document.documentElement;
+  // 主题
+  function theme(v){root.setAttribute('data-theme',v);document.querySelectorAll('[data-theme-toggle]').forEach(function(b){b.textContent=v==='dark'?'浅色':'深色';});}
+  document.querySelectorAll('[data-theme-toggle]').forEach(function(b){b.addEventListener('click',function(){theme(root.getAttribute('data-theme')==='dark'?'light':'dark');});});
+
+  // 预览布局 / 屏宽 / 视图
+  document.querySelectorAll('[data-layout]').forEach(function(b){b.addEventListener('click',function(){
+    document.querySelectorAll('[data-layout]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
+    frame.classList.toggle('layout-left',b.dataset.layout==='left');frame.classList.toggle('layout-top',b.dataset.layout==='top');
+    placeMenus();
+  });});
+  document.querySelectorAll('[data-width]').forEach(function(b){b.addEventListener('click',function(){
+    document.querySelectorAll('[data-width]').forEach(function(x){x.classList.remove('on');});b.classList.add('on');
+    frame.classList.toggle('narrow',b.dataset.width==='narrow');
+    placeMenus();
+  });});
+  function showView(name){
+    document.querySelectorAll('[data-view-panel]').forEach(function(p){p.hidden=p.dataset.viewPanel!==name;});
+    document.querySelectorAll('[data-view]').forEach(function(b){b.classList.toggle('on',b.dataset.view===name);});
+  }
+  document.addEventListener('click',function(e){
+    var v=e.target.closest&&e.target.closest('[data-view]');
+    if(v){showView(v.dataset.view);}
+    if(e.target.closest('[data-noop]')||e.target.closest('[data-page-link]'))e.preventDefault();
+  });
+
+  // 导航：持久手风琴 —— 只有「切到另一个分组」或 Escape 才收起；点内容区/空白不关闭
+  var navItems=Array.prototype.slice.call(document.querySelectorAll('[data-nav-group]')).map(function(g){
+    return {group:g,key:g.dataset.navKey,toggle:g.querySelector('[data-nav-toggle]'),menu:g.querySelector('[data-nav-menu]')};
+  });
+  var subnav=document.querySelector('[data-subnav]'),subnavInner=subnav.querySelector('.subnav-inner');
+  var NAV_KEY='skiff.preview.nav';
+  function readNav(){try{return sessionStorage.getItem(NAV_KEY);}catch(e){return null;}}
+  function writeNav(k){try{if(k)sessionStorage.setItem(NAV_KEY,k);else sessionStorage.removeItem(NAV_KEY);}catch(e){}}
+  function barMode(){return !frame.classList.contains('narrow')&&!frame.classList.contains('layout-left');}
+  function setOpen(it,open){
+    if(open){it.menu.removeAttribute('hidden');it.group.classList.add('open');}
+    else{it.menu.setAttribute('hidden','');it.group.classList.remove('open');}
+    it.toggle.setAttribute('aria-expanded',open?'true':'false');
+  }
+  function syncSubnav(){
+    var openIt=navItems.filter(function(i){return i.group.classList.contains('open');})[0];
+    subnav.classList.toggle('open',barMode()&&!!openIt);
+    subnav.setAttribute('aria-hidden',(barMode()&&openIt)?'false':'true');
+  }
+  // key=null 表示全部收起；'none' 让刷新后也保持收起
+  function openKey(key){
+    var target=null;
+    navItems.forEach(function(it){if(it.key===key)target=it;else setOpen(it,false);});
+    if(target)setOpen(target,true);
+    writeNav(target?key:'none');
+    syncSubnav();
+    return target;
+  }
+  // 上下布局把二级菜单搬进独立全宽栏；侧栏/抽屉则放回分组内
+  function placeMenus(){
+    var inBar=barMode();
+    navItems.forEach(function(it){if(inBar)subnavInner.appendChild(it.menu);else it.group.appendChild(it.menu);});
+    syncSubnav();
+  }
+  function toggleGroup(it){
+    if(it.group.classList.contains('open'))openKey(null);
+    else openKey(it.key);
+  }
+  navItems.forEach(function(it){
+    it.toggle.addEventListener('click',function(){toggleGroup(it);});
+    // 无自身页面的一级：标签按钮等同展开；有自身页面的一级用 <a>，点标签跳转
+    var label=it.group.querySelector('[data-nav-label]');
+    if(label&&label.tagName==='BUTTON')label.addEventListener('click',function(){toggleGroup(it);});
+  });
+  var drawerBtn=document.querySelector('[data-menu-toggle]');
+  drawerBtn.addEventListener('click',function(e){var on=frame.classList.toggle('nav-open');e.currentTarget.setAttribute('aria-expanded',on?'true':'false');});
+  document.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;
+    var openIt=navItems.filter(function(i){return i.group.classList.contains('open');})[0];
+    if(openIt){openKey(null);openIt.toggle.focus();}
+    else if(frame.classList.contains('nav-open')){frame.classList.remove('nav-open');drawerBtn.setAttribute('aria-expanded','false');drawerBtn.focus();}
+  });
+  // 初始：优先恢复会话记忆，其次展开「当前页所在分组」
+  placeMenus();
+  var restored=readNav();
+  var currentGroup=document.querySelector('[data-nav-group].current');
+  openKey(restored==='none'?null:(restored||(currentGroup&&currentGroup.dataset.navKey)||'sites'));
+
+  // 确认弹窗
+  var dlg=document.getElementById('confirm'),msg=document.getElementById('confirm-msg'),pending=null;
+  document.addEventListener('click',function(e){
+    var c=e.target.closest&&e.target.closest('[data-confirm-demo]');
+    if(c){e.preventDefault();msg.textContent=c.dataset.confirmDemo;pending=c;dlg.showModal();}
+  });
+  dlg.querySelector('[data-ok]').addEventListener('click',function(){dlg.close();toast('操作已确认（预览不会真正执行）');});
+  dlg.querySelector('[data-cancel]').addEventListener('click',function(){dlg.close();});
+  function toast(t){var el=document.createElement('div');el.className='toast show';el.textContent=t;document.body.appendChild(el);setTimeout(function(){el.classList.remove('show');},3600);setTimeout(function(){el.remove();},4100);}
+
+  // 向导
+  var wizard=document.querySelector('[data-wizard]');
+  var panels=Array.prototype.slice.call(wizard.querySelectorAll('[data-wizard-panel]'));
+  var steps=Array.prototype.slice.call(wizard.querySelectorAll('[data-wizard-step]'));
+  var cur=1;
+  function field(n){return wizard.querySelector('[name="'+n+'"]');}
+  function err(n,t){var e=wizard.querySelector('[data-error-for="'+n+'"]');if(!e)return;if(t){e.textContent=t;e.removeAttribute('hidden');}else{e.textContent='';e.setAttribute('hidden','');}}
+  function validDomain(v){return /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(v)&&!v.includes('..');}
+  function summary(){var m={domain:field('domain').value.trim(),aliases:field('aliases').value.trim()||'无',root:field('root_dir').value.trim(),php:field('php_version').value};Object.keys(m).forEach(function(k){var e=wizard.querySelector('[data-summary="'+k+'"]');if(e)e.textContent=m[k]||'—';});}
+  function show(n){
+    cur=n;panels.forEach(function(p){p.hidden=Number(p.dataset.wizardPanel)!==n;});
+    steps.forEach(function(s){var i=Number(s.dataset.wizardStep);s.classList.toggle('on',i===n);s.classList.toggle('done',i<n);});
+    if(n===3)summary();
+  }
+  wizard.addEventListener('click',function(e){
+    if(e.target.closest('[data-wizard-next]')){
+      if(cur===1){
+        var d=field('domain').value.trim(),a=field('aliases').value.trim(),r=field('root_dir').value.trim(),ok=true;
+        if(!validDomain(d)){err('domain','域名只能包含字母、数字、点和中划线，且不能以符号开头或结尾');ok=false;}else err('domain','');
+        if(a){var bad=a.split(/[\s,，]+/).filter(function(x){return x&&!validDomain(x);});if(bad.length){err('aliases','别名域名格式不正确：'+bad.join('、'));ok=false;}else err('aliases','');}
+        if(!r.startsWith('/')||r.includes('..')){err('root_dir','根目录必须是以 / 开头的绝对路径，且不能包含 ..');ok=false;}else err('root_dir','');
+        if(!ok)return;
+      }
+      show(Math.min(cur+1,panels.length));
+    }
+    if(e.target.closest('[data-wizard-back]'))show(Math.max(cur-1,1));
+    if(e.target.closest('[data-demo-create]')){toast('站点已创建（预览）');showView('list');}
+  });
+
+  // 详情标签
+  document.addEventListener('click',function(e){
+    var t=e.target.closest&&e.target.closest('[data-detail-tab]');
+    if(t){
+      var name=t.dataset.detailTab;
+      document.querySelectorAll('[data-detail-panel]').forEach(function(p){p.hidden=p.dataset.detailPanel!==name;});
+      document.querySelectorAll('[data-detail-tab]').forEach(function(b){b.classList.toggle('on',b.dataset.detailTab===name);});
+    }
+  });
+})();
+</script>
+</body>
+</html>

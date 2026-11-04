@@ -58,8 +58,15 @@ pub fn session_cookie_name(dev_http: bool) -> &'static str {
     }
 }
 
+/// 会话 Cookie：`Path=/; HttpOnly; SameSite=Lax; Max-Age=...; Secure`。
+///
+/// `SameSite` 必须是 **Lax** 而不是 Strict：面板的正常入口是从聊天/邮件/收藏里的
+/// 链接点进来的跨站顶层导航，Strict 会让浏览器在这类导航上**不回传**会话 Cookie，
+/// 服务端因此认不出已登录用户，登录成功后立刻被踢回登录页（curl 不受 SameSite
+/// 约束，所以命令行测不出来）。Lax 仍然拦截跨站 POST/PUT/DELETE；写操作另有
+/// `check_csrf` 独立校验，因此不因这次放宽而削弱 CSRF 防护。
 pub fn session_cookie(name: &str, token: &str, max_age: i64, secure: bool) -> String {
-    let mut c = format!("{name}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}");
+    let mut c = format!("{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
     if secure {
         c.push_str("; Secure");
     }
@@ -67,7 +74,7 @@ pub fn session_cookie(name: &str, token: &str, max_age: i64, secure: bool) -> St
 }
 
 pub fn clear_cookie(name: &str, secure: bool) -> String {
-    let mut c = format!("{name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+    let mut c = format!("{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
     if secure {
         c.push_str("; Secure");
     }
@@ -83,7 +90,9 @@ mod tests {
         let c = session_cookie("__Host-skiff_session", "tok", 600, true);
         assert!(c.contains("Secure"));
         assert!(c.contains("HttpOnly"));
-        assert!(c.contains("SameSite=Strict"));
+        // Strict 会在跨站顶层导航上丢弃 Cookie，导致登录后立刻被打回登录页。
+        assert!(c.contains("SameSite=Lax"));
+        assert!(!c.contains("SameSite=Strict"));
         assert!(c.contains("Path=/"));
         assert!(!session_cookie("skiff_dev_session", "tok", 600, false).contains("Secure"));
         assert_eq!(session_cookie_name(true), "skiff_dev_session");

@@ -7,8 +7,13 @@
 ```
 /usr/local/bin/skiff           # 单二进制（amd64/arm64）
 /etc/skiff/config.toml         # 可选配置文件
-/var/lib/skiff/                # 唯一数据根 SKIFF_DATA_DIR
-  skiff.db / plugins/ / logs/ / initial-admin.txt / backup/
+/www/skiff/                    # 唯一数据根 SKIFF_DATA_DIR
+  skiff.db / plugins/ / backup/ / waf/rules/
+/www/sites/<域名>/public       # 站点根（容器内同路径 /www/sites/...）
+/www/nginx/conf.d              # 默认站点 + 兜底 404 + 各站点 vhost
+/www/logs/nginx                # <域名>.access.log / .error.log
+/www/certs/<域名>              # 证书预留目录（HTTPS 未接）
+/www/php/php-fpm.sock          # PHP-FPM unix socket（不暴露 9000）
 /run/skiff/                    # root:skiff-plugins 0711；kernel.sock 0660；plugins/{id}/ 0700
 skiff.service                  # systemd unit：Type=simple, Restart=always
 ```
@@ -27,9 +32,11 @@ skiff.service                  # systemd unit：Type=simple, Restart=always
 
 ## 5.2 数据、配置与升级
 
-- 唯一数据根 `/var/lib/skiff`：`skiff.db`、`plugins/`、`logs/`、`initial-admin.txt`、`backup/`。配置文件唯一规范路径是 `/etc/skiff/config.toml`，不在数据根重复维护；可选 Docker 形态以环境变量为主。
+- 唯一数据根 `/www/skiff`：`skiff.db`、`plugins/`、`initial-admin.txt`、`backup/`、WAF 规则预留目录。站点寄宿根单独为 `/www`（`sites/`、`nginx/conf.d`、`logs/nginx`、`certs/`、`php/`），由 `web_root` 配置项决定，默认 `/www`。配置文件唯一规范路径是 `/etc/skiff/config.toml`，不在数据根重复维护；可选 Docker 形态以环境变量为主。
+- 权限：`/www/skiff` 与 `plugins/` 0711（可穿越不可列）、`backup/` 0700、库与口令文件 0600；`/www/{sites,nginx,logs,certs,php}` 0755，供容器内非 root 进程读取。
+- 网站运行环境为 **host 网络**：nginx/OpenResty 直接监听宿主 80（未来 443），PHP-FPM 只监听 `/www/php/php-fpm.sock`；容器日志驱动 `local` + `max-size=10m`，站点 access/error 落 `/www/logs/nginx` 并由内核轮转。
 
-**插件存储分层**（`/var/lib/skiff/plugins/{id}/`；`versions/` 仅 root 写入、插件只读，`data/`/`cache/`/`run/` 插件可写；landlock 按层授权属设计目标，当前未实现）：
+**插件存储分层**（`/www/skiff/plugins/{id}/`；`versions/` 仅 root 写入、插件只读，`data/`/`cache/`/`run/` 插件可写；landlock 按层授权属设计目标，当前未实现）：
 
 ```
 versions/   # 代码：root 写入、插件只读，N-1 回滚（§4.5）
@@ -50,9 +57,9 @@ run/        # 运行时临时（锁/临时文件），重启即清
 - **插件配置两轨**：`config_schema` 声明项（含 `secret`）**内核代管于 `skiff.db`**——UI 统一渲染表单、卸载可导出；插件运行时经一次性 RPC 或继承 FD 取值，**secret 不写启动环境、不落插件可写目录**。插件管理的工作对象配置（如 Nginx 的 `nginx.conf`）属 `data/` 或被管理资源本身，不进 skiff.db。
 - **配置优先级：环境变量 > `/etc/skiff/config.toml` > 内置默认**。
 - **secret 配置项**：MVP 明文入 `skiff.db`（0600 root，插件降权后不可读，§4.2），运行时经一次性 RPC/继承 FD 交付插件、不落插件可写目录——**已知限制**，后续可加密落盘。
-- **首启流程**：生成随机管理员密码写 `/var/lib/skiff/initial-admin.txt`（0600），首次登录强制改密，改密成功后删除该文件；安全入口随机前缀首启生成并持久化到库。
+- **首启流程**：生成随机管理员密码写 `/www/skiff/initial-admin.txt`（0600），首次登录强制改密，改密成功后删除该文件；安全入口随机前缀首启生成并持久化到库。
 - **审计**：入 SQLite（操作者/IP/动作/结果/时间）；文件日志按大小轮转，保留 N 份（默认 5）。
-- **备份**（升级前执行）：**当前实现不停止插件**——`VACUUM INTO` 保证库自身一致，但插件 `data/` 是直接复制，写入中的文件可能不一致；需要强一致时先停服再备（这是已实现的现状，不是本段原定的「先停插件再备份」）。方案目标仍是先停插件，未做到就写清楚，不产“成功”假象。SQLite 用 `VACUUM INTO /var/lib/skiff/backup/skiff-<ts>.db` 或 rusqlite backup API——**禁止对活动库直接 tar**（WAL 下拿到的是不一致快照）；插件停止后复制 `data/`，`cache/`/`run/` 不卷入。需要热备的后续插件可实现版本化 `backup`/`restore` RPC，但 MVP 不在线复制活动数据。备份目录 0700，记录版本与校验和，保留最近 3 份；M5 必须做真实恢复演练，备份成功不等于可恢复。
+- **备份**（升级前执行）：**当前实现不停止插件**——`VACUUM INTO` 保证库自身一致，但插件 `data/` 是直接复制，写入中的文件可能不一致；需要强一致时先停服再备（这是已实现的现状，不是本段原定的「先停插件再备份」）。方案目标仍是先停插件，未做到就写清楚，不产“成功”假象。SQLite 用 `VACUUM INTO /www/skiff/backup/skiff-<ts>.db` 或 rusqlite backup API——**禁止对活动库直接 tar**（WAL 下拿到的是不一致快照）；插件停止后复制 `data/`，`cache/`/`run/` 不卷入。需要热备的后续插件可实现版本化 `backup`/`restore` RPC，但 MVP 不在线复制活动数据。备份目录 0700，记录版本与校验和，保留最近 3 份；M5 必须做真实恢复演练，备份成功不等于可恢复。
 
 ## 5.3 与 1Panel / 宝塔同机共存
 

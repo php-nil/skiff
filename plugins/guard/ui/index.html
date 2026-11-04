@@ -4,23 +4,54 @@
 <meta charset="utf-8">
 <title>容器守护</title>
 <style>
-  :root { color-scheme: dark; }
+  /* 默认深色：旧面板不会下发主题，保持原有观感；
+     面板父页面 postMessage 下发 `light` 时由 app.js 写到 <html data-theme>。 */
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-btn-hover: #232c3c;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-card-line: #202a38;
+    --ui-ok: #7ee787;
+    --ui-warn: #f0b429;
+    --ui-bad: #ff7b72;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-btn-hover: #f0f2f5;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-card-line: #e4e7ec;
+    --ui-ok: #15803d;
+    --ui-warn: #b54708;
+    --ui-bad: #b42318;
+  }
   body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-         background: #0b0d11; color: #d7dee8; }
+         background: var(--ui-bg); color: var(--ui-text); }
   h1 { font-size: 18px; margin: 0 0 12px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-  button { background: #1b2230; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+  button { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
            padding: 5px 12px; cursor: pointer; }
-  button:hover { background: #232c3c; }
-  .muted { color: #8a97a8; font-size: 12px; }
+  button:hover { background: var(--ui-btn-hover); }
+  .muted { color: var(--ui-muted); font-size: 12px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
-  .card { background: #121722; border: 1px solid #202a38; border-radius: 8px; padding: 10px 12px; }
+  .card { background: var(--ui-surface); border: 1px solid var(--ui-card-line); border-radius: 8px; padding: 10px 12px; }
   .card b { display: block; font-size: 20px; margin-top: 4px; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1c2532; font-size: 13px; }
-  th { color: #8a97a8; font-weight: 500; }
-  code { background: #121722; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .ok { color: #7ee787; } .warn { color: #f0b429; } .bad { color: #ff7b72; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--ui-line-soft); font-size: 13px; }
+  th { color: var(--ui-muted); font-weight: 500; }
+  code { background: var(--ui-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .ok { color: var(--ui-ok); } .warn { color: var(--ui-warn); } .bad { color: var(--ui-bad); }
   #msg { min-height: 20px; font-size: 12px; }
 </style>
 </head>
@@ -32,21 +63,25 @@
   <button id="tick">立即巡检</button>
   <span id="msg" class="muted"></span>
 </div>
-<div class="cards">
-  <div class="card"><span class="muted">本小时重启次数</span><b id="hour-count">-</b></div>
-  <div class="card"><span class="muted">已授权对象</span><b id="objects">-</b></div>
-  <div class="card"><span class="muted">演练模式</span><b id="dry-run">-</b></div>
+<div data-view="containers">
+  <div class="cards">
+    <div class="card"><span class="muted">本小时重启次数</span><b id="hour-count">-</b></div>
+    <div class="card"><span class="muted">已授权对象</span><b id="objects">-</b></div>
+    <div class="card"><span class="muted">演练模式</span><b id="dry-run">-</b></div>
+  </div>
+  <h2 style="font-size:14px">容器重启记录</h2>
+  <table>
+    <thead><tr><th>容器</th><th>最近重启</th><th>累计</th></tr></thead>
+    <tbody id="containers"><tr><td colspan="3" class="muted">暂无记录</td></tr></tbody>
+  </table>
 </div>
-<h2 style="font-size:14px">容器重启记录</h2>
-<table>
-  <thead><tr><th>容器</th><th>最近重启</th><th>累计</th></tr></thead>
-  <tbody id="containers"><tr><td colspan="3" class="muted">暂无记录</td></tr></tbody>
-</table>
-<h2 style="font-size:14px;margin-top:16px">最近事件</h2>
-<table>
-  <thead><tr><th>时间</th><th>容器</th><th>结果</th><th>详情</th></tr></thead>
-  <tbody id="events"><tr><td colspan="4" class="muted">暂无事件</td></tr></tbody>
-</table>
+<div data-view="events">
+  <h2 style="font-size:14px;margin-top:16px">最近事件</h2>
+  <table>
+    <thead><tr><th>时间</th><th>容器</th><th>结果</th><th>详情</th></tr></thead>
+    <tbody id="events"><tr><td colspan="4" class="muted">暂无事件</td></tr></tbody>
+  </table>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

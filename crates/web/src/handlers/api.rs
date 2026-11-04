@@ -125,7 +125,7 @@ pub async fn restart_container(
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
     let result = state
         .docker()
-        .execute(Verb::Restart, Some(&obj))
+        .execute(Verb::Restart, Some(&obj), skiff_docker::DockerParams::None)
         .await
         .map(|_| ());
     let ip = handlers::client_ip(&state, &parts);
@@ -194,7 +194,10 @@ pub async fn plugin_ui_index(
             items.push(json!({
                 "plugin": p.id,
                 "label": entry.label,
-                "url": format!("/plugins/{}/ui/{}", p.id, entry.path),
+                "url": format!(
+                    "/{}/plugins/{}/ui/{}",
+                    state.cfg.entry_prefix, p.id, entry.path
+                ),
             }));
         }
     }

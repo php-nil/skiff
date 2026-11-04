@@ -7,7 +7,7 @@ name = "文件管理"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.0"
+api = "1.1"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -23,6 +23,15 @@ verbs = ["read", "write", "list", "mkdir", "remove", "rename"]
 [[ui]]
 label = "文件管理"
 path = "index.html"
+
+# 单视图工具：只声明二级，不造假的三级标签（契约 §7.3）。
+[[menu]]
+id = "files"
+parent = "tools"
+label = "文件管理"
+order = 10
+icon = "folder"
+target = { kind = "plugin_ui", ui = "index.html" }
 
 [config_schema.start_dir]
 type = "string"

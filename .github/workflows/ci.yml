@@ -273,7 +273,7 @@ jobs:
           sh plugins/pack.sh --key "$WORK/release.key" --out "$WORK/official"
 
           n=$(ls -1 "$WORK/official"/*.wbpkg | wc -l)
-          [ "$n" = 5 ] || { echo "::error::官方插件应产出 5 个包（guard/monitor/nginx/files/cron/cron），实得 $n"; exit 1; }
+          [ "$n" = 4 ] || { echo "::error::官方插件应产出 4 个包（guard/monitor/files/cron），实得 $n"; exit 1; }
           for p in "$WORK/official"/*.wbpkg; do
             "$TOOL" verify "$p" --pubkey "$PUB" >/dev/null
             echo "验签通过：$(basename "$p")"

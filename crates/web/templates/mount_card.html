@@ -1,0 +1,25 @@
+<section class="panel mount-card mount-{{ m.height }}" data-mount data-slot="{{ m.slot }}">
+  <div class="mount-head">
+    <h2>{{ m.title }}</h2>
+    <span class="muted small">{{ m.slot_label }}</span>
+    <a class="more" href="/{{ ctx.prefix }}/plugins/{{ m.plugin }}">插件详情 →</a>
+  </div>
+  <iframe class="mount-frame"
+          src="{{ m.src }}"
+          sandbox="allow-scripts allow-modals"
+          data-plugin="{{ m.plugin }}"
+          data-nonce="{{ m.nonce }}"
+          data-rpc="{{ m.rpc_url }}"
+          data-csrf="{{ m.csrf }}"
+          data-plugins="{{ m.plugins }}"
+          data-refresh="{{ m.refresh }}"
+          title="{{ m.title }} · {{ m.slot_label }}"
+          referrerpolicy="no-referrer"></iframe>
+  <div class="mount-fail" data-mount-fail hidden>
+    <p>插件界面未能加载：插件可能已停用、进程未启动或当前账号无权访问。</p>
+    <div class="row">
+      <button type="button" class="btn small" data-mount-retry>重试</button>
+      <a class="ghost" href="/{{ ctx.prefix }}/plugins/{{ m.plugin }}">查看插件状态 / 日志</a>
+    </div>
+  </div>
+</section>

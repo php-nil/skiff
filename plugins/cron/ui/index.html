@@ -4,33 +4,67 @@
 <meta charset="utf-8">
 <title>计划任务</title>
 <style>
-  :root { color-scheme: dark; }
+  /* 默认深色；父页面下发 `light` 时由 app.js 写到 <html data-theme>。 */
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-btn-hover: #232c3c;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-ok: #7ee787;
+    --ui-warn: #f0b429;
+    --ui-bad: #ff7b72;
+    --ui-danger-line: #5a2226;
+    --ui-danger-text: #ff9b90;
+    --ui-hit: #16324a;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-btn-hover: #f0f2f5;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-ok: #15803d;
+    --ui-warn: #b54708;
+    --ui-bad: #b42318;
+    --ui-danger-line: #f3b4ae;
+    --ui-danger-text: #b42318;
+    --ui-hit: #eff6ff;
+  }
   body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-         background: #0b0d11; color: #d7dee8; }
+         background: var(--ui-bg); color: var(--ui-text); }
   h1 { font-size: 18px; margin: 0 0 8px; }
   h2 { font-size: 14px; margin: 16px 0 8px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-  button { background: #1b2230; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+  button { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
            padding: 5px 12px; cursor: pointer; }
-  button:hover { background: #232c3c; }
-  button.danger { border-color: #5a2226; color: #ff9b90; }
+  button:hover { background: var(--ui-btn-hover); }
+  button.danger { border-color: var(--ui-danger-line); color: var(--ui-danger-text); }
   button.mini { padding: 2px 8px; font-size: 12px; }
-  input[type=text] { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+  input[type=text] { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
                      padding: 5px 8px; min-width: 150px; }
-  select { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px; padding: 5px 8px; }
-  textarea { width: 100%; min-height: 54px; box-sizing: border-box; background: #121722; color: #d7dee8;
-             border: 1px solid #2a3444; border-radius: 6px; padding: 6px 8px; font: 12px/1.5 ui-monospace,
+  select { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px; padding: 5px 8px; }
+  textarea { width: 100%; min-height: 54px; box-sizing: border-box; background: var(--ui-surface); color: var(--ui-text);
+             border: 1px solid var(--ui-line); border-radius: 6px; padding: 6px 8px; font: 12px/1.5 ui-monospace,
              SFMono-Regular, Consolas, monospace; resize: vertical; }
-  .muted { color: #8a97a8; font-size: 12px; }
+  .muted { color: var(--ui-muted); font-size: 12px; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1c2532; font-size: 13px;
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--ui-line-soft); font-size: 13px;
            vertical-align: top; }
-  th { color: #8a97a8; font-weight: 500; }
-  tr.hit { background: #16324a; }
-  code { background: #121722; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .ok { color: #7ee787; } .warn { color: #f0b429; } .bad { color: #ff7b72; }
+  th { color: var(--ui-muted); font-weight: 500; }
+  tr.hit { background: var(--ui-hit); }
+  code { background: var(--ui-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .ok { color: var(--ui-ok); } .warn { color: var(--ui-warn); } .bad { color: var(--ui-bad); }
   #msg { min-height: 20px; font-size: 12px; }
-  .card { border: 1px solid #1c2532; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .card { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
@@ -44,28 +78,32 @@
   <span id="msg" class="muted"></span>
 </div>
 
-<h2>新增 / 更新任务</h2>
-<div class="card">
-  <div class="row">
-    <input type="text" id="new-name" placeholder="任务名，例如 网站配置每日备份">
-    <input type="text" id="new-expr" placeholder="0 3 * * *" style="min-width:120px">
-    <span class="muted">5 段 cron：分 时 日 月 周（本地时区）</span>
+<div data-view="new">
+  <h2>新增 / 更新任务</h2>
+  <div class="card">
+    <div class="row">
+      <input type="text" id="new-name" placeholder="任务名，例如 网站配置每日备份">
+      <input type="text" id="new-expr" placeholder="0 3 * * *" style="min-width:120px">
+      <span class="muted">5 段 cron：分 时 日 月 周（本地时区）</span>
+    </div>
+    <div class="row">
+      <select id="new-target"></select>
+      <input type="text" id="new-method" placeholder="方法，例如 backup">
+      <input type="text" id="new-key" placeholder="幂等 key（可空）" style="min-width:130px">
+      <button id="create">保存任务</button>
+    </div>
+    <textarea id="new-params" placeholder='调用参数（JSON 对象，可空），例如 {"name":"example.com"}'></textarea>
+    <p class="muted" id="targets-note">可调度目标来自内核目录；看不到目标说明尚未授予 <code>plugin:</code> 授权。</p>
   </div>
-  <div class="row">
-    <select id="new-target"></select>
-    <input type="text" id="new-method" placeholder="方法，例如 backup">
-    <input type="text" id="new-key" placeholder="幂等 key（可空）" style="min-width:130px">
-    <button id="create">保存任务</button>
-  </div>
-  <textarea id="new-params" placeholder='调用参数（JSON 对象，可空），例如 {"name":"example.com"}'></textarea>
-  <p class="muted" id="targets-note">可调度目标来自内核目录；看不到目标说明尚未授予 <code>plugin:</code> 授权。</p>
 </div>
 
-<h2>任务列表</h2>
-<table>
-  <thead><tr><th>任务</th><th>表达式 / 下次</th><th>目标</th><th>来源</th><th>上次</th><th>操作</th></tr></thead>
-  <tbody id="jobs"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
-</table>
+<div data-view="list">
+  <h2>任务列表</h2>
+  <table>
+    <thead><tr><th>任务</th><th>表达式 / 下次</th><th>目标</th><th>来源</th><th>上次</th><th>操作</th></tr></thead>
+    <tbody id="jobs"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+  </table>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

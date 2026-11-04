@@ -120,27 +120,7 @@ pub(super) async fn docker_call(
     let Some(verb) = Verb::parse(verb_str) else {
         return (StatusCode::FORBIDDEN, "动词不在白名单").into_response();
     };
-    let target = body.get("target").map(|t| skiff_docker::ObjectRef {
-        id: t
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        name: t
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        labels: t
-            .get("labels")
-            .and_then(|v| v.as_object())
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    });
+    let target = parse_target(&body);
 
     let grants: Vec<Grant> = match state.db().plugin(&id) {
         Ok(Some(p)) => p.grants,
@@ -167,7 +147,10 @@ pub(super) async fn docker_call(
     }
 
     // 动词 → Docker 方法的映射只在 `Docker::execute` 一处，这里不再自己 match
-    let result = state.docker().execute(verb, target.as_ref()).await;
+    let result = state
+        .docker()
+        .execute(verb, target.as_ref(), skiff_docker::DockerParams::None)
+        .await;
 
     match result {
         Ok(v) => {
@@ -208,6 +191,39 @@ pub(super) async fn docker_call(
     }
 }
 
+/// 解析 `target`。缺省或显式 `null` 表示「无目标」（如 `containers.list`）。
+///
+/// 不能把 `null` 当成 id/name 全空的容器：策略层会要求 `object:container:` 这条
+/// 永远匹配不上的授权，插件侧只能看到误导性的 403（2026-11-03 实测：
+/// nginx `sites` 静默降级、`reload` 报「缺少授权 object:container:」）。
+fn parse_target(body: &Value) -> Option<skiff_docker::ObjectRef> {
+    let t = body.get("target")?;
+    if t.is_null() {
+        return None;
+    }
+    Some(skiff_docker::ObjectRef {
+        id: t
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        name: t
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        labels: t
+            .get("labels")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
 /// `net.apply` 尚未实现（nftables 出网收口属 M4 硬门槛）：一律 501 + 审计，
 /// 不做「假装成功」。
 pub(super) async fn net_unimplemented(
@@ -232,4 +248,26 @@ pub(super) async fn net_unimplemented(
         "net 能力未实现：nftables owner-match 收口属 M4 硬门槛（§9.1 #17）",
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_null_target_means_no_target() {
+        assert!(parse_target(&json!({ "verb": "containers.list" })).is_none());
+        assert!(parse_target(&json!({ "verb": "containers.list", "target": null })).is_none());
+    }
+
+    #[test]
+    fn object_target_is_parsed() {
+        let t = parse_target(&json!({
+            "target": { "id": "abc123", "name": "nginx", "labels": { "app": "nginx" } }
+        }))
+        .expect("object target");
+        assert_eq!(t.id, "abc123");
+        assert_eq!(t.name, "nginx");
+        assert_eq!(t.labels.get("app").map(String::as_str), Some("nginx"));
+    }
 }

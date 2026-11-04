@@ -20,10 +20,10 @@ skiff-plugin stamp --dir my-plugin --key k    # 用私钥派生的指纹回填 m
 
 - **`stamp` 的用途**：源码里的 `key_id` 只是占位，打包前用发布私钥回填指纹，让「仓库不含任何一把密钥的指纹」与「`pack` 的指纹一致性校验」同时成立。官方插件走这条（`plugins/pack.sh` 在**临时目录**回填，不弄脏工作树）。
 - **SDK 独立 semver**（与内核版本解耦），窄接口以 `skiff-sdk` 的公开 API 为准，只声明兼容的插件 API 区间；破坏性变更升 API 主版本，内核并行兼容 **N-1 API 主版本**。
-- **官方示范插件是 `plugins/` 下的 5 个**（`guard` / `monitor` / `nginx` / `files` / `cron`，见 [`plugins/README.md`](../../plugins/README.md)）：脚手架、签名、打包、权限声明、分页读写、cron tick 全链路可对照抄。注意 `nginx` 走的是「写授权目录 + `containers.restart`」，**没有**用 `containers.exec`（exec 属 M3 门禁）；目标容器仍须由 admin 显式授予 `container:<NAME>` grant，插件不能凭标签自行认领。
+- **官方示范插件是 `plugins/` 下的 4 个**（`guard` / `monitor` / `files` / `cron`，见 [`plugins/README.md`](../../plugins/README.md)）：脚手架、签名、打包、权限声明、分页读写、cron tick 全链路可对照抄。原 `nginx` 插件已内核化为「网站」，不再作为插件示范；`guard` 走的是「`containers.restart` + `fs`」，**没有**用 `containers.exec`（exec 属 M3 门禁）；目标容器仍须由 admin 显式授予 `container:<NAME>` grant，插件不能凭标签自行认领。
 - 对外发布（无论什么渠道）必须附两样东西：**权限清单** + **签名指纹**（供用户导入公钥时核对）。
 - 多架构是发布者的责任：`bin/` 下缺哪个架构，该架构上就拒装（不静默降级）。
-- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 5 个已签名 `.wbpkg` 放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/CI.md`](../CI.md) §4）。
+- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 4 个已签名 `.wbpkg` 放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/CI.md`](../CI.md) §4）。
 
 ## 4.5 用户侧如何部署
 
@@ -35,8 +35,8 @@ skiff-plugin stamp --dir my-plugin --key k    # 用私钥派生的指纹回填 m
 
 **升级与恢复**：
 1. 上传新版本，完成签名、同源密钥、API 与权限差异校验；低于或等于已装版本默认拒绝，只有 admin 的灾难恢复入口可装旧版。
-2. 停止旧进程并暂停该插件调度，按 §5.2 做一致性数据快照；`/var/lib/skiff/plugins/{id}/versions/` 保留 N-1 版。
+2. 停止旧进程并暂停该插件调度，按 §5.2 做一致性数据快照；`/www/skiff/plugins/{id}/versions/` 保留 N-1 版。
 3. 内核以**新版插件的独立 UID + 降级沙箱**启动 migration 模式（landlock/cgroups 未实现），将 `migrations/` 作为输入，调用带截止时间的 `migrate(from_version, to_version)` RPC；**内核从不以 root 直接执行包内迁移脚本**。迁移须幂等，只允许修改本插件 `data/`；对外部 Docker/网络资源的副作用必须由插件自行记录补偿步骤。
 4. 迁移成功才原子切换 active 版本并启用。迁移或健康检查失败则终止插件进程（cgroup 进程树清理未实现）、恢复升级前数据快照并切回旧代码；若旧代码与数据 schema 不兼容，则保持插件停用并提示执行备份恢复，**不伪报“已自动回滚”**。外部资源补偿失败单独告警并保留审计记录。
 
-**卸载**：停进程 + 删版本目录；`cache/`/`run/` 即删；插件数据目录（`/var/lib/skiff/plugins/{id}/data`）默认保留，勾选“同时删除数据”才清。
+**卸载**：停进程 + 删版本目录；`cache/`/`run/` 即删；插件数据目录（`/www/skiff/plugins/{id}/data`）默认保留，勾选“同时删除数据”才清。

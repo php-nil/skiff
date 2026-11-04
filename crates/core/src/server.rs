@@ -40,10 +40,14 @@ pub async fn serve(cfg: &Config, router: axum::Router) -> Result<()> {
                 .map_err(|e| serve_error(e, addr))?;
         }
         _ => {
-            if !cfg.dev_http {
-                anyhow::bail!("内部错误：未通过 TLS 校验却进入明文模式");
+            // `validate()` 只放行两种明文：loopback（dev_http）与「可信反代终止 TLS」
+            // （plaintext_behind_proxy）。这里必须同时认两者，否则后者永远起不来。
+            plaintext_allowed(cfg)?;
+            if cfg.dev_http {
+                warn!(%addr, "明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure 前缀");
+            } else {
+                warn!(%addr, "明文 HTTP 监听：假定 TLS 已由 trusted_proxies 中的反代终止");
             }
-            warn!(%addr, "明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure 前缀");
             axum_server::bind(addr)
                 .handle(handle)
                 .serve(app)
@@ -52,6 +56,15 @@ pub async fn serve(cfg: &Config, router: axum::Router) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 无 TLS 时是否允许明文监听。纯判定，不绑端口，便于单测覆盖三条分支。
+fn plaintext_allowed(cfg: &Config) -> Result<()> {
+    if cfg.dev_http || cfg.plaintext_behind_proxy {
+        Ok(())
+    } else {
+        anyhow::bail!("内部错误：未通过 TLS 校验却进入明文模式")
+    }
 }
 
 /// 监听失败要给运维能看懂的原因（端口被占是最常见的一种），
@@ -106,6 +119,9 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             tick.tick().await;
             state.supervisor().reap_idle().await;
             let _ = state.db().purge_expired_sessions();
+            // 站点日志轮转由内核巡检做（copytruncate），不依赖宿主 logrotate。
+            let log_dir = state.cfg.web_root.join("logs").join("nginx");
+            let _ = skiff_app::sites::rotate_logs(&log_dir, skiff_app::sites::LOG_ROTATE_BYTES);
             run_cron(&state, &mut last_fired, chrono::Local::now().naive_local()).await;
         }
     });
@@ -196,6 +212,7 @@ mod tests {
         Config {
             listen,
             data_dir: tmp.join("data"),
+            web_root: tmp.join("www"),
             run_dir: tmp.join("run"),
             config_path: tmp.join("config.toml"),
             docker_socket: "/nonexistent/docker.sock".into(),
@@ -227,6 +244,23 @@ mod tests {
         let c = base + chrono::Duration::seconds(60);
         assert_eq!(minute_index(&a), minute_index(&b));
         assert_ne!(minute_index(&a), minute_index(&c));
+    }
+
+    /// 明文监听的两条合法路径：loopback 调试（dev_http）与可信反代（plaintext_behind_proxy）。
+    /// 未开 TLS 时后者曾被 `serve` 误判，导致「非 loopback 明文」永远起不来。
+    #[test]
+    fn plaintext_allowed_covers_dev_and_trusted_proxy() {
+        let mut cfg = test_cfg("0.0.0.0:18080".parse().unwrap());
+        cfg.dev_http = false;
+        cfg.plaintext_behind_proxy = false;
+        assert!(plaintext_allowed(&cfg).is_err(), "裸奔必须拒绝");
+
+        cfg.dev_http = true;
+        assert!(plaintext_allowed(&cfg).is_ok(), "loopback 开发模式应放行");
+
+        cfg.dev_http = false;
+        cfg.plaintext_behind_proxy = true;
+        assert!(plaintext_allowed(&cfg).is_ok(), "可信反代终止 TLS 应放行");
     }
 
     /// 端口被占：必须立刻带明确原因返回 Err，不得 panic、不得挂住。

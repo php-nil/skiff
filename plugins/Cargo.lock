@@ -675,15 +675,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skiff-plugin-nginx"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skiff-plugin-common",
- "skiff-sdk",
-]
-
-[[package]]
 name = "skiff-sdk"
 version = "0.1.0"
 dependencies = [

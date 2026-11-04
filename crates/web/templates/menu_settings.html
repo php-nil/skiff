@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}菜单设置 · Skiff{% endblock %}
+{% block content %}
+<section class="panel">
+  <header class="panel-head">
+    <h2>菜单设置</h2>
+    <p class="hint">顺序、隐藏与固定只影响当前账号；换账号或换设备不共享。插件升级新增的菜单会自动插到相邻位置。</p>
+  </header>
+
+  {% if !notice.is_empty() %}
+  <div class="banner ok">{{ notice }}</div>
+  {% endif %}
+
+  <div class="menu-layout-pick">
+    <h3>布局</h3>
+    <p class="hint">只改变呈现方式，菜单结构与顺序不变。</p>
+    <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="layout">
+      <input type="hidden" name="layout" value="top">
+      <button type="submit" class="btn{% if layout == "top" %} primary{% endif %}"{% if layout == "top" %} aria-current="true"{% endif %}>上下（顶栏）</button>
+    </form>
+    <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="layout">
+      <input type="hidden" name="layout" value="left">
+      <button type="submit" class="btn{% if layout == "left" %} primary{% endif %}"{% if layout == "left" %} aria-current="true"{% endif %}>左右（侧栏）</button>
+    </form>
+  </div>
+
+  {% for g in groups %}
+  <div class="menu-pref-group">
+    <h3>{{ g.label }}</h3>
+    {% for it in g.items %}
+    <div class="menu-pref-row{% if it.hidden %} is-hidden{% endif %}">
+      <div class="menu-pref-name">
+        <span>{{ it.label }}</span>
+        {% if it.plugin %}<span class="state">插件</span>{% endif %}
+        {% if it.hidden %}<span class="state disabled">已隐藏</span>{% endif %}
+        {% if it.pinned %}<span class="state">已固定</span>{% endif %}
+      </div>
+      <div class="menu-pref-actions">
+        <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <input type="hidden" name="action" value="up">
+          <input type="hidden" name="key" value="{{ it.key }}">
+          <button type="submit" class="btn small" aria-label="上移 {{ it.label }}">↑</button>
+        </form>
+        <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <input type="hidden" name="action" value="down">
+          <input type="hidden" name="key" value="{{ it.key }}">
+          <button type="submit" class="btn small" aria-label="下移 {{ it.label }}">↓</button>
+        </form>
+        <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <input type="hidden" name="action" value="{% if it.hidden %}show{% else %}hide{% endif %}">
+          <input type="hidden" name="key" value="{{ it.key }}">
+          <button type="submit" class="btn small">{% if it.hidden %}显示{% else %}隐藏{% endif %}</button>
+        </form>
+        {% if it.pinnable %}
+        <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <input type="hidden" name="action" value="{% if it.pinned %}unpin{% else %}pin{% endif %}">
+          <input type="hidden" name="key" value="{{ it.key }}">
+          <button type="submit" class="btn small">{% if it.pinned %}取消固定{% else %}固定{% endif %}</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <div class="menu-pref-reset">
+    <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="reset">
+      <button type="submit" class="btn">恢复默认</button>
+    </form>
+    <p class="hint">恢复默认会清除本账号的顺序、隐藏与固定偏好；布局回到管理员默认值。</p>
+  </div>
+</section>
+{% endblock %}

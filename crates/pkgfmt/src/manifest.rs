@@ -140,6 +140,110 @@ pub struct UiEntry {
     pub icon: Option<String>,
 }
 
+/// 固定一级菜单 id：插件只能挂到这些父级下，不能新增一级。
+pub const MENU_L1: &[&str] = &["sites", "tools", "plugins", "docker", "settings"];
+
+/// 内核内置图标集（v1）。插件只能引用这里的名字，禁止外链/HTML/SVG 字符串。
+pub const MENU_ICONS: &[&str] = &[
+    "dot",
+    "overview",
+    "globe",
+    "docker",
+    "plug",
+    "tools",
+    "settings",
+    "file",
+    "clock",
+    "activity",
+    "shield",
+    "container",
+    "image",
+    "network",
+    "disk",
+    "archive",
+    "list",
+    "user",
+    "lock",
+];
+
+pub const MENU_ROLES: &[&str] = &["viewer", "operator", "admin"];
+pub const MENU_GATES: &[&str] = &["plugin_enabled", "docker_available"];
+
+/// 固定页槽位注册表（P1 只登记，不渲染）。
+pub const MENU_SLOTS: &[&str] = &[
+    "overview.health",
+    "overview.actions",
+    "overview.side",
+    "sites.header",
+];
+
+pub const MENU_MAX_ITEMS: usize = 12;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MenuTarget {
+    /// 只允许 `plugin_ui`：插件不能把菜单指向内核页面。
+    pub kind: String,
+    /// 相对 `ui/` 的页面路径。
+    pub ui: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MenuItem {
+    pub id: String,
+    pub label: String,
+    #[serde(default = "default_menu_order")]
+    pub order: i32,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// 缺省继承所属 L2 的 `target.ui`。
+    #[serde(default)]
+    pub ui: Option<String>,
+    /// 传给插件 UI 的稳定视图名；缺省等于 `id`。
+    #[serde(default)]
+    pub tab: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestMenu {
+    /// 本插件内稳定的局部 id，完整键由内核拼成 `plugin/<plugin-id>/<id>`。
+    pub id: String,
+    /// 只能是固定一级 id（见 `MENU_L1`）。
+    pub parent: String,
+    pub label: String,
+    #[serde(default = "default_menu_order")]
+    pub order: i32,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// `None` = 全角色可见；`Some([])` = 任何角色不可见。
+    #[serde(default)]
+    pub roles: Option<Vec<String>>,
+    #[serde(default = "default_gates")]
+    pub gates: Vec<String>,
+    #[serde(default = "default_true")]
+    pub default_visible: bool,
+    #[serde(default = "default_true")]
+    pub pinnable: bool,
+    pub target: MenuTarget,
+    #[serde(default)]
+    pub items: Vec<MenuItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestMount {
+    pub slot: String,
+    pub ui: String,
+    #[serde(default)]
+    pub height: Option<String>,
+    #[serde(default)]
+    pub refresh: Option<u64>,
+    #[serde(default)]
+    pub roles: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigField {
@@ -222,6 +326,12 @@ pub struct Manifest {
     pub network_egress: Vec<String>,
     #[serde(default)]
     pub ui: Vec<UiEntry>,
+    /// 菜单声明：插件只能在固定一级下声明 L2/L3（见 `docs/MENU_CONTRACT.md`）。
+    #[serde(default)]
+    pub menu: Vec<ManifestMenu>,
+    /// 固定页槽位声明（概览健康块等）；P1 只做解析与校验。
+    #[serde(default)]
+    pub mount: Vec<ManifestMount>,
     /// 安装确认页的**默认资源授权建议**（`path:/abs` / `container:<name|id>` /
     /// `project:<p>` / `plugin:<id>`）。
     ///
@@ -256,6 +366,100 @@ fn default_idle() -> u64 {
 }
 fn default_restarts() -> u32 {
     3
+}
+fn default_menu_order() -> i32 {
+    1000
+}
+fn default_gates() -> Vec<String> {
+    vec!["plugin_enabled".into()]
+}
+
+fn api_minor(api: &str) -> u32 {
+    api.split('.')
+        .nth(1)
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// 菜单局部 id：小写字母/数字/中划线，1–32 字符；不能是保留的 `core`。
+fn validate_menu_id(id: &str, code: &str) -> Result<()> {
+    if id.is_empty() || id.len() > 32 {
+        return Err(PkgError::Manifest(format!(
+            "{code}: 菜单 id 长度必须 1–32: {id:?}"
+        )));
+    }
+    if id == "core" {
+        return Err(PkgError::Manifest(format!(
+            "{code}: 插件不能注册内核命名空间 core"
+        )));
+    }
+    let mut chars = id.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err(PkgError::Manifest(format!(
+            "{code}: 菜单 id 必须以小写字母或数字开头: {id:?}"
+        )));
+    }
+    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        return Err(PkgError::Manifest(format!(
+            "{code}: 菜单 id 只允许 a-z 0-9 -: {id:?}"
+        )));
+    }
+    if id.ends_with('-') {
+        return Err(PkgError::Manifest(format!(
+            "{code}: 菜单 id 不能以中划线结尾: {id:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_menu_label(label: &str) -> Result<()> {
+    let t = label.trim();
+    if t.is_empty() || t.chars().count() > 32 {
+        return Err(PkgError::Manifest(format!(
+            "MENU_LABEL_TOO_LONG: label 长度必须 1–32: {label:?}"
+        )));
+    }
+    if t.chars().any(|c| c.is_control()) {
+        return Err(PkgError::Manifest(format!(
+            "MENU_LABEL_TOO_LONG: label 不能含控制字符: {label:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_menu_order(order: i32) -> Result<()> {
+    if !(-10_000..=10_000).contains(&order) {
+        return Err(PkgError::Manifest(format!(
+            "MENU_ORDER_OUT_OF_RANGE: order 必须在 -10000..=10000，得到 {order}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_roles(roles: Option<&[String]>, code: &str) -> Result<()> {
+    if let Some(roles) = roles {
+        for r in roles {
+            if !MENU_ROLES.contains(&r.as_str()) {
+                return Err(PkgError::Manifest(format!(
+                    "{code}: 未知角色 {r:?}（可选 {MENU_ROLES:?}）"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_menu_asset(path: &str) -> Result<()> {
+    if path.is_empty()
+        || skiff_model::is_posix_absolute(path)
+        || skiff_model::has_parent_segment(path)
+    {
+        return Err(PkgError::Manifest(format!(
+            "MENU_TARGET_INVALID: ui 必须是 ui/ 下的相对路径: {path:?}"
+        )));
+    }
+    Ok(())
 }
 
 impl Manifest {
@@ -327,6 +531,9 @@ impl Manifest {
             }
         }
 
+        self.validate_menu()?;
+        self.validate_mount()?;
+
         for c in &self.cron {
             validate_cron(c)?;
         }
@@ -364,6 +571,165 @@ impl Manifest {
 
         if self.idle_timeout_sec < 30 {
             return Err(PkgError::Manifest("idle_timeout_sec 不得小于 30".into()));
+        }
+        Ok(())
+    }
+
+    /// 菜单声明校验（`docs/MENU_CONTRACT.md` §2.3）。
+    fn validate_menu(&self) -> Result<()> {
+        if self.menu.is_empty() {
+            return Ok(());
+        }
+        if self.ui.is_empty() {
+            return Err(PkgError::Manifest(
+                "MENU_NO_UI_ENTRY: 声明 [[menu]] 的插件必须至少有一个 [[ui]] 入口".into(),
+            ));
+        }
+        if api_minor(&self.api) < 1 {
+            return Err(PkgError::Manifest(
+                "MENU_API_VERSION: 菜单声明要求 api = \"1.1\"（1.0 老包请继续用 [[ui]]）".into(),
+            ));
+        }
+        let mut seen_l2 = BTreeSet::new();
+        for m in &self.menu {
+            validate_menu_id(&m.id, "MENU_ID_INVALID")?;
+            if !MENU_L1.contains(&m.parent.as_str()) {
+                return Err(PkgError::Manifest(format!(
+                    "MENU_PARENT_UNKNOWN: parent 只能是固定一级 {:?}，得到 {:?}",
+                    MENU_L1, m.parent
+                )));
+            }
+            validate_menu_label(&m.label)?;
+            validate_menu_order(m.order)?;
+            // 图标名不在白名单不拒装：渲染层统一降级为 dot（未知即安全）。
+            validate_roles(m.roles.as_deref(), "MENU_ROLE_INVALID")?;
+            for g in &m.gates {
+                if !MENU_GATES.contains(&g.as_str()) {
+                    return Err(PkgError::Manifest(format!(
+                        "MENU_GATE_INVALID: 未知 gate {g:?}（可选 {MENU_GATES:?}）"
+                    )));
+                }
+            }
+            if m.target.kind != "plugin_ui" {
+                return Err(PkgError::Manifest(format!(
+                    "MENU_TARGET_INVALID: target.kind 只能是 plugin_ui，得到 {:?}",
+                    m.target.kind
+                )));
+            }
+            validate_menu_asset(&m.target.ui)?;
+            if !seen_l2.insert(m.id.as_str()) {
+                return Err(PkgError::Manifest(format!(
+                    "MENU_ID_CONFLICT: 重复的菜单 id {:?}",
+                    m.id
+                )));
+            }
+            if m.items.len() > MENU_MAX_ITEMS {
+                return Err(PkgError::Manifest(format!(
+                    "MENU_TOO_MANY_ITEMS: 一个 L2 最多 {MENU_MAX_ITEMS} 个 L3，得到 {}",
+                    m.items.len()
+                )));
+            }
+            let mut seen_l3 = BTreeSet::new();
+            for it in &m.items {
+                validate_menu_id(&it.id, "MENU_ID_INVALID")?;
+                validate_menu_label(&it.label)?;
+                validate_menu_order(it.order)?;
+                if !seen_l3.insert(it.id.as_str()) {
+                    return Err(PkgError::Manifest(format!(
+                        "MENU_ID_CONFLICT: L2 {} 内重复的 L3 id {:?}",
+                        m.id, it.id
+                    )));
+                }
+                if let Some(ui) = &it.ui {
+                    validate_menu_asset(ui)?;
+                }
+                if let Some(tab) = &it.tab {
+                    validate_menu_id(tab, "MENU_ID_INVALID")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 固定页槽位校验（§5.2）。
+    fn validate_mount(&self) -> Result<()> {
+        if self.mount.is_empty() {
+            return Ok(());
+        }
+        if self.ui.is_empty() {
+            return Err(PkgError::Manifest(
+                "MOUNT_NO_UI_ENTRY: 声明 [[mount]] 的插件必须至少有一个 [[ui]] 入口".into(),
+            ));
+        }
+        if api_minor(&self.api) < 1 {
+            return Err(PkgError::Manifest(
+                "MOUNT_API_VERSION: 槽位声明要求 api = \"1.1\"".into(),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for m in &self.mount {
+            if !MENU_SLOTS.contains(&m.slot.as_str()) {
+                return Err(PkgError::Manifest(format!(
+                    "MOUNT_SLOT_INVALID: 未知槽位 {:?}（可选 {MENU_SLOTS:?}）",
+                    m.slot
+                )));
+            }
+            if !seen.insert(m.slot.as_str()) {
+                return Err(PkgError::Manifest(format!(
+                    "MOUNT_SLOT_CONFLICT: 重复声明槽位 {:?}",
+                    m.slot
+                )));
+            }
+            validate_menu_asset(&m.ui)?;
+            if let Some(h) = &m.height {
+                if !matches!(h.as_str(), "sm" | "md" | "lg") {
+                    return Err(PkgError::Manifest(format!(
+                        "MOUNT_HEIGHT_INVALID: height 只能是 sm/md/lg，得到 {h:?}"
+                    )));
+                }
+            }
+            if let Some(r) = m.refresh {
+                if ![0, 30, 60, 300].contains(&r) {
+                    return Err(PkgError::Manifest(
+                        "MOUNT_REFRESH_INVALID: refresh 只能是 0/30/60/300".into(),
+                    ));
+                }
+            }
+            validate_roles(m.roles.as_deref(), "MOUNT_ROLE_INVALID")?;
+        }
+        Ok(())
+    }
+
+    /// 校验菜单/槽位引用的 `ui/` 文件确实在包内。
+    ///
+    /// `Manifest::parse` 只做形式校验（不知道包内容）；安装验包时用这里的
+    /// `exists` 回调把「声明了但没打进包」的菜单挡在安装前。
+    pub fn validate_menu_assets(&self, exists: impl Fn(&str) -> bool) -> Result<()> {
+        for m in &self.menu {
+            if !exists(&m.target.ui) {
+                return Err(PkgError::Manifest(format!(
+                    "MENU_TARGET_INVALID: target.ui 不存在于包内 ui/：{}",
+                    m.target.ui
+                )));
+            }
+            for it in &m.items {
+                if let Some(ui) = &it.ui {
+                    if !exists(ui) {
+                        return Err(PkgError::Manifest(format!(
+                            "MENU_TARGET_INVALID: items[{}].ui 不存在于包内 ui/：{ui}",
+                            it.id
+                        )));
+                    }
+                }
+            }
+        }
+        for m in &self.mount {
+            if !exists(&m.ui) {
+                return Err(PkgError::Manifest(format!(
+                    "MOUNT_TARGET_INVALID: 槽位 {} 的 ui 不存在于包内 ui/：{}",
+                    m.slot, m.ui
+                )));
+            }
         }
         Ok(())
     }
@@ -916,5 +1282,106 @@ consumes = [{consumes}]
     fn wildcard_consume_derives_plugin_star_hint() {
         let m = Manifest::parse(&interop_manifest("\"*\"", true)).unwrap();
         assert_eq!(m.interop_resource_hints(), vec!["plugin:*".to_string()]);
+    }
+
+    fn menu_manifest() -> String {
+        OK.replace("api = \"1.0\"", "api = \"1.1\"").replace(
+            "path = \"index.html\"",
+            "path = \"index.html\"\n\n[[menu]]\nid = \"sites\"\nparent = \"sites\"\nlabel = \"网站\"\norder = 10\nicon = \"globe\"\nroles = [\"viewer\", \"operator\", \"admin\"]\npinnable = true\ntarget = { kind = \"plugin_ui\", ui = \"sites.html\" }\n\n[[menu.items]]\nid = \"overview\"\nlabel = \"站点概览\"\norder = 10\n\n[[menu.items]]\nid = \"certificates\"\nlabel = \"证书\"\norder = 20\nui = \"certs.html\"\ntab = \"certs\"\n\n[[mount]]\nslot = \"overview.health\"\nui = \"health.html\"\nheight = \"md\"\nrefresh = 30",
+        )
+    }
+
+    #[test]
+    fn parses_menu_and_mount() {
+        let m = Manifest::parse(&menu_manifest()).unwrap();
+        assert_eq!(m.menu.len(), 1);
+        assert_eq!(m.menu[0].id, "sites");
+        assert_eq!(m.menu[0].target.kind, "plugin_ui");
+        assert_eq!(m.menu[0].items.len(), 2);
+        assert_eq!(m.menu[0].items[1].tab.as_deref(), Some("certs"));
+        assert_eq!(m.mount[0].slot, "overview.health");
+        assert_eq!(m.mount[0].refresh, Some(30));
+    }
+
+    #[test]
+    fn menu_rejects_illegal_declarations() {
+        let base = menu_manifest();
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "parent = \"sites\"",
+                "parent = \"overview\"",
+                "MENU_PARENT_UNKNOWN",
+            ),
+            ("id = \"sites\"", "id = \"core\"", "MENU_ID_INVALID"),
+            ("id = \"sites\"", "id = \"Sites\"", "MENU_ID_INVALID"),
+            (
+                "target = { kind = \"plugin_ui\", ui = \"sites.html\" }",
+                "target = { kind = \"core_page\", ui = \"sites.html\" }",
+                "MENU_TARGET_INVALID",
+            ),
+            (
+                "ui = \"sites.html\"",
+                "ui = \"/etc/passwd\"",
+                "MENU_TARGET_INVALID",
+            ),
+            (
+                "roles = [\"viewer\", \"operator\", \"admin\"]",
+                "roles = [\"guest\"]",
+                "MENU_ROLE_INVALID",
+            ),
+            ("order = 10", "order = 99999", "MENU_ORDER_OUT_OF_RANGE"),
+            (
+                "[[mount]]\nslot = \"overview.health\"",
+                "[[mount]]\nslot = \"overview.footer\"",
+                "MOUNT_SLOT_INVALID",
+            ),
+            ("refresh = 30", "refresh = 5", "MOUNT_REFRESH_INVALID"),
+        ];
+        for (from, to, code) in cases {
+            let bad = base.replace(from, to);
+            let e = Manifest::parse(&bad).unwrap_err().to_string();
+            assert!(e.contains(code), "{from} -> {to}: {e}");
+        }
+
+        // 同一插件内重复 L2 id
+        let dup = format!(
+            "{}\n\n[[menu]]\nid = \"sites\"\nparent = \"tools\"\nlabel = \"工具\"\ntarget = {{ kind = \"plugin_ui\", ui = \"sites.html\" }}",
+            base
+        );
+        let e = Manifest::parse(&dup).unwrap_err().to_string();
+        assert!(e.contains("MENU_ID_CONFLICT"), "{e}");
+
+        // L3 超过 12 个
+        let mut many = base.clone();
+        let extra: String = (0..12)
+            .map(|i| format!("\n[[menu.items]]\nid = \"x{i}\"\nlabel = \"X{i}\"\n"))
+            .collect();
+        many.push_str(&extra);
+        let e = Manifest::parse(&many).unwrap_err().to_string();
+        assert!(e.contains("MENU_TOO_MANY_ITEMS"), "{e}");
+
+        // 1.0 包声明菜单：必须拒绝（不能静默接受）
+        let old_api = base.replace("api = \"1.1\"", "api = \"1.0\"");
+        let e = Manifest::parse(&old_api).unwrap_err().to_string();
+        assert!(e.contains("MENU_API_VERSION"), "{e}");
+
+        // 有菜单却没有 [[ui]] 入口
+        let no_ui =
+            menu_manifest().replace("[[ui]]\nlabel = \"Nginx\"\npath = \"index.html\"\n\n", "");
+        let e = Manifest::parse(&no_ui).unwrap_err().to_string();
+        assert!(e.contains("MENU_NO_UI_ENTRY"), "{e}");
+    }
+
+    #[test]
+    fn menu_assets_must_exist_in_package() {
+        let m = Manifest::parse(&menu_manifest()).unwrap();
+        assert!(m
+            .validate_menu_assets(|p| matches!(p, "sites.html" | "certs.html" | "health.html"))
+            .is_ok());
+        let e = m
+            .validate_menu_assets(|p| matches!(p, "sites.html" | "health.html"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("certs.html"), "{e}");
     }
 }
