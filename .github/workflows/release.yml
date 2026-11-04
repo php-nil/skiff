@@ -261,12 +261,15 @@ jobs:
             exit 1
           fi
 
+          # 只传文件：dist 里若有目录（历史上 pack 暂存目录没清掉），gh 会报
+          # "is a directory" 直接失败（run 41843228601）。
+          FILES=$(find dist -maxdepth 1 -type f -print)
           if gh release view "$TAG" >/dev/null 2>&1; then
             # 先删同名资产再传，避免不同平台/审批策略下的资产冲突
-            gh release upload "$TAG" dist/* --clobber
+            gh release upload "$TAG" $FILES --clobber
           else
             # 标签已存在、Release 还没建：用 --verify-tag，绝不创建标签
-            gh release create "$TAG" dist/* --verify-tag \
+            gh release create "$TAG" $FILES --verify-tag \
               --title "Skiff（轻舟）$TAG" \
               --notes '交付路径固定为「从 Release 下载安装包 → 解压 → 执行 install.sh」。装机：先 sha256sum -c checksums.txt，再解压、cd 进解压目录、sh install.sh。包内 official/ 是已签名的官方插件（guard/monitor/files/cron），安装时只复制到 /www/skiff/official/、不自动安装；公钥由首启自动信任。测试期沿用同一版本与同一 Release，手动 dispatch 覆盖资产，不新建 tag。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
           fi
