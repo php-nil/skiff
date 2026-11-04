@@ -190,6 +190,9 @@ echo "== 打包 =="
 # 固定 mtime/属主，保证同输入产出同摘要
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2026-01-01' \
     -czf "$TARBALL" -C "$OUT" "$NAME"
+# 暂存目录不能留在 OUT：CI 会把 dist/* 当 Release 资产上传，目录会被 gh 当成
+# "is a directory" 直接失败（run 41843228601 就是这个原因）。
+rm -rf "$STAGE"
 
 echo "== 摘要 =="
 ( cd "$OUT" && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
