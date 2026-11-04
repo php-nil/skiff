@@ -213,7 +213,12 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write   # 建 Release 需要写权限（其余 job 只读）
+    env:
+      # gh 在没有 .git 的目录里会报 "fatal: not a git repository"；
+      # 显式给仓库坐标，同时下面仍 checkout 一份让 gh 有上下文。
+      GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v7
       # v8 起：① 迁移到 ESM；② 校验和不匹配默认直接报错；③ 不再无条件解包，
       #     先看 Content-Type，非 zip 就跳过（就是为配合上面 v7 的 direct upload）。
       #     默认 false 的 merge-multiple 仍在，多产物合并进同一目录的用法不变。
