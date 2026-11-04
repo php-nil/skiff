@@ -246,7 +246,8 @@ jobs:
           fi
 
           # 测试期 / 正式发版都不允许这里新建 tag：标签必须已在仓库里
-          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+          # 用 API 而不是 git ls-remote：runner 的 checkout 只拉单 ref，远端查询不稳
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
             echo "::error::标签 $TAG 不存在。本流水线不新建 tag：请先在仓库里创建（或改用 release_tag 指向既有 Release）。"
             exit 1
           fi
