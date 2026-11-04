@@ -51,9 +51,13 @@ rustc --version    # 需要 ≥ 1.89
 
 ```sh
 # 目标机（无需 Rust；把 <ver> 换成实际版本、<target> 换成 triples）
-curl -LO https://github.com/<owner>/<repo>/releases/download/v<ver>/checksums.txt
-curl -LO https://github.com/<owner>/<repo>/releases/download/v<ver>/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
-sha256sum -c checksums.txt                       # 先校 Release 级摘要
+BASE=https://github.com/<owner>/<repo>/releases/download/v<ver>
+curl -LO $BASE/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
+curl -LO $BASE/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz.sha256
+sha256sum -c skiff-<ver>-x86_64-unknown-linux-musl.tar.gz.sha256   # 只校本机架构这一份
+# 注意：Release 级 checksums.txt 同时列了 amd64 与 aarch64 两个包。
+# 只下载其中一个架构时不要直接 `sha256sum -c checksums.txt`——另一个架构的
+# 条目会报 "FAILED open or read" 并以非零退出（文件本身没问题）。
 ```
 
 内网/无 GitHub 出网时，用临时 HTTP 静态服务把同一份安装包下发（**这是模拟真实用户路径**，
@@ -100,7 +104,7 @@ CI 出的包与手工出包**是同一份脚本、同一套布局**（CI 只是�
 |---|---|---|
 | `skiff-<ver>-<target>.tar.gz` | 是 | 主程序、安装脚本、官方插件与包内摘要 |
 | 同名 `.tar.gz.sha256` | 是 | 单包摘要校验 |
-| `checksums.txt`（Release 资产） | 是 | 多架构汇总摘要；与单包 `.sha256` 二选一即可，推荐都存 |
+| `checksums.txt`（Release 资产） | 否 | 多架构汇总摘要；只装单架构时以同名 `.sha256` 为准（汇总文件直接 `-c` 会因另一架构缺失而非零退出） |
 | 源码目录 | 否 | 仅开发调试（本机编译、给插件测试物编 demo），不属交付路径 |
 
 ## 1. 环境与前置条件
@@ -164,15 +168,15 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 
 ### 2.1 取得发布物并校验
 
-Release 资产三件：`skiff-<ver>-<target>.tar.gz`、同名 `.sha256`、`checksums.txt`（全架构汇总）。
-**不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏；
+Release 资产：每个架构 `skiff-<ver>-<target>.tar.gz` + 同名 `.sha256`，另有跨架构汇总
+`checksums.txt`。**不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏；
 `.sig` / `verify-file` 链路已移除。
 
 **安装顺序固定：先验摘要，失败立即停手。** 包内 `install.sh` 不校验包含自己的压缩包（自校验悖论）。
 
 ```sh
-sha256sum -c checksums.txt                                   # Release 级汇总
-sha256sum -c skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256   # 单包摘要（二选一即可）
+sha256sum -c skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256   # 本机架构的单包摘要（推荐）
+# checksums.txt 含两个架构；只下载一份时不能直接整文件 -c
 ```
 
 ### 2.2 解包安装
@@ -1039,6 +1043,18 @@ sh deploy/pack-release.sh
 | 部署态 | 二进制 round4 → round5，服务稳定 | round4 sha `8f74fabe…` 9,272,296 B；round5 sha `da544b5f…` 9,271,912 B；备份 `20261104-202700-round4` / `20261104-203455-round5`；`/var/lib/skiff` 不存在 |
 | 深色主题下 iframe 内部 | 未验证（curl 无法执行脚本） | 留待真实浏览器复测 |
 
+### 9.9 round6 部署（2026-11-04，方案 A + 前缀收紧，逐项）
+
+| 面 | 结论 | 关键证据 |
+|---|---|---|
+| 前缀资源 | 带前缀全部可取，根路径全部 404 | `/{p}/static/{skiff.css,skiff.js,theme-init.js,htmx.min.js,xterm.min.js}` 均 **200**；`/static/skiff.js`、`/static/skiff.css`、`/plugins/<id>/ui` 均 **404** |
+| 页面引用 | 无坏链 | 登录页/概览/站点列表/插件详情/菜单设置抽 **33** 条同源 `src|href`，逐条 **200**；iframe src 带前缀且 **200** |
+| A 方案结构 | 落地 | 概览含内联 SVG 精灵（31 个 `<svg>`）、5 个 `data-nav-toggle`；无字符图标；CSS 含 `--nav-row-h`/`--nav-icon`，`.subnav.open` 48px |
+| 手风琴行为 | 浏览器实测通过 | caret 展开 `aria-expanded=true`；换组互斥；Escape 收起并回焦 |
+| 证书列 | 与实际证书目录一致 | `/www/certs/demo.local/` 有 `cert.pem`+`key.pem`；列表「已启用 HTTPS」1 处、「未配置」0 处 |
+| 回归 | 全绿 | 站点 `https://10.10.15.4/` **200** + `PHP Version 8.5.12`；4 插件 enabled；概览/插件/菜单设置与 6 条 `/m/...` 深链均 **200** |
+| 部署态 | round5 → round6 | 二进制 sha `9b2158c9…` 9,291,368 B；备份 `20261104-214238-round6`；`/var/lib/skiff` 不存在 |
+
 未闭环项统一登记在 [`docs/TEST_LEDGER.md`](TEST_LEDGER.md)。
 
 ## 变更记录
@@ -1056,3 +1072,4 @@ sh deploy/pack-release.sh
 | 2026-11-04 | **网站寄宿迁 `/www`**：数据根改 `/www/skiff`、站点 `/www/sites`、vhost `/www/nginx/conf.d`、日志 `/www/logs/nginx`、socket `/www/php`；nginx/php 改 host 网络，镜像固定 OpenResty digest；防火墙 80/443 + 18080；§1.1 权限表与 §9.6 同步，迁移实测见本条 |
 | 2026-11-04 | **闭环轮**：新增 §2.13 站点 HTTPS（证书目录/自签/上传/强制跳转/`nginx -t` 回滚）、§2.14 镜像源自动落盘、§0.2 路径 E（目标机 musl 静态包）、§9.7 逐项实测；同步 §9.6 插件由 5 包更正为 4 包 |
 | 2026-11-04 | **round4/round5**：新增 §9.8；静态资源增加带安全入口前缀的别名路由 `/{p}/static/{*path}`（与根路径共用 handler），站点列表单表合并、插件 UI 主题兜底与 `skiff.theme.request` 实测通过；两轮备份与二进制 sha 记录在 §9.8 |
+| 2026-11-04 | **round6（方案 A「舱线」+ 前缀收紧）**：新增 §9.9；根路径 `/static` 与 `/plugins/<id>/ui` 旁路删除后，33 条同源引用逐条 200、0 坏链；A 方案 SVG 精灵/48px 二级通栏与手风琴互斥/Escape 回焦浏览器实测通过；证书列按证书目录判定；二进制 sha `9b2158c9…`，备份 `20261104-214238-round6` |
