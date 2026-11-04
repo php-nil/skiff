@@ -238,6 +238,26 @@ impl Policy {
         for net in &spec.networks {
             validate_object_name(net)?;
         }
+        // host 网络只由内核「网站」能力使用（宿主 80/443 直通）；插件一律拒绝。
+        if spec.network_mode.is_some() {
+            return Err(PolicyError::BadRequest(
+                "插件不允许自定义网络模式（只允许内核站点使用 host 网络）".into(),
+            ));
+        }
+        if let Some(driver) = &spec.log_driver {
+            if !matches!(driver.as_str(), "local" | "json-file") {
+                return Err(PolicyError::BadRequest(format!(
+                    "不支持的日志驱动: {driver}（只允许 local/json-file）"
+                )));
+            }
+        }
+        if let Some(size) = &spec.log_max_size {
+            if !valid_log_size(size) {
+                return Err(PolicyError::BadRequest(format!(
+                    "log_max_size 非法: {size}（示例：10m、1g）"
+                )));
+            }
+        }
         if spec.memory_limit_mb.map(|v| v <= 0).unwrap_or(false) {
             return Err(PolicyError::BadRequest("memory_limit_mb 必须为正数".into()));
         }
@@ -246,6 +266,18 @@ impl Policy {
         }
         Ok(())
     }
+}
+
+/// 日志大小：`<数字><k|m|g>`，如 `10m`、`1g`。
+fn valid_log_size(size: &str) -> bool {
+    let bytes = size.trim().as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    let (num, unit) = bytes.split_at(bytes.len() - 1);
+    num.iter().all(u8::is_ascii_digit)
+        && matches!(unit[0].to_ascii_lowercase(), b'k' | b'm' | b'g')
+        && num.iter().any(|b| *b != b'0')
 }
 
 fn validate_object_name(name: &str) -> Result<(), PolicyError> {
@@ -336,7 +368,10 @@ mod tests {
             restart: None,
             healthcheck: None,
             networks: vec![],
+            network_mode: None,
             mounts: vec![],
+            log_driver: None,
+            log_max_size: None,
             memory_limit_mb: None,
             nano_cpus: None,
             pids_limit: None,

@@ -4,11 +4,15 @@
 # 由发布包内执行，前提：外层已校验 tar.gz 的 SHA-256 摘要（§11 决策 12：发布物不签名）。
 # 本脚本不负责校验包含自身的压缩包（自校验悖论，§5.1）。
 #
-# 用法: sh install.sh [--prefix /usr/local] [--no-start] [--no-systemd]
+# 用法: sh install.sh [--prefix /usr/local] [--datadir /www/skiff] [--webroot /www]
+#                      [--listen <addr:port>] [--no-start] [--no-systemd]
 #                      [--no-docker] [--docker-source <host>] [--registry-mirror <host>]...
 set -eu
 
 PREFIX=/usr/local
+DATADIR_OVERRIDE=""
+WEBROOT_OVERRIDE=""
+LISTEN_OVERRIDE="${SKIFF_LISTEN:-}"
 DO_START=1
 DO_SYSTEMD=1
 WITH_DOCKER=1
@@ -24,6 +28,12 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --prefix) PREFIX="${2:?--prefix 需要参数}"; shift 2 ;;
         --prefix=*) PREFIX="${1#*=}"; shift ;;
+        --datadir) DATADIR_OVERRIDE="${2:?--datadir 需要参数}"; shift 2 ;;
+        --datadir=*) DATADIR_OVERRIDE="${1#*=}"; shift ;;
+        --webroot) WEBROOT_OVERRIDE="${2:?--webroot 需要参数}"; shift 2 ;;
+        --webroot=*) WEBROOT_OVERRIDE="${1#*=}"; shift ;;
+        --listen) LISTEN_OVERRIDE="${2:?--listen 需要参数}"; shift 2 ;;
+        --listen=*) LISTEN_OVERRIDE="${1#*=}"; shift ;;
         --no-start) DO_START=0; shift ;;
         --no-systemd) DO_SYSTEMD=0; shift ;;
         --no-docker) WITH_DOCKER=0; shift ;;
@@ -51,6 +61,11 @@ while [ $# -gt 0 ]; do
 用法: sh install.sh [选项]
 
   --prefix <dir>              安装前缀（默认 /usr/local）
+  --datadir <dir>             数据根（默认 /www/skiff：库、config.toml、plugins、backup）
+  --webroot <dir>             站点寄宿根（默认 /www：sites/nginx/logs/certs/php）
+  --listen <addr:port>        面板监听地址（默认沿用示例配置 127.0.0.1:18080）；
+                              可用环境变量 SKIFF_LISTEN 代替；内网直连需显式改，
+                              并自行确认 allow_insecure_http 或 TLS 配置
   --no-start                  装完不启动服务
   --no-systemd                不装 systemd unit
   --no-docker                 跳过 Docker 自动安装（面板仍可装，容器页为空态）
@@ -66,7 +81,8 @@ done
 
 BIN_DIR="$PREFIX/bin"
 UNIT_DIR=/etc/systemd/system
-DATA_DIR=/var/lib/skiff
+DATA_DIR=${DATADIR_OVERRIDE:-/www/skiff}
+WEB_ROOT=${WEBROOT_OVERRIDE:-/www}
 CONF_DIR=/etc/skiff
 RUN_DIR=/run/skiff
 PLUGIN_GROUP=skiff-plugins
@@ -102,10 +118,41 @@ chmod 0711 "$DATA_DIR/plugins"
 chmod 0700 "$DATA_DIR/backup"
 log "数据根 $DATA_DIR（0711 root，可穿越不可列）"
 
+# 站点寄宿布局：站点、vhost、日志、证书、PHP socket 都对容器内进程可读（0755）。
+mkdir -p "$WEB_ROOT/sites" "$WEB_ROOT/nginx/conf.d" "$WEB_ROOT/logs/nginx" \
+         "$WEB_ROOT/certs" "$WEB_ROOT/php" "$WEB_ROOT/skiff/waf/rules"
+chmod 0755 "$WEB_ROOT" "$WEB_ROOT/sites" "$WEB_ROOT/nginx" "$WEB_ROOT/nginx/conf.d" \
+           "$WEB_ROOT/logs" "$WEB_ROOT/logs/nginx" "$WEB_ROOT/certs" "$WEB_ROOT/php"
+log "站点寄宿根 $WEB_ROOT（sites/nginx/logs/certs/php）"
+
+# 配置文件里写死 data_dir/web_root：示例配置默认值就是 /www/skiff + /www，
+# 自定义 --datadir/--webroot 时同步追加（环境变量优先级更高，但落盘更直观）。
+ensure_path_config() {
+    conf=$1
+    data=$2
+    web=$3
+    [ -f "$conf" ] || return 0
+    if grep -qE '^[[:space:]]*data_dir[[:space:]]*=' "$conf"; then
+        sed -i "s|^[[:space:]]*data_dir[[:space:]]*=.*|data_dir = \"$data\"|" "$conf"
+    else
+        printf '\ndata_dir = "%s"\n' "$data" >> "$conf"
+    fi
+    if grep -qE '^[[:space:]]*web_root[[:space:]]*=' "$conf"; then
+        sed -i "s|^[[:space:]]*web_root[[:space:]]*=.*|web_root = \"$web\"|" "$conf"
+    else
+        printf 'web_root = "%s"\n' "$web" >> "$conf"
+    fi
+    log "配置路径已写入：data_dir=$data web_root=$web"
+}
+
 if [ ! -f "$CONF_DIR/config.toml" ] && [ -f "$SRC_DIR/config.toml.example" ]; then
     cp "$SRC_DIR/config.toml.example" "$CONF_DIR/config.toml"
     chmod 0644 "$CONF_DIR/config.toml"
     log "已放置示例配置 $CONF_DIR/config.toml（请按需修改）"
+fi
+
+if [ -n "$DATADIR_OVERRIDE" ] || [ -n "$WEBROOT_OVERRIDE" ]; then
+    ensure_path_config "$CONF_DIR/config.toml" "$DATA_DIR" "$WEB_ROOT"
 fi
 
 # 2.1 「示例配置装完即起不来」的收口
@@ -143,6 +190,27 @@ ensure_insecure_http() {
     } >> "$conf"
     warn "已在 $conf 启用明文 HTTP（仅 loopback）。对外提供访问前必须配 TLS 或可信反代（§2.4）。"
 }
+# 2.0 监听地址覆盖（--listen / SKIFF_LISTEN）
+#
+# 默认**不改**配置：示例配置是 127.0.0.1:18080（只回环）。内网直连等场景要显式给值，
+# 这样重装/升级不会把已有的监听地址悄悄改回去，也不会把内部实例意外暴露到网卡上。
+apply_listen_override() {
+    conf=$1
+    [ -n "$LISTEN_OVERRIDE" ] || return 0
+    case "$LISTEN_OVERRIDE" in
+        *:*) ;;
+        *) die "--listen/SKIFF_LISTEN 需要 <addr:port> 形式，实际: $LISTEN_OVERRIDE" ;;
+    esac
+    [ -f "$conf" ] || return 0
+    if grep -qE '^[[:space:]]*listen[[:space:]]*=' "$conf"; then
+        sed -i "s|^[[:space:]]*listen[[:space:]]*=.*|listen = \"$LISTEN_OVERRIDE\"|" "$conf"
+    else
+        printf '\nlisten = "%s"\n' "$LISTEN_OVERRIDE" >> "$conf"
+    fi
+    log "监听地址已设为 $LISTEN_OVERRIDE（--listen/SKIFF_LISTEN）"
+}
+apply_listen_override "$CONF_DIR/config.toml"
+
 ensure_insecure_http "$CONF_DIR/config.toml"
 
 # 3. 二进制（先写临时文件再原子替换，避免升级瞬间的半个可执行文件）
@@ -170,9 +238,10 @@ if [ -d "$SRC_DIR/official" ]; then
         install -m 0644 "$pkg" "$OFFICIAL_DIR/"
         COPIED=$((COPIED + 1))
     done
-    # 公钥只是公开信息：复制过去方便管理员导入信任库，不构成泄密
+    # 公钥只是公开信息：复制过去，首次启动会自动写入信任库（不构成泄密）
     if [ -f "$SRC_DIR/official/public-key.txt" ]; then
         install -m 0644 "$SRC_DIR/official/public-key.txt" "$OFFICIAL_DIR/public-key.txt"
+        log "官方公钥已放入 $OFFICIAL_DIR，首启会自动信任（无需手动导入）"
     fi
     log "官方插件包已放入 $OFFICIAL_DIR（$COPIED 个，未自动安装）"
 fi
@@ -264,7 +333,7 @@ echo "     镜像拉不动多半是网络：用 --registry-mirror <host> 配加�
 echo "  5) 默认只监听 127.0.0.1:18080；对外请配 TLS 或反代（见 config.toml.example）"
 if [ -d "$OFFICIAL_DIR" ]; then
 echo "  6) 官方插件（随包携带，安装时逐条确认权限）："
-echo "       先把 $OFFICIAL_DIR/public-key.txt 里的公钥导入面板「设置 → 信任公钥」"
+echo "       官方公钥已由首启自动信任（$OFFICIAL_DIR/public-key.txt），无需手动导入"
 echo "       ls $OFFICIAL_DIR"
 echo "       $BIN_DIR/skiff plugin install $OFFICIAL_DIR/com.skiff.<x>-<ver>.wbpkg \\"
 echo "           --resource path:/var/www"

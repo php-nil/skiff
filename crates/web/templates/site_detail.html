@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}{{ site.domain }} · 网站详情 · Skiff{% endblock %}
+{% block content %}
+<div class="detail-head">
+  <div>
+    <h1>{{ site.domain }}</h1>
+    <div class="meta">
+      {% if site.status == "running" %}
+      <span class="badge ok"><span class="status-dot ok"></span>运行中</span>
+      {% else if site.status == "stopped" %}
+      <span class="badge"><span class="status-dot"></span>已停止</span>
+      {% else %}
+      <span class="badge danger"><span class="status-dot danger"></span>异常</span>
+      {% endif %}
+      {% if site.is_default %}<span class="badge info">默认站点</span>{% endif %}
+      <span class="mono">{{ site.root_dir }}</span>
+      <span>创建于 {{ site.created }}</span>
+    </div>
+  </div>
+  <div class="detail-actions">
+    <a class="btn" href="{% if site.https %}https{% else %}http{% endif %}://{{ site.domain }}/" target="_blank" rel="noopener">访问</a>
+    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">日志</a>
+    {% if can_admin %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/{% if site.status == "running" %}stop{% else %}start{% endif %}" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="btn" type="submit">{% if site.status == "running" %}停止{% else %}启动{% endif %}</button>
+    </form>
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/delete" class="inline"
+          data-confirm="删除站点 {{ site.domain }}？将删除 nginx vhost 与站点目录 {{ site.root_dir }}，不可撤销。确认继续？">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="btn danger" type="submit">删除站点</button>
+    </form>
+    {% endif %}
+    <a class="ghost" href="/{{ ctx.prefix }}/sites">返回列表</a>
+  </div>
+</div>
+
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+
+<nav class="tabs" aria-label="站点详情标签">
+  <a class="tab{% if tab == "overview" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}"{% if tab == "overview" %} aria-current="page"{% endif %}>概览</a>
+  <a class="tab{% if tab == "domains" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=domains"{% if tab == "domains" %} aria-current="page"{% endif %}>域名</a>
+  <a class="tab{% if tab == "config" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=config"{% if tab == "config" %} aria-current="page"{% endif %}>配置文件</a>
+  <a class="tab" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">日志</a>
+  <a class="tab{% if tab == "dir" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir"{% if tab == "dir" %} aria-current="page"{% endif %}>目录</a>
+  <a class="tab{% if tab == "ssl" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=ssl"{% if tab == "ssl" %} aria-current="page"{% endif %}>SSL</a>
+</nav>
+
+{% if tab == "overview" %}
+<section class="panel">
+  <h2>站点概览</h2>
+  <div class="kv">
+    <div><span class="muted">主域名</span><span class="mono">{{ site.domain }}</span></div>
+    <div><span class="muted">别名</span><span class="mono">{% if site.aliases.len() > 0 %}{{ site.aliases_text }}{% else %}无{% endif %}</span></div>
+    <div><span class="muted">根目录</span><span class="mono wrap">{{ site.root_dir }}</span></div>
+    <div><span class="muted">PHP 版本</span><span class="mono">{{ site.php_version }}</span></div>
+    <div><span class="muted">状态</span><span>{{ site.status_label }}</span></div>
+    <div><span class="muted">默认站点</span><span>{% if site.is_default %}是{% else %}否{% endif %}</span></div>
+    <div><span class="muted">证书</span><span>{% if site.https %}已启用{% if site.force_https %}（强制 HTTPS）{% endif %}{% else %}未启用{% endif %}</span></div>
+    <div><span class="muted">访问入口</span><span class="mono">{% if site.https %}https://{{ site.domain }}/{% else %}http://{{ site.domain }}{% if env.port != 80 %}:{{ env.port }}{% endif %}/{% endif %}</span></div>
+  </div>
+</section>
+<section class="panel">
+  <h2>下一步</h2>
+  <p class="muted">在「配置文件」页可直接编辑 vhost 并保存重载；「日志」页支持关键字过滤与时间倒序；「目录」页可只读浏览站点根。</p>
+  <div class="row">
+    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=config">编辑配置文件</a>
+    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir">浏览目录</a>
+    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">查看日志</a>
+  </div>
+</section>
+{% else if tab == "domains" %}
+<section class="panel">
+  <h2>域名</h2>
+  <div class="table-wrap">
+    <table class="grid compact">
+      <thead><tr><th>类型</th><th>域名</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge info">主域名</span></td><td class="mono">{{ site.domain }}</td><td>站点目录与 vhost 命名</td></tr>
+        {% for a in site.aliases %}
+        <tr><td><span class="badge">别名</span></td><td class="mono">{{ a }}</td><td>写入 vhost `server_name`</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if site.aliases.is_empty() %}<p class="hint">当前没有别名域名。</p>{% endif %}
+  <p class="hint">别名在创建向导中设置后写入 vhost；单独增删别名的界面在下一阶段接入。</p>
+</section>
+{% else if tab == "config" %}
+<section class="panel">
+  <h2>nginx 配置文件</h2>
+  <div class="config-path">
+    <span class="mono">{{ config_path }}</span>
+    {% if config_active %}
+    <span class="badge ok">已启用</span>
+    {% else %}
+    <span class="badge warn">已停用（站点处于停止状态）</span>
+    {% endif %}
+  </div>
+  <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/config/save" class="config-editor">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <textarea class="code" name="content" spellcheck="false" aria-label="vhost 配置内容"{% if !can_admin %} readonly{% endif %}>{{ config_content }}</textarea>
+    <div class="form-actions">
+      {% if can_admin %}
+      <button class="btn primary" type="submit"{% if config_path.is_empty() %} disabled{% endif %}>保存并重载 nginx</button>
+      {% endif %}
+      <span class="hint">保存失败会自动回滚到保存前内容，并在上方给出失败原因。</span>
+    </div>
+  </form>
+</section>
+{% else if tab == "dir" %}
+<section class="panel">
+  <h2>站点目录（只读）</h2>
+  <div class="dir-head">
+    <a class="btn small" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir{% if !dir.at_root %}&amp;path={{ dir.parent_url }}{% endif %}">{% if dir.at_root %}根目录{% else %}上一级{% endif %}</a>
+    <span class="crumb">{{ site.root_dir }}{% if !dir.rel.is_empty() %}/{{ dir.rel }}{% endif %}</span>
+  </div>
+  {% if dir.entries.is_empty() %}
+  <div class="empty">
+    <strong>目录为空</strong>
+    <p class="hint">这里只读展示；需要通过其他文件管理能力写入内容。</p>
+  </div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid compact">
+      <thead><tr><th>名称</th><th>类型</th><th class="num">大小</th><th>修改时间</th></tr></thead>
+      <tbody>
+        {% for e in dir.entries %}
+        <tr>
+          <td class="mono wrap">
+            {% if e.is_dir %}
+            <a href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir&amp;path={{ e.url }}">{{ e.name }}/</a>
+            {% else %}{{ e.name }}{% endif %}
+          </td>
+          <td>{% if e.is_dir %}<span class="badge">目录</span>{% else %}<span class="muted">文件</span>{% endif %}</td>
+          <td class="num mono">{{ e.size }}</td>
+          <td class="mono muted">{{ e.modified }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<section class="panel">
+  <h2>SSL 证书</h2>
+  <div class="kv">
+    <div><span class="muted">HTTPS</span><span>{% if ssl.enabled %}<span class="badge ok">已启用</span>{% else %}<span class="badge warn">未启用</span>{% endif %}</span></div>
+    <div><span class="muted">强制跳转</span><span>{% if ssl.force_https %}80 → 443（301）{% else %}关闭{% endif %}</span></div>
+    <div><span class="muted">证书文件</span><span class="mono wrap">{{ ssl.cert_path }}{% if !ssl.cert_exists %}（不存在）{% endif %}</span></div>
+    <div><span class="muted">私钥文件</span><span class="mono wrap">{{ ssl.key_path }}</span></div>
+    {% if !ssl.subject.is_empty() %}<div><span class="muted">主体</span><span class="mono wrap">{{ ssl.subject }}</span></div>{% endif %}
+    {% if !ssl.issuer.is_empty() %}<div><span class="muted">签发者</span><span class="mono wrap">{{ ssl.issuer }}</span></div>{% endif %}
+    {% if !ssl.expires.is_empty() %}<div><span class="muted">到期</span><span class="mono">{{ ssl.expires }}</span></div>{% endif %}
+  </div>
+  {% if can_admin %}
+  <div class="row">
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/ssl" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="generate">
+      <button class="btn" type="submit" data-confirm="将覆盖该站点现有证书并启用 HTTPS，继续？">生成自签证书并启用</button>
+    </form>
+    {% if ssl.enabled %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/ssl" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="force">
+      <input type="hidden" name="enabled" value="{% if ssl.force_https %}0{% else %}1{% endif %}">
+      <button class="btn" type="submit">{% if ssl.force_https %}取消强制 HTTPS{% else %}强制 HTTPS 跳转{% endif %}</button>
+    </form>
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/ssl" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="disable">
+      <button class="btn" type="submit">关闭 HTTPS</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/ssl" class="inline"
+          data-confirm="删除该站点证书文件？HTTPS 将立即关闭，确认继续？">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="delete_cert">
+      <button class="btn danger" type="submit">删除证书</button>
+    </form>
+  </div>
+  <details>
+    <summary>上传已有证书（PEM）</summary>
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/ssl">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="upload">
+      <label>证书 PEM
+        <textarea name="cert_pem" rows="8" class="mono" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+      </label>
+      <label>私钥 PEM（保存为 0600）
+        <textarea name="key_pem" rows="8" class="mono" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+      </label>
+      <button class="btn" type="submit">上传并启用</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

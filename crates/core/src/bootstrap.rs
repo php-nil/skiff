@@ -30,13 +30,20 @@ pub struct Bootstrapped {
 }
 
 pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
-    prepare_dirs(&cfg.data_dir, &cfg.run_dir)?;
+    prepare_dirs(&cfg.data_dir, &cfg.web_root, &cfg.run_dir)?;
 
     let db_path = cfg.data_dir.join("skiff.db");
     let db = skiff_store::Db::open(&db_path)
         .with_context(|| format!("打开数据库失败: {}", db_path.display()))?;
     restrict_mode(&db_path, 0o600);
     let db = Arc::new(db);
+
+    // 官方发布包自带 `official/public-key.txt`：首次启动（以及每次启动）自动写入
+    // 信任库，避免新装机器上 `skiff plugin install` 因「未导入公钥」而失败。
+    // 信任库本身是首用即固定（同 key_id 不覆盖），这里重复调用不会改变已有记录。
+    if let Some(key_id) = trust_bundled_public_key(&db, &cfg.data_dir)? {
+        info!(key_id = %key_id, "已自动信任官方发布包公钥");
+    }
 
     let entry_prefix = db.get_or_init_setting(KEY_ENTRY_PREFIX, || random_prefix(8))?;
     let csrf_secret = db.get_or_init_setting(KEY_CSRF_SECRET, skiff_identity::new_token)?;
@@ -86,6 +93,7 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
 
     let web_cfg = WebConfig {
         data_dir: cfg.data_dir.clone(),
+        web_root: cfg.web_root.clone(),
         entry_prefix,
         dev_http: cfg.dev_http,
         trusted_proxies,
@@ -111,12 +119,21 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     Ok(Bootstrapped { state, first_run })
 }
 
-fn prepare_dirs(data_dir: &Path, run_dir: &Path) -> Result<()> {
+fn prepare_dirs(data_dir: &Path, web_root: &Path, run_dir: &Path) -> Result<()> {
     for dir in [
         data_dir.to_path_buf(),
         data_dir.join("plugins"),
         data_dir.join("logs"),
         data_dir.join("backup"),
+        // 站点寄宿布局：/www/{sites,nginx/conf.d,logs/nginx,certs,php}
+        web_root.to_path_buf(),
+        web_root.join("sites"),
+        web_root.join("nginx").join("conf.d"),
+        web_root.join("logs").join("nginx"),
+        web_root.join("certs"),
+        web_root.join("php"),
+        // WAF 规则目录仅预留，本期不加载、不拦截。
+        web_root.join("skiff").join("waf").join("rules"),
         run_dir.to_path_buf(),
         run_dir.join("plugins"),
     ] {
@@ -129,6 +146,17 @@ fn prepare_dirs(data_dir: &Path, run_dir: &Path) -> Result<()> {
     restrict_mode(data_dir, 0o711);
     restrict_mode(&data_dir.join("plugins"), 0o711);
     restrict_mode(&data_dir.join("backup"), 0o700);
+    // 站点/日志/证书/php socket 目录允许容器内非 root 进程读取（0755）。
+    for dir in [
+        web_root.to_path_buf(),
+        web_root.join("sites"),
+        web_root.join("nginx").join("conf.d"),
+        web_root.join("logs").join("nginx"),
+        web_root.join("certs"),
+        web_root.join("php"),
+    ] {
+        restrict_mode(&dir, 0o755);
+    }
     Ok(())
 }
 
@@ -158,12 +186,65 @@ fn random_password(len: usize) -> String {
         .collect()
 }
 
+/// 自动信任发布包自带的官方公钥（`<data_dir>/official/public-key.txt`）。
+///
+/// 安装脚本会把 `official/` 整个目录（含公钥）复制到数据目录，这里在首次启动
+/// （以及后续每次启动）把公钥写入信任库，使新装机器上的
+/// `skiff plugin install <包>` 不再需要先手动导入。
+///
+/// 信任库是 TOFU（同 key_id 不覆盖），因此重复调用是幂等的；公钥文件缺失或
+/// 内容损坏时只告警、不影响面板启动。
+pub(crate) fn trust_bundled_public_key(
+    db: &skiff_store::Db,
+    data_dir: &Path,
+) -> Result<Option<String>> {
+    let path = data_dir.join("official").join("public-key.txt");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "读取官方公钥失败，跳过自动信任"
+            );
+            return Ok(None);
+        }
+    };
+    let hex = raw.trim();
+    if hex.is_empty() {
+        warn!(path = %path.display(), "官方公钥为空，跳过自动信任");
+        return Ok(None);
+    }
+    let key = match skiff_pkgfmt::decode_public_key(hex) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "官方公钥无法解析，跳过自动信任"
+            );
+            return Ok(None);
+        }
+    };
+    let key_id = skiff_pkgfmt::key_id_of(&key.to_bytes());
+    db.trust_key(&key_id, hex, "official")
+        .with_context(|| format!("写入信任库失败: {}", path.display()))?;
+    Ok(Some(key_id))
+}
+
 /// 数据目录健康检查（`skiff doctor`）：只读，不改动任何文件。
 pub fn doctor(cfg: &Config) -> Vec<(bool, String)> {
     let mut out = Vec::new();
     out.push((
         cfg.data_dir.exists(),
         format!("数据根存在: {}", cfg.data_dir.display()),
+    ));
+    out.push((
+        cfg.web_root.exists(),
+        format!("站点寄宿根存在: {}", cfg.web_root.display()),
     ));
     out.push((
         cfg.data_dir.join("skiff.db").exists(),
@@ -206,10 +287,16 @@ mod tests {
         assert!(!pw.contains('0') && !pw.contains('O'));
     }
 
-    fn test_config(data_dir: PathBuf, run_dir: PathBuf, config_path: PathBuf) -> Config {
+    fn test_config(
+        data_dir: PathBuf,
+        web_root: PathBuf,
+        run_dir: PathBuf,
+        config_path: PathBuf,
+    ) -> Config {
         Config {
             listen: "127.0.0.1:0".parse().unwrap(),
             data_dir,
+            web_root,
             run_dir,
             config_path,
             docker_socket: "/nonexistent/docker.sock".into(),
@@ -238,8 +325,14 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("data");
+        let web_root = tmp.path().join("www");
         let run_dir = tmp.path().join("run");
-        let cfg = test_config(data_dir.clone(), run_dir, tmp.path().join("config.toml"));
+        let cfg = test_config(
+            data_dir.clone(),
+            web_root.clone(),
+            run_dir,
+            tmp.path().join("config.toml"),
+        );
         let boot = bootstrap(&cfg).expect("bootstrap 应成功");
         assert!(boot.first_run.is_some(), "空库首启应生成初始管理员");
         drop(boot);
@@ -254,6 +347,54 @@ mod tests {
         assert_eq!(mode(&data_dir.join("backup")), 0o700);
         assert_eq!(mode(&data_dir.join("skiff.db")), 0o600);
         assert_eq!(mode(&data_dir.join("initial-admin.txt")), 0o600);
+        // 站点寄宿目录对容器内非 root 进程可读。
+        assert_eq!(mode(&web_root), 0o755);
+        assert_eq!(mode(&web_root.join("sites")), 0o755);
+        assert_eq!(mode(&web_root.join("php")), 0o755);
+        assert!(web_root.join("nginx").join("conf.d").is_dir());
+        assert!(web_root.join("logs").join("nginx").is_dir());
+    }
+
+    /// 安装包自带 `official/public-key.txt` 时，首启应自动写入信任库。
+    #[test]
+    fn bundled_public_key_is_trusted_automatically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let official = data_dir.join("official");
+        std::fs::create_dir_all(&official).unwrap();
+        let key = skiff_pkgfmt::SigningKey::generate();
+        std::fs::write(official.join("public-key.txt"), key.public_hex()).unwrap();
+
+        let db = skiff_store::Db::open_in_memory().unwrap();
+        assert!(db.trusted_key(&key.key_id()).unwrap().is_none());
+
+        let id = trust_bundled_public_key(&db, &data_dir)
+            .unwrap()
+            .expect("有公钥文件时应写入信任库");
+        assert_eq!(id, key.key_id());
+        assert_eq!(
+            db.trusted_key(&key.key_id()).unwrap(),
+            Some(key.public_hex())
+        );
+        assert_eq!(db.list_trusted_keys().unwrap()[0].2, "official");
+
+        // 再次启动幂等：同 key_id 不重复插入，也不覆盖内容。
+        assert!(trust_bundled_public_key(&db, &data_dir).unwrap().is_some());
+        assert_eq!(db.list_trusted_keys().unwrap().len(), 1);
+    }
+
+    /// 没有公钥文件 / 文件为空时不写库、也不报错（未携带公钥是合法状态）。
+    #[test]
+    fn missing_or_empty_bundled_key_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let db = skiff_store::Db::open_in_memory().unwrap();
+        assert!(trust_bundled_public_key(&db, &data_dir).unwrap().is_none());
+
+        std::fs::create_dir_all(data_dir.join("official")).unwrap();
+        std::fs::write(data_dir.join("official").join("public-key.txt"), "  \n").unwrap();
+        assert!(trust_bundled_public_key(&db, &data_dir).unwrap().is_none());
+        assert!(db.list_trusted_keys().unwrap().is_empty());
     }
 
     /// 跨平台烟测：bootstrap 全流程（建目录、开库、首启管理员）必须能跑完。
@@ -262,6 +403,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = test_config(
             tmp.path().join("data"),
+            tmp.path().join("www"),
             tmp.path().join("run"),
             tmp.path().join("config.toml"),
         );

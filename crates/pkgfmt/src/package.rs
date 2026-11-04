@@ -108,8 +108,15 @@ pub struct UnpackedPackage {
 impl Drop for UnpackedPackage {
     fn drop(&mut self) {
         // staging 由调用方通过 `persist` 认领；未认领则清理，避免残留“部分安装”。
-        if self.staging.exists() {
-            let _ = fs::remove_dir_all(&self.staging);
+        // Windows 上杀毒/索引会短暂占用刚解包的文件，`remove_dir_all` 可能返回
+        // `ERROR_DIR_NOT_EMPTY`（不是真有残留）；重试几次即可，Linux 首次即成功。
+        for attempt in 0..5 {
+            if !self.staging.exists() || fs::remove_dir_all(&self.staging).is_ok() {
+                return;
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
     }
 }
@@ -363,6 +370,8 @@ fn scan(path: &Path, opts: &VerifyOptions) -> Result<(PackageMeta, Vec<RawEntry>
     let manifest_text = std::str::from_utf8(&manifest_raw)
         .map_err(|_| PkgError::Manifest("manifest.toml 不是 UTF-8".into()))?;
     let manifest = Manifest::parse(manifest_text)?;
+    // 菜单/槽位引用的 ui 文件必须真的打进包；否则安装后是死链。
+    manifest.validate_menu_assets(|p| raw.iter().any(|e| e.path == format!("ui/{p}")))?;
 
     if let Some(bin) = raw
         .iter()

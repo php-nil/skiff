@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -16,12 +17,34 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::AppState;
-use crate::templates::{ContainerDetailPage, ContainerRows, ContainersPage, MountView, PortView};
+use crate::templates::{
+    ContainerDetailPage, ContainerRowView, ContainerRows, ContainersPage, MountView, PortView,
+};
 use crate::util::{form_first, parse_form};
+
+/// `?filter=error` 只保留异常容器（概览待办深链），其余值视为不筛选。
+fn filter_of(q: &HashMap<String, String>) -> String {
+    match q.get("filter").map(String::as_str) {
+        Some("error") => "error".into(),
+        _ => String::new(),
+    }
+}
+
+fn rows_for(
+    containers: Vec<skiff_docker::client::ContainerRow>,
+    filter: &str,
+) -> Vec<ContainerRowView> {
+    containers
+        .iter()
+        .filter(|c| filter.is_empty() || handlers::container_abnormal(&c.state))
+        .map(handlers::container_view)
+        .collect()
+}
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let docker_ok = state.docker().available();
     let containers = if docker_ok {
@@ -33,31 +56,36 @@ pub async fn list(
     } else {
         Vec::new()
     };
+    let filter = filter_of(&q);
     let can_operate = user.can(skiff_model::Permission::DockerOperate);
     let page = ContainersPage {
         ctx: handlers::page_ctx(&state, &user, "containers"),
         can_operate,
-        containers: containers.iter().map(handlers::container_view).collect(),
+        containers: rows_for(containers, &filter),
         docker_reason: state.docker_unavailable_reason().to_string(),
+        filter,
         error: String::new(),
     };
     handlers::render(page)
 }
 
-/// htmx 局部刷新：只回表格行。
+/// htmx 局部刷新：只回表格行；保留当前筛选。
 pub async fn rows(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let containers = if state.docker().available() {
         state.docker().list_containers().await.unwrap_or_default()
     } else {
         Vec::new()
     };
+    let filter = filter_of(&q);
     let page = ContainerRows {
         ctx: handlers::page_ctx(&state, &user, "containers"),
         can_operate: user.can(skiff_model::Permission::DockerOperate),
-        containers: containers.iter().map(handlers::container_view).collect(),
+        containers: rows_for(containers, &filter),
+        filter,
     };
     handlers::render(page)
 }
@@ -212,7 +240,11 @@ pub async fn action(
         })?;
 
     // 分发只在 Docker::execute 一处；这里拿到的 Ok 值（动作类动词为 null）用不上
-    let result = state.docker().execute(verb, Some(&obj)).await.map(|_| ());
+    let result = state
+        .docker()
+        .execute(verb, Some(&obj), skiff_docker::DockerParams::None)
+        .await
+        .map(|_| ());
 
     let ip = handlers::client_ip(&state, &parts);
     match &result {
@@ -240,7 +272,7 @@ pub async fn action(
     result.map_err(|e| AppError::Unavailable(e.to_string()))?;
 
     if handlers::htmx_request(&parts) {
-        return rows(State(state), AuthUser(user)).await;
+        return rows(State(state), AuthUser(user), Query(HashMap::new())).await;
     }
     Ok(handlers::redirect(format!(
         "/{}/containers/{}",

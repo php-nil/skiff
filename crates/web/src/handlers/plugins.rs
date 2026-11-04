@@ -18,7 +18,7 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser, PluginManagerUser};
 use crate::state::AppState;
 use crate::templates::{
-    GrantRow, PermissionRow, PluginConfirmPage, PluginDetailPage, PluginView, PluginsPage,
+    GrantRow, PermissionRow, PluginConfirmPage, PluginDetailPage, PluginView, PluginsPage, TabView,
 };
 use crate::util::{form_first, parse_form};
 
@@ -82,15 +82,27 @@ fn interop_rows(manifest: &Manifest) -> (Vec<String>, Vec<String>) {
 pub async fn list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     // 运行态从 Supervisor 查询（异步，单独收集）
     let mut plugins = plugin_views(&state)?;
     for p in plugins.iter_mut() {
         p.running = state.supervisor().is_running(&p.id).await;
     }
+    let enabled_count = plugins.iter().filter(|p| p.enabled).count();
+    let disabled_count = plugins.len().saturating_sub(enabled_count);
+    let tab = match q.get("tab").map(String::as_str) {
+        Some("discover") => "discover",
+        Some("updates") => "updates",
+        _ => "installed",
+    }
+    .to_string();
     let page = PluginsPage {
-        ctx: handlers::page_ctx(&state, &user, "plugins"),
+        ctx: handlers::page_ctx(&state, &user, &format!("core/plugins/{tab}")),
         plugins,
+        enabled_count,
+        disabled_count,
+        tab,
         can_admin: user.can(skiff_model::Permission::PluginManage),
         error: String::new(),
         notice: String::new(),
@@ -130,21 +142,82 @@ pub async fn detail(
     // 跨插件跳转的定位建议（`?open=`）：只做长度与控制字符清洗，随后原样交给
     // 目标插件——真正能不能读，仍由目标插件自己的 `path:` 授权根判定。
     let open = sanitize_open(q.get("open").map(String::as_str).unwrap_or(""));
-    let iframe_src = if open.is_empty() {
-        format!(
-            "/plugins/{}/ui/{}?nonce={}",
-            plugin.id, plugin.ui_path, nonce
-        )
-    } else {
-        format!(
-            "/plugins/{}/ui/{}?nonce={}&open={}",
-            plugin.id,
-            plugin.ui_path,
-            nonce,
-            crate::util::encode_uri_component(&open)
-        )
-    };
-    let active = format!("plugin:{}", plugin.id);
+    // 菜单深链：`?menu=<local|plugin/<id>/<local>>` 选中 L2，`?l3=<local>` 选中 L3。
+    // 老包没有 `[[menu]]` 时只认 L2 定位串（保持 P1 行为），不再拼 L3。
+    let manifest = Manifest::parse(&rec.manifest).ok();
+    let menu_raw = q.get("menu").map(String::as_str).unwrap_or("");
+    let l3_raw = q.get("l3").map(String::as_str);
+    let mut target_ui = plugin.ui_path.clone();
+    let mut active = format!("plugin:{}", plugin.id);
+    let mut workbench_title = plugin.ui_label.clone();
+    let mut menu_key = String::new();
+    let mut active_l3 = String::new();
+    let mut active_tab = String::new();
+    let mut tabs: Vec<TabView> = Vec::new();
+    if !menu_raw.trim().is_empty() {
+        let local = crate::menu::menu_local(&plugin.id, menu_raw)
+            .ok_or_else(|| AppError::NotFound(format!("未知菜单定位: {menu_raw}")))?;
+        let declared = manifest
+            .as_ref()
+            .map(|m| !m.menu.is_empty())
+            .unwrap_or(false);
+        if declared {
+            // `legacy` 是 P1 老深链：插件升级为声明式后落到首个可见 L2。
+            let wb = crate::menu::workbench_tabs(&state, &user, &plugin.id, &local, l3_raw)
+                .or_else(|| {
+                    if local != "legacy" {
+                        return None;
+                    }
+                    manifest.as_ref()?.menu.iter().find_map(|d| {
+                        crate::menu::workbench_tabs(&state, &user, &plugin.id, &d.id, l3_raw)
+                    })
+                })
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("菜单不存在或当前角色不可见: {local}"))
+                })?;
+            target_ui = wb.active_ui.clone();
+            active = wb.active_key.clone();
+            workbench_title = wb.l2_label.clone();
+            menu_key = wb.l2_key.clone();
+            active_l3 = wb.active_local.clone();
+            active_tab = wb.active_tab.clone();
+            tabs = wb
+                .items
+                .iter()
+                .map(|t| TabView {
+                    key: t.key.clone(),
+                    local: t.local.clone(),
+                    label: t.label.clone(),
+                    href: t.href.clone(),
+                    icon: t.icon.clone(),
+                    tab: t.tab.clone(),
+                    ui: t.ui.clone(),
+                    src: iframe_url(
+                        &state.cfg.entry_prefix,
+                        &plugin.id,
+                        &t.ui,
+                        &nonce,
+                        &wb.l2_key,
+                        &t.tab,
+                        "",
+                    ),
+                    active: t.local == wb.active_local,
+                })
+                .collect();
+        } else {
+            // 老包：`[[ui]]` 单入口，定位串只用于保持 P1 深链。
+            active = format!("plugin/{}/{}", plugin.id, local);
+        }
+    }
+    let iframe_src = iframe_url(
+        &state.cfg.entry_prefix,
+        &plugin.id,
+        &target_ui,
+        &nonce,
+        &menu_key,
+        &active_tab,
+        &open,
+    );
     // 页面上下文顺带算出顶栏插件菜单；同一份「已启用且有 UI 入口」清单
     // 也直接当 iframe 跳转白名单用（避免为白名单再扫一遍插件表）。
     let ctx = handlers::page_ctx(&state, &user, &active);
@@ -173,6 +246,12 @@ pub async fn detail(
         rpc_url,
         nonce,
         nav_plugins,
+        workbench_title,
+        tabs,
+        menu_key,
+        active_l3,
+        active_tab,
+        active_ui: target_ui,
         interop_provides,
         interop_consumes,
         grants,
@@ -180,6 +259,32 @@ pub async fn detail(
         error: String::new(),
     };
     handlers::render(page)
+}
+
+/// 组装插件 iframe URL：统一带 nonce；有 L2/L3 时补 `menu`（完整稳定键）和 `tab`。
+fn iframe_url(
+    prefix: &str,
+    id: &str,
+    ui: &str,
+    nonce: &str,
+    menu_key: &str,
+    tab: &str,
+    open: &str,
+) -> String {
+    let mut url = format!("/{prefix}/plugins/{id}/ui/{ui}?nonce={nonce}");
+    if !menu_key.is_empty() {
+        url.push_str("&menu=");
+        url.push_str(menu_key);
+    }
+    if !tab.is_empty() {
+        url.push_str("&tab=");
+        url.push_str(tab);
+    }
+    if !open.is_empty() {
+        url.push_str("&open=");
+        url.push_str(&crate::util::encode_uri_component(open));
+    }
+    url
 }
 
 /// 清洗跨插件跳转的定位串：去掉控制字符（含换行/制表符，避免被拼进头部或
@@ -433,6 +538,8 @@ pub async fn remove(
     state.supervisor().stop(&id).await;
     skiff_plugin::uninstall_package(state.db(), &state.cfg.data_dir, &id, delete_data)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
+    crate::menu::cleanup_plugin_prefs(state.db(), &id);
     let _ = state.db().audit(
         &user.user.username,
         &handlers::client_ip(&state, &parts),

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ domain }} 日志 · Skiff{% endblock %}
+{% block content %}
+<div class="detail-head">
+  <div>
+    <h1>{{ domain }} 日志</h1>
+    <div class="meta"><span>最新 200 行 · 时间倒序 · 关键字过滤</span></div>
+  </div>
+  <div class="detail-actions">
+    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ domain }}/logs">刷新</a>
+    <a class="ghost" href="/{{ ctx.prefix }}/sites/{{ domain }}">站点详情</a>
+    <a class="ghost" href="/{{ ctx.prefix }}/sites">返回网站列表</a>
+  </div>
+</div>
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+
+<nav class="tabs" aria-label="站点详情标签">
+  <a class="tab" href="/{{ ctx.prefix }}/sites/{{ domain }}">概览</a>
+  <a class="tab" href="/{{ ctx.prefix }}/sites/{{ domain }}?tab=domains">域名</a>
+  <a class="tab" href="/{{ ctx.prefix }}/sites/{{ domain }}?tab=config">配置文件</a>
+  <a class="tab on" href="/{{ ctx.prefix }}/sites/{{ domain }}/logs" aria-current="page">日志</a>
+  <a class="tab" href="/{{ ctx.prefix }}/sites/{{ domain }}?tab=dir">目录</a>
+  <a class="tab" href="/{{ ctx.prefix }}/sites/{{ domain }}?tab=ssl">SSL</a>
+</nav>
+
+<section class="panel">
+  <h2>日志过滤</h2>
+  <form method="get" action="/{{ ctx.prefix }}/sites/{{ domain }}/logs" class="form-grid">
+    <label>关键字（不区分大小写，留空不过滤）
+      <input type="search" name="q" value="{{ keyword }}" placeholder="例如 404 或某个 IP">
+    </label>
+    <div class="form-actions" style="margin:0">
+      <button class="btn primary" type="submit">过滤</button>
+      {% if !keyword.is_empty() %}<a class="ghost" href="/{{ ctx.prefix }}/sites/{{ domain }}/logs">清除</a>{% endif %}
+    </div>
+  </form>
+  <p class="hint">日志由 nginx 直接写入宿主 <code>/www/logs/nginx/{{ domain }}.access.log</code> / <code>.error.log</code>；内核按 10MB 做 copytruncate 轮转，不依赖宿主 logrotate。</p>
+</section>
+<section class="panel">
+  <h2>访问日志（最新 200 行，时间倒序）</h2>
+  <textarea class="code log" readonly aria-label="访问日志" style="min-height:320px">{{ access_log }}</textarea>
+</section>
+<section class="panel">
+  <h2>错误日志（最新 200 行，时间倒序）</h2>
+  <textarea class="code log" readonly aria-label="错误日志" style="min-height:320px">{{ error_log }}</textarea>
+</section>
+{% endblock %}

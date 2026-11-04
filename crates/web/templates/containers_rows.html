@@ -1,5 +1,9 @@
 {% if containers.is_empty() %}
-  <div class="empty">没有容器</div>
+  {% if !filter.is_empty() %}
+  <div class="empty">没有处于异常状态的容器。<a href="/{{ ctx.prefix }}/containers">清除筛选</a></div>
+  {% else %}
+  <div class="empty">没有容器{% if !ctx.docker_ok %}（Docker 不可用）{% endif %}</div>
+  {% endif %}
 {% else %}
 <table class="grid">
   <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>操作</th></tr></thead>

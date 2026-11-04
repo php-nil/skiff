@@ -10,7 +10,7 @@
 #   输入（由 iter.sh 传入）
 #     --install-exit <n>     install.sh 的退出码（A3 断言用；不传则该条 SKIP）
 #     --port <端口>          默认 18080（与 config 的 listen 一致）
-#     --data-dir <目录>      默认 /var/lib/skiff
+#     --data-dir <目录>      默认 /www/skiff
 #     --prefix <入口前缀>     不传则从 journal 日志/库中取
 #     --now <epoch>          调用方当前时间，用于断言时钟偏差 < 30 s
 #     --pre-install          preflight 时检查"端口空闲"（装之前跑）
@@ -25,7 +25,7 @@
 set -u
 
 PORT=18080
-DATA_DIR=/var/lib/skiff
+DATA_DIR=/www/skiff
 CONF=/etc/skiff/config.toml
 GROUP_SEL="all"
 INSTALL_EXIT=""

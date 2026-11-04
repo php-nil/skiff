@@ -4,11 +4,37 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Skiff{% endblock %}</title>
-  <link rel="stylesheet" href="/static/skiff.css">
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/skiff.js" defer></script>
+  {# 主题在样式表之前同步落地：先按 localStorage 设 data-theme，避免暗色用户刷新时先闪白。 #}
+  <script src="/{{ ctx.prefix }}/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/{{ ctx.prefix }}/static/skiff.css">
+  <script src="/{{ ctx.prefix }}/static/htmx.min.js" defer></script>
+  <script src="/{{ ctx.prefix }}/static/skiff.js" defer></script>
 </head>
-<body data-prefix="{{ ctx.prefix }}">
+<body data-prefix="{{ ctx.prefix }}" data-layout="{{ ctx.menu.layout }}">
+{# 内联 SVG 图标精灵：零外链、零图标库。菜单与插件标签统一用 <use href="#i-名称"> 引用。 #}
+<svg class="icon-sprite" aria-hidden="true" width="0" height="0" focusable="false">
+  <symbol id="i-overview" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></g></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.6 12h16.8M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5S9.6 5.9 12 3.5z"/></g></symbol>
+  <symbol id="i-docker" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="9" width="5" height="5" rx="1"/><rect x="9.5" y="9" width="5" height="5" rx="1"/><rect x="9.5" y="3.8" width="5" height="5" rx="1"/><rect x="15.5" y="9" width="5" height="5" rx="1"/><path d="M2.5 17.5c1.6 2.3 4.2 3.5 7.6 3.5 4.6 0 8.3-2.2 10.4-6.1M18.5 14.9c1.1-.2 2.2-.1 3 .4"/></g></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 3v4.5M15 3v4.5M7 7.5h10v3.2a5 5 0 0 1-5 5 5 5 0 0 1-5-5zM12 15.7V21"/></g></symbol>
+  <symbol id="i-tools" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M14.3 6.2a4.2 4.2 0 0 0 5.4 5.4L9.4 21.9a3 3 0 0 1-4.2-4.2zM15.9 3.1 21 8.2"/></g></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6.5h10M18 6.5h2M4 12h2M10 12h10M4 17.5h7M15 17.5h5"/><circle cx="16" cy="6.5" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="17.5" r="2"/></g></symbol>
+  <symbol id="i-container" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 8.2 12 4l8.5 4.2L12 12.5zM3.5 8.2v7.6L12 20l8.5-4.2V8.2M12 12.5V20"/></g></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="9.5" r="1.6"/><path d="m4 17 5-5 4 4 3-2.5 4 3.5"/></g></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="5" r="2.3"/><circle cx="5" cy="18" r="2.3"/><circle cx="19" cy="18" r="2.3"/><path d="M12 7.3v3.4M7 16.2l3.5-3.2M17 16.2l-3.5-3.2"/></g></symbol>
+  <symbol id="i-disk" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="4.5" width="17" height="6.5" rx="1.8"/><rect x="3.5" y="13" width="17" height="6.5" rx="1.8"/><path d="M7 7.8h.1M7 16.3h.1"/></g></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 6.5h11M9 12h11M9 17.5h11M4.5 6.5h.1M4.5 12h.1M4.5 17.5h.1"/></g></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 7.5h17v3h-17zM5 10.5v8.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-8.5M10 14h4"/></g></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3.2 19 6v5.3c0 4.3-2.9 7.5-7 9.5-4.1-2-7-5.2-7-9.5V6z"/><path d="m9 12 2 2 4-4.2"/></g></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10M12 14.2v2"/></g></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3.5 12h4l2.5-6 4 12 2.5-6h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></g></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 3.5h7L18.5 8v12.5h-12zM13 3.8V8h4.3M9 12h6M9 15.5h6"/></g></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v8.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></g></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c.7-3.6 3.8-5.5 7.5-5.5s6.8 1.9 7.5 5.5"/></g></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
 {% if ctx.dev_http %}
 <div class="banner danger">明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure、会话前缀非 __Host-。不可用于远程生产。</div>
 {% endif %}
@@ -18,34 +44,104 @@
 {% if !ctx.docker_ok %}
 <div class="banner warn">Docker 不可用：容器相关页面只渲染空态，操作会返回 503。</div>
 {% endif %}
+<div class="top-shell">
 <header class="topbar">
-  <div class="brand"><span class="logo">▚</span> Skiff <span class="ver">v{{ ctx.version }}</span></div>
-  <nav>
-    <a class="{% if ctx.active == "dashboard" %}on{% endif %}" href="/{{ ctx.prefix }}">概览</a>
-    <a class="{% if ctx.active == "containers" %}on{% endif %}" href="/{{ ctx.prefix }}/containers">容器</a>
-    <a class="{% if ctx.active == "images" %}on{% endif %}" href="/{{ ctx.prefix }}/images">镜像</a>
-    <a class="{% if ctx.active == "networks" %}on{% endif %}" href="/{{ ctx.prefix }}/networks">网络</a>
-    <a class="{% if ctx.active == "volumes" %}on{% endif %}" href="/{{ ctx.prefix }}/volumes">卷</a>
-    <a class="{% if ctx.active == "plugins" %}on{% endif %}" href="/{{ ctx.prefix }}/plugins">插件</a>
-    {# 插件注册的菜单项（manifest 的 [[ui]]）：直接挂到顶栏，省得每次经「插件」列表页中转。
-       只列已启用且有 ui 入口的插件；用各自 manifest 的 label 当菜单名。 #}
-    {% for p in ctx.nav_plugins %}
-    <a class="nav-plugin{% if p.active %} on{% endif %}" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">{{ p.label }}</a>
+  <div class="brand">
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 28 28"><rect x="1.2" y="1.2" width="25.6" height="25.6" rx="7" fill="none" stroke="currentColor" stroke-width="1.4" opacity=".5"/><path d="M7 16.5h14l-2.8 4.5H9.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M13.4 14V7l5.2 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span>
+    <span class="brand-name">Skiff</span> <span class="ver">v{{ ctx.version }}</span>
+  </div>
+  <button type="button" class="menu-toggle" data-menu-toggle aria-expanded="false" aria-controls="skiff-main-nav">
+    菜单
+  </button>
+  <nav class="nav" id="skiff-main-nav" aria-label="主导航" data-layout="{{ ctx.menu.layout }}">
+    {% if !ctx.menu.pinned.is_empty() %}
+    <div class="nav-pinned" aria-label="固定菜单">
+      <span class="nav-pin-caption" aria-hidden="true">固定</span>
+      {% for it in ctx.menu.pinned %}
+      <a class="nav-pin" data-menu-key="{{ it.key }}" href="{{ it.href }}"{% if it.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ it.icon }}" aria-hidden="true"><use href="#i-{{ it.icon }}"></use></svg>{{ it.label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {# 侧栏专用的节奏小标题；上下布局隐藏，不改变菜单结构。 #}
+    <span class="nav-caption" aria-hidden="true">导航</span>
+    {% for g in ctx.menu.groups %}
+      {% if g.href.len() > 0 && g.items.is_empty() %}
+      <a class="nav-link nav-l1" data-menu-key="{{ g.key }}" data-owner-kind="core"
+         href="{{ g.href }}"{% if g.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg>{{ g.label }}</a>
+      {% else %}
+      {# 一级分组 = 标签 + 独立箭头按钮：
+         - 有自身页面的一级（插件 L2 等）标签是链接，点标签跳转；
+         - 无自身页面的一级（网站/Docker/工具/设置）标签是按钮，点标签等同展开。
+         箭头只负责展开/收起，不跳转；点空白不收起，只有切组或 Escape 才收起。
+         关闭面板带 hidden，不进入 Tab 顺序；展开状态由 `/{前缀}/static/skiff.js` 记忆。 #}
+      <div class="nav-group{% if g.active %} current{% endif %}" data-nav-group data-menu-key="{{ g.key }}">
+        <div class="nav-row">
+          {% if g.href.len() > 0 %}
+          <a class="nav-link nav-label" data-nav-label data-menu-key="{{ g.key }}" data-owner-kind="core"
+             href="{{ g.href }}"{% if g.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg>{{ g.label }}</a>
+          {% else %}
+          <button type="button" class="nav-link nav-label" data-nav-label><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg>{{ g.label }}</button>
+          {% endif %}
+          <button type="button" class="nav-caret" data-nav-toggle
+                  aria-expanded="false" aria-controls="nav-menu-{{ g.key }}"
+                  aria-label="展开或收起「{{ g.label }}」">
+            <svg class="caret" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </button>
+        </div>
+        <div class="nav-menu" id="nav-menu-{{ g.key }}" data-nav-key="{{ g.key }}" data-nav-menu hidden>
+          {% for it in g.items %}
+          {# 插件入口沿用 `.nav-plugin` 虚线样式；其余为普通二级项。 #}
+          <a class="{% if it.plugin %}nav-plugin{% else %}nav-sub{% endif %}{% if it.active %} on{% endif %}"
+             data-menu-key="{{ it.key }}" data-owner-kind="{% if it.plugin %}plugin{% else %}core{% endif %}"
+             href="{{ it.href }}"{% if it.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ it.icon }}" aria-hidden="true"><use href="#i-{{ it.icon }}"></use></svg>{{ it.label }}</a>
+          {% endfor %}
+          {% if let Some(e) = g.empty %}
+          <div class="nav-empty">
+            <p>{{ e.text }}</p>
+            <a class="btn small" href="{{ e.href }}">{{ e.action }}</a>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
     {% endfor %}
-    <a class="{% if ctx.active == "audit" %}on{% endif %}" href="/{{ ctx.prefix }}/audit">审计</a>
-    <a class="{% if ctx.active == "settings" %}on{% endif %}" href="/{{ ctx.prefix }}/settings">设置</a>
   </nav>
   <div class="who">
-    <span class="chip">{{ ctx.username }} · {{ ctx.role }}</span>
-    <form method="post" action="/{{ ctx.prefix }}/logout" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-      <button class="link" type="submit">退出</button>
-    </form>
+    <div class="who-user">
+      <span class="avatar" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#i-user"></use></svg></span>
+      <span class="chip">{{ ctx.username }} · {{ ctx.role }}</span>
+    </div>
+    <div class="who-actions">
+      {# 文案由 CSS 按当前主题切换：浅色时显示目标「深色」，深色时显示「浅色」。
+         这样首屏（脚本尚未执行）也不会把按钮标成相反的目标态。 #}
+      <button type="button" class="theme-toggle" data-theme-toggle
+              aria-pressed="false" aria-label="切换到深色主题">
+        <span class="theme-when-light">深色</span><span class="theme-when-dark">浅色</span>
+      </button>
+      <form method="post" action="/{{ ctx.prefix }}/logout" class="inline">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+        <button class="link" type="submit">退出</button>
+      </form>
+    </div>
   </div>
 </header>
+{# 上下布局的二级通栏：固定在顶栏下方、全宽、横向排列；侧栏与窄屏抽屉不显示。
+   菜单由 `/{前缀}/static/skiff.js` 在 bar 模式下搬入 `.subnav-inner`，收起时高度为 0。 #}
+<div class="subnav" data-subnav aria-hidden="true">
+  <div class="subnav-inner"></div>
+</div>
+</div>
 <main>
 {% block content %}{% endblock %}
 </main>
+<dialog class="modal" data-confirm-dialog aria-labelledby="confirm-title">
+  <div class="modal-head"><h2 id="confirm-title">请确认操作</h2></div>
+  <p class="modal-body" data-confirm-message></p>
+  <div class="modal-actions">
+    <button type="button" class="btn ghost" data-confirm-cancel>取消</button>
+    <button type="button" class="btn danger" data-confirm-ok>确认执行</button>
+  </div>
+</dialog>
 <footer class="foot">Skiff（轻舟）· 单二进制 · Docker {% if ctx.docker_ok %}可用{% else %}不可用{% endif %} · CLI：<code>skiff --help</code></footer>
 </body>
 </html>

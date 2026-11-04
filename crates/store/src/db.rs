@@ -21,14 +21,16 @@ use crate::Result;
 mod audit;
 mod backup_codes;
 mod plugins;
+mod prefs;
 mod sessions;
 mod settings;
+pub mod sites;
 mod tokens;
 mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -100,6 +102,31 @@ impl Db {
             conn.execute_batch(SCHEMA_V1)?;
             conn.execute_batch("PRAGMA user_version = 1")?;
             info!(from = version, to = 1, "schema 迁移完成");
+        }
+        if version < 2 {
+            conn.execute_batch(SCHEMA_V2)?;
+            conn.execute_batch("PRAGMA user_version = 2")?;
+            info!(from = version, to = 2, "schema 迁移完成");
+        }
+        if version < 3 {
+            conn.execute_batch(SCHEMA_V3)?;
+            conn.execute_batch("PRAGMA user_version = 3")?;
+            info!(from = version, to = 3, "schema 迁移完成");
+        }
+        if version < 4 {
+            conn.execute_batch(SCHEMA_V4)?;
+            conn.execute_batch("PRAGMA user_version = 4")?;
+            info!(from = version, to = 4, "schema 迁移完成");
+        }
+        if version < 5 {
+            conn.execute_batch(SCHEMA_V5)?;
+            conn.execute_batch("PRAGMA user_version = 5")?;
+            info!(from = version, to = 5, "schema 迁移完成");
+        }
+        if version < 6 {
+            conn.execute_batch(SCHEMA_V6)?;
+            conn.execute_batch("PRAGMA user_version = 6")?;
+            info!(from = version, to = 6, "schema 迁移完成");
         }
         Ok(())
     }
@@ -224,6 +251,65 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts DESC);
 "#;
 
+/// v2：按用户的界面偏好（菜单顺序/隐藏/固定/布局）。
+///
+/// 放在独立表而不是 `settings`：`settings` 是全局键值，菜单偏好必须按用户隔离；
+/// 卸载插件时只清 `key = 'menu.prefs'` 的行，不碰全局配置。
+const SCHEMA_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS user_prefs (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_user_prefs_key ON user_prefs(key);
+"#;
+
+/// v3：内核自带「网站」的站点表。
+///
+/// 域名做唯一约束（同一域名只能有一个 vhost）；根目录与 PHP 版本是站点级配置，
+/// 运行状态只读容器/配置推导后落库，方便列表页直接展示而不每次 inspect。
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS sites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  domain TEXT NOT NULL UNIQUE,
+  root_dir TEXT NOT NULL,
+  php_version TEXT NOT NULL DEFAULT '8.5',
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK(status IN ('running','stopped','error')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sites_created ON sites(created_at DESC);
+"#;
+
+/// v4：站点「默认站点」标记。
+///
+/// 状态只存库（`is_default`），vhost 文件是它的投影；部分唯一索引保证
+/// 同一时间最多一个默认站点，切换时由 `set_site_default` 在同一语句内清旧置新。
+const SCHEMA_V4: &str = r#"
+ALTER TABLE sites ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_default ON sites(is_default) WHERE is_default = 1;
+"#;
+
+// v5：站点别名。独立小表，不改 `sites` 表结构；站点删除时级联清理。
+const SCHEMA_V5: &str = r#"
+CREATE TABLE IF NOT EXISTS site_aliases (
+  domain TEXT PRIMARY KEY,
+  site_domain TEXT NOT NULL REFERENCES sites(domain) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_site_aliases_site ON site_aliases(site_domain);
+"#;
+
+// v6：站点 HTTPS 状态。证书文件落在 `/www/certs/<域名>`，库里只存开关；
+// `https` 表示启用 443，`force_https` 表示 80 强制跳转 443。
+const SCHEMA_V6: &str = r#"
+ALTER TABLE sites ADD COLUMN https INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sites ADD COLUMN force_https INTEGER NOT NULL DEFAULT 0;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +324,39 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// v3 → v6 只加列/加表，不重建站点表：原站点行必须原样保留，新列取默认值。
+    #[test]
+    fn schema_v3_sites_survive_upgrade_to_v6() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skiff.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute_batch("PRAGMA user_version = 5").unwrap();
+            conn.execute(
+                "INSERT INTO sites(domain, root_dir, php_version, status, created_at, updated_at)
+                 VALUES('keep.local', '/www/sites/keep.local', '8.5', 'running', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let v: i64 = db
+            .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 6);
+        let site = db.site_by_domain("keep.local").unwrap().unwrap();
+        assert_eq!(site.root_dir, "/www/sites/keep.local");
+        assert!(!site.is_default);
+        assert!(!site.https);
+        assert!(!site.force_https);
     }
 
     #[test]

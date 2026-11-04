@@ -22,6 +22,7 @@ fn test_state(data_dir: std::path::PathBuf) -> Arc<AppState> {
         db.clone(),
     ));
     let cfg = WebConfig {
+        web_root: data_dir.join("www"),
         data_dir,
         entry_prefix: "p".into(),
         dev_http: true,

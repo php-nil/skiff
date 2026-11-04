@@ -41,10 +41,25 @@ fn official_manifests_parse_and_match_directory_ids() {
             "{} 的 id 必须与目录名一致",
             manifest_path.display()
         );
+        // P2：官方插件全部改为声明式菜单，且声明引用的 ui 文件必须真实存在。
+        assert!(
+            !m.menu.is_empty(),
+            "{} 必须声明至少一个 [[menu]]",
+            manifest_path.display()
+        );
+        let ui_dir = path.join("ui");
+        m.validate_menu_assets(|p| ui_dir.join(p).is_file())
+            .unwrap_or_else(|e| panic!("{} 菜单/槽位引用的 ui 缺失: {e}", manifest_path.display()));
+        if dir_name == "monitor" {
+            assert!(
+                m.mount.iter().any(|x| x.slot == "overview.health"),
+                "monitor 必须声明 overview.health 槽位"
+            );
+        }
         ids.push(m.id);
     }
     ids.sort();
-    assert!(ids.len() >= 5, "官方插件首批至少 5 个，实际只找到: {ids:?}");
+    assert!(ids.len() >= 4, "官方插件至少 4 个，实际只找到: {ids:?}");
     assert!(
         ids.iter().any(|id| id == "com.skiff.cron"),
         "计划任务插件缺失: {ids:?}"

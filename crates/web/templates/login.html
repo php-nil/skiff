@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>登录 · Skiff</title>
-  <link rel="stylesheet" href="/static/skiff.css">
+  <script src="/{{ prefix }}/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/{{ prefix }}/static/skiff.css">
 </head>
 <body class="login-body">
 {% if dev_http %}
@@ -22,7 +23,7 @@
     <label>动态码（启用 TOTP 后必填）<input name="otp" inputmode="numeric" autocomplete="one-time-code"></label>
     <button class="primary" type="submit">登录</button>
   </form>
-  <p class="hint">首次登录口令见 <code>/var/lib/skiff/initial-admin.txt</code>，登录后强制改密。</p>
+  <p class="hint">首次登录口令见 <code>/www/skiff/initial-admin.txt</code>，登录后强制改密。</p>
 </div>
 </body>
 </html>

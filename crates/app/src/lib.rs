@@ -5,6 +5,8 @@
 //! 既编译更重，也没法脱离 axum 单测。层序是 `app` → 下层，`web` → `app`。
 
 pub mod auth;
+pub mod docker_daemon;
+pub mod sites;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -23,6 +25,8 @@ use skiff_model::{Cidr, Permission, RoleExt, Scope, ScopeSet};
 #[derive(Debug, Clone)]
 pub struct WebConfig {
     pub data_dir: PathBuf,
+    /// 站点/nginx/日志/证书/PHP socket 的宿主根（默认 `/www`）。
+    pub web_root: PathBuf,
     pub entry_prefix: String,
     /// loopback 明文开发模式（非 `__Host-` cookie、关闭 Secure、UI 标红）
     pub dev_http: bool,
@@ -63,6 +67,8 @@ pub struct AppState {
     /// 会无限递归）。这里用「进入/离开」标记，而不是调用栈深度计数——目标插件
     /// 并发处理两个请求时，任一请求尝试再调用都应当被拒。
     interop_busy: Mutex<HashSet<String>>,
+    /// 「网站 → 运行环境」后台安装进度（内存态：重启后清空即可，安装动作幂等）。
+    site_env: Mutex<sites::InstallProgress>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +238,7 @@ impl AppState {
             login_semaphore: Semaphore::new(permits),
             exec_tickets: Mutex::new(HashMap::new()),
             interop_busy: Mutex::new(HashSet::new()),
+            site_env: Mutex::new(sites::InstallProgress::default()),
         })
     }
 

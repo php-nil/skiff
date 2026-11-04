@@ -9,6 +9,7 @@ mod db;
 mod error;
 mod model;
 
+pub use db::sites::Site;
 pub use db::{Db, CURRENT_SCHEMA_VERSION};
 pub use error::StoreError;
 pub use model::{AuditEntry, PluginRecord, Session, User};

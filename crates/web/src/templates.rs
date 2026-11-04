@@ -14,8 +14,22 @@ pub struct PageCtx {
     pub docker_ok: bool,
     pub must_change: bool,
     pub active: String,
+    /// 合并后的三级菜单（固定一级 + 内置二级 + 插件声明 + 用户偏好）。
+    pub menu: crate::menu::PageMenu,
+    /// 是否管理员（「设置 → 信任公钥」只对管理员出现）。
+    pub is_admin: bool,
     /// 顶栏「插件菜单」：已启用且有 UI 入口的插件（manifest `[[ui]].label` 当菜单名）。
+    /// 既用于「插件」二级菜单，也被插件详情页当 `skiff.open` 白名单。
     pub nav_plugins: Vec<PluginNav>,
+}
+
+#[derive(Debug, Clone, Template)]
+#[template(path = "menu_settings.html")]
+pub struct MenuSettingsPage {
+    pub ctx: PageCtx,
+    pub groups: Vec<crate::menu::SettingsGroup>,
+    pub layout: String,
+    pub notice: String,
 }
 
 /// 顶栏里的一条插件菜单项。
@@ -61,6 +75,17 @@ pub struct PluginView {
 pub struct GrantRow {
     pub kind: String,
     pub value: String,
+}
+
+/// 概览「需要处理」的一条待办：按影响排序后渲染，链接直达已筛选的目标页。
+#[derive(Debug, Clone)]
+pub struct DashboardTodo {
+    /// `danger` / `warn` / `info`，同时决定排序与左侧色条。
+    pub level: String,
+    pub title: String,
+    pub detail: String,
+    pub href: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +140,181 @@ pub struct LoginPage {
     pub next: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SiteView {
+    pub domain: String,
+    pub root_dir: String,
+    pub php_version: String,
+    /// running / stopped / error
+    pub status: String,
+    pub status_label: String,
+    pub created: String,
+    pub is_default: bool,
+    /// 附加域名（vhost 的 `server_name` 扩展）。
+    pub aliases: Vec<String>,
+    /// 展示用逗号串；无别名时为空。
+    pub aliases_text: String,
+    /// 是否启用 443。
+    pub https: bool,
+    /// 是否 80 强制跳转 443。
+    pub force_https: bool,
+    /// 站点证书目录下 cert.pem 与 key.pem 是否都存在（与详情 SSL 标签同源）。
+    pub cert_ready: bool,
+}
+
+/// SSL 标签：证书路径、主体、到期与开关状态。
+#[derive(Debug, Clone, Default)]
+pub struct SiteTlsView {
+    pub enabled: bool,
+    pub force_https: bool,
+    pub cert_path: String,
+    pub key_path: String,
+    pub cert_exists: bool,
+    pub subject: String,
+    pub issuer: String,
+    pub expires: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SiteNewForm {
+    pub domain: String,
+    pub aliases: String,
+    pub root_dir: String,
+    pub php_version: String,
+}
+
+#[derive(Template)]
+#[template(path = "site_new.html")]
+pub struct SiteNewPage {
+    pub ctx: PageCtx,
+    pub env: SiteEnvView,
+    pub form: SiteNewForm,
+    pub error: String,
+    /// 服务端字段级错误：`domain` / `aliases` / `root_dir`。
+    pub error_field: String,
+    /// 服务端校验失败时直接回到第 1 步。
+    pub wizard_start: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirEntryView {
+    pub name: String,
+    /// 已做 URI 编码的 `path` 查询值。
+    pub url: String,
+    pub is_dir: bool,
+    pub size: String,
+    pub modified: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DirListingView {
+    pub rel: String,
+    /// 已做 URI 编码的上级目录查询值。
+    pub parent_url: String,
+    pub at_root: bool,
+    pub entries: Vec<DirEntryView>,
+}
+
+#[derive(Template)]
+#[template(path = "site_detail.html")]
+pub struct SiteDetailPage {
+    pub ctx: PageCtx,
+    pub site: SiteView,
+    pub env: SiteEnvView,
+    pub can_admin: bool,
+    /// overview / domains / config / dir / ssl
+    pub tab: String,
+    pub config_path: String,
+    pub config_content: String,
+    pub config_active: bool,
+    pub dir: DirListingView,
+    pub ssl: SiteTlsView,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SiteEnvView {
+    pub docker_available: bool,
+    pub docker_reason: String,
+    pub nginx_state: String,
+    pub php_state: String,
+    pub installed: bool,
+    pub ready: bool,
+    pub port: u16,
+    pub port_message: String,
+    pub nginx_image: String,
+    pub php_image: String,
+    pub waf_mode: String,
+    pub waf_rules_dir: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallStepView {
+    pub name: String,
+    pub state: String,
+    pub detail: String,
+}
+
+#[derive(Template)]
+#[template(path = "sites.html")]
+pub struct SitesPage {
+    pub ctx: PageCtx,
+    pub sites: Vec<SiteView>,
+    pub env: SiteEnvView,
+    pub can_admin: bool,
+    pub error: String,
+    pub notice: String,
+    pub keyword: String,
+}
+
+#[derive(Template)]
+#[template(path = "site_env.html")]
+pub struct SiteEnvPage {
+    pub ctx: PageCtx,
+    pub env: SiteEnvView,
+    pub steps: Vec<InstallStepView>,
+    pub running: bool,
+    pub done: bool,
+    pub install_error: String,
+    pub can_admin: bool,
+    pub registry_mirror: String,
+    pub image_prefix: String,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Template)]
+#[template(path = "site_settings.html")]
+pub struct SiteSettingsPage {
+    pub ctx: PageCtx,
+    pub env: SiteEnvView,
+    pub registry_mirror: String,
+    pub image_prefix: String,
+    pub can_admin: bool,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Template)]
+#[template(path = "site_logs.html")]
+pub struct SiteLogsPage {
+    pub ctx: PageCtx,
+    pub domain: String,
+    pub access_log: String,
+    pub error_log: String,
+    pub keyword: String,
+    pub notice: String,
+}
+
+#[derive(Template)]
+#[template(path = "site_delete.html")]
+pub struct SiteDeletePage {
+    pub ctx: PageCtx,
+    pub domain: String,
+    pub root_dir: String,
+}
+
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 pub struct DashboardPage {
@@ -122,11 +322,23 @@ pub struct DashboardPage {
     pub running: usize,
     pub total: usize,
     pub image_count: String,
-    pub plugin_count: usize,
+    pub plugin_total: usize,
+    pub plugin_enabled: usize,
+    /// 内核「网站」健康块：站点总数 / 非运行站点数（不依赖插件）。
+    pub site_total: usize,
+    pub site_abnormal: usize,
+    pub abnormal_total: usize,
+    /// 最多展示若干条异常容器；完整列表走 `containers?filter=error`。
+    pub abnormal: Vec<ContainerRowView>,
     pub uptime: String,
     pub docker_reason: String,
-    pub containers: Vec<ContainerRowView>,
+    pub todos: Vec<DashboardTodo>,
     pub audit: Vec<AuditRow>,
+    /// `overview.health` 槽位挂载；非空时替换内核默认健康块。
+    pub mounts_health: Vec<crate::menu::MountView>,
+    /// `overview.actions` / `overview.side` 槽位挂载。
+    pub mounts_actions: Vec<crate::menu::MountView>,
+    pub mounts_side: Vec<crate::menu::MountView>,
     pub error: String,
 }
 
@@ -137,6 +349,8 @@ pub struct ContainersPage {
     pub can_operate: bool,
     pub containers: Vec<ContainerRowView>,
     pub docker_reason: String,
+    /// 空串表示不筛选；`error` 表示只看异常容器（概览深链用）。
+    pub filter: String,
     pub error: String,
 }
 
@@ -146,6 +360,7 @@ pub struct ContainerRows {
     pub ctx: PageCtx,
     pub can_operate: bool,
     pub containers: Vec<ContainerRowView>,
+    pub filter: String,
 }
 
 #[derive(Template)]
@@ -185,6 +400,10 @@ pub struct ResourcesPage {
 pub struct PluginsPage {
     pub ctx: PageCtx,
     pub plugins: Vec<PluginView>,
+    pub enabled_count: usize,
+    pub disabled_count: usize,
+    /// `installed` / `discover` / `updates`（页内 tab，服务端渲染，无内联脚本）。
+    pub tab: String,
     pub can_admin: bool,
     pub error: String,
     pub notice: String,
@@ -234,6 +453,18 @@ pub struct PluginDetailPage {
     pub nonce: String,
     /// 允许 iframe 请求跳转的目标插件白名单（逗号分隔的 id），供 `skiff.open` 校验
     pub nav_plugins: String,
+    /// 工作台标题（声明菜单取 L2 label，否则沿用 `[[ui]].label`）。
+    pub workbench_title: String,
+    /// L3 标签栏；为空表示该页没有三级菜单（老包/纯 L2）。
+    pub tabs: Vec<TabView>,
+    /// L2 稳定键 `plugin/<id>/<l2>`；无声明菜单时为空。
+    pub menu_key: String,
+    /// 当前 L3 局部 id；无 L3 时为空，模板按它标记 `aria-current`。
+    pub active_l3: String,
+    /// 当前传给插件的 `tab` 值。
+    pub active_tab: String,
+    /// 当前加载的 `ui/` 相对路径（供 JS 判断是否要切换文件）。
+    pub active_ui: String,
     /// 本插件对外提供的接口（`method · label`），空表示不供其他插件调用。
     pub interop_provides: Vec<String>,
     /// 本插件声明的可调用目标（`<plugin-id>:<method>`），空表示不调别的插件。
@@ -241,6 +472,21 @@ pub struct PluginDetailPage {
     pub grants: Vec<GrantRow>,
     pub can_admin: bool,
     pub error: String,
+}
+
+/// 工作台 L3 标签（L3 标签栏由内核渲染，插件只渲染 iframe 内容）。
+#[derive(Debug, Clone)]
+pub struct TabView {
+    pub key: String,
+    pub local: String,
+    pub label: String,
+    pub href: String,
+    pub icon: String,
+    pub tab: String,
+    pub ui: String,
+    /// 该标签对应的 iframe URL（已带 nonce/menu/tab）。
+    pub src: String,
+    pub active: bool,
 }
 
 #[derive(Template)]

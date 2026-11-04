@@ -6,7 +6,7 @@
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if force_change %}<div class="banner warn">首次登录必须修改口令；修改前其他页面会被强制跳转到这里。</div>{% endif %}
 
-<section class="panel">
+<section class="panel" id="password">
   <h2>口令</h2>
   <form method="post" action="/{{ ctx.prefix }}/password" class="col">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
@@ -18,7 +18,7 @@
   <p class="hint">哈希参数 argon2id(m=64MiB, t=3, p=4)；改密后撤销全部会话（当前会话会换新）。</p>
 </section>
 
-<section class="panel">
+<section class="panel" id="totp">
   <h2>两步验证（TOTP）</h2>
   {% if totp_enabled %}
     <p>已启用。登录时需输入动态码；备份码在启用时只显示一次。</p>
@@ -51,13 +51,13 @@
   {% endif %}
 </section>
 
-<section class="panel">
+<section class="panel" id="entry-prefix">
   <h2>安全入口</h2>
   <p>当前前缀：<code>/{{ entry_prefix }}</code>（首启随机生成并持久化；非此前缀一律 404）。</p>
 </section>
 
 {% if is_admin %}
-<section class="panel">
+<section class="panel" id="trusted-keys">
   <h2>信任公钥（TOFU）</h2>
   <p class="hint">第三方公钥必须通过带外渠道取得并逐位核对指纹。不自建中心 PKI；撤销即在此删除。</p>
   {% if keys.is_empty() %}

@@ -2,51 +2,135 @@
 {% block title %}概览 · Skiff{% endblock %}
 {% block content %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
-<section class="stats">
-  <div class="stat"><span class="k">运行中容器</span><span class="v">{{ running }}<small>/{{ total }}</small></span></div>
-  <div class="stat"><span class="k">镜像</span><span class="v">{{ image_count }}</span></div>
-  <div class="stat"><span class="k">已装插件</span><span class="v">{{ plugin_count }}</span></div>
-  <div class="stat"><span class="k">面板运行</span><span class="v">{{ uptime }}</span></div>
-</section>
+<div class="page-head">
+  <h1>概览</h1>
+  <span class="muted small">先看这里需要处理什么，再进对应页面。</span>
+</div>
 
-{% if !ctx.docker_ok %}
-<div class="empty">Docker 不可用：{{ docker_reason }}<br>容器、镜像、网络、卷相关操作会返回 503；面板其余功能不受影响。</div>
+{% if !mounts_actions.is_empty() %}
+<div class="mount-row">
+{% for m in mounts_actions %}{% include "mount_card.html" %}{% endfor %}
+</div>
 {% endif %}
 
-<section class="panel">
-  <h2>容器 <a class="more" href="/{{ ctx.prefix }}/containers">全部 →</a></h2>
-  {% if containers.is_empty() %}
-    <div class="empty">没有容器（或 Docker 不可用）</div>
-  {% else %}
-  <table class="grid">
-    <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>项目</th></tr></thead>
-    <tbody>
-    {% for c in containers %}
-      <tr>
-        <td><a href="/{{ ctx.prefix }}/containers/{{ c.id }}">{{ c.name }}</a> <code>{{ c.short_id }}</code>{% if c.protected %} <span class="tag warn-tag">受保护</span>{% endif %}</td>
-        <td class="muted">{{ c.image }}</td>
-        <td><span class="state {{ c.state }}">{{ c.state }}</span></td>
-        <td class="muted">{{ c.project }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
+{% if mounts_health.is_empty() %}
+<section class="health-grid">
+  <div class="health">
+    <span class="k">面板运行</span>
+    <span class="v">{{ uptime }}</span>
+    <span class="d muted">v{{ ctx.version }} · Docker {% if ctx.docker_ok %}可用{% else %}不可用{% endif %}</span>
+  </div>
+  <a class="health{% if !ctx.docker_ok %} bad{% endif %}" href="/{{ ctx.prefix }}/containers">
+    <span class="k">Docker</span>
+    <span class="v">{% if ctx.docker_ok %}可用{% else %}不可用{% endif %}</span>
+    <span class="d muted">{% if ctx.docker_ok %}镜像 {{ image_count }}{% else %}{{ docker_reason }}{% endif %}</span>
+  </a>
+  <a class="health{% if abnormal_total > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/containers{% if abnormal_total > 0 %}?filter=error{% endif %}">
+    <span class="k">容器</span>
+    <span class="v">{{ running }}<small>/{{ total }}</small></span>
+    <span class="d muted">{% if abnormal_total > 0 %}{{ abnormal_total }} 个异常{% else %}全部运行中{% endif %}</span>
+  </a>
+  <a class="health{% if site_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/list">
+    <span class="k">网站</span>
+    <span class="v">{{ site_total }}<small> 个</small></span>
+    <span class="d muted">{% if site_abnormal > 0 %}{{ site_abnormal }} 个异常/已停止{% else if site_total == 0 %}尚未创建站点{% else %}全部运行中{% endif %}</span>
+  </a>
+  <a class="health" href="/{{ ctx.prefix }}/plugins">
+    <span class="k">插件</span>
+    <span class="v">{{ plugin_enabled }}<small>/{{ plugin_total }}</small></span>
+    <span class="d muted">已启用 / 已安装</span>
+  </a>
 </section>
+{% else %}
+<section class="health-grid">
+  <a class="health{% if site_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/list">
+    <span class="k">网站</span>
+    <span class="v">{{ site_total }}<small> 个</small></span>
+    <span class="d muted">{% if site_abnormal > 0 %}{{ site_abnormal }} 个异常/已停止{% else if site_total == 0 %}尚未创建站点{% else %}全部运行中{% endif %}</span>
+  </a>
+</section>
+<div class="mount-row">
+{% for m in mounts_health %}{% include "mount_card.html" %}{% endfor %}
+</div>
+{% endif %}
 
-<section class="panel">
-  <h2>最近审计 <a class="more" href="/{{ ctx.prefix }}/audit">全部 →</a></h2>
-  {% if audit.is_empty() %}
-    <div class="empty">暂无记录</div>
-  {% else %}
-  <table class="grid">
-    <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead>
-    <tbody>
-    {% for a in audit %}
-      <tr><td class="muted">{{ a.ts }}</td><td>{{ a.actor }}</td><td><code>{{ a.action }}</code></td><td>{{ a.target }}</td><td><span class="state {{ a.result }}">{{ a.result }}</span></td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-</section>
+<div class="overview-grid">
+  <div>
+    <section class="panel">
+      <h2>需要处理 <span class="count">{{ todos.len() }}</span></h2>
+      {% if todos.is_empty() %}
+        <div class="empty">当前没有需要处理的项：安全基线、Docker 与插件状态均正常。</div>
+      {% else %}
+        <ul class="todo-list">
+        {% for t in todos %}
+          <li class="todo {{ t.level }}">
+            <span class="dot" aria-hidden="true"></span>
+            <div class="body">
+              <div class="title">{{ t.title }}</div>
+              <div class="detail muted">{{ t.detail }}</div>
+            </div>
+            <a class="act" href="{{ t.href }}">{{ t.action }}</a>
+          </li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2>异常容器 <a class="more" href="/{{ ctx.prefix }}/containers{% if abnormal_total > 0 %}?filter=error{% endif %}">全部 →</a></h2>
+      {% if abnormal.is_empty() %}
+        <div class="empty">
+          {% if !ctx.docker_ok %}
+            Docker 不可用，暂时读不到容器状态。恢复后这里会列出异常容器。
+          {% else %}
+            没有处于异常状态的容器（exited / dead / restarting / paused）。
+          {% endif %}
+        </div>
+      {% else %}
+        <table class="grid">
+          <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody>
+          {% for c in abnormal %}
+            <tr>
+              <td><a href="/{{ ctx.prefix }}/containers/{{ c.id }}">{{ c.name }}</a> <code>{{ c.short_id }}</code>{% if c.protected %} <span class="tag warn-tag">受保护</span>{% endif %}</td>
+              <td class="muted">{{ c.image }}</td>
+              <td><span class="state {{ c.state }}">{{ c.state }}</span><div class="muted small">{{ c.status }}</div></td>
+              <td><a class="mini" href="/{{ ctx.prefix }}/containers/{{ c.id }}">日志 / 处理</a></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if abnormal_total > abnormal.len() %}
+        <p class="hint">仅显示前 {{ abnormal.len() }} 个，共 {{ abnormal_total }} 个异常容器；<a href="/{{ ctx.prefix }}/containers?filter=error">查看全部</a>。</p>
+        {% endif %}
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>最近审计 <a class="more" href="/{{ ctx.prefix }}/audit">全部 →</a></h2>
+    {% if audit.is_empty() %}
+      <div class="empty">暂无审计记录。登录、容器操作与插件授权会记录在这里。</div>
+    {% else %}
+    <table class="grid compact">
+      <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>结果</th></tr></thead>
+      <tbody>
+      {% for a in audit %}
+        <tr>
+          <td class="muted">{{ a.ts }}</td>
+          <td>{{ a.actor }}</td>
+          <td><code>{{ a.action }}</code><div class="muted small">{{ a.target }}</div></td>
+          <td><span class="state {{ a.result }}">{{ a.result }}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+</div>
+{% if !mounts_side.is_empty() %}
+<div class="mount-row">
+{% for m in mounts_side %}{% include "mount_card.html" %}{% endfor %}
+</div>
+{% endif %}
 {% endblock %}

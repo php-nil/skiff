@@ -25,7 +25,7 @@ use crate::ipc;
 pub struct SupervisorConfig {
     /// `/run/skiff`
     pub run_root: PathBuf,
-    /// `/var/lib/skiff`（SKIFF_DATA_DIR）
+    /// `/www/skiff`（SKIFF_DATA_DIR）
     pub data_root: PathBuf,
     pub kernel_socket: PathBuf,
     pub health_timeout: Duration,

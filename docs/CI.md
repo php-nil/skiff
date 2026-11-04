@@ -10,13 +10,14 @@
 
 ## 1. 三个工作流各管什么
 
-**当前是开发/测试阶段（2026-10-31 起）：不发新版。** 发布链路改成「可跑但默认不发」——
-用来验证 musl/cross/打包全链路，而不是产出对外发行物。
+**当前是开发/测试阶段：不发新版，但交付链路必须可用。** 测试期只走手动 dispatch
+（版本沿用 0.1.0、不新建 tag、资产覆盖到同一 Release），用来真实验证「Release 安装包 →
+下载 → 解压 → install.sh」；正式发版仍走标签推送（§4.2）。
 
 | 文件 | 触发 | 管什么 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push（main/master）、PR、手动；**纯文档改动不触发** | 质量门槛：格式、lint、单测、MSRV、契约校验、插件包链路、脚本、冒烟；musl 静态产物**仅手动** |
-| `.github/workflows/release.yml` | **仅手动**（`v*` 标签触发已摘） | 出发布物验证包：amd64 / arm64 静态包 + 摘要。默认只传 workflow 产物，`publish` 勾选才建 GitHub Release |
+| `.github/workflows/release.yml` | 手动 dispatch（测试期唯一入口）+ `v*` 标签推送（正式发版） | 出可交付安装包：amd64 / arm64 musl 静态包 + `.sha256` + `checksums.txt`。测试期沿用 0.1.0，`publish` 勾选即把资产**覆盖到同一既有 Release**，不新建 tag |
 | `.github/workflows/audit.yml` | 每周一 03:00 UTC、手动 | `cargo audit` 查 RustSec 公告 |
 
 依赖升级不走 Dependabot：`dependabot.yml` 已删（2026-10-31），minor/patch 升级人工按需
@@ -40,7 +41,7 @@
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
-| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 5 个官方插件真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
+| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 4 个官方插件真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
 | `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |
 | `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
@@ -88,75 +89,99 @@ PR 突然变红，排查成本很高。升级方式：改 `ci.yml` / `release.ym
 
 ## 4. 发布流程
 
-**开发阶段（现在）：不发版。** 验证发布链路用手动 dispatch：
+**交付路径固定为「从 GitHub Release 下载安装包 → 校验 → 解压 → 执行 `install.sh`」。**
+开发机工作树直传测试机、目标机就地编译都只算开发调试，**不是交付路径**（见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §0.2）。
 
-```sh
-# GitHub → Actions → Release → Run workflow
-#   version: 留空即可（开发阶段没有版本号，产物自动用 night 占位命名）
-#   publish: 保持 false → 只构建 + 自检 + 传 workflow 产物，不建 Release
-#   skip_plugins: 保持 false → 发布包带已签名的官方插件（见下）
+### 4.1 测试期：手动 dispatch，覆盖同一个 Release
+
+测试阶段**不新建 tag、不改版本号**。版本沿用 `0.1.0`，产物上传/覆盖到同一个既有 Release：
+
+```text
+GitHub → Actions → Release → Run workflow
+  version:      0.1.0                      # 沿用现有版本
+  publish:      true                       # 上传/覆盖 Release 资产
+  release_tag:  v0.1.0                     # 目标 Release 标签（留空则用 v<version>）
+  skip_plugins: false                      # 正式安装包必须带 4 个官方插件
 ```
 
-产物在 run 页的 Artifacts 里下载（7 天保留），验证包结构与摘要即可，
-Release 页保持干净。等真要发版时：
+`publish` job 的行为是**只覆盖资产、绝不建 tag**：
+
+1. 先 `git ls-remote --tags origin refs/tags/<tag>` 校验标签已存在，不存在直接报错（不创建）；
+2. Release 已存在 → `gh release upload <tag> dist/* --clobber`（**同名资产直接覆盖**，
+   反复 dispatch 不会因「资产已存在」失败）；
+3. Release 不存在但标签存在 → `gh release create --verify-tag`（同样不创建标签）；
+4. `night` 占位版本拒绝发布。
+
+> 前置条件：仓库里得先有目标标签/Release。本流水线不负责创建它们；当前仓库
+> **还没有任何 tag 与 Release**（2026-11-04 核对），所以 `publish=true` 会在第 1 步
+> 明确报错并给出提示，不会伪造发布成功。
+
+只想验证构建链路、不碰 Release 时：`publish=false`，产物从 run 页 Artifacts 取（7 天保留）。
+
+### 4.2 正式发版（当前不使用）
+
+工作流同时保留 `push.tags: ["v*"]` 触发。真要发版时改版本号并推送标签即可（测试期不要这么做）：
 
 ```sh
 # 1. 改版本（Cargo.toml 的 workspace.package.version）
-# 2. 打标签推送（先把 release.yml 里注释掉的 push.tags 放开）
-git tag v0.1.0 && git push origin v0.1.0
-# 或仍然手动 dispatch，但 version 必须填真实版本号、publish 勾成 true
-#   （night 占位版本会被 publish job 直接拒绝）
+# 2. git tag v0.1.0 && git push origin v0.1.0   # 标签触发能跑，但测试期禁止
+# 或手动 dispatch：version 填真实版本号、publish=true（night 会被拒绝）
 ```
 
-**官方插件随包携带，必须真签名。** `build` job 先把 `secrets.PLUGIN_SIGNING_KEY`
-（ed25519 私钥种子，64 位 hex）写进 `$RUNNER_TEMP/plugin-signing.key`（`umask 077`），
-再交给 `pack-release.sh --plugin-key`，由 `plugins/pack.sh` 在临时目录回填
-`manifest.key_id` 后打包；私钥不进产物、不进仓库。
-Secret 缺失时 job **直接失败**（宁可红也不要出个缺插件却看不出来的包）；只想调试打包链路
-时手动勾选 `skip_plugins`，那会打警告并产出「裸包」，不能作为正式发布物。
-`build` 的自检会数 `official/` 里是不是 5 个 `.wbpkg`，并用打包日志里的公钥逐个验签，
-`--arch` 按矩阵架构走——这条同时复核「载荷架构没错位」。
+### 4.3 官方插件签名：不强制，缺私钥不阻塞出包
 
-**首次配置（只做一次；私钥只存在离线机与 secret 里）**：
+`build` job 检测 `secrets.PLUGIN_SIGNING_KEY`（ed25519 私钥种子，64 位 hex）：
+
+| 场景 | 行为 |
+|---|---|
+| Secret 已配置 | 写入 `$RUNNER_TEMP/plugin-signing.key`（`umask 077`），交给 `pack-release.sh --plugin-key`；`plugins/pack.sh` 在临时目录回填 `manifest.key_id` 后打包，私钥不进产物/仓库 |
+| Secret 缺失 | **不失败**：`pack-release.sh` 生成临时签名身份并打 `::warning::`，包仍可装可验，但签名人不稳定，**仅供测试**；正式发行前必须配置正式私钥 |
+| `skip_plugins=true` | 出「裸包」，`::warning::` 明确标注不能作为正式发布物 |
+
+`build` 自检会数 `official/` 下是否 **4** 个 `.wbpkg`（guard/monitor/files/cron），读取
+`official/public-key.txt`（64 位 hex）逐个 `skiff-plugin verify --arch <矩阵架构>`——
+既验签名，也复核「载荷架构没错位」。插件构建一律从仓库根用
+`--manifest-path plugins/Cargo.toml` 调（`cross` 按 cwd 判定挂载哪个 workspace，
+cwd 落在 `plugins/` 会报 `failed to find a workspace root`，run 41309171057 双架构同红）。
+
+首次配置签名身份（只做一次；私钥只存在离线机与 secret 里）：
 
 ```sh
-# 1. 生成「官方插件签名身份」（0600；打印 公钥(hex) 与 指纹(key_id)，公钥随包发、指纹对外公布）
-skiff-plugin keygen --out skiff-official-signing.key
-# 2. 值 = 私钥文件里的 64 位 hex 种子（一行，不加引号）
+skiff-plugin keygen --out skiff-official-signing.key   # 0600，打印公钥(hex)与指纹(key_id)
 gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
-
-# 没有 gh 时走 REST：GET /repos/{owner}/{repo}/actions/secrets/public-key 取公钥，
-# 用它对种子做 crypto_box_seal，再 PUT .../actions/secrets/PLUGIN_SIGNING_KEY
-# （body = {"encrypted_value": <base64>, "key_id": <上一步的 key_id>}）
 ```
 
-这把私钥是**发布身份**：换掉它等于换签名人，已导入旧公钥的用户会拒装新包，换之前想清楚。
-缺失时 `build` 第一步就红（报「缺少 secrets.PLUGIN_SIGNING_KEY」），不会静默出裸包。
+这把私钥是**发布身份**：换掉等于换签名人，已信任旧公钥的实例会拒装新包。
+安装时 `official/public-key.txt` 随包落到 `/www/skiff/official/`，**由首启自动信任（TOFU）**，无需手工导入。
 
-**插件构建一律从仓库根用 `--manifest-path plugins/Cargo.toml` 调**，不能先 `cd plugins`
-再 build：`cross` 按 cwd 判定要把哪个 cargo 项目挂进容器，cwd 落在子 workspace 时
-`../../crates/{model,sdk}` 这些跨 workspace 的 path 依赖解析不到根 workspace，直接报
-`failed to find a workspace root`（run 41309171057 双架构同红就是这个）。产物仍在
-`plugins/target/<triple>/release/plugin`。
+### 4.4 产物清单与安装包布局
 
-`build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与
-`aarch64-unknown-linux-musl`（用 `cross`，自带交叉工具链镜像），逐个跑
-`deploy/pack-release.sh`；`publish`（仅 `publish=true` 时跑）汇总两套产物 +
-`SHA256SUMS` 建成 GitHub Release。
+`build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与 `aarch64-unknown-linux-musl`
+（`cross` 自带交叉工具链镜像），逐个跑 `deploy/pack-release.sh`（同一份脚本，CI 只换
+`CARGO=cross` 与 `--target`）。`publish` 汇总后生成 Release 级 `checksums.txt`。
 
-**发布物不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏，
-装机前 `sha256sum -c`。此前的 `RELEASE_SIGNING_KEY_HEX` secret、`.sig` 产物与
-`skiff-plugin verify-file` 链路已整体移除——插件包 `.wbpkg` 的签名/TOFU 不受影响（§4.3），
-官方插件走的正是 `.wbpkg` 自己的 ed25519 签名。
+| 资产 | 说明 |
+|---|---|
+| `skiff-<ver>-<target>.tar.gz` | 安装压缩包（两个架构各一份），命名含版本与 target |
+| `skiff-<ver>-<target>.tar.gz.sha256` | 单包摘要，装机前先校验 |
+| `checksums.txt` | Release 级汇总摘要（覆盖所有 `.tar.gz`），`sha256sum -c checksums.txt` |
 
-发布物结构（与手工 `pack-release.sh` 完全一致，同一份脚本产出）：
+压缩包内布局（解压后 `cd` 进去直接 `sh install.sh`）：
 
 | 文件 | 说明 |
 |---|---|
-| `skiff-<ver>-linux-<arch>.tar.gz` | `skiff` + `skiff-plugin` + `install.sh` / `uninstall.sh` / `skiff.service` / `config.toml.example` |
-| `.tar.gz.sha256` | 装机前先校验 |
-| `official/*.wbpkg` | 官方插件 5 个（guard / monitor / nginx / files / cron），已签名；`install.sh` 只复制到 `/var/lib/skiff/official/`，**不自动安装** |
-| `official/public-key.txt` | 上面那批包的签名公钥；装机后要导入面板「设置 → 信任公钥」才能装（TOFU 首次信任） |
+| `skiff` / `skiff-plugin` | musl 静态主程序（`ldd` 应为 `not a dynamic executable`）与插件工具 |
+| `install.sh` / `uninstall.sh` / `docker-bootstrap.sh` | 安装/卸载/前置引导（不依赖仓库 `deploy/` 路径） |
+| `skiff.service` / `config.toml.example` | systemd unit 与配置样例 |
+| `official/*.wbpkg` | 官方插件 4 个（guard/monitor/files/cron），已签名；只复制到 `/www/skiff/official/`，**不自动安装** |
+| `official/public-key.txt` | 上面那批包的签名公钥，首启自动信任（TOFU） |
+| `checksums.txt` | **包内**所有文件的 SHA-256（不含自身），解压后可 `sha256sum -c` 复核 |
+| `README.txt` | 简短安装说明（含 Docker 选项与 official 用法） |
+
+**发布物不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要防传输损坏；
+`RELEASE_SIGNING_KEY_HEX` secret、`.sig` 产物与 `skiff-plugin verify-file` 链路已整体移除——
+插件包 `.wbpkg` 自己的签名/TOFU 不受影响。
+
 
 ## 5. 哪些地方是“推上去才知道”（实测列已回填）
 

@@ -13,7 +13,7 @@
 | 路径 | 类型 | 说明 | 文档入口 |
 | --- | --- | --- | --- |
 | `crates/` | 子项目 | Rust workspace 的 14 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
-| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `nginx` / `files` / `cron` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
+| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
@@ -63,7 +63,9 @@
 | 部署与测试 | `docs/DEPLOY_TEST.md` | 两种部署形态装机、配置矩阵、验收用例、实测记录与权限口径 |
 | 持续集成 | `docs/CI.md` | 工作流门槛、工具链与 MSRV、发布产物流向 |
 | 迭代验证回路 | `docs/ITERATION.md` | 自动化迭代方案：分层编译位置、回滚协同协议、验收口径、测试机凭据约定 |
-| 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、首批 5 个（guard/monitor/nginx/files/cron）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
+| 测试台账 | `docs/TEST_LEDGER.md` | 只记「正在处理 / 待处理」两栏的未闭环项；PASS 即删，不保留历史 |
+| 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、首批 4 个（guard/monitor/files/cron，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
+| 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

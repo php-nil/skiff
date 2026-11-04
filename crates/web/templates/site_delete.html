@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}删除站点 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head"><h1>删除站点</h1></div>
+<section class="panel">
+  <div class="alert">确认删除站点 <strong class="mono">{{ domain }}</strong>？</div>
+  <p>将删除 nginx vhost 配置与站点目录 <code>{{ root_dir }}</code>，该操作不可撤销。</p>
+  <form method="post" action="/{{ ctx.prefix }}/sites/{{ domain }}/delete" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <button class="btn danger" type="submit">确认删除</button>
+    <a class="ghost" href="/{{ ctx.prefix }}/sites">取消</a>
+  </form>
+</section>
+{% endblock %}

@@ -182,6 +182,7 @@ mod tests {
         ));
         let cfg = WebConfig {
             data_dir: tmp.join("data"),
+            web_root: tmp.join("www"),
             entry_prefix: "p".into(),
             dev_http: true,
             trusted_proxies: vec![],

@@ -1,7 +1,7 @@
 # 计划任务：只调度**插件接口**，不执行宿主 shell。
 #
 # 内核每分钟调一次 tick，本插件按任务表达式逐条匹配，再用 `interop:call` 调目标
-# 插件的 RPC（如 nginx 的 `backup`）。任务不写 crontab、不 spawn 进程——这是
+# 插件的 RPC（如某插件的 `backup`）。任务不写 crontab、不 spawn 进程——这是
 # 「计划任务不做宿主 root 执行」的落地方式（见 docs/PLUGIN_CATALOG.md）。
 #
 # 两个来源：
@@ -13,7 +13,7 @@ name = "计划任务"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.0"
+api = "1.1"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -36,6 +36,31 @@ verbs = ["call"]
 [[ui]]
 label = "计划任务"
 path = "index.html"
+
+# 工具 → 计划任务：任务列表 / 新建任务两个视图，均复用 index.html。
+[[menu]]
+id = "jobs"
+parent = "tools"
+label = "计划任务"
+order = 20
+icon = "clock"
+target = { kind = "plugin_ui", ui = "index.html" }
+
+  [[menu.items]]
+  id = "list"
+  label = "任务列表"
+  order = 10
+  icon = "list"
+  ui = "index.html"
+  tab = "list"
+
+  [[menu.items]]
+  id = "new"
+  label = "新建任务"
+  order = 20
+  icon = "activity"
+  ui = "index.html"
+  tab = "new"
 
 [interop]
 # 调度器需要能调任意插件（具体能否调通仍由对象授权 + 目标 provides 决定）。

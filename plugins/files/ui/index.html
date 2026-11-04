@@ -8,30 +8,65 @@
      所以这里不能引 CDN，也不许内联脚本（逻辑全在 app.js）。 -->
 <link rel="stylesheet" href="vendor/theme-dark.min.css">
 <style>
-  :root { color-scheme: dark; }
+  /* 页面 chrome 跟随面板主题；代码编辑区与 highlight.js 深色主题保持固定深色，
+     否则浅色下语法色与代码底色会互相不匹配。 */
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-btn-hover: #232c3c;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-bad: #ff7b72;
+    --ui-warn: #f0b429;
+    --ui-danger-line: #5a2226;
+    --ui-danger-text: #ff9b90;
+    --ui-row-hover: #121722;
+    --ui-row-sel: #16202e;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-btn-hover: #f0f2f5;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-bad: #b42318;
+    --ui-warn: #b54708;
+    --ui-danger-line: #f3b4ae;
+    --ui-danger-text: #b42318;
+    --ui-row-hover: #f9fafb;
+    --ui-row-sel: #e7f4f1;
+  }
   body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-         background: #0b0d11; color: #d7dee8; }
+         background: var(--ui-bg); color: var(--ui-text); }
   h1 { font-size: 18px; margin: 0 0 8px; }
   h2 { font-size: 14px; margin: 16px 0 8px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-  button { background: #1b2230; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+  button { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
            padding: 5px 12px; cursor: pointer; }
-  button:hover { background: #232c3c; }
-  button.danger { border-color: #5a2226; color: #ff9b90; }
+  button:hover { background: var(--ui-btn-hover); }
+  button.danger { border-color: var(--ui-danger-line); color: var(--ui-danger-text); }
   button.mini { padding: 2px 8px; font-size: 12px; }
-  input[type=text] { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+  input[type=text] { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
                      padding: 5px 8px; min-width: 200px; }
-  select { background: #121722; color: #d7dee8; border: 1px solid #2a3444; border-radius: 6px;
+  select { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
            padding: 5px 8px; font: inherit; }
-  .muted { color: #8a97a8; font-size: 12px; }
+  .muted { color: var(--ui-muted); font-size: 12px; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1c2532; font-size: 13px; }
-  th { color: #8a97a8; font-weight: 500; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--ui-line-soft); font-size: 13px; }
+  th { color: var(--ui-muted); font-weight: 500; }
   tbody tr { cursor: pointer; }
-  tbody tr:hover { background: #121722; }
-  tbody tr.sel { background: #16202e; }
-  code { background: #121722; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .bad { color: #ff7b72; } .warn { color: #f0b429; }
+  tbody tr:hover { background: var(--ui-row-hover); }
+  tbody tr.sel { background: var(--ui-row-sel); }
+  code { background: var(--ui-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .bad { color: var(--ui-bad); } .warn { color: var(--ui-warn); }
   #msg { min-height: 20px; font-size: 12px; }
 
   /* 高亮叠加层：<pre> 画颜色、<textarea> 收键盘。两层的字体/行高/内边距必须逐字一致，

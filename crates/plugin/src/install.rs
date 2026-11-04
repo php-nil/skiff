@@ -221,7 +221,7 @@ pub fn install_package(
     }
     let version_dir = root.join("versions").join(&meta.manifest.version);
     if version_dir.exists() {
-        fs::remove_dir_all(&version_dir)?;
+        remove_tree(&version_dir)?;
     }
     let (meta, staging) = unpacked.persist();
     match fs::rename(&staging, &version_dir) {
@@ -288,7 +288,26 @@ fn prune_versions(root: &Path, keep: usize) -> Result<()> {
     while dirs.len() > keep {
         let (name, path) = dirs.remove(0);
         warn!(version = %name, "删除超出 N-1 保留窗口的旧版本目录");
-        fs::remove_dir_all(path)?;
+        remove_tree(&path)?;
+    }
+    Ok(())
+}
+
+/// 删除目录树。Windows 上杀毒/索引会短暂占用刚写入的文件，`remove_dir_all`
+/// 可能返回 `ERROR_DIR_NOT_EMPTY`（不是真有残留）；重试几次再放弃。
+/// Linux 上首次即成功，无额外开销。
+fn remove_tree(path: &Path) -> Result<()> {
+    let mut delay = std::time::Duration::from_millis(50);
+    for attempt in 0..5 {
+        match fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) if attempt < 4 => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(e) => return Err(PluginError::Io(e)),
+        }
     }
     Ok(())
 }
@@ -310,7 +329,38 @@ fn set_plugin_ownership(root: &Path, id: &str) -> Result<()> {
         }
     }
     let _ = fs::set_permissions(root.join("versions"), fs::Permissions::from_mode(0o755));
+    // 版本目录来自 staging（0700），且解包不落 tar 的 mode 位；不放开这两处，
+    // 降权后的插件进程连自己目录都穿不过去，拉起时直接 Permission denied。
+    if let Ok(entries) = fs::read_dir(root.join("versions")) {
+        for entry in entries.flatten() {
+            let version_dir = entry.path();
+            if !version_dir.is_dir() {
+                continue;
+            }
+            let _ = fs::set_permissions(&version_dir, fs::Permissions::from_mode(0o755));
+            mark_tree_executable(&version_dir.join("bin"));
+        }
+    }
     Ok(())
+}
+
+#[cfg(unix)]
+fn mark_tree_executable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if !dir.is_dir() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
+                mark_tree_executable(&p);
+            } else {
+                let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
 }
 
 #[cfg(not(unix))]
@@ -327,15 +377,15 @@ pub fn uninstall_package(db: &Db, data_dir: &Path, id: &str, delete_data: bool) 
     for sub in ["versions", "cache", "run"] {
         let p = root.join(sub);
         if p.exists() {
-            fs::remove_dir_all(&p)?;
+            remove_tree(&p)?;
         }
     }
     if delete_data {
         let data = root.join("data");
         if data.exists() {
-            fs::remove_dir_all(&data)?;
+            remove_tree(&data)?;
         }
-        let _ = fs::remove_dir_all(&root);
+        let _ = remove_tree(&root);
     } else {
         fs::create_dir_all(root.join("versions"))?;
     }

@@ -13,7 +13,10 @@
 listen = "127.0.0.1:18080"
 
 # ── 路径 ────────────────────────────────────────────────────────
-# data_dir = "/var/lib/skiff"
+# 数据根：库、初始口令、plugins、backup、official 都在这下面
+# data_dir = "/www/skiff"
+# 站点寄宿根：sites/<域名>/public、nginx/conf.d、logs/nginx、certs、php
+# web_root = "/www"
 # run_dir = "/run/skiff"
 # docker_socket = "/var/run/docker.sock"
 

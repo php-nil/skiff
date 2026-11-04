@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}网站运行环境 · Skiff{% endblock %}
+{% block content %}
+{% if running %}<meta http-equiv="refresh" content="3">{% endif %}
+<div class="page-head">
+  <h1>运行环境</h1>
+  {% if can_admin && !running %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/install" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <button class="btn" type="submit">{% if env.installed %}重新安装/重建环境{% else %}安装运行环境{% endif %}</button>
+  </form>
+  {% endif %}
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert">{{ notice }}</div>{% endif %}
+
+<section class="panel">
+  <h2>当前状态</h2>
+  <div class="kv">
+    <div><span class="muted">Docker</span><span>{% if env.docker_available %}可用{% else %}不可用：{{ env.docker_reason }}{% endif %}</span></div>
+    <div><span class="muted">nginx 容器</span><span class="mono">{{ env.nginx_state }}</span></div>
+    <div><span class="muted">PHP-FPM 容器</span><span class="mono">{{ env.php_state }}</span></div>
+    <div><span class="muted">站点访问端口</span><span class="mono">{{ env.port }}（host 网络，宿主直听）</span></div>
+    <div><span class="muted">端口检查</span><span class="mono">{{ env.port_message }}</span></div>
+    <div><span class="muted">nginx 镜像</span><span class="mono">{{ env.nginx_image }}</span></div>
+    <div><span class="muted">PHP 镜像</span><span class="mono">{{ env.php_image }}</span></div>
+    <div><span class="muted">PHP socket</span><span class="mono">/www/php/php-fpm.sock（0660 root:nobody，仅 nginx worker 可连）</span></div>
+    <div><span class="muted">WAF</span><span>模式 {{ env.waf_mode }}（待定：本期不加载规则、不拦截）· 规则目录 <span class="mono">{{ env.waf_rules_dir }}</span></span></div>
+  </div>
+  {% if !env.ready %}
+  <p class="muted">安装动作会先探测宿主 80 端口（被占用会直接报错并给出占用进程），再拉取 OpenResty 固定 digest 镜像与 PHP 镜像，创建两个 host 网络容器并共享 <code>/www</code>；PHP 只监听 unix socket。失败原因会显示在对应步骤，包含 registry 与 Docker 错误码。</p>
+  {% endif %}
+</section>
+
+{% if !steps.is_empty() %}
+<section class="panel">
+  <h2>安装进度{% if running %}<span class="tag warn-tag">进行中</span>{% else if done && install_error.is_empty() %}<span class="tag ok">完成</span>{% else if !install_error.is_empty() %}<span class="tag warn-tag">失败</span>{% endif %}</h2>
+  {% if !install_error.is_empty() %}<div class="alert">{{ install_error }}</div>{% endif %}
+  <ul class="steps">
+    {% for s in steps %}
+    <li class="step {{ s.state }}">
+      <span class="dot"></span>
+      <span class="name">{{ s.name }}</span>
+      <span class="detail muted">{{ s.detail }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>镜像源</h2>
+  <p>当前镜像前缀：<span class="mono">{% if image_prefix.is_empty() %}（无）{% else %}{{ image_prefix }}{% endif %}</span></p>
+  <p>Docker 加速源：<span class="mono">{% if registry_mirror.is_empty() %}未配置{% else %}{{ registry_mirror }}{% endif %}</span></p>
+  <p class="muted">镜像加速需要写入宿主 <code>/etc/docker/daemon.json</code> 的 <code>registry-mirrors</code> 并重启 Docker；可到 <a href="/{{ ctx.prefix }}/sites/settings">设置</a> 修改镜像前缀与镜像标签（端口固定为宿主 80）。</p>
+</section>
+{% endblock %}

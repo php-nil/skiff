@@ -1,7 +1,11 @@
 {% extends "base.html" %}
-{% block title %}插件 · Skiff{% endblock %}
+{% block title %}插件中心 · Skiff{% endblock %}
 {% block content %}
-<div class="page-head"><h1>插件</h1></div>
+<div class="page-head">
+  <h1>插件中心</h1>
+  <span class="muted small">安装、授权、启停与更新都在这里；已启用插件的日常入口在顶部「应用」。</span>
+  <span class="muted small">已启用 {{ enabled_count }} · 已停用 {{ disabled_count }}</span>
+</div>
 {% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !reduced_allowed %}
@@ -11,57 +15,80 @@
 <div class="banner danger">allow_unsigned = true：未签名包可安装，仅限开发环境。</div>
 {% endif %}
 
+<div class="tabs">
+  <a class="tab{% if tab == "installed" %} on{% endif %}" href="/{{ ctx.prefix }}/plugins">已安装 <span class="count">{{ plugins.len() }}</span></a>
+  <a class="tab{% if tab == "discover" %} on{% endif %}" href="/{{ ctx.prefix }}/plugins?tab=discover">发现</a>
+  <a class="tab{% if tab == "updates" %} on{% endif %}" href="/{{ ctx.prefix }}/plugins?tab=updates">可更新</a>
+</div>
+
+{% if tab == "installed" %}
 <section class="panel">
   {% if plugins.is_empty() %}
-    <div class="empty">还没有安装插件</div>
+    <div class="empty">还没有安装插件。到「<a href="/{{ ctx.prefix }}/plugins?tab=discover">发现</a>」上传 .wbpkg 安装；启用后会出现在顶部「应用」菜单。</div>
   {% else %}
-  <table class="grid">
-    <thead><tr><th>插件</th><th>版本 / API</th><th>状态</th><th>信任</th><th>已授权</th><th>操作</th></tr></thead>
-    <tbody>
+  <div class="plugin-cards">
     {% for p in plugins %}
-      <tr>
-        <td><strong>{{ p.name }}</strong><div class="muted small">{{ p.id }}</div></td>
-        <td><code>{{ p.version }}</code> <span class="muted small">api {{ p.api }}</span></td>
-        <td>
-          <span class="state {{ p.status }}">{{ p.status }}</span>
-          {% if p.running %}<span class="tag">运行中</span>{% endif %}
-          {% if p.reduced %}<span class="tag warn-tag">reduced sandbox</span>{% endif %}
-        </td>
-        <td>
-          {% if p.signed %}<span class="state ok">已验签</span>{% else %}<span class="state fail">未验签</span>{% endif %}
-          <div class="muted small"><code>{{ p.key_id }}…</code></div>
-        </td>
-        <td class="muted small">{{ p.grants }}</td>
-        <td class="actions">
-          {% if !p.ui_path.is_empty() %}
-          <a class="mini" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">打开</a>
-          {% endif %}
-          {% if can_admin %}
-          <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/toggle" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-            <button class="mini" type="submit">{% if p.enabled %}停用{% else %}启用{% endif %}</button>
-          </form>
-          <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/remove" class="inline" onsubmit="return confirm('确认卸载？插件数据默认保留。')">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-            <button class="mini danger" type="submit">卸载</button>
-          </form>
-          {% else %}<span class="muted small">只读</span>{% endif %}
-        </td>
-      </tr>
+    <article class="plugin-card">
+      <div class="pc-top">
+        <div>
+          <strong>{{ p.name }}</strong>
+          <div class="muted small"><code>{{ p.id }}</code></div>
+        </div>
+        {% if p.enabled %}
+          <span class="state running">已启用</span>
+        {% else %}
+          <span class="state disabled">已安装 · 未启用</span>
+        {% endif %}
+      </div>
+      <div class="muted small">v{{ p.version }} · api {{ p.api }} · {% if p.signed %}已验签{% else %}未验签{% endif %}{% if p.reduced %} · reduced sandbox{% endif %}</div>
+      <div class="muted small">
+        {% if p.running %}<span class="tag">运行中</span>{% endif %}
+        {% if !p.ui_path.is_empty() %}<span class="tag">有界面</span>{% else %}<span class="tag warn-tag">无界面</span>{% endif %}
+        <span class="muted">已授权：</span>{{ p.grants }}
+        {% if p.grants.is_empty() %}<span class="muted">无</span>{% endif %}
+      </div>
+      <div class="pc-actions">
+        {% if p.enabled && !p.ui_path.is_empty() %}
+        <a class="mini" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">打开</a>
+        {% endif %}
+        {% if can_admin %}
+        <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/toggle" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini" type="submit">{% if p.enabled %}停用{% else %}启用{% endif %}</button>
+        </form>
+        <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/remove" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini danger" type="submit">卸载</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
     {% endfor %}
-    </tbody>
-  </table>
+  </div>
+  <p class="hint">停用后插件会从「应用」菜单消失，数据默认保留；卸载同样保留插件 data/ 目录。</p>
   {% endif %}
 </section>
-
-{% if can_admin %}
-<section class="panel">
-  <h2>安装插件（.wbpkg）</h2>
-  <form method="post" action="/{{ ctx.prefix }}/plugins/install" enctype="multipart/form-data" class="row">
-    <input type="file" name="package" accept=".wbpkg" required>
-    <button class="primary" type="submit">上传并校验</button>
-  </form>
-  <p class="hint">校验顺序：结构 → 哈希清单 → 签名（TOFU 公钥）→ API 兼容 → 能力可用 → 权限逐条确认。全程不出网。</p>
-</section>
+{% else %}
+  {% if tab == "discover" %}
+  <section class="panel">
+    <h2>发现插件</h2>
+    <div class="empty">当前版本没有接入在线官方源，无法在这里浏览可安装清单。可从发布包 <code>official/</code> 目录取 <code>.wbpkg</code> 在本页上传。</div>
+    {% if can_admin %}
+    <h3>从本地包安装</h3>
+    <form method="post" action="/{{ ctx.prefix }}/plugins/install" enctype="multipart/form-data" class="row">
+      <input type="file" name="package" accept=".wbpkg" required>
+      <button class="primary" type="submit">上传并校验</button>
+    </form>
+    <p class="hint">校验顺序：结构 → 哈希清单 → 签名（TOFU 公钥）→ API 兼容 → 能力可用 → 权限逐条确认。全程不出网。安装后默认启用，可在卡片上停用。</p>
+    {% else %}
+    <p class="hint">当前角色只能查看已安装插件，安装需要插件管理权限。</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <section class="panel">
+    <h2>可更新</h2>
+    <div class="empty">尚未接入更新检查源，无法判断可更新版本。升级仍走「发现」重新上传已验签的 .wbpkg。</div>
+  </section>
+  {% endif %}
 {% endif %}
 {% endblock %}

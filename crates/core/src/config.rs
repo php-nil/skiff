@@ -14,6 +14,8 @@ use skiff_model::Cidr;
 pub struct FileConfig {
     pub listen: Option<String>,
     pub data_dir: Option<PathBuf>,
+    /// 站点/nginx/日志/证书/PHP socket 根（默认 `/www`）
+    pub web_root: Option<PathBuf>,
     pub run_dir: Option<PathBuf>,
     pub docker_socket: Option<String>,
     /// `native`（默认）或 `docker`（受限形态，§5.4）
@@ -36,6 +38,7 @@ pub struct FileConfig {
 pub struct Config {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
+    pub web_root: PathBuf,
     pub run_dir: PathBuf,
     pub config_path: PathBuf,
     pub docker_socket: String,
@@ -82,6 +85,10 @@ impl Config {
             .map(PathBuf::from)
             .or(file.data_dir.clone())
             .unwrap_or_else(default_data_dir);
+        let web_root = env_str("SKIFF_WEB_ROOT")
+            .map(PathBuf::from)
+            .or(file.web_root.clone())
+            .unwrap_or_else(default_web_root);
         let run_dir = env_str("SKIFF_RUN_DIR")
             .map(PathBuf::from)
             .or(file.run_dir.clone())
@@ -159,6 +166,7 @@ impl Config {
         Ok(Config {
             listen,
             data_dir,
+            web_root,
             run_dir,
             config_path,
             docker_socket,
@@ -273,9 +281,17 @@ fn default_config_path() -> PathBuf {
 
 fn default_data_dir() -> PathBuf {
     if cfg!(unix) {
-        PathBuf::from("/var/lib/skiff")
+        PathBuf::from("/www/skiff")
     } else {
         PathBuf::from("skiff-data")
+    }
+}
+
+fn default_web_root() -> PathBuf {
+    if cfg!(unix) {
+        PathBuf::from("/www")
+    } else {
+        PathBuf::from("skiff-web")
     }
 }
 
@@ -296,6 +312,7 @@ mod tests {
         let mut c = Config {
             listen: "0.0.0.0:18080".parse().unwrap(),
             data_dir: PathBuf::from("d"),
+            web_root: PathBuf::from("w"),
             run_dir: PathBuf::from("r"),
             config_path: PathBuf::from("c.toml"),
             docker_socket: "/var/run/docker.sock".into(),
@@ -323,6 +340,7 @@ mod tests {
         let mut c = Config {
             listen: "127.0.0.1:18080".parse().unwrap(),
             data_dir: PathBuf::from("d"),
+            web_root: PathBuf::from("w"),
             run_dir: PathBuf::from("r"),
             config_path: PathBuf::from("c.toml"),
             docker_socket: "/var/run/docker.sock".into(),
@@ -369,6 +387,16 @@ mod tests {
             .to_string();
         assert!(e.contains("not-a-cidr"), "{e}");
         assert!(parse_trusted_proxies(&["172.18.0.0/16".into()]).is_ok());
+    }
+
+    #[test]
+    fn default_paths_follow_www_layout() {
+        let c = Config::load(None, true).unwrap();
+        if cfg!(unix) {
+            assert_eq!(c.data_dir, PathBuf::from("/www/skiff"));
+            assert_eq!(c.web_root, PathBuf::from("/www"));
+        }
+        assert!(c.data_dir.is_absolute() || !cfg!(unix));
     }
 
     #[test]

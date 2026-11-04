@@ -1,0 +1,1643 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skiff 导航与 UI 重构 · 可点预览</title>
+<style>
+/* ============ 设计稿说明：本文件是纯静态预览，不加载任何外部资源。
+   调色板沿用 Skiff 现有暗色语言（accent #5ad1a4），层级与密度在本轮重做。 ============ */
+:root{
+  --bg:#0f1115; --panel:#161a21; --panel-2:#1c222b; --panel-3:#222a35;
+  --line:#262d38; --line-soft:#1f2630;
+  --text:#d7dde7; --muted:#8b97a8; --faint:#66717f;
+  --accent:#5ad1a4; --accent-weak:rgba(90,209,164,.12);
+  --blue:#63a4ff; --danger:#ff6b6b; --warn:#f5b942;
+  --radius:12px; --radius-sm:8px;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  background:#080a0d; color:var(--text);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--blue);text-decoration:none}
+code,pre{font-family:var(--mono);font-size:12.5px}
+
+/* ---------- 预览工具条（不属于产品 UI） ---------- */
+.preview-bar{
+  position:relative; z-index:80; display:flex; align-items:center; gap:16px;
+  padding:10px 18px; border-bottom:1px solid #202631; background:#0b0e12;
+  font-size:12.5px; color:var(--muted);
+}
+.preview-bar b{color:var(--text);font-weight:600;letter-spacing:.2px}
+.preview-bar .pb-tag{
+  margin-left:8px; padding:2px 7px; border:1px solid #2b3442; border-radius:999px;
+  color:var(--faint); font-size:11px;
+}
+.preview-bar .pb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.preview-bar .mode{
+  padding:5px 12px; border-radius:999px; border:1px solid #2b3442;
+  background:#12161c; color:var(--muted); cursor:pointer;
+}
+.preview-bar .mode.on{background:var(--accent-weak);border-color:rgba(90,209,164,.45);color:var(--accent)}
+.preview-bar .hint{color:var(--faint);font-size:11.5px}
+
+/* ---------- “设备”画布：桌面全宽 / 窄屏 430px ---------- */
+.device{
+  max-width:1440px; margin:0 auto; background:var(--bg); min-height:calc(100vh - 41px);
+  box-shadow:0 0 0 1px #151a21; transition:max-width .25s ease;
+}
+.device.narrow{max-width:430px; box-shadow:0 0 0 1px #2a3340,0 20px 60px rgba(0,0,0,.5)}
+
+/* ---------- 顶栏：56px，品牌 / 导航 / 账户 ---------- */
+.appbar{
+  position:sticky; top:0; z-index:50; display:flex; align-items:center; gap:18px;
+  height:56px; padding:0 20px; background:rgba(22,26,33,.94);
+  border-bottom:1px solid var(--line); backdrop-filter:blur(6px);
+}
+.brand{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:700;letter-spacing:.4px;cursor:pointer}
+.brand .logo{color:var(--accent);font-size:16px}
+.brand .ver{color:var(--faint);font-weight:400;font-size:11.5px}
+.nav{display:flex;align-items:center;gap:2px;min-width:0}
+.nav-item{
+  display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 11px;
+  border:0;background:none;border-radius:var(--radius-sm);color:var(--muted);
+  font-size:13px;cursor:pointer;white-space:nowrap;
+}
+.nav-item:hover{background:var(--panel-2);color:var(--text)}
+.nav-item.is-active{background:var(--accent-weak);color:var(--accent)}
+.nav-group{position:relative}
+.nav-group.is-current>.nav-trigger{background:rgba(90,209,164,.07);color:var(--accent)}
+.nav-group.is-current>.nav-trigger::after{
+  content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;background:var(--accent);
+}
+.caret{font-size:9px;color:var(--faint);transition:transform .15s ease}
+.nav-group.open .caret{transform:rotate(180deg);color:var(--accent)}
+.nav-menu{
+  display:none;position:absolute;top:calc(100% + 8px);left:0;z-index:60;
+  min-width:246px;padding:6px;background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;box-shadow:0 18px 44px rgba(0,0,0,.55);
+}
+.nav-group.open .nav-menu{display:block}
+.menu-label{padding:6px 10px 4px;color:var(--faint);font-size:11px;letter-spacing:.4px}
+.menu-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:var(--muted)}
+.menu-item:hover{background:var(--panel-2);color:var(--text);text-decoration:none}
+.menu-item.is-active{background:var(--accent-weak);color:var(--accent)}
+.menu-item b{display:block;color:inherit;font-size:13px;font-weight:600;line-height:1.3}
+.menu-item small{display:block;color:var(--faint);font-size:11.5px;line-height:1.35}
+.mi-ico{
+  flex:0 0 30px;height:30px;display:grid;place-items:center;border-radius:8px;
+  background:var(--panel-3);border:1px solid #303a47;color:var(--accent);font-weight:700;font-size:12px;
+}
+.menu-foot{margin-top:4px;padding:8px 10px 6px;border-top:1px solid var(--line-soft);color:var(--faint);font-size:11.5px}
+.menu-foot a{cursor:pointer}
+.nav-badge{
+  min-width:17px;height:17px;padding:0 5px;border-radius:999px;display:inline-grid;place-items:center;
+  background:rgba(245,185,66,.16);color:var(--warn);font-size:10.5px;font-weight:700;
+}
+.appbar-right{margin-left:auto;display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px}
+.health-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(90,209,164,.12)}
+.icon-btn{padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:transparent;color:var(--muted);cursor:pointer}
+.icon-btn:hover{color:var(--text);border-color:#39424f}
+.hamburger{display:none;width:34px;height:32px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
+
+/* ---------- 内容区骨架：1440 内页宽 1200，24px 边距，卡片间距 16 ---------- */
+.page-wrap{padding:22px 24px 48px;max-width:1200px;margin:0 auto}
+.page{display:none}
+.page.is-active{display:block;animation:fade .18s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.page-head{display:flex;align-items:flex-start;gap:18px;margin:2px 0 20px}
+.eyebrow{color:var(--faint);font-size:11.5px;letter-spacing:.6px;text-transform:uppercase}
+.page-head h1{margin:4px 0 4px;font-size:22px;line-height:1.3;letter-spacing:.2px}
+.page-head .sub{margin:0;color:var(--muted);font-size:12.5px}
+.page-head .actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+
+.btn{
+  display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel-2);
+  color:var(--text);font-size:12.5px;cursor:pointer;white-space:nowrap;
+}
+.btn:hover{border-color:#39424f;background:var(--panel-3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#0c1512;font-weight:600}
+.btn.primary:hover{background:#6fdcb3}
+.btn.ghost{background:transparent}
+.btn.danger{color:var(--danger);border-color:rgba(255,107,107,.28);background:rgba(255,107,107,.06)}
+.btn.sm{height:27px;padding:0 9px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.card.pad0{padding:0;overflow:hidden}
+.card-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.card-head h2{margin:0;font-size:14px;font-weight:600;letter-spacing:.2px}
+.card-head .meta{color:var(--faint);font-size:11.5px}
+.card-head .more{margin-left:auto;font-size:12px;cursor:pointer}
+
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:minmax(0,1.45fr) minmax(0,1fr)}
+.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.stack{display:flex;flex-direction:column;gap:16px}
+.mt16{margin-top:16px}
+
+/* 健康数字块 */
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:13px 15px}
+.stat .label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+.stat .value{margin-top:6px;font-size:20px;font-weight:650;letter-spacing:.2px;font-variant-numeric:tabular-nums}
+.stat .meta{margin-top:2px;color:var(--faint);font-size:11.5px}
+.stat .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.stat .dot.warn{background:var(--warn)}
+.stat .dot.bad{background:var(--danger)}
+.stat .bar{height:3px;border-radius:2px;background:var(--panel-3);margin-top:10px;overflow:hidden}
+.stat .bar i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+.stat .bar i.warn{background:var(--warn)}
+
+/* 状态标签 */
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:11.5px;border:1px solid transparent;white-space:nowrap}
+.chip.ok{background:rgba(90,209,164,.11);color:var(--accent);border-color:rgba(90,209,164,.25)}
+.chip.warn{background:rgba(245,185,66,.11);color:var(--warn);border-color:rgba(245,185,66,.25)}
+.chip.bad{background:rgba(255,107,107,.11);color:var(--danger);border-color:rgba(255,107,107,.25)}
+.chip.mute{background:var(--panel-2);color:var(--muted);border-color:var(--line)}
+.chip.blue{background:rgba(99,164,255,.1);color:var(--blue);border-color:rgba(99,164,255,.25)}
+
+/* ---------- 表格：44px 行高，数字列等宽 ---------- */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{
+  text-align:left;padding:9px 14px;color:var(--faint);font-weight:500;font-size:11.5px;
+  letter-spacing:.3px;background:var(--panel-2);border-bottom:1px solid var(--line);white-space:nowrap;
+}
+td{padding:0 14px;height:44px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:rgba(255,255,255,.018)}
+td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.name-cell{display:flex;align-items:center;gap:9px}
+.name-cell b{font-weight:600}
+.name-cell code{color:var(--faint);font-size:11.5px}
+.row-actions{display:flex;gap:6px;justify-content:flex-end}
+.toolbar{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.toolbar .spacer{margin-left:auto}
+.search{
+  height:31px;min-width:200px;padding:0 10px;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel-2);color:var(--text);outline:none;
+}
+.search::placeholder{color:var(--faint)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.filter{
+  padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:transparent;
+  color:var(--muted);font-size:12px;cursor:pointer;
+}
+.filter.on{background:var(--accent-weak);color:var(--accent);border-color:rgba(90,209,164,.35)}
+
+/* ---------- 待处理事项 ---------- */
+.todo{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid var(--line-soft);align-items:flex-start}
+.todo:last-child{border-bottom:0;padding-bottom:0}
+.todo:first-child{padding-top:0}
+.todo .sev{
+  flex:0 0 22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;
+  background:rgba(245,185,66,.12);color:var(--warn);
+}
+.todo .sev.bad{background:rgba(255,107,107,.12);color:var(--danger)}
+.todo .txt{flex:1;min-width:0}
+.todo .txt b{display:block;font-weight:600;font-size:13px}
+.todo .txt small{display:block;color:var(--faint);font-size:11.5px;margin-top:1px}
+.todo .act{align-self:center}
+
+/* ---------- 审计时间线 / 迷你列表 ---------- */
+.mini-list{list-style:none;margin:0;padding:0}
+.mini-list li{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:12.5px}
+.mini-list li:last-child{border-bottom:0;padding-bottom:0}
+.mini-list .time{flex:0 0 46px;color:var(--faint);font-family:var(--mono);font-size:11.5px}
+.mini-list .what{flex:1;min-width:0;color:var(--muted)}
+.mini-list .what b{color:var(--text);font-weight:500}
+.mini-list .who{color:var(--faint);font-size:11.5px}
+
+/* ---------- 插件中心 ---------- */
+.tabs{display:flex;gap:4px;padding:4px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;width:max-content}
+.tab{border:0;background:transparent;color:var(--muted);padding:6px 14px;border-radius:7px;font-size:12.5px;cursor:pointer}
+.tab.on{background:var(--panel);color:var(--text);box-shadow:0 0 0 1px var(--line)}
+.tab .n{color:var(--faint);font-size:11px;margin-left:3px}
+.plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.plugin{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 16px;display:flex;flex-direction:column;gap:10px}
+.plugin.enabled{border-color:rgba(90,209,164,.22)}
+.plugin-top{display:flex;gap:11px;align-items:flex-start}
+.plugin-ico{
+  flex:0 0 36px;height:36px;display:grid;place-items:center;border-radius:9px;
+  background:var(--panel-3);border:1px solid #303a47;color:var(--accent);font-weight:700;
+}
+.plugin-top h3{margin:1px 0 2px;font-size:14px}
+.plugin-top p{margin:0;color:var(--faint);font-size:11.5px}
+.plugin .pill{margin-left:auto}
+.plugin-desc{margin:0;color:var(--muted);font-size:12px;min-height:36px}
+.caps{display:flex;gap:5px;flex-wrap:wrap}
+.cap{padding:1px 7px;border:1px solid var(--line);border-radius:5px;color:var(--faint);font-size:10.5px;font-family:var(--mono)}
+.plugin-foot{display:flex;align-items:center;gap:8px;margin-top:auto;padding-top:2px;flex-wrap:wrap}
+.plugin-foot .hintline{color:var(--faint);font-size:11px;margin-right:auto}
+.empty{
+  padding:34px 16px;text-align:center;color:var(--muted);font-size:13px;
+  background:var(--panel-2);border:1px dashed #313b48;border-radius:10px;margin:8px;
+}
+.empty b{display:block;color:var(--text);font-size:14px;margin-bottom:4px}
+.empty small{display:block;color:var(--faint);font-size:11.5px;margin-bottom:10px}
+.error-panel{
+  padding:12px 14px;border-radius:10px;border:1px solid rgba(255,107,107,.22);
+  background:rgba(255,107,107,.07);color:var(--danger);font-size:12px;
+}
+.error-panel b{color:var(--danger)}
+:focus-visible{outline:2px solid rgba(90,209,164,.55);outline-offset:2px}
+.notice{
+  display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;
+  background:rgba(99,164,255,.07);border:1px solid rgba(99,164,255,.18);color:var(--muted);font-size:12px;
+}
+.notice b{color:var(--text)}
+
+/* ---------- NGINX 工作台：左站点 / 右详情 ---------- */
+.workspace{display:grid;grid-template-columns:270px minmax(0,1fr);gap:16px;align-items:start}
+.site-list{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px}
+.site-list .head{display:flex;align-items:center;padding:8px 10px 6px;color:var(--faint);font-size:11.5px}
+.site-list .head .btn{margin-left:auto}
+.site{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;padding:9px 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
+.site:hover{background:var(--panel-2)}
+.site.on{background:var(--accent-weak);border-color:rgba(90,209,164,.22);color:var(--text)}
+.site b{font-size:12.5px;font-weight:600}
+.site small{color:var(--faint);font-size:11px}
+.site-row{display:flex;align-items:center;gap:7px}
+.site .chip{margin-left:auto}
+.config-box{
+  width:100%;min-height:214px;resize:vertical;padding:12px 14px;border-radius:10px;
+  border:1px solid var(--line);background:#12161c;color:#cfe0d6;
+  font-family:var(--mono);font-size:12px;line-height:1.65;outline:none;
+}
+.config-box:focus{border-color:rgba(90,209,164,.45)}
+.banner{
+  display:flex;align-items:center;gap:10px;padding:9px 13px;border-radius:9px;font-size:12px;margin-bottom:12px;
+  background:rgba(245,185,66,.08);border:1px solid rgba(245,185,66,.2);color:var(--warn);
+}
+.banner.bad{background:rgba(255,107,107,.08);border-color:rgba(255,107,107,.22);color:var(--danger)}
+.banner .btn{margin-left:auto}
+.status-line{display:flex;align-items:center;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.status-line b{color:var(--text);font-weight:600}
+.kv{display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px 12px;font-size:12px}
+.kv dt{color:var(--faint)}
+.kv dd{margin:0;color:var(--muted);word-break:break-all}
+.kv dd code{color:var(--text)}
+
+/* ---------- 设置 / 通用列表 ---------- */
+.setting{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--line-soft)}
+.setting:last-child{border-bottom:0;padding-bottom:2px}
+.setting:first-child{padding-top:2px}
+.setting .txt{flex:1;min-width:0}
+.setting .txt b{display:block;font-size:13px}
+.setting .txt small{display:block;color:var(--faint);font-size:11.5px;margin-top:2px}
+.switch{position:relative;width:40px;height:22px;border-radius:999px;border:1px solid var(--line);background:var(--panel-3);cursor:pointer;flex:0 0 auto}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--faint);transition:.15s}
+.switch.on{background:rgba(90,209,164,.18);border-color:rgba(90,209,164,.4)}
+.switch.on::after{left:21px;background:var(--accent)}
+.file-row{display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:12.5px}
+.file-row:last-child{border-bottom:0}
+.file-row .fico{width:22px;height:22px;border-radius:6px;background:var(--panel-3);display:grid;place-items:center;color:var(--faint);font-size:10px}
+.file-row .size{margin-left:auto;color:var(--faint);font-family:var(--mono);font-size:11.5px}
+.breadcrumb{display:flex;gap:6px;align-items:center;color:var(--faint);font-size:12px;margin-bottom:12px}
+.breadcrumb b{color:var(--text);font-weight:500}
+.metric-bars{display:flex;align-items:flex-end;gap:5px;height:74px;padding-top:8px}
+.metric-bars i{flex:1;min-width:5px;background:linear-gradient(180deg,rgba(90,209,164,.55),rgba(90,209,164,.16));border-radius:3px 3px 0 0}
+
+/* ---------- 抽屉 / 弹窗 / Toast ---------- */
+.overlay{
+  position:fixed;inset:0;z-index:70;background:rgba(5,7,10,.62);
+  opacity:0;pointer-events:none;transition:opacity .18s ease;
+}
+.overlay.on{opacity:1;pointer-events:auto}
+.drawer{
+  position:fixed;top:0;right:0;bottom:0;z-index:75;width:min(470px,92vw);
+  background:var(--panel);border-left:1px solid var(--line);padding:18px 20px;
+  transform:translateX(101%);transition:transform .2s ease;overflow:auto;
+}
+.drawer.on{transform:none}
+.drawer h3{margin:0 0 4px;font-size:15px}
+.drawer .dsub{color:var(--faint);font-size:12px;margin-bottom:14px}
+.drawer .close{position:absolute;top:12px;right:14px}
+.log-box{background:#0d1115;border:1px solid var(--line);border-radius:9px;padding:11px 12px;overflow:auto;max-height:400px}
+.log-box pre{margin:0;color:#a9bdc4;font-size:11.5px;line-height:1.7;white-space:pre-wrap;word-break:break-all}
+.modal-wrap{
+  position:fixed;inset:0;z-index:78;display:none;place-items:center;background:rgba(5,7,10,.66);padding:20px;
+}
+.modal-wrap.on{display:grid}
+.modal{width:min(520px,100%);max-height:88vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:0 24px 70px rgba(0,0,0,.6)}
+.modal h3{margin:0 0 2px;font-size:16px}
+.modal .msub{color:var(--faint);font-size:12px;margin-bottom:14px}
+.perm{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:8px;background:var(--panel-2)}
+.perm b{display:block;font-size:12.5px}
+.perm small{display:block;color:var(--faint);font-size:11.5px;margin-top:1px}
+.perm code{color:var(--accent);font-size:11.5px}
+.confirm-row{display:flex;gap:8px;align-items:flex-start;margin:12px 0;color:var(--muted);font-size:12px}
+.confirm-row input{margin-top:2px}
+.modal-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.progress{height:4px;border-radius:2px;background:var(--panel-3);overflow:hidden;margin:12px 0 6px}
+.progress i{display:block;height:100%;width:0;background:var(--accent);transition:width .5s ease}
+.steps{color:var(--faint);font-size:11.5px;min-height:17px}
+.toast-wrap{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:90;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{
+  padding:9px 14px;border-radius:9px;background:#202832;border:1px solid #34404f;
+  color:var(--text);font-size:12.5px;box-shadow:0 10px 30px rgba(0,0,0,.45);
+  animation:toastIn .18s ease;
+}
+.toast.ok{border-color:rgba(90,209,164,.35)}
+.toast.bad{border-color:rgba(255,107,107,.35)}
+@keyframes toastIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---------- 窄屏（≤900px 或预览切到 430px）：导航折成抽屉，内容单列 ---------- */
+.device.narrow .hamburger{display:inline-grid;place-items:center}
+.device.narrow .appbar{padding:0 14px;gap:10px}
+.device.narrow .nav{
+  display:none;position:fixed;top:56px;left:50%;transform:translateX(-50%);
+  width:min(430px,100vw);z-index:55;
+  flex-direction:column;align-items:stretch;gap:2px;padding:10px 12px 16px;
+  background:var(--panel);border-bottom:1px solid var(--line);
+  max-height:calc(100vh - 56px);overflow:auto;
+}
+.device.narrow.menu-open .nav{display:flex}
+.device.narrow .nav-item{justify-content:space-between;height:40px;font-size:13.5px;padding:0 12px}
+.device.narrow .nav-group{width:100%}
+.device.narrow .nav-group>.nav-trigger{width:100%}
+.device.narrow .nav-group.is-current>.nav-trigger::after{display:none}
+.device.narrow .nav-menu{
+  position:static;min-width:0;margin:2px 0 6px;padding:4px;background:var(--panel-2);
+  border:0;box-shadow:none;
+}
+.device.narrow .menu-item{padding:9px 10px}
+.device.narrow .menu-foot{padding:8px 10px}
+.device.narrow .appbar-right .who,.device.narrow .appbar-right .health-dot{display:none}
+.device.narrow .page-wrap{padding:16px 14px 40px}
+.device.narrow .page-head{flex-wrap:wrap;gap:10px}
+.device.narrow .page-head h1{font-size:19px}
+.device.narrow .page-head .actions{margin-left:0;width:100%}
+.device.narrow .stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.device.narrow .cols-2,.device.narrow .cols-3{grid-template-columns:minmax(0,1fr)}
+.device.narrow .plugin-grid{grid-template-columns:minmax(0,1fr)}
+.device.narrow .workspace{grid-template-columns:minmax(0,1fr)}
+.device.narrow .site-list{order:2}
+.device.narrow .detail{order:1}
+.device.narrow .toolbar{padding:10px 12px}
+.device.narrow .search{min-width:0;flex:1}
+.device.narrow .hide-narrow{display:none}
+.device.narrow .modal{padding:16px}
+.device.narrow .drawer{width:100%}
+@media (max-width:900px){
+  .preview-bar .hint{display:none}
+}
+/* 真机窄屏也直接按窄屏规则渲染（预览里用 .narrow 类模拟） */
+@media (max-width:900px){
+  .device{max-width:100%}
+}
+
+/* CSS-END */
+</style>
+</head>
+<body>
+<div class="preview-bar">
+  <div><b>Skiff · 导航与 UI 重构</b><span class="pb-tag">可点预览 · 示意数据</span></div>
+  <div class="pb-right">
+    <span class="hint">一级菜单 hover/点击展开 · Esc 关闭 · Tab 可达</span>
+    <button class="mode on" data-mode="desktop">桌面</button>
+    <button class="mode" data-mode="narrow">窄屏 430px</button>
+  </div>
+</div>
+
+<div class="device" id="device">
+  <header class="appbar">
+    <button class="hamburger" id="hamburger" aria-label="打开菜单" aria-expanded="false">☰</button>
+    <a class="brand" data-page="overview"><span class="logo">▚</span> Skiff <span class="ver">v0.1.0</span></a>
+    <nav class="nav" id="nav" aria-label="主导航">
+      <button class="nav-item" data-page="overview">概览</button>
+
+      <div class="nav-group" data-group="apps">
+        <button class="nav-item nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="menu-apps">
+          应用 <span class="caret">▾</span>
+        </button>
+        <div class="nav-menu" id="menu-apps">
+          <div class="menu-label">已启用的插件 · 直接进入使用</div>
+          <a class="menu-item" data-page="app-nginx"><span class="mi-ico">N</span><span><b>网站</b><small>NGINX 站点 · 配置 / 状态 / 重载</small></span></a>
+          <a class="menu-item" data-page="files"><span class="mi-ico">F</span><span><b>文件</b><small>文件管理 · 授权目录内浏览与编辑</small></span></a>
+          <div class="menu-foot">插件的安装、授权与停用都在 <a data-page="plugins">插件中心</a></div>
+        </div>
+      </div>
+
+      <div class="nav-group" data-group="docker">
+        <button class="nav-item nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="menu-docker">
+          Docker <span class="caret">▾</span>
+        </button>
+        <div class="nav-menu" id="menu-docker">
+          <a class="menu-item" data-page="containers"><span class="mi-ico">C</span><span><b>容器</b><small>状态 · 日志 · 启停 / 重启</small></span></a>
+          <a class="menu-item" data-page="images"><span class="mi-ico">I</span><span><b>镜像</b><small>本地镜像与占用的空间</small></span></a>
+          <a class="menu-item" data-page="networks"><span class="mi-ico">N</span><span><b>网络</b><small>网络与容器归属</small></span></a>
+          <a class="menu-item" data-page="volumes"><span class="mi-ico">V</span><span><b>卷</b><small>数据卷与挂载点</small></span></a>
+        </div>
+      </div>
+
+      <button class="nav-item" data-page="plugins">插件中心 <span class="nav-badge" id="plugin-badge" title="有可用更新">1</span></button>
+
+      <div class="nav-group" data-group="settings">
+        <button class="nav-item nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="menu-settings">
+          设置 <span class="caret">▾</span>
+        </button>
+        <div class="nav-menu" id="menu-settings">
+          <a class="menu-item" data-page="settings"><span class="mi-ico">S</span><span><b>安全设置</b><small>口令 · 两步验证 · 安全入口 · 信任公钥</small></span></a>
+          <a class="menu-item" data-page="audit"><span class="mi-ico">A</span><span><b>审计日志</b><small>登录、容器、插件与配置操作留痕</small></span></a>
+        </div>
+      </div>
+    </nav>
+    <div class="appbar-right">
+      <span class="health-dot" title="面板与 Docker 连接正常"></span>
+      <span class="who">admin · 管理员</span>
+      <button class="icon-btn" data-toast="已演示：真实产品中此按钮退出登录">退出</button>
+    </div>
+  </header>
+
+  <main class="page-wrap" id="main">
+<!-- ===== 1. 概览：先回答“现在要不要我动手”，不是指标堆砌 ===== -->
+    <section class="page is-active" id="page-overview">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">概览</div>
+          <h1>今天需要你处理的，只有 3 件</h1>
+          <p class="sub">2026-11-03 19:40 · 面板运行 2 小时 18 分 · 登录身份 admin（管理员）</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-toast="已刷新：健康数据来自最近一次探针">刷新</button>
+          <button class="btn primary" data-page="plugins">装插件</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="label"><span class="dot"></span>面板服务</div>
+          <div class="value">运行中</div>
+          <div class="meta">已运行 2h 18m · 127.0.0.1:18080</div>
+        </div>
+        <div class="stat">
+          <div class="label"><span class="dot"></span>Docker 连接</div>
+          <div class="value">12 个容器</div>
+          <div class="meta">10 运行 · 1 停止 · 1 异常</div>
+        </div>
+        <div class="stat">
+          <div class="label"><span class="dot warn"></span>插件运行时</div>
+          <div class="value">5 已启用</div>
+          <div class="meta">1 个插件有可用更新</div>
+        </div>
+        <div class="stat">
+          <div class="label"><span class="dot"></span>最近 24h 审计</div>
+          <div class="value">37 条</div>
+          <div class="meta">0 次权限拒绝 · 1 次登录失败</div>
+        </div>
+      </div>
+
+      <div class="grid cols-2 mt16">
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>需要处理</h2><span class="meta">按影响排序 · 处理完自动消失</span></div>
+
+            <div class="todo">
+              <span class="sev bad">!</span>
+              <div class="txt"><b>nginx 容器反复退出，已重启 3 次</b><small>退出码 1 · 最近 6 分钟 · 容器守护已按冷却策略介入</small></div>
+              <div class="act"><button class="btn sm" data-page="containers" data-filter="error">查看容器</button></div>
+            </div>
+
+            <div class="todo">
+              <span class="sev">!</span>
+              <div class="txt"><b>example.com 的配置已保存，但还没生效</b><small>NGINX 站点 · 上次修改 2 分钟前 · 等你点「重载」</small></div>
+              <div class="act"><button class="btn sm" data-page="app-nginx">去重载</button></div>
+            </div>
+
+            <div class="todo" id="todo-totp">
+              <span class="sev">!</span>
+              <div class="txt"><b>管理员账号还没开两步验证</b><small>只有口令保护 · 开一次以后巡检不用再管</small></div>
+              <div class="act"><button class="btn sm" data-page="settings">去开启</button></div>
+            </div>
+          </div>
+
+          <div class="card pad0">
+            <div class="toolbar">
+              <div class="card-head" style="margin:0"><h2>异常与停止的容器</h2><span class="meta">共 2 个</span></div>
+              <div class="spacer"></div>
+              <button class="btn sm ghost" data-page="containers">全部容器</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>容器</th><th>状态</th><th class="hide-narrow">最近事件</th><th></th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td><div class="name-cell"><b>nginx</b><code>web-nginx</code></div></td>
+                    <td><span class="chip bad">异常</span></td>
+                    <td class="hide-narrow num">6 分钟前 · exit 1</td>
+                    <td><div class="row-actions"><button class="btn sm" data-log="nginx">日志</button><button class="btn sm" data-toast="已重启 nginx（示意）">重启</button></div></td>
+                  </tr>
+                  <tr>
+                    <td><div class="name-cell"><b>minio</b><code>storage</code></div></td>
+                    <td><span class="chip mute">已停止</span></td>
+                    <td class="hide-narrow num">昨天 23:12 · 手动停止</td>
+                    <td><div class="row-actions"><button class="btn sm" data-toast="已启动 minio（示意）">启动</button></div></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>最近发生了什么</h2><span class="more" data-page="audit">全部审计 →</span></div>
+            <ul class="mini-list">
+              <li><span class="time">19:32</span><span class="what"><b>容器重启</b> guard 自动重启 <b>api</b></span><span class="who">guard</span></li>
+              <li><span class="time">19:12</span><span class="what"><b>配置写入</b> example.com 的 .conf 被保存</span><span class="who">admin</span></li>
+              <li><span class="time">18:55</span><span class="what"><b>插件启用</b> 文件管理加入「应用」</span><span class="who">admin</span></li>
+              <li><span class="time">18:47</span><span class="what"><b>登录失败</b> 口令错误，已计入限流</span><span class="who">admin</span></li>
+              <li><span class="time">18:40</span><span class="what"><b>登录成功</b> 新会话，来源 10.10.15.20</span><span class="who">admin</span></li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>常用操作</h2></div>
+            <div class="stack" style="gap:8px">
+              <button class="btn" data-page="plugins" style="justify-content:flex-start">安装插件 → 装完直接出现在「应用」</button>
+              <button class="btn" data-page="containers" style="justify-content:flex-start">看容器日志 → 选中容器即开抽屉</button>
+              <button class="btn" data-page="audit" style="justify-content:flex-start">谁动了这台机器 → 审计按操作者筛</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 2. 容器列表：默认异常优先，操作在行内 ===== -->
+    <section class="page" id="page-containers">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Docker / 容器</div>
+          <h1>容器</h1>
+          <p class="sub">12 个容器 · 10 运行中 · 1 异常 · 1 已停止</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-toast="已刷新容器状态">刷新</button>
+          <button class="btn primary" data-toast="创建容器：预览中未绘制表单">创建容器</button>
+        </div>
+      </div>
+
+      <div class="card pad0">
+        <div class="toolbar">
+          <div class="chips" id="container-filters">
+            <button class="filter on" data-filter="all">全部 <span style="color:var(--faint)">12</span></button>
+            <button class="filter" data-filter="running">运行中 10</button>
+            <button class="filter" data-filter="error">异常 1</button>
+            <button class="filter" data-filter="stopped">已停止 1</button>
+          </div>
+          <div class="spacer"></div>
+          <input class="search" id="container-search" placeholder="按名称或镜像搜索">
+        </div>
+        <div class="table-wrap">
+          <table id="container-table">
+            <thead><tr><th>容器</th><th>镜像</th><th>状态</th><th class="hide-narrow">CPU / 内存</th><th class="hide-narrow">端口</th><th class="hide-narrow">更新</th><th></th></tr></thead>
+            <tbody>
+              <tr data-state="error" data-name="nginx web-nginx">
+                <td><div class="name-cell"><b>nginx</b><code>web-nginx</code></div></td>
+                <td><code>nginx:1.27-alpine</code></td>
+                <td><span class="chip bad">异常 · exit 1</span></td>
+                <td class="num hide-narrow">0.0% / 18 MB</td>
+                <td class="num hide-narrow">80→80</td>
+                <td class="num hide-narrow">6 分钟前</td>
+                <td><div class="row-actions"><button class="btn sm" data-log="nginx">日志</button><button class="btn sm" data-toast="已重启 nginx（示意）">重启</button></div></td>
+              </tr>
+              <tr data-state="running" data-name="blog api wordpress">
+                <td><div class="name-cell"><b>blog</b><code>web-blog</code></div></td>
+                <td><code>wordpress:6.7</code></td>
+                <td><span class="chip ok">运行中</span></td>
+                <td class="num hide-narrow">1.2% / 142 MB</td>
+                <td class="num hide-narrow">host:80</td>
+                <td class="num hide-narrow">2 小时前</td>
+                <td><div class="row-actions"><button class="btn sm" data-log="blog">日志</button><button class="btn sm" data-toast="已重启 blog（示意）">重启</button></div></td>
+              </tr>
+              <tr data-state="running" data-name="redis cache">
+                <td><div class="name-cell"><b>redis</b><code>cache</code></div></td>
+                <td><code>redis:7-alpine</code></td>
+                <td><span class="chip ok">运行中</span></td>
+                <td class="num hide-narrow">0.4% / 12 MB</td>
+                <td class="num hide-narrow">6379</td>
+                <td class="num hide-narrow">2 小时前</td>
+                <td><div class="row-actions"><button class="btn sm" data-log="redis">日志</button><button class="btn sm" data-toast="已重启 redis（示意）">重启</button></div></td>
+              </tr>
+              <tr data-state="running" data-name="postgres database">
+                <td><div class="name-cell"><b>postgres</b><code>database</code></div></td>
+                <td><code>postgres:16-alpine</code></td>
+                <td><span class="chip ok">运行中</span></td>
+                <td class="num hide-narrow">0.9% / 96 MB</td>
+                <td class="num hide-narrow">5432</td>
+                <td class="num hide-narrow">2 小时前</td>
+                <td><div class="row-actions"><button class="btn sm" data-log="postgres">日志</button><button class="btn sm" data-toast="已重启 postgres（示意）">重启</button></div></td>
+              </tr>
+              <tr data-state="running" data-name="api backend">
+                <td><div class="name-cell"><b>api</b><code>backend</code></div></td>
+                <td><code>skiff-demo/api:1.4</code></td>
+                <td><span class="chip ok">运行中</span></td>
+                <td class="num hide-narrow">2.1% / 64 MB</td>
+                <td class="num hide-narrow">9000</td>
+                <td class="num hide-narrow">13 分钟前</td>
+                <td><div class="row-actions"><button class="btn sm" data-log="api">日志</button><button class="btn sm" data-toast="已重启 api（示意）">重启</button></div></td>
+              </tr>
+              <tr data-state="stopped" data-name="minio storage">
+                <td><div class="name-cell"><b>minio</b><code>storage</code></div></td>
+                <td><code>minio/minio:latest</code></td>
+                <td><span class="chip mute">已停止</span></td>
+                <td class="num hide-narrow">—</td>
+                <td class="num hide-narrow">9001</td>
+                <td class="num hide-narrow">23 小时前</td>
+                <td><div class="row-actions"><button class="btn sm" data-toast="已启动 minio（示意）">启动</button><button class="btn sm" data-log="minio">日志</button></div></td>
+              </tr>
+              <tr data-state="running" data-name="watchtower updater">
+                <td><div class="name-cell"><b>watchtower</b><code>updater</code></div></td>
+                <td><code>watchtower:1.7</code></td>
+                <td><span class="chip ok">运行中</span></td>
+                <td class="num hide-narrow">0.2% / 9 MB</td>
+                <td class="num hide-narrow">—</td>
+                <td class="num hide-narrow">2 小时前</td>
+                <td><div class="row-actions"><button class="btn sm" data-log="watchtower">日志</button><button class="btn sm" data-toast="已重启 watchtower（示意）">重启</button></div></td>
+              </tr>
+              <tr id="container-empty" hidden>
+                <td colspan="7">
+                  <div class="empty">
+                    <b>没有匹配的容器</b>
+                    <small>搜索只匹配名称与镜像；清空关键词或切回「全部」。</small>
+                    <button class="btn sm" data-clear-container>清除筛选</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    <!-- ===== 3. 插件中心：管“装/启用/更新”，不承担“使用” ===== -->
+    <section class="page" id="page-plugins">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">插件中心</div>
+          <h1>装插件、授权、启用</h1>
+          <p class="sub">启用后的插件会直接出现在「应用」菜单；这里只负责管理，不承担日常使用。</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-toast="已检查官方源：1 个更新">检查更新</button>
+          <button class="btn primary" data-toast="安装本地 .wbpkg：预览中未绘制上传表单">安装本地包</button>
+        </div>
+      </div>
+
+      <div class="notice" style="margin-bottom:14px">
+        <span>ⓘ</span>
+        <span><b>「应用」与「插件中心」的分工：</b>应用菜单只列<b>已启用</b>插件（网站 / 文件 / 任务 / 监控 / 守护）。未安装、已安装未启用的插件不会出现在应用菜单里，避免点进去是空页的死入口。</span>
+      </div>
+
+      <div class="tabs" id="plugin-tabs" style="margin-bottom:16px">
+        <button class="tab on" data-tab="discover">发现 <span class="n">5</span></button>
+        <button class="tab" data-tab="installed">已安装 <span class="n">3</span></button>
+        <button class="tab" data-tab="updates">可更新 <span class="n">1</span></button>
+      </div>
+
+      <div class="plugin-grid" id="plugin-grid">
+        <div class="plugin enabled" data-plugin="nginx" data-installed="1" data-enabled="1" data-update="1">
+          <div class="plugin-top">
+            <div class="plugin-ico">N</div>
+            <div><h3>NGINX 站点</h3><p>com.skiff.nginx · v0.1.0</p></div>
+            <span class="chip ok pill">已启用</span>
+          </div>
+          <p class="plugin-desc">在授权目录内管理站点 .conf；保存后由「重载」重启 nginx 容器生效，备份可交给计划任务。</p>
+          <div class="caps"><span class="cap">fs:/etc/nginx/conf.d</span><span class="cap">container:nginx</span><span class="cap">interop</span></div>
+          <div class="plugin-foot">
+            <span class="hintline">使用入口：应用 → 网站</span>
+            <button class="btn sm" data-action="disable" data-plugin="nginx">停用</button>
+            <button class="btn sm" data-action="update" data-plugin="nginx">更新 0.2.0</button>
+            <button class="btn sm primary" data-action="open" data-plugin="nginx">打开</button>
+          </div>
+        </div>
+
+        <div class="plugin enabled" data-plugin="files" data-installed="1" data-enabled="1">
+          <div class="plugin-top">
+            <div class="plugin-ico">F</div>
+            <div><h3>文件管理</h3><p>com.skiff.files · v0.1.0</p></div>
+            <span class="chip ok pill">已启用</span>
+          </div>
+          <p class="plugin-desc">在管理员授权的目录内浏览、编辑、上传与改名；单次读写 256 KiB 分页。</p>
+          <div class="caps"><span class="cap">fs:授权目录</span><span class="cap">identity</span></div>
+          <div class="plugin-foot">
+            <span class="hintline">使用入口：应用 → 文件</span>
+            <button class="btn sm" data-action="disable" data-plugin="files">停用</button>
+            <button class="btn sm primary" data-action="open" data-plugin="files">打开</button>
+          </div>
+        </div>
+
+        <div class="plugin" data-plugin="cron" data-installed="1" data-enabled="0">
+          <div class="plugin-top">
+            <div class="plugin-ico">T</div>
+            <div><h3>计划任务</h3><p>com.skiff.cron · v0.1.0</p></div>
+            <span class="chip mute pill">已安装 · 未启用</span>
+          </div>
+          <p class="plugin-desc">按 cron 表达式调度插件接口；启用后 NGINX 的「新增备份任务」才能落地。</p>
+          <div class="caps"><span class="cap">identity:self</span><span class="cap">interop:call</span></div>
+          <div class="plugin-foot">
+            <span class="hintline">启用后加入应用菜单</span>
+            <button class="btn sm" data-action="uninstall" data-plugin="cron">卸载</button>
+            <button class="btn sm primary" data-action="enable" data-plugin="cron">启用</button>
+          </div>
+        </div>
+
+        <div class="plugin" data-plugin="monitor" data-installed="0" data-enabled="0">
+          <div class="plugin-top">
+            <div class="plugin-ico">M</div>
+            <div><h3>主机监控</h3><p>com.skiff.monitor · 官方源</p></div>
+            <span class="chip blue pill">未安装</span>
+          </div>
+          <p class="plugin-desc">每 5 分钟采样 CPU / 内存 / 负载并保留约 20 小时；只读访问 /proc。</p>
+          <div class="caps"><span class="cap">fs:/proc 只读</span><span class="cap">cron</span></div>
+          <div class="plugin-foot">
+            <span class="hintline">安装需确认授权</span>
+            <button class="btn sm primary" data-action="install" data-plugin="monitor">安装</button>
+          </div>
+        </div>
+
+        <div class="plugin" data-plugin="guard" data-installed="0" data-enabled="0">
+          <div class="plugin-top">
+            <div class="plugin-ico">G</div>
+            <div><h3>容器守护</h3><p>com.skiff.guard · 官方源</p></div>
+            <span class="chip blue pill">未安装</span>
+          </div>
+          <p class="plugin-desc">每分钟巡检授权容器，按冷却与次数上限自动重启；支持演练模式先观察。</p>
+          <div class="caps"><span class="cap">docker:inspect/restart</span><span class="cap">fs:data</span></div>
+          <div class="plugin-foot">
+            <span class="hintline">安装需确认授权</span>
+            <button class="btn sm primary" data-action="install" data-plugin="guard">安装</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 4. 已启用插件工作台：以 NGINX 为例，配置 → 状态 → 重载闭环 ===== -->
+    <section class="page" id="page-app-nginx">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">应用 / 网站</div>
+          <h1>网站</h1>
+          <p class="sub">由 NGINX 站点插件提供 · 站点配置写在已授权目录，生效方式是重载容器</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-toast="已打开容器日志" data-log="nginx">查看容器日志</button>
+          <button class="btn primary" data-toast="新建站点：预览中未绘制表单">新建站点</button>
+        </div>
+      </div>
+
+      <div class="banner" id="nginx-banner">
+        <span>●</span>
+        <span><b>example.com 的配置已保存，尚未生效。</b> 保存只写文件；点「重载 NGINX」才会加载。</span>
+        <button class="btn sm" id="reload-btn-top" data-reload>重载 NGINX</button>
+      </div>
+
+      <div class="workspace">
+        <div class="site-list">
+          <div class="head">站点 <span style="margin-left:auto">3</span><button class="btn sm ghost" data-toast="新建站点：预览中未绘制表单">+</button></div>
+          <button class="site on" data-site="example">
+            <div class="site-row"><b>example.com</b><span class="chip warn" data-site-chip>待重载</span></div>
+            <small>→ blog:80 · example.com.conf</small>
+          </button>
+          <button class="site" data-site="api">
+            <div class="site-row"><b>api.example.com</b><span class="chip ok" data-site-chip>已生效</span></div>
+            <small>→ api:9000 · api.example.com.conf</small>
+          </button>
+          <button class="site" data-site="static">
+            <div class="site-row"><b>static.example.com</b><span class="chip ok" data-site-chip>已生效</span></div>
+            <small>→ /var/www/static · static.conf</small>
+          </button>
+        </div>
+
+        <div class="detail card">
+          <div class="card-head">
+            <h2 id="site-title">example.com</h2>
+            <span class="chip warn" id="site-state">待重载</span>
+            <span class="meta" id="site-meta">配置文件 example.com.conf</span>
+            <span class="more" data-save>保存配置</span>
+          </div>
+
+          <div class="kv" style="margin-bottom:14px">
+            <dt>域名</dt><dd id="site-domain">example.com</dd>
+            <dt>上游</dt><dd id="site-upstream"><code>http://blog:80</code>（容器 blog）</dd>
+            <dt>配置文件</dt><dd id="site-file"><code>/etc/nginx/conf.d/example.com.conf</code></dd>
+            <dt>运行容器</dt><dd><code>nginx</code> · 由 Docker 页统一管理</dd>
+          </div>
+
+          <div class="status-line" style="padding:10px 12px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;margin-bottom:12px">
+            <span>容器状态 <b id="nginx-state">运行中</b></span>
+            <span>上次重载 <b id="reload-time">3 分钟前</b></span>
+            <span>本次配置 <b id="config-state" style="color:var(--warn)">待重载</b></span>
+          </div>
+
+          <textarea class="config-box" id="site-config" spellcheck="false">server {
+    listen 80;
+    server_name example.com;
+
+    location / {
+        proxy_pass http://blog:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}</textarea>
+
+          <div class="plugin-foot" style="margin-top:10px">
+            <span class="hintline" id="backup-hint">备份要交给「计划任务」插件；当前未启用。</span>
+            <button class="btn sm" data-backup>新增备份任务</button>
+            <button class="btn sm" data-log="nginx">日志</button>
+            <button class="btn sm primary" id="reload-btn" data-reload>重载 NGINX</button>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- ===== 5. 设置：安全动作就地完成，不用跳多个页面 ===== -->
+    <section class="page" id="page-settings">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">设置 / 安全设置</div>
+          <h1>安全设置</h1>
+          <p class="sub">口令、两步验证、安全入口与信任公钥集中在一页；管理员专属项标了「仅管理员」。</p>
+        </div>
+        <div class="actions"><button class="btn" data-toast="设置已保存（示意）">保存</button></div>
+      </div>
+
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-head"><h2>账号与安全</h2><span class="meta">admin · 管理员</span></div>
+
+          <div class="setting">
+            <div class="txt"><b>登录口令</b><small>上次修改 3 天前 · 建议 12 位以上</small></div>
+            <button class="btn sm" data-toast="打开修改口令表单（预览未绘制）">修改口令</button>
+          </div>
+
+          <div class="setting">
+            <div class="txt"><b>两步验证（TOTP）</b><small id="totp-state">未开启 · 开启后登录需动态码</small></div>
+            <button class="switch" id="totp-switch" aria-label="两步验证开关" aria-pressed="false"></button>
+          </div>
+
+          <div class="setting">
+            <div class="txt"><b>安全入口</b><small>面板只在下面这个前缀下响应，未命中直接 404</small></div>
+            <code style="color:var(--accent);font-size:11.5px">/p/skiff-f8c2a1</code>
+            <button class="btn sm" data-toast="入口已复制（示意）">复制</button>
+          </div>
+
+          <div class="setting">
+            <div class="txt"><b>会话有效期</b><small>空闲 12 小时自动失效；改密后其他会话立即失效</small></div>
+            <button class="btn sm" data-toast="会话策略可调整（预览未绘制）">调整</button>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>信任公钥（TOFU）</h2><span class="chip mute">仅管理员</span></div>
+            <div class="setting" style="padding-top:0">
+              <div class="txt"><b>skiff-2026-a</b><small>首次安装自动记录 · ed25519 · 已信任</small></div>
+              <button class="btn sm" data-toast="查看公钥指纹（预览未绘制）">查看</button>
+            </div>
+            <div class="setting">
+              <div class="txt"><b>third-party-01</b><small>2026-10-30 首次安装第三方插件时确认</small></div>
+              <button class="btn sm danger" data-toast="移除信任需二次确认（示意）">移除</button>
+            </div>
+            <p class="sub" style="margin:12px 0 0;color:var(--faint);font-size:11.5px">未知签名首次出现时会拦住安装，必须在这里人工确认后才信任。</p>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>登录失败与限流</h2></div>
+            <ul class="mini-list">
+              <li><span class="time">18:47</span><span class="what">口令错误 1 次 · 来源 10.10.15.20</span><span class="who">已计入</span></li>
+              <li><span class="time">昨天</span><span class="what">连续 5 次失败 · 已临时封禁 10 分钟</span><span class="who">已解除</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 6. 审计：回答“谁在什么时候动了什么” ===== -->
+    <section class="page" id="page-audit">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">设置 / 审计日志</div>
+          <h1>审计日志</h1>
+          <p class="sub">登录、容器操作、插件安装与配置写入都留痕；点任意一行看详情。</p>
+        </div>
+        <div class="actions"><button class="btn" data-toast="已导出最近 24 小时审计（示意）">导出</button></div>
+      </div>
+
+      <div class="card pad0">
+        <div class="toolbar">
+          <div class="chips" id="audit-filters">
+            <button class="filter on" data-kind="all">全部 37</button>
+            <button class="filter" data-kind="auth">认证 9</button>
+            <button class="filter" data-kind="container">容器 41</button>
+            <button class="filter" data-kind="plugin">插件 7</button>
+            <button class="filter" data-kind="config">配置 12</button>
+          </div>
+          <div class="spacer"></div>
+          <input class="search" id="audit-search" placeholder="按操作者 / 动作 / 目标筛选">
+        </div>
+        <div class="table-wrap">
+          <table id="audit-table">
+            <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th class="hide-narrow">目标</th><th>结果</th><th class="hide-narrow">来源</th></tr></thead>
+            <tbody>
+              <tr data-kind="container" data-text="guard 容器重启 api">
+                <td class="num">19:32:08</td><td>guard</td><td><code>container.restart</code></td>
+                <td class="hide-narrow">api / backend</td><td><span class="chip ok">成功</span></td><td class="num hide-narrow">127.0.0.1</td>
+              </tr>
+              <tr data-kind="config" data-text="admin 配置写入 nginx example.com">
+                <td class="num">19:12:44</td><td>admin</td><td><code>fs.write</code></td>
+                <td class="hide-narrow">/etc/nginx/conf.d/example.com.conf</td><td><span class="chip ok">成功</span></td><td class="num hide-narrow">10.10.15.20</td>
+              </tr>
+              <tr data-kind="plugin" data-text="admin 插件启用 com.skiff.files">
+                <td class="num">18:55:31</td><td>admin</td><td><code>plugin.enable</code></td>
+                <td class="hide-narrow">com.skiff.files</td><td><span class="chip ok">成功</span></td><td class="num hide-narrow">10.10.15.20</td>
+              </tr>
+              <tr data-kind="auth" data-text="admin 登录失败 口令错误">
+                <td class="num">18:47:02</td><td>admin</td><td><code>auth.login</code></td>
+                <td class="hide-narrow">口令错误</td><td><span class="chip bad">失败</span></td><td class="num hide-narrow">10.10.15.20</td>
+              </tr>
+              <tr data-kind="auth" data-text="admin 登录成功 新会话">
+                <td class="num">18:40:11</td><td>admin</td><td><code>auth.login</code></td>
+                <td class="hide-narrow">新会话</td><td><span class="chip ok">成功</span></td><td class="num hide-narrow">10.10.15.20</td>
+              </tr>
+              <tr data-kind="config" data-text="admin 重载 nginx 容器">
+                <td class="num">18:31:27</td><td>admin</td><td><code>container.restart</code></td>
+                <td class="hide-narrow">nginx / web-nginx</td><td><span class="chip ok">成功</span></td><td class="num hide-narrow">10.10.15.20</td>
+              </tr>
+              <tr data-kind="auth" data-text="system 权限拒绝 viewer 安装插件">
+                <td class="num">18:20:05</td><td>viewer</td><td><code>plugin.install</code></td>
+                <td class="hide-narrow">com.skiff.monitor</td><td><span class="chip bad">拒绝</span></td><td class="num hide-narrow">10.10.15.30</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 7. 文件管理（已启用插件之一）：验证“应用”不是只有网站 ===== -->
+    <section class="page" id="page-files">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">应用 / 文件</div>
+          <h1>文件</h1>
+          <p class="sub">由文件管理插件提供 · 仅显示管理员授权的目录；单次读写 256 KiB 分页</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-toast="已上传（示意）">上传</button>
+          <button class="btn primary" data-toast="新建文件夹（示意）">新建文件夹</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="breadcrumb"><span>/</span><span>›</span><b>etc/nginx/conf.d</b><span>›</span><span style="color:var(--faint)">已授权（可写）</span></div>
+        <div class="file-row"><span class="fico">D</span><b>backup</b><span class="size">目录</span><button class="btn sm ghost" data-toast="预览：进入目录">打开</button></div>
+        <div class="file-row"><span class="fico">F</span><b>example.com.conf</b><span class="size">1.2 KB</span><button class="btn sm ghost" data-toast="预览：打开编辑器">编辑</button></div>
+        <div class="file-row"><span class="fico">F</span><b>api.example.com.conf</b><span class="size">0.9 KB</span><button class="btn sm ghost" data-toast="预览：打开编辑器">编辑</button></div>
+        <div class="file-row"><span class="fico">F</span><b>static.conf</b><span class="size">0.4 KB</span><button class="btn sm ghost" data-toast="预览：打开编辑器">编辑</button></div>
+      </div>
+    </section>
+
+    <!-- ===== 8. 其他已启用插件的工作台（任务 / 监控 / 守护，内容由脚本渲染） ===== -->
+    <section class="page" id="page-app">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">应用 / <span id="app-crumb">插件</span></div>
+          <h1 id="app-title">插件工作台</h1>
+          <p class="sub" id="app-sub"></p>
+        </div>
+        <div class="actions"><button class="btn" data-page="plugins">插件设置</button></div>
+      </div>
+      <div id="app-body"></div>
+    </section>
+
+    <!-- ===== 9. Docker 的镜像 / 网络 / 卷（同一骨架，脚本换数据） ===== -->
+    <section class="page" id="page-resource">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Docker / <span id="res-crumb">资源</span></div>
+          <h1 id="res-title">资源</h1>
+          <p class="sub" id="res-sub"></p>
+        </div>
+        <div class="actions"><button class="btn" data-toast="已刷新">刷新</button></div>
+      </div>
+      <div id="resource-body"></div>
+    </section>
+  </main>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <button class="icon-btn close" id="drawer-close">关闭</button>
+  <div id="drawer-body"></div>
+</aside>
+<div class="modal-wrap" id="modal-wrap">
+  <div class="modal" id="modal"></div>
+</div>
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<script>
+  const $ = (s, root) => (root || document).querySelector(s);
+  const $$ = (s, root) => Array.from((root || document).querySelectorAll(s));
+  const device = $('#device');
+  const toastWrap = $('#toast-wrap');
+  const drawer = $('#drawer');
+  const overlay = $('#overlay');
+  const modalWrap = $('#modal-wrap');
+  const modal = $('#modal');
+
+  function toast(msg, kind) {
+    const el = document.createElement('div');
+    el.className = 'toast ' + (kind || '');
+    el.textContent = msg;
+    toastWrap.appendChild(el);
+    setTimeout(() => el.remove(), 2800);
+  }
+
+  function openDrawer(html) {
+    $('#drawer-body').innerHTML = html;
+    drawer.classList.add('on');
+    drawer.setAttribute('aria-hidden', 'false');
+    overlay.classList.add('on');
+  }
+  function closeDrawer() {
+    drawer.classList.remove('on');
+    drawer.setAttribute('aria-hidden', 'true');
+    if (!modalWrap.classList.contains('on')) overlay.classList.remove('on');
+  }
+  function closeModal() {
+    modalWrap.classList.remove('on');
+    if (!drawer.classList.contains('on')) overlay.classList.remove('on');
+  }
+  overlay.addEventListener('click', () => { closeDrawer(); closeModal(); });
+
+  const LOGS = {
+    nginx: 'nginx: [emerg] unknown directive "proxy_set" in /etc/nginx/conf.d/example.com.conf:9\nnginx: configuration file /etc/nginx/nginx.conf test failed\n2026/11/03 19:36:11 [error] container exited with code 1',
+    blog: 'WordPress database connection established\nGET / 200 12ms\nGET /wp-admin/ 302 3ms',
+    redis: 'Ready to accept connections tcp\n10 changes in 300 seconds. Saving...',
+    postgres: 'database system is ready to accept connections\ncheckpoint complete: wrote 41 buffers',
+    api: 'listening on :9000\nGET /health 200 0.4ms',
+    minio: 'ERROR Unable to initialize backend: storage volume not found\nminio exited with code 1',
+    watchtower: 'Checking for updates...\nNo new images found'
+  };
+  function openLog(name) {
+    openDrawer(
+      '<h3>' + name + ' · 容器日志</h3>' +
+      '<div class="dsub">最近 100 行 · 只读 · 来自容器 stdout / stderr</div>' +
+      '<div class="log-box"><pre>' + (LOGS[name] || '（无日志）') + '</pre></div>'
+    );
+  }
+
+  /* ---------- 顶栏导航：hover / 点击展开，Esc / 点外 / 失焦关闭 ---------- */
+  const groups = $$('.nav-group');
+  const isNarrow = () => device.classList.contains('narrow');
+  function setGroup(group, open) {
+    const trigger = $('.nav-trigger', group);
+    group.classList.toggle('open', open);
+    if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function closeGroups(except) {
+    groups.forEach(g => { if (g !== except) setGroup(g, false); });
+  }
+  groups.forEach(group => {
+    const trigger = $('.nav-trigger', group);
+    let timer = 0;
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = group.classList.contains('open');
+      closeGroups(group);
+      setGroup(group, !open);
+    });
+    group.addEventListener('mouseenter', () => {
+      if (isNarrow()) return;
+      clearTimeout(timer);
+      closeGroups(group);
+      setGroup(group, true);
+    });
+    group.addEventListener('mouseleave', () => {
+      if (isNarrow()) return;
+      timer = setTimeout(() => setGroup(group, false), 120);
+    });
+    group.addEventListener('focusout', e => {
+      if (!group.contains(e.relatedTarget)) setGroup(group, false);
+    });
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.nav-group')) closeGroups(null);
+    if (isNarrow() && device.classList.contains('menu-open')
+        && !e.target.closest('.nav') && !e.target.closest('#hamburger')) {
+      toggleMobileMenu(false);
+    }
+    const pageEl = e.target.closest('[data-page]');
+    if (pageEl) {
+      e.preventDefault();
+      setPage(pageEl.dataset.page, pageEl.dataset.filter);
+      return;
+    }
+    const toastEl = e.target.closest('[data-toast]');
+    if (toastEl) toast(toastEl.dataset.toast);
+    const logEl = e.target.closest('[data-log]');
+    if (logEl) openLog(logEl.dataset.log);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (modalWrap.classList.contains('on')) { closeModal(); return; }
+    if (drawer.classList.contains('on')) { closeDrawer(); return; }
+    if (device.classList.contains('menu-open')) { toggleMobileMenu(false); return; }
+    const open = groups.find(g => g.classList.contains('open'));
+    if (open) {
+      const trigger = $('.nav-trigger', open);
+      closeGroups(null);
+      if (trigger) trigger.focus();
+    }
+  });
+
+  /* ---------- 窄屏菜单 ---------- */
+  function toggleMobileMenu(force) {
+    const next = typeof force === 'boolean' ? force : !device.classList.contains('menu-open');
+    device.classList.toggle('menu-open', next);
+    $('#hamburger').setAttribute('aria-expanded', next ? 'true' : 'false');
+    if (!next) closeGroups(null);
+  }
+  $('#hamburger').addEventListener('click', e => { e.stopPropagation(); toggleMobileMenu(); });
+
+  /* ---------- 预览模式切换 ---------- */
+  $$('.mode').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const narrow = btn.dataset.mode === 'narrow';
+      $$('.mode').forEach(b => b.classList.toggle('on', b === btn));
+      device.classList.toggle('narrow', narrow);
+      toggleMobileMenu(false);
+      closeGroups(null);
+    });
+  });
+  if (window.innerWidth <= 900) {
+    device.classList.add('narrow');
+    $$('.mode').forEach(b => b.classList.toggle('on', b.dataset.mode === 'narrow'));
+  }
+
+  /* ---------- 页面切换与导航选中态 ---------- */
+  const APP_PAGES = { 'app-cron': 1, 'app-monitor': 1, 'app-guard': 1 };
+  const RES_PAGES = { images: 1, networks: 1, volumes: 1 };
+  const NAV_MAP = {
+    overview: { top: 'overview' },
+    plugins: { top: 'plugins' },
+    containers: { group: 'docker', item: 'containers' },
+    images: { group: 'docker', item: 'images' },
+    networks: { group: 'docker', item: 'networks' },
+    volumes: { group: 'docker', item: 'volumes' },
+    'app-nginx': { group: 'apps', item: 'app-nginx' },
+    files: { group: 'apps', item: 'files' },
+    'app-cron': { group: 'apps', item: 'app-cron' },
+    'app-monitor': { group: 'apps', item: 'app-monitor' },
+    'app-guard': { group: 'apps', item: 'app-guard' },
+    settings: { group: 'settings', item: 'settings' },
+    audit: { group: 'settings', item: 'audit' }
+  };
+
+  function setPage(page, filter) {
+    let section = '#page-' + page;
+    if (RES_PAGES[page]) { section = '#page-resource'; renderResource(page); }
+    if (APP_PAGES[page]) { section = '#page-app'; renderApp(page); }
+    $$('.page').forEach(p => p.classList.toggle('is-active', p === $(section)));
+    $$('.nav > .nav-item[data-page]').forEach(b => b.classList.remove('is-active'));
+    $$('.menu-item').forEach(a => a.classList.remove('is-active'));
+    $$('.nav-group').forEach(g => g.classList.remove('is-current'));
+
+    const nav = NAV_MAP[page] || {};
+    if (nav.top) {
+      $$('.nav > .nav-item[data-page="' + nav.top + '"]').forEach(b => b.classList.add('is-active'));
+    }
+    if (nav.group) {
+      const group = $('.nav-group[data-group="' + nav.group + '"]');
+      if (group) {
+        group.classList.add('is-current');
+        const item = $('.menu-item[data-page="' + nav.item + '"]', group);
+        if (item) item.classList.add('is-active');
+      }
+    }
+    closeGroups(null);
+    toggleMobileMenu(false);
+    if (filter) {
+      if (page === 'containers') applyContainerFilter(filter);
+      if (page === 'plugins') applyPluginTab(filter);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  /* ---------- 容器筛选与搜索 ---------- */
+  function applyContainerFilter(filter) {
+    $$('#container-filters .filter').forEach(b => b.classList.toggle('on', b.dataset.filter === filter));
+    const q = $('#container-search').value.trim().toLowerCase();
+    let visible = 0;
+    $$('#container-table tbody tr').forEach(tr => {
+      if (tr.id === 'container-empty') return;
+      const okState = filter === 'all' || tr.dataset.state === filter;
+      const okText = !q || tr.dataset.name.toLowerCase().includes(q) || tr.textContent.toLowerCase().includes(q);
+      tr.hidden = !(okState && okText);
+      if (!tr.hidden) visible += 1;
+    });
+    const empty = $('#container-empty');
+    empty.hidden = visible > 0;
+  }
+  document.addEventListener('click', e => {
+    if (!e.target.closest('[data-clear-container]')) return;
+    $('#container-search').value = '';
+    applyContainerFilter('all');
+  });
+  $('#container-filters').addEventListener('click', e => {
+    const b = e.target.closest('[data-filter]');
+    if (b) { e.stopPropagation(); applyContainerFilter(b.dataset.filter); }
+  });
+  $('#container-search').addEventListener('input', () => {
+    const on = $('#container-filters .filter.on');
+    applyContainerFilter(on ? on.dataset.filter : 'all');
+  });
+
+  /* ---------- 审计筛选与详情 ---------- */
+  function applyAuditFilter(kind) {
+    $$('#audit-filters .filter').forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
+    const q = $('#audit-search').value.trim().toLowerCase();
+    $$('#audit-table tbody tr').forEach(tr => {
+      const okKind = kind === 'all' || tr.dataset.kind === kind;
+      const okText = !q || tr.dataset.text.toLowerCase().includes(q) || tr.textContent.toLowerCase().includes(q);
+      tr.hidden = !(okKind && okText);
+    });
+  }
+  $('#audit-filters').addEventListener('click', e => {
+    const b = e.target.closest('[data-kind]');
+    if (b) { e.stopPropagation(); applyAuditFilter(b.dataset.kind); }
+  });
+  $('#audit-search').addEventListener('input', () => {
+    const on = $('#audit-filters .filter.on');
+    applyAuditFilter(on ? on.dataset.kind : 'all');
+  });
+  $$('#audit-table tbody tr').forEach(tr => {
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', () => {
+      const c = $$('td', tr).map(td => td.textContent.trim());
+      openDrawer(
+        '<h3>审计详情</h3><div class="dsub">' + c[0] + ' · ' + c[3] + '</div>' +
+        '<dl class="kv"><dt>操作者</dt><dd>' + c[1] + '</dd>' +
+        '<dt>动作</dt><dd><code>' + c[2] + '</code></dd>' +
+        '<dt>目标</dt><dd>' + c[3] + '</dd>' +
+        '<dt>结果</dt><dd>' + c[4] + '</dd>' +
+        '<dt>来源</dt><dd>' + c[5] + '</dd></dl>' +
+        '<p style="color:var(--faint);font-size:11.5px;margin:14px 0 0">审计为追加写入，不可在面板内删除。</p>'
+      );
+    });
+  });
+
+  /* ---------- 插件中心 ---------- */
+  const state = { cronEnabled: false };
+  const PLUGIN_INFO = {
+    nginx: { name: '网站', label: 'NGINX 站点', icon: 'N', page: 'app-nginx', menuDesc: 'NGINX 站点 · 配置 / 状态 / 重载' },
+    files: { name: '文件', label: '文件管理', icon: 'F', page: 'files', menuDesc: '文件管理 · 授权目录内浏览与编辑' },
+    cron: { name: '任务', label: '计划任务', icon: 'T', page: 'app-cron', menuDesc: '计划任务 · 表达式与最近执行' },
+    monitor: { name: '监控', label: '主机监控', icon: 'M', page: 'app-monitor', menuDesc: '主机监控 · CPU / 内存 / 负载' },
+    guard: { name: '守护', label: '容器守护', icon: 'G', page: 'app-guard', menuDesc: '容器守护 · 冷却与重启上限' }
+  };
+  const pluginCard = key => $('.plugin[data-plugin="' + key + '"]');
+
+  function refreshBadge() {
+    const n = $$('#plugin-grid .plugin[data-update="1"]').length;
+    const badge = $('#plugin-badge');
+    badge.textContent = n;
+    badge.style.display = n ? '' : 'none';
+  }
+
+  function renderPluginCard(key) {
+    const card = pluginCard(key);
+    const info = PLUGIN_INFO[key];
+    const installed = card.dataset.installed === '1';
+    const enabled = card.dataset.enabled === '1';
+    card.classList.toggle('enabled', enabled);
+    const pill = $('.pill', card);
+    pill.className = 'chip pill ' + (enabled ? 'ok' : installed ? 'mute' : 'blue');
+    pill.textContent = enabled ? '已启用' : installed ? '已安装 · 未启用' : '未安装';
+    const foot = $('.plugin-foot', card);
+    let html = '<span class="hintline">' +
+      (enabled ? '使用入口：应用 → ' + info.name : installed ? '启用后加入应用菜单' : '安装需确认授权') +
+      '</span>';
+    if (!installed) {
+      html += '<button class="btn sm primary" data-action="install" data-plugin="' + key + '">安装</button>';
+    } else if (!enabled) {
+      html += '<button class="btn sm" data-action="uninstall" data-plugin="' + key + '">卸载</button>' +
+        '<button class="btn sm primary" data-action="enable" data-plugin="' + key + '">启用</button>';
+    } else {
+      html += '<button class="btn sm" data-action="disable" data-plugin="' + key + '">停用</button>';
+      if (card.dataset.update === '1') {
+        html += '<button class="btn sm" data-action="update" data-plugin="' + key + '">更新</button>';
+      }
+      html += '<button class="btn sm primary" data-action="open" data-plugin="' + key + '">打开</button>';
+    }
+    foot.innerHTML = html;
+  }
+
+  function addAppItem(key) {
+    const info = PLUGIN_INFO[key];
+    const menu = $('#menu-apps');
+    if ($('.menu-item[data-page="' + info.page + '"]', menu)) return;
+    const a = document.createElement('a');
+    a.className = 'menu-item';
+    a.dataset.page = info.page;
+    a.innerHTML = '<span class="mi-ico">' + info.icon + '</span><span><b>' + info.name + '</b><small>' + info.menuDesc + '</small></span>';
+    menu.insertBefore(a, $('.menu-foot', menu));
+  }
+
+  function enablePlugin(key) {
+    const card = pluginCard(key);
+    card.dataset.installed = '1';
+    card.dataset.enabled = '1';
+    renderPluginCard(key);
+    addAppItem(key);
+    if (key === 'cron') {
+      state.cronEnabled = true;
+      $('#backup-hint').textContent = '计划任务已启用：备份任务会出现在「应用 → 任务」。';
+    }
+    toast('已启用「' + PLUGIN_INFO[key].label + '」· 已加入「应用」菜单', 'ok');
+  }
+
+  function applyPluginTab(tab) {
+    $$('#plugin-tabs .tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
+    $$('#plugin-grid .plugin').forEach(card => {
+      const show = tab === 'discover'
+        || (tab === 'installed' && card.dataset.installed === '1')
+        || (tab === 'updates' && card.dataset.update === '1');
+      card.style.display = show ? '' : 'none';
+    });
+  }
+  $('#plugin-tabs').addEventListener('click', e => {
+    const t = e.target.closest('[data-tab]');
+    if (t) { e.stopPropagation(); applyPluginTab(t.dataset.tab); }
+  });
+
+  const PERMS = {
+    monitor: [['fs:/proc', '只读采样 CPU / 内存 / 负载'], ['cron', '每 5 分钟采样一次']],
+    guard: [['docker:inspect', '读取授权容器状态与重启次数'], ['docker:restart', '仅限管理员勾选的容器'], ['fs:插件数据', '保存冷却时间与次数上限']]
+  };
+  function openInstall(key) {
+    const info = PLUGIN_INFO[key];
+    const perms = PERMS[key] || [];
+    modal.innerHTML =
+      '<h3>安装「' + info.label + '」</h3>' +
+      '<div class="msub">官方源 · 签名校验通过 · 安装后不会自动启用</div>' +
+      perms.map(p => '<div class="perm"><b><code>' + p[0] + '</code></b><small>' + p[1] + '</small></div>').join('') +
+      '<div class="confirm-row"><input type="checkbox" id="perm-ok"><label for="perm-ok">我已确认上述授权范围，并理解插件会以降权用户运行。</label></div>' +
+      '<div class="progress"><i id="progress-bar"></i></div><div class="steps" id="install-steps"></div>' +
+      '<div class="modal-foot"><button class="btn" data-close-modal>取消</button>' +
+      '<button class="btn primary" id="install-go" disabled>确认安装</button></div>';
+    modalWrap.classList.add('on');
+    overlay.classList.add('on');
+    $('#perm-ok').addEventListener('change', e => { $('#install-go').disabled = !e.target.checked; });
+    $('#install-go').addEventListener('click', () => {
+      $('[data-close-modal]', modal).disabled = true;
+      $('#install-go').disabled = true;
+      $('#progress-bar').style.width = '38%';
+      $('#install-steps').textContent = '校验签名…';
+      setTimeout(() => { $('#progress-bar').style.width = '72%'; $('#install-steps').textContent = '解包到官方插件目录…'; }, 420);
+      setTimeout(() => {
+        $('#progress-bar').style.width = '100%';
+        $('#install-steps').textContent = '注册完成';
+      }, 850);
+      setTimeout(() => {
+        const card = pluginCard(key);
+        card.dataset.installed = '1';
+        card.dataset.enabled = '0';
+        renderPluginCard(key);
+        closeModal();
+        toast('已安装「' + info.label + '」· 下一步：启用', 'ok');
+      }, 1250);
+    });
+  }
+  modal.addEventListener('click', e => { if (e.target.closest('[data-close-modal]')) closeModal(); });
+
+  document.addEventListener('click', e => {
+    const act = e.target.closest('[data-action]');
+    if (!act) return;
+    e.preventDefault();
+    const key = act.dataset.plugin;
+    const action = act.dataset.action;
+    if (action === 'install') openInstall(key);
+    if (action === 'enable') enablePlugin(key);
+    if (action === 'open') setPage(PLUGIN_INFO[key].page);
+    if (action === 'disable') {
+      const card = pluginCard(key);
+      card.dataset.enabled = '0';
+      renderPluginCard(key);
+      const item = $('.menu-item[data-page="' + PLUGIN_INFO[key].page + '"]', $('#menu-apps'));
+      if (item) item.remove();
+      if (key === 'cron') {
+        state.cronEnabled = false;
+        $('#backup-hint').textContent = '备份要交给「计划任务」插件；当前未启用。';
+      }
+      toast('已停用「' + PLUGIN_INFO[key].label + '」· 已从「应用」菜单移除', 'bad');
+    }
+    if (action === 'uninstall') {
+      const card = pluginCard(key);
+      card.dataset.installed = '0';
+      card.dataset.enabled = '0';
+      renderPluginCard(key);
+      toast('已卸载「' + PLUGIN_INFO[key].label + '」', 'ok');
+    }
+    if (action === 'update') {
+      const card = pluginCard(key);
+      card.dataset.update = '0';
+      renderPluginCard(key);
+      refreshBadge();
+      toast('已更新「' + PLUGIN_INFO[key].label + '」到 0.2.0', 'ok');
+    }
+  });
+
+  /* ---------- NGINX 工作台 ---------- */
+  const SITES = {
+    example: {
+      title: 'example.com', meta: '配置文件 example.com.conf', domain: 'example.com',
+      upstream: '<code>http://blog:80</code>（容器 blog）',
+      file: '<code>/etc/nginx/conf.d/example.com.conf</code>',
+      chip: '待重载', chipClass: 'warn',
+      config: 'server {\n    listen 80;\n    server_name example.com;\n\n    location / {\n        proxy_pass http://blog:80;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n    }\n}'
+    },
+    api: {
+      title: 'api.example.com', meta: '配置文件 api.example.com.conf', domain: 'api.example.com',
+      upstream: '<code>http://api:9000</code>（容器 api）',
+      file: '<code>/etc/nginx/conf.d/api.example.com.conf</code>',
+      chip: '已生效', chipClass: 'ok',
+      config: 'server {\n    listen 80;\n    server_name api.example.com;\n\n    location / {\n        proxy_pass http://api:9000;\n    }\n}'
+    },
+    static: {
+      title: 'static.example.com', meta: '配置文件 static.conf', domain: 'static.example.com',
+      upstream: '<code>/var/www/static</code>（静态目录）',
+      file: '<code>/etc/nginx/conf.d/static.conf</code>',
+      chip: '已生效', chipClass: 'ok',
+      config: 'server {\n    listen 80;\n    server_name static.example.com;\n\n    root /var/www/static;\n    index index.html;\n}'
+    }
+  };
+  let currentSite = 'example';
+  function applySite(key) {
+    currentSite = key;
+    const s = SITES[key];
+    $$('.site').forEach(b => b.classList.toggle('on', b.dataset.site === key));
+    $('#site-title').textContent = s.title;
+    $('#site-meta').textContent = s.meta;
+    $('#site-domain').textContent = s.domain;
+    $('#site-upstream').innerHTML = s.upstream;
+    $('#site-file').innerHTML = s.file;
+    $('#site-config').value = s.config;
+    $('#site-state').className = 'chip ' + s.chipClass;
+    $('#site-state').textContent = s.chip;
+    $('#config-state').textContent = s.chip;
+    $('#config-state').style.color = s.chipClass === 'warn' ? 'var(--warn)' : 'var(--accent)';
+    $('#nginx-banner').style.display = s.chipClass === 'warn' ? '' : 'none';
+  }
+  $$('.site').forEach(b => b.addEventListener('click', () => applySite(b.dataset.site)));
+  $('#site-config').addEventListener('input', () => {
+    const s = SITES[currentSite];
+    s.chip = '待重载';
+    s.chipClass = 'warn';
+    $('#site-state').className = 'chip warn';
+    $('#site-state').textContent = '待重载';
+    $('#config-state').textContent = '待重载';
+    $('#config-state').style.color = 'var(--warn)';
+    $('#nginx-banner').style.display = '';
+    const chip = $('.site[data-site="' + currentSite + '"] [data-site-chip]');
+    if (chip) { chip.className = 'chip warn'; chip.textContent = '待重载'; }
+  });
+  $('.detail .more').addEventListener('click', () => {
+    SITES[currentSite].config = $('#site-config').value;
+    SITES[currentSite].chip = '待重载';
+    SITES[currentSite].chipClass = 'warn';
+    applySite(currentSite);
+    toast('配置已保存到授权目录，等待重载生效', 'ok');
+  });
+  function reloadNginx() {
+    const btns = $$('[data-reload]');
+    btns.forEach(b => { b.disabled = true; b.textContent = '重载中…'; });
+    setTimeout(() => {
+      SITES[currentSite].config = $('#site-config').value;
+      SITES[currentSite].chip = '已生效';
+      SITES[currentSite].chipClass = 'ok';
+      applySite(currentSite);
+      $('#nginx-state').textContent = '运行中';
+      $('#reload-time').textContent = '刚刚';
+      $('#nginx-banner').style.display = 'none';
+      const chip = $('.site[data-site="' + currentSite + '"] [data-site-chip]');
+      if (chip) { chip.className = 'chip ok'; chip.textContent = '已生效'; }
+      $$('.todo').forEach(t => {
+        if (t.textContent.includes('配置已保存，但还没生效')) t.remove();
+      });
+      btns.forEach(b => { b.disabled = false; b.textContent = '重载 NGINX'; });
+      toast('重载完成：nginx 已加载新配置', 'ok');
+    }, 800);
+  }
+  $$('[data-reload]').forEach(b => b.addEventListener('click', e => { e.preventDefault(); reloadNginx(); }));
+  $$('[data-backup]').forEach(b => b.addEventListener('click', e => {
+    e.preventDefault();
+    if (state.cronEnabled) {
+      toast('已创建备份任务：每天 03:00 打包 conf.d', 'ok');
+    } else {
+      toast('需要先启用「计划任务」插件，再到「应用 → 任务」查看', 'bad');
+      setPage('plugins', 'installed');
+    }
+  }));
+
+  /* ---------- 两步验证开关 ---------- */
+  $('#totp-switch').addEventListener('click', () => {
+    const sw = $('#totp-switch');
+    const on = !sw.classList.contains('on');
+    sw.classList.toggle('on', on);
+    sw.setAttribute('aria-pressed', on ? 'true' : 'false');
+    $('#totp-state').textContent = on ? '已开启 · 恢复码已生成，请离线保存' : '未开启 · 开启后登录需动态码';
+    const todo = $('#todo-totp');
+    if (todo) todo.style.display = on ? 'none' : '';
+    toast(on ? '两步验证已开启' : '两步验证已关闭', on ? 'ok' : 'bad');
+  });
+  $$('.switch[data-toggle]').forEach(sw => sw.addEventListener('click', () => {
+    sw.classList.toggle('on');
+    toast('规则状态已切换（示意）');
+  }));
+
+  /* ---------- Docker 资源页 ---------- */
+  function renderResource(page) {
+    const boxes = {
+      images: {
+        crumb: '镜像', title: '镜像', sub: '本地 8 个镜像 · 占用 2.4 GB · 可清理悬空镜像',
+        body: '<div class="card pad0"><div class="table-wrap"><table><thead><tr><th>仓库 / 标签</th><th>镜像 ID</th><th class="hide-narrow">大小</th><th class="hide-narrow">创建</th><th></th></tr></thead><tbody>' +
+          [['nginx:1.27-alpine', 'a1b2c3d4', '48.2 MB', '6 天前'], ['wordpress:6.7', '9f8e7d6c', '412 MB', '2 周前'], ['postgres:16-alpine', '11223344', '246 MB', '3 周前'], ['redis:7-alpine', '55667788', '32.1 MB', '3 周前']]
+            .map(r => '<tr><td><code>' + r[0] + '</code></td><td class="num">' + r[1] + '</td><td class="num hide-narrow">' + r[2] + '</td><td class="num hide-narrow">' + r[3] + '</td><td><div class="row-actions"><button class="btn sm" data-toast="已校验镜像（示意）">校验</button></div></td></tr>').join('') +
+          '</tbody></table></div></div>'
+      },
+      networks: {
+        crumb: '网络', title: '网络', sub: '3 个网络 · 容器可按网络隔离',
+        body: '<div class="grid cols-3">' +
+          [['bridge', 'bridge', '8 个容器', '172.17.0.0/16'], ['skiff-net', 'bridge', '3 个容器', '172.20.0.0/16'], ['host', 'host', '2 个容器', '—']]
+            .map(n => '<div class="card"><div class="card-head"><h2>' + n[0] + '</h2><span class="chip mute">' + n[1] + '</span></div><dl class="kv"><dt>容器</dt><dd>' + n[2] + '</dd><dt>子网</dt><dd><code>' + n[3] + '</code></dd></dl><div class="plugin-foot" style="margin-top:12px"><span class="hintline">由 Docker 管理</span><button class="btn sm" data-toast="查看网络详情（示意）">详情</button></div></div>').join('') +
+          '</div>'
+      },
+      volumes: {
+        crumb: '卷', title: '卷', sub: '6 个数据卷 · 悬空卷可安全清理',
+        body: '<div class="card pad0"><div class="table-wrap"><table><thead><tr><th>名称</th><th>驱动</th><th class="hide-narrow">挂载点</th><th class="hide-narrow">占用</th><th></th></tr></thead><tbody>' +
+          [['blog-data', 'local', '/var/lib/docker/volumes/blog-data', '1.8 GB'], ['db-data', 'local', '/var/lib/docker/volumes/db-data', '960 MB'], ['redis-data', 'local', '/var/lib/docker/volumes/redis-data', '24 MB']]
+            .map(v => '<tr><td><b>' + v[0] + '</b></td><td>' + v[1] + '</td><td class="hide-narrow"><code>' + v[2] + '</code></td><td class="num hide-narrow">' + v[3] + '</td><td><div class="row-actions"><button class="btn sm danger" data-toast="删除卷需二次确认（示意）">删除</button></div></td></tr>').join('') +
+          '</tbody></table></div></div>'
+      }
+    };
+    const box = boxes[page];
+    $('#res-crumb').textContent = box.crumb;
+    $('#res-title').textContent = box.title;
+    $('#res-sub').textContent = box.sub;
+    $('#resource-body').innerHTML = box.body;
+  }
+
+  /* ---------- 其他插件工作台 ---------- */
+  function renderApp(page) {
+    if (page === 'app-cron') {
+      $('#app-crumb').textContent = '任务';
+      $('#app-title').textContent = '计划任务';
+      $('#app-sub').textContent = '由计划任务插件提供 · 表达式调度插件接口，最近执行结果可追溯';
+      $('#app-body').innerHTML =
+        '<div class="card pad0"><div class="toolbar"><div class="chips"><span class="chip ok">4 个任务 · 2 个已启用</span></div><div class="spacer"></div><button class="btn sm primary" data-toast="新建任务：预览中未绘制表单">新建任务</button></div>' +
+        '<div class="table-wrap"><table><thead><tr><th>表达式</th><th>任务</th><th class="hide-narrow">上次执行</th><th class="hide-narrow">下次</th><th></th></tr></thead><tbody>' +
+        [['0 3 * * *', '备份 nginx conf.d', '今天 03:00 · 成功', '明天 03:00'], ['*/5 * * * *', '健康检查 /health', '19:35 · 成功', '19:40'], ['0 4 * * 0', '清理旧备份（保留 7 天）', '周日 04:00 · 成功', '下周日 04:00']]
+          .map(j => '<tr><td><code>' + j[0] + '</code></td><td><b>' + j[1] + '</b></td><td class="num hide-narrow">' + j[2] + '</td><td class="num hide-narrow">' + j[3] + '</td><td><div class="row-actions"><button class="btn sm" data-toast="已立即执行（示意）">立即执行</button></div></td></tr>').join('') +
+        '</tbody></table></div></div>' +
+        '<div class="notice mt16"><span>ⓘ</span><span>任务由插件降权执行；面板重启后由插件运行时恢复调度。</span></div>';
+    } else if (page === 'app-monitor') {
+      $('#app-crumb').textContent = '监控';
+      $('#app-title').textContent = '主机监控';
+      $('#app-sub').textContent = '由主机监控插件提供 · 只读采样，5 分钟一个点，保留约 20 小时';
+      $('#app-body').innerHTML =
+        '<div class="stats"><div class="stat"><div class="label">CPU</div><div class="value">18.4%</div><div class="meta">8 核 · 5 分钟均值</div></div>' +
+        '<div class="stat"><div class="label">内存</div><div class="value">3.1 / 16 GB</div><div class="meta">19.4% · 无 swap 抖动</div></div>' +
+        '<div class="stat"><div class="label">负载</div><div class="value">0.42</div><div class="meta">1 / 5 / 15 分钟 0.42 / 0.51 / 0.55</div></div></div>' +
+        '<div class="card mt16"><div class="card-head"><h2>最近 2 小时</h2><span class="meta">CPU 使用率</span></div><div class="metric-bars">' +
+        [22, 31, 18, 44, 39, 27, 15, 62, 48, 35, 21, 16, 28, 33].map(h => '<i style="height:' + h + '%"></i>').join('') +
+        '</div><p style="margin:10px 0 0;color:var(--faint);font-size:11.5px">峰值 62% 出现在 18:10，对应一次镜像拉取。</p></div>';
+    } else {
+      $('#app-crumb').textContent = '守护';
+      $('#app-title').textContent = '容器守护';
+      $('#app-sub').textContent = '由容器守护插件提供 · 当前为演练模式：只记录，不自动重启';
+      $('#app-body').innerHTML =
+        '<div class="banner"><span>●</span><span><b>演练模式已开启。</b> 观察 24 小时后再切到自动重启，避免误操作放大故障。</span><button class="btn sm" data-toast="已切换为自动重启（示意）">切换为自动重启</button></div>' +
+        '<div class="card pad0"><div class="table-wrap"><table><thead><tr><th>容器</th><th>策略</th><th class="hide-narrow">冷却</th><th class="hide-narrow">次数上限</th><th>状态</th></tr></thead><tbody>' +
+        [['nginx / web-nginx', '退出即重启', '5 分钟', '3 次/小时', '符合策略'], ['api / backend', '退出即重启', '5 分钟', '3 次/小时', '符合策略'], ['minio / storage', '不自动重启', '—', '—', '已排除']]
+          .map(r => '<tr><td><b>' + r[0] + '</b></td><td>' + r[1] + '</td><td class="num hide-narrow">' + r[2] + '</td><td class="num hide-narrow">' + r[3] + '</td><td><span class="chip ' + (r[4] === '已排除' ? 'mute' : 'ok') + '">' + r[4] + '</span></td></tr>').join('') +
+        '</tbody></table></div></div>';
+    }
+  }
+
+  /* ---------- 初始化 ---------- */
+  applyContainerFilter('all');
+  applyPluginTab('discover');
+  applyAuditFilter('all');
+  applySite('example');
+  setPage('overview');
+  refreshBadge();
+</script>
+</body>
+</html>

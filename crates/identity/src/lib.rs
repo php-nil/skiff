@@ -13,7 +13,9 @@ pub use session::{
 };
 // RBAC 词汇的 canonical 定义在 skiff-model；此处转出仅为兼容，新代码请直接 `use skiff_model::…`。
 pub use skiff_model::{Permission, RoleExt};
-pub use token::{new_token, sha256_hex, token_matches};
+pub use token::{
+    new_token, sha256_hex, signed_token, token_matches, verify_signed_token, SignedTokenError,
+};
 pub use totp::{
     generate_backup_codes, generate_totp_secret, otpauth_uri, verify_backup_code, verify_totp,
 };

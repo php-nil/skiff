@@ -31,10 +31,10 @@ fn csp_header() -> &'static HeaderValue {
     CSP_VALUE.get_or_init(|| HeaderValue::from_static(CSP))
 }
 
+/// 只有健康检查不需要安全入口前缀；静态资源与插件 UI 都走 `/{前缀}/...`，
+/// 由下面的前缀判断放行，不再保留根路径旁路。
 fn is_exempt(path: &str) -> bool {
     path == "/healthz"
-        || path.starts_with("/static/")
-        || (path.starts_with("/plugins/") && path.contains("/ui/"))
 }
 
 /// 非流式请求的处理时长上限。等待对象是 Docker Engine 之类的下游——它们不该
@@ -156,7 +156,21 @@ pub async fn load_session(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let cookies = parse_cookies(req.headers().get(COOKIE).and_then(|v| v.to_str().ok()));
+    // `Cookie` 在 HTTP/2 里允许拆成多个头字段（RFC 9113 §8.1.2.5），hyper 不会自动
+    // 合并，`get()` 只返回第一个。这里把全部字段拼起来再解析，避免会话 Cookie 恰好
+    // 落在第二个字段时被当成「未登录」。
+    let cookie_header: Vec<&str> = req
+        .headers()
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    let cookie_header = cookie_header.join("; ");
+    let cookies = parse_cookies(if cookie_header.is_empty() {
+        None
+    } else {
+        Some(cookie_header.as_str())
+    });
     if let Some(token) = cookies.get(state.cookie_name()) {
         let hash = skiff_identity::sha256_hex(token);
         if let Ok(Some(session)) = state
@@ -176,7 +190,7 @@ pub async fn load_session(
                 if needs_change {
                     let path = req.uri().path().to_string();
                     let prefix = &state.cfg.entry_prefix;
-                    let allowed = path.starts_with("/static/")
+                    let allowed = path.starts_with(&format!("/{prefix}/static/"))
                         || path.starts_with("/api/")
                         || path == format!("/{prefix}/login")
                         || path == format!("/{prefix}/password")

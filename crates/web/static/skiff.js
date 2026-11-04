@@ -140,10 +140,635 @@
     });
   }
 
+  // ---- 菜单：持久手风琴（无任何悬停展开），键盘可达，窄屏抽屉 ----
+  // 一级行 = 标签 + 独立箭头：箭头只管展开/收起；有自身页面的标签是链接（跳转），
+  // 无自身页面的标签是按钮（等同展开）。同一时间只展开一个分组；点空白不收起，
+  // 只有切到另一个分组或按 Escape 才收起。展开状态写入 sessionStorage，刷新后保持。
+  // 上下布局把二级菜单搬进顶栏下方的独立全宽栏（`.subnav-inner`），侧栏/抽屉留在组内。
+  // 菜单关闭时带 `hidden`，Tab 不会进入二级项；Escape 收起并把焦点还给箭头按钮。
+  var NAV_STORE_KEY = "skiff.nav.open";
+  var NAV_NONE = "none";
+
+  function readNavOpen() {
+    try { return sessionStorage.getItem(NAV_STORE_KEY) || ""; } catch (e) { return ""; }
+  }
+  function writeNavOpen(key) {
+    try {
+      if (key) sessionStorage.setItem(NAV_STORE_KEY, key);
+      else sessionStorage.removeItem(NAV_STORE_KEY);
+    } catch (e) { /* 隐私模式禁用存储时退化为不记忆 */ }
+  }
+
+  function attachNav() {
+    if (document.body.dataset.navReady === "1") return;
+    document.body.dataset.navReady = "1";
+
+    var groups = Array.prototype.slice.call(document.querySelectorAll("[data-nav-group]"));
+    var subnav = document.querySelector("[data-subnav]");
+    var subnavInner = subnav ? subnav.querySelector(".subnav-inner") : null;
+    var body = document.body;
+    var drawer = document.querySelector("[data-menu-toggle]");
+    var narrow = window.matchMedia ? window.matchMedia("(max-width: 860px)") : null;
+
+    function isNarrow() { return narrow ? narrow.matches : window.innerWidth <= 860; }
+    // bar 模式 = 上下布局且非窄屏：二级走独立通栏；侧栏与抽屉都就地展开。
+    function barMode() { return body.dataset.layout !== "left" && !isNarrow(); }
+
+    // 菜单宿主可能在 `.nav-group` 内（侧栏/抽屉），也可能被搬到 `.subnav-inner`
+    //（上下布局）。因此按 `data-nav-key` 全局查找，不依赖当前父节点。
+    function menuOf(key) {
+      var all = document.querySelectorAll("[data-nav-key]");
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].getAttribute("data-nav-key") === key) return all[i];
+      }
+      return null;
+    }
+
+    function setOpen(group, open) {
+      var toggle = group.querySelector("[data-nav-toggle]");
+      var menu = menuOf(group.dataset.menuKey || "");
+      if (!toggle || !menu) return;
+      if (open) {
+        menu.removeAttribute("hidden");
+        group.classList.add("open");
+      } else {
+        menu.setAttribute("hidden", "");
+        group.classList.remove("open");
+      }
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    function syncSubnav() {
+      if (!subnav) return;
+      var anyOpen = groups.some(function (g) { return g.classList.contains("open"); });
+      var show = barMode() && anyOpen;
+      subnav.classList.toggle("open", show);
+      subnav.setAttribute("aria-hidden", show ? "false" : "true");
+    }
+
+    // key=null 表示全部收起；`NAV_NONE` 让刷新后也保持收起。
+    // remember=false 只用于首屏默认展开（不把「默认」写死成用户选择）。
+    function openKey(key, remember) {
+      var target = null;
+      groups.forEach(function (g) {
+        var on = !!key && g.dataset.menuKey === key;
+        setOpen(g, on);
+        if (on) target = g;
+      });
+      if (remember !== false) writeNavOpen(target ? key : NAV_NONE);
+      syncSubnav();
+      return target;
+    }
+
+    // 上下布局：把当前分组的菜单搬进通栏；侧栏/抽屉则放回分组内。
+    function placeMenus() {
+      if (!subnavInner) return;
+      var inBar = barMode();
+      groups.forEach(function (g) {
+        var menu = menuOf(g.dataset.menuKey || "");
+        if (!menu) return;
+        if (inBar) subnavInner.appendChild(menu);
+        else g.appendChild(menu);
+      });
+      syncSubnav();
+    }
+
+    function linksOf(group) {
+      var menu = menuOf(group.dataset.menuKey || "");
+      return menu ? Array.prototype.slice.call(menu.querySelectorAll("a")) : [];
+    }
+
+    function focusTop(delta) {
+      var tops = Array.prototype.slice.call(
+        document.querySelectorAll(".nav > .nav-link, .nav > .nav-group > .nav-row > .nav-label")
+      );
+      var i = tops.indexOf(document.activeElement);
+      if (i < 0) return;
+      var next = tops[(i + delta + tops.length) % tops.length];
+      if (next) next.focus();
+    }
+
+    groups.forEach(function (group) {
+      var caret = group.querySelector("[data-nav-toggle]");
+      var label = group.querySelector("[data-nav-label]");
+      var toggle = function () {
+        if (group.classList.contains("open")) openKey(null);
+        else openKey(group.dataset.menuKey || "");
+      };
+
+      if (caret) {
+        caret.addEventListener("click", toggle);
+        caret.addEventListener("keydown", function (e) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            openKey(group.dataset.menuKey || "");
+            var first = linksOf(group)[0];
+            if (first) first.focus();
+          } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+            e.preventDefault();
+            focusTop(e.key === "ArrowRight" ? 1 : -1);
+          }
+        });
+      }
+
+      // 无自身页面的一级：标签本身就是展开按钮。
+      if (label && label.tagName === "BUTTON") label.addEventListener("click", toggle);
+      // 有自身页面的一级：标签负责跳转，但先记住该分组，落地后保持展开。
+      if (label && label.tagName !== "BUTTON") {
+        label.addEventListener("click", function () {
+          writeNavOpen(group.dataset.menuKey || "");
+        });
+      }
+
+      var menu = menuOf(group.dataset.menuKey || "");
+      if (menu) {
+        menu.addEventListener("keydown", function (e) {
+          var links = linksOf(group);
+          var i = links.indexOf(document.activeElement);
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            if (!links.length) return;
+            var next = links[(i + (e.key === "ArrowDown" ? 1 : -1) + links.length) % links.length];
+            if (next) next.focus();
+          } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            e.preventDefault();
+            setOpen(group, false);
+            if (caret) caret.focus();
+          }
+        });
+      }
+    });
+
+    function setDrawer(open) {
+      if (!drawer) return;
+      body.classList.toggle("nav-open", open);
+      drawer.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    if (drawer) {
+      drawer.addEventListener("click", function () {
+        setDrawer(!body.classList.contains("nav-open"));
+      });
+    }
+
+    // 抽屉：点顶栏外部收起；导航分组本身不再因「点空白」收起。
+    document.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("[data-menu-toggle]")) return;
+      if (isNarrow() && !target.closest(".topbar") && body.classList.contains("nav-open")) {
+        setDrawer(false);
+      }
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      var openGroup = groups.filter(function (g) {
+        return g.classList.contains("open");
+      })[0];
+      var changed = false;
+      if (openGroup) {
+        openKey(null);
+        var caret = openGroup.querySelector("[data-nav-toggle]");
+        if (caret) caret.focus();
+        changed = true;
+      }
+      if (body.classList.contains("nav-open")) {
+        setDrawer(false);
+        if (drawer) drawer.focus();
+        changed = true;
+      }
+      if (changed) e.preventDefault();
+    });
+
+    function onViewportChange() {
+      if (!isNarrow()) setDrawer(false);
+      placeMenus();
+    }
+    if (narrow && narrow.addEventListener) narrow.addEventListener("change", onViewportChange);
+    else window.addEventListener("resize", onViewportChange);
+
+    placeMenus();
+
+    // 初始：优先恢复会话记忆（`none` = 用户显式收起），其次展开「当前页所在分组」。
+    var restored = readNavOpen();
+    var currentGroup = document.querySelector("[data-nav-group].current");
+    var initial = restored === NAV_NONE ? null : (restored || (currentGroup && currentGroup.dataset.menuKey) || null);
+    openKey(initial, restored !== "");
+  }
+
+  // ---- L3 工作台标签栏：同一个 iframe，tab 参数 + postMessage ----
+  // 切换同一 UI 文件时只发消息（不重载 iframe，避免白屏与重复鉴权）；
+  // 声明了不同 `ui` 的标签才换 iframe 文件。链接本身可直达，无 JS 也能用。
+  function attachWorkbench() {
+    var bar = document.querySelector("[data-workbench]");
+    var frame = document.querySelector("[data-workbench-frame]");
+    if (!bar || !frame) return;
+    var links = Array.prototype.slice.call(bar.querySelectorAll("[data-workbench-tab]"));
+
+    function apply(link, push) {
+      if (!link) return;
+      var tab = link.dataset.tab || "";
+      var ui = link.dataset.ui || "";
+      var href = link.getAttribute("href") || "";
+      if (!tab || !href) return;
+      links.forEach(function (a) {
+        if (a === link) a.setAttribute("aria-current", "page");
+        else a.removeAttribute("aria-current");
+        a.classList.toggle("on", a === link);
+      });
+      if (push) history.pushState({ workbenchTab: tab, href: href }, "", href);
+      if (ui && ui !== frame.dataset.ui) {
+        frame.dataset.ui = ui;
+        frame.src = link.dataset.src || frame.src;
+        return;
+      }
+      frame.dataset.tab = tab;
+      if (frame.contentWindow) {
+        frame.contentWindow.postMessage(
+          { type: "skiff.menu", nonce: frame.dataset.nonce, menu: frame.dataset.menu, tab: tab },
+          "*"
+        );
+      }
+    }
+
+    bar.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!(target instanceof Element)) return;
+      var link = target.closest("[data-workbench-tab]");
+      if (!link) return;
+      e.preventDefault();
+      apply(link, true);
+    });
+    window.addEventListener("popstate", function () {
+      if (!history.state || !history.state.workbenchTab) return;
+      var tab = history.state.workbenchTab;
+      apply(links.filter(function (a) { return a.dataset.tab === tab; })[0], false);
+    });
+  }
+
+  // ---- 固定页槽位：失败降级 + 自动刷新 ----
+  // 插件停用/未授权在服务端就不渲染槽位；这里只兜底「启用了但界面没起来」。
+  function attachMounts() {
+    document.querySelectorAll("[data-mount]").forEach(function (card) {
+      var frame = card.querySelector("iframe");
+      if (!frame || frame.dataset.attached === "1") return;
+      frame.dataset.attached = "1";
+      var fail = card.querySelector("[data-mount-fail]");
+      var retry = card.querySelector("[data-mount-retry]");
+      var timer = 0;
+
+      function showFail() {
+        if (fail) fail.removeAttribute("hidden");
+      }
+      function watch() {
+        clearTimeout(timer);
+        timer = setTimeout(showFail, 5000);
+      }
+      frame.addEventListener("load", function () { clearTimeout(timer); });
+      frame.addEventListener("error", showFail);
+      watch();
+
+      if (retry) {
+        retry.addEventListener("click", function () {
+          if (fail) fail.setAttribute("hidden", "");
+          var src = (frame.getAttribute("src") || "").replace(/[?&]r=\d+/, "");
+          frame.src = src + (src.indexOf("?") >= 0 ? "&" : "?") + "r=" + Date.now();
+          watch();
+        });
+      }
+
+      var refresh = parseInt(frame.dataset.refresh || "0", 10);
+      if (refresh > 0) {
+        setInterval(function () {
+          if (frame.contentWindow) {
+            frame.contentWindow.postMessage(
+              { type: "skiff.refresh", nonce: frame.dataset.nonce },
+              "*"
+            );
+          }
+        }, refresh * 1000);
+      }
+    });
+  }
+
+  // ---- 主题：默认浅色；暗色为完整可选项，选择持久化到 localStorage ----
+  // 首屏由 `/static/theme-init.js` 在样式表之前落地 `data-theme`；这里负责切换、
+  // 按钮可访问性、向插件 iframe 广播，并在 htmx 局部替换 / 前进后退缓存恢复后
+  // 按 localStorage 重新落地。键名与 theme-init.js 必须一致。
+  var THEME_KEY = "skiff.theme";
+  function attachTheme() {
+    var root = document.documentElement;
+
+    function frames() {
+      return Array.prototype.slice.call(
+        document.querySelectorAll("iframe.mount-frame, iframe.plugin-frame")
+      );
+    }
+
+    function current() {
+      return root.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    }
+
+    function broadcastTheme(theme) {
+      frames().forEach(function (f) {
+        if (f.contentWindow) {
+          f.contentWindow.postMessage({ type: "skiff.theme", theme: theme }, "*");
+        }
+      });
+    }
+
+    // 按钮的可见文案由 CSS 按主题切换（深色时显示「浅色」）；这里同步语义状态，
+    // 保证 aria-label 描述的是「点击后会发生什么」，aria-pressed 表示「当前是否深色」。
+    function syncButton(theme) {
+      var button = document.querySelector("[data-theme-toggle]");
+      if (!button) return;
+      var dark = theme === "dark";
+      button.setAttribute("aria-pressed", dark ? "true" : "false");
+      button.setAttribute("aria-label", dark ? "切换到浅色主题" : "切换到深色主题");
+      button.title = dark ? "切换到浅色主题" : "切换到深色主题";
+    }
+
+    function apply(theme, persist) {
+      var dark = theme === "dark";
+      root.setAttribute("data-theme", dark ? "dark" : "light");
+      syncButton(dark ? "dark" : "light");
+      if (persist) {
+        try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) { /* ignore */ }
+      }
+      broadcastTheme(dark ? "dark" : "light");
+    }
+
+    function storedTheme() {
+      try {
+        var stored = localStorage.getItem(THEME_KEY);
+        if (stored === "dark" || stored === "light") return stored;
+      } catch (e) { /* 隐私模式 */ }
+      return null;
+    }
+
+    // 以 localStorage 为准重新落地：刷新、htmx 局部替换、bfcache 恢复都走这里。
+    // 存储值缺失时才保留首屏已经落地的属性，避免无谓地把暗色刷成浅色。
+    function syncFromStorage() {
+      var theme = storedTheme() || current();
+      if (theme !== current()) {
+        apply(theme, false);
+      } else {
+        syncButton(theme);
+        broadcastTheme(theme);
+      }
+    }
+
+    if (root.dataset.themeReady !== "1") {
+      root.dataset.themeReady = "1";
+
+      // 用文档级委托，htmx 替换掉按钮节点后仍然有效。
+      document.addEventListener("click", function (ev) {
+        var button = ev.target && ev.target.closest ? ev.target.closest("[data-theme-toggle]") : null;
+        if (!button) return;
+        apply(current() === "dark" ? "light" : "dark", true);
+      });
+
+      // iframe 加载完成后补发，避免子页面脚本尚未就绪时收到的消息被丢弃。
+      document.addEventListener("load", function (e) {
+        var target = e.target;
+        if (!target || target.tagName !== "IFRAME") return;
+        if (!target.matches("iframe.mount-frame, iframe.plugin-frame")) return;
+        if (target.contentWindow) {
+          target.contentWindow.postMessage({ type: "skiff.theme", theme: current() }, "*");
+        }
+      }, true);
+
+      // 所有 iframe 都加载完后再统一补发一次，覆盖「iframe 先加载、父脚本后就绪」的时序。
+      window.addEventListener("load", function () { broadcastTheme(current()); });
+
+      // 插件页面主动索取主题（插件侧在脚本执行和 load 时各发一次）。
+      window.addEventListener("message", function (ev) {
+        var msg = ev.data;
+        if (!msg || msg.type !== "skiff.theme.request") return;
+        var frame = frames().filter(function (f) { return f.contentWindow === ev.source; })[0];
+        if (!frame) return;
+        ev.source.postMessage({ type: "skiff.theme", theme: current() }, "*");
+      });
+
+      // 前进/后退缓存恢复时 DOM 是旧快照，按当前存储值重新落地并修按钮语义。
+      window.addEventListener("pageshow", syncFromStorage);
+      // 其他标签页改了主题时跟随（storage 事件只在别的文档触发）。
+      window.addEventListener("storage", function (e) {
+        if (e.key !== THEME_KEY) return;
+        apply(e.newValue === "dark" ? "dark" : "light", false);
+      });
+
+      syncFromStorage();
+    } else {
+      // htmx 局部替换：重新同步按钮语义，并给新插入的 iframe 补发主题。
+      syncFromStorage();
+    }
+  }
+
+  // ---- 统一确认弹窗：表单加 data-confirm 即拦截提交，二次确认后放行 ----
+  function attachConfirm() {
+    var dialog = document.querySelector("[data-confirm-dialog]");
+    if (!dialog) return;
+    var message = dialog.querySelector("[data-confirm-message]");
+    var ok = dialog.querySelector("[data-confirm-ok]");
+    var cancel = dialog.querySelector("[data-confirm-cancel]");
+    var pending = null;
+
+    function close() {
+      if (typeof dialog.close === "function") dialog.close();
+      else dialog.removeAttribute("open");
+      pending = null;
+    }
+
+    function open(text, run) {
+      if (typeof dialog.showModal !== "function") {
+        if (window.confirm(text)) run();
+        return;
+      }
+      if (message) message.textContent = text;
+      pending = run;
+      dialog.showModal();
+    }
+
+    document.addEventListener("submit", function (e) {
+      var form = e.target;
+      if (!form || !form.dataset) return;
+      // 确认文案可放在表单上（整表操作），也可放在触发按钮上（同一表单多种动作）。
+      var submitter = e.submitter;
+      var msg = (submitter && submitter.dataset && submitter.dataset.confirm)
+        || form.dataset.confirm;
+      if (!msg) return;
+      if (form.dataset.confirmed === "1") {
+        delete form.dataset.confirmed;
+        return;
+      }
+      e.preventDefault();
+      open(msg, function () {
+        form.dataset.confirmed = "1";
+        if (submitter && typeof form.requestSubmit === "function") {
+          form.requestSubmit(submitter);
+          return;
+        }
+        if (submitter && submitter.name) {
+          var hidden = document.createElement("input");
+          hidden.type = "hidden";
+          hidden.name = submitter.name;
+          hidden.value = submitter.value;
+          form.appendChild(hidden);
+        }
+        form.submit();
+      });
+    });
+
+    if (ok) ok.addEventListener("click", function () {
+      var run = pending;
+      close();
+      if (run) run();
+    });
+    if (cancel) cancel.addEventListener("click", close);
+    dialog.addEventListener("close", function () { pending = null; });
+  }
+
+  // ---- 网站创建向导：分步前进/回退，就地校验域名与根目录 ----
+  function attachWizard() {
+    var wizard = document.querySelector("[data-wizard]");
+    if (!wizard) return;
+    var panels = Array.prototype.slice.call(wizard.querySelectorAll("[data-wizard-panel]"));
+    var dots = Array.prototype.slice.call(wizard.querySelectorAll("[data-wizard-step]"));
+    if (!panels.length) return;
+    var current = 1;
+
+    function form() { return wizard.querySelector("form"); }
+    function field(name) { return form() ? form().querySelector('[name="' + name + '"]') : null; }
+    function errorFor(name) { return wizard.querySelector('[data-error-for="' + name + '"]'); }
+
+    function showError(name, text) {
+      var el = errorFor(name);
+      if (!el) return;
+      if (text) { el.textContent = text; el.removeAttribute("hidden"); }
+      else { el.textContent = ""; el.setAttribute("hidden", ""); }
+    }
+
+    function validDomain(v) {
+      return /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(v) && !v.includes("..");
+    }
+
+    function validateStep(step) {
+      var ok = true;
+      if (step === 1) {
+        var domain = field("domain");
+        var aliases = field("aliases");
+        var root = field("root_dir");
+        var dv = domain ? domain.value.trim() : "";
+        if (!dv) { showError("domain", "请填写主域名"); ok = false; }
+        else if (!validDomain(dv)) { showError("domain", "域名只能包含字母、数字、点和中划线，且不能以符号开头或结尾"); ok = false; }
+        else showError("domain", "");
+
+        var av = aliases ? aliases.value.trim() : "";
+        if (av) {
+          var bad = av.split(/[\s,，]+/).filter(function (x) { return x && !validDomain(x); });
+          if (bad.length) { showError("aliases", "别名域名格式不正确：" + bad.join("、")); ok = false; }
+          else showError("aliases", "");
+        } else showError("aliases", "");
+
+        var rv = root ? root.value.trim() : "";
+        if (!rv) { showError("root_dir", "请填写站点根目录"); ok = false; }
+        else if (!rv.startsWith("/") || rv.includes("..")) { showError("root_dir", "根目录必须是以 / 开头的绝对路径，且不能包含 .."); ok = false; }
+        else showError("root_dir", "");
+      }
+      return ok;
+    }
+
+    function summary() {
+      var domain = field("domain");
+      var aliases = field("aliases");
+      var root = field("root_dir");
+      var php = field("php_version");
+      var map = {
+        domain: domain ? domain.value.trim() : "",
+        aliases: aliases && aliases.value.trim() ? aliases.value.trim() : "无",
+        root: root ? root.value.trim() : "",
+        php: php ? php.value : ""
+      };
+      Object.keys(map).forEach(function (k) {
+        var el = wizard.querySelector('[data-summary="' + k + '"]');
+        if (el) el.textContent = map[k] || "—";
+      });
+    }
+
+    function show(step) {
+      current = step;
+      panels.forEach(function (p) {
+        var n = parseInt(p.dataset.wizardPanel, 10);
+        if (n === step) p.removeAttribute("hidden");
+        else p.setAttribute("hidden", "");
+      });
+      dots.forEach(function (d) {
+        var n = parseInt(d.dataset.wizardStep, 10);
+        d.classList.toggle("on", n === step);
+        d.classList.toggle("done", n < step);
+        if (n === step) d.setAttribute("aria-current", "step");
+        else d.removeAttribute("aria-current");
+      });
+      if (step === 3) summary();
+      var first = panels.filter(function (p) { return parseInt(p.dataset.wizardPanel, 10) === step; })[0];
+      if (first) {
+        var focusable = first.querySelector("input,select,textarea,button");
+        if (focusable) focusable.focus();
+      }
+    }
+
+    wizard.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("[data-wizard-next]")) {
+        if (validateStep(current)) show(Math.min(current + 1, panels.length));
+      } else if (target.closest("[data-wizard-back]")) {
+        show(Math.max(current - 1, 1));
+      }
+    });
+
+    var start = parseInt(wizard.dataset.wizardStart || "1", 10);
+    show(start >= 1 && start <= panels.length ? start : 1);
+  }
+
+  // ---- 服务端提示转为轻量 toast（不阻塞页面） ----
+  function attachToasts() {
+    document.querySelectorAll(".alert[data-toast]").forEach(function (alert) {
+      var toast = document.createElement("div");
+      toast.className = "toast show" + (alert.classList.contains("ok") ? "" : " error");
+      toast.setAttribute("role", "status");
+      toast.textContent = alert.textContent.trim();
+      document.body.appendChild(toast);
+      alert.parentNode && alert.parentNode.removeChild(alert);
+      setTimeout(function () { toast.classList.remove("show"); }, 4200);
+      setTimeout(function () { toast.parentNode && toast.parentNode.removeChild(toast); }, 4700);
+    });
+  }
+
+  // 内联 SVG 精灵兜底：插件 manifest 里的图标名若不在内置集合内（或旧包携带
+  // 未知名称），统一回退到中性圆点，避免出现空白占位。
+  function ensureIcons() {
+    document.querySelectorAll("svg.menu-ico use").forEach(function (use) {
+      var href = use.getAttribute("href") || use.getAttribute("xlink:href") || "";
+      if (!href || href.charAt(0) !== "#") return;
+      if (!document.getElementById(href.slice(1))) use.setAttribute("href", "#i-dot");
+    });
+  }
+
   function boot() {
     attachLogs();
     attachTerminal();
     attachPluginBridges();
+    attachNav();
+    attachWorkbench();
+    attachMounts();
+    attachTheme();
+    attachConfirm();
+    ensureIcons();
+    attachWizard();
+    attachToasts();
   }
 
   document.addEventListener("DOMContentLoaded", boot);

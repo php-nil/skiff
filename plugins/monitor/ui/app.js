@@ -4,6 +4,41 @@
   var pending = {};
   var seq = 0;
 
+  // ---- 主题：面板父页面经 postMessage 下发；未收到时保持本插件默认深色 ----
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== parent) return;
+    var msg = ev.data;
+    if (msg && msg.type === "skiff.theme" && (msg.theme === "light" || msg.theme === "dark")) {
+      document.documentElement.setAttribute("data-theme", msg.theme);
+    }
+  });
+  // 主动向面板索取一次主题：iframe 可能比父页面脚本先就绪，只靠广播会漏。
+  function requestTheme() {
+    try { parent.postMessage({ type: "skiff.theme.request" }, "*"); } catch (e) { /* 独立打开时无父页面 */ }
+  }
+  requestTheme();
+  window.addEventListener("load", requestTheme);
+
+  // ---- 内核 L3 标签 → 内部视图；`skiff.refresh` 供概览槽位定时刷新 ----
+  function setView(name) {
+    var views = document.querySelectorAll("[data-view]");
+    var known = Array.prototype.some.call(views, function (v) {
+      return v.getAttribute("data-view") === name;
+    });
+    views.forEach(function (v) {
+      v.hidden = !!(name && known && v.getAttribute("data-view") !== name);
+    });
+  }
+  setView(new URLSearchParams(location.search).get("tab") || "");
+
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== parent) return;
+    var msg = ev.data;
+    if (!msg || msg.nonce !== nonce) return;
+    if (msg.type === "skiff.menu" && typeof msg.tab === "string") setView(msg.tab);
+    else if (msg.type === "skiff.refresh") refresh();
+  });
+
   function rpc(method, params) {
     return new Promise(function (resolve, reject) {
       if (!nonce) {

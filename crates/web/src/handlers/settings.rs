@@ -5,9 +5,10 @@ use axum::response::Response;
 
 use crate::error::AppError;
 use crate::handlers;
+use crate::menu;
 use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::templates::{AuditPage, AuditRow, KeyRow, SettingsPage};
+use crate::templates::{AuditPage, AuditRow, KeyRow, MenuSettingsPage, SettingsPage};
 use crate::util::{form_first, parse_form};
 
 pub async fn render_settings(
@@ -111,6 +112,55 @@ pub async fn remove_key(
         "撤销后该公钥签名的包将无法安装/升级",
     );
     render_settings(&state, &user, "", "已撤销该公钥", None, Vec::new(), false).await
+}
+
+/// 设置 → 菜单设置（按用户，scope = 当前账号）。
+pub async fn menu_page(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let notice = q
+        .get("ok")
+        .map(|_| "已保存菜单偏好".to_string())
+        .unwrap_or_default();
+    handlers::render(MenuSettingsPage {
+        ctx: handlers::page_ctx(&state, &user, "menu-settings"),
+        groups: menu::settings_view(&state, &user),
+        layout: menu::current_layout(&state, &user),
+        notice,
+    })
+}
+
+pub async fn menu_update(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    body: String,
+) -> Result<Response, AppError> {
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let action = form_first(&form, "action");
+    let key = form_first(&form, "key");
+    let layout = form_first(&form, "layout");
+    menu::apply_action(
+        &state,
+        &user,
+        &action,
+        &key,
+        (!layout.is_empty()).then_some(layout.as_str()),
+    )?;
+    let _ = state.db().audit(
+        &user.user.username,
+        "local",
+        "settings.menu.update",
+        &action,
+        "ok",
+        &key,
+    );
+    Ok(handlers::redirect(format!(
+        "/{}/settings/menu?ok=1",
+        state.cfg.entry_prefix
+    )))
 }
 
 pub async fn audit(
