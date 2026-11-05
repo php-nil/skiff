@@ -626,6 +626,27 @@ testkit 实测：`ping` / `state` / `probe` RPC 200；`interop_cron` 200（`jobs
 兜底站不使用 `server_name _`（默认站已占用 `_`），因此 `nginx -t` 与 reload 不应再出现
 `conflicting server name "_" on 0.0.0.0:80` 警告。
 
+### 2.12.1 网站运行环境与三类建站（2026-11-05 全新库实测）
+
+schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runtime_id` + 反代字段，
+`site_runtimes` 种入唯一 `php-8.5`；**测试期不做旧数据迁移**，重置库后由面板重新建站。
+
+- 全新库 `PRAGMA user_version=7`，`site_runtimes` 仅 `php-8.5`（默认），`sites=0`；
+  `POST /{p}/sites/env/install` 完成环境安装后 `docker exec skiff-web-nginx nginx -t` 成功。
+- 三类站（入口前缀 `/swn4nbhe`）：
+  - PHP（`php.local` + `runtime_id=php-8.5`）：HTTP 与 HTTPS 均 200，正文含 `PHP Version 8.5.12`；
+  - 静态（`static.local`）：自定义 `index/index.html` 返回 200；
+  - 反代（`proxy.local` → `http://127.0.0.1:18081`）：200，`Server: openresty/1.31.8.1`、
+    `X-Upstream: 18081`，上游收到 `Host: proxy.local`。
+- 删除三个站均 303：站目录与 `conf/<域名>.conf` 消失，`nginx -t` 成功，`Host` 回落 404，
+  库内 `sites=0`；`/www/sites` 为空。
+- 拒绝路径（均 HTTP 200，表单页内联告警）：重复域名「域名已存在」；`ftp://` 上游
+  非 http(s)；`site_type=node|go` 只支持三类；未知 `runtime_id` 运行环境不存在。
+- 运行环境页：`/{p}/runtimes`、`/{p}/sites/env`、`/{p}/sites/env/php-8.5` 均 200；PHP 配置保存 303，
+  `/www/php/www.conf` 写入 `memory_limit=512M`、`upload_max_filesize=128M`、`post_max_size=256M`、
+  `max_execution_time=120`、`pm=ondemand`，PHPInfo 页面显示 `upload_max_filesize=128M`；
+  关联站点数 1→0 正确；绑定 `php.local` 时删除运行环境被拒并列出域名。
+
 ### 2.13 站点 HTTPS（2026-11-04 已实测）
 
 一句话：证书按站点落 `/www/sites/<域名>/ssl/{cert.pem,key.pem}`，vhost（`/www/sites/<域名>/conf/<域名>.conf`）追加 `listen 443 ssl`，
