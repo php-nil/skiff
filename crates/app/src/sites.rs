@@ -1579,6 +1579,13 @@ impl AppState {
             }
             let def =
                 runtime_catalog::php_extension(key).ok_or_else(|| format!("未知扩展：{key}"))?;
+            // 镜像内置扩展（opcache / curl）已随 PHP 编入并默认启用，
+            // 再执行 docker-php-ext-enable 会因找不到 .so 而失败（实测 exit 1）。
+            if def.builtin {
+                self.job_note(job_id, &format!("{}：镜像内置已启用，跳过", def.label))
+                    .await;
+                continue;
+            }
             self.job_note(
                 job_id,
                 &format!("启用 {}：{}", def.label, def.enable_script),
@@ -1611,6 +1618,10 @@ impl AppState {
             }
             let def =
                 runtime_catalog::php_extension(key).ok_or_else(|| format!("未知扩展：{key}"))?;
+            // 内置扩展没有独立 .so，docker-php-ext-disable 同样会失败，直接跳过。
+            if def.builtin {
+                continue;
+            }
             let script = runtime_catalog::disable_script(key)
                 .ok_or_else(|| format!("扩展 {key} 不支持停用"))?;
             self.job_note(job_id, &format!("停用 {}：{script}", def.label))

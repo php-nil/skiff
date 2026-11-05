@@ -263,6 +263,24 @@ mod tests {
     }
 
     #[test]
+    fn builtin_extensions_are_flagged() {
+        // 内置扩展随 PHP 编入并默认启用，docker-php-ext-enable/disable 都会因找不到
+        // .so 而失败（PHP 8.5 实测 exit 1），安装流程据此跳过脚本。
+        for key in ["opcache", "curl"] {
+            assert!(
+                php_extension(key).expect(key).builtin,
+                "{key} 应标记为镜像内置"
+            );
+        }
+        for key in ["pdo_mysql", "redis", "gd", "zip", "intl"] {
+            assert!(
+                !php_extension(key).expect(key).builtin,
+                "{key} 需要单独编译，不应标记内置"
+            );
+        }
+    }
+
+    #[test]
     fn extension_catalog_is_single_source() {
         let keys: Vec<&str> = PHP_EXTENSIONS.iter().map(|e| e.key).collect();
         for expected in [
