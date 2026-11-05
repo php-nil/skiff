@@ -591,7 +591,7 @@ systemctl daemon-reload && systemctl restart skiff
 | `/www/nginx/conf.d/10-skiff-sites.conf` | **始终存在** | `include /www/sites/*/conf/*.conf;`（`*.conf` 不匹配 `.conf.disabled`） |
 | `/www/sites/<域名>/conf/<域名>.conf` | 每站一个 | `root /www/sites/<域名>/index;`、`access_log` 与 `error_log` 指向 `/www/sites/<域名>/log/...`、`ssl_certificate` 指向 `/www/sites/<域名>/ssl/cert.pem` |
 
-站点树是「一站一目录”：`index/`（文档根）、`log/`（`access.log`/`error.log`）、`ssl/`（`cert.pem`/`key.pem`）、`conf/`（vhost）。备份单个站点目录即备份整站。旧布局（根目录直接放站点文件、日志在 `/www/logs/nginx/`、证书在 `/www/certs/<域名>/`、conf 在 `/www/nginx/conf.d/`）由启动时的幂等迁移改写；旧目录清空后删除，若仍有其他文件则保留不误删。
+站点树是「一站一目录”：`index/`（文档根）、`log/`（`access.log`/`error.log`）、`ssl/`（`cert.pem`/`key.pem`）、`conf/`（vhost）。备份单个站点目录即备份整站。**不提供旧布局迁移**：测试期无正式库，启动不搬移/清理任何旧路径（`public/`、`/www/logs/nginx/`、`/www/certs/<域名>/`、公共 `conf.d` 站点 conf 均忽略）；新建、日志、证书、vhost 全部直接落在站点目录内。
 
 未知 Host / 裸 IP 访问分两种状态，**不要混为一谈**：
 

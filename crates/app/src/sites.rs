@@ -173,21 +173,6 @@ impl SiteSettings {
         site_conf_dir(site_dir).join(format!("{domain}.conf.disabled"))
     }
 
-    /// 旧布局的集中日志目录（仅迁移/清理用，新写入不再落这里）。
-    pub fn legacy_logs_dir(&self) -> PathBuf {
-        self.web_root.join("logs").join("nginx")
-    }
-
-    pub fn legacy_log_file(&self, domain: &str, kind: LogKind) -> PathBuf {
-        self.legacy_logs_dir()
-            .join(format!("{domain}.{}.log", kind.as_str()))
-    }
-
-    /// 旧布局的证书目录（仅迁移/清理用）。
-    pub fn legacy_cert_dir(&self, domain: &str) -> PathBuf {
-        self.web_root.join("certs").join(domain)
-    }
-
     /// 站点 include 入口内容：通配加载各站点自己的 `conf/*.conf`。
     ///
     /// `.conf.disabled` 不匹配 `*.conf`，因此停用站点天然不会被 nginx 加载。
@@ -777,7 +762,7 @@ impl AppState {
 
         // 绑定挂载的源目录必须先存在，否则 Docker 直接 400；权限 0755 让容器内
         // 非 root 的 nginx/php 进程可读。PHP socket 池配置也在这一步落盘。
-        // 只建公共目录；站点级 index/log/ssl/conf 由建站与迁移各自创建。
+        // 只建公共目录；站点级 index/log/ssl/conf 由建站时创建。
         let dirs = [
             &s.web_root,
             &s.sites_dir,
@@ -846,13 +831,8 @@ impl AppState {
             .await;
 
         self.mark_step(3, StepState::Running, "").await;
-        // 先把旧布局（public/、集中日志/证书、公共 conf.d）一次性迁进站点目录，
-        // 再按当前 `web_root` 重建 vhost；顺序放在启动 nginx 之前，nginx 起来时
+        // 按当前 `web_root` 布局重建 vhost；顺序放在启动 nginx 之前，nginx 起来时
         // 即可直接加载。
-        let migrated = match self.migrate_site_layout() {
-            Ok(n) => n,
-            Err(e) => return fail(3, format!("迁移站点目录布局失败：{e}")).await,
-        };
         let rebuilt = match self.rewrite_site_vhosts(&s) {
             Ok(n) => n,
             Err(e) => return fail(3, format!("重建站点配置失败：{e}")).await,
@@ -860,9 +840,7 @@ impl AppState {
         self.mark_step(
             3,
             StepState::Ok,
-            format!(
-                "PHP socket: {CONTAINER_SOCKET}，已迁移 {migrated} 个站点、重建 {rebuilt} 个 vhost"
-            ),
+            format!("PHP socket: {CONTAINER_SOCKET}，重建 {rebuilt} 个 vhost"),
         )
         .await;
 
@@ -1742,25 +1720,6 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        // 老布局的遗留（公共 conf.d、集中日志、集中证书）一并清掉；
-        // 新布局的这些都在站点目录内，由下面整目录删除覆盖。
-        for name in [format!("{domain}.conf"), format!("{domain}.conf.disabled")] {
-            let p = s.conf_dir.join(name);
-            if p.is_file() {
-                std::fs::remove_file(&p)
-                    .map_err(|e| SiteError::Internal(format!("删除配置失败：{e}")))?;
-            }
-        }
-        for kind in [LogKind::Access, LogKind::Error] {
-            let p = s.legacy_log_file(&site.domain, kind);
-            if p.is_file() {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-        let legacy_certs = s.legacy_cert_dir(&site.domain);
-        if legacy_certs.exists() {
-            let _ = std::fs::remove_dir_all(&legacy_certs);
-        }
         // 删除默认站点时连同默认 conf 一起删，不能留下指向已删目录的 vhost。
         if site.is_default {
             let p = s.conf_dir.join(DEFAULT_CONF);
@@ -1790,32 +1749,6 @@ impl AppState {
             .delete_site(&site.domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?;
         Ok(())
-    }
-
-    /// 一次性把全部站点从旧布局迁到「一站一目录」，并补齐公共配置。
-    ///
-    /// 旧布局：`<站点>/public`、`/www/logs/nginx/<域名>.*.log`、
-    /// `/www/certs/<域名>`、`/www/nginx/conf.d/<域名>.conf`。
-    /// 新布局：`<站点>/{index,log,ssl,conf}`。重复调用幂等，可直接在启动时兜底执行。
-    pub fn migrate_site_layout(&self) -> std::io::Result<usize> {
-        let s = self.site_settings();
-        let sites = self
-            .db()
-            .list_sites()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        for site in &sites {
-            migrate_site_layout_at(&s, site)?;
-            let site_dir = PathBuf::from(&site.root_dir);
-            let has_conf = s.vhost_file(&site_dir, &site.domain).exists()
-                || s.vhost_disabled(&site_dir, &site.domain).exists();
-            if !has_conf {
-                self.write_site_vhost(&s, &site.domain)
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-            }
-        }
-        self.write_default_vhost(&s)?;
-        cleanup_legacy_layout_dirs(&s);
-        Ok(sites.len())
     }
 
     /// 读取站点日志：宿主文件、时间倒序、可选关键字过滤；读取前先做内核轮转。
@@ -2184,186 +2117,6 @@ pub fn rotate_site_logs(sites_dir: &Path, max_bytes: u64) -> std::io::Result<usi
     Ok(rotated)
 }
 
-/// 旧布局 → 「一站一目录」的单站点迁移。幂等，重复执行无副作用。
-///
-/// 只做文件搬运与 vhost 路径改写，不删除站点内容；搬完后旧文件（含空目录）
-/// 会被清掉，不会留下半套。
-pub fn migrate_site_layout_at(s: &SiteSettings, site: &Site) -> std::io::Result<()> {
-    if site.root_dir.trim().is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("站点 {} 缺少目录记录", site.domain),
-        ));
-    }
-    let site_dir = PathBuf::from(&site.root_dir);
-    for dir in [
-        &site_dir,
-        &site_index_dir(&site_dir),
-        &site_log_dir(&site_dir),
-        &site_ssl_dir(&site_dir),
-        &site_conf_dir(&site_dir),
-    ] {
-        std::fs::create_dir_all(dir)?;
-    }
-
-    // 1) 文档根：public/ → index/（保留文件内容与权限）。
-    let old_public = site_dir.join("public");
-    if old_public.is_dir() {
-        merge_dir_contents(&old_public, &site_index_dir(&site_dir))?;
-    }
-
-    // 2) 日志：集中目录 → <站点>/log/access.log|error.log。
-    for kind in [LogKind::Access, LogKind::Error] {
-        let src = s.legacy_log_file(&site.domain, kind);
-        if src.is_file() {
-            move_or_append(&src, &s.log_file(&site_dir, kind))?;
-        }
-    }
-
-    // 3) 证书：/www/certs/<域名>/ → <站点>/ssl/。
-    let legacy_certs = s.legacy_cert_dir(&site.domain);
-    for name in ["cert.pem", "key.pem"] {
-        let src = legacy_certs.join(name);
-        if !src.is_file() {
-            continue;
-        }
-        let dst = site_ssl_dir(&site_dir).join(name);
-        if dst.exists() {
-            // 新位置已有同名文件视为当前有效，旧文件直接清掉，避免半套。
-            std::fs::remove_file(&src)?;
-        } else {
-            std::fs::rename(&src, &dst)?;
-        }
-    }
-    if legacy_certs.is_dir() {
-        let _ = std::fs::remove_dir(&legacy_certs);
-    }
-
-    // 4) vhost：公共 conf.d → <站点>/conf/，并把里面的旧路径改写成新路径。
-    for (src_name, dst) in [
-        (
-            format!("{}.conf", site.domain),
-            s.vhost_file(&site_dir, &site.domain),
-        ),
-        (
-            format!("{}.conf.disabled", site.domain),
-            s.vhost_disabled(&site_dir, &site.domain),
-        ),
-    ] {
-        let src = s.conf_dir.join(src_name);
-        if src.is_file() {
-            if dst.exists() {
-                std::fs::remove_file(&src)?;
-            } else {
-                std::fs::rename(&src, &dst)?;
-            }
-        }
-        if dst.is_file() {
-            rewrite_vhost_paths(&dst, s, site, &site_dir)?;
-        }
-    }
-
-    // 本站点搬完后，若旧公共目录已空则一并删除（多站点时最后一个站点负责收尾）。
-    cleanup_legacy_layout_dirs(s);
-    Ok(())
-}
-
-/// 把 `src` 目录的内容并入 `dst`，随后删除 `src`。
-/// 同名冲突不覆盖数据：目录递归合并，文件改名为 `*.legacy`。
-fn merge_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let name = entry.file_name();
-        let to = dst.join(&name);
-        if !to.exists() {
-            std::fs::rename(&from, &to)?;
-            continue;
-        }
-        if entry.file_type()?.is_dir() && std::fs::symlink_metadata(&to)?.is_dir() {
-            merge_dir_contents(&from, &to)?;
-            continue;
-        }
-        let mut alt = dst.join(format!("{}.legacy", name.to_string_lossy()));
-        let mut i = 1;
-        while alt.exists() {
-            i += 1;
-            alt = dst.join(format!("{}.legacy{i}", name.to_string_lossy()));
-        }
-        std::fs::rename(&from, &alt)?;
-    }
-    std::fs::remove_dir(src)
-}
-
-/// 目标不存在时直接改名（保留权限）；已存在时把旧内容追加进去再删旧文件，
-/// 保证迁移不丢日志行。
-fn move_or_append(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if !dst.exists() {
-        return std::fs::rename(src, dst);
-    }
-    let data = std::fs::read(src)?;
-    let mut f = std::fs::OpenOptions::new().append(true).open(dst)?;
-    f.write_all(&data)?;
-    std::fs::remove_file(src)
-}
-
-/// 原地改写 vhost 内的路径（容器路径与宿主路径都覆盖），保留其余手工编辑。
-fn rewrite_vhost_paths(
-    path: &Path,
-    s: &SiteSettings,
-    site: &Site,
-    site_dir: &Path,
-) -> std::io::Result<()> {
-    let mut text = std::fs::read_to_string(path)?;
-    let mut replace = |old: &str, new: &str| {
-        if !old.is_empty() && old != new {
-            text = text.replace(old, new);
-        }
-    };
-    let old_root = s.container_path(&site_dir.join("public"));
-    let new_root = s.container_path(&site_index_dir(site_dir));
-    replace(&old_root, &new_root);
-
-    for kind in [LogKind::Access, LogKind::Error] {
-        let old = s.container_rel(&s.legacy_log_file(&site.domain, kind));
-        let new = s.container_path(&s.log_file(site_dir, kind));
-        replace(&old, &new);
-        // 手工编辑可能写宿主路径：Web 根为 `/www` 时两者相同，替换是幂等的。
-        let old_host = s.legacy_log_file(&site.domain, kind).display().to_string();
-        let new_host = s.log_file(site_dir, kind).display().to_string();
-        replace(&old_host, &new_host);
-    }
-    for name in ["cert.pem", "key.pem"] {
-        let old = s.container_path(&s.legacy_cert_dir(&site.domain).join(name));
-        let new = s.container_path(&site_ssl_dir(site_dir).join(name));
-        replace(&old, &new);
-        let old_host = s
-            .legacy_cert_dir(&site.domain)
-            .join(name)
-            .display()
-            .to_string();
-        let new_host = site_ssl_dir(site_dir).join(name).display().to_string();
-        replace(&old_host, &new_host);
-    }
-    std::fs::write(path, text)
-}
-
-/// 迁移后清掉空掉的旧公共目录；仍有其他文件时保留（不误删）。
-fn cleanup_legacy_layout_dirs(s: &SiteSettings) {
-    for dir in [
-        s.legacy_logs_dir(),
-        s.web_root.join("logs"),
-        s.web_root.join("certs"),
-    ] {
-        let _ = std::fs::remove_dir(dir);
-    }
-}
-
 /// Windows 上杀软/索引服务短暂占用刚写入的文件时 `remove_dir_all` 会返回
 /// `Directory not empty`（os error 145）；用有界退避重试，最终仍失败才报错。
 fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {
@@ -2718,21 +2471,6 @@ mod tests {
         assert_eq!(registry_of("localhost:5000/nginx"), "localhost:5000");
     }
 
-    fn site_at(domain: &str, site_dir: &Path) -> Site {
-        Site {
-            id: 1,
-            domain: domain.into(),
-            root_dir: site_dir.display().to_string(),
-            php_version: DEFAULT_PHP_VERSION.into(),
-            status: "running".into(),
-            created_at: 0,
-            updated_at: 0,
-            is_default: false,
-            https: false,
-            force_https: false,
-        }
-    }
-
     #[test]
     fn site_layout_has_one_directory_per_site() {
         let s = settings_at(Path::new("/www"));
@@ -2781,101 +2519,6 @@ mod tests {
         assert!(!text.contains(DEFAULT_CONF));
         assert!(!text.contains(FALLBACK_CONF));
         assert_eq!(SITES_INCLUDE_CONF, "10-skiff-sites.conf");
-    }
-
-    /// 从旧布局（public/ + 集中日志/证书/conf）迁到一站一目录，重复执行幂等。
-    #[test]
-    fn layout_migration_is_idempotent_and_cleans_old_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = settings_at(dir.path());
-        let site_dir = s.sites_dir.join("example.com");
-        let site = site_at("example.com", &site_dir);
-        let old_public = site_dir.join("public");
-        std::fs::create_dir_all(&old_public).unwrap();
-        std::fs::write(old_public.join("index.php"), "<?php echo 'old';").unwrap();
-        std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
-        std::fs::write(
-            s.legacy_log_file("example.com", LogKind::Access),
-            "access-old\n",
-        )
-        .unwrap();
-        std::fs::write(
-            s.legacy_log_file("example.com", LogKind::Error),
-            "error-old\n",
-        )
-        .unwrap();
-        let old_certs = s.legacy_cert_dir("example.com");
-        std::fs::create_dir_all(&old_certs).unwrap();
-        std::fs::write(old_certs.join("cert.pem"), "CERT").unwrap();
-        std::fs::write(old_certs.join("key.pem"), "KEY").unwrap();
-        std::fs::create_dir_all(&s.conf_dir).unwrap();
-        let old_vhost = s.conf_dir.join("example.com.conf");
-        std::fs::write(
-            &old_vhost,
-            "server {\n  listen 80;\n  root /www/sites/example.com/public;\n  \
-             access_log /www/logs/nginx/example.com.access.log;\n  \
-             error_log /www/logs/nginx/example.com.error.log;\n}\n",
-        )
-        .unwrap();
-
-        migrate_site_layout_at(&s, &site).unwrap();
-
-        assert!(!old_public.exists(), "旧 public/ 必须清干净");
-        assert_eq!(
-            std::fs::read_to_string(site_index_dir(&site_dir).join("index.php")).unwrap(),
-            "<?php echo 'old';"
-        );
-        assert_eq!(
-            std::fs::read_to_string(s.log_file(&site_dir, LogKind::Access)).unwrap(),
-            "access-old\n"
-        );
-        assert!(!s.legacy_logs_dir().exists(), "旧集中日志目录应清空并删除");
-        assert!(!old_certs.exists(), "旧证书目录应清空并删除");
-        assert_eq!(
-            std::fs::read_to_string(s.cert_file(&site_dir)).unwrap(),
-            "CERT"
-        );
-        let new_vhost = s.vhost_file(&site_dir, "example.com");
-        assert!(!old_vhost.exists(), "旧 conf.d 文件必须搬走");
-        let vhost = std::fs::read_to_string(&new_vhost).unwrap();
-        assert!(vhost.contains("root /www/sites/example.com/index;"));
-        assert!(vhost.contains("access_log /www/sites/example.com/log/access.log;"));
-        assert!(!vhost.contains("/public"));
-        assert!(!vhost.contains("/www/logs/"));
-
-        // 幂等：再跑一次不改内容、不产生副本。
-        let before = std::fs::read_to_string(&new_vhost).unwrap();
-        migrate_site_layout_at(&s, &site).unwrap();
-        assert_eq!(std::fs::read_to_string(&new_vhost).unwrap(), before);
-        assert_eq!(
-            std::fs::read_to_string(s.log_file(&site_dir, LogKind::Access)).unwrap(),
-            "access-old\n"
-        );
-        assert!(!site_dir.join("index.legacy").exists());
-        assert!(!site_dir.join("public").exists());
-    }
-
-    /// 迁移遇到已存在的目标日志时追加，不丢旧行。
-    #[test]
-    fn layout_migration_appends_to_existing_log() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = settings_at(dir.path());
-        let site_dir = s.sites_dir.join("example.com");
-        let site = site_at("example.com", &site_dir);
-        std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
-        std::fs::create_dir_all(site_log_dir(&site_dir)).unwrap();
-        std::fs::write(
-            s.legacy_log_file("example.com", LogKind::Access),
-            "legacy\n",
-        )
-        .unwrap();
-        std::fs::write(s.log_file(&site_dir, LogKind::Access), "new\n").unwrap();
-        migrate_site_layout_at(&s, &site).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(s.log_file(&site_dir, LogKind::Access)).unwrap(),
-            "new\nlegacy\n"
-        );
-        assert!(!s.legacy_log_file("example.com", LogKind::Access).exists());
     }
 
     #[test]

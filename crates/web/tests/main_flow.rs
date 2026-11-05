@@ -2338,107 +2338,9 @@ async fn sites_list_cert_column_matches_ssl_files() {
     );
 }
 
-/// 一站一目录：启动迁移必须补齐站点 conf、公共 include 与默认站投影，
-/// 且路径全部指向 `<站点目录>/{index,log,ssl,conf}`；重复执行幂等。
+/// 删除站点必须整目录删除 index/log/ssl/conf；旧路径残留不做兼容也不主动清理。
 #[tokio::test]
-async fn site_layout_migration_writes_per_site_and_default_confs() {
-    let h = harness();
-    let root = h.data_dir.join("www/sites/demo.local");
-    let s = h.state.site_settings();
-    let index = skiff_app::sites::site_index_dir(&root);
-    std::fs::create_dir_all(&index).unwrap();
-    std::fs::create_dir_all(skiff_app::sites::site_log_dir(&root)).unwrap();
-    std::fs::write(index.join("index.php"), "<?php echo 'demo';").unwrap();
-    h.state
-        .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
-        .unwrap();
-    h.state.db().set_site_default("demo.local", true).unwrap();
-
-    h.state.migrate_site_layout().unwrap();
-
-    let include = s.conf_dir.join(skiff_app::sites::SITES_INCLUDE_CONF);
-    let include_text = std::fs::read_to_string(&include).unwrap();
-    assert!(
-        include_text.contains("include ") && include_text.contains("/sites/*/conf/*.conf;"),
-        "公共入口必须用通配加载各站 conf：{include_text}"
-    );
-    let default_conf = s.conf_dir.join("00-skiff-default.conf");
-    let default_text = std::fs::read_to_string(&default_conf).unwrap();
-    let container_index = s.container_path(&skiff_app::sites::site_index_dir(&root));
-    let container_access = s.container_log(&root, skiff_app::sites::LogKind::Access);
-    assert!(
-        default_text.contains(&container_index),
-        "默认站文档根必须指向站点目录下的 index/：{default_text}"
-    );
-    assert!(
-        default_text.contains(&container_access),
-        "默认站日志必须落在站点目录 log/：{default_text}"
-    );
-    assert!(
-        !default_text.contains("/public") && !default_text.contains("/www/logs/"),
-        "默认站配置不得残留旧布局路径：{default_text}"
-    );
-
-    let vhost = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
-    let vhost_text = std::fs::read_to_string(&vhost).unwrap();
-    assert!(
-        vhost_text.contains(&container_index),
-        "站点 vhost 必须指向 index/：{vhost_text}"
-    );
-    assert!(
-        vhost_text.contains(&container_access),
-        "站点 vhost 日志必须落在 log/：{vhost_text}"
-    );
-
-    // 幂等：再跑一次不得改写内容。
-    h.state.migrate_site_layout().unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&default_conf).unwrap(),
-        default_text,
-        "迁移重复执行必须幂等"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&vhost).unwrap(),
-        vhost_text,
-        "迁移重复执行必须幂等"
-    );
-}
-
-/// 日志数据源只读 `<站点目录>/log/`，旧集中目录即使还有文件也不能被读到。
-#[tokio::test]
-async fn site_logs_read_site_directory_not_legacy_central_dir() {
-    let h = harness();
-    let root = h.data_dir.join("www/sites/demo.local");
-    let s = h.state.site_settings();
-    std::fs::create_dir_all(skiff_app::sites::site_log_dir(&root)).unwrap();
-    h.state
-        .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
-        .unwrap();
-    std::fs::write(
-        s.log_file(&root, skiff_app::sites::LogKind::Access),
-        "new-layout-line\n",
-    )
-    .unwrap();
-    std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
-    std::fs::write(
-        s.legacy_log_file("demo.local", skiff_app::sites::LogKind::Access),
-        "legacy-line\n",
-    )
-    .unwrap();
-
-    let (access, _) = h.state.site_logs("demo.local", 20, "").unwrap();
-    assert!(access.contains("new-layout-line"), "{access}");
-    assert!(
-        !access.contains("legacy-line"),
-        "日志页不得再读旧集中目录：{access}"
-    );
-}
-
-/// 删除站点必须整目录删除 index/log/ssl/conf，并清掉旧布局残留与站点记录。
-#[tokio::test]
-async fn site_delete_removes_whole_site_directory_and_legacy_residue() {
+async fn site_delete_removes_whole_site_directory_only() {
     let h = harness();
     let root = h.data_dir.join("www/sites/demo.local");
     let s = h.state.site_settings();
@@ -2459,14 +2361,10 @@ async fn site_delete_removes_whole_site_directory_and_legacy_residue() {
     std::fs::write(s.cert_file(&root), "CERT").unwrap();
     std::fs::write(s.key_file(&root), "KEY").unwrap();
     std::fs::write(s.vhost_file(&root, "demo.local"), "server {}").unwrap();
-    std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
-    std::fs::write(
-        s.legacy_log_file("demo.local", skiff_app::sites::LogKind::Access),
-        "old",
-    )
-    .unwrap();
-    std::fs::create_dir_all(s.legacy_cert_dir("demo.local")).unwrap();
-    std::fs::write(s.legacy_cert_dir("demo.local").join("cert.pem"), "old").unwrap();
+    // 旧布局残留：新代码不认识也不清理，删除站点时保持原样。
+    let legacy_logs = s.web_root.join("logs").join("nginx");
+    std::fs::create_dir_all(&legacy_logs).unwrap();
+    std::fs::write(legacy_logs.join("demo.local.access.log"), "old").unwrap();
     std::fs::create_dir_all(&s.conf_dir).unwrap();
     std::fs::write(s.conf_dir.join("demo.local.conf"), "server {}").unwrap();
 
@@ -2477,11 +2375,11 @@ async fn site_delete_removes_whole_site_directory_and_legacy_residue() {
     h.state.delete_site("demo.local").await.unwrap();
 
     assert!(!root.exists(), "整站目录必须一次性删除");
-    assert!(!s
-        .legacy_log_file("demo.local", skiff_app::sites::LogKind::Access)
-        .exists());
-    assert!(!s.legacy_cert_dir("demo.local").exists());
-    assert!(!s.conf_dir.join("demo.local.conf").exists());
+    assert!(
+        legacy_logs.join("demo.local.access.log").exists(),
+        "旧路径残留不做兼容也不主动删除"
+    );
+    assert!(s.conf_dir.join("demo.local.conf").exists());
     assert!(
         h.state.db().site_by_domain("demo.local").unwrap().is_none(),
         "站点记录必须删除"
