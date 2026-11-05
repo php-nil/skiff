@@ -664,6 +664,28 @@ pub async fn rpc(
     }
 }
 
+/// 内核统一抑制插件自带的页面级标题。
+///
+/// 插件功能页的标题（插件名 + 视图名）由父页面渲染；插件不得重复。第三方插件
+/// 若必须保留自己的标题，用 `data-plugin-title` 标记，内核在托管 HTML 时注入这条
+/// 规则把它隐藏——不做「隐藏第一个 h1」这类启发式，避免误伤区块小标题。
+const PLUGIN_TITLE_GUARD: &str =
+    "<style data-kernel-title-guard>[data-plugin-title]{display:none!important}</style>";
+
+/// 在 HTML 的 `</head>` 前注入标题抑制规则；没有 `</head>` 时前置（由浏览器归位）。
+fn inject_title_guard(html: &[u8]) -> Vec<u8> {
+    let lower = html.to_ascii_lowercase();
+    let at = lower
+        .windows(b"</head>".len())
+        .position(|w| w == b"</head>")
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(html.len() + PLUGIN_TITLE_GUARD.len());
+    out.extend_from_slice(&html[..at]);
+    out.extend_from_slice(PLUGIN_TITLE_GUARD.as_bytes());
+    out.extend_from_slice(&html[at..]);
+    out
+}
+
 /// 托管插件 UI：`/plugins/{id}/ui/*`，沙箱 iframe 加载（CSP 收紧，§4.2）。
 pub async fn plugin_ui(
     State(state): State<Arc<AppState>>,
@@ -696,8 +718,11 @@ pub async fn plugin_ui(
     if !canon.starts_with(&canon_root) || !canon.is_file() {
         return Err(AppError::NotFound("资源不存在".into()));
     }
-    let data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;
+    let mut data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;
     let mime = mime_guess::from_path(&canon).first_or_octet_stream();
+    if mime == "text/html" {
+        data = inject_title_guard(&data);
+    }
     let mut resp = Response::new(axum::body::Body::from(data));
     resp.headers_mut()
         .insert(CONTENT_TYPE, mime.to_string().parse().unwrap());
@@ -735,6 +760,31 @@ mod tests {
         // 边界：正好等于上限时原样保留
         let exact = "a".repeat(OPEN_PATH_MAX);
         assert_eq!(sanitize_open(&exact), exact);
+    }
+
+    /// 页面级标题由内核提供：残留的自标记标题必须在 iframe 内被统一隐藏。
+    #[test]
+    fn title_guard_is_injected_into_plugin_html() {
+        let html =
+            b"<html><head><title>x</title></head><body><h1 data-plugin-title>x</h1></body></html>";
+        let out = inject_title_guard(html);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("data-kernel-title-guard"));
+        assert!(text.contains("[data-plugin-title]{display:none!important}"));
+        assert!(
+            text.find("data-kernel-title-guard").unwrap() < text.find("</head>").unwrap(),
+            "规则必须在 </head> 前生效: {text}"
+        );
+    }
+
+    /// 非标准 HTML 也不能破坏文档：没有 head 时前置，内容一个字节不改。
+    #[test]
+    fn title_guard_prepends_without_head() {
+        let html = b"<body><h1 data-plugin-title>x</h1></body>";
+        let out = inject_title_guard(html);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("<style data-kernel-title-guard>"));
+        assert!(text.ends_with("<body><h1 data-plugin-title>x</h1></body>"));
     }
 
     /// 插件 UI 只能加载随包同源资源：脚本/图片/连接都不能出现外链与通配。
