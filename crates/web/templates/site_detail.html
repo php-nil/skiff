@@ -26,7 +26,7 @@
       <button class="btn" type="submit">{% if site.status == "running" %}停止{% else %}启动{% endif %}</button>
     </form>
     <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/delete" class="inline"
-          data-confirm="删除站点 {{ site.domain }}？将删除 nginx vhost 与站点目录 {{ site.root_dir }}，不可撤销。确认继续？">
+          data-confirm="删除站点 {{ site.domain }}？将删除整站目录 {{ site.root_dir }}（含 index/log/ssl/conf），不可撤销。确认继续？">
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
       <button class="btn danger" type="submit">删除站点</button>
     </form>
@@ -53,7 +53,8 @@
   <div class="kv">
     <div><span class="muted">主域名</span><span class="mono">{{ site.domain }}</span></div>
     <div><span class="muted">别名</span><span class="mono">{% if site.aliases.len() > 0 %}{{ site.aliases_text }}{% else %}无{% endif %}</span></div>
-    <div><span class="muted">根目录</span><span class="mono wrap">{{ site.root_dir }}</span></div>
+    <div><span class="muted">站点目录</span><span class="mono wrap">{{ site.root_dir }}</span></div>
+    <div><span class="muted">文档根</span><span class="mono wrap">{{ site.index_dir }}</span></div>
     <div><span class="muted">PHP 版本</span><span class="mono">{{ site.php_version }}</span></div>
     <div><span class="muted">状态</span><span>{{ site.status_label }}</span></div>
     <div><span class="muted">默认站点</span><span>{% if site.is_default %}是{% else %}否{% endif %}</span></div>
@@ -63,7 +64,7 @@
 </section>
 <section class="panel">
   <h2>下一步</h2>
-  <p class="muted">在「配置文件」页可直接编辑 vhost 并保存重载；「日志」页支持关键字过滤与时间倒序；「目录」页可只读浏览站点根。</p>
+  <p class="muted">在「配置文件」页可直接编辑 vhost 并保存重载；「日志」页支持关键字过滤与时间倒序；「目录」页可只读浏览文档根 <span class="mono">index/</span>（log/ 与 ssl/ 不开放浏览）。</p>
   <div class="row">
     <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=config">编辑配置文件</a>
     <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir">浏览目录</a>
@@ -111,10 +112,10 @@
 </section>
 {% else if tab == "dir" %}
 <section class="panel">
-  <h2>站点目录（只读）</h2>
+  <h2>文档根 index/（只读）</h2>
   <div class="dir-head">
     <a class="btn small" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir{% if !dir.at_root %}&amp;path={{ dir.parent_url }}{% endif %}">{% if dir.at_root %}根目录{% else %}上一级{% endif %}</a>
-    <span class="crumb">{{ site.root_dir }}{% if !dir.rel.is_empty() %}/{{ dir.rel }}{% endif %}</span>
+    <span class="crumb">{{ site.index_dir }}{% if !dir.rel.is_empty() %}/{{ dir.rel }}{% endif %}</span>
   </div>
   {% if dir.entries.is_empty() %}
   <div class="empty">

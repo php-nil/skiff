@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub struct Cli {
     pub config: Option<PathBuf>,
     pub dev: bool,
+    /// 首启新管理员强制首次登录改密（默认关闭，仅对新建管理员生效）。
+    pub require_initial_password_change: bool,
     pub command: Command,
 }
 
@@ -89,12 +91,15 @@ Skiff（轻舟）· 极简 Linux 服务器管理面板
 全局选项:
   --config <path>           配置文件路径（默认 /etc/skiff/config.toml）
   --dev                     loopback 明文开发模式（等价 allow_insecure_http = true）
+  --require-initial-password-change
+                            新管理员首登强制改密（默认关闭；已有管理员不受影响）
   -h, --help                显示帮助
 ";
 
 pub fn parse(args: Vec<String>) -> Result<Cli, String> {
     let mut config = None;
     let mut dev = false;
+    let mut require_initial_password_change = false;
     let mut i = 0;
     let mut positional: Vec<String> = Vec::new();
     let mut yes = false;
@@ -114,6 +119,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
                 config = Some(PathBuf::from(args.get(i).ok_or("--config 缺少参数")?));
             }
             "--dev" => dev = true,
+            "--require-initial-password-change" => require_initial_password_change = true,
             "--yes" | "-y" => yes = true,
             "--delete-data" => delete_data = true,
             "--allow-unsigned" => allow_unsigned = true,
@@ -150,6 +156,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
         return Ok(Cli {
             config,
             dev,
+            require_initial_password_change,
             command: Command::Serve,
         });
     }
@@ -233,6 +240,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
     Ok(Cli {
         config,
         dev,
+        require_initial_password_change,
         command,
     })
 }
@@ -249,6 +257,13 @@ mod tests {
     fn default_is_serve() {
         let c = parse(args(&[])).unwrap();
         assert!(matches!(c.command, Command::Serve));
+        assert!(!c.require_initial_password_change, "默认不强制首登改密");
+    }
+
+    #[test]
+    fn require_initial_password_change_flag_is_parsed() {
+        let c = parse(args(&["--require-initial-password-change", "serve"])).unwrap();
+        assert!(c.require_initial_password_change);
     }
 
     #[test]

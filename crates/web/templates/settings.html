@@ -5,6 +5,7 @@
 {% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if force_change %}<div class="banner warn">首次登录必须修改口令；修改前其他页面会被强制跳转到这里。</div>{% endif %}
+{% if initial_admin_pending && !force_change %}<div class="alert ok">建议尽快修改初始口令：当前口令仍保存在数据目录的 <code>initial-admin.txt</code>，修改成功后该文件会自动删除。</div>{% endif %}
 
 <section class="panel" id="password">
   <h2>口令</h2>

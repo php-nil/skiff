@@ -19,7 +19,7 @@ pub struct Site {
     pub updated_at: i64,
     /// 默认站点标记：库是唯一状态来源，vhost 文件只是它的投影。
     pub is_default: bool,
-    /// 是否启用 443（证书文件在 `/www/certs/<域名>`）。
+    /// 是否启用 443（证书文件在 `/www/sites/<域名>/ssl/`）。
     pub https: bool,
     /// 是否把 80 强制跳转到 443。
     pub force_https: bool,

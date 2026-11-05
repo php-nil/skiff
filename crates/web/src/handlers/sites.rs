@@ -1,6 +1,7 @@
 //! 内核「网站」页面：站点列表、运行环境、环境设置、日志与操作。
 
 use std::collections::HashMap;
+use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -41,6 +42,10 @@ fn env_view(env: &SiteEnvStatus) -> SiteEnvView {
 fn site_view(s: &Site, aliases: Vec<String>, cert_ready: bool) -> SiteView {
     SiteView {
         domain: s.domain.clone(),
+        // 站点目录本身（整站备份单元）与文档根都展示出来，避免把 `index/` 说成整站。
+        index_dir: skiff_app::sites::site_index_dir(FsPath::new(&s.root_dir))
+            .display()
+            .to_string(),
         root_dir: s.root_dir.clone(),
         php_version: s.php_version.clone(),
         status: s.status.clone(),
@@ -102,8 +107,8 @@ pub async fn list(
     let views: Vec<SiteView> = sites
         .iter()
         .map(|s| {
-            let ready = cert_settings.cert_file(&s.domain).is_file()
-                && cert_settings.key_file(&s.domain).is_file();
+            let ready = cert_settings.cert_file(FsPath::new(&s.root_dir)).is_file()
+                && cert_settings.key_file(FsPath::new(&s.root_dir)).is_file();
             site_view(s, state.site_aliases(&s.domain), ready)
         })
         .filter(|v| {
@@ -746,6 +751,15 @@ pub async fn logs(
 ) -> Result<Response, AppError> {
     let keyword = q.get("q").cloned().unwrap_or_default();
     let (access, error_log) = state.site_logs(&domain, 200, &keyword).map_err(map_err)?;
+    let log_dir = state
+        .db()
+        .site_by_domain(&domain)?
+        .map(|s| {
+            skiff_app::sites::site_log_dir(FsPath::new(&s.root_dir))
+                .display()
+                .to_string()
+        })
+        .unwrap_or_default();
     let notice = if q.contains_key("created") {
         "站点已创建；下面是站点探针首次访问日志（若为空，请用访问入口打开一次）。"
     } else {
@@ -754,6 +768,7 @@ pub async fn logs(
     handlers::render(SiteLogsPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
         domain,
+        log_dir,
         access_log: access,
         error_log,
         keyword,

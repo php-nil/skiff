@@ -32,6 +32,8 @@ pub struct FileConfig {
     pub authorized_roots: Option<Vec<PathBuf>>,
     pub external_url: Option<String>,
     pub login_concurrency: Option<usize>,
+    /// 首启管理员是否强制首次登录改密。默认 false（初始口令可直接使用）。
+    pub require_initial_password_change: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +55,9 @@ pub struct Config {
     pub authorized_roots: Vec<PathBuf>,
     pub external_url: Option<String>,
     pub login_concurrency: usize,
+    /// 首启管理员是否强制首次登录改密。默认 false，可用配置/环境变量/CLI 显式开启。
+    /// 只影响**新建**管理员；已有账号一律不动。
+    pub require_initial_password_change: bool,
     /// 由 main 计算：无 TLS 的 loopback 开发模式
     pub dev_http: bool,
     /// 由 main 计算：非 loopback 明文，但显式确认了「可信反代已终止 TLS」
@@ -130,6 +135,11 @@ impl Config {
             "SKIFF_ALLOW_REDUCED_SANDBOX",
             file.allow_reduced_sandbox.unwrap_or(false),
         );
+        // 默认关闭：初始口令可直接登录。需要「首登强制改密」时显式开启。
+        let require_initial_password_change = bool_env(
+            "SKIFF_REQUIRE_INITIAL_PASSWORD_CHANGE",
+            file.require_initial_password_change.unwrap_or(false),
+        );
 
         let trusted_proxies_raw: Vec<String> = env_str("SKIFF_TRUSTED_PROXIES")
             .map(|s| {
@@ -181,6 +191,7 @@ impl Config {
             authorized_roots,
             external_url,
             login_concurrency,
+            require_initial_password_change,
             dev_http: false,
             plaintext_behind_proxy: false,
         })
@@ -327,6 +338,7 @@ mod tests {
             authorized_roots: vec![],
             external_url: None,
             login_concurrency: 2,
+            require_initial_password_change: false,
             dev_http: false,
             plaintext_behind_proxy: false,
         };
@@ -355,6 +367,7 @@ mod tests {
             authorized_roots: vec![],
             external_url: None,
             login_concurrency: 2,
+            require_initial_password_change: false,
             dev_http: false,
             plaintext_behind_proxy: false,
         };
@@ -387,6 +400,19 @@ mod tests {
             .to_string();
         assert!(e.contains("not-a-cidr"), "{e}");
         assert!(parse_trusted_proxies(&["172.18.0.0/16".into()]).is_ok());
+    }
+
+    #[test]
+    fn require_initial_password_change_defaults_off_and_can_be_enabled() {
+        // 默认关闭：初始口令可直接登录，不强制首登改密。
+        let c = Config::load(None, true).unwrap();
+        assert!(!c.require_initial_password_change);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "require_initial_password_change = true\n").unwrap();
+        let c = Config::load(Some(path), true).unwrap();
+        assert!(c.require_initial_password_change, "配置显式开启后应生效");
     }
 
     #[test]

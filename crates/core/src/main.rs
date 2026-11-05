@@ -43,6 +43,7 @@ fn run() -> Result<ExitCode> {
     let cli::Cli {
         config: config_path,
         dev,
+        require_initial_password_change,
         command,
     } = parsed;
 
@@ -122,12 +123,18 @@ fn run() -> Result<ExitCode> {
             commands::backup(&cfg, out)?;
             Ok(ExitCode::SUCCESS)
         }
-        cli::Command::Serve => serve(config_path, dev),
+        cli::Command::Serve => serve(config_path, dev, require_initial_password_change),
     }
 }
 
-fn serve(config_path: Option<std::path::PathBuf>, dev: bool) -> Result<ExitCode> {
+fn serve(
+    config_path: Option<std::path::PathBuf>,
+    dev: bool,
+    require_initial_password_change: bool,
+) -> Result<ExitCode> {
     let mut cfg = config::Config::load(config_path, dev)?;
+    // CLI 显式开启优先；配置/环境变量在 Config::load 里已解析。
+    cfg.require_initial_password_change |= require_initial_password_change;
     cfg.validate()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -169,9 +176,14 @@ fn serve(config_path: Option<std::path::PathBuf>, dev: bool) -> Result<ExitCode>
         }
         if let Some(fr) = &boot.first_run {
             println!(
-                "  初始口令  : {}（用户 {}，首次登录后强制改密）",
+                "  初始口令  : {}（用户 {}，{}）",
                 fr.password_path.display(),
-                fr.username
+                fr.username,
+                if cfg.require_initial_password_change {
+                    "首次登录后强制改密"
+                } else {
+                    "可直接登录，建议尽快修改口令"
+                }
             );
         }
         if !state.docker().available() {

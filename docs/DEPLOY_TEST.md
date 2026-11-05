@@ -223,13 +223,22 @@ Skiff 已启动
   安全入口  : /a1b2c3d4
   配置      : /etc/skiff/config.toml
   登录地址  : http://127.0.0.1:18080/a1b2c3d4/login
-  初始口令  : /www/skiff/initial-admin.txt（用户 admin，首次登录后强制改密）
+  初始口令  : /www/skiff/initial-admin.txt（用户 admin，可直接登录；建议尽快修改口令）
 ```
 
 `grep` 关键字是「安全入口」：`journalctl -u skiff --no-pager | grep 安全入口`。
 监听写成 `0.0.0.0` 时日志里的地址不能直接点，换成真实 IP/域名访问。
 
-初始口令在 `/www/skiff/initial-admin.txt`（0600），首登强制改密，改密成功后该文件自动删除。安全入口前缀首启随机生成并持久化到库（`settings.security.entry_prefix`）；**非该前缀的路径返回 404**（不是 403）。
+初始口令在 `/www/skiff/initial-admin.txt`（0600），**默认不强制首登改密**：登录后直接进入概览，可直接使用面板；仅显示非阻塞的「建议修改口令」提示。改密成功后该文件自动删除。安全入口前缀首启随机生成并持久化到库（`settings.security.entry_prefix`）；**非该前缀的路径返回 404**（不是 403）。
+
+需要恢复「首登强制改密」时显式开启（**只对新建管理员生效；已有账号一律不改口令、不改标志**）：
+
+```toml
+# /etc/skiff/config.toml
+require_initial_password_change = true
+```
+
+等价方式：环境变量 `SKIFF_REQUIRE_INITIAL_PASSWORD_CHANGE=1`，或启动参数 `--require-initial-password-change`。重装/升级时 `bootstrap` 只在空库创建管理员，已有 `admin` 的口令哈希与 `must_change_password` 保持原值。
 
 ### 2.4 打开 TLS（对外前必做）
 
@@ -573,12 +582,16 @@ systemctl daemon-reload && systemctl restart skiff
 
 ### 2.12 网站 vhost：默认站与兜底站语义（2026-11-04 实测）
 
-生成物（均落在 `conf_dir`，默认 `/www/nginx/conf.d/`）：
+生成物分两类：**内核公共配置**落在 `conf_dir`（默认 `/www/nginx/conf.d/`），**各站 vhost** 落在站点自己的 `conf/`。
 
 | 文件 | 何时存在 | 关键配置 |
 | --- | --- | --- |
-| `00-skiff-fallback.conf` | **始终存在** | `listen 80; server_name skiff-fallback; return 404;` |
-| `00-skiff-default.conf` | **仅当设置了默认站点** | `listen 80 default_server; server_name _;` + 站点 root |
+| `/www/nginx/conf.d/00-skiff-fallback.conf` | **始终存在** | `listen 80; server_name skiff-fallback; return 404;` |
+| `/www/nginx/conf.d/00-skiff-default.conf` | **仅当设置了默认站点** | `listen 80 default_server; server_name _;` + 站点 root |
+| `/www/nginx/conf.d/10-skiff-sites.conf` | **始终存在** | `include /www/sites/*/conf/*.conf;`（`*.conf` 不匹配 `.conf.disabled`） |
+| `/www/sites/<域名>/conf/<域名>.conf` | 每站一个 | `root /www/sites/<域名>/index;`、`access_log` 与 `error_log` 指向 `/www/sites/<域名>/log/...`、`ssl_certificate` 指向 `/www/sites/<域名>/ssl/cert.pem` |
+
+站点树是「一站一目录”：`index/`（文档根）、`log/`（`access.log`/`error.log`）、`ssl/`（`cert.pem`/`key.pem`）、`conf/`（vhost）。备份单个站点目录即备份整站。旧布局（根目录直接放站点文件、日志在 `/www/logs/nginx/`、证书在 `/www/certs/<域名>/`、conf 在 `/www/nginx/conf.d/`）由启动时的幂等迁移改写；旧目录清空后删除，若仍有其他文件则保留不误删。
 
 未知 Host / 裸 IP 访问分两种状态，**不要混为一谈**：
 
@@ -590,7 +603,7 @@ systemctl daemon-reload && systemctl restart skiff
 
 ### 2.13 站点 HTTPS（2026-11-04 已实测）
 
-一句话：证书按站点落 `/www/certs/<域名>/{cert.pem,key.pem}`，vhost 追加 `listen 443 ssl`，
+一句话：证书按站点落 `/www/sites/<域名>/ssl/{cert.pem,key.pem}`，vhost（`/www/sites/<域名>/conf/<域名>.conf`）追加 `listen 443 ssl`，
 强制跳转把 80 块换成 `return 301 https://$host$request_uri;`；所有改动先写盘、再
 `nginx -t`，通过才 reload，失败按文件快照与库开关回滚。
 
@@ -607,8 +620,8 @@ systemctl daemon-reload && systemctl restart skiff
 # 生成自签 + 启用
 curl -sk https://10.10.15.4/ -o /dev/null -w '%{http_code}\n'      # 200
 grep -o 'PHP Version 8.5.12' <响应体>                               # 命中
-openssl x509 -in /www/certs/demo.local/cert.pem -noout -subject -ext subjectAltName
-stat -c '%a' /www/certs/demo.local/key.pem                          # 600
+openssl x509 -in /www/sites/demo.local/ssl/cert.pem -noout -subject -ext subjectAltName
+stat -c '%a' /www/sites/demo.local/ssl/key.pem                      # 600
 docker exec skiff-web-nginx nginx -t                                # syntax ok，无 warning
 
 # 强制跳转
@@ -764,7 +777,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | 编号 | 前置 | 步骤 | 预期 | 实测 | 结论 |
 |---|---|---|---|---|---|
 | B1 | 首启 | 打开非入口前缀的任意路径 | 404（不是 403） | | |
-| B2 | 首启 | 用 `initial-admin.txt` 口令登录 | 成功，强制跳转改密 | | |
+| B2 | 首启 | 用 `initial-admin.txt` 口令登录 | 成功，**默认直接进入概览**（不跳 `settings?force=1`）；显式开启后才强制改密 | | |
 | B3 | B2 | 改密后 | `initial-admin.txt` 已删除；旧会话全部失效 | | |
 | B4 | 任意 | 连续 6 次错误口令 | 第 6 次被拒并提示剩余封禁秒数（5 次/5min，封 5min） | | |
 | B5 | 已登录 | 表单缺 `csrf` 或改值后提交 | 拒绝（CSRF 校验） | | |
@@ -950,7 +963,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | `GET /`（不带前缀） | `404` | 通过（入口守卫） |
 | `GET /{prefix}/`（带尾斜杠） | `307 → /{prefix}` | 通过 |
 | `GET /{prefix}/login` | `200`；下发 `skiff_login` Cookie（HttpOnly/SameSite=Strict）+ CSP 等安全头 | 通过 |
-| `POST /{prefix}/login`（正确口令） | `303 → /{prefix}/settings?force=1`，下发 `skiff_dev_session` | 通过（首登强制改密） |
+| `POST /{prefix}/login`（正确口令，默认口径） | `303 → /{prefix}`（概览），下发 `skiff_dev_session` | 通过（默认不强制改密；显式开启时才 303 → `settings?force=1`） |
 | 未登录访问 `/{prefix}/containers?a=1&b=2` | `303 → /{prefix}/login?next=%2F{prefix}%2Fcontainers%3Fa%3D1%26b%3D2` | 通过（percent-encode，不再被 HTML 转义污染） |
 | 改密后各页面 | `/{prefix}`、`/containers`、`/plugins`、`/audit` 全 `200`；容器页显示「Docker 不可用」空态 | 通过（优雅降级） |
 | `GET /api/v1/docker/containers`（无/错 token） | `401` | 通过 |
@@ -1051,7 +1064,7 @@ sh deploy/pack-release.sh
 | 页面引用 | 无坏链 | 登录页/概览/站点列表/插件详情/菜单设置抽 **33** 条同源 `src|href`，逐条 **200**；iframe src 带前缀且 **200** |
 | A 方案结构 | 落地 | 概览含内联 SVG 精灵（31 个 `<svg>`）、5 个 `data-nav-toggle`；无字符图标；CSS 含 `--nav-row-h`/`--nav-icon`，`.subnav.open` 48px |
 | 手风琴行为 | 浏览器实测通过 | caret 展开 `aria-expanded=true`；换组互斥；Escape 收起并回焦 |
-| 证书列 | 与实际证书目录一致 | `/www/certs/demo.local/` 有 `cert.pem`+`key.pem`；列表「已启用 HTTPS」1 处、「未配置」0 处 |
+| 证书列 | 与实际证书目录一致 | `/www/sites/demo.local/ssl/` 有 `cert.pem`+`key.pem`；列表「已启用 HTTPS」1 处、「未配置」0 处 |
 | 回归 | 全绿 | 站点 `https://10.10.15.4/` **200** + `PHP Version 8.5.12`；4 插件 enabled；概览/插件/菜单设置与 6 条 `/m/...` 深链均 **200** |
 | 部署态 | round5 → round6 | 二进制 sha `9b2158c9…` 9,291,368 B；备份 `20261104-214238-round6`；`/var/lib/skiff` 不存在 |
 

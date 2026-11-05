@@ -103,7 +103,7 @@ root（`id -u`=0）· systemd 为 PID 1 · 与真实时间偏差 < 30 s · 端�
 | D0 Docker 安装 | 无 Docker 时装上且 `docker info` 通；已装**不重装**；`--check-only` 退出 2 且不改动；装失败面板仍起（降级）                                                                                                                                               | Docker 轮  |
 | D1 Docker 策略 | 三层策略在 create 之前拦截；bind 源须在 `authorized_roots` 内。**无需镜像即可断言**                                                                                                                                                               | Docker 轮  |
 | D2 容器操作      | 创建/启动/日志/exec 需镜像与 registry                                                                                                                                                                                                | Docker 轮  |
-| B 认证会话       | 首登强制改密（`?force=1`）；改密后 `initial-admin.txt` 消失、旧会话失效；错误口令连击触发限流                                                                                                                                                             | 首装轮       |
+| B 认证会话       | **默认不强制首登改密**：初始口令可直接登录并落到概览；显式开启（`require_initial_password_change`/环境变量/CLI）后才 `?force=1`；改密后 `initial-admin.txt` 消失、旧会话失效；错误口令连击触发限流 | 首装轮       |
 | F 备份升级       | 升级后 DB 与插件 `data/` 保留；N-1 版本窗口可回滚                                                                                                                                                                                          | 升级轮       |
 | E 插件体系       | 装 → 列表 → 卸载保 `data`；未签名/错公钥必须被拒                                                                                                                                                                                            | 里程碑       |
 | C 传输反代       | TLS（同端口、自签已实测）、`X-Forwarded-*` 仅在 `trusted_proxies` 内采信；HSTS **未实现**（代码无下发）                                                                                                                                                                          | TLS 已测（2026-11-03）；反代正向采信待单独轮   |
@@ -117,7 +117,15 @@ root（`id -u`=0）· systemd 为 PID 1 · 与真实时间偏差 < 30 s · 端�
 accept.sh 之外的项（fs 能力面、插件安装/卸载/降权、会话失效、限流、迭代包自检）只能手工跑，结论记入
 [TEST_LEDGER.md](TEST_LEDGER.md)：**只写未闭环项，PASS 即删**。
 
-> 一轮只能跑**一次** B 组：改密会消耗 `initial-admin.txt`，重跑 B2 必然失败。要再验一次就重装（`rm -rf /www/skiff` 后跑 `install.sh`，约 1 s）。
+### 5.2.1 测试期口令约定（2026-11-05 起）
+
+- **默认不强制首登改密**：`initial-admin.txt` 里的初始口令可直接登录并进入概览，面板只显示非阻塞的「建议修改口令」提示。
+- 需要复验强制流程时，在 `/etc/skiff/config.toml` 写 `require_initial_password_change = true`（或 `SKIFF_REQUIRE_INITIAL_PASSWORD_CHANGE=1` / `--require-initial-password-change`），重启服务后**仅对新建管理员生效**。
+- 测试机 `10.10.15.4` 的当前 admin 口令固定写入 `/root/iter/admin-pw.txt`（0600）。重置/轮换口令后必须同步更新该文件；验收结论以「用该文件口令登录后落到概览」为准。
+- **重装/升级不得覆盖已有 admin 口令与 `must_change_password`**：只有空库才生成新管理员；已有账号一律不改哈希、不改标志。因此升级后可直接用 `admin-pw.txt` 登录，不再需要再改一次密码。
+- 测试期需要临时放开强制改密时，只改当前账号标志（`UPDATE users SET must_change_password=0 WHERE username='admin'` 或反之），不得清库、不得重装、不得删用户数据。
+
+> 旧口径（强制改密）下，一轮只能跑**一次** B 组：改密会消耗 `initial-admin.txt`，重跑 B2 必然失败。要再验一次就重装（`rm -rf /www/skiff` 后跑 `install.sh`，约 1 s）。默认口径下 B2 可重复登录；只有主动改密（B3）后才会消耗该文件。
 > `B4` 登录限流会把 admin 锁 5 分钟，只有首装轮末尾建议开 `--with-rate-limit`。
 
 ## 6. 已知问题

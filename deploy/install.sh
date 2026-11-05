@@ -118,12 +118,12 @@ chmod 0711 "$DATA_DIR/plugins"
 chmod 0700 "$DATA_DIR/backup"
 log "数据根 $DATA_DIR（0711 root，可穿越不可列）"
 
-# 站点寄宿布局：站点、vhost、日志、证书、PHP socket 都对容器内进程可读（0755）。
-mkdir -p "$WEB_ROOT/sites" "$WEB_ROOT/nginx/conf.d" "$WEB_ROOT/logs/nginx" \
-         "$WEB_ROOT/certs" "$WEB_ROOT/php" "$WEB_ROOT/skiff/waf/rules"
-chmod 0755 "$WEB_ROOT" "$WEB_ROOT/sites" "$WEB_ROOT/nginx" "$WEB_ROOT/nginx/conf.d" \
-           "$WEB_ROOT/logs" "$WEB_ROOT/logs/nginx" "$WEB_ROOT/certs" "$WEB_ROOT/php"
-log "站点寄宿根 $WEB_ROOT（sites/nginx/logs/certs/php）"
+# 站点寄宿布局：公共 vhost 目录与 PHP socket 对容器内进程可读（0755）。
+# 每个站点自己的 index/log/ssl/conf 建在 $WEB_ROOT/sites/<域名>/ 内，建站时创建。
+mkdir -p "$WEB_ROOT/sites" "$WEB_ROOT/nginx/conf.d" \
+         "$WEB_ROOT/php" "$WEB_ROOT/skiff/waf/rules"
+chmod 0755 "$WEB_ROOT" "$WEB_ROOT/sites" "$WEB_ROOT/nginx" "$WEB_ROOT/nginx/conf.d" "$WEB_ROOT/php"
+log "站点寄宿根 $WEB_ROOT（sites/<域名>/{index,log,ssl,conf}，公共配置 nginx/conf.d）"
 
 # 配置文件里写死 data_dir/web_root：示例配置默认值就是 /www/skiff + /www，
 # 自定义 --datadir/--webroot 时同步追加（环境变量优先级更高，但落盘更直观）。
@@ -318,7 +318,7 @@ echo "────────────────────────�
 echo "安装完成。下一步："
 echo "  1) 初始管理员口令："
 echo "       cat $DATA_DIR/initial-admin.txt"
-echo "     （首登强制改密，改密成功后该文件自动删除）"
+echo "     （初始口令可直接登录；建议尽快在面板「设置 → 口令」修改，改密成功后该文件自动删除）"
 echo "  2) 安全入口前缀写在启动日志里："
 echo "       journalctl -u skiff -n 30 --no-pager | grep -i 入口"
 echo "     也可直接从数据库读取 settings.entry_prefix。"

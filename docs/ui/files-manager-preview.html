@@ -1,0 +1,1606 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文件管理 · 交互预览</title>
+<!--
+  静态预览：零外链、零构建，双击即开（file:// 也能用）。
+  数据全部在页面内模拟，不代表真实装机内容；真实实现见 plugins/files/ui/。
+  目标：先把「现代文件管理器」的信息层级与键盘/鼠标路径定下来，再落真代码。
+-->
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0b0d11;
+  --bg-soft: #0f1319;
+  --panel: #121722;
+  --panel-2: #161d29;
+  --text: #d7dee8;
+  --muted: #8a97a8;
+  --line: #252d3b;
+  --line-soft: #1b2230;
+  --accent: #2dd4bf;
+  --accent-soft: rgba(45, 212, 191, .13);
+  --hover: #151b26;
+  --sel: rgba(45, 212, 191, .14);
+  --sel-line: rgba(45, 212, 191, .45);
+  --danger: #ff7b72;
+  --warn: #f0b429;
+  --bad-bg: rgba(255, 123, 114, .1);
+  --btn: #1b2230;
+  --btn-hover: #232c3c;
+  --shadow: 0 16px 48px rgba(0, 0, 0, .45);
+  --row-h: 34px;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f7;
+  --bg-soft: #fff;
+  --panel: #fff;
+  --panel-2: #f7f8fa;
+  --text: #101828;
+  --muted: #667085;
+  --line: #d8dde5;
+  --line-soft: #eceef2;
+  --accent: #0f766e;
+  --accent-soft: rgba(15, 118, 110, .1);
+  --hover: #f2f4f7;
+  --sel: #e7f4f1;
+  --sel-line: rgba(15, 118, 110, .45);
+  --danger: #b42318;
+  --warn: #b54708;
+  --bad-bg: #fef3f2;
+  --btn: #fff;
+  --btn-hover: #f2f4f7;
+  --shadow: 0 10px 32px rgba(16, 24, 40, .16);
+}
+* { box-sizing: border-box; }
+/* 关键：作者样式里的 display:flex 会盖掉 [hidden] 的 UA display:none，
+   空态/错误态/横幅必须显式让位，否则会一直盖在列表上。 */
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; }
+.svg-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.ico { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
+       stroke-linecap: round; stroke-linejoin: round; }
+.ico.lg { width: 20px; height: 20px; }
+
+.app { display: grid; grid-template-columns: 236px minmax(0, 1fr); height: 100vh; }
+
+/* ---------- 左侧：快捷入口 + 目录树 ---------- */
+.side { display: flex; flex-direction: column; min-height: 0; background: var(--bg-soft);
+        border-right: 1px solid var(--line); }
+.side-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; }
+.side-head .title { font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.side-head .badge { margin-left: auto; font-size: 11px; color: var(--muted); border: 1px solid var(--line);
+                    border-radius: 999px; padding: 1px 7px; }
+.side-scroll { flex: 1; min-height: 0; overflow: auto; padding: 2px 8px 12px; scrollbar-width: thin; }
+.side-section + .side-section { margin-top: 14px; }
+.side-title { padding: 6px 8px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.quick, .tree { list-style: none; margin: 0; padding: 0; }
+.quick-item, .tree-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px;
+                         padding: 3px 8px; border: 0; border-radius: 6px; background: transparent;
+                         text-align: left; cursor: pointer; color: var(--text); }
+.quick-item:hover, .tree-row:hover { background: var(--hover); }
+.quick-item.active, .tree-row.active { background: var(--accent-soft); color: var(--accent); }
+.quick-item .name, .tree-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-item .path { display: block; font-size: 11px; color: var(--muted); overflow: hidden;
+                    text-overflow: ellipsis; white-space: nowrap; }
+.quick-item.active .path { color: var(--accent); opacity: .8; }
+.tree-group { list-style: none; margin: 0; padding: 0; }
+.tree-row .caret { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center;
+                   border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; padding: 0; }
+.tree-row .caret:hover { background: var(--line); color: var(--text); }
+.tree-row .caret .ico { width: 12px; height: 12px; transition: transform .12s ease; }
+.tree-row[data-open="1"] > .caret .ico { transform: rotate(90deg); }
+.tree-children { padding-left: 14px; }
+.side-foot { border-top: 1px solid var(--line); padding: 10px 14px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.side-foot b { color: var(--text); font-weight: 500; }
+
+/* ---------- 主区 ---------- */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.crumbs-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line);
+              background: var(--bg-soft); min-height: 46px; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px;
+            border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted);
+            cursor: pointer; padding: 0 8px; }
+.icon-btn:hover { background: var(--hover); color: var(--text); border-color: var(--line); }
+.icon-btn[disabled] { opacity: .4; cursor: default; }
+.icon-btn[disabled]:hover { background: transparent; border-color: transparent; }
+.crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; overflow: hidden; }
+.crumb { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 7px; border: 0;
+         border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
+         max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb:hover { background: var(--hover); color: var(--text); }
+.crumb.last { color: var(--text); font-weight: 500; }
+.crumb .ico { color: var(--accent); }
+.crumb-sep { color: var(--line); flex: none; }
+.spacer { flex: 1; }
+
+.toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 6px;
+       border: 1px solid var(--line); background: var(--btn); color: var(--text); cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--btn-hover); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #04211d; font-weight: 600; }
+html[data-theme="light"] .btn.primary { color: #fff; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { background: var(--hover); color: var(--text); }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.btn[disabled] { opacity: .45; cursor: default; }
+.btn[disabled]:hover { background: var(--btn); }
+.filter { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px;
+          border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); min-width: 190px; }
+.filter:focus-within { border-color: var(--accent); color: var(--text); }
+.filter input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; }
+.filter input::placeholder { color: var(--muted); }
+
+.banner { display: flex; align-items: flex-start; gap: 8px; margin: 10px 12px 0; padding: 9px 11px;
+          border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); }
+.banner.bad { border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: var(--bad-bg); }
+.banner.warn { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.banner .ico { margin-top: 1px; }
+.banner.bad .ico { color: var(--danger); }
+.banner.warn .ico { color: var(--warn); }
+.banner .body { flex: 1; min-width: 0; }
+.banner .body b { font-weight: 600; }
+.banner .sub { color: var(--muted); font-size: 12px; }
+
+.list-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; margin: 10px 12px 0;
+             border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+.list-head, .row { display: grid; grid-template-columns: minmax(0, 1fr) 96px 148px; align-items: center; }
+.list-head { height: 32px; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--muted);
+             font-size: 11px; letter-spacing: .05em; background: var(--panel-2); user-select: none; }
+.list-head .cell { padding: 0 6px; }
+.list-head .size, .row .size { text-align: right; }
+.list-head .time, .row .time { text-align: right; }
+.list { flex: 1; min-height: 0; overflow: auto; outline: none; scrollbar-width: thin; }
+.list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.row { height: var(--row-h); padding: 0 10px; border-bottom: 1px solid var(--line-soft); cursor: default; user-select: none; }
+.row:last-child { border-bottom: 0; }
+.row:hover { background: var(--hover); }
+.row.active { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+.row.selected { background: var(--sel); }
+.row.selected.active { background: var(--sel); box-shadow: inset 2px 0 0 var(--sel-line); }
+.row .cell { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 6px; }
+.row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ico { color: var(--muted); }
+.row.folder .ico { color: var(--accent); }
+.row .size, .row .time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.row .rename-input { width: 100%; height: 24px; padding: 0 6px; border: 1px solid var(--accent);
+                     border-radius: 4px; background: var(--bg); color: var(--text); font: inherit; outline: none; }
+.row.loading { color: var(--muted); }
+
+.empty, .error-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                        gap: 8px; color: var(--muted); padding: 30px 20px; text-align: center; }
+.empty .ico, .error-state .ico { width: 42px; height: 42px; color: var(--line); stroke-width: 1.2; }
+.error-state .ico { color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.empty b, .error-state b { color: var(--text); font-size: 14px; font-weight: 600; }
+.error-state .detail { max-width: 560px; font-size: 12px; }
+.error-state .actions { display: flex; gap: 8px; margin-top: 6px; }
+
+.status { display: flex; align-items: center; gap: 12px; height: 30px; padding: 0 14px; margin-top: 8px;
+          border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; }
+.status .sep-dot { color: var(--line); }
+.status .limit { margin-left: auto; }
+
+/* ---------- 右键菜单 ---------- */
+.ctx { position: fixed; z-index: 40; min-width: 176px; padding: 5px; border: 1px solid var(--line);
+       border-radius: 9px; background: var(--panel); box-shadow: var(--shadow); }
+.ctx[hidden] { display: none; }
+.ctx-item { display: flex; align-items: center; gap: 9px; width: 100%; height: 31px; padding: 0 10px;
+            border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.ctx-item:hover { background: var(--hover); }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item[disabled] { opacity: .4; cursor: default; }
+.ctx-item[disabled]:hover { background: transparent; }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+
+/* ---------- 对话框 ---------- */
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text);
+         padding: 0; box-shadow: var(--shadow); max-width: 92vw; }
+dialog::backdrop { background: rgba(5, 8, 12, .58); backdrop-filter: blur(2px); }
+html[data-theme="light"] dialog::backdrop { background: rgba(16, 24, 40, .32); }
+.dlg { width: 420px; }
+.dlg-head { display: flex; align-items: center; gap: 9px; padding: 14px 16px 10px; font-size: 14px; font-weight: 600; }
+.dlg-body { padding: 2px 16px 14px; color: var(--muted); font-size: 12px; }
+.dlg-body p { margin: 0 0 10px; }
+.dlg-body .field { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.dlg-body input[type=text] { width: 100%; height: 32px; padding: 0 9px; border: 1px solid var(--line);
+                             border-radius: 6px; background: var(--bg-soft); color: var(--text); font: inherit; outline: none; }
+.dlg-body input[type=text]:focus { border-color: var(--accent); }
+.dlg-body .err { color: var(--danger); font-size: 12px; min-height: 16px; }
+.dlg-body ul { margin: 4px 0 0; padding-left: 18px; max-height: 160px; overflow: auto; }
+.dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line);
+            background: var(--panel-2); }
+.dlg-foot .btn { min-width: 70px; justify-content: center; }
+
+/* ---------- 编辑器 ---------- */
+.editor-dialog { width: min(1080px, 94vw); height: min(86vh, 860px); max-height: 92vh; display: flex; flex-direction: column; }
+.ed-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.ed-head .file-name { font-weight: 600; font-size: 13px; }
+.ed-head .file-path { font-size: 11px; color: var(--muted); max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dirty { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--warn);
+         border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 999px; padding: 1px 8px; }
+.dirty[hidden] { display: none; }
+.dirty .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+.ed-body { flex: 1; min-height: 0; display: flex; background: var(--bg-soft); }
+.gutter { width: 52px; flex: none; overflow: hidden; border-right: 1px solid var(--line);
+          background: var(--panel-2); color: var(--muted); text-align: right; user-select: none; }
+.gutter-inner { padding: 12px 9px 12px 0; font: 12px/20px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+.gutter-inner div { height: 20px; }
+.code-wrap { position: relative; flex: 1; min-width: 0; }
+.code-hl, .code-area { position: absolute; inset: 0; margin: 0; padding: 12px 14px; border: 0;
+                       font: 12.5px/20px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+                       white-space: pre; tab-size: 4; overflow: auto; }
+.code-hl { pointer-events: none; color: var(--text); overflow: hidden; }
+.code-area { resize: none; background: transparent; color: transparent; caret-color: var(--text); outline: none; }
+.code-area::selection { background: rgba(45, 212, 191, .28); color: transparent; }
+.code-area[readonly] { caret-color: transparent; }
+.tok-com { color: var(--muted); font-style: italic; }
+.tok-str { color: #7ee787; }
+.tok-num { color: #79c0ff; }
+.tok-key { color: #ffa657; }
+html[data-theme="light"] .tok-str { color: #0a7b39; }
+html[data-theme="light"] .tok-num { color: #0550ae; }
+html[data-theme="light"] .tok-key { color: #953800; }
+.ed-foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 11px; }
+.ed-foot .spacer { flex: 1; }
+.ed-foot .warn-text { color: var(--warn); }
+
+/* ---------- toast ---------- */
+.toasts { position: fixed; right: 18px; bottom: 44px; z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.toast { display: flex; align-items: center; gap: 8px; max-width: 420px; padding: 9px 12px; border-radius: 8px;
+         border: 1px solid var(--line); background: var(--panel); box-shadow: var(--shadow); font-size: 12px; animation: toast-in .16s ease-out; }
+.toast.bad { border-color: color-mix(in srgb, var(--danger) 50%, transparent); color: var(--danger); }
+.toast.good .ico { color: var(--accent); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .side { display: none; }
+  .list-head, .row { grid-template-columns: minmax(0, 1fr) 84px; }
+  .list-head .time, .row .time { display: none; }
+  .status .limit { display: none; }
+}
+</style>
+</head>
+<body>
+<svg class="svg-sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5v11a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 19 9h-7.2a2 2 0 0 1-1.6-.8L9 6.4A2 2 0 0 0 7.4 5.6H5A1.5 1.5 0 0 0 3.5 7.1Z"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="M3.5 8v10a1.5 1.5 0 0 0 1.5 1.5h13.6a1.5 1.5 0 0 0 1.4-1l1.9-6.2a1 1 0 0 0-1-1.3H10a2 2 0 0 0-1.9 1.4l-.5 1.6"/><path d="M3.5 8V6.1A1.5 1.5 0 0 1 5 4.6h2.4a2 2 0 0 1 1.6.8l1.2 1.7a2 2 0 0 0 1.6.8H17"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z"/><path d="M13 3.5v4a1 1 0 0 0 1 1h4"/></symbol>
+  <symbol id="i-file-code" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z"/><path d="M13 3.5v4a1 1 0 0 0 1 1h4"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z"/><path d="M13 3.5v4a1 1 0 0 0 1 1h4"/><path d="M8.5 12.5h7M8.5 16h7M8.5 19h4"/></symbol>
+  <symbol id="i-file-archive" viewBox="0 0 24 24"><path d="M6 3.5h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z"/><path d="M13 3.5v4a1 1 0 0 0 1 1h4"/><path d="M10 4.5v2M10 8v2M10 11.5v2M8.5 15h4v5h-4Z"/></symbol>
+  <symbol id="i-caret" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V6M6 12l6-6 6 6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/></symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3.5 7.5v11a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 19 9h-7.2a2 2 0 0 1-1.6-.8L9 6.4A2 2 0 0 0 7.4 5.6H5A1.5 1.5 0 0 0 3.5 7.1Z"/><path d="M12 11.5v5M9.5 14h5"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m13.5 5.5 3 3"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3.5h11l3 3v14H5Z"/><path d="M8 3.5v5h7v-5M8 20.5v-6h8v6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.01"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5 21 19H3Z"/><path d="M12 9v4.5M12 16.5v.01"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="1.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+  <symbol id="i-arrow-r" viewBox="0 0 24 24"><path d="M4 12h16M14 6l6 6-6 6"/></symbol>
+</svg>
+
+<div class="app" data-files-app>
+  <!-- 左侧 -->
+  <aside class="side" aria-label="目录导航">
+    <div class="side-head">
+      <svg class="ico lg" style="color: var(--accent)"><use href="#i-folder"/></svg>
+      <span class="title">文件管理</span>
+      <span class="badge">预览</span>
+    </div>
+    <div class="side-scroll">
+      <section class="side-section">
+        <div class="side-title">快捷入口</div>
+        <ul id="quick" class="quick"></ul>
+      </section>
+      <section class="side-section">
+        <div class="side-title">目录树</div>
+        <ul id="tree" class="tree"></ul>
+      </section>
+    </div>
+    <div class="side-foot">
+      只能访问安装时勾选的 <b>path:</b> 授权根。<br>
+      单次读写上限 <b>256 KiB</b>，保存为全量覆盖。
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <div class="crumbs-bar">
+      <button id="up" class="icon-btn" title="上级目录（Backspace）" aria-label="上级目录">
+        <svg class="ico"><use href="#i-up"/></svg>
+      </button>
+      <nav id="crumbs" class="crumbs" aria-label="当前路径"></nav>
+      <button id="theme" class="icon-btn" title="切换主题" aria-label="切换到浅色主题">
+        <svg class="ico" id="theme-icon"><use href="#i-sun"/></svg><span id="theme-label">浅色</span>
+      </button>
+    </div>
+
+    <div class="toolbar" role="toolbar" aria-label="文件操作">
+      <button id="refresh" class="btn ghost"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+      <button id="mkdir" class="btn"><svg class="ico"><use href="#i-folder-plus"/></svg>新建文件夹</button>
+      <button id="rename" class="btn" disabled><svg class="ico"><use href="#i-pencil"/></svg>重命名</button>
+      <button id="remove" class="btn danger" disabled><svg class="ico"><use href="#i-trash"/></svg>删除</button>
+      <span class="spacer"></span>
+      <label class="filter">
+        <svg class="ico"><use href="#i-search"/></svg>
+        <input id="filter" type="search" placeholder="筛选当前目录" aria-label="筛选当前目录" autocomplete="off">
+      </label>
+      <button id="jump" class="btn ghost"><svg class="ico"><use href="#i-arrow-r"/></svg>跳转</button>
+    </div>
+
+    <div id="banner" class="banner bad" hidden></div>
+
+    <div class="list-wrap">
+      <div class="list-head" role="presentation">
+        <div class="cell">名称</div>
+        <div class="cell size">大小</div>
+        <div class="cell time">修改时间</div>
+      </div>
+      <div id="list" class="list" role="listbox" aria-label="文件列表" aria-multiselectable="true" tabindex="0"></div>
+      <div id="empty" class="empty" hidden>
+        <svg class="ico"><use href="#i-folder-open"/></svg>
+        <b>此目录为空</b>
+        <span>还没有任何文件或文件夹</span>
+        <button id="empty-mkdir" class="btn" style="margin-top: 4px"><svg class="ico"><use href="#i-folder-plus"/></svg>新建文件夹</button>
+      </div>
+      <div id="error-state" class="error-state" hidden>
+        <svg class="ico"><use href="#i-lock"/></svg>
+        <b id="error-title">无权访问该路径</b>
+        <span class="detail" id="error-detail"></span>
+        <div class="actions">
+          <button id="error-back" class="btn primary">返回授权根</button>
+          <button id="error-retry" class="btn">重试</button>
+        </div>
+      </div>
+    </div>
+
+    <footer class="status">
+      <span id="status-dir">-</span>
+      <span class="sep-dot">·</span>
+      <span id="status-count"></span>
+      <span id="status-sel"></span>
+      <span class="spacer"></span>
+      <span class="limit">单次读写上限 256 KiB · 保存为全量覆盖（无并发保护）</span>
+    </footer>
+  </main>
+</div>
+
+<div id="ctx" class="ctx" role="menu" hidden>
+  <button class="ctx-item" data-act="open" role="menuitem"><svg class="ico"><use href="#i-arrow-r"/></svg><span>打开</span></button>
+  <button class="ctx-item" data-act="rename" role="menuitem"><svg class="ico"><use href="#i-pencil"/></svg><span>重命名</span></button>
+  <div class="ctx-sep"></div>
+  <button class="ctx-item" data-act="mkdir" role="menuitem"><svg class="ico"><use href="#i-folder-plus"/></svg><span>新建文件夹</span></button>
+  <button class="ctx-item" data-act="refresh" role="menuitem"><svg class="ico"><use href="#i-refresh"/></svg><span>刷新</span></button>
+  <div class="ctx-sep"></div>
+  <button class="ctx-item danger" data-act="remove" role="menuitem"><svg class="ico"><use href="#i-trash"/></svg><span>删除</span></button>
+</div>
+
+<dialog id="dlg-new" class="dlg">
+  <form method="dialog" id="new-form">
+    <div class="dlg-head"><svg class="ico" style="color: var(--accent)"><use href="#i-folder-plus"/></svg><span>新建文件夹</span></div>
+    <div class="dlg-body">
+      <p>在 <code id="new-parent">-</code> 下创建新目录。</p>
+      <div class="field">
+        <input type="text" id="new-name" placeholder="例如 backups" autocomplete="off" spellcheck="false">
+        <div class="err" id="new-err"></div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="btn" data-close>取消</button>
+      <button type="submit" class="btn primary" id="new-ok">创建</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-jump" class="dlg">
+  <form method="dialog" id="jump-form">
+    <div class="dlg-head"><svg class="ico"><use href="#i-arrow-r"/></svg><span>跳转路径</span></div>
+    <div class="dlg-body">
+      <p>只能跳到已授权的目录；越界会被内核拒绝。</p>
+      <div class="field">
+        <input type="text" id="jump-path" placeholder="/var/www" autocomplete="off" spellcheck="false">
+        <div class="err" id="jump-err"></div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="btn" data-close>取消</button>
+      <button type="submit" class="btn primary">跳转</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-confirm" class="dlg">
+  <div class="dlg-head"><svg class="ico" id="confirm-icon" style="color: var(--warn)"><use href="#i-warn"/></svg><span id="confirm-title">确认操作</span></div>
+  <div class="dlg-body"><p id="confirm-text"></p></div>
+  <div class="dlg-foot">
+    <button type="button" class="btn" id="confirm-cancel">取消</button>
+    <button type="button" class="btn primary" id="confirm-ok">确定</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-editor" class="editor-dialog">
+  <div class="ed-head">
+    <svg class="ico lg" style="color: var(--accent)"><use href="#i-file-code"/></svg>
+    <div style="min-width: 0">
+      <div class="file-name" id="ed-name">-</div>
+      <div class="file-path" id="ed-path">-</div>
+    </div>
+    <span class="dirty" id="ed-dirty" hidden><span class="dot"></span>未保存</span>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="ed-close"><svg class="ico"><use href="#i-close"/></svg>关闭</button>
+    <button class="btn primary" id="ed-save"><svg class="ico"><use href="#i-save"/></svg>保存</button>
+  </div>
+  <div id="ed-banner" class="banner warn" hidden style="margin: 10px 14px 0"></div>
+  <div class="ed-body">
+    <div class="gutter" aria-hidden="true"><div class="gutter-inner" id="gutter"></div></div>
+    <div class="code-wrap">
+      <pre class="code-hl" id="code-hl" aria-hidden="true"></pre>
+      <textarea class="code-area" id="code-area" spellcheck="false" wrap="off" aria-label="文件内容"></textarea>
+    </div>
+  </div>
+  <div class="ed-foot">
+    <span id="ed-stat">0 行</span>
+    <span class="sep-dot">·</span>
+    <span>UTF-8 文本编辑</span>
+    <span class="spacer"></span>
+    <span class="warn-text" id="ed-limits"></span>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+  /* ---------------- 工具 ---------------- */
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  var KB = 1024, MB = KB * 1024, GB = MB * 1024, LIMIT = 256 * KB;
+  function bytes(n) {
+    n = Number(n || 0);
+    if (n < KB) return n + " B";
+    if (n < MB) return (n / KB).toFixed(1) + " KiB";
+    if (n < GB) return (n / MB).toFixed(1) + " MiB";
+    return (n / GB).toFixed(1) + " GiB";
+  }
+  function when(ts) {
+    if (!ts) return "—";
+    var d = new Date(Number(ts) * 1000);
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " +
+      p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function join(dir, name) { return (dir.endsWith("/") ? dir : dir + "/") + name; }
+  function dirOf(path) { var i = path.lastIndexOf("/"); return i > 0 ? path.slice(0, i) : "/"; }
+  function baseName(path) { var i = path.lastIndexOf("/"); return i >= 0 ? path.slice(i + 1) : path; }
+  function badName(name) {
+    return !name || name === "." || name === ".." || name.indexOf("/") >= 0 ||
+      name.indexOf("\\") >= 0 || name.indexOf("..") >= 0;
+  }
+  function iconFor(item) {
+    if (item.dir) return "#i-folder";
+    var ext = String(item.name).toLowerCase().split(".").pop();
+    if (["js", "ts", "json", "rs", "py", "sh", "php", "yml", "yaml", "html", "css", "conf", "toml"].indexOf(ext) >= 0) return "#i-file-code";
+    if (["gz", "tgz", "zip", "tar", "bz2", "xz", "7z"].indexOf(ext) >= 0) return "#i-file-archive";
+    if (["md", "txt", "log", "env", "ini"].indexOf(ext) >= 0) return "#i-file-text";
+    return "#i-file";
+  }
+  function b64encode(text) {
+    var arr = new TextEncoder().encode(text);
+    var bin = "";
+    for (var i = 0; i < arr.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, arr.subarray(i, i + 0x8000));
+    }
+    return btoa(bin);
+  }
+  function b64decode(b64) {
+    var bin = atob(b64 || "");
+    var arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new TextDecoder("utf-8").decode(arr);
+  }
+
+  function toast(text, kind) {
+    var box = $("toasts");
+    var el = document.createElement("div");
+    el.className = "toast " + (kind || "good");
+    var ico = kind === "bad" ? "#i-warn" : "#i-check";
+    el.innerHTML = '<svg class="ico"><use href="' + ico + '"/></svg><span>' + esc(text) + "</span>";
+    box.appendChild(el);
+    setTimeout(function () { el.remove(); }, 3200);
+  }
+
+  /* ---------------- 模拟文件系统（仅预览） ---------------- */
+  /* 真实实现走内核 fs 能力面：只有 list/read/write/remove/rename/mkdir，
+     单次读写 256 KiB，写入是全量覆盖。预览的接口形状与之一致。 */
+  var T = Date.UTC(2026, 10, 4, 9, 20, 0) / 1000;
+  var HTML_BODY = [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '  <meta charset="utf-8">',
+    "  <title>示例站点</title>",
+    '  <link rel="stylesheet" href="assets/app.css">',
+    "</head>",
+    "<body>",
+    '  <div class="hero">',
+    "    <h1>Hello, Skiff</h1>",
+    "    <p>这是一份用于演示编辑器的示例文件。</p>",
+    "  </div>",
+    "</body>",
+    "</html>"
+  ].join("\n");
+  var JSON_BODY = [
+    "{",
+    '  "name": "site-a",',
+    '  "port": 8080,',
+    '  "root": "/var/www/site-a",',
+    '  "gzip": true,',
+    '  "headers": { "X-Frame-Options": "SAMEORIGIN" }',
+    "}"
+  ].join("\n");
+  var CSS_BODY = [
+    ":root { --accent: #2dd4bf; }",
+    "body {",
+    "  margin: 0;",
+    "  font-family: system-ui, sans-serif;",
+    "  background: #0b0d11;",
+    "  color: #d7dee8;",
+    "}",
+    ".hero { padding: 48px; }",
+    ".hero h1 { font-size: 36px; }"
+  ].join("\n");
+  var NGINX_BODY = [
+    "server {",
+    "    listen 80;",
+    "    server_name example.local;",
+    "",
+    "    root /var/www/site-a;",
+    "    index index.html index.htm;",
+    "",
+    "    location / {",
+    "        try_files $uri $uri/ =404;",
+    "    }",
+    "}"
+  ].join("\n");
+  var NGINX_SITE = [
+    "server {",
+    "    listen 8080;",
+    "    server_name api.local;",
+    "    location /api/ {",
+    "        proxy_pass http://127.0.0.1:9000/;",
+    "        proxy_set_header Host $host;",
+    "    }",
+    "}"
+  ].join("\n");
+  var SH_BODY = [
+    "#!/usr/bin/env sh",
+    "set -eu",
+    "",
+    "cd /var/www/site-a",
+    'echo "deploy: $(date -Iseconds)"',
+    "tar -czf /var/backups/site-a.tgz .",
+    'echo "done"'
+  ].join("\n");
+  var MD_BODY = [
+    "# site-a",
+    "",
+    "静态站点根目录。",
+    "",
+    "- 修改 `index.html` 后无需重载",
+    "- `access.log` 超过 256 KiB，只能只读浏览第一页",
+    "- 本插件没有上传与下载打包能力"
+  ].join("\n");
+  var PHP_BODY = [
+    "<?php",
+    "declare(strict_types=1);",
+    "",
+    "$host = $_SERVER['HTTP_HOST'] ?? 'unknown';",
+    'echo "<h1>" . htmlspecialchars($host) . "</h1>";'
+  ].join("\n");
+  var COMPOSE_BODY = [
+    "services:",
+    "  web:",
+    "    image: nginx:1.27-alpine",
+    "    ports:",
+    '      - "8080:80"',
+    "    volumes:",
+    "      - ./site:/usr/share/nginx/html:ro",
+    "    restart: unless-stopped"
+  ].join("\n");
+  var ENV_BODY = [
+    "# 仅示例",
+    "APP_ENV=production",
+    "APP_PORT=8080",
+    "LOG_LEVEL=info"
+  ].join("\n");
+  var RUST_BODY = [
+    "use std::env;",
+    "",
+    "fn main() {",
+    '    let port = env::var("APP_PORT").unwrap_or_else(|_| "8080".into());',
+    '    println!("listening on {}", port);',
+    "}",
+    "",
+    "// 预览里的语法着色是简化版；真实实现用随包分发的 highlight.js。"
+  ].join("\n");
+
+  function D(name, children) { return { name: name, dir: true, mtime: T, children: children || [] }; }
+  function F(name, size, body, extra) {
+    var node = { name: name, dir: false, size: size, mtime: T, body: body || "" };
+    if (extra) { for (var k in extra) node[k] = extra[k]; }
+    return node;
+  }
+  var MOCK = D("", [
+    D("var", [
+      D("www", [
+        D("site-a", [
+          F("index.html", 4120, HTML_BODY),
+          F("config.json", 890, JSON_BODY),
+          D("assets", [F("logo.svg", 2600, "<!-- 示例图标 -->"), F("app.css", 5400, CSS_BODY)])
+        ]),
+        D("site-b", [F("index.php", 2210, PHP_BODY), F("nginx.conf", 1320, NGINX_BODY)]),
+        D("empty", []),
+        F("README.md", 1280, MD_BODY),
+        F("deploy.sh", 2200, SH_BODY),
+        F("access.log", 3 * MB, HTML_BODY, {
+          preview: "# 示例：文件 3.0 MiB，超过单次 256 KiB 上限\n127.0.0.1 - - [04/Nov/2026:09:01:22] \"GET / HTTP/1.1\" 200\n127.0.0.1 - - [04/Nov/2026:09:01:23] \"GET /app.css HTTP/1.1\" 200\n# …… 仅显示第一页，禁止保存"
+        })
+      ])
+    ]),
+    D("etc", [
+      D("nginx", [
+        F("nginx.conf", 1800, NGINX_BODY),
+        D("conf.d", [F("default.conf", 1200, NGINX_SITE), F("api.conf", 980, NGINX_SITE)]),
+        D("snippets", [F("gzip.conf", 420, "gzip on;\ngzip_types text/css application/json;")])
+      ])
+    ]),
+    D("srv", [
+      D("app", [
+        F("docker-compose.yml", 3200, COMPOSE_BODY),
+        F(".env", 640, ENV_BODY),
+        D("src", [F("main.rs", 5400, RUST_BODY), F("lib.rs", 2100, RUST_BODY)])
+      ])
+    ])
+  ]);
+  var ROOTS = ["/var/www", "/etc/nginx", "/srv/app"];
+
+  function underRoot(path) {
+    for (var i = 0; i < ROOTS.length; i++) {
+      if (path === ROOTS[i] || path.indexOf(ROOTS[i] + "/") === 0) return true;
+    }
+    return false;
+  }
+  function nodeAt(path) {
+    var parts = String(path || "").split("/").filter(Boolean);
+    var n = MOCK;
+    for (var i = 0; i < parts.length; i++) {
+      if (!n.children) return null;
+      var next = null;
+      for (var j = 0; j < n.children.length; j++) {
+        if (n.children[j].name === parts[i]) { next = n.children[j]; break; }
+      }
+      if (!next) return null;
+      if (i < parts.length - 1 && !next.dir) return null;
+      n = next;
+    }
+    return n;
+  }
+  function later(value) {
+    return new Promise(function (resolve) { setTimeout(function () { resolve(value); }, 90); });
+  }
+  function fail(msg) {
+    return new Promise(function (_, reject) { setTimeout(function () { reject(new Error(msg)); }, 90); });
+  }
+
+  var API = {
+    roots: function () { return later(ROOTS.slice()); },
+    list: function (path) {
+      path = path || ROOTS[0];
+      if (!underRoot(path)) return fail("EACCES 该路径不在授权根内，已拒绝访问");
+      var n = nodeAt(path);
+      if (!n) return fail("ENOENT 目录不存在");
+      if (!n.dir) return fail("ENOTDIR 目标不是目录");
+      var items = (n.children || []).map(function (c) {
+        return { name: c.name, dir: !!c.dir, size: c.dir ? 0 : c.size, mtime: c.mtime };
+      });
+      return later({
+        path: path,
+        parent: ROOTS.indexOf(path) >= 0 ? null : dirOf(path),
+        roots: ROOTS.slice(),
+        items: items
+      });
+    },
+    read: function (path) {
+      var n = nodeAt(path);
+      if (!underRoot(path)) return fail("EACCES 该路径不在授权根内，已拒绝访问");
+      if (!n) return fail("ENOENT 文件不存在");
+      if (n.dir) return fail("EISDIR 目标是目录");
+      var readOnly = n.size > LIMIT;
+      var text = readOnly ? (n.preview || "") : n.body;
+      return later({ path: path, size: n.size, eof: !readOnly, b64: b64encode(text) });
+    },
+    write: function (path, text) {
+      if (!underRoot(path)) return fail("EACCES 该路径不在授权根内，已拒绝访问");
+      var n = nodeAt(path);
+      if (!n || n.dir) return fail("ENOENT 目标文件不存在");
+      n.body = text;
+      n.size = new TextEncoder().encode(text).length;
+      n.mtime = Date.now() / 1000;
+      return later({ path: path, size: n.size });
+    },
+    mkdir: function (path) {
+      if (!underRoot(path)) return fail("EACCES 该路径不在授权根内，已拒绝访问");
+      var parent = nodeAt(dirOf(path));
+      if (!parent || !parent.dir) return fail("ENOTDIR 父目录不存在");
+      var name = baseName(path);
+      if (parent.children.some(function (c) { return c.name === name; })) return fail("EEXIST 同名条目已存在");
+      parent.children.push(D(name, []));
+      return later({ path: path });
+    },
+    rename: function (from, to) {
+      if (!underRoot(from) || !underRoot(to)) return fail("EACCES 该路径不在授权根内，已拒绝访问");
+      var srcParent = nodeAt(dirOf(from));
+      var n = nodeAt(from);
+      if (!srcParent || !n) return fail("ENOENT 源条目不存在");
+      var name = baseName(to);
+      if (srcParent.children.some(function (c) { return c.name === name && c !== n; })) return fail("EEXIST 同名条目已存在");
+      n.name = name;
+      n.mtime = Date.now() / 1000;
+      return later({ path: to });
+    },
+    remove: function (path) {
+      if (!underRoot(path)) return fail("EACCES 该路径不在授权根内，已拒绝访问");
+      var parent = nodeAt(dirOf(path));
+      var name = baseName(path);
+      if (!parent || !parent.children) return fail("ENOENT 条目不存在");
+      var idx = -1;
+      for (var i = 0; i < parent.children.length; i++) {
+        if (parent.children[i].name === name) { idx = i; break; }
+      }
+      if (idx < 0) return fail("ENOENT 条目不存在");
+      parent.children.splice(idx, 1);
+      return later({ path: path });
+    }
+  };
+
+  /* ---------------- 界面状态 ---------------- */
+  var state = {
+    cwd: "",
+    roots: ROOTS.slice(),
+    items: [],
+    filter: "",
+    selection: {},
+    anchor: -1,
+    active: -1,
+    tree: {},
+    expanded: {},
+    editor: null
+  };
+  function selectedPaths() { return Object.keys(state.selection); }
+  function selectedCount() { return selectedPaths().length; }
+  function visibleItems() {
+    if (!state.filter) return state.items;
+    var f = state.filter.toLowerCase();
+    return state.items.filter(function (it) { return it.name.toLowerCase().indexOf(f) >= 0; });
+  }
+  function itemAt(path) {
+    for (var i = 0; i < state.items.length; i++) if (join(state.cwd, state.items[i].name) === path) return state.items[i];
+    return null;
+  }
+  function message(text, kind) {
+    toast(text, kind === "bad" ? "bad" : "good");
+  }
+  /* ---------------- 主题 ---------------- */
+  function applyTheme(theme) {
+    theme = theme === "light" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", theme);
+    var dark = theme === "dark";
+    $("theme-label").textContent = dark ? "浅色" : "深色";
+    $("theme").setAttribute("aria-label", dark ? "切换到浅色主题" : "切换到深色主题");
+    $("theme-icon").innerHTML = '<use href="' + (dark ? "#i-sun" : "#i-moon") + '"/>';
+  }
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== parent) return;
+    var msg = ev.data;
+    if (msg && msg.type === "skiff.theme" && (msg.theme === "light" || msg.theme === "dark")) {
+      applyTheme(msg.theme);
+    }
+  });
+
+  /* ---------------- 渲染 ---------------- */
+  function sortItems(items) {
+    return items.slice().sort(function (a, b) {
+      if (!!a.dir !== !!b.dir) return a.dir ? -1 : 1;
+      return String(a.name).localeCompare(String(b.name), "zh-Hans-CN");
+    });
+  }
+  function rootOf(path) {
+    for (var i = 0; i < state.roots.length; i++) {
+      if (path === state.roots[i] || path.indexOf(state.roots[i] + "/") === 0) return state.roots[i];
+    }
+    return null;
+  }
+  function renderCrumbs() {
+    var root = rootOf(state.cwd);
+    var parts = [];
+    if (root) {
+      parts.push({ path: root, label: baseName(root) || root });
+      var acc = root;
+      state.cwd.slice(root.length).split("/").filter(Boolean).forEach(function (seg) {
+        acc = join(acc, seg);
+        parts.push({ path: acc, label: seg });
+      });
+    } else if (state.cwd) {
+      parts.push({ path: state.cwd, label: state.cwd });
+    }
+    $("crumbs").innerHTML = parts.map(function (p, i) {
+      var last = i === parts.length - 1;
+      return (i ? '<span class="crumb-sep">/</span>' : "") +
+        '<button class="crumb' + (last ? " last" : "") + '" data-path="' + esc(p.path) +
+        '" title="' + esc(p.path) + '">' +
+        (i === 0 ? '<svg class="ico" style="width:14px;height:14px"><use href="#i-folder"/></svg>' : "") +
+        esc(p.label) + "</button>";
+    }).join("");
+  }
+  function renderStatus() {
+    $("status-dir").textContent = state.cwd || "-";
+    var dirs = state.items.filter(function (i) { return i.dir; }).length;
+    var files = state.items.length - dirs;
+    var text = state.items.length + " 项（" + dirs + " 目录 / " + files + " 文件）";
+    if (state.filter) text += "，筛选后 " + visibleItems().length + " 项";
+    $("status-count").textContent = text;
+    var n = selectedCount();
+    $("status-sel").textContent = n ? "已选 " + n + " 项" : "";
+    $("rename").disabled = n !== 1;
+    $("remove").disabled = n === 0;
+    var up = $("up");
+    up.disabled = !state.parent;
+    up.title = state.parent ? "上级目录（Backspace）→ " + state.parent : "已在授权根，不能继续向上";
+  }
+  function rowHtml(item, index) {
+    var path = join(state.cwd, item.name);
+    var sel = !!state.selection[path];
+    return '<div class="row' + (item.dir ? " folder" : "") +
+      (sel ? " selected" : "") + (index === state.active ? " active" : "") +
+      '" role="option" aria-selected="' + (sel ? "true" : "false") + '" data-index="' + index +
+      '" data-path="' + esc(path) + '" data-dir="' + (item.dir ? "1" : "0") + '">' +
+      '<div class="cell"><svg class="ico"><use href="' + iconFor(item) + '"/></svg>' +
+      '<span class="name" title="' + esc(item.name) + '">' + esc(item.name) + "</span></div>" +
+      '<div class="cell size">' + (item.dir ? "—" : bytes(item.size)) + "</div>" +
+      '<div class="cell time">' + when(item.mtime) + "</div></div>";
+  }
+  function renderList() {
+    var items = visibleItems();
+    var list = $("list");
+    $("error-state").hidden = true;
+    $("empty").hidden = !(state.items.length === 0 && !state.filter);
+    if (state.items.length === 0) {
+      list.innerHTML = "";
+    } else if (items.length === 0) {
+      list.innerHTML = '<div class="row loading" style="cursor:default;grid-template-columns:1fr">没有匹配「' + esc(state.filter) + '」的条目</div>';
+    } else {
+      list.innerHTML = items.map(rowHtml).join("");
+    }
+    renderStatus();
+  }
+  function renderQuick() {
+    $("quick").innerHTML = state.roots.map(function (root) {
+      var active = rootOf(state.cwd) === root;
+      return '<li><button class="quick-item' + (active ? " active" : "") + '" data-path="' + esc(root) +
+        '" title="' + esc(root) + '"><svg class="ico"><use href="#i-folder"/></svg>' +
+        '<span style="min-width:0"><span class="name">' + esc(baseName(root) || root) + "</span>" +
+        '<span class="path">' + esc(root) + "</span></span></button></li>";
+    }).join("");
+  }
+  function renderTree() {
+    function node(path, label) {
+      var exp = !!state.expanded[path];
+      var kids = state.tree[path] || [];
+      var html = '<li><div class="tree-row' + (state.cwd === path ? " active" : "") +
+        '" data-path="' + esc(path) + '" data-open="' + (exp ? "1" : "0") + '">' +
+        '<button class="caret" data-toggle-path="' + esc(path) + '" aria-expanded="' + (exp ? "true" : "false") +
+        '" aria-label="展开或收起">' + '<svg class="ico"><use href="#i-caret"/></svg></button>' +
+        '<svg class="ico"><use href="' + (exp ? "#i-folder-open" : "#i-folder") + '"/></svg>' +
+        '<span class="name" title="' + esc(path) + '">' + esc(label) + "</span></div>";
+      if (exp) {
+        html += '<ul class="tree-children">' +
+          (kids.length ? kids.map(function (k) { return node(join(path, k.name), k.name); }).join("")
+            : '<li class="tree-row" style="cursor:default;color:var(--muted)"><span class="name">（无子目录）</span></li>') +
+          "</ul>";
+      }
+      return html + "</li>";
+    }
+    $("tree").innerHTML = state.roots.map(function (root) {
+      return node(root, baseName(root) || root);
+    }).join("");
+  }
+  function setBanner(text, sub) {
+    var b = $("banner");
+    if (!text) { b.hidden = true; b.innerHTML = ""; return; }
+    b.hidden = false;
+    b.innerHTML = '<svg class="ico"><use href="#i-warn"/></svg><div class="body"><b>' + esc(text) +
+      "</b>" + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + "</div>";
+  }
+  function showLoading() {
+    $("empty").hidden = true;
+    $("error-state").hidden = true;
+    $("list").innerHTML = '<div class="row loading" style="cursor:default">读取目录中…</div>';
+  }
+  function showError(path, err) {
+    var msg = String((err && err.message) || err || "未知错误");
+    lastErrorPath = path || "";
+    state.items = [];
+    state.selection = {};
+    state.active = -1;
+    $("list").innerHTML = "";
+    $("empty").hidden = true;
+    $("error-state").hidden = false;
+    $("error-title").textContent = msg.indexOf("EACCES") >= 0 ? "无权访问该路径" : "读取目录失败";
+    $("error-detail").textContent = "请求：" + (path || "(默认目录)") + " · " + msg +
+      "。本插件只能访问安装时勾选的 path: 授权根。";
+    setBanner(msg.indexOf("EACCES") >= 0 ? "该路径不在授权根内，内核已拒绝" : "目录读取失败", msg);
+    renderCrumbs();
+    renderStatus();
+  }
+
+  /* ---------------- 导航 ---------------- */
+  var navToken = 0;
+  function revealCwd() {
+    var root = rootOf(state.cwd);
+    if (!root) return Promise.resolve();
+    var paths = [root];
+    var acc = root;
+    state.cwd.slice(root.length).split("/").filter(Boolean).forEach(function (seg) {
+      acc = join(acc, seg);
+      paths.push(acc);
+    });
+    var chain = Promise.resolve();
+    paths.slice(0, Math.max(1, paths.length - 1)).forEach(function (path) {
+      chain = chain.then(function () {
+        state.expanded[path] = true;
+        if (state.tree[path]) return;
+        return API.list(path).then(function (r) {
+          state.tree[path] = sortItems(r.items || []).filter(function (i) { return i.dir; });
+        }).catch(function () {});
+      });
+    });
+    return chain.then(renderTree);
+  }
+  function navigate(path) {
+    var token = ++navToken;
+    setBanner(null);
+    showLoading();
+    return API.list(path || "").then(function (r) {
+      if (token !== navToken) return;
+      state.cwd = r.path || path;
+      state.parent = r.parent || null;
+      state.roots = r.roots && r.roots.length ? r.roots : state.roots;
+      state.items = sortItems(r.items || []);
+      state.filter = "";
+      $("filter").value = "";
+      state.selection = {};
+      state.anchor = state.items.length ? 0 : -1;
+      state.active = state.items.length ? 0 : -1;
+      renderCrumbs();
+      renderQuick();
+      renderList();
+      renderTree();
+      $("list").focus();
+      scrollActive();
+      revealCwd();
+    }).catch(function (e) {
+      if (token !== navToken) return;
+      showError(path, e);
+    });
+  }
+  function scrollActive() {
+    var row = $("list").querySelector('.row[data-index="' + state.active + '"]');
+    if (row) row.scrollIntoView({ block: "nearest" });
+  }
+  function goUp() {
+    if (!state.parent) {
+      message("已在授权根，不能继续向上（授权之外的目录不属于本插件）", "bad");
+      return;
+    }
+    navigate(state.parent);
+  }
+
+  /* ---------------- 选择 ---------------- */
+  function applySelection() {
+    var rows = $("list").querySelectorAll(".row[data-path]");
+    Array.prototype.forEach.call(rows, function (row) {
+      var sel = !!state.selection[row.getAttribute("data-path")];
+      row.classList.toggle("selected", sel);
+      row.setAttribute("aria-selected", sel ? "true" : "false");
+      row.classList.toggle("active", Number(row.getAttribute("data-index")) === state.active);
+    });
+    renderStatus();
+  }
+  function selectIndex(index, opts) {
+    var items = visibleItems();
+    var it = items[index];
+    if (!it) return;
+    opts = opts || {};
+    var path = join(state.cwd, it.name);
+    if (opts.shift && state.anchor >= 0) {
+      var a = Math.min(state.anchor, index), b = Math.max(state.anchor, index);
+      var sel = {};
+      for (var i = a; i <= b; i++) sel[join(state.cwd, items[i].name)] = true;
+      state.selection = sel;
+      state.active = index;
+    } else if (opts.toggle) {
+      if (state.selection[path]) delete state.selection[path];
+      else state.selection[path] = true;
+      state.anchor = index;
+      state.active = index;
+    } else {
+      state.selection = {};
+      state.selection[path] = true;
+      state.anchor = index;
+      state.active = index;
+    }
+    $("list").focus();
+    applySelection();
+    scrollActive();
+  }
+  function clearSelection() {
+    state.selection = {};
+    state.active = -1;
+    applySelection();
+  }
+  function openPath(path) {
+    var item = itemAt(path);
+    if (!item) return;
+    if (item.dir) {
+      navigate(path);
+    } else {
+      openEditor(path);
+    }
+  }
+  function openSelected() {
+    var paths = selectedPaths();
+    if (!paths.length) return;
+    var active = visibleItems()[state.active];
+    var path = paths.length === 1 ? paths[0] : (active ? join(state.cwd, active.name) : paths[0]);
+    openPath(path);
+  }
+
+  /* ---------------- 列表事件 ---------------- */
+  $("list").addEventListener("mousedown", function (ev) {
+    if (ev.target.closest(".rename-input")) return;
+    var row = ev.target.closest(".row[data-path]");
+    if (row) selectIndex(Number(row.getAttribute("data-index")), {
+      toggle: ev.ctrlKey || ev.metaKey,
+      shift: ev.shiftKey
+    });
+    else clearSelection();
+  });
+  $("list").addEventListener("dblclick", function (ev) {
+    var row = ev.target.closest(".row[data-path]");
+    if (row) openPath(row.getAttribute("data-path"));
+  });
+  $("list").addEventListener("contextmenu", function (ev) {
+    var row = ev.target.closest(".row[data-path]");
+    if (!row) return;
+    ev.preventDefault();
+    var path = row.getAttribute("data-path");
+    if (!state.selection[path]) selectIndex(Number(row.getAttribute("data-index")), {});
+    showCtx(ev.clientX, ev.clientY, itemAt(path));
+  });
+  $("list").addEventListener("keydown", function (ev) {
+    var items = visibleItems();
+    var key = ev.key;
+    if ((ev.ctrlKey || ev.metaKey) && (key === "a" || key === "A")) {
+      ev.preventDefault();
+      state.selection = {};
+      items.forEach(function (it) { state.selection[join(state.cwd, it.name)] = true; });
+      state.active = items.length - 1;
+      applySelection();
+      return;
+    }
+    if (key === "ArrowDown" || key === "ArrowUp" || key === "Home" || key === "End") {
+      if (!items.length) return;
+      ev.preventDefault();
+      var next = state.active;
+      if (key === "ArrowDown") next = state.active < 0 ? 0 : Math.min(items.length - 1, state.active + 1);
+      if (key === "ArrowUp") next = state.active < 0 ? 0 : Math.max(0, state.active - 1);
+      if (key === "Home") next = 0;
+      if (key === "End") next = items.length - 1;
+      selectIndex(next, { shift: ev.shiftKey });
+      return;
+    }
+    if (key === "Enter") {
+      ev.preventDefault();
+      openSelected();
+      return;
+    }
+    if (key === "F2") {
+      ev.preventDefault();
+      if (selectedCount() === 1) startRename();
+      else message("重命名一次只能选一个条目", "bad");
+      return;
+    }
+    if (key === "Delete") {
+      ev.preventDefault();
+      if (selectedCount()) confirmRemove();
+      return;
+    }
+    if (key === "Backspace") {
+      ev.preventDefault();
+      goUp();
+      return;
+    }
+    if (key === "Escape") {
+      hideCtx();
+      clearSelection();
+      return;
+    }
+    if (key === " ") {
+      ev.preventDefault();
+      selectIndex(state.active, { toggle: true });
+    }
+  });
+
+  /* ---------------- 右键菜单 ---------------- */
+  function showCtx(x, y, item) {
+    var menu = $("ctx");
+    var n = selectedCount();
+    menu.querySelector('[data-act="open"]').disabled = n !== 1;
+    menu.querySelector('[data-act="rename"]').disabled = n !== 1;
+    menu.querySelector('[data-act="remove"]').disabled = n === 0;
+    menu.querySelector('[data-act="open"] span').textContent = item && item.dir ? "进入目录" : "编辑文件";
+    menu.hidden = false;
+    var rect = menu.getBoundingClientRect();
+    var left = Math.min(x, window.innerWidth - rect.width - 8);
+    var top = Math.min(y, window.innerHeight - rect.height - 8);
+    menu.style.left = Math.max(8, left) + "px";
+    menu.style.top = Math.max(8, top) + "px";
+  }
+  function hideCtx() { $("ctx").hidden = true; }
+  document.addEventListener("click", function (ev) {
+    if (!ev.target.closest("#ctx")) hideCtx();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") hideCtx();
+  });
+  $("ctx").addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".ctx-item");
+    if (!btn) return;
+    var act = btn.getAttribute("data-act");
+    hideCtx();
+    if (act === "open") openSelected();
+    if (act === "rename") startRename();
+    if (act === "mkdir") openNewFolder();
+    if (act === "refresh") navigate(state.cwd);
+    if (act === "remove") confirmRemove();
+  });
+  /* ---------------- 重命名（行内） ---------------- */
+  function rowFor(path) {
+    var rows = $("list").querySelectorAll(".row[data-path]");
+    var found = null;
+    Array.prototype.forEach.call(rows, function (r) {
+      if (r.getAttribute("data-path") === path) found = r;
+    });
+    return found;
+  }
+  function startRename() {
+    var paths = selectedPaths();
+    if (paths.length !== 1) {
+      message("重命名一次只能选一个条目", "bad");
+      return;
+    }
+    var path = paths[0];
+    var row = rowFor(path);
+    if (!row || row.querySelector(".rename-input")) return;
+    var name = baseName(path);
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "rename-input";
+    input.value = name;
+    input.setAttribute("aria-label", "新名称");
+    input.spellcheck = false;
+    var span = row.querySelector(".name");
+    span.replaceWith(input);
+    var dot = name.lastIndexOf(".");
+    input.focus();
+    input.setSelectionRange(0, dot > 0 ? dot : name.length);
+
+    var done = false;
+    function finish(commit) {
+      if (done) return;
+      done = true;
+      var next = input.value.trim();
+      if (!commit || next === name) {
+        renderList();
+        applySelection();
+        $("list").focus();
+        return;
+      }
+      if (badName(next)) {
+        message("名称非法：不能为空、不能包含 / 或 ..", "bad");
+        done = false;
+        input.focus();
+        return;
+      }
+      var to = join(dirOf(path), next);
+      API.rename(path, to).then(function () {
+        message("已重命名为 " + next);
+        return navigate(state.cwd).then(function () { selectByPath(to); });
+      }).catch(function (e) {
+        message("重命名失败：" + e.message, "bad");
+        done = false;
+        renderList();
+        applySelection();
+      });
+    }
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); finish(true); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); finish(false); }
+    });
+    input.addEventListener("blur", function () { finish(false); });
+    input.addEventListener("mousedown", function (ev) { ev.stopPropagation(); });
+    input.addEventListener("dblclick", function (ev) { ev.stopPropagation(); });
+  }
+  function selectByPath(path) {
+    var items = visibleItems();
+    for (var i = 0; i < items.length; i++) {
+      if (join(state.cwd, items[i].name) === path) {
+        state.selection = {};
+        state.selection[path] = true;
+        state.anchor = i;
+        state.active = i;
+        applySelection();
+        scrollActive();
+        $("list").focus();
+        return;
+      }
+    }
+  }
+
+  /* ---------------- 新建文件夹 / 跳转 / 确认 ---------------- */
+  var newParentPath = "";
+  function openNewFolder() {
+    newParentPath = state.cwd;
+    $("new-parent").textContent = state.cwd || "-";
+    $("new-name").value = "";
+    $("new-err").textContent = "";
+    $("dlg-new").showModal();
+    setTimeout(function () { $("new-name").focus(); }, 30);
+  }
+  function openJump() {
+    $("jump-path").value = state.cwd;
+    $("jump-err").textContent = "";
+    $("dlg-jump").showModal();
+    setTimeout(function () {
+      $("jump-path").focus();
+      $("jump-path").select();
+    }, 30);
+  }
+  var confirmOnOk = null;
+  function askConfirm(opts) {
+    $("confirm-title").textContent = opts.title || "确认操作";
+    $("confirm-text").innerHTML = opts.text || "";
+    $("confirm-ok").textContent = opts.okText || "确定";
+    $("confirm-ok").className = "btn " + (opts.danger ? "danger" : "primary");
+    $("confirm-icon").style.color = opts.danger ? "var(--danger)" : "var(--warn)";
+    confirmOnOk = opts.onOk || null;
+    $("dlg-confirm").showModal();
+  }
+  function confirmRemove() {
+    var paths = selectedPaths();
+    if (!paths.length) return;
+    var single = itemAt(paths[0]);
+    var text;
+    if (paths.length === 1) {
+      text = "将删除 " + (single && single.dir ? "目录（含其中全部内容）" : "文件") +
+        " <code>" + esc(paths[0]) + "</code>，此操作不可恢复。";
+    } else {
+      text = "将删除以下 " + paths.length + " 个条目（目录会连同内容一起删除），此操作不可恢复：<ul>" +
+        paths.slice(0, 8).map(function (p) { return "<li><code>" + esc(baseName(p)) + "</code></li>"; }).join("") +
+        (paths.length > 8 ? "<li>…</li>" : "") + "</ul>";
+    }
+    askConfirm({
+      title: paths.length === 1 ? "删除条目" : "删除 " + paths.length + " 个条目",
+      text: text,
+      okText: "删除",
+      danger: true,
+      onOk: function () {
+        var removed = paths.slice();
+        var chain = Promise.resolve();
+        removed.forEach(function (p) {
+          chain = chain.then(function () { return API.remove(p); });
+        });
+        chain.then(function () {
+          if (state.editor && removed.indexOf(state.editor.path) >= 0) closeEditorForce();
+          message("已删除 " + removed.length + " 项");
+          return navigate(state.cwd);
+        }).catch(function (e) {
+          message("删除失败：" + e.message, "bad");
+          navigate(state.cwd);
+        });
+      }
+    });
+  }
+
+  /* ---------------- 编辑器 ---------------- */
+  function highlight(text) {
+    var re = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#\s.*$|\/\/\s.*$|\b\d+(?:\.\d+)?\b)/gm;
+    var out = "", last = 0, m;
+    while ((m = re.exec(text))) {
+      out += esc(text.slice(last, m.index));
+      var tok = m[0];
+      var cls = "tok-num";
+      if (tok.charAt(0) === '"' || tok.charAt(0) === "'") cls = "tok-str";
+      else if (tok.charAt(0) === "#" || tok.indexOf("//") === 0) cls = "tok-com";
+      out += '<span class="' + cls + '">' + esc(tok) + "</span>";
+      last = m.index + tok.length;
+    }
+    return out + esc(text.slice(last));
+  }
+  function paintEditor() {
+    var text = $("code-area").value;
+    var lines = text.split("\n").length;
+    var gutter = $("gutter");
+    if (gutter.childElementCount !== lines) {
+      var html = "";
+      for (var i = 1; i <= lines; i++) html += "<div>" + i + "</div>";
+      gutter.innerHTML = html;
+    }
+    $("code-hl").innerHTML = highlight(text) + (text === "" || text.endsWith("\n") ? "\n" : "");
+    $("ed-stat").textContent = lines + " 行 · " + text.length + " 字符";
+    syncEditorScroll();
+  }
+  function syncEditorScroll() {
+    var ta = $("code-area");
+    $("gutter").style.transform = "translateY(-" + ta.scrollTop + "px)";
+    $("code-hl").scrollTop = ta.scrollTop;
+    $("code-hl").scrollLeft = ta.scrollLeft;
+  }
+  function updateDirty() {
+    var ed = state.editor;
+    if (!ed) return;
+    var dirty = !ed.readOnly && $("code-area").value !== ed.orig;
+    ed.dirty = dirty;
+    $("ed-dirty").hidden = !dirty;
+    $("ed-save").disabled = !!ed.readOnly;
+  }
+  function openEditor(path) {
+    API.read(path).then(function (r) {
+      var text = b64decode(r.b64);
+      var readOnly = !r.eof;
+      state.editor = { path: r.path, name: baseName(r.path), orig: text, readOnly: readOnly, size: r.size, dirty: false };
+      $("ed-name").textContent = state.editor.name;
+      $("ed-path").textContent = r.path;
+      $("ed-path").title = r.path;
+      $("code-area").value = text;
+      $("code-area").readOnly = readOnly;
+      $("ed-save").disabled = readOnly;
+      var banner = $("ed-banner");
+      if (readOnly) {
+        banner.hidden = false;
+        banner.innerHTML = '<svg class="ico"><use href="#i-warn"/></svg><div class="body"><b>文件 ' +
+          bytes(r.size) + '，超过单次 256 KiB 读取上限</b><div class="sub">这里只显示第一页，内容只读；大文件请用 SSH 或系统工具处理。</div></div>';
+        $("ed-limits").textContent = "超过 256 KiB：只读";
+      } else {
+        banner.hidden = true;
+        banner.innerHTML = "";
+        $("ed-limits").textContent = "";
+      }
+      paintEditor();
+      updateDirty();
+      if (!$("dlg-editor").open) $("dlg-editor").showModal();
+      $("code-area").focus();
+      $("code-area").setSelectionRange(0, 0);
+      $("code-area").scrollTop = 0;
+      syncEditorScroll();
+    }).catch(function (e) {
+      message("打开失败：" + e.message, "bad");
+    });
+  }
+  function closeEditorForce() {
+    state.editor = null;
+    if ($("dlg-editor").open) $("dlg-editor").close();
+  }
+  function requestCloseEditor() {
+    var ed = state.editor;
+    if (ed && ed.dirty && !ed.readOnly) {
+      askConfirm({
+        title: "放弃未保存的修改？",
+        text: "<code>" + esc(ed.name) + "</code> 有未保存的修改，关闭后这些内容会丢失。",
+        okText: "放弃修改",
+        danger: true,
+        onOk: closeEditorForce
+      });
+      return;
+    }
+    closeEditorForce();
+  }
+  function saveEditor() {
+    var ed = state.editor;
+    if (!ed) return;
+    if (ed.readOnly) {
+      message("超过 256 KiB，当前为只读，不能保存", "bad");
+      return;
+    }
+    var text = $("code-area").value;
+    API.write(ed.path, text).then(function (r) {
+      ed.orig = text;
+      ed.size = r.size;
+      updateDirty();
+      message("已保存 " + ed.name);
+      return API.list(state.cwd).then(function (res) {
+        state.items = sortItems(res.items || []);
+        renderList();
+        applySelection();
+      });
+    }).catch(function (e) {
+      message("保存失败：" + e.message, "bad");
+    });
+  }
+
+  var paintTimer = 0;
+  $("code-area").addEventListener("input", function () {
+    updateDirty();
+    if (paintTimer) clearTimeout(paintTimer);
+    paintTimer = setTimeout(paintEditor, 120);
+  });
+  $("code-area").addEventListener("scroll", syncEditorScroll);
+  $("code-area").addEventListener("keydown", function (ev) {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "s" || ev.key === "S")) {
+      ev.preventDefault();
+      saveEditor();
+      return;
+    }
+    if (ev.key === "Tab" && !ev.ctrlKey && !ev.altKey) {
+      var ta = $("code-area");
+      if (ta.readOnly) return;
+      ev.preventDefault();
+      ta.setRangeText("  ", ta.selectionStart, ta.selectionEnd, "end");
+      updateDirty();
+      paintEditor();
+    }
+  });
+
+  /* ---------------- 事件接线 ---------------- */
+  $("up").addEventListener("click", goUp);
+  $("refresh").addEventListener("click", function () { navigate(state.cwd); });
+  $("mkdir").addEventListener("click", openNewFolder);
+  $("empty-mkdir").addEventListener("click", openNewFolder);
+  $("rename").addEventListener("click", startRename);
+  $("remove").addEventListener("click", confirmRemove);
+  $("jump").addEventListener("click", openJump);
+  $("theme").addEventListener("click", function () {
+    applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+  });
+  $("filter").addEventListener("input", function () {
+    state.filter = this.value.trim();
+    state.active = visibleItems().length ? 0 : -1;
+    renderList();
+  });
+  $("crumbs").addEventListener("click", function (ev) {
+    var crumb = ev.target.closest(".crumb[data-path]");
+    if (crumb) navigate(crumb.getAttribute("data-path"));
+  });
+  $("quick").addEventListener("click", function (ev) {
+    var item = ev.target.closest(".quick-item[data-path]");
+    if (item) navigate(item.getAttribute("data-path"));
+  });
+  $("tree").addEventListener("click", function (ev) {
+    var row = ev.target.closest(".tree-row[data-path]");
+    if (!row) return;
+    var path = row.getAttribute("data-path");
+    if (ev.target.closest(".caret")) {
+      ev.stopPropagation();
+      toggleTree(path);
+      return;
+    }
+    navigate(path);
+  });
+  function toggleTree(path) {
+    if (state.expanded[path]) {
+      delete state.expanded[path];
+      renderTree();
+      return;
+    }
+    API.list(path).then(function (r) {
+      state.tree[path] = sortItems(r.items || []).filter(function (i) { return i.dir; });
+      state.expanded[path] = true;
+      renderTree();
+    }).catch(function (e) {
+      message("展开失败：" + e.message, "bad");
+    });
+  }
+  var lastErrorPath = "";
+  $("error-back").addEventListener("click", function () { navigate(state.roots[0]); });
+  $("error-retry").addEventListener("click", function () { navigate(lastErrorPath); });
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-close]"), function (btn) {
+    btn.addEventListener("click", function () { btn.closest("dialog").close(); });
+  });
+  $("new-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var name = $("new-name").value.trim();
+    if (badName(name)) {
+      $("new-err").textContent = "名称非法：不能为空、不能包含 / 或 ..";
+      return;
+    }
+    var path = join(newParentPath, name);
+    API.mkdir(path).then(function () {
+      $("dlg-new").close();
+      message("已创建目录 " + name);
+      return navigate(newParentPath).then(function () { selectByPath(path); });
+    }).catch(function (e) {
+      $("new-err").textContent = e.message;
+    });
+  });
+  $("jump-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var path = $("jump-path").value.trim();
+    if (!path) {
+      $("jump-err").textContent = "请输入路径";
+      return;
+    }
+    $("dlg-jump").close();
+    lastErrorPath = path;
+    navigate(path);
+  });
+  $("confirm-cancel").addEventListener("click", function () {
+    confirmOnOk = null;
+    $("dlg-confirm").close();
+  });
+  $("confirm-ok").addEventListener("click", function () {
+    var cb = confirmOnOk;
+    confirmOnOk = null;
+    $("dlg-confirm").close();
+    if (cb) cb();
+  });
+  $("ed-close").addEventListener("click", requestCloseEditor);
+  $("ed-save").addEventListener("click", saveEditor);
+  $("dlg-editor").addEventListener("cancel", function (ev) {
+    ev.preventDefault();
+    requestCloseEditor();
+  });
+  window.addEventListener("resize", hideCtx);
+
+  /* ---------------- 启动 ---------------- */
+  applyTheme("dark");
+  $("up").disabled = true;
+  API.roots().then(function (roots) {
+    state.roots = roots;
+    renderQuick();
+    var start = roots[0] || "";
+    lastErrorPath = start;
+    return navigate(start);
+    }).catch(function (e) {
+      showError("", e);
+    });
+})();
+</script>
+</body>
+</html>
