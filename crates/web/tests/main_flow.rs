@@ -2573,6 +2573,72 @@ provides = [{ method = "probe", label = "探针" }]
     );
 }
 
+/// 内核兜底：第三方插件托管 HTML 会被注入标题抑制规则，残留的
+/// `data-plugin-title` 页面标题在 iframe 内不显示（标题统一由内核提供）。
+#[tokio::test]
+async fn plugin_ui_html_gets_kernel_title_guard() {
+    let h = harness();
+    let manifest = r#"id = "com.example.title"
+name = "Title Demo"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.2"
+requires_full_sandbox = false
+[[ui]]
+label = "标题演示"
+path = "plain.html"
+[[menu]]
+id = "plain"
+parent = "tools"
+label = "标题演示"
+view = "plain"
+"#
+    .to_string();
+    seed_declared_plugin(h.state.db().as_ref(), manifest, true);
+    let ui_dir = h
+        .data_dir
+        .join("plugins/com.example.title/versions/0.1.0/ui");
+    std::fs::create_dir_all(&ui_dir).unwrap();
+    std::fs::write(
+        ui_dir.join("plain.html"),
+        "<!doctype html><html><head><title>第三方标题</title></head>\
+         <body><h1 data-plugin-title>第三方标题</h1><h2>区块小标题</h2></body></html>",
+    )
+    .unwrap();
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.title/ui/plain.html")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/html"),
+        "HTML 必须按 text/html 托管"
+    );
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("data-kernel-title-guard")
+            && html.contains("[data-plugin-title]{display:none!important}"),
+        "托管 HTML 必须注入内核标题抑制规则: {html}"
+    );
+    assert!(
+        html.contains("<h2>区块小标题</h2>"),
+        "注入不得误伤区块小标题: {html}"
+    );
+}
+
 /// 旧包兼容：只有 `[[ui]]` 的老包，默认视图 `main` 指向原有 `ui/index.html`；
 /// 未知视图 404，且不渲染标签栏。
 #[tokio::test]
@@ -3134,6 +3200,10 @@ fn d3_plugin_ui_adapts_to_theme_message() {
         assert!(
             js.contains(r#"type: "skiff.theme.request""#),
             "{name} 必须在脚本执行与 load 时向父页面索取主题"
+        );
+        assert!(
+            !html.contains("<h1") && !html.contains("data-plugin-title"),
+            "{name} 不得渲染页面级标题（标题统一由内核提供）"
         );
     }
 

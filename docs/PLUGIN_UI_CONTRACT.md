@@ -180,6 +180,15 @@ object-src 'none'; frame-ancestors 'self'
 - 切换 L3 或 `ui` 文件时父页面清空上报高度，等新页面重新上报。
 - 跨插件跳转使用 `skiff.open`，目标必须在父页面 `data-plugins` 白名单（已启用且有 UI 入口）内。
 
+### 4.1 页面级标题
+
+**页面级标题（插件名 + 视图名）由内核单一提供，插件不得渲染。** 父页面已经画好标题与 L3 标签栏，插件页内再写 `<h1>插件名 · 视图名</h1>` 只会重复。
+
+- 插件只保留**区块小标题**（`<h2>` / `<h3>`、卡片标题、表头）与功能说明文字。
+- 第三方插件如确需保留自己的页面标题，必须标记 `data-plugin-title`；内核托管 HTML 时会在 `</head>` 前注入规则 `[data-plugin-title]{display:none!important}`，在 iframe 内统一隐藏。
+- 内核只认显式标记，**不做**「隐藏第一个 h1」这类启发式，避免误伤区块小标题。
+- 该抑制由内核在 `plugin_ui` 托管层注入，覆盖所有 `.html` 资源；CSS / JS / 图片等非 HTML 资源不注入。
+
 ## 5. 旧包兼容
 
 | 旧包形态 | 新语义 |
@@ -225,9 +234,11 @@ object-src 'none'; frame-ancestors 'self'
 | U11 | 槽位 | testkit `overview.actions` 渲染，`data-slot` / nonce 正确 | 集成 |
 | U12 | 主题与 CSP | 插件 HTML/JS 含主题监听；CSP 无 `connect-src` 放行、无外链、无内联 script | 静态扫描 |
 | U13 | 停用/卸载同步 | 菜单、槽位、功能入口消失；信息页仍可访问以恢复/卸载 | 集成 |
+| U14 | 页面级标题 | 官方/测试插件 `ui/*.html` 无 `<h1>`；托管 HTML 注入 `data-kernel-title-guard`，区块小标题不受影响 | 集成/静态 |
 
 ## 8. 变更记录
 
 | 日期 | 变更 |
 |---|---|
 | 2026-11-05 | 首版：`/{p}/plugins/{id}` 信息页与 `/{p}/plugins/{id}/{view}` 功能页拆分；`view` 视图模型；旧包 `ui/index.html` 回落；新增 `com.skiff.testkit` 验收插件 |
+| 2026-11-05 | 页面级标题改由内核单一提供：清理 5 个插件页内标题；内核托管 HTML 注入 `data-plugin-title` 抑制规则 |
