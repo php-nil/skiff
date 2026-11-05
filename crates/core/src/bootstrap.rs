@@ -128,13 +128,8 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         env!("CARGO_PKG_VERSION"),
     );
 
-    // 站点「一站一目录」迁移是幂等的，启动时兜底跑一次：升级后即使还没进
-    // 「运行环境」重装，旧 public/、集中日志/证书与公共 conf.d 也已就位。
-    // 失败只告警，不阻断面板启动（安装流程里还会再跑一次并显式报错）。
-    match state.migrate_site_layout() {
-        Ok(n) => info!(sites = n, "站点目录布局已就绪（一站一目录）"),
-        Err(e) => warn!(error = %e, "站点目录布局迁移失败，运行环境安装时会重试"),
-    }
+    // 站点目录布局不做旧数据迁移：新建站点时直接创建 `{index,log,ssl,conf}`。
+    // 公共 include 由运行环境安装/启动流程写入，这里不触碰站点数据。
 
     Ok(Bootstrapped { state, first_run })
 }
