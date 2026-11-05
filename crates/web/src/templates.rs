@@ -269,6 +269,10 @@ pub struct SiteDetailPage {
     pub config_active: bool,
     pub dir: DirListingView,
     pub ssl: SiteTlsView,
+    /// PHP 站点绑定的运行环境未运行：访问会 502/503，页面给出回环境页入口。
+    pub runtime_down: bool,
+    pub runtime_alert: String,
+    pub runtime_env_href: String,
     pub error: String,
     pub notice: String,
 }
@@ -282,18 +286,8 @@ pub struct SiteEnvView {
     pub installed: bool,
     pub ready: bool,
     pub port: u16,
-    pub port_message: String,
     pub nginx_image: String,
     pub php_image: String,
-    pub waf_mode: String,
-    pub waf_rules_dir: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct InstallStepView {
-    pub name: String,
-    pub state: String,
-    pub detail: String,
 }
 
 #[derive(Template)]
@@ -313,6 +307,9 @@ pub struct SitesPage {
 pub struct RuntimeRow {
     pub id: String,
     pub kind_label: String,
+    /// 本地实例名（目录/容器名的唯一来源）。
+    pub name: String,
+    pub container_name: String,
     pub version: String,
     pub image: String,
     pub state_label: String,
@@ -326,6 +323,9 @@ pub struct RuntimeRow {
     pub endpoint: String,
     pub implemented: bool,
     pub is_default: bool,
+    /// 已安装（容器存在）且为 PHP：可启停/重启。
+    pub actionable: bool,
+    pub running: bool,
     pub detail_href: String,
     /// 同一底层容器的 Docker 页深链（双向跳转）。
     pub docker_href: String,
@@ -402,13 +402,26 @@ pub struct SiteEnvPage {
     pub ctx: PageCtx,
     pub env: SiteEnvView,
     pub runtimes: Vec<RuntimeRow>,
-    pub steps: Vec<InstallStepView>,
-    pub running: bool,
-    pub done: bool,
-    pub install_error: String,
     pub can_admin: bool,
-    pub registry_mirror: String,
-    pub image_prefix: String,
+    /// 运行环境页新建实例表单回显（避免再次输入）。
+    pub new_name: String,
+    pub new_version: String,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Template)]
+#[template(path = "nginx.html")]
+pub struct NginxPage {
+    pub ctx: PageCtx,
+    pub status: skiff_app::nginx::NginxStatusView,
+    pub config: skiff_app::nginx::NginxConfigView,
+    pub logs: skiff_app::nginx::NginxLogView,
+    pub modules: skiff_app::nginx::NginxModuleView,
+    /// status / config / logs / modules
+    pub tab: String,
+    pub keyword: String,
+    pub can_admin: bool,
     pub error: String,
     pub notice: String,
 }

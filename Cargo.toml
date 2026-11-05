@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/store", "crates/identity", "crates/docker", "crates/plugin", "crates/pkgfmt", "crates/wire", "crates/model", "crates/policy", "crates/compose", "crates/sdk", "crates/app", "crates/web", "crates/cron", "xtask"]
+members = ["crates/core", "crates/store", "crates/identity", "crates/docker", "crates/plugin", "crates/pkgfmt", "crates/wire", "crates/model", "crates/policy", "crates/compose", "crates/sdk", "crates/app", "crates/web", "crates/cron", "crates/sched", "crates/fs", "xtask"]
 # 官方插件是第二个 workspace（见 plugins/README.md），不并进根 workspace：
 # 否则根三关会把插件构建一起拖进来，且发布物与开发产物同 target 互相顶掉。
 exclude = ["plugins"]

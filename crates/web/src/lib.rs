@@ -164,6 +164,20 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/install"),
             post(handlers::sites::env_install),
         )
+        .route(
+            &format!("/{p}/sites/env/add"),
+            post(handlers::sites::env_add),
+        )
+        // ---- 内核「网站 → Nginx」：状态 / 配置 / 日志 / 模块 ----
+        .route(&format!("/{p}/sites/nginx"), get(handlers::nginx::index))
+        .route(
+            &format!("/{p}/sites/nginx/config/main"),
+            post(handlers::nginx::save_main),
+        )
+        .route(
+            &format!("/{p}/sites/nginx/config/params"),
+            post(handlers::nginx::save_params),
+        )
         // 运行环境详情与操作；同时提供 `/{p}/runtimes/...` 规范入口。
         .route(
             &format!("/{p}/sites/env/{{id}}"),

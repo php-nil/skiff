@@ -31,7 +31,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub const CURRENT_SCHEMA_VERSION: i64 = 8;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -133,6 +133,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V7)?;
             conn.execute_batch("PRAGMA user_version = 7")?;
             info!(from = version, to = 7, "schema 迁移完成");
+        }
+        if version < 8 {
+            conn.execute_batch(SCHEMA_V8)?;
+            conn.execute_batch("PRAGMA user_version = 8")?;
+            info!(from = version, to = 8, "schema 迁移完成");
         }
         Ok(())
     }
@@ -399,6 +404,47 @@ VALUES('php-8.5', 'php', '8.5', 'php:8.5-fpm-alpine', '', 'running', 'stopped',
   CAST(strftime('%s','now') AS INTEGER), CAST(strftime('%s','now') AS INTEGER));
 "#;
 
+/// v8：运行环境引入实例名 `name`（路径与容器名的唯一来源）。
+///
+/// `name` 与 `version` 解耦：`version` 表示镜像/上游版本，`name` 是本地实例标识。
+/// 同一 kind 内 `name` 唯一；**不再限制同 kind 同版本**（`php-8.5-a` + `8.5` 合法）。
+/// 旧库按 `id` 回填（内置 `php-8.5` 即 `name=php-8.5`），并把它的 socket 收敛到
+/// `/www/runtime/php/<name>/php-fpm.sock`。
+const SCHEMA_V8: &str = r#"
+PRAGMA foreign_keys=OFF;
+CREATE TABLE site_runtimes_v8 (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('php','node','go')),
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  image TEXT NOT NULL,
+  image_digest TEXT NOT NULL DEFAULT '',
+  desired_state TEXT NOT NULL DEFAULT 'running'
+    CHECK(desired_state IN ('running','stopped')),
+  last_status TEXT NOT NULL DEFAULT 'stopped'
+    CHECK(last_status IN ('installing','running','stopped','error')),
+  socket_path TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(kind, name)
+);
+INSERT INTO site_runtimes_v8(id, kind, name, version, image, image_digest, desired_state,
+  last_status, socket_path, is_default, config_json, created_at, updated_at)
+SELECT id, kind, id, version, image, image_digest, desired_state, last_status,
+  CASE WHEN kind = 'php' AND socket_path IS NOT NULL
+       THEN '/www/runtime/php/' || id || '/php-fpm.sock'
+       ELSE socket_path END,
+  is_default, config_json, created_at, updated_at
+FROM site_runtimes;
+DROP TABLE site_runtimes;
+ALTER TABLE site_runtimes_v8 RENAME TO site_runtimes;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_default
+  ON site_runtimes(kind) WHERE is_default = 1;
+PRAGMA foreign_keys=ON;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,9 +461,9 @@ mod tests {
         assert_eq!(v, CURRENT_SCHEMA_VERSION);
     }
 
-    /// v7 直接落新结构：旧站点表被重建，同时种入 P1 唯一的 PHP 运行环境。
+    /// 迁移链落新结构：旧站点表被重建，同时种入内置 PHP 运行环境（name 即标识）。
     #[test]
-    fn schema_v7_rebuilds_sites_and_seeds_php_runtime() {
+    fn migrations_rebuild_sites_and_seed_php_runtime() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skiff.db");
         {
@@ -441,12 +487,16 @@ mod tests {
             .conn()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, CURRENT_SCHEMA_VERSION);
         assert!(db.site_by_domain("legacy.local").unwrap().is_none());
         let seeded = db.runtime_by_id("php-8.5").unwrap().unwrap();
         assert_eq!(seeded.kind, "php");
+        assert_eq!(seeded.name, "php-8.5");
         assert!(seeded.is_default);
-        assert_eq!(seeded.socket_path.as_deref(), Some("/www/php/php-fpm.sock"));
+        assert_eq!(
+            seeded.socket_path.as_deref(),
+            Some("/www/runtime/php/php-8.5/php-fpm.sock")
+        );
     }
 
     #[test]

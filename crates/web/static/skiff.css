@@ -1695,3 +1695,74 @@ body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); 
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- 运行环境详情抽屉（原生 dialog） ---- */
+dialog.drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  width: min(560px, 100vw);
+  max-width: 560px;
+  height: 100%;
+  max-height: 100%;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg, 0 20px 50px rgba(16, 24, 40, 0.25));
+  display: none;
+  flex-direction: column;
+}
+dialog.drawer[open] { display: flex; }
+dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
+.drawer-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.drawer-head h2 { margin: 0; font-size: 18px; }
+.drawer-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 6px);
+}
+.drawer-close:hover { color: var(--text); background: var(--surface-3); }
+.drawer-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-4) var(--sp-5) 0;
+}
+.drawer-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.danger-zone h2 { color: var(--danger); }
+@media (max-width: 720px) {
+  dialog.drawer {
+    width: 100vw;
+    max-width: none;
+    border-left: 0;
+  }
+  .drawer-content { padding: var(--sp-3); }
+}

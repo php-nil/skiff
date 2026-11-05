@@ -48,16 +48,16 @@ pub async fn index(
         .iter()
         .filter(|r| {
             let name = if r.kind == skiff_store::KIND_PHP {
-                skiff_app::sites::PHP_CONTAINER.to_string()
+                skiff_app::sites::runtime_container_name(&r.kind, &r.name)
             } else {
                 format!("skiff-runtime-{}", r.id)
             };
-            let actual = containers
+            containers
                 .iter()
                 .find(|c| c.name == name)
-                .map(|c| c.state.as_str())
-                .unwrap_or("missing");
-            actual != "running"
+                .map(|c| c.state != "running")
+                // 未安装（没有容器）不算异常，只是尚未安装。
+                .unwrap_or(false)
         })
         .count();
     let totp_enabled = state

@@ -1,0 +1,252 @@
+# 内核文件系统原语：分析与实现说明
+
+> 对应契约：[`KERNEL_FS_CONTRACT.md`](KERNEL_FS_CONTRACT.md)。
+> 本轮范围：**仅底层能力**，新 crate `crates/fs`（包名 `skiff-fs`）。不接插件能力面、不改插件 / Web 路由 / SQLite 表。
+> 状态：独立库 + 单元/集成测试已落地；尚未部署、未提交。
+
+## 0. 一句话结论
+
+契约的授权模型、操作面、审计分级、回收站与三层配额都可以按现状落地，但有三处必须降级实现或在接线时补强：
+
+1. **「永不跟随符号链接」在纯 `std::fs` API 下无法做到零窗口**：Unix 用 `O_NOFOLLOW` 收口最后一段，父目录链只能「先 `symlink_metadata` 逐段校验、再操作」，存在 TOCTOU 残留窗口；真正零窗口需要 `openat` 系列（`openat2`/`O_PATH`）或 fd 相对操作，属于接线阶段的增强项。
+2. **跨文件系统 rename 不是原子操作**：`remove` 进回收站、`rename`、`copy` 跨盘时只能退化为「复制 + 删除」，中途失败可能留下源与目标各一份（不会产生半文件，但会短暂双份）。
+3. **回收站每根 1 GiB 是软配额**：超限时按最旧淘汰而非拒绝；全局 10 GiB 才是硬拒绝。契约文字同时写了「超过后新删除仍进回收站」和「超限淘汰最旧」，实现以「淘汰」为准。
+
+## 1. 契约分析结论
+
+### 1.1 成立且已落地
+
+| 契约条款 | 落地方式 |
+| --- | --- |
+| §2.1 管理员/插件双主体 | `Subject::{Admin{user}, Plugin{id}}`；`Principal` 携带 `grants` / `data_root` / `allow_protected_write` |
+| §2.1 插件仅授权根 + 自身 data | `resolve` 按最长匹配根判定；根外 `fs.escape`；无 `path:` 授权 `fs.denied` |
+| §2.1 管理员不受限但审计 | 管理员不做根/父链校验，仍逐条写审计并带 `request_id` |
+| §2.3 `log/ssl/conf` 默认只读 | `protected_subdir` 推导；插件需 `with_protected_write(true)`，管理员免开关但审计 `protected=true` |
+| §3.1 操作清单 | `list/stat/read/write/mkdir/rename/copy/remove` + `restore/purge/prune` |
+| §3.1 路径形式拒绝 | `normalize_absolute` 拒绝相对路径、`..`、NUL、空串、非 UTF-8 组件；折叠 `//` 与 `.` |
+| §3.2 分页读 | `read` 按 `max_bytes` 截断，返回 `size/eof/truncated`，客户端循环 offset |
+| §3.3 原子写 | 同目录临时文件 + `sync_all` + `rename` + 目录 `fsync`；失败清理临时文件；权限位保留 |
+| §3.4 路径锁 | 键控读写锁；同路径串行、异路径并行；双路径按字典序；5s 超时 `fs.busy` |
+| §4.1 审计字段 | `ts/actor/action/src/dst/bytes/result/code/sha256/site/protected/request_id/detail/count` |
+| §4.2 分级 | `remove/rename/copy/restore/purge`、`deny/fail`、`protected` 永不聚合；读/写/列/stat 按 `(主体, 动作, 路径, 分钟)` 聚合，行加 `#agg` |
+| §5.1 回收站模型 | `TrashEntry` 保留原路径、模式、属主、哈希、`nlink`、删除/到期时间、`quota_root` |
+| §5.2 保留与容量 | 30 天到期清理；每根 1 GiB 软淘汰；全局 10 GiB 硬拒绝；单条 2 GiB 拒绝；10000 条上限 |
+| §5.3 恢复/彻底删除 | 恢复校验父目录与目标不存在；彻底删除仅管理员或条目所属主体 |
+| §7.1 三层限制 | 单次 256 KiB / 单文件 4 GiB / 授权根 10 GiB / 目录条目 1M |
+| §7.3 错误码 | `fs.denied / escape / protected / not_found / conflict / busy / too_large / file_too_large / quota_exceeded / trash_full / unsupported` |
+
+### 1.2 落地有坑、需要接线阶段补强的点
+
+- **TOCTOU（符号链接）**：`resolve` 是「先检查、后操作」。Unix 最后一段用 `O_NOFOLLOW` 关闭了主要缺口，但父目录链的检查与实际 `open` 之间仍可被替换；Windows 无 `O_NOFOLLOW`，只能二次 `symlink_metadata`。
+  - 插件是主要威胁面；管理员路径没有授权边界，风险等级较低。
+  - 根治方案：Unix 改为 `openat(O_PATH|O_NOFOLLOW)` 逐段下钻，后续操作全部用 fd 相对 API；Windows 用句柄 + `GetFinalPathNameByHandle` 复核。
+- **跨文件系统**：`EXDEV` 时 `move_object` 退化为复制 + 删除。契约允许该降级，但无法保证「要么全有要么全无」；需要在审计 `detail` 标记 `crossed_fs=true`（已做）。
+- **回收站与配额**：契约要求「包含回收站占用」，但回收站与授权根通常不在同一棵树下。实现把配额键记为 `quota_root`（授权根字符串），删除时从该根扣减、恢复时加回；真实 SQLite 实现需保证同一口径，否则统计会漂移。
+- **目录删除/复制的锁粒度**：契约只锁目录本身，不锁子项。并发写子项期间删除目录会出现「写成功但随即被删」或删除失败；这是契约明确接受的语义，需在页面上说明。
+- **`remove` 语义变更**：默认进回收站是行为变更；旧调用方若依赖「删完即释放空间」，需要显式传 `permanent`（仅管理员）。
+- **站点整站删除**：契约 P1 明确保持 `remove_dir_all` + 审计，不进回收站；本轮未实现站点感知，属于 P2。
+- **写前快照**：契约 §6 明确 P2，本轮未实现。
+
+## 2. crate 结构与公开 API
+
+```
+crates/fs/
+  Cargo.toml            # skiff-fs：serde + sha2；cfg(unix) 额外 libc
+  src/
+    lib.rs              # 模块声明与公开 re-export
+    error.rs            # FsError + code()/http_status()/audit_result()
+    subject.rs          # Subject / Principal / Scope / 授权根 canonical 化
+    path.rs             # normalize_absolute / resolve / site_of / protected_subdir
+    lock.rs             # PathLocks：键控读写锁 + 超时
+    audit.rs            # AuditEvent / AuditSink / AggregatingSink / MemoryAuditSink
+    trash.rs            # TrashEntry / TrashStore / MemoryTrashStore / 淘汰选择
+    config.rs           # FsConfig / TrashConfig / QuotaTracker / MemoryQuotaTracker
+    hash.rs             # sha256_hex
+    ops/
+      mod.rs            # Fs 门面 + 请求/结果类型 + list/stat/read/mkdir
+      io.rs             # 不跟随链接的打开、原子写、删除、大小/元数据
+      copy.rs           # copy_object / move_object（含跨盘回退）
+      mutate.rs         # write/remove/rename/copy/restore/purge/prune
+  tests/
+    support/mod.rs      # 临时目录夹具 + 内存审计/回收站/配额
+    authorization.rs    # 越界、`..`、符号链接、受保护路径、非 UTF-8
+    ops.rs              # 分页、哈希、原子写并发、rename 死锁、权限位
+    trash.rs            # 回收站往返、配额淘汰、过期清理、跨主体
+    audit.rs            # 字段、无内容、聚合
+```
+
+### 2.1 主体与授权
+
+```rust
+pub enum Subject { Admin { user: String }, Plugin { id: String } }
+
+pub struct Principal { /* subject, grants, data_root, allow_protected_write */ }
+
+impl Principal {
+    pub fn admin(user: &str) -> Self;
+    pub fn plugin(id: &str, grants: Vec<PathBuf>, data_root: Option<PathBuf>) -> Self;
+    pub fn with_protected_write(self, allow: bool) -> Self;
+    pub fn root_of(&self, path: &Path) -> Option<&PathBuf>; // 最长匹配根
+}
+```
+
+### 2.2 路径解析
+
+```rust
+pub enum PathMode { Existing, ExistingLink, Create, CreateLink }
+pub enum PathKind { File, Dir, Symlink, Other, Missing }
+
+pub struct ResolvedPath {
+    pub path: PathBuf,           // lexical 归一后的绝对路径
+    pub kind: PathKind,
+    pub grant_root: Option<PathBuf>,
+    pub site: Option<String>,
+    pub protected: bool,
+}
+
+pub fn normalize_absolute(raw: &str) -> Result<PathBuf, FsError>;
+pub fn resolve(p: &Principal, raw: &str, mode: PathMode, site_root: &str)
+    -> Result<ResolvedPath, FsError>;
+```
+
+### 2.3 服务门面
+
+```rust
+pub struct Fs { /* cfg, locks, audit, trash, quota */ }
+
+impl Fs {
+    pub fn new(cfg: FsConfig, audit: Arc<dyn AuditSink>,
+               trash: Arc<dyn TrashStore>, quota: Arc<dyn QuotaTracker>) -> Self;
+
+    pub fn list(&self, p: &Principal, ctx: &OpContext, req: &ListRequest) -> Result<ListPage, FsError>;
+    pub fn stat(&self, p: &Principal, ctx: &OpContext, req: &StatRequest) -> Result<StatInfo, FsError>;
+    pub fn read(&self, p: &Principal, ctx: &OpContext, req: &ReadRequest) -> Result<ReadChunk, FsError>;
+    pub fn mkdir(&self, p: &Principal, ctx: &OpContext, raw: &str) -> Result<MkdirOutcome, FsError>;
+
+    pub fn write(&self, p: &Principal, ctx: &OpContext, req: &WriteRequest) -> Result<WriteOutcome, FsError>;
+    pub fn remove(&self, p: &Principal, ctx: &OpContext, raw: &str, permanent: bool) -> Result<RemoveOutcome, FsError>;
+    pub fn rename(&self, p: &Principal, ctx: &OpContext, from: &str, to: &str, overwrite: bool) -> Result<RenameOutcome, FsError>;
+    pub fn copy(&self, p: &Principal, ctx: &OpContext, from: &str, to: &str, overwrite: bool) -> Result<CopyOutcome, FsError>;
+
+    pub fn restore(&self, p: &Principal, ctx: &OpContext, trash_id: &str, overwrite: bool) -> Result<RestoreOutcome, FsError>;
+    pub fn purge(&self, p: &Principal, ctx: &OpContext, trash_id: &str) -> Result<u64, FsError>;
+    pub fn prune_trash(&self, ctx: &OpContext) -> Result<u64, FsError>; // 系统主体
+}
+```
+
+`WriteMode::{Replace, Append, At(offset)}`：`Replace` 原子；`Append` 显式非原子；`At` 契约未单列，按定位写实现并在审计 `detail` 标注。
+
+### 2.4 审计与回收站抽象
+
+```rust
+pub trait AuditSink: Send + Sync {
+    fn record(&self, event: AuditEvent);
+    fn flush(&self) {}
+}
+
+pub trait TrashStore: Send + Sync {
+    fn insert(&self, entry: TrashEntry);
+    fn get(&self, id: &str) -> Option<TrashEntry>;
+    fn remove(&self, id: &str) -> Option<TrashEntry>;
+    fn mark_restored(&self, id: &str, ts: i64) -> Option<TrashEntry>;
+    fn mark_purged(&self, id: &str, ts: i64) -> Option<TrashEntry>;
+    fn list(&self) -> Vec<TrashEntry>;
+    // 默认实现：total_usage / usage_for_root / expired
+}
+
+pub trait QuotaTracker: Send + Sync {
+    fn usage(&self, root: &Path) -> u64;
+    fn adjust(&self, root: &Path, delta: i64);
+}
+```
+
+## 3. 测试结果
+
+- `cargo test -p skiff-fs --locked`：**57 passed, 0 failed**
+  - 单元 19（审计聚合 4、配额 1、哈希 1、锁 3、路径 3、主体 3、回收站 4）
+  - 集成 38（audit 3、authorization 11、ops 14、trash 10）
+- `cargo clippy -p skiff-fs --all-targets --locked -- -D warnings`：**0 warning / 0 error**
+- `cargo fmt -p skiff-fs -- --check`：**通过**
+- 说明：`cargo fmt --all` 当前被并行会话的 `crates/sched/src/scheduler/tests.rs`（文件尚不存在）阻断，与 `crates/fs` 无关；因此本轮以 `cargo fmt -p skiff-fs` 验证。
+
+覆盖的契约测试矩阵项：越界（含 `..`、相对路径、NUL）、父目录符号链接逃逸、末段符号链接不跟随、硬链接只删链接、并发写无半文件、rename 双向换名不死锁、复制条目/深度上限、回收站恢复/过期/配额淘汰/跨主体拒绝、审计聚合与不记内容、非 UTF-8 列表跳过、Unix 权限位保留。
+
+Windows 环境限制：本机沙箱无法对符号链接执行 `rename`，因此「删除链接只进回收站」的断言仅在 Unix 执行；语义本身由 `symlink_metadata` + `remove_file` 保证。
+
+## 4. 与契约的差异
+
+| # | 契约 | 实现 | 原因 |
+| --- | --- | --- | --- |
+| 1 | 「符号链接永不跟随，无 TOCTOU」 | Unix 末段 `O_NOFOLLOW`；父链为预检 + 二次校验 | 纯 `std::fs` 无法零窗口；根治需 fd 相对 API |
+| 2 | `append` 仅管理员与显式授权插件 | 未单独鉴权，任何有写权限的主体可用 | 与 `write` 共用授权链路；如需收紧应在接线层加 verb 判定 |
+| 3 | `fs:copy` 目录 >1000 项异步任务 | P1 直接 `fs.too_large` | 契约 §14 把异步化列为 P2 |
+| 4 | 回收站每根 1 GiB「超过后仍进回收站」 | 超限先淘汰最旧再放入；全局超限才拒绝 | 契约 §5.2 同时要求淘汰，取可执行语义 |
+| 5 | `remove` 目录整体 rename | 同盘 rename；跨盘复制 + 删除 | 契约 §5.1 已允许跨盘降级 |
+| 6 | 审计 `id` 自增、保留 90 天 | 本轮无落库；内存 sink 无 id | 明确不接 SQLite；字段已预留 |
+| 7 | 错误码表未列 `fs.io` | 新增 `fs.io`（500） | 承载真实 I/O 错误，避免误映射为 `fs.not_found` |
+| 8 | §7.1 有 `fs.too_many_entries`，§7.3 表未列 | 已实现该码（413） | 以 §7.1 为准，建议回填 §7.3 |
+| 9 | 管理员「危险操作二次确认」 | 未实现（UI 层职责） | 本 crate 无路由/页面 |
+| 10 | 站点删除 P1 审计 `site.delete` | 未实现 | 站点模型不在本 crate，属 app 接线 |
+| 11 | 配额「异步刷新 ≤60s」 | 同步内存计数 | 真实实现由 SQLite/后台刷新替换 |
+| 12 | `prev_sha256` 快照占位 | 未加字段 | P2；避免无消费者的占位字段 |
+
+## 5. 接入现有 capability 与 SQLite 的 trait 边界
+
+### 5.1 能力面（`crates/plugin`）
+
+- 现有 `fsops` 继续负责 UDS 编解码与 `path:` 授权解析；新代码只替换**执行层**：
+  - 入口：把 `path:` grants 与插件 `data/` 转成 `Principal::plugin(id, grants, Some(data_root))`。
+  - 每个 verb 映射到一个 `Fs` 方法；`request_id` 从 UDS 入口生成，放进 `OpContext`。
+  - 错误：`FsError -> {code, http_status}` 直接复用，UDS JSON 字段与契约 §10.1 对齐。
+  - `fs:write-protected` 勾选状态映射到 `allow_protected_write`。
+- 不要在新 crate 里再实现一遍授权：`crates/model` 的 `path` 代数仍是单一来源；`Principal` 的 canonical 化只做形式统一。
+
+### 5.2 SQLite（`crates/store`）
+
+需要三个实现（均在接线会话中新增，不在本轮）：
+
+1. `SqliteAuditSink: AuditSink`：`record` 写 `fs_audit`；`AggregatingSink` 包在外层，`flush` 由定时器每分钟调用。
+2. `SqliteTrashStore: TrashStore`：`insert/get/remove/mark_* / list` 映射 `trash_entries`；`expired` 可用 `expires_at <= now` 索引查询。
+3. `SqliteQuotaTracker: QuotaTracker`：`usage` 读缓存表；`adjust` 增减；写入后复核由调用方触发。
+
+建议表结构（仅边界，不在本轮建表）：
+
+```
+fs_audit(id INTEGER PK, ts, actor_type, actor_id, action, src_path, dst_path,
+         bytes, result, code, sha256, site, protected, request_id, detail, count)
+trash_entries(id TEXT PK, actor_type, actor_id, original_path, trash_path, kind,
+              size, mode, owner, sha256, site, protected, deleted_at, expires_at,
+              nlink, restored_at, purged_at, quota_root)
+fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
+```
+
+### 5.3 接线顺序（建议）
+
+1. **只读接入**：`list/stat/read` 走 `Fs`，先不带回收站/配额；用现有插件跑回归，确认路径与错误码兼容。
+2. **审计落地**：`SqliteAuditSink` + `AggregatingSink`，后台每分钟 `flush`；先把 `fs_audit` 跑通再加页面。
+3. **写路径切换**：`write/mkdir/rename/copy` 切到 `Fs`；`append` 保留语义标记。
+4. **回收站**：`SqliteTrashStore` + `remove` 默认进站；加 `trash-prune` 删除任务；最后接管理页。
+5. **配额**：`SqliteQuotaTracker` 先做「启动扫描 + 写后增量」，再做写前预检；观察误差后再决定是否 60s 刷新。
+6. **管理面**：`/fs/audit`、`/fs/trash`、`/fs/grants` 路由复用同一 `Fs`，禁止另写 `std::fs`。
+7. **强化**：Unix 改 fd 相对操作；Windows 句柄复核；最后再评估 P2 流式与快照。
+
+## 6. 风险清单
+
+| 风险 | 等级 | 说明 / 缓解 |
+| --- | --- | --- |
+| 符号链接 TOCTOU 残留 | 高（插件主体） | 预检 + `O_NOFOLLOW`；接线阶段改 fd 相对 API 才能根治 |
+| 跨盘 move 非原子 | 中 | 复制后校验 `size/sha256` 再删；审计标记 `crossed_fs` |
+| 回收站配额口径漂移 | 中 | `quota_root` 必须与 `SkiffStore` 的 grant 字符串完全一致；建议单测固定 |
+| 目录锁粒度粗 | 中 | 契约接受；删除大目录时可能有并发写失败，需要页面提示 |
+| `remove` 默认语义变更 | 中 | 旧调用方需显式 `permanent`；发布说明必须写清 |
+| Windows 符号链接能力 | 低（部署目标是 Linux） | 测试跳过/限制；生产以 Linux 为准 |
+| 管理员全盘写 | 高但可控 | 强制逐条审计 + `request_id`；UI 二次确认尚未实现 |
+| 内存审计/回收站实现非持久 | 低（本轮定位） | 仅测试替身；接线替换为 SQLite 实现 |
+| 配置默认值未实测 | 低 | 256 KiB / 4 GiB / 10 GiB / 1 GiB / 30 天均沿用契约设计目标，不宣称已实测 |
+
+## 7. 本轮不做
+
+- 不修改 `crates/plugin`（含 `fsops.rs`）、`crates/store`、Web 路由与模板。
+- 不建 `fs_audit` / `trash_entries` / `fs_quotas` 表。
+- 不实现站点整站回收站、写前快照、流式读写、目录复制异步任务。
+- 不部署、不提交、不推送。

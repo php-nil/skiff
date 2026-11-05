@@ -23,11 +23,42 @@ pub fn validate_kind(kind: &str) -> Result<&'static str> {
     }
 }
 
+/// 实例名规则：`^[a-z0-9][a-z0-9.-]{0,31}$`。
+///
+/// 名字只用于本地目录与容器名，不能带路径分隔符；首字符必须是字母或数字，
+/// 因此也不会以点/连字符开头。
+pub fn validate_runtime_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 32 {
+        return Err(StoreError::Conflict(
+            "运行环境名需为 1–32 个字符（小写字母、数字、点、连字符）".into(),
+        ));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap_or(' ');
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return Err(StoreError::Conflict(
+            "运行环境名必须以小写字母或数字开头".into(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+    {
+        return Err(StoreError::Conflict(
+            "运行环境名只能包含小写字母、数字、点与连字符".into(),
+        ));
+    }
+    Ok(name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Runtime {
     /// 稳定 slug：`php-8.5` / `node-22` / `go-1.24`，创建后不可改。
     pub id: String,
     pub kind: String,
+    /// 本地实例名（同 kind 内唯一）；目录与容器名只从它推导。
+    pub name: String,
     pub version: String,
     pub image: String,
     pub image_digest: String,
@@ -49,6 +80,7 @@ pub struct Runtime {
 pub struct NewRuntime {
     pub id: String,
     pub kind: String,
+    pub name: String,
     pub version: String,
     pub image: String,
     pub image_digest: String,
@@ -60,25 +92,28 @@ fn row_to_runtime(r: &Row<'_>) -> rusqlite::Result<Runtime> {
     Ok(Runtime {
         id: r.get(0)?,
         kind: r.get(1)?,
-        version: r.get(2)?,
-        image: r.get(3)?,
-        image_digest: r.get(4)?,
-        desired_state: r.get(5)?,
-        last_status: r.get(6)?,
-        socket_path: r.get(7)?,
-        is_default: r.get::<_, i64>(8)? != 0,
-        config_json: r.get(9)?,
-        created_at: r.get(10)?,
-        updated_at: r.get(11)?,
+        name: r.get(2)?,
+        version: r.get(3)?,
+        image: r.get(4)?,
+        image_digest: r.get(5)?,
+        desired_state: r.get(6)?,
+        last_status: r.get(7)?,
+        socket_path: r.get(8)?,
+        is_default: r.get::<_, i64>(9)? != 0,
+        config_json: r.get(10)?,
+        created_at: r.get(11)?,
+        updated_at: r.get(12)?,
     })
 }
 
-const RUNTIME_COLS: &str = "id, kind, version, image, image_digest, desired_state, last_status, \
-                            socket_path, is_default, config_json, created_at, updated_at";
+const RUNTIME_COLS: &str = "id, kind, name, version, image, image_digest, desired_state, \
+                            last_status, socket_path, is_default, config_json, created_at, \
+                            updated_at";
 
 impl Db {
     pub fn create_runtime(&self, r: &NewRuntime) -> Result<Runtime> {
         let kind = validate_kind(&r.kind)?;
+        let name = validate_runtime_name(&r.name)?;
         let id = r.id.trim();
         if id.is_empty() {
             return Err(StoreError::Conflict("运行环境 id 不能为空".into()));
@@ -86,13 +121,14 @@ impl Db {
         let conn = self.conn();
         let ts = now();
         conn.execute(
-            "INSERT INTO site_runtimes(id, kind, version, image, image_digest, desired_state,
-                                       last_status, socket_path, is_default, config_json,
-                                       created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, 'running', 'stopped', ?6, ?7, '{}', ?8, ?8)",
+            "INSERT INTO site_runtimes(id, kind, name, version, image, image_digest,
+                                       desired_state, last_status, socket_path, is_default,
+                                       config_json, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, '{}', ?9, ?9)",
             params![
                 id,
                 kind,
+                name,
                 r.version.trim(),
                 r.image,
                 r.image_digest,
@@ -105,7 +141,7 @@ impl Db {
             rusqlite::Error::SqliteFailure(err, _)
                 if err.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
-                StoreError::Conflict(format!("运行环境已存在：{id}"))
+                StoreError::Conflict(format!("运行环境已存在：{kind}/{name}"))
             }
             other => StoreError::Sqlite(other),
         })?;
@@ -118,6 +154,17 @@ impl Db {
         drop(conn);
         self.runtime_by_id(id)?
             .ok_or_else(|| StoreError::NotFound(id.to_string()))
+    }
+
+    pub fn runtime_by_name(&self, kind: &str, name: &str) -> Result<Option<Runtime>> {
+        let conn = self.conn();
+        conn.query_row(
+            &format!("SELECT {RUNTIME_COLS} FROM site_runtimes WHERE kind = ?1 AND name = ?2"),
+            params![kind, name],
+            row_to_runtime,
+        )
+        .optional()
+        .map_err(StoreError::from)
     }
 
     /// 幂等落行：已存在则只补齐镜像与 socket（不覆盖用户改过的期望状态与配置）。
@@ -264,21 +311,27 @@ mod tests {
         NewRuntime {
             id: id.into(),
             kind: KIND_PHP.into(),
+            name: id.into(),
             version: version.into(),
             image: "php:8.5-fpm-alpine".into(),
             image_digest: "sha256:demo".into(),
-            socket_path: Some("/www/php/php-fpm.sock".into()),
+            socket_path: Some(format!("/www/runtime/php/{id}/php-fpm.sock")),
             is_default: default,
         }
     }
 
     #[test]
-    fn runtime_crud_and_unique_kind_version() {
+    fn runtime_crud_and_unique_kind_name() {
         let db = Db::open_in_memory().unwrap();
         // v7 迁移会种入 php-8.5 默认行。
         let seeded = db.runtime_by_id("php-8.5").unwrap().unwrap();
         assert_eq!(seeded.kind, KIND_PHP);
+        assert_eq!(seeded.name, "php-8.5");
         assert!(seeded.is_default);
+        assert_eq!(
+            seeded.socket_path.as_deref(),
+            Some("/www/runtime/php/php-8.5/php-fpm.sock")
+        );
 
         let dup = db.create_runtime(&php("php-8.5", "8.5", false));
         assert!(matches!(dup, Err(StoreError::Conflict(_))));
@@ -286,6 +339,12 @@ mod tests {
         let other = db.create_runtime(&php("php-8.4", "8.4", false)).unwrap();
         assert!(!other.is_default);
         assert_eq!(db.list_runtimes().unwrap().len(), 2);
+
+        // 同版本不同 name 允许（name 才是唯一标识）。
+        let second = db.create_runtime(&php("php-8.5-a", "8.5", false)).unwrap();
+        assert_eq!(second.name, "php-8.5-a");
+        assert_eq!(second.version, "8.5");
+        assert_eq!(db.list_runtimes().unwrap().len(), 3);
     }
 
     #[test]
@@ -297,6 +356,47 @@ mod tests {
         assert_eq!(rows.iter().filter(|r| r.is_default).count(), 1);
         assert!(db.runtime_by_id("php-8.4").unwrap().unwrap().is_default);
         assert!(!db.runtime_by_id("php-8.5").unwrap().unwrap().is_default);
+    }
+
+    #[test]
+    fn runtime_name_rules_and_cross_kind_same_name() {
+        for bad in ["", ".php", "-php", "PHP-8.5", "php_85", "php 85", "a/b"] {
+            assert!(validate_runtime_name(bad).is_err(), "应拒绝：{bad}");
+        }
+        assert!(validate_runtime_name("php-8.5").is_ok());
+        assert!(validate_runtime_name("php-8.5-a").is_ok());
+
+        let db = Db::open_in_memory().unwrap();
+        // 同 kind 重名必须拒绝。
+        let dup = db.create_runtime(&php("php-8.5", "8.5", false));
+        assert!(matches!(dup, Err(StoreError::Conflict(_))));
+
+        // 跨 kind 同名允许（路径天然按 kind 分开）。
+        let node = NewRuntime {
+            id: "node-php-8.5".into(),
+            kind: KIND_NODE.into(),
+            name: "php-8.5".into(),
+            version: "22".into(),
+            image: "node:22".into(),
+            image_digest: String::new(),
+            socket_path: None,
+            is_default: false,
+        };
+        db.create_runtime(&node).unwrap();
+        assert!(db.runtime_by_name(KIND_NODE, "php-8.5").unwrap().is_some());
+
+        // 同版本多实例允许：name 不同即可。
+        let mut same_version = php("php-8.5-a", "8.5", false);
+        same_version.id = "php-8.5-a".into();
+        db.create_runtime(&same_version).unwrap();
+        assert_eq!(
+            db.runtime_by_name(KIND_PHP, "php-8.5-a")
+                .unwrap()
+                .unwrap()
+                .version,
+            "8.5"
+        );
+        assert_eq!(db.list_runtimes().unwrap().len(), 3);
     }
 
     #[test]

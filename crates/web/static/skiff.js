@@ -835,6 +835,51 @@
     show(start >= 1 && start <= panels.length ? start : 1);
   }
 
+  // ---- 运行环境详情抽屉（原生 <dialog>：Esc/遮罩关闭、焦点锁在抽屉内） ----
+  function attachRuntimeDrawer() {
+    var dlg = document.querySelector("[data-runtime-drawer]");
+    if (!dlg || dlg.dataset.bound === "1") return;
+    dlg.dataset.bound = "1";
+    var content = dlg.querySelector("[data-drawer-content]");
+    var title = dlg.querySelector("[data-drawer-title]");
+
+    async function open(url) {
+      if (!content) return;
+      content.innerHTML = '<p class="muted">加载中…</p>';
+      try {
+        var resp = await fetch(url, { headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        var text = await resp.text();
+        var doc = new DOMParser().parseFromString(text, "text/html");
+        var panel = doc.querySelector("[data-runtime-panel]");
+        if (!panel) throw new Error("详情内容缺失");
+        content.innerHTML = panel.outerHTML;
+        var heading = panel.querySelector("[data-runtime-title]");
+        if (title && heading) title.textContent = heading.textContent.trim();
+        var focusable = content.querySelector("button,input,select,textarea,a[href]");
+        if (focusable) focusable.focus();
+      } catch (err) {
+        content.innerHTML = '<div class="alert">无法加载运行环境详情：' + String(err.message || err) + "</div>";
+      }
+    }
+
+    document.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!(target instanceof Element)) return;
+      var trigger = target.closest("[data-runtime-open]");
+      if (trigger) {
+        e.preventDefault();
+        open(trigger.getAttribute("data-runtime-open"));
+        if (typeof dlg.showModal === "function") dlg.showModal();
+      }
+      if (target.closest("[data-drawer-close]")) dlg.close();
+    });
+    // 点遮罩关闭：dialog 的点击目标只有自身时即落在 backdrop 上。
+    dlg.addEventListener("click", function (e) {
+      if (e.target === dlg) dlg.close();
+    });
+  }
+
   // ---- 服务端提示转为轻量 toast（不阻塞页面） ----
   function attachToasts() {
     document.querySelectorAll(".alert[data-toast]").forEach(function (alert) {
@@ -870,6 +915,7 @@
     attachConfirm();
     ensureIcons();
     attachWizard();
+    attachRuntimeDrawer();
     attachToasts();
   }
 

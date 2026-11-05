@@ -3482,7 +3482,7 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
     }
     let (status, html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("PHP 专属配置"), "{html}");
+    assert!(html.contains("PHP 配置"), "{html}");
     assert!(html.contains("socket"), "{html}");
     assert!(html.contains("关联站点"), "{html}");
     assert!(
@@ -3493,7 +3493,7 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
     // 菜单契约深链同源。
     let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("PHP 专属配置"), "{html}");
+    assert!(html.contains("PHP 配置"), "{html}");
 
     for uri in ["/p/runtimes", "/p/sites/env", "/p/sites/env/php-8.5"] {
         let (status, _) = get_page(&h.app, uri, &viewer).await;
@@ -3516,6 +3516,285 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// 运行环境页：去安装进度/镜像源，列表 + 新建实例 + 详情抽屉（Esc/遮罩关闭）。
+#[tokio::test]
+async fn site_env_page_drops_install_progress_and_uses_drawer() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+
+    for gone in [
+        "安装进度",
+        "镜像源",
+        "下载速度",
+        "registry_mirror",
+        "image_prefix",
+    ] {
+        assert!(!html.contains(gone), "运行环境页不得常驻 {gone}: {html}");
+    }
+    for keep in [
+        "类型",
+        "版本",
+        "占用站点",
+        "socket / 端口",
+        "默认",
+        "详情",
+        "更多",
+    ] {
+        assert!(html.contains(keep), "列表必须展示 {keep}: {html}");
+    }
+    assert!(
+        html.contains(r#"data-runtime-drawer"#)
+            && html.contains(r#"data-runtime-open="/p/sites/env/php-8.5""#)
+            && html.contains("data-drawer-content"),
+        "详情必须是右侧抽屉而不是跳页: {html}"
+    );
+    assert!(
+        html.contains(r#"name="name""#)
+            && html.contains(r#"name="version""#)
+            && html.contains("目标目录已存在会直接拒绝"),
+        "新建实例必须暴露 name/version 并提示目录拒绝规则: {html}"
+    );
+
+    // 抽屉交互由原生 <dialog> 承担：showModal 自动焦点锁 + Esc，遮罩点击关闭。
+    let js = include_str!("../static/skiff.js");
+    assert!(js.contains("dlg.showModal()"), "抽屉必须用 showModal: {js}");
+    assert!(
+        js.contains("e.target === dlg") && js.contains("dlg.close()"),
+        "点遮罩必须关闭抽屉: {js}"
+    );
+    let css = include_str!("../static/skiff.css");
+    assert!(css.contains("dialog.drawer") && css.contains("dialog.drawer::backdrop"));
+    assert!(
+        css.contains("@media (max-width: 720px)") && css.contains("dialog.drawer"),
+        "窄屏必须退化为全屏抽屉"
+    );
+}
+
+/// 新建 PHP 实例：名字非法 / 同名 / 目录已存在都在落库前拒绝。
+#[tokio::test]
+async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (_, html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    let csrf = csrf_from(&html);
+
+    for (name, version) in [
+        ("PHP-8.5", "8.5"),
+        ("-php", "8.5"),
+        ("php-8.5", "8.5"),
+        ("php-8.5-a", ""),
+    ] {
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/p/sites/env/add")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                    .body(form_body(&[
+                        ("csrf", &csrf),
+                        ("name", name),
+                        ("version", version),
+                    ]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{name}/{version}");
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            location.contains("error="),
+            "{name}/{version} 必须把错误带回页面: {location}"
+        );
+    }
+
+    // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
+    std::fs::create_dir_all(h.data_dir.join("www/runtime/php/php-8.4-a")).unwrap();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/env/add")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("name", "php-8.4-a"),
+                    ("version", "8.4"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        location.contains("error=") && location.contains("%E5%B7%B2%E5%AD%98%E5%9C%A8"),
+        "目录已存在必须提示换名（已存在）: {location}"
+    );
+    assert!(
+        h.state
+            .db()
+            .runtime_by_name("php", "php-8.4-a")
+            .unwrap()
+            .is_none(),
+        "目录冲突时不得落库"
+    );
+}
+
+/// 绑定运行环境停止时：站点详情明确 502/503 并给出回环境页的入口，不静默换版本。
+#[tokio::test]
+async fn site_detail_warns_when_bound_runtime_stopped() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/demo.local");
+    h.state
+        .db()
+        .create_site(&php_site("demo.local", &root.display().to_string()))
+        .unwrap();
+    h.state
+        .db()
+        .set_runtime_status("php-8.5", "running", "stopped")
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("data-runtime-down"), "{html}");
+    assert!(
+        html.contains("502/503") && html.contains("不会静默切换"),
+        "必须说明停止版本的后果: {html}"
+    );
+    assert!(
+        html.contains(r#"href="/p/sites/env/php-8.5""#),
+        "必须提供回运行环境页的入口: {html}"
+    );
+}
+
+/// 「网站 → Nginx」：四区块常驻渲染；管理员 + CSRF，viewer 403。
+#[tokio::test]
+async fn nginx_page_renders_four_sections_and_is_admin_only() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+
+    for uri in [
+        "/p/sites/nginx",
+        "/p/sites/nginx?tab=config",
+        "/p/sites/nginx?tab=logs",
+        "/p/sites/nginx?tab=modules",
+        "/p/m/core/sites/nginx",
+    ] {
+        let (status, _) = get_page(&h.app, uri, &viewer).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
+    }
+
+    let (status, html) = get_page(&h.app, "/p/sites/nginx", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    for section in ["status", "config", "logs", "modules"] {
+        assert!(
+            html.contains(&format!(r#"data-nginx-section="{section}""#)),
+            "缺少 Nginx {section} 区块: {html}"
+        );
+    }
+    assert!(
+        html.contains("active connections") && html.contains("accepts") && html.contains("waiting"),
+        "状态必须展示 stub_status 字段: {html}"
+    );
+    assert!(
+        html.contains("数据不可得"),
+        "容器不可用时必须明确说明，而不是显示 0: {html}"
+    );
+    assert!(
+        html.contains("性能参数")
+            && html.contains("worker_connections")
+            && html.contains("client_max_body_size"),
+        "配置区块必须提供性能参数: {html}"
+    );
+    assert!(
+        html.contains("错误日志（倒序）") && html.contains("访问日志汇总"),
+        "日志区块必须区分错误/访问: {html}"
+    );
+    assert!(
+        html.contains("编译参数") && html.contains("模块列表"),
+        "模块区块必须展示 nginx -V 解析结果: {html}"
+    );
+    assert!(
+        html.contains("校验并重载"),
+        "主配置保存必须走 nginx -t + reload: {html}"
+    );
+
+    // 视图级权限：viewer 不能打开，管理员缺 CSRF 也不能保存。
+    let csrf = csrf_from(&html);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/nginx/config/main")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", "bad-token"),
+                    ("content", "events {}"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 合法 CSRF 时进入回滚路径（无 Docker → 保存失败），必须带回错误而不是 500。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/nginx/config/main")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[("csrf", &csrf), ("content", "events {}")]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "失败应跳回配置页");
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(location.contains("error="), "{location}");
+    assert!(
+        h.state
+            .db()
+            .recent_audit(10)
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "nginx.config.save"),
+        "保存动作必须写审计"
+    );
 }
 
 /// 三类站点在列表/详情中的类型与端点展示不混淆。

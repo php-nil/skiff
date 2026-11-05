@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod docker_daemon;
+pub mod nginx;
 pub mod sites;
 
 use std::collections::{HashMap, HashSet};
@@ -69,6 +70,8 @@ pub struct AppState {
     interop_busy: Mutex<HashSet<String>>,
     /// 「网站 → 运行环境」后台安装进度（内存态：重启后清空即可，安装动作幂等）。
     site_env: Mutex<sites::InstallProgress>,
+    /// 按 `(kind,name)` 的运行环境安装互斥；第二个并发安装直接返回「正在安装」。
+    runtime_installs: sites::InstallLocks,
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +242,7 @@ impl AppState {
             exec_tickets: Mutex::new(HashMap::new()),
             interop_busy: Mutex::new(HashSet::new()),
             site_env: Mutex::new(sites::InstallProgress::default()),
+            runtime_installs: sites::InstallLocks::default(),
         })
     }
 
