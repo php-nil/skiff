@@ -13,7 +13,7 @@
 
   <div class="menu-layout-pick">
     <h3>布局</h3>
-    <p class="hint">只改变呈现方式，菜单结构与顺序不变。</p>
+    <p class="hint">默认「左右（侧栏）」；只改变呈现方式，菜单结构与顺序不变。</p>
     <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
       <input type="hidden" name="action" value="layout">
@@ -25,6 +25,24 @@
       <input type="hidden" name="action" value="layout">
       <input type="hidden" name="layout" value="left">
       <button type="submit" class="btn{% if layout == "left" %} primary{% endif %}"{% if layout == "left" %} aria-current="true"{% endif %}>左右（侧栏）</button>
+    </form>
+  </div>
+
+  <div class="menu-width-pick">
+    <h3>内容宽度</h3>
+    <p class="hint">默认「自适应」：侧栏之外的可用宽度全部给内容。选「固定」时正文、卡片与表格最多展开到设定上限（默认 1440px）。</p>
+    <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="width">
+      <button type="submit" name="width" value="auto" class="btn{% if width == "auto" %} primary{% endif %}"{% if width == "auto" %} aria-current="true"{% endif %}>自适应（铺满）</button>
+    </form>
+    <form method="post" action="/{{ ctx.prefix }}/settings/menu" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="action" value="width">
+      <button type="submit" name="width" value="fixed" class="btn{% if width == "fixed" %} primary{% endif %}"{% if width == "fixed" %} aria-current="true"{% endif %}>固定</button>
+      <label class="width-max">最大宽度
+        <input type="number" name="max" min="960" max="4096" step="8" value="{{ max_width }}" aria-label="固定内容最大宽度（像素）">px
+      </label>
     </form>
   </div>
 

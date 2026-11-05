@@ -32,6 +32,21 @@
   requestTheme();
   window.addEventListener("load", requestTheme);
 
+  // ---- 内容高度上报：父面板据此设置 iframe 高度，避免内外双滚动 ----
+  // 文件管理是「填满视口」的应用（列表在内部滚动），高度不随目录条目数无限增长；
+  // 报一个稳定的舒适值（480–680），父页面据此收缩/放宽 iframe。
+  // 旧面板不消费该消息、独立打开时无父页面时，行为与以前一致。
+  function reportHeight() {
+    if (!nonce) return;
+    var h = Math.min(680, Math.max(480, window.innerHeight || 680));
+    try {
+      parent.postMessage({ type: "skiff.height", nonce: nonce, height: Math.round(h) }, "*");
+    } catch (e) { /* 独立打开 */ }
+  }
+  reportHeight();
+  window.addEventListener("load", reportHeight);
+  window.addEventListener("resize", reportHeight);
+
   function rpc(method, params) {
     return new Promise(function (resolve, reject) {
       if (!nonce) {

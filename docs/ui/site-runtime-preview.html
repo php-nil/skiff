@@ -1,0 +1,1719 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网站 · 运行环境与建站向导 · 交互预览</title>
+<!--
+  静态预览：零外链、零构建、零 CDN，双击即开（file:// 也可用）。
+  数据全部为示意，不代表真实装机内容；契约见 docs/SITE_RUNTIME_CONTRACT.md。
+  目标：先确认三类建站分支、运行环境页与 PHP 专属配置的信息层级，再落真代码。
+-->
+<style>
+:root{
+  --page-bg:#eef1f5;--page-text:#101828;--page-muted:#667085;
+  --bg:#f4f6f8;--surface:#fff;--surface-2:#f8fafb;--surface-3:#f1f4f7;
+  --line:#e3e7ed;--line-soft:#edf0f4;--text:#101828;--text-2:#344054;--muted:#667085;
+  --accent:#0f766e;--accent-soft:#e9f4f1;--accent-line:rgba(15,118,110,.42);
+  --danger:#b42318;--danger-soft:#fef3f2;--warn:#b54708;--warn-soft:#fffaeb;
+  --info:#175cd3;--info-soft:#eff4ff;--ok:#067647;--ok-soft:#ecfdf3;
+  --nav-bg:#fff;--nav-line:#e7eaef;--nav-text:#475467;--nav-strong:#101828;
+  --nav-muted:#7a8798;--nav-accent:#0f766e;--nav-hover:#f4f6f8;
+  --shadow:0 10px 32px rgba(16,24,40,.12);
+  --mono:ui-monospace,SFMono-Regular,"Cascadia Mono","Roboto Mono",Consolas,monospace;
+}
+html[data-theme=dark]{
+  --page-bg:#0d1014;--page-text:#e6ebf2;--page-muted:#98a2b3;
+  --bg:#10141a;--surface:#171c23;--surface-2:#1c222a;--surface-3:#232a33;
+  --line:#2b333d;--line-soft:#232a32;--text:#e6ebf2;--text-2:#c4cdd9;--muted:#93a0b0;
+  --accent:#5fd4b5;--accent-soft:rgba(95,212,181,.12);--accent-line:rgba(95,212,181,.4);
+  --danger:#ff9b93;--danger-soft:rgba(255,155,147,.1);--warn:#f5c66b;--warn-soft:rgba(245,198,107,.1);
+  --info:#8ab4ff;--info-soft:rgba(138,180,255,.1);--ok:#6fdfae;--ok-soft:rgba(111,223,174,.1);
+  --nav-bg:#151a21;--nav-line:#232b35;--nav-text:#b8c2d0;--nav-strong:#eef2f6;
+  --nav-muted:#8d99a8;--nav-accent:#5fd4b5;--nav-hover:#1a2028;
+  --shadow:0 18px 48px rgba(0,0,0,.42);
+}
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+html,body{margin:0}
+body{background:var(--page-bg);color:var(--page-text);
+  font:13px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+a{text-decoration:none;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important}}
+
+/* ---------- 预览工具条 ---------- */
+.preview-bar{position:sticky;top:0;z-index:70;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--line);font-size:12px}
+.preview-bar .title{font-weight:650;font-size:13px;white-space:nowrap}
+.preview-bar .hint{color:var(--muted);margin-right:auto;white-space:nowrap}
+.seg{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface-2)}
+.seg button{border:0;background:transparent;padding:6px 10px;font-size:12px;color:var(--muted);border-right:1px solid var(--line-soft);white-space:nowrap}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--surface-3);color:var(--text)}
+.seg button.on{background:var(--accent);color:#fff;font-weight:600}
+html[data-theme=dark] .seg button.on{color:#06251f}
+.stage{padding:20px 16px 38px;display:flex;justify-content:center;overflow:auto}
+
+/* ---------- 应用外框 ---------- */
+.frame{width:1180px;max-width:100%;height:790px;display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--text);box-shadow:var(--shadow);
+  transition:width .18s ease;position:relative}
+.frame[data-width=narrow]{width:430px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 11px;
+  border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--text);white-space:nowrap;font-size:12.5px}
+.btn:hover{background:var(--surface-2)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+html[data-theme=dark] .btn.primary{color:#06251f}
+.btn.primary:hover{filter:brightness(1.05)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.ghost:hover{background:var(--surface-2);color:var(--text)}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--line))}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn[disabled]:hover{background:var(--surface);filter:none;transform:none}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;
+  border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted)}
+.icon-btn:hover{background:var(--surface-2);color:var(--text);border-color:var(--line)}
+.ico{display:inline-flex;width:18px;height:18px;flex:none;color:currentColor}
+.ico svg{width:100%;height:100%;display:block;fill:none;stroke:currentColor;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.ico.sm{width:14px;height:14px}
+.ico.lg{width:24px;height:24px}
+.svg-sprite{position:absolute;width:0;height:0;overflow:hidden}
+
+/* ---------- 顶栏与连续导航带（A 舱线） ---------- */
+.topbar{height:56px;flex:none;display:flex;align-items:center;gap:14px;padding:0 18px;
+  background:var(--nav-bg);border-bottom:1px solid var(--nav-line);color:var(--nav-text);position:relative;z-index:40}
+.brand{display:inline-flex;align-items:center;gap:8px;flex:none;color:var(--nav-strong);font-weight:650;letter-spacing:.01em}
+.brand .mark{display:inline-flex;width:24px;height:24px;color:var(--nav-accent)}
+.brand .ver{color:var(--nav-muted);font-size:10.5px;letter-spacing:.04em;font-weight:500}
+.nav{display:flex;align-items:center;gap:0;flex:1 1 auto;min-width:0;height:56px;overflow-x:auto;scrollbar-width:none}
+.nav::-webkit-scrollbar{display:none}
+.nav-item{position:relative;display:inline-flex;align-items:center;gap:7px;height:56px;padding:0 14px;
+  border:0;background:transparent;color:var(--nav-text);font-size:13px;font-weight:500;white-space:nowrap}
+.nav-item:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.nav-item.active{color:var(--nav-accent);font-weight:650}
+.nav-item.active::after{content:"";position:absolute;left:14px;right:14px;bottom:0;height:2px;border-radius:2px;background:var(--nav-accent)}
+.nav-ico{display:inline-flex;width:18px;height:18px;opacity:.78}
+.nav-ico svg{width:100%;height:100%;display:block;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.topbar-right{display:flex;align-items:center;gap:10px;flex:none;color:var(--nav-muted);font-size:11.5px}
+.health{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--nav-line);border-radius:999px;background:var(--nav-hover)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+.dot.warn{background:var(--warn)}.dot.err{background:var(--danger)}.dot.muted{background:var(--nav-muted)}
+.menu-btn{display:none}
+.subnav{height:44px;flex:none;display:flex;align-items:center;gap:2px;padding:0 18px;
+  background:var(--nav-bg);border-bottom:1px solid var(--nav-line);overflow-x:auto;scrollbar-width:none}
+.subnav::-webkit-scrollbar{display:none}
+.subnav-item{position:relative;display:inline-flex;align-items:center;height:34px;padding:0 11px;border:0;border-radius:7px;
+  background:transparent;color:var(--nav-muted);font-size:12.5px;white-space:nowrap}
+.subnav-item:hover{background:var(--nav-hover);color:var(--nav-strong)}
+.subnav-item.active{color:var(--nav-accent);font-weight:600}
+.subnav-item.active::after{content:"";position:absolute;left:11px;right:11px;bottom:0;height:2px;border-radius:2px;background:var(--nav-accent)}
+.content{flex:1;min-height:0;overflow:auto;padding:18px 22px 26px;background:var(--bg)}
+.view{display:block}
+.view[hidden]{display:none !important}
+
+/* ---------- 通用 ---------- */
+.page-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}
+.page-head .titles{min-width:0}
+.page-head h1{margin:0;font-size:20px;line-height:1.25;letter-spacing:-.01em;font-weight:650}
+.page-head .sub{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.55}
+.page-head .actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.card-pad{padding:14px 16px}
+.section{margin-top:14px}
+.section-head{display:flex;align-items:center;gap:8px;margin:0 0 10px}
+.section-head h2{margin:0;font-size:14px;font-weight:650}
+.section-head .hint{margin-left:auto;color:var(--muted);font-size:11.5px}
+.banner{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;
+  background:var(--surface-2);color:var(--text);font-size:12.5px;line-height:1.55}
+.banner .ico{margin-top:1px;color:var(--muted)}
+.banner.info{border-color:color-mix(in srgb,var(--info) 30%,var(--line));background:var(--info-soft)}
+.banner.info .ico{color:var(--info)}
+.banner.warn{border-color:color-mix(in srgb,var(--warn) 32%,var(--line));background:var(--warn-soft)}
+.banner.warn .ico{color:var(--warn)}
+.banner.ok{border-color:color-mix(in srgb,var(--ok) 32%,var(--line));background:var(--ok-soft)}
+.banner.ok .ico{color:var(--ok)}
+.banner.err{border-color:color-mix(in srgb,var(--danger) 32%,var(--line));background:var(--danger-soft)}
+.banner.err .ico{color:var(--danger)}
+.banner b{font-weight:650}
+.banner .sub{display:block;margin-top:2px;color:var(--muted);font-size:11.5px}
+.chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:999px;border:1px solid var(--line);
+  background:var(--surface-2);color:var(--muted);font-size:11px;white-space:nowrap}
+.chip .dot{width:6px;height:6px}
+.chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 28%,var(--line));background:var(--ok-soft)}
+.chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 28%,var(--line));background:var(--warn-soft)}
+.chip.err{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 28%,var(--line));background:var(--danger-soft)}
+.chip.info{color:var(--info);border-color:color-mix(in srgb,var(--info) 28%,var(--line));background:var(--info-soft)}
+.chip.muted{color:var(--muted);background:var(--surface-3)}
+.badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;font-size:10.5px;font-weight:600;
+  letter-spacing:.02em;background:var(--surface-3);color:var(--muted);border:1px solid var(--line)}
+.badge.php{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+.badge.static{background:var(--info-soft);color:var(--info);border-color:color-mix(in srgb,var(--info) 30%,var(--line))}
+.badge.proxy{background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,var(--line))}
+.badge.p2{background:var(--surface-3);color:var(--muted)}
+.mono{font-family:var(--mono);font-size:11.5px}
+.muted{color:var(--muted)}
+.spacer{flex:1}
+.filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.filter-btn{height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface);
+  color:var(--muted);font-size:12px}
+.filter-btn:hover{background:var(--surface-2);color:var(--text)}
+.filter-btn.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);font-weight:600}
+.search{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 9px;border:1px solid var(--line);
+  border-radius:7px;background:var(--surface);color:var(--muted);min-width:210px}
+.search:focus-within{border-color:var(--accent);color:var(--text)}
+.search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font-size:12.5px}
+.search input::placeholder{color:var(--muted)}
+.tabs{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);
+  overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{border:0;background:transparent;padding:6px 11px;border-radius:6px;color:var(--muted);font-size:12.5px;white-space:nowrap}
+.tab:hover{background:var(--surface-3);color:var(--text)}
+.tab.on{background:var(--surface);color:var(--accent);font-weight:600;box-shadow:0 1px 0 rgba(16,24,40,.04)}
+.tab-panel{margin-top:14px}
+.tab-panel[hidden]{display:none !important}
+.toast{position:fixed;right:22px;bottom:22px;z-index:90;display:flex;align-items:center;gap:8px;max-width:360px;
+  padding:10px 13px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--text);
+  box-shadow:var(--shadow);font-size:12.5px;opacity:0;transform:translateY(8px);pointer-events:none;transition:.16s ease}
+.toast.show{opacity:1;transform:none}
+.toast .ico{color:var(--accent)}
+/* ---------- 建站向导 ---------- */
+.stepper{display:flex;align-items:center;gap:0;margin-bottom:18px;padding:10px 14px;border:1px solid var(--line);
+  border-radius:9px;background:var(--surface)}
+.step{display:flex;align-items:center;gap:8px;min-width:0}
+.step .n{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;flex:none;
+  border-radius:50%;border:1px solid var(--line);background:var(--surface-2);color:var(--muted);font-size:11px;font-weight:650}
+.step .label{font-size:12px;color:var(--muted);white-space:nowrap}
+.step.on .n{background:var(--accent);border-color:var(--accent);color:#fff}
+html[data-theme=dark] .step.on .n{color:#06251f}
+.step.on .label{color:var(--text);font-weight:600}
+.step.done .n{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+.step-line{flex:1;height:1px;min-width:18px;background:var(--line);margin:0 10px}
+.wizard-shell{border:1px solid var(--line);border-radius:11px;background:var(--surface);overflow:hidden}
+.wizard-body{padding:18px 20px 20px}
+.wizard-body h2{margin:0 0 3px;font-size:15px;font-weight:650}
+.wizard-body .intro{margin:0 0 14px;color:var(--muted);font-size:12px;line-height:1.55}
+.wizard-foot{display:flex;align-items:center;gap:9px;padding:12px 20px;border-top:1px solid var(--line);background:var(--surface-2)}
+.wizard-foot .reason{color:var(--muted);font-size:11.5px;line-height:1.5}
+.wizard-foot .actions{margin-left:auto;display:flex;gap:8px}
+.type-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.type-card{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:7px;padding:14px;
+  border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:var(--text);text-align:left;min-height:142px}
+.type-card:hover{border-color:var(--accent-line);background:var(--surface)}
+.type-card.on{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px var(--accent-line) inset}
+.type-card .top{display:flex;align-items:center;gap:8px;width:100%}
+.type-card .ic{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;flex:none;
+  border-radius:8px;background:var(--surface);border:1px solid var(--line);color:var(--accent)}
+.type-card .name{font-size:13.5px;font-weight:650}
+.type-card .desc{color:var(--muted);font-size:11.5px;line-height:1.55;margin:0}
+.type-card .meta{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:4px;color:var(--muted);font-size:10.5px}
+.type-card .pick{position:absolute;right:10px;top:10px;display:none;align-items:center;justify-content:center;
+  width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff}
+html[data-theme=dark] .type-card .pick{color:#06251f}
+.type-card.on .pick{display:inline-flex}
+.type-card .pick .ico{width:11px;height:11px}
+.kind-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft)}
+.kind-row .label{color:var(--muted);font-size:11.5px}
+.kind-seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.kind-seg button{border:0;background:var(--surface);padding:6px 12px;font-size:12px;color:var(--muted);border-right:1px solid var(--line-soft)}
+.kind-seg button:last-child{border-right:0}
+.kind-seg button:hover{background:var(--surface-2);color:var(--text)}
+.kind-seg button.on{background:var(--accent);color:#fff;font-weight:600}
+html[data-theme=dark] .kind-seg button.on{color:#06251f}
+.runtime-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}
+.runtime-card{position:relative;display:flex;flex-direction:column;gap:5px;padding:12px 13px;border:1px solid var(--line);
+  border-radius:9px;background:var(--surface-2);color:var(--text);text-align:left;min-height:82px}
+.runtime-card:hover{border-color:var(--accent-line);background:var(--surface)}
+.runtime-card.on{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 1px var(--accent-line) inset}
+.runtime-card[disabled]{opacity:.62;cursor:not-allowed}
+.runtime-card[disabled]:hover{border-color:var(--line);background:var(--surface-2)}
+.runtime-card .row1{display:flex;align-items:center;gap:7px;width:100%}
+.runtime-card .name{font-size:12.5px;font-weight:650}
+.runtime-card .row2{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:var(--muted);font-size:10.5px}
+.runtime-card .row3{color:var(--muted);font-size:10.5px;line-height:1.4}
+.bind-hint{display:flex;align-items:flex-start;gap:8px;margin-top:12px;padding:9px 11px;border:1px solid var(--line);
+  border-radius:8px;background:var(--surface-2);color:var(--muted);font-size:11.5px;line-height:1.55}
+.bind-hint .ico{color:var(--accent);margin-top:1px}
+.bind-hint[hidden]{display:none !important}
+.p2-note{margin-top:12px}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px}
+.form-grid .wide{grid-column:1 / -1}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.field label{font-size:12px;font-weight:600;color:var(--text-2)}
+.field .req{color:var(--danger);font-weight:500}
+.field input[type=text],.field input[type=number],.field select,.field textarea{height:32px;padding:0 9px;border:1px solid var(--line);
+  border-radius:7px;background:var(--surface);color:var(--text);outline:0;font-size:12.5px;min-width:0}
+.field textarea{height:auto;min-height:66px;padding:8px 9px;resize:vertical;line-height:1.5}
+.field select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-position:calc(100% - 14px) 13px,calc(100% - 9px) 13px;background-size:5px 5px;background-repeat:no-repeat;padding-right:26px}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--accent)}
+.field input[aria-invalid=true],.field select[aria-invalid=true],.field textarea[aria-invalid=true]{border-color:var(--danger);background:var(--danger-soft)}
+.field .hint{color:var(--muted);font-size:10.5px;line-height:1.5;margin:0}
+.field .error{display:none;color:var(--danger);font-size:11px;line-height:1.45;margin:0}
+.field .error.show{display:block}
+.check{display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--text-2);line-height:1.5}
+.check input{margin:2px 0 0}
+.summary{display:grid;grid-template-columns:130px minmax(0,1fr);gap:8px 14px;margin:0;padding:12px 14px;border:1px solid var(--line);
+  border-radius:9px;background:var(--surface-2);font-size:12px}
+.summary dt{color:var(--muted)}
+.summary dd{margin:0;color:var(--text);min-width:0;word-break:break-word}
+.summary dd.mono{font-size:11.5px}
+.success-box{display:flex;align-items:flex-start;gap:9px;margin-top:14px;padding:11px 13px;border:1px solid var(--accent-line);
+  border-radius:9px;background:var(--accent-soft);color:var(--text);font-size:12.5px;line-height:1.55}
+.success-box .ico{color:var(--accent);margin-top:1px}
+
+/* ---------- 列表 ---------- */
+.table-wrap{border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.table{width:100%;border-collapse:collapse;font-size:12px}
+.table th{height:34px;padding:0 10px;text-align:left;color:var(--muted);font-weight:500;font-size:11px;
+  background:var(--surface-2);border-bottom:1px solid var(--line);white-space:nowrap}
+.table td{padding:9px 10px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+.table tr:last-child td{border-bottom:0}
+.table tr.rowlink:hover td{background:var(--surface-2)}
+.table .name-cell{display:flex;flex-direction:column;gap:2px;min-width:0}
+.table .name-cell b{font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.table .name-cell span{color:var(--muted);font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.table .actions-cell{text-align:right;white-space:nowrap}
+.table .row-actions{display:inline-flex;align-items:center;gap:4px}
+.table .row-actions .btn{height:26px;padding:0 8px;font-size:11.5px}
+.table .row-actions .icon-btn{width:26px;height:26px}
+.mobile-list{display:none}
+.mobile-card{border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:11px 12px;margin-bottom:8px}
+.mobile-card .top{display:flex;align-items:flex-start;gap:8px}
+.mobile-card .top b{font-size:12.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mobile-card .top .chip{margin-left:auto}
+.mobile-card .meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;color:var(--muted);font-size:10.5px}
+.mobile-card .foot{display:flex;align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line-soft)}
+.mobile-card .foot .btn{height:26px;font-size:11.5px}
+.empty{display:none;padding:30px 16px;text-align:center;color:var(--muted);font-size:12px}
+.empty .ico{width:28px;height:28px;color:var(--muted);margin-bottom:6px}
+.empty.show{display:block}
+.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px}
+.kv .item{display:flex;align-items:flex-start;gap:12px;padding:9px 0;border-bottom:1px solid var(--line-soft);min-width:0}
+.kv .item .k{width:118px;flex:none;color:var(--muted);font-size:11.5px}
+.kv .item .v{min-width:0;color:var(--text);font-size:12px;word-break:break-word}
+.kv .item .v.mono{font-size:11.5px}
+.kv .item.full{grid-column:1 / -1}
+
+/* ---------- 详情 ---------- */
+.detail-head{display:flex;align-items:flex-start;gap:11px;margin-bottom:14px}
+.detail-head .ic{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:none;
+  border-radius:9px;border:1px solid var(--line);background:var(--surface);color:var(--accent)}
+.detail-head .titles{min-width:0}
+.detail-head h1{margin:0;font-size:19px;font-weight:650;line-height:1.25}
+.detail-head .meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:5px;color:var(--muted);font-size:11px}
+.detail-head .actions{margin-left:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.panel{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:14px 16px;margin-top:14px}
+.panel h3{margin:0 0 10px;font-size:13px;font-weight:650}
+.panel .hint-line{margin:0 0 10px;color:var(--muted);font-size:11.5px;line-height:1.55}
+.config-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 12px}
+.config-grid .field input{height:30px;font-family:var(--mono);font-size:11.5px}
+.ext-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.ext{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+.ext .name{font-size:11.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ext .state{margin-left:auto;color:var(--muted);font-size:10.5px;white-space:nowrap}
+.ext .state.on{color:var(--ok)}
+.switch{position:relative;display:inline-flex;width:28px;height:16px;flex:none;border-radius:999px;border:1px solid var(--line);
+  background:var(--surface-3);opacity:.65;cursor:not-allowed}
+.switch::after{content:"";position:absolute;top:2px;left:3px;width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.switch.on{background:var(--accent-soft);border-color:var(--accent-line)}
+.switch.on::after{left:14px;background:var(--accent)}
+.p2-strip{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:7px 10px;border:1px dashed var(--line);
+  border-radius:7px;background:var(--surface-2);color:var(--muted);font-size:11px}
+.logbox{margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);
+  color:var(--text-2);font-family:var(--mono);font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto}
+.logbox .ln{color:var(--muted)}
+.linked-table{width:100%;border-collapse:collapse;font-size:12px}
+.linked-table th{text-align:left;color:var(--muted);font-weight:500;font-size:11px;padding:0 8px 6px}
+.linked-table td{padding:8px;border-top:1px solid var(--line-soft)}
+.linked-table .mono{font-size:11px}
+
+/* ---------- 窄屏（帧内 430px） ---------- */
+.frame[data-width=narrow] .topbar{padding:0 12px;gap:8px}
+.frame[data-width=narrow] .nav{display:none}
+.frame[data-width=narrow] .menu-btn{display:inline-flex;margin-left:auto}
+.frame[data-width=narrow] .topbar-right{display:none}
+.frame[data-width=narrow] .nav.open{display:flex;position:absolute;top:56px;left:0;right:0;height:auto;
+  flex-direction:column;align-items:stretch;gap:0;padding:6px 8px;background:var(--nav-bg);
+  border-bottom:1px solid var(--nav-line);box-shadow:var(--shadow);z-index:50}
+.frame[data-width=narrow] .nav.open .nav-item{height:40px;justify-content:flex-start;border-radius:7px;font-size:12.5px}
+.frame[data-width=narrow] .nav.open .nav-item.active::after{display:none}
+.frame[data-width=narrow] .nav.open .nav-item.active{background:var(--accent-soft)}
+.frame[data-width=narrow] .subnav{padding:0 10px;height:42px}
+.frame[data-width=narrow] .content{padding:14px 12px 20px}
+.frame[data-width=narrow] .page-head{flex-direction:column;gap:8px}
+.frame[data-width=narrow] .page-head .actions{margin-left:0;width:100%}
+.frame[data-width=narrow] .page-head .actions .btn{flex:1}
+.frame[data-width=narrow] .detail-head{flex-wrap:wrap}
+.frame[data-width=narrow] .detail-head .actions{margin-left:0;width:100%;justify-content:flex-start}
+.frame[data-width=narrow] .detail-head .actions .btn{flex:0 0 auto;font-size:11.5px;padding:0 8px}
+.frame[data-width=narrow] .linked-table th:nth-child(4),
+.frame[data-width=narrow] .linked-table td:nth-child(4){display:none}
+.frame[data-width=narrow] .linked-table{font-size:11.5px}
+.frame[data-width=narrow] .linked-table td{padding:7px 5px}
+.frame[data-width=narrow] .type-grid,.frame[data-width=narrow] .runtime-grid{grid-template-columns:1fr}
+.frame[data-width=narrow] .type-card{min-height:0;padding:11px 12px}
+.frame[data-width=narrow] .form-grid{grid-template-columns:1fr}
+.frame[data-width=narrow] .config-grid{grid-template-columns:1fr 1fr}
+.frame[data-width=narrow] .ext-grid{grid-template-columns:1fr 1fr}
+.frame[data-width=narrow] .kv{grid-template-columns:1fr}
+.frame[data-width=narrow] .kv .item .k{width:96px}
+.frame[data-width=narrow] .kv .item.full{grid-column:auto}
+.frame[data-width=narrow] .stepper{padding:8px 10px;overflow:hidden}
+.frame[data-width=narrow] .step .label{display:none}
+.frame[data-width=narrow] .step-line{margin:0 5px}
+.frame[data-width=narrow] .wizard-body{padding:14px}
+.frame[data-width=narrow] .wizard-foot{flex-wrap:wrap;padding:11px 14px}
+.frame[data-width=narrow] .wizard-foot .reason{width:100%}
+.frame[data-width=narrow] .wizard-foot .actions{width:100%;margin-left:0}
+.frame[data-width=narrow] .wizard-foot .actions .btn{flex:1}
+.frame[data-width=narrow] .summary{grid-template-columns:96px minmax(0,1fr);padding:10px 11px}
+.frame[data-width=narrow] .table-wrap{display:none}
+.frame[data-width=narrow] .mobile-list{display:block}
+.frame[data-width=narrow] .filters{gap:5px}
+.frame[data-width=narrow] .filters .search{min-width:0;flex:1 1 100%;order:-1}
+.frame[data-width=narrow] .panel{padding:12px}
+.frame[data-width=narrow] .tabs{width:100%}
+/*__CSS_END__*/
+</style>
+</head>
+<body>
+<svg class="svg-sprite" aria-hidden="true">
+  <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.7-3.8-9s1.3-6.4 3.8-9Z"/></symbol>
+  <symbol id="i-docker" viewBox="0 0 24 24"><path d="M4 10h16v7a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-7Z"/><path d="M7 10V7h3v3M11 10V7h3v3M15 10V7h3v3M7 14h10"/><path d="M20 10h1a2 2 0 0 0-2-2"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M6 7h12v3a6 6 0 0 1-12 0V7Z"/><path d="M12 16v5"/></symbol>
+  <symbol id="i-tools" viewBox="0 0 24 24"><path d="M14.7 6.3a3.5 3.5 0 0 0-4.6 4.6L4 17l3 3 6.1-6.1a3.5 3.5 0 0 0 4.6-4.6l-2.1 2.1-2-2 2.1-2.1Z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.8 1.8 0 0 0 .4 2l.1.1-2.8 2.8-.1-.1a1.8 1.8 0 0 0-2-.4 1.8 1.8 0 0 0-1 1.6V21h-4v-.1a1.8 1.8 0 0 0-1-1.6 1.8 1.8 0 0 0-2 .4l-.1.1-2.8-2.8.1-.1a1.8 1.8 0 0 0 .4-2 1.8 1.8 0 0 0-1.6-1H3v-4h.1a1.8 1.8 0 0 0 1.6-1 1.8 1.8 0 0 0-.4-2l-.1-.1 2.8-2.8.1.1a1.8 1.8 0 0 0 2 .4 1.8 1.8 0 0 0 1-1.6V3h4v.1a1.8 1.8 0 0 0 1 1.6 1.8 1.8 0 0 0 2-.4l.1-.1 2.8 2.8-.1.1a1.8 1.8 0 0 0-.4 2 1.8 1.8 0 0 0 1.6 1H21v4h-.1a1.8 1.8 0 0 0-1.5 1Z"/></symbol>
+  <symbol id="i-runtime" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M12 7h5M12 17h5"/></symbol>
+  <symbol id="i-static" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7V3Z"/><path d="M14 3v4h4M10 12h5M10 16h5"/></symbol>
+  <symbol id="i-proxy" viewBox="0 0 24 24"><path d="M4 7h10M9 4l3 3-3 3M20 17H10M15 14l-3 3 3 3"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M10 7l-5 5 5 5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3L12 4Z"/><path d="M12 10v4M12 17h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7V5Z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path d="M6 3h12v18H6V3Z"/><path d="M9 8h6M9 12h6M9 16h4"/></symbol>
+  <symbol id="i-socket" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8 12h8"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M12 3v3M15 3v3M9 18v3M12 18v3M15 18v3M3 9h3M3 12h3M3 15h3M18 9h3M18 12h3M18 15h3"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6H5V6h6"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1 1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1-1"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+</svg>
+
+<div class="preview-bar">
+  <div class="title">网站 · 运行环境与建站向导</div>
+  <div class="hint">示意数据 · 零外链 · 可点</div>
+  <div class="seg" id="viewTabs" aria-label="切换预览屏">
+    <button data-view="wizard">建站向导</button>
+    <button data-view="runtimes">运行环境列表</button>
+    <button data-view="php">PHP 环境详情</button>
+    <button data-view="nodego">Node/Go 详情</button>
+    <button data-view="sites">站点列表</button>
+  </div>
+  <div class="seg" id="themeSeg" aria-label="切换主题">
+    <button data-theme-set="light" class="on">浅色</button>
+    <button data-theme-set="dark">深色</button>
+  </div>
+  <div class="seg" id="widthSeg" aria-label="切换宽度">
+    <button data-width-set="desktop" class="on">桌面</button>
+    <button data-width-set="narrow">430px</button>
+  </div>
+</div>
+
+<div class="stage">
+<div class="frame" id="frame" data-width="desktop">
+  <div class="topbar">
+    <div class="brand">
+      <span class="mark"><span class="ico lg"><svg><use href="#i-globe"></use></svg></span></span>
+      Skiff <span class="ver">v0.1</span>
+    </div>
+    <button class="icon-btn menu-btn" id="menuBtn" aria-label="打开菜单" aria-expanded="false"><span class="ico"><svg><use href="#i-menu"></use></svg></span></button>
+    <nav class="nav" id="nav" aria-label="主导航">
+      <button class="nav-item" data-go="sites"><span class="nav-ico"><svg><use href="#i-overview"></use></svg></span>概览</button>
+      <button class="nav-item active" data-go="sites"><span class="nav-ico"><svg><use href="#i-globe"></use></svg></span>网站</button>
+      <button class="nav-item" data-go="docker"><span class="nav-ico"><svg><use href="#i-docker"></use></svg></span>Docker</button>
+      <button class="nav-item" data-go="plugins"><span class="nav-ico"><svg><use href="#i-plug"></use></svg></span>插件</button>
+      <button class="nav-item" data-go="tools"><span class="nav-ico"><svg><use href="#i-tools"></use></svg></span>工具</button>
+      <button class="nav-item" data-go="settings"><span class="nav-ico"><svg><use href="#i-settings"></use></svg></span>设置</button>
+    </nav>
+    <div class="topbar-right">
+      <span class="health"><span class="dot"></span>运行环境正常</span>
+      <span>admin</span>
+    </div>
+  </div>
+  <div class="subnav" id="subnav" aria-label="网站二级导航">
+    <button class="subnav-item active" data-go="sites">网站列表</button>
+    <button class="subnav-item" data-go="runtimes">运行环境</button>
+    <button class="subnav-item" data-go="settings">设置</button>
+  </div>
+  <main class="content" id="content">
+<div class="view" id="view-wizard" data-view="wizard">
+  <div class="page-head">
+    <div class="titles">
+      <h1>新建网站</h1>
+      <p class="sub">先选网站类型，再补对应配置。运行环境站点必须绑定一个已就绪的运行环境。</p>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" data-go="sites"><span class="ico sm"><svg><use href="#i-arrow-left"></use></svg></span>返回网站列表</button>
+    </div>
+  </div>
+
+  <div class="stepper" aria-label="创建步骤">
+    <div class="step on" data-step-dot="1"><span class="n">1</span><span class="label">类型与运行时</span></div>
+    <div class="step-line"></div>
+    <div class="step" data-step-dot="2"><span class="n">2</span><span class="label">站点信息</span></div>
+    <div class="step-line"></div>
+    <div class="step" data-step-dot="3"><span class="n">3</span><span class="label">确认</span></div>
+  </div>
+
+  <div class="wizard-shell">
+    <div class="wizard-body">
+      <div data-wizard-panel="1">
+        <h2>网站类型</h2>
+        <p class="intro">运行环境适合 PHP / Node.js / Go 应用；静态站只托管构建产物；反向代理把请求转发到已有上游。</p>
+        <div class="type-grid">
+          <button class="type-card" type="button" data-type="runtime">
+            <span class="pick"><span class="ico"><svg><use href="#i-check"></use></svg></span></span>
+            <div class="top">
+              <span class="ic"><span class="ico lg"><svg><use href="#i-runtime"></use></svg></span></span>
+              <span class="name">运行环境</span>
+            </div>
+            <p class="desc">PHP / Node.js / Go 应用，绑定版本化运行环境；可共享或独占进程。</p>
+            <div class="meta"><span class="badge php">PHP 可用</span><span>Node/Go P2</span></div>
+          </button>
+          <button class="type-card" type="button" data-type="static">
+            <span class="pick"><span class="ico"><svg><use href="#i-check"></use></svg></span></span>
+            <div class="top">
+              <span class="ic"><span class="ico lg"><svg><use href="#i-static"></use></svg></span></span>
+              <span class="name">静态网站</span>
+            </div>
+            <p class="desc">只托管 HTML / CSS / JS / 图片等文件，不启动任何运行时进程。</p>
+            <div class="meta"><span class="badge static">无需运行时</span><span>域名 + 目录</span></div>
+          </button>
+          <button class="type-card" type="button" data-type="proxy">
+            <span class="pick"><span class="ico"><svg><use href="#i-check"></use></svg></span></span>
+            <div class="top">
+              <span class="ic"><span class="ico lg"><svg><use href="#i-proxy"></use></svg></span></span>
+              <span class="name">反向代理</span>
+            </div>
+            <p class="desc">把域名请求转发到已有上游服务；可选 WebSocket 升级，不创建文档根。</p>
+            <div class="meta"><span class="badge proxy">仅转发</span><span>上游 + WebSocket</span></div>
+          </button>
+        </div>
+
+        <div id="wizardRuntime" hidden>
+          <div class="kind-row">
+            <span class="label">运行环境类型</span>
+            <div class="kind-seg" role="group" aria-label="选择运行时类型">
+              <button type="button" class="on" data-kind="php">PHP</button>
+              <button type="button" data-kind="node">Node.js</button>
+              <button type="button" data-kind="go">Go</button>
+            </div>
+            <span class="hint muted" id="kindHint">P1 只提供 PHP 运行环境</span>
+          </div>
+          <div class="runtime-grid" id="phpRuntimeGrid">
+            <button type="button" class="runtime-card" data-runtime="php-8.5">
+              <div class="row1"><span class="name">PHP 8.5</span><span class="chip ok"><span class="dot"></span>运行中</span><span class="badge">默认</span></div>
+              <div class="row2"><span>3 个站点</span><span>·</span><span class="mono">/www/php/php-fpm.sock</span></div>
+              <div class="row3">共享 FPM 池与 socket；修改环境配置会影响全部绑定站点。</div>
+            </button>
+            <button type="button" class="runtime-card" disabled>
+              <div class="row1"><span class="name">PHP 8.4</span><span class="chip muted">未安装</span><span class="badge p2">P2</span></div>
+              <div class="row2"><span>多版本并行将在 P2 接入</span></div>
+              <div class="row3">同一 kind 可并行多版本；当前未安装，不可选。</div>
+            </button>
+          </div>
+          <div class="runtime-grid" id="nodeGoRuntimeGrid" hidden>
+            <button type="button" class="runtime-card" disabled>
+              <div class="row1"><span class="name">Node.js 22</span><span class="chip muted">P2 设计态</span><span class="badge p2">未实现</span></div>
+              <div class="row2"><span>每站点独立进程</span><span>·</span><span class="mono">30000–32767</span></div>
+              <div class="row3">当前没有构建与进程守护链路，不会创建站点或伪造端口。</div>
+            </button>
+            <button type="button" class="runtime-card" disabled>
+              <div class="row1"><span class="name">Go 1.24</span><span class="chip muted">P2 设计态</span><span class="badge p2">未实现</span></div>
+              <div class="row2"><span>只运行已编译二进制</span><span>·</span><span class="mono">30000–32767</span></div>
+              <div class="row3">P2 不做 go build；需要把编译后的二进制放进站点 index/。</div>
+            </button>
+          </div>
+          <div class="p2-note" id="nodeGoNote" hidden>
+            <div class="banner warn">
+              <span class="ico"><svg><use href="#i-alert"></use></svg></span>
+              <div><b>Node.js / Go 在 P1 不提供建站。</b>本轮只定义模型与信息架构，不安装运行时、不启动进程、不分配端口。
+                <span class="sub">可以查看 P2 设计态的 Node/Go 环境详情，但向导提交按钮保持禁用。</span>
+                <button class="btn ghost" type="button" data-go="nodego" style="height:24px;padding:0 7px;margin-top:5px">查看 P2 设计态</button>
+              </div>
+            </div>
+          </div>
+          <div class="bind-hint" id="bindHint">
+            <span class="ico"><svg><use href="#i-info"></use></svg></span>
+            <span id="bindHintText">选择运行环境后显示绑定约束。</span>
+          </div>
+        </div>
+
+        <div class="bind-hint" id="typeHint">
+          <span class="ico"><svg><use href="#i-info"></use></svg></span>
+          <span>先选择一种网站类型；选中后会显示该类型需要的字段与就绪条件。</span>
+        </div>
+      </div>
+
+      <div data-wizard-panel="2" hidden>
+        <h2>站点信息</h2>
+        <p class="intro" id="step2Intro">填写域名与目录；运行环境站点会绑定上一步选择的运行环境。</p>
+        <div class="form-grid">
+          <div class="field">
+            <label for="wizDomain">主域名 <span class="req">*</span></label>
+            <input id="wizDomain" type="text" placeholder="example.com" autocomplete="off" aria-describedby="errDomain">
+            <p class="error" id="errDomain"></p>
+            <p class="hint" id="domainHint">用于 vhost 与站点目录命名；必须全实例唯一。</p>
+          </div>
+          <div class="field">
+            <label for="wizAliases">别名域名（可选）</label>
+            <input id="wizAliases" type="text" placeholder="www.example.com, api.example.com" autocomplete="off" aria-describedby="errAliases">
+            <p class="error" id="errAliases"></p>
+            <p class="hint">逗号或空格分隔；不能与其他站点的主域名/别名冲突。</p>
+          </div>
+          <div class="field wide" data-field-root>
+            <label for="wizRoot">站点目录 <span class="req">*</span></label>
+            <input id="wizRoot" type="text" placeholder="/www/sites/example.com" autocomplete="off" aria-describedby="errRoot">
+            <p class="error" id="errRoot"></p>
+            <p class="hint">必须是 <span class="mono">/www/sites/</span> 的一级子目录；留空时按主域名自动生成。</p>
+          </div>
+          <div class="field wide" data-field-proxy hidden>
+            <label for="wizTarget">上游地址 <span class="req">*</span></label>
+            <input id="wizTarget" type="text" placeholder="http://127.0.0.1:8080" autocomplete="off" aria-describedby="errTarget">
+            <p class="error" id="errTarget"></p>
+            <p class="hint">仅支持 <span class="mono">http://</span> 或 <span class="mono">https://</span>；不创建 <span class="mono">index/</span>。</p>
+          </div>
+          <div class="field wide" data-field-proxy hidden>
+            <label class="check"><input type="checkbox" id="wizWebsocket"> 启用 WebSocket 升级</label>
+            <p class="hint">开启后 vhost 增加 <span class="mono">Upgrade</span> 与 <span class="mono">Connection</span> 头。</p>
+          </div>
+          <div class="field" data-field-node hidden>
+            <label for="wizCommand">启动命令</label>
+            <input id="wizCommand" type="text" placeholder="node server.js" autocomplete="off" aria-describedby="errCommand">
+            <p class="error" id="errCommand"></p>
+          </div>
+          <div class="field" data-field-node hidden>
+            <label for="wizPort">应用端口</label>
+            <input id="wizPort" type="number" placeholder="30080" min="30000" max="32767" aria-describedby="errPort">
+            <p class="error" id="errPort"></p>
+            <p class="hint">范围 <span class="mono">30000–32767</span>，仅绑定 <span class="mono">127.0.0.1</span>。</p>
+          </div>
+          <div class="field wide">
+            <div class="bind-hint" id="step2BindHint" style="margin-top:0">
+              <span class="ico"><svg><use href="#i-info"></use></svg></span>
+              <span id="step2BindText">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-wizard-panel="3" hidden>
+        <h2>确认创建</h2>
+        <p class="intro">预览只做契约校验，不会写入数据库或创建目录。</p>
+        <dl class="summary">
+          <dt>网站类型</dt><dd id="sumType">—</dd>
+          <dt>运行环境</dt><dd id="sumRuntime">—</dd>
+          <dt>主域名</dt><dd class="mono" id="sumDomain">—</dd>
+          <dt>别名</dt><dd class="mono" id="sumAliases">—</dd>
+          <dt>站点目录</dt><dd class="mono" id="sumRoot">—</dd>
+          <dt>上游 / 端口</dt><dd class="mono" id="sumTarget">—</dd>
+          <dt>WebSocket</dt><dd id="sumWs">—</dd>
+          <dt>绑定提示</dt><dd id="sumBind">—</dd>
+        </dl>
+        <div id="wizardSuccess" hidden>
+          <div class="success-box">
+            <span class="ico"><svg><use href="#i-check"></use></svg></span>
+            <div><b>示意：已通过向导校验。</b><span class="sub" style="display:block;margin-top:2px;color:var(--muted)">真实实现会创建站点记录与 vhost；本预览不写入任何数据。</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="wizard-foot">
+      <span class="reason" id="wizReason">先选择一种网站类型。</span>
+      <div class="actions">
+        <button class="btn" type="button" id="wizBack" hidden><span class="ico sm"><svg><use href="#i-arrow-left"></use></svg></span>上一步</button>
+        <button class="btn primary" type="button" id="wizNext" disabled>下一步</button>
+        <button class="btn primary" type="button" id="wizCreate" hidden>创建网站</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="view" id="view-runtimes" data-view="runtimes" hidden>
+  <div class="page-head">
+    <div class="titles">
+      <h1>运行环境</h1>
+      <p class="sub">业务视角：版本、绑定站点与专属配置。原始容器请到 Docker → 容器管理。</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" data-toast="安装入口为示意；P1 只安装 PHP 8.5，Node/Go 留 P2。"><span class="ico sm"><svg><use href="#i-plus"></use></svg></span>安装运行环境</button>
+    </div>
+  </div>
+
+  <div class="banner info" style="margin-bottom:12px">
+    <span class="ico"><svg><use href="#i-info"></use></svg></span>
+    <div><b>这里管理“运行环境”，不是 Docker 容器列表。</b>运行环境页负责版本、绑定站点与专属配置；Docker 页只做原始容器操作。
+      <span class="sub">同一个底层容器在两处都能看到：Docker 页带“受管运行环境”徽章，并可返回这里。</span>
+    </div>
+  </div>
+
+  <div class="filters" style="margin-bottom:10px" role="group" aria-label="筛选运行环境">
+    <button class="filter-btn on" data-rt-filter="all">全部 <span class="muted">3</span></button>
+    <button class="filter-btn" data-rt-filter="php">PHP <span class="muted">1</span></button>
+    <button class="filter-btn" data-rt-filter="node">Node.js <span class="muted">1</span></button>
+    <button class="filter-btn" data-rt-filter="go">Go <span class="muted">1</span></button>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th style="width:20%">类型 / 版本</th><th style="width:10%">状态</th><th style="width:9%">占用站点</th><th>socket / 端口</th><th style="width:8%">默认</th><th style="width:20%;text-align:right">操作</th></tr>
+      </thead>
+      <tbody id="rtTableBody">
+        <tr class="rowlink" data-kind="php" data-runtime-row="php-8.5">
+          <td><div class="name-cell"><b>PHP 8.5</b><span class="mono">php-8.5 · php:8.5-fpm-alpine</span></div></td>
+          <td><span class="chip ok"><span class="dot"></span>运行中</span></td>
+          <td><button class="btn ghost" type="button" data-go="sites" style="height:24px;padding:0 6px">3 个站点</button></td>
+          <td><span class="mono">/www/php/php-fpm.sock</span><div class="muted" style="font-size:10.5px">0660 · root:nogroup</div></td>
+          <td><span class="badge php">默认</span></td>
+          <td class="actions-cell"><div class="row-actions">
+            <button class="btn" type="button" data-go="php">查看</button>
+            <button class="icon-btn" type="button" title="停止（示意）" data-toast="示意：停止 PHP 8.5 会让 3 个站点显示“环境停止”。"><span class="ico sm"><svg><use href="#i-stop"></use></svg></span></button>
+            <button class="icon-btn" type="button" title="重建（示意）" data-toast="示意：重建会原子切换容器，失败回滚旧配置。"><span class="ico sm"><svg><use href="#i-refresh"></use></svg></span></button>
+          </div></td>
+        </tr>
+        <tr class="rowlink" data-kind="node" data-runtime-row="node-22">
+          <td><div class="name-cell"><b>Node.js 22 <span class="badge p2">P2 设计态</span></b><span class="mono">node-22 · 每站点独立进程</span></div></td>
+          <td><span class="chip muted">P2 未实现</span></td>
+          <td><span class="muted">2 个站点（示意）</span></td>
+          <td><span class="mono">30010, 30011</span><div class="muted" style="font-size:10.5px">仅 127.0.0.1</div></td>
+          <td><span class="muted">—</span></td>
+          <td class="actions-cell"><div class="row-actions">
+            <button class="btn" type="button" data-go="nodego">查看设计态</button>
+          </div></td>
+        </tr>
+        <tr class="rowlink" data-kind="go" data-runtime-row="go-1.24">
+          <td><div class="name-cell"><b>Go 1.24 <span class="badge p2">P2 设计态</span></b><span class="mono">go-1.24 · 只运行已编译二进制</span></div></td>
+          <td><span class="chip muted">P2 未实现</span></td>
+          <td><span class="muted">0 个站点</span></td>
+          <td><span class="mono">30000–32767 未分配</span></td>
+          <td><span class="muted">—</span></td>
+          <td class="actions-cell"><div class="row-actions">
+            <button class="btn" type="button" data-go="nodego">查看设计态</button>
+          </div></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="empty" id="rtEmpty"><span class="ico"><svg><use href="#i-runtime"></use></svg></span><div>当前筛选下没有运行环境。</div></div>
+  </div>
+
+  <div class="mobile-list" id="rtMobileList">
+    <div class="mobile-card" data-kind="php" data-runtime-row="php-8.5">
+      <div class="top"><b>PHP 8.5</b><span class="chip ok"><span class="dot"></span>运行中</span></div>
+      <div class="meta"><span class="badge php">默认</span><span>3 个站点</span><span class="mono">/www/php/php-fpm.sock</span></div>
+      <div class="foot"><button class="btn primary" type="button" data-go="php">查看详情</button><button class="btn" type="button" data-toast="示意：停止 PHP 8.5 会让 3 个站点显示“环境停止”。">停止</button></div>
+    </div>
+    <div class="mobile-card" data-kind="node" data-runtime-row="node-22">
+      <div class="top"><b>Node.js 22</b><span class="chip muted">P2 未实现</span></div>
+      <div class="meta"><span class="badge p2">设计态</span><span>2 个站点（示意）</span><span class="mono">30010, 30011</span></div>
+      <div class="foot"><button class="btn" type="button" data-go="nodego">查看设计态</button></div>
+    </div>
+    <div class="mobile-card" data-kind="go" data-runtime-row="go-1.24">
+      <div class="top"><b>Go 1.24</b><span class="chip muted">P2 未实现</span></div>
+      <div class="meta"><span class="badge p2">设计态</span><span>0 个站点</span><span class="mono">未分配端口</span></div>
+      <div class="foot"><button class="btn" type="button" data-go="nodego">查看设计态</button></div>
+    </div>
+    <div class="empty" id="rtMobileEmpty"><span class="ico"><svg><use href="#i-runtime"></use></svg></span><div>当前筛选下没有运行环境。</div></div>
+  </div>
+</div>
+<div class="view" id="view-php" data-view="php" hidden>
+  <div class="detail-head">
+    <span class="ic"><span class="ico lg"><svg><use href="#i-runtime"></use></svg></span></span>
+    <div class="titles">
+      <h1>PHP 8.5 <span class="badge php">默认版本</span></h1>
+      <div class="meta">
+        <span class="chip ok"><span class="dot"></span>运行中</span>
+        <span class="mono">php-8.5</span><span>·</span><span class="mono">php:8.5-fpm-alpine</span>
+        <span>·</span><span>3 个站点共享 FPM 池</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" data-toast="示意：跳转 Docker 容器详情，带受管运行环境徽章。"><span class="ico sm"><svg><use href="#i-docker"></use></svg></span>在 Docker 中查看</button>
+      <button class="btn" type="button" data-toast="示意：停止后 3 个绑定站点显示“环境停止”。"><span class="ico sm"><svg><use href="#i-stop"></use></svg></span>停止</button>
+      <button class="btn primary" type="button" data-toast="示意：重建会拉取固定 digest，失败回滚旧容器与配置。"><span class="ico sm"><svg><use href="#i-refresh"></use></svg></span>重建</button>
+    </div>
+  </div>
+
+  <div class="banner info" style="margin-bottom:12px">
+    <span class="ico"><svg><use href="#i-info"></use></svg></span>
+    <div><b>共享 FPM 池：</b>本环境的 ini 与 FPM 配置对全部 3 个 PHP 站点生效；站点级覆盖留 P2。
+      <span class="sub">socket 路径由 <span class="mono">site_runtimes.socket_path</span> 记录，vhost 不硬编码。</span>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="PHP 环境详情">
+    <button class="tab on" type="button" data-tab-group="php" data-tab-target="php-base" role="tab" aria-selected="true">基础信息</button>
+    <button class="tab" type="button" data-tab-group="php" data-tab-target="php-config" role="tab" aria-selected="false">专属配置</button>
+    <button class="tab" type="button" data-tab-group="php" data-tab-target="php-logs" role="tab" aria-selected="false">日志</button>
+    <button class="tab" type="button" data-tab-group="php" data-tab-target="php-sites" role="tab" aria-selected="false">关联站点 <span class="muted">3</span></button>
+  </div>
+
+  <div class="tab-panel" id="php-base">
+    <div class="panel" style="margin-top:0">
+      <h3>运行环境</h3>
+      <div class="kv">
+        <div class="item"><span class="k">类型 / 版本</span><span class="v">PHP 8.5（<span class="mono">php-8.5</span>）</span></div>
+        <div class="item"><span class="k">默认版本</span><span class="v">是（PHP 唯一默认）</span></div>
+        <div class="item full"><span class="k">镜像</span><span class="v mono">php:8.5-fpm-alpine</span></div>
+        <div class="item full"><span class="k">digest</span><span class="v mono">sha256:9f2c…4a71（示意截断）</span></div>
+        <div class="item"><span class="k">socket</span><span class="v mono">/www/php/php-fpm.sock</span></div>
+        <div class="item"><span class="k">权限 / 属组</span><span class="v">0660 · root:nogroup（65534）</span></div>
+        <div class="item"><span class="k">启动时间</span><span class="v">2026-11-05 09:12</span></div>
+        <div class="item"><span class="k">最近健康检查</span><span class="v">09:41 通过 · socket 可连接</span></div>
+        <div class="item"><span class="k">绑定站点</span><span class="v">3 个 · 全部运行中</span></div>
+        <div class="item"><span class="k">实际状态来源</span><span class="v">Docker 容器 + socket 探测</span></div>
+      </div>
+    </div>
+    <div class="banner" style="margin-top:12px">
+      <span class="ico"><svg><use href="#i-link"></use></svg></span>
+      <div><b>底层容器：</b><span class="mono">skiff-rt-php-8.5</span> · 标签 <span class="mono">skiff.managed=runtime</span>。
+        在 Docker 页停止它时，这里会显示“状态漂移”，不会静默改写期望状态。</div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="php-config" hidden>
+    <div class="panel" style="margin-top:0">
+      <h3>PHP 扩展</h3>
+      <p class="hint-line">P1 只读：扩展开关会触发受控镜像重建，P2 开放。当前状态来自镜像，不在运行时热插拔。</p>
+      <div class="ext-grid">
+        <div class="ext"><span class="switch on" aria-hidden="true"></span><span class="name">opcache</span><span class="state on">已启用</span></div>
+        <div class="ext"><span class="switch on" aria-hidden="true"></span><span class="name">redis</span><span class="state on">已启用</span></div>
+        <div class="ext"><span class="switch" aria-hidden="true"></span><span class="name">gd</span><span class="state">未启用</span></div>
+        <div class="ext"><span class="switch on" aria-hidden="true"></span><span class="name">intl</span><span class="state on">已启用</span></div>
+        <div class="ext"><span class="switch on" aria-hidden="true"></span><span class="name">pdo_mysql</span><span class="state on">已启用</span></div>
+        <div class="ext"><span class="switch" aria-hidden="true"></span><span class="name">imagick</span><span class="state">未启用</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>php.ini</h3>
+      <p class="hint-line">保存后平滑 reload；失败时恢复原文件并提示失败行。</p>
+      <div class="config-grid">
+        <div class="field">
+          <label for="phpMemory">memory_limit</label>
+          <input id="phpMemory" type="text" value="256M">
+        </div>
+        <div class="field">
+          <label for="phpUpload">upload_max_filesize</label>
+          <input id="phpUpload" type="text" value="64M">
+        </div>
+        <div class="field">
+          <label for="phpPost">post_max_size</label>
+          <input id="phpPost" type="text" value="70M">
+        </div>
+        <div class="field">
+          <label for="phpExec">max_execution_time</label>
+          <input id="phpExec" type="text" value="60">
+        </div>
+      </div>
+      <p class="error" id="phpIniError" style="display:none;margin-top:8px;color:var(--danger);font-size:11px"></p>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <button class="btn primary" type="button" id="phpSaveIni">保存 ini</button>
+        <span class="muted" style="font-size:11px">校验通过后示意保存，不真正 reload。</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>FPM 进程池</h3>
+      <p class="hint-line">共享池影响全部 PHP 站点；P1 不做站点级独立池。</p>
+      <div class="config-grid">
+        <div class="field">
+          <label for="phpPm">pm</label>
+          <select id="phpPm"><option>dynamic</option><option>static</option><option>ondemand</option></select>
+        </div>
+        <div class="field">
+          <label for="phpMaxChildren">max_children</label>
+          <input id="phpMaxChildren" type="text" value="20">
+        </div>
+        <div class="field">
+          <label for="phpStart">start_servers</label>
+          <input id="phpStart" type="text" value="4">
+        </div>
+        <div class="field">
+          <label for="phpMinSpare">min_spare_servers</label>
+          <input id="phpMinSpare" type="text" value="2">
+        </div>
+        <div class="field">
+          <label for="phpMaxSpare">max_spare_servers</label>
+          <input id="phpMaxSpare" type="text" value="8">
+        </div>
+        <div class="field">
+          <label for="phpMaxReq">max_requests</label>
+          <input id="phpMaxReq" type="text" value="500">
+        </div>
+        <div class="field">
+          <label>socket 路径</label>
+          <input type="text" value="/www/php/php-fpm.sock" readonly>
+        </div>
+        <div class="field">
+          <label>socket 权限</label>
+          <input type="text" value="0660 root:nogroup" readonly>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <button class="btn" type="button" data-toast="示意：保存 FPM 配置并平滑 reload；失败回滚。">保存进程池</button>
+        <span class="muted" style="font-size:11px">变更前会做配置检查，不直接重启整个环境。</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="php-logs" hidden>
+    <div class="panel" style="margin-top:0">
+      <h3>运行环境日志</h3>
+      <p class="hint-line">示意日志；真实实现读取 <span class="mono">/www/runtime/php-8.5/log/</span> 与容器日志。</p>
+      <pre class="logbox"><span class="ln">[09:12:04]</span> runtime php-8.5 start: image=php:8.5-fpm-alpine
+<span class="ln">[09:12:04]</span> socket ready /www/php/php-fpm.sock mode=0660 uid=0 gid=65534
+<span class="ln">[09:12:05]</span> fpm pool dynamic pm.max_children=20
+<span class="ln">[09:40:31]</span> config save: memory_limit 256M -> 512M
+<span class="ln">[09:40:31]</span> nginx -t ok; phpfpm reload ok
+<span class="ln">[09:41:02]</span> healthcheck ok (socket connect 2ms)</pre>
+    </div>
+    <div class="panel">
+      <h3>PHP-FPM 错误日志</h3>
+      <pre class="logbox"><span class="ln">[05-Nov-2026 09:12:05]</span> NOTICE: fpm is running, pid 1
+<span class="ln">[05-Nov-2026 09:12:05]</span> NOTICE: ready to handle connections
+<span class="ln">[05-Nov-2026 09:40:31]</span> NOTICE: reloading: execvp("php-fpm", ...)
+<span class="ln">[05-Nov-2026 09:40:31]</span> NOTICE: ready to handle connections</pre>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="php-sites" hidden>
+    <div class="panel" style="margin-top:0">
+      <h3>关联站点 <span class="muted" style="font-weight:400">（3）</span></h3>
+      <p class="hint-line">这些站点共享当前环境的 FPM 池与 socket；环境停止时全部显示“环境停止”。</p>
+      <table class="linked-table">
+        <thead><tr><th>域名</th><th>类型</th><th>状态</th><th>文档根</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">example.com</td><td><span class="badge php">PHP</span></td><td><span class="chip ok"><span class="dot"></span>运行中</span></td><td class="mono">/www/sites/example.com/index</td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>
+          <tr><td class="mono">blog.example.com</td><td><span class="badge php">PHP</span></td><td><span class="chip ok"><span class="dot"></span>运行中</span></td><td class="mono">/www/sites/blog.example.com/index</td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>
+          <tr><td class="mono">shop.example.com</td><td><span class="badge php">PHP</span></td><td><span class="chip ok"><span class="dot"></span>运行中</span></td><td class="mono">/www/sites/shop.example.com/index</td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="view" id="view-nodego" data-view="nodego" hidden>
+  <div class="detail-head">
+    <span class="ic"><span class="ico lg"><svg><use href="#i-runtime"></use></svg></span></span>
+    <div class="titles">
+      <h1 id="ngTitle">Node.js 22 <span class="badge p2">P2 设计态</span></h1>
+      <div class="meta">
+        <span class="chip muted">P2 未实现</span>
+        <span class="mono" id="ngId">node-22</span><span>·</span><span class="mono" id="ngImage">node:22-alpine</span>
+        <span>·</span><span id="ngModel">每站点独立容器 + loopback 端口</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" disabled title="P1 不提供">安装</button>
+      <button class="btn" type="button" disabled title="P1 不提供">启动</button>
+      <button class="btn primary" type="button" disabled title="P2 才提供">重建</button>
+      <button class="btn" type="button" data-toast="示意：P2 接入后跳转 Docker 容器详情。"><span class="ico sm"><svg><use href="#i-docker"></use></svg></span>Docker 容器</button>
+    </div>
+  </div>
+
+  <div class="banner warn" style="margin-bottom:12px">
+    <span class="ico"><svg><use href="#i-alert"></use></svg></span>
+    <div><b>P1 只定义模型，不提供真实运行。</b>没有安装、构建、进程守护、端口分配与健康检查链路，因此安装/启动/重建按钮保持禁用。
+      <span class="sub">P2 落地时：每站点一个容器，宿主只绑定 <span class="mono">127.0.0.1:&lt;port&gt;</span>，nginx 反代；Go 只运行用户已编译二进制，不做 <span class="mono">go build</span>。</span>
+    </div>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <span class="muted" style="font-size:11.5px">设计态切换</span>
+    <div class="kind-seg" id="ngKindSeg" role="group" aria-label="Node 或 Go 设计态">
+      <button type="button" class="on" data-ng-kind="node">Node.js</button>
+      <button type="button" data-ng-kind="go">Go</button>
+    </div>
+    <span class="p2-strip" style="margin:0">同一套信息架构，进程模型与端口规则一致</span>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Node/Go 环境详情">
+    <button class="tab on" type="button" data-tab-group="ng" data-tab-target="ng-base" role="tab" aria-selected="true">基础信息</button>
+    <button class="tab" type="button" data-tab-group="ng" data-tab-target="ng-config" role="tab" aria-selected="false">专属配置</button>
+    <button class="tab" type="button" data-tab-group="ng" data-tab-target="ng-sites" role="tab" aria-selected="false">关联站点</button>
+    <button class="tab" type="button" data-tab-group="ng" data-tab-target="ng-logs" role="tab" aria-selected="false">日志</button>
+  </div>
+
+  <div class="tab-panel" id="ng-base">
+    <div class="panel" style="margin-top:0">
+      <h3>运行环境</h3>
+      <div class="kv">
+        <div class="item"><span class="k">类型 / 版本</span><span class="v" id="ngBaseVersion">Node.js 22（node-22）</span></div>
+        <div class="item"><span class="k">运行模型</span><span class="v" id="ngBaseModel">每站点独立容器 + 独立端口</span></div>
+        <div class="item full"><span class="k">镜像</span><span class="v mono" id="ngBaseImage">node:22-alpine</span></div>
+        <div class="item"><span class="k">端口范围</span><span class="v mono" id="ngBasePort">30000–32767，仅 127.0.0.1</span></div>
+        <div class="item"><span class="k">健康检查</span><span class="v" id="ngBaseHealth">HTTP GET /，1s 超时 × 10 次</span></div>
+        <div class="item"><span class="k">关联站点</span><span class="v" id="ngBaseSites">2 个（示意）</span></div>
+        <div class="item"><span class="k">状态来源</span><span class="v">P2 接入后：Docker 容器 + 端口探测</span></div>
+        <div class="item"><span class="k">配置落点</span><span class="v mono" id="ngBaseConf">/www/runtime/node-22/conf/</span></div>
+      </div>
+    </div>
+    <div class="banner info" style="margin-top:12px">
+      <span class="ico"><svg><use href="#i-info"></use></svg></span>
+      <div><b>与 PHP 的关键差异：</b>PHP 共享 FPM 池与 socket；Node/Go 每站点独占进程与端口。运行环境只提供版本、镜像与启动模板，不承载站点数据。</div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="ng-config" hidden>
+    <div class="panel" style="margin-top:0">
+      <h3>启动与健康检查模板</h3>
+      <p class="hint-line">P2 才可编辑；站点级命令与端口仍落在站点记录，环境只提供默认模板。</p>
+      <div class="config-grid">
+        <div class="field wide">
+          <label>默认启动命令</label>
+          <input type="text" value="node index/server.js" readonly data-ng-command>
+        </div>
+        <div class="field">
+          <label>健康检查路径</label>
+          <input type="text" value="/" readonly>
+        </div>
+        <div class="field">
+          <label>端口分配范围</label>
+          <input type="text" value="30000–32767" readonly>
+        </div>
+        <div class="field">
+          <label>重启策略</label>
+          <input type="text" value="unless-stopped（P2）" readonly>
+        </div>
+        <div class="field">
+          <label>网络</label>
+          <input type="text" value="bridge + 127.0.0.1 映射" readonly>
+        </div>
+      </div>
+      <div class="banner" style="margin-top:10px">
+        <span class="ico"><svg><use href="#i-info"></use></svg></span>
+        <div id="ngConfigNote">Node 站点从运行环境镜像启动，工作目录挂载 <span class="mono">/www/sites/&lt;域名&gt;/index</span>；依赖安装与构建不在面板内静默执行。</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>进程与端口约束</h3>
+      <div class="kv">
+        <div class="item"><span class="k">进程隔离</span><span class="v">每站点一个容器，互不影响</span></div>
+        <div class="item"><span class="k">端口暴露</span><span class="v mono">127.0.0.1:&lt;port&gt; → 容器端口</span></div>
+        <div class="item"><span class="k">日志</span><span class="v mono">/www/sites/&lt;域名&gt;/log/app.log</span></div>
+        <div class="item"><span class="k">失败处理</span><span class="v">健康检查失败 → 站点 error，保留日志，不无限重试</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="ng-sites" hidden>
+    <div class="panel" style="margin-top:0">
+      <h3>关联站点 <span class="muted" style="font-weight:400">（示意）</span></h3>
+      <p class="hint-line">每个站点独立端口与进程；删除运行环境前必须先改绑或删除这些站点。</p>
+      <table class="linked-table">
+        <thead><tr><th>域名</th><th>类型</th><th>端口</th><th>健康检查</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">node.example.com</td><td><span class="badge php">Node</span></td><td class="mono">30010</td><td><span class="chip warn">P2 未实现</span></td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>
+          <tr><td class="mono">jobs.example.com</td><td><span class="badge php">Node</span></td><td class="mono">30011</td><td><span class="chip warn">P2 未实现</span></td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="ng-logs" hidden>
+    <div class="panel" style="margin-top:0">
+      <h3>运行环境日志</h3>
+      <p class="hint-line">P2 设计态：聚合环境操作日志与各站点 app.log；P1 不存在这些真实日志。</p>
+      <pre class="logbox"><span class="ln">[P2]</span> runtime node-22 install: image=node:22-alpine
+<span class="ln">[P2]</span> site node.example.com start: port=30010 command="node index/server.js"
+<span class="ln">[P2]</span> healthcheck GET http://127.0.0.1:30010/ -> 200
+<span class="ln">[P2]</span> site jobs.example.com start: port=30011 command="node index/server.js"</pre>
+    </div>
+  </div>
+</div>
+<div class="view" id="view-sites" data-view="sites" hidden>
+  <div class="page-head">
+    <div class="titles">
+      <h1>网站列表</h1>
+      <p class="sub">三类站点共用一张列表；运行环境停止时，绑定站点显示“环境停止”，不会单独启停。</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button" data-go="runtimes"><span class="ico sm"><svg><use href="#i-runtime"></use></svg></span>运行环境</button>
+      <button class="btn primary" type="button" data-go="wizard"><span class="ico sm"><svg><use href="#i-plus"></use></svg></span>新建网站</button>
+    </div>
+  </div>
+
+  <div class="banner info" style="margin-bottom:12px">
+    <span class="ico"><svg><use href="#i-info"></use></svg></span>
+    <div><b>状态口径：</b>站点自身期望状态 ∩ 运行环境实际状态。环境停止/异常时显示“环境停止/环境异常”，点击可跳到环境详情。
+      <span class="sub">反向代理站点不创建文档根；静态站点不依赖运行环境。</span>
+    </div>
+  </div>
+
+  <div class="filters" style="margin-bottom:10px" role="group" aria-label="筛选站点">
+    <button class="filter-btn on" data-site-filter="all">全部 <span class="muted">6</span></button>
+    <button class="filter-btn" data-site-filter="runtime">运行环境 <span class="muted">4</span></button>
+    <button class="filter-btn" data-site-filter="static">静态 <span class="muted">1</span></button>
+    <button class="filter-btn" data-site-filter="proxy">反向代理 <span class="muted">1</span></button>
+    <div class="spacer"></div>
+    <span class="search"><span class="ico sm"><svg><use href="#i-search"></use></svg></span><input id="siteSearch" type="text" placeholder="搜索域名或运行环境" aria-label="搜索站点"></span>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th style="width:23%">站点</th><th style="width:10%">类型</th><th style="width:23%">运行环境 / 上游</th><th style="width:9%">状态</th><th style="width:14%">端口 / socket</th><th style="width:9%">证书</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody id="siteTableBody">
+        <tr class="rowlink" data-site-type="runtime" data-kind="php" data-domain="example.com">
+          <td><div class="name-cell"><b>example.com</b><span class="mono">/www/sites/example.com/index</span></div></td>
+          <td><span class="badge php">PHP</span></td>
+          <td><span class="mono">php-8.5</span><div class="muted" style="font-size:10.5px">PHP 8.5 · 共享池</div></td>
+          <td><span class="chip ok"><span class="dot"></span>运行中</span></td>
+          <td><span class="mono">socket</span><div class="muted" style="font-size:10.5px">/www/php/php-fpm.sock</div></td>
+          <td><span class="chip ok">已签发</span></td>
+          <td class="actions-cell"><div class="row-actions"><button class="btn" type="button" data-toast="示意：停止站点只影响自身；PHP 环境停止则全部显示环境停止。">停止</button><button class="icon-btn" type="button" title="更多（示意）" data-toast="站点详情沿用现有六标签页；本预览不展开。"><span class="ico sm"><svg><use href="#i-chevron"></use></svg></span></button></div></td>
+        </tr>
+        <tr class="rowlink" data-site-type="runtime" data-kind="php" data-domain="blog.example.com">
+          <td><div class="name-cell"><b>blog.example.com</b><span class="mono">/www/sites/blog.example.com/index</span></div></td>
+          <td><span class="badge php">PHP</span></td>
+          <td><span class="mono">php-8.5</span><div class="muted" style="font-size:10.5px">PHP 8.5 · 共享池</div></td>
+          <td><span class="chip ok"><span class="dot"></span>运行中</span></td>
+          <td><span class="mono">socket</span><div class="muted" style="font-size:10.5px">/www/php/php-fpm.sock</div></td>
+          <td><span class="chip ok">已签发</span></td>
+          <td class="actions-cell"><div class="row-actions"><button class="btn" type="button" data-toast="示意：停止站点只影响自身；PHP 环境停止则全部显示环境停止。">停止</button><button class="icon-btn" type="button" title="更多（示意）" data-toast="站点详情沿用现有六标签页；本预览不展开。"><span class="ico sm"><svg><use href="#i-chevron"></use></svg></span></button></div></td>
+        </tr>
+        <tr class="rowlink" data-site-type="runtime" data-kind="php" data-domain="shop.example.com">
+          <td><div class="name-cell"><b>shop.example.com</b><span class="mono">/www/sites/shop.example.com/index</span></div></td>
+          <td><span class="badge php">PHP</span></td>
+          <td><span class="mono">php-8.5</span><div class="muted" style="font-size:10.5px">PHP 8.5 · 共享池</div></td>
+          <td><span class="chip ok"><span class="dot"></span>运行中</span></td>
+          <td><span class="mono">socket</span><div class="muted" style="font-size:10.5px">/www/php/php-fpm.sock</div></td>
+          <td><span class="chip muted">未配置</span></td>
+          <td class="actions-cell"><div class="row-actions"><button class="btn" type="button" data-toast="示意：停止站点只影响自身；PHP 环境停止则全部显示环境停止。">停止</button><button class="icon-btn" type="button" title="更多（示意）" data-toast="站点详情沿用现有六标签页；本预览不展开。"><span class="ico sm"><svg><use href="#i-chevron"></use></svg></span></button></div></td>
+        </tr>
+        <tr class="rowlink" data-site-type="static" data-kind="static" data-domain="static.example.com">
+          <td><div class="name-cell"><b>static.example.com</b><span class="mono">/www/sites/static.example.com/index</span></div></td>
+          <td><span class="badge static">静态</span></td>
+          <td><span class="muted">无运行环境</span><div class="muted" style="font-size:10.5px">静态文件托管</div></td>
+          <td><span class="chip ok"><span class="dot"></span>运行中</span></td>
+          <td><span class="muted">—</span></td>
+          <td><span class="chip ok">已签发</span></td>
+          <td class="actions-cell"><div class="row-actions"><button class="btn" type="button" data-toast="示意：静态站点启停仅影响 nginx server 块。">停止</button><button class="icon-btn" type="button" title="更多（示意）" data-toast="站点详情沿用现有六标签页；本预览不展开。"><span class="ico sm"><svg><use href="#i-chevron"></use></svg></span></button></div></td>
+        </tr>
+        <tr class="rowlink" data-site-type="proxy" data-kind="proxy" data-domain="api.example.com">
+          <td><div class="name-cell"><b>api.example.com</b><span class="mono">/www/sites/api.example.com/conf</span></div></td>
+          <td><span class="badge proxy">反向代理</span></td>
+          <td><span class="mono">http://127.0.0.1:8080</span><div class="muted" style="font-size:10.5px">WebSocket 已开启</div></td>
+          <td><span class="chip ok"><span class="dot"></span>运行中</span></td>
+          <td><span class="muted">—</span></td>
+          <td><span class="chip muted">未配置</span></td>
+          <td class="actions-cell"><div class="row-actions"><button class="btn" type="button" data-toast="示意：反代站点启停只改 vhost，不建文档根。">停止</button><button class="icon-btn" type="button" title="更多（示意）" data-toast="站点详情沿用现有六标签页；本预览不展开。"><span class="ico sm"><svg><use href="#i-chevron"></use></svg></span></button></div></td>
+        </tr>
+        <tr class="rowlink" data-site-type="runtime" data-kind="node" data-domain="node.example.com">
+          <td><div class="name-cell"><b>node.example.com</b><span class="mono">/www/sites/node.example.com/index</span></div></td>
+          <td><span class="badge php">Node</span> <span class="badge p2">P2</span></td>
+          <td><span class="mono">node-22</span><div class="muted" style="font-size:10.5px">每站点独立进程</div></td>
+          <td><span class="chip muted">P2 未实现</span></td>
+          <td><span class="mono">30010</span><div class="muted" style="font-size:10.5px">127.0.0.1</div></td>
+          <td><span class="chip muted">—</span></td>
+          <td class="actions-cell"><div class="row-actions"><button class="btn" type="button" data-go="nodego">设计态</button></div></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="empty" id="siteEmpty"><span class="ico"><svg><use href="#i-globe"></use></svg></span><div>没有匹配的站点。<br><button class="btn primary" type="button" data-go="wizard" style="margin-top:8px">新建网站</button></div></div>
+  </div>
+
+  <div class="mobile-list" id="siteMobileList">
+    <div class="mobile-card" data-site-type="runtime" data-kind="php" data-domain="example.com">
+      <div class="top"><b>example.com</b><span class="chip ok"><span class="dot"></span>运行中</span></div>
+      <div class="meta"><span class="badge php">PHP</span><span class="mono">php-8.5</span><span class="mono">socket</span><span>证书已签发</span></div>
+      <div class="foot"><button class="btn" type="button" data-toast="示意：停止站点只影响自身。">停止</button><button class="btn" type="button" data-toast="站点详情沿用现有六标签页；本预览不展开。">详情</button></div>
+    </div>
+    <div class="mobile-card" data-site-type="runtime" data-kind="php" data-domain="blog.example.com">
+      <div class="top"><b>blog.example.com</b><span class="chip ok"><span class="dot"></span>运行中</span></div>
+      <div class="meta"><span class="badge php">PHP</span><span class="mono">php-8.5</span><span class="mono">socket</span><span>证书已签发</span></div>
+      <div class="foot"><button class="btn" type="button" data-toast="示意：停止站点只影响自身。">停止</button><button class="btn" type="button" data-toast="站点详情沿用现有六标签页；本预览不展开。">详情</button></div>
+    </div>
+    <div class="mobile-card" data-site-type="runtime" data-kind="php" data-domain="shop.example.com">
+      <div class="top"><b>shop.example.com</b><span class="chip ok"><span class="dot"></span>运行中</span></div>
+      <div class="meta"><span class="badge php">PHP</span><span class="mono">php-8.5</span><span class="mono">socket</span><span>证书未配置</span></div>
+      <div class="foot"><button class="btn" type="button" data-toast="示意：停止站点只影响自身。">停止</button><button class="btn" type="button" data-toast="站点详情沿用现有六标签页；本预览不展开。">详情</button></div>
+    </div>
+    <div class="mobile-card" data-site-type="static" data-kind="static" data-domain="static.example.com">
+      <div class="top"><b>static.example.com</b><span class="chip ok"><span class="dot"></span>运行中</span></div>
+      <div class="meta"><span class="badge static">静态</span><span>无运行环境</span><span>证书已签发</span></div>
+      <div class="foot"><button class="btn" type="button" data-toast="示意：静态站点启停仅影响 nginx server 块。">停止</button><button class="btn" type="button" data-toast="站点详情沿用现有六标签页；本预览不展开。">详情</button></div>
+    </div>
+    <div class="mobile-card" data-site-type="proxy" data-kind="proxy" data-domain="api.example.com">
+      <div class="top"><b>api.example.com</b><span class="chip ok"><span class="dot"></span>运行中</span></div>
+      <div class="meta"><span class="badge proxy">反向代理</span><span class="mono">127.0.0.1:8080</span><span>WebSocket</span></div>
+      <div class="foot"><button class="btn" type="button" data-toast="示意：反代站点启停只改 vhost。">停止</button><button class="btn" type="button" data-toast="站点详情沿用现有六标签页；本预览不展开。">详情</button></div>
+    </div>
+    <div class="mobile-card" data-site-type="runtime" data-kind="node" data-domain="node.example.com">
+      <div class="top"><b>node.example.com</b><span class="chip muted">P2 未实现</span></div>
+      <div class="meta"><span class="badge php">Node</span><span class="mono">node-22</span><span class="mono">30010</span></div>
+      <div class="foot"><button class="btn" type="button" data-go="nodego">设计态</button></div>
+    </div>
+    <div class="empty" id="siteMobileEmpty"><span class="ico"><svg><use href="#i-globe"></use></svg></span><div>没有匹配的站点。</div></div>
+  </div>
+</div>
+  </main>
+</div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"><span class="ico"><svg><use href="#i-check"></use></svg></span><span id="toastText"></span></div>
+<script>
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const frame = $('#frame');
+const content = $('#content');
+const toastEl = $('#toast');
+const toastText = $('#toastText');
+let toastTimer = 0;
+
+const state = {
+  view: 'wizard',
+  theme: 'light',
+  width: 'desktop',
+  wiz: { type: null, kind: 'php', runtime: null, step: 1 },
+  rtFilter: 'all',
+  siteFilter: 'all',
+  siteQuery: ''
+};
+
+const viewLabels = {
+  wizard: '建站向导', runtimes: '运行环境列表', php: 'PHP 环境详情',
+  nodego: 'Node/Go 详情', sites: '站点列表'
+};
+
+function toast(msg) {
+  toastText.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3200);
+}
+
+function closeDrawer() {
+  const nav = $('#nav');
+  nav.classList.remove('open');
+  $('#menuBtn').setAttribute('aria-expanded', 'false');
+}
+
+function showView(view) {
+  state.view = view;
+  $$('.view').forEach(el => { el.hidden = el.dataset.view !== view; });
+  $$('#viewTabs [data-view]').forEach(btn => btn.classList.toggle('on', btn.dataset.view === view));
+  $$('#subnav .subnav-item').forEach(btn => {
+    const active = (view === 'sites' || view === 'wizard') ? btn.dataset.go === 'sites'
+      : (view === 'runtimes' || view === 'php' || view === 'nodego') ? btn.dataset.go === 'runtimes'
+      : btn.dataset.go === 'settings';
+    btn.classList.toggle('active', active);
+  });
+  content.scrollTop = 0;
+  resetViewTabs(view);
+  closeDrawer();
+}
+
+function resetViewTabs(view) {
+  if (view === 'php') {
+    $$('[data-tab-group="php"]').forEach((t, i) => {
+      t.classList.toggle('on', i === 0);
+      t.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+    });
+    $$('.tab-panel').forEach(p => { p.hidden = p.id !== 'php-base'; });
+  } else if (view === 'nodego') {
+    $$('[data-tab-group="ng"]').forEach((t, i) => {
+      t.classList.toggle('on', i === 0);
+      t.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+    });
+    $$('.tab-panel').forEach(p => { p.hidden = p.id !== 'ng-base'; });
+  }
+}
+
+// 主题 / 宽度
+function setTheme(theme) {
+  state.theme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  $$('#themeSeg [data-theme-set]').forEach(btn => {
+    const on = btn.dataset.themeSet === theme;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+function setWidth(width) {
+  state.width = width;
+  frame.setAttribute('data-width', width);
+  $$('#widthSeg [data-width-set]').forEach(btn => {
+    const on = btn.dataset.widthSet === width;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  closeDrawer();
+}
+
+$('#themeSeg').addEventListener('click', e => {
+  const btn = e.target.closest('[data-theme-set]');
+  if (btn) setTheme(btn.dataset.themeSet);
+});
+$('#widthSeg').addEventListener('click', e => {
+  const btn = e.target.closest('[data-width-set]');
+  if (btn) setWidth(btn.dataset.widthSet);
+});
+$('#viewTabs').addEventListener('click', e => {
+  const btn = e.target.closest('[data-view]');
+  if (btn) showView(btn.dataset.view);
+});
+$('#menuBtn').addEventListener('click', () => {
+  const nav = $('#nav');
+  const open = !nav.classList.contains('open');
+  nav.classList.toggle('open', open);
+  $('#menuBtn').setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDrawer();
+});
+document.addEventListener('click', e => {
+  const go = e.target.closest('[data-go]');
+  if (go) {
+    const dest = go.dataset.go;
+    if (viewLabels[dest]) showView(dest);
+    else if (dest === 'docker') toast('示意：Docker 容器页只做原始容器管理；本预览聚焦网站。');
+    else if (dest === 'plugins') toast('示意：插件中心不在本预览范围。');
+    else if (dest === 'tools') toast('示意：工具菜单不在本预览范围。');
+    else toast('示意：设置页不在本预览范围。');
+    return;
+  }
+  const t = e.target.closest('[data-toast]');
+  if (t) toast(t.dataset.toast);
+});
+
+// 页内标签
+document.addEventListener('click', e => {
+  const tab = e.target.closest('[data-tab-target]');
+  if (!tab) return;
+  const group = tab.dataset.tabGroup;
+  $$(`[data-tab-group="${group}"]`).forEach(t => {
+    const on = t === tab;
+    t.classList.toggle('on', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  $$('.tab-panel').forEach(p => { p.hidden = p.id !== tab.dataset.tabTarget; });
+});
+
+setTheme('light');
+setWidth('desktop');
+showView('wizard');
+// ---------- 建站向导 ----------
+const wiz = state.wiz;
+const typeLabels = { runtime: '运行环境站点', static: '静态网站', proxy: '反向代理' };
+const runtimeLabels = { php: 'PHP 8.5', node: 'Node.js 22', go: 'Go 1.24' };
+const existingDomains = new Set($$('#siteTableBody tr').map(tr => tr.dataset.domain));
+
+const domainInput = $('#wizDomain');
+const aliasesInput = $('#wizAliases');
+const rootInput = $('#wizRoot');
+const targetInput = $('#wizTarget');
+const wsInput = $('#wizWebsocket');
+const commandInput = $('#wizCommand');
+const portInput = $('#wizPort');
+let rootTouched = false;
+
+function setError(input, errId, msg) {
+  const err = $('#' + errId);
+  if (msg) {
+    input.setAttribute('aria-invalid', 'true');
+    err.textContent = msg;
+    err.classList.add('show');
+  } else {
+    input.removeAttribute('aria-invalid');
+    err.textContent = '';
+    err.classList.remove('show');
+  }
+}
+
+function step2FieldsFor(type, kind) {
+  $$('[data-field-root]').forEach(el => { el.hidden = type === 'proxy'; });
+  $$('[data-field-proxy]').forEach(el => { el.hidden = type !== 'proxy'; });
+  $$('[data-field-node]').forEach(el => { el.hidden = !(type === 'runtime' && (kind === 'node' || kind === 'go')); });
+  const hint = $('#step2BindText');
+  if (type === 'runtime' && kind === 'php') {
+    hint.textContent = '绑定 PHP 8.5：共享 FPM 池与 socket；此站点会与另外 3 个站点共享环境配置。';
+  } else if (type === 'runtime') {
+    hint.textContent = '每站点独立容器与 loopback 端口；P1 不提供 Node/Go 真实创建，提交按钮保持禁用。';
+  } else if (type === 'static') {
+    hint.textContent = '不绑定运行环境；只创建 /www/sites/<域名>/index 与静态 vhost。';
+  } else {
+    hint.textContent = '不创建文档根；只生成转发配置，WebSocket 可选。';
+  }
+}
+
+function updateWizardFooter() {
+  const next = $('#wizNext');
+  const reason = $('#wizReason');
+  if (wiz.step === 1) {
+    if (!wiz.type) {
+      next.disabled = true; reason.textContent = '先选择一种网站类型。';
+    } else if (wiz.type === 'runtime' && wiz.kind === 'php' && !wiz.runtime) {
+      next.disabled = true; reason.textContent = '请选择一个已就绪的 PHP 运行环境。';
+    } else if (wiz.type === 'runtime' && wiz.kind !== 'php') {
+      next.disabled = true; reason.textContent = 'Node.js / Go 在 P1 只定义模型，不会创建站点；请先看 P2 设计态。';
+    } else {
+      next.disabled = false;
+      reason.textContent = wiz.type === 'runtime'
+        ? '已绑定 PHP 8.5；下一步填写域名与目录。'
+        : '下一步填写域名与' + (wiz.type === 'proxy' ? '上游地址。' : '目录。');
+    }
+  } else if (wiz.step === 2) {
+    next.disabled = false; reason.textContent = '必填项会做格式与冲突校验；保存前不会写数据。';
+  } else {
+    next.disabled = true; reason.textContent = '确认信息后创建；本预览不会写入数据库。';
+  }
+}
+
+function setWizardStep(step) {
+  wiz.step = step;
+  $$('[data-wizard-panel]').forEach(p => { p.hidden = Number(p.dataset.wizardPanel) !== step; });
+  $$('[data-step-dot]').forEach(dot => {
+    const n = Number(dot.dataset.stepDot);
+    dot.classList.toggle('on', n === step);
+    dot.classList.toggle('done', n < step);
+  });
+  $('#wizBack').hidden = step === 1;
+  $('#wizNext').hidden = step === 3;
+  $('#wizCreate').hidden = step !== 3;
+  if (step === 2) step2FieldsFor(wiz.type, wiz.kind);
+  if (step === 3) fillSummary();
+  updateWizardFooter();
+}
+
+function updateTypeHint() {
+  const hint = $('#typeHint');
+  const text = hint.querySelector('span:last-child');
+  hint.hidden = false;
+  if (!wiz.type) {
+    text.textContent = '先选择一种网站类型；选中后会显示该类型需要的字段与就绪条件。';
+  } else if (wiz.type === 'static') {
+    text.textContent = '静态站不绑定运行环境：只需要域名与目录，创建后生成静态 vhost。';
+  } else if (wiz.type === 'proxy') {
+    text.textContent = '反向代理不绑定运行环境：不创建文档根，只生成转发配置并可选 WebSocket。';
+  } else {
+    hint.hidden = true;
+  }
+}
+
+function selectType(type) {
+  wiz.type = type;
+  $$('.type-card').forEach(c => c.classList.toggle('on', c.dataset.type === type));
+  $('#wizardRuntime').hidden = type !== 'runtime';
+  updateTypeHint();
+  if (type === 'runtime') {
+    $('#bindHintText').textContent = wiz.kind === 'php'
+      ? '选择 PHP 运行环境；同一环境的所有 PHP 站点共享 FPM 池与 socket。'
+      : 'Node.js / Go 每站点独立进程与端口；P1 尚未提供运行链路。';
+  }
+  step2FieldsFor(type, wiz.kind);
+  updateWizardFooter();
+}
+
+function selectKind(kind) {
+  if (wiz.kind === kind) return;
+  wiz.kind = kind;
+  wiz.runtime = null;
+  $$('[data-kind]').forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
+  $('.runtime-card[data-runtime]') && $$('.runtime-card').forEach(c => c.classList.remove('on'));
+  const phpGrid = $('#phpRuntimeGrid');
+  const ngGrid = $('#nodeGoRuntimeGrid');
+  const note = $('#nodeGoNote');
+  phpGrid.hidden = kind !== 'php';
+  ngGrid.hidden = kind === 'php';
+  note.hidden = kind === 'php';
+  $('#kindHint').textContent = kind === 'php' ? 'P1 只提供 PHP 运行环境' : 'P2 设计态：不会安装或创建站点';
+  $('#bindHintText').textContent = kind === 'php'
+    ? '选择 PHP 运行环境；同一环境的所有 PHP 站点共享 FPM 池与 socket。'
+    : 'Node.js / Go 每站点独立进程与端口；P1 尚未提供运行链路，不能选择环境。';
+  updateWizardFooter();
+}
+
+$$('.type-card').forEach(card => {
+  card.addEventListener('click', () => selectType(card.dataset.type));
+});
+$$('[data-kind]').forEach(btn => {
+  btn.addEventListener('click', () => selectKind(btn.dataset.kind));
+});
+$$('.runtime-card[data-runtime]').forEach(card => {
+  card.addEventListener('click', () => {
+    wiz.runtime = card.dataset.runtime;
+    $$('.runtime-card').forEach(c => c.classList.toggle('on', c === card));
+    $('#bindHintText').textContent = '已绑定 PHP 8.5：共享 FPM 池与 socket（/www/php/php-fpm.sock）；环境配置影响全部绑定站点。';
+    updateWizardFooter();
+  });
+});
+
+domainInput.addEventListener('input', () => {
+  const domain = domainInput.value.trim().toLowerCase();
+  if (!rootTouched) rootInput.value = domain ? `/www/sites/${domain}` : '';
+  setError(domainInput, 'errDomain', '');
+  setError(aliasesInput, 'errAliases', '');
+});
+rootInput.addEventListener('input', () => { rootTouched = true; setError(rootInput, 'errRoot', ''); });
+aliasesInput.addEventListener('input', () => setError(aliasesInput, 'errAliases', ''));
+targetInput.addEventListener('input', () => setError(targetInput, 'errTarget', ''));
+commandInput.addEventListener('input', () => setError(commandInput, 'errCommand', ''));
+portInput.addEventListener('input', () => setError(portInput, 'errPort', ''));
+
+function validateDomain(domain) {
+  if (!domain) return '请填写主域名。';
+  if (!/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i.test(domain)) {
+    return '域名格式不正确：只允许字母、数字、中划线与点。';
+  }
+  if (existingDomains.has(domain)) return `${domain} 已被其他站点使用。`;
+  return '';
+}
+
+function validateStep2() {
+  let firstBad = null;
+  const domain = domainInput.value.trim().toLowerCase();
+  const msg = validateDomain(domain);
+  setError(domainInput, 'errDomain', msg);
+  if (msg) firstBad = firstBad || domainInput;
+
+  const aliases = aliasesInput.value.split(/[\s,，]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  let aliasMsg = '';
+  const seen = new Set();
+  for (const a of aliases) {
+    const bad = validateDomain(a);
+    if (bad) { aliasMsg = `别名 ${a}：${bad}`; break; }
+    if (seen.has(a)) { aliasMsg = `别名 ${a} 重复。`; break; }
+    seen.add(a);
+  }
+  setError(aliasesInput, 'errAliases', aliasMsg);
+  if (aliasMsg) firstBad = firstBad || aliasesInput;
+
+  if (wiz.type !== 'proxy') {
+    const root = rootInput.value.trim();
+    if (!root) {
+      setError(rootInput, 'errRoot', '请填写站点目录。');
+      firstBad = firstBad || rootInput;
+    } else if (!/^\/www\/sites\/[a-z0-9.-]+$/i.test(root)) {
+      setError(rootInput, 'errRoot', '站点目录必须是 /www/sites/<域名> 的一级子目录。');
+      firstBad = firstBad || rootInput;
+    } else {
+      setError(rootInput, 'errRoot', '');
+    }
+  }
+  if (wiz.type === 'proxy') {
+    const target = targetInput.value.trim();
+    let tmsg = '';
+    if (!target) tmsg = '请填写上游地址。';
+    else if (!/^https?:\/\//i.test(target)) tmsg = '上游地址必须以 http:// 或 https:// 开头。';
+    else if (target.includes('@')) tmsg = '上游地址不能包含用户名或口令。';
+    else if (!/^https?:\/\/[^\s\/]+/i.test(target)) tmsg = '上游地址缺少主机名。';
+    else if (domain && new RegExp(`^https?://(www\\.)?${domain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([:/]|$)`, 'i').test(target)) {
+      tmsg = '上游地址不能指向本站自身，避免回环。';
+    }
+    setError(targetInput, 'errTarget', tmsg);
+    if (tmsg) firstBad = firstBad || targetInput;
+  }
+  if (wiz.type === 'runtime' && (wiz.kind === 'node' || wiz.kind === 'go')) {
+    if (!commandInput.value.trim()) {
+      setError(commandInput, 'errCommand', '启动命令不能为空。');
+      firstBad = firstBad || commandInput;
+    }
+    const port = Number(portInput.value);
+    const used = [30010, 30011, 30082];
+    if (!port || port < 30000 || port > 32767) {
+      setError(portInput, 'errPort', '端口必须在 30000–32767 之间。');
+      firstBad = firstBad || portInput;
+    } else if (used.includes(port)) {
+      setError(portInput, 'errPort', `端口 ${port} 已被其他站点占用。`);
+      firstBad = firstBad || portInput;
+    }
+  }
+  if (firstBad) {
+    firstBad.focus();
+    toast('请修正标红字段后再继续。');
+    return false;
+  }
+  return true;
+}
+
+function fillSummary() {
+  $('#sumType').textContent = typeLabels[wiz.type] + (wiz.type === 'runtime' ? ` / ${wiz.kind.toUpperCase()}` : '');
+  $('#sumRuntime').textContent = wiz.type === 'runtime'
+    ? (wiz.runtime ? `${runtimeLabels[wiz.kind]}（${wiz.runtime}）` : '未选择')
+    : '无运行环境';
+  const domain = domainInput.value.trim().toLowerCase() || '—';
+  $('#sumDomain').textContent = domain;
+  $('#sumAliases').textContent = aliasesInput.value.trim() || '—';
+  $('#sumRoot').textContent = wiz.type === 'proxy' ? '不创建文档根' : (rootInput.value.trim() || '—');
+  if (wiz.type === 'proxy') {
+    const target = targetInput.value.trim() || '—';
+    $('#sumTarget').textContent = target;
+    $('#sumWs').textContent = wsInput.checked ? '已开启' : '未开启';
+    $('#sumBind').textContent = '不绑定运行环境；只生成转发 vhost。';
+  } else if (wiz.type === 'static') {
+    $('#sumTarget').textContent = '—';
+    $('#sumWs').textContent = '—';
+    $('#sumBind').textContent = '不依赖运行环境；创建静态 vhost 与 index/。';
+  } else {
+    const php = wiz.kind === 'php';
+    $('#sumTarget').textContent = php ? '/www/php/php-fpm.sock' : (portInput.value || '—');
+    $('#sumWs').textContent = php ? '—' : (wsInput.checked ? '已开启' : '未开启');
+    $('#sumBind').textContent = php
+      ? '共享 PHP-FPM 池与 socket；环境停止会影响全部绑定站点。'
+      : '每站点独立进程与端口；P1 不提供真实创建。';
+  }
+  $('#wizardSuccess').hidden = true;
+  $('#wizCreate').disabled = false;
+  $('#wizCreate').textContent = '创建网站';
+}
+
+$('#wizNext').addEventListener('click', () => {
+  if (wiz.step === 1) {
+    if (!wiz.type) { toast('先选择一种网站类型。'); return; }
+    if (wiz.type === 'runtime' && !wiz.runtime) { toast('请选择一个已就绪的运行环境。'); return; }
+    setWizardStep(2);
+    const intro = $('#step2Intro');
+    intro.textContent = wiz.type === 'runtime'
+      ? `已绑定 ${runtimeLabels[wiz.kind]}（${wiz.runtime}），填写站点域名与目录。`
+      : wiz.type === 'static' ? '静态站只需域名与目录；不创建运行时进程。'
+      : '反向代理只需域名与上游地址；不创建文档根。';
+    return;
+  }
+  if (wiz.step === 2) {
+    if (validateStep2()) setWizardStep(3);
+  }
+});
+$('#wizBack').addEventListener('click', () => {
+  if (wiz.step > 1) setWizardStep(wiz.step - 1);
+});
+$('#wizCreate').addEventListener('click', () => {
+  $('#wizardSuccess').hidden = false;
+  $('#wizCreate').disabled = true;
+  $('#wizCreate').textContent = '已通过校验';
+  toast('示意：向导校验通过，未写入任何数据。');
+});
+
+$('#phpSaveIni').addEventListener('click', () => {
+  const values = [$('#phpMemory').value.trim(), $('#phpUpload').value.trim(), $('#phpPost').value.trim()];
+  const bad = values.find(v => !/^\d+[KMG]$/i.test(v));
+  const err = $('#phpIniError');
+  if (bad) {
+    err.textContent = `无效的容量值 “${bad}”：请使用 128M / 1G 这类格式。`;
+    err.style.display = 'block';
+    toast('保存失败：ini 校验未通过。');
+    return;
+  }
+  if (!/^\d+$/.test($('#phpExec').value.trim())) {
+    err.textContent = 'max_execution_time 必须是秒数。';
+    err.style.display = 'block';
+    toast('保存失败：max_execution_time 不是秒数。');
+    return;
+  }
+  err.style.display = 'none';
+  toast('示意：ini 校验通过并保存；真实实现会 reload，失败回滚。');
+});
+// ---------- 运行环境列表 ----------
+function filterRuntimes() {
+  const rows = $$('#rtTableBody [data-runtime-row]');
+  const cards = $$('#rtMobileList .mobile-card');
+  rows.forEach(row => {
+    row.hidden = state.rtFilter !== 'all' && row.dataset.kind !== state.rtFilter;
+  });
+  cards.forEach(card => {
+    card.hidden = state.rtFilter !== 'all' && card.dataset.kind !== state.rtFilter;
+  });
+  $('#rtEmpty').classList.toggle('show', rows.filter(r => !r.hidden).length === 0);
+  $('#rtMobileEmpty').classList.toggle('show', cards.filter(c => !c.hidden).length === 0);
+}
+$$('[data-rt-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.rtFilter = btn.dataset.rtFilter;
+    $$('[data-rt-filter]').forEach(b => b.classList.toggle('on', b === btn));
+    filterRuntimes();
+  });
+});
+$$('[data-runtime-row]').forEach(row => {
+  row.addEventListener('click', e => {
+    if (e.target.closest('button')) return;
+    showView(row.dataset.runtimeRow.startsWith('php') ? 'php' : 'nodego');
+  });
+});
+filterRuntimes();
+
+// ---------- Node / Go 设计态 ----------
+state.ngKind = 'node';
+function setNgKind(kind) {
+  state.ngKind = kind;
+  $$('[data-ng-kind]').forEach(b => b.classList.toggle('on', b.dataset.ngKind === kind));
+  const node = kind === 'node';
+  $('#ngTitle').innerHTML = node
+    ? 'Node.js 22 <span class="badge p2">P2 设计态</span>'
+    : 'Go 1.24 <span class="badge p2">P2 设计态</span>';
+  $('#ngId').textContent = node ? 'node-22' : 'go-1.24';
+  $('#ngImage').textContent = node ? 'node:22-alpine' : 'golang:1.24-alpine';
+  $('#ngModel').textContent = node ? '每站点独立容器 + loopback 端口' : '每站点独立容器 + 预编译二进制';
+  $('#ngBaseVersion').textContent = node ? 'Node.js 22（node-22）' : 'Go 1.24（go-1.24）';
+  $('#ngBaseModel').textContent = node ? '每站点独立容器 + 独立端口' : '每站点独立容器 + 预编译二进制';
+  $('#ngBaseImage').textContent = node ? 'node:22-alpine' : 'golang:1.24-alpine';
+  $('#ngBaseConf').textContent = node ? '/www/runtime/node-22/conf/' : '/www/runtime/go-1.24/conf/';
+  const cmd = $('[data-ng-command]');
+  if (cmd) cmd.value = node ? 'node index/server.js' : './index/app';
+  $('#ngConfigNote').innerHTML = node
+    ? 'Node 站点从运行环境镜像启动，工作目录挂载 <span class="mono">/www/sites/&lt;域名&gt;/index</span>；依赖安装与构建不在面板内静默执行。'
+    : 'Go 只运行用户已编译的二进制（<span class="mono">/www/sites/&lt;域名&gt;/index/app</span>）；P2 不做 <span class="mono">go build</span>，也不假装有构建链路。';
+  $('#ng-sites .linked-table tbody').innerHTML = node
+    ? '<tr><td class="mono">node.example.com</td><td><span class="badge php">Node</span></td><td class="mono">30010</td><td><span class="chip warn">P2 未实现</span></td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>' +
+      '<tr><td class="mono">jobs.example.com</td><td><span class="badge php">Node</span></td><td class="mono">30011</td><td><span class="chip warn">P2 未实现</span></td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>'
+    : '<tr><td class="mono">go.example.com</td><td><span class="badge php">Go</span></td><td class="mono">30020</td><td><span class="chip warn">P2 未实现</span></td><td style="text-align:right"><button class="btn" type="button" data-go="sites">查看</button></td></tr>';
+  $('#ng-logs .logbox').innerHTML = node
+    ? '<span class="ln">[P2]</span> runtime node-22 install: image=node:22-alpine\n<span class="ln">[P2]</span> site node.example.com start: port=30010 command="node index/server.js"\n<span class="ln">[P2]</span> healthcheck GET http://127.0.0.1:30010/ -> 200'
+    : '<span class="ln">[P2]</span> runtime go-1.24 install: image=golang:1.24-alpine\n<span class="ln">[P2]</span> site go.example.com start: port=30020 binary=/www/sites/go.example.com/index/app\n<span class="ln">[P2]</span> healthcheck GET http://127.0.0.1:30020/ -> 200';
+}
+$$('[data-ng-kind]').forEach(btn => {
+  btn.addEventListener('click', () => setNgKind(btn.dataset.ngKind));
+});
+setNgKind('node');
+
+// ---------- 站点列表 ----------
+function filterSites() {
+  const q = state.siteQuery.trim().toLowerCase();
+  const rows = $$('#siteTableBody tr');
+  const cards = $$('#siteMobileList .mobile-card');
+  const match = el => {
+    const typeOk = state.siteFilter === 'all' || el.dataset.siteType === state.siteFilter;
+    const qOk = !q || el.dataset.domain.includes(q) || el.textContent.toLowerCase().includes(q);
+    return typeOk && qOk;
+  };
+  rows.forEach(row => { row.hidden = !match(row); });
+  cards.forEach(card => { card.hidden = !match(card); });
+  $('#siteEmpty').classList.toggle('show', rows.filter(r => !r.hidden).length === 0);
+  $('#siteMobileEmpty').classList.toggle('show', cards.filter(c => !c.hidden).length === 0);
+}
+$$('[data-site-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.siteFilter = btn.dataset.siteFilter;
+    $$('[data-site-filter]').forEach(b => b.classList.toggle('on', b === btn));
+    filterSites();
+  });
+});
+$('#siteSearch').addEventListener('input', e => {
+  state.siteQuery = e.target.value;
+  filterSites();
+});
+filterSites();
+</script>
+</body>
+</html>

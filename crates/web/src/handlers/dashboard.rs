@@ -42,6 +42,24 @@ pub async fn index(
     let plugin_disabled = plugins.len().saturating_sub(plugin_enabled);
     let sites = state.db().list_sites()?;
     let site_abnormal = sites.iter().filter(|s| s.status != "running").count();
+    let runtimes = state.db().list_runtimes()?;
+    let runtime_total = runtimes.len();
+    let runtime_abnormal = runtimes
+        .iter()
+        .filter(|r| {
+            let name = if r.kind == skiff_store::KIND_PHP {
+                skiff_app::sites::PHP_CONTAINER.to_string()
+            } else {
+                format!("skiff-runtime-{}", r.id)
+            };
+            let actual = containers
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.state.as_str())
+                .unwrap_or("missing");
+            actual != "running"
+        })
+        .count();
     let totp_enabled = state
         .db()
         .user_by_id(user.user.id)?
@@ -92,6 +110,8 @@ pub async fn index(
         plugin_enabled,
         site_total: sites.len(),
         site_abnormal,
+        runtime_total,
+        runtime_abnormal,
         abnormal_total: abnormal.len(),
         abnormal: abnormal
             .iter()

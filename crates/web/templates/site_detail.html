@@ -43,7 +43,7 @@
   <a class="tab{% if tab == "domains" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=domains"{% if tab == "domains" %} aria-current="page"{% endif %}>域名</a>
   <a class="tab{% if tab == "config" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=config"{% if tab == "config" %} aria-current="page"{% endif %}>配置文件</a>
   <a class="tab" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">日志</a>
-  <a class="tab{% if tab == "dir" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir"{% if tab == "dir" %} aria-current="page"{% endif %}>目录</a>
+  {% if site.site_type != "proxy" %}<a class="tab{% if tab == "dir" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir"{% if tab == "dir" %} aria-current="page"{% endif %}>目录</a>{% endif %}
   <a class="tab{% if tab == "ssl" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=ssl"{% if tab == "ssl" %} aria-current="page"{% endif %}>SSL</a>
 </nav>
 
@@ -53,9 +53,18 @@
   <div class="kv">
     <div><span class="muted">主域名</span><span class="mono">{{ site.domain }}</span></div>
     <div><span class="muted">别名</span><span class="mono">{% if site.aliases.len() > 0 %}{{ site.aliases_text }}{% else %}无{% endif %}</span></div>
+    <div><span class="muted">网站类型</span><span><span class="badge">{{ site.type_label }}</span></span></div>
     <div><span class="muted">站点目录</span><span class="mono wrap">{{ site.root_dir }}</span></div>
+    {% if site.site_type != "proxy" %}
     <div><span class="muted">文档根</span><span class="mono wrap">{{ site.index_dir }}</span></div>
-    <div><span class="muted">PHP 版本</span><span class="mono">{{ site.php_version }}</span></div>
+    {% endif %}
+    {% if site.site_type == "runtime" %}
+    <div><span class="muted">运行环境</span><span class="mono"><a href="/{{ ctx.prefix }}/sites/env/{{ site.runtime_id }}">{{ site.runtime_label }}</a></span></div>
+    {% else if site.site_type == "proxy" %}
+    <div><span class="muted">上游地址</span><span class="mono wrap">{{ site.proxy_target }}{% if site.proxy_websocket %} · WebSocket{% endif %}</span></div>
+    {% else %}
+    <div><span class="muted">运行环境</span><span class="muted">不适用（静态网站）</span></div>
+    {% endif %}
     <div><span class="muted">状态</span><span>{{ site.status_label }}</span></div>
     <div><span class="muted">默认站点</span><span>{% if site.is_default %}是{% else %}否{% endif %}</span></div>
     <div><span class="muted">证书</span><span>{% if site.https %}已启用{% if site.force_https %}（强制 HTTPS）{% endif %}{% else %}未启用{% endif %}</span></div>
@@ -64,10 +73,10 @@
 </section>
 <section class="panel">
   <h2>下一步</h2>
-  <p class="muted">在「配置文件」页可直接编辑 vhost 并保存重载；「日志」页支持关键字过滤与时间倒序；「目录」页可只读浏览文档根 <span class="mono">index/</span>（log/ 与 ssl/ 不开放浏览）。</p>
+  <p class="muted">在「配置文件」页可直接编辑 vhost 并保存重载；「日志」页支持关键字过滤与时间倒序。{% if site.site_type != "proxy" %}「目录」页可只读浏览文档根 <span class="mono">index/</span>（log/ 与 ssl/ 不开放浏览）。{% endif %}</p>
   <div class="row">
     <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=config">编辑配置文件</a>
-    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir">浏览目录</a>
+    {% if site.site_type != "proxy" %}<a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir">浏览目录</a>{% endif %}
     <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">查看日志</a>
   </div>
 </section>

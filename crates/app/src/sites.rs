@@ -27,7 +27,9 @@ use std::sync::Arc;
 
 use skiff_docker::{ContainerRow, ContainerSpec, DockerParams, Mount, Verb};
 use skiff_model::{is_absolute, normalize_dir, within, within_root};
-use skiff_store::Site;
+use skiff_store::{
+    NewRuntime, NewSite as StoreNewSite, Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC,
+};
 
 use crate::AppState;
 
@@ -40,6 +42,8 @@ pub const DEFAULT_PHP_IMAGE: &str = "php:8.5-fpm-alpine";
 /// nginx 用 host 网络直接监听宿主 80；443 预留给 HTTPS。
 pub const DEFAULT_PORT: u16 = 80;
 pub const DEFAULT_PHP_VERSION: &str = "8.5";
+/// P1 唯一可运行的 PHP 运行环境 id（与 `site_runtimes` 种入行一致）。
+pub const PHP_RUNTIME_ID: &str = "php-8.5";
 /// 容器内 `/www` 的宿主来源由 `SiteSettings::web_root` 决定。
 pub const CONTAINER_WEB_ROOT: &str = "/www";
 pub const CONTAINER_SOCKET: &str = "/www/php/php-fpm.sock";
@@ -312,8 +316,14 @@ impl SiteEnvStatus {
 pub struct NewSite {
     pub domain: String,
     pub root_dir: Option<String>,
-    pub php_version: String,
-    pub https: bool,
+    /// runtime / static / proxy
+    pub site_type: String,
+    /// 仅 runtime：绑定的运行环境 id。
+    pub runtime_id: Option<String>,
+    /// 仅 proxy：`http(s)://host[:port][/path]`。
+    pub proxy_target: String,
+    /// 仅 proxy：是否升级 WebSocket。
+    pub proxy_websocket: bool,
     /// 附加域名：只写 vhost `server_name` 与别名表，不改主域名/目录。
     pub aliases: Vec<String>,
 }
@@ -415,20 +425,77 @@ pub fn validate_domain(raw: &str) -> Result<String, SiteError> {
     Ok(d)
 }
 
-/// 只支持环境实际安装的 PHP 版本；目前固定 8.5 系列。
-pub fn validate_php_version(raw: &str, installed: &str) -> Result<String, SiteError> {
-    let v = raw.trim();
-    if v.is_empty() {
-        return Ok(DEFAULT_PHP_VERSION.to_string());
+/// 站点类型白名单：只接受三类，大小写归一。
+pub fn validate_site_type(raw: &str) -> Result<&'static str, SiteError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        TYPE_RUNTIME => Ok(TYPE_RUNTIME),
+        TYPE_STATIC => Ok(TYPE_STATIC),
+        TYPE_PROXY => Ok(TYPE_PROXY),
+        other => Err(SiteError::BadRequest(format!(
+            "未知站点类型：{other}（应为 runtime / static / proxy）"
+        ))),
     }
-    let major_minor = if v.starts_with("8.5") {
-        "8.5"
-    } else {
-        return Err(SiteError::BadRequest(format!(
-            "当前运行环境只安装了 PHP {installed}，不支持 {v}"
-        )));
-    };
-    Ok(major_minor.to_string())
+}
+
+/// 反向代理上游：必须是 `http(s)://host[:port][/path]`，禁止 userinfo、空白与裸路径。
+pub fn validate_proxy_target(raw: &str) -> Result<String, SiteError> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err(SiteError::BadRequest("上游地址不能为空".into()));
+    }
+    if t.chars().any(char::is_whitespace) {
+        return Err(SiteError::BadRequest("上游地址不能包含空白".into()));
+    }
+    let (scheme, rest) = t
+        .split_once("://")
+        .ok_or_else(|| SiteError::BadRequest("上游地址必须以 http:// 或 https:// 开头".into()))?;
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return Err(SiteError::BadRequest(
+            "上游地址只支持 http:// 或 https://".into(),
+        ));
+    }
+    if rest.is_empty() {
+        return Err(SiteError::BadRequest("上游地址缺少主机".into()));
+    }
+    if rest.contains('@') {
+        return Err(SiteError::BadRequest("上游地址不能包含用户名/密码".into()));
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = authority.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return Err(SiteError::BadRequest("上游地址缺少主机".into()));
+    }
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err(SiteError::BadRequest("上游主机名包含非法字符".into()));
+    }
+    if let Some(port) = authority.split_once(':').map(|(_, p)| p) {
+        let port: u16 = port
+            .parse()
+            .map_err(|_| SiteError::BadRequest("上游端口必须是 1-65535".into()))?;
+        if port == 0 {
+            return Err(SiteError::BadRequest("上游端口必须是 1-65535".into()));
+        }
+    }
+    // 统一小写 scheme，其余保留用户写法（路径大小写敏感）。
+    let normalized = format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        rest.trim_end_matches('/')
+    );
+    Ok(normalized)
+}
+
+/// Node/Go 站点端口占位校验（P1 只落字段；P2 才实际分配）。范围与 P2 契约一致。
+pub fn validate_app_port(raw: i64) -> Result<u16, SiteError> {
+    if !(1024..=65535).contains(&raw) {
+        return Err(SiteError::BadRequest(
+            "应用端口必须在 1024-65535 之间".into(),
+        ));
+    }
+    Ok(raw as u16)
 }
 
 /// TLS 参数：证书/私钥使用**容器内** `/www/...` 路径。
@@ -440,22 +507,23 @@ pub struct VhostTls {
     pub force_https: bool,
 }
 
-/// 生成 nginx/OpenResty vhost。路径里的站点目录已换算为容器内 `/www/...`；
-/// PHP 只走 unix socket，日志落站点自己的 `log/` 目录。
-pub fn render_vhost(
-    domain: &str,
-    container_root: &str,
-    access_log: &str,
-    error_log: &str,
-) -> String {
-    render_vhost_with(domain, &[], container_root, access_log, error_log, None)
+/// vhost 的三种业务形态；容器内路径由调用方换算，生成函数不再硬编码 socket。
+#[derive(Debug, Clone)]
+pub enum VhostKind<'a> {
+    /// 静态站：只读文档根，不接 PHP。
+    Static { root: &'a str },
+    /// 运行环境站（P1 仅 PHP）：fastcgi 指向运行环境登记的 socket。
+    Php { root: &'a str, socket: &'a str },
+    /// 反向代理：不落文档根，只转发到上游。
+    Proxy { target: &'a str, websocket: bool },
 }
 
-/// 同 `render_vhost`，但把别名并入 `server_name`，并按需追加 443 server。
-pub fn render_vhost_with(
+/// 生成站点 vhost。路径里的站点目录已换算为容器内 `/www/...`；
+/// PHP 的 socket 来自 `site_runtimes.socket_path`，不在此硬编码。
+pub fn render_site_vhost(
     domain: &str,
     aliases: &[String],
-    container_root: &str,
+    kind: VhostKind<'_>,
     access_log: &str,
     error_log: &str,
     tls: Option<&VhostTls>,
@@ -474,7 +542,7 @@ pub fn render_vhost_with(
     } else {
         out.push_str("server {\n    listen 80;\n");
         out.push_str(&format!("    server_name {names};\n"));
-        push_site_body(&mut out, container_root, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log);
     }
     if let Some(t) = tls {
         out.push_str("server {\n    listen 443 ssl;\n");
@@ -482,29 +550,59 @@ pub fn render_vhost_with(
         out.push_str(&format!("    ssl_certificate {};\n", t.cert));
         out.push_str(&format!("    ssl_certificate_key {};\n", t.key));
         out.push_str("    ssl_protocols TLSv1.2 TLSv1.3;\n");
-        push_site_body(&mut out, container_root, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log);
     }
     out
 }
 
-fn push_site_body(out: &mut String, container_root: &str, access_log: &str, error_log: &str) {
-    out.push_str(&format!("    root {container_root};\n"));
-    out.push_str("    index index.php index.html;\n");
+fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, error_log: &str) {
     out.push_str(&format!("    access_log {access_log};\n"));
     out.push_str(&format!("    error_log {error_log};\n"));
-    out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
-    out.push_str(
-        "    location ~ \\.php$ {\n\
-         \x20       include fastcgi_params;\n\
-         \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n",
-    );
-    out.push_str(&format!("        fastcgi_pass unix:{CONTAINER_SOCKET};\n"));
-    out.push_str("        fastcgi_index index.php;\n    }\n");
+    match kind {
+        VhostKind::Static { root } => {
+            out.push_str(&format!("    root {root};\n"));
+            out.push_str("    index index.html;\n");
+            out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
+        }
+        VhostKind::Php { root, socket } => {
+            out.push_str(&format!("    root {root};\n"));
+            out.push_str("    index index.php index.html;\n");
+            out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
+            out.push_str(
+                "    location ~ \\.php$ {\n\
+                 \x20       include fastcgi_params;\n\
+                 \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n",
+            );
+            out.push_str(&format!("        fastcgi_pass unix:{socket};\n"));
+            out.push_str("        fastcgi_index index.php;\n    }\n");
+        }
+        VhostKind::Proxy { target, websocket } => {
+            out.push_str("    location / {\n");
+            out.push_str(&format!("        proxy_pass {target};\n"));
+            out.push_str("        proxy_http_version 1.1;\n");
+            out.push_str("        proxy_set_header Host $host;\n");
+            out.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
+            out.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
+            out.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
+            if *websocket {
+                out.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
+                out.push_str("        proxy_set_header Connection \"upgrade\";\n");
+            }
+            out.push_str("        proxy_read_timeout 3600s;\n");
+            out.push_str("    }\n");
+        }
+    }
     out.push_str("}\n");
 }
 
 fn default_probe_php() -> &'static str {
     "<?php\n// Skiff 站点探针：确认 PHP-FPM 正常渲染。\nphpinfo();\n"
+}
+
+fn default_probe_html() -> &'static str {
+    "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">\
+     <title>Skiff 静态站点</title></head>\n<body><h1>站点已就绪</h1>\
+     <p>把您的静态文件放入 <code>index/</code> 目录即可。</p></body></html>\n"
 }
 
 /// 默认站点 vhost：直接访问 IP:80 时落到该站点的 `public`。
@@ -513,7 +611,7 @@ fn default_probe_php() -> &'static str {
 /// `00-skiff-fallback.conf`（按文件名先于站点 vhost 加载）返回 404。
 pub fn render_default_vhost(
     domain: &str,
-    container_root: &str,
+    kind: VhostKind<'_>,
     access_log: &str,
     error_log: &str,
     tls: Option<&VhostTls>,
@@ -524,36 +622,565 @@ pub fn render_default_vhost(
         out.push_str("    return 301 https://$host$request_uri;\n}\n");
     } else {
         out.push_str("server {\n    listen 80 default_server;\n    server_name _;\n");
-        push_site_body(&mut out, container_root, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log);
     }
     if let Some(t) = tls {
         out.push_str("server {\n    listen 443 ssl default_server;\n    server_name _;\n");
         out.push_str(&format!("    ssl_certificate {};\n", t.cert));
         out.push_str(&format!("    ssl_certificate_key {};\n", t.key));
         out.push_str("    ssl_protocols TLSv1.2 TLSv1.3;\n");
-        push_site_body(&mut out, container_root, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log);
     }
     out
 }
 
+/// PHP 运行环境的专属配置（落库为 `site_runtimes.config_json`，不复制到别处）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhpRuntimeConfig {
+    pub memory_limit: String,
+    pub upload_max_filesize: String,
+    pub post_max_size: String,
+    pub max_execution_time: u64,
+    pub pm: String,
+    pub max_children: u32,
+    pub start_servers: u32,
+    pub min_spare_servers: u32,
+    pub max_spare_servers: u32,
+    pub max_requests: u32,
+}
+
+impl Default for PhpRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            memory_limit: "256M".into(),
+            upload_max_filesize: "64M".into(),
+            post_max_size: "64M".into(),
+            max_execution_time: 30,
+            pm: "dynamic".into(),
+            max_children: 20,
+            start_servers: 3,
+            min_spare_servers: 2,
+            max_spare_servers: 8,
+            max_requests: 500,
+        }
+    }
+}
+
+impl PhpRuntimeConfig {
+    /// 从 `config_json` 容错读取：缺字段用默认值，坏字段在 `validate` 里报错。
+    pub fn from_json(raw: &str) -> Self {
+        let mut cfg = Self::default();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return cfg;
+        };
+        if let Some(s) = v.get("memory_limit").and_then(|v| v.as_str()) {
+            cfg.memory_limit = s.into();
+        }
+        if let Some(s) = v.get("upload_max_filesize").and_then(|v| v.as_str()) {
+            cfg.upload_max_filesize = s.into();
+        }
+        if let Some(s) = v.get("post_max_size").and_then(|v| v.as_str()) {
+            cfg.post_max_size = s.into();
+        }
+        if let Some(n) = v.get("max_execution_time").and_then(|v| v.as_u64()) {
+            cfg.max_execution_time = n;
+        }
+        if let Some(s) = v.get("pm").and_then(|v| v.as_str()) {
+            cfg.pm = s.into();
+        }
+        if let Some(n) = v.get("max_children").and_then(|v| v.as_u64()) {
+            cfg.max_children = n as u32;
+        }
+        if let Some(n) = v.get("start_servers").and_then(|v| v.as_u64()) {
+            cfg.start_servers = n as u32;
+        }
+        if let Some(n) = v.get("min_spare_servers").and_then(|v| v.as_u64()) {
+            cfg.min_spare_servers = n as u32;
+        }
+        if let Some(n) = v.get("max_spare_servers").and_then(|v| v.as_u64()) {
+            cfg.max_spare_servers = n as u32;
+        }
+        if let Some(n) = v.get("max_requests").and_then(|v| v.as_u64()) {
+            cfg.max_requests = n as u32;
+        }
+        cfg
+    }
+
+    /// 原样序列化；只写已通过 `validate` 的配置。
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "memory_limit": self.memory_limit,
+            "upload_max_filesize": self.upload_max_filesize,
+            "post_max_size": self.post_max_size,
+            "max_execution_time": self.max_execution_time,
+            "pm": self.pm,
+            "max_children": self.max_children,
+            "start_servers": self.start_servers,
+            "min_spare_servers": self.min_spare_servers,
+            "max_spare_servers": self.max_spare_servers,
+            "max_requests": self.max_requests,
+        })
+        .to_string()
+    }
+
+    /// 数值/尺寸范围校验；任何一项不合法都拒绝落盘，避免 FPM 起不来。
+    pub fn validate(&self) -> Result<(), SiteError> {
+        let mem = parse_size_mb(&self.memory_limit)?;
+        let upload = parse_size_mb(&self.upload_max_filesize)?;
+        let post = parse_size_mb(&self.post_max_size)?;
+        if !(32..=2048).contains(&mem) {
+            return Err(SiteError::BadRequest(
+                "memory_limit 必须在 32M-2048M 之间".into(),
+            ));
+        }
+        if !(1..=1024).contains(&upload) {
+            return Err(SiteError::BadRequest(
+                "upload_max_filesize 必须在 1M-1024M 之间".into(),
+            ));
+        }
+        if post < upload {
+            return Err(SiteError::BadRequest(
+                "post_max_size 不能小于 upload_max_filesize".into(),
+            ));
+        }
+        if post > 2048 {
+            return Err(SiteError::BadRequest("post_max_size 不能超过 2048M".into()));
+        }
+        if !(10..=600).contains(&self.max_execution_time) {
+            return Err(SiteError::BadRequest(
+                "max_execution_time 必须在 10-600 秒之间".into(),
+            ));
+        }
+        if !matches!(self.pm.as_str(), "dynamic" | "ondemand") {
+            return Err(SiteError::BadRequest(
+                "FPM 进程模式只支持 dynamic / ondemand".into(),
+            ));
+        }
+        if !(2..=100).contains(&self.max_children) {
+            return Err(SiteError::BadRequest(
+                "FPM 最大子进程数必须在 2-100 之间".into(),
+            ));
+        }
+        if !(1..=self.max_children).contains(&self.start_servers) {
+            return Err(SiteError::BadRequest(
+                "FPM 启动进程数必须介于 1 和最大子进程数之间".into(),
+            ));
+        }
+        if !(1..=self.start_servers).contains(&self.min_spare_servers) {
+            return Err(SiteError::BadRequest(
+                "FPM 最小空闲进程必须介于 1 和启动进程数之间".into(),
+            ));
+        }
+        if !(self.min_spare_servers..=self.max_children).contains(&self.max_spare_servers) {
+            return Err(SiteError::BadRequest(
+                "FPM 最大空闲进程必须介于最小空闲进程和最大子进程数之间".into(),
+            ));
+        }
+        if !(100..=10000).contains(&self.max_requests) {
+            return Err(SiteError::BadRequest(
+                "FPM max_requests 必须在 100-10000 之间".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `64M` / `1G` / `1024K` → MiB（向下取整，最小 1）。
+fn parse_size_mb(raw: &str) -> Result<u64, SiteError> {
+    let s = raw.trim().to_ascii_uppercase();
+    let (num, unit) = match s.chars().last() {
+        Some('K') | Some('M') | Some('G') => (s[..s.len() - 1].to_string(), s.chars().last()),
+        _ => (s.clone(), None),
+    };
+    let n: u64 = num
+        .parse()
+        .map_err(|_| SiteError::BadRequest(format!("无法解析尺寸：{raw}")))?;
+    let mb = match unit {
+        Some('K') => (n / 1024).max(1),
+        Some('G') => n.saturating_mul(1024),
+        _ => n,
+    };
+    Ok(mb)
+}
+
+impl AppState {
+    /// 把当前站点配置里的 PHP 运行环境校准到库：补 socket 宿主路径与镜像。
+    pub fn ensure_php_runtime(&self) -> Result<Runtime, SiteError> {
+        let s = self.site_settings();
+        let socket = s.php_dir.join("php-fpm.sock").display().to_string();
+        self.db()
+            .ensure_runtime(&NewRuntime {
+                id: PHP_RUNTIME_ID.into(),
+                kind: skiff_store::KIND_PHP.into(),
+                version: DEFAULT_PHP_VERSION.into(),
+                image: s.php_image.clone(),
+                image_digest: String::new(),
+                socket_path: Some(socket),
+                is_default: true,
+            })
+            .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))
+    }
+
+    /// 运行环境列表：库是事实源，容器状态只作实时探测（漂移徽章的依据）。
+    pub async fn runtime_views(&self) -> Result<Vec<RuntimeView>, SiteError> {
+        self.ensure_php_runtime()?;
+        let s = self.site_settings();
+        let runtimes = self
+            .db()
+            .list_runtimes()
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        let rows = if self.docker().available() {
+            self.docker().list_containers().await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut out = Vec::new();
+        for rt in runtimes {
+            let implemented = rt.kind == skiff_store::KIND_PHP;
+            let container_name = if implemented {
+                PHP_CONTAINER.to_string()
+            } else {
+                format!("skiff-runtime-{}", rt.id)
+            };
+            let container_state = rows
+                .iter()
+                .find(|c| c.name == container_name)
+                .map(|c| {
+                    if c.state.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        c.state.clone()
+                    }
+                })
+                .unwrap_or_else(|| "missing".into());
+            let effective_state = if !implemented {
+                "unimplemented".to_string()
+            } else {
+                container_state.clone()
+            };
+            let socket_host = rt.socket_path.clone().unwrap_or_default();
+            let socket_container = if socket_host.is_empty() {
+                String::new()
+            } else {
+                s.container_path(Path::new(&socket_host))
+            };
+            let socket_exists = !socket_host.is_empty() && Path::new(&socket_host).exists();
+            let socket_mode = socket_mode(&socket_host);
+            let site_count = self
+                .db()
+                .runtime_site_count(&rt.id)
+                .map_err(|e| SiteError::Internal(e.to_string()))?;
+            let drift = implemented
+                && rt.desired_state == "running"
+                && effective_state != "running"
+                && effective_state != "missing";
+            // 写回缓存状态；'unimplemented' 不是合法枚举值，跳过。
+            if implemented {
+                let cached = if matches!(
+                    effective_state.as_str(),
+                    "running" | "stopped" | "error" | "installing"
+                ) {
+                    effective_state.clone()
+                } else {
+                    "stopped".into()
+                };
+                let _ = self
+                    .db()
+                    .set_runtime_status(&rt.id, &rt.desired_state, &cached);
+            }
+            out.push(RuntimeView {
+                runtime: rt,
+                implemented,
+                effective_state,
+                container_name,
+                container_state,
+                drift,
+                site_count,
+                socket_host,
+                socket_container,
+                socket_exists,
+                socket_mode,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn runtime_view(&self, id: &str) -> Result<RuntimeView, SiteError> {
+        self.runtime_views()
+            .await?
+            .into_iter()
+            .find(|v| v.runtime.id == id)
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))
+    }
+
+    async fn docker_runtime_action(&self, name: &str, verb: Verb) -> Result<(), SiteError> {
+        let rows = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
+        let c = rows.iter().find(|c| c.name == name).ok_or_else(|| {
+            SiteError::Unavailable(format!("容器 {name} 未安装，请先安装运行环境"))
+        })?;
+        let obj = skiff_docker::ObjectRef {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            labels: c.labels.clone(),
+        };
+        self.docker()
+            .execute(verb, Some(&obj), DockerParams::None)
+            .await
+            .map(|_| ())
+            .map_err(|e| SiteError::Unavailable(format!("容器 {name} 操作失败：{e}")))
+    }
+
+    /// 运行环境启停/重建/同步。Node/Go 在 P1 明确返回「P2 未实现」。
+    pub async fn runtime_action(&self, id: &str, action: &str) -> Result<RuntimeView, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Err(SiteError::Unavailable(format!(
+                "{} 运行环境将在 P2 接入，P1 不提供安装/启停/重建",
+                rt.kind
+            )));
+        }
+        match action {
+            "start" => {
+                self.docker_runtime_action(PHP_CONTAINER, Verb::Start)
+                    .await?;
+                self.db()
+                    .set_runtime_status(id, "running", "running")
+                    .map_err(|e| SiteError::Internal(e.to_string()))?;
+            }
+            "stop" => {
+                self.docker_runtime_action(PHP_CONTAINER, Verb::Stop)
+                    .await?;
+                self.db()
+                    .set_runtime_status(id, "stopped", "stopped")
+                    .map_err(|e| SiteError::Internal(e.to_string()))?;
+            }
+            "restart" => {
+                self.docker_runtime_action(PHP_CONTAINER, Verb::Restart)
+                    .await?;
+                self.db()
+                    .set_runtime_status(id, "running", "running")
+                    .map_err(|e| SiteError::Internal(e.to_string()))?;
+            }
+            "rebuild" => {
+                let s = self.site_settings();
+                let cfg = PhpRuntimeConfig::from_json(&rt.config_json);
+                cfg.validate()?;
+                let socket_host = rt.socket_path.clone().unwrap_or_default();
+                if socket_host.is_empty() {
+                    return Err(SiteError::Unavailable(
+                        "运行环境缺少 socket 路径，请重新安装".into(),
+                    ));
+                }
+                let socket_container = s.container_path(Path::new(&socket_host));
+                std::fs::write(
+                    s.php_pool_conf(),
+                    render_php_pool_with(&cfg, &socket_container),
+                )
+                .map_err(|e| SiteError::Internal(format!("写入 PHP-FPM 配置失败：{e}")))?;
+                self.docker_runtime_action(PHP_CONTAINER, Verb::Restart)
+                    .await?;
+                self.rewrite_site_vhosts(&s)
+                    .map_err(|e| SiteError::Internal(format!("重建站点 vhost 失败：{e}")))?;
+                self.restart_nginx().await?;
+                self.db()
+                    .set_runtime_status(id, "running", "running")
+                    .map_err(|e| SiteError::Internal(e.to_string()))?;
+            }
+            "sync" => {
+                let current = self.runtime_view(id).await?;
+                // 以容器实测为准，纠正「期望运行但实际停了」的漂移缓存。
+                if current.effective_state == "running" {
+                    let _ = self
+                        .db()
+                        .set_runtime_status(id, &rt.desired_state, "running");
+                } else if current.effective_state == "stopped" {
+                    let _ = self
+                        .db()
+                        .set_runtime_status(id, &rt.desired_state, "stopped");
+                }
+            }
+            other => return Err(SiteError::BadRequest(format!("未知运行环境操作：{other}"))),
+        }
+        self.runtime_view(id).await
+    }
+
+    /// 保存 PHP 专属配置：校验 → 写池配置 → reload FPM → 落库；任一步失败回滚文件。
+    pub async fn save_php_runtime_config(
+        &self,
+        id: &str,
+        cfg: &PhpRuntimeConfig,
+    ) -> Result<RuntimeView, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Err(SiteError::Unavailable(format!(
+                "{} 运行环境将在 P2 接入，P1 不提供专属配置",
+                rt.kind
+            )));
+        }
+        cfg.validate()?;
+        let s = self.site_settings();
+        let socket_host = rt
+            .socket_path
+            .clone()
+            .ok_or_else(|| SiteError::Unavailable("运行环境缺少 socket 路径".into()))?;
+        let socket_container = s.container_path(Path::new(&socket_host));
+        let pool = s.php_pool_conf();
+        let original = std::fs::read(&pool).ok();
+        std::fs::write(&pool, render_php_pool_with(cfg, &socket_container))
+            .map_err(|e| SiteError::Internal(format!("写入 PHP-FPM 配置失败：{e}")))?;
+        if let Err(e) = self
+            .docker_runtime_action(PHP_CONTAINER, Verb::Restart)
+            .await
+        {
+            if let Some(bytes) = &original {
+                let _ = std::fs::write(&pool, bytes);
+            }
+            return Err(SiteError::Unavailable(format!(
+                "配置已回滚：重载 PHP-FPM 失败：{e}"
+            )));
+        }
+        self.db()
+            .set_runtime_config(id, &cfg.to_json())
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        self.runtime_view(id).await
+    }
+
+    /// 删除运行环境：有站点绑定时拒绝并列出域名，绝不隐式解绑/级联删除。
+    pub fn delete_site_runtime(&self, id: &str) -> Result<(), SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Err(SiteError::Unavailable(format!(
+                "{} 运行环境将在 P2 接入",
+                rt.kind
+            )));
+        }
+        let domains = self
+            .db()
+            .runtime_site_domains(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        if !domains.is_empty() {
+            return Err(SiteError::Conflict(format!(
+                "运行环境仍被以下站点绑定：{}；请先删除这些站点后再删除运行环境",
+                domains.join("、")
+            )));
+        }
+        self.db()
+            .delete_runtime(id)
+            .map_err(|e| SiteError::Internal(format!("删除运行环境失败：{e}")))
+    }
+
+    /// 运行环境日志：PHP-FPM 走容器日志（stdout/stderr），不额外落宿主机文件。
+    pub async fn runtime_logs(&self, id: &str, tail: usize) -> Result<String, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Ok("（P2 未实现：Node.js/Go 运行环境尚未接入）".into());
+        }
+        let rows = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
+        let c = rows
+            .iter()
+            .find(|c| c.name == PHP_CONTAINER)
+            .ok_or_else(|| {
+                SiteError::Unavailable("PHP-FPM 容器未安装，请先在运行环境页安装".into())
+            })?;
+        self.docker()
+            .logs(&c.id, tail)
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取 PHP-FPM 日志失败：{e}")))
+    }
+}
+
+/// 运行环境列表/详情的展示模型（业务视角，容器状态只用于漂移提示）。
+#[derive(Debug, Clone)]
+pub struct RuntimeView {
+    pub runtime: Runtime,
+    /// running / stopped / error / missing / unimplemented
+    pub effective_state: String,
+    pub implemented: bool,
+    pub container_name: String,
+    pub container_state: String,
+    /// 期望运行但容器未运行。
+    pub drift: bool,
+    pub site_count: usize,
+    pub socket_host: String,
+    pub socket_container: String,
+    pub socket_exists: bool,
+    pub socket_mode: String,
+}
+
+fn socket_mode(path: &str) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            return format!("{:04o}", meta.permissions().mode() & 0o777);
+        }
+    }
+    let _ = path;
+    "—".into()
+}
+
 /// PHP-FPM 池配置：只监听 unix socket（不暴露 9000），socket 目录在共享的 `/www`。
-pub fn render_php_pool() -> String {
+pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
     format!(
         "[www]\n\
          user = www-data\n\
          group = www-data\n\
-         listen = {CONTAINER_SOCKET}\n\
+         listen = {socket}\n\
          listen.owner = root\n\
          ; nginx worker 以 nobody(65534) 运行；只给同组读写，others 无权限。\n\
          listen.group = nobody\n\
          listen.mode = 0660\n\
-         pm = dynamic\n\
-         pm.max_children = 20\n\
-         pm.start_servers = 3\n\
-         pm.min_spare_servers = 2\n\
-         pm.max_spare_servers = 8\n\
-         catch_workers_output = yes\n"
+         pm = {pm}\n\
+         pm.max_children = {max_children}\n\
+         pm.start_servers = {start_servers}\n\
+         pm.min_spare_servers = {min_spare_servers}\n\
+         pm.max_spare_servers = {max_spare_servers}\n\
+         pm.max_requests = {max_requests}\n\
+         php_admin_value[memory_limit] = {memory_limit}\n\
+         php_admin_value[upload_max_filesize] = {upload_max_filesize}\n\
+         php_admin_value[post_max_size] = {post_max_size}\n\
+         php_admin_value[max_execution_time] = {max_execution_time}\n\
+         catch_workers_output = yes\n",
+        pm = cfg.pm,
+        max_children = cfg.max_children,
+        start_servers = cfg.start_servers,
+        min_spare_servers = cfg.min_spare_servers,
+        max_spare_servers = cfg.max_spare_servers,
+        max_requests = cfg.max_requests,
+        memory_limit = cfg.memory_limit,
+        upload_max_filesize = cfg.upload_max_filesize,
+        post_max_size = cfg.post_max_size,
+        max_execution_time = cfg.max_execution_time,
     )
+}
+
+/// 安装/默认池：使用默认配置与共享安装 socket。
+pub fn render_php_pool() -> String {
+    render_php_pool_with(&PhpRuntimeConfig::default(), CONTAINER_SOCKET)
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,24 +1666,120 @@ impl AppState {
         self.sync_default_conf(s)
     }
 
+    /// 读取站点绑定运行环境的 socket：返回（宿主路径，容器内路径）。
+    /// 拒绝 Node/Go（P1 未实现）与未登记的 socket，避免 vhost 指向不存在的端点。
+    fn php_socket_paths(
+        &self,
+        s: &SiteSettings,
+        site: &Site,
+    ) -> Result<(String, String), SiteError> {
+        let rid = site
+            .runtime_id
+            .as_deref()
+            .ok_or_else(|| SiteError::BadRequest("PHP 站点未绑定运行环境".into()))?;
+        let rt = self
+            .db()
+            .runtime_by_id(rid)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Err(SiteError::Unavailable(format!(
+                "{} 运行环境将在 P2 接入，当前不能生成 vhost",
+                rt.kind
+            )));
+        }
+        let host = rt
+            .socket_path
+            .clone()
+            .ok_or_else(|| SiteError::Unavailable("运行环境缺少 socket 路径，请重新安装".into()))?;
+        let container = s.container_path(Path::new(&host));
+        Ok((host, container))
+    }
+
+    /// 按站点类型生成 vhost 内容（静态 / PHP / 反向代理）。
+    fn render_vhost_for(
+        &self,
+        s: &SiteSettings,
+        site: &Site,
+        aliases: &[String],
+        tls: Option<&VhostTls>,
+    ) -> Result<String, SiteError> {
+        let site_dir = PathBuf::from(&site.root_dir);
+        let root = s.container_path(&site_index_dir(&site_dir));
+        let access = s.container_log(&site_dir, LogKind::Access);
+        let error = s.container_log(&site_dir, LogKind::Error);
+        let socket = if site.site_type == TYPE_RUNTIME {
+            Some(self.php_socket_paths(s, site)?.1)
+        } else {
+            None
+        };
+        let kind = match site.site_type.as_str() {
+            TYPE_STATIC => VhostKind::Static { root: &root },
+            TYPE_PROXY => VhostKind::Proxy {
+                target: site.proxy_target.as_deref().unwrap_or(""),
+                websocket: site.proxy_websocket,
+            },
+            _ => VhostKind::Php {
+                root: &root,
+                socket: socket.as_deref().unwrap_or(""),
+            },
+        };
+        Ok(render_site_vhost(
+            &site.domain,
+            aliases,
+            kind,
+            &access,
+            &error,
+            tls,
+        ))
+    }
+
+    /// 默认站点 vhost：与普通站点同一套类型分支，只把 listen 换成 `default_server`。
+    fn render_default_vhost_for(
+        &self,
+        s: &SiteSettings,
+        site: &Site,
+        tls: Option<&VhostTls>,
+    ) -> Result<String, SiteError> {
+        let site_dir = PathBuf::from(&site.root_dir);
+        let root = s.container_path(&site_index_dir(&site_dir));
+        let access = s.container_log(&site_dir, LogKind::Access);
+        let error = s.container_log(&site_dir, LogKind::Error);
+        let socket = if site.site_type == TYPE_RUNTIME {
+            Some(self.php_socket_paths(s, site)?.1)
+        } else {
+            None
+        };
+        let kind = match site.site_type.as_str() {
+            TYPE_STATIC => VhostKind::Static { root: &root },
+            TYPE_PROXY => VhostKind::Proxy {
+                target: site.proxy_target.as_deref().unwrap_or(""),
+                websocket: site.proxy_websocket,
+            },
+            _ => VhostKind::Php {
+                root: &root,
+                socket: socket.as_deref().unwrap_or(""),
+            },
+        };
+        Ok(render_default_vhost(
+            &site.domain,
+            kind,
+            &access,
+            &error,
+            tls,
+        ))
+    }
+
     /// 把 `00-skiff-default.conf` 与库里的默认站点对齐：有则生成，无则删除。
     fn sync_default_conf(&self, s: &SiteSettings) -> std::io::Result<()> {
         let conf = s.conf_dir.join(DEFAULT_CONF);
         match self.db().default_site() {
             Ok(Some(site)) => {
-                let site_dir = PathBuf::from(&site.root_dir);
-                let container_root = s.container_path(&site_index_dir(&site_dir));
                 let tls = self.site_tls(s, &site);
-                std::fs::write(
-                    conf,
-                    render_default_vhost(
-                        &site.domain,
-                        &container_root,
-                        &s.container_log(&site_dir, LogKind::Access),
-                        &s.container_log(&site_dir, LogKind::Error),
-                        tls.as_ref(),
-                    ),
-                )
+                let content = self
+                    .render_default_vhost_for(s, &site, tls.as_ref())
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                std::fs::write(conf, content)
             }
             Ok(None) => {
                 if conf.exists() {
@@ -1422,14 +2145,7 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("创建站点配置目录失败：{e}")))?;
         let aliases = self.site_aliases(&site.domain);
         let tls = self.site_tls(s, &site);
-        let vhost = render_vhost_with(
-            &site.domain,
-            &aliases,
-            &s.container_path(&site_index_dir(&site_dir)),
-            &s.container_log(&site_dir, LogKind::Access),
-            &s.container_log(&site_dir, LogKind::Error),
-            tls.as_ref(),
-        );
+        let vhost = self.render_vhost_for(s, &site, &aliases, tls.as_ref())?;
         let conf = s.vhost_file(&site_dir, &site.domain);
         let disabled = s.vhost_disabled(&site_dir, &site.domain);
         if site.status == "running" {
@@ -1458,14 +2174,9 @@ impl AppState {
             std::fs::create_dir_all(site_conf_dir(&site_dir))?;
             let aliases = self.site_aliases(&site.domain);
             let tls = self.site_tls(s, site);
-            let vhost = render_vhost_with(
-                &site.domain,
-                &aliases,
-                &s.container_path(&site_index_dir(&site_dir)),
-                &s.container_log(&site_dir, LogKind::Access),
-                &s.container_log(&site_dir, LogKind::Error),
-                tls.as_ref(),
-            );
+            let vhost = self
+                .render_vhost_for(s, site, &aliases, tls.as_ref())
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             let conf = s.vhost_file(&site_dir, &site.domain);
             let disabled = s.vhost_disabled(&site_dir, &site.domain);
             if site.status == "running" {
@@ -1481,6 +2192,7 @@ impl AppState {
 
     pub async fn create_site(&self, req: NewSite) -> Result<Site, SiteError> {
         let domain = validate_domain(&req.domain)?;
+        let site_type = validate_site_type(&req.site_type)?;
         // 别名先做语法与去重校验，再查库冲突；拒绝与主域名重复。
         let mut aliases: Vec<String> = Vec::new();
         for raw in &req.aliases {
@@ -1495,19 +2207,79 @@ impl AppState {
         }
         let s = self.site_settings();
         let env = self.site_env_status().await;
-        if !env.ready() {
+        if !env.docker_available || !env.installed || env.nginx_state != "running" {
             return Err(SiteError::Unavailable(
-                "运行环境未就绪：请先在「网站 → 运行环境」安装/启动 nginx 与 PHP-FPM".into(),
+                "nginx 运行环境未就绪：请先在「网站 → 运行环境」安装/启动 nginx".into(),
             ));
         }
-        let php_installed = DEFAULT_PHP_VERSION;
-        let php_version = validate_php_version(&req.php_version, php_installed)?;
-        if req.https {
-            // 一期只做明文；显式告知而不是悄悄忽略。
-            return Err(SiteError::BadRequest(
-                "当前版本只支持 HTTP 明文站点；HTTPS 证书接入尚未开放".into(),
-            ));
+
+        // 类型专属校验。P1 只允许 PHP 运行环境，Node/Go 一律如实拒绝。
+        let mut runtime_id = None;
+        let mut proxy_target = None;
+        let mut proxy_websocket = false;
+        match site_type {
+            TYPE_RUNTIME => {
+                let rid = req
+                    .runtime_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| SiteError::BadRequest("请选择运行环境".into()))?;
+                let rt = self
+                    .db()
+                    .runtime_by_id(rid)
+                    .map_err(|e| SiteError::Internal(e.to_string()))?
+                    .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
+                if rt.kind != skiff_store::KIND_PHP {
+                    return Err(SiteError::Unavailable(format!(
+                        "{} 运行环境将在 P2 接入，当前版本不能创建该类站点",
+                        rt.kind
+                    )));
+                }
+                if rt.desired_state != "running" || rt.last_status != "running" {
+                    return Err(SiteError::Unavailable(format!(
+                        "运行环境 {} 当前未运行，请先在「运行环境」页启动",
+                        rt.version
+                    )));
+                }
+                if env.php_state != "running" {
+                    return Err(SiteError::Unavailable(
+                        "PHP-FPM 容器未运行：请先在「网站 → 运行环境」启动 PHP".into(),
+                    ));
+                }
+                let socket = rt.socket_path.as_deref().ok_or_else(|| {
+                    SiteError::Unavailable("运行环境缺少 socket 路径，请先重新安装".into())
+                })?;
+                if !Path::new(socket).exists() {
+                    return Err(SiteError::Unavailable(format!(
+                        "PHP socket 未就绪：{socket}（请检查 FPM 是否已启动）"
+                    )));
+                }
+                runtime_id = Some(rid.to_string());
+            }
+            TYPE_PROXY => {
+                let target = validate_proxy_target(&req.proxy_target)?;
+                let authority = target
+                    .split_once("://")
+                    .map(|(_, r)| r)
+                    .unwrap_or("")
+                    .split('/')
+                    .next()
+                    .unwrap_or("");
+                let host = authority.split(':').next().unwrap_or("");
+                if host.eq_ignore_ascii_case(&domain)
+                    || aliases.iter().any(|a| a.eq_ignore_ascii_case(host))
+                {
+                    return Err(SiteError::BadRequest(
+                        "上游地址不能指向站点自身，否则会形成回环".into(),
+                    ));
+                }
+                proxy_target = Some(target);
+                proxy_websocket = req.proxy_websocket;
+            }
+            _ => {}
         }
+
         let db = self.db();
         if db
             .site_by_domain(&domain)
@@ -1557,10 +2329,9 @@ impl AppState {
             }
             None => s.sites_dir.join(&domain),
         };
-        // 一站一目录：index/（文档根）、log/、ssl/、conf/ 全部在站点目录内。
+        // 一站一目录：log/、ssl/、conf/ 必建；index/ 只属于 runtime/static。
         for dir in [
             &root,
-            &site_index_dir(&root),
             &site_log_dir(&root),
             &site_ssl_dir(&root),
             &site_conf_dir(&root),
@@ -1568,50 +2339,72 @@ impl AppState {
             std::fs::create_dir_all(dir)
                 .map_err(|e| SiteError::Internal(format!("创建 {} 失败：{e}", dir.display())))?;
         }
-        let index = site_index_dir(&root).join("index.php");
-        if !index.exists() {
-            std::fs::write(&index, default_probe_php())
-                .map_err(|e| SiteError::Internal(format!("写入 index.php 失败：{e}")))?;
+        match site_type {
+            TYPE_RUNTIME => {
+                std::fs::create_dir_all(site_index_dir(&root))
+                    .map_err(|e| SiteError::Internal(format!("创建站点文档根失败：{e}")))?;
+                let index = site_index_dir(&root).join("index.php");
+                if !index.exists() {
+                    std::fs::write(&index, default_probe_php())
+                        .map_err(|e| SiteError::Internal(format!("写入 index.php 失败：{e}")))?;
+                }
+            }
+            TYPE_STATIC => {
+                std::fs::create_dir_all(site_index_dir(&root))
+                    .map_err(|e| SiteError::Internal(format!("创建站点文档根失败：{e}")))?;
+                let index = site_index_dir(&root).join("index.html");
+                if !index.exists() {
+                    std::fs::write(&index, default_probe_html())
+                        .map_err(|e| SiteError::Internal(format!("写入 index.html 失败：{e}")))?;
+                }
+            }
+            _ => {}
+        }
+
+        let site = db
+            .create_site(&StoreNewSite {
+                domain: domain.clone(),
+                root_dir: root.display().to_string(),
+                site_type: site_type.into(),
+                runtime_id,
+                app_command: None,
+                app_port: None,
+                proxy_target,
+                proxy_websocket,
+            })
+            .map_err(|e| SiteError::Conflict(format!("保存站点失败：{e}")))?;
+        if let Err(e) = db.add_site_aliases(&domain, &aliases) {
+            // 别名写失败时把站点行一起撤回，避免半成品。
+            let _ = db.delete_site(&domain);
+            return Err(SiteError::Conflict(format!("保存站点别名失败：{e}")));
         }
 
         // 保证公共配置（默认站投影 + 兜底站 + 站点 include 入口）齐备。
-        self.write_default_vhost(&s)
-            .map_err(|e| SiteError::Internal(format!("写入公共配置失败：{e}")))?;
-        let vhost = render_vhost_with(
-            &domain,
-            &aliases,
-            &s.container_path(&site_index_dir(&root)),
-            &s.container_log(&root, LogKind::Access),
-            &s.container_log(&root, LogKind::Error),
-            None,
-        );
+        let rollback = |conf: &Path| {
+            let _ = self.db().delete_site(&domain);
+            let _ = std::fs::remove_file(conf);
+        };
+        if let Err(e) = self.write_default_vhost(&s) {
+            rollback(&s.vhost_file(&root, &domain));
+            return Err(SiteError::Internal(format!("写入公共配置失败：{e}")));
+        }
+        let vhost = match self.render_vhost_for(&s, &site, &aliases, None) {
+            Ok(v) => v,
+            Err(e) => {
+                rollback(&s.vhost_file(&root, &domain));
+                return Err(e);
+            }
+        };
         let conf = s.vhost_file(&root, &domain);
-        std::fs::write(&conf, &vhost)
-            .map_err(|e| SiteError::Internal(format!("写入 vhost 失败：{e}")))?;
-
+        if let Err(e) = std::fs::write(&conf, &vhost) {
+            rollback(&conf);
+            return Err(SiteError::Internal(format!("写入 vhost 失败：{e}")));
+        }
         if let Err(e) = self.restart_nginx().await {
-            let _ = std::fs::remove_file(&conf);
+            rollback(&conf);
             return Err(e);
         }
-
-        match self
-            .db()
-            .create_site(&domain, &root.display().to_string(), &php_version)
-        {
-            Ok(site) => {
-                if let Err(e) = self.db().add_site_aliases(&domain, &aliases) {
-                    // 别名写失败时把站点行与 vhost 一起撤回，避免半成品。
-                    let _ = self.db().delete_site(&domain);
-                    let _ = std::fs::remove_file(&conf);
-                    return Err(SiteError::Conflict(format!("保存站点别名失败：{e}")));
-                }
-                Ok(site)
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&conf);
-                Err(SiteError::Conflict(format!("保存站点失败：{e}")))
-            }
-        }
+        Ok(site)
     }
 
     pub fn site_aliases(&self, domain: &str) -> Vec<String> {
@@ -1628,6 +2421,30 @@ impl AppState {
         let site_dir = PathBuf::from(&site.root_dir);
         let conf = s.vhost_file(&site_dir, domain);
         let disabled = s.vhost_disabled(&site_dir, domain);
+        if running && site.site_type == TYPE_RUNTIME {
+            // PHP 站点不能在 FPM 停着时假装启动：先核对运行环境与 socket。
+            let env = self.site_env_status().await;
+            if env.php_state != "running" {
+                return Err(SiteError::Unavailable(
+                    "PHP-FPM 未运行，请先在「运行环境」页启动".into(),
+                ));
+            }
+            let rid = site
+                .runtime_id
+                .as_deref()
+                .ok_or_else(|| SiteError::BadRequest("PHP 站点未绑定运行环境".into()))?;
+            let rt = self
+                .db()
+                .runtime_by_id(rid)
+                .map_err(|e| SiteError::Internal(e.to_string()))?
+                .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
+            if rt.kind != skiff_store::KIND_PHP || rt.last_status != "running" {
+                return Err(SiteError::Unavailable(format!(
+                    "运行环境 {} 未运行，请先启动运行环境",
+                    rt.version
+                )));
+            }
+        }
         if running {
             if !conf.exists() && disabled.exists() {
                 std::fs::rename(&disabled, &conf)
@@ -1675,20 +2492,10 @@ impl AppState {
                 std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())
                     .map_err(|e| SiteError::Internal(format!("写入站点 include 失败：{e}")))?;
             }
-            let site_dir = PathBuf::from(&site.root_dir);
-            let container_root = s.container_path(&site_index_dir(&site_dir));
             let tls = self.site_tls(&s, &site);
-            std::fs::write(
-                &conf,
-                render_default_vhost(
-                    &site.domain,
-                    &container_root,
-                    &s.container_log(&site_dir, LogKind::Access),
-                    &s.container_log(&site_dir, LogKind::Error),
-                    tls.as_ref(),
-                ),
-            )
-            .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
+            let content = self.render_default_vhost_for(&s, &site, tls.as_ref())?;
+            std::fs::write(&conf, content)
+                .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
             if let Err(e) = self.restart_nginx().await {
                 // 重载失败则回滚文件，避免留下未生效的默认指向。
                 let _ = std::fs::remove_file(&conf);
@@ -2201,20 +3008,46 @@ mod tests {
     }
 
     #[test]
-    fn php_version_only_matches_installed() {
-        assert_eq!(validate_php_version("8.5", "8.5").unwrap(), "8.5");
-        assert_eq!(validate_php_version("8.5.14", "8.5").unwrap(), "8.5");
-        assert!(validate_php_version("7.4", "8.5").is_err());
-        assert!(validate_php_version("8.4", "8.5").is_err());
+    fn site_type_and_proxy_target_validation() {
+        assert_eq!(validate_site_type("runtime").unwrap(), TYPE_RUNTIME);
+        assert_eq!(validate_site_type("STATIC").unwrap(), TYPE_STATIC);
+        assert_eq!(validate_site_type("proxy").unwrap(), TYPE_PROXY);
+        assert!(validate_site_type("node").is_err());
+
+        assert_eq!(
+            validate_proxy_target("http://127.0.0.1:8080/").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+        for bad in [
+            "",
+            "127.0.0.1:8080",
+            "ftp://x.example",
+            "http://",
+            "http://user:pw@host",
+            "http://bad host",
+            "http://host:0",
+            "http://host:99999",
+        ] {
+            assert!(validate_proxy_target(bad).is_err(), "{bad:?} 应被拒绝");
+        }
+
+        assert_eq!(validate_app_port(2048).unwrap(), 2048);
+        assert!(validate_app_port(80).is_err());
+        assert!(validate_app_port(70000).is_err());
     }
 
     #[test]
-    fn vhost_points_fastcgi_at_unix_socket() {
-        let v = render_vhost(
+    fn php_vhost_points_fastcgi_at_runtime_socket() {
+        let v = render_site_vhost(
             "example.com",
-            "/www/sites/example.com/index",
+            &[],
+            VhostKind::Php {
+                root: "/www/sites/example.com/index",
+                socket: "/www/php/php-fpm.sock",
+            },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
+            None,
         );
         assert!(v.contains("server_name example.com;"));
         assert!(v.contains("root /www/sites/example.com/index;"));
@@ -2227,6 +3060,129 @@ mod tests {
         assert!(!v.contains("/public"), "不得再引用旧的 public 根目录");
         assert!(!v.contains("listen 443"));
         assert!(v.contains("listen 80;"));
+    }
+
+    #[test]
+    fn static_vhost_has_no_php_but_reads_index() {
+        let v = render_site_vhost(
+            "static.local",
+            &[],
+            VhostKind::Static {
+                root: "/www/sites/static.local/index",
+            },
+            "/www/sites/static.local/log/access.log",
+            "/www/sites/static.local/log/error.log",
+            None,
+        );
+        assert!(v.contains("root /www/sites/static.local/index;"));
+        assert!(v.contains("index index.html;"));
+        assert!(v.contains("try_files $uri $uri/ =404;"));
+        assert!(!v.contains("fastcgi_pass"), "静态站不得接 PHP");
+        assert!(!v.contains("index.php"));
+    }
+
+    #[test]
+    fn proxy_vhost_forwards_and_optionally_upgrades_websocket() {
+        let ws = render_site_vhost(
+            "proxy.local",
+            &[],
+            VhostKind::Proxy {
+                target: "http://127.0.0.1:8080",
+                websocket: true,
+            },
+            "/www/sites/proxy.local/log/access.log",
+            "/www/sites/proxy.local/log/error.log",
+            None,
+        );
+        assert!(ws.contains("proxy_pass http://127.0.0.1:8080;"));
+        assert!(ws.contains("proxy_http_version 1.1;"));
+        assert!(ws.contains("proxy_set_header Host $host;"));
+        assert!(ws.contains("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"));
+        assert!(ws.contains("proxy_set_header Upgrade $http_upgrade;"));
+        assert!(ws.contains("proxy_set_header Connection \"upgrade\";"));
+        assert!(!ws.contains("root "), "反代不落文档根");
+        assert!(!ws.contains("fastcgi_pass"));
+
+        let plain = render_site_vhost(
+            "proxy.local",
+            &[],
+            VhostKind::Proxy {
+                target: "https://api.example.com:8443/base",
+                websocket: false,
+            },
+            "/www/sites/proxy.local/log/access.log",
+            "/www/sites/proxy.local/log/error.log",
+            None,
+        );
+        assert!(plain.contains("proxy_pass https://api.example.com:8443/base;"));
+        assert!(!plain.contains("Upgrade $http_upgrade"));
+    }
+
+    #[test]
+    fn php_config_validation_rejects_out_of_range_and_unsafe_values() {
+        PhpRuntimeConfig::default().validate().unwrap();
+
+        let cfg = PhpRuntimeConfig {
+            memory_limit: "8M".into(),
+            ..PhpRuntimeConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "memory_limit 下限 32M");
+
+        let cfg = PhpRuntimeConfig {
+            memory_limit: "9999M".into(),
+            ..PhpRuntimeConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = PhpRuntimeConfig {
+            upload_max_filesize: "256M".into(),
+            post_max_size: "64M".into(),
+            ..PhpRuntimeConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "post 不能小于 upload");
+
+        let cfg = PhpRuntimeConfig {
+            max_children: 100,
+            start_servers: 120,
+            ..PhpRuntimeConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = PhpRuntimeConfig {
+            pm: "static".into(),
+            ..PhpRuntimeConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        // 合法配置可往返序列化，且不丢字段。
+        let cfg = PhpRuntimeConfig {
+            memory_limit: "512M".into(),
+            upload_max_filesize: "128M".into(),
+            post_max_size: "128M".into(),
+            max_execution_time: 120,
+            max_children: 40,
+            start_servers: 5,
+            min_spare_servers: 3,
+            max_spare_servers: 12,
+            max_requests: 800,
+            ..PhpRuntimeConfig::default()
+        };
+        cfg.validate().unwrap();
+        let back = PhpRuntimeConfig::from_json(&cfg.to_json());
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn php_pool_uses_config_and_runtime_socket() {
+        let cfg = PhpRuntimeConfig::default();
+        let pool = render_php_pool_with(&cfg, "/www/php/php-fpm.sock");
+        assert!(pool.contains("listen = /www/php/php-fpm.sock"));
+        assert!(pool.contains("listen.mode = 0660"));
+        assert!(pool.contains("pm = dynamic"));
+        assert!(pool.contains("pm.max_children = 20"));
+        assert!(pool.contains("php_admin_value[memory_limit] = 256M"));
+        assert!(pool.contains("php_admin_value[upload_max_filesize] = 64M"));
+        assert!(pool.contains("php_admin_value[max_execution_time] = 30"));
     }
 
     fn settings_at(root: &Path) -> SiteSettings {
@@ -2302,10 +3258,13 @@ mod tests {
             key: "/www/sites/example.com/ssl/key.pem".into(),
             force_https: false,
         };
-        let v = render_vhost_with(
+        let v = render_site_vhost(
             "example.com",
             &[],
-            "/www/sites/example.com/index",
+            VhostKind::Php {
+                root: "/www/sites/example.com/index",
+                socket: "/www/php/php-fpm.sock",
+            },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
             Some(&tls),
@@ -2324,10 +3283,13 @@ mod tests {
             key: "/www/sites/example.com/ssl/key.pem".into(),
             force_https: true,
         };
-        let v = render_vhost_with(
+        let v = render_site_vhost(
             "example.com",
             &[],
-            "/www/sites/example.com/index",
+            VhostKind::Php {
+                root: "/www/sites/example.com/index",
+                socket: "/www/php/php-fpm.sock",
+            },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
             Some(&tls),
@@ -2345,7 +3307,10 @@ mod tests {
         };
         let v = render_default_vhost(
             "demo.local",
-            "/www/sites/demo.local/index",
+            VhostKind::Php {
+                root: "/www/sites/demo.local/index",
+                socket: "/www/php/php-fpm.sock",
+            },
             "/www/sites/demo.local/log/access.log",
             "/www/sites/demo.local/log/error.log",
             Some(&tls),
@@ -2358,7 +3323,10 @@ mod tests {
     fn default_vhost_serves_index_and_fallback_is_404() {
         let v = render_default_vhost(
             "demo.local",
-            "/www/sites/demo.local/index",
+            VhostKind::Php {
+                root: "/www/sites/demo.local/index",
+                socket: "/www/php/php-fpm.sock",
+            },
             "/www/sites/demo.local/log/access.log",
             "/www/sites/demo.local/log/error.log",
             None,

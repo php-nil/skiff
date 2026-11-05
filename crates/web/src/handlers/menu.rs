@@ -15,13 +15,40 @@ pub async fn dispatch(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Path(rest): Path<String>,
+    Query(incoming): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let rest = rest.trim_matches('/');
-    let mut q: HashMap<String, String> = HashMap::new();
+    let mut q: HashMap<String, String> = incoming;
+    // 契约深链：`core/sites/env/<id>` 与 `core/sites/list/<domain>` 带上末级参数。
+    if let Some(id) = rest.strip_prefix("core/sites/env/") {
+        if !id.is_empty() && !id.contains('/') {
+            return handlers::sites::runtime_detail(
+                State(state),
+                AuthUser(user),
+                Path(id.to_string()),
+                Query(q),
+            )
+            .await;
+        }
+    }
+    if let Some(domain) = rest.strip_prefix("core/sites/list/") {
+        if !domain.is_empty() && !domain.contains('/') {
+            return handlers::sites::detail(
+                State(state),
+                AuthUser(user),
+                Path(domain.to_string()),
+                Query(q),
+            )
+            .await;
+        }
+    }
     match rest {
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
+        "core/sites/new" => {
+            handlers::sites::new_page_get(State(state), AuthUser(user), Query(q)).await
+        }
         "core/sites/settings" => {
             handlers::sites::env_settings_page(State(state), AuthUser(user), Query(q)).await
         }

@@ -10,6 +10,11 @@
 >
 > 下文保留为早期设计过程记录；其中「5 个一级」「默认暗色」「hover 展开」等描述已被当前实现取代，以本节和 `docs/MENU_CONTRACT.md` 为准。
 
+> **网站运行环境重构契约（2026-11-05，设计态）**
+> - 契约：[`docs/SITE_RUNTIME_CONTRACT.md`](../SITE_RUNTIME_CONTRACT.md)（运行环境与站点模型、三类建站、PHP 专属配置、Docker 边界、路由/权限/审计、P1/P2、测试矩阵）。
+> - 可点预览：[`site-runtime-preview.html`](./site-runtime-preview.html)（双击即开，零外链；可切建站向导、运行环境列表、PHP 环境详情、Node/Go 设计态、站点列表；桌面/430px、浅色/深色）。
+> - 本轮只产出契约与预览，不改 Rust 代码、不改 `crates/app/src/sites.rs`、不部署测试机；预览内所有数据为示意。
+
 预览内所有数据为**示意数据**，用于判断信息层级与操作路径，不代表真实装机数据。
 
 ---

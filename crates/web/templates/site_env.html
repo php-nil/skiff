@@ -15,6 +15,40 @@
 {% if !notice.is_empty() %}<div class="alert">{{ notice }}</div>{% endif %}
 
 <section class="panel">
+  <h2>运行环境</h2>
+  <p class="muted">运行环境页是业务视角（版本、绑定站点、专属配置）；Docker 页只做原始容器管理。状态漂移表示「期望运行但容器实际未运行」。</p>
+  {% if runtimes.is_empty() %}
+  <p class="muted">尚未登记运行环境。安装运行环境后会自动登记 PHP 8.5。</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>类型</th><th>版本</th><th>状态</th><th>站点</th><th>端点</th><th>镜像</th><th></th></tr></thead>
+      <tbody>
+      {% for r in runtimes %}
+        <tr>
+          <td>{{ r.kind_label }}</td>
+          <td class="mono">{{ r.version }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
+          <td>
+            <span class="tag{% if r.state_class == "ok" %} ok{% else if r.state_class == "warn" %} warn-tag{% endif %}">{{ r.state_label }}</span>
+            {% if r.drift %}<br><span class="hint">期望运行 / 实际未运行</span>{% endif %}
+          </td>
+          <td>{{ r.site_count }}</td>
+          <td class="mono">{{ r.endpoint }}</td>
+          <td class="mono">{{ r.image }}</td>
+          <td><a href="{{ r.detail_href }}">详情</a> · <a href="{{ r.docker_href }}">Docker</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <div class="not-implemented">
+    <div><strong>Node.js / Go 运行环境</strong><br>P2 预留：每站点独立容器、独立 <code>127.0.0.1</code> 端口、独立日志；P1 不提供安装/启动，也不会显示为运行中。</div>
+    <span class="badge warn">P2 未实现</span>
+  </div>
+</section>
+
+<section class="panel">
   <h2>当前状态</h2>
   <div class="kv">
     <div><span class="muted">Docker</span><span>{% if env.docker_available %}可用{% else %}不可用：{{ env.docker_reason }}{% endif %}</span></div>

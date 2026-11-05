@@ -27,6 +27,28 @@
   requestTheme();
   window.addEventListener("load", requestTheme);
 
+  // ---- 内容高度上报：父面板据此把 iframe 调到内容高度，避免内外双滚动 ----
+  // 未注入面板（独立打开）或旧面板不消费该消息时，行为与以前一致。
+  var heightTimer = 0;
+  function reportHeight() {
+    if (!nonce) return;
+    var body = document.body;
+    var h = body ? Math.max(body.scrollHeight, body.offsetHeight) : 0;
+    if (h < 1) return;
+    try {
+      parent.postMessage({ type: "skiff.height", nonce: nonce, height: Math.ceil(h) }, "*");
+    } catch (e) { /* 独立打开 */ }
+  }
+  function scheduleHeight() {
+    if (heightTimer) clearTimeout(heightTimer);
+    heightTimer = setTimeout(reportHeight, 60);
+  }
+  window.addEventListener("load", reportHeight);
+  window.addEventListener("resize", scheduleHeight);
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(scheduleHeight).observe(document.body);
+  }
+
   // ---- 内核 L3 标签 → 内部视图（同一 iframe，切换不重载）----
   function setView(name) {
     var views = document.querySelectorAll("[data-view]");
@@ -36,6 +58,7 @@
     views.forEach(function (v) {
       v.hidden = !!(name && known && v.getAttribute("data-view") !== name);
     });
+    scheduleHeight();
   }
   setView(new URLSearchParams(location.search).get("tab") || "");
   window.addEventListener("message", function (ev) {

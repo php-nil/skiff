@@ -115,6 +115,19 @@
           openFromPlugin(frame.contentWindow, nonce, msg, allowed, prefix);
           return;
         }
+        // 插件上报内容高度：父页面把 iframe 调到该高度，消除「iframe 内部滚动条 +
+        // 页面滚动条」双滚动。数值做上下限裁剪；旧插件不发消息则维持 CSS 默认高度。
+        if (msg.type === "skiff.height") {
+          if (msg.nonce !== nonce) return;
+          // 只接受工作台 iframe：固定槽位有 manifest 声明的高度，不允许被内容撑开。
+          if (!frame.hasAttribute("data-workbench-frame")) return;
+          var height = Number(msg.height);
+          if (!isFinite(height) || height < 1) return;
+          height = Math.max(320, Math.min(20000, Math.round(height)));
+          frame.classList.add("auto-height");
+          if (frame.style.height !== height + "px") frame.style.height = height + "px";
+          return;
+        }
         if (msg.type !== "skiff.rpc" || msg.nonce !== nonce) return;
         if (typeof msg.method !== "string" || msg.method.length > 64) return;
         var id = msg.id;
@@ -366,6 +379,22 @@
     if (!bar || !frame) return;
     var links = Array.prototype.slice.call(bar.querySelectorAll("[data-workbench-tab]"));
 
+    // 吸顶偏移：L3 横栏落在顶栏（上下布局含二级通栏）之下。用实测高度写入
+    // `--shell-h`：窗口缩放、二级通栏展开/收起、窄屏顶栏换行都会自动跟着变。
+    var shell = document.querySelector(".top-shell");
+    var root = document.documentElement;
+    function syncShell() {
+      root.style.setProperty(
+        "--shell-h",
+        (shell ? Math.round(shell.getBoundingClientRect().height) : 0) + "px"
+      );
+    }
+    syncShell();
+    window.addEventListener("resize", syncShell);
+    if (shell && typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(syncShell).observe(shell);
+    }
+
     function apply(link, push) {
       if (!link) return;
       var tab = link.dataset.tab || "";
@@ -380,6 +409,9 @@
       if (push) history.pushState({ workbenchTab: tab, href: href }, "", href);
       if (ui && ui !== frame.dataset.ui) {
         frame.dataset.ui = ui;
+        // 换 UI 文件等于重新加载：高度先回落到 CSS 默认值，等新页面上报内容高度。
+        frame.style.height = "";
+        frame.classList.remove("auto-height");
         frame.src = link.dataset.src || frame.src;
         return;
       }
@@ -630,7 +662,7 @@
     dialog.addEventListener("close", function () { pending = null; });
   }
 
-  // ---- 网站创建向导：分步前进/回退，就地校验域名与根目录 ----
+  // ---- 网站创建向导：三步（类型 → 分支参数 → 确认），就地校验 ----
   function attachWizard() {
     var wizard = document.querySelector("[data-wizard]");
     if (!wizard) return;
@@ -654,9 +686,43 @@
       return /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(v) && !v.includes("..");
     }
 
+    function siteType() {
+      var el = form() ? form().querySelector('[name="site_type"]:checked') : null;
+      return el ? el.value : "";
+    }
+
+    // 第二步按类型只显示对应分支；未选类型时全部隐藏。
+    function syncType() {
+      var type = siteType();
+      var rootWrap = wizard.querySelector('[data-type-only="root"]');
+      if (rootWrap) {
+        // 静态/运行环境都可能自定义目录；反代不展示目录。
+        if (type === "proxy") rootWrap.setAttribute("hidden", "");
+        else rootWrap.removeAttribute("hidden");
+      }
+      wizard.querySelectorAll("[data-type-panel]").forEach(function (p) {
+        if (p.dataset.typePanel === type) p.removeAttribute("hidden");
+        else p.setAttribute("hidden", "");
+        // 未命中的分支禁用输入，避免把另一分支的字段提交上去。
+        p.querySelectorAll("input,select,textarea").forEach(function (el) {
+          if (p.dataset.typePanel === type) el.removeAttribute("disabled");
+          else el.setAttribute("disabled", "");
+        });
+      });
+    }
+
     function validateStep(step) {
       var ok = true;
       if (step === 1) {
+        if (!siteType()) { ok = false; }
+        var typeErr = errorFor("site_type");
+        if (typeErr) {
+          if (!siteType()) { typeErr.textContent = "请选择网站类型"; typeErr.removeAttribute("hidden"); }
+          else { typeErr.textContent = ""; typeErr.setAttribute("hidden", ""); }
+        }
+      }
+      if (step === 2) {
+        var type = siteType();
         var domain = field("domain");
         var aliases = field("aliases");
         var root = field("root_dir");
@@ -673,24 +739,54 @@
         } else showError("aliases", "");
 
         var rv = root ? root.value.trim() : "";
-        if (!rv) { showError("root_dir", "请填写站点目录"); ok = false; }
-        else if (!rv.startsWith("/") || rv.includes("..")) { showError("root_dir", "站点目录必须是以 / 开头的绝对路径，且不能包含 .."); ok = false; }
-        else if (!/\/sites\/[^\/]+$/.test(rv.replace(/\/+$/, ""))) { showError("root_dir", "站点目录必须是 /www/sites/<域名> 形式的一级目录"); ok = false; }
-        else showError("root_dir", "");
+        if (rv) {
+          if (!rv.startsWith("/") || rv.includes("..")) { showError("root_dir", "站点目录必须是以 / 开头的绝对路径，且不能包含 .."); ok = false; }
+          else if (!/\/sites\/[^\/]+$/.test(rv.replace(/\/+$/, ""))) { showError("root_dir", "站点目录必须是 /www/sites/<域名> 形式的一级目录"); ok = false; }
+          else showError("root_dir", "");
+        } else showError("root_dir", "");
+
+        if (type === "runtime") {
+          var rt = field("runtime_id");
+          var selected = rt ? rt.options[rt.selectedIndex] : null;
+          if (!rt || !rt.value) {
+            showError("runtime_id", "请选择运行环境"); ok = false;
+          } else if (selected && selected.dataset.disabled === "1") {
+            showError("runtime_id", selected.dataset.reason || "该运行环境尚未就绪");
+            ok = false;
+          } else showError("runtime_id", "");
+        } else if (type === "proxy") {
+          var target = field("proxy_target");
+          var tv = target ? target.value.trim() : "";
+          if (!tv) { showError("proxy_target", "请填写上游地址"); ok = false; }
+          else if (!/^http(s)?:\/\/[A-Za-z0-9._-]+(:\d{1,5})?(\/[^\s]*)?$/.test(tv)) {
+            showError("proxy_target", "上游地址必须形如 http://127.0.0.1:8080"); ok = false;
+          } else if (dv && tv.replace(/^http(s)?:\/\//, "").split(":")[0].toLowerCase() === dv.toLowerCase()) {
+            showError("proxy_target", "上游地址不能指向站点自身"); ok = false;
+          } else showError("proxy_target", "");
+        }
       }
       return ok;
     }
 
     function summary() {
+      var type = siteType();
+      var typeText = { runtime: "运行环境", static: "静态网站", proxy: "反向代理" }[type] || "—";
       var domain = field("domain");
       var aliases = field("aliases");
       var root = field("root_dir");
-      var php = field("php_version");
+      var rt = field("runtime_id");
+      var target = field("proxy_target");
+      var ws = form() ? form().querySelector('[name="proxy_websocket"]') : null;
       var map = {
+        type: typeText,
         domain: domain ? domain.value.trim() : "",
         aliases: aliases && aliases.value.trim() ? aliases.value.trim() : "无",
-        root: root ? root.value.trim() : "",
-        php: php ? php.value : ""
+        root: type === "proxy" ? "不适用（反向代理不落文档根）" : (root && root.value.trim() ? root.value.trim() : "默认站点目录"),
+        runtime: type === "runtime"
+          ? (rt && rt.value ? (rt.options[rt.selectedIndex] ? rt.options[rt.selectedIndex].text : rt.value) : "—")
+          : (type === "proxy" ? "不适用" : "不适用（静态网站不接 PHP）"),
+        target: type === "proxy" && target ? target.value.trim() : "不适用",
+        websocket: type === "proxy" ? (ws && ws.checked ? "开启" : "关闭") : "不适用"
       };
       Object.keys(map).forEach(function (k) {
         var el = wizard.querySelector('[data-summary="' + k + '"]');
@@ -705,6 +801,7 @@
         if (n === step) p.removeAttribute("hidden");
         else p.setAttribute("hidden", "");
       });
+      if (step >= 2) syncType();
       dots.forEach(function (d) {
         var n = parseInt(d.dataset.wizardStep, 10);
         d.classList.toggle("on", n === step);
@@ -728,6 +825,10 @@
       } else if (target.closest("[data-wizard-back]")) {
         show(Math.max(current - 1, 1));
       }
+    });
+    wizard.addEventListener("change", function (e) {
+      var target = e.target;
+      if (target instanceof HTMLInputElement && target.name === "site_type") syncType();
     });
 
     var start = parseInt(wizard.dataset.wizardStart || "1", 10);

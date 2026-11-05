@@ -17,6 +17,46 @@ use skiff_store::{Db, PluginRecord, Role};
 use skiff_web::{AppState, WebConfig};
 use tower::ServiceExt;
 
+/// 测试用 PHP 站点：绑定 v7 迁移种入的 php-8.5 运行环境。
+fn php_site(domain: &str, root: &str) -> skiff_store::NewSite {
+    skiff_store::NewSite {
+        domain: domain.into(),
+        root_dir: root.into(),
+        site_type: skiff_store::TYPE_RUNTIME.into(),
+        runtime_id: Some("php-8.5".into()),
+        app_command: None,
+        app_port: None,
+        proxy_target: None,
+        proxy_websocket: false,
+    }
+}
+
+fn static_site(domain: &str, root: &str) -> skiff_store::NewSite {
+    skiff_store::NewSite {
+        domain: domain.into(),
+        root_dir: root.into(),
+        site_type: skiff_store::TYPE_STATIC.into(),
+        runtime_id: None,
+        app_command: None,
+        app_port: None,
+        proxy_target: None,
+        proxy_websocket: false,
+    }
+}
+
+fn proxy_site(domain: &str, root: &str, target: &str, websocket: bool) -> skiff_store::NewSite {
+    skiff_store::NewSite {
+        domain: domain.into(),
+        root_dir: root.into(),
+        site_type: skiff_store::TYPE_PROXY.into(),
+        runtime_id: None,
+        app_command: None,
+        app_port: None,
+        proxy_target: Some(target.into()),
+        proxy_websocket: websocket,
+    }
+}
+
 struct Harness {
     app: Router,
     state: Arc<AppState>,
@@ -1883,6 +1923,17 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
         page_html.contains("data-menu-key") && page_html.contains("恢复默认"),
         "菜单设置页必须列出可操作项: {page_html}"
     );
+    assert!(
+        page_html.contains("内容宽度")
+            && page_html.contains(r#"value="auto""#)
+            && page_html.contains(r#"name="max""#),
+        "菜单设置页必须提供内容宽度选项（自适应/固定 + 最大宽度）: {page_html}"
+    );
+    assert!(
+        page_html.contains(r#"data-layout="left""#)
+            && page_html.contains(r#"data-content-width="auto""#),
+        "缺省布局应为左右、内容宽度应为自适应（铺满）: {page_html}"
+    );
 
     // 隐藏 Docker→镜像
     let resp = h
@@ -1984,7 +2035,47 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
         "布局切换后同一菜单 DOM 必须保留: {left}"
     );
 
-    // 恢复默认：隐藏与布局一起回到 manifest/管理员默认
+    // 内容宽度：固定上限写进 body，刷新后保持
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/settings/menu")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("action", "width"),
+                    ("width", "fixed"),
+                    ("max", "1600"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let fixed = body_text(
+        h.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/p")
+                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        fixed.contains(r#"data-content-width="fixed""#) && fixed.contains("--content-max: 1600px"),
+        "固定宽度必须落库并写进页面: {fixed}"
+    );
+
+    // 恢复默认：隐藏、布局与内容宽度一起回到缺省值（左右 + 自适应）
     let resp = h
         .app
         .clone()
@@ -2015,9 +2106,10 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
     )
     .await;
     assert!(
-        reset.contains(r#"data-layout="top""#)
+        reset.contains(r#"data-layout="left""#)
+            && reset.contains(r#"data-content-width="auto""#)
             && reset.contains(r#"href="/p/m/core/docker/images""#),
-        "恢复默认必须同时复原布局与隐藏项: {reset}"
+        "恢复默认必须同时复原布局、内容宽度与隐藏项: {reset}"
     );
 }
 
@@ -2215,6 +2307,14 @@ view = "info"
     assert!(
         html.contains(r#"class="workbench-tabs""#),
         "应渲染内核 L3 标签栏"
+    );
+    let bar_pos = html.find(r#"class="workbench-tabs""#).unwrap();
+    let panel_pos = html
+        .find(r#"class="panel workbench-panel""#)
+        .expect("工作台内容面板");
+    assert!(
+        bar_pos < panel_pos,
+        "L3 标签栏必须在页面标题区下方、内容面板之外: {html}"
     );
     assert!(html.contains(r#"data-local="list""#) && html.contains(r#"data-local="backup""#));
     assert!(html.contains("tab=list"), "默认取第一个 L3 的 view");
@@ -2598,14 +2698,13 @@ async fn sites_list_shows_default_badge_and_toggle() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     h.state
         .db()
-        .create_site(
+        .create_site(&php_site(
             "demo.local",
             &h.data_dir
                 .join("www/sites/demo.local")
                 .display()
                 .to_string(),
-            "8.5",
-        )
+        ))
         .unwrap();
     h.state.db().set_site_default("demo.local", true).unwrap();
 
@@ -2629,7 +2728,7 @@ async fn sites_list_cert_column_matches_ssl_files() {
     let root = h.data_dir.join("www/sites/demo.local");
     h.state
         .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
     let s = h.state.site_settings();
     std::fs::create_dir_all(root.join("ssl")).unwrap();
@@ -2691,7 +2790,7 @@ async fn site_delete_removes_whole_site_directory_only() {
 
     h.state
         .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
     h.state.delete_site("demo.local").await.unwrap();
 
@@ -2725,7 +2824,7 @@ async fn site_dir_listing_is_limited_to_index_dir() {
     std::fs::write(s.key_file(&root), "key").unwrap();
     h.state
         .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
 
     let listing = h.state.site_dir_listing("demo.local", "").unwrap();
@@ -3033,6 +3132,117 @@ fn d3_plugin_ui_adapts_to_theme_message() {
             "{name} 必须在脚本执行与 load 时向父页面索取主题"
         );
     }
+
+    // 工作台插件侧：上报内容高度，父页面才能消除内外双滚动。
+    for (name, js) in [
+        ("cron", include_str!("../../../plugins/cron/ui/app.js")),
+        ("guard", include_str!("../../../plugins/guard/ui/app.js")),
+        (
+            "monitor",
+            include_str!("../../../plugins/monitor/ui/app.js"),
+        ),
+        ("files", include_str!("../../../plugins/files/ui/app.js")),
+        (
+            "testkit",
+            include_str!("../../../plugins/testkit/ui/app.js"),
+        ),
+    ] {
+        assert!(
+            js.contains(r#"type: "skiff.height""#) && js.contains("reportHeight"),
+            "{name} 必须向父页面上报内容高度"
+        );
+    }
+}
+
+/// D3b：L3 横栏位于页面标题区下方并吸顶；内容宽度默认铺满；插件上报高度后 iframe 跟随。
+#[test]
+fn d3b_workbench_topbar_width_and_iframe_height() {
+    let tpl = include_str!("../templates/plugin_view.html");
+    let base = include_str!("../templates/base.html");
+    let css = include_str!("../static/skiff.css");
+    let js = include_str!("../static/skiff.js");
+
+    // 横栏在页面标题区之后、内容面板之外；无 L3 声明时整条不渲染。
+    let head = tpl.find("page-head").expect("页面标题区");
+    let bar = tpl.find(r#"class="workbench-tabs""#).expect("L3 横栏");
+    let panel = tpl
+        .find(r#"class="panel workbench-panel""#)
+        .expect("工作台内容面板");
+    assert!(
+        head < bar && bar < panel,
+        "L3 横栏必须位于标题区下方、内容面板之外"
+    );
+    assert!(
+        tpl.contains("{% if !tabs.is_empty() %}"),
+        "无 L3 声明时整条横栏不得渲染"
+    );
+    assert!(
+        tpl.contains("data-workbench-frame"),
+        "工作台 iframe 必须带标记，高度消息只对它生效"
+    );
+    assert!(
+        !tpl.contains("插件 UI 运行在无同源权限"),
+        "工作台只保留标题 + L3 横栏，iframe 是纯内容区"
+    );
+
+    // 吸顶：两种布局都停在顶栏之下；上下布局用实测 --shell-h（含二级通栏）。
+    assert!(
+        css.contains(".workbench-tabs {\n  position: sticky;"),
+        "L3 横栏必须 sticky，不随内容滚动"
+    );
+    assert!(
+        css.contains("top: var(--shell-h, var(--topbar-h));"),
+        "上下布局的吸顶偏移要落在顶栏/二级通栏之下"
+    );
+    assert!(
+        js.contains(r#"root.style.setProperty("#) && js.contains("--shell-h"),
+        "横栏吸顶偏移必须由脚本按顶栏实测高度写入"
+    );
+    assert!(
+        js.contains("new ResizeObserver(syncShell).observe(shell)"),
+        "顶栏高度变化（二级通栏展开、窄屏换行）必须自动重算"
+    );
+
+    // 内容宽度：默认铺满；固定时才限宽，侧栏布局在剩余空间居中。
+    assert!(
+        base.contains(r#"data-content-width="{{ ctx.menu.width }}""#)
+            && base.contains("--content-max: {{ ctx.menu.max_width }}px"),
+        "内容宽度偏好必须落到 body 属性与 CSS 变量"
+    );
+    assert!(
+        css.contains(r#"body[data-content-width="fixed"] main"#),
+        "只有「固定」模式才给内容区设上限"
+    );
+    assert!(
+        !css.contains("max-width: 1240px"),
+        "默认不得再给内容区固定 1240px 上限"
+    );
+    assert!(
+        css.contains(r#"body[data-layout="left"][data-content-width="fixed"] main"#),
+        "侧栏布局的固定宽度必须在侧栏之外的剩余空间居中"
+    );
+
+    // iframe 高度桥：只接受工作台 iframe，切 UI 时回落到默认高度。
+    assert!(
+        js.contains(r#"msg.type === "skiff.height""#),
+        "父页面必须处理插件上报的内容高度"
+    );
+    assert!(
+        js.contains(r#"frame.style.height = height + "px""#),
+        "父页面必须把 iframe 调到插件上报的高度"
+    );
+    assert!(
+        js.contains(r#"frame.hasAttribute("data-workbench-frame")"#),
+        "固定槽位 iframe 不允许被内容撑开"
+    );
+    assert!(
+        js.contains(r#"frame.style.height = "";"#),
+        "切换 UI 文件时高度必须回落到默认值"
+    );
+    assert!(
+        css.contains("background: var(--plugin-frame);"),
+        "iframe 加载占位底色必须跟随主题，避免白屏闪烁"
+    );
 }
 
 /// D4：主题切换写回 localStorage，首屏脚本在样式表之前按同一键名落地，避免刷新闪白。
@@ -3215,10 +3425,17 @@ async fn sites_wizard_validates_and_marks_unimplemented() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("data-wizard"), "创建页必须是分步向导: {html}");
     assert!(html.contains(r#"data-wizard-step="3""#), "必须有确认步骤");
-    assert!(html.contains("未实现"), "数据库/SSL 必须明确标注未实现");
     assert!(
-        !html.contains("type=\"checkbox\""),
+        html.contains("Node.js / Go") && html.contains("P2 未实现"),
+        "Node/Go 必须明确标注 P2 未实现: {html}"
+    );
+    assert!(
+        !html.contains("name=\"database\"") && !html.contains("name=\"ssl\""),
         "不得用可点击的假开关冒充数据库/SSL"
+    );
+    assert!(
+        html.contains("name=\"proxy_websocket\"") && html.contains("name=\"site_type\""),
+        "三类站点分支与 WebSocket 开关必须存在: {html}"
     );
     let csrf = csrf_from(&html);
 
@@ -3233,10 +3450,11 @@ async fn sites_wizard_validates_and_marks_unimplemented() {
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[
                     ("csrf", &csrf),
+                    ("site_type", "runtime"),
+                    ("runtime_id", "php-8.5"),
                     ("domain", "bad_domain"),
                     ("aliases", ""),
                     ("root_dir", "/www/sites/bad"),
-                    ("php_version", "8.5"),
                 ]))
                 .unwrap(),
         )
@@ -3250,6 +3468,130 @@ async fn sites_wizard_validates_and_marks_unimplemented() {
     );
 }
 
+/// 运行环境页是业务视角：列表/详情/深链可访问，viewer 一律 403。
+#[tokio::test]
+async fn runtime_pages_are_admin_only_and_render_business_view() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+
+    for uri in ["/p/runtimes", "/p/sites/env", "/p/sites/env/php-8.5"] {
+        let (status, html) = get_page(&h.app, uri, &admin).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains("PHP"), "{uri} 必须展示运行环境类型: {html}");
+    }
+    let (status, html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("PHP 专属配置"), "{html}");
+    assert!(html.contains("socket"), "{html}");
+    assert!(html.contains("关联站点"), "{html}");
+    assert!(
+        html.contains("/p/containers/"),
+        "运行环境详情必须提供 Docker 页深链: {html}"
+    );
+
+    // 菜单契约深链同源。
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("PHP 专属配置"), "{html}");
+
+    for uri in ["/p/runtimes", "/p/sites/env", "/p/sites/env/php-8.5"] {
+        let (status, _) = get_page(&h.app, uri, &viewer).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
+    }
+
+    // viewer 的写操作同样 403，且不产生副作用。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/env/php-8.5/action/start")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
+                .body(form_body(&[("csrf", "x")]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// 三类站点在列表/详情中的类型与端点展示不混淆。
+#[tokio::test]
+async fn three_site_types_are_rendered_in_list() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let php_root = h.data_dir.join("www/sites/php.local");
+    let static_root = h.data_dir.join("www/sites/static.local");
+    let proxy_root = h.data_dir.join("www/sites/proxy.local");
+    h.state
+        .db()
+        .create_site(&php_site("php.local", &php_root.display().to_string()))
+        .unwrap();
+    h.state
+        .db()
+        .create_site(&static_site(
+            "static.local",
+            &static_root.display().to_string(),
+        ))
+        .unwrap();
+    h.state
+        .db()
+        .create_site(&proxy_site(
+            "proxy.local",
+            &proxy_root.display().to_string(),
+            "http://127.0.0.1:8080",
+            true,
+        ))
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("运行环境") && html.contains("静态网站"),
+        "{html}"
+    );
+    assert!(html.contains("反向代理"), "{html}");
+    assert!(html.contains("PHP 8.5"), "{html}");
+    assert!(
+        html.contains("http://127.0.0.1:8080 · WebSocket"),
+        "反代必须展示上游与 WS 标记: {html}"
+    );
+
+    let (status, html) = get_page(&h.app, "/p/sites/proxy.local", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("上游地址"), "{html}");
+    assert!(!html.contains("?tab=dir"), "反代详情不应有目录标签: {html}");
+}
+
+/// 删除仍有站点绑定的运行环境：必须拒绝并列出域名，不做隐式解绑。
+#[tokio::test]
+async fn deleting_bound_runtime_lists_domains_and_is_rejected() {
+    let h = harness();
+    let root = h.data_dir.join("www/sites/demo.local");
+    h.state
+        .db()
+        .create_site(&php_site("demo.local", &root.display().to_string()))
+        .unwrap();
+    let err = h.state.delete_site_runtime("php-8.5").unwrap_err();
+    let text = format!("{err}");
+    assert!(
+        matches!(err, skiff_app::sites::SiteError::Conflict(_)),
+        "有绑定必须冲突：{text}"
+    );
+    assert!(text.contains("demo.local"), "错误必须列出域名：{text}");
+    assert!(
+        h.state.db().runtime_by_id("php-8.5").unwrap().is_some(),
+        "运行环境不能被删掉"
+    );
+    assert!(
+        h.state.db().site_by_domain("demo.local").unwrap().is_some(),
+        "站点不能被隐式删除"
+    );
+}
+
 /// 批量操作必须要求管理员；viewer 直接 403，不产生任何副作用。
 #[tokio::test]
 async fn sites_batch_requires_admin() {
@@ -3257,7 +3599,7 @@ async fn sites_batch_requires_admin() {
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     h.state
         .db()
-        .create_site("demo.local", "/www/sites/demo.local", "8.5")
+        .create_site(&php_site("demo.local", "/www/sites/demo.local"))
         .unwrap();
 
     let resp = h
@@ -3292,7 +3634,7 @@ async fn site_config_save_failure_rolls_back() {
     let root = h.data_dir.join("www/sites/demo.local");
     h.state
         .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
     std::fs::create_dir_all(skiff_app::sites::site_conf_dir(&root)).unwrap();
     let conf = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
@@ -3349,7 +3691,7 @@ async fn site_detail_tabs_are_reachable() {
     std::fs::create_dir_all(skiff_app::sites::site_index_dir(&root)).unwrap();
     h.state
         .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
     h.state
         .db()
@@ -3391,7 +3733,7 @@ async fn site_dir_traversal_returns_bad_request() {
     }
     h.state
         .db()
-        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
 
     for path in ["../log", "../ssl", "../log/access.log"] {

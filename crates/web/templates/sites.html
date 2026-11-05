@@ -29,7 +29,7 @@
 
 <div class="toolbar">
   <form class="search" method="get" action="/{{ ctx.prefix }}/sites" role="search">
-    <input type="search" name="q" value="{{ keyword }}" placeholder="搜索域名、站点目录或 PHP 版本" aria-label="搜索站点">
+    <input type="search" name="q" value="{{ keyword }}" placeholder="搜索域名、站点目录或运行环境" aria-label="搜索站点">
     <button class="btn" type="submit">搜索</button>
     {% if !keyword.is_empty() %}<a class="ghost" href="/{{ ctx.prefix }}/sites">清除</a>{% endif %}
   </form>
@@ -57,7 +57,7 @@
     <a class="btn" href="/{{ ctx.prefix }}/sites">清除搜索</a>
     {% else if !env.ready %}
     <strong>先安装运行环境，再创建第一个网站</strong>
-    <p class="hint">安装 nginx + PHP 后，这里会出现站点列表。</p>
+    <p class="hint">静态网站与反向代理只需要 nginx；运行环境站还需要 PHP-FPM。</p>
     <a class="btn primary" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
     {% else %}
     <strong>还没有站点</strong>
@@ -73,7 +73,7 @@
           {% if can_admin %}<th class="col-select" style="width:36px"><span class="muted small">选择</span></th>{% endif %}
           <th>站点</th>
           <th class="col-status">状态</th>
-          <th class="col-php">PHP 版本</th>
+          <th class="col-php">类型 / 运行环境</th>
           <th class="col-cert">证书</th>
           <th class="col-actions">操作</th>
         </tr>
@@ -107,7 +107,10 @@
             <span class="badge danger"><span class="status-dot danger"></span>{{ s.status_label }}</span>
             {% endif %}
           </td>
-          <td class="mono">{{ s.php_version }}</td>
+          <td>
+            <span class="badge">{{ s.type_label }}</span>
+            <span class="mono">{{ s.endpoint }}</span>
+          </td>
           <td>
             {% if s.https && s.cert_ready %}
             <span class="badge ok">已启用 HTTPS</span>

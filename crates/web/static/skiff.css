@@ -718,13 +718,23 @@ body[data-layout="left"] .foot { margin-left: var(--sidebar-w); }
    页面骨架 / 提示条
    -------------------------------------------------------------------------- */
 
-main { max-width: 1240px; margin: 0 auto; padding: var(--sp-5); }
+/* 内容宽度：默认自适应，铺满侧栏之外的可用宽度；「固定」时才引入 --content-max 上限。 */
+main { margin: 0 auto; padding: var(--sp-5); }
 .foot {
-  max-width: 1240px;
   margin: 0 auto;
   padding: var(--sp-4) var(--sp-5) var(--sp-8);
   color: var(--muted);
   font-size: var(--fs-xs);
+}
+body[data-content-width="fixed"] main,
+body[data-content-width="fixed"] .foot {
+  max-width: var(--content-max, 1440px);
+}
+/* 侧栏布局「固定」时居中于剩余空间：左侧至少让出 248px，避免顶到侧栏。 */
+body[data-layout="left"][data-content-width="fixed"] main,
+body[data-layout="left"][data-content-width="fixed"] .foot {
+  margin-left: calc(var(--sidebar-w) + max(0px, (100% - var(--sidebar-w) - var(--content-max, 1440px)) / 2));
+  margin-right: auto;
 }
 
 .banner {
@@ -1386,14 +1396,24 @@ dialog.modal::backdrop { background: rgba(16, 24, 40, .45); }
    插件 iframe / 登录 / 错误页 / 菜单设置 / L3 标签 / 固定槽位
    -------------------------------------------------------------------------- */
 
+/* 工作台 iframe 是纯内容区：面板只保留圆角与边框，iframe 不再叠自己的内边距/外框。 */
+.workbench-panel {
+  padding: 0;
+  overflow: hidden;
+  background: var(--plugin-frame);
+}
 iframe.plugin-frame {
+  display: block;
   width: 100%;
   height: 70vh;
   min-height: 360px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border: 0;
+  border-radius: 0;
+  /* 加载阶段的占位底色跟随主题，避免白屏/黑屏闪烁。 */
   background: var(--plugin-frame);
 }
+/* 插件上报内容高度后由 skiff.js 写内联 height；类名只作为无脚本时的回退。 */
+iframe.plugin-frame.auto-height { height: auto; }
 
 body.login-body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: var(--sp-5); }
 .login-card {
@@ -1429,6 +1449,11 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
 .menu-layout-pick { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: var(--sp-4) 0 var(--sp-5); }
 .menu-layout-pick h3 { margin: 0 var(--sp-3) 0 0; font-size: var(--fs-md); }
 .menu-layout-pick .hint { flex-basis: 100%; margin: 0; }
+.menu-width-pick { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: 0 0 var(--sp-5); }
+.menu-width-pick h3 { margin: 0 var(--sp-3) 0 0; font-size: var(--fs-md); }
+.menu-width-pick .hint { flex-basis: 100%; margin: 0; }
+.menu-width-pick .width-max { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-sm); }
+.menu-width-pick .width-max input { width: 96px; }
 .menu-pref-group { border-top: 1px solid var(--line); padding-top: var(--sp-3); margin-top: var(--sp-3); }
 .menu-pref-group h3 { margin: 0 0 var(--sp-2); color: var(--muted); font-size: var(--fs-sm); }
 .menu-pref-row {
@@ -1450,33 +1475,57 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
 
 
 
+/* L3 工作台标签栏：页面标题区下方的独立通栏，与内容区同宽。
+   `--shell-h` 由 skiff.js 按顶栏实测高度写入（上下布局含二级通栏），
+   因此两种布局都能吸顶在顶栏之下，滚动时不随内容移动。 */
 .workbench-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 12;
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: var(--sp-1) 0 var(--sp-3);
-  padding-bottom: var(--sp-2);
+  gap: 2px;
+  flex-wrap: nowrap;
+  margin: 0 0 var(--sp-4);
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--bg);
   border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
 }
+.workbench-tabs::-webkit-scrollbar { display: none; }
+body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); }
 .workbench-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-2);
+  height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--muted);
   font-size: var(--fs-sm);
-  min-width: 0;
-  overflow-wrap: anywhere;
+  font-weight: 500;
+  white-space: nowrap;
 }
-.workbench-tab:hover { border-color: var(--line-strong); text-decoration: none; }
+.workbench-tab:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 .workbench-tab.on, .workbench-tab[aria-current="page"] {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
+  background: var(--surface);
   color: var(--accent);
+  font-weight: 600;
+}
+.workbench-tab.on::after, .workbench-tab[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 /* 插件信息页：关联菜单与完整指纹。 */
@@ -1607,7 +1656,9 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
     border-bottom: 0;
     box-shadow: none;
   }
-  body[data-layout="left"] main, body[data-layout="left"] .foot { margin-left: 0; }
+  body[data-layout="left"] main, body[data-layout="left"] .foot,
+  body[data-layout="left"][data-content-width="fixed"] main,
+  body[data-layout="left"][data-content-width="fixed"] .foot { margin-left: 0; }
   body[data-layout="left"] .topbar .nav {
     flex: 1 1 100%;
     width: 100%;
