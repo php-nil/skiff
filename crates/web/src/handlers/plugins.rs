@@ -18,7 +18,8 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser, PluginManagerUser};
 use crate::state::AppState;
 use crate::templates::{
-    GrantRow, PermissionRow, PluginConfirmPage, PluginDetailPage, PluginView, PluginsPage, TabView,
+    GrantRow, PermissionRow, PluginConfirmPage, PluginInfoPage, PluginView, PluginViewPage,
+    PluginsPage, TabView,
 };
 use crate::util::{form_first, parse_form};
 
@@ -48,18 +49,25 @@ fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppErro
         api: p.api.clone(),
         status: p.status.clone(),
         enabled: p.enabled,
-        key_id: p.key_id.chars().take(16).collect(),
+        key_id_full: p.key_id.clone(),
         grants: p
             .grants
             .iter()
             .map(|g| format!("{}:{}", g.kind, g.value))
             .collect::<Vec<_>>()
             .join(", "),
+        requires: manifest
+            .as_ref()
+            .map(|m| m.requires_str().join(", "))
+            .unwrap_or_default(),
+        permissions: manifest
+            .as_ref()
+            .map(|m| m.permission_strings().join(", "))
+            .unwrap_or_default(),
         signed,
         reduced,
         running: false,
         ui_path: ui.map(|u| u.path.clone()).unwrap_or_default(),
-        ui_label: ui.map(|u| u.label.clone()).unwrap_or_default(),
     })
 }
 
@@ -119,16 +127,12 @@ pub async fn list(
     handlers::render(page)
 }
 
-/// 插件详情页：沙箱 iframe + RPC 桥。
-///
-/// nonce 每次打开重新生成，父页面只代发带有该 nonce 的 `skiff.rpc` 消息；
-/// iframe 内容按 `style-src 'self' 'unsafe-inline'`、`connect-src 'none'` 托管，
-/// 拿不到面板 Cookie 也发不出网。
-pub async fn detail(
+/// 插件信息与管理页（`/{p}/plugins/{id}`）：内核渲染插件身份、授权、
+/// 菜单关联与管理动作，不嵌 iframe（功能界面见 `/{p}/plugins/{id}/<view>`）。
+pub async fn info(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
-    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let rec = state
         .db()
@@ -136,9 +140,113 @@ pub async fn detail(
         .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
     let mut plugin = plugin_view(&state, &rec)?;
     plugin.running = state.supervisor().is_running(&plugin.id).await;
-    if plugin.ui_path.is_empty() {
+    let manifest = Manifest::parse(&rec.manifest).ok();
+    let (menus, entry_href) = manifest
+        .as_ref()
+        .map(|m| crate::menu::plugin_info_menu(&state, &user, &id, m))
+        .unwrap_or_default();
+    let (interop_provides, interop_consumes) =
+        manifest.as_ref().map(interop_rows).unwrap_or_default();
+    let grants = rec
+        .grants
+        .iter()
+        .map(|g| GrantRow {
+            kind: g.kind.clone(),
+            value: g.value.clone(),
+        })
+        .collect();
+    let page = PluginInfoPage {
+        ctx: handlers::page_ctx(&state, &user, "core/plugins/installed"),
+        plugin,
+        grants,
+        interop_provides,
+        interop_consumes,
+        menus,
+        entry_href,
+        can_admin: user.can(skiff_model::Permission::PluginManage),
+        error: String::new(),
+        notice: String::new(),
+    };
+    handlers::render(page)
+}
+
+/// 规范功能页（`/{p}/plugins/{id}/<view>`）：视图名 → 所属 L2/L3，
+/// 内核渲染 L3 标签栏后把 iframe 指向 `ui/<view>.html`（未知视图 404）。
+pub async fn view(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path((id, view_name)): Path<(String, String)>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let rec = state
+        .db()
+        .plugin(&id)?
+        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
+    let wb = crate::menu::resolve_plugin_view(&state, &user, &id, &view_name).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "插件 {id} 不存在视图 {view_name}，或该视图对当前角色不可见"
+        ))
+    })?;
+    render_workbench(&state, &user, &rec, wb, q.get("open").map(String::as_str)).await
+}
+
+/// 菜单深链（`/{p}/m/plugin/<id>[/<l2>[/<l3>]]`）。
+///
+/// `legacy` 是 P1 老深链：插件升级为声明式菜单后落到首个可见 L2，
+/// 避免旧收藏与旧入口失效。
+pub async fn menu_view(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path((id, l2_raw, l3_raw)): Path<(String, Option<String>, Option<String>)>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let rec = state
+        .db()
+        .plugin(&id)?
+        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
+    let wb = match l2_raw.as_deref() {
+        None => crate::menu::default_plugin_view(&state, &user, &id),
+        Some(raw) => {
+            let resolved = crate::menu::workbench_tabs(&state, &user, &id, raw, l3_raw.as_deref());
+            if resolved.is_some() {
+                resolved
+            } else if crate::menu::menu_local(&id, raw).as_deref() == Some("legacy") {
+                // 老深链降级：按 manifest 顺序尝试首个可解析的可见 L2。
+                Manifest::parse(&rec.manifest).ok().and_then(|m| {
+                    m.menu.iter().find_map(|d| {
+                        crate::menu::workbench_tabs(&state, &user, &id, &d.id, l3_raw.as_deref())
+                    })
+                })
+            } else {
+                None
+            }
+        }
+    }
+    .ok_or_else(|| {
+        AppError::NotFound(format!(
+            "插件 {id} 的菜单不存在或当前角色不可见: {}",
+            l2_raw.as_deref().unwrap_or("")
+        ))
+    })?;
+    render_workbench(&state, &user, &rec, wb, q.get("open").map(String::as_str)).await
+}
+
+/// 工作台公共渲染：nonce 每次打开重新生成，父页面只代发带有该 nonce 的
+/// `skiff.rpc` 消息；iframe 内容按 `style-src 'self' 'unsafe-inline'`、
+/// `connect-src 'none'` 托管，拿不到面板 Cookie 也发不出网。
+async fn render_workbench(
+    state: &AppState,
+    user: &crate::state::CurrentUser,
+    rec: &PluginRecord,
+    wb: crate::menu::WorkbenchTabs,
+    open_raw: Option<&str>,
+) -> Result<Response, AppError> {
+    let mut plugin = plugin_view(state, rec)?;
+    plugin.running = state.supervisor().is_running(&plugin.id).await;
+    if wb.active_ui.is_empty() {
         return Err(AppError::NotFound(format!(
-            "插件 {id} 的 manifest 未声明 ui 入口"
+            "插件 {} 的 manifest 未声明可用的 ui 视图",
+            plugin.id
         )));
     }
     let nonce = skiff_identity::new_token()
@@ -148,86 +256,42 @@ pub async fn detail(
         .collect::<String>();
     // 跨插件跳转的定位建议（`?open=`）：只做长度与控制字符清洗，随后原样交给
     // 目标插件——真正能不能读，仍由目标插件自己的 `path:` 授权根判定。
-    let open = sanitize_open(q.get("open").map(String::as_str).unwrap_or(""));
-    // 菜单深链：`?menu=<local|plugin/<id>/<local>>` 选中 L2，`?l3=<local>` 选中 L3。
-    // 老包没有 `[[menu]]` 时只认 L2 定位串（保持 P1 行为），不再拼 L3。
-    let manifest = Manifest::parse(&rec.manifest).ok();
-    let menu_raw = q.get("menu").map(String::as_str).unwrap_or("");
-    let l3_raw = q.get("l3").map(String::as_str);
-    let mut target_ui = plugin.ui_path.clone();
-    let mut active = format!("plugin:{}", plugin.id);
-    let mut workbench_title = plugin.ui_label.clone();
-    let mut menu_key = String::new();
-    let mut active_l3 = String::new();
-    let mut active_tab = String::new();
-    let mut tabs: Vec<TabView> = Vec::new();
-    if !menu_raw.trim().is_empty() {
-        let local = crate::menu::menu_local(&plugin.id, menu_raw)
-            .ok_or_else(|| AppError::NotFound(format!("未知菜单定位: {menu_raw}")))?;
-        let declared = manifest
-            .as_ref()
-            .map(|m| !m.menu.is_empty())
-            .unwrap_or(false);
-        if declared {
-            // `legacy` 是 P1 老深链：插件升级为声明式后落到首个可见 L2。
-            let wb = crate::menu::workbench_tabs(&state, &user, &plugin.id, &local, l3_raw)
-                .or_else(|| {
-                    if local != "legacy" {
-                        return None;
-                    }
-                    manifest.as_ref()?.menu.iter().find_map(|d| {
-                        crate::menu::workbench_tabs(&state, &user, &plugin.id, &d.id, l3_raw)
-                    })
-                })
-                .ok_or_else(|| {
-                    AppError::NotFound(format!("菜单不存在或当前角色不可见: {local}"))
-                })?;
-            target_ui = wb.active_ui.clone();
-            active = wb.active_key.clone();
-            workbench_title = wb.l2_label.clone();
-            menu_key = wb.l2_key.clone();
-            active_l3 = wb.active_local.clone();
-            active_tab = wb.active_tab.clone();
-            tabs = wb
-                .items
-                .iter()
-                .map(|t| TabView {
-                    key: t.key.clone(),
-                    local: t.local.clone(),
-                    label: t.label.clone(),
-                    href: t.href.clone(),
-                    icon: t.icon.clone(),
-                    tab: t.tab.clone(),
-                    ui: t.ui.clone(),
-                    src: iframe_url(
-                        &state.cfg.entry_prefix,
-                        &plugin.id,
-                        &t.ui,
-                        &nonce,
-                        &wb.l2_key,
-                        &t.tab,
-                        "",
-                    ),
-                    active: t.local == wb.active_local,
-                })
-                .collect();
-        } else {
-            // 老包：`[[ui]]` 单入口，定位串只用于保持 P1 深链。
-            active = format!("plugin/{}/{}", plugin.id, local);
-        }
-    }
+    let open = sanitize_open(open_raw.unwrap_or(""));
+    let tabs = wb
+        .items
+        .iter()
+        .map(|t| TabView {
+            key: t.key.clone(),
+            local: t.local.clone(),
+            label: t.label.clone(),
+            href: t.href.clone(),
+            icon: t.icon.clone(),
+            tab: t.tab.clone(),
+            ui: t.ui.clone(),
+            src: iframe_url(
+                &state.cfg.entry_prefix,
+                &plugin.id,
+                &t.ui,
+                &nonce,
+                &wb.l2_key,
+                &t.tab,
+                "",
+            ),
+            active: t.local == wb.active_local,
+        })
+        .collect();
     let iframe_src = iframe_url(
         &state.cfg.entry_prefix,
         &plugin.id,
-        &target_ui,
+        &wb.active_ui,
         &nonce,
-        &menu_key,
-        &active_tab,
+        &wb.l2_key,
+        &wb.active_tab,
         &open,
     );
     // 页面上下文顺带算出顶栏插件菜单；同一份「已启用且有 UI 入口」清单
     // 也直接当 iframe 跳转白名单用（避免为白名单再扫一遍插件表）。
-    let ctx = handlers::page_ctx(&state, &user, &active);
+    let ctx = handlers::page_ctx(state, user, &wb.l2_key);
     let nav_plugins = ctx
         .nav_plugins
         .iter()
@@ -235,34 +299,20 @@ pub async fn detail(
         .collect::<Vec<_>>()
         .join(",");
     let rpc_url = format!("/{}/plugins/{}/rpc", state.cfg.entry_prefix, plugin.id);
-    let grants = rec
-        .grants
-        .iter()
-        .map(|g| GrantRow {
-            kind: g.kind.clone(),
-            value: g.value.clone(),
-        })
-        .collect();
-    let (interop_provides, interop_consumes) = Manifest::parse(&rec.manifest)
-        .map(|m| interop_rows(&m))
-        .unwrap_or_default();
-    let page = PluginDetailPage {
+    let page = PluginViewPage {
         ctx,
         plugin,
+        info_href: format!("/{}/plugins/{}", state.cfg.entry_prefix, rec.id),
         iframe_src,
         rpc_url,
         nonce,
         nav_plugins,
-        workbench_title,
+        workbench_title: wb.l2_label,
         tabs,
-        menu_key,
-        active_l3,
-        active_tab,
-        active_ui: target_ui,
-        interop_provides,
-        interop_consumes,
-        grants,
-        can_admin: user.can(skiff_model::Permission::PluginManage),
+        menu_key: wb.l2_key,
+        active_l3: wb.active_local,
+        active_tab: wb.active_tab,
+        active_ui: wb.active_ui,
         error: String::new(),
     };
     handlers::render(page)
@@ -526,10 +576,20 @@ pub async fn toggle(
         "ok",
         &format!("enabled={enable}"),
     );
-    Ok(handlers::redirect(format!(
-        "/{}/plugins",
-        state.cfg.entry_prefix
-    )))
+    // 信息页内操作回信息页；插件中心内操作仍回列表（`next` 只接受本站前缀）。
+    Ok(handlers::redirect(
+        safe_plugin_next(&state, form_first(&form, "next"))
+            .unwrap_or_else(|| format!("/{}/plugins", state.cfg.entry_prefix)),
+    ))
+}
+
+fn safe_plugin_next(state: &AppState, raw: String) -> Option<String> {
+    let expected = format!("/{}/plugins/", state.cfg.entry_prefix);
+    if raw.starts_with(&expected) && !raw.contains("..") && !raw.contains("//") {
+        Some(raw)
+    } else {
+        None
+    }
 }
 
 pub async fn remove(

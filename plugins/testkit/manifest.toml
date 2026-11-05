@@ -1,0 +1,89 @@
+# 插件架构测试台：验证菜单多视图、概览槽位、RPC、能力面、主题与沙箱。
+#
+# 这是官方出包清单里的「体检插件」：不连接任何业务系统，所有调用都真实走内核能力面，
+# 越界读取与失败分支在测试台里是一等公民，不允许本地伪造放行结果。
+id = "com.skiff.testkit"
+name = "插件架构测试台"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.2"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+requires = ["fs", "identity", "interop"]
+network_egress = []
+resource_hints = ["path:/proc"]
+
+[[permissions]]
+capability = "fs"
+verbs = ["read", "list"]
+
+[[permissions]]
+capability = "identity"
+verbs = ["self"]
+
+[[permissions]]
+capability = "interop"
+verbs = ["call"]
+
+[[ui]]
+label = "插件架构测试台"
+path = "main.html"
+
+# 多视图 L2：main / check / group（PLUGIN_UI_CONTRACT §3.2）。
+[[menu]]
+id = "testkit"
+parent = "tools"
+label = "插件架构测试台"
+order = 50
+icon = "plug"
+view = "main"
+
+  [[menu.items]]
+  id = "main"
+  label = "总览与 RPC"
+  order = 10
+  icon = "overview"
+  view = "main"
+
+  [[menu.items]]
+  id = "check"
+  label = "能力面自检"
+  order = 20
+  icon = "activity"
+  view = "check"
+
+  [[menu.items]]
+  id = "group"
+  label = "菜单与槽位"
+  order = 30
+  icon = "tools"
+  view = "group"
+
+# 单视图 L2 对照组：不声明 L3，内核不渲染三级标签栏。
+[[menu]]
+id = "testkit-single"
+parent = "tools"
+label = "测试台 · 单视图"
+order = 60
+icon = "dot"
+view = "single"
+
+# 固定页槽位：与 monitor 的 overview.health 不冲突。
+[[mount]]
+slot = "overview.actions"
+ui = "mount.html"
+height = "sm"
+refresh = 30
+
+[interop]
+consumes = ["com.skiff.cron:jobs.list"]
+provides = [
+  { method = "probe", label = "架构探针", description = "返回插件 id、API、已授予权限与时间戳，用于验证 RPC 通路" },
+]
+
+[config_schema.probe_path]
+type = "string"
+default = "/proc/uptime"
+label = "能力面自检默认读取的宿主路径（必须落在安装时授权的 path: 根内）"

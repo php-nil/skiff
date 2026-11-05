@@ -675,6 +675,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-plugin-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skiff-sdk",
+]
+
+[[package]]
 name = "skiff-sdk"
 version = "0.1.0"
 dependencies = [

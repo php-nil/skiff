@@ -818,8 +818,12 @@ async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
         "插件中心必须显示未启用状态与启用动作: {center_html}"
     );
     assert!(
-        !center_html.contains(r#"href="/p/plugins/com.skiff.files""#),
-        "未启用插件不得渲染「打开」死入口: {center_html}"
+        center_html.contains(r#"href="/p/plugins/com.skiff.files">详情"#),
+        "未启用插件仍应提供信息与管理入口: {center_html}"
+    );
+    assert!(
+        !center_html.contains(r#"href="/p/plugins/com.skiff.files/main""#),
+        "未启用插件不得渲染功能页面死入口: {center_html}"
     );
 }
 
@@ -1703,12 +1707,15 @@ async fn restricted_form_rejects_plugins_beyond_capability_surface() {
     );
 }
 
-/// 插件详情页的两条 UI 约定（跨插件跳转 + 顶栏插件菜单）：
+/// 插件功能页的两条 UI 约定（跨插件跳转 + 顶栏插件菜单）：
 /// 1. `?open=` 只作为「定位建议」被清洗后原样透传（控制字符清掉、百分号编码）；
 /// 2. `data-plugins` 白名单只含「已启用且有 UI 入口」的插件——iframe 的
 ///    `skiff.open` 只能往这些目标跳，跳转本身不授予任何能力。
+///
+/// 信息页与功能页的拆分见 `docs/PLUGIN_UI_CONTRACT.md`：`/plugins/{id}` 只由
+/// 内核渲染信息与管理，功能界面固定落在 `/plugins/{id}/<view>`。
 #[tokio::test]
-async fn plugin_detail_passes_open_hint_and_whitelists_enabled_plugins() {
+async fn plugin_info_and_view_split_passes_open_hint_and_whitelists_enabled_plugins() {
     use skiff_store::PluginRecord;
 
     let h = harness();
@@ -1755,20 +1762,49 @@ path = "index.html"
         .upsert_plugin(&seed("com.example.off", "已停用界面", false))
         .unwrap();
 
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/plugins/com.example.ui?open=%2Fvar%2Fwww%2Fsite%20one")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let html = body_text(resp).await;
+    // 信息页：由内核渲染身份、授权与管理动作，不嵌 iframe。
+    let (status, info_html) = get_page(&h.app, "/p/plugins/com.example.ui", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    for marker in [
+        "标识",
+        "发布者 / 密钥指纹",
+        "签名状态",
+        "沙箱模式",
+        "声明能力面",
+        "关联菜单",
+        "日志与事件",
+        "管理操作",
+    ] {
+        assert!(
+            info_html.contains(marker),
+            "信息页缺少 {marker}: {info_html}"
+        );
+    }
+    assert!(
+        info_html.contains(r#"action="/p/plugins/com.example.ui/toggle""#)
+            && info_html.contains(r#"action="/p/plugins/com.example.ui/remove""#),
+        "信息页必须承载启用/停用与卸载动作: {info_html}"
+    );
+    assert!(
+        info_html.contains(r#"href="/p/m/plugin/com.example.ui/legacy""#),
+        "信息页必须列出关联菜单深链: {info_html}"
+    );
+    assert!(
+        info_html.contains(r#"href="/p/plugins/com.example.ui/main""#),
+        "已启用插件的信息页必须给出功能页入口: {info_html}"
+    );
+    assert!(
+        !info_html.contains("data-workbench-frame"),
+        "信息页不得嵌 iframe 工作台: {info_html}"
+    );
+
+    let (status, html) = get_page(
+        &h.app,
+        "/p/plugins/com.example.ui/main?open=%2Fvar%2Fwww%2Fsite%20one",
+        &token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 
     // open 建议按 RFC 3986 百分号编码后进 iframe src
     assert!(
@@ -1808,7 +1844,7 @@ path = "index.html"
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/plugins/com.example.ui?open=%2Fetc%2F%0Apasswd")
+                .uri("/p/plugins/com.example.ui/main?open=%2Fetc%2F%0Apasswd")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -2119,7 +2155,10 @@ async fn uninstall_cleanup_removes_plugin_keys_from_user_prefs() {
     );
 }
 
-/// P2：L3 标签栏由内核渲染，三个标签共用同一个 iframe（`menu` + `tab` 参数）。
+/// L3 标签栏由内核渲染，多个标签共用同一个 iframe（`menu` + `tab` 参数）。
+///
+/// 契约：`view` 决定 iframe 加载的包内文件（`ui/<view>.html`），视图名在插件内唯一；
+/// 没有 L3 的 L2 只有隐式主视图，**不渲染**标签栏。
 #[tokio::test]
 async fn l3_tabs_render_share_iframe_and_deep_link() {
     let h = harness();
@@ -2127,11 +2166,11 @@ async fn l3_tabs_render_share_iframe_and_deep_link() {
 name = "Tabs Demo"
 version = "0.1.0"
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.1"
+api = "1.2"
 requires_full_sandbox = false
 [[ui]]
 label = "演示"
-path = "index.html"
+path = "main.html"
 [[menu]]
 id = "sites"
 parent = "sites"
@@ -2139,21 +2178,26 @@ label = "站点管理"
 order = 10
 icon = "globe"
 roles = ["operator", "admin"]
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "main"
 [[menu.items]]
 id = "list"
 label = "站点列表"
 order = 10
 icon = "list"
-ui = "index.html"
-tab = "sites"
+view = "list"
 [[menu.items]]
 id = "backup"
 label = "备份"
 order = 20
 icon = "archive"
-ui = "index.html"
-tab = "backup"
+view = "backup"
+[[menu]]
+id = "info"
+parent = "sites"
+label = "单视图信息"
+order = 20
+icon = "globe"
+view = "info"
 "#
     .to_string();
     seed_declared_plugin(h.state.db().as_ref(), manifest, true);
@@ -2168,9 +2212,16 @@ tab = "backup"
         html.contains(r#"data-menu="plugin/com.example.tabs/sites""#),
         "{html}"
     );
-    assert!(html.contains("data-workbench"), "应渲染内核 L3 标签栏");
+    assert!(
+        html.contains(r#"class="workbench-tabs""#),
+        "应渲染内核 L3 标签栏"
+    );
     assert!(html.contains(r#"data-local="list""#) && html.contains(r#"data-local="backup""#));
-    assert!(html.contains("tab=sites"), "默认取第一个 L3 的 tab");
+    assert!(html.contains("tab=list"), "默认取第一个 L3 的 view");
+    assert!(
+        html.contains("/p/plugins/com.example.tabs/ui/list.html?nonce="),
+        "默认 iframe 必须加载 ui/list.html: {html}"
+    );
     assert!(html.contains(r#"href="/p/m/plugin/com.example.tabs/sites/backup""#));
     let pos = html.find(r#"data-local="list""#).unwrap();
     let around = &html[pos.saturating_sub(200)..(pos + 700).min(html.len())];
@@ -2183,6 +2234,10 @@ tab = "backup"
     let (status, html) = get_page(&h.app, &format!("{base}/sites/backup"), &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("tab=backup"), "{html}");
+    assert!(
+        html.contains("/p/plugins/com.example.tabs/ui/backup.html?nonce="),
+        "深链切换后 iframe 必须换成 ui/backup.html: {html}"
+    );
     let pos = html.find(r#"data-local="backup""#).unwrap();
     let around = &html[pos.saturating_sub(220)..(pos + 700).min(html.len())];
     assert!(
@@ -2201,13 +2256,43 @@ tab = "backup"
     let (status, _) = get_page(&h.app, &format!("{base}/sites/list"), &viewer).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // P1 旧深链 `legacy` 升级到声明式后落到首个可见 L2，不破坏旧链接。
+    // 旧深链 `legacy` 升级到声明式后落到首个可见 L2，不破坏旧链接。
     let (status, html) = get_page(&h.app, &format!("{base}/legacy"), &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"data-menu="plugin/com.example.tabs/sites""#),
         "{html}"
     );
+
+    // 规范功能路由：视图名直接寻址，未知视图 404。
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.tabs/list", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("tab=list") && html.contains(r#"class="workbench-tabs""#),
+        "{html}"
+    );
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.tabs/backup", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("tab=backup"), "{html}");
+    let (status, _) = get_page(&h.app, "/p/plugins/com.example.tabs/nope", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "未知视图必须 404");
+
+    // 无 L3 的 L2：隐式主视图，不渲染标签栏，但深链仍可直达。
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.tabs/info", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("/p/plugins/com.example.tabs/ui/info.html?nonce="),
+        "单视图 L2 必须加载 ui/info.html: {html}"
+    );
+    assert!(
+        !html.contains(r#"class="workbench-tabs""#),
+        "无 L3 时内核不得渲染标签栏: {html}"
+    );
+    let (status, html) = get_page(&h.app, &format!("{base}/info/info"), &admin).await;
+    assert_eq!(status, StatusCode::OK, "单视图深链应接受隐式主视图名");
+    assert!(html.contains("tab=info"), "{html}");
+    let (status, _) = get_page(&h.app, &format!("{base}/info/nope"), &viewer).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// P2：`overview.health` 槽位成功渲染；插件停用/角色不可见时回落内核健康块。
@@ -2218,18 +2303,18 @@ async fn overview_health_mount_renders_and_falls_back() {
 name = "Health Demo"
 version = "0.1.0"
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.1"
+api = "1.2"
 requires_full_sandbox = false
 [[ui]]
 label = "主机监控"
-path = "index.html"
+path = "main.html"
 [[menu]]
 id = "monitor"
 parent = "tools"
 label = "主机监控"
 order = 30
 icon = "activity"
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "main"
 [[mount]]
 slot = "overview.health"
 ui = "health.html"
@@ -2270,6 +2355,240 @@ roles = ["admin"]
     assert_eq!(status, StatusCode::OK);
     assert!(!html.contains(r#"data-slot="overview.health""#));
     assert!(html.contains(r#"class="health-grid""#));
+}
+
+/// 内核信息页：身份字段、已授权资源、插件间接口、关联菜单与管理动作
+/// 全部由内核渲染（`docs/PLUGIN_UI_CONTRACT.md` §2）。
+#[tokio::test]
+async fn plugin_info_page_renders_grants_interop_and_management() {
+    let h = harness();
+    let manifest = r#"id = "com.example.info"
+name = "Info Demo"
+version = "0.1.0"
+key_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+api = "1.2"
+requires = ["fs", "interop"]
+[[permissions]]
+capability = "fs"
+verbs = ["read"]
+[[permissions]]
+capability = "interop"
+verbs = ["call"]
+[[ui]]
+label = "信息演示"
+path = "main.html"
+[[menu]]
+id = "panel"
+parent = "tools"
+label = "信息面板"
+order = 10
+icon = "tools"
+view = "main"
+[interop]
+consumes = ["com.skiff.cron:jobs.list"]
+provides = [{ method = "probe", label = "探针" }]
+"#
+    .to_string();
+    let parsed = skiff_pkgfmt::Manifest::parse(&manifest).unwrap();
+    h.state
+        .db()
+        .upsert_plugin(&PluginRecord {
+            id: parsed.id.clone(),
+            name: parsed.name.clone(),
+            version: parsed.version.clone(),
+            api: parsed.api.clone(),
+            key_id: "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd".into(),
+            manifest,
+            enabled: true,
+            status: "enabled".into(),
+            status_detail: String::new(),
+            active_version: parsed.version.clone(),
+            installed_at: 0,
+            grants: vec![
+                skiff_store::Grant {
+                    kind: "path".into(),
+                    value: "/proc".into(),
+                },
+                skiff_store::Grant {
+                    kind: "plugin".into(),
+                    value: "com.skiff.cron".into(),
+                },
+            ],
+        })
+        .unwrap();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.info", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    for marker in [
+        "com.example.info",
+        "abcdefabcdef",
+        "签名状态",
+        "未验签",
+        "完整沙箱",
+        "fs:read",
+        "path:/proc",
+        "plugin:com.skiff.cron",
+        "com.skiff.cron:jobs.list",
+        "probe · 探针",
+        r#"href="/p/m/plugin/com.example.info/panel""#,
+        r#"href="/p/plugins/com.example.info/main""#,
+    ] {
+        assert!(html.contains(marker), "信息页缺少 {marker}: {html}");
+    }
+    // 信息页内的启停动作必须回信息页（`next` 只允许本站插件前缀）。
+    assert!(
+        html.contains(r#"name="next" value="/p/plugins/com.example.info""#),
+        "信息页启停表单必须带回跳地址: {html}"
+    );
+
+    // 单视图 L2：规范视图路由可直达，且不渲染标签栏。
+    let (status, view_html) = get_page(&h.app, "/p/plugins/com.example.info/main", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        view_html.contains("/p/plugins/com.example.info/ui/main.html?nonce="),
+        "{view_html}"
+    );
+    assert!(
+        !view_html.contains(r#"class="workbench-tabs""#),
+        "{view_html}"
+    );
+    let (status, _) = get_page(&h.app, "/p/plugins/com.example.info/nope", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 停用后信息页仍可见（用于恢复/卸载），但不再提供功能页入口。
+    h.state
+        .db()
+        .set_plugin_enabled("com.example.info", false)
+        .unwrap();
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.info", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("已停用") && html.contains("启用插件"),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"href="/p/plugins/com.example.info/main""#),
+        "停用插件不得给出打开入口: {html}"
+    );
+}
+
+/// 旧包兼容：只有 `[[ui]]` 的老包，默认视图 `main` 指向原有 `ui/index.html`；
+/// 未知视图 404，且不渲染标签栏。
+#[tokio::test]
+async fn legacy_ui_only_package_maps_main_to_index_html() {
+    let h = harness();
+    seed_plugin(
+        h.state.db().as_ref(),
+        "com.example.legacy",
+        "旧包界面",
+        "旧包界面",
+        true,
+    );
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.legacy/main", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("/p/plugins/com.example.legacy/ui/index.html?nonce="),
+        "旧包 main 必须回落 ui/index.html: {html}"
+    );
+    assert!(
+        !html.contains(r#"class="workbench-tabs""#),
+        "旧包单入口不得渲染标签栏: {html}"
+    );
+    let (status, _) = get_page(&h.app, "/p/plugins/com.example.legacy/other", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 信息页也必须存在，并给出 main 入口与旧包菜单深链。
+    let (status, html) = get_page(&h.app, "/p/plugins/com.example.legacy", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"href="/p/plugins/com.example.legacy/main""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"href="/p/m/plugin/com.example.legacy/legacy""#),
+        "{html}"
+    );
+}
+
+/// 官方测试插件 `com.skiff.testkit`：多视图 L2 + 单视图对照 + 概览槽位。
+/// manifest 随包断言防止测试台与契约漂移。
+#[tokio::test]
+async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
+    let manifest = include_str!("../../../plugins/testkit/manifest.toml").to_string();
+    let m = skiff_pkgfmt::Manifest::parse(&manifest).expect("testkit manifest 必须可解析");
+    assert_eq!(m.id, "com.skiff.testkit");
+    assert_eq!(m.version, "0.1.0");
+    assert_eq!(m.api, "1.2");
+    assert_eq!(m.menu.len(), 2, "必须同时覆盖多视图与单视图两种 L2");
+    assert_eq!(
+        m.menu[0].effective_views(),
+        vec!["main", "check", "group"],
+        "多视图 L2 必须声明 main/check/group"
+    );
+    assert!(
+        m.menu[1].items.is_empty() && m.menu[1].view == "single",
+        "对照 L2 必须是无 L3 的单视图"
+    );
+    assert!(
+        m.mount.iter().any(|x| x.slot == "overview.actions"),
+        "testkit 必须声明概览槽位（与 monitor 的 health 槽位不冲突）"
+    );
+    assert_eq!(m.requires_str(), vec!["fs", "identity", "interop"]);
+    assert!(m.resource_hints.iter().any(|h| h == "path:/proc"));
+    assert_eq!(m.interop.consumes, vec!["com.skiff.cron:jobs.list"]);
+    assert!(m.interop.provides.iter().any(|p| p.method == "probe"));
+
+    let h = harness();
+    seed_declared_plugin(h.state.db().as_ref(), manifest, true);
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, html) = get_page(&h.app, "/p/plugins/com.skiff.testkit", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("插件架构测试台"), "{html}");
+    assert!(
+        html.contains(r#"href="/p/plugins/com.skiff.testkit/main""#),
+        "{html}"
+    );
+
+    let (status, html) = get_page(&h.app, "/p/plugins/com.skiff.testkit/check", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"class="workbench-tabs""#),
+        "多视图 L2 必须渲染标签栏: {html}"
+    );
+    for local in ["main", "check", "group"] {
+        assert!(html.contains(&format!(r#"data-local="{local}""#)), "{html}");
+    }
+    assert!(html.contains("tab=check"), "{html}");
+    assert!(
+        html.contains("/p/plugins/com.skiff.testkit/ui/check.html?nonce="),
+        "{html}"
+    );
+
+    let (status, html) = get_page(&h.app, "/p/plugins/com.skiff.testkit/single", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("/p/plugins/com.skiff.testkit/ui/single.html?nonce="),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"class="workbench-tabs""#),
+        "单视图 L2 不得渲染标签栏: {html}"
+    );
+
+    let (status, html) = get_page(&h.app, "/p", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"data-slot="overview.actions""#),
+        "testkit 的概览槽位必须渲染: {html}"
+    );
+    assert!(
+        html.contains("/p/plugins/com.skiff.testkit/ui/mount.html?nonce="),
+        "{html}"
+    );
 }
 
 /// 网站列表：默认站点标记与切换入口由内核渲染，不要求环境已安装。
@@ -2643,18 +2962,33 @@ fn d3_plugin_ui_adapts_to_theme_message() {
     // 插件侧：页面 chrome 用变量，默认深色，收到 skiff.theme 才切浅色。
     for (name, html, js) in [
         (
-            "guard",
-            include_str!("../../../plugins/guard/ui/index.html"),
+            "guard-containers",
+            include_str!("../../../plugins/guard/ui/containers.html"),
             include_str!("../../../plugins/guard/ui/app.js"),
         ),
         (
-            "cron",
-            include_str!("../../../plugins/cron/ui/index.html"),
+            "guard-events",
+            include_str!("../../../plugins/guard/ui/events.html"),
+            include_str!("../../../plugins/guard/ui/app.js"),
+        ),
+        (
+            "cron-list",
+            include_str!("../../../plugins/cron/ui/list.html"),
             include_str!("../../../plugins/cron/ui/app.js"),
         ),
         (
-            "monitor",
-            include_str!("../../../plugins/monitor/ui/index.html"),
+            "cron-new",
+            include_str!("../../../plugins/cron/ui/new.html"),
+            include_str!("../../../plugins/cron/ui/app.js"),
+        ),
+        (
+            "monitor-overview",
+            include_str!("../../../plugins/monitor/ui/overview.html"),
+            include_str!("../../../plugins/monitor/ui/app.js"),
+        ),
+        (
+            "monitor-history",
+            include_str!("../../../plugins/monitor/ui/history.html"),
             include_str!("../../../plugins/monitor/ui/app.js"),
         ),
         (
@@ -2664,8 +2998,18 @@ fn d3_plugin_ui_adapts_to_theme_message() {
         ),
         (
             "files",
-            include_str!("../../../plugins/files/ui/index.html"),
+            include_str!("../../../plugins/files/ui/main.html"),
             include_str!("../../../plugins/files/ui/app.js"),
+        ),
+        (
+            "testkit-main",
+            include_str!("../../../plugins/testkit/ui/main.html"),
+            include_str!("../../../plugins/testkit/ui/app.js"),
+        ),
+        (
+            "testkit-mount",
+            include_str!("../../../plugins/testkit/ui/mount.html"),
+            include_str!("../../../plugins/testkit/ui/mount.js"),
         ),
     ] {
         assert!(
@@ -3064,11 +3408,11 @@ async fn site_dir_traversal_returns_bad_request() {
 /// 交互元素都会在 `cargo test` 阶段被挡住。
 #[test]
 fn files_ui_is_self_contained_and_exposes_modern_interactions() {
-    let html = include_str!("../../../plugins/files/ui/index.html");
+    let html = include_str!("../../../plugins/files/ui/main.html");
     let js = include_str!("../../../plugins/files/ui/app.js");
 
     // 自包含：不得出现任何 scheme 形式的绝对地址（包内一律相对路径）。
-    for (name, src) in [("index.html", html), ("app.js", js)] {
+    for (name, src) in [("main.html", html), ("app.js", js)] {
         assert!(
             !src.contains("http://") && !src.contains("https://"),
             "{name} 不得引用外链资源"

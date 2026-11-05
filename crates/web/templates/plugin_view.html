@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ plugin.name }} · {{ workbench_title }} · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ workbench_title }} <span class="muted">{{ plugin.name }}</span></h1>
+  <a class="ghost" href="{{ info_href }}">插件信息</a>
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+
+<section class="panel">
+  <p class="hint">插件 UI 运行在无同源权限的沙箱 iframe 内（opaque origin），不持有面板凭据；所有能力调用经父页面 RPC 桥转发并逐次审计。</p>
+  {% if !tabs.is_empty() %}
+  <nav class="workbench-tabs" data-workbench aria-label="{{ workbench_title }}工作台标签">
+    {% for t in tabs %}
+      <a class="workbench-tab{% if t.active %} on{% endif %}"
+         data-workbench-tab
+         data-key="{{ t.key }}"
+         data-local="{{ t.local }}"
+         data-ui="{{ t.ui }}"
+         data-tab="{{ t.tab }}"
+         data-src="{{ t.src }}"
+         href="{{ t.href }}"
+         {% if t.active %}aria-current="page"{% endif %}>
+        <svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ t.icon }}" aria-hidden="true"><use href="#i-{{ t.icon }}"></use></svg>{{ t.label }}
+      </a>
+    {% endfor %}
+  </nav>
+  {% endif %}
+  <iframe class="plugin-frame"
+          src="{{ iframe_src }}"
+          sandbox="allow-scripts allow-modals allow-forms"
+          data-plugin="{{ plugin.id }}"
+          data-nonce="{{ nonce }}"
+          data-rpc="{{ rpc_url }}"
+          data-csrf="{{ ctx.csrf }}"
+          data-plugins="{{ nav_plugins }}"
+          data-workbench-frame
+          data-menu="{{ menu_key }}"
+          data-tab="{{ active_tab }}"
+          data-l3="{{ active_l3 }}"
+          data-ui="{{ active_ui }}"
+          referrerpolicy="no-referrer"></iframe>
+  <p class="hint">动作失败时：<a href="/{{ ctx.prefix }}/containers?filter=error">查看异常容器与日志</a>（配置保存后通常要再执行一次插件内的「重载」才生效；保存与重载是两个独立动作）。</p>
+  <p class="hint">插件可用 <code>skiff.open</code> 请面板切到另一个插件的界面（如「文件管理」定位到某个目录）：跳转只改地址，目标插件仍按自己的 <code>path:</code> 授权根判权。
+  需要「真的执行」对方的能力时走 <code>interop:call</code>（如 NGINX 的「新增备份任务」写入计划任务）：调用前逐条过 <code>interop:call</code> 权限、<code>plugin:</code> 授权、双方 manifest 白名单，逐次审计。</p>
+</section>
+{% endblock %}

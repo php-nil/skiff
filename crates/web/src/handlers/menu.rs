@@ -51,26 +51,28 @@ pub async fn dispatch(
             };
             let local = parts.next().unwrap_or("");
             if local.is_empty() {
-                // `plugin/<id>` 是合法的插件工作台入口：不带 `menu` 时由详情页
-                // 回落到插件主 UI，与 `plugin:<id>` 的当前态判定一致。
-                return handlers::plugins::detail(
+                // `plugin/<id>` 是插件默认功能页入口（声明菜单取首个可见 L2 的
+                // 首个视图；老包落到 `main` → 原 `ui/index.html`）。
+                return handlers::plugins::menu_view(
                     State(state),
                     AuthUser(user),
-                    Path(id.to_string()),
+                    Path((id.to_string(), None, None)),
                     Query(q),
                 )
                 .await;
             }
-            q.insert("menu".into(), local.into());
             // L3 深链（契约 §3.3）：内核渲染标签栏，插件只渲染 iframe 内容。
-            if let Some(l3) = parts.next().filter(|s| !s.is_empty()) {
-                q.insert("l3".into(), l3.into());
-            }
+            let l3 = parts.next().filter(|s| !s.is_empty()).map(str::to_string);
             if parts.next().is_some() {
                 return Err(AppError::NotFound("菜单层级超过三级".into()));
             }
-            handlers::plugins::detail(State(state), AuthUser(user), Path(id.to_string()), Query(q))
-                .await
+            handlers::plugins::menu_view(
+                State(state),
+                AuthUser(user),
+                Path((id.to_string(), Some(local.to_string()), l3)),
+                Query(q),
+            )
+            .await
         }
         _ => Err(AppError::NotFound("菜单不存在".into())),
     }

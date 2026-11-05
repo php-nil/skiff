@@ -92,9 +92,9 @@ pub struct TabItem {
     pub label: String,
     pub href: String,
     pub icon: String,
-    /// 传给插件 iframe 的视图名（manifest `tab`，缺省等于 `local`）。
+    /// 传给插件 iframe 的视图名（manifest `view`，缺省等于 L3 `id`）。
     pub tab: String,
-    /// 该标签使用的包内 `ui/` 相对路径（缺省继承 L2 `target.ui`）。
+    /// 该标签使用的包内 `ui/` 相对文件（`ui/<view>.html`）。
     pub ui: String,
 }
 
@@ -107,7 +107,7 @@ pub struct WorkbenchTabs {
     pub active_key: String,
     /// 当前 L3 的局部 id；无 L3 时为空。
     pub active_local: String,
-    /// 当前传给插件的 `tab` 值；无 L3 时为空。
+    /// 当前传给插件的 `tab` 值；单视图 L2 为隐式主视图名。
     pub active_tab: String,
     /// 当前应加载的 `ui/` 相对路径。
     pub active_ui: String,
@@ -182,6 +182,148 @@ fn gates_allow(gates: &[String], docker_ok: bool) -> bool {
     })
 }
 
+/// 视图名 → 包内 `ui/` 相对文件（`docs/PLUGIN_UI_CONTRACT.md`）。
+fn view_file(view: &str) -> String {
+    format!("{view}.html")
+}
+
+fn item_view(it: &skiff_pkgfmt::MenuItem) -> &str {
+    it.view.as_deref().unwrap_or(it.id.as_str())
+}
+
+/// 老包（只有 `[[ui]]`）的视图映射：
+/// 第一个入口 = `main`（沿用原 `ui/index.html` 路径），其余入口按文件名降级为独立视图。
+fn legacy_workbench(
+    plugin_id: &str,
+    prefix: &str,
+    m: &skiff_pkgfmt::Manifest,
+    requested: Option<&str>,
+) -> Option<WorkbenchTabs> {
+    let first = m.ui.first()?;
+    let key = format!("plugin/{plugin_id}/legacy");
+    let label = if first.label.trim().is_empty() {
+        m.name.clone()
+    } else {
+        first.label.clone()
+    };
+    let mut ordered: Vec<&skiff_pkgfmt::UiEntry> = m.ui.iter().skip(1).collect();
+    ordered.sort_by(|a, b| (&a.label, &a.path).cmp(&(&b.label, &b.path)));
+    let items: Vec<TabItem> = ordered
+        .iter()
+        .enumerate()
+        .map(|(i, u)| {
+            let view = slug(&u.path, i);
+            TabItem {
+                key: format!("{key}/{view}"),
+                local: view.clone(),
+                label: if u.label.trim().is_empty() {
+                    m.name.clone()
+                } else {
+                    u.label.clone()
+                },
+                href: format!("/{prefix}/m/{key}/{view}"),
+                icon: icon_or_dot(u.icon.as_deref()),
+                tab: view.clone(),
+                ui: u.path.clone(),
+            }
+        })
+        .collect();
+
+    let requested = requested.map(str::trim).filter(|s| !s.is_empty());
+    let active = match requested {
+        None | Some("main") => None,
+        Some(raw) => Some(items.iter().position(|t| t.local == raw)?),
+    };
+    let (active_key, active_local, active_tab, active_ui) = match active {
+        None => (
+            key.clone(),
+            String::new(),
+            "main".into(),
+            first.path.clone(),
+        ),
+        Some(i) => {
+            let t = &items[i];
+            (t.key.clone(), t.local.clone(), t.tab.clone(), t.ui.clone())
+        }
+    };
+    Some(WorkbenchTabs {
+        l2_key: key,
+        l2_label: label,
+        items,
+        active_key,
+        active_local,
+        active_tab,
+        active_ui,
+    })
+}
+
+fn declared_tabs(
+    plugin_id: &str,
+    prefix: &str,
+    decl: &skiff_pkgfmt::ManifestMenu,
+    ordered: &[&skiff_pkgfmt::MenuItem],
+    active_index: Option<usize>,
+) -> WorkbenchTabs {
+    let key = format!("plugin/{plugin_id}/{}", decl.id);
+    let items: Vec<TabItem> = ordered
+        .iter()
+        .map(|it| {
+            let view = item_view(it);
+            TabItem {
+                key: format!("{key}/{}", it.id),
+                local: it.id.clone(),
+                label: it.label.clone(),
+                href: format!("/{prefix}/m/{key}/{}", it.id),
+                icon: icon_or_dot(it.icon.as_deref()),
+                tab: view.to_string(),
+                ui: view_file(view),
+            }
+        })
+        .collect();
+    let (active_key, active_local, active_tab, active_ui) = match active_index {
+        Some(i) => {
+            let t = &items[i];
+            (t.key.clone(), t.local.clone(), t.tab.clone(), t.ui.clone())
+        }
+        None => (
+            key.clone(),
+            String::new(),
+            decl.view.clone(),
+            view_file(&decl.view),
+        ),
+    };
+    WorkbenchTabs {
+        l2_key: key,
+        l2_label: decl.label.clone(),
+        items,
+        active_key,
+        active_local,
+        active_tab,
+        active_ui,
+    }
+}
+
+fn visible_menu<'a>(
+    m: &'a skiff_pkgfmt::Manifest,
+    role: &str,
+    docker_ok: bool,
+) -> Vec<&'a skiff_pkgfmt::ManifestMenu> {
+    let mut out: Vec<&skiff_pkgfmt::ManifestMenu> = m
+        .menu
+        .iter()
+        .filter(|d| roles_allow(d.roles.as_deref(), role))
+        .filter(|d| gates_allow(&d.gates, docker_ok))
+        .collect();
+    out.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+    out
+}
+
+fn sorted_items(decl: &skiff_pkgfmt::ManifestMenu) -> Vec<&skiff_pkgfmt::MenuItem> {
+    let mut ordered: Vec<&skiff_pkgfmt::MenuItem> = decl.items.iter().collect();
+    ordered.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+    ordered
+}
+
 /// 解析插件 L2 下的 L3 标签栏（角色/能力过滤 + 深链选中）。
 ///
 /// 返回 `None` 表示：插件停用、L2 未声明、角色不可见、能力门不满足，
@@ -199,59 +341,198 @@ pub fn workbench_tabs(
     }
     let manifest = skiff_pkgfmt::Manifest::parse(&rec.manifest).ok()?;
     let local = menu_local(plugin_id, l2_raw)?;
-    let decl = manifest.menu.iter().find(|d| d.id == local)?;
-    let role = user.role().as_str();
-    if !roles_allow(decl.roles.as_deref(), role) {
-        return None;
-    }
-    if !gates_allow(&decl.gates, state.docker().available()) {
-        return None;
-    }
-
-    let prefix = &state.cfg.entry_prefix;
-    let key = format!("plugin/{plugin_id}/{}", decl.id);
-    let mut ordered: Vec<&skiff_pkgfmt::MenuItem> = decl.items.iter().collect();
-    ordered.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
-    let items: Vec<TabItem> = ordered
-        .into_iter()
-        .map(|it| TabItem {
-            key: format!("{key}/{}", it.id),
-            local: it.id.clone(),
-            label: it.label.clone(),
-            href: format!("/{prefix}/m/{key}/{}", it.id),
-            icon: icon_or_dot(it.icon.as_deref()),
-            tab: it.tab.clone().unwrap_or_else(|| it.id.clone()),
-            ui: it.ui.clone().unwrap_or_else(|| decl.target.ui.clone()),
-        })
-        .collect();
-
-    let requested = l3_raw.map(str::trim).filter(|s| !s.is_empty());
-    let active = match requested {
-        Some(raw) => Some(items.iter().position(|t| t.local == raw)?),
-        None if !items.is_empty() => Some(0),
-        None => None,
-    };
-    let (active_key, active_local, active_tab, active_ui) = match active {
-        Some(i) => {
-            let t = &items[i];
-            (t.key.clone(), t.local.clone(), t.tab.clone(), t.ui.clone())
+    if manifest.menu.is_empty() {
+        if local != "legacy" {
+            return None;
         }
-        None => (
-            key.clone(),
-            String::new(),
-            String::new(),
-            decl.target.ui.clone(),
-        ),
+        return legacy_workbench(
+            plugin_id,
+            &state.cfg.entry_prefix,
+            &manifest,
+            l3_raw.map(str::trim).filter(|s| !s.is_empty()),
+        );
+    }
+    let decl = visible_menu(&manifest, user.role().as_str(), state.docker().available())
+        .into_iter()
+        .find(|d| d.id == local)?;
+
+    let ordered = sorted_items(decl);
+    let requested = l3_raw.map(str::trim).filter(|s| !s.is_empty());
+    let active = if ordered.is_empty() {
+        // 单视图 L2：深链里的 L3 只能是隐式主视图，避免出现假标签。
+        match requested {
+            None => None,
+            Some(raw) if raw == decl.view => None,
+            Some(_) => return None,
+        }
+    } else {
+        match requested {
+            Some(raw) => Some(ordered.iter().position(|it| it.id == raw)?),
+            None => Some(0),
+        }
     };
-    Some(WorkbenchTabs {
-        l2_key: key,
-        l2_label: decl.label.clone(),
-        items,
-        active_key,
-        active_local,
-        active_tab,
-        active_ui,
-    })
+    Some(declared_tabs(
+        plugin_id,
+        &state.cfg.entry_prefix,
+        decl,
+        &ordered,
+        active,
+    ))
+}
+
+/// 解析规范视图路由 `/{p}/plugins/{id}/{view}`：按视图名找到所属 L2/L3。
+///
+/// 视图名在一个插件内唯一，因此不会出现跨 L2 歧义；未知视图返回 `None`（404）。
+pub fn resolve_plugin_view(
+    state: &AppState,
+    user: &CurrentUser,
+    plugin_id: &str,
+    view_raw: &str,
+) -> Option<WorkbenchTabs> {
+    let rec = state.db().plugin(plugin_id).ok().flatten()?;
+    if !rec.enabled {
+        return None;
+    }
+    let manifest = skiff_pkgfmt::Manifest::parse(&rec.manifest).ok()?;
+    let view = menu_local(plugin_id, view_raw)?;
+    if manifest.menu.is_empty() {
+        return legacy_workbench(plugin_id, &state.cfg.entry_prefix, &manifest, Some(&view));
+    }
+    for decl in visible_menu(&manifest, user.role().as_str(), state.docker().available()) {
+        if decl.items.is_empty() {
+            if decl.view == view {
+                return Some(declared_tabs(
+                    plugin_id,
+                    &state.cfg.entry_prefix,
+                    decl,
+                    &[],
+                    None,
+                ));
+            }
+            continue;
+        }
+        let ordered = sorted_items(decl);
+        if let Some(i) = ordered.iter().position(|it| item_view(it) == view) {
+            return Some(declared_tabs(
+                plugin_id,
+                &state.cfg.entry_prefix,
+                decl,
+                &ordered,
+                Some(i),
+            ));
+        }
+    }
+    None
+}
+
+/// 插件的默认功能页视图（信息页「打开界面」入口 / `plugin/<id>` 深链落点）。
+pub fn default_plugin_view(
+    state: &AppState,
+    user: &CurrentUser,
+    plugin_id: &str,
+) -> Option<WorkbenchTabs> {
+    let rec = state.db().plugin(plugin_id).ok().flatten()?;
+    if !rec.enabled {
+        return None;
+    }
+    let manifest = skiff_pkgfmt::Manifest::parse(&rec.manifest).ok()?;
+    if manifest.menu.is_empty() {
+        return legacy_workbench(plugin_id, &state.cfg.entry_prefix, &manifest, None);
+    }
+    let decl =
+        *visible_menu(&manifest, user.role().as_str(), state.docker().available()).first()?;
+    let view = if decl.items.is_empty() {
+        decl.view.clone()
+    } else {
+        item_view(sorted_items(decl).first()?).to_string()
+    };
+    resolve_plugin_view(state, user, plugin_id, &view)
+}
+
+/// 插件信息页的「关联菜单」：与导航同源的角色/能力过滤，链接指向菜单深链。
+#[derive(Debug, Clone)]
+pub struct InfoMenuLink {
+    pub label: String,
+    pub href: String,
+    pub icon: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct InfoMenuGroup {
+    pub label: String,
+    pub href: String,
+    pub icon: String,
+    pub children: Vec<InfoMenuLink>,
+}
+
+/// 返回 `(菜单分组, 默认功能页 URL)`。无 UI 的插件返回空菜单与空 URL。
+pub fn plugin_info_menu(
+    state: &AppState,
+    user: &CurrentUser,
+    plugin_id: &str,
+    manifest: &skiff_pkgfmt::Manifest,
+) -> (Vec<InfoMenuGroup>, String) {
+    let prefix = &state.cfg.entry_prefix;
+    if manifest.menu.is_empty() {
+        let Some(first) = manifest.ui.first() else {
+            return (Vec::new(), String::new());
+        };
+        let key = format!("plugin/{plugin_id}/legacy");
+        let group = InfoMenuGroup {
+            label: if first.label.trim().is_empty() {
+                manifest.name.clone()
+            } else {
+                first.label.clone()
+            },
+            href: format!("/{prefix}/m/{key}"),
+            icon: icon_or_dot(first.icon.as_deref()),
+            children: manifest
+                .ui
+                .iter()
+                .skip(1)
+                .enumerate()
+                .map(|(i, u)| InfoMenuLink {
+                    label: if u.label.trim().is_empty() {
+                        manifest.name.clone()
+                    } else {
+                        u.label.clone()
+                    },
+                    href: format!("/{prefix}/m/{key}/{}", slug(&u.path, i)),
+                    icon: icon_or_dot(u.icon.as_deref()),
+                })
+                .collect(),
+        };
+        return (vec![group], format!("/{prefix}/plugins/{plugin_id}/main"));
+    }
+
+    let mut groups = Vec::new();
+    let mut entry = String::new();
+    for decl in visible_menu(manifest, user.role().as_str(), state.docker().available()) {
+        let ordered = sorted_items(decl);
+        let key = format!("plugin/{plugin_id}/{}", decl.id);
+        let view = if ordered.is_empty() {
+            decl.view.clone()
+        } else {
+            item_view(ordered[0]).to_string()
+        };
+        if entry.is_empty() {
+            entry = format!("/{prefix}/plugins/{plugin_id}/{view}");
+        }
+        groups.push(InfoMenuGroup {
+            label: decl.label.clone(),
+            href: format!("/{prefix}/m/{key}"),
+            icon: icon_or_dot(decl.icon.as_deref()),
+            children: ordered
+                .iter()
+                .map(|it| InfoMenuLink {
+                    label: it.label.clone(),
+                    href: format!("/{prefix}/m/{key}/{}", it.id),
+                    icon: icon_or_dot(it.icon.as_deref()),
+                })
+                .collect(),
+        });
+    }
+    (groups, entry)
 }
 
 fn slot_label(slot: &str) -> &'static str {
@@ -1296,10 +1577,7 @@ mod tests {
             gates: vec!["plugin_enabled".into()],
             default_visible: true,
             pinnable: true,
-            target: skiff_pkgfmt::MenuTarget {
-                kind: "plugin_ui".into(),
-                ui: "index.html".into(),
-            },
+            view: "main".into(),
             items: Vec::new(),
         }
     }
@@ -1348,20 +1626,21 @@ mod tests {
 name = "Tool"
 version = "0.1.0"
 key_id = "0000000000000000000000000000000000000000000000000000000000000001"
-api = "1.1"
+api = "1.2"
 [[ui]]
 label = "Tool"
-path = "index.html"
+path = "main.html"
 [[menu]]
 id = "main"
 parent = "tools"
 label = "工具"
 order = 5
 gates = ["docker_available"]
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "main"
 [[menu.items]]
 id = "jobs"
 label = "任务"
+view = "jobs"
 "#,
         )
         .unwrap();

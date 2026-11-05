@@ -90,6 +90,8 @@
 
   function card(id, value, bad) {
     var c = el(id);
+    // 视图按文件拆开加载：总览文件没有历史表格，历史文件没有指标卡。
+    if (!c) return;
     c.querySelector("b").textContent = value;
     c.classList.toggle("bad", !!bad);
   }
@@ -111,6 +113,7 @@
   }
 
   function paintHistory(samples) {
+    if (!el("history")) return;
     if (!samples || samples.length === 0) {
       el("history").innerHTML = '<tr><td colspan="6" class="muted">暂无历史采样（cron 每 5 分钟生成一次）</td></tr>';
       return;

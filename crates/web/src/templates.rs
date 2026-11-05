@@ -61,14 +61,18 @@ pub struct PluginView {
     pub api: String,
     pub status: String,
     pub enabled: bool,
-    pub key_id: String,
+    /// 完整公钥指纹（信息页展示；空串 = 未签名包）。
+    pub key_id_full: String,
     pub grants: String,
+    /// manifest `requires`（宿主能力面，如 docker/identity）。
+    pub requires: String,
+    /// manifest `permissions`（动作面，如 fs:read）。
+    pub permissions: String,
     pub signed: bool,
     pub reduced: bool,
     pub running: bool,
-    /// manifest `ui[[ui]]` 的第一个入口（相对 `ui/` 的路径）；空串表示无 UI。
+    /// manifest `[[ui]]` 的第一个入口（相对 `ui/` 的路径）；空串表示无 UI。
     pub ui_path: String,
-    pub ui_label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -447,11 +451,34 @@ pub struct PluginConfirmPage {
     pub error: String,
 }
 
+/// 插件信息与管理页（内核渲染，`/{p}/plugins/{id}`）。
+///
+/// 只放「插件是什么、授权了什么、能做什么管理动作、关联哪些菜单」，
+/// 不嵌 iframe——功能界面在 `/{p}/plugins/{id}/<view>`（`docs/PLUGIN_UI_CONTRACT.md`）。
 #[derive(Template)]
-#[template(path = "plugin_detail.html")]
-pub struct PluginDetailPage {
+#[template(path = "plugin_info.html")]
+pub struct PluginInfoPage {
     pub ctx: PageCtx,
     pub plugin: PluginView,
+    pub grants: Vec<GrantRow>,
+    pub interop_provides: Vec<String>,
+    pub interop_consumes: Vec<String>,
+    /// 与导航同源的关联菜单；链接指向 `/{p}/m/plugin/<id>/...` 深链。
+    pub menus: Vec<crate::menu::InfoMenuGroup>,
+    /// 默认功能页入口（`/{p}/plugins/{id}/<view>`）；无 UI 时为空。
+    pub entry_href: String,
+    pub can_admin: bool,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Template)]
+#[template(path = "plugin_view.html")]
+pub struct PluginViewPage {
+    pub ctx: PageCtx,
+    pub plugin: PluginView,
+    /// 返回插件信息页。
+    pub info_href: String,
     /// 沙箱 iframe 的 URL（已带 `?nonce=`，跨插件跳转时另带 `&open=`）
     pub iframe_src: String,
     pub rpc_url: String,
@@ -460,9 +487,9 @@ pub struct PluginDetailPage {
     pub nav_plugins: String,
     /// 工作台标题（声明菜单取 L2 label，否则沿用 `[[ui]].label`）。
     pub workbench_title: String,
-    /// L3 标签栏；为空表示该页没有三级菜单（老包/纯 L2）。
+    /// L3 标签栏；为空表示该页没有三级菜单（单视图 L2 / 老包）。
     pub tabs: Vec<TabView>,
-    /// L2 稳定键 `plugin/<id>/<l2>`；无声明菜单时为空。
+    /// L2 稳定键 `plugin/<id>/<l2>`；老包为 `plugin/<id>/legacy`。
     pub menu_key: String,
     /// 当前 L3 局部 id；无 L3 时为空，模板按它标记 `aria-current`。
     pub active_l3: String,
@@ -470,12 +497,6 @@ pub struct PluginDetailPage {
     pub active_tab: String,
     /// 当前加载的 `ui/` 相对路径（供 JS 判断是否要切换文件）。
     pub active_ui: String,
-    /// 本插件对外提供的接口（`method · label`），空表示不供其他插件调用。
-    pub interop_provides: Vec<String>,
-    /// 本插件声明的可调用目标（`<plugin-id>:<method>`），空表示不调别的插件。
-    pub interop_consumes: Vec<String>,
-    pub grants: Vec<GrantRow>,
-    pub can_admin: bool,
     pub error: String,
 }
 
