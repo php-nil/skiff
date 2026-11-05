@@ -5,6 +5,7 @@ pub mod api;
 pub mod auth;
 pub mod containers;
 pub mod dashboard;
+pub mod docker_settings;
 pub mod menu;
 pub mod meta;
 pub mod nginx;

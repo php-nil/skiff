@@ -50,11 +50,11 @@ pub async fn dispatch(
         "core/sites/new" => {
             handlers::sites::new_page_get(State(state), AuthUser(user), Query(q)).await
         }
-        "core/sites/settings" => {
-            handlers::sites::env_settings_page(State(state), AuthUser(user), Query(q)).await
-        }
         "core/docker/containers" => {
             handlers::containers::list(State(state), AuthUser(user), Query(q)).await
+        }
+        "core/docker/settings" => {
+            handlers::docker_settings::page(State(state), AuthUser(user), Query(q)).await
         }
         "core/docker/images" => handlers::resources::images(State(state), AuthUser(user)).await,
         "core/docker/networks" => handlers::resources::networks(State(state), AuthUser(user)).await,

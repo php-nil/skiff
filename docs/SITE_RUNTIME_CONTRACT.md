@@ -308,8 +308,9 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 ### 6.1 路由与深链
 
-L2 保持 `docs/MENU_CONTRACT.md` 的三个内置项：网站列表 / 运行环境 / 设置。运行环境详情是 L2 下的
-子页面，不新增 L3（L3 只属于插件）。
+L2 保持 `docs/MENU_CONTRACT.md` 的内置项：网站列表 / 运行环境 / Nginx。运行环境详情是 L2 下的
+子页面，不新增 L3（L3 只属于插件）。站点级设置页已移除：镜像加速源/前缀归 Docker 设置，
+nginx/PHP 镜像标签归运行环境页的「镜像参数」。
 
 | 页面 | 规范 URL | 旧路由别名 |
 | --- | --- | --- |
@@ -319,7 +320,9 @@ L2 保持 `docs/MENU_CONTRACT.md` 的三个内置项：网站列表 / 运行环�
 | 运行环境列表 | `/{p}/m/core/sites/env` | `/{p}/sites/env` |
 | 运行环境详情 | `/{p}/m/core/sites/env/<runtime-id>` | `/{p}/sites/env/<runtime-id>` |
 | 运行环境标签页 | `/{p}/m/core/sites/env/<runtime-id>?tab=config|logs|sites` | 同上 |
-| 网站设置 | `/{p}/m/core/sites/settings` | `/{p}/sites/settings` |
+
+- 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/m/core/docker/settings`），
+  `nginx_image` / `php_image` 归运行环境页的「镜像参数」。
 
 - `runtime-id` 只用 `[a-z0-9.-]`（如 `php-8.5`），不把镜像 tag、路径拼进 URL。
 - 深链无 JS 可打开；切换标签只改 query 或服务端渲染，不依赖前端路由。
@@ -471,7 +474,7 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### 9.3 菜单与导航
 
-- `core/sites/list`、`core/sites/env`、`core/sites/settings` 三项不变；运行环境详情不新增 L2/L3。
+- `core/sites/list`、`core/sites/env`、`core/sites/nginx` 三项不变；运行环境详情不新增 L2/L3。
 - 运行环境详情返回列表时保留筛选与当前 kind；深链落在 `env` 菜单当前态。
 - 不改变顶部/侧栏布局与菜单偏好结构。
 

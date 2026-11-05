@@ -456,6 +456,8 @@ pub struct SiteEnvPage {
     pub add_href: String,
     /// 基础环境安装入口（从标题栏移入弹窗）。
     pub base_install_href: String,
+    /// 镜像参数保存入口。
+    pub images_href: String,
     pub error: String,
     pub notice: String,
 }
@@ -479,11 +481,12 @@ pub struct NginxPage {
 }
 
 #[derive(Template)]
-#[template(path = "site_settings.html")]
-pub struct SiteSettingsPage {
+#[template(path = "docker_settings.html")]
+pub struct DockerSettingsPage {
     pub ctx: PageCtx,
-    pub env: SiteEnvView,
+    /// 宿主 `/etc/docker/daemon.json` 的 registry-mirrors。
     pub registry_mirror: String,
+    /// 拉取站点运行环境镜像时拼接的前缀。
     pub image_prefix: String,
     pub can_admin: bool,
     pub error: String,

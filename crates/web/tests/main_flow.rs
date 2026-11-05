@@ -746,8 +746,12 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
     assert!(
         html.contains(r#"href="/p/m/core/sites/list""#)
             && html.contains(r#"href="/p/m/core/sites/env""#)
-            && html.contains(r#"href="/p/m/core/sites/settings""#),
-        "网站一级由内核自带网站列表/运行环境/设置: {html}"
+            && !html.contains(r#"href="/p/m/core/sites/settings""#),
+        "网站一级保留列表/运行环境；站点级设置入口已移除: {html}"
+    );
+    assert!(
+        html.contains(r#"href="/p/m/core/docker/settings""#),
+        "Docker 一级必须提供设置入口（镜像加速源/前缀）: {html}"
     );
     // 插件一级拆成已安装 / 发现 / 可更新三个真实页面
     assert!(
@@ -3873,6 +3877,63 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         css.contains("@media (max-width: 720px)") && css.contains("dialog.drawer"),
         "窄屏必须退化为全屏抽屉"
     );
+}
+
+/// 站点级设置页已移除：镜像加速源/前缀归 Docker 设置，镜像标签归运行环境页。
+#[tokio::test]
+async fn site_settings_removed_and_docker_settings_hosts_mirror() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    // 旧入口与页面都不再存在。
+    let (status, _) = get_page(&h.app, "/p/sites/settings", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "站点设置页必须已移除");
+
+    // 新 Docker 设置页：镜像加速源 + 镜像前缀；菜单深链同源。
+    for uri in ["/p/docker/settings", "/p/m/core/docker/settings"] {
+        let (status, html) = get_page(&h.app, uri, &admin).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains("镜像加速源")
+                && html.contains(r#"name="registry_mirror""#)
+                && html.contains(r#"name="image_prefix""#),
+            "{uri} 必须承载镜像加速源与镜像前缀: {html}"
+        );
+    }
+
+    // 运行环境页接管镜像标签，不再出现加速源/前缀字段。
+    let (status, env_html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        env_html.contains(r#"name="nginx_image""#)
+            && env_html.contains(r#"name="php_image""#)
+            && env_html.contains("/p/sites/env/images"),
+        "运行环境页必须提供镜像标签保存入口: {env_html}"
+    );
+
+    // viewer 打开页面只读，保存仍被拒绝。
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, html) = get_page(&h.app, "/p/docker/settings", &viewer).await;
+    assert_eq!(status, StatusCode::OK);
+    let csrf = csrf_from(&html);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/docker/settings")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("registry_mirror", "https://mirror.example.com"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 /// 新建 PHP 实例：名字非法 / 同名 / 目录已存在都在落库前拒绝。

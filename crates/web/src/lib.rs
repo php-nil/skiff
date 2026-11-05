@@ -111,6 +111,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/volumes/{{name}}/remove"),
             post(handlers::resources::remove_volume),
         )
+        .route(
+            &format!("/{p}/docker/settings"),
+            get(handlers::docker_settings::page).post(handlers::docker_settings::save),
+        )
         .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
         .route(
             &format!("/{p}/plugins/{{id}}"),
@@ -168,6 +172,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/add"),
             post(handlers::sites::env_add),
         )
+        .route(
+            &format!("/{p}/sites/env/images"),
+            post(handlers::sites::env_images_save),
+        )
         // 轮询端点必须早于 `{id}` 动态段注册，避免把 `jobs` 当成运行环境 id。
         .route(
             &format!("/{p}/sites/env/jobs"),
@@ -224,10 +232,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/runtimes/{{id}}/extensions"),
             post(handlers::sites::runtime_extensions_save),
-        )
-        .route(
-            &format!("/{p}/sites/settings"),
-            get(handlers::sites::env_settings_page).post(handlers::sites::env_settings_save),
         )
         .route(
             &format!("/{p}/sites/{{domain}}"),

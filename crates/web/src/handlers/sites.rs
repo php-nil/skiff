@@ -19,7 +19,7 @@ use crate::templates::{
     BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, PhpConfigView,
     RuntimeDetailPage, RuntimeJobView, RuntimeKindView, RuntimeOptionView, RuntimeRow,
     SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView, SiteLogsPage, SiteNewForm,
-    SiteSettingsPage, SiteTlsView, SiteView, SitesPage,
+    SiteTlsView, SiteView, SitesPage,
 };
 use crate::util::{encode_uri_component, form_first, human_size, parse_form};
 
@@ -625,6 +625,7 @@ pub async fn env_page(
         jobs_href: format!("/{prefix}/sites/env/jobs"),
         add_href: format!("/{prefix}/sites/env/add"),
         base_install_href: format!("/{prefix}/sites/env/install"),
+        images_href: format!("/{prefix}/sites/env/images"),
         error: q.get("error").cloned().unwrap_or_default(),
         notice: q.get("notice").cloned().unwrap_or_default(),
     })
@@ -721,28 +722,9 @@ pub async fn env_add(
     }
 }
 
-pub async fn env_settings_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let env = state.site_env_status().await;
-    let settings = state.site_settings();
-    handlers::render(SiteSettingsPage {
-        ctx: handlers::page_ctx(&state, &user, "core/sites/settings"),
-        env: env_view(&env),
-        registry_mirror: settings.registry_mirror,
-        image_prefix: state
-            .db()
-            .get_setting("sites.image_prefix")?
-            .unwrap_or_default(),
-        can_admin: user.can(skiff_model::Permission::Admin),
-        error: q.get("error").cloned().unwrap_or_default(),
-        notice: q.get("notice").cloned().unwrap_or_default(),
-    })
-}
-
-pub async fn env_settings_save(
+/// 运行环境页「镜像参数」保存：nginx / PHP 基础镜像标签。
+/// 镜像前缀与 Docker 加速源已迁到 Docker 设置，这里只管运行环境自身的镜像名。
+pub async fn env_images_save(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     parts: Parts,
@@ -752,7 +734,6 @@ pub async fn env_settings_save(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     for (form_key, setting_key) in [
-        ("image_prefix", "sites.image_prefix"),
         ("nginx_image", "sites.nginx_image"),
         ("php_image", "sites.php_image"),
     ] {
@@ -761,58 +742,14 @@ pub async fn env_settings_save(
             state.db().set_setting(setting_key, value.trim())?;
         }
     }
-    let prefix = &state.cfg.entry_prefix;
-    let mut notice = "已保存".to_string();
-    if form.contains_key("registry_mirror") {
-        let raw = form_first(&form, "registry_mirror");
-        let raw = raw.trim();
-        let old = state
-            .db()
-            .get_setting("sites.registry_mirror")?
-            .unwrap_or_default();
-        if raw != old {
-            match state.apply_registry_mirror(raw).await {
-                Ok(r) => {
-                    state.db().set_setting("sites.registry_mirror", raw)?;
-                    if r.restarted {
-                        notice =
-                            "镜像源已写入 /etc/docker/daemon.json，Docker 已重启并通过可用性检查"
-                                .into();
-                    } else if r.written {
-                        notice = format!(
-                            "镜像源已写入 /etc/docker/daemon.json；检测到 {} 个运行中容器，未自动重启 Docker，请在维护窗口执行 systemctl restart docker",
-                            r.running_containers
-                        );
-                    } else {
-                        notice = "镜像源未变化，无需写入".into();
-                    }
-                }
-                Err(e) => {
-                    let ip = handlers::client_ip(&state, &parts);
-                    let _ = state.db().audit(
-                        &user.user.username,
-                        &ip,
-                        "sites.env.config",
-                        "registry_mirror",
-                        "failed",
-                        &e,
-                    );
-                    return Ok(handlers::redirect(format!(
-                        "/{prefix}/sites/settings?error={}",
-                        encode_uri_component(&e)
-                    )));
-                }
-            }
-        }
-    }
-    // 端口固定为宿主 80（host 网络 + unix socket），不再允许从界面改。
     let ip = handlers::client_ip(&state, &parts);
     let _ = state
         .db()
-        .audit(&user.user.username, &ip, "sites.env.config", "-", "ok", "");
+        .audit(&user.user.username, &ip, "sites.env.images", "-", "ok", "");
+    let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!(
-        "/{prefix}/sites/settings?notice={}",
-        encode_uri_component(&notice)
+        "/{prefix}/sites/env?notice={}",
+        encode_uri_component("镜像参数已保存，重建基础环境或重装实例后生效")
     )))
 }
 

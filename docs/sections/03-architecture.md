@@ -44,9 +44,9 @@ skiff-core (单进程 · systemd · 宿主机)
 | 一级 | 二级 | 目标 | 说明 |
 |---|---|---|---|
 | 概览 | —（直接链接） | `/{p}` | 行动面板：健康块 + 按影响排序的待办 + 异常容器 + 最近审计 |
-| 网站 | 网站列表 / 运行环境 / 设置 | `/{p}/sites`、`/{p}/sites/env`、`/{p}/sites/settings` | **内核自带**（1Panel 风格的站点闭环：环境安装、建站、启停、删除、日志）；原 `com.skiff.nginx` 插件已内核化 |
+| 网站 | 网站列表 / 运行环境 / Nginx | `/{p}/sites`、`/{p}/sites/env`、`/{p}/sites/nginx` | **内核自带**（1Panel 风格的站点闭环：环境安装、建站、启停、删除、日志）；原 `com.skiff.nginx` 插件已内核化 |
 | 工具 | 各「已启用且有 UI 入口」插件的 `[[ui]].label` | `/{p}/plugins/{id}` | 只列已启用插件；未启用/无 UI 不出现死入口；**0 项时显示可行动空态**；固定顺序 文件→任务→监控→守护 |
-| Docker | 容器 / 镜像 / 网络 / 卷 | `/{p}/containers`、`/{p}/images`、`/{p}/networks`、`/{p}/volumes` | 名称保持「Docker」 |
+| Docker | 容器 / 镜像 / 网络 / 卷 / 设置 | `/{p}/containers`、`/{p}/images`、`/{p}/networks`、`/{p}/volumes`、`/{p}/docker/settings` | 名称保持「Docker」；设置页承载镜像加速源与镜像前缀 |
 | 插件中心 | —（直接链接） | `/{p}/plugins` | 页内「发现 / 已安装 / 可更新」三个 tab；启停、更新、卸载只在插件卡片上 |
 | 设置 | 安全设置 / 审计日志 | `/{p}/settings`、`/{p}/audit` | 只保留两个真实页面，不再用页内锚点冒充二级 |
 

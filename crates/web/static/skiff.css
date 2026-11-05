@@ -1487,9 +1487,10 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
 
 
 
-/* L3 工作台标签栏：页面标题区下方的一条连续横栏（1Panel 式），与内容区同宽。
-   整条是一个容器，标签之间只用 1px 细分隔线；active 只由底部强调轨表达，
-   不再给每个标签单独的描边圆角卡片。
+/* L3 工作台标签栏：页面标题区下方的一条连续横栏，整条仍是单个容器。
+   标签按内容宽度排列并左对齐，不做等宽拉伸（`flex: 0 0 auto`），
+   空间不足时整条横向滚动，文字不截断、不换行。
+   相邻标签只用 1px 细分隔线；active 只由底部 2px 强调轨表达，不叠加底色/描边。
    `--shell-h` 由 skiff.js 按顶栏实测高度写入（上下布局含二级通栏），
    因此两种布局都能吸顶在顶栏之下，滚动时不随内容移动。 */
 .workbench-tabs {
@@ -1498,6 +1499,7 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
   z-index: 12;
   display: flex;
   align-items: stretch;
+  justify-content: flex-start;
   flex-wrap: nowrap;
   gap: 0;
   margin: 0 0 var(--sp-4);
@@ -1518,10 +1520,9 @@ body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); 
   align-items: center;
   justify-content: center;
   gap: 7px;
-  flex: 1 1 0;
-  min-width: max-content;
-  height: 44px;
-  padding: 0 16px;
+  flex: 0 0 auto;
+  height: 42px;
+  padding: 0 18px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1788,22 +1789,90 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
   .drawer-content { padding: var(--sp-3); }
 }
 
-/* 「网站 → Nginx」页面私有样式；不改 .workbench-tabs（横向标签由全局样式负责）。 */
+/* 「网站 → Nginx」页面私有样式；不改 .workbench-tabs（横向标签由全局样式负责）。
+   四段（状态/配置/日志/模块）共用同一套区块头与子块结构；全部沿用全局 token。 */
+.page-nginx .section-head { margin-bottom: var(--sp-4); }
+.page-nginx .section-head h2 { margin: 0; padding: 0; border: 0; font-size: var(--fs-lg); }
+.page-nginx .section-head p { margin: var(--sp-1) 0 0; color: var(--muted); font-size: var(--fs-sm); }
+.page-nginx .nginx-subblock { margin-top: var(--sp-5); }
+.page-nginx .nginx-subblock h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-md); }
+.page-nginx .subblock-meta { margin: 0 0 var(--sp-2); color: var(--muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.page-nginx .nginx-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sp-2);
+}
+.page-nginx .nginx-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.page-nginx .nginx-stat .k { color: var(--muted); font-size: var(--fs-xs); }
+.page-nginx .nginx-stat .v {
+  font: 500 var(--fs-md)/1.35 var(--mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.page-nginx .nginx-stat .v.faded { color: var(--muted); font-weight: 400; }
+.page-nginx .nginx-probe { margin-top: var(--sp-4); }
+.page-nginx .nginx-probe .mono { word-break: break-all; }
+.page-nginx .nginx-diagnosis { white-space: pre-wrap; }
+.page-nginx .nginx-editor { margin-top: 0; }
+.page-nginx .nginx-editor textarea { min-height: 360px; }
+.page-nginx .nginx-filter { padding: var(--sp-3); }
+.page-nginx .nginx-filter form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  width: 100%;
+}
+.page-nginx .nginx-filter label { flex: 1 1 140px; max-width: 220px; }
+.page-nginx .nginx-filter label.wide { flex: 1 1 220px; max-width: 320px; }
+.page-nginx .nginx-filter .filter-actions { display: flex; gap: var(--sp-2); margin-left: auto; }
 .page-nginx .logs-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--sp-4);
-  align-items: start;
+  align-items: stretch;
 }
-.page-nginx .logs-grid pre.log { max-height: 420px; overflow: auto; }
-.page-nginx .nginx-tail { max-height: 360px; overflow: auto; }
-.page-nginx .nginx-probe .mono { word-break: break-all; }
-.page-nginx .nginx-diagnosis { white-space: pre-wrap; }
+.page-nginx .log-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--sp-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.page-nginx .log-card-head { display: flex; align-items: center; gap: var(--sp-2); }
+.page-nginx .log-card-head h3 { margin: 0; }
+.page-nginx .log-card pre.log {
+  height: 300px;
+  max-height: 300px;
+  background: var(--surface);
+}
+.page-nginx .log-card .log-foot { margin: auto 0 0; padding-top: var(--sp-2); color: var(--muted); font-size: var(--fs-xs); }
+.page-nginx .req-tags { display: flex; flex-wrap: wrap; gap: 6px; padding-top: var(--sp-3); }
+.page-nginx .module-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.page-nginx .module-tags .tag { background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); }
+.page-nginx .nginx-args { margin-top: var(--sp-5); }
+.page-nginx .nginx-args summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; }
+.page-nginx .nginx-args pre.log { margin-top: var(--sp-2); }
 @media (max-width: 900px) {
   .page-nginx .logs-grid { grid-template-columns: 1fr; }
+  .page-nginx .log-card pre.log { height: 240px; max-height: 240px; }
 }
 @media (max-width: 560px) {
-  .page-nginx .inline-form { flex-direction: column; align-items: stretch; }
+  .page-nginx .nginx-filter form { flex-direction: column; align-items: stretch; }
+  .page-nginx .nginx-filter label { max-width: none; }
+  .page-nginx .nginx-filter .filter-actions { margin-left: 0; }
+  .page-nginx .nginx-stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 }
 
 /* ---- 网站页（page-sites）：新建弹窗、域名列表、行内操作菜单与统一徽标 ---- */
@@ -1920,6 +1989,8 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
   margin: 0 var(--sp-4) var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--line);
 }
 .page-runtimes .base-install-note { display: flex; flex-direction: column; gap: 2px; }
+.page-runtimes .runtime-images summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; }
+.page-runtimes .runtime-images[open] summary { margin-bottom: var(--sp-2); }
 @media (max-width: 760px) {
   .page-runtimes .runtime-form-grid { grid-template-columns: 1fr; }
   .page-runtimes .ext-options { grid-template-columns: 1fr; }

@@ -62,6 +62,25 @@
     {% endif %}
   </section>
 
+  {% if can_admin %}
+  <section class="panel">
+    <details class="runtime-images">
+      <summary>镜像参数（nginx / PHP 基础镜像标签）</summary>
+      <p class="muted">只影响重新拉取的容器。修改后需「重建基础环境」或重装对应实例才生效；镜像加速源与前缀在 Docker 设置里统一配置。</p>
+      <form method="post" action="{{ images_href }}" class="form-grid">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+        <label>nginx 镜像
+          <input name="nginx_image" value="{{ env.nginx_image }}" class="mono">
+        </label>
+        <label>PHP 镜像（须为 8.5 系列 FPM）
+          <input name="php_image" value="{{ env.php_image }}" class="mono">
+        </label>
+        <button class="btn" type="submit">保存镜像参数</button>
+      </form>
+    </details>
+  </section>
+  {% endif %}
+
 {% if can_admin %}
 <dialog class="modal runtime-dialog" data-runtime-new-dialog aria-label="新建运行环境">
   <form method="post" action="{{ add_href }}">
