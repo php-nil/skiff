@@ -1,90 +1,124 @@
 {% extends "base.html" %}
 {% block title %}网站运行环境 · Skiff{% endblock %}
 {% block content %}
-<div class="page-head">
-  <h1>运行环境</h1>
-  {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/install" class="inline">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <button class="btn" type="submit">{% if env.installed %}重新安装/重建基础环境{% else %}安装基础环境{% endif %}</button>
-  </form>
+<div class="page-runtimes" data-runtime-jobs-url="{{ jobs_href }}">
+  <div class="page-head">
+    <h1>运行环境</h1>
+    <span class="sub">PHP-FPM 独立实例 · 独立目录与 socket · 安装/扩展异步执行</span>
+  </div>
+  {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+  {% if !env.docker_available %}
+  <div class="alert">Docker 不可用：{{ env.docker_reason }}</div>
   {% endif %}
-</div>
-{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
-{% if !notice.is_empty() %}<div class="alert">{{ notice }}</div>{% endif %}
-{% if !env.docker_available %}
-<div class="alert">Docker 不可用：{{ env.docker_reason }}</div>
-{% endif %}
 
-<section class="panel">
-  <h2>环境列表</h2>
-  <p class="muted">每个实例独立目录、独立 socket：<code>/www/runtime/php/&lt;name&gt;/php-fpm.sock</code>（0660 root:nobody），容器名 <code>skiff-php-&lt;name&gt;</code>。停止某个实例只影响绑定它的站点，不会静默切换到其它实例。点「详情」从右侧打开抽屉。</p>
-  {% if runtimes.is_empty() %}
-  <p class="muted">尚未登记运行环境。安装基础环境后会自动登记 PHP 8.5。</p>
-  {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>类型</th><th>版本</th><th>状态</th><th>占用站点</th><th>socket / 端口</th><th>默认</th><th>操作</th></tr></thead>
-      <tbody>
-      {% for r in runtimes %}
-        <tr data-runtime-row="{{ r.id }}">
-          <td>{{ r.kind_label }}</td>
-          <td class="mono">{{ r.version }}</td>
-          <td>
-            <span class="tag{% if r.state_class == "ok" %} ok{% else if r.state_class == "warn" %} warn-tag{% endif %}">{{ r.state_label }}</span>
-            {% if r.drift %}<br><span class="hint">期望运行 / 实际未运行</span>{% endif %}
-          </td>
-          <td>{{ r.site_count }}</td>
-          <td class="mono">{{ r.endpoint }}</td>
-          <td>{% if r.is_default %}<span class="tag">默认</span>{% else %}<span class="muted">—</span>{% endif %}</td>
-          <td class="row-actions">
-            <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">详情</button>
-            {% if can_admin && r.implemented %}
-              {% if r.actionable %}
-                {% if r.running %}
-                <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ r.id }}/action/stop" class="inline">
-                  <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-                  <button type="submit" class="link-btn">停止</button>
-                </form>
-                {% else %}
-                <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ r.id }}/action/start" class="inline">
-                  <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-                  <button type="submit" class="link-btn">启动</button>
-                </form>
-                {% endif %}
-              {% else %}
-              <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ r.id }}/action/install" class="inline">
-                <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-                <button type="submit" class="link-btn">安装</button>
-              </form>
-              {% endif %}
-            {% endif %}
-            <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">更多</button>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% endif %}
-  {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/add" class="inline-form">
+  <section class="panel">
+    <div class="panel-head">
+      <h2>环境列表</h2>
+      {% if can_admin %}
+      <button type="button" class="btn primary" data-runtime-new>+ 新建运行环境</button>
+      {% endif %}
+    </div>
+    <p class="muted">每个实例独立目录、独立 socket：<code>/www/runtime/php/&lt;name&gt;/php-fpm.sock</code>（0660 root:nobody），容器名 <code>skiff-php-&lt;name&gt;</code>。停止某个实例只影响绑定它的站点，不会静默切换到其它实例。</p>
+    {% if runtimes.is_empty() %}
+    <p class="muted">尚未登记运行环境。点「新建运行环境」创建；基础环境在弹窗内可一并重建。</p>
+    {% else %}
+    <div class="table-wrap">
+      <table class="grid runtimes-grid">
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>实例名</th>
+            <th>版本</th>
+            <th>状态</th>
+            <th class="num">占用站点</th>
+            <th>接入方式</th>
+            <th class="actions-col"></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for r in runtimes %}
+          <tr data-runtime-row="{{ r.id }}" data-runtime-open="{{ r.detail_href }}">
+            <td>{{ r.kind_label }}</td>
+            <td class="mono">{{ r.name }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
+            <td class="mono">{{ r.version }}</td>
+            <td data-runtime-state>
+              <span class="tag{% if r.state_class == "ok" %} ok{% else if r.state_class == "warn" %} warn-tag{% else if r.state_class == "danger" %} danger-tag{% endif %}" data-runtime-state-label>{{ r.state_label }}</span>
+              <span class="runtime-progress" data-runtime-progress{% if !r.job_active %} hidden{% endif %}><span style="width: {{ r.job_progress }}%"></span></span>
+              <span class="hint runtime-job-error" data-runtime-job-error{% if r.job_error.is_empty() %} hidden{% endif %}>{{ r.job_error }}</span>
+              {% if r.drift %}<span class="hint">期望运行 / 实际未运行</span>{% endif %}
+            </td>
+            <td class="num">{{ r.site_count }}</td>
+            <td><span class="mono runtime-endpoint" title="{{ r.endpoint_full }}">{{ r.endpoint_short }}</span></td>
+            <td class="actions-col">
+              <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">详情</button>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">点整行或「详情」从右侧打开抽屉；启停/重建、安装日志与扩展管理都在抽屉里。安装中状态与进度会自动刷新。</p>
+    {% endif %}
+  </section>
+
+{% if can_admin %}
+<dialog class="modal runtime-dialog" data-runtime-new-dialog aria-label="新建运行环境">
+  <form method="post" action="{{ add_href }}">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <label>新建 PHP 实例
-      <input type="text" name="name" placeholder="php-8.4-a" value="{{ new_name }}" pattern="[a-z0-9][a-z0-9.\-]{0,31}" required>
-    </label>
-    <label>版本
-      <input type="text" name="version" placeholder="8.4" value="{{ new_version }}" pattern="[0-9.]+" required>
-    </label>
-    <button class="btn" type="submit">安装实例</button>
+    <input type="hidden" name="ext_form" value="1">
+    <div class="modal-head"><h2>新建运行环境</h2></div>
+    <div class="modal-body">
+      <div class="runtime-form-grid">
+        <label>类型
+          <select name="kind" data-runtime-kind>
+            {% for k in kinds %}
+            <option value="{{ k.key }}"{% if loop.first %} selected{% endif %}>{{ k.label }}{% if !k.implemented %}（P2 预留）{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>版本
+          <select name="version" data-runtime-version>
+            {% for k in kinds %}{% for v in k.versions %}
+            <option value="{{ v }}" data-kind="{{ k.key }}"{% if k.key == "php" && loop.first %} selected{% endif %}>{{ v }}</option>
+            {% endfor %}{% endfor %}
+          </select>
+        </label>
+        <label>实例名称
+          <input type="text" name="name" value="php-8.5" data-runtime-name autocomplete="off" maxlength="32">
+          <span class="hint">默认跟随类型与版本（如 php-8.5）；同类型下不可重名，目录已存在会被拒绝。</span>
+        </label>
+      </div>
+      <fieldset class="runtime-extensions exts-box">
+        <legend>常用扩展（安装阶段装入，安装后可在抽屉里增删）</legend>
+        <div class="ext-options">
+          {% for e in extensions %}
+          <label class="ext-option">
+            <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.default_on %} checked{% endif %}>
+            <span class="ext-name mono">{{ e.key }}{% if e.builtin %} <span class="tag">内置</span>{% endif %}</span>
+            <span class="hint">{{ e.label }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <p class="hint" data-runtime-p2-note hidden>Node.js / Go 为 P2 预留：只会登记运行环境行，不安装容器，也不提供扩展管理。</p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-runtime-new-close>取消</button>
+      <button type="submit" class="btn primary">创建并后台安装</button>
+    </div>
   </form>
-  <p class="hint">实例名只允许小写字母、数字、点与连字符（1–32 位，首字符不能是点/连字符）；同类型下不可重名，目标目录已存在会直接拒绝，不覆盖。</p>
-  {% endif %}
-  <div class="not-implemented">
-    <div><strong>Node.js / Go 运行环境</strong><br>P2 预留：每站点独立容器、独立 <code>127.0.0.1</code> 端口、独立日志；P1 不提供安装/启动，也不会显示为运行中。</div>
-    <span class="badge warn">P2 未实现</span>
-  </div>
-</section>
+  <form method="post" action="{{ base_install_href }}" class="runtime-base-install">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="base-install-note">
+      <strong>基础环境（OpenResty + 默认 PHP 8.5）</strong>
+      <span class="hint">原「安装基础环境」入口从标题栏移到此处：重建会重装 nginx 容器与默认 PHP 实例，已有站点配置保留但会短暂中断。日常新建版本请用上方表单。</span>
+    </div>
+    <button type="submit" class="btn ghost">重建基础环境</button>
+  </form>
+</dialog>
+<script type="application/json" data-runtime-catalog>{{ catalog_json|safe }}</script>
+{% endif %}
 
 <dialog class="drawer" id="runtime-drawer" data-runtime-drawer aria-label="运行环境详情">
   <div class="drawer-head">
@@ -95,6 +129,7 @@
     <p class="muted">选择一行运行环境查看详情。</p>
   </div>
 </dialog>
+</div>
 
 <script src="/{{ ctx.prefix }}/static/skiff.js" defer></script>
 {% endblock %}

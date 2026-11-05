@@ -254,6 +254,23 @@ impl Db {
         .optional()
         .map_err(StoreError::from)
     }
+
+    pub fn remove_site_alias(&self, site_domain: &str, domain: &str) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM site_aliases WHERE site_domain = ?1 AND domain = ?2",
+            params![site_domain, domain],
+        )?;
+        Ok(())
+    }
+
+    /// 清空某站点的全部别名；用于别名回滚与整体重建。
+    pub fn clear_site_aliases(&self, site_domain: &str) -> Result<()> {
+        self.conn().execute(
+            "DELETE FROM site_aliases WHERE site_domain = ?1",
+            params![site_domain],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

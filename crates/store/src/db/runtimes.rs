@@ -72,6 +72,8 @@ pub struct Runtime {
     pub is_default: bool,
     /// 专属配置的规范化 JSON 快照（PHP ini / FPM）。
     pub config_json: String,
+    /// 已启用的 PHP 扩展（catalog key 的逗号分隔串；清单本身在应用层单一来源）。
+    pub extensions: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -101,14 +103,15 @@ fn row_to_runtime(r: &Row<'_>) -> rusqlite::Result<Runtime> {
         socket_path: r.get(8)?,
         is_default: r.get::<_, i64>(9)? != 0,
         config_json: r.get(10)?,
-        created_at: r.get(11)?,
-        updated_at: r.get(12)?,
+        extensions: r.get(11)?,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
     })
 }
 
 const RUNTIME_COLS: &str = "id, kind, name, version, image, image_digest, desired_state, \
-                            last_status, socket_path, is_default, config_json, created_at, \
-                            updated_at";
+                            last_status, socket_path, is_default, config_json, extensions, \
+                            created_at, updated_at";
 
 impl Db {
     pub fn create_runtime(&self, r: &NewRuntime) -> Result<Runtime> {
@@ -123,8 +126,8 @@ impl Db {
         conn.execute(
             "INSERT INTO site_runtimes(id, kind, name, version, image, image_digest,
                                        desired_state, last_status, socket_path, is_default,
-                                       config_json, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, '{}', ?9, ?9)",
+                                       config_json, extensions, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, '{}', '', ?9, ?9)",
             params![
                 id,
                 kind,
@@ -226,6 +229,19 @@ impl Db {
             "UPDATE site_runtimes SET desired_state = ?2, last_status = ?3, updated_at = ?4
              WHERE id = ?1",
             params![id, desired, last, now()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 写回已启用的扩展集合（逗号分隔，调用方按 catalog 规范化）。
+    pub fn set_runtime_extensions(&self, id: &str, extensions: &str) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE site_runtimes SET extensions = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, extensions, now()],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(id.to_string()));

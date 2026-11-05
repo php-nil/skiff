@@ -170,6 +170,11 @@ pub struct SiteView {
     /// running / stopped / error
     pub status: String,
     pub status_label: String,
+    /// 状态徽标配色（ok / danger / 空），列表与详情共用同一套徽标样式。
+    pub status_class: String,
+    /// 证书/HTTPS 徽标文案与配色，与运行状态同形呈现。
+    pub https_label: String,
+    pub https_class: String,
     pub created: String,
     pub is_default: bool,
     /// 附加域名（vhost 的 `server_name` 扩展）。
@@ -180,8 +185,6 @@ pub struct SiteView {
     pub https: bool,
     /// 是否 80 强制跳转 443。
     pub force_https: bool,
-    /// 站点证书目录下 cert.pem 与 key.pem 是否都存在（与详情 SSL 标签同源）。
-    pub cert_ready: bool,
 }
 
 /// SSL 标签：证书路径、主体、到期与开关状态。
@@ -202,7 +205,11 @@ pub struct SiteNewForm {
     /// runtime / static / proxy
     pub site_type: String,
     pub domain: String,
-    pub aliases: String,
+    /// 逐行填写的别名（前端可「新增一行」）。
+    pub aliases: Vec<String>,
+    /// 批量粘贴的别名原文（换行/逗号/空格混合），提交时与 `aliases` 合并。
+    pub aliases_bulk: String,
+    /// 站点目录名（只填目录名，`/www/sites/` 前缀由内核自动补全）。
     pub root_dir: String,
     /// 仅 runtime：运行环境 id。
     pub runtime_id: String,
@@ -220,20 +227,6 @@ pub struct RuntimeOptionView {
     /// P2 预留（Node/Go）在 P1 不可继续。
     pub disabled: bool,
     pub disabled_reason: String,
-}
-
-#[derive(Template)]
-#[template(path = "site_new.html")]
-pub struct SiteNewPage {
-    pub ctx: PageCtx,
-    pub env: SiteEnvView,
-    pub form: SiteNewForm,
-    pub runtimes: Vec<RuntimeOptionView>,
-    pub error: String,
-    /// 服务端字段级错误：`domain` / `aliases` / `root_dir` / `runtime_id` / `proxy_target`。
-    pub error_field: String,
-    /// 服务端校验失败时直接回到指定步骤（1/2/3）。
-    pub wizard_start: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +293,16 @@ pub struct SitesPage {
     pub error: String,
     pub notice: String,
     pub keyword: String,
+    /// 新建站点弹窗的表单（与服务端校验失败时的回填同源）。
+    pub form: SiteNewForm,
+    pub runtimes: Vec<RuntimeOptionView>,
+    /// 弹窗是否直接展开（服务端校验失败时保持打开）。
+    pub form_open: bool,
+    pub form_error: String,
+    /// 服务端字段级错误：`domain` / `aliases` / `root_dir` / `runtime_id` / `proxy_target`。
+    pub form_error_field: String,
+    /// 展示用站点根前缀（如 `/www/sites/`），前端只填目录名。
+    pub sites_prefix: String,
 }
 
 /// 运行环境列表/详情行（业务视角；容器状态只作为漂移提示）。
@@ -319,16 +322,19 @@ pub struct RuntimeRow {
     pub site_count: usize,
     /// 底层容器的实测状态（Docker 页同源）。
     pub container_state: String,
-    /// PHP 展示 socket；Node/Go 展示端口占位。
-    pub endpoint: String,
+    /// 列表「接入方式」短标识（sock / :8080），完整路径见 `endpoint_full`。
+    pub endpoint_short: String,
+    /// 悬浮提示与抽屉里的完整路径。
+    pub endpoint_full: String,
     pub implemented: bool,
     pub is_default: bool,
-    /// 已安装（容器存在）且为 PHP：可启停/重启。
-    pub actionable: bool,
-    pub running: bool,
     pub detail_href: String,
     /// 同一底层容器的 Docker 页深链（双向跳转）。
     pub docker_href: String,
+    /// 最近一次异步任务（排队/拉镜像/创建容器/启动/失败）。
+    pub job_progress: u8,
+    pub job_error: String,
+    pub job_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -370,10 +376,41 @@ pub struct PhpConfigView {
     pub max_requests: u32,
 }
 
+/// 新建运行环境弹窗的类型选项（版本来自 `runtime_catalog` 单一来源）。
 #[derive(Debug, Clone)]
-pub struct ExtensionView {
-    pub name: String,
+pub struct RuntimeKindView {
+    pub key: String,
+    pub label: String,
+    pub versions: Vec<String>,
+    /// P2 预留类型：可选择登记，但不安装容器。
+    pub implemented: bool,
+}
+
+/// 抽屉里可勾选/取消的扩展项。
+#[derive(Debug, Clone)]
+pub struct ExtensionOptionView {
+    pub key: String,
+    pub label: String,
+    pub description: String,
     pub enabled: bool,
+    pub default_on: bool,
+    pub builtin: bool,
+}
+
+/// 运行环境异步任务的展示快照（列表/抽屉轮询）。
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeJobView {
+    /// queued / running / done / failed
+    pub state: String,
+    pub state_label: String,
+    /// 当前阶段（拉镜像/创建容器/启动/安装扩展…）。
+    pub step: String,
+    pub progress: u8,
+    pub error: String,
+    pub log: String,
+    pub active: bool,
+    pub failed: bool,
+    pub kind: String,
 }
 
 #[derive(Template)]
@@ -387,8 +424,13 @@ pub struct RuntimeDetailPage {
     pub socket_container: String,
     pub socket_exists: bool,
     pub socket_mode: String,
-    /// 扩展开关只读快照（P1 不提供切换）。
-    pub extensions: Vec<ExtensionView>,
+    /// 扩展清单（单一来源渲染）：勾选状态来自库。
+    pub extensions: Vec<ExtensionOptionView>,
+    pub extensions_href: String,
+    /// 最近一次安装/扩展任务；`has_job` 为 false 时 `job` 是空占位。
+    pub has_job: bool,
+    pub job: RuntimeJobView,
+    pub job_url: String,
     pub logs: String,
     pub logs_error: String,
     pub can_admin: bool,
@@ -403,9 +445,17 @@ pub struct SiteEnvPage {
     pub env: SiteEnvView,
     pub runtimes: Vec<RuntimeRow>,
     pub can_admin: bool,
-    /// 运行环境页新建实例表单回显（避免再次输入）。
-    pub new_name: String,
-    pub new_version: String,
+    /// 新建弹窗：类型/版本目录（来自 `runtime_catalog`）。
+    pub kinds: Vec<RuntimeKindView>,
+    /// 同一目录的 JSON 版本，供弹窗按类型重建版本下拉。
+    pub catalog_json: String,
+    /// 新建弹窗：可选扩展与默认勾选。
+    pub extensions: Vec<ExtensionOptionView>,
+    /// 列表轮询地址。
+    pub jobs_href: String,
+    pub add_href: String,
+    /// 基础环境安装入口（从标题栏移入弹窗）。
+    pub base_install_href: String,
     pub error: String,
     pub notice: String,
 }

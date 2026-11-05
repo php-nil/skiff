@@ -168,6 +168,19 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/add"),
             post(handlers::sites::env_add),
         )
+        // 轮询端点必须早于 `{id}` 动态段注册，避免把 `jobs` 当成运行环境 id。
+        .route(
+            &format!("/{p}/sites/env/jobs"),
+            get(handlers::sites::runtime_jobs),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/job"),
+            get(handlers::sites::runtime_job),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/extensions"),
+            post(handlers::sites::runtime_extensions_save),
+        )
         // ---- 内核「网站 → Nginx」：状态 / 配置 / 日志 / 模块 ----
         .route(&format!("/{p}/sites/nginx"), get(handlers::nginx::index))
         .route(
@@ -205,6 +218,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::sites::runtime_action),
         )
         .route(
+            &format!("/{p}/runtimes/{{id}}/job"),
+            get(handlers::sites::runtime_job),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/extensions"),
+            post(handlers::sites::runtime_extensions_save),
+        )
+        .route(
             &format!("/{p}/sites/settings"),
             get(handlers::sites::env_settings_page).post(handlers::sites::env_settings_save),
         )
@@ -227,6 +248,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/sites/{{domain}}/default"),
             post(handlers::sites::set_default),
+        )
+        .route(
+            &format!("/{p}/sites/{{domain}}/domains"),
+            post(handlers::sites::domains),
         )
         .route(
             &format!("/{p}/sites/{{domain}}/ssl"),

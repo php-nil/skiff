@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}网站列表 · Skiff{% endblock %}
 {% block content %}
+<div class="page-sites">
 <div class="page-head">
   <h1>网站</h1>
   <span class="sub">{{ sites.len() }} 个站点{% if !env.ready %} · 运行环境未就绪{% endif %}</span>
   {% if can_admin %}
-  <a class="btn primary" href="/{{ ctx.prefix }}/sites/new">新建网站</a>
+  <a class="btn primary" href="/{{ ctx.prefix }}/sites/new" data-site-new>新建网站</a>
   {% endif %}
 </div>
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
@@ -29,22 +30,10 @@
 
 <div class="toolbar">
   <form class="search" method="get" action="/{{ ctx.prefix }}/sites" role="search">
-    <input type="search" name="q" value="{{ keyword }}" placeholder="搜索域名、站点目录或运行环境" aria-label="搜索站点">
+    <input type="search" name="q" value="{{ keyword }}" placeholder="搜索域名、别名、站点目录或上游" aria-label="搜索站点">
     <button class="btn" type="submit">搜索</button>
     {% if !keyword.is_empty() %}<a class="ghost" href="/{{ ctx.prefix }}/sites">清除</a>{% endif %}
   </form>
-  <span class="sep"></span>
-  {% if can_admin && !sites.is_empty() %}
-  <form id="sites-batch" method="post" action="/{{ ctx.prefix }}/sites/batch">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <div class="row" style="margin:0">
-      <button class="btn" type="submit" name="action" value="start">批量启动</button>
-      <button class="btn" type="submit" name="action" value="stop">批量停止</button>
-      <button class="btn danger" type="submit" name="action" value="delete"
-              data-confirm="将删除所选站点：整站目录（index/log/ssl/conf）都会被移除，不可撤销。确认继续？">批量删除</button>
-    </div>
-  </form>
-  {% endif %}
 </div>
 
 <section class="panel flush">
@@ -62,7 +51,7 @@
     {% else %}
     <strong>还没有站点</strong>
     <p class="hint">创建后会生成整站目录（index/log/ssl/conf）、nginx vhost 与 PHP 探针，并自动重载 nginx。</p>
-    {% if can_admin %}<a class="btn primary" href="/{{ ctx.prefix }}/sites/new">新建第一个网站</a>{% endif %}
+    {% if can_admin %}<a class="btn primary" href="/{{ ctx.prefix }}/sites/new" data-site-new>新建第一个网站</a>{% endif %}
     {% endif %}
   </div>
   {% else %}
@@ -70,87 +59,75 @@
     <table class="grid compact sites-grid">
       <thead>
         <tr>
-          {% if can_admin %}<th class="col-select" style="width:36px"><span class="muted small">选择</span></th>{% endif %}
           <th>站点</th>
+          <th class="col-type">类型</th>
+          <th class="col-runtime">运行环境</th>
           <th class="col-status">状态</th>
-          <th class="col-php">类型 / 运行环境</th>
-          <th class="col-cert">证书</th>
           <th class="col-actions">操作</th>
         </tr>
       </thead>
       <tbody>
         {% for s in sites %}
         <tr>
-          {% if can_admin %}
-          <td>
-            <input type="checkbox" name="domains" value="{{ s.domain }}" form="sites-batch"
-                   aria-label="选择站点 {{ s.domain }}">
-          </td>
-          {% endif %}
           <td class="site-name-cell">
             <div class="site-name">
               <a href="/{{ ctx.prefix }}/sites/{{ s.domain }}">{{ s.domain }}{% if s.is_default %} <span class="badge ok">默认</span>{% endif %}</a>
+              <span class="alias">{% if s.aliases.len() > 0 %}别名 {{ s.aliases.len() }} 个{% else %}无别名{% endif %}</span>
               <span class="sub mono site-root">{{ s.root_dir }}</span>
-              {% if s.aliases.len() > 0 %}
-              <span class="alias">别名：{{ s.aliases_text }}</span>
-              {% else %}
-              <span class="alias">无别名</span>
-              {% endif %}
             </div>
           </td>
-          <td>
-            {% if s.status == "running" %}
-            <span class="badge ok"><span class="status-dot ok"></span>{{ s.status_label }}</span>
-            {% else if s.status == "stopped" %}
-            <span class="badge"><span class="status-dot"></span>{{ s.status_label }}</span>
+          <td><span class="badge">{{ s.type_label }}</span></td>
+          <td class="cell-runtime">
+            {% if s.site_type == "runtime" %}
+            <span class="mono">{{ s.runtime_label }}</span>
+            {% else if s.site_type == "proxy" %}
+            <span class="mono muted">{{ s.endpoint }}</span>
             {% else %}
-            <span class="badge danger"><span class="status-dot danger"></span>{{ s.status_label }}</span>
+            <span class="muted">静态托管</span>
             {% endif %}
           </td>
-          <td>
-            <span class="badge">{{ s.type_label }}</span>
-            <span class="mono">{{ s.endpoint }}</span>
-          </td>
-          <td>
-            {% if s.https && s.cert_ready %}
-            <span class="badge ok">已启用 HTTPS</span>
-            {% else if s.https %}
-            <span class="badge danger">证书缺失</span>
-            {% else if s.cert_ready %}
-            <span class="badge">证书已上传</span>
-            {% else %}
-            <span class="badge">未配置</span>
-            {% endif %}
+          <td class="cell-status">
+            <span class="badge{% if !s.status_class.is_empty() %} {{ s.status_class }}{% endif %}">
+              <span class="status-dot{% if !s.status_class.is_empty() %} {{ s.status_class }}{% endif %}"></span>{{ s.status_label }}
+            </span>
+            <span class="badge{% if !s.https_class.is_empty() %} {{ s.https_class }}{% endif %}">
+              <span class="status-dot{% if !s.https_class.is_empty() %} {{ s.https_class }}{% endif %}"></span>{{ s.https_label }}
+            </span>
           </td>
           <td class="actions-cell">
             <div class="actions row-actions">
-            <a class="mini" href="/{{ ctx.prefix }}/sites/{{ s.domain }}">详情</a>
-            <a class="ghost" href="/{{ ctx.prefix }}/sites/{{ s.domain }}/logs">日志</a>
-            <a class="ghost" href="http://{{ s.domain }}{% if env.port != 80 %}:{{ env.port }}{% endif %}/" target="_blank" rel="noopener">访问</a>
-            {% if can_admin %}
-            <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/{% if s.status == "running" %}stop{% else %}start{% endif %}" class="inline">
-              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-              <button class="mini" type="submit">{% if s.status == "running" %}停止{% else %}启动{% endif %}</button>
-            </form>
-            {% if s.is_default %}
-            <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/default" class="inline">
-              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-              <input type="hidden" name="enabled" value="0">
-              <button class="mini" type="submit">取消默认</button>
-            </form>
-            {% else if s.status == "running" %}
-            <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/default" class="inline">
-              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-              <input type="hidden" name="enabled" value="1">
-              <button class="mini" type="submit">设为默认</button>
-            </form>
-            {% endif %}
-            <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/delete" class="inline"
-                  data-confirm="删除站点 {{ s.domain }}？将删除 nginx vhost 与站点目录 {{ s.root_dir }}，不可撤销。确认继续？">
-              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-              <button class="mini danger" type="submit">删除</button>
-            </form>
-            {% endif %}
+              <a class="mini" href="/{{ ctx.prefix }}/sites/{{ s.domain }}">详情</a>
+              <details class="row-menu">
+                <summary class="icon-btn" aria-label="更多操作">⋯</summary>
+                <div class="row-menu-list">
+                  <a href="/{{ ctx.prefix }}/sites/{{ s.domain }}/logs">日志</a>
+                  <a href="http://{{ s.domain }}{% if env.port != 80 %}:{{ env.port }}{% endif %}/" target="_blank" rel="noopener">访问</a>
+                  {% if can_admin %}
+                  <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/{% if s.status == "running" %}stop{% else %}start{% endif %}" class="inline">
+                    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                    <button type="submit">{% if s.status == "running" %}停止{% else %}启动{% endif %}</button>
+                  </form>
+                  {% if s.is_default %}
+                  <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/default" class="inline">
+                    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                    <input type="hidden" name="enabled" value="0">
+                    <button type="submit">取消默认</button>
+                  </form>
+                  {% else if s.status == "running" %}
+                  <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/default" class="inline">
+                    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                    <input type="hidden" name="enabled" value="1">
+                    <button type="submit">设为默认</button>
+                  </form>
+                  {% endif %}
+                  <form method="post" action="/{{ ctx.prefix }}/sites/{{ s.domain }}/delete" class="inline"
+                        data-confirm="删除站点 {{ s.domain }}？将删除 nginx vhost 与站点目录 {{ s.root_dir }}，不可撤销。确认继续？">
+                    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                    <button type="submit" class="danger">删除</button>
+                  </form>
+                  {% endif %}
+                </div>
+              </details>
             </div>
           </td>
         </tr>
@@ -160,4 +137,7 @@
   </div>
   {% endif %}
 </section>
+
+{% if can_admin %}{% include "site_new_dialog.html" %}{% endif %}
+</div>
 {% endblock %}

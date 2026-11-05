@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ runtime.kind_label }} {{ runtime.name }} · 运行环境 · Skiff{% endblock %}
 {% block content %}
-<div class="runtime-detail" data-runtime-panel>
+<div class="page-runtimes runtime-detail" data-runtime-panel>
 <div class="page-head">
   <h1 data-runtime-title>{{ runtime.kind_label }} {{ runtime.name }}</h1>
   {% if runtime.is_default %}<span class="tag ok">默认</span>{% endif %}
@@ -10,7 +10,7 @@
 </div>
 
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
-{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 
 {% if runtime.drift %}
 <div class="alert warn">
@@ -32,6 +32,28 @@
 </section>
 {% else %}
 
+{% if has_job %}
+<section class="panel runtime-job" data-runtime-job data-job-url="{{ job_url }}" data-job-state="{{ job.state }}">
+  <div class="panel-head">
+    <h2>{% if job.kind == "extensions" %}扩展变更任务{% else %}安装任务{% endif %}</h2>
+    <span class="tag{% if job.failed %} danger-tag{% else if job.active %} warn-tag{% else %} ok{% endif %}" data-job-state-label>{{ job.state_label }}</span>
+  </div>
+  <p class="muted" data-job-step>{{ job.step }}{% if job.active %} · {{ job.progress }}%{% endif %}</p>
+  <span class="runtime-progress runtime-progress-wide" data-job-progress><span style="width: {{ job.progress }}%"></span></span>
+  {% if job.failed %}
+  <div class="alert" data-job-error>失败原因：{{ job.error }}</div>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <button class="btn" type="submit">重试安装</button>
+  </form>
+  {% else %}
+  <div class="alert" data-job-error hidden></div>
+  {% endif %}
+  <h3>实时日志</h3>
+  <pre class="log runtime-job-log" data-job-log>{{ job.log }}</pre>
+</section>
+{% endif %}
+
 <section class="panel">
   <h2>基础信息</h2>
   <div class="kv">
@@ -44,6 +66,35 @@
     <div><span class="muted">占用站点</span><span>{{ runtime.site_count }}</span></div>
     <div><span class="muted">Docker 页</span><span><a href="{{ runtime.docker_href }}">查看原始容器 / 日志</a></span></div>
   </div>
+</section>
+
+<section class="panel runtime-extensions-panel">
+  <div class="panel-head"><h2>扩展管理</h2></div>
+  <p class="muted">勾选后在容器内执行安装并重载 PHP-FPM；取消勾选会停用相应 ini 并重载。gd / intl / redis 首次编译可能需要数分钟，进度与结果在页面顶部的任务区实时刷新。</p>
+  {% if can_admin %}
+  <form method="post" action="{{ extensions_href }}" data-runtime-extensions data-drawer-post>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input type="hidden" name="ext_form" value="1">
+    <div class="ext-options">
+      {% for e in extensions %}
+      <label class="ext-option">
+        <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.enabled %} checked{% endif %}>
+        <span class="ext-name">{{ e.label }}{% if e.builtin %} <span class="tag">镜像内置</span>{% endif %}</span>
+        <span class="hint">{{ e.description }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="wizard-nav">
+      <button class="btn primary" type="submit"{% if job.active %} disabled{% endif %}>应用扩展变更</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="ext-options">
+    {% for e in extensions %}
+    <div class="ext-option"><span class="ext-name">{{ e.label }}</span><span class="hint">{% if e.enabled %}已启用{% else %}未启用{% endif %}</span></div>
+    {% endfor %}
+  </div>
+  {% endif %}
 </section>
 
 <section class="panel">
@@ -112,14 +163,7 @@
     <div><span class="muted">权限</span><span class="mono">{{ socket_mode }}</span></div>
     <div><span class="muted">说明</span><span class="muted">固定 <code>0660 root:nobody</code>，仅 nginx worker 可连；每实例独立 socket，不占 TCP 端口。</span></div>
   </div>
-  <h3>扩展（只读）</h3>
-  <div class="kv">
-    {% for ext in extensions %}
-    <div><span class="muted">{{ ext.name }}</span><span>{% if ext.enabled %}镜像内置{% else %}未启用{% endif %}</span></div>
-    {% endfor %}
-  </div>
-  <p class="hint">只展示镜像自带扩展，不提供开关。</p>
-  <h3>日志 <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}?tab=logs">刷新</a></h3>
+  <h3>容器日志 <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}?tab=logs">刷新</a></h3>
   {% if !logs_error.is_empty() %}
   <div class="alert">读取日志失败：{{ logs_error }}</div>
   {% else if logs.is_empty() %}
@@ -135,7 +179,7 @@
   <p class="muted">暂无站点绑定该运行环境。</p>
   {% else %}
   <div class="table-wrap">
-    <table>
+    <table class="grid">
       <thead><tr><th>域名</th><th>类型</th><th>状态</th><th></th></tr></thead>
       <tbody>
       {% for s in bound_sites %}
@@ -171,22 +215,22 @@
 
 {% if can_admin %}
 <div class="drawer-foot runtime-actions" data-runtime-actions>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/start" class="inline">
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/start" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">启动</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/stop" class="inline">
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/stop" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">停止</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/restart" class="inline">
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/restart" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重启</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/rebuild" class="inline">
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/rebuild" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重建</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline">
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">同步状态</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline">
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">重新安装</button>
   </form>
 </div>

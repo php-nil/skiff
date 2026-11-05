@@ -662,177 +662,238 @@
     dialog.addEventListener("close", function () { pending = null; });
   }
 
-  // ---- 网站创建向导：三步（类型 → 分支参数 → 确认），就地校验 ----
-  function attachWizard() {
-    var wizard = document.querySelector("[data-wizard]");
-    if (!wizard) return;
-    var panels = Array.prototype.slice.call(wizard.querySelectorAll("[data-wizard-panel]"));
-    var dots = Array.prototype.slice.call(wizard.querySelectorAll("[data-wizard-step]"));
-    if (!panels.length) return;
-    var current = 1;
+  // ---- 新建网站弹窗：单页表单（类型切换 / 域名列表 / 批量粘贴 / 目录自动填） ----
+  function attachSiteDialog() {
+    var dlg = document.querySelector("[data-site-dialog]");
+    if (!dlg || dlg.dataset.bound === "1") return;
+    dlg.dataset.bound = "1";
+    var form = dlg.querySelector("form");
+    var list = dlg.querySelector("[data-domain-list]");
+    var main = dlg.querySelector("[data-domain-main]");
+    var root = dlg.querySelector("[data-root-slug]");
+    if (!form || !list || !main) return;
+    // 目录名默认跟随主域名；用户手动改过之后不再覆盖。
+    var slugTouched = root ? root.value.trim() !== "" : false;
 
-    function form() { return wizard.querySelector("form"); }
-    function field(name) { return form() ? form().querySelector('[name="' + name + '"]') : null; }
-    function errorFor(name) { return wizard.querySelector('[data-error-for="' + name + '"]'); }
+    function open() {
+      if (!dlg.open) {
+        if (typeof dlg.showModal === "function") dlg.showModal();
+        else dlg.setAttribute("open", "");
+      }
+      if (main) main.focus();
+    }
+    function close() {
+      if (typeof dlg.close === "function") dlg.close();
+      else dlg.removeAttribute("open");
+    }
 
+    // 服务端校验失败时会以 open 属性回填；统一升级为模态，保持焦点与遮罩。
+    if (dlg.hasAttribute("open")) { dlg.removeAttribute("open"); open(); }
+
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      if (!(t instanceof Element)) return;
+      var trigger = t.closest("[data-site-new]");
+      if (trigger) { e.preventDefault(); open(); }
+    });
+
+    dlg.addEventListener("click", function (e) {
+      var t = e.target;
+      if (!(t instanceof Element)) return;
+      if (t.closest("[data-site-cancel]")) close();
+      else if (t === dlg) close(); // 点遮罩
+    });
+
+    function errorFor(name) { return dlg.querySelector('[data-error-for="' + name + '"]'); }
     function showError(name, text) {
       var el = errorFor(name);
       if (!el) return;
       if (text) { el.textContent = text; el.removeAttribute("hidden"); }
       else { el.textContent = ""; el.setAttribute("hidden", ""); }
     }
-
+    function clearErrors() {
+      dlg.querySelectorAll("[data-error-for]").forEach(function (el) {
+        el.textContent = "";
+        el.setAttribute("hidden", "");
+      });
+    }
     function validDomain(v) {
       return /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(v) && !v.includes("..");
     }
-
-    function siteType() {
-      var el = form() ? form().querySelector('[name="site_type"]:checked') : null;
-      return el ? el.value : "";
+    function splitNames(raw) {
+      return raw.split(/[\s,，;；]+/).filter(function (x) { return x; });
+    }
+    function aliasInputs() {
+      return Array.prototype.slice.call(list.querySelectorAll('[name="aliases"]'));
     }
 
-    // 第二步按类型只显示对应分支；未选类型时全部隐藏。
+    function siteType() {
+      var el = form.querySelector('[name="site_type"]:checked');
+      return el ? el.value : "";
+    }
+    // 选类型后只展示该类字段；未命中的输入禁用，避免把另一类的字段提交上去。
     function syncType() {
       var type = siteType();
-      var rootWrap = wizard.querySelector('[data-type-only="root"]');
-      if (rootWrap) {
-        // 静态/运行环境都可能自定义目录；反代不展示目录。
-        if (type === "proxy") rootWrap.setAttribute("hidden", "");
-        else rootWrap.removeAttribute("hidden");
+      var rootField = dlg.querySelector("[data-root-field]");
+      if (rootField) {
+        if (type === "proxy") rootField.setAttribute("hidden", "");
+        else rootField.removeAttribute("hidden");
+        if (root) {
+          if (type === "proxy") root.setAttribute("disabled", "");
+          else root.removeAttribute("disabled");
+        }
       }
-      wizard.querySelectorAll("[data-type-panel]").forEach(function (p) {
-        if (p.dataset.typePanel === type) p.removeAttribute("hidden");
+      dlg.querySelectorAll("[data-type-panel]").forEach(function (p) {
+        var match = p.dataset.typePanel === type;
+        if (match) p.removeAttribute("hidden");
         else p.setAttribute("hidden", "");
-        // 未命中的分支禁用输入，避免把另一分支的字段提交上去。
         p.querySelectorAll("input,select,textarea").forEach(function (el) {
-          if (p.dataset.typePanel === type) el.removeAttribute("disabled");
+          if (match) el.removeAttribute("disabled");
           else el.setAttribute("disabled", "");
         });
       });
     }
 
-    function validateStep(step) {
+    function addAliasRow(value) {
+      var row = document.createElement("div");
+      row.className = "domain-row";
+      row.setAttribute("data-alias-row", "");
+      var tag = document.createElement("span");
+      tag.className = "badge";
+      tag.textContent = "别名";
+      var input = document.createElement("input");
+      input.name = "aliases";
+      input.placeholder = "别名域名（可留空）";
+      input.autocomplete = "off";
+      input.setAttribute("aria-label", "别名域名");
+      input.value = value || "";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mini";
+      btn.setAttribute("data-alias-remove", "");
+      btn.textContent = "移除";
+      row.appendChild(tag);
+      row.appendChild(input);
+      row.appendChild(btn);
+      list.appendChild(row);
+      return input;
+    }
+
+    function syncRoot() {
+      if (!root || slugTouched) return;
+      root.value = main.value.trim();
+    }
+
+    main.addEventListener("input", syncRoot);
+    if (root) {
+      root.addEventListener("input", function () { slugTouched = true; });
+    }
+    syncRoot();
+
+    form.addEventListener("change", function (e) {
+      if (e.target instanceof HTMLInputElement && e.target.name === "site_type") syncType();
+    });
+
+    list.addEventListener("click", function (e) {
+      var t = e.target;
+      if (t instanceof Element && t.closest("[data-alias-remove]")) {
+        var row = t.closest("[data-alias-row]");
+        if (row) row.parentNode && row.parentNode.removeChild(row);
+      }
+    });
+
+    var addBtn = dlg.querySelector("[data-alias-add]");
+    if (addBtn) addBtn.addEventListener("click", function () { addAliasRow("").focus(); });
+
+    var bulkToggle = dlg.querySelector("[data-alias-bulk-toggle]");
+    var bulkWrap = dlg.querySelector("[data-alias-bulk]");
+    var bulkInput = dlg.querySelector("[data-alias-bulk] textarea");
+    if (bulkToggle && bulkWrap) {
+      bulkToggle.addEventListener("click", function () {
+        if (bulkWrap.hasAttribute("hidden")) bulkWrap.removeAttribute("hidden");
+        else bulkWrap.setAttribute("hidden", "");
+        if (bulkInput && !bulkWrap.hasAttribute("hidden")) bulkInput.focus();
+      });
+    }
+    var importBtn = dlg.querySelector("[data-alias-import]");
+    if (importBtn && bulkInput) {
+      importBtn.addEventListener("click", function () {
+        var existing = aliasInputs().map(function (i) { return i.value.trim().toLowerCase(); });
+        var mainValue = main.value.trim().toLowerCase();
+        var tokens = splitNames(bulkInput.value);
+        var added = 0;
+        tokens.forEach(function (token) {
+          var key = token.toLowerCase();
+          if (key === mainValue || existing.indexOf(key) !== -1) return;
+          existing.push(key);
+          addAliasRow(token);
+          added += 1;
+        });
+        bulkInput.value = "";
+        if (!added) showError("aliases", "没有可导入的新域名（可能重复或为空）");
+        else showError("aliases", "");
+      });
+    }
+
+    form.addEventListener("submit", function (e) {
+      clearErrors();
       var ok = true;
-      if (step === 1) {
-        if (!siteType()) { ok = false; }
-        var typeErr = errorFor("site_type");
-        if (typeErr) {
-          if (!siteType()) { typeErr.textContent = "请选择网站类型"; typeErr.removeAttribute("hidden"); }
-          else { typeErr.textContent = ""; typeErr.setAttribute("hidden", ""); }
-        }
-      }
-      if (step === 2) {
-        var type = siteType();
-        var domain = field("domain");
-        var aliases = field("aliases");
-        var root = field("root_dir");
-        var dv = domain ? domain.value.trim() : "";
-        if (!dv) { showError("domain", "请填写主域名"); ok = false; }
-        else if (!validDomain(dv)) { showError("domain", "域名只能包含字母、数字、点和中划线，且不能以符号开头或结尾"); ok = false; }
-        else showError("domain", "");
-
-        var av = aliases ? aliases.value.trim() : "";
-        if (av) {
-          var bad = av.split(/[\s,，]+/).filter(function (x) { return x && !validDomain(x); });
-          if (bad.length) { showError("aliases", "别名域名格式不正确：" + bad.join("、")); ok = false; }
-          else showError("aliases", "");
-        } else showError("aliases", "");
-
-        var rv = root ? root.value.trim() : "";
-        if (rv) {
-          if (!rv.startsWith("/") || rv.includes("..")) { showError("root_dir", "站点目录必须是以 / 开头的绝对路径，且不能包含 .."); ok = false; }
-          else if (!/\/sites\/[^\/]+$/.test(rv.replace(/\/+$/, ""))) { showError("root_dir", "站点目录必须是 /www/sites/<域名> 形式的一级目录"); ok = false; }
-          else showError("root_dir", "");
-        } else showError("root_dir", "");
-
-        if (type === "runtime") {
-          var rt = field("runtime_id");
-          var selected = rt ? rt.options[rt.selectedIndex] : null;
-          if (!rt || !rt.value) {
-            showError("runtime_id", "请选择运行环境"); ok = false;
-          } else if (selected && selected.dataset.disabled === "1") {
-            showError("runtime_id", selected.dataset.reason || "该运行环境尚未就绪");
-            ok = false;
-          } else showError("runtime_id", "");
-        } else if (type === "proxy") {
-          var target = field("proxy_target");
-          var tv = target ? target.value.trim() : "";
-          if (!tv) { showError("proxy_target", "请填写上游地址"); ok = false; }
-          else if (!/^http(s)?:\/\/[A-Za-z0-9._-]+(:\d{1,5})?(\/[^\s]*)?$/.test(tv)) {
-            showError("proxy_target", "上游地址必须形如 http://127.0.0.1:8080"); ok = false;
-          } else if (dv && tv.replace(/^http(s)?:\/\//, "").split(":")[0].toLowerCase() === dv.toLowerCase()) {
-            showError("proxy_target", "上游地址不能指向站点自身"); ok = false;
-          } else showError("proxy_target", "");
-        }
-      }
-      return ok;
-    }
-
-    function summary() {
       var type = siteType();
-      var typeText = { runtime: "运行环境", static: "静态网站", proxy: "反向代理" }[type] || "—";
-      var domain = field("domain");
-      var aliases = field("aliases");
-      var root = field("root_dir");
-      var rt = field("runtime_id");
-      var target = field("proxy_target");
-      var ws = form() ? form().querySelector('[name="proxy_websocket"]') : null;
-      var map = {
-        type: typeText,
-        domain: domain ? domain.value.trim() : "",
-        aliases: aliases && aliases.value.trim() ? aliases.value.trim() : "无",
-        root: type === "proxy" ? "不适用（反向代理不落文档根）" : (root && root.value.trim() ? root.value.trim() : "默认站点目录"),
-        runtime: type === "runtime"
-          ? (rt && rt.value ? (rt.options[rt.selectedIndex] ? rt.options[rt.selectedIndex].text : rt.value) : "—")
-          : (type === "proxy" ? "不适用" : "不适用（静态网站不接 PHP）"),
-        target: type === "proxy" && target ? target.value.trim() : "不适用",
-        websocket: type === "proxy" ? (ws && ws.checked ? "开启" : "关闭") : "不适用"
-      };
-      Object.keys(map).forEach(function (k) {
-        var el = wizard.querySelector('[data-summary="' + k + '"]');
-        if (el) el.textContent = map[k] || "—";
-      });
-    }
-
-    function show(step) {
-      current = step;
-      panels.forEach(function (p) {
-        var n = parseInt(p.dataset.wizardPanel, 10);
-        if (n === step) p.removeAttribute("hidden");
-        else p.setAttribute("hidden", "");
-      });
-      if (step >= 2) syncType();
-      dots.forEach(function (d) {
-        var n = parseInt(d.dataset.wizardStep, 10);
-        d.classList.toggle("on", n === step);
-        d.classList.toggle("done", n < step);
-        if (n === step) d.setAttribute("aria-current", "step");
-        else d.removeAttribute("aria-current");
-      });
-      if (step === 3) summary();
-      var first = panels.filter(function (p) { return parseInt(p.dataset.wizardPanel, 10) === step; })[0];
-      if (first) {
-        var focusable = first.querySelector("input,select,textarea,button");
-        if (focusable) focusable.focus();
+      var dv = main.value.trim().toLowerCase();
+      if (!dv) { showError("domain", "请填写主域名"); ok = false; }
+      else if (!validDomain(dv)) {
+        showError("domain", "域名只能包含字母、数字、点和中划线，且不能以符号开头或结尾");
+        ok = false;
       }
-    }
 
-    wizard.addEventListener("click", function (e) {
-      var target = e.target;
-      if (!(target instanceof Element)) return;
-      if (target.closest("[data-wizard-next]")) {
-        if (validateStep(current)) show(Math.min(current + 1, panels.length));
-      } else if (target.closest("[data-wizard-back]")) {
-        show(Math.max(current - 1, 1));
+      var seen = {};
+      if (dv) seen[dv] = true;
+      var bad = [];
+      var dup = "";
+      aliasInputs().forEach(function (input) {
+        splitNames(input.value).forEach(function (token) {
+          var key = token.toLowerCase();
+          if (!validDomain(key)) { bad.push(token); return; }
+          if (seen[key]) { if (!dup) dup = token; return; }
+          seen[key] = true;
+        });
+      });
+      if (bad.length) { showError("aliases", "别名域名格式不正确：" + bad.join("、")); ok = false; }
+      else if (dup) { showError("aliases", "域名重复：" + dup); ok = false; }
+
+      if (type !== "proxy" && root) {
+        if (!slugTouched && !root.value.trim()) root.value = dv;
+        var rv = root.value.trim();
+        if (rv && (rv.includes("/") || rv.includes("..") || /\s/.test(rv) || !/^[A-Za-z0-9._-]+$/.test(rv))) {
+          showError("root_dir", "站点目录只能填目录名，不能包含 / 或 ..");
+          ok = false;
+        }
       }
-    });
-    wizard.addEventListener("change", function (e) {
-      var target = e.target;
-      if (target instanceof HTMLInputElement && target.name === "site_type") syncType();
+
+      if (type === "runtime") {
+        var rt = form.querySelector('[name="runtime_id"]');
+        var selected = rt ? rt.options[rt.selectedIndex] : null;
+        if (!rt || !rt.value) { showError("runtime_id", "请选择运行环境"); ok = false; }
+        else if (selected && selected.dataset.disabled === "1") {
+          showError("runtime_id", selected.dataset.reason || "该运行环境尚未就绪");
+          ok = false;
+        }
+      } else if (type === "proxy") {
+        var target = form.querySelector('[name="proxy_target"]');
+        var tv = target ? target.value.trim() : "";
+        if (!tv) { showError("proxy_target", "请填写上游地址"); ok = false; }
+        else if (!/^http(s)?:\/\/[A-Za-z0-9._-]+(:\d{1,5})?(\/[^\s]*)?$/.test(tv)) {
+          showError("proxy_target", "上游地址必须形如 http://127.0.0.1:8080");
+          ok = false;
+        } else if (dv && tv.replace(/^http(s)?:\/\//, "").split(":")[0].toLowerCase() === dv) {
+          showError("proxy_target", "上游地址不能指向站点自身");
+          ok = false;
+        }
+      }
+      if (!ok) e.preventDefault();
     });
 
-    var start = parseInt(wizard.dataset.wizardStart || "1", 10);
-    show(start >= 1 && start <= panels.length ? start : 1);
+    syncType();
   }
 
   // ---- 运行环境详情抽屉（原生 <dialog>：Esc/遮罩关闭、焦点锁在抽屉内） ----
@@ -843,8 +904,57 @@
     var content = dlg.querySelector("[data-drawer-content]");
     var title = dlg.querySelector("[data-drawer-title]");
 
+    // 抽屉里的安装/扩展任务：轮询 job 端点并实时刷新阶段、进度与日志。
+    function watchJob(scope, refresh) {
+      var panel = scope.querySelector("[data-runtime-job]");
+      if (!panel) return;
+      var url = panel.getAttribute("data-job-url");
+      var stateLabel = panel.querySelector("[data-job-state-label]");
+      var step = panel.querySelector("[data-job-step]");
+      var progress = panel.querySelector("[data-job-progress] span");
+      var error = panel.querySelector("[data-job-error]");
+      var log = panel.querySelector("[data-job-log]");
+      var last = panel.getAttribute("data-job-state");
+      var timer = null;
+      function apply(job) {
+        if (stateLabel) stateLabel.textContent = job.state_label || job.state;
+        if (step) step.textContent = (job.step || "") + (job.active ? " · " + (job.progress || 0) + "%" : "");
+        if (progress) progress.style.width = (job.progress || 0) + "%";
+        if (error) {
+          error.hidden = !job.error;
+          error.textContent = job.error ? "失败原因：" + job.error : "";
+        }
+        if (log) log.textContent = job.log || "";
+        last = job.state;
+      }
+      async function tick() {
+        timer = null;
+        try {
+          var resp = await fetch(url, {
+            headers: { "X-Requested-With": "fetch" },
+            credentials: "same-origin",
+            cache: "no-store"
+          });
+          if (resp.ok) {
+            var job = await resp.json();
+            apply(job);
+            if (job.active) {
+              timer = setTimeout(tick, 1500);
+              return;
+            }
+            // 终态重载一次：渲染失败原因/重试按钮与最新状态。
+            if (last === "done" || last === "failed") refresh();
+            return;
+          }
+        } catch (err) { /* 网络抖动时下一轮再试 */ }
+        timer = setTimeout(tick, 2500);
+      }
+      if (last === "queued" || last === "running") timer = setTimeout(tick, 1200);
+    }
+
     async function open(url) {
       if (!content) return;
+      dlg.dataset.currentUrl = url;
       content.innerHTML = '<p class="muted">加载中…</p>';
       try {
         var resp = await fetch(url, { headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
@@ -856,6 +966,7 @@
         content.innerHTML = panel.outerHTML;
         var heading = panel.querySelector("[data-runtime-title]");
         if (title && heading) title.textContent = heading.textContent.trim();
+        watchJob(content, function () { if (dlg.dataset.currentUrl) open(dlg.dataset.currentUrl); });
         var focusable = content.querySelector("button,input,select,textarea,a[href]");
         if (focusable) focusable.focus();
       } catch (err) {
@@ -874,11 +985,147 @@
       }
       if (target.closest("[data-drawer-close]")) dlg.close();
     });
+
+    // 抽屉内的启停/重建/扩展表单：POST 后重新拉取抽屉内容，不整页跳转。
+    dlg.addEventListener("submit", function (e) {
+      var form = e.target;
+      if (!(form instanceof HTMLFormElement) || !form.hasAttribute("data-drawer-post")) return;
+      if ((form.getAttribute("action") || "").indexOf("/action/delete") >= 0) return;
+      e.preventDefault();
+      var actionUrl = dlg.dataset.currentUrl || form.getAttribute("action");
+      fetch(form.getAttribute("action"), {
+        method: "POST",
+        body: new FormData(form),
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "fetch" }
+      }).then(function () {
+        return open(actionUrl);
+      }).catch(function (err) {
+        if (content) content.innerHTML = '<div class="alert">提交失败：' + String(err.message || err) + "</div>";
+      });
+    });
+
     // 点遮罩关闭：dialog 的点击目标只有自身时即落在 backdrop 上。
     dlg.addEventListener("click", function (e) {
       if (e.target === dlg) dlg.close();
     });
   }
+
+  // ---- 新建运行环境弹窗：类型 → 版本下拉 → 默认实例名；P2 类型只登记 ----
+  function attachRuntimeCreate() {
+    var dlg = document.querySelector("[data-runtime-new-dialog]");
+    if (!dlg || dlg.dataset.bound === "1") return;
+    dlg.dataset.bound = "1";
+    var catalogEl = document.querySelector("[data-runtime-catalog]");
+    var catalog = [];
+    try { catalog = JSON.parse(catalogEl ? catalogEl.textContent : "[]") || []; } catch (e) { catalog = []; }
+    var kindSel = dlg.querySelector("[data-runtime-kind]");
+    var verSel = dlg.querySelector("[data-runtime-version]");
+    var nameInput = dlg.querySelector("[data-runtime-name]");
+    var extField = dlg.querySelector(".exts-box");
+    var p2Note = dlg.querySelector("[data-runtime-p2-note]");
+    var submit = dlg.querySelector('form[action] button[type="submit"]');
+    var nameTouched = false;
+
+    function defOf(key) {
+      for (var i = 0; i < catalog.length; i++) if (catalog[i].key === key) return catalog[i];
+      return catalog[0];
+    }
+    function rebuild(keepName) {
+      var def = defOf(kindSel ? kindSel.value : "");
+      if (!def || !verSel) return;
+      verSel.innerHTML = "";
+      (def.versions || []).forEach(function (v) {
+        var opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = v;
+        verSel.appendChild(opt);
+      });
+      var implemented = !!def.implemented;
+      if (extField) extField.hidden = !implemented;
+      if (p2Note) p2Note.hidden = implemented;
+      if (submit) submit.textContent = implemented ? "创建并后台安装" : "登记运行环境";
+      if (!keepName && nameInput) nameInput.value = def.key + "-" + (def.versions && def.versions[0] || "");
+    }
+    if (kindSel) kindSel.addEventListener("change", function () { nameTouched = false; rebuild(false); });
+    if (verSel) verSel.addEventListener("change", function () {
+      if (nameTouched || !nameInput || !kindSel) return;
+      nameInput.value = kindSel.value + "-" + verSel.value;
+    });
+    if (nameInput) nameInput.addEventListener("input", function () { nameTouched = true; });
+    document.addEventListener("click", function (e) {
+      if (!(e.target instanceof Element)) return;
+      if (e.target.closest("[data-runtime-new]")) {
+        e.preventDefault();
+        rebuild(false);
+        if (typeof dlg.showModal === "function") dlg.showModal();
+      }
+      if (e.target.closest("[data-runtime-new-close]")) dlg.close();
+    });
+    rebuild(true);
+  }
+
+  // ---- 列表任务轮询：安装/扩展执行中更新状态与进度，结束后回到真实状态 ----
+  function attachRuntimeJobs() {
+    var root = document.querySelector("[data-runtime-jobs-url]");
+    if (!root || root.dataset.bound === "1") return;
+    root.dataset.bound = "1";
+    var url = root.getAttribute("data-runtime-jobs-url");
+    var timer = null;
+    var sawActive = false;
+
+    function update(job) {
+      var row = document.querySelector('[data-runtime-row="' + String(job.id).replace(/"/g, '\\"') + '"]');
+      if (!row) return false;
+      var label = row.querySelector("[data-runtime-state-label]");
+      var progress = row.querySelector("[data-runtime-progress]");
+      var bar = progress ? progress.querySelector("span") : null;
+      var error = row.querySelector("[data-runtime-job-error]");
+      if (label) {
+        if (job.active) label.textContent = (job.state_label || "执行中") + "：" + (job.step || "");
+        else if (job.failed) label.textContent = "安装失败";
+        else label.textContent = "已完成";
+      }
+      if (progress && bar) {
+        progress.hidden = !job.active;
+        bar.style.width = (job.progress || 0) + "%";
+      }
+      if (error) {
+        error.hidden = !job.error;
+        error.textContent = job.error || "";
+      }
+      return !!job.active;
+    }
+
+    async function tick() {
+      timer = null;
+      try {
+        var resp = await fetch(url, {
+          headers: { "X-Requested-With": "fetch" },
+          credentials: "same-origin",
+          cache: "no-store"
+        });
+        if (!resp.ok) return;
+        var data = await resp.json();
+        var active = false;
+        (data.jobs || []).forEach(function (job) { if (update(job)) active = true; });
+        if (active) {
+          sawActive = true;
+          timer = setTimeout(tick, 2000);
+        } else if (sawActive) {
+          // 全部收尾：抽屉关着就重载列表拿到真实的运行状态与扩展集合。
+          var drawer = document.querySelector("[data-runtime-drawer]");
+          sawActive = false;
+          if (!drawer || !drawer.open) location.reload();
+        }
+      } catch (err) {
+        timer = setTimeout(tick, 3000);
+      }
+    }
+    var busy = root.querySelector("[data-runtime-progress]:not([hidden])");
+    if (busy) timer = setTimeout(tick, 800);
+  }
+
 
   // ---- 服务端提示转为轻量 toast（不阻塞页面） ----
   function attachToasts() {
@@ -957,8 +1204,10 @@
     attachTheme();
     attachConfirm();
     ensureIcons();
-    attachWizard();
+    attachSiteDialog();
     attachRuntimeDrawer();
+    attachRuntimeCreate();
+    attachRuntimeJobs();
     attachNginxTabs();
     attachToasts();
   }

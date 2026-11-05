@@ -1,0 +1,118 @@
+<dialog class="modal site-new-dialog" data-site-dialog{% if form_open %} open{% endif %} aria-labelledby="site-new-title">
+  <form method="post" action="/{{ ctx.prefix }}/sites/create" novalidate data-site-form>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="modal-head">
+      <h2 id="site-new-title">新建网站</h2>
+      <span class="hint">选类型、填参数，一次提交</span>
+      <button type="button" class="icon-btn" data-site-cancel aria-label="关闭">×</button>
+    </div>
+
+    <div class="modal-body">
+      {% if !form_error.is_empty() %}<div class="alert" data-site-server-error>{{ form_error }}</div>{% endif %}
+      {% if !env.ready %}
+      <div class="alert warn">
+        运行环境未完全就绪：静态网站与反向代理只依赖 nginx，运行环境站还需要 PHP-FPM 运行中。
+        <a href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+      </div>
+      {% endif %}
+
+      <div class="field-block">
+        <span class="field-label">网站类型</span>
+        <div class="segmented" role="radiogroup" aria-label="网站类型">
+          <label class="seg">
+            <input type="radio" name="site_type" value="runtime"
+                   {% if form.site_type == "runtime" %}checked{% endif %}>
+            <span><strong>运行环境</strong><small>PHP-FPM 站点</small></span>
+          </label>
+          <label class="seg">
+            <input type="radio" name="site_type" value="static"
+                   {% if form.site_type == "static" %}checked{% endif %}>
+            <span><strong>静态网站</strong><small>nginx 直接发文件</small></span>
+          </label>
+          <label class="seg">
+            <input type="radio" name="site_type" value="proxy"
+                   {% if form.site_type == "proxy" %}checked{% endif %}>
+            <span><strong>反向代理</strong><small>转发到已有服务</small></span>
+          </label>
+        </div>
+        <p class="field-error" data-error-for="site_type" hidden></p>
+      </div>
+
+      <div class="field-block">
+        <span class="field-label">域名 <small class="muted">主域名必填，别名可选</small></span>
+        <div class="domain-list" data-domain-list>
+          <div class="domain-row domain-row-main">
+            <span class="badge info">主域名</span>
+            <input name="domain" value="{{ form.domain }}" placeholder="example.com"
+                   autocomplete="off" aria-label="主域名" data-domain-main
+                   {% if form_error_field == "domain" %}data-has-error{% endif %}>
+          </div>
+          {% for alias in form.aliases %}
+          <div class="domain-row" data-alias-row>
+            <span class="badge">别名</span>
+            <input name="aliases" value="{{ alias }}" placeholder="别名域名（可留空）"
+                   autocomplete="off" aria-label="别名域名">
+            <button type="button" class="mini" data-alias-remove>移除</button>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="alias-tools">
+          <button type="button" class="mini" data-alias-add>+ 新增别名</button>
+          <button type="button" class="mini" data-alias-bulk-toggle>批量粘贴</button>
+        </div>
+        <div class="alias-bulk" data-alias-bulk hidden>
+          <textarea name="aliases_bulk" rows="3" placeholder="每行一个域名，也可用逗号或空格分隔" data-alias-bulk>{{ form.aliases_bulk }}</textarea>
+          <button type="button" class="mini" data-alias-import>解析并加入列表</button>
+        </div>
+        <p class="field-error" data-error-for="aliases"{% if form_error_field == "aliases" %} data-has-error{% endif %} hidden></p>
+      </div>
+
+      <div class="field-block" data-root-field>
+        <span class="field-label">站点目录</span>
+        <div class="input-prefix">
+          <span class="prefix mono">{{ sites_prefix }}</span>
+          <input name="root_dir" value="{{ form.root_dir }}" placeholder="example.com"
+                 autocomplete="off" aria-label="站点目录名" data-root-slug
+                 {% if form_error_field == "root_dir" %}data-has-error{% endif %}>
+        </div>
+        <p class="hint">默认与主域名同名，只需填目录名，前缀自动带上。</p>
+        <p class="field-error" data-error-for="root_dir"{% if form_error_field == "root_dir" %} data-has-error{% endif %} hidden></p>
+      </div>
+
+      <div class="field-block" data-type-panel="runtime">
+        <label class="field-label" for="site-runtime">运行环境</label>
+        <select id="site-runtime" name="runtime_id">
+          {% for r in runtimes %}
+          <option value="{{ r.id }}"
+                  {% if r.disabled %}disabled data-disabled="1" data-reason="{{ r.disabled_reason }}"{% endif %}
+                  {% if form.runtime_id == r.id %}selected{% endif %}>{{ r.label }}{% if r.disabled %}（{{ r.disabled_reason }}）{% endif %}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">只列出已就绪的版本；未安装请先到 <a href="/{{ ctx.prefix }}/sites/env">运行环境页</a> 安装。Node.js / Go 为 P2 预留，禁用态不代表可用。</p>
+        <p class="field-error" data-error-for="runtime_id" hidden></p>
+      </div>
+
+      <div class="field-block" data-type-panel="static" hidden>
+        <p class="hint">创建后把静态文件放进站点目录的 <code>index/</code>；vhost 直接 <code>root</code> 到该目录，不接 PHP。</p>
+      </div>
+
+      <div class="field-block" data-type-panel="proxy" hidden>
+        <label class="field-label" for="site-proxy-target">上游地址</label>
+        <input id="site-proxy-target" name="proxy_target" value="{{ form.proxy_target }}"
+               placeholder="http://127.0.0.1:8080" autocomplete="off"
+               {% if form_error_field == "proxy_target" %}data-has-error{% endif %}>
+        <p class="hint">必须是 <code>http://</code> 或 <code>https://</code> 开头，可带端口与路径；不能指向站点自身。</p>
+        <label class="check-line">
+          <input type="checkbox" name="proxy_websocket" value="1" {% if form.proxy_websocket %}checked{% endif %}>
+          <span>开启 WebSocket<br><small>追加 Upgrade / Connection 头与长读超时。</small></span>
+        </label>
+        <p class="field-error" data-error-for="proxy_target"{% if form_error_field == "proxy_target" %} data-has-error{% endif %} hidden></p>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-site-cancel>取消</button>
+      <button type="submit" class="btn primary">创建网站</button>
+    </div>
+  </form>
+</dialog>

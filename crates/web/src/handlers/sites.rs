@@ -16,9 +16,10 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::{
-    BoundSiteView, DirEntryView, DirListingView, PhpConfigView, RuntimeDetailPage,
-    RuntimeOptionView, RuntimeRow, SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView,
-    SiteLogsPage, SiteNewForm, SiteNewPage, SiteSettingsPage, SiteTlsView, SiteView, SitesPage,
+    BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, PhpConfigView,
+    RuntimeDetailPage, RuntimeJobView, RuntimeKindView, RuntimeOptionView, RuntimeRow,
+    SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView, SiteLogsPage, SiteNewForm,
+    SiteSettingsPage, SiteTlsView, SiteView, SitesPage,
 };
 use crate::util::{encode_uri_component, form_first, human_size, parse_form};
 
@@ -73,7 +74,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         skiff_store::KIND_GO => "Go",
         _ => "PHP",
     };
-    let endpoint = match v.runtime.kind.as_str() {
+    let endpoint_full = match v.runtime.kind.as_str() {
         skiff_store::KIND_PHP => {
             if v.socket_host.is_empty() {
                 "socket 未登记".to_string()
@@ -83,6 +84,16 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         }
         _ => "端口：P2 按站点独立分配".to_string(),
     };
+    let endpoint_short = if v.runtime.kind == skiff_store::KIND_PHP {
+        "sock".to_string()
+    } else {
+        "P2".to_string()
+    };
+    let job = v.job.clone();
+    let job_active = job.as_ref().is_some_and(|j| j.active());
+    let job_failed = job
+        .as_ref()
+        .is_some_and(|j| j.state == skiff_app::sites::RuntimeJobState::Failed);
     RuntimeRow {
         id: v.runtime.id.clone(),
         kind_label: kind_label.into(),
@@ -90,12 +101,17 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         container_name: v.container_name.clone(),
         version: v.runtime.version.clone(),
         image: v.runtime.image.clone(),
-        state_label: if v.drift {
+        state_label: if let Some(j) = job.as_ref().filter(|j| j.active()) {
+            // 安装中优先显示任务阶段，避免「未安装」与正在拉镜像互相矛盾。
+            format!("{}：{}", j.state.label(), j.step)
+        } else if v.drift {
             "状态漂移".to_string()
+        } else if job_failed && v.container_state != "running" {
+            "安装失败".to_string()
         } else {
             state_label(&v.effective_state).to_string()
         },
-        state_class: if v.drift {
+        state_class: if job_active || v.drift || job_failed {
             "warn".to_string()
         } else {
             state_class(&v.effective_state).to_string()
@@ -103,11 +119,10 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         drift: v.drift,
         site_count: v.site_count,
         container_state: v.container_state.clone(),
-        endpoint,
+        endpoint_short,
+        endpoint_full,
         implemented: v.implemented,
         is_default: v.runtime.is_default,
-        actionable: v.implemented && v.container_state != "missing",
-        running: v.effective_state == "running",
         detail_href: format!(
             "/{prefix}/sites/env/{}",
             encode_uri_component(&v.runtime.id)
@@ -116,7 +131,41 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
             "/{prefix}/containers/{}",
             encode_uri_component(&v.container_name)
         ),
+        job_progress: job.as_ref().map(|j| j.progress).unwrap_or(0),
+        job_error: job.as_ref().map(|j| j.error.clone()).unwrap_or_default(),
+        job_active,
     }
+}
+
+fn job_view(job: &skiff_app::sites::RuntimeJob) -> RuntimeJobView {
+    RuntimeJobView {
+        state: job.state.as_str().to_string(),
+        state_label: job.state.label().to_string(),
+        step: job.step.clone(),
+        progress: job.progress,
+        error: job.error.clone(),
+        log: job.log_text(),
+        active: job.active(),
+        failed: job.state == skiff_app::sites::RuntimeJobState::Failed,
+        kind: job.kind.clone(),
+    }
+}
+
+fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
+    serde_json::json!({
+        "id": job.runtime_id,
+        "state": job.state.as_str(),
+        "state_label": job.state.label(),
+        "step": job.step,
+        "progress": job.progress,
+        "error": job.error,
+        "log": job.log_text(),
+        "active": job.active(),
+        "failed": job.state == skiff_app::sites::RuntimeJobState::Failed,
+        "kind": job.kind,
+        "started_at": job.started_at,
+        "updated_at": job.updated_at,
+    })
 }
 
 fn site_view(
@@ -170,6 +219,26 @@ fn site_view(
             _ => "异常",
         }
         .into(),
+        status_class: match s.status.as_str() {
+            "running" => "ok",
+            "stopped" => "",
+            _ => "danger",
+        }
+        .into(),
+        https_label: match (s.https, cert_ready) {
+            (true, true) => "已启用 HTTPS",
+            (true, false) => "证书缺失",
+            (false, true) => "证书已上传",
+            (false, false) => "未配置 HTTPS",
+        }
+        .into(),
+        https_class: match (s.https, cert_ready) {
+            (true, true) => "ok",
+            (true, false) => "danger",
+            (false, true) => "info",
+            (false, false) => "",
+        }
+        .into(),
         created: chrono::DateTime::from_timestamp(s.created_at, 0)
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default(),
@@ -178,7 +247,6 @@ fn site_view(
         aliases,
         https: s.https,
         force_https: s.force_https,
-        cert_ready,
     }
 }
 
@@ -204,6 +272,16 @@ fn map_err(e: SiteError) -> AppError {
     }
 }
 
+/// 可回填到弹窗的用户侧错误文案；内部错误返回 `None`，交给错误页。
+fn site_error_text(e: &SiteError) -> Option<String> {
+    match e {
+        SiteError::BadRequest(m) | SiteError::Conflict(m) | SiteError::Unavailable(m) => {
+            Some(m.clone())
+        }
+        SiteError::Internal(_) => None,
+    }
+}
+
 pub(crate) fn require_admin(user: &crate::state::CurrentUser) -> Result<(), AppError> {
     handlers::require_permission(user, skiff_model::Permission::Admin)
 }
@@ -212,6 +290,20 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let open = q.contains_key("new") || q.contains_key("type");
+    render_sites(&state, &user, &q, default_new_form(&q), String::new(), open).await
+}
+
+/// 列表页与新建弹窗共用一次渲染：校验失败时把表单值与错误一并带回，
+/// 弹窗保持展开，避免「错误页 + 重新填写」的往返。
+async fn render_sites(
+    state: &Arc<AppState>,
+    user: &crate::state::CurrentUser,
+    q: &HashMap<String, String>,
+    form: SiteNewForm,
+    form_error: String,
+    form_open: bool,
 ) -> Result<Response, AppError> {
     let env = state.site_env_status().await;
     let sites = state.db().list_sites()?;
@@ -241,30 +333,71 @@ pub async fn list(
         .collect();
     let notice = q.get("notice").cloned().unwrap_or_default();
     let error = q.get("error").cloned().unwrap_or_default();
+    let runtime_views = state.runtime_views().await.unwrap_or_default();
+    let settings = state.site_settings();
     handlers::render(SitesPage {
-        ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
+        ctx: handlers::page_ctx(state, user, "core/sites/list"),
         sites: views,
         env: env_view(&env),
         can_admin: user.can(skiff_model::Permission::Admin),
         error,
         notice,
         keyword,
+        form,
+        runtimes: runtime_options(&runtime_views),
+        form_open,
+        form_error: form_error.clone(),
+        form_error_field: error_field(&form_error).to_string(),
+        sites_prefix: format!("{}/", settings.container_sites_dir()),
     })
 }
 
-fn split_aliases(raw: &str) -> Vec<String> {
-    raw.split(|c: char| c == ',' || c == '，' || c.is_whitespace())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToString::to_string)
-        .collect()
+/// 弹窗默认值：类型默认运行环境，PHP 版本预选已安装项；目录留空由服务端按主域名补全。
+fn default_new_form(q: &HashMap<String, String>) -> SiteNewForm {
+    let requested = q.get("type").map(String::as_str).unwrap_or_default();
+    let site_type = match requested {
+        TYPE_STATIC | TYPE_PROXY => requested.to_string(),
+        _ => TYPE_RUNTIME.to_string(),
+    };
+    SiteNewForm {
+        site_type,
+        runtime_id: "php-8.5".into(),
+        ..Default::default()
+    }
+}
+
+/// 服务端错误落到具体字段，前端只做高亮，不重复解释前缀规则。
+fn error_field(error: &str) -> &'static str {
+    if error.contains("别名") || error.contains("域名重复") || error.contains("域名已被")
+    {
+        "aliases"
+    } else if error.contains("上游") {
+        "proxy_target"
+    } else if error.contains("运行环境") || error.contains("FPM") || error.contains("socket") {
+        "runtime_id"
+    } else if error.contains("站点目录") || error.contains("目录") {
+        "root_dir"
+    } else if error.contains("域名") || error.contains("站点已存在") {
+        "domain"
+    } else {
+        ""
+    }
 }
 
 fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
     SiteNewForm {
         site_type: form_first(form, "site_type").trim().to_string(),
         domain: form_first(form, "domain").trim().to_string(),
-        aliases: form_first(form, "aliases").trim().to_string(),
+        aliases: form
+            .get("aliases")
+            .map(|rows| {
+                rows.iter()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        aliases_bulk: form_first(form, "aliases_bulk").trim().to_string(),
         root_dir: form_first(form, "root_dir").trim().to_string(),
         runtime_id: form_first(form, "runtime_id").trim().to_string(),
         proxy_target: form_first(form, "proxy_target").trim().to_string(),
@@ -273,6 +406,34 @@ fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
             "1" | "on" | "true" | "yes"
         ),
     }
+}
+
+/// 用户只填目录名；这里容错剥掉 `/www/sites/` 或宿主机前缀，避免把整段路径当目录名。
+fn root_slug(raw: &str, sites_dir: &FsPath) -> Option<String> {
+    let value = raw.trim().replace('\\', "/");
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.trim_start_matches('/').to_string();
+    for prefix in ["www/sites/", "sites/"] {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            return Some(rest.trim_start_matches('/').to_string());
+        }
+    }
+    let host = sites_dir.to_string_lossy().replace('\\', "/");
+    let host = host.trim_start_matches('/');
+    if let Some(rest) = value.strip_prefix(&format!("{host}/")) {
+        return Some(rest.to_string());
+    }
+    Some(value)
+}
+
+fn collect_aliases(form: &HashMap<String, Vec<String>>) -> Vec<String> {
+    let mut out = form.get("aliases").cloned().unwrap_or_default();
+    if let Some(bulk) = form.get("aliases_bulk") {
+        out.extend(bulk.iter().cloned());
+    }
+    out
 }
 
 /// 运行环境选项：P1 只放行 PHP；Node/Go 以禁用态出现并说明 P2。
@@ -322,72 +483,21 @@ fn runtime_options(views: &[skiff_app::sites::RuntimeView]) -> Vec<RuntimeOption
     out
 }
 
-fn new_page(
-    state: &AppState,
-    user: &crate::state::CurrentUser,
-    env: &SiteEnvStatus,
-    runtimes: Vec<RuntimeOptionView>,
-    form: SiteNewForm,
-    error: String,
-) -> Result<Response, AppError> {
-    let error_field = if error.contains("别名") {
-        "aliases"
-    } else if error.contains("根目录") {
-        "root_dir"
-    } else if error.contains("上游") {
-        "proxy_target"
-    } else if error.contains("运行环境") || error.contains("socket") {
-        "runtime_id"
-    } else if error.contains("域名") || error.contains("站点已存在") {
-        "domain"
-    } else {
-        ""
-    };
-    let wizard_start = if form.site_type.is_empty() {
-        1
-    } else if !error.is_empty() {
-        // 所有创建校验都发生在第二步（类型已选定）。
-        2
-    } else {
-        3
-    };
-    handlers::render(SiteNewPage {
-        ctx: handlers::page_ctx(state, user, "core/sites/list"),
-        env: env_view(env),
-        form,
-        runtimes,
-        error,
-        error_field: error_field.to_string(),
-        wizard_start,
-    })
-}
-
+/// 新建入口不再单独成页：跳到列表并直接展开弹窗（带类型时预选）。
 pub async fn new_page_get(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
-    let env = state.site_env_status().await;
-    let views = state.runtime_views().await.unwrap_or_default();
-    let requested = q.get("type").cloned().unwrap_or_default();
-    let form = SiteNewForm {
-        site_type: if matches!(requested.as_str(), TYPE_RUNTIME | TYPE_STATIC | TYPE_PROXY) {
-            requested
-        } else {
-            String::new()
-        },
-        runtime_id: "php-8.5".to_string(),
-        ..Default::default()
-    };
-    new_page(
-        &state,
-        &user,
-        &env,
-        runtime_options(&views),
-        form,
-        String::new(),
-    )
+    let prefix = &state.cfg.entry_prefix;
+    let mut url = format!("/{prefix}/sites?new=1");
+    if let Some(t) = q.get("type") {
+        if matches!(t.as_str(), TYPE_RUNTIME | TYPE_STATIC | TYPE_PROXY) {
+            url.push_str(&format!("&type={t}"));
+        }
+    }
+    Ok(handlers::redirect(url))
 }
 
 pub async fn create(
@@ -400,14 +510,29 @@ pub async fn create(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let values = new_form(&form);
+    let settings = state.site_settings();
+    let prepared = skiff_app::sites::validate_domain(&values.domain).and_then(|domain| {
+        let slug = root_slug(&values.root_dir, &settings.sites_dir);
+        skiff_app::sites::site_root_for(&settings.sites_dir, &domain, slug.as_deref())
+            .map(|root| (domain, root))
+    });
+    let (domain, root_dir) = match prepared {
+        Ok(v) => v,
+        Err(e) => match site_error_text(&e) {
+            Some(message) => {
+                return render_sites(&state, &user, &HashMap::new(), values, message, true).await
+            }
+            None => return Err(map_err(e)),
+        },
+    };
     let req = NewSite {
-        domain: values.domain.clone(),
-        root_dir: Some(values.root_dir.clone()).filter(|v| !v.is_empty()),
+        domain,
+        root_dir: Some(root_dir.display().to_string()),
         site_type: values.site_type.clone(),
         runtime_id: Some(values.runtime_id.clone()).filter(|v| !v.is_empty()),
         proxy_target: values.proxy_target.clone(),
         proxy_websocket: values.proxy_websocket,
-        aliases: split_aliases(&values.aliases),
+        aliases: collect_aliases(&form),
     };
     match state.create_site(req).await {
         Ok(result) => {
@@ -428,24 +553,40 @@ pub async fn create(
             )))
         }
         Err(e) => {
-            let message = match &e {
-                SiteError::BadRequest(m) | SiteError::Conflict(m) | SiteError::Unavailable(m) => {
-                    m.clone()
-                }
-                SiteError::Internal(_) => return Err(map_err(e)),
+            let message = match site_error_text(&e) {
+                Some(m) => m,
+                None => return Err(map_err(e)),
             };
-            let env = state.site_env_status().await;
-            let views = state.runtime_views().await.unwrap_or_default();
-            new_page(
-                &state,
-                &user,
-                &env,
-                runtime_options(&views),
-                values,
-                message,
-            )
+            // 校验失败仍留在列表页，弹窗保持展开并回填，不做二次确认。
+            render_sites(&state, &user, &HashMap::new(), values, message, true).await
         }
     }
+}
+
+fn runtime_kind_views() -> Vec<RuntimeKindView> {
+    skiff_app::runtime_catalog::RUNTIME_KINDS
+        .iter()
+        .map(|k| RuntimeKindView {
+            key: k.kind.to_string(),
+            label: k.label.to_string(),
+            versions: k.versions.iter().map(|v| v.to_string()).collect(),
+            implemented: skiff_app::runtime_catalog::is_implemented(k.kind),
+        })
+        .collect()
+}
+
+fn extension_options(enabled: &[String]) -> Vec<ExtensionOptionView> {
+    skiff_app::runtime_catalog::PHP_EXTENSIONS
+        .iter()
+        .map(|e| ExtensionOptionView {
+            key: e.key.to_string(),
+            label: e.label.to_string(),
+            description: e.description.to_string(),
+            enabled: enabled.iter().any(|k| k == e.key),
+            default_on: e.default_on,
+            builtin: e.builtin,
+        })
+        .collect()
 }
 
 pub async fn env_page(
@@ -457,13 +598,33 @@ pub async fn env_page(
     let env = state.site_env_status().await;
     let views = state.runtime_views().await.unwrap_or_default();
     let runtimes = views.iter().map(|v| runtime_row(&state, v)).collect();
+    let prefix = &state.cfg.entry_prefix;
+    let kinds = runtime_kind_views();
+    let catalog_json = serde_json::to_string(
+        &kinds
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "key": k.key,
+                    "label": k.label,
+                    "versions": k.versions,
+                    "implemented": k.implemented,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
     handlers::render(SiteEnvPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
         env: env_view(&env),
         runtimes,
         can_admin: user.can(skiff_model::Permission::Admin),
-        new_name: q.get("new_name").cloned().unwrap_or_default(),
-        new_version: q.get("new_version").cloned().unwrap_or_default(),
+        kinds,
+        catalog_json,
+        extensions: extension_options(&skiff_app::runtime_catalog::default_extensions()),
+        jobs_href: format!("/{prefix}/sites/env/jobs"),
+        add_href: format!("/{prefix}/sites/env/add"),
+        base_install_href: format!("/{prefix}/sites/env/install"),
         error: q.get("error").cloned().unwrap_or_default(),
         notice: q.get("notice").cloned().unwrap_or_default(),
     })
@@ -501,26 +662,46 @@ pub async fn env_add(
     require_admin(&user)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let kind = form_first(&form, "kind").trim().to_string();
+    let kind = if kind.is_empty() {
+        skiff_store::KIND_PHP.to_string()
+    } else {
+        kind
+    };
     let name = form_first(&form, "name");
     let version = form_first(&form, "version");
+    // 弹窗会带 `ext_form=1`（即使一个都没勾）；没有该标记的旧表单/无 JS 场景
+    // 回落到目录默认扩展，避免「没提交 ext」被误判成「全部取消」。
+    let selected: Vec<String> = if form.contains_key("ext_form") {
+        form.get("ext").cloned().unwrap_or_default()
+    } else {
+        skiff_app::runtime_catalog::default_extensions()
+    };
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.add_php_runtime(&name, &version).await {
-        Ok(v) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                "sites.env.add",
-                &v.runtime.id,
-                "ok",
-                "",
-            );
+    match state.add_runtime(&kind, &name, &version, &selected).await {
+        Ok((rt, started)) => {
+            let _ = state
+                .db()
+                .audit(&user.user.username, &ip, "sites.env.add", &rt.id, "ok", "");
+            let message = if started {
+                format!(
+                    "已提交 {} {} 安装任务（实例 {}）；列表会实时显示进度，打开详情抽屉可看安装日志",
+                    skiff_app::runtime_catalog::kind_label(&rt.kind),
+                    rt.version,
+                    rt.name
+                )
+            } else {
+                format!(
+                    "已登记 {} {}（实例 {}）；P2 预留类型暂不安装容器",
+                    skiff_app::runtime_catalog::kind_label(&rt.kind),
+                    rt.version,
+                    rt.name
+                )
+            };
             Ok(handlers::redirect(format!(
                 "/{prefix}/sites/env?notice={}",
-                encode_uri_component(&format!(
-                    "已安装 PHP {}（实例 {}）",
-                    v.runtime.version, v.runtime.name
-                ))
+                encode_uri_component(&message)
             )))
         }
         Err(e) => {
@@ -696,6 +877,81 @@ pub async fn set_default(
     );
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!("/{prefix}/sites")))
+}
+
+/// 站点详情「域名」标签：新增/删除别名，落库后重建 vhost 并 reload。
+pub async fn domains(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let action = form_first(&form, "action").trim().to_string();
+    let alias = form_first(&form, "alias").trim().to_string();
+    let result = match action.as_str() {
+        "add" => state.add_site_alias(&domain, &alias).await,
+        "remove" => state.remove_site_alias(&domain, &alias).await,
+        _ => Err(SiteError::BadRequest(format!("未知域名操作：{action}"))),
+    };
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    let target = format!(
+        "/{prefix}/sites/{}?tab=domains",
+        encode_uri_component(&domain)
+    );
+    match result {
+        Ok(name) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                if action == "add" {
+                    "sites.domains.add"
+                } else {
+                    "sites.domains.remove"
+                },
+                &domain,
+                "ok",
+                &name,
+            );
+            let notice = if action == "add" {
+                "别名已添加"
+            } else {
+                "别名已删除"
+            };
+            Ok(handlers::redirect(format!(
+                "{target}&notice={}",
+                encode_uri_component(notice)
+            )))
+        }
+        Err(e) => {
+            let message = match &e {
+                SiteError::BadRequest(m) | SiteError::Conflict(m) | SiteError::Unavailable(m) => {
+                    m.clone()
+                }
+                SiteError::Internal(_) => return Err(map_err(e)),
+            };
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                if action == "add" {
+                    "sites.domains.add"
+                } else {
+                    "sites.domains.remove"
+                },
+                &domain,
+                "fail",
+                &message,
+            );
+            Ok(handlers::redirect(format!(
+                "{target}&error={}",
+                encode_uri_component(&message)
+            )))
+        }
+    }
 }
 
 /// SSL 标签：生成自签 / 上传 PEM / 强制跳转 / 关闭 / 删除证书。
@@ -1140,6 +1396,12 @@ pub async fn runtime_detail(
     } else {
         (String::new(), String::new())
     };
+    let enabled_exts = view.extensions.clone();
+    let job = state.runtime_job(&id).await;
+    let (has_job, job_view) = match job.as_ref() {
+        Some(j) => (true, job_view(j)),
+        None => (false, RuntimeJobView::default()),
+    };
     handlers::render(RuntimeDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
         runtime: runtime_row(&state, &view),
@@ -1149,13 +1411,14 @@ pub async fn runtime_detail(
         socket_container: view.socket_container.clone(),
         socket_exists: view.socket_exists,
         socket_mode: view.socket_mode.clone(),
-        extensions: ["opcache", "mbstring", "pdo_mysql", "curl", "gd", "redis"]
-            .into_iter()
-            .map(|name| crate::templates::ExtensionView {
-                name: name.into(),
-                enabled: matches!(name, "opcache" | "mbstring" | "pdo_mysql" | "curl"),
-            })
-            .collect(),
+        extensions: extension_options(&enabled_exts),
+        extensions_href: format!(
+            "/{prefix}/sites/env/{}/extensions",
+            encode_uri_component(&id)
+        ),
+        has_job,
+        job: job_view,
+        job_url: format!("/{prefix}/sites/env/{}/job", encode_uri_component(&id)),
         logs,
         logs_error,
         can_admin: user.can(skiff_model::Permission::Admin),
@@ -1235,10 +1498,15 @@ pub async fn runtime_action(
                 "ok",
                 "",
             );
+            let notice = if matches!(action.as_str(), "install" | "rebuild") {
+                "已提交后台任务：状态列实时显示阶段，详情抽屉可查看安装日志"
+            } else {
+                "操作已完成"
+            };
             Ok(handlers::redirect(format!(
                 "/{prefix}/sites/env/{}?notice={}",
                 encode_uri_component(&id),
-                encode_uri_component("操作已完成")
+                encode_uri_component(notice)
             )))
         }
         Err(e) => {
@@ -1247,6 +1515,96 @@ pub async fn runtime_action(
                 &user.user.username,
                 &ip,
                 &format!("runtimes.{action}"),
+                &id,
+                "failed",
+                &msg,
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?error={}",
+                encode_uri_component(&id),
+                encode_uri_component(&msg)
+            )))
+        }
+    }
+}
+
+/// 抽屉轮询：单个运行环境的任务快照（状态 / 阶段 / 进度 / 实时日志）。
+pub async fn runtime_job(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    require_admin(&user)?;
+    match state.runtime_job(&id).await {
+        Some(job) => Ok(axum::Json(job_json(&job))),
+        None => Ok(axum::Json(serde_json::json!({
+            "id": id,
+            "state": "none",
+            "state_label": "",
+            "step": "",
+            "progress": 0,
+            "error": "",
+            "log": "",
+            "active": false,
+            "failed": false,
+            "kind": "",
+        }))),
+    }
+}
+
+/// 列表轮询：全部运行环境任务（只返回有任务记录的环境）。
+pub async fn runtime_jobs(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    require_admin(&user)?;
+    let jobs = state.runtime_jobs_snapshot().await;
+    Ok(axum::Json(serde_json::json!({
+        "jobs": jobs.iter().map(job_json).collect::<Vec<_>>(),
+    })))
+}
+
+/// 扩展增删：写库 + 后台执行（启用脚本 / 停用脚本 + 重载 FPM）。
+pub async fn runtime_extensions_save(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let selected = form.get("ext").cloned().unwrap_or_default();
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    match state.update_runtime_extensions(&id, &selected).await {
+        Ok(changed) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
+                &id,
+                "ok",
+                "",
+            );
+            let notice = if changed {
+                "扩展变更任务已提交：进度与日志会实时刷新"
+            } else {
+                "扩展集合未变化"
+            };
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?notice={}",
+                encode_uri_component(&id),
+                encode_uri_component(notice)
+            )))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
                 &id,
                 "failed",
                 &msg,

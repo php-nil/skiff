@@ -31,7 +31,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -138,6 +138,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V8)?;
             conn.execute_batch("PRAGMA user_version = 8")?;
             info!(from = version, to = 8, "schema 迁移完成");
+        }
+        if version < 9 {
+            conn.execute_batch(SCHEMA_V9)?;
+            conn.execute_batch("PRAGMA user_version = 9")?;
+            info!(from = version, to = 9, "schema 迁移完成");
         }
         Ok(())
     }
@@ -443,6 +448,14 @@ ALTER TABLE site_runtimes_v8 RENAME TO site_runtimes;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_default
   ON site_runtimes(kind) WHERE is_default = 1;
 PRAGMA foreign_keys=ON;
+"#;
+
+/// v9：运行环境已启用的 PHP 扩展（逗号分隔的 catalog key）。
+///
+/// 扩展清单本身是代码里的单一来源（`skiff-app::runtime_catalog`），库里只存
+/// 「这个实例勾了哪些」。重建容器时按此重放，新增/删除后由服务层写回。
+const SCHEMA_V9: &str = r#"
+ALTER TABLE site_runtimes ADD COLUMN extensions TEXT NOT NULL DEFAULT '';
 "#;
 
 #[cfg(test)]

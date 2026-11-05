@@ -3489,30 +3489,85 @@ fn d7_theme_toggle_shows_target_theme() {
     );
 }
 
-/// 网站创建向导：分步结构、未实现项置灰标注、服务端非法域名就地报错。
+/// 新建网站改为单页弹窗：无三步向导、无二次确认；字段默认值、别名列表与
+/// 目录前缀自动带上都在这里固化。
 #[tokio::test]
-async fn sites_wizard_validates_and_marks_unimplemented() {
+async fn sites_new_dialog_defaults_and_validation() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p/sites/new", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("data-wizard"), "创建页必须是分步向导: {html}");
-    assert!(html.contains(r#"data-wizard-step="3""#), "必须有确认步骤");
     assert!(
-        html.contains("Node.js / Go") && html.contains("P2 未实现"),
-        "Node/Go 必须明确标注 P2 未实现: {html}"
+        html.contains("data-site-dialog"),
+        "必须用弹窗承载新建: {html}"
+    );
+    assert!(
+        html.contains(r#"data-site-dialog open"#),
+        "?new=1 应直接展开弹窗: {html}"
+    );
+    assert!(!html.contains("data-wizard"), "不得再三步向导");
+    assert!(!html.contains("确认创建"), "不得有二次确认步骤");
+    assert!(
+        html.contains(r#"name="site_type""#)
+            && html.contains("value=\"runtime\"")
+            && html.contains("value=\"static\"")
+            && html.contains("value=\"proxy\""),
+        "三类选择必须在弹窗内: {html}"
+    );
+    assert!(
+        html.contains("data-domain-list")
+            && html.contains("data-alias-add")
+            && html.contains("data-alias-bulk")
+            && html.contains(r#"name="domain""#)
+            && html.contains(r#"name="aliases_bulk""#),
+        "主域名/别名必须是同一个列表，且支持新增与批量粘贴: {html}"
+    );
+    // 默认只有主域名一行；别名行由「新增/批量粘贴」产生。
+    assert!(
+        !html.contains("data-alias-row"),
+        "别名列表默认不应带空行: {html}"
+    );
+    // 弹窗默认值：运行环境类型预选，PHP 版本预选已安装项。
+    let runtime_pos = html.find(r#"value="runtime""#).unwrap();
+    let runtime_tag: String = html[runtime_pos..].chars().take(80).collect();
+    assert!(runtime_tag.contains("checked"), "默认应选中运行环境类型");
+    assert!(html.contains(r#"value="php-8.5""#), "默认应预选 php-8.5");
+    assert!(
+        html.contains("data-domain-main") && html.contains("data-root-slug"),
+        "主域名与目录输入必须带前端钩子: {html}"
+    );
+    assert!(
+        html.contains("/www/sites/") && html.contains("默认与主域名同名"),
+        "目录前缀必须自动带上，默认跟随主域名: {html}"
+    );
+    assert!(
+        !html.contains("必须以 /www/sites/"),
+        "前端不得暴露前缀校验文案: {html}"
+    );
+    assert!(
+        html.contains("Node.js / Go") && html.contains("P2 预留"),
+        "Node/Go 必须明确标注 P2 预留: {html}"
     );
     assert!(
         !html.contains("name=\"database\"") && !html.contains("name=\"ssl\""),
         "不得用可点击的假开关冒充数据库/SSL"
     );
+
+    let js = include_str!("../static/skiff.js");
     assert!(
-        html.contains("name=\"proxy_websocket\"") && html.contains("name=\"site_type\""),
-        "三类站点分支与 WebSocket 开关必须存在: {html}"
+        js.contains("function attachSiteDialog")
+            && js.contains("function syncRoot")
+            && js.contains("slugTouched"),
+        "前端必须有目录自动填主域名的逻辑"
+    );
+    assert!(
+        js.contains("data-alias-import") && js.contains("splitNames"),
+        "批量粘贴必须在前端解析成别名行"
     );
     let csrf = csrf_from(&html);
 
+    // 非法域名：服务端就地报错，弹窗保持展开并回填。
     let resp = h
         .app
         .clone()
@@ -3527,19 +3582,143 @@ async fn sites_wizard_validates_and_marks_unimplemented() {
                     ("site_type", "runtime"),
                     ("runtime_id", "php-8.5"),
                     ("domain", "bad_domain"),
-                    ("aliases", ""),
-                    ("root_dir", "/www/sites/bad"),
+                    ("root_dir", "bad"),
                 ]))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "校验失败应留在向导页");
+    assert_eq!(resp.status(), StatusCode::OK, "校验失败应留在列表页");
     let html = body_text(resp).await;
     assert!(
-        html.contains("域名只能包含") && html.contains("data-wizard"),
-        "非法域名必须就地报错并保留向导: {html}"
+        html.contains("域名只能包含") && html.contains("data-site-dialog"),
+        "非法域名必须就地报错并保留弹窗: {html}"
     );
+    assert!(!html.contains("确认创建"), "错误回填也不得引入二次确认");
+}
+
+/// 别名批量解析：逗号/空格/换行混合提交能被拆分，重复域名明确拒绝。
+#[tokio::test]
+async fn sites_create_rejects_duplicate_aliases() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (_, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    let csrf = csrf_from(&html);
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/create")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("site_type", "static"),
+                    ("domain", "dup.local"),
+                    ("aliases", "www.dup.local, WWW.dup.local"),
+                    ("root_dir", ""),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("域名重复"),
+        "重复别名必须被拒绝而不是静默去重: {html}"
+    );
+
+    // 别名等于主域名同样拒绝。
+    let (_, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    let csrf = csrf_from(&html);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/create")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("site_type", "static"),
+                    ("domain", "same.local"),
+                    ("aliases", "same.local"),
+                    ("root_dir", ""),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("别名不能与主域名相同"),
+        "别名与主域名相同时必须拒绝: {html}"
+    );
+}
+
+/// 站点详情「域名」标签：主域名单独标识，别名可删除，新增入口落库并重建 vhost。
+#[tokio::test]
+async fn site_domains_tab_manages_aliases() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/dom.local").display().to_string();
+    h.state
+        .db()
+        .create_site(&static_site("dom.local", &root))
+        .unwrap();
+    h.state
+        .db()
+        .add_site_aliases("dom.local", &["www.dom.local".to_string()])
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/sites/dom.local?tab=domains", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("主域名"), "{html}");
+    assert!(html.contains("www.dom.local"), "{html}");
+    assert!(
+        html.contains("/p/sites/dom.local/domains")
+            && html.contains(r#"name="action" value="remove""#)
+            && html.contains(r#"name="action" value="add""#),
+        "域名标签必须能增删别名: {html}"
+    );
+    let csrf = csrf_from(&html);
+
+    // 主域名不能作为别名删除。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/dom.local/domains")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("action", "remove"),
+                    ("alias", "dom.local"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(loc.contains("error="), "{loc}");
+    let (_, page) = get_page(&h.app, &loc, &admin).await;
+    assert!(page.contains("主域名不能作为别名删除"), "{page}");
 }
 
 /// 运行环境页是业务视角：列表/详情/深链可访问，viewer 一律 403。
@@ -3613,13 +3792,26 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         "类型",
         "版本",
         "占用站点",
-        "socket / 端口",
+        "接入方式",
         "默认",
         "详情",
-        "更多",
+        "新建运行环境",
+        "创建并后台安装",
     ] {
-        assert!(html.contains(keep), "列表必须展示 {keep}: {html}");
+        assert!(html.contains(keep), "列表/弹窗必须展示 {keep}: {html}");
     }
+    // 「详情」和「更多」合并成一个入口：每行只留一个按钮，整行也可点开抽屉。
+    assert!(
+        !html.contains(">更多<"),
+        "详情与更多必须合并成单一入口: {html}"
+    );
+    // 接入方式只显示短标识，完整路径在 title 悬浮提示里（宿主路径在不同平台上不同）。
+    assert!(
+        html.contains("runtime-endpoint")
+            && html.contains(r#"title="socket "#)
+            && html.contains(">sock<"),
+        "接入方式列必须显示 sock 且完整路径进悬浮提示: {html}"
+    );
     assert!(
         html.contains(r#"data-runtime-drawer"#)
             && html.contains(r#"data-runtime-open="/p/sites/env/php-8.5""#)
@@ -3627,10 +3819,45 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         "详情必须是右侧抽屉而不是跳页: {html}"
     );
     assert!(
-        html.contains(r#"name="name""#)
+        html.contains(r#"name="kind""#)
+            && html.contains(r#"name="name""#)
             && html.contains(r#"name="version""#)
-            && html.contains("目标目录已存在会直接拒绝"),
-        "新建实例必须暴露 name/version 并提示目录拒绝规则: {html}"
+            && html.contains("data-runtime-version")
+            && html.contains("目录已存在会被拒绝"),
+        "新建弹窗必须暴露 kind/name/version 并提示目录拒绝规则: {html}"
+    );
+    // 版本下拉来自 catalog（PHP 8.5/8.4/8.3），不允许手填。
+    assert!(
+        html.contains(r#"<option value="8.5""#)
+            && html.contains(r#"<option value="8.4""#)
+            && html.contains(r#"<option value="8.3""#)
+            && html.contains("data-runtime-catalog"),
+        "版本必须是目录驱动的下拉: {html}"
+    );
+    // 扩展清单单一来源渲染：安装弹窗与抽屉共用同一批 key。
+    for key in ["opcache", "redis", "pdo_mysql", "gd", "intl"] {
+        assert!(
+            html.contains(&format!(r#"value="{key}""#)),
+            "安装弹窗必须列出扩展 {key}: {html}"
+        );
+    }
+    assert!(
+        html.contains(r#"class="runtime-extensions exts-box""#),
+        "弹窗必须有扩展勾选块: {html}"
+    );
+    // 标题栏不再直出基础环境按钮：功能合并进弹窗。
+    let head_block = html
+        .split(r#"<div class="page-head">"#)
+        .nth(1)
+        .and_then(|s| s.split("</div>").next())
+        .unwrap_or("");
+    assert!(
+        !head_block.contains("/sites/env/install"),
+        "标题栏不得再放基础环境按钮: {head_block}"
+    );
+    assert!(
+        html.contains("重建基础环境") && html.contains("runtime-base-install"),
+        "基础环境重建入口必须并入弹窗: {html}"
     );
 
     // 抽屉交互由原生 <dialog> 承担：showModal 自动焦点锁 + Esc，遮罩点击关闭。
@@ -3732,6 +3959,61 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
             .unwrap()
             .is_none(),
         "目录冲突时不得落库"
+    );
+}
+
+/// 抽屉扩展管理 + 列表轮询端点：两处扩展清单同源，JSON 端点不被 `{id}` 路由吞掉。
+#[tokio::test]
+async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
+    assert_eq!(status, StatusCode::OK, "抽屉内容页应 200");
+    assert!(
+        html.contains("data-runtime-extensions") && html.contains(r#"name="ext_form""#),
+        "抽屉必须有扩展增删表单: {html}"
+    );
+    // 无任务时抽屉不渲染任务面板（有任务时才有 data-runtime-job / data-job-log）。
+    assert!(
+        html.contains("data-runtime-panel") && !html.contains("data-job-url"),
+        "空闲运行环境不应显示安装任务面板: {html}"
+    );
+    for key in [
+        "opcache",
+        "redis",
+        "pdo_mysql",
+        "mysqli",
+        "gd",
+        "zip",
+        "bcmath",
+        "curl",
+        "intl",
+    ] {
+        assert!(
+            html.contains(&format!(r#"name="ext" value="{key}""#)),
+            "抽屉扩展清单缺少 {key}（必须与安装弹窗同源）: {html}"
+        );
+    }
+
+    // 列表轮询端点：空任务也必须返回合法 JSON，且路由优先于 `/sites/env/{id}`。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/sites/env/jobs")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .header("x-requested-with", "fetch")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "任务端点应 200");
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("\"jobs\""),
+        "任务端点必须返回结构化 JSON: {body}"
     );
 }
 

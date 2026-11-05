@@ -1805,3 +1805,123 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 @media (max-width: 560px) {
   .page-nginx .inline-form { flex-direction: column; align-items: stretch; }
 }
+
+/* ---- 网站页（page-sites）：新建弹窗、域名列表、行内操作菜单与统一徽标 ---- */
+.page-sites [hidden] { display: none !important; }
+.page-sites .sites-grid .site-name { display: flex; flex-direction: column; gap: 2px; }
+.page-sites .sites-grid .site-root { font-size: 12px; opacity: .7; }
+.page-sites .sites-grid .alias { font-size: 12px; color: var(--muted); }
+.page-sites .sites-grid .cell-status { white-space: nowrap; }
+.page-sites .sites-grid .cell-status .badge + .badge { margin-left: 4px; }
+.page-sites .sites-grid .cell-runtime .mono { word-break: normal; overflow-wrap: anywhere; }
+/* 操作列只保留「详情 + 更多」菜单，宽度收窄，避免旧 252px 撑出空白。 */
+.page-sites table.grid.sites-grid th.col-actions { width: 132px; }
+/* 状态列同时放运行态与 HTTPS 两枚徽标，旧 88px 会裁掉后一枚。 */
+.page-sites table.grid.sites-grid th.col-status { width: 184px; }
+
+.page-sites .row-menu { position: relative; display: inline-block; }
+.page-sites .row-menu > summary { list-style: none; cursor: pointer; }
+.page-sites .row-menu > summary::-webkit-details-marker { display: none; }
+.page-sites .row-menu-list {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20;
+  min-width: 132px; padding: 4px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.page-sites .row-menu-list > a,
+.page-sites .row-menu-list button {
+  display: block; width: 100%; text-align: left; padding: 6px 10px; border: 0;
+  border-radius: calc(var(--radius) - 2px); background: transparent; color: inherit;
+  font: inherit; cursor: pointer; text-decoration: none;
+}
+.page-sites .row-menu-list > a:hover,
+.page-sites .row-menu-list button:hover { background: var(--surface-2); }
+.page-sites .row-menu-list form { margin: 0; }
+.page-sites .row-menu-list .danger { color: var(--danger); }
+
+.page-sites .site-new-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.page-sites .site-new-dialog form { display: flex; flex-direction: column; min-height: 0; }
+.page-sites .site-new-dialog .modal-body { overflow: auto; }
+.page-sites .field-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-4); }
+.page-sites .field-label { font-weight: 600; font-size: 13px; }
+.page-sites .segmented { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.page-sites .seg { position: relative; display: block; }
+.page-sites .seg input { position: absolute; opacity: 0; pointer-events: none; }
+.page-sites .seg span {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2);
+}
+.page-sites .seg small { color: var(--muted); font-size: 12px; }
+.page-sites .seg input:checked + span {
+  border-color: var(--accent); background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.page-sites .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.page-sites .domain-list { display: flex; flex-direction: column; gap: 6px; }
+.page-sites .domain-row { display: flex; align-items: center; gap: 8px; }
+.page-sites .check-line { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.page-sites .check-line input { flex: 0 0 auto; margin-top: 2px; }
+.page-sites .domain-row input { flex: 1 1 auto; min-width: 0; }
+.page-sites .alias-tools { display: flex; gap: 8px; margin-top: 8px; }
+.page-sites .alias-bulk { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.page-sites .input-prefix { display: flex; align-items: stretch; }
+.page-sites .input-prefix .prefix {
+  display: flex; align-items: center; padding: 0 10px; font-size: 13px;
+  border: 1px solid var(--line); border-right: 0; background: var(--surface-2);
+  color: var(--muted); border-radius: var(--radius) 0 0 var(--radius);
+  white-space: nowrap; flex: 0 0 auto;
+}
+.page-sites .input-prefix input { border-radius: 0 var(--radius) var(--radius) 0; min-width: 0; }
+.page-sites .domains-table .col-actions { width: 96px; }
+.page-sites .domain-add-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: var(--sp-4); }
+.page-sites .domain-add-form label { flex: 1 1 320px; display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 13px; }
+
+@media (max-width: 640px) {
+  .page-sites .segmented { grid-template-columns: 1fr; }
+  .page-sites .domain-row { flex-wrap: wrap; }
+}
+
+/* ---- 运行环境页（page-runtimes）：自适应表格、安装进度、新建弹窗与扩展勾选 ---- */
+.page-runtimes table.runtimes-grid { width: 100%; table-layout: auto; }
+.page-runtimes table.runtimes-grid th,
+.page-runtimes table.runtimes-grid td { white-space: nowrap; vertical-align: top; }
+.page-runtimes table.runtimes-grid th.num,
+.page-runtimes table.runtimes-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.page-runtimes table.runtimes-grid th.actions-col,
+.page-runtimes table.runtimes-grid td.actions-col { width: 1%; text-align: right; }
+.page-runtimes table.runtimes-grid td[data-runtime-state] { white-space: normal; min-width: 140px; }
+.page-runtimes table.runtimes-grid tbody tr[data-runtime-open] { cursor: pointer; }
+.page-runtimes .runtime-endpoint { cursor: help; }
+.page-runtimes .runtime-progress {
+  display: inline-block; width: 84px; height: 4px; margin-left: 6px; vertical-align: middle;
+  border-radius: 2px; background: var(--line); overflow: hidden;
+}
+.page-runtimes .runtime-progress > span {
+  display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s ease;
+}
+.page-runtimes .runtime-progress-wide { display: block; width: 100%; height: 6px; margin: 6px 0 10px; }
+.page-runtimes .runtime-job-error { display: block; max-width: 360px; white-space: normal; color: var(--danger); }
+.page-runtimes .runtime-job-log { max-height: 320px; overflow: auto; white-space: pre-wrap; }
+.page-runtimes .runtime-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.page-runtimes .runtime-dialog form { display: flex; flex-direction: column; min-height: 0; }
+.page-runtimes .runtime-dialog .modal-body { overflow: auto; }
+.page-runtimes .runtime-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
+.page-runtimes .runtime-form-grid label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 13px; }
+.page-runtimes .runtime-form-grid label .hint { font-weight: 400; }
+.page-runtimes .runtime-extensions { margin-top: var(--sp-3); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--sp-3); }
+.page-runtimes .runtime-extensions legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
+.page-runtimes .ext-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.page-runtimes .ext-option { display: grid; grid-template-columns: auto 1fr; grid-template-areas: "box name" "box desc"; column-gap: 8px; align-items: center; }
+.page-runtimes .ext-option input[type="checkbox"] { grid-area: box; }
+.page-runtimes .ext-option .ext-name { grid-area: name; font-weight: 600; }
+.page-runtimes .ext-option .hint { grid-area: desc; }
+.page-runtimes .runtime-base-install {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  margin: 0 var(--sp-4) var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--line);
+}
+.page-runtimes .base-install-note { display: flex; flex-direction: column; gap: 2px; }
+@media (max-width: 760px) {
+  .page-runtimes .runtime-form-grid { grid-template-columns: 1fr; }
+  .page-runtimes .ext-options { grid-template-columns: 1fr; }
+  .page-runtimes .runtime-base-install { flex-direction: column; align-items: stretch; }
+}

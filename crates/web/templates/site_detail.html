@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block title %}{{ site.domain }} · 网站详情 · Skiff{% endblock %}
 {% block content %}
+<div class="page-sites">
 <div class="detail-head">
   <div>
     <h1>{{ site.domain }}</h1>
     <div class="meta">
-      {% if site.status == "running" %}
-      <span class="badge ok"><span class="status-dot ok"></span>运行中</span>
-      {% else if site.status == "stopped" %}
-      <span class="badge"><span class="status-dot"></span>已停止</span>
-      {% else %}
-      <span class="badge danger"><span class="status-dot danger"></span>异常</span>
-      {% endif %}
+      <span class="badge{% if !site.status_class.is_empty() %} {{ site.status_class }}{% endif %}">
+        <span class="status-dot{% if !site.status_class.is_empty() %} {{ site.status_class }}{% endif %}"></span>{{ site.status_label }}
+      </span>
+      <span class="badge{% if !site.https_class.is_empty() %} {{ site.https_class }}{% endif %}">
+        <span class="status-dot{% if !site.https_class.is_empty() %} {{ site.https_class }}{% endif %}"></span>{{ site.https_label }}
+      </span>
       {% if site.is_default %}<span class="badge info">默认站点</span>{% endif %}
       <span class="mono">{{ site.root_dir }}</span>
       <span>创建于 {{ site.created }}</span>
@@ -77,31 +77,50 @@
     <div><span class="muted">访问入口</span><span class="mono">{% if site.https %}https://{{ site.domain }}/{% else %}http://{{ site.domain }}{% if env.port != 80 %}:{{ env.port }}{% endif %}/{% endif %}</span></div>
   </div>
 </section>
-<section class="panel">
-  <h2>下一步</h2>
-  <p class="muted">在「配置文件」页可直接编辑 vhost 并保存重载；「日志」页支持关键字过滤与时间倒序。{% if site.site_type != "proxy" %}「目录」页可只读浏览文档根 <span class="mono">index/</span>（log/ 与 ssl/ 不开放浏览）。{% endif %}</p>
-  <div class="row">
-    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=config">编辑配置文件</a>
-    {% if site.site_type != "proxy" %}<a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}?tab=dir">浏览目录</a>{% endif %}
-    <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">查看日志</a>
-  </div>
-</section>
 {% else if tab == "domains" %}
 <section class="panel">
   <h2>域名</h2>
   <div class="table-wrap">
-    <table class="grid compact">
-      <thead><tr><th>类型</th><th>域名</th><th>用途</th></tr></thead>
+    <table class="grid compact domains-table">
+      <thead><tr><th>类型</th><th>域名</th><th class="col-actions">操作</th></tr></thead>
       <tbody>
-        <tr><td><span class="badge info">主域名</span></td><td class="mono">{{ site.domain }}</td><td>站点目录与 vhost 命名</td></tr>
+        <tr>
+          <td><span class="badge info">主域名</span></td>
+          <td class="mono">{{ site.domain }}</td>
+          <td class="actions-cell"><span class="muted small">站点目录与 vhost 命名</span></td>
+        </tr>
         {% for a in site.aliases %}
-        <tr><td><span class="badge">别名</span></td><td class="mono">{{ a }}</td><td>写入 vhost `server_name`</td></tr>
+        <tr>
+          <td><span class="badge">别名</span></td>
+          <td class="mono">{{ a }}</td>
+          <td class="actions-cell">
+            {% if can_admin %}
+            <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/domains" class="inline"
+                  data-confirm="从站点 {{ site.domain }} 删除别名 {{ a }}？vhost 会重新生成并重载 nginx。">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+              <input type="hidden" name="action" value="remove">
+              <input type="hidden" name="alias" value="{{ a }}">
+              <button class="mini danger" type="submit">删除</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
   {% if site.aliases.is_empty() %}<p class="hint">当前没有别名域名。</p>{% endif %}
-  <p class="hint">别名在创建向导中设置后写入 vhost；单独增删别名的界面在下一阶段接入。</p>
+  {% if can_admin %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/domains" class="domain-add-form">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input type="hidden" name="action" value="add">
+    <label>添加别名域名
+      <input name="alias" placeholder="www.example.com" autocomplete="off">
+    </label>
+    <button class="btn primary" type="submit">添加</button>
+    <span class="hint">保存后写入数据库并重新生成 vhost；与主域名或其它站点重复会被拒绝。</span>
+  </form>
+  {% endif %}
 </section>
 {% else if tab == "config" %}
 <section class="panel">
@@ -215,4 +234,5 @@
   {% endif %}
 </section>
 {% endif %}
+</div>
 {% endblock %}
