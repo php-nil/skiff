@@ -27,6 +27,7 @@
 ### 3.1 开发与交付
 
 * **同步更新**：代码、逻辑变动必须与测试用例、相关文档同步更新。
+* **迁移兼容**：当前为测试开发阶段，没有正式环境，不需要兼容旧版本支持迁移。旧版失效文档也无需保留，一切放在当前已有功能上。
 * **交付门槛**：所有变更须本地三关全绿后才可交付合入：`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --locked`，口径与 CI 对齐（`docs/CI.md`）。
   * 动 `plugins/` 时，根三关**不覆盖它**（第二 workspace），另需 `cargo fmt --manifest-path plugins/Cargo.toml --all --check`、`cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings`、`cargo test --manifest-path plugins/Cargo.toml --locked`。
 * **红线**（违反即返工）：

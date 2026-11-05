@@ -1780,9 +1780,11 @@ path = "index.html"
         html.contains(r#"data-plugins="com.example.ui""#),
         "白名单应只含已启用且有 UI 的插件: {html}"
     );
-    // 沙箱属性必须下发：没有它「opaque origin / 不持面板凭据」只是文案
+    // 沙箱属性必须下发：没有它「opaque origin / 不持面板凭据」只是文案。
+    // `allow-forms` 是给插件 UI 的原生表单提交事件（新建目录/跳转对话框），
+    // CSP `form-action 'none'` 仍阻断任何真实导航。
     assert!(
-        html.contains(r#"sandbox="allow-scripts allow-modals""#),
+        html.contains(r#"sandbox="allow-scripts allow-modals allow-forms""#),
         "插件 iframe 必须带 sandbox: {html}"
     );
     // 顶栏「应用」菜单：启用项的 label 进导航并高亮当前项

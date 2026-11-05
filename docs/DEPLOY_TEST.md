@@ -1070,6 +1070,25 @@ sh deploy/pack-release.sh
 
 未闭环项统一登记在 [`docs/TEST_LEDGER.md`](TEST_LEDGER.md)。
 
+### 9.10 2026-11-05 Release 覆盖安装：一站一目录（无迁移）+ 文件管理 0.1.2
+
+Release `v0.1.0` 资产被同一 tag 覆盖（未新建 tag）；测试机按真实下载路径安装，不做旧布局迁移。
+
+| 面 | 结论 | 关键证据 |
+|---|---|---|
+| Release 资产 | 覆盖成功 | x86_64 包 6,592,116 B `sha256:e20bab99…`；aarch64 包 6,302,735 B `sha256:c778a030…`；`checksums.txt` `sha256:512df8b0…`；包内 4 插件 + `public-key.txt`，`checksums.txt` 13 文件全 OK |
+| 安装 | 真实路径 | `curl -L` 下载、同名 `.sha256`、包内 `checksums.txt`、`sh install.sh` 全部通过；`config.toml` 哈希不变，`must_change_password=0` |
+| 站点新布局 | 新建即生成 | 面板新建 `demo.local` → `/www/sites/demo.local/{index,log,ssl,conf}` 与 `index/index.php`；日志 `log/access.log`；自签证书 `ssl/cert.pem|key.pem` |
+| nginx | 通过 | `docker exec skiff-web-nginx nginx -t` 成功；`nginx -s reload` 只有 notice |
+| 站点访问 | 200 | `https://10.10.15.4/` 200 含 `PHP Version 8.5.12`；`Host: demo.local` 200 |
+| 默认站 | 符合预期 | 设默认 → 裸 IP 200；取消 → 404；恢复 → 200 |
+| 详情四标签 | 200 且无旧路径 | 配置/日志/目录/SSL 均 200，旧路径文案计数 0；`../log`、`../ssl` 越界 **400** |
+| 删除站点 | 整目录消失 | 删除后 `/www/sites` 空、`conf.d` 仅 fallback+include、库 `sites=0`/`site_aliases=0`、裸 IP/Host 均 404；`/www/logs/nginx`、`/www/certs` 不存在 |
+| 文件管理 | 0.1.2 可用 | 旧 0.1.1 与 Release 官方密钥 key_id 不同，按 TOFU 守卫先 `plugin remove`（保留 data）再安装；`plugin list` = 0.1.2/running；RPC list/mkdir/write/read/rename/remove 全 OK，307,200 B 读 `eof=false`、`page_max=262144`，超限写与越界读 `400` |
+| 插件 UI 浏览器 | 通过（Chromium） | 主题跟随 light↔dark、Ctrl 多选、右键菜单、行内重命名、编辑器保存、超限只读均实测；「新建文件夹」修复 `sandbox` 缺 `allow-forms` 后通过 |
+
+插件 UI 地址：`https://10.10.15.4:18080/swn4nbhe/m/plugin/com.skiff.files/files`。
+
 ## 变更记录
 
 | 日期 | 变更 |
@@ -1086,3 +1105,4 @@ sh deploy/pack-release.sh
 | 2026-11-04 | **闭环轮**：新增 §2.13 站点 HTTPS（证书目录/自签/上传/强制跳转/`nginx -t` 回滚）、§2.14 镜像源自动落盘、§0.2 路径 E（目标机 musl 静态包）、§9.7 逐项实测；同步 §9.6 插件由 5 包更正为 4 包 |
 | 2026-11-04 | **round4/round5**：新增 §9.8；静态资源增加带安全入口前缀的别名路由 `/{p}/static/{*path}`（与根路径共用 handler），站点列表单表合并、插件 UI 主题兜底与 `skiff.theme.request` 实测通过；两轮备份与二进制 sha 记录在 §9.8 |
 | 2026-11-04 | **round6（方案 A「舱线」+ 前缀收紧）**：新增 §9.9；根路径 `/static` 与 `/plugins/<id>/ui` 旁路删除后，33 条同源引用逐条 200、0 坏链；A 方案 SVG 精灵/48px 二级通栏与手风琴互斥/Escape 回焦浏览器实测通过；证书列按证书目录判定；二进制 sha `9b2158c9…`，备份 `20261104-214238-round6` |
+| 2026-11-05 | **Release 覆盖安装**：新增 §9.10；覆盖 `v0.1.0` 资产（不新建 tag），测试机真实下载/校验/安装；不做旧布局迁移，新建 `demo.local` 即生成 `{index,log,ssl,conf}`，`nginx -t`/站点 200/默认站切换/四标签/越界 400/删除整目录均实测；文件管理 0.1.2 安装与 RPC/浏览器交互实测，修复插件 iframe `sandbox` 缺 `allow-forms` |
