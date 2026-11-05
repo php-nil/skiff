@@ -594,6 +594,8 @@ pub async fn detail(
         let rel = q.get("path").cloned().unwrap_or_default();
         match state.site_dir_listing(&domain, &rel) {
             Ok(listing) => dir = dir_view(listing),
+            // 越界（../log、../ssl 等）按请求错误直接 400，不降级成页面内提示。
+            Err(SiteError::BadRequest(m)) => return Err(AppError::BadRequest(m)),
             Err(e) => error = format!("{e}"),
         }
     }
