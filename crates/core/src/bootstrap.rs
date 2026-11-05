@@ -49,16 +49,28 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     let csrf_secret = db.get_or_init_setting(KEY_CSRF_SECRET, skiff_identity::new_token)?;
     let _ = db.get_or_init_setting(KEY_INSTANCE_ID, skiff_identity::new_token);
 
-    // 首启管理员（§5.2）：随机口令写入 initial-admin.txt，首登强制改密
+    // 首启管理员（§5.2）：随机口令写入 initial-admin.txt。默认**不**强制改密，
+    // 初始口令可直接登录；只有显式开启 require_initial_password_change 时才置标志。
+    // 已有管理员一律不动：仅在空库（无任何用户）时创建。
     let mut first_run = None;
     if db.count_users()? == 0 {
         let password = random_password(16);
         let hash = skiff_identity::hash_password(&password)
             .map_err(|e| anyhow::anyhow!("生成管理员口令失败: {e}"))?;
-        db.create_user("admin", &hash, skiff_store::Role::Admin, true)?;
+        db.create_user(
+            "admin",
+            &hash,
+            skiff_store::Role::Admin,
+            cfg.require_initial_password_change,
+        )?;
         let path = cfg.data_dir.join("initial-admin.txt");
+        let change_hint = if cfg.require_initial_password_change {
+            "首次登录后必须改密；改密成功后本文件自动删除。"
+        } else {
+            "初始口令可直接登录；建议首次登录后尽快在「设置 → 口令」修改，改密成功后本文件自动删除。"
+        };
         let content = format!(
-            "Skiff 初始管理员\n用户名: admin\n口令: {password}\n\n首次登录后必须改密；改密成功后本文件自动删除。\n生成时间: {}\n",
+            "Skiff 初始管理员\n用户名: admin\n口令: {password}\n\n{change_hint}\n生成时间: {}\n",
             chrono::Utc::now().to_rfc3339()
         );
         std::fs::write(&path, content)
@@ -116,6 +128,14 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         env!("CARGO_PKG_VERSION"),
     );
 
+    // 站点「一站一目录」迁移是幂等的，启动时兜底跑一次：升级后即使还没进
+    // 「运行环境」重装，旧 public/、集中日志/证书与公共 conf.d 也已就位。
+    // 失败只告警，不阻断面板启动（安装流程里还会再跑一次并显式报错）。
+    match state.migrate_site_layout() {
+        Ok(n) => info!(sites = n, "站点目录布局已就绪（一站一目录）"),
+        Err(e) => warn!(error = %e, "站点目录布局迁移失败，运行环境安装时会重试"),
+    }
+
     Ok(Bootstrapped { state, first_run })
 }
 
@@ -125,12 +145,11 @@ fn prepare_dirs(data_dir: &Path, web_root: &Path, run_dir: &Path) -> Result<()> 
         data_dir.join("plugins"),
         data_dir.join("logs"),
         data_dir.join("backup"),
-        // 站点寄宿布局：/www/{sites,nginx/conf.d,logs/nginx,certs,php}
+        // 站点寄宿布局：/www/{sites,nginx/conf.d,php}。站点级 index/log/ssl/conf
+        // 建在各自 `/www/sites/<域名>/` 内，不再有集中日志/证书目录。
         web_root.to_path_buf(),
         web_root.join("sites"),
         web_root.join("nginx").join("conf.d"),
-        web_root.join("logs").join("nginx"),
-        web_root.join("certs"),
         web_root.join("php"),
         // WAF 规则目录仅预留，本期不加载、不拦截。
         web_root.join("skiff").join("waf").join("rules"),
@@ -146,13 +165,11 @@ fn prepare_dirs(data_dir: &Path, web_root: &Path, run_dir: &Path) -> Result<()> 
     restrict_mode(data_dir, 0o711);
     restrict_mode(&data_dir.join("plugins"), 0o711);
     restrict_mode(&data_dir.join("backup"), 0o700);
-    // 站点/日志/证书/php socket 目录允许容器内非 root 进程读取（0755）。
+    // 站点公共目录/php socket 目录允许容器内非 root 进程读取（0755）。
     for dir in [
         web_root.to_path_buf(),
         web_root.join("sites"),
         web_root.join("nginx").join("conf.d"),
-        web_root.join("logs").join("nginx"),
-        web_root.join("certs"),
         web_root.join("php"),
     ] {
         restrict_mode(&dir, 0o755);
@@ -311,9 +328,90 @@ mod tests {
             authorized_roots: vec![],
             external_url: None,
             login_concurrency: 1,
+            require_initial_password_change: false,
             dev_http: true,
             plaintext_behind_proxy: false,
         }
+    }
+
+    /// 默认口径：首启管理员**不**强制改密，初始口令可直接登录。
+    #[test]
+    fn initial_admin_does_not_require_password_change_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(
+            tmp.path().join("data"),
+            tmp.path().join("www"),
+            tmp.path().join("run"),
+            tmp.path().join("config.toml"),
+        );
+        let boot = bootstrap(&cfg).expect("bootstrap 应成功");
+        let user = boot
+            .state
+            .db()
+            .user_by_name("admin")
+            .unwrap()
+            .expect("首启应创建 admin");
+        assert!(!user.must_change_password, "默认不得强制首登改密");
+        let initial = std::fs::read_to_string(cfg.data_dir.join("initial-admin.txt")).unwrap();
+        assert!(initial.contains("可直接登录"), "{initial}");
+        assert!(!initial.contains("必须改密"), "{initial}");
+    }
+
+    /// 显式开启后仍保留原能力：新管理员带 must_change_password=1。
+    #[test]
+    fn initial_admin_requires_password_change_when_explicitly_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = test_config(
+            tmp.path().join("data"),
+            tmp.path().join("www"),
+            tmp.path().join("run"),
+            tmp.path().join("config.toml"),
+        );
+        cfg.require_initial_password_change = true;
+        let boot = bootstrap(&cfg).expect("bootstrap 应成功");
+        let user = boot
+            .state
+            .db()
+            .user_by_name("admin")
+            .unwrap()
+            .expect("首启应创建 admin");
+        assert!(user.must_change_password, "显式开启后应强制首登改密");
+        let initial = std::fs::read_to_string(cfg.data_dir.join("initial-admin.txt")).unwrap();
+        assert!(initial.contains("必须改密"), "{initial}");
+    }
+
+    /// 重装/升级口径：已有管理员的口令哈希与标志一律不动，不再生成新口令。
+    #[test]
+    fn bootstrap_does_not_overwrite_existing_admin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(
+            tmp.path().join("data"),
+            tmp.path().join("www"),
+            tmp.path().join("run"),
+            tmp.path().join("config.toml"),
+        );
+        let boot = bootstrap(&cfg).expect("首启应成功");
+        let admin = boot
+            .state
+            .db()
+            .user_by_name("admin")
+            .unwrap()
+            .expect("首启应创建 admin");
+        // 模拟用户已自行改密（升级后再启动不得覆盖）。
+        let changed = skiff_identity::hash_password("user-changed-pass").unwrap();
+        boot.state.db().set_password(admin.id, &changed).unwrap();
+        drop(boot);
+
+        let boot2 = bootstrap(&cfg).expect("再次启动应成功");
+        assert!(boot2.first_run.is_none(), "已有管理员不应重新生成口令");
+        let admin2 = boot2
+            .state
+            .db()
+            .user_by_name("admin")
+            .unwrap()
+            .expect("admin 仍应存在");
+        assert_eq!(admin2.password_hash, changed, "已有口令哈希不得被覆盖");
+        assert!(!admin2.must_change_password);
     }
 
     /// 权限口径回归（红线）：数据根与 plugins/ 必须 0711（可穿越不可列），

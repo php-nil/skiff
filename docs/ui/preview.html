@@ -471,7 +471,8 @@ dialog.modal::backdrop{background:rgba(16,24,40,.45)}
           <div class="kv">
             <div><span class="muted">主域名</span><span class="mono">demo.local</span></div>
             <div><span class="muted">别名</span><span class="mono">www.demo.local</span></div>
-            <div><span class="muted">根目录</span><span class="mono">/www/sites/demo.local</span></div>
+            <div><span class="muted">站点目录</span><span class="mono">/www/sites/demo.local</span></div>
+            <div><span class="muted">文档根</span><span class="mono">/www/sites/demo.local/index</span></div>
             <div><span class="muted">PHP 版本</span><span class="mono">8.5</span></div>
             <div><span class="muted">状态</span><span>运行中</span></div>
             <div><span class="muted">默认站点</span><span>是</span></div>
@@ -489,11 +490,11 @@ dialog.modal::backdrop{background:rgba(16,24,40,.45)}
         </section>
         <section class="panel" data-detail-panel="config" hidden>
           <h2>nginx 配置文件</h2>
-          <div class="config-path"><span class="mono">/www/nginx/conf.d/demo.local.conf</span><span class="badge ok">已启用</span></div>
+          <div class="config-path"><span class="mono">/www/sites/demo.local/conf/demo.local.conf</span><span class="badge ok">已启用</span></div>
           <label>vhost 内容<textarea class="code" spellcheck="false">server {
     listen 80;
     server_name demo.local www.demo.local;
-    root /www/sites/demo.local/public;
+    root /www/sites/demo.local/index;
 
     index index.php index.html;
     location / { try_files $uri $uri/ /index.php?$query_string; }
@@ -514,11 +515,10 @@ dialog.modal::backdrop{background:rgba(16,24,40,.45)}
 10.10.15.9 - - [04/Nov/2026:10:29:14 +0800] "GET /favicon.ico HTTP/1.1" 404 153</textarea>
         </section>
         <section class="panel" data-detail-panel="dir" hidden>
-          <h2>站点目录（只读）</h2>
-          <div class="dir-head"><button class="btn mini" type="button">根目录</button><span class="crumb">/www/sites/demo.local</span></div>
+          <h2>站点目录（只读，根限定 index/）</h2>
+          <div class="dir-head"><button class="btn mini" type="button">文档根</button><span class="crumb">/www/sites/demo.local/index</span></div>
           <table class="grid"><thead><tr><th>名称</th><th>类型</th><th class="num">大小</th><th>修改时间</th></tr></thead><tbody>
-            <tr><td class="mono">public/</td><td><span class="badge">目录</span></td><td class="num mono">—</td><td class="mono muted">2026-11-04 10:20</td></tr>
-            <tr><td class="mono">logs/</td><td><span class="badge">目录</span></td><td class="num mono">—</td><td class="mono muted">2026-11-04 10:20</td></tr>
+            <tr><td class="mono">index.php</td><td><span class="badge">文件</span></td><td class="num mono">0.6 KB</td><td class="mono muted">2026-11-04 10:20</td></tr>
           </tbody></table>
         </section>
         <section class="panel" data-detail-panel="ssl" hidden>

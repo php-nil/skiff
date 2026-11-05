@@ -29,7 +29,7 @@
 
 <div class="toolbar">
   <form class="search" method="get" action="/{{ ctx.prefix }}/sites" role="search">
-    <input type="search" name="q" value="{{ keyword }}" placeholder="搜索域名、根目录或 PHP 版本" aria-label="搜索站点">
+    <input type="search" name="q" value="{{ keyword }}" placeholder="搜索域名、站点目录或 PHP 版本" aria-label="搜索站点">
     <button class="btn" type="submit">搜索</button>
     {% if !keyword.is_empty() %}<a class="ghost" href="/{{ ctx.prefix }}/sites">清除</a>{% endif %}
   </form>
@@ -41,7 +41,7 @@
       <button class="btn" type="submit" name="action" value="start">批量启动</button>
       <button class="btn" type="submit" name="action" value="stop">批量停止</button>
       <button class="btn danger" type="submit" name="action" value="delete"
-              data-confirm="将删除所选站点：nginx vhost 与站点目录都会被移除，不可撤销。确认继续？">批量删除</button>
+              data-confirm="将删除所选站点：整站目录（index/log/ssl/conf）都会被移除，不可撤销。确认继续？">批量删除</button>
     </div>
   </form>
   {% endif %}
@@ -61,7 +61,7 @@
     <a class="btn primary" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
     {% else %}
     <strong>还没有站点</strong>
-    <p class="hint">创建后会生成 nginx vhost、站点目录与 PHP 探针，并自动重载 nginx。</p>
+    <p class="hint">创建后会生成整站目录（index/log/ssl/conf）、nginx vhost 与 PHP 探针，并自动重载 nginx。</p>
     {% if can_admin %}<a class="btn primary" href="/{{ ctx.prefix }}/sites/new">新建第一个网站</a>{% endif %}
     {% endif %}
   </div>

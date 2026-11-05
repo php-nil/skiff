@@ -369,6 +369,78 @@ async fn session_cookie_uses_lax_for_top_level_navigation() {
     );
 }
 
+/// 默认口径：管理员首登不再强制改密，登录后直接落到概览。
+#[tokio::test]
+async fn default_admin_login_lands_on_overview_without_force_change() {
+    let h = harness();
+    let (csrf, cookie) = login_page_tokens(&h.app).await;
+    let resp = post_login(
+        &h.app,
+        &csrf,
+        Some(&cookie),
+        Some("same-origin"),
+        "admin",
+        "pw-test-123",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get(header::LOCATION).unwrap(),
+        "/p",
+        "默认不得跳到 settings?force=1"
+    );
+}
+
+/// 显式开启（用户标志为 1）时保留原能力：登录与后续页面强制跳改密页。
+#[tokio::test]
+async fn explicit_must_change_password_still_redirects() {
+    let h = harness();
+    let hash = skiff_identity::hash_password("pw-test-123").unwrap();
+    h.state
+        .db()
+        .create_user("force-admin", &hash, Role::Admin, true)
+        .unwrap();
+
+    let (csrf, cookie) = login_page_tokens(&h.app).await;
+    let resp = post_login(
+        &h.app,
+        &csrf,
+        Some(&cookie),
+        Some("same-origin"),
+        "force-admin",
+        "pw-test-123",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get(header::LOCATION).unwrap(),
+        "/p/settings?force=1"
+    );
+
+    let token = set_cookie_value(&resp, skiff_identity::session_cookie_name(true))
+        .expect("登录成功应下发会话 Cookie");
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p")
+                .header(
+                    header::COOKIE,
+                    format!("{}={token}", skiff_identity::session_cookie_name(true)),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers().get(header::LOCATION).unwrap(),
+        "/p/settings?force=1"
+    );
+}
+
 /// 回归：登录后带会话访问 settings / 容器页必须是 200，而不是 303 回登录页。
 #[tokio::test]
 async fn session_survives_login_redirect_and_reaches_pages() {
@@ -2205,7 +2277,14 @@ async fn sites_list_shows_default_badge_and_toggle() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     h.state
         .db()
-        .create_site("demo.local", "/www/sites/demo.local", "8.5")
+        .create_site(
+            "demo.local",
+            &h.data_dir
+                .join("www/sites/demo.local")
+                .display()
+                .to_string(),
+            "8.5",
+        )
         .unwrap();
     h.state.db().set_site_default("demo.local", true).unwrap();
 
@@ -2226,14 +2305,15 @@ async fn sites_list_shows_default_badge_and_toggle() {
 async fn sites_list_cert_column_matches_ssl_files() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/demo.local");
     h.state
         .db()
-        .create_site("demo.local", "/www/sites/demo.local", "8.5")
+        .create_site("demo.local", &root.display().to_string(), "8.5")
         .unwrap();
     let s = h.state.site_settings();
-    std::fs::create_dir_all(s.cert_dir("demo.local")).unwrap();
-    std::fs::write(s.cert_file("demo.local"), "-----BEGIN CERTIFICATE-----\n").unwrap();
-    std::fs::write(s.key_file("demo.local"), "-----BEGIN PRIVATE KEY-----\n").unwrap();
+    std::fs::create_dir_all(root.join("ssl")).unwrap();
+    std::fs::write(s.cert_file(&root), "-----BEGIN CERTIFICATE-----\n").unwrap();
+    std::fs::write(s.key_file(&root), "-----BEGIN PRIVATE KEY-----\n").unwrap();
     h.state
         .db()
         .set_site_tls("demo.local", true, false)
@@ -2256,6 +2336,193 @@ async fn sites_list_cert_column_matches_ssl_files() {
         html.contains("证书已上传"),
         "证书文件存在但未启用时应显示已上传: {html}"
     );
+}
+
+/// 一站一目录：启动迁移必须补齐站点 conf、公共 include 与默认站投影，
+/// 且路径全部指向 `<站点目录>/{index,log,ssl,conf}`；重复执行幂等。
+#[tokio::test]
+async fn site_layout_migration_writes_per_site_and_default_confs() {
+    let h = harness();
+    let root = h.data_dir.join("www/sites/demo.local");
+    let s = h.state.site_settings();
+    let index = skiff_app::sites::site_index_dir(&root);
+    std::fs::create_dir_all(&index).unwrap();
+    std::fs::create_dir_all(skiff_app::sites::site_log_dir(&root)).unwrap();
+    std::fs::write(index.join("index.php"), "<?php echo 'demo';").unwrap();
+    h.state
+        .db()
+        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .unwrap();
+    h.state.db().set_site_default("demo.local", true).unwrap();
+
+    h.state.migrate_site_layout().unwrap();
+
+    let include = s.conf_dir.join(skiff_app::sites::SITES_INCLUDE_CONF);
+    let include_text = std::fs::read_to_string(&include).unwrap();
+    assert!(
+        include_text.contains("include ") && include_text.contains("/sites/*/conf/*.conf;"),
+        "公共入口必须用通配加载各站 conf：{include_text}"
+    );
+    let default_conf = s.conf_dir.join("00-skiff-default.conf");
+    let default_text = std::fs::read_to_string(&default_conf).unwrap();
+    let container_index = s.container_path(&skiff_app::sites::site_index_dir(&root));
+    let container_access = s.container_log(&root, skiff_app::sites::LogKind::Access);
+    assert!(
+        default_text.contains(&container_index),
+        "默认站文档根必须指向站点目录下的 index/：{default_text}"
+    );
+    assert!(
+        default_text.contains(&container_access),
+        "默认站日志必须落在站点目录 log/：{default_text}"
+    );
+    assert!(
+        !default_text.contains("/public") && !default_text.contains("/www/logs/"),
+        "默认站配置不得残留旧布局路径：{default_text}"
+    );
+
+    let vhost = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
+    let vhost_text = std::fs::read_to_string(&vhost).unwrap();
+    assert!(
+        vhost_text.contains(&container_index),
+        "站点 vhost 必须指向 index/：{vhost_text}"
+    );
+    assert!(
+        vhost_text.contains(&container_access),
+        "站点 vhost 日志必须落在 log/：{vhost_text}"
+    );
+
+    // 幂等：再跑一次不得改写内容。
+    h.state.migrate_site_layout().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&default_conf).unwrap(),
+        default_text,
+        "迁移重复执行必须幂等"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&vhost).unwrap(),
+        vhost_text,
+        "迁移重复执行必须幂等"
+    );
+}
+
+/// 日志数据源只读 `<站点目录>/log/`，旧集中目录即使还有文件也不能被读到。
+#[tokio::test]
+async fn site_logs_read_site_directory_not_legacy_central_dir() {
+    let h = harness();
+    let root = h.data_dir.join("www/sites/demo.local");
+    let s = h.state.site_settings();
+    std::fs::create_dir_all(skiff_app::sites::site_log_dir(&root)).unwrap();
+    h.state
+        .db()
+        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .unwrap();
+    std::fs::write(
+        s.log_file(&root, skiff_app::sites::LogKind::Access),
+        "new-layout-line\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
+    std::fs::write(
+        s.legacy_log_file("demo.local", skiff_app::sites::LogKind::Access),
+        "legacy-line\n",
+    )
+    .unwrap();
+
+    let (access, _) = h.state.site_logs("demo.local", 20, "").unwrap();
+    assert!(access.contains("new-layout-line"), "{access}");
+    assert!(
+        !access.contains("legacy-line"),
+        "日志页不得再读旧集中目录：{access}"
+    );
+}
+
+/// 删除站点必须整目录删除 index/log/ssl/conf，并清掉旧布局残留与站点记录。
+#[tokio::test]
+async fn site_delete_removes_whole_site_directory_and_legacy_residue() {
+    let h = harness();
+    let root = h.data_dir.join("www/sites/demo.local");
+    let s = h.state.site_settings();
+    for dir in [
+        skiff_app::sites::site_index_dir(&root),
+        skiff_app::sites::site_log_dir(&root),
+        skiff_app::sites::site_ssl_dir(&root),
+        skiff_app::sites::site_conf_dir(&root),
+    ] {
+        std::fs::create_dir_all(&dir).unwrap();
+    }
+    std::fs::write(
+        skiff_app::sites::site_index_dir(&root).join("index.php"),
+        "x",
+    )
+    .unwrap();
+    std::fs::write(s.log_file(&root, skiff_app::sites::LogKind::Access), "x").unwrap();
+    std::fs::write(s.cert_file(&root), "CERT").unwrap();
+    std::fs::write(s.key_file(&root), "KEY").unwrap();
+    std::fs::write(s.vhost_file(&root, "demo.local"), "server {}").unwrap();
+    std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
+    std::fs::write(
+        s.legacy_log_file("demo.local", skiff_app::sites::LogKind::Access),
+        "old",
+    )
+    .unwrap();
+    std::fs::create_dir_all(s.legacy_cert_dir("demo.local")).unwrap();
+    std::fs::write(s.legacy_cert_dir("demo.local").join("cert.pem"), "old").unwrap();
+    std::fs::create_dir_all(&s.conf_dir).unwrap();
+    std::fs::write(s.conf_dir.join("demo.local.conf"), "server {}").unwrap();
+
+    h.state
+        .db()
+        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .unwrap();
+    h.state.delete_site("demo.local").await.unwrap();
+
+    assert!(!root.exists(), "整站目录必须一次性删除");
+    assert!(!s
+        .legacy_log_file("demo.local", skiff_app::sites::LogKind::Access)
+        .exists());
+    assert!(!s.legacy_cert_dir("demo.local").exists());
+    assert!(!s.conf_dir.join("demo.local.conf").exists());
+    assert!(
+        h.state.db().site_by_domain("demo.local").unwrap().is_none(),
+        "站点记录必须删除"
+    );
+}
+
+/// 站点「目录」页只能浏览文档根 index/：log/ 与 ssl/ 不得通过相对路径越界。
+#[tokio::test]
+async fn site_dir_listing_is_limited_to_index_dir() {
+    let h = harness();
+    let root = h.data_dir.join("www/sites/demo.local");
+    let s = h.state.site_settings();
+    std::fs::create_dir_all(skiff_app::sites::site_index_dir(&root)).unwrap();
+    std::fs::create_dir_all(skiff_app::sites::site_log_dir(&root)).unwrap();
+    std::fs::create_dir_all(skiff_app::sites::site_ssl_dir(&root)).unwrap();
+    std::fs::write(
+        skiff_app::sites::site_index_dir(&root).join("hello.txt"),
+        "hi",
+    )
+    .unwrap();
+    std::fs::write(s.log_file(&root, skiff_app::sites::LogKind::Access), "log").unwrap();
+    std::fs::write(s.key_file(&root), "key").unwrap();
+    h.state
+        .db()
+        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .unwrap();
+
+    let listing = h.state.site_dir_listing("demo.local", "").unwrap();
+    assert_eq!(
+        listing.entries.len(),
+        1,
+        "根目录只应看到 index/ 内的 hello.txt"
+    );
+    assert_eq!(listing.entries[0].name, "hello.txt");
+    for rel in ["../log", "log/access.log", "../ssl/key.pem"] {
+        let err = h.state.site_dir_listing("demo.local", rel).unwrap_err();
+        assert!(
+            matches!(err, skiff_app::sites::SiteError::BadRequest(_)),
+            "{rel} 必须被拒绝：{err:?}"
+        );
+    }
 }
 
 /// 导航交互：静态脚本里不得再有悬停展开；单开手风琴、点空白不收起、Escape 回焦箭头。
@@ -2778,13 +3045,13 @@ async fn sites_batch_requires_admin() {
 async fn site_config_save_failure_rolls_back() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/demo.local");
     h.state
         .db()
-        .create_site("demo.local", "/www/sites/demo.local", "8.5")
+        .create_site("demo.local", &root.display().to_string(), "8.5")
         .unwrap();
-    let s = h.state.site_settings();
-    std::fs::create_dir_all(&s.conf_dir).unwrap();
-    let conf = s.conf_dir.join("demo.local.conf");
+    std::fs::create_dir_all(skiff_app::sites::site_conf_dir(&root)).unwrap();
+    let conf = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
     let original = "server { listen 80; server_name demo.local; }";
     std::fs::write(&conf, original).unwrap();
 
@@ -2835,7 +3102,7 @@ async fn site_detail_tabs_are_reachable() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let root = h.data_dir.join("www/sites/demo.local");
-    std::fs::create_dir_all(root.join("public")).unwrap();
+    std::fs::create_dir_all(skiff_app::sites::site_index_dir(&root)).unwrap();
     h.state
         .db()
         .create_site("demo.local", &root.display().to_string(), "8.5")
@@ -2844,9 +3111,8 @@ async fn site_detail_tabs_are_reachable() {
         .db()
         .add_site_aliases("demo.local", &["www.demo.local".into()])
         .unwrap();
-    let s = h.state.site_settings();
-    std::fs::create_dir_all(&s.conf_dir).unwrap();
-    let conf = s.conf_dir.join("demo.local.conf");
+    std::fs::create_dir_all(skiff_app::sites::site_conf_dir(&root)).unwrap();
+    let conf = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
     std::fs::write(
         &conf,
         "server { listen 80; server_name demo.local www.demo.local; }",
@@ -2857,11 +3123,129 @@ async fn site_detail_tabs_are_reachable() {
         ("/p/sites/demo.local", "站点概览"),
         ("/p/sites/demo.local?tab=domains", "别名"),
         ("/p/sites/demo.local?tab=config", "保存并重载 nginx"),
-        ("/p/sites/demo.local?tab=dir", "站点目录"),
+        ("/p/sites/demo.local?tab=dir", "文档根"),
         ("/p/sites/demo.local?tab=ssl", "生成自签证书并启用"),
     ] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains(marker), "{uri} 缺少 {marker}: {html}");
     }
+}
+
+/// 文件管理插件 UI：CSP 只能自同源静态资源，页面必须提供现代文件管理器
+/// 的骨架（目录树/快捷入口/面包屑/多选列表/右键菜单/编辑器）与键盘操作。
+///
+/// 这里断言的是**随包内容**，不依赖浏览器：任何外链、内联脚本或缺失的
+/// 交互元素都会在 `cargo test` 阶段被挡住。
+#[test]
+fn files_ui_is_self_contained_and_exposes_modern_interactions() {
+    let html = include_str!("../../../plugins/files/ui/index.html");
+    let js = include_str!("../../../plugins/files/ui/app.js");
+
+    // 自包含：不得出现任何 scheme 形式的绝对地址（包内一律相对路径）。
+    for (name, src) in [("index.html", html), ("app.js", js)] {
+        assert!(
+            !src.contains("http://") && !src.contains("https://"),
+            "{name} 不得引用外链资源"
+        );
+        assert!(!src.contains("//cdn."), "{name} 不得引用 CDN");
+        assert!(
+            !src.contains("fonts.googleapis") && !src.contains("fonts.gstatic"),
+            "{name} 不得引用外链字体"
+        );
+    }
+
+    // 脚本必须全部外链自包内文件，不允许内联 <script>。
+    assert!(
+        !html.contains("<script>"),
+        "插件 UI 不得包含内联脚本（CSP script-src 'self' 会直接拒绝）"
+    );
+    for src in [
+        "vendor/highlight.min.js",
+        "vendor/languages/nginx.min.js",
+        "app.js",
+    ] {
+        assert!(
+            html.contains(&format!("<script src=\"{src}\"")),
+            "缺少随包脚本引用: {src}"
+        );
+    }
+
+    // 现代文件管理器骨架。
+    for id in [
+        "quick",
+        "tree",
+        "crumbs",
+        "list",
+        "ctx",
+        "dlg-new",
+        "dlg-jump",
+        "dlg-confirm",
+        "dlg-editor",
+        "gutter",
+        "ed-dirty",
+    ] {
+        assert!(
+            html.contains(&format!("id=\"{id}\"")),
+            "缺少必需节点 id=\"{id}\""
+        );
+    }
+    assert!(
+        html.contains(r#"role="listbox""#) && html.contains(r#"aria-multiselectable="true""#),
+        "文件列表必须是可多选的 listbox，键盘与读屏才能工作"
+    );
+    assert!(html.contains("未保存"), "编辑器必须有未保存（dirty）提示");
+    assert!(
+        html.contains("单次读写上限 <b>256 KiB</b>"),
+        "侧栏必须写明 256 KiB 读写上限"
+    );
+    assert!(
+        !html.contains("上传") && !html.contains("下载"),
+        "不得虚构后端不存在的能力（上传/下载）"
+    );
+
+    // 主题契约：缺省深色；父页面下发 skiff.theme 时写 html[data-theme]；
+    // iframe 比父脚本先就绪时主动 request 一次，旧插件不监听消息则保持深色。
+    assert!(
+        html.contains(r#"data-theme="dark""#),
+        "插件页缺省必须是深色（父面板未下发主题时不能闪白）"
+    );
+    assert!(
+        js.contains(r#"msg.type === "skiff.theme""#),
+        "app.js 必须监听父页面的 skiff.theme 消息"
+    );
+    assert!(
+        js.contains("skiff.theme.request"),
+        "app.js 必须主动向父页面索取一次主题，避免 iframe 先加载漏广播"
+    );
+    assert!(
+        js.contains(r#"setAttribute("data-theme""#),
+        "收到主题后必须写到 html[data-theme]（浅色覆盖由 CSS 令牌生效）"
+    );
+
+    // 真实交互：键盘、多选、重命名、删除确认、越权/超限提示。
+    for needle in [
+        r#"key === "ArrowDown""#,
+        r#"key === "ArrowUp""#,
+        r#"key === "Enter""#,
+        r#"key === "F2""#,
+        r#"key === "Delete""#,
+        r#"key === "Backspace""#,
+        "ev.ctrlKey || ev.metaKey",
+        "ev.shiftKey",
+    ] {
+        assert!(js.contains(needle), "app.js 缺少交互片段: {needle}");
+    }
+    assert!(
+        js.contains("var readOnly = !r.eof;"),
+        "超过 256 KiB（eof=false）必须进入只读模式"
+    );
+    assert!(
+        js.contains("超过 256 KiB") || html.contains("超过 256 KiB"),
+        "只读原因必须对用户可见"
+    );
+    assert!(
+        js.contains("无权访问") || html.contains("无权访问"),
+        "越权路径必须给出明确提示"
+    );
 }

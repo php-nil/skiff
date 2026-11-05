@@ -143,7 +143,10 @@ pub struct LoginPage {
 #[derive(Debug, Clone)]
 pub struct SiteView {
     pub domain: String,
+    /// 站点目录（`/www/sites/<域名>`，整站备份单元）。
     pub root_dir: String,
+    /// 文档根（`/www/sites/<域名>/index`），目录页与文件能力的授权根。
+    pub index_dir: String,
     pub php_version: String,
     /// running / stopped / error
     pub status: String,
@@ -301,6 +304,8 @@ pub struct SiteSettingsPage {
 pub struct SiteLogsPage {
     pub ctx: PageCtx,
     pub domain: String,
+    /// 当前站点的日志目录（`/www/sites/<域名>/log`）。
+    pub log_dir: String,
     pub access_log: String,
     pub error_log: String,
     pub keyword: String,
@@ -503,6 +508,8 @@ pub struct SettingsPage {
     pub error: String,
     pub notice: String,
     pub force_change: bool,
+    /// 初始口令文件仍在：给一条**非阻塞**的修改建议，不做任何跳转。
+    pub initial_admin_pending: bool,
 }
 
 #[derive(Template)]

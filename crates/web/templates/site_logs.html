@@ -34,7 +34,7 @@
       {% if !keyword.is_empty() %}<a class="ghost" href="/{{ ctx.prefix }}/sites/{{ domain }}/logs">清除</a>{% endif %}
     </div>
   </form>
-  <p class="hint">日志由 nginx 直接写入宿主 <code>/www/logs/nginx/{{ domain }}.access.log</code> / <code>.error.log</code>；内核按 10MB 做 copytruncate 轮转，不依赖宿主 logrotate。</p>
+  <p class="hint">日志由 nginx 直接写入站点目录 <code>{{ log_dir }}/access.log</code> / <code>{{ log_dir }}/error.log</code>；内核按 10MB 做 copytruncate 轮转，不依赖宿主 logrotate。</p>
 </section>
 <section class="panel">
   <h2>访问日志（最新 200 行，时间倒序）</h2>

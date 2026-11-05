@@ -48,6 +48,8 @@ pub async fn render_settings(
         error: error.to_string(),
         notice: notice.to_string(),
         force_change: force || user.must_change_password(),
+        // 文件仍存在说明初始口令尚未被修改；只提示，不拦截。
+        initial_admin_pending: state.cfg.data_dir.join("initial-admin.txt").exists(),
     };
     handlers::render(page)
 }

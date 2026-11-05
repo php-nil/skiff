@@ -27,8 +27,8 @@
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
 
       <div class="wizard-panel" data-wizard-panel="1">
-        <h2>域名与根目录</h2>
-        <p class="hint">主域名用于 vhost 与目录命名；别名会一并写入 <code>server_name</code>。根目录留空时默认 <code>/www/sites/&lt;主域名&gt;</code>。</p>
+        <h2>域名与站点目录</h2>
+        <p class="hint">主域名用于 vhost 与目录命名；别名会一并写入 <code>server_name</code>。站点目录留空时默认 <code>/www/sites/&lt;主域名&gt;</code>，文档根为它下面的 <code>index/</code>，<code>log/ ssl/ conf/</code> 与 <code>index/</code> 同级。</p>
         <div class="form-grid">
           <label>主域名
             <input name="domain" value="{{ form.domain }}" placeholder="example.com" autocomplete="off"
@@ -42,7 +42,7 @@
             <p class="field-error" id="err-aliases" data-error-for="aliases"
                {% if error_field == "aliases" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
           </label>
-          <label>根目录
+          <label>站点目录
             <input name="root_dir" value="{{ form.root_dir }}" placeholder="/www/sites/example.com" autocomplete="off"
                    aria-describedby="err-root">
             <p class="field-error" id="err-root" data-error-for="root_dir"
@@ -79,7 +79,7 @@
         <dl class="summary">
           <dt>主域名</dt><dd class="mono" data-summary="domain">—</dd>
           <dt>别名</dt><dd class="mono" data-summary="aliases">—</dd>
-          <dt>根目录</dt><dd class="mono" data-summary="root">—</dd>
+          <dt>站点目录</dt><dd class="mono" data-summary="root">—</dd>
           <dt>PHP 版本</dt><dd class="mono" data-summary="php">—</dd>
           <dt>证书</dt><dd>未配置（HTTPS 下一阶段接入）</dd>
         </dl>

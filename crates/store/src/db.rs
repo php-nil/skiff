@@ -303,7 +303,7 @@ CREATE TABLE IF NOT EXISTS site_aliases (
 CREATE INDEX IF NOT EXISTS idx_site_aliases_site ON site_aliases(site_domain);
 "#;
 
-// v6：站点 HTTPS 状态。证书文件落在 `/www/certs/<域名>`，库里只存开关；
+// v6：站点 HTTPS 状态。证书文件落在 `/www/sites/<域名>/ssl`，库里只存开关；
 // `https` 表示启用 443，`force_https` 表示 80 强制跳转 443。
 const SCHEMA_V6: &str = r#"
 ALTER TABLE sites ADD COLUMN https INTEGER NOT NULL DEFAULT 0;

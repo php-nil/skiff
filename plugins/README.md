@@ -38,6 +38,16 @@
   - 调用方与目标都不能在同一调用链里重复进入（内核 busy 集合），单次转发上限 15s。
   - 目标选择器不要写死插件列表：`interop_catalog` 只返回**真正调得通**的接口，UI 按它渲染。
 
+## 插件 UI 交互与主题
+
+- **主题协议**：插件页缺省深色（`html[data-theme="dark"]`）；父面板切换主题时向 iframe 发
+  `{type:"skiff.theme", theme:"light"|"dark"}`，插件写 `html[data-theme]` 由 CSS token 覆盖即可。
+  iframe 先于父脚本就绪时主动发 `skiff.theme.request` 索取一次；不监听消息的老插件保持深色缺省。
+- **files 文件管理**：左目录树 + 快捷入口、可点面包屑、名称/大小/修改时间列表；支持
+  Ctrl/Cmd 点击多选、Shift 连选、方向键/Home/End/Enter/F2/Delete/Backspace/空格、右键菜单、
+  行内重命名、新建目录、编辑弹窗（行号 + 等宽 + 未保存提示）。只用 `list/read/write/remove/rename/mkdir`；
+  单次读写 256 KiB，超限只读第一页；保存是全量覆盖；不提供上传/下载。
+
 ## 菜单与槽位声明（P2）
 
 一级固定六项，插件只能挂到固定一级下；二级/三级都由内核渲染，插件只负责 `ui/` 内容。

@@ -49,9 +49,11 @@ pub async fn index(
         .unwrap_or(false);
     let prefix = state.cfg.entry_prefix.clone();
     let docker_reason = state.docker_unavailable_reason().to_string();
+    let initial_admin_pending = state.cfg.data_dir.join("initial-admin.txt").exists();
     let todos = dashboard_todos(
         &prefix,
         user.must_change_password(),
+        initial_admin_pending,
         docker_ok,
         &docker_reason,
         abnormal.len(),
@@ -108,12 +110,13 @@ pub async fn index(
     handlers::render(page)
 }
 
-/// 概览待办：只由**真实信号**生成（会话强制改密、Docker 可用性、异常容器、
-/// 停用插件、TOTP 状态）。按影响排序：危险 → 警告；同级保持生成顺序。
+/// 概览待办：只由**真实信号**生成（会话强制改密、初始口令未改、Docker 可用性、
+/// 异常容器、停用插件、TOTP 状态）。按影响排序：危险 → 警告；同级保持生成顺序。
 #[allow(clippy::too_many_arguments)]
 fn dashboard_todos(
     prefix: &str,
     must_change: bool,
+    initial_admin_pending: bool,
     docker_ok: bool,
     docker_reason: &str,
     abnormal_containers: usize,
@@ -145,6 +148,15 @@ fn dashboard_todos(
             "当前会话在改密前不能执行其他管理操作。".into(),
             link("settings?force=1"),
             "去改口令",
+        ));
+    } else if initial_admin_pending {
+        // 默认口径下不强制跳转，只给一条可忽略的建议。
+        todos.push(todo(
+            "warn",
+            "建议修改初始口令".into(),
+            "当前口令仍保存在数据目录的 initial-admin.txt；修改成功后文件会自动删除。".into(),
+            link("settings#password"),
+            "去修改",
         ));
     }
     if !docker_ok {
@@ -225,13 +237,23 @@ mod tests {
 
     #[test]
     fn todos_are_empty_when_everything_is_healthy() {
-        let todos = dashboard_todos("p", false, true, "", 0, 0, true, 0);
+        let todos = dashboard_todos("p", false, false, true, "", 0, 0, true, 0);
         assert!(todos.is_empty());
+    }
+
+    /// 默认口径：初始口令未改时只给非阻塞警告，不产生强制跳转条目。
+    #[test]
+    fn initial_password_pending_only_suggests_change() {
+        let todos = dashboard_todos("p", false, true, true, "", 0, 0, true, 0);
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].level, "warn");
+        assert_eq!(todos[0].href, "/p/settings#password");
+        assert!(todos[0].title.contains("建议修改初始口令"));
     }
 
     #[test]
     fn todos_are_impact_ordered_and_deep_linked() {
-        let todos = dashboard_todos("p", true, false, "socket missing", 2, 1, false, 1);
+        let todos = dashboard_todos("p", true, false, false, "socket missing", 2, 1, false, 1);
         let levels: Vec<&str> = todos.iter().map(|t| t.level.as_str()).collect();
         assert_eq!(
             levels,

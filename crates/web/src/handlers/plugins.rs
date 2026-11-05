@@ -25,6 +25,13 @@ use crate::util::{form_first, parse_form};
 /// `?open=` 定位串的字符上限：够放一条深层路径，又不至于把 URL 撑爆。
 const OPEN_PATH_MAX: usize = 512;
 
+/// 插件 UI 的 CSP：脚本/样式只能来自插件包自身，网络请求全禁。
+/// 抽成常量是为了让契约测试能直接断言「没有放开外链」。
+const PLUGIN_UI_CSP: &str =
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; connect-src 'none'; form-action 'none'; base-uri 'none'; \
+     object-src 'none'; frame-ancestors 'self'";
+
 /// 一条插件记录 → 列表/详情通用的视图。
 fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppError> {
     let signed = !p.key_id.is_empty() && state.db().trusted_key(&p.key_id)?.is_some();
@@ -640,14 +647,8 @@ pub async fn plugin_ui(
     // 插件 UI 恰恰要嵌进面板详情页的 iframe，所以显式改成 SAMEORIGIN。
     resp.headers_mut()
         .insert(X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
-    resp.headers_mut().insert(
-        CONTENT_SECURITY_POLICY,
-        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data:; connect-src 'none'; form-action 'none'; base-uri 'none'; \
-         object-src 'none'; frame-ancestors 'self'"
-            .parse()
-            .unwrap(),
-    );
+    resp.headers_mut()
+        .insert(CONTENT_SECURITY_POLICY, PLUGIN_UI_CSP.parse().unwrap());
     Ok(resp)
 }
 #[cfg(test)]
@@ -674,5 +675,28 @@ mod tests {
         // 边界：正好等于上限时原样保留
         let exact = "a".repeat(OPEN_PATH_MAX);
         assert_eq!(sanitize_open(&exact), exact);
+    }
+
+    /// 插件 UI 只能加载随包同源资源：脚本/图片/连接都不能出现外链与通配。
+    #[test]
+    fn plugin_ui_csp_forbids_external_resources() {
+        assert!(
+            PLUGIN_UI_CSP.contains("default-src 'none'"),
+            "缺省必须全部拒绝"
+        );
+        assert!(
+            PLUGIN_UI_CSP.contains("script-src 'self'"),
+            "脚本只能来自插件包自身（禁止内联与 CDN）"
+        );
+        assert!(
+            PLUGIN_UI_CSP.contains("connect-src 'none'"),
+            "插件 UI 不得发出网络请求"
+        );
+        assert!(
+            !PLUGIN_UI_CSP.contains("'unsafe-eval'")
+                && !PLUGIN_UI_CSP.contains("script-src *")
+                && !PLUGIN_UI_CSP.contains("https:"),
+            "不得放开 eval 或任意来源脚本: {PLUGIN_UI_CSP}"
+        );
     }
 }

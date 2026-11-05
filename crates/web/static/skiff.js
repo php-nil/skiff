@@ -673,8 +673,9 @@
         } else showError("aliases", "");
 
         var rv = root ? root.value.trim() : "";
-        if (!rv) { showError("root_dir", "请填写站点根目录"); ok = false; }
-        else if (!rv.startsWith("/") || rv.includes("..")) { showError("root_dir", "根目录必须是以 / 开头的绝对路径，且不能包含 .."); ok = false; }
+        if (!rv) { showError("root_dir", "请填写站点目录"); ok = false; }
+        else if (!rv.startsWith("/") || rv.includes("..")) { showError("root_dir", "站点目录必须是以 / 开头的绝对路径，且不能包含 .."); ok = false; }
+        else if (!/\/sites\/[^\/]+$/.test(rv.replace(/\/+$/, ""))) { showError("root_dir", "站点目录必须是 /www/sites/<域名> 形式的一级目录"); ok = false; }
         else showError("root_dir", "");
       }
       return ok;

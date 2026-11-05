@@ -38,7 +38,7 @@ docker exec skiff cat /data/initial-admin.txt
 docker logs skiff 2>&1 | grep 入口
 ```
 
-首次登录会强制改密，改密成功后 `initial-admin.txt` 自动删除。
+初始口令可直接登录；建议登录后在面板「设置 → 口令」修改，改密成功后 `initial-admin.txt` 自动删除。
 
 ## 数据
 

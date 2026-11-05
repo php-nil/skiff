@@ -9,10 +9,12 @@
 /etc/skiff/config.toml         # 可选配置文件
 /www/skiff/                    # 唯一数据根 SKIFF_DATA_DIR
   skiff.db / plugins/ / backup/ / waf/rules/
-/www/sites/<域名>/public       # 站点根（容器内同路径 /www/sites/...）
-/www/nginx/conf.d              # 默认站点 + 兜底 404 + 各站点 vhost
-/www/logs/nginx                # <域名>.access.log / .error.log
-/www/certs/<域名>              # 证书预留目录（HTTPS 未接）
+/www/sites/<域名>/             # 一站一目录：备份这一个目录 = 备份整站
+  index/                       # 网站根目录（文档根；容器内同路径 /www/sites/...）
+  log/                         # access.log / error.log
+  ssl/                         # cert.pem / key.pem（HTTPS）
+  conf/                        # <域名>.conf（停止时改名 .conf.disabled）
+/www/nginx/conf.d              # 内核公共配置：默认站 + 兜底 404 + 10-skiff-sites.conf（include 各站 conf）
 /www/php/php-fpm.sock          # PHP-FPM unix socket（不暴露 9000）
 /run/skiff/                    # root:skiff-plugins 0711；kernel.sock 0660；plugins/{id}/ 0700
 skiff.service                  # systemd unit：Type=simple, Restart=always
@@ -32,9 +34,10 @@ skiff.service                  # systemd unit：Type=simple, Restart=always
 
 ## 5.2 数据、配置与升级
 
-- 唯一数据根 `/www/skiff`：`skiff.db`、`plugins/`、`initial-admin.txt`、`backup/`、WAF 规则预留目录。站点寄宿根单独为 `/www`（`sites/`、`nginx/conf.d`、`logs/nginx`、`certs/`、`php/`），由 `web_root` 配置项决定，默认 `/www`。配置文件唯一规范路径是 `/etc/skiff/config.toml`，不在数据根重复维护；可选 Docker 形态以环境变量为主。
-- 权限：`/www/skiff` 与 `plugins/` 0711（可穿越不可列）、`backup/` 0700、库与口令文件 0600；`/www/{sites,nginx,logs,certs,php}` 0755，供容器内非 root 进程读取。
-- 网站运行环境为 **host 网络**：nginx/OpenResty 直接监听宿主 80（未来 443），PHP-FPM 只监听 `/www/php/php-fpm.sock`；容器日志驱动 `local` + `max-size=10m`，站点 access/error 落 `/www/logs/nginx` 并由内核轮转。
+- 唯一数据根 `/www/skiff`：`skiff.db`、`plugins/`、`initial-admin.txt`、`backup/`、WAF 规则预留目录。站点寄宿根单独为 `/www`（`sites/`、`nginx/conf.d`、`php/`），由 `web_root` 配置项决定，默认 `/www`。配置文件唯一规范路径是 `/etc/skiff/config.toml`，不在数据根重复维护；可选 Docker 形态以环境变量为主。
+- **站点树一站一目录**：`/www/sites/<域名>/{index,log,ssl,conf}` 承载该站全部产物（文档根、access/error 日志、证书、vhost），备份单个站点目录即整站可恢复；内核公共配置（默认站、兜底 404、`10-skiff-sites.conf`）仍在 `/www/nginx/conf.d`，vhost 由公共配置里的 `include /www/sites/*/conf/*.conf;` 载入（`.conf.disabled` 不被匹配）。旧布局（根目录直接放站点文件、日志在 `/www/logs/nginx/`、证书在 `/www/certs/<域名>/`、conf 在 `/www/nginx/conf.d/`）启动时一次性幂等迁移，内容与权限保留；旧目录清空后删除，若仍有其他文件则保留不误删。
+- 权限：`/www/skiff` 与 `plugins/` 0711（可穿越不可列）、`backup/` 0700、库与口令文件 0600；`/www/{sites,nginx,php}` 0755，供容器内非 root 进程读取。站点根只到 `index/`，`log/` 与 `ssl/` 不通过站点目录浏览与 files 能力面暴露。
+- 网站运行环境为 **host 网络**：nginx/OpenResty 直接监听宿主 80（未来 443），PHP-FPM 只监听 `/www/php/php-fpm.sock`；容器日志驱动 `local` + `max-size=10m`，站点 access/error 落各站 `log/` 目录并由内核按站轮转。
 
 **插件存储分层**（`/www/skiff/plugins/{id}/`；`versions/` 仅 root 写入、插件只读，`data/`/`cache/`/`run/` 插件可写；landlock 按层授权属设计目标，当前未实现）：
 

@@ -313,16 +313,25 @@ group_b() {
     if [ -z "$csrf" ]; then fail B1a "登录页含 csrf 隐藏域" "没抓到 csrf"; return; fi
     pass B1a "登录页含 csrf 隐藏域" "len=${#csrf}"
 
-    # B2：首登必须强制改密（跳 settings?force=1）
+    # B2：默认不强制改密（直接进概览）；仅显式开启 require_initial_password_change 时跳改密页。
     code=$(curl -s -o "$TMP/b2.html" -D "$TMP/b2.hdr" -b "$JAR" -c "$JAR" \
         -d "csrf=$csrf" -d "username=admin" --data-urlencode "password=$PW" \
         -w '%{http_code}' "$BASE/$P/login")
     assert_eq B2 "初始口令登录" "$code" "303"
     loc=$(sed -n 's/^[Ll]ocation: *//p' "$TMP/b2.hdr" | tr -d '\r')
-    case "$loc" in
-        *settings*force=1*) pass B2a "首登强制改密跳转" "$loc" ;;
-        *) fail B2a "首登强制改密跳转" "Location=$loc" ;;
-    esac
+    forced=0
+    [ -f "$CONF" ] && grep -Eq '^[[:space:]]*require_initial_password_change[[:space:]]*=[[:space:]]*true' "$CONF" && forced=1
+    if [ "$forced" = "1" ]; then
+        case "$loc" in
+            *settings*force=1*) pass B2a "首登强制改密跳转（显式开启）" "$loc" ;;
+            *) fail B2a "首登强制改密跳转（显式开启）" "Location=$loc" ;;
+        esac
+    else
+        case "$loc" in
+            *settings*force=1*) fail B2a "默认直接进入概览（不强制改密）" "Location=$loc" ;;
+            *) pass B2a "默认直接进入概览（不强制改密）" "$loc" ;;
+        esac
+    fi
     cp "$JAR" "$TMP/jar.old"
 
     # B5：缺 CSRF 必须拒（放在改密之前，避免误改状态）

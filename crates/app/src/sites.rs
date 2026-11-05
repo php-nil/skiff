@@ -3,14 +3,23 @@
 //! 分层：这里只依赖下层的 `skiff_store` / `skiff_docker`，不含路由与模板；
 //! 所有动词都经 `DockerService::execute` 单点分发，不自己拼 Engine HTTP。
 //!
-//! 宿主目录约定（`web_root` 默认 `/www`）：
-//! - 站点：`/www/sites/<域名>/public`
-//! - vhost：`/www/nginx/conf.d`（挂到容器 `/etc/nginx/conf.d`）
-//! - 日志：`/www/logs/nginx/<域名>.access.log|error.log`
-//! - 证书：`/www/certs/<域名>`；PHP socket：`/www/php/php-fpm.sock`
+//! 宿主目录约定（`web_root` 默认 `/www`，**一个站点一个目录**）：
+//!
+//! ```text
+//! /www/sites/<域名>/
+//!   index/  网站根目录（文档根）
+//!   log/    access.log / error.log
+//!   ssl/    cert.pem / key.pem
+//!   conf/   <域名>.conf（停止时改名 .conf.disabled）
+//! ```
+//!
+//! 备份 `/www/sites/<域名>/` 即备份整站。内核公共配置（默认站、兜底站、站点
+//! include 入口）仍在 `/www/nginx/conf.d`（挂到容器 `/etc/nginx/conf.d`）；
+//! PHP socket 在 `/www/php/php-fpm.sock`。
 //!
 //! 两个容器都整目录挂载 `/www`，并使用 host 网络：nginx 直接监听宿主 80，
-//! PHP-FPM 只走 unix socket，不再暴露 9000。
+//! PHP-FPM 只走 unix socket，不再暴露 9000。容器内路径一律由
+//! [`SiteSettings::container_path`] 从宿主路径换算，禁止手拼。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -43,6 +52,17 @@ pub const CONTAINER_PHP_POOL: &str = "/usr/local/etc/php-fpm.d/www.conf";
 /// 单文件日志轮转阈值（内核自己轮转，不依赖宿主 logrotate）。
 pub const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// 站点目录内的固定子目录（一站一目录，整目录备份即整站备份）。
+pub const SITE_INDEX_DIR: &str = "index";
+pub const SITE_LOG_DIR: &str = "log";
+pub const SITE_SSL_DIR: &str = "ssl";
+pub const SITE_CONF_DIR: &str = "conf";
+
+/// 公共配置目录里的站点 include 入口：主配置 `include /etc/nginx/conf.d/*.conf`
+/// 先加载本文件，再由它把各站点自己的 `conf/*.conf` 拉进来。
+/// 文件名保持 `10-` 前缀，排在 `00-skiff-default.conf` / `00-skiff-fallback.conf` 之后。
+pub const SITES_INCLUDE_CONF: &str = "10-skiff-sites.conf";
+
 const KEY_PREFIX: &str = "sites.image_prefix";
 const KEY_NGINX_IMAGE: &str = "sites.nginx_image";
 const KEY_PHP_IMAGE: &str = "sites.php_image";
@@ -63,19 +83,37 @@ const FALLBACK_VHOST: &str =
      server {\n    listen 80;\n    server_name skiff-fallback;\n    return 404;\n}\n";
 
 /// 站点的宿主路径与镜像配置（默认值即宿主直装形态）。
+///
+/// `conf_dir` 是**内核公共配置目录**（默认站、兜底站、站点 include 入口），
+/// 不是某个站点自己的 `conf/`；站点级路径都由站点目录派生。
 #[derive(Debug, Clone)]
 pub struct SiteSettings {
     pub web_root: PathBuf,
     pub sites_dir: PathBuf,
     pub conf_dir: PathBuf,
-    pub logs_dir: PathBuf,
-    pub certs_dir: PathBuf,
     pub php_dir: PathBuf,
     pub nginx_image: String,
     pub php_image: String,
     pub port: u16,
     pub registry_mirror: String,
     pub waf_mode: String,
+}
+
+/// 站点文档根（`index/`）；files 插件与「目录」页的授权根只能是它。
+pub fn site_index_dir(site_dir: &Path) -> PathBuf {
+    site_dir.join(SITE_INDEX_DIR)
+}
+
+pub fn site_log_dir(site_dir: &Path) -> PathBuf {
+    site_dir.join(SITE_LOG_DIR)
+}
+
+pub fn site_ssl_dir(site_dir: &Path) -> PathBuf {
+    site_dir.join(SITE_SSL_DIR)
+}
+
+pub fn site_conf_dir(site_dir: &Path) -> PathBuf {
+    site_dir.join(SITE_CONF_DIR)
 }
 
 impl SiteSettings {
@@ -98,13 +136,13 @@ impl SiteSettings {
         self.container_rel(host)
     }
 
-    pub fn log_file(&self, domain: &str, kind: LogKind) -> PathBuf {
-        self.logs_dir
-            .join(format!("{domain}.{}.log", kind.as_str()))
+    /// 站点日志：`<站点目录>/log/access.log|error.log`。
+    pub fn log_file(&self, site_dir: &Path, kind: LogKind) -> PathBuf {
+        site_log_dir(site_dir).join(format!("{}.log", kind.as_str()))
     }
 
-    pub fn container_log(&self, domain: &str, kind: LogKind) -> String {
-        self.container_rel(&self.log_file(domain, kind))
+    pub fn container_log(&self, site_dir: &Path, kind: LogKind) -> String {
+        self.container_rel(&self.log_file(site_dir, kind))
     }
 
     /// 由内核生成、覆盖镜像默认 `www.conf` 的 PHP-FPM 池配置。
@@ -117,16 +155,49 @@ impl SiteSettings {
         self.web_root.join("skiff").join("waf").join("rules")
     }
 
-    pub fn cert_dir(&self, domain: &str) -> PathBuf {
-        self.certs_dir.join(domain)
+    /// 站点证书：`<站点目录>/ssl/cert.pem|key.pem`。
+    pub fn cert_file(&self, site_dir: &Path) -> PathBuf {
+        site_ssl_dir(site_dir).join("cert.pem")
     }
 
-    pub fn cert_file(&self, domain: &str) -> PathBuf {
-        self.cert_dir(domain).join("cert.pem")
+    pub fn key_file(&self, site_dir: &Path) -> PathBuf {
+        site_ssl_dir(site_dir).join("key.pem")
     }
 
-    pub fn key_file(&self, domain: &str) -> PathBuf {
-        self.cert_dir(domain).join("key.pem")
+    /// 站点 vhost：`<站点目录>/conf/<域名>.conf`。
+    pub fn vhost_file(&self, site_dir: &Path, domain: &str) -> PathBuf {
+        site_conf_dir(site_dir).join(format!("{domain}.conf"))
+    }
+
+    pub fn vhost_disabled(&self, site_dir: &Path, domain: &str) -> PathBuf {
+        site_conf_dir(site_dir).join(format!("{domain}.conf.disabled"))
+    }
+
+    /// 旧布局的集中日志目录（仅迁移/清理用，新写入不再落这里）。
+    pub fn legacy_logs_dir(&self) -> PathBuf {
+        self.web_root.join("logs").join("nginx")
+    }
+
+    pub fn legacy_log_file(&self, domain: &str, kind: LogKind) -> PathBuf {
+        self.legacy_logs_dir()
+            .join(format!("{domain}.{}.log", kind.as_str()))
+    }
+
+    /// 旧布局的证书目录（仅迁移/清理用）。
+    pub fn legacy_cert_dir(&self, domain: &str) -> PathBuf {
+        self.web_root.join("certs").join(domain)
+    }
+
+    /// 站点 include 入口内容：通配加载各站点自己的 `conf/*.conf`。
+    ///
+    /// `.conf.disabled` 不匹配 `*.conf`，因此停用站点天然不会被 nginx 加载。
+    pub fn sites_include_conf(&self) -> String {
+        format!(
+            "# Skiff 站点 vhost 入口：每个站点的配置在自己的 conf/ 下，\n\
+             # 备份 {sites}/<域名>/ 即备份整站。\n\
+             include {sites}/*/conf/*.conf;\n",
+            sites = self.container_sites_dir()
+        )
     }
 }
 
@@ -385,7 +456,7 @@ pub struct VhostTls {
 }
 
 /// 生成 nginx/OpenResty vhost。路径里的站点目录已换算为容器内 `/www/...`；
-/// PHP 只走 unix socket，日志落宿主 `/www/logs/nginx`。
+/// PHP 只走 unix socket，日志落站点自己的 `log/` 目录。
 pub fn render_vhost(
     domain: &str,
     container_root: &str,
@@ -543,8 +614,6 @@ impl AppState {
         SiteSettings {
             sites_dir: web_root.join("sites"),
             conf_dir: web_root.join("nginx").join("conf.d"),
-            logs_dir: web_root.join("logs").join("nginx"),
-            certs_dir: web_root.join("certs"),
             php_dir: web_root.join("php"),
             nginx_image: pick(KEY_NGINX_IMAGE, DEFAULT_NGINX_IMAGE),
             php_image: pick(KEY_PHP_IMAGE, DEFAULT_PHP_IMAGE),
@@ -708,12 +777,11 @@ impl AppState {
 
         // 绑定挂载的源目录必须先存在，否则 Docker 直接 400；权限 0755 让容器内
         // 非 root 的 nginx/php 进程可读。PHP socket 池配置也在这一步落盘。
+        // 只建公共目录；站点级 index/log/ssl/conf 由建站与迁移各自创建。
         let dirs = [
             &s.web_root,
             &s.sites_dir,
             &s.conf_dir,
-            &s.logs_dir,
-            &s.certs_dir,
             &s.php_dir,
             &s.waf_rules_dir(),
         ];
@@ -778,8 +846,13 @@ impl AppState {
             .await;
 
         self.mark_step(3, StepState::Running, "").await;
-        // 布局或镜像升级后，旧站点的 vhost 也要按当前 `web_root` 重建；
-        // 顺序放在启动 nginx 之前，nginx 起来时即可直接加载。
+        // 先把旧布局（public/、集中日志/证书、公共 conf.d）一次性迁进站点目录，
+        // 再按当前 `web_root` 重建 vhost；顺序放在启动 nginx 之前，nginx 起来时
+        // 即可直接加载。
+        let migrated = match self.migrate_site_layout() {
+            Ok(n) => n,
+            Err(e) => return fail(3, format!("迁移站点目录布局失败：{e}")).await,
+        };
         let rebuilt = match self.rewrite_site_vhosts(&s) {
             Ok(n) => n,
             Err(e) => return fail(3, format!("重建站点配置失败：{e}")).await,
@@ -787,7 +860,9 @@ impl AppState {
         self.mark_step(
             3,
             StepState::Ok,
-            format!("PHP socket: {CONTAINER_SOCKET}，已重建 {rebuilt} 个站点 vhost"),
+            format!(
+                "PHP socket: {CONTAINER_SOCKET}，已迁移 {migrated} 个站点、重建 {rebuilt} 个 vhost"
+            ),
         )
         .await;
 
@@ -980,8 +1055,9 @@ impl AppState {
 
     fn write_default_vhost(&self, s: &SiteSettings) -> std::io::Result<()> {
         std::fs::create_dir_all(&s.conf_dir)?;
-        // 兜底文件始终存在；默认站点的投影以库里 `is_default` 为准。
+        // 兜底文件与站点 include 入口始终存在；默认站点的投影以库里 `is_default` 为准。
         std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)?;
+        std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())?;
         self.sync_default_conf(s)
     }
 
@@ -990,16 +1066,16 @@ impl AppState {
         let conf = s.conf_dir.join(DEFAULT_CONF);
         match self.db().default_site() {
             Ok(Some(site)) => {
-                let root = PathBuf::from(&site.root_dir).join("public");
-                let container_root = s.container_path(&root);
+                let site_dir = PathBuf::from(&site.root_dir);
+                let container_root = s.container_path(&site_index_dir(&site_dir));
                 let tls = self.site_tls(s, &site);
                 std::fs::write(
                     conf,
                     render_default_vhost(
                         &site.domain,
                         &container_root,
-                        &s.container_log(&site.domain, LogKind::Access),
-                        &s.container_log(&site.domain, LogKind::Error),
+                        &s.container_log(&site_dir, LogKind::Access),
+                        &s.container_log(&site_dir, LogKind::Error),
                         tls.as_ref(),
                     ),
                 )
@@ -1041,8 +1117,9 @@ impl AppState {
         if !site.https {
             return None;
         }
-        let cert = s.cert_file(&site.domain);
-        let key = s.key_file(&site.domain);
+        let site_dir = PathBuf::from(&site.root_dir);
+        let cert = s.cert_file(&site_dir);
+        let key = s.key_file(&site_dir);
         if !cert.is_file() || !key.is_file() {
             return None;
         }
@@ -1088,8 +1165,9 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let cert = s.cert_file(domain);
-        let key = s.key_file(domain);
+        let site_dir = PathBuf::from(&site.root_dir);
+        let cert = s.cert_file(&site_dir);
+        let key = s.key_file(&site_dir);
         let mut info = SiteTlsInfo {
             enabled: site.https,
             force_https: site.force_https,
@@ -1136,12 +1214,13 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        let site_dir = PathBuf::from(&site.root_dir);
         let aliases = self.site_aliases(domain);
-        let dir = s.cert_dir(&site.domain);
+        let dir = site_ssl_dir(&site_dir);
         std::fs::create_dir_all(&dir)
             .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
-        let cert = s.cert_file(&site.domain);
-        let key = s.key_file(&site.domain);
+        let cert = s.cert_file(&site_dir);
+        let key = s.key_file(&site_dir);
         let mut san = format!("DNS:{}", site.domain);
         for a in &aliases {
             san.push_str(&format!(",DNS:{a}"));
@@ -1203,11 +1282,12 @@ impl AppState {
                 "证书需为 PEM（BEGIN CERTIFICATE），私钥需包含 PRIVATE KEY".into(),
             ));
         }
-        let dir = s.cert_dir(&site.domain);
+        let site_dir = PathBuf::from(&site.root_dir);
+        let dir = site_ssl_dir(&site_dir);
         std::fs::create_dir_all(&dir)
             .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
-        let cert = s.cert_file(&site.domain);
-        let key = s.key_file(&site.domain);
+        let cert = s.cert_file(&site_dir);
+        let key = s.key_file(&site_dir);
         let tmp_cert = dir.join("cert.pem.tmp");
         let tmp_key = dir.join("key.pem.tmp");
         std::fs::write(&tmp_cert, cert_pem)
@@ -1238,11 +1318,29 @@ impl AppState {
     /// 删除证书文件并关闭 HTTPS。
     pub async fn delete_cert(&self, domain: &str) -> Result<(), SiteError> {
         self.apply_tls(domain, false, false).await?;
+        let site = self
+            .db()
+            .site_by_domain(domain)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
         let s = self.site_settings();
-        let dir = s.cert_dir(domain);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)
-                .map_err(|e| SiteError::Internal(format!("删除证书目录失败：{e}")))?;
+        let dir = site_ssl_dir(Path::new(&site.root_dir));
+        // 只删证书文件，保留 ssl/ 目录（它是站点固定布局的一部分）。
+        for p in [
+            s.cert_file(Path::new(&site.root_dir)),
+            s.key_file(Path::new(&site.root_dir)),
+        ] {
+            if p.exists() {
+                std::fs::remove_file(&p)
+                    .map_err(|e| SiteError::Internal(format!("删除证书文件失败：{e}")))?;
+            }
+        }
+        // 清理上传时的临时文件，避免半套。
+        for name in ["cert.pem.tmp", "key.pem.tmp"] {
+            let p = dir.join(name);
+            if p.exists() {
+                let _ = std::fs::remove_file(p);
+            }
         }
         Ok(())
     }
@@ -1276,15 +1374,16 @@ impl AppState {
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
         let (old_https, old_force) = (site.https, site.force_https);
-        if https && (!s.cert_file(domain).is_file() || !s.key_file(domain).is_file()) {
+        let site_dir = PathBuf::from(&site.root_dir);
+        if https && (!s.cert_file(&site_dir).is_file() || !s.key_file(&site_dir).is_file()) {
             return Err(SiteError::BadRequest(
                 "缺少证书文件，请先上传或生成自签证书".into(),
             ));
         }
         let site_conf = if site.status == "running" {
-            s.conf_dir.join(format!("{domain}.conf"))
+            s.vhost_file(&site_dir, domain)
         } else {
-            s.conf_dir.join(format!("{domain}.conf.disabled"))
+            s.vhost_disabled(&site_dir, domain)
         };
         let default_conf = s.conf_dir.join(DEFAULT_CONF);
         let snapshot: Vec<(PathBuf, Option<Vec<u8>>)> = [&site_conf, &default_conf]
@@ -1340,19 +1439,21 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let root = PathBuf::from(&site.root_dir).join("public");
+        let site_dir = PathBuf::from(&site.root_dir);
+        std::fs::create_dir_all(site_conf_dir(&site_dir))
+            .map_err(|e| SiteError::Internal(format!("创建站点配置目录失败：{e}")))?;
         let aliases = self.site_aliases(&site.domain);
         let tls = self.site_tls(s, &site);
         let vhost = render_vhost_with(
             &site.domain,
             &aliases,
-            &s.container_path(&root),
-            &s.container_log(&site.domain, LogKind::Access),
-            &s.container_log(&site.domain, LogKind::Error),
+            &s.container_path(&site_index_dir(&site_dir)),
+            &s.container_log(&site_dir, LogKind::Access),
+            &s.container_log(&site_dir, LogKind::Error),
             tls.as_ref(),
         );
-        let conf = s.conf_dir.join(format!("{}.conf", site.domain));
-        let disabled = s.conf_dir.join(format!("{}.conf.disabled", site.domain));
+        let conf = s.vhost_file(&site_dir, &site.domain);
+        let disabled = s.vhost_disabled(&site_dir, &site.domain);
         if site.status == "running" {
             std::fs::write(&conf, vhost)
                 .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
@@ -1373,20 +1474,22 @@ impl AppState {
             .list_sites()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::create_dir_all(&s.conf_dir)?;
+        std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())?;
         for site in &sites {
-            let root = PathBuf::from(&site.root_dir).join("public");
+            let site_dir = PathBuf::from(&site.root_dir);
+            std::fs::create_dir_all(site_conf_dir(&site_dir))?;
             let aliases = self.site_aliases(&site.domain);
             let tls = self.site_tls(s, site);
             let vhost = render_vhost_with(
                 &site.domain,
                 &aliases,
-                &s.container_path(&root),
-                &s.container_log(&site.domain, LogKind::Access),
-                &s.container_log(&site.domain, LogKind::Error),
+                &s.container_path(&site_index_dir(&site_dir)),
+                &s.container_log(&site_dir, LogKind::Access),
+                &s.container_log(&site_dir, LogKind::Error),
                 tls.as_ref(),
             );
-            let conf = s.conf_dir.join(format!("{}.conf", site.domain));
-            let disabled = s.conf_dir.join(format!("{}.conf.disabled", site.domain));
+            let conf = s.vhost_file(&site_dir, &site.domain);
+            let disabled = s.vhost_disabled(&site_dir, &site.domain);
             if site.status == "running" {
                 std::fs::write(&conf, vhost)?;
                 let _ = std::fs::remove_file(&disabled);
@@ -1460,11 +1563,15 @@ impl AppState {
         {
             Some(raw) => {
                 let normalized = normalize_dir(raw);
+                // 站点目录必须直接挂在 sites/ 下一层：主配置用 `sites/*/conf/*.conf`
+                // 通配加载，深层目录不会被扫到，因此在这里直接拒绝。
+                let path = Path::new(&normalized);
                 if !is_absolute(&normalized)
                     || !within(&normalized, &s.sites_dir.display().to_string())
+                    || path.parent() != Some(s.sites_dir.as_path())
                 {
                     return Err(SiteError::BadRequest(format!(
-                        "根目录必须位于 {} 之下",
+                        "站点目录必须是 {} 下的一级子目录",
                         s.sites_dir.display()
                     )));
                 }
@@ -1472,30 +1579,35 @@ impl AppState {
             }
             None => s.sites_dir.join(&domain),
         };
-        // 默认根目录再加一层 public，便于放可执行脚本与静态资源分离。
-        let public = root.join("public");
-        for dir in [&root, &public, &s.logs_dir] {
+        // 一站一目录：index/（文档根）、log/、ssl/、conf/ 全部在站点目录内。
+        for dir in [
+            &root,
+            &site_index_dir(&root),
+            &site_log_dir(&root),
+            &site_ssl_dir(&root),
+            &site_conf_dir(&root),
+        ] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| SiteError::Internal(format!("创建 {} 失败：{e}", dir.display())))?;
         }
-        let index = public.join("index.php");
+        let index = site_index_dir(&root).join("index.php");
         if !index.exists() {
             std::fs::write(&index, default_probe_php())
                 .map_err(|e| SiteError::Internal(format!("写入 index.php 失败：{e}")))?;
         }
 
-        let container_site = s.container_path(&root);
+        // 保证公共配置（默认站投影 + 兜底站 + 站点 include 入口）齐备。
+        self.write_default_vhost(&s)
+            .map_err(|e| SiteError::Internal(format!("写入公共配置失败：{e}")))?;
         let vhost = render_vhost_with(
             &domain,
             &aliases,
-            &format!("{container_site}/public"),
-            &s.container_log(&domain, LogKind::Access),
-            &s.container_log(&domain, LogKind::Error),
+            &s.container_path(&site_index_dir(&root)),
+            &s.container_log(&root, LogKind::Access),
+            &s.container_log(&root, LogKind::Error),
             None,
         );
-        std::fs::create_dir_all(&s.conf_dir)
-            .map_err(|e| SiteError::Internal(format!("创建 vhost 目录失败：{e}")))?;
-        let conf = s.conf_dir.join(format!("{domain}.conf"));
+        let conf = s.vhost_file(&root, &domain);
         std::fs::write(&conf, &vhost)
             .map_err(|e| SiteError::Internal(format!("写入 vhost 失败：{e}")))?;
 
@@ -1535,12 +1647,18 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let conf = s.conf_dir.join(format!("{domain}.conf"));
-        let disabled = s.conf_dir.join(format!("{domain}.conf.disabled"));
+        let site_dir = PathBuf::from(&site.root_dir);
+        let conf = s.vhost_file(&site_dir, domain);
+        let disabled = s.vhost_disabled(&site_dir, domain);
         if running {
             if !conf.exists() && disabled.exists() {
                 std::fs::rename(&disabled, &conf)
                     .map_err(|e| SiteError::Internal(format!("启用配置失败：{e}")))?;
+            }
+            if !conf.exists() {
+                return Err(SiteError::Internal(
+                    "站点配置缺失：请重新安装运行环境以重建 vhost".into(),
+                ));
             }
         } else if conf.exists() {
             std::fs::rename(&conf, &disabled)
@@ -1575,16 +1693,20 @@ impl AppState {
                 std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)
                     .map_err(|e| SiteError::Internal(format!("写入兜底配置失败：{e}")))?;
             }
-            let root = PathBuf::from(&site.root_dir).join("public");
-            let container_root = s.container_path(&root);
+            if !s.conf_dir.join(SITES_INCLUDE_CONF).exists() {
+                std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())
+                    .map_err(|e| SiteError::Internal(format!("写入站点 include 失败：{e}")))?;
+            }
+            let site_dir = PathBuf::from(&site.root_dir);
+            let container_root = s.container_path(&site_index_dir(&site_dir));
             let tls = self.site_tls(&s, &site);
             std::fs::write(
                 &conf,
                 render_default_vhost(
                     &site.domain,
                     &container_root,
-                    &s.container_log(&site.domain, LogKind::Access),
-                    &s.container_log(&site.domain, LogKind::Error),
+                    &s.container_log(&site_dir, LogKind::Access),
+                    &s.container_log(&site_dir, LogKind::Error),
                     tls.as_ref(),
                 ),
             )
@@ -1620,12 +1742,24 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        // 老布局的遗留（公共 conf.d、集中日志、集中证书）一并清掉；
+        // 新布局的这些都在站点目录内，由下面整目录删除覆盖。
         for name in [format!("{domain}.conf"), format!("{domain}.conf.disabled")] {
             let p = s.conf_dir.join(name);
-            if p.exists() {
+            if p.is_file() {
                 std::fs::remove_file(&p)
                     .map_err(|e| SiteError::Internal(format!("删除配置失败：{e}")))?;
             }
+        }
+        for kind in [LogKind::Access, LogKind::Error] {
+            let p = s.legacy_log_file(&site.domain, kind);
+            if p.is_file() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        let legacy_certs = s.legacy_cert_dir(&site.domain);
+        if legacy_certs.exists() {
+            let _ = std::fs::remove_dir_all(&legacy_certs);
         }
         // 删除默认站点时连同默认 conf 一起删，不能留下指向已删目录的 vhost。
         if site.is_default {
@@ -1635,22 +1769,19 @@ impl AppState {
                     .map_err(|e| SiteError::Internal(format!("删除默认站点配置失败：{e}")))?;
             }
         }
+        // 整站目录一次性删除：index/log/ssl/conf 随站点一起消失。
+        // 用 canonical 路径比对（而不是字符串 `/` 前缀），既挡住任意路径删除，
+        // 也保证开发机 Windows 路径下同样生效；站点目录本身不允许等于 sites/。
         let root = PathBuf::from(&site.root_dir);
-        if within(&site.root_dir, &s.sites_dir.display().to_string()) && root.exists() {
-            std::fs::remove_dir_all(&root).map_err(|e| {
+        let sites_root = s
+            .sites_dir
+            .canonicalize()
+            .unwrap_or_else(|_| s.sites_dir.clone());
+        let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+        if root.exists() && root_canon != sites_root && within_root(&sites_root, &root_canon) {
+            remove_dir_all_retry(&root).map_err(|e| {
                 SiteError::Internal(format!("删除站点目录 {} 失败：{e}", root.display()))
             })?;
-        }
-        // 宿主日志与证书目录同样随站点清理，避免残留孤立文件。
-        for p in [
-            s.log_file(&site.domain, LogKind::Access),
-            s.log_file(&site.domain, LogKind::Error),
-        ] {
-            let _ = std::fs::remove_file(&p);
-        }
-        let certs = s.certs_dir.join(&site.domain);
-        if certs.exists() {
-            let _ = std::fs::remove_dir_all(&certs);
         }
         if let Err(e) = self.restart_nginx().await {
             tracing::warn!(error = %e, "删除站点后重载 nginx 失败");
@@ -1661,6 +1792,32 @@ impl AppState {
         Ok(())
     }
 
+    /// 一次性把全部站点从旧布局迁到「一站一目录」，并补齐公共配置。
+    ///
+    /// 旧布局：`<站点>/public`、`/www/logs/nginx/<域名>.*.log`、
+    /// `/www/certs/<域名>`、`/www/nginx/conf.d/<域名>.conf`。
+    /// 新布局：`<站点>/{index,log,ssl,conf}`。重复调用幂等，可直接在启动时兜底执行。
+    pub fn migrate_site_layout(&self) -> std::io::Result<usize> {
+        let s = self.site_settings();
+        let sites = self
+            .db()
+            .list_sites()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        for site in &sites {
+            migrate_site_layout_at(&s, site)?;
+            let site_dir = PathBuf::from(&site.root_dir);
+            let has_conf = s.vhost_file(&site_dir, &site.domain).exists()
+                || s.vhost_disabled(&site_dir, &site.domain).exists();
+            if !has_conf {
+                self.write_site_vhost(&s, &site.domain)
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+            }
+        }
+        self.write_default_vhost(&s)?;
+        cleanup_legacy_layout_dirs(&s);
+        Ok(sites.len())
+    }
+
     /// 读取站点日志：宿主文件、时间倒序、可选关键字过滤；读取前先做内核轮转。
     pub fn site_logs(
         &self,
@@ -1669,12 +1826,14 @@ impl AppState {
         keyword: &str,
     ) -> Result<(String, String), SiteError> {
         let s = self.site_settings();
-        self.db()
+        let site = self
+            .db()
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        let site_dir = PathBuf::from(&site.root_dir);
         let read = |kind: LogKind| -> String {
-            let p = s.log_file(domain, kind);
+            let p = s.log_file(&site_dir, kind);
             if let Err(e) = rotate_if_large(&p, LOG_ROTATE_BYTES) {
                 tracing::warn!(path = %p.display(), error = %e, "日志轮转失败");
             }
@@ -1693,19 +1852,17 @@ impl AppState {
     /// 站点 vhost 的落盘路径：运行中读 `.conf`，已停止读 `.conf.disabled`。
     fn site_vhost_path(&self, domain: &str) -> Result<(PathBuf, bool), SiteError> {
         let s = self.site_settings();
-        if self
+        let site = self
             .db()
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
-            .is_none()
-        {
-            return Err(SiteError::BadRequest(format!("站点不存在：{domain}")));
-        }
-        let active = s.conf_dir.join(format!("{domain}.conf"));
+            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        let site_dir = PathBuf::from(&site.root_dir);
+        let active = s.vhost_file(&site_dir, domain);
         if active.exists() {
             return Ok((active, true));
         }
-        let disabled = s.conf_dir.join(format!("{domain}.conf.disabled"));
+        let disabled = s.vhost_disabled(&site_dir, domain);
         if disabled.exists() {
             return Ok((disabled, false));
         }
@@ -1773,7 +1930,9 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let root = PathBuf::from(&site.root_dir);
+        let site_dir = PathBuf::from(&site.root_dir);
+        // 「站点根目录」只授权 `index/`：log/ 与 ssl/ 绝不能被目录浏览/文件能力读到。
+        let root = site_index_dir(&site_dir);
         let rel_clean = rel.trim().trim_matches('/');
         if rel_clean.split('/').any(|seg| seg == "..") {
             return Err(SiteError::BadRequest("目录不能包含 ..".into()));
@@ -1784,14 +1943,33 @@ impl AppState {
             root.join(rel_clean)
         };
         // canonical 比较同时挡住 `..` 与符号链接逃逸。
+        let site_canon = site_dir
+            .canonicalize()
+            .map_err(|e| SiteError::Internal(format!("解析站点目录失败：{e}")))?;
         let root_canon = root
             .canonicalize()
-            .map_err(|e| SiteError::Internal(format!("解析站点根目录失败：{e}")))?;
+            .map_err(|e| SiteError::Internal(format!("站点缺少 index/ 目录：{e}")))?;
+        if !within_root(&site_canon, &root_canon) {
+            return Err(SiteError::BadRequest(
+                "站点根目录（index/）超出站点目录".into(),
+            ));
+        }
+        // `index/` 本身若是指向 log/ 或 ssl/ 的符号链接，同样拒绝。
+        for (dir, label) in [
+            (site_log_dir(&site_dir), "log/"),
+            (site_ssl_dir(&site_dir), "ssl/"),
+        ] {
+            if let Ok(canon) = dir.canonicalize() {
+                if within_root(&canon, &root_canon) {
+                    return Err(SiteError::BadRequest(format!("站点根目录不能指向 {label}")));
+                }
+            }
+        }
         let target_canon = target
             .canonicalize()
             .map_err(|e| SiteError::BadRequest(format!("目录不存在：{e}")))?;
         if !within_root(&root_canon, &target_canon) {
-            return Err(SiteError::BadRequest("目录超出站点根目录".into()));
+            return Err(SiteError::BadRequest("目录超出站点根目录（index/）".into()));
         }
         if !target.is_dir() {
             return Err(SiteError::BadRequest("目标不是目录".into()));
@@ -1991,6 +2169,219 @@ pub fn rotate_logs(dir: &Path, max_bytes: u64) -> std::io::Result<usize> {
     Ok(rotated)
 }
 
+/// 扫描 `sites/` 下一层站点，各自轮转 `log/` 目录（内核巡检用）。
+pub fn rotate_site_logs(sites_dir: &Path, max_bytes: u64) -> std::io::Result<usize> {
+    if !sites_dir.is_dir() {
+        return Ok(0);
+    }
+    let mut rotated = 0;
+    for entry in std::fs::read_dir(sites_dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            rotated += rotate_logs(&site_log_dir(&path), max_bytes)?;
+        }
+    }
+    Ok(rotated)
+}
+
+/// 旧布局 → 「一站一目录」的单站点迁移。幂等，重复执行无副作用。
+///
+/// 只做文件搬运与 vhost 路径改写，不删除站点内容；搬完后旧文件（含空目录）
+/// 会被清掉，不会留下半套。
+pub fn migrate_site_layout_at(s: &SiteSettings, site: &Site) -> std::io::Result<()> {
+    if site.root_dir.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("站点 {} 缺少目录记录", site.domain),
+        ));
+    }
+    let site_dir = PathBuf::from(&site.root_dir);
+    for dir in [
+        &site_dir,
+        &site_index_dir(&site_dir),
+        &site_log_dir(&site_dir),
+        &site_ssl_dir(&site_dir),
+        &site_conf_dir(&site_dir),
+    ] {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    // 1) 文档根：public/ → index/（保留文件内容与权限）。
+    let old_public = site_dir.join("public");
+    if old_public.is_dir() {
+        merge_dir_contents(&old_public, &site_index_dir(&site_dir))?;
+    }
+
+    // 2) 日志：集中目录 → <站点>/log/access.log|error.log。
+    for kind in [LogKind::Access, LogKind::Error] {
+        let src = s.legacy_log_file(&site.domain, kind);
+        if src.is_file() {
+            move_or_append(&src, &s.log_file(&site_dir, kind))?;
+        }
+    }
+
+    // 3) 证书：/www/certs/<域名>/ → <站点>/ssl/。
+    let legacy_certs = s.legacy_cert_dir(&site.domain);
+    for name in ["cert.pem", "key.pem"] {
+        let src = legacy_certs.join(name);
+        if !src.is_file() {
+            continue;
+        }
+        let dst = site_ssl_dir(&site_dir).join(name);
+        if dst.exists() {
+            // 新位置已有同名文件视为当前有效，旧文件直接清掉，避免半套。
+            std::fs::remove_file(&src)?;
+        } else {
+            std::fs::rename(&src, &dst)?;
+        }
+    }
+    if legacy_certs.is_dir() {
+        let _ = std::fs::remove_dir(&legacy_certs);
+    }
+
+    // 4) vhost：公共 conf.d → <站点>/conf/，并把里面的旧路径改写成新路径。
+    for (src_name, dst) in [
+        (
+            format!("{}.conf", site.domain),
+            s.vhost_file(&site_dir, &site.domain),
+        ),
+        (
+            format!("{}.conf.disabled", site.domain),
+            s.vhost_disabled(&site_dir, &site.domain),
+        ),
+    ] {
+        let src = s.conf_dir.join(src_name);
+        if src.is_file() {
+            if dst.exists() {
+                std::fs::remove_file(&src)?;
+            } else {
+                std::fs::rename(&src, &dst)?;
+            }
+        }
+        if dst.is_file() {
+            rewrite_vhost_paths(&dst, s, site, &site_dir)?;
+        }
+    }
+
+    // 本站点搬完后，若旧公共目录已空则一并删除（多站点时最后一个站点负责收尾）。
+    cleanup_legacy_layout_dirs(s);
+    Ok(())
+}
+
+/// 把 `src` 目录的内容并入 `dst`，随后删除 `src`。
+/// 同名冲突不覆盖数据：目录递归合并，文件改名为 `*.legacy`。
+fn merge_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let name = entry.file_name();
+        let to = dst.join(&name);
+        if !to.exists() {
+            std::fs::rename(&from, &to)?;
+            continue;
+        }
+        if entry.file_type()?.is_dir() && std::fs::symlink_metadata(&to)?.is_dir() {
+            merge_dir_contents(&from, &to)?;
+            continue;
+        }
+        let mut alt = dst.join(format!("{}.legacy", name.to_string_lossy()));
+        let mut i = 1;
+        while alt.exists() {
+            i += 1;
+            alt = dst.join(format!("{}.legacy{i}", name.to_string_lossy()));
+        }
+        std::fs::rename(&from, &alt)?;
+    }
+    std::fs::remove_dir(src)
+}
+
+/// 目标不存在时直接改名（保留权限）；已存在时把旧内容追加进去再删旧文件，
+/// 保证迁移不丢日志行。
+fn move_or_append(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !dst.exists() {
+        return std::fs::rename(src, dst);
+    }
+    let data = std::fs::read(src)?;
+    let mut f = std::fs::OpenOptions::new().append(true).open(dst)?;
+    f.write_all(&data)?;
+    std::fs::remove_file(src)
+}
+
+/// 原地改写 vhost 内的路径（容器路径与宿主路径都覆盖），保留其余手工编辑。
+fn rewrite_vhost_paths(
+    path: &Path,
+    s: &SiteSettings,
+    site: &Site,
+    site_dir: &Path,
+) -> std::io::Result<()> {
+    let mut text = std::fs::read_to_string(path)?;
+    let mut replace = |old: &str, new: &str| {
+        if !old.is_empty() && old != new {
+            text = text.replace(old, new);
+        }
+    };
+    let old_root = s.container_path(&site_dir.join("public"));
+    let new_root = s.container_path(&site_index_dir(site_dir));
+    replace(&old_root, &new_root);
+
+    for kind in [LogKind::Access, LogKind::Error] {
+        let old = s.container_rel(&s.legacy_log_file(&site.domain, kind));
+        let new = s.container_path(&s.log_file(site_dir, kind));
+        replace(&old, &new);
+        // 手工编辑可能写宿主路径：Web 根为 `/www` 时两者相同，替换是幂等的。
+        let old_host = s.legacy_log_file(&site.domain, kind).display().to_string();
+        let new_host = s.log_file(site_dir, kind).display().to_string();
+        replace(&old_host, &new_host);
+    }
+    for name in ["cert.pem", "key.pem"] {
+        let old = s.container_path(&s.legacy_cert_dir(&site.domain).join(name));
+        let new = s.container_path(&site_ssl_dir(site_dir).join(name));
+        replace(&old, &new);
+        let old_host = s
+            .legacy_cert_dir(&site.domain)
+            .join(name)
+            .display()
+            .to_string();
+        let new_host = site_ssl_dir(site_dir).join(name).display().to_string();
+        replace(&old_host, &new_host);
+    }
+    std::fs::write(path, text)
+}
+
+/// 迁移后清掉空掉的旧公共目录；仍有其他文件时保留（不误删）。
+fn cleanup_legacy_layout_dirs(s: &SiteSettings) {
+    for dir in [
+        s.legacy_logs_dir(),
+        s.web_root.join("logs"),
+        s.web_root.join("certs"),
+    ] {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
+/// Windows 上杀软/索引服务短暂占用刚写入的文件时 `remove_dir_all` 会返回
+/// `Directory not empty`（os error 145）；用有界退避重试，最终仍失败才报错。
+fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {
+    let mut delay = std::time::Duration::from_millis(20);
+    for attempt in 0..6 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 5 => {
+                tracing::debug!(path = %path.display(), error = %e, "删除站点目录失败，重试");
+                std::thread::sleep(delay);
+                delay = delay.saturating_mul(2);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -2068,17 +2459,19 @@ mod tests {
     fn vhost_points_fastcgi_at_unix_socket() {
         let v = render_vhost(
             "example.com",
-            "/www/sites/example.com/public",
-            "/www/logs/nginx/example.com.access.log",
-            "/www/logs/nginx/example.com.error.log",
+            "/www/sites/example.com/index",
+            "/www/sites/example.com/log/access.log",
+            "/www/sites/example.com/log/error.log",
         );
         assert!(v.contains("server_name example.com;"));
-        assert!(v.contains("root /www/sites/example.com/public;"));
+        assert!(v.contains("root /www/sites/example.com/index;"));
         assert!(v.contains("fastcgi_pass unix:/www/php/php-fpm.sock;"));
         assert!(!v.contains("9000"));
         assert!(v.contains("SCRIPT_FILENAME $document_root$fastcgi_script_name;"));
-        assert!(v.contains("access_log /www/logs/nginx/example.com.access.log;"));
-        assert!(v.contains("error_log /www/logs/nginx/example.com.error.log;"));
+        assert!(v.contains("access_log /www/sites/example.com/log/access.log;"));
+        assert!(v.contains("error_log /www/sites/example.com/log/error.log;"));
+        assert!(!v.contains("/www/logs/"), "不得再引用旧的集中日志目录");
+        assert!(!v.contains("/public"), "不得再引用旧的 public 根目录");
         assert!(!v.contains("listen 443"));
         assert!(v.contains("listen 80;"));
     }
@@ -2088,8 +2481,6 @@ mod tests {
             web_root: root.to_path_buf(),
             sites_dir: root.join("sites"),
             conf_dir: root.join("nginx").join("conf.d"),
-            logs_dir: root.join("logs").join("nginx"),
-            certs_dir: root.join("certs"),
             php_dir: root.join("php"),
             nginx_image: DEFAULT_NGINX_IMAGE.into(),
             php_image: DEFAULT_PHP_IMAGE.into(),
@@ -2108,9 +2499,18 @@ mod tests {
         );
         assert_eq!(s.container_sites_dir(), "/www/sites");
         assert_eq!(s.php_pool_conf(), PathBuf::from("/www/php/www.conf"));
+        let site_dir = Path::new("/www/sites/example.com");
         assert_eq!(
-            s.container_log("example.com", LogKind::Error),
-            "/www/logs/nginx/example.com.error.log"
+            s.container_log(site_dir, LogKind::Error),
+            "/www/sites/example.com/log/error.log"
+        );
+        assert_eq!(
+            s.container_path(&site_index_dir(site_dir)),
+            "/www/sites/example.com/index"
+        );
+        assert_eq!(
+            s.cert_file(site_dir),
+            PathBuf::from("/www/sites/example.com/ssl/cert.pem")
         );
         assert_eq!(
             s.waf_rules_dir(),
@@ -2145,38 +2545,38 @@ mod tests {
     #[test]
     fn vhost_with_tls_adds_443_ssl_server() {
         let tls = VhostTls {
-            cert: "/www/certs/example.com/cert.pem".into(),
-            key: "/www/certs/example.com/key.pem".into(),
+            cert: "/www/sites/example.com/ssl/cert.pem".into(),
+            key: "/www/sites/example.com/ssl/key.pem".into(),
             force_https: false,
         };
         let v = render_vhost_with(
             "example.com",
             &[],
-            "/www/sites/example.com/public",
-            "/www/logs/nginx/example.com.access.log",
-            "/www/logs/nginx/example.com.error.log",
+            "/www/sites/example.com/index",
+            "/www/sites/example.com/log/access.log",
+            "/www/sites/example.com/log/error.log",
             Some(&tls),
         );
         assert!(v.contains("listen 80;"));
         assert!(v.contains("listen 443 ssl;"));
-        assert!(v.contains("ssl_certificate /www/certs/example.com/cert.pem;"));
-        assert!(v.contains("ssl_certificate_key /www/certs/example.com/key.pem;"));
+        assert!(v.contains("ssl_certificate /www/sites/example.com/ssl/cert.pem;"));
+        assert!(v.contains("ssl_certificate_key /www/sites/example.com/ssl/key.pem;"));
         assert!(!v.contains("return 301"));
     }
 
     #[test]
     fn force_https_redirects_80_to_443() {
         let tls = VhostTls {
-            cert: "/www/certs/example.com/cert.pem".into(),
-            key: "/www/certs/example.com/key.pem".into(),
+            cert: "/www/sites/example.com/ssl/cert.pem".into(),
+            key: "/www/sites/example.com/ssl/key.pem".into(),
             force_https: true,
         };
         let v = render_vhost_with(
             "example.com",
             &[],
-            "/www/sites/example.com/public",
-            "/www/logs/nginx/example.com.access.log",
-            "/www/logs/nginx/example.com.error.log",
+            "/www/sites/example.com/index",
+            "/www/sites/example.com/log/access.log",
+            "/www/sites/example.com/log/error.log",
             Some(&tls),
         );
         assert!(v.contains("return 301 https://$host$request_uri;"));
@@ -2186,33 +2586,33 @@ mod tests {
     #[test]
     fn default_vhost_with_tls_serves_443_default_server() {
         let tls = VhostTls {
-            cert: "/www/certs/demo.local/cert.pem".into(),
-            key: "/www/certs/demo.local/key.pem".into(),
+            cert: "/www/sites/demo.local/ssl/cert.pem".into(),
+            key: "/www/sites/demo.local/ssl/key.pem".into(),
             force_https: false,
         };
         let v = render_default_vhost(
             "demo.local",
-            "/www/sites/demo.local/public",
-            "/www/logs/nginx/demo.local.access.log",
-            "/www/logs/nginx/demo.local.error.log",
+            "/www/sites/demo.local/index",
+            "/www/sites/demo.local/log/access.log",
+            "/www/sites/demo.local/log/error.log",
             Some(&tls),
         );
         assert!(v.contains("listen 443 ssl default_server;"));
-        assert!(v.contains("ssl_certificate /www/certs/demo.local/cert.pem;"));
+        assert!(v.contains("ssl_certificate /www/sites/demo.local/ssl/cert.pem;"));
     }
 
     #[test]
-    fn default_vhost_serves_public_and_fallback_is_404() {
+    fn default_vhost_serves_index_and_fallback_is_404() {
         let v = render_default_vhost(
             "demo.local",
-            "/www/sites/demo.local/public",
-            "/www/logs/nginx/demo.local.access.log",
-            "/www/logs/nginx/demo.local.error.log",
+            "/www/sites/demo.local/index",
+            "/www/sites/demo.local/log/access.log",
+            "/www/sites/demo.local/log/error.log",
             None,
         );
         assert!(v.contains("listen 80 default_server;"));
         assert!(v.contains("server_name _;"));
-        assert!(v.contains("root /www/sites/demo.local/public;"));
+        assert!(v.contains("root /www/sites/demo.local/index;"));
         assert!(v.contains("fastcgi_pass unix:/www/php/php-fpm.sock;"));
 
         // 兜底文件不能声明 default_server，否则与默认站点冲突；靠文件名排在站点
@@ -2316,5 +2716,179 @@ mod tests {
             "registry.example.com"
         );
         assert_eq!(registry_of("localhost:5000/nginx"), "localhost:5000");
+    }
+
+    fn site_at(domain: &str, site_dir: &Path) -> Site {
+        Site {
+            id: 1,
+            domain: domain.into(),
+            root_dir: site_dir.display().to_string(),
+            php_version: DEFAULT_PHP_VERSION.into(),
+            status: "running".into(),
+            created_at: 0,
+            updated_at: 0,
+            is_default: false,
+            https: false,
+            force_https: false,
+        }
+    }
+
+    #[test]
+    fn site_layout_has_one_directory_per_site() {
+        let s = settings_at(Path::new("/www"));
+        let site_dir = Path::new("/www/sites/example.com");
+        assert_eq!(
+            site_index_dir(site_dir),
+            PathBuf::from("/www/sites/example.com/index")
+        );
+        assert_eq!(
+            site_log_dir(site_dir),
+            PathBuf::from("/www/sites/example.com/log")
+        );
+        assert_eq!(
+            site_ssl_dir(site_dir),
+            PathBuf::from("/www/sites/example.com/ssl")
+        );
+        assert_eq!(
+            site_conf_dir(site_dir),
+            PathBuf::from("/www/sites/example.com/conf")
+        );
+        assert_eq!(
+            s.log_file(site_dir, LogKind::Access),
+            PathBuf::from("/www/sites/example.com/log/access.log")
+        );
+        assert_eq!(
+            s.log_file(site_dir, LogKind::Error),
+            PathBuf::from("/www/sites/example.com/log/error.log")
+        );
+        assert_eq!(
+            s.vhost_file(site_dir, "example.com"),
+            PathBuf::from("/www/sites/example.com/conf/example.com.conf")
+        );
+        assert_eq!(
+            s.vhost_disabled(site_dir, "example.com"),
+            PathBuf::from("/www/sites/example.com/conf/example.com.conf.disabled")
+        );
+    }
+
+    #[test]
+    fn sites_include_entry_globs_per_site_conf() {
+        let s = settings_at(Path::new("/www"));
+        let text = s.sites_include_conf();
+        assert!(text.contains("include /www/sites/*/conf/*.conf;"));
+        assert!(text.contains("备份"));
+        // 默认站/兜底站仍在内核公共目录，不参与该通配。
+        assert!(!text.contains(DEFAULT_CONF));
+        assert!(!text.contains(FALLBACK_CONF));
+        assert_eq!(SITES_INCLUDE_CONF, "10-skiff-sites.conf");
+    }
+
+    /// 从旧布局（public/ + 集中日志/证书/conf）迁到一站一目录，重复执行幂等。
+    #[test]
+    fn layout_migration_is_idempotent_and_cleans_old_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = settings_at(dir.path());
+        let site_dir = s.sites_dir.join("example.com");
+        let site = site_at("example.com", &site_dir);
+        let old_public = site_dir.join("public");
+        std::fs::create_dir_all(&old_public).unwrap();
+        std::fs::write(old_public.join("index.php"), "<?php echo 'old';").unwrap();
+        std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
+        std::fs::write(
+            s.legacy_log_file("example.com", LogKind::Access),
+            "access-old\n",
+        )
+        .unwrap();
+        std::fs::write(
+            s.legacy_log_file("example.com", LogKind::Error),
+            "error-old\n",
+        )
+        .unwrap();
+        let old_certs = s.legacy_cert_dir("example.com");
+        std::fs::create_dir_all(&old_certs).unwrap();
+        std::fs::write(old_certs.join("cert.pem"), "CERT").unwrap();
+        std::fs::write(old_certs.join("key.pem"), "KEY").unwrap();
+        std::fs::create_dir_all(&s.conf_dir).unwrap();
+        let old_vhost = s.conf_dir.join("example.com.conf");
+        std::fs::write(
+            &old_vhost,
+            "server {\n  listen 80;\n  root /www/sites/example.com/public;\n  \
+             access_log /www/logs/nginx/example.com.access.log;\n  \
+             error_log /www/logs/nginx/example.com.error.log;\n}\n",
+        )
+        .unwrap();
+
+        migrate_site_layout_at(&s, &site).unwrap();
+
+        assert!(!old_public.exists(), "旧 public/ 必须清干净");
+        assert_eq!(
+            std::fs::read_to_string(site_index_dir(&site_dir).join("index.php")).unwrap(),
+            "<?php echo 'old';"
+        );
+        assert_eq!(
+            std::fs::read_to_string(s.log_file(&site_dir, LogKind::Access)).unwrap(),
+            "access-old\n"
+        );
+        assert!(!s.legacy_logs_dir().exists(), "旧集中日志目录应清空并删除");
+        assert!(!old_certs.exists(), "旧证书目录应清空并删除");
+        assert_eq!(
+            std::fs::read_to_string(s.cert_file(&site_dir)).unwrap(),
+            "CERT"
+        );
+        let new_vhost = s.vhost_file(&site_dir, "example.com");
+        assert!(!old_vhost.exists(), "旧 conf.d 文件必须搬走");
+        let vhost = std::fs::read_to_string(&new_vhost).unwrap();
+        assert!(vhost.contains("root /www/sites/example.com/index;"));
+        assert!(vhost.contains("access_log /www/sites/example.com/log/access.log;"));
+        assert!(!vhost.contains("/public"));
+        assert!(!vhost.contains("/www/logs/"));
+
+        // 幂等：再跑一次不改内容、不产生副本。
+        let before = std::fs::read_to_string(&new_vhost).unwrap();
+        migrate_site_layout_at(&s, &site).unwrap();
+        assert_eq!(std::fs::read_to_string(&new_vhost).unwrap(), before);
+        assert_eq!(
+            std::fs::read_to_string(s.log_file(&site_dir, LogKind::Access)).unwrap(),
+            "access-old\n"
+        );
+        assert!(!site_dir.join("index.legacy").exists());
+        assert!(!site_dir.join("public").exists());
+    }
+
+    /// 迁移遇到已存在的目标日志时追加，不丢旧行。
+    #[test]
+    fn layout_migration_appends_to_existing_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = settings_at(dir.path());
+        let site_dir = s.sites_dir.join("example.com");
+        let site = site_at("example.com", &site_dir);
+        std::fs::create_dir_all(s.legacy_logs_dir()).unwrap();
+        std::fs::create_dir_all(site_log_dir(&site_dir)).unwrap();
+        std::fs::write(
+            s.legacy_log_file("example.com", LogKind::Access),
+            "legacy\n",
+        )
+        .unwrap();
+        std::fs::write(s.log_file(&site_dir, LogKind::Access), "new\n").unwrap();
+        migrate_site_layout_at(&s, &site).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(s.log_file(&site_dir, LogKind::Access)).unwrap(),
+            "new\nlegacy\n"
+        );
+        assert!(!s.legacy_log_file("example.com", LogKind::Access).exists());
+    }
+
+    #[test]
+    fn rotate_site_logs_scans_each_site_log_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let sites = dir.path().join("sites");
+        let a_log = sites.join("a.example").join("log");
+        let b_log = sites.join("b.example").join("log");
+        std::fs::create_dir_all(&a_log).unwrap();
+        std::fs::create_dir_all(&b_log).unwrap();
+        std::fs::write(a_log.join("access.log"), "x".repeat(64)).unwrap();
+        std::fs::write(b_log.join("error.log"), "y".repeat(64)).unwrap();
+        std::fs::write(sites.join("readme.txt"), "z".repeat(64)).unwrap();
+        assert_eq!(rotate_site_logs(&sites, 32).unwrap(), 2);
     }
 }

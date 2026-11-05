@@ -120,8 +120,10 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             state.supervisor().reap_idle().await;
             let _ = state.db().purge_expired_sessions();
             // 站点日志轮转由内核巡检做（copytruncate），不依赖宿主 logrotate。
-            let log_dir = state.cfg.web_root.join("logs").join("nginx");
-            let _ = skiff_app::sites::rotate_logs(&log_dir, skiff_app::sites::LOG_ROTATE_BYTES);
+            // 一站一目录：逐个扫描 `/www/sites/<域名>/log/`。
+            let sites_dir = state.cfg.web_root.join("sites");
+            let _ =
+                skiff_app::sites::rotate_site_logs(&sites_dir, skiff_app::sites::LOG_ROTATE_BYTES);
             run_cron(&state, &mut last_fired, chrono::Local::now().naive_local()).await;
         }
     });
@@ -227,6 +229,7 @@ mod tests {
             authorized_roots: vec![],
             external_url: None,
             login_concurrency: 1,
+            require_initial_password_change: false,
             dev_http: true,
             plaintext_behind_proxy: false,
         }
