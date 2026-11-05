@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}{{ plugin.name }} · 插件信息 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ plugin.name }} <code>{{ plugin.version }}</code></h1>
+  <a class="ghost" href="/{{ ctx.prefix }}/plugins">← 返回插件中心</a>
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="notice">{{ notice }}</div>{% endif %}
+
+<section class="panel">
+  <div class="page-head">
+    <h2>插件信息</h2>
+    {% if plugin.enabled && !entry_href.is_empty() %}
+      <a class="primary" href="{{ entry_href }}">打开功能界面</a>
+    {% endif %}
+  </div>
+  <dl class="kv">
+    <dt>标识</dt><dd><code>{{ plugin.id }}</code></dd>
+    <dt>版本 / API</dt><dd><code>{{ plugin.version }}</code> / <code>api {{ plugin.api }}</code></dd>
+    <dt>运行状态</dt><dd>
+      <span class="state {{ plugin.status }}">{{ plugin.status }}</span>
+      {% if plugin.running %}<span class="tag ok-tag">运行中</span>{% else %}<span class="tag">未运行</span>{% endif %}
+      {% if plugin.enabled %}<span class="state ok">已启用</span>{% else %}<span class="state disabled">已停用</span>{% endif %}
+    </dd>
+    <dt>发布者 / 密钥指纹</dt><dd>
+      <code class="fingerprint">{{ plugin.key_id_full }}</code>
+      {% if plugin.key_id_full.is_empty() %}<span class="muted">无（未签名包）</span>{% endif %}
+    </dd>
+    <dt>签名状态</dt><dd>
+      {% if plugin.signed %}<span class="state ok">已验签</span>{% else %}<span class="state fail">未验签</span>{% endif %}
+    </dd>
+    <dt>沙箱模式</dt><dd>
+      {% if plugin.reduced %}<span class="tag warn-tag">受限沙箱（reduced）</span>{% else %}<span class="tag ok-tag">完整沙箱</span>{% endif %}
+      <span class="muted">opaque origin iframe · 无面板凭据 · 出网默认拒绝</span>
+    </dd>
+    <dt>声明能力面</dt><dd>
+      {% if plugin.requires.is_empty() %}<span class="muted">无</span>{% else %}<code>{{ plugin.requires }}</code>{% endif %}
+    </dd>
+    <dt>声明权限</dt><dd>
+      {% if plugin.permissions.is_empty() %}<span class="muted">无</span>{% else %}<code>{{ plugin.permissions }}</code>{% endif %}
+    </dd>
+    <dt>已授权资源</dt><dd>
+      {% for g in grants %}
+        <div><code>{{ g.kind }}:{{ g.value }}</code></div>
+      {% endfor %}
+      {% if grants.is_empty() %}<span class="muted">无</span>{% endif %}
+    </dd>
+    {% if !interop_provides.is_empty() || !interop_consumes.is_empty() %}
+    <dt>插件间接口</dt><dd>
+      <div class="muted">对外开放</div>
+      {% for p in interop_provides %}<div><code>{{ p }}</code></div>{% endfor %}
+      {% if interop_provides.is_empty() %}<div class="muted">无</div>{% endif %}
+      <div class="muted">允许调用</div>
+      {% for c in interop_consumes %}<div><code>{{ c }}</code></div>{% endfor %}
+      {% if interop_consumes.is_empty() %}<div class="muted">无</div>{% endif %}
+    </dd>
+    {% endif %}
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>关联菜单</h2>
+  {% if menus.is_empty() %}
+    <div class="empty">该插件未声明菜单，也没有可打开的界面入口。</div>
+  {% else %}
+    <ul class="plugin-menu-list">
+      {% for m in menus %}
+      <li>
+        <a href="{{ m.href }}">
+          <svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ m.icon }}" aria-hidden="true"><use href="#i-{{ m.icon }}"></use></svg>
+          {{ m.label }}
+          <code>{{ m.href }}</code>
+        </a>
+        {% if !m.children.is_empty() %}
+        <ul>
+          {% for c in m.children %}
+          <li>
+            <a href="{{ c.href }}">
+              <svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ c.icon }}" aria-hidden="true"><use href="#i-{{ c.icon }}"></use></svg>
+              {{ c.label }}
+              <code>{{ c.href }}</code>
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>日志与事件</h2>
+  <p class="hint">插件审计事件与异常输出统一走内核入口，插件不能伪造审计记录。</p>
+  <p>
+    <a href="/{{ ctx.prefix }}/settings/audit">审计日志（含 plugin.* 事件）</a>
+    · <a href="/{{ ctx.prefix }}/containers?filter=error">异常容器与日志</a>
+  </p>
+</section>
+
+{% if can_admin %}
+<section class="panel">
+  <h2>管理操作</h2>
+  <form method="post" action="/{{ ctx.prefix }}/plugins/{{ plugin.id }}/toggle">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input type="hidden" name="next" value="/{{ ctx.prefix }}/plugins/{{ plugin.id }}">
+    <button class="ghost" type="submit">{% if plugin.enabled %}停用插件{% else %}启用插件{% endif %}</button>
+  </form>
+  <form method="post" action="/{{ ctx.prefix }}/plugins/{{ plugin.id }}/remove" class="danger-zone">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <label class="check"><input type="checkbox" name="delete_data" value="on"> 同时删除插件数据目录（不可恢复）</label>
+    <button class="danger" type="submit">卸载插件</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

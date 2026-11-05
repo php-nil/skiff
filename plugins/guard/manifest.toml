@@ -8,7 +8,7 @@ name = "容器守护"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.1"
+api = "1.2"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -29,9 +29,9 @@ verbs = ["read", "write", "list"]
 
 [[ui]]
 label = "容器守护"
-path = "index.html"
+path = "containers.html"
 
-# 工具 → 容器守护：容器 / 事件两个视图，均复用 index.html。
+# 工具 → 容器守护：容器 / 事件两个视图（PLUGIN_UI_CONTRACT §3.2）。
 [[menu]]
 id = "guard"
 parent = "tools"
@@ -39,23 +39,21 @@ label = "容器守护"
 order = 40
 icon = "shield"
 gates = ["plugin_enabled", "docker_available"]
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "containers"
 
   [[menu.items]]
   id = "containers"
   label = "容器"
   order = 10
   icon = "container"
-  ui = "index.html"
-  tab = "containers"
+  view = "containers"
 
   [[menu.items]]
   id = "events"
   label = "事件"
   order = 20
   icon = "activity"
-  ui = "index.html"
-  tab = "events"
+  view = "events"
 
 [config_schema.cooldown_sec]
 type = "number"

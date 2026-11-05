@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>主机监控</title>
+<title>主机监控 · 历史采样</title>
 <style>
   /* 默认深色；父页面下发 `light` 时由 app.js 写到 <html data-theme>。 */
   :root {
@@ -39,11 +39,6 @@
            padding: 5px 12px; cursor: pointer; }
   .muted { color: var(--ui-muted); font-size: 12px; }
   h2 { font-size: 14px; margin: 16px 0 8px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
-  .card { background: var(--ui-surface); border: 1px solid var(--ui-card-line); border-radius: 8px; padding: 10px 12px; }
-  .card span { color: var(--ui-muted); font-size: 12px; }
-  .card b { display: block; font-size: 20px; margin-top: 4px; }
-  .bad b { color: var(--ui-bad); }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--ui-line-soft); font-size: 13px; }
   th:first-child, td:first-child { text-align: left; }
@@ -52,19 +47,11 @@
 </style>
 </head>
 <body>
-<h1>主机监控</h1>
+<h1>主机监控 · 历史采样</h1>
 <p class="muted">只读 /proc 采样；CPU 使用率来自两次采样差值，历史点由内核 cron 每 5 分钟生成。</p>
 <div class="row">
   <button id="refresh">刷新</button>
   <span id="msg"></span>
-</div>
-<div class="cards" data-view="overview">
-  <div class="card" id="c-cpu"><span>CPU</span><b>-</b></div>
-  <div class="card" id="c-mem"><span>内存</span><b>-</b></div>
-  <div class="card" id="c-load"><span>负载 (1/5/15)</span><b>-</b></div>
-  <div class="card" id="c-net"><span>网卡入站</span><b>-</b></div>
-  <div class="card" id="c-uptime"><span>运行时长</span><b>-</b></div>
-  <div class="card" id="c-cpus"><span>CPU 核心</span><b>-</b></div>
 </div>
 <div data-view="history">
   <h2>历史采样</h2>

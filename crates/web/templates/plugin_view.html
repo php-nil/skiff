@@ -1,51 +1,13 @@
 {% extends "base.html" %}
-{% block title %}{{ plugin.name }} · Skiff{% endblock %}
+{% block title %}{{ plugin.name }} · {{ workbench_title }} · Skiff{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>{{ plugin.name }} <code>{{ plugin.version }}</code></h1>
-  <a class="ghost" href="/{{ ctx.prefix }}/plugins">← 返回列表</a>
+  <h1>{{ workbench_title }} <span class="muted">{{ plugin.name }}</span></h1>
+  <a class="ghost" href="{{ info_href }}">插件信息</a>
 </div>
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 
 <section class="panel">
-  <dl class="kv">
-    <dt>插件</dt><dd><code>{{ plugin.id }}</code></dd>
-    <dt>版本 / API</dt><dd><code>{{ plugin.version }}</code> / <code>api {{ plugin.api }}</code></dd>
-    <dt>状态</dt><dd>
-      <span class="state {{ plugin.status }}">{{ plugin.status }}</span>
-      {% if plugin.running %}<span class="tag">运行中</span>{% endif %}
-      {% if plugin.reduced %}<span class="tag warn-tag">reduced sandbox</span>{% endif %}
-      {% if !plugin.enabled %}<span class="state disabled">已停用</span>{% endif %}
-    </dd>
-    <dt>信任</dt><dd>
-      {% if plugin.signed %}<span class="state ok">已验签</span>{% else %}<span class="state fail">未验签</span>{% endif %}
-      <code>{{ plugin.key_id }}…</code>
-    </dd>
-    <dt>已授权</dt><dd>
-      {% for g in grants %}
-        <div><code>{{ g.kind }}:{{ g.value }}</code></div>
-      {% endfor %}
-      {% if grants.is_empty() %}<span class="muted">无</span>{% endif %}
-    </dd>
-    {% if !interop_provides.is_empty() || !interop_consumes.is_empty() %}
-    <dt>插件间接口</dt><dd>
-      <div class="muted">对外开放</div>
-      {% for p in interop_provides %}<div><code>{{ p }}</code></div>{% endfor %}
-      {% if interop_provides.is_empty() %}<div class="muted">无</div>{% endif %}
-      <div class="muted">允许调用</div>
-      {% for c in interop_consumes %}<div><code>{{ c }}</code></div>{% endfor %}
-      {% if interop_consumes.is_empty() %}<div class="muted">无</div>{% endif %}
-    </dd>
-    {% endif %}
-  </dl>
-  {% if can_admin %}
-  <p class="hint">停用、启用与卸载只在<a href="/{{ ctx.prefix }}/plugins">插件中心</a>的插件卡片上操作，避免在工作台里误触。</p>
-  {% endif %}
-</section>
-
-{% if plugin.enabled %}
-<section class="panel">
-  <h2>{{ workbench_title }}</h2>
   <p class="hint">插件 UI 运行在无同源权限的沙箱 iframe 内（opaque origin），不持有面板凭据；所有能力调用经父页面 RPC 桥转发并逐次审计。</p>
   {% if !tabs.is_empty() %}
   <nav class="workbench-tabs" data-workbench aria-label="{{ workbench_title }}工作台标签">
@@ -82,7 +44,4 @@
   <p class="hint">插件可用 <code>skiff.open</code> 请面板切到另一个插件的界面（如「文件管理」定位到某个目录）：跳转只改地址，目标插件仍按自己的 <code>path:</code> 授权根判权。
   需要「真的执行」对方的能力时走 <code>interop:call</code>（如 NGINX 的「新增备份任务」写入计划任务）：调用前逐条过 <code>interop:call</code> 权限、<code>plugin:</code> 授权、双方 manifest 白名单，逐次审计。</p>
 </section>
-{% else %}
-<section class="panel"><div class="empty">插件已停用，启用后才能打开界面。</div></section>
-{% endif %}
 {% endblock %}

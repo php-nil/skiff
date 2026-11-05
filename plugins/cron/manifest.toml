@@ -13,7 +13,7 @@ name = "计划任务"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.1"
+api = "1.2"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -35,32 +35,30 @@ verbs = ["call"]
 
 [[ui]]
 label = "计划任务"
-path = "index.html"
+path = "list.html"
 
-# 工具 → 计划任务：任务列表 / 新建任务两个视图，均复用 index.html。
+# 工具 → 计划任务：任务列表 / 新建任务两个视图（PLUGIN_UI_CONTRACT §3.2）。
 [[menu]]
 id = "jobs"
 parent = "tools"
 label = "计划任务"
 order = 20
 icon = "clock"
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "list"
 
   [[menu.items]]
   id = "list"
   label = "任务列表"
   order = 10
   icon = "list"
-  ui = "index.html"
-  tab = "list"
+  view = "list"
 
   [[menu.items]]
   id = "new"
   label = "新建任务"
   order = 20
   icon = "activity"
-  ui = "index.html"
-  tab = "new"
+  view = "new"
 
 [interop]
 # 调度器需要能调任意插件（具体能否调通仍由对象授权 + 目标 provides 决定）。

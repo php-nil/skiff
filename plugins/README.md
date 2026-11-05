@@ -9,17 +9,20 @@
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
 | `cron/` | `com.skiff.cron` | identity + interop | 计划任务：按 cron 表达式调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记 |
+| `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
 ## 约定
 
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/<arch>/plugin` 收）。
-- id 用 `com.skiff.<x>`；声明菜单/槽位用 `api = "1.1"`，未迁移的老包保持 `"1.0"` 并走 `[[ui]]` 降级。版本独立 semver。
+- id 用 `com.skiff.<x>`；声明菜单/槽位用 `api = "1.2"`，未迁移的老包保持 `"1.0"` / `"1.1"` 并走 `[[ui]]` 降级。版本独立 semver。
+- 功能页文件按视图命名：`view = "main"` → `ui/main.html`，其余 `view = "<x>"` → `ui/<x>.html`；同一插件内视图名唯一。路由分工见 `docs/PLUGIN_UI_CONTRACT.md`。
 - `manifest.toml` 的 `key_id` 在源码里是 **64 个 0 的占位**：发布私钥只在打包机/CI secret，
   打包时 `skiff-plugin stamp` 在临时目录回填指纹（仓库里不含任何密钥指纹）。
 - 权限遵循最小化：guard 只要 `containers.list/inspect/restart`，
   monitor/files 只读或按需读写，具体见各自 manifest。
 - 插件 UI 只经父页面 postMessage 桥取数（`skiff.rpc`），不持有面板凭据、不发同源请求。
-  菜单由 manifest 的 `[[menu]]` 声明、内核渲染；`[[ui]].path` 只是插件中心入口与默认内容页。
+  菜单由 manifest 的 `[[menu]]` 声明、内核渲染；`/{p}/plugins/{id}` 是内核信息与管理页，
+  插件只负责 `/{p}/plugins/{id}/<view>` 加载的 `ui/<view>.html`。
 - **UI 资源全部同源随包分发**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，
   CDN 与内联脚本都加载不了。第三方前端库（如 `files/ui/vendor/` 里的 highlight.js）
   必须把文件 vendor 进 `ui/` 并在页面里用相对路径引用，同时保留其 LICENSE。
@@ -57,13 +60,18 @@
 | --- | --- | --- | --- |
 | guard | 工具 → 容器守护 | 容器 / 事件 | — |
 | monitor | 工具 → 主机监控 | 总览 / 历史采样 | `overview.health` |
-| files | 工具 → 文件管理 | 无（单视图） | — |
+| files | 工具 → 文件管理 | 无（单视图 `main`） | — |
 | cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
+| testkit | 工具 → 架构测试台 | 主视图 / 检查 / 分组 + 单视图对照 | `overview.actions` |
 
-cron（完整 L2 + L3；`tab` 是传给插件的视图名）：
+cron（完整 L2 + L3；`view` 决定 `ui/<view>.html`）：
 
 ```toml
-api = "1.1"
+api = "1.2"
+
+[[ui]]
+label = "计划任务"
+path = "list.html"
 
 [[menu]]
 id = "jobs"
@@ -71,21 +79,19 @@ parent = "tools"          # 只能是固定一级 id
 label = "计划任务"
 order = 20
 icon = "clock"
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "list"
 
   [[menu.items]]
   id = "list"
   label = "任务列表"
   order = 10
-  ui = "index.html"
-  tab = "list"
+  view = "list"           # ui/list.html
 
   [[menu.items]]
   id = "new"
   label = "新建任务"
   order = 20
-  ui = "index.html"
-  tab = "new"
+  view = "new"            # ui/new.html
 ```
 
 > 原 `com.skiff.nginx` 已内核化，网站一级与「网站列表 / 运行环境 / 设置」由内核提供，
@@ -102,9 +108,9 @@ refresh = 30             # 0 / 30 / 60 / 300 秒
 roles = ["admin", "operator", "viewer"]
 ```
 
-插件 UI 收到 `?tab=<view>` 后切换内部视图；切换标签时父页面只在同一 iframe 内
-`postMessage({type:"skiff.menu", nonce, menu, tab})`，不重载页面。无 `tab` 时保持旧行为
-（插件中心直接打开时全部视图可见）。
+插件 UI 收到 `?tab=<view>` 后可切换同一文件内的局部视图；不同 `view` 由内核更换 iframe
+文件（`ui/<view>.html`）。同一文件内切换标签时父页面只 `postMessage({type:"skiff.menu",
+nonce, menu, tab})`，不重载页面。无 L3 的 L2 不渲染标签栏。
 
 ## 构建与自检
 
@@ -155,6 +161,9 @@ skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg \
   `cron` 本身不需要 `fs`/`docker`：它只调插件接口，**不执行宿主 shell**。
 - `guard`：逐个勾要守护的 `container:<name|id>` 或 `project:<p>`；未授权容器只展示不重启。
 - `files`：勾要管理的 `path:` 根（如 `/var/www`、`/etc`）；授权根之外的路径一律 403。
+- `testkit`：勾 `path:/proc`（验证授权读与越界拒绝）；要验证 `interop:call` 时再勾
+  `plugin:com.skiff.cron`（并确保 cron 已安装且声明 `jobs.list`）。它只用只读能力，
+  不执行任何写操作，适合在任何测试环境安装。
 
 ## 多架构
 

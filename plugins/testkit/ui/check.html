@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>插件架构测试台 · 能力面自检</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11; --ui-text: #d7dee8; --ui-muted: #8a97a8; --ui-surface: #121722;
+    --ui-btn: #1b2230; --ui-btn-hover: #232c3c; --ui-line: #2a3444; --ui-line-soft: #1c2532;
+    --ui-ok: #7ee787; --ui-bad: #ff7b72; --ui-warn: #f0b429;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7; --ui-text: #101828; --ui-muted: #667085; --ui-surface: #ffffff;
+    --ui-btn: #ffffff; --ui-btn-hover: #f0f2f5; --ui-line: #cfd5dd; --ui-line-soft: #e4e7ec;
+    --ui-ok: #15803d; --ui-bad: #b42318; --ui-warn: #b54708;
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--ui-bg); color: var(--ui-text); }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  .muted { color: var(--ui-muted); font-size: 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  button { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
+           padding: 5px 12px; cursor: pointer; }
+  button:hover { background: var(--ui-btn-hover); }
+  button:focus-visible { outline: 2px solid var(--ui-ok); outline-offset: 2px; }
+  input { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
+          padding: 5px 8px; min-width: 180px; }
+  pre { margin: 8px 0 0; padding: 10px; border: 1px solid var(--ui-line-soft); border-radius: 8px;
+        background: var(--ui-surface); font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+        white-space: pre-wrap; overflow-wrap: anywhere; min-height: 160px; }
+  .where { font-size: 12px; color: var(--ui-muted); margin-bottom: 10px; }
+</style>
+</head>
+<body data-view="check">
+<h1>插件架构测试台 · 能力面自检</h1>
+<p class="muted">预期失败分支会标 ✓；把失败当异常才是缺陷。授权内路径读取需要安装时授予 <code>path:/proc</code>。</p>
+<div class="where" id="where"></div>
+<div class="row">
+  <button id="run-checks">运行全部自检</button>
+</div>
+<form id="probe-form" class="row">
+  <input id="probe-path" value="/proc/uptime" aria-label="授权路径">
+  <button type="submit">表单提交读取（并作为自检授权路径）</button>
+</form>
+<pre id="out">点击「运行全部自检」…</pre>
+<script src="app.js"></script>
+</body>
+</html>

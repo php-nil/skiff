@@ -114,7 +114,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
         .route(
             &format!("/{p}/plugins/{{id}}"),
-            get(handlers::plugins::detail),
+            get(handlers::plugins::info),
+        )
+        .route(
+            &format!("/{p}/plugins/{{id}}/{{view}}"),
+            get(handlers::plugins::view),
         )
         .route(
             &format!("/{p}/plugins/install"),

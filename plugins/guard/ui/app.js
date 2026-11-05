@@ -80,24 +80,27 @@
     var events = state.events || [];
     var rows = state.containers || {};
     var objects = st.objects || [];
-    el("hour-count").textContent = String(state.count || 0);
-    el("objects").textContent = String(objects.length);
-    el("dry-run").textContent = cfg.dry_run === "true" ? "开" : "关";
+    if (el("hour-count")) el("hour-count").textContent = String(state.count || 0);
+    if (el("objects")) el("objects").textContent = String(objects.length);
+    if (el("dry-run")) el("dry-run").textContent = cfg.dry_run === "true" ? "开" : "关";
 
+    // 视图按文件拆开加载：只有当前视图的节点存在，其余视图跳过。
     var names = Object.keys(rows);
-    if (names.length === 0) {
-      el("containers").innerHTML = '<tr><td colspan="3" class="muted">暂无记录</td></tr>';
-    } else {
-      el("containers").innerHTML = names.map(function (n) {
-        var r = rows[n] || {};
-        return "<tr><td><code>" + esc(n) + "</code></td><td>" + when(r.last) +
-          '</td><td>' + (r.total || 0) + "</td></tr>";
-      }).join("");
+    if (el("containers")) {
+      if (names.length === 0) {
+        el("containers").innerHTML = '<tr><td colspan="3" class="muted">暂无记录</td></tr>';
+      } else {
+        el("containers").innerHTML = names.map(function (n) {
+          var r = rows[n] || {};
+          return "<tr><td><code>" + esc(n) + "</code></td><td>" + when(r.last) +
+            '</td><td>' + (r.total || 0) + "</td></tr>";
+        }).join("");
+      }
     }
 
-    if (events.length === 0) {
+    if (el("events") && events.length === 0) {
       el("events").innerHTML = '<tr><td colspan="4" class="muted">暂无事件</td></tr>';
-    } else {
+    } else if (el("events")) {
       el("events").innerHTML = events.slice().reverse().map(function (e) {
         var cls = e.result === "restarted" ? "ok" : (e.result === "failed" ? "bad" : "warn");
         return "<tr><td>" + when(e.t) + "</td><td><code>" + esc(e.name) + "</code></td><td class=\"" +

@@ -62,6 +62,7 @@
 | P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读） | `path:` 只读授权 + cron `tick`（均已就绪） | 1Panel/宝塔 监控 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
+| P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` | 无（只读能力面） | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
 | P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
 | P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | 未开始（卡 net） |
 | P1 | `com.skiff.backup` | 备份与恢复 | `docker` + `fs` | exec、fs 授权、流式导出 | 1Panel/宝塔 备份 | 未开始 |
@@ -164,18 +165,20 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-4 个官方插件均改为 `api = "1.1"` + `[[menu]]` 声明式菜单，内核渲染全部导航；插件只负责 `ui/` 内容。完整契约见 `docs/MENU_CONTRACT.md`。
+5 个随包插件均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
 
-| 插件 | 一级 → 二级 | 三级标签 | 固定页槽位 |
+| 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
-| `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样 | `overview.health`（`sm`，30s 刷新） |
-| `com.skiff.files` | 工具 → 文件管理 | 无（单视图） | — |
-| `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
-| `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件 | — |
+| `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样（`overview` / `history`） | `overview.health`（`sm`，30s 刷新） |
+| `com.skiff.files` | 工具 → 文件管理 | 无（单视图 `main`） | — |
+| `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务（`list` / `new`） | — |
+| `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件（`containers` / `events`） | — |
+| `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`）+ 单视图对照 | `overview.actions` |
 
-- 原有 `[[ui]].path` 全部保留：插件中心直接打开仍是旧入口；老包（`api = "1.0"`、无 `[[menu]]`）继续走 legacy 降级。
+- `/{p}/plugins/<id>` 是内核信息与管理页，功能页固定 `/{p}/plugins/<id>/<view>`；老包（无 `[[menu]]`）`main` 回落 `ui/index.html`。
 - 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。
 - `monitor` 的 `ui/health.html` 是槽位专用紧凑卡；无采样时显示明确空态，内核负责外框、标题与失败降级。
+- `testkit` 只用于验证架构：多视图/单视图、槽位、RPC 成功与失败、授权读与越界拒绝、主题/CSP；不执行宿主写操作。
 
 ## 5. 目录落地：放在哪里
 
@@ -192,7 +195,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ```
 plugins/
-├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron
+├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/testkit
 ├── Cargo.lock              # 必须入库（CI 与 pack.sh 都用 --locked）
 ├── pack.sh                 # 官方插件打包：build → stamp → pack → verify → official/
 ├── README.md               # 官方插件集约定（id、构建自检、打包、装机授权、多架构）
@@ -201,10 +204,11 @@ plugins/
 │   ├── Cargo.toml          # name = skiff-plugin-guard，[[bin]] name = "plugin"
 │   ├── manifest.toml       # key_id = 64 个 0 的占位（打包时回填）
 │   ├── src/main.rs
-│   └── ui/                 # index.html + app.js（只经 postMessage）
+│   └── ui/                 # containers.html / events.html + app.js（只经 postMessage）
 ├── monitor/                # com.skiff.monitor
 ├── files/                  # com.skiff.files
-└── cron/                   # com.skiff.cron（provides jobs.create/list/remove/run；consumes *）
+├── cron/                   # com.skiff.cron（provides jobs.create/list/remove/run；consumes *）
+└── testkit/                # com.skiff.testkit（架构验收：多视图/单视图/槽位/RPC/能力面）
 ```
 
 约定：

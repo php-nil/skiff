@@ -13,7 +13,7 @@
 # 发布物**不做 detached 签名**（§11 决策 12）：只用 SHA-256 摘要防传输损坏，
 # 签名链路（--key / .sig / verify-file）已于 2026-11-01 整体移除。
 #
-# 官方插件（guard/monitor/files/cron）随包携带：调用 plugins/pack.sh 产出已签名
+# 官方插件（guard/monitor/files/cron/testkit）随包携带：调用 plugins/pack.sh 产出已签名
 # `.wbpkg`，放进发布包的 official/；install.sh 再复制到 /www/skiff/official/
 # （不自动安装，权限确认不能跳过）。插件签名私钥按当前决定**非强制**：
 # 给了 --plugin-key 用正式身份，没给则生成临时身份并告警（产物仅供测试）。
@@ -155,7 +155,7 @@ Skiff（轻舟）$VERSION — ${TARGET:-linux-$ARCH}
 包内文件：
   skiff                 面板主程序（/usr/local/bin/skiff）
   skiff-plugin          插件打包/验签工具（可选，install.sh 会一并装上）
-  official/             官方插件包（guard/monitor/files/cron，install.sh 复制到
+  official/             官方插件包（guard/monitor/files/cron/testkit，install.sh 复制到
                         /www/skiff/official/，不自动安装）+ public-key.txt
   install.sh            安装器（支持 --datadir / --listen / SKIFF_LISTEN / 幂等重装）
   docker-bootstrap.sh   Docker 前置引导（install.sh 会调用；也可单独补跑）

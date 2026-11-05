@@ -4,7 +4,7 @@ name = "主机监控"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.1"
+api = "1.2"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -20,7 +20,7 @@ verbs = ["read", "list"]
 
 [[ui]]
 label = "主机监控"
-path = "index.html"
+path = "overview.html"
 
 # 挂到固定一级「工具」下；系统状态卡另走 overview.health 槽位（见 [[mount]]）。
 [[menu]]
@@ -29,23 +29,21 @@ parent = "tools"
 label = "主机监控"
 order = 30
 icon = "activity"
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "overview"
 
   [[menu.items]]
   id = "overview"
   label = "总览"
   order = 10
   icon = "overview"
-  ui = "index.html"
-  tab = "overview"
+  view = "overview"
 
   [[menu.items]]
   id = "history"
   label = "历史采样"
   order = 20
   icon = "list"
-  ui = "index.html"
-  tab = "history"
+  view = "history"
 
 # 概览页系统状态槽位：内核负责卡片外框/标题/失败降级，插件只提供内容。
 [[mount]]

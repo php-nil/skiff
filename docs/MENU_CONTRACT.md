@@ -86,7 +86,9 @@ pub struct Manifest {
 }
 ```
 
-现有 `Manifest` 使用 `#[serde(deny_unknown_fields)]`；实现本契约时必须同步扩展结构体，否则 `[[menu]]` / `[[mount]]` 会在解析阶段被拒。菜单声明要求 `api = "1.1"`；`api = "1.0"` 的老包继续走 `[[ui]]` 降级。
+现有 `Manifest` 使用 `#[serde(deny_unknown_fields)]`；实现本契约时必须同步扩展结构体，否则 `[[menu]]` / `[[mount]]` 会在解析阶段被拒。菜单声明要求 `api = "1.2"`（`[[mount]]` 自 `1.1` 起可用）；`api = "1.0"` / `1.1` 的老包继续走 `[[ui]]` 降级。
+>
+> **路由与视图分工**见 [`docs/PLUGIN_UI_CONTRACT.md`](PLUGIN_UI_CONTRACT.md)：`/{p}/plugins/{id}` 是内核信息与管理页，插件功能页固定为 `/{p}/plugins/{id}/<view>`；本文只负责菜单树、深链与偏好。
 
 ### 2.2 字段表
 
@@ -103,7 +105,7 @@ pub struct Manifest {
 | `gates` | string[] | 否 | `["plugin_enabled"]` | 只能是 `plugin_enabled` / `docker_available`；多项 AND |
 | `default_visible` | bool | 否 | `true` | 默认是否出现在菜单；用户可覆盖 |
 | `pinnable` | bool | 否 | `true` | 用户是否可把它固定到「固定区」快捷条；插件不能强制固定 |
-| `target` | table | 是 | — | `{ kind = "plugin_ui", ui = "<相对 ui/ 的路径>" }`；插件不能用 `builtin` kind |
+| `view` | string | 否 | `main` | 该 L2 的默认视图名；无 L3 时是唯一视图。映射包内 `ui/<view>.html` |
 | `items` | table[] | 否 | `[]` | L3 列表；见下 |
 
 #### L3：`[[menu.items]]`
@@ -114,8 +116,7 @@ pub struct Manifest {
 | `label` | string | 是 | — | 1–32 字符，纯文本 |
 | `order` | integer | 否 | `100` | 同一 L2 内升序 |
 | `icon` | string | 否 | `dot` | 内置图标集 |
-| `ui` | string | 否 | 继承 L2 `target.ui` | 包内相对路径；若不同则切换 iframe 文件 |
-| `tab` | string | 否 | 等于 `id` | 传给插件的稳定视图名；插件按它切换内部视图 |
+| `view` | string | 否 | 等于 `id` | 视图名；映射包内 `ui/<view>.html`，视图名在插件内必须唯一 |
 
 L3 不重复声明 `roles` / `gates`：继承所属 L2。若将来需要单独控制，再增加字段，不在 v1 引入。
 
@@ -150,11 +151,11 @@ L3 不重复声明 `roles` / `gates`：继承所属 L2。若将来需要单独�
 4. 深度只能是 L2/L3；`items` 内不得再出现 `items`。（`MENU_DEPTH_EXCEEDED`）
 5. `label` 1–32 字符、去空白后非空、不得包含控制字符。（`MENU_LABEL_INVALID`）
 6. `icon` 必须在内置枚举内；未知值 warning 并降级 `dot`，不拒装。（`MENU_ICON_UNKNOWN`）
-7. `target.ui` / `items[].ui` 必须是非绝对、无 `..` 的相对路径，且文件存在于包内 `ui/`。（`MENU_TARGET_INVALID`）
+7. `view` 必须是 `[a-z0-9][a-z0-9-]{0,31}` 的视图名；映射出的 `ui/<view>.html` 必须存在于包内 `ui/`。（`MENU_VIEW_INVALID` / `MENU_VIEW_MISSING`；同一插件内视图名重复为 `MENU_VIEW_CONFLICT`）
 8. `roles` 只能包含 `viewer` / `operator` / `admin`；空数组合法。（`MENU_ROLE_INVALID`）
 9. `gates` 只能包含 `plugin_enabled` / `docker_available`；内置项额外允许 `route_available`。（`MENU_GATE_INVALID`）
 10. `order` 必须在 `-10000..=10000`；超出拒装，防止极端排序破坏默认值。（`MENU_ORDER_INVALID`）
-11. 一个插件至少声明一个 `[[ui]]`；所有 `[[menu]]` 的 `target.ui` 可独立于 `[[ui]]`，但路径必须可托管。没有 `[[ui]]` 的插件不能声明菜单。（`MENU_NO_UI_ENTRY`）
+11. 一个插件至少声明一个 `[[ui]]`；`[[menu]]` 的 `view` 映射文件必须可托管。没有 `[[ui]]` 的插件不能声明菜单。（`MENU_NO_UI_ENTRY`）
 12. 同一 L2 的 L3 数量 ≤12；`items` 超过则拒装。（`MENU_TOO_MANY_ITEMS`）
 
 ### 2.4 示例插件完整声明
@@ -165,11 +166,11 @@ L3 不重复声明 `roles` / `gates`：继承所属 L2。若将来需要单独�
 
 ```toml
 # 现有字段保持不变（id/name/version/key_id/api/...）。
-api = "1.1"
+api = "1.2"
 
 [[ui]]
 label = "示例面板"
-path = "index.html"
+path = "main.html"
 
 # 一级固定为「工具」（id = tools），插件只在这里声明 L2。
 [[menu]]
@@ -182,7 +183,7 @@ roles = ["admin", "operator", "viewer"]
 gates = ["plugin_enabled"]
 default_visible = true
 pinnable = true
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "main"
 
   # L3 由内核渲染成工作台标签栏；插件只处理内容。
   [[menu.items]]
@@ -190,32 +191,30 @@ target = { kind = "plugin_ui", ui = "index.html" }
   label = "总览"
   order = 10
   icon = "list"
-  ui = "index.html"
-  tab = "overview"
+  view = "overview"
 
   [[menu.items]]
   id = "history"
   label = "历史采样"
   order = 20
   icon = "archive"
-  ui = "index.html"
-  tab = "history"
+  view = "history"
 
   [[menu.items]]
   id = "settings"
   label = "设置"
   order = 30
   icon = "settings"
-  ui = "index.html"
-  tab = "settings"
+  view = "settings"
 ```
 
 渲染结果：
 
 - 顶栏/侧栏：`工具` → `示例面板`。
+- 信息页：`/{p}/plugins/com.skiff.example`（内核渲染身份/授权/管理，见 `PLUGIN_UI_CONTRACT.md`）。
 - 工作台：内核标签栏 `总览 · 历史采样 · 设置`，内容 iframe
-  `/{p}/plugins/com.skiff.example/ui/index.html?nonce=...&menu=plugin/com.skiff.example/panel&tab=overview`。
-- 深链：`/{p}/m/plugin/com.skiff.example/panel/overview`。
+  `/{p}/plugins/com.skiff.example/ui/overview.html?nonce=...&menu=plugin/com.skiff.example/panel&tab=overview`。
+- 深链：`/{p}/m/plugin/com.skiff.example/panel/overview`；规范功能页 `/{p}/plugins/com.skiff.example/overview`。
 
 ### 2.5 插件卸载后的残留声明
 
@@ -238,9 +237,9 @@ target = { kind = "plugin_ui", ui = "index.html" }
    - `parent` = 官方白名单映射（见 §7.3），未知插件默认 `tools`。
    - `order` = `1000`；同一父级内按 `plugin-id` 字典序稳定排序。
    - `roles` = 全角色；`gates` = `["plugin_enabled"]`；`pinnable` = true。
-2. `[[ui]]` 其余条目 → 该 L2 的 L3，`id = legacy-2`、`legacy-3`…，`ui` 用各自 `path`，`label` 用各自 label。
+2. `[[ui]]` 其余条目 → 该 L2 的 L3，`id = legacy-2`、`legacy-3`…，各用 `path` 对应的视图名，`label` 用各自 label。
 3. 无 `[[ui]]` 的插件：不产生菜单，只出现在插件中心。
-4. 新包一旦声明至少一个 `[[menu]]`，`[[ui]]` 条目不再参与菜单合成；它们仍可被 `[[menu]]` 的 `target.ui` 使用，也仍可从插件中心打开。
+4. 新包一旦声明至少一个 `[[menu]]`，`[[ui]]` 条目不再参与菜单合成；`view` 统一映射 `ui/<view>.html`，旧包的默认视图 `main` 回落到原 `ui/index.html`（见 `PLUGIN_UI_CONTRACT.md` §5）。
 5. 旧包不要求重打包；升级到新包后声明替换降级结果，用户偏好按稳定键尽量保留；`legacy` 键变成孤儿后由清理任务删除。
 
 ---
@@ -306,7 +305,9 @@ L3 标签栏（在工作台页面内，不在 iframe 内）：
 | 内置 L2 | `/{p}/m/core/<l1>/<l2>` | 如 `/{p}/m/core/docker/containers` |
 | 插件 L2 | `/{p}/m/plugin/<plugin-id>/<l2-id>` | 如上例 |
 | 插件 L3 | `/{p}/m/plugin/<plugin-id>/<l2-id>/<l3-id>` | 选中对应标签 |
-| 插件 iframe 内容 | `/{p}/plugins/<id>/ui/<path>?nonce=...&menu=<l2-key>&tab=<l3-id>` | 内核托管，非用户主入口 |
+| 插件信息与管理 | `/{p}/plugins/<id>` | 内核渲染，非插件页面 |
+| 插件规范功能页 | `/{p}/plugins/<id>/<view>` | 等价于默认/指定视图的深链 |
+| 插件 iframe 内容 | `/{p}/plugins/<id>/ui/<path>?nonce=...&menu=<l2-key>&tab=<l3-view>` | 内核托管，非用户主入口 |
 
 - 规范 URL 是菜单身份的唯一外部表现；旧路由保留为别名（§7.2），由内核解析到同一菜单键。
 - 深链必须能在无 JS 下打开；JS 只做同页增强（更新 iframe / pushState），不能成为唯一入口。
@@ -518,25 +519,25 @@ parent = "tools"
 label = "监控"
 order = 20
 icon = "activity"
-target = { kind = "plugin_ui", ui = "index.html" }
+view = "overview"
 
   [[menu.items]]
   id = "overview"
   label = "总览"
   order = 10
-  tab = "overview"
+  view = "overview"
 
   [[menu.items]]
   id = "cpu"
   label = "CPU / 内存"
   order = 20
-  tab = "cpu"
+  view = "cpu"
 
   [[menu.items]]
   id = "disk"
   label = "磁盘"
   order = 30
-  tab = "disk"
+  view = "disk"
 
 [[mount]]
 slot = "overview.health"
@@ -630,7 +631,7 @@ roles = ["admin", "operator", "viewer"]
 
 - 网站一级由内核自带（网站列表 / 运行环境 / 设置），原 `com.skiff.nginx` 已内核化，不再声明插件菜单。
 - files/cron/monitor/guard 全部归「工具」，不再作为一级或二级「应用」的平铺项。
-- L3 的 `tab` 值必须由插件 UI 自己识别；没有对应视图就先不声明，避免假标签。
+- L3 的 `view` 必须对应真实存在的 `ui/<view>.html`；没有对应视图就先不声明，避免假标签。
 
 ### 7.4 分批
 
@@ -650,7 +651,7 @@ roles = ["admin", "operator", "viewer"]
 | C2 | `parent` 非固定 L1 | 安装拒绝 `MENU_PARENT_UNKNOWN` | 单测/集成 |
 | C3 | 插件声明 `core/...` 或重复键 | 拒绝 `MENU_ID_CONFLICT`，无覆盖 | 单测 |
 | C4 | L3 深度超限 / 数量超限 | 拒绝 `MENU_DEPTH_EXCEEDED` / `MENU_TOO_MANY_ITEMS` | 单测 |
-| C5 | `target.ui` 绝对路径/`..`/不存在 | 拒绝 `MENU_TARGET_INVALID` | 单测 |
+| C5 | `view` 非法/文件不存在/同插件重复 | 拒绝 `MENU_VIEW_INVALID` / `MENU_VIEW_MISSING` / `MENU_VIEW_CONFLICT` | 单测 |
 | C6 | 旧包只有 `[[ui]]` | 合成 `plugin/<id>/legacy`；旧 nginx 包兼容映射到 `sites`，其余映射到 `tools` | 单测/集成 |
 | C7 | 网站 L1 的内核固定 L2 | 始终出现网站列表 / 运行环境 / 设置，三项均 200，无 404 | 集成 |
 | C8 | 0 个工具提供者 | 工具 L1 显示空态 | 集成 |
@@ -660,7 +661,7 @@ roles = ["admin", "operator", "viewer"]
 | C12 | 隐藏偏好 | 隐藏项不渲染，但保留排序位置 | 集成 |
 | C13 | 布局切换 | 同一菜单键/URL 集合，`data-layout` 变化，结构不变 | 集成 |
 | C14 | 深链 | `/{p}/m/...` 命中正确 L1/L2/L3 当前态 | 集成 |
-| C15 | L3 无 JS | iframe query 含 `menu`/`tab`，插件可渲染 | 集成/浏览器 |
+| C15 | L3 无 JS | iframe query 含 `menu`/`tab`，`tab` = 视图名，插件可渲染 | 集成/浏览器 |
 | C16 | 槽位失败 | monitor 禁用后概览回退原生健康块；页面 200 | 集成 |
 | C17 | 卸载清理 | 插件删除后菜单消失；`user_prefs` 无该前缀 | 单测/集成 |
 | C18 | 悬停 | hover 不展开；click 才展开；Escape 关闭并还焦点 | 浏览器 |
@@ -738,12 +739,12 @@ roles = ["admin", "operator", "viewer"]
 用户定稿 Q1–Q3 后，P1 的交付范围被扩大到「声明层 + 渲染 + 菜单设置 + 布局」，原计划中的 P2 部分项前移。实际落地：
 
 **已完成**
-- `skiff-pkgfmt`：`[[menu]]` / `[[menu.items]]` / `[[mount]]` 解析与校验；错误码 `MENU_PARENT_UNKNOWN` / `MENU_ID_INVALID` / `MENU_ID_CONFLICT` / `MENU_TARGET_INVALID` / `MENU_ROLE_INVALID` / `MENU_GATE_INVALID` / `MENU_ORDER_OUT_OF_RANGE` / `MENU_LABEL_TOO_LONG` / `MENU_TOO_MANY_ITEMS` / `MENU_NO_UI_ENTRY` / `MENU_API_VERSION` / `MOUNT_*`；安装验包时校验 `target.ui` 确实在 `ui/` 内。
+- `skiff-pkgfmt`：`[[menu]]` / `[[menu.items]]` / `[[mount]]` 解析与校验；错误码 `MENU_PARENT_UNKNOWN` / `MENU_ID_INVALID` / `MENU_ID_CONFLICT` / `MENU_VIEW_INVALID` / `MENU_VIEW_MISSING` / `MENU_VIEW_CONFLICT` / `MENU_ROLE_INVALID` / `MENU_GATE_INVALID` / `MENU_ORDER_INVALID` / `MENU_LABEL_INVALID` / `MENU_TOO_MANY_ITEMS` / `MENU_NO_UI_ENTRY` / `MENU_API_VERSION` / `MOUNT_*`；安装验包时校验视图文件确实在 `ui/` 内。
 - 内核菜单注册表 `crates/web/src/menu.rs`：六个固定 L1、内置 L2、启用插件声明合并、角色/能力门、旧包 `[[ui]]` legacy 降级、稳定键与规范深链。
 - 渲染：同一份菜单 DOM，`body[data-layout]` 在 `top`/`left` 间切换；左侧栏分组内联展开；点击为主、悬停 320ms 辅助、Escape/焦点/空白关闭、方向键导航、≤860px 抽屉。
 - 菜单设置页 `/settings/menu`：L1/L2 上移/下移、隐藏/显示、固定/取消固定、恢复默认、布局切换；偏好写 `user_prefs`（schema v2），仅当前用户。
 - 空态：工具无提供者保留一级并给出「去插件中心」动作；已安装未启用时直接指向已安装列表；网站为内核固定 L2，无空态。
-- 深链 `/{p}/m/...` 与旧路由并存；插件详情 `?menu=<local>` 选择 `target.ui`。
+- 深链 `/{p}/m/...` 与旧路由并存；插件信息页 `/{p}/plugins/<id>` 与功能页 `/{p}/plugins/<id>/<view>` 分离（见 §13 与 `PLUGIN_UI_CONTRACT.md`）。
 - 卸载插件时清理所有用户偏好中的 `plugin/<id>/...` 残留。
 - 固定项：偏好里的 pin 在导航顶部渲染为固定快捷区（P1 提前落地）。
 
@@ -780,7 +781,7 @@ roles = ["admin", "operator", "viewer"]
 - 失败降级：启用但界面未起来时，5s 超时显示 `data-mount-fail` 区块（重试 + 插件详情/日志入口）；`refresh != 0` 时父页面定时发 `skiff.refresh`。
 - monitor 的 `health.html` 在无采样/进程未启动时显示明确空态文本，不渲染空白卡。
 
-**官方 4 插件迁移（`api = "1.1"` + `[[menu]]`）**
+**官方 4 插件迁移（`api = "1.1"` + `[[menu]]`；P3 已升至 `1.2`，见 §13）**
 
 | 插件 | 一级 | 二级 | 三级 | 槽位 |
 |---|---|---|---|---|
@@ -789,7 +790,7 @@ roles = ["admin", "operator", "viewer"]
 | monitor | 工具 `tools` | 主机监控 `plugin/com.skiff.monitor/monitor` | 总览 / 历史采样 | `overview.health` |
 | guard | 工具 `tools` | 容器守护 `plugin/com.skiff.guard/guard` | 容器 / 事件 | — |
 
-- 所有插件保留原 `[[ui]].path`，插件中心打开仍走原入口；老包降级逻辑不变。
+- P3 起 `[[ui]].path` 指向 `main.html`（旧包回落 `ui/index.html`）；插件中心入口改为信息页 + 规范功能页。
 - 未声明「磁盘」「执行记录」「守护设置」等视图：插件 UI 没有对应内容时不造假标签（契约 §7.3）。
 - 工具内顺序：files 10 / cron 20 / monitor 30 / guard 40，同层 `order` 稳定。
 
@@ -801,6 +802,30 @@ roles = ["admin", "operator", "viewer"]
 - 菜单设置页未列出 L3（L3 由声明决定，不单独隐藏/排序）。
 - 槽位只实现 `overview.*` 与 `sites.header` 的通用渲染；`sites.header` 暂无插件声明。
 - 拖拽排序、管理员全局布局策略、孤儿偏好启动清理任务仍未做。
+
+---
+
+## 13. P3 落地记录（信息页 / 功能页拆分 + `view` 视图模型）
+
+**路由与视图**
+- `/{p}/plugins/<id>` 改为内核渲染的插件信息与管理页，不再承载 iframe 工作台。
+- 插件功能页固定为 `/{p}/plugins/<id>/<view>`；`/<view>` 缺省时取第一个可见 L2 的首个视图（旧包取 `main`）。
+- `/{p}/m/plugin/<id>/<l2>[/<l3>]` 仍是菜单深链：L3 的 `tab` 参数即视图名，`l3` 为空时取该 L2 默认视图。
+- 菜单深链与规范功能页都只选视图，不再出现第二套 `target.ui` / `tab` 语义。
+
+**manifest**
+- `[[menu]]` 增加 `view`（默认 `main`）；`[[menu.items]]` 增加 `view`（默认等于 `id`）。
+- 视图名映射 `ui/<view>.html`；同一插件内视图名必须唯一（`MENU_VIEW_CONFLICT`），文件缺失拒装（`MENU_VIEW_MISSING`）。
+- 无 L3 的 L2 只有隐式主视图，内核不渲染标签栏。
+- 旧包（只有 `[[ui]]`，无 `[[menu]]`）：`main` 指向原 `ui/index.html`，其余 `[[ui]]` 按原顺序合成 `legacy-2`… 标签。
+
+**官方插件**
+- files → 单视图 `main`（`ui/main.html`）；cron → `list` / `new`；guard → `containers` / `events`；monitor → `overview` / `history`（保留 `overview.health` 槽位）。
+- 新增 `plugins/testkit`（`com.skiff.testkit`）作为架构验收插件，覆盖多视图、单视图、槽位、RPC、能力面与主题。
+
+**测试**
+- `skiff-web` 集成：信息页字段与管理动作、`/plugins/<id>/<view>` 规范路由、未知视图 404、无 L3 不渲染标签栏、旧包 `ui/index.html` 回落、testkit 多视图与 `overview.actions` 槽位。
+- 完整契约与测试矩阵见 [`docs/PLUGIN_UI_CONTRACT.md`](PLUGIN_UI_CONTRACT.md)。
 
 ---
 

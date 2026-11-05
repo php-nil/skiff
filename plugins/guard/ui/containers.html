@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>容器守护</title>
+<title>容器守护 · 容器</title>
 <style>
   /* 默认深色：旧面板不会下发主题，保持原有观感；
      面板父页面 postMessage 下发 `light` 时由 app.js 写到 <html data-theme>。 */
@@ -56,7 +56,7 @@
 </style>
 </head>
 <body>
-<h1>容器守护</h1>
+<h1>容器守护 · 容器</h1>
 <p class="muted">每分钟巡检一次；只对已授权对象执行重启（未授权容器仅展示）。</p>
 <div class="row">
   <button id="refresh">刷新状态</button>
@@ -73,13 +73,6 @@
   <table>
     <thead><tr><th>容器</th><th>最近重启</th><th>累计</th></tr></thead>
     <tbody id="containers"><tr><td colspan="3" class="muted">暂无记录</td></tr></tbody>
-  </table>
-</div>
-<div data-view="events">
-  <h2 style="font-size:14px;margin-top:16px">最近事件</h2>
-  <table>
-    <thead><tr><th>时间</th><th>容器</th><th>结果</th><th>详情</th></tr></thead>
-    <tbody id="events"><tr><td colspan="4" class="muted">暂无事件</td></tr></tbody>
   </table>
 </div>
 <script src="app.js"></script>

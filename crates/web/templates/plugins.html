@@ -48,9 +48,7 @@
         {% if p.grants.is_empty() %}<span class="muted">无</span>{% endif %}
       </div>
       <div class="pc-actions">
-        {% if p.enabled && !p.ui_path.is_empty() %}
-        <a class="mini" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">打开</a>
-        {% endif %}
+        <a class="mini" href="/{{ ctx.prefix }}/plugins/{{ p.id }}">详情</a>
         {% if can_admin %}
         <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/toggle" class="inline">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

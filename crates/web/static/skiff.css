@@ -1479,6 +1479,14 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
   color: var(--accent);
 }
 
+/* 插件信息页：关联菜单与完整指纹。 */
+.plugin-menu-list { margin: 0; padding-left: 0; list-style: none; }
+.plugin-menu-list > li { margin-bottom: var(--sp-3); }
+.plugin-menu-list a { display: inline-flex; align-items: center; gap: 6px; }
+.plugin-menu-list code { color: var(--muted); font-size: var(--fs-xs); }
+.plugin-menu-list ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); list-style: none; }
+.fingerprint { overflow-wrap: anywhere; font-size: var(--fs-xs); }
+
 .mount-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
 .mount-card { padding: var(--sp-3) var(--sp-4); }
 .mount-head { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-2); }

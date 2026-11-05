@@ -118,6 +118,8 @@
 
   function renderTargets() {
     var sel = el("new-target");
+    // 视图按文件拆开加载：列表页没有「新建任务」表单，跳过目标渲染。
+    if (!sel) return;
     sel.innerHTML = "";
     if (targets.length === 0) {
       sel.innerHTML = '<option value="">（无可调用目标）</option>';
@@ -136,6 +138,7 @@
   }
 
   function pickTarget() {
+    if (!el("new-target")) return;
     var id = el("new-target").value;
     var t = targets.filter(function (x) { return x.id === id; })[0];
     if (t && t.methods && t.methods.length) {
@@ -147,6 +150,7 @@
 
   function render() {
     var body = el("jobs");
+    if (!body) return;
     if (jobs.length === 0) {
       body.innerHTML = '<tr><td colspan="6" class="muted">还没有任务。可在此新建，或从其他插件的界面一键添加。</td></tr>';
       return;
@@ -209,7 +213,9 @@
   }
 
   function refreshAll() {
-    return Promise.all([load(), loadTargets()]);
+    var tasks = [load()];
+    if (el("new-target")) tasks.push(loadTargets());
+    return Promise.all(tasks);
   }
 
   el("refresh").addEventListener("click", function () {
@@ -217,9 +223,9 @@
     refreshAll().then(function () { say("已刷新"); });
   });
 
-  el("new-target").addEventListener("change", pickTarget);
+  if (el("new-target")) el("new-target").addEventListener("change", pickTarget);
 
-  el("create").addEventListener("click", function () {
+  if (el("create")) el("create").addEventListener("click", function () {
     var name = el("new-name").value.trim();
     var expr = el("new-expr").value.trim() || "0 3 * * *";
     var target = el("new-target").value;
@@ -255,7 +261,7 @@
     });
   });
 
-  el("jobs").addEventListener("click", function (ev) {
+  if (el("jobs")) el("jobs").addEventListener("click", function (ev) {
     var btn = ev.target.closest ? ev.target.closest("button") : null;
     if (!btn) return;
     var runId = btn.getAttribute("data-run");
@@ -303,8 +309,9 @@
   });
 
   rpc("config").then(function (c) {
-    if (c && c.default_expr && !el("new-expr").value) {
-      el("new-expr").value = c.default_expr;
+    var expr = el("new-expr");
+    if (c && c.default_expr && expr && !expr.value) {
+      expr.value = c.default_expr;
     }
   }).catch(function () {});
   refreshAll();

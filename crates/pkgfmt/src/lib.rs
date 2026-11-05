@@ -8,7 +8,7 @@ pub mod package;
 pub mod signature;
 
 pub use manifest::{
-    Manifest, ManifestMenu, ManifestMount, ManifestPerm, MenuItem, MenuTarget, RunMode, UiEntry,
+    Manifest, ManifestMenu, ManifestMount, ManifestPerm, MenuItem, RunMode, UiEntry,
 };
 pub use package::{
     host_arch, pack_dir, verify_file, PackageLimits, PackageMeta, UnpackedPackage, DEFAULT_LIMITS,
