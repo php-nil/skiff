@@ -13,8 +13,14 @@ use crate::state::{AppState, CurrentUser};
 
 /// 偏好表内的键；仅 `menu.prefs` 一行，JSON 内容由本模块解释。
 pub const PREFS_KEY: &str = "menu.prefs";
-/// 全局默认布局（P1 只读，管理员 UI 留 P3）。缺省 `top`。
+/// 全局默认布局（P1 只读，管理员 UI 留 P3）。缺省 `left`（左右 / 侧栏）。
 pub const GLOBAL_LAYOUT_KEY: &str = "ui.menu.layout";
+/// 内容宽度缺省值：`auto` 铺满可用宽度。
+pub const DEFAULT_CONTENT_WIDTH: &str = "auto";
+/// 「固定」内容宽度的缺省上限（px）。
+pub const DEFAULT_CONTENT_MAX: u32 = 1440;
+/// 「固定」内容宽度允许的范围（px）。
+pub const CONTENT_MAX_RANGE: std::ops::RangeInclusive<u32> = 960..=4096;
 
 /// 一级菜单稳定键（`root/<id>` 的 `<id>` 部分）。契约 §1.2。
 pub const L1_OVERVIEW: &str = "overview";
@@ -79,6 +85,10 @@ pub struct MenuGroup {
 #[derive(Debug, Clone)]
 pub struct PageMenu {
     pub layout: String,
+    /// 内容宽度：`auto` 铺满；`fixed` 使用 `max_width`。
+    pub width: String,
+    /// `width == fixed` 时的最大宽度（px）。
+    pub max_width: u32,
     pub groups: Vec<MenuGroup>,
     pub pinned: Vec<MenuLink>,
 }
@@ -607,6 +617,10 @@ pub struct MenuPrefs {
     pub v: u32,
     /// `top` / `left`。
     pub layout: Option<String>,
+    /// 内容宽度：`auto` / `fixed`。
+    pub content_width: Option<String>,
+    /// `content_width = fixed` 时的最大宽度（px）。
+    pub content_max: Option<u32>,
     /// `root` 为一级顺序，其余键为一级 id。
     pub order: BTreeMap<String, Vec<String>>,
     pub hidden: Vec<String>,
@@ -661,6 +675,8 @@ pub struct SettingsGroup {
 pub fn build(state: &AppState, user: &CurrentUser, active: &str) -> PageMenu {
     let prefs = load_prefs(state, user.user.id);
     let layout = effective_layout(state, &prefs);
+    let width = effective_width(&prefs);
+    let max_width = effective_max_width(&prefs);
     let decls = declarations(state, user);
     let (visible, _) = arrange(&decls, &prefs, user);
     let active_key = resolve_plugin_active(&visible, active);
@@ -708,6 +724,8 @@ pub fn build(state: &AppState, user: &CurrentUser, active: &str) -> PageMenu {
 
     PageMenu {
         layout,
+        width,
+        max_width,
         groups,
         pinned,
     }
@@ -763,6 +781,14 @@ pub fn current_layout(state: &AppState, user: &CurrentUser) -> String {
     effective_layout(state, &load_prefs(state, user.user.id))
 }
 
+pub fn current_width(state: &AppState, user: &CurrentUser) -> String {
+    effective_width(&load_prefs(state, user.user.id))
+}
+
+pub fn current_max_width(state: &AppState, user: &CurrentUser) -> u32 {
+    effective_max_width(&load_prefs(state, user.user.id))
+}
+
 /// 处理菜单设置页的一个动作。非法键直接忽略，不把用户卡在坏状态。
 pub fn apply_action(
     state: &AppState,
@@ -770,6 +796,8 @@ pub fn apply_action(
     action: &str,
     key: &str,
     layout: Option<&str>,
+    width: Option<&str>,
+    max: Option<&str>,
 ) -> Result<(), AppError> {
     if action == "reset" {
         state.db().delete_user_pref(user.user.id, PREFS_KEY)?;
@@ -783,6 +811,18 @@ pub fn apply_action(
             if let Some(l) = layout {
                 if matches!(l, "top" | "left") {
                     prefs.layout = Some(l.to_string());
+                }
+            }
+        }
+        "width" => {
+            if let Some(w) = width {
+                if matches!(w, "auto" | "fixed") {
+                    prefs.content_width = Some(w.to_string());
+                }
+            }
+            if let Some(raw) = max.and_then(|v| v.trim().parse::<u32>().ok()) {
+                if CONTENT_MAX_RANGE.contains(&raw) {
+                    prefs.content_max = Some(raw);
                 }
             }
         }
@@ -1016,7 +1056,23 @@ fn effective_layout(state: &AppState, prefs: &MenuPrefs) -> String {
         .ok()
         .flatten()
         .filter(|l| matches!(l.as_str(), "top" | "left"))
-        .unwrap_or_else(|| "top".into())
+        .unwrap_or_else(|| "left".into())
+}
+
+fn effective_width(prefs: &MenuPrefs) -> String {
+    prefs
+        .content_width
+        .as_deref()
+        .filter(|w| matches!(*w, "auto" | "fixed"))
+        .unwrap_or(DEFAULT_CONTENT_WIDTH)
+        .to_string()
+}
+
+fn effective_max_width(prefs: &MenuPrefs) -> u32 {
+    prefs
+        .content_max
+        .filter(|v| CONTENT_MAX_RANGE.contains(v))
+        .unwrap_or(DEFAULT_CONTENT_MAX)
 }
 
 /// 角色/能力门过滤。

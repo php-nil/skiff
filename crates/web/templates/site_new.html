@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1>新建网站</h1>
-  <span class="sub">三步完成：域名与目录 → PHP 版本 → 确认</span>
+  <span class="sub">三步完成：选择类型 → 填写参数 → 确认</span>
   <a class="ghost" href="/{{ ctx.prefix }}/sites">返回网站列表</a>
 </div>
 
@@ -11,15 +11,16 @@
 
 {% if !env.ready %}
 <div class="alert warn">
-  运行环境未就绪，创建按钮已禁用。请先安装并启动 nginx + PHP 运行环境。
+  运行环境当前未完全就绪。静态网站与反向代理只依赖 nginx；运行环境站还需要 PHP-FPM 运行中。
   <a href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
 </div>
 {% endif %}
+
 <section class="panel">
   <div class="wizard" data-wizard data-wizard-start="{{ wizard_start }}">
     <div class="wizard-steps" aria-label="创建步骤">
-      <span class="wizard-step" data-wizard-step="1"><span class="n">1</span>域名与目录</span>
-      <span class="wizard-step" data-wizard-step="2"><span class="n">2</span>PHP 版本</span>
+      <span class="wizard-step" data-wizard-step="1"><span class="n">1</span>网站类型</span>
+      <span class="wizard-step" data-wizard-step="2"><span class="n">2</span>参数</span>
       <span class="wizard-step" data-wizard-step="3"><span class="n">3</span>确认</span>
     </div>
 
@@ -27,47 +28,93 @@
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
 
       <div class="wizard-panel" data-wizard-panel="1">
-        <h2>域名与站点目录</h2>
-        <p class="hint">主域名用于 vhost 与目录命名；别名会一并写入 <code>server_name</code>。站点目录留空时默认 <code>/www/sites/&lt;主域名&gt;</code>，文档根为它下面的 <code>index/</code>，<code>log/ ssl/ conf/</code> 与 <code>index/</code> 同级。</p>
-        <div class="form-grid">
-          <label>主域名
-            <input name="domain" value="{{ form.domain }}" placeholder="example.com" autocomplete="off"
-                   aria-describedby="err-domain">
-            <p class="field-error" id="err-domain" data-error-for="domain"
-               {% if error_field == "domain" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+        <h2>选择网站类型</h2>
+        <p class="hint">类型决定站点的运行方式：运行环境站共享 PHP-FPM；静态站只发文件；反向代理把请求转发到已有服务。Node.js / Go 运行环境在 P2 接入，当前不可继续。</p>
+        <div class="check-list">
+          <label class="check-line">
+            <input type="radio" name="site_type" value="runtime" {% if form.site_type == "runtime" %}checked{% endif %}>
+            <span><strong>运行环境</strong><br><small>绑定一个运行环境（P1 仅 PHP），站点共享该环境的 FPM 进程池与 socket。</small></span>
           </label>
-          <label>别名域名（可选，多个用逗号或空格分隔）
-            <input name="aliases" value="{{ form.aliases }}" placeholder="www.example.com, api.example.com" autocomplete="off"
-                   aria-describedby="err-aliases">
-            <p class="field-error" id="err-aliases" data-error-for="aliases"
-               {% if error_field == "aliases" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          <label class="check-line">
+            <input type="radio" name="site_type" value="static" {% if form.site_type == "static" %}checked{% endif %}>
+            <span><strong>静态网站</strong><br><small>只填写域名与站点目录，<code>index/</code> 下的文件由 nginx 直接返回。</small></span>
           </label>
-          <label>站点目录
-            <input name="root_dir" value="{{ form.root_dir }}" placeholder="/www/sites/example.com" autocomplete="off"
-                   aria-describedby="err-root">
-            <p class="field-error" id="err-root" data-error-for="root_dir"
-               {% if error_field == "root_dir" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          <label class="check-line">
+            <input type="radio" name="site_type" value="proxy" {% if form.site_type == "proxy" %}checked{% endif %}>
+            <span><strong>反向代理</strong><br><small>填写上游地址并按需开启 WebSocket 升级，不创建文档根。</small></span>
           </label>
         </div>
+        <p class="field-error" data-error-for="site_type"
+           {% if error_field == "site_type" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+        <div class="not-implemented">
+          <div><strong>Node.js / Go 运行环境</strong><br>P2 预留：每站点独立容器、独立 <code>127.0.0.1</code> 端口与日志；P1 不安装、不启动、也不伪造运行状态。</div>
+          <span class="badge warn">P2 未实现</span>
+        </div>
         <div class="wizard-nav">
-          <button class="btn primary next" type="button" data-wizard-next>下一步：选择 PHP</button>
+          <button class="btn primary next" type="button" data-wizard-next>下一步：填写参数</button>
         </div>
       </div>
 
       <div class="wizard-panel" data-wizard-panel="2" hidden>
-        <h2>PHP 版本</h2>
+        <h2>站点参数</h2>
         <div class="form-grid">
-          <label>PHP 版本
-            <select name="php_version">
-              <option value="8.5" {% if form.php_version == "8.5" || form.php_version.is_empty() %}selected{% endif %}>PHP 8.5（当前运行环境）</option>
-            </select>
-            <p class="hint">运行环境当前只提供 PHP 8.5；其他版本在后续阶段接入。</p>
+          <label>主域名
+            <input name="domain" value="{{ form.domain }}" placeholder="example.com" autocomplete="off" aria-describedby="err-domain">
+            <p class="field-error" id="err-domain" data-error-for="domain"
+               {% if error_field == "domain" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          </label>
+          <label>别名域名（可选，多个用逗号或空格分隔）
+            <input name="aliases" value="{{ form.aliases }}" placeholder="www.example.com, api.example.com" autocomplete="off" aria-describedby="err-aliases">
+            <p class="field-error" id="err-aliases" data-error-for="aliases"
+               {% if error_field == "aliases" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+          </label>
+          <label data-type-only="root">站点目录（可选）
+            <input name="root_dir" value="{{ form.root_dir }}" placeholder="留空则使用 /www/sites/&lt;主域名&gt;" autocomplete="off" aria-describedby="err-root">
+            <p class="hint">必须是已有站点根下的一级目录；文档根为其中的 <code>index/</code>。</p>
+            <p class="field-error" id="err-root" data-error-for="root_dir"
+               {% if error_field == "root_dir" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
           </label>
         </div>
-        <div class="not-implemented">
-          <div><strong>数据库</strong><br>建站向导中的数据库创建尚未实现，下一阶段接入。</div>
-          <span class="badge warn">未实现</span>
+
+        <div data-type-panel="runtime">
+          <h2>运行环境</h2>
+          <div class="form-grid">
+            <label>运行环境
+              <select name="runtime_id">
+                {% for r in runtimes %}
+                <option value="{{ r.id }}"
+                        {% if r.disabled %}disabled data-disabled="1" data-reason="{{ r.disabled_reason }}"{% endif %}
+                        {% if form.runtime_id == r.id %}selected{% endif %}>{{ r.label }}{% if r.disabled %}（{{ r.disabled_reason }}）{% endif %}</option>
+                {% endfor %}
+              </select>
+              <p class="hint">P1 只提供 PHP 单版本；Node.js / Go 选项为禁用态，代表 P2 预留而不是可用能力。</p>
+              <p class="field-error" data-error-for="runtime_id"
+                 {% if error_field == "runtime_id" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+            </label>
+          </div>
         </div>
+
+        <div data-type-panel="static" hidden>
+          <h2>静态网站</h2>
+          <p class="hint">只需域名与目录。创建后把静态文件放进站点目录的 <code>index/</code>；vhost 直接 <code>root</code> 到该目录，不接 PHP。</p>
+        </div>
+
+        <div data-type-panel="proxy" hidden>
+          <h2>反向代理</h2>
+          <div class="form-grid">
+            <label>上游地址
+              <input name="proxy_target" value="{{ form.proxy_target }}" placeholder="http://127.0.0.1:8080" autocomplete="off" aria-describedby="err-target">
+              <p class="hint">必须是 <code>http://</code> 或 <code>https://</code> 开头，可带端口与路径；不能指向站点自身。</p>
+              <p class="field-error" id="err-target" data-error-for="proxy_target"
+                 {% if error_field == "proxy_target" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
+            </label>
+            <label class="check-line">
+              <input type="checkbox" name="proxy_websocket" value="1" {% if form.proxy_websocket %}checked{% endif %}>
+              <span>开启 WebSocket<br><small>追加 <code>Upgrade</code> / <code>Connection</code> 头与长读超时。</small></span>
+            </label>
+          </div>
+        </div>
+
         <div class="wizard-nav">
           <button class="btn ghost" type="button" data-wizard-back>上一步</button>
           <button class="btn primary next" type="button" data-wizard-next>下一步：确认</button>
@@ -77,20 +124,21 @@
       <div class="wizard-panel" data-wizard-panel="3" hidden>
         <h2>确认创建</h2>
         <dl class="summary">
+          <dt>网站类型</dt><dd data-summary="type">—</dd>
           <dt>主域名</dt><dd class="mono" data-summary="domain">—</dd>
           <dt>别名</dt><dd class="mono" data-summary="aliases">—</dd>
           <dt>站点目录</dt><dd class="mono" data-summary="root">—</dd>
-          <dt>PHP 版本</dt><dd class="mono" data-summary="php">—</dd>
-          <dt>证书</dt><dd>未配置（HTTPS 下一阶段接入）</dd>
+          <dt>运行环境</dt><dd data-summary="runtime">—</dd>
+          <dt>上游地址</dt><dd class="mono" data-summary="target">—</dd>
+          <dt>WebSocket</dt><dd data-summary="websocket">—</dd>
         </dl>
         <div class="not-implemented">
-          <div><strong>数据库与 SSL</strong><br>这两步已明确标注为未实现，不会创建数据库或申请证书；创建后仅生成 nginx vhost、站点目录与 PHP 探针。</div>
-          <span class="badge warn">未实现</span>
+          <div><strong>证书与数据库</strong><br>SSL 沿用现有能力（自签 / 上传证书），创建后可在站点详情页配置；向导不创建数据库。</div>
+          <span class="badge warn">不在本步</span>
         </div>
         <div class="wizard-nav">
           <button class="btn ghost" type="button" data-wizard-back>上一步</button>
-          <button class="btn primary next" type="submit"{% if !env.ready %} disabled{% endif %}>创建网站</button>
-          {% if !env.ready %}<span class="hint">运行环境未就绪，无法提交。</span>{% endif %}
+          <button class="btn primary next" type="submit">创建网站</button>
         </div>
       </div>
     </form>

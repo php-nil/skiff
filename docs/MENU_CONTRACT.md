@@ -377,11 +377,12 @@ L3 标签栏（在工作台页面内，不在 iframe 内）：
 | L1/L2/L3 顺序 | 按用户 | 内置注册表 + manifest `order` | 用户自己；插件只能改声明默认值 |
 | 显示/隐藏 | 按用户 | `default_visible` + gates + roles | 用户自己 |
 | 固定（pin） | 按用户 | `pinnable` | 用户自己；插件不能强制 |
-| 上下/左右布局 | 按用户 | 全局 `menu.layout.default`，缺省 `top` | 用户自己；插件不能改 |
+| 上下/左右布局 | 按用户 | 全局 `menu.layout.default`，缺省 `left` | 用户自己；插件不能改 |
+| 内容宽度（自适应/固定） | 按用户 | 缺省 `auto`（铺满）；固定上限缺省 1440px | 用户自己；插件不能改 |
 | 实例默认布局 | 全局 | `settings.menu.layout.default` | 管理员 |
 | 菜单集合、内置 L1/L2、URL 规则 | 内核 | 代码 | 任何人都不能由插件改 |
 
-- 「全局 vs 按用户」结论：**顺序/隐藏/pin/布局一律按用户**；全局只保留实例默认布局。
+- 「全局 vs 按用户」结论：**顺序/隐藏/pin/布局/内容宽度一律按用户**；全局只保留实例默认布局。
 - 管理员不能看到其他用户的私有排序；P1 不做“强制模板/锁定布局”。若以后需要，再加全局策略层。
 
 ### 4.2 存放位置
@@ -403,7 +404,9 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   ```json
   {
     "v": 1,
-    "layout": "top",
+    "layout": "left",
+    "content_width": "auto",
+    "content_max": 1440,
     "order": {
       "sites": ["core/sites/list", "core/sites/env"],
       "docker": ["core/docker/overview", "core/docker/containers"]
@@ -412,7 +415,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     "pinned": ["core/docker/containers"]
   }
   ```
-- 全局实例默认布局存现有 `settings` 表：`settings.menu.layout.default = "top" | "left"`。
+- 全局实例默认布局存现有 `settings` 表：`settings.menu.layout.default = "top" | "left"`，未设置时按 `left`。
 - 为什么不用 config：需要按用户、事务写入、立即生效、随用户删除级联；config 是启动期文件，不适合高频个人偏好。
 - 菜单设置页只写当前用户 `user_prefs`；插件无法通过 manifest/API 写这些键。
 - 每次保存写审计 `menu.prefs.update`（不记录完整 JSON，只记录变更键数）。
@@ -447,17 +450,19 @@ overview(0) → sites(100) → docker(200) → plugins(300) → tools(400) → s
 
 ### 4.5 布局切换
 
-- 值：`top`（上下） / `left`（左右）；缺省读全局默认，最后兜底 `top`。
+- 值：`top`（上下） / `left`（左右）；缺省读全局默认，最后兜底 `left`。
 - 存 `user_prefs.menu.prefs.layout`；切换即时生效。
 - 结构不变保证：菜单注册表、菜单键、URL、L2/L3 顺序完全一致，只改根节点 `data-layout` 与 CSS；禁止为 left 另生成一份导航数据。
 - 布局是内核功能：插件 manifest 没有 layout 字段，插件也不能通过 CSS 影响宿主布局。
-- 窄屏 ≤860px 时两种布局都走 §3.6 折叠规则，`data-layout` 仍保留但视觉统一。
+- 内容宽度与布局独立：`body[data-content-width="auto"]` 铺满可用宽度；`"fixed"` 时用 `--content-max`（默认 1440px）约束 `main` / `.foot`。左右布局的固定宽度在侧栏之外的剩余空间居中。
+- 窄屏 ≤860px 时两种布局都走 §3.6 折叠规则，`data-layout` 仍保留但视觉统一，内容区取消侧栏留白。
 
 ### 4.6 菜单设置页
 
 - 入口：`设置 → 菜单设置`，稳定键 `core/settings/menu`，URL `/{p}/settings/menu`。
 - 内容：
-  - 布局：上下 / 左右（单选）。
+  - 布局：上下 / 左右（单选，缺省左右）。
+  - 内容宽度：自适应（铺满）/ 固定（可填 960–4096px 的最大宽度，缺省 1440px）。
   - L1 列表：显示/隐藏、上移/下移、恢复默认。
   - 每个 L1 展开后的 L2/L3：显示/隐藏、上移/下移、固定/取消固定。
   - 锁定项：`概览`、`设置`、`菜单设置`自身不可隐藏（防止把自己锁在门外）；其余可隐藏。

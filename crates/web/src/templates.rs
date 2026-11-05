@@ -29,6 +29,10 @@ pub struct MenuSettingsPage {
     pub ctx: PageCtx,
     pub groups: Vec<crate::menu::SettingsGroup>,
     pub layout: String,
+    /// 内容宽度：`auto` / `fixed`。
+    pub width: String,
+    /// 「固定」时的最大宽度（px）。
+    pub max_width: u32,
     pub notice: String,
 }
 
@@ -151,7 +155,18 @@ pub struct SiteView {
     pub root_dir: String,
     /// 文档根（`/www/sites/<域名>/index`），目录页与文件能力的授权根。
     pub index_dir: String,
-    pub php_version: String,
+    /// runtime / static / proxy
+    pub site_type: String,
+    pub type_label: String,
+    /// 仅 runtime：绑定的运行环境与展示名。
+    pub runtime_id: String,
+    pub runtime_label: String,
+    /// 仅 proxy：上游地址。
+    pub proxy_target: String,
+    /// 仅 proxy：是否升级 WebSocket。
+    pub proxy_websocket: bool,
+    /// 列表里的「类型详情」列：PHP 版本 / 上游 / 静态目录。
+    pub endpoint: String,
     /// running / stopped / error
     pub status: String,
     pub status_label: String,
@@ -184,10 +199,27 @@ pub struct SiteTlsView {
 
 #[derive(Debug, Clone, Default)]
 pub struct SiteNewForm {
+    /// runtime / static / proxy
+    pub site_type: String,
     pub domain: String,
     pub aliases: String,
     pub root_dir: String,
-    pub php_version: String,
+    /// 仅 runtime：运行环境 id。
+    pub runtime_id: String,
+    /// 仅 proxy：上游地址。
+    pub proxy_target: String,
+    /// 仅 proxy：是否升级 WebSocket。
+    pub proxy_websocket: bool,
+}
+
+/// 向导第二步可选的一个运行环境。
+#[derive(Debug, Clone)]
+pub struct RuntimeOptionView {
+    pub id: String,
+    pub label: String,
+    /// P2 预留（Node/Go）在 P1 不可继续。
+    pub disabled: bool,
+    pub disabled_reason: String,
 }
 
 #[derive(Template)]
@@ -196,10 +228,11 @@ pub struct SiteNewPage {
     pub ctx: PageCtx,
     pub env: SiteEnvView,
     pub form: SiteNewForm,
+    pub runtimes: Vec<RuntimeOptionView>,
     pub error: String,
-    /// 服务端字段级错误：`domain` / `aliases` / `root_dir`。
+    /// 服务端字段级错误：`domain` / `aliases` / `root_dir` / `runtime_id` / `proxy_target`。
     pub error_field: String,
-    /// 服务端校验失败时直接回到第 1 步。
+    /// 服务端校验失败时直接回到指定步骤（1/2/3）。
     pub wizard_start: u8,
 }
 
@@ -275,11 +308,100 @@ pub struct SitesPage {
     pub keyword: String,
 }
 
+/// 运行环境列表/详情行（业务视角；容器状态只作为漂移提示）。
+#[derive(Debug, Clone)]
+pub struct RuntimeRow {
+    pub id: String,
+    pub kind_label: String,
+    pub version: String,
+    pub image: String,
+    pub state_label: String,
+    /// ok / warn / danger / muted，模板据此上色。
+    pub state_class: String,
+    pub drift: bool,
+    pub site_count: usize,
+    /// 底层容器的实测状态（Docker 页同源）。
+    pub container_state: String,
+    /// PHP 展示 socket；Node/Go 展示端口占位。
+    pub endpoint: String,
+    pub implemented: bool,
+    pub is_default: bool,
+    pub detail_href: String,
+    /// 同一底层容器的 Docker 页深链（双向跳转）。
+    pub docker_href: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundSiteView {
+    pub domain: String,
+    pub type_label: String,
+    pub status_label: String,
+    pub href: String,
+}
+
+impl From<&skiff_app::sites::PhpRuntimeConfig> for PhpConfigView {
+    fn from(c: &skiff_app::sites::PhpRuntimeConfig) -> Self {
+        Self {
+            memory_limit: c.memory_limit.clone(),
+            upload_max_filesize: c.upload_max_filesize.clone(),
+            post_max_size: c.post_max_size.clone(),
+            max_execution_time: c.max_execution_time,
+            pm: c.pm.clone(),
+            max_children: c.max_children,
+            start_servers: c.start_servers,
+            min_spare_servers: c.min_spare_servers,
+            max_spare_servers: c.max_spare_servers,
+            max_requests: c.max_requests,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PhpConfigView {
+    pub memory_limit: String,
+    pub upload_max_filesize: String,
+    pub post_max_size: String,
+    pub max_execution_time: u64,
+    pub pm: String,
+    pub max_children: u32,
+    pub start_servers: u32,
+    pub min_spare_servers: u32,
+    pub max_spare_servers: u32,
+    pub max_requests: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtensionView {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Template)]
+#[template(path = "runtime_detail.html")]
+pub struct RuntimeDetailPage {
+    pub ctx: PageCtx,
+    pub runtime: RuntimeRow,
+    pub config: PhpConfigView,
+    pub bound_sites: Vec<BoundSiteView>,
+    pub socket_host: String,
+    pub socket_container: String,
+    pub socket_exists: bool,
+    pub socket_mode: String,
+    /// 扩展开关只读快照（P1 不提供切换）。
+    pub extensions: Vec<ExtensionView>,
+    pub logs: String,
+    pub logs_error: String,
+    pub can_admin: bool,
+    pub error: String,
+    pub notice: String,
+}
+
 #[derive(Template)]
 #[template(path = "site_env.html")]
 pub struct SiteEnvPage {
     pub ctx: PageCtx,
     pub env: SiteEnvView,
+    pub runtimes: Vec<RuntimeRow>,
     pub steps: Vec<InstallStepView>,
     pub running: bool,
     pub done: bool,
@@ -336,6 +458,9 @@ pub struct DashboardPage {
     /// 内核「网站」健康块：站点总数 / 非运行站点数（不依赖插件）。
     pub site_total: usize,
     pub site_abnormal: usize,
+    /// 运行环境健康：总数 / 异常（未运行、漂移、容器缺失）。
+    pub runtime_total: usize,
+    pub runtime_abnormal: usize,
     pub abnormal_total: usize,
     /// 最多展示若干条异常容器；完整列表走 `containers?filter=error`。
     pub abnormal: Vec<ContainerRowView>,

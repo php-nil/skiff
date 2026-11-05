@@ -164,6 +164,32 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/install"),
             post(handlers::sites::env_install),
         )
+        // 运行环境详情与操作；同时提供 `/{p}/runtimes/...` 规范入口。
+        .route(
+            &format!("/{p}/sites/env/{{id}}"),
+            get(handlers::sites::runtime_detail),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/config"),
+            post(handlers::sites::runtime_config_save),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/action/{{action}}"),
+            post(handlers::sites::runtime_action),
+        )
+        .route(&format!("/{p}/runtimes"), get(handlers::sites::env_page))
+        .route(
+            &format!("/{p}/runtimes/{{id}}"),
+            get(handlers::sites::runtime_detail),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/config"),
+            post(handlers::sites::runtime_config_save),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/action/{{action}}"),
+            post(handlers::sites::runtime_action),
+        )
         .route(
             &format!("/{p}/sites/settings"),
             get(handlers::sites::env_settings_page).post(handlers::sites::env_settings_save),

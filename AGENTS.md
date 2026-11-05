@@ -68,6 +68,7 @@
 | 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、首批 4 个（guard/monitor/files/cron，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
 | 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 插件 UI 契约 | `docs/PLUGIN_UI_CONTRACT.md` | 插件信息/管理页与功能页的路由分工、`view` 视图模型与静态文件映射、内核信息页字段与操作、沙箱/CSP、旧包 `[[ui]]` 回落与测试矩阵 |
+| 网站运行环境契约 | `docs/SITE_RUNTIME_CONTRACT.md` | 运行环境与站点模型、三类建站（运行环境/静态/反向代理）、PHP 专属配置、Docker 页边界、路由权限审计、P1/P2 范围与测试矩阵；可点预览 `docs/ui/site-runtime-preview.html` |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

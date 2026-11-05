@@ -22,6 +22,7 @@ mod audit;
 mod backup_codes;
 mod plugins;
 mod prefs;
+pub mod runtimes;
 mod sessions;
 mod settings;
 pub mod sites;
@@ -30,7 +31,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -127,6 +128,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V6)?;
             conn.execute_batch("PRAGMA user_version = 6")?;
             info!(from = version, to = 6, "schema 迁移完成");
+        }
+        if version < 7 {
+            conn.execute_batch(SCHEMA_V7)?;
+            conn.execute_batch("PRAGMA user_version = 7")?;
+            info!(from = version, to = 7, "schema 迁移完成");
         }
         Ok(())
     }
@@ -310,6 +316,89 @@ ALTER TABLE sites ADD COLUMN https INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sites ADD COLUMN force_https INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v7：运行环境单一事实源 + 三类站点。
+///
+/// 测试期直接落新结构：`sites` 与 `site_aliases` 重建，不再保留旧 `php_version`
+/// 字段，也不写逐行搬迁逻辑（旧站点数据不跨版本保留）。
+///
+/// `site_runtimes` 的约束：
+/// - `(kind, version)` 唯一；`id = <kind>-<version>` 由服务层保证；
+/// - 同一 `kind` 至多一个默认版本（部分唯一索引）；
+/// - `socket_path` 仅 PHP 有意义，vhost 由它换算容器路径。
+const SCHEMA_V7: &str = r#"
+CREATE TABLE IF NOT EXISTS site_runtimes (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('php','node','go')),
+  version TEXT NOT NULL,
+  image TEXT NOT NULL,
+  image_digest TEXT NOT NULL DEFAULT '',
+  desired_state TEXT NOT NULL DEFAULT 'running'
+    CHECK(desired_state IN ('running','stopped')),
+  last_status TEXT NOT NULL DEFAULT 'stopped'
+    CHECK(last_status IN ('installing','running','stopped','error')),
+  socket_path TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(kind, version)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_default
+  ON site_runtimes(kind) WHERE is_default = 1;
+
+-- 旧站点/别名表整表重建（测试期，不做旧布局迁移）。
+DROP TABLE IF EXISTS site_aliases;
+DROP TABLE IF EXISTS sites;
+
+CREATE TABLE sites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  domain TEXT NOT NULL UNIQUE,
+  root_dir TEXT NOT NULL,
+  site_type TEXT NOT NULL DEFAULT 'runtime'
+    CHECK(site_type IN ('runtime','static','proxy')),
+  runtime_id TEXT REFERENCES site_runtimes(id) ON DELETE RESTRICT,
+  app_command TEXT,
+  app_port INTEGER,
+  proxy_target TEXT,
+  proxy_websocket INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK(status IN ('running','stopped','error')),
+  is_default INTEGER NOT NULL DEFAULT 0,
+  https INTEGER NOT NULL DEFAULT 0,
+  force_https INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  -- runtime 必须有环境；static/proxy 不得有环境。
+  CHECK(
+    (site_type = 'runtime' AND runtime_id IS NOT NULL)
+    OR (site_type = 'static' AND runtime_id IS NULL)
+    OR (site_type = 'proxy' AND runtime_id IS NULL AND proxy_target IS NOT NULL)
+  ),
+  -- 应用进程字段只属于 runtime 站点（P2 Node/Go）。
+  CHECK(site_type = 'runtime' OR (app_command IS NULL AND app_port IS NULL)),
+  -- 上游地址只属于 proxy。
+  CHECK(site_type = 'proxy' OR proxy_target IS NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_sites_created ON sites(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sites_runtime ON sites(runtime_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_default ON sites(is_default) WHERE is_default = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_app_port ON sites(app_port) WHERE app_port IS NOT NULL;
+
+CREATE TABLE site_aliases (
+  domain TEXT PRIMARY KEY,
+  site_domain TEXT NOT NULL REFERENCES sites(domain) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_site_aliases_site ON site_aliases(site_domain);
+
+-- 种入 P1 唯一的 PHP 运行环境；镜像与 socket 由服务层按当前 web_root 校准。
+INSERT OR IGNORE INTO site_runtimes(id, kind, version, image, image_digest, desired_state,
+  last_status, socket_path, is_default, config_json, created_at, updated_at)
+VALUES('php-8.5', 'php', '8.5', 'php:8.5-fpm-alpine', '', 'running', 'stopped',
+  '/www/php/php-fpm.sock', 1, '{}',
+  CAST(strftime('%s','now') AS INTEGER), CAST(strftime('%s','now') AS INTEGER));
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,9 +415,9 @@ mod tests {
         assert_eq!(v, CURRENT_SCHEMA_VERSION);
     }
 
-    /// v3 → v6 只加列/加表，不重建站点表：原站点行必须原样保留，新列取默认值。
+    /// v7 直接落新结构：旧站点表被重建，同时种入 P1 唯一的 PHP 运行环境。
     #[test]
-    fn schema_v3_sites_survive_upgrade_to_v6() {
+    fn schema_v7_rebuilds_sites_and_seeds_php_runtime() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skiff.db");
         {
@@ -338,10 +427,11 @@ mod tests {
             conn.execute_batch(SCHEMA_V3).unwrap();
             conn.execute_batch(SCHEMA_V4).unwrap();
             conn.execute_batch(SCHEMA_V5).unwrap();
-            conn.execute_batch("PRAGMA user_version = 5").unwrap();
+            conn.execute_batch(SCHEMA_V6).unwrap();
+            conn.execute_batch("PRAGMA user_version = 6").unwrap();
             conn.execute(
                 "INSERT INTO sites(domain, root_dir, php_version, status, created_at, updated_at)
-                 VALUES('keep.local', '/www/sites/keep.local', '8.5', 'running', 1, 1)",
+                 VALUES('legacy.local', '/www/sites/legacy.local', '8.5', 'running', 1, 1)",
                 [],
             )
             .unwrap();
@@ -351,12 +441,12 @@ mod tests {
             .conn()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
-        let site = db.site_by_domain("keep.local").unwrap().unwrap();
-        assert_eq!(site.root_dir, "/www/sites/keep.local");
-        assert!(!site.is_default);
-        assert!(!site.https);
-        assert!(!site.force_https);
+        assert_eq!(v, 7);
+        assert!(db.site_by_domain("legacy.local").unwrap().is_none());
+        let seeded = db.runtime_by_id("php-8.5").unwrap().unwrap();
+        assert_eq!(seeded.kind, "php");
+        assert!(seeded.is_default);
+        assert_eq!(seeded.socket_path.as_deref(), Some("/www/php/php-fpm.sock"));
     }
 
     #[test]

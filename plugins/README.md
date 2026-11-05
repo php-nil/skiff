@@ -112,6 +112,12 @@ roles = ["admin", "operator", "viewer"]
 文件（`ui/<view>.html`）。同一文件内切换标签时父页面只 `postMessage({type:"skiff.menu",
 nonce, menu, tab})`，不重载页面。无 L3 的 L2 不渲染标签栏。
 
+工作台外框只保留页面标题区 + 顶部 L3 通栏（吸顶、与内容区同宽），iframe 是纯内容区。
+插件应主动上报内容高度（`{type:"skiff.height", nonce, height}`），父页面只对工作台
+iframe 生效，避免「iframe 内部滚动 + 页面滚动」双滚动；旧包不发消息时维持默认高度并
+由外层滚动。主题仍用 `skiff.theme` / `skiff.theme.request`，加载阶段的 iframe 底色由
+宿主 `--plugin-frame` 提供。
+
 ## 构建与自检
 
 ```sh

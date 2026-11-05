@@ -13,7 +13,7 @@
 |---|---|---|---|
 | `/{p}/plugins` | GET | 内核 | 插件中心（已安装 / 发现 / 可更新） |
 | `/{p}/plugins/{id}` | GET | 内核 | **插件信息与管理页**：身份、版本、密钥指纹、签名、沙箱、授权、菜单、运行状态、日志/事件入口、管理动作 |
-| `/{p}/plugins/{id}/{view}` | GET | 内核框架 + 插件 iframe | **插件功能页**：按视图名加载 `ui/<view>.html`，内核渲染 L3 标签栏 |
+| `/{p}/plugins/{id}/{view}` | GET | 内核框架 + 插件 iframe | **插件功能页**：按视图名加载 `ui/<view>.html`，内核只渲染页面标题区 + 顶部 L3 通栏，iframe 为纯内容区 |
 | `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越 |
 | `/{p}/plugins/{id}/rpc` | POST | 内核代发 | 父页面代发插件 RPC，需要 CSRF 头与管理员权限，逐次审计 |
 | `/{p}/plugins/{id}/toggle` | POST | 内核 | 启用 / 停用；`next` 只接受本站插件前缀 |
@@ -175,6 +175,9 @@ object-src 'none'; frame-ancestors 'self'
 
 - 禁止内联 `<script>`、外部脚本、外链样式、`fetch/XHR/WebSocket`。
 - 主题只能通过 `postMessage` 跟随父面板（`skiff.theme` / `skiff.theme.request`），不读 `localStorage` 作为唯一来源。
+- 高度：插件主动上报 `{ type: "skiff.height", nonce, height }`；父页面只接受带 `data-workbench-frame` 的工作台 iframe（固定槽位不受影响），把高度裁剪到 320–20000px 后写入 iframe。旧包不发消息时维持 CSS 默认 `70vh` / 最小 360px，由外层滚动。
+- 加载占位：工作台 iframe 与面板使用 `--plugin-frame` 主题底色，加载阶段不出现白屏/黑屏闪烁；插件自身仍以缺省深色渲染，收到 `skiff.theme` 后切换。
+- 切换 L3 或 `ui` 文件时父页面清空上报高度，等新页面重新上报。
 - 跨插件跳转使用 `skiff.open`，目标必须在父页面 `data-plugins` 白名单（已启用且有 UI 入口）内。
 
 ## 5. 旧包兼容
