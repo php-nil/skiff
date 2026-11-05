@@ -3132,6 +3132,31 @@ async fn site_detail_tabs_are_reachable() {
     }
 }
 
+/// 目录浏览只开放 `index/`：越界（../log、../ssl）必须是 400，而不是页面内提示。
+#[tokio::test]
+async fn site_dir_traversal_returns_bad_request() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/demo.local");
+    for dir in [
+        skiff_app::sites::site_index_dir(&root),
+        skiff_app::sites::site_log_dir(&root),
+        skiff_app::sites::site_ssl_dir(&root),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    h.state
+        .db()
+        .create_site("demo.local", &root.display().to_string(), "8.5")
+        .unwrap();
+
+    for path in ["../log", "../ssl", "../log/access.log"] {
+        let uri = format!("/p/sites/demo.local?tab=dir&path={path}");
+        let (status, _) = get_page(&h.app, &uri, &admin).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path} 必须 400");
+    }
+}
+
 /// 文件管理插件 UI：CSP 只能自同源静态资源，页面必须提供现代文件管理器
 /// 的骨架（目录树/快捷入口/面包屑/多选列表/右键菜单/编辑器）与键盘操作。
 ///
