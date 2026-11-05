@@ -40,7 +40,7 @@ fn main() {
     let p = plugin.clone();
     if let Err(e) = plugin.serve(move |method, params| match method {
         "tick" => tick(&p, &params),
-        "list" | "jobs" => list(&p, &params),
+        "jobs.list" | "list" | "jobs" => list(&p, &params),
         "jobs.create" | "create" => create(&p, &params),
         "jobs.update" | "update" => create(&p, &params),
         "jobs.toggle" | "toggle" => toggle(&p, &params),
