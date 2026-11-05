@@ -1072,12 +1072,12 @@ sh deploy/pack-release.sh
 
 ### 9.10 2026-11-05 Release 覆盖安装：一站一目录（无迁移）+ 文件管理 0.1.2
 
-Release `v0.1.0` 资产被同一 tag 覆盖（未新建 tag）；测试机按真实下载路径安装，不做旧布局迁移。
+Release `v0.1.0` 资产被同一 tag 覆盖（run `41945350367`，未新建 tag）；测试机按真实下载路径安装，不做旧布局迁移。
 
 | 面 | 结论 | 关键证据 |
 |---|---|---|
-| Release 资产 | 覆盖成功 | x86_64 包 6,592,116 B `sha256:e20bab99…`；aarch64 包 6,302,735 B `sha256:c778a030…`；`checksums.txt` `sha256:512df8b0…`；包内 4 插件 + `public-key.txt`，`checksums.txt` 13 文件全 OK |
-| 安装 | 真实路径 | `curl -L` 下载、同名 `.sha256`、包内 `checksums.txt`、`sh install.sh` 全部通过；`config.toml` 哈希不变，`must_change_password=0` |
+| Release 资产 | 覆盖成功 | x86_64 包 6,592,720 B `sha256:a294bc41…`；aarch64 包 6,301,191 B `sha256:e783c8ca…`；`checksums.txt` 223 B `sha256:6567ed24…`；包内 4 插件 + `public-key.txt`，`checksums.txt` 13 文件全 OK |
+| 安装 | 真实路径 | 测试机直连 `github.com` 本轮 SSL EOF，改走 GitHub API 下载后 scp；同名 `.sha256`、包内 `checksums.txt`、`sh install.sh` 全部通过；`config.toml` 哈希不变，`must_change_password=0` |
 | 站点新布局 | 新建即生成 | 面板新建 `demo.local` → `/www/sites/demo.local/{index,log,ssl,conf}` 与 `index/index.php`；日志 `log/access.log`；自签证书 `ssl/cert.pem|key.pem` |
 | nginx | 通过 | `docker exec skiff-web-nginx nginx -t` 成功；`nginx -s reload` 只有 notice |
 | 站点访问 | 200 | `https://10.10.15.4/` 200 含 `PHP Version 8.5.12`；`Host: demo.local` 200 |
