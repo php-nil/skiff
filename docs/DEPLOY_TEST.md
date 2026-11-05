@@ -199,7 +199,7 @@ sh install.sh                     # 可加 --datadir / --listen / --no-docker �
 | 放示例配置 | `/etc/skiff/config.toml`（**仅当不存在时**，已有配置只读不改） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
-| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（4 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（5 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
 | 启动 | `systemctl restart skiff` 并验 active（20 s 不起即失败退出；`--no-start` 可跳过） |
 
@@ -445,10 +445,10 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
 skiff plugin list
 ```
 
-**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 4 个已签名的包（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 5 个已签名的包（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包；`com.skiff.testkit` 为架构测试台），装机时已复制到 `/www/skiff/official/`：
 
 ```sh
-ls /www/skiff/official            # com.skiff.{guard,monitor,files,cron}-0.1.0.wbpkg + public-key.txt
+ls /www/skiff/official            # com.skiff.{guard,monitor,cron,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.2.wbpkg + public-key.txt
 # public-key.txt 不需要手动导入：首次启动会自动写入信任库（见 §2.11 注）
 # 仅在公钥缺失/指纹不符时，才需显式执行：
 #   skiff trust import /www/skiff/official/public-key.txt --label official
@@ -465,14 +465,19 @@ skiff plugin install /www/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
   --resource container:nginx
 
 # 文件管理：目录由你决定（不给默认值）
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg --yes \
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.2.wbpkg --yes \
   --grant fs:read --grant fs:write --grant fs:list \
   --grant fs:mkdir --grant fs:remove --grant fs:rename \
   --resource path:/var/www
 
 # 计划任务：只调插件接口，不执行宿主 shell；要调度别的插件再加 --resource plugin:<id>
 skiff plugin install /www/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
-  --grant identity:self --grant interop:call
+  --grant identity:self --grant interop:call --resource plugin:*
+
+# 架构测试台（多视图 / 槽位 / RPC 成功失败 / 越界 / 互操作）
+skiff plugin install /www/skiff/official/com.skiff.testkit-0.1.0.wbpkg --yes \
+  --grant fs:read --grant fs:list --grant identity:self --grant interop:call \
+  --resource path:/proc --resource plugin:com.skiff.cron
 ```
 
 > `--grant` 少一项就是运行时 403（插件会把「该去勾哪个授权」写进错误文案）；`guard`/`files` 的 `resource_hints` 为空，**必须显式给 `--resource`**。
@@ -515,7 +520,7 @@ ps -o user,group,args -p $(systemctl show -p MainPID --value skiff)
 - `install.sh` 只把发布包里的 `official/` 复制到 `/www/skiff/official/`，**不自动安装**（脚本随后只打印提示）。
   `official/` 下的 `.wbpkg` 是分发物，不等于已安装。
 - 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
-- `allow_reduced_sandbox = false` 时，官方 4 个包的 manifest 没有显式关闭 `requires_full_sandbox`
+- `allow_reduced_sandbox = false` 时，官方 5 个包的 manifest 没有显式关闭 `requires_full_sandbox`
   （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
 - 停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 内的库是 **0 插件 / 0 公钥**，且不含 `official/`；
   回到该快照就是回到「未装插件」状态。
@@ -579,6 +584,26 @@ systemctl daemon-reload && systemctl restart skiff
 **顺带修复的内核缺陷**：`kernel/capability.rs` 把 `target: null` 当成 id/name 全空的容器，
 导致 `containers.list` 去匹配永远不存在的 `object:container:` 授权（nginx `reload`、guard 拉取容器列表被 403）。
 已改为「缺省或 null = 无目标」并补两个单测；**测试机二进制按源码现编（glibc 动态）**，仍不是 musl 发布包。
+
+### 2.11.1 插件信息页与多视图路由（2026-11-05 实测）
+
+manifest 升到 `api = "1.2"` 后，路由契约变为：
+
+| 路由 | 用途 | 2026-11-05 实测（`/swn4nbhe` 前缀） |
+| --- | --- | --- |
+| `GET /{p}/plugins/{id}` | 内核渲染的信息 + 管理页 | 5 个插件均 200；版本/API、签名与指纹、沙箱、授权、启停、卸载、关联菜单、日志入口齐全 |
+| `GET /{p}/plugins/{id}/main` | 默认功能页（`ui/main.html`） | files 200；无 L3 声明，无标签栏 |
+| `GET /{p}/plugins/{id}/<view>` | 声明的 L3 视图 | cron `list`/`new`、guard `containers`/`events`、monitor `overview`/`history` 200，标签栏 2 项；testkit `main`/`check`/`group` 200，标签栏 3 项 |
+| `GET /{p}/plugins/{id}/<未知>` | 未知视图 | 404，文案「插件 com.skiff.files 不存在视图 nope，或该视图对当前角色不可见」 |
+| `GET /{p}/m/plugin/{id}/<l2>[/<l3>]` | 菜单深链 | cron `jobs`/`jobs/list`/`jobs/new`、files、testkit `testkit[/check]`、`testkit-single` 全 200 |
+
+testkit 实测：`ping` / `state` / `probe` RPC 200；`interop_cron` 200（`jobs:[], ok:true`）；
+`fail` HTTP 400 且文案含 `-32602`；`fs_read /etc/passwd` 400（「内核返回 HTTP 403：路径不在
+已授权的 path: 根内」）；`fs_read /proc/uptime` 200。概览出现 `data-slot="overview.actions"`；
+停用 testkit 后槽位与导航链接消失、`testkit/main` 404，重新启用即恢复。
+
+> 升级同名版本（官方 4 个迁移后仍为 0.1.0）需先 `skiff plugin remove <id>` 保留 data，再安装；
+> 官方包签名密钥一致时同样适用，避免同版本原位覆盖的 TOFU/重复安装判定。
 
 ### 2.12 网站 vhost：默认站与兜底站语义（2026-11-04 实测）
 
