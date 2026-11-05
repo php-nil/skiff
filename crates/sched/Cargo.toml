@@ -1,0 +1,14 @@
+[package]
+name = "skiff-sched"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 内核定时任务调度：任务模型 / 内存缓冲 / tick / 执行语义（零数据库、零 Docker、零 HTTP）"
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+skiff-cron = { workspace = true }

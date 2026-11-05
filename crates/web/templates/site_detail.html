@@ -37,6 +37,12 @@
 
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+{% if runtime_down %}
+<div class="alert warn" data-runtime-down>
+  {{ runtime_alert }}
+  <a class="btn" href="{{ runtime_env_href }}">前往运行环境页</a>
+</div>
+{% endif %}
 
 <nav class="tabs" aria-label="站点详情标签">
   <a class="tab{% if tab == "overview" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/{{ site.domain }}"{% if tab == "overview" %} aria-current="page"{% endif %}>概览</a>

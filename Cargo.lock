@@ -1885,6 +1885,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "skiff-identity"
 version = "0.1.0"
 dependencies = [
@@ -1960,6 +1971,17 @@ dependencies = [
  "serde_json",
  "skiff-model",
  "tempfile",
+]
+
+[[package]]
+name = "skiff-sched"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "skiff-cron",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

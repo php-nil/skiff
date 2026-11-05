@@ -1124,6 +1124,14 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     href("m/core/sites/env"),
                 ),
                 builtin(
+                    "core/sites/nginx",
+                    L1_SITES,
+                    "Nginx",
+                    "globe",
+                    25,
+                    href("m/core/sites/nginx"),
+                ),
+                builtin(
                     "core/sites/settings",
                     L1_SITES,
                     "设置",

@@ -16,7 +16,7 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::{
-    BoundSiteView, DirEntryView, DirListingView, InstallStepView, PhpConfigView, RuntimeDetailPage,
+    BoundSiteView, DirEntryView, DirListingView, PhpConfigView, RuntimeDetailPage,
     RuntimeOptionView, RuntimeRow, SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView,
     SiteLogsPage, SiteNewForm, SiteNewPage, SiteSettingsPage, SiteTlsView, SiteView, SitesPage,
 };
@@ -31,11 +31,8 @@ fn env_view(env: &SiteEnvStatus) -> SiteEnvView {
         installed: env.installed,
         ready: env.ready(),
         port: env.port,
-        port_message: env.port_message.clone(),
         nginx_image: env.nginx_image.clone(),
         php_image: env.php_image.clone(),
-        waf_mode: env.waf_mode.clone(),
-        waf_rules_dir: env.waf_rules_dir.clone(),
     }
 }
 
@@ -53,7 +50,7 @@ fn state_label(state: &str) -> &'static str {
         "stopped" => "已停止",
         "installing" => "安装中",
         "error" => "异常",
-        "missing" => "容器缺失",
+        "missing" => "未安装",
         "unimplemented" => "P2 未实现",
         _ => "未知",
     }
@@ -89,6 +86,8 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
     RuntimeRow {
         id: v.runtime.id.clone(),
         kind_label: kind_label.into(),
+        name: v.runtime.name.clone(),
+        container_name: v.container_name.clone(),
         version: v.runtime.version.clone(),
         image: v.runtime.image.clone(),
         state_label: if v.drift {
@@ -107,6 +106,8 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         endpoint,
         implemented: v.implemented,
         is_default: v.runtime.is_default,
+        actionable: v.implemented && v.container_state != "missing",
+        running: v.effective_state == "running",
         detail_href: format!(
             "/{prefix}/sites/env/{}",
             encode_uri_component(&v.runtime.id)
@@ -203,7 +204,7 @@ fn map_err(e: SiteError) -> AppError {
     }
 }
 
-fn require_admin(user: &crate::state::CurrentUser) -> Result<(), AppError> {
+pub(crate) fn require_admin(user: &crate::state::CurrentUser) -> Result<(), AppError> {
     handlers::require_permission(user, skiff_model::Permission::Admin)
 }
 
@@ -291,6 +292,8 @@ fn runtime_options(views: &[skiff_app::sites::RuntimeView]) -> Vec<RuntimeOption
                 disabled: !v.implemented || !ready,
                 disabled_reason: if !v.implemented {
                     "P2 未实现：P1 只支持 PHP 运行环境".into()
+                } else if v.effective_state == "missing" {
+                    "未安装，可到运行环境页安装".into()
                 } else if !ready {
                     format!(
                         "运行环境未运行（当前：{}）",
@@ -452,32 +455,15 @@ pub async fn env_page(
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
     let env = state.site_env_status().await;
-    let progress = state.site_install_progress().await;
-    let settings = state.site_settings();
     let views = state.runtime_views().await.unwrap_or_default();
     let runtimes = views.iter().map(|v| runtime_row(&state, v)).collect();
     handlers::render(SiteEnvPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
         env: env_view(&env),
         runtimes,
-        steps: progress
-            .steps
-            .iter()
-            .map(|s| InstallStepView {
-                name: s.name.clone(),
-                state: s.state.as_str().to_string(),
-                detail: s.detail.clone(),
-            })
-            .collect(),
-        running: progress.running,
-        done: progress.done,
-        install_error: progress.error,
         can_admin: user.can(skiff_model::Permission::Admin),
-        registry_mirror: settings.registry_mirror,
-        image_prefix: state
-            .db()
-            .get_setting("sites.image_prefix")?
-            .unwrap_or_default(),
+        new_name: q.get("new_name").cloned().unwrap_or_default(),
+        new_version: q.get("new_version").cloned().unwrap_or_default(),
         error: q.get("error").cloned().unwrap_or_default(),
         notice: q.get("notice").cloned().unwrap_or_default(),
     })
@@ -504,6 +490,54 @@ pub async fn env_install(
     );
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!("/{prefix}/sites/env")))
+}
+
+pub async fn env_add(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let name = form_first(&form, "name");
+    let version = form_first(&form, "version");
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    match state.add_php_runtime(&name, &version).await {
+        Ok(v) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "sites.env.add",
+                &v.runtime.id,
+                "ok",
+                "",
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env?notice={}",
+                encode_uri_component(&format!(
+                    "已安装 PHP {}（实例 {}）",
+                    v.runtime.version, v.runtime.name
+                ))
+            )))
+        }
+        Err(e) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "sites.env.add",
+                &name,
+                "failed",
+                &e.to_string(),
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env?error={}",
+                encode_uri_component(&e.to_string())
+            )))
+        }
+    }
 }
 
 pub async fn env_settings_page(
@@ -778,6 +812,39 @@ pub async fn detail(
         .site_by_domain(&domain)?
         .ok_or_else(|| AppError::NotFound(format!("站点不存在：{domain}")))?;
     let env = state.site_env_status().await;
+    let (runtime_down, runtime_alert, runtime_env_href) = if site.site_type
+        == skiff_store::TYPE_RUNTIME
+    {
+        let rid = site.runtime_id.clone().unwrap_or_default();
+        let rt = state.db().runtime_by_id(&rid)?;
+        let down = rt
+            .as_ref()
+            .map(|r| {
+                r.last_status != "running"
+                    || r.socket_path
+                        .as_deref()
+                        .map(|p| !std::path::Path::new(p).exists())
+                        .unwrap_or(true)
+            })
+            .unwrap_or(true);
+        let name = rt
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| rid.clone());
+        (
+            down,
+            format!(
+                "绑定的运行环境 {name} 当前未运行，访问本站点会返回 502/503。请启动该运行环境；系统不会静默切换到其它版本。"
+            ),
+            format!(
+                "/{}/sites/env/{}",
+                state.cfg.entry_prefix,
+                encode_uri_component(&rid)
+            ),
+        )
+    } else {
+        (false, String::new(), String::new())
+    };
     let mut tab = q.get("tab").cloned().unwrap_or_else(|| "overview".into());
     if !matches!(
         tab.as_str(),
@@ -833,6 +900,9 @@ pub async fn detail(
         config_active,
         dir,
         ssl,
+        runtime_down,
+        runtime_alert,
+        runtime_env_href,
         error,
         notice,
     })
@@ -1120,7 +1190,7 @@ pub async fn runtime_action(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     if !matches!(
         action.as_str(),
-        "start" | "stop" | "restart" | "rebuild" | "sync" | "delete"
+        "start" | "stop" | "restart" | "rebuild" | "sync" | "delete" | "install"
     ) {
         return Err(AppError::BadRequest(format!("未知运行环境操作：{action}")));
     }

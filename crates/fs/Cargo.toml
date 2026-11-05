@@ -1,0 +1,18 @@
+[package]
+name = "skiff-fs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 内核文件系统原语：主体授权、路径规范化、路径锁、原子写、回收站、配额与审计结构（不依赖 store/docker/plugin/web）"
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

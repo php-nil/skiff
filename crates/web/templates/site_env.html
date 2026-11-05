@@ -1,46 +1,84 @@
 {% extends "base.html" %}
 {% block title %}网站运行环境 · Skiff{% endblock %}
 {% block content %}
-{% if running %}<meta http-equiv="refresh" content="3">{% endif %}
 <div class="page-head">
   <h1>运行环境</h1>
-  {% if can_admin && !running %}
+  {% if can_admin %}
   <form method="post" action="/{{ ctx.prefix }}/sites/env/install" class="inline">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <button class="btn" type="submit">{% if env.installed %}重新安装/重建环境{% else %}安装运行环境{% endif %}</button>
+    <button class="btn" type="submit">{% if env.installed %}重新安装/重建基础环境{% else %}安装基础环境{% endif %}</button>
   </form>
   {% endif %}
 </div>
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert">{{ notice }}</div>{% endif %}
+{% if !env.docker_available %}
+<div class="alert">Docker 不可用：{{ env.docker_reason }}</div>
+{% endif %}
 
 <section class="panel">
-  <h2>运行环境</h2>
-  <p class="muted">运行环境页是业务视角（版本、绑定站点、专属配置）；Docker 页只做原始容器管理。状态漂移表示「期望运行但容器实际未运行」。</p>
+  <h2>环境列表</h2>
+  <p class="muted">每个实例独立目录、独立 socket：<code>/www/runtime/php/&lt;name&gt;/php-fpm.sock</code>（0660 root:nobody），容器名 <code>skiff-php-&lt;name&gt;</code>。停止某个实例只影响绑定它的站点，不会静默切换到其它实例。点「详情」从右侧打开抽屉。</p>
   {% if runtimes.is_empty() %}
-  <p class="muted">尚未登记运行环境。安装运行环境后会自动登记 PHP 8.5。</p>
+  <p class="muted">尚未登记运行环境。安装基础环境后会自动登记 PHP 8.5。</p>
   {% else %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>类型</th><th>版本</th><th>状态</th><th>站点</th><th>端点</th><th>镜像</th><th></th></tr></thead>
+      <thead><tr><th>类型</th><th>版本</th><th>状态</th><th>占用站点</th><th>socket / 端口</th><th>默认</th><th>操作</th></tr></thead>
       <tbody>
       {% for r in runtimes %}
-        <tr>
+        <tr data-runtime-row="{{ r.id }}">
           <td>{{ r.kind_label }}</td>
-          <td class="mono">{{ r.version }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
+          <td class="mono">{{ r.version }}</td>
           <td>
             <span class="tag{% if r.state_class == "ok" %} ok{% else if r.state_class == "warn" %} warn-tag{% endif %}">{{ r.state_label }}</span>
             {% if r.drift %}<br><span class="hint">期望运行 / 实际未运行</span>{% endif %}
           </td>
           <td>{{ r.site_count }}</td>
           <td class="mono">{{ r.endpoint }}</td>
-          <td class="mono">{{ r.image }}</td>
-          <td><a href="{{ r.detail_href }}">详情</a> · <a href="{{ r.docker_href }}">Docker</a></td>
+          <td>{% if r.is_default %}<span class="tag">默认</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="row-actions">
+            <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">详情</button>
+            {% if can_admin && r.implemented %}
+              {% if r.actionable %}
+                {% if r.running %}
+                <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ r.id }}/action/stop" class="inline">
+                  <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                  <button type="submit" class="link-btn">停止</button>
+                </form>
+                {% else %}
+                <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ r.id }}/action/start" class="inline">
+                  <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                  <button type="submit" class="link-btn">启动</button>
+                </form>
+                {% endif %}
+              {% else %}
+              <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ r.id }}/action/install" class="inline">
+                <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+                <button type="submit" class="link-btn">安装</button>
+              </form>
+              {% endif %}
+            {% endif %}
+            <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">更多</button>
+          </td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
+  {% endif %}
+  {% if can_admin %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/add" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <label>新建 PHP 实例
+      <input type="text" name="name" placeholder="php-8.4-a" value="{{ new_name }}" pattern="[a-z0-9][a-z0-9.\-]{0,31}" required>
+    </label>
+    <label>版本
+      <input type="text" name="version" placeholder="8.4" value="{{ new_version }}" pattern="[0-9.]+" required>
+    </label>
+    <button class="btn" type="submit">安装实例</button>
+  </form>
+  <p class="hint">实例名只允许小写字母、数字、点与连字符（1–32 位，首字符不能是点/连字符）；同类型下不可重名，目标目录已存在会直接拒绝，不覆盖。</p>
   {% endif %}
   <div class="not-implemented">
     <div><strong>Node.js / Go 运行环境</strong><br>P2 预留：每站点独立容器、独立 <code>127.0.0.1</code> 端口、独立日志；P1 不提供安装/启动，也不会显示为运行中。</div>
@@ -48,44 +86,15 @@
   </div>
 </section>
 
-<section class="panel">
-  <h2>当前状态</h2>
-  <div class="kv">
-    <div><span class="muted">Docker</span><span>{% if env.docker_available %}可用{% else %}不可用：{{ env.docker_reason }}{% endif %}</span></div>
-    <div><span class="muted">nginx 容器</span><span class="mono">{{ env.nginx_state }}</span></div>
-    <div><span class="muted">PHP-FPM 容器</span><span class="mono">{{ env.php_state }}</span></div>
-    <div><span class="muted">站点访问端口</span><span class="mono">{{ env.port }}（host 网络，宿主直听）</span></div>
-    <div><span class="muted">端口检查</span><span class="mono">{{ env.port_message }}</span></div>
-    <div><span class="muted">nginx 镜像</span><span class="mono">{{ env.nginx_image }}</span></div>
-    <div><span class="muted">PHP 镜像</span><span class="mono">{{ env.php_image }}</span></div>
-    <div><span class="muted">PHP socket</span><span class="mono">/www/php/php-fpm.sock（0660 root:nobody，仅 nginx worker 可连）</span></div>
-    <div><span class="muted">WAF</span><span>模式 {{ env.waf_mode }}（待定：本期不加载规则、不拦截）· 规则目录 <span class="mono">{{ env.waf_rules_dir }}</span></span></div>
+<dialog class="drawer" id="runtime-drawer" data-runtime-drawer aria-label="运行环境详情">
+  <div class="drawer-head">
+    <h2 data-drawer-title>运行环境</h2>
+    <button type="button" class="drawer-close" data-drawer-close aria-label="关闭">×</button>
   </div>
-  {% if !env.ready %}
-  <p class="muted">安装动作会先探测宿主 80 端口（被占用会直接报错并给出占用进程），再拉取 OpenResty 固定 digest 镜像与 PHP 镜像，创建两个 host 网络容器并共享 <code>/www</code>；PHP 只监听 unix socket。失败原因会显示在对应步骤，包含 registry 与 Docker 错误码。</p>
-  {% endif %}
-</section>
+  <div class="drawer-content" data-drawer-content>
+    <p class="muted">选择一行运行环境查看详情。</p>
+  </div>
+</dialog>
 
-{% if !steps.is_empty() %}
-<section class="panel">
-  <h2>安装进度{% if running %}<span class="tag warn-tag">进行中</span>{% else if done && install_error.is_empty() %}<span class="tag ok">完成</span>{% else if !install_error.is_empty() %}<span class="tag warn-tag">失败</span>{% endif %}</h2>
-  {% if !install_error.is_empty() %}<div class="alert">{{ install_error }}</div>{% endif %}
-  <ul class="steps">
-    {% for s in steps %}
-    <li class="step {{ s.state }}">
-      <span class="dot"></span>
-      <span class="name">{{ s.name }}</span>
-      <span class="detail muted">{{ s.detail }}</span>
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
-<section class="panel">
-  <h2>镜像源</h2>
-  <p>当前镜像前缀：<span class="mono">{% if image_prefix.is_empty() %}（无）{% else %}{{ image_prefix }}{% endif %}</span></p>
-  <p>Docker 加速源：<span class="mono">{% if registry_mirror.is_empty() %}未配置{% else %}{{ registry_mirror }}{% endif %}</span></p>
-  <p class="muted">镜像加速需要写入宿主 <code>/etc/docker/daemon.json</code> 的 <code>registry-mirrors</code> 并重启 Docker；可到 <a href="/{{ ctx.prefix }}/sites/settings">设置</a> 修改镜像前缀与镜像标签（端口固定为宿主 80）。</p>
-</section>
+<script src="/{{ ctx.prefix }}/static/skiff.js" defer></script>
 {% endblock %}

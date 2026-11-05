@@ -69,6 +69,10 @@
 | 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 插件 UI 契约 | `docs/PLUGIN_UI_CONTRACT.md` | 插件信息/管理页与功能页的路由分工、`view` 视图模型与静态文件映射、内核信息页字段与操作、沙箱/CSP、旧包 `[[ui]]` 回落与测试矩阵 |
 | 网站运行环境契约 | `docs/SITE_RUNTIME_CONTRACT.md` | 运行环境与站点模型、三类建站（运行环境/静态/反向代理）、PHP 专属配置、Docker 页边界、路由权限审计、P1/P2 范围与测试矩阵；可点预览 `docs/ui/site-runtime-preview.html` |
+| 内核定时任务契约 | `docs/KERNEL_SCHEDULER_CONTRACT.md` | 任务模型（kind/source/调度/超时/重试/并发）、内存缓冲与四种回执、执行语义、插件唤醒链路、内置任务、插件分工（cron 降级为 UI）、API/权限/迁移与测试矩阵 |
+| 内核文件系统契约 | `docs/KERNEL_FS_CONTRACT.md` | 管理员与插件双主体授权、操作面与原子写/路径锁、fs 审计、回收站与配额、受保护路径、站点目录归属、页面与测试矩阵 |
+| 内核定时任务实现说明 | `docs/KERNEL_SCHEDULER_IMPL_NOTES.md` | `skiff-sched` 的任务模型、内存缓冲与回执、tick 语义、审计结构、与契约差异、SQLite/Web 接线边界与顺序 |
+| 内核文件系统实现说明 | `docs/KERNEL_FS_IMPL_NOTES.md` | `skiff-fs` 的授权与路径解析、原子写/路径锁、回收站与配额、审计分级、与契约差异与接线边界 |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ runtime.kind_label }} {{ runtime.version }} · 运行环境 · Skiff{% endblock %}
+{% block title %}{{ runtime.kind_label }} {{ runtime.name }} · 运行环境 · Skiff{% endblock %}
 {% block content %}
+<div class="runtime-detail" data-runtime-panel>
 <div class="page-head">
-  <h1>{{ runtime.kind_label }} {{ runtime.version }}</h1>
+  <h1 data-runtime-title>{{ runtime.kind_label }} {{ runtime.name }}</h1>
   {% if runtime.is_default %}<span class="tag ok">默认</span>{% endif %}
-  <span class="sub">运行环境详情 · 业务视角</span>
+  <span class="sub">版本 {{ runtime.version }} · 业务视角</span>
   <a class="ghost" href="/{{ ctx.prefix }}/sites/env">返回运行环境列表</a>
 </div>
 
@@ -28,9 +29,6 @@
     </div>
     <span class="badge warn">P2 未实现</span>
   </div>
-  <div class="wizard-nav">
-    <a class="btn" href="/{{ ctx.prefix }}/sites/env">返回列表</a>
-  </div>
 </section>
 {% else %}
 
@@ -38,42 +36,18 @@
   <h2>基础信息</h2>
   <div class="kv">
     <div><span class="muted">类型</span><span>{{ runtime.kind_label }}</span></div>
+    <div><span class="muted">实例名</span><span class="mono">{{ runtime.name }}</span></div>
     <div><span class="muted">版本</span><span class="mono">{{ runtime.version }}</span></div>
     <div><span class="muted">镜像</span><span class="mono">{{ runtime.image }}</span></div>
     <div><span class="muted">运行状态</span><span><span class="tag{% if runtime.state_class == "ok" %} ok{% else if runtime.state_class == "warn" %} warn-tag{% endif %}">{{ runtime.state_label }}</span></span></div>
-    <div><span class="muted">底层容器</span><span class="mono">{{ runtime.container_state }}</span></div>
+    <div><span class="muted">底层容器</span><span class="mono">{{ runtime.container_name }}</span></div>
     <div><span class="muted">占用站点</span><span>{{ runtime.site_count }}</span></div>
-    <div><span class="muted">Docker 页</span><span><a href="{{ runtime.docker_href }}">查看原始容器 / 日志</a> <small class="muted">（与运行环境页双向深链，容器启停两边同源）</small></span></div>
+    <div><span class="muted">Docker 页</span><span><a href="{{ runtime.docker_href }}">查看原始容器 / 日志</a></span></div>
   </div>
-  {% if can_admin %}
-  <div class="wizard-nav wrap">
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/start" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">启动</button>
-    </form>
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/stop" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">停止</button>
-    </form>
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/restart" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重启</button>
-    </form>
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/rebuild" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重建</button>
-    </form>
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">同步状态</button>
-    </form>
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/delete" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn danger" type="submit" {% if runtime.site_count > 0 %}disabled title="仍有站点绑定，删除会被拒绝并列出域名"{% endif %}>删除运行环境</button>
-    </form>
-  </div>
-  {% if runtime.site_count > 0 %}
-  <p class="hint">删除会被拒绝：仍有 {{ runtime.site_count }} 个站点绑定，必须先删除这些站点，P1 不做隐式解绑。</p>
-  {% endif %}
-  {% endif %}
 </section>
 
 <section class="panel">
-  <h2>PHP 专属配置</h2>
+  <h2>PHP 配置</h2>
   {% if can_admin %}
   <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/config">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
@@ -130,24 +104,29 @@
 </section>
 
 <section class="panel">
-  <h2>Socket 与权限</h2>
+  <h2>运行与日志</h2>
   <div class="kv">
     <div><span class="muted">socket 宿主路径</span><span class="mono">{% if socket_host.is_empty() %}未登记{% else %}{{ socket_host }}{% endif %}</span></div>
     <div><span class="muted">vhost 使用路径</span><span class="mono">{% if socket_container.is_empty() %}未登记{% else %}{{ socket_container }}{% endif %}</span></div>
     <div><span class="muted">文件存在</span><span>{% if socket_exists %}是{% else %}否（FPM 可能未启动）{% endif %}</span></div>
     <div><span class="muted">权限</span><span class="mono">{{ socket_mode }}</span></div>
-    <div><span class="muted">说明</span><span class="muted">P1 固定 <code>0660 root:nobody</code>，仅 nginx worker 可连；多版本时再改为每环境独立 socket。</span></div>
+    <div><span class="muted">说明</span><span class="muted">固定 <code>0660 root:nobody</code>，仅 nginx worker 可连；每实例独立 socket，不占 TCP 端口。</span></div>
   </div>
-</section>
-
-<section class="panel">
-  <h2>扩展（只读）</h2>
+  <h3>扩展（只读）</h3>
   <div class="kv">
     {% for ext in extensions %}
     <div><span class="muted">{{ ext.name }}</span><span>{% if ext.enabled %}镜像内置{% else %}未启用{% endif %}</span></div>
     {% endfor %}
   </div>
-  <p class="hint">P1 只展示镜像自带扩展，不提供开关；扩展开关在 P2 接入，避免把「能点」误当成「已生效」。</p>
+  <p class="hint">只展示镜像自带扩展，不提供开关。</p>
+  <h3>日志 <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}?tab=logs">刷新</a></h3>
+  {% if !logs_error.is_empty() %}
+  <div class="alert">读取日志失败：{{ logs_error }}</div>
+  {% else if logs.is_empty() %}
+  <p class="muted">点击「刷新」读取容器最近 300 行输出。</p>
+  {% else %}
+  <pre class="log">{{ logs }}</pre>
+  {% endif %}
 </section>
 
 <section class="panel">
@@ -173,15 +152,45 @@
   {% endif %}
 </section>
 
-<section class="panel">
-  <h2>日志 <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}?tab=logs">刷新</a></h2>
-  {% if !logs_error.is_empty() %}
-  <div class="alert">读取日志失败：{{ logs_error }}</div>
-  {% else if logs.is_empty() %}
-  <p class="muted">点击「刷新」读取 PHP-FPM 容器最近 300 行输出。</p>
-  {% else %}
-  <pre class="log">{{ logs }}</pre>
+<section class="panel danger-zone">
+  <h2>危险操作</h2>
+  <p class="muted">删除不可恢复；仍有站点绑定时会被拒绝并列出域名，不做隐式解绑或级联删除。</p>
+  {% if can_admin %}
+  <div class="wizard-nav wrap">
+    {% if runtime.site_count > 0 %}
+    <button class="btn danger" type="button" disabled title="仍有站点绑定，删除会被拒绝并列出域名">删除运行环境</button>
+    <p class="hint">删除会被拒绝：仍有 {{ runtime.site_count }} 个站点绑定，必须先删除这些站点。</p>
+    {% else %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn danger" type="submit">删除运行环境</button>
+    </form>
+    {% endif %}
+  </div>
   {% endif %}
 </section>
+
+{% if can_admin %}
+<div class="drawer-foot runtime-actions" data-runtime-actions>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/start" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">启动</button>
+  </form>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/stop" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">停止</button>
+  </form>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/restart" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重启</button>
+  </form>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/rebuild" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重建</button>
+  </form>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">同步状态</button>
+  </form>
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">重新安装</button>
+  </form>
+</div>
 {% endif %}
+{% endif %}
+</div>
 {% endblock %}

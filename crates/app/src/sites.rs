@@ -15,10 +15,11 @@
 //!
 //! 备份 `/www/sites/<域名>/` 即备份整站。内核公共配置（默认站、兜底站、站点
 //! include 入口）仍在 `/www/nginx/conf.d`（挂到容器 `/etc/nginx/conf.d`）；
-//! PHP socket 在 `/www/php/php-fpm.sock`。
+//! 每个 PHP 实例一个独立 socket：`/www/runtime/php/<name>/php-fpm.sock`。
 //!
-//! 两个容器都整目录挂载 `/www`，并使用 host 网络：nginx 直接监听宿主 80，
-//! PHP-FPM 只走 unix socket，不再暴露 9000。容器内路径一律由
+//! nginx 容器整目录挂载 `/www`，PHP 容器同样挂载 `/www`（每版本一个容器、
+//! 一个池配置与一个 socket）。nginx 使用 host 网络直接监听宿主 80；PHP-FPM
+//! 只走 unix socket，不暴露 9000。容器内路径一律由
 //! [`SiteSettings::container_path`] 从宿主路径换算，禁止手拼。
 
 use std::collections::BTreeMap;
@@ -34,7 +35,8 @@ use skiff_store::{
 use crate::AppState;
 
 pub const NGINX_CONTAINER: &str = "skiff-web-nginx";
-pub const PHP_CONTAINER: &str = "skiff-web-php";
+/// 每个 PHP 实例一个独立容器：`skiff-php-<name>`。
+pub const PHP_CONTAINER_PREFIX: &str = "skiff-php";
 /// OpenResty 官方镜像，固定 digest（不复用 1Panel 的 tag）。
 pub const DEFAULT_NGINX_IMAGE: &str =
     "openresty/openresty:alpine@sha256:2cb90d64192934c26b3749cf744f47edd59277787fe761bd109eeebdc3e2214a";
@@ -42,11 +44,14 @@ pub const DEFAULT_PHP_IMAGE: &str = "php:8.5-fpm-alpine";
 /// nginx 用 host 网络直接监听宿主 80；443 预留给 HTTPS。
 pub const DEFAULT_PORT: u16 = 80;
 pub const DEFAULT_PHP_VERSION: &str = "8.5";
-/// P1 唯一可运行的 PHP 运行环境 id（与 `site_runtimes` 种入行一致）。
+/// 内核内置可安装的 PHP 版本目录（未安装的只显示为「可安装」，不能直接建站）。
+pub const PHP_AVAILABLE_VERSIONS: &[&str] = &["8.5", "8.4", "8.3"];
+/// P1 默认 PHP 运行环境 id（与 `site_runtimes` 种入行一致）。
 pub const PHP_RUNTIME_ID: &str = "php-8.5";
 /// 容器内 `/www` 的宿主来源由 `SiteSettings::web_root` 决定。
 pub const CONTAINER_WEB_ROOT: &str = "/www";
-pub const CONTAINER_SOCKET: &str = "/www/php/php-fpm.sock";
+/// 每版本独立 socket 的容器内根目录：`/www/runtime/php-<version>/php-fpm.sock`。
+pub const CONTAINER_RUNTIME_ROOT: &str = "/www/runtime";
 /// socket 固定属组：openresty 镜像的 worker 与 php 镜像都带 `nobody`（gid 65534）。
 /// 0660 只放行该组，本机普通用户连不上。
 pub const SOCKET_GID: u32 = 65534;
@@ -55,6 +60,21 @@ pub const SOCKET_MODE: u32 = 0o660;
 pub const CONTAINER_PHP_POOL: &str = "/usr/local/etc/php-fpm.d/www.conf";
 /// 单文件日志轮转阈值（内核自己轮转，不依赖宿主 logrotate）。
 pub const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// 内置默认 PHP 实例名（`name` 与 id 一致）。
+pub fn default_php_name() -> String {
+    format!("php-{DEFAULT_PHP_VERSION}")
+}
+
+/// 容器名只从 `<kind>/<name>` 推导：`skiff-<kind>-<name>`。
+pub fn runtime_container_name(kind: &str, name: &str) -> String {
+    format!("skiff-{kind}-{name}")
+}
+
+/// PHP 实例 socket 的容器内路径：`/www/runtime/<kind>/<name>/php-fpm.sock`。
+pub fn runtime_container_socket(kind: &str, name: &str) -> String {
+    format!("{CONTAINER_RUNTIME_ROOT}/{kind}/{name}/php-fpm.sock")
+}
 
 /// 站点目录内的固定子目录（一站一目录，整目录备份即整站备份）。
 pub const SITE_INDEX_DIR: &str = "index";
@@ -95,7 +115,8 @@ pub struct SiteSettings {
     pub web_root: PathBuf,
     pub sites_dir: PathBuf,
     pub conf_dir: PathBuf,
-    pub php_dir: PathBuf,
+    /// 运行环境根目录；每个 PHP 版本在 `runtime/php-<version>/` 下独立成套。
+    pub runtime_dir: PathBuf,
     pub nginx_image: String,
     pub php_image: String,
     pub port: u16,
@@ -149,9 +170,43 @@ impl SiteSettings {
         self.container_rel(&self.log_file(site_dir, kind))
     }
 
-    /// 由内核生成、覆盖镜像默认 `www.conf` 的 PHP-FPM 池配置。
-    pub fn php_pool_conf(&self) -> PathBuf {
-        self.php_dir.join("www.conf")
+    /// 某环境实例的独立运行目录：`<runtime>/<kind>/<name>/`。
+    pub fn runtime_home(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_dir.join(kind).join(name)
+    }
+
+    /// PHP 实例 socket 的宿主路径（0660 root:nobody）。
+    pub fn runtime_socket(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_home(kind, name).join("php-fpm.sock")
+    }
+
+    /// PHP 实例的 FPM 池配置（宿主文件，覆盖镜像默认 www.conf）。
+    pub fn runtime_pool_conf(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_home(kind, name).join("www.conf")
+    }
+
+    /// PHP 实例的独立日志目录。
+    pub fn runtime_log_dir(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_home(kind, name).join("log")
+    }
+
+    /// socket 的容器内路径；vhost 的 `fastcgi_pass` 必须用它。
+    pub fn runtime_socket_container(&self, kind: &str, name: &str) -> String {
+        runtime_container_socket(kind, name)
+    }
+
+    /// nginx 全局日志目录（错误日志与访问汇总）。
+    pub fn global_log_dir(&self) -> PathBuf {
+        self.web_root.join("log")
+    }
+
+    /// 内核生成并挂载进 nginx 容器的主配置。
+    pub fn nginx_main_conf(&self) -> PathBuf {
+        self.web_root.join("nginx").join("nginx.conf")
+    }
+
+    pub fn container_nginx_main_conf(&self) -> &'static str {
+        "/usr/local/openresty/nginx/conf/nginx.conf"
     }
 
     /// WAF 规则目录（预留；本期不加载、不拦截）。
@@ -285,6 +340,47 @@ pub struct InstallProgress {
     pub done: bool,
     pub error: String,
     pub steps: Vec<InstallStep>,
+}
+
+/// 运行环境安装互斥表：键为 `kind:name`。
+///
+/// 只防「同一实例被并发安装」；不同实例互不影响。守卫 drop 时自动释放，
+/// 安装失败也不会把实例永久锁死。
+#[derive(Default)]
+pub struct InstallLocks {
+    busy: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl std::fmt::Debug for InstallLocks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstallLocks").finish_non_exhaustive()
+    }
+}
+
+pub struct InstallLock<'a> {
+    locks: &'a InstallLocks,
+    key: String,
+}
+
+impl Drop for InstallLock<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut busy) = self.locks.busy.lock() {
+            busy.remove(&self.key);
+        }
+    }
+}
+
+impl InstallLocks {
+    pub fn try_begin(&self, key: &str) -> Option<InstallLock<'_>> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        if !busy.insert(key.to_string()) {
+            return None;
+        }
+        Some(InstallLock {
+            locks: self,
+            key: key.to_string(),
+        })
+    }
 }
 
 /// 运行环境探测结果（列表页/环境页共用）。
@@ -804,26 +900,66 @@ fn parse_size_mb(raw: &str) -> Result<u64, SiteError> {
 }
 
 impl AppState {
-    /// 把当前站点配置里的 PHP 运行环境校准到库：补 socket 宿主路径与镜像。
+    /// 把默认 PHP 运行环境校准到库：补 socket 宿主路径与镜像。
     pub fn ensure_php_runtime(&self) -> Result<Runtime, SiteError> {
         let s = self.site_settings();
-        let socket = s.php_dir.join("php-fpm.sock").display().to_string();
+        let name = format!("php-{DEFAULT_PHP_VERSION}");
         self.db()
             .ensure_runtime(&NewRuntime {
-                id: PHP_RUNTIME_ID.into(),
+                id: name.clone(),
                 kind: skiff_store::KIND_PHP.into(),
+                name: name.clone(),
                 version: DEFAULT_PHP_VERSION.into(),
                 image: s.php_image.clone(),
                 image_digest: String::new(),
-                socket_path: Some(socket),
+                socket_path: Some(
+                    s.runtime_socket(skiff_store::KIND_PHP, &name)
+                        .display()
+                        .to_string(),
+                ),
                 is_default: true,
             })
             .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))
     }
 
+    /// 校准内置 PHP 版本目录：已安装的保留状态，未安装的登记为「缺容器」。
+    ///
+    /// 目录只是可安装版本清单，**不代表已运行**；建站仍要求对应 socket 实际存在。
+    fn ensure_php_runtimes(&self) -> Result<Vec<Runtime>, SiteError> {
+        let s = self.site_settings();
+        let mut out = Vec::new();
+        for (idx, version) in PHP_AVAILABLE_VERSIONS.iter().enumerate() {
+            let name = format!("php-{version}");
+            let image = if *version == DEFAULT_PHP_VERSION {
+                s.php_image.clone()
+            } else {
+                format!("php:{version}-fpm-alpine")
+            };
+            let rt = self
+                .db()
+                .ensure_runtime(&NewRuntime {
+                    id: name.clone(),
+                    kind: skiff_store::KIND_PHP.into(),
+                    name: name.clone(),
+                    version: (*version).into(),
+                    image,
+                    image_digest: String::new(),
+                    socket_path: Some(
+                        s.runtime_socket(skiff_store::KIND_PHP, &name)
+                            .display()
+                            .to_string(),
+                    ),
+                    is_default: idx == 0,
+                })
+                .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))?;
+            out.push(rt);
+        }
+        Ok(out)
+    }
+
     /// 运行环境列表：库是事实源，容器状态只作实时探测（漂移徽章的依据）。
     pub async fn runtime_views(&self) -> Result<Vec<RuntimeView>, SiteError> {
-        self.ensure_php_runtime()?;
+        self.ensure_php_runtimes()?;
         let s = self.site_settings();
         let runtimes = self
             .db()
@@ -838,7 +974,7 @@ impl AppState {
         for rt in runtimes {
             let implemented = rt.kind == skiff_store::KIND_PHP;
             let container_name = if implemented {
-                PHP_CONTAINER.to_string()
+                runtime_container_name(&rt.kind, &rt.name)
             } else {
                 format!("skiff-runtime-{}", rt.id)
             };
@@ -947,23 +1083,27 @@ impl AppState {
                 rt.kind
             )));
         }
+        let container = runtime_container_name(&rt.kind, &rt.name);
         match action {
+            "install" => {
+                self.install_php_runtime(&rt).await?;
+            }
             "start" => {
-                self.docker_runtime_action(PHP_CONTAINER, Verb::Start)
-                    .await?;
+                self.docker_runtime_action(&container, Verb::Start).await?;
                 self.db()
                     .set_runtime_status(id, "running", "running")
                     .map_err(|e| SiteError::Internal(e.to_string()))?;
             }
             "stop" => {
-                self.docker_runtime_action(PHP_CONTAINER, Verb::Stop)
-                    .await?;
+                // 停止不换版本、不改绑定：绑定站点继续指向本版本 socket，访问返回
+                // 502/503；站点页会给出「前往运行环境页」的入口。
+                self.docker_runtime_action(&container, Verb::Stop).await?;
                 self.db()
                     .set_runtime_status(id, "stopped", "stopped")
                     .map_err(|e| SiteError::Internal(e.to_string()))?;
             }
             "restart" => {
-                self.docker_runtime_action(PHP_CONTAINER, Verb::Restart)
+                self.docker_runtime_action(&container, Verb::Restart)
                     .await?;
                 self.db()
                     .set_runtime_status(id, "running", "running")
@@ -973,19 +1113,19 @@ impl AppState {
                 let s = self.site_settings();
                 let cfg = PhpRuntimeConfig::from_json(&rt.config_json);
                 cfg.validate()?;
-                let socket_host = rt.socket_path.clone().unwrap_or_default();
-                if socket_host.is_empty() {
-                    return Err(SiteError::Unavailable(
-                        "运行环境缺少 socket 路径，请重新安装".into(),
-                    ));
-                }
+                let socket_host = rt
+                    .socket_path
+                    .clone()
+                    .unwrap_or_else(|| s.runtime_socket(&rt.kind, &rt.name).display().to_string());
                 let socket_container = s.container_path(Path::new(&socket_host));
+                std::fs::create_dir_all(s.runtime_home(&rt.kind, &rt.name))
+                    .map_err(|e| SiteError::Internal(format!("创建运行目录失败：{e}")))?;
                 std::fs::write(
-                    s.php_pool_conf(),
+                    s.runtime_pool_conf(&rt.kind, &rt.name),
                     render_php_pool_with(&cfg, &socket_container),
                 )
                 .map_err(|e| SiteError::Internal(format!("写入 PHP-FPM 配置失败：{e}")))?;
-                self.docker_runtime_action(PHP_CONTAINER, Verb::Restart)
+                self.docker_runtime_action(&container, Verb::Restart)
                     .await?;
                 self.rewrite_site_vhosts(&s)
                     .map_err(|e| SiteError::Internal(format!("重建站点 vhost 失败：{e}")))?;
@@ -1012,6 +1152,156 @@ impl AppState {
         self.runtime_view(id).await
     }
 
+    /// 安装某一 PHP 实例：建独立目录 → 写池配置 → 拉镜像 → 建容器 → 收紧 socket。
+    ///
+    /// 同一 `(kind,name)` 安装中互斥；只影响该实例，不动其它版本/实例的站点。
+    async fn install_php_runtime(&self, rt: &Runtime) -> Result<(), SiteError> {
+        let key = format!("{}:{}", rt.kind, rt.name);
+        let _guard = self
+            .runtime_installs
+            .try_begin(&key)
+            .ok_or_else(|| SiteError::Conflict("该环境正在安装，请稍后再试".into()))?;
+        self.install_php_runtime_inner(rt).await
+    }
+
+    async fn install_php_runtime_inner(&self, rt: &Runtime) -> Result<(), SiteError> {
+        let s = self.site_settings();
+        if !self.docker().available() {
+            return Err(SiteError::Unavailable(format!(
+                "Docker 不可用：{}",
+                self.docker_unavailable_reason()
+            )));
+        }
+        let image = if rt.version == DEFAULT_PHP_VERSION {
+            s.php_image.clone()
+        } else {
+            format!("php:{}-fpm-alpine", rt.version)
+        };
+        let cfg = PhpRuntimeConfig::from_json(&rt.config_json);
+        cfg.validate()?;
+        let dir = s.runtime_home(&rt.kind, &rt.name);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| SiteError::Internal(format!("创建 {} 失败：{e}", dir.display())))?;
+        std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
+            .map_err(|e| SiteError::Internal(format!("创建 PHP 日志目录失败：{e}")))?;
+        let socket_container = runtime_container_socket(&rt.kind, &rt.name);
+        std::fs::write(
+            s.runtime_pool_conf(&rt.kind, &rt.name),
+            render_php_pool_with(&cfg, &socket_container),
+        )
+        .map_err(|e| SiteError::Internal(format!("写入 PHP-FPM 配置失败：{e}")))?;
+
+        self.docker()
+            .execute(
+                Verb::ImagePull,
+                None,
+                DockerParams::ImagePull(image.clone()),
+            )
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("拉取 {image} 失败：{e}")))?;
+
+        let container_name = runtime_container_name(&rt.kind, &rt.name);
+        if let Ok(rows) = self.docker().list_containers().await {
+            if let Some(c) = rows.iter().find(|c| c.name == container_name) {
+                self.remove_existing_container(&c.id)
+                    .await
+                    .map_err(SiteError::Unavailable)?;
+            }
+        }
+        self.ensure_container(&self.php_spec_for(&s, &rt.kind, &rt.name, &image))
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("创建/启动 {container_name} 失败：{e}")))?;
+        self.secure_php_socket(&s, &rt.kind, &rt.name)
+            .await
+            .map_err(SiteError::Unavailable)?;
+
+        // 以本次安装的镜像与 socket 为准写回库；name 与默认标记保持不变。
+        self.db()
+            .ensure_runtime(&NewRuntime {
+                id: rt.id.clone(),
+                kind: rt.kind.clone(),
+                name: rt.name.clone(),
+                version: rt.version.clone(),
+                image,
+                image_digest: String::new(),
+                socket_path: Some(s.runtime_socket(&rt.kind, &rt.name).display().to_string()),
+                is_default: rt.is_default,
+            })
+            .map_err(|e| SiteError::Internal(format!("写入运行环境失败：{e}")))?;
+        self.db()
+            .set_runtime_status(&rt.id, "running", "running")
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 新建并安装一个 PHP 实例（用户可自定义 `name`）。
+    pub async fn add_php_runtime(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<RuntimeView, SiteError> {
+        let name = skiff_store::validate_runtime_name(name)
+            .map_err(|e| SiteError::BadRequest(e.to_string()))?;
+        let version = version.trim();
+        if version.is_empty()
+            || !version.chars().all(|c| c.is_ascii_digit() || c == '.')
+            || version.starts_with('.')
+        {
+            return Err(SiteError::BadRequest(
+                "PHP 版本格式无效（示例：8.5 / 8.4）".into(),
+            ));
+        }
+        if self
+            .db()
+            .runtime_by_name(skiff_store::KIND_PHP, name)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .is_some()
+        {
+            return Err(SiteError::Conflict(format!(
+                "同类型下已存在名为 {name} 的运行环境，请换一个名字"
+            )));
+        }
+        let s = self.site_settings();
+        let dir = s.runtime_home(skiff_store::KIND_PHP, name);
+        if dir.exists() {
+            return Err(SiteError::Conflict(format!(
+                "目标目录已存在：{}，请换一个名字（不会覆盖或自动加后缀）",
+                dir.display()
+            )));
+        }
+        let key = format!("{}:{}", skiff_store::KIND_PHP, name);
+        let _guard = self
+            .runtime_installs
+            .try_begin(&key)
+            .ok_or_else(|| SiteError::Conflict("该环境正在安装，请稍后再试".into()))?;
+        let id = format!("php-{name}");
+        let image = if version == DEFAULT_PHP_VERSION {
+            s.php_image.clone()
+        } else {
+            format!("php:{version}-fpm-alpine")
+        };
+        let rt = self
+            .db()
+            .create_runtime(&NewRuntime {
+                id: id.clone(),
+                kind: skiff_store::KIND_PHP.into(),
+                name: name.to_string(),
+                version: version.to_string(),
+                image,
+                image_digest: String::new(),
+                socket_path: Some(
+                    s.runtime_socket(skiff_store::KIND_PHP, name)
+                        .display()
+                        .to_string(),
+                ),
+                is_default: false,
+            })
+            .map_err(|e| SiteError::Conflict(e.to_string()))?;
+        // 已在 add 阶段持锁，直接走不带锁的实现，避免自锁。
+        self.install_php_runtime_inner(&rt).await?;
+        self.runtime_view(&id).await
+    }
+
     /// 保存 PHP 专属配置：校验 → 写池配置 → reload FPM → 落库；任一步失败回滚文件。
     pub async fn save_php_runtime_config(
         &self,
@@ -1034,14 +1324,16 @@ impl AppState {
         let socket_host = rt
             .socket_path
             .clone()
-            .ok_or_else(|| SiteError::Unavailable("运行环境缺少 socket 路径".into()))?;
+            .unwrap_or_else(|| s.runtime_socket(&rt.kind, &rt.name).display().to_string());
         let socket_container = s.container_path(Path::new(&socket_host));
-        let pool = s.php_pool_conf();
+        std::fs::create_dir_all(s.runtime_home(&rt.kind, &rt.name))
+            .map_err(|e| SiteError::Internal(format!("创建运行目录失败：{e}")))?;
+        let pool = s.runtime_pool_conf(&rt.kind, &rt.name);
         let original = std::fs::read(&pool).ok();
         std::fs::write(&pool, render_php_pool_with(cfg, &socket_container))
             .map_err(|e| SiteError::Internal(format!("写入 PHP-FPM 配置失败：{e}")))?;
         if let Err(e) = self
-            .docker_runtime_action(PHP_CONTAINER, Verb::Restart)
+            .docker_runtime_action(&runtime_container_name(&rt.kind, &rt.name), Verb::Restart)
             .await
         {
             if let Some(bytes) = &original {
@@ -1102,7 +1394,7 @@ impl AppState {
             .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
         let c = rows
             .iter()
-            .find(|c| c.name == PHP_CONTAINER)
+            .find(|c| c.name == runtime_container_name(&rt.kind, &rt.name))
             .ok_or_else(|| {
                 SiteError::Unavailable("PHP-FPM 容器未安装，请先在运行环境页安装".into())
             })?;
@@ -1180,7 +1472,10 @@ pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
 
 /// 安装/默认池：使用默认配置与共享安装 socket。
 pub fn render_php_pool() -> String {
-    render_php_pool_with(&PhpRuntimeConfig::default(), CONTAINER_SOCKET)
+    render_php_pool_with(
+        &PhpRuntimeConfig::default(),
+        &runtime_container_socket(skiff_store::KIND_PHP, &default_php_name()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,7 +1521,7 @@ impl AppState {
         SiteSettings {
             sites_dir: web_root.join("sites"),
             conf_dir: web_root.join("nginx").join("conf.d"),
-            php_dir: web_root.join("php"),
+            runtime_dir: web_root.join("runtime"),
             nginx_image: pick(KEY_NGINX_IMAGE, DEFAULT_NGINX_IMAGE),
             php_image: pick(KEY_PHP_IMAGE, DEFAULT_PHP_IMAGE),
             port,
@@ -1259,12 +1554,18 @@ impl AppState {
                             c.state.clone()
                         };
                     }
-                    if c.name == PHP_CONTAINER {
-                        php_state = if c.state.is_empty() {
-                            "unknown".into()
-                        } else {
-                            c.state
-                        };
+                    if c.name.starts_with(&format!("{PHP_CONTAINER_PREFIX}-")) {
+                        // 多版本：任一版本运行即视为「有可用 PHP」；没有任何版本容器
+                        // 时为 missing（环境页按行展示每个版本的安装状态）。
+                        if c.state == "running" {
+                            php_state = "running".into();
+                        } else if php_state == "missing" {
+                            php_state = if c.state.is_empty() {
+                                "unknown".into()
+                            } else {
+                                c.state.clone()
+                            };
+                        }
                     }
                 }
             }
@@ -1394,7 +1695,8 @@ impl AppState {
             &s.web_root,
             &s.sites_dir,
             &s.conf_dir,
-            &s.php_dir,
+            &s.runtime_dir,
+            &s.global_log_dir(),
             &s.waf_rules_dir(),
         ];
         for dir in dirs {
@@ -1402,15 +1704,26 @@ impl AppState {
                 return fail(0, format!("创建 {} 失败：{e}", dir.display())).await;
             }
         }
-        if let Err(e) = std::fs::write(s.php_pool_conf(), render_php_pool()) {
+        let php_name = default_php_name();
+        let pool = s.runtime_pool_conf(skiff_store::KIND_PHP, &php_name);
+        if let Some(parent) = pool.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return fail(0, format!("创建 {} 失败：{e}", parent.display())).await;
+            }
+        }
+        if let Err(e) = std::fs::create_dir_all(s.runtime_log_dir(skiff_store::KIND_PHP, &php_name))
+        {
+            return fail(0, format!("创建 PHP 日志目录失败：{e}")).await;
+        }
+        if let Err(e) = std::fs::write(&pool, render_php_pool()) {
             return fail(
                 3,
-                format!(
-                    "写入 PHP-FPM 池配置 {} 失败：{e}",
-                    s.php_pool_conf().display()
-                ),
+                format!("写入 PHP-FPM 池配置 {} 失败：{e}", pool.display()),
             )
             .await;
+        }
+        if let Err(e) = crate::nginx::ensure_nginx_main_conf(&s, self.db()) {
+            return fail(0, format!("写入 nginx 主配置失败：{e}")).await;
         }
         if let Err(e) = self.write_default_vhost(&s) {
             return fail(0, format!("写入默认配置失败：{e}")).await;
@@ -1467,7 +1780,10 @@ impl AppState {
         self.mark_step(
             3,
             StepState::Ok,
-            format!("PHP socket: {CONTAINER_SOCKET}，重建 {rebuilt} 个 vhost"),
+            format!(
+                "PHP socket: {}，重建 {rebuilt} 个 vhost",
+                runtime_container_socket(skiff_store::KIND_PHP, &default_php_name())
+            ),
         )
         .await;
 
@@ -1485,20 +1801,37 @@ impl AppState {
 
         self.mark_step(5, StepState::Running, "准备 PHP-FPM 容器")
             .await;
-        if let Some(c) = existing.iter().find(|c| c.name == PHP_CONTAINER) {
-            self.remove_existing_container(&c.id).await?;
+        let default_php = runtime_container_name(skiff_store::KIND_PHP, &php_name);
+        for c in &existing {
+            if c.name == default_php || c.name == "skiff-web-php" {
+                self.remove_existing_container(&c.id).await?;
+            }
         }
-        if let Err(e) = self.ensure_container(&self.php_spec(&s)).await {
+        if let Err(e) = self
+            .ensure_container(&self.php_spec_for(
+                &s,
+                skiff_store::KIND_PHP,
+                &php_name,
+                &s.php_image,
+            ))
+            .await
+        {
             return fail(5, format!("创建/启动 PHP-FPM 失败：{e}")).await;
         }
         // 不用 0666 兜底：等 socket 出现后由内核收口到 0660 + 固定 gid。
-        if let Err(e) = self.secure_php_socket(&s).await {
+        if let Err(e) = self
+            .secure_php_socket(&s, skiff_store::KIND_PHP, &php_name)
+            .await
+        {
             return fail(5, format!("收紧 PHP socket 权限失败：{e}")).await;
         }
         self.mark_step(
             5,
             StepState::Ok,
-            format!("{PHP_CONTAINER}，socket {CONTAINER_SOCKET} 0660"),
+            format!(
+                "{default_php}，socket {} 0660",
+                runtime_container_socket(skiff_store::KIND_PHP, &php_name)
+            ),
         )
         .await;
 
@@ -1562,8 +1895,13 @@ impl AppState {
     ///
     /// 容器内 `listen.group` 已经指向 nobody，但镜像/版本差异可能让 FPM 落盘时
     /// 带上别的组；这里以宿主准绳再收一次，绝不允许 world 可写。
-    async fn secure_php_socket(&self, s: &SiteSettings) -> Result<(), String> {
-        let path = s.php_dir.join("php-fpm.sock");
+    async fn secure_php_socket(
+        &self,
+        s: &SiteSettings,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let path = s.runtime_socket(kind, name);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
         while !path.exists() {
             if tokio::time::Instant::now() >= deadline {
@@ -1615,6 +1953,11 @@ impl AppState {
                     target: s.container_conf_dir().to_string(),
                     read_only: false,
                 },
+                Mount::Bind {
+                    source: s.nginx_main_conf().display().to_string(),
+                    target: s.container_nginx_main_conf().to_string(),
+                    read_only: false,
+                },
             ],
             log_driver: Some("local".into()),
             log_max_size: Some("10m".into()),
@@ -1624,10 +1967,10 @@ impl AppState {
         }
     }
 
-    fn php_spec(&self, s: &SiteSettings) -> ContainerSpec {
+    fn php_spec_for(&self, s: &SiteSettings, kind: &str, name: &str, image: &str) -> ContainerSpec {
         ContainerSpec {
-            image: s.php_image.clone(),
-            name: Some(PHP_CONTAINER.to_string()),
+            image: image.to_string(),
+            name: Some(runtime_container_name(kind, name)),
             command: None,
             entrypoint: None,
             env: BTreeMap::new(),
@@ -1645,7 +1988,7 @@ impl AppState {
                     read_only: false,
                 },
                 Mount::Bind {
-                    source: s.php_pool_conf().display().to_string(),
+                    source: s.runtime_pool_conf(kind, name).display().to_string(),
                     target: CONTAINER_PHP_POOL.to_string(),
                     read_only: true,
                 },
@@ -2242,11 +2585,6 @@ impl AppState {
                         rt.version
                     )));
                 }
-                if env.php_state != "running" {
-                    return Err(SiteError::Unavailable(
-                        "PHP-FPM 容器未运行：请先在「网站 → 运行环境」启动 PHP".into(),
-                    ));
-                }
                 let socket = rt.socket_path.as_deref().ok_or_else(|| {
                     SiteError::Unavailable("运行环境缺少 socket 路径，请先重新安装".into())
                 })?;
@@ -2423,12 +2761,6 @@ impl AppState {
         let disabled = s.vhost_disabled(&site_dir, domain);
         if running && site.site_type == TYPE_RUNTIME {
             // PHP 站点不能在 FPM 停着时假装启动：先核对运行环境与 socket。
-            let env = self.site_env_status().await;
-            if env.php_state != "running" {
-                return Err(SiteError::Unavailable(
-                    "PHP-FPM 未运行，请先在「运行环境」页启动".into(),
-                ));
-            }
             let rid = site
                 .runtime_id
                 .as_deref()
@@ -2442,6 +2774,14 @@ impl AppState {
                 return Err(SiteError::Unavailable(format!(
                     "运行环境 {} 未运行，请先启动运行环境",
                     rt.version
+                )));
+            }
+            let socket = rt.socket_path.as_deref().ok_or_else(|| {
+                SiteError::Unavailable("运行环境缺少 socket 路径，请重新安装".into())
+            })?;
+            if !Path::new(socket).exists() {
+                return Err(SiteError::Unavailable(format!(
+                    "PHP socket 未就绪：{socket}，请先启动运行环境"
                 )));
             }
         }
@@ -3043,7 +3383,7 @@ mod tests {
             &[],
             VhostKind::Php {
                 root: "/www/sites/example.com/index",
-                socket: "/www/php/php-fpm.sock",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
             },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
@@ -3051,7 +3391,7 @@ mod tests {
         );
         assert!(v.contains("server_name example.com;"));
         assert!(v.contains("root /www/sites/example.com/index;"));
-        assert!(v.contains("fastcgi_pass unix:/www/php/php-fpm.sock;"));
+        assert!(v.contains("fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock;"));
         assert!(!v.contains("9000"));
         assert!(v.contains("SCRIPT_FILENAME $document_root$fastcgi_script_name;"));
         assert!(v.contains("access_log /www/sites/example.com/log/access.log;"));
@@ -3175,8 +3515,8 @@ mod tests {
     #[test]
     fn php_pool_uses_config_and_runtime_socket() {
         let cfg = PhpRuntimeConfig::default();
-        let pool = render_php_pool_with(&cfg, "/www/php/php-fpm.sock");
-        assert!(pool.contains("listen = /www/php/php-fpm.sock"));
+        let pool = render_php_pool_with(&cfg, "/www/runtime/php/php-8.5/php-fpm.sock");
+        assert!(pool.contains("listen = /www/runtime/php/php-8.5/php-fpm.sock"));
         assert!(pool.contains("listen.mode = 0660"));
         assert!(pool.contains("pm = dynamic"));
         assert!(pool.contains("pm.max_children = 20"));
@@ -3190,13 +3530,101 @@ mod tests {
             web_root: root.to_path_buf(),
             sites_dir: root.join("sites"),
             conf_dir: root.join("nginx").join("conf.d"),
-            php_dir: root.join("php"),
+            runtime_dir: root.join("runtime"),
             nginx_image: DEFAULT_NGINX_IMAGE.into(),
             php_image: DEFAULT_PHP_IMAGE.into(),
             port: DEFAULT_PORT,
             registry_mirror: String::new(),
             waf_mode: "off".into(),
         }
+    }
+
+    /// 第（无 Docker）测试用应用上下文：数据目录落在临时目录，避免污染源码树。
+    fn app_state_at(root: &Path) -> Arc<AppState> {
+        use crate::WebConfig;
+        use skiff_docker::{DockerService, Form, Policy, Tier};
+        use skiff_identity::SessionLimits;
+        use skiff_plugin::{Supervisor, SupervisorConfig};
+        let db = Arc::new(skiff_store::Db::open_in_memory().unwrap());
+        let docker = Arc::new(DockerService::connect("/nonexistent/docker.sock"));
+        let sup = Arc::new(Supervisor::new(
+            SupervisorConfig::new(root.join("data"), root.join("run")),
+            db.clone(),
+        ));
+        let cfg = WebConfig {
+            data_dir: root.join("data"),
+            web_root: root.join("www"),
+            entry_prefix: "p".into(),
+            dev_http: true,
+            trusted_proxies: vec![],
+            external_url: None,
+            tier: Tier::Basic,
+            form: Form::Native,
+            allow_unsigned: true,
+            allow_reduced_sandbox: true,
+            policy: Policy::new(Tier::Basic, Form::Native, vec![]).unwrap(),
+            session: SessionLimits::default(),
+            login_concurrency: 1,
+        };
+        AppState::new(db, docker, sup, cfg, "csrf-test".into(), "test")
+    }
+
+    #[test]
+    fn site_vhost_routes_by_runtime_id_to_its_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        state.ensure_php_runtimes().unwrap();
+        let s = state.site_settings();
+        // 同版本第二实例：socket 只从 name 推导，与内置实例分开。
+        state
+            .db()
+            .create_runtime(&NewRuntime {
+                id: "php-8.5-a".into(),
+                kind: skiff_store::KIND_PHP.into(),
+                name: "php-8.5-a".into(),
+                version: "8.5".into(),
+                image: "php:8.5-fpm-alpine".into(),
+                image_digest: String::new(),
+                socket_path: Some(s.runtime_socket("php", "php-8.5-a").display().to_string()),
+                is_default: false,
+            })
+            .unwrap();
+
+        let site = |domain: &str, runtime_id: &str| {
+            state
+                .db()
+                .create_site(&StoreNewSite {
+                    domain: domain.into(),
+                    root_dir: s.sites_dir.join(domain).display().to_string(),
+                    site_type: TYPE_RUNTIME.into(),
+                    runtime_id: Some(runtime_id.into()),
+                    app_command: None,
+                    app_port: None,
+                    proxy_target: None,
+                    proxy_websocket: false,
+                })
+                .unwrap()
+        };
+
+        let custom = site("a.local", "php-8.5-a");
+        let vhost = state.render_vhost_for(&s, &custom, &[], None).unwrap();
+        assert!(
+            vhost.contains("fastcgi_pass unix:/www/runtime/php/php-8.5-a/php-fpm.sock;"),
+            "站点必须按 runtime_id 指向所属实例 socket: {vhost}"
+        );
+        assert!(
+            !vhost.contains("fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock;"),
+            "不得回落到默认实例: {vhost}"
+        );
+
+        let default_site = site("b.local", "php-8.5");
+        let vhost = state
+            .render_vhost_for(&s, &default_site, &[], None)
+            .unwrap();
+        assert!(
+            vhost.contains("fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock;"),
+            "默认实例站点仍指向自己的 socket: {vhost}"
+        );
     }
 
     #[test]
@@ -3207,7 +3635,14 @@ mod tests {
             "/www/sites/example.com"
         );
         assert_eq!(s.container_sites_dir(), "/www/sites");
-        assert_eq!(s.php_pool_conf(), PathBuf::from("/www/php/www.conf"));
+        assert_eq!(
+            s.runtime_pool_conf("php", "php-8.5"),
+            PathBuf::from("/www/runtime/php/php-8.5/www.conf")
+        );
+        assert_eq!(
+            s.runtime_socket("php", "php-8.5"),
+            PathBuf::from("/www/runtime/php/php-8.5/php-fpm.sock")
+        );
         let site_dir = Path::new("/www/sites/example.com");
         assert_eq!(
             s.container_log(site_dir, LogKind::Error),
@@ -3231,11 +3666,77 @@ mod tests {
     #[test]
     fn php_pool_only_uses_unix_socket() {
         let pool = render_php_pool();
-        assert!(pool.contains("listen = /www/php/php-fpm.sock"));
+        assert!(pool.contains("listen = /www/runtime/php/php-8.5/php-fpm.sock"));
         assert!(pool.contains("listen.group = nobody"));
         assert!(pool.contains("listen.mode = 0660"));
         assert!(!pool.contains("0666"), "socket 不得 world 可写");
         assert!(!pool.contains("9000"));
+    }
+
+    #[test]
+    fn runtime_paths_and_container_names_derive_from_name_only() {
+        let s = settings_at(Path::new("/www"));
+        assert_eq!(
+            runtime_container_name("php", "php-8.5"),
+            "skiff-php-php-8.5"
+        );
+        assert_eq!(
+            runtime_container_name("php", "php-8.5-a"),
+            "skiff-php-php-8.5-a"
+        );
+        assert_eq!(
+            runtime_container_name("node", "php-8.5"),
+            "skiff-node-php-8.5",
+            "跨 kind 同名容器天然分开"
+        );
+        assert_eq!(
+            runtime_container_socket("php", "php-8.5-a"),
+            "/www/runtime/php/php-8.5-a/php-fpm.sock"
+        );
+        assert_eq!(
+            s.runtime_socket("php", "php-8.5-a"),
+            PathBuf::from("/www/runtime/php/php-8.5-a/php-fpm.sock")
+        );
+        assert_eq!(
+            s.runtime_home("php", "php-8.5-a"),
+            PathBuf::from("/www/runtime/php/php-8.5-a")
+        );
+        assert_eq!(
+            s.runtime_log_dir("php", "php-8.5-a"),
+            PathBuf::from("/www/runtime/php/php-8.5-a/log")
+        );
+        // 同版本不同实例的 socket / 容器名必须不同，不能按版本号共用。
+        assert_ne!(
+            s.runtime_socket("php", "php-8.5"),
+            s.runtime_socket("php", "php-8.5-a")
+        );
+        assert_ne!(
+            runtime_container_name("php", "php-8.5"),
+            runtime_container_name("php", "php-8.5-a")
+        );
+    }
+
+    #[test]
+    fn install_locks_are_mutually_exclusive_per_kind_name() {
+        let locks = InstallLocks::default();
+        let a = locks.try_begin("php:php-8.5-a").expect("首个安装应拿到锁");
+        assert!(
+            locks.try_begin("php:php-8.5-a").is_none(),
+            "同一实例并发安装必须被拒绝"
+        );
+        assert!(
+            locks.try_begin("php:php-8.5-b").is_some(),
+            "不同实例可并行安装"
+        );
+        assert!(
+            locks.try_begin("node:php-8.5-a").is_some(),
+            "跨 kind 同名是不同实例"
+        );
+        drop(a);
+        assert!(
+            locks.try_begin("php:php-8.5-a").is_some(),
+            "安装结束后锁应释放"
+        );
     }
 
     #[test]
@@ -3263,7 +3764,7 @@ mod tests {
             &[],
             VhostKind::Php {
                 root: "/www/sites/example.com/index",
-                socket: "/www/php/php-fpm.sock",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
             },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
@@ -3288,7 +3789,7 @@ mod tests {
             &[],
             VhostKind::Php {
                 root: "/www/sites/example.com/index",
-                socket: "/www/php/php-fpm.sock",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
             },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
@@ -3309,7 +3810,7 @@ mod tests {
             "demo.local",
             VhostKind::Php {
                 root: "/www/sites/demo.local/index",
-                socket: "/www/php/php-fpm.sock",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
             },
             "/www/sites/demo.local/log/access.log",
             "/www/sites/demo.local/log/error.log",
@@ -3325,7 +3826,7 @@ mod tests {
             "demo.local",
             VhostKind::Php {
                 root: "/www/sites/demo.local/index",
-                socket: "/www/php/php-fpm.sock",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
             },
             "/www/sites/demo.local/log/access.log",
             "/www/sites/demo.local/log/error.log",
@@ -3334,7 +3835,7 @@ mod tests {
         assert!(v.contains("listen 80 default_server;"));
         assert!(v.contains("server_name _;"));
         assert!(v.contains("root /www/sites/demo.local/index;"));
-        assert!(v.contains("fastcgi_pass unix:/www/php/php-fpm.sock;"));
+        assert!(v.contains("fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock;"));
 
         // 兜底文件不能声明 default_server，否则与默认站点冲突；靠文件名排在站点
         // vhost 之前接管裸访问并返回 404。

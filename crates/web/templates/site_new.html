@@ -87,7 +87,7 @@
                         {% if form.runtime_id == r.id %}selected{% endif %}>{{ r.label }}{% if r.disabled %}（{{ r.disabled_reason }}）{% endif %}</option>
                 {% endfor %}
               </select>
-              <p class="hint">P1 只提供 PHP 单版本；Node.js / Go 选项为禁用态，代表 P2 预留而不是可用能力。</p>
+              <p class="hint">可并列安装多个 PHP 版本；这里只列出已就绪的版本。未安装的版本需先到 <a href="/{{ ctx.prefix }}/sites/env">运行环境页</a> 安装后才能选择。Node.js / Go 选项为禁用态，代表 P2 预留而不是可用能力。</p>
               <p class="field-error" data-error-for="runtime_id"
                  {% if error_field == "runtime_id" && !error.is_empty() %}data-server-error{% else %}hidden{% endif %}>{{ error }}</p>
             </label>

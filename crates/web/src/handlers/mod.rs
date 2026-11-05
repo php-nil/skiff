@@ -7,6 +7,7 @@ pub mod containers;
 pub mod dashboard;
 pub mod menu;
 pub mod meta;
+pub mod nginx;
 pub mod plugins;
 pub mod resources;
 pub mod settings;

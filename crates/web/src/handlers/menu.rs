@@ -46,6 +46,7 @@ pub async fn dispatch(
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
+        "core/sites/nginx" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,
         "core/sites/new" => {
             handlers::sites::new_page_get(State(state), AuthUser(user), Query(q)).await
         }

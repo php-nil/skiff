@@ -2,7 +2,7 @@
 
 > 状态：**设计契约 v1（2026-11-05）**。本轮只定模型、信息架构与验收口径，不改 Rust 代码、不改
 > `crates/app/src/sites.rs`、不部署测试机。
-> 基线：`crates/store/src/db.rs`（schema v6）、`crates/app/src/sites.rs`（现有 OpenResty + PHP-FPM
+> 基线：`crates/store/src/db.rs`（schema v8）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
 > 运行环境）、`crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
 > 可点预览：[`docs/ui/site-runtime-preview.html`](./ui/site-runtime-preview.html)。
@@ -40,9 +40,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 | 对象 | 字段 | 说明 |
 | --- | --- | --- |
-| `RuntimeEnv` | `id` | 稳定 slug：`php-8.5` / `node-22` / `go-1.24`；全实例唯一，创建后不可改 |
+| `RuntimeEnv` | `id` | 稳定 slug：内置 `php-8.5`；新实例建议 `php-<name>`；全实例唯一，创建后不可改 |
 | | `kind` | `php` / `node` / `go` |
-| | `version` | 主版本号（PHP `8.5`、Node `22`、Go `1.24`）；同一 kind 可并行多版本 |
+| | `name` | 本地实例标识，规则 `^[a-z0-9][a-z0-9.-]{0,31}$`；同 kind 唯一；目录与容器名只由它推导 |
+| | `version` | 镜像/上游版本（PHP `8.5`、Node `22`、Go `1.24`）；与 `name` 解耦，同版本可多实例 |
 | | `image` / `image_digest` | 固定镜像引用与 digest；digest 是重建/校验依据 |
 | | `desired_state` | `running` / `stopped`，用户意图 |
 | | `last_status` | `installing` / `running` / `stopped` / `error`，最近一次探测结果（缓存，不是事实源） |
@@ -95,18 +96,18 @@ Site (static / proxy)  不持有 RuntimeEnv
 ### 2.1 运行环境目录
 
 ```text
-/www/runtime/<kind>-<version>/
-  meta.json      内核生成：kind/version/image/digest/created_at，只读，不手改
-  conf/          php.ini 片段、FPM pool、Node/Go 启动模板
-  ext/           PHP 扩展构建上下文（Dockerfile / conf.d 片段），P2 使用
+/www/runtime/<kind>/<name>/
+  php-fpm.sock   PHP：FPM unix socket（权限 0660，属主 root、属组 65534）
+  www.conf       PHP：FPM pool（内核渲染，不手改）
   log/           runtime.log（内核操作）、build.log（重建/扩展构建）、fpm-error.log
-  run/           php-fpm.sock（仅 PHP；权限 0660，属组与 nginx worker 对齐）
   data/          运行环境自身数据（session/临时目录），不放站点代码
 ```
 
-- `/www/runtime` 由内核创建，权限 `0711`（可穿越不可列）；`run/` 内 socket 权限 `0660`，
-  属主 `root`、属组固定 `65534`（nobody/nogroup），**禁止 0666 兜底**。
-- 运行环境配置只写 `conf/`；站点目录不写运行环境级配置，避免“改一个站点影响全部站点”的隐式耦合。
+- `name` 是本地实例标识（规则 `^[a-z0-9][a-z0-9.-]{0,31}$`），路径与容器名只从 `name` 推导；
+  `version` 只表示镜像/上游版本，允许 `name=php-8.5-a` + `version=8.5`。容器名 `skiff-<kind>-<name>`。
+- `/www/runtime` 由内核创建，权限 `0711`（可穿越不可列）；socket 权限 `0660`，属主 `root`、
+  属组固定 `65534`（nobody/nogroup），**禁止 0666 兜底**。
+- 运行环境配置只写自己目录；站点目录不写运行环境级配置，避免“改一个站点影响全部站点”的隐式耦合。
 - 删除运行环境只删除该环境目录与记录，不触碰 `/www/sites/*` 与数据库备份。**存在绑定站点时禁止删除**
   （见 §4.4），不做隐式解绑。
 
@@ -133,11 +134,13 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 | 规则 | 结论 |
 | --- | --- |
-| 同一 kind 多版本并行 | 允许；唯一约束 `(kind, version)`，`id = <kind>-<version>`；每个 kind 最多一个 `is_default` |
-| 同一版本重复安装 | 拒绝（`RUNTIME_ALREADY_EXISTS`） |
-| PHP 默认版本 | 建站向导默认选中；删除默认版本前必须先切换默认，存在绑定站点时直接拒绝 |
-| PHP socket | 每个 PHP 环境一条 socket；规范目标 `<runtime>/run/php-fpm.sock`，P1 单版本可继续使用现网 `/www/php/php-fpm.sock`（由 `socket_path` 字段记录，见 §10 Q2） |
-| PHP 共享池 | 同一环境所有 PHP 站点共享一个 FPM master / socket / 池；P1 不做站点级池，站点级 php.ini 覆盖留 P2 |
+| 同一 kind 多实例并行 | 允许；唯一约束 `(kind, name)`，`name` 是本地实例标识；每个 kind 最多一个 `is_default` |
+| 同一版本多实例 | 允许：`name` 不同即可（如 `php-8.5` 与 `php-8.5-a` 都可用 `version=8.5`） |
+| 实例名 | 规则 `^[a-z0-9][a-z0-9.-]{0,31}$`；安装时确定，同 kind 内不得重名；目标目录已存在直接拒绝，不覆盖、不自动加后缀 |
+| 安装并发 | 同一 `(kind, name)` 安装期内互斥，第二个请求返回“该环境正在安装” |
+| PHP 默认实例 | 建站向导默认选中；删除默认环境前必须先切换默认，存在绑定站点时直接拒绝 |
+| PHP socket | 每个 PHP 实例独立 socket `/www/runtime/<kind>/<name>/php-fpm.sock`；vhost 按站点 `runtime_id` 取该实例 socket，不按版本号推导 |
+| PHP 共享池 | 同一实例所有 PHP 站点共享一个 FPM master / socket / 池；P1 不做站点级池，站点级 php.ini 覆盖留 P2 |
 | Node/Go 端口 | 每站点独立容器/进程 + 独立宿主 loopback 端口，范围 `30000–32767` |
 | 端口分配 | 取范围内最小空闲且数据库未占用、宿主未监听的端口；创建/改端口时做 bind 探测，失败给出端口与占用进程 |
 | 端口暴露 | Node/Go 容器使用 bridge 网络，端口映射固定 `127.0.0.1:<app_port>:<container_port>`；禁止 `0.0.0.0` 映射 |
@@ -346,23 +349,24 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 
 ### P1（必须一次做完，且可验收）
 
-1. **schema v7**：`site_runtimes` 表；`sites` 增加 `site_type/runtime_id/app_command/app_port/proxy_target/proxy_websocket`，
-   删除 `php_version`（表重建，不做兼容双写）；现有站点迁移为 `runtime` + `php-8.5`。
-2. **三类站点**：静态站、PHP 站（绑定现有 PHP 8.5 环境）、反向代理站（含 WebSocket）完整建站、启停、删除、
+1. **schema v8**：`site_runtimes` 以 `name` 为本地实例唯一标识（`UNIQUE(kind, name)`），
+   `sites` 使用 `site_type/runtime_id/...`，删除 `php_version`（表重建，不做兼容双写）。
+2. **三类站点**：静态站、PHP 站（绑定已就绪 PHP 实例）、反向代理站（含 WebSocket）完整建站、启停、删除、
    配置生成与日志。
-3. **三步向导**：类型选择、运行时选择（PHP 可选）、类型相关字段、校验与确认；Node/Go 卡片禁用并说明 P2。
-4. **运行环境页**：PHP 列表与详情、基础信息、ini/FPM 配置、socket 只读、日志、关联站点、启停/重建/删除
-   保护；Node/Go 只展示“P2 未实现”信息卡。
-5. **状态与边界**：运行环境停止导致绑定站点显示“环境停止”；删除被引用环境被拒绝；Docker 页徽章与双向深链。
-6. **路由/权限/审计**：规范 URL 与旧路由别名；admin 写、viewer 读；`sites.runtime.*` 事件。
-7. **测试**：§8 中 P1 项全绿；根 workspace 三关全绿；不部署测试机。
+3. **三步向导**：类型选择、运行时选择（列出所有已就绪 PHP 实例）、类型相关字段、校验与确认；Node/Go 卡片禁用并说明 P2。
+4. **运行环境页**：PHP 列表与右侧抽屉详情、基础信息、ini/FPM 配置、socket 只读、日志、关联站点、启停/重建/删除
+   保护；列表与详情不常驻安装进度/镜像源；Node/Go 只展示“P2 未实现”信息卡。
+5. **多版本 PHP**：同 kind 多实例并行，每实例独立 socket `/www/runtime/php/<name>/php-fpm.sock`；
+   vhost 按站点 `runtime_id` 路由；停止实例时绑定站点明确 502/503 且可回环境页，不静默换实例。
+6. **状态与边界**：运行环境停止导致绑定站点显示“环境停止”；删除被引用环境被拒绝；Docker 页徽章与双向深链。
+7. **路由/权限/审计**：规范 URL 与旧路由别名；admin 写、viewer 读；`sites.runtime.*` 事件。
+8. **测试**：§8 中 P1 项全绿；根 workspace 三关全绿；不部署测试机。
 
 ### P2（扩展，不阻塞 P1）
 
 - Node.js / Go 运行环境安装、重建、启停；每站点独立容器 + loopback 端口 + 健康检查 + 应用日志。
 - Go 只运行**用户已编译二进制**，面板不做 `go build`、不假装有构建链路；Node 依赖安装若做，必须有独立
   构建日志与失败回滚，不能静默假装成功。
-- PHP 多版本并行、每版本独立 socket、默认版本切换、站点批量改绑。
 - PHP 扩展开关与受控镜像重建（Dockerfile 在 `ext/`，构建日志可见）；站点级 php.ini / 独立 FPM 池。
 - 运行环境漂移检测的“同步状态”、站点改绑向导、批量改绑。
 
@@ -395,10 +399,10 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 | T14 | 路由与深链 | 规范 URL 与旧别名均 200；runtime 详情/标签页；未知 id 404 | 集成 | P1 |
 | T15 | Docker 边界 | 受管容器带徽章；Docker 操作后运行环境页显示漂移；双链正确 | 集成/浏览器 | P1 |
 | T16 | 状态漂移 | 外部停止容器后页面显示“状态漂移”；“仅同步状态”不重启容器 | 集成 | P1 |
-| T17 | 迁移 | v6→v7 幂等；现有 PHP 站点全部映射到 `php-8.5`；默认站/SSL/别名不丢 | 单测 | P1 |
+| T17 | 迁移 | v6→v8 幂等；旧站点映射到 `php-8.5`；默认站/SSL/别名不丢；`name` 回填 | 单测 | P1 |
 | T18 | Node/Go 未实现 | P1 不出现“安装成功”或假端口；按钮禁用且有 P2 文案 | 集成/浏览器 | P1 |
 | T19 | Node/Go 健康检查 | 健康检查超时置 error、保留日志、不无限重试；恢复后 running | 集成 | P2 |
-| T20 | 多版本 PHP | 两版本并行 socket 互不覆盖；站点 vhost 指向各自 socket | 集成 | P2 |
+| T20 | 多实例 PHP | 同 kind 不同 `name` 的 socket/容器互不覆盖；站点按 `runtime_id` 指向各自 socket；同版本多实例允许 | 单测/集成 | P1 |
 
 浏览器验收至少覆盖：向导三类分支、校验报错、运行环境列表筛选、PHP 详情标签切换、配置保存失败回滚提示、
 Node/Go P2 禁用态、站点列表窄屏无横向滚动。
@@ -409,12 +413,13 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### 9.1 数据库
 
-- 当前 `CURRENT_SCHEMA_VERSION = 6`；本契约目标 **v7**。
-- 新增 `site_runtimes`：
+- 当前 `CURRENT_SCHEMA_VERSION = 8`；本契约目标 v8。
+- `site_runtimes`：
   ```sql
   CREATE TABLE site_runtimes (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK(kind IN ('php','node','go')),
+    name TEXT NOT NULL,
     version TEXT NOT NULL,
     image TEXT NOT NULL,
     image_digest TEXT NOT NULL DEFAULT '',
@@ -427,20 +432,19 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
     config_json TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    UNIQUE(kind, version)
+    UNIQUE(kind, name)
   );
   CREATE UNIQUE INDEX idx_runtime_default ON site_runtimes(kind) WHERE is_default = 1;
   ```
 - `sites` 表重建：删除 `php_version`，新增 §1.1 字段；外键 `runtime_id REFERENCES site_runtimes(id) ON DELETE RESTRICT`
   （SQLite 需开启外键；服务层仍做“有绑定站点禁止删除”校验，不能只靠 FK）。
-- 迁移策略：为现有站点创建 `php-8.5` 运行环境（镜像来自现有 `sites.php_image` 设置，socket 取现网路径），
-  全部旧站点置 `site_type='runtime', runtime_id='php-8.5'`；保留 `is_default/https/force_https/aliases`。
-  迁移幂等，失败整体回滚。
+- 迁移策略：v8 重建 `site_runtimes`，按 `id` 回填 `name`；内置 `php-8.5` 的 socket 收敛为
+  `/www/runtime/php/php-8.5/php-fpm.sock`。旧站点 `runtime_id` 保持不变，不做旧固定 socket 路径迁移。
 
 ### 9.2 文件与目录
 
-- `/www/sites/<域名>/` 布局不变；新增 `/www/runtime/<kind>-<version>/`。
-- PHP socket 规范与 P1 现网路径的取舍见 §10 Q2；无论选哪种，**vhost 必须从 DB `socket_path` 生成**。
+- `/www/sites/<域名>/` 布局不变；运行环境目录为 `/www/runtime/<kind>/<name>/`。
+- **vhost 必须从 DB `socket_path` 生成**；该字段只由实例 `name` 推导，不按版本号硬编码。
 - 删除站点仍只删该站目录；删除运行环境不删站点目录。
 
 ### 9.3 菜单与导航
@@ -487,11 +491,12 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 - 推荐：**不包含**。P1 只落模型、列表说明与禁用态；P2 再实现安装、进程、端口与健康检查。
 - 理由：没有构建/进程守护链路时做“能跑”的 Node/Go 必然假实现；先把 PHP/静态/反代闭环做扎实。
 
-### Q2. PHP socket 路径：P1 沿用 `/www/php/php-fpm.sock`，还是立即改为每环境独立路径？
+### Q2. PHP socket 路径：固定 `/www/php/php-fpm.sock`，还是每实例独立路径？
 
-- 推荐：**P1 单版本沿用现网路径，但由 `site_runtimes.socket_path` 字段记录；P2 安装第二个 PHP 版本时改为
-  `/www/runtime/php-<ver>/run/php-fpm.sock`，禁止不同版本共用 socket。**
-- 理由：不打断当前正在修改的站点代码；同时把“路径来源”收敛到 DB，P2 迁移只换字段值，不散落硬编码。
+- 已定：**每实例独立路径 `/www/runtime/php/<name>/php-fpm.sock`**，由实例 `name` 推导；
+  内置 `php-8.5` 即 `/www/runtime/php/php-8.5/php-fpm.sock`。不同实例绝不共用 socket。
+- 理由：路径只依赖 `name` 后，同版本多实例（`php-8.5` / `php-8.5-a`）天然隔离；vhost 按站点
+  `runtime_id` 取对应实例 socket，不按版本号推导，也不再散落硬编码。
 
 ### Q3. Node/Go 的运行模型：每站点独立容器，还是每环境一个常驻进程？
 

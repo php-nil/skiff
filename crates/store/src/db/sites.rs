@@ -362,13 +362,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_v7_keeps_previous_data() {
+    fn schema_is_at_current_version_and_starts_empty() {
         let db = Db::open_in_memory().unwrap();
         let v: i64 = db
             .conn()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, super::super::CURRENT_SCHEMA_VERSION);
         assert!(db.list_sites().unwrap().is_empty());
     }
 
