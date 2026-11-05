@@ -26,12 +26,13 @@ pub mod runtimes;
 mod sessions;
 mod settings;
 pub mod sites;
+pub mod tasks;
 mod tokens;
 mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 10;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -143,6 +144,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V9)?;
             conn.execute_batch("PRAGMA user_version = 9")?;
             info!(from = version, to = 9, "schema 迁移完成");
+        }
+        if version < 10 {
+            conn.execute_batch(SCHEMA_V10)?;
+            conn.execute_batch("PRAGMA user_version = 10")?;
+            info!(from = version, to = 10, "schema 迁移完成");
         }
         Ok(())
     }
@@ -456,6 +462,61 @@ PRAGMA foreign_keys=ON;
 /// 「这个实例勾了哪些」。重建容器时按此重放，新增/删除后由服务层写回。
 const SCHEMA_V9: &str = r#"
 ALTER TABLE site_runtimes ADD COLUMN extensions TEXT NOT NULL DEFAULT '';
+"#;
+
+/// v10：内核定时任务。任务定义与运行历史分表；调度语义（cron 表达式、重试、
+/// 缓冲配置）一律以 JSON 文本存放，存储层不解释。
+///
+/// - `scheduled_tasks`：`(kind, source)` 唯一——同一内置任务/站点/插件只能有一条；
+///   插件任务用带 `local_key` 的 `id` 区分（`plugin:<id>:<local_key>`）。
+/// - `task_runs`：每次执行一条，保留期由维护巡检按 7 天清理。
+const SCHEMA_V10: &str = r#"
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  source TEXT NOT NULL,
+  schedule_json TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  timeout_secs INTEGER NOT NULL DEFAULT 30,
+  retry_json TEXT NOT NULL DEFAULT '{}',
+  concurrency TEXT NOT NULL DEFAULT 'skip',
+  missed TEXT NOT NULL DEFAULT 'skip',
+  buffer_json TEXT,
+  lifecycle TEXT NOT NULL DEFAULT 'active',
+  blocked_reason TEXT,
+  last_run_json TEXT,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_tasks_kind_source
+  ON scheduled_tasks(kind, source);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_source
+  ON scheduled_tasks(source);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled
+  ON scheduled_tasks(enabled);
+
+CREATE TABLE IF NOT EXISTS task_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER NOT NULL,
+  result TEXT NOT NULL,
+  error_class TEXT,
+  error_detail TEXT,
+  duration_ms INTEGER NOT NULL,
+  request_id TEXT,
+  consumed_upto INTEGER,
+  output_bytes INTEGER NOT NULL DEFAULT 0,
+  missed_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_task
+  ON task_runs(task_id, finished_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_runs_finished
+  ON task_runs(finished_at DESC);
 "#;
 
 #[cfg(test)]

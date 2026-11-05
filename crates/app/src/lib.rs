@@ -9,6 +9,7 @@ pub mod docker_daemon;
 pub mod nginx;
 pub mod runtime_catalog;
 pub mod sites;
+pub mod tasks;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -75,6 +76,9 @@ pub struct AppState {
     runtime_installs: sites::InstallLocks,
     /// 运行环境异步安装/扩展任务（按 runtime id）；列表与抽屉轮询读取。
     runtime_jobs: Mutex<sites::RuntimeJobs>,
+    /// 内核定时任务服务。`OnceLock` 而不是构造参数：`AppState::new` 被大量
+    /// 测试直接使用，任务服务需要真实库与 Supervisor，由 `bootstrap` 显式初始化。
+    tasks: std::sync::OnceLock<Arc<tasks::TaskService>>,
 }
 
 #[derive(Debug, Clone)]
@@ -247,7 +251,26 @@ impl AppState {
             site_env: Mutex::new(sites::InstallProgress::default()),
             runtime_installs: sites::InstallLocks::default(),
             runtime_jobs: Mutex::new(sites::RuntimeJobs::default()),
+            tasks: std::sync::OnceLock::new(),
         })
+    }
+
+    /// 初始化内核任务服务：装载库内任务、种内置任务、起 tick 前调用一次。
+    pub fn init_tasks(&self) -> Result<(), String> {
+        let svc = tasks::TaskService::open(
+            Arc::clone(&self.db),
+            Arc::clone(&self.supervisor),
+            self.cfg.web_root.clone(),
+            self.cfg.data_dir.clone(),
+        )?;
+        self.tasks
+            .set(svc)
+            .map_err(|_| "任务服务已初始化".to_string())
+    }
+
+    /// 任务服务句柄。未初始化时返回 `None`（Web 写操作应回 503）。
+    pub fn tasks(&self) -> Option<&Arc<tasks::TaskService>> {
+        self.tasks.get()
     }
 
     /// 存储层句柄（只读访问）。上层要写审计/查插件记录时用这个入口，
@@ -276,6 +299,12 @@ impl AppState {
     /// 离开 interop 目标状态。无论调用成功、失败还是超时都必须调用。
     pub async fn leave_interop(&self, id: &str) {
         self.interop_busy.lock().await.remove(id);
+    }
+
+    /// 插件当前是否正作为执行目标（interop 或任务执行中）。
+    /// 调度能力面据此拒绝「插件来源的任务在执行时回调调度器」。
+    pub async fn is_interop_busy(&self, id: &str) -> bool {
+        self.interop_busy.lock().await.contains(id)
     }
 
     /// 签发 exec 单连票据：明文只返回这一次，库里存 sha256。

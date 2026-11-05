@@ -108,6 +108,24 @@ pub fn probe(addr: SocketAddr) -> Result<String> {
     Ok(buf)
 }
 
+/// 内核调度器 tick 循环：1s 一轮只做「出票」，执行体在 tick 之外的任务里跑，
+/// 因此单个任务耗时不阻塞下一轮（`docs/KERNEL_SCHEDULER_CONTRACT.md` §5）。
+pub fn spawn_task_loop(state: Arc<skiff_app::AppState>) {
+    let Some(tasks) = state.tasks().cloned() else {
+        warn!("任务服务未初始化，调度器 tick 循环未启动");
+        return;
+    };
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // 上一轮晚到不能靠「补拍」追平：错过的触发由调度器自己的 missed 策略处理。
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            tasks.tick_once().await;
+        }
+    });
+}
+
 pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
@@ -115,6 +133,10 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
         // 30s 一次的巡检如果不去重，`* * * * *` 会变成每分钟两次。
         let mut last_fired: std::collections::HashMap<String, i64> =
             std::collections::HashMap::new();
+        // 旧 manifest `cron` 已弃用（契约 §12）：只回一条 deprecation 审计，
+        // 不按轮次刷屏。guard/monitor 尚未迁移到任务模型，读取兼容暂时保留。
+        let mut cron_deprecated: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         loop {
             tick.tick().await;
             state.supervisor().reap_idle().await;
@@ -124,7 +146,13 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             let sites_dir = state.cfg.web_root.join("sites");
             let _ =
                 skiff_app::sites::rotate_site_logs(&sites_dir, skiff_app::sites::LOG_ROTATE_BYTES);
-            run_cron(&state, &mut last_fired, chrono::Local::now().naive_local()).await;
+            run_cron(
+                &state,
+                &mut last_fired,
+                &mut cron_deprecated,
+                chrono::Local::now().naive_local(),
+            )
+            .await;
         }
     });
 }
@@ -136,11 +164,13 @@ fn minute_index(t: &chrono::NaiveDateTime) -> i64 {
 
 /// 单轮 cron 调度：按 manifest 的 `cron` 表达式调用插件 `tick`。
 ///
-/// 只对「已启用且 manifest 可解析」的插件触发；表达式非法由
-/// [`skiff_cron::expr_matches`] 判为不命中（不 panic、不刷审计）。
+/// **过渡态**：契约 §12 要求由内核任务模型接管并移除 `run_cron`；本轮只把 `cron`
+/// 插件从 manifest 里摘掉，`guard`/`monitor` 尚未迁移，故保留读取兼容并对旧字段
+/// 记录一次性 deprecation 审计（`cron_deprecated` 去重）。
 pub async fn run_cron(
     state: &skiff_app::AppState,
     last_fired: &mut std::collections::HashMap<String, i64>,
+    cron_deprecated: &mut std::collections::HashSet<String>,
     now: chrono::NaiveDateTime,
 ) {
     let minute = minute_index(&now);
@@ -154,6 +184,16 @@ pub async fn run_cron(
         let Ok(manifest) = skiff_plugin::install::manifest_of(&rec) else {
             continue;
         };
+        if !manifest.cron.is_empty() && cron_deprecated.insert(rec.id.clone()) {
+            let _ = state.db().audit(
+                "system",
+                "cron",
+                "plugin.cron_deprecated",
+                &rec.id,
+                "ok",
+                "manifest `cron` 已弃用，等待迁移到内核任务模型",
+            );
+        }
         for expr in manifest.cron.iter() {
             if !skiff_cron::expr_matches(expr, &now) {
                 continue;

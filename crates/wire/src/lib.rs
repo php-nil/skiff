@@ -47,6 +47,9 @@ pub mod routes {
     pub const CAP_INTEROP_CALL: &str = "/api/v1/capability/interop/call";
     /// 已启用插件对外暴露的接口清单（供插件 UI 选择目标，不返回实现细节）。
     pub const CAP_INTEROP_CATALOG: &str = "/api/v1/capability/interop/catalog";
+    /// 内核定时任务能力面：`{method, params}` → `skiff-sched` 仓储/调度。
+    /// 插件的 `scheduler` 能力声明对应此路由（任务列表/注册/更新/运行/缓冲）。
+    pub const CAP_SCHEDULER_CALL: &str = "/api/v1/capability/scheduler/call";
 
     // ---- 插件提供、内核调用（plugin.sock）----
     pub const PLUGIN_HEALTHZ: &str = "/healthz";

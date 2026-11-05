@@ -31,6 +31,7 @@ pub(super) fn build(state: Arc<AppState>) -> Router {
         .route(wire::CAP_DOCKER_CALL, post(capability::docker_call))
         .route(wire::CAP_INTEROP_CALL, post(interop::interop_call))
         .route(wire::CAP_INTEROP_CATALOG, post(interop::interop_catalog))
+        .route(wire::CAP_SCHEDULER_CALL, post(capability::scheduler_call))
         .route(wire::CAP_NET_APPLY, post(capability::net_unimplemented))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

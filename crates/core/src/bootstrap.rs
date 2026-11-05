@@ -127,6 +127,9 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         csrf_secret,
         env!("CARGO_PKG_VERSION"),
     );
+    state
+        .init_tasks()
+        .map_err(|e| anyhow::anyhow!("初始化内核定时任务失败: {e}"))?;
 
     // 站点目录布局不做旧数据迁移：新建站点时直接创建 `{index,log,ssl,conf}`。
     // 公共 include 由运行环境安装/启动流程写入，这里不触碰站点数据。

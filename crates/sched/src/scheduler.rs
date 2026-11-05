@@ -263,6 +263,11 @@ impl<S: TaskStore> Scheduler<S> {
         self.runtime.get(id).map(|rt| rt.state)
     }
 
+    /// 下一次计划触发时间（本地时间戳）；停用/不可解析/未排程时为 `None`。
+    pub fn next_run_at(&self, id: &str) -> Option<i64> {
+        self.runtime.get(id).and_then(|rt| rt.next_due)
+    }
+
     pub fn sample_failures(&self, id: &str) -> u64 {
         self.runtime
             .get(id)
@@ -296,12 +301,20 @@ impl<S: TaskStore> Scheduler<S> {
         clock: &dyn Clock,
     ) -> Result<Task, TaskError> {
         spec.validate()?;
-        let existing = self
-            .store
-            .list_tasks()
-            .into_iter()
-            .find(|t| t.spec.kind == spec.kind && t.spec.source == spec.source)
-            .map(|t| t.spec.id.to_string());
+        // 幂等键：内置任务按 `(kind, source)`（同一站点只能有一条 site-backup）；
+        // 插件任务按 `id`（`plugin:<id>:<local_key>` 已编码唯一键），否则同一插件
+        // 对同一目标的多条任务会互相覆盖。
+        let existing = if spec.kind.is_builtin() {
+            self.store
+                .list_tasks()
+                .into_iter()
+                .find(|t| t.spec.kind == spec.kind && t.spec.source == spec.source)
+                .map(|t| t.spec.id.to_string())
+        } else {
+            self.store
+                .get_task(spec.id.as_str())
+                .map(|t| t.spec.id.to_string())
+        };
 
         if let Some(existing_id) = existing {
             let mut task = self

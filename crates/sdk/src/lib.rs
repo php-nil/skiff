@@ -368,6 +368,18 @@ impl Plugin {
         self.call_kernel(skiff_wire::routes::CAP_INTEROP_CATALOG, json!({}))
     }
 
+    /// 内核调度能力面（manifest 需声明 `scheduler` 能力与对应 verbs）。
+    ///
+    /// 常用方法：`task.list` / `task.get` / `task.history` / `task.register` /
+    /// `task.update` / `task.delete` / `task.run`。返回内核原样 JSON（任务视图已带
+    /// `next_run`/`state` 等展示字段，插件 UI 不需要自己算表达式）。
+    pub fn scheduler_call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_SCHEDULER_CALL,
+            json!({ "method": method, "params": params }),
+        )
+    }
+
     /// 回调内核能力面（`/api/v1/capability/*`），带进程级 Bearer token。
     pub fn call_kernel(&self, path: &str, body: Value) -> Result<Value> {
         let payload = serde_json::to_vec(&body).map_err(|e| SdkError::Protocol(e.to_string()))?;

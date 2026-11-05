@@ -11,6 +11,7 @@ mod model;
 
 pub use db::runtimes::{validate_runtime_name, NewRuntime, Runtime, KIND_GO, KIND_NODE, KIND_PHP};
 pub use db::sites::{NewSite, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
+pub use db::tasks::{ScheduledTaskRow, TaskRunRow};
 pub use db::{Db, CURRENT_SCHEMA_VERSION};
 pub use error::StoreError;
 pub use model::{AuditEntry, PluginRecord, Session, User};

@@ -106,6 +106,64 @@ pub(super) async fn config_get(State(state): State<Arc<AppState>>, req: Request<
     Json(Value::Object(obj)).into_response()
 }
 
+/// `scheduler` 能力面：任务列表/注册/更新/运行/缓冲。
+///
+/// 两条硬边界在**路由层**先拦，避免把非法调用送进调度器：
+/// - 未初始化任务服务 → 503；
+/// - 插件正作为任务执行目标（含 interop 与插件任务调用） → 403 + `scheduler.deny`。
+///   否则「插件任务执行 → 回调 scheduler 注册新任务」会自我繁殖。
+pub(super) async fn scheduler_call(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+) -> Response {
+    let id = req
+        .extensions()
+        .get::<cap::PluginId>()
+        .map(|p| p.0.clone())
+        .unwrap_or_default();
+    let audit = |action: &str, result: &str, detail: &str| {
+        let _ = state
+            .db()
+            .audit(&format!("plugin:{id}"), "uds", action, &id, result, detail);
+    };
+
+    let Some(tasks) = state.tasks() else {
+        audit("scheduler.deny", "fail", "任务服务未初始化");
+        return (StatusCode::SERVICE_UNAVAILABLE, "任务服务未初始化").into_response();
+    };
+    let busy = state.is_interop_busy(&id).await || tasks.is_executing(&id);
+    if busy {
+        audit("scheduler.deny", "deny", "插件正在作为任务执行目标");
+        return (
+            StatusCode::FORBIDDEN,
+            "插件正在执行任务，不能再调用 scheduler",
+        )
+            .into_response();
+    }
+
+    let body = cap::read_json(req).await;
+    let method = body.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
+    match tasks.capability(&id, method, params).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => {
+            // 授权/归属类错误记 deny，参数类错误记 fail：审计要能区分「越权」与「写错」。
+            let denied = e.contains("缺少") || e.contains("只能") || e.contains("未知");
+            audit(
+                "scheduler.deny",
+                if denied { "deny" } else { "fail" },
+                &format!("{method}: {e}"),
+            );
+            let status = if denied {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, e).into_response()
+        }
+    }
+}
+
 pub(super) async fn docker_call(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,

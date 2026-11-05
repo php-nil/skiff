@@ -78,6 +78,8 @@ skiff-model = { path = "crates/model" }
 skiff-policy = { path = "crates/policy" }
 skiff-cron = { path = "crates/cron" }
 skiff-compose = { path = "crates/compose" }
+skiff-sched = { path = "crates/sched" }
+skiff-fs = { path = "crates/fs" }
 
 [profile.release]
 opt-level = "z"

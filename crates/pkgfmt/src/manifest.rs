@@ -22,6 +22,11 @@ pub enum Capability {
     /// 不是宿主能力：它只让插件调用**另一个插件**声明过的接口，
     /// 仍受 `interop:call` 权限与 `plugin:<id>` 对象授权双闸约束。
     Interop,
+    /// 内核定时任务能力面（`/capability/scheduler/*`）。
+    ///
+    /// 不是宿主能力：任务注册/查询只写内核任务表，执行仍由内核调度器发起。
+    /// `scheduler:admin` 是内核指定的任务管理 UI 才能拿到的全域权限。
+    Scheduler,
 }
 
 impl Capability {
@@ -32,6 +37,7 @@ impl Capability {
             Capability::Fs => "fs",
             Capability::Net => "net",
             Capability::Interop => "interop",
+            Capability::Scheduler => "scheduler",
         }
     }
 
@@ -43,6 +49,7 @@ impl Capability {
             Capability::Fs,
             Capability::Net,
             Capability::Interop,
+            Capability::Scheduler,
         ]
     }
 
@@ -61,6 +68,7 @@ impl Capability {
                 Capability::Docker,
                 Capability::Identity,
                 Capability::Interop,
+                Capability::Scheduler,
             ],
         }
     }

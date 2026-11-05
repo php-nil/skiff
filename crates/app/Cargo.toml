@@ -12,10 +12,13 @@ skiff-store = { workspace = true }
 skiff-identity = { workspace = true }
 skiff-docker = { workspace = true }
 skiff-plugin = { workspace = true }
+skiff-sched = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+tar = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
