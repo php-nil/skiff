@@ -4613,3 +4613,89 @@ fn files_ui_is_self_contained_and_exposes_modern_interactions() {
         "越权路径必须给出明确提示"
     );
 }
+
+#[tokio::test]
+async fn tasks_page_is_read_only_for_viewer_and_requires_csrf_for_admin() {
+    let h = harness();
+    h.state.init_tasks().expect("任务服务应能初始化");
+
+    // viewer：能看到列表与历史入口，但没有任何写操作表单。
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, html) = get_page(&h.app, "/p/tasks", &viewer).await;
+    assert_eq!(status, StatusCode::OK, "viewer 应能读任务页");
+    assert!(html.contains("计划任务"), "任务页标题缺失: {html}");
+    assert!(
+        html.contains("builtin:db-vacuum"),
+        "内置 db-vacuum 应出现在列表: {html}"
+    );
+    assert!(
+        !html.contains("/tasks/builtin:db-vacuum/run"),
+        "viewer 页面不得渲染写操作: {html}"
+    );
+    assert!(html.contains("只读"), "viewer 应看到只读提示: {html}");
+
+    // viewer 直接 POST：403（角色判定先于 CSRF）。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/tasks/builtin:db-vacuum/toggle")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
+                .body(form_body(&[("enabled", "0"), ("csrf", "bogus")]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "viewer 不得启停任务");
+
+    // admin：没有 CSRF 的 POST 必须被拒。
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/tasks/builtin:db-vacuum/toggle")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[("enabled", "0")]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_client_error(),
+        "缺少 CSRF 的写操作必须失败: {}",
+        resp.status()
+    );
+
+    // admin + 正确 CSRF：启停生效并回到详情页。
+    let csrf = h.state.csrf_token(&admin);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/tasks/builtin:db-vacuum/toggle")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[("enabled", "0"), ("csrf", &csrf)]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "启停应 303 回详情");
+    let view = h
+        .state
+        .tasks()
+        .unwrap()
+        .detail_view("builtin:db-vacuum", 5)
+        .await
+        .expect("任务应仍在");
+    assert_eq!(view["task"]["enabled"], false, "停用应落库");
+}

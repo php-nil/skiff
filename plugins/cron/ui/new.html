@@ -62,8 +62,8 @@
 </head>
 <body>
 <p class="muted">
-  任务只调用<strong>插件接口</strong>，不写 crontab、不执行宿主命令。能否调通由内核判定：
-  计划任务需被授予 <code>interop:call</code> 与目标插件的 <code>plugin:</code> 对象授权。
+  任务由<strong>内核调度器</strong>保存与执行，本页只负责写任务定义。能否调通由内核判定：
+  计划任务需被授予 <code>scheduler:manage</code>，目标插件还需勾选 <code>plugin:</code> 对象授权。
 </p>
 <div class="row">
   <button id="refresh">刷新</button>

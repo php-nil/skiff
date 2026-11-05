@@ -13,6 +13,7 @@ pub mod plugins;
 pub mod resources;
 pub mod settings;
 pub mod sites;
+pub mod tasks;
 
 use std::collections::HashMap;
 

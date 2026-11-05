@@ -266,8 +266,19 @@ pub struct SiteDetailPage {
     pub runtime_down: bool,
     pub runtime_alert: String,
     pub runtime_env_href: String,
+    /// 站点备份开关（内核 `site-backup` 任务在该站点的投影）。
+    pub backup: SiteBackupView,
     pub error: String,
     pub notice: String,
+}
+
+/// 站点详情页的备份区块。`task_id` 为空表示尚未建立任务（关闭态）。
+#[derive(Debug, Clone, Default)]
+pub struct SiteBackupView {
+    pub enabled: bool,
+    pub task_id: String,
+    pub last_text: String,
+    pub next_text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -732,6 +743,56 @@ pub struct AuditPage {
     pub ctx: PageCtx,
     pub rows: Vec<AuditRow>,
     pub error: String,
+}
+
+#[derive(Template)]
+#[template(path = "tasks.html")]
+pub struct TasksPage {
+    pub ctx: PageCtx,
+    pub tasks: Vec<TaskRow>,
+    pub can_admin: bool,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TaskRow {
+    pub id: String,
+    pub name: String,
+    pub expr: String,
+    pub next_text: String,
+    pub source: String,
+    pub target: String,
+    pub method: String,
+    pub enabled: bool,
+    pub state_label: String,
+    pub state_class: String,
+    pub last_text: String,
+    pub last_class: String,
+    pub builtin: bool,
+}
+
+#[derive(Template)]
+#[template(path = "task_detail.html")]
+pub struct TaskDetailPage {
+    pub ctx: PageCtx,
+    pub task: TaskRow,
+    pub payload: String,
+    pub runs: Vec<TaskRunRow>,
+    pub can_admin: bool,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TaskRunRow {
+    pub trigger: String,
+    pub started_text: String,
+    pub duration: String,
+    pub result: String,
+    pub result_class: String,
+    pub detail: String,
+    pub missed: i64,
 }
 
 #[derive(Template)]

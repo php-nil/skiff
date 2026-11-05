@@ -1236,7 +1236,14 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             pinnable: false,
             default_visible: true,
             roles: None,
-            children: Vec::new(),
+            children: vec![builtin(
+                "core/tasks",
+                L1_TOOLS,
+                "计划任务",
+                "clock",
+                10,
+                href("m/core/tasks"),
+            )],
         },
         Decl {
             key: L1_SETTINGS.into(),

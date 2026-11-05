@@ -155,6 +155,21 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::settings::menu_page).post(handlers::settings::menu_update),
         )
         .route(&format!("/{p}/settings"), get(handlers::settings::page))
+        // ---- 内核定时任务：viewer 只读，写操作 Admin + CSRF ----
+        .route(&format!("/{p}/tasks"), get(handlers::tasks::list))
+        .route(&format!("/{p}/tasks/{{id}}"), get(handlers::tasks::detail))
+        .route(
+            &format!("/{p}/tasks/{{id}}/toggle"),
+            post(handlers::tasks::toggle),
+        )
+        .route(
+            &format!("/{p}/tasks/{{id}}/run"),
+            post(handlers::tasks::run),
+        )
+        .route(
+            &format!("/{p}/tasks/{{id}}/delete"),
+            post(handlers::tasks::delete),
+        )
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
         .route(&format!("/{p}/sites"), get(handlers::sites::list))
         .route(
@@ -260,6 +275,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/sites/{{domain}}/ssl"),
             post(handlers::sites::ssl_action),
+        )
+        // 站点备份开关：直接开关内核 `site-backup` 任务（不跳计划任务页）。
+        // 必须注册在 `{{action}}` 通配之前，否则会被当成未知站点动作。
+        .route(
+            &format!("/{p}/sites/{{domain}}/backup"),
+            post(handlers::sites::set_backup),
         )
         .route(
             &format!("/{p}/sites/{{domain}}/{{action}}"),

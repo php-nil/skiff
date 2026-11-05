@@ -62,8 +62,9 @@
 </head>
 <body>
 <p class="muted">
-  任务只调用<strong>插件接口</strong>，不写 crontab、不执行宿主命令。能否调通由内核判定：
-  计划任务需被授予 <code>interop:call</code> 与目标插件的 <code>plugin:</code> 对象授权。
+  任务由<strong>内核调度器</strong>统一执行：内置任务（站点备份 / 数据库整理）在进程内跑，
+  插件任务经 Supervisor 调用目标接口。本页只是管理视图——不写 crontab、不执行宿主命令。
+  任务定义与历史都落在内核库，插件重启不会丢。
 </p>
 <div class="row">
   <button id="refresh">刷新</button>

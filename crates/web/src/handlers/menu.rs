@@ -42,8 +42,21 @@ pub async fn dispatch(
             .await;
         }
     }
+    // `core/tasks/<id>`：任务详情深链（id 里含 `:`，不含 `/`）。
+    if let Some(id) = rest.strip_prefix("core/tasks/") {
+        if !id.is_empty() && !id.contains('/') {
+            return handlers::tasks::detail(
+                State(state),
+                AuthUser(user),
+                Path(id.to_string()),
+                Query(HashMap::new()),
+            )
+            .await;
+        }
+    }
     match rest {
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
+        "core/tasks" => handlers::tasks::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
         "core/sites/nginx" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,

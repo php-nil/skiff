@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}计划任务 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>计划任务</h1>
+  <span class="muted small">由内核调度器统一执行；插件任务需目标插件在线</span>
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+<section class="panel">
+  <form method="get" action="/{{ ctx.prefix }}/tasks" class="inline" style="margin-bottom:12px">
+    <input type="search" name="q" value="" placeholder="按名称 / id / 来源过滤">
+    <button class="btn" type="submit">筛选</button>
+  </form>
+  {% if tasks.is_empty() %}
+    <div class="empty">暂无任务。站点页可以开启每日备份，插件也可以注册自己的任务。</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid compact">
+      <thead><tr><th>任务</th><th>表达式</th><th>下次执行</th><th>状态</th><th>上次结果</th><th class="col-actions">操作</th></tr></thead>
+      <tbody>
+      {% for t in tasks %}
+        <tr>
+          <td>
+            <a href="/{{ ctx.prefix }}/tasks/{{ t.id }}"><strong>{{ t.name }}</strong></a>
+            <div class="muted small"><code>{{ t.id }}</code>{% if t.builtin %} · <span class="badge">内置</span>{% endif %}</div>
+            <div class="muted small">来源 {{ t.source }}{% if t.target.len() > 0 %} · 目标 {{ t.target }}.{{ t.method }}{% endif %}</div>
+          </td>
+          <td class="mono">{{ t.expr }}</td>
+          <td class="mono">{{ t.next_text }}</td>
+          <td><span class="state {{ t.state_class }}">{{ t.state_label }}</span></td>
+          <td><span class="state {{ t.last_class }}">{{ t.last_text }}</span></td>
+          <td class="actions-cell">
+            {% if can_admin %}
+            <form method="post" action="/{{ ctx.prefix }}/tasks/{{ t.id }}/toggle" class="inline">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+              <input type="hidden" name="enabled" value="{% if t.enabled %}0{% else %}1{% endif %}">
+              <button class="mini" type="submit">{% if t.enabled %}停用{% else %}启用{% endif %}</button>
+            </form>
+            <form method="post" action="/{{ ctx.prefix }}/tasks/{{ t.id }}/run" class="inline">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+              <button class="mini" type="submit">立即执行</button>
+            </form>
+            {% if t.builtin %}
+            <span class="muted small">内置任务不可删除</span>
+            {% else %}
+            <form method="post" action="/{{ ctx.prefix }}/tasks/{{ t.id }}/delete" class="inline"
+                  data-confirm="删除任务 {{ t.name }}？运行历史会保留。">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+              <button class="mini danger" type="submit">删除</button>
+            </form>
+            {% endif %}
+            {% else %}
+            <span class="muted small">只读</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

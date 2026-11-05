@@ -196,10 +196,22 @@
       var toggle = j.enabled
         ? '<button class="mini" data-toggle="' + esc(j.id) + '" data-enabled="0">停用</button>'
         : '<button class="mini" data-toggle="' + esc(j.id) + '" data-enabled="1">启用</button>';
+      // 内核状态优先于「上次结果」：blocked（插件不可用）不是失败。
+      var stateText = "";
+      var stateCls = "muted";
+      if (j.state === "blocked" || j.lifecycle === "blocked") {
+        stateText = "已阻塞" + (j.blocked_reason ? "：" + esc(j.blocked_reason) : "");
+        stateCls = "warn";
+      } else if (j.state === "running") {
+        stateText = "执行中";
+        stateCls = "warn";
+      }
       return '<tr data-id="' + esc(j.id) + '"' + (j.id === focusId ? ' class="hit"' : "") + ">" +
         "<td><strong>" + esc(j.name) + "</strong>" +
           '<div class="muted"><code>' + esc(j.id) + "</code>" +
-          (j.key ? " · key " + esc(j.key) : "") + "</div></td>" +
+          (j.key ? " · key " + esc(j.key) : "") +
+          (stateText ? ' · <span class="' + stateCls + '">' + stateText + "</span>" : "") +
+          "</div></td>" +
         "<td><code>" + esc(j.expr) + "</code><div class=\"muted\">下次 " + esc(next) + "</div></td>" +
         "<td><code>" + esc(j.target) + "</code><div class=\"muted\">" + esc(j.method) + "</div></td>" +
         "<td>" + esc(srcText) + jump + "</td>" +

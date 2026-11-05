@@ -18,8 +18,8 @@ use crate::state::AppState;
 use crate::templates::{
     BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, PhpConfigView,
     RuntimeDetailPage, RuntimeJobView, RuntimeKindView, RuntimeOptionView, RuntimeRow,
-    SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView, SiteLogsPage, SiteNewForm,
-    SiteTlsView, SiteView, SitesPage,
+    SiteBackupView, SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView, SiteLogsPage,
+    SiteNewForm, SiteTlsView, SiteView, SitesPage,
 };
 use crate::util::{encode_uri_component, form_first, human_size, parse_form};
 
@@ -1077,6 +1077,7 @@ pub async fn detail(
         .runtime_id
         .as_deref()
         .and_then(|id| state.db().runtime_by_id(id).ok().flatten());
+    let backup = backup_view(&state, &domain).await;
     handlers::render(SiteDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
         site: site_view(
@@ -1096,9 +1097,103 @@ pub async fn detail(
         runtime_down,
         runtime_alert,
         runtime_env_href,
+        backup,
         error,
         notice,
     })
+}
+
+fn fmt_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// 站点备份开关的视图。任务服务未初始化（旧库/未接线）时渲染为「不可用」，
+/// 不把整页拖成 503——站点页的主要信息仍然可用。
+async fn backup_view(state: &AppState, domain: &str) -> SiteBackupView {
+    let Some(tasks) = state.tasks() else {
+        return SiteBackupView::default();
+    };
+    let status = tasks.site_backup_status(domain).await;
+    SiteBackupView {
+        enabled: status.enabled,
+        task_id: status.task_id,
+        last_text: status
+            .last_at
+            .map(|at| {
+                format!(
+                    "{} · {}",
+                    fmt_ts(at),
+                    status.last_result.as_deref().unwrap_or("-")
+                )
+            })
+            .unwrap_or_else(|| "从未执行".to_string()),
+        next_text: status
+            .next_at
+            .map(fmt_ts)
+            .unwrap_or_else(|| "-".to_string()),
+    }
+}
+
+/// 站点备份开关：直接开关内核 `site-backup` 任务，不跳计划任务页。
+pub async fn set_backup(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let enabled = matches!(
+        form_first(&form, "enabled").trim(),
+        "1" | "on" | "true" | "yes"
+    );
+    let svc = state
+        .tasks()
+        .ok_or_else(|| AppError::Unavailable("内核任务服务未初始化".into()))?;
+    let ip = handlers::client_ip(&state, &parts);
+    match svc
+        .set_site_backup(&domain, enabled, &user.user.username)
+        .await
+    {
+        Ok(_) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "sites.backup",
+                &domain,
+                "ok",
+                if enabled {
+                    "开启站点备份"
+                } else {
+                    "关闭站点备份"
+                },
+            );
+            Ok(handlers::redirect(format!(
+                "/{}/sites/{}?notice={}",
+                state.cfg.entry_prefix,
+                encode_uri_component(&domain),
+                encode_uri_component(if enabled {
+                    "站点备份已开启（每日 03:00）"
+                } else {
+                    "站点备份已关闭"
+                })
+            )))
+        }
+        Err(e) => Ok(handlers::redirect(format!(
+            "/{}/sites/{}?error={}",
+            state.cfg.entry_prefix,
+            encode_uri_component(&domain),
+            encode_uri_component(&e)
+        ))),
+    }
 }
 
 pub async fn save_config(

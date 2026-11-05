@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ task.name }} · 计划任务 · Skiff{% endblock %}
+{% block content %}
+<div class="detail-head">
+  <div>
+    <h1>{{ task.name }}</h1>
+    <div class="meta">
+      <span class="state {{ task.state_class }}">{{ task.state_label }}</span>
+      <span class="mono">{{ task.expr }}</span>
+      {% if task.builtin %}<span class="badge">内置</span>{% endif %}
+    </div>
+  </div>
+  <div class="detail-actions">
+    {% if can_admin %}
+    <form method="post" action="/{{ ctx.prefix }}/tasks/{{ task.id }}/toggle" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="enabled" value="{% if task.enabled %}0{% else %}1{% endif %}">
+      <button class="btn" type="submit">{% if task.enabled %}停用{% else %}启用{% endif %}</button>
+    </form>
+    <form method="post" action="/{{ ctx.prefix }}/tasks/{{ task.id }}/run" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="btn" type="submit">立即执行</button>
+    </form>
+    {% endif %}
+    <a class="ghost" href="/{{ ctx.prefix }}/tasks">返回列表</a>
+  </div>
+</div>
+
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+
+<section class="panel">
+  <h2>任务定义</h2>
+  <div class="kv">
+    <div><span class="muted">任务 id</span><span class="mono wrap">{{ task.id }}</span></div>
+    <div><span class="muted">来源</span><span class="mono">{{ task.source }}</span></div>
+    <div><span class="muted">目标</span><span class="mono">{{ task.target }}{% if task.method.len() > 0 %}.{{ task.method }}{% endif %}</span></div>
+    <div><span class="muted">表达式</span><span class="mono">{{ task.expr }}</span></div>
+    <div><span class="muted">下次执行</span><span class="mono">{{ task.next_text }}</span></div>
+    <div><span class="muted">上次结果</span><span class="state {{ task.last_class }}">{{ task.last_text }}</span></div>
+  </div>
+  <h3>参数</h3>
+  <pre class="code">{{ payload }}</pre>
+</section>
+
+<section class="panel">
+  <h2>运行历史</h2>
+  <span class="muted small">最近 {{ runs.len() }} 次</span>
+  {% if runs.is_empty() %}
+    <div class="empty">还没有运行记录</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid compact">
+      <thead><tr><th>开始</th><th>触发</th><th>耗时</th><th>结果</th><th>错过</th><th>详情</th></tr></thead>
+      <tbody>
+      {% for r in runs %}
+        <tr>
+          <td class="muted">{{ r.started_text }}</td>
+          <td>{{ r.trigger }}</td>
+          <td class="mono">{{ r.duration }}</td>
+          <td><span class="state {{ r.result_class }}">{{ r.result }}</span></td>
+          <td class="mono">{% if r.missed > 0 %}{{ r.missed }}{% else %}-{% endif %}</td>
+          <td class="muted small">{{ r.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
