@@ -155,7 +155,9 @@ fn list(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .filter(|j| {
             let src = j["source"].as_str().unwrap_or("");
             // 面板 UI 的「本面板」对应内核里 cron 自己创建的任务，也接受内核的 ui 标记。
-            source.is_empty() || src == source || (source == "ui" && (src == "ui" || src == "system"))
+            source.is_empty()
+                || src == source
+                || (source == "ui" && (src == "ui" || src == "system"))
         })
         .filter(|j| target.is_empty() || j["target"].as_str() == Some(target.as_str()))
         .collect();
@@ -290,7 +292,10 @@ fn toggle(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .and_then(Value::as_bool)
         .ok_or_else(|| RpcError::invalid_params("需要 enabled（true/false）".to_string()))?;
     let body = plugin
-        .scheduler_call("task.update", json!({ "id": id, "patch": { "enabled": enabled } }))
+        .scheduler_call(
+            "task.update",
+            json!({ "id": id, "patch": { "enabled": enabled } }),
+        )
         .map_err(|e| RpcError::internal(call_err(&id, &e.to_string())))?;
     Ok(json!({ "ok": true, "id": id, "enabled": enabled, "task": body.get("task").cloned() }))
 }

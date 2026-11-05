@@ -1,6 +1,7 @@
 # 内核调度器底层实现说明（`skiff-sched`）
 
-> 状态：P1 底层能力已实现，**未接 SQLite、未接插件、未接 Web**。
+> 状态：P1 底层能力已实现，并已完成 SQLite 仓储、1s tick、插件门、内置执行体、
+> Web 管理面与 cron 插件降级的接线（2026-11-06，见 §8）。
 > 契约：`docs/KERNEL_SCHEDULER_CONTRACT.md`
 > 代码：`crates/sched`（包名 `skiff-sched`，已在根 `Cargo.toml` members 登记）
 > 依赖边界：只依赖 `chrono` / `serde` / `serde_json` / `thiserror` / `skiff-cron`；
@@ -116,16 +117,16 @@ apply_sample(ticket, Result<Option<Value>, ExecError>, now) -> Result<Option<Pus
 | --- | --- | --- | --- |
 | D1 | 内核内置 1s `tokio::time::interval` 循环 | 只提供 `tick` 原语，由上层驱动 | 不引 tokio；便于注入时间做演算测试；1s 节拍由接线层保证 |
 | D2 | `Scheduler` trait（`&self` + `RunHandle`） | `Scheduler<S>` 结构体（`&mut self` + `RunTicket` 两段式） | 运行态与缓冲都在内存，必须可变；出票/结算避免同步阻塞 |
-| D3 | `scheduled_tasks / task_runs / task_state_changes` 三张表 | `TaskStore` trait + `MemoryTaskStore`，未落 SQLite | 按任务边界要求，`crates/store/src/db.rs` 未改动；状态变化并入 `task.blocked` / `task.run` 审计 |
+| D3 | `scheduled_tasks / task_runs / task_state_changes` 三张表 | 前两张已落 SQLite（schema v10）；状态变化并入审计 | 适配器在 `crates/app/src/tasks.rs`；不单独建 `task_state_changes` |
 | D4 | `history(id, page)` 分页 | `history(id, limit)` 倒序 | 分页由 Web/仓储层在 SQL 上做 |
 | D5 | `push` 返回 `Result<(), TaskError>` | 返回 `PushReport`（含 `outcome / signals / net_bytes`） | 让调用方知道拒收原因与丢点计量 |
 | D6 | 插件按需 ensure / 健康等待 / 熔断 / `task_pinned` | `PluginGate` 只返回状态；ensure/health 在执行体适配层 | 复用 `Supervisor` 的职责不搬进纯逻辑 crate |
-| D7 | 插件只能创建 `plugin:<self>:`、`source` 由内核注入、每插件 ≤20 条、推送限速 100 点/秒 | 未实现 | 属于 `scheduler` RPC 能力面与权限层；模型层仅拒绝自调方法名 |
+| D7 | 插件只能创建 `plugin:<self>:`、`source` 由内核注入、每插件 ≤20 条、推送限速 100 点/秒 | 前三条已实现 | `scheduler` 能力面强制 id 前缀 / source / 配额；`buffer.push` 的限速与采样链路仍未接 |
 | D8 | `last_error` 作为任务字段展示 | 落在 `RunRecord.error_class/error_detail/request_id`；`Task.last_run` 只保留结果摘要 | 避免任务行频繁写；失败详情走执行历史 |
 | D9 | 全局「超限」的单一阈值 | 软限（默认 64 MiB）触发降级；硬限（默认 128 MiB）先腾挪再拒收 | 契约表格与正文对「降级/超限」表述不一致，按两者拆分 |
 | D10 | 单插件 16 MiB / 64 MiB | 16 MiB 为拒收配额；64 MiB 仅配置校验上限 | 同上，契约未区分运营配额与配置上限 |
 | D11 | `aggregate` 按 `payload.aggregate` 合并任意点 | 仅合并数值字段（`sum/last/max/min`），非数值窗口降级为丢最旧 | 避免对结构不同的点做隐式语义猜测 |
-| D12 | 停机/崩溃恢复与状态校正 | 未实现 | 缓冲 P1 不落盘；重启后由接线层校正 `running` 状态 |
+| D12 | 停机/崩溃恢复与状态校正 | 缓冲不落盘；`running` 只在内存 | 库里无运行态列，重启天然回 `idle`；启动按声明写 `buffer.lost_on_restart` |
 | D13 | `delete` 无时间参数 | `delete(id, now)` | 审计需要准确时间戳，补一个 `now` |
 
 ## 4. 为接 SQLite / Web 预留的 trait 边界
@@ -185,6 +186,9 @@ pub trait TaskStore {
 6. **Web/UI**：任务列表/详情/历史/手动触发/启停；viewer 只读、Admin + CSRF 写；最后移除 manifest `cron` 解析与 `run_cron`。
 7. **插件迁移**：`cron` 降为 UI、`monitor`/`guard` 注册任务；此步必须在上面的内核链路验收通过后做。
 
+> 执行结果（2026-11-06）：1–6 已完成；第 7 步只完成 `cron`（纯管理 UI），
+> `monitor` / `guard` 仍未迁移，`manifest.cron` 解析保留过渡兼容（见 §8.4）。
+
 ## 6. 已知风险
 
 - **执行体晚到**：超时后插件仍可能完成并返回；接线层必须以 `run_id` 丢弃晚到结果，不能只看任务 id。
@@ -218,3 +222,70 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 - 注入时间下的 cron 触发、本地时区换算、DST 跳变日跳过不存在的本地时刻。
 - 时钟回拨告警与 >600s 暂停/恢复、插件 gate blocked 与恢复。
 - `Executor` 两段式接口从票据到回执的完整往返。
+
+## 8. 接线结果（2026-11-06）
+
+### 8.1 落库（schema v10）
+
+- `crates/store/src/db/tasks.rs`：`scheduled_tasks`（17 列）/ `task_runs`（14 列）。
+  调度语义不落列：`schedule_json / payload_json / retry_json / buffer_json / last_run_json`
+  整体序列化，`state / blocked_reason` 跟 `Task` 走，`concurrency / missed` 存枚举字符串。
+- 索引：`(kind, source)` **UNIQUE**（内置任务幂等键）、`source`、`enabled`、
+  `task_runs(task_id, finished_at DESC)`、`task_runs(finished_at)`（保留清理）。
+- `PRAGMA user_version` 9 → 10，`SCHEMA_V10` 建表；`mark_tasks_loaded()` 保持空实现——
+  运行态只在内存，重启后 `running` 直接回 `idle`，不需要状态校正列。
+
+### 8.2 仓储与 tick 装配（`crates/app/src/tasks.rs`）
+
+- **偏离建议位置**：适配器放 `crates/app` 而非 `crates/core`。`core` 是可执行 crate（无 lib），
+  而 Web 与插件 UDS 都经 `AppState` 取任务服务；`app` 是唯一同时被两者依赖的装配层，
+  同时避免 `skiff-store` 反向依赖 `skiff-sched`。
+- `SqliteTaskStore` 实现 `TaskStore`；`TaskService` 持有 `Mutex<Scheduler<SqliteTaskStore>>`。
+- `tick_once`：锁内只 `tick` + 落 records/audits + 收集票据；锁外
+  `tokio::spawn(drive_run / drive_sample)` 执行。超时由 `timeout` 结算，晚到 `finish`
+  按 `run_id` 拒绝；`retain_across_ticks=false` 的清空边界由 crate 的快照 tail 保证。
+- 启动：`Scheduler::new` 装载（声明缓冲的任务写 `buffer.lost_on_restart`）→
+  `seed_builtins`（`builtin:db-vacuum`，`0 4 * * 0`）。
+- 内置执行体：`site-backup`（`tar` 打包站点根到 `data_dir/backups/sites/<domain>`）、
+  `db-vacuum`（`Db::backup_to` 到 `data_dir/backups/db`），同步实现经 `spawn_blocking`。
+- 插件门：未安装 → `NotInstalled`、禁用 → `Disabled`、`api != "1.2"` → `ApiMismatch`、
+  其余 `Ready`；不可用只写 `task.blocked` 审计，不产生失败运行记录。
+- 插件执行：`BusyGuard` 标记执行中的插件，期间该插件回调 `scheduler` 一律 403（防重入）。
+- 错误映射：`NotInstalled | CircuitOpen → Unavailable`、`Spawn → Spawn`、
+  `Manifest | Store → Protocol`、`Unsupported | Ipc → ExecutorFailed`。
+
+### 8.3 能力面与权限
+
+- 路由 `/api/v1/capability/scheduler/call`（`skiff-wire::CAP_SCHEDULER_CALL`），
+  SDK 暴露 `scheduler_call(method, params)`；方法 `task.list/get/history/register/update/delete/run`。
+- 插件只能看 / 管 `source = plugin:<self>`；新增 `scheduler:admin` 仅供内核指定 UI，
+  可跨来源并可用 `target`。插件任务 id 固定 `plugin:<caller>:<local_key>`，
+  `local_key` 1–64 位 `[A-Za-z0-9._-]`，每插件 ≤20 条，`payload` 必须对象并注入 `key`。
+- Web：viewer 只读任务与历史；启停 / 立即执行 / 删除要 Admin + CSRF；内置任务不可删。
+- **未接**：`buffer.push` / `buffer.stat` 的 UDS 能力，采样链路仍只在进程内。
+
+### 8.4 站点备份与 cron 插件
+
+- 站点详情页新增 `#site-backup` 区块：开关直连内核 `site-backup` 任务
+  （默认 `0 3 * * *`，payload `{domain}`），不跳计划任务页；关闭只置 `enabled=false`，
+  运行历史保留。
+- cron 插件删除 `tick` / `cron` 声明与自带计时器，改为纯管理 UI：
+  `jobs.list/create/update/toggle/remove/run → task.*`、`targets → interop_catalog`；
+  manifest `requires` 增加 `scheduler`，`[[permissions]] capability="scheduler"`
+  覆盖 `read/manage/run/admin`；菜单元标签改「任务编辑器」，避免与内核「工具 → 计划任务」重名。
+- **`manifest.cron` 过渡**：`run_cron` 仍读取 `guard` / `monitor` 的旧声明并记一次
+  `plugin.cron_deprecated` 审计，待这两个插件迁移后删除。
+
+### 8.5 门禁实测
+
+```text
+cargo fmt --all --check                                              # 通过
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # 通过（--jobs 1）
+cargo test   --workspace --locked                                   # 478 passed; 0 failed; 1 ignored
+cargo fmt    --manifest-path plugins/Cargo.toml --all --check       # 通过
+cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings  # 通过
+cargo test   --manifest-path plugins/Cargo.toml --locked            # 21 passed; 0 failed
+```
+
+> 注：Windows 开发机上并行 rustc 会偶发 `STATUS_STACK_BUFFER_OVERRUN`，
+> 以 `CARGO_INCREMENTAL=0` + `--jobs 1` 复跑即稳定通过，与代码无关。
