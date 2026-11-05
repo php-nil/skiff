@@ -274,6 +274,13 @@ body[data-layout="left"] .nav > .nav-link[aria-current="page"]::before {
 .nav-row:hover .nav-link,
 .nav-row:hover .nav-link:hover { background: transparent; }
 .nav-label { padding-right: 2px; }
+/* 菜单文字单独成盒：任何宽度下都保持可见，空间不足时收敛为省略号，
+   不会出现「只剩图标/箭头、没有文字」的状态。 */
+.nav-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 上下布局的横向菜单不压缩条目：空间不足时整条横向滚动，绝不把文字压没。 */
+body[data-layout="top"] .topbar .nav > .nav-link,
+body[data-layout="top"] .topbar .nav > .nav-group,
+body[data-layout="top"] .nav-pinned { flex: 0 0 auto; }
 .nav-group.open > .nav-row { background: transparent; }
 .nav-group.open > .nav-row .nav-label { color: var(--nav-strong); font-weight: 600; }
 .nav-group.current > .nav-row { background: transparent; }
@@ -747,6 +754,11 @@ body[data-layout="left"][data-content-width="fixed"] .foot {
 .banner.danger { background: var(--danger-soft); border-color: var(--danger-line); color: var(--danger); }
 .banner.warn { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
 .banner a { margin-left: var(--sp-2); font-weight: 600; }
+/* 左侧布局的顶栏是固定列：提示条文字从内容起点开始，避免被侧栏遮住左半句。
+   窄屏为抽屉形态，提示条全宽，无需偏移。 */
+@media (min-width: 861px) {
+  body[data-layout="left"] .banner { padding-left: calc(var(--sidebar-w) + var(--sp-5)); }
+}
 
 .page-head {
   display: flex;
@@ -1475,7 +1487,9 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
 
 
 
-/* L3 工作台标签栏：页面标题区下方的独立通栏，与内容区同宽。
+/* L3 工作台标签栏：页面标题区下方的一条连续横栏（1Panel 式），与内容区同宽。
+   整条是一个容器，标签之间只用 1px 细分隔线；active 只由底部强调轨表达，
+   不再给每个标签单独的描边圆角卡片。
    `--shell-h` 由 skiff.js 按顶栏实测高度写入（上下布局含二级通栏），
    因此两种布局都能吸顶在顶栏之下，滚动时不随内容移动。 */
 .workbench-tabs {
@@ -1483,15 +1497,17 @@ body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap:
   top: 0;
   z-index: 12;
   display: flex;
-  align-items: center;
-  gap: 2px;
+  align-items: stretch;
   flex-wrap: nowrap;
+  gap: 0;
   margin: 0 0 var(--sp-4);
   padding: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   scrollbar-width: none;
 }
 .workbench-tabs::-webkit-scrollbar { display: none; }
@@ -1500,31 +1516,36 @@ body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); 
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 40px;
-  padding: 0 12px;
+  justify-content: center;
+  gap: 7px;
+  flex: 1 1 0;
+  min-width: max-content;
+  height: 44px;
+  padding: 0 16px;
   border: 0;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-radius: 0;
   background: transparent;
   color: var(--muted);
   font-size: var(--fs-sm);
   font-weight: 500;
   white-space: nowrap;
 }
+/* 连续横栏：相邻标签之间只有一条细分隔线，不做独立描边块。 */
+.workbench-tab + .workbench-tab { border-left: 1px solid var(--line); }
 .workbench-tab:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 .workbench-tab.on, .workbench-tab[aria-current="page"] {
-  background: var(--surface);
+  background: transparent;
   color: var(--accent);
   font-weight: 600;
 }
+/* 选中态只用一条底部强调轨，不与底色/边框叠加。 */
 .workbench-tab.on::after, .workbench-tab[aria-current="page"]::after {
   content: "";
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: -1px;
+  left: 0;
+  right: 0;
+  bottom: 0;
   height: 2px;
-  border-radius: 2px;
   background: var(--accent);
 }
 
@@ -1765,4 +1786,22 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
     border-left: 0;
   }
   .drawer-content { padding: var(--sp-3); }
+}
+
+/* 「网站 → Nginx」页面私有样式；不改 .workbench-tabs（横向标签由全局样式负责）。 */
+.page-nginx .logs-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+  align-items: start;
+}
+.page-nginx .logs-grid pre.log { max-height: 420px; overflow: auto; }
+.page-nginx .nginx-tail { max-height: 360px; overflow: auto; }
+.page-nginx .nginx-probe .mono { word-break: break-all; }
+.page-nginx .nginx-diagnosis { white-space: pre-wrap; }
+@media (max-width: 900px) {
+  .page-nginx .logs-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .page-nginx .inline-form { flex-direction: column; align-items: stretch; }
 }

@@ -2649,6 +2649,10 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("插件架构测试台"), "{html}");
     assert!(
+        !html.contains("插件架构测试台 插件架构测试台"),
+        "L2 label 与插件名同名时标题不得重复渲染: {html}"
+    );
+    assert!(
         html.contains(r#"href="/p/plugins/com.skiff.testkit/main""#),
         "{html}"
     );
@@ -3709,19 +3713,57 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
 
     let (status, html) = get_page(&h.app, "/p/sites/nginx", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    for section in ["status", "config", "logs", "modules"] {
+    for panel in ["status", "config", "logs", "modules"] {
         assert!(
-            html.contains(&format!(r#"data-nginx-section="{section}""#)),
-            "缺少 Nginx {section} 区块: {html}"
+            html.contains(&format!(r#"data-nginx-panel="{panel}""#)),
+            "缺少 Nginx {panel} 区块: {html}"
         );
     }
+    // 复用插件工作台横栏标记；四个标签走页内切换（hash 定位）。
     assert!(
-        html.contains("active connections") && html.contains("accepts") && html.contains("waiting"),
-        "状态必须展示 stub_status 字段: {html}"
+        html.contains(r#"class="workbench-tabs""#)
+            && html.contains("data-nginx-tabs")
+            && html.contains(r#"data-nginx-tab="status""#)
+            && html.contains(r#"data-nginx-tab="config""#)
+            && html.contains(r#"data-nginx-tab="log""#)
+            && html.contains(r#"data-nginx-tab="modules""#),
+        "必须复用 workbench-tabs 标记并给出四个标签: {html}"
+    );
+    for hash in ["#status", "#config", "#log", "#modules"] {
+        assert!(
+            html.contains(&format!(r#"href="{hash}""#)),
+            "标签必须同步到 URL hash {hash}: {html}"
+        );
+    }
+    // 默认只显示 status，其余区块 hidden；切标签由 JS + hash 控制。
+    assert!(
+        html.contains(r#"data-nginx-panel="config" hidden"#)
+            && html.contains(r#"data-nginx-panel="logs" hidden"#)
+            && html.contains(r#"data-nginx-panel="modules" hidden"#),
+        "非当前标签必须 hidden，避免四块堆一页: {html}"
+    );
+
+    let (status, config_tab) = get_page(&h.app, "/p/sites/nginx?tab=config", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        config_tab.contains(r#"data-nginx-panel="config""#)
+            && !config_tab.contains(r#"data-nginx-panel="config" hidden"#),
+        "?tab=config 必须直接停在配置区块（无 hash 时的服务端兜底）"
+    );
+
+    assert!(
+        html.contains("active connections")
+            && html.contains("accepts")
+            && html.contains("waiting")
+            && html.contains("运行时长")
+            && html.contains("最近 reload"),
+        "状态必须展示 stub_status 四项 + 版本/时长/reload: {html}"
     );
     assert!(
-        html.contains("数据不可得"),
-        "容器不可用时必须明确说明，而不是显示 0: {html}"
+        html.contains("探测地址")
+            && html.contains("http://127.0.0.1:8081/nginx_status")
+            && html.contains("主配置含 stub_status"),
+        "状态不可得时必须给出探测地址与主配置诊断: {html}"
     );
     assert!(
         html.contains("性能参数")
@@ -3730,8 +3772,12 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         "配置区块必须提供性能参数: {html}"
     );
     assert!(
-        html.contains("错误日志（倒序）") && html.contains("访问日志汇总"),
-        "日志区块必须区分错误/访问: {html}"
+        html.contains("错误日志（倒序）")
+            && html.contains("访问日志（tail）")
+            && html.contains("刷新 tail")
+            && html.contains(r#"name="level""#)
+            && html.contains(r#"name="tail""#),
+        "日志区块必须 access/error 分栏、按级别过滤并支持 tail 刷新: {html}"
     );
     assert!(
         html.contains("编译参数") && html.contains("模块列表"),
@@ -3740,6 +3786,21 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
     assert!(
         html.contains("校验并重载"),
         "主配置保存必须走 nginx -t + reload: {html}"
+    );
+
+    // JS：标签页内切换 + hash 同步 + 刷新后停在原标签；CSS 只加页面私有命名空间。
+    let js = include_str!("../static/skiff.js");
+    assert!(
+        js.contains("attachNginxTabs")
+            && js.contains("location.hash")
+            && js.contains("history.replaceState")
+            && js.contains("data-nginx-panel"),
+        "缺少 Nginx 标签切换/hash 同步逻辑: {js}"
+    );
+    let css = include_str!("../static/skiff.css");
+    assert!(
+        css.contains(".page-nginx .logs-grid"),
+        "日志分栏必须落在页面私有命名空间"
     );
 
     // 视图级权限：viewer 不能打开，管理员缺 CSRF 也不能保存。

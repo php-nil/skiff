@@ -421,6 +421,8 @@ pub struct NginxPage {
     /// status / config / logs / modules
     pub tab: String,
     pub keyword: String,
+    /// tail 行数上限（50–500）。
+    pub tail: usize,
     pub can_admin: bool,
     pub error: String,
     pub notice: String,
