@@ -904,6 +904,49 @@
     });
   }
 
+  // 「网站 → Nginx」单页标签：复用 workbench-tabs 标记，切区块并同步 URL hash。
+  function attachNginxTabs() {
+    var bar = document.querySelector("[data-nginx-tabs]");
+    if (!bar || bar.getAttribute("data-nginx-bound") === "1") return;
+    bar.setAttribute("data-nginx-bound", "1");
+    var tabs = [].slice.call(bar.querySelectorAll("[data-nginx-tab]"));
+    var panels = [].slice.call(document.querySelectorAll("[data-nginx-panel]"));
+    var known = ["status", "config", "log", "modules"];
+    function panelOf(name) {
+      return name === "log" ? "logs" : name;
+    }
+    function apply(name, sync) {
+      if (known.indexOf(name) < 0) name = "status";
+      var panel = panelOf(name);
+      tabs.forEach(function (t) {
+        var on = t.getAttribute("data-nginx-tab") === name;
+        t.classList.toggle("on", on);
+        if (on) t.setAttribute("aria-current", "page");
+        else t.removeAttribute("aria-current");
+      });
+      panels.forEach(function (p) {
+        p.hidden = p.getAttribute("data-nginx-panel") !== panel;
+      });
+      if (sync) history.replaceState(null, "", "#" + name);
+    }
+    bar.addEventListener("click", function (e) {
+      var link = e.target.closest("[data-nginx-tab]");
+      if (!link) return;
+      e.preventDefault();
+      apply(link.getAttribute("data-nginx-tab"), true);
+    });
+    window.addEventListener("hashchange", function () {
+      var h = (location.hash || "").replace("#", "");
+      if (h) apply(h, false);
+    });
+    var initial = (location.hash || "").replace("#", "");
+    if (!initial) {
+      var active = bar.querySelector("[data-nginx-tab].on");
+      if (active) initial = active.getAttribute("data-nginx-tab");
+    }
+    apply(initial || "status", false);
+  }
+
   function boot() {
     attachLogs();
     attachTerminal();
@@ -916,6 +959,7 @@
     ensureIcons();
     attachWizard();
     attachRuntimeDrawer();
+    attachNginxTabs();
     attachToasts();
   }
 

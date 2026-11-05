@@ -6,7 +6,9 @@
 //! 三步，失败回滚并保留错误行。日志一律来自实际布局：站点行日志在
 //! `<站点目录>/log/`，全局日志在 `<web_root>/log/`。
 
+use std::io::{Read, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use skiff_store::Db;
 
@@ -15,6 +17,14 @@ use crate::AppState;
 
 /// 性能参数在 `settings` 表里的键。
 pub const NGINX_PARAMS_KEY: &str = "nginx.params_json";
+/// 内核最近一次成功 reload 的时间（`settings`）。
+pub const NGINX_LAST_RELOAD_KEY: &str = "nginx.last_reload_at";
+
+/// stub_status 监听地址与探测 URL（host 网络，仅宿主/容器本机可访问）。
+pub const STUB_ADDR: &str = "127.0.0.1:8081";
+pub const STUB_URL: &str = "http://127.0.0.1:8081/nginx_status";
+/// 主配置里内核生成标记；有标记才允许内核追加 stub 段。
+const MAIN_CONF_MARKER: &str = "# 由 Skiff 内核生成";
 
 /// nginx 性能参数（主配置里由内核渲染，不手改文本）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +155,7 @@ pub fn render_main_nginx_conf(p: &NginxParams) -> String {
          \x20       listen 127.0.0.1:8081;\n\
          \x20       location = /nginx_status {{\n\
          \x20           stub_status;\n\
+         \x20           access_log off;\n\
          \x20           allow 127.0.0.1;\n\
          \x20           deny all;\n\
          \x20       }}\n\
@@ -159,14 +170,14 @@ pub fn render_main_nginx_conf(p: &NginxParams) -> String {
     )
 }
 
-/// 首次安装/重建时确保主配置存在；已存在则不动（用户可能改过）。
+/// 首次安装/重建时确保主配置存在且包含内核 stub_status 段。
+///
+/// 已存在时不动用户正文，只做两件事：内核生成的文件若丢失 stub 段则补回；
+/// 非内核生成的文件不碰（状态页会提示“当前主配置不是内核生成”）。
 pub fn ensure_nginx_main_conf(s: &SiteSettings, db: &Db) -> std::io::Result<()> {
     std::fs::create_dir_all(s.global_log_dir())?;
     if let Some(parent) = s.nginx_main_conf().parent() {
         std::fs::create_dir_all(parent)?;
-    }
-    if s.nginx_main_conf().is_file() {
-        return Ok(());
     }
     let params = db
         .get_setting(NGINX_PARAMS_KEY)
@@ -174,7 +185,32 @@ pub fn ensure_nginx_main_conf(s: &SiteSettings, db: &Db) -> std::io::Result<()> 
         .flatten()
         .map(|raw| NginxParams::from_json(&raw))
         .unwrap_or_default();
-    std::fs::write(s.nginx_main_conf(), render_main_nginx_conf(&params))
+    let path = s.nginx_main_conf();
+    if path.is_file() {
+        let current = std::fs::read_to_string(&path)?;
+        if current.contains(MAIN_CONF_MARKER) && !current.contains("stub_status;") {
+            std::fs::write(&path, ensure_stub_block(&current))?;
+        }
+        return Ok(());
+    }
+    std::fs::write(&path, render_main_nginx_conf(&params))
+}
+
+/// 在内核生成的主配置末尾补回 stub_status server 段。
+fn ensure_stub_block(conf: &str) -> String {
+    let block = "    server {\n\
+                 \x20       listen 127.0.0.1:8081;\n\
+                 \x20       location = /nginx_status {\n\
+                 \x20           stub_status;\n\
+                 \x20           access_log off;\n\
+                 \x20           allow 127.0.0.1;\n\
+                 \x20           deny all;\n\
+                 \x20       }\n\
+                 \x20   }\n";
+    match conf.rfind('}') {
+        Some(idx) => format!("{}{}{}", &conf[..idx], block, &conf[idx..]),
+        None => format!("{conf}\n{block}"),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +220,16 @@ pub struct NginxStatusView {
     pub container_state: String,
     pub version: String,
     pub config_test: String,
+    /// 容器 `docker ps` 的运行时长文案（如 `Up 6 minutes`）；未运行则原样给出状态。
+    pub uptime: String,
+    /// 内核最近一次成功 reload 的时间；空串表示暂无记录。
+    pub last_reload: String,
+    /// 探测地址与失败原因（不可得时用于诊断，禁止静默留空）。
+    pub probe_url: String,
+    pub probe_error: String,
+    /// 宿主主配置路径，以及它是否包含内核 stub_status 段。
+    pub conf_path: String,
+    pub conf_has_stub: bool,
     pub active: Option<u64>,
     pub accepts: Option<u64>,
     pub handled: Option<u64>,
@@ -223,8 +269,14 @@ pub struct NginxLogView {
     pub error_path: String,
     pub error_lines: Vec<String>,
     pub error_reason: String,
+    /// 当前级别过滤（all/emerg/alert/crit/error/warn/notice/info）。
+    pub error_level: String,
     pub access_path: String,
     pub access_reason: String,
+    /// 访问日志 tail（与错误日志分栏展示）。
+    pub access_lines: Vec<String>,
+    /// 本次 tail 行数上限（50–500）。
+    pub tail: usize,
     pub status_counts: Vec<StatusCount>,
     pub recent: Vec<String>,
 }
@@ -325,8 +377,101 @@ pub fn parse_stub_status(out: &str) -> Option<(u64, u64, u64, u64, u64, u64, u64
     ))
 }
 
+/// 宿主侧 TCP 探测：nginx 用 host 网络时，8081 就在宿主回环上，不依赖容器内 curl/wget。
+fn probe_stub_host() -> Result<String, String> {
+    let addr = STUB_ADDR
+        .parse()
+        .map_err(|e| format!("探测地址无效（{STUB_ADDR}）：{e}"))?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        .map_err(|e| format!("连接 {STUB_ADDR} 失败：{e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| format!("设置读超时失败：{e}"))?;
+    stream
+        .write_all(b"GET /nginx_status HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .map_err(|e| format!("发送探测请求失败：{e}"))?;
+    let mut buf = String::new();
+    stream
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("读取探测响应失败：{e}"))?;
+    let (head, body) = buf
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "探测响应不是完整 HTTP 报文".to_string())?;
+    let code = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("?");
+    if code != "200" {
+        return Err(format!("{STUB_URL} 返回 HTTP {code}"));
+    }
+    Ok(body.to_string())
+}
+
+/// 容器内兜底探测：OpenResty 自带 `resty`，用 Lua socket 发同一请求。
+fn probe_stub_resty_args() -> Vec<String> {
+    vec![
+        "resty".into(),
+        "-e".into(),
+        "local s=ngx.socket.tcp();s:settimeout(2000);\
+         local ok,err=s:connect(\"127.0.0.1\",8081);\
+         if not ok then print(\"CONNECT_FAIL: \"..tostring(err)) os.exit(1) end;\
+         s:send(\"GET /nginx_status HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\");\
+         local d,e=s:receive(\"*a\");s:close();\
+         if not d then print(\"READ_FAIL: \"..tostring(e)) os.exit(1) end;print(d)"
+            .into(),
+    ]
+}
+
+/// 简单逐行差异摘要（失败回滚时给出到底改了哪几行）。
+fn diff_summary(original: &str, candidate: &str, limit: usize) -> String {
+    if original.is_empty() {
+        return "当前主配置不存在（本次为新建）".into();
+    }
+    let old: Vec<&str> = original.lines().collect();
+    let new: Vec<&str> = candidate.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    for i in 0..old.len().max(new.len()) {
+        let a = old.get(i).copied().unwrap_or("<缺行>");
+        let b = new.get(i).copied().unwrap_or("<缺行>");
+        if a != b {
+            out.push(format!("第 {} 行 - {} + {}", i + 1, a.trim(), b.trim()));
+            if out.len() >= limit {
+                out.push("…".into());
+                break;
+            }
+        }
+    }
+    if out.is_empty() {
+        "内容与当前主配置相同".into()
+    } else {
+        out.join("；")
+    }
+}
+
+fn matches_level(line: &str, level: &str) -> bool {
+    if level.is_empty() || level == "all" {
+        return true;
+    }
+    let needle = format!("[{level}]");
+    line.to_ascii_lowercase().contains(&needle)
+}
+
+fn nginx_level_label(level: &str) -> &'static str {
+    match level {
+        "emerg" => "emerg",
+        "alert" => "alert",
+        "crit" => "crit",
+        "error" => "error",
+        "warn" => "warn",
+        "notice" => "notice",
+        "info" => "info",
+        _ => "all",
+    }
+}
+
 impl AppState {
-    async fn nginx_container(&self) -> Result<(String, String), SiteError> {
+    async fn nginx_container(&self) -> Result<(String, String, String), SiteError> {
         if !self.docker().available() {
             return Err(SiteError::Unavailable(format!(
                 "Docker 不可用：{}",
@@ -342,7 +487,7 @@ impl AppState {
             .iter()
             .find(|c| c.name == NGINX_CONTAINER)
             .ok_or_else(|| SiteError::Unavailable("nginx 运行环境未安装".into()))?;
-        Ok((c.id.clone(), c.state.clone()))
+        Ok((c.id.clone(), c.state.clone(), c.status.clone()))
     }
 
     async fn apply_nginx_main(&self, s: &SiteSettings, content: &str) -> Result<(), SiteError> {
@@ -364,11 +509,14 @@ impl AppState {
             .await
             .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
         if code != 0 {
+            let original = std::fs::read_to_string(s.nginx_main_conf()).unwrap_or_default();
+            let diff = diff_summary(&original, content, 6);
             let _ = std::fs::remove_file(&candidate);
             return Err(SiteError::Conflict(format!(
-                "nginx -t 未通过（{}）：{}",
+                "nginx -t 未通过（{}）：{}；已回滚未替换；差异：{}",
                 container_candidate,
-                error_line(&out)
+                error_line(&out),
+                diff
             )));
         }
         let original = std::fs::read(s.nginx_main_conf()).ok();
@@ -383,17 +531,38 @@ impl AppState {
                 "配置已回滚：重载 nginx 失败：{e}"
             )));
         }
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let _ = self.db().set_setting(NGINX_LAST_RELOAD_KEY, &stamp);
         Ok(())
     }
 
     pub async fn nginx_status(&self) -> NginxStatusView {
         let s = self.site_settings();
+        let main = s.nginx_main_conf();
+        let conf_has_stub = main
+            .is_file()
+            .then(|| std::fs::read_to_string(&main).ok())
+            .flatten()
+            .map(|t| t.contains("stub_status;"))
+            .unwrap_or(false);
+        let last_reload = self
+            .db()
+            .get_setting(NGINX_LAST_RELOAD_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let mut v = NginxStatusView {
             available: false,
             reason: String::new(),
             container_state: "missing".into(),
             version: String::new(),
             config_test: String::new(),
+            uptime: String::new(),
+            last_reload,
+            probe_url: STUB_URL.into(),
+            probe_error: String::new(),
+            conf_path: main.display().to_string(),
+            conf_has_stub,
             active: None,
             accepts: None,
             handled: None,
@@ -404,9 +573,10 @@ impl AppState {
             stub_reason: String::new(),
         };
         match self.nginx_container().await {
-            Ok((_id, state)) => {
+            Ok((_id, state, status)) => {
                 v.available = true;
                 v.container_state = state;
+                v.uptime = status;
             }
             Err(e) => {
                 v.reason = e.to_string();
@@ -430,51 +600,63 @@ impl AppState {
             .await
         {
             v.config_test = if code == 0 {
-                format!("配置校验通过（{}）", s.nginx_main_conf().display())
+                "配置校验通过".into()
             } else {
                 format!("配置校验失败：{}", error_line(&out))
             };
         } else {
             v.config_test = "无法执行 nginx -t（容器不可执行）".into();
         }
-        let status_url = "http://127.0.0.1:8081/nginx_status";
-        let fetched = self
-            .docker()
-            .exec_capture(
-                NGINX_CONTAINER,
-                vec![
-                    "curl".into(),
-                    "-fsS".into(),
-                    "--max-time".into(),
-                    "3".into(),
-                    status_url.into(),
-                ],
-            )
-            .await
-            .ok()
-            .filter(|(code, _)| *code == 0);
-        let out = match fetched {
-            Some((_, out)) => Ok(out),
-            None => match self
-                .docker()
-                .exec_capture(
-                    NGINX_CONTAINER,
-                    vec![
-                        "wget".into(),
-                        "-qO-".into(),
-                        "--timeout=3".into(),
-                        status_url.into(),
-                    ],
-                )
-                .await
-            {
-                Ok((0, out)) => Ok(out),
-                Ok((_, out)) => Err(format!("读取 stub_status 失败：{}", error_line(&out))),
-                Err(e) => Err(format!(
-                    "读取 stub_status 失败（容器内没有可用的 curl/wget）：{e}"
-                )),
-            },
+
+        // 探测顺序：宿主 TCP（host 网络，最可靠）→ 容器内 resty → wget/curl。
+        let mut attempts: Vec<String> = Vec::new();
+        let mut out: Result<String, ()> = match probe_stub_host() {
+            Ok(body) => Ok(body),
+            Err(e) => {
+                attempts.push(format!("宿主 TCP {STUB_ADDR}：{e}"));
+                match self
+                    .docker()
+                    .exec_capture(NGINX_CONTAINER, probe_stub_resty_args())
+                    .await
+                {
+                    Ok((0, text)) if text.contains("active connections") => Ok(text),
+                    Ok((_, text)) => {
+                        attempts.push(format!("容器内 resty：{}", error_line(&text)));
+                        Err(())
+                    }
+                    Err(e) => {
+                        attempts.push(format!("容器内 resty 不可用：{e}"));
+                        Err(())
+                    }
+                }
+            }
         };
+        if out.is_err() {
+            let mut fallback: Option<String> = None;
+            for tool in [
+                vec!["wget", "-qO-", "--timeout=3", STUB_URL],
+                vec!["curl", "-fsS", "--max-time", "3", STUB_URL],
+            ] {
+                match self
+                    .docker()
+                    .exec_capture(
+                        NGINX_CONTAINER,
+                        tool.iter().map(|s| s.to_string()).collect(),
+                    )
+                    .await
+                {
+                    Ok((0, text)) if text.contains("active connections") => {
+                        fallback = Some(text);
+                        break;
+                    }
+                    Ok((_, text)) => attempts.push(format!("{}：{}", tool[0], error_line(&text))),
+                    Err(e) => attempts.push(format!("{} 不可用：{e}", tool[0])),
+                }
+            }
+            if let Some(text) = fallback {
+                out = Ok(text);
+            }
+        }
         match out {
             Ok(text) => match parse_stub_status(&text) {
                 Some((a, ac, h, r, rd, wr, wt)) => {
@@ -492,7 +674,17 @@ impl AppState {
                             .into();
                 }
             },
-            Err(e) => v.stub_reason = e,
+            Err(()) => {
+                let mut detail = attempts.join("；");
+                if !v.conf_has_stub {
+                    detail.push_str(&format!(
+                        "；内核主配置 {} 未包含 stub_status 段（容器可能仍在使用镜像默认 nginx.conf）",
+                        v.conf_path
+                    ));
+                }
+                v.stub_reason = format!("{STUB_URL} 不可得：{detail}");
+                v.probe_error = detail;
+            }
         }
         v
     }
@@ -570,16 +762,19 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("保存 nginx 参数失败：{e}")))
     }
 
-    pub fn nginx_logs(&self, keyword: &str) -> NginxLogView {
+    pub fn nginx_logs(&self, keyword: &str, level: &str, tail: usize) -> NginxLogView {
         let s = self.site_settings();
+        let level = nginx_level_label(level);
+        let tail = tail.clamp(50, 500);
         let error_path = s.global_log_dir().join("nginx-error.log");
         let kw = keyword.trim().to_ascii_lowercase();
         let mut error_reason = String::new();
-        let error_lines = match read_tail(&error_path, 200) {
+        let error_lines = match read_tail(&error_path, tail) {
             Ok(lines) => lines
                 .into_iter()
                 .filter(|l| kw.is_empty() || l.to_ascii_lowercase().contains(&kw))
-                .take(100)
+                .filter(|l| matches_level(l, level))
+                .take(tail)
                 .collect(),
             Err(e) => {
                 error_reason = e;
@@ -594,7 +789,7 @@ impl AppState {
             let dir = std::path::PathBuf::from(&site.root_dir);
             let path = s.log_file(&dir, LogKind::Access);
             if path.is_file() {
-                if let Ok(lines) = read_tail(&path, 200) {
+                if let Ok(lines) = read_tail(&path, tail) {
                     paths.push(path);
                     site_lines.push((site.domain.clone(), lines));
                 }
@@ -604,11 +799,12 @@ impl AppState {
         for (_, lines) in &site_lines {
             all.extend(lines.iter().cloned());
         }
-        if let Ok(lines) = read_tail(&global_access, 200) {
+        if let Ok(lines) = read_tail(&global_access, tail) {
             all.extend(lines);
         }
         all.retain(|l| kw.is_empty() || l.to_ascii_lowercase().contains(&kw));
         all.sort_by(|a, b| b.cmp(a));
+        let access_lines: Vec<String> = all.iter().take(100).cloned().collect();
         let mut c2 = 0u64;
         let mut c3 = 0u64;
         let mut c4 = 0u64;
@@ -643,8 +839,11 @@ impl AppState {
             error_path: error_path.display().to_string(),
             error_lines,
             error_reason,
+            error_level: level.into(),
             access_path,
             access_reason,
+            access_lines,
+            tail,
             status_counts: vec![
                 StatusCount {
                     label: "2xx".into(),
@@ -715,5 +914,76 @@ impl AppState {
             Err(e) => v.reason = format!("无法执行 nginx -V：{e}"),
         }
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_conf_has_stub_status_on_loopback_only() {
+        let conf = render_main_nginx_conf(&NginxParams::default());
+        assert!(conf.contains("listen 127.0.0.1:8081;"), "{conf}");
+        assert!(conf.contains("location = /nginx_status"), "{conf}");
+        assert!(conf.contains("stub_status;"), "{conf}");
+        assert!(conf.contains("access_log off;"), "{conf}");
+        assert!(conf.contains("allow 127.0.0.1;"), "{conf}");
+        assert!(conf.contains("deny all;"), "{conf}");
+        // 不占 9000、不对外监听状态端点。
+        assert!(!conf.contains("9000"));
+    }
+
+    #[test]
+    fn stale_kernel_conf_gets_stub_block_back_once() {
+        let stale = "# 由 Skiff 内核生成\nworker_processes auto;\nevents {}\nhttp {\n}\n";
+        assert!(!stale.contains("stub_status;"));
+        let fixed = ensure_stub_block(stale);
+        assert!(fixed.contains("listen 127.0.0.1:8081;"), "{fixed}");
+        assert!(fixed.contains("stub_status;"), "{fixed}");
+        // 只追加一段；再次 ensure 时由调用方 `contains("stub_status;")` 短路。
+        assert_eq!(fixed.matches("location = /nginx_status").count(), 1);
+    }
+
+    #[test]
+    fn diff_summary_points_at_changed_line() {
+        let old = "worker_processes auto;\nworker_connections 1024;\n";
+        let new = "worker_processes 4;\nworker_connections 1024;\n";
+        let diff = diff_summary(old, new, 6);
+        assert!(diff.contains("第 1 行"), "{diff}");
+        assert!(diff.contains("worker_processes auto"), "{diff}");
+        assert!(diff.contains("worker_processes 4"), "{diff}");
+        assert_eq!(diff_summary(old, old, 6), "内容与当前主配置相同");
+        assert!(diff_summary("", new, 6).contains("当前主配置不存在"));
+    }
+
+    #[test]
+    fn stub_status_parser_reads_all_seven_numbers() {
+        let body = "Active connections: 3 \n\
+                    server accepts handled requests\n\
+                    \x20 12 12 40 \n\
+                    Reading: 0 Writing: 1 Waiting: 2 \n";
+        let got = parse_stub_status(body).expect("应解析");
+        assert_eq!(got, (3, 12, 12, 40, 0, 1, 2));
+    }
+
+    #[test]
+    fn log_level_filter_and_normalization() {
+        assert!(matches_level("[error] 123#0: upstream timed out", "error"));
+        assert!(!matches_level("[warn] 123#0: something", "error"));
+        assert!(matches_level("[warn] 123#0: something", "all"));
+        assert_eq!(nginx_level_label("bogus"), "all");
+        assert_eq!(nginx_level_label("crit"), "crit");
+    }
+
+    #[test]
+    fn resty_fallback_uses_openresty_lua_socket() {
+        let args = probe_stub_resty_args();
+        assert_eq!(args.first().map(String::as_str), Some("resty"));
+        assert_eq!(args.get(1).map(String::as_str), Some("-e"));
+        let script = &args[2];
+        assert!(script.contains("ngx.socket.tcp()"), "{script}");
+        assert!(script.contains("nginx_status"), "{script}");
+        assert!(script.contains("print(d)"), "{script}");
     }
 }

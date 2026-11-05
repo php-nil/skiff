@@ -59,7 +59,7 @@
     <div class="nav-pinned" aria-label="固定菜单">
       <span class="nav-pin-caption" aria-hidden="true">固定</span>
       {% for it in ctx.menu.pinned %}
-      <a class="nav-pin" data-menu-key="{{ it.key }}" href="{{ it.href }}"{% if it.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ it.icon }}" aria-hidden="true"><use href="#i-{{ it.icon }}"></use></svg>{{ it.label }}</a>
+      <a class="nav-pin" data-menu-key="{{ it.key }}" href="{{ it.href }}"{% if it.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ it.icon }}" aria-hidden="true"><use href="#i-{{ it.icon }}"></use></svg><span class="nav-text">{{ it.label }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -68,7 +68,7 @@
     {% for g in ctx.menu.groups %}
       {% if g.href.len() > 0 && g.items.is_empty() %}
       <a class="nav-link nav-l1" data-menu-key="{{ g.key }}" data-owner-kind="core"
-         href="{{ g.href }}"{% if g.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg>{{ g.label }}</a>
+         href="{{ g.href }}"{% if g.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg><span class="nav-text">{{ g.label }}</span></a>
       {% else %}
       {# 一级分组 = 标签 + 独立箭头按钮：
          - 有自身页面的一级（插件 L2 等）标签是链接，点标签跳转；
@@ -79,9 +79,9 @@
         <div class="nav-row">
           {% if g.href.len() > 0 %}
           <a class="nav-link nav-label" data-nav-label data-menu-key="{{ g.key }}" data-owner-kind="core"
-             href="{{ g.href }}"{% if g.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg>{{ g.label }}</a>
+             href="{{ g.href }}"{% if g.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg><span class="nav-text">{{ g.label }}</span></a>
           {% else %}
-          <button type="button" class="nav-link nav-label" data-nav-label><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg>{{ g.label }}</button>
+          <button type="button" class="nav-link nav-label" data-nav-label><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ g.icon }}" aria-hidden="true"><use href="#i-{{ g.icon }}"></use></svg><span class="nav-text">{{ g.label }}</span></button>
           {% endif %}
           <button type="button" class="nav-caret" data-nav-toggle
                   aria-expanded="false" aria-controls="nav-menu-{{ g.key }}"
@@ -94,7 +94,7 @@
           {# 插件入口沿用 `.nav-plugin` 虚线样式；其余为普通二级项。 #}
           <a class="{% if it.plugin %}nav-plugin{% else %}nav-sub{% endif %}{% if it.active %} on{% endif %}"
              data-menu-key="{{ it.key }}" data-owner-kind="{% if it.plugin %}plugin{% else %}core{% endif %}"
-             href="{{ it.href }}"{% if it.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ it.icon }}" aria-hidden="true"><use href="#i-{{ it.icon }}"></use></svg>{{ it.label }}</a>
+             href="{{ it.href }}"{% if it.active %} aria-current="page"{% endif %}><svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ it.icon }}" aria-hidden="true"><use href="#i-{{ it.icon }}"></use></svg><span class="nav-text">{{ it.label }}</span></a>
           {% endfor %}
           {% if let Some(e) = g.empty %}
           <div class="nav-empty">

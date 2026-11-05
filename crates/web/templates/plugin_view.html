@@ -2,7 +2,8 @@
 {% block title %}{{ plugin.name }} · {{ workbench_title }} · Skiff{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>{{ workbench_title }} <span class="muted">{{ plugin.name }}</span></h1>
+  {# 标题只出现一次：L2 label 与插件名同名的插件（如 testkit）不再重复渲染。 #}
+  <h1>{{ workbench_title }}{% if workbench_title != plugin.name %} <span class="muted">{{ plugin.name }}</span>{% endif %}</h1>
   <div class="row">
     <a class="ghost" href="/{{ ctx.prefix }}/containers?filter=error">异常容器与日志</a>
     <a class="ghost" href="{{ info_href }}">插件信息</a>

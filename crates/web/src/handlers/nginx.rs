@@ -20,7 +20,7 @@ use skiff_app::nginx::NginxParams;
 fn allowed_tab(tab: &str) -> &'static str {
     match tab {
         "config" => "config",
-        "logs" => "logs",
+        "logs" | "log" => "logs",
         "modules" => "modules",
         _ => "status",
     }
@@ -34,6 +34,17 @@ async fn page(
     notice: String,
 ) -> Result<Response, AppError> {
     let tab = allowed_tab(q.get("tab").map(String::as_str).unwrap_or("status"));
+    let level = q
+        .get("level")
+        .map(String::as_str)
+        .unwrap_or("all")
+        .to_string();
+    let tail = q
+        .get("tail")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(50, 500);
+    let keyword = q.get("q").cloned().unwrap_or_default();
     let config = state.nginx_config_view().await.map_err(|e| match e {
         skiff_app::sites::SiteError::Internal(m) => AppError::Internal(m),
         skiff_app::sites::SiteError::BadRequest(m) => AppError::BadRequest(m),
@@ -44,10 +55,11 @@ async fn page(
         ctx: handlers::page_ctx(&state, &user, "core/sites/nginx"),
         status: state.nginx_status().await,
         config,
-        logs: state.nginx_logs(q.get("q").map(String::as_str).unwrap_or("")),
+        logs: state.nginx_logs(&keyword, &level, tail),
         modules: state.nginx_modules().await,
         tab: tab.to_string(),
-        keyword: q.get("q").cloned().unwrap_or_default(),
+        keyword,
+        tail,
         can_admin: user.can(skiff_model::Permission::Admin),
         error,
         notice,

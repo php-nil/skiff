@@ -1,174 +1,228 @@
 {% extends "base.html" %}
 {% block title %}Nginx · 网站 · Skiff{% endblock %}
 {% block content %}
-<div class="page-head">
-  <h1>Nginx</h1>
-  <span class="sub">内核功能（非插件）· host 网络 · stub_status 127.0.0.1:8081</span>
-</div>
-{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
-{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
-
-<nav class="tabs" aria-label="Nginx 区块">
-  <a class="tab{% if tab == "status" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/nginx?tab=status#nginx-status">状态</a>
-  <a class="tab{% if tab == "config" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/nginx?tab=config#nginx-config">配置</a>
-  <a class="tab{% if tab == "logs" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/nginx?tab=logs#nginx-logs">日志</a>
-  <a class="tab{% if tab == "modules" %} on{% endif %}" href="/{{ ctx.prefix }}/sites/nginx?tab=modules#nginx-modules">模块</a>
-</nav>
-
-<section class="panel" id="nginx-status" data-nginx-section="status">
-  <h2>状态</h2>
-  {% if !status.available %}
-  <div class="alert">数据不可得：{{ status.reason }}</div>
-  {% endif %}
-  <div class="kv">
-    <div><span class="muted">容器</span><span class="mono">{% if status.container_state.is_empty() %}不可得{% else %}skiff-web-nginx（{{ status.container_state }}）{% endif %}</span></div>
-    <div><span class="muted">版本</span><span class="mono">{% if status.version.is_empty() %}不可得{% else %}{{ status.version }}{% endif %}</span></div>
-    <div><span class="muted">配置校验</span><span>{% if status.config_test.is_empty() %}不可得{% else %}{{ status.config_test }}{% endif %}</span></div>
-    <div><span class="muted">active connections</span><span class="mono">{% match status.active %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
-    <div><span class="muted">accepts</span><span class="mono">{% match status.accepts %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
-    <div><span class="muted">handled</span><span class="mono">{% match status.handled %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
-    <div><span class="muted">requests</span><span class="mono">{% match status.requests %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
-    <div><span class="muted">reading / writing / waiting</span><span class="mono">{% match status.reading %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %} / {% match status.writing %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %} / {% match status.waiting %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
+<div class="page-nginx">
+  <div class="page-head">
+    <h1>Nginx</h1>
+    <span class="sub">内核功能（非插件）· host 网络 · stub_status 127.0.0.1:8081</span>
   </div>
-  {% if !status.stub_reason.is_empty() %}<div class="alert warn">stub_status 不可得：{{ status.stub_reason }}（不显示 0 假装正常）</div>{% endif %}
-</section>
+  {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 
-<section class="panel" id="nginx-config" data-nginx-section="config">
-  <h2>配置</h2>
-  <p class="muted">主配置：<span class="mono">{{ config.main_path }}</span>。保存时先写候选文件并在容器内执行 <code>nginx -t -c</code>，通过后才替换并 reload；失败回滚并给出错误行。</p>
-  {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/nginx/config/main">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <label>主配置 nginx.conf
-      <textarea name="content" rows="18" class="mono" spellcheck="false">{{ config.main_content }}</textarea>
-    </label>
-    <div class="wizard-nav"><button class="btn primary" type="submit">校验并重载</button></div>
-  </form>
-  {% else %}
-  <pre class="log">{{ config.main_content }}</pre>
-  {% endif %}
+  {# 复用插件工作台的横栏标记与类名；本页在单页内切换区块，不用 iframe/新路由。 #}
+  <nav class="workbench-tabs" data-workbench data-nginx-tabs aria-label="Nginx 标签">
+    <a class="workbench-tab{% if tab == "status" %} on{% endif %}" data-nginx-tab="status" href="#status"{% if tab == "status" %} aria-current="page"{% endif %}>
+      <svg class="menu-ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-activity"/></svg>状态
+    </a>
+    <a class="workbench-tab{% if tab == "config" %} on{% endif %}" data-nginx-tab="config" href="#config"{% if tab == "config" %} aria-current="page"{% endif %}>
+      <svg class="menu-ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-file"/></svg>配置
+    </a>
+    <a class="workbench-tab{% if tab == "logs" %} on{% endif %}" data-nginx-tab="log" href="#log"{% if tab == "logs" %} aria-current="page"{% endif %}>
+      <svg class="menu-ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-list"/></svg>日志
+    </a>
+    <a class="workbench-tab{% if tab == "modules" %} on{% endif %}" data-nginx-tab="modules" href="#modules"{% if tab == "modules" %} aria-current="page"{% endif %}>
+      <svg class="menu-ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-tools"/></svg>模块
+    </a>
+  </nav>
 
-  <h3>性能参数</h3>
-  {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/nginx/config/params">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <div class="form-grid">
-      <label>worker_processes
-        <input name="worker_processes" value="{{ config.params.worker_processes }}" class="mono" placeholder="auto 或 1–512">
+  <section class="panel" id="nginx-status" data-nginx-panel="status"{% if tab != "status" %} hidden{% endif %}>
+    <h2>状态</h2>
+    {% if !status.available %}
+    <div class="alert">数据不可得：{{ status.reason }}</div>
+    {% endif %}
+    <div class="kv">
+      <div><span class="muted">容器</span><span class="mono">{% if status.container_state.is_empty() %}不可得{% else %}skiff-web-nginx（{{ status.container_state }}）{% endif %}</span></div>
+      <div><span class="muted">版本</span><span class="mono">{% if status.version.is_empty() %}不可得{% else %}{{ status.version }}{% endif %}</span></div>
+      <div><span class="muted">运行时长</span><span class="mono">{% if status.uptime.is_empty() %}不可得{% else %}{{ status.uptime }}{% endif %}</span></div>
+      <div><span class="muted">最近 reload</span><span class="mono">{% if status.last_reload.is_empty() %}暂无记录（本页保存成功后写入）{% else %}{{ status.last_reload }}{% endif %}</span></div>
+      <div><span class="muted">配置校验</span><span>{% if status.config_test.is_empty() %}不可得{% else %}{{ status.config_test }}{% endif %}</span></div>
+      <div><span class="muted">active connections</span><span class="mono">{% match status.active %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
+      <div><span class="muted">accepts</span><span class="mono">{% match status.accepts %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
+      <div><span class="muted">handled</span><span class="mono">{% match status.handled %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
+      <div><span class="muted">requests</span><span class="mono">{% match status.requests %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
+      <div><span class="muted">reading / writing / waiting</span><span class="mono">{% match status.reading %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %} / {% match status.writing %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %} / {% match status.waiting %}{% when Some with (v) %}{{ v }}{% when None %}不可得{% endmatch %}</span></div>
+    </div>
+    <div class="kv nginx-probe">
+      <div><span class="muted">探测地址</span><span class="mono">{{ status.probe_url }}</span></div>
+      <div><span class="muted">内核主配置</span><span class="mono">{{ status.conf_path }}</span></div>
+      <div><span class="muted">主配置含 stub_status</span><span class="mono">{% if status.conf_has_stub %}是{% else %}否（容器可能仍在使用镜像默认 nginx.conf）{% endif %}</span></div>
+    </div>
+    {% if !status.stub_reason.is_empty() %}<div class="alert warn" data-nginx-stub-error>stub_status 不可得：{{ status.stub_reason }}（不显示 0 假装正常）</div>{% endif %}
+    {% if !status.probe_error.is_empty() %}<pre class="log nginx-diagnosis">{{ status.probe_error }}</pre>{% endif %}
+  </section>
+
+  <section class="panel" id="nginx-config" data-nginx-panel="config"{% if tab != "config" %} hidden{% endif %}>
+    <h2>配置</h2>
+    <p class="muted">主配置：<span class="mono">{{ config.main_path }}</span>。保存时先写候选文件并在容器内执行 <code>nginx -t -c</code>，通过后才替换并 reload；失败回滚并给出错误行与逐行差异。</p>
+    {% if can_admin %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/nginx/config/main">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <label>主配置 nginx.conf
+        <textarea name="content" rows="18" class="mono" spellcheck="false">{{ config.main_content }}</textarea>
       </label>
-      <label>worker_connections
-        <input name="worker_connections" type="number" min="64" max="65535" value="{{ config.params.worker_connections }}" class="mono">
-      </label>
-      <label>keepalive_timeout（秒）
-        <input name="keepalive_timeout" type="number" min="0" max="3600" value="{{ config.params.keepalive_timeout }}" class="mono">
-      </label>
-      <label>client_max_body_size
-        <input name="client_max_body_size" value="{{ config.params.client_max_body_size }}" class="mono" placeholder="16m">
-      </label>
-      <label>gzip
-        <select name="gzip">
-          <option value="on" {% if config.params.gzip %}selected{% endif %}>开启</option>
-          <option value="off" {% if !config.params.gzip %}selected{% endif %}>关闭</option>
+      <div class="wizard-nav"><button class="btn primary" type="submit">校验并重载</button></div>
+    </form>
+    {% else %}
+    <pre class="log">{{ config.main_content }}</pre>
+    {% endif %}
+
+    <h3>性能参数</h3>
+    {% if can_admin %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/nginx/config/params">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <div class="form-grid">
+        <label>worker_processes
+          <input name="worker_processes" value="{{ config.params.worker_processes }}" class="mono" placeholder="auto 或 1–512">
+        </label>
+        <label>worker_connections
+          <input name="worker_connections" type="number" min="64" max="65535" value="{{ config.params.worker_connections }}" class="mono">
+        </label>
+        <label>keepalive_timeout（秒）
+          <input name="keepalive_timeout" type="number" min="0" max="3600" value="{{ config.params.keepalive_timeout }}" class="mono">
+        </label>
+        <label>client_max_body_size
+          <input name="client_max_body_size" value="{{ config.params.client_max_body_size }}" class="mono" placeholder="16m">
+        </label>
+        <label>gzip
+          <select name="gzip">
+            <option value="on" {% if config.params.gzip %}selected{% endif %}>开启</option>
+            <option value="off" {% if !config.params.gzip %}selected{% endif %}>关闭</option>
+          </select>
+        </label>
+        <label>gzip_types
+          <input name="gzip_types" value="{{ config.params.gzip_types }}" class="mono">
+        </label>
+      </div>
+      <p class="hint">保存会重新生成主配置并走同一套 nginx -t + reload + 回滚流程。</p>
+      <div class="wizard-nav"><button class="btn primary" type="submit">保存参数</button></div>
+    </form>
+    {% else %}
+    <div class="kv">
+      <div><span class="muted">worker_processes</span><span class="mono">{{ config.params.worker_processes }}</span></div>
+      <div><span class="muted">worker_connections</span><span class="mono">{{ config.params.worker_connections }}</span></div>
+      <div><span class="muted">keepalive_timeout</span><span class="mono">{{ config.params.keepalive_timeout }}s</span></div>
+      <div><span class="muted">client_max_body_size</span><span class="mono">{{ config.params.client_max_body_size }}</span></div>
+      <div><span class="muted">gzip</span><span class="mono">{% if config.params.gzip %}on{% else %}off{% endif %}</span></div>
+      <div><span class="muted">gzip_types</span><span class="mono">{{ config.params.gzip_types }}</span></div>
+    </div>
+    {% endif %}
+
+    <h3>网站 include（只读）</h3>
+    <p class="muted"><span class="mono">{{ config.include_path }}</span></p>
+    <pre class="log">{% if config.include_content.is_empty() %}文件不存在或为空{% else %}{{ config.include_content }}{% endif %}</pre>
+    <h3>站点 vhost（只读）</h3>
+    {% if config.sites.is_empty() %}
+    <p class="muted">暂无站点 vhost。</p>
+    {% else %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>域名</th><th>路径</th><th>内容</th></tr></thead>
+        <tbody>
+        {% for s in config.sites %}
+          <tr>
+            <td class="mono">{{ s.domain }}</td>
+            <td class="mono">{{ s.path }}</td>
+            <td><details><summary>展开</summary><pre class="log">{% if s.content.is_empty() %}文件不存在{% else %}{{ s.content }}{% endif %}</pre></details></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="panel" id="nginx-logs" data-nginx-panel="logs"{% if tab != "logs" %} hidden{% endif %}>
+    <h2>日志</h2>
+    <form method="get" action="/{{ ctx.prefix }}/sites/nginx" class="inline-form">
+      <input type="hidden" name="tab" value="logs">
+      <label>关键字 <input type="text" name="q" value="{{ keyword }}" placeholder="状态码 / IP / 路径"></label>
+      <label>级别
+        <select name="level">
+          <option value="all" {% if logs.error_level == "all" %}selected{% endif %}>全部</option>
+          <option value="emerg" {% if logs.error_level == "emerg" %}selected{% endif %}>emerg</option>
+          <option value="alert" {% if logs.error_level == "alert" %}selected{% endif %}>alert</option>
+          <option value="crit" {% if logs.error_level == "crit" %}selected{% endif %}>crit</option>
+          <option value="error" {% if logs.error_level == "error" %}selected{% endif %}>error</option>
+          <option value="warn" {% if logs.error_level == "warn" %}selected{% endif %}>warn</option>
+          <option value="notice" {% if logs.error_level == "notice" %}selected{% endif %}>notice</option>
+          <option value="info" {% if logs.error_level == "info" %}selected{% endif %}>info</option>
         </select>
       </label>
-      <label>gzip_types
-        <input name="gzip_types" value="{{ config.params.gzip_types }}" class="mono">
+      <label>tail
+        <select name="tail">
+          <option value="100" {% if tail == 100 %}selected{% endif %}>100 行</option>
+          <option value="200" {% if tail == 200 %}selected{% endif %}>200 行</option>
+          <option value="500" {% if tail == 500 %}selected{% endif %}>500 行</option>
+        </select>
       </label>
+      <button class="btn" type="submit">过滤</button>
+      <a class="btn" data-nginx-tail-refresh href="/{{ ctx.prefix }}/sites/nginx?tab=logs&amp;q={{ keyword }}&amp;level={{ logs.error_level }}&amp;tail={{ tail }}">刷新 tail</a>
+    </form>
+
+    <div class="logs-grid">
+      <div>
+        <h3>错误日志（倒序）</h3>
+        <p class="muted"><span class="mono">{{ logs.error_path }}</span> · 级别 {{ logs.error_level }}</p>
+        {% if !logs.error_reason.is_empty() %}
+        <div class="alert">不可得：{{ logs.error_reason }}</div>
+        {% else if logs.error_lines.is_empty() %}
+        <p class="muted">当前没有匹配的错误日志（tail {{ logs.tail }} 行）。</p>
+        {% else %}
+        <pre class="log nginx-tail">{% for l in logs.error_lines %}{{ l }}
+{% endfor %}</pre>
+        <p class="muted">共 {{ logs.error_lines.len() }} 行（tail {{ logs.tail }} 行内过滤）。</p>
+        {% endif %}
+      </div>
+      <div>
+        <h3>访问日志（tail）</h3>
+        <p class="muted">{{ logs.access_path }}</p>
+        {% if !logs.access_reason.is_empty() %}
+        <div class="alert">不可得：{{ logs.access_reason }}</div>
+        {% else %}
+        <pre class="log nginx-tail">{% for l in logs.access_lines %}{{ l }}
+{% endfor %}</pre>
+        <p class="muted">共 {{ logs.access_lines.len() }} 行（tail {{ logs.tail }} 行内）。</p>
+        {% endif %}
+        <div class="kv">
+          {% for c in logs.status_counts %}
+          <div><span class="muted">{{ c.label }}</span><span class="mono">{{ c.count }}</span></div>
+          {% endfor %}
+        </div>
+      </div>
     </div>
-    <p class="hint">保存会重新生成主配置并走同一套 nginx -t + reload + 回滚流程。</p>
-    <div class="wizard-nav"><button class="btn primary" type="submit">保存参数</button></div>
-  </form>
-  {% else %}
-  <div class="kv">
-    <div><span class="muted">worker_processes</span><span class="mono">{{ config.params.worker_processes }}</span></div>
-    <div><span class="muted">worker_connections</span><span class="mono">{{ config.params.worker_connections }}</span></div>
-    <div><span class="muted">keepalive_timeout</span><span class="mono">{{ config.params.keepalive_timeout }}s</span></div>
-    <div><span class="muted">client_max_body_size</span><span class="mono">{{ config.params.client_max_body_size }}</span></div>
-    <div><span class="muted">gzip</span><span class="mono">{% if config.params.gzip %}on{% else %}off{% endif %}</span></div>
-    <div><span class="muted">gzip_types</span><span class="mono">{{ config.params.gzip_types }}</span></div>
-  </div>
-  {% endif %}
 
-  <h3>网站 include（只读）</h3>
-  <p class="muted"><span class="mono">{{ config.include_path }}</span></p>
-  <pre class="log">{% if config.include_content.is_empty() %}文件不存在或为空{% else %}{{ config.include_content }}{% endif %}</pre>
-  <h3>站点 vhost（只读）</h3>
-  {% if config.sites.is_empty() %}
-  <p class="muted">暂无站点 vhost。</p>
-  {% else %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>域名</th><th>路径</th><th>内容</th></tr></thead>
-      <tbody>
-      {% for s in config.sites %}
-        <tr>
-          <td class="mono">{{ s.domain }}</td>
-          <td class="mono">{{ s.path }}</td>
-          <td><details><summary>展开</summary><pre class="log">{% if s.content.is_empty() %}文件不存在{% else %}{{ s.content }}{% endif %}</pre></details></td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% endif %}
-</section>
+    {% if logs.access_reason.is_empty() %}
+    <h3>最近请求</h3>
+    <pre class="log">{% for l in logs.recent %}{{ l }}
+{% endfor %}</pre>
+    {% endif %}
+  </section>
 
-<section class="panel" id="nginx-logs" data-nginx-section="logs">
-  <h2>日志</h2>
-  <form method="get" action="/{{ ctx.prefix }}/sites/nginx" class="inline-form">
-    <input type="hidden" name="tab" value="logs">
-    <label>关键字 <input type="text" name="q" value="{{ keyword }}" placeholder="状态码 / IP / 路径"></label>
-    <button class="btn" type="submit">过滤</button>
-  </form>
-  <h3>错误日志（倒序）</h3>
-  <p class="muted"><span class="mono">{{ logs.error_path }}</span></p>
-  {% if !logs.error_reason.is_empty() %}
-  <div class="alert">不可得：{{ logs.error_reason }}</div>
-  {% else if logs.error_lines.is_empty() %}
-  <p class="muted">当前没有匹配的错误日志。</p>
-  {% else %}
-  <pre class="log">{% for l in logs.error_lines %}{{ l }}
+  <section class="panel" id="nginx-modules" data-nginx-panel="modules"{% if tab != "modules" %} hidden{% endif %}>
+    <h2>模块</h2>
+    {% if !modules.available %}
+    <div class="alert">不可得：{% if modules.reason.is_empty() %}nginx 容器不可用{% else %}{{ modules.reason }}{% endif %}</div>
+    {% else %}
+    <div class="kv">
+      <div><span class="muted">版本</span><span class="mono">{% if modules.version.is_empty() %}不可得{% else %}{{ modules.version }}{% endif %}</span></div>
+      <div><span class="muted">模块数</span><span class="mono">{{ modules.modules.len() }}</span></div>
+    </div>
+    {% if !modules.reason.is_empty() %}<div class="alert warn">{{ modules.reason }}</div>{% endif %}
+    {% endif %}
+    <h3>编译参数（nginx -V）</h3>
+    {% if modules.configure_args.is_empty() %}
+    <p class="muted">nginx -V 未给出编译参数。</p>
+    {% else %}
+    <pre class="log">{% for a in modules.configure_args %}{{ a }}
 {% endfor %}</pre>
-  {% endif %}
-  <h3>访问日志汇总</h3>
-  <p class="muted">{{ logs.access_path }}</p>
-  <div class="kv">
-    {% for c in logs.status_counts %}
-    <div><span class="muted">{{ c.label }}</span><span class="mono">{{ c.count }}</span></div>
-    {% endfor %}
-  </div>
-  {% if !logs.access_reason.is_empty() %}
-  <div class="alert">不可得：{{ logs.access_reason }}</div>
-  {% else %}
-  <h3>最近请求</h3>
-  <pre class="log">{% for l in logs.recent %}{{ l }}
+    {% endif %}
+    <h3>模块列表</h3>
+    {% if modules.modules.is_empty() %}
+    <p class="muted">未解析到模块。</p>
+    {% else %}
+    <pre class="log">{% for m in modules.modules %}{{ m }}
 {% endfor %}</pre>
-  {% endif %}
-</section>
-
-<section class="panel" id="nginx-modules" data-nginx-section="modules">
-  <h2>模块</h2>
-  {% if !modules.available %}
-  <div class="alert">不可得：{% if modules.reason.is_empty() %}nginx 容器不可用{% else %}{{ modules.reason }}{% endif %}</div>
-  {% else %}
-  <div class="kv">
-    <div><span class="muted">版本</span><span class="mono">{% if modules.version.is_empty() %}不可得{% else %}{{ modules.version }}{% endif %}</span></div>
-  </div>
-  {% if !modules.reason.is_empty() %}<div class="alert warn">{{ modules.reason }}</div>{% endif %}
-  {% endif %}
-  <h3>编译参数（nginx -V）</h3>
-  {% if modules.configure_args.is_empty() %}
-  <p class="muted">nginx -V 未给出编译参数。</p>
-  {% else %}
-  <pre class="log">{% for a in modules.configure_args %}{{ a }}
-{% endfor %}</pre>
-  {% endif %}
-  <h3>模块列表</h3>
-  {% if modules.modules.is_empty() %}
-  <p class="muted">未解析到模块。</p>
-  {% else %}
-  <pre class="log">{% for m in modules.modules %}{{ m }}
-{% endfor %}</pre>
-  {% endif %}
-</section>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}
