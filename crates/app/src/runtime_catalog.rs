@@ -253,18 +253,27 @@ pub const PHP_EXTENSION_INSTALLER: &str =
 /// `IPE_KEEP_SYSPKG_CACHE=1`：安装器默认在收尾时删掉 `/var/cache/apk/*`。
 /// 容器把该目录挂到宿主 `<runtime>/cache/apk`，保留缓存后，重建与同机多环境
 /// 可复用已下载的依赖包，不再每次重下整套构建依赖。
+///
+/// apk-tools 3 只在 `/etc/apk/cache` 存在时才自动启用 `cache-packages`；容器里
+/// 该目录不存在，apk 会静默回退到 `/var/cache/apk` 静态缓存目录，但**不把 `.apk`
+/// 落盘**（只留索引）。安装器的 `IPE_APK_FLAGS` 在脚本内部被重置为 `''`，无法从
+/// 环境注入，因此在 prelude 里写 `/etc/apk/config` 显式打开 `cache-packages`，
+/// 让主路径的 `apk add` 把包副本落进挂载的 `/var/cache/apk`。
 fn installer_prelude() -> String {
     format!(
         "set -e\n\
          IPE_KEEP_SYSPKG_CACHE=1\n\
          export IPE_KEEP_SYSPKG_CACHE\n\
+         if [ ! -f /etc/apk/config ] || ! grep -q '^cache-packages' /etc/apk/config; then\n\
+         \tprintf 'cache-packages yes\\n' >> /etc/apk/config\n\
+         fi\n\
          SKIFF_LOCAL_IPE='{local}'\n\
          if [ -f \"$SKIFF_LOCAL_IPE\" ]; then\n\
          \tSKIFF_IPE_VER=$(sed -n 's/^IPE_VERSION=//p' \"$SKIFF_LOCAL_IPE\" | head -n 1)\n\
          \tif [ \"$SKIFF_IPE_VER\" = '{ver}' ]; then\n\
          \t\tcp \"$SKIFF_LOCAL_IPE\" /usr/local/bin/install-php-extensions\n\
          \t\tchmod 0755 /usr/local/bin/install-php-extensions\n\
-         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}；apk 缓存保留在 /var/cache/apk）\"\n\
+         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}；apk 包缓存 /var/cache/apk 已启用）\"\n\
          \telse\n\
          \t\techo \"[skiff] 本地扩展安装器版本不符：$SKIFF_IPE_VER（期望 {ver}）；回退下载固定版本\" >&2\n\
          \t\tcurl -fsSL {url} -o /usr/local/bin/install-php-extensions && chmod 0755 /usr/local/bin/install-php-extensions || true\n\
@@ -1576,6 +1585,17 @@ mod tests {
         assert_eq!(php_extension("ldap").expect("ldap").deps, &["openldap-dev"]);
         assert_eq!(php_extension("tidy").expect("tidy").deps, &["tidyhtml-dev"]);
         assert_eq!(php_extension("snmp").expect("snmp").deps, &["net-snmp-dev"]);
+    }
+
+    #[test]
+    fn installer_prelude_enables_apk_package_cache() {
+        // apk-tools 3 默认只缓存索引、不缓存 `.apk`；只挂载 `/var/cache/apk`
+        // 会出现「目录有文件但二装不命中包」的假优化。必须显式打开 cache-packages。
+        let script = php_extension("redis").expect("redis").install_script();
+        assert!(script.contains("cache-packages yes"), "{script}");
+        assert!(script.contains("/etc/apk/config"), "{script}");
+        // 安装器收尾默认 `rm -rf /var/cache/apk/*`，保留缓存才能跨安装复用。
+        assert!(script.contains("IPE_KEEP_SYSPKG_CACHE=1"), "{script}");
     }
 
     #[test]

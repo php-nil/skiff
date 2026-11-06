@@ -277,9 +277,11 @@ impl SiteSettings {
 
     /// 宿主侧系统包缓存（alpine `apk` / debian `apt` 下载的包文件）。
     ///
-    /// 挂进每个 PHP 容器的 `/var/cache/apk`，配合安装器的
-    /// `IPE_KEEP_SYSPKG_CACHE=1`，让重建/同机多环境复用已下载的依赖包，
-    /// 不再每次都从镜像源重下整套构建依赖。
+    /// 挂进每个 PHP 容器的 `/var/cache/apk`。仅挂载目录还不够：apk-tools 3 在
+    /// `/etc/apk/cache` 不存在时会回退到该静态目录，但默认不缓存 `.apk`；安装器
+    /// prelude 会写 `/etc/apk/config` 打开 `cache-packages`，并设置
+    /// `IPE_KEEP_SYSPKG_CACHE=1` 阻止收尾清理，才能让重建/同机多环境复用
+    /// 已下载的依赖包。
     pub fn system_pkg_cache_dir(&self) -> PathBuf {
         self.runtime_dir.join("cache").join("apk")
     }
