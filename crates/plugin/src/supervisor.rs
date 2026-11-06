@@ -64,10 +64,38 @@ pub enum SupervisorError {
 }
 
 struct Running {
-    child: tokio::process::Child,
+    child: ChildGuard,
     socket: PathBuf,
     token: String,
     last_used: Instant,
+}
+
+/// 子进程所有权：`tokio::process::Child` 被丢弃时**不会**杀进程。
+///
+/// 只要 `Running` 不是经 `terminate` 正常结束就被丢弃（重复插入覆盖、`ensure` 的调用方
+/// future 在拉起中途被取消），子进程就失去归属、永久泄漏。Drop 里补一刀 SIGKILL，
+/// 保证无主孤儿子进程被立即回收；对已经退出的进程再调 `start_kill` 是无害的。
+struct ChildGuard(Option<tokio::process::Child>);
+
+impl std::ops::Deref for ChildGuard {
+    type Target = tokio::process::Child;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("ChildGuard 只在 Drop 中取走进程")
+    }
+}
+
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("ChildGuard 只在 Drop 中取走进程")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -81,6 +109,8 @@ pub struct Supervisor {
     db: Arc<Db>,
     running: Mutex<HashMap<String, Running>>,
     failures: Mutex<HashMap<String, Failure>>,
+    /// 按插件 id 的 spawn 门：同一插件的拉起必须串行，否则并发 `ensure` 各起一个进程。
+    spawn_gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Supervisor {
@@ -90,6 +120,7 @@ impl Supervisor {
             db,
             running: Mutex::new(HashMap::new()),
             failures: Mutex::new(HashMap::new()),
+            spawn_gates: Mutex::new(HashMap::new()),
         }
     }
 
@@ -120,6 +151,29 @@ impl Supervisor {
 
     /// 确保插件已拉起，返回 socket 路径。
     pub async fn ensure(&self, rec: &PluginRecord) -> Result<PathBuf, SupervisorError> {
+        self.ensure_spawned(rec, || async {
+            let manifest =
+                manifest_of(rec).map_err(|e| SupervisorError::Manifest(e.to_string()))?;
+            self.spawn(rec, &manifest).await
+        })
+        .await
+    }
+
+    /// `ensure` 的可注入版本：`spawn` 只在确实需要拉起时调用一次（测试可传计数替身）。
+    ///
+    /// 「快路径复查 → 取门 → 门内复查」三道关，保证同一插件同一时刻只有一个进程在拉起；
+    /// 已在跑的直接复用。没有这层门时，并发 `ensure` 会在锁外各 spawn 一个进程，
+    /// 后被插入 `running` 的那份覆盖先前那份、先前进程无人回收（2026-11-06 测试机
+    /// 反复出现同一插件多个 pid、进程泄漏）。
+    async fn ensure_spawned<F, Fut>(
+        &self,
+        rec: &PluginRecord,
+        spawn: F,
+    ) -> Result<PathBuf, SupervisorError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Running, SupervisorError>>,
+    {
         {
             let mut running = self.running.lock().await;
             if let Some(r) = running.get_mut(&rec.id) {
@@ -127,6 +181,19 @@ impl Supervisor {
                 return Ok(r.socket.clone());
             }
         }
+
+        let gate = self.spawn_gate(&rec.id).await;
+        let _gate = gate.lock().await;
+
+        // 等门期间别人可能已经拉起：直接复用，不要新起。
+        {
+            let mut running = self.running.lock().await;
+            if let Some(r) = running.get_mut(&rec.id) {
+                r.last_used = Instant::now();
+                return Ok(r.socket.clone());
+            }
+        }
+
         {
             let failures = self.failures.lock().await;
             if let Some(f) = failures.get(&rec.id) {
@@ -141,8 +208,7 @@ impl Supervisor {
             }
         }
 
-        let manifest = manifest_of(rec).map_err(|e| SupervisorError::Manifest(e.to_string()))?;
-        match self.spawn(rec, &manifest).await {
+        match spawn().await {
             Ok(r) => {
                 let mut running = self.running.lock().await;
                 let socket = r.socket.clone();
@@ -172,6 +238,15 @@ impl Supervisor {
                 Err(e)
             }
         }
+    }
+
+    /// 取（必要时创建）该插件的 spawn 门。
+    async fn spawn_gate(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.spawn_gates.lock().await;
+        gates
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// 调用插件 RPC（自动拉起）。超时/错误不熔断进程本身，由 ensure 的失败计数负责。
@@ -363,9 +438,10 @@ impl Supervisor {
             });
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| SupervisorError::Spawn(format!("{}: {e}", bin.display())))?;
+        let mut child =
+            ChildGuard(Some(cmd.spawn().map_err(|e| {
+                SupervisorError::Spawn(format!("{}: {e}", bin.display()))
+            })?));
 
         // 一次性身份令牌经 stdin 交付（不落环境变量，退出即失效）
         if let Some(mut stdin) = child.stdin.take() {
@@ -473,5 +549,146 @@ pub fn clean_run_dirs(data_root: &Path) {
                 unsafe { libc::chown(c.as_ptr(), uid, uid) };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn rec(id: &str) -> PluginRecord {
+        PluginRecord {
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            api: "v1".into(),
+            key_id: String::new(),
+            manifest: "{}".into(),
+            enabled: true,
+            status: "installed".into(),
+            status_detail: String::new(),
+            active_version: "1.0.0".into(),
+            installed_at: 0,
+            grants: Vec::new(),
+        }
+    }
+
+    fn supervisor(dir: &std::path::Path) -> Arc<Supervisor> {
+        Arc::new(Supervisor::new(
+            SupervisorConfig::new(dir, dir.join("run")),
+            Arc::new(Db::open_in_memory().unwrap()),
+        ))
+    }
+
+    /// 替身进程：真 child 只为验证所有权与回收，不依赖 Docker / 真插件。
+    #[cfg(unix)]
+    fn fake_child() -> ChildGuard {
+        ChildGuard(Some(
+            tokio::process::Command::new("sleep")
+                .arg("60")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("测试替身 sleep 拉起失败"),
+        ))
+    }
+
+    #[cfg(windows)]
+    fn fake_child() -> ChildGuard {
+        ChildGuard(Some(
+            tokio::process::Command::new("cmd")
+                .args(["/C", "ping", "-n", "120", "127.0.0.1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("测试替身 ping 拉起失败"),
+        ))
+    }
+
+    /// 同一插件并发 ensure：只允许拉起一次，其余在门内复查后复用同一 socket。
+    #[tokio::test]
+    async fn concurrent_ensure_spawns_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let sup = supervisor(dir.path());
+        let r = rec("com.skiff.concurrent");
+        let spawned = Arc::new(AtomicUsize::new(0));
+
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let sup = sup.clone();
+            let r = r.clone();
+            let spawned = spawned.clone();
+            tasks.push(tokio::spawn(async move {
+                sup.ensure_spawned(&r, || {
+                    spawned.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        // 留出窗口，让其余调用都卡在门上，而不是走快路径
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok(Running {
+                            child: fake_child(),
+                            socket: sup.socket_path(&r.id),
+                            token: "test".into(),
+                            last_used: Instant::now(),
+                        })
+                    }
+                })
+                .await
+            }));
+        }
+
+        let mut sockets = Vec::new();
+        for t in tasks {
+            sockets.push(t.await.unwrap().unwrap());
+        }
+
+        assert_eq!(
+            spawned.load(Ordering::SeqCst),
+            1,
+            "同一插件并发 ensure 只应拉起一个进程"
+        );
+        assert!(sockets.iter().all(|s| *s == sockets[0]));
+        assert!(sup.is_running("com.skiff.concurrent").await);
+    }
+
+    /// 没有归属的子进程：`Running` 被直接丢弃时必须被回收，而不是继续在后台跑。
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropped_running_reaps_orphan_child() {
+        let pid = {
+            let r = Running {
+                child: fake_child(),
+                socket: PathBuf::from("/tmp/skiff-test.sock"),
+                token: "test".into(),
+                last_used: Instant::now(),
+            };
+            let pid = r.child.id().expect("子进程应有 pid");
+            drop(r);
+            pid
+        };
+
+        // SIGKILL 送达后进程最多短暂停留为僵尸，不能继续是活的睡眠态。
+        let mut alive = true;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Ok(stat) => {
+                    let state = stat
+                        .rsplit(')')
+                        .next()
+                        .and_then(|s| s.trim().chars().next());
+                    if matches!(state, Some('Z') | Some('X')) {
+                        alive = false;
+                        break;
+                    }
+                }
+                Err(_) => {
+                    alive = false;
+                    break;
+                }
+            }
+        }
+        assert!(!alive, "丢弃 Running 后孤儿子进程仍存活（pid {pid}）");
     }
 }
