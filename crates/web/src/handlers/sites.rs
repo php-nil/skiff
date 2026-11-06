@@ -83,12 +83,7 @@ pub(crate) fn version_display(
 
 fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRow {
     let prefix = &state.cfg.entry_prefix;
-    let kind_label = match v.runtime.kind.as_str() {
-        skiff_store::KIND_NODE => "Node.js",
-        skiff_store::KIND_GO => "Go",
-        skiff_store::KIND_RUST => "Rust",
-        _ => "PHP",
-    };
+    let kind_label = skiff_app::runtime_catalog::kind_label(&v.runtime.kind);
     let endpoint_full = match v.runtime.kind.as_str() {
         skiff_store::KIND_PHP => {
             if v.socket_host.is_empty() {
@@ -133,7 +128,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
     RuntimeRow {
         id: v.runtime.id.clone(),
         kind_key: v.runtime.kind.clone(),
-        kind_label: kind_label.into(),
+        kind_label,
         name: v.runtime.name.clone(),
         container_name: v.container_name.clone(),
         version: v.runtime.version.clone(),
@@ -570,23 +565,19 @@ fn collect_aliases(form: &HashMap<String, Vec<String>>) -> Vec<String> {
     out
 }
 
-/// 运行环境选项：P1 只放行 PHP；Node/Go 以禁用态出现并说明 P2。
+/// 运行环境选项：label 与类型目录共用 `runtime_catalog`，避免漏映射新类型（如 Rust 被标成 PHP）。
 fn runtime_options(views: &[skiff_app::sites::RuntimeView]) -> Vec<RuntimeOptionView> {
     let mut out: Vec<RuntimeOptionView> = views
         .iter()
         .map(|v| {
-            let kind = match v.runtime.kind.as_str() {
-                skiff_store::KIND_NODE => "Node.js",
-                skiff_store::KIND_GO => "Go",
-                _ => "PHP",
-            };
+            let kind = skiff_app::runtime_catalog::kind_label(&v.runtime.kind);
             let ready = v.implemented && v.effective_state == "running";
             RuntimeOptionView {
                 id: v.runtime.id.clone(),
                 label: format!("{kind} {}", v.runtime.version),
                 disabled: !v.implemented || !ready,
                 disabled_reason: if !v.implemented {
-                    "P2 未实现：P1 只支持 PHP 运行环境".into()
+                    "P2 未实现：当前仅提供 PHP / Rust 运行环境".into()
                 } else if v.effective_state == "missing" {
                     "未安装，可到运行环境页安装".into()
                 } else if !ready {
@@ -1214,6 +1205,32 @@ pub async fn detail(
     Path(domain): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
+    render_detail(
+        state,
+        user,
+        domain,
+        q.get("tab").cloned().unwrap_or_else(|| "overview".into()),
+        q.get("error").cloned().unwrap_or_default(),
+        q.get("notice").cloned().unwrap_or_default(),
+        q.get("path").cloned(),
+        None,
+    )
+    .await
+}
+
+/// 详情页渲染。`submitted_config` 非空时用用户刚提交的配置替代磁盘内容，
+/// 供保存校验失败后原地回显，避免跳转重读把编辑内容冲掉。
+#[allow(clippy::too_many_arguments)]
+async fn render_detail(
+    state: Arc<AppState>,
+    user: crate::state::CurrentUser,
+    domain: String,
+    mut tab: String,
+    mut error: String,
+    notice: String,
+    dir_path: Option<String>,
+    submitted_config: Option<String>,
+) -> Result<Response, AppError> {
     let site = state
         .db()
         .site_by_domain(&domain)?
@@ -1252,15 +1269,12 @@ pub async fn detail(
     } else {
         (false, String::new(), String::new())
     };
-    let mut tab = q.get("tab").cloned().unwrap_or_else(|| "overview".into());
     if !matches!(
         tab.as_str(),
         "overview" | "domains" | "config" | "dir" | "ssl"
     ) {
         tab = "overview".to_string();
     }
-    let mut error = q.get("error").cloned().unwrap_or_default();
-    let notice = q.get("notice").cloned().unwrap_or_default();
     let mut config_path = String::new();
     let mut config_content = String::new();
     let mut config_active = false;
@@ -1274,9 +1288,12 @@ pub async fn detail(
             }
             Err(e) => error = format!("{e}"),
         }
+        if let Some(text) = submitted_config {
+            config_content = text;
+        }
     }
     if tab == "dir" {
-        let rel = q.get("path").cloned().unwrap_or_default();
+        let rel = dir_path.unwrap_or_default();
         match state.site_dir_listing(&domain, &rel) {
             Ok(listing) => dir = dir_view(listing),
             // 越界（../log、../ssl 等）按请求错误直接 400，不降级成页面内提示。
@@ -1462,11 +1479,18 @@ pub async fn save_config(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/{}?tab=config&error={}",
-                encode_uri_component(&domain),
-                encode_uri_component(&msg)
-            )))
+            // 校验失败原地回显：把本次提交内容带回配置标签页；跳转会重读磁盘，冲掉编辑。
+            render_detail(
+                state,
+                user,
+                domain,
+                "config".to_string(),
+                msg,
+                String::new(),
+                None,
+                Some(content),
+            )
+            .await
         }
     }
 }

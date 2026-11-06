@@ -4606,7 +4606,7 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-    // 合法 CSRF 时进入回滚路径（无 Docker → 保存失败），必须带回错误而不是 500。
+    // 合法 CSRF 时进入回滚路径（无 Docker → 保存失败），必须带回错误并保留本次编辑内容。
     let resp = h
         .app
         .clone()
@@ -4621,14 +4621,16 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "失败应跳回配置页");
-    let location = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert!(location.contains("error="), "{location}");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "失败应原地回显配置页，不再跳转"
+    );
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("events {}"),
+        "校验失败必须保留用户正在编辑的内容: {html}"
+    );
     assert!(
         h.state
             .db()
@@ -4796,16 +4798,16 @@ async fn stopped_site_config_save_validation_failure_does_not_persist() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "失败应跳回配置页");
-    let loc = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    let (status, html) = get_page(&h.app, &loc, &admin).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "失败应原地回显配置页，不再跳转"
+    );
+    let html = body_text(resp).await;
+    assert!(
+        html.contains("this_is_invalid_directive_xyz"),
+        "校验失败必须保留用户正在编辑的内容: {html}"
+    );
     assert!(
         html.contains("校验") || html.contains("容器列表失败"),
         "必须展示校验失败原因: {html}"
@@ -4824,6 +4826,62 @@ async fn stopped_site_config_save_validation_failure_does_not_persist() {
             .join("demo.local.conf")
             .exists(),
         "失败不得把停用配置推进线上 include"
+    );
+}
+
+/// 新建站点弹窗的运行环境下拉按真实类型取标签，不能把 Rust 复制成 PHP。
+#[tokio::test]
+async fn site_new_dialog_labels_runtime_kind_correctly() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    h.state
+        .db()
+        .create_runtime(&skiff_store::NewRuntime {
+            id: "rust-1.83".into(),
+            kind: "rust".into(),
+            name: "rust-1.83".into(),
+            version: "1.83".into(),
+            image: "rust:1.83-slim".into(),
+            image_digest: String::new(),
+            socket_path: None,
+            port: None,
+            is_default: false,
+        })
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("Rust 1.83"),
+        "Rust 运行环境必须显示 Rust 标签: {html}"
+    );
+    assert!(
+        !html.contains("PHP 1.83"),
+        "Rust 环境不得被标成 PHP: {html}"
+    );
+}
+
+/// 插件 UI 小回归：内置任务不渲染删除按钮；累计流量按字节自适应进位。
+#[test]
+fn plugin_ui_hides_builtin_delete_and_formats_traffic_bytes() {
+    let cron = include_str!("../../../plugins/cron/ui/app.js");
+    assert!(
+        cron.contains("function isBuiltinTask") && cron.contains("isBuiltinTask(j.id)"),
+        "cron 列表必须按 builtin: 前缀隐藏删除按钮"
+    );
+    assert!(
+        !cron.contains("toggle + ' <button class=\"mini danger\" data-remove="),
+        "删除按钮不得再无条件渲染"
+    );
+
+    let monitor = include_str!("../../../plugins/monitor/ui/app.js");
+    assert!(
+        monitor.contains("function bytes(") && monitor.contains("bytes(s.net_tx)"),
+        "历史出站必须按原始字节格式化"
+    );
+    assert!(
+        !monitor.contains("gb(s.net_tx * 1024)"),
+        "不得再把字节当 KiB 换算后拼 GiB"
     );
 }
 

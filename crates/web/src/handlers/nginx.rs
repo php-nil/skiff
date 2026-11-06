@@ -32,6 +32,8 @@ async fn page(
     q: &HashMap<String, String>,
     error: String,
     notice: String,
+    // 保存失败时不跳转，直接用用户提交的文本渲染配置页，避免把正在编辑的内容冲掉。
+    submitted: Option<String>,
 ) -> Result<Response, AppError> {
     let tab = allowed_tab(q.get("tab").map(String::as_str).unwrap_or("status"));
     // 日志按需加载：只有 `load=1` 才读文件；参数走查询串，后端按条件读尾部。
@@ -62,12 +64,15 @@ async fn page(
             .unwrap_or(0)
             .min(100_000),
     });
-    let config = state.nginx_config_view().await.map_err(|e| match e {
+    let mut config = state.nginx_config_view().await.map_err(|e| match e {
         skiff_app::sites::SiteError::Internal(m) => AppError::Internal(m),
         skiff_app::sites::SiteError::BadRequest(m) => AppError::BadRequest(m),
         skiff_app::sites::SiteError::Unavailable(m) => AppError::Unavailable(m),
         skiff_app::sites::SiteError::Conflict(m) => AppError::Conflict(m),
     })?;
+    if let Some(text) = submitted {
+        config.main_content = text;
+    }
     handlers::render(NginxPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/web"),
         status: state.nginx_status().await,
@@ -93,6 +98,7 @@ pub async fn index(
         &q,
         q.get("error").cloned().unwrap_or_default(),
         q.get("notice").cloned().unwrap_or_default(),
+        None,
     )
     .await
 }
@@ -134,10 +140,10 @@ pub async fn save_main(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/web?tab=config&error={}",
-                encode_uri_component(&msg)
-            )))
+            // 校验失败直接回显配置页，保留用户本次提交的内容；跳转会重新从磁盘读取，冲掉编辑。
+            let mut q = HashMap::new();
+            q.insert("tab".to_string(), "config".to_string());
+            page(state, user, &q, msg, String::new(), Some(content)).await
         }
     }
 }

@@ -138,6 +138,10 @@
   function isPluginId(s) {
     return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(s);
   }
+  // 内核内置任务（builtin: 前缀）由内核维护，插件侧不提供删除入口。
+  function isBuiltinTask(id) {
+    return String(id || "").indexOf("builtin:") === 0;
+  }
 
   function renderTargets() {
     var sel = el("new-target");
@@ -196,6 +200,10 @@
       var toggle = j.enabled
         ? '<button class="mini" data-toggle="' + esc(j.id) + '" data-enabled="0">停用</button>'
         : '<button class="mini" data-toggle="' + esc(j.id) + '" data-enabled="1">启用</button>';
+      // 内置任务不可删除：不渲染删除按钮，避免误导用户点击。
+      var remove = isBuiltinTask(j.id)
+        ? '<span class="muted">内置任务</span>'
+        : '<button class="mini danger" data-remove="' + esc(j.id) + '">删除</button>';
       // 内核状态优先于「上次结果」：blocked（插件不可用）不是失败。
       var stateText = "";
       var stateCls = "muted";
@@ -217,7 +225,7 @@
         "<td>" + esc(srcText) + jump + "</td>" +
         '<td class="' + cls + '">' + lastText + "</td>" +
         '<td><button class="mini" data-run="' + esc(j.id) + '">立即执行</button> ' +
-          toggle + ' <button class="mini danger" data-remove="' + esc(j.id) + '">删除</button></td>' +
+          toggle + ' ' + remove + "</td>" +
         "</tr>";
     }).join("");
 
@@ -333,6 +341,10 @@
       return;
     }
     if (removeId) {
+      if (isBuiltinTask(removeId)) {
+        say("内置任务不可删除", true);
+        return;
+      }
       if (!window.confirm("删除任务 " + removeId + "？")) return;
       rpc("remove", { id: removeId }).then(function () {
         say("任务已删除");
