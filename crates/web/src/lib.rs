@@ -180,10 +180,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(&format!("/{p}/sites/create"), post(handlers::sites::create))
         .route(&format!("/{p}/sites/env"), get(handlers::sites::env_page))
         .route(
-            &format!("/{p}/sites/env/install"),
-            post(handlers::sites::env_install),
-        )
-        .route(
             &format!("/{p}/sites/env/add"),
             post(handlers::sites::env_add),
         )
@@ -203,6 +199,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/sites/env/{{id}}/extensions"),
             post(handlers::sites::runtime_extensions_save),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/extensions-batch"),
+            post(handlers::sites::runtime_extensions_batch),
         )
         .route(
             &format!("/{p}/sites/env/{{id}}/extensions/{{key}}/install"),
@@ -228,14 +228,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/{{id}}/sites/{{domain}}/unbind"),
             post(handlers::sites::runtime_unbind_site),
         )
-        // ---- 内核「网站 → Nginx」：状态 / 配置 / 日志 / 模块 ----
-        .route(&format!("/{p}/sites/nginx"), get(handlers::nginx::index))
+        // ---- 内核「网站 → Web 服务」：状态 / 配置 / 日志 / 模块 ----
+        .route(&format!("/{p}/sites/web"), get(handlers::nginx::index))
         .route(
-            &format!("/{p}/sites/nginx/config/main"),
+            &format!("/{p}/sites/web/config/main"),
             post(handlers::nginx::save_main),
         )
         .route(
-            &format!("/{p}/sites/nginx/config/params"),
+            &format!("/{p}/sites/web/config/params"),
             post(handlers::nginx::save_params),
         )
         // 运行环境详情与操作；同时提供 `/{p}/runtimes/...` 规范入口。

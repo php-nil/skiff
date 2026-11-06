@@ -2766,7 +2766,7 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     );
 }
 
-/// 网站列表：默认站点标记与切换入口由内核渲染，不要求环境已安装。
+/// 网站列表：默认站点只在列表做标记，切换入口下沉到详情页。
 #[tokio::test]
 async fn sites_list_shows_default_badge_and_toggle() {
     let h = harness();
@@ -2788,10 +2788,143 @@ async fn sites_list_shows_default_badge_and_toggle() {
     assert!(html.contains("demo.local"), "{html}");
     assert!(html.contains("默认</span>"), "默认标记必须出现");
     assert!(
-        html.contains("/p/sites/demo.local/default"),
-        "切换入口必须出现"
+        !html.contains("/p/sites/demo.local/default"),
+        "默认站点操作必须从列表移出: {html}"
     );
-    assert!(html.contains("取消默认"), "已是默认时按钮文案应为取消默认");
+    assert!(
+        !html.contains("设为默认") && !html.contains("取消默认"),
+        "列表不得再有默认切换按钮: {html}"
+    );
+
+    let (status, detail) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        detail.contains("/p/sites/demo.local/default"),
+        "详情页必须提供默认站点切换入口: {detail}"
+    );
+    assert!(
+        detail.contains("取消默认站点"),
+        "已是默认时详情页按钮文案应为取消默认站点: {detail}"
+    );
+}
+
+/// 列表收敛：类型与运行环境合成一列（runtime 显示实例名），别名只在有值时出现，
+/// 行操作只保留「详情」，不再有「⋯ 更多」菜单。
+#[tokio::test]
+async fn sites_list_merges_type_column_and_hides_empty_alias() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let php_root = h.data_dir.join("www/sites/php.local");
+    h.state
+        .db()
+        .create_site(&php_site("php.local", &php_root.display().to_string()))
+        .unwrap();
+    h.state
+        .db()
+        .add_site_aliases("php.local", &["www.php.local".to_string()])
+        .unwrap();
+    h.state
+        .db()
+        .create_site(&static_site(
+            "plain.local",
+            &h.data_dir
+                .join("www/sites/plain.local")
+                .display()
+                .to_string(),
+        ))
+        .unwrap();
+    h.state
+        .db()
+        .create_site(&proxy_site(
+            "proxy.local",
+            &h.data_dir
+                .join("www/sites/proxy.local")
+                .display()
+                .to_string(),
+            "http://127.0.0.1:3000",
+            false,
+        ))
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("类型 / 运行环境"),
+        "类型与运行环境必须合成一列: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="mono">php-8.5</span>"#),
+        "运行环境列必须显示实例名 php-8.5: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="mono">http://127.0.0.1:3000</span>"#),
+        "反向代理列必须显示上游地址: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="muted">静态</span>"#),
+        "静态站点必须显示「静态」: {html}"
+    );
+    assert!(
+        html.contains(r#"class="alias""#),
+        "有别名时必须展示别名预览: {html}"
+    );
+    assert!(
+        !html.contains("无别名") && !html.contains("别名 0 个"),
+        "没有别名时不得渲染空别名行: {html}"
+    );
+    assert!(
+        !html.contains("row-menu") && !html.contains("更多操作"),
+        "行内「⋯ 更多」菜单必须移除: {html}"
+    );
+    let (_, detail) = get_page(&h.app, "/p/sites/plain.local", &admin).await;
+    assert!(
+        detail.contains("设为默认站点") || detail.contains("取消默认站点"),
+        "默认站点切换必须落到详情页: {detail}"
+    );
+}
+
+/// 默认站点只能有一个：切换后旧默认必须取消，详情页入口与库状态同源。
+#[tokio::test]
+async fn sites_default_switch_keeps_single_default() {
+    let h = harness();
+    for domain in ["a.local", "b.local"] {
+        h.state
+            .db()
+            .create_site(&static_site(
+                domain,
+                &h.data_dir
+                    .join(format!("www/sites/{domain}"))
+                    .display()
+                    .to_string(),
+            ))
+            .unwrap();
+    }
+    h.state.db().set_site_default("a.local", true).unwrap();
+    h.state.db().set_site_default("b.local", true).unwrap();
+
+    assert!(
+        !h.state
+            .db()
+            .site_by_domain("a.local")
+            .unwrap()
+            .unwrap()
+            .is_default,
+        "切换默认后旧站点必须取消默认"
+    );
+    assert!(
+        h.state
+            .db()
+            .site_by_domain("b.local")
+            .unwrap()
+            .unwrap()
+            .is_default,
+        "新站点必须成为默认"
+    );
+    assert_eq!(
+        h.state.db().default_site().unwrap().unwrap().domain,
+        "b.local",
+        "任何时刻只能存在一个默认站点"
+    );
 }
 
 /// 网站列表的证书列必须与详情 SSL 标签同源：证书文件存在即显示已配置，
@@ -3440,8 +3573,24 @@ fn d5_sites_actions_column_stays_visible() {
         "固定表格布局才能保证 960 内容区不被内容撑出横向滚动"
     );
     assert!(
-        css.contains("table.grid.sites-grid th.col-actions { width: 252px; }"),
-        "操作列必须给出固定宽度，站点列吃掉剩余空间"
+        css.contains(".page-sites table.grid.sites-grid th.col-actions { width: 88px; }"),
+        "操作列只剩「详情」，必须收窄固定宽度"
+    );
+    assert!(
+        tpl.contains("类型 / 运行环境") && tpl.contains("s.runtime_name"),
+        "类型与运行环境必须合并成一列，并显示运行环境实例名"
+    );
+    assert!(
+        tpl.contains("alias_preview") && !tpl.contains("无别名"),
+        "别名只在非空时渲染，不能保留「无别名」占位"
+    );
+    assert!(
+        !tpl.contains("row-menu") && tpl.contains(">详情</a>"),
+        "行内更多菜单必须移除，只留详情入口"
+    );
+    assert!(
+        !tpl.contains("runtime_label"),
+        "列表不得再拼「PHP 8.5」展示名，实例名已足够"
     );
     assert!(
         css.contains("@media (max-width: 1100px)")
@@ -3498,8 +3647,32 @@ fn d7_theme_toggle_shows_target_theme() {
 /// 目录前缀自动带上都在这里固化。
 #[tokio::test]
 async fn sites_new_dialog_defaults_and_validation() {
+    let tpl = include_str!("../templates/site_new_dialog.html");
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    // 单屏结构：主域名与目录双列、类型面板占同一槽位、每个字段都有错误位。
+    assert!(
+        tpl.contains(r#"class="field-grid""#) && tpl.contains(r#"class="field-block type-panel""#),
+        "主域名/目录应双列排布，类型专属字段共用面板槽位"
+    );
+    for name in [
+        "domain",
+        "aliases",
+        "root_dir",
+        "runtime_id",
+        "proxy_target",
+    ] {
+        assert!(
+            tpl.contains(&format!(r#"data-error-for="{name}""#)),
+            "{name} 必须有字段级错误位"
+        );
+    }
+    assert!(tpl.contains("data-row-error"), "别名行必须有逐行错误位");
+    assert!(
+        tpl.contains(r#"class="req""#),
+        "必填字段必须有可见的必填标识"
+    );
 
     let (status, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
@@ -3599,7 +3772,30 @@ async fn sites_new_dialog_defaults_and_validation() {
         html.contains("域名只能包含") && html.contains("data-site-dialog"),
         "非法域名必须就地报错并保留弹窗: {html}"
     );
+    // 服务端错误要落到字段旁：错误位可见 + 输入框高亮，而不是只在顶部飘一条。
+    assert!(
+        html.contains(r#"data-error-for="domain" data-has-error"#),
+        "域名错误必须显示在字段旁: {html}"
+    );
+    assert!(
+        html.contains(r#"data-has-error aria-invalid="true""#),
+        "出错字段必须高亮并标记 aria-invalid: {html}"
+    );
     assert!(!html.contains("确认创建"), "错误回填也不得引入二次确认");
+
+    let js = include_str!("../static/skiff.js");
+    assert!(
+        js.contains("function rowError") && js.contains("data-row-error"),
+        "别名必须支持逐行错误，批量重复要逐条指出"
+    );
+    assert!(
+        js.contains("已存在，未导入") && js.contains("域名重复："),
+        "批量粘贴必须逐条列出被跳过的域名"
+    );
+    assert!(
+        js.contains("创建中…") && js.contains("submitBtn.disabled = true"),
+        "提交必须进入禁用态，避免连点重复创建"
+    );
 }
 
 /// 别名批量解析：逗号/空格/换行混合提交能被拆分，重复域名明确拒绝。
@@ -3846,7 +4042,7 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
             "安装弹窗必须列出扩展 {key}: {html}"
         );
     }
-    // 版本切换必须按该版本重算扩展可用性：8.4 起 imap/pspell 不可用，8.3 可选。
+    // 版本切换必须按该版本重算扩展可用性：8.4 起 imap/pspell 不再出现（不灰显）。
     let raw = html
         .split(r#"data-runtime-catalog>"#)
         .nth(1)
@@ -3858,17 +4054,13 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         .and_then(|a| a.iter().find(|k| k["key"] == "php"))
         .expect("目录必须含 php");
     let by_ver = php["exts_by_version"].as_object().expect("php 扩展矩阵");
-    for (ver, expect) in [("8.5", false), ("8.4", false), ("8.3", true)] {
+    for (ver, expect_present) in [("8.5", false), ("8.4", false), ("8.3", true)] {
         let list = by_ver[ver].as_array().expect("版本扩展列表");
         for key in ["imap", "pspell"] {
-            let e = list
-                .iter()
-                .find(|e| e["key"] == key)
-                .unwrap_or_else(|| panic!("{ver} 缺扩展 {key}"));
+            let found = list.iter().any(|e| e["key"] == key);
             assert_eq!(
-                e["supported"].as_bool(),
-                Some(expect),
-                "{ver} 的 {key} 可用性必须为 {expect}"
+                found, expect_present,
+                "{ver} 的 {key} 是否出现在可用清单必须为 {expect_present}"
             );
         }
     }
@@ -3880,7 +4072,11 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         html.contains(r#"class="runtime-extensions exts-box""#),
         "弹窗必须有扩展勾选块: {html}"
     );
-    // 标题栏不再直出基础环境按钮：功能合并进弹窗。
+    // 「基础环境」概念已取消：入口、文案、次要表单全部不出现。
+    assert!(
+        !html.contains("基础环境") && !html.contains("runtime-base-install"),
+        "运行环境页不得再出现基础环境概念: {html}"
+    );
     let head_block = html
         .split(r#"<div class="page-head">"#)
         .nth(1)
@@ -3890,9 +4086,13 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         !head_block.contains("/sites/env/install"),
         "标题栏不得再放基础环境按钮: {head_block}"
     );
+    // Web 服务独立成行：不打开实例抽屉，动作走 /sites/env/web/action/*。
     assert!(
-        html.contains("重建基础环境") && html.contains("runtime-base-install"),
-        "基础环境重建入口必须并入弹窗: {html}"
+        html.contains(r#"data-web-action="install""#)
+            && html.contains(r#"/sites/env/web/action"#)
+            && html.contains("Web 服务（OpenResty）")
+            && include_str!("../static/skiff.js").contains("data-web-action"),
+        "Web 服务必须是独立行并带各自操作: {html}"
     );
 
     // 抽屉交互由原生 <dialog> 承担：showModal 自动焦点锁 + Esc，遮罩点击关闭。
@@ -4084,10 +4284,22 @@ async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
         "intl",
     ] {
         assert!(
-            html.contains(&format!(r#"/extensions/{key}/install"#)),
-            "抽屉扩展清单缺少 {key} 的安装入口（必须与安装弹窗同源）: {html}"
+            html.contains(&format!(r#"data-search="{key} "#))
+                && html.contains(&format!(r#"value="{key}""#)),
+            "抽屉扩展清单缺少 {key} 的勾选项（必须与安装弹窗同源）: {html}"
         );
     }
+    // 多选安装/卸载：一份表单 + 二次确认，后端接收批量 `op` + 多个 `ext`。
+    assert!(
+        html.contains(r#"data-ext-batch-form"#)
+            && html.contains(r#"action="/p/sites/env/php-8.5/extensions-batch""#)
+            && html.contains(r#"name="ext""#)
+            && html.contains(r#"data-ext-submit="install""#)
+            && html.contains(r#"data-ext-submit="uninstall""#)
+            && html.contains(r#"data-ext-confirm"#)
+            && html.contains("确认提交"),
+        "扩展页签必须是多选 + 二次确认: {html}"
+    );
     // 镜像内置项（opcache / curl / mbstring / sodium / sqlite3 / pdo_sqlite）直接显示已安装，
     // 不提供安装/编译入口，避免重复编译与重复启用。
     for key in [
@@ -4100,21 +4312,26 @@ async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
     ] {
         assert!(
             html.contains(&format!(r#"data-search="{key} "#))
+                && html.contains(&format!(r#"value="{key}""#))
                 && !html.contains(&format!(r#"/extensions/{key}/install"#)),
-            "{key} 为镜像内置，不应出现安装入口: {html}"
+            "{key} 为镜像内置，不应出现单独安装入口: {html}"
         );
     }
+    assert!(
+        html.contains(r#"data-ext-builtin="true""#),
+        "内置扩展必须带 data-ext-builtin=true 供确认弹窗过滤: {html}"
+    );
     assert!(
         html.contains(r#"/pecl""#) && html.contains(r#"name="name""#),
         "扩展页签必须提供 PECL 按名字安装入口: {html}"
     );
-    // 8.4 起 imap 移出核心：8.5 环境里必须灰显并给出原因，不提供一键安装入口。
+    // 8.4 起 imap 移出核心：8.5 环境里直接不显示（不灰显、不占位、无原因文案）。
     assert!(
-        html.contains(r#"data-search="imap "#)
-            && html.contains("当前不可用")
-            && html.contains("已从核心移除")
-            && !html.contains(r#"/extensions/imap/install"#),
-        "imap 在 PHP 8.5 应标记为不可用并给原因: {html}"
+        !html.contains(r#"data-search="imap "#)
+            && !html.contains(r#"value="imap""#)
+            && !html.contains("当前不可用")
+            && !html.contains("已从核心移除"),
+        "imap 在 PHP 8.5 应完全不显示且不出现灰显/原因文案: {html}"
     );
 
     // 列表轮询端点：空任务也必须返回合法 JSON，且路由优先于 `/sites/env/{id}`。
@@ -4167,7 +4384,7 @@ async fn site_detail_warns_when_bound_runtime_stopped() {
     );
 }
 
-/// 「网站 → Nginx」：四区块常驻渲染；管理员 + CSRF，viewer 403。
+/// 「网站 → Web 服务」：四区块常驻渲染；管理员 + CSRF，viewer 403。
 #[tokio::test]
 async fn nginx_page_renders_four_sections_and_is_admin_only() {
     let h = harness();
@@ -4175,22 +4392,22 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
 
     for uri in [
-        "/p/sites/nginx",
-        "/p/sites/nginx?tab=config",
-        "/p/sites/nginx?tab=logs",
-        "/p/sites/nginx?tab=modules",
-        "/p/m/core/sites/nginx",
+        "/p/sites/web",
+        "/p/sites/web?tab=config",
+        "/p/sites/web?tab=logs",
+        "/p/sites/web?tab=modules",
+        "/p/m/core/sites/web",
     ] {
         let (status, _) = get_page(&h.app, uri, &viewer).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
     }
 
-    let (status, html) = get_page(&h.app, "/p/sites/nginx", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/sites/web", &admin).await;
     assert_eq!(status, StatusCode::OK);
     for panel in ["status", "config", "logs", "modules"] {
         assert!(
             html.contains(&format!(r#"data-nginx-panel="{panel}""#)),
-            "缺少 Nginx {panel} 区块: {html}"
+            "缺少 Web 服务 {panel} 区块: {html}"
         );
     }
     // 复用插件工作台横栏标记；四个标签走页内切换（hash 定位）。
@@ -4217,7 +4434,7 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         "非当前标签必须 hidden，避免四块堆一页: {html}"
     );
 
-    let (status, config_tab) = get_page(&h.app, "/p/sites/nginx?tab=config", &admin).await;
+    let (status, config_tab) = get_page(&h.app, "/p/sites/web?tab=config", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         config_tab.contains(r#"data-nginx-panel="config""#)
@@ -4245,13 +4462,30 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
             && html.contains("client_max_body_size"),
         "配置区块必须提供性能参数: {html}"
     );
+    // 日志默认不加载：先给「选择日志 → 选择范围」空态，筛选条件齐全但不读文件。
     assert!(
-        html.contains("错误日志（倒序）")
-            && html.contains("访问日志（tail）")
-            && html.contains("刷新 tail")
+        html.contains("data-log-empty")
+            && html.contains("选择日志 → 选择范围")
+            && html.contains(r#"name="type""#)
+            && html.contains(r#"name="lines""#)
+            && html.contains(r#"name="status""#)
             && html.contains(r#"name="level""#)
-            && html.contains(r#"name="tail""#),
-        "日志区块必须 access/error 分栏、按级别过滤并支持 tail 刷新: {html}"
+            && html.contains(r#"name="load""#)
+            && !html.contains("data-log-result"),
+        "日志区块必须先给空态、不自动读取，并保留类型/范围/关键字/级别筛选: {html}"
+    );
+    let (_, loaded) = get_page(
+        &h.app,
+        "/p/sites/web?tab=logs&load=1&type=access&lines=200",
+        &admin,
+    )
+    .await;
+    assert!(
+        loaded.contains("data-log-result")
+            && loaded.contains("本次加载")
+            && loaded.contains("已扫描尾部")
+            && !loaded.contains("data-log-empty"),
+        "点「加载」后只按条件取尾部并标注读取范围: {loaded}"
     );
     assert!(
         html.contains("编译参数") && html.contains("模块列表"),
@@ -4269,12 +4503,12 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
             && js.contains("location.hash")
             && js.contains("history.replaceState")
             && js.contains("data-nginx-panel"),
-        "缺少 Nginx 标签切换/hash 同步逻辑: {js}"
+        "缺少 Web 服务标签切换/hash 同步逻辑: {js}"
     );
     let css = include_str!("../static/skiff.css");
     assert!(
-        css.contains(".page-nginx .logs-grid"),
-        "日志分栏必须落在页面私有命名空间"
+        css.contains(".page-nginx .log-empty") && css.contains(".page-nginx .log-card"),
+        "日志空态与结果卡必须落在页面私有命名空间"
     );
 
     // 视图级权限：viewer 不能打开，管理员缺 CSRF 也不能保存。
@@ -4285,7 +4519,7 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/nginx/config/main")
+                .uri("/p/sites/web/config/main")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[
@@ -4305,7 +4539,7 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/nginx/config/main")
+                .uri("/p/sites/web/config/main")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[("csrf", &csrf), ("content", "events {}")]))
@@ -4364,13 +4598,20 @@ async fn three_site_types_are_rendered_in_list() {
     let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains("运行环境") && html.contains("静态网站"),
-        "{html}"
+        html.contains("类型 / 运行环境"),
+        "类型与运行环境合并成一列: {html}"
     );
-    assert!(html.contains("反向代理"), "{html}");
-    assert!(html.contains("PHP 8.5"), "{html}");
     assert!(
-        html.contains("http://127.0.0.1:8080 · WebSocket"),
+        html.contains(r#"<span class="mono">php-8.5</span>"#),
+        "运行环境站必须显示实例名 php-8.5: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="muted">静态</span>"#),
+        "静态站必须显示「静态」: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="mono">http://127.0.0.1:8080</span>"#)
+            && html.contains(">WS</span>"),
         "反代必须展示上游与 WS 标记: {html}"
     );
 

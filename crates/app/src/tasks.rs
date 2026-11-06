@@ -20,10 +20,11 @@ use chrono::{Local, TimeZone};
 use serde_json::{json, Value};
 use skiff_plugin::supervisor::{Supervisor, SupervisorError};
 use skiff_sched::{
-    AuditActor, AuditEvent, AuditOutcome, Batch, Clock, ErrorClass, ErrorPhase, ExecError,
-    ExecOutput, PluginGate, PluginStatus, RunContext, RunRecord, RunTicket, SampleTicket, Schedule,
-    Scheduler, SchedulerConfig, SystemClock, Task, TaskError, TaskFilter, TaskKind, TaskPatch,
-    TaskSource, TaskSpec, TaskState, TaskStore, Trigger,
+    AuditActor, AuditEvent, AuditOutcome, Batch, BufferSignal, Clock, ErrorClass, ErrorPhase,
+    ExecError, ExecOutput, PluginGate, PluginStatus, PushOutcome, PushReport, RejectReason,
+    RunContext, RunRecord, RunTicket, SampleTicket, Schedule, Scheduler, SchedulerConfig,
+    SystemClock, Task, TaskError, TaskFilter, TaskKind, TaskPatch, TaskSource, TaskSpec, TaskState,
+    TaskStore, Trigger,
 };
 use skiff_store::{Db, Grant, PluginRecord, ScheduledTaskRow, TaskRunRow};
 use tokio::sync::Mutex;
@@ -371,9 +372,14 @@ pub struct TaskService {
     /// 正在作为任务执行目标被调用的插件 id。std Mutex 而不是 tokio Mutex：
     /// 守卫要在 `Drop` 里清理，而 `Drop` 不能 await（超时/取消时也要摘除）。
     executing: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// `buffer.push` 的每任务限速窗口：`(秒序号, 该秒已收点数)`。
+    push_window: std::sync::Mutex<std::collections::HashMap<String, (i64, u32)>>,
     web_root: PathBuf,
     data_dir: PathBuf,
 }
+
+/// 每任务 `buffer.push` 限速：100 点/秒（契约 §10.2）。
+const PUSH_PER_SECOND: u32 = 100;
 
 /// 插件执行忙碌标记的 RAII 守卫：无论正常返回、超时还是 future 被丢弃，
 /// `Drop` 都会把它从集合里摘掉。
@@ -429,6 +435,7 @@ impl TaskService {
             clock,
             scheduler: Mutex::new(scheduler),
             executing: std::sync::Mutex::new(std::collections::HashSet::new()),
+            push_window: std::sync::Mutex::new(std::collections::HashMap::new()),
             web_root,
             data_dir,
         }))
@@ -850,6 +857,38 @@ impl TaskService {
                     json!({ "runs": sched.history(&id, limit).iter().map(run_view).collect::<Vec<_>>() }),
                 )
             }
+            "buffer.push" => {
+                if !manage {
+                    return Err("缺少 scheduler:manage".into());
+                }
+                let id = require_id(&params)?;
+                let point = params
+                    .get("point")
+                    .cloned()
+                    .ok_or_else(|| "缺少 point".to_string())?;
+                self.ensure_owned(caller, &id).await?;
+                let now = self.clock.now();
+                if !self.allow_push(&id, now) {
+                    return Err(format!(
+                        "buffer.push 超过限速（每任务 {PUSH_PER_SECOND} 点/秒）"
+                    ));
+                }
+                let mut sched = self.scheduler.lock().await;
+                let report = sched.push(&id, point, now).map_err(|e| e.to_string())?;
+                Ok(push_report_view(&report))
+            }
+            "buffer.stat" => {
+                if !read {
+                    return Err("缺少 scheduler:read".into());
+                }
+                let id = require_id(&params)?;
+                self.ensure_owned(caller, &id).await?;
+                let sched = self.scheduler.lock().await;
+                let stat = sched
+                    .buffer_stat(&id)
+                    .ok_or_else(|| "任务不存在".to_string())?;
+                Ok(json!({ "stat": stat }))
+            }
             "task.register" => {
                 if !manage {
                     return Err("缺少 scheduler:manage".into());
@@ -1022,6 +1061,22 @@ impl TaskService {
             "id": id,
             "task": task_view(&sched, &task),
         }))
+    }
+
+    /// 限速窗口按秒滚动；只统计真正进入 scheduler 的点（参数校验失败不计）。
+    fn allow_push(&self, id: &str, now: i64) -> bool {
+        let Ok(mut windows) = self.push_window.lock() else {
+            return false;
+        };
+        let slot = windows.entry(id.to_string()).or_insert((now, 0));
+        if slot.0 != now {
+            *slot = (now, 0);
+        }
+        if slot.1 >= PUSH_PER_SECOND {
+            return false;
+        }
+        slot.1 += 1;
+        true
     }
 
     async fn ensure_owned(&self, caller: &str, id: &str) -> Result<(), String> {
@@ -1310,6 +1365,53 @@ fn task_view(sched: &Scheduler<SqliteTaskStore>, task: &Task) -> Value {
     })
 }
 
+fn push_report_view(report: &PushReport) -> Value {
+    let outcome = match &report.outcome {
+        PushOutcome::Accepted {
+            seq,
+            bytes,
+            dropped_points,
+            dropped_bytes,
+            aggregated,
+        } => json!({
+            "accepted": true,
+            "seq": seq,
+            "bytes": bytes,
+            "dropped_points": dropped_points,
+            "dropped_bytes": dropped_bytes,
+            "aggregated": aggregated,
+        }),
+        PushOutcome::Rejected { reason, bytes } => json!({
+            "accepted": false,
+            "reason": reject_reason_str(reason),
+            "bytes": bytes,
+        }),
+    };
+    json!({
+        "outcome": outcome,
+        "signals": report.signals.iter().map(buffer_signal_str).collect::<Vec<_>>(),
+        "net_bytes": report.net_bytes,
+    })
+}
+
+fn reject_reason_str(reason: &RejectReason) -> &'static str {
+    match reason {
+        RejectReason::PointTooLarge => "point_too_large",
+        RejectReason::Full => "full",
+        RejectReason::GlobalDegraded => "global_degraded",
+        RejectReason::PluginQuota => "plugin_quota",
+    }
+}
+
+fn buffer_signal_str(signal: &BufferSignal) -> &'static str {
+    match signal {
+        BufferSignal::HighWatermark => "high_watermark",
+        BufferSignal::Overflow => "overflow",
+        BufferSignal::Recovered => "recovered",
+        BufferSignal::PointTooLarge => "point_too_large",
+    }
+}
+
 fn run_view(r: &RunRecord) -> Value {
     json!({
         "id": &r.id,
@@ -1439,6 +1541,82 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(archived, 1);
+    }
+
+    #[tokio::test]
+    async fn buffer_push_and_stat_are_exposed_to_the_owning_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let plugin = "com.skiff.monitor";
+        svc.db_handle()
+            .upsert_plugin(&PluginRecord {
+                id: plugin.into(),
+                name: "monitor".into(),
+                version: "0.1.0".into(),
+                api: KERNEL_API.into(),
+                key_id: "0".into(),
+                manifest: String::new(),
+                enabled: true,
+                status: "enabled".into(),
+                status_detail: String::new(),
+                active_version: "0.1.0".into(),
+                installed_at: 0,
+                grants: vec![
+                    Grant::perm("scheduler:read"),
+                    Grant::perm("scheduler:manage"),
+                ],
+            })
+            .unwrap();
+        let id = format!("plugin:{plugin}:sample");
+        {
+            let mut sched = svc.scheduler.lock().await;
+            let mut spec = TaskSpec::new(
+                id.clone(),
+                TaskKind::parse(&id).unwrap(),
+                TaskSource::Plugin(plugin.into()),
+                Schedule::cron("* * * * *"),
+            )
+            .unwrap();
+            spec.buffer = Some(skiff_sched::BufferConfig::default());
+            sched.register(spec, svc.clock.now(), &svc.clock).unwrap();
+        }
+
+        let stat = svc
+            .capability(plugin, "buffer.stat", json!({ "id": id }))
+            .await
+            .unwrap();
+        assert_eq!(stat["stat"]["points"], 0);
+        let pushed = svc
+            .capability(
+                plugin,
+                "buffer.push",
+                json!({ "id": id, "point": { "v": 1 } }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pushed["outcome"]["accepted"], true);
+        let stat = svc
+            .capability(plugin, "buffer.stat", json!({ "id": id }))
+            .await
+            .unwrap();
+        assert_eq!(stat["stat"]["points"], 1);
+        // 非本人任务不可读写。
+        let denied = svc
+            .capability(plugin, "buffer.stat", json!({ "id": "builtin:db-vacuum" }))
+            .await;
+        assert!(denied.is_err());
+    }
+
+    #[test]
+    fn buffer_push_rate_limit_is_per_task_and_per_second() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        for _ in 0..PUSH_PER_SECOND {
+            assert!(svc.allow_push("t1", 1000));
+        }
+        assert!(!svc.allow_push("t1", 1000));
+        assert!(svc.allow_push("t1", 1001));
+        assert!(svc.allow_push("t2", 1000));
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@ use crate::state::AppState;
 use crate::templates::NginxPage;
 use crate::util::{encode_uri_component, form_first, parse_form};
 
-use skiff_app::nginx::NginxParams;
+use skiff_app::nginx::{NginxLogQuery, NginxParams};
 
 fn allowed_tab(tab: &str) -> &'static str {
     match tab {
@@ -34,17 +34,34 @@ async fn page(
     notice: String,
 ) -> Result<Response, AppError> {
     let tab = allowed_tab(q.get("tab").map(String::as_str).unwrap_or("status"));
-    let level = q
-        .get("level")
-        .map(String::as_str)
-        .unwrap_or("all")
-        .to_string();
-    let tail = q
-        .get("tail")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(200)
-        .clamp(50, 500);
-    let keyword = q.get("q").cloned().unwrap_or_default();
+    // 日志按需加载：只有 `load=1` 才读文件；参数走查询串，后端按条件读尾部。
+    let logs = state.nginx_logs(&NginxLogQuery {
+        loaded: q
+            .get("load")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false),
+        kind: if q.get("type").map(String::as_str) == Some("error") {
+            "error".into()
+        } else {
+            "access".into()
+        },
+        keyword: q.get("q").cloned().unwrap_or_default(),
+        level: q
+            .get("level")
+            .map(String::as_str)
+            .unwrap_or("all")
+            .to_string(),
+        status: q.get("status").cloned().unwrap_or_default(),
+        page_lines: q
+            .get("lines")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(200),
+        offset: q
+            .get("offset")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(100_000),
+    });
     let config = state.nginx_config_view().await.map_err(|e| match e {
         skiff_app::sites::SiteError::Internal(m) => AppError::Internal(m),
         skiff_app::sites::SiteError::BadRequest(m) => AppError::BadRequest(m),
@@ -52,14 +69,12 @@ async fn page(
         skiff_app::sites::SiteError::Conflict(m) => AppError::Conflict(m),
     })?;
     handlers::render(NginxPage {
-        ctx: handlers::page_ctx(&state, &user, "core/sites/nginx"),
+        ctx: handlers::page_ctx(&state, &user, "core/sites/web"),
         status: state.nginx_status().await,
         config,
-        logs: state.nginx_logs(&keyword, &level, tail),
+        logs,
         modules: state.nginx_modules().await,
         tab: tab.to_string(),
-        keyword,
-        tail,
         can_admin: user.can(skiff_model::Permission::Admin),
         error,
         notice,
@@ -105,7 +120,7 @@ pub async fn save_main(
                 "",
             );
             Ok(handlers::redirect(format!(
-                "/{prefix}/sites/nginx?tab=config&notice={}",
+                "/{prefix}/sites/web?tab=config&notice={}",
                 encode_uri_component("主配置已通过 nginx -t 并重载")
             )))
         }
@@ -120,7 +135,7 @@ pub async fn save_main(
                 &msg,
             );
             Ok(handlers::redirect(format!(
-                "/{prefix}/sites/nginx?tab=config&error={}",
+                "/{prefix}/sites/web?tab=config&error={}",
                 encode_uri_component(&msg)
             )))
         }
@@ -163,7 +178,7 @@ pub async fn save_params(
                 "",
             );
             Ok(handlers::redirect(format!(
-                "/{prefix}/sites/nginx?tab=config&notice={}",
+                "/{prefix}/sites/web?tab=config&notice={}",
                 encode_uri_component("性能参数已保存并通过 nginx -t，随后重载")
             )))
         }
@@ -178,7 +193,7 @@ pub async fn save_params(
                 &msg,
             );
             Ok(handlers::redirect(format!(
-                "/{prefix}/sites/nginx?tab=config&error={}",
+                "/{prefix}/sites/web?tab=config&error={}",
                 encode_uri_component(&msg)
             )))
         }

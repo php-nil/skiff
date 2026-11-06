@@ -99,69 +99,64 @@
 <section class="panel runtime-tab-panel" data-runtime-tab-panel="extensions" hidden>
   <div class="panel-head">
     <h2>扩展管理</h2>
-    <span class="hint">共 {{ extensions.len() }} 项 · 目录来自 <code>runtime_catalog</code> 单一来源</span>
+    <span class="hint">共 {{ extensions.len() }} 项可用 · 目录来自 <code>runtime_catalog</code> 单一来源</span>
   </div>
-  <p class="muted">安装走异步任务并在日志页实时输出（失败回传真实编译 / PECL 报错）；卸载会删除 conf.d ini 并重启容器。需要编译依赖的扩展会自动安装 apk 依赖并在完成后清理。</p>
-  <div class="ext-toolbar">
-    <input type="search" class="ext-search" placeholder="搜索扩展名或说明" data-ext-search autocomplete="off">
-    <div class="ext-cats" data-ext-cats>
-      <button type="button" class="chip on" data-ext-cat="">全部</button>
-      {% for c in ext_categories %}
-      <button type="button" class="chip" data-ext-cat="{{ c }}">{{ c }}</button>
+  <p class="muted">不可用项不显示（不灰显、不占位）；版本/基座不支持的原因保留在后端错误里。勾选多项后一次提交，后端在<strong>同一个任务内串行执行、日志合流、只重启一次容器</strong>；安装与卸载都会先弹出二次确认。</p>
+
+  <form method="post" action="{{ env_href }}/extensions-batch" data-ext-batch-form>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="ext-toolbar">
+      <input type="search" class="ext-search" placeholder="搜索扩展名或说明" data-ext-search autocomplete="off">
+      <div class="ext-cats" data-ext-cats>
+        <button type="button" class="chip on" data-ext-cat="">全部</button>
+        {% for c in ext_categories %}
+        <button type="button" class="chip" data-ext-cat="{{ c }}">{{ c }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    <p class="hint ext-empty" data-ext-empty hidden>没有匹配的扩展。</p>
+
+    <div class="ext-list" data-ext-list>
+      {% for e in extensions %}
+      <div class="ext-item" data-ext-item data-search="{{ e.key }} {{ e.label }} {{ e.description }}" data-category="{{ e.category }}">
+        <label class="ext-check">
+          <input type="checkbox" name="ext" value="{{ e.key }}" data-ext-check data-ext-label="{{ e.label }}" data-ext-enabled="{{ e.enabled }}" data-ext-builtin="{{ e.builtin }}" data-ext-heavy="{{ e.heavy }}" data-ext-estimated="{{ e.estimated_time }}"{% if e.builtin || job.active %} disabled{% endif %}>
+        </label>
+        <div class="ext-main">
+          <span class="ext-name mono">{{ e.key }}</span>
+          <span class="ext-tags">
+            <span class="tag">{{ e.category }}</span>
+            <span class="tag">{{ e.source }}</span>
+            {% if e.builtin %}<span class="tag">镜像内置</span>{% endif %}
+            {% if e.hot %}<span class="tag">热装</span>{% else %}<span class="tag warn-tag">需重建</span>{% endif %}
+            {% if e.heavy %}<span class="tag warn-tag">{{ e.estimated_time }}</span>{% endif %}
+          </span>
+          <span class="hint">{{ e.label }}：{{ e.description }}</span>
+          {% if !e.support_note.is_empty() %}
+          <span class="hint ext-note">依赖：{{ e.support_note }}</span>
+          {% endif %}
+        </div>
+        <div class="ext-state">
+          {% if e.enabled %}<span class="tag ok">已安装</span>{% else %}<span class="tag">可安装</span>{% endif %}
+        </div>
+      </div>
       {% endfor %}
     </div>
-  </div>
-  <p class="hint ext-empty" data-ext-empty hidden>没有匹配的扩展。</p>
 
-  <div class="ext-list" data-ext-list>
-    {% for e in extensions %}
-    <div class="ext-item{% if !e.supported %} ext-item-off{% endif %}" data-ext-item data-search="{{ e.key }} {{ e.label }} {{ e.description }}" data-category="{{ e.category }}"{% if !e.supported %} title="{{ e.support_note }}"{% endif %}>
-      <div class="ext-main">
-        <span class="ext-name mono">{{ e.key }}</span>
-        <span class="ext-tags">
-          <span class="tag">{{ e.category }}</span>
-          <span class="tag">{{ e.source }}</span>
-          {% if e.builtin %}<span class="tag">镜像内置</span>{% endif %}
-          {% if e.hot %}<span class="tag">热装</span>{% else %}<span class="tag warn-tag">需重建</span>{% endif %}
-          {% if !e.supported %}<span class="tag danger">当前不可用</span>{% endif %}
-        </span>
-        <span class="hint">{{ e.label }}：{{ e.description }}</span>
-        {% if !e.support_note.is_empty() %}
-        <span class="hint ext-note{% if !e.supported %} danger{% endif %}">{% if e.supported %}依赖：{% endif %}{{ e.support_note }}</span>
-        {% endif %}
-      </div>
-      <div class="ext-state">
-        {% if e.enabled %}
-        <span class="tag ok">已安装</span>
-        {% if can_admin %}
-        <form method="post" action="{{ env_href }}/extensions/{{ e.key }}/uninstall" data-drawer-post class="inline">
-          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-          <button class="btn ghost" type="submit"{% if job.active %} disabled{% endif %}>卸载</button>
-        </form>
-        {% endif %}
-        {% else if job.active && job.ext_key == e.key %}
-        <span class="tag warn-tag">安装中</span>
-        {% else if !e.supported %}
-        <span class="tag danger">不支持</span>
-        {% else %}
-        <span class="tag">可安装</span>
-        {% if can_admin %}
-        <form method="post" action="{{ env_href }}/extensions/{{ e.key }}/install" data-drawer-post class="inline">
-          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-          <button class="btn" type="submit"{% if job.active || !e.supported %} disabled{% endif %}>安装</button>
-        </form>
-        {% endif %}
-        {% endif %}
-      </div>
+    {% if can_admin %}
+    <div class="ext-batch-actions">
+      <span class="hint" data-ext-selected-count>已选 0 项</span>
+      <button type="submit" name="op" value="install" class="btn primary" data-ext-submit="install"{% if job.active %} disabled{% endif %}>安装所选</button>
+      <button type="submit" name="op" value="uninstall" class="btn ghost" data-ext-submit="uninstall"{% if job.active %} disabled{% endif %}>卸载所选</button>
     </div>
-    {% endfor %}
-  </div>
+    {% endif %}
+  </form>
 
   <section class="pecl-block">
     <h3>按名字安装 PECL 扩展</h3>
     <p class="muted">适用于目录里没有的扩展。失败会在任务日志里回传 <code>pecl install</code> 的真实报错；安装成功后写 ini 并重启容器。</p>
     {% if can_admin %}
-    <form method="post" action="{{ env_href }}/pecl" class="pecl-form" data-drawer-post>
+    <form method="post" action="{{ env_href }}/pecl" class="pecl-form" data-pecl-form>
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
       <label>扩展名
         <input name="name" class="mono" placeholder="如 redis / xdebug" autocomplete="off" required>
@@ -174,6 +169,25 @@
     {% endif %}
   </section>
 </section>
+
+<div class="ext-confirm" data-ext-confirm hidden aria-label="确认扩展变更">
+  <div class="ext-confirm-card" role="dialog" aria-modal="true">
+  <div class="modal-head"><h2 data-ext-confirm-title>确认扩展变更</h2></div>
+  <div class="modal-body">
+    <ul class="ext-confirm-list" data-ext-confirm-list></ul>
+    <div class="kv">
+      <div><span class="muted">重启容器</span><span data-ext-confirm-restart>是（操作完成后重启一次）</span></div>
+      <div><span class="muted">触发编译</span><span data-ext-confirm-compile>否</span></div>
+    </div>
+    <div class="alert warn" data-ext-confirm-heavy hidden></div>
+    <p class="hint" data-ext-confirm-hint>确认后将作为单个后台任务提交，进度与日志在「日志」页签实时刷新。</p>
+  </div>
+  <div class="modal-actions">
+    <button type="button" class="btn ghost" data-ext-confirm-cancel>取消</button>
+    <button type="button" class="btn primary" data-ext-confirm-ok>确认提交</button>
+  </div>
+  </div>
+</div>
 
 <section class="panel runtime-tab-panel" data-runtime-tab-panel="config" hidden>
   {% if runtime.kind_key == "php" %}
@@ -260,7 +274,7 @@
   {% if has_job %}
   <div class="runtime-job" data-runtime-job data-job-url="{{ job_url }}" data-job-state="{{ job.state }}">
     <div class="panel-head">
-      <h3>{% if job.kind == "extensions" %}扩展变更任务{% else %}安装任务{% endif %}{% if !job.ext_key.is_empty() %}：{{ job.ext_key }}{% endif %}</h3>
+      <h3>{% if job.kind == "extensions" %}扩展变更任务{% else %}安装任务{% endif %}{% if !job.ext_keys.is_empty() %}：{{ job.ext_keys.len() }} 项扩展{% endif %}</h3>
       <span class="tag{% if job.failed %} danger-tag{% else if job.active %} warn-tag{% else %} ok{% endif %}" data-job-state-label>{{ job.state_label }}</span>
     </div>
     <p class="muted" data-job-step>{{ job.step }}{% if job.active %} · {{ job.progress }}%{% endif %}</p>

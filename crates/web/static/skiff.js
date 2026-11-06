@@ -705,14 +705,57 @@
     });
 
     function errorFor(name) { return dlg.querySelector('[data-error-for="' + name + '"]'); }
+    // 字段级错误同时高亮对应输入；别名列表没有单一输入，交给行内错误。
+    function fieldInput(name) {
+      if (name === "domain") return main;
+      if (name === "root_dir") return root;
+      if (name === "runtime_id" || name === "proxy_target") {
+        return form.querySelector('[name="' + name + '"]');
+      }
+      return null;
+    }
+    function markField(name, bad) {
+      var el = fieldInput(name);
+      if (!el) return;
+      if (bad) {
+        el.setAttribute("data-has-error", "");
+        el.setAttribute("aria-invalid", "true");
+      } else {
+        el.removeAttribute("data-has-error");
+        el.removeAttribute("aria-invalid");
+      }
+    }
     function showError(name, text) {
       var el = errorFor(name);
       if (!el) return;
       if (text) { el.textContent = text; el.removeAttribute("hidden"); }
       else { el.textContent = ""; el.setAttribute("hidden", ""); }
+      markField(name, !!text);
+    }
+    // 别名行级错误：直接把原因写在该行下方，批量导入/提交时逐条指出。
+    function rowError(input, text) {
+      var row = input ? input.closest("[data-alias-row]") : null;
+      if (!row) return;
+      var el = row.querySelector("[data-row-error]");
+      if (!el) {
+        el = document.createElement("p");
+        el.className = "field-error row-error";
+        el.setAttribute("data-row-error", "");
+        row.appendChild(el);
+      }
+      if (text) { el.textContent = text; el.removeAttribute("hidden"); input.setAttribute("data-has-error", ""); }
+      else { el.textContent = ""; el.setAttribute("hidden", ""); input.removeAttribute("data-has-error"); }
     }
     function clearErrors() {
       dlg.querySelectorAll("[data-error-for]").forEach(function (el) {
+        el.textContent = "";
+        el.setAttribute("hidden", "");
+      });
+      dlg.querySelectorAll("[data-has-error]").forEach(function (el) {
+        el.removeAttribute("data-has-error");
+        el.removeAttribute("aria-invalid");
+      });
+      dlg.querySelectorAll("[data-row-error]").forEach(function (el) {
         el.textContent = "";
         el.setAttribute("hidden", "");
       });
@@ -772,9 +815,14 @@
       btn.className = "mini";
       btn.setAttribute("data-alias-remove", "");
       btn.textContent = "移除";
+      var err = document.createElement("p");
+      err.className = "field-error row-error";
+      err.setAttribute("data-row-error", "");
+      err.setAttribute("hidden", "");
       row.appendChild(tag);
       row.appendChild(input);
       row.appendChild(btn);
+      row.appendChild(err);
       list.appendChild(row);
       return input;
     }
@@ -786,12 +834,21 @@
 
     main.addEventListener("input", syncRoot);
     if (root) {
-      root.addEventListener("input", function () { slugTouched = true; });
+      // 用户改名即视为手动接管；清空后恢复「跟随主域名」，避免一次误改后永远不再回填。
+      root.addEventListener("input", function () {
+        slugTouched = root.value.trim() !== "";
+        syncRoot();
+      });
     }
     syncRoot();
 
     form.addEventListener("change", function (e) {
-      if (e.target instanceof HTMLInputElement && e.target.name === "site_type") syncType();
+      if (e.target instanceof HTMLInputElement && e.target.name === "site_type") {
+        // 类型专属字段只切换显隐，已填内容保留；同时清掉另一类的旧报错。
+        showError("runtime_id", "");
+        showError("proxy_target", "");
+        syncType();
+      }
     });
 
     list.addEventListener("click", function (e) {
@@ -818,20 +875,28 @@
     var importBtn = dlg.querySelector("[data-alias-import]");
     if (importBtn && bulkInput) {
       importBtn.addEventListener("click", function () {
+        clearErrors();
         var existing = aliasInputs().map(function (i) { return i.value.trim().toLowerCase(); });
         var mainValue = main.value.trim().toLowerCase();
         var tokens = splitNames(bulkInput.value);
+        var invalid = [];
+        var dup = [];
         var added = 0;
         tokens.forEach(function (token) {
           var key = token.toLowerCase();
-          if (key === mainValue || existing.indexOf(key) !== -1) return;
+          if (!validDomain(key)) { invalid.push(token); return; }
+          if (key === mainValue || existing.indexOf(key) !== -1) { dup.push(token); return; }
           existing.push(key);
           addAliasRow(token);
           added += 1;
         });
-        bulkInput.value = "";
-        if (!added) showError("aliases", "没有可导入的新域名（可能重复或为空）");
-        else showError("aliases", "");
+        // 格式错误留在文本框里便于修正；重复项已经存在，直接丢弃。
+        bulkInput.value = invalid.join("\n");
+        var msgs = [];
+        if (invalid.length) msgs.push("格式不正确，未导入：" + invalid.join("、"));
+        if (dup.length) msgs.push("已存在，未导入：" + dup.join("、"));
+        showError("aliases", msgs.join("；"));
+        if (added && !invalid.length) bulkWrap.setAttribute("hidden", "");
       });
     }
 
@@ -849,20 +914,32 @@
       var seen = {};
       if (dv) seen[dv] = true;
       var bad = [];
-      var dup = "";
+      var dup = [];
       aliasInputs().forEach(function (input) {
+        var msgs = [];
         splitNames(input.value).forEach(function (token) {
           var key = token.toLowerCase();
-          if (!validDomain(key)) { bad.push(token); return; }
-          if (seen[key]) { if (!dup) dup = token; return; }
+          if (!validDomain(key)) {
+            bad.push(token);
+            if (msgs.indexOf("格式不正确") < 0) msgs.push("格式不正确");
+            return;
+          }
+          if (seen[key]) {
+            dup.push(token);
+            var why = key === dv ? "与主域名重复" : "与前面的域名重复";
+            if (msgs.indexOf(why) < 0) msgs.push(why);
+            return;
+          }
           seen[key] = true;
         });
+        // 逐行标注，错误就显示在该别名输入框下方。
+        rowError(input, msgs.join("；"));
       });
       if (bad.length) { showError("aliases", "别名域名格式不正确：" + bad.join("、")); ok = false; }
-      else if (dup) { showError("aliases", "域名重复：" + dup); ok = false; }
+      if (dup.length) { showError("aliases", "域名重复：" + dup.join("、")); ok = false; }
 
       if (type !== "proxy" && root) {
-        if (!slugTouched && !root.value.trim()) root.value = dv;
+        if (!slugTouched || !root.value.trim()) { root.value = dv; slugTouched = false; }
         var rv = root.value.trim();
         if (rv && (rv.includes("/") || rv.includes("..") || /\s/.test(rv) || !/^[A-Za-z0-9._-]+$/.test(rv))) {
           showError("root_dir", "站点目录只能填目录名，不能包含 / 或 ..");
@@ -890,7 +967,22 @@
           ok = false;
         }
       }
-      if (!ok) e.preventDefault();
+      if (!ok) {
+        e.preventDefault();
+        var first = dlg.querySelector("[data-has-error]");
+        if (first && typeof first.focus === "function") first.focus();
+        return;
+      }
+      // 提交中禁用按钮，避免连点重复创建；真正禁用放到下一拍，别影响本次提交。
+      var submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn && !form.dataset.submitting) {
+        form.dataset.submitting = "1";
+        form.setAttribute("aria-busy", "true");
+        setTimeout(function () {
+          submitBtn.disabled = true;
+          submitBtn.textContent = "创建中…";
+        }, 0);
+      }
     });
 
     syncType();
@@ -1000,6 +1092,104 @@
       document.body.removeChild(ta);
     }
 
+    // ---- 扩展多选与二次确认：一个请求 = 一个任务 ----
+    var pendingConfirm = null;
+
+    function refreshSelectedCount() {
+      if (!content) return;
+      var label = content.querySelector("[data-ext-selected-count]");
+      if (!label) return;
+      var n = content.querySelectorAll("[data-ext-check]:checked").length;
+      label.textContent = "已选 " + n + " 项";
+    }
+
+    function showExtConfirm(form, op, items, isPecl) {
+      var box = content && content.querySelector("[data-ext-confirm]");
+      if (!box) return;
+      var title = box.querySelector("[data-ext-confirm-title]");
+      var list = box.querySelector("[data-ext-confirm-list]");
+      var restart = box.querySelector("[data-ext-confirm-restart]");
+      var compile = box.querySelector("[data-ext-confirm-compile]");
+      var heavyBox = box.querySelector("[data-ext-confirm-heavy]");
+      var hint = box.querySelector("[data-ext-confirm-hint]");
+      var heavy = items.filter(function (i) { return i.heavy && !i.builtin; });
+      if (title) {
+        title.textContent = (isPecl ? "确认安装 PECL 扩展" : (op === "uninstall" ? "确认卸载扩展" : "确认安装扩展")) +
+          "（" + items.length + " 项）";
+      }
+      if (list) {
+        list.innerHTML = "";
+        items.forEach(function (i) {
+          var li = document.createElement("li");
+          var name = document.createElement("span");
+          name.className = "mono";
+          name.textContent = i.key;
+          li.appendChild(name);
+          li.appendChild(document.createTextNode(" " + (i.label || i.key)));
+          if (i.heavy) {
+            var tag = document.createElement("span");
+            tag.className = "tag warn-tag";
+            tag.textContent = i.estimated || "预计 2–5 分钟（需编译）";
+            li.appendChild(tag);
+          }
+          list.appendChild(li);
+        });
+      }
+      if (restart) restart.textContent = "是（串行执行完成后重启一次容器）";
+      if (compile) {
+        compile.textContent = op === "uninstall"
+          ? "否（仅移除 ini）"
+          : (heavy.length ? "是（" + heavy.length + " 项重项需编译）" : "可能（按 mlocati 依赖解析编译）");
+      }
+      if (heavyBox) {
+        heavyBox.hidden = heavy.length === 0;
+        if (heavy.length) {
+          heavyBox.textContent = "重项：" + heavy.map(function (i) { return i.key; }).join("、") +
+            " · 预计 2–5 分钟；任务在后台串行执行，日志合流。";
+        }
+      }
+      if (hint) {
+        hint.textContent = "本次提交 1 个任务（不是 " + items.length + " 个独立任务）；进度与日志在「日志」页签实时刷新。";
+      }
+      pendingConfirm = { form: form, op: op, items: items, isPecl: !!isPecl };
+      box.hidden = false;
+      var ok = box.querySelector("[data-ext-confirm-ok]");
+      if (ok) ok.focus();
+    }
+
+    function postDrawerForm(form) {
+      var actionUrl = dlg.dataset.currentUrl || form.getAttribute("action");
+      fetch(form.getAttribute("action"), {
+        method: "POST",
+        body: new FormData(form),
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "fetch" }
+      }).then(function () {
+        return open(actionUrl);
+      }).catch(function (err) {
+        if (content) content.innerHTML = '<div class="alert">提交失败：' + String(err.message || err) + "</div>";
+      });
+    }
+
+    function confirmPending() {
+      var p = pendingConfirm;
+      pendingConfirm = null;
+      var box = content && content.querySelector("[data-ext-confirm]");
+      if (box) box.hidden = true;
+      if (!p || !p.form) return;
+      if (!p.isPecl) {
+        var op = p.form.querySelector('input[name="op"]');
+        if (!op) {
+          op = document.createElement("input");
+          op.type = "hidden";
+          op.name = "op";
+          p.form.appendChild(op);
+        }
+        op.value = p.op;
+      }
+      postDrawerForm(p.form);
+    }
+
     // ---- 扩展搜索与分类过滤 ----
     function applyExtFilter() {
       if (!content) return;
@@ -1036,6 +1226,16 @@
         applyExtFilter();
         return;
       }
+      if (target.closest("[data-ext-confirm-cancel]")) {
+        var cancelBox = target.closest("[data-ext-confirm]");
+        if (cancelBox) cancelBox.hidden = true;
+        pendingConfirm = null;
+        return;
+      }
+      if (target.closest("[data-ext-confirm-ok]")) {
+        confirmPending();
+        return;
+      }
       if (target.closest("[data-rt-runlog-refresh]")) {
         loadRunLog();
         return;
@@ -1050,6 +1250,9 @@
     });
     dlg.addEventListener("input", function (e) {
       if (e.target instanceof Element && e.target.closest("[data-ext-search]")) applyExtFilter();
+    });
+    dlg.addEventListener("change", function (e) {
+      if (e.target instanceof Element && e.target.closest("[data-ext-check]")) refreshSelectedCount();
     });
 
 
@@ -1141,20 +1344,57 @@
     // 抽屉内的启停/重建/扩展表单：POST 后重新拉取抽屉内容，不整页跳转。
     dlg.addEventListener("submit", function (e) {
       var form = e.target;
-      if (!(form instanceof HTMLFormElement) || !form.hasAttribute("data-drawer-post")) return;
+      if (!(form instanceof HTMLFormElement)) return;
+      // 扩展多选：先弹出二次确认，确认后才提交（一个请求 = 一个任务）。
+      if (form.hasAttribute("data-ext-batch-form")) {
+        e.preventDefault();
+        var op = e.submitter ? e.submitter.value : "";
+        var boxes = Array.prototype.slice.call(
+          form.querySelectorAll("[data-ext-check]:checked")
+        ).filter(function (cb) { return !cb.disabled; });
+        var items = boxes.filter(function (cb) {
+          var enabled = cb.getAttribute("data-ext-enabled") === "true";
+          var builtin = cb.getAttribute("data-ext-builtin") === "true";
+          if (builtin) return false;
+          return op === "uninstall" ? enabled : !enabled;
+        }).map(function (cb) {
+          return {
+            key: cb.value,
+            label: cb.getAttribute("data-ext-label") || cb.value,
+            enabled: cb.getAttribute("data-ext-enabled") === "true",
+            builtin: cb.getAttribute("data-ext-builtin") === "true",
+            heavy: cb.getAttribute("data-ext-heavy") === "true",
+            estimated: cb.getAttribute("data-ext-estimated") || ""
+          };
+        });
+        if (!items.length) {
+          alert(op === "uninstall"
+            ? "请勾选已安装的扩展后再卸载"
+            : "请勾选尚未安装的扩展后再安装");
+          return;
+        }
+        showExtConfirm(form, op, items, false);
+        return;
+      }
+      if (form.hasAttribute("data-pecl-form")) {
+        e.preventDefault();
+        var nameInput = form.querySelector('input[name="name"]');
+        var versionInput = form.querySelector('input[name="version"]');
+        var name = nameInput ? nameInput.value.trim() : "";
+        if (!name) return;
+        var version = versionInput ? versionInput.value.trim() : "";
+        showExtConfirm(form, "install", [{
+          key: name + (version ? "@" + version : ""),
+          label: "PECL 扩展",
+          heavy: true,
+          estimated: "预计耗时取决于编译方式"
+        }], true);
+        return;
+      }
+      if (!form.hasAttribute("data-drawer-post")) return;
       if ((form.getAttribute("action") || "").indexOf("/action/delete") >= 0) return;
       e.preventDefault();
-      var actionUrl = dlg.dataset.currentUrl || form.getAttribute("action");
-      fetch(form.getAttribute("action"), {
-        method: "POST",
-        body: new FormData(form),
-        credentials: "same-origin",
-        headers: { "X-Requested-With": "fetch" }
-      }).then(function () {
-        return open(actionUrl);
-      }).catch(function (err) {
-        if (content) content.innerHTML = '<div class="alert">提交失败：' + String(err.message || err) + "</div>";
-      });
+      postDrawerForm(form);
     });
 
     // 点遮罩关闭：dialog 的点击目标只有自身时即落在 backdrop 上。
@@ -1183,8 +1423,8 @@
       for (var i = 0; i < catalog.length; i++) if (catalog[i].key === key) return catalog[i];
       return catalog[0];
     }
-    // 按当前选中的 PHP 版本重建扩展勾选项：不可用项灰显并带原因，避免
-    // 8.4/8.5 已经移除的扩展在 8.3 上也被误禁，或反之。
+    // 按当前选中的 PHP 版本重建扩展勾选项：后端只返回可用项，
+    // 不可用项不渲染（不灰显、不占位）。
     function rebuildExts(def) {
       if (!extField) return;
       var box = extField.querySelector(".ext-options");
@@ -1195,14 +1435,12 @@
       box.innerHTML = "";
       list.forEach(function (e) {
         var lab = document.createElement("label");
-        lab.className = "ext-option" + (e.supported ? "" : " ext-option-off");
-        if (!e.supported) lab.title = e.note || "";
+        lab.className = "ext-option";
         var cb = document.createElement("input");
         cb.type = "checkbox";
         cb.name = "ext";
         cb.value = e.key;
         if (e.default_on) cb.checked = true;
-        if (!e.supported) cb.disabled = true;
         var name = document.createElement("span");
         name.className = "ext-name mono";
         name.textContent = e.key;
@@ -1215,7 +1453,7 @@
         }
         var hint = document.createElement("span");
         hint.className = "hint";
-        hint.textContent = e.supported ? (e.label || e.key) : (e.note || "");
+        hint.textContent = (e.label || e.key) + (e.estimated_time ? " · " + e.estimated_time : "");
         lab.appendChild(cb);
         lab.appendChild(name);
         lab.appendChild(hint);
@@ -1389,6 +1627,28 @@
     apply(initial || "status", false);
   }
 
+  // ---- Web 服务行内动作：独立合成行，不打开抽屉 ----
+  function attachWebRuntimeActions() {
+    var form = document.querySelector("[data-web-action-form]");
+    if (!form || form.dataset.bound === "1") return;
+    form.dataset.bound = "1";
+    document.addEventListener("click", function (e) {
+      if (!(e.target instanceof Element)) return;
+      var btn = e.target.closest("[data-web-action]");
+      if (!btn) return;
+      e.preventDefault();
+      var op = btn.getAttribute("data-web-action") || "";
+      if (!op) return;
+      if (op === "delete" && !window.confirm("删除 Web 服务容器？PHP / Node / Go / Rust 运行环境各自独立，不受影响。")) {
+        return;
+      }
+      var base = form.getAttribute("data-web-action-base") || "";
+      form.setAttribute("action", base + "/" + op);
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else form.submit();
+    });
+  }
+
   function boot() {
     attachLogs();
     attachTerminal();
@@ -1402,6 +1662,7 @@
     attachSiteDialog();
     attachRuntimeDrawer();
     attachRuntimeCreate();
+    attachWebRuntimeActions();
     attachRuntimeJobs();
     attachNginxTabs();
     attachToasts();

@@ -55,7 +55,7 @@
 
 - L1 **集合固定**，不因插件缺失而从注册表删除；但渲染时按下面规则处理可见性。
 - `概览`、`网站`、`Docker`、`插件`、`设置` 有内核自带的固定 L2，正常渲染。
-  - `网站` 的 L2 为内核固定的「网站列表 / 运行环境 / 设置」，不依赖任何插件（原 `com.skiff.nginx` 已内核化）。
+  - `网站` 的 L2 为内核固定的「网站列表 / 运行环境 / Web 服务」，不依赖任何插件（原 `com.skiff.nginx` 已内核化）。Web 服务的稳定键为 `core/sites/web`，路由 `/{p}/sites/web`；页面内部可说明底层实现（当前为 OpenResty），但菜单与路由不绑定具体软件名。
 - `工具` 是**插件支撑型一级**：
   - 有可见 L2：正常渲染分组。
   - 没有任何已启用提供者：L1 仍然显示，展开后只有一条**空态项**「未启用工具插件」，附「去插件中心」链接；点击空态项进入插件中心，不产生 404。
@@ -160,7 +160,7 @@ L3 不重复声明 `roles` / `gates`：继承所属 L2。若将来需要单独�
 
 ### 2.4 示例插件完整声明
 
-> 原 `com.skiff.nginx` 插件已**内核化**：网站一级与「网站列表 / 运行环境 / 设置」由内核自带，
+> 原 `com.skiff.nginx` 插件已**内核化**：网站一级与「网站列表 / 运行环境 / Web 服务」由内核自带，
 > 不再作为插件声明菜单。下面的 `com.skiff.example` 仅演示键格式（L2 + L3 + 槽位），
 > 任何仍挂在固定一级下的插件都适用。
 
@@ -408,7 +408,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     "content_width": "auto",
     "content_max": 1440,
     "order": {
-      "sites": ["core/sites/list", "core/sites/env"],
+      "sites": ["core/sites/list", "core/sites/env", "core/sites/web"],
       "docker": ["core/docker/overview", "core/docker/containers"]
     },
     "hidden": ["plugin/com.skiff.guard/guard"],
@@ -634,7 +634,7 @@ roles = ["admin", "operator", "viewer"]
 
 说明：
 
-- 网站一级由内核自带（网站列表 / 运行环境 / 设置），原 `com.skiff.nginx` 已内核化，不再声明插件菜单。
+- 网站一级由内核自带（网站列表 / 运行环境 / Web 服务），原 `com.skiff.nginx` 已内核化，不再声明插件菜单。
 - files/cron/monitor/guard 全部归「工具」，不再作为一级或二级「应用」的平铺项。
 - L3 的 `view` 必须对应真实存在的 `ui/<view>.html`；没有对应视图就先不声明，避免假标签。
 
@@ -658,7 +658,7 @@ roles = ["admin", "operator", "viewer"]
 | C4 | L3 深度超限 / 数量超限 | 拒绝 `MENU_DEPTH_EXCEEDED` / `MENU_TOO_MANY_ITEMS` | 单测 |
 | C5 | `view` 非法/文件不存在/同插件重复 | 拒绝 `MENU_VIEW_INVALID` / `MENU_VIEW_MISSING` / `MENU_VIEW_CONFLICT` | 单测 |
 | C6 | 旧包只有 `[[ui]]` | 合成 `plugin/<id>/legacy`；旧 nginx 包兼容映射到 `sites`，其余映射到 `tools` | 单测/集成 |
-| C7 | 网站 L1 的内核固定 L2 | 始终出现网站列表 / 运行环境 / 设置，三项均 200，无 404 | 集成 |
+| C7 | 网站 L1 的内核固定 L2 | 始终出现网站列表 / 运行环境 / Web 服务，三项均 200，无 404 | 集成 |
 | C8 | 0 个工具提供者 | 工具 L1 显示空态 | 集成 |
 | C9 | 插件未启用 | 其 L2 不出现在导航；插件中心可启用 | 集成 |
 | C10 | 角色不匹配 | 菜单不渲染；直接访问菜单 URL 404 | 集成 |
@@ -839,7 +839,7 @@ roles = ["admin", "operator", "viewer"]
 | L1 id | 标签 | 类型 | 默认 L2 |
 |---|---|---|---|
 | `overview` | 概览 | 直达 | —（页面内槽位） |
-| `sites` | 网站 | 分组 | 内核固定：网站列表 / 运行环境 / 设置（不依赖插件） |
+| `sites` | 网站 | 分组 | 内核固定：网站列表 / 运行环境 / Web 服务（不依赖插件） |
 | `docker` | Docker | 分组 | 概览 / 容器 / 镜像 / 网络 / 卷 / 编排 / 设置（概览、编排、设置 P3，`route_available=false` 前不渲染） |
 | `plugins` | 插件 | 分组 | 已安装 / 发现 / 可更新 |
 | `tools` | 工具 | 分组 | 插件声明；无提供者显示空态 |

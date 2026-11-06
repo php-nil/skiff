@@ -246,6 +246,19 @@ if [ -d "$SRC_DIR/official" ]; then
     log "官方插件包已放入 $OFFICIAL_DIR（$COPIED 个，未自动安装）"
 fi
 
+# PHP 扩展安装器（mlocati/docker-php-extension-installer，固定版本）：随包分发，
+# PHP 容器整目录挂载 $WEB_ROOT，容器内固定读取 /www/skiff/tools/install-php-extensions。
+# 运行时不再访问 GitHub；包内缺失时内核会从二进制内置副本落盘。
+TOOLS_DIR="$WEB_ROOT/skiff/tools"
+if [ -f "$SRC_DIR/vendor/install-php-extensions" ]; then
+    mkdir -p "$TOOLS_DIR"
+    chmod 0755 "$TOOLS_DIR"
+    install -m 0755 "$SRC_DIR/vendor/install-php-extensions" "$TOOLS_DIR/install-php-extensions"
+    log "PHP 扩展安装器已放入 $TOOLS_DIR/install-php-extensions（本地副本，不走网络）"
+else
+    warn "发布包内缺少 vendor/install-php-extensions；内核会在首次安装 PHP 时从内置副本落盘"
+fi
+
 # 4. Docker 前置
 #
 # 必须排在 systemd 之前：DockerService 只在进程启动时 connect 一次，先起面板再装

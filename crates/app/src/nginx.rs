@@ -6,8 +6,8 @@
 //! 三步，失败回滚并保留错误行。日志一律来自实际布局：站点行日志在
 //! `<站点目录>/log/`，全局日志在 `<web_root>/log/`。
 
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use skiff_store::Db;
@@ -264,21 +264,71 @@ pub struct StatusCount {
     pub count: u64,
 }
 
+/// 单次日志读取的字节上限：从文件尾反向读，避免大文件拖垮请求。
+pub const LOG_TAIL_BYTES: usize = 2 * 1024 * 1024;
+
+/// 日志页查询条件；全部来自 GET 参数，未点「加载」时不触碰文件。
+#[derive(Debug, Clone, Default)]
+pub struct NginxLogQuery {
+    pub loaded: bool,
+    /// `access` | `error`；其余值按 access 处理。
+    pub kind: String,
+    pub keyword: String,
+    /// 错误日志级别（all/emerg/alert/crit/error/warn/notice/info）。
+    pub level: String,
+    /// 访问日志状态码过滤：空 / `404` / `4xx`。
+    pub status: String,
+    /// 本次加载的行数（50–500）。
+    pub page_lines: usize,
+    /// 已加载匹配行数；「加载更多」从这里继续。
+    pub offset: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct NginxLogView {
-    pub error_path: String,
-    pub error_lines: Vec<String>,
-    pub error_reason: String,
-    /// 当前级别过滤（all/emerg/alert/crit/error/warn/notice/info）。
-    pub error_level: String,
-    pub access_path: String,
-    pub access_reason: String,
-    /// 访问日志 tail（与错误日志分栏展示）。
-    pub access_lines: Vec<String>,
-    /// 本次 tail 行数上限（50–500）。
-    pub tail: usize,
+    pub loaded: bool,
+    pub kind: String,
+    pub keyword: String,
+    pub level: String,
+    pub status: String,
+    pub page_lines: usize,
+    pub offset: usize,
+    pub next_offset: usize,
+    pub rows: Vec<String>,
+    /// 展示用日志路径；访问日志含多个文件时给出文件数说明。
+    pub path: String,
+    pub reason: String,
+    /// 本次实际扫描的行数与字节数（仅尾部范围内）。
+    pub scanned_lines: u64,
+    pub scanned_bytes: u64,
+    pub scanned_text: String,
+    /// 已检查日志文件的总大小。
+    pub file_bytes: u64,
+    pub file_text: String,
+    /// 是否因 2 MiB 上限截断（更早内容未读取）。
+    pub truncated: bool,
+    pub has_more: bool,
+    /// 仅统计 `rows` 这批已加载行的状态码分布。
     pub status_counts: Vec<StatusCount>,
-    pub recent: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TailChunk {
+    lines: Vec<String>,
+    scanned_bytes: u64,
+    file_bytes: u64,
+    truncated: bool,
+}
+
+/// 字节数 → 人类可读文本（日志页只做展示）。
+fn bytes_text(n: u64) -> String {
+    if n >= 1024 * 1024 {
+        format!("{:.1} MiB", n as f64 / (1024.0 * 1024.0))
+    } else if n >= 1024 {
+        format!("{:.1} KiB", n as f64 / 1024.0)
+    } else {
+        format!("{n} B")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -298,28 +348,123 @@ fn error_line(out: &str) -> String {
         .unwrap_or_else(|| out.trim().to_string())
 }
 
-fn read_tail(path: &Path, max: usize) -> Result<Vec<String>, String> {
+/// 只读文件尾部的 `budget` 字节（最多 2 MiB），按行倒序返回。
+///
+/// 用 `seek` 从末尾定位，绝不整文件读进内存；截断在行中间时丢掉那段残行。
+fn read_tail_chunk(path: &Path, budget: usize) -> Result<TailChunk, String> {
     if !path.is_file() {
         return Err(format!("日志文件不存在：{}", path.display()));
     }
-    let text = std::fs::read_to_string(path).map_err(|e| format!("读取日志失败：{e}"))?;
-    Ok(text
-        .lines()
+    let mut f = std::fs::File::open(path).map_err(|e| format!("读取日志失败：{e}"))?;
+    let file_bytes = f
+        .metadata()
+        .map_err(|e| format!("读取日志元信息失败：{e}"))?
+        .len();
+    let want = (budget as u64).min(file_bytes);
+    let start = file_bytes - want;
+    let mut buf = vec![0u8; want as usize];
+    if want > 0 {
+        f.seek(SeekFrom::Start(start))
+            .map_err(|e| format!("定位日志文件失败：{e}"))?;
+        f.read_exact(&mut buf)
+            .map_err(|e| format!("读取日志失败：{e}"))?;
+    }
+    let truncated = start > 0;
+    // 截断点正好落在换行之后时，第一段就是完整行；否则要丢掉那段残行。
+    let mut drop_first = false;
+    if truncated {
+        f.seek(SeekFrom::Start(start - 1))
+            .map_err(|e| format!("定位日志文件失败：{e}"))?;
+        let mut prev = [0u8; 1];
+        f.read_exact(&mut prev)
+            .map_err(|e| format!("读取日志失败：{e}"))?;
+        drop_first = prev[0] != b'\n';
+    }
+    let mut raw: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+    if raw.last().map(|s| s.is_empty()).unwrap_or(false) {
+        raw.pop();
+    }
+    if drop_first && !raw.is_empty() {
+        raw.remove(0);
+    }
+    let lines = raw
+        .iter()
         .rev()
-        .take(max)
-        .map(|l| l.to_string())
-        .collect())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    Ok(TailChunk {
+        lines,
+        scanned_bytes: want,
+        file_bytes,
+        truncated,
+    })
 }
 
 fn status_of_line(line: &str) -> Option<u16> {
     line.split(|c: char| c.is_whitespace()).find_map(|tok| {
-        let t = tok.trim_matches(|c| c == '"' || c == '[' || c == ']');
+        let t = tok.trim_matches(|c: char| c == '"' || c == '[' || c == ']');
         if t.len() == 3 && t.bytes().all(|b| b.is_ascii_digit()) {
             t.parse::<u16>().ok().filter(|n| (100..600).contains(n))
         } else {
             None
         }
     })
+}
+
+/// 状态码过滤：空值不过滤；支持精确 `404` 与类别 `4xx`。
+fn status_matches(line: &str, filter: &str) -> bool {
+    let filter = filter.trim().to_ascii_lowercase();
+    if filter.is_empty() {
+        return true;
+    }
+    let Some(code) = status_of_line(line) else {
+        return false;
+    };
+    if let Some(class) = filter.strip_suffix("xx") {
+        let Ok(n) = class.parse::<u16>() else {
+            return true;
+        };
+        return code / 100 == n;
+    }
+    match filter.parse::<u16>() {
+        Ok(n) => code == n,
+        Err(_) => true,
+    }
+}
+
+/// 已加载行的状态码分布（只统计传入的这一批，不代表全量）。
+fn status_buckets(lines: &[String]) -> Vec<StatusCount> {
+    let mut c2 = 0u64;
+    let mut c3 = 0u64;
+    let mut c4 = 0u64;
+    let mut c5 = 0u64;
+    for line in lines {
+        match status_of_line(line) {
+            Some(n) if n < 300 => c2 += 1,
+            Some(n) if n < 400 => c3 += 1,
+            Some(n) if n < 500 => c4 += 1,
+            Some(_) => c5 += 1,
+            None => {}
+        }
+    }
+    vec![
+        StatusCount {
+            label: "2xx".into(),
+            count: c2,
+        },
+        StatusCount {
+            label: "3xx".into(),
+            count: c3,
+        },
+        StatusCount {
+            label: "4xx".into(),
+            count: c4,
+        },
+        StatusCount {
+            label: "5xx".into(),
+            count: c5,
+        },
+    ]
 }
 
 /// 解析 stub_status 文本；缺失任一行返回 None，调用方要如实说明不可得。
@@ -762,108 +907,137 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("保存 nginx 参数失败：{e}")))
     }
 
-    pub fn nginx_logs(&self, keyword: &str, level: &str, tail: usize) -> NginxLogView {
+    /// 按条件读取日志尾部。
+    ///
+    /// `loaded == false` 时只返回空视图，**不触碰任何文件**；加载后按类型、
+    /// 关键字、级别/状态码过滤，单次最多从尾部反向读 [`LOG_TAIL_BYTES`]。
+    pub fn nginx_logs(&self, q: &NginxLogQuery) -> NginxLogView {
         let s = self.site_settings();
-        let level = nginx_level_label(level);
-        let tail = tail.clamp(50, 500);
-        let error_path = s.global_log_dir().join("nginx-error.log");
-        let kw = keyword.trim().to_ascii_lowercase();
-        let mut error_reason = String::new();
-        let error_lines = match read_tail(&error_path, tail) {
-            Ok(lines) => lines
-                .into_iter()
-                .filter(|l| kw.is_empty() || l.to_ascii_lowercase().contains(&kw))
-                .filter(|l| matches_level(l, level))
-                .take(tail)
-                .collect(),
-            Err(e) => {
-                error_reason = e;
-                Vec::new()
-            }
+        let kind = if q.kind == "error" { "error" } else { "access" }.to_string();
+        let page_lines = q.page_lines.clamp(50, 500);
+        let mut v = NginxLogView {
+            loaded: q.loaded,
+            kind: kind.clone(),
+            keyword: q.keyword.clone(),
+            level: nginx_level_label(&q.level).to_string(),
+            status: q.status.trim().to_string(),
+            page_lines,
+            offset: q.offset,
+            next_offset: q.offset.saturating_add(page_lines),
+            rows: Vec::new(),
+            path: String::new(),
+            reason: String::new(),
+            scanned_lines: 0,
+            scanned_bytes: 0,
+            scanned_text: bytes_text(0),
+            file_bytes: 0,
+            file_text: bytes_text(0),
+            truncated: false,
+            has_more: false,
+            status_counts: Vec::new(),
         };
-        let global_access = s.global_log_dir().join("nginx-access.log");
-        let mut paths = vec![global_access.clone()];
-        let sites = self.db().list_sites().unwrap_or_default();
-        let mut site_lines: Vec<(String, Vec<String>)> = Vec::new();
-        for site in &sites {
-            let dir = std::path::PathBuf::from(&site.root_dir);
-            let path = s.log_file(&dir, LogKind::Access);
-            if path.is_file() {
-                if let Ok(lines) = read_tail(&path, tail) {
-                    paths.push(path);
-                    site_lines.push((site.domain.clone(), lines));
+        if !q.loaded {
+            return v;
+        }
+
+        let error_path = s.global_log_dir().join("nginx-error.log");
+        let files: Vec<PathBuf> = if kind == "error" {
+            vec![error_path.clone()]
+        } else {
+            let mut paths = Vec::new();
+            let global = s.global_log_dir().join("nginx-access.log");
+            if global.is_file() {
+                paths.push(global);
+            }
+            let sites = self.db().list_sites().unwrap_or_default();
+            for site in &sites {
+                let p = s.log_file(&PathBuf::from(&site.root_dir), LogKind::Access);
+                if p.is_file() {
+                    paths.push(p);
                 }
             }
+            // 按修改时间从新到旧，优先取最近写入的日志文件。
+            paths.sort_by(|a, b| {
+                let ma = a.metadata().and_then(|m| m.modified()).ok();
+                let mb = b.metadata().and_then(|m| m.modified()).ok();
+                mb.cmp(&ma)
+            });
+            paths
+        };
+        if kind == "access" && files.is_empty() {
+            v.path = format!("{}（未发现访问日志文件）", s.global_log_dir().display());
+            v.reason = format!(
+                "暂无可读访问日志；已检查全局日志目录 {} 与各站点 log/ 目录",
+                s.global_log_dir().display()
+            );
+            return v;
         }
-        let mut all: Vec<String> = Vec::new();
-        for (_, lines) in &site_lines {
-            all.extend(lines.iter().cloned());
-        }
-        if let Ok(lines) = read_tail(&global_access, tail) {
-            all.extend(lines);
-        }
-        all.retain(|l| kw.is_empty() || l.to_ascii_lowercase().contains(&kw));
-        all.sort_by(|a, b| b.cmp(a));
-        let access_lines: Vec<String> = all.iter().take(100).cloned().collect();
-        let mut c2 = 0u64;
-        let mut c3 = 0u64;
-        let mut c4 = 0u64;
-        let mut c5 = 0u64;
-        for line in &all {
-            match status_of_line(line) {
-                Some(n) if n < 300 => c2 += 1,
-                Some(n) if n < 400 => c3 += 1,
-                Some(n) if n < 500 => c4 += 1,
-                Some(_) => c5 += 1,
-                None => {}
+
+        let mut errors: Vec<String> = Vec::new();
+        let mut scanned: Vec<String> = Vec::new();
+        let mut budget = LOG_TAIL_BYTES;
+        for path in &files {
+            if budget == 0 {
+                v.truncated = true;
+                break;
+            }
+            match read_tail_chunk(path, budget) {
+                Ok(chunk) => {
+                    v.file_bytes = v.file_bytes.saturating_add(chunk.file_bytes);
+                    v.scanned_bytes = v.scanned_bytes.saturating_add(chunk.scanned_bytes);
+                    v.scanned_lines = v.scanned_lines.saturating_add(chunk.lines.len() as u64);
+                    v.truncated |= chunk.truncated;
+                    budget = budget.saturating_sub(chunk.scanned_bytes as usize);
+                    scanned.extend(chunk.lines);
+                }
+                Err(e) => errors.push(e),
             }
         }
-        let access_path = if paths.len() > 1 {
-            format!("{} 个日志文件（全局 + 站点）", paths.len())
+        v.scanned_text = bytes_text(v.scanned_bytes);
+        v.file_text = bytes_text(v.file_bytes);
+        if kind == "access" {
+            v.path = if files.len() > 1 {
+                format!(
+                    "{} 个访问日志文件（全局 + 站点，按修改时间从新到旧）",
+                    files.len()
+                )
+            } else {
+                files[0].display().to_string()
+            };
         } else {
-            global_access.display().to_string()
-        };
-        let access_reason = if all.is_empty() {
-            format!(
-                "暂无可读访问日志；已检查：{}",
-                paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("、")
-            )
-        } else {
-            String::new()
-        };
-        NginxLogView {
-            error_path: error_path.display().to_string(),
-            error_lines,
-            error_reason,
-            error_level: level.into(),
-            access_path,
-            access_reason,
-            access_lines,
-            tail,
-            status_counts: vec![
-                StatusCount {
-                    label: "2xx".into(),
-                    count: c2,
-                },
-                StatusCount {
-                    label: "3xx".into(),
-                    count: c3,
-                },
-                StatusCount {
-                    label: "4xx".into(),
-                    count: c4,
-                },
-                StatusCount {
-                    label: "5xx".into(),
-                    count: c5,
-                },
-            ],
-            recent: all.into_iter().take(30).collect(),
+            v.path = error_path.display().to_string();
         }
+        if errors.len() == files.len() {
+            v.reason = errors.join("；");
+            return v;
+        }
+
+        let kw = v.keyword.trim().to_ascii_lowercase();
+        let level = v.level.clone();
+        let status = v.status.clone();
+        let mut matching: Vec<String> = Vec::new();
+        for line in scanned {
+            if !kw.is_empty() && !line.to_ascii_lowercase().contains(&kw) {
+                continue;
+            }
+            if kind == "error" && !matches_level(&line, &level) {
+                continue;
+            }
+            if kind == "access" && !status_matches(&line, &status) {
+                continue;
+            }
+            matching.push(line);
+        }
+        v.has_more = matching.len() > v.offset.saturating_add(page_lines);
+        v.rows = matching
+            .into_iter()
+            .skip(v.offset)
+            .take(page_lines)
+            .collect();
+        if kind == "access" {
+            v.status_counts = status_buckets(&v.rows);
+        }
+        v
     }
 
     pub async fn nginx_modules(&self) -> NginxModuleView {
@@ -974,6 +1148,61 @@ mod tests {
         assert!(matches_level("[warn] 123#0: something", "all"));
         assert_eq!(nginx_level_label("bogus"), "all");
         assert_eq!(nginx_level_label("crit"), "crit");
+    }
+
+    #[test]
+    fn tail_reader_reads_bounded_bytes_and_keeps_complete_lines() {
+        // 每行 20 字节；200 字节预算恰好 10 行，不应因截断丢整行。
+        let dir = std::env::temp_dir().join(format!("skiff-nginx-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("access.log");
+        let content: String = (0..3000)
+            .map(|i| format!("line {i:04} 200 0.001\n"))
+            .collect();
+        std::fs::write(&path, &content).unwrap();
+
+        let chunk = read_tail_chunk(&path, 200).expect("读取尾部");
+        assert_eq!(chunk.scanned_bytes, 200);
+        assert_eq!(chunk.file_bytes, content.len() as u64);
+        assert!(chunk.truncated, "只读尾部必须标记截断");
+        assert_eq!(chunk.lines.len(), 10);
+        assert_eq!(
+            chunk.lines.first().map(String::as_str),
+            Some("line 2999 200 0.001")
+        );
+        assert_eq!(
+            chunk.lines.last().map(String::as_str),
+            Some("line 2990 200 0.001")
+        );
+
+        let full = read_tail_chunk(&path, LOG_TAIL_BYTES).expect("读取全文");
+        assert!(!full.truncated);
+        assert_eq!(full.lines.len(), 3000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tail_reader_drops_partial_first_line() {
+        let dir = std::env::temp_dir().join(format!("skiff-nginx-part-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("error.log");
+        std::fs::write(&path, "aaaa 200\nbbbb 404\ncccc 500\n").unwrap();
+        // 从倒数第 14 字节开始，切在 "bbbb 404\n" 中间。
+        let chunk = read_tail_chunk(&path, 14).expect("读取尾部");
+        assert!(chunk.truncated);
+        assert_eq!(chunk.lines, vec!["cccc 500".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_filter_supports_exact_and_class() {
+        let line = r#"1.2.3.4 - - [01/Jan/2026:00:00:00 +0800] "GET / HTTP/1.1" 404 123 "-""#;
+        assert!(status_matches(line, "404"));
+        assert!(status_matches(line, "4xx"));
+        assert!(!status_matches(line, "200"));
+        assert!(!status_matches(line, "5xx"));
+        assert!(status_matches(line, ""));
+        assert!(status_matches(line, "bogus"));
     }
 
     #[test]

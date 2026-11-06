@@ -7,8 +7,9 @@
 #   （<target> 未指定时退化为 linux-<arch>）
 #
 # 安装包内至少含：skiff、skiff-plugin、install.sh、uninstall.sh、skiff.service、
-# config.toml.example、official/*.wbpkg、official/public-key.txt、checksums.txt、
-# README.txt。checksums.txt 覆盖包内除自身外的所有文件。
+# config.toml.example、official/*.wbpkg、official/public-key.txt、
+# vendor/install-php-extensions、checksums.txt、README.txt。
+# checksums.txt 覆盖包内除自身外的所有文件。
 #
 # 发布物**不做 detached 签名**（§11 决策 12）：只用 SHA-256 摘要防传输损坏，
 # 签名链路（--key / .sig / verify-file）已于 2026-11-01 整体移除。
@@ -132,6 +133,16 @@ if [ -f "$STAGE/skiff-plugin" ]; then
     chmod 0755 "$STAGE/skiff-plugin"
 fi
 
+# 固定版本 PHP 扩展安装器（mlocati）：随包分发，install.sh 复制到
+# /www/skiff/tools/，运行时不再从 GitHub 拉取。
+[ -f deploy/vendor/install-php-extensions ] \
+    || { echo "错误: 缺少 deploy/vendor/install-php-extensions（固定版本扩展安装器）" >&2; exit 2; }
+grep -q "IPE_VERSION=2.13.2" deploy/vendor/install-php-extensions \
+    || { echo "错误: 随包扩展安装器不是正式 release 2.13.2（禁止 master 副本）" >&2; exit 2; }
+mkdir -p "$STAGE/vendor"
+cp deploy/vendor/install-php-extensions "$STAGE/vendor/install-php-extensions"
+chmod 0755 "$STAGE/vendor/install-php-extensions"
+
 if [ "$SKIP_PLUGINS" -eq 0 ]; then
     mkdir -p "$STAGE/official"
     cp "$ROOT"/plugins/official/*.wbpkg "$STAGE/official/"
@@ -159,6 +170,8 @@ Skiff（轻舟）$VERSION — ${TARGET:-linux-$ARCH}
                         /www/skiff/official/，不自动安装）+ public-key.txt
   install.sh            安装器（支持 --datadir / --listen / SKIFF_LISTEN / 幂等重装）
   docker-bootstrap.sh   Docker 前置引导（install.sh 会调用；也可单独补跑）
+  vendor/install-php-extensions
+                       固定版本 PHP 扩展安装器（install.sh 复制到 /www/skiff/tools/）
   uninstall.sh / skiff.service / config.toml.example
   checksums.txt         本包内所有文件的 SHA-256（解压后 sha256sum -c 可复核）
 
