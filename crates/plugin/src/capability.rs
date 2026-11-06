@@ -31,14 +31,14 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use skiff_store::Grant;
 
-use crate::fsops;
+use crate::{fsgrant, fsops};
 
 /// 能力面需要的宿主上下文。
 ///
 /// 最小接口：能力面只要「插件数据根在哪」「这个插件被授了哪些权限」
 /// 「审计往哪写」这三件事，不关心数据库与状态是怎么组装的。
 pub trait CapabilityHost {
-    /// 插件数据根（`<data_dir>/plugins/<id>/data`）。
+    /// 内核数据根（生产 `/www/skiff`；插件私有数据在其下 `plugins/<id>/data`）。
     fn data_dir(&self) -> &Path;
     /// 该插件已授予的权限（安装时逐条确认的结果）。
     fn plugin_grants(&self, plugin_id: &str) -> Vec<Grant>;
@@ -128,6 +128,65 @@ fn fs_ok<H: CapabilityHost>(host: &H, id: &str, perm: &str, target: &str) {
     );
 }
 
+/// 内核自有目录的保护（FS-08）：即便 `path:` 授权根覆盖（如 `path:/www` 含
+/// `/www/skiff`），也不允许插件读/写/删/改名/列目录本身，并记一条 `fs.protected`。
+/// 列父目录不在这里拒——受保护子项由 [`filter_protected`] 过滤掉。
+fn protected_deny<H: CapabilityHost>(
+    host: &H,
+    id: &str,
+    target: &str,
+    path: &Path,
+) -> Option<Response> {
+    if !fsgrant::is_protected(host.data_dir(), path) {
+        return None;
+    }
+    host.audit(
+        &format!("plugin:{id}"),
+        "uds",
+        "fs.protected",
+        target,
+        "deny",
+        "受保护路径（内核数据根/插件目录），拒绝访问",
+    );
+    Some(
+        (
+            StatusCode::FORBIDDEN,
+            "受保护路径：内核数据根与插件目录不允许插件访问".to_string(),
+        )
+            .into_response(),
+    )
+}
+
+/// 列父目录时隐藏受保护子项（FS-08）：整页报错会让插件连 `/www` 都列不了，
+/// 因此按名字过滤 `items`，并据保留项重建 `entries`（两者同源，避免前端两套口径）。
+fn filter_protected<H: CapabilityHost>(host: &H, dir: &Path, mut v: Value) -> Value {
+    let data = host.data_dir();
+    let items: Vec<Value> = v
+        .get("items")
+        .and_then(|i| i.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|item| {
+                    item.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|name| !fsgrant::hides_listed_entry(data, &dir.join(name)))
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let entries: Vec<String> = items
+        .iter()
+        .filter_map(|i| i.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .collect();
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("entries".to_string(), json!(entries));
+        obj.insert("items".to_string(), json!(items));
+    }
+    v
+}
+
 pub async fn fs_read<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
     let id = plugin_of(&req);
     let perm = "fs:read";
@@ -144,10 +203,16 @@ pub async fn fs_read<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respons
     let as_b64 = body.get("encoding").and_then(|v| v.as_str()) == Some("base64");
 
     let grants = grants_of(host, &id);
-    let (path, _) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
+    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
+    // 读同样会泄露内核机密（`skiff.db` 含口令哈希/会话/密钥），与写一并拦。
+    if scope == fsops::Scope::Host {
+        if let Some(r) = protected_deny(host, &id, raw, &path) {
+            return r;
+        }
+    }
     let chunk = match fsops::read_chunk(&path, offset, max) {
         Ok(c) => c,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
@@ -202,6 +267,11 @@ pub async fn fs_write<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
+    if scope == fsops::Scope::Host {
+        if let Some(r) = protected_deny(host, &id, raw, &path) {
+            return r;
+        }
+    }
     let (wrote, size) = match fsops::write_chunk(&path, &bytes, offset, append) {
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
@@ -223,12 +293,23 @@ pub async fn fs_list<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respons
     let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let grants = grants_of(host, &id);
-    let (path, _) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
+    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, false) {
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
+    // 列受保护目录本身 → 403；列其父目录 → 过滤子项（不整页报错）。
+    if scope == fsops::Scope::Host {
+        if let Some(r) = protected_deny(host, &id, raw, &path) {
+            return r;
+        }
+    }
     match fsops::list(&path) {
         Ok(v) => {
+            let v = if scope == fsops::Scope::Host {
+                filter_protected(host, &path, v)
+            } else {
+                v
+            };
             fs_ok(host, &id, perm, raw);
             Json(v).into_response()
         }
@@ -247,10 +328,15 @@ pub async fn fs_mkdir<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
     let body = read_json(req).await;
     let raw = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let grants = grants_of(host, &id);
-    let (path, _) = match fsops::resolve(host.data_dir(), &id, &grants, raw, true) {
+    let (path, scope) = match fsops::resolve(host.data_dir(), &id, &grants, raw, true) {
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
+    if scope == fsops::Scope::Host {
+        if let Some(r) = protected_deny(host, &id, raw, &path) {
+            return r;
+        }
+    }
     match fsops::make_dir(&path) {
         Ok(()) => {
             fs_ok(host, &id, perm, raw);
@@ -274,6 +360,11 @@ pub async fn fs_remove<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respo
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
+    if scope == fsops::Scope::Host {
+        if let Some(r) = protected_deny(host, &id, raw, &path) {
+            return r;
+        }
+    }
     if fsops::is_scope_root(host.data_dir(), &id, &grants, &path, scope) {
         return fs_fail(
             host,
@@ -319,6 +410,14 @@ pub async fn fs_rename<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respo
             from_raw,
             fsops::FsError::Forbidden("不允许在 data/ 与宿主路径之间搬运".into()),
         );
+    }
+    if from_scope == fsops::Scope::Host {
+        if let Some(r) = protected_deny(host, &id, from_raw, &from) {
+            return r;
+        }
+        if let Some(r) = protected_deny(host, &id, to_raw, &to) {
+            return r;
+        }
     }
     if fsops::is_scope_root(host.data_dir(), &id, &grants, &from, from_scope) {
         return fs_fail(

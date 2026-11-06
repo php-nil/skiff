@@ -13,6 +13,12 @@
 //!
 //! 授权根在**每次调用**时重新 canonicalize：管理员后来把目录搬走或删掉，授权即失效，
 //! 不会因为库里存了旧字符串而继续放行。
+//!
+//! 授权根命中之外还有一道**受保护前缀**：内核数据根（生产 `/www/skiff`）及其下
+//! `plugins/`、`official/` 可能落在某个 `path:` 根内（典型 `path:/www`），
+//! 这时只靠「在授权根内」会放行读写 `skiff.db`。读写/删/改名在 IO 前必须再问
+//! [`is_protected`]；列父目录时只过滤受保护子项（[`hides_listed_entry`]），
+//! 不整页失败。
 
 use std::path::{Path, PathBuf};
 
@@ -70,6 +76,36 @@ pub fn inside_any(roots: &[PathBuf], target: &Path) -> bool {
 /// `/var/log` 删掉或改名——那是「授权一个目录」和「授权毁掉这个目录」的区别。
 pub fn is_root_itself(roots: &[PathBuf], target: &Path) -> bool {
     hits_a_root_itself(roots, target)
+}
+
+/// 内核自有目录：插件经能力面一律不可读/写/删/改名；列父目录时其子项被过滤。
+///
+/// `data_dir` 是内核数据根（生产为 `/www/skiff`）：其下 `plugins/` 存插件包与
+/// 运行数据，`official/` 存官方包仓。它们可能落在某个 `path:` 授权根内，
+/// 单靠授权根判定挡不住，必须在 IO 前额外过这一道。
+pub fn protected_roots(data_dir: &Path) -> Vec<PathBuf> {
+    match std::fs::canonicalize(data_dir) {
+        Ok(root) => vec![root.clone(), root.join("plugins"), root.join("official")],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `target`（应为 canonical 路径）是否命中内核受保护前缀（含前缀本身）。
+pub fn is_protected(data_dir: &Path, target: &Path) -> bool {
+    protected_roots(data_dir)
+        .iter()
+        .any(|root| target == root.as_path() || target.starts_with(root.as_path()))
+}
+
+/// 列目录时某个子项是否应隐藏：自身或软链解析后命中受保护前缀。
+///
+/// 无法 canonicalize 的条目（如悬空软链）保留：真正读它时自会失败，不必让
+/// 整个列表陪葬。
+pub fn hides_listed_entry(data_dir: &Path, child: &Path) -> bool {
+    match std::fs::canonicalize(child) {
+        Ok(resolved) => is_protected(data_dir, &resolved),
+        Err(_) => false,
+    }
 }
 
 /// 把插件给的请求路径解析成可操作的真实路径。
@@ -202,5 +238,80 @@ mod tests {
         let child = canon_root.join("x");
         std::fs::write(&child, b"x").unwrap();
         assert!(!is_root_itself(&roots, &child));
+    }
+
+    /// 受保护前缀覆盖数据根本身、`skiff.db`、`plugins/`、`official/`，
+    /// 但不误伤数据根旁边的普通目录。
+    #[test]
+    fn protected_prefixes_cover_data_root_and_plugin_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let www = dir.path().join("www");
+        let data = www.join("skiff");
+        std::fs::create_dir_all(data.join("plugins/com.skiff.files")).unwrap();
+        std::fs::create_dir_all(data.join("official")).unwrap();
+        std::fs::write(data.join("skiff.db"), b"db").unwrap();
+        std::fs::create_dir_all(www.join("sites")).unwrap();
+
+        let data = std::fs::canonicalize(&data).unwrap();
+        let db = std::fs::canonicalize(data.join("skiff.db")).unwrap();
+        let plugin = std::fs::canonicalize(data.join("plugins/com.skiff.files")).unwrap();
+        let site = std::fs::canonicalize(www.join("sites")).unwrap();
+
+        assert!(is_protected(&data, &data));
+        assert!(is_protected(&data, &db));
+        assert!(is_protected(&data, &plugin));
+        assert!(!is_protected(&data, &site));
+    }
+
+    /// FS-08 回归：授权根 `/www` 覆盖数据根时，`resolve` 会判「在根内」，
+    /// 但受保护判定必须把数据根下的写目标拦下；普通路径仍放行。
+    #[test]
+    fn protected_path_passes_grant_but_is_denied_for_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let www = dir.path().join("www");
+        let data = www.join("skiff");
+        std::fs::create_dir_all(data.join("plugins/com.skiff.files/data")).unwrap();
+        std::fs::write(data.join("skiff.db"), b"db").unwrap();
+        std::fs::create_dir_all(www.join("normal")).unwrap();
+
+        let roots = canonical_roots(&[grant(&format!("path:{}", www.display()))]);
+        let data = std::fs::canonicalize(&data).unwrap();
+
+        // 授权根内的普通路径：可写。
+        let normal = std::fs::canonicalize(www.join("normal"))
+            .unwrap()
+            .join("ok.txt");
+        assert!(resolve(&roots, &normal.display().to_string(), true).is_ok());
+        assert!(!is_protected(&data, &normal));
+
+        // 授权根内但属于内核数据根：授权判定放行，受保护判定拒绝。
+        let db = data.join("skiff.db");
+        assert!(resolve(&roots, &db.display().to_string(), true).is_ok());
+        assert!(is_protected(&data, &db));
+
+        let plugin_file = data.join("plugins/com.skiff.files/data/x");
+        assert!(resolve(&roots, &plugin_file.display().to_string(), true).is_ok());
+        assert!(is_protected(&data, &plugin_file));
+    }
+
+    /// 列 `/www` 时只隐藏受保护子项（`skiff`），普通子项仍在。
+    #[test]
+    fn listing_hides_protected_children_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let www = dir.path().join("www");
+        let data = www.join("skiff");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("skiff.db"), b"db").unwrap();
+        std::fs::create_dir_all(www.join("sites")).unwrap();
+        std::fs::write(www.join("notes.txt"), b"x").unwrap();
+
+        let data = std::fs::canonicalize(&data).unwrap();
+        let mut names = vec![
+            "skiff".to_string(),
+            "sites".to_string(),
+            "notes.txt".to_string(),
+        ];
+        names.retain(|n| !hides_listed_entry(&data, &www.join(n)));
+        assert_eq!(names, vec!["sites".to_string(), "notes.txt".to_string()]);
     }
 }

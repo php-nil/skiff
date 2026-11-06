@@ -389,17 +389,20 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let inside = root.join("site.conf");
 
-        // 没有 path: 授权 → 一律拒（哪怕给了 fs:write）
-        assert!(matches!(
-            resolve(
-                tmp.path(),
-                "com.example.demo",
-                &[],
-                &inside.display().to_string(),
-                true
-            ),
-            Err(FsError::Forbidden(_))
-        ));
+        // 没有 path: 授权 → 一律拒（哪怕给了 fs:write）；错误文案必须指出补救入口，
+        // 否则用户只看到「未授权」，不知道要去安装确认页勾选。
+        match resolve(
+            tmp.path(),
+            "com.example.demo",
+            &[],
+            &inside.display().to_string(),
+            true,
+        ) {
+            Err(FsError::Forbidden(m)) => {
+                assert!(m.contains("安装确认页勾选"), "错误文案不可读: {m}")
+            }
+            other => panic!("应当拒绝，实际: {other:?}"),
+        }
 
         let grants = vec![grant(&format!("path:{}", root.display()))];
         let (path, scope) = resolve(

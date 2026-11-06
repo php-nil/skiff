@@ -165,12 +165,18 @@ async fn json_body(resp: axum::response::Response) -> serde_json::Value {
 #[tokio::test]
 async fn host_fs_requires_perm_and_path_grant() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("conf.d");
+    // 数据根与授权根互不包含：授权根落在数据根内时会被 FS-08 保护前缀拦下，
+    // 那是另一条用例的语义，这里要验的是「授权根内放行」。
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("skiff.db"), b"db").unwrap();
+    let db = data.join("skiff.db").display().to_string();
+    let root = tmp.path().join("grant");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("site.conf"), b"server {}").unwrap();
     let abs = root.join("site.conf").display().to_string();
 
-    let state = test_state(tmp.path().to_path_buf());
+    let state = test_state(data);
     let id = "com.example.demo";
 
     // 未安装 → 无权限
@@ -195,15 +201,36 @@ async fn host_fs_requires_perm_and_path_grant() {
     assert_eq!(v["data"], "server {}");
     assert_eq!(v["size"], 9, "`server {{}}` 共 9 字节");
     assert_eq!(v["eof"], true);
+
+    // 把授权根扩到 `tmp`（覆盖数据根）后，数据根里的 `skiff.db` 仍必须 403：
+    // 受保护前缀优先于授权根，读口与写口一致。
+    seed_plugin(
+        &state,
+        id,
+        &["fs:read"],
+        &[
+            &format!("path:{}", root.display()),
+            &format!("path:{}", tmp.path().display()),
+        ],
+    );
+    let r = cap::fs_read(&*state, fs_req(id, json!({ "path": db }))).await;
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "数据根的 skiff.db 不可读"
+    );
 }
 
 /// 写入被限制在授权根内；授权根自身不许删，根内文件可删可建目录。
 #[tokio::test]
 async fn host_fs_write_is_confined_and_roots_are_protected() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("conf.d");
+    // 同上：授权根必须与数据根分离，否则普通写入会先撞上 FS-08 保护。
+    let root = tmp.path().join("grant");
     std::fs::create_dir_all(&root).unwrap();
-    let state = test_state(tmp.path().to_path_buf());
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let state = test_state(data.clone());
     let id = "com.example.demo";
     seed_plugin(
         &state,
@@ -251,6 +278,28 @@ async fn host_fs_write_is_confined_and_roots_are_protected() {
     let r = cap::fs_remove(&*state, fs_req(id, json!({ "path": target }))).await;
     assert_eq!(r.status(), StatusCode::OK);
     assert!(!root.join("new.conf").exists());
+
+    // 授权根扩到 `tmp`（覆盖数据根）后，写数据根仍必须 403 且不落盘。
+    seed_plugin(
+        &state,
+        id,
+        &["fs:read", "fs:write", "fs:list", "fs:mkdir", "fs:remove"],
+        &[
+            &format!("path:{}", root.display()),
+            &format!("path:{}", tmp.path().display()),
+        ],
+    );
+    let pwn = data.join("pwn.txt");
+    let r = cap::fs_write(
+        &*state,
+        fs_req(
+            id,
+            json!({ "path": pwn.display().to_string(), "data": "x" }),
+        ),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN, "数据根不可写");
+    assert!(!pwn.exists(), "被拒的写入不得落盘");
 }
 
 /// 相对路径仍走插件 `data/`（原有语义不回退），绝对路径没有授权时必须拒。
