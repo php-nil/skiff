@@ -170,8 +170,11 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
         builtin: false,
         default_on: false,
         description: "PECL Redis 客户端",
+        // pecl 会就 igbinary / lzf / zstd 等编译选项逐个提问；面板的 docker exec
+        // 带 PTY，没人回答就会一直阻塞（实测挂起 20 分钟以上）。用 yes 持续喂空行
+        // 取默认值，keep-alive 到 pecl 退出后由 SIGPIPE 结束。
         enable_script: "apk add --no-cache --virtual .skiff-build autoconf g++ make re2c pkgconf \
-                        && pecl install redis && docker-php-ext-enable redis \
+                        && yes '' | pecl install redis && docker-php-ext-enable redis \
                         && apk del .skiff-build",
     },
 ];
@@ -278,6 +281,24 @@ mod tests {
                 "{key} 需要单独编译，不应标记内置"
             );
         }
+    }
+
+    #[test]
+    fn pecl_extensions_feed_stdin() {
+        // pecl 在 PTY 下会就编译选项逐个提问；不重定向 stdin 会一直阻塞（实测挂起）。
+        for e in PHP_EXTENSIONS {
+            if e.enable_script.contains("pecl install") {
+                assert!(
+                    e.enable_script.contains("| pecl install"),
+                    "{}：pecl 必须重定向 stdin，否则 PTY 下无人应答会挂起",
+                    e.key
+                );
+            }
+        }
+        assert!(php_extension("redis")
+            .expect("redis")
+            .enable_script
+            .contains("yes ''"));
     }
 
     #[test]
