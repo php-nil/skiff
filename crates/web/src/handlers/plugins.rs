@@ -357,6 +357,7 @@ fn sanitize_open(raw: &str) -> String {
 pub async fn install(
     State(state): State<Arc<AppState>>,
     PluginManagerUser(user): PluginManagerUser,
+    parts: Parts,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
     let mut bytes: Option<(String, Bytes)> = None;
@@ -399,7 +400,28 @@ pub async fn install(
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 
-    let meta = verify_for_confirm(&state, &path)?.meta;
+    let trust = verify_for_confirm(&state, &path)?;
+    let meta = &trust.meta;
+
+    // 重装/升级：按同一插件 id 找回既有授权，直接完成安装，不再逐条弹确认页。
+    // 选择集传空表示「不新增任何授权」；install_package 会沿用库内 grants，
+    // 并按新 manifest 的声明集过滤（新增声明项不自动授予）。
+    if state.db().plugin(&meta.manifest.id)?.is_some() {
+        let opts = skiff_plugin::install_options(
+            &trust,
+            Vec::new(),
+            Vec::new(),
+            state.cfg.allow_unsigned,
+            state.cfg.form,
+            state.cfg.allow_reduced_sandbox,
+        );
+        let ip = handlers::client_ip(&state, &parts);
+        commit_install(&state, &user, &ip, &path, &opts, &meta.manifest.id)?;
+        return Ok(handlers::redirect(format!(
+            "/{}/plugins",
+            state.cfg.entry_prefix
+        )));
+    }
 
     let permissions = meta
         .manifest
@@ -461,6 +483,52 @@ fn verify_for_confirm(
     })
 }
 
+/// 安装包并统一留痕：成功/失败都写 `plugin.install` 审计，并清理 `.incoming` 暂存。
+///
+/// 首次安装（确认页提交）与重装/升级（跳过确认页）共用这一条收尾路径，
+/// 避免两个入口的审计字段、临时文件清理和错误话术各写一遍。
+fn commit_install(
+    state: &AppState,
+    user: &crate::state::CurrentUser,
+    ip: &str,
+    path: &FsPath,
+    opts: &skiff_plugin::InstallOptions,
+    fail_id: &str,
+) -> Result<(), AppError> {
+    let result = skiff_plugin::install_package(state.db(), &state.cfg.data_dir, path, opts);
+    let _ = std::fs::remove_file(path);
+    match &result {
+        Ok(info) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                ip,
+                "plugin.install",
+                &info.id,
+                "ok",
+                &format!(
+                    "version={} key_id={} grants={}",
+                    info.version,
+                    info.key_id,
+                    info.grants.len()
+                ),
+            );
+        }
+        Err(e) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                ip,
+                "plugin.install",
+                fail_id,
+                "fail",
+                &e.to_string(),
+            );
+        }
+    }
+    result
+        .map(|_| ())
+        .map_err(|e| AppError::BadRequest(e.to_string()))
+}
+
 /// 第二步：权限确认后安装。
 pub async fn confirm(
     State(state): State<Arc<AppState>>,
@@ -510,37 +578,8 @@ pub async fn confirm(
         state.cfg.allow_reduced_sandbox,
     );
 
-    let result = skiff_plugin::install_package(state.db(), &state.cfg.data_dir, &path, &opts);
-    let _ = std::fs::remove_file(&path);
     let ip = handlers::client_ip(&state, &parts);
-    match &result {
-        Ok(info) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                "plugin.install",
-                &info.id,
-                "ok",
-                &format!(
-                    "version={} key_id={} grants={}",
-                    info.version,
-                    info.key_id,
-                    info.grants.len()
-                ),
-            );
-        }
-        Err(e) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                "plugin.install",
-                &trust.meta.manifest.id,
-                "fail",
-                &e.to_string(),
-            );
-        }
-    }
-    result.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    commit_install(&state, &user, &ip, &path, &opts, &trust.meta.manifest.id)?;
     Ok(handlers::redirect(format!(
         "/{}/plugins",
         state.cfg.entry_prefix

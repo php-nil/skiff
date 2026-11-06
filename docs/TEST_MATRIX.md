@@ -103,7 +103,8 @@ curl -ks -b "$J" "$B/$P/" | grep -o 'data-layout="[^"]*"' | head -1
 | PLUGIN-07 | 标题归属：插件不能覆盖内核标题 | `[上机]` 已装任意插件 | 打开插件 UI 页，检查 `<title>` 与工作台标题；在插件脚本里尝试改 `document.title` 后刷新 | 页面标题由内核注入；插件脚本的 `document.title` 赋值被标题守卫覆盖回内核标题 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`（`inject_title_guard`） |
 | PLUGIN-08 | 概览槽位与固定标题 | `[上机]` monitor 启用 | 打开概览；停用 monitor；再启用 | monitor 启用时出现 `overview.health` 槽位且标题由内核固定；停用回落原生 `health-grid` | □通过 / □失败 | `crates/web/src/templates.rs`、`templates/dashboard.html`、`templates/mount_card.html`、`crates/plugin` |
 | PLUGIN-09 | RPC 成功、业务错误与授权拒绝 | `[上机]` 已装 testkit | 调 `/$P/plugins/com.skiff.testkit/rpc` 的 `ping`、`fail`、`fs_read` 越界路径与无授权方法 | `ping` 200；`fail` 400 且含 `-32602`；`fs_read /etc/passwd` 400；无授权方法 400 且审计 result=fail | □通过 / □失败 | `crates/plugin/src/rpc.rs`、`capability.rs`、`plugins/testkit`、`crates/web/src/handlers/plugins.rs`（RPC 错误统一 400） |
-| PLUGIN-10 | 卸载清理菜单/路由但保留 data | `[上机]` 已装 files 且有数据文件 | 卸载 files；看 `/www/skiff/plugins/com.skiff.files/data`；重装 | 菜单与 `/$P/plugins/<id>` 消失；data 文件原样保留；重装后数据仍在 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/app`、`plugins/README.md` |
+| PLUGIN-10 | 卸载清理菜单/路由但保留 data、清空授权 | `[上机]` 已装 files 且有数据文件与授权 | 卸载 files；看 `/www/skiff/plugins/com.skiff.files/data`；重装 | 菜单与 `/$P/plugins/<id>` 消失；data 文件原样保留；授权清空，重装需重新确认 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/app`、`plugins/README.md` |
+| PLUGIN-11 | 重装/升级保留既有授权，新增声明不自动授予 | `[上机]` 已装 files，装时只勾选部分权限并手授路径 | 记下详情页授权项；上传同版本包覆盖重装；再上传更高版本；查看授权与确认页 | 重装/升级均直接安装、不再弹确认页；授权项与原来一致；manifest 新增声明不被自动授予 | □通过 / □失败 | `crates/plugin/src/install.rs`、`crates/web/src/handlers/plugins.rs`、`crates/core/src/commands.rs` |
 
 最小回归命令：
 

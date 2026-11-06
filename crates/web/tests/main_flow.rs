@@ -317,6 +317,78 @@ verbs = ["list"]
     (out, key.public_hex(), key.key_id())
 }
 
+/// 复用同一签名密钥构建指定版本/声明集/资源提示的包（重装、升级用例）。
+fn build_package_version(
+    root: &std::path::Path,
+    key: &skiff_pkgfmt::SigningKey,
+    version: &str,
+    perms: &[&str],
+    hints: &[&str],
+) -> PathBuf {
+    let src = root.join(format!("pkg-src-{version}"));
+    let arch = skiff_pkgfmt::host_arch();
+    std::fs::create_dir_all(src.join("bin").join(&arch)).unwrap();
+    std::fs::write(src.join("bin").join(&arch).join("plugin"), b"test-binary").unwrap();
+    let hints_list = hints
+        .iter()
+        .map(|h| format!("\"{h}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut manifest = format!(
+        r#"id = "com.example.demo"
+name = "Demo"
+version = "{version}"
+key_id = "{}"
+api = "1.0"
+requires_full_sandbox = false
+requires = ["docker"]
+resource_hints = [{hints_list}]
+"#,
+        key.key_id()
+    );
+    for p in perms {
+        let (cap, verb) = p.split_once(':').expect("权限串必须是 cap:verb");
+        manifest.push_str(&format!(
+            "[[permissions]]\ncapability = \"{cap}\"\nverbs = [\"{verb}\"]\n"
+        ));
+    }
+    std::fs::write(src.join("manifest.toml"), manifest).unwrap();
+    let out = root.join(format!("demo-{version}.wbpkg"));
+    skiff_pkgfmt::package::pack_dir(&src, &out, &key.seed_hex()).unwrap();
+    out
+}
+
+/// 上传插件包（不跟随跳转），供安装/重装/升级用例复用。
+async fn upload_pkg(app: &Router, token: &str, pkg: &std::path::Path) -> axum::response::Response {
+    let bytes = std::fs::read(pkg).unwrap();
+    let (ct, body) = multipart(&bytes);
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/install")
+                .header(header::CONTENT_TYPE, ct)
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// 读取 `.incoming` 里唯一暂存包的确认令牌。
+fn staged_confirm_token(data_dir: &std::path::Path) -> String {
+    let incoming = data_dir.join("plugins").join(".incoming");
+    let staged: Vec<_> = std::fs::read_dir(&incoming)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".wbpkg"))
+        .collect();
+    assert_eq!(staged.len(), 1, "上传包应暂存一份: {staged:?}");
+    staged[0].trim_end_matches(".wbpkg").to_string()
+}
+
 fn multipart(pkg: &[u8]) -> (String, Body) {
     let boundary = "----skifftestboundary7d93";
     let mut buf = Vec::new();
@@ -1282,6 +1354,148 @@ async fn plugin_install_confirm_main_flow() {
             .any(|e| e.action == "plugin.install" && e.result == "ok"),
         "安装成功必须留审计，实际: {:?}",
         audit
+    );
+}
+
+/// 装 → 授权 → 重装/升级 → 授权仍在；manifest 新增声明不被自动授予；
+/// 只有显式卸载才清空授权。
+#[tokio::test]
+async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+    let key = skiff_pkgfmt::SigningKey::generate();
+    h.state
+        .db()
+        .trust_key(&key.key_id(), &key.public_hex(), "测试作者")
+        .unwrap();
+    let id = "com.example.demo";
+
+    // 首次安装：manifest 声明 list + inspect，管理员只确认 list，并手授对象 container:abc。
+    let pkg = build_package_version(
+        &h.data_dir,
+        &key,
+        "0.1.0",
+        &["docker:list", "docker:inspect"],
+        &["container:abc"],
+    );
+    let resp = upload_pkg(&h.app, &token, &pkg).await;
+    assert_eq!(resp.status(), StatusCode::OK, "首次安装应渲染确认页");
+    let confirm_token = staged_confirm_token(&h.data_dir);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/confirm")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(form_body(&[
+                    ("token", confirm_token.as_str()),
+                    ("csrf", csrf.as_str()),
+                    ("grant", "docker:list"),
+                    ("resource", "container:abc"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "确认安装应 303 回列表"
+    );
+
+    let assert_grants = |label: &str| {
+        let mut got: Vec<(String, String)> = h
+            .state
+            .db()
+            .grants(id)
+            .unwrap()
+            .into_iter()
+            .map(|g| (g.kind, g.value))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("object".to_string(), "container:abc".to_string()),
+                ("perm".to_string(), "docker:list".to_string()),
+            ],
+            "{label} 授权集合不符: {got:?}"
+        );
+    };
+    assert_grants("首次安装后");
+
+    // 同版本重装：跳过确认页直接安装，授权保持既有最小子集，不重置为 manifest 默认值。
+    let pkg = build_package_version(
+        &h.data_dir,
+        &key,
+        "0.1.0",
+        &["docker:list", "docker:inspect"],
+        &["container:abc", "container:def"],
+    );
+    let resp = upload_pkg(&h.app, &token, &pkg).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "重装应跳过确认页直接安装"
+    );
+    assert_grants("重装后");
+    assert_eq!(
+        h.state.db().plugin(id).unwrap().unwrap().version,
+        "0.1.0",
+        "重装应保持同版本"
+    );
+    let staged = h.data_dir.join("plugins").join(".incoming");
+    assert_eq!(
+        std::fs::read_dir(&staged).unwrap().count(),
+        0,
+        "安装成功必须清理 .incoming 暂存"
+    );
+
+    // 升级 0.2.0：同样沿用既有授权；新增声明项与新增 hint 都不自动授予。
+    let pkg = build_package_version(
+        &h.data_dir,
+        &key,
+        "0.2.0",
+        &["docker:list", "docker:inspect", "docker:exec"],
+        &["container:abc", "container:def"],
+    );
+    let resp = upload_pkg(&h.app, &token, &pkg).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "升级应跳过确认页直接安装"
+    );
+    assert_grants("升级后");
+    assert_eq!(
+        h.state.db().plugin(id).unwrap().unwrap().version,
+        "0.2.0",
+        "升级应写入新版本"
+    );
+
+    // 只有管理员显式卸载才清空授权。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/com.example.demo/remove")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(form_body(&[("csrf", csrf.as_str())]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "卸载应 303 回列表");
+    assert!(h.state.db().plugin(id).unwrap().is_none(), "卸载应删记录");
+    assert!(
+        h.state.db().grants(id).unwrap().is_empty(),
+        "显式卸载必须清空授权"
     );
 }
 

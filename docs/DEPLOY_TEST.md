@@ -473,7 +473,7 @@ skiff plugin install /www/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
 skiff plugin install /www/skiff/official/com.skiff.testkit-0.1.0.wbpkg --yes
 ```
 
-> `--yes` 不再「权限默认全拒」，而是采用 manifest 声明 + `resource_hints`；显式 `--grant`/`--resource` 会把该维度收窄到只给列出的项（少一项即运行时 403，插件会把「该去勾哪个授权」写进错误文案）。确认页同样默认勾选这些声明值，取消勾选即按最小授权安装。**升级/覆盖安装不会自动补授权**，重装后请核对详情页授权项。
+> `--yes` 不再「权限默认全拒」，而是采用 manifest 声明 + `resource_hints`；显式 `--grant`/`--resource` 会把该维度收窄到只给列出的项（少一项即运行时 403，插件会把「该去勾哪个授权」写进错误文案）。确认页同样默认勾选这些声明值，取消勾选即按最小授权安装。**重装/升级按同一插件 id 沿用既有授权**（不重置为 manifest 默认值、manifest 新增声明不自动授予）；**只有显式卸载才清空授权**，重装后无需重新授权。
 
 ### 2.10 权限链自检（装完必查）
 
@@ -595,8 +595,8 @@ testkit 实测：`ping` / `state` / `probe` RPC 200；`interop_cron` 200（`jobs
 已授权的 path: 根内」）；`fs_read /proc/uptime` 200。概览出现 `data-slot="overview.actions"`；
 停用 testkit 后槽位与导航链接消失、`testkit/main` 404，重新启用即恢复。
 
-> 升级同名版本（官方 4 个迁移后仍为 0.1.0）需先 `skiff plugin remove <id>` 保留 data，再安装；
-> 官方包签名密钥一致时同样适用，避免同版本原位覆盖的 TOFU/重复安装判定。
+> 同版本可直接重装（原位覆盖版本目录，保留 data/ 与既有授权，不再弹确认页）；
+> 官方包签名密钥一致时同样适用。如需重新选择授权集，先 `skiff plugin remove <id>`（保留 data）再安装。
 
 ### 2.12 网站 vhost：默认站与兜底站语义（2026-11-04 实测）
 
@@ -918,7 +918,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | **插件日志报“UID 未映射到任何插件”** | 插件进程 uid 与 `sha256(id)%1000+200000` 不一致（手工 chown 过目录、或换了用户跑） | 别手工改插件目录属主；重装插件恢复 |
 | **重启后插件突然写不进自己的 `run/`** | `clean_run_dirs` 重建目录后属主本应归还，若仍失败说明不是 root 起的服务 | 确认 `systemctl` 里是 `User=root`；或 `ls -ld .../run` 看属主 |
 | **装包报“未导入公钥”** | 信任公钥没导入 | 面板「设置 → 信任公钥」导入 key_id + 公钥 hex |
-| **装包报“已安装版本不低于包内版本”** | 版本号没升 | 改 manifest 的 `version`；升级只接受更高版本 |
+| **装包报“已安装版本高于包内版本”** | 包版本低于已装版本 | 改 manifest 的 `version`；同版本可重装，降级需先卸载（保留 data）再装 |
 | **`pack` 报“指纹不一致”** | `--key` 用的私钥与 manifest.key_id 不是一对 | 用 `new` 生成的那把 `<dir>/skiff-signing.key`，或改 manifest.key_id |
 | **`skiff-plugin new` 后 `build` 找不到 skiff-sdk** | SDK 未发布到 crates.io，脚手架写成了版本依赖 | 加 `--sdk-path <仓库>/crates/sdk` 重新生成，或手改 Cargo.toml 为 path 依赖 |
 | **编译报 `x86_64-linux-gnu-gcc not found`** | 缺 C 工具链 | `apt install build-essential pkg-config` |

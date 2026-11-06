@@ -197,7 +197,21 @@ pub fn plugin_install(
     let hints = meta.manifest.resource_hints.clone();
     let mut granted = Vec::new();
     let mut object_grants = Vec::new();
-    if yes {
+    // 重装/升级同一插件：既有授权必须保留，不再逐条确认，也不按 manifest
+    // 默认值重置。`install_package` 会按插件 id 从库内取回并按新声明集过滤。
+    let existing = db.plugin(&meta.manifest.id)?;
+    if let Some(prev) = &existing {
+        println!(
+            "重装/升级: 沿用已授权 {} 项（不重新确认；新增声明项不会自动授予）",
+            prev.grants.len()
+        );
+        if !grants.is_empty() || !resources.is_empty() {
+            println!(
+                "警告: 重装/升级不改动既有授权，--grant/--resource 已忽略；\
+                 如需变更授权请先 remove 再安装"
+            );
+        }
+    } else if yes {
         // --yes：未显式指定时采用 manifest 声明值（官方包「装完即可用」）；
         // 给了 --grant/--resource 就按显式清单来，便于最小授权安装。
         let (g, r) = resolve_yes_selection(&declared, &hints, &grants, &resources)?;

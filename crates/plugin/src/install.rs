@@ -191,40 +191,59 @@ pub fn install_package(
         warnings.push("包未经验签（allow_unsigned）：仅限开发调试，生产环境必须导入公钥".into());
     }
 
-    // 版本策略：低于或等于已装版本默认拒绝（灾难恢复入口不在此实现）
-    if let Some(existing) = db.plugin(&meta.manifest.id)? {
-        if !version_gt(&meta.manifest.version, &existing.version) {
+    // 版本策略：同版本视为重装（原位覆盖版本目录），低于已装版本拒绝
+    // （灾难恢复入口不在此实现）。
+    let existing = db.plugin(&meta.manifest.id)?;
+    if let Some(prev) = &existing {
+        if !version_gt(&meta.manifest.version, &prev.version)
+            && meta.manifest.version != prev.version
+        {
             return Err(PluginError::Rejected(format!(
-                "已安装版本 {} 不低于包内版本 {}；升级只接受更高版本（灾难恢复入口另设）",
-                existing.version, meta.manifest.version
+                "已安装版本 {} 高于包内版本 {}；不接受降级（同版本可直接重装）",
+                prev.version, meta.manifest.version
             )));
         }
-        if existing.key_id != meta.manifest.key_id && !opts.allow_unsigned {
+        if prev.key_id != meta.manifest.key_id && !opts.allow_unsigned {
             return Err(PluginError::Rejected(
                 "升级包签名公钥与已装版本不一致：换密钥视为新信任，需重新确认指纹".into(),
             ));
         }
     }
 
-    // 权限确认：只授予用户确认过的子集，且必须是 manifest 声明过的
+    // 授权来源分两条：
+    // - 首次安装：只授予用户确认过的子集，且必须是 manifest 声明过的；
+    // - 重装/升级：按同一插件 id 沿用库内既有 grants，并按新 manifest 的声明集
+    //   过滤。既不重置为 manifest 默认值，也不自动授予新增声明项（安全默认）；
+    //   既有授权只在管理员显式卸载时由 `uninstall_package` 清空。
     let declared = meta.manifest.permission_strings();
-    let mut grants = Vec::new();
-    for p in &opts.granted_permissions {
-        if !declared.contains(p) {
-            return Err(PluginError::Rejected(format!(
-                "权限 {p} 未在 manifest 中声明，拒绝授予"
-            )));
+    let grants = match &existing {
+        Some(prev) => prev
+            .grants
+            .iter()
+            .filter(|g| g.kind != "perm" || declared.iter().any(|d| d == &g.value))
+            .cloned()
+            .collect::<Vec<Grant>>(),
+        None => {
+            let mut grants = Vec::new();
+            for p in &opts.granted_permissions {
+                if !declared.contains(p) {
+                    return Err(PluginError::Rejected(format!(
+                        "权限 {p} 未在 manifest 中声明，拒绝授予"
+                    )));
+                }
+                grants.push(Grant::perm(p.clone()));
+            }
+            for o in &opts.object_grants {
+                // 对象 grant 的三形态与 manifest `resource_hints` 共用同一份形式校验：
+                // `path:` 只做形式校验（绝对路径 / 无 .. / 非 `/`），存在性由内核每次调用
+                // canonicalize 判定——允许「先装插件、后建目录」。
+                skiff_pkgfmt::manifest::validate_resource(o)
+                    .map_err(|e| PluginError::Rejected(format!("对象 grant {o} 非法: {e}")))?;
+                grants.push(Grant::object(o.clone()));
+            }
+            grants
         }
-        grants.push(Grant::perm(p.clone()));
-    }
-    for o in &opts.object_grants {
-        // 对象 grant 的三形态与 manifest `resource_hints` 共用同一份形式校验：
-        // `path:` 只做形式校验（绝对路径 / 无 .. / 非 `/`），存在性由内核每次调用
-        // canonicalize 判定——允许「先装插件、后建目录」。
-        skiff_pkgfmt::manifest::validate_resource(o)
-            .map_err(|e| PluginError::Rejected(format!("对象 grant {o} 非法: {e}")))?;
-        grants.push(Grant::object(o.clone()));
-    }
+    };
 
     // UID 冲突：uid 由 id 哈希取模 1000 得到，撞车时两个插件就是「同一个身份」，
     // 彼此的 data/ 都是 0700 同 uid，互相可读——隔离假成立。装前拦下，别等真机发现。
@@ -522,6 +541,65 @@ verbs = ["list"]
         out
     }
 
+    /// 可声明额外权限与 `resource_hints` 的包（重装/升级授权用例）。
+    fn build_pkg_with(
+        dir: &Path,
+        id: &str,
+        version: &str,
+        perms: &[&str],
+        hints: &[&str],
+    ) -> PathBuf {
+        use skiff_pkgfmt::SigningKey;
+        let key = SigningKey::generate();
+        // 目录/文件名不能带 `:`（Windows 非法字符），权限串里的冒号替换掉。
+        let tag = format!("{version}-{}", perms.join("_").replace(':', "-"));
+        let src = dir.join(format!("src-{tag}"));
+        let arch = skiff_pkgfmt::host_arch();
+        std::fs::create_dir_all(src.join("bin").join(&arch)).unwrap();
+        std::fs::write(src.join("bin").join(&arch).join("plugin"), b"test-binary").unwrap();
+        let mut manifest = format!(
+            r#"id = "{id}"
+name = "Demo"
+version = "{version}"
+key_id = "{key_id}"
+api = "1.0"
+requires_full_sandbox = false
+requires = ["docker"]
+"#,
+            key_id = key.key_id()
+        );
+        if !hints.is_empty() {
+            let list = hints
+                .iter()
+                .map(|h| format!("\"{h}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            manifest.push_str(&format!("resource_hints = [{list}]\n"));
+        }
+        for p in perms {
+            let (cap, verb) = p.split_once(':').expect("权限串必须是 cap:verb");
+            manifest.push_str(&format!(
+                "[[permissions]]\ncapability = \"{cap}\"\nverbs = [\"{verb}\"]\n"
+            ));
+        }
+        std::fs::write(src.join("manifest.toml"), manifest).unwrap();
+        let out = dir.join(format!("pkg-{tag}.wbpkg"));
+        skiff_pkgfmt::package::pack_dir(&src, &out, &key.seed_hex()).unwrap();
+        out
+    }
+
+    /// 断言授权集恰好等于 `expected`（顺序无关：`grants()` 按 kind/value 排序）。
+    fn grants_are(db: &Db, id: &str, expected: &[(&str, &str)]) {
+        let got = db.grants(id).unwrap();
+        for (kind, value) in expected {
+            assert!(
+                got.iter().any(|g| g.kind == *kind && g.value == *value),
+                "缺少授权 {kind}:{value}，实际 {got:?}"
+            );
+        }
+        assert_eq!(got.len(), expected.len(), "授权项数量不符: {got:?}");
+    }
+
     fn opts() -> InstallOptions {
         InstallOptions {
             trusted_public_key: None,
@@ -571,23 +649,155 @@ verbs = ["list"]
         );
     }
 
-    /// 同版与降级必须拒（灾难恢复入口另设，不在安装路径里偷偷降级）。
+    /// 同版本按重装处理（保留既有授权），降级仍必须拒。
     #[test]
-    fn downgrade_and_same_version_are_rejected() {
+    fn downgrade_is_rejected_but_same_version_reinstalls() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path();
         let db = Db::open_in_memory().unwrap();
         let id = "com.example.demo";
 
         install_package(&db, data_dir, &build_pkg(data_dir, id, "0.2.0"), &opts()).unwrap();
-        let e = install_package(&db, data_dir, &build_pkg(data_dir, id, "0.2.0"), &opts())
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("升级只接受更高版本"), "同版应拒: {e}");
+        install_package(&db, data_dir, &build_pkg(data_dir, id, "0.2.0"), &opts())
+            .expect("同版本应允许重装");
+        assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.2.0");
         let e = install_package(&db, data_dir, &build_pkg(data_dir, id, "0.1.0"), &opts())
             .unwrap_err()
             .to_string();
-        assert!(e.contains("升级只接受更高版本"), "降级应拒: {e}");
+        assert!(e.contains("不接受降级"), "降级应拒: {e}");
+    }
+
+    /// 装 → 授权（最小子集 + 对象）→ 同版本重装：既有授权原样保留，
+    /// 不回到 manifest 默认值，也不自动补入新增声明项。
+    #[test]
+    fn reinstall_same_version_preserves_existing_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        let mut first = opts();
+        first.granted_permissions = vec!["docker:list".into()];
+        first.object_grants = vec!["container:abc".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(
+                data_dir,
+                id,
+                "0.1.0",
+                &["docker:list", "docker:inspect"],
+                &[],
+            ),
+            &first,
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:abc"), ("perm", "docker:list")],
+        );
+
+        // 重装时调用方按 manifest 默认值提交（含新增 inspect 与新 hint），
+        // 也只能沿用既有项：不重置、不新增。
+        let mut again = opts();
+        again.granted_permissions = vec!["docker:list".into(), "docker:inspect".into()];
+        again.object_grants = vec!["container:def".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(
+                data_dir,
+                id,
+                "0.1.0",
+                &["docker:list", "docker:inspect"],
+                &["container:def"],
+            ),
+            &again,
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:abc"), ("perm", "docker:list")],
+        );
+        assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.1.0");
+    }
+
+    /// 升级新版本：沿用既有授权；manifest 新增的声明项不被自动授予。
+    #[test]
+    fn upgrade_does_not_auto_grant_new_manifest_declarations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        let mut first = opts();
+        first.granted_permissions = vec!["docker:list".into()];
+        first.object_grants = vec!["container:abc".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &[]),
+            &first,
+        )
+        .unwrap();
+
+        let mut upgraded = opts();
+        upgraded.granted_permissions = vec!["docker:list".into(), "docker:inspect".into()];
+        upgraded.object_grants = vec!["container:def".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(
+                data_dir,
+                id,
+                "0.2.0",
+                &["docker:list", "docker:inspect"],
+                &["container:def"],
+            ),
+            &upgraded,
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:abc"), ("perm", "docker:list")],
+        );
+        assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.2.0");
+    }
+
+    /// 只有管理员显式卸载才会清空授权；卸载保留 data/ 也不影响这条口径。
+    #[test]
+    fn explicit_uninstall_clears_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        let mut grants = opts();
+        grants.granted_permissions = vec!["docker:list".into()];
+        grants.object_grants = vec!["container:abc".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &[]),
+            &grants,
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:abc"), ("perm", "docker:list")],
+        );
+
+        uninstall_package(&db, data_dir, id, false).unwrap();
+        assert!(db.plugin(id).unwrap().is_none(), "库记录应删除");
+        assert!(
+            db.grants(id).unwrap().is_empty(),
+            "显式卸载必须清空授权: {:?}",
+            db.grants(id).unwrap()
+        );
     }
 
     /// 卸载默认保 data/（§4.5）；显式 delete_data 才清干净。
