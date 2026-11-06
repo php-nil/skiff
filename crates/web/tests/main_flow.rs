@@ -3846,6 +3846,36 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
             "安装弹窗必须列出扩展 {key}: {html}"
         );
     }
+    // 版本切换必须按该版本重算扩展可用性：8.4 起 imap/pspell 不可用，8.3 可选。
+    let raw = html
+        .split(r#"data-runtime-catalog>"#)
+        .nth(1)
+        .and_then(|s| s.split("</script>").next())
+        .expect("运行环境目录 JSON");
+    let catalog: serde_json::Value = serde_json::from_str(raw.trim()).expect("目录 JSON 可解析");
+    let php = catalog
+        .as_array()
+        .and_then(|a| a.iter().find(|k| k["key"] == "php"))
+        .expect("目录必须含 php");
+    let by_ver = php["exts_by_version"].as_object().expect("php 扩展矩阵");
+    for (ver, expect) in [("8.5", false), ("8.4", false), ("8.3", true)] {
+        let list = by_ver[ver].as_array().expect("版本扩展列表");
+        for key in ["imap", "pspell"] {
+            let e = list
+                .iter()
+                .find(|e| e["key"] == key)
+                .unwrap_or_else(|| panic!("{ver} 缺扩展 {key}"));
+            assert_eq!(
+                e["supported"].as_bool(),
+                Some(expect),
+                "{ver} 的 {key} 可用性必须为 {expect}"
+            );
+        }
+    }
+    assert!(
+        include_str!("../static/skiff.js").contains("function rebuildExts"),
+        "新建弹窗切换版本时必须重建扩展勾选项"
+    );
     assert!(
         html.contains(r#"class="runtime-extensions exts-box""#),
         "弹窗必须有扩展勾选块: {html}"
