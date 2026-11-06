@@ -3136,11 +3136,7 @@ impl AppState {
             image: image.to_string(),
             name: Some(runtime_container_name(skiff_store::KIND_RUST, name)),
             // 独立进程 + host 网络端口；容器重启后由 restart=unless-stopped 拉起。
-            command: Some(vec![
-                "sh".into(),
-                "-lc".into(),
-                format!("cargo run --release --manifest-path {manifest} >> {log} 2>&1"),
-            ]),
+            command: Some(rust_run_command(&manifest, &log)),
             entrypoint: None,
             env,
             labels: skiff_labels("runtime"),
@@ -4613,6 +4609,16 @@ pub fn registry_of(image: &str) -> String {
     }
 }
 
+/// Rust 容器的启动命令。必须用非登录 shell：`sh -lc` 会重置 PATH，
+/// rust 镜像里的 cargo 在 `/usr/local/cargo/bin`，实测退化成 `cargo: not found`（退出码 127）。
+fn rust_run_command(manifest: &str, log: &str) -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        format!("cargo run --release --manifest-path {manifest} >> {log} 2>&1"),
+    ]
+}
+
 /// Rust P1 工程：无第三方依赖，`cargo run --release` 离线可编译。
 fn rust_cargo_manifest() -> &'static str {
     "[package]\nname = \"skiff-runtime-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
@@ -5401,6 +5407,18 @@ mod tests {
         assert!(!nginx_container_running(&[container_row(
             "other", "running"
         )]));
+    }
+
+    #[test]
+    fn rust_runtime_uses_non_login_shell() {
+        // 回归：`sh -lc` 会重置 PATH，cargo 不在默认 PATH 里，容器退出码 127。
+        let cmd = rust_run_command(
+            "/www/runtime/rust/x/app/Cargo.toml",
+            "/www/runtime/rust/x/log/server.log",
+        );
+        assert_eq!(cmd[0], "sh");
+        assert_eq!(cmd[1], "-c");
+        assert!(cmd[2].starts_with("cargo run --release --manifest-path"));
     }
 
     #[test]
