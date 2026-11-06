@@ -58,6 +58,13 @@ pub const SOCKET_GID: u32 = 65534;
 pub const SOCKET_MODE: u32 = 0o660;
 /// PHP-FPM 默认池配置在容器内的位置（用宿主生成的文件覆盖它）。
 pub const CONTAINER_PHP_POOL: &str = "/usr/local/etc/php-fpm.d/www.conf";
+/// `fastcgi_params` 的容器内绝对路径。
+///
+/// vhost 里的 `include` 必须写绝对路径：主配置编辑会用
+/// `nginx -t -c /www/nginx/nginx.conf.candidate` 校验候选文件，此时配置目录变成
+/// `/www/nginx`，相对 `include fastcgi_params` 会解析成 `/www/nginx/fastcgi_params`
+/// 并报 No such file，导致任何合法修改都被误判为失败。
+pub const CONTAINER_FASTCGI_PARAMS: &str = "/usr/local/openresty/nginx/conf/fastcgi_params";
 /// 单文件日志轮转阈值（内核自己轮转，不依赖宿主 logrotate）。
 pub const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -868,11 +875,11 @@ fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, erro
             out.push_str(&format!("    root {root};\n"));
             out.push_str("    index index.php index.html;\n");
             out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
-            out.push_str(
-                "    location ~ \\.php$ {\n\
-                 \x20       include fastcgi_params;\n\
-                 \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n",
-            );
+            out.push_str(&format!(
+                "    location ~ \\.php$ {{\n\
+                 \x20       include {CONTAINER_FASTCGI_PARAMS};\n\
+                 \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n"
+            ));
             out.push_str(&format!("        fastcgi_pass unix:{socket};\n"));
             out.push_str("        fastcgi_index index.php;\n    }\n");
         }
@@ -4054,6 +4061,9 @@ mod tests {
         assert!(v.contains("fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock;"));
         assert!(!v.contains("9000"));
         assert!(v.contains("SCRIPT_FILENAME $document_root$fastcgi_script_name;"));
+        // 主配置候选校验时配置目录会变成 /www/nginx，include 必须写绝对路径。
+        assert!(v.contains(&format!("include {CONTAINER_FASTCGI_PARAMS};")));
+        assert!(!v.contains("include fastcgi_params;"));
         assert!(v.contains("access_log /www/sites/example.com/log/access.log;"));
         assert!(v.contains("error_log /www/sites/example.com/log/error.log;"));
         assert!(!v.contains("/www/logs/"), "不得再引用旧的集中日志目录");
