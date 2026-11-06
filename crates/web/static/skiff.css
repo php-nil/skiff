@@ -2114,3 +2114,11 @@ body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
   .page-runtimes .ext-options { grid-template-columns: 1fr; }
   .ext-toolbar { align-items: stretch; }
 }
+
+/* 运行环境详情抽屉：1024 视口按 92vw（不被全局 840px 硬截断），1440 仍保持 840px。 */
+@media (min-width: 721px) {
+  .page-runtimes dialog.drawer { width: 92vw; max-width: none; }
+}
+@media (min-width: 1400px) {
+  .page-runtimes dialog.drawer { width: 840px; max-width: 840px; }
+}

@@ -249,16 +249,22 @@ pub const PHP_EXTENSION_INSTALLER: &str =
 /// 生成安装脚本前缀：优先本地副本并校验版本；缺失/版本不符时打印明确错误并回退
 /// 固定版本下载。正式 release 资产的 `IPE_VERSION` 是具体版本号，不会进入
 /// `IPE_VERSION=master` 的 `sleep 10` 分支；执行安装器时仍显式 `CI=true` 兜底。
+///
+/// `IPE_KEEP_SYSPKG_CACHE=1`：安装器默认在收尾时删掉 `/var/cache/apk/*`。
+/// 容器把该目录挂到宿主 `<runtime>/cache/apk`，保留缓存后，重建与同机多环境
+/// 可复用已下载的依赖包，不再每次重下整套构建依赖。
 fn installer_prelude() -> String {
     format!(
         "set -e\n\
+         IPE_KEEP_SYSPKG_CACHE=1\n\
+         export IPE_KEEP_SYSPKG_CACHE\n\
          SKIFF_LOCAL_IPE='{local}'\n\
          if [ -f \"$SKIFF_LOCAL_IPE\" ]; then\n\
          \tSKIFF_IPE_VER=$(sed -n 's/^IPE_VERSION=//p' \"$SKIFF_LOCAL_IPE\" | head -n 1)\n\
          \tif [ \"$SKIFF_IPE_VER\" = '{ver}' ]; then\n\
          \t\tcp \"$SKIFF_LOCAL_IPE\" /usr/local/bin/install-php-extensions\n\
          \t\tchmod 0755 /usr/local/bin/install-php-extensions\n\
-         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}）\"\n\
+         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}；apk 缓存保留在 /var/cache/apk）\"\n\
          \telse\n\
          \t\techo \"[skiff] 本地扩展安装器版本不符：$SKIFF_IPE_VER（期望 {ver}）；回退下载固定版本\" >&2\n\
          \t\tcurl -fsSL {url} -o /usr/local/bin/install-php-extensions && chmod 0755 /usr/local/bin/install-php-extensions || true\n\

@@ -1410,6 +1410,15 @@ pub async fn set_backup(
     }
 }
 
+/// 保存站点的成功文案：只有真正重载成功才能说「已重载」。
+fn save_config_notice(reloaded: bool) -> &'static str {
+    if reloaded {
+        "配置已保存、校验通过并已重载 nginx"
+    } else {
+        "配置已保存并通过校验（站点未运行，未重载）"
+    }
+}
+
 pub async fn save_config(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -1424,19 +1433,23 @@ pub async fn save_config(
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
     match state.save_site_vhost(&domain, &content).await {
-        Ok(()) => {
+        Ok(outcome) => {
             let _ = state.db().audit(
                 &user.user.username,
                 &ip,
                 "sites.config.save",
                 &domain,
                 "ok",
-                "",
+                if outcome.reloaded {
+                    "已保存并重载 nginx"
+                } else {
+                    "已保存并通过校验（站点未运行）"
+                },
             );
             Ok(handlers::redirect(format!(
                 "/{prefix}/sites/{}?tab=config&notice={}",
                 encode_uri_component(&domain),
-                encode_uri_component("配置已保存并重载 nginx")
+                encode_uri_component(save_config_notice(outcome.reloaded))
             )))
         }
         Err(e) => {
@@ -1776,15 +1789,24 @@ pub async fn runtime_action(
         };
     }
     if action == "delete" {
-        return match state.delete_site_runtime(&id) {
-            Ok(()) => {
-                let _ =
-                    state
-                        .db()
-                        .audit(&user.user.username, &ip, "runtimes.delete", &id, "ok", "");
+        return match state.delete_site_runtime(&id).await {
+            Ok(report) => {
+                let mut notice = "运行环境已删除".to_string();
+                if !report.skipped.is_empty() {
+                    notice.push_str("；注意：");
+                    notice.push_str(&report.skipped.join("；"));
+                }
+                let _ = state.db().audit(
+                    &user.user.username,
+                    &ip,
+                    "runtimes.delete",
+                    &id,
+                    "ok",
+                    &report.completed.join("；"),
+                );
                 Ok(handlers::redirect(format!(
                     "/{prefix}/sites/env?notice={}",
-                    encode_uri_component("运行环境已删除")
+                    encode_uri_component(&notice)
                 )))
             }
             Err(e) => {
@@ -2338,7 +2360,15 @@ pub async fn runtime_config_save(
 
 #[cfg(test)]
 mod tests {
-    use super::{error_field, version_display};
+    use super::{error_field, save_config_notice, version_display};
+
+    #[test]
+    fn save_config_notice_never_claims_reload_when_site_stopped() {
+        assert!(save_config_notice(true).contains("已重载"));
+        assert!(save_config_notice(true).contains("校验通过"));
+        assert!(!save_config_notice(false).contains("已重载"));
+        assert!(save_config_notice(false).contains("站点未运行，未重载"));
+    }
 
     #[test]
     fn server_error_maps_to_visible_field_only() {

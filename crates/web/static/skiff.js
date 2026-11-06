@@ -136,7 +136,17 @@
           headers: { "content-type": "application/json", "x-csrf-token": csrf },
           credentials: "same-origin",
           body: JSON.stringify({ method: msg.method, params: msg.params || null })
-        }).then(function (r) { return r.json().catch(function () { return { error: { message: "bad json" } }; }); })
+        }).then(function (r) {
+          // 内核错误页走 HTML（如未授权宿主路径、CSRF 失败），直接 r.json() 会只剩
+          // "bad json"，把真正原因吞掉。非 JSON 时从错误页正文提取一句话回给插件。
+          return r.text().then(function (text) {
+            try { return JSON.parse(text); } catch (e) {
+              var m = text.match(/<main[\s\S]*?<\/main>/i);
+              var plain = (m ? m[0] : text).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+              return { error: { message: plain.slice(0, 300) || ("HTTP " + r.status) } };
+            }
+          });
+        })
           .then(function (data) {
             frame.contentWindow.postMessage(
               { type: "skiff.rpc.result", nonce: nonce, id: id, result: data.result, error: data.error },
@@ -990,11 +1000,16 @@
 
   // ---- 运行环境详情抽屉（原生 <dialog>：Esc/遮罩关闭、焦点锁在抽屉内） ----
   function attachRuntimeDrawer() {
-    var dlg = document.querySelector("[data-runtime-drawer]");
-    if (!dlg || dlg.dataset.bound === "1") return;
-    dlg.dataset.bound = "1";
-    var content = dlg.querySelector("[data-drawer-content]");
-    var title = dlg.querySelector("[data-drawer-title]");
+    // 列表页的抽屉与直达页 `/sites/env/{id}` 共用同一套绑定：
+    // 直达页没有 dialog，就把 [data-runtime-panel] 当作内容根。
+    var dialog = document.querySelector("[data-runtime-drawer]");
+    var scope = dialog || document.querySelector("[data-runtime-panel]");
+    if (!scope || scope.dataset.bound === "1") return;
+    scope.dataset.bound = "1";
+    var standalone = !dialog;
+    var dlg = scope;
+    var content = dialog ? dialog.querySelector("[data-drawer-content]") : scope;
+    var title = dialog ? dialog.querySelector("[data-drawer-title]") : null;
 
     // ---- 详情页签：基础信息 / 扩展 / 配置 / 日志 / 站点 ----
     function applyTab(name) {
@@ -1158,6 +1173,11 @@
     }
 
     function postDrawerForm(form) {
+      if (standalone) {
+        // 直达页：走普通表单提交，服务端回跳并渲染最新状态。
+        form.submit();
+        return;
+      }
       var actionUrl = dlg.dataset.currentUrl || form.getAttribute("action");
       fetch(form.getAttribute("action"), {
         method: "POST",
@@ -1336,9 +1356,9 @@
       if (trigger) {
         e.preventDefault();
         open(trigger.getAttribute("data-runtime-open"));
-        if (typeof dlg.showModal === "function") dlg.showModal();
+        if (dialog && typeof dlg.showModal === "function") dlg.showModal();
       }
-      if (target.closest("[data-drawer-close]")) dlg.close();
+      if (dialog && target.closest("[data-drawer-close]")) dlg.close();
     });
 
     // 抽屉内的启停/重建/扩展表单：POST 后重新拉取抽屉内容，不整页跳转。
@@ -1393,14 +1413,21 @@
       }
       if (!form.hasAttribute("data-drawer-post")) return;
       if ((form.getAttribute("action") || "").indexOf("/action/delete") >= 0) return;
+      if (standalone) return; // 直达页：普通提交，由服务端回跳。
       e.preventDefault();
       postDrawerForm(form);
     });
 
     // 点遮罩关闭：dialog 的点击目标只有自身时即落在 backdrop 上。
-    dlg.addEventListener("click", function (e) {
-      if (e.target === dlg) dlg.close();
-    });
+    if (dialog) {
+      dlg.addEventListener("click", function (e) {
+        if (e.target === dlg) dlg.close();
+      });
+    } else {
+      // 直达页：任务进行中时轮询，终态后整页刷新取服务端渲染的最新状态。
+      refreshSelectedCount();
+      watchJob(content, function () { location.reload(); });
+    }
   }
 
   // ---- 新建运行环境弹窗：类型 → 版本下拉 → 默认实例名；P2 类型只登记 ----

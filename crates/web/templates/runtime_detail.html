@@ -127,7 +127,6 @@
           <span class="ext-tags">
             <span class="tag">{{ e.category }}</span>
             <span class="tag">{{ e.source }}</span>
-            {% if e.builtin %}<span class="tag">镜像内置</span>{% endif %}
             {% if e.hot %}<span class="tag">热装</span>{% else %}<span class="tag warn-tag">需重建</span>{% endif %}
             {% if e.heavy %}<span class="tag warn-tag">{{ e.estimated_time }}</span>{% endif %}
           </span>

@@ -78,6 +78,24 @@ pub fn runtime_container_name(kind: &str, name: &str) -> String {
     format!("skiff-{kind}-{name}")
 }
 
+/// 从 `repo@sha256:...` 取出摘要部分；已是摘要时原样返回。
+fn digest_sha256(digest: &str) -> &str {
+    match digest.find("@sha256:") {
+        Some(i) => &digest[i + 1..],
+        None => digest.trim(),
+    }
+}
+
+/// 用于拉取与建容器的固定引用：`image@sha256:...`；无 digest 时保持 tag。
+fn pinned_image_ref(image: &str, digest: &str) -> String {
+    let sha = digest_sha256(digest);
+    if sha.is_empty() || image.contains('@') {
+        image.to_string()
+    } else {
+        format!("{image}@{sha}")
+    }
+}
+
 /// PHP 实例 socket 的容器内路径：`/www/runtime/<kind>/<name>/php-fpm.sock`。
 pub fn runtime_container_socket(kind: &str, name: &str) -> String {
     format!("{CONTAINER_RUNTIME_ROOT}/{kind}/{name}/php-fpm.sock")
@@ -255,6 +273,15 @@ impl SiteSettings {
     /// 本地 mlocati 扩展安装器（宿主路径）。
     pub fn php_extension_installer(&self) -> PathBuf {
         self.tools_dir().join("install-php-extensions")
+    }
+
+    /// 宿主侧系统包缓存（alpine `apk` / debian `apt` 下载的包文件）。
+    ///
+    /// 挂进每个 PHP 容器的 `/var/cache/apk`，配合安装器的
+    /// `IPE_KEEP_SYSPKG_CACHE=1`，让重建/同机多环境复用已下载的依赖包，
+    /// 不再每次都从镜像源重下整套构建依赖。
+    pub fn system_pkg_cache_dir(&self) -> PathBuf {
+        self.runtime_dir.join("cache").join("apk")
     }
 
     /// 站点证书：`<站点目录>/ssl/cert.pem|key.pem`。
@@ -674,6 +701,26 @@ impl std::fmt::Display for SiteError {
             SiteError::Internal(m) => write!(f, "{m}"),
         }
     }
+}
+
+/// 删除运行环境的结果：`completed` 是已完成的清理步骤，`skipped` 是因环境限制
+/// 无法执行、需要用户知晓的步骤（例如 Docker 不可用时未能确认容器）。
+#[derive(Debug, Default, Clone)]
+pub struct RuntimeDeleteReport {
+    pub completed: Vec<String>,
+    pub skipped: Vec<String>,
+}
+
+/// 删除中途失败的错误：把已完成步骤一并返回，避免「记录删了但容器/目录还在」。
+fn partial_delete_error(completed: &[String], message: String) -> SiteError {
+    let done = if completed.is_empty() {
+        "无".to_string()
+    } else {
+        completed.join("；")
+    };
+    SiteError::Unavailable(format!(
+        "{message}；已完成：{done}；运行环境记录已保留，可修复后重试"
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1254,30 @@ pub(crate) fn image_version_lookup(
     }
 }
 
+/// 站点 vhost 保存结果：`reloaded` 表示确实对运行中的 nginx 发起了重载。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VhostSaveOutcome {
+    pub reloaded: bool,
+}
+
+/// 隔离校验用的临时主配置：只 include 候选 vhost，不加载线上站点 include。
+///
+/// 站点停止时配置是 `.conf.disabled`，不在线上 include 内；直接用 `nginx -t`
+/// 只能校验现值、无法校验候选内容。这里用独立 main 显式 include 候选文件，
+/// 校验通过才替换线上文件，避免「先写进 include 再测」把全局打挂。
+fn vhost_check_main(candidate_container: &str) -> String {
+    format!(
+        "worker_processes 1;\n\
+         error_log /tmp/skiff-vhost-check-error.log;\n\
+         pid /tmp/skiff-vhost-check.pid;\n\
+         events {{ worker_connections 64; }}\n\
+         http {{\n\
+         \x20   include /usr/local/openresty/nginx/conf/mime.types;\n\
+         \x20   include {candidate_container};\n\
+         }}\n"
+    )
+}
+
 impl AppState {
     /// 把默认 PHP 运行环境校准到库：补 socket 宿主路径与镜像。
     pub fn ensure_php_runtime(&self) -> Result<Runtime, SiteError> {
@@ -1297,8 +1368,10 @@ impl AppState {
                 .map(|c| c.image_id.clone())
                 .unwrap_or_default();
             let container_image = container_row.map(|c| c.image.clone()).unwrap_or_default();
+            // 容器可能登记为 `image@digest`；比较时只看仓库:tag 部分，避免误报漂移。
+            let container_ref_base = container_image.split('@').next().unwrap_or("");
             let image_mismatch =
-                container_exists && !container_image.is_empty() && container_image != rt.image;
+                container_exists && !container_image.is_empty() && container_ref_base != rt.image;
             let container_state = container_row
                 .map(|c| {
                     if c.state.is_empty() {
@@ -1636,49 +1709,105 @@ impl AppState {
         }
     }
 
-    /// 拉镜像：先 `inspect`，已存在且与登记 digest 一致时跳过 `ImagePull`。
+    /// 拉镜像：先 `inspect`，本地已有就直接回填 digest 并跳过 `ImagePull`。
+    ///
+    /// - 登记 digest 为空（新环境）：采用本地 tag 的真实 digest 落库，不再冷拉。
+    /// - 登记 digest 与本地一致：跳过拉取。
+    /// - 登记 digest 与本地不一致（tag 漂移）：按登记 digest 拉取固定版本并提示。
     async fn ensure_runtime_image(
         &self,
         job_id: &str,
         image: &str,
         registered_digest: &str,
     ) -> Result<String, String> {
-        if let Ok(info) = self.docker().inspect_image(image).await {
-            if let Some(digest) = info.primary_digest() {
-                if !registered_digest.is_empty() && digest == registered_digest {
-                    self.job_note(
-                        job_id,
-                        &format!("镜像 {image} 已存在且 digest 一致（{digest}），跳过拉取"),
-                    )
-                    .await;
-                    return Ok(digest);
-                }
+        let registered = digest_sha256(registered_digest);
+        let local = self
+            .docker()
+            .inspect_image(image)
+            .await
+            .ok()
+            .and_then(|i| i.primary_digest());
+        if let Some(local_digest) = &local {
+            if registered.is_empty() {
+                self.job_note(
+                    job_id,
+                    &format!(
+                        "镜像 {image} 本地已存在（{local_digest}），回填 image_digest 并跳过拉取"
+                    ),
+                )
+                .await;
+                return Ok(local_digest.clone());
             }
+            if digest_sha256(local_digest) == registered {
+                self.job_note(
+                    job_id,
+                    &format!("镜像 {image} 已存在且与登记 digest 一致（{local_digest}），跳过拉取"),
+                )
+                .await;
+                return Ok(local_digest.clone());
+            }
+            self.job_note(
+                job_id,
+                &format!(
+                    "镜像 {image} 与登记值漂移：本地 {local_digest}，登记 {registered_digest}；按登记 digest 拉取"
+                ),
+            )
+            .await;
+        } else if !registered.is_empty() {
+            self.job_note(
+                job_id,
+                &format!("本地无镜像 {image}，按登记 digest 拉取固定版本"),
+            )
+            .await;
         }
+        let pull_ref = if registered.is_empty() {
+            image.to_string()
+        } else {
+            pinned_image_ref(image, registered_digest)
+        };
         self.job_advance(
             job_id,
             "拉取镜像",
             30,
-            &format!("拉取镜像 {image}（首次可能较慢）"),
+            &format!("拉取镜像 {pull_ref}（首次可能较慢）"),
         )
         .await;
         self.docker()
             .execute(
                 Verb::ImagePull,
                 None,
-                DockerParams::ImagePull(image.to_string()),
+                DockerParams::ImagePull(pull_ref.clone()),
             )
             .await
-            .map_err(|e| format!("拉取 {image} 失败：{e}"))?;
+            .map_err(|e| format!("拉取 {pull_ref} 失败：{e}"))?;
         let digest = self
             .docker()
-            .inspect_image(image)
+            .inspect_image(&pull_ref)
             .await
             .ok()
-            .and_then(|i| i.primary_digest())
-            .unwrap_or_default();
-        self.job_note(job_id, &format!("镜像 {image} 已就绪（digest {digest}）"))
-            .await;
+            .and_then(|i| i.primary_digest());
+        let digest = match digest {
+            Some(d) if !registered.is_empty() && digest_sha256(&d) != registered => {
+                return Err(format!(
+                    "拉取 {pull_ref} 后 digest 与登记值不一致：期望 {registered_digest}，实际 {d}"
+                ));
+            }
+            Some(d) => d,
+            None if !registered.is_empty() => registered_digest.to_string(),
+            None => {
+                self.job_note(
+                    job_id,
+                    &format!("警告：{pull_ref} 拉取成功但读不到 repo digest，image_digest 暂为空"),
+                )
+                .await;
+                String::new()
+            }
+        };
+        self.job_note(
+            job_id,
+            &format!("镜像 {pull_ref} 已就绪（digest {digest}）"),
+        )
+        .await;
         Ok(digest)
     }
 
@@ -1725,6 +1854,9 @@ impl AppState {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
         std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
             .map_err(|e| format!("创建 PHP 日志目录失败：{e}"))?;
+        // apk 包缓存挂载源必须存在（Docker 不会替我们建宿主机目录）。
+        std::fs::create_dir_all(s.system_pkg_cache_dir())
+            .map_err(|e| format!("创建依赖包缓存目录失败：{e}"))?;
         let socket_container = runtime_container_socket(&rt.kind, &rt.name);
         std::fs::write(
             s.runtime_pool_conf(&rt.kind, &rt.name),
@@ -1752,9 +1884,14 @@ impl AppState {
                     .map_err(|e| format!("移除旧容器失败：{e}"))?;
             }
         }
-        self.ensure_container(&self.php_spec_for(&s, &rt.kind, &rt.name, &image))
-            .await
-            .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
+        self.ensure_container(&self.php_spec_for(
+            &s,
+            &rt.kind,
+            &rt.name,
+            &pinned_image_ref(&image, &image_digest),
+        ))
+        .await
+        .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
 
         let enabled = runtime_catalog::split_extensions(&rt.extensions);
         if enabled.is_empty() {
@@ -1854,9 +1991,14 @@ impl AppState {
                     .map_err(|e| format!("移除旧容器失败：{e}"))?;
             }
         }
-        self.ensure_container(&self.rust_spec_for(s, &rt.name, &image, port))
-            .await
-            .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
+        self.ensure_container(&self.rust_spec_for(
+            s,
+            &rt.name,
+            &pinned_image_ref(&image, &image_digest),
+            port,
+        ))
+        .await
+        .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
 
         self.job_advance(
             id,
@@ -2633,18 +2775,17 @@ impl AppState {
     }
 
     /// 删除运行环境：有站点绑定时拒绝并列出域名，绝不隐式解绑/级联删除。
-    pub fn delete_site_runtime(&self, id: &str) -> Result<(), SiteError> {
+    ///
+    /// 真正清理的顺序：容器 stop → remove → 运行目录（含 FPM 池配置、socket、
+    /// 日志与 Rust 工程）→ DB 行。任一步失败就停下并保留 DB 行，错误里列出
+    /// 已完成项，避免「记录删了、容器和目录还在」的静默残留。
+    /// 删除不区分 kind：Node/Go 只是未实现安装，已登记的运行环境仍可删除。
+    pub async fn delete_site_runtime(&self, id: &str) -> Result<RuntimeDeleteReport, SiteError> {
         let rt = self
             .db()
             .runtime_by_id(id)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
-        if rt.kind != skiff_store::KIND_PHP {
-            return Err(SiteError::Unavailable(format!(
-                "{} 运行环境将在 P2 接入",
-                rt.kind
-            )));
-        }
         let domains = self
             .db()
             .runtime_site_domains(id)
@@ -2655,9 +2796,91 @@ impl AppState {
                 domains.join("、")
             )));
         }
-        self.db()
-            .delete_runtime(id)
-            .map_err(|e| SiteError::Internal(format!("删除运行环境失败：{e}")))
+        if self.runtime_job(id).await.is_some_and(|j| j.active()) {
+            return Err(SiteError::Conflict(
+                "该运行环境有进行中的任务，请等待任务结束后再删除".into(),
+            ));
+        }
+
+        let s = self.site_settings();
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        let mut report = RuntimeDeleteReport::default();
+
+        if self.docker().available() {
+            let rows = self.docker().list_containers().await.map_err(|e| {
+                partial_delete_error(
+                    &report.completed,
+                    format!("读取容器列表失败，未清理任何容器：{e}"),
+                )
+            })?;
+            if let Some(c) = rows.iter().find(|c| c.name == container) {
+                let obj = skiff_docker::ObjectRef {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    labels: c.labels.clone(),
+                };
+                if matches!(c.state.as_str(), "running" | "restarting" | "paused") {
+                    self.docker()
+                        .execute(Verb::Stop, Some(&obj), DockerParams::None)
+                        .await
+                        .map_err(|e| {
+                            partial_delete_error(
+                                &report.completed,
+                                format!("停止容器 {container} 失败：{e}"),
+                            )
+                        })?;
+                    report.completed.push(format!("容器 {container} 已停止"));
+                }
+                self.docker()
+                    .execute(
+                        Verb::ContainerRemove,
+                        Some(&obj),
+                        DockerParams::ContainerRemove { force: true },
+                    )
+                    .await
+                    .map_err(|e| {
+                        partial_delete_error(
+                            &report.completed,
+                            format!("删除容器 {container} 失败：{e}"),
+                        )
+                    })?;
+                report.completed.push(format!("容器 {container} 已删除"));
+            } else {
+                report
+                    .completed
+                    .push(format!("容器 {container} 不存在（无需删除）"));
+            }
+        } else {
+            // Docker 不可用无法确认容器是否存在；不阻塞目录与记录清理，但明确告知。
+            report.skipped.push(format!(
+                "Docker 不可用（{}），未确认/清理容器 {container}",
+                self.docker_unavailable_reason()
+            ));
+        }
+
+        let dir = s.runtime_home(&rt.kind, &rt.name);
+        if dir.exists() {
+            remove_dir_all_retry(&dir).map_err(|e| {
+                partial_delete_error(
+                    &report.completed,
+                    format!("删除运行环境目录 {} 失败：{e}", dir.display()),
+                )
+            })?;
+            report.completed.push(format!(
+                "运行环境目录已删除（含 FPM 池配置与 socket）：{}",
+                dir.display()
+            ));
+        } else {
+            report
+                .completed
+                .push("运行环境目录不存在（无需删除）".into());
+        }
+
+        self.db().delete_runtime(id).map_err(|e| {
+            partial_delete_error(&report.completed, format!("删除运行环境记录失败：{e}"))
+        })?;
+        report.completed.push("数据库记录已删除".into());
+        Ok(report)
     }
 
     /// 运行环境日志：PHP-FPM 走容器日志（stdout/stderr）；Rust 读宿主日志文件。
@@ -3278,6 +3501,11 @@ impl AppState {
                     source: s.runtime_pool_conf(kind, name).display().to_string(),
                     target: CONTAINER_PHP_POOL.to_string(),
                     read_only: true,
+                },
+                Mount::Bind {
+                    source: s.system_pkg_cache_dir().display().to_string(),
+                    target: "/var/cache/apk".to_string(),
+                    read_only: false,
                 },
             ],
             log_driver: Some("local".into()),
@@ -4242,21 +4470,62 @@ impl AppState {
                 )));
             }
         }
+        let mut activated = false;
         if running {
-            if !conf.exists() && disabled.exists() {
-                std::fs::rename(&disabled, &conf)
-                    .map_err(|e| SiteError::Internal(format!("启用配置失败：{e}")))?;
-            }
-            if !conf.exists() {
+            // 先把即将被 include 的配置（停止态是 .conf.disabled）做一次隔离校验，
+            // 非法内容绝不进入线上 include，避免启动即把全局 nginx 带入 crash-loop。
+            let target = if conf.exists() {
+                conf.clone()
+            } else if disabled.exists() {
+                disabled.clone()
+            } else {
                 return Err(SiteError::Internal(
                     "站点配置缺失：请重新安装运行环境以重建 vhost".into(),
                 ));
+            };
+            let content = std::fs::read_to_string(&target)
+                .map_err(|e| SiteError::Internal(format!("读取站点配置失败：{e}")))?;
+            self.validate_site_vhost_content(&s, domain, &content, &content)
+                .await
+                .map_err(|e| SiteError::Conflict(format!("拒绝启动：站点配置未通过校验（{e}）")))?;
+            if !conf.exists() && disabled.exists() {
+                std::fs::rename(&disabled, &conf)
+                    .map_err(|e| SiteError::Internal(format!("启用配置失败：{e}")))?;
+                activated = true;
+            }
+            // 再跑一次完整的线上 include 校验：单站合法但多站 conflict 也要拦。
+            if let Err(e) = self.validate_nginx().await {
+                if activated {
+                    let _ = std::fs::rename(&conf, &disabled);
+                }
+                return Err(SiteError::Conflict(format!(
+                    "拒绝启动：站点配置未通过全局 nginx -t（{e}）"
+                )));
+            }
+            if let Err(e) = self.restart_nginx().await {
+                if activated {
+                    let _ = std::fs::rename(&conf, &disabled);
+                    let _ = self.restart_nginx().await;
+                }
+                return Err(SiteError::Unavailable(format!("启动站点失败：{e}")));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let env = self.site_env_status().await;
+            if env.installed && env.nginx_state != "running" {
+                if activated {
+                    let _ = std::fs::rename(&conf, &disabled);
+                    let _ = self.restart_nginx().await;
+                }
+                return Err(SiteError::Unavailable(format!(
+                    "启动站点失败：nginx 未能保持运行（当前状态 {}）",
+                    env.nginx_state
+                )));
             }
         } else if conf.exists() {
             std::fs::rename(&conf, &disabled)
                 .map_err(|e| SiteError::Internal(format!("停用配置失败：{e}")))?;
+            self.restart_nginx().await?;
         }
-        self.restart_nginx().await?;
         self.db()
             .set_site_status(&site.domain, if running { "running" } else { "stopped" })
             .map_err(|e| SiteError::Internal(e.to_string()))?;
@@ -4417,8 +4686,72 @@ impl AppState {
         Ok((path.display().to_string(), content, active))
     }
 
-    /// 保存 vhost 并 reload；reload 失败时把文件回滚到保存前内容。
-    pub async fn save_site_vhost(&self, domain: &str, content: &str) -> Result<(), SiteError> {
+    /// 用候选内容做隔离校验：临时 main 只 include 候选文件，不触碰线上 include。
+    async fn validate_site_vhost_content(
+        &self,
+        s: &SiteSettings,
+        domain: &str,
+        original: &str,
+        content: &str,
+    ) -> Result<(), SiteError> {
+        let rows = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
+        if !nginx_container_running(&rows) {
+            return Err(SiteError::Unavailable(
+                "Web 服务（OpenResty）未运行，无法校验配置".into(),
+            ));
+        }
+        let dir = s.web_root.join("skiff").join("vhost-check");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| SiteError::Internal(format!("创建校验目录失败：{e}")))?;
+        let stamp = chrono::Local::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default();
+        let candidate = dir.join(format!("{domain}-{stamp}.conf.candidate"));
+        let main = dir.join(format!("{domain}-{stamp}.check-main.candidate"));
+        let container_candidate = s.container_path(&candidate);
+        let container_main = s.container_path(&main);
+        std::fs::write(&candidate, content)
+            .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
+        std::fs::write(&main, vhost_check_main(&container_candidate))
+            .map_err(|e| SiteError::Internal(format!("写入校验主配置失败：{e}")))?;
+        let result = self
+            .docker()
+            .exec_capture(
+                NGINX_CONTAINER,
+                vec![
+                    "nginx".into(),
+                    "-t".into(),
+                    "-c".into(),
+                    container_main.clone(),
+                ],
+            )
+            .await;
+        let _ = std::fs::remove_file(&candidate);
+        let _ = std::fs::remove_file(&main);
+        let (code, out) =
+            result.map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(SiteError::Conflict(format!(
+                "站点配置校验未通过：{}；差异：{}",
+                crate::nginx::error_line(&out),
+                crate::nginx::diff_summary(original, content, 6)
+            )))
+        }
+    }
+
+    /// 保存 vhost：先隔离校验候选内容，通过后才落盘；运行中的站点再重载，
+    /// 停止的站点只落盘不重载（`.conf.disabled` 不在线上 include 内）。
+    pub async fn save_site_vhost(
+        &self,
+        domain: &str,
+        content: &str,
+    ) -> Result<VhostSaveOutcome, SiteError> {
         if content.trim().is_empty() {
             return Err(SiteError::BadRequest("配置内容不能为空".into()));
         }
@@ -4427,9 +4760,14 @@ impl AppState {
                 "配置至少需要包含一个 server 块".into(),
             ));
         }
-        let (path, _) = self.site_vhost_path(domain)?;
+        let s = self.site_settings();
+        let (path, active) = self.site_vhost_path(domain)?;
         let original = std::fs::read(&path)
             .map_err(|e| SiteError::Internal(format!("读取原配置失败：{e}")))?;
+        let original_text = String::from_utf8_lossy(&original).to_string();
+        // 无论启停都先校验：停止态的文件不在 include 内，直接 reload 等于没测。
+        self.validate_site_vhost_content(&s, domain, &original_text, content)
+            .await?;
         // 先写临时文件再 rename，避免半截文件被 nginx 加载。
         let tmp = path.with_extension("conf.tmp");
         std::fs::write(&tmp, content)
@@ -4437,6 +4775,9 @@ impl AppState {
         if let Err(e) = std::fs::rename(&tmp, &path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(SiteError::Internal(format!("替换配置失败：{e}")));
+        }
+        if !active {
+            return Ok(VhostSaveOutcome { reloaded: false });
         }
         if let Err(e) = self.restart_nginx().await {
             // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
@@ -4457,7 +4798,7 @@ impl AppState {
                 env.nginx_state
             )));
         }
-        Ok(())
+        Ok(VhostSaveOutcome { reloaded: true })
     }
 
     /// 站点根目录只读浏览；`rel` 为空表示根。拒绝 `..` 与越界路径。
@@ -5206,6 +5547,108 @@ mod tests {
     }
 
     #[test]
+    fn vhost_check_main_isolates_candidate_from_live_include() {
+        let text = vhost_check_main("/www/skiff/vhost-check/x.conf.candidate");
+        assert!(text.contains("include /www/skiff/vhost-check/x.conf.candidate;"));
+        // 绝不能把线上站点 include 拉进来，否则等于先写进线上再测。
+        assert!(!text.contains("10-skiff-sites"));
+        assert!(!text.contains("/www/sites/*/conf"));
+    }
+
+    #[test]
+    fn vhost_check_failure_reports_line_and_diff() {
+        let original = "server {\n    listen 80;\n    server_name a.local;\n}\n";
+        let bad = "server {\n    listen 80;\n    server_name a.local;\n    this_is_invalid_directive_xyz;\n}\n";
+        let out = "nginx: [emerg] unknown directive \"this_is_invalid_directive_xyz\" in /www/skiff/vhost-check/a.local-1.conf.candidate:5";
+        let msg = format!(
+            "站点配置校验未通过：{}；差异：{}",
+            crate::nginx::error_line(out),
+            crate::nginx::diff_summary(original, bad, 6)
+        );
+        assert!(msg.contains("unknown directive"), "{msg}");
+        assert!(msg.contains("第 5 行"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn stopped_site_save_does_not_persist_when_validation_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = state.site_settings();
+        let site_dir = s.sites_dir.join("audit-env.local");
+        std::fs::create_dir_all(site_conf_dir(&site_dir)).unwrap();
+        let disabled = s.vhost_disabled(&site_dir, "audit-env.local");
+        let original = "server {\n    listen 80;\n    server_name audit-env.local;\n}\n";
+        std::fs::write(&disabled, original).unwrap();
+        state
+            .db()
+            .create_site(&StoreNewSite {
+                domain: "audit-env.local".into(),
+                root_dir: site_dir.display().to_string(),
+                site_type: TYPE_STATIC.into(),
+                runtime_id: None,
+                app_command: None,
+                app_port: None,
+                proxy_target: None,
+                proxy_websocket: false,
+            })
+            .unwrap();
+        let bad = "server {\n    listen 80;\n    this_is_invalid_directive_xyz;\n}\n";
+        let res = state.save_site_vhost("audit-env.local", bad).await;
+        assert!(res.is_err(), "校验不可用/失败时必须返回错误");
+        assert_eq!(
+            std::fs::read_to_string(&disabled).unwrap(),
+            original,
+            "校验失败不得落盘"
+        );
+        assert!(!s.vhost_file(&site_dir, "audit-env.local").exists());
+    }
+
+    #[tokio::test]
+    async fn start_site_does_not_activate_when_validation_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = state.site_settings();
+        let site_dir = s.sites_dir.join("audit-env.local");
+        std::fs::create_dir_all(site_conf_dir(&site_dir)).unwrap();
+        let disabled = s.vhost_disabled(&site_dir, "audit-env.local");
+        std::fs::write(
+            &disabled,
+            "server {\n    listen 80;\n    this_is_invalid_directive_xyz;\n}\n",
+        )
+        .unwrap();
+        state
+            .db()
+            .create_site(&StoreNewSite {
+                domain: "audit-env.local".into(),
+                root_dir: site_dir.display().to_string(),
+                site_type: TYPE_STATIC.into(),
+                runtime_id: None,
+                app_command: None,
+                app_port: None,
+                proxy_target: None,
+                proxy_websocket: false,
+            })
+            .unwrap();
+        state
+            .db()
+            .set_site_status("audit-env.local", "stopped")
+            .unwrap();
+        let res = state.set_site_running("audit-env.local", true).await;
+        assert!(res.is_err(), "非法配置必须拒绝启动");
+        assert!(disabled.exists(), "拒绝启动后仍应保留停用态文件");
+        assert!(
+            !s.vhost_file(&site_dir, "audit-env.local").exists(),
+            "拒绝启动不得把配置推进线上 include"
+        );
+        let site = state
+            .db()
+            .site_by_domain("audit-env.local")
+            .unwrap()
+            .unwrap();
+        assert_eq!(site.status, "stopped", "拒绝启动不得改写运行状态");
+    }
+
+    #[test]
     fn site_vhost_routes_by_runtime_id_to_its_socket() {
         let dir = tempfile::tempdir().unwrap();
         let state = app_state_at(dir.path());
@@ -5750,5 +6193,118 @@ mod tests {
             image_version_lookup(&cache, "sha256:new", t0),
             ImageVersionHit::Miss
         ));
+    }
+
+    #[test]
+    fn digest_normalizes_repo_digest_and_builds_pinned_ref() {
+        let repo = "php@sha256:abc123";
+        assert_eq!(digest_sha256(repo), "sha256:abc123");
+        assert_eq!(digest_sha256("sha256:abc123"), "sha256:abc123");
+        assert_eq!(digest_sha256(""), "");
+        assert_eq!(
+            pinned_image_ref("php:8.5-fpm-alpine", repo),
+            "php:8.5-fpm-alpine@sha256:abc123"
+        );
+        // 已是固定引用或没有 digest 时保持原样。
+        assert_eq!(
+            pinned_image_ref("php:8.5-fpm-alpine@sha256:abc123", repo),
+            "php:8.5-fpm-alpine@sha256:abc123"
+        );
+        assert_eq!(
+            pinned_image_ref("php:8.5-fpm-alpine", ""),
+            "php:8.5-fpm-alpine"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_runtime_removes_directory_and_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = state.site_settings();
+        state
+            .db()
+            .ensure_runtime(&NewRuntime {
+                id: "php-custom".into(),
+                kind: skiff_store::KIND_PHP.into(),
+                name: "php-custom".into(),
+                version: "8.5".into(),
+                image: DEFAULT_PHP_IMAGE.into(),
+                image_digest: String::new(),
+                socket_path: None,
+                port: None,
+                is_default: false,
+            })
+            .unwrap();
+        let home = s.runtime_home(skiff_store::KIND_PHP, "php-custom");
+        std::fs::create_dir_all(s.runtime_log_dir(skiff_store::KIND_PHP, "php-custom")).unwrap();
+        std::fs::write(
+            s.runtime_pool_conf(skiff_store::KIND_PHP, "php-custom"),
+            "listen = /www/runtime/php/php-custom/php-fpm.sock\n",
+        )
+        .unwrap();
+
+        let report = state.delete_site_runtime("php-custom").await.unwrap();
+        assert!(!home.exists(), "运行环境目录（含 FPM 池配置）必须删除");
+        assert!(
+            state.db().runtime_by_id("php-custom").unwrap().is_none(),
+            "DB 行必须删除"
+        );
+        assert!(
+            report.skipped.iter().any(|s| s.contains("Docker 不可用")),
+            "无 Docker 时必须说明容器未清理：{:?}",
+            report.skipped
+        );
+        assert!(
+            report.completed.iter().any(|s| s.contains("目录")),
+            "报告必须记录已删除目录：{:?}",
+            report.completed
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_runtime_with_bound_site_is_rejected_and_keeps_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = state.site_settings();
+        state
+            .db()
+            .ensure_runtime(&NewRuntime {
+                id: "php-bound".into(),
+                kind: skiff_store::KIND_PHP.into(),
+                name: "php-bound".into(),
+                version: "8.5".into(),
+                image: DEFAULT_PHP_IMAGE.into(),
+                image_digest: String::new(),
+                socket_path: None,
+                port: None,
+                is_default: false,
+            })
+            .unwrap();
+        let home = s.runtime_home(skiff_store::KIND_PHP, "php-bound");
+        std::fs::create_dir_all(&home).unwrap();
+        let site_dir = s.sites_dir.join("bound.local");
+        state
+            .db()
+            .create_site(&StoreNewSite {
+                domain: "bound.local".into(),
+                root_dir: site_dir.display().to_string(),
+                site_type: TYPE_RUNTIME.into(),
+                runtime_id: Some("php-bound".into()),
+                app_command: None,
+                app_port: None,
+                proxy_target: None,
+                proxy_websocket: false,
+            })
+            .unwrap();
+
+        let err = state.delete_site_runtime("php-bound").await.unwrap_err();
+        let text = format!("{err}");
+        assert!(matches!(err, SiteError::Conflict(_)), "{text}");
+        assert!(text.contains("bound.local"), "{text}");
+        assert!(home.exists(), "有绑定时不得删除目录");
+        assert!(
+            state.db().runtime_by_id("php-bound").unwrap().is_some(),
+            "有绑定时不得删除记录"
+        );
     }
 }

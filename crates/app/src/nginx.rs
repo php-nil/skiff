@@ -340,7 +340,7 @@ pub struct NginxModuleView {
     pub modules: Vec<String>,
 }
 
-fn error_line(out: &str) -> String {
+pub(crate) fn error_line(out: &str) -> String {
     out.lines()
         .find(|l| l.contains("emerg") || l.contains("error") || l.contains("[warn]"))
         .map(|l| l.trim().to_string())
@@ -569,7 +569,7 @@ fn probe_stub_resty_args() -> Vec<String> {
 }
 
 /// 简单逐行差异摘要（失败回滚时给出到底改了哪几行）。
-fn diff_summary(original: &str, candidate: &str, limit: usize) -> String {
+pub(crate) fn diff_summary(original: &str, candidate: &str, limit: usize) -> String {
     if original.is_empty() {
         return "当前主配置不存在（本次为新建）".into();
     }
