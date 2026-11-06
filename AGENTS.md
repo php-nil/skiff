@@ -65,6 +65,7 @@
 | 持续集成 | `docs/CI.md` | 工作流门槛、工具链与 MSRV、发布产物流向 |
 | 迭代验证回路 | `docs/ITERATION.md` | 自动化迭代方案：分层编译位置、回滚协同协议、验收口径、测试机凭据约定 |
 | 测试台账 | `docs/TEST_LEDGER.md` | 只记「正在处理 / 待处理」两栏的未闭环项；PASS 即删，不保留历史 |
+| 测试矩阵 | `docs/TEST_MATRIX.md` | 按内核功能域组织的回归清单：稳定编号、触发条件、前置/步骤/预期/判定/代码位置；每章附最小回归命令 |
 | 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、首批 4 个（guard/monitor/files/cron，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
 | 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 插件 UI 契约 | `docs/PLUGIN_UI_CONTRACT.md` | 插件信息/管理页与功能页的路由分工、`view` 视图模型与静态文件映射、内核信息页字段与操作、沙箱/CSP、旧包 `[[ui]]` 回落与测试矩阵 |

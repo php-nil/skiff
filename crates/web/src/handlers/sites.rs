@@ -28,7 +28,6 @@ fn env_view(env: &SiteEnvStatus) -> SiteEnvView {
         docker_available: env.docker_available,
         docker_reason: env.docker_reason.clone(),
         nginx_state: env.nginx_state.clone(),
-        php_state: env.php_state.clone(),
         installed: env.installed,
         ready: env.ready(),
         port: env.port,
@@ -171,6 +170,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         port: v.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
         implemented: v.implemented,
         is_default: v.runtime.is_default,
+        is_web: false,
         detail_href: format!(
             "/{prefix}/sites/env/{}",
             encode_uri_component(&v.runtime.id)
@@ -185,6 +185,63 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
     }
 }
 
+/// 独立 Web 服务（OpenResty）合成行：不落库、不打开实例抽屉。
+///
+/// 与 PHP/Node/Go/Rust 行完全平级：各自安装、各自状态、各自删除。
+fn web_runtime_row(state: &AppState, env: &SiteEnvStatus, site_count: usize) -> RuntimeRow {
+    let prefix = &state.cfg.entry_prefix;
+    let exists = env.nginx_state != "missing";
+    let short = |id: &str| -> String {
+        let raw = id.strip_prefix("sha256:").unwrap_or(id);
+        raw.chars().take(12).collect()
+    };
+    RuntimeRow {
+        id: "web".into(),
+        kind_key: "web".into(),
+        kind_label: "Web 服务（OpenResty）".into(),
+        name: "openresty".into(),
+        container_name: skiff_app::sites::NGINX_CONTAINER.to_string(),
+        version: "openresty".into(),
+        version_display: "OpenResty".into(),
+        version_note: format!("镜像 {}", env.nginx_image),
+        actual_version: env.nginx_image_id.clone(),
+        container_exists: exists,
+        image: env.nginx_image.clone(),
+        image_id: short(&env.nginx_image_id),
+        image_id_full: env.nginx_image_id.clone(),
+        image_digest: String::new(),
+        image_digest_full: String::new(),
+        image_mismatch: false,
+        state_label: if exists {
+            state_label(&env.nginx_state).to_string()
+        } else {
+            "未安装".into()
+        },
+        state_class: if !exists {
+            "warn".into()
+        } else {
+            state_class(&env.nginx_state).to_string()
+        },
+        drift: false,
+        site_count,
+        container_state: env.nginx_state.clone(),
+        endpoint_short: ":80".into(),
+        endpoint_full: "宿主 80 端口（host 网络）".into(),
+        port: "80".into(),
+        implemented: true,
+        is_default: false,
+        is_web: true,
+        detail_href: String::new(),
+        docker_href: format!(
+            "/{prefix}/containers/{}",
+            encode_uri_component(skiff_app::sites::NGINX_CONTAINER)
+        ),
+        job_progress: 0,
+        job_error: String::new(),
+        job_active: false,
+    }
+}
+
 fn job_view(job: &skiff_app::sites::RuntimeJob) -> RuntimeJobView {
     RuntimeJobView {
         state: job.state.as_str().to_string(),
@@ -196,7 +253,7 @@ fn job_view(job: &skiff_app::sites::RuntimeJob) -> RuntimeJobView {
         active: job.active(),
         failed: job.state == skiff_app::sites::RuntimeJobState::Failed,
         kind: job.kind.clone(),
-        ext_key: job.ext_key.clone(),
+        ext_keys: job.ext_keys.clone(),
     }
 }
 
@@ -212,7 +269,7 @@ fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
         "active": job.active(),
         "failed": job.state == skiff_app::sites::RuntimeJobState::Failed,
         "kind": job.kind,
-        "ext_key": job.ext_key,
+        "ext_keys": job.ext_keys,
         "started_at": job.started_at,
         "updated_at": job.updated_at,
     })
@@ -249,6 +306,8 @@ fn site_view(
         TYPE_STATIC => "静态文档根".to_string(),
         _ => runtime_label.clone(),
     };
+    // 列表合并列展示实例名（php-8.5），不拼「PHP · php-8.5」这类冗余；记录缺失时留空由模板兜底。
+    let runtime_name = runtime.map(|r| r.name.clone()).unwrap_or_default();
     SiteView {
         domain: s.domain.clone(),
         // 站点目录本身（整站备份单元）与文档根都展示出来，避免把 `index/` 说成整站。
@@ -260,6 +319,7 @@ fn site_view(
         type_label: type_label(&s.site_type).to_string(),
         runtime_id: s.runtime_id.clone().unwrap_or_default(),
         runtime_label,
+        runtime_name,
         proxy_target: s.proxy_target.clone().unwrap_or_default(),
         proxy_websocket: s.proxy_websocket,
         endpoint,
@@ -295,6 +355,13 @@ fn site_view(
             .unwrap_or_default(),
         is_default: s.is_default,
         aliases_text: aliases.join("、"),
+        alias_preview: aliases
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("、"),
+        alias_more: aliases.len().saturating_sub(2),
         aliases,
         https: s.https,
         force_https: s.force_https,
@@ -386,6 +453,7 @@ async fn render_sites(
     let error = q.get("error").cloned().unwrap_or_default();
     let runtime_views = state.runtime_views().await.unwrap_or_default();
     let settings = state.site_settings();
+    let form_error_field = error_field(&form_error, &form.site_type).to_string();
     handlers::render(SitesPage {
         ctx: handlers::page_ctx(state, user, "core/sites/list"),
         sites: views,
@@ -398,7 +466,7 @@ async fn render_sites(
         runtimes: runtime_options(&runtime_views),
         form_open,
         form_error: form_error.clone(),
-        form_error_field: error_field(&form_error).to_string(),
+        form_error_field,
         sites_prefix: format!("{}/", settings.container_sites_dir()),
     })
 }
@@ -418,8 +486,17 @@ fn default_new_form(q: &HashMap<String, String>) -> SiteNewForm {
 }
 
 /// 服务端错误落到具体字段，前端只做高亮，不重复解释前缀规则。
-fn error_field(error: &str) -> &'static str {
-    if error.contains("别名") || error.contains("域名重复") || error.contains("域名已被")
+///
+/// 两类错误回到顶部提示，避免落到当前类型下不可见的字段：
+/// - 环境级错误（nginx/Docker 未就绪）不属于任何输入；
+/// - 类型专属字段与当前选中的类型不匹配（如静态站报运行环境错误）。
+fn error_field(error: &str, site_type: &str) -> &'static str {
+    let field = if (error.contains("未就绪")
+        && (error.contains("OpenResty") || error.contains("nginx")))
+        || error.contains("Docker 不可用")
+    {
+        ""
+    } else if error.contains("别名") || error.contains("域名重复") || error.contains("域名已被")
     {
         "aliases"
     } else if error.contains("上游") {
@@ -432,7 +509,13 @@ fn error_field(error: &str) -> &'static str {
         "domain"
     } else {
         ""
+    };
+    if (field == "runtime_id" && site_type != TYPE_RUNTIME)
+        || (field == "proxy_target" && site_type != TYPE_PROXY)
+    {
+        return "";
     }
+    field
 }
 
 fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
@@ -633,15 +716,13 @@ fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<Exte
             .into_iter()
             .map(|entry| {
                 let e = entry.def;
-                let (supported, support_note) = match &entry.support {
-                    skiff_app::runtime_catalog::ExtSupport::Ok => (true, String::new()),
-                    skiff_app::runtime_catalog::ExtSupport::NeedsDeps(deps) => (
-                        true,
-                        format!("安装时将临时安装 {} 并在完成后清理", deps.join(" / ")),
-                    ),
-                    skiff_app::runtime_catalog::ExtSupport::Unsupported(reason) => {
-                        (false, reason.clone())
+                // 不可用项已在 `extensions_for` 过滤，展示层不再灰显/占位；
+                // 这里只保留依赖提示（Ok → 空）。
+                let support_note = match &entry.support {
+                    skiff_app::runtime_catalog::ExtSupport::NeedsDeps(deps) => {
+                        format!("安装时将临时安装 {} 并在完成后清理", deps.join(" / "))
                     }
+                    _ => String::new(),
                 };
                 ExtensionOptionView {
                     key: e.key.to_string(),
@@ -654,7 +735,9 @@ fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<Exte
                     category: e.category.to_string(),
                     source: e.source.label().to_string(),
                     hot: e.hot,
-                    supported,
+                    heavy: skiff_app::runtime_catalog::extension_is_heavy(e.key),
+                    estimated_time: skiff_app::runtime_catalog::extension_estimated_time(e.key)
+                        .to_string(),
                     support_note,
                 }
             })
@@ -676,7 +759,9 @@ fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<Exte
                     .label()
                     .to_string(),
                 hot: true,
-                supported: true,
+                heavy: skiff_app::runtime_catalog::extension_is_heavy(token),
+                estimated_time: skiff_app::runtime_catalog::extension_estimated_time(token)
+                    .to_string(),
                 support_note: String::new(),
             });
         }
@@ -692,7 +777,10 @@ pub async fn env_page(
     require_admin(&user)?;
     let env = state.site_env_status().await;
     let views = state.runtime_views().await.unwrap_or_default();
-    let runtimes = views.iter().map(|v| runtime_row(&state, v)).collect();
+    let site_total = state.db().list_sites().map(|s| s.len()).unwrap_or(0);
+    let mut runtimes: Vec<RuntimeRow> = Vec::with_capacity(views.len() + 1);
+    runtimes.push(web_runtime_row(&state, &env, site_total));
+    runtimes.extend(views.iter().map(|v| runtime_row(&state, v)));
     let prefix = &state.cfg.entry_prefix;
     let kinds = runtime_kind_views();
     // 新建弹窗切换 PHP 版本时，扩展勾选项要按该版本重算可用性；
@@ -716,7 +804,8 @@ pub async fn env_page(
                         "label": e.label,
                         "builtin": e.builtin,
                         "default_on": e.default_on,
-                        "supported": e.supported,
+                        "heavy": e.heavy,
+                        "estimated_time": e.estimated_time,
                         "note": e.support_note,
                     })
                 })
@@ -757,34 +846,10 @@ pub async fn env_page(
         ),
         jobs_href: format!("/{prefix}/sites/env/jobs"),
         add_href: format!("/{prefix}/sites/env/add"),
-        base_install_href: format!("/{prefix}/sites/env/install"),
         images_href: format!("/{prefix}/sites/env/images"),
         error: q.get("error").cloned().unwrap_or_default(),
         notice: q.get("notice").cloned().unwrap_or_default(),
     })
-}
-
-pub async fn env_install(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    require_admin(&user)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    state.start_site_env_install();
-    let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        "sites.env.install",
-        "-",
-        "accepted",
-        "",
-    );
-    let prefix = &state.cfg.entry_prefix;
-    Ok(handlers::redirect(format!("/{prefix}/sites/env")))
 }
 
 pub async fn env_add(
@@ -882,7 +947,7 @@ pub async fn env_images_save(
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!(
         "/{prefix}/sites/env?notice={}",
-        encode_uri_component("镜像参数已保存，重建基础环境或重装实例后生效")
+        encode_uri_component("镜像参数已保存，重建 Web 服务或重装对应实例后生效")
     )))
 }
 
@@ -915,7 +980,15 @@ pub async fn action(
         "",
     );
     let prefix = &state.cfg.entry_prefix;
-    Ok(handlers::redirect(format!("/{prefix}/sites")))
+    Ok(handlers::redirect(format!(
+        "/{prefix}/sites/{}?notice={}",
+        encode_uri_component(&domain),
+        encode_uri_component(if running {
+            "站点已启动"
+        } else {
+            "站点已停止"
+        })
+    )))
 }
 
 pub async fn set_default(
@@ -946,7 +1019,15 @@ pub async fn set_default(
         if enabled { "set" } else { "unset" },
     );
     let prefix = &state.cfg.entry_prefix;
-    Ok(handlers::redirect(format!("/{prefix}/sites")))
+    Ok(handlers::redirect(format!(
+        "/{prefix}/sites/{}?notice={}",
+        encode_uri_component(&domain),
+        encode_uri_component(if enabled {
+            "已设为默认站点"
+        } else {
+            "已取消默认站点"
+        })
+    )))
 }
 
 /// 站点详情「域名」标签：新增/删除别名，落库后重建 vhost 并 reload。
@@ -1645,6 +1726,55 @@ pub async fn runtime_action(
     }
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
+    // Web 服务是独立合成行（id=web，不落库），动作直接落到 OpenResty 容器。
+    if id == "web" {
+        if !matches!(
+            action.as_str(),
+            "install" | "rebuild" | "start" | "stop" | "restart" | "delete"
+        ) {
+            return Err(AppError::BadRequest(format!(
+                "Web 服务不支持操作：{action}"
+            )));
+        }
+        return match state.web_env_action(&action).await {
+            Ok(()) => {
+                let _ = state.db().audit(
+                    &user.user.username,
+                    &ip,
+                    &format!("web_env.{action}"),
+                    "-",
+                    "ok",
+                    "",
+                );
+                let notice = match action.as_str() {
+                    "install" | "rebuild" => {
+                        "已提交 Web 服务（OpenResty）安装任务；PHP/Node/Go/Rust 不受影响"
+                    }
+                    "delete" => "Web 服务容器已删除（语言运行环境各自独立，未受影响）",
+                    _ => "Web 服务操作已完成",
+                };
+                Ok(handlers::redirect(format!(
+                    "/{prefix}/sites/env?notice={}",
+                    encode_uri_component(notice)
+                )))
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                let _ = state.db().audit(
+                    &user.user.username,
+                    &ip,
+                    &format!("web_env.{action}"),
+                    "-",
+                    "failed",
+                    &msg,
+                );
+                Ok(handlers::redirect(format!(
+                    "/{prefix}/sites/env?error={}",
+                    encode_uri_component(&msg)
+                )))
+            }
+        };
+    }
     if action == "delete" {
         return match state.delete_site_runtime(&id) {
             Ok(()) => {
@@ -1900,6 +2030,80 @@ pub async fn runtime_extension_uninstall(
     }
 }
 
+/// 批量勾选安装/卸载：一次请求、一个任务、日志合流、只重启一次容器。
+pub async fn runtime_extensions_batch(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let op = form_first(&form, "op").trim().to_string();
+    let add = match op.as_str() {
+        "install" => true,
+        "uninstall" => false,
+        _ => {
+            return Err(AppError::BadRequest(format!(
+                "未知扩展操作：{op}（应为 install / uninstall）"
+            )))
+        }
+    };
+    let keys = form.get("ext").cloned().unwrap_or_default();
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    if keys.is_empty() {
+        return Ok(handlers::redirect(format!(
+            "/{prefix}/sites/env/{}?error={}",
+            encode_uri_component(&id),
+            encode_uri_component("未选择任何扩展")
+        )));
+    }
+    match state.apply_extension_selection(&id, add, &keys).await {
+        Ok(0) => Ok(handlers::redirect(format!(
+            "/{prefix}/sites/env/{}?notice={}",
+            encode_uri_component(&id),
+            encode_uri_component("所选扩展均已是目标状态，无需变更")
+        ))),
+        Ok(n) => {
+            let action = if add { "安装" } else { "卸载" };
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions.batch",
+                &id,
+                "ok",
+                &format!("{action} {n} 项：{}", keys.join(", ")),
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?notice={}",
+                encode_uri_component(&id),
+                encode_uri_component(&format!(
+                    "{n} 项扩展{action}任务已提交（单任务串行执行，日志合流，只重启一次容器）"
+                ))
+            )))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions.batch",
+                &id,
+                "failed",
+                &format!("{}: {msg}", keys.join(", ")),
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?error={}",
+                encode_uri_component(&id),
+                encode_uri_component(&msg)
+            )))
+        }
+    }
+}
+
 /// 按名字安装 PECL 扩展（可选版本）。
 pub async fn runtime_pecl_install(
     State(state): State<Arc<AppState>>,
@@ -2134,7 +2338,40 @@ pub async fn runtime_config_save(
 
 #[cfg(test)]
 mod tests {
-    use super::version_display;
+    use super::{error_field, version_display};
+
+    #[test]
+    fn server_error_maps_to_visible_field_only() {
+        // 重复站点落到主域名字段旁。
+        assert_eq!(error_field("站点已存在：shop.local", "static"), "domain");
+        // 别名冲突落到别名区。
+        assert_eq!(
+            error_field("域名已被站点使用：www.shop.local", "runtime"),
+            "aliases"
+        );
+        assert_eq!(error_field("域名重复：www.shop.local", "proxy"), "aliases");
+        // 类型专属错误只在对应类型下落到字段，否则回顶部提示。
+        assert_eq!(error_field("上游地址不能为空", "proxy"), "proxy_target");
+        assert_eq!(error_field("上游地址不能为空", "static"), "");
+        assert_eq!(error_field("请选择运行环境", "runtime"), "runtime_id");
+        assert_eq!(error_field("请选择运行环境", "static"), "");
+        // 环境级错误不属于任何输入字段。
+        assert_eq!(
+            error_field(
+                "Web 服务（OpenResty）未就绪：请先在「网站 → 运行环境」安装/启动 Web 服务",
+                "static"
+            ),
+            ""
+        );
+        assert_eq!(
+            error_field(
+                "Web 服务（OpenResty）未就绪：请先在「网站 → 运行环境」安装/启动 Web 服务",
+                "runtime"
+            ),
+            ""
+        );
+        assert_eq!(error_field("Docker 不可用：socket 不存在", "runtime"), "");
+    }
 
     #[test]
     fn version_column_shows_actual_then_falls_back_with_marker() {

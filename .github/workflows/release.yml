@@ -11,6 +11,7 @@
 # 产物（每个架构一套，与 deploy/pack-release.sh 布局完全一致）：
 #   skiff-<ver>-<target>.tar.gz           主程序 + skiff-plugin + install/uninstall +
 #                                         skiff.service + config.toml.example + official/ +
+#                                         vendor/install-php-extensions +
 #                                         checksums.txt + README.txt
 #   skiff-<ver>-<target>.tar.gz.sha256    装机前先校验（单包摘要）
 #   checksums.txt                         所有安装包的汇总摘要（Release 资产）
@@ -176,6 +177,10 @@ jobs:
           for f in install.sh uninstall.sh skiff.service config.toml.example README.txt checksums.txt; do
             [ -f "$root/$f" ] || { echo "::error::安装包缺少 $f"; exit 1; }
           done
+          # 固定版本 PHP 扩展安装器（运行时不再从 GitHub 拉）
+          [ -f "$root/vendor/install-php-extensions" ] || { echo "::error::安装包缺少 vendor/install-php-extensions"; exit 1; }
+          [ -x "$root/vendor/install-php-extensions" ] || { echo "::error::vendor/install-php-extensions 不可执行"; exit 1; }
+          grep -q "IPE_VERSION=2.13.2" "$root/vendor/install-php-extensions" || { echo "::error::vendor/install-php-extensions 不是正式 release 2.13.2（禁止 master 副本）"; exit 1; }
           # 包内摘要自校验（checksums.txt 覆盖包内除自身外的所有文件）
           ( cd "$root" && sha256sum -c checksums.txt )
 

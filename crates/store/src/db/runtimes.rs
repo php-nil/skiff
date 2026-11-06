@@ -182,7 +182,12 @@ impl Db {
     pub fn ensure_runtime(&self, r: &NewRuntime) -> Result<Runtime> {
         match self.runtime_by_id(&r.id)? {
             Some(existing) => {
-                self.update_runtime_image(&r.id, &r.image, r.socket_path.as_deref())?;
+                self.update_runtime_image(
+                    &r.id,
+                    &r.image,
+                    r.socket_path.as_deref(),
+                    &r.image_digest,
+                )?;
                 Ok(self.runtime_by_id(&r.id)?.unwrap_or(existing))
             }
             None => self.create_runtime(r),
@@ -218,11 +223,16 @@ impl Db {
         id: &str,
         image: &str,
         socket_path: Option<&str>,
+        image_digest: &str,
     ) -> Result<()> {
         let conn = self.conn();
+        // 空 digest 表示「本次调用未探测」：保留库里已有值，避免每次启动校准把它清零。
         let n = conn.execute(
-            "UPDATE site_runtimes SET image = ?2, socket_path = ?3, updated_at = ?4 WHERE id = ?1",
-            params![id, image, socket_path, now()],
+            "UPDATE site_runtimes SET image = ?2, socket_path = ?3,
+                 image_digest = CASE WHEN ?4 = '' THEN image_digest ELSE ?4 END,
+                 updated_at = ?5
+             WHERE id = ?1",
+            params![id, image, socket_path, image_digest, now()],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(id.to_string()));
@@ -370,6 +380,25 @@ mod tests {
         assert_eq!(second.name, "php-8.5-a");
         assert_eq!(second.version, "8.5");
         assert_eq!(db.list_runtimes().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn ensure_runtime_writes_digest_but_never_clears_it_with_a_blank_probe() {
+        let db = Db::open_in_memory().unwrap();
+        let mut rt = php("php-8.5", "8.5", true);
+        rt.image_digest = "sha256:first".into();
+        let saved = db.ensure_runtime(&rt).unwrap();
+        assert_eq!(saved.image_digest, "sha256:first");
+
+        // 启动校准只传空 digest：必须保留旧值。
+        rt.image_digest = String::new();
+        let kept = db.ensure_runtime(&rt).unwrap();
+        assert_eq!(kept.image_digest, "sha256:first");
+
+        // 安装/重建探测到新 digest：覆盖旧值。
+        rt.image_digest = "sha256:second".into();
+        let updated = db.ensure_runtime(&rt).unwrap();
+        assert_eq!(updated.image_digest, "sha256:second");
     }
 
     #[test]

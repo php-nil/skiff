@@ -121,7 +121,7 @@ apply_sample(ticket, Result<Option<Value>, ExecError>, now) -> Result<Option<Pus
 | D4 | `history(id, page)` 分页 | `history(id, limit)` 倒序 | 分页由 Web/仓储层在 SQL 上做 |
 | D5 | `push` 返回 `Result<(), TaskError>` | 返回 `PushReport`（含 `outcome / signals / net_bytes`） | 让调用方知道拒收原因与丢点计量 |
 | D6 | 插件按需 ensure / 健康等待 / 熔断 / `task_pinned` | `PluginGate` 只返回状态；ensure/health 在执行体适配层 | 复用 `Supervisor` 的职责不搬进纯逻辑 crate |
-| D7 | 插件只能创建 `plugin:<self>:`、`source` 由内核注入、每插件 ≤20 条、推送限速 100 点/秒 | 前三条已实现 | `scheduler` 能力面强制 id 前缀 / source / 配额；`buffer.push` 的限速与采样链路仍未接 |
+| D7 | 插件只能创建 `plugin:<self>:`、`source` 由内核注入、每插件 ≤20 条、推送限速 100 点/秒 | 前三条已实现；推送限速在能力面按任务滚动窗口实现 | `scheduler` 能力面强制 id 前缀 / source / 配额；`buffer.push` 只对 `scheduler:manage` 且本人任务开放，每任务每秒 100 点；采样执行链路仍由插件自行驱动 |
 | D8 | `last_error` 作为任务字段展示 | 落在 `RunRecord.error_class/error_detail/request_id`；`Task.last_run` 只保留结果摘要 | 避免任务行频繁写；失败详情走执行历史 |
 | D9 | 全局「超限」的单一阈值 | 软限（默认 64 MiB）触发降级；硬限（默认 128 MiB）先腾挪再拒收 | 契约表格与正文对「降级/超限」表述不一致，按两者拆分 |
 | D10 | 单插件 16 MiB / 64 MiB | 16 MiB 为拒收配额；64 MiB 仅配置校验上限 | 同上，契约未区分运营配额与配置上限 |
@@ -257,12 +257,15 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 ### 8.3 能力面与权限
 
 - 路由 `/api/v1/capability/scheduler/call`（`skiff-wire::CAP_SCHEDULER_CALL`），
-  SDK 暴露 `scheduler_call(method, params)`；方法 `task.list/get/history/register/update/delete/run`。
+  SDK 暴露 `scheduler_call(method, params)`；方法覆盖 `task.list/get/history/register/update/delete/run`
+  与 `buffer.push` / `buffer.stat`。`buffer.push` 需 `scheduler:manage`、`buffer.stat` 需
+  `scheduler:read`，都只作用于本人任务；单点上限与三层配额由 `Scheduler::push` 校验，
+  能力面另加每任务 100 点/秒限速。
 - 插件只能看 / 管 `source = plugin:<self>`；新增 `scheduler:admin` 仅供内核指定 UI，
   可跨来源并可用 `target`。插件任务 id 固定 `plugin:<caller>:<local_key>`，
   `local_key` 1–64 位 `[A-Za-z0-9._-]`，每插件 ≤20 条，`payload` 必须对象并注入 `key`。
 - Web：viewer 只读任务与历史；启停 / 立即执行 / 删除要 Admin + CSRF；内置任务不可删。
-- **未接**：`buffer.push` / `buffer.stat` 的 UDS 能力，采样链路仍只在进程内。
+- **未接**：定时向插件索要采样点的执行链路仍只在进程内，未通过 UDS 暴露。
 
 ### 8.4 站点备份与 cron 插件
 

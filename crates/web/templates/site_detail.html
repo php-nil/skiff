@@ -21,6 +21,19 @@
     <a class="btn" href="{% if site.https %}https{% else %}http{% endif %}://{{ site.domain }}/" target="_blank" rel="noopener">访问</a>
     <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">日志</a>
     {% if can_admin %}
+    {% if site.is_default %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/default" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="enabled" value="0">
+      <button class="btn" type="submit">取消默认站点</button>
+    </form>
+    {% else if site.status == "running" %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/default" class="inline">
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <input type="hidden" name="enabled" value="1">
+      <button class="btn" type="submit">设为默认站点</button>
+    </form>
+    {% endif %}
     <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/{% if site.status == "running" %}stop{% else %}start{% endif %}" class="inline">
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
       <button class="btn" type="submit">{% if site.status == "running" %}停止{% else %}启动{% endif %}</button>

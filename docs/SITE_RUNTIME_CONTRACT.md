@@ -473,7 +473,7 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### 9.3 菜单与导航
 
-- `core/sites/list`、`core/sites/env`、`core/sites/nginx` 三项不变；运行环境详情不新增 L2/L3。
+- `core/sites/list`、`core/sites/env`、`core/sites/web`（原 `core/sites/nginx`，测试期直接换键、不兼容旧链接）三项不变；运行环境详情不新增 L2/L3。
 - 运行环境详情返回列表时保留筛选与当前 kind；深链落在 `env` 菜单当前态。
 - 不改变顶部/侧栏布局与菜单偏好结构。
 
@@ -623,14 +623,17 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
   - 版本 delta 用 `since / core_until / pecl_only_since`：8.4 起 `imap` / `oci8` / `pdo_oci` / `pspell`
     移出核心，8.5 延续；8.3 仍可选 `imap`；
   - 基础镜像 delta：alpine 上 `oci8` / `pdo_oci` / 商业 loader 为 `Unsupported`，`rdkafka` 可用；
-  - `extensions_for(version, base_image)` 同时供 UI 与后端校验；UI 不支持项灰显 + `title` 原因，
-    依赖差异项提示「将临时安装 X/Y」；后端错误码 `EXT_NOT_IN_VERSION` / `EXT_BASE_IMAGE_UNSUPPORTED` /
+  - `extensions_for(version, base_image)` 同时供 UI 与后端校验；**UI 只返回可用项**，不可用项
+    直接不显示（不灰显、不占位、不带原因文案），原因保留在后端错误里；依赖差异项提示
+    「将临时安装 X/Y」；后端错误码 `EXT_NOT_IN_VERSION` / `EXT_BASE_IMAGE_UNSUPPORTED` /
     `EXT_PECL_NOT_READY`，文案带版本与替代建议。
   - **builtin 修正**：`mbstring`、`sodium`、`sqlite3`、`pdo_sqlite` 标为镜像内置（官方
     `php:*-fpm-alpine` 已编译并启用），不再触发 `oniguruma-dev` 安装与编译，也不重复 enable。
-- **依赖解析**：优先使用 mlocati/docker-php-extension-installer（版本/基座感知，安装后自动清理），
-  下载失败回退原手写依赖表；依赖名修正 `ldap-dev → openldap-dev`、`tidy → tidyhtml-dev`、
-  `snmp → net-snmp-dev`。
+- **依赖解析**：使用随包分发的固定版本 mlocati/docker-php-extension-installer（版本/基座感知，
+  安装后自动清理）。脚本落在 `<web_root>/skiff/tools/install-php-extensions`，容器内固定读取
+  `/www/skiff/tools/install-php-extensions`，**运行时默认不访问 GitHub**；本地副本缺失时打印明确
+  错误并回退固定版本下载，仍失败再回退原手写依赖表。依赖名修正 `ldap-dev → openldap-dev`、
+  `tidy → tidyhtml-dev`、`snmp → net-snmp-dev`。
 - **热装与重建**：`hot=true` 的扩展在运行中的容器内安装/卸载后重启容器即可；
   `hot=false` 或镜像层依赖变化（如新增系统库、需要改基础镜像）必须重建容器。
   编译很重的 PECL（`grpc` / `swoole` / `mongodb`）允许安装，但 UI 标注预计耗时，失败回传真实 stderr。
@@ -647,3 +650,69 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 | Rust | 创建 → 安装异步任务 → 端口监听 → 站点绑定 `runtime` → 反代返回内容；无 Docker 时验证失败链路与渲染 |
 | 抽屉 | 宽度 `min(840px, 92vw)`；五页签可切换；扩展搜索/分类过滤 |
 | 扩展矩阵 | 8.3 imap 可选、8.4/8.5 不可用；alpine oci8 不可用；mbstring/sodium 不产生编译步骤；PECL 失败回传真 stderr |
+
+## 12. 运行环境拆分、扩展多选与安装器本地化（2026-11-06）
+
+### 12.1 取消「基础环境」
+
+- **模型**：运行环境列表每行一个独立主体，`web`（OpenResty）、`php`、`node`、`go`、`rust`
+  各自安装、各自状态、各自删除，互不连带。站点创建只做两类独立校验：
+  1. Web 服务：`docker_available && nginx 容器存在 && running`，否则提示「装 Web 服务」；
+  2. 语言运行环境：所选实例存在且运行中，否则提示「装对应语言运行环境」。
+  不再存在「基础环境就绪」的合并判断。
+- **Web 行**：合成行（`id=web`，不落库、不打开实例抽屉），容器名 `skiff-web-nginx`，
+  行内动作 `/sites/env/web/action/{install|rebuild|start|stop|restart|delete}`。
+  `install`/`rebuild` 只拉取 OpenResty、重建 vhost、启动 nginx；不触碰任何 PHP/Node/Go/Rust 容器。
+- **删除的耦合**：`add_runtime` 弹窗内的「安装基础环境（OpenResty + 默认 PHP 8.5）」次要表单、
+  `/sites/env/install` 路由、`base_install_href` 上下文、`run_site_env_install` 里的 PHP 池配置 /
+  PHP 镜像拉取 / PHP 容器创建与 socket 收紧，全部移除。
+- **schema**：`site_runtimes` 中没有「基础环境」标记；`is_default` 是 per-kind 默认实例，不需要迁移。
+- **vhost**：站点 vhost 生成只依赖 Web 服务存在 + 所选语言实例的 socket（PHP）或端口（Rust）；
+  任一缺失各自报错（`PHP 实例未登记 socket` / `Rust 实例未分配端口` / `Web 服务未安装`）。
+
+### 12.2 扩展多选与二次确认
+
+- **展示**：`extensions_for(version, base_image)` 只返回可用项；不可用项不渲染（不灰显、不占位）。
+  三版本 × 两基座的可显示项数量见下文实测；50 项全集与 `since/core_until/pecl_only_since` 矩阵不变。
+- **多选安装/卸载**：抽屉扩展页签是一张表单，`name=ext` 多值 + `op=install|uninstall`；
+  新建弹窗同样多选，随环境创建任务一次提交。
+- **二次确认**：前端拦截提交，列出本次扩展名、是否重启容器、是否触发编译；`extension_is_heavy`
+  的重项标注「预计 2–5 分钟（需编译）」。确认后才 POST。
+- **后端形态**：`POST /sites/env/{id}/extensions-batch`，字段 `op` + 多个 `ext`；服务端一次
+  `apply_extension_selection` 计算目标集合，复用 `extensions_task` 串行执行，**日志合流、只重启一次容器**；
+  任务记录 `ext_keys: Vec<String>`，轮询 JSON 同步为 `ext_keys`。
+- **PECL**：按名字安装同样走二次确认；批量与单扩展都使用同一任务执行器。
+
+### 12.3 mlocati 安装器本地化
+
+- **资产**：`deploy/vendor/install-php-extensions`，**官方 2.13.2 release 完整文件**（非仓库
+  master 副本；`IPE_VERSION=2.13.2`，不会进入 `sleep 10` 分支）。来源 URL、
+  SHA-256 `27fa8d80bd4e22feb9ddcadff1ca40c8f3e8ea942eb2dd8f446ed1afd2f2f0ab` 记录在
+  `runtime_catalog` 常量中。`include_str!` 编进二进制，Docker 形态也能落盘。
+- **落盘**：安装 PHP 环境或执行扩展任务前写入 `<web_root>/skiff/tools/install-php-extensions`（0755）；
+  PHP 容器整目录挂载 `web_root`，容器内固定路径 `/www/skiff/tools/install-php-extensions`。
+- **脚本行为**：优先 `cp` 本地副本并校验 `IPE_VERSION` 与常量一致，打印版本与 sha256；
+  本地缺失/版本不符时打印明确错误并回退固定版本 URL；执行安装器时显式 `CI=true`。
+- **回退链**：主路径（安装器）**执行失败**也会进入手写依赖表，输出「主路径失败，已回退」；
+  两者都失败时保留两段输出，退出码取回退路径（编译阶段的具体失败码）。
+- **批量**：安装一次 `docker exec` 把多个包名交给安装器；回退按 union 运行库 + union 编译依赖
+  → 逐项编译（分段标记）→ 末尾一次清理。卸载把多个 ini 删除合并为一次 `docker exec`。
+- **其它性能项**：PECL 编译设置 `MAKE="make -j$(nproc)"`；拉镜像前先 `inspect`，已存在且与
+  登记 digest 一致时跳过 `ImagePull`；安装时若有扩展，跳过第一次 socket 收紧，重启后统一
+  `chmod`。
+- **打包/安装**：`pack-release.sh` 强制要求并复制 `vendor/install-php-extensions`；`install.sh`
+  复制到 `/www/skiff/tools/`；`release.yml` 校验包内存在、可执行且含 `IPE_VERSION`；`checksums.txt`
+  自动覆盖。`xtask verify-pkg` 只校验插件 `.wbpkg` 结构与摘要，不涉及发布包文件清单，无需改动。
+
+### 12.4 验收矩阵（本轮）
+
+| 用例 | 口径 |
+| --- | --- |
+| Web 行独立 | 列表首行固定 `web`；安装/删除不影响任一 PHP/Node/Go/Rust 行状态 |
+| 基础环境移除 | 页面无「基础环境」文案与 `runtime-base-install`；无 `/sites/env/install` 路由 |
+| 扩展不可用项 | PHP 8.5 抽屉不出现 `imap`；无「当前不可用」灰显文案 |
+| 多选 + 确认 | 勾选多项 → 确认弹窗列出名称/重启/编译与重项耗时 → 单个 `extensions-batch` 请求 |
+| 批量后端 | 一个任务串行执行，`RuntimeJob.ext_keys` 为多值，日志合流，只重启一次 |
+| 安装器版本 | 随包脚本 `IPE_VERSION=2.13.2`（非 master），sha256 与常量一致 |
+| 安装器回退 | 主路径执行失败输出「主路径失败，已回退」并进入 legacy；两者失败时两段日志保留 |
+| 发布包 | `vendor/install-php-extensions` 存在、可执行、含 `IPE_VERSION`，并被 checksums 覆盖 |

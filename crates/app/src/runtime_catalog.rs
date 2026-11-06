@@ -151,7 +151,31 @@ pub struct PhpExtensionDef {
 }
 
 impl PhpExtensionDef {
-    /// 旧的手写依赖 + `docker-php-ext-install` 路径：仅在 mlocati 脚本下载失败时兜底。
+    /// 只编译并启用本扩展（不含 apk 依赖安装/清理），供单项与批量 legacy 路径复用。
+    fn legacy_compile_command(&self) -> String {
+        if let Some(pkg) = self.pecl_package {
+            // pecl 在 PTY 下会逐项提问；不重定向 stdin 会阻塞（实测挂起）。
+            // MAKE 交给并行 make，缩短 PECL 源码编译时间。
+            format!(
+                "export MAKE=\"make -j$(nproc)\"; yes '' | pecl install {pkg} && docker-php-ext-enable {}",
+                self.key
+            )
+        } else {
+            let mut out = String::new();
+            if let Some(cfg) = self.configure {
+                out.push_str("docker-php-ext-configure ");
+                out.push_str(cfg);
+                out.push_str(" && ");
+            }
+            out.push_str("docker-php-ext-install -j\"$(nproc)\" ");
+            out.push_str(self.key);
+            out.push_str(" && docker-php-ext-enable ");
+            out.push_str(self.key);
+            out
+        }
+    }
+
+    /// 旧的手写依赖 + `docker-php-ext-install` 路径：仅在 mlocati 主路径失败时兜底。
     fn legacy_install_script(&self) -> String {
         let mut out = String::new();
         let mut clean = false;
@@ -168,23 +192,7 @@ impl PhpExtensionDef {
             out.push_str(" && ");
             clean = true;
         }
-        if let Some(pkg) = self.pecl_package {
-            // pecl 在 PTY 下会逐项提问；不重定向 stdin 会阻塞（实测挂起）。
-            out.push_str("yes '' | pecl install ");
-            out.push_str(pkg);
-            out.push_str(" && docker-php-ext-enable ");
-            out.push_str(self.key);
-        } else {
-            if let Some(cfg) = self.configure {
-                out.push_str("docker-php-ext-configure ");
-                out.push_str(cfg);
-                out.push_str(" && ");
-            }
-            out.push_str("docker-php-ext-install -j\"$(nproc)\" ");
-            out.push_str(self.key);
-            out.push_str(" && docker-php-ext-enable ");
-            out.push_str(self.key);
-        }
+        out.push_str(&self.legacy_compile_command());
         if clean {
             out.push_str(" && apk del .skiff-build");
         }
@@ -193,9 +201,11 @@ impl PhpExtensionDef {
 
     /// 安装并启用该扩展的 shell 脚本。
     ///
-    /// 优先使用 mlocati/docker-php-extension-installer：它按 PHP 版本与基础镜像
-    /// 解析系统依赖（alpine 用 apk、debian 用 apt），安装后自动清理，失败保留真实 stderr。
-    /// 下载失败时回退到旧的手写依赖表，保证离线/受限网络仍可编译。
+    /// 优先使用随包分发的 mlocati/docker-php-extension-installer（正式 release、
+    /// 容器内本地副本 `/www/skiff/tools/install-php-extensions`）：它按 PHP 版本
+    /// 与基础镜像解析系统依赖（alpine 用 apk、debian 用 apt），安装后自动清理，
+    /// 失败保留真实 stderr。本地副本缺失/版本不符时打印明确错误并回退固定版本
+    /// 下载；主路径**执行失败**也会回退到手写依赖表，两段输出都留在任务日志里。
     pub fn install_script(&self) -> String {
         if self.builtin {
             // 官方镜像已编译并默认启用，返回空脚本让调用方直接跳过：
@@ -203,18 +213,7 @@ impl PhpExtensionDef {
             return String::new();
         }
         let pkg = self.pecl_package.unwrap_or(self.key);
-        let legacy = self.legacy_install_script();
-        format!(
-            "set -e\n\
-             if ! command -v install-php-extensions >/dev/null 2>&1; then\n\
-             \tcurl -fsSL https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions -o /usr/local/bin/install-php-extensions && chmod +x /usr/local/bin/install-php-extensions || true\n\
-             fi\n\
-             if command -v install-php-extensions >/dev/null 2>&1; then\n\
-             \tinstall-php-extensions {pkg}\n\
-             else\n\
-             \t{legacy}\n\
-             fi"
-        )
+        fallback_script(pkg, &self.legacy_install_script())
     }
 }
 
@@ -223,6 +222,182 @@ pub const CATEGORY_IMAGE: &str = "图片";
 pub const CATEGORY_CRYPTO: &str = "加密";
 pub const CATEGORY_CACHE: &str = "缓存";
 pub const CATEGORY_OTHER: &str = "其他";
+
+// ---------------------------------------------------------------------------
+// mlocati/docker-php-extension-installer：固定版本、随包分发
+// ---------------------------------------------------------------------------
+//
+// 运行时不再从 GitHub 拉脚本：安装包携带 `deploy/vendor/install-php-extensions`，
+// 内核启动/安装环境时写到 `<web_root>/skiff/tools/`，PHP 容器内固定可见
+// `/www/skiff/tools/install-php-extensions`。下面的常量也编进二进制，保证
+// Docker 形态（无 install.sh）同样能落盘。
+
+/// 随包脚本的版本号（GitHub release tag）。
+pub const PHP_EXTENSION_INSTALLER_VERSION: &str = "2.13.2";
+/// 官方来源（记录用；默认路径不访问网络）。
+pub const PHP_EXTENSION_INSTALLER_URL: &str =
+    "https://github.com/mlocati/docker-php-extension-installer/releases/download/2.13.2/install-php-extensions";
+/// 随包脚本的 SHA-256（`deploy/vendor/install-php-extensions`，官方 2.13.2 release 资产）。
+pub const PHP_EXTENSION_INSTALLER_SHA256: &str =
+    "27fa8d80bd4e22feb9ddcadff1ca40c8f3e8ea942eb2dd8f446ed1afd2f2f0ab";
+/// 容器内固定路径（`web_root` 挂载到 `/www`）。
+pub const PHP_EXTENSION_INSTALLER_CONTAINER: &str = "/www/skiff/tools/install-php-extensions";
+/// 随二进制分发的脚本内容（与 `deploy/vendor/` 同一份资产）。
+pub const PHP_EXTENSION_INSTALLER: &str =
+    include_str!("../../../deploy/vendor/install-php-extensions");
+
+/// 生成安装脚本前缀：优先本地副本并校验版本；缺失/版本不符时打印明确错误并回退
+/// 固定版本下载。正式 release 资产的 `IPE_VERSION` 是具体版本号，不会进入
+/// `IPE_VERSION=master` 的 `sleep 10` 分支；执行安装器时仍显式 `CI=true` 兜底。
+fn installer_prelude() -> String {
+    format!(
+        "set -e\n\
+         SKIFF_LOCAL_IPE='{local}'\n\
+         if [ -f \"$SKIFF_LOCAL_IPE\" ]; then\n\
+         \tSKIFF_IPE_VER=$(sed -n 's/^IPE_VERSION=//p' \"$SKIFF_LOCAL_IPE\" | head -n 1)\n\
+         \tif [ \"$SKIFF_IPE_VER\" = '{ver}' ]; then\n\
+         \t\tcp \"$SKIFF_LOCAL_IPE\" /usr/local/bin/install-php-extensions\n\
+         \t\tchmod 0755 /usr/local/bin/install-php-extensions\n\
+         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}）\"\n\
+         \telse\n\
+         \t\techo \"[skiff] 本地扩展安装器版本不符：$SKIFF_IPE_VER（期望 {ver}）；回退下载固定版本\" >&2\n\
+         \t\tcurl -fsSL {url} -o /usr/local/bin/install-php-extensions && chmod 0755 /usr/local/bin/install-php-extensions || true\n\
+         \tfi\n\
+         else\n\
+         \techo \"[skiff] 本地扩展安装器缺失：$SKIFF_LOCAL_IPE；回退下载固定版本 {ver}\" >&2\n\
+         \tcurl -fsSL {url} -o /usr/local/bin/install-php-extensions && chmod 0755 /usr/local/bin/install-php-extensions || true\n\
+         fi\n",
+        local = PHP_EXTENSION_INSTALLER_CONTAINER,
+        ver = PHP_EXTENSION_INSTALLER_VERSION,
+        sha = PHP_EXTENSION_INSTALLER_SHA256,
+        url = PHP_EXTENSION_INSTALLER_URL,
+    )
+}
+
+/// 主路径（本地/下载的 mlocati 安装器）与 legacy 手写依赖表的组合。
+///
+/// 关键点：判据不再只是 `command -v`。主路径**执行失败**也会进入 legacy，
+/// 失败原因与主路径 stderr 都留在输出里；两者都失败时退出码取 legacy
+/// （编译阶段的具体失败码），并打印两段均已保留的说明。
+fn fallback_script(pkg: &str, legacy: &str) -> String {
+    format!(
+        "{pre}\
+         if command -v install-php-extensions >/dev/null 2>&1; then\n\
+         \tif CI=true install-php-extensions {pkg}; then\n\
+         \t\texit 0\n\
+         \telse\n\
+         \t\tskiff_main_rc=$?\n\
+         \t\techo \"[skiff] 主路径失败（exit $skiff_main_rc），已回退手写依赖表：{pkg}\" >&2\n\
+         \tfi\n\
+         fi\n\
+         if {legacy}; then\n\
+         \texit 0\n\
+         else\n\
+         \tskiff_legacy_rc=$?\n\
+         \techo \"[skiff] 回退路径也失败（exit $skiff_legacy_rc）；主路径与回退两段输出均已保留\" >&2\n\
+         \texit $skiff_legacy_rc\n\
+         fi\n",
+        pre = installer_prelude(),
+        pkg = pkg,
+        legacy = legacy,
+    )
+}
+
+/// 批量安装脚本：**一次** `docker exec`、主路径一次传多个包名；
+/// legacy 回退按「union 运行库 + union 编译依赖 → 逐项编译 → 末尾一次清理」，
+/// 每项前打印分隔标记，失败时能定位到具体扩展。
+pub fn batch_install_script(keys: &[String]) -> Option<String> {
+    let mut items: Vec<(String, String, String)> = Vec::new();
+    let mut runtime_deps: Vec<String> = Vec::new();
+    let mut build_deps: Vec<String> = Vec::new();
+    for key in keys {
+        if let Some(def) = php_extension(key) {
+            if def.builtin {
+                continue;
+            }
+            let pkg = def.pecl_package.unwrap_or(def.key).to_string();
+            for d in def.runtime_deps {
+                if !runtime_deps.iter().any(|x| x == d) {
+                    runtime_deps.push(d.to_string());
+                }
+            }
+            for d in def.deps {
+                if !build_deps.iter().any(|x| x == d) {
+                    build_deps.push(d.to_string());
+                }
+            }
+            items.push((pkg, def.legacy_compile_command(), extension_label(def.key)));
+        } else if let Some((name, version)) = parse_pecl_token(key) {
+            let pkg = if version.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}-{version}")
+            };
+            // 自定义 PECL 扩展没有登记依赖：沿用旧脚本的通用编译工具集。
+            for d in ["autoconf", "g++", "make", "pkgconf", "re2c"] {
+                if !build_deps.iter().any(|x| x == d) {
+                    build_deps.push(d.to_string());
+                }
+            }
+            items.push((
+                pkg.clone(),
+                format!(
+                    "export MAKE=\"make -j$(nproc)\"; yes '' | pecl install {pkg} && docker-php-ext-enable {name}"
+                ),
+                extension_label(key),
+            ));
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    let pkgs: Vec<String> = items.iter().map(|(p, _, _)| p.clone()).collect();
+    let mut legacy = String::from("export MAKE=\"make -j$(nproc)\"");
+    if !runtime_deps.is_empty() {
+        legacy.push_str(" && apk add --no-cache ");
+        legacy.push_str(&runtime_deps.join(" "));
+    }
+    if !build_deps.is_empty() {
+        legacy.push_str(" && apk add --no-cache --virtual .skiff-build ");
+        legacy.push_str(&build_deps.join(" "));
+    }
+    for (idx, (_, cmd, label)) in items.iter().enumerate() {
+        legacy.push_str(&format!(
+            "\necho \"[skiff] --- 回退安装 {label}（{}/{total}）---\"\n\
+             if {cmd}; then\n\
+             \techo \"[skiff] --- {label} 完成 ---\"\n\
+             else\n\
+             \tskiff_ext_rc=$?\n\
+             \techo \"[skiff] --- {label} 失败（exit $skiff_ext_rc）---\" >&2\n\
+             \texit $skiff_ext_rc\n\
+             fi",
+            idx + 1,
+            total = items.len()
+        ));
+    }
+    if !build_deps.is_empty() {
+        legacy.push_str(" && apk del .skiff-build");
+    }
+    Some(fallback_script(&pkgs.join(" "), &legacy))
+}
+
+/// 批量停用脚本：一次 `docker exec` 内逐项删除 ini，并打印分段标记。
+pub fn batch_disable_script(keys: &[String]) -> Option<String> {
+    let scripts: Vec<String> = keys
+        .iter()
+        .filter_map(|key| {
+            let script = disable_script(key)?;
+            Some(format!(
+                "echo \"[skiff] --- 停用 {} ---\"\n{script}",
+                extension_label(key)
+            ))
+        })
+        .collect();
+    if scripts.is_empty() {
+        return None;
+    }
+    Some(format!("set -e\n{}", scripts.join("\n")))
+}
 
 const fn builtin(
     key: &'static str,
@@ -746,15 +921,50 @@ pub fn pecl_failure_code(output: &str) -> Option<&'static str> {
     not_ready.then_some("EXT_PECL_NOT_READY")
 }
 
-/// 某个版本 + 基座的完整扩展清单（含不可用项，供 UI 灰显与后端二次校验）。
+/// 某个版本 + 基座**可用**的扩展清单。
+///
+/// 不可用项不再进入展示层（不灰显、不占位）；原因只通过
+/// [`extension_block_reason`] / [`extension_support`] 在后端报错时给出。
 pub fn extensions_for(version: &str, base_image: &str) -> Vec<ExtensionEntry> {
     PHP_EXTENSIONS
         .iter()
-        .map(|def| ExtensionEntry {
-            def,
-            support: extension_support(def, version, base_image),
+        .filter_map(|def| {
+            let support = extension_support(def, version, base_image);
+            match support {
+                ExtSupport::Unsupported(_) => None,
+                _ => Some(ExtensionEntry { def, support }),
+            }
         })
         .collect()
+}
+
+/// 编译较重、耗时明显的扩展（确认弹窗据此提示预计耗时）。
+pub fn extension_is_heavy(key: &str) -> bool {
+    matches!(
+        key,
+        "memcached"
+            | "imagick"
+            | "intl"
+            | "ldap"
+            | "snmp"
+            | "tidy"
+            | "rdkafka"
+            | "grpc"
+            | "swoole"
+            | "mongodb"
+            | "amqp"
+            | "oci8"
+            | "pdo_oci"
+    ) || key.starts_with("pecl:")
+}
+
+/// 重项预计耗时文案；轻量项返回空串。
+pub fn extension_estimated_time(key: &str) -> &'static str {
+    if extension_is_heavy(key) {
+        "预计 2–5 分钟（需编译）"
+    } else {
+        ""
+    }
 }
 
 pub fn default_extensions() -> Vec<String> {
@@ -812,18 +1022,14 @@ pub fn extension_install_script(token: &str) -> Option<String> {
     } else {
         format!("{name}-{version}")
     };
-    // PECL 自定义扩展：同样优先 mlocati（依赖解析 + 清理），失败保留真实 stderr；
-    // 下载失败回退 `pecl install`（PTY 下用 `yes ''` 防提问挂起）。
-    Some(format!(
-        "set -e\n\
-         if ! command -v install-php-extensions >/dev/null 2>&1; then\n\
-         \tcurl -fsSL https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions -o /usr/local/bin/install-php-extensions && chmod +x /usr/local/bin/install-php-extensions || true\n\
-         fi\n\
-         if command -v install-php-extensions >/dev/null 2>&1; then\n\
-         \tinstall-php-extensions {pkg}\n\
-         else\n\
-         \tapk add --no-cache --virtual .skiff-build autoconf g++ make pkgconf re2c && yes '' | pecl install {pkg} && docker-php-ext-enable {name} && apk del .skiff-build\n\
-         fi"
+    // PECL 自定义扩展：同样优先本地 mlocati（依赖解析 + 清理），失败保留真实 stderr；
+    // 本地副本缺失/不可用或主路径执行失败时回退 `pecl install`
+    // （PTY 下用 `yes ''` 防提问挂起；MAKE 并行缩短编译）。
+    Some(fallback_script(
+        &pkg,
+        &format!(
+            "export MAKE=\"make -j$(nproc)\" && apk add --no-cache --virtual .skiff-build autoconf g++ make pkgconf re2c && yes '' | pecl install {pkg} && docker-php-ext-enable {name} && apk del .skiff-build"
+        ),
     ))
 }
 
@@ -1170,20 +1376,36 @@ mod tests {
                 .expect(key)
                 .support
         };
-        // 8.3 核心仍提供 imap；8.4 起移入 PECL，UI 灰显。
+        let support = |version: &str, base: &str, key: &str| {
+            let def = php_extension(key).expect(key);
+            extension_support(def, version, base)
+        };
+        // 8.3 核心仍提供 imap；8.4 起移入 PECL：展示层直接不出现。
         assert_eq!(find("8.3", "alpine", "imap"), ExtSupport::Ok);
         for v in ["8.4", "8.5", "8.5.12"] {
             assert!(
-                matches!(find(v, "alpine", "imap"), ExtSupport::Unsupported(_)),
+                matches!(support(v, "alpine", "imap"), ExtSupport::Unsupported(_)),
                 "PHP {v} 的 imap 应不可用"
             );
+            assert!(
+                extensions_for(v, "alpine")
+                    .iter()
+                    .all(|e| e.def.key != "imap"),
+                "PHP {v} 的不可用 imap 不应出现在展示清单"
+            );
         }
-        // Oracle Instant Client 只有 glibc 版：alpine 不可用，debian 可用。
+        // Oracle Instant Client 只有 glibc 版：alpine 不可用、展示层不出现；debian 可用。
         for key in ["oci8", "pdo_oci"] {
             assert!(matches!(
-                find("8.5", "alpine", key),
+                support("8.5", "alpine", key),
                 ExtSupport::Unsupported(_)
             ));
+            assert!(
+                extensions_for("8.5", "alpine")
+                    .iter()
+                    .all(|e| e.def.key != key),
+                "alpine 的 {key} 不应出现在展示清单"
+            );
             assert_eq!(find("8.5", "debian", key), ExtSupport::Ok);
         }
         // 依赖差异：alpine 提示临时依赖，debian 交给 mlocati 用 apt 解析。
@@ -1208,12 +1430,122 @@ mod tests {
             "EXT_BASE_IMAGE_UNSUPPORTED"
         );
         assert!(extension_block_reason(oci, "8.5", "debian").is_none());
-        // 三版本 × 两基座都返回完整清单（只做 delta，不做裁剪）。
+        // 三版本 × 两基座：展示清单只含可用项（不含任何 Unsupported）。
+        // 8.3/debian 恰好全部可用，因此不强制「少于完整目录」，只校验过滤正确性。
         for v in ["8.3", "8.4", "8.5"] {
             for b in ["alpine", "debian"] {
-                assert_eq!(extensions_for(v, b).len(), PHP_EXTENSIONS.len());
+                let visible = extensions_for(v, b);
+                println!(
+                    "visible {v}/{b}: {} / {}",
+                    visible.len(),
+                    PHP_EXTENSIONS.len()
+                );
+                assert!(!visible.is_empty(), "{v}/{b} 不应为空");
+                assert!(
+                    visible
+                        .iter()
+                        .all(|e| !matches!(e.support, ExtSupport::Unsupported(_))),
+                    "{v}/{b} 展示清单不应包含不可用项"
+                );
             }
         }
+        // 8.4/8.5 有核心移除项（imap/pspell），两基座都应出现过滤。
+        for v in ["8.4", "8.5"] {
+            for b in ["alpine", "debian"] {
+                assert!(
+                    extensions_for(v, b).len() < PHP_EXTENSIONS.len(),
+                    "{v}/{b} 应过滤掉不可用项"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extension_installer_is_vendored_and_local_first() {
+        // 随包资产本体：固定版本脚本，来源/版本/sha256 都记录在常量里。
+        assert!(
+            PHP_EXTENSION_INSTALLER.starts_with("#!/bin/sh"),
+            "随包脚本应以 shebang 开头"
+        );
+        assert!(PHP_EXTENSION_INSTALLER.contains("IPE_VERSION"));
+        // 必须是正式 release：脚本头写死具体版本，而非 master（master 会 sleep 10）。
+        assert!(
+            PHP_EXTENSION_INSTALLER
+                .contains(&format!("IPE_VERSION={PHP_EXTENSION_INSTALLER_VERSION}")),
+            "随包脚本应为正式 release 的 IPE_VERSION"
+        );
+        assert!(!PHP_EXTENSION_INSTALLER.contains("IPE_VERSION=master"));
+        assert_eq!(PHP_EXTENSION_INSTALLER_SHA256.len(), 64);
+        assert!(PHP_EXTENSION_INSTALLER_URL.contains(PHP_EXTENSION_INSTALLER_VERSION));
+        assert!(PHP_EXTENSION_INSTALLER_CONTAINER.starts_with("/www/skiff/tools/"));
+        // 安装脚本默认走本地副本，本地缺失/版本不符才回退固定版本下载。
+        let script = php_extension("redis").expect("redis").install_script();
+        assert!(script.contains("SKIFF_LOCAL_IPE"), "{script}");
+        assert!(script.contains("使用本地副本 $SKIFF_LOCAL_IPE"), "{script}");
+        assert!(script.contains("本地扩展安装器缺失"), "{script}");
+        assert!(script.contains("本地扩展安装器版本不符"), "{script}");
+        assert!(script.contains(PHP_EXTENSION_INSTALLER_URL), "{script}");
+        // 执行安装器时 CI=true，避免任何 master 脚本进入 sleep 分支。
+        assert!(
+            script.contains("CI=true install-php-extensions"),
+            "{script}"
+        );
+        // 主路径执行失败也要回退（判据不是只有 command -v）。
+        assert!(script.contains("主路径失败"), "{script}");
+        assert!(script.contains("已回退手写依赖表"), "{script}");
+        assert!(script.contains("回退路径也失败"), "{script}");
+        // 不再出现「latest」随缘下载。
+        assert!(!script.contains("/latest/"), "{script}");
+        let pecl = extension_install_script("pecl:swoole").expect("pecl script");
+        assert!(pecl.contains("使用本地副本"), "{pecl}");
+        assert!(pecl.contains("MAKE=\"make -j$(nproc)\""), "{pecl}");
+        assert!(!pecl.contains("/latest/"), "{pecl}");
+    }
+
+    #[test]
+    fn batch_scripts_single_exec_and_union_deps() {
+        let keys = vec![
+            "pdo_pgsql".to_string(),
+            "gd".to_string(),
+            "redis".to_string(),
+        ];
+        let batch = batch_install_script(&keys).expect("batch");
+        // 一次把多个包名交给安装器。
+        assert!(
+            batch.contains("install-php-extensions pdo_pgsql gd redis"),
+            "{batch}"
+        );
+        // 回退 union 依赖只装一次、末尾只清理一次。
+        assert_eq!(batch.matches(".skiff-build").count(), 2, "{batch}");
+        assert!(batch.contains("libpq"), "{batch}");
+        assert!(batch.contains("回退安装"), "{batch}");
+        assert!(batch.contains("MAKE=\"make -j$(nproc)\""), "{batch}");
+        assert_eq!(batch.matches("主路径失败").count(), 1, "{batch}");
+        // 内置项不进批量脚本。
+        let builtin_keys = vec!["opcache".to_string()];
+        assert!(batch_install_script(&builtin_keys).is_none());
+        // 卸载合并为一次脚本，带分段标记。
+        let rm = batch_disable_script(&["redis".to_string(), "gd".to_string()]).expect("rm");
+        assert!(
+            rm.contains("停用 Redis") || rm.contains("停用 redis"),
+            "{rm}"
+        );
+        assert_eq!(
+            rm.matches("rm -f /usr/local/etc/php/conf.d/").count(),
+            2,
+            "{rm}"
+        );
+    }
+
+    #[test]
+    fn heavy_extensions_are_flagged_for_confirmation() {
+        for key in ["intl", "imagick", "memcached", "ldap"] {
+            assert!(extension_is_heavy(key), "{key} 应标记为重项");
+            assert!(!extension_estimated_time(key).is_empty());
+        }
+        assert!(!extension_is_heavy("redis"));
+        assert!(extension_estimated_time("redis").is_empty());
+        assert!(extension_is_heavy("pecl:swoole"));
     }
 
     #[test]

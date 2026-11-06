@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Nginx · 网站 · Skiff{% endblock %}
+{% block title %}Web 服务 · 网站 · Skiff{% endblock %}
 {% block content %}
 <div class="page-nginx">
   <div class="page-head">
-    <h1>Nginx</h1>
-    <span class="sub">内核功能（非插件）· host 网络 · stub_status 127.0.0.1:8081</span>
+    <h1>Web 服务</h1>
+    <span class="sub">内核功能（非插件）· 当前实现：{% if status.version.is_empty() %}OpenResty（版本不可得）{% else %}{{ status.version }}{% endif %} · stub_status 127.0.0.1:8081</span>
   </div>
   {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
   {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 
   {# 复用插件工作台的横栏标记与类名；本页在单页内切换区块，不用 iframe/新路由。 #}
-  <nav class="workbench-tabs" data-workbench data-nginx-tabs aria-label="Nginx 标签">
+  <nav class="workbench-tabs" data-workbench data-nginx-tabs aria-label="Web 服务标签">
     <a class="workbench-tab{% if tab == "status" %} on{% endif %}" data-nginx-tab="status" href="#status"{% if tab == "status" %} aria-current="page"{% endif %}>
       <svg class="menu-ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-activity"/></svg>状态
     </a>
@@ -104,7 +104,7 @@
       <h3>主配置 nginx.conf</h3>
       <p class="subblock-meta mono">{{ config.main_path }}</p>
       {% if can_admin %}
-      <form method="post" action="/{{ ctx.prefix }}/sites/nginx/config/main">
+      <form method="post" action="/{{ ctx.prefix }}/sites/web/config/main">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
         <label class="nginx-editor">编辑内容
           <textarea name="content" rows="18" class="mono" spellcheck="false">{{ config.main_content }}</textarea>
@@ -119,7 +119,7 @@
     <div class="nginx-subblock">
       <h3>性能参数</h3>
       {% if can_admin %}
-      <form method="post" action="/{{ ctx.prefix }}/sites/nginx/config/params">
+      <form method="post" action="/{{ ctx.prefix }}/sites/web/config/params">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
         <div class="form-grid">
           <label>worker_processes
@@ -191,83 +191,89 @@
   <section class="panel nginx-section" id="nginx-logs" data-nginx-panel="logs"{% if tab != "logs" %} hidden{% endif %}>
     <div class="section-head">
       <h2>日志</h2>
-      <p>错误日志倒序展示并按级别过滤，访问日志按 tail 行数展示；两栏容器等高，便于对照。</p>
+      <p>按需加载：默认不读取文件。选好日志类型与尾部范围后点「加载」，服务端只从文件尾反向读取有限行（单次最多 2 MiB）。</p>
     </div>
 
     <div class="toolbar nginx-filter">
-      <form method="get" action="/{{ ctx.prefix }}/sites/nginx">
+      <form method="get" action="/{{ ctx.prefix }}/sites/web" data-log-form>
         <input type="hidden" name="tab" value="logs">
-        <label class="wide">关键字 <input type="text" name="q" value="{{ keyword }}" placeholder="状态码 / IP / 路径"></label>
-        <label>级别
-          <select name="level">
-            <option value="all" {% if logs.error_level == "all" %}selected{% endif %}>全部</option>
-            <option value="emerg" {% if logs.error_level == "emerg" %}selected{% endif %}>emerg</option>
-            <option value="alert" {% if logs.error_level == "alert" %}selected{% endif %}>alert</option>
-            <option value="crit" {% if logs.error_level == "crit" %}selected{% endif %}>crit</option>
-            <option value="error" {% if logs.error_level == "error" %}selected{% endif %}>error</option>
-            <option value="warn" {% if logs.error_level == "warn" %}selected{% endif %}>warn</option>
-            <option value="notice" {% if logs.error_level == "notice" %}selected{% endif %}>notice</option>
-            <option value="info" {% if logs.error_level == "info" %}selected{% endif %}>info</option>
+        <label>日志类型
+          <select name="type">
+            <option value="access" {% if logs.kind == "access" %}selected{% endif %}>访问日志</option>
+            <option value="error" {% if logs.kind == "error" %}selected{% endif %}>错误日志</option>
           </select>
         </label>
-        <label>tail
-          <select name="tail">
-            <option value="100" {% if tail == 100 %}selected{% endif %}>100 行</option>
-            <option value="200" {% if tail == 200 %}selected{% endif %}>200 行</option>
-            <option value="500" {% if tail == 500 %}selected{% endif %}>500 行</option>
+        <label>尾部行数
+          <select name="lines">
+            <option value="50" {% if logs.page_lines == 50 %}selected{% endif %}>50 行</option>
+            <option value="100" {% if logs.page_lines == 100 %}selected{% endif %}>100 行</option>
+            <option value="200" {% if logs.page_lines == 200 %}selected{% endif %}>200 行</option>
+            <option value="500" {% if logs.page_lines == 500 %}selected{% endif %}>500 行</option>
+          </select>
+        </label>
+        <label class="wide">关键字 <input type="text" name="q" value="{{ logs.keyword }}" placeholder="状态码 / IP / 路径"></label>
+        <label>状态码
+          <input type="text" name="status" value="{{ logs.status }}" placeholder="如 404 / 5xx（访问）">
+        </label>
+        <label>级别
+          <select name="level">
+            <option value="all" {% if logs.level == "all" %}selected{% endif %}>全部</option>
+            <option value="emerg" {% if logs.level == "emerg" %}selected{% endif %}>emerg</option>
+            <option value="alert" {% if logs.level == "alert" %}selected{% endif %}>alert</option>
+            <option value="crit" {% if logs.level == "crit" %}selected{% endif %}>crit</option>
+            <option value="error" {% if logs.level == "error" %}selected{% endif %}>error</option>
+            <option value="warn" {% if logs.level == "warn" %}selected{% endif %}>warn</option>
+            <option value="notice" {% if logs.level == "notice" %}selected{% endif %}>notice</option>
+            <option value="info" {% if logs.level == "info" %}selected{% endif %}>info</option>
           </select>
         </label>
         <div class="filter-actions">
-          <button class="btn" type="submit">过滤</button>
-          <a class="btn" data-nginx-tail-refresh href="/{{ ctx.prefix }}/sites/nginx?tab=logs&amp;q={{ keyword }}&amp;level={{ logs.error_level }}&amp;tail={{ tail }}">刷新 tail</a>
+          <button class="btn primary" type="submit" name="load" value="1">加载</button>
+          {% if logs.loaded %}
+          <a class="btn" data-log-refresh href="/{{ ctx.prefix }}/sites/web?tab=logs&amp;load=1&amp;type={{ logs.kind }}&amp;lines={{ logs.page_lines }}&amp;q={{ logs.keyword|urlencode }}&amp;status={{ logs.status|urlencode }}&amp;level={{ logs.level }}">刷新</a>
+          {% endif %}
         </div>
       </form>
     </div>
 
-    <div class="logs-grid">
-      <section class="log-card">
-        <div class="log-card-head">
-          <h3>错误日志（倒序）</h3>
-          <span class="tag">级别 {{ logs.error_level }}</span>
-        </div>
-        <p class="subblock-meta mono" title="{{ logs.error_path }}">{{ logs.error_path }}</p>
-        {% if !logs.error_reason.is_empty() %}
-        <div class="alert">不可得：{{ logs.error_reason }}</div>
-        {% else if logs.error_lines.is_empty() %}
-        <p class="muted">当前没有匹配的错误日志（tail {{ logs.tail }} 行）。</p>
-        {% else %}
-        <pre class="log nginx-tail">{% for l in logs.error_lines %}{{ l }}
-{% endfor %}</pre>
-        {% endif %}
-        <p class="log-foot">共 {{ logs.error_lines.len() }} 行（tail {{ logs.tail }} 行内过滤）</p>
-      </section>
-      <section class="log-card">
-        <div class="log-card-head">
-          <h3>访问日志（tail）</h3>
-          <span class="tag">最近 {{ logs.access_lines.len() }} 行</span>
-        </div>
-        <p class="subblock-meta mono" title="{{ logs.access_path }}">{{ logs.access_path }}</p>
-        {% if !logs.access_reason.is_empty() %}
-        <div class="alert">不可得：{{ logs.access_reason }}</div>
-        {% else %}
-        <pre class="log nginx-tail">{% for l in logs.access_lines %}{{ l }}
-{% endfor %}</pre>
-        {% endif %}
-        <div class="req-tags">
-          {% for c in logs.status_counts %}
-          <span class="tag">{{ c.label }} <span class="mono">{{ c.count }}</span></span>
-          {% endfor %}
-        </div>
-        <p class="log-foot">共 {{ logs.access_lines.len() }} 行（tail {{ logs.tail }} 行内）</p>
-      </section>
+    {% if !logs.loaded %}
+    <div class="log-empty" data-log-empty>
+      <h3>选择日志 → 选择范围</h3>
+      <p>默认不加载全文。选择上方的日志类型与尾部行数（可选关键字、状态码或级别），点击「加载」后才读取文件尾部。</p>
     </div>
-
-    {% if logs.access_reason.is_empty() %}
-    <div class="nginx-subblock">
-      <h3>最近请求</h3>
-      <pre class="log">{% for l in logs.recent %}{{ l }}
+    {% else %}
+    <section class="log-card" data-log-result>
+      <div class="log-card-head">
+        <h3>{% if logs.kind == "error" %}错误日志{% else %}访问日志{% endif %}（倒序）</h3>
+        <span class="tag">{% if logs.kind == "error" %}级别 {{ logs.level }}{% else if logs.status.is_empty() %}状态码 全部{% else %}状态码 {{ logs.status }}{% endif %}</span>
+        <span class="tag">尾部 {{ logs.page_lines }} 行</span>
+      </div>
+      <p class="subblock-meta mono" title="{{ logs.path }}">{{ logs.path }}</p>
+      {% if !logs.reason.is_empty() %}
+      <div class="alert">不可得：{{ logs.reason }}</div>
+      {% else if logs.rows.is_empty() %}
+      <p class="muted">本次范围内没有匹配的日志行。</p>
+      {% else %}
+      <pre class="log nginx-tail">{% for l in logs.rows %}{{ l }}
 {% endfor %}</pre>
-    </div>
+      {% endif %}
+      <p class="log-foot" data-log-scope>
+        本次加载 {{ logs.rows.len() }} 行（每页 {{ logs.page_lines }} 行，偏移 {{ logs.offset }}）· 已扫描尾部 {{ logs.scanned_text }} / 共 {{ logs.scanned_lines }} 行（文件 {{ logs.file_text }}）{% if logs.truncated %} · 文件更大，仅扫描尾部 2 MiB，更早内容未加载{% endif %}
+      </p>
+      {% if logs.has_more %}
+      <div class="wizard-nav">
+        <a class="btn" data-log-more href="/{{ ctx.prefix }}/sites/web?tab=logs&amp;load=1&amp;type={{ logs.kind }}&amp;lines={{ logs.page_lines }}&amp;offset={{ logs.next_offset }}&amp;q={{ logs.keyword|urlencode }}&amp;status={{ logs.status|urlencode }}&amp;level={{ logs.level }}">加载更多（更早 {{ logs.page_lines }} 行）</a>
+      </div>
+      {% endif %}
+      {% if logs.kind == "access" && !logs.rows.is_empty() %}
+      <div class="req-tags">
+        {% for c in logs.status_counts %}
+        <span class="tag">{{ c.label }} <span class="mono">{{ c.count }}</span></span>
+        {% endfor %}
+      </div>
+      <p class="log-foot">状态码分布仅统计本次已加载的 {{ logs.rows.len() }} 行，不代表全量。</p>
+      {% endif %}
+    </section>
     {% endif %}
   </section>
 

@@ -1789,7 +1789,7 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
   .drawer-content { padding: var(--sp-3); }
 }
 
-/* 「网站 → Nginx」页面私有样式；不改 .workbench-tabs（横向标签由全局样式负责）。
+/* 「网站 → Web 服务」页面私有样式；不改 .workbench-tabs（横向标签由全局样式负责）。
    四段（状态/配置/日志/模块）共用同一套区块头与子块结构；全部沿用全局 token。 */
 .page-nginx .section-head { margin-bottom: var(--sp-4); }
 .page-nginx .section-head h2 { margin: 0; padding: 0; border: 0; font-size: var(--fs-lg); }
@@ -1835,12 +1835,17 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-nginx .nginx-filter label { flex: 1 1 140px; max-width: 220px; }
 .page-nginx .nginx-filter label.wide { flex: 1 1 220px; max-width: 320px; }
 .page-nginx .nginx-filter .filter-actions { display: flex; gap: var(--sp-2); margin-left: auto; }
-.page-nginx .logs-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--sp-4);
-  align-items: stretch;
+.page-nginx .log-empty {
+  margin-top: var(--sp-4);
+  padding: var(--sp-5);
+  background: var(--surface-2);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
 }
+.page-nginx .log-empty h3 { margin: 0 0 var(--sp-2); color: var(--text-2); font-size: var(--fs-md); }
+.page-nginx .log-empty p { margin: 0; font-size: var(--fs-sm); }
 .page-nginx .log-card {
   display: flex;
   flex-direction: column;
@@ -1865,7 +1870,6 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-nginx .nginx-args summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; }
 .page-nginx .nginx-args pre.log { margin-top: var(--sp-2); }
 @media (max-width: 900px) {
-  .page-nginx .logs-grid { grid-template-columns: 1fr; }
   .page-nginx .log-card pre.log { height: 240px; max-height: 240px; }
 }
 @media (max-width: 560px) {
@@ -1875,49 +1879,47 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
   .page-nginx .nginx-stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 }
 
-/* ---- 网站页（page-sites）：新建弹窗、域名列表、行内操作菜单与统一徽标 ---- */
+/* ---- 网站页（page-sites）：合并列、新建弹窗单屏布局与字段级错误 ---- */
 .page-sites [hidden] { display: none !important; }
 .page-sites .sites-grid .site-name { display: flex; flex-direction: column; gap: 2px; }
 .page-sites .sites-grid .site-root { font-size: 12px; opacity: .7; }
 .page-sites .sites-grid .alias { font-size: 12px; color: var(--muted); }
 .page-sites .sites-grid .cell-status { white-space: nowrap; }
 .page-sites .sites-grid .cell-status .badge + .badge { margin-left: 4px; }
-.page-sites .sites-grid .cell-runtime .mono { word-break: normal; overflow-wrap: anywhere; }
-/* 操作列只保留「详情 + 更多」菜单，宽度收窄，避免旧 252px 撑出空白。 */
-.page-sites table.grid.sites-grid th.col-actions { width: 132px; }
-/* 状态列同时放运行态与 HTTPS 两枚徽标，旧 88px 会裁掉后一枚。 */
+.page-sites .sites-grid .cell-runtime { word-break: normal; overflow-wrap: anywhere; }
+/* 列表只留一个「详情」，操作列收窄；状态列容纳运行态 + HTTPS 两枚徽标。 */
+.page-sites table.grid.sites-grid th.col-actions { width: 88px; }
+.page-sites table.grid.sites-grid th.col-type { width: 200px; }
 .page-sites table.grid.sites-grid th.col-status { width: 184px; }
 
-.page-sites .row-menu { position: relative; display: inline-block; }
-.page-sites .row-menu > summary { list-style: none; cursor: pointer; }
-.page-sites .row-menu > summary::-webkit-details-marker { display: none; }
-.page-sites .row-menu-list {
-  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20;
-  min-width: 132px; padding: 4px; display: flex; flex-direction: column; gap: 2px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+/* 新建网站弹窗：类型 + 双列基础字段 + 类型面板 + 别名，一屏内完成 */
+.page-sites .site-new-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column;
 }
-.page-sites .row-menu-list > a,
-.page-sites .row-menu-list button {
-  display: block; width: 100%; text-align: left; padding: 6px 10px; border: 0;
-  border-radius: calc(var(--radius) - 2px); background: transparent; color: inherit;
-  font: inherit; cursor: pointer; text-decoration: none;
-}
-.page-sites .row-menu-list > a:hover,
-.page-sites .row-menu-list button:hover { background: var(--surface-2); }
-.page-sites .row-menu-list form { margin: 0; }
-.page-sites .row-menu-list .danger { color: var(--danger); }
-
-.page-sites .site-new-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
-.page-sites .site-new-dialog form { display: flex; flex-direction: column; min-height: 0; }
-.page-sites .site-new-dialog .modal-body { overflow: auto; }
-.page-sites .field-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-4); }
-.page-sites .field-label { font-weight: 600; font-size: 13px; }
+.page-sites .site-new-dialog form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+/* 正文内部滚动，底部按钮常驻可见：窄屏也不要求滚到底才能提交。 */
+.page-sites .site-new-dialog .modal-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.page-sites .site-new-dialog .modal-actions { flex: 0 0 auto; }
+.page-sites .site-new-dialog .alert.warn { margin-bottom: var(--sp-3); }
+.page-sites .field-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-3); }
+.page-sites .field-label { display: block; font-weight: 600; font-size: 13px; }
+.page-sites .field-label .muted { font-weight: 400; margin-left: 4px; }
+.page-sites .req { color: var(--danger); margin-left: 2px; }
+.page-sites .field-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.page-sites .field-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 12px; }
+.page-sites .field-error { color: var(--danger); font-size: 12px; margin: 0; }
+.page-sites .field-error.row-error { grid-column: 1 / -1; }
+.page-sites input[data-has-error],
+.page-sites select[data-has-error] { border-color: var(--danger); }
+/* 三类面板占用同一块高度，切换时不上下横跳。 */
+.page-sites .type-panel { min-height: 112px; }
 .page-sites .segmented { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .page-sites .seg { position: relative; display: block; }
 .page-sites .seg input { position: absolute; opacity: 0; pointer-events: none; }
 .page-sites .seg span {
-  display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; cursor: pointer;
   border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2);
 }
 .page-sites .seg small { color: var(--muted); font-size: 12px; }
@@ -1927,12 +1929,12 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 }
 .page-sites .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .page-sites .domain-list { display: flex; flex-direction: column; gap: 6px; }
-.page-sites .domain-row { display: flex; align-items: center; gap: 8px; }
-.page-sites .check-line { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.page-sites .domain-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px 8px; }
+.page-sites .domain-row input { min-width: 0; }
+.page-sites .alias-tools { display: flex; gap: 8px; flex: 0 0 auto; }
+.page-sites .check-line { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin-top: 2px; }
 .page-sites .check-line input { flex: 0 0 auto; margin-top: 2px; }
-.page-sites .domain-row input { flex: 1 1 auto; min-width: 0; }
-.page-sites .alias-tools { display: flex; gap: 8px; margin-top: 8px; }
-.page-sites .alias-bulk { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.page-sites .alias-bulk { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .page-sites .input-prefix { display: flex; align-items: stretch; }
 .page-sites .input-prefix .prefix {
   display: flex; align-items: center; padding: 0 10px; font-size: 13px;
@@ -1947,7 +1949,10 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 
 @media (max-width: 640px) {
   .page-sites .segmented { grid-template-columns: 1fr; }
-  .page-sites .domain-row { flex-wrap: wrap; }
+  .page-sites .field-grid { grid-template-columns: 1fr; gap: 0; }
+  .page-sites .type-panel { min-height: 0; }
+  .page-sites .domain-row { grid-template-columns: auto minmax(0, 1fr); }
+  .page-sites .domain-row [data-alias-remove] { grid-column: 1 / -1; justify-self: end; }
 }
 
 /* ---- 运行环境页（page-runtimes）：自适应表格、安装进度、新建弹窗与扩展勾选 ---- */
@@ -1984,11 +1989,6 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-runtimes .ext-option input[type="checkbox"] { grid-area: box; }
 .page-runtimes .ext-option .ext-name { grid-area: name; font-weight: 600; }
 .page-runtimes .ext-option .hint { grid-area: desc; }
-.page-runtimes .runtime-base-install {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
-  margin: 0 var(--sp-4) var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--line);
-}
-.page-runtimes .base-install-note { display: flex; flex-direction: column; gap: 2px; }
 .page-runtimes .runtime-images summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; }
 .page-runtimes .runtime-images[open] summary { margin-bottom: var(--sp-2); }
 
@@ -2067,6 +2067,44 @@ body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
 .runtime-logs-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-2); }
 .runtime-run-log { max-height: 340px; overflow: auto; white-space: pre-wrap; }
 .runtime-site-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); white-space: nowrap; }
+/* 运行环境页新增：Web 服务独立行 + 扩展多选与二次确认（只作用于 .page-runtimes） */
+.page-runtimes .runtime-inline-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.page-runtimes .runtime-inline-actions .link-btn.danger { color: var(--danger); }
+.page-runtimes .ext-item { align-items: flex-start; }
+.page-runtimes .ext-check { display: flex; align-items: center; flex: 0 0 auto; margin-top: 2px; }
+.page-runtimes .ext-batch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+}
+.page-runtimes .ext-batch-actions [data-ext-selected-count] { margin-right: auto; }
+.page-runtimes .ext-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.page-runtimes .ext-confirm[hidden] { display: none; }
+.page-runtimes .ext-confirm-card {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+.page-runtimes .ext-confirm-list { margin: 0 0 var(--sp-3); padding-left: 20px; }
+.page-runtimes .ext-confirm-list li { margin-bottom: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 @media (min-width: 980px) {
   .runtime-version-card { grid-template-columns: 1fr 1fr; }
   .ext-list { grid-template-columns: 1fr 1fr; }
@@ -2074,6 +2112,5 @@ body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
 @media (max-width: 760px) {
   .page-runtimes .runtime-form-grid { grid-template-columns: 1fr; }
   .page-runtimes .ext-options { grid-template-columns: 1fr; }
-  .page-runtimes .runtime-base-install { flex-direction: column; align-items: stretch; }
   .ext-toolbar { align-items: stretch; }
 }

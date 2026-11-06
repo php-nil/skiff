@@ -161,6 +161,8 @@ pub struct SiteView {
     /// 仅 runtime：绑定的运行环境与展示名。
     pub runtime_id: String,
     pub runtime_label: String,
+    /// 列表合并列用的运行环境实例名（如 `php-8.5`）；运行环境记录缺失时为空。
+    pub runtime_name: String,
     /// 仅 proxy：上游地址。
     pub proxy_target: String,
     /// 仅 proxy：是否升级 WebSocket。
@@ -181,6 +183,10 @@ pub struct SiteView {
     pub aliases: Vec<String>,
     /// 展示用逗号串；无别名时为空。
     pub aliases_text: String,
+    /// 列表页别名预览（最多两个）；无别名时为空，模板据此整行不渲染。
+    pub alias_preview: String,
+    /// 预览之外的别名数量，用于 `+N` 提示。
+    pub alias_more: usize,
     /// 是否启用 443。
     pub https: bool,
     /// 是否 80 强制跳转 443。
@@ -286,7 +292,6 @@ pub struct SiteEnvView {
     pub docker_available: bool,
     pub docker_reason: String,
     pub nginx_state: String,
-    pub php_state: String,
     pub installed: bool,
     pub ready: bool,
     pub port: u16,
@@ -359,6 +364,8 @@ pub struct RuntimeRow {
     pub port: String,
     pub implemented: bool,
     pub is_default: bool,
+    /// 合成行：独立 Web 服务（OpenResty），不落库、不打开实例抽屉。
+    pub is_web: bool,
     pub detail_href: String,
     /// 同一底层容器的 Docker 页深链（双向跳转）。
     pub docker_href: String,
@@ -432,9 +439,11 @@ pub struct ExtensionOptionView {
     pub source: String,
     /// 支持热装（安装后重启容器生效）。
     pub hot: bool,
-    /// 当前 (版本, 基础镜像) 下是否可安装；false 时前端灰显并禁用。
-    pub supported: bool,
-    /// 不可安装原因，或「将临时安装 X/Y」的依赖提示。
+    /// 编译较重，确认弹窗标预计耗时。
+    pub heavy: bool,
+    /// 重项预计耗时文案；轻量项为空。
+    pub estimated_time: String,
+    /// 依赖提示（「将临时安装 X/Y」）；不可用项不进入清单。
     pub support_note: String,
 }
 
@@ -452,8 +461,8 @@ pub struct RuntimeJobView {
     pub active: bool,
     pub failed: bool,
     pub kind: String,
-    /// 单个扩展任务的目标 token；整批/安装任务为空。
-    pub ext_key: String,
+    /// 本批任务的目标 token（批量时多个）；安装任务为空。
+    pub ext_keys: Vec<String>,
 }
 
 #[derive(Template)]
@@ -505,8 +514,6 @@ pub struct SiteEnvPage {
     /// 列表轮询地址。
     pub jobs_href: String,
     pub add_href: String,
-    /// 基础环境安装入口（从标题栏移入弹窗）。
-    pub base_install_href: String,
     /// 镜像参数保存入口。
     pub images_href: String,
     pub error: String,
@@ -523,9 +530,6 @@ pub struct NginxPage {
     pub modules: skiff_app::nginx::NginxModuleView,
     /// status / config / logs / modules
     pub tab: String,
-    pub keyword: String,
-    /// tail 行数上限（50–500）。
-    pub tail: usize,
     pub can_admin: bool,
     pub error: String,
     pub notice: String,

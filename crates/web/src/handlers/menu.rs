@@ -59,7 +59,7 @@ pub async fn dispatch(
         "core/tasks" => handlers::tasks::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
-        "core/sites/nginx" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,
+        "core/sites/web" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,
         "core/sites/new" => {
             handlers::sites::new_page_get(State(state), AuthUser(user), Query(q)).await
         }

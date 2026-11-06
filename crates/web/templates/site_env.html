@@ -4,7 +4,7 @@
 <div class="page-runtimes" data-runtime-jobs-url="{{ jobs_href }}">
   <div class="page-head">
     <h1>运行环境</h1>
-    <span class="sub">PHP-FPM / Rust 独立实例 · 独立目录与接入方式 · 安装 / 扩展异步执行</span>
+    <span class="sub">Web 服务（OpenResty）与 PHP / Node / Go / Rust 各自独立安装、各自状态、各自删除</span>
   </div>
   {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
   {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
@@ -19,10 +19,7 @@
       <button type="button" class="btn primary" data-runtime-new>+ 新建运行环境</button>
       {% endif %}
     </div>
-    <p class="muted">每个实例独立目录、独立 socket：<code>/www/runtime/php/&lt;name&gt;/php-fpm.sock</code>（0660 root:nobody），容器名 <code>skiff-php-&lt;name&gt;</code>。停止某个实例只影响绑定它的站点，不会静默切换到其它实例。</p>
-    {% if runtimes.is_empty() %}
-    <p class="muted">尚未登记运行环境。点「新建运行环境」创建；基础环境在弹窗内可一并重建。</p>
-    {% else %}
+    <p class="muted">Web 服务行只管理 OpenResty 容器（<code>skiff-web-nginx</code>，host 网络 80），安装/重建/删除都不会连带任何语言运行环境；PHP / Node / Go / Rust 每类各自独立安装与状态。PHP 实例独立目录与 socket：<code>/www/runtime/php/&lt;name&gt;/php-fpm.sock</code>（0660 root:nobody）。</p>
     <div class="table-wrap">
       <table class="grid runtimes-grid">
         <thead>
@@ -38,7 +35,7 @@
         </thead>
         <tbody>
         {% for r in runtimes %}
-          <tr data-runtime-row="{{ r.id }}" data-runtime-open="{{ r.detail_href }}">
+          <tr{% if !r.is_web %} data-runtime-row="{{ r.id }}" data-runtime-open="{{ r.detail_href }}"{% endif %}>
             <td>{{ r.kind_label }}</td>
             <td class="mono">{{ r.name }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
             <td>
@@ -54,22 +51,41 @@
             <td class="num">{{ r.site_count }}</td>
             <td><span class="mono runtime-endpoint" title="{{ r.endpoint_full }}">{{ r.endpoint_short }}</span></td>
             <td class="actions-col">
+              {% if r.is_web %}
+              {% if can_admin %}
+              <div class="runtime-inline-actions">
+                {% if r.container_exists %}
+                <button type="button" class="link-btn" data-web-action="start">启动</button>
+                <button type="button" class="link-btn" data-web-action="stop">停止</button>
+                <button type="button" class="link-btn" data-web-action="restart">重启</button>
+                <button type="button" class="link-btn" data-web-action="rebuild">重建</button>
+                <button type="button" class="link-btn danger" data-web-action="delete">删除</button>
+                {% else %}
+                <button type="button" class="link-btn" data-web-action="install">安装</button>
+                {% endif %}
+              </div>
+              {% endif %}
+              {% else %}
               <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">详情</button>
+              {% endif %}
             </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="hint">点整行或「详情」从右侧打开抽屉；启停/重建、安装日志与扩展管理都在抽屉里。安装中状态与进度会自动刷新。</p>
-    {% endif %}
+    <p class="hint">Web 服务行用行内按钮直接启停/重建/删除，不打开抽屉；语言运行环境点整行或「详情」从右侧打开抽屉，启停/重建、安装日志与扩展管理都在抽屉里。安装中状态与进度会自动刷新。</p>
   </section>
 
   {% if can_admin %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/install" data-web-action-form data-web-action-base="/{{ ctx.prefix }}/sites/env/web/action" hidden>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+  </form>
+
   <section class="panel">
     <details class="runtime-images">
       <summary>镜像参数（nginx / PHP 基础镜像标签）</summary>
-      <p class="muted">只影响重新拉取的容器。修改后需「重建基础环境」或重装对应实例才生效；镜像加速源与前缀在 Docker 设置里统一配置。</p>
+      <p class="muted">只影响重新拉取的容器。修改后需「重建 Web 服务」或重装对应实例才生效；镜像加速源与前缀在 Docker 设置里统一配置。</p>
       <form method="post" action="{{ images_href }}" class="form-grid">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
         <label>nginx 镜像
@@ -115,10 +131,10 @@
         <legend>常用扩展（安装阶段装入，安装后可在抽屉里增删）</legend>
         <div class="ext-options">
           {% for e in extensions %}
-          <label class="ext-option{% if !e.supported %} ext-option-off{% endif %}"{% if !e.supported %} title="{{ e.support_note }}"{% endif %}>
-            <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.default_on %} checked{% endif %}{% if !e.supported %} disabled{% endif %}>
+          <label class="ext-option">
+            <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.default_on %} checked{% endif %}>
             <span class="ext-name mono">{{ e.key }}{% if e.builtin %} <span class="tag">内置</span>{% endif %}</span>
-            <span class="hint">{% if e.supported %}{{ e.label }}{% else %}{{ e.support_note }}{% endif %}</span>
+            <span class="hint">{{ e.label }}{% if !e.estimated_time.is_empty() %} · {{ e.estimated_time }}{% endif %}</span>
           </label>
           {% endfor %}
         </div>
@@ -129,14 +145,6 @@
       <button type="button" class="btn ghost" data-runtime-new-close>取消</button>
       <button type="submit" class="btn primary">创建并后台安装</button>
     </div>
-  </form>
-  <form method="post" action="{{ base_install_href }}" class="runtime-base-install">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <div class="base-install-note">
-      <strong>基础环境（OpenResty + 默认 PHP 8.5）</strong>
-      <span class="hint">原「安装基础环境」入口从标题栏移到此处：重建会重装 nginx 容器与默认 PHP 实例，已有站点配置保留但会短暂中断。日常新建版本请用上方表单。</span>
-    </div>
-    <button type="submit" class="btn ghost">重建基础环境</button>
   </form>
 </dialog>
 <script type="application/json" data-runtime-catalog>{{ catalog_json|safe }}</script>
