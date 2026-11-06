@@ -98,6 +98,9 @@ pub fn plugin_uid(id: &str) -> u32 {
     200_000 + (n % 1000)
 }
 
+#[cfg(unix)]
+const SHARED_GROUP: &str = "skiff-plugins";
+
 /// 插件运行组 `skiff-plugins` 的 gid；组不存在时返回 `None`（开发机手跑的情形）。
 ///
 /// 插件的主 gid 是自己的独立 gid，**必须**把运行组作为附加组补上，否则：
@@ -107,13 +110,36 @@ pub fn plugin_uid(id: &str) -> u32 {
 /// 这一条只在真机（unix）上生效，Windows 开发机上永远走 `None` 分支。
 #[cfg(unix)]
 pub fn shared_gid() -> Option<u32> {
-    let name = std::ffi::CString::new("skiff-plugins").ok()?;
-    // SAFETY: name 是合法 C 字符串；getgrnam 返回静态区指针，只读访问 gid。
-    let gr = unsafe { libc::getgrnam(name.as_ptr()) };
-    if gr.is_null() {
-        return None;
+    let name = std::ffi::CString::new(SHARED_GROUP).ok()?;
+    // 不能用 getgrnam：它返回进程级静态区（musl 下是无锁的 static char*/group，
+    // 每次调用 free 重用同一个指针）。并发 spawn 会让两个线程对同一指针双重 free，
+    // 直接打坏 mallocng 元数据 → 内核进程 SIGSEGV/SIGBUS（2026-11-06 测试机多次崩溃）。
+    // getgrnam_r 结果全落调用方缓冲区，才是可重入的。
+    let mut buf = vec![0u8; 1024];
+    loop {
+        let mut gr: libc::group = unsafe { std::mem::zeroed() };
+        let mut out: *mut libc::group = std::ptr::null_mut();
+        // SAFETY: name 是合法 C 字符串；gr/buf 都是本线程独占的有效内存，
+        // getgrnam_r 只会写入这两块区域，失败时 out 保持 null。
+        let rc = unsafe {
+            libc::getgrnam_r(
+                name.as_ptr(),
+                &mut gr,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
+                buf.len(),
+                &mut out,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < 64 * 1024 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || out.is_null() {
+            return None;
+        }
+        // SAFETY: out 指向上面的 gr，成功时 gr_gid 已由 getgrnam_r 填好。
+        return Some(unsafe { (*out).gr_gid });
     }
-    Some(unsafe { (*gr).gr_gid })
 }
 
 #[cfg(not(unix))]
@@ -430,6 +456,26 @@ mod tests {
         assert!(!version_gt("0.1.0", "0.1.0"));
         assert!(!version_gt("0.0.9", "0.1.0"));
         assert!(version_gt("1.0.0-beta.2", "0.9.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_gid_is_safe_under_concurrency() {
+        // 并发 spawn 会多线程同时取插件组 gid；旧实现用 getgrnam（musl 下共享静态
+        // 缓冲区且无锁，并发调用会 double free 打坏堆元数据并打死内核进程）。
+        let expect = shared_gid();
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        assert_eq!(shared_gid(), expect);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
     }
 
     #[test]
