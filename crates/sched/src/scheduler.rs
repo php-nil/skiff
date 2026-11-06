@@ -433,6 +433,11 @@ impl<S: TaskStore> Scheduler<S> {
     }
 
     pub fn delete(&mut self, id: &str, now: i64) -> Result<(), TaskError> {
+        // `builtin:` 由内核种入（如 db-vacuum / site-backup），删掉只会让能力缺席，
+        // 重启才由 seed_builtins 重建。UI 隐藏按钮不是安全边界，删除入口必须自己拒。
+        if id.starts_with("builtin:") {
+            return Err(TaskError::BuiltinProtected(id.to_string()));
+        }
         let task = self
             .store
             .delete_task(id)?

@@ -918,6 +918,8 @@ impl TaskService {
                     return Err("缺少 scheduler:manage".into());
                 }
                 let id = require_id(&params)?;
+                // 内置任务先于归属校验拒绝：不论调用方是谁，都不能删内核种入的任务。
+                ensure_not_builtin(&id)?;
                 if !admin {
                     self.ensure_owned(caller, &id).await?;
                 }
@@ -1432,6 +1434,15 @@ fn run_view(r: &RunRecord) -> Value {
     })
 }
 
+/// 内置任务（`builtin:`）删除保护。服务层与插件能力面共用同一口径：
+/// 允许停用/立即执行，不允许删除（由内核 seed 重建，删了等于能力缺席）。
+fn ensure_not_builtin(id: &str) -> Result<(), String> {
+    if id.starts_with("builtin:") {
+        return Err("内置任务不可删除（只能停用）".to_string());
+    }
+    Ok(())
+}
+
 fn require_id(params: &Value) -> Result<String, String> {
     params
         .get("id")
@@ -1694,5 +1705,91 @@ mod tests {
             Some(TaskState::Blocked)
         );
         assert!(sched.history("plugin:com.skiff.none:sample", 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn builtin_task_delete_is_rejected_but_disable_and_run_are_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let ui = "com.skiff.cron";
+        svc.db_handle()
+            .upsert_plugin(&PluginRecord {
+                id: ui.into(),
+                name: "cron".into(),
+                version: "0.1.0".into(),
+                api: KERNEL_API.into(),
+                key_id: "0".into(),
+                manifest: String::new(),
+                enabled: true,
+                status: "enabled".into(),
+                status_detail: String::new(),
+                active_version: "0.1.0".into(),
+                installed_at: 0,
+                grants: vec![
+                    Grant::perm("scheduler:read"),
+                    Grant::perm("scheduler:manage"),
+                    Grant::perm("scheduler:run"),
+                    Grant::perm("scheduler:admin"),
+                ],
+            })
+            .unwrap();
+
+        // 服务层（Web 删除入口）：拒绝且行仍在。
+        let err = svc.delete_task(DB_VACUUM_TASK_ID).await.unwrap_err();
+        assert!(err.contains("内置任务不可删除"), "{err}");
+        assert!(svc
+            .db_handle()
+            .scheduled_task(DB_VACUUM_TASK_ID)
+            .unwrap()
+            .is_some());
+
+        // 插件能力面（含 scheduler:admin 的 UI 也不能删）。
+        let err = svc
+            .capability(ui, "task.delete", json!({ "id": DB_VACUUM_TASK_ID }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("内置任务不可删除"), "{err}");
+        assert!(svc
+            .db_handle()
+            .scheduled_task(DB_VACUUM_TASK_ID)
+            .unwrap()
+            .is_some());
+
+        // 普通任务仍可删。
+        svc.capability(
+            ui,
+            "task.register",
+            json!({
+                "target": "com.skiff.testkit",
+                "local_key": "probe",
+                "method": "probe",
+                "expr": "0 5 * * *",
+                "payload": {},
+            }),
+        )
+        .await
+        .unwrap();
+        let normal = format!("plugin:{ui}:probe");
+        svc.capability(ui, "task.delete", json!({ "id": normal }))
+            .await
+            .unwrap();
+        assert!(svc.db_handle().scheduled_task(&normal).unwrap().is_none());
+
+        // 内置任务可停用/启用（结论：可停用）。
+        let off = svc
+            .set_enabled_task(DB_VACUUM_TASK_ID, false)
+            .await
+            .unwrap();
+        assert_eq!(off["enabled"], false);
+        let on = svc.set_enabled_task(DB_VACUUM_TASK_ID, true).await.unwrap();
+        assert_eq!(on["enabled"], true);
+
+        // 内置任务可立即执行（结论：可 run-now）。
+        let run = svc
+            .run_task_now(DB_VACUUM_TASK_ID, AuditActor::Admin("admin".into()))
+            .await
+            .unwrap();
+        assert_eq!(run["trigger"], "manual");
+        assert_eq!(run["result"], "ok");
     }
 }

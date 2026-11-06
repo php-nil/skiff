@@ -25,6 +25,8 @@ pub enum TaskError {
     InvalidRetry(String),
     #[error("缓冲配置非法：{0}")]
     InvalidBuffer(String),
+    #[error("内置任务不可删除（只能停用）：{0}")]
+    BuiltinProtected(String),
     #[error("任务不存在：{0}")]
     NotFound(String),
     #[error("任务 id 已被占用：{0}")]
