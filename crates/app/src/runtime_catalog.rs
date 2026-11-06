@@ -716,6 +716,24 @@ pub fn extension_block_reason(
     }
 }
 
+/// 建环境时预选扩展的二次校验：与抽屉安装共用同一份版本/基座矩阵。
+/// 返回 `Err((code, reason))` 时直接拒绝创建，避免绕过 UI 灰显塞入不可用扩展。
+pub fn validate_selection(
+    version: &str,
+    image: &str,
+    exts: &[String],
+) -> Result<(), (&'static str, String)> {
+    let base = base_image_of(image);
+    for token in exts {
+        if let Some(def) = php_extension(token) {
+            if let Some((code, reason)) = extension_block_reason(def, version, base) {
+                return Err((code, reason));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// PECL/编译失败输出 → 错误码。只识别「包/版本不存在、下载失败、与 PHP 不兼容」，
 /// 其余失败保留原始报错，不做过度归类。
 pub fn pecl_failure_code(output: &str) -> Option<&'static str> {
@@ -1196,6 +1214,22 @@ mod tests {
                 assert_eq!(extensions_for(v, b).len(), PHP_EXTENSIONS.len());
             }
         }
+    }
+
+    #[test]
+    fn selection_validation_rejects_unsupported_extensions() {
+        // 建环境表单可被直接构造 POST 绕过 UI 灰显，后端必须按同一矩阵拒绝。
+        let sel = |v: &str, keys: &[&str]| {
+            let exts: Vec<String> = keys.iter().map(|s| s.to_string()).collect();
+            validate_selection(v, &format!("php:{v}-fpm-alpine"), &exts)
+                .err()
+                .map(|(code, _)| code)
+        };
+        assert_eq!(sel("8.4", &["imap"]), Some("EXT_NOT_IN_VERSION"));
+        assert_eq!(sel("8.4", &["pspell"]), Some("EXT_NOT_IN_VERSION"));
+        assert_eq!(sel("8.5", &["imap"]), Some("EXT_NOT_IN_VERSION"));
+        assert!(sel("8.3", &["imap", "pspell"]).is_none());
+        assert!(sel("8.5", &["gd", "redis"]).is_none());
     }
 
     #[test]
