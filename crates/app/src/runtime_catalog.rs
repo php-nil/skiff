@@ -134,6 +134,8 @@ pub struct PhpExtensionDef {
     pub description: &'static str,
     /// 编译前需要临时安装的 apk 包（装完 `apk del` 清理）。
     pub deps: &'static [&'static str],
+    /// 编译依赖被清理后仍需保留的运行库：显式安装，避免 `.so` 加载时缺库。
+    pub runtime_deps: &'static [&'static str],
     /// PECL 包名；源码内置扩展为 None。
     pub pecl_package: Option<&'static str>,
     /// `docker-php-ext-configure` 的参数（如 `gd --with-freetype --with-jpeg`）。
@@ -153,6 +155,13 @@ impl PhpExtensionDef {
     fn legacy_install_script(&self) -> String {
         let mut out = String::new();
         let mut clean = false;
+        // 运行库必须显式安装：`apk del .skiff-build` 会把作为虚拟包依赖装进来的
+        // 运行库一起带走，导致 .so 编译成功但启动时缺库（gd 实测 libpng16.so.16 丢失）。
+        if !self.runtime_deps.is_empty() {
+            out.push_str("apk add --no-cache ");
+            out.push_str(&self.runtime_deps.join(" "));
+            out.push_str(" && ");
+        }
         if !self.deps.is_empty() {
             out.push_str("apk add --no-cache --virtual .skiff-build ");
             out.push_str(&self.deps.join(" "));
@@ -231,6 +240,7 @@ const fn builtin(
         default_on,
         description,
         deps: &[],
+        runtime_deps: &[],
         pecl_package: None,
         configure: None,
         hot: false,
@@ -256,6 +266,7 @@ const fn build(
         default_on,
         description,
         deps: &[],
+        runtime_deps: &[],
         pecl_package: None,
         configure: None,
         hot: true,
@@ -282,6 +293,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     build("mysqli", "MySQLi", CATEGORY_DB, false, "MySQL 原生扩展"),
     PhpExtensionDef {
         deps: &["postgresql-dev"],
+        runtime_deps: &["libpq"],
         ..build(
             "pdo_pgsql",
             "PDO PostgreSQL",
@@ -292,6 +304,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     },
     PhpExtensionDef {
         deps: &["postgresql-dev"],
+        runtime_deps: &["libpq"],
         ..build(
             "pgsql",
             "PostgreSQL",
@@ -325,6 +338,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     },
     PhpExtensionDef {
         deps: &["unixodbc-dev"],
+        runtime_deps: &["unixodbc"],
         ..build(
             "pdo_odbc",
             "PDO ODBC",
@@ -356,6 +370,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     // ---- 图片 ----
     PhpExtensionDef {
         deps: &["libpng-dev", "libjpeg-turbo-dev", "freetype-dev"],
+        runtime_deps: &["libpng", "libjpeg-turbo", "freetype"],
         configure: Some("gd --with-freetype --with-jpeg"),
         ..build(
             "gd",
@@ -381,6 +396,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
             "pkgconf",
             "re2c",
         ],
+        runtime_deps: &["imagemagick-libs"],
         pecl_package: Some("imagick"),
         ..build(
             "imagick",
@@ -411,6 +427,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     },
     PhpExtensionDef {
         deps: &["gmp-dev"],
+        runtime_deps: &["gmp"],
         ..build("gmp", "GMP", CATEGORY_CRYPTO, false, "任意精度整数（GMP）")
     },
     build(
@@ -478,10 +495,12 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     build("bcmath", "BCMath", CATEGORY_OTHER, false, "任意精度数学"),
     PhpExtensionDef {
         deps: &["libzip-dev"],
+        runtime_deps: &["libzip"],
         ..build("zip", "Zip", CATEGORY_OTHER, false, "压缩包读写（libzip）")
     },
     PhpExtensionDef {
         deps: &["icu-dev"],
+        runtime_deps: &["icu-libs"],
         ..build("intl", "Intl", CATEGORY_OTHER, false, "国际化（ICU）")
     },
     PhpExtensionDef {
@@ -514,6 +533,7 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     build("gettext", "Gettext", CATEGORY_OTHER, false, "本地化翻译"),
     PhpExtensionDef {
         deps: &["bzip2-dev"],
+        runtime_deps: &["libbz2"],
         ..build("bz2", "Bzip2", CATEGORY_OTHER, false, "bzip2 压缩")
     },
     build("calendar", "Calendar", CATEGORY_OTHER, false, "日历换算"),
@@ -555,18 +575,22 @@ pub const PHP_EXTENSIONS: &[PhpExtensionDef] = &[
     build("xmlwriter", "XMLWriter", CATEGORY_OTHER, false, "XMLWriter"),
     PhpExtensionDef {
         deps: &["libxslt-dev"],
+        runtime_deps: &["libxslt"],
         ..build("xsl", "XSL", CATEGORY_OTHER, false, "XSLT 转换（libxslt）")
     },
     PhpExtensionDef {
         deps: &["openldap-dev"],
+        runtime_deps: &["libldap"],
         ..build("ldap", "LDAP", CATEGORY_OTHER, false, "LDAP 目录服务")
     },
     PhpExtensionDef {
         deps: &["net-snmp-dev"],
+        runtime_deps: &["net-snmp-libs"],
         ..build("snmp", "SNMP", CATEGORY_OTHER, false, "SNMP 监控")
     },
     PhpExtensionDef {
         deps: &["tidyhtml-dev"],
+        runtime_deps: &["tidyhtml-libs"],
         ..build("tidy", "Tidy", CATEGORY_OTHER, false, "HTML 清理与修复")
     },
     PhpExtensionDef {
@@ -991,6 +1015,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn runtime_libs_are_installed_explicitly_before_cleanup() {
+        // 实测：gd 编译成功但 `.so` 启动时报 libpng16.so.16 缺失——`apk del .skiff-build`
+        // 把作为虚拟包依赖装进来的运行库一起删了。运行库必须显式安装且排在编译依赖之前。
+        for e in PHP_EXTENSIONS.iter().filter(|e| !e.runtime_deps.is_empty()) {
+            let script = e.install_script();
+            let head = format!("apk add --no-cache {} &&", e.runtime_deps.join(" "));
+            assert!(script.contains(&head), "{}：运行库未显式安装", e.key);
+            let head_at = script.find(&head).expect("head");
+            let build_at = script
+                .find("--virtual .skiff-build")
+                .unwrap_or_else(|| panic!("{}：缺编译依赖段", e.key));
+            assert!(
+                head_at < build_at,
+                "{}：运行库必须先于编译依赖显式安装，否则会被一并清理",
+                e.key
+            );
+        }
+        let gd = extension_install_script("gd").expect("gd");
+        assert!(gd.contains("apk add --no-cache libpng libjpeg-turbo freetype &&"));
+        assert!(gd.contains("apk del .skiff-build"));
     }
 
     #[test]
