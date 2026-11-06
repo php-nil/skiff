@@ -32,7 +32,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 10;
+pub const CURRENT_SCHEMA_VERSION: i64 = 11;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -149,6 +149,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V10)?;
             conn.execute_batch("PRAGMA user_version = 10")?;
             info!(from = version, to = 10, "schema 迁移完成");
+        }
+        if version < 11 {
+            conn.execute_batch(SCHEMA_V11)?;
+            conn.execute_batch("PRAGMA user_version = 11")?;
+            info!(from = version, to = 11, "schema 迁移完成");
         }
         Ok(())
     }
@@ -517,6 +522,45 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_task
   ON task_runs(task_id, finished_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_runs_finished
   ON task_runs(finished_at DESC);
+"#;
+
+/// v11：运行环境新增 Rust 类型与固定端口列。
+///
+/// Rust 不像 PHP-FPM 有 unix socket：每个环境固定一个 host 网络端口
+/// （`port`），站点 vhost 反代到它。kind 的 CHECK 约束必须整表重建才能扩到
+/// `rust`，顺手补上 `port` 与既有 `extensions` 列。
+const SCHEMA_V11: &str = r#"
+PRAGMA foreign_keys=OFF;
+CREATE TABLE site_runtimes_v11 (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK(kind IN ('php','node','go','rust')),
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  image TEXT NOT NULL,
+  image_digest TEXT NOT NULL DEFAULT '',
+  desired_state TEXT NOT NULL DEFAULT 'running'
+    CHECK(desired_state IN ('running','stopped')),
+  last_status TEXT NOT NULL DEFAULT 'stopped'
+    CHECK(last_status IN ('installing','running','stopped','error')),
+  socket_path TEXT,
+  port INTEGER,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  extensions TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(kind, name)
+);
+INSERT INTO site_runtimes_v11(id, kind, name, version, image, image_digest, desired_state,
+  last_status, socket_path, port, is_default, config_json, extensions, created_at, updated_at)
+SELECT id, kind, name, version, image, image_digest, desired_state, last_status,
+  socket_path, NULL, is_default, config_json, extensions, created_at, updated_at
+FROM site_runtimes;
+DROP TABLE site_runtimes;
+ALTER TABLE site_runtimes_v11 RENAME TO site_runtimes;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_default
+  ON site_runtimes(kind) WHERE is_default = 1;
+PRAGMA foreign_keys=ON;
 "#;
 
 #[cfg(test)]

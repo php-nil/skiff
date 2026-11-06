@@ -1723,8 +1723,8 @@ dialog.drawer {
   position: fixed;
   inset: 0 0 0 auto;
   margin: 0;
-  width: min(560px, 100vw);
-  max-width: 560px;
+  width: min(840px, 92vw);
+  max-width: 840px;
   height: 100%;
   max-height: 100%;
   padding: 0;
@@ -1991,8 +1991,89 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-runtimes .base-install-note { display: flex; flex-direction: column; gap: 2px; }
 .page-runtimes .runtime-images summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; }
 .page-runtimes .runtime-images[open] summary { margin-bottom: var(--sp-2); }
+
+/* ---- 运行环境详情抽屉：加宽 + 页签 / 版本卡 / 扩展清单 ---- */
+.runtime-detail .workbench-tabs { top: 0; }
+body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
+.runtime-detail .runtime-tab-panel { margin-bottom: var(--sp-4); }
+.page-runtimes .runtime-version-main { display: block; font-weight: 600; }
+.page-runtimes .runtime-version-note { display: block; margin-top: 2px; font-size: 11px; white-space: nowrap; }
+.runtime-version-card {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.runtime-version-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.runtime-version-value { font-size: 22px; line-height: 1.2; }
+.runtime-version-kv { margin-bottom: var(--sp-3); }
+.runtime-version-kv > div { align-items: baseline; }
+.runtime-version-kv .mono { word-break: break-all; }
+.runtime-probe { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.runtime-subhead { margin-top: var(--sp-4); }
+.runtime-danger-zone {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.runtime-danger-zone h3 { margin: 0 0 var(--sp-2); color: var(--danger); }
+
+.ext-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.ext-search { flex: 1 1 220px; min-width: 160px; }
+.ext-cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.ext-cats .chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ext-cats .chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft, var(--surface)); }
+.ext-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.ext-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.ext-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ext-main .hint { word-break: break-word; }
+.ext-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.ext-state { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.ext-item[hidden] { display: none; }
+.ext-item-off { opacity: 0.62; }
+.ext-item-off .ext-state { cursor: not-allowed; }
+.ext-note.danger { color: var(--danger, #c0392b); }
+.page-runtimes .ext-option-off { opacity: 0.6; }
+.page-runtimes .ext-option-off input[type="checkbox"] { cursor: not-allowed; }
+.ext-list-empty { margin-top: var(--sp-3); }
+.pecl-block { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+.pecl-form { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--sp-2); }
+.pecl-form label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; min-width: 160px; }
+.runtime-logs-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.runtime-run-log { max-height: 340px; overflow: auto; white-space: pre-wrap; }
+.runtime-site-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); white-space: nowrap; }
+@media (min-width: 980px) {
+  .runtime-version-card { grid-template-columns: 1fr 1fr; }
+  .ext-list { grid-template-columns: 1fr 1fr; }
+}
 @media (max-width: 760px) {
   .page-runtimes .runtime-form-grid { grid-template-columns: 1fr; }
   .page-runtimes .ext-options { grid-template-columns: 1fr; }
   .page-runtimes .runtime-base-install { flex-direction: column; align-items: stretch; }
+  .ext-toolbar { align-items: stretch; }
 }

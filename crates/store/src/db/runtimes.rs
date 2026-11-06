@@ -13,12 +13,14 @@ use rusqlite::{params, OptionalExtension, Row};
 pub const KIND_PHP: &str = "php";
 pub const KIND_NODE: &str = "node";
 pub const KIND_GO: &str = "go";
+pub const KIND_RUST: &str = "rust";
 
 pub fn validate_kind(kind: &str) -> Result<&'static str> {
     match kind {
         KIND_PHP => Ok(KIND_PHP),
         KIND_NODE => Ok(KIND_NODE),
         KIND_GO => Ok(KIND_GO),
+        KIND_RUST => Ok(KIND_RUST),
         other => Err(StoreError::Conflict(format!("未知运行环境类型：{other}"))),
     }
 }
@@ -68,6 +70,8 @@ pub struct Runtime {
     pub last_status: String,
     /// 仅 PHP：FPM socket 的宿主绝对路径；vhost 由它换算容器路径，禁止硬编码。
     pub socket_path: Option<String>,
+    /// 仅 Rust：环境固定监听端口（host 网络）；站点 vhost 反代到它。
+    pub port: Option<u16>,
     /// 同一 kind 内最多一个默认版本。
     pub is_default: bool,
     /// 专属配置的规范化 JSON 快照（PHP ini / FPM）。
@@ -87,6 +91,8 @@ pub struct NewRuntime {
     pub image: String,
     pub image_digest: String,
     pub socket_path: Option<String>,
+    /// 仅 Rust：固定监听端口。
+    pub port: Option<u16>,
     pub is_default: bool,
 }
 
@@ -101,17 +107,18 @@ fn row_to_runtime(r: &Row<'_>) -> rusqlite::Result<Runtime> {
         desired_state: r.get(6)?,
         last_status: r.get(7)?,
         socket_path: r.get(8)?,
-        is_default: r.get::<_, i64>(9)? != 0,
-        config_json: r.get(10)?,
-        extensions: r.get(11)?,
-        created_at: r.get(12)?,
-        updated_at: r.get(13)?,
+        port: r.get(9)?,
+        is_default: r.get::<_, i64>(10)? != 0,
+        config_json: r.get(11)?,
+        extensions: r.get(12)?,
+        created_at: r.get(13)?,
+        updated_at: r.get(14)?,
     })
 }
 
 const RUNTIME_COLS: &str = "id, kind, name, version, image, image_digest, desired_state, \
-                            last_status, socket_path, is_default, config_json, extensions, \
-                            created_at, updated_at";
+                            last_status, socket_path, port, is_default, config_json, \
+                            extensions, created_at, updated_at";
 
 impl Db {
     pub fn create_runtime(&self, r: &NewRuntime) -> Result<Runtime> {
@@ -125,9 +132,9 @@ impl Db {
         let ts = now();
         conn.execute(
             "INSERT INTO site_runtimes(id, kind, name, version, image, image_digest,
-                                       desired_state, last_status, socket_path, is_default,
+                                       desired_state, last_status, socket_path, port, is_default,
                                        config_json, extensions, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, '{}', '', ?9, ?9)",
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, ?9, '{}', '', ?10, ?10)",
             params![
                 id,
                 kind,
@@ -136,6 +143,7 @@ impl Db {
                 r.image,
                 r.image_digest,
                 r.socket_path,
+                r.port.map(i64::from),
                 i64::from(r.is_default),
                 ts
             ],
@@ -332,6 +340,7 @@ mod tests {
             image: "php:8.5-fpm-alpine".into(),
             image_digest: "sha256:demo".into(),
             socket_path: Some(format!("/www/runtime/php/{id}/php-fpm.sock")),
+            port: None,
             is_default: default,
         }
     }
@@ -396,6 +405,7 @@ mod tests {
             image: "node:22".into(),
             image_digest: String::new(),
             socket_path: None,
+            port: None,
             is_default: false,
         };
         db.create_runtime(&node).unwrap();

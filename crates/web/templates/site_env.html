@@ -4,7 +4,7 @@
 <div class="page-runtimes" data-runtime-jobs-url="{{ jobs_href }}">
   <div class="page-head">
     <h1>运行环境</h1>
-    <span class="sub">PHP-FPM 独立实例 · 独立目录与 socket · 安装/扩展异步执行</span>
+    <span class="sub">PHP-FPM / Rust 独立实例 · 独立目录与接入方式 · 安装 / 扩展异步执行</span>
   </div>
   {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
   {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
@@ -41,7 +41,10 @@
           <tr data-runtime-row="{{ r.id }}" data-runtime-open="{{ r.detail_href }}">
             <td>{{ r.kind_label }}</td>
             <td class="mono">{{ r.name }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
-            <td class="mono">{{ r.version }}</td>
+            <td>
+              <span class="mono runtime-version-main" data-runtime-version-text>{{ r.version_display }}</span>
+              <span class="hint runtime-version-note" data-runtime-version-note>{{ r.version_note }}</span>
+            </td>
             <td data-runtime-state>
               <span class="tag{% if r.state_class == "ok" %} ok{% else if r.state_class == "warn" %} warn-tag{% else if r.state_class == "danger" %} danger-tag{% endif %}" data-runtime-state-label>{{ r.state_label }}</span>
               <span class="runtime-progress" data-runtime-progress{% if !r.job_active %} hidden{% endif %}><span style="width: {{ r.job_progress }}%"></span></span>
@@ -112,10 +115,10 @@
         <legend>常用扩展（安装阶段装入，安装后可在抽屉里增删）</legend>
         <div class="ext-options">
           {% for e in extensions %}
-          <label class="ext-option">
-            <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.default_on %} checked{% endif %}>
+          <label class="ext-option{% if !e.supported %} ext-option-off{% endif %}"{% if !e.supported %} title="{{ e.support_note }}"{% endif %}>
+            <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.default_on %} checked{% endif %}{% if !e.supported %} disabled{% endif %}>
             <span class="ext-name mono">{{ e.key }}{% if e.builtin %} <span class="tag">内置</span>{% endif %}</span>
-            <span class="hint">{{ e.label }}</span>
+            <span class="hint">{% if e.supported %}{{ e.label }}{% else %}{{ e.support_note }}{% endif %}</span>
           </label>
           {% endfor %}
         </div>

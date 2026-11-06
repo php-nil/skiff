@@ -181,6 +181,20 @@ impl Db {
         Ok(())
     }
 
+    /// 解绑运行环境：站点转为静态并置为 stopped（vhost 由调用方先停用）。
+    pub fn set_site_static_unbound(&self, domain: &str) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE sites SET site_type = 'static', runtime_id = NULL, status = 'stopped', \
+             updated_at = ?2 WHERE domain = ?1",
+            params![domain, now()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(domain.to_string()));
+        }
+        Ok(())
+    }
+
     /// 更新 HTTPS 开关；`force_https` 只允许在启用时置 1（无证书时强制跳转必然 502）。
     pub fn set_site_tls(&self, domain: &str, https: bool, force_https: bool) -> Result<()> {
         let conn = self.conn();

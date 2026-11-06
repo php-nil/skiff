@@ -22,7 +22,7 @@
 //! 只走 unix socket，不暴露 9000。容器内路径一律由
 //! [`SiteSettings::container_path`] 从宿主路径换算，禁止手拼。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -417,6 +417,8 @@ pub struct RuntimeJob {
     pub runtime_id: String,
     /// install / extensions
     pub kind: String,
+    /// 单个扩展任务时的扩展 token（`gd` / `pecl:swoole@5.1.2`）；整批任务为空。
+    pub ext_key: String,
     pub state: RuntimeJobState,
     /// 当前阶段（排队 / 拉镜像 / 创建容器 / 启动 / 安装扩展 / …）。
     pub step: String,
@@ -433,6 +435,7 @@ impl RuntimeJob {
         let mut job = Self {
             runtime_id: runtime_id.to_string(),
             kind: kind.to_string(),
+            ext_key: String::new(),
             state: RuntimeJobState::Queued,
             step: "排队".into(),
             progress: 0,
@@ -516,6 +519,15 @@ impl RuntimeJobs {
             ));
         }
         self.jobs.insert(id.to_string(), RuntimeJob::new(id, kind));
+        Ok(())
+    }
+
+    fn begin_ext(&mut self, id: &str, ext_key: &str) -> Result<(), SiteError> {
+        self.begin(id, "extensions")?;
+        if let Some(job) = self.jobs.get_mut(id) {
+            job.ext_key = ext_key.to_string();
+            job.note(&format!("目标扩展：{ext_key}"));
+        }
         Ok(())
     }
 
@@ -819,8 +831,10 @@ pub struct VhostTls {
 pub enum VhostKind<'a> {
     /// 静态站：只读文档根，不接 PHP。
     Static { root: &'a str },
-    /// 运行环境站（P1 仅 PHP）：fastcgi 指向运行环境登记的 socket。
+    /// 运行环境站（PHP）：fastcgi 指向运行环境登记的 socket。
     Php { root: &'a str, socket: &'a str },
+    /// 运行环境站（Rust）：独立进程监听固定端口，vhost 反代过去。
+    Process { root: &'a str, port: u16 },
     /// 反向代理：不落文档根，只转发到上游。
     Proxy { target: &'a str, websocket: bool },
 }
@@ -882,6 +896,20 @@ fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, erro
             ));
             out.push_str(&format!("        fastcgi_pass unix:{socket};\n"));
             out.push_str("        fastcgi_index index.php;\n    }\n");
+        }
+        VhostKind::Process { root, port } => {
+            // Rust 进程自带内容与路由：文档根只作兜底静态资源，主路径反代到端口。
+            out.push_str(&format!("    root {root};\n"));
+            out.push_str("    location / {\n");
+            out.push_str(&format!("        proxy_pass http://127.0.0.1:{port};\n"));
+            out.push_str("        proxy_http_version 1.1;\n");
+            out.push_str("        proxy_set_header Host $host;\n");
+            out.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
+            out.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
+            out.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
+            out.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
+            out.push_str("        proxy_set_header Connection \"upgrade\";\n");
+            out.push_str("        proxy_read_timeout 3600s;\n    }\n");
         }
         VhostKind::Proxy { target, websocket } => {
             out.push_str("    location / {\n");
@@ -1110,6 +1138,30 @@ fn parse_size_mb(raw: &str) -> Result<u64, SiteError> {
     Ok(mb)
 }
 
+/// 镜像版本缓存查询结果。
+pub(crate) enum ImageVersionHit {
+    /// 正缓存命中：image_id 不可变，值不需要 TTL。
+    Known(String),
+    /// 正缓存的「读不到」或负缓存仍在有效期内：本轮不再 inspect。
+    Suppressed,
+    /// 未命中或负缓存过期：需要 inspect。
+    Miss,
+}
+
+/// 进程内镜像版本缓存查询（纯函数，便于单测）。
+pub(crate) fn image_version_lookup(
+    cache: &HashMap<String, (Option<String>, std::time::Instant)>,
+    image_id: &str,
+    now: std::time::Instant,
+) -> ImageVersionHit {
+    const NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+    match cache.get(image_id) {
+        Some((Some(v), _)) => ImageVersionHit::Known(v.clone()),
+        Some((None, at)) if now.duration_since(*at) < NEGATIVE_TTL => ImageVersionHit::Suppressed,
+        _ => ImageVersionHit::Miss,
+    }
+}
+
 impl AppState {
     /// 把默认 PHP 运行环境校准到库：补 socket 宿主路径与镜像。
     pub fn ensure_php_runtime(&self) -> Result<Runtime, SiteError> {
@@ -1128,6 +1180,7 @@ impl AppState {
                         .display()
                         .to_string(),
                 ),
+                port: None,
                 is_default: true,
             })
             .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))
@@ -1159,6 +1212,7 @@ impl AppState {
                             .display()
                             .to_string(),
                     ),
+                    port: None,
                     is_default: idx == 0,
                 })
                 .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))?;
@@ -1182,16 +1236,25 @@ impl AppState {
         };
         let jobs = self.runtime_jobs.lock().await.list();
         let mut out = Vec::new();
+        // image_id → 待 inspect 的视图下标（同一镜像多实例只 inspect 一次）。
+        let mut pending_images: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
         for rt in runtimes {
-            let implemented = rt.kind == skiff_store::KIND_PHP;
+            let implemented = runtime_catalog::is_implemented(&rt.kind);
             let container_name = if implemented {
                 runtime_container_name(&rt.kind, &rt.name)
             } else {
                 format!("skiff-runtime-{}", rt.id)
             };
-            let container_state = rows
-                .iter()
-                .find(|c| c.name == container_name)
+            let container_row = rows.iter().find(|c| c.name == container_name);
+            let container_exists = container_row.is_some();
+            let image_id = container_row
+                .map(|c| c.image_id.clone())
+                .unwrap_or_default();
+            let container_image = container_row.map(|c| c.image.clone()).unwrap_or_default();
+            let image_mismatch =
+                container_exists && !container_image.is_empty() && container_image != rt.image;
+            let container_state = container_row
                 .map(|c| {
                     if c.state.is_empty() {
                         "unknown".to_string()
@@ -1246,7 +1309,27 @@ impl AppState {
                     .db()
                     .set_runtime_status(&rt.id, &rt.desired_state, &cached);
             }
+            // 真实版本来自镜像元数据（image_id 不可变），与容器是否运行无关：
+            // 停止但容器仍在时照样显示真实版本。全程不进容器执行进程。
+            let actual_version =
+                if !image_id.is_empty() && runtime_catalog::version_env_key(&rt.kind).is_some() {
+                    let cache = self.image_versions.lock().await;
+                    match image_version_lookup(&cache, &image_id, std::time::Instant::now()) {
+                        ImageVersionHit::Known(v) => Some(v),
+                        ImageVersionHit::Suppressed => None,
+                        ImageVersionHit::Miss => {
+                            pending_images
+                                .entry(image_id.clone())
+                                .or_default()
+                                .push(out.len());
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
             let extensions = runtime_catalog::split_extensions(&rt.extensions);
+            let image_digest = rt.image_digest.clone();
             out.push(RuntimeView {
                 runtime: rt,
                 implemented,
@@ -1259,9 +1342,40 @@ impl AppState {
                 socket_container,
                 socket_exists,
                 socket_mode,
+                actual_version,
+                image_id,
+                image_mismatch,
+                image_digest,
+                container_exists,
                 extensions,
                 job,
             });
+        }
+
+        // 未命中时每个 image_id 只 inspect 一次；失败写入 60 秒负缓存，不阻塞后续渲染。
+        for (image_id, indices) in pending_images {
+            let version = self
+                .docker()
+                .inspect_image(&image_id)
+                .await
+                .ok()
+                .and_then(|info| {
+                    let kind = out
+                        .get(indices[0])
+                        .map(|v| v.runtime.kind.as_str())
+                        .unwrap_or_default();
+                    let key = runtime_catalog::version_env_key(kind)?;
+                    info.env_value(key)
+                });
+            self.image_versions.lock().await.insert(
+                image_id.clone(),
+                (version.clone(), std::time::Instant::now()),
+            );
+            for idx in indices {
+                if let Some(view) = out.get_mut(idx) {
+                    view.actual_version = version.clone();
+                }
+            }
         }
         Ok(out)
     }
@@ -1304,7 +1418,7 @@ impl AppState {
             .runtime_by_id(id)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
-        if rt.kind != skiff_store::KIND_PHP {
+        if !runtime_catalog::is_implemented(&rt.kind) {
             return Err(SiteError::Unavailable(format!(
                 "{} 运行环境将在 P2 接入，P1 不提供安装/启停/重建",
                 rt.kind
@@ -1432,6 +1546,7 @@ impl AppState {
             Ok(()) => {
                 self.job_finish_ok(id, "安装完成，运行环境已就绪").await;
                 let _ = self.db().set_runtime_status(id, "running", "running");
+                // 新容器可能换了 id；清一次缓存，让下一次渲染重新读取真实版本。
             }
             Err(err) => {
                 self.job_finish_err(id, &err).await;
@@ -1463,6 +1578,9 @@ impl AppState {
             ));
         }
         let s = self.site_settings();
+        if rt.kind == skiff_store::KIND_RUST {
+            return self.install_rust_runtime_task(id, &rt, &s).await;
+        }
         let cfg = PhpRuntimeConfig::from_json(&rt.config_json);
         cfg.validate().map_err(|e| e.to_string())?;
 
@@ -1500,7 +1618,15 @@ impl AppState {
             )
             .await
             .map_err(|e| format!("拉取 {image} 失败：{e}"))?;
-        self.job_note(id, &format!("镜像 {image} 已就绪")).await;
+        let image_digest = self
+            .docker()
+            .inspect_image(&image)
+            .await
+            .ok()
+            .and_then(|i| i.primary_digest())
+            .unwrap_or_default();
+        self.job_note(id, &format!("镜像 {image} 已就绪（digest {image_digest}）"))
+            .await;
 
         let container = runtime_container_name(&rt.kind, &rt.name);
         self.job_advance(
@@ -1561,8 +1687,123 @@ impl AppState {
                 name: rt.name.clone(),
                 version: rt.version.clone(),
                 image,
-                image_digest: String::new(),
+                image_digest,
                 socket_path: Some(s.runtime_socket(&rt.kind, &rt.name).display().to_string()),
+                port: None,
+                is_default: rt.is_default,
+            })
+            .map_err(|e| format!("写入运行环境失败：{e}"))?;
+        Ok(())
+    }
+
+    /// Rust 环境安装：写最小 std HTTP 工程 → 拉镜像 → 容器内 `cargo run --release`
+    /// → 等端口监听。日志重定向到 `/www/runtime/rust/<name>/log/server.log`。
+    async fn install_rust_runtime_task(
+        &self,
+        id: &str,
+        rt: &Runtime,
+        s: &SiteSettings,
+    ) -> Result<(), String> {
+        let port = rt
+            .port
+            .ok_or_else(|| "Rust 环境缺少固定端口，请删除后重新创建".to_string())?;
+        let dir = s.runtime_home(&rt.kind, &rt.name);
+        let app_dir = dir.join("app");
+        std::fs::create_dir_all(app_dir.join("src"))
+            .map_err(|e| format!("创建 Rust 工程目录失败：{e}"))?;
+        std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
+            .map_err(|e| format!("创建 Rust 日志目录失败：{e}"))?;
+        self.job_advance(id, "准备工程", 15, "写入最小 HTTP 工程（无第三方依赖）")
+            .await;
+        std::fs::write(app_dir.join("Cargo.toml"), rust_cargo_manifest())
+            .map_err(|e| format!("写入 Cargo.toml 失败：{e}"))?;
+        std::fs::write(
+            app_dir.join("src/main.rs"),
+            rust_main_source(&rt.version, port),
+        )
+        .map_err(|e| format!("写入 main.rs 失败：{e}"))?;
+
+        let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
+        self.job_advance(
+            id,
+            "拉取镜像",
+            30,
+            &format!("拉取镜像 {image}（首次可能较慢）"),
+        )
+        .await;
+        self.docker()
+            .execute(
+                Verb::ImagePull,
+                None,
+                DockerParams::ImagePull(image.clone()),
+            )
+            .await
+            .map_err(|e| format!("拉取 {image} 失败：{e}"))?;
+        let image_digest = self
+            .docker()
+            .inspect_image(&image)
+            .await
+            .ok()
+            .and_then(|i| i.primary_digest())
+            .unwrap_or_default();
+        self.job_note(id, &format!("镜像 {image} 已就绪（digest {image_digest}）"))
+            .await;
+
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        self.job_advance(
+            id,
+            "创建容器",
+            50,
+            &format!("创建容器 {container}（host 网络，端口 {port}）"),
+        )
+        .await;
+        if let Ok(rows) = self.docker().list_containers().await {
+            if let Some(c) = rows.iter().find(|c| c.name == container) {
+                self.remove_existing_container(&c.id)
+                    .await
+                    .map_err(|e| format!("移除旧容器失败：{e}"))?;
+            }
+        }
+        self.ensure_container(&self.rust_spec_for(s, &rt.name, &image, port))
+            .await
+            .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
+
+        self.job_advance(
+            id,
+            "构建并启动进程",
+            70,
+            &format!("cargo run --release（监听 127.0.0.1:{port}），首次编译需等待"),
+        )
+        .await;
+        if !wait_tcp_port(port, std::time::Duration::from_secs(240)).await {
+            let log =
+                std::fs::read_to_string(s.runtime_log_dir(&rt.kind, &rt.name).join("server.log"))
+                    .unwrap_or_default();
+            let tail: Vec<&str> = log
+                .lines()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            return Err(format!(
+                "端口 {port} 在 240 秒内未监听，构建或启动失败：\n{}",
+                tail.join("\n")
+            ));
+        }
+        self.job_note(id, &format!("端口 {port} 已就绪，Rust 进程返回内容"))
+            .await;
+        self.db()
+            .ensure_runtime(&NewRuntime {
+                id: rt.id.clone(),
+                kind: rt.kind.clone(),
+                name: rt.name.clone(),
+                version: rt.version.clone(),
+                image,
+                image_digest,
+                socket_path: None,
+                port: Some(port),
                 is_default: rt.is_default,
             })
             .map_err(|e| format!("写入运行环境失败：{e}"))?;
@@ -1584,38 +1825,34 @@ impl AppState {
             if previous.iter().any(|p| p == key) {
                 continue;
             }
-            let def =
-                runtime_catalog::php_extension(key).ok_or_else(|| format!("未知扩展：{key}"))?;
             // 镜像内置扩展（opcache / curl）已随 PHP 编入并默认启用，
             // 再执行 docker-php-ext-enable 会因找不到 .so 而失败（实测 exit 1）。
-            if def.builtin {
-                self.job_note(job_id, &format!("{}：镜像内置已启用，跳过", def.label))
+            if runtime_catalog::php_extension(key).is_some_and(|d| d.builtin) {
+                let label = runtime_catalog::extension_label(key);
+                self.job_note(job_id, &format!("{label}：镜像内置已启用，跳过"))
                     .await;
                 continue;
             }
-            self.job_note(
-                job_id,
-                &format!("启用 {}：{}", def.label, def.enable_script),
-            )
-            .await;
+            let label = runtime_catalog::extension_label(key);
+            let script = runtime_catalog::extension_install_script(key)
+                .ok_or_else(|| format!("扩展 {key} 没有可执行的安装脚本"))?;
+            self.job_note(job_id, &format!("启用 {label}：{script}"))
+                .await;
             let (code, out) = self
                 .docker()
-                .exec_capture(
-                    container,
-                    vec!["sh".into(), "-lc".into(), def.enable_script.into()],
-                )
+                .exec_capture(container, vec!["sh".into(), "-lc".into(), script])
                 .await
-                .map_err(|e| format!("扩展 {} 执行失败：{e}", def.label))?;
+                .map_err(|e| format!("扩展 {label} 执行失败：{e}"))?;
             self.job_log_output(job_id, &out).await;
             if code != 0 {
-                return Err(format!("扩展 {} 安装失败（exit {code}）", def.label));
+                return Err(format!("扩展 {label} 安装失败（exit {code}）"));
             }
             let progress = base + span.saturating_mul(idx as u8 + 1) / total;
             self.job_advance(
                 job_id,
                 "安装扩展",
                 progress,
-                &format!("扩展 {} 已启用", def.label),
+                &format!("扩展 {label} 已启用"),
             )
             .await;
         }
@@ -1623,27 +1860,25 @@ impl AppState {
             if enabled.iter().any(|e| e == key) {
                 continue;
             }
-            let def =
-                runtime_catalog::php_extension(key).ok_or_else(|| format!("未知扩展：{key}"))?;
             // 内置扩展没有独立 .so，docker-php-ext-disable 同样会失败，直接跳过。
-            if def.builtin {
+            if runtime_catalog::php_extension(key).is_some_and(|d| d.builtin) {
                 continue;
             }
+            let label = runtime_catalog::extension_label(key);
             let script = runtime_catalog::disable_script(key)
                 .ok_or_else(|| format!("扩展 {key} 不支持停用"))?;
-            self.job_note(job_id, &format!("停用 {}：{script}", def.label))
+            self.job_note(job_id, &format!("停用 {label}：{script}"))
                 .await;
             let (code, out) = self
                 .docker()
                 .exec_capture(container, vec!["sh".into(), "-lc".into(), script.clone()])
                 .await
-                .map_err(|e| format!("扩展 {} 停用失败：{e}", def.label))?;
+                .map_err(|e| format!("扩展 {label} 停用失败：{e}"))?;
             self.job_log_output(job_id, &out).await;
             if code != 0 {
-                return Err(format!("扩展 {} 停用失败（exit {code}）", def.label));
+                return Err(format!("扩展 {label} 停用失败（exit {code}）"));
             }
-            self.job_note(job_id, &format!("扩展 {} 已停用", def.label))
-                .await;
+            self.job_note(job_id, &format!("扩展 {label} 已停用")).await;
         }
         Ok(())
     }
@@ -1691,6 +1926,213 @@ impl AppState {
                 let _ = self.db().set_runtime_status(id, "running", "running");
             }
         }
+    }
+
+    /// 安装单个扩展（目录项或 `pecl:...`）。异步任务，立即返回；已启用返回 false。
+    pub async fn install_extension(
+        self: &Arc<Self>,
+        id: &str,
+        token: &str,
+    ) -> Result<bool, SiteError> {
+        let rt = self.php_runtime_for_extension(id)?;
+        let token = token.trim();
+        if runtime_catalog::extension_install_script(token).is_none() {
+            return Err(SiteError::BadRequest(format!("不支持安装扩展：{token}")));
+        }
+        if let Some(def) = runtime_catalog::php_extension(token) {
+            if def.builtin {
+                return Err(SiteError::BadRequest(format!(
+                    "{} 为镜像内置扩展，无需安装",
+                    runtime_catalog::extension_label(token)
+                )));
+            }
+            let base = runtime_catalog::base_image_of(&rt.image);
+            if let Some((code, reason)) =
+                runtime_catalog::extension_block_reason(def, &rt.version, base)
+            {
+                return Err(SiteError::BadRequest(format!("{code}: {reason}")));
+            }
+        }
+        let current = runtime_catalog::split_extensions(&rt.extensions);
+        if current.iter().any(|k| k == token) {
+            return Ok(false);
+        }
+        self.runtime_jobs.lock().await.begin_ext(id, token)?;
+        let state = self.clone();
+        let rid = id.to_string();
+        let target = token.to_string();
+        tokio::spawn(async move {
+            state.run_single_extension_job(&rid, &target, true).await;
+        });
+        Ok(true)
+    }
+
+    /// 卸载单个扩展：删 conf.d 里的 ini → 重启容器 → 从库里的启用集合移除。
+    pub async fn uninstall_extension(
+        self: &Arc<Self>,
+        id: &str,
+        token: &str,
+    ) -> Result<bool, SiteError> {
+        let rt = self.php_runtime_for_extension(id)?;
+        let token = token.trim();
+        if runtime_catalog::php_extension(token).is_some_and(|e| e.builtin) {
+            return Err(SiteError::BadRequest(format!(
+                "{} 编译进镜像，不能卸载；如需关闭请修改 PHP 配置",
+                runtime_catalog::extension_label(token)
+            )));
+        }
+        let current = runtime_catalog::split_extensions(&rt.extensions);
+        if !current.iter().any(|k| k == token) {
+            return Ok(false);
+        }
+        if runtime_catalog::disable_script(token).is_none() {
+            return Err(SiteError::BadRequest(format!("不支持卸载扩展：{token}")));
+        }
+        self.runtime_jobs.lock().await.begin_ext(id, token)?;
+        let state = self.clone();
+        let rid = id.to_string();
+        let target = token.to_string();
+        tokio::spawn(async move {
+            state.run_single_extension_job(&rid, &target, false).await;
+        });
+        Ok(true)
+    }
+
+    /// 按名字安装 PECL 扩展（版本可选），例如 `swoole` / `swoole 5.1.2`。
+    pub async fn install_pecl_extension(
+        self: &Arc<Self>,
+        id: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<bool, SiteError> {
+        let token = runtime_catalog::pecl_token(name, version);
+        if runtime_catalog::parse_pecl_token(&token).is_none() {
+            return Err(SiteError::BadRequest(
+                "PECL 扩展名只能包含小写字母、数字与下划线".into(),
+            ));
+        }
+        self.install_extension(id, &token).await
+    }
+
+    fn php_runtime_for_extension(&self, id: &str) -> Result<Runtime, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Err(SiteError::Unavailable(
+                "只有 PHP 运行环境支持扩展管理".into(),
+            ));
+        }
+        Ok(rt)
+    }
+
+    async fn run_single_extension_job(&self, id: &str, token: &str, add: bool) {
+        let result = self.single_extension_task(id, token, add).await;
+        let label = runtime_catalog::extension_label(token);
+        match result {
+            Ok(()) => {
+                self.job_finish_ok(
+                    id,
+                    &format!(
+                        "扩展 {label} {}，PHP-FPM 已重载",
+                        if add { "已启用" } else { "已停用" }
+                    ),
+                )
+                .await;
+                let _ = self.db().set_runtime_status(id, "running", "running");
+            }
+            Err(err) => {
+                self.job_finish_err(id, &err).await;
+                let _ = self.db().set_runtime_status(id, "running", "running");
+            }
+        }
+    }
+
+    async fn single_extension_task(&self, id: &str, token: &str, add: bool) -> Result<(), String> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("运行环境不存在：{id}"))?;
+        let label = runtime_catalog::extension_label(token);
+        let current = runtime_catalog::split_extensions(&rt.extensions);
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        let exists = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| format!("读取容器列表失败：{e}"))?
+            .iter()
+            .any(|c| c.name == container && c.state == "running");
+        if !exists {
+            return Err(format!(
+                "PHP 容器未运行，无法热装扩展；请先安装/启动运行环境（{container}）"
+            ));
+        }
+        let script = if add {
+            runtime_catalog::extension_install_script(token)
+                .ok_or_else(|| format!("扩展 {label} 没有可执行的安装脚本"))?
+        } else {
+            runtime_catalog::disable_script(token)
+                .ok_or_else(|| format!("扩展 {label} 不支持卸载"))?
+        };
+        self.job_advance(
+            id,
+            if add { "安装扩展" } else { "卸载扩展" },
+            15,
+            &format!("{label}：{script}"),
+        )
+        .await;
+        let (code, out) = self
+            .docker()
+            .exec_capture(&container, vec!["sh".into(), "-lc".into(), script])
+            .await
+            .map_err(|e| format!("{label} 执行失败：{e}"))?;
+        self.job_log_output(id, &out).await;
+        if code != 0 {
+            // 必须回传真实报错（pecl 常见缺依赖/版本不存在），不能只报「安装失败」。
+            let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+            let start = lines.len().saturating_sub(20);
+            let err_code = if add {
+                runtime_catalog::pecl_failure_code(&out)
+            } else {
+                None
+            };
+            let prefix = match err_code {
+                Some(c) => format!(
+                    "{c}：PHP {} 下扩展 {label} 可能尚未就绪（PECL 滞后于新版 PHP）；可稍后重试或指定兼容版本。\n",
+                    rt.version
+                ),
+                None => String::new(),
+            };
+            return Err(format!(
+                "{prefix}扩展 {label} {}失败（exit {code}）：\n{}",
+                if add { "安装" } else { "卸载" },
+                lines[start..].join("\n")
+            ));
+        }
+        self.job_advance(id, "重载 PHP-FPM", 80, "重启容器以加载扩展变更")
+            .await;
+        self.docker_runtime_action(&container, Verb::Restart)
+            .await
+            .map_err(|e| format!("重启 PHP-FPM 失败：{e}"))?;
+        let s = self.site_settings();
+        self.secure_php_socket(&s, &rt.kind, &rt.name)
+            .await
+            .map_err(|e| format!("收紧 PHP socket 失败：{e}"))?;
+        let mut next = current;
+        if add {
+            next.push(token.to_string());
+        } else {
+            next.retain(|k| k != token);
+        }
+        let joined = runtime_catalog::join_extensions(&next);
+        self.db()
+            .set_runtime_extensions(id, &joined)
+            .map_err(|e| format!("写入扩展集合失败：{e}"))?;
+        Ok(())
     }
 
     async fn extensions_task(&self, id: &str, desired: &[String]) -> Result<(), String> {
@@ -1794,7 +2236,30 @@ impl AppState {
             }
         }
         let image = runtime_catalog::image_for(kind, version, &s.php_image);
-        let enabled = runtime_catalog::normalize_extensions(extensions);
+        let enabled = if kind == skiff_store::KIND_PHP {
+            runtime_catalog::normalize_extensions(extensions)
+        } else {
+            Vec::new()
+        };
+        // Rust 是「独立进程 + 固定端口」：建环境时一次性分配，冲突直接拒绝。
+        let port = if kind == skiff_store::KIND_RUST {
+            let used: Vec<u16> = self
+                .db()
+                .list_runtimes()
+                .map_err(|e| SiteError::Internal(e.to_string()))?
+                .iter()
+                .filter_map(|r| r.port)
+                .collect();
+            Some(runtime_catalog::allocate_rust_port(&used).ok_or_else(|| {
+                SiteError::Conflict(format!(
+                    "Rust 端口区间 {}–{} 已用满，请先删除不再使用的环境",
+                    *runtime_catalog::RUST_PORT_RANGE.start(),
+                    *runtime_catalog::RUST_PORT_RANGE.end()
+                ))
+            })?)
+        } else {
+            None
+        };
         // PHP 沿用「实例名即 id」的既有约定；其它类型加前缀避免与 PHP 实例名撞车。
         let id = if kind == skiff_store::KIND_PHP {
             name.clone()
@@ -1810,11 +2275,12 @@ impl AppState {
                 version: version.to_string(),
                 image,
                 image_digest: String::new(),
-                socket_path: if runtime_catalog::is_implemented(kind) {
+                socket_path: if kind == skiff_store::KIND_PHP {
                     Some(s.runtime_socket(kind, &name).display().to_string())
                 } else {
                     None
                 },
+                port,
                 is_default: false,
             })
             .map_err(|e| SiteError::Conflict(e.to_string()))?;
@@ -1876,6 +2342,48 @@ impl AppState {
         self.runtime_view(id).await
     }
 
+    /// 解绑单个站点：停用其 vhost 并转为静态（文件不删）；PHP 源码不会被静态直出。
+    pub async fn unbind_runtime_site(
+        &self,
+        runtime_id: &str,
+        domain: &str,
+    ) -> Result<(), SiteError> {
+        let site = self
+            .db()
+            .site_by_domain(domain)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        if site.runtime_id.as_deref() != Some(runtime_id) {
+            return Err(SiteError::BadRequest(format!(
+                "站点 {domain} 未绑定到该运行环境"
+            )));
+        }
+        let s = self.site_settings();
+        let site_dir = PathBuf::from(&site.root_dir);
+        let vhost = s.vhost_file(&site_dir, domain);
+        let disabled = s.vhost_disabled(&site_dir, domain);
+        if vhost.exists() {
+            std::fs::rename(&vhost, &disabled)
+                .map_err(|e| SiteError::Internal(format!("停用 vhost 失败：{e}")))?;
+        }
+        self.db()
+            .set_site_static_unbound(domain)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        // 停用 vhost 后重载 nginx；容器不在运行则留待下次启动加载。
+        if let Ok(rows) = self.docker().list_containers().await {
+            if let Some(c) = rows
+                .iter()
+                .find(|c| c.name == NGINX_CONTAINER && c.state == "running")
+            {
+                let _ = self
+                    .docker()
+                    .exec_capture(&c.id, vec!["nginx".into(), "-s".into(), "reload".into()])
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
     /// 删除运行环境：有站点绑定时拒绝并列出域名，绝不隐式解绑/级联删除。
     pub fn delete_site_runtime(&self, id: &str) -> Result<(), SiteError> {
         let rt = self
@@ -1904,14 +2412,22 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("删除运行环境失败：{e}")))
     }
 
-    /// 运行环境日志：PHP-FPM 走容器日志（stdout/stderr），不额外落宿主机文件。
+    /// 运行环境日志：PHP-FPM 走容器日志（stdout/stderr）；Rust 读宿主日志文件。
     pub async fn runtime_logs(&self, id: &str, tail: usize) -> Result<String, SiteError> {
         let rt = self
             .db()
             .runtime_by_id(id)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
-        if rt.kind != skiff_store::KIND_PHP {
+        if rt.kind == skiff_store::KIND_RUST {
+            let s = self.site_settings();
+            let path = s.runtime_log_dir(&rt.kind, &rt.name).join("server.log");
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines.len().saturating_sub(tail);
+            return Ok(lines[start..].join("\n"));
+        }
+        if !runtime_catalog::is_implemented(&rt.kind) {
             return Ok("（P2 未实现：Node.js/Go 运行环境尚未接入）".into());
         }
         let rows = self
@@ -1929,6 +2445,63 @@ impl AppState {
             .logs(&c.id, tail)
             .await
             .map_err(|e| SiteError::Unavailable(format!("读取 PHP-FPM 日志失败：{e}")))
+    }
+
+    /// 用户主动点击「实测版本」时，才进容器执行一次；2 秒超时。
+    /// 结果只代表当前运行中的容器，不写缓存、不参与列表渲染。
+    pub async fn probe_runtime_version(&self, id: &str) -> Result<String, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        let rows = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取容器列表失败：{e}")))?;
+        let c = rows
+            .iter()
+            .find(|c| c.name == runtime_container_name(&rt.kind, &rt.name))
+            .filter(|c| c.state == "running")
+            .ok_or_else(|| {
+                SiteError::Unavailable("容器未运行，无法实测版本（镜像元数据仍可显示）".into())
+            })?;
+        let (cmd, strip): (Vec<String>, &str) = match rt.kind.as_str() {
+            skiff_store::KIND_PHP => (
+                vec!["php".into(), "-r".into(), "echo PHP_VERSION;".into()],
+                "",
+            ),
+            skiff_store::KIND_RUST => (vec!["rustc".into(), "--version".into()], "rustc "),
+            skiff_store::KIND_NODE => (vec!["node".into(), "-v".into()], ""),
+            _ => (vec!["go".into(), "version".into()], ""),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.docker().exec_capture(&c.id, cmd),
+        )
+        .await
+        .map_err(|_| SiteError::Unavailable("2 秒内未取到实测版本（容器可能繁忙）".into()))?
+        .map_err(|e| SiteError::Unavailable(format!("实测版本失败：{e}")))?;
+        let (code, out) = result;
+        if code != 0 {
+            return Err(SiteError::Unavailable(format!(
+                "实测版本失败（exit {code}）：{}",
+                out.lines().next().unwrap_or("")
+            )));
+        }
+        let value = out
+            .trim()
+            .strip_prefix(strip)
+            .unwrap_or(out.trim())
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        if value.is_empty() {
+            return Err(SiteError::Unavailable("实测版本输出为空".into()));
+        }
+        Ok(value)
     }
 }
 
@@ -1948,6 +2521,15 @@ pub struct RuntimeView {
     pub socket_container: String,
     pub socket_exists: bool,
     pub socket_mode: String,
+    /// 从镜像元数据读到的真实版本（如 `8.5.12`）；读不到为 None。
+    pub actual_version: Option<String>,
+    /// 容器实际镜像 id（`sha256:...`）；容器不存在为空。
+    pub image_id: String,
+    /// 登记镜像与容器实际镜像引用不一致（只提示，不自动修）。
+    pub image_mismatch: bool,
+    /// 安装时记录的 manifest digest（可能为空）。
+    pub image_digest: String,
+    pub container_exists: bool,
     /// 已启用的扩展 key（catalog 顺序）。
     pub extensions: Vec<String>,
     /// 最近一次异步任务（安装/扩展变更）；无任务时为 None。
@@ -2532,6 +3114,47 @@ impl AppState {
         }
     }
 
+    fn rust_spec_for(&self, s: &SiteSettings, name: &str, image: &str, port: u16) -> ContainerSpec {
+        let manifest = format!(
+            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/app/Cargo.toml",
+            skiff_store::KIND_RUST
+        );
+        let log = format!(
+            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/log/server.log",
+            skiff_store::KIND_RUST
+        );
+        let mut env = BTreeMap::new();
+        env.insert("PORT".to_string(), port.to_string());
+        ContainerSpec {
+            image: image.to_string(),
+            name: Some(runtime_container_name(skiff_store::KIND_RUST, name)),
+            // 独立进程 + host 网络端口；容器重启后由 restart=unless-stopped 拉起。
+            command: Some(vec![
+                "sh".into(),
+                "-lc".into(),
+                format!("cargo run --release --manifest-path {manifest} >> {log} 2>&1"),
+            ]),
+            entrypoint: None,
+            env,
+            labels: skiff_labels("runtime"),
+            ports: vec![],
+            restart: Some("unless-stopped".into()),
+            healthcheck: None,
+            networks: vec![],
+            network_mode: Some("host".into()),
+            mounts: vec![Mount::Bind {
+                source: s.web_root.display().to_string(),
+                target: CONTAINER_WEB_ROOT.to_string(),
+                read_only: false,
+            }],
+            log_driver: Some("local".into()),
+            log_max_size: Some("10m".into()),
+            memory_limit_mb: None,
+            nano_cpus: None,
+            pids_limit: None,
+        }
+    }
+
     fn write_default_vhost(&self, s: &SiteSettings) -> std::io::Result<()> {
         std::fs::create_dir_all(&s.conf_dir)?;
         // 兜底文件与站点 include 入口始终存在；默认站点的投影以库里 `is_default` 为准。
@@ -2540,8 +3163,19 @@ impl AppState {
         self.sync_default_conf(s)
     }
 
-    /// 读取站点绑定运行环境的 socket：返回（宿主路径，容器内路径）。
-    /// 拒绝 Node/Go（P1 未实现）与未登记的 socket，避免 vhost 指向不存在的端点。
+    fn bound_runtime(&self, site: &Site) -> Result<Runtime, SiteError> {
+        let rid = site
+            .runtime_id
+            .as_deref()
+            .ok_or_else(|| SiteError::BadRequest("运行环境站点未绑定运行环境".into()))?;
+        self.db()
+            .runtime_by_id(rid)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))
+    }
+
+    /// 读取站点绑定 PHP 运行环境的 socket：返回（宿主路径，容器内路径）。
+    /// 拒绝未登记的 socket，避免 vhost 指向不存在的端点。
     fn php_socket_paths(
         &self,
         s: &SiteSettings,
@@ -2582,7 +3216,15 @@ impl AppState {
         let root = s.container_path(&site_index_dir(&site_dir));
         let access = s.container_log(&site_dir, LogKind::Access);
         let error = s.container_log(&site_dir, LogKind::Error);
-        let socket = if site.site_type == TYPE_RUNTIME {
+        let runtime = if site.site_type == TYPE_RUNTIME {
+            Some(self.bound_runtime(site)?)
+        } else {
+            None
+        };
+        let socket = if runtime
+            .as_ref()
+            .is_some_and(|r| r.kind == skiff_store::KIND_PHP)
+        {
             Some(self.php_socket_paths(s, site)?.1)
         } else {
             None
@@ -2593,9 +3235,22 @@ impl AppState {
                 target: site.proxy_target.as_deref().unwrap_or(""),
                 websocket: site.proxy_websocket,
             },
-            _ => VhostKind::Php {
-                root: &root,
-                socket: socket.as_deref().unwrap_or(""),
+            _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
+                Some(skiff_store::KIND_RUST) => VhostKind::Process {
+                    root: &root,
+                    port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
+                        SiteError::Unavailable("Rust 运行环境缺少端口，请重新安装".into())
+                    })?,
+                },
+                Some(skiff_store::KIND_NODE) | Some(skiff_store::KIND_GO) => {
+                    return Err(SiteError::Unavailable(
+                        "Node.js / Go 运行环境将在 P2 接入，当前不能生成 vhost".into(),
+                    ))
+                }
+                _ => VhostKind::Php {
+                    root: &root,
+                    socket: socket.as_deref().unwrap_or(""),
+                },
             },
         };
         Ok(render_site_vhost(
@@ -2619,7 +3274,15 @@ impl AppState {
         let root = s.container_path(&site_index_dir(&site_dir));
         let access = s.container_log(&site_dir, LogKind::Access);
         let error = s.container_log(&site_dir, LogKind::Error);
-        let socket = if site.site_type == TYPE_RUNTIME {
+        let runtime = if site.site_type == TYPE_RUNTIME {
+            Some(self.bound_runtime(site)?)
+        } else {
+            None
+        };
+        let socket = if runtime
+            .as_ref()
+            .is_some_and(|r| r.kind == skiff_store::KIND_PHP)
+        {
             Some(self.php_socket_paths(s, site)?.1)
         } else {
             None
@@ -2630,9 +3293,22 @@ impl AppState {
                 target: site.proxy_target.as_deref().unwrap_or(""),
                 websocket: site.proxy_websocket,
             },
-            _ => VhostKind::Php {
-                root: &root,
-                socket: socket.as_deref().unwrap_or(""),
+            _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
+                Some(skiff_store::KIND_RUST) => VhostKind::Process {
+                    root: &root,
+                    port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
+                        SiteError::Unavailable("Rust 运行环境缺少端口，请重新安装".into())
+                    })?,
+                },
+                Some(skiff_store::KIND_NODE) | Some(skiff_store::KIND_GO) => {
+                    return Err(SiteError::Unavailable(
+                        "Node.js / Go 运行环境将在 P2 接入，当前不能生成 vhost".into(),
+                    ))
+                }
+                _ => VhostKind::Php {
+                    root: &root,
+                    socket: socket.as_deref().unwrap_or(""),
+                },
             },
         };
         Ok(render_default_vhost(
@@ -3077,7 +3753,7 @@ impl AppState {
             ));
         }
 
-        // 类型专属校验。P1 只允许 PHP 运行环境，Node/Go 一律如实拒绝。
+        // 类型专属校验。P1 允许 PHP 与 Rust 运行环境；Node/Go 一律如实拒绝。
         let mut runtime_id = None;
         let mut proxy_target = None;
         let mut proxy_websocket = false;
@@ -3094,7 +3770,7 @@ impl AppState {
                     .runtime_by_id(rid)
                     .map_err(|e| SiteError::Internal(e.to_string()))?
                     .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
-                if rt.kind != skiff_store::KIND_PHP {
+                if !runtime_catalog::is_implemented(&rt.kind) {
                     return Err(SiteError::Unavailable(format!(
                         "{} 运行环境将在 P2 接入，当前版本不能创建该类站点",
                         rt.kind
@@ -3106,13 +3782,19 @@ impl AppState {
                         rt.version
                     )));
                 }
-                let socket = rt.socket_path.as_deref().ok_or_else(|| {
-                    SiteError::Unavailable("运行环境缺少 socket 路径，请先重新安装".into())
-                })?;
-                if !Path::new(socket).exists() {
-                    return Err(SiteError::Unavailable(format!(
-                        "PHP socket 未就绪：{socket}（请检查 FPM 是否已启动）"
-                    )));
+                if rt.kind == skiff_store::KIND_PHP {
+                    let socket = rt.socket_path.as_deref().ok_or_else(|| {
+                        SiteError::Unavailable("运行环境缺少 socket 路径，请先重新安装".into())
+                    })?;
+                    if !Path::new(socket).exists() {
+                        return Err(SiteError::Unavailable(format!(
+                            "PHP socket 未就绪：{socket}（请检查 FPM 是否已启动）"
+                        )));
+                    }
+                } else if rt.port.is_none() {
+                    return Err(SiteError::Unavailable(
+                        "运行环境缺少固定端口，请先重新安装".into(),
+                    ));
                 }
                 runtime_id = Some(rid.to_string());
             }
@@ -3924,9 +4606,76 @@ pub fn registry_of(image: &str) -> String {
     }
 }
 
+/// Rust P1 工程：无第三方依赖，`cargo run --release` 离线可编译。
+fn rust_cargo_manifest() -> &'static str {
+    "[package]\nname = \"skiff-runtime-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+     [[bin]]\nname = \"skiff-runtime-app\"\npath = \"src/main.rs\"\n"
+}
+
+/// 最小 HTTP 服务：监听 `$PORT`，任何请求返回一段带版本的环境标识文本。
+fn rust_main_source(version: &str, port: u16) -> String {
+    format!(
+        r#"use std::io::{{Read, Write}};
+use std::net::TcpListener;
+
+const VERSION: &str = "{version}";
+
+fn main() {{
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or({port});
+    let listener = TcpListener::bind(("0.0.0.0", port)).expect("bind port");
+    println!("skiff rust runtime {{}} listening on {{}}", VERSION, port);
+    for stream in listener.incoming() {{
+        let mut stream = match stream {{
+            Ok(s) => s,
+            Err(e) => {{
+                eprintln!("accept failed: {{e}}");
+                continue;
+            }}
+        }};
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let body = format!(
+            "Skiff Rust runtime ready\nversion: {{}}\nport: {{}}\n",
+            VERSION, port
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n\
+             Content-Length: {{}}\r\nConnection: close\r\n\r\n{{}}",
+            body.as_bytes().len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    }}
+}}
+"#
+    )
+}
+
+/// 以 TCP 连接探测端口是否已监听（Rust 等无 socket 环境的就绪判据）。
+async fn wait_tcp_port(port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn domain_validation_rejects_unsafe_input() {
@@ -4256,6 +5005,7 @@ mod tests {
                 image: "php:8.5-fpm-alpine".into(),
                 image_digest: String::new(),
                 socket_path: Some(s.runtime_socket("php", "php-8.5-a").display().to_string()),
+                port: None,
                 is_default: false,
             })
             .unwrap();
@@ -4617,6 +5367,7 @@ mod tests {
             id: "id".into(),
             name: name.into(),
             image: "img".into(),
+            image_id: "sha256:deadbeef".into(),
             state: state.into(),
             status: String::new(),
             labels: BTreeMap::new(),
@@ -4719,5 +5470,56 @@ mod tests {
         std::fs::write(b_log.join("error.log"), "y".repeat(64)).unwrap();
         std::fs::write(sites.join("readme.txt"), "z".repeat(64)).unwrap();
         assert_eq!(rotate_site_logs(&sites, 32).unwrap(), 2);
+    }
+
+    #[test]
+    fn image_version_cache_positive_has_no_ttl_and_negative_expires() {
+        let mut cache: HashMap<String, (Option<String>, std::time::Instant)> = HashMap::new();
+        let t0 = std::time::Instant::now();
+        // 正缓存：image_id 不可变，过了很久仍然命中。
+        cache.insert("sha256:abc".into(), (Some("8.5.12".into()), t0));
+        match image_version_lookup(
+            &cache,
+            "sha256:abc",
+            t0 + std::time::Duration::from_secs(3600),
+        ) {
+            ImageVersionHit::Known(v) => assert_eq!(v, "8.5.12"),
+            _ => panic!("正缓存不应过期"),
+        }
+        // 负缓存：60 秒内抑制重复 inspect。
+        cache.insert("sha256:def".into(), (None, t0));
+        assert!(matches!(
+            image_version_lookup(
+                &cache,
+                "sha256:def",
+                t0 + std::time::Duration::from_secs(59)
+            ),
+            ImageVersionHit::Suppressed
+        ));
+        assert!(matches!(
+            image_version_lookup(
+                &cache,
+                "sha256:def",
+                t0 + std::time::Duration::from_secs(61)
+            ),
+            ImageVersionHit::Miss
+        ));
+        // 未登记 image_id：未命中。
+        assert!(matches!(
+            image_version_lookup(&cache, "sha256:ghi", t0),
+            ImageVersionHit::Miss
+        ));
+    }
+
+    #[test]
+    fn image_id_change_does_not_reuse_previous_version() {
+        let mut cache: HashMap<String, (Option<String>, std::time::Instant)> = HashMap::new();
+        let t0 = std::time::Instant::now();
+        cache.insert("sha256:old".into(), (Some("8.5.11".into()), t0));
+        // 重建后 image_id 变化：新 key 未命中，必须重新 inspect，不会沿用旧版本。
+        assert!(matches!(
+            image_version_lookup(&cache, "sha256:new", t0),
+            ImageVersionHit::Miss
+        ));
     }
 }

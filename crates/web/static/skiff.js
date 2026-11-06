@@ -904,6 +904,155 @@
     var content = dlg.querySelector("[data-drawer-content]");
     var title = dlg.querySelector("[data-drawer-title]");
 
+    // ---- 详情页签：基础信息 / 扩展 / 配置 / 日志 / 站点 ----
+    function applyTab(name) {
+      if (!content) return;
+      var known = ["info", "extensions", "config", "logs", "sites"];
+      if (known.indexOf(name) < 0) name = "info";
+      dlg.dataset.rtTab = name;
+      content.querySelectorAll("[data-runtime-tab]").forEach(function (t) {
+        var on = t.getAttribute("data-runtime-tab") === name;
+        t.classList.toggle("on", on);
+        if (on) t.setAttribute("aria-current", "page");
+        else t.removeAttribute("aria-current");
+      });
+      content.querySelectorAll("[data-runtime-tab-panel]").forEach(function (p) {
+        p.hidden = p.getAttribute("data-runtime-tab-panel") !== name;
+      });
+      if (name === "logs" && !dlg.dataset.rtLogLoaded) loadRunLog();
+    }
+
+    // ---- 运行日志：按需拉取，不在渲染路径执行容器命令 ----
+    async function loadRunLog() {
+      var btn = content && content.querySelector("[data-rt-runlog-refresh]");
+      var out = content && content.querySelector("[data-rt-runlog]");
+      if (!btn || !out) return;
+      var url = btn.getAttribute("data-logs-url") || "";
+      var tail = content.querySelector("[data-rt-tail]");
+      if (url && tail) url += (url.indexOf("?") >= 0 ? "&" : "?") + "tail=" + tail.value;
+      btn.disabled = true;
+      out.textContent = "读取中…";
+      try {
+        var resp = await fetch(url, {
+          headers: { "X-Requested-With": "fetch" },
+          credentials: "same-origin",
+          cache: "no-store"
+        });
+        var data = await resp.json();
+        out.textContent = data.logs || (data.ok ? "（无输出）" : "读取失败");
+        dlg.dataset.rtLogLoaded = "1";
+        var at = content.querySelector("[data-rt-runlog-at]");
+        if (at) {
+          var path = at.getAttribute("data-log-path") || "";
+          at.textContent = (path ? "日志文件：" + path + " · " : "") + "更新于 " + new Date().toLocaleTimeString();
+        }
+      } catch (err) {
+        out.textContent = "读取日志失败：" + String(err.message || err);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ---- 实测版本：唯一主动进容器执行的位置 ----
+    async function probeVersion(btn) {
+      var out = content && content.querySelector("[data-rt-probe-result]");
+      var csrfInput = content && content.querySelector('input[name="csrf"]');
+      var csrf = csrfInput ? csrfInput.value : "";
+      btn.disabled = true;
+      if (out) out.textContent = "执行中（2 秒超时）…";
+      try {
+        var resp = await fetch(btn.getAttribute("data-probe-url"), {
+          method: "POST",
+          body: new URLSearchParams({ csrf: csrf }),
+          credentials: "same-origin",
+          headers: { "X-Requested-With": "fetch" }
+        });
+        var data = await resp.json();
+        if (out) {
+          if (data.ok) {
+            var at = data.at ? new Date(data.at * 1000).toLocaleString() : "";
+            out.textContent = "实测 " + data.version + "（" + at + "），仅代表当前运行中的容器";
+          } else {
+            out.textContent = "实测失败：" + (data.error || "未知错误");
+          }
+        }
+      } catch (err) {
+        if (out) out.textContent = "实测失败：" + String(err.message || err);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ---- 复制镜像引用 / digest / 镜像 ID ----
+    function copyText(value) {
+      if (!value) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).catch(function () {});
+        return;
+      }
+      var ta = document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e) { /* 忽略 */ }
+      document.body.removeChild(ta);
+    }
+
+    // ---- 扩展搜索与分类过滤 ----
+    function applyExtFilter() {
+      if (!content) return;
+      var q = (content.querySelector("[data-ext-search]") || {}).value || "";
+      q = q.trim().toLowerCase();
+      var chip = content.querySelector(".ext-cats .chip.on");
+      var cat = chip ? chip.getAttribute("data-ext-cat") : "";
+      var any = false;
+      content.querySelectorAll("[data-ext-item]").forEach(function (item) {
+        var text = (item.getAttribute("data-search") || "").toLowerCase();
+        var okCat = !cat || item.getAttribute("data-category") === cat;
+        var okQ = !q || text.indexOf(q) >= 0;
+        item.hidden = !(okCat && okQ);
+        if (!item.hidden) any = true;
+      });
+      var empty = content.querySelector("[data-ext-empty]");
+      if (empty) empty.hidden = any;
+    }
+
+    dlg.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!(target instanceof Element)) return;
+      var tab = target.closest("[data-runtime-tab]");
+      if (tab && content && content.contains(tab)) {
+        e.preventDefault();
+        applyTab(tab.getAttribute("data-runtime-tab"));
+        return;
+      }
+      var chip = target.closest("[data-ext-cat]");
+      if (chip && content && content.contains(chip)) {
+        content.querySelectorAll("[data-ext-cat]").forEach(function (c) {
+          c.classList.toggle("on", c === chip);
+        });
+        applyExtFilter();
+        return;
+      }
+      if (target.closest("[data-rt-runlog-refresh]")) {
+        loadRunLog();
+        return;
+      }
+      var probe = target.closest("[data-rt-probe]");
+      if (probe && !probe.disabled) {
+        probeVersion(probe);
+        return;
+      }
+      var copy = target.closest("[data-rt-copy]");
+      if (copy) copyText(copy.getAttribute("data-rt-copy"));
+    });
+    dlg.addEventListener("input", function (e) {
+      if (e.target instanceof Element && e.target.closest("[data-ext-search]")) applyExtFilter();
+    });
+
+
     // 抽屉里的安装/扩展任务：轮询 job 端点并实时刷新阶段、进度与日志。
     function watchJob(scope, refresh) {
       var panel = scope.querySelector("[data-runtime-job]");
@@ -964,6 +1113,9 @@
         var panel = doc.querySelector("[data-runtime-panel]");
         if (!panel) throw new Error("详情内容缺失");
         content.innerHTML = panel.outerHTML;
+        dlg.dataset.rtLogLoaded = "";
+        var previousTab = dlg.dataset.rtTab || "info";
+        applyTab(previousTab);
         var heading = panel.querySelector("[data-runtime-title]");
         if (title && heading) title.textContent = heading.textContent.trim();
         watchJob(content, function () { if (dlg.dataset.currentUrl) open(dlg.dataset.currentUrl); });
@@ -1042,8 +1194,11 @@
         verSel.appendChild(opt);
       });
       var implemented = !!def.implemented;
-      if (extField) extField.hidden = !implemented;
-      if (p2Note) p2Note.hidden = implemented;
+      if (extField) extField.hidden = def.key !== "php";
+      if (p2Note) {
+        p2Note.hidden = implemented;
+        if (!implemented) p2Note.textContent = "Node.js / Go 为 P2 预留：只会登记运行环境行，不安装容器，也不提供扩展管理。";
+      }
       if (submit) submit.textContent = implemented ? "创建并后台安装" : "登记运行环境";
       if (!keepName && nameInput) nameInput.value = def.key + "-" + (def.versions && def.versions[0] || "");
     }

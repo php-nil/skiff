@@ -1,8 +1,7 @@
 # Skiff 网站运行环境与建站契约（SITE_RUNTIME_CONTRACT）
 
-> 状态：**设计契约 v1（2026-11-05）**。本轮只定模型、信息架构与验收口径，不改 Rust 代码、不改
-> `crates/app/src/sites.rs`、不部署测试机。
-> 基线：`crates/store/src/db.rs`（schema v8）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
+> 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）**。
+> 基线：`crates/store/src/db.rs`（schema v11）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
 > 运行环境）、`crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
 > 可点预览：[`docs/ui/site-runtime-preview.html`](./ui/site-runtime-preview.html)。
@@ -20,9 +19,9 @@
 4. **运行环境页与 Docker 页分工明确**：运行环境页是业务视角（版本、绑定站点、专属配置、启停/重建），
    Docker 页只做原始容器管理。运行环境的**期望状态**存库、**实际状态**读 Docker / 进程探测；
    两页不维护第二份生命周期状态，出现外部改动时显示“状态漂移”并提供重建/同步入口。
-5. **P1 不做假实现**：P1 落地静态站、PHP 站、反向代理站与 PHP 运行环境管理；Node.js / Go 只落模型、
-   路由占位与“P2 未实现”提示，不显示安装成功、不伪造进程、不伪造端口监听。扩展开关、多 PHP 版本、
-   站点级 php.ini 覆盖、Go 构建链路均留 P2。
+5. **P1 不做假实现**：P1 落地静态站、PHP / Rust 站、反向代理站；Node.js / Go 只落模型、
+   路由占位与“P2 未实现”提示，不显示安装成功、不伪造进程、不伪造端口监听。
+   PHP 扩展管理、抽屉页签、版本元数据与 Rust 运行环境在 2026-11-06 收口（见 §11）。
 
 ---
 
@@ -220,7 +219,7 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 区块 | 内容 | P1 |
 | --- | --- | --- |
 | 基础信息 | 版本、镜像与 digest、socket 路径/权限、默认版本、启动时间、最近健康检查、绑定站点数 | 可读 |
-| 扩展开关 | opcache / curl / pdo_mysql / mysqli / gd / zip / bcmath / intl / redis；显示已启用/未启用 | P1 可增删：安装阶段装入，安装后在抽屉里开关并重建/重载 |
+| 扩展开关 | 基线全集按分类展示（数据库 / 图片 / 加密 / 缓存 / 其他），按 `(version, base_image)` 过滤；支持搜索、PECL 按名字安装 | P1 可增删：安装阶段装入，安装后在抽屉里开关并重建/重载（见 §11.4） |
 | 安装任务 | 状态（排队/拉镜像/创建容器/启动/失败）、进度百分比、实时日志、失败原因与「重试安装」 | P1 异步执行，抽屉轮询刷新 |
 | ini | `memory_limit`、`upload_max_filesize`、`post_max_size`、`max_execution_time` | P1 可改，保存后平滑 reload |
 | FPM 进程池 | `pm`（dynamic/static）、`max_children`、`start_servers`、`min_spare_servers`、`max_spare_servers`、`max_requests` | P1 可改 |
@@ -257,21 +256,21 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 ### 4.5 新建运行环境与异步安装
 
-- **新建弹窗**：类型下拉（PHP / Node.js / Go）→ 版本下拉（大版本下的小版本，如 `8.5 / 8.4 / 8.3`）
+- **新建弹窗**：类型下拉（PHP / Node.js / Go / Rust）→ 版本下拉（大版本下的小版本，如 `8.5 / 8.4 / 8.3`）
   → 实例名（默认 `php-8.5` 跟随类型与版本，可改；同 kind 内唯一，目标目录已存在直接拒绝）。
-  不允许手填版本；Node / Go 在 P1 只登记不安装，提交后在列表显示「P2 未实现」。
+  不允许手填版本；Node / Go 在 P1 只登记不安装，提交后在列表显示「P2 未实现」；Rust 在 P1 可安装并建站。
 - **版本目录单一来源**：`crates/app/src/runtime_catalog.rs` 的 `RUNTIME_KINDS` 同时驱动弹窗下拉、
   安装镜像选择与后端校验；新增版本只改这一处，模板不再硬编码版本列表。
 - **扩展清单单一来源**：同一模块的 `PHP_EXTENSIONS` 同时驱动安装弹窗勾选、抽屉开关、
-  `extensions` 字段校验与容器内执行脚本；未勾选时为默认集合（opcache / curl / pdo_mysql / mysqli / zip / bcmath）。
+  `extensions` 字段校验与容器内执行脚本；默认集合为 `default_on` 项（pdo_mysql / mbstring 等）。
 - **异步安装**：点击「创建并后台安装」立即返回（落库 + 入队），后台任务按
   `排队 → 拉镜像 → 创建容器 → 启动 → 完成/失败` 推进；列表与抽屉轮询
   `/sites/env/jobs`、`/sites/env/{id}/job` 获取状态、进度与日志。
 - **安装日志**：任务持有最近 300 行日志，抽屉内 `data-job-log` 实时追加；失败保留原因，
   提供「重试安装」入口，不阻塞其它页面操作。
-- **扩展变更**：抽屉勾选后提交 `/sites/env/{id}/extensions`，异步执行
-  `docker-php-ext-install/enable/disable`（redis 走 pecl），完成后重启容器、收紧 socket 权限并落库；
-  容器不存在时改走完整安装并重放扩展集合。
+- **扩展变更**：抽屉提交 `/sites/env/{id}/extensions/{key}/install|uninstall` 或 `/pecl`，异步执行
+  mlocati `install-php-extensions`（下载失败回退手写 apk 依赖 + `docker-php-ext-install` / `pecl install`），
+  完成后重启容器、收紧 socket 权限并落库；容器不存在时提示先安装/启动。
 - **持久化**：`site_runtimes.extensions`（schema v9）保存逗号分隔的启用集合，安装/扩展任务成功后回写。
 
 ---
@@ -545,3 +544,106 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 | Node/Go P1 | `Node.js / Go 运行环境将在 P2 接入；当前不会创建站点或伪造进程。` |
 | proxy 无文档根 | `反向代理站点不创建文档根，只生成转发配置。` |
 | 无绑定站点 | `该环境暂无站点。去网站列表新建。` |
+
+---
+
+## 11. P1 实现补充（2026-11-06）
+
+> 本节记录与 §1–§10 设计契约的实现差异与落地口径；与上文冲突时以本节为准。
+
+### 11.1 版本显示：镜像元数据 + `image_id` 内存缓存
+
+- **数据来源**：列表用的 `list_containers` 已返回 `ImageID`；`ContainerRow.image_id` 随行模型返回，
+  渲染路径不再调用 `docker exec`，也不再为每个实例额外查一次容器。
+- **缓存**：进程内 `HashMap<image_id, (Option<String>, Instant)>`。未命中时只对**该镜像**执行
+  1 次 `docker image inspect`，从 `Config.Env` 读 `PHP_VERSION` / `NODE_VERSION` / `GOLANG_VERSION`。
+  同一 `image_id` 的多个实例共享一次结果；正缓存**不设 TTL**（image_id 不可变），
+  失败做 **60 秒负缓存**，避免每页重复打 Docker。Rust 官方镜像无稳定版本变量，回退目标版本并标注。
+- **显示**：
+  - 已知 → 主显真实补丁号（如 `8.5.12`），副行 `目标 8.5 · php:8.5-fpm-alpine`；
+  - 容器缺失/未安装 → `8.5` +「未安装」；
+  - 容器存在但元数据读不到 → `8.5` +「版本未读取」；
+  - **容器停止但容器仍存在时照常显示镜像真实版本**（已知事实，不因未运行回退）。
+- **唯一保留的 exec**：抽屉「实测版本」按钮，用户主动点击才执行 `php -r 'echo PHP_VERSION;'`
+  （2 秒超时），显示结果与时间戳，并注明「仅代表当前运行中的容器」。
+- **digest 落库**：安装/重建拉完镜像后从 `ImageInspect.repo_digests` 取 manifest digest 写入
+  `site_runtimes.image_digest`；默认仍按 tag 重建，digest 只作复现/回滚信息与详情展示。
+  登记镜像与容器实际 `image_id` 对应镜像不一致时，抽屉提示「登记镜像与容器镜像不一致」，只提示不自动修。
+
+### 11.2 镜像来源结论与 1Panel 对比
+
+- **`php:8.5-fpm-alpine` 的来源**：仓库内唯一默认值是 `crates/app/src/sites.rs` 的
+  `DEFAULT_PHP_IMAGE = "php:8.5-fpm-alpine"`（`runtime_catalog::image_for` 对非默认版本拼
+  `php:<ver>-fpm-alpine`）。它是 **Docker Hub 官方 `php` 镜像的 alpine/fpm 变体**
+  （docker-library/php 维护），**不是** 1Panel 的镜像，也不是本项目自建镜像。
+- **1Panel 对照**：
+
+| 维度 | 1Panel 运行环境 | Skiff 当前 |
+| --- | --- | --- |
+| 镜像来源 | 自建镜像（PHP 为 `1panel/php` 系列 / `1panel-php-fpm:<patch>`），按面板版本统一发布 | Docker Hub 官方 `php:<ver>-fpm-alpine`，默认版本可由「镜像参数」覆盖 |
+| tag 规则 | 自建 tag 跟补丁号（如 `8.3.24`），可复现 | 浮动 tag（`8.5-fpm-alpine`），实际补丁号由拉取时的镜像元数据回填 |
+| 运行形态 | 每站点/每环境独立容器，常驻端口 + FPM，站点经端口反代 | 每实例独立容器 + **unix socket**，nginx 直接 `fastcgi_pass`，不暴露 9000 |
+| 扩展安装 | 面板预置扩展清单 + 图形化安装，镜像内置编译依赖 | 源码内置全集 + PECL 按名字安装，mlocati 解析依赖，容器内编译 |
+| alpine/debian | 两种基础镜像都提供；默认 alpine | 默认 alpine；`base_image_of` 按镜像名识别，debian 已按 glibc 处理 |
+
+- **alpine 与 debian 的差异**：alpine 用 musl、镜像体积小、启动与内存占用低；debian 用 glibc、
+  体积大但二进制兼容性好（Oracle Instant Client、商业 loader、部分预编译扩展只发 glibc 版）。
+- **结论与取舍**：
+  - **继续以 alpine 为默认**：体积/内存与官方维护成本更优，PHP 扩展可用 mlocati 在 alpine 上解析 apk 依赖；
+  - 代价：扩展编译依赖 apk、遇过 `oniguruma`/PECL 编译坑，`oci8` / `pdo_oci` / `ioncube_loader` / `sg16`
+    在 alpine **明确不可用**（UI 灰显 + 原因），需要这些扩展时改用 debian 基础镜像；
+  - **不擅自改默认镜像**：默认仍为 `php:8.5-fpm-alpine`；是否提供 debian 变体作为可选项留待后续。
+- **镜像源与固定 tag**：
+  - `image_prefix` / 加速源已存在（Docker 设置页 `DockerSettingsPage.image_prefix`），不新增配置；
+  - 浮动 tag 建议**拉取时记录 digest 并落库**，重建默认仍按 tag；是否改成「按 digest 锁定」暂不动，
+    因为当前无法保证 digest 在扩展编译/重建路径上始终可用。
+
+### 11.3 Rust 运行环境（P1）
+
+- 目录：`runtime_catalog::RUNTIME_KINDS` 新增 `rust`，版本 `1.83 / 1.82 / 1.80`，
+  镜像 `rust:<ver>-slim`；`default_name` 为 `rust-<ver>`，同 kind 唯一、目录已存在拒绝。
+- 运行模型（独立进程 + 固定端口）：
+  - 端口区间 **9100–9199**，创建时取区间内最小未占用端口并落 `site_runtimes.port`；冲突直接拒绝；
+  - 容器 `skiff-rust-<name>`，`network_mode=host`，挂载 `/www`；
+  - 容器内执行 `cargo run --release --manifest-path /www/runtime/rust/<name>/app/Cargo.toml`，
+    日志重定向到 `/www/runtime/rust/<name>/log/server.log`；
+  - 安装任务写最小 std HTTP 工程（无第三方依赖），启动后 `wait_tcp_port` 等端口监听，失败回传日志尾部；
+  - 目录结构：`/www/runtime/rust/<name>/app/{Cargo.toml,src/main.rs}`、`log/server.log`。
+- 站点绑定：站点类型 `runtime`，vhost 生成 `proxy_pass http://127.0.0.1:<port>`（不是 `fastcgi_pass`）；
+  解绑入口在抽屉「站点」页签，删除环境仍受「存在绑定站点即拒绝」约束。
+- Node / Go 保持 P2 现状，不在本轮改动。
+
+### 11.4 详情抽屉与扩展管理
+
+- **抽屉宽度**：`width: min(840px, 92vw)`，`max-width: 840px`；`max-width: 720px` 时整宽 `100vw`（窄屏）；
+  内容区在 `min-width: 980px` 时两栏，窄屏单栏。头部与底部操作固定，中间内容滚动。
+- **页签**：`基础信息 / 扩展 / 配置 / 日志 / 站点`，沿用 `.workbench-tabs`，抽屉内切换不整页刷新。
+- **扩展矩阵（只做 delta）**：
+  - 基线 `PHP_EXTENSIONS` 全集按分类（数据库 / 图片 / 加密 / 缓存 / 其他）展示，支持搜索与分类过滤；
+  - 版本 delta 用 `since / core_until / pecl_only_since`：8.4 起 `imap` / `oci8` / `pdo_oci` / `pspell`
+    移出核心，8.5 延续；8.3 仍可选 `imap`；
+  - 基础镜像 delta：alpine 上 `oci8` / `pdo_oci` / 商业 loader 为 `Unsupported`，`rdkafka` 可用；
+  - `extensions_for(version, base_image)` 同时供 UI 与后端校验；UI 不支持项灰显 + `title` 原因，
+    依赖差异项提示「将临时安装 X/Y」；后端错误码 `EXT_NOT_IN_VERSION` / `EXT_BASE_IMAGE_UNSUPPORTED` /
+    `EXT_PECL_NOT_READY`，文案带版本与替代建议。
+  - **builtin 修正**：`mbstring`、`sodium`、`sqlite3`、`pdo_sqlite` 标为镜像内置（官方
+    `php:*-fpm-alpine` 已编译并启用），不再触发 `oniguruma-dev` 安装与编译，也不重复 enable。
+- **依赖解析**：优先使用 mlocati/docker-php-extension-installer（版本/基座感知，安装后自动清理），
+  下载失败回退原手写依赖表；依赖名修正 `ldap-dev → openldap-dev`、`tidy → tidyhtml-dev`、
+  `snmp → net-snmp-dev`。
+- **热装与重建**：`hot=true` 的扩展在运行中的容器内安装/卸载后重启容器即可；
+  `hot=false` 或镜像层依赖变化（如新增系统库、需要改基础镜像）必须重建容器。
+  编译很重的 PECL（`grpc` / `swoole` / `mongodb`）允许安装，但 UI 标注预计耗时，失败回传真实 stderr。
+- **1Panel 对照**：1Panel 的运行环境页是「版本 + 容器」入口，扩展在 PHP 配置页按清单勾选安装，
+  依赖由自建镜像预置；Skiff 保留同样的「清单 + 分类 + 安装日志」信息架构，但复用官方镜像与
+  mlocati 动态解析依赖，不维护自建镜像，因此新增/升级扩展不需要重新发布面板镜像。
+
+### 11.5 验收矩阵（本轮）
+
+| 用例 | 口径 |
+| --- | --- |
+| 版本显示 | 已知显示补丁号；容器缺失 → 目标 + 未安装；元数据缺失 → 目标 + 版本未读取；停止但存在 → 仍显示真实版本 |
+| 缓存 | 同 image_id 只 inspect 一次；image_id 变化重新 inspect；失败 60 秒负缓存；列表渲染路径 0 次 exec |
+| Rust | 创建 → 安装异步任务 → 端口监听 → 站点绑定 `runtime` → 反代返回内容；无 Docker 时验证失败链路与渲染 |
+| 抽屉 | 宽度 `min(840px, 92vw)`；五页签可切换；扩展搜索/分类过滤 |
+| 扩展矩阵 | 8.3 imap 可选、8.4/8.5 不可用；alpine oci8 不可用；mbstring/sodium 不产生编译步骤；PECL 失败回传真 stderr |

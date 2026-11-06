@@ -75,7 +75,10 @@ fn image_pull_ref(image: &str) -> (String, Option<String>) {
 pub struct ContainerRow {
     pub id: String,
     pub name: String,
+    /// 容器创建时使用的镜像引用（tag）。
     pub image: String,
+    /// 实际镜像 id（`sha256:...`），用于按镜像缓存版本元数据。
+    pub image_id: String,
     pub state: String,
     pub status: String,
     pub labels: std::collections::BTreeMap<String, String>,
@@ -88,6 +91,36 @@ impl ContainerRow {
     /// 短 id（Docker 惯例前 12 位）。展示与审计详情统一用它。
     pub fn short_id(&self) -> String {
         skiff_model::short_id(&self.id)
+    }
+}
+
+/// 镜像 inspect 的精简结果（镜像元数据，不启动容器）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ImageInfo {
+    pub id: String,
+    /// `Config.Env`，官方镜像会带 `PHP_VERSION` / `NODE_VERSION` / `GOLANG_VERSION`。
+    pub env: Vec<String>,
+    pub repo_digests: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+impl ImageInfo {
+    /// 从 `KEY=value` 形式的环境变量里取值。
+    pub fn env_value(&self, key: &str) -> Option<String> {
+        self.env
+            .iter()
+            .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    /// 首选与 tag 相同的 repo digest；否则取第一个。
+    pub fn primary_digest(&self) -> Option<String> {
+        self.repo_digests
+            .iter()
+            .find(|d| d.contains("@sha256:"))
+            .or_else(|| self.repo_digests.first())
+            .cloned()
     }
 }
 
@@ -223,6 +256,18 @@ impl DockerService {
             .inspect_container(id, None::<qp::InspectContainerOptions>)
             .await
             .map_err(api_err)
+    }
+
+    /// 镜像元数据：只读、按 image id 取，用于读取 `*_VERSION` 与 repo digest。
+    pub async fn inspect_image(&self, image: &str) -> Result<ImageInfo, DockerError> {
+        let i = self.client()?.inspect_image(image).await.map_err(api_err)?;
+        let config = i.config.unwrap_or_default();
+        Ok(ImageInfo {
+            id: i.id.unwrap_or_default(),
+            env: config.env.unwrap_or_default(),
+            repo_digests: i.repo_digests.unwrap_or_default(),
+            tags: i.repo_tags.unwrap_or_default(),
+        })
     }
 
     pub async fn start_container(&self, id: &str) -> Result<(), DockerError> {
@@ -656,6 +701,7 @@ fn to_row(c: ContainerSummary) -> ContainerRow {
         id: c.id.unwrap_or_default(),
         name,
         image: c.image.unwrap_or_default(),
+        image_id: c.image_id.unwrap_or_default(),
         state: c
             .state
             .map(|s| state_str(s).to_string())
@@ -815,6 +861,36 @@ mod tests {
     use super::*;
     use crate::policy::{ContainerSpec, Mount, PortMapping};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn image_info_env_parsing_and_digest() {
+        let info = ImageInfo {
+            id: "sha256:abc".into(),
+            env: vec![
+                "PATH=/usr/local/bin".into(),
+                "PHP_VERSION=8.5.12".into(),
+                "PHP_INI_DIR=/usr/local/etc/php".into(),
+            ],
+            repo_digests: vec![
+                "php@sha256:111".into(),
+                "php:8.5-fpm-alpine@sha256:222".into(),
+            ],
+            tags: vec![],
+        };
+        assert_eq!(info.env_value("PHP_VERSION"), Some("8.5.12".into()));
+        assert_eq!(info.env_value("PATH"), Some("/usr/local/bin".into()));
+        // 前缀必须精确匹配 `KEY=`：`PHP_VERSION_EXTRA=` 不能被当成 `PHP_VERSION`。
+        assert_eq!(info.env_value("PHP_VERSION_EXTRA"), None);
+        assert_eq!(info.env_value("MISSING"), None);
+        assert_eq!(info.primary_digest(), Some("php@sha256:111".into()));
+
+        // 空值与纯空白不算已读到版本。
+        let blank = ImageInfo {
+            env: vec!["PHP_VERSION=   ".into()],
+            ..Default::default()
+        };
+        assert_eq!(blank.env_value("PHP_VERSION"), None);
+    }
 
     #[test]
     fn image_pull_ref_keeps_digest_in_from_image() {

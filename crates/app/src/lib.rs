@@ -76,6 +76,11 @@ pub struct AppState {
     runtime_installs: sites::InstallLocks,
     /// 运行环境异步安装/扩展任务（按 runtime id）；列表与抽屉轮询读取。
     runtime_jobs: Mutex<sites::RuntimeJobs>,
+    /// 镜像版本元数据缓存：image_id → (读到的版本/None, 负缓存起点)。
+    ///
+    /// image_id 不可变：命中即 0 次 Docker API。inspect 失败做 60 秒负缓存，
+    /// 避免每页重复打；容器重建换 image_id 自然失效。
+    image_versions: Mutex<HashMap<String, (Option<String>, std::time::Instant)>>,
     /// 内核定时任务服务。`OnceLock` 而不是构造参数：`AppState::new` 被大量
     /// 测试直接使用，任务服务需要真实库与 Supervisor，由 `bootstrap` 显式初始化。
     tasks: std::sync::OnceLock<Arc<tasks::TaskService>>,
@@ -251,6 +256,7 @@ impl AppState {
             site_env: Mutex::new(sites::InstallProgress::default()),
             runtime_installs: sites::InstallLocks::default(),
             runtime_jobs: Mutex::new(sites::RuntimeJobs::default()),
+            image_versions: Mutex::new(HashMap::new()),
             tasks: std::sync::OnceLock::new(),
         })
     }

@@ -5,7 +5,7 @@
 <div class="page-head">
   <h1 data-runtime-title>{{ runtime.kind_label }} {{ runtime.name }}</h1>
   {% if runtime.is_default %}<span class="tag ok">默认</span>{% endif %}
-  <span class="sub">版本 {{ runtime.version }} · 业务视角</span>
+  <span class="sub">目标 {{ runtime.version }} · 业务视角</span>
   <a class="ghost" href="/{{ ctx.prefix }}/sites/env">返回运行环境列表</a>
 </div>
 
@@ -32,75 +32,154 @@
 </section>
 {% else %}
 
-{% if has_job %}
-<section class="panel runtime-job" data-runtime-job data-job-url="{{ job_url }}" data-job-state="{{ job.state }}">
-  <div class="panel-head">
-    <h2>{% if job.kind == "extensions" %}扩展变更任务{% else %}安装任务{% endif %}</h2>
-    <span class="tag{% if job.failed %} danger-tag{% else if job.active %} warn-tag{% else %} ok{% endif %}" data-job-state-label>{{ job.state_label }}</span>
-  </div>
-  <p class="muted" data-job-step>{{ job.step }}{% if job.active %} · {{ job.progress }}%{% endif %}</p>
-  <span class="runtime-progress runtime-progress-wide" data-job-progress><span style="width: {{ job.progress }}%"></span></span>
-  {% if job.failed %}
-  <div class="alert" data-job-error>失败原因：{{ job.error }}</div>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <button class="btn" type="submit">重试安装</button>
-  </form>
-  {% else %}
-  <div class="alert" data-job-error hidden></div>
-  {% endif %}
-  <h3>实时日志</h3>
-  <pre class="log runtime-job-log" data-job-log>{{ job.log }}</pre>
-</section>
-{% endif %}
+<nav class="workbench-tabs runtime-tabs" data-runtime-tabs aria-label="运行环境标签">
+  <a class="workbench-tab on" data-runtime-tab="info" href="#rt-info" aria-current="page">基础信息</a>
+  <a class="workbench-tab" data-runtime-tab="extensions" href="#rt-extensions">扩展</a>
+  <a class="workbench-tab" data-runtime-tab="config" href="#rt-config">配置</a>
+  <a class="workbench-tab" data-runtime-tab="logs" href="#rt-logs">日志</a>
+  <a class="workbench-tab" data-runtime-tab="sites" href="#rt-sites">站点{% if runtime.site_count > 0 %}（{{ runtime.site_count }}）{% endif %}</a>
+</nav>
 
-<section class="panel">
-  <h2>基础信息</h2>
+<section class="panel runtime-tab-panel" data-runtime-tab-panel="info">
+  <div class="panel-head"><h2>版本与镜像</h2></div>
+  <div class="runtime-version-card">
+    <div class="runtime-version-col">
+      <span class="muted">目标版本</span>
+      <strong class="mono runtime-version-value">{{ runtime.version }}</strong>
+      <span class="hint">安装目标的大版本，来自运行环境登记。</span>
+    </div>
+    <div class="runtime-version-col">
+      <span class="muted">实际版本</span>
+      <strong class="mono runtime-version-value" data-rt-actual>{% if !runtime.actual_version.is_empty() %}{{ runtime.actual_version }}{% else %}未读取{% endif %}</strong>
+      <span class="hint">{% if !runtime.actual_version.is_empty() %}来自镜像元数据（<code>Config.Env</code>），不在渲染路径执行容器命令。{% else if !runtime.container_exists %}容器未安装，暂无实际版本。{% else %}镜像元数据里没有版本变量，显示目标版本。{% endif %}</span>
+    </div>
+  </div>
+  {% if runtime.image_mismatch %}
+  <div class="alert warn">登记镜像与容器镜像不一致：登记 <code>{{ runtime.image }}</code>，容器实际镜像 id <code>{{ runtime.image_id }}</code>。请核对后重建；本页只提示，不自动修复。</div>
+  {% endif %}
+  <div class="kv runtime-version-kv">
+    <div><span class="muted">镜像引用</span><span class="mono">{{ runtime.image }}</span><button type="button" class="link-btn" data-rt-copy="{{ runtime.image }}">复制</button></div>
+    <div><span class="muted">镜像 digest</span><span class="mono">{% if runtime.image_digest.is_empty() %}未登记{% else %}{{ runtime.image_digest }}{% endif %}</span>{% if !runtime.image_digest_full.is_empty() %}<button type="button" class="link-btn" data-rt-copy="{{ runtime.image_digest_full }}">复制完整值</button>{% endif %}</div>
+    <div><span class="muted">容器镜像 ID</span><span class="mono">{% if runtime.image_id.is_empty() %}不可得{% else %}{{ runtime.image_id }}{% endif %}</span>{% if !runtime.image_id_full.is_empty() %}<button type="button" class="link-btn" data-rt-copy="{{ runtime.image_id_full }}">复制</button>{% endif %}</div>
+    <div><span class="muted">说明</span><span class="muted">digest 是可拉取的 manifest 摘要；镜像 ID 是容器实际使用的本地镜像，两者不混用。</span></div>
+  </div>
+  <div class="runtime-probe">
+    <button type="button" class="btn ghost" data-rt-probe data-probe-url="{{ env_href }}/probe"{% if !runtime.container_exists %} disabled title="容器未安装"{% endif %}>实测版本</button>
+    <span class="hint" data-rt-probe-result>仅在主动点击时进当前运行中的容器执行一次（2 秒超时），结果只代表当时运行的容器。</span>
+  </div>
+
+  <div class="panel-head runtime-subhead"><h2>基础信息</h2></div>
   <div class="kv">
     <div><span class="muted">类型</span><span>{{ runtime.kind_label }}</span></div>
     <div><span class="muted">实例名</span><span class="mono">{{ runtime.name }}</span></div>
-    <div><span class="muted">版本</span><span class="mono">{{ runtime.version }}</span></div>
-    <div><span class="muted">镜像</span><span class="mono">{{ runtime.image }}</span></div>
-    <div><span class="muted">运行状态</span><span><span class="tag{% if runtime.state_class == "ok" %} ok{% else if runtime.state_class == "warn" %} warn-tag{% endif %}">{{ runtime.state_label }}</span></span></div>
-    <div><span class="muted">底层容器</span><span class="mono">{{ runtime.container_name }}</span></div>
-    <div><span class="muted">占用站点</span><span>{{ runtime.site_count }}</span></div>
+    <div><span class="muted">运行状态</span><span><span class="tag{% if runtime.state_class == "ok" %} ok{% else if runtime.state_class == "warn" %} warn-tag{% else if runtime.state_class == "danger" %} danger-tag{% endif %}">{{ runtime.state_label }}</span></span></div>
+    <div><span class="muted">底层容器</span><span class="mono">{{ runtime.container_name }}</span>{% if !runtime.container_exists %}<span class="hint">（不存在）</span>{% else %}<span class="hint">（{{ runtime.container_state }}）</span>{% endif %}</div>
+    <div><span class="muted">占用的站点</span><span>{{ runtime.site_count }}</span></div>
     <div><span class="muted">Docker 页</span><span><a href="{{ runtime.docker_href }}">查看原始容器 / 日志</a></span></div>
   </div>
+
+  <section class="runtime-danger-zone">
+    <h3>危险操作</h3>
+    <p class="muted">删除不可恢复；仍有站点绑定时会被拒绝并列出域名，不做隐式解绑或级联删除。</p>
+    {% if can_admin %}
+    <div class="wizard-nav wrap">
+      {% if runtime.site_count > 0 %}
+      <button class="btn danger" type="button" disabled title="仍有站点绑定，删除会被拒绝并列出域名">删除运行环境</button>
+      <p class="hint">删除会被拒绝：仍有 {{ runtime.site_count }} 个站点绑定，必须先删除或解绑这些站点。</p>
+      {% else %}
+      <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/delete" class="inline">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn danger" type="submit">删除运行环境</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+  </section>
 </section>
 
-<section class="panel runtime-extensions-panel">
-  <div class="panel-head"><h2>扩展管理</h2></div>
-  <p class="muted">勾选后在容器内执行安装并重载 PHP-FPM；取消勾选会停用相应 ini 并重载。gd / intl / redis 首次编译可能需要数分钟，进度与结果在页面顶部的任务区实时刷新。</p>
-  {% if can_admin %}
-  <form method="post" action="{{ extensions_href }}" data-runtime-extensions data-drawer-post>
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <input type="hidden" name="ext_form" value="1">
-    <div class="ext-options">
-      {% for e in extensions %}
-      <label class="ext-option">
-        <input type="checkbox" name="ext" value="{{ e.key }}"{% if e.enabled %} checked{% endif %}>
-        <span class="ext-name">{{ e.label }}{% if e.builtin %} <span class="tag">镜像内置</span>{% endif %}</span>
-        <span class="hint">{{ e.description }}</span>
-      </label>
+<section class="panel runtime-tab-panel" data-runtime-tab-panel="extensions" hidden>
+  <div class="panel-head">
+    <h2>扩展管理</h2>
+    <span class="hint">共 {{ extensions.len() }} 项 · 目录来自 <code>runtime_catalog</code> 单一来源</span>
+  </div>
+  <p class="muted">安装走异步任务并在日志页实时输出（失败回传真实编译 / PECL 报错）；卸载会删除 conf.d ini 并重启容器。需要编译依赖的扩展会自动安装 apk 依赖并在完成后清理。</p>
+  <div class="ext-toolbar">
+    <input type="search" class="ext-search" placeholder="搜索扩展名或说明" data-ext-search autocomplete="off">
+    <div class="ext-cats" data-ext-cats>
+      <button type="button" class="chip on" data-ext-cat="">全部</button>
+      {% for c in ext_categories %}
+      <button type="button" class="chip" data-ext-cat="{{ c }}">{{ c }}</button>
       {% endfor %}
     </div>
-    <div class="wizard-nav">
-      <button class="btn primary" type="submit"{% if job.active %} disabled{% endif %}>应用扩展变更</button>
-    </div>
-  </form>
-  {% else %}
-  <div class="ext-options">
+  </div>
+  <p class="hint ext-empty" data-ext-empty hidden>没有匹配的扩展。</p>
+
+  <div class="ext-list" data-ext-list>
     {% for e in extensions %}
-    <div class="ext-option"><span class="ext-name">{{ e.label }}</span><span class="hint">{% if e.enabled %}已启用{% else %}未启用{% endif %}</span></div>
+    <div class="ext-item{% if !e.supported %} ext-item-off{% endif %}" data-ext-item data-search="{{ e.key }} {{ e.label }} {{ e.description }}" data-category="{{ e.category }}"{% if !e.supported %} title="{{ e.support_note }}"{% endif %}>
+      <div class="ext-main">
+        <span class="ext-name mono">{{ e.key }}</span>
+        <span class="ext-tags">
+          <span class="tag">{{ e.category }}</span>
+          <span class="tag">{{ e.source }}</span>
+          {% if e.builtin %}<span class="tag">镜像内置</span>{% endif %}
+          {% if e.hot %}<span class="tag">热装</span>{% else %}<span class="tag warn-tag">需重建</span>{% endif %}
+          {% if !e.supported %}<span class="tag danger">当前不可用</span>{% endif %}
+        </span>
+        <span class="hint">{{ e.label }}：{{ e.description }}</span>
+        {% if !e.support_note.is_empty() %}
+        <span class="hint ext-note{% if !e.supported %} danger{% endif %}">{% if e.supported %}依赖：{% endif %}{{ e.support_note }}</span>
+        {% endif %}
+      </div>
+      <div class="ext-state">
+        {% if e.enabled %}
+        <span class="tag ok">已安装</span>
+        {% if can_admin %}
+        <form method="post" action="{{ env_href }}/extensions/{{ e.key }}/uninstall" data-drawer-post class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn ghost" type="submit"{% if job.active %} disabled{% endif %}>卸载</button>
+        </form>
+        {% endif %}
+        {% else if job.active && job.ext_key == e.key %}
+        <span class="tag warn-tag">安装中</span>
+        {% else if !e.supported %}
+        <span class="tag danger">不支持</span>
+        {% else %}
+        <span class="tag">可安装</span>
+        {% if can_admin %}
+        <form method="post" action="{{ env_href }}/extensions/{{ e.key }}/install" data-drawer-post class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn" type="submit"{% if job.active || !e.supported %} disabled{% endif %}>安装</button>
+        </form>
+        {% endif %}
+        {% endif %}
+      </div>
+    </div>
     {% endfor %}
   </div>
-  {% endif %}
+
+  <section class="pecl-block">
+    <h3>按名字安装 PECL 扩展</h3>
+    <p class="muted">适用于目录里没有的扩展。失败会在任务日志里回传 <code>pecl install</code> 的真实报错；安装成功后写 ini 并重启容器。</p>
+    {% if can_admin %}
+    <form method="post" action="{{ env_href }}/pecl" class="pecl-form" data-drawer-post>
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <label>扩展名
+        <input name="name" class="mono" placeholder="如 redis / xdebug" autocomplete="off" required>
+      </label>
+      <label>版本（可选）
+        <input name="version" class="mono" placeholder="如 6.0.2；留空取最新" autocomplete="off">
+      </label>
+      <button class="btn primary" type="submit"{% if job.active %} disabled{% endif %}>安装 PECL 扩展</button>
+    </form>
+    {% endif %}
+  </section>
 </section>
 
-<section class="panel">
-  <h2>PHP 配置</h2>
+<section class="panel runtime-tab-panel" data-runtime-tab-panel="config" hidden>
+  {% if runtime.kind_key == "php" %}
+  <div class="panel-head"><h2>PHP 配置</h2></div>
   {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/config">
+  <form method="post" action="{{ env_href }}/config">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
     <div class="form-grid">
       <label>memory_limit
@@ -152,10 +231,8 @@
     <div><span class="muted">FPM</span><span class="mono">{{ config.pm }} · children {{ config.max_children }} · start {{ config.start_servers }} · spare {{ config.min_spare_servers }}-{{ config.max_spare_servers }} · max_requests {{ config.max_requests }}</span></div>
   </div>
   {% endif %}
-</section>
 
-<section class="panel">
-  <h2>运行与日志</h2>
+  <div class="panel-head runtime-subhead"><h2>socket 与权限</h2></div>
   <div class="kv">
     <div><span class="muted">socket 宿主路径</span><span class="mono">{% if socket_host.is_empty() %}未登记{% else %}{{ socket_host }}{% endif %}</span></div>
     <div><span class="muted">vhost 使用路径</span><span class="mono">{% if socket_container.is_empty() %}未登记{% else %}{{ socket_container }}{% endif %}</span></div>
@@ -163,53 +240,93 @@
     <div><span class="muted">权限</span><span class="mono">{{ socket_mode }}</span></div>
     <div><span class="muted">说明</span><span class="muted">固定 <code>0660 root:nobody</code>，仅 nginx worker 可连；每实例独立 socket，不占 TCP 端口。</span></div>
   </div>
-  <h3>容器日志 <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}?tab=logs">刷新</a></h3>
-  {% if !logs_error.is_empty() %}
-  <div class="alert">读取日志失败：{{ logs_error }}</div>
-  {% else if logs.is_empty() %}
-  <p class="muted">点击「刷新」读取容器最近 300 行输出。</p>
+  {% else if runtime.kind_key == "rust" %}
+  <div class="panel-head"><h2>Rust 运行模型</h2></div>
+  <div class="kv">
+    <div><span class="muted">监听端口</span><span class="mono">{% if runtime.port.is_empty() %}未分配{% else %}127.0.0.1:{{ runtime.port }}{% endif %}</span></div>
+    <div><span class="muted">端口分配</span><span class="muted">每环境固定端口（<code>9100-9199</code> 内分配），创建时校验冲突；站点 vhost 用 <code>proxy_pass</code> 反代到该端口。</span></div>
+    <div><span class="muted">进程守护</span><span class="mono">容器内 <code>cargo run --release</code>，容器 <code>restart: unless-stopped</code>，宿主网络。</span></div>
+    <div><span class="muted">目录结构</span><span class="mono">/www/runtime/rust/{{ runtime.name }}/（app 源码 + log/）</span></div>
+    <div><span class="muted">运行日志</span><span class="mono">{% if runtime_log_path.is_empty() %}未登记{% else %}{{ runtime_log_path }}{% endif %}</span></div>
+  </div>
+  <p class="hint">源码热更新：修改 <code>/www/runtime/rust/{{ runtime.name }}/app/src/main.rs</code> 后「重启」即可重新编译启动；首次编译在容器内执行，耗时取决于依赖。</p>
   {% else %}
-  <pre class="log">{{ logs }}</pre>
+  <div class="not-implemented"><span class="badge warn">P2 未实现</span> {{ runtime.kind_label }} 的专属配置将在 P2 接入。</div>
   {% endif %}
 </section>
 
-<section class="panel">
-  <h2>关联站点</h2>
+<section class="panel runtime-tab-panel" data-runtime-tab-panel="logs" hidden>
+  <div class="panel-head"><h2>安装 / 扩展任务日志</h2></div>
+  {% if has_job %}
+  <div class="runtime-job" data-runtime-job data-job-url="{{ job_url }}" data-job-state="{{ job.state }}">
+    <div class="panel-head">
+      <h3>{% if job.kind == "extensions" %}扩展变更任务{% else %}安装任务{% endif %}{% if !job.ext_key.is_empty() %}：{{ job.ext_key }}{% endif %}</h3>
+      <span class="tag{% if job.failed %} danger-tag{% else if job.active %} warn-tag{% else %} ok{% endif %}" data-job-state-label>{{ job.state_label }}</span>
+    </div>
+    <p class="muted" data-job-step>{{ job.step }}{% if job.active %} · {{ job.progress }}%{% endif %}</p>
+    <span class="runtime-progress runtime-progress-wide" data-job-progress><span style="width: {{ job.progress }}%"></span></span>
+    {% if job.failed %}
+    <div class="alert" data-job-error>失败原因：{{ job.error }}</div>
+    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="btn" type="submit">重试安装</button>
+    </form>
+    {% else %}
+    <div class="alert" data-job-error hidden></div>
+    {% endif %}
+    <pre class="log runtime-job-log" data-job-log>{{ job.log }}</pre>
+  </div>
+  {% else %}
+  <p class="muted">暂无安装或扩展任务。新建 / 重装 / 扩展操作会在这里实时输出日志。</p>
+  {% endif %}
+
+  <div class="panel-head runtime-subhead"><h2>运行日志</h2></div>
+  <div class="runtime-logs-toolbar">
+    <label>tail
+      <select data-rt-tail>
+        <option value="100">100 行</option>
+        <option value="300" selected>300 行</option>
+        <option value="1000">1000 行</option>
+      </select>
+    </label>
+    <button type="button" class="btn ghost" data-rt-runlog-refresh data-logs-url="{{ logs_url }}">刷新运行日志</button>
+    <span class="hint" data-rt-runlog-at{% if !runtime_log_path.is_empty() %} data-log-path="{{ runtime_log_path }}"{% endif %}>{% if !runtime_log_path.is_empty() %}日志文件：{{ runtime_log_path }}{% else %}容器最近输出（docker logs）{% endif %}</span>
+  </div>
+  {% if !logs_error.is_empty() %}
+  <div class="alert">读取日志失败：{{ logs_error }}</div>
+  {% endif %}
+  <pre class="log runtime-run-log" data-rt-runlog>{% if logs.is_empty() %}点击「刷新运行日志」按需读取，不在渲染路径执行容器命令。{% else %}{{ logs }}{% endif %}</pre>
+</section>
+
+<section class="panel runtime-tab-panel" data-runtime-tab-panel="sites" hidden>
+  <div class="panel-head"><h2>关联站点</h2></div>
   {% if bound_sites.is_empty() %}
   <p class="muted">暂无站点绑定该运行环境。</p>
   {% else %}
   <div class="table-wrap">
     <table class="grid">
-      <thead><tr><th>域名</th><th>类型</th><th>状态</th><th></th></tr></thead>
+      <thead><tr><th>域名</th><th>类型</th><th>状态</th><th class="num">操作</th></tr></thead>
       <tbody>
       {% for s in bound_sites %}
         <tr>
           <td class="mono">{{ s.domain }}</td>
           <td>{{ s.type_label }}</td>
           <td>{{ s.status_label }}</td>
-          <td><a href="{{ s.href }}">站点详情</a></td>
+          <td class="num runtime-site-actions">
+            <a href="{{ s.href }}">站点详情</a>
+            {% if can_admin %}
+            <form method="post" action="{{ env_href }}/sites/{{ s.domain }}/unbind" data-drawer-post class="inline">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+              <button class="btn ghost" type="submit">解绑</button>
+            </form>
+            {% endif %}
+          </td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
-  {% endif %}
-</section>
-
-<section class="panel danger-zone">
-  <h2>危险操作</h2>
-  <p class="muted">删除不可恢复；仍有站点绑定时会被拒绝并列出域名，不做隐式解绑或级联删除。</p>
-  {% if can_admin %}
-  <div class="wizard-nav wrap">
-    {% if runtime.site_count > 0 %}
-    <button class="btn danger" type="button" disabled title="仍有站点绑定，删除会被拒绝并列出域名">删除运行环境</button>
-    <p class="hint">删除会被拒绝：仍有 {{ runtime.site_count }} 个站点绑定，必须先删除这些站点。</p>
-    {% else %}
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/delete" class="inline">
-      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn danger" type="submit">删除运行环境</button>
-    </form>
-    {% endif %}
-  </div>
+  <p class="hint">解绑会停用该站点的 vhost 并把站点转为静态（文件保留）；不会删除站点目录，也不会静默切换版本。</p>
   {% endif %}
 </section>
 

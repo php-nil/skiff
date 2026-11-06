@@ -320,12 +320,30 @@ pub struct SitesPage {
 #[derive(Debug, Clone)]
 pub struct RuntimeRow {
     pub id: String,
+    /// php / node / go / rust，模板按类型分支。
+    pub kind_key: String,
     pub kind_label: String,
     /// 本地实例名（目录/容器名的唯一来源）。
     pub name: String,
     pub container_name: String,
+    /// 安装目标版本（如 8.5）或运行中读到的真实版本（如 8.5.12）。
     pub version: String,
+    /// 同上，已按运行状态决定展示值。
+    pub version_display: String,
+    /// `目标 8.5 · php:8.5-fpm-alpine` / `未安装` / `版本未读取`。
+    pub version_note: String,
+    /// 镜像元数据里读到的版本（可能为空）。
+    pub actual_version: String,
+    /// 容器是否存在（停止但存在也算存在；缺失才是「未安装」）。
+    pub container_exists: bool,
     pub image: String,
+    /// 容器实际镜像 id（短值）与 digest 短值，详情抽屉展示。
+    pub image_id: String,
+    pub image_id_full: String,
+    pub image_digest: String,
+    pub image_digest_full: String,
+    /// 登记镜像与容器镜像不一致的提示。
+    pub image_mismatch: bool,
     pub state_label: String,
     /// ok / warn / danger / muted，模板据此上色。
     pub state_class: String,
@@ -337,6 +355,8 @@ pub struct RuntimeRow {
     pub endpoint_short: String,
     /// 悬浮提示与抽屉里的完整路径。
     pub endpoint_full: String,
+    /// Rust 固定端口；其他类型为空。
+    pub port: String,
     pub implemented: bool,
     pub is_default: bool,
     pub detail_href: String,
@@ -406,6 +426,16 @@ pub struct ExtensionOptionView {
     pub enabled: bool,
     pub default_on: bool,
     pub builtin: bool,
+    /// 数据库 / 图片 / 加密 / 缓存 / 其他（来自单一来源目录）。
+    pub category: String,
+    /// 镜像内置 / 源码内置 / PECL。
+    pub source: String,
+    /// 支持热装（安装后重启容器生效）。
+    pub hot: bool,
+    /// 当前 (版本, 基础镜像) 下是否可安装；false 时前端灰显并禁用。
+    pub supported: bool,
+    /// 不可安装原因，或「将临时安装 X/Y」的依赖提示。
+    pub support_note: String,
 }
 
 /// 运行环境异步任务的展示快照（列表/抽屉轮询）。
@@ -422,6 +452,8 @@ pub struct RuntimeJobView {
     pub active: bool,
     pub failed: bool,
     pub kind: String,
+    /// 单个扩展任务的目标 token；整批/安装任务为空。
+    pub ext_key: String,
 }
 
 #[derive(Template)]
@@ -437,11 +469,19 @@ pub struct RuntimeDetailPage {
     pub socket_mode: String,
     /// 扩展清单（单一来源渲染）：勾选状态来自库。
     pub extensions: Vec<ExtensionOptionView>,
-    pub extensions_href: String,
+    /// 分类顺序（来自 runtime_catalog，模板不做硬编码）。
+    pub ext_categories: Vec<String>,
     /// 最近一次安装/扩展任务；`has_job` 为 false 时 `job` 是空占位。
     pub has_job: bool,
     pub job: RuntimeJobView,
     pub job_url: String,
+    /// 抽屉内日志页签的刷新地址（`?tail=300`）。
+    pub logs_url: String,
+    /// 扩展操作基址：`/{prefix}/sites/env/{id}`。
+    pub env_href: String,
+    /// Rust 运行日志的宿主路径（其他类型为空）。
+    pub runtime_log_path: String,
+    /// 安装日志（任务快照）与运行日志分开展示。
     pub logs: String,
     pub logs_error: String,
     pub can_admin: bool,

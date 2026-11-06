@@ -67,11 +67,27 @@ fn state_class(state: &str) -> &'static str {
     }
 }
 
+/// 列表版本列：已知真实版本优先；容器缺失 → 目标 + 「未安装」；
+/// 容器在但元数据读不到 → 目标 + 「版本未读取」。停止的容器仍展示真实版本。
+pub(crate) fn version_display(
+    actual: Option<&str>,
+    target: &str,
+    image: &str,
+    container_exists: bool,
+) -> (String, String) {
+    match actual {
+        Some(actual) => (actual.to_string(), format!("目标 {target} · {image}")),
+        None if !container_exists => (target.to_string(), "未安装".into()),
+        None => (target.to_string(), "版本未读取".into()),
+    }
+}
+
 fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRow {
     let prefix = &state.cfg.entry_prefix;
     let kind_label = match v.runtime.kind.as_str() {
         skiff_store::KIND_NODE => "Node.js",
         skiff_store::KIND_GO => "Go",
+        skiff_store::KIND_RUST => "Rust",
         _ => "PHP",
     };
     let endpoint_full = match v.runtime.kind.as_str() {
@@ -82,12 +98,33 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
                 format!("socket {}", v.socket_host)
             }
         }
+        skiff_store::KIND_RUST => match v.runtime.port {
+            Some(port) => format!("http://127.0.0.1:{port}"),
+            None => "端口未分配".to_string(),
+        },
         _ => "端口：P2 按站点独立分配".to_string(),
     };
-    let endpoint_short = if v.runtime.kind == skiff_store::KIND_PHP {
-        "sock".to_string()
-    } else {
-        "P2".to_string()
+    let endpoint_short = match v.runtime.kind.as_str() {
+        skiff_store::KIND_PHP => "sock".to_string(),
+        skiff_store::KIND_RUST => v
+            .runtime
+            .port
+            .map(|p| format!(":{p}"))
+            .unwrap_or_else(|| "端口".into()),
+        _ => "P2".to_string(),
+    };
+    // 已知真实版本（镜像元数据）优先；容器缺失/未安装 → 目标 + 未安装；
+    // 容器在但元数据读不到 → 目标 + 版本未读取。停止的容器仍展示真实版本。
+    let target_version = v.runtime.version.clone();
+    let (version_display, version_note) = version_display(
+        v.actual_version.as_deref(),
+        &target_version,
+        &v.runtime.image,
+        v.container_exists,
+    );
+    let image_short = |id: &str| -> String {
+        let raw = id.strip_prefix("sha256:").unwrap_or(id);
+        raw.chars().take(12).collect()
     };
     let job = v.job.clone();
     let job_active = job.as_ref().is_some_and(|j| j.active());
@@ -96,11 +133,21 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         .is_some_and(|j| j.state == skiff_app::sites::RuntimeJobState::Failed);
     RuntimeRow {
         id: v.runtime.id.clone(),
+        kind_key: v.runtime.kind.clone(),
         kind_label: kind_label.into(),
         name: v.runtime.name.clone(),
         container_name: v.container_name.clone(),
         version: v.runtime.version.clone(),
+        version_display,
+        version_note,
+        actual_version: v.actual_version.clone().unwrap_or_default(),
+        container_exists: v.container_exists,
         image: v.runtime.image.clone(),
+        image_id: image_short(&v.image_id),
+        image_id_full: v.image_id.clone(),
+        image_digest: image_short(&v.image_digest),
+        image_digest_full: v.image_digest.clone(),
+        image_mismatch: v.image_mismatch,
         state_label: if let Some(j) = job.as_ref().filter(|j| j.active()) {
             // 安装中优先显示任务阶段，避免「未安装」与正在拉镜像互相矛盾。
             format!("{}：{}", j.state.label(), j.step)
@@ -121,6 +168,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         container_state: v.container_state.clone(),
         endpoint_short,
         endpoint_full,
+        port: v.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
         implemented: v.implemented,
         is_default: v.runtime.is_default,
         detail_href: format!(
@@ -148,6 +196,7 @@ fn job_view(job: &skiff_app::sites::RuntimeJob) -> RuntimeJobView {
         active: job.active(),
         failed: job.state == skiff_app::sites::RuntimeJobState::Failed,
         kind: job.kind.clone(),
+        ext_key: job.ext_key.clone(),
     }
 }
 
@@ -163,6 +212,7 @@ fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
         "active": job.active(),
         "failed": job.state == skiff_app::sites::RuntimeJobState::Failed,
         "kind": job.kind,
+        "ext_key": job.ext_key,
         "started_at": job.started_at,
         "updated_at": job.updated_at,
     })
@@ -181,6 +231,7 @@ fn site_view(
                 match r.kind.as_str() {
                     skiff_store::KIND_NODE => "Node.js",
                     skiff_store::KIND_GO => "Go",
+                    skiff_store::KIND_RUST => "Rust",
                     _ => "PHP",
                 },
                 r.version
@@ -575,18 +626,62 @@ fn runtime_kind_views() -> Vec<RuntimeKindView> {
         .collect()
 }
 
-fn extension_options(enabled: &[String]) -> Vec<ExtensionOptionView> {
-    skiff_app::runtime_catalog::PHP_EXTENSIONS
-        .iter()
-        .map(|e| ExtensionOptionView {
-            key: e.key.to_string(),
-            label: e.label.to_string(),
-            description: e.description.to_string(),
-            enabled: enabled.iter().any(|k| k == e.key),
-            default_on: e.default_on,
-            builtin: e.builtin,
-        })
-        .collect()
+fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<ExtensionOptionView> {
+    let base = skiff_app::runtime_catalog::base_image_of(image);
+    let mut out: Vec<ExtensionOptionView> =
+        skiff_app::runtime_catalog::extensions_for(version, base)
+            .into_iter()
+            .map(|entry| {
+                let e = entry.def;
+                let (supported, support_note) = match &entry.support {
+                    skiff_app::runtime_catalog::ExtSupport::Ok => (true, String::new()),
+                    skiff_app::runtime_catalog::ExtSupport::NeedsDeps(deps) => (
+                        true,
+                        format!("安装时将临时安装 {} 并在完成后清理", deps.join(" / ")),
+                    ),
+                    skiff_app::runtime_catalog::ExtSupport::Unsupported(reason) => {
+                        (false, reason.clone())
+                    }
+                };
+                ExtensionOptionView {
+                    key: e.key.to_string(),
+                    label: e.label.to_string(),
+                    description: e.description.to_string(),
+                    // 镜像内置项始终视为已启用（无需再编译）。
+                    enabled: e.builtin || enabled.iter().any(|k| k == e.key),
+                    default_on: e.default_on,
+                    builtin: e.builtin,
+                    category: e.category.to_string(),
+                    source: e.source.label().to_string(),
+                    hot: e.hot,
+                    supported,
+                    support_note,
+                }
+            })
+            .collect();
+    // 运行环境里按名字装过的 PECL 扩展也要出现在清单里（否则无法卸载）。
+    for token in enabled {
+        if skiff_app::runtime_catalog::php_extension(token).is_none()
+            && skiff_app::runtime_catalog::parse_pecl_token(token).is_some()
+        {
+            out.push(ExtensionOptionView {
+                key: token.clone(),
+                label: skiff_app::runtime_catalog::extension_label(token),
+                description: "通过 PECL 按名字安装".to_string(),
+                enabled: true,
+                default_on: false,
+                builtin: false,
+                category: skiff_app::runtime_catalog::CATEGORY_OTHER.to_string(),
+                source: skiff_app::runtime_catalog::ExtSource::Pecl
+                    .label()
+                    .to_string(),
+                hot: true,
+                supported: true,
+                support_note: String::new(),
+            });
+        }
+    }
+    out
 }
 
 pub async fn env_page(
@@ -621,7 +716,11 @@ pub async fn env_page(
         can_admin: user.can(skiff_model::Permission::Admin),
         kinds,
         catalog_json,
-        extensions: extension_options(&skiff_app::runtime_catalog::default_extensions()),
+        extensions: extension_options(
+            &skiff_app::runtime_catalog::default_extensions(),
+            skiff_app::sites::DEFAULT_PHP_VERSION,
+            &env.php_image,
+        ),
         jobs_href: format!("/{prefix}/sites/env/jobs"),
         add_href: format!("/{prefix}/sites/env/add"),
         base_install_href: format!("/{prefix}/sites/env/install"),
@@ -1443,14 +1542,35 @@ pub async fn runtime_detail(
         socket_container: view.socket_container.clone(),
         socket_exists: view.socket_exists,
         socket_mode: view.socket_mode.clone(),
-        extensions: extension_options(&enabled_exts),
-        extensions_href: format!(
-            "/{prefix}/sites/env/{}/extensions",
-            encode_uri_component(&id)
-        ),
+        extensions: extension_options(&enabled_exts, &view.runtime.version, &view.runtime.image),
+        ext_categories: [
+            skiff_app::runtime_catalog::CATEGORY_DB,
+            skiff_app::runtime_catalog::CATEGORY_IMAGE,
+            skiff_app::runtime_catalog::CATEGORY_CRYPTO,
+            skiff_app::runtime_catalog::CATEGORY_CACHE,
+            skiff_app::runtime_catalog::CATEGORY_OTHER,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
         has_job,
         job: job_view,
         job_url: format!("/{prefix}/sites/env/{}/job", encode_uri_component(&id)),
+        logs_url: format!(
+            "/{prefix}/sites/env/{}/logs?tail=300",
+            encode_uri_component(&id)
+        ),
+        env_href: format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+        runtime_log_path: if view.runtime.kind == skiff_store::KIND_RUST {
+            state
+                .site_settings()
+                .runtime_log_dir(&view.runtime.kind, &view.runtime.name)
+                .join("server.log")
+                .display()
+                .to_string()
+        } else {
+            String::new()
+        },
         logs,
         logs_error,
         can_admin: user.can(skiff_model::Permission::Admin),
@@ -1650,6 +1770,255 @@ pub async fn runtime_extensions_save(
     }
 }
 
+/// 安装单个扩展（目录项或 `pecl:` token）：异步任务，立即返回。
+pub async fn runtime_extension_install(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path((id, key)): Path<(String, String)>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    match state.install_extension(&id, &key).await {
+        Ok(_) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
+                &id,
+                "ok",
+                &key,
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?notice={}",
+                encode_uri_component(&id),
+                encode_uri_component(&format!("扩展 {key} 安装任务已提交，进度与日志会实时刷新"))
+            )))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
+                &id,
+                "failed",
+                &format!("{key}: {msg}"),
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?error={}",
+                encode_uri_component(&id),
+                encode_uri_component(&msg)
+            )))
+        }
+    }
+}
+
+/// 卸载单个扩展：删除 ini → 重启容器 → 从启用集合移除。
+pub async fn runtime_extension_uninstall(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path((id, key)): Path<(String, String)>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    match state.uninstall_extension(&id, &key).await {
+        Ok(_) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
+                &id,
+                "ok",
+                &key,
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?notice={}",
+                encode_uri_component(&id),
+                encode_uri_component(&format!("扩展 {key} 卸载任务已提交"))
+            )))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
+                &id,
+                "failed",
+                &format!("{key}: {msg}"),
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?error={}",
+                encode_uri_component(&id),
+                encode_uri_component(&msg)
+            )))
+        }
+    }
+}
+
+/// 按名字安装 PECL 扩展（可选版本）。
+pub async fn runtime_pecl_install(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let name = form_first(&form, "name").trim().to_string();
+    let version = form_first(&form, "version").trim().to_string();
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    match state.install_pecl_extension(&id, &name, &version).await {
+        Ok(_) => Ok(handlers::redirect(format!(
+            "/{prefix}/sites/env/{}?notice={}",
+            encode_uri_component(&id),
+            encode_uri_component(&format!("PECL {name} 安装任务已提交"))
+        ))),
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.extensions",
+                &id,
+                "failed",
+                &msg,
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?error={}",
+                encode_uri_component(&id),
+                encode_uri_component(&msg)
+            )))
+        }
+    }
+}
+
+/// 抽屉日志页签：安装日志在页面快照里，运行日志由这里按需拉取。
+pub async fn runtime_logs(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    require_admin(&user)?;
+    let tail = q
+        .get("tail")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(300)
+        .min(2000);
+    match state.runtime_logs(&id, tail).await {
+        Ok(text) => Ok(axum::Json(serde_json::json!({
+            "ok": true,
+            "logs": text,
+        }))),
+        Err(e) => Ok(axum::Json(serde_json::json!({
+            "ok": false,
+            "logs": e.to_string(),
+        }))),
+    }
+}
+
+/// 「实测版本」按钮：唯一主动进容器执行的位置，2 秒超时。
+pub async fn runtime_probe(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<axum::Json<serde_json::Value>, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let ip = handlers::client_ip(&state, &parts);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match state.probe_runtime_version(&id).await {
+        Ok(version) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.probe",
+                &id,
+                "ok",
+                &version,
+            );
+            Ok(axum::Json(serde_json::json!({
+                "ok": true,
+                "version": version,
+                "at": at,
+            })))
+        }
+        Err(e) => Ok(axum::Json(serde_json::json!({
+            "ok": false,
+            "error": e.to_string(),
+            "at": at,
+        }))),
+    }
+}
+
+/// 站点页签的解绑入口：停用 vhost、站点转静态并停止。
+pub async fn runtime_unbind_site(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path((id, domain)): Path<(String, String)>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    match state.unbind_runtime_site(&id, &domain).await {
+        Ok(()) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.unbind",
+                &id,
+                "ok",
+                &domain,
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?notice={}",
+                encode_uri_component(&id),
+                encode_uri_component(&format!("站点 {domain} 已解绑并停止"))
+            )))
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.unbind",
+                &id,
+                "failed",
+                &format!("{domain}: {msg}"),
+            );
+            Ok(handlers::redirect(format!(
+                "/{prefix}/sites/env/{}?error={}",
+                encode_uri_component(&id),
+                encode_uri_component(&msg)
+            )))
+        }
+    }
+}
+
 pub async fn runtime_config_save(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -1726,5 +2095,33 @@ pub async fn runtime_config_save(
                 encode_uri_component(&msg)
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_display;
+
+    #[test]
+    fn version_column_shows_actual_then_falls_back_with_marker() {
+        // 已知真实版本：主显补丁号，副行给出目标与镜像。
+        let (display, note) = version_display(Some("8.5.12"), "8.5", "php:8.5-fpm-alpine", true);
+        assert_eq!(display, "8.5.12");
+        assert_eq!(note, "目标 8.5 · php:8.5-fpm-alpine");
+
+        // 容器缺失（未安装）：目标 + 未安装。
+        let (display, note) = version_display(None, "8.5", "php:8.5-fpm-alpine", false);
+        assert_eq!(display, "8.5");
+        assert_eq!(note, "未安装");
+
+        // 容器存在但镜像元数据读不到：目标 + 版本未读取，不伪造真实版本。
+        let (display, note) = version_display(None, "8.5", "php:8.5-fpm-alpine", true);
+        assert_eq!(display, "8.5");
+        assert_eq!(note, "版本未读取");
+
+        // 停止但容器仍存在 → 上层仍传入镜像元数据版本，照常显示真实版本。
+        let (display, note) = version_display(Some("8.5.12"), "8.5", "php:8.5-fpm-alpine", true);
+        assert_eq!(display, "8.5.12");
+        assert_eq!(note, "目标 8.5 · php:8.5-fpm-alpine");
     }
 }

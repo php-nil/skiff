@@ -66,6 +66,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             image: "nginx".into(),
+            image_id: "sha256:cdn".into(),
             state: "running".into(),
             status: "Up".into(),
             labels: BTreeMap::new(),

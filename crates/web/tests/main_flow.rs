@@ -1275,6 +1275,7 @@ async fn exec_requires_single_use_ticket_bound_to_session_and_container() {
         id: "cid-1".into(),
         name: "web".into(),
         image: "nginx".into(),
+        image_id: "sha256:feedface".into(),
         state: "running".into(),
         status: "Up 1m".into(),
         labels: Default::default(),
@@ -4031,8 +4032,12 @@ async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
     let (status, html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK, "抽屉内容页应 200");
     assert!(
-        html.contains("data-runtime-extensions") && html.contains(r#"name="ext_form""#),
-        "抽屉必须有扩展增删表单: {html}"
+        html.contains("data-runtime-tabs") && html.contains(r#"data-runtime-tab="extensions""#),
+        "抽屉必须有页签并包含扩展页签: {html}"
+    );
+    assert!(
+        html.contains(r#"data-ext-search"#) && html.contains(r#"data-ext-cat"#),
+        "扩展页签必须有搜索与分类过滤: {html}"
     );
     // 无任务时抽屉不渲染任务面板（有任务时才有 data-runtime-job / data-job-log）。
     assert!(
@@ -4040,21 +4045,47 @@ async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
         "空闲运行环境不应显示安装任务面板: {html}"
     );
     for key in [
-        "opcache",
         "redis",
         "pdo_mysql",
         "mysqli",
         "gd",
         "zip",
         "bcmath",
-        "curl",
         "intl",
     ] {
         assert!(
-            html.contains(&format!(r#"name="ext" value="{key}""#)),
-            "抽屉扩展清单缺少 {key}（必须与安装弹窗同源）: {html}"
+            html.contains(&format!(r#"/extensions/{key}/install"#)),
+            "抽屉扩展清单缺少 {key} 的安装入口（必须与安装弹窗同源）: {html}"
         );
     }
+    // 镜像内置项（opcache / curl / mbstring / sodium / sqlite3 / pdo_sqlite）直接显示已安装，
+    // 不提供安装/编译入口，避免重复编译与重复启用。
+    for key in [
+        "opcache",
+        "curl",
+        "mbstring",
+        "sodium",
+        "sqlite3",
+        "pdo_sqlite",
+    ] {
+        assert!(
+            html.contains(&format!(r#"data-search="{key} "#))
+                && !html.contains(&format!(r#"/extensions/{key}/install"#)),
+            "{key} 为镜像内置，不应出现安装入口: {html}"
+        );
+    }
+    assert!(
+        html.contains(r#"/pecl""#) && html.contains(r#"name="name""#),
+        "扩展页签必须提供 PECL 按名字安装入口: {html}"
+    );
+    // 8.4 起 imap 移出核心：8.5 环境里必须灰显并给出原因，不提供一键安装入口。
+    assert!(
+        html.contains(r#"data-search="imap "#)
+            && html.contains("当前不可用")
+            && html.contains("已从核心移除")
+            && !html.contains(r#"/extensions/imap/install"#),
+        "imap 在 PHP 8.5 应标记为不可用并给原因: {html}"
+    );
 
     // 列表轮询端点：空任务也必须返回合法 JSON，且路由优先于 `/sites/env/{id}`。
     let resp = h

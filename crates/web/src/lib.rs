@@ -204,6 +204,30 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/{{id}}/extensions"),
             post(handlers::sites::runtime_extensions_save),
         )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/extensions/{{key}}/install"),
+            post(handlers::sites::runtime_extension_install),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/extensions/{{key}}/uninstall"),
+            post(handlers::sites::runtime_extension_uninstall),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/pecl"),
+            post(handlers::sites::runtime_pecl_install),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/logs"),
+            get(handlers::sites::runtime_logs),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/probe"),
+            post(handlers::sites::runtime_probe),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/sites/{{domain}}/unbind"),
+            post(handlers::sites::runtime_unbind_site),
+        )
         // ---- 内核「网站 → Nginx」：状态 / 配置 / 日志 / 模块 ----
         .route(&format!("/{p}/sites/nginx"), get(handlers::nginx::index))
         .route(
@@ -239,6 +263,30 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/runtimes/{{id}}/action/{{action}}"),
             post(handlers::sites::runtime_action),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/extensions/{{key}}/install"),
+            post(handlers::sites::runtime_extension_install),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/extensions/{{key}}/uninstall"),
+            post(handlers::sites::runtime_extension_uninstall),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/pecl"),
+            post(handlers::sites::runtime_pecl_install),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/logs"),
+            get(handlers::sites::runtime_logs),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/probe"),
+            post(handlers::sites::runtime_probe),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/sites/{{domain}}/unbind"),
+            post(handlers::sites::runtime_unbind_site),
         )
         .route(
             &format!("/{p}/runtimes/{{id}}/job"),
