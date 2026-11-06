@@ -448,7 +448,12 @@ mod tests {
         assert_eq!(mode(&web_root.join("sites")), 0o755);
         assert_eq!(mode(&web_root.join("php")), 0o755);
         assert!(web_root.join("nginx").join("conf.d").is_dir());
-        assert!(web_root.join("logs").join("nginx").is_dir());
+        // 站点已改为「一站一目录」：日志在 `sites/<域名>/log/`，不再有集中日志目录。
+        assert!(web_root.join("skiff").join("waf").join("rules").is_dir());
+        assert!(
+            !web_root.join("logs").exists(),
+            "布局已改为站点内 log/，不得再建集中日志目录"
+        );
     }
 
     /// 安装包自带 `official/public-key.txt` 时，首启应自动写入信任库。

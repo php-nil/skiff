@@ -379,6 +379,8 @@ jobs:
           set -eu
           export SKIFF_DATA_DIR="$PWD/.smoke/data"
           export SKIFF_RUN_DIR="$PWD/.smoke/run"
+          # 非 root runner 建不了默认的 /www；站点寄宿根必须落在 workspace 内。
+          export SKIFF_WEB_ROOT="$PWD/.smoke/www"
           export SKIFF_LISTEN=127.0.0.1:18080
           export SKIFF_FORM=docker
           mkdir -p .smoke

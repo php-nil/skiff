@@ -10,7 +10,9 @@ use skiff_fs::{
 };
 
 pub struct Harness {
-    pub base: tempfile::TempDir,
+    /// 保持临时目录生命周期；对外路径一律从 `base`（canonical）派生。
+    _tmp: tempfile::TempDir,
+    pub base: PathBuf,
     pub fs: Arc<Fs>,
     pub audit: Arc<MemoryAuditSink>,
     pub trash: Arc<MemoryTrashStore>,
@@ -26,10 +28,11 @@ impl Harness {
 
     /// 允许测试按需收窄配额/上限。
     pub fn with_config(f: impl FnOnce(&mut FsConfig)) -> Self {
-        let base = tempfile::tempdir().unwrap();
-        let data = base.path().join("data");
-        let sites = base.path().join("sites");
-        let trash_dir = base.path().join("trash");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = canonical_base(tmp.path());
+        let data = base.join("data");
+        let sites = base.join("sites");
+        let trash_dir = base.join("trash");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&sites).unwrap();
         std::fs::create_dir_all(&trash_dir).unwrap();
@@ -53,6 +56,7 @@ impl Harness {
         let quota = Arc::new(MemoryQuotaTracker::new());
         let fs = Fs::new(cfg, audit.clone(), trash.clone(), quota.clone());
         Self {
+            _tmp: tmp,
             base,
             fs: Arc::new(fs),
             audit,
@@ -62,19 +66,19 @@ impl Harness {
     }
 
     pub fn base(&self) -> PathBuf {
-        self.base.path().to_path_buf()
+        self.base.clone()
     }
 
     pub fn data(&self) -> PathBuf {
-        self.base.path().join("data")
+        self.base.join("data")
     }
 
     pub fn sites(&self) -> PathBuf {
-        self.base.path().join("sites")
+        self.base.join("sites")
     }
 
     pub fn trash_dir(&self) -> PathBuf {
-        self.base.path().join("trash")
+        self.base.join("trash")
     }
 
     /// 插件主体：默认只授权 `data/`。
@@ -122,4 +126,22 @@ impl Default for Harness {
 
 pub fn ctx() -> skiff_fs::OpContext {
     skiff_fs::OpContext::at("req-test-1", 1_000)
+}
+
+/// 授权根在 `Principal` 里走 `canonicalize`，测试原始路径必须与它同一坐标系。
+///
+/// Windows 上 `canonicalize` 会做两件测试路径没做的事：展开 8.3 短名
+/// （CI 的 `TEMP` 是 `C:\Users\RUNNER~1\...`）并返回 `\\?\` verbatim 前缀；
+/// 直接拿 `TempDir::path()` 拼原始路径，`path.starts_with(root)` 会判成越界，
+/// 与产品逻辑无关。这里统一成 `simplify_windows` 后的 canonical 形态。
+pub fn canonical_base(p: &std::path::Path) -> PathBuf {
+    let canon = std::fs::canonicalize(p).unwrap();
+    #[cfg(windows)]
+    {
+        let s = canon.to_string_lossy().to_string();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    canon
 }

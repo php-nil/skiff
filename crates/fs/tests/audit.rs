@@ -8,7 +8,7 @@ use skiff_fs::{
     AggregatingSink, AuditSink, Fs, FsConfig, MemoryQuotaTracker, MemoryTrashStore, ReadRequest,
     TrashConfig, WriteMode, WriteRequest,
 };
-use support::{ctx, Harness};
+use support::{canonical_base, ctx, Harness};
 
 #[test]
 fn success_and_denied_events_carry_expected_fields() {
@@ -88,10 +88,11 @@ fn audit_rows_never_include_file_content() {
 
 #[test]
 fn aggregating_sink_merges_reads_but_not_removes() {
-    let base = tempfile::tempdir().unwrap();
-    let data = base.path().join("data");
+    let tmp = tempfile::tempdir().unwrap();
+    let base = canonical_base(tmp.path());
+    let data = base.join("data");
     std::fs::create_dir_all(&data).unwrap();
-    let trash_dir = base.path().join("trash");
+    let trash_dir = base.join("trash");
     std::fs::create_dir_all(&trash_dir).unwrap();
 
     let inner = Arc::new(skiff_fs::MemoryAuditSink::new());
