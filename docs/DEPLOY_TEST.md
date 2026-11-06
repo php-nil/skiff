@@ -364,6 +364,12 @@ systemctl status skiff --no-pager
 
 数据目录不动；SQLite 迁移幂等、向前，启动自动执行并写 `PRAGMA user_version`。若库的 schema 版本高于二进制支持版本，启动会拒绝并报 `SchemaTooNew`——这是防降级写坏数据，不是 bug。
 
+**官方插件随升级同步**：`install.sh` 更新 `/www/skiff/official/` 后，`skiff serve` 在启动早期
+遍历该目录，只对**库内已安装**的插件做比对：包版本更高，或同版本但版本目录内容（文件集合 +
+SHA-256）与包不一致时，按普通重装路径安装。`data/` 不覆盖，管理员既有授权原样沿用，
+manifest 新增声明不自动授予，已停用插件保持停用；未安装的插件仍不自动安装（首次安装必须逐条确认权限）。
+单个包失败只写 `[warn]` 并继续启动，日志会打印可人工重试的 `skiff plugin install <包>` 命令。
+
 ### 2.6 回滚
 
 ```sh
@@ -510,8 +516,10 @@ ps -o user,group,args -p $(systemctl show -p MainPID --value skiff)
 
 - 列表页 `GET /{prefix}/plugins` 读的是 SQLite 的 `plugins` 表（`state.db().plugins()`），**不扫描目录**；
   顶部导航的插件入口也由这些行生成。表为空时页面显示「还没有安装插件」，导航里没有插件项。
-- `install.sh` 只把发布包里的 `official/` 复制到 `/www/skiff/official/`，**不自动安装**（脚本随后只打印提示）。
-  `official/` 下的 `.wbpkg` 是分发物，不等于已安装。
+- `install.sh` 只把发布包里的 `official/` 复制到 `/www/skiff/official/`，**不自动安装未装插件**
+  （脚本随后只打印提示）。`official/` 下的 `.wbpkg` 是分发物，不等于已安装。
+  已安装的官方插件由内核在启动早期做版本/内容比对后自动补齐（见 §2.5），
+  `data/`、既有授权与停用状态都不变。
 - 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
 - `allow_reduced_sandbox = false` 时，官方 5 个包的 manifest 没有显式关闭 `requires_full_sandbox`
   （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
