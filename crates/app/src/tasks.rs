@@ -1033,11 +1033,12 @@ impl TaskService {
             }));
         }
 
-        // 每插件任务上限（契约 §10.2：≤20）。
+        // 每插件任务上限（契约 §10.2：≤20）。任务归属按 `owner` 计：
+        // 管理 UI 代他人注册时，配额记在目标插件名下。
         let owned = sched
             .list(&TaskFilter::default())
             .into_iter()
-            .filter(|t| t.spec.source.plugin_id() == Some(caller))
+            .filter(|t| t.spec.source.plugin_id() == Some(owner))
             .count();
         if owned >= 20 {
             return Err("每插件最多注册 20 条任务".into());
@@ -1045,7 +1046,7 @@ impl TaskService {
         let mut spec = TaskSpec::new(
             id.clone(),
             kind,
-            TaskSource::Plugin(caller.to_string()),
+            TaskSource::Plugin(owner.to_string()),
             schedule,
         )
         .map_err(|e| e.to_string())?;
@@ -1605,6 +1606,56 @@ mod tests {
             .capability(plugin, "buffer.stat", json!({ "id": "builtin:db-vacuum" }))
             .await;
         assert!(denied.is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_ui_can_register_a_task_for_another_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let ui = "com.skiff.cron";
+        let target = "com.skiff.testkit";
+        svc.db_handle()
+            .upsert_plugin(&PluginRecord {
+                id: ui.into(),
+                name: "cron".into(),
+                version: "0.1.0".into(),
+                api: KERNEL_API.into(),
+                key_id: "0".into(),
+                manifest: String::new(),
+                enabled: true,
+                status: "enabled".into(),
+                status_detail: String::new(),
+                active_version: "0.1.0".into(),
+                installed_at: 0,
+                grants: vec![
+                    Grant::perm("scheduler:read"),
+                    Grant::perm("scheduler:manage"),
+                    Grant::perm("scheduler:admin"),
+                ],
+            })
+            .unwrap();
+        svc.capability(
+            ui,
+            "task.register",
+            json!({
+                "target": target,
+                "local_key": "probe",
+                "method": "probe",
+                "expr": "0 5 * * *",
+                "payload": {},
+            }),
+        )
+        .await
+        .unwrap();
+        let id = format!("plugin:{ui}:probe");
+        let sched = svc.scheduler.lock().await;
+        let task = sched.get(&id).expect("任务应已注册");
+        // 归属必须与执行目标一致，否则模型校验会拒绝（source/kind 同 id）。
+        assert_eq!(task.spec.source.plugin_id(), Some(target));
+        assert_eq!(
+            task.spec.kind.to_string_value(),
+            format!("plugin:{target}:probe")
+        );
     }
 
     #[test]

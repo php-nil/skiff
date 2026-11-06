@@ -115,6 +115,12 @@ fn timeout_enters_sixty_second_cooldown() {
     assert_eq!(record.result, RunResult::Timeout);
     assert_eq!(record.error_class, Some(ErrorClass::Timeout));
 
+    // 超时已结算后，插件晚到的回执必须按 run_id 丢弃，不能覆盖终态。
+    let late = sched.finish(&run_id, Ok(ExecOutput::default()), 31);
+    assert!(matches!(late, Err(TaskError::Protocol(_))));
+    // 冷却期内任务处于失败态，晚到回执不能把它改回运行/成功。
+    assert_eq!(sched.task_state("t1"), Some(TaskState::Failed));
+
     // 冷却期（60s）内再次到点 → 跳过
     clock.set(60);
     let skipped = sched.tick(&clock, &AllPluginsReady);
