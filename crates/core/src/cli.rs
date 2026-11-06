@@ -71,7 +71,8 @@ Skiff（轻舟）· 极简 Linux 服务器管理面板
   health                    探测本机 /healthz（退出码 0 = 健康）
   doctor                    检查数据目录/配置/TLS/Docker socket（只读）
   version                   打印版本
-  plugin install <pkg>      安装 .wbpkg（--yes 非交互；--grant cap:verb；--resource type:id）
+  plugin install <pkg>      安装 .wbpkg（--yes 非交互，默认授予 manifest 声明权限与
+                            resource_hints；--grant/--resource 可覆盖为最小授权）
   plugin list               列出已装插件
   plugin remove <id>        卸载（--delete-data 同时删数据）
   plugin enable|disable <id>

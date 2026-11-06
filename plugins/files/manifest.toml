@@ -1,7 +1,8 @@
 # 文件管理：只动安装时勾选的 path: 授权根，不碰目录之外的任何东西。
 #
 # 浏览/读写走宿主 fs 能力面；大文件按 256KiB 分页（单帧 1MiB 的协议上限）。
-# 不预设任何路径：管理员在安装确认页勾选要管理的目录（如 /var/www、/etc）。
+# 默认建议授权 `/www`（站点与面板数据的宿主根）：确认页预勾选，装完即可浏览；
+# 管理员可取消后自行填写更小的授权根（如 `/var/www`、`/etc`）。
 id = "com.skiff.files"
 name = "文件管理"
 version = "0.1.2"
@@ -13,8 +14,8 @@ idle_timeout_sec = 300
 max_restarts = 3
 requires = ["fs", "identity"]
 network_egress = []
-# 通用插件：授权哪些目录由管理员在安装确认页填写（不给默认建议，免得顺手放权）。
-resource_hints = []
+# 安装确认页的默认勾选值：官方包声明默认授权，避免「装完打不开」。
+resource_hints = ["path:/www"]
 
 [[permissions]]
 capability = "fs"

@@ -126,6 +126,32 @@ fn trust_hint(package: &Path, key_id: &str) -> String {
     }
 }
 
+/// 非交互安装（`--yes`）的选择口径：未显式指定时采用 manifest 声明值，
+/// 保证官方包「装完即可用」；显式 `--grant`/`--resource` 覆盖为最小授权。
+fn resolve_yes_selection(
+    declared: &[String],
+    hints: &[String],
+    explicit_grants: &[String],
+    explicit_resources: &[String],
+) -> Result<(Vec<String>, Vec<String>)> {
+    let granted = if explicit_grants.is_empty() {
+        declared.to_vec()
+    } else {
+        for g in explicit_grants {
+            if !declared.contains(g) {
+                bail!("--grant {g} 未在 manifest 中声明");
+            }
+        }
+        explicit_grants.to_vec()
+    };
+    let object_grants = if explicit_resources.is_empty() {
+        hints.to_vec()
+    } else {
+        explicit_resources.to_vec()
+    };
+    Ok((granted, object_grants))
+}
+
 pub fn plugin_install(
     cfg: &Config,
     package: &Path,
@@ -168,38 +194,45 @@ pub fn plugin_install(
     println!("能力: {:?}", meta.manifest.requires_str());
 
     let declared = meta.manifest.permission_strings();
+    let hints = meta.manifest.resource_hints.clone();
     let mut granted = Vec::new();
+    let mut object_grants = Vec::new();
     if yes {
-        // --yes：权限默认全拒，只授予显式 --grant（§4.5）
-        for g in &grants {
-            if !declared.contains(g) {
-                bail!("--grant {g} 未在 manifest 中声明");
-            }
-            granted.push(g.clone());
-        }
-        if !declared.is_empty() && granted.is_empty() {
-            println!("提示：--yes 模式下权限默认全拒；如需授权请显式 --grant cap:verb");
-        }
+        // --yes：未显式指定时采用 manifest 声明值（官方包「装完即可用」）；
+        // 给了 --grant/--resource 就按显式清单来，便于最小授权安装。
+        let (g, r) = resolve_yes_selection(&declared, &hints, &grants, &resources)?;
+        granted = g;
+        object_grants = r;
     } else {
         if !is_tty() {
-            bail!("非交互环境请使用 --yes（权限默认全拒，需显式 --grant）");
+            bail!("非交互环境请使用 --yes（默认授予 manifest 声明权限与 resource_hints）");
         }
         for g in &declared {
-            print!("授予 {g} ? [y/N] ");
+            print!("授予 {g} ? [Y/n] ");
             use std::io::Write;
             std::io::stdout().flush().ok();
             let mut line = String::new();
             std::io::stdin().read_line(&mut line)?;
-            if matches!(line.trim(), "y" | "Y" | "yes") {
+            if !matches!(line.trim(), "n" | "N" | "no") {
                 granted.push(g.clone());
+            }
+        }
+        for h in &hints {
+            print!("按默认建议授权 {h} ? [Y/n] ");
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            if !matches!(line.trim(), "n" | "N" | "no") {
+                object_grants.push(h.clone());
             }
         }
     }
 
     let opts = skiff_plugin::install_options(
         &trust,
-        granted.clone(),
-        resources,
+        granted,
+        object_grants,
         allow_unsigned,
         cfg.form,
         cfg.allow_reduced_sandbox,
@@ -479,6 +512,35 @@ fn is_tty() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--yes` 未显式指定时必须采用 manifest 默认值，否则官方包装完即不可用
+    /// （files 无 path: 授权 → 所有 RPC 400；cron 无 scheduler:* → 列表 400）。
+    #[test]
+    fn yes_install_defaults_to_manifest_declared_permissions_and_hints() {
+        let declared = vec!["fs:read".to_string(), "scheduler:read".to_string()];
+        let hints = vec!["path:/www".to_string()];
+
+        let (g, r) = resolve_yes_selection(&declared, &hints, &[], &[]).unwrap();
+        assert_eq!(g, declared, "未指定 --grant 时应全量授予 manifest 声明权限");
+        assert_eq!(r, hints, "未指定 --resource 时应采用 resource_hints");
+
+        // 显式清单覆盖默认值（最小授权安装仍可用）
+        let (g, r) = resolve_yes_selection(
+            &declared,
+            &hints,
+            &["fs:read".to_string()],
+            &["path:/tmp".to_string()],
+        )
+        .unwrap();
+        assert_eq!(g, vec!["fs:read".to_string()]);
+        assert_eq!(r, vec!["path:/tmp".to_string()]);
+
+        // 未声明的权限必须拒绝
+        let e = resolve_yes_selection(&declared, &hints, &["docker:run".to_string()], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("未在 manifest 中声明"), "{e}");
+    }
 
     /// 安装报错必须把「包自带公钥」与「包里没带公钥」分开，并给出可复制命令。
     #[test]
