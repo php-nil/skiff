@@ -222,9 +222,16 @@ pub fn join_extensions(list: &[String]) -> String {
     normalize_extensions(list).join(",")
 }
 
-/// 停用脚本：官方镜像自带 `docker-php-ext-disable`，写入的 ini 会被移除。
+/// 停用脚本：官方镜像只有 `docker-php-ext-enable`，**没有** `docker-php-ext-disable`
+/// （实测 exit 127 `not found`）。启用时写入的 ini 在 `/usr/local/etc/php/conf.d/`，
+/// 删掉 `docker-php-ext-<key>.ini` 即可让容器重启后不再加载该扩展。
 pub fn disable_script(key: &str) -> Option<String> {
-    php_extension(key).map(|e| format!("docker-php-ext-disable {}", e.key))
+    php_extension(key).map(|e| {
+        format!(
+            "rm -f /usr/local/etc/php/conf.d/docker-php-ext-{}.ini",
+            e.key
+        )
+    })
 }
 
 #[cfg(test)]
@@ -299,6 +306,22 @@ mod tests {
             .expect("redis")
             .enable_script
             .contains("yes ''"));
+    }
+
+    #[test]
+    fn disable_scripts_remove_ini_files() {
+        // 官方镜像没有 docker-php-ext-disable（实测 exit 127）；停用只能删 ini。
+        for key in ["pdo_mysql", "redis", "gd", "zip", "intl"] {
+            let script = disable_script(key).expect(key);
+            assert!(
+                !script.contains("docker-php-ext-disable"),
+                "{key}：官方镜像没有 docker-php-ext-disable"
+            );
+            assert!(
+                script.contains(&format!("/conf.d/docker-php-ext-{key}.ini")),
+                "{key}：停用脚本应删除对应 ini"
+            );
+        }
     }
 
     #[test]
