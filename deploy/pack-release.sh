@@ -167,7 +167,8 @@ Skiff（轻舟）$VERSION — ${TARGET:-linux-$ARCH}
   skiff                 面板主程序（/usr/local/bin/skiff）
   skiff-plugin          插件打包/验签工具（可选，install.sh 会一并装上）
   official/             官方插件包（guard/monitor/files/cron/testkit，install.sh 复制到
-                        /www/skiff/official/，不自动安装）+ public-key.txt
+                        /www/skiff/official/，不自动安装未装插件；已装插件由内核启动时
+                        按版本/内容同步，保留 data/ 与既有授权）+ public-key.txt
   install.sh            安装器（支持 --datadir / --listen / SKIFF_LISTEN / 幂等重装）
   docker-bootstrap.sh   Docker 前置引导（install.sh 会调用；也可单独补跑）
   vendor/install-php-extensions

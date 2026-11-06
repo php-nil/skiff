@@ -15,6 +15,7 @@ pub mod fsops;
 pub mod install;
 pub mod interop;
 pub mod ipc;
+pub mod official;
 pub mod supervisor;
 pub mod trust;
 
@@ -22,6 +23,7 @@ pub use capability::CapabilityHost;
 pub use install::{
     install_options, install_package, uninstall_package, InstallOptions, InstalledInfo, PluginError,
 };
+pub use official::{sync_official_plugins, OfficialSyncReport};
 // 清单词汇的 canonical 定义在 skiff-pkgfmt；此处转出仅为兼容，新代码请直接 `use skiff_pkgfmt::…`。
 pub use skiff_pkgfmt::manifest::{Capability, Manifest, RunMode};
 pub use supervisor::{Supervisor, SupervisorConfig};

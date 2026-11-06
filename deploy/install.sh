@@ -228,6 +228,7 @@ fi
 
 # 官方插件包（随发布包携带）：只放到本地官方源，**不自动安装**——
 # 权限与对象授权必须由管理员逐条确认，跳过确认就等于装了个万能插件。
+# 已安装的官方插件由内核启动时按版本/内容比对补齐（升级不再只升内核）。
 OFFICIAL_DIR="$DATA_DIR/official"
 if [ -d "$SRC_DIR/official" ]; then
     mkdir -p "$OFFICIAL_DIR"
@@ -346,6 +347,7 @@ echo "     镜像拉不动多半是网络：用 --registry-mirror <host> 配加�
 echo "  5) 默认只监听 127.0.0.1:18080；对外请配 TLS 或反代（见 config.toml.example）"
 if [ -d "$OFFICIAL_DIR" ]; then
 echo "  6) 官方插件（随包携带，安装时逐条确认权限）："
+echo "       已安装的官方插件会在服务启动时按随包版本/内容自动更新（保留 data/ 与授权）"
 echo "       官方公钥已由首启自动信任（$OFFICIAL_DIR/public-key.txt），无需手动导入"
 echo "       ls $OFFICIAL_DIR"
 echo "       $BIN_DIR/skiff plugin install $OFFICIAL_DIR/com.skiff.<x>-<ver>.wbpkg \\"

@@ -45,6 +45,17 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         info!(key_id = %key_id, "已自动信任官方发布包公钥");
     }
 
+    // 升级安装只换二进制时，随包 `official/*.wbpkg` 不会自动生效；启动早期对库内
+    // 已安装的官方插件做一次版本/内容比对并补齐（不动 data/、不改既有授权、
+    // 不自动安装未装插件）。单包失败只告警，不阻断启动。
+    let _ = skiff_plugin::sync_official_plugins(
+        &db,
+        &cfg.data_dir,
+        cfg.allow_unsigned,
+        cfg.form,
+        cfg.allow_reduced_sandbox,
+    );
+
     let entry_prefix = db.get_or_init_setting(KEY_ENTRY_PREFIX, || random_prefix(8))?;
     let csrf_secret = db.get_or_init_setting(KEY_CSRF_SECRET, skiff_identity::new_token)?;
     let _ = db.get_or_init_setting(KEY_INSTANCE_ID, skiff_identity::new_token);
@@ -482,6 +493,24 @@ mod tests {
         // 再次启动幂等：同 key_id 不重复插入，也不覆盖内容。
         assert!(trust_bundled_public_key(&db, &data_dir).unwrap().is_some());
         assert_eq!(db.list_trusted_keys().unwrap().len(), 1);
+    }
+
+    /// 官方目录里有坏包时：只告警，不得阻断启动（升级安装失败的兜底口径）。
+    #[test]
+    fn corrupt_official_package_does_not_block_bootstrap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let official = data_dir.join("official");
+        std::fs::create_dir_all(&official).unwrap();
+        std::fs::write(official.join("broken-0.1.0.wbpkg"), b"not a package").unwrap();
+
+        let cfg = test_config(
+            data_dir,
+            tmp.path().join("www"),
+            tmp.path().join("run"),
+            tmp.path().join("config.toml"),
+        );
+        bootstrap(&cfg).expect("坏官方包不得让面板启动失败");
     }
 
     /// 没有公钥文件 / 文件为空时不写库、也不报错（未携带公钥是合法状态）。
