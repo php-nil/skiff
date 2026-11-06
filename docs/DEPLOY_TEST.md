@@ -401,7 +401,7 @@ sh uninstall.sh --purge    # 删程序 + 数据 + 配置（需手输 YES 确认�
 | `skiff backup [--out <path>]` | `VACUUM INTO` + 复制插件 data，保留 3 份 | 0 |
 | `skiff token create ci` | 建 API Token（仅创建时打印一次） | 0 |
 | `skiff plugin list` | 列出已装插件 | 0 |
-| `skiff plugin install <pkg> --yes --grant docker:containers.list --resource container:abc` | 非交互安装；`--yes` 下权限**默认全拒**，必须逐条 `--grant` | 0 |
+| `skiff plugin install <pkg> --yes [--grant <perm>] [--resource <obj>]` | 非交互安装；默认采用 manifest 声明的权限与 `resource_hints`（官方包「装完即可用」），显式 `--grant`/`--resource` 覆盖为最小授权 | 0 |
 | `skiff plugin remove <id> [--delete-data]` | 卸载，默认保留数据 | 0 |
 | `skiff plugin config <id>` | 列出该插件 `config_schema` 声明项与当前值（secret 打码） | 0 |
 | `skiff plugin config <id> <key> <value>` | 写入一项配置；是否 secret 由 manifest 决定，键必须在 `config_schema` 内 | 0 |
@@ -454,33 +454,26 @@ ls /www/skiff/official            # com.skiff.{guard,monitor,cron,testkit}-0.1.0
 #   skiff trust import /www/skiff/official/public-key.txt --label official
 
 # 主机监控：只读 /proc
-skiff plugin install /www/skiff/official/com.skiff.monitor-0.1.0.wbpkg --yes \
-  --grant fs:read --grant fs:list --resource path:/proc
+skiff plugin install /www/skiff/official/com.skiff.monitor-0.1.0.wbpkg --yes
 
-# 容器守护：零内核改动，按容器逐条授权
+# 容器守护：manifest 已声明权限；容器对象按需显式追加
 skiff plugin install /www/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
-  --grant docker:containers.list --grant docker:containers.inspect \
-  --grant docker:containers.restart \
-  --grant fs:read --grant fs:write --grant fs:list \
   --resource container:nginx
 
-# 文件管理：目录由你决定（不给默认值）
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.2.wbpkg --yes \
-  --grant fs:read --grant fs:write --grant fs:list \
-  --grant fs:mkdir --grant fs:remove --grant fs:rename \
-  --resource path:/var/www
+# 文件管理：默认授权 path:/www（resource_hints 预勾选），装完即可浏览；
+# 想缩小范围就显式覆盖，例如 --resource path:/var/www
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.2.wbpkg --yes
 
-# 计划任务：只调插件接口，不执行宿主 shell；要调度别的插件再加 --resource plugin:<id>
+# 计划任务：manifest 已声明 scheduler:read/manage/run/admin 与 interop:call；
+# 要调度别的插件再追加 --resource plugin:<id>
 skiff plugin install /www/skiff/official/com.skiff.cron-0.1.0.wbpkg --yes \
-  --grant identity:self --grant interop:call --resource plugin:*
+  --resource plugin:*
 
 # 架构测试台（多视图 / 槽位 / RPC 成功失败 / 越界 / 互操作）
-skiff plugin install /www/skiff/official/com.skiff.testkit-0.1.0.wbpkg --yes \
-  --grant fs:read --grant fs:list --grant identity:self --grant interop:call \
-  --resource path:/proc --resource plugin:com.skiff.cron
+skiff plugin install /www/skiff/official/com.skiff.testkit-0.1.0.wbpkg --yes
 ```
 
-> `--grant` 少一项就是运行时 403（插件会把「该去勾哪个授权」写进错误文案）；`guard`/`files` 的 `resource_hints` 为空，**必须显式给 `--resource`**。
+> `--yes` 不再「权限默认全拒」，而是采用 manifest 声明 + `resource_hints`；显式 `--grant`/`--resource` 会把该维度收窄到只给列出的项（少一项即运行时 403，插件会把「该去勾哪个授权」写进错误文案）。确认页同样默认勾选这些声明值，取消勾选即按最小授权安装。**升级/覆盖安装不会自动补授权**，重装后请核对详情页授权项。
 
 ### 2.10 权限链自检（装完必查）
 
