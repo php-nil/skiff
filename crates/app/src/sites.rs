@@ -2241,6 +2241,13 @@ impl AppState {
         } else {
             Vec::new()
         };
+        if kind == skiff_store::KIND_PHP {
+            if let Err((code, reason)) =
+                runtime_catalog::validate_selection(version, &image, &enabled)
+            {
+                return Err(SiteError::BadRequest(format!("{code}: {reason}")));
+            }
+        }
         // Rust 是「独立进程 + 固定端口」：建环境时一次性分配，冲突直接拒绝。
         let port = if kind == skiff_store::KIND_RUST {
             let used: Vec<u16> = self
