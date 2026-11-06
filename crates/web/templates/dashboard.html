@@ -38,7 +38,7 @@
   <a class="health{% if runtime_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/env">
     <span class="k">运行环境</span>
     <span class="v">{{ runtime_total }}<small> 个</small></span>
-    <span class="d muted">{% if runtime_abnormal > 0 %}{{ runtime_abnormal }} 个未运行/异常{% else if runtime_total == 0 %}尚未登记{% else %}全部运行中{% endif %}</span>
+    <span class="d muted">{% if runtime_abnormal > 0 %}{{ runtime_abnormal }} 个未运行/异常{% else if runtime_total == 0 %}尚未登记{% else if runtime_uninstalled > 0 %}{{ runtime_uninstalled }} 个未安装{% else %}全部运行中{% endif %}</span>
   </a>
   <a class="health" href="/{{ ctx.prefix }}/plugins">
     <span class="k">插件</span>
@@ -56,7 +56,7 @@
   <a class="health{% if runtime_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/env">
     <span class="k">运行环境</span>
     <span class="v">{{ runtime_total }}<small> 个</small></span>
-    <span class="d muted">{% if runtime_abnormal > 0 %}{{ runtime_abnormal }} 个未运行/异常{% else if runtime_total == 0 %}尚未登记{% else %}全部运行中{% endif %}</span>
+    <span class="d muted">{% if runtime_abnormal > 0 %}{{ runtime_abnormal }} 个未运行/异常{% else if runtime_total == 0 %}尚未登记{% else if runtime_uninstalled > 0 %}{{ runtime_uninstalled }} 个未安装{% else %}全部运行中{% endif %}</span>
   </a>
 </section>
 <div class="mount-row">

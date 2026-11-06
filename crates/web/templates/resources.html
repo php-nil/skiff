@@ -21,15 +21,19 @@
           {% if can_admin %}
           {% if section == "images" %}
           <form method="post" action="/{{ ctx.prefix }}/images/{{ r.id }}/remove" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit">删除</button>
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit" data-confirm="删除镜像 {{ r.name }}？此操作不可恢复。">删除</button>
           </form>
           {% else if section == "networks" %}
+          {% if r.name == "bridge" || r.name == "host" || r.name == "none" %}
+          <span class="muted small">预定义网络不可删除</span>
+          {% else %}
           <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/remove" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit">删除</button>
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit" data-confirm="删除网络 {{ r.name }}？">删除</button>
           </form>
+          {% endif %}
           {% else %}
           <form method="post" action="/{{ ctx.prefix }}/volumes/{{ r.name }}/remove" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit">删除</button>
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit" data-confirm="删除卷 {{ r.name }}？卷内数据将一并删除，不可恢复。">删除</button>
           </form>
           {% endif %}
           {% else %}<span class="muted small">只读</span>{% endif %}

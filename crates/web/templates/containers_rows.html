@@ -19,10 +19,7 @@
       <td><span class="state {{ c.state }}">{{ c.state }}</span><div class="muted small">{{ c.status }}</div></td>
       <td class="actions">
         {% if can_operate %}
-        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/start" hx-target="#rows" hx-swap="innerHTML" class="inline">
-          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-          <button class="mini" type="submit">启动</button>
-        </form>
+        {% if c.state == "running" %}
         <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/restart" hx-target="#rows" hx-swap="innerHTML" class="inline">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="mini" type="submit">重启</button>
@@ -31,6 +28,12 @@
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="mini" type="submit">停止</button>
         </form>
+        {% else %}
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/start" hx-target="#rows" hx-swap="innerHTML" class="inline">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini" type="submit">启动</button>
+        </form>
+        {% endif %}
         {% else %}
         <span class="muted small">只读</span>
         {% endif %}

@@ -91,6 +91,16 @@ pub fn redirect(to: impl Into<String>) -> Response {
     Redirect::to(&to.into()).into_response()
 }
 
+/// 设置页的表单错误统一回跳（PRG）：保留页面上下文与已填字段，
+/// 不再把用户留在裸 400 错误页。
+pub fn settings_error_redirect(state: &AppState, message: &str) -> String {
+    format!(
+        "/{}/settings?err={}",
+        state.cfg.entry_prefix,
+        crate::util::encode_uri_component(message)
+    )
+}
+
 /// 解析表单体。大小上限由 axum 默认 body 限制（2MB）兜底——表单只承载 CSRF 与少量字段，
 /// 远超所需；插件包上传走独立路由并显式抬升上限（见 `router()` 里的 `DefaultBodyLimit`）。
 pub async fn read_form(body: String) -> HashMap<String, Vec<String>> {

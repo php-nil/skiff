@@ -44,22 +44,21 @@ pub async fn index(
     let site_abnormal = sites.iter().filter(|s| s.status != "running").count();
     let runtimes = state.db().list_runtimes()?;
     let runtime_total = runtimes.len();
-    let runtime_abnormal = runtimes
-        .iter()
-        .filter(|r| {
-            let name = if r.kind == skiff_store::KIND_PHP {
-                skiff_app::sites::runtime_container_name(&r.kind, &r.name)
-            } else {
-                format!("skiff-runtime-{}", r.id)
-            };
-            containers
-                .iter()
-                .find(|c| c.name == name)
-                .map(|c| c.state != "running")
-                // 未安装（没有容器）不算异常，只是尚未安装。
-                .unwrap_or(false)
-        })
-        .count();
+    let mut runtime_abnormal = 0usize;
+    let mut runtime_uninstalled = 0usize;
+    for r in &runtimes {
+        let name = if r.kind == skiff_store::KIND_PHP {
+            skiff_app::sites::runtime_container_name(&r.kind, &r.name)
+        } else {
+            format!("skiff-runtime-{}", r.id)
+        };
+        match containers.iter().find(|c| c.name == name) {
+            Some(c) if c.state != "running" => runtime_abnormal += 1,
+            // 未安装（没有容器）不算异常，只是尚未安装。
+            None => runtime_uninstalled += 1,
+            Some(_) => {}
+        }
+    }
     let totp_enabled = state
         .db()
         .user_by_id(user.user.id)?
@@ -112,6 +111,7 @@ pub async fn index(
         site_abnormal,
         runtime_total,
         runtime_abnormal,
+        runtime_uninstalled,
         abnormal_total: abnormal.len(),
         abnormal: abnormal
             .iter()

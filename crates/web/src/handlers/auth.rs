@@ -224,10 +224,16 @@ pub async fn change_password(
     let confirm = form_first(&form, "confirm_password");
 
     if new != confirm {
-        return Err(AppError::BadRequest("两次输入的新口令不一致".into()));
+        return Err(AppError::Redirect(handlers::settings_error_redirect(
+            &state,
+            "两次输入的新口令不一致",
+        )));
     }
     if !skiff_identity::verify_password(&old, &user.user.password_hash) {
-        return Err(AppError::BadRequest("当前口令不正确".into()));
+        return Err(AppError::Redirect(handlers::settings_error_redirect(
+            &state,
+            "当前口令不正确",
+        )));
     }
     let hash = skiff_identity::hash_password(&new).map_err(AppError::BadRequest)?;
     state.db().set_password(user.user.id, &hash)?;

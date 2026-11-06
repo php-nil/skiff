@@ -522,6 +522,7 @@ impl DockerService {
                 container,
                 CreateExecOptions::<String> {
                     cmd: Some(cmd),
+                    attach_stdin: Some(true),
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
                     tty: Some(true),

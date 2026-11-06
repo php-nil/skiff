@@ -60,7 +60,8 @@ pub async fn page(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let force = q.get("force").map(|v| v == "1").unwrap_or(false);
-    render_settings(&state, &user, "", "", None, Vec::new(), force).await
+    let error = q.get("err").map(String::as_str).unwrap_or("");
+    render_settings(&state, &user, error, "", None, Vec::new(), force).await
 }
 
 pub async fn import_key(

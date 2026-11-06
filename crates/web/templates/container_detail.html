@@ -63,6 +63,8 @@
 </section>
 
 {% if can_exec %}
+<link rel="stylesheet" href="/{{ ctx.prefix }}/static/xterm.css">
+<script src="/{{ ctx.prefix }}/static/xterm.min.js" defer></script>
 <section class="panel">
   <h2>终端（exec）</h2>
   <div class="term" id="term"

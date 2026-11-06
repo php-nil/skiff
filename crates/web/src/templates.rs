@@ -584,6 +584,8 @@ pub struct DashboardPage {
     /// 运行环境健康：总数 / 异常（未运行、漂移、容器缺失）。
     pub runtime_total: usize,
     pub runtime_abnormal: usize,
+    /// 尚未安装（没有容器）的运行环境数量；不计入异常，但也不能说成「全部运行中」。
+    pub runtime_uninstalled: usize,
     pub abnormal_total: usize,
     /// 最多展示若干条异常容器；完整列表走 `containers?filter=error`。
     pub abnormal: Vec<ContainerRowView>,
