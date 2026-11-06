@@ -1183,6 +1183,45 @@
       for (var i = 0; i < catalog.length; i++) if (catalog[i].key === key) return catalog[i];
       return catalog[0];
     }
+    // 按当前选中的 PHP 版本重建扩展勾选项：不可用项灰显并带原因，避免
+    // 8.4/8.5 已经移除的扩展在 8.3 上也被误禁，或反之。
+    function rebuildExts(def) {
+      if (!extField) return;
+      var box = extField.querySelector(".ext-options");
+      if (!box) return;
+      var ver = verSel ? verSel.value : "";
+      var list = (def.exts_by_version || {})[ver] || [];
+      if (!list.length) return;
+      box.innerHTML = "";
+      list.forEach(function (e) {
+        var lab = document.createElement("label");
+        lab.className = "ext-option" + (e.supported ? "" : " ext-option-off");
+        if (!e.supported) lab.title = e.note || "";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.name = "ext";
+        cb.value = e.key;
+        if (e.default_on) cb.checked = true;
+        if (!e.supported) cb.disabled = true;
+        var name = document.createElement("span");
+        name.className = "ext-name mono";
+        name.textContent = e.key;
+        if (e.builtin) {
+          name.appendChild(document.createTextNode(" "));
+          var tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = "内置";
+          name.appendChild(tag);
+        }
+        var hint = document.createElement("span");
+        hint.className = "hint";
+        hint.textContent = e.supported ? (e.label || e.key) : (e.note || "");
+        lab.appendChild(cb);
+        lab.appendChild(name);
+        lab.appendChild(hint);
+        box.appendChild(lab);
+      });
+    }
     function rebuild(keepName) {
       var def = defOf(kindSel ? kindSel.value : "");
       if (!def || !verSel) return;
@@ -1201,11 +1240,12 @@
       }
       if (submit) submit.textContent = implemented ? "创建并后台安装" : "登记运行环境";
       if (!keepName && nameInput) nameInput.value = def.key + "-" + (def.versions && def.versions[0] || "");
+      rebuildExts(def);
     }
     if (kindSel) kindSel.addEventListener("change", function () { nameTouched = false; rebuild(false); });
     if (verSel) verSel.addEventListener("change", function () {
-      if (nameTouched || !nameInput || !kindSel) return;
-      nameInput.value = kindSel.value + "-" + verSel.value;
+      if (!nameTouched && nameInput && kindSel) nameInput.value = kindSel.value + "-" + verSel.value;
+      rebuildExts(defOf(kindSel ? kindSel.value : ""));
     });
     if (nameInput) nameInput.addEventListener("input", function () { nameTouched = true; });
     document.addEventListener("click", function (e) {

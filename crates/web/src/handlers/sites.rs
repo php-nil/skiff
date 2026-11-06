@@ -695,16 +695,50 @@ pub async fn env_page(
     let runtimes = views.iter().map(|v| runtime_row(&state, v)).collect();
     let prefix = &state.cfg.entry_prefix;
     let kinds = runtime_kind_views();
+    // 新建弹窗切换 PHP 版本时，扩展勾选项要按该版本重算可用性；
+    // 数据与抽屉共用 `extension_options`（`runtime_catalog` 单一来源）。
+    let mut exts_by_version = serde_json::Map::new();
+    if let Some(def) = skiff_app::runtime_catalog::RUNTIME_KINDS
+        .iter()
+        .find(|k| k.kind == "php")
+    {
+        for ver in def.versions {
+            let opts = extension_options(
+                &skiff_app::runtime_catalog::default_extensions(),
+                ver,
+                &env.php_image,
+            );
+            let arr: Vec<serde_json::Value> = opts
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "key": e.key,
+                        "label": e.label,
+                        "builtin": e.builtin,
+                        "default_on": e.default_on,
+                        "supported": e.supported,
+                        "note": e.support_note,
+                    })
+                })
+                .collect();
+            exts_by_version.insert(ver.to_string(), serde_json::Value::Array(arr));
+        }
+    }
+    let exts_json = serde_json::Value::Object(exts_by_version);
     let catalog_json = serde_json::to_string(
         &kinds
             .iter()
             .map(|k| {
-                serde_json::json!({
+                let mut v = serde_json::json!({
                     "key": k.key,
                     "label": k.label,
                     "versions": k.versions,
                     "implemented": k.implemented,
-                })
+                });
+                if k.key == "php" {
+                    v["exts_by_version"] = exts_json.clone();
+                }
+                v
             })
             .collect::<Vec<_>>(),
     )
