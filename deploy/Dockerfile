@@ -25,6 +25,9 @@ COPY crates ./crates
 # workspace 的成员里有 xtask：少这一份 manifest，cargo 会直接崩在
 # "failed to load manifest for workspace member xtask" —— 镜像根本构建不出来
 COPY xtask ./xtask
+# PHP 扩展安装器按 include_str!("../../../deploy/vendor/install-php-extensions") 编进
+# skiff-app：构建上下文必须带上 deploy/vendor，否则镜像构建死在 couldn't read。
+COPY deploy/vendor ./deploy/vendor
 # 前端资源在 crates/web/{static,templates} 里，随上面的 COPY crates 进上下文。
 # 不要再 COPY 顶层 web-assets/——那个目录 2026-10-31 已迁入 crates/web，
 # 残留引用会让 docker build 直接死在 "/web-assets": not found（release 首跑踩过）。
