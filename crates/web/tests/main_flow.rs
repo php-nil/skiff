@@ -431,6 +431,43 @@ async fn default_admin_login_lands_on_overview_without_force_change() {
     );
 }
 
+/// 改密表单校验失败必须回跳设置页并带错误，不能把用户留在裸 400 页。
+#[tokio::test]
+async fn change_password_failure_redirects_back_to_settings() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+    let body = format!(
+        "csrf={csrf}&old_password=wrong&new_password=new-pw-123&confirm_password=new-pw-123"
+    );
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/password")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(loc.starts_with("/p/settings?err="), "回跳设置页: {loc}");
+    assert!(
+        loc.contains("%E5%BD%93%E5%89%8D%E5%8F%A3%E4%BB%A4"),
+        "错误文案应 URL 编码后回传: {loc}"
+    );
+}
+
 /// 显式开启（用户标志为 1）时保留原能力：登录与后续页面强制跳改密页。
 #[tokio::test]
 async fn explicit_must_change_password_still_redirects() {
@@ -993,6 +1030,10 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
             && dash_html.contains("auth.login")
             && dash_html.contains("Docker 不可用，暂时读不到容器状态"),
         "概览必须接真实审计，并在 Docker 不可用时给出容器空态: {dash_html}"
+    );
+    assert!(
+        dash_html.contains("个未安装"),
+        "运行环境只有登记、没有容器时，概览不能笼统宣称「全部运行中」: {dash_html}"
     );
 
     let filtered = h
@@ -2764,6 +2805,39 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
         html.contains("/p/plugins/com.skiff.testkit/ui/mount.html?nonce="),
         "{html}"
     );
+}
+
+/// 官方包「装完即可用」回归：files 必须有默认 path: 授权建议，
+/// cron 必须声明 scheduler 能力（否则全新安装后 files RPC / cron 列表 400）。
+#[tokio::test]
+async fn official_packages_declare_usable_install_defaults() {
+    let files = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/files/manifest.toml"))
+        .expect("files manifest 必须可解析");
+    let perms = files.permission_strings();
+    for p in ["fs:read", "fs:write", "fs:list", "fs:mkdir", "fs:rename"] {
+        assert!(perms.iter().any(|x| x == p), "files 缺少 {p}: {perms:?}");
+    }
+    assert!(
+        files.resource_hints.iter().any(|h| h.starts_with("path:/")),
+        "files 必须给出默认 path: 授权建议，否则安装后无法浏览: {:?}",
+        files.resource_hints
+    );
+
+    let cron = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/cron/manifest.toml"))
+        .expect("cron manifest 必须可解析");
+    let cron_perms = cron.permission_strings();
+    for p in [
+        "scheduler:read",
+        "scheduler:manage",
+        "scheduler:run",
+        "scheduler:admin",
+    ] {
+        assert!(
+            cron_perms.iter().any(|x| x == p),
+            "cron 缺少 {p}，全新安装后列表会 400: {cron_perms:?}"
+        );
+    }
+    assert!(cron.cron.is_empty(), "cron 插件不得再声明自建 cron 计时器");
 }
 
 /// 网站列表：默认站点只在列表做标记，切换入口下沉到详情页。
@@ -4630,7 +4704,7 @@ async fn deleting_bound_runtime_lists_domains_and_is_rejected() {
         .db()
         .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
-    let err = h.state.delete_site_runtime("php-8.5").unwrap_err();
+    let err = h.state.delete_site_runtime("php-8.5").await.unwrap_err();
     let text = format!("{err}");
     assert!(
         matches!(err, skiff_app::sites::SiteError::Conflict(_)),
@@ -4681,9 +4755,9 @@ async fn sites_batch_requires_admin() {
     );
 }
 
-/// 配置保存失败（本机无 Docker，reload 失败）必须回滚旧内容并给出提示。
+/// 停止态保存非法配置：先校验、失败不落盘，并给出错误而不是「已重载」。
 #[tokio::test]
-async fn site_config_save_failure_rolls_back() {
+async fn stopped_site_config_save_validation_failure_does_not_persist() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let root = h.data_dir.join("www/sites/demo.local");
@@ -4691,10 +4765,14 @@ async fn site_config_save_failure_rolls_back() {
         .db()
         .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
+    h.state
+        .db()
+        .set_site_status("demo.local", "stopped")
+        .unwrap();
     std::fs::create_dir_all(skiff_app::sites::site_conf_dir(&root)).unwrap();
-    let conf = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
+    let disabled = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf.disabled");
     let original = "server { listen 80; server_name demo.local; }";
-    std::fs::write(&conf, original).unwrap();
+    std::fs::write(&disabled, original).unwrap();
 
     let (_, sites_html) = get_page(&h.app, "/p/sites", &admin).await;
     let csrf = csrf_from(&sites_html);
@@ -4709,7 +4787,10 @@ async fn site_config_save_failure_rolls_back() {
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[
                     ("csrf", &csrf),
-                    ("content", "server { listen 80; server_name broken.local; }"),
+                    (
+                        "content",
+                        "server { listen 80; server_name demo.local; this_is_invalid_directive_xyz; }",
+                    ),
                 ]))
                 .unwrap(),
         )
@@ -4725,15 +4806,24 @@ async fn site_config_save_failure_rolls_back() {
         .to_string();
     let (status, html) = get_page(&h.app, &loc, &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("已回滚"), "必须给回滚提示: {html}");
     assert!(
-        html.contains(original),
-        "页面必须展示回滚后的旧配置: {html}"
+        html.contains("校验") || html.contains("容器列表失败"),
+        "必须展示校验失败原因: {html}"
+    );
+    assert!(
+        !html.contains("配置已保存、校验通过并已重载"),
+        "失败不得复用重载成功文案: {html}"
     );
     assert_eq!(
-        std::fs::read_to_string(&conf).unwrap(),
+        std::fs::read_to_string(&disabled).unwrap(),
         original,
-        "磁盘内容必须回滚"
+        "校验失败不得落盘"
+    );
+    assert!(
+        !skiff_app::sites::site_conf_dir(&root)
+            .join("demo.local.conf")
+            .exists(),
+        "失败不得把停用配置推进线上 include"
     );
 }
 
