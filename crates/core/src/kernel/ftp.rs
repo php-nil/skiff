@@ -391,6 +391,12 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
         None,
     )
     .await;
+    // 卸载会整目录回收 `/etc/pure-ftpd/auth`，干净系统首装时该目录也不存在；
+    // 直接 ln 会以 "No such file or directory" 失败，这里先补建。
+    // `/etc` 在主服务里是只读（ProtectSystem=full），mk 必须走 run_host。
+    run_host("/usr/bin/mkdir", &["-p", AUTH_DIR], None)
+        .await
+        .map_err(|e| FtpError::internal(format!("创建 {AUTH_DIR} 失败：{e}")))?;
     run_host(
         "/usr/bin/ln",
         &["-sfn", AUTH_DB_LINK, &format!("{AUTH_DIR}/50pure")],
@@ -446,14 +452,15 @@ async fn uninstall(params: &Value) -> Result<Value, FtpError> {
     let _ = run_host("/usr/bin/systemctl", &["stop", SERVICE], None).await;
     let _ = run_host("/usr/bin/systemctl", &["disable", SERVICE], None).await;
     let _ = run_host("/usr/bin/rm", &["-f", JAIL_FILE], None).await;
+    // install 会在 auth 目录建 `50pure` 符号链接；卸载后该目录必须一并回收，
+    // 否则留下指向前 PureDB 的悬空链接。保留包（remove_package=false）时也回收：
+    // 服务已停，重装会由 install 重新建目录与链接。
+    let _ = run_host("/usr/bin/rm", &["-rf", AUTH_DIR], None).await;
     let _ = run("systemctl", &["restart", "fail2ban"], None).await;
     if remove_package {
         let _ = run_host("/usr/bin/apt-get", &["remove", "-y", "pure-ftpd"], None).await;
         let _ = run_host("/usr/bin/rm", &["-f", PASSWD_FILE, PDB_FILE], None).await;
         let _ = run_host("/usr/bin/rm", &["-rf", CONF_DIR], None).await;
-        // install 会在 auth 目录建 `50pure` 符号链接；pluggable 认证目录要一并回收，
-        // 否则卸载后留下指向前 PureDB 的悬空链接（实测残留 `/etc/pure-ftpd/auth/50pure`）。
-        let _ = run_host("/usr/bin/rm", &["-rf", AUTH_DIR], None).await;
     }
     Ok(json!({
         "stopped": true,
@@ -700,9 +707,17 @@ async fn ensure_pdb_present() -> Result<(), FtpError> {
         return Ok(());
     }
     if !Path::new(PASSWD_FILE).exists() {
-        std::fs::File::create(PASSWD_FILE)
-            .map_err(|e| FtpError::internal(format!("创建 {PASSWD_FILE} 失败：{e}")))?;
-        let _ = std::fs::set_permissions(PASSWD_FILE, std::fs::Permissions::from_mode(0o600));
+        // `/etc/pure-ftpd` 在主服务只读，建文件必须经 run_host（install -m 0600 -D /dev/null）。
+        run_host("/usr/bin/mkdir", &["-p", "/etc/pure-ftpd"], None)
+            .await
+            .map_err(|e| FtpError::internal(format!("创建 /etc/pure-ftpd 失败：{e}")))?;
+        run_host(
+            "/usr/bin/install",
+            &["-m", "0600", "/dev/null", PASSWD_FILE],
+            None,
+        )
+        .await
+        .map_err(|e| FtpError::internal(format!("创建 {PASSWD_FILE} 失败：{e}")))?;
     }
     let pw = pure_pw_path()
         .ok_or_else(|| FtpError::internal("找不到 pure-pw，请确认 pure-ftpd 已安装"))?;
