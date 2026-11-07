@@ -36,11 +36,12 @@
   * 数字纪律：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
   * 权限口径：数据根与 `plugins/` 保持 0711（可穿越不可列），勿改回 0700，否则降权插件全线 EACCES（详见 `docs/DEPLOY_TEST.md` §1.1）。
 * **编译与测试串行（红线）**：违反即返工。
-  * 同一时间只允许一路 `cargo` 编译或测试（`fmt` / `clippy` / `test` / `build`），不分会话、不分开发者。开跑前先抢目录锁 `New-Item -ItemType Directory -Path d:\panel\.build-lock -ErrorAction Stop`，创建失败即说明有人在跑，等待或放弃；跑完在 `finally` 里删锁，崩溃残留手工删。
+  * 同一时间只允许一路 `cargo` 编译或测试（`fmt` / `clippy` / `test` / `build` 及任意 `cargo` 子命令），不分会话、不分开发者。**必须经包装/闸门执行**：`PATH` 靠前的 `tools/bin/cargo.cmd` → `tools/cargo-gate.ps1` → `tools/gate.ps1`，由全局命名互斥体 `Global\SkiffBuild` 发放唯一令牌；拿不到令牌立即以退出码 2 拒绝，**不排队等待**。根 workspace 与 `plugins/` 共用同一把令牌，插件侧命令按 `--manifest-path` 记为 `workspace=plugins` 租约。
+  * 第二层是单次调用内部：`.cargo/config.toml` 固化 `[build] jobs = 1`，同一时刻只跑一路 `rustc`；`plugins/` 无本地 `.cargo/config.toml`，继承根配置，闸门的插件任务另显式带 `--jobs 1`。`cargo fmt` 不取 cargo 的 target 锁，只能靠包装入口拦住，因此 `fmt` 同样必须走该入口。
   * 禁止为了并行而使用自定义 `CARGO_TARGET_DIR`——它会绕过 cargo 自带的 target 目录锁，是已发生过的真实事故成因。
-  * 根 workspace 与 `plugins/` 第二 workspace **串行**跑，不并发。
-  * 全量 `cargo test --workspace` 优先交 CI；本地只跑受影响 crate 的快速回归。必须本地全量时，按 `CARGO_INCREMENTAL=0 --jobs 1` 串行执行。
-  * 依据：本机 6.3 GB 物理内存 + 12 GB 页文件上限 ≈ 18.3 GB commit 天花板，空载基线已占 5.4 GB；并发编译会打穿提交上限，表现为 `rustc` LLVM OOM、`failed to mmap rmeta`、`STATUS_STACK_BUFFER_OVERRUN`，系统日志同时出现 Event 26「虚拟内存不足」。
+  * 全量 `cargo test --workspace` 优先交 CI；本地只跑受影响 crate 的快速回归。必须本地全量时走 `pwsh tools/gate.ps1 -Task test -AllowFull`（任务模式的闸门会拦截未显式放行的全量命令；`exec` 透传模式不拦，需自行判断）。
+  * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**，guest 侧 commit limit 在 4.7–7.2GB 间浮动，比例阈值没有判别力。原「6.3GB 物理内存 + 18.3GB commit 天花板」记载已被实测证伪，不再引用。
+  * 覆盖不到的入口：绝对路径 `C:\Users\dev-bl\.cargo\bin\cargo.exe`、PATH 更新前已启动的进程（含已运行的 Trae 会话、rust-analyzer）、CI 与其它机器。这些场景没有机器级拦截，仍需人工遵守本节条款。
 
 ### 3.2 测试要求
 

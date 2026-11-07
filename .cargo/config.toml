@@ -3,6 +3,11 @@
 # 说明：本机到 crates.io 的直连被阻断，这里把 crates-io 源替换为 rsproxy 稀疏索引。
 # 只影响本项目（不污染 ~/.cargo/config.toml）；换到能直连 crates.io 的机器时，
 # 删除本文件即可恢复默认源，或改用自己的镜像。
+[build]
+# 单次 cargo 调用内部也不并行编译；配合 tools/bin/cargo 包装的全局令牌，
+# 保证同一时刻全机只有一路 rustc。不要在命令行用 --jobs N 覆盖。
+jobs = 1
+
 [source.crates-io]
 replace-with = "rsproxy-sparse"
 

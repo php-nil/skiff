@@ -8,8 +8,9 @@
      仅持锁进程可在 finally 中释放；陈旧租约自动回收并写日志。
   3. 拿不到锁立即以退出码 2 结束，不排队、不等待。
   4. 根 workspace 与 plugins/ 共用同一把互斥体，禁止并行。
-  5. 提交内存准入：提交余量 < 1024MB 或 Available < 1536MB 时拒绝启动（退出码 3）。
-     不用提交百分比：本机页文件很小（约 167MB），空闲基线即达 82%，百分比无判别力。
+  5. 内存准入：可用物理内存 < 1024MB 时拒绝启动（退出码 3），下限可用
+     SKIFF_GATE_MIN_AVAILABLE_MB 调整。本机是动态内存虚拟机，commit limit 在
+     4.7–7.2GB 间浮动，提交量/百分比阈值没有判别力。
   6. 运行期间每 5 秒采样一次，写入 .workbuddy/memwatch/YYYYMMDD.csv，保留 7 天。
   7. 本地全量拦截：根 workspace 的 clippy / test / build 不带 -Pkg 时必须显式 -AllowFull（退出码 4）。
 
@@ -26,8 +27,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('fmt', 'clippy', 'test', 'build', 'probe')]
+    [ValidateSet('fmt', 'clippy', 'test', 'build', 'exec', 'probe')]
     [string]$Task,
+
+    # 仅 -Task exec：由 PATH 包装入口透传的原始 cargo 参数。
+    # 命名必须与内部数组 $cargoArgs 区分开：PowerShell 变量名大小写不敏感，
+    # 同名会被后面的 $cargoArgs = @() 直接覆盖（曾导致所有参数被清空）。
+    [string[]]$ExecArgs = @(),
 
     [string]$Pkg,
 
@@ -49,9 +55,14 @@ $LeaseFile = Join-Path $LockDir 'build.lease'
 $GateLog   = Join-Path $LockDir 'gate.log'
 $StopFile  = Join-Path $LockDir ("sampler.stop.{0}" -f $PID)
 
-$MinFreeCommitMB  = 1024
-$MinAvailableMB   = 1536
+$MinAvailableMB   = 1024
 $RetentionDays    = 7
+if ($env:SKIFF_GATE_MIN_AVAILABLE_MB) {
+    $parsed = 0
+    if ([int]::TryParse($env:SKIFF_GATE_MIN_AVAILABLE_MB, [ref]$parsed) -and $parsed -gt 0) {
+        $MinAvailableMB = $parsed
+    }
+}
 
 foreach ($d in @($LockDir, $MemDir)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
@@ -159,6 +170,18 @@ function Stop-Sampler($sampler) {
     try { Remove-Item $StopFile -Force -ErrorAction SilentlyContinue } catch { }
 }
 
+function Resolve-RealCargo {
+    if ($env:SKIFF_REAL_CARGO -and (Test-Path $env:SKIFF_REAL_CARGO)) { return $env:SKIFF_REAL_CARGO }
+    foreach ($p in ($env:PATH -split ';')) {
+        if (-not $p) { continue }
+        $exe = Join-Path $p 'cargo.exe'
+        if (Test-Path $exe) { return $exe }
+    }
+    $fallback = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+    if (Test-Path $fallback) { return $fallback }
+    throw '找不到真实的 cargo.exe（PATH 中除包装入口外没有 cargo.exe）'
+}
+
 # ---- 构造 cargo 命令 ----
 $PluginsManifest = Join-Path $RepoRoot 'plugins\Cargo.toml'
 $cargoArgs = @()
@@ -202,8 +225,24 @@ switch ($Task) {
             $cargoArgs = @('build', '--workspace', '--locked', '--jobs', '1')
         }
     }
+    'exec' {
+        # PATH 包装透传的原始参数；-Pkg/-Plugins 不参与
+        $cargoArgs = @($ExecArgs)
+    }
     'probe' {
         $cargoArgs = @()
+    }
+}
+
+# 根 workspace 与 plugins/ 共用同一把令牌，这里只标注归属用于审计
+$wsKind = 'root'
+if ($Plugins) { $wsKind = 'plugins' }
+if ($Task -eq 'exec') {
+    for ($i = 0; $i -lt $cargoArgs.Count - 1; $i++) {
+        if ($cargoArgs[$i] -eq '--manifest-path' -and $cargoArgs[$i + 1] -match 'plugins') { $wsKind = 'plugins' }
+    }
+    foreach ($a in $cargoArgs) {
+        if ($a -match '^--manifest-path=.*plugins') { $wsKind = 'plugins' }
     }
 }
 
@@ -253,13 +292,14 @@ try {
         pid       = $PID
         startedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         task      = $Task
+        workspace = $wsKind
         pkg       = $Pkg
         plugins   = [bool]$Plugins
         command   = (@('cargo') + $cargoArgs) -join ' '
     }
     $lease | ConvertTo-Json -Compress | Set-Content -Path $LeaseFile -Encoding utf8
-    Write-GateLog ("ACQUIRED task={0} pkg={1} plugins={2} cmd=[{3}]" -f $Task, $Pkg, [bool]$Plugins, $lease.command)
-    Write-Host ("ACQUIRED: pid={0} task={1} pkg={2}" -f $PID, $Task, $Pkg) -ForegroundColor Green
+    Write-GateLog ("ACQUIRED task={0} workspace={1} pkg={2} cmd=[{3}]" -f $Task, $wsKind, $Pkg, $lease.command)
+    Write-Host ("ACQUIRED: pid={0} task={1} workspace={2} pkg={3}" -f $PID, $Task, $wsKind, $Pkg) -ForegroundColor Green
 
     if ($Task -eq 'probe') {
         Write-Host ("PROBE: 持锁 {0}s" -f $HoldSeconds)
@@ -279,20 +319,22 @@ try {
         $mem = $null
     }
     if ($null -ne $mem) {
-        Write-Host ("MEM: committed={0}MB limit={1}MB free={2}MB ({3}%) available={4}MB pagefile={5}%" -f `
-            $mem.CommittedMB, $mem.LimitMB, $mem.FreeCommitMB, $mem.CommitPct, $mem.AvailableMB, $mem.PagefilePct)
-        if ($mem.FreeCommitMB -lt $MinFreeCommitMB -or $mem.AvailableMB -lt $MinAvailableMB) {
-            Write-GateLog ("REFUSED admission committed={0}MB limit={1}MB free={2}MB avail={3}MB" -f `
-                $mem.CommittedMB, $mem.LimitMB, $mem.FreeCommitMB, $mem.AvailableMB)
-            Write-Host ("REFUSED: 提交余量 {0}MB（阈值 {1}MB）/ 可用 {2}MB（阈值 {3}MB）" -f `
-                $mem.FreeCommitMB, $MinFreeCommitMB, $mem.AvailableMB, $MinAvailableMB) -ForegroundColor Red
+        Write-Host ("MEM: available={0}MB（准入下限 {1}MB） committed={2}MB limit={3}MB pagefile={4}%（仅供观测）" -f `
+            $mem.AvailableMB, $MinAvailableMB, $mem.CommittedMB, $mem.LimitMB, $mem.PagefilePct)
+        # 动态内存虚拟机：commit limit 在 4.7–7.2GB 浮动，比例阈值不可靠，只看可用物理内存绝对下限
+        if ($mem.AvailableMB -lt $MinAvailableMB) {
+            Write-GateLog ("REFUSED admission available={0}MB min={1}MB" -f $mem.AvailableMB, $MinAvailableMB)
+            Write-Host ("REFUSED: 可用物理内存 {0}MB 低于下限 {1}MB（可用 SKIFF_GATE_MIN_AVAILABLE_MB 调整）" -f `
+                $mem.AvailableMB, $MinAvailableMB) -ForegroundColor Red
             Write-Host '  请先关闭其他会话或等待当前编译结束，再重试。' -ForegroundColor Red
             $exitCode = 3
             exit $exitCode
         }
     }
 
-    $cmdLine = (@('cargo') + $cargoArgs) -join ' '
+    # 绕过 PATH 包装递归：始终调用真实 cargo.exe
+    $realCargo = Resolve-RealCargo
+    $cmdLine = (@($realCargo) + $cargoArgs) -join ' '
     Write-Host ("RUN: {0}" -f $cmdLine) -ForegroundColor Cyan
 
     if ($DryRun) {
@@ -305,9 +347,9 @@ try {
     $csv = Join-Path $MemDir ((Get-Date -Format 'yyyyMMdd') + '.csv')
     $sampler = Start-Sampler $csv
 
-    # 全量门禁按红线口径关闭增量
-    $env:CARGO_INCREMENTAL = '0'
-    & cargo @cargoArgs
+    # 门禁任务按红线口径关闭增量；包装透传保持调用方语义
+    if ($Task -ne 'exec') { $env:CARGO_INCREMENTAL = '0' }
+    & $realCargo @cargoArgs
     $exitCode = $LASTEXITCODE
     Write-GateLog ("FINISHED task={0} pkg={1} exit={2}" -f $Task, $Pkg, $exitCode)
 }
