@@ -1635,6 +1635,33 @@ impl AppState {
         self.runtime_jobs.lock().await.list()
     }
 
+    /// 容器是否被进行中的内核任务占用（Docker 页删除前的 BusyGuard）。
+    ///
+    /// 与 `delete_site_runtime` 同一口径：运行环境有安装/扩展任务、Web 服务
+    /// 正在安装或重建时，都不允许从 Docker 页直接删除对应容器。
+    pub async fn container_busy_reason(&self, container: &str) -> Option<String> {
+        if container == NGINX_CONTAINER && self.site_install_progress().await.running {
+            return Some("Web 服务正在安装或重建中，暂不能删除容器".into());
+        }
+        let runtimes = self.db().list_runtimes().unwrap_or_default();
+        for rt in runtimes {
+            if runtime_container_name(&rt.kind, &rt.name) != container {
+                continue;
+            }
+            if self
+                .runtime_job(&rt.id)
+                .await
+                .is_some_and(|job| job.active())
+            {
+                return Some(format!(
+                    "运行环境 {} 有进行中的任务，暂不能删除容器",
+                    rt.name
+                ));
+            }
+        }
+        None
+    }
+
     async fn job_advance(&self, id: &str, step: &str, progress: u8, line: &str) {
         self.runtime_jobs
             .lock()
@@ -5100,10 +5127,13 @@ fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// 内核自建容器的统一标签：`project=sites` 用于识别归属，`protected=true`
+/// 保证面板不能停/删自己托管的 Web 服务与运行时容器。
 fn skiff_labels(component: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("io.skiff.project".to_string(), "sites".to_string()),
         ("io.skiff.component".to_string(), component.to_string()),
+        (skiff_model::LABEL_PROTECTED.to_string(), "true".to_string()),
     ])
 }
 
@@ -5546,6 +5576,86 @@ mod tests {
             login_concurrency: 1,
         };
         AppState::new(db, docker, sup, cfg, "csrf-test".into(), "test")
+    }
+
+    /// 内核自建容器（Web 服务 + 各运行环境）必须统一带保护标签，
+    /// 否则面板能把自己的 nginx / PHP / Rust 容器停掉。
+    #[test]
+    fn kernel_container_specs_carry_protected_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = settings_at(dir.path());
+        let nginx = state.nginx_spec(&s);
+        let php = state.php_spec_for(&s, "php", "batch1", "php:8.5-fpm-alpine");
+        let rust = state.rust_spec_for(&s, "rust-1.83", "rust:1.83", 18090);
+        assert_eq!(nginx.name.as_deref(), Some(NGINX_CONTAINER));
+        assert_eq!(php.name.as_deref(), Some("skiff-php-batch1"));
+        assert_eq!(rust.name.as_deref(), Some("skiff-rust-rust-1.83"));
+        for spec in [&nginx, &php, &rust] {
+            assert_eq!(
+                spec.labels
+                    .get(skiff_model::LABEL_PROTECTED)
+                    .map(String::as_str),
+                Some("true"),
+                "{} 缺 io.skiff.protected 标签",
+                spec.name.as_deref().unwrap_or_default()
+            );
+            assert_eq!(
+                spec.labels
+                    .get(skiff_model::LABEL_PROJECT)
+                    .map(String::as_str),
+                Some("sites")
+            );
+        }
+    }
+
+    /// 删除容器前的 BusyGuard：运行环境有任务、Web 服务安装/重建中都应拒绝，
+    /// 空闲时放行（正常删除路径）。
+    #[tokio::test]
+    async fn container_busy_reason_matches_kernel_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        state
+            .db()
+            .create_runtime(&skiff_store::NewRuntime {
+                id: "php-busy".into(),
+                kind: "php".into(),
+                name: "busy".into(),
+                version: "8.5".into(),
+                image: "php:8.5-fpm-alpine".into(),
+                image_digest: String::new(),
+                socket_path: None,
+                port: None,
+                is_default: false,
+            })
+            .unwrap();
+        let container = runtime_container_name("php", "busy");
+        assert!(
+            state.container_busy_reason(&container).await.is_none(),
+            "空闲运行环境应允许删除"
+        );
+        state
+            .runtime_jobs
+            .lock()
+            .await
+            .begin("php-busy", "install")
+            .unwrap();
+        assert!(state
+            .container_busy_reason(&container)
+            .await
+            .unwrap()
+            .contains("进行中的任务"));
+        assert!(
+            state.container_busy_reason("someone-else").await.is_none(),
+            "无关容器不受运行环境任务影响"
+        );
+        assert!(state.container_busy_reason(NGINX_CONTAINER).await.is_none());
+        state.site_env.lock().await.running = true;
+        assert!(state
+            .container_busy_reason(NGINX_CONTAINER)
+            .await
+            .unwrap()
+            .contains("Web 服务"));
     }
 
     #[test]
@@ -6036,6 +6146,7 @@ mod tests {
             project: None,
             owner: None,
             protected: false,
+            unprotected_kernel: false,
         }
     }
 

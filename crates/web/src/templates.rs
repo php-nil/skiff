@@ -55,6 +55,8 @@ pub struct ContainerRowView {
     pub status: String,
     pub project: String,
     pub protected: bool,
+    /// 内核托管但缺少保护标签的存量容器（页面提示需重建后生效）。
+    pub unprotected_kernel: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +608,8 @@ pub struct DashboardPage {
 pub struct ContainersPage {
     pub ctx: PageCtx,
     pub can_operate: bool,
+    /// 删除容器属生命周期动词（admin 专属）。
+    pub can_delete: bool,
     pub containers: Vec<ContainerRowView>,
     pub docker_reason: String,
     /// 空串表示不筛选；`error` 表示只看异常容器（概览深链用）。
@@ -618,6 +622,7 @@ pub struct ContainersPage {
 pub struct ContainerRows {
     pub ctx: PageCtx,
     pub can_operate: bool,
+    pub can_delete: bool,
     pub containers: Vec<ContainerRowView>,
     pub filter: String,
 }
@@ -637,6 +642,7 @@ pub struct ContainerDetailPage {
     pub health: String,
     pub can_exec: bool,
     pub can_operate: bool,
+    pub can_delete: bool,
     pub docker_reason: String,
     pub error: String,
 }

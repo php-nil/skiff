@@ -339,6 +339,7 @@ pub fn container_view(
         status: crate::util::truncate(&c.status, 60),
         project: c.project.clone().unwrap_or_default(),
         protected: c.protected,
+        unprotected_kernel: c.unprotected_kernel,
     }
 }
 

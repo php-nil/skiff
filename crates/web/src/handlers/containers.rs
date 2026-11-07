@@ -61,6 +61,7 @@ pub async fn list(
     let page = ContainersPage {
         ctx: handlers::page_ctx(&state, &user, "containers"),
         can_operate,
+        can_delete: user.can(skiff_model::Permission::DockerLifecycle),
         containers: rows_for(containers, &filter),
         docker_reason: state.docker_unavailable_reason().to_string(),
         filter,
@@ -84,6 +85,7 @@ pub async fn rows(
     let page = ContainerRows {
         ctx: handlers::page_ctx(&state, &user, "containers"),
         can_operate: user.can(skiff_model::Permission::DockerOperate),
+        can_delete: user.can(skiff_model::Permission::DockerLifecycle),
         containers: rows_for(containers, &filter),
         filter,
     };
@@ -196,10 +198,23 @@ pub async fn detail(
         health,
         can_exec: user.can(skiff_model::Permission::DockerExec),
         can_operate: user.can(skiff_model::Permission::DockerOperate),
+        can_delete: user.can(skiff_model::Permission::DockerLifecycle),
         docker_reason: state.docker_unavailable_reason().to_string(),
         error: String::new(),
     };
     handlers::render(page)
+}
+
+/// 页面动作 → 动词白名单。未知动作仍是 400，不能落到别的动词上。
+fn action_verb(action: &str) -> Result<Verb, AppError> {
+    match action {
+        "start" => Ok(Verb::Start),
+        "stop" => Ok(Verb::Stop),
+        "restart" => Ok(Verb::Restart),
+        "kill" => Ok(Verb::Kill),
+        "remove" => Ok(Verb::ContainerRemove),
+        other => Err(AppError::BadRequest(format!("未知动作: {other}"))),
+    }
 }
 
 pub async fn action(
@@ -212,13 +227,7 @@ pub async fn action(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
 
-    let verb = match action.as_str() {
-        "start" => Verb::Start,
-        "stop" => Verb::Stop,
-        "restart" => Verb::Restart,
-        "kill" => Verb::Kill,
-        other => return Err(AppError::BadRequest(format!("未知动作: {other}"))),
-    };
+    let verb = action_verb(&action)?;
 
     let row = handlers::resolve_container(&state, &id).await?;
     let obj = handlers::object_ref(&row);
@@ -239,10 +248,31 @@ pub async fn action(
             AppError::Forbidden(e.to_string())
         })?;
 
+    // BusyGuard：容器有进行中的安装/扩展/重建任务时，删除会打断内核自己的任务。
+    if verb == Verb::ContainerRemove {
+        if let Some(reason) = state.container_busy_reason(&row.name).await {
+            let _ = state.db().audit(
+                &user.user.username,
+                &handlers::client_ip(&state, &parts),
+                &verb.audit_action(),
+                &row.name,
+                "deny",
+                &reason,
+            );
+            return Err(AppError::Conflict(reason));
+        }
+    }
+
+    let params = match verb {
+        // 删除即销毁；running 容器一并强制移除，不再拆成 stop→remove 两步。
+        Verb::ContainerRemove => skiff_docker::DockerParams::ContainerRemove { force: true },
+        _ => skiff_docker::DockerParams::None,
+    };
+
     // 分发只在 Docker::execute 一处；这里拿到的 Ok 值（动作类动词为 null）用不上
     let result = state
         .docker()
-        .execute(verb, Some(&obj), skiff_docker::DockerParams::None)
+        .execute(verb, Some(&obj), params)
         .await
         .map(|_| ());
 
@@ -273,6 +303,13 @@ pub async fn action(
 
     if handlers::htmx_request(&parts) {
         return rows(State(state), AuthUser(user), Query(HashMap::new())).await;
+    }
+    // 删除后详情页已不存在，回列表而不是落到 404。
+    if verb == Verb::ContainerRemove {
+        return Ok(handlers::redirect(format!(
+            "/{}/containers",
+            state.cfg.entry_prefix
+        )));
     }
     Ok(handlers::redirect(format!(
         "/{}/containers/{}",
@@ -494,4 +531,18 @@ async fn run_exec(
 /// 供 UI 列表用：把 ObjectRef 转回展示名。
 pub fn describe(obj: &ObjectRef) -> String {
     format!("{} ({})", obj.name, obj.short_id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_is_a_known_container_action() {
+        assert_eq!(action_verb("remove").unwrap(), Verb::ContainerRemove);
+        for action in ["start", "stop", "restart", "kill"] {
+            assert!(action_verb(action).is_ok(), "{action} 应保持可用");
+        }
+        assert!(action_verb("nope").is_err(), "未知动作仍要 400");
+    }
 }

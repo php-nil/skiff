@@ -2,7 +2,10 @@
 {% block title %}{{ container.name }} · Skiff{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>{{ container.name }} <code>{{ container.short_id }}</code></h1>
+  <h1>{{ container.name }} <code>{{ container.short_id }}</code>
+    {% if container.protected %}<span class="tag warn-tag">受保护</span>{% endif %}
+    {% if container.unprotected_kernel %}<span class="tag warn-tag" title="旧容器未打保护标签，重建 Web 服务或运行环境后生效">存量未受保护</span>{% endif %}
+  </h1>
   <a class="ghost" href="/{{ ctx.prefix }}/containers">← 返回列表</a>
 </div>
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
@@ -31,6 +34,14 @@
       </form>
       <form method="post" action="/{{ ctx.prefix }}/containers/{{ container.id }}/kill" class="inline">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini danger" type="submit">终止</button>
+      </form>
+    </div>
+    {% endif %}
+    {% if can_delete %}
+    <div class="row">
+      <form method="post" action="/{{ ctx.prefix }}/containers/{{ container.id }}/remove" class="inline"
+            data-confirm="删除后不可恢复，确定删除容器 {{ container.name }}？">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini danger" type="submit">删除</button>
       </form>
     </div>
     {% endif %}

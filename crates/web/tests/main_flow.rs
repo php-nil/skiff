@@ -1537,6 +1537,7 @@ async fn exec_requires_single_use_ticket_bound_to_session_and_container() {
         project: None,
         owner: None,
         protected: false,
+        unprotected_kernel: false,
     };
 
     // 没票据 → 403

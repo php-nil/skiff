@@ -423,6 +423,33 @@ mod tests {
             .is_ok());
     }
 
+    /// 删除与 stop/restart 共用同一套受保护判定：打了标签就拒；缺标签的存量
+    /// 内核容器不假装受保护（页面用 `unprotected_kernel` 单独提示）。
+    #[test]
+    fn container_remove_uses_same_protection_rule() {
+        let p = policy(Tier::Lifecycle, Form::Native);
+        let normal = obj("web", &[]);
+        assert!(
+            p.check(&user(Role::Admin), Verb::ContainerRemove, Some(&normal))
+                .is_ok(),
+            "正常容器删除应放行"
+        );
+        let protected = obj("web", &[(LABEL_PROTECTED, "true")]);
+        assert!(matches!(
+            p.check(&user(Role::Admin), Verb::ContainerRemove, Some(&protected)),
+            Err(PolicyError::Protected { .. })
+        ));
+        let stale_kernel = obj("skiff-web-nginx", &[(LABEL_PROJECT, "sites")]);
+        assert!(!stale_kernel.is_protected());
+        assert!(p
+            .check(
+                &user(Role::Admin),
+                Verb::ContainerRemove,
+                Some(&stale_kernel)
+            )
+            .is_ok());
+    }
+
     #[test]
     fn plugin_needs_explicit_object_grant() {
         let p = policy(Tier::Lifecycle, Form::Native);

@@ -85,6 +85,9 @@ pub struct ContainerRow {
     pub project: Option<String>,
     pub owner: Option<String>,
     pub protected: bool,
+    /// 内核托管（`io.skiff.project=sites`）但缺少 `io.skiff.protected` 的存量容器。
+    /// Docker 不允许后加标签，只能在页面提示「重建后生效」。
+    pub unprotected_kernel: bool,
 }
 
 impl ContainerRow {
@@ -698,6 +701,10 @@ fn to_row(c: ContainerSummary) -> ContainerRow {
         .map(|v| v == "true")
         .unwrap_or(false)
         || name == "skiff";
+    let unprotected_kernel = !protected
+        && labels
+            .get(crate::policy::LABEL_PROJECT)
+            .is_some_and(|project| project == "sites");
     ContainerRow {
         id: c.id.unwrap_or_default(),
         name,
@@ -712,6 +719,7 @@ fn to_row(c: ContainerSummary) -> ContainerRow {
         owner: labels.get(crate::policy::LABEL_OWNER).cloned(),
         labels,
         protected,
+        unprotected_kernel,
     }
 }
 
@@ -1057,6 +1065,50 @@ mod tests {
         assert!(row.protected);
         assert_eq!(row.name, "skiff");
         assert_eq!(row.state, "running");
+    }
+
+    #[test]
+    fn stale_kernel_container_without_protected_label_is_not_protected() {
+        let c = ContainerSummary {
+            id: Some("old".into()),
+            names: Some(vec!["/skiff-web-nginx".into()]),
+            labels: Some(HashMap::from([
+                ("io.skiff.project".to_string(), "sites".to_string()),
+                ("io.skiff.component".to_string(), "nginx".to_string()),
+            ])),
+            ..Default::default()
+        };
+        let row = to_row(c);
+        assert!(!row.protected, "缺保护标签的存量容器不能被当成受保护");
+        assert!(row.unprotected_kernel, "页面必须能识别存量未受保护容器");
+        let obj = ObjectRef {
+            id: row.id.clone(),
+            name: row.name.clone(),
+            labels: row.labels.clone(),
+        };
+        assert!(!obj.is_protected());
+    }
+
+    #[test]
+    fn kernel_container_with_protected_label_is_protected() {
+        let c = ContainerSummary {
+            id: Some("new".into()),
+            names: Some(vec!["/skiff-php-batch1".into()]),
+            labels: Some(HashMap::from([
+                ("io.skiff.project".to_string(), "sites".to_string()),
+                ("io.skiff.protected".to_string(), "true".to_string()),
+            ])),
+            ..Default::default()
+        };
+        let row = to_row(c);
+        assert!(row.protected);
+        assert!(!row.unprotected_kernel);
+        let obj = ObjectRef {
+            id: row.id.clone(),
+            name: row.name.clone(),
+            labels: row.labels.clone(),
+        };
+        assert!(obj.is_protected());
     }
 
     #[test]

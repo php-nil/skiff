@@ -14,6 +14,7 @@
         <a href="/{{ ctx.prefix }}/containers/{{ c.id }}">{{ c.name }}</a>
         <code>{{ c.short_id }}</code>
         {% if c.protected %}<span class="tag warn-tag">受保护</span>{% endif %}
+        {% if c.unprotected_kernel %}<span class="tag warn-tag" title="旧容器未打保护标签，重建 Web 服务或运行环境后生效">存量未受保护</span>{% endif %}
       </td>
       <td class="muted">{{ c.image }}</td>
       <td><span class="state {{ c.state }}">{{ c.state }}</span><div class="muted small">{{ c.status }}</div></td>
@@ -36,6 +37,12 @@
         {% endif %}
         {% else %}
         <span class="muted small">只读</span>
+        {% endif %}
+        {% if can_delete %}
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/remove" hx-target="#rows" hx-swap="innerHTML" class="inline" hx-confirm="删除后不可恢复，确定删除容器 {{ c.name }}？">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="mini danger" type="submit">删除</button>
+        </form>
         {% endif %}
       </td>
     </tr>

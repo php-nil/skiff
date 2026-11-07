@@ -73,6 +73,7 @@ mod tests {
             project: None,
             owner: None,
             protected: false,
+            unprotected_kernel: false,
         }
     }
 
