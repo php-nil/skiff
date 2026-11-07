@@ -427,11 +427,11 @@ curl -s -o /dev/null -w 'rust=%{http_code}\n' -H 'Host: audit-rust.local' http:/
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
-| FTP-01 | 首次安装、幂等重入与卸载回收 | `[上机]` Release 安装后未装 pure-ftpd；能 `apt` | 插件「运行状态」点安装；再次点安装；检查 `pure-ftpd -v`、`systemctl status pure-ftpd`、`/etc/pure-ftpd/conf/*`、`iptables`/`nft` 无新规则；再点回收并确认 | 首次安装成功且自动启动；二次调用返回同样配置不重复装包；配置含 `ChrootEveryone`/`NoAnonymous`/`PureDB`/`PassivePortRange`/`Umask=002:002`/`MaxClientsPerIP`；回收后服务停止、包可移除或至少禁用，站点账号全部失效 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::install/uninstall/status`、`plugins/ftp/src/main.rs`、`plugins/ftp/ui/runtime.html` |
-| FTP-02 | 账号名/密码/端口范围校验（纯函数） | `[本机]` | `cargo test -p skiff --bin skiff kernel::ftp --locked` | 非法账号名、过短密码、控制字符、非法端口区间全部被拒；登录名 `skiff_<slug16>_<fnv4>_<account>` 稳定且不同域名不碰撞 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs`（`valid_account_name`/`valid_password`/`valid_port_range`/`ftp_login`） |
-| FTP-03 | 建号身份探测与 `MinUID` 只降不升 | `[上机]` PHP 站点 running；容器内 `www-data` 非 0 | 建账号；`docker exec -u www-data <php容器> id -u`；读 `/etc/pure-ftpd/conf/MinUID`；再对另一个 uid 不同的运行环境建号 | 账号 uid/gid 与容器内 `www-data` 一致；`MinUID` 取 `min(当前值, 探测 uid)`，不被上调；站点 `index/` 属主/属组改为该身份，目录 2775、文件 0664/0775 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::resolve_identity/probe_id/ensure_min_uid/align_tree` |
-| FTP-04 | FTP 上传的文件 PHP 容器内可读写 | `[上机]` FTP-03 通过；客户端可用（`curl`/`lftp`） | 用账号登录（显式 TLS 可选），上传 `probe.txt` 与 `probe.php`；在容器内 `cat`/`stat` 并写入同名文件；浏览器访问 `probe.php` | 上传后容器内可读且属主/属组与 `www-data` 一致；容器内写入成功（非只读）；HTTP 返回上传内容，无 403/500 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::align_tree`、`write_conf("Umask")`；站点 `index/` |
-| FTP-05 | 越界、跨站与暴力登录被拒；删号回收与审计 | `[上机]` 两站各一账号；已装 fail2ban（`login_guard=true`） | 用 A 站账号 `cd ..`/绝对路径/软链尝试进 `log`、`conf`、B 站；连续错密码 3 次；删除 A 站账号后再登录；查 `/$P/audit` 中 `ftp.*` 行 | chroot 生效，越界与跨站全部 530/550；`MaxClientsPerIP=3`、fail2ban 10 分钟 3 次封禁生效；删号后登录失败且 `pureftpd.passwd` 无该行；审计含 `ftp.account.create/delete`、`ftp.deny.*`，无密码内容 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::ftp_call/dispatch/account_delete/ensure_login_guard`、`crates/core` 审计表 |
+| FTP-01 | 首次安装、幂等重入与卸载回收 | `[上机]` Release 安装后未装 pure-ftpd；能 `apt` | 插件「运行状态」点安装；再次点安装；检查 `pure-ftpd -v`、`systemctl status pure-ftpd`、`/etc/pure-ftpd/conf/*`、`iptables`/`nft` 无新规则；再点回收并确认 | 首次安装成功且自动启动；二次调用返回同样配置不重复装包；配置含 `ChrootEveryone`/`NoAnonymous`/`PureDB`/`PassivePortRange`/`Umask 002 002`/`MaxClientsPerIP`，且 `/etc/pure-ftpd/auth` 只保留 `50pure -> ../conf/PureDB`（`65unix`/`70pam` 已清理）；回收后服务停止、包可移除或至少禁用，站点账号全部失效 | △部分通过（2026-11-07 测试机：安装、二次重入、配置项与认证链通过；卸载回收未执行） | `crates/core/src/kernel/ftp.rs::install/uninstall/status`、`plugins/ftp/src/main.rs`、`plugins/ftp/ui/runtime.html` |
+| FTP-02 | 账号名/密码/端口范围校验（纯函数） | `[本机]` | `cargo test -p skiff --bin skiff kernel::ftp --locked` | 非法账号名、过短密码、控制字符、非法端口区间全部被拒；登录名 `skiff_<slug16>_<fnv4>_<account>` 稳定且不同域名不碰撞 | 通过（2026-11-07 本机 `kernel::ftp` 7 项单测） | `crates/core/src/kernel/ftp.rs`（`valid_account_name`/`valid_password`/`valid_port_range`/`ftp_login`） |
+| FTP-03 | 建号身份探测与 `MinUID` 只降不升 | `[上机]` PHP 站点 running；容器内 `www-data` 非 0 | 建账号；`docker exec -u www-data <php容器> id -u`；读 `/etc/pure-ftpd/conf/MinUID`；再对另一个 uid 不同的运行环境建号 | 账号 uid/gid 与容器内 `www-data` 一致；`MinUID` 取 `min(当前值, 探测 uid)`，不被上调；站点 `index/` 属主/属组改为该身份，目录 2775、文件 0664/0775 | 通过（2026-11-07 测试机：uid/gid 82 与容器 `www-data` 一致，`MinUID=82`，`index/` 目录 `drwxrwsr-x`、上传文件 `-rw-rw-r--`） | `crates/core/src/kernel/ftp.rs::resolve_identity/probe_id/ensure_min_uid/align_tree` |
+| FTP-04 | FTP 上传的文件 PHP 容器内可读写 | `[上机]` FTP-03 通过；客户端可用（`curl`/`lftp`） | 用账号登录（显式 TLS 可选），上传 `probe.txt` 与 `probe.php`；在容器内 `cat`/`stat` 并写入同名文件；浏览器访问 `probe.php` | 上传后容器内可读且属主/属组与 `www-data` 一致；容器内写入成功（非只读）；HTTP 返回上传内容，无 403/500 | 通过（2026-11-07 测试机：`STOR` 226，宿主侧 `uid=82 gid=82 mode=775`，容器内 `www-data` 读得上传内容、写入 `php-write-ok`；浏览器访问 `probe.php` 与显式 TLS 未跑） | `crates/core/src/kernel/ftp.rs::align_tree`、`write_conf("Umask")`；站点 `index/` |
+| FTP-05 | 越界、跨站与暴力登录被拒；删号回收与审计 | `[上机]` 两站各一账号；已装 fail2ban（`login_guard=true`） | 用 A 站账号 `cd ..`/绝对路径/软链尝试进 `log`、`conf`、B 站；连续错密码 3 次；删除 A 站账号后再登录；查 `/$P/audit` 中 `ftp.*` 行 | chroot 生效，越界与跨站全部 530/550；`MaxClientsPerIP=3`、fail2ban 10 分钟 3 次封禁生效；删号后登录失败且 `pureftpd.passwd` 无该行；审计含 `ftp.account.create/delete`、`ftp.deny.*`，无密码内容 | △部分通过（2026-11-07 测试机：删号后重新登录 530、`pureftpd.passwd` 无该行、审计有 `ftp.account.create/delete` 且无密码；越界/跨站、fail2ban 封禁、`ftp.deny.*` 未跑） | `crates/core/src/kernel/ftp.rs::ftp_call/dispatch/account_delete/ensure_login_guard`、`crates/core` 审计表 |
 
 最小回归命令：
 
@@ -444,7 +444,8 @@ curl -ks -b "$J" -o /dev/null -w 'ftp_plugin=%{http_code}\n' "$B/$P/plugins/com.
 curl -ks -b "$J" -H 'content-type: application/json' \
   -d '{"method":"list","params":{}}' "$B/$P/plugins/com.skiff.ftp/rpc"
 docker exec -u www-data skiff-php-batch1 id
-grep -x 'MinUID=*' /etc/pure-ftpd/conf/MinUID
+grep -H . /etc/pure-ftpd/conf/{MinUID,Umask,PureDB}
+ls -l /etc/pure-ftpd/auth
 systemctl is-active pure-ftpd fail2ban
 ```
 
