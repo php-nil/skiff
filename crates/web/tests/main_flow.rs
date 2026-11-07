@@ -4678,6 +4678,43 @@ async fn site_detail_warns_when_bound_runtime_stopped() {
     );
 }
 
+/// Docker 不可达时，运行环境站点不能谎称「运行中」：列表、详情、环境列表都要显示未知。
+#[tokio::test]
+async fn runtime_sites_show_unknown_instead_of_running_when_docker_unavailable() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/demo.local");
+    h.state
+        .db()
+        .create_site(&php_site("demo.local", &root.display().to_string()))
+        .unwrap();
+
+    let (status, list_html) = get_page(&h.app, "/p/sites", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list_html.contains("状态未知（Docker 不可用）"),
+        "站点列表必须把 Docker 不可达标成未知，而不是运行中: {list_html}"
+    );
+
+    let (status, detail_html) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        detail_html.contains("状态未知（Docker 不可用）"),
+        "站点详情必须与列表一致: {detail_html}"
+    );
+    assert!(
+        detail_html.contains("data-runtime-down"),
+        "Docker 未知时也要给出不可用告警: {detail_html}"
+    );
+
+    let (status, env_html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        env_html.contains("状态未知"),
+        "运行环境列表必须区分「未知」与「未安装」: {env_html}"
+    );
+}
+
 /// 「网站 → Web 服务」：四区块常驻渲染；管理员 + CSRF，viewer 403。
 #[tokio::test]
 async fn nginx_page_renders_four_sections_and_is_admin_only() {

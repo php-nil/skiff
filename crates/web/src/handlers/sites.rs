@@ -47,12 +47,15 @@ fn type_label(t: &str) -> &'static str {
 fn state_label(state: &str) -> &'static str {
     match state {
         "running" => "运行中",
-        "stopped" => "已停止",
+        // Docker 的终止态统一说「已停止」，别再落到兜底的「未知」。
+        "stopped" | "exited" | "dead" | "created" => "已停止",
+        "paused" => "已暂停",
+        "restarting" => "重启中",
         "installing" => "安装中",
         "error" => "异常",
         "missing" => "未安装",
         "unimplemented" => "P2 未实现",
-        _ => "未知",
+        _ => "状态未知",
     }
 }
 
@@ -61,8 +64,34 @@ fn state_class(state: &str) -> &'static str {
         "running" => "ok",
         "error" => "danger",
         "missing" => "warn",
-        "stopped" => "muted",
-        _ => "muted",
+        // 未知不是「运行中」，用 muted 表示无法确认。
+        "unknown" | "" => "muted",
+        "stopped" | "exited" | "dead" | "created" | "paused" | "restarting" | "installing" => {
+            "warn"
+        }
+        _ => "",
+    }
+}
+
+/// 运行环境站点的对外状态：站点自身停止优先，否则以 Docker 实时容器状态为准。
+///
+/// 容器不存在 / 已停止 / Docker 不可达分别给出不同文案，禁止把「未知」当成运行中。
+fn runtime_site_status(
+    site_status: &str,
+    runtime_state: Option<&str>,
+) -> (&'static str, &'static str) {
+    if site_status != "running" {
+        return ("已停止", "");
+    }
+    match runtime_state {
+        Some("running") => ("运行中", "ok"),
+        Some("installing") => ("环境安装中", "warn"),
+        Some("error") => ("环境异常", "danger"),
+        Some("missing") => ("未运行（环境未安装）", "warn"),
+        Some("unknown") => ("状态未知（Docker 不可用）", "muted"),
+        Some("unimplemented") => ("运行环境 P2 未实现", "warn"),
+        Some(_) => ("未运行（环境已停止）", "warn"),
+        None => ("未运行（环境记录缺失）", "warn"),
     }
 }
 
@@ -185,7 +214,9 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
 /// 与 PHP/Node/Go/Rust 行完全平级：各自安装、各自状态、各自删除。
 fn web_runtime_row(state: &AppState, env: &SiteEnvStatus, site_count: usize) -> RuntimeRow {
     let prefix = &state.cfg.entry_prefix;
-    let exists = env.nginx_state != "missing";
+    // Docker 不可达时状态是 unknown：既不是「已安装」，也不是「未安装」。
+    let known = env.nginx_state != "unknown" && !env.nginx_state.is_empty();
+    let exists = known && env.nginx_state != "missing";
     let short = |id: &str| -> String {
         let raw = id.strip_prefix("sha256:").unwrap_or(id);
         raw.chars().take(12).collect()
@@ -207,12 +238,16 @@ fn web_runtime_row(state: &AppState, env: &SiteEnvStatus, site_count: usize) -> 
         image_digest: String::new(),
         image_digest_full: String::new(),
         image_mismatch: false,
-        state_label: if exists {
+        state_label: if !known {
+            "状态未知".into()
+        } else if exists {
             state_label(&env.nginx_state).to_string()
         } else {
             "未安装".into()
         },
-        state_class: if !exists {
+        state_class: if !known {
+            "muted".into()
+        } else if !exists {
             "warn".into()
         } else {
             state_class(&env.nginx_state).to_string()
@@ -275,17 +310,13 @@ fn site_view(
     aliases: Vec<String>,
     cert_ready: bool,
     runtime: Option<&Runtime>,
+    runtime_state: Option<&str>,
 ) -> SiteView {
     let runtime_label = runtime
         .map(|r| {
             format!(
                 "{} {}",
-                match r.kind.as_str() {
-                    skiff_store::KIND_NODE => "Node.js",
-                    skiff_store::KIND_GO => "Go",
-                    skiff_store::KIND_RUST => "Rust",
-                    _ => "PHP",
-                },
+                skiff_app::runtime_catalog::kind_label(&r.kind),
                 r.version
             )
         })
@@ -319,16 +350,24 @@ fn site_view(
         proxy_websocket: s.proxy_websocket,
         endpoint,
         status: s.status.clone(),
-        status_label: match s.status.as_str() {
-            "running" => "运行中",
-            "stopped" => "已停止",
-            _ => "异常",
+        status_label: if s.site_type == TYPE_RUNTIME {
+            runtime_site_status(&s.status, runtime_state).0
+        } else {
+            match s.status.as_str() {
+                "running" => "运行中",
+                "stopped" => "已停止",
+                _ => "异常",
+            }
         }
         .into(),
-        status_class: match s.status.as_str() {
-            "running" => "ok",
-            "stopped" => "",
-            _ => "danger",
+        status_class: if s.site_type == TYPE_RUNTIME {
+            runtime_site_status(&s.status, runtime_state).1
+        } else {
+            match s.status.as_str() {
+                "running" => "ok",
+                "stopped" => "",
+                _ => "danger",
+            }
         }
         .into(),
         https_label: match (s.https, cert_ready) {
@@ -425,6 +464,8 @@ async fn render_sites(
     // 证书列与详情 SSL 标签同源：直接看站点证书目录下的 cert.pem/key.pem 是否存在。
     let cert_settings = state.site_settings();
     let runtimes = state.db().list_runtimes().unwrap_or_default();
+    // 站点列表的运行态以 Docker 实时容器状态为准；DB last_status 只是缓存，不能直接展示。
+    let runtime_views = state.runtime_views().await.unwrap_or_default();
     let views: Vec<SiteView> = sites
         .iter()
         .map(|s| {
@@ -434,7 +475,18 @@ async fn render_sites(
                 .runtime_id
                 .as_deref()
                 .and_then(|id| runtimes.iter().find(|r| r.id == id));
-            site_view(s, state.site_aliases(&s.domain), ready, runtime)
+            let runtime_state = s
+                .runtime_id
+                .as_deref()
+                .and_then(|id| runtime_views.iter().find(|v| v.runtime.id == id))
+                .map(|v| v.effective_state.as_str());
+            site_view(
+                s,
+                state.site_aliases(&s.domain),
+                ready,
+                runtime,
+                runtime_state,
+            )
         })
         .filter(|v| {
             needle.is_empty()
@@ -446,7 +498,6 @@ async fn render_sites(
         .collect();
     let notice = q.get("notice").cloned().unwrap_or_default();
     let error = q.get("error").cloned().unwrap_or_default();
-    let runtime_views = state.runtime_views().await.unwrap_or_default();
     let settings = state.site_settings();
     let form_error_field = error_field(&form_error, &form.site_type).to_string();
     handlers::render(SitesPage {
@@ -1236,42 +1287,77 @@ async fn render_detail(
         .site_by_domain(&domain)?
         .ok_or_else(|| AppError::NotFound(format!("站点不存在：{domain}")))?;
     let env = state.site_env_status().await;
+    // 运行态只信 Docker 实时探测：DB 的 last_status 是缓存，可能滞后于手工停容器。
+    let runtime_view = if site.site_type == skiff_store::TYPE_RUNTIME {
+        match site.runtime_id.as_deref() {
+            Some(rid) if !rid.is_empty() => state.runtime_view(rid).await.ok(),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let (runtime_down, runtime_alert, runtime_env_href) = if site.site_type
         == skiff_store::TYPE_RUNTIME
     {
         let rid = site.runtime_id.clone().unwrap_or_default();
-        let rt = state.db().runtime_by_id(&rid)?;
-        let down = rt
+        let name = runtime_view
             .as_ref()
-            .map(|r| {
-                r.last_status != "running"
-                    || r.socket_path
-                        .as_deref()
-                        .map(|p| !std::path::Path::new(p).exists())
-                        .unwrap_or(true)
+            .map(|v| v.runtime.name.clone())
+            .or_else(|| {
+                state
+                    .db()
+                    .runtime_by_id(&rid)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.name)
             })
-            .unwrap_or(true);
-        let name = rt
-            .as_ref()
-            .map(|r| r.name.clone())
             .unwrap_or_else(|| rid.clone());
-        (
-            down,
-            format!(
-                "绑定的运行环境 {name} 当前未运行，访问本站点会返回 502/503。请启动该运行环境；系统不会静默切换到其它版本。"
+        let href = format!(
+            "/{}/sites/env/{}",
+            state.cfg.entry_prefix,
+            encode_uri_component(&rid)
+        );
+        match runtime_view.as_ref() {
+            Some(v) => {
+                let mut down = v.effective_state != "running";
+                let mut reason = String::new();
+                if !down
+                    && v.runtime.kind == skiff_store::KIND_PHP
+                    && v.runtime.socket_path.is_some()
+                    && !v.socket_exists
+                {
+                    // 容器在跑但 PHP-FPM socket 没挂上，同样不可用。
+                    down = true;
+                    reason = "socket 缺失".into();
+                }
+                let alert = if down {
+                    let state_text = if reason.is_empty() {
+                        state_label(&v.effective_state)
+                    } else {
+                        reason.as_str()
+                    };
+                    format!(
+                        "绑定的运行环境 {name} 当前{state_text}，访问本站点会返回 502/503。请启动该运行环境；系统不会静默切换到其它版本。"
+                    )
+                } else {
+                    String::new()
+                };
+                (down, alert, href)
+            }
+            None => (
+                true,
+                format!(
+                    "绑定的运行环境 {name} 不存在或状态未知，访问本站点会返回 502/503。请到运行环境页确认；系统不会静默切换到其它版本。"
+                ),
+                href,
             ),
-            format!(
-                "/{}/sites/env/{}",
-                state.cfg.entry_prefix,
-                encode_uri_component(&rid)
-            ),
-        )
+        }
     } else {
         (false, String::new(), String::new())
     };
     if !matches!(
         tab.as_str(),
-        "overview" | "domains" | "config" | "dir" | "ssl"
+        "overview" | "domains" | "config" | "dir" | "ssl" | "manage"
     ) {
         tab = "overview".to_string();
     }
@@ -1304,10 +1390,15 @@ async fn render_detail(
     let ssl_info = state.site_tls_info(&domain).ok();
     let cert_ready = ssl_info.as_ref().map(|i| i.cert_exists).unwrap_or(false);
     let ssl = ssl_info.map(tls_view).unwrap_or_default();
-    let runtime = site
-        .runtime_id
-        .as_deref()
-        .and_then(|id| state.db().runtime_by_id(id).ok().flatten());
+    let runtime = runtime_view
+        .as_ref()
+        .map(|v| v.runtime.clone())
+        .or_else(|| {
+            site.runtime_id
+                .as_deref()
+                .and_then(|id| state.db().runtime_by_id(id).ok().flatten())
+        });
+    let runtime_state = runtime_view.as_ref().map(|v| v.effective_state.as_str());
     let backup = backup_view(&state, &domain).await;
     handlers::render(SiteDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
@@ -1316,6 +1407,7 @@ async fn render_detail(
             state.site_aliases(&domain),
             cert_ready,
             runtime.as_ref(),
+            runtime_state,
         ),
         env: env_view(&env),
         can_admin: user.can(skiff_model::Permission::Admin),
@@ -1668,7 +1760,9 @@ pub async fn runtime_detail(
             href: format!("/{prefix}/sites/{}", encode_uri_component(&s.domain)),
             domain: s.domain,
             type_label: type_label(&s.site_type).to_string(),
-            status_label: state_label(&s.status).to_string(),
+            status_label: runtime_site_status(&s.status, Some(view.effective_state.as_str()))
+                .0
+                .to_string(),
         })
         .collect();
     let (logs, logs_error) = if q.get("tab").map(String::as_str) == Some("logs") {
@@ -2384,7 +2478,56 @@ pub async fn runtime_config_save(
 
 #[cfg(test)]
 mod tests {
-    use super::{error_field, save_config_notice, version_display};
+    use super::{
+        error_field, runtime_site_status, save_config_notice, state_class, state_label,
+        version_display,
+    };
+
+    #[test]
+    fn runtime_site_status_distinguishes_unknown_missing_and_stopped() {
+        // 记录缺失 / 容器不存在 / 容器停止 / Docker 不可达必须是四种不同文案。
+        assert_eq!(
+            runtime_site_status("running", None).0,
+            "未运行（环境记录缺失）"
+        );
+        assert_eq!(
+            runtime_site_status("running", Some("missing")).0,
+            "未运行（环境未安装）"
+        );
+        assert_eq!(
+            runtime_site_status("running", Some("stopped")).0,
+            "未运行（环境已停止）"
+        );
+        assert_eq!(
+            runtime_site_status("running", Some("unknown")).0,
+            "状态未知（Docker 不可用）"
+        );
+        assert_eq!(runtime_site_status("running", Some("running")).0, "运行中");
+        // 配色同样区分：未知是 muted（无法确认），停止/未安装是 warn（确认不可用）。
+        assert_eq!(runtime_site_status("running", Some("unknown")).1, "muted");
+        assert_eq!(runtime_site_status("running", Some("stopped")).1, "warn");
+        assert_eq!(runtime_site_status("running", Some("running")).1, "ok");
+        // 站点自身已停止时优先展示站点状态。
+        assert_eq!(runtime_site_status("stopped", Some("running")).0, "已停止");
+    }
+
+    #[test]
+    fn env_row_labels_keep_unknown_missing_and_stopped_apart() {
+        // 运行环境列表的徽章文案与配色：Docker 原始状态（exited/dead 等）已由
+        // `runtime_effective_state` 归一成 stopped，这里只校验展示层不把未知当运行中。
+        assert_eq!(state_label("running"), "运行中");
+        assert_eq!(state_class("running"), "ok");
+        for stopped in ["stopped", "exited", "dead", "created"] {
+            assert_eq!(state_label(stopped), "已停止", "{stopped}");
+            assert_eq!(state_class(stopped), "warn", "{stopped}");
+        }
+        assert_eq!(state_label("missing"), "未安装");
+        assert_eq!(state_class("missing"), "warn");
+        assert_eq!(state_label("unknown"), "状态未知");
+        assert_eq!(state_class("unknown"), "muted");
+        assert_eq!(state_label(""), "状态未知");
+        assert_eq!(state_class(""), "muted");
+    }
 
     #[test]
     fn save_config_notice_never_claims_reload_when_site_stopped() {

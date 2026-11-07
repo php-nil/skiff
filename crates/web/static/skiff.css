@@ -1962,7 +1962,13 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-runtimes table.runtimes-grid th.num,
 .page-runtimes table.runtimes-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .page-runtimes table.runtimes-grid th.actions-col,
-.page-runtimes table.runtimes-grid td.actions-col { width: 1%; text-align: right; }
+.page-runtimes table.runtimes-grid td.actions-col {
+  width: 1%;
+  /* 五个行内按钮必须一行放下：低于此宽度时整表横向滚动，而不是按钮竖向堆叠。 */
+  min-width: 216px;
+  text-align: right;
+  white-space: nowrap;
+}
 .page-runtimes table.runtimes-grid td[data-runtime-state] { white-space: normal; min-width: 140px; }
 .page-runtimes table.runtimes-grid tbody tr[data-runtime-open] { cursor: pointer; }
 .page-runtimes .runtime-endpoint { cursor: help; }
@@ -1976,9 +1982,15 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-runtimes .runtime-progress-wide { display: block; width: 100%; height: 6px; margin: 6px 0 10px; }
 .page-runtimes .runtime-job-error { display: block; max-width: 360px; white-space: normal; color: var(--danger); }
 .page-runtimes .runtime-job-log { max-height: 320px; overflow: auto; white-space: pre-wrap; }
-.page-runtimes .runtime-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
-.page-runtimes .runtime-dialog form { display: flex; flex-direction: column; min-height: 0; }
-.page-runtimes .runtime-dialog .modal-body { overflow: auto; }
+.page-runtimes .runtime-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column;
+}
+/* 正文内部滚动、底部按钮常驻：扩展清单很长时也点得到「创建并后台安装」。 */
+.page-runtimes .runtime-dialog form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.page-runtimes .runtime-dialog .modal-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.page-runtimes .runtime-dialog .modal-actions { flex: 0 0 auto; }
 .page-runtimes .runtime-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
 .page-runtimes .runtime-form-grid label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 13px; }
 .page-runtimes .runtime-form-grid label .hint { font-weight: 400; }
@@ -1997,7 +2009,7 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
 .runtime-detail .runtime-tab-panel { margin-bottom: var(--sp-4); }
 .page-runtimes .runtime-version-main { display: block; font-weight: 600; }
-.page-runtimes .runtime-version-note { display: block; margin-top: 2px; font-size: 11px; white-space: nowrap; }
+.page-runtimes .runtime-version-note { display: block; margin-top: 2px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
 .runtime-version-card {
   display: grid;
   grid-template-columns: 1fr;
@@ -2068,7 +2080,7 @@ body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
 .runtime-run-log { max-height: 340px; overflow: auto; white-space: pre-wrap; }
 .runtime-site-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); white-space: nowrap; }
 /* 运行环境页新增：Web 服务独立行 + 扩展多选与二次确认（只作用于 .page-runtimes） */
-.page-runtimes .runtime-inline-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.page-runtimes .runtime-inline-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 10px; white-space: nowrap; }
 .page-runtimes .runtime-inline-actions .link-btn.danger { color: var(--danger); }
 .page-runtimes .ext-item { align-items: flex-start; }
 .page-runtimes .ext-check { display: flex; align-items: center; flex: 0 0 auto; margin-top: 2px; }

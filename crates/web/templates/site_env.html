@@ -40,7 +40,7 @@
             <td class="mono">{{ r.name }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
             <td>
               <span class="mono runtime-version-main" data-runtime-version-text>{{ r.version_display }}</span>
-              <span class="hint runtime-version-note" data-runtime-version-note>{{ r.version_note }}</span>
+              <span class="hint runtime-version-note" data-runtime-version-note title="{{ r.version_note }}">{{ r.version_note }}</span>
             </td>
             <td data-runtime-state>
               <span class="tag{% if r.state_class == "ok" %} ok{% else if r.state_class == "warn" %} warn-tag{% else if r.state_class == "danger" %} danger-tag{% endif %}" data-runtime-state-label>{{ r.state_label }}</span>
@@ -55,8 +55,11 @@
               {% if can_admin %}
               <div class="runtime-inline-actions">
                 {% if r.container_exists %}
-                <button type="button" class="link-btn" data-web-action="start">启动</button>
+                {% if r.container_state == "running" %}
                 <button type="button" class="link-btn" data-web-action="stop">停止</button>
+                {% else %}
+                <button type="button" class="link-btn" data-web-action="start">启动</button>
+                {% endif %}
                 <button type="button" class="link-btn" data-web-action="restart">重启</button>
                 <button type="button" class="link-btn" data-web-action="rebuild">重建</button>
                 <button type="button" class="link-btn danger" data-web-action="delete">删除</button>

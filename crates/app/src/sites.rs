@@ -78,6 +78,34 @@ pub fn runtime_container_name(kind: &str, name: &str) -> String {
     format!("skiff-{kind}-{name}")
 }
 
+/// 探测单个运行环境的原始容器状态。
+///
+/// 三种「不在运行」必须分开：Docker 不可达/列表失败是 `unknown`（不知道），
+/// 列表能查但没这个容器是 `missing`（没装），容器在但状态非 running 由
+/// [`runtime_effective_state`] 归一成 `stopped`。
+fn probe_container_state(docker_known: bool, state: Option<&str>) -> String {
+    if !docker_known {
+        return "unknown".into();
+    }
+    match state {
+        None => "missing".into(),
+        Some(s) if s.trim().is_empty() => "unknown".into(),
+        Some(s) => s.to_string(),
+    }
+}
+
+/// Docker 原始状态归一为界面使用的业务状态；未知值单独保留，不与 running 合并。
+fn runtime_effective_state(raw: &str) -> &'static str {
+    match raw {
+        "running" => "running",
+        "stopped" | "exited" | "dead" | "created" | "paused" | "restarting" | "removing" => {
+            "stopped"
+        }
+        "missing" => "missing",
+        _ => "unknown",
+    }
+}
+
 /// 从 `repo@sha256:...` 取出摘要部分；已是摘要时原样返回。
 fn digest_sha256(digest: &str) -> &str {
     match digest.find("@sha256:") {
@@ -1347,8 +1375,17 @@ impl AppState {
             .db()
             .list_runtimes()
             .map_err(|e| SiteError::Internal(e.to_string()))?;
-        let rows = if self.docker().available() {
-            self.docker().list_containers().await.unwrap_or_default()
+        let docker_available = self.docker().available();
+        let mut docker_known = docker_available;
+        let rows = if docker_available {
+            match self.docker().list_containers().await {
+                Ok(rows) => rows,
+                Err(_) => {
+                    // Docker 可以连上但列表失败：状态未知，不能当成「容器不存在」。
+                    docker_known = false;
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -1374,15 +1411,8 @@ impl AppState {
             let container_ref_base = container_image.split('@').next().unwrap_or("");
             let image_mismatch =
                 container_exists && !container_image.is_empty() && container_ref_base != rt.image;
-            let container_state = container_row
-                .map(|c| {
-                    if c.state.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        c.state.clone()
-                    }
-                })
-                .unwrap_or_else(|| "missing".into());
+            let container_state =
+                probe_container_state(docker_known, container_row.map(|c| c.state.as_str()));
             let job = jobs.iter().find(|j| j.runtime_id == rt.id).cloned();
             let job_active = job.as_ref().is_some_and(RuntimeJob::active);
             let job_failed = job
@@ -1411,12 +1441,15 @@ impl AppState {
                 .runtime_site_count(&rt.id)
                 .map_err(|e| SiteError::Internal(e.to_string()))?;
             let drift = implemented
+                && docker_known
                 && !job_active
                 && rt.desired_state == "running"
                 && effective_state != "running"
-                && effective_state != "missing";
+                && effective_state != "missing"
+                && effective_state != "unknown";
             // 写回缓存状态；'unimplemented' 不是合法枚举值，跳过；任务执行中由任务收尾写入。
-            if implemented && !job_active {
+            // Docker 不可达时状态未知，不能把 unknown 写回成 stopped，避免污染下次判断。
+            if implemented && !job_active && docker_known {
                 let cached = if matches!(
                     effective_state.as_str(),
                     "running" | "stopped" | "error" | "installing"
@@ -3170,10 +3203,14 @@ impl AppState {
 
     pub async fn site_env_status(&self) -> SiteEnvStatus {
         let s = self.site_settings();
-        let mut nginx_state = "missing".to_string();
+        // 默认 unknown：Docker 不可达时不能声称「未安装」。
+        let mut nginx_state = "unknown".to_string();
         let mut nginx_image_id = String::new();
+        let mut docker_known = false;
         if self.docker().available() {
             if let Ok(rows) = self.docker().list_containers().await {
+                docker_known = true;
+                nginx_state = "missing".into();
                 for c in rows {
                     if c.name == NGINX_CONTAINER {
                         nginx_state = if c.state.is_empty() {
@@ -3187,7 +3224,7 @@ impl AppState {
             }
         }
         // 只有「Web 服务」容器的存在性：PHP 等语言运行环境是独立行，不再参与该判断。
-        let installed = nginx_state != "missing";
+        let installed = docker_known && nginx_state != "missing";
         let port_message = if nginx_state == "running" {
             format!("宿主 {} 端口由 {NGINX_CONTAINER}（host 网络）监听", s.port)
         } else {
@@ -5229,6 +5266,29 @@ async fn wait_tcp_port(port: u16, timeout: std::time::Duration) -> bool {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn runtime_container_state_distinguishes_unknown_missing_and_stopped() {
+        // Docker 不可达/列表失败：状态未知，不能伪造成 missing 或 running。
+        assert_eq!(probe_container_state(false, None), "unknown");
+        assert_eq!(probe_container_state(false, Some("running")), "unknown");
+        // Docker 可查但列表里没有该容器：确实没安装。
+        assert_eq!(probe_container_state(true, None), "missing");
+        // 容器存在但已退出/终止：归一成 stopped，界面显示「已停止」而不是「运行中」或「未知」。
+        for raw in [
+            "exited",
+            "dead",
+            "created",
+            "paused",
+            "restarting",
+            "stopped",
+        ] {
+            assert_eq!(runtime_effective_state(raw), "stopped", "{raw}");
+        }
+        assert_eq!(runtime_effective_state("running"), "running");
+        assert_eq!(runtime_effective_state(""), "unknown");
+        assert_eq!(runtime_effective_state("weird-state"), "unknown");
+    }
 
     #[test]
     fn domain_validation_rejects_unsafe_input() {
