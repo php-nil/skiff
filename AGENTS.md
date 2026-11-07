@@ -41,7 +41,8 @@
   * 禁止为了并行而使用自定义 `CARGO_TARGET_DIR`——它会绕过 cargo 自带的 target 目录锁，是已发生过的真实事故成因。
   * 全量 `cargo test --workspace` 优先交 CI；本地只跑受影响 crate 的快速回归。必须本地全量时走 `pwsh tools/gate.ps1 -Task test -AllowFull`（任务模式的闸门会拦截未显式放行的全量命令；`exec` 透传模式不拦，需自行判断）。
   * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**，guest 侧 commit limit 在 4.7–7.2GB 间浮动，比例阈值没有判别力。原「6.3GB 物理内存 + 18.3GB commit 天花板」记载已被实测证伪，不再引用。
-  * 覆盖不到的入口：绝对路径 `C:\Users\dev-bl\.cargo\bin\cargo.exe`、PATH 更新前已启动的进程（含已运行的 Trae 会话、rust-analyzer）、CI 与其它机器。这些场景没有机器级拦截，仍需人工遵守本节条款。
+  * 覆盖不到的入口，一律按红线人工遵守：绝对路径 `C:\Users\dev-bl\.cargo\bin\cargo.exe`、rust-analyzer / IDE 内部调用、CI 与其它机器。`.trae/` 只有 `rules/`，没有 shell 前置钩子，工具层无法再加一道拦截。
+  * **包装是否生效，重启后先自检**：当前 Trae 宿主的 `PATH` 是启动时的旧快照，`D:\panel\tools\bin` 不在其中，裸敲 `cargo` 仍会解析到 `cargo.exe` 并绕过包装；必须重启 Trae（含其终端）才继承新 `PATH`。重启后在新 shell 里执行 `where.exe cargo`，首行应为 `D:\panel\tools\bin\cargo.cmd`；若先出现 `C:\Users\dev-bl\.cargo\bin\cargo.exe`，说明包装未生效，先修 `PATH` 再编译。
 
 ### 3.2 测试要求
 
