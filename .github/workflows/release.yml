@@ -276,7 +276,7 @@ jobs:
             # 标签已存在、Release 还没建：用 --verify-tag，绝不创建标签
             gh release create "$TAG" $FILES --verify-tag \
               --title "Skiff（轻舟）$TAG" \
-              --notes '交付路径固定为「从 Release 下载安装包 → 解压 → 执行 install.sh」。装机：先 sha256sum -c checksums.txt，再解压、cd 进解压目录、sh install.sh。包内 official/ 是已签名的官方插件（guard/monitor/files/cron/testkit），安装时只复制到 /www/skiff/official/、不自动安装；公钥由首启自动信任。测试期沿用同一版本与同一 Release，手动 dispatch 覆盖资产，不新建 tag。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
+              --notes '交付路径固定为「从 Release 下载安装包 → 解压 → 执行 install.sh」。装机：先 sha256sum -c checksums.txt，再解压、cd 进解压目录、sh install.sh。包内 official/ 是已签名的官方插件（guard/monitor/files/cron/ftp/testkit），安装时只复制到 /www/skiff/official/、不自动安装；公钥由首启自动信任。测试期沿用同一版本与同一 Release，手动 dispatch 覆盖资产，不新建 tag。Windows/无外网场景可加 --no-docker；国内网络可用 --registry-mirror <host> 配镜像加速。'
           fi
 
   # Dockerfile 是可选形态，但"能不能构建"必须有人验：这一步不 gate publish，
