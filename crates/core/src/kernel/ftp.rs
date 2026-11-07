@@ -15,6 +15,8 @@
 //! 也到不了别的站点。
 
 #[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -396,6 +398,9 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
     )
     .await
     .map_err(|e| FtpError::internal(format!("启用 PureDB 认证失败：{e}")))?;
+    // 无账号时 PureDB 文件并不存在，Debian 的 pure-ftpd wrapper 会因认证库缺失
+    // 拒绝启动（首次 install 即 active 失败）；先落一个空库，建号仍走 `pure-pw useradd -m`。
+    ensure_pdb_present().await?;
     if tls_mode != "0" {
         ensure_tls_pem().await?;
     }
@@ -446,6 +451,9 @@ async fn uninstall(params: &Value) -> Result<Value, FtpError> {
         let _ = run_host("/usr/bin/apt-get", &["remove", "-y", "pure-ftpd"], None).await;
         let _ = run_host("/usr/bin/rm", &["-f", PASSWD_FILE, PDB_FILE], None).await;
         let _ = run_host("/usr/bin/rm", &["-rf", CONF_DIR], None).await;
+        // install 会在 auth 目录建 `50pure` 符号链接；pluggable 认证目录要一并回收，
+        // 否则卸载后留下指向前 PureDB 的悬空链接（实测残留 `/etc/pure-ftpd/auth/50pure`）。
+        let _ = run_host("/usr/bin/rm", &["-rf", AUTH_DIR], None).await;
     }
     Ok(json!({
         "stopped": true,
@@ -682,6 +690,29 @@ async fn account_delete(params: &Value) -> Result<Value, FtpError> {
         .map_err(|e| FtpError::internal(format!("删除 FTP 账号失败：{e}")))?;
     restart_service().await?;
     Ok(json!({ "login": login, "files_kept": true }))
+}
+
+/// 无账号时 PureDB 不存在，pure-ftpd 的 wrapper 会以认证库缺失拒绝启动。
+/// `pure-pw mkdb` 在空账号表上也会生成可用空库；建号仍由 `pure-pw useradd -m` 更新。
+#[cfg(target_os = "linux")]
+async fn ensure_pdb_present() -> Result<(), FtpError> {
+    if Path::new(PDB_FILE).exists() {
+        return Ok(());
+    }
+    if !Path::new(PASSWD_FILE).exists() {
+        std::fs::File::create(PASSWD_FILE)
+            .map_err(|e| FtpError::internal(format!("创建 {PASSWD_FILE} 失败：{e}")))?;
+        let _ = std::fs::set_permissions(PASSWD_FILE, std::fs::Permissions::from_mode(0o600));
+    }
+    let pw = pure_pw_path()
+        .ok_or_else(|| FtpError::internal("找不到 pure-pw，请确认 pure-ftpd 已安装"))?;
+    run_host(pw, &["mkdb", PDB_FILE, "-f", PASSWD_FILE], None)
+        .await
+        .map_err(|e| FtpError::internal(format!("生成 PureDB 失败：{e}")))?;
+    if !Path::new(PDB_FILE).exists() {
+        return Err(FtpError::internal("生成 PureDB 后文件仍不存在"));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
