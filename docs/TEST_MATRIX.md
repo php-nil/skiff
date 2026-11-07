@@ -29,12 +29,14 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | A. 身份与会话 | 10 | 1 项本机可验（AUTH-06），9 项必须上机 | `cargo test -p skiff-identity`；测试机 curl 登录链路 |
 | B. 菜单与导航 | 8 | 1 项本机可验（MENU-01 常量单测），7 项必须上机 | 路由/模板断言；浏览器手风琴与布局 |
 | C. 插件体系 | 10 | 1 项本机可验（PLUGIN-02），9 项必须上机 | `cargo test -p skiff-plugin`；`.wbpkg` 安装与 iframe |
-| D. 网站与运行环境 | 12 | 0 项本机可验，12 项必须上机（crate 单测兜底） | `cargo test -p skiff-app sites`；测试机建站与容器 |
+| D. 网站与运行环境 | 13 | 1 项本机可验（SITE-13 模板/路由断言），12 项必须上机（crate 单测兜底） | `cargo test -p skiff-web site_detail`；测试机建站与容器 |
 | E. Web 服务 | 8 | 0 项本机可验，8 项必须上机（crate 单测兜底） | `cargo test -p skiff-app nginx`；测试机 nginx -t 与日志 |
 | F. 文件系统原语 | 8 | 4 项本机可验（FS-02～05），4 项必须上机 | `cargo test -p skiff-fs -p skiff-plugin`；插件能力面 |
-| G. 调度器 | 8 | 3 项本机可验（TASK-05～07），5 项必须上机；TASK-06 无上机入口、TASK-07 有入口 | `cargo test -p skiff-sched -p skiff-app`；任务页 |
+| G. 调度器 | 9 | 3 项本机可验（TASK-05～07），6 项需上机（TASK-09 另有 `skiff-cron` 单测兜底） | `cargo test -p skiff-sched -p skiff-app -p skiff-cron`；任务页与 cron 插件页 |
 | H. Docker | 10 | 2 项本机可验（DOCKER-09/10，本轮本机 OOM 未跑、CI 兜底），8 项必须上机 | `cargo test -p skiff-docker -p skiff-policy`；Docker 页面/API |
 | I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；DEPLOY-09/10/11 因环境/复现条件阻塞 | `deploy/*.sh`、systemd、安装包 |
+| J. 站点压测与资源开销 | 8 | 0 项本机可验，8 项必须上机（测试机两站并发 + `/proc` 采样） | `tools/perf/*`；nginx / PHP-FPM / 反代三路径；`skiff` 进程与插件子进程 |
+| K. FTP 与宿主机文件服务 | 5 | 1 项本机可验（FTP-02 账号/密码/端口校验单测），4 项必须上机 | `cargo test -p skiff --bin skiff kernel::ftp`；测试机 pure-ftpd + PHP 容器 |
 
 ## A. 身份与会话
 
@@ -132,6 +134,7 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 | PLUGIN-08 | ☑通过 | 启用出 `overview.health` 槽位与固定标题；停用回落 `health-grid`；与 PLUGIN-04 同轮复验 |
 | PLUGIN-09 | ☑通过 | `ping` 200；`fail` 400 含 `-32602`；越界 `fs_read` 400；无授权方法 400 且审计 `result=fail` |
 | PLUGIN-10 | ☑通过 | 卸载后菜单、信息页、路由消失；`/www/skiff/plugins/com.skiff.files/data` 原样保留；重装后数据仍在 |
+| PLUGIN-12 | ☑关闭（2026-11-07 追补） | RPC 403 透传已实测（`remove builtin:db-vacuum` → 403，审计 `scheduler.deny`，正文「内置任务不可删除（只能停用）」）；「未装官方包不被自动安装」由 `crates/plugin/src/official.rs` 单测覆盖（本轮未做上机卸载样本，按已定论关闭） |
 
 ## D. 网站与运行环境
 
@@ -151,6 +154,7 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 | SITE-10 | 解绑与删除保护 | `[上机]` 有绑定站点的运行环境 | 运行环境详情尝试删除；先解绑一个站点再删；删除绑定过的站点 | 有绑定站点时删除被拒并列出域名；解绑后列表更新；删站不影响其他站与运行环境 | □通过 / □失败 | `crates/app/src/sites.rs`（`unbind_runtime_site`、`delete_site_runtime`） |
 | SITE-11 | socket、端口与网络模式 | `[上机]` PHP 与 nginx 运行中 | 检查 `/www/runtime/php/<name>/php-fpm.sock` 权限与属主；`docker inspect skiff-web-nginx` 与 PHP 容器；`ss -ltnp` 看 80 | socket 0660 `0:65534`（root:gid 65534）；PHP 容器挂载 `web_root`（读写）与 pool 配置（只读）；nginx `NetworkMode=host` 且监听 80；面板不占用 80 | □通过 / □失败 | `crates/app/src/sites.rs`（`SOCKET_MODE`/`SOCKET_GID`、`nginx_spec`、`php_spec_for`）、`deploy/install.sh`、`docs/DEPLOY_TEST.md` §1.1 |
 | SITE-12 | 证书与强制 HTTPS | `[上机]` 站点已建 | 生成自签证书；上传证书；开启强制跳转；访问 HTTP 与 HTTPS | 证书落 `/www/sites/<domain>/ssl/`；HTTPS 200；HTTP 301/308 到 HTTPS；`docker exec skiff-web-nginx nginx -t` 通过 | □通过 / □失败 | `crates/app/src/sites.rs`、`templates/site_detail.html` |
+| SITE-13 | 高风险动作只在「管理」页签 | `[本机]` 模板断言；`[上机]` 已登录 admin 且至少 1 个站点 | 打开站点详情概览，检查顶部操作区；再切到「管理」页签启停一次并删除 | 顶部只有访问/日志/默认与返回，无「停止/启动」「删除站点」；管理页签内两种动作均可执行；启停后 303 回 `?tab=manage` 并显示「站点已启动/已停止」；非管理员看不到「管理」页签 | □通过 / □失败 | `crates/web/templates/site_detail.html`、`crates/web/src/handlers/sites.rs`（`render_detail` 的 tab 白名单、`action` 回跳）、`crates/web/tests/main_flow.rs`（`site_detail_risk_actions_only_in_manage_tab`） |
 
 最小回归命令：
 
@@ -160,6 +164,7 @@ curl -ks -o /dev/null -w 'site_php=%{http_code}\n' -H 'Host: matrix.local' 'http
 curl -ks -o /dev/null -w 'site_static=%{http_code}\n' -H 'Host: matrix-static.local' 'http://10.10.15.4/'
 curl -ks -o /dev/null -w 'site_proxy=%{http_code}\n' -H 'Host: matrix-proxy.local' 'http://10.10.15.4/'
 curl -ks -o /dev/null -w 'traversal=%{http_code}\n' -b "$J" "$B/$P/sites/matrix.local?tab=dir&path=../log"
+curl -ks -o /dev/null -w 'site_manage=%{http_code}\n' -b "$J" "$B/$P/sites/matrix.local?tab=manage"
 ```
 
 ## E. Web 服务
@@ -198,8 +203,9 @@ curl -ks -o /dev/null -w 'modules=%{http_code}\n' -b "$J" "$B/$P/sites/web?tab=m
 | FS-04 | 回收站移动/恢复/清理 | `[本机]` 单测；`[已核对]` 无上机入口（能力面仅 read/write/list/mkdir/remove/rename，无 trash 动词） | `cargo test -p skiff-fs --locked` | 删除进回收站、可恢复、过期清理；恢复后原路径内容一致 | □通过 / □失败 | `crates/fs/src/trash.rs` |
 | FS-05 | 全局与插件配额 | `[本机]` 单测；`[已核对]` 无上机入口（配额在 fs 内部生效，能力面无 quota 动词、无配置项） | `cargo test -p skiff-fs --locked` | 超全局/插件配额被拒；回收站占用计入配额；配额释放后可再写 | □通过 / □失败 | `crates/fs/src/quota.rs` |
 | FS-06 | 审计分级与目视筛选 | `[上机]` 已产生 fs 操作 | 打开 `/$P/audit`（页面只展示最近 200 条，无服务端筛选参数），在列表中找出 `fs.*` 与 result=deny/fail 行 | 每条含 actor、channel、action、target、result；能按文本找到 `fs.*` 与 deny/fail 条目 | □通过 / □失败 | `crates/plugin/src/capability.rs`、`handlers/settings.rs`、`templates/audit.html` |
-| FS-07 | 管理员文件页基本操作 | `[上机]` files 插件启用 | 在 `/$P/plugins/com.skiff.files/main` 浏览、新建目录、重命名、删除、编辑保存；打开 >256 KiB 文件（当前无上传入口） | 操作成功；大于 256 KiB 只读并禁用保存；删除走确认 | □通过 / □失败 | `plugins/files`、`crates/web/src/handlers/plugins.rs` |
-| FS-08 | 受保护路径与权限位 | `[上机]` 已安装 | 用管理员文件页/插件能力尝试写 `/www/skiff/skiff.db`、`/www/skiff/plugins`、`/etc`；检查数据根权限 | 受保护路径拒绝；数据根与 plugins 为 0711；DB 文件非全局可写 | □通过 / □失败 | `crates/fs`、`deploy/install.sh`、`docs/DEPLOY_TEST.md` §1.1 |
+| FS-07 | 内核文件管理页基本操作（第一步） | `[上机]` 管理员会话，`/$P/files` 可打开 | 浏览目录；打开文本并修改保存；新建目录/文件；重命名；删除；再打开 >256 KiB 文件 | 操作成功；大小/时间正确；>256 KiB 只读且保存禁用；删除二次确认；保存失败时编辑内容保留 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/app/src/admin_fs.rs`、`static/files.js` |
+| FS-08 | 数据根硬拒与权限位 | `[上机]` 已安装 | 用内核文件页尝试列/读/写 `/www/skiff/skiff.db`、`/www/skiff/plugins`、`/www/skiff/official`；检查数据根权限 | 即使管理员也返回 403 `fs.protected`；绕过软链仍拒绝；数据根与 plugins 为 0711；DB 文件非全局可写 | □通过 / □失败 | `crates/app/src/admin_fs.rs`、`crates/plugin/src/fsgrant.rs`、`deploy/install.sh`、`docs/DEPLOY_TEST.md` §1.1 |
+| FS-09 | 旧深链 301 与插件菜单撤销 | `[上机]` `com.skiff.files` 已装 | 访问 `/$P/plugins/com.skiff.files/main`；查看「工具」菜单与全站导航 | 返回 301 且 `Location: /$P/files`；菜单中只有内核「文件管理」入口，无插件文件管理入口 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/web/src/menu.rs`、`crates/web/src/handlers/mod.rs` |
 
 最小回归命令：
 
@@ -220,10 +226,12 @@ curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff
 | FS-04 | ☐未执行 | 仅本机单测；运行时无回收站存储/入口（`/www/skiff` 下无 trash 目录），files 删除为永久删除 |
 | FS-05 | ☐未执行 | 仅本机单测；运行时无配额配置/入口（`config.toml` 无 trash/quota 键） |
 | FS-06 | ☑通过 | `/$P/audit` 200；列为 时间/操作者/第三列（管理员 IP 或插件 `uds`）/动作/对象/结果/详情；同一列表含 `fs.read` ok 与 deny 行、`plugin.rpc` 行 |
-| FS-07 | ☑通过（真实浏览器 Playwright 1440） | 文件页 200；跳转 `/www/fs-matrix-ui` 后双击 `small.txt` 编辑保存，RPC 读回 `hello-from-ui`；`big.txt`（300 KiB）打开后 `#ed-save.disabled=true` 且横幅可见；行内重命名 `rename-me.txt→renamed.txt`；删除 `delete-me.txt` 确认后消失；当前无上传入口 |
-| FS-08 | ☐失败 | `/etc/*` 写 400 拒绝；数据根/`plugins` 0711、`skiff.db` 0600；但 files（授权 `path:/www`）写 `/www/skiff/fs-probe2.txt` 与 `/www/skiff/plugins/fs-probe2.txt` 均 200，落地 `root:skiff-plugins 644`（内核以 root 执行，`/www` 授权根覆盖数据根）→ 记台账 |
+| FS-07 | ☑本机集成通过（2026-11-07） | `files_page_browses_edits_and_redirects_legacy_link` 覆盖页面渲染、目录列表、读文本、原子保存、数据根 403 与旧深链 301；`crates/app/src/admin_fs.rs` 三个单测覆盖往返读写/数据根硬拒/超限只读。真实浏览器与上机复核待发版 | 发版后按上表 FS-07/08/09 上机复验；重点看保存失败提示与编辑内容保留 |
+| FS-08 | ☑本机集成通过（2026-11-07，内核文件页） | 旧结论（files 插件按 `path:/www` 可写数据根）已被内核接管取代：`AdminFs::guard` 对 `data/`、`data/plugins`、`data/official` 一律 403，集成测试断言列 `data_dir/plugins` 返回 403；Unix 软链绕回单测同样拒绝。上机权限位复核仍待发版 | 发版后按 FS-08 上机复验：管理员在 `/files` 打开数据根必须 403；软链逃逸仍拒绝；数据根 0711/DB 0600 不变 |
 
 > 稳定性：开跑前后 6 次探活（`/$P/` 307、`/api/v1/docker/containers` 401）一致，`NRestarts=0`，未遇到重启/502；测试期间 `monitor` 被并行会话停用，不影响 F 章判定。
+
+> 2026-11-07 补充（FS-07 编辑器关闭回归）：`plugins/files` 编辑器弹窗的关闭按钮 / Esc / 点遮罩三条路径全部失效。根因是 `.editor-dialog` 上的作者样式 `display:flex` 盖掉了 UA 的 `dialog:not([open]) { display:none }`，`close()` 只移除 `open` 属性，窗口整块留在页面上。修复为 `display` 只挂 `.editor-dialog[open]`、补 `dialog:not([open]) { display:none !important }`、遮罩点击接入 `requestCloseEditor`（未保存内容先确认）、关闭后焦点回列表、确认框防重复 `showModal`。本地复现台（同 CSP + mock RPC，真浏览器）已验证：关闭按钮 / Esc / 遮罩均能收起、未保存内容先确认、保存后重开内容持久、>256 KiB 只读且禁用保存；测试机面板内复验待发版（浏览器工具无法越过自签证书）。
 
 ## G. 调度器
 
@@ -239,6 +247,7 @@ curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff
 | TASK-06 | 缓冲回执与限速 | `[本机]` app 单测；`[已核对]` 无上机入口（testkit 无 scheduler_call，cron 只代理 task.*） | `cargo test -p skiff-app buffer_push --locked` | accepted/rejected 回执字段正确；每任务 100 点/秒限速生效 | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/sched/src/buffer.rs` |
 | TASK-07 | 插件任务唤醒 | `[本机]` sched 单测；`[已核对]` 有入口 | `cargo test -p skiff-sched plugin --locked`；cron 新建生成 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>` | 插件任务按调度唤醒、超时/失败回执；插件不可用时记 blocked 而非 failed | □通过 / □失败 | `crates/core/src/server.rs`、`crates/sched`、`crates/app/src/tasks.rs` |
 | TASK-08 | 任务页权限与 CSRF | `[上机]` viewer 与 admin 各一 | viewer 打开任务页；尝试启停/立即执行/删除；admin 不带 CSRF 执行 | viewer 只读；写操作 403；admin 无 CSRF 403，带 CSRF 303 | □通过 / □失败 | `crates/web/src/handlers/tasks.rs`、`crates/model/src/rbac.rs` |
+| TASK-09 | 调度预设选择与编辑反解 | `[本机]` `skiff-cron` 单测；`[上机]` 已装 cron 插件 | 本机跑 `cargo test -p skiff-cron --locked`；新建页逐个选预设并核对表达式/人话预览；保存后在列表「改调度」逐项确认回显；自定义表达式填非法值 | 6 类预设各自生成标准 5 段表达式且预览为人话；编辑时预设能回显成对应表单；匹配不到预设落「自定义」并保留原表达式；非法表达式有明确报错且拒绝保存；界面标注本地时区、不支持秒级与 `@reboot` | □通过 / □失败 | `crates/cron/src/preset.rs`、`plugins/cron/src/main.rs`、`plugins/cron/ui/app.js` |
 
 最小回归命令：
 
@@ -261,6 +270,7 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | TASK-06 | ☑通过（本机） | `cargo test -p skiff-app tasks --locked` 7 项通过：`buffer.push`/`buffer.stat` 回执、仅本人任务、每任务 100 点/秒限速、无权限拒绝；上机入口缺口记台账 |
 | TASK-07 | ☑部分通过 | `cron` `jobs.list/toggle/run` 200；`jobs.remove` 200 且行删除（`{"removed":true}`）；内核任务详情/历史页 200；插件任务按调度唤醒、失败回执 `result=fail`/`error_class=executor_failed`、手动触发均通过；`cron` 代他人注册被 `source != owner` 拒，修复（`source=owner`）已在本机待发版，见台账 |
 | TASK-08 | ☑通过 | viewer 只读；写操作 403；admin 无 CSRF 403、带 CSRF 303 |
+| TASK-09 | ☑通过（2026-11-07） | `skiff-cron` 14 项单测（预设→表达式、越界拒绝、往返反解、等价写法、自定义回退、描述文案）全绿；测试机 10.10.15.4 真浏览器 41 项断言全过：6 类预设分别落 `*/5 * * * *`、`0 */2 * * *`、`0 3 * * *`、`30 9 * * 1,3,5`、`0 4 1 * *`、`0 9 * * 1-5` 且预览为人话；编辑「改调度」逐项回显对应表单；自定义 `0,30 8-18 * * 1-5` 原样保留；非法 `0 25 * * *` 在新建与编辑两处均报错并拒绝保存；验收任务已清理。截图 `dist/iter/shots/{list,edit-card}.png` |
 
 **调度器补充实测（本轮）**
 
@@ -280,12 +290,12 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | --- | --- | --- | --- | --- | --- | --- |
 | DOCKER-01 | 容器列表与异常过滤 | `[上机]` Docker 可用 | 打开 `/$P/containers`；打开 `?filter=error`；对比 `docker ps` | 列表 200 且数量一致；异常过滤只返回异常容器；无异常时显示空态 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
 | DOCKER-02 | 容器详情与不存在/非法参数 | `[上机]` 有容器 | 打开详情；请求不存在 id；请求非法动词 | 详情 200；不存在 404；非法动词 400 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src` |
-| DOCKER-03 | 启停/重启/删除 | `[上机]` 一个可丢弃容器 | 依次 start、stop、restart；再 POST remove；对受保护容器 POST remove；对执行中任务的运行环境容器 POST remove；每步 `docker ps` 对照 | start/stop/restart/remove 均 303 且状态与 `docker ps` 一致；remove 后容器消失；受保护容器 remove 403；任务占用 remove 409；未知动作仍 400。`[2026-11-07 修复，待发版复验]` remove 入口已开放，删除后回列表 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/app/src/sites.rs`、`crates/docker` |
+| DOCKER-03 | 启停/重启/删除 | `[上机]` 一个可丢弃容器 | 依次 start、stop、restart；再 POST remove；对受保护容器 POST remove；对执行中任务的运行环境容器 POST remove；每步 `docker ps` 对照 | start/stop/restart/remove 均 303 且状态与 `docker ps` 一致；remove 后容器消失；受保护容器 remove 403；任务占用 remove 409；未知动作仍 400。`[已复验 2026-11-07，f9a0b30]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/app/src/sites.rs`、`crates/docker` |
 | DOCKER-04 | 日志 SSE 与断连 | `[上机]` 有持续输出的容器 | 打开日志页；`curl -N` 订阅 SSE；关闭客户端 | SSE 持续返回 `data:` 行；断开后服务端停止 follow，无泄漏 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
 | DOCKER-05 | exec 一次性票据与 Origin | `[上机]` 容器可执行 sh | 申请 exec 票据；用票据连 WS；重复用同一票据；异源 Origin/无 Origin 再连；过期票据再连；浏览器打开详情页在终端输入命令 | 首次可连；重复票据被拒；异源/无 Origin 403；过期票据被拒；终端可输入并有回显。`[已复验 2026-11-07]` 详情页加载 xterm；`echo ok` 回显；票据一次性/异源/无 Origin/过期均 403 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src/client.rs`、`templates/container_detail.html` |
 | DOCKER-06 | 镜像列表/拉取/删除 | `[上机]` 可访问镜像源 | 拉取一个小镜像；列表出现；删除；再拉 | 拉取返回 200 且结果/错误可见；列表与 `docker images` 一致；删除后消失；再拉成功 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
 | DOCKER-07 | 网络与卷创建/删除 | `[上机]` Docker 可用 | 创建 bridge 网络、volume；挂载到临时容器；删除 | 创建 200（页面刷新，非 303）；列表出现；挂载可用；删除后列表消失；使用中的卷删除被拒 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
-| DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[2026-11-07 修复，待发版复验]` | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
+| DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[已复验 2026-11-07，f9a0b30]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
 | DOCKER-09 | 危险字段无法表达 | `[本机]` 模型/策略单测 | `cargo test -p skiff-policy --locked`；构造含 `privileged`/`cap_add` 的 JSON 请求 | 反序列化拒绝或校验拒绝；容器规格只允许契约字段 | □通过 / □失败 | `crates/model/src/container.rs`、`crates/policy` |
 | DOCKER-10 | Compose 子集静态校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose` | 样例全部通过；含不支持字段的 compose 被拒；`[已核对]` 无运行时入口，仅 `xtask check` 静态校验（本轮因本机 OOM 未跑） | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
 
@@ -316,6 +326,16 @@ cargo run -p xtask -- check
 | DOCKER-08 | ☑通过（发现新缺口） | 合成 `io.skiff.protected=true` 容器 stop/restart 403「受保护对象 … 拒绝操作」且保持 running；remove 仍 400（DOCKER-03 缺口）。**新缺口**：运行时 `skiff-web-nginx`/`skiff-php-batch1`/`skiff-rust-rust-1.83` 未带该标签、名称也不匹配 `skiff`/`skiff_`，实测可被面板停止 |
 | DOCKER-09 | ⏸阻塞（本机 OOM） | `cargo test -p skiff-policy` 在 `skiff-model` 编译期 `memory allocation failed`；需充足内存或 CI 兜底 |
 | DOCKER-10 | ⏸阻塞（本机 OOM） | `xtask check` 同样需本地编译；且无运行时 Compose 入口（仅静态校验） |
+
+**Docker 复验（2026-11-07 发版轮，包 `v0.1.0` / `f9a0b30`，x86_64 sha256 `87427aa6…`，测试机 10.10.15.4）**
+
+| 编号 | 结果 | 证据 |
+| --- | --- | --- |
+| DOCKER-08（存量标注） | ☑通过 | 部署后未重建时：列表页「存量未受保护」3 处（三容器各一），详情页各 1 处；`docker inspect` 三容器均无 `io.skiff.protected` |
+| DOCKER-08（重建后标签） | ☑通过 | Web 服务 + `batch1` + `rust-rust-1.83` 重建后 `protected=true` ×3；列表「受保护」3 处、「存量未受保护」0；详情各 1 处且无存量字样；`audit-env.local` / `audit-rust.local` 均 200 |
+| DOCKER-08（面板拒操作） | ☑通过 | 三容器 stop、restart 共 6 次请求全部 403，`docker ps` 保持 `Up` |
+| DOCKER-03（删除入口） | ☑通过 | 可丢弃容器 `remove` 303（回列表）且 `docker ps -a` 消失；三受保护容器 `remove` 均 403；临时运行环境在 `imagick` 安装任务 running 时 `remove` 409 且容器保持运行；未知动作 400（前轮已验） |
+| DOCKER-03/08 备注 | — | 409 分支只在「存量未受保护容器 + 进行中任务」可达：受保护容器先被策略判 403。本轮用临时 PHP 运行环境容器（带 `io.skiff.project=sites`、无 `protected`）复现该路径，面板列表亦标注「存量未受保护」；测后已删运行时记录与容器 |
 
 ## I. 部署与升级
 
@@ -355,6 +375,78 @@ sudo journalctl -u skiff -n 50 --no-pager | grep -E '安全入口|listen|error' 
 | DEPLOY-09 | ⏸阻塞（无环境） | Release 已上架 `aarch64-unknown-linux-musl` 包（7,191,228 B）；复现条件=arm64 Linux + systemd |
 | DEPLOY-10 | ⏸阻塞（无环境） | `deploy/1panel/apps/skiff/0.1.0` 已在仓库；复现条件=1Panel 主机装商店包，验 fs/net 拒装、docker/identity 可用 |
 | DEPLOY-11 | ⏸阻塞（无复现条件） | 正常下载+`sha256sum -c` 通过；`tools/iter.sh::cmd_fetch` 无重试；复现条件=对下载域名注入超时/丢包 |
+
+## J. 站点压测与资源开销
+
+> 重跑触发：改了 nginx/PHP-FPM/反代站点链路、站点日志轮转或日志页读取、`skiff` 主循环（1 s tick / 30 s 巡检）、调度器 tick、插件唤醒/常驻策略、Docker 容器列表与 inspect 调用、监控采样落盘，或更换测试机规格。
+> 执行前提：测试机已有 `audit-env.local`（PHP 运行环境站点）与 `audit-rust.local`（反代站点）且均 `running`；不在测试机上编译任何东西；压测只从本机回环发起，不引外部流量。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| PERF-01 | 压测可重复执行且自带清理，不污染站点目录 | `[上机]` 两站 running；`python3` 可用；站点 `index/` 可写 | `OUT=/root/perf-$(date +%Y%m%d) bash tools/perf/run.sh quick`；结束后检查 `index/` 与 `log/` | 临时文件 `perf-static-64k.bin`、`perf.php` 与本轮新增 `access.log.1` 被删除；站点日志截回压测前尺寸；`OUT/` 下产出 `samples.csv`、`procs.csv`、`threads.csv`、`conts.csv`、各阶段 `*.json`、`state-before/after.json` | □通过 / □失败 | `tools/perf/run.sh`、`tools/perf/load.py`、`tools/perf/observe.py` |
+| PERF-02 | 静态路径基准：并发档位吞吐/延迟/错误率可测 | `[上机]` PERF-01 通过 | `bash tools/perf/run.sh full`；读 `OUT/summary` 中 `static-c4/c16/c32` | 三档全部 200、`errors=0`；rps 随并发上升；`reconnects` 只来自 nginx `keepalive_requests` 到期（≈每 1000 请求 1 次），不计错误 | □通过 / □失败 | `tools/perf/load.py`；nginx `keepalive_requests` |
+| PERF-03 | PHP 动态路径：FPM 池与每请求日志成本可归因 | `[上机]` PERF-02 通过；`audit-env.local` 为 PHP 站点 | 跑 `php-c4/c16/c32`；采样 `skiff-php-batch1` cgroup `cpu.stat`、容器内 FPM 进程、`dockerd` 与容器 shim；对比压测前后 `docker logs skiff-php-batch1` 行数 | 全部 200；PHP 路径吞吐不低于同档静态的 95%；容器 `docker logs` 不随请求增长（池模板 `access.log = /dev/null`）；容器 CPU 与 `dockerd`/shim CPU 之和能算到「每请求微秒」 | □通过 / □失败 | `crates/app/src/sites.rs::render_php_pool_with`（显式 `access.log = /dev/null`）、镜像 `/usr/local/etc/php-fpm.d/docker.conf`（`access.log = /proc/self/fd/2`） |
+| PERF-04 | 反代路径：与静态/PHP 路径可横向对比 | `[上机]` PERF-02 通过；`audit-rust.local` 反代上游 200 | 跑 `rust-c4/c16/c32`；采 nginx 容器与上游容器 CPU | 全部 200；反代路径额外开销只落在 nginx 与上游容器；`skiff` 进程 CPU 不随 rps 增长 | □通过 / □失败 | `crates/app/src/sites.rs`（反代 vhost）、`crates/docker/src/client.rs` |
+| PERF-05 | 宿主机与容器资源归因：1 Hz 采样可复算 | `[上机]` PERF-01 通过 | 检查 `samples.csv` 各阶段 CPU/内存/磁盘写/网络、`conts.csv` 各容器 cgroup CPU/内存、`procs.csv` 目标进程 | 三阶段（idle/warmup/负载）分档齐全；宿主 4 核合计 CPU 与容器 CPU 之和同量级；内存无持续增长；磁盘写增长能对应到日志轮转 | □通过 / □失败 | `tools/perf/observe.py`；`/proc/stat`、`/proc/meminfo`、`/proc/diskstats`、cgroup v2 |
+| PERF-06 | 内核与插件常驻成本：tick 与插件进程可忽略 | `[上机]` PERF-01 通过；guard/monitor 已装并启用 | 对比 idle 与最高并发档的 `skiff` 主进程 CPU、线程数/自愿切换、插件子进程 RSS/CPU、`NRestarts` | `skiff` 主进程 CPU 不随请求增长（≤0.2% 单核）；线程数稳定；tokio 线程每秒自愿切换为个位数（含 1 s tick）；guard+monitor 常驻 RSS < 5 MB、CPU ≤0.1%；`NRestarts=0` | □通过 / □失败 | `crates/core/src/server.rs`（1 s tick、30 s 巡检）、`crates/sched/src/scheduler.rs::tick`、`plugins/guard/manifest.toml`、`plugins/monitor/manifest.toml` |
+| PERF-07 | 无意义消耗定量：日志轮转/日志页/采样写放大 | `[上机]` PERF-02/PERF-03 通过 | 在最高并发档读 `skiff` 进程写字节与磁盘写；比对站点 `access.log` 尺寸；打开站点「日志」页一次；观察 `plugins/monitor/data/samples.json` 的 mtime 与尺寸 | 能给出「每请求额外写多少字节」「一次日志页读入多少字节」「监控每 5 分钟重写多少字节」三项实测值，并判定是否与请求量线性放大 | □通过 / □失败 | `crates/app/src/sites.rs::rotate_if_large`（copytruncate 整文件复制）、`crates/app/src/sites.rs::read_log`（全量 `read_to_string`）、`plugins/monitor/src/main.rs`（`samples.json` 全量重写） |
+| PERF-08 | 压测后机器恢复干净、数据一致 | `[上机]` 已完成任一档压测 | 核对容器与站点状态、插件启停与基线一致、`PRAGMA integrity_check`、`user_version`、`systemctl show skiff -p NRestarts`、`load1` 与 `MemAvailable` 回落 | 临时站点/容器/文件全部消失；三容器 Up；插件启停与压测前一致；`integrity_check=ok`；`user_version` 与压测前相同；`NRestarts=0`；两站仍 200 | □通过 / □失败 | `tools/perf/report.py`；`/www/skiff/skiff.db`；`/www/sites` |
+
+最小回归命令：
+
+```bash
+# 测试机上执行（不在测试机编译）；$REPO 为仓库检出目录
+export REPO=/path/to/skiff OUT=/root/perf-$(date +%Y%m%d)
+OUT=$OUT bash "$REPO/tools/perf/run.sh" quick
+sqlite3 /www/skiff/skiff.db 'PRAGMA integrity_check; PRAGMA user_version;'
+systemctl show skiff -p NRestarts
+docker ps --format '{{.Names}}\t{{.Status}}'
+curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: audit-env.local' http://127.0.0.1/
+curl -s -o /dev/null -w 'rust=%{http_code}\n' -H 'Host: audit-rust.local' http://127.0.0.1/
+```
+
+**压测补充实测（2026-11-07 首轮，测试机 10.10.15.4，4 逻辑 CPU / 6.3 GB）**
+
+并发档位固定 4/16/32，每档 60 s，每连接限速 100 rps；`quick` 档为 4 并发 30 s。宿主 CPU 为 4 核合计占比，容器 CPU 为单核百分比。
+
+| 编号 | 结果 | 证据 |
+| --- | --- | --- |
+| PERF-02 | ☑通过 | 静态 358 / 1480 / 2947 rps；p99 1.51 / 3.30 / 3.79 ms；`errors=0`，`reconnects` 20/80/160 |
+| PERF-03 | ☑通过（发现日志成本） | PHP 357 / 1466 / 2913 rps；p99 2.50 / 4.53 / 6.02 ms；PHP 容器 CPU 9.41 / 35.61 / 36.88%，同档 `dockerd`+容器 shim 在 c32 合计 13.78% 单核（≈47 µs/请求），静态/Rust 路径仅 0.25–0.28% |
+| PERF-04 | ☑通过 | Rust 353 / 1462 / 2921 rps；p99 2.24 / 3.65 / 5.44 ms；nginx 容器 10.38 / 27.94 / 54.45%；上游容器 2.12 / 6.71 / 11.49% |
+| PERF-05 | ☑通过 | 宿主 CPU：静态 3.56 / 8.82 / 14.02%，PHP 7.04 / 25.75 / 26.45%，Rust 4.88 / 11.70 / 20.49%；nginx 容器 5.29 / 14.96 / 23.23%（静态）；磁盘写 45 / 291 / 779 KB/s；全程内存无单调增长 |
+| PERF-06 | ☑通过 | `skiff` 主进程 idle 0.05% 单核，负载下 0.03–0.10%，与 rps 无关；tokio 线程自愿切换约 2.4 次/s；guard+monitor 常驻 RSS ≈1.4 MB、CPU ≤0.02%；`NRestarts=0` |
+| PERF-07 | ☑通过（三项定量） | ①PHP 每请求 stdout 日志经 containerd-shim→dockerd，c32 合计 13.78% 单核；②30 s copytruncate 轮转使 `skiff` 写 1/215/464 KB/s（c4/c16/c32，≈161 B/请求），磁盘写 45/291/779 KB/s；③`monitor` `samples.json` 36,549 B 每 300 s 整文件重写（≈10.4 MB/天）；④`read_log` 整文件读入，`audit-env.local/access.log` 轮转前达 40 MB 级 |
+| PERF-08 | ☑通过 | 临时文件与新增 `access.log.1` 已删；三容器 Up、两站 200；插件/授权/任务计数与压测前一致；`integrity=ok`、`user_version=11`；`NRestarts=0`；`MemAvailable` 约 3301 MB、`load1` 回落 |
+| PERF-01 备注 | — | 首轮 `collect` 采样脚本变量被覆盖导致无数据，已修复；`load.py` 曾把 nginx `keepalive_requests` 到期断连计为 error，已改计 `reconnects` |
+
+## K. FTP 与宿主机文件服务
+
+> 重跑触发：改了 `ftp` 能力面（`crates/core/src/kernel/ftp.rs`）、`com.skiff.ftp` 插件、pure-ftpd 配置键、账号身份探测/`MinUID`/`Umask`、站点目录对齐或 fail2ban 策略。
+> 执行前提：内核二进制与 `official/com.skiff.ftp-*.wbpkg` 均来自 GitHub Release 资产（下载后先 `sha256sum -c` 再安装）；本地/交叉编译产物只作编译级验证，**不作为部署来源，也不作为验收依据**。契约见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md)。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| FTP-01 | 首次安装、幂等重入与卸载回收 | `[上机]` Release 安装后未装 pure-ftpd；能 `apt` | 插件「运行状态」点安装；再次点安装；检查 `pure-ftpd -v`、`systemctl status pure-ftpd`、`/etc/pure-ftpd/conf/*`、`iptables`/`nft` 无新规则；再点回收并确认 | 首次安装成功且自动启动；二次调用返回同样配置不重复装包；配置含 `ChrootEveryone`/`NoAnonymous`/`PureDB`/`PassivePortRange`/`Umask=002:002`/`MaxClientsPerIP`；回收后服务停止、包可移除或至少禁用，站点账号全部失效 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::install/uninstall/status`、`plugins/ftp/src/main.rs`、`plugins/ftp/ui/runtime.html` |
+| FTP-02 | 账号名/密码/端口范围校验（纯函数） | `[本机]` | `cargo test -p skiff --bin skiff kernel::ftp --locked` | 非法账号名、过短密码、控制字符、非法端口区间全部被拒；登录名 `skiff_<slug16>_<fnv4>_<account>` 稳定且不同域名不碰撞 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs`（`valid_account_name`/`valid_password`/`valid_port_range`/`ftp_login`） |
+| FTP-03 | 建号身份探测与 `MinUID` 只降不升 | `[上机]` PHP 站点 running；容器内 `www-data` 非 0 | 建账号；`docker exec -u www-data <php容器> id -u`；读 `/etc/pure-ftpd/conf/MinUID`；再对另一个 uid 不同的运行环境建号 | 账号 uid/gid 与容器内 `www-data` 一致；`MinUID` 取 `min(当前值, 探测 uid)`，不被上调；站点 `index/` 属主/属组改为该身份，目录 2775、文件 0664/0775 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::resolve_identity/probe_id/ensure_min_uid/align_tree` |
+| FTP-04 | FTP 上传的文件 PHP 容器内可读写 | `[上机]` FTP-03 通过；客户端可用（`curl`/`lftp`） | 用账号登录（显式 TLS 可选），上传 `probe.txt` 与 `probe.php`；在容器内 `cat`/`stat` 并写入同名文件；浏览器访问 `probe.php` | 上传后容器内可读且属主/属组与 `www-data` 一致；容器内写入成功（非只读）；HTTP 返回上传内容，无 403/500 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::align_tree`、`write_conf("Umask")`；站点 `index/` |
+| FTP-05 | 越界、跨站与暴力登录被拒；删号回收与审计 | `[上机]` 两站各一账号；已装 fail2ban（`login_guard=true`） | 用 A 站账号 `cd ..`/绝对路径/软链尝试进 `log`、`conf`、B 站；连续错密码 3 次；删除 A 站账号后再登录；查 `/$P/audit` 中 `ftp.*` 行 | chroot 生效，越界与跨站全部 530/550；`MaxClientsPerIP=3`、fail2ban 10 分钟 3 次封禁生效；删号后登录失败且 `pureftpd.passwd` 无该行；审计含 `ftp.account.create/delete`、`ftp.deny.*`，无密码内容 | □通过 / □失败 | `crates/core/src/kernel/ftp.rs::ftp_call/dispatch/account_delete/ensure_login_guard`、`crates/core` 审计表 |
+
+最小回归命令：
+
+```bash
+# 本机（编译级 + 纯函数单测）
+cargo test -p skiff --bin skiff kernel::ftp --locked
+
+# 测试机（安装后；$P 为安全入口前缀）
+curl -ks -b "$J" -o /dev/null -w 'ftp_plugin=%{http_code}\n' "$B/$P/plugins/com.skiff.ftp"
+curl -ks -b "$J" -H 'content-type: application/json' \
+  -d '{"method":"list","params":{}}' "$B/$P/plugins/com.skiff.ftp/rpc"
+docker exec -u www-data skiff-php-batch1 id
+grep -x 'MinUID=*' /etc/pure-ftpd/conf/MinUID
+systemctl is-active pure-ftpd fail2ban
+```
 
 ## 附：待核对项结论（2026-11-07 已全部定性）
 

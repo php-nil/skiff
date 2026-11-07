@@ -6,14 +6,14 @@
 ## 一、项目概述
 
 * **项目名称**：Skiff（轻舟）—— Rust 极简 Linux 服务器管理面板
-* **核心定位**：只做三核心——Web 管理服务 / Docker 管理 / 插件体系。文件管理、防火墙、网站管理、主机监控等宿主功能不进内核，由插件层在宿主能力面（docker/identity/fs/net）实现。主交付形态为宿主机 systemd 直装；1Panel 商店 Docker 包是可选受限形态（能力面收缩为 docker/identity）。
+* **核心定位**：只做三核心——Web 管理服务 / Docker 管理 / 插件体系。内核持有 fs 能力面的**管理员客户端**（「工具 → 文件管理」页面，IO 全部经 `skiff-fs`），但不把宿主文件业务塞回内核业务层；防火墙、主机监控等其余宿主功能仍由插件层在宿主能力面（docker/identity/fs/net）实现。主交付形态为宿主机 systemd 直装；1Panel 商店 Docker 包是可选受限形态（能力面收缩为 docker/identity）。
 
 ## 二、仓库结构
 
 | 路径 | 类型 | 说明 | 文档入口 |
 | --- | --- | --- | --- |
 | `crates/` | 子项目 | Rust workspace 的 14 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
-| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
+| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` / `ftp` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
@@ -80,6 +80,7 @@
 | 内核文件系统契约 | `docs/KERNEL_FS_CONTRACT.md` | 管理员与插件双主体授权、操作面与原子写/路径锁、fs 审计、回收站与配额、受保护路径、站点目录归属、页面与测试矩阵 |
 | 内核定时任务实现说明 | `docs/KERNEL_SCHEDULER_IMPL_NOTES.md` | `skiff-sched` 的任务模型、内存缓冲与回执、tick 语义、审计结构、与契约差异、SQLite/Web 接线边界与顺序 |
 | 内核文件系统实现说明 | `docs/KERNEL_FS_IMPL_NOTES.md` | `skiff-fs` 的授权与路径解析、原子写/路径锁、回收站与配额、审计分级、与契约差异与接线边界 |
+| 内核 FTP 契约 | `docs/KERNEL_FTP_CONTRACT.md` | 新增 `ftp` 能力面的主体与授权（manifest→`perm:ftp:<verb>`）、审计口径、站点账号与 uid/gid 对齐（`MinUID` 只降不升）、安全边界、宿主 pure-ftpd 取舍与测试矩阵 |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

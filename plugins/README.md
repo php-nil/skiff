@@ -1,14 +1,17 @@
 # Skiff 官方插件集
 
 这里是官方插件的**第二 workspace**（与根 `crates/` 分开构建），主程序发布包会随包携带
-本目录产出的 `.wbpkg`。插件是「能力面的组合」，不新增内核接口：
+本目录产出的 `.wbpkg`。插件原则上只做「能力面的组合」，不新增内核接口；唯一例外是
+`com.skiff.ftp`——它需要宿主软件包与 systemd，新增了内核 `ftp` 能力面，
+契约见 [`docs/KERNEL_FTP_CONTRACT.md`](../docs/KERNEL_FTP_CONTRACT.md)。
 
 | 插件 | id | 能力 | 用途 |
 | --- | --- | --- | --- |
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
-| `cron/` | `com.skiff.cron` | identity + interop | 计划任务：按 cron 表达式调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记 |
+| `cron/` | `com.skiff.cron` | identity + interop | 计划任务管理 UI：按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。只调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记 |
+| `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** | FTP 管理：站点账号增删改、服务安装/回收/重启；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；仅 Native 形态 |
 | `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
 ## 约定

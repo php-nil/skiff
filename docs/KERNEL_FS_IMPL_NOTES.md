@@ -1,8 +1,9 @@
 # 内核文件系统原语：分析与实现说明
 
 > 对应契约：[`KERNEL_FS_CONTRACT.md`](KERNEL_FS_CONTRACT.md)。
-> 本轮范围：**仅底层能力**，新 crate `crates/fs`（包名 `skiff-fs`）。不接插件能力面、不改插件 / Web 路由 / SQLite 表。
-> 状态：独立库 + 单元/集成测试已落地；尚未部署、未提交。
+> 原始范围：底层能力库 `crates/fs`（包名 `skiff-fs`），不接插件能力面、不改插件 / Web 路由 / SQLite 表。
+> 2026-11-07 追加：第一步管理面接线完成——`skiff-app::admin_fs::AdminFs` 把 `skiff-fs` 接成管理员侧文件服务，Web 提供 `/{p}/files` 页面与 JSON API；回收站/配额仍为内存实现，UI 留第二步。
+> 状态：独立库 + 单元/集成测试已落地；页面/API 已接线并通过集成测试，尚未部署。
 
 ## 0. 一句话结论
 
@@ -227,7 +228,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 3. **写路径切换**：`write/mkdir/rename/copy` 切到 `Fs`；`append` 保留语义标记。
 4. **回收站**：`SqliteTrashStore` + `remove` 默认进站；加 `trash-prune` 删除任务；最后接管理页。
 5. **配额**：`SqliteQuotaTracker` 先做「启动扫描 + 写后增量」，再做写前预检；观察误差后再决定是否 60s 刷新。
-6. **管理面**：`/fs/audit`、`/fs/trash`、`/fs/grants` 路由复用同一 `Fs`，禁止另写 `std::fs`。
+6. **管理面**：`/files`（第一步已接：浏览/编辑/新建/改名/删除）、`/fs/audit`、`/fs/trash`、`/fs/grants` 路由复用同一 `Fs`，禁止另写 `std::fs`。
 7. **强化**：Unix 改 fd 相对操作；Windows 句柄复核；最后再评估 P2 流式与快照。
 
 ## 6. 风险清单
@@ -240,13 +241,40 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | 目录锁粒度粗 | 中 | 契约接受；删除大目录时可能有并发写失败，需要页面提示 |
 | `remove` 默认语义变更 | 中 | 旧调用方需显式 `permanent`；发布说明必须写清 |
 | Windows 符号链接能力 | 低（部署目标是 Linux） | 测试跳过/限制；生产以 Linux 为准 |
-| 管理员全盘写 | 高但可控 | 强制逐条审计 + `request_id`；UI 二次确认尚未实现 |
-| 内存审计/回收站实现非持久 | 低（本轮定位） | 仅测试替身；接线替换为 SQLite 实现 |
+| 管理员全盘写 | 高但可控 | 数据根（`skiff.db`、`plugins`、`official`）已在 `AdminFs::guard` 硬拒；其余路径仍全盘可写，靠逐条审计 + `request_id` 追溯；UI 危险操作二次确认已接删除 |
+| 内存审计/回收站实现非持久 | 低（本轮定位） | 审计接 `DbAuditSink` 落 `audit` 表（`ip=web`，事件压 `detail` JSON）；回收站/配额仍为内存实现，第二步替换 |
 | 配置默认值未实测 | 低 | 256 KiB / 4 GiB / 10 GiB / 1 GiB / 30 天均沿用契约设计目标，不宣称已实测 |
 
-## 7. 本轮不做
+## 7. 原始轮次不做（历史边界）
 
 - 不修改 `crates/plugin`（含 `fsops.rs`）、`crates/store`、Web 路由与模板。
 - 不建 `fs_audit` / `trash_entries` / `fs_quotas` 表。
 - 不实现站点整站回收站、写前快照、流式读写、目录复制异步任务。
 - 不部署、不提交、不推送。
+
+## 8. 第一步管理面接线（2026-11-07）
+
+### 8.1 接线位置
+
+| 层 | 文件 | 职责 |
+| --- | --- | --- |
+| 应用装配 | `crates/app/src/lib.rs` | `AppState` 持有 `AdminFs`，提供 `admin_fs()` 访问器 |
+| 管理客户端 | `crates/app/src/admin_fs.rs` | 管理员主体调用原语；数据根硬拒；审计落 `audit` 表；256 KiB 编辑上限 |
+| Web 页面/API | `crates/web/src/handlers/files.rs` | `/{p}/files` 与 `/files/api/{list,read,write,mkdir,rename,remove}`；Admin + CSRF |
+| 模板/静态 | `templates/files.html`、`static/files.css`、`static/files.js` | 独立样式全部挂 `.files-page`，不改 `skiff.css` |
+| 菜单/深链 | `menu.rs`、`handlers/plugins.rs` | 新增内置 `core/files`；过滤 `com.skiff.files` 插件菜单；旧深链 301 |
+
+### 8.2 语义与边界
+
+- **数据根硬拒**：`AdminFs::guard` 先做 lexical 校验，再对已存在目标 / 待创建目标父目录 canonical 化，最后复用 `skiff_plugin::fsgrant::is_protected`；软链绕回同样拒绝。`list` 时用 `hides_listed_entry` 过滤受保护子项。
+- **编辑上限**：读、写都限制 256 KiB；超限文件只读并禁用保存，避免「读到一半再保存」截断原文件。二进制（非 UTF-8）返回 `fs.unsupported`，页面提示并保留原编辑内容。
+- **写语义**：`write` 走 `WriteMode::Replace` 原子替换；`rename` 默认不覆盖；`remove` 第一步 `permanent = true`（永久删除），第二步改 `false` 接 SQLite 回收站，**路由与页面不需要改**。
+- **审计**：`DbAuditSink` 把 `AuditEvent` 压成 `detail` JSON 写现有 `audit` 表（`actor=用户名`、`ip=web`、`action=fs.*`），本轮不建 `fs_audit` 表；回收站/配额的持久化仍在第二步。
+- **菜单退役**：`menu::build` 与 `nav_plugins` 同时过滤 `com.skiff.files`；旧深链 `/{p}/plugins/com.skiff.files/main` 返回 **301** 到 `/{p}/files`（注意 axum `Redirect::permanent` 是 308，已手写 301）。
+- **错误提示**：API 统一 `{ok:false,error:{code,message}}`，HTTP 状态取 `FsError::http_status()`；前端按 `code` 显示且保存失败不清空 textarea。
+
+### 8.3 第二步预留
+
+- 回收站：把 `AdminFs::remove` 的 `permanent` 改为 `false`，接 `SqliteTrashStore`；新增 `/{p}/fs/trash` 页面与恢复/彻底删除 API。
+- 配额：`SqliteQuotaTracker` 替换 `MemoryQuotaTracker`，`/{p}/fs/grants` 展示占用；`FsConfig` 与 `Fs` 构造已预留注入点。
+- 审计明细：第二步建 `fs_audit` 表后，`DbAuditSink` 改为双写或迁移，页面查询复用审计流。
