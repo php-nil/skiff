@@ -552,8 +552,6 @@ async fn account_create(state: &AppState, params: &Value) -> Result<Value, FtpEr
             &gid.to_string(),
             "-d",
             &home,
-            "-y",
-            "2",
             "-f",
             PASSWD_FILE,
             "-m",
