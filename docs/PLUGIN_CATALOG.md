@@ -10,20 +10,20 @@
 | 维度 | 结论 |
 |---|---|
 | 选型依据 | 竞品把面板做成「服务器操作系统」，Skiff 只做三核心，**官方插件集就是产品完整度的上限** |
-| 首批 5 个 | **容器守护**（零内核改动，链路验证）→ **主机监控** → **Nginx 站点** → **文件管理** → **计划任务**（按落地难度排序） |
+| 当前 5 个 | **容器守护**（零内核改动，链路验证）→ **主机监控** → **文件管理** → **计划任务** → **FTP 管理**（Nginx 站点已内核化，不再作为插件；按落地难度排序） |
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
-| 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 仍缺 exec/compose；`net` 一律 501 |
+| 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 已支持 `containers.exec`，仍缺 create/remove/pull/compose；`net` 一律 501 |
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
 | 能力面扩张 | **FTP 管理**是唯一新增内核原语（`ftp`），涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md) |
 
-**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。首批 5 个已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
+**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 5 个官方插件已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
 
 
 ## 1. 能力现状核对（选型的硬约束）
 
 | 能力 | 代码现状 | 位置 | 对官方插件集的含义 |
 |---|---|---|---|
-| `docker` | 白名单 26 个动词；Broker 实际只执行 `containers.list/inspect/logs`、`images.list`、`networks.list`、`volumes.list`、`info`、`version`、`containers.start/stop/restart/kill`；exec、create、remove、pull、compose 一律返回 Unsupported | `crates/docker/src/client.rs` 的 `Docker::execute` | Nginx 管理、一键部署、数据库管理、备份导出全部卡在 exec/compose |
+| `docker` | 白名单动词；Broker 执行 `containers.list/inspect/logs/exec`、`images.list`、`networks.list`、`volumes.list`、`info`、`version`、`containers.start/stop/restart/kill`；create、remove、pull、compose 一律返回 Unsupported | `crates/docker/src/client.rs` 的 `Docker::execute` | 一键部署、数据库管理、备份导出仍卡在 create/remove/compose |
 | `fs` | 两条分支：相对路径落插件自身 `data/`；**绝对路径**须命中安装时确认的 `path:` 对象授权根（`fsops::resolve` + `skiff_plugin::fsgrant`），动词 `read/write/list/mkdir/remove/rename`；单次读写 256KiB 分页 | `crates/plugin/src/{capability.rs,fsops.rs,fsgrant.rs}` | 文件管理器、主机监控、Nginx 站点已可做；大文件靠分页而非流式 |
 | `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | 防火墙、ACME 证书不可做 |
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
@@ -65,7 +65,7 @@
 | P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
 | P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` | 无（只读能力面） | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
-| P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态） | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现（待 Release 上机验证） |
+| P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态） | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现并上机验收通过（FTP-01/05 残留，见 TEST_LEDGER） |
 | P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
 | P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | 未开始（卡 net） |
 | P1 | `com.skiff.backup` | 备份与恢复 | `docker` + `fs` | exec、fs 授权、流式导出 | 1Panel/宝塔 备份 | 未开始 |
@@ -83,11 +83,11 @@
 - **不在本期做在线商店**：渠道未决策（§1.4），官方包先随发布物离线分发。
 - **不把终端/日志流做成插件**：内核已有容器 exec 终端与日志 SSE，流式场景按 §4.2 不进插件。
 
-## 4. 首批 5 个：实现与前置
+## 4. 当前 5 个：实现与前置
 
 ### 4.1 实现顺序（按落地难度，已全部落地）
 
-**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ Nginx 站点（fs 写 + 容器重启，中）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）**。
+**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）**。
 
 `guard` 排在第一位是因为它**不需要任何内核改动**：只用既有 `containers.list/inspect/restart` 与自身 `data/`，可以先把「manifest → 打包 → 装包 → RPC → UI」整条链路验穿，再往上叠能力面。
 
@@ -168,7 +168,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-5 个随包插件均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
+5 个官方插件与 testkit 均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
 
 | 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
@@ -246,7 +246,7 @@ plugins/
 - 根 `Cargo.toml` 增加 `exclude = ["plugins"]`，显式声明第二 workspace（已完成）。
 - 每个插件 crate 直接 `skiff-sdk = { path = "../../crates/sdk" }`；不设 `workspace.dependencies`（各有依赖，收敛收益不大）。
 - `plugins/pack.sh`：`build`（`CARGO`/`--target` 交叉）→ 复制 `manifest.toml` + `ui/` + `migrations/` + `bin/<arch>/plugin` 到临时目录 → `stamp` 回填指纹 → `pack --arch` → `verify --arch` 自检 → 输出 `com.skiff.<name>-<version>.wbpkg` 与 `public-key.txt`。
-- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥打 5 个包并逐个验签）。
+- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥打 6 个包并逐个验签）。
 - 发布：`deploy/pack-release.sh --plugin-key <私钥>` 调 `pack.sh`，产物塞进发布包 `official/`；不给私钥且未 `--skip-plugins` 时**拒绝出包**（详见 [`docs/CI.md`](CI.md) §4）。
 - 交叉打包需要 `skiff-plugin pack/verify --arch`（否则按打包机架构找载荷，arm64 包在 amd64 机上会被误判缺载荷）。
 - 多架构是发布者责任：缺哪个架构，该架构上就拒装（§4.4）。
@@ -265,11 +265,11 @@ plugins/
 |---|---|---|
 | 0 决策与目录 | 建 `plugins/` 第二 workspace + 三关门禁 | ✅ 2026-11-01（`exclude`、CI `plugins` job、`plugins/Cargo.lock`） |
 | 1 能力补齐 | fs 宿主授权（`path:` grant、`resolve_data`/`resolve` 双分支、manifests 的 `resource_hints`、Broker 复验）；cron 运行时；interop 契约（manifest `[interop]`、`plugin:` 对象授权、`capability/interop/{call,catalog}`、审计） | ✅ fs / cron / interop 就绪；❌ docker exec、内置官方公钥仍未做 |
-| 2 首批插件 | guard → monitor → files → cron（nginx 已内核化） | ✅ 代码 + UI + 单测（guard 3 / monitor 5 / files 2 / cron 8 / common 7） |
+| 2 首批插件 | guard → monitor → files → cron → ftp（nginx 已内核化） | ✅ 代码 + UI + 单测（guard 3 / monitor 5 / files 2 / cron 8 / ftp 3 / common 7） |
 | 3 分发 | 官方源目录 + 随包携带 | ✅ 随包携带（`official/` + `public-key.txt`）；❌ 面板内官方插件列表 |
 | 4 第二批 | 防火墙（net #17 通过后）、备份与恢复、应用模板、数据库 | 未开始 |
 
-> 首批 4 个的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）尚未记录实测，见 [`docs/sections/12-pending-tests.md`](sections/12-pending-tests.md) 口径；Windows 上只验证了编译与单测，装机链路待 Linux 实测。
+> 5 个官方插件与 testkit 的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验。
 
 > 能力补齐与插件开发并行时，先冻结 manifest 字段与协议契约再写插件，否则三份插件要返工。
 

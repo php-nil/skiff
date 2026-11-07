@@ -1,6 +1,6 @@
 # 内核定时任务契约（Scheduler Contract）
 
-> 状态：评审稿 · 只定义契约，不含实现
+> 状态：已落地（2026-11-06）；任务表迁移最终编号为 schema v10，当前全局 v11。文中 v8 为设计初稿编号，以 `docs/changes/2026-11-06.md` 与代码为准。
 > 关联：`docs/KERNEL_FS_CONTRACT.md`（任务落盘统一走 fs 原语）、`docs/PLUGIN_CATALOG.md`（cron/monitor/guard 分工）
 > 原则：调度是内核原语，插件只注册任务与提供执行体；插件不再自带计时器。
 

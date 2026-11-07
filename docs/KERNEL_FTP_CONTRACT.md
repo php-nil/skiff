@@ -1,5 +1,6 @@
 # 内核 FTP 原语契约（FTP Contract）
 
+> 状态：已上线（2026-11-07，随 `v0.1.0` 发布；DB schema v11）。
 > 本文件是 `ftp` 能力面的**契约**：主体、授权、账号与权限口径、审计、错误码与测试矩阵。
 > 实现细节见 `crates/core/src/kernel/ftp.rs`；插件实现约定见 `plugins/README.md`；
 > 与内核能力面的关系见本文件 §1.2 与 §8。

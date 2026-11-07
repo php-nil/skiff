@@ -7,17 +7,11 @@
 > 依赖边界：只依赖 `chrono` / `serde` / `serde_json` / `thiserror` / `skiff-cron`；
 > 不依赖 `skiff-store` / `skiff-docker` / `skiff-wire` / `skiff-web`，未引 tokio。
 
-## 1. 契约关键结论
+## 1. 实现补充结论
 
-### 1.1 站得住的设计
+> 任务模型、缓冲、执行语义、持久化与 API 的规范以 [KERNEL_SCHEDULER_CONTRACT.md](KERNEL_SCHEDULER_CONTRACT.md) §3–§10 为准；本节只记实现取舍与必须补强的点。
 
-- **任务级事实源**替代「manifest cron → 插件 tick」：调度单位从插件变成任务，才能表达超时、重试、并发、缓冲与来源级联。
-- **采样与执行解耦**是这套模型的核心价值：高频采样只写内核内存，低频执行批量消费，插件不再持有计时器。
-- **水位回执协议**（`persist / keep / discard / partial`）方向正确：未回执默认 `keep` 是保守且安全的；水位越界按协议失败、缓冲不动，可以避免「执行体报错但数据已被误删」。
-- **三层内存配额**（单点 / 单任务 / 全局）配溢出策略与降级，能在内存失控前给出确定性行为，而不是静默扩张。
-- **单飞 + 超时冷却 + 仅瞬时错误重试**：避免同一任务堆叠、避免超时后立即重入、避免业务错误被无意义重试。
-
-### 1.2 落地时容易踩的坑
+### 1.1 落地时容易踩的坑
 
 1. **1s tick 不能同步执行执行体**。契约写的是 1s 调度循环，但插件 RPC 可能跑几十秒。必须保证 `tick` 只出票、执行放到独立任务；否则所有任务会被最慢的执行体串行阻塞。本 crate 的「出票 / 结算」两段式就是为此设计。
 2. **超时无法强杀执行体**。超时只释放单飞锁并进入冷却，晚到的结果必须丢弃。上层要以 `run_id` + `snapshot_id` 作为幂等键；本 crate 已拒绝同一票据重复结算，但「旧结果晚到」需要上层按 `run_id` 丢弃。
@@ -178,7 +172,7 @@ pub trait TaskStore {
 
 ## 5. 后续接线顺序
 
-1. **表结构（schema v8）**：由当前负责 `crates/store/src/db.rs` 的会话落地 `scheduled_tasks` / `task_runs` 与索引；本 crate 不改。
+1. **表结构（最终 schema v10，设计稿曾记 v8）**：由当前负责 `crates/store/src/db.rs` 的会话落地 `scheduled_tasks` / `task_runs` 与索引；本 crate 不改。
 2. **仓储适配器**：实现 `TaskStore`（建议放 `crates/core` 的适配模块），补齐启动加载、状态校正、`buffer.lost_on_restart`、保留清理。
 3. **tick 装配**：在 `crates/core/src/server.rs` 起 1s 循环（与 30s 巡检分离）：`tick → 对每个 RunTicket spawn_blocking 执行 → finish/timeout → 批量写 run/audit`。
 4. **执行体与插件门**：实现内置 `Executor`，再把插件 `sample/execute` 适配到 Supervisor + interop；接通 `PluginGate`。
@@ -225,7 +219,7 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 
 ## 8. 接线结果（2026-11-06）
 
-### 8.1 落库（schema v10）
+### 8.1 落库（schema v10 → 当前 v11）
 
 - `crates/store/src/db/tasks.rs`：`scheduled_tasks`（17 列）/ `task_runs`（14 列）。
   调度语义不落列：`schedule_json / payload_json / retry_json / buffer_json / last_run_json`

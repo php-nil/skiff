@@ -623,7 +623,7 @@ roles = ["admin", "operator", "viewer"]
 - 当前 `active` 字符串迁移为 `route → menu-key` 映射表，迁移完成后删除 `APP_ORDER` 与 `nav()` 旧硬编码。
 - 旧「应用」菜单不再出现；`工具` 按 §1.4 渲染；`网站` 由内核固定的三个 L2 渲染。
 
-### 7.3 4 个官方插件应声明什么
+### 7.3 5 个官方插件应声明什么
 
 | 插件 | L1 | 插件 L2 | L3 | 固定页槽位 | 批次 |
 |---|---|---|---|---|---|
@@ -631,18 +631,19 @@ roles = ["admin", "operator", "viewer"]
 | `com.skiff.cron` | 工具 `tools` | `cron` 任务 | 任务列表 / 执行记录 / 设置 | — | B3 |
 | `com.skiff.monitor` | 工具 `tools` | `monitor` 监控 | 总览 / CPU 内存 / 磁盘 | `overview.health` | B2 |
 | `com.skiff.guard` | 工具 `tools` | `guard` 守护 | 容器 / 事件 / 设置 | — | B3 |
+| `com.skiff.ftp` | 工具 `tools` | `ftp` FTP 管理 | 账号 / 运行状态 | — | 后续 |
 
 说明：
 
 - 网站一级由内核自带（网站列表 / 运行环境 / Web 服务），原 `com.skiff.nginx` 已内核化，不再声明插件菜单。
-- files/cron/monitor/guard 全部归「工具」，不再作为一级或二级「应用」的平铺项。
+- files/cron/monitor/guard/ftp 全部归「工具」，不再作为一级或二级「应用」的平铺项。
 - L3 的 `view` 必须对应真实存在的 `ui/<view>.html`；没有对应视图就先不声明，避免假标签。
 
 ### 7.4 分批
 
 1. **B1 内核先行**：注册表、manifest 解析/校验、旧路由映射、旧 `[[ui]]` 降级、L1/L2 渲染；不引入 L3 与设置页。
 2. **B2 高价值路径**：内核网站（网站列表 / 运行环境 / 设置 + 运行环境安装）、monitor（工具 + `overview.health` 槽位）；同时落 user_prefs 与布局切换。
-3. **B3 全量**：files/cron/guard 声明、插件中心 L2 拆分、Docker 规划页、pin/固定区与管理员默认。
+3. **B3 全量**：files/cron/guard 声明、插件中心 L2 拆分、Docker 规划页、pin/固定区与管理员默认；ftp 随能力面上线后补入。
 
 ---
 
@@ -708,10 +709,10 @@ roles = ["admin", "operator", "viewer"]
 
 ### P3：全量迁移与规划项
 
-- files/cron/guard 声明迁移；插件中心 L2 拆分；旧「应用」代码删除。
+- files/cron/guard/monitor/ftp 声明迁移；插件中心 L2 拆分；旧「应用」代码删除。
 - Docker 概览 / 编排 / 设置 页面与内置 L2（编排无后端前保持 `route_available=false`，不出现死链）。
 - pin/固定区、管理员实例默认、菜单设置细节（拖拽、恢复默认、预览）。
-- 产出：4 个官方插件全部走新契约；旧 `[[ui]]` 仅作兼容；契约测试矩阵全绿。
+- 产出：5 个官方插件全部走新契约；旧 `[[ui]]` 仅作兼容；契约测试矩阵全绿。
 - 风险：官方插件 UI 需配合 `tab`/`menu` query，否则 L3 是空标签；Docker 编排缺少后端可能导致长期隐藏项；用户偏好迁移与清理遗漏。
 
 ---

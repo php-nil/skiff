@@ -272,6 +272,7 @@ Site (static / proxy)  不持有 RuntimeEnv
   mlocati `install-php-extensions`（下载失败回退手写 apk 依赖 + `docker-php-ext-install` / `pecl install`），
   完成后重启容器、收紧 socket 权限并落库；容器不存在时提示先安装/启动。
 - **持久化**：`site_runtimes.extensions`（schema v9）保存逗号分隔的启用集合，安装/扩展任务成功后回写。
+- **PHP 池日志口径**：FPM 池显式 `access.log = /dev/null`，站点访问日志只由 Nginx 写；`error_log` 仍指 fd 2，由容器日志承接，不在站点目录重复落盘。
 
 ---
 

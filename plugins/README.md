@@ -65,6 +65,7 @@
 | monitor | 工具 → 主机监控 | 总览 / 历史采样 | `overview.health` |
 | files | 工具 → 文件管理 | 无（单视图 `main`） | — |
 | cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
+| ftp | 工具 → FTP 管理 | 账号 / 运行状态 | — |
 | testkit | 工具 → 架构测试台 | 主视图 / 检查 / 分组 + 单视图对照 | `overview.actions` |
 
 cron（完整 L2 + L3；`view` 决定 `ui/<view>.html`）：
@@ -124,14 +125,14 @@ iframe 生效，避免「iframe 内部滚动 + 页面滚动」双滚动；旧包
 ## 构建与自检
 
 ```sh
-# 插件 workspace 的常规门禁（与根 workspace 同一套口径）
-cargo fmt --manifest-path plugins/Cargo.toml --all
-cargo clippy --manifest-path plugins/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path plugins/Cargo.toml
+# 插件 workspace 的常规门禁（命令与 CI 同源，勿在此另立口径）
+cargo fmt    --manifest-path plugins/Cargo.toml --all --check
+cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings
+cargo test   --manifest-path plugins/Cargo.toml --locked
 ```
 
-> `plugins/` 是独立 workspace（根 `Cargo.toml` 已 `exclude`），因此根三关不会编译这里；
-> CI 里是单独 job，见 `docs/CI.md`。
+> `plugins/` 是独立 workspace（根 `Cargo.toml` 已 `exclude`），根三关不会编译这里；
+> 闸门入口与串行约束见 [AGENTS.md](../AGENTS.md) §3.1，CI job 与命令清单见 [CI.md](../docs/CI.md) §2、§6。
 
 ## 打包（发布物携带）
 

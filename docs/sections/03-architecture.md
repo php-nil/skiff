@@ -33,7 +33,7 @@ skiff-core (单进程 · systemd · 宿主机)
 | `fs` | 路径白名单内文件读/写/列表/建目录/删除/重命名（白名单 = 插件自身目录 + 用户授权目录，Broker 逐次校验；无独立 `stat` 动词） |
 | `net` | 主机防火墙端口规则（放行/拒绝；nftables 适配，探测 firewalld/ufw；按 UID owner-match 收口插件出网）——**尚未实现**：`net.apply` 一律返回 501，属 M4 门槛 |
 
-> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器。官方首批 4 个插件已落地：`guard` 走 `docker`，`files` / `monitor` 走 `fs`，`cron` 走 `interop`（见 [PLUGIN_CATALOG.md](../PLUGIN_CATALOG.md)）。
+> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器。官方 5 个插件已落地：`guard` 走 `docker`，`files` / `monitor` 走 `fs`，`cron` 走 `interop`，`ftp` 走新增的 `ftp` 能力面（见 [PLUGIN_CATALOG.md](../PLUGIN_CATALOG.md)）。
 
 ## 3.4 Web UI 导航结构与信息架构（最终版）
 

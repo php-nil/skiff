@@ -20,10 +20,10 @@ skiff-plugin stamp --dir my-plugin --key k    # 用私钥派生的指纹回填 m
 
 - **`stamp` 的用途**：源码里的 `key_id` 只是占位，打包前用发布私钥回填指纹，让「仓库不含任何一把密钥的指纹」与「`pack` 的指纹一致性校验」同时成立。官方插件走这条（`plugins/pack.sh` 在**临时目录**回填，不弄脏工作树）。
 - **SDK 独立 semver**（与内核版本解耦），窄接口以 `skiff-sdk` 的公开 API 为准，只声明兼容的插件 API 区间；破坏性变更升 API 主版本，内核并行兼容 **N-1 API 主版本**。
-- **官方示范插件是 `plugins/` 下的 4 个**（`guard` / `monitor` / `files` / `cron`，见 [`plugins/README.md`](../../plugins/README.md)）：脚手架、签名、打包、权限声明、分页读写、cron tick 全链路可对照抄。原 `nginx` 插件已内核化为「网站」，不再作为插件示范；`guard` 走的是「`containers.restart` + `fs`」，**没有**用 `containers.exec`（exec 属 M3 门禁）；目标容器仍须由 admin 显式授予 `container:<NAME>` grant，插件不能凭标签自行认领。
+- **官方示范插件是 `plugins/` 下的 5 个**（`guard` / `monitor` / `files` / `cron` / `ftp`，见 [`plugins/README.md`](../../plugins/README.md)）：脚手架、签名、打包、权限声明、分页读写、cron tick 全链路可对照抄。原 `nginx` 插件已内核化为「网站」，不再作为插件示范；`guard` 走的是「`containers.restart` + `fs`」，**没有**用 `containers.exec`（exec 属 M3 门禁）；目标容器仍须由 admin 显式授予 `container:<NAME>` grant，插件不能凭标签自行认领。
 - 对外发布（无论什么渠道）必须附两样东西：**权限清单** + **签名指纹**（供用户导入公钥时核对）。
 - 多架构是发布者的责任：`bin/` 下缺哪个架构，该架构上就拒装（不静默降级）。
-- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 4 个已签名 `.wbpkg` 放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/CI.md`](../CI.md) §4）。
+- 发布包自带官方插件：`deploy/pack-release.sh --plugin-key <私钥>` 会把 6 个已签名 `.wbpkg`（5 个官方插件 + testkit）放进 `official/`，不给私钥且未 `--skip-plugins` 时拒绝出包（[`docs/CI.md`](../CI.md) §4）。
 
 ## 4.5 用户侧如何部署
 

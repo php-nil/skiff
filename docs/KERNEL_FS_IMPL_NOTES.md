@@ -13,30 +13,11 @@
 2. **跨文件系统 rename 不是原子操作**：`remove` 进回收站、`rename`、`copy` 跨盘时只能退化为「复制 + 删除」，中途失败可能留下源与目标各一份（不会产生半文件，但会短暂双份）。
 3. **回收站每根 1 GiB 是软配额**：超限时按最旧淘汰而非拒绝；全局 10 GiB 才是硬拒绝。契约文字同时写了「超过后新删除仍进回收站」和「超限淘汰最旧」，实现以「淘汰」为准。
 
-## 1. 契约分析结论
+## 1. 实现补充结论
 
-### 1.1 成立且已落地
+> 授权模型、操作面、审计字段、回收站、配额与 API 的规范以 [KERNEL_FS_CONTRACT.md](KERNEL_FS_CONTRACT.md) §2–§10 为准；本节只记实现取舍与必须补强的点。
 
-| 契约条款 | 落地方式 |
-| --- | --- |
-| §2.1 管理员/插件双主体 | `Subject::{Admin{user}, Plugin{id}}`；`Principal` 携带 `grants` / `data_root` / `allow_protected_write` |
-| §2.1 插件仅授权根 + 自身 data | `resolve` 按最长匹配根判定；根外 `fs.escape`；无 `path:` 授权 `fs.denied` |
-| §2.1 管理员不受限但审计 | 管理员不做根/父链校验，仍逐条写审计并带 `request_id` |
-| §2.3 `log/ssl/conf` 默认只读 | `protected_subdir` 推导；插件需 `with_protected_write(true)`，管理员免开关但审计 `protected=true` |
-| §3.1 操作清单 | `list/stat/read/write/mkdir/rename/copy/remove` + `restore/purge/prune` |
-| §3.1 路径形式拒绝 | `normalize_absolute` 拒绝相对路径、`..`、NUL、空串、非 UTF-8 组件；折叠 `//` 与 `.` |
-| §3.2 分页读 | `read` 按 `max_bytes` 截断，返回 `size/eof/truncated`，客户端循环 offset |
-| §3.3 原子写 | 同目录临时文件 + `sync_all` + `rename` + 目录 `fsync`；失败清理临时文件；权限位保留 |
-| §3.4 路径锁 | 键控读写锁；同路径串行、异路径并行；双路径按字典序；5s 超时 `fs.busy` |
-| §4.1 审计字段 | `ts/actor/action/src/dst/bytes/result/code/sha256/site/protected/request_id/detail/count` |
-| §4.2 分级 | `remove/rename/copy/restore/purge`、`deny/fail`、`protected` 永不聚合；读/写/列/stat 按 `(主体, 动作, 路径, 分钟)` 聚合，行加 `#agg` |
-| §5.1 回收站模型 | `TrashEntry` 保留原路径、模式、属主、哈希、`nlink`、删除/到期时间、`quota_root` |
-| §5.2 保留与容量 | 30 天到期清理；每根 1 GiB 软淘汰；全局 10 GiB 硬拒绝；单条 2 GiB 拒绝；10000 条上限 |
-| §5.3 恢复/彻底删除 | 恢复校验父目录与目标不存在；彻底删除仅管理员或条目所属主体 |
-| §7.1 三层限制 | 单次 256 KiB / 单文件 4 GiB / 授权根 10 GiB / 目录条目 1M |
-| §7.3 错误码 | `fs.denied / escape / protected / not_found / conflict / busy / too_large / file_too_large / quota_exceeded / trash_full / unsupported` |
-
-### 1.2 落地有坑、需要接线阶段补强的点
+### 1.1 落地有坑、需要接线阶段补强的点
 
 - **TOCTOU（符号链接）**：`resolve` 是「先检查、后操作」。Unix 最后一段用 `O_NOFOLLOW` 关闭了主要缺口，但父目录链的检查与实际 `open` 之间仍可被替换；Windows 无 `O_NOFOLLOW`，只能二次 `symlink_metadata`。
   - 插件是主要威胁面；管理员路径没有授权边界，风险等级较低。
