@@ -115,7 +115,8 @@
 
 ### 4.3 目录与 umask
 
-- `Umask=002:002`：FTP 新建文件/目录对同组可写；
+- `Umask=002:002`：FTP 新建文件/目录对同组可写；`/etc/pure-ftpd/conf/Umask` 必须写
+  `002 002`（两个空白分隔的三位八进制数），Debian `pure-ftpd-wrapper` 不接受 `002:002`。
 - 首次建号对齐范围**仅** `<site_root>/index` 子树：目录 `chown uid:gid` + `2775`（setgid 继承组），文件 `0664`/可执行 `0775`；
 - 跳过 symlink（不跟随），不碰 `log/`、`ssl/`、`conf/`，不碰其它站点；
 - 站点父目录与 `/www` 保持 `root:skiff-plugins 0755`/`0711` 口径，不放宽整体可写。

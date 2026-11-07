@@ -40,6 +40,11 @@ const SERVICE: &str = "pure-ftpd";
 const LOGIN_PREFIX: &str = "skiff_";
 const DEFAULT_PORT_START: u16 = 30000;
 const DEFAULT_PORT_END: u16 = 30100;
+/// `/etc/pure-ftpd/conf/Umask` 的格式是「两个三位八进制数、空白分隔」；
+/// Debian 的 pure-ftpd-wrapper 不接受 `002:002`（会以 exit 255 拒绝启动）。
+const UMASK: &str = "002 002";
+/// `pure-pw` 在 Debian/Ubuntu 落在 `/usr/bin`，部分发行版在 `/usr/sbin`。
+const PURE_PW_CANDIDATES: [&str; 2] = ["/usr/bin/pure-pw", "/usr/sbin/pure-pw"];
 
 #[derive(Debug)]
 struct FtpError {
@@ -200,6 +205,20 @@ pub(crate) fn valid_port_range(start: u16, end: u16) -> bool {
     start >= 1024 && end >= 1024 && start < end && (end - start) <= 500
 }
 
+/// Umask 配置值：两个空白分隔的三位八进制数（wrapper 的硬格式）。
+pub(crate) fn valid_umask(value: &str) -> bool {
+    let fields: Vec<&str> = value.split_whitespace().collect();
+    fields.len() == 2
+        && fields
+            .iter()
+            .all(|f| f.len() == 3 && f.bytes().all(|b| (b'0'..=b'7').contains(&b)))
+}
+
+/// 按候选顺序选出存在的 `pure-pw` 路径；`exists` 由调用方注入，便于单测。
+pub(crate) fn pure_pw_from(exists: impl Fn(&str) -> bool) -> Option<&'static str> {
+    PURE_PW_CANDIDATES.into_iter().find(|p| exists(p))
+}
+
 /// 稳定且可读的 FTP 登录名：`skiff_<域名slug>_<hash4>_<账号>`。
 ///
 /// 域名 slug 只用于可读性；hash4 防止 `a-b` 与 `a.b` 这类清洗碰撞。
@@ -226,6 +245,11 @@ fn fnv4(input: &str) -> String {
 }
 
 // ───────────────────────────── Linux 实现 ─────────────────────────
+
+#[cfg(target_os = "linux")]
+fn pure_pw_path() -> Option<&'static str> {
+    pure_pw_from(|p| Path::new(p).exists())
+}
 
 #[cfg(target_os = "linux")]
 async fn status() -> Result<Value, FtpError> {
@@ -341,7 +365,7 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
     // MinUID 不写死：pure-ftpd 默认 1000，而 PHP 镜像的 www-data 常见 82。
     // 建号时按容器内探测到的 uid 只降不升（见 ensure_min_uid），换镜像不会全线登录失败。
     write_conf("PassivePortRange", &format!("{start} {end}")).await?;
-    write_conf("Umask", "002:002").await?;
+    write_conf("Umask", UMASK).await?;
     write_conf("MaxClientsNumber", "30").await?;
     write_conf("MaxClientsPerIP", "3").await?;
     write_conf("DontResolve", "yes").await?;
@@ -382,13 +406,10 @@ async fn uninstall(params: &Value) -> Result<Value, FtpError> {
 
     let accounts = read_accounts().unwrap_or_default();
     if remove_accounts {
-        for a in &accounts {
-            let _ = run_host(
-                "/usr/sbin/pure-pw",
-                &["userdel", &a.login, "-f", PASSWD_FILE, "-m"],
-                None,
-            )
-            .await;
+        if let Some(pw) = pure_pw_path() {
+            for a in &accounts {
+                let _ = run_host(pw, &["userdel", &a.login, "-f", PASSWD_FILE, "-m"], None).await;
+            }
         }
     }
     let _ = run_host("/usr/bin/systemctl", &["stop", SERVICE], None).await;
@@ -545,8 +566,10 @@ async fn account_create(state: &AppState, params: &Value) -> Result<Value, FtpEr
         .map_err(FtpError::internal)?;
 
     let home = index.to_string_lossy().to_string();
+    let pw =
+        pure_pw_path().ok_or_else(|| FtpError::bad("找不到 pure-pw，请确认 pure-ftpd 已安装"))?;
     run_host(
-        "/usr/sbin/pure-pw",
+        pw,
         &[
             "useradd",
             &login,
@@ -596,8 +619,10 @@ async fn account_password(params: &Value) -> Result<Value, FtpError> {
     {
         return Err(FtpError::not_found(format!("FTP 账号不存在：{login}")));
     }
+    let pw = pure_pw_path()
+        .ok_or_else(|| FtpError::internal("找不到 pure-pw，请确认 pure-ftpd 已安装"))?;
     run_host(
-        "/usr/sbin/pure-pw",
+        pw,
         &["passwd", login, "-f", PASSWD_FILE, "-m"],
         Some(&format!("{password}\n{password}\n")),
     )
@@ -624,13 +649,11 @@ async fn account_delete(params: &Value) -> Result<Value, FtpError> {
     {
         return Err(FtpError::not_found(format!("FTP 账号不存在：{login}")));
     }
-    run_host(
-        "/usr/sbin/pure-pw",
-        &["userdel", login, "-f", PASSWD_FILE, "-m"],
-        None,
-    )
-    .await
-    .map_err(|e| FtpError::internal(format!("删除 FTP 账号失败：{e}")))?;
+    let pw = pure_pw_path()
+        .ok_or_else(|| FtpError::internal("找不到 pure-pw，请确认 pure-ftpd 已安装"))?;
+    run_host(pw, &["userdel", login, "-f", PASSWD_FILE, "-m"], None)
+        .await
+        .map_err(|e| FtpError::internal(format!("删除 FTP 账号失败：{e}")))?;
     restart_service().await?;
     Ok(json!({ "login": login, "files_kept": true }))
 }
@@ -1191,6 +1214,26 @@ mod tests {
         assert!(!valid_port_range(30000, 30600));
         assert!(!valid_port_range(21, 100));
         assert!(valid_port_range(65530, 65535));
+    }
+
+    #[test]
+    fn umask_conf_uses_wrapper_format() {
+        assert!(valid_umask(UMASK));
+        assert!(!valid_umask("002:002"));
+        assert!(!valid_umask("02 02"));
+        assert!(!valid_umask("008 002"));
+        assert!(!valid_umask("002"));
+    }
+
+    #[test]
+    fn pure_pw_prefers_usr_bin_then_usr_sbin() {
+        let both = |p: &str| p == "/usr/bin/pure-pw" || p == "/usr/sbin/pure-pw";
+        assert_eq!(pure_pw_from(both), Some("/usr/bin/pure-pw"));
+        assert_eq!(
+            pure_pw_from(|p| p == "/usr/sbin/pure-pw"),
+            Some("/usr/sbin/pure-pw")
+        );
+        assert_eq!(pure_pw_from(|_| false), None);
     }
 
     #[test]

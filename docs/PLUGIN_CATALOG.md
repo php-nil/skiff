@@ -198,7 +198,7 @@ verbs = ["status", "install", "uninstall", "sites.list", "accounts.list",
 - **为什么必须新增内核原语**：`fs` 只能在授权根内读写，装不了宿主包；`docker` 白名单不开放 `create/exec`，且 FTP 不走容器；`scheduler` 只调度任务，不执行宿主命令。三条现有能力面都不足以完成「apt 安装 pure-ftpd + `pure-pw` 建号 + chown 对齐 + systemd 启停」，因此新增 `ftp` 能力面，插件只做 UI 与编排。
 - **安装形态**：宿主 `pure-ftpd` 软件包 + systemd（Debian 默认 standalone），不用容器——避免第三方镜像供应链与 Docker 端口段发布，生命周期与 systemd 直装一致；1Panel 受限形态（`Form::DockerRestricted`）一律 503，`Capability::available_in` 也不把它列入。
 - **账号模型**：账号绑定站点，每站可多账号；登录名 `skiff_<slug16>_<fnv4>_<account>`，密码只经 stdin 交给 `pure-pw`，落 `pureftpd.pdb` 哈希；chroot 固定 `<site_root>/index`。
-- **权限对齐**：建号时在运行容器内 `id -u/-g www-data` 探测 uid/gid（不写死 82），`MinUID` 只降不升；`Umask=002:002`；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
+- **权限对齐**：建号时在运行容器内 `id -u/-g www-data` 探测 uid/gid（不写死 82），`MinUID` 只降不升；`Umask 002 002`（conf 文件写两个空白分隔的三位八进制数，wrapper 不接受冒号）；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
 - **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`、`MaxClientsPerIP=3`、fail2ban 专用 jail（10 分钟 3 次，新装时关闭默认 sshd jail）、可选 TLS 自签。
 - **契约与验收**：主体/授权/审计口径见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FTP-01`–`FTP-05`。
 
