@@ -251,6 +251,16 @@ curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
 实测旁证：同一条 `git push` 之前用本机代理端口（`127.0.0.1:50121` 之类）一直失败，换成 `10.66.10.22:1010` 后**一次成功**
 （`* [new branch] iter/first-install -> iter/first-install`）。`git ls-remote` 也通，返回 `main` 的 commit。
 
+**本机已固化**（2026-11-07）：不再依赖手打 `-c`，全局配置把代理与 sslBackend 都限定在 `github.com` 作用域，其它流量不受影响：
+
+```sh
+git config --global http.https://github.com.proxy http://10.66.10.22:1010
+git config --global http.https://github.com.sslBackend openssl
+```
+
+复测：`git ls-remote origin refs/heads/main` 未加任何 `-c` 直接返回 SHA。五个代理当日通断（`curl -x ... -I https://github.com`）：
+`.22` 200 / 3.1 s、`.12` 200 / 2.26 s、`.13` 200 / 1.84 s、`.9` 200 / 2.47 s、`.21` 200 但 10 s 内只收 81 KB（传输超时，仅作兜底）。
+
 ## 8. 工具落点
 
 | 文件                           | 作用                                                                            | 状态 |
@@ -301,8 +311,12 @@ curl -x $HTTPS_PROXY -sS -I https://github.com          # 单次探活
 加上 `-c http.sslBackend=openssl` 后 `git push` / `git ls-remote` 一次通过，分支 `iter/first-install` 已推上去，
 `iter.yml` 恢复可用。
 
-**留下的经验**：以后本机任何「GitHub 出网」问题，先按 §7.1 探一遍那五个代理再找别的绕行，不要在 `127.0.0.1:xxxxx` 的
-本地代理端口上反复试——那一路本来就不稳（端口还会轮换）。
+**留下的经验**：本机任何「GitHub 出网」问题，先按 §7.1 探一遍那五个内网代理，并先确认 `git config --global` 里
+`github.com` 作用域的代理是否已生效；不要在 `127.0.0.1:xxxxx` 的本地代理端口上反复试——那一路本来就不稳（端口还会轮换），
+也不要在系统代理开关上打转：**内网代理不在本机监听，loopback 端口和系统代理设置都查不到它**。
+
+2026-11-07 的复查就踩了这个坑：直连 `github.com` 被间歇重置后，只在 loopback 端口与系统代理开关上排查，退避重试五轮才推上去，
+全程没翻 §7.1。结论是「github.com 单 IP/单路径抖动」而不是「整体出网不可用」，与仓库改动无关；正确的第一步应该是先查内网代理。
 
 ### 9.2 首连发现的两处基线偏差（不是代码问题，但会挡住自动化）
 
