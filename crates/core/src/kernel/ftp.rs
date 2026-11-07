@@ -304,14 +304,14 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
         }
         let mut args = vec!["install", "-y", "--no-install-recommends"];
         args.extend(pkgs.iter().copied());
-        let mut out = run("apt-get", &args, None)
+        let mut out = run_host("/usr/bin/apt-get", &args, None)
             .await
             .map_err(|e| FtpError::internal(format!("安装 pure-ftpd 失败：{e}")))?;
         if out.contains("Unable to locate package") {
-            run("apt-get", &["update"], None)
+            run_host("/usr/bin/apt-get", &["update"], None)
                 .await
                 .map_err(|e| FtpError::internal(format!("apt-get update 失败：{e}")))?;
-            out = run("apt-get", &args, None)
+            out = run_host("/usr/bin/apt-get", &args, None)
                 .await
                 .map_err(|e| FtpError::internal(format!("安装 pure-ftpd 失败：{e}")))?;
         }
@@ -325,8 +325,13 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
     // standalone 模式：Debian 默认即 standalone；显式固化，避免被 inetd 抢占 21。
     ensure_default_file().await?;
     // 若安装时仍拉入了 openbsd-inetd，停用它；pure-ftpd 由 systemd 托管。
-    let _ = run("systemctl", &["disable", "--now", "openbsd-inetd"], None).await;
-    let _ = run("systemctl", &["disable", "--now", "inetd"], None).await;
+    let _ = run_host(
+        "/usr/bin/systemctl",
+        &["disable", "--now", "openbsd-inetd"],
+        None,
+    )
+    .await;
+    let _ = run_host("/usr/bin/systemctl", &["disable", "--now", "inetd"], None).await;
 
     write_conf("ChrootEveryone", "yes").await?;
     write_conf("NoAnonymous", "yes").await?;
@@ -352,7 +357,7 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
     run("systemctl", &["daemon-reload"], None)
         .await
         .map_err(|e| FtpError::internal(format!("systemctl daemon-reload 失败：{e}")))?;
-    run("systemctl", &["enable", SERVICE], None)
+    run_host("/usr/bin/systemctl", &["enable", SERVICE], None)
         .await
         .map_err(|e| FtpError::internal(format!("启用 pure-ftpd 失败：{e}")))?;
     run("systemctl", &["restart", SERVICE], None)
@@ -378,7 +383,7 @@ async fn uninstall(params: &Value) -> Result<Value, FtpError> {
     let accounts = read_accounts().unwrap_or_default();
     if remove_accounts {
         for a in &accounts {
-            let _ = run(
+            let _ = run_host(
                 "/usr/sbin/pure-pw",
                 &["userdel", &a.login, "-f", PASSWD_FILE, "-m"],
                 None,
@@ -386,15 +391,14 @@ async fn uninstall(params: &Value) -> Result<Value, FtpError> {
             .await;
         }
     }
-    let _ = run("systemctl", &["stop", SERVICE], None).await;
-    let _ = run("systemctl", &["disable", SERVICE], None).await;
-    let _ = tokio::fs::remove_file(JAIL_FILE).await;
+    let _ = run_host("/usr/bin/systemctl", &["stop", SERVICE], None).await;
+    let _ = run_host("/usr/bin/systemctl", &["disable", SERVICE], None).await;
+    let _ = run_host("/usr/bin/rm", &["-f", JAIL_FILE], None).await;
     let _ = run("systemctl", &["restart", "fail2ban"], None).await;
     if remove_package {
-        let _ = run("apt-get", &["remove", "-y", "pure-ftpd"], None).await;
-        let _ = tokio::fs::remove_file(PASSWD_FILE).await;
-        let _ = tokio::fs::remove_file(PDB_FILE).await;
-        let _ = tokio::fs::remove_dir_all(CONF_DIR).await;
+        let _ = run_host("/usr/bin/apt-get", &["remove", "-y", "pure-ftpd"], None).await;
+        let _ = run_host("/usr/bin/rm", &["-f", PASSWD_FILE, PDB_FILE], None).await;
+        let _ = run_host("/usr/bin/rm", &["-rf", CONF_DIR], None).await;
     }
     Ok(json!({
         "stopped": true,
@@ -541,7 +545,7 @@ async fn account_create(state: &AppState, params: &Value) -> Result<Value, FtpEr
         .map_err(FtpError::internal)?;
 
     let home = index.to_string_lossy().to_string();
-    run(
+    run_host(
         "/usr/sbin/pure-pw",
         &[
             "useradd",
@@ -592,7 +596,7 @@ async fn account_password(params: &Value) -> Result<Value, FtpError> {
     {
         return Err(FtpError::not_found(format!("FTP 账号不存在：{login}")));
     }
-    run(
+    run_host(
         "/usr/sbin/pure-pw",
         &["passwd", login, "-f", PASSWD_FILE, "-m"],
         Some(&format!("{password}\n{password}\n")),
@@ -620,7 +624,7 @@ async fn account_delete(params: &Value) -> Result<Value, FtpError> {
     {
         return Err(FtpError::not_found(format!("FTP 账号不存在：{login}")));
     }
-    run(
+    run_host(
         "/usr/sbin/pure-pw",
         &["userdel", login, "-f", PASSWD_FILE, "-m"],
         None,
@@ -741,8 +745,8 @@ async fn ensure_static_user() -> Result<u32, FtpError> {
             return Ok(uid);
         }
     }
-    run(
-        "useradd",
+    run_host(
+        "/usr/sbin/useradd",
         &[
             "--system",
             "--no-create-home",
@@ -815,6 +819,42 @@ fn align_tree(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 async fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    run_timeout(cmd, args, stdin, 300).await
+}
+
+/// 宿主机落盘动作（apt/pure-pw/写 `/etc`、`/usr`）必须绕开主服务的
+/// `ProtectSystem=full`：这些动作在 skiff 服务进程里会被内核拒绝写（只读文件系统）。
+/// 这里用 `systemd-run` 起一个**不继承主服务沙箱**的瞬态单元执行；命令仍是
+/// 固定二进制 + 固定参数，不经 shell，密码仍只走 stdin。
+#[cfg(target_os = "linux")]
+async fn run_host(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let unit = format!("skiff-ftp-{}-{n}", std::process::id());
+    let mut full = vec![
+        "--unit",
+        unit.as_str(),
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--quiet",
+        "--description",
+        "skiff ftp host mutation",
+        "--",
+        cmd,
+    ];
+    full.extend_from_slice(args);
+    run_timeout("/usr/bin/systemd-run", &full, stdin, 900).await
+}
+
+#[cfg(target_os = "linux")]
+async fn run_timeout(
+    cmd: &str,
+    args: &[&str],
+    stdin: Option<&str>,
+    secs: u64,
+) -> Result<String, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
@@ -840,11 +880,11 @@ async fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, St
         }
     }
     let out = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
+        std::time::Duration::from_secs(secs),
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| format!("{cmd} 执行超时（300s）"))?
+    .map_err(|_| format!("{cmd} 执行超时（{secs}s）"))?
     .map_err(|e| format!("等待 {cmd} 失败：{e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -907,12 +947,14 @@ async fn read_port_range() -> (u16, u16) {
 
 #[cfg(target_os = "linux")]
 async fn write_conf(name: &str, value: &str) -> Result<(), FtpError> {
-    tokio::fs::create_dir_all(CONF_DIR)
+    let path = format!("{CONF_DIR}/{name}");
+    run_host("/usr/bin/mkdir", &["-p", CONF_DIR], None)
         .await
         .map_err(|e| FtpError::internal(format!("创建 {CONF_DIR} 失败：{e}")))?;
-    tokio::fs::write(format!("{CONF_DIR}/{name}"), format!("{value}\n"))
+    run_host("/usr/bin/tee", &[&path], Some(&format!("{value}\n")))
         .await
-        .map_err(|e| FtpError::internal(format!("写入配置 {name} 失败：{e}")))
+        .map_err(|e| FtpError::internal(format!("写入配置 {name} 失败：{e}")))?;
+    Ok(())
 }
 
 /// pure-ftpd 的 `MinUID` 是全局配置：只允许它随实际站点身份**下调**。
@@ -952,13 +994,15 @@ async fn ensure_default_file() -> Result<(), FtpError> {
     }
     let body = kept.join("\n") + "\n";
     if let Some(parent) = Path::new(DEFAULT_FILE).parent() {
-        tokio::fs::create_dir_all(parent)
+        let parent = parent.to_string_lossy().to_string();
+        run_host("/usr/bin/mkdir", &["-p", parent.as_str()], None)
             .await
-            .map_err(|e| FtpError::internal(format!("创建 {} 失败：{e}", parent.display())))?;
+            .map_err(|e| FtpError::internal(format!("创建 {parent} 失败：{e}")))?;
     }
-    tokio::fs::write(DEFAULT_FILE, body)
+    run_host("/usr/bin/tee", &[DEFAULT_FILE], Some(&body))
         .await
-        .map_err(|e| FtpError::internal(format!("写入 {DEFAULT_FILE} 失败：{e}")))
+        .map_err(|e| FtpError::internal(format!("写入 {DEFAULT_FILE} 失败：{e}")))?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -973,8 +1017,8 @@ async fn ensure_tls_pem() -> Result<(), FtpError> {
         .to_string();
     let key = "/tmp/skiff-ftp-key.pem";
     let cert = "/tmp/skiff-ftp-cert.pem";
-    run(
-        "openssl",
+    run_host(
+        "/usr/bin/openssl",
         &[
             "req",
             "-x509",
@@ -1001,15 +1045,19 @@ async fn ensure_tls_pem() -> Result<(), FtpError> {
         .await
         .map_err(|e| FtpError::internal(format!("读取 TLS 证书失败：{e}")))?;
     if let Some(parent) = Path::new(TLS_PEM).parent() {
-        tokio::fs::create_dir_all(parent)
+        let parent = parent.to_string_lossy().to_string();
+        run_host("/usr/bin/mkdir", &["-p", parent.as_str()], None)
             .await
             .map_err(|e| FtpError::internal(format!("创建证书目录失败：{e}")))?;
     }
-    tokio::fs::write(TLS_PEM, format!("{key_body}{cert_body}"))
-        .await
-        .map_err(|e| FtpError::internal(format!("写入 {TLS_PEM} 失败：{e}")))?;
-    use std::os::unix::fs::PermissionsExt;
-    let _ = tokio::fs::set_permissions(TLS_PEM, std::fs::Permissions::from_mode(0o600)).await;
+    run_host(
+        "/usr/bin/tee",
+        &[TLS_PEM],
+        Some(&format!("{key_body}{cert_body}")),
+    )
+    .await
+    .map_err(|e| FtpError::internal(format!("写入 {TLS_PEM} 失败：{e}")))?;
+    let _ = run_host("/usr/bin/chmod", &["600", TLS_PEM], None).await;
     let _ = tokio::fs::remove_file(key).await;
     let _ = tokio::fs::remove_file(cert).await;
     Ok(())
@@ -1023,7 +1071,8 @@ async fn ensure_login_guard(had_f2b: bool) -> Result<(), FtpError> {
         return Err(FtpError::internal("fail2ban 未安装，无法启用登录尝试限制"));
     }
     if let Some(parent) = Path::new(JAIL_FILE).parent() {
-        tokio::fs::create_dir_all(parent)
+        let parent = parent.to_string_lossy().to_string();
+        run_host("/usr/bin/mkdir", &["-p", parent.as_str()], None)
             .await
             .map_err(|e| FtpError::internal(format!("创建 fail2ban jail.d 失败：{e}")))?;
     }
@@ -1036,10 +1085,10 @@ async fn ensure_login_guard(had_f2b: bool) -> Result<(), FtpError> {
     body.push_str(
         "[pure-ftpd]\nenabled = true\nbackend = systemd\nmaxretry = 3\nfindtime = 10m\nbantime = 10m\n",
     );
-    tokio::fs::write(JAIL_FILE, body)
+    run_host("/usr/bin/tee", &[JAIL_FILE], Some(&body))
         .await
         .map_err(|e| FtpError::internal(format!("写入 fail2ban jail 失败：{e}")))?;
-    run("systemctl", &["enable", "fail2ban"], None)
+    run_host("/usr/bin/systemctl", &["enable", "fail2ban"], None)
         .await
         .map_err(|e| FtpError::internal(format!("启用 fail2ban 失败：{e}")))?;
     run("systemctl", &["restart", "fail2ban"], None)

@@ -88,9 +88,9 @@
 - **站点绑定**：`account.create` 必须带已存在站点的域名；站点 → 账号一对多。
 - **登录名**：内核生成 `skiff_<slug16>_<fnv4>_<account>`：
   - 强制 `skiff_` 前缀，避免与系统用户、其它服务账号或人工建号重名；
-  - `slug` 取域名小写、非字母数字转 `_`；`fnv4` 是域名的 4 位 FNV 短哈希，防同名 slug 碰撞；
+  - `slug` 取域名小写、非字母数字转 `-`；`fnv4` 是域名的 4 位 FNV 短哈希，防同名 slug 碰撞；
   - 账号名 1–32 位、首字符字母数字、仅 `[A-Za-z0-9_-]`。
-- **密码**：8–128 字节、禁控制字符（防 stdin 注入与日志污染）。只经 stdin 传给 `pure-pw useradd -y 2`，落 `pureftpd.passwd`（哈希）后 `mkdb`；内核不存明文，面板 DB 不存密码，审计不含密码。
+- **密码**：8–128 字节、禁控制字符（防 stdin 注入与日志污染）。只经 stdin 传给 `pure-pw useradd`，落 `pureftpd.passwd`（哈希）后 `mkdb`；内核不存明文，面板 DB 不存密码，审计不含密码。`pure-pw` 的 `-y` 表示「最大文件数」，**不得设置**。
 - **被动端口**：`PassivePortRange` 由插件配置写入，范围 1024–65535、`start < end`、跨度 ≤ 500，默认 `30000 30100`。
 - **TLS**：`tls_mode` ∈ `off | optional | required`（默认 `optional`）；`optional`/`required` 时生成自签 PEM（`/etc/ssl/private/pure-ftpd.pem`）。
 - **chroot**：`ChrootEveryone=yes`，账号 home 固定 `<site_root>/index`；FTP 用户只能看到该目录子树。
@@ -133,7 +133,7 @@
 1. **目录穿越**：home 由 `validate_index` 计算：canonicalize 后必须同时位于 `/www/sites` 与站点根内，且站点 `index` 本身不得是 symlink；`..` 段一律拒绝。
 2. **跨站点**：home 只能是当前站点 `index`；`accounts.list` 按 home 反查站点，不信任登录名。
 3. **账号边界**：只管理 `skiff_` 前缀账号；删除/改密前校验该账号在 passwd 文件中存在且 home 合法。
-4. **登录尝试限制**：fail2ban 专用 jail（10 分钟内 3 次失败，`bantime` 1 小时）；新装 fail2ban 时关闭默认 sshd jail，避免影响共享主机；`MaxClientsPerIP=3`、`MaxClientsNumber=30`、`DontResolve=yes`。
+4. **登录尝试限制**：fail2ban 专用 jail（10 分钟内 3 次失败，`bantime` 10 分钟）；新装 fail2ban 时关闭默认 sshd jail，避免影响共享主机；`MaxClientsPerIP=3`、`MaxClientsNumber=30`、`DontResolve=yes`。
 5. **命令注入**：所有宿主命令用 `Command::new` + 参数数组，不拼 shell；密码只走 stdin。
 6. **服务控制面**：只允许操作 `pure-ftpd.service`；`uninstall` 不清除其它包。
 
@@ -167,6 +167,20 @@
 
 安装幂等：已装跳过 apt；重复 `install` 只重写配置并重启。卸载：停服务、删账号与配置；`purge=true` 时 `apt purge` 回收包。
 
+### 8.1 特权执行通道（加固约束）
+
+`deploy/systemd/skiff.service` 带 `ProtectSystem=full`（`/usr`、`/boot`、`/etc` 只读）与
+`NoNewPrivileges=yes`，apt/dpkg 写 `/usr`、`pure-pw`/`useradd` 与配置写 `/etc` 在服务进程内会被
+直接拒绝（上机实测报 `Read-only file system`）。因此所有**宿主落盘动作**统一经
+`/usr/bin/systemd-run --unit <临时单元> --wait --pipe --collect --quiet -- <命令>` 起独立瞬态单元执行：
+瞬态单元不继承主服务沙箱，从而能写 `/usr`、`/etc`。约束不变——
+
+- 命令仍是固定二进制 + 固定参数数组，不经 shell；密码仍只经 stdin（`--pipe` 透传）；
+- 只有落盘/装包/改系统状态的动词走该通道；`systemctl is-active/is-enabled/restart`、`getent`、
+  `dpkg-query` 等只读或走 D-Bus 的调用仍用普通子进程；
+- 该通道不改变授权与审计：调用主体仍是插件 `perm:ftp:<verb>`，审计仍落 `ftp.<method>` /
+  `ftp.deny.<method>`，瞬态单元不额外接受其它来源的命令。
+
 ## 9. 错误码
 
 | HTTP | 场景 |
@@ -193,3 +207,4 @@
 | 日期 | 变更 |
 | --- | --- |
 | 2026-11-07 | 初版：新增 `ftp` 能力面（wire/pkgfmt/SDK/内核/插件）；宿主 pure-ftpd；MinUID 改按探测值只降不升；审计与安全边界定稿 |
+| 2026-11-07 | 补充 §8.1：宿主落盘动作改经 `systemd-run` 瞬态单元执行，绕开 `ProtectSystem=full` 的只读限制（上机 install 实测暴露） |
