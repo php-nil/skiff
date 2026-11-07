@@ -6,7 +6,7 @@
 
 ## 0. 使用约定
 
-- `$B`：测试机基址，例如 `https://10.10.15.4`；`$P`：安全入口前缀，从 `journalctl -u skiff | grep 安全入口` 或首次安装输出取最后一段。
+- `$B`：测试机基址（当前地址、端口与 TLS 见 [TEST_ENV.md](TEST_ENV.md) §2，例如 `https://10.10.15.4:18080`）；`$P`：安全入口前缀，从 `journalctl -u skiff | grep 安全入口`、首次安装输出或 TEST_ENV §2 取当前值。
 - `$J`：已登录管理员的 curl CookieJar；除 AUTH 章外，默认已登录。
 - `[本机]`：开发机即可执行（`cargo test`、`xtask`、模板/路由单测）。
 - `[本机+上机]`：先跑单测，再到测试机补一条手工断言（通常用于路径/权限类）。
@@ -290,12 +290,12 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | --- | --- | --- | --- | --- | --- | --- |
 | DOCKER-01 | 容器列表与异常过滤 | `[上机]` Docker 可用 | 打开 `/$P/containers`；打开 `?filter=error`；对比 `docker ps` | 列表 200 且数量一致；异常过滤只返回异常容器；无异常时显示空态 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
 | DOCKER-02 | 容器详情与不存在/非法参数 | `[上机]` 有容器 | 打开详情；请求不存在 id；请求非法动词 | 详情 200；不存在 404；非法动词 400 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src` |
-| DOCKER-03 | 启停/重启/删除 | `[上机]` 一个可丢弃容器 | 依次 start、stop、restart；再 POST remove；对受保护容器 POST remove；对执行中任务的运行环境容器 POST remove；每步 `docker ps` 对照 | start/stop/restart/remove 均 303 且状态与 `docker ps` 一致；remove 后容器消失；受保护容器 remove 403；任务占用 remove 409；未知动作仍 400。`[已复验 2026-11-07，f9a0b30]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/app/src/sites.rs`、`crates/docker` |
+| DOCKER-03 | 启停/重启/删除 | `[上机]` 一个可丢弃容器 | 依次 start、stop、restart；再 POST remove；对受保护容器 POST remove；对执行中任务的运行环境容器 POST remove；每步 `docker ps` 对照 | start/stop/restart/remove 均 303 且状态与 `docker ps` 一致；remove 后容器消失；受保护容器 remove 403；任务占用 remove 409；未知动作仍 400。`[已复验 2026-11-07，f9a0b30；该资产已被同日最终版覆盖，当前资产见 TEST_ENV §6]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/app/src/sites.rs`、`crates/docker` |
 | DOCKER-04 | 日志 SSE 与断连 | `[上机]` 有持续输出的容器 | 打开日志页；`curl -N` 订阅 SSE；关闭客户端 | SSE 持续返回 `data:` 行；断开后服务端停止 follow，无泄漏 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
 | DOCKER-05 | exec 一次性票据与 Origin | `[上机]` 容器可执行 sh | 申请 exec 票据；用票据连 WS；重复用同一票据；异源 Origin/无 Origin 再连；过期票据再连；浏览器打开详情页在终端输入命令 | 首次可连；重复票据被拒；异源/无 Origin 403；过期票据被拒；终端可输入并有回显。`[已复验 2026-11-07]` 详情页加载 xterm；`echo ok` 回显；票据一次性/异源/无 Origin/过期均 403 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src/client.rs`、`templates/container_detail.html` |
 | DOCKER-06 | 镜像列表/拉取/删除 | `[上机]` 可访问镜像源 | 拉取一个小镜像；列表出现；删除；再拉 | 拉取返回 200 且结果/错误可见；列表与 `docker images` 一致；删除后消失；再拉成功 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
 | DOCKER-07 | 网络与卷创建/删除 | `[上机]` Docker 可用 | 创建 bridge 网络、volume；挂载到临时容器；删除 | 创建 200（页面刷新，非 303）；列表出现；挂载可用；删除后列表消失；使用中的卷删除被拒 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
-| DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[已复验 2026-11-07，f9a0b30]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
+| DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[已复验 2026-11-07，f9a0b30；该资产已被同日最终版覆盖，当前资产见 TEST_ENV §6]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
 | DOCKER-09 | 危险字段无法表达 | `[本机]` 模型/策略单测 | `cargo test -p skiff-policy --locked`；构造含 `privileged`/`cap_add` 的 JSON 请求 | 反序列化拒绝或校验拒绝；容器规格只允许契约字段 | □通过 / □失败 | `crates/model/src/container.rs`、`crates/policy` |
 | DOCKER-10 | Compose 子集静态校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose` | 样例全部通过；含不支持字段的 compose 被拒；`[已核对]` 无运行时入口，仅 `xtask check` 静态校验（本轮因本机 OOM 未跑） | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
 
@@ -312,7 +312,7 @@ cargo test -p skiff-app container_busy_reason --locked
 cargo run -p xtask -- check
 ```
 
-**Docker 补充实测（本轮 2026-11-07，包 `v0.1.0` / `3e98b5e`，x86_64 sha256 `c39fe7d2…`）**
+**Docker 补充实测（2026-11-07 历史轮，包 `v0.1.0` / `3e98b5e`，x86_64 sha256 `c39fe7d2…`；最终资产见 [TEST_ENV.md](TEST_ENV.md) §6）**
 
 | 编号 | 结果 | 证据 |
 | --- | --- | --- |
@@ -327,7 +327,7 @@ cargo run -p xtask -- check
 | DOCKER-09 | ⏸阻塞（本机 OOM） | `cargo test -p skiff-policy` 在 `skiff-model` 编译期 `memory allocation failed`；需充足内存或 CI 兜底 |
 | DOCKER-10 | ⏸阻塞（本机 OOM） | `xtask check` 同样需本地编译；且无运行时 Compose 入口（仅静态校验） |
 
-**Docker 复验（2026-11-07 发版轮，包 `v0.1.0` / `f9a0b30`，x86_64 sha256 `87427aa6…`，测试机 10.10.15.4）**
+**Docker 复验（2026-11-07 发版轮，包 `v0.1.0` / `f9a0b30`，x86_64 sha256 `87427aa6…`，测试机 10.10.15.4；该资产已被同日最终版覆盖，当前资产见 [TEST_ENV.md](TEST_ENV.md) §6）**
 
 | 编号 | 结果 | 证据 |
 | --- | --- | --- |
@@ -351,7 +351,7 @@ cargo run -p xtask -- check
 | DEPLOY-06 | 反代信任边界 | `[上机]` 前置反代 | 配 `trusted_proxies` 为反代 CIDR；从可信/不可信来源分别带 `X-Forwarded-Proto`、`X-Forwarded-For` 访问，看审计里的来源 IP 与 scheme | 可信来源的头被采信，来源 IP 为最左真实客户端；不可信来源的头一律忽略，来源 IP 为直连 peer；伪造头不改变客户端识别 | □通过 / □失败 | `crates/core/src/config.rs`、`crates/web/src/middleware.rs` |
 | DEPLOY-07 | 升级覆盖安装与数据保留 | `[上机]` 已有库与站点 | 备份旧二进制与 DB；覆盖安装新 release；重启；登录看站点/任务/插件 | 新版本启动；`user_version` 升到当前 schema（11）；站点、任务、插件数据保留；已装官方插件的 `versions/<ver>` 与随包内容一致（版本或内容不同则更新，`data/` 与既有授权不变）。`[已复验 2026-11-07]` 同包覆盖安装，配置 sha 不变、业务计数保留 | □通过 / □失败 | `deploy/install.sh`、`crates/store/src/db.rs`（迁移） |
 | DEPLOY-08 | 卸载与 purge 边界 | `[上机]` 可丢弃环境 | `deploy/uninstall.sh`；再加 `--purge`；检查数据目录 | 默认卸载保留 `/www/skiff` 数据；`--purge` 明确删除数据与配置并提示。`[已复验 2026-11-07]` 默认卸载删程序保数据（`/www/skiff`、`/etc/skiff`、`/www/sites`），重装恢复一致 | □通过 / □失败 | `deploy/uninstall.sh` |
-| DEPLOY-09 | aarch64 装机 | `[上机]` arm64 Linux | 安装 release arm64 包；起 systemd；建站访问 | 安装/启动/建站均成功；`uname -m` 为 aarch64。`[阻塞]` 无 arm64 实机：Release 已有 aarch64 包（7,191,228 B），仅核对资产存在，未实装 | □通过 / □失败 | `deploy/pack-release.sh`、`.github/workflows/release.yml` |
+| DEPLOY-09 | aarch64 装机 | `[上机]` arm64 Linux | 安装 release arm64 包；起 systemd；建站访问 | 安装/启动/建站均成功；`uname -m` 为 aarch64。`[阻塞]` 无 arm64 实机：Release 已有 aarch64 包（7,675,401 B，`sha256:a780dd7f…`），仅核对资产存在，未实装（摘要见 [TEST_ENV.md](TEST_ENV.md) §6） | □通过 / □失败 | `deploy/pack-release.sh`、`.github/workflows/release.yml` |
 | DEPLOY-10 | 1Panel Docker 受限形态 | `[上机]` 1Panel 环境 | 按商店包安装；尝试安装 fs/net 插件；打开三核心 | 面板可用；fs/net 插件因能力面收缩而拒装；docker/identity 正常。`[阻塞]` 无 1Panel 环境；商店包与 `init.sh` 能力面收缩声明已在仓库，未实装 | □通过 / □失败 | `deploy/1panel/`、`crates/plugin` |
 | DEPLOY-11 | Release 下载失败可诊断 | `[上机]` 外网下载 | 正常下载一次；模拟超时/断网再下载 | 正常成功且校验摘要；失败时保留明确 URL/状态码/原因并有限重试。`[阻塞]` 无可复现超时/断网条件；代码核对 `tools/iter.sh::cmd_fetch` 为单次 `curl --max-time 600`，无重试与结构化错误输出 | □通过 / □失败 | `tools/iter.sh`、`.github/workflows/release.yml` |
 
@@ -372,7 +372,7 @@ sudo journalctl -u skiff -n 50 --no-pager | grep -E '安全入口|listen|error' 
 | DEPLOY-02 | ☑通过 | 重启后 `skiff.service` enabled+active、`NRestarts=0`，三容器 Up，面板与两站 200；开机后约 4s 服务就绪、约 10s 面板可用 |
 | DEPLOY-07 | ☑通过 | 同包覆盖安装不清库：配置 sha 不变，users/sites/grants/plugins/tasks 计数全保留，`integrity=ok` |
 | DEPLOY-08 | ☑通过 | 默认卸载删除二进制/unit/`/run/skiff`，保留 `/www/skiff`、`/etc/skiff`、`/www/sites` 与运行组；重装恢复后站点 `diff -r` 无差异 |
-| DEPLOY-09 | ⏸阻塞（无环境） | Release 已上架 `aarch64-unknown-linux-musl` 包（7,191,228 B）；复现条件=arm64 Linux + systemd |
+| DEPLOY-09 | ⏸阻塞（无环境） | Release 已上架 `aarch64-unknown-linux-musl` 包（7,675,401 B，`sha256:a780dd7f…`）；复现条件=arm64 Linux + systemd |
 | DEPLOY-10 | ⏸阻塞（无环境） | `deploy/1panel/apps/skiff/0.1.0` 已在仓库；复现条件=1Panel 主机装商店包，验 fs/net 拒装、docker/identity 可用 |
 | DEPLOY-11 | ⏸阻塞（无复现条件） | 正常下载+`sha256sum -c` 通过；`tools/iter.sh::cmd_fetch` 无重试；复现条件=对下载域名注入超时/丢包 |
 
@@ -405,7 +405,7 @@ curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: audit-env.local' http://1
 curl -s -o /dev/null -w 'rust=%{http_code}\n' -H 'Host: audit-rust.local' http://127.0.0.1/
 ```
 
-**压测补充实测（2026-11-07 首轮，测试机 10.10.15.4，4 逻辑 CPU / 6.3 GB）**
+**压测补充实测（2026-11-07 首轮，测试机 10.10.15.4，4 vCPU / 3.9 GB；规格当前值见 [TEST_ENV.md](TEST_ENV.md) §1）**
 
 并发档位固定 4/16/32，每档 60 s，每连接限速 100 rps；`quick` 档为 4 并发 30 s。宿主 CPU 为 4 核合计占比，容器 CPU 为单核百分比。
 
@@ -458,6 +458,6 @@ systemctl is-active pure-ftpd fail2ban
 | TASK-06 | 只有后端没有入口 | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；testkit 无 `scheduler_call`，cron 只代理 `task.*` |
 | TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，本轮实测创建/删除均 200 |
 | DOCKER-10 | 只有静态校验，无运行时入口 | Web 路由无 Compose；仓库仅 `xtask check` 字段子集校验 |
-| DEPLOY-09 | 因无 arm64 实机阻塞 | Release 有 aarch64 包（7,191,228 B）与 `.sha256`；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
+| DEPLOY-09 | 因无 arm64 实机阻塞 | Release 有 aarch64 包（7,675,401 B，`sha256:a780dd7f…`）与 `.sha256`；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
 | DEPLOY-10 | 因无 1Panel 环境阻塞 | `deploy/1panel/apps/skiff/0.1.0` 已在仓库并声明 fs/net 收缩；复现条件=1Panel 主机装商店包后验 fs/net 拒装、docker/identity 可用 |
 | DEPLOY-11 | 因无可复现超时/断网条件阻塞 | 正常下载+摘要校验通过（c39fe7d2…）；代码核对 `tools/iter.sh::cmd_fetch` 单次 `curl --max-time 600`，无重试/结构化错误输出；复现条件=对下载域名注入超时或丢包 |
