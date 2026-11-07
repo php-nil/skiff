@@ -32,9 +32,9 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | D. 网站与运行环境 | 12 | 0 项本机可验，12 项必须上机（crate 单测兜底） | `cargo test -p skiff-app sites`；测试机建站与容器 |
 | E. Web 服务 | 8 | 0 项本机可验，8 项必须上机（crate 单测兜底） | `cargo test -p skiff-app nginx`；测试机 nginx -t 与日志 |
 | F. 文件系统原语 | 8 | 4 项本机可验（FS-02～05），4 项必须上机 | `cargo test -p skiff-fs -p skiff-plugin`；插件能力面 |
-| G. 调度器 | 8 | 3 项本机可验（TASK-05～07），5 项必须上机；其中 2 项上机入口待核对 | `cargo test -p skiff-sched -p skiff-app`；任务页 |
-| H. Docker | 10 | 2 项本机可验（DOCKER-09/10），8 项必须上机；其中 1 项待核对 | `cargo test -p skiff-docker -p skiff-policy`；Docker 页面/API |
-| I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；其中 3 项待核对 | `deploy/*.sh`、systemd、安装包 |
+| G. 调度器 | 8 | 3 项本机可验（TASK-05～07），5 项必须上机；TASK-06 无上机入口、TASK-07 有入口 | `cargo test -p skiff-sched -p skiff-app`；任务页 |
+| H. Docker | 10 | 2 项本机可验（DOCKER-09/10，本轮本机 OOM 未跑、CI 兜底），8 项必须上机 | `cargo test -p skiff-docker -p skiff-policy`；Docker 页面/API |
+| I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；DEPLOY-09/10/11 因环境/复现条件阻塞 | `deploy/*.sh`、systemd、安装包 |
 
 ## A. 身份与会话
 
@@ -72,7 +72,7 @@ curl -ks -o /dev/null -w 'api_noauth=%{http_code}\n' "$B/api/v1/docker/container
 | MENU-01 | 一级菜单固定六项且顺序稳定 | `[本机]` 菜单常量单测；`[上机]` 已登录 | `cargo test -p skiff-web menu --locked`；或 `curl -ks -b "$J" "$B/$P/"` 统计一级导航项 | 概览、网站、Docker、插件、工具、设置六项，顺序固定；`overview` 不可隐藏 | □通过 / □失败 | `crates/web/src/menu.rs`（L1 常量）、`templates/base.html` |
 | MENU-02 | 二级/三级由 manifest 声明，停用即消失 | `[上机]` 装有 cron、guard、monitor 等插件 | 打开首页记二级项；停用 monitor；刷新；再启用 | monitor 的二级项消失，其余不变；重新启用后恢复 | □通过 / □失败 | `crates/web/src/menu.rs`、`crates/plugin`、`plugins/*/manifest.toml` |
 | MENU-03 | 深链与信息页入口均可直达 | `[上机]` 已登录，插件已启用 | 访问 `/$P/m/overview`、`/$P/m/plugin/com.skiff.monitor/monitor`、`/$P/m/plugin/com.skiff.monitor/monitor/overview`、`/$P/plugins/com.skiff.monitor`、`/$P/m/plugin/com.skiff.monitor/nope`、`/$P/m/not-exist` | 前四条 200 且 active 菜单一致（`/plugins/<id>` 为信息页，不是插件工作台）；`monitor` 的 L2 是 `monitor`、L3 是 `overview/history`（`.../overview` 直挂 L2 下为 404）；未知 L2/L3 与未知 `m/*` 均 404 | □通过 / □失败 | `crates/web/src/menu.rs`、`crates/web/src/handlers/plugins.rs` |
-| MENU-04 | 布局 left/top 按用户持久化 | `[上机]` admin 与第二个账号 | 菜单设置分别选 left、top，各刷新两次；第二账号打开首页 | 两种布局均保持；第二账号看到默认布局，不受 admin 影响 | □通过 / □失败 | `crates/web/src/menu.rs`、`handlers/menu.rs`、`user_prefs`。`[待核对]` 当前无建号入口，第二账号需直接写库或用旧版临时账号，多用户隔离本轮未复验 |
+| MENU-04 | 布局 left/top 按用户持久化 | `[上机]` admin 与第二个账号 | 菜单设置分别选 left、top，各刷新两次；第二账号打开首页 | 两种布局均保持；第二账号看到默认布局，不受 admin 影响 | □通过 / □失败 | `crates/web/src/menu.rs`、`handlers/menu.rs`、`user_prefs`。`[待补入口]` 无建号入口：面板只有 `/{p}/password`，无用户 CRUD 路由与页面；需补「用户管理」后再验多用户隔离 |
 | MENU-05 | 内容宽度 auto/fixed 生效且越界拒绝 | `[上机]` 已登录 | 设置 `content_width=auto`；再设 `fixed=1600`；再提交 `800` 与 `5000` | auto 无 `max-width`；1600 落库并生成 `--content-max`；800/5000 被拒并保留旧值 | □通过 / □失败 | `crates/web/src/menu.rs`、`templates/base.html` |
 | MENU-06 | 菜单设置：上移、隐藏、固定、恢复默认 | `[上机]` 已登录 | 在 `/$P/settings/menu` 依次上移、隐藏、固定、取消固定、恢复默认，每次刷新 | 顺序变化持久；隐藏项不再出现；固定项固定在顶部；恢复默认回到初始顺序 | □通过 / □失败 | `crates/web/src/handlers/menu.rs`、`menu.rs` |
 | MENU-07 | 停用全部插件后内核菜单不受影响、概览给出行动入口 | `[上机]` 已登录 | 停用全部插件，打开概览、工具、网站；再全部启用 | 工具仍固定显示内核「计划任务」，网站仍显示内核站点项，二者都不出现空态；概览出现「N 个插件已停用」提示与「去插件中心」链接且链接 200；重新启用后提示消失、插件二级项恢复 | □通过 / □失败 | `crates/web/src/menu.rs`（L1 常量与空态）、`templates/dashboard.html`、`templates/base.html` |
@@ -195,8 +195,8 @@ curl -ks -o /dev/null -w 'modules=%{http_code}\n' -b "$J" "$B/$P/sites/web?tab=m
 | FS-01 | 插件只能读授权根内文件 | `[上机]` testkit 已装且授 `fs:read` + `path:` 根 | 调 testkit `fs_read` 读授权根内文件；读根外文件 | 根内 200 且返回内容；根外 400 并审计 `fs.read deny` | □通过 / □失败 | `crates/plugin/src/capability.rs`、`crates/model/src/path.rs` |
 | FS-02 | 路径越界与符号链接逃逸 | `[本机+上机]` 单测 + 临时目录 | `cargo test -p skiff-fs --locked`；上机用 `../`、绝对路径、指向根外的软链测试 | 全部拒绝；规范化后仍在根内的路径才放行 | □通过 / □失败 | `crates/fs`、`crates/model/src/path.rs` |
 | FS-03 | 原子写与并发路径锁 | `[本机]` 单测 | `cargo test -p skiff-fs --locked` | 写入走临时文件+rename；并发写同一路径不出现半文件；失败不留 `.tmp` | □通过 / □失败 | `crates/fs/src/atomic.rs`、`crates/fs/src/lock.rs` |
-| FS-04 | 回收站移动/恢复/清理 | `[本机]` 单测；`[待核对]` 上机入口 | `cargo test -p skiff-fs --locked` | 删除进回收站、可恢复、过期清理；恢复后原路径内容一致 | □通过 / □失败 | `crates/fs/src/trash.rs` |
-| FS-05 | 全局与插件配额 | `[本机]` 单测；`[待核对]` 上机入口 | `cargo test -p skiff-fs --locked` | 超全局/插件配额被拒；回收站占用计入配额；配额释放后可再写 | □通过 / □失败 | `crates/fs/src/quota.rs` |
+| FS-04 | 回收站移动/恢复/清理 | `[本机]` 单测；`[已核对]` 无上机入口（能力面仅 read/write/list/mkdir/remove/rename，无 trash 动词） | `cargo test -p skiff-fs --locked` | 删除进回收站、可恢复、过期清理；恢复后原路径内容一致 | □通过 / □失败 | `crates/fs/src/trash.rs` |
+| FS-05 | 全局与插件配额 | `[本机]` 单测；`[已核对]` 无上机入口（配额在 fs 内部生效，能力面无 quota 动词、无配置项） | `cargo test -p skiff-fs --locked` | 超全局/插件配额被拒；回收站占用计入配额；配额释放后可再写 | □通过 / □失败 | `crates/fs/src/quota.rs` |
 | FS-06 | 审计分级与目视筛选 | `[上机]` 已产生 fs 操作 | 打开 `/$P/audit`（页面只展示最近 200 条，无服务端筛选参数），在列表中找出 `fs.*` 与 result=deny/fail 行 | 每条含 actor、channel、action、target、result；能按文本找到 `fs.*` 与 deny/fail 条目 | □通过 / □失败 | `crates/plugin/src/capability.rs`、`handlers/settings.rs`、`templates/audit.html` |
 | FS-07 | 管理员文件页基本操作 | `[上机]` files 插件启用 | 在 `/$P/plugins/com.skiff.files/main` 浏览、新建目录、重命名、删除、编辑保存；打开 >256 KiB 文件（当前无上传入口） | 操作成功；大于 256 KiB 只读并禁用保存；删除走确认 | □通过 / □失败 | `plugins/files`、`crates/web/src/handlers/plugins.rs` |
 | FS-08 | 受保护路径与权限位 | `[上机]` 已安装 | 用管理员文件页/插件能力尝试写 `/www/skiff/skiff.db`、`/www/skiff/plugins`、`/etc`；检查数据根权限 | 受保护路径拒绝；数据根与 plugins 为 0711；DB 文件非全局可写 | □通过 / □失败 | `crates/fs`、`deploy/install.sh`、`docs/DEPLOY_TEST.md` §1.1 |
@@ -236,8 +236,8 @@ curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff
 | TASK-03 | 站点备份开关 | `[上机]` 有站点 | 站点详情打开备份开关；关闭；刷新站点页与任务页 | 开关 303；启用后出现 `builtin:site-backup:<domain>`（每日 03:00），关闭后任务保留但 `enabled=false`；站点页开关与任务页状态一致；无「保留天数」参数 | □通过 / □失败 | `crates/app/src/tasks.rs`（`set_site_backup`）、`templates/site_detail.html` |
 | TASK-04 | 手动触发并写历史 | `[上机]` 任一启用任务 | 点「立即执行」；刷新详情；看 `task_runs` | 303；出现 running 记录；完成后 success/failed 与耗时、输出摘要可见 | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/sched` |
 | TASK-05 | 超时、重试与退避 | `[本机]` 调度器单测 | `cargo test -p skiff-sched timeout --locked`；`cargo test -p skiff-sched backoff --locked` | 超时被取消并记 timeout；按重试次数与退避间隔重跑；最终状态正确 | □通过 / □失败 | `crates/sched/src/scheduler.rs`、`docs/KERNEL_SCHEDULER_CONTRACT.md` |
-| TASK-06 | 缓冲回执与限速 | `[本机]` app 单测；`[待核对]` 上机入口 | `cargo test -p skiff-app buffer_push --locked` | accepted/rejected 回执字段正确；每任务 100 点/秒限速生效 | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/sched/src/buffer.rs` |
-| TASK-07 | 插件任务唤醒 | `[本机]` sched 单测；`[待核对]` 上机 | `cargo test -p skiff-sched plugin --locked`；上机需插件能注册 `plugin:<id>:` 任务 | 插件任务按调度唤醒、超时/失败回执；插件不可用时记 blocked 而非 failed | □通过 / □失败 | `crates/core/src/server.rs`、`crates/sched`、`crates/app/src/tasks.rs` |
+| TASK-06 | 缓冲回执与限速 | `[本机]` app 单测；`[已核对]` 无上机入口（testkit 无 scheduler_call，cron 只代理 task.*） | `cargo test -p skiff-app buffer_push --locked` | accepted/rejected 回执字段正确；每任务 100 点/秒限速生效 | □通过 / □失败 | `crates/app/src/tasks.rs`、`crates/sched/src/buffer.rs` |
+| TASK-07 | 插件任务唤醒 | `[本机]` sched 单测；`[已核对]` 有入口 | `cargo test -p skiff-sched plugin --locked`；cron 新建生成 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>` | 插件任务按调度唤醒、超时/失败回执；插件不可用时记 blocked 而非 failed | □通过 / □失败 | `crates/core/src/server.rs`、`crates/sched`、`crates/app/src/tasks.rs` |
 | TASK-08 | 任务页权限与 CSRF | `[上机]` viewer 与 admin 各一 | viewer 打开任务页；尝试启停/立即执行/删除；admin 不带 CSRF 执行 | viewer 只读；写操作 403；admin 无 CSRF 403，带 CSRF 303 | □通过 / □失败 | `crates/web/src/handlers/tasks.rs`、`crates/model/src/rbac.rs` |
 
 最小回归命令：
@@ -280,14 +280,14 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | --- | --- | --- | --- | --- | --- | --- |
 | DOCKER-01 | 容器列表与异常过滤 | `[上机]` Docker 可用 | 打开 `/$P/containers`；打开 `?filter=error`；对比 `docker ps` | 列表 200 且数量一致；异常过滤只返回异常容器；无异常时显示空态 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
 | DOCKER-02 | 容器详情与不存在/非法参数 | `[上机]` 有容器 | 打开详情；请求不存在 id；请求非法动词 | 详情 200；不存在 404；非法动词 400 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src` |
-| DOCKER-03 | 启停/重启/删除 | `[上机]` 一个可丢弃容器 | 依次 start、stop、restart；再 POST remove；每步 `docker ps` 对照 | start/stop/restart 均 303 且状态与 `docker ps` 一致；remove 入口当前未开放（返回 400「未知动作」），记为台账缺口，删除只能用 docker CLI | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
+| DOCKER-03 | 启停/重启/删除 | `[上机]` 一个可丢弃容器 | 依次 start、stop、restart；再 POST remove；对受保护容器 POST remove；对执行中任务的运行环境容器 POST remove；每步 `docker ps` 对照 | start/stop/restart/remove 均 303 且状态与 `docker ps` 一致；remove 后容器消失；受保护容器 remove 403；任务占用 remove 409；未知动作仍 400。`[2026-11-07 修复，待发版复验]` remove 入口已开放，删除后回列表 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/app/src/sites.rs`、`crates/docker` |
 | DOCKER-04 | 日志 SSE 与断连 | `[上机]` 有持续输出的容器 | 打开日志页；`curl -N` 订阅 SSE；关闭客户端 | SSE 持续返回 `data:` 行；断开后服务端停止 follow，无泄漏 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker` |
-| DOCKER-05 | exec 一次性票据与 Origin | `[上机]` 容器可执行 sh | 申请 exec 票据；用票据连 WS；重复用同一票据；异源 Origin/无 Origin 再连；过期票据再连；浏览器打开详情页在终端输入命令 | 首次可连；重复票据被拒；异源/无 Origin 403；过期票据被拒；终端可输入并有回显。`[待核对]` 详情页缺 xterm 资源且 exec 未 attach stdin，见台账，修复待发版复验 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src/client.rs`、`templates/container_detail.html` |
+| DOCKER-05 | exec 一次性票据与 Origin | `[上机]` 容器可执行 sh | 申请 exec 票据；用票据连 WS；重复用同一票据；异源 Origin/无 Origin 再连；过期票据再连；浏览器打开详情页在终端输入命令 | 首次可连；重复票据被拒；异源/无 Origin 403；过期票据被拒；终端可输入并有回显。`[已复验 2026-11-07]` 详情页加载 xterm；`echo ok` 回显；票据一次性/异源/无 Origin/过期均 403 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`、`crates/docker/src/client.rs`、`templates/container_detail.html` |
 | DOCKER-06 | 镜像列表/拉取/删除 | `[上机]` 可访问镜像源 | 拉取一个小镜像；列表出现；删除；再拉 | 拉取返回 200 且结果/错误可见；列表与 `docker images` 一致；删除后消失；再拉成功 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
-| DOCKER-07 | 网络与卷创建/删除 | `[上机]` Docker 可用 | 创建 bridge 网络、volume；挂载到临时容器；删除 | 创建 303；列表出现；挂载可用；删除后列表消失；使用中的卷删除被拒 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
-| DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 有带 `io.skiff.protected=true` 标签的容器（如 nginx/php 运行时容器） | 对该容器执行 stop/restart/remove | 状态变更被拒（403）并给「受保护」提示；容器仍在运行；只读查看仍可 | □通过 / □失败 | `crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/model/src/container.rs` |
+| DOCKER-07 | 网络与卷创建/删除 | `[上机]` Docker 可用 | 创建 bridge 网络、volume；挂载到临时容器；删除 | 创建 200（页面刷新，非 303）；列表出现；挂载可用；删除后列表消失；使用中的卷删除被拒 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
+| DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[2026-11-07 修复，待发版复验]` | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
 | DOCKER-09 | 危险字段无法表达 | `[本机]` 模型/策略单测 | `cargo test -p skiff-policy --locked`；构造含 `privileged`/`cap_add` 的 JSON 请求 | 反序列化拒绝或校验拒绝；容器规格只允许契约字段 | □通过 / □失败 | `crates/model/src/container.rs`、`crates/policy` |
-| DOCKER-10 | Compose 子集静态校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose` | 样例全部通过；含不支持字段的 compose 被拒；`[待核对]` 无运行时 Compose 入口，仅静态校验 | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
+| DOCKER-10 | Compose 子集静态校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose` | 样例全部通过；含不支持字段的 compose 被拒；`[已核对]` 无运行时入口，仅 `xtask check` 静态校验（本轮因本机 OOM 未跑） | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
 
 最小回归命令：
 
@@ -296,8 +296,26 @@ curl -ks -o /dev/null -w 'containers=%{http_code}\n' -b "$J" "$B/$P/containers"
 curl -ks -o /dev/null -w 'containers_error=%{http_code}\n' -b "$J" "$B/$P/containers?filter=error"
 curl -ks -o /dev/null -w 'images=%{http_code}\n' -b "$J" "$B/$P/images"
 curl -ks -o /dev/null -w 'networks=%{http_code}\n' -b "$J" "$B/$P/networks"
+cargo test -p skiff-policy container_remove --locked
+cargo test -p skiff-docker stale_kernel --locked
+cargo test -p skiff-app container_busy_reason --locked
 cargo run -p xtask -- check
 ```
+
+**Docker 补充实测（本轮 2026-11-07，包 `v0.1.0` / `3e98b5e`，x86_64 sha256 `c39fe7d2…`）**
+
+| 编号 | 结果 | 证据 |
+| --- | --- | --- |
+| DOCKER-01 | ☑通过 | `/containers` 200，3 个容器名全部命中；`?filter=error` 200 且空态「没有处于异常状态的容器。」 |
+| DOCKER-02 | ☑通过 | 详情 200；不存在 404；非法动词 400「未知动作: nope」 |
+| DOCKER-03 | ☑通过（remove 缺口） | stop/start/restart 303 且 `docker inspect` 状态随动；remove 400「未知动作: remove」 |
+| DOCKER-04 | ☑通过 | `curl -N` 收到 76 行 `data:`；断开后无残留连接 |
+| DOCKER-05 | ☑通过 | 合法票据 101 且 `echo ok` 回显帧含 `ok\r\n`；无票据/坏票据/复用/异源/无 Origin/过期均 403，文案分别为「缺少 exec 票据」「票据校验失败」「WebSocket Origin 校验失败」「票据已过期」；详情页已加载 xterm |
+| DOCKER-06 | ☑通过 | `busybox:latest` 拉取 200「已拉取」，列表出现；删除后面板与 `docker images` 均消失 |
+| DOCKER-07 | ☑通过（实际 200） | 创建网络/卷返回 200 并实际落库 Docker（原写 303 为页面刷新语义）；挂载临时容器可用；使用中卷删除被拒（`in use - [id]`），清理后删除成功 |
+| DOCKER-08 | ☑通过（发现新缺口） | 合成 `io.skiff.protected=true` 容器 stop/restart 403「受保护对象 … 拒绝操作」且保持 running；remove 仍 400（DOCKER-03 缺口）。**新缺口**：运行时 `skiff-web-nginx`/`skiff-php-batch1`/`skiff-rust-rust-1.83` 未带该标签、名称也不匹配 `skiff`/`skiff_`，实测可被面板停止 |
+| DOCKER-09 | ⏸阻塞（本机 OOM） | `cargo test -p skiff-policy` 在 `skiff-model` 编译期 `memory allocation failed`；需充足内存或 CI 兜底 |
+| DOCKER-10 | ⏸阻塞（本机 OOM） | `xtask check` 同样需本地编译；且无运行时 Compose 入口（仅静态校验） |
 
 ## I. 部署与升级
 
@@ -306,16 +324,16 @@ cargo run -p xtask -- check
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
 | DEPLOY-01 | 发行包结构与摘要/签名 | `[本机]` 有 release 包 | 解包检查 `skiff`、`skiff-plugin`、`install.sh`、`uninstall.sh`、`docker-bootstrap.sh`、`skiff.service`、`config.toml.example`、`vendor/install-php-extensions`、`official/*.wbpkg` 与 `public-key.txt`；`cargo run -p xtask -- verify-pkg …`；`sha256sum -c` | 结构完整；单包 `.sha256` 校验通过；缺失或篡改被拒 | □通过 / □失败 | `deploy/pack-release.sh`、`xtask`、`.github/workflows/release.yml` |
-| DEPLOY-02 | systemd 直装与自启 | `[上机]` 干净 Linux | `deploy/install.sh`；`systemctl status skiff`；重启机器 | 安装成功；服务 active；重启后自动拉起；面板 200。`[待核对]` 2026-11-06 只验 active+enabled，重启需独占窗口 | □通过 / □失败 | `deploy/install.sh`、`deploy/systemd/skiff.service` |
+| DEPLOY-02 | systemd 直装与自启 | `[上机]` 干净 Linux | `deploy/install.sh`；`systemctl status skiff`；重启机器 | 安装成功；服务 active；重启后自动拉起；面板 200。`[已复验 2026-11-07]` 重启后自启、三容器 Up、面板/两站 200 | □通过 / □失败 | `deploy/install.sh`、`deploy/systemd/skiff.service` |
 | DEPLOY-03 | 数据目录与权限口径 | `[上机]` 已安装 | 查看 `/etc/skiff/config.toml`、`/www/skiff`、`/www/skiff/plugins`、`/www/skiff/skiff.db` | 数据根与 plugins 0711；DB 0600；面板自身配置 `/etc/skiff/config.toml` 由安装脚本落为 0644（非 0600）；目录属主正确 | □通过 / □失败 | `deploy/install.sh`、`crates/core/src/bootstrap.rs`、`docs/DEPLOY_TEST.md` §1.1 |
 | DEPLOY-04 | 配置严格校验与非回环无 TLS 拒绝 | `[上机]` 可改配置 | 写未知字段启动；监听 `0.0.0.0` 且不配 TLS 启动；恢复合法配置 | 未知字段启动失败并指出字段；非回环无 TLS 拒绝启动；合法配置恢复 200 | □通过 / □失败 | `crates/core/src/config.rs`、`deploy/config.toml.example` |
 | DEPLOY-05 | 直连 TLS | `[上机]` 有证书 | 配 `tls_cert`、`tls_key` 指向证书；重启；访问 HTTPS；用 http 访问同一端口 | HTTPS 200 且证书正确；明文 HTTP 无法完成 TLS 握手（不会降级为明文）；面板 Cookie 带 Secure | □通过 / □失败 | `crates/core/src/config.rs`、`crates/core/src/server.rs`（TLS 监听）、`deploy/install.sh` |
 | DEPLOY-06 | 反代信任边界 | `[上机]` 前置反代 | 配 `trusted_proxies` 为反代 CIDR；从可信/不可信来源分别带 `X-Forwarded-Proto`、`X-Forwarded-For` 访问，看审计里的来源 IP 与 scheme | 可信来源的头被采信，来源 IP 为最左真实客户端；不可信来源的头一律忽略，来源 IP 为直连 peer；伪造头不改变客户端识别 | □通过 / □失败 | `crates/core/src/config.rs`、`crates/web/src/middleware.rs` |
-| DEPLOY-07 | 升级覆盖安装与数据保留 | `[上机]` 已有库与站点 | 备份旧二进制与 DB；覆盖安装新 release；重启；登录看站点/任务/插件 | 新版本启动；`user_version` 升到当前 schema（11）；站点、任务、插件数据保留；已装官方插件的 `versions/<ver>` 与随包内容一致（版本或内容不同则更新，`data/` 与既有授权不变）。`[待核对]` 2026-11-06 只核对 `user_version=11` 与数据完整，覆盖安装需独占窗口 | □通过 / □失败 | `deploy/install.sh`、`crates/store/src/db.rs`（迁移） |
-| DEPLOY-08 | 卸载与 purge 边界 | `[上机]` 可丢弃环境 | `deploy/uninstall.sh`；再加 `--purge`；检查数据目录 | 默认卸载保留 `/www/skiff` 数据；`--purge` 明确删除数据与配置并提示。`[待核对]` 共享测试机未执行，需独占可丢弃环境 | □通过 / □失败 | `deploy/uninstall.sh` |
-| DEPLOY-09 | aarch64 装机 | `[上机]` arm64 Linux | 安装 release arm64 包；起 systemd；建站访问 | 安装/启动/建站均成功；`uname -m` 为 aarch64。`[待核对]` 当前只核对资产 sha，未在 arm64 实机跑过 | □通过 / □失败 | `deploy/pack-release.sh`、`.github/workflows/release.yml` |
-| DEPLOY-10 | 1Panel Docker 受限形态 | `[上机]` 1Panel 环境 | 按商店包安装；尝试安装 fs/net 插件；打开三核心 | 面板可用；fs/net 插件因能力面收缩而拒装；docker/identity 正常。`[待核对]` 未上机验证 | □通过 / □失败 | `deploy/1panel/`、`crates/plugin` |
-| DEPLOY-11 | Release 下载失败可诊断 | `[上机]` 外网下载 | 正常下载一次；模拟超时/断网再下载 | 正常成功且校验摘要；失败时保留明确 URL/状态码/原因并有限重试。`[待核对]` 偶发超时回退 API 端点未复现，尚不能断言重试次数 | □通过 / □失败 | `tools/iter.sh`、`.github/workflows/release.yml` |
+| DEPLOY-07 | 升级覆盖安装与数据保留 | `[上机]` 已有库与站点 | 备份旧二进制与 DB；覆盖安装新 release；重启；登录看站点/任务/插件 | 新版本启动；`user_version` 升到当前 schema（11）；站点、任务、插件数据保留；已装官方插件的 `versions/<ver>` 与随包内容一致（版本或内容不同则更新，`data/` 与既有授权不变）。`[已复验 2026-11-07]` 同包覆盖安装，配置 sha 不变、业务计数保留 | □通过 / □失败 | `deploy/install.sh`、`crates/store/src/db.rs`（迁移） |
+| DEPLOY-08 | 卸载与 purge 边界 | `[上机]` 可丢弃环境 | `deploy/uninstall.sh`；再加 `--purge`；检查数据目录 | 默认卸载保留 `/www/skiff` 数据；`--purge` 明确删除数据与配置并提示。`[已复验 2026-11-07]` 默认卸载删程序保数据（`/www/skiff`、`/etc/skiff`、`/www/sites`），重装恢复一致 | □通过 / □失败 | `deploy/uninstall.sh` |
+| DEPLOY-09 | aarch64 装机 | `[上机]` arm64 Linux | 安装 release arm64 包；起 systemd；建站访问 | 安装/启动/建站均成功；`uname -m` 为 aarch64。`[阻塞]` 无 arm64 实机：Release 已有 aarch64 包（7,191,228 B），仅核对资产存在，未实装 | □通过 / □失败 | `deploy/pack-release.sh`、`.github/workflows/release.yml` |
+| DEPLOY-10 | 1Panel Docker 受限形态 | `[上机]` 1Panel 环境 | 按商店包安装；尝试安装 fs/net 插件；打开三核心 | 面板可用；fs/net 插件因能力面收缩而拒装；docker/identity 正常。`[阻塞]` 无 1Panel 环境；商店包与 `init.sh` 能力面收缩声明已在仓库，未实装 | □通过 / □失败 | `deploy/1panel/`、`crates/plugin` |
+| DEPLOY-11 | Release 下载失败可诊断 | `[上机]` 外网下载 | 正常下载一次；模拟超时/断网再下载 | 正常成功且校验摘要；失败时保留明确 URL/状态码/原因并有限重试。`[阻塞]` 无可复现超时/断网条件；代码核对 `tools/iter.sh::cmd_fetch` 为单次 `curl --max-time 600`，无重试与结构化错误输出 | □通过 / □失败 | `tools/iter.sh`、`.github/workflows/release.yml` |
 
 最小回归命令：
 
@@ -327,15 +345,26 @@ sqlite3 /www/skiff/skiff.db 'PRAGMA user_version;'
 sudo journalctl -u skiff -n 50 --no-pager | grep -E '安全入口|listen|error' | tail -5
 ```
 
-## 附：待核对项
+**部署补充实测（本轮 2026-11-07）**
 
-| 编号 | 待核对点 | 原因 |
+| 编号 | 结果 | 证据 / 阻塞条件 |
 | --- | --- | --- |
-| FS-04 | 回收站是否有上机入口 | `crates/fs` 有回收站实现与单测，但插件能力面未暴露 `fs.trash`，上机只能靠单测 |
-| FS-05 | 配额是否有上机入口 | 同上，配额在 `crates/fs` 内部生效，能力面未单独暴露 |
-| TASK-06 | `buffer.push` / `buffer.stat` 的上机入口 | 能力面已实现并有限速单测，但 testkit 未暴露 `scheduler_call`，上机需临时插件 |
-| TASK-07 | 插件任务唤醒上机链路 | `skiff-sched` 单测覆盖 PluginGate，但现有插件没有注册 `plugin:<id>:` 任务 |
-| DOCKER-10 | Compose 运行时 | 仓库只有 `xtask` 静态字段子集校验，无运行时 Compose 入口 |
-| DEPLOY-09 | aarch64 实机 | 只有资产 sha256 核对记录，没有 arm64 机器实测 |
-| DEPLOY-10 | 1Panel Docker 受限形态 | 商店包未上机，能力面拒装仅按代码推断 |
-| DEPLOY-11 | Release 下载重试语义 | 超时回退 API 端点未复现，重试次数/错误文案尚待定稿 |
+| DEPLOY-02 | ☑通过 | 重启后 `skiff.service` enabled+active、`NRestarts=0`，三容器 Up，面板与两站 200；开机后约 4s 服务就绪、约 10s 面板可用 |
+| DEPLOY-07 | ☑通过 | 同包覆盖安装不清库：配置 sha 不变，users/sites/grants/plugins/tasks 计数全保留，`integrity=ok` |
+| DEPLOY-08 | ☑通过 | 默认卸载删除二进制/unit/`/run/skiff`，保留 `/www/skiff`、`/etc/skiff`、`/www/sites` 与运行组；重装恢复后站点 `diff -r` 无差异 |
+| DEPLOY-09 | ⏸阻塞（无环境） | Release 已上架 `aarch64-unknown-linux-musl` 包（7,191,228 B）；复现条件=arm64 Linux + systemd |
+| DEPLOY-10 | ⏸阻塞（无环境） | `deploy/1panel/apps/skiff/0.1.0` 已在仓库；复现条件=1Panel 主机装商店包，验 fs/net 拒装、docker/identity 可用 |
+| DEPLOY-11 | ⏸阻塞（无复现条件） | 正常下载+`sha256sum -c` 通过；`tools/iter.sh::cmd_fetch` 无重试；复现条件=对下载域名注入超时/丢包 |
+
+## 附：待核对项结论（2026-11-07 已全部定性）
+
+| 编号 | 结论 | 依据 |
+| --- | --- | --- |
+| FS-04 | 只有后端没有入口 | 内核 fs 能力面仅 read/write/list/mkdir/remove/rename；无 `fs.trash` 动词，也无 UI |
+| FS-05 | 只有后端没有入口 | 配额在 `crates/fs` 内部生效，能力面与配置/UI 均未暴露 |
+| TASK-06 | 只有后端没有入口 | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；testkit 无 `scheduler_call`，cron 只代理 `task.*` |
+| TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，本轮实测创建/删除均 200 |
+| DOCKER-10 | 只有静态校验，无运行时入口 | Web 路由无 Compose；仓库仅 `xtask check` 字段子集校验 |
+| DEPLOY-09 | 因无 arm64 实机阻塞 | Release 有 aarch64 包（7,191,228 B）与 `.sha256`；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
+| DEPLOY-10 | 因无 1Panel 环境阻塞 | `deploy/1panel/apps/skiff/0.1.0` 已在仓库并声明 fs/net 收缩；复现条件=1Panel 主机装商店包后验 fs/net 拒装、docker/identity 可用 |
+| DEPLOY-11 | 因无可复现超时/断网条件阻塞 | 正常下载+摘要校验通过（c39fe7d2…）；代码核对 `tools/iter.sh::cmd_fetch` 单次 `curl --max-time 600`，无重试/结构化错误输出；复现条件=对下载域名注入超时或丢包 |
