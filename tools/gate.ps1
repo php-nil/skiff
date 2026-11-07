@@ -13,6 +13,9 @@
      4.7–7.2GB 间浮动，提交量/百分比阈值没有判别力。
   6. 运行期间每 5 秒采样一次，写入 .workbuddy/memwatch/YYYYMMDD.csv，保留 7 天。
   7. 本地全量拦截：根 workspace 的 clippy / test / build 不带 -Pkg 时必须显式 -AllowFull（退出码 4）。
+  8. git 写命令（add / commit / merge / rebase / reset / checkout / switch / restore / stash /
+     gc / prune / mv / rm / tag / push / fetch 等）与 cargo 共用同一把互斥体，租约 workspace=git；
+     只读命令（status / log / diff / show 等）不占令牌，但写审计（AUDIT git-read）。
 
 退出码：0 成功；2 锁被占用；3 内存准入拒绝；4 需要 -AllowFull；其他为 cargo 自身的退出码。
 用法示例：
@@ -27,13 +30,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('fmt', 'clippy', 'test', 'build', 'exec', 'probe')]
+    [ValidateSet('fmt', 'clippy', 'test', 'build', 'exec', 'git', 'probe')]
     [string]$Task,
 
     # 仅 -Task exec：由 PATH 包装入口透传的原始 cargo 参数。
     # 命名必须与内部数组 $cargoArgs 区分开：PowerShell 变量名大小写不敏感，
     # 同名会被后面的 $cargoArgs = @() 直接覆盖（曾导致所有参数被清空）。
     [string[]]$ExecArgs = @(),
+
+    # 仅 -Task git：由 tools/bin/git.cmd 透传的原始 git 参数
+    [string[]]$GitArgs = @(),
 
     [string]$Pkg,
 
@@ -182,10 +188,23 @@ function Resolve-RealCargo {
     throw '找不到真实的 cargo.exe（PATH 中除包装入口外没有 cargo.exe）'
 }
 
+function Resolve-RealGit {
+    if ($env:SKIFF_REAL_GIT -and (Test-Path $env:SKIFF_REAL_GIT)) { return $env:SKIFF_REAL_GIT }
+    foreach ($p in ($env:PATH -split ';')) {
+        if (-not $p) { continue }
+        $exe = Join-Path $p 'git.exe'
+        if (Test-Path $exe) { return $exe }
+    }
+    $fallback = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
+    if (Test-Path $fallback) { return $fallback }
+    throw '找不到真实的 git.exe（PATH 中除包装入口外没有 git.exe）'
+}
+
 # ---- 构造 cargo 命令 ----
 $PluginsManifest = Join-Path $RepoRoot 'plugins\Cargo.toml'
 $cargoArgs = @()
 $fullRoot = $false
+$isGit = $false
 
 switch ($Task) {
     'fmt' {
@@ -229,6 +248,11 @@ switch ($Task) {
         # PATH 包装透传的原始参数；-Pkg/-Plugins 不参与
         $cargoArgs = @($ExecArgs)
     }
+    'git' {
+        # PATH 包装透传的原始 git 参数；只读命令放行但仍记审计
+        $cargoArgs = @($GitArgs)
+        $isGit = $true
+    }
     'probe' {
         $cargoArgs = @()
     }
@@ -237,6 +261,7 @@ switch ($Task) {
 # 根 workspace 与 plugins/ 共用同一把令牌，这里只标注归属用于审计
 $wsKind = 'root'
 if ($Plugins) { $wsKind = 'plugins' }
+if ($isGit) { $wsKind = 'git' }
 if ($Task -eq 'exec') {
     for ($i = 0; $i -lt $cargoArgs.Count - 1; $i++) {
         if ($cargoArgs[$i] -eq '--manifest-path' -and $cargoArgs[$i + 1] -match 'plugins') { $wsKind = 'plugins' }
@@ -251,6 +276,39 @@ if ($fullRoot -and -not $AllowFull) {
     Write-Host ("INTERCEPT: 本地全量 {0} 需要显式 -AllowFull（本机仅 4.9GB 内存）；" -f $Task) -ForegroundColor Yellow
     Write-Host '  受影响 crate 快速回归请用 -Pkg <crate>，全量优先交 CI。' -ForegroundColor Yellow
     exit 4
+}
+
+# ---- git：只读命令直接放行（不占令牌，但记审计）；写命令与 cargo 共用同一把令牌 ----
+if ($isGit) {
+    $gitVerb = ''
+    $i = 0
+    while ($i -lt $cargoArgs.Count) {
+        $t = $cargoArgs[$i]
+        if ($t -in @('-C', '-c', '--git-dir', '--work-tree', '--namespace')) { $i += 2; continue }
+        if ($t -like '-*') { $i += 1; continue }
+        $gitVerb = $t
+        break
+    }
+    $readOnlyVerbs = @(
+        'status', 'log', 'diff', 'show', 'rev-parse', 'rev-list', 'ls-files', 'ls-remote',
+        'describe', 'blame', 'shortlog', 'cat-file', 'show-ref', 'for-each-ref', 'grep',
+        'whatchanged', 'count-objects', 'fsck', 'check-ignore', 'check-attr', 'merge-base',
+        'name-rev', 'symbolic-ref', 'version', 'help'
+    )
+    if (($readOnlyVerbs -contains $gitVerb) -or ($cargoArgs -contains '--version')) {
+        $realGitRO = Resolve-RealGit
+        $roLine = (@($realGitRO) + $cargoArgs) -join ' '
+        Write-GateLog ("AUDIT git-read verb={0} cmd=[{1}]" -f $gitVerb, $roLine)
+        # 只读命令不刷新 index（否则 status 也会写 .git/index，制造写冲突）
+        $env:GIT_OPTIONAL_LOCKS = '0'
+        & $realGitRO @cargoArgs
+        exit $LASTEXITCODE
+    }
+    if (-not $gitVerb) {
+        Write-GateLog 'REFUSED git-empty-args'
+        Write-Host 'REFUSED: 未识别的 git 参数（需要子命令）' -ForegroundColor Red
+        exit 2
+    }
 }
 
 $mutex = Get-GateMutex
@@ -288,6 +346,7 @@ try {
         Remove-Item $LeaseFile -Force -ErrorAction SilentlyContinue
     }
 
+    $toolName = if ($isGit) { 'git' } else { 'cargo' }
     $lease = [pscustomobject]@{
         pid       = $PID
         startedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
@@ -295,7 +354,7 @@ try {
         workspace = $wsKind
         pkg       = $Pkg
         plugins   = [bool]$Plugins
-        command   = (@('cargo') + $cargoArgs) -join ' '
+        command   = (@($toolName) + $cargoArgs) -join ' '
     }
     $lease | ConvertTo-Json -Compress | Set-Content -Path $LeaseFile -Encoding utf8
     Write-GateLog ("ACQUIRED task={0} workspace={1} pkg={2} cmd=[{3}]" -f $Task, $wsKind, $Pkg, $lease.command)
@@ -310,46 +369,49 @@ try {
         exit $exitCode
     }
 
-    # 提交内存准入
-    try {
-        $mem = Get-MemSnapshot
-    } catch {
-        Write-GateLog 'ADMISSION-WARN counter-unavailable'
-        Write-Host 'WARN: 无法读取内存计数器，跳过准入检查' -ForegroundColor DarkYellow
-        $mem = $null
-    }
-    if ($null -ne $mem) {
-        Write-Host ("MEM: available={0}MB（准入下限 {1}MB） committed={2}MB limit={3}MB pagefile={4}%（仅供观测）" -f `
-            $mem.AvailableMB, $MinAvailableMB, $mem.CommittedMB, $mem.LimitMB, $mem.PagefilePct)
-        # 动态内存虚拟机：commit limit 在 4.7–7.2GB 浮动，比例阈值不可靠，只看可用物理内存绝对下限
-        if ($mem.AvailableMB -lt $MinAvailableMB) {
-            Write-GateLog ("REFUSED admission available={0}MB min={1}MB" -f $mem.AvailableMB, $MinAvailableMB)
-            Write-Host ("REFUSED: 可用物理内存 {0}MB 低于下限 {1}MB（可用 SKIFF_GATE_MIN_AVAILABLE_MB 调整）" -f `
-                $mem.AvailableMB, $MinAvailableMB) -ForegroundColor Red
-            Write-Host '  请先关闭其他会话或等待当前编译结束，再重试。' -ForegroundColor Red
-            $exitCode = 3
-            exit $exitCode
+    # 提交内存准入（仅 cargo；git 写不占内存峰值）
+    if (-not $isGit) {
+        try {
+            $mem = Get-MemSnapshot
+        } catch {
+            Write-GateLog 'ADMISSION-WARN counter-unavailable'
+            Write-Host 'WARN: 无法读取内存计数器，跳过准入检查' -ForegroundColor DarkYellow
+            $mem = $null
+        }
+        if ($null -ne $mem) {
+            Write-Host ("MEM: available={0}MB（准入下限 {1}MB） committed={2}MB limit={3}MB pagefile={4}%（仅供观测）" -f `
+                $mem.AvailableMB, $MinAvailableMB, $mem.CommittedMB, $mem.LimitMB, $mem.PagefilePct)
+            # 动态内存虚拟机：commit limit 在 4.7–7.2GB 浮动，比例阈值不可靠，只看可用物理内存绝对下限
+            if ($mem.AvailableMB -lt $MinAvailableMB) {
+                Write-GateLog ("REFUSED admission available={0}MB min={1}MB" -f $mem.AvailableMB, $MinAvailableMB)
+                Write-Host ("REFUSED: 可用物理内存 {0}MB 低于下限 {1}MB（可用 SKIFF_GATE_MIN_AVAILABLE_MB 调整）" -f `
+                    $mem.AvailableMB, $MinAvailableMB) -ForegroundColor Red
+                Write-Host '  请先关闭其他会话或等待当前编译结束，再重试。' -ForegroundColor Red
+                $exitCode = 3
+                exit $exitCode
+            }
         }
     }
 
-    # 绕过 PATH 包装递归：始终调用真实 cargo.exe
-    $realCargo = Resolve-RealCargo
-    $cmdLine = (@($realCargo) + $cargoArgs) -join ' '
+    # 绕过 PATH 包装递归：始终调用真实可执行文件
+    $realExe = if ($isGit) { Resolve-RealGit } else { Resolve-RealCargo }
+    $cmdLine = (@($realExe) + $cargoArgs) -join ' '
     Write-Host ("RUN: {0}" -f $cmdLine) -ForegroundColor Cyan
 
     if ($DryRun) {
         Write-GateLog ("DRYRUN cmd=[{0}]" -f $cmdLine)
-        Write-Host 'DRYRUN: 已通过锁与准入检查，未执行 cargo' -ForegroundColor Cyan
+        Write-Host 'DRYRUN: 已通过锁与准入检查，未执行' -ForegroundColor Cyan
         $exitCode = 0
         exit $exitCode
     }
 
-    $csv = Join-Path $MemDir ((Get-Date -Format 'yyyyMMdd') + '.csv')
-    $sampler = Start-Sampler $csv
-
-    # 门禁任务按红线口径关闭增量；包装透传保持调用方语义
-    if ($Task -ne 'exec') { $env:CARGO_INCREMENTAL = '0' }
-    & $realCargo @cargoArgs
+    if (-not $isGit) {
+        $csv = Join-Path $MemDir ((Get-Date -Format 'yyyyMMdd') + '.csv')
+        $sampler = Start-Sampler $csv
+        # 门禁任务按红线口径关闭增量；包装透传保持调用方语义
+        if ($Task -ne 'exec') { $env:CARGO_INCREMENTAL = '0' }
+    }
+    & $realExe @cargoArgs
     $exitCode = $LASTEXITCODE
     Write-GateLog ("FINISHED task={0} pkg={1} exit={2}" -f $Task, $Pkg, $exitCode)
 }

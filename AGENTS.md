@@ -44,6 +44,10 @@
   * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**。
   * 覆盖不到的入口，一律按红线人工遵守：绝对路径 `C:\Users\dev-bl\.cargo\bin\cargo.exe`、rust-analyzer / IDE 内部调用、CI 与其它机器。`.trae/` 只有 `rules/`，没有 shell 前置钩子，工具层无法再加一道拦截。
   * **包装是否生效，重启后先自检**：当前 Trae 宿主的 `PATH` 是启动时的旧快照，`D:\panel\tools\bin` 不在其中，裸敲 `cargo` 仍会解析到 `cargo.exe` 并绕过包装；必须重启 Trae（含其终端）才继承新 `PATH`。重启后在新 shell 里执行 `where.exe cargo`，首行应为 `D:\panel\tools\bin\cargo.cmd`；若先出现 `C:\Users\dev-bl\.cargo\bin\cargo.exe`，说明包装未生效，先修 `PATH` 再编译。
+* **git 写操作串行（红线）**：与编译共用同一把 `Global\SkiffBuild` 令牌，同样必须经包装入口 `tools\bin\git.cmd` 执行。
+  * 写命令（`add` / `commit` / `merge` / `rebase` / `reset` / `checkout` / `switch` / `restore` / `stash` / `gc` / `prune` / `mv` / `rm` / `tag` / `push` / `fetch` 等）拿不到令牌即退出码 2，不排队；只读命令（`status` / `log` / `diff` / `show` 等）不占令牌，但会在 `gate.log` 记一条 `AUDIT git-read`。
+  * 仓库已关闭后台自动维护（`gc.auto=0`、`maintenance.auto=false`），避免无人值守时重建 `packed-refs` / 写 `maintenance.lock`；需要回收时人工在闸门里跑一次 `git gc`。
+  * 提交与推送只由唯一负责会话执行；其它会话只读，不并发写 refs，避免 stale lock 与 `AUTO_MERGE` / `rebase-merge` 残留。
 
 ### 3.2 测试要求
 
