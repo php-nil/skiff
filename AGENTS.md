@@ -35,6 +35,12 @@
   * 单一来源：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`；插件能力面实现只在 `crates/plugin`。
   * 数字纪律：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
   * 权限口径：数据根与 `plugins/` 保持 0711（可穿越不可列），勿改回 0700，否则降权插件全线 EACCES（详见 `docs/DEPLOY_TEST.md` §1.1）。
+* **编译与测试串行（红线）**：违反即返工。
+  * 同一时间只允许一路 `cargo` 编译或测试（`fmt` / `clippy` / `test` / `build`），不分会话、不分开发者。开跑前先抢目录锁 `New-Item -ItemType Directory -Path d:\panel\.build-lock -ErrorAction Stop`，创建失败即说明有人在跑，等待或放弃；跑完在 `finally` 里删锁，崩溃残留手工删。
+  * 禁止为了并行而使用自定义 `CARGO_TARGET_DIR`——它会绕过 cargo 自带的 target 目录锁，是已发生过的真实事故成因。
+  * 根 workspace 与 `plugins/` 第二 workspace **串行**跑，不并发。
+  * 全量 `cargo test --workspace` 优先交 CI；本地只跑受影响 crate 的快速回归。必须本地全量时，按 `CARGO_INCREMENTAL=0 --jobs 1` 串行执行。
+  * 依据：本机 6.3 GB 物理内存 + 12 GB 页文件上限 ≈ 18.3 GB commit 天花板，空载基线已占 5.4 GB；并发编译会打穿提交上限，表现为 `rustc` LLVM OOM、`failed to mmap rmeta`、`STATUS_STACK_BUFFER_OVERRUN`，系统日志同时出现 Event 26「虚拟内存不足」。
 
 ### 3.2 测试要求
 

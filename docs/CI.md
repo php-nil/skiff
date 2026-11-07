@@ -196,6 +196,8 @@ gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
 
 ## 6. 本地复现 CI
 
+本地执行以下命令须遵守 `AGENTS.md` §3.1「编译与测试串行（红线）」：同一时间只允许一路 `cargo`，根 workspace 与 `plugins/` 串行，全量测试优先交 CI。
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
