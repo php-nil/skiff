@@ -333,7 +333,7 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 
 ```rust
 trait Scheduler {
-    fn register(&self, task: NewTask) -> Result<Task, TaskError>;   // 幂等 upsert by (kind, source)
+    fn register(&self, task: NewTask) -> Result<Task, TaskError>;   // 内置按 (kind, source)、插件按 id 幂等 upsert
     fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError>;
     fn delete(&self, id: &str) -> Result<(), TaskError>;
     fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), TaskError>;
@@ -413,7 +413,7 @@ trait Scheduler {
 
 | 类别 | 用例 | 期望 |
 | --- | --- | --- |
-| 模型 | kind/id/source 非法；插件越权创建 builtin；重复 (kind, source) upsert | 拒绝并给出字段级错误；合法重复只更新 |
+| 模型 | kind/id/source 非法；插件越权创建 builtin；内置重复 (kind, source) upsert；插件同 id 重复 | 拒绝并给出字段级错误；内置合法重复只更新；插件任务身份是 id 里的 `local_key`，同一 `(kind, source)` 允许多条 |
 | 调度 | cron 5 段；interval 4s 拒绝；jitter；本地时区；非法表达式 blocked | 不 panic；不刷审计 |
 | 缓冲 | 容量上限；三种 overflow；retain false；partial 越界水位；单点 >64 KiB；全局 128 MiB | 丢弃/拒收计数正确；审计一次；越界回执按协议失败 |
 | 执行 | 单飞跳过；queue_one；missed skip/once/all；时钟回拨 | `skipped_busy/missed_count/clock_skew` 记录正确 |

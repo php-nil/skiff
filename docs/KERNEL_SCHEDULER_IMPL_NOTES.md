@@ -224,8 +224,10 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 - `crates/store/src/db/tasks.rs`：`scheduled_tasks`（17 列）/ `task_runs`（14 列）。
   调度语义不落列：`schedule_json / payload_json / retry_json / buffer_json / last_run_json`
   整体序列化，`state / blocked_reason` 跟 `Task` 走，`concurrency / missed` 存枚举字符串。
-- 索引：`(kind, source)` **UNIQUE**（内置任务幂等键）、`source`、`enabled`、
-  `task_runs(task_id, finished_at DESC)`、`task_runs(finished_at)`（保留清理）。
+- 索引：`source`、`enabled`、`task_runs(task_id, finished_at DESC)`、
+  `task_runs(finished_at)`（保留清理）。v12 起**没有** `(kind, source)` 唯一索引：内置任务的
+  幂等键在调度器内存按 `(kind, source)` 处理，插件任务的唯一键是 id 里的 `local_key`，
+  同一 `(kind, source)` 允许挂多条。
 - `PRAGMA user_version` 9 → 10，`SCHEMA_V10` 建表；`mark_tasks_loaded()` 保持空实现——
   运行态只在内存，重启后 `running` 直接回 `idle`，不需要状态校正列。
 

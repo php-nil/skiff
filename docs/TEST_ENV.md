@@ -19,7 +19,7 @@
 | 项 | 值 |
 | --- | --- |
 | URL | `https://10.10.15.4:18080/<entry_prefix>/login` |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `swn4nbhe`（2026-11-05 重置后人工恢复，2026-11-07 覆盖安装保留库与前缀） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `8p9yyvg4`（2026-11-07 干净系统重装，全新库生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | TLS | 自签证书，同端口 HTTPS；HTTP 访问同端口不降级 |
 | 证书 | `/etc/skiff/tls/fullchain.pem`（0644）、`/etc/skiff/tls/privkey.pem`（0600）；SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`，有效期 10 年 |
@@ -50,10 +50,11 @@
 | --- | --- |
 | 版本 | `v0.1.0` |
 | tag / 构建提交 | `v0.1.0` = `c44eeb5`（Release 由该提交构建，资产与之一一对应） |
-| 部署时间 | 2026-11-07 20:50（Asia/Shanghai，Release 资产覆盖时间；上机时间以当轮记录为准） |
-| 部署方式 | GitHub Release 资产 `sha256sum -c` → 解压 → `sh install.sh` 覆盖安装；未清库，站点/任务/插件数据保留 |
+| 部署时间 | 2026-11-07 22:05（Asia/Shanghai，干净系统从 Release 资产装机） |
+| 部署方式 | GitHub Release 资产 `sha256sum -c` → 解压 → `sh install.sh`；全新库（users=1），6 个官方插件用 CLI `--yes` 安装（grants 含 `object:path:/www` 与 scheduler 权限） |
 | 数据库 | `PRAGMA user_version=11` |
-| 服务 | `skiff.service` active、`NRestarts=0` |
+| 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200 |
+| 配置 | `/etc/skiff/config.toml`：`listen=0.0.0.0:18080` + TLS 自签、`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
 
 ## 6. Release 资产（v0.1.0，2026-11-07 最终版）
 
@@ -73,20 +74,36 @@
 | 2026-11-05 | 重置库后全新安装（schema v7） | x86_64 6,987,420 B，`sha256:25559d7ec362625cee4fb608710aa842049447f7c76588cfb921c8e348988862` | 安装成功；新口令写入 `/root/iter/admin-pw.txt`；三类站与运行环境验收通过 |
 | 2026-11-07 早轮 | Docker / FTP 修复轮 | 资产 `f9a0b30`，x86_64 `sha256:87427aa6…` | DOCKER-01～08 复验通过；该资产随后被同日最终版覆盖 |
 | 2026-11-07 | v0.1.0 最终版覆盖安装 | tag/构建 `c44eeb5`；x86_64 `b16cb72e…` | FTP 主链路、DEPLOY-02/07/08 通过；详见 §8 |
+| 2026-11-07 22:05 | 干净系统全新装机（Release 资产） | tag/构建 `c44eeb5`；x86_64 8,020,711 B `b16cb72e…`，`sha256sum -c` OK | 全新库 `user_version=11`；入口前缀 `8p9yyvg4`；6 个官方插件 CLI 安装成功（grants 默认含 `path:/www` 与 scheduler 权限）；`doctor` 全 ok、`/healthz` 200 |
 
-## 8. 最近一次全链路验收结论（2026-11-07）
+## 8. 最近一次全链路验收结论（2026-11-07 干净系统轮）
 
 **通过**
-- Release 资产 `sha256sum -c`、`install.sh`、`skiff.service` active、`NRestarts=0`、`integrity=ok`。
-- FTP：装机与插件重装验签（grants=9）；建号 uid/gid 82 与容器 `www-data` 一致、`MinUID=82`；`STOR` 226；PHP 容器内读写；删号后登录 530；审计含 `ftp.*` 且无密码。
-- DEPLOY-02 重启自启、DEPLOY-07 同包覆盖安装保留数据、DEPLOY-08 默认卸载保留数据，均通过。
-- DOCKER-01～08（含受保护容器拒操作与删除入口）；SITE / WEB / MENU / TASK 的 HTTP 级验收见 [TEST_MATRIX.md](TEST_MATRIX.md)。
+- Release 资产 `sha256sum -c`（含包内 `checksums.txt`）、`install.sh`、`skiff.service` active、`NRestarts=0`、`integrity=ok`、`user_version=11`；6 个官方插件 CLI `--yes` 安装（grants 含 `object:path:/www` 与 scheduler 权限）。
+- 文件管理内置页（FS-07/08/09）：列目录/读/原子写/新建/改名/删除全 200；`/www/skiff`、`skiff.db`、`plugins`、`official` 的读写删全 403；>256 KiB 只读（`truncated=true`，text 截断 262144 字节）。
+- cron：预设 ↔ 表达式互转正确、落库标准 5 段；内置任务删除 403（文案「内置任务不可删除（只能停用）」）。
+- 受保护容器 `io.skiff.protected=true` 的 stop/restart/remove 全 403；`/containers` 页 remove 入口可用（DOCKER-03）。
+- 官方插件随包同步：同版本 UI 内容漂移后重启重装，`enabled=0` 与 grants 保留。
+- 站点详情「管理」页签：stop/delete 仅该页签出现；启停 303 回 `?tab=manage` 并带提示。
+- PERF-03：池文件含 `access.log = /dev/null`，重启后 NOTICE 仍可见、10 次请求 `docker logs` 增量为 0。
+- 运行环境：新建回填 `image_digest` 且重建跳过拉取；APK 缓存首装 36 s → 二装 16 s（缓存 30 个 `.apk`）；删除运行环境后容器/目录/DB 行全清（SITE-10）。
+- FTP：建号 uid/gid 82 与容器 `www-data` 一致（`MinUID` 只降）、`STOR`/容器内读写/删号 530；越界与跨站 4 条路径全 550；`--ssl-reqd` TLSv1.3 成功；上传 `probe.php` 经浏览器语义 HTTP 200（`php-ok-8.5.12`）；`ftp.deny.*` 撤权后 403 并落 `deny` 审计；卸载后账号/端口/服务回收（残留目录已人工清理）。
+- PHP 参数：保存 256M/64M/64M/120 后宿主池与容器内一致，FPM 请求读取生效；4096M 被拒（「32M-2048M」）。
+- 站点详情四标签、插件 iframe 无自渲染标题、1024 抽屉宽度：仅 HTTP/CSS 结构核对通过（浏览器工具受自签证书限制，见下）。
 
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- FTP-01 卸载回收；FTP-05 越界/跨站、fail2ban 三次封禁、`ftp.deny.*`、显式 TLS、浏览器访问上传的 `probe.php`。
-- aarch64 仅核对资产摘要，未实机装机。
-- 真实 Release 下载超时回退、1Panel 受限形态、G 组长时观测等无环境项。
-- 真实浏览器视觉：430/860px、iframe 交互、站点详情四标签。
+- 四处**已修复待发版**、需下版复验：删站级联计划任务、`scheduled_tasks(kind,source)` 唯一索引（schema v12）、PHP 扩展卸载清理 `pecl`/`.so`、FTP 首装无账号 `PureDB` 缺失（另卸载回收 `/etc/pure-ftpd/auth`）。
+- WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警（未回落阈值提示）。
+- Docker 通用 create / CPU·内存限制表单 / Compose 运行入口仍缺（DOCKER-08/10）。
+- FTP fail2ban 三次封禁：`ignoreself` 使本机无法构造，需第二台客户端。
+- 真实浏览器复核（430/860px、四标签像素、直达页交互）受自签证书阻塞。
+- aarch64 仅核对资产摘要；1Panel 受限形态、G 组长时观测等无环境项。
+
+**收尾状态（2026-11-07 本轮结束）**
+- 站点：`/www/sites` 为空；容器仅 `skiff-web-nginx`；三个 PHP 环境为种子行（`stopped`，目录已清）。
+- 任务：仅 `builtin:db-vacuum`（本轮测试任务与孤儿备份任务已删，重启调度器后 `NRestarts=0`）。
+- FTP 已卸载，`/etc/pure-ftpd` 与 APK 测试缓存已清；保留 `/root/iter/admin-pw.txt` 与 `/root/iter/backups`、`/root/backups`。
+
 
 ## 9. 数据、备份与清理
 
