@@ -32,7 +32,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 11;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -154,6 +154,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V11)?;
             conn.execute_batch("PRAGMA user_version = 11")?;
             info!(from = version, to = 11, "schema 迁移完成");
+        }
+        if version < 12 {
+            conn.execute_batch(SCHEMA_V12)?;
+            conn.execute_batch("PRAGMA user_version = 12")?;
+            info!(from = version, to = 12, "schema 迁移完成");
         }
         Ok(())
     }
@@ -472,8 +477,8 @@ ALTER TABLE site_runtimes ADD COLUMN extensions TEXT NOT NULL DEFAULT '';
 /// v10：内核定时任务。任务定义与运行历史分表；调度语义（cron 表达式、重试、
 /// 缓冲配置）一律以 JSON 文本存放，存储层不解释。
 ///
-/// - `scheduled_tasks`：`(kind, source)` 唯一——同一内置任务/站点/插件只能有一条；
-///   插件任务用带 `local_key` 的 `id` 区分（`plugin:<id>:<local_key>`）。
+/// - `scheduled_tasks`：任务 id 唯一；插件任务的唯一性由 id 里的 `local_key` 保证，
+///   不能给 `(kind, source)` 建唯一索引（同一插件/站点允许挂多条任务，见 v12）。
 /// - `task_runs`：每次执行一条，保留期由维护巡检按 7 天清理。
 const SCHEMA_V10: &str = r#"
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -495,8 +500,6 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_tasks_kind_source
-  ON scheduled_tasks(kind, source);
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_source
   ON scheduled_tasks(source);
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled
@@ -561,6 +564,15 @@ ALTER TABLE site_runtimes_v11 RENAME TO site_runtimes;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_default
   ON site_runtimes(kind) WHERE is_default = 1;
 PRAGMA foreign_keys=ON;
+"#;
+
+/// v12：去掉 `scheduled_tasks(kind, source)` 唯一索引。
+///
+/// v10 建的该索引把「同一插件方法/同一站点只能有一条任务」写死，但插件任务的
+/// 身份是 id 里的 `local_key`（`plugin:<id>:<local_key>`），同一 `(kind, source)`
+/// 挂多条是合法配置（实测第二个任务被 `UNIQUE constraint failed` 拒绝）。
+const SCHEMA_V12: &str = r#"
+DROP INDEX IF EXISTS idx_scheduled_tasks_kind_source;
 "#;
 
 #[cfg(test)]

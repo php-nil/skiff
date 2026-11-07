@@ -293,7 +293,8 @@ impl<S: TaskStore> Scheduler<S> {
             .and_then(|rt| rt.buffer.as_ref().map(Buffer::stat))
     }
 
-    /// 注册或更新任务：同一 `kind + source` 只允许一条，重复注册按更新处理。
+    /// 注册或更新任务：内置任务按 `kind + source` 幂等（重复注册按更新处理），
+    /// 插件任务按 `id`（`plugin:<id>:<local_key>`）幂等。
     pub fn register(
         &mut self,
         spec: crate::model::TaskSpec,

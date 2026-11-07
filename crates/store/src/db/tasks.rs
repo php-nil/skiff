@@ -57,8 +57,8 @@ pub struct TaskRunRow {
 }
 
 impl Db {
-    /// 插入或更新任务定义（按 `id` 主键）。`(kind, source)` 的唯一索引防止同一
-    /// 内置任务被装成两条；插件任务的唯一性由任务 id 上的 `local_key` 保证。
+    /// 插入或更新任务定义（按 `id` 主键）。任务身份是 `id`：同一 `(kind, source)`
+    /// 允许挂多条（插件任务靠 id 里的 `local_key` 区分），因此没有该组合的唯一索引。
     pub fn put_scheduled_task(&self, t: &ScheduledTaskRow) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -322,20 +322,22 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_kind_and_source_is_rejected() {
+    fn duplicate_kind_and_source_allowed_with_distinct_ids() {
         let db = Db::open_in_memory().unwrap();
         db.put_scheduled_task(&task_row(
-            "site:example.com",
-            "builtin:site-backup",
-            "site:example.com",
+            "plugin:com.skiff.cron:1",
+            "plugin:com.skiff.cron:noop",
+            "plugin:com.skiff.cron",
         ))
         .unwrap();
-        let mut dup = task_row("other", "builtin:site-backup", "site:example.com");
-        dup.id = "other".into();
-        assert!(
-            db.put_scheduled_task(&dup).is_err(),
-            "同一 (kind,source) 必须唯一"
-        );
+        // v12 起同一 (kind, source) 允许挂多条：任务身份是 id 里的 local_key。
+        db.put_scheduled_task(&task_row(
+            "plugin:com.skiff.cron:2",
+            "plugin:com.skiff.cron:noop",
+            "plugin:com.skiff.cron",
+        ))
+        .expect("同一 (kind,source) 的第二个任务不应被拒绝");
+        assert_eq!(db.scheduled_tasks().unwrap().len(), 2);
     }
 
     #[test]
