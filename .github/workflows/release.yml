@@ -189,7 +189,7 @@ jobs:
             exit 0
           fi
           n=$(ls -1 "$root"/official/*.wbpkg | wc -l)
-          [ "$n" = 5 ] || { echo "::error::发布包应带 5 个官方插件包（guard/monitor/files/cron/testkit），实得 $n"; exit 1; }
+          [ "$n" = 6 ] || { echo "::error::发布包应带 6 个官方插件包（guard/monitor/files/cron/ftp/testkit），实得 $n"; exit 1; }
           [ -f "$root/official/public-key.txt" ] || { echo "::error::发布包缺少 official/public-key.txt"; exit 1; }
           PUB=$(tr -d '[:space:]' < "$root/official/public-key.txt")
           [ "${#PUB}" = 64 ] || { echo "::error::official/public-key.txt 不是 64 位 hex 公钥"; exit 1; }

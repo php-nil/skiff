@@ -258,9 +258,9 @@ jobs:
           # （pack_excludes_build_dir_and_signing_key，在 test job 里跑）
 
       # 发布包里的 official/ 是这条脚本产出的，它坏了要到发版才暴露：
-      # 这里用临时密钥把 5 个官方插件真打一遍，并逐个验签。--out 指到临时目录，
+      # 这里用临时密钥把 6 个官方插件真打一遍，并逐个验签。--out 指到临时目录，
       # 不污染工作树（plugins/official 也在 .gitignore 里）。
-      - name: 官方插件真打包（plugins/pack.sh → 5 个 .wbpkg）
+      - name: 官方插件真打包（plugins/pack.sh → 6 个 .wbpkg）
         run: |
           set -eu
           WORK=$(mktemp -d)
@@ -273,7 +273,7 @@ jobs:
           sh plugins/pack.sh --key "$WORK/release.key" --out "$WORK/official"
 
           n=$(ls -1 "$WORK/official"/*.wbpkg | wc -l)
-          [ "$n" = 5 ] || { echo "::error::官方插件应产出 5 个包（guard/monitor/files/cron/testkit），实得 $n"; exit 1; }
+          [ "$n" = 6 ] || { echo "::error::官方插件应产出 6 个包（guard/monitor/files/cron/ftp/testkit），实得 $n"; exit 1; }
           for p in "$WORK/official"/*.wbpkg; do
             "$TOOL" verify "$p" --pubkey "$PUB" >/dev/null
             echo "验签通过：$(basename "$p")"

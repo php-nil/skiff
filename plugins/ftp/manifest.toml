@@ -1,0 +1,79 @@
+# FTP 管理：按站点创建 pure-ftpd 虚拟账号。
+#
+# 插件只负责站点选择、账号表单与运行状态展示；安装 pure-ftpd、写 pure-pw
+# 用户库、对齐站点 index 的 uid/gid 全部走内核新增的 `ftp` 能力面
+# （/api/v1/capability/ftp/call）。该能力面仅 Native 形态可用。
+id = "com.skiff.ftp"
+name = "FTP 管理"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.2"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+requires = ["ftp"]
+network_egress = []
+resource_hints = []
+
+[[permissions]]
+capability = "ftp"
+verbs = [
+  "status",
+  "install",
+  "uninstall",
+  "sites.list",
+  "accounts.list",
+  "account.create",
+  "account.password",
+  "account.delete",
+  "service.restart",
+]
+
+[[ui]]
+label = "FTP 管理"
+path = "accounts.html"
+
+# 工具 → FTP 管理：账号 / 运行状态两个视图（PLUGIN_UI_CONTRACT §3.2）。
+[[menu]]
+id = "ftp"
+parent = "tools"
+label = "FTP 管理"
+order = 50
+icon = "network"
+gates = ["plugin_enabled"]
+view = "accounts"
+
+  [[menu.items]]
+  id = "accounts"
+  label = "账号"
+  order = 10
+  icon = "user"
+  view = "accounts"
+
+  [[menu.items]]
+  id = "runtime"
+  label = "运行状态"
+  order = 20
+  icon = "activity"
+  view = "runtime"
+
+[config_schema.passive_port_start]
+type = "number"
+default = "30000"
+label = "被动模式起始端口（需在宿主防火墙放行）"
+
+[config_schema.passive_port_end]
+type = "number"
+default = "30100"
+label = "被动模式结束端口（与起始端口跨度不超过 500）"
+
+[config_schema.tls_mode]
+type = "text"
+default = "optional"
+label = "TLS 模式：off / optional / required（自签证书位于 /etc/ssl/private/pure-ftpd.pem）"
+
+[config_schema.login_guard]
+type = "bool"
+default = "true"
+label = "启用 fail2ban 登录尝试限制（3 次失败 / 10 分钟）"

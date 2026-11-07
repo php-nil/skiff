@@ -50,6 +50,12 @@ pub mod routes {
     /// 内核定时任务能力面：`{method, params}` → `skiff-sched` 仓储/调度。
     /// 插件的 `scheduler` 能力声明对应此路由（任务列表/注册/更新/运行/缓冲）。
     pub const CAP_SCHEDULER_CALL: &str = "/api/v1/capability/scheduler/call";
+    /// 宿主机 FTP 服务能力面（pure-ftpd 安装/账号/权限对齐）。
+    ///
+    /// 仅 Native 形态可用：`{method, params}` → 内核 `ftp` handler。该能力面是
+    /// 内核新增原语（要装宿主软件包、改 systemd、写 pure-pw 用户库），不是
+    /// 插件可自行实现的普通能力。
+    pub const CAP_FTP_CALL: &str = "/api/v1/capability/ftp/call";
 
     // ---- 插件提供、内核调用（plugin.sock）----
     pub const PLUGIN_HEALTHZ: &str = "/healthz";

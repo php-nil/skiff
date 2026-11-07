@@ -380,6 +380,18 @@ impl Plugin {
         )
     }
 
+    /// 宿主机 FTP 能力面（manifest 需声明 `ftp` 能力与对应 verbs）。
+    ///
+    /// 方法：`status` / `install` / `uninstall` / `sites.list` / `accounts.list` /
+    /// `account.create` / `account.password` / `account.delete` / `service.restart`。
+    /// 返回内核原样 JSON；仅 Native 形态可用，受限形态安装期就不会授予 `ftp`。
+    pub fn ftp_call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_FTP_CALL,
+            json!({ "method": method, "params": params }),
+        )
+    }
+
     /// 回调内核能力面（`/api/v1/capability/*`），带进程级 Bearer token。
     pub fn call_kernel(&self, path: &str, body: Value) -> Result<Value> {
         let payload = serde_json::to_vec(&body).map_err(|e| SdkError::Protocol(e.to_string()))?;

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FTP 管理 · 账号</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-btn-hover: #232c3c;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-ok: #7ee787;
+    --ui-bad: #ff7b72;
+    --ui-hit: #16324a;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-btn-hover: #f0f2f5;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-ok: #15803d;
+    --ui-bad: #b42318;
+    --ui-hit: #eff6ff;
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--ui-bg); color: var(--ui-text); }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 14px; margin: 18px 0 8px; }
+  .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .grow { flex: 1; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+          border: 1px solid var(--ui-line); background: var(--ui-surface); }
+  .pill.ok { color: var(--ui-ok); border-color: var(--ui-ok); }
+  .pill.bad { color: var(--ui-bad); border-color: var(--ui-bad); }
+  .muted { color: var(--ui-muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .small { font-size: 12px; }
+  .card { border: 1px solid var(--ui-line); background: var(--ui-surface); border-radius: 8px; padding: 14px; }
+  .form { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
+  .form label { display: block; font-size: 12px; color: var(--ui-muted); margin-bottom: 4px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 6px;
+                  border: 1px solid var(--ui-line); background: var(--ui-bg); color: var(--ui-text); }
+  button { padding: 7px 12px; border-radius: 6px; border: 1px solid var(--ui-line);
+           background: var(--ui-btn); color: var(--ui-text); cursor: pointer; font-size: 13px; }
+  button:hover { background: var(--ui-btn-hover); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.sm { padding: 3px 8px; font-size: 12px; }
+  button.danger { color: var(--ui-bad); }
+  table { width: 100%; border-collapse: collapse; border: 1px solid var(--ui-line); border-radius: 8px;
+          overflow: hidden; background: var(--ui-surface); }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--ui-line-soft); vertical-align: top; }
+  th { font-size: 12px; color: var(--ui-muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.right { text-align: right; white-space: nowrap; }
+  .empty { color: var(--ui-muted); text-align: center; padding: 20px; }
+  .note { margin-top: 10px; font-size: 12px; color: var(--ui-muted); }
+  .toast { position: fixed; right: 16px; bottom: 16px; max-width: 520px; padding: 9px 12px;
+           border-radius: 6px; background: var(--ui-surface); border: 1px solid var(--ui-ok);
+           color: var(--ui-text); opacity: 0; transform: translateY(8px); transition: .18s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.bad { border-color: var(--ui-bad); color: var(--ui-bad); }
+  @media (max-width: 900px) { .form { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body data-view="accounts">
+  <h1>FTP 账号</h1>
+  <div class="bar">
+    <span id="status-line" class="muted">正在读取服务状态…</span>
+    <span class="grow"></span>
+    <button id="btn-install-inline" style="display:none">安装并启用 FTP 服务</button>
+    <button id="btn-refresh">刷新</button>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">为站点新建账号</h2>
+    <form id="create-form" class="form">
+      <div>
+        <label for="site">站点</label>
+        <select id="site"></select>
+      </div>
+      <div>
+        <label for="account">账号名</label>
+        <input id="account" autocomplete="off" placeholder="deploy（1–32 位）">
+      </div>
+      <div>
+        <label for="password">密码</label>
+        <input id="password" type="password" autocomplete="new-password" placeholder="8–128 字节">
+      </div>
+      <div>
+        <label for="password2">确认密码</label>
+        <input id="password2" type="password" autocomplete="new-password">
+      </div>
+      <div><button id="btn-create" type="submit">创建</button></div>
+    </form>
+    <div id="unsupported" class="note"></div>
+    <div class="note">
+      账号只能看到该站点的 <span class="mono">index/</span> 目录；同一站点的多个账号共用该站点
+      PHP 运行用户（例如 82:82），站点之间由 chroot 隔离。新建账号会先把站点
+      <span class="mono">index/</span> 下既有文件的属主/属组对齐到该用户，目录改为 2775、文件改为 0664。
+    </div>
+  </div>
+
+  <h2>已有账号</h2>
+  <table>
+    <thead><tr><th>站点</th><th>FTP 登录名</th><th>uid:gid</th><th>chroot 目录</th><th></th></tr></thead>
+    <tbody id="accounts"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody>
+  </table>
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

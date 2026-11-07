@@ -27,6 +27,12 @@ pub enum Capability {
     /// 不是宿主能力：任务注册/查询只写内核任务表，执行仍由内核调度器发起。
     /// `scheduler:admin` 是内核指定的任务管理 UI 才能拿到的全域权限。
     Scheduler,
+    /// 宿主机 FTP 服务能力面（`/capability/ftp/call`）。
+    ///
+    /// 这是**宿主特权**原语：安装/卸载 pure-ftpd、写 pure-pw 用户库、
+    /// 对齐站点目录 uid/gid。受限形态（1Panel Docker 包）没有宿主 systemd
+    /// 与 apt，故不提供。
+    Ftp,
 }
 
 impl Capability {
@@ -38,6 +44,7 @@ impl Capability {
             Capability::Net => "net",
             Capability::Interop => "interop",
             Capability::Scheduler => "scheduler",
+            Capability::Ftp => "ftp",
         }
     }
 
@@ -50,6 +57,7 @@ impl Capability {
             Capability::Net,
             Capability::Interop,
             Capability::Scheduler,
+            Capability::Ftp,
         ]
     }
 
@@ -70,6 +78,8 @@ impl Capability {
                 Capability::Interop,
                 Capability::Scheduler,
             ],
+            // 注意：`Ftp` 只在 Native 形态出现。它要落宿主 apt/systemd 与
+            // pure-pw 用户库，受限形态没有这些能力面，不能假装可用。
         }
     }
 }

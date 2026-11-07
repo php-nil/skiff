@@ -14,6 +14,7 @@
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
 | 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 仍缺 exec/compose；`net` 一律 501 |
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
+| 能力面扩张 | **FTP 管理**是唯一新增内核原语（`ftp`），涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md) |
 
 **主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。首批 5 个已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
 
@@ -26,6 +27,7 @@
 | `fs` | 两条分支：相对路径落插件自身 `data/`；**绝对路径**须命中安装时确认的 `path:` 对象授权根（`fsops::resolve` + `skiff_plugin::fsgrant`），动词 `read/write/list/mkdir/remove/rename`；单次读写 256KiB 分页 | `crates/plugin/src/{capability.rs,fsops.rs,fsgrant.rs}` | 文件管理器、主机监控、Nginx 站点已可做；大文件靠分页而非流式 |
 | `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | 防火墙、ACME 证书不可做 |
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
+| `ftp` | **新增能力面**（api 1.2）：`status/install/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/service.restart`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/core/src/kernel/ftp.rs`、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排，特权动作（apt/systemd/pure-pw/chown）全在内核 |
 | `interop` | 两个路由：`capability/interop/call`（跨插件接口调用，四道闸 + 15s 超时 + busy 防环）、`capability/interop/catalog`（只列**调得通**的接口）；转发时注入 `params._interop.caller` | `crates/core/src/kernel/{routes.rs,interop.rs}`、manifest `[interop]`（`crates/pkgfmt/src/manifest.rs`）、`crates/plugin/src/interop.rs` | 计划任务（调度插件接口）、站点页「一键新增备份任务」这类**插件间协作**可做；不需要给插件宿主 shell |
 | 插件 UI | 沙箱 iframe（无 same-origin）+ 父页面 postMessage 桥 + CSP `connect-src 'none'`；单帧上限 1MiB | `crates/web/src/handlers/plugins.rs` 的 `plugin_ui` / `rpc`、`crates/web/static/skiff.js` 的 `attachPluginBridges` | 插件 UI 不能直连内核，所有数据走插件 RPC；**大文件上传下载会被帧上限卡死**，文件管理器需要新增传输契约 |
 | 信任 | DB 信任库 + TOFU 三段式；**没有内置官方公钥**（§4.3 承诺「内置官方公钥」尚未落地） | `crates/plugin/src/trust.rs` 的 `resolve` / `decide` | 官方插件「开箱即用」的第一道门未开：现在仍要手动导入公钥 |
@@ -63,6 +65,7 @@
 | P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
 | P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` | 无（只读能力面） | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
+| P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态） | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现（待 Release 上机验证） |
 | P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
 | P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | 未开始（卡 net） |
 | P1 | `com.skiff.backup` | 备份与恢复 | `docker` + `fs` | exec、fs 授权、流式导出 | 1Panel/宝塔 备份 | 未开始 |
@@ -174,11 +177,30 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 | `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务（`list` / `new`） | — |
 | `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件（`containers` / `events`） | — |
 | `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`）+ 单视图对照 | `overview.actions` |
+| `com.skiff.ftp` | 工具 → FTP 管理 | 站点账号 / 服务状态（`accounts` / `runtime`） | — |
 
 - `/{p}/plugins/<id>` 是内核信息与管理页，功能页固定 `/{p}/plugins/<id>/<view>`；老包（无 `[[menu]]`）`main` 回落 `ui/index.html`。
 - 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。
 - `monitor` 的 `ui/health.html` 是槽位专用紧凑卡；无采样时显示明确空态，内核负责外框、标题与失败降级。
 - `testkit` 只用于验证架构：多视图/单视图、槽位、RPC 成功与失败、授权读与越界拒绝、主题/CSP；不执行宿主写操作。
+
+### 4.8 FTP 管理 `com.skiff.ftp`（能力面扩张）
+
+```toml
+run = "on-demand"
+requires = ["ftp"]
+[[permissions]]
+capability = "ftp"
+verbs = ["status", "install", "uninstall", "sites.list", "accounts.list",
+         "account.create", "account.password", "account.delete", "service.restart"]
+```
+
+- **为什么必须新增内核原语**：`fs` 只能在授权根内读写，装不了宿主包；`docker` 白名单不开放 `create/exec`，且 FTP 不走容器；`scheduler` 只调度任务，不执行宿主命令。三条现有能力面都不足以完成「apt 安装 pure-ftpd + `pure-pw` 建号 + chown 对齐 + systemd 启停」，因此新增 `ftp` 能力面，插件只做 UI 与编排。
+- **安装形态**：宿主 `pure-ftpd` 软件包 + systemd（Debian 默认 standalone），不用容器——避免第三方镜像供应链与 Docker 端口段发布，生命周期与 systemd 直装一致；1Panel 受限形态（`Form::DockerRestricted`）一律 503，`Capability::available_in` 也不把它列入。
+- **账号模型**：账号绑定站点，每站可多账号；登录名 `skiff_<slug16>_<fnv4>_<account>`，密码只经 stdin 交给 `pure-pw`，落 `pureftpd.pdb` 哈希；chroot 固定 `<site_root>/index`。
+- **权限对齐**：建号时在运行容器内 `id -u/-g www-data` 探测 uid/gid（不写死 82），`MinUID` 只降不升；`Umask=002:002`；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
+- **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`、`MaxClientsPerIP=3`、fail2ban 专用 jail（10 分钟 3 次，新装时关闭默认 sshd jail）、可选 TLS 自签。
+- **契约与验收**：主体/授权/审计口径见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FTP-01`–`FTP-05`。
 
 ## 5. 目录落地：放在哪里
 
@@ -195,7 +217,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ```
 plugins/
-├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/testkit
+├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/ftp/testkit
 ├── Cargo.lock              # 必须入库（CI 与 pack.sh 都用 --locked）
 ├── pack.sh                 # 官方插件打包：build → stamp → pack → verify → official/
 ├── README.md               # 官方插件集约定（id、构建自检、打包、装机授权、多架构）

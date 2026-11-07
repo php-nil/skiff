@@ -38,6 +38,8 @@ mod auth;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod capability;
 #[cfg_attr(not(unix), allow(dead_code))]
+mod ftp;
+#[cfg_attr(not(unix), allow(dead_code))]
 mod interop;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod routes;

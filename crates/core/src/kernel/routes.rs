@@ -10,7 +10,7 @@ use axum::Router;
 use skiff_app::AppState;
 use skiff_wire::routes as wire;
 
-use super::{auth, capability, interop};
+use super::{auth, capability, ftp, interop};
 
 /// 能力面路由表。
 ///
@@ -32,6 +32,7 @@ pub(super) fn build(state: Arc<AppState>) -> Router {
         .route(wire::CAP_INTEROP_CALL, post(interop::interop_call))
         .route(wire::CAP_INTEROP_CATALOG, post(interop::interop_catalog))
         .route(wire::CAP_SCHEDULER_CALL, post(capability::scheduler_call))
+        .route(wire::CAP_FTP_CALL, post(ftp::ftp_call))
         .route(wire::CAP_NET_APPLY, post(capability::net_unimplemented))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

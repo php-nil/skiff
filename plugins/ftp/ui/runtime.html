@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FTP 管理 · 运行状态</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-btn-hover: #232c3c;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-ok: #7ee787;
+    --ui-bad: #ff7b72;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-btn-hover: #f0f2f5;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-ok: #15803d;
+    --ui-bad: #b42318;
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--ui-bg); color: var(--ui-text); }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 14px; margin: 18px 0 8px; }
+  .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .grow { flex: 1; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .card { border: 1px solid var(--ui-line); background: var(--ui-surface); border-radius: 8px; padding: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0;
+        border-bottom: 1px dashed var(--ui-line-soft); }
+  .kv:last-child { border-bottom: 0; }
+  .kv span { color: var(--ui-muted); }
+  button { padding: 7px 12px; border-radius: 6px; border: 1px solid var(--ui-line);
+           background: var(--ui-btn); color: var(--ui-text); cursor: pointer; font-size: 13px; }
+  button:hover { background: var(--ui-btn-hover); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.danger { color: var(--ui-bad); }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; font-size: 13px; }
+  .note { margin-top: 10px; font-size: 12px; color: var(--ui-muted); line-height: 1.7; }
+  .warn { border: 1px solid var(--ui-line); border-left: 3px solid var(--ui-bad); padding: 10px 12px;
+          border-radius: 6px; background: var(--ui-surface); font-size: 13px; }
+  .toast { position: fixed; right: 16px; bottom: 16px; max-width: 520px; padding: 9px 12px;
+           border-radius: 6px; background: var(--ui-surface); border: 1px solid var(--ui-ok);
+           color: var(--ui-text); opacity: 0; transform: translateY(8px); transition: .18s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.bad { border-color: var(--ui-bad); color: var(--ui-bad); }
+</style>
+</head>
+<body data-view="runtime">
+  <h1>FTP 运行状态</h1>
+  <div class="bar">
+    <span class="grow muted">pure-ftpd 由宿主 systemd 托管；本插件只调用内核 ftp 能力面。</span>
+    <button id="btn-refresh-runtime">刷新</button>
+    <button id="btn-install">安装并启用</button>
+    <button id="btn-restart">重启服务</button>
+  </div>
+
+  <div class="card">
+    <div id="runtime-grid" class="grid"><div class="kv"><span>加载中…</span></div></div>
+  </div>
+
+  <h2>安全边界</h2>
+  <div class="card">
+    <div class="note" style="margin-top:0">
+      1. 每个账号 chroot 到所属站点的 <span class="mono">index/</span>，看不到
+      <span class="mono">conf/</span>、<span class="mono">log/</span>、<span class="mono">ssl/</span>，
+      也到不了别的站点。<br>
+      2. 账号文件身份与该站点 PHP 容器内 <span class="mono">www-data</span> 一致（官方 alpine 镜像为 82:82），
+      上传文件 owner 为 82、目录 2775、文件 0664，PHP 进程可直接读写。<br>
+      3. 同一 IP 最多 3 个并发控制连接；fail2ban 对 pure-ftpd 认证失败执行 3 次 / 10 分钟封禁。<br>
+      4. 被动端口范围需在宿主防火墙放行；插件不修改宿主防火墙，避免越权。
+    </div>
+  </div>
+
+  <h2>回收</h2>
+  <div class="warn">
+    <div>停用前请确认没有业务仍在使用 FTP。删除账号不会删除已上传的文件。</div>
+    <div style="margin:10px 0">
+      <label class="chk"><input id="rm-accounts" type="checkbox" checked> 删除本插件创建的 FTP 账号</label>
+      <label class="chk"><input id="rm-package" type="checkbox"> 同时卸载 pure-ftpd 软件包并清除配置</label>
+    </div>
+    <button id="btn-uninstall" class="danger">停止并回收</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
