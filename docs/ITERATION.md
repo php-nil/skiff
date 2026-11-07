@@ -25,7 +25,7 @@
 | 数据     | 可随意删除，允许暴露               | 重置可粗暴，验收可直接明文 HTTP   |
 | 回滚     | **全量回滚到初始状态**，人工触发       | 每轮可得干净系统；会清时钟与缓存（§4） |
 | Docker | **初始无，需脚本安装，在测试范围内**     | 安装链路本身是待测对象 → 基线分两档  |
-| 凭据     | 无需特殊处理，可直接写本文            | 见 §7                 |
+| 凭据     | 存取方式统一见 [TEST_ENV.md](TEST_ENV.md)；本文不落明文 | 见 §7 |
 
 ## 2. 基线
 
@@ -121,7 +121,7 @@ accept.sh 之外的项（fs 能力面、插件安装/卸载/降权、会话失�
 
 - **默认不强制首登改密**：`initial-admin.txt` 里的初始口令可直接登录并进入概览，面板只显示非阻塞的「建议修改口令」提示。
 - 需要复验强制流程时，在 `/etc/skiff/config.toml` 写 `require_initial_password_change = true`（或 `SKIFF_REQUIRE_INITIAL_PASSWORD_CHANGE=1` / `--require-initial-password-change`），重启服务后**仅对新建管理员生效**。
-- 测试机 `10.10.15.4` 的当前 admin 口令固定写入 `/root/iter/admin-pw.txt`（0600）。重置/轮换口令后必须同步更新该文件；验收结论以「用该文件口令登录后落到概览」为准。
+- 测试机账号、口令文件（`/root/iter/admin-pw.txt`，0600）与读取方式见 [TEST_ENV.md](TEST_ENV.md) §3。重置/轮换口令后必须同步更新该文件；验收结论以「用该文件口令登录后落到概览」为准。
 - **重装/升级不得覆盖已有 admin 口令与 `must_change_password`**：只有空库才生成新管理员；已有账号一律不改哈希、不改标志。因此升级后可直接用 `admin-pw.txt` 登录，不再需要再改一次密码。
 - 测试期需要临时放开强制改密时，只改当前账号标志（`UPDATE users SET must_change_password=0 WHERE username='admin'` 或反之），不得清库、不得重装、不得删用户数据。
 
@@ -208,24 +208,11 @@ journal 里只有 `Permission denied (os error 13)`；此时插件目录长这�
 
 ## 7. 测试机与凭据
 
-内网测试机，可随意重置，凭据无需特殊处理。填完即用：
+地址、SSH 用户/密钥/公钥、面板 URL/入口前缀/TLS、管理员口令文件与读取方式、当前部署版本与资产摘要，**统一见 [TEST_ENV.md](TEST_ENV.md)**；本文不重复，也不保存明文口令。
 
-| 字段                         | 值                        |
-| -------------------------- | ------------------------ |
-| 地址 `SKIFF_TEST_HOST`       | 10.10.15.4               |
-| 端口 `SKIFF_TEST_PORT`       | 22                       |
-| 用户 `SKIFF_TEST_USER`       | root                     |
-| 密码 `SKIFF_TEST_PASSWORD`   | 1                        |
-| 私钥 `SKIFF_TEST_KEY`        | `~/.ssh/skiff-iter`（已生成） |
-| 回滚方式 `SKIFF_TEST_ROLLBACK` | 人工手动操作，需要时告知我            |
-
-公钥（**加入 `authorized_keys` 后再打基线**，顺序反了回滚即失联）：
-
-```
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh skiff-iter@DESKTOP-5P3Q9PS
-```
-
-首连只做环境探测、不装任何东西：`uname -m/-r`、`/etc/os-release`、`nproc`、`free -h`、`df -h`、`id -u`、`sudo -n true`、`ss -lntp`、`curl -I linuxmirrors.cn`、`apt-get -s update`、landlock ABI、cgroups v2、`systemd --version`。结果回填 §9。
+- 公钥必须先加入 `authorized_keys`，再打基线快照；顺序反了回滚后即失联。
+- 首连只做环境探测、不装任何东西：`uname -m/-r`、`/etc/os-release`、`nproc`、`free -h`、`df -h`、`id -u`、`sudo -n true`、`ss -lntp`、`curl -I linuxmirrors.cn`、`apt-get -s update`、landlock ABI、cgroups v2、`systemd --version`。结果回填 §9。
+- 回滚方式：人工手动操作，需要时告知机器所有者。
 
 ### 7.1 内网 HTTP 代理（GitHub 出网缺口就靠它）
 
@@ -278,12 +265,14 @@ git config --global http.https://github.com.sslBackend openssl
 
 ## 9. 实测回填（未填即视为未验证）
 
+> 本节是 2026-11-03 的历史实测；当时官方包口径为 5 个（4 个插件 + testkit），当前为 6 个（5 个官方插件 + testkit），以 [TEST_ENV.md](TEST_ENV.md) §6 为准。
+
 | 项                                              | 值         | 日期/依据                  |
 | ---------------------------------------------- | --------- | ---------------------- |
 | 本机到测试机 TCP 可达                                  | 通（TCP 22 open，密钥登录 OK） | 2026-11-03 实测 |
 | 出网：linuxmirrors.cn / mirrors.tencent.com / apt | `linuxmirrors.cn` 200、`mirrors.tencent.com/docker-ce` 301 | 2026-11-03 实测 |
 | 架构 / 发行版 / 内核                                  | x86_64 / Debian GNU/Linux 13 (trixie) / 6.12.113+deb13-amd64 | 2026-11-03 实测 |
-| CPU / 内存 / 磁盘                                  | 4 vCPU / 3.9 GB（可用 3.5 GB）/ 120 GB 根分区，可用 113 GB | 2026-11-03 实测 |
+| CPU / 内存 / 磁盘                                  | 4 vCPU / 3.9 GB（可用 3.5 GB）/ 120 GB 根分区，可用 113 GB；当前值见 [TEST_ENV.md](TEST_ENV.md) §1 | 2026-11-03 实测 |
 | systemd 是否 PID 1                               | 是（systemd 257，257.13-1~deb13u1） | 2026-11-03 实测 |
 | landlock ABI / cgroups v2                      | landlock 在 LSM 列表内（内核 6.12，ABI ≥ 1；`/sys/kernel/security/landlock` 目录未出现，以 LSM 列表为准）/ cgroups v2 | 2026-11-03 实测 |
 | Docker 安装耗时                                    | apt 装包 5 s（16:22:14→16:22:19，114 MB 下载 6 s）；整段含 `docker.sh` 拉取约 2 min（起止未精确打点） | 2026-11-03 实测 |
@@ -297,9 +286,9 @@ git config --global http.https://github.com.sslBackend openssl
 | 覆盖轮：认证与会话                                 | 首登未改密时全部 UI 路由 303 → `/{p}/settings?force=1`；改密 303 后旧 Bearer 令牌 401；5 次错误口令后第 6 次（**即使口令正确**）503「请 299 秒后重试」；伪造 `X-Forwarded-For: 1.2.3.4` 时审计源地址仍为 `127.0.0.1` | 2026-11-03 实测（脚本 `/root/iter/skiff_cover.py`） |
 | 覆盖轮：fs 能力面（files 插件 + `path:` 授权根）      | 越界读 400、授权根内读 200、分页 `page_max=262144` 且 `eof=false`、覆盖写 `size=12`、300 KiB 写入 400 | 2026-11-03 实测 |
 | 覆盖轮：插件体系                                  | 未导入公钥时官方签名包拒装（TOFU 未知密钥）；`requires_full_sandbox` 且未开 `allow_reduced_sandbox` 时 5 个官方包全部拒装；开后 5 个 rc=0 且 `enabled=true`；UI 200 且 CSP 收紧；RPC 200；卸载 cron 后 `versions/cache/run` 删除、`data/jobs.json` 保留、库行消失 | 2026-11-03 实测 |
-| 覆盖轮：人工复核入口                                | 10.10.15.4:18080 **只绑 127.0.0.1**（外部不可直连）；SSH 隧道后 `http://127.0.0.1:18080/<前缀>/login` 200、`/<错前缀>/login` 404、根路径 307 → 正确前缀 | 2026-11-03 实测 |
-| 内网明文直连（测试机改造）                          | `listen=0.0.0.0:18080` + `allow_insecure_http=true` + `trusted_proxies=["127.0.0.1/32"]`；`ss` 为 `0.0.0.0:18080`；开发机直连 `/login` 200、错前缀 404、根 307、`/healthz` 200；防火墙 iptables 白名单 + systemd oneshot，重启后规则与监听仍在；重装 `--listen` 不丢、不给参数不改写 | 2026-11-03 实测（发现并修复 §6.6 启动判据缺陷） |
-| 同端口 TLS（自签，人工复核入口）                      | 证书 `/etc/skiff/tls/fullchain.pem` 0644 / `privkey.pem` 0600（SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`，10 年，SHA-256 `D7:49…:67:78`）；`config.toml` 加 `tls_cert`/`tls_key`、去 `allow_insecure_http`；`ss` 仍 `0.0.0.0:18080`，日志 `HTTPS 监听中`；`https` `/login` 200、`/healthz` 200、错前缀 404；`http` 同端口 curl `000`（无页面）；cookie jar：登录 POST 303 → `/settings?force=1`，`skiff_login`/`__Host-skiff_session` 均 `Secure`，改密 303 → 首页 200；重启后证书/监听/登录页保持；重装前后 `config.toml` sha256 相同 | 2026-11-03 实测（HSTS 未实现，见 DEPLOY_TEST §2.4.2） |
+| 覆盖轮：人工复核入口（历史明文口径）                   | 2026-11-03 时 10.10.15.4:18080 **只绑 127.0.0.1**；SSH 隧道后 `http://127.0.0.1:18080/<前缀>/login` 200、`/<错前缀>/login` 404、根路径 307。当前访问方式与 TLS 见 [TEST_ENV.md](TEST_ENV.md) §2 | 2026-11-03 实测 |
+| 内网明文直连（历史口径）                            | 2026-11-03 时 `listen=0.0.0.0:18080` + `allow_insecure_http=true` + `trusted_proxies=["127.0.0.1/32"]`；`ss` 为 `0.0.0.0:18080`；开发机直连 `/login` 200、错前缀 404、根 307、`/healthz` 200；防火墙 iptables 白名单 + systemd oneshot，重启后规则与监听仍在；重装 `--listen` 不丢、不给参数不改写。当前已改为同端口 TLS，访问信息见 [TEST_ENV.md](TEST_ENV.md) §2 | 2026-11-03 实测（发现并修复 §6.6 启动判据缺陷） |
+| 同端口 TLS（自签，人工复核入口）                      | 证书路径/权限/SAN/有效期见 [TEST_ENV.md](TEST_ENV.md) §2（当轮 SHA-256 `D7:49…:67:78`）；`config.toml` 加 `tls_cert`/`tls_key`、去 `allow_insecure_http`；`ss` 仍 `0.0.0.0:18080`，日志 `HTTPS 监听中`；`https` `/login` 200、`/healthz` 200、错前缀 404；`http` 同端口 curl `000`（无页面）；cookie jar：登录 POST 303 → `/settings?force=1`，`skiff_login`/`__Host-skiff_session` 均 `Secure`，改密 303 → 首页 200；重启后证书/监听/登录页保持；重装前后 `config.toml` sha256 相同 | 2026-11-03 实测（HSTS 未实现，见 DEPLOY_TEST §2.4.2） |
 
 ### 9.1 已解决：`git push` 走内网代理（原「github.com 不通」）
 

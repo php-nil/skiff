@@ -109,6 +109,8 @@ CI 出的包与手工出包**是同一份脚本、同一套布局**（CI 只是�
 
 ## 1. 环境与前置条件
 
+> 测试机访问信息（地址、账号、口令文件读取方式、面板 URL/入口前缀、TLS 当前值、当前部署版本与资产摘要）统一见 [TEST_ENV.md](TEST_ENV.md)；本节只列通用前置条件，不重复测试机凭据。
+
 | 项 | 要求 | 说明 |
 |---|---|---|
 | 操作系统 | Linux x86_64 / aarch64 | 主形态依赖 systemd；macOS/Windows 只能用于开发与单测 |
@@ -327,9 +329,8 @@ tls_cert = "/etc/skiff/tls/fullchain.pem"
 tls_key  = "/etc/skiff/tls/privkey.pem"
 ```
 
-实测环境：`/etc/skiff/tls/fullchain.pem` 0644 root、`privkey.pem` 0600 root；subject `CN=10.10.15.4`；
-SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`；有效期 2026-11-03 → 2036-10-31（10 年）；
-SHA-256 指纹 `D7:49:D0:06:BC:64:70:3C:E9:D2:AE:D5:D6:62:07:25:B9:97:60:CE:54:0C:57:D8:27:5B:FB:5B:D3:92:67:78`。
+实测环境：证书路径、权限、SAN 与有效期统一见 [TEST_ENV.md](TEST_ENV.md) §2（当轮 SHA-256 指纹
+`D7:49:D0:06:BC:64:70:3C:E9:D2:AE:D5:D6:62:07:25:B9:97:60:CE:54:0C:57:D8:27:5B:FB:5B:D3:92:67:78`）。
 
 | 项 | 实测结果 |
 |---|---|
@@ -521,7 +522,7 @@ ps -o user,group,args -p $(systemctl show -p MainPID --value skiff)
   已安装的官方插件由内核在启动早期做版本/内容比对后自动补齐（见 §2.5），
   `data/`、既有授权与停用状态都不变。
 - 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
-- `allow_reduced_sandbox = false` 时，官方 5 个包的 manifest 没有显式关闭 `requires_full_sandbox`
+- `allow_reduced_sandbox = false` 时，官方 6 个包的 manifest 没有显式关闭 `requires_full_sandbox`
   （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
 - 停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 内的库是 **0 插件 / 0 公钥**，且不含 `official/`；
   回到该快照就是回到「未装插件」状态。
@@ -1134,7 +1135,7 @@ Release `v0.1.0` 资产被同一 tag 覆盖（run `41945350367`，未新建 tag�
 | 文件管理 | 0.1.2 可用 | 旧 0.1.1 与 Release 官方密钥 key_id 不同，按 TOFU 守卫先 `plugin remove`（保留 data）再安装；`plugin list` = 0.1.2/running；RPC list/mkdir/write/read/rename/remove 全 OK，307,200 B 读 `eof=false`、`page_max=262144`，超限写与越界读 `400` |
 | 插件 UI 浏览器 | 通过（Chromium） | 主题跟随 light↔dark、Ctrl 多选、右键菜单、行内重命名、编辑器保存、超限只读均实测；「新建文件夹」修复 `sandbox` 缺 `allow-forms` 后通过 |
 
-插件 UI 地址：`https://10.10.15.4:18080/swn4nbhe/m/plugin/com.skiff.files/files`。
+插件 UI 地址：`https://10.10.15.4:18080/<entry_prefix>/m/plugin/com.skiff.files/files`（当轮前缀 `swn4nbhe`；当前值见 [TEST_ENV.md](TEST_ENV.md) §2）。
 
 ## 变更记录
 

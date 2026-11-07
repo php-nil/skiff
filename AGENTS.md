@@ -12,7 +12,7 @@
 
 | 路径 | 类型 | 说明 | 文档入口 |
 | --- | --- | --- | --- |
-| `crates/` | 子项目 | Rust workspace 的 14 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
+| `crates/` | 子项目 | Rust workspace 的 16 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
 | `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` / `ftp` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
@@ -28,8 +28,9 @@
 
 * **同步更新**：代码、逻辑变动必须与测试用例、相关文档同步更新。
 * **迁移兼容**：当前为测试开发阶段，没有正式环境，不需要兼容旧版本支持迁移。旧版失效文档也无需保留，一切放在当前已有功能上。
-* **交付门槛**：所有变更须本地三关全绿后才可交付合入：`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --locked`，口径与 CI 对齐（`docs/CI.md`）。
-  * 动 `plugins/` 时，根三关**不覆盖它**（第二 workspace），另需 `cargo fmt --manifest-path plugins/Cargo.toml --all --check`、`cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings`、`cargo test --manifest-path plugins/Cargo.toml --locked`。
+* **交付门槛**：命令与判定口径只在 [docs/CI.md](docs/CI.md) §2、§6 维护；本文件不重复命令清单。
+  * 动 `plugins/` 时，根三关**不覆盖它**（第二 workspace），另跑插件 workspace 三关，命令见 `docs/CI.md` §6。
+* **测试机部署留痕**：任何一次向测试机部署后，必须更新 [docs/TEST_ENV.md](docs/TEST_ENV.md) 的部署记录与验收结论，并在汇报中交代「地址 + 账号」；缺这步视为部署未完成。
 * **红线**（违反即返工）：
   * 分层禁令：`policy` / `pkgfmt` / `wire` 不得依赖 `store` / `docker`；`app` 不含路由与模板；`impl` 必须与类型同 crate。
   * 单一来源：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`；插件能力面实现只在 `crates/plugin`。
@@ -39,8 +40,8 @@
   * 同一时间只允许一路 `cargo` 编译或测试（`fmt` / `clippy` / `test` / `build` 及任意 `cargo` 子命令），不分会话、不分开发者。**必须经包装/闸门执行**：`PATH` 靠前的 `tools/bin/cargo.cmd` → `tools/cargo-gate.ps1` → `tools/gate.ps1`，由全局命名互斥体 `Global\SkiffBuild` 发放唯一令牌；拿不到令牌立即以退出码 2 拒绝，**不排队等待**。根 workspace 与 `plugins/` 共用同一把令牌，插件侧命令按 `--manifest-path` 记为 `workspace=plugins` 租约。
   * 第二层是单次调用内部：`.cargo/config.toml` 固化 `[build] jobs = 1`，同一时刻只跑一路 `rustc`；`plugins/` 无本地 `.cargo/config.toml`，继承根配置，闸门的插件任务另显式带 `--jobs 1`。`cargo fmt` 不取 cargo 的 target 锁，只能靠包装入口拦住，因此 `fmt` 同样必须走该入口。
   * 禁止为了并行而使用自定义 `CARGO_TARGET_DIR`——它会绕过 cargo 自带的 target 目录锁，是已发生过的真实事故成因。
-  * 全量 `cargo test --workspace` 优先交 CI；本地只跑受影响 crate 的快速回归。必须本地全量时走 `pwsh tools/gate.ps1 -Task test -AllowFull`（任务模式的闸门会拦截未显式放行的全量命令；`exec` 透传模式不拦，需自行判断）。
-  * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**，guest 侧 commit limit 在 4.7–7.2GB 间浮动，比例阈值没有判别力。原「6.3GB 物理内存 + 18.3GB commit 天花板」记载已被实测证伪，不再引用。
+  * 闸门 `pwsh tools/gate.ps1` 的退出码：`0` 成功、`2` 锁被占用、`3` 内存准入拒绝、`4` 需要 `-AllowFull`。根 workspace 的 `clippy` / `test` / `build` 带 `--workspace` 或 `--all-targets` 且不带 `-Pkg` 时属全量，**必须显式 `-AllowFull`**；`exec` 透传模式不拦，需自行判断。全量测试优先交 CI，本地只跑受影响 crate 的快速回归。
+  * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**。
   * 覆盖不到的入口，一律按红线人工遵守：绝对路径 `C:\Users\dev-bl\.cargo\bin\cargo.exe`、rust-analyzer / IDE 内部调用、CI 与其它机器。`.trae/` 只有 `rules/`，没有 shell 前置钩子，工具层无法再加一道拦截。
   * **包装是否生效，重启后先自检**：当前 Trae 宿主的 `PATH` 是启动时的旧快照，`D:\panel\tools\bin` 不在其中，裸敲 `cargo` 仍会解析到 `cargo.exe` 并绕过包装；必须重启 Trae（含其终端）才继承新 `PATH`。重启后在新 shell 里执行 `where.exe cargo`，首行应为 `D:\panel\tools\bin\cargo.cmd`；若先出现 `C:\Users\dev-bl\.cargo\bin\cargo.exe`，说明包装未生效，先修 `PATH` 再编译。
 
@@ -71,10 +72,11 @@
 | 架构审查 | `docs/ARCH_REVIEW.md` | 六轮审查记录与 P0–P2 行动清单 |
 | 部署与测试 | `docs/DEPLOY_TEST.md` | 两种部署形态装机、配置矩阵、验收用例、实测记录与权限口径 |
 | 持续集成 | `docs/CI.md` | 工作流门槛、工具链与 MSRV、发布产物流向 |
-| 迭代验证回路 | `docs/ITERATION.md` | 自动化迭代方案：分层编译位置、回滚协同协议、验收口径、测试机凭据约定 |
+| 迭代验证回路 | `docs/ITERATION.md` | 自动化迭代方案：分层编译位置、回滚协同协议、验收口径；测试机访问信息见 `docs/TEST_ENV.md` |
+| 测试环境访问信息 | `docs/TEST_ENV.md` | 测试机地址、面板 URL/入口前缀/TLS、账号与口令文件读取方式、SSH、当前部署版本与 Release 资产摘要、最近验收结论（唯一来源） |
 | 测试台账 | `docs/TEST_LEDGER.md` | 只记「正在处理 / 待处理」两栏的未闭环项；PASS 即删，不保留历史 |
 | 测试矩阵 | `docs/TEST_MATRIX.md` | 按内核功能域组织的回归清单：稳定编号、触发条件、前置/步骤/预期/判定/代码位置；每章附最小回归命令 |
-| 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、首批 4 个（guard/monitor/files/cron，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
+| 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、5 个（guard/monitor/files/cron/ftp，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
 | 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 插件 UI 契约 | `docs/PLUGIN_UI_CONTRACT.md` | 插件信息/管理页与功能页的路由分工、`view` 视图模型与静态文件映射、内核信息页字段与操作、沙箱/CSP、旧包 `[[ui]]` 回落与测试矩阵 |
 | 网站运行环境契约 | `docs/SITE_RUNTIME_CONTRACT.md` | 运行环境与站点模型、三类建站（运行环境/静态/反向代理）、PHP 专属配置、Docker 页边界、路由权限审计、P1/P2 范围与测试矩阵；可点预览 `docs/ui/site-runtime-preview.html` |

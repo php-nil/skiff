@@ -101,7 +101,7 @@ GitHub → Actions → Release → Run workflow
   version:      0.1.0                      # 沿用现有版本
   publish:      true                       # 上传/覆盖 Release 资产
   release_tag:  v0.1.0                     # 目标 Release 标签（留空则用 v<version>）
-  skip_plugins: false                      # 正式安装包必须带 4 个官方插件
+  skip_plugins: false                      # 正式安装包必须带 6 个官方插件包
 ```
 
 `publish` job 的行为是**只覆盖资产、绝不建 tag**：
@@ -112,9 +112,9 @@ GitHub → Actions → Release → Run workflow
 3. Release 不存在但标签存在 → `gh release create --verify-tag`（同样不创建标签）；
 4. `night` 占位版本拒绝发布。
 
-> 前置条件：仓库里得先有目标标签/Release。本流水线不负责创建它们；当前仓库
-> **还没有任何 tag 与 Release**（2026-11-04 核对），所以 `publish=true` 会在第 1 步
-> 明确报错并给出提示，不会伪造发布成功。
+> 前置条件：仓库里得先有目标标签/Release。本流水线不负责创建它们；当前已有
+> `v0.1.0` tag 与 Release（2026-11-07），资产坐标与摘要见 [TEST_ENV.md](TEST_ENV.md) §5、§6。
+> 目标标签或 Release 不存在时，`publish=true` 会在第 1 步明确报错并给出提示，不会伪造发布成功。
 
 只想验证构建链路、不碰 Release 时：`publish=false`，产物从 run 页 Artifacts 取（7 天保留）。
 
@@ -196,7 +196,7 @@ gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
 
 ## 6. 本地复现 CI
 
-本地执行以下命令须遵守 `AGENTS.md` §3.1「编译与测试串行（红线）」：同一时间只允许一路 `cargo`，根 workspace 与 `plugins/` 串行，全量测试优先交 CI。
+本地执行一律经闸门入口，串行约束、退出码（`2` 锁被占用 / `3` 内存拒绝 / `4` 需要 `-AllowFull`）与 `-AllowFull` 适用条件见 [AGENTS.md](../AGENTS.md) §3.1，本文不重复。全量测试优先交 CI。
 
 ```sh
 cargo fmt --all --check
@@ -212,4 +212,4 @@ cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D war
 cargo test   --manifest-path plugins/Cargo.toml --locked
 ```
 
-CLI flag 有变（如某天要 `--all-features` 之外的新组合），以 CI 的命令为准——本文件只是索引。
+以上带 `--workspace` / `--all-targets` 的命令属全量，本地执行须经闸门显式 `-AllowFull` 放行；CI 不受此限。CLI flag 有变（如某天要 `--all-features` 之外的新组合），以 CI 的命令为准——本文件只是索引。
