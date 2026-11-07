@@ -1109,9 +1109,15 @@ pub fn join_extensions(list: &[String]) -> String {
     normalize_extensions(list).join(",")
 }
 
-/// 停用脚本：官方镜像只有 `docker-php-ext-enable`，**没有** `docker-php-ext-disable`
+/// 卸载脚本：官方镜像只有 `docker-php-ext-enable`，**没有** `docker-php-ext-disable`
 /// （实测 exit 127 `not found`）。启用时写入的 ini 在 `/usr/local/etc/php/conf.d/`，
 /// 删掉 `docker-php-ext-<name>.ini` 即可让容器重启后不再加载该扩展。
+///
+/// 但只删 ini 会把 PECL 注册表项与 `.so` 留下：再次安装时 `install-php-extensions`
+/// 会因 `pecl/<name> is already installed and is the same as the released version`
+/// 直接失败（实测 redis 卸载后重装即如此）。因此还要：已被 pecl 登记则
+/// `pecl uninstall`（它同时清注册表与文件），再兜底删扩展目录里的 `.so`
+/// （`docker-php-ext-install` 编译的扩展不经 pecl）。
 pub fn disable_script(key: &str) -> Option<String> {
     let name = if let Some(def) = php_extension(key) {
         def.key.to_string()
@@ -1119,7 +1125,12 @@ pub fn disable_script(key: &str) -> Option<String> {
         parse_pecl_token(key)?.0
     };
     Some(format!(
-        "rm -f /usr/local/etc/php/conf.d/docker-php-ext-{name}.ini"
+        "rm -f /usr/local/etc/php/conf.d/docker-php-ext-{name}.ini\n\
+         if pecl list 2>/dev/null | awk 'NR>3 {{print $1}}' | grep -qx '{name}'; then\n\
+         \tpecl uninstall {name} >/dev/null 2>&1 || true\n\
+         fi\n\
+         rm -f \"$(php-config --extension-dir)/{name}.so\"\n\
+         echo '[skiff] 已停用扩展 {name}（ini/注册表/.so 均已清理）'"
     ))
 }
 
@@ -1310,6 +1321,15 @@ mod tests {
             assert!(
                 script.contains(&format!("/conf.d/docker-php-ext-{key}.ini")),
                 "{key}：停用脚本应删除对应 ini"
+            );
+            // 实测：只删 ini 会留下 pecl 注册表与 .so，重装报 already installed。
+            assert!(
+                script.contains(&format!("pecl uninstall {key}")),
+                "{key}：停用脚本应清理 pecl 注册表"
+            );
+            assert!(
+                script.contains(&format!("/{key}.so")),
+                "{key}：停用脚本应清理扩展目录里的 .so"
             );
         }
     }
