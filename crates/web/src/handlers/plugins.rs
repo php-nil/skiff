@@ -660,6 +660,30 @@ pub async fn remove(
     )))
 }
 
+/// 从插件错误链里提取内核能力面返回的 HTTP 状态码。
+///
+/// 插件 SDK 把内核非 200 响应折叠成 `协议错误: 内核返回 HTTP <code>: <detail>`，
+/// 再经 JSON-RPC `-32603` 与 Supervisor 包装后只剩字符串。这里只认这一固定片段，
+/// 避免把插件业务文案里出现的数字误判成状态码。
+fn kernel_http_status(message: &str) -> Option<u16> {
+    let (_, tail) = message.split_once("内核返回 HTTP ")?;
+    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// RPC 错误→HTTP 状态：内核 403/404/409 原样透传，其余（含内部错误）仍归 400。
+///
+/// 文案保持内核 detail 原样，不在代理层追加授权提示——是否补提示由插件按
+/// 具体错误语义决定，避免「内置任务保护」被误报成权限不足。
+fn rpc_error(message: String) -> AppError {
+    match kernel_http_status(&message) {
+        Some(403) => AppError::Forbidden(message),
+        Some(404) => AppError::NotFound(message),
+        Some(409) => AppError::Conflict(message),
+        _ => AppError::BadRequest(message),
+    }
+}
+
 /// 插件 UI 的 RPC 桥（父页面代发）。admin 专属，逐次审计。
 pub async fn rpc(
     State(state): State<Arc<AppState>>,
@@ -699,7 +723,7 @@ pub async fn rpc(
     );
     match result {
         Ok(v) => Ok(axum::Json(serde_json::json!({ "result": v })).into_response()),
-        Err(e) => Err(AppError::BadRequest(e.to_string())),
+        Err(e) => Err(rpc_error(e.to_string())),
     }
 }
 
@@ -824,6 +848,49 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("<style data-kernel-title-guard>"));
         assert!(text.ends_with("<body><h1 data-plugin-title>x</h1></body>"));
+    }
+
+    /// RPC 代理透传内核状态码；文案保持内核 detail 原样，不追加授权提示。
+    #[test]
+    fn rpc_error_passes_kernel_status_through() {
+        let forbidden =
+            "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 403: 内置任务不可删除（只能停用）";
+        match rpc_error(forbidden.to_string()) {
+            AppError::Forbidden(m) => assert_eq!(m, forbidden, "403 文案必须原样保留"),
+            other => panic!("内核 403 应映射 HTTP 403，实际 {other:?}"),
+        }
+
+        let not_found = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 404: 任务不存在";
+        match rpc_error(not_found.to_string()) {
+            AppError::NotFound(m) => assert_eq!(m, not_found),
+            other => panic!("内核 404 应映射 HTTP 404，实际 {other:?}"),
+        }
+
+        let conflict = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 409: 任务已在运行";
+        match rpc_error(conflict.to_string()) {
+            AppError::Conflict(m) => assert_eq!(m, conflict),
+            other => panic!("内核 409 应映射 HTTP 409，实际 {other:?}"),
+        }
+
+        // 其余状态与普通插件业务错误仍归 400，并保留原文。
+        let internal = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 500: 内核内部错误";
+        assert!(
+            matches!(rpc_error(internal.to_string()), AppError::BadRequest(m) if m == internal)
+        );
+        let business = "IPC: 插件返回错误 -32603: 任务名不能为空";
+        assert!(
+            matches!(rpc_error(business.to_string()), AppError::BadRequest(m) if m == business),
+            "普通业务错误应保持 400 且文案不变"
+        );
+    }
+
+    /// 只认 `内核返回 HTTP <code>` 这一段，业务文案里的数字不算状态码。
+    #[test]
+    fn kernel_status_is_parsed_conservatively() {
+        assert_eq!(kernel_http_status("内核返回 HTTP 403: x"), Some(403));
+        assert_eq!(kernel_http_status("HTTP 403 与业务错误"), None);
+        assert_eq!(kernel_http_status("内核返回 HTTP abc: x"), None);
+        assert_eq!(kernel_http_status("端口 8080 被占用"), None);
     }
 
     /// 插件 UI 只能加载随包同源资源：脚本/图片/连接都不能出现外链与通配。
