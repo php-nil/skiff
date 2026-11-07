@@ -39,7 +39,10 @@ fn main() {
         "jobs.toggle" | "toggle" => toggle(&p, &params),
         "jobs.remove" | "remove" => remove(&p, &params),
         "jobs.run" | "run" => run_now(&p, &params),
+        "jobs.reschedule" | "reschedule" => reschedule(&p, &params),
         "targets" => targets(&p),
+        "schedule.describe" | "schedule" => schedule_describe(&params),
+        "schedule.build" => schedule_build(&params),
         "config" => Ok(config(&p)),
         other => Err(RpcError::method_not_found(other)),
     }) {
@@ -101,6 +104,155 @@ fn call_err(target: &str, e: &str) -> String {
     }
 }
 
+// ---- 调度预设 ---------------------------------------------------------
+
+/// 预设 → 前端 JSON。内核仍只存表达式，这些字段只用于表单回显。
+fn preset_to_json(preset: &skiff_cron::Preset) -> Value {
+    use skiff_cron::Preset;
+    match preset {
+        Preset::Minutes { every } => json!({ "kind": "minutes", "every": every }),
+        Preset::Hours { every } => json!({ "kind": "hours", "every": every }),
+        Preset::Daily { hour, minute } => {
+            json!({ "kind": "daily", "hour": hour, "minute": minute })
+        }
+        Preset::Weekly { days, hour, minute } => {
+            json!({ "kind": "weekly", "days": days, "hour": hour, "minute": minute })
+        }
+        Preset::Monthly { day, hour, minute } => {
+            json!({ "kind": "monthly", "day": day, "hour": hour, "minute": minute })
+        }
+        Preset::Weekdays { hour, minute } => {
+            json!({ "kind": "weekdays", "hour": hour, "minute": minute })
+        }
+    }
+}
+
+fn preset_from_json(value: &Value) -> Result<skiff_cron::Preset, String> {
+    use skiff_cron::Preset;
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "preset 缺少 kind".to_string())?;
+    let num = |name: &str| -> Result<u32, String> {
+        value
+            .get(name)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| format!("preset.{name} 必须是非负整数"))
+    };
+    match kind {
+        "minutes" => Ok(Preset::Minutes {
+            every: num("every")?,
+        }),
+        "hours" => Ok(Preset::Hours {
+            every: num("every")?,
+        }),
+        "daily" => Ok(Preset::Daily {
+            hour: num("hour")?,
+            minute: num("minute")?,
+        }),
+        "weekly" => {
+            let days = value
+                .get("days")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "preset.days 必须是数组".to_string())?;
+            let mut out = Vec::with_capacity(days.len());
+            for day in days {
+                let n = day
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| "preset.days 只能包含 0–6".to_string())?;
+                out.push(n);
+            }
+            Ok(Preset::Weekly {
+                days: out,
+                hour: num("hour")?,
+                minute: num("minute")?,
+            })
+        }
+        "monthly" => Ok(Preset::Monthly {
+            day: num("day")?,
+            hour: num("hour")?,
+            minute: num("minute")?,
+        }),
+        "weekdays" => Ok(Preset::Weekdays {
+            hour: num("hour")?,
+            minute: num("minute")?,
+        }),
+        other => Err(format!("未知的调度预设：{other}")),
+    }
+}
+
+/// 表单来源二选一：给了 `preset` 就由本插件翻译成表达式；否则用 `expr`。
+///
+/// 两条路径都返回可直接落库的标准 5 段表达式；非法时返回人话错误，
+/// 内核侧仍会再做一次校验（这里只是把错误提前到界面上）。
+fn expr_from_params(params: &Value, default: Option<&str>) -> Result<String, String> {
+    if let Some(value) = params.get("preset").filter(|v| !v.is_null()) {
+        return preset_from_json(value)?.to_expr();
+    }
+    let raw = common::param_str(params, "expr");
+    let raw = raw.trim();
+    let expr = if raw.is_empty() {
+        match default {
+            Some(value) => value.trim().to_string(),
+            None => return Err("缺少 preset 或 expr".to_string()),
+        }
+    } else {
+        raw.to_string()
+    };
+    if !skiff_cron::is_valid(&expr) {
+        return Err(format!(
+            "cron 表达式无法解析：{expr}（需要 5 段：分 时 日 月 周；不支持秒级与 @reboot）"
+        ));
+    }
+    Ok(expr)
+}
+
+/// 反解：表达式 → 预设 + 人话预览。无法匹配预设时 `preset` 为 `null`，
+/// `expr` 原样返回，供界面落到「自定义」而不是丢掉用户数据。
+fn schedule_describe(params: &Value) -> Result<Value, RpcError> {
+    let expr = common::param_str(params, "expr");
+    let expr = expr.trim();
+    if !skiff_cron::is_valid(expr) {
+        return Ok(json!({
+            "ok": true,
+            "valid": false,
+            "expr": expr,
+            "preset": Value::Null,
+            "human": "",
+            "error": format!(
+                "cron 表达式无法解析：{expr}（需要 5 段：分 时 日 月 周；不支持秒级与 @reboot）"
+            ),
+        }));
+    }
+    let preset = skiff_cron::detect_preset(expr);
+    let human = preset.as_ref().map(|p| p.describe()).unwrap_or_default();
+    Ok(json!({
+        "ok": true,
+        "valid": true,
+        "expr": expr,
+        "preset": preset.as_ref().map(preset_to_json).unwrap_or(Value::Null),
+        "human": human,
+    }))
+}
+
+/// 正向：预设 → 表达式 + 人话预览。范围错误以 `{ok:false,error}` 返回，界面就地提示。
+fn schedule_build(params: &Value) -> Result<Value, RpcError> {
+    let value = params
+        .get("preset")
+        .ok_or_else(|| RpcError::invalid_params("缺少 preset".to_string()))?;
+    match preset_from_json(value).and_then(|preset| preset.to_expr().map(|expr| (preset, expr))) {
+        Ok((preset, expr)) => Ok(json!({
+            "ok": true,
+            "preset": preset_to_json(&preset),
+            "expr": expr,
+            "human": preset.describe(),
+        })),
+        Err(error) => Ok(json!({ "ok": false, "error": error })),
+    }
+}
+
 // ---- 视图映射 -----------------------------------------------------------
 
 /// 内核任务视图 → 插件 UI 沿用的 `job` 形状。
@@ -109,6 +261,9 @@ fn call_err(target: &str, e: &str) -> String {
 fn task_to_job(task: &Value) -> Value {
     let id = task["id"].as_str().unwrap_or("");
     let source = task["source"].as_str().unwrap_or("").to_string();
+    let expr = task["expr"].as_str().unwrap_or("");
+    // 展示层翻译：能对应到预设就给人话，匹配不到就留空由界面显示「自定义」。
+    let expr_human = skiff_cron::describe_expr(expr).unwrap_or_default();
     // 本插件创建的任务在面板语境下就是「本面板」。
     let source_label = if source == SELF_ID {
         "ui".to_string()
@@ -120,7 +275,8 @@ fn task_to_job(task: &Value) -> Value {
     json!({
         "id": id,
         "name": task["name"].as_str().unwrap_or(id),
-        "expr": task["expr"].as_str().unwrap_or(""),
+        "expr": expr,
+        "expr_human": expr_human,
         "enabled": task["enabled"].as_bool().unwrap_or(false),
         "state": task["state"].as_str().unwrap_or("idle"),
         "lifecycle": task["lifecycle"].as_str().unwrap_or("enabled"),
@@ -198,15 +354,9 @@ fn create(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     }
 
     let cfg = common::load_config(plugin);
-    let expr = {
-        let raw = common::param_str(params, "expr");
-        let raw = raw.trim();
-        if raw.is_empty() {
-            common::cfg_str(&cfg, "default_expr", "0 3 * * *")
-        } else {
-            raw.to_string()
-        }
-    };
+    let default_expr = common::cfg_str(&cfg, "default_expr", "0 3 * * *");
+    let expr =
+        expr_from_params(params, Some(default_expr.as_str())).map_err(RpcError::invalid_params)?;
 
     let name = {
         let raw = common::param_str(params, "name");
@@ -309,6 +459,30 @@ fn remove(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     Ok(json!({ "ok": true, "id": id, "removed": true }))
 }
 
+/// 只改调度（表达式），不动任务身份 / 目标 / 参数。
+///
+/// 内核存的标准表达式是唯一事实：这里把预设翻译好后走 `task.update`，
+/// 与新建共用同一套 `expr_from_params`，不产生第二份调度语义。
+fn reschedule(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let id = require_id(params)?;
+    let expr = expr_from_params(params, None).map_err(RpcError::invalid_params)?;
+    let body = plugin
+        .scheduler_call(
+            "task.update",
+            json!({
+                "id": id,
+                "patch": { "schedule": { "type": "cron", "expr": expr } },
+            }),
+        )
+        .map_err(|e| RpcError::internal(call_err(&id, &e.to_string())))?;
+    Ok(json!({
+        "ok": true,
+        "id": id,
+        "expr": expr,
+        "task": body.get("task").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 fn run_now(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let id = require_id(params)?;
     let body = plugin
@@ -374,6 +548,7 @@ mod tests {
         assert_eq!(job["id"], "plugin:com.skiff.cron:nightly");
         assert_eq!(job["source"], "ui");
         assert_eq!(job["expr"], "0 3 * * *");
+        assert_eq!(job["expr_human"], "每天 03:00 执行");
         assert_eq!(job["next_run"]["text"], "2023-11-15 03:00:00");
         assert_eq!(job["last"]["result"], "ok");
         // 纯映射：输入不被改写
@@ -426,5 +601,104 @@ mod tests {
         assert!(require_id(&json!({})).is_err());
         assert!(require_id(&json!({"id": "   "})).is_err());
         assert_eq!(require_id(&json!({"id": " j1 "})).unwrap(), "j1");
+    }
+
+    #[test]
+    fn preset_json_round_trips_every_kind() {
+        use skiff_cron::Preset;
+        let presets = [
+            Preset::Minutes { every: 5 },
+            Preset::Hours { every: 2 },
+            Preset::Daily { hour: 3, minute: 0 },
+            Preset::Weekly {
+                days: vec![1, 3, 5],
+                hour: 9,
+                minute: 30,
+            },
+            Preset::Monthly {
+                day: 1,
+                hour: 4,
+                minute: 0,
+            },
+            Preset::Weekdays { hour: 9, minute: 0 },
+        ];
+        for preset in presets {
+            let value = preset_to_json(&preset);
+            assert_eq!(preset_from_json(&value).unwrap(), preset, "{value}");
+        }
+    }
+
+    #[test]
+    fn build_and_describe_share_one_translation() {
+        let built = schedule_build(&json!({
+            "preset": {"kind": "daily", "hour": 3, "minute": 0}
+        }))
+        .unwrap();
+        assert_eq!(built["ok"], true);
+        assert_eq!(built["expr"], "0 3 * * *");
+        assert_eq!(built["human"], "每天 03:00 执行");
+
+        let described = schedule_describe(&json!({"expr": "0 3 * * *"})).unwrap();
+        assert_eq!(described["valid"], true);
+        assert_eq!(described["expr"], "0 3 * * *");
+        assert_eq!(described["preset"]["kind"], "daily");
+        assert_eq!(described["human"], "每天 03:00 执行");
+    }
+
+    #[test]
+    fn unmatched_expression_falls_back_to_custom_without_losing_text() {
+        let described = schedule_describe(&json!({"expr": "0,30 9 * * *"})).unwrap();
+        assert_eq!(described["valid"], true);
+        assert!(described["preset"].is_null(), "不该硬套预设");
+        assert_eq!(described["expr"], "0,30 9 * * *");
+        assert_eq!(described["human"], "");
+    }
+
+    #[test]
+    fn invalid_expression_is_reported_clearly() {
+        for bad in ["* * * *", "60 * * * *", "@reboot", "0 0 0 * *"] {
+            let described = schedule_describe(&json!({ "expr": bad })).unwrap();
+            assert_eq!(described["valid"], false, "{bad:?}");
+            assert_eq!(described["expr"], bad, "原文不能丢");
+            assert!(
+                described["error"].as_str().unwrap_or("").contains("5 段"),
+                "{bad:?} 应给出明确报错"
+            );
+        }
+    }
+
+    #[test]
+    fn expr_from_params_prefers_preset_and_validates_custom() {
+        let from_preset = expr_from_params(
+            &json!({"preset": {"kind": "weekdays", "hour": 9, "minute": 0}}),
+            Some("0 3 * * *"),
+        )
+        .unwrap();
+        assert_eq!(from_preset, "0 9 * * 1-5");
+
+        let from_custom = expr_from_params(&json!({"expr": "15 2 * * 6"}), None).unwrap();
+        assert_eq!(from_custom, "15 2 * * 6");
+
+        let defaulted = expr_from_params(&json!({}), Some("0 3 * * *")).unwrap();
+        assert_eq!(defaulted, "0 3 * * *");
+
+        let bad = expr_from_params(&json!({"expr": "0 25 * * *"}), None).unwrap_err();
+        assert!(bad.contains("5 段"), "非法表达式要给人话提示：{bad}");
+
+        let missing = expr_from_params(&json!({}), None).unwrap_err();
+        assert!(missing.contains("缺少 preset 或 expr"));
+    }
+
+    #[test]
+    fn out_of_range_preset_returns_inline_error() {
+        let built = schedule_build(&json!({
+            "preset": {"kind": "minutes", "every": 60}
+        }))
+        .unwrap();
+        assert_eq!(built["ok"], false);
+        assert!(
+            built["error"].as_str().unwrap_or("").contains("1–59"),
+            "越界要给出范围：{built}"
+        );
     }
 }

@@ -58,13 +58,29 @@
   code { background: var(--ui-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
   .ok { color: var(--ui-ok); } .warn { color: var(--ui-warn); } .bad { color: var(--ui-bad); }
   #msg { min-height: 20px; font-size: 12px; }
+  .card { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 10px 12px; margin: 8px 0 12px;
+          background: var(--ui-surface); }
+  .sched-box { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 8px 10px; margin: 2px 0 8px;
+               background: var(--ui-bg); }
+  .sched-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .sched-line select, .sched-line input[type=time], .sched-line input[type=number] {
+    background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
+    padding: 5px 8px; }
+  .sched-line input[type=number] { width: 72px; }
+  .sched-line .sched-expr { min-width: 210px; flex: 1; background: var(--ui-surface); color: var(--ui-text);
+    border: 1px solid var(--ui-line); border-radius: 6px; padding: 5px 8px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .sched-line label.sched-day { font-size: 12px; color: var(--ui-muted); white-space: nowrap; }
+  .sched-preview { font-size: 12px; color: var(--ui-ok); }
+  .sched-error { color: var(--ui-bad); font-size: 12px; min-height: 18px; }
 </style>
 </head>
 <body>
 <p class="muted">
   任务由<strong>内核调度器</strong>统一执行：内置任务（站点备份 / 数据库整理）在进程内跑，
   插件任务经 Supervisor 调用目标接口。本页只是管理视图——不写 crontab、不执行宿主命令。
-  任务定义与历史都落在内核库，插件重启不会丢。
+  任务定义与历史都落在内核库，插件重启不会丢。调度按<strong>服务器本地时区</strong>执行，
+  不支持秒级（6 段）与 <code>@reboot</code>。
 </p>
 <div class="row">
   <button id="refresh">刷新</button>
@@ -72,6 +88,18 @@
 </div>
 <div data-view="list">
   <h2>任务列表</h2>
+  <div class="card" id="edit-card" hidden>
+    <div class="row">
+      <strong>修改调度</strong>
+      <span id="edit-title" class="muted"></span>
+      <span id="edit-msg" class="muted"></span>
+    </div>
+    <div id="edit-sched"></div>
+    <div class="row">
+      <button id="edit-save">保存调度</button>
+      <button id="edit-cancel">取消</button>
+    </div>
+  </div>
   <table>
     <thead><tr><th>任务</th><th>表达式 / 下次</th><th>目标</th><th>来源</th><th>上次</th><th>操作</th></tr></thead>
     <tbody id="jobs"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>

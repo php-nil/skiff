@@ -49,6 +49,9 @@
   button:hover { background: var(--ui-btn-hover); }
   input[type=text] { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
                      padding: 5px 8px; min-width: 150px; }
+  input[type=time], input[type=number] { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line);
+                     border-radius: 6px; padding: 5px 8px; }
+  input[type=number] { width: 72px; }
   select { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px; padding: 5px 8px; }
   textarea { width: 100%; min-height: 54px; box-sizing: border-box; background: var(--ui-surface); color: var(--ui-text);
              border: 1px solid var(--ui-line); border-radius: 6px; padding: 6px 8px; font: 12px/1.5 ui-monospace,
@@ -58,6 +61,13 @@
   .ok { color: var(--ui-ok); } .warn { color: var(--ui-warn); } .bad { color: var(--ui-bad); }
   #msg { min-height: 20px; font-size: 12px; }
   .card { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .sched-box { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 8px 10px; margin: 2px 0 8px;
+               background: var(--ui-surface); }
+  .sched-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .sched-line .sched-expr { min-width: 210px; flex: 1; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .sched-line label.sched-day { font-size: 12px; color: var(--ui-muted); white-space: nowrap; }
+  .sched-preview { font-size: 12px; color: var(--ui-ok); }
+  .sched-error { color: var(--ui-bad); font-size: 12px; min-height: 18px; }
 </style>
 </head>
 <body>
@@ -74,9 +84,8 @@
   <div class="card">
     <div class="row">
       <input type="text" id="new-name" placeholder="任务名，例如 网站配置每日备份">
-      <input type="text" id="new-expr" placeholder="0 3 * * *" style="min-width:120px">
-      <span class="muted">5 段 cron：分 时 日 月 周（本地时区）</span>
     </div>
+    <div id="sched-new"></div>
     <div class="row">
       <select id="new-target"></select>
       <input type="text" id="new-method" placeholder="方法，例如 backup">
@@ -86,6 +95,10 @@
     <textarea id="new-params" placeholder='调用参数（JSON 对象，可空），例如 {"name":"example.com"}'></textarea>
     <p class="muted" id="targets-note">可调度目标来自内核目录；看不到目标说明尚未授予 <code>plugin:</code> 授权。</p>
   </div>
+  <p class="muted">
+    调度按<strong>服务器本地时区</strong>执行；不支持秒级（6 段表达式）与 <code>@reboot</code>。
+    预设只是把选择翻译成标准 5 段表达式，落库与内核执行语义不变。
+  </p>
 </div>
 <script src="app.js"></script>
 </body>

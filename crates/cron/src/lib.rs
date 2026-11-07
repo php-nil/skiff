@@ -11,6 +11,9 @@
 
 use chrono::{Datelike, NaiveDateTime, TimeDelta, Timelike};
 
+pub mod preset;
+pub use preset::{describe_expr, detect_preset, Preset};
+
 /// 最多向前搜索 8 年：覆盖 `2 月 29 日` 这类闰年表达式，且不会让 UI 卡住。
 const MAX_SEARCH_MINUTES: i64 = 8 * 366 * 24 * 60;
 
