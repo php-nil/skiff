@@ -45,6 +45,12 @@ const DEFAULT_PORT_END: u16 = 30100;
 const UMASK: &str = "002 002";
 /// `pure-pw` 在 Debian/Ubuntu 落在 `/usr/bin`，部分发行版在 `/usr/sbin`。
 const PURE_PW_CANDIDATES: [&str; 2] = ["/usr/bin/pure-pw", "/usr/sbin/pure-pw"];
+/// Debian 的认证链由 `/etc/pure-ftpd/auth` 下的符号链接决定（conf 值只是开关）。
+const AUTH_DIR: &str = "/etc/pure-ftpd/auth";
+/// 指向 PureDB 的链接必须用相对路径，与包自带链接保持同一约定。
+const AUTH_DB_LINK: &str = "../conf/PureDB";
+/// 包自带的 Unix/PAM 认证链接：虚拟账号不应走 PAM。
+const AUTH_STALE: [&str; 2] = ["65unix", "70pam"];
 
 #[derive(Debug)]
 struct FtpError {
@@ -371,6 +377,25 @@ async fn install(params: &Value) -> Result<Value, FtpError> {
     write_conf("MaxClientsPerIP", "3").await?;
     write_conf("DontResolve", "yes").await?;
     write_conf("TLS", tls_mode).await?;
+    // Debian 的认证链只认 /etc/pure-ftpd/auth 下的符号链接：只写 conf/PureDB 不生效，
+    // 包自带的 65unix / 70pam 还会让虚拟账号先走 PAM，最终 530。
+    let stale: Vec<String> = AUTH_STALE
+        .iter()
+        .map(|n| format!("{AUTH_DIR}/{n}"))
+        .collect();
+    let _ = run_host(
+        "/usr/bin/rm",
+        &["-f", stale[0].as_str(), stale[1].as_str()],
+        None,
+    )
+    .await;
+    run_host(
+        "/usr/bin/ln",
+        &["-sfn", AUTH_DB_LINK, &format!("{AUTH_DIR}/50pure")],
+        None,
+    )
+    .await
+    .map_err(|e| FtpError::internal(format!("启用 PureDB 认证失败：{e}")))?;
     if tls_mode != "0" {
         ensure_tls_pem().await?;
     }
@@ -1215,6 +1240,13 @@ mod tests {
         assert!(!valid_port_range(30000, 30600));
         assert!(!valid_port_range(21, 100));
         assert!(valid_port_range(65530, 65535));
+    }
+
+    #[test]
+    fn pure_db_auth_wiring_matches_debian_layout() {
+        assert_eq!(AUTH_DIR, "/etc/pure-ftpd/auth");
+        assert_eq!(AUTH_DB_LINK, "../conf/PureDB");
+        assert_eq!(AUTH_STALE, ["65unix", "70pam"]);
     }
 
     #[test]
