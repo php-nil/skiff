@@ -89,9 +89,10 @@ fn truncate(s: &str) -> String {
     s.chars().take(200).collect()
 }
 
-/// 内核 403/404 的原文对用户没信息量，这里补一句「该去勾哪个授权」。
+/// 只有「缺少授权」这类权限不足才补「该去勾哪个授权」；其余 403（内置任务保护、
+/// 执行中互斥等）保留内核原文，避免把非权限问题误报成授权缺失。
 fn call_err(target: &str, e: &str) -> String {
-    if e.contains("403") || e.contains("缺少") {
+    if e.contains("缺少") {
         format!("{e}（请确认计划任务持有 scheduler 权限，且安装时勾选了 plugin:{target}）")
     } else if e.contains("404") || e.contains("不存在") {
         format!("{e}（目标插件 {target} 可能未安装或未启用）")
@@ -400,6 +401,24 @@ mod tests {
         };
         assert_eq!(only("system"), 1);
         assert_eq!(only("com.skiff.guard"), 1);
+    }
+
+    /// 403 不都等于权限不足：内置任务保护保留内核原文，只有「缺少」才补授权指引。
+    #[test]
+    fn call_err_only_hints_when_permission_is_missing() {
+        let builtin = "协议错误: 内核返回 HTTP 403: 内置任务不可删除（只能停用）";
+        assert_eq!(
+            call_err("builtin:db-vacuum", builtin),
+            builtin,
+            "内置任务保护不应套授权提示"
+        );
+        let busy = "协议错误: 内核返回 HTTP 403: 插件正在执行任务，不能再调用 scheduler";
+        assert_eq!(call_err("调度器", busy), busy, "执行中互斥不应套授权提示");
+        let denied = "协议错误: 内核返回 HTTP 403: 缺少 scheduler:manage";
+        assert!(
+            call_err("调度器", denied).contains("请确认计划任务持有 scheduler 权限"),
+            "真正的权限不足应补授权指引"
+        );
     }
 
     #[test]
