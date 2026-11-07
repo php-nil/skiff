@@ -780,6 +780,14 @@ impl TaskService {
         sched.delete(id, now).map_err(|e| e.to_string())
     }
 
+    /// 级联删除：内核维护路径（删站）清理 `builtin:` 任务时用，绕过内置保护。
+    /// 只给「前置对象已经删除」的级联场景，不暴露给插件与非内核调用方。
+    pub async fn delete_task_cascade(&self, id: &str) -> Result<(), String> {
+        let now = self.clock.now();
+        let mut sched = self.scheduler.lock().await;
+        sched.delete_cascade(id, now).map_err(|e| e.to_string())
+    }
+
     // -- 插件能力面 ---------------------------------------------------------
 
     /// `scheduler` 能力：插件（cron 管理 UI）读写任务的唯一入口。

@@ -4691,8 +4691,8 @@ impl AppState {
             .delete_site(&site.domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?;
         // 级联清理站点定时任务：否则 `builtin:site-backup:<域名>` 会留成指向已不存在
-        // 站点的孤儿任务，且 `(kind, source)` 唯一约束会让同名站点重建后无法再注册。
-        // 走任务服务的删除（而非直接删库），保证调度器内存与库一致。
+        // 站点的孤儿任务。站点备份是内核种入的 `builtin:` 任务，普通删除入口会被
+        // 内置保护拒绝，这里必须走级联删除（仍经任务服务，保证调度器内存与库一致）。
         if let Some(tasks) = self.tasks() {
             let source = format!("site:{}", site.domain);
             let stale: Vec<String> = self
@@ -4704,7 +4704,7 @@ impl AppState {
                 .map(|t| t.id)
                 .collect();
             for id in stale {
-                if let Err(e) = tasks.delete_task(&id).await {
+                if let Err(e) = tasks.delete_task_cascade(&id).await {
                     tracing::warn!(task = %id, error = %e, "删除站点后清理定时任务失败");
                 }
             }

@@ -439,6 +439,17 @@ impl<S: TaskStore> Scheduler<S> {
         if id.starts_with("builtin:") {
             return Err(TaskError::BuiltinProtected(id.to_string()));
         }
+        self.delete_inner(id, now)
+    }
+
+    /// 级联删除：内核自身的维护路径专用（删站后清理 `site:<domain>` 的 site-backup）。
+    /// `builtin:` 保护只拦用户/插件入口；站点已消失时其备份任务必须一并移除，
+    /// 否则任务会指向不存在的站点直到重启。调用方需自行确保前置对象已经删除。
+    pub fn delete_cascade(&mut self, id: &str, now: i64) -> Result<(), TaskError> {
+        self.delete_inner(id, now)
+    }
+
+    fn delete_inner(&mut self, id: &str, now: i64) -> Result<(), TaskError> {
         let task = self
             .store
             .delete_task(id)?

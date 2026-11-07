@@ -745,3 +745,27 @@ fn executor_trait_roundtrips_batch_and_watermark() {
     assert_eq!(executor.calls.get(), 1);
     assert_eq!(sched.buffer_stat("t1").unwrap().points, 0);
 }
+
+#[test]
+fn delete_protects_builtin_but_cascade_removes_it() {
+    let clock = ManualClock::new(0);
+    let mut sched = scheduler(SchedulerConfig::default(), &clock);
+    let spec = builtin("builtin:site-backup:probe.test", "site-backup", 3600);
+    sched.register(spec, 0, &clock).unwrap();
+
+    // 用户/插件入口：内置任务必须拒绝
+    let err = sched
+        .delete("builtin:site-backup:probe.test", 0)
+        .unwrap_err();
+    assert!(matches!(err, TaskError::BuiltinProtected(_)));
+    assert!(sched.get("builtin:site-backup:probe.test").is_some());
+
+    // 内核级联路径（删站）：任务与调度器内存一并移除
+    sched
+        .delete_cascade("builtin:site-backup:probe.test", 0)
+        .unwrap();
+    assert!(sched.get("builtin:site-backup:probe.test").is_none());
+    assert!(sched
+        .delete_cascade("builtin:site-backup:probe.test", 0)
+        .is_err());
+}
