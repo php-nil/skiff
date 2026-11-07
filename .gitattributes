@@ -12,6 +12,11 @@
 *.toml text eol=lf
 *.rs text eol=lf
 
+# Windows 批处理必须是 CRLF：cmd.exe 逐字节解析，LF 换行会导致参数丢失、
+# 注释行被当命令执行（tools/bin/cargo.cmd 已踩过）
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 # 二进制：不参与行尾转换与文本 diff
 *.wbpkg binary
 *.tar.gz binary
