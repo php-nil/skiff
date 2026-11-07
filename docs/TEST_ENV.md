@@ -58,6 +58,9 @@
 
 ## 6. Release 资产（v0.1.0 = `a22296f`，2026-11-07 最终版）
 
+构建来源：Release workflow run `42390087336`（`push` tag `v0.1.0`，`head_sha=a22296f`）。
+`git merge-base --is-ancestor` 校验：`1188e75`/`ca44fd3`/`73b108c`/`5a77db3`/`54406bf`/`a22296f` 退出码均为 0（全部在 tag 内），仅文档提交 `3a70cc7` 在 tag 之后。
+
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
 | `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,027,834 B | `2e8aa3d5afb18acc5e43bc96a9e721ade8b9c3dd946dd016ceea26cadff98b4e` |
