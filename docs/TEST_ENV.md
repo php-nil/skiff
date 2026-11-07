@@ -49,19 +49,19 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `c44eeb5`（Release 由该提交构建，资产与之一一对应） |
-| 部署时间 | 2026-11-07 22:05（Asia/Shanghai，干净系统从 Release 资产装机） |
-| 部署方式 | GitHub Release 资产 `sha256sum -c` → 解压 → `sh install.sh`；全新库（users=1），6 个官方插件用 CLI `--yes` 安装（grants 含 `object:path:/www` 与 scheduler 权限） |
-| 数据库 | `PRAGMA user_version=11` |
+| tag / 构建提交 | `v0.1.0` = `a22296f`（Release 由该提交构建，资产与之一一对应） |
+| 部署时间 | 2026-11-08 00:18（Asia/Shanghai；在旧资产 `c44eeb5` 装出的 v11 库上覆盖安装） |
+| 部署方式 | 旧资产 `c44eeb5` 先装出 `user_version=11` 并留 2 条任务 → 新资产按 `sha256sum -c` → 解压 → `sh install.sh` 覆盖（同一轮既走升级路径又复验四处修复）；6 个官方插件随包同步 |
+| 数据库 | `PRAGMA user_version=12`（v11→v12 自动迁移，`idx_scheduled_tasks_kind_source` 已删） |
 | 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200 |
 | 配置 | `/etc/skiff/config.toml`：`listen=0.0.0.0:18080` + TLS 自签、`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
 
-## 6. Release 资产（v0.1.0，2026-11-07 最终版）
+## 6. Release 资产（v0.1.0 = `a22296f`，2026-11-07 最终版）
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,020,711 B | `b16cb72e4a4b3b606e86634fb9940d9df4742e395ad01cb4cb5c48ae8bea7601` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,675,401 B | `a780dd7ff5adefb0a194a8925ffb6e65df6c561c9d32c1bd83bf9186d9257d11` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,027,834 B | `2e8aa3d5afb18acc5e43bc96a9e721ade8b9c3dd946dd016ceea26cadff98b4e` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,674,270 B | `ac517feef6393c6e1966b2890de4116eaf2f33d8711c83c59049e833926d0a43` |
 
 - 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；测试机直连 `objects.githubusercontent.com` 会超时，改用 GitHub API 资产端点或本机代理下发。
 - 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`checksums.txt` 逐个校验。
@@ -75,34 +75,35 @@
 | 2026-11-07 早轮 | Docker / FTP 修复轮 | 资产 `f9a0b30`，x86_64 `sha256:87427aa6…` | DOCKER-01～08 复验通过；该资产随后被同日最终版覆盖 |
 | 2026-11-07 | v0.1.0 最终版覆盖安装 | tag/构建 `c44eeb5`；x86_64 `b16cb72e…` | FTP 主链路、DEPLOY-02/07/08 通过；详见 §8 |
 | 2026-11-07 22:05 | 干净系统全新装机（Release 资产） | tag/构建 `c44eeb5`；x86_64 8,020,711 B `b16cb72e…`，`sha256sum -c` OK | 全新库 `user_version=11`；入口前缀 `8p9yyvg4`；6 个官方插件 CLI 安装成功（grants 默认含 `path:/www` 与 scheduler 权限）；`doctor` 全 ok、`/healthz` 200 |
+| 2026-11-08 00:18 | v11→v12 升级 + 最终版复验（覆盖安装） | 旧 `c44eeb5` → 新 `a22296f`；x86_64 8,027,834 B `2e8aa3d5…`，`sha256sum -c` OK | 库自动升 12、原任务保留、唯一索引消失、同 target 建第二条成功；FTP 零账号首装/卸载回收、PHP 扩展重装、删站级联逐项通过；浏览器视觉项实测（详见 §8） |
 
-## 8. 最近一次全链路验收结论（2026-11-07 干净系统轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `a22296f` 升级 + 复验轮）
 
 **通过**
-- Release 资产 `sha256sum -c`（含包内 `checksums.txt`）、`install.sh`、`skiff.service` active、`NRestarts=0`、`integrity=ok`、`user_version=11`；6 个官方插件 CLI `--yes` 安装（grants 含 `object:path:/www` 与 scheduler 权限）。
-- 文件管理内置页（FS-07/08/09）：列目录/读/原子写/新建/改名/删除全 200；`/www/skiff`、`skiff.db`、`plugins`、`official` 的读写删全 403；>256 KiB 只读（`truncated=true`，text 截断 262144 字节）。
-- cron：预设 ↔ 表达式互转正确、落库标准 5 段；内置任务删除 403（文案「内置任务不可删除（只能停用）」）。
-- 受保护容器 `io.skiff.protected=true` 的 stop/restart/remove 全 403；`/containers` 页 remove 入口可用（DOCKER-03）。
-- 官方插件随包同步：同版本 UI 内容漂移后重启重装，`enabled=0` 与 grants 保留。
-- 站点详情「管理」页签：stop/delete 仅该页签出现；启停 303 回 `?tab=manage` 并带提示。
-- PERF-03：池文件含 `access.log = /dev/null`，重启后 NOTICE 仍可见、10 次请求 `docker logs` 增量为 0。
-- 运行环境：新建回填 `image_digest` 且重建跳过拉取；APK 缓存首装 36 s → 二装 16 s（缓存 30 个 `.apk`）；删除运行环境后容器/目录/DB 行全清（SITE-10）。
-- FTP：建号 uid/gid 82 与容器 `www-data` 一致（`MinUID` 只降）、`STOR`/容器内读写/删号 530；越界与跨站 4 条路径全 550；`--ssl-reqd` TLSv1.3 成功；上传 `probe.php` 经浏览器语义 HTTP 200（`php-ok-8.5.12`）；`ftp.deny.*` 撤权后 403 并落 `deny` 审计；卸载后账号/端口/服务回收（残留目录已人工清理）。
-- PHP 参数：保存 256M/64M/64M/120 后宿主池与容器内一致，FPM 请求读取生效；4096M 被拒（「32M-2048M」）。
-- 站点详情四标签、插件 iframe 无自渲染标题、1024 抽屉宽度：仅 HTTP/CSS 结构核对通过（浏览器工具受自签证书限制，见下）。
+- 升级路径：旧资产 `c44eeb5` 装出 `user_version=11` 并留 2 条任务（`builtin:db-vacuum`、`plugin:com.skiff.cron:upgradeprobe1`）；新资产覆盖后自动升到 12，原任务保留，`idx_scheduled_tasks_kind_source` 消失，同 target+method 第二条（`upgradeprobe2`）建成功。
+- FTP（零账号首装 → 全链路 → 卸载回收）：清空 `/etc/pure-ftpd` 模拟干净系统后 `ftp.install` 200、`pure-ftpd` active、`auth/50pure` 生成、`pureftpd.passwd` 0600 空、`pureftpd.pdb` 2056 B、`:21` 监听；建号 uid/gid 82 与容器 `www-data` 一致；`STOR` 226；容器内 www-data 读上传内容并回写；删号后重登 530；`uninstall`（`removed_package:false`）后 `inactive`、`:21` 消失、`/etc/pure-ftpd/auth` 已回收。
+- PHP 扩展卸载/重装：安装 `redis` → 卸载后 `php -m` 无、`redis.so` 无、`pecl list` 无 → 重装约 15 s 成功。
+- 删站级联：删 `cascade-probe.test` 后 `scheduled_tasks` 中 `source=site:cascade-probe.test` 行消失，站点目录删除，日志无新 WARN。
+- 浏览器视觉（Chromium `--ignore-certificate-errors` + CDP 精确视口）：
+  - 430px / 860px：站点列表与详情无页面级横向溢出（430px 列表表格 504 px 宽，但包在 `.table-wrap` 内滚动，页面 `scrollWidth=430`）。
+  - 站点详情实际 **7 个标签**（概览/域名/配置文件/日志/目录/SSL/管理），真实点击「管理」落到 `?tab=manage` 并出现停止/删除按钮。
+  - 直达 `/sites/env/{id}`：扩展操作按钮齐全（安装所选/卸载所选/安装 PECL 扩展/重新安装/已安装）。
+  - 插件 iframe：`/plugins/com.skiff.cron/ui/list.html` 内 `h1=0`、`h2=1`、无横向溢出（标题由父页面渲染）。
+  - 1024 视口抽屉实测宽 720 px、`clippedChildren=0`；与 CSS `92vw`/840 px 预期不符，已记台账待复核。
+- 其余沿用通过项：文件管理内置页、cron 预设互转、受保护容器 403、官方插件随包同步、站点「管理」页签、PERF-03、运行环境 digest/APK 缓存、FTP 主链路、PHP 参数生效与越界拒绝。
 
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- 四处**已修复待发版**、需下版复验：删站级联计划任务、`scheduled_tasks(kind,source)` 唯一索引（schema v12）、PHP 扩展卸载清理 `pecl`/`.so`、FTP 首装无账号 `PureDB` 缺失（另卸载回收 `/etc/pure-ftpd/auth`）。
-- WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警（未回落阈值提示）。
-- Docker 通用 create / CPU·内存限制表单 / Compose 运行入口仍缺（DOCKER-08/10）。
+- WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警。
+- Docker 通用 create / CPU·内存限制表单 / Compose 运行入口仍缺（UI 设计未定，按用户要求留台账）。
 - FTP fail2ban 三次封禁：`ignoreself` 使本机无法构造，需第二台客户端。
-- 真实浏览器复核（430/860px、四标签像素、直达页交互）受自签证书阻塞。
+- 1024 视口抽屉实测 720 px 与 CSS 预期不符，待真实 1024 窗口复核。
 - aarch64 仅核对资产摘要；1Panel 受限形态、G 组长时观测等无环境项。
 
-**收尾状态（2026-11-07 本轮结束）**
+**收尾状态（本轮结束）**
 - 站点：`/www/sites` 为空；容器仅 `skiff-web-nginx`；三个 PHP 环境为种子行（`stopped`，目录已清）。
-- 任务：仅 `builtin:db-vacuum`（本轮测试任务与孤儿备份任务已删，重启调度器后 `NRestarts=0`）。
-- FTP 已卸载，`/etc/pure-ftpd` 与 APK 测试缓存已清；保留 `/root/iter/admin-pw.txt` 与 `/root/iter/backups`、`/root/backups`。
+- 任务：仅 `builtin:db-vacuum`；`user_version=12`；服务 active、`NRestarts=0`。
+- FTP 已彻底卸载（包状态 `rc`、`/etc/pure-ftpd` 删除、`:21` 无监听）；测试账号与上传文件已清。
+- 保留 `/root/iter/admin-pw.txt`、`/root/iter/backups`、`/root/backups`。
 
 
 ## 9. 数据、备份与清理
