@@ -212,6 +212,9 @@
 
   dialog { border: 1px solid var(--ui-line); border-radius: 12px; background: var(--ui-surface);
            color: var(--ui-text); padding: 0; box-shadow: var(--ui-shadow); max-width: 92vw; }
+  /* 作者样式里的 display 会盖掉 UA 的 dialog:not([open]) { display: none }：
+     模态 close() 只移除 open 属性，不看这条规则窗口就关不掉（编辑器曾整块留在页面上）。 */
+  dialog:not([open]) { display: none !important; }
   dialog::backdrop { background: rgba(5, 8, 12, .58); }
   html[data-theme="light"] dialog::backdrop { background: rgba(16, 24, 40, .32); }
   .dlg { width: 420px; }
@@ -232,8 +235,9 @@
               border-top: 1px solid var(--ui-line); background: var(--ui-surface-2); }
   .dlg-foot .btn { min-width: 70px; justify-content: center; }
 
-  .editor-dialog { width: min(1080px, 94vw); height: min(86vh, 860px); max-height: 92vh;
-                   display: flex; flex-direction: column; }
+  .editor-dialog { width: min(1080px, 94vw); height: min(86vh, 860px); max-height: 92vh; }
+  /* 只有打开时才布局成列；关闭后交给 UA 的 display:none，避免 close() 后残留。 */
+  .editor-dialog[open] { display: flex; flex-direction: column; }
   .ed-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px;
              border-bottom: 1px solid var(--ui-line); flex-wrap: wrap; }
   .ed-head .file-name { font-weight: 600; font-size: 13px; }

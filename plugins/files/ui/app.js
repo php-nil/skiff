@@ -719,7 +719,8 @@
     $("confirm-ok").className = "btn " + (opts.danger ? "danger" : "primary");
     $("confirm-icon").style.color = opts.danger ? "var(--ui-bad)" : "var(--ui-warn)";
     confirmOnOk = opts.onOk || null;
-    $("dlg-confirm").showModal();
+    // 已有确认框时就复用，重复 showModal 会抛 InvalidStateError 并让本次关闭落空。
+    if (!$("dlg-confirm").open) $("dlg-confirm").showModal();
   }
   function confirmRemove() {
     var paths = selectedPaths();
@@ -842,7 +843,10 @@
   }
   function closeEditorForce() {
     state.editor = null;
-    if ($("dlg-editor").open) $("dlg-editor").close();
+    var dlg = $("dlg-editor");
+    if (dlg.open) dlg.close();
+    // 关闭后把焦点还给列表，方向键/Enter 能接着用。
+    $("list").focus();
   }
   function requestCloseEditor() {
     var ed = state.editor;
@@ -1002,6 +1006,10 @@
   });
   $("ed-close").addEventListener("click", requestCloseEditor);
   $("ed-save").addEventListener("click", saveEditor);
+  // 点遮罩关闭（事件目标是 dialog 自身）：有未保存内容时先走确认，不静默丢内容。
+  $("dlg-editor").addEventListener("click", function (ev) {
+    if (ev.target === this) requestCloseEditor();
+  });
   $("dlg-editor").addEventListener("cancel", function (ev) {
     ev.preventDefault();
     requestCloseEditor();

@@ -129,6 +129,11 @@ html[data-theme="dark"] {
 
 * { box-sizing: border-box; }
 
+/* 属性语义兜底：hidden 与未打开的 dialog 不能被页面里的 display 规则顶开。
+   组件里已有零散补丁（nav-menu / field-error / ext-confirm 等），这里统一收口。 */
+[hidden] { display: none !important; }
+dialog:not([open]) { display: none !important; }
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {
@@ -1898,6 +1903,8 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
   max-height: calc(100vh - 48px);
   display: flex; flex-direction: column;
 }
+/* 服务端校验失败会用 open 属性回填；升级为模态前不绘制，避免弹窗先落在文档流里。 */
+.page-sites .site-new-dialog[open]:not(:modal) { visibility: hidden; }
 .page-sites .site-new-dialog form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 /* 正文内部滚动，底部按钮常驻可见：窄屏也不要求滚到底才能提交。 */
 .page-sites .site-new-dialog .modal-body { overflow: auto; flex: 1 1 auto; min-height: 0; }

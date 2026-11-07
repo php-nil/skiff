@@ -5361,6 +5361,25 @@ fn files_ui_is_self_contained_and_exposes_modern_interactions() {
         js.contains("无权访问") || html.contains("无权访问"),
         "越权路径必须给出明确提示"
     );
+
+    // 关闭回归：作者样式里的 display 会盖掉 UA 的 dialog:not([open]) { display:none }，
+    // 编辑器曾因此 close() 后整块留在页面上（三条关闭路径全部失效）。
+    assert!(
+        html.contains("dialog:not([open])"),
+        "必须显式让位给 UA 的隐藏规则，否则 close() 后对话框仍可见"
+    );
+    assert!(
+        html.contains(".editor-dialog[open] { display: flex"),
+        "编辑器的 flex 布局只能作用在打开态，关闭态交给 UA display:none"
+    );
+    assert!(
+        js.contains("ev.target === this"),
+        "点遮罩必须走同一关闭/确认路径，不能静默丢未保存内容"
+    );
+    assert!(
+        js.contains(r#"$("dlg-editor").addEventListener("cancel""#),
+        "Esc 必须接在编辑器对话框的 cancel 上"
+    );
 }
 
 #[tokio::test]
@@ -5447,4 +5466,176 @@ async fn tasks_page_is_read_only_for_viewer_and_requires_csrf_for_admin() {
         .await
         .expect("任务应仍在");
     assert_eq!(view["task"]["enabled"], false, "停用应落库");
+}
+
+/// UI 语义兜底回归：`hidden` 与未打开的 dialog 必须不可见，
+/// 避免页面里的 display 规则把空进度条、空告警、幽灵弹窗顶出来。
+#[test]
+fn ui_hidden_and_dialog_guards_hold() {
+    let css = include_str!("../static/skiff.css");
+    assert!(
+        css.contains("[hidden] { display: none !important; }"),
+        "缺少 [hidden] 全局兜底，组件 display 会覆盖 hidden"
+    );
+    assert!(
+        css.contains("dialog:not([open]) { display: none !important; }"),
+        "缺少 dialog:not([open]) 兜底，关闭的弹窗会被 display:flex 顶出来"
+    );
+    let tpl = include_str!("../templates/site_env.html");
+    assert!(
+        tpl.contains(r#"{% if r.container_state == "running" %}"#),
+        "Web 服务行的启动/停止必须按容器状态二选一，不能并列渲染"
+    );
+}
+
+fn attr_value(html: &str, name: &str) -> Option<String> {
+    let needle = format!(r#"{name}=""#);
+    let start = html.find(&needle)? + needle.len();
+    let rest = &html[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// 极简 query 转义：把 Windows 反斜杠、空格与非 ASCII 都编码掉，
+/// 避免 `http::Uri` 解析直接拒绝。
+fn encode_query(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 第一步验收：页面可打开、目录可浏览、文本可读可写、旧深链 301。
+#[tokio::test]
+async fn files_page_browses_edits_and_redirects_legacy_link() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let cookie = format!("skiff_dev_session={token}");
+
+    let page = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/files")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = body_text(page).await;
+    assert!(
+        html.contains(r#"class="files-page""#),
+        "缺少文件管理页: {html}"
+    );
+    assert!(
+        html.contains("/p/static/files.css") && html.contains("/p/static/files.js"),
+        "页面必须加载独立的 files.css / files.js: {html}"
+    );
+    let csrf = attr_value(&html, "data-csrf").expect("页面必须带 CSRF 令牌");
+
+    // 用独立临时目录作为浏览目标：harness 的 data_dir 本身是受保护根。
+    let work = tempfile::tempdir().unwrap();
+    let file = work.path().join("hello.txt");
+    std::fs::write(&file, "旧内容").unwrap();
+    let dir = work.path().to_str().unwrap();
+    let file_path = file.to_str().unwrap();
+
+    let list = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/p/files/api/list?path={}", encode_query(dir)))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = body_text(list).await;
+    assert!(
+        list_body.contains("hello.txt"),
+        "列表必须包含文件: {list_body}"
+    );
+
+    let read = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/p/files/api/read?path={}",
+                    encode_query(file_path)
+                ))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    assert!(body_text(read).await.contains("旧内容"));
+
+    let write = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/files/api/write")
+                .header(header::COOKIE, &cookie)
+                .header("x-csrf-token", &csrf)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "path": file_path, "content": "新内容" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.status(), StatusCode::OK);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "新内容");
+
+    // 数据根硬拒：管理员也不能从页面读写 skiff.db / plugins。
+    let denied = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/p/files/api/list?path={}",
+                    encode_query(&h.data_dir.join("plugins").display().to_string())
+                ))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let legacy = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.skiff.files/main")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(legacy.headers().get(header::LOCATION).unwrap(), "/p/files");
 }
