@@ -1023,7 +1023,7 @@ pub async fn action(
     );
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!(
-        "/{prefix}/sites/{}?notice={}",
+        "/{prefix}/sites/{}?tab=manage&notice={}",
         encode_uri_component(&domain),
         encode_uri_component(if running {
             "站点已启动"

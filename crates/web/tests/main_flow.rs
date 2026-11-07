@@ -5178,6 +5178,48 @@ async fn site_detail_tabs_are_reachable() {
     }
 }
 
+/// 站点详情的停止/删除属于高风险动作：顶部操作区不直出，只在「管理」页签内提供。
+#[tokio::test]
+async fn site_detail_risk_actions_only_in_manage_tab() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/demo.local");
+    std::fs::create_dir_all(skiff_app::sites::site_index_dir(&root)).unwrap();
+    h.state
+        .db()
+        .create_site(&php_site("demo.local", &root.display().to_string()))
+        .unwrap();
+
+    let (status, overview) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    // 顶部操作区 = detail-actions 容器内的内容。
+    let head = overview
+        .split("class=\"detail-actions\"")
+        .nth(1)
+        .expect("详情页必须有顶部操作区");
+    let head = head.split("</div>").next().unwrap();
+    assert!(!head.contains("停止"), "顶部操作区不得直出停止：{head}");
+    assert!(
+        !head.contains("删除站点"),
+        "顶部操作区不得直出删除站点：{head}"
+    );
+    assert!(
+        head.contains("日志") && head.contains("访问"),
+        "日志/访问仍应留在顶部：{head}"
+    );
+
+    let (status, manage) = get_page(&h.app, "/p/sites/demo.local?tab=manage", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        manage.contains("/sites/demo.local/stop"),
+        "管理页签内应有停止表单：{manage}"
+    );
+    assert!(
+        manage.contains("删除站点"),
+        "管理页签内应有删除入口：{manage}"
+    );
+}
+
 /// 目录浏览只开放 `index/`：越界（../log、../ssl）必须是 400，而不是页面内提示。
 #[tokio::test]
 async fn site_dir_traversal_returns_bad_request() {
