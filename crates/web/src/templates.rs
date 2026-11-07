@@ -772,6 +772,14 @@ pub struct TabView {
 }
 
 #[derive(Template)]
+#[template(path = "files.html")]
+pub struct FilesPage {
+    pub ctx: PageCtx,
+    /// 首屏目录（来自 `?path=`，缺省为内核站点根 `/www`）。
+    pub start_path: String,
+}
+
+#[derive(Template)]
 #[template(path = "settings.html")]
 pub struct SettingsPage {
     pub ctx: PageCtx,

@@ -1,0 +1,354 @@
+/* 文件管理页样式：全部选择器挂在 .files-page 下，不改 skiff.css 的全局规则。 */
+
+.files-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.files-page .files-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.files-page .files-heading h1 {
+  margin: 0;
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+
+.files-page .files-sub {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.files-page .files-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.files-page .files-btn {
+  height: var(--ctl-h-sm);
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.files-page .files-btn:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.files-page .files-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.files-page .files-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.files-page .files-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.files-page .files-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
+}
+
+.files-page .files-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+
+.files-page .files-btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+
+.files-page .files-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--info-line);
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  color: var(--info);
+  font-size: var(--fs-sm);
+}
+
+.files-page .files-alert[data-kind="ok"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.files-page .files-alert[data-kind="warn"] {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.files-page .files-alert[data-kind="danger"] {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.files-page .files-alert-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.files-page .files-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 38%) minmax(0, 1fr);
+  gap: 14px;
+  min-height: calc(100vh - 260px);
+}
+
+.files-page .files-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.files-page .files-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--nav-panel);
+  font-size: var(--fs-sm);
+}
+
+.files-page .files-crumb {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.files-page .files-crumb:hover {
+  background: var(--accent-soft);
+}
+
+.files-page .files-crumb-sep {
+  color: var(--muted);
+}
+
+.files-page .files-crumb-current {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+}
+
+.files-page .files-crumb-current:hover {
+  background: transparent;
+}
+
+.files-page .files-list {
+  flex: 1;
+  min-height: 200px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.files-page .files-empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.files-page .files-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+}
+
+.files-page .files-row:hover {
+  background: var(--nav-hover);
+}
+
+.files-page .files-row.selected {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.files-page .files-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.files-page .files-row.is-dir .files-row-name {
+  font-weight: 600;
+}
+
+.files-page .files-row-meta {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.files-page .files-ico {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  color: var(--muted);
+}
+
+.files-page .files-row.is-dir .files-ico {
+  color: var(--accent);
+}
+
+.files-page .files-list-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--nav-panel);
+}
+
+.files-page .files-editor-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+.files-page .files-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--nav-panel);
+}
+
+.files-page .files-editor-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.files-page .files-editor-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.files-page .files-dirty {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}
+
+.files-page .files-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.files-page .files-readonly {
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}
+
+.files-page .files-textarea {
+  flex: 1;
+  min-height: 320px;
+  width: 100%;
+  resize: none;
+  border: 0;
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+}
+
+.files-page .files-textarea:focus {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
+.files-page .files-textarea:disabled {
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.files-page .files-editor-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--nav-panel);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 860px) {
+  .files-page .files-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .files-page .files-list-pane {
+    max-height: 46vh;
+  }
+}

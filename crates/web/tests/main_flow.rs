@@ -946,9 +946,14 @@ async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
             && html.contains(r#"href="/p/m/plugin/com.skiff.nginx/legacy""#),
         "插件二级必须用 [[ui]].label，并指向规范深链: {html}"
     );
+    // 文件管理已由内核接管：菜单里只能出现内核入口，不能再有插件入口。
     assert!(
-        !html.contains("文件管理"),
-        "未启用插件不得出现任何插件菜单入口: {html}"
+        html.contains(r#"href="/p/m/core/files""#),
+        "内核「工具 → 文件管理」入口必须存在: {html}"
+    );
+    assert!(
+        !html.contains(r#"href="/p/m/plugin/com.skiff.files"#),
+        "文件管理插件入口必须撤销: {html}"
     );
 
     // 插件中心卡片仍能看见未启用插件，并给出启用动作而不是打开入口

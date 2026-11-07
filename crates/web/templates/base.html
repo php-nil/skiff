@@ -7,6 +7,7 @@
   {# 主题在样式表之前同步落地：先按 localStorage 设 data-theme，避免暗色用户刷新时先闪白。 #}
   <script src="/{{ ctx.prefix }}/static/theme-init.js"></script>
   <link rel="stylesheet" href="/{{ ctx.prefix }}/static/skiff.css">
+  {% block head %}{% endblock %}
   <script src="/{{ ctx.prefix }}/static/htmx.min.js" defer></script>
   <script src="/{{ ctx.prefix }}/static/skiff.js" defer></script>
 </head>

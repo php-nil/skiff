@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}文件管理 · Skiff{% endblock %}
+{% block head %}<link rel="stylesheet" href="/{{ ctx.prefix }}/static/files.css">{% endblock %}
+{% block content %}
+<div class="files-page" data-files data-prefix="{{ ctx.prefix }}" data-csrf="{{ ctx.csrf }}" data-start="{{ start_path }}">
+  <div class="files-head">
+    <div class="files-heading">
+      <h1>文件管理</h1>
+      <p class="files-sub">内核 fs 服务 · 原子写入 · 数据根（skiff.db / plugins / official）受保护</p>
+    </div>
+    <div class="files-toolbar" role="toolbar" aria-label="文件操作">
+      <button type="button" class="files-btn" data-files-refresh>刷新</button>
+      <button type="button" class="files-btn" data-files-root>根目录</button>
+      <button type="button" class="files-btn" data-files-new-dir>新建目录</button>
+      <button type="button" class="files-btn" data-files-new-file>新建文件</button>
+    </div>
+  </div>
+
+  <div class="files-alert" data-files-alert role="alert" hidden>
+    <span data-files-alert-text></span>
+    <button type="button" class="files-alert-close" data-files-alert-close aria-label="关闭提示">×</button>
+  </div>
+
+  <div class="files-layout">
+    <section class="files-pane files-list-pane" aria-label="目录列表">
+      <div class="files-crumbs" data-files-crumbs></div>
+      <div class="files-list" data-files-list aria-live="polite">
+        <div class="files-empty">加载中…</div>
+      </div>
+      <div class="files-list-actions">
+        <button type="button" class="files-btn" data-files-rename disabled>重命名</button>
+        <button type="button" class="files-btn files-btn-danger" data-files-delete disabled>删除</button>
+      </div>
+    </section>
+
+    <section class="files-pane files-editor-pane" aria-label="文件编辑">
+      <header class="files-editor-head">
+        <div class="files-editor-meta">
+          <span class="files-editor-path" data-files-open-path>未打开文件</span>
+          <span class="files-dirty" data-files-dirty hidden>未保存</span>
+        </div>
+        <div class="files-editor-actions">
+          <span class="files-readonly" data-files-readonly hidden>只读 · 超过 256 KiB</span>
+          <button type="button" class="files-btn" data-files-close disabled>关闭</button>
+          <button type="button" class="files-btn files-btn-primary" data-files-save disabled>保存</button>
+        </div>
+      </header>
+      <textarea class="files-textarea" data-files-textarea spellcheck="false" wrap="off"
+                placeholder="在左侧双击文件即可打开编辑；Ctrl/⌘ + S 保存" disabled></textarea>
+      <footer class="files-editor-foot">
+        <span data-files-status>就绪</span>
+        <span data-files-stats></span>
+      </footer>
+    </section>
+  </div>
+</div>
+<script src="/{{ ctx.prefix }}/static/files.js" defer></script>
+{% endblock %}

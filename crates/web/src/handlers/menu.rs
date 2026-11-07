@@ -57,6 +57,7 @@ pub async fn dispatch(
     match rest {
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         "core/tasks" => handlers::tasks::list(State(state), AuthUser(user), Query(q)).await,
+        "core/files" => handlers::files::page(State(state), AuthUser(user), Query(q)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
         "core/sites/web" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,

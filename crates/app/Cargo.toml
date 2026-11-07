@@ -13,6 +13,7 @@ skiff-identity = { workspace = true }
 skiff-docker = { workspace = true }
 skiff-plugin = { workspace = true }
 skiff-sched = { workspace = true }
+skiff-fs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

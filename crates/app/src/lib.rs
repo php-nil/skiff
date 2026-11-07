@@ -4,6 +4,7 @@
 //! 拿到 db / docker / policy，如果上下文住在 `web`，内核就被迫反向依赖表现层，
 //! 既编译更重，也没法脱离 axum 单测。层序是 `app` → 下层，`web` → `app`。
 
+pub mod admin_fs;
 pub mod auth;
 pub mod docker_daemon;
 pub mod nginx;
@@ -84,6 +85,8 @@ pub struct AppState {
     /// 内核定时任务服务。`OnceLock` 而不是构造参数：`AppState::new` 被大量
     /// 测试直接使用，任务服务需要真实库与 Supervisor，由 `bootstrap` 显式初始化。
     tasks: std::sync::OnceLock<Arc<tasks::TaskService>>,
+    /// 管理员侧文件服务（`skiff-fs` 的唯一接线点）。
+    admin_fs: admin_fs::AdminFs,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +244,7 @@ impl AppState {
         version: impl Into<String>,
     ) -> Arc<Self> {
         let permits = cfg.login_concurrency.max(1);
+        let admin_fs = admin_fs::AdminFs::new(&cfg, Arc::clone(&db));
         Arc::new(Self {
             db,
             docker,
@@ -258,6 +262,7 @@ impl AppState {
             runtime_jobs: Mutex::new(sites::RuntimeJobs::default()),
             image_versions: Mutex::new(HashMap::new()),
             tasks: std::sync::OnceLock::new(),
+            admin_fs,
         })
     }
 
@@ -277,6 +282,11 @@ impl AppState {
     /// 任务服务句柄。未初始化时返回 `None`（Web 写操作应回 503）。
     pub fn tasks(&self) -> Option<&Arc<tasks::TaskService>> {
         self.tasks.get()
+    }
+
+    /// 管理员侧文件服务（只读访问）。Web 文件管理页是它的唯一调用方。
+    pub fn admin_fs(&self) -> &admin_fs::AdminFs {
+        &self.admin_fs
     }
 
     /// 存储层句柄（只读访问）。上层要写审计/查插件记录时用这个入口，

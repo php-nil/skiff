@@ -1236,14 +1236,28 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             pinnable: false,
             default_visible: true,
             roles: None,
-            children: vec![builtin(
-                "core/tasks",
-                L1_TOOLS,
-                "计划任务",
-                "clock",
-                10,
-                href("m/core/tasks"),
-            )],
+            children: {
+                let mut items = vec![builtin(
+                    "core/tasks",
+                    L1_TOOLS,
+                    "计划任务",
+                    "clock",
+                    10,
+                    href("m/core/tasks"),
+                )];
+                // 文件管理只对管理员开放：viewer 看不到入口，直接访问也会 403。
+                if user.role().as_str() == "admin" {
+                    items.push(builtin(
+                        "core/files",
+                        L1_TOOLS,
+                        "文件管理",
+                        "folder",
+                        20,
+                        href("m/core/files"),
+                    ));
+                }
+                items
+            },
         },
         Decl {
             key: L1_SETTINGS.into(),
@@ -1291,6 +1305,11 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
     if let Ok(list) = state.db().list_plugins() {
         for p in &list {
             if !p.enabled {
+                continue;
+            }
+            // 文件管理已由内核接管：插件包保留安装态与信息页，但不再声明菜单入口，
+            // 避免同一能力出现两套 UI（旧深链由 `plugins::view` 301 到新页）。
+            if p.id == "com.skiff.files" {
                 continue;
             }
             let Ok(m) = skiff_pkgfmt::Manifest::parse(&p.manifest) else {

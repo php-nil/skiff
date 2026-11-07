@@ -6,6 +6,7 @@ pub mod auth;
 pub mod containers;
 pub mod dashboard;
 pub mod docker_settings;
+pub mod files;
 pub mod menu;
 pub mod meta;
 pub mod nginx;
@@ -57,6 +58,8 @@ pub fn nav_plugins(state: &AppState, active: &str) -> Vec<crate::templates::Plug
     };
     list.iter()
         .filter(|p| p.enabled)
+        // 文件管理入口由内核「工具 → 文件管理」承担；插件只保留安装态与管理页。
+        .filter(|p| p.id != "com.skiff.files")
         .filter_map(|p| {
             let m = skiff_pkgfmt::Manifest::parse(&p.manifest).ok()?;
             let ui = m.ui.first()?;

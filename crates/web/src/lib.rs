@@ -170,6 +170,32 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/tasks/{{id}}/delete"),
             post(handlers::tasks::delete),
         )
+        // ---- 内核「文件管理」：管理员侧 fs 服务 + 页面（第一步浏览/编辑）----
+        .route(&format!("/{p}/files"), get(handlers::files::page))
+        .route(
+            &format!("/{p}/files/api/list"),
+            get(handlers::files::api_list),
+        )
+        .route(
+            &format!("/{p}/files/api/read"),
+            get(handlers::files::api_read),
+        )
+        .route(
+            &format!("/{p}/files/api/write"),
+            post(handlers::files::api_write),
+        )
+        .route(
+            &format!("/{p}/files/api/mkdir"),
+            post(handlers::files::api_mkdir),
+        )
+        .route(
+            &format!("/{p}/files/api/rename"),
+            post(handlers::files::api_rename),
+        )
+        .route(
+            &format!("/{p}/files/api/remove"),
+            post(handlers::files::api_remove),
+        )
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
         .route(&format!("/{p}/sites"), get(handlers::sites::list))
         .route(

@@ -1846,6 +1846,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-docker",
+ "skiff-fs",
  "skiff-identity",
  "skiff-model",
  "skiff-plugin",
