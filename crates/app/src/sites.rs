@@ -1426,7 +1426,7 @@ impl AppState {
                 // 安装失败且容器没起来：列表状态要能看出失败，而不是笼统的「未安装」。
                 "error".to_string()
             } else {
-                container_state.clone()
+                runtime_effective_state(&container_state).to_string()
             };
             let socket_host = rt.socket_path.clone().unwrap_or_default();
             let socket_container = if socket_host.is_empty() {
@@ -3102,6 +3102,9 @@ pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
          php_admin_value[upload_max_filesize] = {upload_max_filesize}\n\
          php_admin_value[post_max_size] = {post_max_size}\n\
          php_admin_value[max_execution_time] = {max_execution_time}\n\
+         ; 镜像 docker.conf 默认 access.log = /proc/self/fd/2，访问日志经容器 stdout\n\
+         ; 落到 dockerd/shims；nginx 侧已记录同一请求，这里显式关闭以免每请求重复写。\n\
+         access.log = /dev/null\n\
          catch_workers_output = yes\n",
         pm = cfg.pm,
         max_children = cfg.max_children,
@@ -5592,6 +5595,10 @@ mod tests {
         assert!(pool.contains("php_admin_value[memory_limit] = 256M"));
         assert!(pool.contains("php_admin_value[upload_max_filesize] = 64M"));
         assert!(pool.contains("php_admin_value[max_execution_time] = 30"));
+        assert!(
+            pool.contains("access.log = /dev/null"),
+            "必须覆盖镜像的 /proc/self/fd/2，避免每请求重复写访问日志"
+        );
     }
 
     fn settings_at(root: &Path) -> SiteSettings {
