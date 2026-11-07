@@ -206,6 +206,7 @@ pub(crate) fn valid_port_range(start: u16, end: u16) -> bool {
 }
 
 /// Umask 配置值：两个空白分隔的三位八进制数（wrapper 的硬格式）。
+#[cfg(test)]
 pub(crate) fn valid_umask(value: &str) -> bool {
     let fields: Vec<&str> = value.split_whitespace().collect();
     fields.len() == 2
