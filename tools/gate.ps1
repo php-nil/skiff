@@ -8,7 +8,8 @@
      仅持锁进程可在 finally 中释放；陈旧租约自动回收并写日志。
   3. 拿不到锁立即以退出码 2 结束，不排队、不等待。
   4. 根 workspace 与 plugins/ 共用同一把互斥体，禁止并行。
-  5. 提交内存准入：% Committed Bytes In Use > 80% 或 Available < 1536MB 时拒绝启动（退出码 3）。
+  5. 提交内存准入：提交余量 < 1024MB 或 Available < 1536MB 时拒绝启动（退出码 3）。
+     不用提交百分比：本机页文件很小（约 167MB），空闲基线即达 82%，百分比无判别力。
   6. 运行期间每 5 秒采样一次，写入 .workbuddy/memwatch/YYYYMMDD.csv，保留 7 天。
   7. 本地全量拦截：根 workspace 的 clippy / test / build 不带 -Pkg 时必须显式 -AllowFull（退出码 4）。
 
@@ -48,7 +49,7 @@ $LeaseFile = Join-Path $LockDir 'build.lease'
 $GateLog   = Join-Path $LockDir 'gate.log'
 $StopFile  = Join-Path $LockDir ("sampler.stop.{0}" -f $PID)
 
-$MaxCommitPercent = 80
+$MinFreeCommitMB  = 1024
 $MinAvailableMB   = 1536
 $RetentionDays    = 7
 
@@ -103,6 +104,7 @@ function Get-MemSnapshot {
         CommitPct   = [math]::Round($s[2].CookedValue, 0)
         AvailableMB = [math]::Round($s[3].CookedValue, 0)
         PagefilePct = [math]::Round($s[4].CookedValue, 0)
+        FreeCommitMB = [math]::Round(($s[1].CookedValue - $s[0].CookedValue) / 1MB, 0)
     }
 }
 
@@ -277,13 +279,13 @@ try {
         $mem = $null
     }
     if ($null -ne $mem) {
-        Write-Host ("MEM: committed={0}MB limit={1}MB ({2}%) available={3}MB pagefile={4}%" -f `
-            $mem.CommittedMB, $mem.LimitMB, $mem.CommitPct, $mem.AvailableMB, $mem.PagefilePct)
-        if ($mem.CommitPct -gt $MaxCommitPercent -or $mem.AvailableMB -lt $MinAvailableMB) {
-            Write-GateLog ("REFUSED admission committed={0}MB limit={1}MB pct={2} avail={3}MB" -f `
-                $mem.CommittedMB, $mem.LimitMB, $mem.CommitPct, $mem.AvailableMB)
-            Write-Host ("REFUSED: 提交内存 {0}%（阈值 {1}%）/ 可用 {2}MB（阈值 {3}MB）" -f `
-                $mem.CommitPct, $MaxCommitPercent, $mem.AvailableMB, $MinAvailableMB) -ForegroundColor Red
+        Write-Host ("MEM: committed={0}MB limit={1}MB free={2}MB ({3}%) available={4}MB pagefile={5}%" -f `
+            $mem.CommittedMB, $mem.LimitMB, $mem.FreeCommitMB, $mem.CommitPct, $mem.AvailableMB, $mem.PagefilePct)
+        if ($mem.FreeCommitMB -lt $MinFreeCommitMB -or $mem.AvailableMB -lt $MinAvailableMB) {
+            Write-GateLog ("REFUSED admission committed={0}MB limit={1}MB free={2}MB avail={3}MB" -f `
+                $mem.CommittedMB, $mem.LimitMB, $mem.FreeCommitMB, $mem.AvailableMB)
+            Write-Host ("REFUSED: 提交余量 {0}MB（阈值 {1}MB）/ 可用 {2}MB（阈值 {3}MB）" -f `
+                $mem.FreeCommitMB, $MinFreeCommitMB, $mem.AvailableMB, $MinAvailableMB) -ForegroundColor Red
             Write-Host '  请先关闭其他会话或等待当前编译结束，再重试。' -ForegroundColor Red
             $exitCode = 3
             exit $exitCode
