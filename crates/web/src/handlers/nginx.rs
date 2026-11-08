@@ -26,6 +26,29 @@ fn allowed_tab(tab: &str) -> &'static str {
     }
 }
 
+/// 解析性能参数表单。
+///
+/// 数字字段非法时直接报错，不再 `unwrap_or(默认值)`：静默回落会让页面提示「已保存」，
+/// 实际落库的却是默认值，用户无法察觉。
+fn parse_params(form: &HashMap<String, Vec<String>>) -> Result<NginxParams, String> {
+    let worker_connections = form_first(form, "worker_connections")
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "worker_connections 需为 64–65535 的整数".to_string())?;
+    let keepalive_timeout = form_first(form, "keepalive_timeout")
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "keepalive_timeout 需为 0–3600 的整数".to_string())?;
+    Ok(NginxParams {
+        worker_processes: form_first(form, "worker_processes").trim().to_string(),
+        worker_connections,
+        keepalive_timeout,
+        client_max_body_size: form_first(form, "client_max_body_size").trim().to_string(),
+        gzip: form_first(form, "gzip") == "on",
+        gzip_types: form_first(form, "gzip_types").trim().to_string(),
+    })
+}
+
 async fn page(
     state: Arc<AppState>,
     user: crate::state::CurrentUser,
@@ -117,18 +140,28 @@ pub async fn save_main(
     let ip = handlers::client_ip(&state, &parts);
     let prefix = state.cfg.entry_prefix.clone();
     match state.save_nginx_main(&content).await {
-        Ok(()) => {
+        Ok(warnings) => {
+            let detail = warnings.join("；");
             let _ = state.db().audit(
                 &user.user.username,
                 &ip,
                 "nginx.config.save",
                 "nginx.conf",
                 "ok",
-                "",
+                &detail,
             );
+            let notice = if warnings.is_empty() {
+                "主配置已通过 nginx -t 并重载".to_string()
+            } else {
+                format!(
+                    "主配置已保存并重载；nginx -t 有 {} 条告警：{}",
+                    warnings.len(),
+                    detail
+                )
+            };
             Ok(handlers::redirect(format!(
                 "/{prefix}/sites/web?tab=config&notice={}",
-                encode_uri_component("主配置已通过 nginx -t 并重载")
+                encode_uri_component(&notice)
             )))
         }
         Err(e) => {
@@ -158,35 +191,50 @@ pub async fn save_params(
     require_admin(&user)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let params = NginxParams {
-        worker_processes: form_first(&form, "worker_processes").trim().to_string(),
-        worker_connections: form_first(&form, "worker_connections")
-            .trim()
-            .parse()
-            .unwrap_or(1024),
-        keepalive_timeout: form_first(&form, "keepalive_timeout")
-            .trim()
-            .parse()
-            .unwrap_or(65),
-        client_max_body_size: form_first(&form, "client_max_body_size").trim().to_string(),
-        gzip: form_first(&form, "gzip") == "on",
-        gzip_types: form_first(&form, "gzip_types").trim().to_string(),
-    };
     let ip = handlers::client_ip(&state, &parts);
     let prefix = state.cfg.entry_prefix.clone();
+    // 数字字段显式校验：以前 `unwrap_or(1024/65)` 会把「abc」静默存成默认值，
+    // 页面显示成功、实际保存的不是用户输入的值。
+    let params = match parse_params(&form) {
+        Ok(p) => p,
+        Err(msg) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "nginx.params.save",
+                "nginx.conf",
+                "failed",
+                &msg,
+            );
+            return Ok(handlers::redirect(format!(
+                "/{prefix}/sites/web?tab=config&error={}",
+                encode_uri_component(&msg)
+            )));
+        }
+    };
     match state.save_nginx_params(&params).await {
-        Ok(()) => {
+        Ok(warnings) => {
+            let detail = warnings.join("；");
             let _ = state.db().audit(
                 &user.user.username,
                 &ip,
                 "nginx.params.save",
                 "nginx.conf",
                 "ok",
-                "",
+                &detail,
             );
+            let notice = if warnings.is_empty() {
+                "性能参数已保存并通过 nginx -t，随后重载".to_string()
+            } else {
+                format!(
+                    "性能参数已保存并重载；nginx -t 有 {} 条告警：{}",
+                    warnings.len(),
+                    detail
+                )
+            };
             Ok(handlers::redirect(format!(
                 "/{prefix}/sites/web?tab=config&notice={}",
-                encode_uri_component("性能参数已保存并通过 nginx -t，随后重载")
+                encode_uri_component(&notice)
             )))
         }
         Err(e) => {
@@ -204,5 +252,61 @@ pub async fn save_params(
                 encode_uri_component(&msg)
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn form(pairs: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), vec![v.to_string()]))
+            .collect()
+    }
+
+    #[test]
+    fn params_parse_rejects_non_numeric_numbers() {
+        let err = parse_params(&form(&[
+            ("worker_processes", "auto"),
+            ("worker_connections", "abc"),
+            ("keepalive_timeout", "65"),
+            ("client_max_body_size", "16m"),
+            ("gzip", "on"),
+            ("gzip_types", "text/plain"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("worker_connections"), "{err}");
+
+        let err = parse_params(&form(&[
+            ("worker_processes", "auto"),
+            ("worker_connections", "2048"),
+            ("keepalive_timeout", "x"),
+            ("client_max_body_size", "16m"),
+            ("gzip", "on"),
+            ("gzip_types", "text/plain"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("keepalive_timeout"), "{err}");
+    }
+
+    #[test]
+    fn params_parse_keeps_submitted_values() {
+        let p = parse_params(&form(&[
+            ("worker_processes", " 4 "),
+            ("worker_connections", "2048"),
+            ("keepalive_timeout", "90"),
+            ("client_max_body_size", "32m"),
+            ("gzip", "on"),
+            ("gzip_types", " text/css "),
+        ]))
+        .expect("应解析");
+        assert_eq!(p.worker_processes, "4");
+        assert_eq!(p.worker_connections, 2048);
+        assert_eq!(p.keepalive_timeout, 90);
+        assert_eq!(p.client_max_body_size, "32m");
+        assert!(p.gzip);
+        assert_eq!(p.gzip_types, "text/css");
     }
 }

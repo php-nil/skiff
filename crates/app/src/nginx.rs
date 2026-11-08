@@ -130,10 +130,17 @@ impl NginxParams {
 }
 
 /// 内核生成的主配置：固定 stub_status 监听在 `127.0.0.1:8081`，不对外暴露。
+///
+/// `worker_rlimit_nofile` 显式跟随 `worker_connections`：容器默认软限制 1024，
+/// 只调大 `worker_connections` 会让 `nginx -t` 告警
+/// `worker_connections exceed open file resource limit`（退出码仍为 0），
+/// 属于「保存成功但带告警」的静默路径。下限保留 1024，避免把 fd 限制压得过低。
 pub fn render_main_nginx_conf(p: &NginxParams) -> String {
+    let rlimit_nofile = p.worker_connections.max(1024);
     format!(
         "# 由 Skiff 内核生成；手工修改请走「网站 → Nginx → 配置」，保存前会执行 nginx -t。\n\
          worker_processes {wp};\n\
+         worker_rlimit_nofile {rlimit};\n\
          error_log /www/log/nginx-error.log warn;\n\
          pid /var/run/nginx.pid;\n\
          \n\
@@ -162,6 +169,7 @@ pub fn render_main_nginx_conf(p: &NginxParams) -> String {
          \x20   }}\n\
          }}\n",
         wp = p.worker_processes.trim(),
+        rlimit = rlimit_nofile,
         wc = p.worker_connections,
         kt = p.keepalive_timeout,
         body = p.client_max_body_size.trim(),
@@ -346,6 +354,17 @@ pub(crate) fn error_line(out: &str) -> String {
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .unwrap_or_else(|| out.trim().to_string())
+}
+
+/// 收集 `nginx -t` 的告警行。
+///
+/// `nginx -t` 有告警时退出码仍为 0；只看退出码会把「配置生效但带问题」当成完全成功。
+fn test_warnings(out: &str) -> Vec<String> {
+    out.lines()
+        .filter(|l| l.contains("[warn]"))
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 /// 只读文件尾部的 `budget` 字节（最多 2 MiB），按行倒序返回。
@@ -635,7 +654,12 @@ impl AppState {
         Ok((c.id.clone(), c.state.clone(), c.status.clone()))
     }
 
-    async fn apply_nginx_main(&self, s: &SiteSettings, content: &str) -> Result<(), SiteError> {
+    /// 校验、替换并重启 nginx；返回 `nginx -t` 的告警行（无告警为空）。
+    async fn apply_nginx_main(
+        &self,
+        s: &SiteSettings,
+        content: &str,
+    ) -> Result<Vec<String>, SiteError> {
         let candidate = s.nginx_main_conf().with_extension("conf.candidate");
         std::fs::write(&candidate, content)
             .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
@@ -668,7 +692,7 @@ impl AppState {
         std::fs::rename(&candidate, s.nginx_main_conf())
             .map_err(|e| SiteError::Internal(format!("替换主配置失败：{e}")))?;
         if let Err(e) = self.restart_nginx().await {
-            if let Some(bytes) = original {
+            if let Some(bytes) = original.clone() {
                 let _ = std::fs::write(s.nginx_main_conf(), bytes);
                 let _ = self.restart_nginx().await;
             }
@@ -676,9 +700,24 @@ impl AppState {
                 "配置已回滚：重载 nginx 失败：{e}"
             )));
         }
+        // Docker restart 返回成功不代表 nginx 仍在运行：配置里的
+        // `worker_rlimit_nofile` 超出容器硬限制等错误会让 master 启动后立即退出。
+        // 短暂启动窗口后核对容器状态，避免「页面提示已保存、实际站点全挂」。
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let env = self.site_env_status().await;
+        if env.installed && env.nginx_state != "running" {
+            if let Some(bytes) = original.clone() {
+                let _ = std::fs::write(s.nginx_main_conf(), bytes);
+                let _ = self.restart_nginx().await;
+            }
+            return Err(SiteError::Unavailable(format!(
+                "配置已回滚：nginx 未能保持运行（当前状态 {}）",
+                env.nginx_state
+            )));
+        }
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let _ = self.db().set_setting(NGINX_LAST_RELOAD_KEY, &stamp);
-        Ok(())
+        Ok(test_warnings(&out))
     }
 
     pub async fn nginx_status(&self) -> NginxStatusView {
@@ -745,7 +784,16 @@ impl AppState {
             .await
         {
             v.config_test = if code == 0 {
-                "配置校验通过".into()
+                let warnings = test_warnings(&out);
+                if warnings.is_empty() {
+                    "配置校验通过".into()
+                } else {
+                    format!(
+                        "配置校验通过（{} 条告警：{}）",
+                        warnings.len(),
+                        warnings.join("；")
+                    )
+                }
             } else {
                 format!("配置校验失败：{}", error_line(&out))
             };
@@ -889,7 +937,8 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    pub async fn save_nginx_main(&self, content: &str) -> Result<(), SiteError> {
+    /// 保存主配置；返回 `nginx -t` 的告警行（无告警为空）。
+    pub async fn save_nginx_main(&self, content: &str) -> Result<Vec<String>, SiteError> {
         if content.trim().is_empty() {
             return Err(SiteError::BadRequest("主配置不能为空".into()));
         }
@@ -897,14 +946,27 @@ impl AppState {
         self.apply_nginx_main(&s, content).await
     }
 
-    pub async fn save_nginx_params(&self, params: &NginxParams) -> Result<(), SiteError> {
+    /// 保存性能参数：先落库再应用，应用失败时把库回滚到旧值，避免「配置已换、页面仍显示旧参数」。
+    ///
+    /// 返回 `nginx -t` 的告警行（无告警为空）。
+    pub async fn save_nginx_params(&self, params: &NginxParams) -> Result<Vec<String>, SiteError> {
         params.validate()?;
         let s = self.site_settings();
-        self.apply_nginx_main(&s, &render_main_nginx_conf(params))
-            .await?;
+        let previous = self.db().get_setting(NGINX_PARAMS_KEY).ok().flatten();
         self.db()
             .set_setting(NGINX_PARAMS_KEY, &params.to_json())
-            .map_err(|e| SiteError::Internal(format!("保存 nginx 参数失败：{e}")))
+            .map_err(|e| SiteError::Internal(format!("保存 nginx 参数失败：{e}")))?;
+        match self
+            .apply_nginx_main(&s, &render_main_nginx_conf(params))
+            .await
+        {
+            Ok(warnings) => Ok(warnings),
+            Err(e) => {
+                let rollback = previous.unwrap_or_else(|| NginxParams::default().to_json());
+                let _ = self.db().set_setting(NGINX_PARAMS_KEY, &rollback);
+                Err(e)
+            }
+        }
     }
 
     /// 按条件读取日志尾部。
@@ -1106,6 +1168,39 @@ mod tests {
         assert!(conf.contains("deny all;"), "{conf}");
         // 不占 9000、不对外监听状态端点。
         assert!(!conf.contains("9000"));
+    }
+
+    #[test]
+    fn main_conf_sets_worker_rlimit_nofile_above_connections() {
+        let big = NginxParams {
+            worker_connections: 2048,
+            ..Default::default()
+        };
+        let conf = render_main_nginx_conf(&big);
+        assert!(conf.contains("worker_rlimit_nofile 2048;"), "{conf}");
+        assert!(conf.contains("worker_connections 2048;"), "{conf}");
+        assert_eq!(conf.matches("worker_rlimit_nofile").count(), 1);
+        // 下限 1024，避免把 worker_connections 调小时压低 fd 限制。
+        let small = NginxParams {
+            worker_connections: 64,
+            ..Default::default()
+        };
+        assert!(
+            render_main_nginx_conf(&small).contains("worker_rlimit_nofile 1024;"),
+            "{}",
+            render_main_nginx_conf(&small)
+        );
+    }
+
+    #[test]
+    fn nginx_test_warnings_are_collected() {
+        let out = "nginx: the configuration file /www/nginx/nginx.conf syntax is ok\n\
+                   nginx: [warn] 2048 worker_connections exceed open file resource limit: 1024\n\
+                   nginx: configuration file /www/nginx/nginx.conf test is successful\n";
+        let warnings = test_warnings(out);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("worker_connections exceed"));
+        assert!(test_warnings("nginx: configuration file ... test is successful").is_empty());
     }
 
     #[test]
