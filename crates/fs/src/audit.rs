@@ -34,6 +34,10 @@ pub enum AuditAction {
     QuotaScan,
     QuotaSet,
     QuotaCancel,
+    Chmod,
+    Chown,
+    Archive,
+    Extract,
     /// 聚合桶超限时的丢弃标记。
     SampledOut,
 }
@@ -56,6 +60,10 @@ impl AuditAction {
             AuditAction::QuotaScan => "fs.quota.scan",
             AuditAction::QuotaSet => "fs.quota.set",
             AuditAction::QuotaCancel => "fs.quota.cancel",
+            AuditAction::Chmod => "fs.chmod",
+            AuditAction::Chown => "fs.chown",
+            AuditAction::Archive => "fs.archive",
+            AuditAction::Extract => "fs.extract",
             AuditAction::SampledOut => "audit.sampled_out",
         }
     }
@@ -72,6 +80,10 @@ impl AuditAction {
                 | AuditAction::TrashClear
                 | AuditAction::QuotaSet
                 | AuditAction::QuotaCancel
+                | AuditAction::Chmod
+                | AuditAction::Chown
+                | AuditAction::Archive
+                | AuditAction::Extract
         )
     }
 }

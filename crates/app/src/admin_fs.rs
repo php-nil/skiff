@@ -19,9 +19,10 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use skiff_fs::{
-    AuditEvent, AuditSink, ClearTrashOutcome, Fs, FsConfig, FsError, ListRequest, OpContext,
-    Principal, QuotaLimit, QuotaSnapshot, QuotaTracker, QuotaUsage, ReadRequest, RestoreOutcome,
-    TrashConfig, TrashEntry, TrashKind, TrashStore, WriteMode, WriteRequest, MAX_REQUEST_BYTES,
+    ArchiveFormat, ArchiveRequest, AuditEvent, AuditSink, ClearTrashOutcome, ExtractRequest, Fs,
+    FsConfig, FsError, ListRequest, OpContext, Principal, QuotaLimit, QuotaSnapshot, QuotaTracker,
+    QuotaUsage, ReadRequest, RestoreOutcome, TrashConfig, TrashEntry, TrashKind, TrashStore,
+    WriteMode, WriteRequest, MAX_REQUEST_BYTES,
 };
 use skiff_store::{Db, QuotaRow, TrashRow};
 
@@ -29,6 +30,8 @@ use crate::WebConfig;
 
 /// 文件原语错误在本模块公开：Web 层把 `code()/message()` 直接映射成 JSON。
 pub use skiff_fs::FsError as FsErr;
+/// Web 层只借用路径类型做下载分流，不直接依赖 `skiff-fs`。
+pub use skiff_fs::PathKind as FsPathKind;
 
 /// 页面可编辑文件上限：与单次读写上限一致（256 KiB）。
 pub const MAX_EDIT_BYTES: usize = MAX_REQUEST_BYTES;
@@ -50,6 +53,19 @@ pub struct DirEntry {
     pub symlink: bool,
     pub size: u64,
     pub mtime: Option<i64>,
+    /// Unix 权限位（`0o7777` 以内）；非 Unix 平台为 `None`。
+    pub mode: Option<u32>,
+    /// `<uid>:<gid>`；非 Unix 平台为 `None`。
+    pub owner: Option<String>,
+    pub nlink: u64,
+    pub link_target: Option<String>,
+}
+
+/// 「文件管理」左栏目录树的根入口（服务端只提供根，子节点按需展开）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RootEntry {
+    pub label: String,
+    pub path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +90,51 @@ pub struct WriteResult {
 pub struct RemoveResult {
     pub path: String,
     pub trash_id: Option<String>,
+}
+
+/// 复制/移动结果（移动复用 `rename`）。
+#[derive(Debug, Serialize)]
+pub struct CopyResult {
+    pub from: String,
+    pub to: String,
+    pub bytes: u64,
+    pub entries: u64,
+}
+
+/// 权限修改结果（`previous` 为改前权限位，供页面提示）。
+#[derive(Debug, Serialize)]
+pub struct ChmodResult {
+    pub path: String,
+    pub mode: u32,
+    pub previous: Option<u32>,
+}
+
+/// 属主修改结果；`root_owned` 为真时页面必须显式提示「属主改为 root」。
+#[derive(Debug, Serialize)]
+pub struct ChownResult {
+    pub path: String,
+    pub owner: String,
+    pub root_owned: bool,
+}
+
+/// 压缩结果（`skipped_*` 为未进入压缩包的符号链接/特殊文件数）。
+#[derive(Debug, Serialize)]
+pub struct ArchiveResult {
+    pub path: String,
+    pub bytes: u64,
+    pub entries: u64,
+    pub skipped_symlinks: u64,
+    pub skipped_special: u64,
+}
+
+/// 解压结果；跳过的链接/特殊文件单独回报，页面不静默。
+#[derive(Debug, Serialize)]
+pub struct ExtractResult {
+    pub dest: String,
+    pub files: u64,
+    pub bytes: u64,
+    pub skipped_symlinks: u64,
+    pub skipped_special: u64,
 }
 
 /// 回收站条目视图（不暴露内部落点 `trash_path`）。
@@ -335,6 +396,8 @@ pub struct AdminFs {
     db: Arc<Db>,
     /// 内核受保护前缀（数据根 + 运行配置 + TLS 材料），与 `skiff-fs` 共用同一判定代数。
     protected: Vec<PathBuf>,
+    /// 左栏目录树的候选根（调用时再按存在性/保护规则过滤）。
+    root_candidates: Vec<RootEntry>,
     seq: AtomicU64,
 }
 
@@ -392,6 +455,25 @@ fn data_protected_paths(data_dir: &Path) -> Vec<PathBuf> {
         push_protected(&mut out, &p);
     }
     out
+}
+
+/// 左栏目录树的根入口：站点/运行环境/日志/Web 根 + 两个常用系统目录。
+fn tree_roots(web_root: &Path) -> Vec<RootEntry> {
+    let candidates = [
+        (web_root.join("sites"), "站点目录"),
+        (web_root.join("runtime"), "运行环境"),
+        (web_root.join("log"), "Web 日志"),
+        (web_root.to_path_buf(), "Web 根"),
+        (PathBuf::from("/etc"), "系统 /etc"),
+        (PathBuf::from("/opt"), "系统 /opt"),
+    ];
+    candidates
+        .into_iter()
+        .map(|(path, label)| RootEntry {
+            label: label.to_string(),
+            path: path.display().to_string(),
+        })
+        .collect()
 }
 
 impl AdminFs {
@@ -459,6 +541,7 @@ impl AdminFs {
             ),
             db,
             protected,
+            root_candidates: tree_roots(&web_root),
             seq: AtomicU64::new(1),
         }
     }
@@ -556,6 +639,10 @@ impl AdminFs {
                 symlink: e.kind == skiff_fs::PathKind::Symlink,
                 size: e.size,
                 mtime: e.mtime,
+                mode: e.mode,
+                owner: e.owner,
+                nlink: e.nlink,
+                link_target: e.link_target,
             });
         }
         entries.sort_by(|a, b| {
@@ -568,6 +655,248 @@ impl AdminFs {
             parent: dir.path.parent().map(|p| p.display().to_string()),
             entries,
             truncated: page.has_more || page.total > 1000,
+        })
+    }
+
+    /// 左栏目录树的根入口（只返回存在的、未被内核保护的目录）。
+    pub fn roots(&self) -> Vec<RootEntry> {
+        self.root_candidates
+            .iter()
+            .filter(|r| Path::new(&r.path).is_dir() && !self.is_protected_child(Path::new(&r.path)))
+            .cloned()
+            .collect()
+    }
+
+    /// 目录树懒展开：只返回子目录名（受保护子项已过滤）。
+    pub fn list_dirs(&self, user: &str, path: &str) -> Result<Vec<String>, FsError> {
+        let listing = self.list(user, path)?;
+        Ok(listing
+            .entries
+            .into_iter()
+            .filter(|e| e.dir)
+            .map(|e| e.name)
+            .collect())
+    }
+
+    /// 元数据（不跟随符号链接）；上传续传前用它核对当前大小。
+    pub fn stat(&self, user: &str, path: &str) -> Result<skiff_fs::StatInfo, FsError> {
+        self.guard(path, false, false)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.stat(
+            &p,
+            &ctx,
+            &skiff_fs::StatRequest {
+                path: path.to_string(),
+                with_hash: false,
+            },
+        )
+    }
+
+    /// 按区间读取原始字节（下载流式输出使用；单次仍是 256 KiB 上限）。
+    pub fn read_chunk(
+        &self,
+        user: &str,
+        path: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<skiff_fs::ReadChunk, FsError> {
+        self.guard(path, false, false)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.read(
+            &p,
+            &ctx,
+            &ReadRequest {
+                path: path.to_string(),
+                offset,
+                max_bytes,
+            },
+        )
+    }
+
+    /// 上传分片：首片按原子替换创建，后续片按偏移写入。
+    ///
+    /// 续传前核对磁盘当前大小与 `offset`，不一致直接 `fs.conflict`，避免静默写出空洞。
+    pub fn upload_chunk(
+        &self,
+        user: &str,
+        path: &str,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<WriteResult, FsError> {
+        self.guard(path, true, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let mode = if offset == 0 {
+            if let Ok(info) = self.fs.stat(
+                &p,
+                &ctx,
+                &skiff_fs::StatRequest {
+                    path: path.to_string(),
+                    with_hash: false,
+                },
+            ) {
+                if info.kind == skiff_fs::PathKind::Dir {
+                    return Err(FsError::Conflict("目标是目录，不能上传文件".into()));
+                }
+            }
+            WriteMode::Replace
+        } else {
+            let info = self.fs.stat(
+                &p,
+                &ctx,
+                &skiff_fs::StatRequest {
+                    path: path.to_string(),
+                    with_hash: false,
+                },
+            )?;
+            if info.kind != skiff_fs::PathKind::File {
+                return Err(FsError::NotFound("上传目标不存在或不是普通文件".into()));
+            }
+            if info.size != offset {
+                return Err(FsError::Conflict(format!(
+                    "上传分片偏移不一致：文件当前 {} 字节，分片从 {} 开始，请重新上传",
+                    info.size, offset
+                )));
+            }
+            WriteMode::At(offset)
+        };
+        let out = self.fs.write(
+            &p,
+            &ctx,
+            &WriteRequest {
+                path: path.to_string(),
+                data: data.to_vec(),
+                mode,
+            },
+        )?;
+        Ok(WriteResult {
+            path: out.path,
+            size: out.size,
+            sha256: out.sha256,
+        })
+    }
+
+    /// 服务端复制（文件/目录）；覆盖仅管理员，默认拒绝覆盖。
+    pub fn copy(
+        &self,
+        user: &str,
+        from: &str,
+        to: &str,
+        overwrite: bool,
+    ) -> Result<CopyResult, FsError> {
+        self.guard(from, false, true)?;
+        self.guard(to, true, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let out = self.fs.copy(&p, &ctx, from, to, overwrite)?;
+        Ok(CopyResult {
+            from: out.from,
+            to: out.to,
+            bytes: out.bytes,
+            entries: out.entries,
+        })
+    }
+
+    /// 修改权限位。setuid 在 `skiff-fs` 内硬拒（Web 层不另写判定）。
+    pub fn chmod(&self, user: &str, path: &str, mode: u32) -> Result<ChmodResult, FsError> {
+        self.guard(path, false, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let out = self.fs.chmod(&p, &ctx, path, mode)?;
+        Ok(ChmodResult {
+            path: out.path,
+            mode: out.mode,
+            previous: out.previous,
+        })
+    }
+
+    /// 修改属主/属组。任意 `uid:gid` 允许，受保护路径仍由 `skiff-fs` 硬拒。
+    pub fn chown(
+        &self,
+        user: &str,
+        path: &str,
+        uid: u32,
+        gid: u32,
+    ) -> Result<ChownResult, FsError> {
+        self.guard(path, false, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let out = self.fs.chown(&p, &ctx, path, uid, gid)?;
+        Ok(ChownResult {
+            path: out.path,
+            owner: out.owner,
+            root_owned: out.root_owned,
+        })
+    }
+
+    /// 打包（zip / tar.gz）。源与目标都先过内核数据根硬拒。
+    pub fn archive(
+        &self,
+        user: &str,
+        sources: &[String],
+        dest: &str,
+        format: &str,
+        overwrite: bool,
+    ) -> Result<ArchiveResult, FsError> {
+        if sources.is_empty() {
+            return Err(FsError::Denied("请选择要压缩的文件或目录".into()));
+        }
+        for source in sources {
+            self.guard(source, false, true)?;
+        }
+        self.guard(dest, true, true)?;
+        let format = ArchiveFormat::parse(format)
+            .ok_or_else(|| FsError::Unsupported("压缩格式仅支持 zip / tar.gz".into()))?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let out = self.fs.archive(
+            &p,
+            &ctx,
+            &ArchiveRequest {
+                sources: sources.to_vec(),
+                dest: dest.to_string(),
+                format,
+                overwrite,
+            },
+        )?;
+        Ok(ArchiveResult {
+            path: out.path,
+            bytes: out.bytes,
+            entries: out.entries,
+            skipped_symlinks: out.skipped_symlinks,
+            skipped_special: out.skipped_special,
+        })
+    }
+
+    /// 解压到已存在的目标目录；目标与 `skiff-fs` 的受保护/配额执行点共用。
+    pub fn extract(
+        &self,
+        user: &str,
+        archive: &str,
+        dest_dir: &str,
+        overwrite: bool,
+    ) -> Result<ExtractResult, FsError> {
+        self.guard(archive, false, false)?;
+        self.guard(dest_dir, false, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let out = self.fs.extract(
+            &p,
+            &ctx,
+            &ExtractRequest {
+                archive: archive.to_string(),
+                dest_dir: dest_dir.to_string(),
+                overwrite,
+            },
+        )?;
+        Ok(ExtractResult {
+            dest: out.dest,
+            files: out.files,
+            bytes: out.bytes,
+            skipped_symlinks: out.skipped_symlinks,
+            skipped_special: out.skipped_special,
         })
     }
 
@@ -1112,5 +1441,92 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, FsError::Denied(_)));
+    }
+
+    #[test]
+    fn chunked_upload_appends_and_rejects_offset_drift() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+        let target = web.join("sites/up.bin");
+
+        admin
+            .upload_chunk("admin", target.to_str().unwrap(), 0, b"abc")
+            .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"abc");
+
+        admin
+            .upload_chunk("admin", target.to_str().unwrap(), 3, b"def")
+            .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+
+        // 偏移漂移必须冲突，不能静默写出空洞或截断已有内容。
+        let err = admin
+            .upload_chunk("admin", target.to_str().unwrap(), 1, b"x")
+            .unwrap_err();
+        assert!(
+            matches!(err, FsError::Conflict(_)),
+            "offset 漂移应返回 conflict: {err:?}"
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"abcdef");
+
+        // 单次分片超过 256 KiB 上限直接拒绝。
+        let big = vec![0u8; MAX_REQUEST_BYTES + 1];
+        let err = admin
+            .upload_chunk("admin", target.to_str().unwrap(), 6, &big)
+            .unwrap_err();
+        assert!(
+            matches!(err, FsError::TooLarge(_)),
+            "超大分片应返回 too_large: {err:?}"
+        );
+    }
+
+    #[test]
+    fn tree_roots_and_list_dirs_hide_protected_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        // 数据根放在 Web 根下，验证目录树会把它从子目录列表里过滤掉。
+        let data = web.join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(web.join("runtime")).unwrap();
+        fs::create_dir_all(data.join("plugins")).unwrap();
+        fs::write(web.join("sites/readme.txt"), b"x").unwrap();
+        let admin = new_admin(&web, &data);
+
+        let roots = admin.roots();
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.path == web.join("sites").display().to_string()),
+            "站点目录必须是树根之一: {roots:?}"
+        );
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.path == web.join("runtime").display().to_string()),
+            "运行环境必须是树根之一: {roots:?}"
+        );
+        assert!(
+            !roots.iter().any(|r| r.path == data.display().to_string()),
+            "受保护的数据根不能作为树根: {roots:?}"
+        );
+
+        let dirs = admin.list_dirs("admin", web.to_str().unwrap()).unwrap();
+        assert!(dirs.contains(&"sites".to_string()));
+        assert!(dirs.contains(&"runtime".to_string()));
+        assert!(!dirs.contains(&"skiff".to_string()), "受保护目录必须过滤");
+        assert!(
+            !dirs.contains(&"readme.txt".to_string()),
+            "目录树只返回目录"
+        );
+        assert!(matches!(
+            admin
+                .list_dirs("admin", data.to_str().unwrap())
+                .unwrap_err(),
+            FsError::Denied(_)
+        ));
     }
 }

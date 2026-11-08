@@ -28,16 +28,18 @@ pub use audit::{
 };
 pub use config::{
     FsConfig, MemoryQuotaTracker, QuotaLimit, QuotaSnapshot, QuotaTracker, QuotaUsage, TrashConfig,
-    COPY_MAX_DEPTH, COPY_MAX_ENTRIES, MAX_DIR_ENTRIES, MAX_FILE_BYTES, MAX_REQUEST_BYTES,
-    MAX_ROOT_BYTES,
+    ARCHIVE_MAX_DEPTH, ARCHIVE_MAX_ENTRIES, ARCHIVE_MAX_TOTAL_BYTES, COPY_MAX_DEPTH,
+    COPY_MAX_ENTRIES, EXTRACT_MAX_ENTRIES, EXTRACT_MAX_ENTRY_BYTES, EXTRACT_MAX_TOTAL_BYTES,
+    MAX_DIR_ENTRIES, MAX_FILE_BYTES, MAX_REQUEST_BYTES, MAX_ROOT_BYTES,
 };
 pub use error::FsError;
 pub use hash::sha256_hex;
 pub use lock::{PathLocks, DEFAULT_LOCK_TIMEOUT};
 pub use ops::{
-    now_secs, ClearTrashOutcome, CopyLimits, CopyOutcome, EntryInfo, Fs, ListPage, ListRequest,
-    MkdirOutcome, OpContext, ReadChunk, ReadRequest, RemoveOutcome, RenameOutcome, RestoreOutcome,
-    StatInfo, StatRequest, WriteMode, WriteOutcome, WriteRequest,
+    now_secs, ArchiveFormat, ArchiveOutcome, ArchiveRequest, ChmodOutcome, ChownOutcome,
+    ClearTrashOutcome, CopyLimits, CopyOutcome, EntryInfo, ExtractOutcome, ExtractRequest, Fs,
+    ListPage, ListRequest, MkdirOutcome, OpContext, ReadChunk, ReadRequest, RemoveOutcome,
+    RenameOutcome, RestoreOutcome, StatInfo, StatRequest, WriteMode, WriteOutcome, WriteRequest,
 };
 pub use path::{
     normalize_absolute, protected_hit, protected_subdir, site_of, PathKind, PathMode, ResolvedPath,

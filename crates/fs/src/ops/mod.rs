@@ -4,6 +4,8 @@
 //! 每笔操作都走同一条链路：`resolve`（授权 + 不跟随链接）→ 路径锁 → 实际 I/O
 //! → 审计（成功逐条或聚合，失败逐条）。管理面与插件面的差异只在 `Principal`。
 
+mod archive;
+mod attr;
 mod copy;
 mod io;
 mod mutate;
@@ -19,6 +21,8 @@ use crate::path::{self, PathKind, PathMode, ResolvedPath};
 use crate::subject::{Principal, Scope};
 use crate::trash::{TrashEntry, TrashStore};
 
+pub use archive::{ArchiveFormat, ArchiveOutcome, ArchiveRequest, ExtractOutcome, ExtractRequest};
+pub use attr::{ChmodOutcome, ChownOutcome};
 pub use copy::CopyLimits;
 
 /// 一次调用的请求上下文：`request_id` 贯穿审计与错误返回；`now` 可注入便于测试。
@@ -160,13 +164,13 @@ pub struct RemoveOutcome {
     pub bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RenameOutcome {
     pub from: String,
     pub to: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CopyOutcome {
     pub from: String,
     pub to: String,

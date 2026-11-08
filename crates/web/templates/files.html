@@ -2,19 +2,16 @@
 {% block title %}文件管理 · Skiff{% endblock %}
 {% block head %}<link rel="stylesheet" href="/{{ ctx.prefix }}/static/files.css">{% endblock %}
 {% block content %}
-<div class="files-page" data-files data-prefix="{{ ctx.prefix }}" data-csrf="{{ ctx.csrf }}" data-start="{{ start_path }}">
-  <div class="files-head">
-    <div class="files-heading">
-      <h1>文件管理</h1>
-      <p class="files-sub">内核 fs 服务 · 原子写入 · 数据根（skiff.db / plugins / official）受保护</p>
-    </div>
-    <div class="files-toolbar" role="toolbar" aria-label="文件操作">
-      <button type="button" class="files-btn" data-files-refresh>刷新</button>
-      <button type="button" class="files-btn" data-files-root>根目录</button>
-      <button type="button" class="files-btn" data-files-new-dir>新建目录</button>
-      <button type="button" class="files-btn" data-files-new-file>新建文件</button>
-      <a class="files-btn" href="/{{ ctx.prefix }}/files/trash">回收站</a>
-      <a class="files-btn" href="/{{ ctx.prefix }}/files/quotas">配额</a>
+<div class="files-page" data-files
+     data-prefix="{{ ctx.prefix }}" data-csrf="{{ ctx.csrf }}" data-start="{{ start_path }}"
+     data-max-edit="{{ max_edit_bytes }}" data-chunk="{{ upload_chunk_bytes }}">
+  <div class="page-head">
+    <h1>文件管理</h1>
+    <span class="sub">内核 fs 服务 · 原子写入 · 删除进回收站</span>
+    <div class="actions">
+      <a class="btn ghost small" href="/{{ ctx.prefix }}/files/trash">回收站</a>
+      <a class="btn ghost small" href="/{{ ctx.prefix }}/files/quotas">配额</a>
+      <button type="button" class="btn primary" data-files-upload-open>上传文件</button>
     </div>
   </div>
 
@@ -23,38 +20,286 @@
     <button type="button" class="files-alert-close" data-files-alert-close aria-label="关闭提示">×</button>
   </div>
 
-  <div class="files-layout">
-    <section class="files-pane files-list-pane" aria-label="目录列表">
-      <div class="files-crumbs" data-files-crumbs></div>
-      <div class="files-list" data-files-list aria-live="polite">
-        <div class="files-empty">加载中…</div>
+  <div class="files-body" data-files-body>
+    <aside class="files-tree" data-files-tree aria-label="目录树">
+      <div class="files-tree-head">
+        <span>目录</span>
+        <button type="button" class="files-icon-btn" data-files-tree-close aria-label="收起目录树">×</button>
       </div>
-      <div class="files-list-actions">
-        <button type="button" class="files-btn" data-files-rename disabled>重命名</button>
-        <button type="button" class="files-btn files-btn-danger" data-files-delete disabled>删除</button>
+      <div class="files-tree-scroll">
+        <ul class="files-tree-roots">
+          {% for r in roots %}
+          <li class="files-tree-node" data-files-root data-path="{{ r.path }}" data-label="{{ r.label }}">
+            <div class="files-tree-row">
+              <button type="button" class="files-tree-toggle" data-files-tree-toggle aria-label="展开或收起" aria-expanded="false" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"></use></svg>
+              </button>
+              <button type="button" class="files-tree-label" data-files-tree-open>
+                <svg class="files-ico" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder"></use></svg>
+                <span class="files-tree-text">{{ r.label }}</span>
+              </button>
+            </div>
+            <ul class="files-tree-children" data-files-tree-children hidden></ul>
+          </li>
+          {% endfor %}
+        </ul>
       </div>
-    </section>
+    </aside>
+    <div class="files-tree-backdrop" data-files-tree-backdrop hidden></div>
 
-    <section class="files-pane files-editor-pane" aria-label="文件编辑">
-      <header class="files-editor-head">
-        <div class="files-editor-meta">
-          <span class="files-editor-path" data-files-open-path>未打开文件</span>
-          <span class="files-dirty" data-files-dirty hidden>未保存</span>
+    <section class="files-main" aria-label="文件列表">
+      <div class="files-crumbs" data-files-crumbs></div>
+      <div class="toolbar files-toolbar">
+        <button type="button" class="btn ghost small files-tree-open-btn" data-files-tree-open-btn>目录</button>
+        <button type="button" class="btn ghost small" data-files-up title="上一级">上级</button>
+        <div class="search">
+          <input type="search" data-files-search placeholder="在当前目录过滤…" autocomplete="off" aria-label="过滤当前目录">
         </div>
-        <div class="files-editor-actions">
-          <span class="files-readonly" data-files-readonly hidden>只读 · 超过 256 KiB</span>
-          <button type="button" class="files-btn" data-files-close disabled>关闭</button>
-          <button type="button" class="files-btn files-btn-primary" data-files-save disabled>保存</button>
+        <select class="files-sort" data-files-sort aria-label="排序字段">
+          <option value="name">名称</option>
+          <option value="size">大小</option>
+          <option value="mtime">修改时间</option>
+        </select>
+        <button type="button" class="btn ghost small" data-files-order title="切换升降序">升序 ↑</button>
+        <label class="files-check"><input type="checkbox" data-files-hidden> 显示隐藏</label>
+        <button type="button" class="btn ghost small" data-files-refresh>刷新</button>
+      </div>
+
+      <div class="files-batchbar" data-files-batch hidden>
+        <span data-files-batch-count>已选 0 项</span>
+        <button type="button" class="btn ghost small" data-files-batch-clear>取消选择</button>
+        <button type="button" class="btn ghost small" data-files-batch-archive>批量压缩</button>
+        <button type="button" class="btn ghost small" data-files-batch-copy>批量复制</button>
+        <button type="button" class="btn ghost small" data-files-batch-move>批量移动</button>
+        <button type="button" class="btn danger small" data-files-batch-delete>批量删除</button>
+      </div>
+
+      <div class="table-wrap files-table-wrap">
+        <table class="grid compact files-table">
+          <colgroup>
+            <col class="files-col-check">
+            <col class="files-col-name">
+            <col class="files-col-size">
+            <col class="files-col-mode">
+            <col class="files-col-owner">
+            <col class="files-col-time">
+            <col class="files-col-actions">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="files-col-check"><input type="checkbox" data-files-select-all aria-label="全选当前目录"></th>
+              <th>名称</th>
+              <th class="num">大小</th>
+              <th>权限</th>
+              <th>属主</th>
+              <th>修改时间</th>
+              <th class="files-col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody data-files-list></tbody>
+        </table>
+      </div>
+
+      <div class="empty files-empty" data-files-empty hidden>
+        <strong data-files-empty-title>目录为空</strong>
+        <p class="hint" data-files-empty-hint>可以新建文件或目录，也可以上传文件。</p>
+        <div class="actions">
+          <button type="button" class="btn primary small" data-files-empty-upload>上传文件</button>
+          <button type="button" class="btn ghost small" data-files-empty-new-dir>新建目录</button>
         </div>
-      </header>
-      <textarea class="files-textarea" data-files-textarea spellcheck="false" wrap="off"
-                placeholder="在左侧双击文件即可打开编辑；Ctrl/⌘ + S 保存" disabled></textarea>
-      <footer class="files-editor-foot">
+      </div>
+
+      <footer class="files-foot">
         <span data-files-status>就绪</span>
-        <span data-files-stats></span>
+        <span class="muted small" data-files-summary></span>
       </footer>
     </section>
   </div>
+
+  {# ---- 名称输入弹窗（新建文件 / 新建目录 / 重命名共用）---- #}
+  <dialog class="modal" data-files-name-dialog aria-labelledby="files-name-title">
+    <form method="dialog" data-files-name-form>
+      <div class="modal-head"><h2 id="files-name-title" data-files-name-title>新建</h2></div>
+      <div class="modal-body files-form">
+        <label class="files-field">
+          <span data-files-name-label>名称</span>
+          <input type="text" data-files-name-input autocomplete="off" spellcheck="false" required>
+        </label>
+        <p class="field-error" data-files-name-error hidden></p>
+        <p class="hint small muted" data-files-name-hint></p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-files-name-cancel>取消</button>
+        <button type="submit" class="btn primary" data-files-name-ok>确定</button>
+      </div>
+    </form>
+  </dialog>
+
+  {# ---- 上传弹窗：多文件、逐片进度 ---- #}
+  <dialog class="modal files-upload-dialog" data-files-upload-dialog aria-labelledby="files-upload-title">
+    <div class="modal-head"><h2 id="files-upload-title">上传文件</h2></div>
+    <div class="modal-body files-form">
+      <p class="hint small muted">目标目录：<code data-files-upload-dir></code></p>
+      <input type="file" multiple data-files-upload-input>
+      <p class="hint small muted" data-files-upload-limit></p>
+      <div class="files-upload-list" data-files-upload-list></div>
+      <p class="field-error" data-files-upload-error hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-upload-close>关闭</button>
+      <button type="button" class="btn primary" data-files-upload-start>开始上传</button>
+    </div>
+  </dialog>
+
+  {# ---- 编辑抽屉：可关闭、超限只读、保存失败保留内容 ---- #}
+  <dialog class="files-editor-dialog" data-files-editor aria-labelledby="files-editor-title">
+    <header class="files-editor-head">
+      <div class="files-editor-meta">
+        <h2 id="files-editor-title" class="files-editor-path" data-files-editor-path>编辑文件</h2>
+        <span class="files-dirty" data-files-editor-dirty hidden>未保存</span>
+        <span class="files-readonly" data-files-editor-readonly hidden>只读</span>
+      </div>
+      <div class="files-editor-actions">
+        <button type="button" class="btn ghost small" data-files-editor-cancel>关闭</button>
+        <button type="button" class="btn primary small" data-files-editor-save disabled>保存</button>
+        <button type="button" class="files-icon-btn" data-files-editor-x aria-label="关闭编辑窗口">×</button>
+      </div>
+    </header>
+    <div class="files-editor-body">
+      <textarea class="files-textarea" data-files-editor-text spellcheck="false" wrap="off" disabled></textarea>
+    </div>
+    <footer class="files-editor-foot">
+      <span data-files-editor-status>就绪</span>
+      <span class="muted small" data-files-editor-stats></span>
+    </footer>
+  </dialog>
+
+  {# ---- 本地确认弹窗（与全局表单确认弹窗互不干扰）---- #}
+  <dialog class="modal" data-files-confirm aria-labelledby="files-confirm-title">
+    <div class="modal-head"><h2 id="files-confirm-title" data-files-confirm-title>请确认操作</h2></div>
+    <p class="modal-body" data-files-confirm-message></p>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-confirm-cancel>取消</button>
+      <button type="button" class="btn danger" data-files-confirm-ok>确认执行</button>
+    </div>
+  </dialog>
+
+  {# ---- 权限弹窗：setuid 在前端提示，后端仍硬拒 ---- #}
+  <dialog class="modal files-attr-dialog" data-files-chmod aria-labelledby="files-chmod-title">
+    <div class="modal-head"><h2 id="files-chmod-title">修改权限</h2></div>
+    <div class="modal-body files-form">
+      <p class="hint small muted">目标：<code data-files-chmod-path></code></p>
+      <label class="files-field">
+        <span>常用预设</span>
+        <select data-files-chmod-preset>
+          <option value="">自定义</option>
+          <option value="0755">0755 · 目录/可执行</option>
+          <option value="0644">0644 · 普通文件</option>
+          <option value="0775">0775 · 组可写目录</option>
+          <option value="2775">2775 · 共享目录（setgid）</option>
+        </select>
+      </label>
+      <label class="files-field">
+        <span>权限位（八进制）</span>
+        <input type="text" data-files-chmod-input autocomplete="off" spellcheck="false" placeholder="例如 0755 / 2775">
+      </label>
+      <p class="hint small muted">setgid（2000）允许，用于站点共享目录；setuid（4000）会被服务端拒绝。</p>
+      <p class="field-error" data-files-chmod-error hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-chmod-cancel>取消</button>
+      <button type="button" class="btn primary" data-files-chmod-ok>应用权限</button>
+    </div>
+  </dialog>
+
+  {# ---- 属主弹窗：uid 0 明确提示属主将变为 root ---- #}
+  <dialog class="modal files-attr-dialog" data-files-chown aria-labelledby="files-chown-title">
+    <div class="modal-head"><h2 id="files-chown-title">修改属主</h2></div>
+    <div class="modal-body files-form">
+      <p class="hint small muted">目标：<code data-files-chown-path></code></p>
+      <label class="files-field">
+        <span>UID</span>
+        <input type="number" min="0" step="1" data-files-chown-uid autocomplete="off">
+      </label>
+      <label class="files-field">
+        <span>GID</span>
+        <input type="number" min="0" step="1" data-files-chown-gid autocomplete="off">
+      </label>
+      <p class="files-root-warn" data-files-chown-warn hidden>属主改为 root，该文件将由 root 持有。</p>
+      <p class="hint small muted">受保护路径仍会被服务端拒绝；chown 到 root 会单独记审计。</p>
+      <p class="field-error" data-files-chown-error hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-chown-cancel>取消</button>
+      <button type="button" class="btn primary" data-files-chown-ok>应用属主</button>
+    </div>
+  </dialog>
+
+  {# ---- 压缩弹窗 ---- #}
+  <dialog class="modal files-attr-dialog" data-files-archive-dialog aria-labelledby="files-archive-title">
+    <div class="modal-head"><h2 id="files-archive-title">压缩</h2></div>
+    <div class="modal-body files-form">
+      <p class="hint small muted">将打包到：<code data-files-archive-dir></code></p>
+      <p class="hint small muted" data-files-archive-sources></p>
+      <label class="files-field">
+        <span>压缩包名称</span>
+        <input type="text" data-files-archive-name autocomplete="off" spellcheck="false">
+      </label>
+      <label class="files-field">
+        <span>格式</span>
+        <select data-files-archive-format>
+          <option value="zip">zip</option>
+          <option value="tar.gz">tar.gz</option>
+        </select>
+      </label>
+      <label class="files-check"><input type="checkbox" data-files-archive-overwrite> 目标已存在时覆盖</label>
+      <p class="field-error" data-files-archive-error hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-archive-cancel>取消</button>
+      <button type="button" class="btn primary" data-files-archive-ok>开始压缩</button>
+    </div>
+  </dialog>
+
+  {# ---- 解压弹窗（目标目录可用目录选择器）---- #}
+  <dialog class="modal files-attr-dialog" data-files-extract-dialog aria-labelledby="files-extract-title">
+    <div class="modal-head"><h2 id="files-extract-title">解压</h2></div>
+    <div class="modal-body files-form">
+      <p class="hint small muted">压缩包：<code data-files-extract-archive></code></p>
+      <label class="files-field">
+        <span>解压到目录</span>
+        <div class="files-field-row">
+          <input type="text" data-files-extract-dest autocomplete="off" spellcheck="false">
+          <button type="button" class="btn ghost small" data-files-extract-pick>选择目录</button>
+        </div>
+      </label>
+      <label class="files-check"><input type="checkbox" data-files-extract-overwrite> 同名文件已存在时覆盖</label>
+      <p class="hint small muted">符号链接与特殊文件默认不解出；绝对路径、.. 穿越、条目/体积/累计字节超限会立即中止并清理半成品。</p>
+      <p class="field-error" data-files-extract-error hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-extract-cancel>取消</button>
+      <button type="button" class="btn primary" data-files-extract-ok>开始解压</button>
+    </div>
+  </dialog>
+
+  {# ---- 目标目录选择器：浏览子目录，供复制/移动/解压共用 ---- #}
+  <dialog class="modal files-pick-dialog" data-files-pick aria-labelledby="files-pick-title">
+    <div class="modal-head"><h2 id="files-pick-title" data-files-pick-title>选择目标目录</h2></div>
+    <div class="modal-body files-pick">
+      <div class="files-crumbs" data-files-pick-crumbs></div>
+      <div class="files-pick-toolbar">
+        <button type="button" class="btn ghost small" data-files-pick-up>上级</button>
+        <span class="muted small">点击目录进入；确认后使用当前目录</span>
+      </div>
+      <ul class="files-pick-list" data-files-pick-list></ul>
+      <p class="hint small muted">当前选择：<code data-files-pick-current></code></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-files-pick-cancel>取消</button>
+      <button type="button" class="btn primary" data-files-pick-ok>选择此目录</button>
+    </div>
+  </dialog>
 </div>
 <script src="/{{ ctx.prefix }}/static/files.js" defer></script>
 {% endblock %}

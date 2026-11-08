@@ -10,21 +10,27 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::body::{Body, Bytes};
 use axum::extract::{Query, State};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use futures_util::stream;
 use serde_json::{json, Value};
 
-use skiff_app::admin_fs::FsErr;
+use skiff_app::admin_fs::{FsErr, FsPathKind, MAX_EDIT_BYTES};
 use skiff_model::Permission;
 
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::AuthUser;
 use crate::state::AppState;
-use crate::templates::{FilesPage, FsQuotasPage, FsTrashPage};
+use crate::templates::{FilesPage, FilesRootView, FsQuotasPage, FsTrashPage};
+
+/// 上传/下载的单片字节数（与 `skiff-fs` 的单次读写上限一致）。
+const CHUNK_BYTES: usize = 256 * 1024;
 
 type JsonErr = (StatusCode, Json<Value>);
 type ApiResult = Result<Json<Value>, JsonErr>;
@@ -92,8 +98,240 @@ pub async fn page(
     let page = FilesPage {
         ctx: handlers::page_ctx(&state, &user, "core/files"),
         start_path,
+        roots: state
+            .admin_fs()
+            .roots()
+            .into_iter()
+            .map(|r| FilesRootView {
+                label: r.label,
+                path: r.path,
+            })
+            .collect(),
+        max_edit_bytes: MAX_EDIT_BYTES,
+        upload_chunk_bytes: CHUNK_BYTES,
     };
     handlers::render(page)
+}
+
+/// 目录树懒展开：只返回子目录名，前端拼成绝对路径。
+pub async fn api_tree(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
+    admin(&user)?;
+    let path = q
+        .get("path")
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| bad_request("缺少 path 参数"))?;
+    match state.admin_fs().list_dirs(&user.user.username, path) {
+        Ok(dirs) => Ok(Json(json!({ "ok": true, "path": path, "dirs": dirs }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 分片上传：`offset` 与磁盘当前大小必须一致；首片按原子替换创建。
+pub async fn api_upload(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+    parts: Parts,
+    body: Bytes,
+) -> ApiResult {
+    admin(&user)?;
+    csrf(&state, &user, &parts)?;
+    let path = q
+        .get("path")
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| bad_request("缺少 path 参数"))?;
+    let offset: u64 = q
+        .get("offset")
+        .ok_or_else(|| bad_request("缺少 offset 参数"))?
+        .parse()
+        .map_err(|_| bad_request("offset 必须是非负整数"))?;
+    if body.len() > CHUNK_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "files.too_large",
+                    "message": format!("单次上传分片不能超过 {} KiB", CHUNK_BYTES / 1024)
+                }
+            })),
+        ));
+    }
+    match state
+        .admin_fs()
+        .upload_chunk(&user.user.username, path, offset, &body)
+    {
+        Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 单文件下载：流式按 256 KiB 区间读取，不在内存里整文件缓冲。
+pub async fn api_download(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, JsonErr> {
+    admin(&user)?;
+    let path = q
+        .get("path")
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| bad_request("缺少 path 参数"))?;
+    let stat = state
+        .admin_fs()
+        .stat(&user.user.username, path)
+        .map_err(fs_err)?;
+    if stat.kind == FsPathKind::Dir {
+        return download_dir(state, user.user.username.clone(), path).await;
+    }
+    if stat.kind != FsPathKind::File {
+        return Err(bad_request("只支持下载普通文件"));
+    }
+
+    let name = path
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("download");
+    let content_type = mime_guess::from_path(name)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string();
+    stream_file(
+        state,
+        user.user.username,
+        path.to_string(),
+        stat.size,
+        name.to_string(),
+        content_type,
+        None,
+    )
+}
+
+/// 目录打包下载：复用 `archive` 落一个临时 zip，再用**同一条下载流**输出；
+/// `TempDir` 随流生命周期释放（客户端断开也会清理）。
+async fn download_dir(state: Arc<AppState>, user: String, path: &str) -> Result<Response, JsonErr> {
+    let base = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("download");
+    let name = format!("{base}.zip");
+    let dir = tempfile::tempdir().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "ok": false,
+                "error": { "code": "files.temp", "message": format!("创建下载临时目录失败: {e}") }
+            })),
+        )
+    })?;
+    let dest = dir.path().join("download.zip");
+    let dest_str = dest.display().to_string();
+    let archive = {
+        let st = Arc::clone(&state);
+        let user = user.clone();
+        let source = path.to_string();
+        tokio::task::spawn_blocking(move || {
+            st.admin_fs()
+                .archive(&user, &[source], &dest_str, "zip", false)
+        })
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "ok": false,
+                    "error": { "code": "files.temp", "message": format!("打包任务失败: {e}") }
+                })),
+            )
+        })?
+        .map_err(fs_err)?
+    };
+    stream_file(
+        state,
+        user,
+        dest.display().to_string(),
+        archive.bytes,
+        name,
+        "application/zip".to_string(),
+        Some(dir),
+    )
+}
+
+/// 同一条流式下载：按 256 KiB 区间读，不在内存整文件缓冲；`keep` 为临时目录守卫。
+#[allow(clippy::too_many_arguments)]
+fn stream_file(
+    state: Arc<AppState>,
+    user: String,
+    path: String,
+    size: u64,
+    name: String,
+    content_type: String,
+    keep: Option<tempfile::TempDir>,
+) -> Result<Response, JsonErr> {
+    let owner = user;
+    let source = path;
+    let chunks = stream::try_unfold(
+        (Arc::clone(&state), owner, source, 0u64, keep),
+        |(st, user, path, offset, keep)| async move {
+            let st2 = Arc::clone(&st);
+            let user2 = user.clone();
+            let path2 = path.clone();
+            let read = tokio::task::spawn_blocking(move || {
+                st2.admin_fs()
+                    .read_chunk(&user2, &path2, offset, CHUNK_BYTES)
+            })
+            .await
+            .map_err(|e| std::io::Error::other(format!("下载读取任务失败: {e}")))?;
+            let chunk = read.map_err(|e| std::io::Error::other(e.message().to_string()))?;
+            if chunk.bytes.is_empty() {
+                return Ok::<_, std::io::Error>(None);
+            }
+            let next = offset + chunk.bytes.len() as u64;
+            Ok(Some((
+                Bytes::from(chunk.bytes),
+                (st, user, path, next, keep),
+            )))
+        },
+    );
+
+    let body = Body::from_stream(chunks);
+    let disposition = axum::http::HeaderValue::from_str(&content_disposition(&name))
+        .map_err(|_| bad_request("文件名包含无法编码的字符"))?;
+    let mut resp = (
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, content_type),
+            (CONTENT_LENGTH, size.to_string()),
+        ],
+        body,
+    )
+        .into_response();
+    resp.headers_mut().insert(CONTENT_DISPOSITION, disposition);
+    Ok(resp)
+}
+
+/// `attachment; filename="x"`（ASCII）或 RFC 5987 `filename*=UTF-8''…`（非 ASCII）。
+fn content_disposition(name: &str) -> String {
+    let plain = name
+        .chars()
+        .all(|c| c.is_ascii() && !c.is_ascii_control() && c != '"' && c != '\\');
+    if plain {
+        return format!("attachment; filename=\"{name}\"");
+    }
+    let mut enc = String::new();
+    for b in name.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(*b, b'-' | b'_' | b'.' | b'~') {
+            enc.push(*b as char);
+        } else {
+            enc.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename*=UTF-8''{enc}")
 }
 
 pub async fn api_list(
@@ -189,6 +427,122 @@ pub async fn api_remove(
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
     match state.admin_fs().remove(&user.user.username, path) {
+        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 复制/移动：`move` 即同盘 `rename`，两者都只走 `skiff-fs`。
+pub async fn api_copy(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> ApiResult {
+    admin(&user)?;
+    csrf(&state, &user, &parts)?;
+    let body = body_json(&body)?;
+    let from = field(&body, "from")?;
+    let to = field(&body, "to")?;
+    let overwrite = body
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match state
+        .admin_fs()
+        .copy(&user.user.username, from, to, overwrite)
+    {
+        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 权限修改：`mode` 接受数字或八进制字符串（如 `"0755"` / `"0o2775"`）。
+pub async fn api_chmod(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> ApiResult {
+    admin(&user)?;
+    csrf(&state, &user, &parts)?;
+    let body = body_json(&body)?;
+    let path = field(&body, "path")?;
+    let mode = mode_field(&body, "mode")?;
+    match state.admin_fs().chmod(&user.user.username, path, mode) {
+        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 属主修改：任意 `uid:gid`；uid 0 由下层审计单独标注，前端负责提示。
+pub async fn api_chown(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> ApiResult {
+    admin(&user)?;
+    csrf(&state, &user, &parts)?;
+    let body = body_json(&body)?;
+    let path = field(&body, "path")?;
+    let uid = u32_field(&body, "uid")?;
+    let gid = u32_field(&body, "gid")?;
+    match state.admin_fs().chown(&user.user.username, path, uid, gid) {
+        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 压缩：源为绝对路径数组，目标为压缩包绝对路径。
+pub async fn api_archive(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> ApiResult {
+    admin(&user)?;
+    csrf(&state, &user, &parts)?;
+    let body = body_json(&body)?;
+    let sources = string_array(&body, "sources")?;
+    if sources.is_empty() {
+        return Err(bad_request("sources 不能为空"));
+    }
+    let dest = field(&body, "dest")?;
+    let format = field(&body, "format")?;
+    let overwrite = body
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match state
+        .admin_fs()
+        .archive(&user.user.username, &sources, dest, format, overwrite)
+    {
+        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Err(e) => Err(fs_err(e)),
+    }
+}
+
+/// 解压：格式由压缩包扩展名决定，目标目录必须已存在。
+pub async fn api_extract(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> ApiResult {
+    admin(&user)?;
+    csrf(&state, &user, &parts)?;
+    let body = body_json(&body)?;
+    let archive = field(&body, "archive")?;
+    let dest = field(&body, "dest")?;
+    let overwrite = body
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match state
+        .admin_fs()
+        .extract(&user.user.username, archive, dest, overwrite)
+    {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -357,6 +711,73 @@ pub async fn api_quota_scan(
         Ok(quota) => Ok(Json(json!({ "ok": true, "quota": quota }))),
         Err(e) => Err(fs_err(e)),
     }
+}
+
+/// 权限位：数字按十进制数值（前端 `parseInt(x, 8)` 得到），字符串按八进制解析。
+fn mode_field(body: &Value, key: &str) -> Result<u32, JsonErr> {
+    let value = body
+        .get(key)
+        .ok_or_else(|| bad_request(format!("缺少字段 {key}")))?;
+    let raw = match value {
+        Value::Number(n) => {
+            let n = n
+                .as_u64()
+                .ok_or_else(|| bad_request(format!("{key} 必须是非负整数")))?;
+            if !(0..=0o17777).contains(&n) {
+                return Err(bad_request(format!("{key} 超出 0000-7777 范围")));
+            }
+            return Ok(n as u32);
+        }
+        Value::String(s) => s.trim().to_string(),
+        _ => return Err(bad_request(format!("{key} 必须是数字或八进制字符串"))),
+    };
+    let digits = raw
+        .strip_prefix("0o")
+        .or_else(|| raw.strip_prefix("0O"))
+        .unwrap_or(&raw);
+    if digits.is_empty() || !digits.chars().all(|c| ('0'..='7').contains(&c)) {
+        return Err(bad_request(format!(
+            "{key} 必须是八进制权限位（例如 0755 / 2775）"
+        )));
+    }
+    let n = u32::from_str_radix(digits, 8)
+        .map_err(|_| bad_request(format!("{key} 超出 0000-7777 范围")))?;
+    if n > 0o7777 {
+        return Err(bad_request(format!("{key} 超出 0000-7777 范围")));
+    }
+    Ok(n)
+}
+
+fn u32_field(body: &Value, key: &str) -> Result<u32, JsonErr> {
+    match body.get(key) {
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| bad_request(format!("{key} 必须是非负整数"))),
+        Some(Value::String(s)) => s
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| bad_request(format!("{key} 必须是非负整数"))),
+        _ => Err(bad_request(format!("缺少字段 {key}"))),
+    }
+}
+
+fn string_array(body: &Value, key: &str) -> Result<Vec<String>, JsonErr> {
+    let arr = body
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad_request(format!("缺少数组字段 {key}")))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let s = item
+            .as_str()
+            .ok_or_else(|| bad_request(format!("{key} 的元素必须是非空字符串")))?;
+        if s.is_empty() {
+            return Err(bad_request(format!("{key} 的元素必须是非空字符串")));
+        }
+        out.push(s.to_string());
+    }
+    Ok(out)
 }
 
 /// 上限字段允许：数字、数字字符串、空串/null（表示不限制）。

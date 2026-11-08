@@ -9,6 +9,9 @@ description = "Skiff（轻舟）· 内核文件系统原语：主体授权、路
 [dependencies]
 serde = { workspace = true }
 sha2 = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

@@ -20,6 +20,18 @@ pub const MAX_DIR_ENTRIES: usize = 1_000_000;
 pub const COPY_MAX_ENTRIES: usize = 1_000;
 /// 目录复制深度上限。
 pub const COPY_MAX_DEPTH: usize = 32;
+/// 压缩包条目数上限（打包侧；含目录条目）。
+pub const ARCHIVE_MAX_ENTRIES: usize = 10_000;
+/// 压缩包打包侧源文件总字节上限。
+pub const ARCHIVE_MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// 压缩包递归深度上限（与复制一致）。
+pub const ARCHIVE_MAX_DEPTH: usize = 32;
+/// 解压条目数上限（边解边计数）。
+pub const EXTRACT_MAX_ENTRIES: usize = 10_000;
+/// 单条解压后体积上限。
+pub const EXTRACT_MAX_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
+/// 解压后累计字节上限。
+pub const EXTRACT_MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct TrashConfig {
@@ -66,6 +78,18 @@ pub struct FsConfig {
     pub copy_max_entries: usize,
     /// 递归复制深度上限。
     pub copy_max_depth: usize,
+    /// 打包条目数上限。
+    pub archive_max_entries: usize,
+    /// 打包源文件总字节上限。
+    pub archive_max_total_bytes: u64,
+    /// 打包递归深度上限。
+    pub archive_max_depth: usize,
+    /// 解压条目数上限。
+    pub extract_max_entries: usize,
+    /// 单条解压后体积上限。
+    pub extract_max_entry_bytes: u64,
+    /// 解压后累计字节上限。
+    pub extract_max_total_bytes: u64,
     /// 路径锁等待上限。
     pub lock_timeout: Duration,
     pub trash: TrashConfig,
@@ -86,6 +110,12 @@ impl Default for FsConfig {
             max_dir_entries: MAX_DIR_ENTRIES,
             copy_max_entries: COPY_MAX_ENTRIES,
             copy_max_depth: COPY_MAX_DEPTH,
+            archive_max_entries: ARCHIVE_MAX_ENTRIES,
+            archive_max_total_bytes: ARCHIVE_MAX_TOTAL_BYTES,
+            archive_max_depth: ARCHIVE_MAX_DEPTH,
+            extract_max_entries: EXTRACT_MAX_ENTRIES,
+            extract_max_entry_bytes: EXTRACT_MAX_ENTRY_BYTES,
+            extract_max_total_bytes: EXTRACT_MAX_TOTAL_BYTES,
             lock_timeout: DEFAULT_LOCK_TIMEOUT,
             trash: TrashConfig::default(),
             protected_paths: Vec::new(),

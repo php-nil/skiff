@@ -151,15 +151,15 @@ pub trait QuotaTracker: Send + Sync {
 
 ## 3. 测试结果
 
-- `cargo test -p skiff-fs --locked`：**80 passed, 0 failed**
-  - 单元 22（审计聚合 4、配额 1、哈希 1、锁 3、路径 3、主体 3、回收站 4、压缩路径校验 1、错误映射 2）
-  - 集成 58（audit 3、authorization 11、ops 14、phase2 14、protected 1、quota 5、trash 10）
+- `cargo test -p skiff-fs --locked`：**82 passed, 0 failed**
+  - 单元 23（审计聚合 4、配额 1、哈希 1、锁 3、路径 3、主体 3、回收站 4、压缩路径校验 1、回滚残留回报 1、错误映射 2）
+  - 集成 59（audit 3、authorization 11、ops 14、phase2 15、protected 1、quota 5、trash 10）
 - `cargo clippy -p skiff-fs --all-targets --locked -- -D warnings`：**0 warning / 0 error**
 - `pwsh tools/gate.ps1 -Task fmt`：**通过**
 
 覆盖的契约测试矩阵项：越界（含 `..`、相对路径、NUL）、父目录符号链接逃逸、末段符号链接不跟随、硬链接只删链接、并发写无半文件、rename 双向换名不死锁、复制条目/深度上限、回收站恢复/过期/配额淘汰/跨主体拒绝、审计聚合与不记内容、非 UTF-8 列表跳过、Unix 权限位保留。
 
-阶段二新增（`tests/phase2.rs`）：setuid 拒绝且给可读原因、受保护路径拒绝、压缩/解压 roundtrip、绝对路径与 `..` 穿越拒绝、tar.gz 符号链接跳过、解压条目数/单条体积/累计字节超限后**中止并清理半成品**、解压目标路径含符号链接时拒绝、同名冲突默认拒绝与显式覆盖。限额：`ARCHIVE_MAX_ENTRIES=10_000`、`ARCHIVE_MAX_TOTAL_BYTES=8 GiB`、`ARCHIVE_MAX_DEPTH=32`、`EXTRACT_MAX_ENTRIES=10_000`、`EXTRACT_MAX_ENTRY_BYTES=1 GiB`、`EXTRACT_MAX_TOTAL_BYTES=4 GiB`。
+阶段二新增（`tests/phase2.rs`）：setuid **按位**拒绝（含 `0o6000` / `0o7777`，`0o2775` / `0o1777` 放行）、受保护路径拒绝、压缩/解压 roundtrip、绝对路径与 `..` 穿越拒绝、tar.gz 符号链接跳过、解压条目数/单条体积/累计字节超限后**检测点即刻中止并清理半成品**、回滚失败时把残留路径回写进错误信息、解压目标路径含符号链接时拒绝、同名冲突默认拒绝与显式覆盖。限额：`ARCHIVE_MAX_ENTRIES=10_000`、`ARCHIVE_MAX_TOTAL_BYTES=8 GiB`、`ARCHIVE_MAX_DEPTH=32`、`EXTRACT_MAX_ENTRIES=10_000`、`EXTRACT_MAX_ENTRY_BYTES=1 GiB`、`EXTRACT_MAX_TOTAL_BYTES=4 GiB`。
 
 Windows 环境限制：本机沙箱无法对符号链接执行 `rename`，因此「删除链接只进回收站」的断言仅在 Unix 执行；语义本身由 `symlink_metadata` + `remove_file` 保证。
 
