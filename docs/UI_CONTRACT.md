@@ -35,7 +35,12 @@
   - **成功**：`<div class="alert ok" data-toast>`，约 4.2 秒后自动消失；由 `data-toast` 统一接管。
   - **警告/状态说明**：`<div class="alert warn">` 或 `.banner warn`，常驻直到状态改变。
 - 字段级校验用 `.field-error`，不要用 `alert`；请求级失败才用 `alert`。
-- 来源：服务端 `?notice=` / `?error=`（整页跳转），或 AJAX 响应体。**禁止 `alert()` / `window.alert`**。
+- 来源：写操作结果统一用服务端一次性消息（flash，按会话短期存储，页面渲染一次即消费）：
+  POST → 303 到无参数地址，渲染时从会话取一条成功/失败。**禁止**把结果塞进
+  `?notice=` / `?error=` / `?ok=1`（刷新会重放、链接带脏数据、错误进历史与日志）。
+  AJAX 响应体也可直达提示条。抽屉内 `data-drawer-post` 表单：fetch 跟随 303 后
+  直接用回跳返回的整页 HTML 重绘面板，并把同一份 HTML 里的提示条带回抽屉
+  （面板本身在提示条之外，只取面板会丢反馈）。**禁止 `alert()` / `window.alert`**。
 - 文案反例：「操作失败」「出错了」。正例：「安装任务未启动：该实例已有任务在执行，请等待完成后再试。」
 
 ## 4. 主操作与次操作
@@ -107,11 +112,14 @@
 
 - 统一组件：`[data-confirm-dialog]`；文案放在触发按钮的 `data-confirm`（同一表单多动作）或表单 `data-confirm`（整表操作）。
 - **措辞**：`确认<动作><对象>？<后果>`。示例：
-  - 「确认删除站点 a.com？删除后目录与证书将移入回收站，站点立即不可访问。」
   - 「确认停止 Web 服务？所有站点将立即不可访问。」
 - **按钮顺序**：取消（`ghost`，左）→ 确认动作（`danger`，右）；确认按钮文案用动词（删除/停止/卸载），不用「确定」。
-- 不可恢复且影响面大的操作才要求输入对象名二次确认；本轮不新增该形态。
-- 新代码禁止新增 `window.confirm` 分支；老代码迁移时替换为统一组件。
+- **删除站点走专用确认页**（不可恢复且会删源码）：`{entry}/sites/<域名>/delete` 先展示将被删除的具体量
+  （目录大小、文件数、关联定时任务数、运行环境绑定；Rust 站点额外标明删源码），再要求输入域名确认。
+  - 表单挂 `data-type-confirm="<域名>"`，输入框 `data-type-confirm-input`，提交按钮 `data-type-confirm-submit`；
+    JS 在输入 trim 后与域名完全一致前保持 `disabled`。
+  - 服务端必须校验提交的 `confirm` 字段等于域名，不能只依赖前端禁用。
+  - 其余危险操作仍走 `[data-confirm-dialog]`；新代码禁止新增 `window.confirm` 分支。
 
 ## 10. 窄屏断点（430 / 860 / 1024）
 
@@ -127,7 +135,7 @@
 
 - 页面骨架：`.page-head`、`.toolbar`、`.panel`、`.panel-head`、`.empty`、`.alert`、`.table-wrap`。
 - 业务前缀：`runtime-*`（运行环境）、`site-*`（站点）、`web-*`（Web 服务）、`task-*`、`plugin-*`。
-- 行为钩子统一 `data-*`：`data-runtime-new`、`data-runtime-open`、`data-drawer-post`、`data-confirm`、`data-toast`、`data-tab`。
+- 行为钩子统一 `data-*`：`data-runtime-new`、`data-runtime-open`、`data-drawer-post`、`data-confirm`、`data-type-confirm`、`data-toast`、`data-tab`。
 - 新增类名必须带业务前缀；禁止 `.left`、`.right`、`.red`、`.big` 这类无语义名。
 - 行为钩子与样式类解耦：JS 只监听 `data-*`，CSS 只匹配语义类，避免改名互相破坏。
 
@@ -149,7 +157,7 @@
 | 容器（本轮补主操作） | 已加「新建容器」主操作与「compose · 项目」归属列；刷新仍与主操作同排（htmx） | 主操作位置达标；刷新/结果计数待拆到 `.toolbar` | P2 |
 | 容器新建 / Compose（本轮） | 新建页与 Compose 页按 §2/§4/§7/§9/§10 搭建；Compose 破坏性操作走共享确认 | 已按基准对齐；后续随 §13 清单做窄屏复核 | — |
 | 插件中心 | 提示条未加 `data-toast`；无工具栏 | 成功提示接 `data-toast`；搜索/筛选按 §5 补齐 | P2 |
-| 文件管理 | 工具栏与目录操作混合、上传/新建入口分散 | 主操作右上角、目录工具栏统一、危险删除接确认 | P1 |
+| 文件管理（阶段二） | 左右双栏 + 行操作菜单：权限/属主/压缩/解压/复制/移动/删除；批量栏含批量压缩与批量复制/移动；目录下载服务端打包 | 已按 §2/§4/§5/§7/§8/§9/§11 对齐；setuid 与 root 属主提示在弹窗内明示 | — |
 | 站点详情 | 多页签 + 分步操作，danger 分散 | 统一页签头部、footer 主操作、危险确认 | P2 |
 | 设置 / 审计 / 资源 | 只有标题，无操作区 | 保持现状；新增操作时按 §4 | P3 |
 | 运行时详情直接页 | 与抽屉共用模板，但直接页无顶部返回入口 | 直接页补「返回运行环境」`ghost`；抽屉内隐藏 | P2 |

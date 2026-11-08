@@ -13,7 +13,7 @@ use crate::handlers::sites::require_admin;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::NginxPage;
-use crate::util::{encode_uri_component, form_first, parse_form};
+use crate::util::{form_first, parse_form};
 
 use skiff_app::nginx::{NginxLogQuery, NginxParams};
 
@@ -116,15 +116,7 @@ pub async fn index(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
-    page(
-        state,
-        user,
-        &q,
-        q.get("error").cloned().unwrap_or_default(),
-        q.get("notice").cloned().unwrap_or_default(),
-        None,
-    )
-    .await
+    page(state, user, &q, String::new(), String::new(), None).await
 }
 
 pub async fn save_main(
@@ -159,10 +151,13 @@ pub async fn save_main(
                     detail
                 )
             };
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/web?tab=config&notice={}",
-                encode_uri_component(&notice)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                notice,
+                format!("/{prefix}/sites/web?tab=config"),
+            ))
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -206,10 +201,13 @@ pub async fn save_params(
                 "failed",
                 &msg,
             );
-            return Ok(handlers::redirect(format!(
-                "/{prefix}/sites/web?tab=config&error={}",
-                encode_uri_component(&msg)
-            )));
+            return Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/web?tab=config"),
+            ));
         }
     };
     match state.save_nginx_params(&params).await {
@@ -232,10 +230,13 @@ pub async fn save_params(
                     detail
                 )
             };
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/web?tab=config&notice={}",
-                encode_uri_component(&notice)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                notice,
+                format!("/{prefix}/sites/web?tab=config"),
+            ))
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -247,10 +248,13 @@ pub async fn save_params(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/web?tab=config&error={}",
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/web?tab=config"),
+            ))
         }
     }
 }

@@ -672,6 +672,24 @@
     dialog.addEventListener("close", function () { pending = null; });
   }
 
+  // ---- 危险操作：输入目标名称才允许提交（删除站点等），防手滑 ----
+  function attachTypedConfirm() {
+    document.querySelectorAll("[data-type-confirm]").forEach(function (box) {
+      if (box.dataset.bound === "1") return;
+      box.dataset.bound = "1";
+      var expected = box.getAttribute("data-type-confirm");
+      var input = box.querySelector("[data-type-confirm-input]");
+      var submit = box.querySelector("[data-type-confirm-submit]");
+      if (!input || !submit) return;
+      function sync() {
+        submit.disabled = input.value.trim() !== expected;
+      }
+      input.addEventListener("input", sync);
+      input.addEventListener("change", sync);
+      sync();
+    });
+  }
+
   // ---- 新建网站弹窗：单页表单（类型切换 / 域名列表 / 批量粘贴 / 目录自动填） ----
   function attachSiteDialog() {
     var dlg = document.querySelector("[data-site-dialog]");
@@ -1188,8 +1206,12 @@
         headers: { "X-Requested-With": "fetch" }
       }).then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
-        // 303 回跳带 ?notice=/?error=：按最终 URL 重开抽屉，错误不再被静默吞掉。
-        return open(resp.redirected ? resp.url : actionUrl);
+        // 服务端 303 到无参数地址，操作结果是一次性提示（flash）：
+        // 直接渲染这次回跳返回的 HTML，提示条与最新面板一起进抽屉，
+        // 不再依赖 URL 上的 ?notice=/?error=（刷新重放、链接带脏数据）。
+        return resp.text().then(function (html) {
+          renderDrawer(html, resp.redirected ? resp.url : actionUrl);
+        });
       }).catch(function (err) {
         if (content) content.innerHTML = '<div class="alert">提交失败：' + String(err.message || err) + "</div>";
       });
@@ -1328,6 +1350,32 @@
       if (last === "queued" || last === "running") timer = setTimeout(tick, 1200);
     }
 
+    // 把整页 HTML 渲染进抽屉：只取运行环境面板，并把一次性提示条带回抽屉
+    // （提示条在 base 模板里、面板之外，只取面板会丢掉反馈）。
+    function renderDrawer(html, url) {
+      if (!content) return;
+      var doc = new DOMParser().parseFromString(html, "text/html");
+      var panel = doc.querySelector("[data-runtime-panel]");
+      if (!panel) throw new Error("详情内容缺失");
+      dlg.dataset.currentUrl = url;
+      content.innerHTML = panel.outerHTML;
+      var banner = doc.querySelector(".banner.ok, .banner.danger");
+      if (banner) {
+        var box = document.createElement("div");
+        box.className = banner.className;
+        box.textContent = banner.textContent.trim();
+        content.insertBefore(box, content.firstChild);
+      }
+      dlg.dataset.rtLogLoaded = "";
+      var previousTab = dlg.dataset.rtTab || "info";
+      applyTab(previousTab);
+      var heading = panel.querySelector("[data-runtime-title]");
+      if (title && heading) title.textContent = heading.textContent.trim();
+      watchJob(content, function () { if (dlg.dataset.currentUrl) open(dlg.dataset.currentUrl); });
+      var focusable = content.querySelector("button,input,select,textarea,a[href]");
+      if (focusable) focusable.focus();
+    }
+
     async function open(url) {
       if (!content) return;
       dlg.dataset.currentUrl = url;
@@ -1335,19 +1383,7 @@
       try {
         var resp = await fetch(url, { headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
-        var text = await resp.text();
-        var doc = new DOMParser().parseFromString(text, "text/html");
-        var panel = doc.querySelector("[data-runtime-panel]");
-        if (!panel) throw new Error("详情内容缺失");
-        content.innerHTML = panel.outerHTML;
-        dlg.dataset.rtLogLoaded = "";
-        var previousTab = dlg.dataset.rtTab || "info";
-        applyTab(previousTab);
-        var heading = panel.querySelector("[data-runtime-title]");
-        if (title && heading) title.textContent = heading.textContent.trim();
-        watchJob(content, function () { if (dlg.dataset.currentUrl) open(dlg.dataset.currentUrl); });
-        var focusable = content.querySelector("button,input,select,textarea,a[href]");
-        if (focusable) focusable.focus();
+        renderDrawer(await resp.text(), url);
       } catch (err) {
         content.innerHTML = '<div class="alert">无法加载运行环境详情：' + String(err.message || err) + "</div>";
       }
@@ -1689,6 +1725,7 @@
     attachMounts();
     attachTheme();
     attachConfirm();
+    attachTypedConfirm();
     ensureIcons();
     attachSiteDialog();
     attachRuntimeDrawer();

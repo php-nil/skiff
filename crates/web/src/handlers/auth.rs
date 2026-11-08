@@ -43,7 +43,6 @@ pub async fn login_page(
     // 而不是只看 `dev_http` 开关。
     let secure = handlers::is_secure_request(&state, &parts);
     let page = LoginPage {
-        dev_http: state.cfg.dev_http,
         prefix: state.cfg.entry_prefix.clone(),
         error: String::new(),
         csrf: csrf.clone(),
@@ -142,7 +141,6 @@ pub async fn login_submit(
             // 直接沿用会让用户的下一次提交卡在时效边界上）。
             let csrf = issue_login_csrf(&state);
             let page = LoginPage {
-                dev_http: state.cfg.dev_http,
                 prefix: state.cfg.entry_prefix.clone(),
                 error: message,
                 csrf: csrf.clone(),
@@ -226,12 +224,14 @@ pub async fn change_password(
     if new != confirm {
         return Err(AppError::Redirect(handlers::settings_error_redirect(
             &state,
+            &user,
             "两次输入的新口令不一致",
         )));
     }
     if !skiff_identity::verify_password(&old, &user.user.password_hash) {
         return Err(AppError::Redirect(handlers::settings_error_redirect(
             &state,
+            &user,
             "当前口令不正确",
         )));
     }

@@ -224,13 +224,10 @@
 
 <section class="panel" id="site-delete">
   <h2>删除站点</h2>
-  <p class="hint">将删除整站目录 <code class="mono">{{ site.root_dir }}</code>（含 index/log/ssl/conf）、vhost 与数据库记录，不可撤销。</p>
+  <p class="hint">将删除整站目录 <code class="mono">{{ site.root_dir }}</code>（含 index/log/ssl/conf）、vhost 与数据库记录，不可撤销。注意：<code class="mono">index/</code> 是运行环境站点的源码目录（Rust 站点即源码本身），删除站点就等于删除源码。</p>
   {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/{{ site.domain }}/delete" class="inline"
-        data-confirm="删除站点 {{ site.domain }}？将删除整站目录 {{ site.root_dir }}（含 index/log/ssl/conf），不可撤销。确认继续？">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <button class="btn danger" type="submit">删除站点</button>
-  </form>
+  <a class="btn danger" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/delete">删除站点</a>
+  <p class="hint">会先进入确认页：显示将被删除的目录大小、文件数、关联定时任务数与运行环境绑定，并要求输入域名确认。</p>
   {% else %}
   <p class="muted small">当前账号只读，删除站点需要管理员操作。</p>
   {% endif %}

@@ -37,8 +37,11 @@
   <symbol id="i-user" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20c.7-3.6 3.8-5.5 7.5-5.5s6.8 1.9 7.5 5.5"/></g></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
-{% if ctx.dev_http %}
-<div class="banner danger">明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure、会话前缀非 __Host-。不可用于远程生产。</div>
+{% if !ctx.flash_error.is_empty() %}
+<div class="banner danger">{{ ctx.flash_error }}</div>
+{% endif %}
+{% if !ctx.flash_notice.is_empty() %}
+<div class="banner ok">{{ ctx.flash_notice }}</div>
 {% endif %}
 {% if ctx.must_change %}
 <div class="banner warn">首次登录必须修改口令后才能继续使用面板。<a href="/{{ ctx.prefix }}/settings?force=1">去修改</a></div>

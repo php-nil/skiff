@@ -3,11 +3,38 @@
 {% block content %}
 <div class="page-head"><h1>删除站点</h1></div>
 <section class="panel">
-  <div class="alert">确认删除站点 <strong class="mono">{{ domain }}</strong>？</div>
-  <p>将删除整站目录 <code>{{ root_dir }}</code>（含 <code>index/ log/ ssl/ conf/</code>）与 nginx vhost，该操作不可撤销。</p>
-  <form method="post" action="/{{ ctx.prefix }}/sites/{{ domain }}/delete" class="inline">
+  <div class="alert danger">确认删除站点 <strong class="mono">{{ domain }}</strong>？以下内容将被永久删除，且不经回收站。</div>
+  <div class="table-box">
+    <table class="grid">
+      <thead><tr><th>将被删除</th><th>数量 / 影响</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>站点目录 <code class="mono">{{ root_dir }}</code>（含 index/log/ssl/conf）</td>
+          <td>{{ dir_size }} · {{ file_count }} 个文件</td>
+        </tr>
+        <tr>
+          <td>绑定的定时任务</td>
+          <td>{% if task_count > 0 %}{{ task_count }} 个（将一并清理）{% else %}0 个{% endif %}</td>
+        </tr>
+        <tr>
+          <td>运行环境绑定</td>
+          <td>{% if runtime_label.is_empty() %}无{% else %}{{ runtime_label }}（删除后该站点解除绑定，运行环境本身保留）{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  {% if rust_source %}
+  <div class="alert danger">该站点绑定 Rust 运行环境：<code class="mono">index/</code> 就是运行源码目录，删除站点将同时删除源码。</div>
+  {% endif %}
+  <p class="hint">vhost、证书与站点记录一并删除；运行环境不会被删除。</p>
+  <form method="post" action="/{{ ctx.prefix }}/sites/{{ domain }}/delete"
+        data-type-confirm="{{ domain }}">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <button class="btn danger" type="submit">确认删除</button>
+    <label class="field">输入域名 <strong class="mono">{{ domain }}</strong> 以确认
+      <input class="mono" name="confirm" type="text" autocomplete="off" spellcheck="false"
+             data-type-confirm-input>
+    </label>
+    <button class="btn danger" type="submit" disabled data-type-confirm-submit>确认删除</button>
     <a class="ghost" href="/{{ ctx.prefix }}/sites">取消</a>
   </form>
 </section>

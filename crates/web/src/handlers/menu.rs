@@ -45,13 +45,8 @@ pub async fn dispatch(
     // `core/tasks/<id>`：任务详情深链（id 里含 `:`，不含 `/`）。
     if let Some(id) = rest.strip_prefix("core/tasks/") {
         if !id.is_empty() && !id.contains('/') {
-            return handlers::tasks::detail(
-                State(state),
-                AuthUser(user),
-                Path(id.to_string()),
-                Query(HashMap::new()),
-            )
-            .await;
+            return handlers::tasks::detail(State(state), AuthUser(user), Path(id.to_string()))
+                .await;
         }
     }
     match rest {
@@ -61,7 +56,7 @@ pub async fn dispatch(
         "core/files/trash" => handlers::files::trash_page(State(state), AuthUser(user)).await,
         "core/files/quotas" => handlers::files::quotas_page(State(state), AuthUser(user)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
-        "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
+        "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user)).await,
         "core/sites/web" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,
         "core/sites/new" => {
             handlers::sites::new_page_get(State(state), AuthUser(user), Query(q)).await
@@ -73,7 +68,7 @@ pub async fn dispatch(
             handlers::compose::page(State(state), AuthUser(user), Query(q)).await
         }
         "core/docker/settings" => {
-            handlers::docker_settings::page(State(state), AuthUser(user), Query(q)).await
+            handlers::docker_settings::page(State(state), AuthUser(user)).await
         }
         "core/docker/images" => handlers::resources::images(State(state), AuthUser(user)).await,
         "core/docker/networks" => handlers::resources::networks(State(state), AuthUser(user)).await,
@@ -86,9 +81,7 @@ pub async fn dispatch(
         "core/settings/security" => {
             handlers::settings::page(State(state), AuthUser(user), Query(HashMap::new())).await
         }
-        "core/settings/menu" => {
-            handlers::settings::menu_page(State(state), AuthUser(user), Query(HashMap::new())).await
-        }
+        "core/settings/menu" => handlers::settings::menu_page(State(state), AuthUser(user)).await,
         "core/settings/audit" => handlers::settings::audit(State(state), AuthUser(user)).await,
         other if other.starts_with("plugin/") => {
             let mut parts = other.split('/');

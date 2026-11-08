@@ -136,8 +136,8 @@ pub async fn list(
         ctx: handlers::page_ctx(&state, &user, "core/tasks"),
         tasks: rows,
         can_admin: user.can(skiff_model::Permission::Admin),
-        error: q.get("error").cloned().unwrap_or_default(),
-        notice: q.get("notice").cloned().unwrap_or_default(),
+        error: String::new(),
+        notice: String::new(),
     })
 }
 
@@ -145,7 +145,6 @@ pub async fn detail(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
-    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let svc = service(&state)?;
     let view = svc
@@ -165,8 +164,8 @@ pub async fn detail(
         payload,
         runs,
         can_admin: user.can(skiff_model::Permission::Admin),
-        error: q.get("error").cloned().unwrap_or_default(),
-        notice: q.get("notice").cloned().unwrap_or_default(),
+        error: String::new(),
+        notice: String::new(),
     })
 }
 
@@ -210,11 +209,13 @@ pub async fn toggle(
             );
             Ok(handlers::redirect(back(&id)))
         }
-        Err(e) => Ok(handlers::redirect(format!(
-            "{}?error={}",
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            e,
             back(&id),
-            crate::util::encode_uri_component(&e)
-        ))),
+        )),
     }
 }
 
@@ -241,16 +242,20 @@ pub async fn run(
         "",
     );
     match result {
-        Ok(_) => Ok(handlers::redirect(format!(
-            "{}?notice={}",
+        Ok(_) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            "任务已执行",
             back(&id),
-            crate::util::encode_uri_component("任务已执行")
-        ))),
-        Err(e) => Ok(handlers::redirect(format!(
-            "{}?error={}",
+        )),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            e,
             back(&id),
-            crate::util::encode_uri_component(&e)
-        ))),
+        )),
     }
 }
 
@@ -280,10 +285,12 @@ pub async fn delete(
             "/{}/tasks",
             crate::templates::entry_prefix()
         ))),
-        Err(e) => Ok(handlers::redirect(format!(
-            "{}?error={}",
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            e,
             back(&id),
-            crate::util::encode_uri_component(&e)
-        ))),
+        )),
     }
 }

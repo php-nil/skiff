@@ -34,7 +34,9 @@
 
 <nav class="workbench-tabs runtime-tabs" data-runtime-tabs aria-label="运行环境标签">
   <a class="workbench-tab on" data-runtime-tab="info" href="#rt-info" aria-current="page">基础信息</a>
+  {% if runtime.kind_key == "php" %}
   <a class="workbench-tab" data-runtime-tab="extensions" href="#rt-extensions">扩展</a>
+  {% endif %}
   <a class="workbench-tab" data-runtime-tab="config" href="#rt-config">配置</a>
   <a class="workbench-tab" data-runtime-tab="logs" href="#rt-logs">日志</a>
   <a class="workbench-tab" data-runtime-tab="sites" href="#rt-sites">站点{% if runtime.site_count > 0 %}（{{ runtime.site_count }}）{% endif %}</a>
@@ -117,6 +119,7 @@
   </section>
 </section>
 
+{% if runtime.kind_key == "php" %}
 <section class="panel runtime-tab-panel" data-runtime-tab-panel="extensions" hidden>
   <div class="panel-head">
     <h2>扩展管理</h2>
@@ -208,10 +211,22 @@
   </div>
   </div>
 </div>
+{% endif %}
 
 <section class="panel runtime-tab-panel" data-runtime-tab-panel="config" hidden>
   {% if runtime.kind_key == "php" %}
   <div class="panel-head"><h2>PHP 配置</h2></div>
+  {% if config_mounts_stale %}
+  <div class="alert warn">
+    本实例创建于「配置文件编辑」功能之前：容器未挂载宿主 <code>php/php.ini</code> 与 <code>conf.d</code>，在这里保存的修改不会生效。
+    请先重建实例，重建只重装容器与配置，不影响站点目录与源码。
+    {% if can_admin %}
+    <form method="post" action="{{ env_href }}/action/rebuild" class="inline" data-drawer-post>
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn primary" type="submit"{% if has_job && job.active %} disabled{% endif %}>直接重建</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
   {% if can_admin %}
   <form method="post" action="{{ env_href }}/config">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
@@ -264,6 +279,66 @@
     <div><span class="muted">max_execution_time</span><span class="mono">{{ config.max_execution_time }}s</span></div>
     <div><span class="muted">FPM</span><span class="mono">{{ config.pm }} · children {{ config.max_children }} · start {{ config.start_servers }} · spare {{ config.min_spare_servers }}-{{ config.max_spare_servers }} · max_requests {{ config.max_requests }}</span></div>
   </div>
+  {% endif %}
+
+  {% if can_admin %}
+  <div class="panel-head runtime-subhead">
+    <h2>配置文件</h2>
+    <a class="btn ghost" href="{{ env_href }}?tab=config&amp;ini=1#rt-config">刷新生效值</a>
+  </div>
+  <p class="hint">直接编辑宿主托管文件；保存前在容器内校验语法，保存后重启 FPM，失败自动回滚。<strong>权威关系</strong>：上方「PHP 参数」保存时会重写 <code>www.conf</code>（表单字段为权威）；<code>php.ini</code> 中的同名项在 FPM 池里被 <code>php_admin_value</code> 覆盖。</p>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>文件</th><th>宿主路径</th><th>容器路径</th><th class="num">操作</th></tr></thead>
+      <tbody>
+      {% for f in php_files %}
+        <tr{% if f.selected %} class="selected"{% endif %}>
+          <td>{{ f.label }}{% if !f.exists %} <span class="tag warn">不存在</span>{% endif %}</td>
+          <td class="mono">{{ f.host_path }}</td>
+          <td class="mono">{{ f.container_path }}</td>
+          <td class="num"><a href="{{ f.edit_href }}#rt-config">编辑</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">镜像内置扩展安装器写入容器 <code>conf.d</code> 的 ini 不在宿主侧；宿主托管目录 <code>php/conf.d/</code> 的 ini 会在镜像 <code>conf.d</code> 之后扫描。</p>
+
+  {% match php_editor %}
+  {% when Some with (ed) %}
+  <form method="post" action="{{ env_href }}/config-file" class="config-editor">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input type="hidden" name="key" value="{{ ed.key }}">
+    <div class="panel-head runtime-subhead"><h3>{{ ed.label }}</h3><span class="mono">{{ ed.container_path }}</span></div>
+    <p class="hint">{{ ed.note }}</p>
+    <textarea name="content" class="mono config-textarea" rows="16" spellcheck="false">{{ ed.content }}</textarea>
+    <div class="wizard-nav">
+      <a class="btn ghost" href="{{ env_href }}?tab=config#rt-config">取消</a>
+      <button class="btn primary" type="submit">校验并保存</button>
+    </div>
+  </form>
+  {% when None %}
+  {% endmatch %}
+
+  {% if php_values_loaded %}
+  <div class="panel-head runtime-subhead"><h2>生效值（php -i）</h2></div>
+  {% if !php_values_error.is_empty() %}
+  <div class="alert">读取生效值失败：{{ php_values_error }}</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>指令</th><th>文件值</th><th>生效值</th><th>来源</th></tr></thead>
+      <tbody>
+      {% for v in php_values %}
+        <tr><td class="mono">{{ v.key }}</td><td class="mono">{{ v.file_value }}</td><td class="mono">{{ v.effective }}</td><td class="muted">{{ v.source }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% else %}
+  <p class="hint">点「刷新生效值」按需执行 <code>php -i</code>；不会在页面渲染时执行容器命令。</p>
+  {% endif %}
   {% endif %}
 
   <div class="panel-head runtime-subhead"><h2>socket 与权限</h2></div>

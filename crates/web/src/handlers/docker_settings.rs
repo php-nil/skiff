@@ -2,10 +2,9 @@
 //!
 //! 原挂在「网站设置」下，但两项都只影响镜像拉取，与站点业务无关，因此迁到 Docker 一级。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::request::Parts;
 use axum::response::Response;
 
@@ -14,12 +13,11 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::DockerSettingsPage;
-use crate::util::{encode_uri_component, form_first, parse_form};
+use crate::util::{form_first, parse_form};
 
 pub async fn page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     handlers::render(DockerSettingsPage {
         ctx: handlers::page_ctx(&state, &user, "core/docker/settings"),
@@ -32,8 +30,8 @@ pub async fn page(
             .get_setting("sites.image_prefix")?
             .unwrap_or_default(),
         can_admin: user.can(skiff_model::Permission::Admin),
-        error: q.get("error").cloned().unwrap_or_default(),
-        notice: q.get("notice").cloned().unwrap_or_default(),
+        error: String::new(),
+        notice: String::new(),
     })
 }
 
@@ -89,10 +87,13 @@ pub async fn save(
                         "failed",
                         &e,
                     );
-                    return Ok(handlers::redirect(format!(
-                        "/{prefix}/docker/settings?error={}",
-                        encode_uri_component(&e)
-                    )));
+                    return Ok(handlers::flash_redirect(
+                        &state,
+                        &user,
+                        skiff_app::FlashKind::Error,
+                        e,
+                        format!("/{prefix}/docker/settings"),
+                    ));
                 }
             }
         }
@@ -107,8 +108,11 @@ pub async fn save(
         "ok",
         "",
     );
-    Ok(handlers::redirect(format!(
-        "/{prefix}/docker/settings?notice={}",
-        encode_uri_component(&notice)
-    )))
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        skiff_app::FlashKind::Notice,
+        notice,
+        format!("/{prefix}/docker/settings"),
+    ))
 }

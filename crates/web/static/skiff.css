@@ -758,6 +758,9 @@ body[data-layout="left"][data-content-width="fixed"] .foot {
 }
 .banner.danger { background: var(--danger-soft); border-color: var(--danger-line); color: var(--danger); }
 .banner.warn { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
+.banner.ok { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.config-editor .config-textarea { width: 100%; min-height: 18rem; }
+.table-wrap table.grid tr.selected { background: var(--accent-soft); }
 .banner a { margin-left: var(--sp-2); font-weight: 600; }
 /* 左侧布局的顶栏是固定列：提示条文字从内容起点开始，避免被侧栏遮住左半句。
    窄屏为抽屉形态，提示条全宽，无需偏移。 */

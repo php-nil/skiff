@@ -32,12 +32,44 @@ use skiff_store::{
     NewRuntime, NewSite as StoreNewSite, Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC,
 };
 
+use crate::jobs as app_jobs;
 use crate::runtime_catalog;
 use crate::AppState;
 
 pub const NGINX_CONTAINER: &str = "skiff-web-nginx";
 /// 每个 PHP 实例一个独立容器：`skiff-php-<name>`。
 pub const PHP_CONTAINER_PREFIX: &str = "skiff-php";
+
+/// 单扩展安装/卸载脚本的硬超时：超时只停止等待（Docker 无 kill exec 接口），
+/// 按失败结算并保留已采集输出尾巴，避免作业永远停在「取消中」。
+const EXT_EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// 批量扩展脚本（可能触发多次编译）的硬超时。
+const EXT_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// 超时错误标记：`job_finish_err` 依据它把 `error_class` 记为 `timeout`。
+const TIMEOUT_MARK: &str = "timeout: ";
+
+/// 任务日志时间戳（本地时区，仅展示用）。
+fn fmt_log_time(at: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(at, 0)
+        .single()
+        .map(|t| t.format("%H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+/// 任务中心错误 → 站点错误：忙碌时给出可行动提示。
+fn site_error_from_job(e: app_jobs::JobError) -> SiteError {
+    match e {
+        app_jobs::JobError::Busy(m) => SiteError::Conflict(format!(
+            "该对象已有任务在执行（{m}），请等待完成或取消后再试"
+        )),
+        app_jobs::JobError::NotFound(m) | app_jobs::JobError::BadRequest(m) => {
+            SiteError::BadRequest(m)
+        }
+        app_jobs::JobError::Store(m) => SiteError::Internal(m),
+    }
+}
 /// OpenResty 官方镜像，固定 digest（不复用 1Panel 的 tag）。
 pub const DEFAULT_NGINX_IMAGE: &str =
     "openresty/openresty:alpine@sha256:2cb90d64192934c26b3749cf744f47edd59277787fe761bd109eeebdc3e2214a";
@@ -58,6 +90,22 @@ pub const SOCKET_GID: u32 = 65534;
 pub const SOCKET_MODE: u32 = 0o660;
 /// PHP-FPM 默认池配置在容器内的位置（用宿主生成的文件覆盖它）。
 pub const CONTAINER_PHP_POOL: &str = "/usr/local/etc/php-fpm.d/www.conf";
+/// PHP 主配置（宿主 `php/php.ini` 挂到这里）。
+pub const CONTAINER_PHP_INI: &str = "/usr/local/etc/php/php.ini";
+/// 宿主托管的扩展 ini 目录在容器内的位置。
+pub const CONTAINER_PHP_SKIFF_CONFD: &str = "/usr/local/etc/php/conf.d-skiff";
+/// PHP 启动时扫描的 ini 目录：镜像自带 conf.d 在前，Skiff 托管目录在后。
+pub const PHP_INI_SCAN_DIR_VALUE: &str =
+    ":/usr/local/etc/php/conf.d:/usr/local/etc/php/conf.d-skiff";
+/// 宿主侧标记：本实例是新版安装（`php.ini` / `conf.d` 已挂载，编辑才会生效）。
+///
+/// 旧实例的容器没有这两个挂载，编辑能保存但不生效；详情页据此提示重建。
+pub const PHP_CONFIG_SENTINEL: &str = ".config-mounted";
+/// 宿主托管 `php.ini` 的初始内容：只写说明，不改镜像默认值。
+pub const DEFAULT_PHP_INI: &str =
+    "; Skiff 托管的 PHP 主配置（挂载为 /usr/local/etc/php/php.ini）。\n\
+     ; 保存前会用容器内 `php -c` 校验；保存后重启 FPM，失败自动回滚。\n\
+     ; 注意：页面「PHP 参数」写入 FPM 池的 php_admin_value，优先级高于本文件同名项。\n";
 /// `fastcgi_params` 的容器内绝对路径。
 ///
 /// vhost 里的 `include` 必须写绝对路径：主配置编辑会用
@@ -200,6 +248,50 @@ pub struct SiteSettings {
     pub waf_mode: String,
 }
 
+/// 删除站点确认页要展示的「具体量」：目录体积、文件数、关联任务与运行环境绑定。
+#[derive(Debug, Clone, Default)]
+pub struct SiteDeleteStats {
+    pub dir_bytes: u64,
+    pub file_count: u64,
+    pub task_count: usize,
+    /// 绑定的运行环境名；无绑定为空。
+    pub runtime_name: String,
+    /// 绑定运行环境的 kind（`php` / `rust` …）；无绑定为空。
+    pub runtime_kind: String,
+    /// Rust 站点：`index/` 即运行源码，删除站点等于删除源码。
+    pub rust_source: bool,
+}
+
+/// 递归统计目录体积与文件数：不跟随符号链接，读不到的条目跳过。
+fn dir_usage(root: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    if !root.exists() {
+        return (bytes, files);
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            // 符号链接可能指向站点目录之外：只计为文件，不跟进去统计体积。
+            if ft.is_symlink() {
+                files += 1;
+            } else if ft.is_dir() {
+                stack.push(entry.path());
+            } else if ft.is_file() {
+                files += 1;
+                if let Ok(meta) = entry.metadata() {
+                    bytes = bytes.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    (bytes, files)
+}
+
 /// 站点文档根（`index/`）；files 插件与「目录」页的授权根只能是它。
 pub fn site_index_dir(site_dir: &Path) -> PathBuf {
     site_dir.join(SITE_INDEX_DIR)
@@ -259,6 +351,21 @@ impl SiteSettings {
     /// PHP 实例的 FPM 池配置（宿主文件，覆盖镜像默认 www.conf）。
     pub fn runtime_pool_conf(&self, kind: &str, name: &str) -> PathBuf {
         self.runtime_home(kind, name).join("www.conf")
+    }
+
+    /// PHP 实例的宿主托管配置目录：`<runtime>/<kind>/<name>/php/`。
+    pub fn runtime_php_dir(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_home(kind, name).join("php")
+    }
+
+    /// 宿主托管的主配置文件（挂到容器 `/usr/local/etc/php/php.ini`）。
+    pub fn runtime_php_ini(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_php_dir(kind, name).join("php.ini")
+    }
+
+    /// 宿主托管的扩展 ini 目录（挂到容器 `/usr/local/etc/php/conf.d-skiff`）。
+    pub fn runtime_php_confd(&self, kind: &str, name: &str) -> PathBuf {
+        self.runtime_php_dir(kind, name).join("conf.d")
     }
 
     /// PHP 实例的独立日志目录。
@@ -503,8 +610,8 @@ impl RuntimeJobState {
 
 /// 单个运行环境的异步任务：安装 / 扩展变更。
 ///
-/// 内存态即可：日志是过程信息，重启后面板不再展示旧日志；可重试的来源是库里的
-/// 运行环境行与容器实际状态，不依赖本结构持久化。
+/// 这是任务中心作业在运行环境页上的**投影**：事实源是 `jobs` / `job_logs` 表，
+/// 投影只为保持列表与抽屉既有轮询契约（`runtime_job` / `runtime_jobs_snapshot`）。
 #[derive(Debug, Clone)]
 pub struct RuntimeJob {
     pub runtime_id: String,
@@ -523,24 +630,6 @@ pub struct RuntimeJob {
 }
 
 impl RuntimeJob {
-    fn new(runtime_id: &str, kind: &str) -> Self {
-        let ts = chrono::Local::now().timestamp();
-        let mut job = Self {
-            runtime_id: runtime_id.to_string(),
-            kind: kind.to_string(),
-            ext_keys: Vec::new(),
-            state: RuntimeJobState::Queued,
-            step: "排队".into(),
-            progress: 0,
-            error: String::new(),
-            logs: Vec::new(),
-            started_at: ts,
-            updated_at: ts,
-        };
-        job.note("任务已创建，等待执行");
-        job
-    }
-
     pub fn active(&self) -> bool {
         matches!(
             self.state,
@@ -548,94 +637,33 @@ impl RuntimeJob {
         )
     }
 
-    fn note(&mut self, line: &str) {
-        let stamp = chrono::Local::now().format("%H:%M:%S");
-        self.logs.push(format!("[{stamp}] {line}"));
-        // 日志只保留最近 300 行：安装输出可能很长，轮询响应要可控。
-        let excess = self.logs.len().saturating_sub(300);
-        if excess > 0 {
-            self.logs.drain(..excess);
-        }
-        self.updated_at = chrono::Local::now().timestamp();
-    }
-
-    fn advance(&mut self, step: &str, progress: u8, line: &str) {
-        if self.active() {
-            self.state = RuntimeJobState::Running;
-        }
-        self.step = step.to_string();
-        self.progress = progress.min(100);
-        self.note(line);
-    }
-
-    fn finish_ok(&mut self, line: &str) {
-        self.state = RuntimeJobState::Done;
-        self.step = "完成".into();
-        self.progress = 100;
-        self.error.clear();
-        self.note(line);
-    }
-
-    fn finish_err(&mut self, error: &str) {
-        self.state = RuntimeJobState::Failed;
-        self.step = "失败".into();
-        self.error = error.to_string();
-        self.note(&format!("失败：{error}"));
-    }
-
     pub fn log_text(&self) -> String {
         self.logs.join("\n")
     }
-}
 
-/// 按 runtime id 保存最近一次任务（同一环境同时只允许一个任务）。
-#[derive(Debug, Default)]
-pub struct RuntimeJobs {
-    jobs: std::collections::HashMap<String, RuntimeJob>,
-}
-
-impl RuntimeJobs {
-    pub fn get(&self, id: &str) -> Option<&RuntimeJob> {
-        self.jobs.get(id)
-    }
-
-    pub fn list(&self) -> Vec<RuntimeJob> {
-        let mut out: Vec<RuntimeJob> = self.jobs.values().cloned().collect();
-        out.sort_by_key(|j| std::cmp::Reverse(j.updated_at));
-        out
-    }
-
-    fn begin(&mut self, id: &str, kind: &str) -> Result<(), SiteError> {
-        if self.jobs.get(id).is_some_and(RuntimeJob::active) {
-            return Err(SiteError::Conflict(
-                "该运行环境已有任务在执行，请等待完成".into(),
-            ));
-        }
-        self.jobs.insert(id.to_string(), RuntimeJob::new(id, kind));
-        Ok(())
-    }
-
-    fn begin_ext(&mut self, id: &str, ext_key: &str) -> Result<(), SiteError> {
-        self.begin_exts(id, &[ext_key.to_string()])
-    }
-
-    /// 批量扩展任务：一次记录全部目标 token，日志合并到同一任务。
-    fn begin_exts(&mut self, id: &str, keys: &[String]) -> Result<(), SiteError> {
-        self.begin(id, "extensions")?;
-        if let Some(job) = self.jobs.get_mut(id) {
-            job.ext_keys = keys.to_vec();
-            job.note(&format!(
-                "目标扩展（{} 项）：{}",
-                keys.len(),
-                keys.join("、")
-            ));
-        }
-        Ok(())
-    }
-
-    fn update(&mut self, id: &str, f: impl FnOnce(&mut RuntimeJob)) {
-        if let Some(job) = self.jobs.get_mut(id) {
-            f(job);
+    /// 从任务中心作业投影（`logs` 已按时间升序格式化）。
+    fn from_job(job: &app_jobs::Job, logs: Vec<String>, now: i64) -> Self {
+        let state = match job.status {
+            app_jobs::JobStatus::Queued => RuntimeJobState::Queued,
+            app_jobs::JobStatus::Running => RuntimeJobState::Running,
+            app_jobs::JobStatus::Succeeded => RuntimeJobState::Done,
+            app_jobs::JobStatus::Failed | app_jobs::JobStatus::Cancelled => RuntimeJobState::Failed,
+        };
+        Self {
+            runtime_id: job.target_id.clone(),
+            kind: if job.kind.contains(".ext.") {
+                "extensions".into()
+            } else {
+                "install".into()
+            },
+            ext_keys: job.ext_keys(),
+            state,
+            step: job.phase_label.clone(),
+            progress: job.progress.clamp(0, 100) as u8,
+            error: job.error_detail.clone().unwrap_or_default(),
+            logs,
+            started_at: job.started_at.unwrap_or(job.created_at),
+            updated_at: job.finished_at.unwrap_or(now),
         }
     }
 }
@@ -1091,6 +1119,98 @@ pub fn render_default_vhost(
     out
 }
 
+/// 一个可直接查看/编辑的 PHP 配置文件。
+#[derive(Debug, Clone)]
+pub struct PhpConfigFile {
+    /// `php.ini` / `www.conf` / `conf.d/<name>.ini`。
+    pub key: String,
+    pub label: String,
+    pub host_path: String,
+    pub container_path: String,
+    pub exists: bool,
+    pub editable: bool,
+    /// 与页面「PHP 参数」表单的权威关系说明。
+    pub note: String,
+    /// 保存时的容器校验警告（原文）。`PHP Warning` 不阻止保存，但要在界面回显。
+    pub warnings: Vec<String>,
+}
+
+/// 配置文件正文（打开编辑器时返回）。
+#[derive(Debug, Clone)]
+pub struct PhpConfigFileView {
+    pub file: PhpConfigFile,
+    pub content: String,
+}
+
+/// `php -i` 实际生效值 vs `php.ini` 文件值的并排展示项。
+#[derive(Debug, Clone)]
+pub struct PhpIniValue {
+    pub key: String,
+    pub file_value: String,
+    pub effective: String,
+    pub source: String,
+}
+
+/// 解析 `php -i` 的 `key => local => master` 行，取 local 值（运行时实际值）。
+fn parse_php_i(out: &str) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+    for line in out.lines() {
+        let mut parts = line.split("=>");
+        let key = parts.next().unwrap_or_default().trim();
+        let local = parts.next().map(str::trim).unwrap_or_default();
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'))
+        {
+            continue;
+        }
+        let value = if local.eq_ignore_ascii_case("no value") {
+            parts.next().map(str::trim).unwrap_or_default()
+        } else {
+            local
+        };
+        values.push((key.to_string(), value.to_string()));
+    }
+    values
+}
+
+/// 从容器校验输出里挑出警告原文（`PHP Warning` / `Warning:` 行），去重保序。
+///
+/// 警告不阻止保存（用户要求放宽口径），但必须让用户看到，避免“保存成功但启动时报警”。
+fn php_validation_warnings(out: &str) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut warnings = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.to_ascii_lowercase().contains("warning") {
+            continue;
+        }
+        if seen.insert(line.to_string()) {
+            warnings.push(line.to_string());
+        }
+    }
+    warnings
+}
+
+/// 解析 ini 文件里的 `key = value` 赋值行（忽略注释与 section 头）。
+fn parse_ini_assignments(text: &str) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('[') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() {
+                values.push((key.to_string(), value.trim().trim_matches('"').to_string()));
+            }
+        }
+    }
+    values
+}
+
 /// PHP 运行环境的专属配置（落库为 `site_runtimes.config_json`，不复制到别处）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhpRuntimeConfig {
@@ -1329,7 +1449,7 @@ impl AppState {
         } else {
             Vec::new()
         };
-        let jobs = self.runtime_jobs.lock().await.list();
+        let jobs = self.runtime_jobs_snapshot().await;
         let s = self.site_settings();
         let mut out = Vec::new();
         // image_id → 待 inspect 的视图下标（同一镜像多实例只 inspect 一次）。
@@ -1541,7 +1661,13 @@ impl AppState {
     /// 运行环境启停/重建/同步。Node/Go 在 P1 明确返回「P2 未实现」。
     ///
     /// `install` / `rebuild` 只登记后台任务并立即返回；页面轮询任务状态与日志。
-    pub async fn runtime_action(self: &Arc<Self>, id: &str, action: &str) -> Result<(), SiteError> {
+    pub async fn runtime_action(
+        self: &Arc<Self>,
+        id: &str,
+        action: &str,
+        actor: &str,
+        role: &str,
+    ) -> Result<(), SiteError> {
         let rt = self
             .db()
             .runtime_by_id(id)
@@ -1557,7 +1683,7 @@ impl AppState {
         match action {
             "install" | "rebuild" => {
                 // 重建与安装同一条异步链路：默认读取库里的扩展集并重放。
-                self.start_runtime_install(id).await?;
+                self.start_runtime_install(id, actor, role).await?;
                 return Ok(());
             }
             "start" => {
@@ -1601,12 +1727,31 @@ impl AppState {
 
     /// 最近一次任务快照（列表/抽屉轮询）。
     pub async fn runtime_job(&self, id: &str) -> Option<RuntimeJob> {
-        self.runtime_jobs.lock().await.get(id).cloned()
+        let job = self
+            .jobs()
+            .latest_for_target(app_jobs::TARGET_RUNTIME, id)?;
+        Some(self.runtime_job_view(&job, 300))
     }
 
     /// 全部运行环境任务（只含有任务记录的环境）。
     pub async fn runtime_jobs_snapshot(&self) -> Vec<RuntimeJob> {
-        self.runtime_jobs.lock().await.list()
+        self.jobs()
+            .list_for_target_type(app_jobs::TARGET_RUNTIME, 200)
+            .iter()
+            .map(|j| self.runtime_job_view(j, 60))
+            .collect()
+    }
+
+    /// 作业 → 运行环境页投影；日志按时间升序带上 `[HH:MM:SS]` 前缀。
+    fn runtime_job_view(&self, job: &app_jobs::Job, log_limit: i64) -> RuntimeJob {
+        let logs = self
+            .db()
+            .job_log_tail(&job.id, log_limit)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| format!("[{}] {}", fmt_log_time(e.at), e.line))
+            .collect();
+        RuntimeJob::from_job(job, logs, chrono::Local::now().timestamp())
     }
 
     /// 容器是否被进行中的内核任务占用（Docker 页删除前的 BusyGuard）。
@@ -1636,45 +1781,76 @@ impl AppState {
         None
     }
 
-    async fn job_advance(&self, id: &str, step: &str, progress: u8, line: &str) {
-        self.runtime_jobs
-            .lock()
-            .await
-            .update(id, |job| job.advance(step, progress, line));
+    /// 阶段推进。参数是**任务中心作业 id**（不是 runtime id），进度只在真实步骤落库。
+    async fn job_advance(&self, job_id: &str, step: &str, progress: u8, line: &str) {
+        self.job_advance_with(job_id, step, progress, line, true)
+            .await;
     }
 
-    async fn job_note(&self, id: &str, line: &str) {
-        self.runtime_jobs
-            .lock()
-            .await
-            .update(id, |job| job.note(line));
+    /// 不可中断步骤（`docker exec` 安装脚本）推进：期间取消按钮应隐藏。
+    async fn job_advance_blocking(&self, job_id: &str, step: &str, progress: u8, line: &str) {
+        self.job_advance_with(job_id, step, progress, line, false)
+            .await;
     }
 
-    async fn job_finish_ok(&self, id: &str, line: &str) {
-        self.runtime_jobs
-            .lock()
-            .await
-            .update(id, |job| job.finish_ok(line));
+    async fn job_advance_with(
+        &self,
+        job_id: &str,
+        step: &str,
+        progress: u8,
+        line: &str,
+        cancellable: bool,
+    ) {
+        self.jobs()
+            .set_phase(job_id, step, step, progress as i64, cancellable);
+        self.jobs().note(job_id, line);
     }
 
-    async fn job_finish_err(&self, id: &str, error: &str) {
-        self.runtime_jobs
-            .lock()
-            .await
-            .update(id, |job| job.finish_err(error));
+    async fn job_note(&self, job_id: &str, line: &str) {
+        self.jobs().note(job_id, line);
     }
 
-    /// 把命令输出按行写入任务日志（只保留尾部，防止一次 pull 撑爆轮询响应）。
-    async fn job_log_output(&self, id: &str, output: &str) {
-        let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
-        let tail = &lines[lines.len().saturating_sub(30)..];
-        for line in tail {
-            self.job_note(id, &format!("  {line}")).await;
+    async fn job_finish_ok(&self, job_id: &str, line: &str) {
+        self.jobs().finish_ok(job_id, line, serde_json::json!({}));
+    }
+
+    async fn job_finish_err(&self, job_id: &str, error: &str) {
+        match error.strip_prefix(TIMEOUT_MARK) {
+            Some(msg) => self.job_finish_err_class(job_id, "timeout", msg).await,
+            None => self.job_finish_err_class(job_id, "failed", error).await,
         }
     }
 
-    /// 启动一次运行环境安装（异步）。只登记任务，立即返回。
-    pub async fn start_runtime_install(self: &Arc<Self>, id: &str) -> Result<(), SiteError> {
+    async fn job_finish_err_class(&self, job_id: &str, class: &str, error: &str) {
+        self.jobs().finish_err(job_id, class, error);
+    }
+
+    /// 执行体在阶段边界检查取消标记。
+    async fn job_cancelled(&self, job_id: &str) -> bool {
+        self.jobs().cancel_requested(job_id)
+    }
+
+    /// 把命令输出按行写入任务日志（只保留尾部，防止一次 pull 撑爆轮询响应）。
+    async fn job_log_output(&self, job_id: &str, output: &str) {
+        let mut lines: Vec<String> = output
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!("  {l}"))
+            .collect();
+        let keep = 30;
+        if lines.len() > keep {
+            lines.drain(..lines.len() - keep);
+        }
+        self.jobs().log_lines(job_id, "out", &lines);
+    }
+
+    /// 启动一次运行环境安装（异步）。只登记作业，立即返回。
+    pub async fn start_runtime_install(
+        self: &Arc<Self>,
+        id: &str,
+        actor: &str,
+        role: &str,
+    ) -> Result<(), SiteError> {
         let rt = self
             .db()
             .runtime_by_id(id)
@@ -1686,28 +1862,58 @@ impl AppState {
                 runtime_catalog::kind_label(&rt.kind)
             )));
         }
-        self.runtime_jobs.lock().await.begin(id, "install")?;
+        let job = self
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: "runtime.install".into(),
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: id.to_string(),
+                title: format!("安装运行环境 {}", rt.name),
+                params: serde_json::json!({
+                    "runtime_id": id,
+                    "kind": rt.kind,
+                    "name": rt.name,
+                    "version": rt.version,
+                }),
+                created_by: actor.to_string(),
+                created_by_role: role.to_string(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
+            .map_err(site_error_from_job)?;
         let _ = self.db().set_runtime_status(id, "running", "installing");
         let state = self.clone();
         let rid = id.to_string();
+        let job_id = job.id;
         tokio::spawn(async move {
-            state.run_runtime_install_job(&rid).await;
+            state.run_runtime_install_job(&rid, &job_id).await;
         });
         Ok(())
     }
 
-    async fn run_runtime_install_job(&self, id: &str) {
-        let result = self.install_runtime_task(id).await;
+    async fn run_runtime_install_job(&self, runtime_id: &str, job_id: &str) {
+        let result = self.install_runtime_task(runtime_id, job_id).await;
         match result {
             Ok(()) => {
-                self.job_finish_ok(id, "安装完成，运行环境已就绪").await;
-                let _ = self.db().set_runtime_status(id, "running", "running");
-                // 新容器可能换了 id；清一次缓存，让下一次渲染重新读取真实版本。
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，运行环境可能处于中间状态，可重试安装");
+                } else {
+                    self.job_finish_ok(job_id, "安装完成，运行环境已就绪").await;
+                }
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
             Err(err) => {
-                self.job_finish_err(id, &err).await;
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，运行环境可能处于中间状态，可重试安装");
+                } else {
+                    self.job_finish_err(job_id, &err).await;
+                }
                 // 记录失败但保留「期望运行」，这样重试入口与漂移提示仍然成立。
-                let _ = self.db().set_runtime_status(id, "running", "error");
+                let _ = self.db().set_runtime_status(runtime_id, "running", "error");
             }
         }
     }
@@ -1815,7 +2021,7 @@ impl AppState {
     }
 
     /// 安装主体：目录 → FPM 池 → 拉镜像 → 建/启容器 → socket → 扩展。
-    async fn install_runtime_task(&self, id: &str) -> Result<(), String> {
+    async fn install_runtime_task(&self, id: &str, job_id: &str) -> Result<(), String> {
         let rt = self
             .db()
             .runtime_by_id(id)
@@ -1827,7 +2033,7 @@ impl AppState {
             .try_begin(&key)
             .ok_or_else(|| "该环境正在安装，请稍后再试".to_string())?;
 
-        self.job_advance(id, "检查 Docker", 8, "检查 Docker 可用性")
+        self.job_advance(job_id, "检查 Docker", 8, "检查 Docker 可用性")
             .await;
         if !self.docker().available() {
             return Err(format!(
@@ -1835,9 +2041,12 @@ impl AppState {
                 self.docker_unavailable_reason()
             ));
         }
+        if self.job_cancelled(job_id).await {
+            return Err("已取消".into());
+        }
         let s = self.site_settings();
         if rt.kind == skiff_store::KIND_RUST {
-            return self.install_rust_runtime_task(id, &rt, &s).await;
+            return self.install_rust_runtime_task(&rt, job_id, &s).await;
         }
         // PHP 扩展安装器随包分发：先落到共享 web_root，容器内 `/www/skiff/tools`
         // 直接可见；运行时不再依赖 GitHub。
@@ -1847,7 +2056,7 @@ impl AppState {
         cfg.validate().map_err(|e| e.to_string())?;
 
         self.job_advance(
-            id,
+            job_id,
             "准备目录与配置",
             15,
             "创建实例目录并写入 PHP-FPM 池配置",
@@ -1861,6 +2070,15 @@ impl AppState {
         std::fs::create_dir_all(s.system_pkg_cache_dir())
             .map_err(|e| format!("创建依赖包缓存目录失败：{e}"))?;
         let socket_container = runtime_container_socket(&rt.kind, &rt.name);
+        self.ensure_php_config_files(&s, &rt.kind, &rt.name)?;
+        // 标记“本实例创建时已带 php.ini / conf.d 挂载”：只有安装流程写这个标记，
+        // 保存配置时补目录不写，旧实例的“编辑不生效”提示就不会被误清掉。
+        std::fs::write(
+            s.runtime_php_dir(&rt.kind, &rt.name)
+                .join(PHP_CONFIG_SENTINEL),
+            "1\n",
+        )
+        .map_err(|e| format!("写入 PHP 配置挂载标记失败：{e}"))?;
         std::fs::write(
             s.runtime_pool_conf(&rt.kind, &rt.name),
             render_php_pool_with(&cfg, &socket_container),
@@ -1869,12 +2087,15 @@ impl AppState {
 
         let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
         let image_digest = self
-            .ensure_runtime_image(id, &image, &rt.image_digest)
+            .ensure_runtime_image(job_id, &image, &rt.image_digest)
             .await?;
+        if self.job_cancelled(job_id).await {
+            return Err("已取消".into());
+        }
 
         let container = runtime_container_name(&rt.kind, &rt.name);
         self.job_advance(
-            id,
+            job_id,
             "创建容器",
             50,
             &format!("创建容器 {container}（已有同名容器会先移除）"),
@@ -1899,7 +2120,7 @@ impl AppState {
         let enabled = runtime_catalog::split_extensions(&rt.extensions);
         if enabled.is_empty() {
             self.job_advance(
-                id,
+                job_id,
                 "启动 PHP-FPM",
                 62,
                 "收紧 socket 权限（0660 root:nobody）",
@@ -1912,15 +2133,15 @@ impl AppState {
             // 有扩展时跳过安装期的第一次 socket 收紧：反正随后要重启容器，
             // 重启后统一 chmod，少等一轮 socket。
             self.job_advance(
-                id,
+                job_id,
                 "安装扩展",
                 65,
                 &format!("安装 {} 个扩展：{}", enabled.len(), enabled.join("、")),
             )
             .await;
-            self.run_extension_scripts(id, &container, &enabled, &[], 65, 92)
+            self.run_extension_scripts(job_id, &container, &enabled, &[], 65, 92)
                 .await?;
-            self.job_advance(id, "重载 PHP-FPM", 96, "重启容器以加载扩展")
+            self.job_advance(job_id, "重载 PHP-FPM", 96, "重启容器以加载扩展")
                 .await;
             self.docker_runtime_action(&container, Verb::Restart)
                 .await
@@ -1951,8 +2172,8 @@ impl AppState {
     /// → 等端口监听。日志重定向到 `/www/runtime/rust/<name>/log/server.log`。
     async fn install_rust_runtime_task(
         &self,
-        id: &str,
         rt: &Runtime,
+        job_id: &str,
         s: &SiteSettings,
     ) -> Result<(), String> {
         let port = rt
@@ -1964,7 +2185,7 @@ impl AppState {
             .map_err(|e| format!("创建 Rust 工程目录失败：{e}"))?;
         std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
             .map_err(|e| format!("创建 Rust 日志目录失败：{e}"))?;
-        self.job_advance(id, "准备工程", 15, "写入最小 HTTP 工程（无第三方依赖）")
+        self.job_advance(job_id, "准备工程", 15, "写入最小 HTTP 工程（无第三方依赖）")
             .await;
         std::fs::write(app_dir.join("Cargo.toml"), rust_cargo_manifest())
             .map_err(|e| format!("写入 Cargo.toml 失败：{e}"))?;
@@ -1973,15 +2194,18 @@ impl AppState {
             rust_main_source(&rt.version, port),
         )
         .map_err(|e| format!("写入 main.rs 失败：{e}"))?;
+        // 入口脚本每次安装/重建都刷新：绑定站点的源码切换逻辑随版本升级。
+        std::fs::write(dir.join("entry.sh"), rust_entry_script())
+            .map_err(|e| format!("写入入口脚本失败：{e}"))?;
 
         let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
         let image_digest = self
-            .ensure_runtime_image(id, &image, &rt.image_digest)
+            .ensure_runtime_image(job_id, &image, &rt.image_digest)
             .await?;
 
         let container = runtime_container_name(&rt.kind, &rt.name);
         self.job_advance(
-            id,
+            job_id,
             "创建容器",
             50,
             &format!("创建容器 {container}（host 网络，端口 {port}）"),
@@ -2004,7 +2228,7 @@ impl AppState {
         .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
 
         self.job_advance(
-            id,
+            job_id,
             "构建并启动进程",
             70,
             &format!("cargo run --release（监听 127.0.0.1:{port}），首次编译需等待"),
@@ -2027,7 +2251,7 @@ impl AppState {
                 tail.join("\n")
             ));
         }
-        self.job_note(id, &format!("端口 {port} 已就绪，Rust 进程返回内容"))
+        self.job_note(job_id, &format!("端口 {port} 已就绪，Rust 进程返回内容"))
             .await;
         self.db()
             .ensure_runtime(&NewRuntime {
@@ -2093,12 +2317,28 @@ impl AppState {
                 ),
             )
             .await;
-            let (code, out) = self
+            self.jobs().set_cancellable(job_id, false);
+            let (code, out, timed_out) = self
                 .docker()
-                .exec_capture(container, vec!["sh".into(), "-lc".into(), script])
+                .exec_capture_timeout(
+                    container,
+                    vec!["sh".into(), "-lc".into(), script],
+                    EXT_BATCH_TIMEOUT,
+                )
                 .await
                 .map_err(|e| format!("批量安装扩展执行失败：{e}"))?;
             self.job_log_output(job_id, &out).await;
+            self.jobs().set_cancellable(job_id, true);
+            if timed_out {
+                return Err(format!(
+                    "{TIMEOUT_MARK}批量安装扩展超过 {} 分钟未结束，已按超时失败结算；\
+                     Docker 无法中断 exec，容器内脚本可能仍在运行，建议重建运行环境。",
+                    EXT_BATCH_TIMEOUT.as_secs() / 60
+                ));
+            }
+            if self.job_cancelled(job_id).await {
+                return Err("已取消".into());
+            }
             if code != 0 {
                 return Err(format!(
                     "批量安装扩展失败（exit {code}）：{}（主路径与回退路径输出见任务日志）",
@@ -2145,12 +2385,28 @@ impl AppState {
                 ),
             )
             .await;
-            let (code, out) = self
+            self.jobs().set_cancellable(job_id, false);
+            let (code, out, timed_out) = self
                 .docker()
-                .exec_capture(container, vec!["sh".into(), "-lc".into(), script])
+                .exec_capture_timeout(
+                    container,
+                    vec!["sh".into(), "-lc".into(), script],
+                    EXT_BATCH_TIMEOUT,
+                )
                 .await
                 .map_err(|e| format!("批量停用扩展执行失败：{e}"))?;
             self.job_log_output(job_id, &out).await;
+            self.jobs().set_cancellable(job_id, true);
+            if timed_out {
+                return Err(format!(
+                    "{TIMEOUT_MARK}批量停用扩展超过 {} 分钟未结束，已按超时失败结算；\
+                     Docker 无法中断 exec，容器内脚本可能仍在运行，建议重建运行环境。",
+                    EXT_BATCH_TIMEOUT.as_secs() / 60
+                ));
+            }
+            if self.job_cancelled(job_id).await {
+                return Err("已取消".into());
+            }
             if code != 0 {
                 return Err(format!(
                     "批量停用扩展失败（exit {code}）：{}",
@@ -2168,6 +2424,8 @@ impl AppState {
         self: &Arc<Self>,
         id: &str,
         selected: &[String],
+        actor: &str,
+        role: &str,
     ) -> Result<bool, SiteError> {
         let rt = self
             .db()
@@ -2184,26 +2442,62 @@ impl AppState {
         if desired == current {
             return Ok(false);
         }
-        self.runtime_jobs.lock().await.begin(id, "extensions")?;
+        let job = self
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: "runtime.ext.apply".into(),
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: id.to_string(),
+                title: format!("更新 {} 的 PHP 扩展", rt.name),
+                params: serde_json::json!({"runtime_id": id, "ext_keys": desired}),
+                created_by: actor.to_string(),
+                created_by_role: role.to_string(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
+            .map_err(site_error_from_job)?;
         let state = self.clone();
         let rid = id.to_string();
+        let job_id = job.id;
         tokio::spawn(async move {
-            state.run_runtime_extensions_job(&rid, desired).await;
+            state
+                .run_runtime_extensions_job(&rid, &job_id, desired)
+                .await;
         });
         Ok(true)
     }
 
-    async fn run_runtime_extensions_job(&self, id: &str, desired: Vec<String>) {
-        let result = self.extensions_task(id, &desired).await;
+    async fn run_runtime_extensions_job(
+        &self,
+        runtime_id: &str,
+        job_id: &str,
+        desired: Vec<String>,
+    ) {
+        let result = self.extensions_task(runtime_id, job_id, &desired).await;
         match result {
             Ok(()) => {
-                self.job_finish_ok(id, "扩展已更新，PHP-FPM 已重载").await;
-                let _ = self.db().set_runtime_status(id, "running", "running");
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，扩展集合可能部分生效，可重试");
+                } else {
+                    self.job_finish_ok(job_id, "扩展已更新，PHP-FPM 已重载")
+                        .await;
+                }
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
             Err(err) => {
-                self.job_finish_err(id, &err).await;
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，扩展集合可能部分生效，可重试");
+                } else {
+                    self.job_finish_err(job_id, &err).await;
+                }
                 // 扩展失败不改变容器可用性：状态回 running，错误留在任务里可重试。
-                let _ = self.db().set_runtime_status(id, "running", "running");
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
         }
     }
@@ -2213,6 +2507,8 @@ impl AppState {
         self: &Arc<Self>,
         id: &str,
         token: &str,
+        actor: &str,
+        role: &str,
     ) -> Result<bool, SiteError> {
         let rt = self.php_runtime_for_extension(id)?;
         let token = token.trim();
@@ -2237,12 +2533,36 @@ impl AppState {
         if current.iter().any(|k| k == token) {
             return Ok(false);
         }
-        self.runtime_jobs.lock().await.begin_ext(id, token)?;
+        let job = self
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: "runtime.ext.install".into(),
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: id.to_string(),
+                title: format!(
+                    "安装 PHP 扩展 {}（{}）",
+                    runtime_catalog::extension_label(token),
+                    rt.name
+                ),
+                params: serde_json::json!({
+                    "runtime_id": id,
+                    "ext_keys": [token],
+                    "action": "install",
+                }),
+                created_by: actor.to_string(),
+                created_by_role: role.to_string(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
+            .map_err(site_error_from_job)?;
         let state = self.clone();
         let rid = id.to_string();
         let target = token.to_string();
+        let job_id = job.id;
         tokio::spawn(async move {
-            state.run_single_extension_job(&rid, &target, true).await;
+            state
+                .run_single_extension_job(&rid, &job_id, &target, true)
+                .await;
         });
         Ok(true)
     }
@@ -2252,6 +2572,8 @@ impl AppState {
         self: &Arc<Self>,
         id: &str,
         token: &str,
+        actor: &str,
+        role: &str,
     ) -> Result<bool, SiteError> {
         let rt = self.php_runtime_for_extension(id)?;
         let token = token.trim();
@@ -2268,12 +2590,36 @@ impl AppState {
         if runtime_catalog::disable_script(token).is_none() {
             return Err(SiteError::BadRequest(format!("不支持卸载扩展：{token}")));
         }
-        self.runtime_jobs.lock().await.begin_ext(id, token)?;
+        let job = self
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: "runtime.ext.uninstall".into(),
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: id.to_string(),
+                title: format!(
+                    "卸载 PHP 扩展 {}（{}）",
+                    runtime_catalog::extension_label(token),
+                    rt.name
+                ),
+                params: serde_json::json!({
+                    "runtime_id": id,
+                    "ext_keys": [token],
+                    "action": "uninstall",
+                }),
+                created_by: actor.to_string(),
+                created_by_role: role.to_string(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
+            .map_err(site_error_from_job)?;
         let state = self.clone();
         let rid = id.to_string();
         let target = token.to_string();
+        let job_id = job.id;
         tokio::spawn(async move {
-            state.run_single_extension_job(&rid, &target, false).await;
+            state
+                .run_single_extension_job(&rid, &job_id, &target, false)
+                .await;
         });
         Ok(true)
     }
@@ -2284,6 +2630,8 @@ impl AppState {
         id: &str,
         name: &str,
         version: &str,
+        actor: &str,
+        role: &str,
     ) -> Result<bool, SiteError> {
         let token = runtime_catalog::pecl_token(name, version);
         if runtime_catalog::parse_pecl_token(&token).is_none() {
@@ -2291,7 +2639,7 @@ impl AppState {
                 "PECL 扩展名只能包含小写字母、数字与下划线".into(),
             ));
         }
-        self.install_extension(id, &token).await
+        self.install_extension(id, &token, actor, role).await
     }
 
     /// 批量勾选安装/卸载：一次任务内按目录顺序串行执行，日志合并，只重启一次容器。
@@ -2302,6 +2650,8 @@ impl AppState {
         id: &str,
         add: bool,
         keys: &[String],
+        actor: &str,
+        role: &str,
     ) -> Result<usize, SiteError> {
         let rt = self.php_runtime_for_extension(id)?;
         let current = runtime_catalog::split_extensions(&rt.extensions);
@@ -2362,36 +2712,83 @@ impl AppState {
         } else {
             desired.retain(|k| !changed.iter().any(|c| c == k));
         }
-        self.runtime_jobs.lock().await.begin_exts(id, &changed)?;
+        let job = self
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: if add {
+                    "runtime.ext.install".into()
+                } else {
+                    "runtime.ext.uninstall".into()
+                },
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: id.to_string(),
+                title: format!(
+                    "{} {} 的 {} 项 PHP 扩展",
+                    if add { "批量安装" } else { "批量卸载" },
+                    rt.name,
+                    changed.len()
+                ),
+                params: serde_json::json!({
+                    "runtime_id": id,
+                    "ext_keys": changed,
+                    "action": if add { "install" } else { "uninstall" },
+                }),
+                created_by: actor.to_string(),
+                created_by_role: role.to_string(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
+            .map_err(site_error_from_job)?;
         let state = self.clone();
         let rid = id.to_string();
         let targets = changed.clone();
+        let job_id = job.id;
         tokio::spawn(async move {
             state
-                .run_batch_extensions_job(&rid, &desired, &targets)
+                .run_batch_extensions_job(&rid, &job_id, &desired, &targets)
                 .await;
         });
         Ok(changed.len())
     }
 
-    async fn run_batch_extensions_job(&self, id: &str, desired: &[String], targets: &[String]) {
-        let result = self.extensions_task(id, desired).await;
+    async fn run_batch_extensions_job(
+        &self,
+        runtime_id: &str,
+        job_id: &str,
+        desired: &[String],
+        targets: &[String],
+    ) {
+        let result = self.extensions_task(runtime_id, job_id, desired).await;
         match result {
             Ok(()) => {
-                self.job_finish_ok(
-                    id,
-                    &format!(
-                        "已应用 {} 项扩展变更（{}）；PHP-FPM 已重载",
-                        targets.len(),
-                        targets.join("、")
-                    ),
-                )
-                .await;
-                let _ = self.db().set_runtime_status(id, "running", "running");
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，扩展集合可能部分生效，可重试");
+                } else {
+                    self.job_finish_ok(
+                        job_id,
+                        &format!(
+                            "已应用 {} 项扩展变更（{}）；PHP-FPM 已重载",
+                            targets.len(),
+                            targets.join("、")
+                        ),
+                    )
+                    .await;
+                }
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
             Err(err) => {
-                self.job_finish_err(id, &err).await;
-                let _ = self.db().set_runtime_status(id, "running", "running");
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，扩展集合可能部分生效，可重试");
+                } else {
+                    self.job_finish_err(job_id, &err).await;
+                }
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
         }
     }
@@ -2410,34 +2807,62 @@ impl AppState {
         Ok(rt)
     }
 
-    async fn run_single_extension_job(&self, id: &str, token: &str, add: bool) {
-        let result = self.single_extension_task(id, token, add).await;
+    async fn run_single_extension_job(
+        &self,
+        runtime_id: &str,
+        job_id: &str,
+        token: &str,
+        add: bool,
+    ) {
+        let result = self
+            .single_extension_task(runtime_id, job_id, token, add)
+            .await;
         let label = runtime_catalog::extension_label(token);
         match result {
             Ok(()) => {
-                self.job_finish_ok(
-                    id,
-                    &format!(
-                        "扩展 {label} {}，PHP-FPM 已重载",
-                        if add { "已启用" } else { "已停用" }
-                    ),
-                )
-                .await;
-                let _ = self.db().set_runtime_status(id, "running", "running");
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，扩展状态可能未生效，请核对后重试");
+                } else {
+                    self.job_finish_ok(
+                        job_id,
+                        &format!(
+                            "扩展 {label} {}，PHP-FPM 已重载",
+                            if add { "已启用" } else { "已停用" }
+                        ),
+                    )
+                    .await;
+                }
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
             Err(err) => {
-                self.job_finish_err(id, &err).await;
-                let _ = self.db().set_runtime_status(id, "running", "running");
+                if self.job_cancelled(job_id).await {
+                    self.jobs()
+                        .finish_cancelled(job_id, "已取消，扩展状态可能未生效，请核对后重试");
+                } else {
+                    self.job_finish_err(job_id, &err).await;
+                }
+                let _ = self
+                    .db()
+                    .set_runtime_status(runtime_id, "running", "running");
             }
         }
     }
 
-    async fn single_extension_task(&self, id: &str, token: &str, add: bool) -> Result<(), String> {
+    async fn single_extension_task(
+        &self,
+        runtime_id: &str,
+        job_id: &str,
+        token: &str,
+        add: bool,
+    ) -> Result<(), String> {
         let rt = self
             .db()
-            .runtime_by_id(id)
+            .runtime_by_id(runtime_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("运行环境不存在：{id}"))?;
+            .ok_or_else(|| format!("运行环境不存在：{runtime_id}"))?;
         let label = runtime_catalog::extension_label(token);
         self.ensure_php_extension_installer(&self.site_settings())
             .map_err(|e| format!("准备本地扩展安装器失败：{e}"))?;
@@ -2462,19 +2887,36 @@ impl AppState {
             runtime_catalog::disable_script(token)
                 .ok_or_else(|| format!("扩展 {label} 不支持卸载"))?
         };
-        self.job_advance(
-            id,
+        self.job_advance_blocking(
+            job_id,
             if add { "安装扩展" } else { "卸载扩展" },
             15,
             &format!("{label}：{script}"),
         )
         .await;
-        let (code, out) = self
+        let (code, out, timed_out) = self
             .docker()
-            .exec_capture(&container, vec!["sh".into(), "-lc".into(), script])
+            .exec_capture_timeout(
+                &container,
+                vec!["sh".into(), "-lc".into(), script],
+                EXT_EXEC_TIMEOUT,
+            )
             .await
             .map_err(|e| format!("{label} 执行失败：{e}"))?;
-        self.job_log_output(id, &out).await;
+        self.job_log_output(job_id, &out).await;
+        // 脚本结束（无论成败）后重新允许取消。
+        self.jobs().set_cancellable(job_id, true);
+        if timed_out {
+            return Err(format!(
+                "{TIMEOUT_MARK}扩展 {label} 执行超过 {} 分钟未结束，已按超时失败结算；\
+                 Docker 无法中断 exec，容器内脚本可能仍在运行，建议重载或重建运行环境。\
+                 已采集输出尾部见任务日志。",
+                EXT_EXEC_TIMEOUT.as_secs() / 60
+            ));
+        }
+        if self.job_cancelled(job_id).await {
+            return Err("已取消".into());
+        }
         if code != 0 {
             // 必须回传真实报错（pecl 常见缺依赖/版本不存在），不能只报「安装失败」。
             let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -2497,7 +2939,7 @@ impl AppState {
                 lines[start..].join("\n")
             ));
         }
-        self.job_advance(id, "重载 PHP-FPM", 80, "重启容器以加载扩展变更")
+        self.job_advance(job_id, "重载 PHP-FPM", 80, "重启容器以加载扩展变更")
             .await;
         self.docker_runtime_action(&container, Verb::Restart)
             .await
@@ -2514,17 +2956,22 @@ impl AppState {
         }
         let joined = runtime_catalog::join_extensions(&next);
         self.db()
-            .set_runtime_extensions(id, &joined)
+            .set_runtime_extensions(runtime_id, &joined)
             .map_err(|e| format!("写入扩展集合失败：{e}"))?;
         Ok(())
     }
 
-    async fn extensions_task(&self, id: &str, desired: &[String]) -> Result<(), String> {
+    async fn extensions_task(
+        &self,
+        runtime_id: &str,
+        job_id: &str,
+        desired: &[String],
+    ) -> Result<(), String> {
         let rt = self
             .db()
-            .runtime_by_id(id)
+            .runtime_by_id(runtime_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("运行环境不存在：{id}"))?;
+            .ok_or_else(|| format!("运行环境不存在：{runtime_id}"))?;
         self.ensure_php_extension_installer(&self.site_settings())
             .map_err(|e| format!("准备本地扩展安装器失败：{e}"))?;
         let current = runtime_catalog::split_extensions(&rt.extensions);
@@ -2539,24 +2986,27 @@ impl AppState {
 
         // 容器不存在时，先把期望集合落库，再走完整安装（安装阶段会重放扩展）。
         if !exists {
-            self.job_advance(id, "准备重建", 10, "容器不存在，改为完整安装并重放扩展")
+            self.job_advance(job_id, "准备重建", 10, "容器不存在，改为完整安装并重放扩展")
                 .await;
             let joined = runtime_catalog::join_extensions(desired);
             self.db()
-                .set_runtime_extensions(id, &joined)
+                .set_runtime_extensions(runtime_id, &joined)
                 .map_err(|e| format!("写入扩展集合失败：{e}"))?;
             let _ = self
                 .runtime_installs
                 .try_begin(&format!("{}:{}", rt.kind, rt.name));
-            return self.install_runtime_task(id).await;
+            return self.install_runtime_task(runtime_id, job_id).await;
         }
 
-        self.job_advance(id, "应用扩展变更", 20, "对比扩展集合，执行启用/停用")
+        self.job_advance(job_id, "应用扩展变更", 20, "对比扩展集合，执行启用/停用")
             .await;
-        self.run_extension_scripts(id, &container, desired, &current, 20, 60)
+        self.run_extension_scripts(job_id, &container, desired, &current, 20, 60)
             .await?;
-        self.job_advance(id, "重载 PHP-FPM", 85, "重启容器以加载扩展变更")
+        self.job_advance(job_id, "重载 PHP-FPM", 85, "重启容器以加载扩展变更")
             .await;
+        if self.job_cancelled(job_id).await {
+            return Err("已取消".into());
+        }
         self.docker_runtime_action(&container, Verb::Restart)
             .await
             .map_err(|e| format!("重启 PHP-FPM 失败：{e}"))?;
@@ -2566,7 +3016,7 @@ impl AppState {
             .map_err(|e| format!("收紧 PHP socket 失败：{e}"))?;
         let joined = runtime_catalog::join_extensions(desired);
         self.db()
-            .set_runtime_extensions(id, &joined)
+            .set_runtime_extensions(runtime_id, &joined)
             .map_err(|e| format!("写入扩展集合失败：{e}"))?;
         Ok(())
     }
@@ -2581,6 +3031,8 @@ impl AppState {
         raw_name: &str,
         version: &str,
         extensions: &[String],
+        actor: &str,
+        role: &str,
     ) -> Result<(Runtime, bool), SiteError> {
         let kind = kind.trim();
         let def = runtime_catalog::kind_def(kind)
@@ -2698,7 +3150,7 @@ impl AppState {
             .map_err(|e| SiteError::Internal(e.to_string()))?;
         let started = runtime_catalog::is_implemented(kind);
         if started {
-            self.start_runtime_install(&rt.id).await?;
+            self.start_runtime_install(&rt.id, actor, role).await?;
         }
         Ok((rt, started))
     }
@@ -2708,6 +3160,7 @@ impl AppState {
         &self,
         id: &str,
         cfg: &PhpRuntimeConfig,
+        actor: &str,
     ) -> Result<RuntimeView, SiteError> {
         let rt = self
             .db()
@@ -2731,14 +3184,24 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("创建运行目录失败：{e}")))?;
         let pool = s.runtime_pool_conf(&rt.kind, &rt.name);
         let original = std::fs::read(&pool).ok();
-        std::fs::write(&pool, render_php_pool_with(cfg, &socket_container))
+        // 用户可见写操作统一走 skiff-fs：原子替换 + 审计，不在 app 层直接 std::fs::write。
+        self.admin_fs()
+            .write(
+                actor,
+                &pool.display().to_string(),
+                &render_php_pool_with(cfg, &socket_container),
+            )
             .map_err(|e| SiteError::Internal(format!("写入 PHP-FPM 配置失败：{e}")))?;
         if let Err(e) = self
             .docker_runtime_action(&runtime_container_name(&rt.kind, &rt.name), Verb::Restart)
             .await
         {
             if let Some(bytes) = &original {
-                let _ = std::fs::write(&pool, bytes);
+                if let Ok(text) = std::str::from_utf8(bytes) {
+                    let _ = self
+                        .admin_fs()
+                        .write(actor, &pool.display().to_string(), text);
+                }
             }
             return Err(SiteError::Unavailable(format!(
                 "配置已回滚：重载 PHP-FPM 失败：{e}"
@@ -2750,7 +3213,385 @@ impl AppState {
         self.runtime_view(id).await
     }
 
-    /// 解绑单个站点：停用其 vhost 并转为静态（文件不删）；PHP 源码不会被静态直出。
+    /// 实例创建时是否已带 `php.ini` / `conf.d` 挂载（决定配置编辑是否真生效）。
+    ///
+    /// 旧实例（早于配置文件编辑功能）容器里没有这两个挂载，编辑能保存但不生效；
+    /// 详情页据此提示“重建后生效”，避免用户对着能编辑的界面猜。
+    pub fn php_config_mounts_current(&self, id: &str) -> Result<bool, SiteError> {
+        let rt = self.php_runtime(id)?;
+        let s = self.site_settings();
+        Ok(s.runtime_php_dir(&rt.kind, &rt.name)
+            .join(PHP_CONFIG_SENTINEL)
+            .exists())
+    }
+
+    /// 列出 PHP 实例可直接查看/编辑的配置文件。
+    ///
+    /// 当前实际存在三类：`php.ini`（宿主新建，挂到容器主配置）、FPM 池 `www.conf`
+    /// （宿主生成，覆盖镜像默认池）、`conf.d/*.ini`（宿主托管扩展 ini，扫在镜像
+    /// `conf.d` 之后）。镜像里由扩展安装器写入的 ini 不在宿主侧，不在此列。
+    pub fn php_config_files(&self, id: &str) -> Result<Vec<PhpConfigFile>, SiteError> {
+        let rt = self.php_runtime(id)?;
+        let s = self.site_settings();
+        let mut files = vec![
+            PhpConfigFile {
+                key: "php.ini".into(),
+                label: "php.ini".into(),
+                host_path: s.runtime_php_ini(&rt.kind, &rt.name).display().to_string(),
+                container_path: CONTAINER_PHP_INI.into(),
+                exists: s.runtime_php_ini(&rt.kind, &rt.name).exists(),
+                editable: true,
+                note:
+                    "PHP 主配置；页面「PHP 参数」中的 memory_limit 等四项写在 FPM 池，优先级更高。"
+                        .into(),
+                warnings: Vec::new(),
+            },
+            PhpConfigFile {
+                key: "www.conf".into(),
+                label: "www.conf（FPM 池）".into(),
+                host_path: s
+                    .runtime_pool_conf(&rt.kind, &rt.name)
+                    .display()
+                    .to_string(),
+                container_path: CONTAINER_PHP_POOL.into(),
+                exists: s.runtime_pool_conf(&rt.kind, &rt.name).exists(),
+                editable: true,
+                note: "FPM 进程/监听配置；「PHP 参数」保存时会重写本文件（表单字段为权威）。"
+                    .into(),
+                warnings: Vec::new(),
+            },
+        ];
+        let confd = s.runtime_php_confd(&rt.kind, &rt.name);
+        if let Ok(entries) = std::fs::read_dir(&confd) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".ini") {
+                    continue;
+                }
+                files.push(PhpConfigFile {
+                    key: format!("conf.d/{name}"),
+                    label: format!("扩展 {name}"),
+                    host_path: entry.path().display().to_string(),
+                    container_path: format!("{CONTAINER_PHP_SKIFF_CONFD}/{name}"),
+                    exists: true,
+                    editable: true,
+                    note: "宿主托管的扩展 ini，PHP 启动时在镜像 conf.d 之后扫描。".into(),
+                    warnings: Vec::new(),
+                });
+            }
+        }
+        Ok(files)
+    }
+
+    /// 读一个可用编辑器打开的配置文件。
+    pub fn read_php_config_file(
+        &self,
+        id: &str,
+        key: &str,
+        actor: &str,
+    ) -> Result<PhpConfigFileView, SiteError> {
+        let rt = self.php_runtime(id)?;
+        let s = self.site_settings();
+        let (path, meta) = self.php_config_target(&rt, &s, key)?;
+        let content = if path.exists() {
+            self.admin_fs()
+                .read(actor, &path.display().to_string())
+                .map_err(|e| SiteError::Internal(format!("读取 {key} 失败：{e}")))?
+                .text
+        } else {
+            String::new()
+        };
+        Ok(PhpConfigFileView {
+            file: meta,
+            content,
+        })
+    }
+
+    /// 保存配置文件：先写候选 → 容器内语法校验 → 原子落盘 → 重启 FPM；失败回滚。
+    pub async fn save_php_config_file(
+        &self,
+        id: &str,
+        key: &str,
+        content: &str,
+        actor: &str,
+    ) -> Result<PhpConfigFile, SiteError> {
+        let rt = self.php_runtime(id)?;
+        let s = self.site_settings();
+        let (path, meta) = self.php_config_target(&rt, &s, key)?;
+        // 旧实例可能还没有宿主托管的 php/ 目录：先补齐，否则候选文件无处落盘。
+        self.ensure_php_config_files(&s, &rt.kind, &rt.name)
+            .map_err(|e| SiteError::Internal(format!("准备 PHP 配置目录失败：{e}")))?;
+        if content.len() > 256 * 1024 {
+            return Err(SiteError::BadRequest(
+                "配置文件超过 256 KiB 编辑上限".into(),
+            ));
+        }
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        let running = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取容器状态失败：{e}")))?
+            .iter()
+            .any(|c| c.name == container && c.state == "running");
+        if !running {
+            return Err(SiteError::Unavailable(
+                "运行环境未在运行，无法在容器内校验配置；请先启动实例".into(),
+            ));
+        }
+        // 候选文件放在 web_root 内，容器内可直接读到同一个文件。
+        let candidate = s
+            .runtime_php_dir(&rt.kind, &rt.name)
+            .join(format!("{key}.candidate"));
+        self.admin_fs()
+            .write(actor, &candidate.display().to_string(), content)
+            .map_err(|e| SiteError::Internal(format!("写入候选文件失败：{e}")))?;
+        let candidate_container = s.container_path(&candidate);
+        let (code, out) = match key {
+            "www.conf" => {
+                // php-fpm -t 只接受主配置；用临时主配置 include 候选池文件。
+                let main = s
+                    .runtime_php_dir(&rt.kind, &rt.name)
+                    .join("php-fpm-test.conf");
+                let main_text = format!(
+                    "[global]\n\
+                     error_log = /dev/stderr\n\
+                     include = {candidate_container}\n"
+                );
+                self.admin_fs()
+                    .write(actor, &main.display().to_string(), &main_text)
+                    .map_err(|e| SiteError::Internal(format!("写入校验主配置失败：{e}")))?;
+                let main_container = s.container_path(&main);
+                self.docker()
+                    .exec_capture(
+                        &container,
+                        vec![
+                            "/usr/local/sbin/php-fpm".into(),
+                            "-t".into(),
+                            "-y".into(),
+                            main_container,
+                        ],
+                    )
+                    .await
+                    .map_err(|e| SiteError::Unavailable(format!("容器内校验失败：{e}")))?
+            }
+            _ => self
+                .docker()
+                .exec_capture(
+                    &container,
+                    vec![
+                        "php".into(),
+                        "-c".into(),
+                        candidate_container,
+                        "-r".into(),
+                        "echo \"skiff-ok\";".into(),
+                    ],
+                )
+                .await
+                .map_err(|e| SiteError::Unavailable(format!("容器内校验失败：{e}")))?,
+        };
+        // 只拦语法错误与启动失败：退出码非 0，或（非池配置）没跑进 `-r` 就退出。
+        // `PHP Warning` 不阻止保存，但要收进 warnings 原文回显给用户。
+        let invalid = code != 0 || (key != "www.conf" && !out.contains("skiff-ok"));
+        if invalid {
+            let reason = out.trim();
+            return Err(SiteError::BadRequest(if reason.is_empty() {
+                "配置语法校验失败，已拒绝保存".into()
+            } else {
+                format!("配置语法校验失败，已拒绝保存：{reason}")
+            }));
+        }
+        let warnings = php_validation_warnings(&out);
+        let original = std::fs::read(&path).ok();
+        self.admin_fs()
+            .write(actor, &path.display().to_string(), content)
+            .map_err(|e| SiteError::Internal(format!("写入 {key} 失败：{e}")))?;
+        // 重启后必须复核容器仍在 running：Docker restart 返回成功不代表 FPM
+        // 没被坏配置带崩（与 nginx 主配置保存同一条静默路径）。
+        let problem = match self.docker_runtime_action(&container, Verb::Restart).await {
+            Err(e) => Some(format!("{e}")),
+            Ok(()) => {
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                match self.docker().list_containers().await {
+                    Ok(rows)
+                        if rows
+                            .iter()
+                            .any(|c| c.name == container && c.state == "running") =>
+                    {
+                        None
+                    }
+                    Ok(_) => {
+                        Some("容器重启后未保持 running（配置可能导致 FPM 启动失败）".to_string())
+                    }
+                    Err(e) => Some(format!("重启后核对容器状态失败：{e}")),
+                }
+            }
+        };
+        if let Some(reason) = problem {
+            match &original {
+                Some(bytes) if !bytes.is_empty() => {
+                    if let Ok(text) = std::str::from_utf8(bytes) {
+                        let _ = self
+                            .admin_fs()
+                            .write(actor, &path.display().to_string(), text);
+                    }
+                }
+                _ => {
+                    let _ = self.admin_fs().remove(actor, &path.display().to_string());
+                }
+            }
+            let _ = self.docker_runtime_action(&container, Verb::Restart).await;
+            return Err(SiteError::Unavailable(format!(
+                "保存后重启 PHP-FPM 失败，已回滚 {key}：{reason}"
+            )));
+        }
+        Ok(PhpConfigFile {
+            exists: true,
+            warnings,
+            ..meta
+        })
+    }
+
+    /// 读取容器内 `php -i` 的实际生效值，并与宿主 `php.ini` 文件值并排返回。
+    ///
+    /// 只在用户点「刷新生效值」时调用，不在页面渲染路径执行容器命令。
+    pub async fn php_effective_values(&self, id: &str) -> Result<Vec<PhpIniValue>, SiteError> {
+        let rt = self.php_runtime(id)?;
+        let s = self.site_settings();
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        let (code, out) = self
+            .docker()
+            .exec_capture(&container, vec!["php".into(), "-i".into()])
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("读取 php -i 失败：{e}")))?;
+        if code != 0 {
+            return Err(SiteError::Unavailable(format!(
+                "php -i 退出码 {code}，无法读取生效值"
+            )));
+        }
+        let effective = parse_php_i(&out);
+        let file_text =
+            std::fs::read_to_string(s.runtime_php_ini(&rt.kind, &rt.name)).unwrap_or_default();
+        let file_values = parse_ini_assignments(&file_text);
+        let managed = [
+            "memory_limit",
+            "upload_max_filesize",
+            "post_max_size",
+            "max_execution_time",
+        ];
+        let keys = [
+            "memory_limit",
+            "upload_max_filesize",
+            "post_max_size",
+            "max_execution_time",
+            "display_errors",
+            "error_reporting",
+            "date.timezone",
+            "opcache.enable",
+        ];
+        Ok(keys
+            .iter()
+            .map(|key| {
+                let eff = effective
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| "（未读取）".into());
+                let file = file_values
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| "（文件未设置）".into());
+                let source = if managed.contains(key) && file != "（文件未设置）" {
+                    "FPM 池 php_admin_value 优先；文件值仅在其他 SAPI 生效".to_string()
+                } else if file != "（文件未设置）" && file == eff {
+                    "php.ini".to_string()
+                } else if file != "（文件未设置）" {
+                    "其他 conf.d / 镜像默认覆盖".to_string()
+                } else {
+                    "镜像默认或其他 conf.d".to_string()
+                };
+                PhpIniValue {
+                    key: key.to_string(),
+                    file_value: file,
+                    effective: eff,
+                    source,
+                }
+            })
+            .collect())
+    }
+
+    fn php_runtime(&self, id: &str) -> Result<Runtime, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_PHP {
+            return Err(SiteError::Unavailable(format!(
+                "{} 运行环境没有 PHP 专属配置",
+                rt.kind
+            )));
+        }
+        Ok(rt)
+    }
+
+    /// 把配置 key 解析成宿主路径；只允许固定两项与 `conf.d/<name>.ini` 单层文件名。
+    fn php_config_target(
+        &self,
+        rt: &Runtime,
+        s: &SiteSettings,
+        key: &str,
+    ) -> Result<(PathBuf, PhpConfigFile), SiteError> {
+        let (path, container_path, label, note) = match key {
+            "php.ini" => (
+                s.runtime_php_ini(&rt.kind, &rt.name),
+                CONTAINER_PHP_INI.to_string(),
+                "php.ini".to_string(),
+                "PHP 主配置；页面「PHP 参数」中的四项写在 FPM 池，优先级更高。",
+            ),
+            "www.conf" => (
+                s.runtime_pool_conf(&rt.kind, &rt.name),
+                CONTAINER_PHP_POOL.to_string(),
+                "www.conf（FPM 池）".to_string(),
+                "FPM 进程/监听配置；「PHP 参数」保存时会重写本文件（表单字段为权威）。",
+            ),
+            other => {
+                let name = other
+                    .strip_prefix("conf.d/")
+                    .ok_or_else(|| SiteError::BadRequest(format!("未知配置文件：{other}")))?;
+                let p = Path::new(name);
+                if name.is_empty()
+                    || p.components().count() != 1
+                    || !name.ends_with(".ini")
+                    || name.contains('\\')
+                {
+                    return Err(SiteError::BadRequest("扩展 ini 文件名不合法".into()));
+                }
+                (
+                    s.runtime_php_confd(&rt.kind, &rt.name).join(name),
+                    format!("{CONTAINER_PHP_SKIFF_CONFD}/{name}"),
+                    format!("扩展 {name}"),
+                    "宿主托管的扩展 ini，PHP 启动时在镜像 conf.d 之后扫描。",
+                )
+            }
+        };
+        Ok((
+            path.clone(),
+            PhpConfigFile {
+                key: key.to_string(),
+                label,
+                host_path: path.display().to_string(),
+                container_path,
+                exists: path.exists(),
+                editable: true,
+                note: note.to_string(),
+                warnings: Vec::new(),
+            },
+        ))
+    }
+
     pub async fn unbind_runtime_site(
         &self,
         runtime_id: &str,
@@ -2787,6 +3628,14 @@ impl AppState {
                     .docker()
                     .exec_capture(&c.id, vec!["nginx".into(), "-s".into(), "reload".into()])
                     .await;
+            }
+        }
+        // Rust 环境失去最后的绑定后，执行目录回落 `app/` 兜底源码。
+        if let Ok(Some(rt)) = self.db().runtime_by_id(runtime_id) {
+            if rt.kind == skiff_store::KIND_RUST {
+                if let Err(e) = self.sync_rust_runtime_source(&rt, &s).await {
+                    tracing::warn!(error = %e, "解绑站点后切换 Rust 源码目录失败");
+                }
             }
         }
         Ok(())
@@ -3169,6 +4018,24 @@ impl AppState {
         Ok(path)
     }
 
+    /// 准备 PHP 宿主托管配置：`php/php.ini` 与 `php/conf.d/`。
+    ///
+    /// 两者都要在容器创建前存在，否则 Docker 会把缺失的宿主路径建成目录或拒绝挂载。
+    fn ensure_php_config_files(
+        &self,
+        s: &SiteSettings,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(s.runtime_php_confd(kind, name))
+            .map_err(|e| format!("创建扩展 ini 目录失败：{e}"))?;
+        let ini = s.runtime_php_ini(kind, name);
+        if !ini.exists() {
+            write_if_changed(&ini, DEFAULT_PHP_INI.as_bytes(), 0o644)?;
+        }
+        Ok(())
+    }
+
     pub async fn site_env_status(&self) -> SiteEnvStatus {
         let s = self.site_settings();
         // 默认 unknown：Docker 不可达时不能声称「未安装」。
@@ -3516,12 +4383,18 @@ impl AppState {
     }
 
     fn php_spec_for(&self, s: &SiteSettings, kind: &str, name: &str, image: &str) -> ContainerSpec {
+        let mut env = BTreeMap::new();
+        // 让 PHP 同时扫描镜像自带 conf.d 与 Skiff 托管目录：后者放用户可编辑的扩展 ini。
+        env.insert(
+            "PHP_INI_SCAN_DIR".to_string(),
+            PHP_INI_SCAN_DIR_VALUE.to_string(),
+        );
         ContainerSpec {
             image: image.to_string(),
             name: Some(runtime_container_name(kind, name)),
             command: None,
             entrypoint: None,
-            env: BTreeMap::new(),
+            env,
             labels: skiff_labels("php"),
             // 只走 unix socket，不暴露 9000；host 网络避免额外 bridge。
             ports: vec![],
@@ -3538,6 +4411,16 @@ impl AppState {
                 Mount::Bind {
                     source: s.runtime_pool_conf(kind, name).display().to_string(),
                     target: CONTAINER_PHP_POOL.to_string(),
+                    read_only: true,
+                },
+                Mount::Bind {
+                    source: s.runtime_php_ini(kind, name).display().to_string(),
+                    target: CONTAINER_PHP_INI.to_string(),
+                    read_only: true,
+                },
+                Mount::Bind {
+                    source: s.runtime_php_confd(kind, name).display().to_string(),
+                    target: CONTAINER_PHP_SKIFF_CONFD.to_string(),
                     read_only: true,
                 },
                 Mount::Bind {
@@ -3559,21 +4442,27 @@ impl AppState {
     }
 
     fn rust_spec_for(&self, s: &SiteSettings, name: &str, image: &str, port: u16) -> ContainerSpec {
-        let manifest = format!(
-            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/app/Cargo.toml",
+        let entry = format!(
+            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/entry.sh",
             skiff_store::KIND_RUST
         );
         let log = format!(
             "{CONTAINER_RUNTIME_ROOT}/{}/{name}/log/server.log",
             skiff_store::KIND_RUST
         );
+        let target = format!(
+            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/target",
+            skiff_store::KIND_RUST
+        );
         let mut env = BTreeMap::new();
         env.insert("PORT".to_string(), port.to_string());
+        // 构建产物留在运行环境目录，站点目录只放源码（用户可整目录备份/替换源码）。
+        env.insert("CARGO_TARGET_DIR".to_string(), target);
         ContainerSpec {
             image: image.to_string(),
             name: Some(runtime_container_name(skiff_store::KIND_RUST, name)),
             // 独立进程 + host 网络端口；容器重启后由 restart=unless-stopped 拉起。
-            command: Some(rust_run_command(&manifest, &log)),
+            command: Some(rust_run_command(&entry, &log)),
             entrypoint: None,
             env,
             labels: skiff_labels("runtime"),
@@ -3605,6 +4494,58 @@ impl AppState {
         std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)?;
         std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())?;
         self.sync_default_conf(s)
+    }
+
+    /// 把 Rust 运行环境源码切到最早绑定的站点目录；无绑定时回落到自带 `app/`。
+    ///
+    /// 容器整目录挂载 `/www`，改写宿主 `<runtime>/site` 标记即可；仅当容器正在运行
+    /// 时才重启以立即生效，停止的容器下次启动自然读取新标记。多站点绑同一环境时
+    /// 以最早绑定的站点为准（端口固定，只能跑一个进程）。
+    async fn sync_rust_runtime_source(
+        &self,
+        rt: &Runtime,
+        s: &SiteSettings,
+    ) -> Result<(), SiteError> {
+        if rt.kind != skiff_store::KIND_RUST {
+            return Ok(());
+        }
+        let marker = s.runtime_home(&rt.kind, &rt.name).join("site");
+        let domains = self
+            .db()
+            .runtime_site_domains(&rt.id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        let target = match domains.first() {
+            Some(domain) => {
+                let site = self
+                    .db()
+                    .site_by_domain(domain)
+                    .map_err(|e| SiteError::Internal(e.to_string()))?
+                    .ok_or_else(|| SiteError::Internal(format!("站点行缺失：{domain}")))?;
+                s.container_path(&site_index_dir(Path::new(&site.root_dir)))
+            }
+            None => String::new(),
+        };
+        if std::fs::read_to_string(&marker).unwrap_or_default().trim() == target {
+            return Ok(());
+        }
+        if target.is_empty() {
+            let _ = std::fs::remove_file(&marker);
+        } else {
+            std::fs::write(&marker, &target)
+                .map_err(|e| SiteError::Internal(format!("写入 Rust 源码标记失败：{e}")))?;
+        }
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        if let Ok(rows) = self.docker().list_containers().await {
+            if rows
+                .iter()
+                .any(|c| c.name == container && c.state == "running")
+            {
+                if let Err(e) = self.docker_runtime_action(&container, Verb::Restart).await {
+                    tracing::warn!(error = %e, "切换 Rust 源码后重启运行环境失败");
+                }
+            }
+        }
+        Ok(())
     }
 
     fn bound_runtime(&self, site: &Site) -> Result<Runtime, SiteError> {
@@ -4199,6 +5140,9 @@ impl AppState {
 
         // 类型专属校验。P1 允许 PHP 与 Rust 运行环境；Node/Go 一律如实拒绝。
         let mut runtime_id = None;
+        let mut runtime_kind = String::new();
+        let mut runtime_version = String::new();
+        let mut runtime_port = None;
         let mut proxy_target = None;
         let mut proxy_websocket = false;
         match site_type {
@@ -4240,6 +5184,9 @@ impl AppState {
                         "运行环境缺少固定端口，请先重新安装".into(),
                     ));
                 }
+                runtime_kind = rt.kind.clone();
+                runtime_version = rt.version.clone();
+                runtime_port = rt.port;
                 runtime_id = Some(rid.to_string());
             }
             TYPE_PROXY => {
@@ -4328,10 +5275,22 @@ impl AppState {
             TYPE_RUNTIME => {
                 std::fs::create_dir_all(site_index_dir(&root))
                     .map_err(|e| SiteError::Internal(format!("创建站点文档根失败：{e}")))?;
-                let index = site_index_dir(&root).join("index.php");
-                if !index.exists() {
-                    std::fs::write(&index, default_probe_php())
-                        .map_err(|e| SiteError::Internal(format!("写入 index.php 失败：{e}")))?;
+                // 按运行环境类型给初始文件：PHP 写探针、Rust 写最小工程，
+                // 禁止所有 runtime 站点一律回落 index.php（Rust 站出现 index.php 即此回落）。
+                for (rel, content) in
+                    runtime_site_default_files(&runtime_kind, &runtime_version, runtime_port)
+                {
+                    let file = site_index_dir(&root).join(rel);
+                    if let Some(parent) = file.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            SiteError::Internal(format!("创建 {} 失败：{e}", parent.display()))
+                        })?;
+                    }
+                    if !file.exists() {
+                        std::fs::write(&file, content).map_err(|e| {
+                            SiteError::Internal(format!("写入 {} 失败：{e}", file.display()))
+                        })?;
+                    }
                 }
             }
             TYPE_STATIC => {
@@ -4346,6 +5305,13 @@ impl AppState {
             _ => {}
         }
 
+        // Rust 站点的 `index/` 就是运行源码：创建成功后把环境执行目录切过来。
+        let rust_runtime_id = if site_type == TYPE_RUNTIME && runtime_kind == skiff_store::KIND_RUST
+        {
+            runtime_id.clone()
+        } else {
+            None
+        };
         let site = db
             .create_site(&StoreNewSite {
                 domain: domain.clone(),
@@ -4388,6 +5354,15 @@ impl AppState {
         if let Err(e) = self.restart_nginx().await {
             rollback(&conf);
             return Err(e);
+        }
+        // Rust 站点的 `index/` 就是源码：站点落库后再把环境执行目录切过来。
+        // 失败只告警不回滚站点（源码目录仍可用，`app/` 兜底仍可运行）。
+        if let Some(rid) = rust_runtime_id {
+            if let Ok(Some(rt)) = self.db().runtime_by_id(&rid) {
+                if let Err(e) = self.sync_rust_runtime_source(&rt, &s).await {
+                    tracing::warn!(error = %e, "站点创建后切换 Rust 源码目录失败");
+                }
+            }
         }
         Ok(site)
     }
@@ -4632,6 +5607,41 @@ impl AppState {
         Ok(())
     }
 
+    /// 删除确认页的具体量：目录体积/文件数、关联定时任务数、运行环境绑定。
+    pub fn site_delete_stats(&self, domain: &str) -> Result<SiteDeleteStats, SiteError> {
+        let site = self
+            .db()
+            .site_by_domain(domain)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        let (dir_bytes, file_count) = dir_usage(Path::new(&site.root_dir));
+        let source = format!("site:{}", site.domain);
+        let task_count = self
+            .db()
+            .scheduled_tasks()
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .iter()
+            .filter(|t| t.source == source)
+            .count();
+        let (runtime_name, runtime_kind) = if site.site_type == TYPE_RUNTIME {
+            site.runtime_id
+                .as_deref()
+                .and_then(|rid| self.db().runtime_by_id(rid).ok().flatten())
+                .map(|rt| (rt.name, rt.kind))
+                .unwrap_or_default()
+        } else {
+            (String::new(), String::new())
+        };
+        Ok(SiteDeleteStats {
+            dir_bytes,
+            file_count,
+            task_count,
+            rust_source: runtime_kind == skiff_store::KIND_RUST,
+            runtime_name,
+            runtime_kind,
+        })
+    }
+
     pub async fn delete_site(&self, domain: &str) -> Result<(), SiteError> {
         let s = self.site_settings();
         let site = self
@@ -4667,6 +5677,19 @@ impl AppState {
         self.db()
             .delete_site(&site.domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?;
+        // Rust 站点目录即运行源码：删除站点后让环境切到剩余站点或 `app/` 兜底，
+        // 否则容器仍指着一个已被删掉的目录。
+        if site.site_type == TYPE_RUNTIME {
+            if let Some(rid) = site.runtime_id.as_deref() {
+                if let Ok(Some(rt)) = self.db().runtime_by_id(rid) {
+                    if rt.kind == skiff_store::KIND_RUST {
+                        if let Err(e) = self.sync_rust_runtime_source(&rt, &s).await {
+                            tracing::warn!(error = %e, "删除站点后切换 Rust 源码目录失败");
+                        }
+                    }
+                }
+            }
+        }
         // 级联清理站点定时任务：否则 `builtin:site-backup:<域名>` 会留成指向已不存在
         // 站点的孤儿任务。站点备份是内核种入的 `builtin:` 任务，普通删除入口会被
         // 内置保护拒绝，这里必须走级联删除（仍经任务服务，保证调度器内存与库一致）。
@@ -5185,13 +6208,30 @@ pub fn registry_of(image: &str) -> String {
     }
 }
 
-/// Rust 容器的启动命令。必须用非登录 shell：`sh -lc` 会重置 PATH，
-/// rust 镜像里的 cargo 在 `/usr/local/cargo/bin`，实测退化成 `cargo: not found`（退出码 127）。
-fn rust_run_command(manifest: &str, log: &str) -> Vec<String> {
+/// Rust 容器入口脚本：有绑定站点时跑站点 `index/` 源码，否则跑环境自带 `app/`。
+///
+/// 容器整目录挂载 `/www`，切换源码只重写宿主上的 `<runtime>/site` 标记并重启容器，
+/// 不需要改容器配置，避免出现“站点脚手架”和“运行代码”两套互不同步的副本。
+fn rust_entry_script() -> &'static str {
+    "#!/bin/sh\n\
+     DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
+     if [ -f \"$DIR/site\" ]; then\n\
+       APP=\"$(cat \"$DIR/site\")\"\n\
+     else\n\
+       APP=\"$DIR/app\"\n\
+     fi\n\
+     if [ ! -f \"$APP/Cargo.toml\" ]; then\n\
+       echo \"skiff: rust source missing: $APP/Cargo.toml\" >&2\n\
+       exit 1\n\
+     fi\n\
+     exec cargo run --release --manifest-path \"$APP/Cargo.toml\"\n"
+}
+
+fn rust_run_command(entry: &str, log: &str) -> Vec<String> {
     vec![
         "sh".into(),
         "-c".into(),
-        format!("cargo run --release --manifest-path {manifest} >> {log} 2>&1"),
+        format!("sh {entry} >> {log} 2>&1"),
     ]
 }
 
@@ -5199,6 +6239,27 @@ fn rust_run_command(manifest: &str, log: &str) -> Vec<String> {
 fn rust_cargo_manifest() -> &'static str {
     "[package]\nname = \"skiff-runtime-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
      [[bin]]\nname = \"skiff-runtime-app\"\npath = \"src/main.rs\"\n"
+}
+
+/// 运行环境站点的初始文档根文件（相对站点 `index/`）。
+///
+/// **站点 `index/` 就是 Rust 的源码目录**：绑定站点后容器执行
+/// `cargo run --manifest-path /www/sites/<域名>/index/Cargo.toml`，构建产物写运行
+/// 环境 `target/`，不回写站点目录；只有环境**未绑定任何站点**时才回落到
+/// `/www/runtime/rust/<name>/app`。绝不能回落成 `index.php`，否则会误以为站点跑 PHP。
+fn runtime_site_default_files(
+    kind: &str,
+    version: &str,
+    port: Option<u16>,
+) -> Vec<(&'static str, String)> {
+    match kind {
+        skiff_store::KIND_PHP => vec![("index.php", default_probe_php().to_string())],
+        skiff_store::KIND_RUST => vec![
+            ("Cargo.toml", rust_cargo_manifest().to_string()),
+            ("src/main.rs", rust_main_source(version, port.unwrap_or(0))),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// 最小 HTTP 服务：监听 `$PORT`，任何请求返回一段带版本的环境标识文本。
@@ -5287,6 +6348,54 @@ mod tests {
         assert_eq!(runtime_effective_state("running"), "running");
         assert_eq!(runtime_effective_state(""), "unknown");
         assert_eq!(runtime_effective_state("weird-state"), "unknown");
+    }
+
+    #[test]
+    fn runtime_site_defaults_follow_runtime_kind() {
+        // PHP 站点：探针 index.php。
+        let php = runtime_site_default_files(skiff_store::KIND_PHP, "8.5", None);
+        assert_eq!(php.len(), 1);
+        assert_eq!(php[0].0, "index.php");
+        // Rust 站点：最小工程，绝不出现 PHP 文件。
+        let rust = runtime_site_default_files(skiff_store::KIND_RUST, "1.83", Some(9101));
+        assert!(rust.iter().any(|(p, _)| *p == "Cargo.toml"));
+        assert!(rust.iter().any(|(p, _)| *p == "src/main.rs"));
+        assert!(!rust.iter().any(|(p, _)| *p == "index.php"));
+        // 未实现的类型不给任何默认文件，避免伪造可用性。
+        assert!(runtime_site_default_files("node", "20", None).is_empty());
+    }
+
+    #[test]
+    fn rust_entry_script_runs_bound_site_source_with_fallback() {
+        // 入口脚本必须在运行时决定源码目录：标记在 → 站点 index/，否则回落 app/。
+        let script = rust_entry_script();
+        assert!(script.contains("$DIR/site"));
+        assert!(script.contains("$DIR/app"));
+        assert!(script.contains("--manifest-path"));
+    }
+
+    #[test]
+    fn php_validation_warnings_only_collects_warning_lines() {
+        // `PHP Warning` 不阻止保存，但必须原文回显；普通输出与错误行不混进 warnings。
+        let out = "PHP Warning:  Module \"foo\" is already loaded in Unknown on line 0\n\
+                   skiff-ok\n\
+                   PHP Warning:  Module \"foo\" is already loaded in Unknown on line 0\n\
+                   PHP Fatal error: Uncaught Exception\n";
+        let warnings = php_validation_warnings(out);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("PHP Warning:"));
+        assert!(!warnings[0].contains("skiff-ok"));
+    }
+
+    #[test]
+    fn dir_usage_counts_nested_files_and_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("index/src")).unwrap();
+        std::fs::write(dir.path().join("index/a.txt"), "12345").unwrap();
+        std::fs::write(dir.path().join("index/src/main.rs"), "ok").unwrap();
+        let (bytes, files) = dir_usage(dir.path());
+        assert_eq!(files, 2);
+        assert_eq!(bytes, 7);
     }
 
     #[test]
@@ -5706,10 +6815,18 @@ mod tests {
             "空闲运行环境应允许删除"
         );
         state
-            .runtime_jobs
-            .lock()
-            .await
-            .begin("php-busy", "install")
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: "runtime.install".into(),
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: "php-busy".into(),
+                title: "安装运行环境 busy".into(),
+                params: serde_json::json!({}),
+                created_by: "admin".into(),
+                created_by_role: "admin".into(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
             .unwrap();
         assert!(state
             .container_busy_reason(&container)
@@ -6002,50 +7119,45 @@ mod tests {
     }
 
     #[test]
-    fn runtime_job_state_transitions_follow_install_lifecycle() {
-        let mut jobs = RuntimeJobs::default();
-        jobs.begin("php-8.5", "install").expect("首单应入队");
-        let queued = jobs.get("php-8.5").cloned().expect("任务应可读取");
+    fn runtime_job_projection_follows_job_center_status() {
+        let svc = app_jobs::JobService::new(std::sync::Arc::new(
+            skiff_store::Db::open_in_memory().unwrap(),
+        ));
+        let job = svc
+            .submit(app_jobs::JobSubmit {
+                kind: "runtime.install".into(),
+                target_type: app_jobs::TARGET_RUNTIME.into(),
+                target_id: "php-8.5".into(),
+                title: "安装运行环境 php-8.5".into(),
+                params: serde_json::json!({"runtime_id": "php-8.5"}),
+                created_by: "admin".into(),
+                created_by_role: "admin".into(),
+                requester_ip: String::new(),
+                cancellable: true,
+            })
+            .unwrap();
+        let queued = RuntimeJob::from_job(&svc.get(&job.id).unwrap(), Vec::new(), 0);
         assert_eq!(queued.state, RuntimeJobState::Queued);
-        assert!(queued.active(), "排队中视为活动任务");
-        assert_eq!(queued.progress, 0);
-        assert!(
-            jobs.begin("php-8.5", "install").is_err(),
-            "同一环境执行中必须拒绝重复任务"
-        );
+        assert!(queued.active());
+        assert_eq!(queued.kind, "install");
 
-        jobs.update("php-8.5", |j| {
-            j.advance("拉取镜像", 15, "pull php:8.5-fpm");
-        });
-        let running = jobs.get("php-8.5").cloned().unwrap();
+        svc.set_phase(&job.id, "拉取镜像", "拉取镜像", 15, true);
+        svc.note(&job.id, "pull php:8.5-fpm");
+        let running = RuntimeJob::from_job(&svc.get(&job.id).unwrap(), vec!["pull".into()], 0);
         assert_eq!(running.state, RuntimeJobState::Running);
         assert_eq!(running.step, "拉取镜像");
         assert_eq!(running.progress, 15);
-        assert!(running.active());
 
-        jobs.update("php-8.5", |j| j.finish_err("Docker 不可用"));
-        let failed = jobs.get("php-8.5").cloned().unwrap();
-        assert_eq!(failed.state, RuntimeJobState::Failed);
-        assert!(!failed.active(), "失败是终态，不再算活动任务");
-        assert_eq!(failed.error, "Docker 不可用");
-        assert!(
-            failed.log_text().contains("Docker 不可用"),
-            "失败原因必须进实时日志：{}",
-            failed.log_text()
+        svc.finish_err(&job.id, "failed", "Docker 不可用");
+        let failed = RuntimeJob::from_job(
+            &svc.get(&job.id).unwrap(),
+            vec!["[00:00:00] 失败：Docker 不可用".into()],
+            0,
         );
-
-        // 失败后可重试；新任务重新从排队开始，并带上新的 kind。
-        assert!(jobs.begin("php-8.5", "extensions").is_ok());
-        let retry = jobs.get("php-8.5").cloned().unwrap();
-        assert_eq!(retry.state, RuntimeJobState::Queued);
-        assert_eq!(retry.kind, "extensions");
-
-        jobs.update("php-8.5", |j| j.finish_ok("完成"));
-        let done = jobs.get("php-8.5").cloned().unwrap();
-        assert_eq!(done.state, RuntimeJobState::Done);
-        assert_eq!(done.progress, 100);
-        assert!(!done.active());
-        assert_eq!(jobs.list().len(), 1, "每个环境只保留最近一次任务");
+        assert_eq!(failed.state, RuntimeJobState::Failed);
+        assert!(!failed.active());
+        assert_eq!(failed.error, "Docker 不可用");
+        assert!(failed.log_text().contains("Docker 不可用"));
     }
 
     #[test]
@@ -6242,13 +7354,15 @@ mod tests {
     #[test]
     fn rust_runtime_uses_non_login_shell() {
         // 回归：`sh -lc` 会重置 PATH，cargo 不在默认 PATH 里，容器退出码 127。
+        // 具体源码目录由 entry.sh 在运行时决定（站点 index/ 或 app/ 兜底）。
         let cmd = rust_run_command(
-            "/www/runtime/rust/x/app/Cargo.toml",
+            "/www/runtime/rust/x/entry.sh",
             "/www/runtime/rust/x/log/server.log",
         );
         assert_eq!(cmd[0], "sh");
         assert_eq!(cmd[1], "-c");
-        assert!(cmd[2].starts_with("cargo run --release --manifest-path"));
+        assert!(cmd[2].starts_with("sh /www/runtime/rust/x/entry.sh"));
+        assert!(cmd[2].contains(">> /www/runtime/rust/x/log/server.log 2>&1"));
     }
 
     #[test]

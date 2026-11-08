@@ -16,10 +16,10 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::{
-    BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, PhpConfigView,
-    RuntimeDetailPage, RuntimeJobView, RuntimeKindView, RuntimeOptionView, RuntimeRow,
-    SiteBackupView, SiteDeletePage, SiteDetailPage, SiteEnvPage, SiteEnvView, SiteLogsPage,
-    SiteNewForm, SiteTlsView, SiteView, SitesPage,
+    BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, PhpConfigView, PhpEditorView,
+    PhpFileView, PhpIniValueView, RuntimeDetailPage, RuntimeJobView, RuntimeKindView,
+    RuntimeOptionView, RuntimeRow, SiteBackupView, SiteDeletePage, SiteDetailPage, SiteEnvPage,
+    SiteEnvView, SiteLogsPage, SiteNewForm, SiteTlsView, SiteView, SitesPage,
 };
 use crate::util::{encode_uri_component, form_first, human_size, parse_form};
 
@@ -441,8 +441,6 @@ async fn render_sites(
                 || v.aliases_text.to_lowercase().contains(&needle)
         })
         .collect();
-    let notice = q.get("notice").cloned().unwrap_or_default();
-    let error = q.get("error").cloned().unwrap_or_default();
     let settings = state.site_settings();
     let form_error_field = error_field(&form_error, &form.site_type).to_string();
     handlers::render(SitesPage {
@@ -450,8 +448,8 @@ async fn render_sites(
         sites: views,
         env: env_view(&env),
         can_admin: user.can(skiff_model::Permission::Admin),
-        error,
-        notice,
+        error: String::new(),
+        notice: String::new(),
         keyword,
         form,
         runtimes: runtime_opts,
@@ -642,11 +640,13 @@ pub async fn create(
                 &result.root_dir,
             );
             let prefix = &state.cfg.entry_prefix;
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/{}?notice={}",
-                encode_uri_component(&result.domain),
-                encode_uri_component("站点已创建")
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                "站点已创建",
+                format!("/{prefix}/sites/{}", encode_uri_component(&result.domain)),
+            ))
         }
         Err(e) => {
             let message = match site_error_text(&e) {
@@ -734,7 +734,6 @@ fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<Exte
 pub async fn env_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
     let env = state.site_env_status().await;
@@ -811,8 +810,8 @@ pub async fn env_page(
         jobs_href: format!("/{prefix}/sites/env/jobs"),
         add_href: format!("/{prefix}/sites/env/add"),
         images_href: format!("/{prefix}/sites/env/images"),
-        error: q.get("error").cloned().unwrap_or_default(),
-        notice: q.get("notice").cloned().unwrap_or_default(),
+        error: String::new(),
+        notice: String::new(),
     })
 }
 
@@ -842,7 +841,17 @@ pub async fn env_add(
     };
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.add_runtime(&kind, &name, &version, &selected).await {
+    match state
+        .add_runtime(
+            &kind,
+            &name,
+            &version,
+            &selected,
+            &user.user.username,
+            user.user.role.as_str(),
+        )
+        .await
+    {
         Ok((rt, started)) => {
             let _ = state
                 .db()
@@ -862,10 +871,13 @@ pub async fn env_add(
                     rt.name
                 )
             };
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env?notice={}",
-                encode_uri_component(&message)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                message,
+                format!("/{prefix}/sites/env"),
+            ))
         }
         Err(e) => {
             let _ = state.db().audit(
@@ -876,10 +888,13 @@ pub async fn env_add(
                 "failed",
                 &e.to_string(),
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env?error={}",
-                encode_uri_component(&e.to_string())
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                e.to_string(),
+                format!("/{prefix}/sites/env"),
+            ))
         }
     }
 }
@@ -909,10 +924,13 @@ pub async fn env_images_save(
         .db()
         .audit(&user.user.username, &ip, "sites.env.images", "-", "ok", "");
     let prefix = &state.cfg.entry_prefix;
-    Ok(handlers::redirect(format!(
-        "/{prefix}/sites/env?notice={}",
-        encode_uri_component("镜像参数已保存，重建 Web 服务或重装对应实例后生效")
-    )))
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        skiff_app::FlashKind::Notice,
+        "镜像参数已保存，重建 Web 服务或重装对应实例后生效",
+        format!("/{prefix}/sites/env"),
+    ))
 }
 
 pub async fn action(
@@ -944,15 +962,20 @@ pub async fn action(
         "",
     );
     let prefix = &state.cfg.entry_prefix;
-    Ok(handlers::redirect(format!(
-        "/{prefix}/sites/{}?tab=manage&notice={}",
-        encode_uri_component(&domain),
-        encode_uri_component(if running {
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        skiff_app::FlashKind::Notice,
+        if running {
             "站点已启动"
         } else {
             "站点已停止"
-        })
-    )))
+        },
+        format!(
+            "/{prefix}/sites/{}?tab=manage",
+            encode_uri_component(&domain)
+        ),
+    ))
 }
 
 pub async fn set_default(
@@ -983,15 +1006,17 @@ pub async fn set_default(
         if enabled { "set" } else { "unset" },
     );
     let prefix = &state.cfg.entry_prefix;
-    Ok(handlers::redirect(format!(
-        "/{prefix}/sites/{}?notice={}",
-        encode_uri_component(&domain),
-        encode_uri_component(if enabled {
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        skiff_app::FlashKind::Notice,
+        if enabled {
             "已设为默认站点"
         } else {
             "已取消默认站点"
-        })
-    )))
+        },
+        format!("/{prefix}/sites/{}", encode_uri_component(&domain)),
+    ))
 }
 
 /// 站点详情「域名」标签：新增/删除别名，落库后重建 vhost 并 reload。
@@ -1037,10 +1062,13 @@ pub async fn domains(
             } else {
                 "别名已删除"
             };
-            Ok(handlers::redirect(format!(
-                "{target}&notice={}",
-                encode_uri_component(notice)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                notice,
+                target,
+            ))
         }
         Err(e) => {
             let message = match &e {
@@ -1061,10 +1089,13 @@ pub async fn domains(
                 "fail",
                 &message,
             );
-            Ok(handlers::redirect(format!(
-                "{target}&error={}",
-                encode_uri_component(&message)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                message,
+                target,
+            ))
         }
     }
 }
@@ -1115,11 +1146,13 @@ pub async fn ssl_action(
                 "ok",
                 "",
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/{}?tab=ssl&notice={}",
-                encode_uri_component(&domain),
-                encode_uri_component("SSL 设置已更新并重载 nginx")
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                "SSL 设置已更新并重载 nginx",
+                format!("/{prefix}/sites/{}?tab=ssl", encode_uri_component(&domain)),
+            ))
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -1131,11 +1164,13 @@ pub async fn ssl_action(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/{}?tab=ssl&error={}",
-                encode_uri_component(&domain),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/{}?tab=ssl", encode_uri_component(&domain)),
+            ))
         }
     }
 }
@@ -1183,8 +1218,8 @@ pub async fn detail(
         user,
         domain,
         q.get("tab").cloned().unwrap_or_else(|| "overview".into()),
-        q.get("error").cloned().unwrap_or_default(),
-        q.get("notice").cloned().unwrap_or_default(),
+        String::new(),
+        String::new(),
         q.get("path").cloned(),
         None,
     )
@@ -1421,23 +1456,33 @@ pub async fn set_backup(
                     "关闭站点备份"
                 },
             );
-            Ok(handlers::redirect(format!(
-                "/{}/sites/{}?notice={}",
-                state.cfg.entry_prefix,
-                encode_uri_component(&domain),
-                encode_uri_component(if enabled {
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                if enabled {
                     "站点备份已开启（每日 03:00）"
                 } else {
                     "站点备份已关闭"
-                })
-            )))
+                },
+                format!(
+                    "/{}/sites/{}",
+                    state.cfg.entry_prefix,
+                    encode_uri_component(&domain)
+                ),
+            ))
         }
-        Err(e) => Ok(handlers::redirect(format!(
-            "/{}/sites/{}?error={}",
-            state.cfg.entry_prefix,
-            encode_uri_component(&domain),
-            encode_uri_component(&e)
-        ))),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            e.to_string(),
+            format!(
+                "/{}/sites/{}",
+                state.cfg.entry_prefix,
+                encode_uri_component(&domain)
+            ),
+        )),
     }
 }
 
@@ -1477,11 +1522,16 @@ pub async fn save_config(
                     "已保存并通过校验（站点未运行）"
                 },
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/{}?tab=config&notice={}",
-                encode_uri_component(&domain),
-                encode_uri_component(save_config_notice(outcome.reloaded))
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                save_config_notice(outcome.reloaded),
+                format!(
+                    "/{prefix}/sites/{}?tab=config",
+                    encode_uri_component(&domain)
+                ),
+            ))
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -1529,12 +1579,22 @@ pub async fn batch(
         .collect();
     let prefix = &state.cfg.entry_prefix;
     if domains.is_empty() {
-        return Ok(handlers::redirect(format!(
-            "/{prefix}/sites?error={}",
-            encode_uri_component("请先选择至少一个站点")
-        )));
+        return Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            "请先选择至少一个站点",
+            format!("/{prefix}/sites"),
+        ));
     }
-    if !matches!(action.as_str(), "start" | "stop" | "delete") {
+    // 批量删除没有「输入域名确认」这一关，留着就是绕过删除确认的后门：
+    // 一律拒绝并引导到单站确认页（那里会展示将被删除的量并要求输入域名）。
+    if action == "delete" {
+        return Err(AppError::BadRequest(
+            "删除站点请走「站点详情 → 删除确认页」（需输入域名确认）".into(),
+        ));
+    }
+    if !matches!(action.as_str(), "start" | "stop") {
         return Err(AppError::BadRequest(format!("未知批量操作：{action}")));
     }
     let ip = handlers::client_ip(&state, &parts);
@@ -1543,8 +1603,8 @@ pub async fn batch(
     for domain in &domains {
         let result = match action.as_str() {
             "start" => state.set_site_running(domain, true).await.map_err(map_err),
-            "stop" => state.set_site_running(domain, false).await.map_err(map_err),
-            _ => state.delete_site(domain).await.map_err(map_err),
+            // 上面已限制只有 start/stop 两种动作。
+            _ => state.set_site_running(domain, false).await.map_err(map_err),
         };
         match result {
             Ok(()) => {
@@ -1572,19 +1632,25 @@ pub async fn batch(
         }
     }
     if failed.is_empty() {
-        Ok(handlers::redirect(format!(
-            "/{prefix}/sites?notice={}",
-            encode_uri_component(&format!("批量操作完成：{ok} 个站点"))
-        )))
+        Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            format!("批量操作完成：{ok} 个站点"),
+            format!("/{prefix}/sites"),
+        ))
     } else {
-        Ok(handlers::redirect(format!(
-            "/{prefix}/sites?error={}",
-            encode_uri_component(&format!(
+        Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            format!(
                 "成功 {ok} 个，失败 {} 个：{}",
                 failed.len(),
                 failed.join("；")
-            ))
-        )))
+            ),
+            format!("/{prefix}/sites"),
+        ))
     }
 }
 
@@ -1631,10 +1697,25 @@ pub async fn delete_confirm(
         .db()
         .site_by_domain(&domain)?
         .ok_or_else(|| AppError::NotFound(format!("站点不存在：{domain}")))?;
+    let stats = state.site_delete_stats(&domain).map_err(map_err)?;
+    let runtime_label = if stats.runtime_name.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{} {}",
+            skiff_app::runtime_catalog::kind_label(&stats.runtime_kind),
+            stats.runtime_name
+        )
+    };
     handlers::render(SiteDeletePage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
         domain: site.domain,
         root_dir: site.root_dir,
+        dir_size: human_size(i64::try_from(stats.dir_bytes).unwrap_or(i64::MAX)),
+        file_count: stats.file_count,
+        task_count: stats.task_count,
+        runtime_label,
+        rust_source: stats.rust_source,
     })
 }
 
@@ -1648,6 +1729,13 @@ pub async fn delete(
     require_admin(&user)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    // 输入域名确认：前端按钮禁用只是防手滑，服务端也必须校验，
+    // 防止绕过确认页直接 POST。
+    if form_first(&form, "confirm").trim() != domain {
+        return Err(AppError::BadRequest(format!(
+            "请输入站点域名 {domain} 以确认删除"
+        )));
+    }
     state.delete_site(&domain).await.map_err(map_err)?;
     let ip = handlers::client_ip(&state, &parts);
     let _ = state
@@ -1696,10 +1784,77 @@ pub async fn runtime_detail(
         (String::new(), String::new())
     };
     let enabled_exts = view.extensions.clone();
+    let is_php = view.runtime.kind == skiff_store::KIND_PHP;
+    let mut page_error = String::new();
+    let mut php_files = Vec::new();
+    let mut php_editor = None;
+    let mut php_values = Vec::new();
+    let mut php_values_loaded = false;
+    let mut php_values_error = String::new();
+    if is_php {
+        php_files = state
+            .php_config_files(&id)
+            .map_err(map_err)?
+            .into_iter()
+            .map(|f| {
+                let selected = q.get("file").map(String::as_str) == Some(f.key.as_str());
+                PhpFileView {
+                    label: f.label,
+                    host_path: f.host_path,
+                    container_path: f.container_path,
+                    exists: f.exists,
+                    selected,
+                    edit_href: format!(
+                        "/{prefix}/sites/env/{}?tab=config&file={}",
+                        encode_uri_component(&id),
+                        encode_uri_component(&f.key)
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(key) = q.get("file").filter(|v| !v.is_empty()) {
+            match state.read_php_config_file(&id, key, &user.user.username) {
+                Ok(v) => {
+                    php_editor = Some(PhpEditorView {
+                        key: v.file.key,
+                        label: v.file.label,
+                        content: v.content,
+                        container_path: v.file.container_path,
+                        note: v.file.note,
+                    });
+                }
+                Err(e) => page_error = format!("{e}"),
+            }
+        }
+        if q.get("ini").map(String::as_str) == Some("1") {
+            php_values_loaded = true;
+            match state.php_effective_values(&id).await {
+                Ok(values) => {
+                    php_values = values
+                        .into_iter()
+                        .map(|v| PhpIniValueView {
+                            key: v.key,
+                            file_value: v.file_value,
+                            effective: v.effective,
+                            source: v.source,
+                        })
+                        .collect();
+                }
+                Err(e) => php_values_error = format!("{e}"),
+            }
+        }
+    }
     let job = state.runtime_job(&id).await;
     let (has_job, job_view) = match job.as_ref() {
         Some(j) => (true, job_view(j)),
         None => (false, RuntimeJobView::default()),
+    };
+    // 安装时未挂载 php/php.ini 与 conf.d 的存量容器：编辑能保存但不生效，
+    // 详情页给出重建入口，别让用户对着界面猜。
+    let config_mounts_stale = if is_php && view.container_exists {
+        !state.php_config_mounts_current(&id).map_err(map_err)?
+    } else {
+        false
     };
     handlers::render(RuntimeDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
@@ -1710,7 +1865,11 @@ pub async fn runtime_detail(
         socket_container: view.socket_container.clone(),
         socket_exists: view.socket_exists,
         socket_mode: view.socket_mode.clone(),
-        extensions: extension_options(&enabled_exts, &view.runtime.version, &view.runtime.image),
+        extensions: if is_php {
+            extension_options(&enabled_exts, &view.runtime.version, &view.runtime.image)
+        } else {
+            Vec::new()
+        },
         ext_categories: [
             skiff_app::runtime_catalog::CATEGORY_DB,
             skiff_app::runtime_catalog::CATEGORY_IMAGE,
@@ -1741,9 +1900,15 @@ pub async fn runtime_detail(
         },
         logs,
         logs_error,
+        php_files,
+        php_editor,
+        php_values,
+        php_values_loaded,
+        php_values_error,
+        config_mounts_stale,
         can_admin: user.can(skiff_model::Permission::Admin),
-        error: q.get("error").cloned().unwrap_or_default(),
-        notice: q.get("notice").cloned().unwrap_or_default(),
+        error: page_error,
+        notice: String::new(),
     })
 }
 
@@ -1759,6 +1924,74 @@ fn parse_u32_field(
     }
     raw.parse::<u32>()
         .map_err(|_| AppError::BadRequest(format!("{key} 必须是整数")))
+}
+
+/// 保存 PHP 配置文件：校验在容器内完成，失败回滚并提示原因。
+pub async fn runtime_config_file_save(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let key = form_first(&form, "key");
+    let content = form_first(&form, "content");
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    let back = format!(
+        "/{prefix}/sites/env/{}?tab=config&file={}",
+        encode_uri_component(&id),
+        encode_uri_component(&key)
+    );
+    match state
+        .save_php_config_file(&id, &key, &content, &user.user.username)
+        .await
+    {
+        Ok(file) => {
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.config_file",
+                &id,
+                "ok",
+                &key,
+            );
+            // PHP Warning 不阻止保存，但原文回显，避免“保存成功”掩盖潜在问题。
+            let mut notice = format!("{} 已保存，PHP-FPM 已重启", file.label);
+            if !file.warnings.is_empty() {
+                notice.push_str("；校验警告（不影响本次保存）：");
+                notice.push_str(&file.warnings.join("；"));
+            }
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                notice,
+                back,
+            ))
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            let _ = state.db().audit(
+                &user.user.username,
+                &ip,
+                "runtimes.config_file",
+                &id,
+                "failed",
+                &format!("{key}: {msg}"),
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                back,
+            ))
+        }
+    }
 }
 
 pub async fn runtime_action(
@@ -1807,10 +2040,13 @@ pub async fn runtime_action(
                     "delete" => "Web 服务容器已删除（语言运行环境各自独立，未受影响）",
                     _ => "Web 服务操作已完成",
                 };
-                Ok(handlers::redirect(format!(
-                    "{back}&notice={}",
-                    encode_uri_component(notice)
-                )))
+                Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Notice,
+                    notice,
+                    back,
+                ))
             }
             Err(e) => {
                 let msg = format!("{e}");
@@ -1822,10 +2058,13 @@ pub async fn runtime_action(
                     "failed",
                     &msg,
                 );
-                Ok(handlers::redirect(format!(
-                    "{back}&error={}",
-                    encode_uri_component(&msg)
-                )))
+                Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Error,
+                    msg,
+                    back,
+                ))
             }
         };
     }
@@ -1845,10 +2084,13 @@ pub async fn runtime_action(
                     "ok",
                     &report.completed.join("；"),
                 );
-                Ok(handlers::redirect(format!(
-                    "/{prefix}/sites/env?notice={}",
-                    encode_uri_component(&notice)
-                )))
+                Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Notice,
+                    notice,
+                    format!("/{prefix}/sites/env"),
+                ))
             }
             Err(e) => {
                 let msg = format!("{e}");
@@ -1860,14 +2102,20 @@ pub async fn runtime_action(
                     "failed",
                     &msg,
                 );
-                Ok(handlers::redirect(format!(
-                    "/{prefix}/sites/env?error={}",
-                    encode_uri_component(&msg)
-                )))
+                Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Error,
+                    msg,
+                    format!("/{prefix}/sites/env"),
+                ))
             }
         };
     }
-    match state.runtime_action(&id, &action).await {
+    match state
+        .runtime_action(&id, &action, &user.user.username, user.user.role.as_str())
+        .await
+    {
         Ok(_) => {
             let _ = state.db().audit(
                 &user.user.username,
@@ -1882,11 +2130,13 @@ pub async fn runtime_action(
             } else {
                 "操作已完成"
             };
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component(notice)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                notice,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -1898,11 +2148,13 @@ pub async fn runtime_action(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -1957,7 +2209,10 @@ pub async fn runtime_extensions_save(
     let selected = form.get("ext").cloned().unwrap_or_default();
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.update_runtime_extensions(&id, &selected).await {
+    match state
+        .update_runtime_extensions(&id, &selected, &user.user.username, user.user.role.as_str())
+        .await
+    {
         Ok(changed) => {
             let _ = state.db().audit(
                 &user.user.username,
@@ -1972,11 +2227,13 @@ pub async fn runtime_extensions_save(
             } else {
                 "扩展集合未变化"
             };
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component(notice)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                notice,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -1988,11 +2245,13 @@ pub async fn runtime_extensions_save(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -2010,7 +2269,10 @@ pub async fn runtime_extension_install(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.install_extension(&id, &key).await {
+    match state
+        .install_extension(&id, &key, &user.user.username, user.user.role.as_str())
+        .await
+    {
         Ok(_) => {
             let _ = state.db().audit(
                 &user.user.username,
@@ -2020,11 +2282,13 @@ pub async fn runtime_extension_install(
                 "ok",
                 &key,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component(&format!("扩展 {key} 安装任务已提交，进度与日志会实时刷新"))
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!("扩展 {key} 安装任务已提交，进度与日志会实时刷新"),
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -2036,11 +2300,13 @@ pub async fn runtime_extension_install(
                 "failed",
                 &format!("{key}: {msg}"),
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -2058,7 +2324,10 @@ pub async fn runtime_extension_uninstall(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.uninstall_extension(&id, &key).await {
+    match state
+        .uninstall_extension(&id, &key, &user.user.username, user.user.role.as_str())
+        .await
+    {
         Ok(_) => {
             let _ = state.db().audit(
                 &user.user.username,
@@ -2068,11 +2337,13 @@ pub async fn runtime_extension_uninstall(
                 "ok",
                 &key,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component(&format!("扩展 {key} 卸载任务已提交"))
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!("扩展 {key} 卸载任务已提交"),
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -2084,11 +2355,13 @@ pub async fn runtime_extension_uninstall(
                 "failed",
                 &format!("{key}: {msg}"),
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -2118,18 +2391,31 @@ pub async fn runtime_extensions_batch(
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
     if keys.is_empty() {
-        return Ok(handlers::redirect(format!(
-            "/{prefix}/sites/env/{}?error={}",
-            encode_uri_component(&id),
-            encode_uri_component("未选择任何扩展")
-        )));
+        return Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            "未选择任何扩展",
+            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+        ));
     }
-    match state.apply_extension_selection(&id, add, &keys).await {
-        Ok(0) => Ok(handlers::redirect(format!(
-            "/{prefix}/sites/env/{}?notice={}",
-            encode_uri_component(&id),
-            encode_uri_component("所选扩展均已是目标状态，无需变更")
-        ))),
+    match state
+        .apply_extension_selection(
+            &id,
+            add,
+            &keys,
+            &user.user.username,
+            user.user.role.as_str(),
+        )
+        .await
+    {
+        Ok(0) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            "所选扩展均已是目标状态，无需变更",
+            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+        )),
         Ok(n) => {
             let action = if add { "安装" } else { "卸载" };
             let _ = state.db().audit(
@@ -2140,13 +2426,13 @@ pub async fn runtime_extensions_batch(
                 "ok",
                 &format!("{action} {n} 项：{}", keys.join(", ")),
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component(&format!(
-                    "{n} 项扩展{action}任务已提交（单任务串行执行，日志合流，只重启一次容器）"
-                ))
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!("{n} 项扩展{action}任务已提交（单任务串行执行，日志合流，只重启一次容器）"),
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -2158,11 +2444,13 @@ pub async fn runtime_extensions_batch(
                 "failed",
                 &format!("{}: {msg}", keys.join(", ")),
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -2182,12 +2470,23 @@ pub async fn runtime_pecl_install(
     let version = form_first(&form, "version").trim().to_string();
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.install_pecl_extension(&id, &name, &version).await {
-        Ok(_) => Ok(handlers::redirect(format!(
-            "/{prefix}/sites/env/{}?notice={}",
-            encode_uri_component(&id),
-            encode_uri_component(&format!("PECL {name} 安装任务已提交"))
-        ))),
+    match state
+        .install_pecl_extension(
+            &id,
+            &name,
+            &version,
+            &user.user.username,
+            user.user.role.as_str(),
+        )
+        .await
+    {
+        Ok(_) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            format!("PECL {name} 安装任务已提交"),
+            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+        )),
         Err(e) => {
             let msg = e.to_string();
             let _ = state.db().audit(
@@ -2198,11 +2497,13 @@ pub async fn runtime_pecl_install(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -2295,11 +2596,13 @@ pub async fn runtime_unbind_site(
                 "ok",
                 &domain,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component(&format!("站点 {domain} 已解绑并停止"))
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!("站点 {domain} 已解绑并停止"),
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -2311,11 +2614,13 @@ pub async fn runtime_unbind_site(
                 "failed",
                 &format!("{domain}: {msg}"),
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }
@@ -2369,16 +2674,21 @@ pub async fn runtime_config_save(
     };
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.save_php_runtime_config(&id, &cfg).await {
+    match state
+        .save_php_runtime_config(&id, &cfg, &user.user.username)
+        .await
+    {
         Ok(_) => {
             let _ = state
                 .db()
                 .audit(&user.user.username, &ip, "runtimes.config", &id, "ok", "");
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?notice={}",
-                encode_uri_component(&id),
-                encode_uri_component("PHP 配置已保存并重载 FPM")
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                "PHP 配置已保存并重载 FPM",
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
         Err(e) => {
             let msg = format!("{e}");
@@ -2390,11 +2700,13 @@ pub async fn runtime_config_save(
                 "failed",
                 &msg,
             );
-            Ok(handlers::redirect(format!(
-                "/{prefix}/sites/env/{}?error={}",
-                encode_uri_component(&id),
-                encode_uri_component(&msg)
-            )))
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
         }
     }
 }

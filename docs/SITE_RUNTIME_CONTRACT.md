@@ -97,7 +97,9 @@ Site (static / proxy)  不持有 RuntimeEnv
 ```text
 /www/runtime/<kind>/<name>/
   php-fpm.sock   PHP：FPM unix socket（权限 0660，属主 root、属组 65534）
-  www.conf       PHP：FPM pool（内核渲染，不手改）
+  www.conf       PHP：FPM pool（宿主托管，可在「配置 → 配置文件」直接编辑）
+  php/php.ini    PHP：宿主托管主配置（挂载为容器 /usr/local/etc/php/php.ini）
+  php/conf.d/    PHP：宿主托管扩展 ini（挂载为 conf.d-skiff，扫在镜像 conf.d 之后）
   log/           runtime.log（内核操作）、build.log（重建/扩展构建）、fpm-error.log
   data/          运行环境自身数据（session/临时目录），不放站点代码
 ```
@@ -114,7 +116,7 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 ```text
 /www/sites/<域名>/
-  index/   静态/PHP 的文档根；Node/Go 的应用工作目录（入口文件或已编译二进制）
+  index/   静态/PHP 的文档根；Rust 的运行源码目录（Cargo.toml + src/）；Node/Go 的应用工作目录（入口文件或已编译二进制）
   log/     access.log / error.log；Node/Go 追加 app.log / app.err.log
   ssl/     cert.pem / key.pem（站点 HTTPS）
   conf/    <域名>.conf；Node/Go 追加 app.json（进程/端口/健康检查快照）
@@ -124,9 +126,19 @@ Site (static / proxy)  不持有 RuntimeEnv
 - `static`：`index/` 必须存在，根目录是 `<站点目录>/index`。
 - `proxy`：不创建 `index/`；站点目录只含 `conf/ log/ ssl/`。目录页对 proxy 显示“反代站点无文档根”。
 - `runtime`（PHP）：`index/` 是文档根；PHP-FPM 池与 socket 由环境提供，不由站点目录提供。
+- `runtime`（Rust）：**`index/` 就是运行源码目录**。容器执行
+  `cargo run --release --manifest-path /www/sites/<域名>/index/Cargo.toml`，构建产物写到运行环境
+  `target/`，不回写站点目录。只有该环境**未绑定任何站点**时才回落到 `/www/runtime/rust/<name>/app`；
+  新建 Rust 站点只在 `index/` 生成 `Cargo.toml` + `src/main.rs`，**不生成 `index.php`**。
+  同一环境绑定多个站点时以最早绑定的站点为准（端口固定，只能跑一个进程）。
 - `runtime`（Node/Go）：`index/` 是应用工作目录；`conf/app.json` 记录命令、端口、健康检查，
   由内核生成，站点详情只读展示，不提供任意 Docker 参数编辑。
-- 删除站点：删除该站整目录 + 站点记录 + 别名 + 证书；**不删除运行环境**。删除运行环境：被站点引用时
+- 删除站点：删除该站整目录 + 站点记录 + 别名 + 证书；**不删除运行环境**。Rust 站点的 `index/`
+  即运行源码，删除站点就是删除源码（不可撤销，且不经回收站）。删除确认页必须展示将被删除的具体量：
+  目录大小、文件数、关联定时任务数（`source = site:<域名>`）、绑定的运行环境（删除后仅解除该站点绑定），
+  Rust 站点额外标注「将删除源码目录」；确认方式为输入域名，输入不匹配时提交按钮禁用，服务端同时校验
+  `confirm` 字段。批量操作接口的 `action=delete` 一律拒绝（无 UI 入口，且会绕过输入确认），
+  统一引导到单站确认页。删除后若该 Rust 环境仍绑定其它站点则以最早绑定者为准，否则回落 `app/` 兜底。删除运行环境：被站点引用时
   拒绝，并列出域名与“先改绑或删除站点”的动作。
 
 ### 2.3 多版本、端口与 socket 分配
@@ -609,10 +621,16 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 - 运行模型（独立进程 + 固定端口）：
   - 端口区间 **9100–9199**，创建时取区间内最小未占用端口并落 `site_runtimes.port`；冲突直接拒绝；
   - 容器 `skiff-rust-<name>`，`network_mode=host`，挂载 `/www`；
-  - 容器内执行 `cargo run --release --manifest-path /www/runtime/rust/<name>/app/Cargo.toml`，
-    日志重定向到 `/www/runtime/rust/<name>/log/server.log`；
+  - 容器入口固定为 `sh /www/runtime/rust/<name>/entry.sh`，日志重定向到
+    `/www/runtime/rust/<name>/log/server.log`；`entry.sh` 运行时读取宿主标记
+    `/www/runtime/rust/<name>/site`：
+    - 有标记（环境已绑定站点）→ `cargo run --release --manifest-path <标记指向的站点 index>/Cargo.toml`；
+    - 无标记（未绑定任何站点）→ 回落 `/www/runtime/rust/<name>/app/Cargo.toml`；
+  - `CARGO_TARGET_DIR=/www/runtime/rust/<name>/target`，构建产物不写站点目录；
   - 安装任务写最小 std HTTP 工程（无第三方依赖），启动后 `wait_tcp_port` 等端口监听，失败回传日志尾部；
-  - 目录结构：`/www/runtime/rust/<name>/app/{Cargo.toml,src/main.rs}`、`log/server.log`。
+  - 目录结构：`/www/runtime/rust/<name>/{entry.sh,site,app/{Cargo.toml,src/main.rs},log/server.log,target/}`。
+    站点目录与 `app/` 不复用同一份脚手架：站点源码只存在于站点 `index/`，`app/` 仅作无绑定兜底。
+  - 绑定/解绑/删除站点后内核同步 `site` 标记；标记变化且容器在运行时重启容器，停止的容器下次启动自然生效。
 - 站点绑定：站点类型 `runtime`，vhost 生成 `proxy_pass http://127.0.0.1:<port>`（不是 `fastcgi_pass`）；
   解绑入口在抽屉「站点」页签，删除环境仍受「存在绑定站点即拒绝」约束。
 - Node / Go 保持 P2 现状，不在本轮改动。
@@ -724,3 +742,52 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 | 安装器版本 | 随包脚本 `IPE_VERSION=2.13.2`（非 master），sha256 与常量一致 |
 | 安装器回退 | 主路径执行失败输出「主路径失败，已回退」并进入 legacy；两者失败时两段日志保留 |
 | 发布包 | `vendor/install-php-extensions` 存在、可执行、含 `IPE_VERSION`，并被 checksums 覆盖 |
+
+## 13. PHP 配置文件直接编辑（2026-11-08）
+
+### 13.1 文件面
+
+| 文件 | 宿主路径 | 容器路径 | 来源/权威 |
+| --- | --- | --- | --- |
+| 主配置 | `<runtime>/php/php.ini` | `/usr/local/etc/php/php.ini` | 宿主新建（默认仅注释），用户直接编辑 |
+| FPM 池 | `<runtime>/www.conf` | `/usr/local/etc/php-fpm.d/www.conf` | 「PHP 参数」表单渲染；表单字段是权威 |
+| 扩展 ini | `<runtime>/php/conf.d/*.ini` | `/usr/local/etc/php/conf.d-skiff/*.ini` | 宿主托管，PHP 在镜像 `conf.d` 之后扫描 |
+
+- 镜像/扩展安装器写入容器内 `conf.d` 的 ini 不在宿主侧，**不列进编辑列表**；需要覆盖时在
+  `php/conf.d/` 新建同名语义的 ini，加载顺序保证它在镜像 ini 之后。
+- 所有保存经 `AdminFs`（`skiff-fs`）原子写并写审计，Web/业务层禁止 `std::fs::write`。
+- 页面「PHP 参数」写的是 FPM 池的 `php_admin_value`，优先级高于 `php.ini` 同名项；
+  保存参数表单会重写 `www.conf`，直接编辑的自定义行会丢失。`php.ini` 里的同名项仅对其他
+  SAPI/未覆盖指令生效。
+
+### 13.2 保存流程
+
+1. 写候选文件到 `<runtime>/php/*.candidate`（同在 `/www` 内，容器可见）；
+2. 容器内校验：`www.conf` 用临时主配置 `include` 候选后执行 `php-fpm -t -y`；`php.ini` /
+   扩展 ini 执行 `php -c <候选> -r 'echo "skiff-ok";'`。**只拦语法错误与启动失败**
+   （退出码非 0；非池配置还要求输出 `skiff-ok`），`PHP Warning` 不阻止保存，但原文收进界面提示；
+3. 校验通过才原子写正式文件，然后重启对应 PHP 容器；
+4. 重启后复核容器仍为 `running`（Docker restart 返回成功不代表 FPM 没被坏配置带崩）；
+   重启报错或容器未能保持运行即视为失败：回滚原内容（原文件不存在则移入回收站）、
+   再次尝试重启，并返回回滚原因。
+5. 存量实例：容器创建于本功能之前（宿主缺 `<runtime>/php/.config-mounted` 标记）时，
+   页面提示「编辑不生效」并给出直达重建入口；重建只重装容器与挂载，不动站点目录与源码。
+   旧 Rust 站点的 `index.php` 不自动删除。
+
+### 13.3 生效值
+
+- `?ini=1`（「刷新生效值」按钮）才执行容器内 `php -i`，页面渲染路径不执行容器命令；
+- 并排展示 `php.ini` 文件值、`php -i` 本地值、来源判断（`php.ini` / FPM 池覆盖 / 其他 conf.d）；
+- 读取失败在面板内回显，不写入 URL。
+
+### 13.4 验收
+
+| 用例 | 口径 |
+| --- | --- |
+| 非 PHP 分流 | Rust/Node/Go 详情抽屉无「扩展」页签与 PHP 配置/文件区块；直达 URL 同样不出现 |
+| Rust 站点默认文件 | 新建后站点 `index/` 只有 `Cargo.toml` + `src/main.rs`，无 `index.php`；静态站为 `index.html`，反代无文件 |
+| 校验失败 | 写入非法 ini → 返回 400 类错误并提示原因，磁盘文件与 FPM 状态不变 |
+| Warning 不阻断 | 写入只触发 `PHP Warning` 的配置 → 保存成功，界面提示条回显 warning 原文 |
+| 存量实例重建 | 缺 `.config-mounted` 的容器 → 配置页签出现「编辑不生效」提示与直达重建入口 |
+| 重启失败回滚 | 模拟重启失败 → 文件恢复原内容并再次重载，页面提示已回滚 |
+| 生效值来源 | `php.ini` 设 `memory_limit=256M` 而表单设 512M → 生效值 512M、来源标为 FPM 池覆盖 |

@@ -60,8 +60,8 @@ pub async fn page(
         &user,
         PageInput {
             selected_project: q.get("project").cloned().unwrap_or_default(),
-            notice: q.get("notice").cloned().unwrap_or_default(),
-            error: q.get("error").cloned().unwrap_or_default(),
+            notice: String::new(),
+            error: String::new(),
             ..Default::default()
         },
     )
@@ -321,12 +321,18 @@ pub async fn project_action(
     }
 
     let notice = format!("项目 {project}：成功 {done} 个，失败 {failed} 个");
-    Ok(handlers::redirect(format!(
-        "/{}/compose?project={}&notice={}",
-        state.cfg.entry_prefix,
-        project,
-        urlencode(&notice)
-    )))
+    let kind = if failed == 0 {
+        skiff_app::FlashKind::Notice
+    } else {
+        skiff_app::FlashKind::Error
+    };
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        kind,
+        notice,
+        format!("/{}/compose?project={}", state.cfg.entry_prefix, project),
+    ))
 }
 
 async fn render(
@@ -547,6 +553,7 @@ fn audit(
     }
 }
 
+#[cfg(test)]
 fn urlencode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for b in raw.bytes() {

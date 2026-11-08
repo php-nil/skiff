@@ -520,7 +520,8 @@ async fn default_admin_login_lands_on_overview_without_force_change() {
     );
 }
 
-/// 改密表单校验失败必须回跳设置页并带错误，不能把用户留在裸 400 页。
+/// 改密表单校验失败必须回跳设置页，错误经会话 flash 展示一次，
+/// URL 不得带 `?err=`（刷新重放 / 链接带脏数据）。
 #[tokio::test]
 async fn change_password_failure_redirects_back_to_settings() {
     let h = harness();
@@ -549,11 +550,31 @@ async fn change_password_failure_redirects_back_to_settings() {
         .get(header::LOCATION)
         .unwrap()
         .to_str()
-        .unwrap();
-    assert!(loc.starts_with("/p/settings?err="), "回跳设置页: {loc}");
+        .unwrap()
+        .to_string();
+    assert_eq!(loc, "/p/settings", "回跳设置页不得携带消息参数");
+
+    let fetch = |cookie: String| {
+        h.app.clone().oneshot(
+            Request::builder()
+                .uri("/p/settings")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let first = fetch(format!("skiff_dev_session={token}")).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let html = body_text(first).await;
     assert!(
-        loc.contains("%E5%BD%93%E5%89%8D%E5%8F%A3%E4%BB%A4"),
-        "错误文案应 URL 编码后回传: {loc}"
+        html.contains("当前口令不正确"),
+        "首次渲染应显示错误: {html}"
+    );
+    let second = fetch(format!("skiff_dev_session={token}")).await.unwrap();
+    let html = body_text(second).await;
+    assert!(
+        !html.contains("当前口令不正确"),
+        "flash 只能消费一次，刷新不应重放: {html}"
     );
 }
 
@@ -3078,6 +3099,47 @@ async fn official_packages_declare_usable_install_defaults() {
     assert!(cron.cron.is_empty(), "cron 插件不得再声明自建 cron 计时器");
 }
 
+/// 计划任务：新建任务是列表页右上角的按钮 + 页内弹窗，不是 L3 独立视图。
+/// 守住真实约束：有效视图集合只有 list；旧的 new 视图不得复活。
+#[test]
+fn cron_new_task_is_a_list_button_not_a_separate_view() {
+    let m = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/cron/manifest.toml"))
+        .expect("cron manifest 必须可解析");
+    assert_eq!(m.menu.len(), 1, "cron 只应声明一个 L2 菜单");
+    let menu = &m.menu[0];
+    assert_eq!(menu.id, "jobs");
+    let views = menu.effective_views();
+    assert_eq!(
+        views,
+        vec!["list"],
+        "cron 的有效视图集合只能是 [list]，实际 {views:?}"
+    );
+    assert!(
+        !views.contains(&"new"),
+        "「新建任务」是按钮，不得再作为独立视图存在"
+    );
+
+    let list = include_str!("../../../plugins/cron/ui/list.html");
+    assert!(
+        list.contains(r#"id="btn-new""#),
+        "列表页右上角必须有「新建任务」按钮"
+    );
+    assert!(
+        !list.contains("<h1"),
+        "插件页面不得渲染页面级标题（标题由内核提供）"
+    );
+
+    let js = include_str!("../../../plugins/cron/ui/app.js");
+    assert!(
+        js.contains(r#"id="job-dialog""#),
+        "新建与编辑必须复用同一个页内弹窗"
+    );
+    assert!(
+        !js.contains("new.html"),
+        "列表页脚本不得再跳转到独立的「新建任务」页面"
+    );
+}
+
 /// 网站列表：默认站点只在列表做标记，切换入口下沉到详情页。
 #[tokio::test]
 async fn sites_list_shows_default_badge_and_toggle() {
@@ -3324,6 +3386,122 @@ async fn site_delete_removes_whole_site_directory_only() {
         h.state.db().site_by_domain("demo.local").unwrap().is_none(),
         "站点记录必须删除"
     );
+}
+
+/// 删除确认页必须给出具体量，并要求输入域名确认；不带 confirm 的 POST 一律拒绝。
+#[tokio::test]
+async fn site_delete_confirm_shows_stats_and_requires_typed_domain() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+    let root = h.data_dir.join("www/sites/demo.local");
+    std::fs::create_dir_all(root.join("index/src")).unwrap();
+    std::fs::write(root.join("index/index.php"), "0123456789").unwrap();
+    std::fs::write(root.join("index/src/main.rs"), "fn main() {}").unwrap();
+    h.state
+        .db()
+        .create_site(&php_site("demo.local", &root.display().to_string()))
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/sites/demo.local/delete", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("data-type-confirm=\"demo.local\""),
+        "确认区必须要求输入域名: {html}"
+    );
+    assert!(
+        html.contains("data-type-confirm-submit"),
+        "提交按钮必须受域名输入控制: {html}"
+    );
+    assert!(html.contains("2 个文件"), "确认页必须给出文件数: {html}");
+    assert!(
+        html.contains("绑定的定时任务"),
+        "确认页必须给出定时任务影响: {html}"
+    );
+
+    let post = |body: Body| {
+        let app = h.app.clone();
+        let token = token.clone();
+        let uri = "/p/sites/demo.local/delete";
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let resp = post(form_body(&[("csrf", csrf.as_str())])).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "未输入域名必须拒绝");
+    assert!(
+        h.state.db().site_by_domain("demo.local").unwrap().is_some(),
+        "拒绝后站点必须仍在"
+    );
+
+    let resp = post(form_body(&[
+        ("csrf", csrf.as_str()),
+        ("confirm", "demo.local"),
+    ]))
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert!(
+        h.state.db().site_by_domain("demo.local").unwrap().is_none(),
+        "输入匹配后站点删除"
+    );
+}
+
+/// 批量删除入口已关闭：不能绕过「输入域名确认」，返回 4xx 且站点仍在。
+#[tokio::test]
+async fn sites_batch_delete_is_rejected_and_keeps_site() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+    let root = h.data_dir.join("www/sites/batch-guard.local");
+    std::fs::create_dir_all(root.join("index")).unwrap();
+    h.state
+        .db()
+        .create_site(&php_site("batch-guard.local", &root.display().to_string()))
+        .unwrap();
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/batch")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(form_body(&[
+                    ("csrf", csrf.as_str()),
+                    ("action", "delete"),
+                    ("domains", "batch-guard.local"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_client_error(),
+        "批量删除必须被拒绝，实际 {}",
+        resp.status()
+    );
+    assert!(
+        h.state
+            .db()
+            .site_by_domain("batch-guard.local")
+            .unwrap()
+            .is_some(),
+        "拒绝后站点必须仍在"
+    );
+    assert!(root.exists(), "拒绝后站点目录必须仍在");
 }
 
 /// 站点「目录」页只能浏览文档根 index/：log/ 与 ssl/ 不得通过相对路径越界。
@@ -3593,11 +3771,6 @@ fn d3_plugin_ui_adapts_to_theme_message() {
         (
             "cron-list",
             include_str!("../../../plugins/cron/ui/list.html"),
-            include_str!("../../../plugins/cron/ui/app.js"),
-        ),
-        (
-            "cron-new",
-            include_str!("../../../plugins/cron/ui/new.html"),
             include_str!("../../../plugins/cron/ui/app.js"),
         ),
         (
@@ -4232,7 +4405,10 @@ async fn site_domains_tab_manages_aliases() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(loc.contains("error="), "{loc}");
+    assert!(
+        !loc.contains("error=") && !loc.contains("notice="),
+        "结果不得走 query: {loc}"
+    );
     let (_, page) = get_page(&h.app, &loc, &admin).await;
     assert!(page.contains("主域名不能作为别名删除"), "{page}");
 }
@@ -4285,6 +4461,53 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// 非 PHP 实例（Rust/Node/Go）的详情页不得出现任何 PHP 专属区块：
+/// 扩展页签、扩展面板、PHP 配置文件编辑；直达 env 页与规范入口都要判 kind。
+#[tokio::test]
+async fn runtime_detail_hides_php_blocks_for_non_php_instances() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    h.state
+        .db()
+        .create_runtime(&skiff_store::NewRuntime {
+            id: "rust-1.83".into(),
+            kind: "rust".into(),
+            name: "rust-1.83".into(),
+            version: "1.83".into(),
+            image: "rust:1.83-slim".into(),
+            image_digest: String::new(),
+            socket_path: None,
+            port: None,
+            is_default: false,
+        })
+        .unwrap();
+
+    for uri in ["/p/sites/env/rust-1.83", "/p/runtimes/rust-1.83"] {
+        let (status, html) = get_page(&h.app, uri, &admin).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            !html.contains(r#"data-runtime-tab="extensions""#)
+                && !html.contains(r#"data-runtime-tab-panel="extensions""#),
+            "{uri} 不得渲染扩展页签/面板: {html}"
+        );
+        assert!(
+            !html.contains("扩展管理") && !html.contains("php.ini") && !html.contains("PECL"),
+            "{uri} 不得出现 PHP 专属配置: {html}"
+        );
+        assert!(
+            html.contains("Rust") && html.contains("rust-1.83"),
+            "{uri} 仍应展示实例自身信息: {html}"
+        );
+    }
+
+    // 同一页面在 PHP 实例上仍完整保留扩展与 PHP 配置。
+    let (_, php_html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
+    assert!(
+        php_html.contains(r#"data-runtime-tab="extensions""#) && php_html.contains("php.ini"),
+        "PHP 实例必须保留扩展页签与 php.ini 查看入口: {php_html}"
+    );
 }
 
 /// 运行环境页：去安装进度/镜像源，列表 + 新建实例 + 详情抽屉（Esc/遮罩关闭）。
@@ -4599,9 +4822,9 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(
-            location.contains("error="),
-            "{name}/{version} 必须把错误带回页面: {location}"
+        assert_eq!(
+            location, "/p/sites/env",
+            "{name}/{version} 回跳不得携带消息参数"
         );
     }
 
@@ -4632,10 +4855,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(
-        location.contains("notice="),
-        "种子行应被同名新建接管而不是重名拒绝: {location}"
-    );
+    assert_eq!(location, "/p/sites/env", "回跳不得携带消息参数");
     // 接管后已是真实实例，再次同名必须拒绝。
     let resp = h
         .app
@@ -4663,10 +4883,9 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(
-        location.contains("error="),
-        "真实实例同名新建必须报重名: {location}"
-    );
+    assert_eq!(location, "/p/sites/env", "回跳不得携带消息参数");
+    let (_, page) = get_page(&h.app, "/p/sites/env", &admin).await;
+    assert!(page.contains("已存在"), "重名原因应经 flash 回显: {page}");
 
     // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
     std::fs::create_dir_all(h.data_dir.join("www/runtime/php/php-8.4-a")).unwrap();
@@ -4696,9 +4915,11 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .to_str()
         .unwrap()
         .to_string();
+    assert_eq!(location, "/p/sites/env", "回跳不得携带消息参数");
+    let (_, page) = get_page(&h.app, "/p/sites/env", &admin).await;
     assert!(
-        location.contains("error=") && location.contains("%E5%B7%B2%E5%AD%98%E5%9C%A8"),
-        "目录已存在必须提示换名（已存在）: {location}"
+        page.contains("已存在"),
+        "目录冲突原因应经 flash 回显: {page}"
     );
     assert!(
         h.state

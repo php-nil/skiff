@@ -93,8 +93,8 @@ pub async fn page(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let force = q.get("force").map(|v| v == "1").unwrap_or(false);
-    let error = q.get("err").map(String::as_str).unwrap_or("");
-    render_settings(&state, &user, error, "", None, Vec::new(), force).await
+    // 错误提示走会话 flash（见 `settings_error_redirect`），URL 只保留页面上下文。
+    render_settings(&state, &user, "", "", None, Vec::new(), force).await
 }
 
 /// 设置 → 监听端口 / 安全入口前缀 / TLS 开关。
@@ -343,19 +343,14 @@ pub async fn remove_key(
 pub async fn menu_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
-    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let notice = q
-        .get("ok")
-        .map(|_| "已保存菜单偏好".to_string())
-        .unwrap_or_default();
     handlers::render(MenuSettingsPage {
         ctx: handlers::page_ctx(&state, &user, "menu-settings"),
         groups: menu::settings_view(&state, &user),
         layout: menu::current_layout(&state, &user),
         width: menu::current_width(&state, &user),
         max_width: menu::current_max_width(&state, &user),
-        notice,
+        notice: String::new(),
     })
 }
 
@@ -388,10 +383,13 @@ pub async fn menu_update(
         "ok",
         &key,
     );
-    Ok(handlers::redirect(format!(
-        "/{}/settings/menu?ok=1",
-        state.cfg.entry_prefix
-    )))
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        skiff_app::FlashKind::Notice,
+        "已保存菜单偏好",
+        format!("/{}/settings/menu", state.cfg.entry_prefix),
+    ))
 }
 
 pub async fn audit(
