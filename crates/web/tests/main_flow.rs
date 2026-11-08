@@ -2105,6 +2105,12 @@ async fn restricted_form_hides_and_rejects_files_management() {
         html.contains(r#"href="/p/m/core/tasks""#) && html.contains(r#"href="/p/m/core/jobs""#),
         "工具分组里不依赖 fs 的入口应保留: {html}"
     );
+    // 菜单 href 必须真能落地（历史缺陷：`core/jobs` 有入口但 dispatch 漏了分支 → 404）。
+    // 计划任务页在无调度器快照的测试环境可能 503，这里只验证不是 404。
+    let (status, _) = get_page(&h.app, "/p/m/core/jobs", &token).await;
+    assert_eq!(status, StatusCode::OK, "任务中心深链必须可解析");
+    let (status, _) = get_page(&h.app, "/p/m/core/tasks", &token).await;
+    assert_ne!(status, StatusCode::NOT_FOUND, "计划任务深链必须可解析");
 
     for uri in [
         "/p/m/core/files",
