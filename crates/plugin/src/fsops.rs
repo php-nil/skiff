@@ -33,22 +33,31 @@ pub enum Scope {
 
 #[derive(Debug)]
 pub enum FsError {
-    /// 形式非法 / 越权 / 缺授权
+    /// 形式非法 / 越权 / 缺授权（以及宿主权限不足 `EACCES`/`EPERM`）
     Forbidden(String),
     NotFound(String),
     /// 类型冲突（目标是目录、目标已存在等）
     Conflict(String),
+    /// 目标文件系统只读（宿主 `ProtectSystem`、只读挂载等策略限制）
+    ReadOnly(String),
+    /// 宿主磁盘空间不足，或文件系统配额（`ENOSPC` / `EDQUOT`）已用尽
+    NoSpace(String),
+    /// 未归类的 I/O 故障；只有这一类落 500
     Io(String),
 }
 
 impl FsError {
     /// HTTP 状态码。用裸 `u16` 而不是 `axum::StatusCode`——判定层不该依赖
     /// HTTP 框架；映射成 `StatusCode` 由调用方（能力面适配层）负责。
+    ///
+    /// 与内核侧 `skiff-fs::FsError` 的语义保持一致，对照表见
+    /// `docs/KERNEL_FS_CONTRACT.md` §7.3：宿主拒绝类不落 500，只有未归类 I/O 才是 500。
     pub fn status(&self) -> u16 {
         match self {
-            FsError::Forbidden(_) => 403,
+            FsError::Forbidden(_) | FsError::ReadOnly(_) => 403,
             FsError::NotFound(_) => 404,
             FsError::Conflict(_) => 409,
+            FsError::NoSpace(_) => 507,
             FsError::Io(_) => 500,
         }
     }
@@ -58,6 +67,8 @@ impl FsError {
             FsError::Forbidden(m)
             | FsError::NotFound(m)
             | FsError::Conflict(m)
+            | FsError::ReadOnly(m)
+            | FsError::NoSpace(m)
             | FsError::Io(m) => m,
         }
     }
@@ -67,16 +78,57 @@ impl FsError {
         match self {
             FsError::Forbidden(_) => "deny",
             FsError::NotFound(_) | FsError::Conflict(_) => "fail",
-            FsError::Io(_) => "fail",
+            FsError::ReadOnly(_) | FsError::NoSpace(_) | FsError::Io(_) => "fail",
         }
     }
 }
 
-fn io_err(e: std::io::Error) -> FsError {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => FsError::NotFound(e.to_string()),
-        _ => FsError::Io(e.to_string()),
+/// 与内核侧 `skiff-fs::error::io_error` 同语义：宿主限制类优先按 `raw_os_error()`
+/// 归类并给可读中文原因，其余按 `ErrorKind` 回落。
+fn io_err(path: &Path, e: std::io::Error) -> FsError {
+    io_err_ctx(path, e, "")
+}
+
+/// 同 [`io_err`]，但保留调用点的动作描述（如「创建数据目录失败」）。
+fn io_err_ctx(path: &Path, e: std::io::Error, context: &str) -> FsError {
+    if let Some(err) = classify_os_error(path, e.raw_os_error()) {
+        return err;
     }
+    let ctx = if context.is_empty() {
+        format!("{}: {e}", path.display())
+    } else {
+        format!("{context}（{}）: {e}", path.display())
+    };
+    match e.kind() {
+        std::io::ErrorKind::NotFound => FsError::NotFound(ctx),
+        std::io::ErrorKind::PermissionDenied => FsError::Forbidden(format!("权限不足: {ctx}")),
+        std::io::ErrorKind::AlreadyExists => FsError::Conflict(ctx),
+        _ => FsError::Io(ctx),
+    }
+}
+
+/// 宿主只读 / 容量类 OS 错误译成可读的 4xx/507；语义与内核侧一致。
+#[cfg(unix)]
+fn classify_os_error(path: &Path, code: Option<i32>) -> Option<FsError> {
+    let code = code?;
+    let display = path.display();
+    match code {
+        libc::EROFS => Some(FsError::ReadOnly(format!(
+            "该路径所在文件系统为只读，无法写入（宿主策略限制）: {display}"
+        ))),
+        libc::ENOSPC => Some(FsError::NoSpace(format!(
+            "宿主磁盘空间不足，无法写入: {display}"
+        ))),
+        libc::EDQUOT => Some(FsError::NoSpace(format!(
+            "文件系统配额已用尽，无法写入: {display}"
+        ))),
+        _ => None,
+    }
+}
+
+#[cfg(not(unix))]
+fn classify_os_error(_path: &Path, _code: Option<i32>) -> Option<FsError> {
+    None
 }
 
 /// 把插件给的路径解析成可操作的真实路径。
@@ -116,15 +168,15 @@ fn resolve_data(data_dir: &Path, id: &str, raw: &str, create: bool) -> Result<Pa
         return Err(FsError::Forbidden("路径非法".into()));
     }
     let root = data_dir.join("plugins").join(id).join("data");
-    fs::create_dir_all(&root).map_err(|_| FsError::Io("创建数据目录失败".into()))?;
-    let canon_root = fs::canonicalize(&root).map_err(|_| FsError::Io("数据目录不可用".into()))?;
+    fs::create_dir_all(&root).map_err(|e| io_err_ctx(&root, e, "创建数据目录失败"))?;
+    let canon_root = fs::canonicalize(&root).map_err(|e| io_err_ctx(&root, e, "数据目录不可用"))?;
     let target = root.join(raw);
     if create {
         let parent = target
             .parent()
             .ok_or_else(|| FsError::Forbidden("路径无父目录".into()))?;
-        fs::create_dir_all(parent).map_err(|e| FsError::Io(e.to_string()))?;
-        let canon_parent = fs::canonicalize(parent).map_err(|e| FsError::Io(e.to_string()))?;
+        fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+        let canon_parent = fs::canonicalize(parent).map_err(|e| io_err(parent, e))?;
         if !canon_parent.starts_with(&canon_root) {
             return Err(FsError::Forbidden("越权路径".into()));
         }
@@ -135,14 +187,14 @@ fn resolve_data(data_dir: &Path, id: &str, raw: &str, create: bool) -> Result<Pa
         );
         // 目标已存在（软链）时按真实路径再判一次，避免借既有软链写到 data/ 之外。
         if resolved.exists() {
-            resolved = fs::canonicalize(&resolved).map_err(|e| FsError::Io(e.to_string()))?;
+            resolved = fs::canonicalize(&resolved).map_err(|e| io_err(&resolved, e))?;
             if !resolved.starts_with(&canon_root) {
                 return Err(FsError::Forbidden("越权路径".into()));
             }
         }
         Ok(resolved)
     } else {
-        let canon = fs::canonicalize(&target).map_err(io_err)?;
+        let canon = fs::canonicalize(&target).map_err(|e| io_err(&target, e))?;
         if !canon.starts_with(&canon_root) {
             return Err(FsError::Forbidden("越权路径".into()));
         }
@@ -175,7 +227,7 @@ pub struct Chunk {
 
 /// 读一页。`offset` 越界（等于或超过文件尾）时返回空页 + `eof = true`。
 pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError> {
-    let meta = fs::metadata(path).map_err(io_err)?;
+    let meta = fs::metadata(path).map_err(|e| io_err(path, e))?;
     if meta.is_dir() {
         return Err(FsError::Conflict("目标是目录".into()));
     }
@@ -189,9 +241,9 @@ pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError
             eof: true,
         });
     }
-    let mut f = File::open(path).map_err(io_err)?;
+    let mut f = File::open(path).map_err(|e| io_err(path, e))?;
     f.seek(SeekFrom::Start(offset))
-        .map_err(|e| FsError::Io(e.to_string()))?;
+        .map_err(|e| io_err(path, e))?;
     // procfs（如 `/proc/stat`）的 `metadata.len()` 恒为 0，但内容非空：
     // 不能按 size 提前返回空页，否则 monitor 等插件永远读不到 /proc。
     let want = if size == 0 {
@@ -203,7 +255,7 @@ pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError
     (&mut f)
         .take(want as u64)
         .read_to_end(&mut bytes)
-        .map_err(|e| FsError::Io(e.to_string()))?;
+        .map_err(|e| io_err(path, e))?;
     let eof = if size == 0 {
         bytes.len() < max
     } else {
@@ -232,19 +284,18 @@ pub fn write_chunk(
     if append {
         opts.append(true);
     }
-    let mut f = opts.open(path).map_err(|e| FsError::Io(e.to_string()))?;
+    let mut f = opts.open(path).map_err(|e| io_err(path, e))?;
     if !append {
         match offset {
             Some(o) => {
-                f.seek(SeekFrom::Start(o))
-                    .map_err(|e| FsError::Io(e.to_string()))?;
+                f.seek(SeekFrom::Start(o)).map_err(|e| io_err(path, e))?;
             }
-            None => f.set_len(0).map_err(|e| FsError::Io(e.to_string()))?,
+            None => f.set_len(0).map_err(|e| io_err(path, e))?,
         }
     }
-    f.write_all(data).map_err(|e| FsError::Io(e.to_string()))?;
-    f.flush().map_err(|e| FsError::Io(e.to_string()))?;
-    let size = f.metadata().map_err(|e| FsError::Io(e.to_string()))?.len();
+    f.write_all(data).map_err(|e| io_err(path, e))?;
+    f.flush().map_err(|e| io_err(path, e))?;
+    let size = f.metadata().map_err(|e| io_err(path, e))?.len();
     Ok((data.len(), size))
 }
 
@@ -264,12 +315,12 @@ fn mode_of(meta: Option<&fs::Metadata>) -> Value {
 
 /// 列目录：`entries` 保持旧形态（名字数组），`items` 带类型/大小/时间/权限。
 pub fn list(path: &Path) -> Result<Value, FsError> {
-    let meta = fs::metadata(path).map_err(io_err)?;
+    let meta = fs::metadata(path).map_err(|e| io_err(path, e))?;
     if !meta.is_dir() {
         return Err(FsError::Conflict("目标不是目录".into()));
     }
     let mut items: Vec<Value> = Vec::new();
-    for entry in fs::read_dir(path).map_err(io_err)?.flatten() {
+    for entry in fs::read_dir(path).map_err(|e| io_err(path, e))?.flatten() {
         let md = entry.metadata().ok();
         let name = entry.file_name().to_string_lossy().to_string();
         items.push(json!({
@@ -302,18 +353,18 @@ pub fn make_dir(path: &Path) -> Result<(), FsError> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             Err(FsError::Conflict("目标已存在".into()))
         }
-        Err(e) => Err(FsError::Io(e.to_string())),
+        Err(e) => Err(io_err(path, e)),
     }
 }
 
 /// 删除文件或目录（目录递归删），返回 `true` 表示删的是目录。
 pub fn remove(path: &Path) -> Result<bool, FsError> {
-    let meta = fs::symlink_metadata(path).map_err(io_err)?;
+    let meta = fs::symlink_metadata(path).map_err(|e| io_err(path, e))?;
     if meta.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| FsError::Io(e.to_string()))?;
+        fs::remove_dir_all(path).map_err(|e| io_err(path, e))?;
         Ok(true)
     } else {
-        fs::remove_file(path).map_err(|e| FsError::Io(e.to_string()))?;
+        fs::remove_file(path).map_err(|e| io_err(path, e))?;
         Ok(false)
     }
 }
@@ -323,7 +374,7 @@ pub fn rename(from: &Path, to: &Path) -> Result<(), FsError> {
     if to.exists() {
         return Err(FsError::Conflict("目标已存在".into()));
     }
-    fs::rename(from, to).map_err(|e| FsError::Io(e.to_string()))
+    fs::rename(from, to).map_err(|e| io_err_ctx(from, e, "改名失败"))
 }
 
 /// 删除/改名的源路径是不是「根本身」。
@@ -515,5 +566,51 @@ mod tests {
         assert!(!remove(&to).unwrap(), "删文件返回 false");
         assert!(remove(&dir).unwrap(), "删目录返回 true");
         assert!(matches!(remove(&dir), Err(FsError::NotFound(_))));
+    }
+
+    /// 宿主拒绝类错误的映射必须与内核侧一致（对照表见 `KERNEL_FS_CONTRACT.md` §7.3）。
+    #[cfg(unix)]
+    #[test]
+    fn host_reject_errors_keep_kernel_semantics() {
+        let p = Path::new("/etc/skiff-iter-probe.txt");
+        let erofs = io_err(p, std::io::Error::from_raw_os_error(libc::EROFS));
+        assert_eq!(erofs.status(), 403);
+        assert!(erofs.message().contains("只读"), "{}", erofs.message());
+
+        let eacces = io_err(p, std::io::Error::from_raw_os_error(libc::EACCES));
+        assert_eq!(eacces.status(), 403);
+        assert!(
+            eacces.message().contains("权限不足"),
+            "{}",
+            eacces.message()
+        );
+
+        let enospc = io_err(p, std::io::Error::from_raw_os_error(libc::ENOSPC));
+        assert_eq!(enospc.status(), 507);
+
+        let edquot = io_err(p, std::io::Error::from_raw_os_error(libc::EDQUOT));
+        assert_eq!(edquot.status(), 507);
+        assert!(edquot.message().contains("配额"), "{}", edquot.message());
+    }
+
+    #[test]
+    fn permission_denied_maps_to_403() {
+        let err = io_err(
+            Path::new("/etc/hosts"),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        assert_eq!(err.status(), 403);
+        assert!(err.message().contains("权限不足"), "{}", err.message());
+    }
+
+    /// 真正的内部错误不能被降级成 4xx。
+    #[test]
+    fn unknown_io_error_stays_500() {
+        let err = io_err(
+            Path::new("/www/probe.bin"),
+            std::io::Error::other("device exploded"),
+        );
+        assert_eq!(err.status(), 500);
+        assert_eq!(err.audit_result(), "fail");
     }
 }

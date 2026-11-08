@@ -292,6 +292,7 @@
 
 - 插件侧错误经 UDS 返回结构化 JSON；HTTP 管理面映射到上表状态码，页面内联展示。
 - **宿主拒绝≠内部错误**：`EROFS` 映射 `fs.read_only`（403，提示「该路径所在文件系统为只读，无法写入（宿主策略限制）」）；`EACCES`/`EPERM` 归 `fs.denied`（403）；`ENOSPC`/`EDQUOT` 归 `fs.no_space`（507）。只有真正未归类的 I/O 故障才落 `fs.io`（500），避免把环境限制伪装成面板故障，也避免把内部错误降级成 4xx。
+- **插件能力面同一口径**：`crates/plugin/src/fsops.rs` 维护独立的 `FsError`（不并入 `skiff-fs`），但状态码与文案语义以本表为准：`EROFS`/`EACCES`/`EPERM`→403，`ENOSPC`/`EDQUOT`→507，未归类→500。两处改动须同步对照，避免同一失败在管理员面与插件面表现不一致。
 
 ## 8. 与站点的关系
 

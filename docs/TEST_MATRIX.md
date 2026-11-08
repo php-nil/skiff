@@ -211,6 +211,7 @@ curl -ks -o /dev/null -w 'modules=%{http_code}\n' -b "$J" "$B/$P/sites/web?tab=m
 | FS-11 | 配额页面与执行（第二步） | `[上机]` 管理员会话，`/$P/files/quotas` 可打开 | 设置目录树字节/文件数上限 → 在文件页写入超限；修改上限；取消上限；点「重新统计」 | 超限写入返回 `fs.quota_exceeded` 且含原因；页面显示已用/上限；取消后不再拦截且列表隐藏；重扫耗时提示出现 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/web/templates/fs_quotas.html`、`static/fs_quotas.js`、`crates/app/src/admin_fs.rs` |
 | FS-12 | 回收站/配额审计与受保护路径 | `[上机]` 已产生回收站/配额操作 | 删除、恢复、彻底删除、清空、设置/取消配额后打开 `/$P/audit`；再尝试把配额根设为数据根/`plugins/` | 审计出现 `fs.recycle.*` / `fs.quota.*` 且不含文件内容；受保护根被拒（403 `fs.denied/protected`） | □通过 / □失败 | `crates/fs/src/audit.rs`、`crates/app/src/admin_fs.rs`、`handlers/settings.rs` |
 | FS-13 | 内核运行配置保护（加固） | `[本机]` 单测；`[上机]` 管理员会话，文件页可浏览 `/etc` | 在文件页对 `/etc/skiff/config.toml` 执行删除、改名、覆盖保存；再对 `/etc/nginx/nginx.conf` 执行同样操作；尝试把配额根设为 `/etc/skiff` | 配置/TLS 路径三类操作均 403 且提示「内核运行配置或数据目录受保护」；`/etc/nginx/nginx.conf` 仍可操作；配额设置/扫描对 `/etc/skiff` 均 403 | □通过 / □失败 | `crates/fs/src/path.rs`、`crates/fs/src/ops/mutate.rs`、`crates/app/src/admin_fs.rs` |
+| FS-14 | 宿主只读/容量类 I/O 错误映射 | `[本机]` 单测；`[上机]` systemd `ProtectSystem` 生效，管理员会话可浏览 `/etc` | 本机 `cargo test -p skiff-fs -p skiff-plugin`；上机在文件页写保护区外只读路径（如 `/etc/skiff-iter-probe.txt`），有只读挂载时再写该挂载点；ENOSPC/EDQUOT 构造不出则如实标未实测 | `EROFS` → 403 `fs.read_only` 且文案含「只读」，不再 500；`EACCES`/`EPERM` → 403 `fs.denied`；`ENOSPC`/`EDQUOT` → 507 `fs.no_space`；未归类 I/O 仍 500；插件能力面同一口径 | □通过 / □失败 | `crates/fs/src/error.rs`、`crates/plugin/src/fsops.rs`、`crates/web/src/handlers/files.rs`、`static/files.js` |
 
 最小回归命令：
 
