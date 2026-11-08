@@ -18,13 +18,25 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18081/<entry_prefix>/login`（**当前为明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `8p9yyvg4`（2026-11-07 干净系统重装，全新库生成） |
+| URL | `http://10.10.15.4:18081/<entry_prefix>/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `8p9yyvg4`（2026-11-07 干净系统重装，全新库生成，本轮未变） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
-| 明文通道 | 2026-11-08 起为关闭 TLS 做视觉复核：`listen=127.0.0.1:18080` + `allow_insecure_http=true`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /tmp/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`）TCP 转发。**仅供内网验证，勿对外暴露** |
-| TLS 恢复 | 原配置备份 `/root/iter/config-https-20261108.toml`（`listen=0.0.0.0:18080` + `tls_cert/tls_key`）；`cp` 回 `/etc/skiff/config.toml` 并 `systemctl stop skiff-http-fwd && systemctl restart skiff` 即恢复 HTTPS |
+| 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /tmp/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | `/etc/skiff/tls/fullchain.pem`（0644）、`/etc/skiff/tls/privkey.pem`（0600）；SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`，有效期 10 年（文件保留，未删除） |
 | 健康检查 | `GET /healthz` 200；裸 `GET /` 404，根路径只做前缀跳转 |
+
+### 2.1 三种 TLS 形态与回切路径（2026-11-08 已逐形态验证）
+
+| 形态 | 生效配置 | 访问地址 | 备份与回切 |
+| --- | --- | --- | --- |
+| 一：TLS 直连（`install.sh --tls on`） | `listen="0.0.0.0:18080"`、`tls_enabled=true`、`tls_cert=/etc/skiff/tls/fullchain.pem`、`tls_key=/etc/skiff/tls/privkey.pem` | `https://10.10.15.4:18080` | `/root/iter/config-tls-20261108-c.toml`（本轮 9aa0381 复验版；`-b` 同形，旧版 `config-tls-20261108.toml`）。回切：`cp` 覆盖 `/etc/skiff/config.toml` → `systemctl stop skiff-http-fwd skiff-tls-proxy` → `systemctl restart skiff` |
+| 二：反代终止 TLS（`trusted_proxies`） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`trusted_proxies=["127.0.0.1/32"]`、`tls_enabled=false` | `https://10.10.15.4:18443`（`skiff-tls-proxy.service`，脚本 `/root/iter/skiff-tls-proxy.py`，转发 `127.0.0.1:18080`） | `/root/iter/config-proxy-20261108-b.toml`（本轮；无后缀 `config-proxy-20261108.toml` 同形）。回切：`cp` → `systemctl stop skiff-http-fwd` → `systemctl start skiff-tls-proxy` → `systemctl restart skiff` |
+| 三：直接明文（当前） | `listen="127.0.0.1:18080"`、`allow_insecure_http=true`、`tls_enabled=false` | `http://10.10.15.4:18081`（`skiff-http-fwd.service` 转发） | `/root/iter/config-dev-20261108-c.toml`（当前生效；`-b` 同形）。回切：`cp` → `systemctl stop skiff-tls-proxy` → `systemctl start skiff-http-fwd` → `systemctl restart skiff` |
+
+- 旧自签 HTTPS 直连配置另存 `/root/iter/config-https-20261108.toml`（`listen=0.0.0.0:18080` + `tls_cert/tls_key`），需要时可直接回切。
+- 三形态切换均只需覆盖配置 + 重启 `skiff`，实测来回 3→1→3 均恢复 `/healthz` 200，无残留监听。
+- Cookie 断言：形态一/二为 `__Host-skiff_session`（`Secure; HttpOnly; SameSite=Lax`）；形态三为 `skiff_dev_session`（`HttpOnly; SameSite=Lax`，无 `Secure`）。
+- 形态二下直连 `:18080` 明文端口：`GET /<prefix>/login` 仍 200 但不写会话，`POST /<prefix>/login` 返回 403「跨站登录请求被拒绝」；`curl -k https://<host>:18080/healthz` 返回 000（该端口无 TLS）。
 
 ## 3. 账号与口令
 
@@ -50,22 +62,22 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `1ead5fe`（Release 由该提交构建；其后仅有文档回填提交，不影响资产）；CI run `42446837173`、Release run `42446842893` 均 success |
-| 部署时间 | 2026-11-08 12:38（Asia/Shanghai；在 `8ede9d2` 装出的 v13 库上按 Release 资产覆盖安装） |
-| 部署方式 | `v0.1.0` Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh`；输出 `CONFIG_UNCHANGED`，未传本地二进制 |
-| 数据库 | `PRAGMA user_version=13`（v12→v13 迁移在 `8ede9d2` 轮完成，本轮覆盖后保持 13；`site_runtimes.origin` 与 seed 行 `socket_path=NULL` 均保留） |
-| 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` 运行中 |
-| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true`（明文 dev HTTP，安装前后 sha256 不变；TLS 原配置已备份，见 §2）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
+| tag / 构建提交 | `v0.1.0` = `9aa0381`（Release 由该提交构建；`origin/main` 与 HEAD 同为 `9aa0381`）；CI run `42452614639`、Release run `42452619537` 均 success |
+| 部署时间 | 2026-11-08（Asia/Shanghai；TLS 三形态轮，在 `1ead5fe` 装出的 v13 库上按 Release 资产覆盖安装） |
+| 部署方式 | `v0.1.0`（`9aa0381`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker --listen 0.0.0.0:18080 --tls on --tls-cert … --tls-key …`；未传本地二进制 |
+| 数据库 | `PRAGMA user_version=13`（覆盖安装后保持 13；站点、运行环境、内置任务均保留） |
+| 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发）；`skiff-tls-proxy.service` inactive（形态二验证用，脚本保留） |
+| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `0103e75af4cc497d697be2baeedb9da349f006079a888517ed2c0b0298f053e1`）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）。三形态备份见 §2.1 |
 
-## 6. Release 资产（v0.1.0 = `1ead5fe`，2026-11-08）
+## 6. Release 资产（v0.1.0 = `9aa0381`，2026-11-08）
 
-构建来源：Release workflow run `42446842893`（`push` tag `v0.1.0`，`head_sha=1ead5fe`）。
-`git merge-base --is-ancestor` 校验：`a22296f`/`8ede9d2`/`3030648`/`1ead5fe` 对 `v0.1.0` 退出码均为 0（全部在 tag 内），构建时 tag 与 `origin/main` 同为 `1ead5fe`。
+构建来源：Release workflow run `42452619537`（`push` tag `v0.1.0`，`head_sha=9aa0381`；CI run `42452614639` success）。
+`git merge-base --is-ancestor` 校验：`1ead5fe`/`46848d7`/`8ede9d2`/`3030648` 对 `v0.1.0` 退出码均为 0（全部在 tag 内），构建时 tag、`origin/main` 与 HEAD 同为 `9aa0381`。资产摘要经 GitHub API 复核。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,124,749 B | `55caa6d28dce68a978b8f5ec3ca2e486e2a31cc99806ecca16f5a6906c3c6bae` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,767,601 B | `dea9b016eab805f0f403ff220ebaabf8b59534f1210861811ac889a437f6c8d7` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,124,497 B | `244ab407398f0429e52bd11efe4d2b9da06834296e18753bc3f0933ea178a4ee` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,768,972 B | `bd9993b61cfa732475eb6f8b227d2fb662623f190e372c3483faf611fdae5cf4` |
 
 - 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；测试机直连 `objects.githubusercontent.com` 会超时，用 `curl --retry 5 --retry-all-errors` 或在资产端点重试。
 - 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`checksums.txt` 逐个校验。
@@ -83,32 +95,36 @@
 | 2026-11-08 08:30 | 关闭 TLS 切明文 HTTP + 浏览器视觉复测 | 无重装：`listen=127.0.0.1:18080` + `allow_insecure_http=true`，`skiff-http-fwd` 转发 `0.0.0.0:18081 → 127.0.0.1:18080` | `/healthz` 200、`/<prefix>/login` 200；完成 430/860/1024 视觉项与插件 iframe 复核 |
 | 2026-11-08 上午 | v12→v13 升级轮（覆盖安装） | 资产 `8ede9d2`；x86_64 8,123,372 B `3c2d498c…`，`sha256sum -c` OK | `user_version=13`；`site_runtimes.origin` 落 `instance`/`seed`，seed 行 `socket_path` 清空；种子行可被同名新建接管并继承 `is_default` |
 | 2026-11-08 12:38 | `1ead5fe` 重发版覆盖安装 + 复验 | 资产 `1ead5fe`；x86_64 8,124,749 B `55caa6d2…`，双架构 `sha256sum -c` OK | 库保持 13、任务/站点/运行环境全部保留；插件 iframe P0、登录 `Origin: null`、抽屉表单、网络页「可附加」、新建网站下拉均复验通过 |
+| 2026-11-08（三形态轮） | `9aa0381` 覆盖安装 + TLS 三形态 / 视觉 / 工作台复验 | 资产 `9aa0381`；x86_64 8,124,497 B `244ab407…`、aarch64 7,768,972 B `bd9993b6…`，双架构 `sha256sum -c` OK | 库保持 13；三形态逐项通过（Cookie 名/属性、浏览器登录、切回）；430/860/工作台通过；WAF 核查为「功能不存在」；详见 §8 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `1ead5fe` 重发轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `9aa0381` 三形态轮）
 
-**通过**
-- 装机与升级：Release 资产双架构 `sha256sum -c` OK；`install.sh` 输出 `CONFIG_UNCHANGED`；`user_version=13`；`site_runtimes` 保留 `p8.5`/`php-8.5`/`visual`/`rust-rust-probe` 为 `instance`，`php-8.3`/`php-8.4` 仍为 `seed` 且 `socket_path=NULL`；`php-8.5` `is_default=1`；`builtin:db-vacuum` 与站点 `visual.test`/`rust.test` 保留；旧前缀 `sk9v13x` 302 → `8p9yyvg4`，`/healthz` 200。
-- 插件 iframe P0（本轮修复）：`curl -D-` 确认插件功能页响应头 `X-Frame-Options: SAMEORIGIN`（原为 `DENY`，`entry_guard` 覆盖了 handler 设置）；浏览器实测计划任务菜单页 iframe 渲染出 `builtin:db-vacuum` 行、内置任务无删除按钮；FTP 菜单页渲染出账号表与运行状态。根因是 `entry_guard` 无条件写 XFO，改为 `entry().or_insert(DENY)` 后 handler 的 `SAMEORIGIN` 生效（回归测试 `entry_guard_keeps_handler_x_frame_options`）。
-- 登录 `Origin: null`：Chromium 无 Fetch Metadata 时同源表单 POST 带 `Origin: null`，原逻辑按跨站拒绝（403）；修复后回落双提交令牌，浏览器真实点击登录 303 进入 `/8p9yyvg4`，无登录表单残留。
-- `postDrawerForm` urlencoded：运行环境详情抽屉「重启」请求为 `application/x-www-form-urlencoded;charset=UTF-8` + `X-Requested-With: fetch`，抽屉提示「操作已完成」（原 multipart 导致 csrf 取不到、整单 403）。
-- DOCKER-11：网络页新增「可附加」列（可附加/不可附加），子网、网关、`类型`（外部/内部）、容器挂载均在列；Docker 不可用时不显示「暂无数据」。
-- 新建网站下拉：3 个运行中实例可选，默认选中 `p8.5`；`option` 值与 `selected` 分隔正常；无就绪实例时显示引导卡片（沿用上一轮结论）。
-- 插件 UI 弹窗：计划任务「新建任务」弹窗打开且顶层 URL 不变（不跳页）；预设 `daily` → `0 3 * * *`；表达式 `*/15 * * * *` 预览「每 15 分钟执行」；内置任务无删除入口。FTP「服务配置」弹窗（2121 / required / guard 开），非法端口 70000 → `监听端口需为 1–65535 的整数`，弹窗保留、字段未清空；「新建 FTP 账号」弹窗列出 `visual.test（PHP）`，密码不一致 → `两次输入的密码不一致`，账号与两次密码均保留。
-- 视觉：430/860/1024 下运行环境、Web 服务、新建网站弹窗、任务弹窗、FTP 服务配置与新建账号弹窗均无页面级横向溢出；iframe 内视口 396/826 px，弹窗 364/722 px，`clippedChildren=0`。
-- 文件管理：`GET /{p}/files/api/list?path=/www` 200；`POST /{p}/m/core/{p}/files/api/list` 405/404（重复段路由不存在）；受保护路径 403 沿用上一轮结论。
-- 其余沿用通过项：PANEL-02/03/04/05/06、运行环境种子接管、Rust 1.99 建站、FTP-06～09 与 TLS/封禁/审计、DOCKER-11 取不到时显示「未知」。
+**本轮通过（三形态轮）**
+- 装机：`9aa0381` 资产双架构 `sha256sum -c` OK；`install.sh --no-docker --listen 0.0.0.0:18080 --tls on --tls-cert … --tls-key …` 退出码 0；配置落 `tls_enabled=true`、`tls_cert=/etc/skiff/tls/fullchain.pem`、`tls_key=/etc/skiff/tls/privkey.pem`（修复前 `tls_key` 曾被函数参数覆盖成证书路径）；`user_version=13`、`NRestarts=0`。
+- 形态一（TLS 直连 `:18080`）：`/healthz` 200（loopback 与 `10.10.15.4` 均通）；表单登录 303 + `set-cookie: __Host-skiff_session=…; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200; Secure`；认证后 `/8p9yyvg4`（概览）、`/containers`、`/plugins`、`/settings` 均 200；Chromium（忽略证书错误）真实登录成功，Cookie `secure=true; httpOnly=true; SameSite=Lax`。
+- 形态二（反代终止 TLS）：`trusted_proxies=["127.0.0.1/32"]` + `allow_insecure_http=true`；经 `https://10.10.15.4:18443` 登录 303 + 同名同属性 `__Host-skiff_session`（Secure），认证后页面 200，浏览器登录可用；直连明文 `:18080` 的 `POST /<prefix>/login` 返回 403「跨站登录请求被拒绝」，`curl -k https://<host>:18080/healthz` 为 000（该端口无 TLS）。
+- 形态三（直接明文 `tls_enabled=false`）：经 `http://10.10.15.4:18081` 登录 303 + `skiff_dev_session=…; HttpOnly; SameSite=Lax`（无 `Secure`、无 `__Host-`），认证后页面 200；改密路径 `POST /8p9yyvg4/password`（旧口令错误）返回 303 `settings?err=当前口令不正确`，表单校验链路可用；浏览器登录成功并显示「明文 HTTP 开发模式」提示。
+- 三形态往返：3→1→3 各覆盖配置 + `systemctl restart skiff`，两端 `/healthz` 均 200，Cookie 名随形态正确切换，无残留监听；备份路径见 §2.1。
+- 430px：概览、应用（containers）、插件中心三页 `document.documentElement.scrollWidth=430`、无子元素越界（`bad=0`）；容器列表 `.table-wrap` `overflowX=auto`（`scrollWidth=668 / clientWidth=364`），修复随 `9aa0381` 生效。
+- 860px：菜单抽屉初始 `x=0 w=0 aria=false` → 展开 `x=16 w=828 aria=true` → 再收起归零；「网站」分组展开 `items=3`，点二级菜单进入 `/m/core/sites/list`（标题「网站列表 · Skiff」）。
+- 工作台（cron）：两个标签 `plugin/com.skiff.cron/jobs/list*` 与 `…/jobs/new`；`.workbench-tabs` 吸顶 `position=sticky top=0px`，页头滚出后 `rectTop` 由 126 变 0（`scrollY=589` 仍吸顶）；点「新建」URL 变为 `…/jobs/new`、活动标签切换、iframe `src` 指向 `new.html?...&tab=new`，切回列表恢复 `list.html?tab=list`。
+- WAF：**功能不存在**。代码仅有预留（`crates/app/src/sites.rs:170` `KEY_WAF_MODE`、`:288-289` `waf_rules_dir`，`crates/core/src/bootstrap.rs:210` 注释「WAF 规则目录仅预留，本期不加载、不拦截」），无模板、无 UI、无规则加载与拦截逻辑，无法构造可触发拦截的请求；不按缺陷处理。
+
+**沿用通过（`1ead5fe` 轮，本轮未回归）**
+- 插件 iframe `X-Frame-Options: SAMEORIGIN`（`entry_guard` 改 `entry().or_insert(DENY)`）、登录 `Origin: null` 回落双提交令牌、`postDrawerForm` 改 urlencoded、DOCKER-11 网络页「可附加」列、新建网站运行环境下拉、插件 UI 弹窗校验、430/860/1024 弹窗无溢出、文件管理绝对路径 API、PANEL-02～06、运行环境种子接管、Rust 1.99 建站、FTP-06～09 与封禁/审计。
 
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
+- WAF 拦截能力未实现（仅配置字段与目录预留），需产品定稿规则来源与开关后再验。
 - WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警。
 - Docker 通用 create / CPU·内存限制表单 / Compose 运行入口仍缺（UI 设计未定，按用户要求留台账）。
 - FTP fail2ban 三次封禁：`ignoreself` 使本机无法构造，需第二台客户端。
 - aarch64 仅核对资产摘要；1Panel 受限形态、G 组长时观测等无环境项。
 
-**收尾状态（2026-11-08 `1ead5fe` 复验后）**
-- 面板：明文 HTTP `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active；`skiff-http-fwd.service` 运行中（测试用途）。
+**收尾状态（2026-11-08 `9aa0381` 三形态轮后）**
+- 面板：形态三明文 `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active；`skiff-http-fwd.service` active（`systemd-run` 临时单元）；`skiff-tls-proxy.service` inactive（`systemd-run` 临时单元，脚本 `/root/iter/skiff-tls-proxy.py` 保留）。
 - 视觉/功能测试资产：站点 `visual.test`、`rust.test`、PHP 运行环境 `visual`/`p8.5`/`php-8.5`、Rust 运行环境 `rust-rust-probe` 仍在，供后续复测。
 - FTP：`pure-ftpd` active、`:2121` 监听，账号 `skiff_visual-test_fa92_ftpuanchor`（用于上传/禁用/改密验证）保留；`fail2ban` jail `skiff-pureftpd.conf` 保留手工 `[sshd] enabled=false`。
-- 保留 `/root/iter/admin-pw.txt`、`/root/iter/config-https-20261108.toml`、`/root/iter/backups`、`/root/backups`、`/root/iter/rel-1ead5fe`。
+- 保留 `/root/iter/admin-pw.txt`、`/root/iter/tls-src/`、三形态配置备份、`/root/iter/rel-1ead5fe`、`/root/iter/rel-9aa0381`、`/root/iter/backups`、`/root/backups`。
 
 
 ## 9. 数据、备份与清理
