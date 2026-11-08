@@ -29,7 +29,7 @@ verbs = ["call"]
 
 [[permissions]]
 capability = "scheduler"
-verbs = ["read"]
+verbs = ["read", "manage"]
 
 # 执行期 BusyGuard 探针：任务由内核驱动，执行体在插件进程内回调 scheduler，
 # 应被内核以 403 拒绝（防止「插件任务执行 → 再注册任务」自我繁殖）。

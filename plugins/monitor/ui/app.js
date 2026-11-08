@@ -104,17 +104,6 @@
     if (n < 1048576) return (n / 1024).toFixed(1) + " KiB/s";
     return (n / 1048576).toFixed(2) + " MiB/s";
   }
-  // 累计流量（/proc/net/dev 的字节数）按字节自适应进位，GiB 以上继续进位到 TiB。
-  function bytes(n) {
-    if (n == null) return "-";
-    var v = Number(n);
-    if (!isFinite(v) || v < 0) return "-";
-    if (v < 1024) return v.toFixed(0) + " B";
-    if (v < 1048576) return (v / 1024).toFixed(1) + " KiB";
-    if (v < 1073741824) return (v / 1048576).toFixed(2) + " MiB";
-    if (v < 1099511627776) return (v / 1073741824).toFixed(2) + " GiB";
-    return (v / 1099511627776).toFixed(2) + " TiB";
-  }
   function dur(sec) {
     if (!sec) return "-";
     var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
@@ -142,6 +131,7 @@
       return v == null ? "-" : Number(v).toFixed(2);
     }).join(" / "));
     card("c-net", rate(s.net_rx_rate));
+    card("c-net-tx", rate(s.net_tx_rate));
     card("c-uptime", dur(s.uptime));
     card("c-cpus", String(s.cpus || "-"));
   }
@@ -157,7 +147,7 @@
       return "<tr><td>" + when(s.t) + "</td><td>" + pct(s.cpu) + "</td><td>" + pct(memPct) +
         "</td><td>" + (s.load1 == null ? "-" : Number(s.load1).toFixed(2)) +
         "</td><td>" + rate(s.net_rx_rate) + "</td><td>" +
-        (s.net_tx == null ? "-" : bytes(s.net_tx)) + "</td></tr>";
+        rate(s.net_tx_rate) + "</td></tr>";
     }).join("");
   }
 

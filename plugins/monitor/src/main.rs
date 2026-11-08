@@ -14,6 +14,11 @@ use skiff_sdk::{Plugin, RpcError};
 
 const RING_FILE: &str = "samples.jsonl";
 const PREV_FILE: &str = "prev.json";
+/// UI `snapshot` 的独立基线文件。
+///
+/// 内核 60s 采样与 UI 刷新共用一份基线时，后一次调用会把前一次的速率窗口截成
+/// 任意长度（可能只有 1 秒），历史点与实时卡片的速率口径都会漂移。
+const PREV_UI_FILE: &str = "prev_ui.json";
 /// 环形缓冲保留点数：60s 采样 ≈ 4 小时（契约 §9 的 `sample_interval=60s`）。
 const RING_MAX: usize = 240;
 /// 行数超过该值才压缩：追加到 2 倍上限再一次性收敛，摊薄重写成本。
@@ -32,13 +37,13 @@ fn main() {
     eprintln!("[{TASK_ID}] 采样由内核调度器驱动，插件内无定时器");
     if let Err(e) = plugin.serve(move |method, params| match method {
         // 内核采样出票 → 只读点，不写历史。
-        "sample" => read_point(&p),
+        "sample" => read_point(&p, PREV_FILE),
         // 内核执行出票 → 批次落盘并回执。
         "execute" => execute(&p, &params),
-        // UI 现取现算，不写历史缓冲。
+        // UI 现取现算，不写历史缓冲；基线用独立文件，不打断内核 60s 采样窗口。
         "snapshot" => Ok(json!({
             "ok": true,
-            "sample": read_point(&p)?,
+            "sample": read_point(&p, PREV_UI_FILE)?,
             "ring_max": RING_MAX,
             "scheduler": { "driver": "kernel", "task_id": TASK_ID },
         })),
@@ -78,8 +83,11 @@ fn ring_lines(plugin: &Plugin) -> Vec<Value> {
         .collect()
 }
 
-/// 内核采样出票：读 `/proc` 并算差值，返回单个采样点（基线写 `prev.json`）。
-fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
+/// 内核采样出票：读 `/proc` 并算差值，返回单个采样点。
+///
+/// 基线写 `state_file`（内核采样与 UI 快照各用一份），速率为字节计量、
+/// 除以距上次采样的秒数，单位 **B/s**。
+fn read_point(plugin: &Plugin, state_file: &str) -> Result<Value, RpcError> {
     let now = common::now_secs();
     let read = |name: &str| -> Result<String, RpcError> {
         plugin
@@ -107,10 +115,15 @@ fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
     let Some((total, idle)) = parse_stat(&stat) else {
         return Err(RpcError::internal("/proc/stat 第一行无法解析".to_string()));
     };
-    let prev = common::read_state(plugin, PREV_FILE);
+    let prev = common::read_state(plugin, state_file);
     let prev_total = prev.get("total").and_then(|v| v.as_u64());
     let prev_idle = prev.get("idle").and_then(|v| v.as_u64());
-    let prev_net = prev.get("net").and_then(|v| v.as_u64()).unwrap_or(0);
+    // 旧版只存入站累计（键名 `net`），兼容读取；旧基线没有 `net_tx` 时出站首轮不报速率。
+    let prev_net_rx = prev
+        .get("net_rx")
+        .or_else(|| prev.get("net"))
+        .and_then(|v| v.as_u64());
+    let prev_net_tx = prev.get("net_tx").and_then(|v| v.as_u64());
     let prev_net_t = prev.get("net_t").and_then(|v| v.as_u64()).unwrap_or(0);
 
     let cpu: Option<f64> = match (prev_total, prev_idle) {
@@ -126,11 +139,9 @@ fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
     let (l1, l5, l15) = parse_loadavg(&loadavg);
     let up = parse_uptime(&uptime);
     let (net_rx, net_tx) = parse_net(netdev.lines());
-    let net_rx_rate: Option<f64> = if prev_net_t > 0 && now > prev_net_t {
-        Some(net_rx.saturating_sub(prev_net) as f64 / (now - prev_net_t) as f64)
-    } else {
-        None
-    };
+    let elapsed = now.saturating_sub(prev_net_t);
+    let net_rx_rate = counter_rate(net_rx, prev_net_rx, elapsed);
+    let net_tx_rate = counter_rate(net_tx, prev_net_tx, elapsed);
     let cpus = count_cpus(&cpuinfo);
 
     let point = json!({
@@ -140,7 +151,8 @@ fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
         "mem_used_kb": mem_total_kb.saturating_sub(mem_avail_kb),
         "mem_avail_kb": mem_avail_kb,
         "load1": l1, "load5": l5, "load15": l15,
-        "net_rx": net_rx, "net_tx": net_tx, "net_rx_rate": net_rx_rate,
+        "net_rx": net_rx, "net_tx": net_tx,
+        "net_rx_rate": net_rx_rate, "net_tx_rate": net_tx_rate,
         "uptime": up,
         "cpus": cpus,
     });
@@ -148,8 +160,11 @@ fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
     // 基线始终更新；历史只由内核 `execute` 批次统一落盘，UI 现取不写历史。
     common::write_state(
         plugin,
-        PREV_FILE,
-        &json!({ "total": total, "idle": idle, "net": net_rx, "net_t": now }),
+        state_file,
+        &json!({
+            "total": total, "idle": idle,
+            "net_rx": net_rx, "net_tx": net_tx, "net_t": now,
+        }),
     )
     .map_err(common::rpc_err)?;
 
@@ -288,6 +303,14 @@ fn parse_uptime(text: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// 计数器差值 / 采样间隔秒数；缺基线或间隔为 0 时不报速率（避免除零与伪 0）。
+fn counter_rate(cur: u64, prev: Option<u64>, elapsed_secs: u64) -> Option<f64> {
+    if elapsed_secs == 0 {
+        return None;
+    }
+    prev.map(|p| cur.saturating_sub(p) as f64 / elapsed_secs as f64)
+}
+
 /// 汇总 `/proc/net/dev` 的 rx/tx 字节数（跳过 `lo`：回环流量不代表真实网卡负载）。
 fn parse_net<'a>(lines: impl Iterator<Item = &'a str>) -> (u64, u64) {
     let mut rx = 0;
@@ -352,6 +375,18 @@ mod tests {
             (0.12, 0.34, 0.56)
         );
         assert_eq!(parse_uptime("12345.67 999.0\n"), 12345);
+    }
+
+    #[test]
+    fn net_rate_is_bytes_per_second() {
+        // 2048 字节 / 2 秒 = 1024 B/s（不是 bit/s，也不是按 KB 计）。
+        assert_eq!(counter_rate(2048, Some(1024), 2), Some(512.0));
+        assert_eq!(counter_rate(2048, Some(0), 2), Some(1024.0));
+        // 缺基线（首次采样/旧版 prev.json）与同秒采样都不报伪速率。
+        assert_eq!(counter_rate(2048, None, 2), None);
+        assert_eq!(counter_rate(2048, Some(1024), 0), None);
+        // 计数器重置后不回绕成负数。
+        assert_eq!(counter_rate(10, Some(100), 2), Some(0.0));
     }
 
     #[test]
