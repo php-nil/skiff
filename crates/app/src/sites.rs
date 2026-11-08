@@ -1175,6 +1175,12 @@ fn parse_php_i(out: &str) -> Vec<(String, String)> {
     values
 }
 
+/// PHP ini 语法错误只打印到 stdout，退出码仍为 0（`php -c bad.ini -r ...` 会继续执行
+/// `-r` 代码），必须显式识别 `syntax error`，否则坏配置会被当成合法保存。
+fn php_output_has_syntax_error(out: &str) -> bool {
+    out.to_ascii_lowercase().contains("syntax error")
+}
+
 /// 从容器校验输出里挑出警告原文（`PHP Warning` / `Warning:` 行），去重保序。
 ///
 /// 警告不阻止保存（用户要求放宽口径），但必须让用户看到，避免“保存成功但启动时报警”。
@@ -3390,9 +3396,14 @@ impl AppState {
                 .await
                 .map_err(|e| SiteError::Unavailable(format!("容器内校验失败：{e}")))?,
         };
-        // 只拦语法错误与启动失败：退出码非 0，或（非池配置）没跑进 `-r` 就退出。
+        // 只拦语法错误与启动失败：退出码非 0，或（非池配置）没跑进 `-r` 就退出，
+        // 或输出里出现 `syntax error`。最后一条不能省：PHP 的 ini 语法错误只打印到
+        // stdout（`PHP:  syntax error, unexpected ...`），进程仍会执行 `-r` 并返回 0，
+        // 只看退出码/`skiff-ok` 会把坏配置放过去（上机 FS 验收复现）。
         // `PHP Warning` 不阻止保存，但要收进 warnings 原文回显给用户。
-        let invalid = code != 0 || (key != "www.conf" && !out.contains("skiff-ok"));
+        let invalid = code != 0
+            || php_output_has_syntax_error(&out)
+            || (key != "www.conf" && !out.contains("skiff-ok"));
         if invalid {
             let reason = out.trim();
             return Err(SiteError::BadRequest(if reason.is_empty() {
@@ -6385,6 +6396,16 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].starts_with("PHP Warning:"));
         assert!(!warnings[0].contains("skiff-ok"));
+    }
+
+    #[test]
+    fn php_validation_rejects_invalid_output_even_when_exit_zero() {
+        // PHP ini 语法错误只写到 stdout，且 `-r` 仍会执行打印标记得以返回 0；
+        // 这种情况下必须判无效，否则坏配置会覆盖原文件。
+        let out = "PHP:  syntax error, unexpected end of file in /probe/b.ini on line 2\nskiff-ok";
+        assert!(php_output_has_syntax_error(out));
+        let ok = "PHP Version => 8.5.0\nskiff-ok";
+        assert!(!php_output_has_syntax_error(ok));
     }
 
     #[test]
