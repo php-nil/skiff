@@ -389,6 +389,10 @@
     if (!bar || !frame) return;
     var links = Array.prototype.slice.call(bar.querySelectorAll("[data-workbench-tab]"));
 
+    function markLoaded() { frame.dataset.loaded = "1"; }
+    if (frame.contentDocument && frame.contentDocument.readyState === "complete") markLoaded();
+    else frame.addEventListener("load", markLoaded);
+
     // 吸顶偏移：L3 横栏落在顶栏（上下布局含二级通栏）之下。用实测高度写入
     // `--shell-h`：窗口缩放、二级通栏展开/收起、窄屏顶栏换行都会自动跟着变。
     var shell = document.querySelector(".top-shell");
@@ -616,6 +620,9 @@
     var ok = dialog.querySelector("[data-confirm-ok]");
     var cancel = dialog.querySelector("[data-confirm-cancel]");
     var pending = null;
+    // 非表单入口（文件回收站、配额等脚本操作）用 Promise 版本；
+    // 关闭（含 ESC）时按取消处理，避免 Promise 悬空。
+    var pendingCancel = null;
 
     function close() {
       if (typeof dialog.close === "function") dialog.close();
@@ -623,16 +630,19 @@
       pending = null;
     }
 
-    function open(text, run) {
+    function open(text, verb, run) {
       if (typeof dialog.showModal !== "function") {
         if (window.confirm(text)) run();
         return;
       }
       if (message) message.textContent = text;
+      if (ok) ok.textContent = verb || "确认执行";
       pending = run;
       dialog.showModal();
     }
 
+    // capture 阶段拦截：htmx 表单在 form 自身的 submit 监听里就发请求，
+    // 冒泡到 document 时已经晚了；必须比它先拿到事件才能弹出确认。
     document.addEventListener("submit", function (e) {
       var form = e.target;
       if (!form || !form.dataset) return;
@@ -646,7 +656,9 @@
         return;
       }
       e.preventDefault();
-      open(msg, function () {
+      var verb = (submitter && submitter.dataset && submitter.dataset.confirmVerb)
+        || form.dataset.confirmVerb;
+      open(msg, verb, function () {
         form.dataset.confirmed = "1";
         if (submitter && typeof form.requestSubmit === "function") {
           form.requestSubmit(submitter);
@@ -661,15 +673,33 @@
         }
         form.submit();
       });
-    });
+    }, true);
 
     if (ok) ok.addEventListener("click", function () {
       var run = pending;
+      pendingCancel = null;
       close();
       if (run) run();
     });
     if (cancel) cancel.addEventListener("click", close);
-    dialog.addEventListener("close", function () { pending = null; });
+    dialog.addEventListener("close", function () {
+      pending = null;
+      var c = pendingCancel;
+      pendingCancel = null;
+      if (c) c();
+    });
+
+    // 页面脚本的危险操作统一走这里，返回 Promise<boolean>，与表单版同一套外观。
+    window.skiffConfirm = function (text, verb) {
+      return new Promise(function (resolve) {
+        if (typeof dialog.showModal !== "function") {
+          resolve(window.confirm(text));
+          return;
+        }
+        pendingCancel = function () { resolve(false); };
+        open(text, verb, function () { resolve(true); });
+      });
+    };
   }
 
   // ---- 危险操作：输入目标名称才允许提交（删除站点等），防手滑 ----
@@ -1428,9 +1458,9 @@
           };
         });
         if (!items.length) {
-          alert(op === "uninstall"
+          showToast(op === "uninstall"
             ? "请勾选已安装的扩展后再卸载"
-            : "请勾选尚未安装的扩展后再安装");
+            : "请勾选尚未安装的扩展后再安装", true);
           return;
         }
         showExtConfirm(form, op, items, false);
@@ -1627,17 +1657,41 @@
   }
 
 
-  // ---- 服务端提示转为轻量 toast（不阻塞页面） ----
+  // ---- 轻量 toast：服务端一次性提示与页内校验都走这里，不用 alert() ----
+  function showToast(text, error) {
+    var toast = document.createElement("div");
+    toast.className = "toast show" + (error ? " error" : "");
+    toast.setAttribute("role", error ? "alert" : "status");
+    toast.textContent = text;
+    document.body.appendChild(toast);
+    setTimeout(function () { toast.classList.remove("show"); }, 4200);
+    setTimeout(function () { toast.parentNode && toast.parentNode.removeChild(toast); }, 4700);
+  }
+
   function attachToasts() {
     document.querySelectorAll(".alert[data-toast]").forEach(function (alert) {
-      var toast = document.createElement("div");
-      toast.className = "toast show" + (alert.classList.contains("ok") ? "" : " error");
-      toast.setAttribute("role", "status");
-      toast.textContent = alert.textContent.trim();
-      document.body.appendChild(toast);
+      showToast(alert.textContent.trim(), !alert.classList.contains("ok"));
       alert.parentNode && alert.parentNode.removeChild(alert);
-      setTimeout(function () { toast.classList.remove("show"); }, 4200);
-      setTimeout(function () { toast.parentNode && toast.parentNode.removeChild(toast); }, 4700);
+    });
+  }
+
+  // ---- 通用弹窗：data-dialog-open 打开对应 <dialog id>，data-dialog-close 关闭 ----
+  function attachDialogs() {
+    document.querySelectorAll("[data-dialog-open]").forEach(function (btn) {
+      if (btn.dataset.dialogBound) return;
+      btn.dataset.dialogBound = "1";
+      btn.addEventListener("click", function () {
+        var d = document.getElementById(btn.dataset.dialogOpen);
+        if (d && typeof d.showModal === "function") d.showModal();
+      });
+    });
+    document.querySelectorAll("[data-dialog-close]").forEach(function (btn) {
+      if (btn.dataset.dialogBound) return;
+      btn.dataset.dialogBound = "1";
+      btn.addEventListener("click", function () {
+        var d = btn.closest("dialog");
+        if (d) d.close();
+      });
     });
   }
 
@@ -1733,6 +1787,7 @@
     attachRuntimeJobs();
     attachNginxTabs();
     attachToasts();
+    attachDialogs();
     attachComposeFile();
   }
 

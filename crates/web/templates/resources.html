@@ -1,39 +1,87 @@
 {% extends "base.html" %}
 {% block title %}{{ title }} · Skiff{% endblock %}
 {% block content %}
-<div class="page-head"><h1>{{ title }}</h1></div>
-{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+<div class="page-head">
+  <h1>{{ title }}</h1>
+  <span class="muted small">
+    {% if section == "images" %}宿主镜像清单；拉取与删除都走 Docker Engine。
+    {% else if section == "networks" %}Docker 网络清单；预定义网络不可删除。
+    {% else %}命名卷清单；删除卷会连同卷内数据一起删除。{% endif %}
+  </span>
+  {% if can_admin && docker_reason.is_empty() %}
+  <div class="actions">
+    <button type="button" class="btn primary" data-dialog-open="res-new">
+      {% if section == "images" %}拉取镜像{% else if section == "networks" %}新建网络{% else %}创建卷{% endif %}
+    </button>
+  </div>
+  {% endif %}
+</div>
+{% include "page_banner.html" %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
-{% if !docker_reason.is_empty() %}<div class="empty">Docker 不可用：{{ docker_reason }}</div>{% endif %}
+
+{% if !docker_reason.is_empty() %}
+<section class="panel">
+  <div class="empty error-state">
+    <strong>Docker 不可用，{{ title }}暂不可读</strong>
+    <p class="hint">{{ docker_reason }}。恢复 Docker 后刷新本页。</p>
+    <a class="btn ghost" href="/{{ ctx.prefix }}/docker/settings">前往 Docker 设置</a>
+  </div>
+</section>
+{% else %}
+<div class="toolbar">
+  <span class="muted small">共 {{ rows.len() }} 项</span>
+  <div class="actions">
+    <a class="btn ghost" href="">刷新</a>
+  </div>
+</div>
 
 <section class="panel">
   {% if rows.is_empty() %}
-    <div class="empty">暂无数据</div>
+    <div class="empty">
+      <strong>
+        {% if section == "images" %}还没有拉取镜像{% else if section == "networks" %}还没有自定义网络{% else %}还没有命名卷{% endif %}
+      </strong>
+      <p class="hint">
+        {% if section == "images" %}拉取镜像后，新建容器或运行环境可以直接按镜像名使用。
+        {% else if section == "networks" %}容器默认使用 bridge；需要隔离或固定子网时新建一个自定义网络。
+        {% else %}命名卷用于持久化容器数据；创建后可在新建容器时挂载。{% endif %}
+      </p>
+      {% if can_admin %}
+      <button type="button" class="btn primary" data-dialog-open="res-new">
+        {% if section == "images" %}拉取镜像{% else if section == "networks" %}新建网络{% else %}创建卷{% endif %}
+      </button>
+      {% endif %}
+    </div>
   {% else %}
+  <div class="table-wrap">
   <table class="grid">
-    <thead><tr><th>名称</th><th>信息</th><th>操作</th></tr></thead>
+    <thead><tr><th>名称</th><th>信息</th><th class="col-actions">操作</th></tr></thead>
     <tbody>
     {% for r in rows %}
       <tr>
         <td>{{ r.name }} {% if !r.warn.is_empty() %}<span class="tag warn-tag">{{ r.warn }}</span>{% endif %}</td>
         <td class="muted"><code>{{ r.meta }}</code></td>
-        <td class="actions">
+        <td class="actions-cell">
           {% if can_admin %}
           {% if section == "images" %}
-          <form method="post" action="/{{ ctx.prefix }}/images/{{ r.id }}/remove" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit" data-confirm="删除镜像 {{ r.name }}？此操作不可恢复。">删除</button>
+          <form method="post" action="/{{ ctx.prefix }}/images/{{ r.id }}/remove" class="inline"
+                data-confirm="确认删除镜像 {{ r.name }}？正在使用它的容器会失败，删除后需重新拉取。" data-confirm-verb="删除">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini danger" type="submit">删除</button>
           </form>
           {% else if section == "networks" %}
           {% if r.name == "bridge" || r.name == "host" || r.name == "none" %}
           <span class="muted small">预定义网络不可删除</span>
           {% else %}
-          <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/remove" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit" data-confirm="删除网络 {{ r.name }}？">删除</button>
+          <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/remove" class="inline"
+                data-confirm="确认删除网络 {{ r.name }}？挂载该网络的容器会失去连接。" data-confirm-verb="删除">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini danger" type="submit">删除</button>
           </form>
           {% endif %}
           {% else %}
-          <form method="post" action="/{{ ctx.prefix }}/volumes/{{ r.name }}/remove" class="inline">
-            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit" data-confirm="删除卷 {{ r.name }}？卷内数据将一并删除，不可恢复。">删除</button>
+          <form method="post" action="/{{ ctx.prefix }}/volumes/{{ r.name }}/remove" class="inline"
+                data-confirm="确认删除卷 {{ r.name }}？卷内数据将一并删除，不可恢复。" data-confirm-verb="删除">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini danger" type="submit">删除</button>
           </form>
           {% endif %}
           {% else %}<span class="muted small">只读</span>{% endif %}
@@ -42,34 +90,41 @@
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% endif %}
 </section>
 
 {% if can_admin %}
-<section class="panel">
-  <h2>新建</h2>
-  {% if section == "images" %}
-  <form method="post" action="/{{ ctx.prefix }}/images/pull" class="row">
+<dialog class="modal" id="res-new">
+  <form method="post" action="{% if section == "images" %}/{{ ctx.prefix }}/images/pull{% else if section == "networks" %}/{{ ctx.prefix }}/networks/create{% else %}/{{ ctx.prefix }}/volumes/create{% endif %}">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <input name="image" placeholder="nginx:1.27-alpine" required>
-    <button class="primary" type="submit">拉取镜像</button>
-    <span class="hint">只走 fromImage 拉取，不调用 Engine /build。</span>
+    <div class="modal-head">
+      <h2>{% if section == "images" %}拉取镜像{% else if section == "networks" %}新建网络{% else %}创建卷{% endif %}</h2>
+      <span class="hint">
+        {% if section == "images" %}只走 fromImage 拉取，不调用 Engine /build。
+        {% else if section == "networks" %}MVP 只允许默认 bridge 驱动。
+        {% else %}只允许默认 local 驱动且 driver_opts 为空。{% endif %}
+      </span>
+      <button type="button" class="icon-btn" data-dialog-close aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-block">
+        <label class="field-label" for="res-name">
+          {% if section == "images" %}镜像名{% else if section == "networks" %}网络名称{% else %}卷名称{% endif %}
+        </label>
+        <input id="res-name" name="{% if section == "images" %}image{% else %}name{% endif %}"
+               placeholder="{% if section == "images" %}nginx:1.27-alpine{% else if section == "networks" %}net-name{% else %}volume-name{% endif %}"
+               required autocomplete="off">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-dialog-close>取消</button>
+      <button class="btn primary" type="submit">
+        {% if section == "images" %}拉取镜像{% else if section == "networks" %}创建网络{% else %}创建卷{% endif %}
+      </button>
+    </div>
   </form>
-  {% else if section == "networks" %}
-  <form method="post" action="/{{ ctx.prefix }}/networks/create" class="row">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <input name="name" placeholder="net-name" required>
-    <button class="primary" type="submit">创建 bridge 网络</button>
-    <span class="hint">MVP 只允许默认 bridge 驱动。</span>
-  </form>
-  {% else %}
-  <form method="post" action="/{{ ctx.prefix }}/volumes/create" class="row">
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-    <input name="name" placeholder="volume-name" required>
-    <button class="primary" type="submit">创建 local 卷</button>
-    <span class="hint">只允许默认 local 驱动且 driver_opts 为空。</span>
-  </form>
-  {% endif %}
-</section>
+</dialog>
+{% endif %}
 {% endif %}
 {% endblock %}

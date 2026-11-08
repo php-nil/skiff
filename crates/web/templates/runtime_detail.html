@@ -5,9 +5,10 @@
 <div class="page-head">
   <h1 data-runtime-title>{{ runtime.kind_label }} {{ runtime.name }}</h1>
   {% if runtime.is_default %}<span class="tag ok">默认</span>{% endif %}
-  <span class="sub">目标 {{ runtime.version }} · 业务视角</span>
+  <span class="muted small">目标 {{ runtime.version }} · 业务视角</span>
   <a class="ghost" href="/{{ ctx.prefix }}/sites/env">返回运行环境列表</a>
 </div>
+{% include "page_banner.html" %}
 
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}

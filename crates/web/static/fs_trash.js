@@ -206,17 +206,19 @@
       })
       .catch(function (err) {
         if (err.status === 409) {
-          var replace = window.confirm(
-            "恢复失败：原路径已存在同名对象。\n是否覆盖现有对象并恢复？\n\n" +
-            item.original_path
-          );
-          if (!replace) {
-            showAlert("warn", "恢复已取消：" + err.message);
-            return;
-          }
-          return restore(id, true).then(function () {
-            showAlert("ok", "已覆盖并恢复到 " + item.original_path);
-            load();
+          return window.skiffConfirm(
+            "恢复失败：原路径已存在同名对象。是否覆盖现有对象并恢复？\n\n" +
+            item.original_path,
+            "覆盖恢复"
+          ).then(function (replace) {
+            if (!replace) {
+              showAlert("warn", "恢复已取消：" + err.message);
+              return;
+            }
+            return restore(id, true).then(function () {
+              showAlert("ok", "已覆盖并恢复到 " + item.original_path);
+              load();
+            });
           });
         }
         showAlert("danger", "恢复失败：" + err.message);
@@ -228,24 +230,26 @@
     if (!item) {
       return;
     }
-    var ok = window.confirm(
-      "彻底删除后不可恢复，确认永久删除？\n\n" + item.original_path +
-      "\n大小：" + fmtBytes(item.size)
-    );
-    if (!ok) {
-      return;
-    }
-    request("trash/purge", {
-      method: "POST",
-      body: JSON.stringify({ id: id })
-    })
-      .then(function () {
-        showAlert("ok", "已彻底删除 " + item.original_path);
-        load();
+    window.skiffConfirm(
+      "确认彻底删除该条目？删除后不可恢复，也不会进入任何备份。\n\n" +
+      item.original_path + "\n大小：" + fmtBytes(item.size),
+      "彻底删除"
+    ).then(function (ok) {
+      if (!ok) {
+        return;
+      }
+      return request("trash/purge", {
+        method: "POST",
+        body: JSON.stringify({ id: id })
       })
-      .catch(function (err) {
-        showAlert("danger", "彻底删除失败：" + err.message);
-      });
+        .then(function () {
+          showAlert("ok", "已彻底删除 " + item.original_path);
+          load();
+        })
+        .catch(function (err) {
+          showAlert("danger", "彻底删除失败：" + err.message);
+        });
+    });
   }
 
   function onClear() {
@@ -255,27 +259,29 @@
     var bytes = items.reduce(function (sum, item) {
       return sum + Number(item.size || 0);
     }, 0);
-    var ok = window.confirm(
-      "将永久删除回收站内全部 " + items.length + " 个条目（共 " + fmtBytes(bytes) +
-      "）。\n清空后无法恢复，且不会进入任何备份。\n\n确认继续？"
-    );
-    if (!ok) {
-      return;
-    }
-    request("trash/clear", { method: "POST", body: "{}" })
-      .then(function (data) {
-        var failed = (data.result && data.result.failed) || [];
-        if (failed.length) {
-          showAlert("warn", "已清理 " + data.result.removed + " 项，" + failed.length +
-            " 项失败：" + failed.join("；"));
-        } else {
-          showAlert("ok", "已清空回收站，释放 " + fmtBytes(data.result.bytes));
-        }
-        load();
-      })
-      .catch(function (err) {
-        showAlert("danger", "清空失败：" + err.message);
-      });
+    window.skiffConfirm(
+      "确认清空回收站？将永久删除全部 " + items.length + " 个条目（共 " + fmtBytes(bytes) +
+      "），清空后无法恢复，且不会进入任何备份。",
+      "清空回收站"
+    ).then(function (ok) {
+      if (!ok) {
+        return;
+      }
+      return request("trash/clear", { method: "POST", body: "{}" })
+        .then(function (data) {
+          var failed = (data.result && data.result.failed) || [];
+          if (failed.length) {
+            showAlert("warn", "已清理 " + data.result.removed + " 项，" + failed.length +
+              " 项失败：" + failed.join("；"));
+          } else {
+            showAlert("ok", "已清空回收站，释放 " + fmtBytes(data.result.bytes));
+          }
+          load();
+        })
+        .catch(function (err) {
+          showAlert("danger", "清空失败：" + err.message);
+        });
+    });
   }
 
   if (el.refresh) {

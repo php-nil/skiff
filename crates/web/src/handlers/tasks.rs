@@ -138,6 +138,7 @@ pub async fn list(
         can_admin: user.can(skiff_model::Permission::Admin),
         error: String::new(),
         notice: String::new(),
+        keyword,
     })
 }
 

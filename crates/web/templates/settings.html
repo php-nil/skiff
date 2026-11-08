@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}设置 · Skiff{% endblock %}
 {% block content %}
-<div class="page-head"><h1>设置</h1></div>
-{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+<div class="page-head"><h1>设置</h1><span class="muted small">口令、安全入口与面板偏好。</span></div>
+{% include "page_banner.html" %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if force_change %}<div class="banner warn">首次登录必须修改口令；修改前其他页面会被强制跳转到这里。</div>{% endif %}
 {% if initial_admin_pending && !force_change %}<div class="alert ok">建议尽快修改初始口令：当前口令仍保存在数据目录的 <code>initial-admin.txt</code>，修改成功后该文件会自动删除。</div>{% endif %}
@@ -97,14 +98,15 @@
   {% if keys.is_empty() %}
     <div class="empty">信任库为空：未签名包默认拒装</div>
   {% else %}
+  <div class="table-wrap">
   <table class="grid">
-    <thead><tr><th>指纹</th><th>备注</th><th>操作</th></tr></thead>
+    <thead><tr><th>指纹</th><th>备注</th><th class="col-actions">操作</th></tr></thead>
     <tbody>
     {% for k in keys %}
       <tr>
         <td><code>{{ k.fingerprint_short }}…</code><div class="muted small">{{ k.key_id }}</div></td>
         <td>{{ k.label }}</td>
-        <td>
+        <td class="actions-cell">
           <form method="post" action="/{{ ctx.prefix }}/settings/keys/{{ k.key_id }}/remove" class="inline">
             <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
             <button class="mini danger" type="submit">撤销</button>
@@ -114,6 +116,7 @@
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% endif %}
   <form method="post" action="/{{ ctx.prefix }}/settings/keys" class="col">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

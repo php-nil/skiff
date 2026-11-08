@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ task.name }} · 计划任务 · Skiff{% endblock %}
 {% block content %}
-<div class="detail-head">
+<div class="page-head">
   <div>
     <h1>{{ task.name }}</h1>
     <div class="meta">
@@ -10,7 +10,7 @@
       {% if task.builtin %}<span class="badge">内置</span>{% endif %}
     </div>
   </div>
-  <div class="detail-actions">
+  <div class="actions">
     {% if can_admin %}
     <form method="post" action="/{{ ctx.prefix }}/tasks/{{ task.id }}/toggle" class="inline">
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
@@ -25,6 +25,7 @@
     <a class="ghost" href="/{{ ctx.prefix }}/tasks">返回列表</a>
   </div>
 </div>
+{% include "page_banner.html" %}
 
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}概览 · Skiff{% endblock %}
 {% block content %}
-{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 <div class="page-head">
   <h1>概览</h1>
   <span class="muted small">先看这里需要处理什么，再进对应页面。</span>
 </div>
+{% include "page_banner.html" %}
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 
 {% if !mounts_actions.is_empty() %}
 <div class="mount-row">

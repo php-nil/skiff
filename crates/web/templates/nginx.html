@@ -4,8 +4,24 @@
 <div class="page-nginx">
   <div class="page-head">
     <h1>Web 服务</h1>
-    <span class="sub">内核功能（非插件）· 当前实现：{% if status.version.is_empty() %}OpenResty（版本不可得）{% else %}{{ status.version }}{% endif %} · stub_status 127.0.0.1:8081</span>
+    <span class="muted small">内核功能（非插件）· 当前实现：{% if status.version.is_empty() %}OpenResty（版本不可得）{% else %}{{ status.version }}{% endif %} · stub_status 127.0.0.1:8081</span>
+    {% if can_admin %}
+    <div class="actions">
+      {% if status.container_state == "missing" || status.container_state.is_empty() %}
+      <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/install" class="inline">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+        <button class="btn primary" type="submit">安装 Web 服务</button>
+      </form>
+      {% else if status.container_state != "running" %}
+      <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/start" class="inline">
+        <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+        <button class="btn primary" type="submit">启动 Web 服务</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
+  {% include "page_banner.html" %}
   {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
   {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 
@@ -96,10 +112,7 @@
       {% if can_admin %}
       <div class="web-env-actions">
         {% if status.container_state == "missing" || status.container_state.is_empty() %}
-        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/install">
-          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-          <button class="btn primary" type="submit">安装 Web 服务（OpenResty）</button>
-        </form>
+        <p class="hint">安装入口在页面右上角；安装会拉取 OpenResty 镜像并启动容器。</p>
         {% else %}
         <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/{% if status.container_state == "running" %}stop{% else %}start{% endif %}">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

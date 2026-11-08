@@ -6,11 +6,22 @@
   <h1>任务中心</h1>
   <span class="muted small">安装、拉镜像、Compose 等长耗时操作的统一进度与日志；切走页面不影响执行</span>
 </div>
+{% include "page_banner.html" %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+<div class="toolbar">
+  <span class="muted small">共 {{ rows.len() }} 个任务{% if has_active %} · 有任务进行中，页面每 3 秒自动刷新{% endif %}</span>
+  <div class="actions">
+    <a class="btn ghost" href="/{{ ctx.prefix }}/jobs">刷新</a>
+  </div>
+</div>
 <section class="panel">
   {% if rows.is_empty() %}
-    <div class="empty">暂无任务。在「网站 → 运行环境」安装 PHP 扩展、拉取镜像或启动 Compose 后，任务会出现在这里。</div>
+    <div class="empty">
+      <strong>还没有长耗时任务</strong>
+      <p class="hint">安装运行环境、拉取镜像、启动 Compose 等操作会在这里显示进度与日志；切走页面不影响执行。</p>
+      <a class="btn primary" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+    </div>
   {% else %}
   <div class="table-wrap">
     <table class="grid compact">

@@ -3,8 +3,9 @@
 {% block content %}
 <div class="page-head">
   <h1>Docker 设置</h1>
-  <span class="sub">镜像拉取参数 · 只写宿主配置，不改动已有容器</span>
+  <span class="muted small">镜像拉取参数 · 只写宿主配置，不改动已有容器</span>
 </div>
+{% include "page_banner.html" %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
 

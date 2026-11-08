@@ -1,13 +1,21 @@
 {% if containers.is_empty() %}
   {% if !filter.is_empty() %}
-  <div class="empty">没有处于异常状态的容器。<a href="/{{ ctx.prefix }}/containers">清除筛选</a></div>
+  <div class="empty">
+    <strong>没有处于异常状态的容器</strong>
+    <p class="hint">所有容器都在正常运行。</p>
+    <a class="btn" href="/{{ ctx.prefix }}/containers">清除筛选</a>
+  </div>
   {% else %}
-  <div class="empty">没有容器{% if !ctx.docker_ok %}（Docker 不可用）{% endif %}</div>
+  <div class="empty">
+    <strong>还没有容器{% if !ctx.docker_ok %}（Docker 不可用）{% endif %}</strong>
+    <p class="hint">安装 Web 服务或运行环境后会生成受管容器；也可以手动新建一个容器。</p>
+    <a class="btn primary" href="/{{ ctx.prefix }}/containers/new">新建容器</a>
+  </div>
   {% endif %}
 {% else %}
 <div class="table-wrap">
 <table class="grid">
-  <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>操作</th></tr></thead>
+  <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th class="col-actions">操作</th></tr></thead>
   <tbody>
   {% for c in containers %}
     <tr>
@@ -20,7 +28,8 @@
       </td>
       <td class="muted">{{ c.image }}</td>
       <td><span class="state {{ c.state }}">{{ c.state }}</span><div class="muted small">{{ c.status }}</div></td>
-      <td class="actions">
+      <td class="actions-cell">
+        <div class="actions">
         {% if can_operate %}
         {% if c.state == "running" %}
         <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/restart" hx-target="#rows" hx-swap="innerHTML" class="inline">
@@ -41,11 +50,14 @@
         <span class="muted small">只读</span>
         {% endif %}
         {% if can_delete %}
-        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/remove" hx-target="#rows" hx-swap="innerHTML" class="inline" hx-confirm="删除后不可恢复，确定删除容器 {{ c.name }}？">
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/remove" hx-target="#rows" hx-swap="innerHTML" class="inline"
+              data-confirm="确认删除容器 {{ c.name }}？删除后不可恢复，容器内未持久化的数据会丢失。"
+              data-confirm-verb="删除">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="mini danger" type="submit">删除</button>
         </form>
         {% endif %}
+        </div>
       </td>
     </tr>
   {% endfor %}

@@ -3,16 +3,43 @@
 {% block content %}
 <div class="page-head">
   <h1>容器</h1>
-  {% if !filter.is_empty() %}<span class="tag warn-tag">仅显示异常</span><a class="ghost" href="/{{ ctx.prefix }}/containers">清除筛选</a>{% endif %}
-  {% if can_delete %}<a class="primary" href="/{{ ctx.prefix }}/containers/new">新建容器</a>{% endif %}
-  <button class="ghost" hx-get="/{{ ctx.prefix }}/containers/rows{% if !filter.is_empty() %}?filter={{ filter }}{% endif %}" hx-target="#rows" hx-swap="innerHTML">刷新</button>
+  <span class="muted small">容器、网络与镜像的底层视图；启停与删除都在这里完成。</span>
+  {% if can_delete %}
+  <div class="actions">
+    <a class="btn primary" href="/{{ ctx.prefix }}/containers/new">新建容器</a>
+  </div>
+  {% endif %}
 </div>
+{% include "page_banner.html" %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
-{% if !docker_reason.is_empty() %}<div class="empty">Docker 不可用：{{ docker_reason }}</div>{% endif %}
+{% if !docker_reason.is_empty() %}
+{% if !filter.is_empty() %}
+<div class="toolbar">
+  <span class="tag warn-tag">仅显示异常</span>
+  <a class="ghost" href="/{{ ctx.prefix }}/containers">清除筛选</a>
+  <span class="muted small">Docker 不可用，无法读取异常容器</span>
+</div>
+{% endif %}
+<section class="panel">
+  <div class="empty error-state">
+    <strong>Docker 不可用，容器页暂不可操作</strong>
+    <p class="hint">{{ docker_reason }}。恢复 Docker 后刷新本页；镜像加速源等参数可在 Docker 设置里调整。</p>
+    <a class="btn ghost" href="/{{ ctx.prefix }}/docker/settings">前往 Docker 设置</a>
+  </div>
+</section>
+{% else %}
+<div class="toolbar">
+  {% if !filter.is_empty() %}<span class="tag warn-tag">仅显示异常</span><a class="ghost" href="/{{ ctx.prefix }}/containers">清除筛选</a>{% endif %}
+  <span class="muted small">{% if filter.is_empty() %}共 {{ containers.len() }} 个容器{% else %}异常容器 {{ containers.len() }} 个{% endif %}</span>
+  <div class="actions">
+    <button type="button" class="btn ghost" hx-get="/{{ ctx.prefix }}/containers/rows{% if !filter.is_empty() %}?filter={{ filter }}{% endif %}" hx-target="#rows" hx-swap="innerHTML">刷新</button>
+  </div>
+</div>
 <section class="panel">
   <div id="rows">
     {% include "containers_rows.html" %}
   </div>
 </section>
+{% endif %}
 <script src="/{{ ctx.prefix }}/static/xterm.min.js" defer></script>
 {% endblock %}

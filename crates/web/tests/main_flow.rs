@@ -113,6 +113,8 @@ fn harness_full(form: Form, tier: Tier) -> Harness {
         policy: Policy::new(tier, form, vec![]).unwrap(),
         session: skiff_identity::SessionLimits::default(),
         login_concurrency: 2,
+        ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
+        ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
     };
     let state = AppState::new(db, docker, sup, cfg, "csrf-test-secret".into(), "test");
     let app = skiff_web::router(state.clone());
@@ -1168,8 +1170,8 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
     let filtered_html = body_text(filtered).await;
     assert!(
         filtered_html.contains("仅显示异常")
-            && filtered_html.contains("没有处于异常状态的容器")
-            && filtered_html.contains("清除筛选"),
+            && filtered_html.contains("清除筛选")
+            && filtered_html.contains("Docker 不可用"),
         "异常筛选深链必须可解释且可恢复: {filtered_html}"
     );
 }
@@ -5579,9 +5581,13 @@ async fn site_detail_risk_actions_only_in_manage_tab() {
 
     let (status, overview) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    // 顶部操作区 = detail-actions 容器内的内容。
+    // 顶部操作区 = page-head 内 actions 容器内的内容。
     let head = overview
-        .split("class=\"detail-actions\"")
+        .split("class=\"page-head\"")
+        .nth(1)
+        .expect("详情页必须有顶部操作区");
+    let head = head
+        .split("class=\"actions\"")
         .nth(1)
         .expect("详情页必须有顶部操作区");
     let head = head.split("</div>").next().unwrap();

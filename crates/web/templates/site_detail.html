@@ -2,7 +2,7 @@
 {% block title %}{{ site.domain }} · 网站详情 · Skiff{% endblock %}
 {% block content %}
 <div class="page-sites">
-<div class="detail-head">
+<div class="page-head">
   <div>
     <h1>{{ site.domain }}</h1>
     <div class="meta">
@@ -17,7 +17,7 @@
       <span>创建于 {{ site.created }}</span>
     </div>
   </div>
-  <div class="detail-actions">
+  <div class="actions">
     <a class="btn" href="{% if site.https %}https{% else %}http{% endif %}://{{ site.domain }}/" target="_blank" rel="noopener">访问</a>
     <a class="btn" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/logs">日志</a>
     {% if can_admin %}
@@ -38,6 +38,7 @@
     <a class="ghost" href="/{{ ctx.prefix }}/sites">返回列表</a>
   </div>
 </div>
+{% include "page_banner.html" %}
 
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}

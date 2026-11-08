@@ -762,10 +762,11 @@ body[data-layout="left"][data-content-width="fixed"] .foot {
 .config-editor .config-textarea { width: 100%; min-height: 18rem; }
 .table-wrap table.grid tr.selected { background: var(--accent-soft); }
 .banner a { margin-left: var(--sp-2); font-weight: 600; }
-/* 左侧布局的顶栏是固定列：提示条文字从内容起点开始，避免被侧栏遮住左半句。
-   窄屏为抽屉形态，提示条全宽，无需偏移。 */
-@media (min-width: 861px) {
-  body[data-layout="left"] .banner { padding-left: calc(var(--sidebar-w) + var(--sp-5)); }
+/* 提示条现在位于 main 内部，侧栏偏移由 main 自身承担，不再额外加左内边距。 */
+main > .banner {
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
 .page-head {
@@ -819,6 +820,17 @@ body[data-layout="left"][data-content-width="fixed"] .foot {
   border-bottom: 1px solid var(--line);
 }
 .panel h3 { margin: var(--sp-4) 0 var(--sp-2); color: var(--text-2); }
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line);
+}
+.panel-head h2 { margin: 0; padding: 0; border: 0; }
+.panel-head > .btn:last-child { margin-left: auto; }
 .panel .more { font-size: var(--fs-xs); margin-left: auto; }
 .panel.split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-6); }
 .panel.flush { padding: 0; overflow: hidden; }
@@ -1350,16 +1362,8 @@ table.grid td.actions-cell > .actions .ghost {
 .not-implemented strong { color: var(--text-2); }
 .not-implemented .badge { margin-left: auto; flex: none; }
 
-.detail-head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
-  margin-bottom: var(--sp-4);
-}
-.detail-head h1 { margin: 0; }
-.detail-head .meta { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; color: var(--muted); font-size: var(--fs-xs); }
-.detail-actions { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; margin-left: auto; }
+.page-head .meta { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; color: var(--muted); font-size: var(--fs-xs); }
+.page-head .actions { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
 
 .dir-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .dir-head .crumb { font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted); overflow-wrap: anywhere; }
@@ -1419,15 +1423,32 @@ dialog.modal::backdrop { background: rgba(16, 24, 40, .45); }
 
 /* 工作台 iframe 是纯内容区：面板只保留圆角与边框，iframe 不再叠自己的内边距/外框。 */
 .workbench-panel {
+  position: relative;
   padding: 0;
   overflow: hidden;
   background: var(--plugin-frame);
 }
+/* 未加载完成时的主题占位：iframe 透明前先给一句说明，避免空白块。 */
+.workbench-panel::before {
+  content: "正在加载插件界面…";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+}
+.workbench-panel:has(iframe.plugin-frame[data-loaded])::before { display: none; }
 iframe.plugin-frame {
   display: block;
+  position: relative;
   width: 100%;
-  height: 70vh;
-  min-height: 360px;
+  /* 默认高度收敛到一屏内，避免外层与 iframe 双滚动条；
+     插件上报内容高度后由 auto-height 覆盖。 */
+  height: clamp(320px, calc(100dvh - var(--shell-h, 56px) - 190px), 70vh);
+  min-height: 320px;
   border: 0;
   border-radius: 0;
   /* 加载阶段的占位底色跟随主题，避免白屏/黑屏闪烁。 */
@@ -1562,8 +1583,8 @@ body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); 
 /* 插件信息页：关联菜单与完整指纹。 */
 .plugin-menu-list { margin: 0; padding-left: 0; list-style: none; }
 .plugin-menu-list > li { margin-bottom: var(--sp-3); }
-.plugin-menu-list a { display: inline-flex; align-items: center; gap: 6px; }
-.plugin-menu-list code { color: var(--muted); font-size: var(--fs-xs); }
+.plugin-menu-list a { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; flex-wrap: wrap; }
+.plugin-menu-list code { color: var(--muted); font-size: var(--fs-xs); overflow-wrap: anywhere; min-width: 0; }
 .plugin-menu-list ul { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); list-style: none; }
 .fingerprint { overflow-wrap: anywhere; font-size: var(--fs-xs); }
 
@@ -1709,13 +1730,38 @@ body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); 
 
   main { padding: var(--sp-4); }
   .panel.split, .form-grid { grid-template-columns: 1fr; }
-  .detail-actions { margin-left: 0; }
+  .page-head { align-items: flex-start; }
+  .page-head .actions { width: 100%; margin-left: 0; justify-content: flex-end; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .toolbar { align-items: stretch; }
   .toolbar .search { flex-basis: 100%; }
   .toolbar .sep { display: none; }
+  .table-wrap > table.grid:has(th.col-actions) { min-width: 620px; }
   .bulk-bar { align-items: stretch; }
+}
+
+/* ≤430：主操作整行、触达高度 44px；不隐藏任何关键操作，只允许换行/横向滚动。 */
+@media (max-width: 430px) {
+  main { padding: var(--sp-3); }
+  .page-head .actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-2);
+  }
+  .page-head .actions .btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .toolbar .actions { margin-left: auto; }
+  .toolbar .actions .btn { min-height: 44px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs .tab { flex: 0 0 auto; }
+  .plugin-card .pc-actions .btn,
+  .plugin-card .pc-actions .mini { min-height: 36px; }
+  dialog.modal, dialog.drawer { width: 92vw; max-width: 92vw; }
 }
 
 @media (prefers-reduced-motion: reduce) {

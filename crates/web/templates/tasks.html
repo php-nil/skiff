@@ -5,15 +5,34 @@
   <h1>计划任务</h1>
   <span class="muted small">由内核调度器统一执行；插件任务需目标插件在线</span>
 </div>
+{% include "page_banner.html" %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
-<section class="panel">
-  <form method="get" action="/{{ ctx.prefix }}/tasks" class="inline" style="margin-bottom:12px">
-    <input type="search" name="q" value="" placeholder="按名称 / id / 来源过滤">
+<div class="toolbar">
+  <form class="search" method="get" action="/{{ ctx.prefix }}/tasks" role="search">
+    <input type="search" name="q" value="{{ keyword }}" placeholder="按名称 / id / 来源过滤" aria-label="筛选计划任务">
     <button class="btn" type="submit">筛选</button>
+    {% if !keyword.is_empty() %}<a class="ghost" href="/{{ ctx.prefix }}/tasks">清除</a>{% endif %}
   </form>
+  <span class="muted small">{% if keyword.is_empty() %}共 {{ tasks.len() }} 个任务{% else %}筛选结果 {{ tasks.len() }} 条{% endif %}</span>
+  <div class="actions">
+    <a class="btn ghost" href="/{{ ctx.prefix }}/tasks{% if !keyword.is_empty() %}?q={{ keyword|urlencode }}{% endif %}">刷新</a>
+  </div>
+</div>
+
+<section class="panel">
   {% if tasks.is_empty() %}
-    <div class="empty">暂无任务。站点页可以开启每日备份，插件也可以注册自己的任务。</div>
+    <div class="empty">
+      {% if !keyword.is_empty() %}
+      <strong>没有匹配「{{ keyword }}」的任务</strong>
+      <p class="hint">试试更短的关键字，或清除筛选条件。</p>
+      <a class="btn" href="/{{ ctx.prefix }}/tasks">清除筛选</a>
+      {% else %}
+      <strong>还没有计划任务</strong>
+      <p class="hint">计划任务由内核调度器执行，不会在这里手动新建：站点详情页可开启每日备份，插件安装后也会注册自己的任务。</p>
+      <a class="btn primary" href="/{{ ctx.prefix }}/sites">去站点开设备份</a>
+      {% endif %}
+    </div>
   {% else %}
   <div class="table-wrap">
     <table class="grid compact">
@@ -45,7 +64,8 @@
             <span class="muted small">内置任务不可删除</span>
             {% else %}
             <form method="post" action="/{{ ctx.prefix }}/tasks/{{ t.id }}/delete" class="inline"
-                  data-confirm="删除任务 {{ t.name }}？运行历史会保留。">
+                  data-confirm="删除任务 {{ t.name }}？运行历史会保留。"
+                  data-confirm-verb="删除">
               <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
               <button class="mini danger" type="submit">删除</button>
             </form>

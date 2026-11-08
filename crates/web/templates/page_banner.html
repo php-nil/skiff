@@ -1,0 +1,3 @@
+{# 页面级一次性提示：紧跟 page-head 之后，错误常驻、成功约 4.2 秒自动消失。 #}
+{% if !ctx.flash_error.is_empty() %}<div class="alert">{{ ctx.flash_error }}</div>{% endif %}
+{% if !ctx.flash_notice.is_empty() %}<div class="alert ok" data-toast>{{ ctx.flash_notice }}</div>{% endif %}

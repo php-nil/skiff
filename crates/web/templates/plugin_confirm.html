@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}确认安装 · Skiff{% endblock %}
 {% block content %}
-<div class="page-head"><h1>确认安装插件</h1></div>
-{% if !error.is_empty() %}<div class="notice-line">{{ error }}</div>{% endif %}
+<div class="page-head"><h1>确认安装插件</h1><span class="muted small">核对签名指纹与申请的能力面后再确认。</span></div>
+{% include "page_banner.html" %}
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 <section class="panel">
   <dl class="kv">
     <dt>插件</dt><dd><strong>{{ name }}</strong>（{{ id }}）</dd>

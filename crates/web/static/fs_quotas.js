@@ -239,25 +239,26 @@
   }
 
   function scan(root) {
-    var ok = window.confirm(
-      "重新统计会递归扫描整棵目录树，期间可能阻塞较久（成本 O(条目数)）。\n\n" +
-      root + "\n\n确认开始？"
-    );
-    if (!ok) {
-      return;
-    }
-    request("quotas/scan", {
-      method: "POST",
-      body: JSON.stringify({ path: root })
-    })
-      .then(function (data) {
-        showAlert("ok", "统计完成：" + data.quota.root + "，已用 " +
-          fmtBytes(data.quota.used_bytes) + " / " + fmtNumber(data.quota.used_files) + " 个文件");
-        load();
+    window.skiffConfirm(
+      "重新统计会递归扫描整棵目录树，期间可能阻塞较久（成本 O(条目数)）。\n\n" + root,
+      "开始统计"
+    ).then(function (ok) {
+      if (!ok) {
+        return;
+      }
+      return request("quotas/scan", {
+        method: "POST",
+        body: JSON.stringify({ path: root })
       })
-      .catch(function (err) {
-        showAlert("danger", "重新统计失败：" + err.message);
-      });
+        .then(function (data) {
+          showAlert("ok", "统计完成：" + data.quota.root + "，已用 " +
+            fmtBytes(data.quota.used_bytes) + " / " + fmtNumber(data.quota.used_files) + " 个文件");
+          load();
+        })
+        .catch(function (err) {
+          showAlert("danger", "重新统计失败：" + err.message);
+        });
+    });
   }
 
   function cancel(root) {
@@ -265,24 +266,25 @@
     if (!q) {
       return;
     }
-    var ok = window.confirm(
-      "取消配额后不再限制该目录树的写入，但已用量统计会保留。\n\n" + root +
-      "\n\n确认取消？"
-    );
-    if (!ok) {
-      return;
-    }
-    request("quotas/cancel", {
-      method: "POST",
-      body: JSON.stringify({ path: root })
-    })
-      .then(function () {
-        showAlert("ok", "已取消配额：" + root);
-        load();
+    window.skiffConfirm(
+      "取消配额后不再限制该目录树的写入，但已用量统计会保留。\n\n" + root,
+      "取消配额"
+    ).then(function (ok) {
+      if (!ok) {
+        return;
+      }
+      return request("quotas/cancel", {
+        method: "POST",
+        body: JSON.stringify({ path: root })
       })
-      .catch(function (err) {
-        showAlert("danger", "取消配额失败：" + err.message);
-      });
+        .then(function () {
+          showAlert("ok", "已取消配额：" + root);
+          load();
+        })
+        .catch(function (err) {
+          showAlert("danger", "取消配额失败：" + err.message);
+        });
+    });
   }
 
   if (el.form) {

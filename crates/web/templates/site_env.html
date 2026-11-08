@@ -11,6 +11,7 @@
     </div>
     {% endif %}
   </div>
+  {% include "page_banner.html" %}
 
   {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
   {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}

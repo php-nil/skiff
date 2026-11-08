@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}删除站点 · Skiff{% endblock %}
 {% block content %}
-<div class="page-head"><h1>删除站点</h1></div>
+<div class="page-head"><h1>删除站点</h1><span class="muted small">删除不可恢复，且不经回收站；请核对数量后输入域名确认。</span></div>
+{% include "page_banner.html" %}
 <section class="panel">
   <div class="alert danger">确认删除站点 <strong class="mono">{{ domain }}</strong>？以下内容将被永久删除，且不经回收站。</div>
   <div class="table-box">

@@ -4,11 +4,13 @@
 <div class="page-head">
   {# 标题只出现一次：L2 label 与插件名同名的插件（如 testkit）不再重复渲染。 #}
   <h1>{{ workbench_title }}{% if workbench_title != plugin.name %} <span class="muted">{{ plugin.name }}</span>{% endif %}</h1>
-  <div class="row">
-    <a class="ghost" href="/{{ ctx.prefix }}/containers?filter=error">异常容器与日志</a>
-    <a class="ghost" href="{{ info_href }}">插件信息</a>
+  <div class="actions">
+    <a class="btn ghost" href="/{{ ctx.prefix }}/containers?filter=error">异常容器与日志</a>
+    <a class="btn ghost" href="{{ info_href }}">插件信息</a>
   </div>
 </div>
+{% include "page_banner.html" %}
+{% if !ctx.docker_ok %}<div class="alert warn">Docker 不可用：依赖容器的插件功能会失败；异常容器入口仍保留，但容器页同样处于 gate 状态。</div>{% endif %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 
 {# 页面标题区下方一条通栏 L3 标签栏：与内容区同宽、吸顶不随内容滚动。

@@ -1019,6 +1019,8 @@ pub struct TasksPage {
     pub can_admin: bool,
     pub error: String,
     pub notice: String,
+    /// 当前筛选关键字（回填搜索框，并区分「无数据」与「筛选无结果」）。
+    pub keyword: String,
 }
 
 #[derive(Debug, Clone, Default)]
