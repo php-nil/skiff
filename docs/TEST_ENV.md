@@ -62,24 +62,25 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `9aa0381`（Release 由该提交构建；`origin/main` 与 HEAD 同为 `9aa0381`）；CI run `42452614639`、Release run `42452619537` 均 success |
-| 部署时间 | 2026-11-08（Asia/Shanghai；TLS 三形态轮，在 `1ead5fe` 装出的 v13 库上按 Release 资产覆盖安装） |
-| 部署方式 | `v0.1.0`（`9aa0381`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker --listen 0.0.0.0:18080 --tls on --tls-cert … --tls-key …`；未传本地二进制 |
-| 数据库 | `PRAGMA user_version=13`（覆盖安装后保持 13；站点、运行环境、内置任务均保留） |
+| tag / 构建提交 | `v0.1.0` = `48f57dc`（Release 由该提交构建）；Release run `42456674709` success。`origin/main` 在发版后另有仅文档的回填提交（本文与台账），不改变二进制、不再触发 Release |
+| 部署时间 | 2026-11-08 15:20（Asia/Shanghai；在 v13 库上按 Release 资产覆盖安装） |
+| 部署方式 | `v0.1.0`（`48f57dc`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`（沿用形态三配置，未传 `--listen/--tls`）；未传本地二进制 |
+| 数据库 | `PRAGMA user_version=14`（覆盖安装后自动 v13→v14；`trash_entries`、`fs_quotas` 建出，站点/设置/用户/插件全部保留） |
 | 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发）；`skiff-tls-proxy.service` inactive（形态二验证用，脚本保留） |
 | 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `0103e75af4cc497d697be2baeedb9da349f006079a888517ed2c0b0298f053e1`）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）。三形态备份见 §2.1 |
 
-## 6. Release 资产（v0.1.0 = `9aa0381`，2026-11-08）
+## 6. Release 资产（v0.1.0 = `48f57dc`，2026-11-08）
 
-构建来源：Release workflow run `42452619537`（`push` tag `v0.1.0`，`head_sha=9aa0381`；CI run `42452614639` success）。
-`git merge-base --is-ancestor` 校验：`1ead5fe`/`46848d7`/`8ede9d2`/`3030648` 对 `v0.1.0` 退出码均为 0（全部在 tag 内），构建时 tag、`origin/main` 与 HEAD 同为 `9aa0381`。资产摘要经 GitHub API 复核。
+构建来源：Release workflow run `42456674709`（`push` tag `v0.1.0`，`head_sha=48f57dc`；当前唯一在跑的 Release，已 success）。
+`git merge-base --is-ancestor` 校验：`5b0d4d5`（docker）/`53da47a`（fs v14）/`7c7d0d8`（sched）/`48f57dc`（docs）/`758d6e6`（WEB-02）/`41fc04e`（TLS 三形态文档）对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与 HEAD 同为 `48f57dc`（发版后的文档回填提交不参与构建）。资产摘要经 GitHub API 复核。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,124,497 B | `244ab407398f0429e52bd11efe4d2b9da06834296e18753bc3f0933ea178a4ee` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,768,972 B | `bd9993b61cfa732475eb6f8b227d2fb662623f190e372c3483faf611fdae5cf4` |
+| `checksums.txt` | 223 B | `ac9a2504c325c6455b7604e012af9bd9b7e0a688e4ce61ca0829e98fb5463300` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,453,244 B | `786018dcd5427e4f24e18d4de085900781bc27abd6b0d399f7f45ccb31b548d1` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,068,111 B | `e34089f217dddac125393b779f25f76ace577aaeb8e6c088ffb0c0ee8919450f` |
 
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；测试机直连 `objects.githubusercontent.com` 会超时，用 `curl --retry 5 --retry-all-errors` 或在资产端点重试。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；本轮 Windows 直连 `github.com` 与 `objects.githubusercontent.com` 均被重置，改用 `https://api.github.com/repos/php-nil/skiff/releases/assets/<id>` + `Accept: application/octet-stream` 经内网代理下载，测试机用 `scp` 传输后 `sha256sum -c` 双架构 OK。
 - 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`checksums.txt` 逐个校验。
 - GitHub Release **说明正文尚未列 `ftp`**（正文仍写 4 个插件）；以包内 `official/` 与本文为准，待人工修正 Release 说明。
 
@@ -96,35 +97,33 @@
 | 2026-11-08 上午 | v12→v13 升级轮（覆盖安装） | 资产 `8ede9d2`；x86_64 8,123,372 B `3c2d498c…`，`sha256sum -c` OK | `user_version=13`；`site_runtimes.origin` 落 `instance`/`seed`，seed 行 `socket_path` 清空；种子行可被同名新建接管并继承 `is_default` |
 | 2026-11-08 12:38 | `1ead5fe` 重发版覆盖安装 + 复验 | 资产 `1ead5fe`；x86_64 8,124,749 B `55caa6d2…`，双架构 `sha256sum -c` OK | 库保持 13、任务/站点/运行环境全部保留；插件 iframe P0、登录 `Origin: null`、抽屉表单、网络页「可附加」、新建网站下拉均复验通过 |
 | 2026-11-08（三形态轮） | `9aa0381` 覆盖安装 + TLS 三形态 / 视觉 / 工作台复验 | 资产 `9aa0381`；x86_64 8,124,497 B `244ab407…`、aarch64 7,768,972 B `bd9993b6…`，双架构 `sha256sum -c` OK | 库保持 13；三形态逐项通过（Cookie 名/属性、浏览器登录、切回）；430/860/工作台通过；WAF 核查为「功能不存在」；详见 §8 |
+| 2026-11-08 15:20 | `48f57dc` 收口发版覆盖安装 + v13→v14 升级与五组复验 | 资产 `48f57dc`；x86_64 8,453,244 B `786018dc…`、aarch64 8,068,111 B `e34089f2…`，双架构 `sha256sum -c` OK | `user_version=14`，`trash_entries`/`fs_quotas` 建出、旧数据保留；FS-10～12、DOCKER-12～14、monitor/guard 内核调度器、WEB-02 全部通过；详见 §8 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `9aa0381` 三形态轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `48f57dc` 收口轮）
 
-**本轮通过（三形态轮）**
-- 装机：`9aa0381` 资产双架构 `sha256sum -c` OK；`install.sh --no-docker --listen 0.0.0.0:18080 --tls on --tls-cert … --tls-key …` 退出码 0；配置落 `tls_enabled=true`、`tls_cert=/etc/skiff/tls/fullchain.pem`、`tls_key=/etc/skiff/tls/privkey.pem`（修复前 `tls_key` 曾被函数参数覆盖成证书路径）；`user_version=13`、`NRestarts=0`。
-- 形态一（TLS 直连 `:18080`）：`/healthz` 200（loopback 与 `10.10.15.4` 均通）；表单登录 303 + `set-cookie: __Host-skiff_session=…; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200; Secure`；认证后 `/8p9yyvg4`（概览）、`/containers`、`/plugins`、`/settings` 均 200；Chromium（忽略证书错误）真实登录成功，Cookie `secure=true; httpOnly=true; SameSite=Lax`。
-- 形态二（反代终止 TLS）：`trusted_proxies=["127.0.0.1/32"]` + `allow_insecure_http=true`；经 `https://10.10.15.4:18443` 登录 303 + 同名同属性 `__Host-skiff_session`（Secure），认证后页面 200，浏览器登录可用；直连明文 `:18080` 的 `POST /<prefix>/login` 返回 403「跨站登录请求被拒绝」，`curl -k https://<host>:18080/healthz` 为 000（该端口无 TLS）。
-- 形态三（直接明文 `tls_enabled=false`）：经 `http://10.10.15.4:18081` 登录 303 + `skiff_dev_session=…; HttpOnly; SameSite=Lax`（无 `Secure`、无 `__Host-`），认证后页面 200；改密路径 `POST /8p9yyvg4/password`（旧口令错误）返回 303 `settings?err=当前口令不正确`，表单校验链路可用；浏览器登录成功并显示「明文 HTTP 开发模式」提示。
-- 三形态往返：3→1→3 各覆盖配置 + `systemctl restart skiff`，两端 `/healthz` 均 200，Cookie 名随形态正确切换，无残留监听；备份路径见 §2.1。
-- 430px：概览、应用（containers）、插件中心三页 `document.documentElement.scrollWidth=430`、无子元素越界（`bad=0`）；容器列表 `.table-wrap` `overflowX=auto`（`scrollWidth=668 / clientWidth=364`），修复随 `9aa0381` 生效。
-- 860px：菜单抽屉初始 `x=0 w=0 aria=false` → 展开 `x=16 w=828 aria=true` → 再收起归零；「网站」分组展开 `items=3`，点二级菜单进入 `/m/core/sites/list`（标题「网站列表 · Skiff」）。
-- 工作台（cron）：两个标签 `plugin/com.skiff.cron/jobs/list*` 与 `…/jobs/new`；`.workbench-tabs` 吸顶 `position=sticky top=0px`，页头滚出后 `rectTop` 由 126 变 0（`scrollY=589` 仍吸顶）；点「新建」URL 变为 `…/jobs/new`、活动标签切换、iframe `src` 指向 `new.html?...&tab=new`，切回列表恢复 `list.html?tab=list`。
-- WAF：**功能不存在**。代码仅有预留（`crates/app/src/sites.rs:170` `KEY_WAF_MODE`、`:288-289` `waf_rules_dir`，`crates/core/src/bootstrap.rs:210` 注释「WAF 规则目录仅预留，本期不加载、不拦截」），无模板、无 UI、无规则加载与拦截逻辑，无法构造可触发拦截的请求；不按缺陷处理。
+**本轮通过（`48f57dc` 收口轮）**
+- 装机/升级：Release 资产双架构 `sha256sum -c` OK；`sh install.sh --no-docker` 退出码 0；库 v13→**v14**，`trash_entries`、`fs_quotas` 建出；站点 2 / settings 7 / users 1 / plugins 6 全部保留；配置 sha256 保持 `0103e75a…f053e1`，`/healthz` 200。
+- FS-10～12：删除进回收站 → 列表 → 恢复；同名冲突 409「不自动覆盖」，`overwrite=true` 后内容仍为 `hello-a`；父目录缺失恢复 403；彻底删除、清空归零；配额 100B → 200B 写入 **507 `fs.quota_exceeded`** → 重扫 → 取消后写回 200；数据根删除/配额均 403；审计 `fs.recycle.*` 7 条、`fs.quota.*` 3 条，明细无文件内容。
+- DOCKER-12～14：创建页 → `containers.create` 303；坏镜像失败回显保留 `image/name/memory` 原值；资源限制热更新为 `cpu_shares=1024 / memory=256MB / pids_limit=128`，`docker inspect` 即时生效，`/sys/fs/cgroup/pids.max=128` 且超额 fork 报 `can't fork`；Compose 合法/非法 YAML 校验、`up` 建出带 `io.skiff.project` 标签容器与卷、`down` 跳过 `io.skiff.protected=true`、默认保留卷、勾选后删卷。
+- monitor/guard：`scheduled_tasks` 含 `plugin:com.skiff.monitor:sample`（60s 采样→`*/5` 批量落盘）与 `plugin:com.skiff.guard:reconcile`（每分钟）；两插件 RPC `snapshot`/`status` 均返回 `scheduler.driver=kernel`；停用 monitor 任务后跨过 15:30 采样点 `last_run` 仍停 15:25:00；卸载 monitor 后插件行与任务行同时清空，重装后任务重新 seed、driver 仍 kernel。
+- WEB-02：保存 `worker_connections=2048` 后返回「已保存并通过 nginx -t」，容器内 `nginx -t` 无告警；主配置含 `worker_rlimit_nofile 2048`；容器重启与 `nginx -s reload` 后复测仍无告警。
 
-**沿用通过（`1ead5fe` 轮，本轮未回归）**
-- 插件 iframe `X-Frame-Options: SAMEORIGIN`（`entry_guard` 改 `entry().or_insert(DENY)`）、登录 `Origin: null` 回落双提交令牌、`postDrawerForm` 改 urlencoded、DOCKER-11 网络页「可附加」列、新建网站运行环境下拉、插件 UI 弹窗校验、430/860/1024 弹窗无溢出、文件管理绝对路径 API、PANEL-02～06、运行环境种子接管、Rust 1.99 建站、FTP-06～09 与封禁/审计。
+**沿用通过（三形态轮 `9aa0381`，本轮未回归）**
+- TLS 三形态（直连 / 反代终止 / 明文）与 Cookie 名/属性、浏览器登录、3→1→3 来回切换；430px 三页无横向溢出；860px 菜单抽屉展开收起与二级菜单；工作台标签切换与吸顶。
+- 插件 iframe、登录 `Origin: null`、抽屉表单 urlencoded、DOCKER-11 网络页、PANEL-02～06、FTP-06～09 等前轮结论继续有效。
 
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- WAF 拦截能力未实现（仅配置字段与目录预留），需产品定稿规则来源与开关后再验。
-- WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警。
-- Docker 通用 create / CPU·内存限制表单 / Compose 运行入口仍缺（UI 设计未定，按用户要求留台账）。
-- FTP fail2ban 三次封禁：`ignoreself` 使本机无法构造，需第二台客户端。
-- aarch64 仅核对资产摘要；1Panel 受限形态、G 组长时观测等无环境项。
+- WAF 拦截能力不存在（仅字段/目录预留），需产品定稿后实现。
+- aarch64 仅核对 sha256，无 arm64 实机装机。
+- FTP fail2ban 三次封禁、1Panel 受限形态、BusyGuard/buffer 上机入口、并发 spawn 复验等无环境项。
+- 观察项：插件 stderr 被 supervisor 丢到 `/dev/null`，源码里的「巡检由内核调度器驱动」启动日志在 journal 不可见（以 RPC `driver=kernel` 判定）。
+- 观察项：管理员可按契约访问数据根以外文件系统，本轮实测可删除并恢复 `/etc/skiff/config.toml`（已恢复原字节）；数据根/`plugins/`/`official/` 仍硬拒。
+- Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
 
-**收尾状态（2026-11-08 `9aa0381` 三形态轮后）**
-- 面板：形态三明文 `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active；`skiff-http-fwd.service` active（`systemd-run` 临时单元）；`skiff-tls-proxy.service` inactive（`systemd-run` 临时单元，脚本 `/root/iter/skiff-tls-proxy.py` 保留）。
-- 视觉/功能测试资产：站点 `visual.test`、`rust.test`、PHP 运行环境 `visual`/`p8.5`/`php-8.5`、Rust 运行环境 `rust-rust-probe` 仍在，供后续复测。
-- FTP：`pure-ftpd` active、`:2121` 监听，账号 `skiff_visual-test_fa92_ftpuanchor`（用于上传/禁用/改密验证）保留；`fail2ban` jail `skiff-pureftpd.conf` 保留手工 `[sshd] enabled=false`。
-- 保留 `/root/iter/admin-pw.txt`、`/root/iter/tls-src/`、三形态配置备份、`/root/iter/rel-1ead5fe`、`/root/iter/rel-9aa0381`、`/root/iter/backups`、`/root/backups`。
+**收尾状态（2026-11-08 `48f57dc` 收口轮后）**
+- 面板：形态三明文 `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active；`skiff-http-fwd.service` active；`skiff-tls-proxy.service` inactive（脚本保留）。
+- 数据：`iter-fs-test` 测试目录与回收站条目已清理；`skiff-iter-create`、`iter-compose-protected` 容器与 `iter-compose_data` 卷已删除；monitor 插件已重装并恢复任务。
+- 视觉/功能测试资产、FTP 账号与 fail2ban jail 沿用上一轮保留；备份 `/root/iter/skiff-v13-20261108-before48f57dc.db`、`/root/iter/config-before48f57dc.toml`、`/root/iter/release-v010-48f57dc/` 保留。
 
 
 ## 9. 数据、备份与清理
