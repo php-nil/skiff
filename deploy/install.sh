@@ -243,8 +243,8 @@ apply_listen_override() {
 #   auto（未指定）→ 有 --tls-cert/--tls-key 即 on；交互终端询问；否则沿用旧行为。
 conf_set_str() {
     conf=$1 key=$2 val=$3
-    if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$conf"; then
-        sed -i "s|^[[:space:]]*$key[[:space:]]*=.*|$key = \"$val\"|" "$conf"
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then
+        sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = \"$val\"|" "$conf"
     else
         printf '%s = "%s"\n' "$key" "$val" >> "$conf"
     fi
@@ -252,8 +252,8 @@ conf_set_str() {
 
 conf_set_bool() {
     conf=$1 key=$2 val=$3
-    if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$conf"; then
-        sed -i "s|^[[:space:]]*$key[[:space:]]*=.*|$key = $val|" "$conf"
+    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then
+        sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = $val|" "$conf"
     else
         printf '%s = %s\n' "$key" "$val" >> "$conf"
     fi
