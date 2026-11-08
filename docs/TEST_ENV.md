@@ -18,11 +18,12 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `https://10.10.15.4:18080/<entry_prefix>/login` |
+| URL | `http://10.10.15.4:18081/<entry_prefix>/login`（**当前为明文 HTTP，仅限内网**） |
 | 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `8p9yyvg4`（2026-11-07 干净系统重装，全新库生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
-| TLS | 自签证书，同端口 HTTPS；HTTP 访问同端口不降级 |
-| 证书 | `/etc/skiff/tls/fullchain.pem`（0644）、`/etc/skiff/tls/privkey.pem`（0600）；SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`，有效期 10 年 |
+| 明文通道 | 2026-11-08 起为关闭 TLS 做视觉复核：`listen=127.0.0.1:18080` + `allow_insecure_http=true`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /tmp/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`）TCP 转发。**仅供内网验证，勿对外暴露** |
+| TLS 恢复 | 原配置备份 `/root/iter/config-https-20261108.toml`（`listen=0.0.0.0:18080` + `tls_cert/tls_key`）；`cp` 回 `/etc/skiff/config.toml` 并 `systemctl stop skiff-http-fwd && systemctl restart skiff` 即恢复 HTTPS |
+| 证书 | `/etc/skiff/tls/fullchain.pem`（0644）、`/etc/skiff/tls/privkey.pem`（0600）；SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`，有效期 10 年（文件保留，未删除） |
 | 健康检查 | `GET /healthz` 200；裸 `GET /` 404，根路径只做前缀跳转 |
 
 ## 3. 账号与口令
@@ -54,7 +55,7 @@
 | 部署方式 | 旧资产 `c44eeb5` 先装出 `user_version=11` 并留 2 条任务 → 新资产按 `sha256sum -c` → 解压 → `sh install.sh` 覆盖（同一轮既走升级路径又复验四处修复）；6 个官方插件随包同步 |
 | 数据库 | `PRAGMA user_version=12`（v11→v12 自动迁移，`idx_scheduled_tasks_kind_source` 已删） |
 | 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200 |
-| 配置 | `/etc/skiff/config.toml`：`listen=0.0.0.0:18080` + TLS 自签、`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
+| 配置 | `/etc/skiff/config.toml`：2026-11-08 08:30 起 `listen=127.0.0.1:18080` + `allow_insecure_http=true`（明文 dev HTTP，TLS 原配置已备份，见 §2）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
 
 ## 6. Release 资产（v0.1.0 = `a22296f`，2026-11-07 最终版）
 
@@ -79,6 +80,7 @@
 | 2026-11-07 | v0.1.0 最终版覆盖安装 | tag/构建 `c44eeb5`；x86_64 `b16cb72e…` | FTP 主链路、DEPLOY-02/07/08 通过；详见 §8 |
 | 2026-11-07 22:05 | 干净系统全新装机（Release 资产） | tag/构建 `c44eeb5`；x86_64 8,020,711 B `b16cb72e…`，`sha256sum -c` OK | 全新库 `user_version=11`；入口前缀 `8p9yyvg4`；6 个官方插件 CLI 安装成功（grants 默认含 `path:/www` 与 scheduler 权限）；`doctor` 全 ok、`/healthz` 200 |
 | 2026-11-08 00:18 | v11→v12 升级 + 最终版复验（覆盖安装） | 旧 `c44eeb5` → 新 `a22296f`；x86_64 8,027,834 B `2e8aa3d5…`，`sha256sum -c` OK | 库自动升 12、原任务保留、唯一索引消失、同 target 建第二条成功；FTP 零账号首装/卸载回收、PHP 扩展重装、删站级联逐项通过；浏览器视觉项实测（详见 §8） |
+| 2026-11-08 08:30 | 关闭 TLS 切明文 HTTP + 浏览器视觉复测 | 无重装、无补丁：`/etc/skiff/config.toml` 改为 `listen=127.0.0.1:18080` + `allow_insecure_http=true`，`skiff-http-fwd.service` 转发 `0.0.0.0:18081 → 127.0.0.1:18080`；原 HTTPS 配置备份 `/root/iter/config-https-20261108.toml` | `/healthz` 200、`/<prefix>/login` 200；HTTP 下完成 430/860/1024 视觉项、7 标签、直达页、iframe 标题与 1024 真实窗口抽屉复核（详见 §8） |
 
 ## 8. 最近一次全链路验收结论（2026-11-08 `a22296f` 升级 + 复验轮）
 
@@ -87,26 +89,25 @@
 - FTP（零账号首装 → 全链路 → 卸载回收）：清空 `/etc/pure-ftpd` 模拟干净系统后 `ftp.install` 200、`pure-ftpd` active、`auth/50pure` 生成、`pureftpd.passwd` 0600 空、`pureftpd.pdb` 2056 B、`:21` 监听；建号 uid/gid 82 与容器 `www-data` 一致；`STOR` 226；容器内 www-data 读上传内容并回写；删号后重登 530；`uninstall`（`removed_package:false`）后 `inactive`、`:21` 消失、`/etc/pure-ftpd/auth` 已回收。
 - PHP 扩展卸载/重装：安装 `redis` → 卸载后 `php -m` 无、`redis.so` 无、`pecl list` 无 → 重装约 15 s 成功。
 - 删站级联：删 `cascade-probe.test` 后 `scheduled_tasks` 中 `source=site:cascade-probe.test` 行消失，站点目录删除，日志无新 WARN。
-- 浏览器视觉（Chromium `--ignore-certificate-errors` + CDP 精确视口）：
-  - 430px / 860px：站点列表与详情无页面级横向溢出（430px 列表表格 504 px 宽，但包在 `.table-wrap` 内滚动，页面 `scrollWidth=430`）。
-  - 站点详情实际 **7 个标签**（概览/域名/配置文件/日志/目录/SSL/管理），真实点击「管理」落到 `?tab=manage` 并出现停止/删除按钮。
+- 浏览器视觉（2026-11-08 08:30 起改为**明文 HTTP**，Chromium 无证书参数 + CDP 精确视口）：
+  - 430px / 860px：站点列表与详情无页面级横向溢出（430px 列表表格 504 px 宽，但包在 `.table-wrap` 内滚动，页面 `scrollWidth=430`；详情 `scrollWidth=415`）。
+  - 站点详情实际 **7 个标签**（概览/域名/配置文件/日志/目录/SSL/管理），真实鼠标点击「管理」落到 `?tab=manage` 并出现「停止」「删除站点」。
   - 直达 `/sites/env/{id}`：扩展操作按钮齐全（安装所选/卸载所选/安装 PECL 扩展/重新安装/已安装）。
-  - 插件 iframe：`/plugins/com.skiff.cron/ui/list.html` 内 `h1=0`、`h2=1`、无横向溢出（标题由父页面渲染）。
-  - 1024 视口抽屉实测宽 720 px、`clippedChildren=0`；与 CSS `92vw`/840 px 预期不符，已记台账待复核。
+  - 插件 iframe：父页 `h1=1`；`/plugins/com.skiff.cron/ui/list.html` 内 `h1=0`、`h2=1`、无横向溢出（标题由父页面渲染）。
+  - 1024 真实窗口（`outerWidth=1024`、`innerWidth=1008`）打开「+ 新建运行环境」抽屉：宽 720 px、`clippedChildren=0`。该抽屉是 `.modal.runtime-dialog`，CSS 定义 `width: min(720px, calc(100vw - 32px))`，720 px 即设计值；台账旧记的 `dialog.drawer` 92vw 属于另一类抽屉，不适用于运行环境弹窗。
 - 其余沿用通过项：文件管理内置页、cron 预设互转、受保护容器 403、官方插件随包同步、站点「管理」页签、PERF-03、运行环境 digest/APK 缓存、FTP 主链路、PHP 参数生效与越界拒绝。
 
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
 - WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警。
 - Docker 通用 create / CPU·内存限制表单 / Compose 运行入口仍缺（UI 设计未定，按用户要求留台账）。
 - FTP fail2ban 三次封禁：`ignoreself` 使本机无法构造，需第二台客户端。
-- 1024 视口抽屉实测 720 px 与 CSS 预期不符，待真实 1024 窗口复核。
 - aarch64 仅核对资产摘要；1Panel 受限形态、G 组长时观测等无环境项。
 
-**收尾状态（本轮结束）**
-- 站点：`/www/sites` 为空；容器仅 `skiff-web-nginx`；三个 PHP 环境为种子行（`stopped`，目录已清）。
-- 任务：仅 `builtin:db-vacuum`；`user_version=12`；服务 active、`NRestarts=0`。
+**收尾状态（2026-11-08 视觉复测后）**
+- 面板：明文 HTTP `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active、`NRestarts=0`；`skiff-http-fwd.service` 运行中（测试用途）。
+- 视觉测试资产：站点 `visual.test` + PHP 运行环境 `visual`（容器 `skiff-php-visual`）仍在，供后续复测；其余站点/任务/账号保持清空。
 - FTP 已彻底卸载（包状态 `rc`、`/etc/pure-ftpd` 删除、`:21` 无监听）；测试账号与上传文件已清。
-- 保留 `/root/iter/admin-pw.txt`、`/root/iter/backups`、`/root/backups`。
+- 保留 `/root/iter/admin-pw.txt`、`/root/iter/config-https-20261108.toml`、`/root/iter/backups`、`/root/backups`。
 
 
 ## 9. 数据、备份与清理
