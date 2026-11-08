@@ -40,6 +40,10 @@ pub struct FileConfig {
     pub trash_retention_days: Option<u32>,
     /// 首启管理员是否强制首次登录改密。默认 false（初始口令可直接使用）。
     pub require_initial_password_change: Option<bool>,
+    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（秒，默认 900）。
+    pub ext_exec_timeout_secs: Option<u64>,
+    /// 批量扩展脚本的硬超时（秒，默认 1800）。
+    pub ext_batch_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +74,10 @@ pub struct Config {
     /// 首启管理员是否强制首次登录改密。默认 false，可用配置/环境变量/CLI 显式开启。
     /// 只影响**新建**管理员；已有账号一律不动。
     pub require_initial_password_change: bool,
+    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（默认 15 分钟）。
+    pub ext_exec_timeout: std::time::Duration,
+    /// 批量扩展脚本的硬超时（默认 30 分钟）。
+    pub ext_batch_timeout: std::time::Duration,
     /// 由 main 计算：无 TLS 的 loopback 开发模式
     pub dev_http: bool,
     /// 由 main 计算：非 loopback 明文，但显式确认了「可信反代已终止 TLS」
@@ -199,6 +207,31 @@ impl Config {
             None => file.trash_retention_days.unwrap_or(30).clamp(1, 365),
         };
 
+        // 扩展安装的 docker exec 硬超时：默认单扩展 15 分钟、批量 30 分钟。
+        // 做成可配置只为让超时失败路径可在测试机上用秒级超时验证，不改变生产默认值。
+        let timeout_secs = |env_key: &str, file_val: Option<u64>, default: u64| -> Result<u64> {
+            let raw = match env_str(env_key) {
+                Some(v) => v
+                    .parse::<u64>()
+                    .with_context(|| format!("{env_key} 非法: {v}"))?,
+                None => file_val.unwrap_or(default),
+            };
+            if raw == 0 {
+                bail!("{env_key}/配置文件中的扩展超时必须大于 0 秒");
+            }
+            Ok(raw.min(24 * 3600))
+        };
+        let ext_exec_timeout = std::time::Duration::from_secs(timeout_secs(
+            "SKIFF_EXT_EXEC_TIMEOUT_SECS",
+            file.ext_exec_timeout_secs,
+            15 * 60,
+        )?);
+        let ext_batch_timeout = std::time::Duration::from_secs(timeout_secs(
+            "SKIFF_EXT_BATCH_TIMEOUT_SECS",
+            file.ext_batch_timeout_secs,
+            30 * 60,
+        )?);
+
         Ok(Config {
             listen,
             data_dir,
@@ -221,6 +254,8 @@ impl Config {
             login_concurrency,
             trash_retention_days,
             require_initial_password_change,
+            ext_exec_timeout,
+            ext_batch_timeout,
             dev_http: false,
             plaintext_behind_proxy: false,
             tls_active: false,
@@ -404,6 +439,8 @@ mod tests {
             login_concurrency: 2,
             trash_retention_days: 30,
             require_initial_password_change: false,
+            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
+            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
             dev_http: false,
             plaintext_behind_proxy: false,
             tls_active: false,
@@ -437,6 +474,8 @@ mod tests {
             login_concurrency: 2,
             trash_retention_days: 30,
             require_initial_password_change: false,
+            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
+            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
             dev_http: false,
             plaintext_behind_proxy: false,
             tls_active: false,
@@ -536,6 +575,26 @@ mod tests {
         std::fs::write(&path, "require_initial_password_change = true\n").unwrap();
         let c = Config::load(Some(path), true).unwrap();
         assert!(c.require_initial_password_change, "配置显式开启后应生效");
+    }
+
+    #[test]
+    fn ext_timeouts_default_and_can_be_overridden_by_file() {
+        // 默认单扩展 15 分钟、批量 30 分钟（生产值不变）。
+        let c = Config::load(None, true).unwrap();
+        assert_eq!(c.ext_exec_timeout.as_secs(), 15 * 60);
+        assert_eq!(c.ext_batch_timeout.as_secs(), 30 * 60);
+
+        // 文件可把超时压到秒级，供测试机验证超时失败路径。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "ext_exec_timeout_secs = 3\next_batch_timeout_secs = 5\n",
+        )
+        .unwrap();
+        let c = Config::load(Some(path), true).unwrap();
+        assert_eq!(c.ext_exec_timeout.as_secs(), 3);
+        assert_eq!(c.ext_batch_timeout.as_secs(), 5);
     }
 
     #[test]

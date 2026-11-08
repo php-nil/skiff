@@ -175,6 +175,8 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         policy,
         session: SessionLimits::default(),
         login_concurrency: cfg.login_concurrency,
+        ext_exec_timeout: cfg.ext_exec_timeout,
+        ext_batch_timeout: cfg.ext_batch_timeout,
     };
 
     let state = AppState::new(
@@ -387,6 +389,8 @@ mod tests {
             external_url: None,
             login_concurrency: 1,
             require_initial_password_change: false,
+            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
+            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
             dev_http: true,
             plaintext_behind_proxy: false,
             tls_active: false,

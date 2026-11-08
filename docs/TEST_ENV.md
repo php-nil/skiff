@@ -102,6 +102,8 @@
 | 2026-11-08 16:55 | `8716e51` 小批收口覆盖安装 + 配置保护 / 插件日志 / 上一批回归 | 资产 `8716e51`；x86_64 8,472,637 B `dee454fd…`、aarch64 8,086,197 B `8cffabc3…`，双架构 `sha256sum -c` OK | 库保持 v14、数据全部保留、配置 sha 未变；配置保护 403/配额 403、插件日志与崩溃尾巴、回收站/配额与 Docker 三入口均通过；详见 §8 |
 | 2026-11-08 19:59 | 机器还原后**全新安装**（空库直建 v15） | 资产 `1862702`；x86_64 8,785,237 B `640603ca…`、aarch64 8,378,566 B `4c1232c9…`，双架构 `sha256sum -c` OK | `sh install.sh --no-docker` 完成；空库直建 **v15**，`jobs`/`job_logs`/`trash_entries`/`fs_quotas` 均建出；入口前缀 `udkwxz96`；6 个官方插件安装成功；`/healthz` 200、登录 303 换会话成功 |
 | 2026-11-08 20:47 | `9daabd3` 复核轮覆盖安装（两处缺陷修复） | 资产 `9daabd3`；x86_64 8,786,193 B `ff71be79…`、aarch64 8,380,846 B `a2945c66…`，双架构 `sha256sum -c` OK | 库保持 v15、插件与运行环境保留；php.ini 坏语法被拒且原文件不变、合法值即生效；插件只读 403 文案不再追加授权提示；详见 §8 |
+| 2026-11-08 20:47–21:55 | 工作树构建二进制覆盖（写放大三处修复 A/B 复测，**非 Release 资产**） | 同工作树 musl 构建替换 `/usr/local/bin/skiff`（备份 `/root/skiff.before-archfix`，即 `9daabd3` 资产 13,005,584 B）；monitor 修复以现编插件临时替换（备份 `/root/plugin.monitor.before-archfix`，961,864 B） | 三处 A/B 复测完成，数字见 `docs/TEST_LEDGER.md` 与 `docs/changes/2026-11-08.md`；收尾已还原官方 `com.skiff.monitor-0.1.0.wbpkg` 与官方插件二进制（961,864 B，22:09），删除 `samples.jsonl`，删除测试站 `audit-env.local`，`PRAGMA integrity_check=ok`、`/healthz` 200 |
+| 2026-11-08 21:20 | 本地工作树构建二进制覆盖（超时可配验证用，**非 Release 资产**） | `cargo build --release --target x86_64-unknown-linux-musl -p skiff`（工作树含未提交的超时可配改动）；`/usr/local/bin/skiff` 12,749,696 B `md5 86e8f7ca06730120bcf2131600f567fb` | 仅用于验证任务中心超时路径；验完 `config.toml` 已恢复默认（无 `ext_*_timeout_secs` 键），服务 active、`/<prefix>/login` 200 |
 
 ## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮）
 
@@ -114,15 +116,21 @@
 - 访问：形态三 `http://10.10.15.4:18081`（`skiff-http-fwd.service`），`/healthz` 200、登录页 200、`POST` 登录 303 并下发 `skiff_dev_session`。
 
 **分组验收（`1862702` 全新安装轮）**
-- **任务中心**：PHP 扩展安装全程走作业中心（`runtime.install` / 扩展安装作业），SSE 带 `Last-Event-ID` 可从断点续传、`/jobs/{id}/logs?after=` 可补历史；`docker exec` 阶段取消只置 `cancel_requested`，作业保持 running 到当前步骤结束，最终 `cancelled` 且 `error_detail` 为「已取消，扩展状态可能未生效，请核对后重试」；失败作业保留安装器尾部输出；同目标重复提交文案含 job id 与阶段；重试新建 job 且 `retry_of` 指旧 id。**超时失败未实测**：安装器脚本每轮被内核重写，改写 `sleep` 探针无效。
+- **任务中心**：PHP 扩展安装全程走作业中心（`runtime.install` / 扩展安装作业），SSE 带 `Last-Event-ID` 可从断点续传、`/jobs/{id}/logs?after=` 可补历史；`docker exec` 阶段取消只置 `cancel_requested`，作业保持 running 到当前步骤结束，最终 `cancelled` 且 `error_detail` 为「已取消，扩展状态可能未生效，请核对后重试」；失败作业保留安装器尾部输出；同目标重复提交文案含 job id 与阶段；重试新建 job 且 `retry_of` 指旧 id。**超时失败未实测**（2026-11-08 晚已补实测，见下方「三条补充实测」）：安装器脚本每轮被内核重写，改写 `sleep` 探针无效。
 - **文件管理**：`4755`/`6000`/`7777` → **403** 且理由含 setuid；`2775`/`1777` 生效；chown root 返回 `root_owned=true` 且审计 `root_owner=true`；zip / tar.gz 往返内容一致；穿越包 **403**、软链包 `skipped_symlinks=1` 不落链接；配额超限解压 **507** 且目标目录无残留；目录打包下载 zip 条目正确。
 - **Web 五条**：明文访问无危险横幅；PHP 站点根有 `index.php`，Rust 站点无 `index.php` 且容器编译运行站点源码（Cargo.toml + src/main.rs）；两处入口均无 PHP 扩展区块；flash 只显示一次、刷新不重放，Location 无 `?notice=`/`?error=`；php.ini 合法值保存后 `php -i` 即生效。**发现缺陷：坏语法被放行**（PHP 只把 `syntax error` 打到 stdout、退出码仍 0）→ 已修并复核。
 - **删站**：确认页展示 `677 B · 4 个文件`、绑定任务 0 个、绑定运行环境；确认域名填错 **400**；批量 `action=delete` **400**；正确删除 **303** 且目录移除。
-- **FS-14**：内核写 `/etc`、`/usr/bin` → **403** `fs.read_only`「…只读，无法写入（宿主策略限制）」；构造 64 KB tmpfs 写满 → **507** `fs.no_space`；插件能力面写 `/etc` → **403** 且文案含「只读」（当时附带「不在已授权范围」误导提示 → 已修）。`EDQUOT` 构造不出 → **未实测**。
+- **FS-14**：内核写 `/etc`、`/usr/bin` → **403** `fs.read_only`「…只读，无法写入（宿主策略限制）」；构造 64 KB tmpfs 写满 → **507** `fs.no_space`；插件能力面写 `/etc` → **403** 且文案含「只读」（当时附带「不在已授权范围」误导提示 → 已修）。`EDQUOT` 构造不出 → **未实测**（2026-11-08 晚已补实测，见下方「三条补充实测」）。
 
 **复核轮修复（`9daabd3`）**
 - PHP 配置校验：坏内容 `memory_limit = 64M` + `[` 提交后 **303** flash「配置语法校验失败，已拒绝保存：PHP: syntax error, unexpected end of file…」；文件 md5 前后一致、`php -i` 仍为原值；合法 `memory_limit = 128M` / `upload_max_filesize = 32M` 保存后立即生效。
 - 插件 403 文案：只读路径返回「该路径所在文件系统为只读，无法写入（宿主策略限制）」，不再追加「不在已授权范围」；复验后 files 授权恢复默认（grants=7）。
+
+**三条「未实测」补充实测（2026-11-08 21:36–21:45，运行的是 §7 21:20 本地工作树二进制）**
+
+- **任务中心超时（`error_class=timeout`）**：把 `ext_exec_timeout_secs = 6` 临时写入 `/etc/skiff/config.toml` 后重启，安装未装的 Xdebug（`bcmath/exif/gd/intl/sodium` 已装，重复安装是 no-op，故必须换扩展才能触发）。作业 `job-1794145039-1218b5c90`（`runtime.ext.install`）结果：`status=failed`、`error_class=timeout`、`phase_label=失败`、`progress=15`、`created_at=started_at=1794145039`、`finished_at=1794145045`（6 秒）；`error_detail` = 「扩展 Xdebug 执行超过 6 秒 未结束，已按超时失败结算；Docker 无法中断 exec，容器内脚本可能仍在运行，建议重载或重建运行环境。已采集输出尾部见任务日志。」；`job_logs` 共 **24** 条，seq 1–23 为安装器 `out` 行（含 `Warning: Module "intl"/"sodium" is already loaded`、`Updating channel "pecl.php.net"`、`fetch https://dl-cdn.alpinelinux.org/…`），seq 24 为同文案 `note` — 输出尾巴确实保留。验完删除配置键并重启，`config.toml` 无 `ext_*_timeout_secs`、`/<prefix>/login` 200。
+- **EACCES / EPERM（403「权限不足」）**：`mkdir /www/iter-eacces` + `chattr +i` 造「可进入不可写」路径。内核管理员面 `POST /{p}/files/api/write` → **403**，`{"error":{"code":"fs.denied","message":"权限不足: /www/iter-eacces/.probe.txt.tmp-66300-0: Operation not permitted (os error 1)"},"ok":false}`；审计 `actor=admin action=fs.write result=deny code=fs.denied`。插件能力面（`com.skiff.files` RPC `fs.write`）→ **HTTP 403**，页面正文「内核返回 HTTP 403: 权限不足: /www/iter-eacces/probe.txt: Operation not permitted (os error 1)」；审计 `actor=plugin:com.skiff.files` 同文案 `result=deny`。两面都不是 500。验后 `chattr -i` 并删除目录。
+- **EDQUOT（507「文件系统配额已用尽」）**：8 MB loop ext4（`mkfs.ext4 -O quota` 内建配额）+ `setquota` KB 级硬限。**关键构造点**：skiff 以 uid 0 运行且 `CapEff=000001ffffffffff` 含 `CAP_SYS_RESOURCE`，配额对 root 直接豁免（前三次构造写 20 KB 都返回 200，`repquota` 显示已超限也没用）；用 `setpriv --reuid=65534` 写同一挂载点会失败，证明配额本身生效。临时 drop-in `[Service] CapabilityBoundingSet=~CAP_SYS_RESOURCE` + `daemon-reload` + restart（`CapEff` 降为 `000001fffeffffff`）后：内核管理员面写 20 KB → **507**，`{"error":{"code":"fs.no_space","message":"文件系统配额已用尽，无法写入: /www/iter-quota/.big.bin.tmp-75024-0"},"ok":false}`；审计 `code=fs.no_space result=fail`。插件能力面同一次写 → **HTTP 400**，正文「…协议错误: 内核返回 HTTP 507: 文件系统配额已用尽，无法写入: /www/iter-quota/big2.bin」——代理层 `rpc_error` 当时只透传 403/404/409。已补 `AppError::NoSpace`（507）+ `rpc_error` 透传 507 + 单测 `rpc_error_passes_kernel_status_through` 覆盖；**该改动未随测试机二进制部署，插件面 507 端到端待下一次发版复验**。验后移除 drop-in、`daemon-reload` + restart（`CapEff` 回 `000001ffffffffff`）、`quotaoff`+`umount` 并删除镜像与目录。
 
 **沿用通过（`8716e51` 小批收口轮，本轮未复跑全部断言）**
 - 装机/升级：Release 资产双架构 `sha256sum -c` OK；`sh install.sh --no-docker` 完成；库保持 **v14**，站点 2 / settings 7 / users 1 / plugins 6 全部保留；配置 sha256 保持 `0103e75a…f053e1`，`/healthz` 200。

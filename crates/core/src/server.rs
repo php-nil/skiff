@@ -140,11 +140,25 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             tick.tick().await;
             state.supervisor().reap_idle().await;
             let _ = state.db().purge_expired_sessions();
-            // 站点日志轮转由内核巡检做（copytruncate），不依赖宿主 logrotate。
+            // 站点日志轮转由内核巡检做（改名 + 让 nginx 重开日志），不依赖宿主 logrotate。
             // 一站一目录：逐个扫描 `/www/sites/<域名>/log/`。
             let sites_dir = state.cfg.web_root.join("sites");
-            let _ =
-                skiff_app::sites::rotate_site_logs(&sites_dir, skiff_app::sites::LOG_ROTATE_BYTES);
+            let rotated =
+                skiff_app::sites::rotate_site_logs(&sites_dir, skiff_app::sites::LOG_ROTATE_BYTES)
+                    .unwrap_or(0);
+            if rotated > 0 {
+                // 改名后原 fd 仍指向 `.1`；不重开就会一直写进旧文件、新文件永远为空。
+                if let Err(e) = state
+                    .docker()
+                    .exec_capture(
+                        skiff_app::sites::NGINX_CONTAINER,
+                        vec!["nginx".into(), "-s".into(), "reopen".into()],
+                    )
+                    .await
+                {
+                    warn!(error = %e, "日志轮转后重开 nginx 日志失败，写入仍落在 .1");
+                }
+            }
         }
     });
 }
@@ -180,6 +194,8 @@ mod tests {
             external_url: None,
             login_concurrency: 1,
             require_initial_password_change: false,
+            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
+            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
             dev_http: true,
             plaintext_behind_proxy: false,
             tls_active: false,

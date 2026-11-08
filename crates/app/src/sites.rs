@@ -40,13 +40,21 @@ pub const NGINX_CONTAINER: &str = "skiff-web-nginx";
 /// 每个 PHP 实例一个独立容器：`skiff-php-<name>`。
 pub const PHP_CONTAINER_PREFIX: &str = "skiff-php";
 
-/// 单扩展安装/卸载脚本的硬超时：超时只停止等待（Docker 无 kill exec 接口），
-/// 按失败结算并保留已采集输出尾巴，避免作业永远停在「取消中」。
-const EXT_EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-/// 批量扩展脚本（可能触发多次编译）的硬超时。
-const EXT_BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+// 扩展 exec 的硬超时默认值在 `WebConfig`（单扩展 15 分钟、批量 30 分钟），
+// 可用 `ext_exec_timeout_secs` / `ext_batch_timeout_secs` 或环境变量覆盖。
+// 超时只停止等待（Docker 无 kill exec 接口），按失败结算并保留已采集输出尾巴。
 /// 超时错误标记：`job_finish_err` 依据它把 `error_class` 记为 `timeout`。
 const TIMEOUT_MARK: &str = "timeout: ";
+
+/// 超时展示：秒级配置（测试用）不能显示成「0 分钟」。
+fn fmt_timeout(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 60 && secs.is_multiple_of(60) {
+        format!("{} 分钟", secs / 60)
+    } else {
+        format!("{secs} 秒")
+    }
+}
 
 /// 任务日志时间戳（本地时区，仅展示用）。
 fn fmt_log_time(at: i64) -> String {
@@ -2329,7 +2337,7 @@ impl AppState {
                 .exec_capture_timeout(
                     container,
                     vec!["sh".into(), "-lc".into(), script],
-                    EXT_BATCH_TIMEOUT,
+                    self.cfg.ext_batch_timeout,
                 )
                 .await
                 .map_err(|e| format!("批量安装扩展执行失败：{e}"))?;
@@ -2337,9 +2345,9 @@ impl AppState {
             self.jobs().set_cancellable(job_id, true);
             if timed_out {
                 return Err(format!(
-                    "{TIMEOUT_MARK}批量安装扩展超过 {} 分钟未结束，已按超时失败结算；\
+                    "{TIMEOUT_MARK}批量安装扩展超过 {} 未结束，已按超时失败结算；\
                      Docker 无法中断 exec，容器内脚本可能仍在运行，建议重建运行环境。",
-                    EXT_BATCH_TIMEOUT.as_secs() / 60
+                    fmt_timeout(self.cfg.ext_batch_timeout)
                 ));
             }
             if self.job_cancelled(job_id).await {
@@ -2397,7 +2405,7 @@ impl AppState {
                 .exec_capture_timeout(
                     container,
                     vec!["sh".into(), "-lc".into(), script],
-                    EXT_BATCH_TIMEOUT,
+                    self.cfg.ext_batch_timeout,
                 )
                 .await
                 .map_err(|e| format!("批量停用扩展执行失败：{e}"))?;
@@ -2405,9 +2413,9 @@ impl AppState {
             self.jobs().set_cancellable(job_id, true);
             if timed_out {
                 return Err(format!(
-                    "{TIMEOUT_MARK}批量停用扩展超过 {} 分钟未结束，已按超时失败结算；\
+                    "{TIMEOUT_MARK}批量停用扩展超过 {} 未结束，已按超时失败结算；\
                      Docker 无法中断 exec，容器内脚本可能仍在运行，建议重建运行环境。",
-                    EXT_BATCH_TIMEOUT.as_secs() / 60
+                    fmt_timeout(self.cfg.ext_batch_timeout)
                 ));
             }
             if self.job_cancelled(job_id).await {
@@ -2905,7 +2913,7 @@ impl AppState {
             .exec_capture_timeout(
                 &container,
                 vec!["sh".into(), "-lc".into(), script],
-                EXT_EXEC_TIMEOUT,
+                self.cfg.ext_exec_timeout,
             )
             .await
             .map_err(|e| format!("{label} 执行失败：{e}"))?;
@@ -2914,10 +2922,10 @@ impl AppState {
         self.jobs().set_cancellable(job_id, true);
         if timed_out {
             return Err(format!(
-                "{TIMEOUT_MARK}扩展 {label} 执行超过 {} 分钟未结束，已按超时失败结算；\
+                "{TIMEOUT_MARK}扩展 {label} 执行超过 {} 未结束，已按超时失败结算；\
                  Docker 无法中断 exec，容器内脚本可能仍在运行，建议重载或重建运行环境。\
                  已采集输出尾部见任务日志。",
-                EXT_EXEC_TIMEOUT.as_secs() / 60
+                fmt_timeout(self.cfg.ext_exec_timeout)
             ));
         }
         if self.job_cancelled(job_id).await {
@@ -6367,6 +6375,17 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn timeout_message_never_renders_zero_minutes() {
+        // 测试机把超时压到秒级时，文案必须说「3 秒」而不是「0 分钟」。
+        assert_eq!(fmt_timeout(std::time::Duration::from_secs(3)), "3 秒");
+        assert_eq!(fmt_timeout(std::time::Duration::from_secs(90)), "90 秒");
+        assert_eq!(
+            fmt_timeout(std::time::Duration::from_secs(15 * 60)),
+            "15 分钟"
+        );
+    }
+
+    #[test]
     fn runtime_container_state_distinguishes_unknown_missing_and_stopped() {
         // Docker 不可达/列表失败：状态未知，不能伪造成 missing 或 running。
         assert_eq!(probe_container_state(false, None), "unknown");
@@ -6803,6 +6822,8 @@ mod tests {
             policy: Policy::new(Tier::Basic, Form::Native, vec![]).unwrap(),
             session: SessionLimits::default(),
             login_concurrency: 1,
+            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
+            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
         };
         AppState::new(db, docker, sup, cfg, "csrf-test".into(), "test")
     }

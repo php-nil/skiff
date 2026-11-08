@@ -74,6 +74,14 @@ listen = "127.0.0.1:18080"
 
 # login_concurrency = 2
 
+# ── PHP 扩展安装超时（任务中心）────────────────────────────────
+# 单扩展安装/卸载一次 docker exec 的硬超时（秒，默认 900 = 15 分钟）。
+# 批量扩展脚本（可能触发多次编译）的硬超时（秒，默认 1800 = 30 分钟）。
+# 环境变量 SKIFF_EXT_EXEC_TIMEOUT_SECS / SKIFF_EXT_BATCH_TIMEOUT_SECS 优先。
+# 仅供测试把超时路径压到秒级验证；生产不要调小（调小会把正常编译误判为超时）。
+# ext_exec_timeout_secs = 900
+# ext_batch_timeout_secs = 1800
+
 # ── Docker 宿主绑定挂载授权根（native 形态，方案 §5.5）──────────
 # 只有位于这些根内的路径才允许作为 bind 源。留空 = 允许创建的容器不能有宿主绑定挂载。
 # 路径各组件须由 root 管理，不接受插件可写目录内的 bind 源。

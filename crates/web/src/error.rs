@@ -11,6 +11,9 @@ pub enum AppError {
     Forbidden(String),
     BadRequest(String),
     Conflict(String),
+    /// 容量类失败（磁盘/文件系统配额用尽）：单独一个变体是为了让插件能力面
+    /// 与内核面同口径返回 507，而不是被代理层归成 400。
+    NoSpace(String),
     Unavailable(String),
     /// 处理超时（等待 Docker 引擎等下游过久）。单独一个变体是为了给 504 配一条
     /// 说人话的文案，而不是让浏览器看到一个空 408。
@@ -27,6 +30,7 @@ impl AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::NoSpace(_) => StatusCode::INSUFFICIENT_STORAGE,
             AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -41,6 +45,7 @@ impl AppError {
             | AppError::Forbidden(m)
             | AppError::BadRequest(m)
             | AppError::Conflict(m)
+            | AppError::NoSpace(m)
             | AppError::Unavailable(m)
             | AppError::Timeout(m)
             | AppError::Internal(m)
@@ -72,6 +77,7 @@ impl IntoResponse for AppError {
             403 => "无权访问",
             404 => "页面不存在",
             409 => "冲突",
+            507 => "空间不足",
             503 => "服务不可用",
             504 => "请求超时",
             _ => "请求失败",

@@ -845,6 +845,8 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | `SKIFF_AUTHORIZED_ROOTS` | `authorized_roots` | 空 | 宿主 bind 授权根（空 = 不许 bind） |
 | `SKIFF_ALLOW_UNSIGNED` | `allow_unsigned` | `false` | 允许未签名插件（仅开发） |
 | `SKIFF_ALLOW_REDUCED_SANDBOX` | `allow_reduced_sandbox` | `false` | 允许沙箱降级装插件 |
+| `SKIFF_EXT_EXEC_TIMEOUT_SECS` | `ext_exec_timeout_secs` | `900` | 单扩展一次 `docker exec` 硬超时（秒；0 拒绝，上限 86400；超时作业 `failed` + `error_class=timeout`） |
+| `SKIFF_EXT_BATCH_TIMEOUT_SECS` | `ext_batch_timeout_secs` | `1800` | 批量扩展脚本硬超时（秒；口径同上） |
 | `SKIFF_EXTERNAL_URL` | `external_url` | 无 | 对外地址（绝对链接兜底） |
 | `SKIFF_LOG_LEVEL` | — | `info` | tracing 过滤；排障用 `RUST_LOG` 风格，如 `debug,skiff_plugin=trace` |
 | `SKIFF_CONFIG` | — | `/etc/skiff/config.toml` | 配置文件路径 |

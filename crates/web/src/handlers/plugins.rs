@@ -694,7 +694,10 @@ fn kernel_http_status(message: &str) -> Option<u16> {
     digits.parse().ok()
 }
 
-/// RPC 错误→HTTP 状态：内核 403/404/409 原样透传，其余（含内部错误）仍归 400。
+/// RPC 错误→HTTP 状态：内核 403/404/409/507 原样透传，其余（含内部错误）仍归 400。
+///
+/// 507 收进来是因为容量类失败（磁盘满 / 文件系统配额用尽）在插件 UI 里要和普通
+/// 业务错误区分开；内核面已经是 507，代理层再压成 400 会让两面对不上。
 ///
 /// 文案保持内核 detail 原样，不在代理层追加授权提示——是否补提示由插件按
 /// 具体错误语义决定，避免「内置任务保护」被误报成权限不足。
@@ -703,6 +706,7 @@ fn rpc_error(message: String) -> AppError {
         Some(403) => AppError::Forbidden(message),
         Some(404) => AppError::NotFound(message),
         Some(409) => AppError::Conflict(message),
+        Some(507) => AppError::NoSpace(message),
         _ => AppError::BadRequest(message),
     }
 }
@@ -893,6 +897,12 @@ mod tests {
         match rpc_error(conflict.to_string()) {
             AppError::Conflict(m) => assert_eq!(m, conflict),
             other => panic!("内核 409 应映射 HTTP 409，实际 {other:?}"),
+        }
+
+        let no_space = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 507: 文件系统配额已用尽";
+        match rpc_error(no_space.to_string()) {
+            AppError::NoSpace(m) => assert_eq!(m, no_space, "507 文案必须原样保留"),
+            other => panic!("内核 507 应映射 HTTP 507，实际 {other:?}"),
         }
 
         // 其余状态与普通插件业务错误仍归 400，并保留原文。
