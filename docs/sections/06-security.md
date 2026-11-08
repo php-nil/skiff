@@ -25,7 +25,8 @@ argon2id(m=64MiB,t=3,p=4)；会话与 API Token 均为 32 字节随机、服务�
 其余操作一律 403 + 审计。按里程碑放开：
 
 - **基础档（M2 起）**：`GET /containers/json`、`GET /containers/{id}/json`、`GET /containers/{id}/logs`、`GET /containers/{id}/stats`；`GET /images/json`、`GET /networks`、`GET /volumes`、`GET /info`、`GET /version`；`POST /containers/{id}/start`、`POST /containers/{id}/stop`、`POST /containers/{id}/restart`、`POST /containers/{id}/kill`；`POST /containers/{id}/exec` + `POST /exec/{id}/start`（hijack 流，容器终端必需）+ `GET /exec/{id}/json`。
-- **生命周期档（M3，Compose 所需）**：`POST /containers/create`、`POST /images/create`（仅 `fromImage` 拉取）、`POST /networks/create`、`POST /volumes/create`；`DELETE /containers/{id}`、`DELETE /images/{id}`、`DELETE /networks/{id}`、`DELETE /volumes/{id}`。
+- **生命周期档（M3，Compose 所需）**：`POST /containers/create`、`POST /containers/{id}/update`（仅资源限制）、`POST /images/create`（仅 `fromImage` 拉取）、`POST /networks/create`、`POST /volumes/create`；`DELETE /containers/{id}`、`DELETE /images/{id}`、`DELETE /networks/{id}`、`DELETE /volumes/{id}`。
+- 容器创建与资源限制同属 `containers.create` / `containers.update`，在 `Tier::Basic`（1Panel Docker 受限形态）下整体关闭，只有宿主机直装的生命周期档可用。`containers.update` 只接受资源限制字段（CPU 份额/周期/配额、内存、内存+交换、`pids`），不开放镜像/命令/挂载等结构变更——那些必须重建。
 
 ### 6.4.2 第二层：资源对象授权
 
@@ -43,13 +44,22 @@ argon2id(m=64MiB,t=3,p=4)；会话与 API Token 均为 32 字节随机、服务�
 - **native 形态**：绑定挂载仅允许 admin 配置的宿主授权根；插件不能借一次调用自行扩根，超出范围只能由 admin 在授权界面新增。**受限 Docker 形态**：宿主绑定挂载一律拒绝，仅允许受控 named volume（§5.5）。
 - MVP 新建 named volume 只允许默认 `local` driver 且 `driver_opts` 为空；引用既有卷前检查 driver/options，`o=bind`、`type=none`、`device=<host-path>` 等宿主绑定语义一律按绑定挂载处理，在受限形态拒绝，在 native 形态重新走路径授权。
 - `networks/create` MVP 只允许默认 `bridge` 网络；拒绝 `host`/`none`/`macvlan`/`ipvlan`/`overlay`、自定义 driver、自定义 IPAM 与未列 options，外部网络引用须走对象 grant。
+- 资源限制与创建共用一份边界（`Policy::validate_limits`）：`cpu_shares` 0–262144；`cpu_period` 0 或 1000–1,000,000 微秒；`cpu_quota` 0 / -1（不限）/ ≥1000；`memory_limit_mb` 有值时 ≥6MB；`memory_swap_mb` ≥-1 且正数时不得小于内存上限；`pids_limit` ≥-1。约定 `0` = 清除该上限、`-1` = 显式不限，避免「空字段」与「重置」二义。
 - 所有宿主路径一律经 §5.5 校验后才下传；对象授权与参数校验均在调用 bollard 前完成并记审计。
 
 > **UI 与文档必须写明**：装了本面板 = 授予其宿主 root 等价能力。这不是缺陷，是这类产品的定义；上述策略用于约束面板与插件的可见操作，不改变 socket 本身的权限本质。
 
 ## 6.5 Compose MVP 子集
 
-支持顶层 `services` / `volumes` / `networks`，可选 `version`（仅接受并忽略，保证常见 compose 文件可导入）；服务字段限 `image`、`command`、`entrypoint`、`environment`、`ports`、`restart`、`depends_on`、`healthcheck`、`volumes`、`networks`、`labels`；不支持 `build`、`extends`、`profiles`、`env_file`、`secrets`、`configs` 和未列字段，遇到即明确报错而非忽略。Compose 不调用 Engine `/build`，镜像只走 `fromImage` 拉取。项目名规范化后写入 `io.skiff.project`，up/down/restart 只作用于同项目对象；部分失败必须报告每个对象状态，不把“部分成功”判成整体成功。
+支持顶层 `services` / `volumes` / `networks`，可选 `version`（仅接受并忽略，保证常见 compose 文件可导入）；服务字段限 `image`、`command`、`entrypoint`、`environment`、`ports`、`restart`、`depends_on`、`healthcheck`、`volumes`、`networks`、`labels`；不支持 `build`、`extends`、`profiles`、`env_file`、`secrets`、`configs` 和未列字段，遇到即明确报错而非忽略。Compose 不调用 Engine `/build`，镜像只走 `fromImage` 拉取。
+
+**运行语义（已实现）**：解析在 `skiff-compose`（纯 `serde_yaml`、零引擎依赖），执行在 `skiff-docker::compose_run`，两者都只经 `Docker::execute` 的 `compose.up` / `compose.down` 分发。
+
+- **单文件**：每次只接受一份 compose 内容（粘贴或上传 `.yml/.yaml` 读入文本框），不支持 `-f` 多文件叠加；源文件不落盘，项目状态每次从容器标签重建。
+- **标签与归属**：执行层在创建时为容器注入 `io.skiff.project` / `io.skiff.owner=skiff` 两个保留标签，以及 Docker 官方的 `com.docker.compose.project` / `com.docker.compose.service`；容器列表的「compose · 项目」列优先读内核标签，回落官方标签，因此外部 `docker compose` 项目也能归组展示，但 `down` 只处理 `io.skiff.project` 命中的容器。
+- **命名空间**：项目名规范化后，容器 `{project}-{service}`、卷 `{project}_{name}`、网络 `{project}_{name}`（缺省网络 `{project}_default`）；`down` 只删除此前缀下的网络，卷必须显式勾选 `remove_volumes` 才删除，未勾选时在报告里列为 `kept_volumes`。
+- **安全边界**：`sites` / `skiff` 项目名保留拒绝；`io.skiff.protected=true` 的容器不参与 `down`；`up` 按 `depends_on` 拓扑序创建，依赖失败的服务记 `skipped`、镜像拉取失败记 `failed`；部分失败必须报告每个对象状态，不把“部分成功”判成整体成功。`down` 与「删除卷」在 UI 上必须二次确认并写明后果（容器删除、数据卷不可恢复）。
+- **未实测项**：`pids_limit` 的实际生效范围与 Engine 版本差异属「待实测」，文档与页面按设计目标标注，不当已验证事实引用。
 
 ## 6.6 插件安全与 fs / net 能力
 

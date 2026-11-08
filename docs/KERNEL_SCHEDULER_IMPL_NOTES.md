@@ -180,8 +180,9 @@ pub trait TaskStore {
 6. **Web/UI**：任务列表/详情/历史/手动触发/启停；viewer 只读、Admin + CSRF 写；最后移除 manifest `cron` 解析与 `run_cron`。
 7. **插件迁移**：`cron` 降为 UI、`monitor`/`guard` 注册任务；此步必须在上面的内核链路验收通过后做。
 
-> 执行结果（2026-11-06）：1–6 已完成；第 7 步只完成 `cron`（纯管理 UI），
-> `monitor` / `guard` 仍未迁移，`manifest.cron` 解析保留过渡兼容（见 §8.4）。
+> 执行结果（2026-11-06）：1–6 已完成；第 7 步只完成 `cron`（纯管理 UI）。
+> 执行结果（2026-11-08）：第 7 步完成——`monitor` / `guard` 迁移到任务模型，
+> `run_cron` 与 manifest `cron` 执行路径已删除（见 §8.6）。
 
 ## 6. 已知风险
 
@@ -241,7 +242,9 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
   `tokio::spawn(drive_run / drive_sample)` 执行。超时由 `timeout` 结算，晚到 `finish`
   按 `run_id` 拒绝；`retain_across_ticks=false` 的清空边界由 crate 的快照 tail 保证。
 - 启动：`Scheduler::new` 装载（声明缓冲的任务写 `buffer.lost_on_restart`）→
-  `seed_builtins`（`builtin:db-vacuum`，`0 4 * * 0`）。
+  `seed_builtins`（`builtin:db-vacuum`，`0 4 * * 0`）→ `seed_manifest_tasks`
+  （按已安装插件的 manifest `[[task]]` 补种，已存在不覆盖；回收插件已卸载或声明已消失的
+  `created_by=system:manifest` 任务）。
 - 内置执行体：`site-backup`（`tar` 打包站点根到 `data_dir/backups/sites/<domain>`）、
   `db-vacuum`（`Db::backup_to` 到 `data_dir/backups/db`），同步实现经 `spawn_blocking`。
 - 插件门：未安装 → `NotInstalled`、禁用 → `Disabled`、`api != "1.2"` → `ApiMismatch`、
@@ -272,8 +275,8 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
   `jobs.list/create/update/toggle/remove/run → task.*`、`targets → interop_catalog`；
   manifest `requires` 增加 `scheduler`，`[[permissions]] capability="scheduler"`
   覆盖 `read/manage/run/admin`；菜单元标签改「任务编辑器」，避免与内核「工具 → 计划任务」重名。
-- **`manifest.cron` 过渡**：`run_cron` 仍读取 `guard` / `monitor` 的旧声明并记一次
-  `plugin.cron_deprecated` 审计，待这两个插件迁移后删除。
+- **`manifest.cron` 已停用**：`run_cron` / `minute_index` / `plugin.cron_deprecated` 已从
+  `crates/core/src/server.rs` 删除；`Manifest::cron` 仅保留解析兼容，内核不再读取。
 
 ### 8.5 门禁实测
 
@@ -288,3 +291,24 @@ cargo test   --manifest-path plugins/Cargo.toml --locked            # 21 passed;
 
 > 注：Windows 开发机上并行 rustc 会偶发 `STATUS_STACK_BUFFER_OVERRUN`，
 > 以 `CARGO_INCREMENTAL=0` + `--jobs 1` 复跑即稳定通过，与代码无关。
+
+### 8.6 monitor / guard 迁移（2026-11-08）
+
+- **声明**：`crates/pkgfmt/src/manifest.rs` 新增 `[[task]]`（`ManifestTask`），校验 key 唯一、
+  `expr`/`interval_secs` 二选一、`sample_method` 与采样间隔配套、超时/容量/批次上限与保留入口；
+  旧 `cron` 字段只解析不再读取。
+- **种入**：`crates/app/src/tasks.rs::seed_manifest_tasks` 在 `TaskService::open` 启动装配时执行，
+  并在 Web 安装/升级成功后由 `TaskService::sync_manifest_tasks` 即时补种；卸载走
+  `TaskService::drop_plugin_tasks` 回收 `source=plugin:<id>` 全部任务。已存在任务不覆盖，
+  避免重启回滚管理员改过的调度/启停。CLI 安装在运行中的内核里不触发同步，重启后由启动
+  装配补齐。
+- **monitor**：任务 `plugin:com.skiff.monitor:sample`（kind `plugin:com.skiff.monitor:execute`，
+  source `plugin:com.skiff.monitor`，`sample_interval=60s`、`schedule=*/5`、缓冲 4 MiB / 批 512 KiB）。
+  插件只留 `sample`（返回点、更新 `prev.json` 基线）、`execute`（批次落 `samples.json`、回 `persist`）
+  与只读 `snapshot/history/config`；`tick` 已删除。
+- **guard**：任务 `plugin:com.skiff.guard:reconcile`（每分钟），执行体返回无 `verdict` 的
+  `ExecOutput`（等价 `keep`），摘要进 `detail`；`tick` 与 UI「立即巡检」已删除，UI 只读。
+- **单路径证据**：`run_cron` 已删除；两插件启动日志打印 `[plugin:<id>:<key>] 巡检/采样由内核调度器驱动`；
+  monitor `snapshot`、guard `status` 返回 `scheduler.driver = "kernel"` 与 `task_id`。
+- **未做**：`task_pinned`（60s 采样小于 300s 回收阈值，当前不影响常驻）；guard 的 docker events
+  实时主链路（P2，无 events 能力面）。

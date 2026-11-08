@@ -131,7 +131,7 @@
 | `ts` | INTEGER | 秒级时间戳 |
 | `actor_type` | TEXT | `admin` / `plugin` / `system` |
 | `actor_id` | TEXT | 用户名或插件 id |
-| `action` | TEXT | `fs.read/write/list/mkdir/remove/rename/copy/stat/trash.restore/trash.purge` |
+| `action` | TEXT | `fs.read/write/list/mkdir/remove/rename/copy/stat/recycle.list/recycle.restore/recycle.purge/recycle.clear/quota.scan/quota.set/quota.cancel` |
 | `src_path` | TEXT | 源路径（规范化） |
 | `dst_path` | TEXT | 目标路径（改名/复制/恢复） |
 | `bytes` | INTEGER | 读/写/复制字节数；目录操作为 0 |
@@ -148,7 +148,7 @@
 
 ### 4.2 聚合与采样
 
-- **逐条记录**：`remove / rename / copy / trash.restore / trash.purge / protected=true` 的写入、以及所有 `deny/fail`。
+- **逐条记录**：`remove / rename / copy / fs.recycle.restore / fs.recycle.purge / fs.recycle.clear / fs.quota.set / fs.quota.cancel / protected=true` 的写入、以及所有 `deny/fail`。
 - **按分钟聚合**：同一 `(actor_type, actor_id, action, src_path)` 的 `read/list/stat` 与普通 `write`，每分钟一行，字段为 `count/sum(bytes)/first_ts/last_ts`，避免日志刷屏。
 - 聚合行 `action` 后缀 `#agg`，详情页可展开原聚合窗口；破坏性操作永不聚合。
 - 采样上限：单主体每分钟最多 1000 个聚合桶；超出丢弃并记 `audit.sampled_out`。
@@ -173,11 +173,13 @@
   "trash_path": "data/trash/<yyyy>/<mm>/<ulid>",
   "kind": "file|dir|symlink",
   "size": 1234,
+  "files": 1,
   "mode": "0644",
   "owner": "uid:gid",
   "sha256": "…",
   "site": "example.com",
   "protected": false,
+  "quota_root": "/www/sites/example.com",
   "deleted_at": 1760000000,
   "expires_at": 1762592000,
   "nlink": 1,
@@ -185,6 +187,10 @@
   "purged_at": null
 }
 ```
+
+- `size` 是条目总字节数（目录为子树内普通文件大小之和），`files` 是普通文件数；恢复时按这两个值回补配额计数。
+- `quota_root` 记录删除时命中的配额根（无规则时为空串），便于审计与迁移核对。
+- 落盘位置：SQLite `trash_entries`（schema v14）。它与 `skiff-fs` 的 `TrashStore` 通过 `skiff-app` 的 `DbTrashStore` 适配，`skiff-fs` 本身不依赖 `skiff-store`。
 
 - `remove` 默认把对象**移动到** `trash_path`（同文件系统 rename；跨盘时复制+校验+删除），并写 `trash_entries`。
 - 原路径元数据（父目录、文件名、模式、属主）完整保留，用于恢复。
@@ -194,7 +200,7 @@
 
 | 项 | 默认 | 说明 |
 | --- | --- | --- |
-| 保留期 | 30 天 | 到期由 `trash-prune` 后台清理 |
+| 保留期 | 30 天 | 到期由内置任务 `builtin:trash-prune`（每日 04:30）清理；配置键为顶层 `trash_retention_days`，环境变量 `SKIFF_TRASH_RETENTION_DAYS`，取值夹在 1–365 |
 | 单授权根配额 | 1 GiB | 超过后新删除仍进回收站但按最旧淘汰（先清最旧，再放入） |
 | 全局配额 | 10 GiB | 超过后拒绝新删除并返回 `fs.trash_full`（提示彻底删除） |
 | 单条目上限 | 2 GiB | 超过走「异步回收站」任务，进度可查；P1 直接拒绝并提示 `permanent` |
@@ -202,11 +208,13 @@
 
 - 清理与占用统计按 `actor_id` 与 `site` 维度展示；插件卸载（删除数据）时其回收站条目一并清理。
 - 回收站目录 `data/trash/` 权限 0711，不通过 Web 暴露；不参与站点备份。
+- 清空回收站（`fs.recycle.clear`）仅管理员可用，逐条彻底删除；失败条目保留并在响应里回报原因。
 
 ### 5.3 恢复与彻底删除
 
-- `trash.restore(id)`：检查原路径父目录存在且可写、目标不存在；按原模式/属主恢复（属主变更需 Admin）；写审计 `trash.restore`。
-- `trash.purge(id)`：彻底删除，写审计 `trash.purge`；仅 Admin 或条目所属主体。
+- `fs.recycle.restore(id)`：检查原路径父目录存在且可写、目标不存在；父目录缺失返回 `fs.not_found` 并带「原路径的父目录已不存在」的可读说明，同名冲突返回 `fs.conflict` 且不覆盖（显式 `overwrite` 才替换）；写审计 `fs.recycle.restore`。
+- `fs.recycle.purge(id)`：彻底删除，写审计 `fs.recycle.purge`；仅 Admin 或条目所属主体。
+- **受保护路径双路径硬拒**：删除（`remove`）与恢复（`restore`）都在 `skiff-app` 的 `AdminFs::guard` 与 `skiff-fs` 授权层各拦一次；原路径落回数据根、`plugins/`、`official/`、`skiff.db` 一律拒绝，旧条目也不能绕过。
 - 站点删除：见 §9.3（P2 整站进回收站）。
 - 与备份的关系：回收站是**短期误删保护**，不替代站点备份；备份任务不读取回收站，清理也不触发备份。
 
@@ -240,9 +248,16 @@
 | 回收站（全局） | 10 GiB | 可配 | `fs.trash_full` |
 | 目录条目 | 1,000,000 | — | `fs.too_many_entries` |
 
-- 配额按**逻辑字节**统计（写入量减去删除量），包含回收站占用；可由管理员在授权根详情页查看与调整。
-- 写入前预检：`当前占用 + 本次写入 > 配额` 直接拒绝，不先写后删。
-- 配额统计异步刷新（≤60s 误差），硬限制以预检 + 写入后复核双保险。
+### 7.1.1 管理员目录树配额（第二步）
+
+- **规则存储**：SQLite `fs_quotas`（schema v14），字段 `root_path / max_bytes / max_files / used_bytes / used_files / updated_at / scanned_at`。
+- **命中规则**：对整个路径匹配已设置的根，**最长祖先根优先**；同一棵树被多条规则覆盖时只按最近的一条判定。两个上限可单独或同时设置，至少一项；全部留空即视为未设置。
+- **统计口径**：`used_bytes` = 子树内普通文件大小之和；`used_files` = 普通文件个数；符号链接不跟随，目录本身不计入。
+- **刷新口径**：默认是**缓存增量计数**——`skiff-fs` 在每次成功的写/删/改名/复制/恢复后按操作的 `delta_bytes/delta_files` 修正缓存；设置或修改配额、以及管理员点「重新统计」时做**全量重扫**（`scanned_at` 记录时间），成本 O(条目数)，目录越大越慢，页面会二次确认并提示。外部改动（SSH/脚本）不会自动更新计数，需重扫校准。
+- **执行点（唯一接线点）**：`skiff-fs` 的 `write`（含 append/定位写）、`copy`、`rename`（跨根时按目标根预检）、`restore`（回补回收站条目用量）在落盘前调用 `enforce_quota`；Web 层不重复判定。超限返回 `fs.quota_exceeded`，消息含配额根、写入后用量与上限。
+- **回收站与配额的关系**：对象移入回收站后**从目录树用量中扣除**（回收站自身由 §5.2 的全局配额单独约束），避免同一份数据被两套上限重复计算；恢复时再回补。
+- **取消配额**：清空 `max_bytes/max_files`，保留用量计数；页面不再展示该条目的上限（列表只显示已设置上限的规则）。
+- **受保护路径**：数据根、`plugins/`、`official/`、`skiff.db` 不允许设置为配额根；列表侧也做同样的过滤。
 
 ### 7.2 现有 256 KiB 读限制的调整
 
@@ -300,15 +315,15 @@
 
 | 页面 | 路由 | 权限 | 内容 |
 | --- | --- | --- | --- |
-| 文件管理（第一步） | `/{p}/files` | Admin | 目录浏览、文本打开/编辑/保存、新建目录/文件、重命名、删除；错误按稳定 `code` 内联提示；数据根硬拒 |
+| 文件管理（第一步） | `/{p}/files` | Admin | 目录浏览、文本打开/编辑/保存、新建目录/文件、重命名、删除（移入回收站）；错误按稳定 `code` 内联提示；数据根硬拒 |
 | 文件审计流 | `/{p}/fs/audit` | Admin（或 `audit.read`） | 时间/主体/动作/路径/站点/结果/字节/哈希；分页与过滤 |
-| 回收站 | `/{p}/fs/trash` | Admin | 条目、原路径、大小、站点、删除时间、到期时间、恢复/彻底删除 |
-| 回收站详情 | `/{p}/fs/trash/{id}` | Admin | 元数据、来源、关联站点、恢复预览（目标是否存在） |
-| 授权根容量 | `/{p}/fs/grants` | Admin | 每个 `path:` 根占用/配额/回收站占用 |
+| 回收站（第二步） | `/{p}/files/trash` | Admin | 条目、原路径、大小/文件数、操作者、删除/到期时间；恢复（冲突二次确认覆盖）、彻底删除、清空（二次确认并写清后果） |
+| 配额管理（第二步） | `/{p}/files/quotas` | Admin | 已设置配额的目录树、已用/上限、最近统计时间；设置/修改/取消、重新统计（成本提示） |
+| 授权根容量 | `/{p}/fs/grants` | Admin（规划中） | 每个 `path:` 根占用/配额/回收站占用 |
 
-- 深链：`/{p}/m/core/files`、`/{p}/m/core/fs/audit`、`/{p}/m/core/fs/trash`；站点详情页的「文件」入口可深链到按 `site=<domain>` 过滤的审计流。
-- 恢复/彻底删除：POST + CSRF + 二次确认；结果内联提示（成功/冲突/父目录缺失）。
-- 插件 UI（`files`）**已撤销菜单入口**，旧深链 `/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`；插件包可保留安装态与管理页，但不再提供第二套浏览/编辑界面。第一步删除为永久删除，回收站/配额页面放第二步。
+- 深链：`/{p}/m/core/files`、`/{p}/m/core/fs/audit`、`/{p}/m/core/files/trash`、`/{p}/m/core/files/quotas`；站点详情页的「文件」入口可深链到按 `site=<domain>` 过滤的审计流。
+- 恢复/彻底删除/清空：POST + CSRF + 二次确认；结果内联提示（成功/冲突/父目录缺失/失败条目）。
+- 插件 UI（`files`）**已撤销菜单入口**，旧深链 `/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`；插件包可保留安装态与管理页，但不再提供第二套浏览/编辑界面。删除已切换为回收站语义，配额页面与回收站页面同属第二步。
 
 ## 10. API 形态
 
@@ -340,19 +355,26 @@
 | `/{p}/files/api/write` | POST | 原子替换写（CSRF + Admin） |
 | `/{p}/files/api/mkdir` | POST | 新建目录（CSRF + Admin） |
 | `/{p}/files/api/rename` | POST | 重命名/移动（CSRF + Admin） |
-| `/{p}/files/api/remove` | POST | 删除；第一步永久删除，第二步接回收站（CSRF + Admin） |
+| `/{p}/files/api/remove` | POST | 删除（移入回收站，返回 `trash_id`；CSRF + Admin） |
+| `/{p}/files/trash` | GET | 回收站页面 |
+| `/{p}/files/api/trash` | GET | 回收站列表 |
+| `/{p}/files/api/trash/restore` | POST | 恢复（`id`、`overwrite`；CSRF/Admin） |
+| `/{p}/files/api/trash/purge` | POST | 彻底删除（`id`；CSRF/Admin） |
+| `/{p}/files/api/trash/clear` | POST | 清空回收站（CSRF/Admin；返回删除数/字节/失败条目） |
+| `/{p}/files/quotas` | GET | 配额管理页面 |
+| `/{p}/files/api/quotas` | GET | 已设置上限的配额列表 |
+| `/{p}/files/api/quotas/set` | POST | 设置/修改（`root/max_bytes/max_files`；CSRF/Admin） |
+| `/{p}/files/api/quotas/cancel` | POST | 取消上限（`root`；CSRF/Admin） |
+| `/{p}/files/api/quotas/scan` | POST | 全量重扫用量（`root`；CSRF/Admin，O(条目数)） |
 | `/{p}/fs/audit` | GET | 审计流 |
-| `/{p}/fs/trash` | GET | 回收站列表 |
-| `/{p}/fs/trash/{id}/restore` | POST | 恢复（CSRF/Admin） |
-| `/{p}/fs/trash/{id}/purge` | POST | 彻底删除（CSRF/Admin） |
-| `/{p}/fs/grants` | GET | 授权根容量 |
+| `/{p}/fs/grants` | GET | 授权根容量（规划中） |
 
 - 管理面写操作同样走内核操作面（不是另一套 `std::fs` 实现），保证锁、原子性、审计一致。
 
 ## 11. 迁移与兼容
 
-- 测试期直接新建表：`fs_audit`、`trash_entries`、`fs_quotas`（或并入 grants 表），不做旧数据迁移。
-- 现有 `audit` 表保留用于安全事件汇总；fs 明细进 `fs_audit`，关键操作双写（`fs_audit` + `audit`），避免安全审计页看不到文件删除。
+- 测试期直接新建表，不做旧数据搬迁：`trash_entries` 与 `fs_quotas` 随 schema v14（`CURRENT_SCHEMA_VERSION` 从 13 单调递增到 14）一次性创建；旧库启动时自动升到 v14，`store` 单测覆盖 v13→v14。
+- 现有 `audit` 表沿用：回收站/配额操作以 `fs.recycle.*` / `fs.quota.*` 动作写入同一张表，不新建独立审计表，不记录文件内容或敏感路径片段。
 - 现有 `fsops` 的 256 KiB、授权根解析、禁止跨 scope 改名、禁止删根全部保留，作为新契约的实现基座。
 - `remove` 默认行为从「直接删」改为「进回收站」是**行为变更**：测试期允许直接切换；插件无需改代码，但需在文档/UI 说明删除可恢复。
 - `copy`/`stat` 为新增 verb，旧插件不声明即不可用，无兼容问题。
@@ -366,8 +388,8 @@
 | 并发 | 同路径两写；跨路径并行；rename 双向交叉 | 写串行、无半截；无死锁；`fs.busy` 兜底 |
 | 原子性 | 覆盖写中断（注入失败）；append；临时文件清理 | 读方只见旧/新；无 `.tmp` 残留 |
 | 审计 | 读/写/删/改名/复制/恢复/彻底删除；聚合窗口；request id | 字段完整；破坏性逐条；内容不入库 |
-| 回收站 | 保留期清理；配额淘汰；恢复冲突；硬链接/目录/大文件 | 到期清理；`fs.conflict`；nlink 记录；>2 GiB 拒绝 |
-| 配额 | 单次 >256 KiB；单文件 >4 GiB；授权根超限；回收站满 | 对应错误码，预检生效 |
+| 回收站 | 保留期清理；配额淘汰；恢复冲突；父目录缺失；硬链接/目录/大文件；清空 | 到期清理；`fs.conflict` 需显式覆盖；父目录缺失可读提示；nlink 记录；>2 GiB 拒绝；清空回报失败条目 |
+| 配额 | 单次 >256 KiB；单文件 >4 GiB；授权根超限；目录树字节/文件数超限；最长根优先；取消后不再拦截 | 对应错误码；预检在落盘前生效；消息含配额根与用量/上限；统计与重扫一致 |
 | 受保护路径 | 插件写 `ssl/conf/log` 未开开关；管理员写 | 插件 `fs.protected`；管理员成功且 `protected=true` |
 | 权限 | viewer 访问审计/回收站；插件跨根；未声明 verb | 403 + 审计 |
 | 站点 | 路径推导 site；站点删除审计；P2 整站回收站 | site 字段正确；删除可追溯 |

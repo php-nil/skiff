@@ -31,9 +31,9 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | C. 插件体系 | 10 | 1 项本机可验（PLUGIN-02），9 项必须上机 | `cargo test -p skiff-plugin`；`.wbpkg` 安装与 iframe |
 | D. 网站与运行环境 | 13 | 1 项本机可验（SITE-13 模板/路由断言），12 项必须上机（crate 单测兜底） | `cargo test -p skiff-web site_detail`；测试机建站与容器 |
 | E. Web 服务 | 8 | 0 项本机可验，8 项必须上机（crate 单测兜底） | `cargo test -p skiff-app nginx`；测试机 nginx -t 与日志 |
-| F. 文件系统原语 | 8 | 4 项本机可验（FS-02～05），4 项必须上机 | `cargo test -p skiff-fs -p skiff-plugin`；插件能力面 |
+| F. 文件系统原语 | 12 | 5 项本机可验（FS-02～05、FS-07 集成），7 项必须上机（FS-10～12 为第二步新增） | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；插件能力面；管理员文件页 |
 | G. 调度器 | 9 | 3 项本机可验（TASK-05～07），6 项需上机（TASK-09 另有 `skiff-cron` 单测兜底） | `cargo test -p skiff-sched -p skiff-app -p skiff-cron`；任务页与 cron 插件页 |
-| H. Docker | 11 | 2 项本机可验（DOCKER-09/10，本轮本机 OOM 未跑、CI 兜底），9 项必须上机 | `cargo test -p skiff-docker -p skiff-policy`；Docker 页面/API |
+| H. Docker | 14 | 5 项本机可验（DOCKER-09/10/12/13/14），9 项必须上机 | `cargo test -p skiff-docker -p skiff-policy -p skiff-compose -p skiff-web`；Docker 页面/API |
 | I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；DEPLOY-09/10/11 因环境/复现条件阻塞 | `deploy/*.sh`、systemd、安装包 |
 | J. 站点压测与资源开销 | 8 | 0 项本机可验，8 项必须上机（测试机两站并发 + `/proc` 采样） | `tools/perf/*`；nginx / PHP-FPM / 反代三路径；`skiff` 进程与插件子进程 |
 | K. FTP 与宿主机文件服务 | 9 | 2 项本机可验（FTP-02 账号/密码/端口校验单测、FTP-06 配置校验单测），7 项必须上机（FTP-06 另有持久化断言需上机） | `cargo test -p skiff --bin skiff kernel::ftp`；测试机 pure-ftpd + PHP 容器 |
@@ -201,12 +201,15 @@ curl -ks -o /dev/null -w 'modules=%{http_code}\n' -b "$J" "$B/$P/sites/web?tab=m
 | FS-01 | 插件只能读授权根内文件 | `[上机]` testkit 已装且授 `fs:read` + `path:` 根 | 调 testkit `fs_read` 读授权根内文件；读根外文件 | 根内 200 且返回内容；根外 400 并审计 `fs.read deny` | □通过 / □失败 | `crates/plugin/src/capability.rs`、`crates/model/src/path.rs` |
 | FS-02 | 路径越界与符号链接逃逸 | `[本机+上机]` 单测 + 临时目录 | `cargo test -p skiff-fs --locked`；上机用 `../`、绝对路径、指向根外的软链测试 | 全部拒绝；规范化后仍在根内的路径才放行 | □通过 / □失败 | `crates/fs`、`crates/model/src/path.rs` |
 | FS-03 | 原子写与并发路径锁 | `[本机]` 单测 | `cargo test -p skiff-fs --locked` | 写入走临时文件+rename；并发写同一路径不出现半文件；失败不留 `.tmp` | □通过 / □失败 | `crates/fs/src/atomic.rs`、`crates/fs/src/lock.rs` |
-| FS-04 | 回收站移动/恢复/清理 | `[本机]` 单测；`[已核对]` 无上机入口（能力面仅 read/write/list/mkdir/remove/rename，无 trash 动词） | `cargo test -p skiff-fs --locked` | 删除进回收站、可恢复、过期清理；恢复后原路径内容一致 | □通过 / □失败 | `crates/fs/src/trash.rs` |
-| FS-05 | 全局与插件配额 | `[本机]` 单测；`[已核对]` 无上机入口（配额在 fs 内部生效，能力面无 quota 动词、无配置项） | `cargo test -p skiff-fs --locked` | 超全局/插件配额被拒；回收站占用计入配额；配额释放后可再写 | □通过 / □失败 | `crates/fs/src/quota.rs` |
+| FS-04 | 回收站移动/恢复/清理 | `[本机]` 单测；`[上机]` 管理员会话可打开 `/$P/files/trash` | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；上机删除文件后进回收站，恢复、彻底删除、过期清理 | 删除进回收站、可恢复、过期清理；恢复后原路径内容一致；父目录缺失/同名冲突有可读提示 | □通过 / □失败 | `crates/fs/src/trash.rs`、`crates/app/src/admin_fs.rs`、`crates/web/handlers/files.rs` |
+| FS-05 | 全局与插件配额 | `[本机]` 单测；`[上机]` 管理员会话可打开 `/$P/files/quotas` | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；设置目录树字节/文件数上限后写入 | 超全局/插件配额被拒；目录树超限返回 `fs.quota_exceeded` 且消息含配额根与用量；回收站对象不计入目录树用量（恢复回补） | □通过 / □失败 | `crates/fs/src/quota.rs`、`crates/fs/src/ops/mod.rs`、`crates/app/src/admin_fs.rs` |
 | FS-06 | 审计分级与目视筛选 | `[上机]` 已产生 fs 操作 | 打开 `/$P/audit`（页面只展示最近 200 条，无服务端筛选参数），在列表中找出 `fs.*` 与 result=deny/fail 行 | 每条含 actor、channel、action、target、result；能按文本找到 `fs.*` 与 deny/fail 条目 | □通过 / □失败 | `crates/plugin/src/capability.rs`、`handlers/settings.rs`、`templates/audit.html` |
 | FS-07 | 内核文件管理页基本操作（第一步） | `[上机]` 管理员会话，`/$P/files` 可打开 | 浏览目录；打开文本并修改保存；新建目录/文件；重命名；删除；再打开 >256 KiB 文件 | 操作成功；大小/时间正确；>256 KiB 只读且保存禁用；删除二次确认；保存失败时编辑内容保留 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/app/src/admin_fs.rs`、`static/files.js` |
 | FS-08 | 数据根硬拒与权限位 | `[上机]` 已安装 | 用内核文件页尝试列/读/写 `/www/skiff/skiff.db`、`/www/skiff/plugins`、`/www/skiff/official`；检查数据根权限 | 即使管理员也返回 403 `fs.protected`；绕过软链仍拒绝；数据根与 plugins 为 0711；DB 文件非全局可写 | □通过 / □失败 | `crates/app/src/admin_fs.rs`、`crates/plugin/src/fsgrant.rs`、`deploy/install.sh`、`docs/DEPLOY_TEST.md` §1.1 |
 | FS-09 | 旧深链 301 与插件菜单撤销 | `[上机]` `com.skiff.files` 已装 | 访问 `/$P/plugins/com.skiff.files/main`；查看「工具」菜单与全站导航 | 返回 301 且 `Location: /$P/files`；菜单中只有内核「文件管理」入口，无插件文件管理入口 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/web/src/menu.rs`、`crates/web/src/handlers/mod.rs` |
+| FS-10 | 回收站页面主链路（第二步） | `[上机]` 管理员会话，`/$P/files/trash` 可打开 | 在文件页删除文件/目录 → 打开回收站；恢复、故意制造同名冲突后覆盖恢复、彻底删除、清空 | 删除后进回收站且原路径消失；恢复后内容一致；冲突提示可读且需二次确认覆盖；清空二次确认并说明不可恢复；列表清空 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/web/templates/fs_trash.html`、`static/fs_trash.js` |
+| FS-11 | 配额页面与执行（第二步） | `[上机]` 管理员会话，`/$P/files/quotas` 可打开 | 设置目录树字节/文件数上限 → 在文件页写入超限；修改上限；取消上限；点「重新统计」 | 超限写入返回 `fs.quota_exceeded` 且含原因；页面显示已用/上限；取消后不再拦截且列表隐藏；重扫耗时提示出现 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/web/templates/fs_quotas.html`、`static/fs_quotas.js`、`crates/app/src/admin_fs.rs` |
+| FS-12 | 回收站/配额审计与受保护路径 | `[上机]` 已产生回收站/配额操作 | 删除、恢复、彻底删除、清空、设置/取消配额后打开 `/$P/audit`；再尝试把配额根设为数据根/`plugins/` | 审计出现 `fs.recycle.*` / `fs.quota.*` 且不含文件内容；受保护根被拒（403 `fs.denied/protected`） | □通过 / □失败 | `crates/fs/src/audit.rs`、`crates/app/src/admin_fs.rs`、`handlers/settings.rs` |
 
 最小回归命令：
 
@@ -281,7 +284,9 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | 执行期回调 scheduler | ☐未上机 | 现有 testkit 无「执行期回调 scheduler」方法，无法从 RPC 构造；代码核对 `crates/core/src/kernel/capability.rs:134-141`：`is_interop_busy || tasks.is_executing` → 403 + `scheduler.deny`。缺口记台账 |
 | 超时晚到结果 | ☑通过（本机） | `timeout_enters_sixty_second_cooldown` 新增断言：`timeout` 结算后 `finish(同一 run_id)` 返回 `Protocol`，任务保持 `Failed`，终态不被覆盖；上机未单独构造晚到回执 |
 | 缓冲能力面 | ☑部分通过 | 本机回执/权限/限速全绿；测试机 testkit 未暴露 `buffer.*` 入口，无法上机复验（台账记缺口） |
-| monitor / guard 过渡期 | ☑通过（偏差已记） | 两者 manifest 仍声明 `cron`，安装/加载记 `plugin.cron_deprecated`；运行依赖内核 legacy `run_cron`，源码无自建 `sleep`/`interval`/线程计时器；guard 61 次、monitor 11 次 `plugin.cron` 审计 |
+| monitor / guard 迁移 | ☐未上机（代码完成） | manifest 改 `[[task]]`，内核启动/安装种入 `plugin:com.skiff.monitor:sample` 与 `plugin:com.skiff.guard:reconcile`；`run_cron` 已删，插件无 `tick`。上机断言：`scheduled_tasks` 两条、source 前缀正确、无 `plugin.cron_deprecated` 审计、重装不重复、卸载任务消失 |
+| monitor 采样/落盘 | ☐未上机 | 内核每 60s 调 `sample`（只更新 `prev.json`），每 5 分钟调 `execute` 落 `samples.json` 并回 `persist`；写盘失败时缓冲保留、下一轮重试；`snapshot` 返回 `scheduler.driver=kernel` |
+| guard 单路径与语义 | ☐未上机 | 每分钟 `reconcile`；异常容器重启/冷却/小时预算/未授权只报不动与迁移前一致；UI 无「立即巡检」入口；`status.scheduler.driver=kernel` |
 
 ## H. Docker
 
@@ -298,8 +303,11 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | DOCKER-07 | 网络与卷创建/删除 | `[上机]` Docker 可用 | 创建 bridge 网络、volume；挂载到临时容器；删除 | 创建 200（页面刷新，非 303）；列表出现；挂载可用；删除后列表消失；使用中的卷删除被拒 | □通过 / □失败 | `crates/web/src/handlers/resources.rs`、`crates/docker` |
 | DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[已复验 2026-11-07，f9a0b30；该资产已被同日最终版覆盖，当前资产见 TEST_ENV §6]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
 | DOCKER-09 | 危险字段无法表达 | `[本机]` 模型/策略单测 | `cargo test -p skiff-policy --locked`；构造含 `privileged`/`cap_add` 的 JSON 请求 | 反序列化拒绝或校验拒绝；容器规格只允许契约字段 | □通过 / □失败 | `crates/model/src/container.rs`、`crates/policy` |
-| DOCKER-10 | Compose 子集静态校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose` | 样例全部通过；含不支持字段的 compose 被拒；`[已核对]` 无运行时入口，仅 `xtask check` 静态校验（本轮因本机 OOM 未跑） | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
+| DOCKER-10 | Compose 子集解析校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose`；`cargo test -p skiff-compose` | 样例全部通过；含不支持字段的 compose 被拒；解析器单测覆盖拓扑序、卷/网络前缀与标签不注入 | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
 | DOCKER-11 | 网络页显示子网/网关/IPAM/内外部/容器挂载 | `[上机]` Docker 可用 | 打开 `/$P/networks`；对照 `docker network inspect <name>`；打开一个网络的容器明细；停掉 Docker 或让它返回错误再打开页面 | 列表显示每个网络的 Subnet、Gateway、IPAM 驱动、internal/attachable、容器数量；展开 `details` 能看到容器名/IPv4/IPv6/MAC；取不到的数据显示「未知」，**不显示 0 或空白**；Docker 不可用时页面给出错误而不是空列表 | □通过 / □失败 | `crates/docker/src/client.rs`（`list_networks` / `network_attachments`）、`crates/web/src/handlers/resources.rs`、`templates/networks.html` |
+| DOCKER-12 | 创建容器表单与受限形态拒绝 | `[本机]` 表单解析单测；`[上机]` 一个可丢弃镜像 | 本机：`cargo test -p skiff-web spec_from_form --locked`；上机：打开 `/$P/containers/new` 填镜像/名称/端口/环境变量/卷/网络/重启策略提交；再以 viewer 打开该页；在 1Panel Docker 受限形态（`Tier::Basic`）用 admin 打开该页 | 页面 200 且各字段齐全；提交 303 跳详情且 `docker ps` 出现该容器、端口/环境/挂载一致；viewer 403；Basic 档 admin 也 403（能力面收缩）；镜像为空/端口越界/环境变量无 `=` 一律 400 并保留表单 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`（`new_page`/`create`/`parse_ports`/`parse_env`/`parse_mounts`/`spec_from_form`）、`templates/container_new.html`、`crates/policy/src/policy.rs` |
+| DOCKER-13 | 资源限制热更新与生效值 | `[本机]` 策略/模型单测；`[上机]` 一个可丢弃容器 | 本机：`cargo test -p skiff-policy resource_limits --locked`；上机：详情页改 CPU 份额/配额/内存/内存+交换/`pids`，提交后 `docker inspect` 对照；填非法值（内存 <6MB、交换 < 内存、端口越界等）；把字段清空再提交 | 更新 303 且 `docker inspect` 的 `HostConfig` 与表单一致；详情页「当前生效值」同步刷新；非法值 400 并保留表单；清空按 0 = 清除上限；镜像/命令等结构项在页面上注明「需重建」，无输入入口；`pids` 生效范围标「待实测」 | □通过 / □失败 | `crates/web/src/handlers/containers.rs`（`update_limits`/`limits_from_form`）、`crates/docker/src/client.rs`（`update_container`）、`crates/policy/src/policy.rs`（`validate_limits`）、`templates/container_detail.html` |
+| DOCKER-14 | Compose 主链路：校验→部署→状态/日志→down | `[本机]` handler/解析单测；`[上机]` Docker 可用 | 本机：`cargo test -p skiff-compose --locked`、`cargo test -p skiff-web compose --locked`；上机：`/$P/compose` 粘贴一份两服务 compose（含 `depends_on` 与命名卷）→ 仅校验 → 部署；观察服务表与日志；打开容器列表看「compose · 项目」归属；停止/重启项目；`down` 先不勾删除卷，再勾删除卷 | 校验通过并回显计划（项目名/服务/容器名）；部署按拓扑序创建容器并启动，报告逐服务状态；服务表显示状态与最近日志；列表归属来自标签（内核 `io.skiff.project` 优先，回落 `com.docker.compose.project`）；`down` 二次确认后容器全部删除、网络前缀清理，未勾删除卷时卷保留并在报告列出，勾选后卷删除；部分失败不判整体成功；`sites`/`skiff` 项目名被拒；viewer 看不到写操作按钮 | □通过 / □失败 | `crates/compose/src/lib.rs`、`crates/docker/src/compose_run.rs`、`crates/web/src/handlers/compose.rs`、`crates/web/src/menu.rs`（`core/docker/compose`）、`templates/compose.html` |
 
 最小回归命令：
 
@@ -311,6 +319,8 @@ curl -ks -o /dev/null -w 'networks=%{http_code}\n' -b "$J" "$B/$P/networks"
 cargo test -p skiff-policy container_remove --locked
 cargo test -p skiff-docker stale_kernel --locked
 cargo test -p skiff-app container_busy_reason --locked
+cargo test -p skiff-compose --locked
+cargo test -p skiff-web docker_create_and_compose --locked
 cargo run -p xtask -- check
 ```
 
@@ -326,8 +336,8 @@ cargo run -p xtask -- check
 | DOCKER-06 | ☑通过 | `busybox:latest` 拉取 200「已拉取」，列表出现；删除后面板与 `docker images` 均消失 |
 | DOCKER-07 | ☑通过（实际 200） | 创建网络/卷返回 200 并实际落库 Docker（原写 303 为页面刷新语义）；挂载临时容器可用；使用中卷删除被拒（`in use - [id]`），清理后删除成功 |
 | DOCKER-08 | ☑通过（发现新缺口） | 合成 `io.skiff.protected=true` 容器 stop/restart 403「受保护对象 … 拒绝操作」且保持 running；remove 仍 400（DOCKER-03 缺口）。**新缺口**：运行时 `skiff-web-nginx`/`skiff-php-batch1`/`skiff-rust-rust-1.83` 未带该标签、名称也不匹配 `skiff`/`skiff_`，实测可被面板停止 |
-| DOCKER-09 | ⏸阻塞（本机 OOM） | `cargo test -p skiff-policy` 在 `skiff-model` 编译期 `memory allocation failed`；需充足内存或 CI 兜底 |
-| DOCKER-10 | ⏸阻塞（本机 OOM） | `xtask check` 同样需本地编译；且无运行时 Compose 入口（仅静态校验） |
+| DOCKER-09 | ☑通过（本机） | `cargo test -p skiff-policy` 在闸门内串行通过：危险字段反序列化拒绝、规格白名单校验均绿 |
+| DOCKER-10 | ☑通过（本机解析） | `cargo test -p skiff-compose` 通过；运行时入口已从无到有（`/$P/compose`），`xtask check` 的字段子集校验仍保留 |
 
 **Docker 复验（2026-11-07 发版轮，包 `v0.1.0` / `f9a0b30`，x86_64 sha256 `87427aa6…`，测试机 10.10.15.4；该资产已被同日最终版覆盖，当前资产见 [TEST_ENV.md](TEST_ENV.md) §6）**
 
@@ -486,11 +496,11 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 
 | 编号 | 结论 | 依据 |
 | --- | --- | --- |
-| FS-04 | 只有后端没有入口 | 内核 fs 能力面仅 read/write/list/mkdir/remove/rename；无 `fs.trash` 动词，也无 UI |
-| FS-05 | 只有后端没有入口 | 配额在 `crates/fs` 内部生效，能力面与配置/UI 均未暴露 |
+| FS-04 | 后端+管理员 UI 已接（第二步） | 回收站接 SQLite `trash_entries`，`/{p}/files/trash` 提供恢复/彻底删除/清空；能力面仍无 `fs.trash` 动词（插件不直接操作回收站） |
+| FS-05 | 后端+管理员 UI 已接（第二步） | 目录树配额接 `fs_quotas`，`/{p}/files/quotas` 提供设置/修改/取消/重扫；能力面无 quota 动词 |
 | TASK-06 | 只有后端没有入口 | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；testkit 无 `scheduler_call`，cron 只代理 `task.*` |
 | TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，本轮实测创建/删除均 200 |
-| DOCKER-10 | 只有静态校验，无运行时入口 | Web 路由无 Compose；仓库仅 `xtask check` 字段子集校验 |
+| DOCKER-10 | 运行时入口已接（单文件） | `/$P/compose` 走 `skiff-compose` 解析 + `Docker::execute` 的 `compose.up/down`；不支持 `-f` 多文件叠加，源文件不落盘；`xtask check` 字段子集校验保留 |
 | DEPLOY-09 | 因无 arm64 实机阻塞 | Release 有 aarch64 包（7,675,401 B，`sha256:a780dd7f…`）与 `.sha256`；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
 | DEPLOY-10 | 因无 1Panel 环境阻塞 | `deploy/1panel/apps/skiff/0.1.0` 已在仓库并声明 fs/net 收缩；复现条件=1Panel 主机装商店包后验 fs/net 拒装、docker/identity 可用 |
 | DEPLOY-11 | 因无可复现超时/断网条件阻塞 | 正常下载+摘要校验通过（c39fe7d2…）；代码核对 `tools/iter.sh::cmd_fetch` 单次 `curl --max-time 600`，无重试/结构化错误输出；复现条件=对下载域名注入超时或丢包 |

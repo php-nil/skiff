@@ -225,7 +225,7 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 
 ### 5.5 超时与取消
 
-- 默认 `timeout_secs=30`（沿用现有 `run_cron` 的 30s，`crates/core/src/server.rs:171`），上限 600s。
+- 默认 `timeout_secs=30`（`skiff_sched::DEFAULT_TIMEOUT_SECS`），上限 600s。
 - 超时后内核记 `timeout`、释放逻辑锁、进入冷却；插件 RPC 无法强杀，可能仍在后台完成，其返回值丢弃。
 - 取消是协作式的：手动停用/删除任务时，内核标记取消位；执行体可查询 `_task.cancelled`，但不保证即时中断。
 
@@ -321,11 +321,21 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 | --- | --- | --- |
 | `cron` | 持有 `jobs.json`、自己匹配表达式、自己调用目标插件 | 纯管理 UI：任务增删改查、历史、手动触发；全部走内核 scheduler API；不再有计时器与本地任务文件 |
 | `monitor` | manifest `cron` 每 5 分钟 `tick`，插件内环形缓冲 `samples.json` | 注册 `plugin:com.skiff.monitor:sample`：`sample_interval=60s` 进内核缓冲，`schedule=*/5` 执行批量落盘；插件只实现 `sample`/`execute` 两个方法 |
-| `guard` | 每分钟 `tick` 全量列举容器 | docker events 为主（实时）；注册 `reconcile` 每分钟对账，只处理事件缺失/漂移；可带缓冲聚合事件 |
+| `guard` | 每分钟 `tick` 全量列举容器 | 注册 `plugin:com.skiff.guard:reconcile`，每分钟对账；插件内无定时器 |
 | `files` | 无定时任务 | 保持无任务；文件操作走 fs 原语 |
 
 - `cron` UI 的「目标插件/方法」列表仍由内核 `interop` 能力面提供，不再由 cron 插件自行维护允许列表。
 - 插件方法仍受四道闸（`interop:call` + `plugin:` 授权 + consumes/provides + 自调禁令），调度器不绕过。
+- **manifest `[[task]]` 声明**（D8 已落地）：插件用 `key` / `method` / `expr` 或 `interval_secs` /
+  `sample_method` / `sample_interval_secs` / `capacity_bytes` / `max_batch_bytes` / `timeout_secs` /
+  `enabled` 描述「内核按什么节奏驱动我」；内核启动与 Web 安装/升级后按声明种入
+  `plugin:<id>:<key>`，已存在则不覆盖（保留管理员改过的调度与启停）。插件内**不得**再有
+  定时器；动态任务（站点备份等）仍由内核内置任务承担。
+- `monitor` 落盘口径：`sample` 只更新 `data/prev.json` 差值基线；`execute` 把内核批次写
+  `data/samples.json`（环形 240 点，60s 采样 ≈ 4 小时），统一走 fs 通道。写失败返回错误 →
+  内核记失败且不产生回执，缓冲保留到下一轮重试；容量 4 MiB，溢出按 `drop_oldest`。
+- `guard` 本轮只落周期对账；契约原定的「docker events 为主」尚无 events 能力面，列为 P2 差距，
+  不以插件自建事件循环替代。
 
 ## 10. API 形态
 
@@ -404,9 +414,10 @@ trait Scheduler {
 
 - 测试期，允许**直接重建**：新增 schema v8 三张表；不迁移 `jobs.json`。
 - 插件升级时删除旧的 `plugins/cron/data/jobs.json`；cron UI 首次打开显示「任务已迁移至内核，请重新创建」空态（P1 可提供一次性导入按钮，但默认不做）。
-- 现有 manifest `cron = [...]` 字段：P1 移除解析与 `run_cron`；manifest 校验对旧字段给出明确错误或忽略（推荐：直接忽略并记录一次 deprecation 审计）。
-- `monitor` 的 `samples.json`：P1 保留历史文件只读展示；新采样写内核缓冲 + 新落盘格式；不做旧数据合并。
-- `guard` 的 `state.json` events：保留；新增对账任务不依赖旧 tick。
+- 现有 manifest `cron = [...]` 字段：**已移除 `run_cron`**；字段仅保留解析兼容，内核不再读取、不再产生第二套执行路径。
+- manifest `[[task]]`：内核在启动装配与 Web 安装/升级成功后按声明种任务；插件卸载（或 manifest 升级后不再声明）时回收 `source=plugin:<id>` 的孤儿任务。种子任务以 `created_by=system:manifest` 标记，只回收这类「内核声明种入」的任务，插件自己经 RPC 建的任务不动。
+- `monitor` 的 `samples.json`：P1 保留历史文件只读展示；新采样由 `sample` 出点进内核缓冲，`execute` 批次写回同一环形文件；不做旧数据合并。
+- `guard` 的 `state.json` events：保留；`reconcile` 任务不依赖旧 tick。
 - 站点备份：仓库内**未发现现有 `site_backup` 实现**（全仓搜索无 Rust 命中），因此无需收敛逻辑；站点页新增开关即可。
 
 ## 13. 测试矩阵与失败注入
@@ -461,19 +472,20 @@ trait Scheduler {
 
 | 差距 | 现状 | 需要补什么 |
 | --- | --- | --- |
-| 无任务表 | 任务在 `plugins/cron/data/jobs.json` | schema v8 `scheduled_tasks`/`task_runs` + 仓储/迁移 |
-| 调度粒度是插件 | `run_cron` 按 manifest `cron` 调 `tick`（`crates/core/src/server.rs:141-202`） | 按任务调度；1s 循环；移除 `run_cron`/`cron` 字段依赖 |
-| 无缓冲 | monitor 自己环形数组写盘（`plugins/monitor/src/main.rs:119-144`） | 内核缓冲 + 采样 RPC + 回执协议 |
+| 无任务表 | ✅ 已落地：`scheduled_tasks`/`task_runs`（schema v12） | 保持 |
+| 调度粒度是插件 | ✅ 已落地（2026-11-08）：`run_cron` 已删，manifest `[[task]]` 由内核种入 `scheduled_tasks`，1s 循环驱动 | 保持；新增周期能力必须走任务模型，不得恢复插件计时器 |
+| 无缓冲 | ✅ 已落地：monitor 由内核 `sample` 出点进缓冲，`execute` 收批次回 `persist` | 保持；`task_pinned` 未实现，常驻采样仍依赖 `sample_interval < 回收阈值` |
 | 无重试/重入/错过语义 | 仅 30s 超时 + 一次调用 | 单飞锁、retry、missed、冷却、错误分类 |
 | 无执行历史 | 仅 `last` 一个结果（`jobs.json`） | `task_runs` + 分页查询 |
 | 审计字段不足 | `audit` 仅 7 列，无 request id/耗时 | 任务审计走 `task_runs` + audit 双写；补 request id |
 | 插件唤醒无健康等待 | `Supervisor::ensure` 拉起后直接拿 socket（`crates/plugin/src/supervisor.rs:121-189`） | ensure 内加 ≤5s ping/health；失败分类映射 |
 | 常驻控制缺失 | 回收器无条件 `reap_idle`（`crates/core/src/server.rs:120`） | `task_pinned` 标记与回收豁免 |
 | 无内置备份 | 全仓无 `site_backup` 实现；站点删除整目录删除（`crates/app/src/sites.rs:2523-2558`） | 内置备份任务、站点开关、产物目录与保留、删除级联 |
-| `cron` 插件自带计时器 | `tick` + `jobs.json`（`plugins/cron/src/main.rs`） | 降级为 UI；删除计时器/本地任务文件 |
+| `cron` 插件自带计时器 | ✅ 已落地：`cron` 纯 UI；`monitor`/`guard` 删除 `tick` 与 manifest `cron`，改内核任务 | 保持；UI 不再提供「立即巡检」等绕过调度器的直调入口 |
 
 ## 17. 变更记录
 
 | 日期 | 变更 |
 | --- | --- |
 | 2026-11-05 | 首版评审稿：任务模型、缓冲模型、执行语义、内置任务、插件分工、API、迁移与测试矩阵 |
+| 2026-11-08 | `monitor`/`guard` 迁移完成：删除 `run_cron` 与 manifest `cron` 执行路径，改为 manifest `[[task]]` 声明 + 内核种入；monitor 走 `sample`→缓冲→`execute` 批量落盘，guard 走 `reconcile` 每分钟对账；插件 UI 只读 |

@@ -3,7 +3,8 @@
 > 对应契约：[`KERNEL_FS_CONTRACT.md`](KERNEL_FS_CONTRACT.md)。
 > 原始范围：底层能力库 `crates/fs`（包名 `skiff-fs`），不接插件能力面、不改插件 / Web 路由 / SQLite 表。
 > 2026-11-07 追加：第一步管理面接线完成——`skiff-app::admin_fs::AdminFs` 把 `skiff-fs` 接成管理员侧文件服务，Web 提供 `/{p}/files` 页面与 JSON API；回收站/配额仍为内存实现，UI 留第二步。
-> 状态：独立库 + 单元/集成测试已落地；页面/API 已接线并通过集成测试，尚未部署。
+> 2026-11-08 追加：第二步落地——回收站接 SQLite `trash_entries`，配额接 `fs_quotas`（schema v14），新增 `/{p}/files/trash` 与 `/{p}/files/quotas` 页面/API；删除默认进回收站，内置任务 `builtin:trash-prune` 每日清理过期条目。详见 §9。
+> 状态：独立库 + 单元/集成测试已落地；页面/API 已接线，`skiff-fs`/`skiff-store`/`skiff-app`/`skiff-web`/`skiff` 门禁测试与 clippy 均已通过，尚未部署上机。
 
 ## 0. 一句话结论
 
@@ -223,13 +224,13 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | `remove` 默认语义变更 | 中 | 旧调用方需显式 `permanent`；发布说明必须写清 |
 | Windows 符号链接能力 | 低（部署目标是 Linux） | 测试跳过/限制；生产以 Linux 为准 |
 | 管理员全盘写 | 高但可控 | 数据根（`skiff.db`、`plugins`、`official`）已在 `AdminFs::guard` 硬拒；其余路径仍全盘可写，靠逐条审计 + `request_id` 追溯；UI 危险操作二次确认已接删除 |
-| 内存审计/回收站实现非持久 | 低（本轮定位） | 审计接 `DbAuditSink` 落 `audit` 表（`ip=web`，事件压 `detail` JSON）；回收站/配额仍为内存实现，第二步替换 |
+| 内存审计/回收站实现非持久 | 低（历史） | 审计接 `DbAuditSink` 落 `audit` 表；回收站/配额已由第二步替换为 SQLite（`trash_entries` / `fs_quotas`），内存实现仅保留给 `skiff-fs` 单测 |
 | 配置默认值未实测 | 低 | 256 KiB / 4 GiB / 10 GiB / 1 GiB / 30 天均沿用契约设计目标，不宣称已实测 |
 
 ## 7. 原始轮次不做（历史边界）
 
 - 不修改 `crates/plugin`（含 `fsops.rs`）、`crates/store`、Web 路由与模板。
-- 不建 `fs_audit` / `trash_entries` / `fs_quotas` 表。
+- 不建 `fs_audit` 表（`trash_entries` / `fs_quotas` 已由第二步在 schema v14 建立；不新建独立 fs 审计表）。
 - 不实现站点整站回收站、写前快照、流式读写、目录复制异步任务。
 - 不部署、不提交、不推送。
 
@@ -254,8 +255,40 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 - **菜单退役**：`menu::build` 与 `nav_plugins` 同时过滤 `com.skiff.files`；旧深链 `/{p}/plugins/com.skiff.files/main` 返回 **301** 到 `/{p}/files`（注意 axum `Redirect::permanent` 是 308，已手写 301）。
 - **错误提示**：API 统一 `{ok:false,error:{code,message}}`，HTTP 状态取 `FsError::http_status()`；前端按 `code` 显示且保存失败不清空 textarea。
 
-### 8.3 第二步预留
+### 8.3 第二步落地结果
 
-- 回收站：把 `AdminFs::remove` 的 `permanent` 改为 `false`，接 `SqliteTrashStore`；新增 `/{p}/fs/trash` 页面与恢复/彻底删除 API。
-- 配额：`SqliteQuotaTracker` 替换 `MemoryQuotaTracker`，`/{p}/fs/grants` 展示占用；`FsConfig` 与 `Fs` 构造已预留注入点。
-- 审计明细：第二步建 `fs_audit` 表后，`DbAuditSink` 改为双写或迁移，页面查询复用审计流。
+- 回收站：`AdminFs::remove` 改为 `permanent=false`，接 `DbTrashStore`（SQLite `trash_entries`）；新增 `/{p}/files/trash` 页面与 `files/api/trash[/restore|/purge|/clear]` API。
+- 配额：`DbQuotaTracker` 替换 `MemoryQuotaTracker`，`/{p}/files/quotas` 展示已设置上限的目录树与用量；写前预检与写后增量均由 `skiff-fs` 完成。
+- 审计仍写现有 `audit` 表，动作统一 `fs.recycle.*` / `fs.quota.*`；未建 `fs_audit` 表。
+
+## 9. 第二步实现（2026-11-08）
+
+### 9.1 适配层放在 `skiff-app`
+
+`skiff-fs` 只依赖 trait，`skiff-store` 不反向依赖 `skiff-fs`；适配实现在 `crates/app/src/admin_fs.rs`：
+
+| trait | 适配器 | 落点 |
+| --- | --- | --- |
+| `TrashStore` | `DbTrashStore` | `trash_entries`（`trash_insert/get/live/remove/mark_restored/mark_purged`） |
+| `QuotaTracker` | `DbQuotaTracker` | `fs_quotas`（`fs_quota_list/get/set/set_usage/adjust/set_limits/clear_limits`） |
+
+- `DbTrashStore::list` 按 `deleted_at ASC` 返回存活条目；`trash_list` 再按主体过滤，管理员可见全部。
+- `DbQuotaTracker::limit_for` 每次读库，按「最长祖先根」匹配；`adjust_stats` 使用 `MAX(0, used + delta)` 防止计数下溢。
+
+### 9.2 回收站链路
+
+1. `remove` → `skiff-fs` 计算 `object_stats`（不跟随符号链接）→ 按 `quota_target` 从目录树扣减 → `remove_to_trash`（跨盘退化为复制+删除）→ `DbTrashStore::insert`。
+2. `restore` → 读条目 → 父目录存在性检查（缺失返回 `fs.not_found` 可读消息）→ 目标冲突检查（不覆盖，除非 `overwrite`）→ 受保护路径再判一次 → 落回原位置 → 回补配额 → `mark_restored`。
+3. `purge` → 删物理对象 → `mark_purged`；`clear` 逐条处理并收集失败原因，返回 `ClearTrashOutcome{removed, bytes, failed}`。
+4. 自动清理：内置任务 `builtin:trash-prune` 每日 04:30 调 `AdminFs::trash_prune`，按 `expires_at` 删除过期条目。
+
+### 9.3 配额执行点
+
+- 预检在 `skiff-fs::ops` 内完成，Web/应用层不重复判定：
+  - `write`：按目标根计算 `delta_bytes/delta_files`（覆盖写先减旧文件）；
+  - `copy`：只按目标根预检，覆盖文件/链接时减旧目标；
+  - `rename`：跨配额根时按目标根预检；同根移动不额外拦截；
+  - `restore`：按恢复条目回补，覆盖恢复时减旧目标。
+- 统计缓存：成功写后 `adjust_stats` 增量修正；`quota_set` 与 `quota_scan` 做全量重扫并写 `scanned_at`，成本 O(条目数)。
+- 回收站对象不计入目录树用量（移入时扣减、恢复时回补），避免与回收站全局配额重复计算。
+- 保护：`AdminFs::guard` 在 `quota_set/cancel/scan/list` 前执行，数据根 / `plugins/` / `official/` / `skiff.db` 不可设为配额根；列表侧过滤旧数据。
