@@ -286,7 +286,8 @@ fn origin_is_panel(origin: &str, host: &str, dev_http: bool, external_url: Optio
             return true;
         }
     }
-    !host.is_empty() && (origin == format!("https://{host}") || (dev_http && origin == format!("http://{host}")))
+    !host.is_empty()
+        && (origin == format!("https://{host}") || (dev_http && origin == format!("http://{host}")))
 }
 
 pub fn cookie_header(name: &str, value: &str) -> (axum::http::HeaderName, String) {
@@ -460,23 +461,58 @@ mod tests {
     #[test]
     fn login_origin_same_origin_and_cross_site() {
         assert_eq!(
-            login_origin_from(None, Some("https://panel.example.com"), None, "panel.example.com", false, None),
+            login_origin_from(
+                None,
+                Some("https://panel.example.com"),
+                None,
+                "panel.example.com",
+                false,
+                None
+            ),
             Some(true)
         );
         assert_eq!(
-            login_origin_from(None, Some("http://panel.example.com"), None, "panel.example.com", true, None),
+            login_origin_from(
+                None,
+                Some("http://panel.example.com"),
+                None,
+                "panel.example.com",
+                true,
+                None
+            ),
             Some(true)
         );
         assert_eq!(
-            login_origin_from(None, Some("https://evil.example.com"), None, "panel.example.com", false, None),
+            login_origin_from(
+                None,
+                Some("https://evil.example.com"),
+                None,
+                "panel.example.com",
+                false,
+                None
+            ),
             Some(false)
         );
         assert_eq!(
-            login_origin_from(Some("cross-site"), None, None, "panel.example.com", false, None),
+            login_origin_from(
+                Some("cross-site"),
+                None,
+                None,
+                "panel.example.com",
+                false,
+                None
+            ),
             Some(false)
         );
         assert_eq!(
-            login_origin_from(None, None, Some("https://panel.example.com/login"), "panel.example.com", false, None),
+            login_origin_from(
+                None,
+                None,
+                Some("https://panel.example.com/login"),
+                "panel.example.com",
+                false,
+                None
+            ),
             Some(true)
         );
     }

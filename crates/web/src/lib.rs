@@ -541,9 +541,13 @@ mod tests {
             );
             resp
         }
-        let app = Router::new().route("/p/x", get(framed)).layer(
-            axum::middleware::from_fn_with_state(test_state(), middleware::entry_guard),
-        );
+        let app =
+            Router::new()
+                .route("/p/x", get(framed))
+                .layer(axum::middleware::from_fn_with_state(
+                    test_state(),
+                    middleware::entry_guard,
+                ));
         let resp = app
             .oneshot(Request::builder().uri("/p/x").body(Body::empty()).unwrap())
             .await
