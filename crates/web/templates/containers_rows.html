@@ -5,6 +5,7 @@
   <div class="empty">没有容器{% if !ctx.docker_ok %}（Docker 不可用）{% endif %}</div>
   {% endif %}
 {% else %}
+<div class="table-wrap">
 <table class="grid">
   <thead><tr><th>名称</th><th>镜像</th><th>状态</th><th>操作</th></tr></thead>
   <tbody>
@@ -49,4 +50,5 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}
