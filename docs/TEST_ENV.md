@@ -50,24 +50,24 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `a22296f`（Release 由该提交构建，资产与之一一对应） |
-| 部署时间 | 2026-11-08 00:18（Asia/Shanghai；在旧资产 `c44eeb5` 装出的 v11 库上覆盖安装） |
-| 部署方式 | 旧资产 `c44eeb5` 先装出 `user_version=11` 并留 2 条任务 → 新资产按 `sha256sum -c` → 解压 → `sh install.sh` 覆盖（同一轮既走升级路径又复验四处修复）；6 个官方插件随包同步 |
-| 数据库 | `PRAGMA user_version=12`（v11→v12 自动迁移，`idx_scheduled_tasks_kind_source` 已删） |
-| 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200 |
-| 配置 | `/etc/skiff/config.toml`：2026-11-08 08:30 起 `listen=127.0.0.1:18080` + `allow_insecure_http=true`（明文 dev HTTP，TLS 原配置已备份，见 §2）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
+| tag / 构建提交 | `v0.1.0` = `1ead5fe`（Release 由该提交构建；其后仅有文档回填提交，不影响资产）；CI run `42446837173`、Release run `42446842893` 均 success |
+| 部署时间 | 2026-11-08 12:38（Asia/Shanghai；在 `8ede9d2` 装出的 v13 库上按 Release 资产覆盖安装） |
+| 部署方式 | `v0.1.0` Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh`；输出 `CONFIG_UNCHANGED`，未传本地二进制 |
+| 数据库 | `PRAGMA user_version=13`（v12→v13 迁移在 `8ede9d2` 轮完成，本轮覆盖后保持 13；`site_runtimes.origin` 与 seed 行 `socket_path=NULL` 均保留） |
+| 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` 运行中 |
+| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true`（明文 dev HTTP，安装前后 sha256 不变；TLS 原配置已备份，见 §2）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级） |
 
-## 6. Release 资产（v0.1.0 = `a22296f`，2026-11-07 最终版）
+## 6. Release 资产（v0.1.0 = `1ead5fe`，2026-11-08）
 
-构建来源：Release workflow run `42390087336`（`push` tag `v0.1.0`，`head_sha=a22296f`）。
-`git merge-base --is-ancestor` 校验：`1188e75`/`ca44fd3`/`73b108c`/`5a77db3`/`54406bf`/`a22296f` 退出码均为 0（全部在 tag 内），仅文档提交 `3a70cc7` 在 tag 之后。
+构建来源：Release workflow run `42446842893`（`push` tag `v0.1.0`，`head_sha=1ead5fe`）。
+`git merge-base --is-ancestor` 校验：`a22296f`/`8ede9d2`/`3030648`/`1ead5fe` 对 `v0.1.0` 退出码均为 0（全部在 tag 内），构建时 tag 与 `origin/main` 同为 `1ead5fe`。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,027,834 B | `2e8aa3d5afb18acc5e43bc96a9e721ade8b9c3dd946dd016ceea26cadff98b4e` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,674,270 B | `ac517feef6393c6e1966b2890de4116eaf2f33d8711c83c59049e833926d0a43` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,124,749 B | `55caa6d28dce68a978b8f5ec3ca2e486e2a31cc99806ecca16f5a6906c3c6bae` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 7,767,601 B | `dea9b016eab805f0f403ff220ebaabf8b59534f1210861811ac889a437f6c8d7` |
 
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；测试机直连 `objects.githubusercontent.com` 会超时，改用 GitHub API 资产端点或本机代理下发。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；测试机直连 `objects.githubusercontent.com` 会超时，用 `curl --retry 5 --retry-all-errors` 或在资产端点重试。
 - 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`checksums.txt` 逐个校验。
 - GitHub Release **说明正文尚未列 `ftp`**（正文仍写 4 个插件）；以包内 `official/` 与本文为准，待人工修正 Release 说明。
 
@@ -78,24 +78,25 @@
 | 2026-11-05 | 重置库后全新安装（schema v7） | x86_64 6,987,420 B，`sha256:25559d7ec362625cee4fb608710aa842049447f7c76588cfb921c8e348988862` | 安装成功；新口令写入 `/root/iter/admin-pw.txt`；三类站与运行环境验收通过 |
 | 2026-11-07 早轮 | Docker / FTP 修复轮 | 资产 `f9a0b30`，x86_64 `sha256:87427aa6…` | DOCKER-01～08 复验通过；该资产随后被同日最终版覆盖 |
 | 2026-11-07 | v0.1.0 最终版覆盖安装 | tag/构建 `c44eeb5`；x86_64 `b16cb72e…` | FTP 主链路、DEPLOY-02/07/08 通过；详见 §8 |
-| 2026-11-07 22:05 | 干净系统全新装机（Release 资产） | tag/构建 `c44eeb5`；x86_64 8,020,711 B `b16cb72e…`，`sha256sum -c` OK | 全新库 `user_version=11`；入口前缀 `8p9yyvg4`；6 个官方插件 CLI 安装成功（grants 默认含 `path:/www` 与 scheduler 权限）；`doctor` 全 ok、`/healthz` 200 |
-| 2026-11-08 00:18 | v11→v12 升级 + 最终版复验（覆盖安装） | 旧 `c44eeb5` → 新 `a22296f`；x86_64 8,027,834 B `2e8aa3d5…`，`sha256sum -c` OK | 库自动升 12、原任务保留、唯一索引消失、同 target 建第二条成功；FTP 零账号首装/卸载回收、PHP 扩展重装、删站级联逐项通过；浏览器视觉项实测（详见 §8） |
-| 2026-11-08 08:30 | 关闭 TLS 切明文 HTTP + 浏览器视觉复测 | 无重装、无补丁：`/etc/skiff/config.toml` 改为 `listen=127.0.0.1:18080` + `allow_insecure_http=true`，`skiff-http-fwd.service` 转发 `0.0.0.0:18081 → 127.0.0.1:18080`；原 HTTPS 配置备份 `/root/iter/config-https-20261108.toml` | `/healthz` 200、`/<prefix>/login` 200；HTTP 下完成 430/860/1024 视觉项、7 标签、直达页、iframe 标题与 1024 真实窗口抽屉复核（详见 §8） |
+| 2026-11-07 22:05 | 干净系统全新装机（Release 资产） | tag/构建 `c44eeb5`；x86_64 8,020,711 B `b16cb72e…`，`sha256sum -c` OK | 全新库 `user_version=11`；入口前缀 `8p9yyvg4`；6 个官方插件 CLI 安装成功；`doctor` 全 ok、`/healthz` 200 |
+| 2026-11-08 00:18 | v11→v12 升级 + 最终版复验（覆盖安装） | 旧 `c44eeb5` → 新 `a22296f`；x86_64 8,027,834 B `2e8aa3d5…`，`sha256sum -c` OK | 库自动升 12、原任务保留；FTP、PHP 扩展、删站级联逐项通过 |
+| 2026-11-08 08:30 | 关闭 TLS 切明文 HTTP + 浏览器视觉复测 | 无重装：`listen=127.0.0.1:18080` + `allow_insecure_http=true`，`skiff-http-fwd` 转发 `0.0.0.0:18081 → 127.0.0.1:18080` | `/healthz` 200、`/<prefix>/login` 200；完成 430/860/1024 视觉项与插件 iframe 复核 |
+| 2026-11-08 上午 | v12→v13 升级轮（覆盖安装） | 资产 `8ede9d2`；x86_64 8,123,372 B `3c2d498c…`，`sha256sum -c` OK | `user_version=13`；`site_runtimes.origin` 落 `instance`/`seed`，seed 行 `socket_path` 清空；种子行可被同名新建接管并继承 `is_default` |
+| 2026-11-08 12:38 | `1ead5fe` 重发版覆盖安装 + 复验 | 资产 `1ead5fe`；x86_64 8,124,749 B `55caa6d2…`，双架构 `sha256sum -c` OK | 库保持 13、任务/站点/运行环境全部保留；插件 iframe P0、登录 `Origin: null`、抽屉表单、网络页「可附加」、新建网站下拉均复验通过 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `a22296f` 升级 + 复验轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `1ead5fe` 重发轮）
 
 **通过**
-- 升级路径：旧资产 `c44eeb5` 装出 `user_version=11` 并留 2 条任务（`builtin:db-vacuum`、`plugin:com.skiff.cron:upgradeprobe1`）；新资产覆盖后自动升到 12，原任务保留，`idx_scheduled_tasks_kind_source` 消失，同 target+method 第二条（`upgradeprobe2`）建成功。
-- FTP（零账号首装 → 全链路 → 卸载回收）：清空 `/etc/pure-ftpd` 模拟干净系统后 `ftp.install` 200、`pure-ftpd` active、`auth/50pure` 生成、`pureftpd.passwd` 0600 空、`pureftpd.pdb` 2056 B、`:21` 监听；建号 uid/gid 82 与容器 `www-data` 一致；`STOR` 226；容器内 www-data 读上传内容并回写；删号后重登 530；`uninstall`（`removed_package:false`）后 `inactive`、`:21` 消失、`/etc/pure-ftpd/auth` 已回收。
-- PHP 扩展卸载/重装：安装 `redis` → 卸载后 `php -m` 无、`redis.so` 无、`pecl list` 无 → 重装约 15 s 成功。
-- 删站级联：删 `cascade-probe.test` 后 `scheduled_tasks` 中 `source=site:cascade-probe.test` 行消失，站点目录删除，日志无新 WARN。
-- 浏览器视觉（2026-11-08 08:30 起改为**明文 HTTP**，Chromium 无证书参数 + CDP 精确视口）：
-  - 430px / 860px：站点列表与详情无页面级横向溢出（430px 列表表格 504 px 宽，但包在 `.table-wrap` 内滚动，页面 `scrollWidth=430`；详情 `scrollWidth=415`）。
-  - 站点详情实际 **7 个标签**（概览/域名/配置文件/日志/目录/SSL/管理），真实鼠标点击「管理」落到 `?tab=manage` 并出现「停止」「删除站点」。
-  - 直达 `/sites/env/{id}`：扩展操作按钮齐全（安装所选/卸载所选/安装 PECL 扩展/重新安装/已安装）。
-  - 插件 iframe：父页 `h1=1`；`/plugins/com.skiff.cron/ui/list.html` 内 `h1=0`、`h2=1`、无横向溢出（标题由父页面渲染）。
-  - 1024 真实窗口（`outerWidth=1024`、`innerWidth=1008`）打开「+ 新建运行环境」抽屉：宽 720 px、`clippedChildren=0`。该抽屉是 `.modal.runtime-dialog`，CSS 定义 `width: min(720px, calc(100vw - 32px))`，720 px 即设计值；台账旧记的 `dialog.drawer` 92vw 属于另一类抽屉，不适用于运行环境弹窗。
-- 其余沿用通过项：文件管理内置页、cron 预设互转、受保护容器 403、官方插件随包同步、站点「管理」页签、PERF-03、运行环境 digest/APK 缓存、FTP 主链路、PHP 参数生效与越界拒绝。
+- 装机与升级：Release 资产双架构 `sha256sum -c` OK；`install.sh` 输出 `CONFIG_UNCHANGED`；`user_version=13`；`site_runtimes` 保留 `p8.5`/`php-8.5`/`visual`/`rust-rust-probe` 为 `instance`，`php-8.3`/`php-8.4` 仍为 `seed` 且 `socket_path=NULL`；`php-8.5` `is_default=1`；`builtin:db-vacuum` 与站点 `visual.test`/`rust.test` 保留；旧前缀 `sk9v13x` 302 → `8p9yyvg4`，`/healthz` 200。
+- 插件 iframe P0（本轮修复）：`curl -D-` 确认插件功能页响应头 `X-Frame-Options: SAMEORIGIN`（原为 `DENY`，`entry_guard` 覆盖了 handler 设置）；浏览器实测计划任务菜单页 iframe 渲染出 `builtin:db-vacuum` 行、内置任务无删除按钮；FTP 菜单页渲染出账号表与运行状态。根因是 `entry_guard` 无条件写 XFO，改为 `entry().or_insert(DENY)` 后 handler 的 `SAMEORIGIN` 生效（回归测试 `entry_guard_keeps_handler_x_frame_options`）。
+- 登录 `Origin: null`：Chromium 无 Fetch Metadata 时同源表单 POST 带 `Origin: null`，原逻辑按跨站拒绝（403）；修复后回落双提交令牌，浏览器真实点击登录 303 进入 `/8p9yyvg4`，无登录表单残留。
+- `postDrawerForm` urlencoded：运行环境详情抽屉「重启」请求为 `application/x-www-form-urlencoded;charset=UTF-8` + `X-Requested-With: fetch`，抽屉提示「操作已完成」（原 multipart 导致 csrf 取不到、整单 403）。
+- DOCKER-11：网络页新增「可附加」列（可附加/不可附加），子网、网关、`类型`（外部/内部）、容器挂载均在列；Docker 不可用时不显示「暂无数据」。
+- 新建网站下拉：3 个运行中实例可选，默认选中 `p8.5`；`option` 值与 `selected` 分隔正常；无就绪实例时显示引导卡片（沿用上一轮结论）。
+- 插件 UI 弹窗：计划任务「新建任务」弹窗打开且顶层 URL 不变（不跳页）；预设 `daily` → `0 3 * * *`；表达式 `*/15 * * * *` 预览「每 15 分钟执行」；内置任务无删除入口。FTP「服务配置」弹窗（2121 / required / guard 开），非法端口 70000 → `监听端口需为 1–65535 的整数`，弹窗保留、字段未清空；「新建 FTP 账号」弹窗列出 `visual.test（PHP）`，密码不一致 → `两次输入的密码不一致`，账号与两次密码均保留。
+- 视觉：430/860/1024 下运行环境、Web 服务、新建网站弹窗、任务弹窗、FTP 服务配置与新建账号弹窗均无页面级横向溢出；iframe 内视口 396/826 px，弹窗 364/722 px，`clippedChildren=0`。
+- 文件管理：`GET /{p}/files/api/list?path=/www` 200；`POST /{p}/m/core/{p}/files/api/list` 405/404（重复段路由不存在）；受保护路径 403 沿用上一轮结论。
+- 其余沿用通过项：PANEL-02/03/04/05/06、运行环境种子接管、Rust 1.99 建站、FTP-06～09 与 TLS/封禁/审计、DOCKER-11 取不到时显示「未知」。
 
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
 - WEB-02：`worker_connections=2048` 保存成功但容器 `nginx -t` 仍告警。
@@ -103,11 +104,11 @@
 - FTP fail2ban 三次封禁：`ignoreself` 使本机无法构造，需第二台客户端。
 - aarch64 仅核对资产摘要；1Panel 受限形态、G 组长时观测等无环境项。
 
-**收尾状态（2026-11-08 视觉复测后）**
-- 面板：明文 HTTP `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active、`NRestarts=0`；`skiff-http-fwd.service` 运行中（测试用途）。
-- 视觉测试资产：站点 `visual.test` + PHP 运行环境 `visual`（容器 `skiff-php-visual`）仍在，供后续复测；其余站点/任务/账号保持清空。
-- FTP 已彻底卸载（包状态 `rc`、`/etc/pure-ftpd` 删除、`:21` 无监听）；测试账号与上传文件已清。
-- 保留 `/root/iter/admin-pw.txt`、`/root/iter/config-https-20261108.toml`、`/root/iter/backups`、`/root/backups`。
+**收尾状态（2026-11-08 `1ead5fe` 复验后）**
+- 面板：明文 HTTP `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active；`skiff-http-fwd.service` 运行中（测试用途）。
+- 视觉/功能测试资产：站点 `visual.test`、`rust.test`、PHP 运行环境 `visual`/`p8.5`/`php-8.5`、Rust 运行环境 `rust-rust-probe` 仍在，供后续复测。
+- FTP：`pure-ftpd` active、`:2121` 监听，账号 `skiff_visual-test_fa92_ftpuanchor`（用于上传/禁用/改密验证）保留；`fail2ban` jail `skiff-pureftpd.conf` 保留手工 `[sshd] enabled=false`。
+- 保留 `/root/iter/admin-pw.txt`、`/root/iter/config-https-20261108.toml`、`/root/iter/backups`、`/root/backups`、`/root/iter/rel-1ead5fe`。
 
 
 ## 9. 数据、备份与清理
