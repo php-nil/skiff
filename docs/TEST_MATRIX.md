@@ -33,7 +33,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | E. Web 服务 | 8 | 0 项本机可验，8 项必须上机（crate 单测兜底） | `cargo test -p skiff-app nginx`；测试机 nginx -t 与日志 |
 | F. 文件系统原语 | 8 | 4 项本机可验（FS-02～05），4 项必须上机 | `cargo test -p skiff-fs -p skiff-plugin`；插件能力面 |
 | G. 调度器 | 9 | 3 项本机可验（TASK-05～07），6 项需上机（TASK-09 另有 `skiff-cron` 单测兜底） | `cargo test -p skiff-sched -p skiff-app -p skiff-cron`；任务页与 cron 插件页 |
-| H. Docker | 10 | 2 项本机可验（DOCKER-09/10，本轮本机 OOM 未跑、CI 兜底），8 项必须上机 | `cargo test -p skiff-docker -p skiff-policy`；Docker 页面/API |
+| H. Docker | 11 | 2 项本机可验（DOCKER-09/10，本轮本机 OOM 未跑、CI 兜底），9 项必须上机 | `cargo test -p skiff-docker -p skiff-policy`；Docker 页面/API |
 | I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；DEPLOY-09/10/11 因环境/复现条件阻塞 | `deploy/*.sh`、systemd、安装包 |
 | J. 站点压测与资源开销 | 8 | 0 项本机可验，8 项必须上机（测试机两站并发 + `/proc` 采样） | `tools/perf/*`；nginx / PHP-FPM / 反代三路径；`skiff` 进程与插件子进程 |
 | K. FTP 与宿主机文件服务 | 5 | 1 项本机可验（FTP-02 账号/密码/端口校验单测），4 项必须上机 | `cargo test -p skiff --bin skiff kernel::ftp`；测试机 pure-ftpd + PHP 容器 |
@@ -299,6 +299,7 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | DOCKER-08 | 受保护容器不可被面板操作 | `[上机]` 新版本重装/重建后的内核容器（`skiff-web-nginx`、`skiff-php-*`、`skiff-rust-*`） | 查看三个容器 Labels；对每个执行 stop/restart/remove；再看一个旧版未打标签的内核容器列表标签 | 新容器均带 `io.skiff.project=sites` 与 `io.skiff.protected=true`；stop/restart/remove 一律 403 且容器仍运行；存量未打标签容器在页面显示「存量未受保护」，重建后标签生效。`[已复验 2026-11-07，f9a0b30；该资产已被同日最终版覆盖，当前资产见 TEST_ENV §6]` 见下方「Docker 复验」表 | □通过 / □失败 | `crates/app/src/sites.rs`（`skiff_labels`）、`crates/policy/src/policy.rs`（`Target::is_protected`）、`crates/docker/src/client.rs`（`unprotected_kernel`） |
 | DOCKER-09 | 危险字段无法表达 | `[本机]` 模型/策略单测 | `cargo test -p skiff-policy --locked`；构造含 `privileged`/`cap_add` 的 JSON 请求 | 反序列化拒绝或校验拒绝；容器规格只允许契约字段 | □通过 / □失败 | `crates/model/src/container.rs`、`crates/policy` |
 | DOCKER-10 | Compose 子集静态校验 | `[本机]` 仓库根 | `cargo run -p xtask -- check`（`check-1panel` + `check-compose`）；再对一份含不支持字段的 compose 跑 `check-compose` | 样例全部通过；含不支持字段的 compose 被拒；`[已核对]` 无运行时入口，仅 `xtask check` 静态校验（本轮因本机 OOM 未跑） | □通过 / □失败 | `xtask`、`crates/compose`、`deploy/compose` |
+| DOCKER-11 | 网络页显示子网/网关/IPAM/内外部/容器挂载 | `[上机]` Docker 可用 | 打开 `/$P/networks`；对照 `docker network inspect <name>`；打开一个网络的容器明细；停掉 Docker 或让它返回错误再打开页面 | 列表显示每个网络的 Subnet、Gateway、IPAM 驱动、internal/attachable、容器数量；展开 `details` 能看到容器名/IPv4/IPv6/MAC；取不到的数据显示「未知」，**不显示 0 或空白**；Docker 不可用时页面给出错误而不是空列表 | □通过 / □失败 | `crates/docker/src/client.rs`（`list_networks` / `network_attachments`）、`crates/web/src/handlers/resources.rs`、`templates/networks.html` |
 
 最小回归命令：
 

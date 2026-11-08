@@ -156,6 +156,24 @@ pub struct NetworkRow {
     pub name: String,
     pub driver: String,
     pub scope: String,
+    /// IPAM 驱动；`None` = Docker 未返回该字段（页面显示「未知」）。
+    pub ipam_driver: Option<String>,
+    /// 子网 CIDR 列表；`None` = Docker 未返回 IPAM 配置（未知），`Some([])` = 明确无子网。
+    pub subnets: Option<Vec<String>>,
+    pub gateways: Option<Vec<String>>,
+    /// 是否为内部网络（不可外部路由）。
+    pub internal: Option<bool>,
+    pub attachable: Option<bool>,
+    /// 容器挂载情况；`None` = 容器列表查询失败（未知），不是「0 个容器」。
+    pub containers: Option<Vec<NetworkAttachment>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkAttachment {
+    pub container: String,
+    pub ipv4: Option<String>,
+    pub ipv6: Option<String>,
+    pub mac: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -457,15 +475,91 @@ impl DockerService {
             .list_networks(None::<qp::ListNetworksOptions>)
             .await
             .map_err(api_err)?;
+        // `/networks` 列表接口不带容器挂载，单独取一次容器列表；取不到时保持 None（未知），
+        // 页面必须显示「未知」而不是 0。
+        let attachments = self.network_attachments().await.ok();
         Ok(items
             .into_iter()
-            .map(|n| NetworkRow {
-                id: n.id.unwrap_or_default(),
-                name: n.name.unwrap_or_default(),
-                driver: n.driver.unwrap_or_default(),
-                scope: n.scope.unwrap_or_default(),
+            .map(|n| {
+                let id = n.id.unwrap_or_default();
+                let name = n.name.unwrap_or_default();
+                let (ipam_driver, subnets, gateways) = match n.ipam.as_ref() {
+                    Some(ipam) => {
+                        let mut subnets = Vec::new();
+                        let mut gateways = Vec::new();
+                        if let Some(configs) = ipam.config.as_ref() {
+                            for c in configs {
+                                if let Some(s) = c.subnet.as_ref().filter(|s| !s.is_empty()) {
+                                    subnets.push(s.clone());
+                                }
+                                if let Some(g) = c.gateway.as_ref().filter(|g| !g.is_empty()) {
+                                    gateways.push(g.clone());
+                                }
+                            }
+                        }
+                        (ipam.driver.clone(), Some(subnets), Some(gateways))
+                    }
+                    None => (None, None, None),
+                };
+                let containers = attachments.as_ref().map(|map| {
+                    map.get(&name)
+                        .or_else(|| map.get(&id))
+                        .cloned()
+                        .unwrap_or_default()
+                });
+                NetworkRow {
+                    id,
+                    name,
+                    driver: n.driver.unwrap_or_default(),
+                    scope: n.scope.unwrap_or_default(),
+                    ipam_driver,
+                    subnets,
+                    gateways,
+                    internal: n.internal,
+                    attachable: n.attachable,
+                    containers,
+                }
             })
             .collect())
+    }
+
+    async fn network_attachments(
+        &self,
+    ) -> Result<HashMap<String, Vec<NetworkAttachment>>, DockerError> {
+        let items = self
+            .client()?
+            .list_containers(Some(qp::ListContainersOptions {
+                all: true,
+                ..Default::default()
+            }))
+            .await
+            .map_err(api_err)?;
+        let mut out: HashMap<String, Vec<NetworkAttachment>> = HashMap::new();
+        for c in items {
+            let cname = c
+                .names
+                .and_then(|names| names.into_iter().next())
+                .map(|n| n.trim_start_matches('/').to_string())
+                .unwrap_or_else(|| {
+                    c.id.as_deref()
+                        .map(skiff_model::short_id)
+                        .unwrap_or_else(|| "unknown".into())
+                });
+            if let Some(networks) = c.network_settings.and_then(|s| s.networks) {
+                for (net, ep) in networks {
+                    out.entry(net).or_default().push(NetworkAttachment {
+                        container: cname.clone(),
+                        ipv4: ep.ip_address.filter(|s| !s.is_empty()),
+                        ipv6: ep.global_ipv6_address.filter(|s| !s.is_empty()),
+                        mac: ep.mac_address.filter(|s| !s.is_empty()),
+                    });
+                }
+            }
+        }
+        for list in out.values_mut() {
+            list.sort_by(|a, b| a.container.cmp(&b.container));
+        }
+        Ok(out)
     }
 
     /// MVP 只允许默认 `bridge` 网络（§6.4.3）。

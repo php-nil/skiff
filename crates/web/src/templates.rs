@@ -660,6 +660,41 @@ pub struct ResourcesPage {
     pub notice: String,
 }
 
+/// Docker 网络页：比通用资源表多列出子网/网关/IPAM/内外网/容器挂载。
+#[derive(Template)]
+#[template(path = "networks.html")]
+pub struct NetworksPage {
+    pub ctx: PageCtx,
+    pub rows: Vec<NetworkRowView>,
+    pub can_admin: bool,
+    pub docker_reason: String,
+    pub error: String,
+    pub notice: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NetworkRowView {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub scope: String,
+    pub ipam_driver: String,
+    pub subnet: String,
+    pub gateway: String,
+    pub internal: String,
+    pub container_count: String,
+    pub containers_known: bool,
+    pub containers: Vec<NetworkContainerView>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NetworkContainerView {
+    pub name: String,
+    pub ipv4: String,
+    pub ipv6: String,
+    pub mac: String,
+}
+
 #[derive(Template)]
 #[template(path = "plugins.html")]
 pub struct PluginsPage {

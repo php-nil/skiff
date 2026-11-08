@@ -151,24 +151,92 @@ pub async fn remove_image(
     images(State(state), AuthUser(user)).await
 }
 
+fn network_page(
+    state: &Arc<AppState>,
+    user: &crate::state::CurrentUser,
+    rows: Vec<crate::templates::NetworkRowView>,
+    notice: &str,
+    error: &str,
+) -> Result<Response, AppError> {
+    handlers::render(crate::templates::NetworksPage {
+        ctx: handlers::page_ctx(state, user, "networks"),
+        rows,
+        can_admin: user.can(skiff_model::Permission::DockerLifecycle),
+        docker_reason: state.docker_unavailable_reason().to_string(),
+        error: error.to_string(),
+        notice: notice.to_string(),
+    })
+}
+
+fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView {
+    use crate::templates::{NetworkContainerView, NetworkRowView};
+
+    // 未知（Docker 未返回）必须显式显示「未知」，不能显示 0 或留空。
+    let ipam_driver = match n.ipam_driver.as_deref() {
+        Some(d) if !d.is_empty() => d.to_string(),
+        Some(_) => "未知".to_string(),
+        None => "未知".to_string(),
+    };
+    let subnet = match n.subnets.as_ref() {
+        Some(v) if v.is_empty() => "—（无子网）".to_string(),
+        Some(v) => v.join("，"),
+        None => "未知".to_string(),
+    };
+    let gateway = match n.gateways.as_ref() {
+        Some(v) if v.is_empty() => "—（无网关）".to_string(),
+        Some(v) => v.join("，"),
+        None => "未知".to_string(),
+    };
+    let internal = match n.internal {
+        Some(true) => "内部".to_string(),
+        Some(false) => "外部".to_string(),
+        None => "未知".to_string(),
+    };
+    let containers_known = n.containers.is_some();
+    let container_count = match n.containers.as_ref() {
+        Some(v) => format!("{} 个", v.len()),
+        None => "未知".to_string(),
+    };
+    let containers = n
+        .containers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| NetworkContainerView {
+            name: c.container,
+            ipv4: c.ipv4.unwrap_or_else(|| "—".into()),
+            ipv6: c.ipv6.unwrap_or_else(|| "—".into()),
+            mac: c.mac.unwrap_or_else(|| "—".into()),
+        })
+        .collect();
+    NetworkRowView {
+        id: n.id,
+        name: n.name,
+        driver: n.driver,
+        scope: n.scope,
+        ipam_driver,
+        subnet,
+        gateway,
+        internal,
+        container_count,
+        containers_known,
+        containers,
+    }
+}
+
 pub async fn networks(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    let rows = state
-        .docker()
-        .list_networks()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|n| ResourceRow {
-            id: n.id.clone(),
-            name: n.name,
-            meta: format!("{} / {}", n.driver, n.scope),
-            warn: String::new(),
-        })
-        .collect();
-    page(&state, &user, "networks", "网络", rows, "", "")
+    match state.docker().list_networks().await {
+        Ok(items) => network_page(
+            &state,
+            &user,
+            items.into_iter().map(network_view).collect(),
+            "",
+            "",
+        ),
+        Err(e) => network_page(&state, &user, Vec::new(), "", &e.to_string()),
+    }
 }
 
 pub async fn create_network(

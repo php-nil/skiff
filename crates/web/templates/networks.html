@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}网络 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head"><h1>网络</h1></div>
+{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !docker_reason.is_empty() %}<div class="empty">Docker 不可用：{{ docker_reason }}</div>{% endif %}
+
+<section class="panel">
+  {% if rows.is_empty() %}
+    <div class="empty">暂无数据</div>
+  {% else %}
+  <div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>名称</th>
+        <th>驱动 / 范围</th>
+        <th>子网</th>
+        <th>网关</th>
+        <th>IPAM 驱动</th>
+        <th>类型</th>
+        <th>容器</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>
+          <strong>{{ r.name }}</strong>
+          <div class="muted small"><code>{{ r.id }}</code></div>
+        </td>
+        <td>{{ r.driver }}<div class="muted small">{{ r.scope }}</div></td>
+        <td class="muted">{{ r.subnet }}</td>
+        <td class="muted">{{ r.gateway }}</td>
+        <td class="muted">{{ r.ipam_driver }}</td>
+        <td>{{ r.internal }}</td>
+        <td>
+          <details>
+            <summary>{{ r.container_count }}</summary>
+            {% if r.containers_known %}
+              {% if r.containers.is_empty() %}
+                <div class="muted small">该网络没有挂载容器</div>
+              {% else %}
+                <div class="table-wrap">
+                <table class="grid">
+                  <thead><tr><th>容器</th><th>IPv4</th><th>IPv6</th><th>MAC</th></tr></thead>
+                  <tbody>
+                  {% for c in r.containers %}
+                    <tr>
+                      <td>{{ c.name }}</td>
+                      <td class="muted">{{ c.ipv4 }}</td>
+                      <td class="muted">{{ c.ipv6 }}</td>
+                      <td class="muted">{{ c.mac }}</td>
+                    </tr>
+                  {% endfor %}
+                  </tbody>
+                </table>
+                </div>
+              {% endif %}
+            {% else %}
+              <div class="muted small">容器挂载情况未知（Docker 未返回容器列表）</div>
+            {% endif %}
+          </details>
+        </td>
+        <td class="actions">
+          {% if can_admin %}
+          {% if r.name == "bridge" || r.name == "host" || r.name == "none" %}
+          <span class="muted small">预定义网络不可删除</span>
+          {% else %}
+          <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/remove" class="inline">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+            <button class="mini" type="submit" data-confirm="删除网络 {{ r.name }}？">删除</button>
+          </form>
+          {% endif %}
+          {% else %}<span class="muted small">只读</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+
+{% if can_admin %}
+<section class="panel">
+  <h2>新建</h2>
+  <form method="post" action="/{{ ctx.prefix }}/networks/create" class="row">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input name="name" placeholder="net-name" required>
+    <button class="primary" type="submit">创建 bridge 网络</button>
+    <span class="hint">MVP 只允许默认 bridge 驱动；子网/网关由 Docker IPAM 自动分配。</span>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
