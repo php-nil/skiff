@@ -62,28 +62,28 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `1862702`（Release 由该提交构建）；Release run `42471149737` success，CI run `42471115305` success |
-| 部署时间 | 2026-11-08 19:59（Asia/Shanghai；**机器已还原，全新库安装，不是升级**） |
-| 部署方式 | `v0.1.0`（`1862702`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`；未传本地二进制；安装后仅追加 `allow_reduced_sandbox=true` 再重启 |
-| 数据库 | 空库直建 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均建出（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 0 / site_runtimes 1 |
-| 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 5）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc` |
+| tag / 构建提交 | `v0.1.0` = `9daabd3`（Release 由该提交构建；含 `1862702` 及其后三个修复提交）；Release run `42480735047` success，CI run `42480722493` success |
+| 部署时间 | 2026-11-08 20:47（Asia/Shanghai；在 19:59 全新库上按 Release 资产覆盖安装，库保持 v15） |
+| 部署方式 | `v0.1.0`（`9daabd3`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`；未传本地二进制 |
+| 数据库 | 沿用 19:59 空库直建结果 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均在（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 0 / site_runtimes 1 |
+| 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 5）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc`；复验后 files 已恢复默认授权 |
 | 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发，脚本 `/root/iter/skiff-http-fwd.py`）；`skiff-tls-proxy.service` 未部署 |
 | 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）。备份 `/root/iter/config-dev-20261108-fresh.toml` |
 
-## 6. Release 资产（v0.1.0 = `1862702`，2026-11-08）
+## 6. Release 资产（v0.1.0 = `9daabd3`，2026-11-08）
 
-构建来源：Release workflow run `42471149737`（`push` tag `v0.1.0`，`head_sha=1862702`；同一时刻只有该 Release 在跑，已 success）。
-`git merge-base --is-ancestor` 校验：`92aa580` / `aa292b7` / `8716e51` / `48f57dc` / `5498f28`（任务中心）/ `d0e656d`（文件管理阶段二）/ `1862702`（站点与运行环境）对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与 HEAD 同为 `1862702`。资产摘要经 GitHub API 复核，并下载后本地重算。
+构建来源：Release workflow run `42480735047`（`push` tag `v0.1.0`，`head_sha=9daabd3`；同一时刻只有该 Release 在跑，已 success）。
+`git merge-base --is-ancestor` 校验：`92aa580` / `aa292b7` / `8716e51` / `48f57dc` / `5498f28`（任务中心）/ `d0e656d`（文件管理阶段二）/ `1862702`（站点与运行环境）/ `fd6bdf8`（PHP 配置校验）/ `128d698`（插件 403 文案）对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与该提交一致。资产摘要经 GitHub API 复核，并下载后本地重算。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `ae5fe49646cc30eecc177c323a0c0c6b88333918f0acef1d3f6fdda6fa3ecd60` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,785,237 B | `640603cadf74f40b9101b4a2187cf4b27dd773b59225bd0b1785fe9a8d120918` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,378,566 B | `4c1232c9942d9292ed73d0814e05e45f34ac78ddcb72475cff4309dbbedb1b07` |
+| `checksums.txt` | 223 B | `50d07d113aafd5f8c45b17a5b68a8dd553e02825e1ec1541120810b49c0d86e3` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,786,193 B | `ff71be79b73bf5eab7efeb1c60c21ac95aa0f44864e63b30a1fd19e7b821de4c` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,380,846 B | `a2945c66518b5464b32e94bf4f8a83af6b82ce273c150d0e0d3d7072471d9dbe` |
 
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 直连常被重置时改用 `https://api.github.com/repos/php-nil/skiff/releases/assets/<id>` + `Accept: application/octet-stream` 经内网代理下载；本轮缓存于 `d:\panel\.workbuddy\release-1862702\`，`scp` 到测试机后 `sha256sum -c` 双架构 OK。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 直连常被重置时改用 `https://api.github.com/repos/php-nil/skiff/releases/assets/<id>` + `Accept: application/octet-stream`，本轮经内网代理 `http://10.66.10.22:1010` 下载（缓存 `d:\panel\.workbuddy\release-9daabd3\`），`scp` 到测试机后 `sha256sum -c` 双架构 OK。
 - 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；签名指纹 `ed73de3e…cd47`，首启自动信任。
-- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**（违规的 `v0.1.1` 已于本轮前清除）。
+- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**（违规的 `v0.1.1` 已于本轮前清除，`git ls-remote --tags origin` 现只有 `v0.1.0`）。
 
 ## 7. 最近部署记录
 
@@ -101,8 +101,9 @@
 | 2026-11-08 15:20 | `48f57dc` 收口发版覆盖安装 + v13→v14 升级与五组复验 | 资产 `48f57dc`；x86_64 8,453,244 B `786018dc…`、aarch64 8,068,111 B `e34089f2…`，双架构 `sha256sum -c` OK | `user_version=14`，`trash_entries`/`fs_quotas` 建出、旧数据保留；FS-10～12、DOCKER-12～14、monitor/guard 内核调度器、WEB-02 全部通过；详见 §8 |
 | 2026-11-08 16:55 | `8716e51` 小批收口覆盖安装 + 配置保护 / 插件日志 / 上一批回归 | 资产 `8716e51`；x86_64 8,472,637 B `dee454fd…`、aarch64 8,086,197 B `8cffabc3…`，双架构 `sha256sum -c` OK | 库保持 v14、数据全部保留、配置 sha 未变；配置保护 403/配额 403、插件日志与崩溃尾巴、回收站/配额与 Docker 三入口均通过；详见 §8 |
 | 2026-11-08 19:59 | 机器还原后**全新安装**（空库直建 v15） | 资产 `1862702`；x86_64 8,785,237 B `640603ca…`、aarch64 8,378,566 B `4c1232c9…`，双架构 `sha256sum -c` OK | `sh install.sh --no-docker` 完成；空库直建 **v15**，`jobs`/`job_logs`/`trash_entries`/`fs_quotas` 均建出；入口前缀 `udkwxz96`；6 个官方插件安装成功；`/healthz` 200、登录 303 换会话成功 |
+| 2026-11-08 20:47 | `9daabd3` 复核轮覆盖安装（两处缺陷修复） | 资产 `9daabd3`；x86_64 8,786,193 B `ff71be79…`、aarch64 8,380,846 B `a2945c66…`，双架构 `sha256sum -c` OK | 库保持 v15、插件与运行环境保留；php.ini 坏语法被拒且原文件不变、合法值即生效；插件只读 403 文案不再追加授权提示；详见 §8 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮）
 
 **安装链路（`1862702` 全新安装轮）**
 - 机器已还原：无 `/etc/skiff`、无 `admin` 用户、无旧数据根；按 Release 资产安装，不传本地二进制。
@@ -112,8 +113,16 @@
 - 插件：为降级沙箱在 `config.toml` 追加 `allow_reduced_sandbox=true` 后重启，6 个官方插件全部 `已验签` 安装成功，grants 与 manifest 一致（`plugin list` 已核对）。
 - 访问：形态三 `http://10.10.15.4:18081`（`skiff-http-fwd.service`），`/healthz` 200、登录页 200、`POST` 登录 303 并下发 `skiff_dev_session`。
 
-**分组验收**
-- 任务中心 / 文件管理 / Web 五条 / 删站确认 / FS-14 五组结论随本轮验收逐组回填。
+**分组验收（`1862702` 全新安装轮）**
+- **任务中心**：PHP 扩展安装全程走作业中心（`runtime.install` / 扩展安装作业），SSE 带 `Last-Event-ID` 可从断点续传、`/jobs/{id}/logs?after=` 可补历史；`docker exec` 阶段取消只置 `cancel_requested`，作业保持 running 到当前步骤结束，最终 `cancelled` 且 `error_detail` 为「已取消，扩展状态可能未生效，请核对后重试」；失败作业保留安装器尾部输出；同目标重复提交文案含 job id 与阶段；重试新建 job 且 `retry_of` 指旧 id。**超时失败未实测**：安装器脚本每轮被内核重写，改写 `sleep` 探针无效。
+- **文件管理**：`4755`/`6000`/`7777` → **403** 且理由含 setuid；`2775`/`1777` 生效；chown root 返回 `root_owned=true` 且审计 `root_owner=true`；zip / tar.gz 往返内容一致；穿越包 **403**、软链包 `skipped_symlinks=1` 不落链接；配额超限解压 **507** 且目标目录无残留；目录打包下载 zip 条目正确。
+- **Web 五条**：明文访问无危险横幅；PHP 站点根有 `index.php`，Rust 站点无 `index.php` 且容器编译运行站点源码（Cargo.toml + src/main.rs）；两处入口均无 PHP 扩展区块；flash 只显示一次、刷新不重放，Location 无 `?notice=`/`?error=`；php.ini 合法值保存后 `php -i` 即生效。**发现缺陷：坏语法被放行**（PHP 只把 `syntax error` 打到 stdout、退出码仍 0）→ 已修并复核。
+- **删站**：确认页展示 `677 B · 4 个文件`、绑定任务 0 个、绑定运行环境；确认域名填错 **400**；批量 `action=delete` **400**；正确删除 **303** 且目录移除。
+- **FS-14**：内核写 `/etc`、`/usr/bin` → **403** `fs.read_only`「…只读，无法写入（宿主策略限制）」；构造 64 KB tmpfs 写满 → **507** `fs.no_space`；插件能力面写 `/etc` → **403** 且文案含「只读」（当时附带「不在已授权范围」误导提示 → 已修）。`EDQUOT` 构造不出 → **未实测**。
+
+**复核轮修复（`9daabd3`）**
+- PHP 配置校验：坏内容 `memory_limit = 64M` + `[` 提交后 **303** flash「配置语法校验失败，已拒绝保存：PHP: syntax error, unexpected end of file…」；文件 md5 前后一致、`php -i` 仍为原值；合法 `memory_limit = 128M` / `upload_max_filesize = 32M` 保存后立即生效。
+- 插件 403 文案：只读路径返回「该路径所在文件系统为只读，无法写入（宿主策略限制）」，不再追加「不在已授权范围」；复验后 files 授权恢复默认（grants=7）。
 
 **沿用通过（`8716e51` 小批收口轮，本轮未复跑全部断言）**
 - 装机/升级：Release 资产双架构 `sha256sum -c` OK；`sh install.sh --no-docker` 完成；库保持 **v14**，站点 2 / settings 7 / users 1 / plugins 6 全部保留；配置 sha256 保持 `0103e75a…f053e1`，`/healthz` 200。
@@ -134,10 +143,10 @@
 - Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
 - 原两条观察项已在 `8716e51` 关闭：插件 stderr 已转出 journal；`/etc/skiff` 与配置/TLS 私钥已纳入受保护路径。
 
-**收尾状态（2026-11-08 `1862702` 全新安装轮后）**
+**收尾状态（2026-11-08 `9daabd3` 复核轮后）**
 - 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用；`skiff.service` active；`skiff-http-fwd.service` active；`skiff-tls-proxy.service` 未部署。
-- 数据：全新库（`user_version=15`），6 个官方插件已装；验收产生的站点/文件/任务随分组验收清理，回收站归零。
-- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/iter/cookies.txt`（会话）、`/root/skiff-pkg/`（解压目录）保留；安装包原件在 `/root/*.tar.gz`。
+- 数据：库保持 `user_version=15`，6 个官方插件已装；站点已清空，`iter-php-1862702` / `iter-rust-rust-1862702` 运行环境与容器保留（php.ini 复核需要）。
+- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/iter/cookies.txt`（会话）、`/root/skiff-pkg-9daabd3/`（解压目录）保留；安装包原件在 `/root/*.tar.gz`。
 
 
 ## 9. 数据、备份与清理
