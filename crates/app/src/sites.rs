@@ -1442,6 +1442,31 @@ fn vhost_check_main(candidate_container: &str) -> String {
     )
 }
 
+/// 启动运行环境站点前的就绪检查：环境必须处于 running；PHP 还要求 FPM socket 已就绪。
+///
+/// Rust 等「独立进程 + 固定端口」的运行环境没有 socket，不能套用 PHP 的条件，
+/// 否则运行正常的 Rust 环境站点会被误判为「运行环境未运行」而拒绝启动。
+fn ensure_runtime_ready_for_start(rt: &Runtime) -> Result<(), SiteError> {
+    if rt.last_status != "running" {
+        return Err(SiteError::Unavailable(format!(
+            "运行环境 {} 未运行，请先启动运行环境",
+            rt.version
+        )));
+    }
+    if rt.kind == skiff_store::KIND_PHP {
+        let socket = rt
+            .socket_path
+            .as_deref()
+            .ok_or_else(|| SiteError::Unavailable("运行环境缺少 socket 路径，请重新安装".into()))?;
+        if !Path::new(socket).exists() {
+            return Err(SiteError::Unavailable(format!(
+                "PHP socket 未就绪：{socket}，请先启动运行环境"
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl AppState {
     /// 运行环境列表：库是事实源，容器状态只作实时探测（漂移徽章的依据）。
     pub async fn runtime_views(&self) -> Result<Vec<RuntimeView>, SiteError> {
@@ -5485,30 +5510,18 @@ impl AppState {
         let conf = s.vhost_file(&site_dir, domain);
         let disabled = s.vhost_disabled(&site_dir, domain);
         if running && site.site_type == TYPE_RUNTIME {
-            // PHP 站点不能在 FPM 停着时假装启动：先核对运行环境与 socket。
+            // 运行环境站点不能在环境停着时假装启动。PHP 还要求 FPM socket 存在；
+            // Rust 是「独立进程 + 固定端口」，只看最后状态，不能套 PHP 的 socket 条件。
             let rid = site
                 .runtime_id
                 .as_deref()
-                .ok_or_else(|| SiteError::BadRequest("PHP 站点未绑定运行环境".into()))?;
+                .ok_or_else(|| SiteError::BadRequest("运行环境站点未绑定运行环境".into()))?;
             let rt = self
                 .db()
                 .runtime_by_id(rid)
                 .map_err(|e| SiteError::Internal(e.to_string()))?
                 .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
-            if rt.kind != skiff_store::KIND_PHP || rt.last_status != "running" {
-                return Err(SiteError::Unavailable(format!(
-                    "运行环境 {} 未运行，请先启动运行环境",
-                    rt.version
-                )));
-            }
-            let socket = rt.socket_path.as_deref().ok_or_else(|| {
-                SiteError::Unavailable("运行环境缺少 socket 路径，请重新安装".into())
-            })?;
-            if !Path::new(socket).exists() {
-                return Err(SiteError::Unavailable(format!(
-                    "PHP socket 未就绪：{socket}，请先启动运行环境"
-                )));
-            }
+            ensure_runtime_ready_for_start(&rt)?;
         }
         let mut activated = false;
         if running {
@@ -7016,6 +7029,57 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(site.status, "stopped", "拒绝启动不得改写运行状态");
+    }
+
+    #[test]
+    fn runtime_site_start_guard_only_treats_php_as_socket_based() {
+        let rt = |kind: &str, last_status: &str, socket: Option<&str>| Runtime {
+            id: "probe".into(),
+            kind: kind.into(),
+            name: "probe".into(),
+            version: "1.99".into(),
+            image: String::new(),
+            image_digest: String::new(),
+            desired_state: "running".into(),
+            last_status: last_status.into(),
+            socket_path: socket.map(ToString::to_string),
+            port: None,
+            is_default: false,
+            config_json: "{}".into(),
+            extensions: String::new(),
+            origin: "instance".into(),
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        // Rust 运行环境没有 FPM socket，只要状态 running 就允许启动站点。
+        ensure_runtime_ready_for_start(&rt(skiff_store::KIND_RUST, "running", None))
+            .expect("运行中的 Rust 环境不得被 PHP socket 条件误拦");
+        let stopped = ensure_runtime_ready_for_start(&rt(skiff_store::KIND_RUST, "stopped", None))
+            .expect_err("停用的 Rust 环境必须拒绝启动");
+        assert!(stopped.to_string().contains("未运行"), "{stopped}");
+
+        // PHP 仍要求 socket 文件真实存在。
+        let missing = ensure_runtime_ready_for_start(&rt(
+            skiff_store::KIND_PHP,
+            "running",
+            Some("/nonexistent/php-fpm.sock"),
+        ))
+        .expect_err("socket 缺失必须拒绝启动");
+        assert!(
+            missing.to_string().contains("PHP socket 未就绪"),
+            "{missing}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("php-fpm.sock");
+        std::fs::write(&sock, b"").unwrap();
+        ensure_runtime_ready_for_start(&rt(
+            skiff_store::KIND_PHP,
+            "running",
+            Some(&sock.display().to_string()),
+        ))
+        .expect("socket 就绪的 PHP 环境应允许启动");
     }
 
     #[test]
