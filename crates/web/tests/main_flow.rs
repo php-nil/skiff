@@ -3040,10 +3040,19 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
         m.mount.iter().any(|x| x.slot == "overview.actions"),
         "testkit 必须声明概览槽位（与 monitor 的 health 槽位不冲突）"
     );
-    assert_eq!(m.requires_str(), vec!["fs", "identity", "interop"]);
+    assert_eq!(
+        m.requires_str(),
+        vec!["fs", "identity", "interop", "scheduler"]
+    );
     assert!(m.resource_hints.iter().any(|h| h == "path:/proc"));
     assert_eq!(m.interop.consumes, vec!["com.skiff.cron:jobs.list"]);
     assert!(m.interop.provides.iter().any(|p| p.method == "probe"));
+    assert!(
+        m.task
+            .iter()
+            .any(|t| t.key == "busy-probe" && t.method == "busy_probe" && !t.enabled),
+        "testkit 必须声明默认停用的执行期 BusyGuard 探针任务"
+    );
 
     let h = harness();
     seed_declared_plugin(h.state.db().as_ref(), manifest, true);

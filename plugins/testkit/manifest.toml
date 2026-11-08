@@ -11,7 +11,7 @@ api = "1.2"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
-requires = ["fs", "identity", "interop"]
+requires = ["fs", "identity", "interop", "scheduler"]
 network_egress = []
 resource_hints = ["path:/proc"]
 
@@ -26,6 +26,20 @@ verbs = ["self"]
 [[permissions]]
 capability = "interop"
 verbs = ["call"]
+
+[[permissions]]
+capability = "scheduler"
+verbs = ["read"]
+
+# 执行期 BusyGuard 探针：任务由内核驱动，执行体在插件进程内回调 scheduler，
+# 应被内核以 403 拒绝（防止「插件任务执行 → 再注册任务」自我繁殖）。
+# 默认停用，避免日常定时触发；验证时在任务中心启用后「立即执行」。
+[[task]]
+key = "busy-probe"
+method = "busy_probe"
+expr = "* * * * *"
+enabled = false
+timeout_secs = 10
 
 [[ui]]
 label = "插件架构测试台"

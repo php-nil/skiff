@@ -32,6 +32,8 @@ fn main() {
         "fs_read" => fs_read(&p, &params),
         "interop_catalog" => p.interop_catalog().map_err(rpc_err),
         "interop_cron" => interop_cron(&p),
+        "scheduler_probe" => scheduler_probe(&p),
+        "busy_probe" => scheduler_probe(&p),
         "probe" => Ok(probe(&p)),
         other => Err(RpcError::method_not_found(other)),
     }) {
@@ -102,6 +104,26 @@ fn interop_cron(plugin: &Plugin) -> Result<Value, RpcError> {
         .map_err(|e| {
             RpcError::internal(format!(
                 "调用 com.skiff.cron:jobs.list 失败：{e}（需安装计划任务并授予 plugin:com.skiff.cron）"
+            ))
+        })
+}
+
+/// 回调 scheduler：直接调用时正常返回任务列表；作为任务执行体（`busy_probe`）
+/// 调用时应被内核 403 拒绝，错误原文透传给任务运行历史。
+fn scheduler_probe(plugin: &Plugin) -> Result<Value, RpcError> {
+    plugin
+        .scheduler_call("task.list", json!({}))
+        .map(|v| {
+            let count = v
+                .get("tasks")
+                .and_then(|t| t.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            json!({ "ok": true, "count": count, "result": v })
+        })
+        .map_err(|e| {
+            RpcError::internal(format!(
+                "执行期回调 scheduler 被拒绝：{e}（BusyGuard 期望 403）"
             ))
         })
 }
