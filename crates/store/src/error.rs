@@ -14,6 +14,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("唯一约束冲突: {0}")]
     Conflict(String),
+    #[error("目标忙: {0}")]
+    Busy(String),
     #[error("数据格式错误: {0}")]
     Decode(String),
 }

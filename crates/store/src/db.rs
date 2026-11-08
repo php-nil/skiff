@@ -20,6 +20,7 @@ use crate::Result;
 
 mod audit;
 mod backup_codes;
+pub mod jobs;
 mod plugins;
 mod prefs;
 pub mod quotas;
@@ -34,7 +35,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 14;
+pub const CURRENT_SCHEMA_VERSION: i64 = 15;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -171,6 +172,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V14)?;
             conn.execute_batch("PRAGMA user_version = 14")?;
             info!(from = version, to = 14, "schema 迁移完成");
+        }
+        if version < 15 {
+            conn.execute_batch(SCHEMA_V15)?;
+            conn.execute_batch("PRAGMA user_version = 15")?;
+            info!(from = version, to = 15, "schema 迁移完成");
         }
         Ok(())
     }
@@ -652,6 +658,53 @@ CREATE TABLE IF NOT EXISTS fs_quotas (
 );
 "#;
 
+/// v15：任务中心——一次性作业与过程日志。
+///
+/// `idx_jobs_active_target` 是部分唯一索引：同一目标同时只允许一个活跃作业，
+/// 由 SQLite 原子保证，重启后仍有效。
+const SCHEMA_V15: &str = r#"
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  params_json TEXT NOT NULL DEFAULT '{}',
+  phase TEXT NOT NULL,
+  phase_label TEXT NOT NULL,
+  progress INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','cancelled')),
+  cancellable INTEGER NOT NULL DEFAULT 0,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL,
+  created_by_role TEXT NOT NULL,
+  requester_ip TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  error_class TEXT,
+  error_detail TEXT,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  log_bytes INTEGER NOT NULL DEFAULT 0,
+  log_seq INTEGER NOT NULL DEFAULT 0,
+  retry_of TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_target
+  ON jobs(target_type, target_id) WHERE status IN ('queued','running');
+CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS job_logs (
+  job_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  stream TEXT NOT NULL,
+  line TEXT NOT NULL,
+  PRIMARY KEY (job_id, seq)
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn v13_database_upgrades_to_v14_with_trash_and_quota_tables() {
+    fn v13_database_upgrades_through_latest_schema() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skiff.db");
         {
@@ -728,18 +781,20 @@ mod tests {
             .conn()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 14);
+        assert_eq!(v, CURRENT_SCHEMA_VERSION);
         let exists = |name: &str| -> bool {
             db.conn()
-                .query_row(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
-                    [name],
-                    |_| Ok(()),
-                )
+                .query_row("SELECT 1 FROM sqlite_master WHERE name=?1", [name], |_| {
+                    Ok(())
+                })
                 .is_ok()
         };
         assert!(exists("trash_entries"));
         assert!(exists("fs_quotas"));
+        // v15：任务中心的两张表与「同目标仅一个活跃作业」的部分唯一索引。
+        assert!(exists("jobs"));
+        assert!(exists("job_logs"));
+        assert!(exists("idx_jobs_active_target"));
     }
 
     #[test]

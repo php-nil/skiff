@@ -838,6 +838,42 @@ impl DockerService {
         let code = info.get("ExitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
         Ok((code, out))
     }
+
+    /// 带硬超时的 `exec_capture`：超时后停止等待并**返回已采集的输出**，
+    /// 供任务中心把失败尾巴留在日志里。
+    ///
+    /// Docker Engine 没有 kill exec 的接口，超时只是不再等待；容器内脚本可能
+    /// 仍在运行，调用方应在提示里说明并提供重建路径。
+    pub async fn exec_capture_timeout(
+        &self,
+        container: &str,
+        cmd: Vec<String>,
+        limit: std::time::Duration,
+    ) -> Result<(i64, String, bool), DockerError> {
+        let exec_id = self.create_exec(container, cmd).await?;
+        let mut out = String::new();
+        let mut timed_out = false;
+        if let StartExecResults::Attached { mut output, .. } = self.start_exec(&exec_id).await? {
+            let deadline = tokio::time::Instant::now() + limit;
+            loop {
+                match tokio::time::timeout_at(deadline, output.next()).await {
+                    Ok(Some(Ok(v))) => out.push_str(&v.to_string()),
+                    Ok(Some(Err(e))) => return Err(api_err(e)),
+                    Ok(None) => break,
+                    Err(_) => {
+                        timed_out = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if timed_out {
+            return Ok((-1, out, true));
+        }
+        let info = self.inspect_exec(&exec_id).await?;
+        let code = info.get("ExitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
+        Ok((code, out, false))
+    }
 }
 
 fn logs_options(tail: usize, follow: bool) -> qp::LogsOptions {

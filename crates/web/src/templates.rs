@@ -21,6 +21,9 @@ pub struct PageCtx {
     /// 顶栏「插件菜单」：已启用且有 UI 入口的插件（manifest `[[ui]].label` 当菜单名）。
     /// 既用于「插件」二级菜单，也被插件详情页当 `skiff.open` 白名单。
     pub nav_plugins: Vec<PluginNav>,
+    /// 服务端一次性提示：本次渲染消费，用于写操作后的反馈。
+    pub flash_notice: String,
+    pub flash_error: String,
 }
 
 #[derive(Debug, Clone, Template)]
@@ -142,7 +145,6 @@ pub struct PortView {
 #[derive(Template)]
 #[template(path = "login.html")]
 pub struct LoginPage {
-    pub dev_http: bool,
     pub prefix: String,
     pub error: String,
     pub csrf: String,
@@ -462,6 +464,33 @@ pub struct RuntimeJobView {
     pub ext_keys: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PhpFileView {
+    pub label: String,
+    pub host_path: String,
+    pub container_path: String,
+    pub exists: bool,
+    pub selected: bool,
+    pub edit_href: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PhpEditorView {
+    pub key: String,
+    pub label: String,
+    pub content: String,
+    pub container_path: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PhpIniValueView {
+    pub key: String,
+    pub file_value: String,
+    pub effective: String,
+    pub source: String,
+}
+
 #[derive(Template)]
 #[template(path = "runtime_detail.html")]
 pub struct RuntimeDetailPage {
@@ -490,6 +519,16 @@ pub struct RuntimeDetailPage {
     /// 安装日志（任务快照）与运行日志分开展示。
     pub logs: String,
     pub logs_error: String,
+    /// PHP 配置文件列表（非 PHP 为空）。
+    pub php_files: Vec<PhpFileView>,
+    /// 当前打开的配置文件编辑器（`?file=php.ini` 等）。
+    pub php_editor: Option<PhpEditorView>,
+    /// `php -i` 实际生效值（仅在 `?ini=1` 时读取，避免渲染路径执行容器命令）。
+    pub php_values: Vec<PhpIniValueView>,
+    pub php_values_loaded: bool,
+    pub php_values_error: String,
+    /// 容器创建于「配置文件挂载」之前：编辑能保存但不生效，需重建实例。
+    pub config_mounts_stale: bool,
     pub can_admin: bool,
     pub error: String,
     pub notice: String,
@@ -566,6 +605,14 @@ pub struct SiteDeletePage {
     pub ctx: PageCtx,
     pub domain: String,
     pub root_dir: String,
+    /// 目录体积（人类可读）。
+    pub dir_size: String,
+    pub file_count: u64,
+    pub task_count: usize,
+    /// 绑定的运行环境（kind + name）；无绑定为空串。
+    pub runtime_label: String,
+    /// Rust 站点：`index/` 即运行源码，删除站点等于删除源码。
+    pub rust_source: bool,
 }
 
 #[derive(Template)]
@@ -899,6 +946,18 @@ pub struct FilesPage {
     pub ctx: PageCtx,
     /// 首屏目录（来自 `?path=`，缺省为内核站点根 `/www`）。
     pub start_path: String,
+    /// 左栏目录树根入口（服务端已按存在性与保护规则过滤）。
+    pub roots: Vec<FilesRootView>,
+    /// 单文件文本编辑上限（字节），超限只读。
+    pub max_edit_bytes: usize,
+    /// 上传分片大小上限（字节），前端按此切块。
+    pub upload_chunk_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct FilesRootView {
+    pub label: String,
+    pub path: String,
 }
 
 #[derive(Template)]
@@ -1000,6 +1059,76 @@ pub struct TaskRunRow {
     pub result_class: String,
     pub detail: String,
     pub missed: i64,
+}
+
+#[derive(Template)]
+#[template(path = "jobs.html")]
+pub struct JobsPage {
+    pub ctx: PageCtx,
+    pub rows: Vec<JobRowView>,
+    pub has_active: bool,
+    pub error: String,
+    pub notice: String,
+}
+
+/// 任务中心列表行。
+#[derive(Debug, Clone, Default)]
+pub struct JobRowView {
+    pub id: String,
+    pub title: String,
+    pub kind_label: String,
+    pub target_label: String,
+    pub status_label: String,
+    pub status_class: String,
+    pub phase_label: String,
+    pub progress: i64,
+    pub indeterminate: bool,
+    pub duration: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub active: bool,
+}
+
+#[derive(Template)]
+#[template(path = "job_detail.html")]
+pub struct JobDetailPage {
+    pub ctx: PageCtx,
+    pub job: JobDetailView,
+    pub can_admin: bool,
+}
+
+/// 任务详情（含取消/重试的可行动状态）。
+#[derive(Debug, Clone, Default)]
+pub struct JobDetailView {
+    pub id: String,
+    pub title: String,
+    pub kind_label: String,
+    pub target_label: String,
+    pub status_label: String,
+    pub status_class: String,
+    pub phase_label: String,
+    pub progress: i64,
+    pub indeterminate: bool,
+    pub cancellable: bool,
+    pub cancel_requested: bool,
+    pub created_by: String,
+    pub created_by_role: String,
+    pub requester_ip: String,
+    pub created_at: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub duration: String,
+    pub error_class: String,
+    pub error_detail: String,
+    pub result_json: String,
+    pub params_json: String,
+    pub retry_of: String,
+    pub can_cancel: bool,
+    pub can_retry: bool,
+    /// 轮询/SSE 的起始游标：页面首次加载时补历史用。
+    pub log_cursor: i64,
+    /// 首屏日志尾巴（已格式化为 `[HH:MM:SS] 行`），避免详情页首包空着。
+    pub log_text: String,
 }
 
 #[derive(Template)]

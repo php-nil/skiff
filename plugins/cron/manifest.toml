@@ -40,9 +40,13 @@ verbs = ["read", "manage", "run", "admin"]
 label = "计划任务"
 path = "list.html"
 
-# 菜单：内核「工具 → 计划任务」是面向所有登录用户的只读/管理页；本插件的菜单
-# 只服务 Admin 的高级编辑（新建任务 / 立即执行），入口仍沿用 ui/list.html 与
-# ui/new.html 两个视图（api 1.2 的 `view` 映射）。
+# 菜单：内核「工具 → 计划任务」是面向所有登录用户的只读/管理页；本插件只提供
+# 一个功能页（ui/list.html），新建/编辑都在页内弹窗完成。**不要**再把「新建任务」
+# 声明成 L3 菜单项：它是按钮，不是页面入口。
+#
+# 升级兼容：旧菜单记录中残留的 `plugin:com.skiff.cron:jobs:new` 键会被内核按
+# 「未声明项」过滤，不会渲染成僵尸入口；`/plugins/com.skiff.cron/new` 也不再是
+# 有效视图（返回 404）。
 [[menu]]
 id = "jobs"
 parent = "tools"
@@ -50,20 +54,6 @@ label = "任务编辑器"
 order = 20
 icon = "clock"
 view = "list"
-
-  [[menu.items]]
-  id = "list"
-  label = "任务列表"
-  order = 10
-  icon = "list"
-  view = "list"
-
-  [[menu.items]]
-  id = "new"
-  label = "新建任务"
-  order = 20
-  icon = "activity"
-  view = "new"
 
 [interop]
 # 内核调度器负责执行任务；本插件不再提供任何可被调度的接口。

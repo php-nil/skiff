@@ -1246,14 +1246,24 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             default_visible: true,
             roles: None,
             children: {
-                let mut items = vec![builtin(
-                    "core/tasks",
-                    L1_TOOLS,
-                    "计划任务",
-                    "clock",
-                    10,
-                    href("m/core/tasks"),
-                )];
+                let mut items = vec![
+                    builtin(
+                        "core/tasks",
+                        L1_TOOLS,
+                        "计划任务",
+                        "clock",
+                        10,
+                        href("m/core/tasks"),
+                    ),
+                    builtin(
+                        "core/jobs",
+                        L1_TOOLS,
+                        "任务中心",
+                        "activity",
+                        15,
+                        href("m/core/jobs"),
+                    ),
+                ];
                 // 文件管理只对管理员开放：viewer 看不到入口，直接访问也会 403。
                 if user.role().as_str() == "admin" {
                     items.push(builtin(

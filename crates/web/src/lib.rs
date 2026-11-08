@@ -57,6 +57,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/containers/{{id}}/exec"),
             get(handlers::containers::exec_ws),
+        )
+        .route(
+            &format!("/{p}/jobs/{{id}}/logs/stream"),
+            get(handlers::jobs::logs_sse),
         );
 
     let ui = Router::new()
@@ -207,6 +211,21 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/tasks/{{id}}/delete"),
             post(handlers::tasks::delete),
         )
+        // ---- 任务中心：一次性异步作业（安装/拉镜像/Compose 等）----
+        .route(&format!("/{p}/jobs"), get(handlers::jobs::list))
+        .route(&format!("/{p}/jobs/{{id}}"), get(handlers::jobs::detail))
+        .route(
+            &format!("/{p}/jobs/{{id}}/cancel"),
+            post(handlers::jobs::cancel),
+        )
+        .route(
+            &format!("/{p}/jobs/{{id}}/retry"),
+            post(handlers::jobs::retry),
+        )
+        .route(
+            &format!("/{p}/jobs/{{id}}/logs"),
+            get(handlers::jobs::logs_json),
+        )
         // ---- 内核「文件管理」：管理员侧 fs 服务 + 页面（第一步浏览/编辑）----
         .route(&format!("/{p}/files"), get(handlers::files::page))
         .route(
@@ -232,6 +251,38 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/files/api/remove"),
             post(handlers::files::api_remove),
+        )
+        .route(
+            &format!("/{p}/files/api/tree"),
+            get(handlers::files::api_tree),
+        )
+        .route(
+            &format!("/{p}/files/api/upload"),
+            post(handlers::files::api_upload),
+        )
+        .route(
+            &format!("/{p}/files/api/download"),
+            get(handlers::files::api_download),
+        )
+        .route(
+            &format!("/{p}/files/api/copy"),
+            post(handlers::files::api_copy),
+        )
+        .route(
+            &format!("/{p}/files/api/chmod"),
+            post(handlers::files::api_chmod),
+        )
+        .route(
+            &format!("/{p}/files/api/chown"),
+            post(handlers::files::api_chown),
+        )
+        .route(
+            &format!("/{p}/files/api/archive"),
+            post(handlers::files::api_archive),
+        )
+        .route(
+            &format!("/{p}/files/api/extract"),
+            post(handlers::files::api_extract),
         )
         // ---- 回收站与配额（内核文件管理第二步）----
         .route(
@@ -350,6 +401,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/sites/env/{{id}}/config"),
             post(handlers::sites::runtime_config_save),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/config-file"),
+            post(handlers::sites::runtime_config_file_save),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/config-file"),
+            post(handlers::sites::runtime_config_file_save),
         )
         .route(
             &format!("/{p}/sites/env/{{id}}/action/{{action}}"),

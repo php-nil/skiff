@@ -23,13 +23,14 @@ askama = "0.16"
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 futures-util = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 flate2 = "1"
-tempfile = { workspace = true }
 
 [build-dependencies]
 # 前端资源预压缩由 build.rs 完成（§2.2）：为 crates/web/static 生成 .gz 变体并 embed

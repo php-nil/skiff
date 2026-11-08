@@ -8,6 +8,7 @@ pub mod containers;
 pub mod dashboard;
 pub mod docker_settings;
 pub mod files;
+pub mod jobs;
 pub mod menu;
 pub mod meta;
 pub mod nginx;
@@ -32,6 +33,13 @@ use crate::util::{form_first, parse_form};
 pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
     let nav_plugins = nav_plugins(state, active);
     let is_admin = user.can(skiff_model::Permission::Admin);
+    let (flash_notice, flash_error) = match state.take_flash(&user.session_id) {
+        Some(msg) => match msg.kind {
+            skiff_app::FlashKind::Notice => (msg.text, String::new()),
+            skiff_app::FlashKind::Error => (String::new(), msg.text),
+        },
+        None => (String::new(), String::new()),
+    };
     PageCtx {
         prefix: state.cfg.entry_prefix.clone(),
         username: user.user.username.clone(),
@@ -45,6 +53,8 @@ pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
         menu: crate::menu::build(state, user, active),
         is_admin,
         nav_plugins,
+        flash_notice,
+        flash_error,
     }
 }
 
@@ -95,14 +105,25 @@ pub fn redirect(to: impl Into<String>) -> Response {
     Redirect::to(&to.into()).into_response()
 }
 
+/// 写操作的标准收尾：把结果写进会话 flash，再 303 到无参数地址。
+///
+/// 提示由下一次页面渲染消费一次，刷新不会重放，URL 里也不会留下错误信息。
+pub fn flash_redirect(
+    state: &AppState,
+    user: &CurrentUser,
+    kind: skiff_app::FlashKind,
+    text: impl Into<String>,
+    to: impl Into<String>,
+) -> Response {
+    state.push_flash(&user.session_id, kind, text);
+    redirect(to)
+}
+
 /// 设置页的表单错误统一回跳（PRG）：保留页面上下文与已填字段，
-/// 不再把用户留在裸 400 错误页。
-pub fn settings_error_redirect(state: &AppState, message: &str) -> String {
-    format!(
-        "/{}/settings?err={}",
-        state.cfg.entry_prefix,
-        crate::util::encode_uri_component(message)
-    )
+/// 不再把用户留在裸 400 错误页；错误进会话 flash，URL 不带消息。
+pub fn settings_error_redirect(state: &AppState, user: &CurrentUser, message: &str) -> String {
+    state.push_flash(&user.session_id, skiff_app::FlashKind::Error, message);
+    format!("/{}/settings", state.cfg.entry_prefix)
 }
 
 /// 解析表单体。大小上限由 axum 默认 body 限制（2MB）兜底——表单只承载 CSRF 与少量字段，

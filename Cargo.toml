@@ -51,6 +51,8 @@ base64 = "0.22"
 # 包格式
 tar = "0.4"
 zstd = "0.13"
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # 其它
 anyhow = "1"

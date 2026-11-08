@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}任务中心 · Skiff{% endblock %}
+{% block content %}
+{% if has_active %}<meta http-equiv="refresh" content="3">{% endif %}
+<div class="page-head">
+  <h1>任务中心</h1>
+  <span class="muted small">安装、拉镜像、Compose 等长耗时操作的统一进度与日志；切走页面不影响执行</span>
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
+<section class="panel">
+  {% if rows.is_empty() %}
+    <div class="empty">暂无任务。在「网站 → 运行环境」安装 PHP 扩展、拉取镜像或启动 Compose 后，任务会出现在这里。</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid compact">
+      <thead><tr><th>任务</th><th>目标</th><th>状态</th><th>进度</th><th>发起人</th><th>开始时间</th><th>耗时</th><th class="col-actions">操作</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td>
+            <a href="/{{ ctx.prefix }}/jobs/{{ r.id }}"><strong>{{ r.title }}</strong></a>
+            <div class="muted small"><code>{{ r.id }}</code> · {{ r.kind_label }}</div>
+          </td>
+          <td>{{ r.target_label }}</td>
+          <td><span class="state {{ r.status_class }}">{{ r.status_label }}</span></td>
+          <td>
+            {% if r.indeterminate %}
+              <span class="muted small">{{ r.phase_label }}（不确定进度）</span>
+            {% else %}
+              <div class="job-progress"><span style="width:{{ r.progress }}%"></span></div>
+              <div class="muted small">{{ r.phase_label }} · {{ r.progress }}%</div>
+            {% endif %}
+          </td>
+          <td>{{ r.created_by }}</td>
+          <td class="mono">{{ r.created_at }}</td>
+          <td>{{ r.duration }}</td>
+          <td class="actions-cell">
+            <a class="mini" href="/{{ ctx.prefix }}/jobs/{{ r.id }}">查看详情</a>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

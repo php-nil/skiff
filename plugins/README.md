@@ -83,23 +83,11 @@ parent = "tools"          # 只能是固定一级 id
 label = "计划任务"
 order = 20
 icon = "clock"
-view = "list"
-
-  [[menu.items]]
-  id = "list"
-  label = "任务列表"
-  order = 10
-  view = "list"           # ui/list.html
-
-  [[menu.items]]
-  id = "new"
-  label = "新建任务"
-  order = 20
-  view = "new"            # ui/new.html
+view = "list"             # 单视图 L2：ui/list.html，不渲染 L3 标签栏
 ```
 
-> cron 的「新建任务」L3 进入后立即打开新建弹窗；任务列表右上角「新建任务」也在当前页弹窗完成，
-> 编辑已有任务同样复用该弹窗，不跳页、不与抽屉混用。内置任务不渲染删除按钮，只提供启停。
+> cron 只有一个功能页 `ui/list.html`：右上角「新建任务」是按钮，点击在页内弹窗完成；
+> 编辑已有任务复用同一弹窗，不跳页、不与抽屉混用。内置任务不渲染删除按钮，只提供启停。
 
 > 原 `com.skiff.nginx` 已内核化，网站一级与「网站列表 / 运行环境 / 设置」由内核提供，
 > 不再随官方插件发布。

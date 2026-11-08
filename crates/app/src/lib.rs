@@ -7,6 +7,7 @@
 pub mod admin_fs;
 pub mod auth;
 pub mod docker_daemon;
+pub mod jobs;
 pub mod nginx;
 pub mod panel_settings;
 pub mod runtime_catalog;
@@ -92,8 +93,8 @@ pub struct AppState {
     site_env: Mutex<sites::InstallProgress>,
     /// 按 `(kind,name)` 的运行环境安装互斥；第二个并发安装直接返回「正在安装」。
     runtime_installs: sites::InstallLocks,
-    /// 运行环境异步安装/扩展任务（按 runtime id）；列表与抽屉轮询读取。
-    runtime_jobs: Mutex<sites::RuntimeJobs>,
+    /// 任务中心：一次性异步作业（安装/拉镜像/Compose 等），事实源在 `jobs` 表。
+    jobs: jobs::JobService,
     /// 镜像版本元数据缓存：image_id → (读到的版本/None, 负缓存起点)。
     ///
     /// image_id 不可变：命中即 0 次 Docker API。inspect 失败做 60 秒负缓存，
@@ -104,7 +105,29 @@ pub struct AppState {
     tasks: std::sync::OnceLock<Arc<tasks::TaskService>>,
     /// 管理员侧文件服务（`skiff-fs` 的唯一接线点）。
     admin_fs: admin_fs::AdminFs,
+    /// 一次性提示（flash）：按会话保存，页面渲染一次即消费。
+    ///
+    /// 写操作完成后重定向到无参数地址，由下一次渲染从会话取走消息，
+    /// 避免把操作结果塞进 `?notice=` / `?error=`（刷新重放、链接带脏数据）。
+    flash: std::sync::Mutex<HashMap<String, (FlashMessage, Instant)>>,
 }
+
+/// flash 提示级别：只区分成功提示与失败原因，样式由页面统一渲染。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashKind {
+    Notice,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct FlashMessage {
+    pub kind: FlashKind,
+    pub text: String,
+}
+
+/// flash 的保存时长与条目上限：旧消息未取走会自动过期，避免内存常驻。
+pub const FLASH_TTL: Duration = Duration::from_secs(600);
+pub const FLASH_MAX_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone)]
 pub struct LoginAttempt {
@@ -262,6 +285,8 @@ impl AppState {
     ) -> Arc<Self> {
         let permits = cfg.login_concurrency.max(1);
         let admin_fs = admin_fs::AdminFs::new(&cfg, Arc::clone(&db));
+        let jobs = jobs::JobService::new(Arc::clone(&db));
+        jobs.prune_quietly();
         Arc::new(Self {
             db,
             docker,
@@ -276,10 +301,11 @@ impl AppState {
             interop_busy: Mutex::new(HashSet::new()),
             site_env: Mutex::new(sites::InstallProgress::default()),
             runtime_installs: sites::InstallLocks::default(),
-            runtime_jobs: Mutex::new(sites::RuntimeJobs::default()),
+            jobs,
             image_versions: Mutex::new(HashMap::new()),
             tasks: std::sync::OnceLock::new(),
             admin_fs,
+            flash: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -307,11 +333,51 @@ impl AppState {
         &self.admin_fs
     }
 
+    /// 写入一条一次性提示。同一会话重复写入时后写覆盖先写（一个动作只留一条）。
+    pub fn push_flash(&self, session_id: &str, kind: FlashKind, text: impl Into<String>) {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return;
+        }
+        let Ok(mut map) = self.flash.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        map.retain(|_, (_, at)| now.duration_since(*at) < FLASH_TTL);
+        if map.len() >= FLASH_MAX_ENTRIES {
+            // 超限先丢最早一条；flash 是短命提示，不做复杂淘汰。
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(k, _)| k.clone())
+            {
+                map.remove(&oldest);
+            }
+        }
+        map.insert(session_id.to_string(), (FlashMessage { kind, text }, now));
+    }
+
+    /// 取走并消费当前会话的一次性提示；过期条目不返回。
+    pub fn take_flash(&self, session_id: &str) -> Option<FlashMessage> {
+        let Ok(mut map) = self.flash.lock() else {
+            return None;
+        };
+        match map.remove(session_id) {
+            Some((msg, at)) if at.elapsed() < FLASH_TTL => Some(msg),
+            _ => None,
+        }
+    }
+
     /// 存储层句柄（只读访问）。上层要写审计/查插件记录时用这个入口，
     /// 而不是直接摸存储句柄——字段私有是刻意的：跨层直接调用存储 API
     /// 会让「谁负责这条业务规则」变得没有答案。
     pub fn db(&self) -> &Arc<Db> {
         &self.db
+    }
+
+    /// 任务中心句柄：提交、推进、日志、取消与重试都走它。
+    pub fn jobs(&self) -> &jobs::JobService {
+        &self.jobs
     }
 
     /// Docker 服务句柄（只读访问）。
