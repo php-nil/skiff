@@ -776,7 +776,7 @@ async fn apply_service_config(cfg: &ServiceConfig, allow_install: bool) -> Resul
     ensure_tls_pem(cfg).await?;
 
     if cfg.login_guard {
-        ensure_login_guard(had_f2b).await?;
+        ensure_login_guard(had_f2b, cfg.listen_port).await?;
     } else {
         disable_login_guard().await?;
     }
@@ -1869,8 +1869,22 @@ async fn write_tls_pem(body: &str) -> Result<(), FtpError> {
     Ok(())
 }
 
+/// fail2ban jail 内容。必须把 `port` 钉到实际监听端口：jail.conf 自带的
+/// `[pure-ftpd] port = ftp,ftp-data,ftps,ftps-data`（20/21/989/990）只覆盖默认端口，
+/// 一旦把 FTP 改到其它端口，封禁规则就落空——IP 显示已封但仍能登录。
+fn jail_body(preserve_sshd: bool, listen_port: u16) -> String {
+    let mut body = String::new();
+    if preserve_sshd {
+        body.push_str("[sshd]\nenabled = false\n\n");
+    }
+    body.push_str(&format!(
+        "[pure-ftpd]\nenabled = true\nbackend = systemd\nport = {listen_port}\nmaxretry = 3\nfindtime = 10m\nbantime = 10m\n"
+    ));
+    body
+}
+
 #[cfg(target_os = "linux")]
-async fn ensure_login_guard(had_f2b: bool) -> Result<(), FtpError> {
+async fn ensure_login_guard(had_f2b: bool, listen_port: u16) -> Result<(), FtpError> {
     if !Path::new("/usr/sbin/fail2ban-client").exists()
         && !Path::new("/usr/bin/fail2ban-client").exists()
     {
@@ -1893,13 +1907,7 @@ async fn ensure_login_guard(had_f2b: bool) -> Result<(), FtpError> {
             .unwrap_or_default()
             .contains("[sshd]")
     };
-    let mut body = String::new();
-    if preserve_sshd {
-        body.push_str("[sshd]\nenabled = false\n\n");
-    }
-    body.push_str(
-        "[pure-ftpd]\nenabled = true\nbackend = systemd\nmaxretry = 3\nfindtime = 10m\nbantime = 10m\n",
-    );
+    let body = jail_body(preserve_sshd, listen_port);
     run_host("/usr/bin/tee", &[JAIL_FILE], Some(&body))
         .await
         .map_err(|e| FtpError::internal(format!("写入 fail2ban jail 失败：{e}")))?;
@@ -2137,6 +2145,21 @@ mod tests {
 ";
         let entries = parse_net_tcp(sample);
         assert_eq!(entries, vec![(5432, 0x0A), (5432, 0x01), (53, 0x0A)]);
+    }
+
+    #[test]
+    fn jail_body_pins_configured_listen_port() {
+        // 改了监听端口后，jail 必须覆盖 jail.conf 里的默认 ftp 端口，
+        // 否则封禁规则只落在 20/21/989/990，显示已封但目标端口仍可登录。
+        let body = jail_body(true, 2121);
+        assert!(body.contains("port = 2121"), "{body}");
+        assert!(body.contains("[sshd]\nenabled = false"), "{body}");
+        assert!(body.contains("maxretry = 3"), "{body}");
+        assert!(body.contains("bantime = 10m"), "{body}");
+
+        let no_sshd = jail_body(false, 21);
+        assert!(!no_sshd.contains("[sshd]"), "{no_sshd}");
+        assert!(no_sshd.contains("port = 21"), "{no_sshd}");
     }
 
     #[test]
