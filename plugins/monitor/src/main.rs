@@ -3,8 +3,10 @@
 //! 采样不执行任何外部命令，也不走 Docker；`fs` 能力读 `/proc/stat|meminfo|loadavg|
 //! uptime|net/dev|cpuinfo`，需要安装时授权 `path:/proc`。
 //!
-//! 采样点由内核 cron 每 5 分钟调一次 `tick` 追加；`snapshot` 供 UI 现取现算（不影响
-//! 历史缓冲）。CPU 使用率是**两次采样差值**，进程刚拉起时第一次没有基线，返回 `null`。
+//! **周期完全交给内核调度器**（manifest `[[task]]`）：内核按 `sample_interval` 调
+//! `sample` 取点进缓冲，按 `*/5` 调 `execute` 把批次落盘。插件内没有任何定时器，
+//! 也不再有旧 `tick` 入口。`snapshot` 供 UI 现取现算（不写历史缓冲）。
+//! CPU 使用率是**两次采样差值**，进程刚拉起时第一次没有基线，返回 `null`。
 
 use serde_json::{json, Value};
 use skiff_plugin_common as common;
@@ -12,7 +14,9 @@ use skiff_sdk::{Plugin, RpcError};
 
 const RING_FILE: &str = "samples.json";
 const PREV_FILE: &str = "prev.json";
+/// 环形缓冲保留点数：60s 采样 ≈ 4 小时（契约 §9 的 `sample_interval=60s`）。
 const RING_MAX: usize = 240;
+const TASK_ID: &str = "plugin:com.skiff.monitor:sample";
 
 fn main() {
     let plugin = match Plugin::from_env() {
@@ -23,9 +27,19 @@ fn main() {
         }
     };
     let p = plugin.clone();
+    eprintln!("[{TASK_ID}] 采样由内核调度器驱动，插件内无定时器");
     if let Err(e) = plugin.serve(move |method, params| match method {
-        "snapshot" => sample(&p, false, &params),
-        "tick" => sample(&p, true, &params),
+        // 内核采样出票 → 只读点，不写历史。
+        "sample" => read_point(&p),
+        // 内核执行出票 → 批次落盘并回执。
+        "execute" => execute(&p, &params),
+        // UI 现取现算，不写历史缓冲。
+        "snapshot" => Ok(json!({
+            "ok": true,
+            "sample": read_point(&p)?,
+            "ring_max": RING_MAX,
+            "scheduler": { "driver": "kernel", "task_id": TASK_ID },
+        })),
         "history" => Ok(history(&p)),
         "config" => Ok(config(&p)),
         other => Err(RpcError::method_not_found(other)),
@@ -49,8 +63,8 @@ fn history(plugin: &Plugin) -> Value {
     json!({ "samples": st.get("samples").cloned().unwrap_or(json!([])) })
 }
 
-/// 采样：读 `/proc` 并算差值；`store = true` 时把结果追加进环形缓冲。
-fn sample(plugin: &Plugin, store: bool, _params: &Value) -> Result<Value, RpcError> {
+/// 内核采样出票：读 `/proc` 并算差值，返回单个采样点（基线写 `prev.json`）。
+fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
     let now = common::now_secs();
     let read = |name: &str| -> Result<String, RpcError> {
         plugin
@@ -116,7 +130,7 @@ fn sample(plugin: &Plugin, store: bool, _params: &Value) -> Result<Value, RpcErr
         "cpus": cpus,
     });
 
-    // 基线始终更新；历史只在 `store`（cron tick）时追加，避免每次开 UI 都写盘。
+    // 基线始终更新；历史只由内核 `execute` 批次统一落盘，UI 现取不写历史。
     common::write_state(
         plugin,
         PREV_FILE,
@@ -124,24 +138,71 @@ fn sample(plugin: &Plugin, store: bool, _params: &Value) -> Result<Value, RpcErr
     )
     .map_err(common::rpc_err)?;
 
-    if store {
-        let mut ring = common::read_state(plugin, RING_FILE);
-        if !ring.is_object() {
-            ring = json!({});
-        }
-        let obj = ring.as_object_mut().expect("上面刚保证是对象");
-        let arr = obj.entry("samples").or_insert_with(|| json!([]));
-        if let Some(arr) = arr.as_array_mut() {
-            arr.push(point.clone());
-            if arr.len() > RING_MAX {
-                let drop = arr.len() - RING_MAX;
-                arr.drain(0..drop);
-            }
-            common::write_state(plugin, RING_FILE, &ring).map_err(common::rpc_err)?;
-        }
+    Ok(point)
+}
+
+/// 内核执行出票：把缓冲批次追加进环形历史并回 `persist` 水位。
+///
+/// 落盘口径：写插件数据目录 `samples.json`（经 `common::write_state` 的 fs 通道），
+/// 环形保留 [`RING_MAX`] 点。任一点缺少 `seq`/`data` 或写盘失败都返回错误——
+/// 内核记失败且**不产生回执**，缓冲保留，下一轮重试。
+fn execute(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let points = params
+        .get("points")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if points.is_empty() {
+        return Ok(json!({ "detail": "无待落盘点", "output_bytes": 0 }));
     }
 
-    Ok(json!({ "ok": true, "sample": point, "ring_max": RING_MAX }))
+    let rows = batch_rows(&points)?;
+
+    let mut ring = common::read_state(plugin, RING_FILE);
+    if !ring.is_object() {
+        ring = json!({});
+    }
+    let obj = ring.as_object_mut().expect("上面刚保证是对象");
+    let arr = obj
+        .entry("samples")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| RpcError::internal("samples.json 的 samples 不是数组".to_string()))?;
+    for (_, data) in &rows {
+        arr.push(data.clone());
+    }
+    if arr.len() > RING_MAX {
+        let drop = arr.len() - RING_MAX;
+        arr.drain(0..drop);
+    }
+    let kept = arr.len();
+    common::write_state(plugin, RING_FILE, &ring).map_err(common::rpc_err)?;
+
+    let last_seq = rows.last().map(|(seq, _)| *seq).unwrap_or(0);
+    Ok(json!({
+        "verdict": { "verdict": "persist", "persisted_upto": last_seq },
+        "detail": format!("落盘 {} 点，环形保留 {} 点", rows.len(), kept),
+        "output_bytes": 0,
+    }))
+}
+
+/// 内核批次点必须带 `seq` 与对象型 `data`；任一缺失都算协议错误，
+/// 返回错误让内核保留缓冲并重试，不能静默跳过（否则水位会前进、点会丢）。
+fn batch_rows(points: &[Value]) -> Result<Vec<(u64, Value)>, RpcError> {
+    let mut rows = Vec::with_capacity(points.len());
+    for p in points {
+        let seq = p
+            .get("seq")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| RpcError::invalid_params("缓冲点缺少 seq".to_string()))?;
+        let data = p
+            .get("data")
+            .filter(|v| v.is_object())
+            .cloned()
+            .ok_or_else(|| RpcError::invalid_params("缓冲点缺少 data 对象".to_string()))?;
+        rows.push((seq, data));
+    }
+    Ok(rows)
 }
 
 fn parse_stat(text: &str) -> Option<(u64, u64)> {
@@ -275,5 +336,20 @@ Inter-|   Receive                                                |  Transmit
     fn counts_processors() {
         let text = "processor : 0\nmodel name : x\nprocessor : 1\n";
         assert_eq!(count_cpus(text), 2);
+    }
+
+    #[test]
+    fn batch_rows_keeps_order_and_rejects_short_points() {
+        let points = vec![
+            json!({ "seq": 7, "at": 1, "data": { "t": 1 } }),
+            json!({ "seq": 9, "at": 2, "data": { "t": 2 } }),
+        ];
+        let rows = batch_rows(&points).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.last().unwrap().0, 9);
+        assert_eq!(rows[0].1["t"], json!(1));
+
+        assert!(batch_rows(&[json!({ "data": { "t": 1 } })]).is_err());
+        assert!(batch_rows(&[json!({ "seq": 1, "data": 3 })]).is_err());
     }
 }

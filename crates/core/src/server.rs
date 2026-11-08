@@ -134,14 +134,8 @@ pub fn spawn_task_loop(state: Arc<skiff_app::AppState>) {
 pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
-        // 插件 cron 的去重表：`{id}|{expr}` → 已触发的分钟序号。
-        // 30s 一次的巡检如果不去重，`* * * * *` 会变成每分钟两次。
-        let mut last_fired: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::new();
-        // 旧 manifest `cron` 已弃用（契约 §12）：只回一条 deprecation 审计，
-        // 不按轮次刷屏。guard/monitor 尚未迁移到任务模型，读取兼容暂时保留。
-        let mut cron_deprecated: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        // 周期任务全部由内核调度器驱动（`spawn_task_loop`）；这里只做插件回收、
+        // 会话清理与站点日志轮转，不再有第二套 cron 执行路径。
         loop {
             tick.tick().await;
             state.supervisor().reap_idle().await;
@@ -151,99 +145,8 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             let sites_dir = state.cfg.web_root.join("sites");
             let _ =
                 skiff_app::sites::rotate_site_logs(&sites_dir, skiff_app::sites::LOG_ROTATE_BYTES);
-            run_cron(
-                &state,
-                &mut last_fired,
-                &mut cron_deprecated,
-                chrono::Local::now().naive_local(),
-            )
-            .await;
         }
     });
-}
-
-/// 分钟序号（去重键的一部分）：同一分钟内重复巡检只触发一次。
-fn minute_index(t: &chrono::NaiveDateTime) -> i64 {
-    t.and_utc().timestamp() / 60
-}
-
-/// 单轮 cron 调度：按 manifest 的 `cron` 表达式调用插件 `tick`。
-///
-/// **过渡态**：契约 §12 要求由内核任务模型接管并移除 `run_cron`；本轮只把 `cron`
-/// 插件从 manifest 里摘掉，`guard`/`monitor` 尚未迁移，故保留读取兼容并对旧字段
-/// 记录一次性 deprecation 审计（`cron_deprecated` 去重）。
-pub async fn run_cron(
-    state: &skiff_app::AppState,
-    last_fired: &mut std::collections::HashMap<String, i64>,
-    cron_deprecated: &mut std::collections::HashSet<String>,
-    now: chrono::NaiveDateTime,
-) {
-    let minute = minute_index(&now);
-    let Ok(recs) = state.db().list_plugins() else {
-        return;
-    };
-    for rec in recs {
-        if !rec.enabled {
-            continue;
-        }
-        let Ok(manifest) = skiff_plugin::install::manifest_of(&rec) else {
-            continue;
-        };
-        if !manifest.cron.is_empty() && cron_deprecated.insert(rec.id.clone()) {
-            let _ = state.db().audit(
-                "system",
-                "cron",
-                "plugin.cron_deprecated",
-                &rec.id,
-                "ok",
-                "manifest `cron` 已弃用，等待迁移到内核任务模型",
-            );
-        }
-        for expr in manifest.cron.iter() {
-            if !skiff_cron::expr_matches(expr, &now) {
-                continue;
-            }
-            let key = format!("{}|{expr}", rec.id);
-            if last_fired.get(&key).copied() == Some(minute) {
-                continue;
-            }
-            // 先记账再调用：单次 tick 若超过一分钟，下一轮也不会补发一次。
-            last_fired.insert(key, minute);
-
-            let params = serde_json::json!({ "cron": expr, "minute": minute });
-            let call = state.supervisor().call(&rec, "tick", params);
-            // 拉起 + 健康检查本身要 5s，再给一次调用留出余量。
-            match tokio::time::timeout(Duration::from_secs(30), call).await {
-                Ok(Ok(_)) => {
-                    let _ = state
-                        .db()
-                        .audit("system", "cron", "plugin.cron", &rec.id, "ok", expr);
-                }
-                Ok(Err(e)) => {
-                    let _ = state.db().audit(
-                        "system",
-                        "cron",
-                        "plugin.cron",
-                        &rec.id,
-                        "fail",
-                        &format!("{expr}: {e}"),
-                    );
-                }
-                Err(_) => {
-                    let _ = state.db().audit(
-                        "system",
-                        "cron",
-                        "plugin.cron",
-                        &rec.id,
-                        "fail",
-                        &format!("{expr}: 30s 超时"),
-                    );
-                }
-            }
-        }
-    }
-    // 避免长期运行后表里堆积已卸载插件的键。
-    last_fired.retain(|_, m| minute - *m <= 1440);
 }
 
 #[cfg(test)]
@@ -280,21 +183,8 @@ mod tests {
             dev_http: true,
             plaintext_behind_proxy: false,
             tls_active: false,
+            trash_retention_days: 30,
         }
-    }
-
-    /// 30s 巡检同一分钟内只该产生一个去重键，否则每分钟会触发两次。
-    #[test]
-    fn minute_index_groups_a_whole_minute() {
-        let base = chrono::NaiveDate::from_ymd_opt(2026, 11, 1)
-            .unwrap()
-            .and_hms_opt(12, 30, 0)
-            .unwrap();
-        let a = base;
-        let b = base + chrono::Duration::seconds(29);
-        let c = base + chrono::Duration::seconds(60);
-        assert_eq!(minute_index(&a), minute_index(&b));
-        assert_ne!(minute_index(&a), minute_index(&c));
     }
 
     /// 明文监听的两条合法路径：loopback 调试（dev_http）与可信反代（plaintext_behind_proxy）。

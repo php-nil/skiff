@@ -196,6 +196,8 @@ pub const MENU_SLOTS: &[&str] = &[
 ];
 
 pub const MENU_MAX_ITEMS: usize = 12;
+/// 单个插件可声明的内核任务上限（与调度器能力面的每插件配额一致）。
+pub const MAX_MANIFEST_TASKS: usize = 20;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -357,13 +359,54 @@ pub struct Manifest {
     pub max_restarts: u32,
     #[serde(default)]
     pub config_schema: BTreeMap<String, ConfigField>,
-    /// 周期任务：5 段 cron 表达式；到点拉起插件调 `tick`，跑完回收（§4.2）
+    /// 内核调度器任务声明：安装/启动时由内核种入 `scheduled_tasks`，
+    /// 插件只提供被调用的采集/执行方法（见 `docs/KERNEL_SCHEDULER_CONTRACT.md` §9）。
+    #[serde(default)]
+    pub task: Vec<ManifestTask>,
+    /// 旧版周期任务字段：仅保留解析兼容，内核不再读取（迁移见契约 §12）。
     #[serde(default)]
     pub cron: Vec<String>,
     #[serde(default)]
     pub memory_limit_mb: Option<u64>,
     #[serde(default)]
     pub pids_limit: Option<u64>,
+}
+
+/// `[[task]]`：插件向内核调度器声明的一条任务。
+///
+/// 内核按 `plugin:<manifest.id>:<key>` 建任务、按 `method` 调插件执行体；
+/// 声明只描述「内核要按什么节奏驱动插件」，不含可执行代码。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestTask {
+    /// 任务局部键：`[A-Za-z0-9._-]`，1–64 位；与插件 id 拼成任务 id。
+    pub key: String,
+    /// 执行体方法名（插件 `execute` 等）。
+    pub method: String,
+    /// 5 段 cron；与 `interval_secs` 二选一。
+    #[serde(default)]
+    pub expr: Option<String>,
+    /// 固定间隔秒数；与 `expr` 二选一。
+    #[serde(default)]
+    pub interval_secs: Option<u64>,
+    /// 内核定期向插件索要采样点的方法；声明后该任务启用内存缓冲。
+    #[serde(default)]
+    pub sample_method: Option<String>,
+    /// 采样间隔秒数；`sample_method` 存在时生效。
+    #[serde(default)]
+    pub sample_interval_secs: Option<u64>,
+    /// 缓冲容量上限（字节）。
+    #[serde(default)]
+    pub capacity_bytes: Option<usize>,
+    /// 单次执行批次上限（字节）。
+    #[serde(default)]
+    pub max_batch_bytes: Option<usize>,
+    /// 单次执行超时秒数。
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// 初始是否启用；管理员之后可停用（内置保护不适用于插件任务）。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -573,6 +616,7 @@ impl Manifest {
 
         self.validate_menu()?;
         self.validate_mount()?;
+        self.validate_tasks()?;
 
         for c in &self.cron {
             validate_cron(c)?;
@@ -738,6 +782,89 @@ impl Manifest {
                 }
             }
             validate_roles(m.roles.as_deref(), "MOUNT_ROLE_INVALID")?;
+        }
+        Ok(())
+    }
+
+    /// 校验 `[[task]]`：形式与边界检查在这儿，调度器限额（缓冲/超时等）在种任务时再兜底。
+    fn validate_tasks(&self) -> Result<()> {
+        if self.task.len() > MAX_MANIFEST_TASKS {
+            return Err(PkgError::Manifest(format!(
+                "TASK_TOO_MANY: 一个插件最多声明 {MAX_MANIFEST_TASKS} 条任务，得到 {}",
+                self.task.len()
+            )));
+        }
+        let mut seen = BTreeSet::new();
+        for t in &self.task {
+            if !is_manifest_token(&t.key, 64) {
+                return Err(PkgError::Manifest(format!(
+                    "TASK_KEY_INVALID: key 只允许 [A-Za-z0-9._-]（1–64 位），得到 {:?}",
+                    t.key
+                )));
+            }
+            if !seen.insert(t.key.as_str()) {
+                return Err(PkgError::Manifest(format!(
+                    "TASK_KEY_CONFLICT: 重复的任务 key {:?}",
+                    t.key
+                )));
+            }
+            validate_task_method(&t.method, "method")?;
+            match (&t.expr, t.interval_secs) {
+                (Some(_), Some(_)) => {
+                    return Err(PkgError::Manifest(
+                        "TASK_SCHEDULE_CONFLICT: expr 与 interval_secs 只能二选一".into(),
+                    ))
+                }
+                (None, None) => {
+                    return Err(PkgError::Manifest(
+                        "TASK_SCHEDULE_MISSING: 必须声明 expr 或 interval_secs".into(),
+                    ))
+                }
+                (Some(expr), None) => validate_cron(expr)?,
+                (None, Some(secs)) if secs < 5 => {
+                    return Err(PkgError::Manifest(format!(
+                        "TASK_INTERVAL_TOO_SMALL: interval_secs 不得小于 5，得到 {secs}"
+                    )))
+                }
+                (None, Some(_)) => {}
+            }
+            match (&t.sample_method, t.sample_interval_secs) {
+                (Some(method), secs) => {
+                    validate_task_method(method, "sample_method")?;
+                    if secs.is_some_and(|s| s == 0) {
+                        return Err(PkgError::Manifest(
+                            "TASK_SAMPLE_INTERVAL_INVALID: sample_interval_secs 必须大于 0".into(),
+                        ));
+                    }
+                }
+                (None, Some(_)) => {
+                    return Err(PkgError::Manifest(
+                        "TASK_SAMPLE_METHOD_MISSING: 声明 sample_interval_secs 时必须同时声明 sample_method".into(),
+                    ))
+                }
+                (None, None) => {}
+            }
+            if let Some(secs) = t.timeout_secs {
+                if !(1..=600).contains(&secs) {
+                    return Err(PkgError::Manifest(format!(
+                        "TASK_TIMEOUT_INVALID: timeout_secs 必须在 1–600，得到 {secs}"
+                    )));
+                }
+            }
+            if let Some(bytes) = t.capacity_bytes {
+                if !(1..=16 * 1024 * 1024).contains(&bytes) {
+                    return Err(PkgError::Manifest(format!(
+                        "TASK_CAPACITY_INVALID: capacity_bytes 必须在 1–16MiB，得到 {bytes}"
+                    )));
+                }
+            }
+            if let Some(bytes) = t.max_batch_bytes {
+                if bytes == 0 || bytes > 16 * 1024 * 1024 {
+                    return Err(PkgError::Manifest(format!(
+                        "TASK_BATCH_INVALID: max_batch_bytes 必须在 1–16MiB，得到 {bytes}"
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -1079,6 +1206,28 @@ fn validate_cron(expr: &str) -> Result<()> {
     Ok(())
 }
 
+fn is_manifest_token(s: &str, max: usize) -> bool {
+    !s.is_empty()
+        && s.len() <= max
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn validate_task_method(method: &str, field: &str) -> Result<()> {
+    if !is_manifest_token(method, 64) {
+        return Err(PkgError::Manifest(format!(
+            "TASK_METHOD_INVALID: {field} 只允许 [A-Za-z0-9._-]（1–64 位），得到 {method:?}"
+        )));
+    }
+    // 与调度器 `TaskKind::plugin` 的保留入口一致：任务执行体不能反过来调调度器。
+    if method == "scheduler" || method.starts_with("task.") || method.starts_with("buffer.") {
+        return Err(PkgError::Manifest(format!(
+            "TASK_METHOD_RESERVED: {field} 不能使用调度器保留入口 {method:?}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,6 +1337,56 @@ secret = true
             "network_egress = [\"10.0.0.0/8:443\"]\ncron = [\"*/5 * *\"]",
         );
         assert!(Manifest::parse(&bad_cron).is_err());
+    }
+
+    #[test]
+    fn task_declarations_validated() {
+        let ok_task = format!(
+            "{OK}\n[[task]]\nkey = \"sample\"\nmethod = \"execute\"\nexpr = \"*/5 * * * *\"\nsample_method = \"sample\"\nsample_interval_secs = 60\ntimeout_secs = 30\n"
+        );
+        let m = Manifest::parse(&ok_task).unwrap();
+        assert_eq!(m.task.len(), 1);
+        assert_eq!(m.task[0].key, "sample");
+        assert_eq!(m.task[0].method, "execute");
+        assert_eq!(m.task[0].sample_method.as_deref(), Some("sample"));
+
+        let base = format!("{OK}\n[[task]]\nkey = \"x\"\nmethod = \"execute\"\n");
+        let cases = [
+            (
+                "expr = \"*/5 * * * *\"\ninterval_secs = 60",
+                "TASK_SCHEDULE_CONFLICT",
+            ),
+            ("interval_secs = 4", "TASK_INTERVAL_TOO_SMALL"),
+            ("expr = \"*/5 * *\"", "cron 表达式非法"),
+            (
+                "expr = \"*/5 * * * *\"\nsample_interval_secs = 60",
+                "TASK_SAMPLE_METHOD_MISSING",
+            ),
+            (
+                "expr = \"*/5 * * * *\"\ntimeout_secs = 0",
+                "TASK_TIMEOUT_INVALID",
+            ),
+            (
+                "expr = \"*/5 * * * *\"\ncapacity_bytes = 0",
+                "TASK_CAPACITY_INVALID",
+            ),
+        ];
+        for (extra, want) in cases {
+            let bad = format!("{base}{extra}\n");
+            let e = Manifest::parse(&bad).unwrap_err().to_string();
+            assert!(e.contains(want), "期望含 {want:?}，实际 {e}");
+        }
+        let no_schedule = format!("{base}\n");
+        assert!(Manifest::parse(&no_schedule).is_err());
+
+        let bad_key =
+            format!("{OK}\n[[task]]\nkey = \"a/b\"\nmethod = \"execute\"\nexpr = \"* * * * *\"\n");
+        assert!(Manifest::parse(&bad_key).is_err());
+
+        let reserved =
+            format!("{OK}\n[[task]]\nkey = \"x\"\nmethod = \"task.list\"\nexpr = \"* * * * *\"\n");
+        let e = Manifest::parse(&reserved).unwrap_err().to_string();
+        assert!(e.contains("TASK_METHOD_RESERVED"), "{e}");
     }
 
     /// 资源授权建议：形式要合法，且与 `requires` 对得上（少了对应能力就等于装完必拒）。

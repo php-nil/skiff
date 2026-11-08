@@ -429,7 +429,7 @@ pub async fn install(
             state.cfg.allow_reduced_sandbox,
         );
         let ip = handlers::client_ip(&state, &parts);
-        commit_install(&state, &user, &ip, &path, &opts, &meta.manifest.id)?;
+        commit_install(&state, &user, &ip, &path, &opts, &meta.manifest.id).await?;
         return Ok(handlers::redirect(format!(
             "/{}/plugins",
             state.cfg.entry_prefix
@@ -500,7 +500,7 @@ fn verify_for_confirm(
 ///
 /// 首次安装（确认页提交）与重装/升级（跳过确认页）共用这一条收尾路径，
 /// 避免两个入口的审计字段、临时文件清理和错误话术各写一遍。
-fn commit_install(
+async fn commit_install(
     state: &AppState,
     user: &crate::state::CurrentUser,
     ip: &str,
@@ -510,6 +510,12 @@ fn commit_install(
 ) -> Result<(), AppError> {
     let result = skiff_plugin::install_package(state.db(), &state.cfg.data_dir, path, opts);
     let _ = std::fs::remove_file(path);
+    if result.is_ok() {
+        // manifest `[[task]]` 声明的内核任务随安装即时种入，不要求重启。
+        if let Some(tasks) = state.tasks() {
+            tasks.sync_manifest_tasks().await;
+        }
+    }
     match &result {
         Ok(info) => {
             let _ = state.db().audit(
@@ -592,7 +598,7 @@ pub async fn confirm(
     );
 
     let ip = handlers::client_ip(&state, &parts);
-    commit_install(&state, &user, &ip, &path, &opts, &trust.meta.manifest.id)?;
+    commit_install(&state, &user, &ip, &path, &opts, &trust.meta.manifest.id).await?;
     Ok(handlers::redirect(format!(
         "/{}/plugins",
         state.cfg.entry_prefix
@@ -657,6 +663,10 @@ pub async fn remove(
     state.supervisor().stop(&id).await;
     skiff_plugin::uninstall_package(state.db(), &state.cfg.data_dir, &id, delete_data)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // 卸载即回收该插件名下的内核任务；否则 source=plugin:<id> 的任务会指向不存在的插件。
+    if let Some(tasks) = state.tasks() {
+        tasks.drop_plugin_tasks(&id).await;
+    }
     // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
     crate::menu::cleanup_plugin_prefs(state.db(), &id);
     let _ = state.db().audit(

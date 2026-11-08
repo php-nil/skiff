@@ -10,9 +10,19 @@ idle_timeout_sec = 300
 max_restarts = 3
 requires = ["fs"]
 network_egress = []
-# 5 分钟一个采样点，环形缓冲保留最近 240 个（约 20 小时）。
-cron = ["*/5 * * * *"]
 resource_hints = ["path:/proc"]
+
+# 周期由内核调度器驱动（契约 §9）：60s 采一点进内核缓冲，每 5 分钟批量落盘。
+# 插件只提供 `sample`（返回点）与 `execute`（收批次回 persist）两个方法，禁止自建定时器。
+[[task]]
+key = "sample"
+method = "execute"
+expr = "*/5 * * * *"
+sample_method = "sample"
+sample_interval_secs = 60
+capacity_bytes = 4194304
+max_batch_bytes = 524288
+timeout_secs = 30
 
 [[permissions]]
 capability = "fs"

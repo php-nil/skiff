@@ -149,7 +149,7 @@
   function paintHistory(samples) {
     if (!el("history")) return;
     if (!samples || samples.length === 0) {
-      el("history").innerHTML = '<tr><td colspan="6" class="muted">暂无历史采样（cron 每 5 分钟生成一次）</td></tr>';
+      el("history").innerHTML = '<tr><td colspan="6" class="muted">暂无历史采样（内核调度器每 5 分钟生成一次）</td></tr>';
       return;
     }
     el("history").innerHTML = samples.slice().reverse().slice(0, 30).map(function (s) {

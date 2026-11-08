@@ -1,9 +1,10 @@
 //! `com.skiff.guard`：容器守护（零内核改动版）。
 //!
-//! 巡检由内核 cron 每分钟调用一次 `tick`；插件用既有 docker 能力列出容器，
-//! 发现 `dead` / `restarting` / `unhealthy`（可选 `exited`）就按冷却时间与
-//! 每小时预算重启。**未授权的容器只记录、不重启**——对象授权的判定同时在内核
-//! 侧复验一遍，插件侧的预筛只是为了让 UI 能提前显示「未授权」。
+//! 巡检由**内核调度器**按 manifest `[[task]]` 每分钟调用一次 `reconcile`；插件用
+//! 既有 docker 能力列出容器，发现 `dead` / `restarting` / `unhealthy`（可选
+//! `exited`）就按冷却时间与每小时预算重启。**未授权的容器只记录、不重启**——
+//! 对象授权的判定同时在内核侧复验一遍，插件侧的预筛只是为了让 UI 能提前显示
+//! 「未授权」。插件内没有定时器，也没有旧 `tick` 入口；UI 只读展示。
 
 use serde_json::{json, Value};
 use skiff_plugin_common as common;
@@ -11,6 +12,7 @@ use skiff_sdk::{Plugin, RpcError};
 
 const STATE_FILE: &str = "guard.json";
 const MAX_EVENTS: usize = 100;
+const TASK_ID: &str = "plugin:com.skiff.guard:reconcile";
 
 fn main() {
     let plugin = match Plugin::from_env() {
@@ -21,8 +23,9 @@ fn main() {
         }
     };
     let p = plugin.clone();
+    eprintln!("[{TASK_ID}] 巡检由内核调度器驱动，插件内无定时器");
     if let Err(e) = plugin.serve(move |method, params| match method {
-        "tick" => tick(&p, params),
+        "reconcile" => reconcile(&p, params),
         "status" => status(&p),
         "config" => Ok(config(&p)),
         other => Err(RpcError::method_not_found(other)),
@@ -120,7 +123,9 @@ fn push_event(state: &mut Value, item: Value) {
     }
 }
 
-fn tick(plugin: &Plugin, _params: Value) -> Result<Value, RpcError> {
+/// 内核执行出票：一轮全量对账。告警/冷却/预算/未授权只报不动语义保持不变；
+/// 返回值走调度器 `ExecOutput`（无缓冲，`verdict` 省略等价 `keep`）。
+fn reconcile(plugin: &Plugin, _params: Value) -> Result<Value, RpcError> {
     let cfg = common::load_config(plugin);
     let cooldown = clamp(common::cfg_u64(&cfg, "cooldown_sec", 300), 86400);
     let max_per_hour = clamp(common::cfg_u64(&cfg, "max_per_hour", 6), 1000);
@@ -232,8 +237,8 @@ fn tick(plugin: &Plugin, _params: Value) -> Result<Value, RpcError> {
 
     common::write_state(plugin, STATE_FILE, &st).map_err(common::rpc_err)?;
 
-    Ok(json!({
-        "ok": true,
+    // 状态与事件已经落盘；执行回执照调度器协议返回，`detail` 保留本轮摘要。
+    let summary = json!({
         "at": now,
         "checked": checked,
         "restarted": restarted,
@@ -241,6 +246,10 @@ fn tick(plugin: &Plugin, _params: Value) -> Result<Value, RpcError> {
         "unauthorized": unauthorized,
         "dry_run": dry_run,
         "hour_count": st.get("count").cloned().unwrap_or(json!(0)),
+    });
+    Ok(json!({
+        "detail": summary.to_string(),
+        "output_bytes": 0,
     }))
 }
 
@@ -252,6 +261,7 @@ fn status(plugin: &Plugin) -> Result<Value, RpcError> {
         "granted": plugin.granted(),
         "objects": objects,
         "config": common::load_config(plugin),
+        "scheduler": { "driver": "kernel", "task_id": TASK_ID },
     }))
 }
 

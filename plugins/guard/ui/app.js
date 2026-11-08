@@ -148,19 +148,7 @@
   }
 
   el("refresh").addEventListener("click", refresh);
-  el("tick").addEventListener("click", function () {
-    say("巡检中…");
-    rpc("tick", {}).then(function (r) {
-      var parts = ["检查 " + (r.checked || 0) + " 个异常容器"];
-      if (r.restarted && r.restarted.length) parts.push("已重启：" + r.restarted.join(", "));
-      if (r.unauthorized && r.unauthorized.length) parts.push("未授权跳过：" + r.unauthorized.join(", "));
-      if (r.dry_run) parts.push("（演练模式）");
-      say(parts.join("；"));
-      return refresh();
-    }).catch(function (e) {
-      say("巡检失败：" + e, true);
-    });
-  });
 
+  // 巡检完全由内核调度器驱动：插件 UI 只读，不再提供「立即巡检」入口。
   refresh();
 })();

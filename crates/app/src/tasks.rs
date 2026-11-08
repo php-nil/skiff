@@ -20,11 +20,11 @@ use chrono::{Local, TimeZone};
 use serde_json::{json, Value};
 use skiff_plugin::supervisor::{Supervisor, SupervisorError};
 use skiff_sched::{
-    AuditActor, AuditEvent, AuditOutcome, Batch, BufferSignal, Clock, ErrorClass, ErrorPhase,
-    ExecError, ExecOutput, PluginGate, PluginStatus, PushOutcome, PushReport, RejectReason,
-    RunContext, RunRecord, RunTicket, SampleTicket, Schedule, Scheduler, SchedulerConfig,
-    SystemClock, Task, TaskError, TaskFilter, TaskKind, TaskPatch, TaskSource, TaskSpec, TaskState,
-    TaskStore, Trigger,
+    AuditActor, AuditEvent, AuditOutcome, Batch, BufferConfig, BufferSignal, Clock, ErrorClass,
+    ErrorPhase, ExecError, ExecOutput, PluginGate, PluginStatus, PushOutcome, PushReport,
+    RejectReason, RunContext, RunRecord, RunTicket, SampleTicket, Schedule, Scheduler,
+    SchedulerConfig, SystemClock, Task, TaskError, TaskFilter, TaskKind, TaskPatch, TaskSource,
+    TaskSpec, TaskState, TaskStore, Trigger,
 };
 use skiff_store::{Db, Grant, PluginRecord, ScheduledTaskRow, TaskRunRow};
 use tokio::sync::Mutex;
@@ -37,6 +37,10 @@ pub const BUILTIN_SITE_BACKUP: &str = "site-backup";
 pub const BUILTIN_DB_VACUUM: &str = "db-vacuum";
 /// 内置任务 id：数据库整理（全局唯一）。
 pub const DB_VACUUM_TASK_ID: &str = "builtin:db-vacuum";
+/// 内置任务名：回收站到期清理。
+pub const BUILTIN_TRASH_PRUNE: &str = "trash-prune";
+/// 内置任务 id：回收站到期清理（全局唯一）。
+pub const TRASH_PRUNE_TASK_ID: &str = "builtin:trash-prune";
 
 /// 站点备份任务 id。内置任务以 `(kind, source)` 唯一，id 里带域名只为可读性。
 pub fn site_backup_task_id(domain: &str) -> String {
@@ -376,6 +380,7 @@ pub struct TaskService {
     push_window: std::sync::Mutex<std::collections::HashMap<String, (i64, u32)>>,
     web_root: PathBuf,
     data_dir: PathBuf,
+    trash_retention_days: u32,
 }
 
 /// 每任务 `buffer.push` 限速：100 点/秒（契约 §10.2）。
@@ -410,12 +415,13 @@ impl Drop for BusyGuard<'_> {
 
 impl TaskService {
     /// 打开任务服务：装载库内任务（运行态只存内存，重启天然回 `idle`），
-    /// 补最后一次 `buffer.lost_on_restart`，并种下内置 `db-vacuum`。
+    /// 补最后一次 `buffer.lost_on_restart`，并种下内置任务。
     pub fn open(
         db: Arc<Db>,
         supervisor: Arc<Supervisor>,
         web_root: PathBuf,
         data_dir: PathBuf,
+        trash_retention_days: u32,
     ) -> Result<Arc<Self>, String> {
         let clock = SystemClock;
         let mut scheduler = Scheduler::new(
@@ -428,6 +434,9 @@ impl TaskService {
         // 在把 scheduler 交给 tokio Mutex 之前种内置任务：`open` 既可能在运行时内
         // 调用（bootstrap），也可能在运行时外（单测），不能依赖 `blocking_lock`。
         seed_builtins(&mut scheduler, &clock)?;
+        // 插件把「按什么节奏驱动我」声明在 manifest `[[task]]` 里；内核在这里种任务。
+        // 插件是 on-demand 进程，没有「启动时自注册」的时机，声明式种入是唯一单一路径。
+        seed_manifest_tasks(&mut scheduler, &db, &clock);
 
         Ok(Arc::new(Self {
             db,
@@ -438,6 +447,7 @@ impl TaskService {
             push_window: std::sync::Mutex::new(std::collections::HashMap::new()),
             web_root,
             data_dir,
+            trash_retention_days,
         }))
     }
 
@@ -451,6 +461,26 @@ impl TaskService {
 
     pub fn db_handle(&self) -> &Arc<Db> {
         &self.db
+    }
+
+    /// Web 安装/升级后即时同步 manifest 任务，不必重启内核。
+    pub async fn sync_manifest_tasks(&self) {
+        let mut sched = self.scheduler.lock().await;
+        seed_manifest_tasks(&mut sched, &self.db, &self.clock);
+    }
+
+    /// 卸载插件后回收其名下全部任务（含 cron 等 UI 代建的同 source 任务）。
+    pub async fn drop_plugin_tasks(&self, plugin_id: &str) {
+        let mut sched = self.scheduler.lock().await;
+        let now = self.clock.now();
+        for task in sched.list(&TaskFilter::default()) {
+            if task.spec.plugin_id() != Some(plugin_id) {
+                continue;
+            }
+            if let Err(e) = sched.delete(task.spec.id.as_str(), now) {
+                tracing::warn!(task = %task.spec.id, error = %e, "卸载插件时回收任务失败");
+            }
+        }
     }
 
     /// 1s tick：拿票 → 执行体独立 task → 结算。**不在锁内执行任何 RPC**。
@@ -566,8 +596,9 @@ impl TaskService {
                 let db = Arc::clone(&self.db);
                 let web_root = self.web_root.clone();
                 let data_dir = self.data_dir.clone();
+                let retention = self.trash_retention_days;
                 tokio::task::spawn_blocking(move || {
-                    run_builtin(&name, &ctx, &db, &web_root, &data_dir)
+                    run_builtin(&name, &ctx, &db, &web_root, &data_dir, retention)
                 })
                 .await
                 .map_err(|e| {
@@ -1127,24 +1158,153 @@ fn seed_builtins(
     sched: &mut Scheduler<SqliteTaskStore>,
     clock: &SystemClock,
 ) -> Result<(), String> {
-    if sched.get(DB_VACUUM_TASK_ID).is_some() {
-        return Ok(());
-    }
-    let mut spec = TaskSpec::new(
-        DB_VACUUM_TASK_ID,
-        TaskKind::builtin(BUILTIN_DB_VACUUM).map_err(|e| e.to_string())?,
-        TaskSource::System,
-        Schedule::cron("0 4 * * 0"),
-    )
-    .map_err(|e| e.to_string())?;
-    spec.payload = json!({});
-    spec.created_by = "system".into();
-    spec.created_at = clock.now();
-    spec.updated_at = spec.created_at;
-    sched
-        .register(spec, clock.now(), clock)
+    if sched.get(DB_VACUUM_TASK_ID).is_none() {
+        let mut spec = TaskSpec::new(
+            DB_VACUUM_TASK_ID,
+            TaskKind::builtin(BUILTIN_DB_VACUUM).map_err(|e| e.to_string())?,
+            TaskSource::System,
+            Schedule::cron("0 4 * * 0"),
+        )
         .map_err(|e| e.to_string())?;
+        spec.payload = json!({});
+        spec.created_by = "system".into();
+        spec.created_at = clock.now();
+        spec.updated_at = spec.created_at;
+        sched
+            .register(spec, clock.now(), clock)
+            .map_err(|e| e.to_string())?;
+    }
+    if sched.get(TRASH_PRUNE_TASK_ID).is_none() {
+        let mut spec = TaskSpec::new(
+            TRASH_PRUNE_TASK_ID,
+            TaskKind::builtin(BUILTIN_TRASH_PRUNE).map_err(|e| e.to_string())?,
+            TaskSource::System,
+            Schedule::cron("30 4 * * *"),
+        )
+        .map_err(|e| e.to_string())?;
+        spec.payload = json!({});
+        spec.created_by = "system".into();
+        spec.created_at = clock.now();
+        spec.updated_at = spec.created_at;
+        sched
+            .register(spec, clock.now(), clock)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+/// manifest 种入的任务用这个 actor 标记，便于区分「内核按声明种的」与
+/// 「插件自己通过能力面注册的」——升级后声明消失时只回收前者。
+const MANIFEST_TASK_ACTOR: &str = "system:manifest";
+
+/// 按已安装插件的 manifest `[[task]]` 补种任务，并回收孤儿任务。
+///
+/// 只补缺失项，不覆盖已有任务：管理员改过的调度/启停状态在重启后保留。
+/// 回收两类：插件已卸载（含 cron 等代建的 `source=plugin:<id>` 任务），
+/// 以及 manifest 已不再声明的内核种子任务。
+fn seed_manifest_tasks(sched: &mut Scheduler<SqliteTaskStore>, db: &Db, clock: &SystemClock) {
+    let now = clock.now();
+    let installed = match db.list_plugins() {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::warn!(error = %e, "读取插件列表失败，跳过 manifest 任务种入");
+            return;
+        }
+    };
+    let mut expected: Vec<String> = Vec::new();
+    for rec in &installed {
+        let manifest = match skiff_plugin::install::manifest_of(rec) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(plugin = %rec.id, error = %e, "manifest 不可解析，跳过任务种入");
+                continue;
+            }
+        };
+        if !manifest.cron.is_empty() {
+            tracing::warn!(
+                plugin = %rec.id,
+                "manifest `cron` 已停用（改用 [[task]]），本次忽略"
+            );
+        }
+        for t in &manifest.task {
+            let id = format!("plugin:{}:{}", rec.id, t.key);
+            expected.push(id.clone());
+            if sched.get(&id).is_some() {
+                continue;
+            }
+            match task_spec_from_manifest(rec, t, now) {
+                Ok(spec) => match sched.register(spec, now, clock) {
+                    Ok(_) => {
+                        tracing::info!(plugin = %rec.id, task = %id, "按 manifest 种入内核任务");
+                    }
+                    Err(e) => {
+                        tracing::warn!(plugin = %rec.id, task = %id, error = %e, "manifest 任务种入失败");
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(plugin = %rec.id, task = %id, error = %e, "manifest 任务声明不可用");
+                }
+            }
+        }
+    }
+
+    for task in sched.list(&TaskFilter::default()) {
+        let Some(pid) = task.spec.plugin_id() else {
+            continue;
+        };
+        let installed_here = installed.iter().any(|r| r.id == pid);
+        let manifest_owned = task.spec.created_by == MANIFEST_TASK_ACTOR;
+        let declared = expected
+            .iter()
+            .any(|id| id.as_str() == task.spec.id.as_str());
+        if !installed_here || (manifest_owned && !declared) {
+            if let Err(e) = sched.delete(task.spec.id.as_str(), now) {
+                tracing::warn!(task = %task.spec.id, error = %e, "孤儿插件任务回收失败");
+            }
+        }
+    }
+}
+
+/// manifest 声明 → `TaskSpec`。这里做二次校验：manifest 只保形式合法，
+/// 调度器限额（超时/缓冲）由 `TaskSpec::validate` 在 `register` 时兜底。
+fn task_spec_from_manifest(
+    rec: &PluginRecord,
+    t: &skiff_pkgfmt::manifest::ManifestTask,
+    now: i64,
+) -> Result<TaskSpec, TaskError> {
+    let kind = TaskKind::plugin(&rec.id, &t.method)?;
+    let schedule = match (&t.expr, t.interval_secs) {
+        (Some(expr), None) => Schedule::cron(expr.clone()),
+        (None, Some(secs)) => Schedule::interval(secs),
+        // pkgfmt 已经在解析期拦住这两种情况；这里保留明确错误而不是 panic。
+        _ => {
+            return Err(TaskError::InvalidSchedule(
+                "manifest 任务必须且只能声明 expr 或 interval_secs".into(),
+            ))
+        }
+    };
+    let id = format!("plugin:{}:{}", rec.id, t.key);
+    let mut spec = TaskSpec::new(id, kind, TaskSource::Plugin(rec.id.clone()), schedule)?;
+    spec.enabled = t.enabled;
+    spec.payload = json!({ "key": t.key });
+    spec.timeout_secs = t.timeout_secs.unwrap_or(skiff_sched::DEFAULT_TIMEOUT_SECS);
+    spec.created_by = MANIFEST_TASK_ACTOR.into();
+    spec.created_at = now;
+    spec.updated_at = now;
+    if let Some(method) = &t.sample_method {
+        spec.buffer = Some(BufferConfig {
+            sample_method: Some(method.clone()),
+            sample_interval_secs: t.sample_interval_secs.unwrap_or(30),
+            capacity_bytes: t
+                .capacity_bytes
+                .unwrap_or(skiff_sched::DEFAULT_CAPACITY_BYTES),
+            max_batch_bytes: t
+                .max_batch_bytes
+                .unwrap_or(skiff_sched::DEFAULT_MAX_BATCH_BYTES),
+            ..BufferConfig::default()
+        });
+    }
+    Ok(spec)
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,9 +1341,10 @@ impl From<&RunContext> for BuiltinCtx {
 fn run_builtin(
     name: &str,
     ctx: &BuiltinCtx,
-    db: &Db,
+    db: &Arc<Db>,
     web_root: &Path,
     data_dir: &Path,
+    trash_retention_days: u32,
 ) -> Result<ExecOutput, ExecError> {
     tracing::debug!(
         task = %ctx.task_id,
@@ -1199,6 +1360,7 @@ fn run_builtin(
     match name {
         BUILTIN_SITE_BACKUP => site_backup(ctx, db, web_root, data_dir),
         BUILTIN_DB_VACUUM => db_vacuum(ctx, db, data_dir),
+        BUILTIN_TRASH_PRUNE => trash_prune(ctx, db, web_root, data_dir, trash_retention_days),
         other => Err(ExecError::new(
             ErrorClass::Unavailable,
             ErrorPhase::Ensure,
@@ -1286,6 +1448,31 @@ fn db_vacuum(ctx: &BuiltinCtx, db: &Db, data_dir: &Path) -> Result<ExecOutput, E
         verdict: None,
         detail: Some(path.display().to_string()),
         output_bytes: bytes,
+    })
+}
+
+fn trash_prune(
+    ctx: &BuiltinCtx,
+    db: &Arc<Db>,
+    web_root: &Path,
+    data_dir: &Path,
+    trash_retention_days: u32,
+) -> Result<ExecOutput, ExecError> {
+    let _ = ctx;
+    // 任务服务与 Web 页面共用同一个 `data/trash` 目录与 `trash_entries` 表。
+    let admin = crate::admin_fs::AdminFs::with_options(
+        data_dir.to_path_buf(),
+        web_root.to_path_buf(),
+        Arc::clone(db),
+        trash_retention_days,
+    );
+    let bytes = admin
+        .trash_prune()
+        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.message()))?;
+    Ok(ExecOutput {
+        verdict: None,
+        detail: Some(format!("released_bytes={bytes}")),
+        output_bytes: bytes as usize,
     })
 }
 
@@ -1489,6 +1676,7 @@ mod tests {
             supervisor,
             dir.path().join("www"),
             dir.path().to_path_buf(),
+            30,
         )
         .unwrap()
     }
@@ -1511,10 +1699,12 @@ mod tests {
             )),
             dir.path().join("www"),
             dir.path().to_path_buf(),
+            30,
         )
         .unwrap();
         let sched = reloaded.scheduler.blocking_lock();
         assert!(sched.get(DB_VACUUM_TASK_ID).is_some());
+        assert!(sched.get(TRASH_PRUNE_TASK_ID).is_some());
     }
 
     #[tokio::test]

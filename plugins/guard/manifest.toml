@@ -14,10 +14,15 @@ idle_timeout_sec = 300
 max_restarts = 3
 requires = ["docker", "identity", "fs"]
 network_egress = []
-# 每分钟巡检一次；内核按分钟去重（30s 扫描不会触发两次）。
-cron = ["* * * * *"]
 # 守护对象由管理员在安装确认页逐条勾选（guard 是通用插件，不预设某台容器）。
 resource_hints = []
+
+# 周期由内核调度器驱动（契约 §9）；插件只提供 `reconcile` 执行体。
+[[task]]
+key = "reconcile"
+method = "reconcile"
+expr = "* * * * *"
+timeout_secs = 30
 
 [[permissions]]
 capability = "docker"
