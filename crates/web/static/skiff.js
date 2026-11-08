@@ -1179,9 +1179,11 @@
         return;
       }
       var actionUrl = dlg.dataset.currentUrl || form.getAttribute("action");
+      // 服务端只解析 application/x-www-form-urlencoded（util::parse_form 按 & 切分），
+      // 用 FormData 默认的 multipart 会让 csrf 提取不到、整单 403。
       fetch(form.getAttribute("action"), {
         method: "POST",
-        body: new FormData(form),
+        body: new URLSearchParams(new FormData(form)),
         credentials: "same-origin",
         headers: { "X-Requested-With": "fetch" }
       }).then(function (resp) {

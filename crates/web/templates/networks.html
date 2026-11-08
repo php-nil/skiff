@@ -8,7 +8,9 @@
 
 <section class="panel">
   {% if rows.is_empty() %}
+    {% if error.is_empty() && docker_reason.is_empty() %}
     <div class="empty">暂无数据</div>
+    {% endif %}
   {% else %}
   <div class="table-wrap">
   <table class="grid">
@@ -20,6 +22,7 @@
         <th>网关</th>
         <th>IPAM 驱动</th>
         <th>类型</th>
+        <th>可附加</th>
         <th>容器</th>
         <th>操作</th>
       </tr>
@@ -36,6 +39,7 @@
         <td class="muted">{{ r.gateway }}</td>
         <td class="muted">{{ r.ipam_driver }}</td>
         <td>{{ r.internal }}</td>
+        <td>{{ r.attachable }}</td>
         <td>
           <details>
             <summary>{{ r.container_count }}</summary>

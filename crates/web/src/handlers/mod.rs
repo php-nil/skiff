@@ -223,26 +223,55 @@ pub fn login_origin_allowed(state: &AppState, parts: &Parts) -> Option<bool> {
             .and_then(|v| v.to_str().ok())
             .filter(|v| !v.is_empty())
     };
-    if let Some(site) = header("sec-fetch-site") {
+    login_origin_from(
+        header("sec-fetch-site"),
+        header("origin"),
+        header("referer"),
+        &host_header(parts),
+        state.cfg.dev_http,
+        state.cfg.external_url.as_deref(),
+    )
+}
+
+/// 纯函数形态：便于对来源头组合做回归，不构造 `AppState`。
+///
+/// `Origin: null` 视为「来源未知」而不是跨站：面板所有响应都带
+/// `Referrer-Policy: no-referrer`，不支持 Fetch Metadata 的浏览器（如旧版
+/// Safari）提交同源表单时会被序列化成 `Origin: null`，此时交给签名表单
+/// token + `skiff_login` 双提交判定，避免同类浏览器被锁在登录页外。
+fn login_origin_from(
+    site: Option<&str>,
+    origin: Option<&str>,
+    referer: Option<&str>,
+    host: &str,
+    dev_http: bool,
+    external_url: Option<&str>,
+) -> Option<bool> {
+    if let Some(site) = site {
         return Some(matches!(site, "same-origin" | "none"));
     }
-    if let Some(origin) = header("origin") {
+    if let Some(origin) = origin {
+        if origin.eq_ignore_ascii_case("null") {
+            return None;
+        }
         return Some(origin_is_panel(
-            state,
             origin.trim_end_matches('/'),
-            &host_header(parts),
+            host,
+            dev_http,
+            external_url,
         ));
     }
-    if let Some(referer) = header("referer") {
+    if let Some(referer) = referer {
         if let Some((scheme, rest)) = referer.split_once("://") {
-            let host = rest.split('/').next().unwrap_or("");
-            if host.is_empty() {
+            let referer_host = rest.split('/').next().unwrap_or("");
+            if referer_host.is_empty() {
                 return Some(false);
             }
             return Some(origin_is_panel(
-                state,
-                &format!("{scheme}://{host}"),
-                &host_header(parts),
+                &format!("{scheme}://{referer_host}"),
+                host,
+                dev_http,
+                external_url,
             ));
         }
         return Some(false);
@@ -250,16 +279,14 @@ pub fn login_origin_allowed(state: &AppState, parts: &Parts) -> Option<bool> {
     None
 }
 
-fn origin_is_panel(state: &AppState, origin: &str, host: &str) -> bool {
-    if let Some(ext) = state.cfg.external_url.as_deref() {
+fn origin_is_panel(origin: &str, host: &str, dev_http: bool, external_url: Option<&str>) -> bool {
+    if let Some(ext) = external_url {
         let ext = ext.trim_end_matches('/');
         if !ext.is_empty() && origin == ext {
             return true;
         }
     }
-    !host.is_empty()
-        && (origin == format!("https://{host}")
-            || (state.cfg.dev_http && origin == format!("http://{host}")))
+    !host.is_empty() && (origin == format!("https://{host}") || (dev_http && origin == format!("http://{host}")))
 }
 
 pub fn cookie_header(name: &str, value: &str) -> (axum::http::HeaderName, String) {
@@ -416,6 +443,42 @@ mod tests {
             None,
             true
         ));
+    }
+
+    // ---- 登录来源判定 ----
+
+    #[test]
+    fn login_origin_null_falls_back_to_double_submit() {
+        // no-referrer 下不支持 Fetch Metadata 的浏览器会提交 `Origin: null`；
+        // 必须落到「未知来源」分支，而不是按跨站拒绝。
+        assert_eq!(
+            login_origin_from(None, Some("null"), None, "panel.example.com", false, None),
+            None
+        );
+    }
+
+    #[test]
+    fn login_origin_same_origin_and_cross_site() {
+        assert_eq!(
+            login_origin_from(None, Some("https://panel.example.com"), None, "panel.example.com", false, None),
+            Some(true)
+        );
+        assert_eq!(
+            login_origin_from(None, Some("http://panel.example.com"), None, "panel.example.com", true, None),
+            Some(true)
+        );
+        assert_eq!(
+            login_origin_from(None, Some("https://evil.example.com"), None, "panel.example.com", false, None),
+            Some(false)
+        );
+        assert_eq!(
+            login_origin_from(Some("cross-site"), None, None, "panel.example.com", false, None),
+            Some(false)
+        );
+        assert_eq!(
+            login_origin_from(None, None, Some("https://panel.example.com/login"), "panel.example.com", false, None),
+            Some(true)
+        );
     }
 
     #[test]

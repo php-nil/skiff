@@ -73,7 +73,7 @@
         <select id="site-runtime" name="runtime_id" aria-required="true"
                 {% if form_error_field == "runtime_id" %}data-has-error aria-invalid="true"{% endif %}>
           {% for r in runtimes %}
-          <option value="{{ r.id }}"{% if form.runtime_id == r.id %}selected{% endif %}>{{ r.label }}</option>
+          <option value="{{ r.id }}"{% if form.runtime_id == r.id %} selected{% endif %}>{{ r.label }}</option>
           {% endfor %}
         </select>
         <p class="hint">只列出已安装且运行中的实例；未安装、已停止或未实现的类型不出现在这里。未安装请先到 <a href="/{{ ctx.prefix }}/sites/env">运行环境页</a> 安装。</p>

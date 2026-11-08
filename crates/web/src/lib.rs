@@ -529,6 +529,28 @@ mod tests {
         assert!(csp.contains("img-src 'self' data:"));
     }
 
+    /// 插件 UI 页面由 handler 显式设 `SAMEORIGIN` 以便被面板 iframe 嵌入，
+    /// `entry_guard` 不能把它覆盖回 `DENY`，否则插件功能页在浏览器里整页被拦。
+    #[tokio::test]
+    async fn entry_guard_keeps_handler_x_frame_options() {
+        async fn framed() -> axum::response::Response {
+            let mut resp = "ok".into_response();
+            resp.headers_mut().insert(
+                axum::http::header::X_FRAME_OPTIONS,
+                axum::http::HeaderValue::from_static("SAMEORIGIN"),
+            );
+            resp
+        }
+        let app = Router::new().route("/p/x", get(framed)).layer(
+            axum::middleware::from_fn_with_state(test_state(), middleware::entry_guard),
+        );
+        let resp = app
+            .oneshot(Request::builder().uri("/p/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "SAMEORIGIN");
+    }
+
     /// 非流式路由挂超时：慢 handler 必须变成 504 错误页，而不是一直挂着连接。
     #[tokio::test]
     async fn slow_handler_times_out_with_504() {

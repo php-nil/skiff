@@ -192,6 +192,11 @@ fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView
         Some(false) => "外部".to_string(),
         None => "未知".to_string(),
     };
+    let attachable = match n.attachable {
+        Some(true) => "可附加".to_string(),
+        Some(false) => "不可附加".to_string(),
+        None => "未知".to_string(),
+    };
     let containers_known = n.containers.is_some();
     let container_count = match n.containers.as_ref() {
         Some(v) => format!("{} 个", v.len()),
@@ -217,6 +222,7 @@ fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView
         subnet,
         gateway,
         internal,
+        attachable,
         container_count,
         containers_known,
         containers,

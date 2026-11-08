@@ -74,7 +74,11 @@ pub async fn entry_guard(State(state): State<Arc<AppState>>, req: Request, next:
     let headers = resp.headers_mut();
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // 默认 DENY；插件 UI 页面需要被面板自己的 iframe 嵌入，handler 已显式设成
+    // SAMEORIGIN，这里不能无条件覆盖，否则插件功能页会被浏览器以 XFO 拦截。
+    headers
+        .entry(X_FRAME_OPTIONS)
+        .or_insert(HeaderValue::from_static("DENY"));
     if !headers.contains_key(CONTENT_SECURITY_POLICY) {
         headers.insert(CONTENT_SECURITY_POLICY, csp_header().clone());
     }

@@ -679,6 +679,7 @@ pub struct NetworkRowView {
     pub subnet: String,
     pub gateway: String,
     pub internal: String,
+    pub attachable: String,
     pub container_count: String,
     pub containers_known: bool,
     pub containers: Vec<NetworkContainerView>,
