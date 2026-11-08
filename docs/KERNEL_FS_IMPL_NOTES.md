@@ -50,6 +50,8 @@ crates/fs/
       io.rs             # 不跟随链接的打开、原子写、删除、大小/元数据
       copy.rs           # copy_object / move_object（含跨盘回退）
       mutate.rs         # write/remove/rename/copy/restore/purge/prune
+      attr.rs           # chmod/chown（setuid 拒绝、root 属主审计标注）
+      archive.rs        # archive/extract（zip + tar.gz，边解边校验与半成品清理）
   tests/
     support/mod.rs      # 临时目录夹具 + 内存审计/回收站/配额
     authorization.rs    # 越界、`..`、符号链接、受保护路径、非 UTF-8
@@ -110,6 +112,10 @@ impl Fs {
     pub fn remove(&self, p: &Principal, ctx: &OpContext, raw: &str, permanent: bool) -> Result<RemoveOutcome, FsError>;
     pub fn rename(&self, p: &Principal, ctx: &OpContext, from: &str, to: &str, overwrite: bool) -> Result<RenameOutcome, FsError>;
     pub fn copy(&self, p: &Principal, ctx: &OpContext, from: &str, to: &str, overwrite: bool) -> Result<CopyOutcome, FsError>;
+    pub fn chmod(&self, p: &Principal, ctx: &OpContext, raw: &str, mode: u32) -> Result<ChmodOutcome, FsError>;
+    pub fn chown(&self, p: &Principal, ctx: &OpContext, raw: &str, uid: u32, gid: u32) -> Result<ChownOutcome, FsError>;
+    pub fn archive(&self, p: &Principal, ctx: &OpContext, req: &ArchiveRequest) -> Result<ArchiveOutcome, FsError>;
+    pub fn extract(&self, p: &Principal, ctx: &OpContext, req: &ExtractRequest) -> Result<ExtractOutcome, FsError>;
 
     pub fn restore(&self, p: &Principal, ctx: &OpContext, trash_id: &str, overwrite: bool) -> Result<RestoreOutcome, FsError>;
     pub fn purge(&self, p: &Principal, ctx: &OpContext, trash_id: &str) -> Result<u64, FsError>;
@@ -145,14 +151,15 @@ pub trait QuotaTracker: Send + Sync {
 
 ## 3. 测试结果
 
-- `cargo test -p skiff-fs --locked`：**57 passed, 0 failed**
-  - 单元 19（审计聚合 4、配额 1、哈希 1、锁 3、路径 3、主体 3、回收站 4）
-  - 集成 38（audit 3、authorization 11、ops 14、trash 10）
+- `cargo test -p skiff-fs --locked`：**80 passed, 0 failed**
+  - 单元 22（审计聚合 4、配额 1、哈希 1、锁 3、路径 3、主体 3、回收站 4、压缩路径校验 1、错误映射 2）
+  - 集成 58（audit 3、authorization 11、ops 14、phase2 14、protected 1、quota 5、trash 10）
 - `cargo clippy -p skiff-fs --all-targets --locked -- -D warnings`：**0 warning / 0 error**
-- `cargo fmt -p skiff-fs -- --check`：**通过**
-- 说明：`cargo fmt --all` 当前被并行会话的 `crates/sched/src/scheduler/tests.rs`（文件尚不存在）阻断，与 `crates/fs` 无关；因此本轮以 `cargo fmt -p skiff-fs` 验证。
+- `pwsh tools/gate.ps1 -Task fmt`：**通过**
 
 覆盖的契约测试矩阵项：越界（含 `..`、相对路径、NUL）、父目录符号链接逃逸、末段符号链接不跟随、硬链接只删链接、并发写无半文件、rename 双向换名不死锁、复制条目/深度上限、回收站恢复/过期/配额淘汰/跨主体拒绝、审计聚合与不记内容、非 UTF-8 列表跳过、Unix 权限位保留。
+
+阶段二新增（`tests/phase2.rs`）：setuid 拒绝且给可读原因、受保护路径拒绝、压缩/解压 roundtrip、绝对路径与 `..` 穿越拒绝、tar.gz 符号链接跳过、解压条目数/单条体积/累计字节超限后**中止并清理半成品**、解压目标路径含符号链接时拒绝、同名冲突默认拒绝与显式覆盖。限额：`ARCHIVE_MAX_ENTRIES=10_000`、`ARCHIVE_MAX_TOTAL_BYTES=8 GiB`、`ARCHIVE_MAX_DEPTH=32`、`EXTRACT_MAX_ENTRIES=10_000`、`EXTRACT_MAX_ENTRY_BYTES=1 GiB`、`EXTRACT_MAX_TOTAL_BYTES=4 GiB`。
 
 Windows 环境限制：本机沙箱无法对符号链接执行 `rename`，因此「删除链接只进回收站」的断言仅在 Unix 执行；语义本身由 `symlink_metadata` + `remove_file` 保证。
 
@@ -166,7 +173,7 @@ Windows 环境限制：本机沙箱无法对符号链接执行 `rename`，因此
 | 4 | 回收站每根 1 GiB「超过后仍进回收站」 | 超限先淘汰最旧再放入；全局超限才拒绝 | 契约 §5.2 同时要求淘汰，取可执行语义 |
 | 5 | `remove` 目录整体 rename | 同盘 rename；跨盘复制 + 删除 | 契约 §5.1 已允许跨盘降级 |
 | 6 | 审计 `id` 自增、保留 90 天 | 本轮无落库；内存 sink 无 id | 明确不接 SQLite；字段已预留 |
-| 7 | 错误码表未列 `fs.io` | 新增 `fs.io`（500） | 承载真实 I/O 错误，避免误映射为 `fs.not_found` |
+| 7 | 错误码表未列 `fs.io` | 新增 `fs.io`（500），仅承载未归类 I/O；`EROFS`→`fs.read_only`（403）、`ENOSPC`/`EDQUOT`→`fs.no_space`（507）、`EACCES`/`EPERM`→`fs.denied`（403） | 承载真实 I/O 错误，同时不把宿主只读/磁盘满伪装成 500，也不把内部错误降级为 4xx |
 | 8 | §7.1 有 `fs.too_many_entries`，§7.3 表未列 | 已实现该码（413） | 以 §7.1 为准，建议回填 §7.3 |
 | 9 | 管理员「危险操作二次确认」 | 未实现（UI 层职责） | 本 crate 无路由/页面 |
 | 10 | 站点删除 P1 审计 `site.delete` | 未实现 | 站点模型不在本 crate，属 app 接线 |

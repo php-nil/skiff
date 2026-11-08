@@ -93,6 +93,10 @@
 | `mkdir` | `path` | 建单层目录 | 沿用现有单层语义 |
 | `copy` | `path, to, overwrite?` | 服务端复制（文件/目录） | 新增；目录复制异步任务化（>1000 项） |
 | `stat` | `path` | 元数据（大小/类型/模式/属主/链接/哈希可选） | 新增；哈希按需计算，默认不算 |
+| `chmod` | `path, mode` | 修改权限位（`0000-7777`） | 新增；**禁止 setuid（4000）**，允许 setgid（2000）；受保护路径拒绝 |
+| `chown` | `path, uid, gid` | 修改属主/属组 | 新增；任意 `uid:gid` 允许；uid 0 在审计 `detail` 单独标 `root_owner=true` |
+| `archive` | `sources[], dest, format, overwrite?` | 打包（`zip` / `tar.gz`） | 新增；限条目数、源总字节、递归深度；符号链接/特殊文件跳过并回报 |
+| `extract` | `archive, dest_dir, overwrite?` | 解压（按扩展名识别 `zip` / `tar.gz`） | 新增；边解边校验绝对路径/`..`/条目数/单条体积/累计字节，超限中止并清理半成品；链接不解出 |
 
 - 所有操作返回结构化结果：`{ok, code?, message?, path?, bytes?, hash?, meta?}`；错误码见 §7.3。
 - 所有路径参数必须是**绝对路径**（插件）或管理员选择的路径；相对路径、`..`、NUL、空串一律拒绝。
@@ -131,7 +135,7 @@
 | `ts` | INTEGER | 秒级时间戳 |
 | `actor_type` | TEXT | `admin` / `plugin` / `system` |
 | `actor_id` | TEXT | 用户名或插件 id |
-| `action` | TEXT | `fs.read/write/list/mkdir/remove/rename/copy/stat/recycle.list/recycle.restore/recycle.purge/recycle.clear/quota.scan/quota.set/quota.cancel` |
+| `action` | TEXT | `fs.read/write/list/mkdir/remove/rename/copy/stat/chmod/chown/archive/extract/recycle.list/recycle.restore/recycle.purge/recycle.clear/quota.scan/quota.set/quota.cancel` |
 | `src_path` | TEXT | 源路径（规范化） |
 | `dst_path` | TEXT | 目标路径（改名/复制/恢复） |
 | `bytes` | INTEGER | 读/写/复制字节数；目录操作为 0 |
@@ -215,6 +219,7 @@
 - `fs.recycle.restore(id)`：检查原路径父目录存在且可写、目标不存在；父目录缺失返回 `fs.not_found` 并带「原路径的父目录已不存在」的可读说明，同名冲突返回 `fs.conflict` 且不覆盖（显式 `overwrite` 才替换）；写审计 `fs.recycle.restore`。
 - `fs.recycle.purge(id)`：彻底删除，写审计 `fs.recycle.purge`；仅 Admin 或条目所属主体。
 - **受保护路径双路径硬拒**：删除（`remove`）、别名（`rename`）、覆盖写（`write`/`copy`）与恢复（`restore`）都在 `skiff-app` 的 `AdminFs::guard` 与 `skiff-fs` 授权层各拦一次；命中数据根、`plugins/`、`official/`、`skiff.db`，以及内核自身运行配置（`/etc/skiff/config.toml`、`/etc/skiff/**` 的 TLS 材料、自定义 `config_path` 与 `tls_cert/tls_key`）一律返回 403（`fs.denied` / `fs.protected`），旧回收站条目也不能绕过。
+- **读取与列目录同样 403（有意设计）**：`fs.list` / `fs.read` 命中同一 `protected_hit` 时也返回 403，避免管理员经 Web 文件管理预览或下载内核运行配置（含监听/证书/密钥路径与令牌）；受保护区不是「只读可见」，需要排障时走宿主 shell 或 `skiff doctor`，不开放网页读。
 - **只保护内核运行路径**：保护区按路径组件比较，`/etc/skiff` 不会误伤 `/etc/skiff-other`；`/etc/nginx/nginx.conf`、`/etc/hosts` 等宿主其它配置仍可正常管理。`config_path` 的父目录仅在其专用目录名为 `skiff` 时整体保护，避免把 `/etc` 整体锁死。
 - 判定代数单一来源：`skiff-fs` 的 [`protected_hit`]，Web/应用层只注入前缀列表，不另写 `starts_with` 判断。
 - 站点删除：见 §9.3（P2 整站进回收站）。
@@ -281,9 +286,12 @@
 | `fs.file_too_large` | 413 | 单文件超限 |
 | `fs.quota_exceeded` | 507 | 授权根配额不足 |
 | `fs.trash_full` | 507 | 回收站满 |
+| `fs.read_only` | 403 | 目标文件系统只读（宿主 `ProtectSystem`/只读挂载等策略限制） |
+| `fs.no_space` | 507 | 宿主磁盘空间不足（`ENOSPC`）或文件系统配额用尽（`EDQUOT`） |
 | `fs.unsupported` | 400 | 操作不支持（如跨 scope 改名） |
 
 - 插件侧错误经 UDS 返回结构化 JSON；HTTP 管理面映射到上表状态码，页面内联展示。
+- **宿主拒绝≠内部错误**：`EROFS` 映射 `fs.read_only`（403，提示「该路径所在文件系统为只读，无法写入（宿主策略限制）」）；`EACCES`/`EPERM` 归 `fs.denied`（403）；`ENOSPC`/`EDQUOT` 归 `fs.no_space`（507）。只有真正未归类的 I/O 故障才落 `fs.io`（500），避免把环境限制伪装成面板故障，也避免把内部错误降级成 4xx。
 
 ## 8. 与站点的关系
 
