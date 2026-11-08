@@ -162,6 +162,13 @@ def size(path):
         return 0
 
 
+def monitor_samples():
+    """监控采样文件：新实现为 JSONL，旧实现为 samples.json，取实际存在的那份。"""
+    d = os.path.join(SKIFF_ROOT, "plugins/com.skiff.monitor/data")
+    jsonl = os.path.join(d, "samples.jsonl")
+    return jsonl if os.path.exists(jsonl) else os.path.join(d, "samples.json")
+
+
 def main():
     cg = cgroup_paths()
     f = open(os.path.join(OUT, "samples.csv"), "w", newline="", encoding="utf-8")
@@ -258,7 +265,7 @@ def main():
             sum(s[0] for _, s in dockerd), sum(s[2] for _, s in dockerd),
             sum(s[0] for _, s in loadgen), sum(s[2] for _, s in loadgen),
             len(plugins), sum(s[0] for _, _, s in plugins), sum(s[2] for _, _, s in plugins),
-            size(os.path.join(SKIFF_ROOT, "plugins/com.skiff.monitor/data/samples.json")),
+            size(monitor_samples()),
             size(os.path.join(SKIFF_ROOT, "skiff.db")),
             sum(size(p) for p in glob.glob(os.path.join(SITES_ROOT, "*", "log", "*.log"))),
         ])

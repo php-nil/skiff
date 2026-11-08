@@ -35,6 +35,13 @@ def d(a, b, key):
     return b[key] - a[key]
 
 
+def monitor_samples():
+    """监控采样文件：新实现为 JSONL，旧实现为 samples.json，取实际存在的那份。"""
+    d = os.path.join(SKIFF_ROOT, "plugins/com.skiff.monitor/data")
+    jsonl = os.path.join(d, "samples.jsonl")
+    return jsonl if os.path.exists(jsonl) else os.path.join(d, "samples.json")
+
+
 def main():
     print("phase\trps\thost%\tskiff%\tplugin%\tnginx%\tphp%\trust%\tdockerd%\tdiskW_KB/s\tskiffW_KB/s\tp99_ms\tconns\tmem_min_MB")
     for name, rs in ph.items():
@@ -96,9 +103,9 @@ def main():
         print("tasks:", con.execute("select count(*) from scheduled_tasks").fetchone()[0])
     except Exception as e:
         print("db check skipped:", e)
-    mon = os.path.join(SKIFF_ROOT, "plugins/com.skiff.monitor/data/samples.json")
+    mon = monitor_samples()
     if os.path.exists(mon):
-        print("monitor samples.json:", os.path.getsize(mon), "bytes")
+        print("monitor %s: %d bytes" % (os.path.basename(mon), os.path.getsize(mon)))
 
     before = os.path.join(D, "state-before.json")
     after = os.path.join(D, "state-after.json")

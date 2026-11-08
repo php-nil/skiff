@@ -25,8 +25,8 @@ PH=${PHP_HOST:-audit-env.local}
 RH=${RUST_HOST:-audit-rust.local}
 RATE=${RATE:-100}
 MODE=${1:-quick}
-LOG1=/www/sites/audit-env.local/log/access.log
-LOG2=/www/sites/audit-rust.local/log/access.log
+LOG1=/www/sites/$PH/log/access.log
+LOG2=/www/sites/$RH/log/access.log
 mkdir -p "$D"
 
 PRE1=$(stat -c %s "$LOG1" 2>/dev/null || echo 0)

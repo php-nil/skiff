@@ -12,10 +12,12 @@ use serde_json::{json, Value};
 use skiff_plugin_common as common;
 use skiff_sdk::{Plugin, RpcError};
 
-const RING_FILE: &str = "samples.json";
+const RING_FILE: &str = "samples.jsonl";
 const PREV_FILE: &str = "prev.json";
 /// 环形缓冲保留点数：60s 采样 ≈ 4 小时（契约 §9 的 `sample_interval=60s`）。
 const RING_MAX: usize = 240;
+/// 行数超过该值才压缩：追加到 2 倍上限再一次性收敛，摊薄重写成本。
+const RING_COMPACT_AT: usize = RING_MAX * 2;
 const TASK_ID: &str = "plugin:com.skiff.monitor:sample";
 
 fn main() {
@@ -59,8 +61,21 @@ fn config(plugin: &Plugin) -> Value {
 }
 
 fn history(plugin: &Plugin) -> Value {
-    let st = common::read_state(plugin, RING_FILE);
-    json!({ "samples": st.get("samples").cloned().unwrap_or(json!([])) })
+    json!({ "samples": ring_lines(plugin) })
+}
+
+/// 读回环形文件：一行一个采样点（JSON Lines）。
+///
+/// 文件只追加、定期压缩，行数最多 [`RING_COMPACT_AT`] 行；解析失败的行（例如
+/// 崩溃留下的半行）直接跳过，不让一条坏行毁掉整段历史。
+fn ring_lines(plugin: &Plugin) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(plugin.data_dir.join(RING_FILE)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(Value::is_object)
+        .collect()
 }
 
 /// 内核采样出票：读 `/proc` 并算差值，返回单个采样点（基线写 `prev.json`）。
@@ -143,9 +158,10 @@ fn read_point(plugin: &Plugin) -> Result<Value, RpcError> {
 
 /// 内核执行出票：把缓冲批次追加进环形历史并回 `persist` 水位。
 ///
-/// 落盘口径：写插件数据目录 `samples.json`（经 `common::write_state` 的 fs 通道），
-/// 环形保留 [`RING_MAX`] 点。任一点缺少 `seq`/`data` 或写盘失败都返回错误——
-/// 内核记失败且**不产生回执**，缓冲保留，下一轮重试。
+/// 落盘口径：插件数据目录 `samples.jsonl` 一行一个采样点，只追新增批次，
+/// 写放大与本批点数成正比、与历史长度无关；行数超过 2 倍上限时压缩为最近
+/// [`RING_MAX`] 行。任一点缺少 `seq`/`data` 或写盘失败都返回错误——内核记失败
+/// 且**不产生回执**，缓冲保留，下一轮重试。
 fn execute(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let points = params
         .get("points")
@@ -157,33 +173,53 @@ fn execute(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     }
 
     let rows = batch_rows(&points)?;
-
-    let mut ring = common::read_state(plugin, RING_FILE);
-    if !ring.is_object() {
-        ring = json!({});
-    }
-    let obj = ring.as_object_mut().expect("上面刚保证是对象");
-    let arr = obj
-        .entry("samples")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .ok_or_else(|| RpcError::internal("samples.json 的 samples 不是数组".to_string()))?;
-    for (_, data) in &rows {
-        arr.push(data.clone());
-    }
-    if arr.len() > RING_MAX {
-        let drop = arr.len() - RING_MAX;
-        arr.drain(0..drop);
-    }
-    let kept = arr.len();
-    common::write_state(plugin, RING_FILE, &ring).map_err(common::rpc_err)?;
+    let kept = append_rows(plugin, &rows)?;
 
     let last_seq = rows.last().map(|(seq, _)| *seq).unwrap_or(0);
     Ok(json!({
         "verdict": { "verdict": "persist", "persisted_upto": last_seq },
-        "detail": format!("落盘 {} 点，环形保留 {} 点", rows.len(), kept),
+        "detail": format!("追加 {} 点，环形保留 {} 点", rows.len(), kept),
         "output_bytes": 0,
     }))
+}
+
+/// 追加写环形文件；返回写入后的保留点数。
+///
+/// 只在行数超过 [`RING_COMPACT_AT`] 时整体压缩一次，其余批次都是纯追加。
+fn append_rows(plugin: &Plugin, rows: &[(u64, Value)]) -> Result<usize, RpcError> {
+    use std::io::Write;
+    let io_err = |e: std::io::Error| RpcError::internal(format!("写入 {RING_FILE} 失败: {e}"));
+    std::fs::create_dir_all(&plugin.data_dir).map_err(io_err)?;
+    let path = plugin.data_dir.join(RING_FILE);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(io_err)?;
+    for (_, data) in rows {
+        let line = serde_json::to_string(data)
+            .map_err(|e| RpcError::internal(format!("采样点序列化失败: {e}")))?;
+        writeln!(file, "{line}").map_err(io_err)?;
+    }
+    file.flush().map_err(io_err)?;
+    // Windows 上不能删除/改名仍被打开的文件：压缩前先释放句柄。
+    drop(file);
+
+    let lines = ring_lines(plugin);
+    if lines.len() <= RING_COMPACT_AT {
+        return Ok(lines.len());
+    }
+    let keep = &lines[lines.len() - RING_MAX..];
+    let mut text = String::new();
+    for v in keep {
+        text.push_str(&v.to_string());
+        text.push('\n');
+    }
+    let tmp = plugin.data_dir.join(format!(".{RING_FILE}.tmp"));
+    std::fs::write(&tmp, text).map_err(io_err)?;
+    let _ = std::fs::remove_file(&path);
+    std::fs::rename(&tmp, &path).map_err(io_err)?;
+    Ok(RING_MAX)
 }
 
 /// 内核批次点必须带 `seq` 与对象型 `data`；任一缺失都算协议错误，
@@ -351,5 +387,50 @@ Inter-|   Receive                                                |  Transmit
 
         assert!(batch_rows(&[json!({ "data": { "t": 1 } })]).is_err());
         assert!(batch_rows(&[json!({ "seq": 1, "data": 3 })]).is_err());
+    }
+
+    fn test_plugin() -> Plugin {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("skiff-monitor-test-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Plugin {
+            id: "com.skiff.monitor".into(),
+            api: "1.2".into(),
+            socket: dir.join("s.sock"),
+            data_dir: dir.clone(),
+            cache_dir: dir.join("cache"),
+            run_dir: dir.join("run"),
+            kernel_socket: dir.join("kernel.sock"),
+            granted: vec![],
+            token: String::new(),
+        }
+    }
+
+    #[test]
+    fn ring_appends_then_compacts() {
+        let p = test_plugin();
+        let rows: Vec<(u64, Value)> = (0..500u64).map(|i| (i, json!({ "t": i }))).collect();
+        // 超过 2 倍上限才压缩，保留最近 RING_MAX 点。
+        assert_eq!(append_rows(&p, &rows).unwrap(), RING_MAX);
+        let lines = ring_lines(&p);
+        assert_eq!(lines.len(), RING_MAX);
+        assert_eq!(lines[0]["t"], json!(260));
+        assert_eq!(lines[RING_MAX - 1]["t"], json!(499));
+
+        // 未到压缩阈值时纯追加：行数增加且历史不重写。
+        let more: Vec<(u64, Value)> = (500..505u64).map(|i| (i, json!({ "t": i }))).collect();
+        assert_eq!(append_rows(&p, &more).unwrap(), RING_MAX + 5);
+
+        // 崩溃留下的半行：解析失败只跳过该行，不影响其它历史。
+        let path = p.data_dir.join(RING_FILE);
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"t\": truncated\n");
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(ring_lines(&p).len(), RING_MAX + 5);
+        let _ = std::fs::remove_dir_all(&p.data_dir);
     }
 }

@@ -320,7 +320,7 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 | 插件 | 变更前 | 变更后 |
 | --- | --- | --- |
 | `cron` | 持有 `jobs.json`、自己匹配表达式、自己调用目标插件 | 纯管理 UI：任务增删改查、历史、手动触发；全部走内核 scheduler API；不再有计时器与本地任务文件 |
-| `monitor` | manifest `cron` 每 5 分钟 `tick`，插件内环形缓冲 `samples.json` | 注册 `plugin:com.skiff.monitor:sample`：`sample_interval=60s` 进内核缓冲，`schedule=*/5` 执行批量落盘；插件只实现 `sample`/`execute` 两个方法 |
+| `monitor` | manifest `cron` 每 5 分钟 `tick`，插件内环形缓冲 `samples.json` | 注册 `plugin:com.skiff.monitor:sample`：`sample_interval=60s` 进内核缓冲，`schedule=*/5` 执行批量落盘；插件只实现 `sample`/`execute` 两个方法；落盘为 `samples.jsonl` 追加 |
 | `guard` | 每分钟 `tick` 全量列举容器 | 注册 `plugin:com.skiff.guard:reconcile`，每分钟对账；插件内无定时器 |
 | `files` | 无定时任务 | 保持无任务；文件操作走 fs 原语 |
 
@@ -331,9 +331,11 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
   `enabled` 描述「内核按什么节奏驱动我」；内核启动与 Web 安装/升级后按声明种入
   `plugin:<id>:<key>`，已存在则不覆盖（保留管理员改过的调度与启停）。插件内**不得**再有
   定时器；动态任务（站点备份等）仍由内核内置任务承担。
-- `monitor` 落盘口径：`sample` 只更新 `data/prev.json` 差值基线；`execute` 把内核批次写
-  `data/samples.json`（环形 240 点，60s 采样 ≈ 4 小时），统一走 fs 通道。写失败返回错误 →
+- `monitor` 落盘口径：`sample` 只更新 `data/prev.json` 差值基线；`execute` 把内核批次以
+  JSON Lines **追加**到 `data/samples.jsonl`（一行一点，60s 采样），行数超过 480 才压缩为最近
+  240 行（≈4 小时），统一走 fs 通道。追加写与文件大小无关，不再每次整文件重写。写失败返回错误 →
   内核记失败且不产生回执，缓冲保留到下一轮重试；容量 4 MiB，溢出按 `drop_oldest`。
+  `history` 逐行解析，崩溃留下的半行/坏行跳过。
 - `guard` 本轮只落周期对账；契约原定的「docker events 为主」尚无 events 能力面，列为 P2 差距，
   不以插件自建事件循环替代。
 
@@ -416,7 +418,7 @@ trait Scheduler {
 - 插件升级时删除旧的 `plugins/cron/data/jobs.json`；cron UI 首次打开显示「任务已迁移至内核，请重新创建」空态（P1 可提供一次性导入按钮，但默认不做）。
 - 现有 manifest `cron = [...]` 字段：**已移除 `run_cron`**；字段仅保留解析兼容，内核不再读取、不再产生第二套执行路径。
 - manifest `[[task]]`：内核在启动装配与 Web 安装/升级成功后按声明种任务；插件卸载（或 manifest 升级后不再声明）时回收 `source=plugin:<id>` 的孤儿任务。种子任务以 `created_by=system:manifest` 标记，只回收这类「内核声明种入」的任务，插件自己经 RPC 建的任务不动。
-- `monitor` 的 `samples.json`：P1 保留历史文件只读展示；新采样由 `sample` 出点进内核缓冲，`execute` 批次写回同一环形文件；不做旧数据合并。
+- `monitor` 的 `samples.jsonl`：P1 保留历史文件只读展示；新采样由 `sample` 出点进内核缓冲，`execute` 批次**追加**到同一 JSONL 文件，超 480 行压缩回 240 行；不做旧 `samples.json` 数据合并。
 - `guard` 的 `state.json` events：保留；`reconcile` 任务不依赖旧 tick。
 - 站点备份：仓库内**未发现现有 `site_backup` 实现**（全仓搜索无 Rust 命中），因此无需收敛逻辑；站点页新增开关即可。
 

@@ -5723,7 +5723,10 @@ impl AppState {
         Ok(())
     }
 
-    /// 读取站点日志：宿主文件、时间倒序、可选关键字过滤；读取前先做内核轮转。
+    /// 读取站点日志：宿主文件、时间倒序、可选关键字过滤（均只作用于文件尾部窗口）。
+    ///
+    /// 读取本身不再触发轮转：轮转由 30s 巡检统一做（改名后让 nginx 重开日志），
+    /// 避免「看一下日志就复制整个文件」的写放大。
     pub fn site_logs(
         &self,
         domain: &str,
@@ -5739,9 +5742,6 @@ impl AppState {
         let site_dir = PathBuf::from(&site.root_dir);
         let read = |kind: LogKind| -> String {
             let p = s.log_file(&site_dir, kind);
-            if let Err(e) = rotate_if_large(&p, LOG_ROTATE_BYTES) {
-                tracing::warn!(path = %p.display(), error = %e, "日志轮转失败");
-            }
             match read_log(&p, tail, keyword) {
                 Ok(t) if t.is_empty() && !keyword.trim().is_empty() => {
                     format!("（没有匹配「{}」的日志行）", keyword.trim())
@@ -6115,9 +6115,31 @@ fn port_owner(_port: u16) -> String {
     "当前平台无法解析占用进程".into()
 }
 
+/// 单次日志读取的最大字节数：只看文件尾部这么多字节，避免大文件整读拖垮页面。
+const LOG_READ_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
 /// 读取日志尾部：`keyword` 为空不过滤；输出时间倒序（最新在前）。
+///
+/// 只读文件最后 [`LOG_READ_MAX_BYTES`] 字节，内存占用与文件大小无关；因此关键字
+/// 过滤与 `tail` 都限制在这个窗口内。起点落在文件中间时丢弃首个半行。
 fn read_log(path: &Path, tail: usize, keyword: &str) -> std::io::Result<String> {
-    let text = std::fs::read_to_string(path)?;
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(LOG_READ_MAX_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf);
+    let text = if start > 0 {
+        match text.find('\n') {
+            // 首行是半行：跳过它；整段没有换行说明是单条超长行，直接放弃。
+            Some(i) => &text[i + 1..],
+            None => "",
+        }
+    } else {
+        &text[..]
+    };
     let kw = keyword.trim().to_lowercase();
     let lines: Vec<&str> = text
         .lines()
@@ -6128,10 +6150,10 @@ fn read_log(path: &Path, tail: usize, keyword: &str) -> std::io::Result<String> 
     Ok(lines.join("\n"))
 }
 
-/// 内核轮转：扫描日志目录，对超过阈值的 `.log` 做 copytruncate。
+/// 内核轮转：扫描日志目录，对超过阈值的 `.log` 改名轮转（不复制数据）。
 ///
-/// 由内核巡检（30s 一次）调用，不依赖宿主 logrotate；nginx 一直持有文件 fd，
-/// copytruncate 保留 inode，不会因重开日志丢行。
+/// 由内核巡检（30s 一次）调用，不依赖宿主 logrotate；改名后调用方负责让
+/// nginx 重新打开日志，否则写入会继续落在 `.1` 上。
 pub fn rotate_logs(dir: &Path, max_bytes: u64) -> std::io::Result<usize> {
     if !dir.is_dir() {
         return Ok(0);
@@ -6179,6 +6201,10 @@ fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 内核轮转：达到阈值时把文件改名为 `.1` 并新建同名空文件。
+///
+/// 改名不复制数据，写放大与文件大小无关；不改 inode 语义的前提是写者重新打开
+/// 文件——nginx 由 30s 巡检在轮转后触发 `nginx -s reopen`，新文件立即接续写入。
 fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -6192,7 +6218,9 @@ fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
         "{}.1",
         path.extension().and_then(|e| e.to_str()).unwrap_or("log")
     ));
-    std::fs::copy(path, &rotated)?;
+    // Windows 的 rename 不能覆盖已存在目标；Unix 上是原子覆盖，先删也无害。
+    let _ = std::fs::remove_file(&rotated);
+    std::fs::rename(path, &rotated)?;
     std::fs::File::create(path)?;
     Ok(true)
 }
@@ -7299,7 +7327,26 @@ mod tests {
     }
 
     #[test]
-    fn log_rotation_copytruncates() {
+    fn log_reader_only_reads_tail_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.access.log");
+        let line = format!("{}\n", "x".repeat(99));
+        let mut text = String::from("EARLY-MARKER\n");
+        while text.len() < (LOG_READ_MAX_BYTES as usize) + 4096 {
+            text.push_str(&line);
+        }
+        text.push_str("LATE-MARKER\n");
+        std::fs::write(&p, &text).unwrap();
+        let out = read_log(&p, 5, "").unwrap();
+        assert!(out.contains("LATE-MARKER"), "尾部窗口应包含最新行");
+        assert!(!out.contains("EARLY-MARKER"), "窗口之外的内容不应被读入");
+        assert!(out.lines().count() <= 5);
+        // 关键字过滤同样只作用于尾部窗口，不回头扫描整个文件。
+        assert!(read_log(&p, 5, "early-marker").unwrap().is_empty());
+    }
+
+    #[test]
+    fn log_rotation_renames_and_recreates() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("demo.access.log");
         std::fs::write(&p, "x".repeat(64)).unwrap();

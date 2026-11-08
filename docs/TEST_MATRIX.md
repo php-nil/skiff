@@ -287,7 +287,7 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | 超时晚到结果 | ☑通过（本机） | `timeout_enters_sixty_second_cooldown` 新增断言：`timeout` 结算后 `finish(同一 run_id)` 返回 `Protocol`，任务保持 `Failed`，终态不被覆盖；上机未单独构造晚到回执 |
 | 缓冲能力面 | ☑部分通过 | 本机回执/权限/限速全绿；测试机 testkit 未暴露 `buffer.*` 入口，无法上机复验（台账记缺口） |
 | monitor / guard 迁移 | ☐未上机（代码完成） | manifest 改 `[[task]]`，内核启动/安装种入 `plugin:com.skiff.monitor:sample` 与 `plugin:com.skiff.guard:reconcile`；`run_cron` 已删，插件无 `tick`。上机断言：`scheduled_tasks` 两条、source 前缀正确、无 `plugin.cron_deprecated` 审计、重装不重复、卸载任务消失 |
-| monitor 采样/落盘 | ☐未上机 | 内核每 60s 调 `sample`（只更新 `prev.json`），每 5 分钟调 `execute` 落 `samples.json` 并回 `persist`；写盘失败时缓冲保留、下一轮重试；`snapshot` 返回 `scheduler.driver=kernel` |
+| monitor 采样/落盘 | ☐未上机 | 内核每 60s 调 `sample`（只更新 `prev.json`），每 5 分钟调 `execute` 追加 `samples.jsonl`（一行一点，超 480 行压缩回 240 行）并回 `persist`；写盘失败时缓冲保留、下一轮重试；`snapshot` 返回 `scheduler.driver=kernel` |
 | guard 单路径与语义 | ☐未上机 | 每分钟 `reconcile`；异常容器重启/冷却/小时预算/未授权只报不动与迁移前一致；UI 无「立即巡检」入口；`status.scheduler.driver=kernel` |
 
 ## H. Docker
@@ -403,7 +403,7 @@ sudo journalctl -u skiff -n 50 --no-pager | grep -E '安全入口|listen|error' 
 | PERF-04 | 反代路径：与静态/PHP 路径可横向对比 | `[上机]` PERF-02 通过；`audit-rust.local` 反代上游 200 | 跑 `rust-c4/c16/c32`；采 nginx 容器与上游容器 CPU | 全部 200；反代路径额外开销只落在 nginx 与上游容器；`skiff` 进程 CPU 不随 rps 增长 | □通过 / □失败 | `crates/app/src/sites.rs`（反代 vhost）、`crates/docker/src/client.rs` |
 | PERF-05 | 宿主机与容器资源归因：1 Hz 采样可复算 | `[上机]` PERF-01 通过 | 检查 `samples.csv` 各阶段 CPU/内存/磁盘写/网络、`conts.csv` 各容器 cgroup CPU/内存、`procs.csv` 目标进程 | 三阶段（idle/warmup/负载）分档齐全；宿主 4 核合计 CPU 与容器 CPU 之和同量级；内存无持续增长；磁盘写增长能对应到日志轮转 | □通过 / □失败 | `tools/perf/observe.py`；`/proc/stat`、`/proc/meminfo`、`/proc/diskstats`、cgroup v2 |
 | PERF-06 | 内核与插件常驻成本：tick 与插件进程可忽略 | `[上机]` PERF-01 通过；guard/monitor 已装并启用 | 对比 idle 与最高并发档的 `skiff` 主进程 CPU、线程数/自愿切换、插件子进程 RSS/CPU、`NRestarts` | `skiff` 主进程 CPU 不随请求增长（≤0.2% 单核）；线程数稳定；tokio 线程每秒自愿切换为个位数（含 1 s tick）；guard+monitor 常驻 RSS < 5 MB、CPU ≤0.1%；`NRestarts=0` | □通过 / □失败 | `crates/core/src/server.rs`（1 s tick、30 s 巡检）、`crates/sched/src/scheduler.rs::tick`、`plugins/guard/manifest.toml`、`plugins/monitor/manifest.toml` |
-| PERF-07 | 无意义消耗定量：日志轮转/日志页/采样写放大 | `[上机]` PERF-02/PERF-03 通过 | 在最高并发档读 `skiff` 进程写字节与磁盘写；比对站点 `access.log` 尺寸；打开站点「日志」页一次；观察 `plugins/monitor/data/samples.json` 的 mtime 与尺寸 | 能给出「每请求额外写多少字节」「一次日志页读入多少字节」「监控每 5 分钟重写多少字节」三项实测值，并判定是否与请求量线性放大 | □通过 / □失败 | `crates/app/src/sites.rs::rotate_if_large`（copytruncate 整文件复制）、`crates/app/src/sites.rs::read_log`（全量 `read_to_string`）、`plugins/monitor/src/main.rs`（`samples.json` 全量重写） |
+| PERF-07 | 无意义消耗定量：日志轮转/日志页/采样写放大 | `[上机]` PERF-02/PERF-03 通过 | 在最高并发档读 `skiff` 进程写字节与磁盘写；比对站点 `access.log` 尺寸；打开站点「日志」页一次；观察 `plugins/monitor/data/samples.jsonl` 的 mtime 与尺寸 | 能给出「每请求额外写多少字节」「一次日志页读入多少字节」「监控每 5 分钟重写多少字节」三项实测值，并判定是否与请求量线性放大 | □通过 / □失败 | `crates/app/src/sites.rs::rotate_if_large`（`rename` + 巡检后 `nginx -s reopen`）、`crates/app/src/sites.rs::read_log`（尾部 2 MiB 窗口）、`plugins/monitor/src/main.rs`（`samples.jsonl` 追加 + 超 480 行压缩） |
 | PERF-08 | 压测后机器恢复干净、数据一致 | `[上机]` 已完成任一档压测 | 核对容器与站点状态、插件启停与基线一致、`PRAGMA integrity_check`、`user_version`、`systemctl show skiff -p NRestarts`、`load1` 与 `MemAvailable` 回落 | 临时站点/容器/文件全部消失；三容器 Up；插件启停与压测前一致；`integrity_check=ok`；`user_version` 与压测前相同；`NRestarts=0`；两站仍 200 | □通过 / □失败 | `tools/perf/report.py`；`/www/skiff/skiff.db`；`/www/sites` |
 
 最小回归命令：
@@ -430,7 +430,7 @@ curl -s -o /dev/null -w 'rust=%{http_code}\n' -H 'Host: audit-rust.local' http:/
 | PERF-04 | ☑通过 | Rust 353 / 1462 / 2921 rps；p99 2.24 / 3.65 / 5.44 ms；nginx 容器 10.38 / 27.94 / 54.45%；上游容器 2.12 / 6.71 / 11.49% |
 | PERF-05 | ☑通过 | 宿主 CPU：静态 3.56 / 8.82 / 14.02%，PHP 7.04 / 25.75 / 26.45%，Rust 4.88 / 11.70 / 20.49%；nginx 容器 5.29 / 14.96 / 23.23%（静态）；磁盘写 45 / 291 / 779 KB/s；全程内存无单调增长 |
 | PERF-06 | ☑通过 | `skiff` 主进程 idle 0.05% 单核，负载下 0.03–0.10%，与 rps 无关；tokio 线程自愿切换约 2.4 次/s；guard+monitor 常驻 RSS ≈1.4 MB、CPU ≤0.02%；`NRestarts=0` |
-| PERF-07 | ☑通过（三项定量） | ①PHP 每请求 stdout 日志经 containerd-shim→dockerd，c32 合计 13.78% 单核；②30 s copytruncate 轮转使 `skiff` 写 1/215/464 KB/s（c4/c16/c32，≈161 B/请求），磁盘写 45/291/779 KB/s；③`monitor` `samples.json` 36,549 B 每 300 s 整文件重写（≈10.4 MB/天）；④`read_log` 整文件读入，`audit-env.local/access.log` 轮转前达 40 MB 级 |
+| PERF-07 | ☑通过（三项 A/B 定量，2026-11-08） | 改前：①PHP 每请求 stdout 日志经 containerd-shim→dockerd，c32 合计 13.78% 单核；②30 s copytruncate 轮转使 `skiff` 写 1/215/464 KB/s（c4/c16/c32）；③`samples.json` 36,549 B 每 300 s 整文件重写；④`read_log` 整文件读入，3 GB 文件 4.53 s/写 2.97 GB/返回空页。改后复测：②`skiff` 写 3/3/3 KB/s、磁盘写 52/124/195 KB/s、p99 2.08/4.11/4.99 ms（CPU 与 p99 在噪声内）；④9.5 MB 峰值 RSS 22,984→12,160 KB，3 GB 4.5 ms/写 16 KB/返回最新 199 行；③一次 `execute` 写 77,824→1,059 B、inode 不变、旧 `samples.json` 不再被写 |
 | PERF-08 | ☑通过 | 临时文件与新增 `access.log.1` 已删；三容器 Up、两站 200；插件/授权/任务计数与压测前一致；`integrity=ok`、`user_version=11`；`NRestarts=0`；`MemAvailable` 约 3301 MB、`load1` 回落 |
 | PERF-01 备注 | — | 首轮 `collect` 采样脚本变量被覆盖导致无数据，已修复；`load.py` 曾把 nginx `keepalive_requests` 到期断连计为 error，已改计 `reconnects` |
 

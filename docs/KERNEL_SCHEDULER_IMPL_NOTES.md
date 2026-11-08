@@ -304,7 +304,8 @@ cargo test   --manifest-path plugins/Cargo.toml --locked            # 21 passed;
   装配补齐。
 - **monitor**：任务 `plugin:com.skiff.monitor:sample`（kind `plugin:com.skiff.monitor:execute`，
   source `plugin:com.skiff.monitor`，`sample_interval=60s`、`schedule=*/5`、缓冲 4 MiB / 批 512 KiB）。
-  插件只留 `sample`（返回点、更新 `prev.json` 基线）、`execute`（批次落 `samples.json`、回 `persist`）
+  插件只留 `sample`（返回点、更新 `prev.json` 基线）、`execute`（批次**追加** `samples.jsonl`，
+  超 480 行压缩为 240 行，回 `persist`）
   与只读 `snapshot/history/config`；`tick` 已删除。
 - **guard**：任务 `plugin:com.skiff.guard:reconcile`（每分钟），执行体返回无 `verdict` 的
   `ExecOutput`（等价 `keep`），摘要进 `detail`；`tick` 与 UI「立即巡检」已删除，UI 只读。
