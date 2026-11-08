@@ -86,4 +86,4 @@
 | 2026-11-06 | 内核调度器契约与实现落地（任务模型、内存缓冲与四种回执、插件唤醒链路、内置任务）；站点停止态/运行态非法配置保存改为候选 `nginx -t` 校验。详 [changes/2026-11-06.md](changes/2026-11-06.md)。 |
 | 2026-11-07 | 内核文件管理页第一步（`AdminFs` 接 `skiff-fs`，菜单退役与旧深链 301）；FTP 能力面与 `com.skiff.ftp` 上线（`MinUID=82`，schema v11）；内置任务删除在调度器/能力面/服务层硬拦截；PHP 池显式 `access.log = /dev/null`；站点高风险动作移入「管理」页签。详 [changes/2026-11-07.md](changes/2026-11-07.md)。 |
 | 2026-11-07 | 文档体系收敛：新增 [TEST_ENV.md](TEST_ENV.md) 作为测试机访问信息唯一来源；门槛命令、测试台账、契约与实现说明去重。详 [changes/2026-11-07.md](changes/2026-11-07.md)。 |
-| 2026-11-09 | 收尾清理：Node.js / Go 未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除；WAF 仅占位无实现，`sites.waf_mode` 与 `waf_rules_dir` 死配置及目录预留已删除。详 [changes/2026-11-09.md](changes/2026-11-09.md)。 |
+| 2026-11-09 | 收尾清理：Node.js / Go 未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除；WAF 未实现，已移出范围，`sites.waf_mode` 与 `waf_rules_dir` 死配置及目录预留已删除。详 [changes/2026-11-09.md](changes/2026-11-09.md)。 |

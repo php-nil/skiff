@@ -233,8 +233,8 @@
 - **终态**：`user_version=15`；6 插件（cron / ftp / guard / monitor / files / testkit）；站点仅 `iter-rust-1862702.test` running；容器 `skiff-web-nginx` / `skiff-php-iter-php-1862702` / `skiff-rust-iter-rust-1862702` 均 Up；探针站 `btn-probe-1862702.test` 的站点、目录与 vhost 已删除；远端 `/root/iter/v1.sh v2.sh v3.sh` 已清理。
 
 **未闭环（唯一来源为 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- WAF 拦截未实现、aarch64 未实机装机、buffer 上机入口与并发 spawn 复验、监控出站速率字段、Release 下载端点容错等未闭环项的当前状态与下一步，统一见台账；本节只记已通过的断言。
-- 受限形态「文件管理」入口与直达已按能力面处理，`607d09b` 装机复验通过，该行已从台账删除。
+- aarch64 未实机装机、buffer 上机入口、监控出站速率字段、Release 下载端点容错等未闭环项的当前状态与下一步，统一见台账；本节只记已通过的断言。
+- WAF 未实现、已移出范围（配置与规则目录已删除，台账行已删除）；受限形态「文件管理」入口与直达已按能力面处理，`607d09b` 装机复验通过，该行已从台账删除。
 
 **收尾状态（2026-11-09 `8acc83f` 收口发版复验轮后）**
 - 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用（admin，口令文件 `/root/iter/admin-pw.txt` 第 3 行）；`skiff.service` active、`NRestarts=0`、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,050,640 B、sha256 `5959d021…64a72b8`（与 `8acc83f` 包内一致）。
