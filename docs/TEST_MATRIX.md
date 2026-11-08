@@ -273,7 +273,7 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | TASK-03 | ☑通过 | 开关 303；`scheduled_tasks` 行 `id=builtin:site-backup:matrix.local`、`kind=builtin:site-backup`、`source=site:matrix.local`、`schedule_json={"type":"cron","expr":"0 3 * * *","tz":...}`、`payload={"domain":"matrix.local"}`、`enabled=1`；关闭后 `enabled=0` 且 8 条历史保留；重开恢复 `enabled=1`。环境无 OpenResty，站点为库内夹具，未触发真实 vhost |
 | TASK-04 | ☑通过 | 手动触发 303；`task_runs` 落 `trigger=manual`/`result=ok`（站点备份产出 tar）；插件任务手动触发同样落 `trigger=manual` |
 | TASK-05 | ☑通过（本机） | `cargo test -p skiff-sched --locked` 45 项通过：超时取消、退避重试、单飞、`queue_one`、冷却期、错过策略、`retain_across_ticks=false` |
-| TASK-06 | ☑通过（本机） | `cargo test -p skiff-app tasks --locked` 7 项通过：`buffer.push`/`buffer.stat` 回执、仅本人任务、每任务 100 点/秒限速、无权限拒绝；testkit 已补 `buffer_probe`/`buffer_push` 入口，上机复验待发版后在台账跟踪 |
+| TASK-06 | ☑通过（上机，2026-11-09） | 官方包 `0c99464` 上机：`buffer_probe` 基线 `points=0/capacity_bytes=4096`；`buffer_push count=100` → `accepted=100, dropped_points=17, dropped_bytes=833, signals=[high_watermark,overflow]`；再 probe `points=83, bytes=4067, seq=100, head_seq=17, tail_seq=99, high_watermark=true`；同秒再推 1 点被 400 拒（每任务 100 点/秒限速）；`count=101` 本地 `-32602`；70KB 大点 `accepted=false, bytes=70043, reason=point_too_large`。`rejected_points/rejected_bytes` 未能构造：超限点与限速在入缓冲前即被拒，统计恒 0。旧包（无 `manage`）`buffer_push` 403「缺少 scheduler:manage」已验 |
 | TASK-07 | ☑部分通过 | `cron` `jobs.list/toggle/run` 200；`jobs.remove` 200 且行删除（`{"removed":true}`）；内核任务详情/历史页 200；插件任务按调度唤醒、失败回执 `result=fail`/`error_class=executor_failed`、手动触发均通过；`cron` 代他人注册被 `source != owner` 拒，修复（`source=owner`）已在本机待发版，见台账 |
 | TASK-08 | ☑通过 | viewer 只读；写操作 403；admin 无 CSRF 403、带 CSRF 303 |
 | TASK-09 | ☑通过（2026-11-07） | `skiff-cron` 14 项单测（预设→表达式、越界拒绝、往返反解、等价写法、自定义回退、描述文案）全绿；测试机 10.10.15.4 真浏览器 41 项断言全过：6 类预设分别落 `*/5 * * * *`、`0 */2 * * *`、`0 3 * * *`、`30 9 * * 1,3,5`、`0 4 1 * *`、`0 9 * * 1-5` 且预览为人话；编辑「改调度」逐项回显对应表单；自定义 `0,30 8-18 * * 1-5` 原样保留；非法 `0 25 * * *` 在新建与编辑两处均报错并拒绝保存；验收任务已清理。截图 `dist/iter/shots/{list,edit-card}.png` |
@@ -285,10 +285,10 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | 插件门三态 | ☑通过 | 未安装 `NotInstalled`、禁用 `Disabled`、`api=1.1` 且 `plugins.api=1.1` 时 `ApiMismatch`；均只写 `task.blocked` 审计，不产生 failed 运行 |
 | 执行期回调 scheduler | ☐未上机 | testkit 已提供 `busy_probe`（默认停用的 `busy-probe` 任务，启用后「立即执行」即构造执行期回调），待上机复验；代码核对 `crates/core/src/kernel/capability.rs:134-141`：`is_interop_busy || tasks.is_executing` → 403 + `scheduler.deny` |
 | 超时晚到结果 | ☑通过（本机） | `timeout_enters_sixty_second_cooldown` 新增断言：`timeout` 结算后 `finish(同一 run_id)` 返回 `Protocol`，任务保持 `Failed`，终态不被覆盖；上机未单独构造晚到回执 |
-| 缓冲能力面 | ☐待上机 | 本机回执/权限/限速全绿；testkit 已补 `buffer_probe`/`buffer_push`（`scheduler:manage`），按 TASK-06 步骤上机复验容量/丢弃/高水位与限速 |
+| 缓冲能力面 | ☑通过（上机，2026-11-09） | 容量/条数/字节/丢弃/高水位/seq 全对上：4096 B 容量下 100 点推入后保留 83 点/4067 B、丢 17 点/833 B（drop-oldest，单点约 49 B）；限速与本地 `count` 上限、无 `manage` 403 均通过。`rejected_*` 统计无法构造（拒绝发生在入缓冲前） |
 | monitor / guard 迁移 | ☐未上机（代码完成） | manifest 改 `[[task]]`，内核启动/安装种入 `plugin:com.skiff.monitor:sample` 与 `plugin:com.skiff.guard:reconcile`；`run_cron` 已删，插件无 `tick`。上机断言：`scheduled_tasks` 两条、source 前缀正确、无 `plugin.cron_deprecated` 审计、重装不重复、卸载任务消失 |
 | monitor 采样/落盘 | ☐未上机 | 内核每 60s 调 `sample`（只更新 `prev.json`），每 5 分钟调 `execute` 追加 `samples.jsonl`（一行一点，超 480 行压缩回 240 行）并回 `persist`；写盘失败时缓冲保留、下一轮重试；`snapshot` 返回 `scheduler.driver=kernel`，基线独立写 `prev_ui.json`，不截断采样窗口 |
-| monitor 网络速率口径 | ☑通过（2026-11-09） | 已知量对照（测试机，16s 窗口下载 119.1 MB）：`/proc/net/dev` tx 差 119,125,028 B → 期望 7,428,904 B/s，插件报 `net_tx_rate=7,437,136 B/s`（差 0.11%）；rx 44,709 vs 44,739 B/s。单位 B/s（字节差/秒），`net_rx`/`net_tx` 为累计字节；历史表出站用 `net_tx_rate`，概览分入站/出站两卡。修复前该列展示累计字节且无 `net_tx_rate` |
+| monitor 网络速率口径 | ☑通过（2026-11-09，官方包 `0c99464`） | 全速窗口：`/proc/net/dev` tx 差 210,657,428 B / 10 s → 期望 21,065,742.8 B/s，插件 `net_tx_rate=21,065,742.8 B/s`（差 0.00%，`net_tx` 与宿主逐字节一致）。限速长窗口 106 s（200 MB，`scp -l 16384`）：整窗均值 1,985,505 B/s；面板 UI 每约 60 s 自身的 `snapshot` 轮询把末段窗口截为 54 s，插件报 1,943,259.9 B/s，对同 54 s 期望差 0.00%、对整窗均值差 2.13%。同窗内内核 60 s 采样推进 `prev.json`（3060→3120），`prev_ui.json` 未被内核改写——两份基线独立，内核采样不截断 UI 窗口 |
 | guard 单路径与语义 | ☐未上机 | 每分钟 `reconcile`；异常容器重启/冷却/小时预算/未授权只报不动与迁移前一致；UI 无「立即巡检」入口；`status.scheduler.driver=kernel` |
 
 ## H. Docker
@@ -501,7 +501,7 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 | --- | --- | --- |
 | FS-04 | 后端+管理员 UI 已接（第二步） | 回收站接 SQLite `trash_entries`，`/{p}/files/trash` 提供恢复/彻底删除/清空；能力面仍无 `fs.trash` 动词（插件不直接操作回收站） |
 | FS-05 | 后端+管理员 UI 已接（第二步） | 目录树配额接 `fs_quotas`，`/{p}/files/quotas` 提供设置/修改/取消/重扫；能力面无 quota 动词 |
-| TASK-06 | 有入口（待上机复验） | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；2026-11-09 testkit 增加 `buffer_probe`/`buffer_stat`（`buffer.stat` 原样回报统计）与 `buffer_push`（按 `count` 循环 `buffer.push`，≤100 对齐限速），manifest 已加 `scheduler:manage`；上机步骤见 TASK-06 |
+| TASK-06 | ☑通过（上机，2026-11-09） | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；testkit `buffer_probe`/`buffer_stat`/`buffer_push` 上机实测覆盖容量/丢弃/高水位/限速/权限，数字见 G 章「调度器补充实测」 |
 | TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，2026-11-06 实测创建/删除均 200 |
 | DOCKER-10 | 运行时入口已接（单文件） | `/$P/compose` 走 `skiff-compose` 解析 + `Docker::execute` 的 `compose.up/down`；不支持 `-f` 多文件叠加，源文件不落盘；`xtask check` 字段子集校验保留 |
 | DEPLOY-09 | 部分通过：qemu-user 冒烟，未实机装机 | `file`/`ldd` 显示 ARM aarch64 静态链接，`version`/`--help`/`doctor` 通过（2026-11-09 `2f63aeb`）；复现条件=arm64 Linux + systemd，装包后验启动/建站 |

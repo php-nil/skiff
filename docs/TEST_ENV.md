@@ -61,29 +61,28 @@
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `v0.1.0`（`9a656d5`；相对 `8acc83f` 含下载/读取不存在路径的 **404** 修复——受保护目录下仍硬拒 403，附 `missing_child_reports_not_found_not_denied` 回归） |
-| tag / 构建提交 | `v0.1.0` = `9a656d5`（force 移动同一 tag）：Release run `42519640010` success，CI run `42519633018` success，`main` 与 tag 同指该提交 |
-| 部署时间 | 2026-11-09 04:29（Asia/Shanghai；在 v15 库上按新 Release 资产覆盖安装，库保持 v15） |
-| 部署方式 | `v0.1.0`（`9a656d5`）Release 资产 → `checksums.txt` 与包内逐资产 sha256 校验 OK → 解压 → `sh install.sh --no-docker`；安装后 `/usr/local/bin/skiff` 13,050,640 B、sha256 `eb8ac79541c378833d3e04f735673f9e7ed2d54463be4475058a35865273401d` 与包内二进制一致；`/root/skiff.before-d80661b` 保留旧版 |
+| 版本 | `v0.1.0`（`0c99464`；相对 `9a656d5` 含 monitor 出站速率 `net_tx_rate` + 独立 UI 基线 `prev_ui.json`、testkit `buffer_probe`/`buffer_push` 与 `scheduler read+manage`，以及 busy-probe 补缓冲声明（`sample_method=buffer_sample`、`capacity_bytes=4096`）的修复） |
+| tag / 构建提交 | `v0.1.0` = `0c99464`（force 移动同一 tag）：Release run `42523652885` success，CI run `42523018505` success；`git ls-remote` 核对远端 `main` 与 tag 同指该提交 |
+| 部署时间 | 2026-11-09 约 05:10–05:28（Asia/Shanghai；在 v15 库上按新 Release 资产覆盖安装，库保持 v15） |
+| 部署方式 | `v0.1.0`（`0c99464`）Release 资产 → `checksums.txt` 与逐资产 sha256 校验 OK → 解压 → `sh install.sh --no-docker`；安装后 `/usr/local/bin/skiff` 13,050,640 B、sha256 `92b2bd2b413294be97c372267cc977dbb4ebcfb7bdd4fe89c9232c2742f26b17` 与包内二进制一致；旧版备份 `/root/skiff.before-d80661b` 仍保留 |
 | 数据库 | 沿用空库直建结果 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均在（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 1 / **site_runtimes 2**（`php-8.5` 种子行在 SITE-10 复验中按无占用路径删除，保留 `iter-php-1862702` 与 `rust-iter-rust-1862702`） |
-| 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / **testkit 6**，testkit 新增 `scheduler:read`）；`testkit` 包更新为 322,007 B / md5 `df8e361b…e04411e0`，其余 5 个包字节与 md5 与 `456e040` 轮一致（monitor 358,905 B / `97f805f9…7212`、cron 381,183 B / `ca287744…`、files 395,243 B / `0bd74f4f…`、ftp 327,273 B / `fcd5e7cb…`、guard 354,267 B / `b01c2360…`）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc`；manifest 与授权逐项比对无越权 |
+| 插件 | 6 个官方插件包（新 `skiff-plugin` 重打，`verify --arch amd64` 全过、同一指纹 `ed73de3e…cd47`）：cron 381,183 B / `ca287744…`、files 395,243 B / `0bd74f4f…`、ftp 327,273 B / `fcd5e7cb…`、guard 354,267 B / `b01c2360…`、**monitor 358,972 B / `a507dbf3…bdeb00`**、**testkit 327,945 B / `5b395f9a…6562e4`**（字节为文件大小，值为 md5）；grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / **testkit 7**（`object:path:/proc` + `fs:list` + `fs:read` + `identity:self` + `interop:call` + `scheduler:read` + **`scheduler:manage`**）；`files` 授权 `object:path:/www`；manifest 与授权逐项比对无越权。**同版本覆盖升级保留旧 grants**，testkit 需 `plugin remove` + `plugin install --yes` 重装才拿到 `scheduler:manage` |
 | 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发，脚本 `/root/iter/skiff-http-fwd.py`）；`skiff-tls-proxy.service` 未部署 |
 | 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`，`8acc83f` 轮覆盖安装前后一致）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）；无 `ext_*_timeout_secs`（超时复验后已删键）。备份 `/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml` |
 
-## 6. Release 资产（v0.1.0 = `9a656d5`，2026-11-09）
+## 6. Release 资产（v0.1.0 = `0c99464`，2026-11-09）
 
-构建来源：Release workflow run `42519640010`（force 移动 tag `v0.1.0` 到 `9a656d5`；`head_sha=9a656d5`；自动覆盖同一 Release 资产；同提交 CI run `42519633018` success）。
-`git merge-base --is-ancestor` 校验：`8acc83f` / `607d09b` 对 `v0.1.0`=`9a656d5` 退出码为 0；`9a656d5` 对 `origin/main` 退出码 0；构建时 tag、`origin/main` 与该提交一致。双架构包下载后本地重算 sha256 与 API digest 一致，测试机 `sha256sum -c` 与外层 `checksums.txt` 双重校验通过。
+构建来源：Release workflow run `42523652885`（force 移动 tag `v0.1.0` 到 `0c99464`；自动覆盖同一 Release 资产；同提交 CI run `42523018505` success）。本地 `git ls-remote` 核对远端 `main` 与 `refs/tags/v0.1.0` 均为 `0c99464`；双架构包下载后本地重算 sha256 与 API digest 一致，测试机 `sha256sum -c` 与外层 `checksums.txt` 双重校验通过。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `1fad9748f03d07e52b9b370adde8706e00faf5d880c6cf45b419ed6fd0e0fc7b` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,812,918 B | `928fb07fe7b61874b3a65257f80a837760dd0974fc31d8099b6fc935fc71837a` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,403,389 B | `7efbcb6c3cf669101b97ddbb17375cf736189c2b96c43e7267159699a98300a7` |
+| `checksums.txt` | 223 B | `08890567f5ac8beca9a535e427fc77230e360d99d2f3dbe7bb690692c03df0ac` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,817,181 B | `f969910df3d5cd42874bcaeb9ddcf17b71cb5ae808f0c70b1b176046ccfe6c9a` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,408,470 B | `d16801d89a5755ff3908da1c9ccb47381a47bbb741994fc1a6045d4ff243a0a7` |
 
-- 包内二进制：x86_64 `skiff` 13,050,640 B `eb8ac79541c378833d3e04f735673f9e7ed2d54463be4475058a35865273401d`（= 安装后 `/usr/local/bin/skiff`）；aarch64 `skiff` 10,711,080 B `784dded6444d270ff041b41cfbd2c0601282b701a9593cabb7adc3dce3040486`。
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 经内网代理 `http://10.66.10.22:1010` 走 API 资产端点下载（缓存 `d:\panel\.workbuddy\release-9a656d5\`）；`scp` 到测试机 `/root/iter/a9a656d5/` 后校验再解压安装。
-- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`9a656d5` 轮未改插件包，签名指纹不变。
+- 包内二进制：x86_64 `skiff` 13,050,640 B `92b2bd2b413294be97c372267cc977dbb4ebcfb7bdd4fe89c9232c2742f26b17`（= 安装后 `/usr/local/bin/skiff`）；aarch64 `skiff` 10,711,080 B `590aa50056f3356f5b7a75f9aa068985180d07b47db3d67973094c71a5de54ba`。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 经内网代理 `http://10.66.10.22:1010` 走 API 资产端点下载（缓存 `d:\panel\.workbuddy\release-0c99464\`，按 API digest 逐资产校验）；`scp` 到测试机后 `sha256sum -c` 再解压安装。
+- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`。本轮 monitor 用新构建的 `skiff-plugin` 重打（358,972 B / md5 `a507dbf3584c58dc1a10146f62bdeb00`），testkit 同步更新（327,945 B / md5 `5b395f9a14ae04e9af2be4d3536562e4`）；6 包在测试机全部通过 `skiff-plugin verify --arch amd64`，签名指纹同为 `ed73de3e87df8805b952d18e4f1d95329bd34f7ff40865b3cd94fd247343cd47`。
 - 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**。
 
 ## 7. 最近部署记录
@@ -117,8 +116,9 @@
 | 2026-11-09 03:59 | `8acc83f` 收口发版覆盖安装（Release 资产） | 资产 `8acc83f`；x86_64 8,812,469 B `ac4bc53f…1519fd1`、aarch64 8,402,947 B `fefae2ac…140bc38`，`sha256sum -c` 与外层 `checksums.txt` 均 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；`/usr/local/bin/skiff` 13,050,640 B `5959d021…64a72b8` 与包内一致；`/healthz` 200、`NRestarts=0`；详见 §8「`8acc83f` 收口发版复验」 |
 | 2026-11-09 04:10–04:25 | monitor 网速口径修复的插件临时替换（**非 Release 资产**） | 现编 musl 插件 `730,592 B` `dfb96a8a…` 替换 `versions/0.1.0/bin/amd64/plugin`（官方版 `b113ddd9…` 备份 `/root/monitor-plugin-official.bin`）；官方包暂移 `/root/monitor-official.wbpkg.bak`；UI 两文件替换（备份 `/root/monitor-{overview.html,app.js}.bak`） | 已知量对照：16s 下载 119.1 MB，期望 tx 7,428,904 B/s、插件报 7,437,136 B/s（0.11%），rx 44,709 vs 44,739 B/s；历史行已带 `net_tx_rate`、双基线 `prev.json`/`prev_ui.json` 独立。收尾已还原官方插件 `b113ddd9…`、官方包与 UI（`c-net-tx` 消失），删 `prev_ui.json` 与临时文件，单进程、`/healthz` 200；详见 `docs/changes/2026-11-09.md` |
 | 2026-11-09 04:29 | `9a656d5` 下载端点 404 修复版覆盖安装（Release 资产） | 资产 `9a656d5`；x86_64 8,812,918 B `928fb07f…fc71837a`、aarch64 8,403,389 B `7efbcb6c…98300a7`，`sha256sum -c` 与外层 `checksums.txt` 均 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；`/usr/local/bin/skiff` 13,050,640 B `eb8ac795…523401d` 与包内一致；`/healthz` 200、`NRestarts=0`；详见 §8「`9a656d5` 台账清理轮复验」 |
+| 2026-11-09 05:10–05:28 | `0c99464` monitor 出站速率 + testkit 缓冲探针复验版覆盖安装（Release 资产） | 资产 `0c99464`；x86_64 8,817,181 B `f969910d…ccfe6c9a`、aarch64 8,408,470 B `d16801d8…4ff243a0a7`，双架构 `sha256sum -c` 与外层 `checksums.txt` 均 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；`/usr/local/bin/skiff` 13,050,640 B `92b2bd2b…2f26b17` 与包内一致；6 包全部 `verify` 通过（指纹 `ed73de3e…`）；testkit 同版本升级保留旧 grants，`remove`+`install` 后才得 `scheduler:manage`，busy-probe 任务行需删后重种；详见 §8「`0c99464` monitor 与 TASK-06 复验」 |
 
-## 8. 最近一次全链路验收结论（截至 2026-11-09 `v0.1.0` / `9a656d5`）
+## 8. 最近一次全链路验收结论（截至 2026-11-09 `v0.1.0` / `0c99464`）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-09.md](changes/2026-11-09.md)、[changes/2026-11-08.md](changes/2026-11-08.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
 
@@ -247,17 +247,34 @@
 - **主链路**：`/sites`、`/tasks`、`/jobs`、`/files`、`/files/api/list?path=/www`、`/containers`、`/plugins`、`/settings` 全 **200**；`/healthz` **200**；`NRestarts=0`。
 - **WAF 口径**：WAF 未实现，已移出范围（配置与规则目录已删除），不再作为台账未闭环项。
 
+**`0c99464` monitor 与 TASK-06 复验（Release 资产，2026-11-09 05:10–05:28）**
+
+- **monitor 出站速率（全速窗口）**：`scp` 下载 200 MiB 文件耗时 9.04 s，采样窗口 10 s。宿主 `/proc/net/dev` 非 lo 接口 tx 差 **210,657,428 B** → 期望 **21,065,742.8 B/s**；插件 `net_tx_rate` = **21,065,742.8 B/s**，与宿主**逐字节一致、偏差 0.00%**（`net_tx` 字段同样为 210,657,428 B；before/after 之间 396 B 的偏移只来自两次读取时刻不同，不计入窗口差值）。
+- **拉长窗口不被内核采样截断**：`scp -l 16384` 下载同文件 106 s，整窗均值 **1,985,505 B/s**。期间内核 60 s 采样只推进 `prev.json`（3060→3120），`prev_ui.json` 未被内核改写——两份基线独立，内核采样不截断 UI 快照窗口。面板 UI 自身约 60 s 一次的 `snapshot` 轮询把末段窗口缩到 **54 s**（`prev_ui` t=3051），插件报 **1,943,259.9 B/s**：对同 54 s 窗口期望 **0.00%**，对整窗 106 s 均值 **2.13%**。结论：窗口误差只来自 UI 自轮询覆盖 `prev_ui.json`（已知行为，非内核采样截断）。
+- **TASK-06 缓冲探针**（testkit 重装取得 `scheduler:manage`、删行重种任务后）：
+  - 基线 `buffer_probe` → `points=0`、`capacity_bytes=4096`。
+  - `buffer_push{count:100}` → `accepted=100`、`rejected=0`、`dropped_points=17`、`dropped_bytes=833`、`signals=[high_watermark, overflow]`、`last.seq=99`。
+  - 随后 `buffer_probe` → `points=83`、`bytes=4067`、`capacity_bytes=4096`、`seq=100`、`head_seq=17`、`tail_seq=99`、`dropped_points=17`、`dropped_bytes=833`、`rejected_points=0`、`rejected_bytes=0`、`high_watermark=true`（drop-oldest：100 点约 4,900 B 超 4,096 B 容量，保留 83 点 / 4,067 B、丢 17 点 / 833 B）。
+  - 限速（两条都验）：同秒再推 1 点 → **HTTP 400**「buffer.push 超过限速（每任务 100 点/秒）」；`count=101` → 本地 **-32602**「count 需在 1..=100（内核限速每任务 100 点/秒）」。
+  - 超限单点：约 70 KB 的单点 → `accepted=false`、`bytes=70043`、`reason=point_too_large`（插件汇总 `rejected=1`；内核 `rejected_points` 仍为 0，因在入缓冲前即被拒）。
+  - 权限：无 `scheduler:manage` 的旧包调 `buffer_push` → **403**「缺少 scheduler:manage」。
+  - **构造不出的断言**：`rejected_points` / `rejected_bytes` 的累计——拒绝发生在入缓冲前，且在 drop-oldest 策略下不累计；如实记为未覆盖。
+- **主链路回归**：`/` **307**（AUTH-01 预期，跳登录页）、`/sites` `/tasks` `/jobs` `/files` `/containers` `/plugins` `/settings` 全 **200**；`/healthz` **200**；`systemctl show skiff -p ActiveState,NRestarts` = `active` / **0**；journal 近 30 分钟 `ERROR` 计数 **0**，无 panic/SIGSEGV。
+- **同版本升级两项已知缺陷（未改代码）**：①`seed_manifest_tasks` 对已存在任务直接 `continue`、不刷新 spec，且 CLI `plugin remove` 不删 `scheduled_tasks` 行，故同版本覆盖升级后 busy-probe 仍无缓冲声明，需 `systemctl stop skiff` → 删 `plugin:com.skiff.testkit:busy-probe` 行 → 启动重种；②同版本升级保留旧 grants、不自动授予 manifest 新增权限，testkit 需 `plugin remove` + `plugin install --yes` 才拿到 `scheduler:manage`。两项已记入台账「待处理」。
+
 **未闭环（唯一来源为 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- aarch64 未实机装机、buffer 上机入口、监控出站速率字段、Release 下载端点容错等未闭环项的当前状态与下一步，统一见台账；本节只记已通过的断言。
+- aarch64 未实机装机、Release 下载端点容错、插件 UI 窄屏/跨浏览器、反代与 WS 残余等未闭环项的当前状态与下一步，统一见台账；本节只记已通过的断言。
+- TASK-06 缓冲、monitor 出站速率两条已随 `0c99464` 复验通过并从台账删除；上方「同版本升级两项已知缺陷」已进台账「待处理」。
 - 受限形态「文件管理」入口与直达已按能力面处理，`607d09b` 装机复验通过，该行已从台账删除。
 
-**收尾状态（2026-11-09 `9a656d5` 台账清理轮复验后）**
-- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用（admin，口令文件 `/root/iter/admin-pw.txt` 第 3 行）；`skiff.service` active、`NRestarts=0`、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,050,640 B、sha256 `eb8ac795…523401d`（与 `9a656d5` 包内一致）。
-- 资产：x86_64 包 8,812,918 B（`928fb07f…fc71837a`）、aarch64 包 8,403,389 B（`7efbcb6c…98300a7`，包内二进制 `784dded6…3040486`，10,711,080 B）。
-- 数据：库保持 `user_version=15`，6 个官方插件已装（grants：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 6）；站点仍为 1（`iter-rust-1862702.test`，`status=running`）；`site_runtimes` 2（php / rust）。
-- 清理：探针站 `btn-probe-1862702.test`（站点、目录、vhost）已删；临时卸载的 `com.skiff.testkit` 已按原授权装回；远端 `/root/iter/v1.sh v2.sh v3.sh` 与临时 cookie 文件已清理。
+**收尾状态（2026-11-09 `0c99464` 复验后）**
+- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用（admin，口令文件 `/root/iter/admin-pw.txt` 第 3 行）；`skiff.service` active、`NRestarts=0`、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,050,640 B、sha256 `92b2bd2b…2f26b17`（与 `0c99464` 包内一致）。
+- 资产：x86_64 包 8,817,181 B（`f969910d…ccfe6c9a`）、aarch64 包 8,408,470 B（`d16801d8…4ff243a0a7`，包内二进制 `590aa500…5de54ba`，10,711,080 B）。
+- 数据：库保持 `user_version=15`；6 个官方插件已装（grants：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit **7**）；站点仍为 1（`iter-rust-1862702.test`，`status=running`）；`site_runtimes` 2（php / rust）；testkit `busy-probe` 任务 `enabled=0`（默认停用）。
+- 配置：`/etc/skiff/config.toml` sha256 `ebcccae6…` 覆盖安装前后一致。
+- 清理：本轮无新增站点/容器/账号；缓冲为内核内存态（随停服清空），`buffer_probe` 基线已归零；monitor 只读 `/proc`，无落盘产物需清理。
 - 容器：`skiff-web-nginx` / `skiff-php-iter-php-1862702` / `skiff-rust-iter-rust-1862702` 全部 running；宿主面板 `18080` 与转发 `18081` 的 `/healthz` 均 200。
-- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-d80661b`、`/root/iter/a9a656d5/`、`/root/iter/a8acc83f/`、`/root/iter/a607d09b/`、`/root/iter/ad80661b/`、`/root/iter/a2f63aeb/` 保留；临时 cookie 文件已清理。
+- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-d80661b`、`/root/iter/a9a656d5/`、`/root/iter/a8acc83f/`、`/root/iter/a607d09b/`、`/root/iter/ad80661b/`、`/root/iter/a2f63aeb/` 保留。
 
 
 ## 9. 数据、备份与清理
