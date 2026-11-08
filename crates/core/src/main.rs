@@ -151,7 +151,7 @@ fn serve(
             "  监听      : {}{}",
             cfg.listen,
             if cfg.dev_http {
-                "（明文开发模式）"
+                "（明文 HTTP：Cookie 已降级，仅限内网或反代之后）"
             } else if cfg.plaintext_behind_proxy {
                 "（明文，假定可信反代已终止 TLS）"
             } else {
@@ -162,7 +162,7 @@ fn serve(
         println!("  安全入口  : /{}", state.cfg.entry_prefix);
         println!("  配置      : {}", cfg.config_path.display());
         // 只有真 TLS 或反代终止才算 https；dev_http 时明确降级为 http。
-        let scheme = if cfg.tls_cert.is_some() || cfg.plaintext_behind_proxy { "https" } else { "http" };
+        let scheme = if cfg.tls_active || cfg.plaintext_behind_proxy { "https" } else { "http" };
         println!(
             "  登录地址  : {scheme}://{}/{}/login",
             cfg.listen, state.cfg.entry_prefix

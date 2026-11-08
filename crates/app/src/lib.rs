@@ -8,11 +8,13 @@ pub mod admin_fs;
 pub mod auth;
 pub mod docker_daemon;
 pub mod nginx;
+pub mod panel_settings;
 pub mod runtime_catalog;
 pub mod sites;
 pub mod tasks;
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,8 +33,21 @@ pub struct WebConfig {
     pub data_dir: PathBuf,
     /// 站点/nginx/日志/证书/PHP socket 的宿主根（默认 `/www`）。
     pub web_root: PathBuf,
+    /// 面板配置文件的落盘路径（设置页保存端口/前缀/TLS 时写这里）。
+    pub config_path: PathBuf,
+    /// 当前生效的监听地址（设置页只读展示 + 端口占用检测的排除项）。
+    pub listen: SocketAddr,
     pub entry_prefix: String,
-    /// loopback 明文开发模式（非 `__Host-` cookie、关闭 Secure、UI 标红）
+    /// 上一次入口前缀：重启后 24 小时内 GET 重定向到新前缀，避免改前缀把自己锁在外面。
+    pub entry_prefix_previous: Option<String>,
+    /// 本次启动是否启用 TLS（决定 Cookie 是否 `__Host-` + Secure）。
+    pub tls_enabled: bool,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+    /// 兼容旧配置的明文开关：只用于 loopback 调试与「可信反代终止 TLS」。
+    pub allow_insecure_http: bool,
+    /// 浏览器直接走明文 HTTP（loopback 调试或显式关闭 TLS）：Cookie 降级为
+    /// `skiff_dev_session`（无 `__Host-`、无 `Secure`），HttpOnly/SameSite 保持不变。
     pub dev_http: bool,
     pub trusted_proxies: Vec<Cidr>,
     /// 面板预期 Origin（WS 校验、TLS 重定向用）

@@ -23,8 +23,15 @@ fn test_state(data_dir: std::path::PathBuf) -> Arc<AppState> {
     ));
     let cfg = WebConfig {
         web_root: data_dir.join("www"),
+        config_path: data_dir.join("config.toml"),
+        listen: "127.0.0.1:18080".parse().unwrap(),
         data_dir,
         entry_prefix: "p".into(),
+        entry_prefix_previous: None,
+        tls_enabled: false,
+        tls_cert: None,
+        tls_key: None,
+        allow_insecure_http: true,
         dev_http: true,
         trusted_proxies: vec![],
         external_url: None,

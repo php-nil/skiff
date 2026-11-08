@@ -37,6 +37,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；DEPLOY-09/10/11 因环境/复现条件阻塞 | `deploy/*.sh`、systemd、安装包 |
 | J. 站点压测与资源开销 | 8 | 0 项本机可验，8 项必须上机（测试机两站并发 + `/proc` 采样） | `tools/perf/*`；nginx / PHP-FPM / 反代三路径；`skiff` 进程与插件子进程 |
 | K. FTP 与宿主机文件服务 | 5 | 1 项本机可验（FTP-02 账号/密码/端口校验单测），4 项必须上机 | `cargo test -p skiff --bin skiff kernel::ftp`；测试机 pure-ftpd + PHP 容器 |
+| L. 后台端口 / 入口前缀 / TLS | 6 | 2 项本机可验（PANEL-02/03 校验单测，PANEL-06 有 `skiff` 单测兜底），4 项必须上机 | `cargo test -p skiff-app -p skiff`；测试机改端口/前缀/TLS 三形态 |
 
 ## A. 身份与会话
 
@@ -447,6 +448,33 @@ docker exec -u www-data skiff-php-batch1 id
 grep -H . /etc/pure-ftpd/conf/{MinUID,Umask,PureDB}
 ls -l /etc/pure-ftpd/auth
 systemctl is-active pure-ftpd fail2ban
+```
+
+## L. 后台端口 / 入口前缀 / TLS
+
+> 重跑触发：改了 `Config` 的 `listen` / `entry_prefix` / `tls_enabled` / `tls_cert` / `tls_key`、设置页的保存逻辑、旧前缀重定向、Cookie 命名或 `install.sh` 的 TLS 分支。契约见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §2.3 / §2.4。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| PANEL-01 | 设置页读取端口/前缀/TLS 与 `config.toml` 一致 | `[本机+上机]` admin 已登录 | 打开 `/$P/settings`；对照 `/etc/skiff/config.toml` 的 `listen`、`entry_prefix`、`tls_enabled`、`tls_cert`、`tls_key` | 页面字段值与配置文件一致；未配置的项显示「自动 / 未设置」而不是伪造默认值；非管理员看不到该表单 | □通过 / □失败 | `crates/web/src/handlers/settings.rs`、`templates/settings.html`、`crates/app/src/panel_settings.rs` |
+| PANEL-02 | 端口范围与占用检测 | `[本机]` 单测 + `[上机]` 改端口 | `[本机]` `cargo test -p skiff-app panel_settings`；`[上机]` 设置页填 `0`、`70000`、一个已被 `ss -lntp` 占用的端口、当前监听端口 | `0`/`70000` 被拒；被占用端口被拒并提示占用；当前端口视为自己占用、允许保存；被拒时 `config.toml` 不变 | □通过 / □失败 | `crates/app/src/panel_settings.rs::validate_port/check_port_free`、`crates/web/src/handlers/settings.rs` |
+| PANEL-03 | 入口前缀字符集/长度/保留段 | `[本机]` 单测 | `cargo test -p skiff-app panel_settings`；再在设置页填 `abc`（过短）、`/`、含空格/中文、`api`、`healthz`、32 位与 33 位 | 6–32 位 ASCII 字母数字 `-` `_` 通过；过短/含非法字符/`/`/保留段被拒；首字符必须字母或数字；被拒时不落盘 | □通过 / □失败 | `crates/app/src/panel_settings.rs::validate_entry_prefix`、`crates/core/src/config.rs::validate` |
+| PANEL-04 | 保存写回 `config.toml`、需重启提示 | `[上机]` 可改配置并重启 | 改端口与前缀后保存；不重启先访问；`systemctl restart skiff` 后再访问 | 保存后页面明确提示「需重启生效」，不是静默成功；`config.toml` 原位更新且保留注释与其他字段、无重复键；不重启仍是旧监听；重启后新端口/新前缀可用 | □通过 / □失败 | `crates/app/src/panel_settings.rs::write_config_updates`、`crates/web/src/handlers/settings.rs`、`crates/web/src/templates.rs` |
+| PANEL-05 | 旧前缀 24h 302 防锁死 | `[上机]` 刚改过前缀 | 用旧前缀 GET 首页与子路径；等窗口外（或手改 `..._previous_until` 为过去时间）再访问旧前缀 | 窗口内旧前缀 GET 302 到新前缀且保留路径；新前缀始终 200；窗口外旧前缀 404；非 GET（POST）不走旧前缀重定向 | □通过 / □失败 | `crates/web/src/handlers/settings.rs::legacy_prefix_root/legacy_prefix_redirect`、`crates/web/src/middleware.rs::prefix_ok`、`crates/core/src/bootstrap.rs` |
+| PANEL-06 | TLS 三态与三种 Cookie 策略 | `[本机]` 单测 + `[上机]` 三种部署 | `[本机]` `cargo test -p skiff-core tls_`；`[上机]` 分别用「TLS 开」「反代终止 TLS」「`tls_enabled=false` 直接明文」启动，用 cookie-jar 登录一次 | TLS 开：HTTPS 200，Cookie `__Host-skiff_session` + `Secure`；反代：面板侧明文但 Cookie 仍是 `__Host-` + `Secure`，只有 `trusted_proxies` 能直连；直接明文：日志有「明文 HTTP」警告、页面有告警，Cookie 为 `skiff_dev_session`（无 `Secure`、保留 HttpOnly/SameSite），**浏览器 HTTP 下登录/改密能走通**；`tls_enabled=true` 缺证书拒绝启动且报错可读 | □通过 / □失败 | `crates/core/src/config.rs`（`validate` / `tls_enabled_*` 测试）、`crates/core/src/server.rs`、`crates/identity`（Cookie 命名）、`deploy/install.sh`（`apply_tls_config`） |
+
+最小回归命令：
+
+```bash
+# 本机
+cargo test -p skiff-app panel_settings --locked
+cargo test -p skiff tls_ --locked
+cargo test -p skiff-web settings --locked
+
+# 测试机（直接明文形态下；$B 为 http://10.10.15.4:18080）
+curl -s -c /tmp/j "$B/$P/login" | grep -o 'name="csrf" value="[^"]*"'
+curl -s -b /tmp/j -c /tmp/j -D- -d "csrf=...&username=admin&password=..." "$B/$P/login" | grep -i set-cookie
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 ```
 
 ## 附：待核对项结论（2026-11-07 已全部定性）

@@ -231,7 +231,22 @@ Skiff 已启动
 `grep` 关键字是「安全入口」：`journalctl -u skiff --no-pager | grep 安全入口`。
 监听写成 `0.0.0.0` 时日志里的地址不能直接点，换成真实 IP/域名访问。
 
-初始口令在 `/www/skiff/initial-admin.txt`（0600），**默认不强制首登改密**：登录后直接进入概览，可直接使用面板；仅显示非阻塞的「建议修改口令」提示。改密成功后该文件自动删除。安全入口前缀首启随机生成并持久化到库（`settings.security.entry_prefix`）；**非该前缀的路径返回 404**（不是 403）。
+初始口令在 `/www/skiff/initial-admin.txt`（0600），**默认不强制首登改密**：登录后直接进入概览，可直接使用面板；仅显示非阻塞的「建议修改口令」提示。改密成功后该文件自动删除。
+
+**监听端口与安全入口前缀**（`listen` / `entry_prefix`）可在「设置 → 后台端口 / 安全入口 / TLS」页修改，
+保存即写回 `config.toml`，**需重启生效**；页面会明确提示「需重启」，不会静默失败。规则：
+
+| 项 | 规则 | 失败时 |
+|---|---|---|
+| 端口 | 1–65535；排除 0；保存前用 `TcpListener::bind` 探针检测占用（与当前监听同值视为自己占用，允许） | 页面就地报错，不落盘 |
+| 入口前缀 | 6–32 位 ASCII 字母/数字/`-`/`_`，首字符须字母或数字；不得为 `/`；保留段 `api`/`healthz`/`static`/`assets`/`favicon.ico`/`robots.txt` 拒绝 | 页面就地报错，不落盘 |
+| 来源 | `entry_prefix` 显式值（config / 环境变量）优先；未配时首启随机 8 位并持久化到库 `settings.security.entry_prefix` | — |
+
+**防锁死**：前缀变更后，旧前缀在 24 小时内对 GET 请求 302 到新前缀（`settings.security.entry_prefix_previous`
++ `..._previous_until` 两个键控制窗口），窗口外旧前缀直接失效；新前缀始终可用。建议改完先在新标签页
+确认新入口能打开，再关旧标签。非当前/非旧前缀的路径一律 404（不是 403）。
+
+**升级行为不变**：已有部署的 `config.toml` 里没有 `entry_prefix` 时继续用库里的旧前缀，入口不变。
 
 需要恢复「首登强制改密」时显式开启（**只对新建管理员生效；已有账号一律不改口令、不改标志**）：
 
@@ -242,19 +257,32 @@ require_initial_password_change = true
 
 等价方式：环境变量 `SKIFF_REQUIRE_INITIAL_PASSWORD_CHANGE=1`，或启动参数 `--require-initial-password-change`。重装/升级时 `bootstrap` 只在空库创建管理员，已有 `admin` 的口令哈希与 `must_change_password` 保持原值。
 
-### 2.4 打开 TLS（对外前必做）
+### 2.4 TLS 三态与监听形态（对外前必读）
 
-默认监听 `127.0.0.1:18080`。对外有两条正路，选一条：
+默认监听 `127.0.0.1:18080`，**默认不启用 TLS**（示例配置里没有 `tls_enabled`，
+走旧行为自动推断：loopback + `allow_insecure_http` 明文可登录）。
 
-**A. 本进程终止 TLS**
+`tls_enabled` 是三态开关，和 `entry_prefix` / `listen` 落在同一处 `Config`：
+
+| 值 | 含义 | 是否必须有证书 |
+|---|---|---|
+| `true` | 启用 TLS，本进程终止 | 是；缺失拒绝启动（报错可读，提示补路径或改 `false`） |
+| `false` | 显式直接明文 HTTP | 否；不读证书、不生成自签、日志打一行明文提示 |
+| 不写 | 旧行为自动推断（loopback / 反代 / 拒绝裸奔） | 有则用，无则按规则矩阵判定 |
+
+对外有三条正路，按场景选一条：
+
+**A. 本进程终止 TLS（公网/跨网推荐）**
 
 ```toml
-listen   = "0.0.0.0:18080"
-tls_cert = "/etc/skiff/tls/fullchain.pem"
-tls_key  = "/etc/skiff/tls/privkey.pem"
+listen      = "0.0.0.0:18080"
+tls_enabled = true
+tls_cert    = "/etc/skiff/tls/fullchain.pem"
+tls_key     = "/etc/skiff/tls/privkey.pem"
 ```
 
-证书文件须 root 可读、非全局可写。启动时校验文件存在性，缺失直接退出。
+证书文件须 root 可读、非全局可写。启动时校验文件存在性，缺失直接退出（报错会指出
+缺哪个字段、可改 `tls_enabled = false` 走明文）。
 
 自签只用于内网复核（2026-11-03 已实测）。**SAN 必须含实际访问的 IP/域名**，否则浏览器会报名称不匹配：
 
@@ -279,42 +307,81 @@ listen              = "127.0.0.1:18080"
 allow_insecure_http = true          # 显式确认「明文只到本机/可信反代」
 trusted_proxies     = ["127.0.0.1/32", "::1/128"]
 external_url        = "https://panel.example.com"
+# tls_enabled 不写：由 loopback + allow_insecure_http + trusted_proxies 推断为「反代后明文」
 ```
+
+> **不要**在这个形态里写 `tls_enabled = false`：那会把 Cookie 降级成无 `Secure`，
+> 浏览器虽仍能登录，但等于放弃了反代形态下本可保留的 `__Host-` + `Secure` 保护。
+
+**C. 直接明文监听（仅内网，浏览器可登录）**
+
+```toml
+listen      = "0.0.0.0:18080"
+tls_enabled = false                 # 显式关闭 TLS：直接明文，不依赖反代/转发进程
+```
+
+`tls_enabled` 是三态：`true` 启用；`false` 显式直接明文；不写 = 旧行为自动推断。
+显式关闭时**不走** `allow_insecure_http`/`trusted_proxies` 的旧判据，启动日志会打一行
+「明文 HTTP 监听：Cookie 已降级…」；设置页同时给出告警。
 
 规则（§6.2，代码里就是这么判的）：
 
-| 监听 | TLS 配置 | allow_insecure_http | trusted_proxies | 结果 |
+| tls_enabled | 监听 | 其他条件 | 结果 | 会话 Cookie |
 |---|---|---|---|---|
-| loopback | 无 | false | 任意 | 拒绝启动 |
-| loopback | 无 | true | 任意 | 启动，`dev_http` 模式（Cookie 降级为 `skiff_dev_session`） |
-| 非 loopback | 有 | 任意 | 任意 | 启动，HTTPS |
-| 非 loopback | 无 | true | **非空** | 启动，视为“反代已终止 TLS”，日志告警 |
-| 非 loopback | 无 | true | 空 | **拒绝启动**（等于裸奔） |
-| 非 loopback | 无 | false | 任意 | 拒绝启动 |
+| `true` | 任意 | cert/key 都存在 | HTTPS | `__Host-skiff_session` + Secure |
+| `true` | 任意 | cert/key 缺失 | **拒绝启动**，提示补路径或改 `false` | — |
+| 未写 | loopback | 无 TLS，`allow_insecure_http=true` | 启动，明文 | `skiff_dev_session`，无 Secure |
+| 未写 | 非 loopback | 无 TLS，`allow_insecure_http=true` + `trusted_proxies` **非空** | 启动，视为反代终止 TLS，日志告警 | `__Host-skiff_session` + Secure |
+| 未写 | 非 loopback | 无 TLS，`allow_insecure_http=true` + `trusted_proxies` 空 | **拒绝启动**（裸奔） | — |
+| 未写 | 非 loopback | 无 TLS，`allow_insecure_http=false` | 拒绝启动 | — |
+| `false` | 任意（含 loopback/内网） | 忽略 `allow_insecure_http`/`trusted_proxies` | 启动，明文直连，日志/页面告警 | `skiff_dev_session`，无 Secure；HttpOnly/SameSite 保留 |
+
+三种形态的 Cookie 语义：
+
+- **TLS 开启**：浏览器与面板之间是 HTTPS，用 `__Host-skiff_session` + `Secure`。
+- **反代终止 TLS**：浏览器与反代是 HTTPS，反代到面板是明文；仍用 `__Host-` + `Secure`，
+  因此浏览器正常回传，但前提是只有 `trusted_proxies` 里的反代能直连面板端口。
+- **TLS 关闭（直接明文）**：浏览器直接走 HTTP，`Secure`/`__Host-` 会被丢弃，所以降级为
+  `skiff_dev_session`（HttpOnly/SameSite 保持不变）。仅限内网或隔离测试网。
 
 只有直连 peer 命中 `trusted_proxies` 才采信 `X-Forwarded-For/Proto/Host`，否则一律清除伪造头。
 
-#### 2.4.1 内网直连（明文、无 TLS）——仅测试/隔离内网
+**安装脚本与配置的对应关系**（`install.sh`；重装跑也幂等）：
+
+| 参数 / 环境变量 | 写入 `config.toml` |
+|---|---|
+| `--tls on` / `SKIFF_TLS=on` | `tls_enabled = true`，并要求 `--tls-cert`/`--tls-key`（或从 LE 目录自动发现）；证书复制到 `/etc/skiff/tls/`（0600） |
+| `--tls off` / `--no-tls` / `SKIFF_TLS=off` | `tls_enabled = false`，打印明文告警 |
+| 不给 | 已有配置有 `tls_enabled` 则沿用；有证书路径视为开、无则交互询问（非交互默认 on 并报错要求补证书） |
+| `--listen` / `SKIFF_LISTEN` | `listen` |
+
+配置与环境变量**同一结构**：`SKIFF_TLS_ENABLED`（`true/false/on/off/1/0`）、`SKIFF_ENTRY_PREFIX`、
+`SKIFF_LISTEN`、`SKIFF_TLS_CERT`、`SKIFF_TLS_KEY`；优先级为环境变量 > `config.toml` > 默认。
+
+**生效方式**：`listen` / `tls_enabled` / 证书路径 / `entry_prefix` 都是**重启生效**（`systemctl restart skiff`），
+无热加载。设置页保存后会明确提示「需重启」，不做静默失败。
+
+#### 2.4.1 内网直连（明文、无 TLS，浏览器可登录）
 
 ```toml
-listen              = "0.0.0.0:18080"
-allow_insecure_http = true
-trusted_proxies     = ["127.0.0.1/32"]   # 只为通过启动校验；不要填真实客户端网段
+listen      = "0.0.0.0:18080"
+tls_enabled = false
 ```
 
-- `trusted_proxies` 的唯一作用是决定**采信哪些 peer 的 `X-Forwarded-*`**。填 `127.0.0.1/32`
-  时，内网客户端伪造的 `X-Forwarded-For` 一律被清除，审计记真实 peer IP；**不要**为了让
-  “更多来源能用”把客户端网段填进去，那等于允许它们伪造源地址。
-- 该模式在 `serve` 里走「明文、假定反代已终止 TLS」分支（`dev_http=false`,
-  `plaintext_behind_proxy=true`）。2026-11-03 前这里有个判据缺陷：`serve` 只认 `dev_http`，
-  非 loopback 明文在配置校验通过后仍会以「未通过 TLS 校验却进入明文模式」退出；已修并补单测。
-- **Cookie / Secure 口径（重要）**：该模式会话 Cookie 与登录页 CSRF Cookie 都带 `Secure`。
-  浏览器从 `http://` 打开时不会回传这两个 Cookie → 登录表单的 CSRF 校验会失败；
-  `curl` 与 `/api/v1`（`Authorization: Bearer`）不受影响。2026-11-03 起测试机已改为**同端口
-  TLS**（§2.4.2），浏览器登录不在这个模式下进行；纯明文内网直连只适合看到登录页与 API 联调。
-- 重装/升级：`sh install.sh --listen 0.0.0.0:18080`（或 `SKIFF_LISTEN=0.0.0.0:18080`）。
-  不给该参数时脚本**不改**已有 `listen`；只有 `/etc/skiff/config.toml` 被删掉才会回到示例默认
-  `127.0.0.1:18080`。`skiff.service` 不含任何监听覆盖项。
+- `tls_enabled = false` 是**显式直接明文**：`serve` 走明文分支，并在启动日志打一行
+  「明文 HTTP 监听：Cookie 已降级，仅限内网或反代之后」，设置页同步显示告警。
+- **Cookie 口径**：会话 Cookie 降级为 `skiff_dev_session`（无 `Secure`、无 `__Host-` 前缀，
+  `HttpOnly` / `SameSite=Strict` 保留），登录页 CSRF Cookie 同理。浏览器从 `http://` 正常
+  回传，**登录、改密、页面跳转都能走通**——这是「不依赖反代、不依赖转发进程」的形态。
+- `allow_insecure_http` / `trusted_proxies` 在显式 `tls_enabled = false` 时**不参与判定**
+  （见 §2.4 的规则矩阵）。`trusted_proxies` 仍只决定**采信哪些 peer 的 `X-Forwarded-*`**：
+  填 `127.0.0.1/32` 时，内网客户端伪造的 `X-Forwarded-For` 一律被清除，审计记真实 peer IP；
+  **不要**为了让“更多来源能用”把客户端网段填进去，那等于允许它们伪造源地址。
+- 安全边界：明文仅限内网 / 隔离测试网。跨公网必须走 TLS 或「反代终止 TLS + `trusted_proxies`」。
+- 重装/升级：`sh install.sh --tls off --listen 0.0.0.0:18080`（或 `SKIFF_TLS=off`
+  + `SKIFF_LISTEN=0.0.0.0:18080`）。不给参数时脚本按交互/`tls_enabled` 现状决定，且**不改**已有
+  `listen`；只有 `/etc/skiff/config.toml` 被删掉才会回到示例默认 `127.0.0.1:18080`。
+  `skiff.service` 不含任何监听覆盖项。
 - 防火墙（宿主机实测是 iptables，无 firewalld/ufw）：放行回环、`10.10.15.0/24` 与指定开发机 `/32` 的
   面板 18080、站点 80/443，其余 `DROP`；由 `skiff-firewall.service`（oneshot + enabled）在开机时重放，
   iptables 自身不持久。
@@ -1154,3 +1221,4 @@ Release `v0.1.0` 资产被同一 tag 覆盖（run `41945350367`，未新建 tag�
 | 2026-11-04 | **round4/round5**：新增 §9.8；静态资源增加带安全入口前缀的别名路由 `/{p}/static/{*path}`（与根路径共用 handler），站点列表单表合并、插件 UI 主题兜底与 `skiff.theme.request` 实测通过；两轮备份与二进制 sha 记录在 §9.8 |
 | 2026-11-04 | **round6（方案 A「舱线」+ 前缀收紧）**：新增 §9.9；根路径 `/static` 与 `/plugins/<id>/ui` 旁路删除后，33 条同源引用逐条 200、0 坏链；A 方案 SVG 精灵/48px 二级通栏与手风琴互斥/Escape 回焦浏览器实测通过；证书列按证书目录判定；二进制 sha `9b2158c9…`，备份 `20261104-214238-round6` |
 | 2026-11-05 | **Release 覆盖安装**：新增 §9.10；覆盖 `v0.1.0` 资产（不新建 tag），测试机真实下载/校验/安装；不做旧布局迁移，新建 `demo.local` 即生成 `{index,log,ssl,conf}`，`nginx -t`/站点 200/默认站切换/四标签/越界 400/删除整目录均实测；文件管理 0.1.2 安装与 RPC/浏览器交互实测，修复插件 iframe `sandbox` 缺 `allow-forms` |
+| 2026-11-08 | **端口/前缀/TLS 可配置 + 三态 Cookie**：§2.3 补「设置页修改监听端口/入口前缀」规则表、24h 旧前缀 302 防锁死、升级保持原入口；§2.4 改为 TLS 三态（`true`/`false`/不写）与三条正路 A/B/C，补 `install.sh --tls on/off` 映射与 `SKIFF_TLS_ENABLED`/`SKIFF_ENTRY_PREFIX` 环境变量、重启生效口径；§2.4.1 改写为显式 `tls_enabled=false` 可直接浏览器登录（`skiff_dev_session` 无 Secure）并写清明文安全边界。其余见 `docs/changes/2026-11-08.md` |

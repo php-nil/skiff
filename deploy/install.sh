@@ -5,7 +5,8 @@
 # 本脚本不负责校验包含自身的压缩包（自校验悖论，§5.1）。
 #
 # 用法: sh install.sh [--prefix /usr/local] [--datadir /www/skiff] [--webroot /www]
-#                      [--listen <addr:port>] [--no-start] [--no-systemd]
+#                      [--listen <addr:port>] [--tls on|off] [--tls-cert <pem>] [--tls-key <pem>]
+#                      [--no-start] [--no-systemd]
 #                      [--no-docker] [--docker-source <host>] [--registry-mirror <host>]...
 set -eu
 
@@ -13,6 +14,9 @@ PREFIX=/usr/local
 DATADIR_OVERRIDE=""
 WEBROOT_OVERRIDE=""
 LISTEN_OVERRIDE="${SKIFF_LISTEN:-}"
+TLS_MODE="${SKIFF_TLS:-auto}"
+TLS_CERT_SRC=""
+TLS_KEY_SRC=""
 DO_START=1
 DO_SYSTEMD=1
 WITH_DOCKER=1
@@ -34,6 +38,13 @@ while [ $# -gt 0 ]; do
         --webroot=*) WEBROOT_OVERRIDE="${1#*=}"; shift ;;
         --listen) LISTEN_OVERRIDE="${2:?--listen 需要参数}"; shift 2 ;;
         --listen=*) LISTEN_OVERRIDE="${1#*=}"; shift ;;
+        --tls) TLS_MODE="${2:?--tls 需要参数 on|off}"; shift 2 ;;
+        --tls=*) TLS_MODE="${1#*=}"; shift ;;
+        --no-tls) TLS_MODE=off; shift ;;
+        --tls-cert) TLS_CERT_SRC="${2:?--tls-cert 需要参数}"; shift 2 ;;
+        --tls-cert=*) TLS_CERT_SRC="${1#*=}"; shift ;;
+        --tls-key) TLS_KEY_SRC="${2:?--tls-key 需要参数}"; shift 2 ;;
+        --tls-key=*) TLS_KEY_SRC="${1#*=}"; shift ;;
         --no-start) DO_START=0; shift ;;
         --no-systemd) DO_SYSTEMD=0; shift ;;
         --no-docker) WITH_DOCKER=0; shift ;;
@@ -66,6 +77,12 @@ while [ $# -gt 0 ]; do
   --listen <addr:port>        面板监听地址（默认沿用示例配置 127.0.0.1:18080）；
                               可用环境变量 SKIFF_LISTEN 代替；内网直连需显式改，
                               并自行确认 allow_insecure_http 或 TLS 配置
+  --tls on|off                显式启用/关闭 TLS。off = 直接明文监听（仅限内网，
+                              登录 Cookie 降级为 skiff_dev_session）
+  --tls-cert <pem>            TLS 证书；配合 --tls on 时拷进 /etc/skiff/tls（0600）
+  --tls-key <pem>             TLS 私钥；配合 --tls on 时拷进 /etc/skiff/tls（0600）
+                              未给 --tls 时：有 --tls-cert/--tls-key 即启用；交互终端会询问；
+                              非交互且无证书则沿用旧行为（loopback 明文调试/反代形态）
   --no-start                  装完不启动服务
   --no-systemd                不装 systemd unit
   --no-docker                 跳过 Docker 自动安装（面板仍可装，容器页为空态）
@@ -86,6 +103,11 @@ WEB_ROOT=${WEBROOT_OVERRIDE:-/www}
 CONF_DIR=/etc/skiff
 RUN_DIR=/run/skiff
 PLUGIN_GROUP=skiff-plugins
+
+case "$TLS_MODE" in
+    auto|on|off) ;;
+    *) echo "--tls / SKIFF_TLS 只支持 on|off（auto 表示未指定），实际: $TLS_MODE" >&2; exit 2 ;;
+esac
 
 log() { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] 警告: %s\n' "$*" >&2; }
@@ -166,6 +188,10 @@ fi
 ensure_insecure_http() {
     conf=$1
     [ -f "$conf" ] || return 0
+    # 显式关闭 TLS（tls_enabled = false）已在 apply_tls_config 里处理，不再补旧开关
+    if grep -qE '^[[:space:]]*tls_enabled[[:space:]]*=[[:space:]]*false' "$conf"; then
+        return 0
+    fi
     # 配了 TLS 就不需要（且该项无意义）
     if grep -qE '^[[:space:]]*tls_cert[[:space:]]*=' "$conf"; then
         return 0
@@ -209,7 +235,88 @@ apply_listen_override() {
     fi
     log "监听地址已设为 $LISTEN_OVERRIDE（--listen/SKIFF_LISTEN）"
 }
+# 2.2 TLS 可选（--tls on|off / 交互选择）
+#
+# 三态语义（与 Config::validate 一致）：
+#   on  → tls_enabled = true，必须能读到证书/私钥；
+#   off → tls_enabled = false，直接明文监听（仅限内网），登录 Cookie 降级；
+#   auto（未指定）→ 有 --tls-cert/--tls-key 即 on；交互终端询问；否则沿用旧行为。
+conf_set_str() {
+    conf=$1 key=$2 val=$3
+    if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$conf"; then
+        sed -i "s|^[[:space:]]*$key[[:space:]]*=.*|$key = \"$val\"|" "$conf"
+    else
+        printf '%s = "%s"\n' "$key" "$val" >> "$conf"
+    fi
+}
+
+conf_set_bool() {
+    conf=$1 key=$2 val=$3
+    if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$conf"; then
+        sed -i "s|^[[:space:]]*$key[[:space:]]*=.*|$key = $val|" "$conf"
+    else
+        printf '%s = %s\n' "$key" "$val" >> "$conf"
+    fi
+}
+
+apply_tls_config() {
+    conf=$1
+    [ -f "$conf" ] || return 0
+    if [ "$TLS_MODE" = auto ]; then
+        if [ -n "$TLS_CERT_SRC" ] || [ -n "$TLS_KEY_SRC" ]; then
+            TLS_MODE=on
+        elif [ -t 0 ]; then
+            printf '[install] 是否启用 TLS？需要 --tls-cert/--tls-key 或配置里已有可用证书 [y/N]: ' >&2
+            answer=""
+            read -r answer || true
+            case "$answer" in
+                y|Y|yes|YES) TLS_MODE=on ;;
+                *) return 0 ;;
+            esac
+        else
+            return 0
+        fi
+    fi
+
+    if [ "$TLS_MODE" = on ]; then
+        if [ -n "$TLS_CERT_SRC" ] || [ -n "$TLS_KEY_SRC" ]; then
+            [ -n "$TLS_CERT_SRC" ] && [ -n "$TLS_KEY_SRC" ] \
+                || die "已选择启用 TLS，但 --tls-cert 与 --tls-key 必须同时提供（当前 cert='$TLS_CERT_SRC' key='$TLS_KEY_SRC'）"
+            [ -f "$TLS_CERT_SRC" ] || die "TLS 证书文件不存在或不可读: $TLS_CERT_SRC"
+            [ -f "$TLS_KEY_SRC" ] || die "TLS 私钥文件不存在或不可读: $TLS_KEY_SRC"
+            mkdir -p "$CONF_DIR/tls"
+            chmod 0700 "$CONF_DIR/tls"
+            install -m 0600 "$TLS_CERT_SRC" "$CONF_DIR/tls/fullchain.pem"
+            install -m 0600 "$TLS_KEY_SRC" "$CONF_DIR/tls/privkey.pem"
+            cert="$CONF_DIR/tls/fullchain.pem"
+            key="$CONF_DIR/tls/privkey.pem"
+        else
+            cert=$(sed -n 's/^[[:space:]]*tls_cert[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$conf" | head -1)
+            key=$(sed -n 's/^[[:space:]]*tls_key[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$conf" | head -1)
+            [ -n "$cert" ] && [ -n "$key" ] \
+                || die "已选择启用 TLS，但未提供 --tls-cert/--tls-key，配置 $conf 中也没有可用的 tls_cert/tls_key 路径"
+            [ -f "$cert" ] || die "已选择启用 TLS，但配置中的证书文件不存在: $cert"
+            [ -f "$key" ] || die "已选择启用 TLS，但配置中的私钥文件不存在: $key"
+        fi
+        conf_set_bool "$conf" tls_enabled true
+        conf_set_str "$conf" tls_cert "$cert"
+        conf_set_str "$conf" tls_key "$key"
+        log "TLS 已启用：cert=$cert key=$key"
+        return 0
+    fi
+
+    # off
+    conf_set_bool "$conf" tls_enabled false
+    listen=$(sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$conf" | head -1)
+    log "TLS 已显式关闭：面板直接监听明文 HTTP（Cookie 降级为 skiff_dev_session，仅限内网或反代之后）"
+    case "$listen" in
+        127.0.0.1:*|localhost:*|localhost|\[::1\]:*) ;;
+        *) warn "当前 listen=$listen 为非 loopback，明文管理面已显式开启；请确保处于内网或反向代理之后。" ;;
+    esac
+}
+
 apply_listen_override "$CONF_DIR/config.toml"
+apply_tls_config "$CONF_DIR/config.toml"
 
 ensure_insecure_http "$CONF_DIR/config.toml"
 

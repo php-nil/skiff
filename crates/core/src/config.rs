@@ -24,7 +24,11 @@ pub struct FileConfig {
     pub docker_tier: Option<String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    /// `true` 启用 TLS；`false` 直接明文监听（Cookie 降级）；缺省走旧行为自动推断。
+    pub tls_enabled: Option<bool>,
     pub allow_insecure_http: Option<bool>,
+    /// 安全入口前缀；缺省时沿用数据库里首启随机生成的值。
+    pub entry_prefix: Option<String>,
     pub allow_unsigned: Option<bool>,
     pub allow_reduced_sandbox: Option<bool>,
     pub trusted_proxies: Option<Vec<String>>,
@@ -48,7 +52,11 @@ pub struct Config {
     pub tier: Tier,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    /// `Some(true/false)` 为显式开关；`None` 表示旧配置的自动推断。
+    pub tls_enabled: Option<bool>,
     pub allow_insecure_http: bool,
+    /// 安全入口前缀（配置文件/环境变量显式值；`None` 时用数据库值）。
+    pub entry_prefix: Option<String>,
     pub allow_unsigned: bool,
     pub allow_reduced_sandbox: bool,
     pub trusted_proxies: Vec<Cidr>,
@@ -62,6 +70,8 @@ pub struct Config {
     pub dev_http: bool,
     /// 由 main 计算：非 loopback 明文，但显式确认了「可信反代已终止 TLS」
     pub plaintext_behind_proxy: bool,
+    /// 由 main 计算：本次进程是否真正用 TLS 监听（显式关闭时即使配了证书也为 false）。
+    pub tls_active: bool,
 }
 
 impl Config {
@@ -169,6 +179,11 @@ impl Config {
         let tls_key = env_str("SKIFF_TLS_KEY")
             .map(PathBuf::from)
             .or(file.tls_key.clone());
+        let tls_enabled = match env_str("SKIFF_TLS_ENABLED") {
+            Some(v) => Some(parse_bool_word("SKIFF_TLS_ENABLED", &v)?),
+            None => file.tls_enabled,
+        };
+        let entry_prefix = env_str("SKIFF_ENTRY_PREFIX").or(file.entry_prefix.clone());
 
         let external_url = env_str("SKIFF_EXTERNAL_URL").or(file.external_url.clone());
         let login_concurrency = file.login_concurrency.unwrap_or(2).max(1);
@@ -184,7 +199,9 @@ impl Config {
             tier,
             tls_cert,
             tls_key,
+            tls_enabled,
             allow_insecure_http,
+            entry_prefix,
             allow_unsigned,
             allow_reduced_sandbox,
             trusted_proxies,
@@ -194,18 +211,39 @@ impl Config {
             require_initial_password_change,
             dev_http: false,
             plaintext_behind_proxy: false,
+            tls_active: false,
         })
     }
 
-    /// 启动前校验（§6.2）：非 loopback 必须 HTTPS 或可信反代终止。
+    /// 启动前校验（§6.2）：三态 TLS 与入口前缀。
     ///
-    /// 明文路径只有两种，且都必须显式打开：
-    /// 1. loopback + `allow_insecure_http`（本地调试，Cookie 降级为 `skiff_dev_session`）
-    /// 2. 非 loopback + `allow_insecure_http` + **非空 `trusted_proxies`**
-    ///    —— 用于「反代终止 TLS」（含 1Panel 商店形态）。没有可信反代白名单就只是裸奔，
-    ///    一律拒绝。
+    /// - `tls_enabled = true`：必须同时配置证书与私钥，缺失时报可读错误；
+    /// - `tls_enabled = false`：显式直接明文监听（局域网直连），Cookie 降级为
+    ///   `skiff_dev_session`（无 `__Host-`/`Secure`），启动日志另打警告；
+    /// - 未写 `tls_enabled`：保留旧行为——有证书走 TLS；否则只允许 loopback 调试
+    ///   或「非 loopback + allow_insecure_http + 非空 trusted_proxies」的可信反代形态。
     pub fn validate(&mut self) -> Result<()> {
+        if let Some(prefix) = self.entry_prefix.as_deref() {
+            skiff_app::panel_settings::validate_entry_prefix(prefix)
+                .map_err(|e| anyhow::anyhow!("entry_prefix 非法: {e}"))?;
+        }
+
+        // 显式关闭 TLS：不看证书/反代白名单，直接监听明文；Cookie 必须同步降级，
+        // 否则浏览器在 HTTP 下会丢弃 `__Host-` + Secure 的会话 Cookie。
+        if self.tls_enabled == Some(false) {
+            self.dev_http = true;
+            self.plaintext_behind_proxy = false;
+            self.tls_active = false;
+            return Ok(());
+        }
+
         let has_tls = self.tls_cert.is_some() && self.tls_key.is_some();
+        if self.tls_enabled == Some(true) && !has_tls {
+            bail!(
+                "已启用 TLS（tls_enabled = true），但 tls_cert / tls_key 未同时配置：\
+                 请补齐证书与私钥路径；若要直接监听明文 HTTP，请显式设 tls_enabled = false"
+            );
+        }
         if self.tls_cert.is_some() != self.tls_key.is_some() {
             bail!("tls_cert 与 tls_key 必须同时配置");
         }
@@ -220,19 +258,20 @@ impl Config {
                 }
             }
             self.dev_http = false;
+            self.tls_active = true;
             return Ok(());
         }
         if loopback {
             if !self.allow_insecure_http {
                 bail!(
-                    "未配置 TLS：loopback 调试请显式加 --dev 或 allow_insecure_http = true（§6.2）。\
-                     远程部署请配置 tls_cert/tls_key，或在可信反代终止 TLS。"
+                    "未配置 TLS：loopback 调试请显式加 --dev 或 allow_insecure_http = true（§6.2）；\
+                     局域网/远程直连请设 tls_enabled = false，或配置 tls_cert/tls_key"
                 );
             }
             self.dev_http = true;
             return Ok(());
         }
-        // 非 loopback
+        // 非 loopback 的兼容形态：可信反代终止 TLS
         if self.allow_insecure_http && !self.trusted_proxies.is_empty() {
             self.dev_http = false;
             self.plaintext_behind_proxy = true;
@@ -240,15 +279,17 @@ impl Config {
         }
         if self.allow_insecure_http {
             bail!(
-                "监听 {} 为非 loopback 且未配置 TLS，且 trusted_proxies 为空：\
-                 这等于把管理面明文暴露在网络上。请配置 tls_cert/tls_key；\
-                 若 TLS 已由可信反代终止，请同时配置 trusted_proxies（CIDR 白名单）。",
+                "监听 {} 为非 loopback 且未配置 TLS，且 trusted_proxies 为空。\
+                 直接明文监听请设 tls_enabled = false（Cookie 会降级、仅限内网）；\
+                 若 TLS 已由可信反代终止，请同时配置 trusted_proxies（CIDR 白名单）；\
+                 否则请配置 tls_cert/tls_key。",
                 self.listen
             );
         }
         bail!(
             "监听 {} 为非 loopback 且未配置 TLS：远程管理默认只接受 HTTPS。\
-             请配置 tls_cert/tls_key（可信反代终止时也请显式加 allow_insecure_http = true 并配 trusted_proxies）",
+             直接明文监听请设 tls_enabled = false（仅限内网）；\
+             请配置 tls_cert/tls_key，或在可信反代终止 TLS（allow_insecure_http = true + trusted_proxies）",
             self.listen
         )
     }
@@ -266,6 +307,15 @@ impl Config {
 
 fn env_str(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// 三态/布尔环境变量的可读解析；非法值直接拒绝启动，避免静默按 false 处理。
+fn parse_bool_word(key: &str, raw: &str) -> Result<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => bail!("{key} 只支持 true/false/on/off/1/0，实际: {other}"),
+    }
 }
 
 /// 逐项解析可信代理 CIDR；非法项拒绝启动。
@@ -331,7 +381,9 @@ mod tests {
             tier: Tier::Lifecycle,
             tls_cert: None,
             tls_key: None,
+            tls_enabled: None,
             allow_insecure_http: true,
+            entry_prefix: None,
             allow_unsigned: false,
             allow_reduced_sandbox: false,
             trusted_proxies: vec![],
@@ -341,6 +393,7 @@ mod tests {
             require_initial_password_change: false,
             dev_http: false,
             plaintext_behind_proxy: false,
+            tls_active: false,
         };
         let e = c.validate().unwrap_err().to_string();
         // 只有 allow_insecure_http、没有可信反代白名单：必须拒绝，并说清差什么
@@ -360,7 +413,9 @@ mod tests {
             tier: Tier::Lifecycle,
             tls_cert: None,
             tls_key: None,
+            tls_enabled: None,
             allow_insecure_http: false,
+            entry_prefix: None,
             allow_unsigned: false,
             allow_reduced_sandbox: false,
             trusted_proxies: vec![],
@@ -370,6 +425,7 @@ mod tests {
             require_initial_password_change: false,
             dev_http: false,
             plaintext_behind_proxy: false,
+            tls_active: false,
         };
         assert!(c.validate().is_err());
         c.allow_insecure_http = true;
@@ -391,6 +447,59 @@ mod tests {
         c.validate().unwrap();
         assert!(c.plaintext_behind_proxy);
         assert!(!c.dev_http);
+    }
+
+    #[test]
+    fn tls_enabled_without_cert_fails_readably() {
+        let mut c = Config::load(None, false).unwrap();
+        c.listen = "0.0.0.0:18080".parse().unwrap();
+        c.tls_enabled = Some(true);
+        c.tls_cert = None;
+        c.tls_key = None;
+        let e = c.validate().unwrap_err().to_string();
+        assert!(e.contains("tls_enabled"), "{e}");
+        assert!(e.contains("tls_cert"), "{e}");
+    }
+
+    #[test]
+    fn tls_off_allows_lan_plaintext_and_downgrades_cookie() {
+        // 关闭 TLS 直接监听局域网地址：必须允许启动，且 Cookie 走非 __Host- 形态。
+        let mut c = Config::load(None, false).unwrap();
+        c.listen = "0.0.0.0:18080".parse().unwrap();
+        c.tls_enabled = Some(false);
+        c.tls_cert = None;
+        c.tls_key = None;
+        c.allow_insecure_http = false;
+        c.trusted_proxies = vec![];
+        c.validate().unwrap();
+        assert!(c.dev_http, "明文直连必须降级 Cookie");
+        assert!(!c.plaintext_behind_proxy);
+        assert_eq!(
+            skiff_identity::session_cookie_name(c.dev_http),
+            "skiff_dev_session"
+        );
+        // 反代形态仍使用 __Host- + Secure
+        c.tls_enabled = None;
+        c.allow_insecure_http = true;
+        c.trusted_proxies = vec![Cidr::parse("172.18.0.0/16").unwrap()];
+        c.dev_http = false;
+        c.plaintext_behind_proxy = false;
+        c.validate().unwrap();
+        assert!(!c.dev_http);
+        assert_eq!(
+            skiff_identity::session_cookie_name(c.dev_http),
+            "__Host-skiff_session"
+        );
+    }
+
+    #[test]
+    fn invalid_entry_prefix_fails_startup() {
+        let mut c = Config::load(None, true).unwrap();
+        c.entry_prefix = Some("api".into()); // 保留段 + 长度不足
+        let e = c.validate().unwrap_err().to_string();
+        assert!(e.contains("entry_prefix"), "{e}");
+        c.entry_prefix = Some("abc12345".into());
+        c.validate().unwrap();
     }
 
     #[test]

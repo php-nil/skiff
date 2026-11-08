@@ -14,7 +14,10 @@ use skiff_plugin::{Supervisor, SupervisorConfig};
 
 use crate::config::Config;
 
-pub const KEY_ENTRY_PREFIX: &str = "security.entry_prefix";
+pub use skiff_app::panel_settings::{
+    ENTRY_PREFIX_GRACE_SECS, KEY_ENTRY_PREFIX, KEY_ENTRY_PREFIX_PREVIOUS,
+    KEY_ENTRY_PREFIX_PREVIOUS_UNTIL,
+};
 pub const KEY_CSRF_SECRET: &str = "security.csrf_secret";
 pub const KEY_INSTANCE_ID: &str = "instance.id";
 
@@ -56,7 +59,43 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         cfg.allow_reduced_sandbox,
     );
 
-    let entry_prefix = db.get_or_init_setting(KEY_ENTRY_PREFIX, || random_prefix(8))?;
+    let stored_prefix = db.get_setting(KEY_ENTRY_PREFIX)?;
+    let entry_prefix = match cfg
+        .entry_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        Some(p) => {
+            // 配置文件/环境变量是显式来源：同步进库，并把旧前缀留作兼容别名。
+            if let Some(old) = stored_prefix.as_deref().filter(|old| *old != p) {
+                db.set_setting(KEY_ENTRY_PREFIX_PREVIOUS, old)?;
+                db.set_setting(
+                    KEY_ENTRY_PREFIX_PREVIOUS_UNTIL,
+                    &(chrono::Utc::now().timestamp() + ENTRY_PREFIX_GRACE_SECS).to_string(),
+                )?;
+            }
+            db.set_setting(KEY_ENTRY_PREFIX, p)?;
+            p.to_string()
+        }
+        None => match stored_prefix {
+            Some(p) => p,
+            None => db.get_or_init_setting(KEY_ENTRY_PREFIX, || random_prefix(8))?,
+        },
+    };
+    // 旧前缀只在有效窗口内作为 GET 重定向别名；窗口外忽略，避免永久旁路。
+    let entry_prefix_previous = db
+        .get_setting(KEY_ENTRY_PREFIX_PREVIOUS)?
+        .filter(|prev| prev != &entry_prefix)
+        .filter(|prev| skiff_app::panel_settings::validate_entry_prefix(prev).is_ok())
+        .filter(|_| {
+            db.get_setting(KEY_ENTRY_PREFIX_PREVIOUS_UNTIL)
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|until| until > chrono::Utc::now().timestamp())
+                .unwrap_or(false)
+        });
     let csrf_secret = db.get_or_init_setting(KEY_CSRF_SECRET, skiff_identity::new_token)?;
     let _ = db.get_or_init_setting(KEY_INSTANCE_ID, skiff_identity::new_token);
 
@@ -117,7 +156,14 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     let web_cfg = WebConfig {
         data_dir: cfg.data_dir.clone(),
         web_root: cfg.web_root.clone(),
+        config_path: cfg.config_path.clone(),
+        listen: cfg.listen,
         entry_prefix,
+        entry_prefix_previous,
+        tls_enabled: cfg.tls_active,
+        tls_cert: cfg.tls_cert.clone(),
+        tls_key: cfg.tls_key.clone(),
+        allow_insecure_http: cfg.allow_insecure_http,
         dev_http: cfg.dev_http,
         trusted_proxies,
         external_url: cfg.external_url.clone(),
@@ -330,7 +376,9 @@ mod tests {
             tier: Tier::Basic,
             tls_cert: None,
             tls_key: None,
+            tls_enabled: None,
             allow_insecure_http: true,
+            entry_prefix: None,
             allow_unsigned: true,
             allow_reduced_sandbox: true,
             trusted_proxies: vec![],
@@ -340,6 +388,7 @@ mod tests {
             require_initial_password_change: false,
             dev_http: true,
             plaintext_behind_proxy: false,
+            tls_active: false,
         }
     }
 

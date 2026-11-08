@@ -6,11 +6,17 @@
 # 这是刻意的——拼写错误不应静默降级。
 
 # ── 监听 ────────────────────────────────────────────────────────
-# 默认 127.0.0.1:18080。对外提供服务有两种正路：
-#   A) 本进程直接终止 TLS：配 tls_cert / tls_key
-#   B) 反代终止 TLS：监听 loopback，并显式 allow_insecure_http = true + trusted_proxies
-# 非 loopback 且无 TLS 时启动会被拒绝（方案 §6.2）。
+# 默认 127.0.0.1:18080。三种正路：
+#   A) 本进程直接终止 TLS：tls_enabled = true + tls_cert / tls_key
+#   B) 反代终止 TLS：监听 loopback/内网，显式 allow_insecure_http = true + trusted_proxies
+#   C) 直接明文监听（仅限内网）：tls_enabled = false
+#      此时登录 Cookie 降级为 skiff_dev_session（无 __Host-/Secure），HttpOnly/SameSite 保留。
+# 非 loopback、未配 TLS、又没显式 tls_enabled = false 时启动会被拒绝（方案 §6.2）。
 listen = "127.0.0.1:18080"
+
+# 安全入口前缀：缺省时首启随机生成并写入数据库；显式写入后以本文件为准。
+# 设置页修改会同步写这里。只允许 ASCII 字母/数字/-/_，长度 6–32，不得占用 api/healthz/static。
+# entry_prefix = "abc12345"
 
 # ── 路径 ────────────────────────────────────────────────────────
 # 数据根：库、初始口令、plugins、backup、official 都在这下面
@@ -27,11 +33,16 @@ listen = "127.0.0.1:18080"
 # docker_tier = "lifecycle"
 
 # ── TLS ─────────────────────────────────────────────────────────
+# 三态：true 启用；false 显式直接明文监听；不写 = 旧行为自动推断（有证书走 TLS）。
+# tls_enabled = true
 # tls_cert = "/etc/skiff/tls/fullchain.pem"
 # tls_key  = "/etc/skiff/tls/privkey.pem"
 
-# 明文 HTTP 仅用于 loopback 调试或「反代已终止 TLS」的显式确认。
-# 配了 tls_cert/tls_key 时本项无意义。远程裸奔不会被允许。
+# 用法边界：
+#   tls_enabled = true  → __Host-skiff_session + Secure
+#   不写 + allow_insecure_http + trusted_proxies（反代终止 TLS）→ __Host-skiff_session + Secure
+#   tls_enabled = false（直接明文，仅限内网）→ skiff_dev_session，无 Secure
+# 后两种明文形态都会在启动日志与设置页给出显式警告。
 # allow_insecure_http = true
 
 # ── 可信反向代理（方案 §6.4）────────────────────────────────────

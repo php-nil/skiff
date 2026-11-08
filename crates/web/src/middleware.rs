@@ -63,8 +63,9 @@ pub async fn entry_guard(State(state): State<Arc<AppState>>, req: Request, next:
     let path = req.uri().path().to_string();
     if !is_exempt(&path) {
         let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
-        let prefix_ok =
-            first == state.cfg.entry_prefix || (first == "api" && path.starts_with("/api/v1/"));
+        let prefix_ok = first == state.cfg.entry_prefix
+            || state.cfg.entry_prefix_previous.as_deref() == Some(first)
+            || (first == "api" && path.starts_with("/api/v1/"));
         if !prefix_ok {
             return AppError::NotFound("404 Not Found".into()).into_response();
         }

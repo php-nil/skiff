@@ -34,6 +34,20 @@ pub fn router(state: Arc<AppState>) -> Router {
     // 错误页在没有 AppState 的路径上也要能给出「返回首页」，前缀在这里注入一次
     templates::set_entry_prefix(&state.cfg.entry_prefix);
     let p = &state.cfg.entry_prefix;
+    // 改前缀防锁死：重启后的 24 小时内，旧入口 GET 请求 302 到新前缀同名路径。
+    // 只注册 GET，不复制认证/写操作，避免旧入口成为长期旁路。
+    let legacy = match state.cfg.entry_prefix_previous.as_deref() {
+        Some(prev) if !prev.is_empty() => Router::new()
+            .route(
+                &format!("/{prev}"),
+                get(handlers::settings::legacy_prefix_root),
+            )
+            .route(
+                &format!("/{prev}/{{*rest}}"),
+                get(handlers::settings::legacy_prefix_redirect),
+            ),
+        _ => Router::new(),
+    };
     // 长连接路由单独成组：不挂超时（见下方 `.layer(request_timeout)` 的位置）。
     let streaming = Router::new()
         .route(
@@ -364,6 +378,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/keys"),
             post(handlers::settings::import_key),
         )
+        // 监听端口 / 安全入口前缀 / TLS：写 config.toml，重启生效。
+        .route(
+            &format!("/{p}/settings/panel"),
+            post(handlers::settings::panel_update),
+        )
         .route(
             &format!("/{p}/settings/keys/{{id}}/remove"),
             post(handlers::settings::remove_key),
@@ -409,6 +428,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(handlers::meta::healthz))
         .merge(ui)
+        .merge(legacy)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::entry_guard,
@@ -460,7 +480,14 @@ mod tests {
         let cfg = crate::state::WebConfig {
             data_dir: PathBuf::from("skiff-test-data"),
             web_root: PathBuf::from("skiff-test-web"),
+            config_path: PathBuf::from("skiff-test-config.toml"),
+            listen: "127.0.0.1:18080".parse().unwrap(),
             entry_prefix: "p".into(),
+            entry_prefix_previous: None,
+            tls_enabled: false,
+            tls_cert: None,
+            tls_key: None,
+            allow_insecure_http: true,
             dev_http: true,
             trusted_proxies: vec![],
             external_url: None,

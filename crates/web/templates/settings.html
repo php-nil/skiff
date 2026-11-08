@@ -53,10 +53,43 @@
 </section>
 
 <section class="panel" id="entry-prefix">
-  <h2>安全入口</h2>
-  <p>当前前缀：<code>/{{ entry_prefix }}</code>（首启随机生成并持久化；非此前缀一律 404）。</p>
+  <h2>后台端口 / 安全入口 / TLS</h2>
+  <p>当前监听 <code>{{ listen_addr }}:{{ listen_port }}</code>，入口前缀 <code>/{{ entry_prefix }}</code>，TLS
+    {% if tls_mode == "on" %}已启用（本进程终止 TLS）{% else if tls_mode == "off" %}已关闭（直接明文 HTTP）{% else %}自动推断{% endif %}。</p>
+  {% if plaintext_behind_proxy %}
+    <div class="banner warn">当前为「可信反代终止 TLS」形态：面板只监听明文，Cookie 仍为 __Host- + Secure；请确保只有 trusted_proxies 中的反代能直连本端口。</div>
+  {% endif %}
+  {% if tls_mode == "off" && listen_addr != "127.0.0.1" && listen_addr != "::1" %}
+    <div class="banner danger">已显式关闭 TLS 并监听非 loopback 地址：管理面为明文 HTTP，登录 Cookie 降级为 <code>skiff_dev_session</code>（无 Secure）。仅限内网或反向代理之后使用。</div>
+  {% endif %}
+  {% if is_admin %}
+  <form method="post" action="/{{ ctx.prefix }}/settings/panel" class="col">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <label>监听地址（IPv4 / IPv6 字面量）<input name="listen_addr" value="{{ listen_addr }}" required></label>
+    <label>监听端口（1–65535）<input type="number" name="listen_port" min="1" max="65535" value="{{ listen_port }}" required></label>
+    <label>安全入口前缀（6–32 位，字母/数字/-/_）
+      <input name="entry_prefix" value="{{ entry_prefix }}" required minlength="6" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{5,31}">
+    </label>
+    <label>TLS 模式
+      <select name="tls_mode">
+        <option value="auto" {% if tls_mode == "auto" %}selected{% endif %}>自动（有证书即启用；反代形态保持明文）</option>
+        <option value="on" {% if tls_mode == "on" %}selected{% endif %}>启用（本进程终止 TLS，需证书与私钥）</option>
+        <option value="off" {% if tls_mode == "off" %}selected{% endif %}>关闭（直接明文 HTTP，仅限内网）</option>
+      </select>
+    </label>
+    <label>TLS 证书路径（PEM）<input name="tls_cert" value="{{ tls_cert }}" placeholder="/etc/skiff/tls/fullchain.pem"></label>
+    <label>TLS 私钥路径（PEM）<input name="tls_key" value="{{ tls_key }}" placeholder="/etc/skiff/tls/privkey.pem"></label>
+    <button class="primary" type="submit">保存（重启后生效）</button>
+  </form>
+  <div class="banner warn">
+    端口 / 前缀 / TLS 会写入 <code>{{ config_path }}</code>，必须重启 skiff 服务后才生效；重启前当前入口仍然可用。
+    修改前缀后，重启后旧入口会在 24 小时内 302 跳转到新入口，作为防锁死兜底。
+  </div>
+  <p class="hint">关闭 TLS 且直接监听非 loopback 地址时，登录 Cookie 会降级为 <code>skiff_dev_session</code>（无 <code>__Host-</code>/<code>Secure</code>，HttpOnly/SameSite 保留），仅限内网或反向代理之后使用。启用 TLS 时使用 <code>__Host-skiff_session</code> + Secure。</p>
+  {% else %}
+  <p class="hint">只有管理员可以修改监听端口、入口前缀与 TLS 配置。</p>
+  {% endif %}
 </section>
-
 {% if is_admin %}
 <section class="panel" id="trusted-keys">
   <h2>信任公钥（TOFU）</h2>

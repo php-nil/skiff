@@ -29,8 +29,9 @@ RuntimeDirectoryMode=0711
 
 # 面板要写 /www（库、站点、vhost、日志、证书、PHP socket）与 /run/skiff；
 # ProtectSystem=full 只把 /usr、/boot、/etc 置只读，这里显式列白名单便于审计。
+# /etc/skiff：设置页保存监听/入口前缀/TLS 需要核改 config.toml（写前校验、临时文件 rename）。
 # /etc/docker：面板需要把镜像源写进 daemon.json（写前备份、失败回滚）。
-ReadWritePaths=/www /run/skiff /etc/docker
+ReadWritePaths=/www /run/skiff /etc/docker /etc/skiff
 
 # 插件 Supervisor 需要在自己的 cgroup 下放子进程；delegate 让容器/沙箱后续可控。
 # 注：cgroups v2 限额在 MVP 未实现（见 docs/sections/12-pending-tests.md）。

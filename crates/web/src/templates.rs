@@ -784,6 +784,17 @@ pub struct FilesPage {
 pub struct SettingsPage {
     pub ctx: PageCtx,
     pub entry_prefix: String,
+    /// 当前监听的 IP 与端口（拆分展示，便于端口占用校验）。
+    pub listen_addr: String,
+    pub listen_port: u16,
+    /// TLS 三态：`auto` / `on` / `off`（与 `config.toml` 的 `tls_enabled` 对应）。
+    pub tls_mode: String,
+    pub tls_cert: String,
+    pub tls_key: String,
+    /// 配置文件落盘路径（设置页展示 + 提示）。
+    pub config_path: String,
+    /// 明文反代形态：TLS 由 trusted_proxies 中的反代终止。
+    pub plaintext_behind_proxy: bool,
     pub totp_enabled: bool,
     pub totp_secret: String,
     pub totp_uri: String,

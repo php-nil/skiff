@@ -27,33 +27,38 @@ pub async fn serve(cfg: &Config, router: axum::Router) -> Result<()> {
 
     let app = router.into_make_service_with_connect_info::<SocketAddr>();
 
-    match (&cfg.tls_cert, &cfg.tls_key) {
-        (Some(cert), Some(key)) => {
-            let tls = RustlsConfig::from_pem_file(cert, key)
-                .await
-                .with_context(|| format!("加载 TLS 证书失败: {}", cert.display()))?;
-            info!(%addr, "HTTPS 监听中");
-            axum_server::bind_rustls(addr, tls)
-                .handle(handle)
-                .serve(app)
-                .await
-                .map_err(|e| serve_error(e, addr))?;
+    if cfg.tls_active {
+        let (cert, key) = match (&cfg.tls_cert, &cfg.tls_key) {
+            (Some(cert), Some(key)) => (cert, key),
+            _ => anyhow::bail!("内部错误：tls_active 为真但证书/私钥缺失"),
+        };
+        let tls = RustlsConfig::from_pem_file(cert, key)
+            .await
+            .with_context(|| format!("加载 TLS 证书失败: {}", cert.display()))?;
+        info!(%addr, "HTTPS 监听中");
+        axum_server::bind_rustls(addr, tls)
+            .handle(handle)
+            .serve(app)
+            .await
+            .map_err(|e| serve_error(e, addr))?;
+    } else {
+        // `validate()` 只放行两种明文：loopback/显式关 TLS（dev_http）与「可信反代终止 TLS」
+        // （plaintext_behind_proxy）。这里必须同时认两者，否则后者永远起不来。
+        plaintext_allowed(cfg)?;
+        if cfg.dev_http {
+            warn!(
+                %addr,
+                "明文 HTTP 监听：Cookie 已降级为 skiff_dev_session（无 __Host-/Secure）；\
+                 仅限内网直连或反向代理之后"
+            );
+        } else {
+            warn!(%addr, "明文 HTTP 监听：假定 TLS 已由 trusted_proxies 中的反代终止");
         }
-        _ => {
-            // `validate()` 只放行两种明文：loopback（dev_http）与「可信反代终止 TLS」
-            // （plaintext_behind_proxy）。这里必须同时认两者，否则后者永远起不来。
-            plaintext_allowed(cfg)?;
-            if cfg.dev_http {
-                warn!(%addr, "明文 HTTP 开发模式（仅 loopback）：Cookie 无 Secure 前缀");
-            } else {
-                warn!(%addr, "明文 HTTP 监听：假定 TLS 已由 trusted_proxies 中的反代终止");
-            }
-            axum_server::bind(addr)
-                .handle(handle)
-                .serve(app)
-                .await
-                .map_err(|e| serve_error(e, addr))?;
-        }
+        axum_server::bind(addr)
+            .handle(handle)
+            .serve(app)
+            .await
+            .map_err(|e| serve_error(e, addr))?;
     }
     Ok(())
 }
@@ -262,7 +267,9 @@ mod tests {
             tier: Tier::Basic,
             tls_cert: None,
             tls_key: None,
+            tls_enabled: None,
             allow_insecure_http: true,
+            entry_prefix: None,
             allow_unsigned: true,
             allow_reduced_sandbox: true,
             trusted_proxies: vec![],
@@ -272,6 +279,7 @@ mod tests {
             require_initial_password_change: false,
             dev_http: true,
             plaintext_behind_proxy: false,
+            tls_active: false,
         }
     }
 
