@@ -214,7 +214,9 @@
 
 - `fs.recycle.restore(id)`：检查原路径父目录存在且可写、目标不存在；父目录缺失返回 `fs.not_found` 并带「原路径的父目录已不存在」的可读说明，同名冲突返回 `fs.conflict` 且不覆盖（显式 `overwrite` 才替换）；写审计 `fs.recycle.restore`。
 - `fs.recycle.purge(id)`：彻底删除，写审计 `fs.recycle.purge`；仅 Admin 或条目所属主体。
-- **受保护路径双路径硬拒**：删除（`remove`）与恢复（`restore`）都在 `skiff-app` 的 `AdminFs::guard` 与 `skiff-fs` 授权层各拦一次；原路径落回数据根、`plugins/`、`official/`、`skiff.db` 一律拒绝，旧条目也不能绕过。
+- **受保护路径双路径硬拒**：删除（`remove`）、别名（`rename`）、覆盖写（`write`/`copy`）与恢复（`restore`）都在 `skiff-app` 的 `AdminFs::guard` 与 `skiff-fs` 授权层各拦一次；命中数据根、`plugins/`、`official/`、`skiff.db`，以及内核自身运行配置（`/etc/skiff/config.toml`、`/etc/skiff/**` 的 TLS 材料、自定义 `config_path` 与 `tls_cert/tls_key`）一律返回 403（`fs.denied` / `fs.protected`），旧回收站条目也不能绕过。
+- **只保护内核运行路径**：保护区按路径组件比较，`/etc/skiff` 不会误伤 `/etc/skiff-other`；`/etc/nginx/nginx.conf`、`/etc/hosts` 等宿主其它配置仍可正常管理。`config_path` 的父目录仅在其专用目录名为 `skiff` 时整体保护，避免把 `/etc` 整体锁死。
+- 判定代数单一来源：`skiff-fs` 的 [`protected_hit`]，Web/应用层只注入前缀列表，不另写 `starts_with` 判断。
 - 站点删除：见 §9.3（P2 整站进回收站）。
 - 与备份的关系：回收站是**短期误删保护**，不替代站点备份；备份任务不读取回收站，清理也不触发备份。
 
@@ -257,7 +259,7 @@
 - **执行点（唯一接线点）**：`skiff-fs` 的 `write`（含 append/定位写）、`copy`、`rename`（跨根时按目标根预检）、`restore`（回补回收站条目用量）在落盘前调用 `enforce_quota`；Web 层不重复判定。超限返回 `fs.quota_exceeded`，消息含配额根、写入后用量与上限。
 - **回收站与配额的关系**：对象移入回收站后**从目录树用量中扣除**（回收站自身由 §5.2 的全局配额单独约束），避免同一份数据被两套上限重复计算；恢复时再回补。
 - **取消配额**：清空 `max_bytes/max_files`，保留用量计数；页面不再展示该条目的上限（列表只显示已设置上限的规则）。
-- **受保护路径**：数据根、`plugins/`、`official/`、`skiff.db` 不允许设置为配额根；列表侧也做同样的过滤。
+- **受保护路径**：数据根、`plugins/`、`official/`、`skiff.db`、内核运行配置与 TLS 材料不允许设置为配额根；`quota_set` / `quota_scan` / `quota_cancel` / `quota_list` 都用同一份前缀列表拒绝/过滤。最长祖先根命中时若命中受保护根，按拒绝处理，不会把配置目录纳入统计。
 
 ### 7.2 现有 256 KiB 读限制的调整
 

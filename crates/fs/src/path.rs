@@ -271,6 +271,17 @@ pub(crate) fn simplify_windows(mut p: PathBuf) -> PathBuf {
     p
 }
 
+/// 命中受保护前缀（含前缀本身），返回命中的根用于拼错误提示。
+///
+/// 这是「内核受保护路径」的唯一判定代数：调用方负责把 `target` 与 `protected`
+/// 放在同一坐标系（已存在路径用 canonical 形态，待创建路径用 lexical canonical 父目录 + 文件名）。
+/// 前缀按路径组件比较，不做字符串前缀，避免 `/etc/skiff-other` 被 `/etc/skiff` 误伤。
+pub fn protected_hit<'a>(protected: &'a [PathBuf], target: &Path) -> Option<&'a PathBuf> {
+    protected
+        .iter()
+        .find(|root| target == root.as_path() || target.starts_with(root.as_path()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

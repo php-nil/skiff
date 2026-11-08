@@ -40,7 +40,7 @@ pub use ops::{
     StatInfo, StatRequest, WriteMode, WriteOutcome, WriteRequest,
 };
 pub use path::{
-    normalize_absolute, protected_subdir, site_of, PathKind, PathMode, ResolvedPath,
+    normalize_absolute, protected_hit, protected_subdir, site_of, PathKind, PathMode, ResolvedPath,
     DEFAULT_SITE_ROOT, PROTECTED_SUBDIRS,
 };
 pub use subject::{canonical_grant_roots, validate_grant_root, Principal, Scope, Subject};

@@ -333,22 +333,87 @@ impl AuditSink for DbAuditSink {
 pub struct AdminFs {
     fs: Fs,
     db: Arc<Db>,
-    data_dir: PathBuf,
+    /// 内核受保护前缀（数据根 + 运行配置 + TLS 材料），与 `skiff-fs` 共用同一判定代数。
+    protected: Vec<PathBuf>,
     seq: AtomicU64,
+}
+
+/// 计算内核受保护前缀：数据根、`plugins/`、`official/`、运行配置与 TLS 材料。
+///
+/// 只保护「碰了会让内核起不来」的路径；`config_path` 的父目录仅在其专用目录名为
+/// `skiff` 时整体保护，避免把 `/etc` 这类宽目录顺手锁死。
+pub fn kernel_protected_paths(
+    data_dir: &Path,
+    config_path: &Path,
+    tls_cert: Option<&Path>,
+    tls_key: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for p in [
+        data_dir.to_path_buf(),
+        data_dir.join("plugins"),
+        data_dir.join("official"),
+        config_path.to_path_buf(),
+    ] {
+        push_protected(&mut out, &p);
+    }
+    if let Some(dir) = config_path.parent() {
+        if dir.file_name().and_then(|s| s.to_str()) == Some("skiff") {
+            push_protected(&mut out, dir);
+        }
+    }
+    // 默认安装的专用配置目录（FTP/服务配置也在此），即使 config 被自定义也保护。
+    push_protected(&mut out, Path::new("/etc/skiff"));
+    for p in [tls_cert, tls_key].into_iter().flatten() {
+        push_protected(&mut out, p);
+    }
+    out
+}
+
+fn push_protected(out: &mut Vec<PathBuf>, p: &Path) {
+    if let Ok(canon) = std::fs::canonicalize(p) {
+        if !out.contains(&canon) {
+            out.push(canon);
+        }
+    }
+    let lexical = p.to_path_buf();
+    if !out.contains(&lexical) {
+        out.push(lexical);
+    }
+}
+
+fn data_protected_paths(data_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for p in [
+        data_dir.to_path_buf(),
+        data_dir.join("plugins"),
+        data_dir.join("official"),
+    ] {
+        push_protected(&mut out, &p);
+    }
+    out
 }
 
 impl AdminFs {
     pub fn new(cfg: &WebConfig, db: Arc<Db>) -> Self {
-        Self::with_options(
+        let protected = kernel_protected_paths(
+            &cfg.data_dir,
+            &cfg.config_path,
+            cfg.tls_cert.as_deref(),
+            cfg.tls_key.as_deref(),
+        );
+        Self::with_protected(
             cfg.data_dir.clone(),
             cfg.web_root.clone(),
             db,
             cfg.trash_retention_days,
+            protected,
         )
     }
 
     pub fn with_paths(data_dir: PathBuf, web_root: PathBuf, db: Arc<Db>) -> Self {
-        Self::with_options(data_dir, web_root, db, 30)
+        let protected = data_protected_paths(&data_dir);
+        Self::with_protected(data_dir, web_root, db, 30, protected)
     }
 
     pub fn with_options(
@@ -356,6 +421,17 @@ impl AdminFs {
         web_root: PathBuf,
         db: Arc<Db>,
         trash_retention_days: u32,
+    ) -> Self {
+        let protected = data_protected_paths(&data_dir);
+        Self::with_protected(data_dir, web_root, db, trash_retention_days, protected)
+    }
+
+    pub fn with_protected(
+        data_dir: PathBuf,
+        web_root: PathBuf,
+        db: Arc<Db>,
+        trash_retention_days: u32,
+        protected: Vec<PathBuf>,
     ) -> Self {
         let site_root = web_root.join("sites");
         let fs_cfg = FsConfig {
@@ -365,6 +441,7 @@ impl AdminFs {
                 retention_secs: i64::from(trash_retention_days.max(1)) * 86_400,
                 ..TrashConfig::default()
             },
+            protected_paths: protected.clone(),
             ..FsConfig::default()
         };
         Self {
@@ -381,7 +458,7 @@ impl AdminFs {
                 }),
             ),
             db,
-            data_dir,
+            protected,
             seq: AtomicU64::new(1),
         }
     }
@@ -433,10 +510,11 @@ impl AdminFs {
                 )))
             }
         };
-        if skiff_plugin::fsgrant::is_protected(&self.data_dir, &probe) {
-            return Err(FsError::Denied(
-                "内核数据目录受保护，文件管理不能访问（skiff.db / plugins / official）".into(),
-            ));
+        if let Some(root) = skiff_fs::protected_hit(&self.protected, &probe) {
+            return Err(FsError::Denied(format!(
+                "内核运行配置或数据目录受保护，文件管理不能访问: {raw}（命中 {}）",
+                root.display()
+            )));
         }
         if reject_root && is_root(&probe) {
             return Err(FsError::Denied("不能操作根目录".into()));
@@ -445,7 +523,10 @@ impl AdminFs {
     }
 
     fn is_protected_child(&self, child: &Path) -> bool {
-        skiff_plugin::fsgrant::hides_listed_entry(&self.data_dir, child)
+        match std::fs::canonicalize(child) {
+            Ok(resolved) => skiff_fs::protected_hit(&self.protected, &resolved).is_some(),
+            Err(_) => false,
+        }
     }
 
     pub fn list(&self, user: &str, path: &str) -> Result<Listing, FsError> {
@@ -747,6 +828,74 @@ mod tests {
         // 列表里不能出现数据根的任何子项。
         let listed = admin.list("admin", web.to_str().unwrap()).unwrap();
         assert!(!listed.entries.iter().any(|e| e.name == "evil.db"));
+    }
+
+    #[test]
+    fn kernel_runtime_config_is_protected_but_other_etc_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        let etc = tmp.path().join("etc");
+        let config = etc.join("skiff/config.toml");
+        let tls_key = etc.join("certs/privkey.pem");
+        let nginx = etc.join("nginx/nginx.conf");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::create_dir_all(tls_key.parent().unwrap()).unwrap();
+        fs::create_dir_all(nginx.parent().unwrap()).unwrap();
+        fs::write(&config, b"data_dir = '...'\n").unwrap();
+        fs::write(&tls_key, b"KEY").unwrap();
+        fs::write(&nginx, b"server {}\n").unwrap();
+
+        let db = db();
+        let protected = kernel_protected_paths(&data, &config, Some(&tls_key), None);
+        let admin = AdminFs::with_protected(data, web, db, 30, protected);
+
+        // 运行配置：删除 / 改名 / 覆盖写一律 403，并带可读原因。
+        let err = admin.remove("admin", config.to_str().unwrap()).unwrap_err();
+        assert_eq!(err.http_status(), 403);
+        assert!(err.message().contains("运行配置"), "{}", err.message());
+        let err = admin
+            .rename(
+                "admin",
+                config.to_str().unwrap(),
+                etc.join("skiff/config.bak").to_str().unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(err.http_status(), 403);
+        let err = admin
+            .write("admin", config.to_str().unwrap(), "pwned")
+            .unwrap_err();
+        assert_eq!(err.http_status(), 403);
+        assert_eq!(fs::read(&config).unwrap(), b"data_dir = '...'\n");
+
+        // TLS 材料显式文件保护。
+        let err = admin
+            .remove("admin", tls_key.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(err.http_status(), 403);
+
+        // 其它 /etc 配置不受影响：允许删除（进回收站）。
+        admin.remove("admin", nginx.to_str().unwrap()).unwrap();
+        assert!(!nginx.exists());
+
+        // 配额根落在受保护路径上：设置与扫描都拒绝。
+        let skiff_dir = etc.join("skiff");
+        assert_eq!(
+            admin
+                .quota_set("admin", skiff_dir.to_str().unwrap(), Some(1), None)
+                .unwrap_err()
+                .http_status(),
+            403
+        );
+        assert_eq!(
+            admin
+                .quota_scan("admin", skiff_dir.to_str().unwrap())
+                .unwrap_err()
+                .http_status(),
+            403
+        );
     }
 
     #[test]

@@ -69,6 +69,11 @@ pub struct FsConfig {
     /// 路径锁等待上限。
     pub lock_timeout: Duration,
     pub trash: TrashConfig,
+    /// 内核受保护路径前缀（含前缀本身）：内核运行配置、数据根等硬拒删除/改名/覆盖写。
+    ///
+    /// 由接线方注入（`skiff-app` 按运行配置计算），本 crate 不做任何默认假设；
+    /// 判定代数见 [`crate::path::protected_hit`]。允许同时放 canonical 与 lexical 形态。
+    pub protected_paths: Vec<PathBuf>,
 }
 
 impl Default for FsConfig {
@@ -83,6 +88,7 @@ impl Default for FsConfig {
             copy_max_depth: COPY_MAX_DEPTH,
             lock_timeout: DEFAULT_LOCK_TIMEOUT,
             trash: TrashConfig::default(),
+            protected_paths: Vec::new(),
         }
     }
 }

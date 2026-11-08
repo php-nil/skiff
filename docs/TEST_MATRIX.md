@@ -31,7 +31,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | C. 插件体系 | 10 | 1 项本机可验（PLUGIN-02），9 项必须上机 | `cargo test -p skiff-plugin`；`.wbpkg` 安装与 iframe |
 | D. 网站与运行环境 | 13 | 1 项本机可验（SITE-13 模板/路由断言），12 项必须上机（crate 单测兜底） | `cargo test -p skiff-web site_detail`；测试机建站与容器 |
 | E. Web 服务 | 8 | 0 项本机可验，8 项必须上机（crate 单测兜底） | `cargo test -p skiff-app nginx`；测试机 nginx -t 与日志 |
-| F. 文件系统原语 | 12 | 5 项本机可验（FS-02～05、FS-07 集成），7 项必须上机（FS-10～12 为第二步新增） | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；插件能力面；管理员文件页 |
+| F. 文件系统原语 | 13 | 6 项本机可验（FS-02～05、FS-07、FS-13 集成），7 项必须上机（FS-10～12 为第二步新增） | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；插件能力面；管理员文件页 |
 | G. 调度器 | 9 | 3 项本机可验（TASK-05～07），6 项需上机（TASK-09 另有 `skiff-cron` 单测兜底） | `cargo test -p skiff-sched -p skiff-app -p skiff-cron`；任务页与 cron 插件页 |
 | H. Docker | 14 | 5 项本机可验（DOCKER-09/10/12/13/14），9 项必须上机 | `cargo test -p skiff-docker -p skiff-policy -p skiff-compose -p skiff-web`；Docker 页面/API |
 | I. 部署与升级 | 11 | 1 项本机可验（DEPLOY-01），10 项必须上机；DEPLOY-09/10/11 因环境/复现条件阻塞 | `deploy/*.sh`、systemd、安装包 |
@@ -210,6 +210,7 @@ curl -ks -o /dev/null -w 'modules=%{http_code}\n' -b "$J" "$B/$P/sites/web?tab=m
 | FS-10 | 回收站页面主链路（第二步） | `[上机]` 管理员会话，`/$P/files/trash` 可打开 | 在文件页删除文件/目录 → 打开回收站；恢复、故意制造同名冲突后覆盖恢复、彻底删除、清空 | 删除后进回收站且原路径消失；恢复后内容一致；冲突提示可读且需二次确认覆盖；清空二次确认并说明不可恢复；列表清空 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/web/templates/fs_trash.html`、`static/fs_trash.js` |
 | FS-11 | 配额页面与执行（第二步） | `[上机]` 管理员会话，`/$P/files/quotas` 可打开 | 设置目录树字节/文件数上限 → 在文件页写入超限；修改上限；取消上限；点「重新统计」 | 超限写入返回 `fs.quota_exceeded` 且含原因；页面显示已用/上限；取消后不再拦截且列表隐藏；重扫耗时提示出现 | □通过 / □失败 | `crates/web/src/handlers/files.rs`、`crates/web/templates/fs_quotas.html`、`static/fs_quotas.js`、`crates/app/src/admin_fs.rs` |
 | FS-12 | 回收站/配额审计与受保护路径 | `[上机]` 已产生回收站/配额操作 | 删除、恢复、彻底删除、清空、设置/取消配额后打开 `/$P/audit`；再尝试把配额根设为数据根/`plugins/` | 审计出现 `fs.recycle.*` / `fs.quota.*` 且不含文件内容；受保护根被拒（403 `fs.denied/protected`） | □通过 / □失败 | `crates/fs/src/audit.rs`、`crates/app/src/admin_fs.rs`、`handlers/settings.rs` |
+| FS-13 | 内核运行配置保护（加固） | `[本机]` 单测；`[上机]` 管理员会话，文件页可浏览 `/etc` | 在文件页对 `/etc/skiff/config.toml` 执行删除、改名、覆盖保存；再对 `/etc/nginx/nginx.conf` 执行同样操作；尝试把配额根设为 `/etc/skiff` | 配置/TLS 路径三类操作均 403 且提示「内核运行配置或数据目录受保护」；`/etc/nginx/nginx.conf` 仍可操作；配额设置/扫描对 `/etc/skiff` 均 403 | □通过 / □失败 | `crates/fs/src/path.rs`、`crates/fs/src/ops/mutate.rs`、`crates/app/src/admin_fs.rs` |
 
 最小回归命令：
 

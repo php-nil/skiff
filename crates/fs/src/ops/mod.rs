@@ -522,6 +522,26 @@ impl Fs {
         Ok(())
     }
 
+    /// 内核受保护路径：删除/改名/覆盖写一律硬拒（管理员也不例外）。
+    ///
+    /// 与 `ensure_write_allowed` 的站点 `log/ssl/conf` 是两套口径：这里保护的是
+    /// 内核自身运行所需的配置/数据，属于「碰了就起不来」的路径。
+    pub(crate) fn ensure_not_protected(
+        &self,
+        r: &ResolvedPath,
+        action: &str,
+    ) -> Result<(), FsError> {
+        if let Some(root) = crate::path::protected_hit(&self.cfg.protected_paths, &r.path) {
+            return Err(FsError::Protected(format!(
+                "内核运行配置或数据目录受保护，不能{}: {}（命中 {}）",
+                action,
+                r.path.display(),
+                root.display()
+            )));
+        }
+        Ok(())
+    }
+
     /// 配额 key：插件按命中授权根；管理员按站点目录（无站点则为空）。
     pub(crate) fn quota_key(&self, p: &Principal, r: &ResolvedPath) -> Option<PathBuf> {
         if p.subject().is_admin() {

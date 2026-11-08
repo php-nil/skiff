@@ -28,6 +28,14 @@ impl Harness {
 
     /// 允许测试按需收窄配额/上限。
     pub fn with_config(f: impl FnOnce(&mut FsConfig)) -> Self {
+        Self::with_config_at(|_| Vec::new(), f)
+    }
+
+    /// 在已知临时根上注入受保护前缀（`prefixes` 收到 canonical 的 `base`）。
+    pub fn with_config_at<P>(prefixes: P, f: impl FnOnce(&mut FsConfig)) -> Self
+    where
+        P: FnOnce(&std::path::Path) -> Vec<PathBuf>,
+    {
         let tmp = tempfile::tempdir().unwrap();
         let base = canonical_base(tmp.path());
         let data = base.join("data");
@@ -47,6 +55,7 @@ impl Harness {
                 per_entry_bytes: 2 * 1024 * 1024 * 1024,
                 max_entries: 10_000,
             },
+            protected_paths: prefixes(&base),
             ..FsConfig::default()
         };
         f(&mut cfg);

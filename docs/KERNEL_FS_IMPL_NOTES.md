@@ -292,3 +292,16 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 - 统计缓存：成功写后 `adjust_stats` 增量修正；`quota_set` 与 `quota_scan` 做全量重扫并写 `scanned_at`，成本 O(条目数)。
 - 回收站对象不计入目录树用量（移入时扣减、恢复时回补），避免与回收站全局配额重复计算。
 - 保护：`AdminFs::guard` 在 `quota_set/cancel/scan/list` 前执行，数据根 / `plugins/` / `official/` / `skiff.db` 不可设为配额根；列表侧过滤旧数据。
+
+### 9.4 内核运行配置保护（加固）
+
+- `FsConfig.protected_paths` 为唯一前缀列表，由 `AdminFs` 在构造时注入；判定函数是 `skiff-fs::path::protected_hit`（按路径组件比较，含前缀本身）。
+- `AdminFs::kernel_protected_paths(data_dir, config_path, tls_cert, tls_key)` 组装：
+  - 数据根、`data/plugins`、`data/official`；
+  - `config_path` 文件本身；
+  - `config_path` 父目录仅在目录名为 `skiff` 时整体保护（默认 `/etc/skiff`）；
+  - 默认 `/etc/skiff` 目录（即使 config 被自定义，FTP/服务配置仍在此）；
+  - `tls_cert` / `tls_key` 文件（自定义 TLS 路径也不会漏）。
+- 每个前缀同时保留 canonical 与 lexical 两种形态：`AdminFs::guard` 用 canonical 比对已存在目标，`skiff-fs` 操作用 lexical 路径做纵深防御。
+- 执行点：`write`/`copy` 的目标、`remove` 的目标、`rename` 的源与目标、`restore` 的原路径；命中返回 `fs.protected`（HTTP 403）。`AdminFs` 早拦返回 `fs.denied`（同为 403），消息含「内核运行配置或数据目录受保护」与命中根。
+- 不锁 `/etc`：只加 `/etc/skiff` 及显式文件；`/etc/nginx/nginx.conf` 等仍可删除/改名/覆盖。

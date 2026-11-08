@@ -53,6 +53,9 @@ impl super::Fs {
                 FsError::Conflict("目标是目录".into()),
             );
         }
+        if let Err(e) = self.ensure_not_protected(&r, "覆盖写入") {
+            return self.fail_resolved(p, ctx, AuditAction::Write, &r, e);
+        }
         if let Err(e) = self.ensure_write_allowed(p, &r) {
             return self.fail_resolved(p, ctx, AuditAction::Write, &r, e);
         }
@@ -162,6 +165,9 @@ impl super::Fs {
                 &r,
                 FsError::Denied("不允许删除授权根本身".into()),
             );
+        }
+        if let Err(e) = self.ensure_not_protected(&r, "删除") {
+            return self.fail_resolved(p, ctx, AuditAction::Remove, &r, e);
         }
         if let Err(e) = self.ensure_write_allowed(p, &r) {
             return self.fail_resolved(p, ctx, AuditAction::Remove, &r, e);
@@ -396,6 +402,9 @@ impl super::Fs {
             );
         }
         for r in [&from, &to] {
+            if let Err(e) = self.ensure_not_protected(r, "改名") {
+                return self.rename_fail(p, ctx, &from, &to, e);
+            }
             if let Err(e) = self.ensure_write_allowed(p, r) {
                 return self.rename_fail(p, ctx, &from, &to, e);
             }
@@ -549,6 +558,9 @@ impl super::Fs {
                 FsError::Denied("overwrite 仅管理员可用".into()),
             );
         }
+        if let Err(e) = self.ensure_not_protected(&to, "覆盖写入") {
+            return self.copy_fail(p, ctx, &from, &to, e);
+        }
         if let Err(e) = self.ensure_write_allowed(p, &to) {
             return self.copy_fail(p, ctx, &from, &to, e);
         }
@@ -650,6 +662,7 @@ impl super::Fs {
             }
         }
         let target = self.resolve(p, &entry.original_path, PathMode::Create)?;
+        self.ensure_not_protected(&target, "恢复")?;
         if target.kind != PathKind::Missing && !overwrite {
             return Err(FsError::Conflict(
                 "原路径已存在同名对象，不自动覆盖；如需替换请显式选择覆盖".into(),
