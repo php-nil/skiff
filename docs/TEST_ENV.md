@@ -18,23 +18,23 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18081/<entry_prefix>/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `8p9yyvg4`（2026-11-07 干净系统重装，全新库生成，本轮未变） |
+| URL | `http://10.10.15.4:18081/udkwxz96/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `udkwxz96`（2026-11-08 19:59 全新库生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
-| 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /tmp/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
-| 证书 | `/etc/skiff/tls/fullchain.pem`（0644）、`/etc/skiff/tls/privkey.pem`（0600）；SAN `IP:10.10.15.4, IP:127.0.0.1, DNS:skiff.local`，有效期 10 年（文件保留，未删除） |
+| 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /root/iter/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`，unit 在 `/etc/systemd/system/`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
+| 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
 | 健康检查 | `GET /healthz` 200；裸 `GET /` 404，根路径只做前缀跳转 |
 
 ### 2.1 三种 TLS 形态与回切路径（2026-11-08 已逐形态验证）
 
 | 形态 | 生效配置 | 访问地址 | 备份与回切 |
 | --- | --- | --- | --- |
-| 一：TLS 直连（`install.sh --tls on`） | `listen="0.0.0.0:18080"`、`tls_enabled=true`、`tls_cert=/etc/skiff/tls/fullchain.pem`、`tls_key=/etc/skiff/tls/privkey.pem` | `https://10.10.15.4:18080` | `/root/iter/config-tls-20261108-c.toml`（本轮 9aa0381 复验版；`-b` 同形，旧版 `config-tls-20261108.toml`）。回切：`cp` 覆盖 `/etc/skiff/config.toml` → `systemctl stop skiff-http-fwd skiff-tls-proxy` → `systemctl restart skiff` |
-| 二：反代终止 TLS（`trusted_proxies`） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`trusted_proxies=["127.0.0.1/32"]`、`tls_enabled=false` | `https://10.10.15.4:18443`（`skiff-tls-proxy.service`，脚本 `/root/iter/skiff-tls-proxy.py`，转发 `127.0.0.1:18080`） | `/root/iter/config-proxy-20261108-b.toml`（本轮；无后缀 `config-proxy-20261108.toml` 同形）。回切：`cp` → `systemctl stop skiff-http-fwd` → `systemctl start skiff-tls-proxy` → `systemctl restart skiff` |
-| 三：直接明文（当前） | `listen="127.0.0.1:18080"`、`allow_insecure_http=true`、`tls_enabled=false` | `http://10.10.15.4:18081`（`skiff-http-fwd.service` 转发） | `/root/iter/config-dev-20261108-c.toml`（当前生效；`-b` 同形）。回切：`cp` → `systemctl stop skiff-tls-proxy` → `systemctl start skiff-http-fwd` → `systemctl restart skiff` |
+| 一：TLS 直连（`install.sh --tls on`） | `listen="0.0.0.0:18080"`、`tls_enabled=true`、`tls_cert=/etc/skiff/tls/fullchain.pem`、`tls_key=/etc/skiff/tls/privkey.pem` | `https://10.10.15.4:18080` | 需先自签证书（当前未生成）。以 `/root/iter/config-dev-20261108-fresh.toml` 为基线改这三项 → `systemctl restart skiff` |
+| 二：反代终止 TLS（`trusted_proxies`） | `listen="0.0.0.0:18080"`、`allow_insecure_http=true`、`trusted_proxies=["127.0.0.1/32"]`、`tls_enabled=false` | `https://10.10.15.4:18443`（需自备 `skiff-tls-proxy.service`，当前未部署） | 同上；停 `skiff-http-fwd`、起 TLS 代理、重启 `skiff` |
+| 三：直接明文（当前） | `listen="127.0.0.1:18080"`、`allow_insecure_http=true`、`tls_enabled=false` | `http://10.10.15.4:18081`（`skiff-http-fwd.service` 转发） | `/root/iter/config-dev-20261108-fresh.toml`（当前生效） |
 
-- 旧自签 HTTPS 直连配置另存 `/root/iter/config-https-20261108.toml`（`listen=0.0.0.0:18080` + `tls_cert/tls_key`），需要时可直接回切。
-- 三形态切换均只需覆盖配置 + 重启 `skiff`，实测来回 3→1→3 均恢复 `/healthz` 200，无残留监听。
+- **机器还原后，本轮之前的配置备份、TLS 证书与 `skiff-tls-proxy` 均已不存在**；上表只描述切换方法，形态一/二需要先重新生成证书/代理。当前备份只有 `/root/iter/config-dev-20261108-fresh.toml`。
+- 三形态切换均只需覆盖配置 + 重启 `skiff`；历史三形态实测结论（3→1→3 恢复 `/healthz` 200、无残留监听）仍然有效。
 - Cookie 断言：形态一/二为 `__Host-skiff_session`（`Secure; HttpOnly; SameSite=Lax`）；形态三为 `skiff_dev_session`（`HttpOnly; SameSite=Lax`，无 `Secure`）。
 - 形态二下直连 `:18080` 明文端口：`GET /<prefix>/login` 仍 200 但不写会话，`POST /<prefix>/login` 返回 403「跨站登录请求被拒绝」；`curl -k https://<host>:18080/healthz` 返回 000（该端口无 TLS）。
 
@@ -62,27 +62,28 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `8716e51`（Release 由该提交构建）；Release run `42464183354` success，CI run `42464178143` success（含 Clippy）。本轮只有一次 Release 在跑（`3dcea91` 的 run 已先结束） |
-| 部署时间 | 2026-11-08 16:55（Asia/Shanghai；在 v14 库上按 Release 资产覆盖安装） |
-| 部署方式 | `v0.1.0`（`8716e51`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`（沿用形态三配置，未传 `--listen/--tls`）；未传本地二进制 |
-| 数据库 | `PRAGMA user_version=14`（覆盖安装后保持 v14；站点 2 / plugins 6 / settings 7 / users 1 全部保留） |
-| 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发）；`skiff-tls-proxy.service` inactive（形态二验证用，脚本保留） |
-| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `0103e75af4cc497d697be2baeedb9da349f006079a888517ed2c0b0298f053e1`）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）。三形态备份见 §2.1 |
+| tag / 构建提交 | `v0.1.0` = `1862702`（Release 由该提交构建）；Release run `42471149737` success，CI run `42471115305` success |
+| 部署时间 | 2026-11-08 19:59（Asia/Shanghai；**机器已还原，全新库安装，不是升级**） |
+| 部署方式 | `v0.1.0`（`1862702`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`；未传本地二进制；安装后仅追加 `allow_reduced_sandbox=true` 再重启 |
+| 数据库 | 空库直建 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均建出（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 0 / site_runtimes 1 |
+| 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 5）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc` |
+| 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发，脚本 `/root/iter/skiff-http-fwd.py`）；`skiff-tls-proxy.service` 未部署 |
+| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）。备份 `/root/iter/config-dev-20261108-fresh.toml` |
 
-## 6. Release 资产（v0.1.0 = `8716e51`，2026-11-08）
+## 6. Release 资产（v0.1.0 = `1862702`，2026-11-08）
 
-构建来源：Release workflow run `42464183354`（`push` tag `v0.1.0`，`head_sha=8716e51`；同一时刻只有该 Release 在跑，已 success）。
-`git merge-base --is-ancestor` 校验：`48f57dc`（上一轮发版）/`0345628`（插件日志）/`9c5d198`（fs 保护）/`ff5c774`（文档与台账）/`3dcea91`（插件退出收口修复）/`8716e51`（Linux 死代码修正）对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与 HEAD 同为 `8716e51`。资产摘要经 GitHub API 复核。
+构建来源：Release workflow run `42471149737`（`push` tag `v0.1.0`，`head_sha=1862702`；同一时刻只有该 Release 在跑，已 success）。
+`git merge-base --is-ancestor` 校验：`92aa580` / `aa292b7` / `8716e51` / `48f57dc` / `5498f28`（任务中心）/ `d0e656d`（文件管理阶段二）/ `1862702`（站点与运行环境）对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与 HEAD 同为 `1862702`。资产摘要经 GitHub API 复核，并下载后本地重算。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `66883ecedbe20fe55ca4519bd950e9407901bfe146f5a27e028de596ee77cf00` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,472,637 B | `dee454fdd36455170eb8b638cd521bcd9ad1f57b096bc4b0d5e2bc8137f9a6d1` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,086,197 B | `8cffabc388e3f74d53997534d775745acf6cdf0e17bcccae7f0879fe9b63dfc5` |
+| `checksums.txt` | 223 B | `ae5fe49646cc30eecc177c323a0c0c6b88333918f0acef1d3f6fdda6fa3ecd60` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,785,237 B | `640603cadf74f40b9101b4a2187cf4b27dd773b59225bd0b1785fe9a8d120918` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,378,566 B | `4c1232c9942d9292ed73d0814e05e45f34ac78ddcb72475cff4309dbbedb1b07` |
 
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；本轮 Windows 直连 `github.com` 与 `objects.githubusercontent.com` 均被重置，改用 `https://api.github.com/repos/php-nil/skiff/releases/assets/<id>` + `Accept: application/octet-stream` 经内网代理下载，测试机用 `scp` 传输后 `sha256sum -c` 双架构 OK。
-- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`checksums.txt` 逐个校验。
-- GitHub Release **说明正文尚未列 `ftp`**（正文仍写 4 个插件）；以包内 `official/` 与本文为准，待人工修正 Release 说明。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 直连常被重置时改用 `https://api.github.com/repos/php-nil/skiff/releases/assets/<id>` + `Accept: application/octet-stream` 经内网代理下载；本轮缓存于 `d:\panel\.workbuddy\release-1862702\`，`scp` 到测试机后 `sha256sum -c` 双架构 OK。
+- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；签名指纹 `ed73de3e…cd47`，首启自动信任。
+- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**（违规的 `v0.1.1` 已于本轮前清除）。
 
 ## 7. 最近部署记录
 
@@ -99,10 +100,22 @@
 | 2026-11-08（三形态轮） | `9aa0381` 覆盖安装 + TLS 三形态 / 视觉 / 工作台复验 | 资产 `9aa0381`；x86_64 8,124,497 B `244ab407…`、aarch64 7,768,972 B `bd9993b6…`，双架构 `sha256sum -c` OK | 库保持 13；三形态逐项通过（Cookie 名/属性、浏览器登录、切回）；430/860/工作台通过；WAF 核查为「功能不存在」；详见 §8 |
 | 2026-11-08 15:20 | `48f57dc` 收口发版覆盖安装 + v13→v14 升级与五组复验 | 资产 `48f57dc`；x86_64 8,453,244 B `786018dc…`、aarch64 8,068,111 B `e34089f2…`，双架构 `sha256sum -c` OK | `user_version=14`，`trash_entries`/`fs_quotas` 建出、旧数据保留；FS-10～12、DOCKER-12～14、monitor/guard 内核调度器、WEB-02 全部通过；详见 §8 |
 | 2026-11-08 16:55 | `8716e51` 小批收口覆盖安装 + 配置保护 / 插件日志 / 上一批回归 | 资产 `8716e51`；x86_64 8,472,637 B `dee454fd…`、aarch64 8,086,197 B `8cffabc3…`，双架构 `sha256sum -c` OK | 库保持 v14、数据全部保留、配置 sha 未变；配置保护 403/配额 403、插件日志与崩溃尾巴、回收站/配额与 Docker 三入口均通过；详见 §8 |
+| 2026-11-08 19:59 | 机器还原后**全新安装**（空库直建 v15） | 资产 `1862702`；x86_64 8,785,237 B `640603ca…`、aarch64 8,378,566 B `4c1232c9…`，双架构 `sha256sum -c` OK | `sh install.sh --no-docker` 完成；空库直建 **v15**，`jobs`/`job_logs`/`trash_entries`/`fs_quotas` 均建出；入口前缀 `udkwxz96`；6 个官方插件安装成功；`/healthz` 200、登录 303 换会话成功 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `8716e51` 小批收口轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装轮）
 
-**本轮通过（`8716e51` 小批收口轮）**
+**安装链路（`1862702` 全新安装轮）**
+- 机器已还原：无 `/etc/skiff`、无 `admin` 用户、无旧数据根；按 Release 资产安装，不传本地二进制。
+- 资产校验：`checksums.txt` 两个架构 `sha256sum -c` 均 OK；解压后 `sh install.sh --no-docker` 一次成功。
+- 空库直建：`user_version=15`；`jobs`（含 `cancel_requested`/`log_seq`/`retry_of`）、`job_logs`、`trash_entries`、`fs_quotas` 全部建出；users 1 / plugins 0（安装前）/ site_runtimes 1。
+- 初始管理员口令生成于 `/www/skiff/initial-admin.txt`（已转存 `/root/iter/admin-pw.txt`，0600）；安全入口随机生成 `udkwxz96`。
+- 插件：为降级沙箱在 `config.toml` 追加 `allow_reduced_sandbox=true` 后重启，6 个官方插件全部 `已验签` 安装成功，grants 与 manifest 一致（`plugin list` 已核对）。
+- 访问：形态三 `http://10.10.15.4:18081`（`skiff-http-fwd.service`），`/healthz` 200、登录页 200、`POST` 登录 303 并下发 `skiff_dev_session`。
+
+**分组验收**
+- 任务中心 / 文件管理 / Web 五条 / 删站确认 / FS-14 五组结论随本轮验收逐组回填。
+
+**沿用通过（`8716e51` 小批收口轮，本轮未复跑全部断言）**
 - 装机/升级：Release 资产双架构 `sha256sum -c` OK；`sh install.sh --no-docker` 完成；库保持 **v14**，站点 2 / settings 7 / users 1 / plugins 6 全部保留；配置 sha256 保持 `0103e75a…f053e1`，`/healthz` 200。
 - 配置保护组：删 / 改名 / 覆盖写 `/etc/skiff/config.toml` 全部 **403**「内核运行配置或数据目录受保护…（命中 /etc/skiff/config.toml）」；对 `/etc/skiff` 设配额 **403**（命中 `/etc/skiff`）；`/etc/hosts` 读 200；保护区外 `/www/iter-protect-probe.txt` 写/改名/读/删均 200（`/etc` 内其它路径不撞保护判定，写入被 systemd 只读挡回 500）；重启后服务 active、`/healthz` 与登录 200、配置 sha 前后一致。
 - 插件日志组：journal 可见 monitor 启动横幅（`WARN … stream="stderr"`）；`kill -9` 子进程后 RPC **55 ms** 返回 200 并拉起新 pid，journal 先「上一次运行的 stderr 尾部」后新横幅，新日志不覆盖旧尾巴；初始化失败探针（临时替换二进制为 `exit 9`，已恢复、md5 `6c5ea70b…`）RPC **133 ms** 返回 400，正文、journal `ERROR` 与审计 `plugin.spawn` fail 的 `detail` 均带 `stderr 尾部: BOOT-8716e51 init failed probe`；恢复后 `status=running`、`status_detail` 清空。
@@ -121,10 +134,10 @@
 - Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
 - 原两条观察项已在 `8716e51` 关闭：插件 stderr 已转出 journal；`/etc/skiff` 与配置/TLS 私钥已纳入受保护路径。
 
-**收尾状态（2026-11-08 `8716e51` 小批收口轮后）**
-- 面板：形态三明文 `http://10.10.15.4:18081/8p9yyvg4` 可用；`skiff.service` active；`skiff-http-fwd.service` active；`skiff-tls-proxy.service` inactive（脚本保留）。
-- 数据：`iter-rt*`、`iter-lim*`、`iter-protect*` 测试文件/目录与容器已清理，回收站 0 条；monitor 二进制已还原（md5 `6c5ea70bdd7d66cb0190945cb6b665a8`）、插件 `running`。
-- 备份：`/root/iter/config-before-8716e51.toml`、`/root/iter/skiff-before-8716e51.db`、`/root/iter/release-8716e51/`（含新资产与解压目录）保留；上一轮备份与资产目录继续保留。
+**收尾状态（2026-11-08 `1862702` 全新安装轮后）**
+- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用；`skiff.service` active；`skiff-http-fwd.service` active；`skiff-tls-proxy.service` 未部署。
+- 数据：全新库（`user_version=15`），6 个官方插件已装；验收产生的站点/文件/任务随分组验收清理，回收站归零。
+- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/iter/cookies.txt`（会话）、`/root/skiff-pkg/`（解压目录）保留；安装包原件在 `/root/*.tar.gz`。
 
 
 ## 9. 数据、备份与清理
