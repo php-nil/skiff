@@ -18,8 +18,6 @@
 //! 也到不了别的站点。
 
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1069,11 +1067,8 @@ async fn account_delete(params: &Value) -> Result<Value, FtpError> {
     {
         return Err(FtpError::not_found(format!("FTP 账号不存在：{login}")));
     }
-    rewrite_accounts(|line| match account_line_state(line) {
-        Some((name, _)) if name == login => false,
-        _ => true,
-    })
-    .await?;
+    rewrite_accounts(|line| !matches!(account_line_state(line), Some((name, _)) if name == login))
+        .await?;
     mkdb().await?;
     restart_service().await?;
     Ok(json!({ "login": login, "files_kept": true }))
