@@ -3099,10 +3099,12 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     assert_eq!(m.interop.consumes, vec!["com.skiff.cron:jobs.list"]);
     assert!(m.interop.provides.iter().any(|p| p.method == "probe"));
     assert!(
-        m.task
-            .iter()
-            .any(|t| t.key == "busy-probe" && t.method == "busy_probe" && !t.enabled),
-        "testkit 必须声明默认停用的执行期 BusyGuard 探针任务"
+        m.task.iter().any(|t| t.key == "busy-probe"
+            && t.method == "busy_probe"
+            && !t.enabled
+            && t.sample_method.as_deref() == Some("buffer_sample")
+            && t.capacity_bytes == Some(4096)),
+        "testkit 的 BusyGuard 探针任务必须同时声明缓冲（TASK-06 的 buffer.push 落点）"
     );
 
     let h = harness();

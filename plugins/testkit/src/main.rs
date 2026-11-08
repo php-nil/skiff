@@ -36,6 +36,7 @@ fn main() {
         "busy_probe" => scheduler_probe(&p),
         "buffer_probe" | "buffer_stat" => buffer_probe(&p, &params),
         "buffer_push" => buffer_push(&p, &params),
+        "buffer_sample" => Ok(buffer_sample()),
         "probe" => Ok(probe(&p)),
         other => Err(RpcError::method_not_found(other)),
     }) {
@@ -108,6 +109,14 @@ fn interop_cron(plugin: &Plugin) -> Result<Value, RpcError> {
                 "调用 com.skiff.cron:jobs.list 失败：{e}（需安装计划任务并授予 plugin:com.skiff.cron）"
             ))
         })
+}
+
+/// 内核采样出票的落点：返回最小采样点。
+///
+/// `busy-probe` 默认停用，采样只在手工启用且到达 `sample_interval_secs` 时触发；
+/// 声明它只是为了让内核给该任务建内存缓冲（TASK-06 的 `buffer.push` 落点）。
+fn buffer_sample() -> Value {
+    json!({ "at": now() })
 }
 
 /// 取任务 id：`buffer.*` 只作用于本插件来源的任务，越权由内核 `ensure_owned` 拒绝。

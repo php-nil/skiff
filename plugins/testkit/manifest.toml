@@ -34,10 +34,17 @@ verbs = ["read", "manage"]
 # 执行期 BusyGuard 探针：任务由内核驱动，执行体在插件进程内回调 scheduler，
 # 应被内核以 403 拒绝（防止「插件任务执行 → 再注册任务」自我繁殖）。
 # 默认停用，避免日常定时触发；验证时在任务中心启用后「立即执行」。
+#
+# 同时作为 TASK-06 缓冲探针的落点：内核只在声明 `sample_method` 时建内存缓冲，
+# 因此这里给一个廉价采样方法 + 1 小时间隔（任务默认停用，日常不会自动采样），
+# 容量压到 4KiB，便于用 `buffer_push` 少量点构造丢弃与高水位。
 [[task]]
 key = "busy-probe"
 method = "busy_probe"
 expr = "* * * * *"
+sample_method = "buffer_sample"
+sample_interval_secs = 3600
+capacity_bytes = 4096
 enabled = false
 timeout_secs = 10
 
