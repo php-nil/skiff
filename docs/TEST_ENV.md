@@ -61,29 +61,30 @@
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `v0.1.0`（`9e2c6b1`；相对 `97edf87` 内核只多一处 Rust 环境站点启动修复，插件侧为 testkit 执行期 BusyGuard 探针） |
-| tag / 构建提交 | `v0.1.0` = `9e2c6b1`（force 移动同一 tag）：Release run `42504080508` success，CI run `42504074528` success，`main` 与 tag 同指该提交 |
-| 部署时间 | 2026-11-09 01:23（Asia/Shanghai；在 v15 库上按新 Release 资产覆盖安装，库保持 v15） |
-| 部署方式 | `v0.1.0`（`9e2c6b1`）Release 资产 → 单资产 sha256 与 API digest 一致 → 解压 → `sh install.sh --no-docker`；安装后 `/usr/local/bin/skiff` 13,034,256 B、sha256 `df1ba659dfe5b07961e56a988916eb6b2bd0f17445c5d068dd9bf52f47ea28c0` 与包内二进制一致；`/root/skiff.before-97edf87` 保留未动 |
+| 版本 | `v0.1.0`（`607d09b`；相对 `2f63aeb` 含 Node/Go 运行环境摘除、WAF 死配置清理、FTP jail `port` 修复、受限形态文件管理门禁、工具菜单 `core/jobs` 深链修复、新建站弹窗文案修正） |
+| tag / 构建提交 | `v0.1.0` = `607d09b`（force 移动同一 tag）：Release run `42514194128` success，CI run `42513408684` success，`main` 与 tag 同指该提交 |
+| 部署时间 | 2026-11-09 03:25（Asia/Shanghai；在 v15 库上按新 Release 资产覆盖安装，库保持 v15） |
+| 部署方式 | `v0.1.0`（`607d09b`）Release 资产 → `checksums.txt` 与包内逐资产 sha256 校验 OK → 解压 → `sh install.sh --no-docker`；安装后 `/usr/local/bin/skiff` 13,050,640 B、sha256 `01ad573e11cc7a91d30ea929d654e299ff5f9579991840dddf1b80cb985d7348` 与包内二进制一致；`/root/skiff.before-d80661b` 保留上一版 |
 | 数据库 | 沿用空库直建结果 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均在（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 1 / **site_runtimes 2**（`php-8.5` 种子行在 SITE-10 复验中按无占用路径删除，保留 `iter-php-1862702` 与 `rust-iter-rust-1862702`） |
 | 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / **testkit 6**，testkit 新增 `scheduler:read`）；`testkit` 包更新为 322,007 B / md5 `df8e361b…e04411e0`，其余 5 个包字节与 md5 与 `456e040` 轮一致（monitor 358,905 B / `97f805f9…7212`、cron 381,183 B / `ca287744…`、files 395,243 B / `0bd74f4f…`、ftp 327,273 B / `fcd5e7cb…`、guard 354,267 B / `b01c2360…`）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc`；manifest 与授权逐项比对无越权 |
 | 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发，脚本 `/root/iter/skiff-http-fwd.py`）；`skiff-tls-proxy.service` 未部署 |
 | 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`，本轮覆盖安装前后一致）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）；无 `ext_*_timeout_secs`（超时复验后已删键）。备份 `/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml` |
 
-## 6. Release 资产（v0.1.0 = `9e2c6b1`，2026-11-09）
+## 6. Release 资产（v0.1.0 = `607d09b`，2026-11-09）
 
-构建来源：Release workflow run `42504080508`（force 移动 tag `v0.1.0` 到 `9e2c6b1`；`head_sha=9e2c6b1`；自动覆盖同一 Release 资产；同提交 CI run `42504074528` success）。
-`git merge-base --is-ancestor` 校验：`92aa580` / `456e040` / `0e5b030` / `65b10b9` / `ddfa7b0` / `97edf87` / `205d1c8` / `d197041`（上一轮部署）/ `9e2c6b1` 对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与该提交一致。资产摘要经 GitHub API 复核，x86_64 包下载后本地重算 sha256 一致。
+构建来源：Release workflow run `42514194128`（force 移动 tag `v0.1.0` 到 `607d09b`；`head_sha=607d09b`；自动覆盖同一 Release 资产；同提交 CI run `42513408684` success）。
+`git merge-base --is-ancestor` 校验：`74eaef8` / `d80661b`（上一轮发版）对 `v0.1.0`=`607d09b` 退出码为 0；`607d09b` 对 `origin/main` 退出码 0；构建时 tag、`origin/main` 与该提交一致。x86_64 包下载后本地重算 sha256 与 API digest 一致，测试机 `sha256sum -c` 与外层 `checksums.txt` 双重校验通过。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `e757a124c5b33601170ef5cc72aa4a541f917260acd0700645c345ecf327e2ea` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,808,110 B | `23c5127daa630240b9bddf1c4e30d521fedc4077751b5c607cbb4d7419ad1486` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,404,070 B | `17bc60b3e04221844b4095feafcb11cea22d16e78643d63e87492d29b80a362b` |
+| `checksums.txt` | 223 B | `fe1b0341c42f9b6ca0be7df401725ee3b45026ee18d6641f6530cbe6e3ed1315` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,812,519 B | `1284a6cbe832c18b09d9b4a680fa48ab807c28b2e6a6c979e590ca6b4c5c009b` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,403,005 B | `fb4c7aa58e66e560d1be93777803641a99827632998a7bc8681f149274dead7a` |
 
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 经内网代理 `http://10.66.10.22:1010` 走 API 资产端点下载（缓存 `d:\panel\.workbuddy\release-9e2c6b1\`），x86_64 包 sha256 与 API digest 一致；`scp` 到测试机 `/root/iter/a9e2c6b1/` 后校验再解压安装。
-- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；本轮只改内核 `crates/app/src/sites.rs`（Rust 环境站点启动修复），6 个插件包字节不变（testkit 322,007 B / `df8e361b…`）；签名指纹 `ed73de3e…cd47`，首启自动信任。
-- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**（`git ls-remote --tags origin` 现只有 `v0.1.0`）。
+- 包内二进制：x86_64 `skiff` 13,050,640 B `01ad573e11cc7a91d30ea929d654e299ff5f9579991840dddf1b80cb985d7348`（= 安装后 `/usr/local/bin/skiff`）；aarch64 `skiff` 10,711,080 B `f165b5701c51b03fcdedd0fdd85ecfa67a38c94065a815c1aab1ba8a7615775c`。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 经内网代理 `http://10.66.10.22:1010` 走 API 资产端点下载（缓存 `d:\panel\.workbuddy\release-607d09b\`）；`scp` 到测试机 `/root/iter/a607d09b/` 后校验再解压安装。
+- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；本轮未改插件包，签名指纹不变。
+- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**。
 
 ## 7. 最近部署记录
 
@@ -111,8 +112,9 @@
 | 2026-11-09 01:05 | `d197041` testkit 探针复验版覆盖安装（Release 资产） | 资产 `d197041`；x86_64 8,807,640 B `563a0fc4…`（单资产 sha256 与 API digest 一致） | 解压 `sh install.sh --no-docker` 成功；库保持 v15；`/usr/local/bin/skiff` 13,034,256 B `9e96f596…` 与包内一致；testkit 新包 322,007 B `df8e361b…` 同步到 `/www/skiff/official/`，全新安装 grants 6（含 `scheduler:read`）并种入默认停用探针任务 |
 | 2026-11-09 01:05–01:12 | `d197041` 台账四条复验 | 同资产 | WEB-04 四条候选校验、SITE-10 三种删除路径、files 授权默认/重装、BusyGuard 403 全部通过；详见 §8「台账四项复验」 |
 | 2026-11-09 01:23–01:35 | `9e2c6b1` 修复轮覆盖安装 + 复验（Release 资产） | 资产 `9e2c6b1`；x86_64 8,808,110 B `23c5127d…`（与 API digest 一致） | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；二进制 `df1ba659…` 与包内一致；停止态植入非法配置启动被拒且线上 `nginx -t` 通过，还原后启动成功、站点恢复；详见 §8「`9e2c6b1` 修复轮」 |
+| 2026-11-09 03:25 | `607d09b` 发版覆盖安装（Release 资产） | 资产 `607d09b`；x86_64 8,812,519 B `1284a6cb…4c5c009b`、aarch64 8,403,005 B `fb4c7aa5…4dead7a`，`sha256sum -c` 与外层 `checksums.txt` 均 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；`/usr/local/bin/skiff` 13,050,640 B `01ad573e…985d7348` 与包内一致；`/healthz` 200；详见 §8「`607d09b` 发版复验」 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮 + `456e040` 收口轮 + 2026-11-09 `97edf87` 工作台轮 + `d197041` 台账轮 + `9e2c6b1` 修复轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮 + `456e040` 收口轮 + 2026-11-09 `97edf87` 工作台轮 + `d197041` 台账轮 + `9e2c6b1` 修复轮 + `607d09b` 发版轮）
 
 **安装链路（`1862702` 全新安装轮）**
 - 机器已还原：无 `/etc/skiff`、无 `admin` 用户、无旧数据根；按 Release 资产安装，不传本地二进制。
@@ -205,22 +207,36 @@
 - **aarch64（DEPLOY-09）**：包内二进制 **10,702,888 B**、sha256 `8891cf4b7193f2835997b5ba07fb0b0780c88c6a9b90a575b2c64f55425e29ce`；`file` = `ELF 64-bit LSB executable, ARM aarch64, … statically linked, stripped`；`ldd` = `not a dynamic executable`；`qemu-aarch64-static`（10.0.13）下 `skiff version` → `skiff 0.1.0 / arch=arm64 os=linux`，`skiff --help` 正常列出命令，`skiff doctor` 全绿。
   **结论：qemu-user 冒烟通过，未实机装机，不记为装机通过。**（`--version` 非 CLI 旗标，版本用 `version` 子命令。）
 
+**`607d09b` 发版复验（Release 资产，2026-11-09 03:25–03:55）**
+
+- **安装**：`sha256sum -c` 与外层 `checksums.txt` 双重校验 OK；`sh install.sh --no-docker` 成功；库保持 `user_version=15`、配置 sha `ebcccae6…` 未变；二进制 `01ad573e…985d7348` 13,050,640 B 与包内一致；`/healthz` 200、`skiff version` = `skiff 0.1.0`。
+- **Node/Go 摘除**：`/sites?new=1&type=runtime` 下拉只剩 `PHP 8.5` / `Rust 1.99`，页面无 Node/Go 字样；`site_runtimes` 仅 `iter-php-1862702`(php) 与 `rust-iter-rust-1862702`(rust)。弹窗「运行环境」副标题原为 `PHP / Node / Go / Rust`，已改 `PHP / Rust`（`crates/web/templates/site_new_dialog.html`，本轮修复）。
+- **WAF 残留**：`/settings` 页面 waf 命中 **0**；`/etc/skiff/config.toml`、包内 `config.toml.example`、`README.txt` 均 **0**；无 `sites.waf_mode` / `waf_rules_dir` 键。
+- **FTP jail `port`（全新安装路径）**：先 `uninstall{remove_accounts:true}`（jail 回落 `[sshd] enabled=false`），再 `install` → 新 jail 为 `[pure-ftpd] enabled=true / backend=systemd / port = 2121 / maxretry=3 / findtime=10m / bantime=10m`；`fail2ban-client status` 仅 1 个 `pure-ftpd` jail；强制封一个探针 IP 后 nft 链为 **`tcp dport 2121`**（无 20/21/989/990），`ss` 监听 `*:2121`。
+- **FTP 主链路回归**：新建 `ftp-probe2-1862702.test`（PHP 运行环境）→ `create` 账号 → FTP 2121 上传 `ftp-probe2-upload.txt` → 站点容器 `skiff-php-iter-php-1862702` 读到内容 → 容器内写 `ftp-probe2-cw.txt` → FTP `RETR` 读回 `container-write-ok` → `delete` 账号（`remaining_accounts=0`）→ 删站点 303 且目录回收；审计含 `plugin.rpc` / `sites.delete`。
+- **任务中心与文件管理主链路**：`/tasks` `/jobs` `/files` `/containers` `/sites` 均 **200**；`/files/api/list?path=/www` 200。**发现并修复**：`/{p}/m/core/jobs` 之前 404（`handlers/menu.rs::dispatch` 漏分支），本版已补分支并 200。
+- **受限形态（DEPLOY-10，`SKIFF_FORM=docker`）**：探针镜像 `skiff-panel-probe2:607d09b`（`alpine:3.23` + 本版发布二进制，等价 `deploy/Dockerfile` 运行阶段），`127.0.0.1:18082→18080`，`SKIFF_ALLOW_INSECURE_HTTP=1`、`SKIFF_TRUSTED_PROXIES=172.16.0.0/12`、`/data` bind、`/var/run/docker.sock`。
+  - 首页菜单：`core/files` / `core/files/trash` / `core/files/quotas` 链接 **0 条**，「文件管理 / 回收站 / 配额管理」文案 0 次；`core/tasks`、`core/jobs` 入口保留。
+  - 直达拒绝（均 **403**，正文含「当前部署形态不提供文件管理能力（1Panel 受限形态能力面仅 docker/identity）」）：`/m/core/files`、`/m/core/files/trash`、`/m/core/files/quotas`、`/files`、`/files/trash`、`/files/quotas`、`/files/api/list`、`/files/api/tree`、`/files/api/trash`、`/files/api/quotas`；`POST /files/api/{mkdir,write,upload}` 同样 403（不再是列容器内 `/`、`/www`）。
+  - 容器管理仍可用：`/containers` 200 并列出站点容器；临时容器 `skiff-p2-probe` 详情 200、`stop`/`start` 均 **303**，`docker inspect` running→exited→running，审计 `docker.containers.stop|start result=ok`。
+  - 清理：探针容器/镜像/`/root/iter/panel-probe2` 与临时容器已删。
+
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
 - WAF 拦截未实现；`sites.waf_mode` 设置键与 `waf_rules_dir` 规则目录占位已于 2026-11-09 删除，要做需先定规则来源与开关位置。
 - aarch64 仅 qemu-user 冒烟（`file`/`ldd`/`version`/`--help`/`doctor`），未实机装机。
-- 受限形态「文件管理」入口可见且可用（容器内路径），未按「不可见或明确提示能力面未启用」处理，待产品定稿。
 - buffer 上机入口、并发 spawn 复验等无环境项。
 - 主机监控历史页「出站」仍用累计字节（`net_tx_rate` 未产生），待补采样字段后对齐。
 - Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
 - 原两条观察项已在 `8716e51` 关闭：插件 stderr 已转出 journal；`/etc/skiff` 与配置/TLS 私钥已纳入受保护路径。
+- 受限形态「文件管理」入口与直达已按能力面处理，`607d09b` 装机复验通过，该行已从台账删除。
 
-**收尾状态（2026-11-09 `2f63aeb` 复验轮后）**
-- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用；`skiff.service` active、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,034,256 B、sha256 `54f660a1…0657d4fd`（与 `2f63aeb` 包内一致）。
-- 资产：x86_64 包 8,808,264 B（`9bb0467f…cc7324`）、aarch64 包 8,401,553 B（`5bfd3cb1…d692060`，包内二进制 `8891cf4b…25e29ce`）。
-- 数据：库保持 `user_version=15`，6 个官方插件已装（grants：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 6）；站点仍为 1（`iter-rust-1862702.test`，`status=running`）。
-- 清理：FTP 测试账号/站点已删、FTP 服务已 uninstall、封禁全清（jail 仅 `[sshd] enabled=false`、0 jail、无 f2b nft 规则）；探针容器 `skiff-panel-probe`/`skiff-ftp-probe-client`、镜像 `skiff-panel-probe:2f63aeb`/`python:3.13-alpine`/`alpine:3.23`、网络 `skiff-ftp-probe-net`、`/root/iter/panel-probe` 均已删除。
-- 容器：`skiff-web-nginx` / `skiff-php-iter-php-1862702` / `skiff-rust-iter-rust-1862702` 全部 running；宿主面板 `/healthz` 200。
-- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-97edf87`、`/root/iter/a2f63aeb/`（本轮资产与解压目录）保留；临时 cookie 文件已清理。
+**收尾状态（2026-11-09 `607d09b` 发版复验轮后）**
+- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用（admin，口令文件 `/root/iter/admin-pw.txt` 第 3 行）；`skiff.service` active、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,050,640 B、sha256 `01ad573e…985d7348`（与 `607d09b` 包内一致）。
+- 资产：x86_64 包 8,812,519 B（`1284a6cb…4c5c009b`）、aarch64 包 8,403,005 B（`fb4c7aa5…4dead7a`，包内二进制 `f165b570…7615775c`，10,711,080 B）。
+- 数据：库保持 `user_version=15`，6 个官方插件已装（grants：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 6）；站点仍为 1（`iter-rust-1862702.test`，`status=running`）；`site_runtimes` 2（php / rust）。
+- 清理：FTP 探针账号/站点已删、FTP 服务恢复到测试前状态（`installed=true / enabled=false / accounts=0`）、封禁全清（jail 仅 `[sshd] enabled=false`、0 jail、无 f2b nft 规则）；探针容器 `skiff-panel-probe2`、临时容器 `skiff-p2-probe`、镜像 `skiff-panel-probe2:607d09b`、`/root/iter/panel-probe2` 均已删除。
+- 容器：`skiff-web-nginx` / `skiff-php-iter-php-1862702` / `skiff-rust-iter-rust-1862702` 全部 running；宿主面板 `18080` 与转发 `18081` 的 `/healthz` 均 200。
+- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-d80661b`、`/root/iter/a607d09b/`、`/root/iter/ad80661b/`、`/root/iter/a2f63aeb/` 保留；临时 cookie 文件已清理。
 
 
 ## 9. 数据、备份与清理

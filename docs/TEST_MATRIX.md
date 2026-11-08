@@ -366,7 +366,7 @@ cargo run -p xtask -- check
 | DEPLOY-07 | 升级覆盖安装与数据保留 | `[上机]` 已有库与站点 | 备份旧二进制与 DB；覆盖安装新 release；重启；登录看站点/任务/插件 | 新版本启动；`user_version` 升到当前 schema（11）；站点、任务、插件数据保留；已装官方插件的 `versions/<ver>` 与随包内容一致（版本或内容不同则更新，`data/` 与既有授权不变）。`[已复验 2026-11-07]` 同包覆盖安装，配置 sha 不变、业务计数保留 | □通过 / □失败 | `deploy/install.sh`、`crates/store/src/db.rs`（迁移） |
 | DEPLOY-08 | 卸载与 purge 边界 | `[上机]` 可丢弃环境 | `deploy/uninstall.sh`；再加 `--purge`；检查数据目录 | 默认卸载保留 `/www/skiff` 数据；`--purge` 明确删除数据与配置并提示。`[已复验 2026-11-07]` 默认卸载删程序保数据（`/www/skiff`、`/etc/skiff`、`/www/sites`），重装恢复一致 | □通过 / □失败 | `deploy/uninstall.sh` |
 | DEPLOY-09 | aarch64 装机 | `[上机]` arm64 Linux | 安装 release arm64 包；起 systemd；建站访问 | 安装/启动/建站均成功；`uname -m` 为 aarch64。`[部分]` 无 arm64 实机，仅 qemu-user 冒烟：`file` = ARM aarch64 静态链接、`ldd` = `not a dynamic executable`、`skiff version/--help/doctor` 正常（2026-11-09，`2f63aeb`）；装机未验 | □通过 / □失败 | `deploy/pack-release.sh`、`.github/workflows/release.yml` |
-| DEPLOY-10 | 1Panel Docker 受限形态 | `[上机]` 1Panel 环境 | 按商店包安装；尝试安装 fs/net 插件；打开三核心 | 面板可用；fs/net 插件因能力面收缩而拒装；docker/identity 正常。`[部分通过]` 2026-11-09 用等价镜像（`alpine:3.23` + 发布包 `skiff`，`SKIFF_FORM=docker`）实测：`/healthz` 200、登录 303、`files/monitor/guard/testkit` 400「需要能力 fs」、`ftp` 400「需要能力 ftp」、`cron` 400「要求完整沙箱」、`/containers/rows` 200 + `stop/start` 303；未在真实 1Panel 商店流程内装。**偏差**：`/{p}/m/core/files` 仍可见可用（容器内路径），见台账 | □通过 / □失败 | `deploy/1panel/`、`crates/plugin` |
+| DEPLOY-10 | 1Panel Docker 受限形态 | `[上机]` 1Panel 环境 | 按商店包安装；尝试安装 fs/net 插件；打开三核心 | 面板可用；fs/net 插件因能力面收缩而拒装；docker/identity 正常。`[部分通过]` 2026-11-09 用等价镜像（`alpine:3.23` + 发布包 `skiff`，`SKIFF_FORM=docker`）实测：`/healthz` 200、登录 303、`files/monitor/guard/testkit` 400「需要能力 fs」、`ftp` 400「需要能力 ftp」、`cron` 400「要求完整沙箱」、`/containers/rows` 200 + `stop/start` 303；未在真实 1Panel 商店流程内装。**文件管理已按能力面收口（`607d09b` 复验）**：`core/files`、`core/files/trash`、`core/files/quotas` 入口不渲染，`/{p}/files*`、`/{p}/m/core/files*` 直达均 403「当前部署形态不提供文件管理能力」；回归 `crates/web/tests/main_flow.rs::restricted_form_hides_and_rejects_files_management` | □通过 / □失败 | `deploy/1panel/`、`crates/plugin`、`crates/web/src/middleware.rs`（`check_fs_capability`） |
 | DEPLOY-11 | Release 下载失败可诊断 | `[上机]` 外网下载 | 正常下载一次；模拟超时/断网再下载 | 正常成功且校验摘要；失败时保留明确 URL/状态码/原因并有限重试。`[阻塞]` 无可复现超时/断网条件；代码核对 `tools/iter.sh::cmd_fetch` 为单次 `curl --max-time 600`，无重试与结构化错误输出 | □通过 / □失败 | `tools/iter.sh`、`.github/workflows/release.yml` |
 
 最小回归命令：
@@ -387,7 +387,7 @@ sudo journalctl -u skiff -n 50 --no-pager | grep -E '安全入口|listen|error' 
 | DEPLOY-07 | ☑通过 | 同包覆盖安装不清库：配置 sha 不变，users/sites/grants/plugins/tasks 计数全保留，`integrity=ok` |
 | DEPLOY-08 | ☑通过 | 默认卸载删除二进制/unit/`/run/skiff`，保留 `/www/skiff`、`/etc/skiff`、`/www/sites` 与运行组；重装恢复后站点 `diff -r` 无差异 |
 | DEPLOY-09 | △部分（qemu-user 冒烟） | 包内 ARM aarch64 静态链接（`file`/`ldd` 正常）、`version`/`--help`/`doctor` 通过（2026-11-09 `2f63aeb`）；复现条件=arm64 Linux + systemd 装包后验启动/建站 |
-| DEPLOY-10 | △部分通过（等价镜像） | 2026-11-09 用 `alpine:3.23` + 发布包二进制、`SKIFF_FORM=docker` 实测：healthz 200、登录 303、fs/net/ftp 插件拒装、容器 stop/start 303；未在真实 1Panel 商店流程内装；文件管理入口偏差见台账 |
+| DEPLOY-10 | △部分通过（等价镜像） | 2026-11-09 用 `alpine:3.23` + 发布包二进制、`SKIFF_FORM=docker` 实测：healthz 200、登录 303、fs/net/ftp 插件拒装、容器 stop/start 303；`607d09b` 复核文件管理入口已隐藏、直达 403 文案可读；未在真实 1Panel 商店流程内装 |
 | DEPLOY-11 | ⏸阻塞（无复现条件） | 正常下载+`sha256sum -c` 通过；`tools/iter.sh::cmd_fetch` 无重试；复现条件=对下载域名注入超时/丢包 |
 
 ## J. 站点压测与资源开销
@@ -504,5 +504,5 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 | TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，本轮实测创建/删除均 200 |
 | DOCKER-10 | 运行时入口已接（单文件） | `/$P/compose` 走 `skiff-compose` 解析 + `Docker::execute` 的 `compose.up/down`；不支持 `-f` 多文件叠加，源文件不落盘；`xtask check` 字段子集校验保留 |
 | DEPLOY-09 | 部分通过：qemu-user 冒烟，未实机装机 | `file`/`ldd` 显示 ARM aarch64 静态链接，`version`/`--help`/`doctor` 通过（2026-11-09 `2f63aeb`）；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
-| DEPLOY-10 | 部分通过：等价镜像实测，未走真实 1Panel 商店流程 | `SKIFF_FORM=docker` 下 healthz 200、登录 303、fs/net/ftp 插件 400 拒装、容器 stop/start 303；文件管理入口仍可见可用（容器内路径），已记台账 |
+| DEPLOY-10 | 部分通过：等价镜像实测，未走真实 1Panel 商店流程 | `SKIFF_FORM=docker` 下 healthz 200、登录 303、fs/net/ftp 插件 400 拒装、容器 stop/start 303；文件管理入口已在 `607d09b` 按形态隐藏、页面/深链/API 直达 403 且文案可读 |
 | DEPLOY-11 | 因无可复现超时/断网条件阻塞 | 正常下载+摘要校验通过（c39fe7d2…）；代码核对 `tools/iter.sh::cmd_fetch` 单次 `curl --max-time 600`，无重试/结构化错误输出；复现条件=对下载域名注入超时或丢包 |
