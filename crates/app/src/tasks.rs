@@ -946,6 +946,10 @@ impl TaskService {
                     params.get("patch").cloned().unwrap_or_else(|| json!({})),
                 )
                 .map_err(|e| format!("patch 非法: {e}"))?;
+                // `kind` 只允许内核补种（manifest 改 method）使用；插件不得改派自己的执行体。
+                if patch.kind.is_some() {
+                    return Err("patch.kind 不可修改（契约 §10.2）".into());
+                }
                 let mut sched = self.scheduler.lock().await;
                 let task = sched
                     .update(&id, &patch, self.clock.now(), &self.clock)
@@ -1197,11 +1201,14 @@ fn seed_builtins(
 /// 「插件自己通过能力面注册的」——升级后声明消失时只回收前者。
 const MANIFEST_TASK_ACTOR: &str = "system:manifest";
 
-/// 按已安装插件的 manifest `[[task]]` 补种任务，并回收孤儿任务。
+/// 按已安装插件的 manifest `[[task]]` 补种/刷新任务，并回收孤儿任务。
 ///
-/// 只补缺失项，不覆盖已有任务：管理员改过的调度/启停状态在重启后保留。
-/// 回收两类：插件已卸载（含 cron 等代建的 `source=plugin:<id>` 任务），
-/// 以及 manifest 已不再声明的内核种子任务。
+/// - 缺失项：按声明注册。
+/// - 已存在：比对声明与库内 spec，有差异就 `update`（调度/执行方法/payload/超时/缓冲），
+///   **保留**用户侧的启用状态、`created_by`、`created_at` 与运行历史——不能用「删了重建」，
+///   那会丢历史并把管理员停用的任务重新启用。
+/// - 回收两类：插件已卸载（含 cron 等代建的 `source=plugin:<id>` 任务），
+///   以及 manifest 已不再声明的内核种子任务。
 fn seed_manifest_tasks(sched: &mut Scheduler<SqliteTaskStore>, db: &Db, clock: &SystemClock) {
     let now = clock.now();
     let installed = match db.list_plugins() {
@@ -1229,20 +1236,41 @@ fn seed_manifest_tasks(sched: &mut Scheduler<SqliteTaskStore>, db: &Db, clock: &
         for t in &manifest.task {
             let id = format!("plugin:{}:{}", rec.id, t.key);
             expected.push(id.clone());
-            if sched.get(&id).is_some() {
-                continue;
-            }
-            match task_spec_from_manifest(rec, t, now) {
-                Ok(spec) => match sched.register(spec, now, clock) {
+            let declared = match task_spec_from_manifest(rec, t, now) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    tracing::warn!(plugin = %rec.id, task = %id, error = %e, "manifest 任务声明不可用");
+                    continue;
+                }
+            };
+            let existing = sched.get(&id).map(|task| task.spec.clone());
+            let Some(existing) = existing else {
+                match sched.register(declared, now, clock) {
                     Ok(_) => {
                         tracing::info!(plugin = %rec.id, task = %id, "按 manifest 种入内核任务");
                     }
                     Err(e) => {
                         tracing::warn!(plugin = %rec.id, task = %id, error = %e, "manifest 任务种入失败");
                     }
-                },
+                }
+                continue;
+            };
+            // 升级后声明可能变了：刷新内核侧 spec，但不动启停状态与历史。
+            let (patch, fields) = manifest_task_patch(&existing, &declared);
+            if fields.is_empty() {
+                continue;
+            }
+            match sched.update(&id, &patch, now, clock) {
+                Ok(_) => {
+                    tracing::info!(
+                        plugin = %rec.id,
+                        task = %id,
+                        changed = %fields.join(","),
+                        "按 manifest 刷新内核任务（保留启停状态与历史）"
+                    );
+                }
                 Err(e) => {
-                    tracing::warn!(plugin = %rec.id, task = %id, error = %e, "manifest 任务声明不可用");
+                    tracing::warn!(plugin = %rec.id, task = %id, error = %e, "manifest 任务刷新失败");
                 }
             }
         }
@@ -1263,6 +1291,47 @@ fn seed_manifest_tasks(sched: &mut Scheduler<SqliteTaskStore>, db: &Db, clock: &
             }
         }
     }
+}
+
+/// 比对库内 spec 与 manifest 声明，只把「声明能决定」的字段放进补丁。
+///
+/// 刻意不含 `enabled` / `created_by` / `created_at` / `last_run` / `state`：
+/// 这些属于用户与运行态，升级刷新不得重置。返回变更字段名仅用于日志。
+fn manifest_task_patch(existing: &TaskSpec, declared: &TaskSpec) -> (TaskPatch, Vec<&'static str>) {
+    let mut patch = TaskPatch::default();
+    let mut fields = Vec::new();
+    if existing.kind != declared.kind {
+        patch.kind = Some(declared.kind.clone());
+        fields.push("kind");
+    }
+    if existing.schedule != declared.schedule {
+        patch.schedule = Some(declared.schedule.clone());
+        fields.push("schedule");
+    }
+    if existing.payload != declared.payload {
+        patch.payload = Some(declared.payload.clone());
+        fields.push("payload");
+    }
+    if existing.timeout_secs != declared.timeout_secs {
+        patch.timeout_secs = Some(declared.timeout_secs);
+        fields.push("timeout_secs");
+    }
+    match (declared.buffer.as_ref(), existing.buffer.as_ref()) {
+        (Some(d), Some(e)) if d != e => {
+            patch.buffer = Some(d.clone());
+            fields.push("buffer");
+        }
+        (Some(d), None) => {
+            patch.buffer = Some(d.clone());
+            fields.push("buffer");
+        }
+        (None, Some(_)) => {
+            patch.clear_buffer = true;
+            fields.push("buffer");
+        }
+        _ => {}
+    }
+    (patch, fields)
 }
 
 /// manifest 声明 → `TaskSpec`。这里做二次校验：manifest 只保形式合法，
@@ -1679,6 +1748,176 @@ mod tests {
             30,
         )
         .unwrap()
+    }
+
+    fn manifest_with_task(
+        version: &str,
+        expr: &str,
+        method: &str,
+        sample_method: &str,
+        sample_secs: u64,
+        timeout: u64,
+    ) -> String {
+        let key_id = "0".repeat(64);
+        format!(
+            r#"id = "com.example.demo"
+name = "Demo"
+version = "{version}"
+key_id = "{key_id}"
+api = "1.0"
+run = "on-demand"
+requires = ["fs"]
+
+[[task]]
+key = "sample"
+method = "{method}"
+expr = "{expr}"
+sample_method = "{sample_method}"
+sample_interval_secs = {sample_secs}
+timeout_secs = {timeout}
+"#
+        )
+    }
+
+    fn plugin_record(version: &str, manifest: &str) -> PluginRecord {
+        PluginRecord {
+            id: "com.example.demo".into(),
+            name: "Demo".into(),
+            version: version.into(),
+            api: KERNEL_API.into(),
+            key_id: "0".repeat(64),
+            manifest: manifest.into(),
+            enabled: true,
+            status: "installed".into(),
+            status_detail: String::new(),
+            active_version: version.into(),
+            installed_at: 0,
+            grants: vec![],
+        }
+    }
+
+    /// 升级刷新：manifest 改了调度/方法/采样/超时 → 库内 spec 跟着更新；
+    /// 但管理员停用的状态、created_by 与运行历史必须原样保留（不是删了重建）。
+    #[tokio::test]
+    async fn manifest_task_refresh_updates_spec_and_keeps_user_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let db = Arc::clone(svc.db_handle());
+        let task_id = "plugin:com.example.demo:sample";
+
+        db.upsert_plugin(&plugin_record(
+            "0.1.0",
+            &manifest_with_task("0.1.0", "*/5 * * * *", "execute", "sample", 60, 30),
+        ))
+        .unwrap();
+        svc.sync_manifest_tasks().await;
+
+        let created_at = {
+            let sched = svc.scheduler.lock().await;
+            let task = sched.get(task_id).expect("任务应被种入");
+            assert_eq!(task.spec.schedule, Schedule::cron("*/5 * * * *"));
+            assert_eq!(task.spec.timeout_secs, 30);
+            assert_eq!(task.spec.created_by, MANIFEST_TASK_ACTOR);
+            assert!(task.spec.enabled);
+            task.spec.created_at
+        };
+
+        // 管理员停用 + 一条运行历史。
+        {
+            let mut sched = svc.scheduler.lock().await;
+            let now = svc.clock.now();
+            sched
+                .update(
+                    task_id,
+                    &TaskPatch {
+                        enabled: Some(false),
+                        ..Default::default()
+                    },
+                    now,
+                    &svc.clock,
+                )
+                .unwrap();
+        }
+        db.append_task_run(&TaskRunRow {
+            id: "run-1".into(),
+            task_id: task_id.into(),
+            trigger: "schedule".into(),
+            attempt: 1,
+            started_at: 100,
+            finished_at: 101,
+            result: "ok".into(),
+            error_class: None,
+            error_detail: None,
+            duration_ms: 1000,
+            request_id: None,
+            consumed_upto: None,
+            output_bytes: 0,
+            missed_count: 0,
+        })
+        .unwrap();
+
+        // 升级：调度、执行方法、采样方法/间隔、超时全变。
+        db.upsert_plugin(&plugin_record(
+            "0.2.0",
+            &manifest_with_task("0.2.0", "*/10 * * * *", "run", "probe", 120, 45),
+        ))
+        .unwrap();
+        svc.sync_manifest_tasks().await;
+
+        let sched = svc.scheduler.lock().await;
+        let task = sched.get(task_id).expect("刷新不应删任务");
+        assert_eq!(task.spec.schedule, Schedule::cron("*/10 * * * *"));
+        assert_eq!(task.spec.timeout_secs, 45);
+        assert_eq!(
+            task.spec.kind,
+            TaskKind::plugin("com.example.demo", "run").unwrap()
+        );
+        let buf = task.spec.buffer.as_ref().expect("缓冲声明应保留");
+        assert_eq!(buf.sample_method.as_deref(), Some("probe"));
+        assert_eq!(buf.sample_interval_secs, 120);
+        // 用户态与历史不受刷新影响。
+        assert!(!task.spec.enabled, "管理员停用的状态不能被刷新重新启用");
+        assert_eq!(task.spec.created_by, MANIFEST_TASK_ACTOR);
+        assert_eq!(task.spec.created_at, created_at);
+        drop(sched);
+
+        let row = db.scheduled_task(task_id).unwrap().expect("任务行仍在");
+        assert!(!row.enabled);
+        assert_eq!(db.task_runs(task_id, 10).unwrap().len(), 1);
+    }
+
+    /// 升级后 manifest 不再声明任务 → 内核种子任务被回收。
+    #[tokio::test]
+    async fn manifest_task_removed_on_upgrade_is_reclaimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let db = Arc::clone(svc.db_handle());
+        let task_id = "plugin:com.example.demo:sample";
+
+        db.upsert_plugin(&plugin_record(
+            "0.1.0",
+            &manifest_with_task("0.1.0", "*/5 * * * *", "execute", "sample", 60, 30),
+        ))
+        .unwrap();
+        svc.sync_manifest_tasks().await;
+        assert!(svc.scheduler.lock().await.get(task_id).is_some());
+
+        db.upsert_plugin(&plugin_record(
+            "0.2.0",
+            r#"id = "com.example.demo"
+name = "Demo"
+version = "0.2.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.0"
+run = "on-demand"
+requires = ["fs"]
+"#,
+        ))
+        .unwrap();
+        svc.sync_manifest_tasks().await;
+
+        assert!(svc.scheduler.lock().await.get(task_id).is_none());
+        assert!(db.scheduled_task(task_id).unwrap().is_none());
     }
 
     #[test]

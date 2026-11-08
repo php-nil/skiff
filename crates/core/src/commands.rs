@@ -202,13 +202,14 @@ pub fn plugin_install(
     let existing = db.plugin(&meta.manifest.id)?;
     if let Some(prev) = &existing {
         println!(
-            "重装/升级: 沿用已授权 {} 项（不重新确认；新增声明项不会自动授予）",
+            "重装/升级: 沿用已授权 {} 项（不重新确认）；新 manifest 新增声明的权限由安装器按声明补齐，\
+             新增敏感动词会写审计 plugin.grant_upgrade",
             prev.grants.len()
         );
         if !grants.is_empty() || !resources.is_empty() {
             println!(
                 "警告: 重装/升级不改动既有授权，--grant/--resource 已忽略；\
-                 如需变更授权请先 remove 再安装"
+                 如需缩减授权请 remove 后重装"
             );
         }
     } else if yes {
@@ -296,7 +297,18 @@ pub fn plugin_install(
 pub fn plugin_remove(cfg: &Config, id: &str, delete_data: bool) -> Result<()> {
     let db = open_db(cfg)?;
     skiff_plugin::uninstall_package(&db, &cfg.data_dir, id, delete_data)?;
-    println!("已卸载 {id}（delete_data={delete_data}）");
+    // 卸载即回收该插件名下的内核任务（manifest 种子任务 + cron 等代建的同 source 任务）；
+    // Web 卸载走 `TaskService::drop_plugin_tasks`，CLI 直连库时在这里清掉，避免残留行
+    // 让「重装后任务仍在跑」或「升级后 spec 仍是旧的」。
+    let source = format!("plugin:{id}");
+    let mut dropped = 0usize;
+    for task in db.scheduled_tasks()? {
+        if task.source == source {
+            db.delete_scheduled_task(&task.id)?;
+            dropped += 1;
+        }
+    }
+    println!("已卸载 {id}（delete_data={delete_data}，回收任务 {dropped} 条）");
     Ok(())
 }
 

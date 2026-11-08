@@ -417,8 +417,8 @@ pub async fn install(
     let meta = &trust.meta;
 
     // 重装/升级：按同一插件 id 找回既有授权，直接完成安装，不再逐条弹确认页。
-    // 选择集传空表示「不新增任何授权」；install_package 会沿用库内 grants，
-    // 并按新 manifest 的声明集过滤（新增声明项不自动授予）。
+    // 选择集传空表示「不新增人工授权」；install_package 沿用库内 grants 并按新
+    // manifest 的声明集过滤，相对旧 manifest 新增声明的权限由它补齐（敏感档写审计）。
     if state.db().plugin(&meta.manifest.id)?.is_some() {
         let opts = skiff_plugin::install_options(
             &trust,

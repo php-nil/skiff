@@ -685,9 +685,14 @@ pub struct LastRun {
     pub trigger: Trigger,
 }
 
-/// 修改补丁：只允许改调度参数与开关，不允许改 id/kind/source（契约 §10.2）。
+/// 修改补丁：只允许改调度参数与开关，不允许改 id/source（契约 §10.2）。
+///
+/// `kind` 只给内核补种用（manifest `[[task]]` 改了 `method` 时要同步目标方法）；
+/// 插件 RPC 入口 `task.update` 显式拒绝该字段，不得由插件改派自己的执行体。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TaskKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<Schedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -713,6 +718,12 @@ impl TaskPatch {
     /// 把补丁合入 spec，返回是否真的发生了变化。
     pub fn apply_to(&self, spec: &mut TaskSpec) -> bool {
         let mut changed = false;
+        if let Some(kind) = &self.kind {
+            if spec.kind != *kind {
+                spec.kind = kind.clone();
+                changed = true;
+            }
+        }
         if let Some(schedule) = &self.schedule {
             if spec.schedule != *schedule {
                 spec.schedule = schedule.clone();

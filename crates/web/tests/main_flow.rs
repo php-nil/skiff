@@ -1434,8 +1434,8 @@ async fn plugin_install_confirm_main_flow() {
     );
 }
 
-/// 装 → 授权 → 重装/升级 → 授权仍在；manifest 新增声明不被自动授予；
-/// 只有显式卸载才清空授权。
+/// 装 → 授权 → 重装/升级 → 既有授权仍在；升级只补「相对旧 manifest 新声明」的权限，
+/// 用户当初拒绝过的声明项不会被翻案补授；只有显式卸载才清空授权。
 #[tokio::test]
 async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
     let h = harness();
@@ -1484,7 +1484,7 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         "确认安装应 303 回列表"
     );
 
-    let assert_grants = |label: &str| {
+    let assert_grants = |label: &str, want: &[(&str, &str)]| {
         let mut got: Vec<(String, String)> = h
             .state
             .db()
@@ -1494,16 +1494,17 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
             .map(|g| (g.kind, g.value))
             .collect();
         got.sort();
-        assert_eq!(
-            got,
-            vec![
-                ("object".to_string(), "container:abc".to_string()),
-                ("perm".to_string(), "docker:list".to_string()),
-            ],
-            "{label} 授权集合不符: {got:?}"
-        );
+        let mut want: Vec<(String, String)> = want
+            .iter()
+            .map(|(kind, value)| (kind.to_string(), value.to_string()))
+            .collect();
+        want.sort();
+        assert_eq!(got, want, "{label} 授权集合不符: {got:?}");
     };
-    assert_grants("首次安装后");
+    assert_grants(
+        "首次安装后",
+        &[("object", "container:abc"), ("perm", "docker:list")],
+    );
 
     // 同版本重装：跳过确认页直接安装，授权保持既有最小子集，不重置为 manifest 默认值。
     let pkg = build_package_version(
@@ -1519,7 +1520,10 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         StatusCode::SEE_OTHER,
         "重装应跳过确认页直接安装"
     );
-    assert_grants("重装后");
+    assert_grants(
+        "重装后",
+        &[("object", "container:abc"), ("perm", "docker:list")],
+    );
     assert_eq!(
         h.state.db().plugin(id).unwrap().unwrap().version,
         "0.1.0",
@@ -1532,7 +1536,8 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         "安装成功必须清理 .incoming 暂存"
     );
 
-    // 升级 0.2.0：同样沿用既有授权；新增声明项与新增 hint 都不自动授予。
+    // 升级 0.2.0：既有授权保留；新增声明的 docker:exec 按声明补授（敏感档写审计），
+    // 但旧 manifest 已声明、用户当初未勾选的 docker:inspect 不被翻案补授。
     let pkg = build_package_version(
         &h.data_dir,
         &key,
@@ -1546,7 +1551,26 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         StatusCode::SEE_OTHER,
         "升级应跳过确认页直接安装"
     );
-    assert_grants("升级后");
+    assert_grants(
+        "升级后",
+        &[
+            ("object", "container:abc"),
+            ("perm", "docker:exec"),
+            ("perm", "docker:list"),
+        ],
+    );
+    let audit = h.state.db().recent_audit(20).unwrap();
+    assert!(
+        audit.iter().any(|e| {
+            e.action == "plugin.grant_upgrade"
+                && e.target == id
+                && e.detail.contains("docker:exec")
+                && e.detail.contains("0.1.0")
+                && e.detail.contains("0.2.0")
+        }),
+        "升级补授敏感权限必须写审计，实际: {:?}",
+        audit
+    );
     assert_eq!(
         h.state.db().plugin(id).unwrap().unwrap().version,
         "0.2.0",

@@ -212,17 +212,44 @@ pub fn install_package(
 
     // 授权来源分两条：
     // - 首次安装：只授予用户确认过的子集，且必须是 manifest 声明过的；
-    // - 重装/升级：按同一插件 id 沿用库内既有 grants，并按新 manifest 的声明集
-    //   过滤。既不重置为 manifest 默认值，也不自动授予新增声明项（安全默认）；
-    //   既有授权只在管理员显式卸载时由 `uninstall_package` 清空。
+    // - 重装/升级：保留库内既有 grants（既有授权绝不清空），按新 manifest 的声明集过滤，
+    //   并把**相对已装版本新声明**的能力动词补齐——上限始终是新 manifest，不会出现越权授权；
+    //   老声明里被用户拒绝过的项不翻案（只在旧 manifest 未声明时才算新增）。
+    //   补齐的写/删除/执行类动词必须留痕（见下方 `plugin.grant_upgrade` 审计），不静默扩权。
     let declared = meta.manifest.permission_strings();
+    let prev_declared = match &existing {
+        Some(prev) => match Manifest::parse(&prev.manifest) {
+            Ok(m) => Some(m.permission_strings()),
+            Err(e) => {
+                // 旧 manifest 读不出来就无法判断「新增」，按保守口径不补授。
+                warn!(plugin = %prev.id, error = %e, "旧 manifest 不可解析，升级不自动补授新增权限");
+                None
+            }
+        },
+        None => None,
+    };
+    let mut grant_upgrade: Vec<String> = Vec::new();
     let grants = match &existing {
-        Some(prev) => prev
-            .grants
-            .iter()
-            .filter(|g| g.kind != "perm" || declared.iter().any(|d| d == &g.value))
-            .cloned()
-            .collect::<Vec<Grant>>(),
+        Some(prev) => {
+            let mut kept = prev
+                .grants
+                .iter()
+                .filter(|g| g.kind != "perm" || declared.iter().any(|d| d == &g.value))
+                .cloned()
+                .collect::<Vec<Grant>>();
+            let newly_declared: Vec<&String> = match &prev_declared {
+                Some(old) => declared.iter().filter(|p| !old.contains(p)).collect(),
+                None => Vec::new(),
+            };
+            for p in newly_declared {
+                if kept.iter().any(|g| g.kind == "perm" && g.value == *p) {
+                    continue;
+                }
+                grant_upgrade.push(p.clone());
+                kept.push(Grant::perm(p.clone()));
+            }
+            kept
+        }
         None => {
             let mut grants = Vec::new();
             for p in &opts.granted_permissions {
@@ -310,6 +337,53 @@ pub fn install_package(
     )?;
     info!(plugin = %record.id, version = %record.version, "插件安装完成");
 
+    // 升级补齐授权不是静默行为：只读类记日志；写/删除/执行类额外落一条审计，
+    // 写清插件 id、新增动词与来源版本，便于事后核对「这台机器什么时候扩的权」。
+    if !grant_upgrade.is_empty() {
+        let version_from = existing
+            .as_ref()
+            .map(|p| p.version.as_str())
+            .unwrap_or("(未安装)");
+        let added = grant_upgrade.join(",");
+        let sensitive = grant_upgrade
+            .iter()
+            .filter(|p| is_sensitive_perm(p))
+            .cloned()
+            .collect::<Vec<String>>();
+        if sensitive.is_empty() {
+            info!(
+                plugin = %record.id,
+                from = version_from,
+                to = %record.version,
+                added = %added,
+                "升级按 manifest 补齐授权（只读类）"
+            );
+        } else {
+            warn!(
+                plugin = %record.id,
+                from = version_from,
+                to = %record.version,
+                added = %added,
+                sensitive = %sensitive.join(","),
+                "升级新增敏感授权"
+            );
+            db.audit(
+                "system",
+                "local",
+                "plugin.grant_upgrade",
+                &record.id,
+                "ok",
+                &format!(
+                    "升级新增授权: {}；版本 {} → {}（敏感: {}）",
+                    added,
+                    version_from,
+                    record.version,
+                    sensitive.join(",")
+                ),
+            )?;
+        }
+    }
+
     Ok(InstalledInfo {
         id: record.id,
         name: record.name,
@@ -320,6 +394,47 @@ pub fn install_package(
         reduced_sandbox,
         warnings,
     })
+}
+
+/// 判断权限动词是否属于「写/删除/执行」档。
+///
+/// 只看动词最后一段（`containers.exec` → `exec`、`scheduler:manage` → `manage`）；
+/// 只读动词（`list` / `read` / `stat` / `logs` 等）不在表内，升级补授时只记日志。
+fn is_sensitive_perm(perm: &str) -> bool {
+    const SENSITIVE: &[&str] = &[
+        "write",
+        "delete",
+        "remove",
+        "rm",
+        "exec",
+        "execute",
+        "run",
+        "start",
+        "stop",
+        "restart",
+        "kill",
+        "create",
+        "update",
+        "set",
+        "put",
+        "upload",
+        "apply",
+        "restore",
+        "manage",
+        "grant",
+        "install",
+        "uninstall",
+        "reload",
+        "truncate",
+        "move",
+        "rename",
+        "chmod",
+        "chown",
+        "call",
+    ];
+    let verb = perm.rsplit_once(':').map(|(_, v)| v).unwrap_or(perm);
+    let seg = verb.rsplit('.').next().unwrap_or(verb);
+    SENSITIVE.contains(&seg)
 }
 
 fn prune_versions(root: &Path, keep: usize) -> Result<()> {
@@ -668,7 +783,7 @@ requires = ["docker"]
     }
 
     /// 装 → 授权（最小子集 + 对象）→ 同版本重装：既有授权原样保留，
-    /// 不回到 manifest 默认值，也不自动补入新增声明项。
+    /// 不回到 manifest 默认值；声明集未变，不会补授任何项。
     #[test]
     fn reinstall_same_version_preserves_existing_grants() {
         let tmp = tempfile::tempdir().unwrap();
@@ -724,9 +839,10 @@ requires = ["docker"]
         assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.1.0");
     }
 
-    /// 升级新版本：沿用既有授权；manifest 新增的声明项不被自动授予。
+    /// 升级新声明的能力动词要补齐授权（既有项不清空、对象授权不动），
+    /// 敏感档（写/删除/执行）额外落一条 `plugin.grant_upgrade` 审计。
     #[test]
-    fn upgrade_does_not_auto_grant_new_manifest_declarations() {
+    fn upgrade_grants_newly_declared_permissions_and_audits_sensitive() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path();
         let db = Db::open_in_memory().unwrap();
@@ -743,8 +859,9 @@ requires = ["docker"]
         )
         .unwrap();
 
+        // 0.2.0 新声明 restart（敏感）与 inspect（只读）。
         let mut upgraded = opts();
-        upgraded.granted_permissions = vec!["docker:list".into(), "docker:inspect".into()];
+        upgraded.granted_permissions = vec!["docker:list".into()];
         upgraded.object_grants = vec!["container:def".into()];
         install_package(
             &db,
@@ -753,7 +870,7 @@ requires = ["docker"]
                 data_dir,
                 id,
                 "0.2.0",
-                &["docker:list", "docker:inspect"],
+                &["docker:list", "docker:restart", "docker:inspect"],
                 &["container:def"],
             ),
             &upgraded,
@@ -762,9 +879,130 @@ requires = ["docker"]
         grants_are(
             &db,
             id,
-            &[("object", "container:abc"), ("perm", "docker:list")],
+            &[
+                ("object", "container:abc"),
+                ("perm", "docker:list"),
+                ("perm", "docker:restart"),
+                ("perm", "docker:inspect"),
+            ],
         );
         assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.2.0");
+
+        let rows = db.recent_audit(20).unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.action == "plugin.grant_upgrade")
+            .expect("敏感新增授权必须留审计");
+        assert_eq!(row.target, id);
+        assert!(row.detail.contains("docker:restart"), "{}", row.detail);
+        // 审计列出本次补齐的全部新增动词，并标注其中哪些属于敏感档。
+        assert!(row.detail.contains("docker:inspect"), "{}", row.detail);
+        assert!(
+            row.detail.contains("敏感: docker:restart"),
+            "{}",
+            row.detail
+        );
+        assert!(row.detail.contains("0.1.0"), "{}", row.detail);
+        assert!(row.detail.contains("0.2.0"), "{}", row.detail);
+    }
+
+    /// 只读类的新声明：授权补齐但不落敏感审计。
+    #[test]
+    fn upgrade_grants_read_only_declaration_without_sensitive_audit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &[]),
+            &opts(),
+        )
+        .unwrap();
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(
+                data_dir,
+                id,
+                "0.2.0",
+                &["docker:list", "docker:inspect"],
+                &[],
+            ),
+            &opts(),
+        )
+        .unwrap();
+
+        grants_are(
+            &db,
+            id,
+            &[("perm", "docker:list"), ("perm", "docker:inspect")],
+        );
+        let rows = db.recent_audit(20).unwrap();
+        assert!(
+            rows.iter().all(|r| r.action != "plugin.grant_upgrade"),
+            "只读补齐不应落敏感审计: {rows:?}"
+        );
+    }
+
+    /// 升级后 manifest 不再声明某能力时，旧授权仍按声明集过滤掉（补齐不等于只增不减）。
+    #[test]
+    fn upgrade_drops_grants_no_longer_declared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        let mut first = opts();
+        first.granted_permissions = vec!["docker:list".into(), "docker:inspect".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(
+                data_dir,
+                id,
+                "0.1.0",
+                &["docker:list", "docker:inspect"],
+                &[],
+            ),
+            &first,
+        )
+        .unwrap();
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &[]),
+            &opts(),
+        )
+        .unwrap();
+
+        grants_are(&db, id, &[("perm", "docker:list")]);
+    }
+
+    /// 敏感档判定只看动词最后一段。
+    #[test]
+    fn sensitive_perm_classification() {
+        for p in [
+            "scheduler:manage",
+            "docker:restart",
+            "docker:containers.exec",
+            "fs:write",
+            "fs:delete",
+            "interop:call",
+        ] {
+            assert!(is_sensitive_perm(p), "{p} 应判为敏感");
+        }
+        for p in [
+            "docker:list",
+            "docker:inspect",
+            "fs:read",
+            "identity:self",
+            "docker:logs",
+        ] {
+            assert!(!is_sensitive_perm(p), "{p} 应判为只读");
+        }
     }
 
     /// 只有管理员显式卸载才会清空授权；卸载保留 data/ 也不影响这条口径。
