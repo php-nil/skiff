@@ -582,6 +582,13 @@ impl AdminFs {
                     Some(name) => parent.join(name),
                     None => parent,
                 })
+        } else if p
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .is_some()
+        {
+            // 目标不存在但父目录可达：只是路径不存在，不能报成「父目录不存在」的 403。
+            return Err(FsError::NotFound(format!("{raw} 不存在")));
         } else {
             None
         };
@@ -1124,6 +1131,31 @@ mod tests {
 
         admin.remove("admin", to.to_str().unwrap()).unwrap();
         assert!(!to.exists());
+    }
+
+    #[test]
+    fn missing_child_reports_not_found_not_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(&web).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+        let missing = web.join("nope-1862702.txt");
+        assert!(matches!(
+            admin.read("admin", missing.to_str().unwrap()).unwrap_err(),
+            FsError::NotFound(_)
+        ));
+        assert!(matches!(
+            admin.stat("admin", missing.to_str().unwrap()).unwrap_err(),
+            FsError::NotFound(_)
+        ));
+        // 父目录也不存在时仍是「无法解析」，保持原有 403 口径。
+        let deep = web.join("no-dir/nope.txt");
+        assert!(matches!(
+            admin.stat("admin", deep.to_str().unwrap()).unwrap_err(),
+            FsError::Denied(_)
+        ));
     }
 
     #[test]
