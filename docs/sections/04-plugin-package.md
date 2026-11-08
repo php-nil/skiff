@@ -49,7 +49,8 @@ manifest 字段分两组：**包标识与兼容性**、**能力、权限与运�
 
 ## 4.2 生命周期与资源兜底
 
-- **启动**：首次请求拉起，经继承 FD 一次性交付插件身份 token（绑定插件 id + 权限集，**与进程同生命周期**，退出即吊销）+ socket 路径；5s 内 `GET /healthz` 不通过即判失败。
+- **启动**：首次请求拉起，经继承 FD 一次性交付插件身份 token（绑定插件 id + 权限集，**与进程同生命周期**，退出即吊销）+ socket 路径；5s 内 `GET /healthz` 不通过即判失败。插件进程提前退出时立即收口，不再空等满 5s。
+- **输出采集**：拉起时插件 stdout/stderr 以管道接入，由内核逐行转成结构化日志（stdout→info、stderr→warn），因此启动横幅、panic 与初始化失败原因都能在 `journalctl -u skiff` 看到，不与内核 stdout 原始字节互相穿插。单行超 1KB 截断、按每路 20 行/秒（突发 128 行）限速，超限只丢弃并汇总告警，不阻塞插件、不刷爆 journald。stderr 另留最近 2KB 环形缓冲：拉起失败时整段尾巴写进错误、审计与插件状态详情；每次新拉起会先把上一次尾巴冻结（并写一条 `warn`），新运行的输出不会覆盖上一次崩溃原因。
 - **回收**：空闲 300s SIGTERM（`resident` 除外）；崩溃退避 0.5s/2s/8s，连续 3 次熔断 + UI 告警。
 - **周期任务**：manifest 声明 cron 表达式，内核到点拉起插件调 `tick` RPC，跑完即回收——不让定时器把插件钉成常驻；**停机错过的 tick 不补跑**（要对账的插件在 tick 内自行幂等处理）。实现口径：内核每 30s 巡检一次，按 `{插件 id}|{表达式}` 记住「已触发的分钟序号」去重，所以 30s 的扫描节奏不会让 `* * * * *` 变成每分钟两次；单次 `tick` 调用有超时上限，超时按失败计并写审计。
 - **进程降权**：每个插件使用按插件 id 稳定分配的独立 UID/GID（不进 docker 组），拉起后依次重置 supplementary groups（仅保留 `skiff-plugins`）、`setgid`/`setuid`、清空 capabilities 并设 `PR_SET_NO_NEW_PRIVS`；独立 UID 同时防止同 UID 插件互发信号、ptrace 或读取 `/proc/<pid>/environ`。`skiff.db`/`/etc/skiff/config.toml`/`initial-admin.txt` 保持 0600 root，插件仅自身目录（`/www/skiff/plugins/{id}/`）可写，目录内部分层 `versions/`（代码，只读）/ `data/` / `cache/` / `run/`（语义见 §5.2），SDK 注入 `SKIFF_PLUGIN_DATA_DIR` / `SKIFF_PLUGIN_CACHE_DIR` 约定路径、插件不硬编码——直连 `docker.sock`（root:docker 0660）与读内核数据两条旁路封死，越权只剩「经 Broker」一条路。

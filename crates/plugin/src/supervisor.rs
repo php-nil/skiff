@@ -16,6 +16,278 @@ use skiff_store::{Db, PluginRecord};
 use tokio::sync::Mutex;
 use tracing::info;
 
+use self::output::PluginOutput;
+
+/// 插件子进程输出采集。
+///
+/// 插件 stdout/stderr 若直连 `/dev/null`，启动横幅、panic 与初始化失败原因在
+/// `journalctl -u skiff` 里全部丢失；若把原始字节直接拼进内核 stdout，多插件输出
+/// 会互相穿插并绕开日志框架。这里逐行经 `tracing` 输出（一条事件一条记录），
+/// 同时对单行长度与速率设上限，避免插件高频刷屏把 journald / 磁盘写爆或拖慢内核。
+///
+/// 非 unix 宿主不会拉起插件进程，这些采集件只在测试里使用；`allow(dead_code)`
+/// 只覆盖「非 unix 且非测试」这一种构建，不掩盖真实未使用。
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+mod output {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tracing::{info, warn};
+
+    /// 单行最多保留的字节数（超出截断并标注）。
+    const OUTPUT_LINE_MAX_BYTES: usize = 1024;
+    /// 令牌桶容量（突发允许的行数）。
+    const OUTPUT_BURST: u32 = 128;
+    /// 令牌桶稳态速率（行/秒）。
+    const OUTPUT_RATE_PER_SEC: u32 = 20;
+    /// 保留的 stderr 尾部字节数：拉起失败时原样带进错误与审计。
+    const STDERR_TAIL_MAX_BYTES: usize = 2048;
+
+    /// 单个插件进程的输出采集状态，按插件 id 保存在 `Supervisor` 上，**跨插件重启保留**。
+    ///
+    /// - `tail`：本次运行最近一段 stderr（有界环形缓冲，默认 2KB）；
+    /// - `last_exit`：上一次运行结束/失败时的 stderr 尾巴。每次新拉起会把旧尾巴冻结到
+    ///   这里并清空当前缓冲，所以新运行的输出不会覆盖上一次崩溃原因；
+    /// - `emitted` / `suppressed`：实际转出与因限速丢弃的行数（用于自检与收尾汇总）。
+    #[derive(Default)]
+    pub(super) struct PluginOutput {
+        tail: std::sync::Mutex<VecDeque<u8>>,
+        last_exit: std::sync::Mutex<Option<String>>,
+        emitted: AtomicU64,
+        suppressed: AtomicU64,
+    }
+
+    impl PluginOutput {
+        /// 新一次拉起前调用：冻结上一次的 stderr 尾巴并清空当前缓冲。
+        ///
+        /// 冻结的内容同时以 `warn` 写进日志，保证「上一次崩溃尾巴」不会因为进程重启
+        /// 或缓冲复用而消失。
+        pub(super) fn begin_run(&self, id: &str) {
+            let previous = self.take_tail();
+            if previous.is_empty() {
+                return;
+            }
+            warn!(plugin = %id, "上一次运行的 stderr 尾部: {previous}");
+            if let Ok(mut last) = self.last_exit.lock() {
+                *last = Some(previous);
+            }
+        }
+
+        /// 追加一行 stderr 到有界环形缓冲（原始字节，显示时再做 lossy 解码）。
+        pub(super) fn push_stderr(&self, line: &[u8]) {
+            let Ok(mut tail) = self.tail.lock() else {
+                return;
+            };
+            for &b in line {
+                if tail.len() >= STDERR_TAIL_MAX_BYTES {
+                    tail.pop_front();
+                }
+                tail.push_back(b);
+            }
+            if tail.len() >= STDERR_TAIL_MAX_BYTES {
+                tail.pop_front();
+            }
+            tail.push_back(b'\n');
+        }
+
+        pub(super) fn tail_text(&self) -> String {
+            let Ok(tail) = self.tail.lock() else {
+                return String::new();
+            };
+            String::from_utf8_lossy(&tail.iter().copied().collect::<Vec<u8>>())
+                .trim()
+                .to_string()
+        }
+
+        /// 取出并清空当前 stderr 尾巴。
+        pub(super) fn take_tail(&self) -> String {
+            let Ok(mut tail) = self.tail.lock() else {
+                return String::new();
+            };
+            let text = String::from_utf8_lossy(&tail.iter().copied().collect::<Vec<u8>>())
+                .trim()
+                .to_string();
+            tail.clear();
+            text
+        }
+
+        pub(super) fn record_exit(&self, tail: &str) {
+            if tail.is_empty() {
+                return;
+            }
+            if let Ok(mut last) = self.last_exit.lock() {
+                *last = Some(tail.to_string());
+            }
+        }
+
+        pub(super) fn last_exit(&self) -> Option<String> {
+            self.last_exit.lock().ok().and_then(|s| s.clone())
+        }
+
+        /// 实际转出的行数（限速丢弃的不计）。
+        pub(super) fn emitted(&self) -> u64 {
+            self.emitted.load(Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub(super) enum StreamKind {
+        Stdout,
+        Stderr,
+    }
+
+    impl StreamKind {
+        fn as_str(self) -> &'static str {
+            match self {
+                StreamKind::Stdout => "stdout",
+                StreamKind::Stderr => "stderr",
+            }
+        }
+    }
+
+    /// 令牌桶：允许 `OUTPUT_BURST` 行突发，之后按 `OUTPUT_RATE_PER_SEC` 行/秒放行。
+    struct RateBudget {
+        tokens: f64,
+        last: Instant,
+    }
+
+    impl RateBudget {
+        fn new() -> Self {
+            Self {
+                tokens: f64::from(OUTPUT_BURST),
+                last: Instant::now(),
+            }
+        }
+
+        fn take(&mut self) -> bool {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last).as_secs_f64();
+            self.last = now;
+            self.tokens = (self.tokens + elapsed * f64::from(OUTPUT_RATE_PER_SEC))
+                .min(f64::from(OUTPUT_BURST));
+            if self.tokens >= 1.0 {
+                self.tokens -= 1.0;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// 把一条插件输出转成一条结构化日志（stdout → info，stderr → warn）。
+    fn emit_line(
+        id: &str,
+        stream: StreamKind,
+        line: &[u8],
+        truncated: bool,
+        output: &PluginOutput,
+        budget: &mut RateBudget,
+        skipped: &mut u64,
+    ) {
+        if matches!(stream, StreamKind::Stderr) {
+            output.push_stderr(line);
+        }
+        if !budget.take() {
+            *skipped += 1;
+            output.suppressed.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        output.emitted.fetch_add(1, Ordering::Relaxed);
+        let text = String::from_utf8_lossy(line);
+        let suffix = if truncated {
+            " …(单行超长已截断)"
+        } else {
+            ""
+        };
+        match stream {
+            StreamKind::Stdout => info!(plugin = %id, stream = "stdout", "{text}{suffix}"),
+            StreamKind::Stderr => warn!(plugin = %id, stream = "stderr", "{text}{suffix}"),
+        }
+    }
+
+    /// 启动一路输出读取任务：分块读取 → 按行切分 → 限额转出。
+    ///
+    /// 用分块读取而不是 `lines()`，是为了在插件写出超长单行时把内存占用钉在
+    /// `OUTPUT_LINE_MAX_BYTES`，不让它先把内核堆撑大再做截断。
+    pub(super) fn spawn_output_pump<R>(
+        id: String,
+        stream: StreamKind,
+        mut reader: R,
+        output: Arc<PluginOutput>,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+
+            let mut chunk = vec![0u8; 4096];
+            let mut line = Vec::with_capacity(OUTPUT_LINE_MAX_BYTES);
+            let mut truncated = false;
+            let mut budget = RateBudget::new();
+            let mut skipped = 0u64;
+            loop {
+                let n = match reader.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                for &b in &chunk[..n] {
+                    if b == b'\n' {
+                        emit_line(
+                            &id,
+                            stream,
+                            &line,
+                            truncated,
+                            &output,
+                            &mut budget,
+                            &mut skipped,
+                        );
+                        line.clear();
+                        truncated = false;
+                    } else if line.len() < OUTPUT_LINE_MAX_BYTES {
+                        line.push(b);
+                    } else {
+                        truncated = true;
+                    }
+                }
+            }
+            if !line.is_empty() || truncated {
+                emit_line(
+                    &id,
+                    stream,
+                    &line,
+                    truncated,
+                    &output,
+                    &mut budget,
+                    &mut skipped,
+                );
+            }
+            if skipped > 0 {
+                warn!(
+                    plugin = %id,
+                    stream = stream.as_str(),
+                    skipped,
+                    "插件输出超出限速，已丢弃部分行（只保底采集，不阻塞插件）"
+                );
+            }
+        })
+    }
+
+    /// 等读取任务收尾；超时则中止，避免进程卡死时留下泄留任务。
+    pub(super) async fn drain_pumps(pumps: &mut Vec<tokio::task::JoinHandle<()>>) {
+        for mut handle in pumps.drain(..) {
+            if tokio::time::timeout(Duration::from_millis(300), &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+            }
+        }
+    }
+}
+
 use crate::install::manifest_of;
 #[cfg(unix)]
 use crate::install::{plugin_root, plugin_uid};
@@ -68,6 +340,31 @@ struct Running {
     socket: PathBuf,
     token: String,
     last_used: Instant,
+    /// 本次运行的输出采集状态（stderr 尾巴 + 计数）。
+    output: Arc<PluginOutput>,
+    /// stdout/stderr 的读取任务；进程退出后应尽快收尾。
+    pumps: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Running {
+    /// 仅 unix 拉起路径与测试会构造 `Running`。
+    #[cfg(any(unix, test))]
+    fn new(
+        child: ChildGuard,
+        socket: PathBuf,
+        token: String,
+        output: Arc<PluginOutput>,
+        pumps: Vec<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self {
+            child,
+            socket,
+            token,
+            last_used: Instant::now(),
+            output,
+            pumps,
+        }
+    }
 }
 
 /// 子进程所有权：`tokio::process::Child` 被丢弃时**不会**杀进程。
@@ -111,6 +408,8 @@ pub struct Supervisor {
     failures: Mutex<HashMap<String, Failure>>,
     /// 按插件 id 的 spawn 门：同一插件的拉起必须串行，否则并发 `ensure` 各起一个进程。
     spawn_gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// 按插件 id 的输出采集状态；跨插件重启保留，用于冻结上一次 stderr 尾巴。
+    outputs: Mutex<HashMap<String, Arc<PluginOutput>>>,
 }
 
 impl Supervisor {
@@ -121,11 +420,32 @@ impl Supervisor {
             running: Mutex::new(HashMap::new()),
             failures: Mutex::new(HashMap::new()),
             spawn_gates: Mutex::new(HashMap::new()),
+            outputs: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn config(&self) -> &SupervisorConfig {
         &self.cfg
+    }
+
+    /// 取（必要时创建）该插件的输出采集状态。
+    #[cfg(unix)]
+    async fn plugin_output(&self, id: &str) -> Arc<PluginOutput> {
+        self.outputs
+            .lock()
+            .await
+            .entry(id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// 上一次运行结束时的 stderr 尾巴（崩溃诊断用；新运行不会覆盖它）。
+    pub async fn last_exit_output(&self, id: &str) -> Option<String> {
+        self.outputs
+            .lock()
+            .await
+            .get(id)
+            .and_then(|out| out.last_exit())
     }
 
     /// 插件身份令牌（kernel.sock 侧校验 UID ↔ 插件 id 与 token，§4.2）。
@@ -268,6 +588,10 @@ impl Supervisor {
             return;
         };
         terminate(&mut r.child).await;
+        // 进程退出后读端会收到 EOF；顺带把当前 stderr 尾巴留作诊断。
+        output::drain_pumps(&mut r.pumps).await;
+        let tail = r.output.take_tail();
+        r.output.record_exit(&tail);
         let _ = std::fs::remove_file(&r.socket);
         let _ = self.db.set_plugin_status(id, "installed", "");
         info!(plugin = id, "插件进程已停止");
@@ -390,8 +714,10 @@ impl Supervisor {
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .current_dir(&run_dir)
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            // stdout/stderr 不再丢给 /dev/null：由下方读取任务逐行转进 tracing
+            //（落到 journald），插件启动横幅、panic 与初始化失败原因因此可见。
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let nofile = 256u64;
         let nproc = manifest.pids_limit.unwrap_or(128);
@@ -443,6 +769,27 @@ impl Supervisor {
                 SupervisorError::Spawn(format!("{}: {e}", bin.display()))
             })?));
 
+        // 收集 stdout/stderr：旧尾巴先冻结，再挂读取任务（分块读 + 限速转出）。
+        let output = self.plugin_output(&rec.id).await;
+        output.begin_run(&rec.id);
+        let mut pumps = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            pumps.push(output::spawn_output_pump(
+                rec.id.clone(),
+                output::StreamKind::Stdout,
+                stdout,
+                output.clone(),
+            ));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pumps.push(output::spawn_output_pump(
+                rec.id.clone(),
+                output::StreamKind::Stderr,
+                stderr,
+                output.clone(),
+            ));
+        }
+
         // 一次性身份令牌经 stdin 交付（不落环境变量，退出即失效）
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
@@ -453,26 +800,37 @@ impl Supervisor {
         }
 
         let deadline = Instant::now() + self.cfg.health_timeout;
-        loop {
+        let failure = loop {
             if ipc::healthz(&socket).await {
-                break;
+                break None;
+            }
+            // 起不来的插件通常很快就退出（缺依赖、端口冲突、panic）：提前收口，
+            // 不必空等满 5s，并把 stderr 尾巴带进错误里。
+            if let Ok(Some(status)) = child.try_wait() {
+                break Some(format!("插件进程提前退出（{status}）"));
             }
             if Instant::now() >= deadline {
                 let _ = child.kill().await;
-                return Err(SupervisorError::Spawn(
-                    "5s 内 /healthz 未通过，判拉起失败".into(),
-                ));
+                break Some("5s 内 /healthz 未通过，判拉起失败".into());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+
+        if let Some(reason) = failure {
+            output::drain_pumps(&mut pumps).await;
+            let tail = output.take_tail();
+            output.record_exit(&tail);
+            let detail = if tail.is_empty() {
+                reason
+            } else {
+                format!("{reason}；stderr 尾部: {tail}")
+            };
+            tracing::error!(plugin = %rec.id, "{detail}");
+            return Err(SupervisorError::Spawn(detail));
         }
 
         info!(plugin = %rec.id, pid = ?child.id(), "插件已拉起（reduced sandbox）");
-        Ok(Running {
-            child,
-            socket,
-            token,
-            last_used: Instant::now(),
-        })
+        Ok(Running::new(child, socket, token, output, pumps))
     }
 
     #[cfg(not(unix))]
@@ -626,12 +984,13 @@ mod tests {
                     async {
                         // 留出窗口，让其余调用都卡在门上，而不是走快路径
                         tokio::time::sleep(Duration::from_millis(50)).await;
-                        Ok(Running {
-                            child: fake_child(),
-                            socket: sup.socket_path(&r.id),
-                            token: "test".into(),
-                            last_used: Instant::now(),
-                        })
+                        Ok(Running::new(
+                            fake_child(),
+                            sup.socket_path(&r.id),
+                            "test".into(),
+                            Arc::new(PluginOutput::default()),
+                            Vec::new(),
+                        ))
                     }
                 })
                 .await
@@ -657,12 +1016,13 @@ mod tests {
     #[tokio::test]
     async fn dropped_running_reaps_orphan_child() {
         let pid = {
-            let r = Running {
-                child: fake_child(),
-                socket: PathBuf::from("/tmp/skiff-test.sock"),
-                token: "test".into(),
-                last_used: Instant::now(),
-            };
+            let r = Running::new(
+                fake_child(),
+                PathBuf::from("/tmp/skiff-test.sock"),
+                "test".into(),
+                Arc::new(PluginOutput::default()),
+                Vec::new(),
+            );
             let pid = r.child.id().expect("子进程应有 pid");
             drop(r);
             pid
@@ -690,5 +1050,82 @@ mod tests {
             }
         }
         assert!(!alive, "丢弃 Running 后孤儿子进程仍存活（pid {pid}）");
+    }
+
+    /// 跨平台的「同时往 stdout / stderr 各写一行」的替身进程。
+    fn noisy_child() -> tokio::process::Child {
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args([
+                "/C",
+                "echo plugin-stdout-line & echo plugin-stderr-line 1>&2",
+            ]);
+            c
+        };
+        #[cfg(unix)]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", "echo plugin-stdout-line; echo plugin-stderr-line >&2"]);
+            c
+        };
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("测试替身进程拉起失败")
+    }
+
+    /// 回归：插件的 stdout/stderr 确实被读取任务采集并转出（不是只改重定向方向）。
+    #[tokio::test]
+    async fn output_pump_collects_stdout_and_stderr() {
+        let mut child = noisy_child();
+        let output = Arc::new(PluginOutput::default());
+        let mut pumps = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            pumps.push(output::spawn_output_pump(
+                "t".into(),
+                output::StreamKind::Stdout,
+                stdout,
+                output.clone(),
+            ));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pumps.push(output::spawn_output_pump(
+                "t".into(),
+                output::StreamKind::Stderr,
+                stderr,
+                output.clone(),
+            ));
+        }
+        let _ = child.wait().await;
+        output::drain_pumps(&mut pumps).await;
+
+        let tail = output.tail_text();
+        assert!(
+            tail.contains("plugin-stderr-line"),
+            "stderr 未被采集：{tail:?}"
+        );
+        assert_eq!(output.emitted(), 2, "stdout 与 stderr 各应转出一条");
+    }
+
+    /// 回归：插件重启时上一次 stderr 尾巴被冻结保留，不被新运行的输出覆盖。
+    #[tokio::test]
+    async fn previous_stderr_tail_survives_restart() {
+        let output = PluginOutput::default();
+        output.push_stderr(b"old-crash-reason");
+        output.begin_run("t");
+        assert!(
+            output.tail_text().is_empty(),
+            "新运行应从空缓冲开始，避免把旧输出算成新崩溃原因"
+        );
+        assert_eq!(output.last_exit().as_deref(), Some("old-crash-reason"));
+
+        output.push_stderr(b"new-run-output");
+        assert_eq!(
+            output.last_exit().as_deref(),
+            Some("old-crash-reason"),
+            "新运行的输出不应覆盖上一次崩溃尾巴"
+        );
     }
 }
