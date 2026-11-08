@@ -5637,8 +5637,17 @@ fn plugin_ui_hides_builtin_delete_and_formats_traffic_bytes() {
 
     let monitor = include_str!("../../../plugins/monitor/ui/app.js");
     assert!(
-        monitor.contains("function bytes(") && monitor.contains("bytes(s.net_tx)"),
-        "历史出站必须按原始字节格式化"
+        monitor.contains("rate(s.net_rx_rate)") && monitor.contains("rate(s.net_tx_rate)"),
+        "历史表入站/出站都必须按速率列显示"
+    );
+    assert!(
+        monitor.contains("card(\"c-net\", rate(s.net_rx_rate))")
+            && monitor.contains("card(\"c-net-tx\", rate(s.net_tx_rate))"),
+        "概览必须拆入站/出站两张速率卡"
+    );
+    assert!(
+        !monitor.contains("bytes(s.net_tx)"),
+        "不得再把累计字节当速率展示"
     );
     assert!(
         !monitor.contains("gb(s.net_tx * 1024)"),
