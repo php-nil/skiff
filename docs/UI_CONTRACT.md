@@ -183,9 +183,12 @@
   - 新规则本地同源码 mock 实测：短内容 260→260（三档）；长内容 1600 → 430/860/1024 = 576 / 576 / 607，iframe 内部滚动、页级无第二条滚动条。
   - `65b10b9` 上机实测（四插件 × 三档）：860/1024 全部贴合（内容高＝iframe 高，页级滚动 0）；430 封顶生效（cron 566→530、ftp 656→470），但整页仍多 1px（`scrollHeight 901 / clientHeight 900`），`innerWidth − clientWidth = 15` 说明真的出了一条页级滚动条。
   - 修复：可用高度改从 `.workbench-panel` 量起并扣掉面板边框/外边距；封顶后再用真实 `scrollHeight` 做一次溢出校正（亚像素累计会稳定多出 1px）。
+  - `97edf87` 复验：430 宽 `innerWidth − clientWidth = 0`、`scrollHeight 900 / innerHeight 900`（页级滚动条消失）；iframe 中心滚轮 `ΔY=400` 后截图变化而父页面 `scrollY` 保持 0（内部滚动有效）；860/1024 维持贴合。
 - [x] 主题占位：加载前占位底色与 iframe 底衬跟随主题（light `#f6f8fa` / dark `#0b0d11`），占位文案 `正在加载插件界面…` 在 iframe 之上可见；切换主题时占位与已加载页同步。
   - `456e040` 实测：占位底色正确，但无 L3 标签的单视图/老包页面 `data-loaded` 永不置位、且文案被 iframe 底衬盖住。
+  - `97edf87` 复验：单视图（testkit `single`，`tabs=0`）加载后 `::before` 为 `display:none`，明暗底衬 `rgb(246,248,250)` / `rgb(11,13,17)` 一致；`readystatechange=interactive` 时主题已落地，首帧 body 底色 `rgb(244,245,247)` / `rgb(14,17,22)`，无闪白。
 - [x] Docker 不可用 gate：工作台 warn、概览 banner、容器/镜像/网络/卷 gate 均带「前往 Docker 设置」出口，不出现裸连接错误或白屏；守护进程恢复后 3 秒内自动解除 gate。
   - `456e040` 实测（停 `docker.socket` + `docker`）：容器页 503「服务不可用」、镜像/网络页显示 `hyper client error`，工作台与概览仍按启动时的缓存判断为可用。
+  - `97edf87` 复验：概览（`-L` 200，gate 文案 4 处）与 `/containers`、`/images`、`/networks`、`/volumes` 均 200、各 2 处 gate、`hyper client error` 0；恢复后 gate 归零、三容器自动 `Up`、skiff PID 不变。guard 工作台页按 manifest `gates=["docker_available"]` 随菜单隐藏、深链 404（设计行为）。
   - 修复＝后台 3 秒探活 + `available()` 动态化 + 入口 handler 早退 gate + 模板补出口；单测覆盖四个入口返回 200 且含出口。
 

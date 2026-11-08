@@ -62,27 +62,27 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | `v0.1.0` |
-| tag / 构建提交 | `v0.1.0` = `456e040`（Release 由该提交构建；三线收口：性能 / UI 全站对齐 / 错误与超时）；Release run `42489795537` success，`main` 与 tag 同指该提交 |
-| 部署时间 | 2026-11-08 22:48（Asia/Shanghai；在 19:59 全新库上按 Release 资产覆盖安装，库保持 v15） |
-| 部署方式 | `v0.1.0`（`456e040`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`；未传本地二进制；安装后 `/usr/local/bin/skiff` sha256 `a6610cb081459db8a47e4ea816bf92cb16ed5eb9f29bdd2d725d5c6a6bb3c0c5` 与包内二进制一致 |
+| tag / 构建提交 | `v0.1.0` = `97edf87`（Release 由该提交构建；工作台三项：iframe 高度收敛、主题占位、Docker 运行期探活与四处 gate，外加 430 宽封顶 1px 溢出修复）；Release run `42499597756` success，`main` 与 tag 同指该提交；CI run `42499591334` success |
+| 部署时间 | 2026-11-09 00:31（Asia/Shanghai；在 22:48 覆盖安装的 v15 库上按 Release 资产覆盖安装，库保持 v15） |
+| 部署方式 | `v0.1.0`（`97edf87`）Release 资产 → `sha256sum -c checksums.txt`（双架构均 OK）→ 解压 → `sh install.sh --no-docker`；未传本地二进制；安装后 `/usr/local/bin/skiff` 13,034,256 B、sha256 `8ae4eb97ac6a12e2202d747636a9a6f56e8bc32358899574ba35b2a6aaf6d444` 与包内二进制一致；旧二进制备份 `/root/skiff.before-97edf87` |
 | 数据库 | 沿用 19:59 空库直建结果 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均在（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 1 / site_runtimes 3 |
-| 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 5）；**`com.skiff.monitor` 为本轮新构建包**（358,905 B，md5 `97f805f948565cec34999c52b8dc7212`）；其余 5 个字节与 md5 与上版一致；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc` |
+| 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 5）；本轮发布未改插件，6 个 `.wbpkg` 的字节与 md5 与 `456e040` 轮完全一致（monitor 358,905 B / `97f805f9…7212`、cron 381,183 B / `ca287744…`、files 395,243 B / `0bd74f4f…`、ftp 327,273 B / `fcd5e7cb…`、guard 354,267 B / `b01c2360…`、testkit 320,615 B / `92ea82e4…`）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc` |
 | 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发，脚本 `/root/iter/skiff-http-fwd.py`）；`skiff-tls-proxy.service` 未部署 |
 | 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`，本轮覆盖安装前后一致）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）；无 `ext_*_timeout_secs`（超时复验后已删键）。备份 `/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml` |
 
-## 6. Release 资产（v0.1.0 = `456e040`，2026-11-08）
+## 6. Release 资产（v0.1.0 = `97edf87`，2026-11-09）
 
-构建来源：Release workflow run `42489795537`（`push` tag `v0.1.0`，`head_sha=456e040`；`publish` job 条件命中 tag 推送，自动覆盖同一 Release 资产，tag 不移动）。
-`git merge-base --is-ancestor` 校验：`92aa580` / `aa292b7` / `8716e51` / `48f57dc` / `5498f28`（任务中心）/ `d0e656d`（文件管理阶段二）/ `1862702`（站点与运行环境）/ `fd6bdf8`（PHP 配置校验）/ `128d698`（插件 403 文案）/ `9daabd3`（复核轮）/ `c6d74e0` / `445194c`（性能）/ `c49e075`（UI 全站对齐）/ `456e040`（错误与超时）对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与该提交一致。资产摘要经 GitHub API 复核，并下载后本地重算。
+构建来源：Release workflow run `42499597756`（`push` tag `v0.1.0`，`head_sha=97edf87`；`publish` job 条件命中 tag 推送，自动覆盖同一 Release 资产，tag 不移动；同提交 CI run `42499591334` success）。
+`git merge-base --is-ancestor` 校验：`92aa580` / `456e040`（上一轮收口）/ `0e5b030`（工作台三项）/ `65b10b9`（工作台文档）/ `ddfa7b0`（上轮文档）/ `97edf87` 对 `v0.1.0` 退出码均为 0；构建时 tag、`origin/main` 与该提交一致。资产摘要经 GitHub API 复核，并下载后本地重算。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `109a020200f0e6e62575c21fcc32498b6ffe4c2703479c2c53c10525e1c68e82` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,798,637 B | `5ba0a822a3e4251e5ed49dbccf461861e22f44f745fd73813b6060e7cb4bc005` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,391,898 B | `315ddaa276562196112bdb9b9a01d0aef752f07160001ca76ca19bedc644f620` |
+| `checksums.txt` | 223 B | `d89299e20e75ab39b0787603eccec238a7c9004feea185c5f8fbc76774d89796` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 8,806,266 B | `e10a0e9ef19951ebf1c21745f3c6ebd175f2520cd6e729a616273b037347155f` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 8,401,420 B | `e3e2373512b19ddc48da13a09b9ed8c60c2b4ed75faf5da24213610c4bd24afd` |
 
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows/测试机直连仍被重置，经内网代理 `http://10.66.10.22:1010` 下载（缓存 `d:\panel\.workbuddy\release-456e040\`），本地重算 sha256 与 `checksums.txt` 完全吻合；`scp` 到测试机后 `sha256sum -c checksums.txt` 双架构 OK，逐资产 `.sha256` 亦 OK。
-- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；**monitor 为本次重新构建**（358,905 B，上版 351,186 B），其余 5 个字节与 md5 与上版一致；6 个包用同一源码树重建的 `skiff-plugin verify --arch` 全部通过；签名指纹 `ed73de3e…cd47`，首启自动信任。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 直连仍被重置，经内网代理 `http://10.66.10.22:1010` 下载（缓存 `d:\panel\.workbuddy\release-97edf87\`），本地重算 sha256 与 `checksums.txt` 完全吻合；`scp` 到测试机 `/root/iter/a97edf87/` 后 `sha256sum -c checksums.txt` 双架构与逐资产 `.sha256` 均 OK。
+- 包内 `official/` 仍含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；本轮未改插件，6 个包字节与 md5 与 `456e040` 轮一致；签名指纹 `ed73de3e…cd47`，首启自动信任。
 - 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**（`git ls-remote --tags origin` 现只有 `v0.1.0`）。
 
 ## 7. 最近部署记录
@@ -106,8 +106,10 @@
 | 2026-11-08 21:20 | 本地工作树构建二进制覆盖（超时可配验证用，**非 Release 资产**） | `cargo build --release --target x86_64-unknown-linux-musl -p skiff`（工作树含未提交的超时可配改动）；`/usr/local/bin/skiff` 12,749,696 B `md5 86e8f7ca06730120bcf2131600f567fb` | 仅用于验证任务中心超时路径；验完 `config.toml` 已恢复默认（无 `ext_*_timeout_secs` 键），服务 active、`/<prefix>/login` 200 |
 | 2026-11-08 22:48 | `456e040` 三线收口发版覆盖安装（Release 资产） | 资产 `456e040`；x86_64 8,798,637 B `5ba0a822…`、aarch64 8,391,898 B `315ddaa2…`，双架构与逐资产 `sha256sum -c` 全部 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha 未变；`/usr/local/bin/skiff` 与包内二进制 sha256 一致；6 个官方插件按新包重装（monitor 新包 358,905 B，进程然后由内核调度器拉起） |
 | 2026-11-08 22:48–23:12 | `456e040` Release 资产五组复验 | 同资产 | 插件面 EDQUOT **507**、超时 `error_class=timeout`、430/860/1024 三档 UI、性能三项、monitor `samples.jsonl` 追加+压缩 全部通过；详见 §8「收口轮复验」 |
+| 2026-11-09 00:31 | `97edf87` 工作台三项复验版覆盖安装（Release 资产） | 资产 `97edf87`；x86_64 8,806,266 B `e10a0e9e…`、aarch64 8,401,420 B `e3e23735…`，双架构与逐资产 `sha256sum -c` 全部 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；`/usr/local/bin/skiff` 13,034,256 B `8ae4eb97…` 与包内一致；6 个官方插件包字节与 md5 未变 |
+| 2026-11-09 00:35–01:05 | `97edf87` 工作台三项 + 任务/文件主链路复验 | 同资产 | 四插件 × 三档 iframe 高度收敛（430 封顶后页级滚动条 0、滚轮内部滚动有效）、单视图老包占位消失与明暗底衬一致、停 Docker 后概览 + 四资源页 gate 且恢复后自动解除、任务中心与文件管理主链路 200；详见 §8「工作台三项复验」 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮 + `456e040` 收口轮）
+## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮 + `456e040` 收口轮 + 2026-11-09 `97edf87` 工作台轮）
 
 **安装链路（`1862702` 全新安装轮）**
 - 机器已还原：无 `/etc/skiff`、无 `admin` 用户、无旧数据根；按 Release 资产安装，不传本地二进制。
@@ -153,6 +155,14 @@
 - **性能三项**：3 GiB 站点日志页 **4.741 ms** 返回 200、下载 45,060 B，skiff `rchar` 增量 **2,097,152 B（恰 2 MiB）**（非 3 GiB），页面含尾标记与 199 行；30 s 巡检把 3,223,322,644 B 的 `access.log` 改名为 `.1` 并新建 0 B 新文件，skiff `write_bytes` 增量 **90,112 B**（约 88 KiB，与文件大小无关；复制方案需写 ~3 GB）；monitor 追加 3 点：11→14 行、2,461→2,546 B（+85 B）、inode 不变。
 - **官方 monitor 包（`samples.jsonl`）**：新包装上后 `snapshot` 返回 `cpu=0.7`、`cpus=4`、`mem_avail_kb=3404336`、`net_rx_rate≈599.6 B/s`；`execute` 3 点纯追加（见上）；预置到 480 行再追加 6 点 → 压缩回 **240 行**（detail「追加 6 点，环形保留 240 点」，文件 4,758 B，属主仍 200115，无 `.tmp` 残留）；`history` 回读 240 点。验后清空 `samples.jsonl`（保留属主），**23:10:00 的 5 分钟 tick 实测追加 5 个真实点（1,132 B，属主不变）**，采样链路按新逻辑闭环。
 
+**工作台三项复验（`97edf87` Release 资产，2026-11-09 00:35–01:05）**
+
+- **iframe 高度（四插件 × 430/860/1024）**：860/1024 全部内容高＝iframe 高（cron 381/381、ftp 346/406、testkit 331/370、guard 304/304），`scrollHeight == innerHeight`，页级滚动 0；430 封顶生效（cron 561→513、ftp 635→453、testkit 466→453、guard 409→409），`innerWidth − clientWidth = 0`、`scrollHeight 900 / innerHeight 900`，上一轮那条 15px 页级滚动条彻底消失；在 iframe 中心发 `mouseWheel ΔY=400` 后整页截图变化、父页面 `scrollY` 仍为 0，内部滚动真实可用。截图与 `result.json` / `scroll-wheel.json` 在开发机 `.workbuddy/ui-65b10b9/`（不入库）。
+- **主题占位**：单视图老包（testkit `single`，`tabs=0`）加载后 `::before` 为 `display:none`；面板与 iframe 底衬浅色 `rgb(246,248,250)`、暗色 `rgb(11,13,17)`，与 `--plugin-frame` 一致；`readystatechange=interactive` 时 `data-theme` 已是 `light`/`dark`，首帧 body 底色 `rgb(244,245,247)` / `rgb(14,17,22)`，无闪白。
+- **Docker gate**：停 `docker.socket` + `docker` 8 秒后，概览 `/udkwxz96`（`-L` 后 200，gate 文案 4 处）、`/containers`、`/images`、`/networks`、`/volumes` 均 200、各 2 处「Docker 不可用」+ 1 处「前往 Docker 设置」、`hyper client error` **0**；恢复后全部 gate 归零、三容器 10 秒内自动 `Up`、skiff PID `122451` 前后一致（未重启面板）。guard 工作台页在 Docker 不可用时按 manifest `gates=["docker_available"]` 随菜单隐藏、深链 404（设计行为，非裸错误）。
+- **探活开销**：30 s 内 skiff 进程 CPU（`utime+stime`）**40 ms**，≈0.133% 单核；3 秒一次 `ping` 无可见负担。
+- **主链路回归**：`/files` 200、`/files/api/list?path=/www` 200、`/tasks` 200、`/jobs` 200；`POST /tasks/builtin:db-vacuum/run` 303，审计 `tasks.run target=builtin:db-vacuum result=ok`（内置任务同步执行、不落 `jobs` 行，故 `jobs` 表 0 命中属预期）。
+
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
 - WAF 拦截能力不存在（仅字段/目录预留），需产品定稿后实现。
 - aarch64 仅核对 sha256，无 arm64 实机装机。
@@ -161,10 +171,10 @@
 - Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
 - 原两条观察项已在 `8716e51` 关闭：插件 stderr 已转出 journal；`/etc/skiff` 与配置/TLS 私钥已纳入受保护路径。
 
-**收尾状态（2026-11-08 `456e040` 收口轮后）**
+**收尾状态（2026-11-09 `97edf87` 工作台轮后）**
 - 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用；`skiff.service` active；`skiff-http-fwd.service` active；`skiff-tls-proxy.service` 未部署。
-- 数据：库保持 `user_version=15`，6 个官方插件已装（monitor 为本轮新包）；站点 1（`iter-rust-1862702.test`，日志页性能复验用，`access.log` 已复原）、`site_runtimes` 3；`samples.jsonl` 已清空后由 5 分钟 tick 重新落真实点。
-- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml`、`/root/iter/admin-pw.txt`、`/root/iter/cookies.txt`（会话）、`/root/iter/cookies_ui.txt`（三档 UI 复验会话）、`/root/iter/v456e040/`（资产与解压目录）保留。
+- 数据：库保持 `user_version=15`，6 个官方插件已装（字节与 md5 与 `456e040` 轮一致）；站点 1（`iter-rust-1862702.test`）、`site_runtimes` 3；`samples.jsonl` 由 5 分钟 tick 正常追加。
+- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-97edf87`（上一版二进制）、`/root/iter/a97edf87/`（本轮资产与解压目录）保留；临时 cookie 文件已清理。
 
 
 ## 9. 数据、备份与清理
