@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>计划任务 · 新建任务</title>
+<link rel="stylesheet" href="base.css">
+<!-- 主题变量内联兜底：插件页面只依赖自身资源，父页面未下发主题时保持深色。 -->
 <style>
-  /* 默认深色；父页面下发 `light` 时由 app.js 写到 <html data-theme>。 */
   :root {
     color-scheme: dark;
     --ui-bg: #0b0d11;
@@ -41,65 +42,24 @@
   }
   body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
          background: var(--ui-bg); color: var(--ui-text); }
-  h1 { font-size: 18px; margin: 0 0 8px; }
-  h2 { font-size: 14px; margin: 16px 0 8px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-  button { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
-           padding: 5px 12px; cursor: pointer; }
-  button:hover { background: var(--ui-btn-hover); }
-  input[type=text] { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
-                     padding: 5px 8px; min-width: 150px; }
-  input[type=time], input[type=number] { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line);
-                     border-radius: 6px; padding: 5px 8px; }
-  input[type=number] { width: 72px; }
-  select { background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px; padding: 5px 8px; }
-  textarea { width: 100%; min-height: 54px; box-sizing: border-box; background: var(--ui-surface); color: var(--ui-text);
-             border: 1px solid var(--ui-line); border-radius: 6px; padding: 6px 8px; font: 12px/1.5 ui-monospace,
-             SFMono-Regular, Consolas, monospace; resize: vertical; }
-  .muted { color: var(--ui-muted); font-size: 12px; }
-  code { background: var(--ui-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .ok { color: var(--ui-ok); } .warn { color: var(--ui-warn); } .bad { color: var(--ui-bad); }
-  #msg { min-height: 20px; font-size: 12px; }
-  .card { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
-  .sched-box { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 8px 10px; margin: 2px 0 8px;
-               background: var(--ui-surface); }
-  .sched-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
-  .sched-line .sched-expr { min-width: 210px; flex: 1; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-  .sched-line label.sched-day { font-size: 12px; color: var(--ui-muted); white-space: nowrap; }
-  .sched-preview { font-size: 12px; color: var(--ui-ok); }
-  .sched-error { color: var(--ui-bad); font-size: 12px; min-height: 18px; }
 </style>
 </head>
 <body>
-<p class="muted">
-  任务由<strong>内核调度器</strong>保存与执行，本页只负责写任务定义。能否调通由内核判定：
-  计划任务需被授予 <code>scheduler:manage</code>，目标插件还需勾选 <code>plugin:</code> 对象授权。
-</p>
-<div class="row">
-  <button id="refresh">刷新</button>
-  <span id="msg" class="muted"></span>
-</div>
-<div data-view="new">
-  <h2>新增 / 更新任务</h2>
-  <div class="card">
-    <div class="row">
-      <input type="text" id="new-name" placeholder="任务名，例如 网站配置每日备份">
-    </div>
-    <div id="sched-new"></div>
-    <div class="row">
-      <select id="new-target"></select>
-      <input type="text" id="new-method" placeholder="方法，例如 backup">
-      <input type="text" id="new-key" placeholder="幂等 key（可空）" style="min-width:130px">
-      <button id="create">保存任务</button>
-    </div>
-    <textarea id="new-params" placeholder='调用参数（JSON 对象，可空），例如 {"name":"example.com"}'></textarea>
-    <p class="muted" id="targets-note">可调度目标来自内核目录；看不到目标说明尚未授予 <code>plugin:</code> 授权。</p>
-  </div>
-  <p class="muted">
-    调度按<strong>服务器本地时区</strong>执行；不支持秒级（6 段表达式）与 <code>@reboot</code>。
-    预设只是把选择翻译成标准 5 段表达式，落库与内核执行语义不变。
+<div class="page-head">
+  <p class="sub">
+    弹窗内一次填写名称、目标与调度；保存后任务定义写入<strong>内核调度器</strong>，按服务器本地时区执行。
   </p>
+  <div class="actions">
+    <button id="btn-new" class="primary">新建任务</button>
+  </div>
 </div>
+<div id="msg" class="muted"></div>
+<div class="card">
+  <div class="empty" id="new-hint">
+    新建任务使用弹窗完成，不会跳转到其他页面；关闭弹窗后可再次点击右上角「新建任务」。
+  </div>
+</div>
+<div id="editor-host"></div>
 <script src="app.js"></script>
 </body>
 </html>

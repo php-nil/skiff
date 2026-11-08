@@ -10,7 +10,7 @@
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
-| `cron/` | `com.skiff.cron` | identity + interop | 计划任务管理 UI：按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。只调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记 |
+| `cron/` | `com.skiff.cron` | identity + interop | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。只调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记；内置任务只可启停，删除在插件 RPC 层硬拦截 |
 | `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径、fail2ban 开关（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相，插件不再写 `service-config.json`；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；仅 Native 形态 |
 | `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
@@ -97,6 +97,9 @@ view = "list"
   order = 20
   view = "new"            # ui/new.html
 ```
+
+> cron 的「新建任务」L3 进入后立即打开新建弹窗；任务列表右上角「新建任务」也在当前页弹窗完成，
+> 编辑已有任务同样复用该弹窗，不跳页、不与抽屉混用。内置任务不渲染删除按钮，只提供启停。
 
 > 原 `com.skiff.nginx` 已内核化，网站一级与「网站列表 / 运行环境 / 设置」由内核提供，
 > 不再随官方插件发布。

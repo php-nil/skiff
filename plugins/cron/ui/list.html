@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>计划任务 · 任务列表</title>
+<link rel="stylesheet" href="base.css">
+<!-- 主题变量内联兜底：插件页面只依赖自身资源，父页面未下发主题时保持深色。 -->
 <style>
-  /* 默认深色；父页面下发 `light` 时由 app.js 写到 <html data-theme>。 */
   :root {
     color-scheme: dark;
     --ui-bg: #0b0d11;
@@ -41,70 +42,47 @@
   }
   body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
          background: var(--ui-bg); color: var(--ui-text); }
-  h1 { font-size: 18px; margin: 0 0 8px; }
-  h2 { font-size: 14px; margin: 16px 0 8px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-  button { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
-           padding: 5px 12px; cursor: pointer; }
-  button:hover { background: var(--ui-btn-hover); }
-  button.danger { border-color: var(--ui-danger-line); color: var(--ui-danger-text); }
-  button.mini { padding: 2px 8px; font-size: 12px; }
-  .muted { color: var(--ui-muted); font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--ui-line-soft); font-size: 13px;
-           vertical-align: top; }
-  th { color: var(--ui-muted); font-weight: 500; }
-  tr.hit { background: var(--ui-hit); }
-  code { background: var(--ui-surface); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .ok { color: var(--ui-ok); } .warn { color: var(--ui-warn); } .bad { color: var(--ui-bad); }
-  #msg { min-height: 20px; font-size: 12px; }
-  .card { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 10px 12px; margin: 8px 0 12px;
-          background: var(--ui-surface); }
-  .sched-box { border: 1px solid var(--ui-line-soft); border-radius: 8px; padding: 8px 10px; margin: 2px 0 8px;
-               background: var(--ui-bg); }
-  .sched-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
-  .sched-line select, .sched-line input[type=time], .sched-line input[type=number] {
-    background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-line); border-radius: 6px;
-    padding: 5px 8px; }
-  .sched-line input[type=number] { width: 72px; }
-  .sched-line .sched-expr { min-width: 210px; flex: 1; background: var(--ui-surface); color: var(--ui-text);
-    border: 1px solid var(--ui-line); border-radius: 6px; padding: 5px 8px;
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-  .sched-line label.sched-day { font-size: 12px; color: var(--ui-muted); white-space: nowrap; }
-  .sched-preview { font-size: 12px; color: var(--ui-ok); }
-  .sched-error { color: var(--ui-bad); font-size: 12px; min-height: 18px; }
 </style>
 </head>
 <body>
-<p class="muted">
-  任务由<strong>内核调度器</strong>统一执行：内置任务（站点备份 / 数据库整理）在进程内跑，
-  插件任务经 Supervisor 调用目标接口。本页只是管理视图——不写 crontab、不执行宿主命令。
-  任务定义与历史都落在内核库，插件重启不会丢。调度按<strong>服务器本地时区</strong>执行，
-  不支持秒级（6 段）与 <code>@reboot</code>。
-</p>
-<div class="row">
+<div class="page-head">
+  <p class="sub">
+    由<strong>内核调度器</strong>统一执行：任务定义与历史落在内核库，插件重启不丢；调度按
+    <strong>服务器本地时区</strong>执行，不支持秒级（6 段）与 <code>@reboot</code>。
+  </p>
+  <div class="actions">
+    <button id="btn-new" class="primary">新建任务</button>
+  </div>
+</div>
+<div id="msg" class="muted"></div>
+<div class="toolbar">
+  <input class="search" type="search" id="q" placeholder="搜索名称 / ID / 目标 / 方法">
+  <select id="flt">
+    <option value="all">全部任务</option>
+    <option value="enabled">已启用</option>
+    <option value="disabled">已停用</option>
+    <option value="builtin">内置任务</option>
+    <option value="own">本面板创建</option>
+    <option value="other">其他来源</option>
+  </select>
+  <span class="spacer"></span>
   <button id="refresh">刷新</button>
-  <span id="msg" class="muted"></span>
 </div>
 <div data-view="list">
-  <h2>任务列表</h2>
-  <div class="card" id="edit-card" hidden>
-    <div class="row">
-      <strong>修改调度</strong>
-      <span id="edit-title" class="muted"></span>
-      <span id="edit-msg" class="muted"></span>
-    </div>
-    <div id="edit-sched"></div>
-    <div class="row">
-      <button id="edit-save">保存调度</button>
-      <button id="edit-cancel">取消</button>
-    </div>
+  <div class="table-wrap">
+    <table>
+      <colgroup>
+        <col style="width:26%"><col style="width:24%"><col style="width:16%">
+        <col style="width:9%"><col style="width:12%"><col style="width:220px">
+      </colgroup>
+      <thead>
+        <tr><th>任务</th><th>调度 / 下次</th><th>目标</th><th>来源</th><th>上次</th><th>操作</th></tr>
+      </thead>
+      <tbody id="jobs"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+    </table>
   </div>
-  <table>
-    <thead><tr><th>任务</th><th>表达式 / 下次</th><th>目标</th><th>来源</th><th>上次</th><th>操作</th></tr></thead>
-    <tbody id="jobs"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
-  </table>
 </div>
+<div id="editor-host"></div>
 <script src="app.js"></script>
 </body>
 </html>

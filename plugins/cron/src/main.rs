@@ -20,6 +20,15 @@ const MAX_NAME: usize = 64;
 const MAX_KEY: usize = 64;
 const MAX_METHOD: usize = 64;
 const MAX_PARAMS_BYTES: usize = 4096;
+/// 高级参数范围必须与内核 `skiff-sched` 校验保持一致，插件侧只做提前提示。
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const MAX_TIMEOUT_SECS: u64 = 600;
+const MAX_RETRIES: u64 = 10;
+const MAX_BACKOFF_SECS: u64 = 3600;
+const DEFAULT_BACKOFF_SECS: u64 = 30;
+/// 本插件创建的任务 id 前缀：编辑/删除只允许落在这个作用域内。
+const SELF_TASK_PREFIX: &str = "plugin:com.skiff.cron:";
+const BUILTIN_PREFIX: &str = "builtin:";
 /// 本插件自己的 id：任务来源 / 表单默认值都记在这里。
 const SELF_ID: &str = "com.skiff.cron";
 
@@ -35,7 +44,9 @@ fn main() {
     if let Err(e) = plugin.serve(move |method, params| match method {
         // 旧插件 RPC 名称保留为薄别名：面板 UI（app.js）与旧调用方都能平滑切换。
         "jobs.list" | "list" | "jobs" => list(&p, &params),
-        "jobs.create" | "create" | "jobs.update" | "update" => create(&p, &params),
+        "jobs.create" | "create" => create(&p, &params),
+        // 编辑已有任务：与新建共用弹窗，但走 `task.update`，不改任务身份（id/kind/source）。
+        "jobs.update" | "update" => update_job(&p, &params),
         "jobs.toggle" | "toggle" => toggle(&p, &params),
         "jobs.remove" | "remove" => remove(&p, &params),
         "jobs.run" | "run" => run_now(&p, &params),
@@ -253,8 +264,121 @@ fn schedule_build(params: &Value) -> Result<Value, RpcError> {
     }
 }
 
-// ---- 视图映射 -----------------------------------------------------------
+// ---- 高级参数 ---------------------------------------------------------
 
+/// 把 UI 的高级字段翻译成内核 `TaskPatch` 的子集。
+///
+/// 只有明确传了值才写补丁，避免「没改也覆盖」；范围与 `skiff-sched` 保持一致。
+fn advanced_patch(params: &Value) -> Result<serde_json::Map<String, Value>, RpcError> {
+    let mut patch = serde_json::Map::new();
+    if let Some(value) = params.get("timeout_secs").filter(|v| !v.is_null()) {
+        let secs = value
+            .as_u64()
+            .ok_or_else(|| RpcError::invalid_params("timeout_secs 必须是整数".to_string()))?;
+        if !(1..=MAX_TIMEOUT_SECS).contains(&secs) {
+            return Err(RpcError::invalid_params(format!(
+                "超时需在 1–{MAX_TIMEOUT_SECS} 秒之间"
+            )));
+        }
+        patch.insert("timeout_secs".into(), json!(secs));
+    }
+
+    let retry_max = params.get("retry_max").filter(|v| !v.is_null());
+    let backoff = params.get("backoff_secs").filter(|v| !v.is_null());
+    if retry_max.is_some() || backoff.is_some() {
+        let max = retry_max
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| RpcError::invalid_params("retry_max 必须是整数".to_string()))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        if max > MAX_RETRIES {
+            return Err(RpcError::invalid_params(format!(
+                "重试次数不能超过 {MAX_RETRIES}"
+            )));
+        }
+        let backoff_secs = backoff
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| RpcError::invalid_params("backoff_secs 必须是整数".to_string()))
+            })
+            .transpose()?
+            .unwrap_or(DEFAULT_BACKOFF_SECS);
+        if !(1..=MAX_BACKOFF_SECS).contains(&backoff_secs) {
+            return Err(RpcError::invalid_params(format!(
+                "退避时间需在 1–{MAX_BACKOFF_SECS} 秒之间"
+            )));
+        }
+        // 0 次重试时不带退避数组，避免内核把「无重试」也当成配置了退避。
+        let backoff_secs = if max == 0 {
+            Vec::new()
+        } else {
+            vec![backoff_secs]
+        };
+        patch.insert(
+            "retry".into(),
+            json!({ "max": max, "backoff_secs": backoff_secs, "on": [] }),
+        );
+    }
+
+    if let Some(value) = params.get("concurrency").filter(|v| !v.is_null()) {
+        let mode = value
+            .as_str()
+            .ok_or_else(|| RpcError::invalid_params("concurrency 必须是字符串".to_string()))?;
+        if !matches!(mode, "skip" | "queue_one") {
+            return Err(RpcError::invalid_params(
+                "concurrency 只能是 skip 或 queue_one".to_string(),
+            ));
+        }
+        patch.insert("concurrency".into(), json!(mode));
+    }
+    Ok(patch)
+}
+
+/// 任务名：去空白后不能为空，最长 `MAX_NAME` 字符。
+fn read_name(params: &Value, fallback: Option<String>) -> Result<String, RpcError> {
+    let raw = common::param_str(params, "name");
+    let raw = raw.trim();
+    let name = if raw.is_empty() {
+        match fallback {
+            Some(default) => default,
+            None => return Err(RpcError::invalid_params("任务名不能为空".to_string())),
+        }
+    } else {
+        raw.to_string()
+    };
+    if name.chars().count() > MAX_NAME {
+        return Err(RpcError::invalid_params(format!(
+            "任务名过长（上限 {MAX_NAME} 字符）"
+        )));
+    }
+    Ok(name)
+}
+
+/// 调用参数：必须是 JSON 对象，且不超过 `MAX_PARAMS_BYTES`。
+fn read_params_object(params: &Value) -> Result<Option<Value>, RpcError> {
+    let Some(value) = params.get("params").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    if !value.is_object() {
+        return Err(RpcError::invalid_params(
+            "params 必须是 JSON 对象".to_string(),
+        ));
+    }
+    if serde_json::to_vec(value)
+        .map(|b| b.len())
+        .unwrap_or(usize::MAX)
+        > MAX_PARAMS_BYTES
+    {
+        return Err(RpcError::invalid_params(format!(
+            "params 超过 {MAX_PARAMS_BYTES} 字节"
+        )));
+    }
+    Ok(Some(value.clone()))
+}
+
+// ---- 视图映射 -----------------------------------------------------------
 /// 内核任务视图 → 插件 UI 沿用的 `job` 形状。
 ///
 /// 纯函数，便于单测：不改写内核数据，只做字段搬运与展示值补全。
@@ -286,6 +410,8 @@ fn task_to_job(task: &Value) -> Value {
         "key": task["key"].as_str().unwrap_or(""),
         "source": source_label,
         "payload": task["payload"].clone(),
+        "timeout_secs": task["timeout_secs"].as_u64().unwrap_or(DEFAULT_TIMEOUT_SECS),
+        "builtin": id.starts_with(BUILTIN_PREFIX),
         "last": task["last"].clone(),
         "next_run": task["next_run"].clone(),
     })
@@ -358,36 +484,8 @@ fn create(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let expr =
         expr_from_params(params, Some(default_expr.as_str())).map_err(RpcError::invalid_params)?;
 
-    let name = {
-        let raw = common::param_str(params, "name");
-        let raw = raw.trim();
-        if raw.is_empty() {
-            format!("{target} {method}")
-        } else {
-            raw.to_string()
-        }
-    };
-    if name.chars().count() > MAX_NAME {
-        return Err(RpcError::invalid_params(format!(
-            "任务名过长（上限 {MAX_NAME} 字符）"
-        )));
-    }
-
-    let inner = params.get("params").cloned().unwrap_or_else(|| json!({}));
-    if !inner.is_object() {
-        return Err(RpcError::invalid_params(
-            "params 必须是 JSON 对象".to_string(),
-        ));
-    }
-    if serde_json::to_vec(&inner)
-        .map(|b| b.len())
-        .unwrap_or(usize::MAX)
-        > MAX_PARAMS_BYTES
-    {
-        return Err(RpcError::invalid_params(format!(
-            "params 超过 {MAX_PARAMS_BYTES} 字节"
-        )));
-    }
+    let name = read_name(params, Some(format!("{target} {method}")))?;
+    let inner = read_params_object(params)?.unwrap_or_else(|| json!({}));
 
     let enabled = params
         .get("enabled")
@@ -401,19 +499,31 @@ fn create(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     }
 
     let payload = json!({ "name": name, "params": inner });
+    let advanced = advanced_patch(params)?;
+    let mut register = json!({
+        "local_key": key,
+        "target": target,
+        "method": method,
+        "expr": expr,
+        "payload": payload,
+        "enabled": enabled,
+    });
+    if let Some(timeout) = advanced.get("timeout_secs") {
+        register["timeout_secs"] = timeout.clone();
+    }
     let body = plugin
-        .scheduler_call(
-            "task.register",
-            json!({
-                "local_key": key,
-                "target": target,
-                "method": method,
-                "expr": expr,
-                "payload": payload,
-                "enabled": enabled,
-            }),
-        )
+        .scheduler_call("task.register", register)
         .map_err(|e| RpcError::internal(call_err(&target, &e.to_string())))?;
+    // `task.register` 只覆盖调度/负载/启用/超时；重试与并发需再补一次 `task.update`。
+    let mut extra = advanced.clone();
+    extra.remove("timeout_secs");
+    if !extra.is_empty() {
+        if let Some(id) = body["id"].as_str() {
+            plugin
+                .scheduler_call("task.update", json!({ "id": id, "patch": extra }))
+                .map_err(|e| RpcError::internal(call_err(id, &e.to_string())))?;
+        }
+    }
     let created = body["created"].as_bool().unwrap_or(false);
     let job = body.get("task").map(task_to_job).unwrap_or(Value::Null);
     Ok(json!({
@@ -423,6 +533,66 @@ fn create(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
         "next_run": job["next_run"].clone(),
         "job": job,
     }))
+}
+
+/// 编辑已有任务：只改名称/参数/调度/高级项，不改变任务身份（id、kind、source）。
+fn update_job(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let id = require_id(params)?;
+    if id.starts_with(BUILTIN_PREFIX) {
+        return Err(RpcError::invalid_params(
+            "内置任务只允许启停，不能编辑".to_string(),
+        ));
+    }
+    if !id.starts_with(SELF_TASK_PREFIX) {
+        return Err(RpcError::invalid_params(
+            "只能编辑本面板创建的任务".to_string(),
+        ));
+    }
+
+    let current = plugin
+        .scheduler_call("task.get", json!({ "id": id }))
+        .map_err(|e| RpcError::internal(call_err(&id, &e.to_string())))?;
+    let task = current.get("task").cloned().unwrap_or(Value::Null);
+    if task.is_null() {
+        return Err(RpcError::invalid_params("任务不存在".to_string()));
+    }
+
+    let fallback_name = task["payload"]["name"]
+        .as_str()
+        .or_else(|| task["name"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = read_name(params, Some(fallback_name))?;
+    let mut payload = task["payload"].as_object().cloned().unwrap_or_default();
+    payload.insert("name".into(), json!(name));
+    if let Some(inner) = read_params_object(params)? {
+        payload.insert("params".into(), inner);
+    }
+    // 幂等 key 由内核生成，编辑时必须原样带回，否则任务会被当成无 key 的新任务。
+    let key = task["key"].as_str().unwrap_or("");
+    if key.is_empty() {
+        payload.remove("key");
+    } else {
+        payload.insert("key".into(), json!(key));
+    }
+
+    let cfg = common::load_config(plugin);
+    let default_expr = common::cfg_str(&cfg, "default_expr", "0 3 * * *");
+    let fallback_expr = task["expr"].as_str().unwrap_or(default_expr.as_str());
+    let expr = expr_from_params(params, Some(fallback_expr)).map_err(RpcError::invalid_params)?;
+
+    let mut patch = advanced_patch(params)?;
+    patch.insert("payload".into(), Value::Object(payload));
+    patch.insert("schedule".into(), json!({ "type": "cron", "expr": expr }));
+    if let Some(enabled) = params.get("enabled").and_then(Value::as_bool) {
+        patch.insert("enabled".into(), json!(enabled));
+    }
+
+    let body = plugin
+        .scheduler_call("task.update", json!({ "id": id, "patch": patch }))
+        .map_err(|e| RpcError::internal(call_err(&id, &e.to_string())))?;
+    let job = body.get("task").map(task_to_job).unwrap_or(Value::Null);
+    Ok(json!({ "ok": true, "id": id, "job": job }))
 }
 
 /// 定位任务并返回内核任务 id（面板 UI 只按 id 操作，不做来源推断）。
@@ -453,6 +623,12 @@ fn toggle(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
 
 fn remove(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let id = require_id(params)?;
+    // 内置任务在插件 RPC 层也硬拦截：不能只靠 UI 隐藏按钮（重启后内核会重建）。
+    if id.starts_with(BUILTIN_PREFIX) {
+        return Err(RpcError::invalid_params(
+            "内置任务不可删除（只能停用）".to_string(),
+        ));
+    }
     plugin
         .scheduler_call("task.delete", json!({ "id": id }))
         .map_err(|e| RpcError::internal(call_err(&id, &e.to_string())))?;
@@ -626,6 +802,48 @@ mod tests {
             let value = preset_to_json(&preset);
             assert_eq!(preset_from_json(&value).unwrap(), preset, "{value}");
         }
+    }
+
+    #[test]
+    fn advanced_patch_only_writes_explicit_fields() {
+        let none = advanced_patch(&json!({})).unwrap();
+        assert!(none.is_empty(), "未改高级项不得产生补丁");
+
+        let patch = advanced_patch(&json!({
+            "timeout_secs": 120,
+            "retry_max": 2,
+            "backoff_secs": 45,
+            "concurrency": "queue_one",
+        }))
+        .unwrap();
+        assert_eq!(patch["timeout_secs"], 120);
+        assert_eq!(patch["retry"]["max"], 2);
+        assert_eq!(patch["retry"]["backoff_secs"], json!([45]));
+        assert_eq!(patch["concurrency"], "queue_one");
+
+        // 0 次重试不带退避数组。
+        let zero = advanced_patch(&json!({"retry_max": 0, "backoff_secs": 30})).unwrap();
+        assert_eq!(zero["retry"]["backoff_secs"], json!([]));
+    }
+
+    #[test]
+    fn advanced_patch_rejects_out_of_range_values() {
+        assert!(advanced_patch(&json!({"timeout_secs": 0})).is_err());
+        assert!(advanced_patch(&json!({"timeout_secs": MAX_TIMEOUT_SECS + 1})).is_err());
+        assert!(advanced_patch(&json!({"retry_max": MAX_RETRIES + 1})).is_err());
+        assert!(advanced_patch(&json!({"retry_max": 1, "backoff_secs": 0})).is_err());
+        assert!(advanced_patch(&json!({"concurrency": "parallel"})).is_err());
+    }
+
+    #[test]
+    fn read_params_object_requires_json_object() {
+        assert!(read_params_object(&json!({"params": []})).is_err());
+        assert!(read_params_object(&json!({"params": "x"})).is_err());
+        assert_eq!(
+            read_params_object(&json!({"params": {"k": 1}})).unwrap(),
+            Some(json!({"k": 1}))
+        );
+        assert_eq!(read_params_object(&json!({})).unwrap(), None);
     }
 
     #[test]
