@@ -362,7 +362,7 @@ trait Scheduler {
 | method | 参数 | 限制 |
 | --- | --- | --- |
 | `task.register` | `{local_key, method, schedule, payload, timeout, retry, concurrency, missed, buffer}` | 只能创建 `kind=plugin:<self>:<method>`；`source=plugin:<self>`；每插件 ≤ 20 条 |
-| `task.update` | `{id, patch}` | 只能改自己的任务；不可改 kind/source |
+| `task.update` | `{id, patch}` | 只能改自己的任务；patch 只接受 `schedule` / `payload` / `timeout_secs` / `retry` / `concurrency` / `missed` / `buffer` / `enabled`，带 `kind` 直接拒绝（执行体由内核按 manifest 维护） |
 | `task.delete` | `{id}` | 只能删自己的任务 |
 | `task.list` | `{filter}` | 只返回自己的任务 |
 | `task.run` | `{id}` | 只能触发自己的任务 |
@@ -372,6 +372,8 @@ trait Scheduler {
 
 - 权限：manifest 需声明 `scheduler` 能力与对应 verbs；未授权一律 403 + 审计 `scheduler.deny`。
 - 插件任务不能指定 `kind=builtin:*`，不能跨插件调用，不能修改 `enabled` 以外的内核字段。
+- `kind` 只由内核维护：manifest `[[task]]` 的 `method` 变化时，内核在升级同步里补 `kind`；
+  插件 RPC 传 `patch.kind` 一律拒绝（契约只允许内核改派执行体）。
 - `payload` ≤ 4 KiB（沿用 cron 现有 4 KiB 口径，`plugins/cron/src/main.rs:25,327-341`）。
 
 ### 10.3 HTTP 管理面

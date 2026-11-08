@@ -260,7 +260,7 @@
   - 权限：无 `scheduler:manage` 的旧包调 `buffer_push` → **403**「缺少 scheduler:manage」。
   - **构造不出的断言**：`rejected_points` / `rejected_bytes` 的累计——拒绝发生在入缓冲前，且在 drop-oldest 策略下不累计；如实记为未覆盖。
 - **主链路回归**：`/` **307**（AUTH-01 预期，跳登录页）、`/sites` `/tasks` `/jobs` `/files` `/containers` `/plugins` `/settings` 全 **200**；`/healthz` **200**；`systemctl show skiff -p ActiveState,NRestarts` = `active` / **0**；journal 近 30 分钟 `ERROR` 计数 **0**，无 panic/SIGSEGV。
-- **同版本升级两项已知缺陷（未改代码）**：①`seed_manifest_tasks` 对已存在任务直接 `continue`、不刷新 spec，且 CLI `plugin remove` 不删 `scheduled_tasks` 行，故同版本覆盖升级后 busy-probe 仍无缓冲声明，需 `systemctl stop skiff` → 删 `plugin:com.skiff.testkit:busy-probe` 行 → 启动重种；②同版本升级保留旧 grants、不自动授予 manifest 新增权限，testkit 需 `plugin remove` + `plugin install --yes` 才拿到 `scheduler:manage`。两项已记入台账「待处理」。
+- **同版本升级两项已知缺陷（该资产未含修复）**：①`seed_manifest_tasks` 对已存在任务直接 `continue`、不刷新 spec，且 CLI `plugin remove` 不删 `scheduled_tasks` 行，故同版本覆盖升级后 busy-probe 仍无缓冲声明，需 `systemctl stop skiff` → 删 `plugin:com.skiff.testkit:busy-probe` 行 → 启动重种；②同版本升级保留旧 grants、不自动授予 manifest 新增权限，testkit 需 `plugin remove` + `plugin install --yes` 才拿到 `scheduler:manage`。工作区已修复（`docs/changes/2026-11-09.md`），台账保留「待上机复验」。
 
 **未闭环（唯一来源为 [TEST_LEDGER.md](TEST_LEDGER.md)）**
 - aarch64 未实机装机、Release 下载端点容错、插件 UI 窄屏/跨浏览器、反代与 WS 残余等未闭环项的当前状态与下一步，统一见台账；本节只记已通过的断言。

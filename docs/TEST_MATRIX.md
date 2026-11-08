@@ -290,6 +290,8 @@ curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/built
 | monitor 采样/落盘 | ☐未上机 | 内核每 60s 调 `sample`（只更新 `prev.json`），每 5 分钟调 `execute` 追加 `samples.jsonl`（一行一点，超 480 行压缩回 240 行）并回 `persist`；写盘失败时缓冲保留、下一轮重试；`snapshot` 返回 `scheduler.driver=kernel`，基线独立写 `prev_ui.json`，不截断采样窗口 |
 | monitor 网络速率口径 | ☑通过（2026-11-09，官方包 `0c99464`） | 全速窗口：`/proc/net/dev` tx 差 210,657,428 B / 10 s → 期望 21,065,742.8 B/s，插件 `net_tx_rate=21,065,742.8 B/s`（差 0.00%，`net_tx` 与宿主逐字节一致）。限速长窗口 106 s（200 MB，`scp -l 16384`）：整窗均值 1,985,505 B/s；面板 UI 每约 60 s 自身的 `snapshot` 轮询把末段窗口截为 54 s，插件报 1,943,259.9 B/s，对同 54 s 期望差 0.00%、对整窗均值差 2.13%。同窗内内核 60 s 采样推进 `prev.json`（3060→3120），`prev_ui.json` 未被内核改写——两份基线独立，内核采样不截断 UI 窗口 |
 | guard 单路径与语义 | ☐未上机 | 每分钟 `reconcile`；异常容器重启/冷却/小时预算/未授权只报不动与迁移前一致；UI 无「立即巡检」入口；`status.scheduler.driver=kernel` |
+| manifest 任务升级刷新 | ☑通过（本机，2026-11-09） | `cargo test -p skiff-app manifest_task --locked`：`*/5`→`*/10`、`execute`→`run`、采样 60→120、超时 30→45 后任务行同步更新；管理员停用的 `enabled=0`、`created_by=system:manifest`、`created_at` 与 `task_runs` 历史全部保留；撤掉声明后任务行被回收 |
+| 升级补齐新增授权 | ☑通过（本机，2026-11-09） | `cargo test -p skiff-plugin upgrade_ --locked`：0.1.0→0.2.0 新声明 `docker:restart`/`docker:inspect` 后 grants 补齐，敏感档写审计 `plugin.grant_upgrade`（detail 含动词与 `0.1.0 → 0.2.0`）；只读新增不写该审计；未再声明的 perm 被过滤；同版本重装保留既有授权 |
 
 ## H. Docker
 
