@@ -184,7 +184,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 - `monitor` 的 `ui/health.html` 是槽位专用紧凑卡；无采样时显示明确空态，内核负责外框、标题与失败降级。
 - `testkit` 只用于验证架构：多视图/单视图、槽位、RPC 成功与失败、授权读与越界拒绝、主题/CSP；不执行宿主写操作。
 - `testkit` 带 `scheduler` 读写探针：`scheduler_probe`（`task.list`）、`buffer_probe`/`buffer_stat`（`buffer.stat`，原样回报容量/条数/丢弃/拒绝/高水位）、`buffer_push`（按 `count` 循环调 `buffer.push`，上限 100 对齐每任务 100 点/秒限速），仅作用于本插件来源任务；不新增能力面方法。
-- `testkit` 另带默认停用的 `busy-probe` 任务（`scheduler:read`）：任务执行期回调 `scheduler` 应被内核以 403 拒绝（BusyGuard），用于上机复验「插件任务执行 → 再注册任务」的自我繁殖防护。
+- `testkit` 另带默认停用的 `busy-probe` 任务（`scheduler:read`）：任务执行期回调 `scheduler` 应被内核以 403 拒绝（BusyGuard），用于上机复验「插件任务执行 → 再注册任务」的自我繁殖防护。该任务同时声明内存缓冲（`sample_method=buffer_sample`、`capacity_bytes=4096`，默认停用不自动采样），作为 TASK-06 `buffer_probe`/`buffer_push` 的落点。
 
 ### 4.8 FTP 管理 `com.skiff.ftp`（能力面扩张）
 
