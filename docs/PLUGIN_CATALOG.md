@@ -64,7 +64,7 @@
 | P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读） | `path:` 只读授权 + cron `tick`（均已就绪） | 1Panel/宝塔 监控 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
-| P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` | 无（只读能力面） | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
+| P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` + `scheduler`（只读） | `scheduler:read` + 默认停用的执行期 BusyGuard 探针任务 | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
 | P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态） | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现并上机验收通过（FTP-01/05 残留，见 TEST_LEDGER） |
 | P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
 | P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | 未开始（卡 net） |
@@ -183,6 +183,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 - 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。
 - `monitor` 的 `ui/health.html` 是槽位专用紧凑卡；无采样时显示明确空态，内核负责外框、标题与失败降级。
 - `testkit` 只用于验证架构：多视图/单视图、槽位、RPC 成功与失败、授权读与越界拒绝、主题/CSP；不执行宿主写操作。
+- `testkit` 另带默认停用的 `busy-probe` 任务（`scheduler:read`）：任务执行期回调 `scheduler` 应被内核以 403 拒绝（BusyGuard），用于上机复验「插件任务执行 → 再注册任务」的自我繁殖防护。
 
 ### 4.8 FTP 管理 `com.skiff.ftp`（能力面扩张）
 
