@@ -73,8 +73,8 @@
     {% endif %}
 
     <div class="row">
-      <button class="primary" type="submit">确认并安装</button>
-      <a class="ghost" href="/{{ ctx.prefix }}/plugins">取消</a>
+      <a class="btn ghost" href="/{{ ctx.prefix }}/plugins">取消</a>
+      <button class="btn primary" type="submit">确认并安装</button>
     </div>
   </form>
   <p class="hint">拒绝某项权限后，该权限不会进入 granted 集，插件可通过 <code>SKIFF_GRANTED_PERMS</code> 查询并降级适配。</p>

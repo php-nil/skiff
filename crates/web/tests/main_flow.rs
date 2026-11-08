@@ -3506,6 +3506,14 @@ async fn site_delete_confirm_shows_stats_and_requires_typed_domain() {
         html.contains("data-type-confirm-submit"),
         "提交按钮必须受域名输入控制: {html}"
     );
+    let cancel_at = html.find(">取消<").expect("确认页必须有取消入口");
+    let submit_at = html
+        .find("data-type-confirm-submit>删除站点<")
+        .expect("确认页必须有删除站点按钮");
+    assert!(
+        cancel_at < submit_at,
+        "按钮顺序必须是取消在左、危险操作在右（UI_CONTRACT §9）: {html}"
+    );
     assert!(html.contains("2 个文件"), "确认页必须给出文件数: {html}");
     assert!(
         html.contains("绑定的定时任务"),
