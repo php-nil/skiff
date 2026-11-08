@@ -98,6 +98,18 @@ mod tests {
     }
 
     #[test]
+    fn files_js_builds_absolute_api_urls() {
+        // 回归：`prefix` 不带前导斜杠，apiUrl 必须补 `/`，否则在
+        // `/{p}/m/core/files` 页面上会被解析成 `/{p}/m/core/{p}/files/api/...` → 404。
+        let js = Assets::get("files.js").expect("files.js 应已嵌入");
+        let text = String::from_utf8_lossy(&js.data);
+        assert!(
+            text.contains(r#"return "/" + prefix + "/files/api" + path;"#),
+            "files.js 的 apiUrl 必须返回以 `/` 开头的绝对路径"
+        );
+    }
+
+    #[test]
     fn every_static_asset_has_gzip_variant() {
         for name in Assets::iter() {
             if name.ends_with(".gz") {

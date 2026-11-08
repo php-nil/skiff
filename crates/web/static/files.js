@@ -116,7 +116,7 @@
   }
 
   function apiUrl(path) {
-    return prefix + "/files/api" + path;
+    return "/" + prefix + "/files/api" + path;
   }
 
   function formatSize(n) {
