@@ -299,9 +299,19 @@ cargo test   --manifest-path plugins/Cargo.toml --locked            # 21 passed;
   旧 `cron` 字段只解析不再读取。
 - **种入**：`crates/app/src/tasks.rs::seed_manifest_tasks` 在 `TaskService::open` 启动装配时执行，
   并在 Web 安装/升级成功后由 `TaskService::sync_manifest_tasks` 即时补种；卸载走
-  `TaskService::drop_plugin_tasks` 回收 `source=plugin:<id>` 全部任务。已存在任务不覆盖，
-  避免重启回滚管理员改过的调度/启停。CLI 安装在运行中的内核里不触发同步，重启后由启动
-  装配补齐。
+  `TaskService::drop_plugin_tasks` 回收 `source=plugin:<id>` 全部任务（CLI `plugin remove`
+  在 `crates/core/src/commands.rs` 直连库删除同 source 行）。CLI 安装在运行中的内核里不触发
+  同步，重启后由启动装配补齐。
+- **升级刷新**（2026-11-09 补）：已存在任务不再 `continue`，而是用 `manifest_task_patch`
+  比对声明与库内 spec，差异字段（`kind` / `schedule` / `payload` / `timeout_secs` / `buffer`）
+  走 `Scheduler::update`；`enabled`、`created_by`、`created_at`、`last_run`、`state` 与
+  `task_runs` 历史一律保留（不做删了重建）。manifest 撤掉的声明任务按 `created_by =
+  "system:manifest"` 回收。
+- **授权补齐**（2026-11-09 补）：`crates/plugin/src/install.rs` 升级时先按新声明过滤既有
+  grants（未声明的 perm 清除），再只在「相对已装 manifest 新声明的 perm」上补授——
+  不翻案用户当初拒绝过的项，旧 manifest 不可解析时保守不补。只读动词仅记 `info`；
+  命中敏感动词（写/删除/执行类，`is_sensitive_perm`）时记 `warn` 与审计
+  `plugin.grant_upgrade`，detail 为 `升级新增授权: {全部新增动词}；版本 {from} → {to}（敏感: {敏感动词}）`。
 - **monitor**：任务 `plugin:com.skiff.monitor:sample`（kind `plugin:com.skiff.monitor:execute`，
   source `plugin:com.skiff.monitor`，`sample_interval=60s`、`schedule=*/5`、缓冲 4 MiB / 批 512 KiB）。
   插件只留 `sample`（返回点、更新 `prev.json` 基线）、`execute`（批次**追加** `samples.jsonl`，
