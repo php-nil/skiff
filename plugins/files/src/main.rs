@@ -54,7 +54,9 @@ fn config(plugin: &Plugin) -> Value {
 
 fn fs_err(e: skiff_sdk::SdkError) -> RpcError {
     let msg = format!("{e}");
-    if msg.contains("403") {
+    // 只有「越权/不在授权根」才追加授权提示；403 也可能是只读宿主路径
+    // （ProtectSystem），那时补授权建议会误导用户去改授权。
+    if msg.contains("403") && msg.contains("已授权") {
         RpcError::invalid_params(format!(
             "{msg}（该路径不在已授权范围内；路径授权只能在安装确认页或由 admin 追加）"
         ))
