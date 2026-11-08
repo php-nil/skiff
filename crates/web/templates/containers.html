@@ -4,6 +4,7 @@
 <div class="page-head">
   <h1>容器</h1>
   {% if !filter.is_empty() %}<span class="tag warn-tag">仅显示异常</span><a class="ghost" href="/{{ ctx.prefix }}/containers">清除筛选</a>{% endif %}
+  {% if can_delete %}<a class="primary" href="/{{ ctx.prefix }}/containers/new">新建容器</a>{% endif %}
   <button class="ghost" hx-get="/{{ ctx.prefix }}/containers/rows{% if !filter.is_empty() %}?filter={{ filter }}{% endif %}" hx-target="#rows" hx-swap="innerHTML">刷新</button>
 </div>
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}

@@ -65,11 +65,20 @@ struct Harness {
 }
 
 fn harness() -> Harness {
-    harness_with(Form::Native)
+    harness_full(Form::Native, Tier::Basic)
 }
 
 /// 指定部署形态的 harness：受限形态（1Panel Docker 包）能力面收缩用它。
 fn harness_with(form: Form) -> Harness {
+    harness_full(form, Tier::Basic)
+}
+
+/// 生命周期档 harness：创建容器 / Compose 等 `Tier::Lifecycle` 动词只在宿主机直装形态可用。
+fn harness_lifecycle() -> Harness {
+    harness_full(Form::Native, Tier::Lifecycle)
+}
+
+fn harness_full(form: Form, tier: Tier) -> Harness {
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_path_buf();
     let db = Arc::new(Db::open_in_memory().unwrap());
@@ -85,6 +94,7 @@ fn harness_with(form: Form) -> Harness {
     let cfg = WebConfig {
         data_dir: data_dir.clone(),
         web_root: data_dir.join("www"),
+        trash_retention_days: 30,
         config_path: data_dir.join("config.toml"),
         listen: "127.0.0.1:18080".parse().unwrap(),
         entry_prefix: "p".into(),
@@ -96,11 +106,11 @@ fn harness_with(form: Form) -> Harness {
         dev_http: true,
         trusted_proxies: vec![],
         external_url: None,
-        tier: Tier::Basic,
+        tier,
         form,
         allow_unsigned: false,
         allow_reduced_sandbox: true,
-        policy: Policy::new(Tier::Basic, form, vec![]).unwrap(),
+        policy: Policy::new(tier, form, vec![]).unwrap(),
         session: skiff_identity::SessionLimits::default(),
         login_concurrency: 2,
     };
@@ -866,8 +876,9 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
         "网站一级保留列表/运行环境；站点级设置入口已移除: {html}"
     );
     assert!(
-        html.contains(r#"href="/p/m/core/docker/settings""#),
-        "Docker 一级必须提供设置入口（镜像加速源/前缀）: {html}"
+        html.contains(r#"href="/p/m/core/docker/settings""#)
+            && html.contains(r#"href="/p/m/core/docker/compose""#),
+        "Docker 一级必须提供设置与 Compose 入口（镜像加速源/前缀）: {html}"
     );
     // 插件一级拆成已安装 / 发现 / 可更新三个真实页面
     assert!(
@@ -4497,6 +4508,61 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// Docker 三个入口的页面骨架：创建容器（admin-only）、Compose 页（viewer 只读）。
+#[tokio::test]
+async fn docker_create_and_compose_entries_follow_the_ui_contract() {
+    // 创建/更新容器属于生命周期档，只有宿主机直装形态开放。
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    // 受限形态（Tier::Basic）连 admin 也不能创建，能力面收缩由策略层统一拒绝。
+    let basic = harness();
+    let basic_admin = login(&basic.app, "admin", "pw-test-123").await;
+    let (status, _) = get_page(&basic.app, "/p/containers/new", &basic_admin).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "Basic 档必须拒绝创建容器");
+
+    let (status, html) = get_page(&h.app, "/p/containers/new", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"name="image""#)
+            && html.contains(r#"name="ports""#)
+            && html.contains(r#"name="env""#)
+            && html.contains(r#"name="volumes""#)
+            && html.contains(r#"name="restart""#),
+        "创建容器页必须覆盖镜像/端口/环境变量/卷/重启策略: {html}"
+    );
+    // 页头右上主操作通过 form= 关联表单，满足「一页一个主操作」。
+    assert!(
+        html.contains(r#"form="container-form""#),
+        "创建容器主操作必须在页头并关联表单: {html}"
+    );
+
+    let (status, _) = get_page(&h.app, "/p/containers/new", &viewer).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "viewer 不得进入创建页");
+
+    let (status, html) = get_page(&h.app, "/p/compose", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"name="compose""#)
+            && html.contains(r#"name="project""#)
+            && html.contains("/p/compose/validate")
+            && html.contains("/p/compose/up"),
+        "Compose 页必须提供项目名、文件内容、校验与部署动作: {html}"
+    );
+    assert!(
+        html.contains("com.docker.compose") || html.contains("容器标签"),
+        "Compose 页必须说明项目归属来自容器标签: {html}"
+    );
+
+    // viewer 只读：页面可看，但不得出现部署/删除按钮。
+    let (status, viewer_html) = get_page(&h.app, "/p/compose", &viewer).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !viewer_html.contains("/p/compose/up") && !viewer_html.contains("/p/compose/down"),
+        "viewer 不得看到 Compose 写操作: {viewer_html}"
+    );
 }
 
 /// 新建 PHP 实例：名字非法 / 同名 / 目录已存在都在落库前拒绝。

@@ -642,6 +642,95 @@ pub struct ContainerDetailPage {
     pub can_delete: bool,
     pub docker_reason: String,
     pub error: String,
+    pub limits: ResourceLimitsForm,
+    pub limits_effective: Vec<(String, String)>,
+}
+
+/// 资源限制表单的原始输入值（空串 = Engine 默认 / 不限制，由页面文案解释）。
+#[derive(Debug, Clone, Default)]
+pub struct ResourceLimitsForm {
+    pub cpu_shares: String,
+    pub cpu_period: String,
+    pub cpu_quota: String,
+    pub memory_limit_mb: String,
+    pub memory_swap_mb: String,
+    pub pids_limit: String,
+}
+
+/// 新建容器表单；出错时保留用户原始输入。
+#[derive(Debug, Clone, Default)]
+pub struct ContainerFormView {
+    pub image: String,
+    pub name: String,
+    pub ports: String,
+    pub env: String,
+    pub binds: String,
+    pub volumes: String,
+    pub restart: String,
+    pub cpu_shares: String,
+    pub cpu_period: String,
+    pub cpu_quota: String,
+    pub memory_limit_mb: String,
+    pub memory_swap_mb: String,
+    pub pids_limit: String,
+    pub networks: Vec<String>,
+}
+
+#[derive(Template)]
+#[template(path = "container_new.html")]
+pub struct ContainerNewPage {
+    pub ctx: PageCtx,
+    pub form: ContainerFormView,
+    pub network_options: Vec<(String, bool)>,
+    pub docker_reason: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComposeServiceView {
+    pub service: String,
+    pub container: String,
+    pub id: String,
+    pub state: String,
+    pub status: String,
+    pub image: String,
+    pub managed: bool,
+    pub logs: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComposeProjectView {
+    pub name: String,
+    pub managed: bool,
+    pub services: usize,
+    pub running: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComposeReportRow {
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    pub error: String,
+}
+
+#[derive(Template)]
+#[template(path = "compose.html")]
+pub struct ComposePage {
+    pub ctx: PageCtx,
+    /// 部署 / 起停 / 删除属生命周期动词（admin 专属）。
+    pub can_admin: bool,
+    pub docker_reason: String,
+    pub error: String,
+    pub notice: String,
+    pub compose_text: String,
+    pub project_input: String,
+    pub validation: Vec<String>,
+    pub report_title: String,
+    pub report: Vec<ComposeReportRow>,
+    pub projects: Vec<ComposeProjectView>,
+    pub selected_project: String,
+    pub services: Vec<ComposeServiceView>,
 }
 
 #[derive(Template)]
@@ -810,6 +899,20 @@ pub struct FilesPage {
     pub ctx: PageCtx,
     /// 首屏目录（来自 `?path=`，缺省为内核站点根 `/www`）。
     pub start_path: String,
+}
+
+#[derive(Template)]
+#[template(path = "fs_trash.html")]
+pub struct FsTrashPage {
+    pub ctx: PageCtx,
+    /// 默认保留天数，页面用于提示「到期自动清理」。
+    pub retention_days: u32,
+}
+
+#[derive(Template)]
+#[template(path = "fs_quotas.html")]
+pub struct FsQuotasPage {
+    pub ctx: PageCtx,
 }
 
 #[derive(Template)]

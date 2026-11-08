@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use skiff_model::{
-    has_parent_segment, is_posix_absolute, Actor, ContainerSpec, Form, Mount, ObjectRef, RoleExt,
-    Tier, Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED,
+    has_parent_segment, is_posix_absolute, Actor, ContainerSpec, Form, Mount, ObjectRef,
+    ResourceLimits, RoleExt, Tier, Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED,
 };
 
 use crate::paths::{PathError, PathGuard};
@@ -264,6 +264,66 @@ impl Policy {
         if spec.nano_cpus.map(|v| v <= 0).unwrap_or(false) {
             return Err(PolicyError::BadRequest("nano_cpus 必须为正数".into()));
         }
+        self.validate_limits(&ResourceLimits::from_spec(spec))?;
+        Ok(())
+    }
+
+    /// 第三层补充：资源限制校验。创建与热更新共用同一份规则，避免两处写两套边界。
+    ///
+    /// 约定：`0` 表示「不设置/清除该上限」，`-1` 只对 `cpu_quota` / `memory_swap_mb`
+    /// 表示「不限制」，`pids_limit=-1` 同样表示不限制。Docker 对内存下限要求 6MB。
+    pub fn validate_limits(&self, limits: &ResourceLimits) -> Result<(), PolicyError> {
+        if let Some(v) = limits.cpu_shares {
+            if !(0..=262_144).contains(&v) {
+                return Err(PolicyError::BadRequest(
+                    "cpu_shares 必须在 0–262144（0 表示默认权重）".into(),
+                ));
+            }
+        }
+        if let Some(v) = limits.cpu_period {
+            if v != 0 && !(1_000..=1_000_000).contains(&v) {
+                return Err(PolicyError::BadRequest(
+                    "cpu_period 必须在 1000–1000000 微秒（0 表示默认）".into(),
+                ));
+            }
+        }
+        if let Some(v) = limits.cpu_quota {
+            if v != 0 && v != -1 && v < 1_000 {
+                return Err(PolicyError::BadRequest(
+                    "cpu_quota 必须 ≥1000 微秒、0（默认）或 -1（不限制）".into(),
+                ));
+            }
+        }
+        if let Some(v) = limits.memory_limit_mb {
+            if v < 0 || (v > 0 && v < 6) {
+                return Err(PolicyError::BadRequest(
+                    "memory_limit_mb 必须为 0（不设置）或 ≥6MB".into(),
+                ));
+            }
+        }
+        if let Some(v) = limits.memory_swap_mb {
+            if v < -1 {
+                return Err(PolicyError::BadRequest(
+                    "memory_swap_mb 必须 ≥-1（-1 表示交换区不限制）".into(),
+                ));
+            }
+            if v > 0 {
+                if let Some(mem) = limits.memory_limit_mb.filter(|m| *m > 0) {
+                    if v < mem {
+                        return Err(PolicyError::BadRequest(format!(
+                            "memory_swap_mb（{v}）不能小于 memory_limit_mb（{mem}）"
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some(v) = limits.pids_limit {
+            if v < -1 {
+                return Err(PolicyError::BadRequest(
+                    "pids_limit 必须 ≥-1（-1 表示不限制）".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -375,6 +435,10 @@ mod tests {
             memory_limit_mb: None,
             nano_cpus: None,
             pids_limit: None,
+            cpu_shares: None,
+            cpu_period: None,
+            cpu_quota: None,
+            memory_swap_mb: None,
         }
     }
 
@@ -553,6 +617,73 @@ mod tests {
             .validate_spec(&spec, &user(Role::Admin))
             .unwrap_err();
         assert!(matches!(e, PolicyError::Restricted(_)));
+    }
+
+    #[test]
+    fn resource_limits_validation() {
+        let p = policy(Tier::Lifecycle, Form::Native);
+        let ok = ResourceLimits {
+            cpu_shares: Some(512),
+            cpu_period: Some(100_000),
+            cpu_quota: Some(50_000),
+            memory_limit_mb: Some(256),
+            memory_swap_mb: Some(512),
+            pids_limit: Some(128),
+        };
+        p.validate_limits(&ok).unwrap();
+        // 0 表示清除/默认；-1 表示不限制。
+        p.validate_limits(&ResourceLimits {
+            memory_limit_mb: Some(0),
+            memory_swap_mb: Some(-1),
+            cpu_quota: Some(-1),
+            ..Default::default()
+        })
+        .unwrap();
+
+        for bad in [
+            ResourceLimits {
+                cpu_shares: Some(-1),
+                ..Default::default()
+            },
+            ResourceLimits {
+                cpu_period: Some(500),
+                ..Default::default()
+            },
+            ResourceLimits {
+                cpu_quota: Some(10),
+                ..Default::default()
+            },
+            ResourceLimits {
+                memory_limit_mb: Some(2),
+                ..Default::default()
+            },
+            ResourceLimits {
+                memory_limit_mb: Some(512),
+                memory_swap_mb: Some(256),
+                ..Default::default()
+            },
+            ResourceLimits {
+                pids_limit: Some(-2),
+                ..Default::default()
+            },
+        ] {
+            assert!(p.validate_limits(&bad).is_err(), "应拒绝：{bad:?}");
+        }
+    }
+
+    #[test]
+    fn spec_resource_fields_share_the_same_rules() {
+        let p = policy(Tier::Lifecycle, Form::Native);
+        let mut sp = spec();
+        sp.memory_limit_mb = Some(128);
+        sp.cpu_shares = Some(512);
+        p.validate_spec(&sp, &user(Role::Admin)).unwrap();
+
+        sp.memory_swap_mb = Some(64);
+        assert!(
+            p.validate_spec(&sp, &user(Role::Admin)).is_err(),
+            "交换区小于内存上限应在创建时也拒绝"
+        );
     }
 
     #[test]

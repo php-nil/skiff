@@ -1658,6 +1658,28 @@
     apply(initial || "status", false);
   }
 
+  // ---- Compose：选择本地文件后填进 textarea；项目名为空时用文件名归一化 ----
+  function attachComposeFile() {
+    var input = document.querySelector("[data-fill-target]");
+    if (!input || input.dataset.bound === "1") return;
+    input.dataset.bound = "1";
+    input.addEventListener("change", function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      var target = document.querySelector(input.getAttribute("data-fill-target"));
+      var project = document.querySelector(input.getAttribute("data-fill-project") || "");
+      var reader = new FileReader();
+      reader.onload = function () {
+        if (target) target.value = String(reader.result || "");
+        if (project && !project.value.trim()) {
+          project.value = file.name.replace(/\.(yml|yaml)$/i, "")
+            .toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
+
   function boot() {
     attachLogs();
     attachTerminal();
@@ -1674,6 +1696,7 @@
     attachRuntimeJobs();
     attachNginxTabs();
     attachToasts();
+    attachComposeFile();
   }
 
   document.addEventListener("DOMContentLoaded", boot);

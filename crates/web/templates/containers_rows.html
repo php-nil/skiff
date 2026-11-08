@@ -16,6 +16,7 @@
         <code>{{ c.short_id }}</code>
         {% if c.protected %}<span class="tag warn-tag">受保护</span>{% endif %}
         {% if c.unprotected_kernel %}<span class="tag warn-tag" title="旧容器未打保护标签，重建 Web 服务或运行环境后生效">存量未受保护</span>{% endif %}
+        {% if !c.project.is_empty() %}<a class="tag" href="/{{ ctx.prefix }}/compose?project={{ c.project }}">compose · {{ c.project }}</a>{% endif %}
       </td>
       <td class="muted">{{ c.image }}</td>
       <td><span class="state {{ c.state }}">{{ c.state }}</span><div class="muted small">{{ c.status }}</div></td>

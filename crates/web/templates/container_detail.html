@@ -58,6 +58,32 @@
 </section>
 
 <section class="panel">
+  <h2>资源限制</h2>
+  <dl class="kv">
+    {% for (name, value) in limits_effective %}
+    <dt>{{ name }}</dt><dd>{{ value }}</dd>
+    {% endfor %}
+  </dl>
+  <p class="hint">上表为 Engine 当前生效值。下列 6 项走 <code>containers.update</code> 热更新（空值 = 0，即 Engine 默认/清除）；镜像、端口、网络、挂载、环境变量等改动需要重建容器。`pids_limit` 热更新依赖 Docker 20.10+（待实测，目标机未验证）。</p>
+  {% if can_delete %}
+  <form method="post" action="/{{ ctx.prefix }}/containers/{{ container.id }}/limits">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="form-grid">
+      <label class="field"><span>CPU 份额</span><input name="cpu_shares" value="{{ limits.cpu_shares }}" placeholder="0 = 默认权重"></label>
+      <label class="field"><span>CPU 周期（μs）</span><input name="cpu_period" value="{{ limits.cpu_period }}" placeholder="0 = 默认"></label>
+      <label class="field"><span>CPU 配额（μs）</span><input name="cpu_quota" value="{{ limits.cpu_quota }}" placeholder="-1 = 不限制"></label>
+      <label class="field"><span>内存上限（MB）</span><input name="memory_limit_mb" value="{{ limits.memory_limit_mb }}" placeholder="0 = 不限制；≥6"></label>
+      <label class="field"><span>内存+交换（MB）</span><input name="memory_swap_mb" value="{{ limits.memory_swap_mb }}" placeholder="-1 = 交换区不限制"></label>
+      <label class="field"><span>PIDs 上限</span><input name="pids_limit" value="{{ limits.pids_limit }}" placeholder="0/-1 = 不限制"></label>
+    </div>
+    <div class="row"><button class="primary" type="submit">保存资源限制</button></div>
+  </form>
+  {% else %}
+  <div class="empty">资源限制仅限管理员修改（属生命周期动词）。</div>
+  {% endif %}
+</section>
+
+<section class="panel">
   <h2>标签</h2>
   <table class="grid">
     <tbody>

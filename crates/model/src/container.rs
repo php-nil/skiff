@@ -62,6 +62,63 @@ pub struct ContainerSpec {
     pub nano_cpus: Option<i64>,
     #[serde(default)]
     pub pids_limit: Option<i64>,
+    /// CPU 权重（Docker `CpuShares`，0 = 使用默认权重）。与 `nano_cpus` 互斥使用：
+    /// `nano_cpus` 表达硬配额，`cpu_shares` 表达相对权重。
+    #[serde(default)]
+    pub cpu_shares: Option<i64>,
+    /// CPU 周期（微秒），与 `cpu_quota` 搭配；缺省由 Engine 取 100000。
+    #[serde(default)]
+    pub cpu_period: Option<i64>,
+    /// CPU 配额（微秒/周期）；-1 表示不限制。
+    #[serde(default)]
+    pub cpu_quota: Option<i64>,
+    /// 内存+交换上限（MB）；-1 表示交换区不限制。只在提供 `memory_limit_mb` 时有意义。
+    #[serde(default)]
+    pub memory_swap_mb: Option<i64>,
+}
+
+/// 资源限制热更新参数（`containers.update`）。字段全部可选，`None` 表示「本次不修改」。
+///
+/// 与 `ContainerSpec` 分开的原因：创建时的资源字段是白名单的一部分，更新时只需要
+/// 可热更新的那几项；两者共用同一套 `Policy::validate_limits` 校验。
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceLimits {
+    #[serde(default)]
+    pub cpu_shares: Option<i64>,
+    #[serde(default)]
+    pub cpu_period: Option<i64>,
+    #[serde(default)]
+    pub cpu_quota: Option<i64>,
+    #[serde(default)]
+    pub memory_limit_mb: Option<i64>,
+    #[serde(default)]
+    pub memory_swap_mb: Option<i64>,
+    #[serde(default)]
+    pub pids_limit: Option<i64>,
+}
+
+impl ResourceLimits {
+    pub fn is_empty(&self) -> bool {
+        self.cpu_shares.is_none()
+            && self.cpu_period.is_none()
+            && self.cpu_quota.is_none()
+            && self.memory_limit_mb.is_none()
+            && self.memory_swap_mb.is_none()
+            && self.pids_limit.is_none()
+    }
+
+    /// 从容器规格提取资源字段（创建路径的校验复用同一份规则）。
+    pub fn from_spec(spec: &ContainerSpec) -> Self {
+        Self {
+            cpu_shares: spec.cpu_shares,
+            cpu_period: spec.cpu_period,
+            cpu_quota: spec.cpu_quota,
+            memory_limit_mb: spec.memory_limit_mb,
+            memory_swap_mb: spec.memory_swap_mb,
+            pids_limit: spec.pids_limit,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -202,6 +259,40 @@ mod tests {
         let spec: ContainerSpec = serde_json::from_str(json).unwrap();
         assert_eq!(spec.image, "nginx:1.27-alpine");
         assert_eq!(spec.ports[0].host, 18081);
+    }
+
+    #[test]
+    fn spec_accepts_resource_fields() {
+        let json = r#"{
+            "image":"nginx",
+            "cpu_shares":512,
+            "cpu_period":100000,
+            "cpu_quota":50000,
+            "memory_swap_mb":-1,
+            "pids_limit":64
+        }"#;
+        let spec: ContainerSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec.cpu_shares, Some(512));
+        assert_eq!(spec.cpu_period, Some(100000));
+        assert_eq!(spec.cpu_quota, Some(50000));
+        assert_eq!(spec.memory_swap_mb, Some(-1));
+        assert_eq!(spec.pids_limit, Some(64));
+        let limits = ResourceLimits::from_spec(&spec);
+        assert_eq!(limits.cpu_shares, Some(512));
+        assert_eq!(limits.memory_swap_mb, Some(-1));
+    }
+
+    #[test]
+    fn resource_limits_reject_unknown_fields() {
+        let json = r#"{"cpu_shares":512,"cpuset_cpus":"0-1"}"#;
+        assert!(serde_json::from_str::<ResourceLimits>(json).is_err());
+        let empty = ResourceLimits::default();
+        assert!(empty.is_empty());
+        assert!(!ResourceLimits {
+            pids_limit: Some(64),
+            ..Default::default()
+        }
+        .is_empty());
     }
 
     #[test]

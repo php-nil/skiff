@@ -12,6 +12,8 @@
 pub use bollard;
 
 pub mod client;
+mod compose_run;
+pub use compose_run::{project_of, service_of, LABEL_COMPOSE_PROJECT, LABEL_COMPOSE_SERVICE};
 // Compose 子集解析已独立为 `skiff-compose`（纯 serde_yaml，零引擎依赖）；
 // 这里转出保持 `skiff_docker::compose::parse` 既有写法成立。
 pub use skiff_compose as compose;
@@ -31,6 +33,6 @@ pub use skiff_policy as policy;
 pub use skiff_policy::{PathError, PathGuard, Policy, PolicyError};
 // 词汇层在 `skiff-model`：动词、容器规格、调用主体等纯值类型。
 pub use skiff_model::{
-    Actor, ContainerSpec, Form, Healthcheck, Mount, ObjectRef, PortMapping, Tier, Verb,
-    LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED,
+    Actor, ContainerSpec, Form, Healthcheck, Mount, ObjectRef, PortMapping, ResourceLimits, Tier,
+    Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED,
 };

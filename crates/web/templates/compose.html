@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Compose · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Compose</h1>
+  <a class="ghost" href="/{{ ctx.prefix }}/compose">刷新</a>
+  {% if can_admin %}<button class="primary" type="submit" form="compose-form">部署</button>{% endif %}
+</div>
+{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+{% if !notice.is_empty() %}<div class="alert ok">{{ notice }}</div>{% endif %}
+{% if !docker_reason.is_empty() %}<div class="empty">Docker 不可用：{{ docker_reason }}</div>{% endif %}
+<p class="hint">单文件部署：粘贴 compose 内容或选择本地文件。支持的服务字段见设计 §6.5 子集；不支持 build、network_mode、privileged。项目状态由容器标签重建，源文件不落盘；<code>down</code> 只清理内核项目，外部 compose 项目只读展示。</p>
+
+{% if can_admin %}
+<section class="panel">
+  <h2>部署 / 校验</h2>
+  <form id="compose-form" method="post" action="/{{ ctx.prefix }}/compose/up">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="form-grid">
+      <label class="field"><span>项目名 *</span><input id="compose-project" name="project" value="{{ project_input }}" placeholder="demo" required></label>
+      <label class="field"><span>选择文件（可选）</span><input id="compose-file" type="file" accept=".yml,.yaml,text/yaml" data-fill-target="#compose-text" data-fill-project="#compose-project"></label>
+    </div>
+    <label class="field"><span>compose 内容</span><textarea id="compose-text" name="compose" rows="14" placeholder="services:&#10;  web:&#10;    image: nginx:1.27&#10;    ports: [&quot;8080:80&quot;]">{{ compose_text }}</textarea></label>
+    <div class="row">
+      <button class="ghost" type="submit" formaction="/{{ ctx.prefix }}/compose/validate">仅校验</button>
+      <span class="hint">部署会创建缺失的网络、卷与容器；已存在的容器名不会被覆盖。</span>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{% if !validation.is_empty() %}
+<section class="panel">
+  <h2>校验结果</h2>
+  <ul>
+    {% for line in validation %}<li>{{ line }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if !report.is_empty() %}
+<section class="panel">
+  <h2>{{ report_title }}</h2>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>服务</th><th>对象</th><th>状态</th><th>说明</th></tr></thead>
+      <tbody>
+      {% for row in report %}
+        <tr>
+          <td>{{ row.kind }}</td>
+          <td>{{ row.name }}</td>
+          <td><span class="state {{ row.status }}">{{ row.status }}</span></td>
+          <td class="muted small">{{ row.error }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>项目</h2>
+  {% if projects.is_empty() %}
+  <div class="empty">还没有 compose 项目{% if !ctx.docker_ok %}（Docker 不可用）{% endif %}</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>项目</th><th>归属</th><th>服务</th><th>运行</th><th>操作</th></tr></thead>
+      <tbody>
+      {% for p in projects %}
+        <tr>
+          <td><a href="/{{ ctx.prefix }}/compose?project={{ p.name }}">{{ p.name }}</a></td>
+          <td>{% if p.managed %}<span class="tag">内核项目</span>{% else %}<span class="tag warn-tag">外部 compose</span>{% endif %}</td>
+          <td>{{ p.services }}</td>
+          <td>{{ p.running }} / {{ p.services }}</td>
+          <td class="actions">
+            <a class="mini" href="/{{ ctx.prefix }}/compose?project={{ p.name }}">查看</a>
+            {% if p.managed && can_admin %}
+            <form method="post" action="/{{ ctx.prefix }}/compose/{{ p.name }}/start" class="inline">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit">启动</button>
+            </form>
+            <form method="post" action="/{{ ctx.prefix }}/compose/{{ p.name }}/stop" class="inline">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit">停止</button>
+            </form>
+            <form method="post" action="/{{ ctx.prefix }}/compose/{{ p.name }}/restart" class="inline">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini" type="submit">重启</button>
+            </form>
+            <form method="post" action="/{{ ctx.prefix }}/compose/down" class="inline"
+                  data-confirm="确认删除项目 {{ p.name }}？将停止并删除其全部容器；勾选「删除数据卷」后卷内数据不可恢复。">
+              <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+              <input type="hidden" name="project" value="{{ p.name }}">
+              <label class="check"><input type="checkbox" name="remove_volumes" value="on"> 删除数据卷（不可恢复）</label>
+              <button class="mini danger" type="submit">删除项目</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+{% if selected_project.len() > 0 %}
+<section class="panel">
+  <h2>服务 · {{ selected_project }}</h2>
+  {% if services.is_empty() %}
+  <div class="empty">该项目当前没有容器（可能已删除）。</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>服务</th><th>容器</th><th>状态</th><th>镜像</th><th>日志</th></tr></thead>
+      <tbody>
+      {% for s in services %}
+        <tr>
+          <td>{{ s.service }}{% if !s.managed %} <span class="tag">外部</span>{% endif %}</td>
+          <td><a href="/{{ ctx.prefix }}/containers/{{ s.id }}">{{ s.container }}</a> <code>{{ s.id }}</code></td>
+          <td><span class="state {{ s.state }}">{{ s.state }}</span><div class="muted small">{{ s.status }}</div></td>
+          <td class="muted">{{ s.image }}</td>
+          <td>
+            <details><summary>最近 100 行</summary><pre class="logs">{{ s.logs }}</pre></details>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

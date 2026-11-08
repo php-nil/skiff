@@ -92,7 +92,8 @@ pub struct PlannedService {
     pub depends_on: Vec<String>,
 }
 
-/// 规范化项目名（§6.5：写入 `io.skiff.project`，up/down/restart 只作用于同项目对象）。
+/// 项目名归一化：小写、非字母数字转 `-`、去掉首尾 `-`，空值回落 `skiff-project`。
+/// 公开是为了让 Web 层在 `down` / 起停时与 `up` 使用同一套名字规则。
 pub fn normalize_project_name(raw: &str) -> String {
     // Docker 的 compose 项目名要求 ^[a-z0-9][a-z0-9_-]*$：
     // 允许的继续保留（'_' 归一到 '-'，避免与标签选择器混淆），分隔符统一成 '-'，
@@ -136,6 +137,14 @@ pub fn parse(text: &str, project: &str) -> Result<ComposeProject, ComposeError> 
     let project_name = normalize_project_name(project);
     let declared_networks: BTreeSet<String> = file.networks.keys().cloned().collect();
     let declared_volumes: BTreeSet<String> = file.volumes.keys().cloned().collect();
+    for (kind, names) in [
+        ("networks", &declared_networks),
+        ("volumes", &declared_volumes),
+    ] {
+        for name in names {
+            validate_declared_name(kind, name)?;
+        }
+    }
 
     // 依赖闭环检测（只用于诊断，执行顺序由 depends_on 拓扑排序给出）。
     let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -153,7 +162,13 @@ pub fn parse(text: &str, project: &str) -> Result<ComposeProject, ComposeError> 
     topological_order(&deps)?;
 
     let mut services = Vec::new();
-    for (name, svc) in &file.services {
+    let mut used_networks: BTreeSet<String> = BTreeSet::new();
+    for name in topological_order(&deps)? {
+        let svc = file
+            .services
+            .get(&name)
+            .expect("拓扑顺序只包含已校验的服务");
+        validate_declared_name("service", &name)?;
         let image = svc.image.clone().ok_or_else(|| {
             ComposeError::Unsupported(format!(
                 "服务 {name} 使用 build 或缺少 image（不支持 build）"
@@ -163,17 +178,25 @@ pub fn parse(text: &str, project: &str) -> Result<ComposeProject, ComposeError> 
             return Err(ComposeError::Invalid(format!("服务 {name} 的 image 为空")));
         }
 
-        let mut labels: BTreeMap<String, String> = parse_map(svc.labels.as_ref(), "labels")?;
-        labels.insert(skiff_model::LABEL_PROJECT.to_string(), project_name.clone());
-        // owner 由内核写入：compose 项目归内核（skiff），插件不能借此认领。
-        labels.insert(skiff_model::LABEL_OWNER.to_string(), "skiff".to_string());
-
+        // 保留标签由 Docker 执行层在策略校验通过后写入，解析器只保留用户标签。
+        let labels: BTreeMap<String, String> = parse_map(svc.labels.as_ref(), "labels")?;
         let mut mounts = Vec::new();
         for v in &svc.volumes {
-            mounts.push(parse_volume(v, &declared_volumes, &project_name)?);
+            mounts.push(parse_volume(v, &project_name)?);
         }
 
-        let networks = parse_networks(svc.networks.as_ref(), &declared_networks)?;
+        let logical_networks = parse_networks(svc.networks.as_ref(), &declared_networks)?;
+        let networks = if logical_networks.is_empty() {
+            vec![format!("{project_name}_default")]
+        } else {
+            logical_networks
+                .iter()
+                .map(|n| format!("{project_name}_{n}"))
+                .collect()
+        };
+        for n in &networks {
+            used_networks.insert(n.clone());
+        }
 
         let ports = svc
             .ports
@@ -208,22 +231,49 @@ pub fn parse(text: &str, project: &str) -> Result<ComposeProject, ComposeError> 
             memory_limit_mb: None,
             nano_cpus: None,
             pids_limit: None,
+            cpu_shares: None,
+            cpu_period: None,
+            cpu_quota: None,
+            memory_swap_mb: None,
         };
 
         services.push(PlannedService {
             service: name.clone(),
             container_name: format!("{project_name}-{name}"),
-            depends_on: deps.get(name).cloned().unwrap_or_default(),
+            depends_on: deps.get(&name).cloned().unwrap_or_default(),
             spec,
         });
     }
 
+    let volumes = declared_volumes
+        .into_iter()
+        .map(|name| format!("{project_name}_{name}"))
+        .collect();
+
     Ok(ComposeProject {
         name: project_name,
         services,
-        volumes: declared_volumes.into_iter().collect(),
-        networks: declared_networks.into_iter().collect(),
+        volumes,
+        networks: used_networks.into_iter().collect(),
     })
+}
+
+fn validate_declared_name(kind: &str, name: &str) -> Result<(), ComposeError> {
+    // 项目名最长 48；`{project}_{name}` 要留在 Docker 对象名 128 字符以内。
+    if name.is_empty() || name.len() > 64 {
+        return Err(ComposeError::Invalid(format!(
+            "{kind} 名称 {name:?} 为空或超过 64 字符"
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.'))
+    {
+        return Err(ComposeError::Invalid(format!(
+            "{kind} 名称 {name:?} 只允许小写字母、数字、'_'、'-'、'.'"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_depends_on(v: Option<&serde_yaml::Value>) -> Result<Vec<String>, ComposeError> {
@@ -485,11 +535,7 @@ fn parse_duration_secs(v: &serde_yaml::Value) -> Result<i64, ComposeError> {
     Ok(n * mult)
 }
 
-fn parse_volume(
-    spec: &str,
-    declared: &BTreeSet<String>,
-    project: &str,
-) -> Result<Mount, ComposeError> {
+fn parse_volume(spec: &str, project: &str) -> Result<Mount, ComposeError> {
     let parts: Vec<&str> = spec.split(':').collect();
     if parts.len() < 2 {
         return Err(ComposeError::Invalid(format!(
@@ -522,14 +568,9 @@ fn parse_volume(
             read_only,
         });
     }
-    // 未声明的 named volume：compose 会隐式创建，这里显式创建并加项目前缀，避免跨项目碰撞。
-    let name = if declared.contains(source) {
-        source.to_string()
-    } else {
-        format!("{project}_{source}")
-    };
+    // named volume 一律加项目前缀（声明与隐式创建一致），避免跨项目碰撞。
     Ok(Mount::Volume {
-        source: name,
+        source: format!("{project}_{source}"),
         target: target.to_string(),
         read_only,
     })
@@ -597,16 +638,45 @@ networks:
         let web = p.services.iter().find(|s| s.service == "web").unwrap();
         assert_eq!(web.container_name, "my-project-web");
         assert_eq!(web.spec.ports[0].host, 18081);
-        assert_eq!(
-            web.spec.labels.get("io.skiff.project").unwrap(),
-            "my-project"
-        );
-        assert_eq!(web.spec.labels.get("io.skiff.owner").unwrap(), "skiff");
-        assert!(matches!(web.spec.mounts[0], Mount::Volume { .. }));
+        // 保留标签只在执行层注入，解析器不写 io.skiff.*。
+        assert!(!web.spec.labels.contains_key("io.skiff.project"));
+        assert!(!web.spec.labels.contains_key("io.skiff.owner"));
+        assert!(matches!(
+            web.spec.mounts[0],
+            Mount::Volume { ref source, .. } if source == "my-project_html"
+        ));
         assert!(matches!(web.spec.mounts[1], Mount::Bind { .. }));
         assert!(web.spec.mounts[1].read_only());
+        assert_eq!(web.spec.networks, vec!["my-project_default".to_string()]);
+        assert_eq!(p.volumes, vec!["my-project_html".to_string()]);
+        assert_eq!(p.networks, vec!["my-project_default".to_string()]);
         let api = p.services.iter().find(|s| s.service == "api").unwrap();
         assert_eq!(api.depends_on, vec!["web".to_string()]);
+        // 拓扑顺序：web 先于 api。
+        let names: Vec<_> = p.services.iter().map(|s| s.service.as_str()).collect();
+        assert_eq!(names, vec!["web", "api"]);
+    }
+
+    #[test]
+    fn declares_used_networks_and_user_labels() {
+        let yaml = r#"
+services:
+  web:
+    image: nginx
+    networks: [front]
+    labels:
+      app: demo
+networks:
+  front:
+  unused:
+"#;
+        let p = parse(yaml, "demo").unwrap();
+        assert_eq!(p.networks, vec!["demo_front".to_string()]);
+        assert_eq!(
+            p.services[0].spec.labels.get("app").map(String::as_str),
+            Some("demo")
+        );
+        assert_eq!(p.services[0].spec.networks, vec!["demo_front".to_string()]);
     }
 
     #[test]

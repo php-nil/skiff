@@ -51,6 +51,7 @@ pub enum Verb {
     ExecInspect,
     // ---- 生命周期档 ----
     ContainerCreate,
+    ContainerUpdate,
     ContainerRemove,
     ImagePull,
     ImageRemove,
@@ -95,6 +96,7 @@ impl Verb {
             ExecStart,
             ExecInspect,
             ContainerCreate,
+            ContainerUpdate,
             ContainerRemove,
             ImagePull,
             ImageRemove,
@@ -128,6 +130,7 @@ impl Verb {
             ExecStart => "exec.start",
             ExecInspect => "exec.inspect",
             ContainerCreate => "containers.create",
+            ContainerUpdate => "containers.update",
             ContainerRemove => "containers.remove",
             ImagePull => "images.pull",
             ImageRemove => "images.remove",
@@ -170,6 +173,7 @@ impl Verb {
             ExecStart => "POST /exec/{id}/start",
             ExecInspect => "GET /exec/{id}/json",
             ContainerCreate => "POST /containers/create",
+            ContainerUpdate => "POST /containers/{id}/update",
             ContainerRemove => "DELETE /containers/{id}",
             ImagePull => "POST /images/create（仅 fromImage）",
             ImageRemove => "DELETE /images/{id}",
@@ -188,10 +192,9 @@ impl Verb {
             ContainersList | ContainerInspect | ContainerLogs | ContainerStats | ImagesList
             | NetworksList | VolumesList | Info | Version | Start | Stop | Restart | Kill
             | Exec | ExecStart | ExecInspect => true,
-            ContainerCreate | ContainerRemove | ImagePull | ImageRemove | NetworkCreate
-            | NetworkRemove | VolumeCreate | VolumeRemove | ComposeUp | ComposeDown => {
-                tier == Tier::Lifecycle
-            }
+            ContainerCreate | ContainerUpdate | ContainerRemove | ImagePull | ImageRemove
+            | NetworkCreate | NetworkRemove | VolumeCreate | VolumeRemove | ComposeUp
+            | ComposeDown => tier == Tier::Lifecycle,
         }
     }
 
@@ -221,6 +224,7 @@ impl Verb {
             Kill | Exec
                 | ExecStart
                 | ContainerCreate
+                | ContainerUpdate
                 | ContainerRemove
                 | ImageRemove
                 | NetworkRemove
@@ -254,10 +258,9 @@ impl Verb {
             | NetworksList | VolumesList | Info | Version | ExecInspect => Permission::DockerRead,
             Start | Stop | Restart | Kill => Permission::DockerOperate,
             Exec | ExecStart => Permission::DockerExec,
-            ContainerCreate | ContainerRemove | ImagePull | ImageRemove | NetworkCreate
-            | NetworkRemove | VolumeCreate | VolumeRemove | ComposeUp | ComposeDown => {
-                Permission::DockerLifecycle
-            }
+            ContainerCreate | ContainerUpdate | ContainerRemove | ImagePull | ImageRemove
+            | NetworkCreate | NetworkRemove | VolumeCreate | VolumeRemove | ComposeUp
+            | ComposeDown => Permission::DockerLifecycle,
         }
     }
 }

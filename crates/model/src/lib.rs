@@ -21,7 +21,8 @@ mod scope;
 mod verb;
 pub use cidr::Cidr;
 pub use container::{
-    short_id, Actor, ContainerSpec, Healthcheck, Mount, ObjectRef, PortMapping, SHORT_ID_LEN,
+    short_id, Actor, ContainerSpec, Healthcheck, Mount, ObjectRef, PortMapping, ResourceLimits,
+    SHORT_ID_LEN,
 };
 pub use path::{
     any_root_contains, has_parent_segment, hits_a_root_itself, is_absolute, is_posix_absolute,

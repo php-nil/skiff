@@ -3508,6 +3508,10 @@ impl AppState {
             memory_limit_mb: None,
             nano_cpus: None,
             pids_limit: None,
+            cpu_shares: None,
+            cpu_period: None,
+            cpu_quota: None,
+            memory_swap_mb: None,
         }
     }
 
@@ -3547,6 +3551,10 @@ impl AppState {
             memory_limit_mb: None,
             nano_cpus: None,
             pids_limit: None,
+            cpu_shares: None,
+            cpu_period: None,
+            cpu_quota: None,
+            memory_swap_mb: None,
         }
     }
 
@@ -3584,6 +3592,10 @@ impl AppState {
             memory_limit_mb: None,
             nano_cpus: None,
             pids_limit: None,
+            cpu_shares: None,
+            cpu_period: None,
+            cpu_quota: None,
+            memory_swap_mb: None,
         }
     }
 
@@ -5614,6 +5626,7 @@ mod tests {
         let cfg = WebConfig {
             data_dir: root.join("data"),
             web_root: root.join("www"),
+            trash_retention_days: 30,
             config_path: root.join("config.toml"),
             listen: "127.0.0.1:18080".parse().unwrap(),
             entry_prefix: "p".into(),

@@ -21,7 +21,10 @@ use bollard::Docker;
 use futures_util::{Stream, StreamExt};
 use serde::Serialize;
 
+use crate::compose::ComposeProject;
 use crate::policy::{ContainerSpec, ObjectRef, Verb};
+use bollard::models::ContainerUpdateBody;
+use skiff_model::ResourceLimits;
 
 #[derive(Debug, Clone)]
 pub enum DockerError {
@@ -185,8 +188,17 @@ pub enum DockerParams {
     ImagePull(String),
     /// `containers.create` 的强类型规格（字段白名单在 `ContainerSpec`）。
     ContainerCreate(Box<ContainerSpec>),
+    /// `containers.update` 的资源限制热更新参数。
+    ContainerUpdate(Box<ResourceLimits>),
     /// `containers.remove` 是否强制删除。
     ContainerRemove { force: bool },
+    /// `compose.up`：已解析、已校验的项目计划。
+    ComposeUp(Box<ComposeProject>),
+    /// `compose.down`：按项目标签清理；卷删除必须显式勾选。
+    ComposeDown {
+        project: String,
+        remove_volumes: bool,
+    },
 }
 
 pub struct DockerService {
@@ -237,7 +249,7 @@ impl DockerService {
         &self.reason
     }
 
-    fn client(&self) -> Result<&Docker, DockerError> {
+    pub(crate) fn client(&self) -> Result<&Docker, DockerError> {
         self.docker
             .as_ref()
             .ok_or_else(|| DockerError::Unavailable(self.reason.clone()))
@@ -320,6 +332,36 @@ impl DockerService {
                     t: Some(10),
                 }),
             )
+            .await
+            .map_err(api_err)
+    }
+
+    /// 资源限制热更新（`containers.update`）。只提交显式给出的字段；
+    /// `0` 表示清除该上限，`-1` 只用于交换区/CPU 配额的「不限制」语义。
+    pub async fn update_container(
+        &self,
+        id: &str,
+        limits: &ResourceLimits,
+    ) -> Result<(), DockerError> {
+        let body = ContainerUpdateBody {
+            cpu_shares: limits.cpu_shares,
+            cpu_period: limits.cpu_period,
+            cpu_quota: limits.cpu_quota,
+            memory: limits
+                .memory_limit_mb
+                .map(|mb| mb.saturating_mul(1024 * 1024)),
+            memory_swap: limits.memory_swap_mb.map(|mb| {
+                if mb < 0 {
+                    mb
+                } else {
+                    mb.saturating_mul(1024 * 1024)
+                }
+            }),
+            pids_limit: limits.pids_limit,
+            ..Default::default()
+        };
+        self.client()?
+            .update_container(id, body)
             .await
             .map_err(api_err)
     }
@@ -724,6 +766,35 @@ impl DockerService {
                     "containers.remove 需要显式删除选项".into(),
                 )),
             },
+            Verb::ContainerUpdate => match params {
+                DockerParams::ContainerUpdate(limits) => {
+                    if limits.is_empty() {
+                        return Err(DockerError::Unsupported(
+                            "containers.update 至少需要一个资源字段".into(),
+                        ));
+                    }
+                    self.update_container(&id()?, &limits).await?;
+                    Ok(serde_json::Value::Null)
+                }
+                _ => Err(DockerError::Unsupported(
+                    "containers.update 需要资源限制参数".into(),
+                )),
+            },
+            Verb::ComposeUp => match params {
+                DockerParams::ComposeUp(project) => self.compose_up(&project).await,
+                _ => Err(DockerError::Unsupported(
+                    "compose.up 需要已解析的项目计划".into(),
+                )),
+            },
+            Verb::ComposeDown => match params {
+                DockerParams::ComposeDown {
+                    project,
+                    remove_volumes,
+                } => self.compose_down(&project, remove_volumes).await,
+                _ => Err(DockerError::Unsupported(
+                    "compose.down 需要项目名与删卷选项".into(),
+                )),
+            },
             Verb::ImagePull => match params {
                 DockerParams::ImagePull(image) if !image.trim().is_empty() => {
                     self.pull_image(&image).await?;
@@ -809,7 +880,10 @@ fn to_row(c: ContainerSummary) -> ContainerRow {
             .map(|s| state_str(s).to_string())
             .unwrap_or_default(),
         status: c.status.unwrap_or_default(),
-        project: labels.get(crate::policy::LABEL_PROJECT).cloned(),
+        project: labels
+            .get(crate::policy::LABEL_PROJECT)
+            .or_else(|| labels.get("com.docker.compose.project"))
+            .cloned(),
         owner: labels.get(crate::policy::LABEL_OWNER).cloned(),
         labels,
         protected,
@@ -949,8 +1023,14 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
             network_mode: spec.network_mode.clone(),
             log_config,
             memory: spec.memory_limit_mb.map(|m| m * 1024 * 1024),
+            memory_swap: spec
+                .memory_swap_mb
+                .map(|m| if m < 0 { m } else { m * 1024 * 1024 }),
             nano_cpus: spec.nano_cpus,
             pids_limit: spec.pids_limit,
+            cpu_shares: spec.cpu_shares,
+            cpu_period: spec.cpu_period,
+            cpu_quota: spec.cpu_quota,
             ..Default::default()
         }),
         healthcheck,
@@ -1045,6 +1125,10 @@ mod tests {
             memory_limit_mb: Some(128),
             nano_cpus: None,
             pids_limit: Some(64),
+            cpu_shares: Some(512),
+            cpu_period: Some(100000),
+            cpu_quota: Some(50000),
+            memory_swap_mb: Some(-1),
         }
     }
 
@@ -1057,7 +1141,11 @@ mod tests {
         let pb = hc.port_bindings.unwrap();
         assert!(pb.contains_key("80/tcp"));
         assert_eq!(hc.memory, Some(128 * 1024 * 1024));
+        assert_eq!(hc.memory_swap, Some(-1));
         assert_eq!(hc.pids_limit, Some(64));
+        assert_eq!(hc.cpu_shares, Some(512));
+        assert_eq!(hc.cpu_period, Some(100000));
+        assert_eq!(hc.cpu_quota, Some(50000));
         // 危险字段在类型层面不存在：privileged / cap_add 等无法被设置
         let json = serde_json::to_value(&c).unwrap();
         assert!(json.get("Privileged").is_none());
@@ -1105,6 +1193,12 @@ mod tests {
         ));
         assert!(matches!(rt, Some(Err(DockerError::Unsupported(_)))));
         let rt = futures_util::FutureExt::now_or_never(svc.execute(
+            Verb::ContainerUpdate,
+            None,
+            DockerParams::ContainerUpdate(Box::default()),
+        ));
+        assert!(matches!(rt, Some(Err(DockerError::Unsupported(_)))));
+        let rt = futures_util::FutureExt::now_or_never(svc.execute(
             Verb::ContainerRemove,
             None,
             DockerParams::ContainerRemove { force: true },
@@ -1117,6 +1211,7 @@ mod tests {
         // 白名单里的生命周期动词不再落入「需专用参数」的兜底分支。
         let handled = [
             Verb::ContainerCreate,
+            Verb::ContainerUpdate,
             Verb::ContainerRemove,
             Verb::ImagePull,
             Verb::Start,
