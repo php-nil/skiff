@@ -37,6 +37,9 @@ pub async fn images(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
+    if !state.docker().available() {
+        return page(&state, &user, "images", "镜像", Vec::new(), "", "");
+    }
     let rows = match state.docker().list_images().await {
         Ok(items) => items
             .into_iter()
@@ -233,6 +236,9 @@ pub async fn networks(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
+    if !state.docker().available() {
+        return network_page(&state, &user, Vec::new(), "", "");
+    }
     match state.docker().list_networks().await {
         Ok(items) => network_page(
             &state,
@@ -320,6 +326,9 @@ pub async fn volumes(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
+    if !state.docker().available() {
+        return page(&state, &user, "volumes", "卷", Vec::new(), "", "");
+    }
     let rows = state
         .docker()
         .list_volumes()

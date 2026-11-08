@@ -1171,9 +1171,40 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
     assert!(
         filtered_html.contains("仅显示异常")
             && filtered_html.contains("清除筛选")
-            && filtered_html.contains("Docker 不可用"),
+            && filtered_html.contains("Docker 不可用")
+            && filtered_html.contains("前往 Docker 设置")
+            && filtered_html.contains("docker/settings"),
         "异常筛选深链必须可解释且可恢复: {filtered_html}"
     );
+    // Docker 不可达时，镜像/网络/卷入口都要给出同一个恢复出口，而不是裸错误。
+    for path in ["/p/images", "/p/networks", "/p/volumes"] {
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "{path} 必须渲染 gate 而非 503"
+        );
+        let html = body_text(resp).await;
+        assert!(
+            html.contains("前往 Docker 设置") && html.contains("docker/settings"),
+            "{path} 的 gate 必须带「前往 Docker 设置」出口: {html}"
+        );
+        assert!(
+            !html.contains("hyper client error"),
+            "{path} 不得把裸连接错误直接甩给用户: {html}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3927,8 +3958,16 @@ fn d3b_workbench_topbar_width_and_iframe_height() {
         "父页面必须处理插件上报的内容高度"
     );
     assert!(
-        js.contains(r#"frame.style.height = height + "px""#),
-        "父页面必须把 iframe 调到插件上报的高度"
+        js.contains(r#"frame.style.height = visual + "px""#),
+        "父页面必须把 iframe 调到收敛后的高度（短内容贴合）"
+    );
+    assert!(
+        js.contains("window.innerHeight - top - gap"),
+        "长内容必须按一屏可用高度封顶（iframe 内部滚动，不撑出页面第二条滚动条）"
+    );
+    assert!(
+        js.contains("FRAME_MIN_H"),
+        "内容高度收敛必须有下限，避免极小空块"
     );
     assert!(
         js.contains(r#"frame.hasAttribute("data-workbench-frame")"#),

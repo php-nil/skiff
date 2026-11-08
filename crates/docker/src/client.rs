@@ -203,6 +203,13 @@ pub enum DockerParams {
 
 pub struct DockerService {
     docker: Option<Docker>,
+    /// 运行期可达性：守护进程停掉后 socket 文件仍在，只靠 `docker.is_some()` 会一直
+    /// 认为「可用」；由后台探活任务持续刷新，页面 gate 才能真实反映当前状态。
+    health: std::sync::RwLock<Health>,
+}
+
+struct Health {
+    reachable: bool,
     reason: String,
 }
 
@@ -212,11 +219,17 @@ impl DockerService {
         match Self::try_connect(socket) {
             Ok(d) => Self {
                 docker: Some(d),
-                reason: String::new(),
+                health: std::sync::RwLock::new(Health {
+                    reachable: true,
+                    reason: String::new(),
+                }),
             },
             Err(e) => Self {
                 docker: None,
-                reason: e.to_string(),
+                health: std::sync::RwLock::new(Health {
+                    reachable: false,
+                    reason: e.to_string(),
+                }),
             },
         }
     }
@@ -242,17 +255,45 @@ impl DockerService {
     }
 
     pub fn available(&self) -> bool {
-        self.docker.is_some()
+        self.health.read().map(|h| h.reachable).unwrap_or(false)
     }
 
-    pub fn unavailable_reason(&self) -> &str {
-        &self.reason
+    pub fn unavailable_reason(&self) -> String {
+        self.health
+            .read()
+            .map(|h| h.reason.clone())
+            .unwrap_or_else(|_| "Docker 状态锁被毒化".to_string())
+    }
+
+    /// 后台探活：守护进程停掉/恢复后刷新可达性。3 秒无响应按不可达处理，
+    /// 不阻塞调用方；页面 gate 文案随之出现或消失。
+    pub async fn probe(&self) -> bool {
+        let Some(client) = self.docker.as_ref() else {
+            return false;
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), client.ping()).await;
+        let (reachable, reason) = match result {
+            Ok(Ok(_)) => (true, String::new()),
+            Ok(Err(e)) => (false, format!("Docker 守护进程不可达：{e}")),
+            Err(_) => (
+                false,
+                "Docker 守护进程 3 秒未响应（可能已停止或 socket 不可达）".to_string(),
+            ),
+        };
+        if let Ok(mut h) = self.health.write() {
+            h.reachable = reachable;
+            h.reason = reason;
+        }
+        reachable
     }
 
     pub(crate) fn client(&self) -> Result<&Docker, DockerError> {
+        if !self.available() {
+            return Err(DockerError::Unavailable(self.unavailable_reason()));
+        }
         self.docker
             .as_ref()
-            .ok_or_else(|| DockerError::Unavailable(self.reason.clone()))
+            .ok_or_else(|| DockerError::Unavailable("Docker 客户端未初始化".to_string()))
     }
 
     pub async fn ping(&self) -> Result<(), DockerError> {

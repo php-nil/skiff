@@ -10,7 +10,7 @@
   </div>
 </div>
 {% include "page_banner.html" %}
-{% if !ctx.docker_ok %}<div class="alert warn">Docker 不可用：依赖容器的插件功能会失败；异常容器入口仍保留，但容器页同样处于 gate 状态。</div>{% endif %}
+{% if !ctx.docker_ok %}<div class="alert warn">Docker 不可用：依赖容器的插件功能会失败；异常容器入口仍保留，但容器页同样处于 gate 状态。<a href="/{{ ctx.prefix }}/docker/settings">前往 Docker 设置</a></div>{% endif %}
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 
 {# 页面标题区下方一条通栏 L3 标签栏：与内容区同宽、吸顶不随内容滚动。

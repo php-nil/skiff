@@ -129,7 +129,7 @@
 <div class="banner warn">首次登录必须修改口令后才能继续使用面板。<a href="/{{ ctx.prefix }}/settings?force=1">去修改</a></div>
 {% endif %}
 {% if !ctx.docker_ok %}
-<div class="banner warn">Docker 不可用：容器相关页面只渲染空态，操作会返回 503。</div>
+<div class="banner warn">Docker 不可用：容器相关页面只渲染空态，操作会返回 503。<a href="/{{ ctx.prefix }}/docker/settings">前往 Docker 设置</a></div>
 {% endif %}
 {% block content %}{% endblock %}
 </main>

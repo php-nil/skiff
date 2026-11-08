@@ -131,6 +131,31 @@ pub fn spawn_task_loop(state: Arc<skiff_app::AppState>) {
     });
 }
 
+/// Docker 探活循环：守护进程可能在中途停止/恢复，`available()` 是内存态标志，
+/// 由这里每 3 秒刷新一次；页面 gate 文案随可达性出现或消失。
+pub fn spawn_docker_health(state: Arc<skiff_app::AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(3));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last = state.docker().available();
+        loop {
+            tick.tick().await;
+            let ok = state.docker().probe().await;
+            if ok != last {
+                if ok {
+                    info!("Docker 已恢复，容器功能重新可用");
+                } else {
+                    warn!(
+                        reason = %state.docker_unavailable_reason(),
+                        "Docker 不可达：容器相关页面切换为 gate 状态"
+                    );
+                }
+                last = ok;
+            }
+        }
+    });
+}
+
 pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));

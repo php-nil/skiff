@@ -476,7 +476,7 @@ impl AppState {
         SessionTokens::new()
     }
 
-    pub fn docker_unavailable_reason(&self) -> &str {
+    pub fn docker_unavailable_reason(&self) -> String {
         self.docker.unavailable_reason()
     }
 }

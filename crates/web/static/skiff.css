@@ -1439,6 +1439,8 @@ dialog.modal::backdrop { background: rgba(16, 24, 40, .45); }
   color: var(--muted);
   font-size: var(--fs-sm);
   pointer-events: none;
+  /* iframe 与占位同层且位于其后，不抬起就会被不透明的 iframe 底衬盖住。 */
+  z-index: 1;
 }
 .workbench-panel:has(iframe.plugin-frame[data-loaded])::before { display: none; }
 iframe.plugin-frame {
@@ -1448,7 +1450,8 @@ iframe.plugin-frame {
   /* 默认高度收敛到一屏内，避免外层与 iframe 双滚动条；
      插件上报内容高度后由 auto-height 覆盖。 */
   height: clamp(320px, calc(100dvh - var(--shell-h, 56px) - 190px), 70vh);
-  min-height: 320px;
+  /* 与 skiff.js 的 200px 下限保持一致：短内容可贴合到 200px，长内容按一屏封顶。 */
+  min-height: 200px;
   border: 0;
   border-radius: 0;
   /* 加载阶段的占位底色跟随主题，避免白屏/黑屏闪烁。 */

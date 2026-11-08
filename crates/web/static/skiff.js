@@ -93,6 +93,28 @@
     window.location.assign(url);
   }
 
+  // ---- 插件 iframe 高度收敛 ----
+  // 规则：短内容贴合（iframe 高 = 内容高，下限 200px 防止极小空块），
+  // 长内容以「一屏可用高度」封顶（iframe 内部滚动），外层页面不再被 iframe 撑出
+  // 第二条滚动条。可用高度 = 视口高 - iframe 在文档中的顶部位置 - 16px 余量。
+  var FRAME_MIN_H = 200;
+  function applyFrameHeight(frame) {
+    var content = Number(frame.dataset.contentH);
+    if (!isFinite(content) || content < 1) return;
+    var top = frame.getBoundingClientRect().top + (window.scrollY || 0);
+    // 底部还要让出 main 的下内边距与页脚；否则 iframe 刚好铺满一屏时，
+    // 页脚仍会把整页顶出滚动条，形成「iframe 内滚动 + 页面滚动」。
+    var gap = 16;
+    var main = document.querySelector("main");
+    if (main) gap += parseFloat(getComputedStyle(main).paddingBottom) || 0;
+    var foot = document.querySelector(".foot");
+    if (foot) gap += foot.offsetHeight;
+    var maxH = Math.max(FRAME_MIN_H, window.innerHeight - top - gap);
+    var visual = Math.max(FRAME_MIN_H, Math.min(Math.round(content), maxH));
+    frame.classList.add("auto-height");
+    if (frame.style.height !== visual + "px") frame.style.height = visual + "px";
+  }
+
   // ---- 插件 UI 沙箱桥 ----
   // 父页面校验 event.source === iframe.contentWindow、nonce、消息 schema，
   // 再代发到 /{prefix}/plugins/{id}/rpc（携带 CSRF 头），回包 targetOrigin="*"
@@ -106,6 +128,17 @@
       var csrf = frame.dataset.csrf;
       var allowed = (frame.dataset.plugins || "").split(",").filter(function (s) { return s; });
       if (!plugin || !nonce || !endpoint) return;
+
+      // 加载完成标记必须对所有插件 iframe 生效：单视图/老包没有 L3 标签栏，
+      // 不能把标记塞在 attachWorkbench 里，否则占位永远不消失。
+      if (frame.dataset.loadHooked !== "1") {
+        frame.dataset.loadHooked = "1";
+        var markLoaded = function () { frame.dataset.loaded = "1"; };
+        if (frame.contentDocument && frame.contentDocument.readyState === "complete") markLoaded();
+        else frame.addEventListener("load", markLoaded);
+        window.addEventListener("resize", function () { applyFrameHeight(frame); });
+      }
+
       window.addEventListener("message", function (ev) {
         if (ev.source !== frame.contentWindow) return;
         var msg = ev.data;
@@ -115,17 +148,16 @@
           openFromPlugin(frame.contentWindow, nonce, msg, allowed, prefix);
           return;
         }
-        // 插件上报内容高度：父页面把 iframe 调到该高度，消除「iframe 内部滚动条 +
-        // 页面滚动条」双滚动。数值做上下限裁剪；旧插件不发消息则维持 CSS 默认高度。
+        // 插件上报内容高度：父页面按「短内容贴合、长内容一屏封顶」收敛，
+        // 长内容在 iframe 内部滚动，避免外层与 iframe 双滚动条。
         if (msg.type === "skiff.height") {
           if (msg.nonce !== nonce) return;
           // 只接受工作台 iframe：固定槽位有 manifest 声明的高度，不允许被内容撑开。
           if (!frame.hasAttribute("data-workbench-frame")) return;
           var height = Number(msg.height);
           if (!isFinite(height) || height < 1) return;
-          height = Math.max(320, Math.min(20000, Math.round(height)));
-          frame.classList.add("auto-height");
-          if (frame.style.height !== height + "px") frame.style.height = height + "px";
+          frame.dataset.contentH = String(Math.round(height));
+          applyFrameHeight(frame);
           return;
         }
         if (msg.type !== "skiff.rpc" || msg.nonce !== nonce) return;
@@ -389,10 +421,6 @@
     if (!bar || !frame) return;
     var links = Array.prototype.slice.call(bar.querySelectorAll("[data-workbench-tab]"));
 
-    function markLoaded() { frame.dataset.loaded = "1"; }
-    if (frame.contentDocument && frame.contentDocument.readyState === "complete") markLoaded();
-    else frame.addEventListener("load", markLoaded);
-
     // 吸顶偏移：L3 横栏落在顶栏（上下布局含二级通栏）之下。用实测高度写入
     // `--shell-h`：窗口缩放、二级通栏展开/收起、窄屏顶栏换行都会自动跟着变。
     var shell = document.querySelector(".top-shell");
@@ -423,7 +451,10 @@
       if (push) history.pushState({ workbenchTab: tab, href: href }, "", href);
       if (ui && ui !== frame.dataset.ui) {
         frame.dataset.ui = ui;
-        // 换 UI 文件等于重新加载：高度先回落到 CSS 默认值，等新页面上报内容高度。
+        // 换 UI 文件等于重新加载：高度先回落到 CSS 默认值，等新页面上报内容高度；
+        // 同时清掉加载标记，占位重新出现，不会在空白 iframe 上闪一下旧内容。
+        delete frame.dataset.contentH;
+        delete frame.dataset.loaded;
         frame.style.height = "";
         frame.classList.remove("auto-height");
         frame.src = link.dataset.src || frame.src;
