@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use skiff_store::{Db, PluginRecord};
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{debug, info};
 
 use self::output::PluginOutput;
 
@@ -125,9 +125,12 @@ mod output {
             self.last_exit.lock().ok().and_then(|s| s.clone())
         }
 
-        /// 实际转出的行数（限速丢弃的不计）。
-        pub(super) fn emitted(&self) -> u64 {
-            self.emitted.load(Ordering::Relaxed)
+        /// 实际转出的行数与因限速丢弃的行数（收尾时汇总到日志）。
+        pub(super) fn stats(&self) -> (u64, u64) {
+            (
+                self.emitted.load(Ordering::Relaxed),
+                self.suppressed.load(Ordering::Relaxed),
+            )
         }
     }
 
@@ -582,6 +585,9 @@ impl Supervisor {
         if let Some(mut r) = dead {
             // 进程已退出，读端很快 EOF；先收尾读取任务，保证尾巴完整。
             output::drain_pumps(&mut r.pumps).await;
+            let tail = r.output.tail_text();
+            let (emitted, suppressed) = r.output.stats();
+            debug!(plugin = %id, emitted, suppressed, tail, "插件进程已退出，输出采集收尾");
             let _ = std::fs::remove_file(&r.socket);
             let _ = self.db.set_plugin_status(id, "installed", "");
         }
@@ -619,6 +625,8 @@ impl Supervisor {
         output::drain_pumps(&mut r.pumps).await;
         let tail = r.output.take_tail();
         r.output.record_exit(&tail);
+        let (emitted, suppressed) = r.output.stats();
+        debug!(plugin = id, emitted, suppressed, "插件输出采集收尾");
         let _ = std::fs::remove_file(&r.socket);
         let _ = self.db.set_plugin_status(id, "installed", "");
         info!(plugin = id, "插件进程已停止");
@@ -1229,7 +1237,7 @@ mod tests {
             tail.contains("plugin-stderr-line"),
             "stderr 未被采集：{tail:?}"
         );
-        assert_eq!(output.emitted(), 2, "stdout 与 stderr 各应转出一条");
+        assert_eq!(output.stats().0, 2, "stdout 与 stderr 各应转出一条");
     }
 
     /// 回归：插件重启时上一次 stderr 尾巴被冻结保留，不被新运行的输出覆盖。
