@@ -11,7 +11,7 @@
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
 | `cron/` | `com.skiff.cron` | identity + interop | 计划任务管理 UI：按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。只调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记 |
-| `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** | FTP 管理：站点账号增删改、服务安装/回收/重启；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；仅 Native 形态 |
+| `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径、fail2ban 开关（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相，插件不再写 `service-config.json`；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；仅 Native 形态 |
 | `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
 ## 约定
@@ -100,6 +100,30 @@ view = "list"
 
 > 原 `com.skiff.nginx` 已内核化，网站一级与「网站列表 / 运行环境 / 设置」由内核提供，
 > 不再随官方插件发布。
+
+### FTP 与 fail2ban 生命周期（`com.skiff.ftp`）
+
+- **fail2ban 不是内核内置**，是宿主系统包（Debian/Ubuntu 的 `fail2ban`）。它由
+  `com.skiff.ftp` **首次安装**且 `login_guard = true`（内核配置默认值）时，与
+  `pure-ftpd` 一起经 `apt-get install` 装上；机器上原本已有 fail2ban 则只复用，不再重复安装。
+- **专用 jail**：安装时写入 `/etc/fail2ban/jail.d/skiff-pureftpd.conf`，内容为
+  `[pure-ftpd] enabled = true / backend = systemd / maxretry = 3 / findtime = 10m / bantime = 10m`。
+  仅当 `fail2ban` 是本次新装（安装前不存在）时，同一文件追加 `[sshd] enabled = false`，
+  避免新装 fail2ban 把宿主既有 SSH 登录封掉；机器原本已有 fail2ban 时**不改**其既有 sshd jail。
+- **开关口径**：`login_guard=false` 只移除本插件的 pure-ftpd jail；若同文件里还留着安装时写的
+  `[sshd] enabled=false`，则重写为仅含该段，避免顺手把宿主 sshd 防护打开。随后
+  `systemctl restart fail2ban`；**不卸载 fail2ban 软件包**，也不改动系统级
+  `/etc/fail2ban/jail.conf` 或其它 jail。
+- **卸载口径**：`uninstall` 走同一套 jail 清理逻辑；即使勾选 `remove_package`，也只
+  `apt-get remove pure-ftpd` 并清理 pure-ftpd 的 passwd/pdb/conf，不执行 `apt purge`。
+  `/etc/skiff/ftp-service.json` 保留，重装/升级后沿用。
+- **状态可观测性**：内核 `ftp.status` 回传 `fail2ban.installed / running / jail_configured /
+  jail_enabled / currently_banned / total_banned / recent_ban`；取不到时为 `null`，
+  UI 显示「未知（读取失败）」，不伪造 0。`recent_ban` 口径为
+  `fail2ban-client get pure-ftpd banip --with-time`。
+- **账号口径**：`account.set_enabled` 通过给 passwd 行加/去 `#` 前缀并 `mkdb` 实现；禁用后登录失败，
+  账号与目录保留。最后登录不由 pure-ftpd 用户库记录，`accounts.list` 明确返回
+  `last_login=null`、`last_login_source=unavailable`；配额与速率是后续项。
 
 monitor（固定页槽位；内核负责外框/标题/失败降级）：
 

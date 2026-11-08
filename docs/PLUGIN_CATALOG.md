@@ -27,7 +27,7 @@
 | `fs` | 两条分支：相对路径落插件自身 `data/`；**绝对路径**须命中安装时确认的 `path:` 对象授权根（`fsops::resolve` + `skiff_plugin::fsgrant`），动词 `read/write/list/mkdir/remove/rename`；单次读写 256KiB 分页 | `crates/plugin/src/{capability.rs,fsops.rs,fsgrant.rs}` | 文件管理器、主机监控、Nginx 站点已可做；大文件靠分页而非流式 |
 | `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | 防火墙、ACME 证书不可做 |
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
-| `ftp` | **新增能力面**（api 1.2）：`status/install/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/service.restart`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/core/src/kernel/ftp.rs`、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排，特权动作（apt/systemd/pure-pw/chown）全在内核 |
+| `ftp` | **新增能力面**（api 1.2）：`status/install/service.configure/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/account.set_enabled/service.restart`；`status` 回传真实监听/连接数/fail2ban 细节，配置持久化到 `/etc/skiff/ftp-service.json`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/core/src/kernel/ftp.rs`、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排，特权动作（apt/systemd/pure-pw/chown）全在内核 |
 | `interop` | 两个路由：`capability/interop/call`（跨插件接口调用，四道闸 + 15s 超时 + busy 防环）、`capability/interop/catalog`（只列**调得通**的接口）；转发时注入 `params._interop.caller` | `crates/core/src/kernel/{routes.rs,interop.rs}`、manifest `[interop]`（`crates/pkgfmt/src/manifest.rs`）、`crates/plugin/src/interop.rs` | 计划任务（调度插件接口）、站点页「一键新增备份任务」这类**插件间协作**可做；不需要给插件宿主 shell |
 | 插件 UI | 沙箱 iframe（无 same-origin）+ 父页面 postMessage 桥 + CSP `connect-src 'none'`；单帧上限 1MiB | `crates/web/src/handlers/plugins.rs` 的 `plugin_ui` / `rpc`、`crates/web/static/skiff.js` 的 `attachPluginBridges` | 插件 UI 不能直连内核，所有数据走插件 RPC；**大文件上传下载会被帧上限卡死**，文件管理器需要新增传输契约 |
 | 信任 | DB 信任库 + TOFU 三段式；**没有内置官方公钥**（§4.3 承诺「内置官方公钥」尚未落地） | `crates/plugin/src/trust.rs` 的 `resolve` / `decide` | 官方插件「开箱即用」的第一道门未开：现在仍要手动导入公钥 |
@@ -191,16 +191,19 @@ run = "on-demand"
 requires = ["ftp"]
 [[permissions]]
 capability = "ftp"
-verbs = ["status", "install", "uninstall", "sites.list", "accounts.list",
-         "account.create", "account.password", "account.delete", "service.restart"]
+verbs = ["status", "install", "service.configure", "uninstall", "sites.list", "accounts.list",
+         "account.create", "account.password", "account.delete", "account.set_enabled",
+         "service.restart"]
 ```
 
 - **为什么必须新增内核原语**：`fs` 只能在授权根内读写，装不了宿主包；`docker` 白名单不开放 `create/exec`，且 FTP 不走容器；`scheduler` 只调度任务，不执行宿主命令。三条现有能力面都不足以完成「apt 安装 pure-ftpd + `pure-pw` 建号 + chown 对齐 + systemd 启停」，因此新增 `ftp` 能力面，插件只做 UI 与编排。
 - **安装形态**：宿主 `pure-ftpd` 软件包 + systemd（Debian 默认 standalone），不用容器——避免第三方镜像供应链与 Docker 端口段发布，生命周期与 systemd 直装一致；1Panel 受限形态（`Form::DockerRestricted`）一律 503，`Capability::available_in` 也不把它列入。
 - **账号模型**：账号绑定站点，每站可多账号；登录名 `skiff_<slug16>_<fnv4>_<account>`，密码只经 stdin 交给 `pure-pw`，落 `pureftpd.pdb` 哈希；chroot 固定 `<site_root>/index`。
 - **权限对齐**：建号时在运行容器内 `id -u/-g www-data` 探测 uid/gid（不写死 82），`MinUID` 只降不升；`Umask 002 002`（conf 文件写两个空白分隔的三位八进制数，wrapper 不接受冒号）；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
-- **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`、`MaxClientsPerIP=3`、fail2ban 专用 jail（10 分钟 3 次，新装时关闭默认 sshd jail）、可选 TLS 自签。
-- **契约与验收**：主体/授权/审计口径见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FTP-01`–`FTP-05`。
+- **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`；连接上限与每 IP 上限可配（默认 30/3）；fail2ban 专用 jail（10 分钟 3 次，新装时关闭默认 sshd jail，可开关）；TLS 可关/显式可选/显式强制，证书与私钥路径可配，非法路径直接报错不静默降级。
+- **状态与账号**：`ftp.status` 回传监听端口、是否在监听、当前连接数、fail2ban 安装/jail/封禁详情，未知回传 `null`；账号可启用/禁用；最后登录 pure-ftpd 用户库不记录，明确标注不可得；配额/速率列为后续项。
+- **配置持久化**：`/etc/skiff/ftp-service.json` 是唯一真相来源，插件本地不再保留 `service-config.json`。
+- **契约与验收**：主体/授权/审计口径见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FTP-01`–`FTP-09`。
 
 ## 5. 目录落地：放在哪里
 

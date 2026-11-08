@@ -7,11 +7,12 @@
 
 ## 0. 一页结论
 
-- **新增能力面 `ftp`**：内核在 Linux 宿主机上管理 pure-ftpd（apt 安装、systemd 托管、`pure-pw` 账号、chroot、被动端口、TLS、fail2ban）。
+- **新增能力面 `ftp`**：内核在 Linux 宿主机上管理 pure-ftpd（apt 安装、systemd 托管、`pure-pw` 账号、chroot、监听端口、被动端口、连接上限、TLS、fail2ban）。
 - **唯一调用方是插件**：经 Supervisor 的 UDS 调用，内核从 `cap::PluginId` 取主体、从 grants 校验动词；插件自身不装包、不碰 `/etc`、不执行宿主命令。
 - **只在 Native 形态提供**：`Form::DockerRestricted` 下返回 503；`pkgfmt` 的 `available_in` 亦不列 Docker 受限形态。
 - **账号绑定站点**：一个站点可多账号，共用该站点 PHP 容器内 `www-data` 的 uid/gid；chroot 固定 `<site_root>/index`，看不到 `conf/`、`log/`、`ssl/`，也到不了别的站点。
-- **审计口径**：`ftp.<method>`，actor `plugin:<id>`，source `uds`，结果 `ok | fail | deny`，密码不入 argv/日志/审计。
+- **服务配置单一真相**：监听端口、被动端口、连接上限、TLS 模式与证书路径、登录防护开关持久化在 `/etc/skiff/ftp-service.json` 由内核唯一维护；插件不再保留 `service-config.json`。
+- **审计口径**：`ftp.<method>`，actor `plugin:<id>`，source `uds`，结果 `ok | fail | deny`；detail 只含配置摘要/登录名/启用状态，密码与私钥不入 argv/日志/审计。
 
 ## 1. 背景与现状
 
@@ -40,7 +41,9 @@
 目标：
 - 按站点建 FTP 账号（每站多账号），上传的文件可被该站点 PHP-FPM 容器读写；
 - 首次使用安装 pure-ftpd，幂等；卸载可回收包与配置；
-- 被动端口、TLS、登录尝试限制可配置；
+- 监听端口、被动端口范围、连接上限、TLS 模式与证书路径可配置并持久化，保存后重载；
+- 登录尝试限制可开可关，首装默认开启；状态回传 fail2ban 安装/运行/jail/封禁详情；
+- 账号可启用/禁用；最后登录、配额与速率按可得性如实回传或标注后续项；
 - 全程审计。
 
 非目标：
@@ -74,14 +77,16 @@
 
 | 方法 | 参数 | 说明 |
 | --- | --- | --- |
-| `status` | — | 服务/包/端口/TLS/账号数概览 |
-| `install` | `passive_port_start`、`passive_port_end`、`tls_mode`、`login_guard` | 幂等安装并配置 |
-| `uninstall` | `purge`（可选） | 停服务、删配置与账号；`purge` 时卸包 |
+| `status` | — | 真实服务状态：安装/运行/监听/监听端口/当前连接数、连接上限、TLS、账号启停计数、fail2ban 细节与持久化配置快照；取不到的字段回传 `null`，不用 0/空串冒充 |
+| `install` | `listen_port`、`passive_port_start`、`passive_port_end`、`max_clients`、`max_per_ip`、`tls_mode`、`tls_cert_path`、`tls_key_path`、`login_guard`（均可选） | 幂等安装；未传字段沿用 `/etc/skiff/ftp-service.json`；`login_guard=true` 且系统无 fail2ban 时随 pure-ftpd 一起安装 |
+| `service.configure` | 同 `install`，均可选 | 校验并持久化配置；服务已安装时立即写 conf/TLS 并重载，未安装时只落盘 |
+| `uninstall` | `remove_accounts`、`remove_package`（均可选） | 停服务、删本插件 jail 并重启 fail2ban；`remove_package` 时 `apt-get remove pure-ftpd`（非 purge）；**不删除 `ftp-service.json`**，便于重装沿用 |
 | `sites.list` | — | 可绑定站点（含静态/反代）与运行时信息 |
-| `accounts.list` | — | 账号 → 站点反查（按 home 归一化） |
+| `accounts.list` | — | 账号 → 站点反查（按 home 归一化）；含 `enabled`、`last_login`（当前恒为 `null` + `unavailable`）、`quota_supported=false`、`rate_supported=false` |
 | `account.create` | `site`、`account`、`password` | 建号 + 对齐 `index/` + 只降不升 `MinUID` |
-| `account.password` | `login`、`password` | 改密（重写 passwd 后 `mkdb`） |
-| `account.delete` | `login` | 删号并 `mkdb` |
+| `account.password` | `login`、`password` | 改密（重写 passwd 后 `mkdb`）；禁用账号返回 400，需先启用 |
+| `account.delete` | `login` | 删号（含禁用行）并 `mkdb`；不删除站点文件 |
+| `account.set_enabled` | `login`、`enabled` | 启用/禁用：只改 passwd 行 `#` 前缀并 `mkdb`；禁用后登录失败，账号与目录保留 |
 | `service.restart` | — | 只重启 `pure-ftpd` |
 
 ## 3. 账号模型
@@ -92,8 +97,11 @@
   - `slug` 取域名小写、非字母数字转 `-`；`fnv4` 是域名的 4 位 FNV 短哈希，防同名 slug 碰撞；
   - 账号名 1–32 位、首字符字母数字、仅 `[A-Za-z0-9_-]`。
 - **密码**：8–128 字节、禁控制字符（防 stdin 注入与日志污染）。只经 stdin 传给 `pure-pw useradd`，落 `pureftpd.passwd`（哈希）后 `mkdb`；内核不存明文，面板 DB 不存密码，审计不含密码。`pure-pw` 的 `-y` 表示「最大文件数」，**不得设置**。
-- **被动端口**：`PassivePortRange` 由插件配置写入，范围 1024–65535、`start < end`、跨度 ≤ 500，默认 `30000 30100`。
-- **TLS**：`tls_mode` ∈ `off | optional | required`（默认 `optional`）；`optional`/`required` 时生成自签 PEM（`/etc/ssl/private/pure-ftpd.pem`）。
+- **被动端口**：`PassivePortRange` 由内核配置写入，范围 1024–65535、`start < end`、跨度 ≤ 500，默认 `30000 30100`。
+- **监听端口与连接上限**：`Bind`（Debian wrapper 的 `-S [addr,]port`，只写端口，默认 21）、`MaxClientsNumber`（默认 30）、`MaxClientsPerIP`（默认 3）；改监听端口后 UI 提示宿主防火墙放通监听端口与被动端口范围，内核不改防火墙。写 `conf/Port` 会被 wrapper 当作未知项，故不得使用。
+- **TLS**：`tls_mode` ∈ `off | optional | required`（默认 `optional`，接受 `explicit` 作为 `optional` 别名）；`optional`/`required` 时优先使用配置的证书/私钥路径（两路径必须同时给出），校验文件存在、非空、PEM 标记匹配，并把 key+cert 合并写入 `/etc/ssl/private/pure-ftpd.pem`；未配置路径时沿用既有 PEM，缺失则生成自签。配置了路径但缺失/非法 → 400 可读错误，**不静默回退自签**。
+- **账号启停**：禁用只把 `pureftpd.passwd` 行加 `#` 前缀并 `mkdb`；PureDB 中该账号消失，登录失败，passwd 行与原 home 保留；启用反向操作。删除同时回收启用行与禁用行，但不动站点文件。
+- **最后登录/配额/速率**：pure-ftpd 的 passwd/PureDB 不记录最后登录，内核不解析 journal 冒充；`accounts.list` 明确返回 `last_login=null` + `last_login_source=unavailable`。配额与速率未实现，返回 `quota_supported=false`、`rate_supported=false`，列为后续项，不做半成品。
 - **chroot**：`ChrootEveryone=yes`，账号 home 固定 `<site_root>/index`；FTP 用户只能看到该目录子树。
 
 ## 4. 权限模型（uid/gid 与 PHP 容器对齐）
@@ -139,9 +147,20 @@
 1. **目录穿越**：home 由 `validate_index` 计算：canonicalize 后必须同时位于 `/www/sites` 与站点根内，且站点 `index` 本身不得是 symlink；`..` 段一律拒绝。
 2. **跨站点**：home 只能是当前站点 `index`；`accounts.list` 按 home 反查站点，不信任登录名。
 3. **账号边界**：只管理 `skiff_` 前缀账号；删除/改密前校验该账号在 passwd 文件中存在且 home 合法。
-4. **登录尝试限制**：fail2ban 专用 jail（10 分钟内 3 次失败，`bantime` 10 分钟）；新装 fail2ban 时关闭默认 sshd jail，避免影响共享主机；`MaxClientsPerIP=3`、`MaxClientsNumber=30`、`DontResolve=yes`。
-5. **命令注入**：所有宿主命令用 `Command::new` + 参数数组，不拼 shell；密码只走 stdin。
-6. **服务控制面**：只允许操作 `pure-ftpd.service`；`uninstall` 不清除其它包。
+4. **登录尝试限制**：fail2ban 专用 jail（10 分钟内 3 次失败，`bantime` 10 分钟）；连接上限与每 IP 上限改为配置项（默认 `MaxClientsNumber=30`、`MaxClientsPerIP=3`），`DontResolve=yes` 固定。
+   `fail2ban` **不是内核内置**，是宿主系统包：首装且 `login_guard=true` 时与 pure-ftpd 一起
+   `apt-get install`；安装前已存在则只复用。jail 写到
+   `/etc/fail2ban/jail.d/skiff-pureftpd.conf`；只有 fail2ban 由本次安装新装时，才在同一文件写
+   `[sshd] enabled=false`，避免影响共享宿主机的 SSH；已有 fail2ban 的机子不改其 sshd jail。
+   `login_guard=false` 只移除本插件的 pure-ftpd jail（若同文件还保留安装时写的 `[sshd] enabled=false`，
+   则重写为仅含该段）并重启 fail2ban，**不卸载 fail2ban 包**，也不改动其它 jail。
+   `ftp.status` 回传 fail2ban `installed` / `running` / `jail_configured` / `jail_enabled` /
+   `currently_banned` / `total_banned` / `recent_ban`（口径
+   `fail2ban-client get pure-ftpd banip --with-time`）；取不到时为 `null`，不返回 0 冒充。
+5. **命令注入**：所有宿主命令用 `Command::new` + 参数数组，不拼 shell；密码只走 stdin；TLS 私钥只读校验后合并写入固定 PEM，不识别的文件内容直接拒绝。
+6. **服务控制面**：只允许操作 `pure-ftpd.service`；`uninstall` 不清除其它包；`ftp-service.json` 保留供重装沿用。
+7. **配置持久化**：`/etc/skiff/ftp-service.json` 是唯一真相来源（systemd unit 的 `ReadWritePaths` 覆盖 `/etc/skiff`）；插件侧 `service-config.json` 已删除，避免双份真相漂移。
+8. **状态未知态**：`status` 的 `running` / `listening` / `current_connections` / `jail_enabled` / 封禁数在探测失败时为 `null`，UI 显示「未知（读取失败）」。
 
 ## 6. API 形态
 
@@ -159,9 +178,10 @@
 | action | `ftp.<method>`；授权缺失时 `ftp.deny.<method>` |
 | object | 插件 id（deny 时）；成功调用为空 |
 | result | `ok` / `fail` / `deny`（403 为 `deny`，其余错误为 `fail`） |
-| detail | 失败原因；**不含密码** |
+| detail | 失败原因；成功时只写定位摘要：`install`/`service.configure` 写监听端口、被动范围、TLS 模式、登录防护与是否已应用；账号动词只写登录名与启用状态；**不含密码、私钥内容** |
 
-一次建号会产生 `ftp.account.create` 一条；内部对齐目录不单独记审计（属于该动作的一部分）。
+一次建号会产生 `ftp.account.create` 一条；内部对齐目录、`mkdb`、重启不单独记审计（属于该动作的一部分）。
+`service.configure` 与 `account.set_enabled` 各记一条；配置摘要不含证书路径原文之外的敏感信息。
 
 ## 8. 部署形态取舍：宿主软件包 vs 容器
 
@@ -171,7 +191,11 @@
 | 自制容器 | 放弃 | 供应链风险；需要发布 100 个被动端口；容器内 uid 与宿主文件对齐更复杂；Docker 受限形态也无法复用 |
 | 1Panel 商店包 | 不提供 | 能力面收缩为 `docker/identity`，无 apt/systemd |
 
-安装幂等：已装跳过 apt；重复 `install` 只重写配置并重启。卸载：停服务、删账号与配置；`purge=true` 时 `apt purge` 回收包。
+安装幂等：已装跳过 apt；重复 `install` 只重写配置并重启。`service.configure` 在未安装时只落
+`/etc/skiff/ftp-service.json`，安装后沿用。卸载：停服务；按参数删除本插件账号；
+若 `remove_package=true`，`apt-get remove -y pure-ftpd` 并删除 pure-ftpd 的 passwd/pdb/conf，
+但不执行 `apt purge`，也**不卸载 fail2ban**；本插件 jail 的清理走与 `login_guard=false` 相同的
+逻辑（保留安装时写入的 `[sshd] enabled=false`），并重启 fail2ban。`ftp-service.json` 保留。
 
 ### 8.1 特权执行通道（加固约束）
 
@@ -206,7 +230,7 @@
 
 ## 11. 测试矩阵
 
-见 `docs/TEST_MATRIX.md` 的 `FTP-01`–`FTP-05`；未闭环项记 `docs/TEST_LEDGER.md`。
+见 `docs/TEST_MATRIX.md` 的 `FTP-01`–`FTP-09`；未闭环项记 `docs/TEST_LEDGER.md`。
 
 ## 12. 变更记录
 
@@ -214,3 +238,4 @@
 | --- | --- |
 | 2026-11-07 | 初版：新增 `ftp` 能力面（wire/pkgfmt/SDK/内核/插件）；宿主 pure-ftpd；MinUID 改按探测值只降不升；审计与安全边界定稿 |
 | 2026-11-07 | 补充 §8.1：宿主落盘动作改经 `systemd-run` 瞬态单元执行，绕开 `ProtectSystem=full` 的只读限制（上机 install 实测暴露） |
+| 2026-11-08 | 能力面扩容：监听端口/连接上限/TLS 证书路径/登录防护开关可配并持久化到 `/etc/skiff/ftp-service.json`；新增 `service.configure` 与 `account.set_enabled`；`status` 回传监听/连接数与 fail2ban 详情；插件删除本地 `service-config.json`，只读标注改为真实交互 |
