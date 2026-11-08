@@ -242,20 +242,22 @@ apply_listen_override() {
 #   off → tls_enabled = false，直接明文监听（仅限内网），登录 Cookie 降级；
 #   auto（未指定）→ 有 --tls-cert/--tls-key 即 on；交互终端询问；否则沿用旧行为。
 conf_set_str() {
-    conf=$1 key=$2 val=$3
-    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then
-        sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = \"$val\"|" "$conf"
+    # 参数用 _ 前缀：POSIX sh 没有 local，普通变量赋值会污染调用方同名变量
+    # （apply_tls_config 里就有 cert/key/conf，之前因此把 tls_key 写成 "tls_cert"）。
+    _conf=$1 _key=$2 _val=$3
+    if grep -qE "^[[:space:]]*${_key}[[:space:]]*=" "$_conf"; then
+        sed -i "s|^[[:space:]]*${_key}[[:space:]]*=.*|${_key} = \"$_val\"|" "$_conf"
     else
-        printf '%s = "%s"\n' "$key" "$val" >> "$conf"
+        printf '%s = "%s"\n' "$_key" "$_val" >> "$_conf"
     fi
 }
 
 conf_set_bool() {
-    conf=$1 key=$2 val=$3
-    if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$conf"; then
-        sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = $val|" "$conf"
+    _conf=$1 _key=$2 _val=$3
+    if grep -qE "^[[:space:]]*${_key}[[:space:]]*=" "$_conf"; then
+        sed -i "s|^[[:space:]]*${_key}[[:space:]]*=.*|${_key} = $_val|" "$_conf"
     else
-        printf '%s = %s\n' "$key" "$val" >> "$conf"
+        printf '%s = %s\n' "$_key" "$_val" >> "$_conf"
     fi
 }
 
