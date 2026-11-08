@@ -601,8 +601,12 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### 11.3 Rust 运行环境（P1）
 
-- 目录：`runtime_catalog::RUNTIME_KINDS` 新增 `rust`，版本 `1.83 / 1.82 / 1.80`，
-  镜像 `rust:<ver>-slim`；`default_name` 为 `rust-<ver>`，同 kind 唯一、目录已存在拒绝。
+- 目录：`runtime_catalog::RUNTIME_KINDS` 新增 `rust`，版本白名单 `1.99 / 1.98 / 1.97 / 1.83`，
+  镜像 `rust:<ver>-slim`（如 `rust:1.99-slim`）；`default_name` 为 `rust-<ver>`，同 kind 唯一、目录已存在拒绝。
+  - 1.99.0 于 2026-10-01 发布、1.99.1 于 2026-10-15；保留 1.83 作为旧版本可选，避免只留最新一条。
+  - 白名单与 `image_for` 必须同步：`image_for("rust", "1.99") == "rust:1.99-slim"`，非白名单版本拒绝。
+  - **镜像可拉取性待实测**：本轮开发机无 Docker 且不能直连 Docker Hub，`docker pull rust:1.99-slim`
+    需并入上机清单验证；若某 tag 实际不可拉，回退到下一个白名单版本并同步改测试。
 - 运行模型（独立进程 + 固定端口）：
   - 端口区间 **9100–9199**，创建时取区间内最小未占用端口并落 `site_runtimes.port`；冲突直接拒绝；
   - 容器 `skiff-rust-<name>`，`network_mode=host`，挂载 `/www`；

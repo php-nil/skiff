@@ -36,7 +36,9 @@ pub const RUNTIME_KINDS: &[RuntimeKindDef] = &[
     RuntimeKindDef {
         kind: KIND_RUST,
         label: "Rust",
-        versions: &["1.83", "1.82", "1.80"],
+        // 2026-11：最新稳定 1.99（1.99.0 于 2026-10-01 发布，1.99.1 于 2026-10-15）；
+        // 保留 1.98（次新）与仍在使用中的 1.83 作为可选，不强制所有人升级。
+        versions: &["1.99", "1.98", "1.97", "1.83"],
     },
 ];
 
@@ -54,7 +56,7 @@ pub fn version_supported(kind: &str, version: &str) -> bool {
     kind_def(kind).is_some_and(|d| d.versions.contains(&version.trim()))
 }
 
-/// 名称默认跟随版本（`php-8.5` / `node-22` / `go-1.24` / `rust-1.83`）；
+/// 名称默认跟随版本（`php-8.5` / `node-22` / `go-1.24` / `rust-1.99`）；
 /// 唯一性仍由库里同类型校验。
 pub fn default_name(kind: &str, version: &str) -> String {
     format!("{}-{}", kind, version.trim())
@@ -1146,9 +1148,18 @@ mod tests {
         assert!(!version_supported(KIND_PHP, "8"));
         assert!(version_supported(KIND_NODE, "22"));
         assert!(version_supported(KIND_GO, "1.24"));
-        assert!(version_supported(KIND_RUST, "1.83"));
-        assert!(!version_supported(KIND_RUST, "1.84"));
+        assert!(version_supported(KIND_RUST, "1.99"));
+        assert!(version_supported(KIND_RUST, "1.98"));
+        assert!(version_supported(KIND_RUST, "1.83"), "保留旧版本可选");
+        assert!(!version_supported(KIND_RUST, "1.100"));
         assert!(kind_def("unknown").is_none());
+    }
+
+    #[test]
+    fn rust_catalog_starts_with_latest_stable() {
+        let rust = kind_def(KIND_RUST).expect("rust 目录必须存在");
+        assert_eq!(*rust.versions.first().unwrap(), "1.99");
+        assert!(rust.versions.len() >= 3, "至少保留一个旧版本可选");
     }
 
     #[test]
@@ -1174,8 +1185,12 @@ mod tests {
             "node:22-alpine"
         );
         assert_eq!(
-            image_for(KIND_RUST, "1.83", DEFAULT_PHP_IMAGE),
-            "rust:1.83-slim"
+            image_for(KIND_RUST, "1.99", DEFAULT_PHP_IMAGE),
+            "rust:1.99-slim"
+        );
+        assert_eq!(
+            image_for(KIND_RUST, "1.98", DEFAULT_PHP_IMAGE),
+            "rust:1.98-slim"
         );
     }
 
