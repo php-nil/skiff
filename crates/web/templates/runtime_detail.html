@@ -42,6 +42,27 @@
 
 <section class="panel runtime-tab-panel" data-runtime-tab-panel="info">
   <div class="panel-head"><h2>版本与镜像</h2></div>
+  {% if !runtime.container_exists %}
+  <div class="empty error-state runtime-install-cta">
+    <strong>该实例尚未安装</strong>
+    <p class="hint">安装会拉取镜像、创建容器并写入 socket；失败原因会显示在本页与「日志」页签。</p>
+    {% if can_admin %}
+    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
+      <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+      <button class="btn primary" type="submit"{% if has_job && job.active %} disabled{% endif %}>{% if has_job && job.active %}安装中…{% else %}安装运行环境{% endif %}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if has_job && job.active %}
+  <div class="runtime-job" data-runtime-job data-job-url="{{ job_url }}" data-job-state="{{ job.state }}">
+    <p class="muted" data-job-step>{{ job.step }} · {{ job.progress }}%</p>
+    <span class="runtime-progress runtime-progress-wide" data-job-progress><span style="width: {{ job.progress }}%"></span></span>
+    <pre class="log runtime-job-log" data-job-log>{{ job.log }}</pre>
+  </div>
+  {% else if has_job && job.failed %}
+  <div class="alert" data-job-error>安装失败：{{ job.error }}。修正后可在上方重试，详细日志见「日志」页签。</div>
+  {% endif %}
+  {% endif %}
   <div class="runtime-version-card">
     <div class="runtime-version-col">
       <span class="muted">目标版本</span>
@@ -345,6 +366,7 @@
 
 {% if can_admin %}
 <div class="drawer-foot runtime-actions" data-runtime-actions>
+  {% if runtime.container_exists %}
   <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/start" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">启动</button>
   </form>
@@ -357,11 +379,16 @@
   <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/rebuild" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重建</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline" data-drawer-post>
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">同步状态</button>
-  </form>
   <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">重新安装</button>
+  </form>
+  {% else %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn primary" type="submit">安装运行环境</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline" data-drawer-post>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">同步状态</button>
   </form>
 </div>
 {% endif %}

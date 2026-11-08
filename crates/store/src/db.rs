@@ -32,7 +32,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -159,6 +159,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V12)?;
             conn.execute_batch("PRAGMA user_version = 12")?;
             info!(from = version, to = 12, "schema 迁移完成");
+        }
+        if version < 13 {
+            conn.execute_batch(SCHEMA_V13)?;
+            conn.execute_batch("PRAGMA user_version = 13")?;
+            info!(from = version, to = 13, "schema 迁移完成");
         }
         Ok(())
     }
@@ -575,9 +580,31 @@ const SCHEMA_V12: &str = r#"
 DROP INDEX IF EXISTS idx_scheduled_tasks_kind_source;
 "#;
 
+/// v13：标记「迁移种入、从未安装」的 PHP 占位行，列表不再展示这类种子。
+///
+/// 只有 `image_digest` 为空（从未成功安装）且无站点引用的种子行才降级为
+/// `origin = 'seed'`；用户实际安装过或站点正在使用的行保持 `instance`，
+/// 避免把真实实例误判成模板。
+const SCHEMA_V13: &str = r#"
+ALTER TABLE site_runtimes ADD COLUMN origin TEXT NOT NULL DEFAULT 'instance';
+UPDATE site_runtimes
+   SET origin = 'seed'
+ WHERE kind = 'php'
+   AND id IN ('php-8.5', 'php-8.4', 'php-8.3')
+   AND name = id
+   AND image_digest = ''
+   AND config_json = '{}'
+   AND extensions = ''
+   AND NOT EXISTS (SELECT 1 FROM sites WHERE sites.runtime_id = site_runtimes.id);
+UPDATE site_runtimes
+   SET socket_path = NULL
+ WHERE origin = 'seed';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ORIGIN_SEED;
     use skiff_model::Role;
 
     #[test]
@@ -591,9 +618,9 @@ mod tests {
         assert_eq!(v, CURRENT_SCHEMA_VERSION);
     }
 
-    /// 迁移链落新结构：旧站点表被重建，同时种入内置 PHP 运行环境（name 即标识）。
+    /// 迁移链落新结构：旧站点表被重建，内置 PHP 行被标记为未安装种子。
     #[test]
-    fn migrations_rebuild_sites_and_seed_php_runtime() {
+    fn migrations_rebuild_sites_and_mark_php_seed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("skiff.db");
         {
@@ -623,9 +650,10 @@ mod tests {
         assert_eq!(seeded.kind, "php");
         assert_eq!(seeded.name, "php-8.5");
         assert!(seeded.is_default);
-        assert_eq!(
-            seeded.socket_path.as_deref(),
-            Some("/www/runtime/php/php-8.5/php-fpm.sock")
+        assert_eq!(seeded.origin, ORIGIN_SEED);
+        assert!(
+            seeded.socket_path.is_none(),
+            "从未安装的种子行不应登记 socket 路径"
         );
     }
 

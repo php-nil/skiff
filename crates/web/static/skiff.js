@@ -1184,8 +1184,10 @@
         body: new FormData(form),
         credentials: "same-origin",
         headers: { "X-Requested-With": "fetch" }
-      }).then(function () {
-        return open(actionUrl);
+      }).then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        // 303 回跳带 ?notice=/?error=：按最终 URL 重开抽屉，错误不再被静默吞掉。
+        return open(resp.redirected ? resp.url : actionUrl);
       }).catch(function (err) {
         if (content) content.innerHTML = '<div class="alert">提交失败：' + String(err.message || err) + "</div>";
       });
@@ -1654,28 +1656,6 @@
     apply(initial || "status", false);
   }
 
-  // ---- Web 服务行内动作：独立合成行，不打开抽屉 ----
-  function attachWebRuntimeActions() {
-    var form = document.querySelector("[data-web-action-form]");
-    if (!form || form.dataset.bound === "1") return;
-    form.dataset.bound = "1";
-    document.addEventListener("click", function (e) {
-      if (!(e.target instanceof Element)) return;
-      var btn = e.target.closest("[data-web-action]");
-      if (!btn) return;
-      e.preventDefault();
-      var op = btn.getAttribute("data-web-action") || "";
-      if (!op) return;
-      if (op === "delete" && !window.confirm("删除 Web 服务容器？PHP / Node / Go / Rust 运行环境各自独立，不受影响。")) {
-        return;
-      }
-      var base = form.getAttribute("data-web-action-base") || "";
-      form.setAttribute("action", base + "/" + op);
-      if (typeof form.requestSubmit === "function") form.requestSubmit();
-      else form.submit();
-    });
-  }
-
   function boot() {
     attachLogs();
     attachTerminal();
@@ -1689,7 +1669,6 @@
     attachSiteDialog();
     attachRuntimeDrawer();
     attachRuntimeCreate();
-    attachWebRuntimeActions();
     attachRuntimeJobs();
     attachNginxTabs();
     attachToasts();

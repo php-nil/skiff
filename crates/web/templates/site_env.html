@@ -4,8 +4,14 @@
 <div class="page-runtimes" data-runtime-jobs-url="{{ jobs_href }}">
   <div class="page-head">
     <h1>运行环境</h1>
-    <span class="sub">Web 服务（OpenResty）与 PHP / Node / Go / Rust 各自独立安装、各自状态、各自删除</span>
+    <span class="muted small">语言运行时实例（PHP / Rust）；Web 服务在「Web 服务」页单独管理。</span>
+    {% if can_admin %}
+    <div class="actions">
+      <button type="button" class="btn primary" data-runtime-new>新建运行环境</button>
+    </div>
+    {% endif %}
   </div>
+
   {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
   {% if !notice.is_empty() %}<div class="alert ok" data-toast>{{ notice }}</div>{% endif %}
   {% if !env.docker_available %}
@@ -15,11 +21,21 @@
   <section class="panel">
     <div class="panel-head">
       <h2>环境列表</h2>
-      {% if can_admin %}
-      <button type="button" class="btn primary" data-runtime-new>+ 新建运行环境</button>
-      {% endif %}
     </div>
-    <p class="muted">Web 服务行只管理 OpenResty 容器（<code>skiff-web-nginx</code>，host 网络 80），安装/重建/删除都不会连带任何语言运行环境；PHP / Node / Go / Rust 每类各自独立安装与状态。PHP 实例独立目录与 socket：<code>/www/runtime/php/&lt;name&gt;/php-fpm.sock</code>（0660 root:nobody）。</p>
+    <div class="toolbar">
+      <span class="muted small">共 {{ runtimes.len() }} 个实例</span>
+      <div class="sep"></div>
+      <div class="actions">
+        <a class="btn ghost" href="/{{ ctx.prefix }}/sites/env">刷新</a>
+      </div>
+    </div>
+    {% if runtimes.is_empty() %}
+    <div class="empty">
+      <strong>还没有运行环境</strong>
+      <p class="hint">模板里的 PHP 版本只在新建时出现，安装成功后才进入本列表。点击右上角「新建运行环境」，选择 PHP / Rust 并安装后即可绑定站点。</p>
+      {% if can_admin %}<button type="button" class="btn primary" data-runtime-new>新建运行环境</button>{% endif %}
+    </div>
+    {% else %}
     <div class="table-wrap">
       <table class="grid runtimes-grid">
         <thead>
@@ -30,12 +46,12 @@
             <th>状态</th>
             <th class="num">占用站点</th>
             <th>接入方式</th>
-            <th class="actions-col"></th>
+            <th class="col-actions"></th>
           </tr>
         </thead>
         <tbody>
         {% for r in runtimes %}
-          <tr{% if !r.is_web %} data-runtime-row="{{ r.id }}" data-runtime-open="{{ r.detail_href }}"{% endif %}>
+          <tr data-runtime-row="{{ r.id }}" data-runtime-open="{{ r.detail_href }}">
             <td>{{ r.kind_label }}</td>
             <td class="mono">{{ r.name }}{% if r.is_default %} <span class="tag">默认</span>{% endif %}</td>
             <td>
@@ -50,41 +66,19 @@
             </td>
             <td class="num">{{ r.site_count }}</td>
             <td><span class="mono runtime-endpoint" title="{{ r.endpoint_full }}">{{ r.endpoint_short }}</span></td>
-            <td class="actions-col">
-              {% if r.is_web %}
-              {% if can_admin %}
-              <div class="runtime-inline-actions">
-                {% if r.container_exists %}
-                {% if r.container_state == "running" %}
-                <button type="button" class="link-btn" data-web-action="stop">停止</button>
-                {% else %}
-                <button type="button" class="link-btn" data-web-action="start">启动</button>
-                {% endif %}
-                <button type="button" class="link-btn" data-web-action="restart">重启</button>
-                <button type="button" class="link-btn" data-web-action="rebuild">重建</button>
-                <button type="button" class="link-btn danger" data-web-action="delete">删除</button>
-                {% else %}
-                <button type="button" class="link-btn" data-web-action="install">安装</button>
-                {% endif %}
-              </div>
-              {% endif %}
-              {% else %}
+            <td class="actions-cell">
               <button type="button" class="link-btn" data-runtime-open="{{ r.detail_href }}" aria-haspopup="dialog">详情</button>
-              {% endif %}
             </td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="hint">Web 服务行用行内按钮直接启停/重建/删除，不打开抽屉；语言运行环境点整行或「详情」从右侧打开抽屉，启停/重建、安装日志与扩展管理都在抽屉里。安装中状态与进度会自动刷新。</p>
+    <p class="hint">点击整行或「详情」从右侧打开抽屉；启停/重建、安装日志与扩展管理都在抽屉里。安装中状态与进度会自动刷新。</p>
+    {% endif %}
   </section>
 
   {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/install" data-web-action-form data-web-action-base="/{{ ctx.prefix }}/sites/env/web/action" hidden>
-    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-  </form>
-
   <section class="panel">
     <details class="runtime-images">
       <summary>镜像参数（nginx / PHP 基础镜像标签）</summary>
@@ -101,9 +95,7 @@
       </form>
     </details>
   </section>
-  {% endif %}
 
-{% if can_admin %}
 <dialog class="modal runtime-dialog" data-runtime-new-dialog aria-label="新建运行环境">
   <form method="post" action="{{ add_href }}">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

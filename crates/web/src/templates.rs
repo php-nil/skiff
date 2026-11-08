@@ -227,14 +227,11 @@ pub struct SiteNewForm {
     pub proxy_websocket: bool,
 }
 
-/// 向导第二步可选的一个运行环境。
+/// 向导第二步可选的一个运行环境（只含已就绪实例）。
 #[derive(Debug, Clone)]
 pub struct RuntimeOptionView {
     pub id: String,
     pub label: String,
-    /// P2 预留（Node/Go）在 P1 不可继续。
-    pub disabled: bool,
-    pub disabled_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -366,8 +363,6 @@ pub struct RuntimeRow {
     pub port: String,
     pub implemented: bool,
     pub is_default: bool,
-    /// 合成行：独立 Web 服务（OpenResty），不落库、不打开实例抽屉。
-    pub is_web: bool,
     pub detail_href: String,
     /// 同一底层容器的 Docker 页深链（双向跳转）。
     pub docker_href: String,
@@ -530,6 +525,8 @@ pub struct NginxPage {
     pub config: skiff_app::nginx::NginxConfigView,
     pub logs: skiff_app::nginx::NginxLogView,
     pub modules: skiff_app::nginx::NginxModuleView,
+    /// Web 服务容器安装进度（安装/重建时的分步状态）。
+    pub install: skiff_app::sites::InstallProgress,
     /// status / config / logs / modules
     pub tab: String,
     pub can_admin: bool,

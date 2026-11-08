@@ -194,7 +194,6 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         port: v.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
         implemented: v.implemented,
         is_default: v.runtime.is_default,
-        is_web: false,
         detail_href: format!(
             "/{prefix}/sites/env/{}",
             encode_uri_component(&v.runtime.id)
@@ -206,69 +205,6 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         job_progress: job.as_ref().map(|j| j.progress).unwrap_or(0),
         job_error: job.as_ref().map(|j| j.error.clone()).unwrap_or_default(),
         job_active,
-    }
-}
-
-/// 独立 Web 服务（OpenResty）合成行：不落库、不打开实例抽屉。
-///
-/// 与 PHP/Node/Go/Rust 行完全平级：各自安装、各自状态、各自删除。
-fn web_runtime_row(state: &AppState, env: &SiteEnvStatus, site_count: usize) -> RuntimeRow {
-    let prefix = &state.cfg.entry_prefix;
-    // Docker 不可达时状态是 unknown：既不是「已安装」，也不是「未安装」。
-    let known = env.nginx_state != "unknown" && !env.nginx_state.is_empty();
-    let exists = known && env.nginx_state != "missing";
-    let short = |id: &str| -> String {
-        let raw = id.strip_prefix("sha256:").unwrap_or(id);
-        raw.chars().take(12).collect()
-    };
-    RuntimeRow {
-        id: "web".into(),
-        kind_key: "web".into(),
-        kind_label: "Web 服务（OpenResty）".into(),
-        name: "openresty".into(),
-        container_name: skiff_app::sites::NGINX_CONTAINER.to_string(),
-        version: "openresty".into(),
-        version_display: "OpenResty".into(),
-        version_note: format!("镜像 {}", env.nginx_image),
-        actual_version: env.nginx_image_id.clone(),
-        container_exists: exists,
-        image: env.nginx_image.clone(),
-        image_id: short(&env.nginx_image_id),
-        image_id_full: env.nginx_image_id.clone(),
-        image_digest: String::new(),
-        image_digest_full: String::new(),
-        image_mismatch: false,
-        state_label: if !known {
-            "状态未知".into()
-        } else if exists {
-            state_label(&env.nginx_state).to_string()
-        } else {
-            "未安装".into()
-        },
-        state_class: if !known {
-            "muted".into()
-        } else if !exists {
-            "warn".into()
-        } else {
-            state_class(&env.nginx_state).to_string()
-        },
-        drift: false,
-        site_count,
-        container_state: env.nginx_state.clone(),
-        endpoint_short: ":80".into(),
-        endpoint_full: "宿主 80 端口（host 网络）".into(),
-        port: "80".into(),
-        implemented: true,
-        is_default: false,
-        is_web: true,
-        detail_href: String::new(),
-        docker_href: format!(
-            "/{prefix}/containers/{}",
-            encode_uri_component(skiff_app::sites::NGINX_CONTAINER)
-        ),
-        job_progress: 0,
-        job_error: String::new(),
-        job_active: false,
     }
 }
 
@@ -457,6 +393,7 @@ async fn render_sites(
     form_error: String,
     form_open: bool,
 ) -> Result<Response, AppError> {
+    let mut form = form;
     let env = state.site_env_status().await;
     let sites = state.db().list_sites()?;
     let keyword = q.get("q").cloned().unwrap_or_default();
@@ -466,6 +403,14 @@ async fn render_sites(
     let runtimes = state.db().list_runtimes().unwrap_or_default();
     // 站点列表的运行态以 Docker 实时容器状态为准；DB last_status 只是缓存，不能直接展示。
     let runtime_views = state.runtime_views().await.unwrap_or_default();
+    let runtime_opts = runtime_options(&runtime_views);
+    // 默认选中第一个已就绪实例；没有就绪实例时留空，由模板给出引导。
+    if runtime_opts.is_empty() || !runtime_opts.iter().any(|o| o.id == form.runtime_id) {
+        form.runtime_id = runtime_opts
+            .first()
+            .map(|o| o.id.clone())
+            .unwrap_or_default();
+    }
     let views: Vec<SiteView> = sites
         .iter()
         .map(|s| {
@@ -509,7 +454,7 @@ async fn render_sites(
         notice,
         keyword,
         form,
-        runtimes: runtime_options(&runtime_views),
+        runtimes: runtime_opts,
         form_open,
         form_error: form_error.clone(),
         form_error_field,
@@ -526,7 +471,7 @@ fn default_new_form(q: &HashMap<String, String>) -> SiteNewForm {
     };
     SiteNewForm {
         site_type,
-        runtime_id: "php-8.5".into(),
+        runtime_id: String::new(),
         ..Default::default()
     }
 }
@@ -616,47 +561,22 @@ fn collect_aliases(form: &HashMap<String, Vec<String>>) -> Vec<String> {
     out
 }
 
-/// 运行环境选项：label 与类型目录共用 `runtime_catalog`，避免漏映射新类型（如 Rust 被标成 PHP）。
+/// 运行环境选项：只列已就绪（已安装且运行中）的实例。
+///
+/// 未安装、未运行与 P2 未实现的类型都不出现在下拉里；模板在选项为空时
+/// 给出「先安装运行环境」的引导，而不是渲染一个空下拉。
 fn runtime_options(views: &[skiff_app::sites::RuntimeView]) -> Vec<RuntimeOptionView> {
-    let mut out: Vec<RuntimeOptionView> = views
+    views
         .iter()
+        .filter(|v| v.implemented && v.effective_state == "running")
         .map(|v| {
             let kind = skiff_app::runtime_catalog::kind_label(&v.runtime.kind);
-            let ready = v.implemented && v.effective_state == "running";
             RuntimeOptionView {
                 id: v.runtime.id.clone(),
                 label: format!("{kind} {}", v.runtime.version),
-                disabled: !v.implemented || !ready,
-                disabled_reason: if !v.implemented {
-                    "P2 未实现：当前仅提供 PHP / Rust 运行环境".into()
-                } else if v.effective_state == "missing" {
-                    "未安装，可到运行环境页安装".into()
-                } else if !ready {
-                    format!(
-                        "运行环境未运行（当前：{}）",
-                        state_label(&v.effective_state)
-                    )
-                } else {
-                    String::new()
-                },
             }
         })
-        .collect();
-    // 固定展示 P2 预留项，避免用户以为界面漏做了 Node/Go。
-    for (id, version) in [("node-22", "22"), ("go-1.24", "1.24")] {
-        let kind = if id.starts_with("node") { "node" } else { "go" };
-        out.push(RuntimeOptionView {
-            id: id.into(),
-            label: format!(
-                "{} {}",
-                if kind == "node" { "Node.js" } else { "Go" },
-                version
-            ),
-            disabled: true,
-            disabled_reason: "P2 未实现：P1 不提供该运行时的安装与运行".into(),
-        });
-    }
-    out
+        .collect()
 }
 
 /// 新建入口不再单独成页：跳到列表并直接展开弹窗（带类型时预选）。
@@ -819,10 +739,12 @@ pub async fn env_page(
     require_admin(&user)?;
     let env = state.site_env_status().await;
     let views = state.runtime_views().await.unwrap_or_default();
-    let site_total = state.db().list_sites().map(|s| s.len()).unwrap_or(0);
-    let mut runtimes: Vec<RuntimeRow> = Vec::with_capacity(views.len() + 1);
-    runtimes.push(web_runtime_row(&state, &env, site_total));
-    runtimes.extend(views.iter().map(|v| runtime_row(&state, v)));
+    // Web 服务在「Web 服务」页单独管理；种子行只在已安装或被站点引用时出现。
+    let runtimes: Vec<RuntimeRow> = views
+        .iter()
+        .filter(|v| v.is_listed())
+        .map(|v| runtime_row(&state, v))
+        .collect();
     let prefix = &state.cfg.entry_prefix;
     let kinds = runtime_kind_views();
     // 新建弹窗切换 PHP 版本时，扩展勾选项要按该版本重算可用性；
@@ -1857,7 +1779,7 @@ pub async fn runtime_action(
     }
     let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    // Web 服务是独立合成行（id=web，不落库），动作直接落到 OpenResty 容器。
+    // Web 服务不落库，运维入口在「Web 服务」页；动作直接落到 OpenResty 容器。
     if id == "web" {
         if !matches!(
             action.as_str(),
@@ -1867,6 +1789,7 @@ pub async fn runtime_action(
                 "Web 服务不支持操作：{action}"
             )));
         }
+        let back = format!("/{prefix}/sites/web?tab=status");
         return match state.web_env_action(&action).await {
             Ok(()) => {
                 let _ = state.db().audit(
@@ -1885,7 +1808,7 @@ pub async fn runtime_action(
                     _ => "Web 服务操作已完成",
                 };
                 Ok(handlers::redirect(format!(
-                    "/{prefix}/sites/env?notice={}",
+                    "{back}&notice={}",
                     encode_uri_component(notice)
                 )))
             }
@@ -1900,7 +1823,7 @@ pub async fn runtime_action(
                     &msg,
                 );
                 Ok(handlers::redirect(format!(
-                    "/{prefix}/sites/env?error={}",
+                    "{back}&error={}",
                     encode_uri_component(&msg)
                 )))
             }

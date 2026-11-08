@@ -15,6 +15,11 @@ pub const KIND_NODE: &str = "node";
 pub const KIND_GO: &str = "go";
 pub const KIND_RUST: &str = "rust";
 
+/// 用户创建的真实实例。
+pub const ORIGIN_INSTANCE: &str = "instance";
+/// 迁移种入、从未安装的占位行（只作模板，不进列表）。
+pub const ORIGIN_SEED: &str = "seed";
+
 pub fn validate_kind(kind: &str) -> Result<&'static str> {
     match kind {
         KIND_PHP => Ok(KIND_PHP),
@@ -78,6 +83,8 @@ pub struct Runtime {
     pub config_json: String,
     /// 已启用的 PHP 扩展（catalog key 的逗号分隔串；清单本身在应用层单一来源）。
     pub extensions: String,
+    /// `instance`：用户创建的真实实例；`seed`：迁移种入、未安装的占位行（只作模板，不进列表）。
+    pub origin: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -111,14 +118,15 @@ fn row_to_runtime(r: &Row<'_>) -> rusqlite::Result<Runtime> {
         is_default: r.get::<_, i64>(10)? != 0,
         config_json: r.get(11)?,
         extensions: r.get(12)?,
-        created_at: r.get(13)?,
-        updated_at: r.get(14)?,
+        origin: r.get(13)?,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
     })
 }
 
 const RUNTIME_COLS: &str = "id, kind, name, version, image, image_digest, desired_state, \
                             last_status, socket_path, port, is_default, config_json, \
-                            extensions, created_at, updated_at";
+                            extensions, origin, created_at, updated_at";
 
 impl Db {
     pub fn create_runtime(&self, r: &NewRuntime) -> Result<Runtime> {
@@ -133,8 +141,8 @@ impl Db {
         conn.execute(
             "INSERT INTO site_runtimes(id, kind, name, version, image, image_digest,
                                        desired_state, last_status, socket_path, port, is_default,
-                                       config_json, extensions, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, ?9, '{}', '', ?10, ?10)",
+                                       config_json, extensions, origin, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', 'stopped', ?7, ?8, ?9, '{}', '', 'instance', ?10, ?10)",
             params![
                 id,
                 kind,
@@ -363,9 +371,9 @@ mod tests {
         assert_eq!(seeded.kind, KIND_PHP);
         assert_eq!(seeded.name, "php-8.5");
         assert!(seeded.is_default);
-        assert_eq!(
-            seeded.socket_path.as_deref(),
-            Some("/www/runtime/php/php-8.5/php-fpm.sock")
+        assert!(
+            seeded.socket_path.is_none(),
+            "从未安装的种子行不登记 socket 路径"
         );
 
         let dup = db.create_runtime(&php("php-8.5", "8.5", false));

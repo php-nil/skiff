@@ -76,6 +76,52 @@
       </div>
     </div>
 
+    <div class="nginx-subblock" data-web-env-ops>
+      <h3>容器运维</h3>
+      <p class="muted small">Web 服务（OpenResty）是站点依赖的基础容器；停止或删除会立即影响所有站点。语言运行环境在「运行环境」页单独管理。</p>
+      {% if install.running %}
+      <div class="alert warn" data-web-install-progress>
+        正在安装 Web 服务容器…
+      </div>
+      {% if !install.steps.is_empty() %}
+      <ol class="steps">
+        {% for step in install.steps %}
+        <li class="step {{ step.state.as_str() }}"><span class="dot"></span><span>{{ step.name }}{% if !step.detail.is_empty() %}<span class="detail">{{ step.detail }}</span>{% endif %}</span></li>
+        {% endfor %}
+      </ol>
+      {% endif %}
+      {% else if !install.error.is_empty() %}
+      <div class="alert">上次安装失败：{{ install.error }}</div>
+      {% endif %}
+      {% if can_admin %}
+      <div class="web-env-actions">
+        {% if status.container_state == "missing" || status.container_state.is_empty() %}
+        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/install">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn primary" type="submit">安装 Web 服务（OpenResty）</button>
+        </form>
+        {% else %}
+        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/{% if status.container_state == "running" %}stop{% else %}start{% endif %}">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn" type="submit">{% if status.container_state == "running" %}停止{% else %}启动{% endif %}</button>
+        </form>
+        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/restart">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn" type="submit">重启</button>
+        </form>
+        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/rebuild" data-confirm="确认重新安装 Web 服务？将重建 OpenResty 容器，期间所有站点不可访问。">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn ghost" type="submit">重新安装</button>
+        </form>
+        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/delete" data-confirm="确认删除 Web 服务容器？删除后所有站点立即不可访问，配置与站点目录保留。">
+          <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+          <button class="btn ghost danger" type="submit">删除容器</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
     <div class="nginx-subblock">
       <h3>探测与路径</h3>
       <div class="kv nginx-probe">

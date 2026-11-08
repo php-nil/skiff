@@ -207,10 +207,9 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 操作 | 只保留一个「详情」入口；整行或按钮都打开右侧抽屉，不再并列「更多」 |
 
 - 表格按内容自适应列宽并铺满容器，不固定撑宽某一列；接入方式列宽度只够放 `sock` / `:8080`。
-- 空态：未安装任何环境时显示「新建运行环境」主操作 + “Node.js / Go 将在 P2 接入”说明，不显示空表。
-- 顶部固定边界提示：`本页管理运行环境与绑定关系；原始容器操作请到 Docker → 容器。`
-- 标题栏不再直出「安装/重新安装基础环境」按钮：该入口并入「新建运行环境」弹窗的次要表单，
-  并标注重建会重装 nginx 容器与默认 PHP 实例、已有站点配置保留但会短暂中断。
+- 空态：没有任何真实实例时显示「还没有运行环境」+「新建运行环境」主操作；迁移种入的 PHP 模板（8.5/8.4/8.3）只在新建弹窗里出现，不在列表占位。
+- 顶部固定边界提示：`本页管理语言运行环境与绑定关系；Web 服务在「Web 服务」页单独管理，原始容器操作请到 Docker → 容器。`
+- 主操作统一放右上角 `page-head .actions`（「新建运行环境」），不再下沉到列表头部。
 
 ### 4.2 PHP 环境详情
 
@@ -660,18 +659,22 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### 12.1 取消「基础环境」
 
-- **模型**：运行环境列表每行一个独立主体，`web`（OpenResty）、`php`、`node`、`go`、`rust`
-  各自安装、各自状态、各自删除，互不连带。站点创建只做两类独立校验：
+- **模型**：运行环境列表只列真实语言实例（`php` / `rust`，以及用户显式创建、尚未实现的 `node` / `go` 登记行），
+  各自安装、各自状态、各自删除，互不连带。**Web 服务（OpenResty）不属于运行环境列表**，归 `/$P/sites/web` 页管理。
+  站点创建只做两类独立校验：
   1. Web 服务：`docker_available && nginx 容器存在 && running`，否则提示「装 Web 服务」；
   2. 语言运行环境：所选实例存在且运行中，否则提示「装对应语言运行环境」。
   不再存在「基础环境就绪」的合并判断。
-- **Web 行**：合成行（`id=web`，不落库、不打开实例抽屉），容器名 `skiff-web-nginx`，
-  行内动作 `/sites/env/web/action/{install|rebuild|start|stop|restart|delete}`。
-  `install`/`rebuild` 只拉取 OpenResty、重建 vhost、启动 nginx；不触碰任何 PHP/Node/Go/Rust 容器。
+- **种子与实例**：`site_runtimes.origin ∈ {instance, seed}`（schema v13）。迁移种入、从未安装且无站点引用的
+  PHP 行标记为 `seed`，列表通过 `RuntimeView::is_listed` 过滤（种子只在已安装或被站点引用时显示）；
+  同类型同名新建时会接管无引用的种子行。种子仍可按 id 直达详情页，模板入口只出现在新建流程。
+- **Web 服务页**：容器名 `skiff-web-nginx`，状态与运维入口（安装/启停/重启/重建/删除）在
+  `/$P/sites/web?tab=status`；`install`/`rebuild` 只拉取 OpenResty、重建 vhost、启动 nginx，
+  不触碰任何 PHP/Node/Go/Rust 容器。运行环境页不再有合成 `web` 行与行内 Web 动作。
 - **删除的耦合**：`add_runtime` 弹窗内的「安装基础环境（OpenResty + 默认 PHP 8.5）」次要表单、
   `/sites/env/install` 路由、`base_install_href` 上下文、`run_site_env_install` 里的 PHP 池配置 /
   PHP 镜像拉取 / PHP 容器创建与 socket 收紧，全部移除。
-- **schema**：`site_runtimes` 中没有「基础环境」标记；`is_default` 是 per-kind 默认实例，不需要迁移。
+- **schema**：`site_runtimes` 无「基础环境」标记；v13 新增 `origin`（`instance` / `seed`），`is_default` 仍是 per-kind 默认实例。
 - **vhost**：站点 vhost 生成只依赖 Web 服务存在 + 所选语言实例的 socket（PHP）或端口（Rust）；
   任一缺失各自报错（`PHP 实例未登记 socket` / `Rust 实例未分配端口` / `Web 服务未安装`）。
 

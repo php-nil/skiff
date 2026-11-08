@@ -6,7 +6,9 @@
   <h1>网站</h1>
   <span class="sub">{{ sites.len() }} 个站点{% if !env.ready %} · Web 服务未就绪{% endif %}</span>
   {% if can_admin %}
-  <a class="btn primary" href="/{{ ctx.prefix }}/sites/new" data-site-new>新建网站</a>
+  <div class="actions">
+    <a class="btn primary" href="/{{ ctx.prefix }}/sites/new" data-site-new>新建网站</a>
+  </div>
   {% endif %}
 </div>
 {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
@@ -19,11 +21,11 @@
     {% if !env.docker_available %}
     <p class="hint">Docker 不可用：{{ env.docker_reason }}。网站依赖 Docker 承载 OpenResty 与语言运行环境。</p>
     {% else if !env.installed %}
-    <p class="hint">尚未安装 Web 服务（OpenResty）；PHP / Node / Go / Rust 是各自独立的运行环境，请在运行环境列表按需安装。</p>
+    <p class="hint">尚未安装 Web 服务（OpenResty）；PHP / Rust 是各自独立的运行环境，请在运行环境列表按需安装。</p>
     {% else %}
     <p class="hint">Web 服务容器未运行：{{ env.nginx_state }}。语言运行环境的状态在运行环境列表独立展示。</p>
     {% endif %}
-    <a class="btn primary" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+    <a class="btn primary" href="/{{ ctx.prefix }}/sites/web">前往 Web 服务</a>
   </div>
 </section>
 {% endif %}
@@ -46,8 +48,8 @@
     <a class="btn" href="/{{ ctx.prefix }}/sites">清除搜索</a>
     {% else if !env.ready %}
     <strong>先安装 Web 服务，再创建第一个网站</strong>
-    <p class="hint">静态网站与反向代理只需要 Web 服务（OpenResty）；运行环境站还需要单独安装并选择对应的语言运行环境（PHP / Node / Go / Rust）。</p>
-    <a class="btn primary" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+    <p class="hint">静态网站与反向代理只需要 Web 服务（OpenResty）；运行环境站还需要单独安装并选择对应的语言运行环境（PHP / Rust）。</p>
+    <a class="btn primary" href="/{{ ctx.prefix }}/sites/web">前往 Web 服务</a>
     {% else %}
     <strong>还没有站点</strong>
     <p class="hint">创建后会生成整站目录（index/log/ssl/conf）、nginx vhost 与 PHP 探针，并自动重载 nginx。</p>

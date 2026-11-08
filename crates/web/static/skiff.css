@@ -775,6 +775,7 @@ body[data-layout="left"][data-content-width="fixed"] .foot {
 .page-head h1 { margin: 0; }
 .page-head .sub { color: var(--muted); font-size: var(--fs-sm); }
 .page-head .ghost, .page-head .more, .page-head .spacer { margin-left: auto; }
+.page-head .actions { margin-left: auto; }
 
 /* 工具条：搜索 / 主按钮 / 批量操作 */
 .toolbar {
@@ -1801,6 +1802,7 @@ dialog.drawer::backdrop { background: rgba(16, 24, 40, 0.45); }
 .page-nginx .section-head p { margin: var(--sp-1) 0 0; color: var(--muted); font-size: var(--fs-sm); }
 .page-nginx .nginx-subblock { margin-top: var(--sp-5); }
 .page-nginx .nginx-subblock h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-md); }
+.page-nginx .web-env-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); align-items: center; }
 .page-nginx .subblock-meta { margin: 0 0 var(--sp-2); color: var(--muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 .page-nginx .nginx-stats {
   display: grid;

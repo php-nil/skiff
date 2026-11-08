@@ -11,8 +11,8 @@
       {% if !form_error.is_empty() && form_error_field.is_empty() %}<div class="alert" data-site-server-error>{{ form_error }}</div>{% endif %}
       {% if !env.ready %}
       <div class="alert warn compact">
-        Web 服务未就绪：静态网站与反向代理需要 OpenResty 运行中；运行环境站还需要单独安装并选择对应的语言运行环境（PHP / Node / Go / Rust 各自独立）。
-        <a href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+        Web 服务未就绪：静态网站与反向代理需要 OpenResty 运行中；运行环境站还需要单独安装并选择对应的语言运行环境（PHP / Rust 各自独立）。
+        <a href="/{{ ctx.prefix }}/sites/web">前往 Web 服务</a>
       </div>
       {% endif %}
 
@@ -63,15 +63,21 @@
 
       <div class="field-block type-panel" data-type-panel="runtime">
         <label class="field-label" for="site-runtime">运行环境<span class="req" aria-hidden="true">*</span></label>
+        {% if runtimes.is_empty() %}
+        <div class="empty error-state">
+          <strong>没有已就绪的运行环境</strong>
+          <p class="hint">运行环境站需要已安装且运行中的实例。请先到运行环境页新建并安装 PHP / Rust，再回来创建站点。</p>
+          <a class="btn ghost" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+        </div>
+        {% else %}
         <select id="site-runtime" name="runtime_id" aria-required="true"
                 {% if form_error_field == "runtime_id" %}data-has-error aria-invalid="true"{% endif %}>
           {% for r in runtimes %}
-          <option value="{{ r.id }}"
-                  {% if r.disabled %}disabled data-disabled="1" data-reason="{{ r.disabled_reason }}"{% endif %}
-                  {% if form.runtime_id == r.id %}selected{% endif %}>{{ r.label }}{% if r.disabled %}（{{ r.disabled_reason }}）{% endif %}</option>
+          <option value="{{ r.id }}"{% if form.runtime_id == r.id %}selected{% endif %}>{{ r.label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">只列出已就绪的版本；未安装请先到 <a href="/{{ ctx.prefix }}/sites/env">运行环境页</a> 安装。Node.js / Go 为 P2 预留，禁用态不代表可用。</p>
+        <p class="hint">只列出已安装且运行中的实例；未安装、已停止或未实现的类型不出现在这里。未安装请先到 <a href="/{{ ctx.prefix }}/sites/env">运行环境页</a> 安装。</p>
+        {% endif %}
         <p class="field-error" data-error-for="runtime_id"{% if form_error_field == "runtime_id" %} data-has-error{% else %} hidden{% endif %}>{% if form_error_field == "runtime_id" %}{{ form_error }}{% endif %}</p>
       </div>
 

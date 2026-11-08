@@ -76,6 +76,7 @@ async fn page(
     handlers::render(NginxPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/web"),
         status: state.nginx_status().await,
+        install: state.site_install_progress().await,
         config,
         logs,
         modules: state.nginx_modules().await,

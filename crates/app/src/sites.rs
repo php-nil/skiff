@@ -1309,68 +1309,8 @@ fn vhost_check_main(candidate_container: &str) -> String {
 }
 
 impl AppState {
-    /// 把默认 PHP 运行环境校准到库：补 socket 宿主路径与镜像。
-    pub fn ensure_php_runtime(&self) -> Result<Runtime, SiteError> {
-        let s = self.site_settings();
-        let name = format!("php-{DEFAULT_PHP_VERSION}");
-        self.db()
-            .ensure_runtime(&NewRuntime {
-                id: name.clone(),
-                kind: skiff_store::KIND_PHP.into(),
-                name: name.clone(),
-                version: DEFAULT_PHP_VERSION.into(),
-                image: s.php_image.clone(),
-                image_digest: String::new(),
-                socket_path: Some(
-                    s.runtime_socket(skiff_store::KIND_PHP, &name)
-                        .display()
-                        .to_string(),
-                ),
-                port: None,
-                is_default: true,
-            })
-            .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))
-    }
-
-    /// 校准内置 PHP 版本目录：已安装的保留状态，未安装的登记为「缺容器」。
-    ///
-    /// 目录只是可安装版本清单，**不代表已运行**；建站仍要求对应 socket 实际存在。
-    fn ensure_php_runtimes(&self) -> Result<Vec<Runtime>, SiteError> {
-        let s = self.site_settings();
-        let versions: &[&str] = runtime_catalog::kind_def(skiff_store::KIND_PHP)
-            .map(|d| d.versions)
-            .unwrap_or(&[]);
-        let mut out = Vec::new();
-        for (idx, version) in versions.iter().enumerate() {
-            let name = format!("php-{version}");
-            let image = runtime_catalog::image_for(skiff_store::KIND_PHP, version, &s.php_image);
-            let rt = self
-                .db()
-                .ensure_runtime(&NewRuntime {
-                    id: name.clone(),
-                    kind: skiff_store::KIND_PHP.into(),
-                    name: name.clone(),
-                    version: (*version).into(),
-                    image,
-                    image_digest: String::new(),
-                    socket_path: Some(
-                        s.runtime_socket(skiff_store::KIND_PHP, &name)
-                            .display()
-                            .to_string(),
-                    ),
-                    port: None,
-                    is_default: idx == 0,
-                })
-                .map_err(|e| SiteError::Internal(format!("校准 PHP 运行环境失败：{e}")))?;
-            out.push(rt);
-        }
-        Ok(out)
-    }
-
     /// 运行环境列表：库是事实源，容器状态只作实时探测（漂移徽章的依据）。
     pub async fn runtime_views(&self) -> Result<Vec<RuntimeView>, SiteError> {
-        self.ensure_php_runtimes()?;
-        let s = self.site_settings();
         let runtimes = self
             .db()
             .list_runtimes()
@@ -1390,6 +1330,7 @@ impl AppState {
             Vec::new()
         };
         let jobs = self.runtime_jobs.lock().await.list();
+        let s = self.site_settings();
         let mut out = Vec::new();
         // image_id → 待 inspect 的视图下标（同一镜像多实例只 inspect 一次）。
         let mut pending_images: std::collections::HashMap<String, Vec<usize>> =
@@ -2660,15 +2601,30 @@ impl AppState {
                 .map_err(|e| SiteError::BadRequest(e.to_string()))?
                 .to_string()
         };
-        if self
+        let mut inherit_default = false;
+        if let Some(existing) = self
             .db()
             .runtime_by_name(kind, &name)
             .map_err(|e| SiteError::Internal(e.to_string()))?
-            .is_some()
         {
-            return Err(SiteError::Conflict(format!(
-                "同类型下已存在名为 {name} 的运行环境，请换一个名字"
-            )));
+            // 迁移种入、从未安装且无站点引用的模板行可被同名新建接管；
+            // 其它已存在的实例仍按重名拒绝。
+            let seed_free = existing.origin == skiff_store::ORIGIN_SEED
+                && self
+                    .db()
+                    .runtime_site_count(&existing.id)
+                    .map_err(|e| SiteError::Internal(e.to_string()))?
+                    == 0;
+            if seed_free {
+                inherit_default = existing.is_default;
+                self.db()
+                    .delete_runtime(&existing.id)
+                    .map_err(|e| SiteError::Internal(e.to_string()))?;
+            } else {
+                return Err(SiteError::Conflict(format!(
+                    "同类型下已存在名为 {name} 的运行环境，请换一个名字"
+                )));
+            }
         }
         let s = self.site_settings();
         if runtime_catalog::is_implemented(kind) {
@@ -2733,7 +2689,7 @@ impl AppState {
                     None
                 },
                 port,
-                is_default: false,
+                is_default: inherit_default,
             })
             .map_err(|e| SiteError::Conflict(e.to_string()))?;
         let joined = runtime_catalog::join_extensions(&enabled);
@@ -3067,6 +3023,15 @@ pub struct RuntimeView {
     pub extensions: Vec<String>,
     /// 最近一次异步任务（安装/扩展变更）；无任务时为 None。
     pub job: Option<RuntimeJob>,
+}
+
+impl RuntimeView {
+    /// 列表是否展示该行：用户实例始终展示；种子行只在已安装或被站点引用时展示。
+    pub fn is_listed(&self) -> bool {
+        self.runtime.origin != skiff_store::ORIGIN_SEED
+            || self.container_exists
+            || self.site_count > 0
+    }
 }
 
 fn socket_mode(path: &str) -> String {
@@ -3666,7 +3631,7 @@ impl AppState {
         let host = rt
             .socket_path
             .clone()
-            .ok_or_else(|| SiteError::Unavailable("运行环境缺少 socket 路径，请重新安装".into()))?;
+            .unwrap_or_else(|| s.runtime_socket(&rt.kind, &rt.name).display().to_string());
         let container = s.container_path(Path::new(&host));
         Ok((host, container))
     }
@@ -5649,7 +5614,14 @@ mod tests {
         let cfg = WebConfig {
             data_dir: root.join("data"),
             web_root: root.join("www"),
+            config_path: root.join("config.toml"),
+            listen: "127.0.0.1:18080".parse().unwrap(),
             entry_prefix: "p".into(),
+            entry_prefix_previous: None,
+            tls_enabled: false,
+            tls_cert: None,
+            tls_key: None,
+            allow_insecure_http: true,
             dev_http: true,
             trusted_proxies: vec![],
             external_url: None,
@@ -5850,7 +5822,6 @@ mod tests {
     fn site_vhost_routes_by_runtime_id_to_its_socket() {
         let dir = tempfile::tempdir().unwrap();
         let state = app_state_at(dir.path());
-        state.ensure_php_runtimes().unwrap();
         let s = state.site_settings();
         // 同版本第二实例：socket 只从 name 推导，与内置实例分开。
         state

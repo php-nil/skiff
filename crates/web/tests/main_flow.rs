@@ -4007,11 +4007,14 @@ async fn sites_new_dialog_defaults_and_validation() {
         !html.contains("data-alias-row"),
         "别名列表默认不应带空行: {html}"
     );
-    // 弹窗默认值：运行环境类型预选，PHP 版本预选已安装项。
+    // 弹窗默认值：运行环境类型预选；无就绪实例时给引导，不渲染空下拉。
     let runtime_pos = html.find(r#"value="runtime""#).unwrap();
     let runtime_tag: String = html[runtime_pos..].chars().take(80).collect();
     assert!(runtime_tag.contains("checked"), "默认应选中运行环境类型");
-    assert!(html.contains(r#"value="php-8.5""#), "默认应预选 php-8.5");
+    assert!(
+        html.contains("没有已就绪的运行环境") && html.contains("前往运行环境"),
+        "无就绪运行环境时必须给出引导而不是空下拉: {html}"
+    );
     assert!(
         html.contains("data-domain-main") && html.contains("data-root-slug"),
         "主域名与目录输入必须带前端钩子: {html}"
@@ -4025,8 +4028,8 @@ async fn sites_new_dialog_defaults_and_validation() {
         "前端不得暴露前缀校验文案: {html}"
     );
     assert!(
-        html.contains("Node.js / Go") && html.contains("P2 预留"),
-        "Node/Go 必须明确标注 P2 预留: {html}"
+        !html.contains("data-disabled"),
+        "未就绪的运行环境必须整项不出现，而不是禁用占位: {html}"
     );
     assert!(
         !html.contains("name=\"database\"") && !html.contains("name=\"ssl\""),
@@ -4278,6 +4281,21 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
 async fn site_env_page_drops_install_progress_and_uses_drawer() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
+    // 一个真实实例（未安装也算已存在的实例，应进列表）。
+    h.state
+        .db()
+        .create_runtime(&skiff_store::NewRuntime {
+            id: "php-8.5-a".into(),
+            kind: "php".into(),
+            name: "php-8.5-a".into(),
+            version: "8.5".into(),
+            image: "php:8.5-fpm-alpine".into(),
+            image_digest: String::new(),
+            socket_path: Some("/www/runtime/php/php-8.5-a/php-fpm.sock".into()),
+            port: None,
+            is_default: false,
+        })
+        .unwrap();
     let (status, html) = get_page(&h.app, "/p/sites/env", &admin).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -4295,7 +4313,6 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         "版本",
         "占用站点",
         "接入方式",
-        "默认",
         "详情",
         "新建运行环境",
         "创建并后台安装",
@@ -4314,9 +4331,16 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
             && html.contains(">sock<"),
         "接入方式列必须显示 sock 且完整路径进悬浮提示: {html}"
     );
+    assert!(html.contains("共 1 个实例"), "列表计数只算真实实例: {html}");
+    assert!(
+        !html.contains(r#"data-runtime-open="/p/sites/env/php-8.3""#)
+            && !html.contains(r#"data-runtime-open="/p/sites/env/php-8.4""#)
+            && !html.contains(r#"data-runtime-open="/p/sites/env/php-8.5""#),
+        "迁移种子行不得在列表占位（模板只在新建流程出现）: {html}"
+    );
     assert!(
         html.contains(r#"data-runtime-drawer"#)
-            && html.contains(r#"data-runtime-open="/p/sites/env/php-8.5""#)
+            && html.contains(r#"data-runtime-open="/p/sites/env/php-8.5-a""#)
             && html.contains("data-drawer-content"),
         "详情必须是右侧抽屉而不是跳页: {html}"
     );
@@ -4387,13 +4411,20 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
         !head_block.contains("/sites/env/install"),
         "标题栏不得再放基础环境按钮: {head_block}"
     );
-    // Web 服务独立成行：不打开实例抽屉，动作走 /sites/env/web/action/*。
+    // Web 服务不再是运行环境行：运维入口移到 Web 服务页。
     assert!(
-        html.contains(r#"data-web-action="install""#)
-            && html.contains(r#"/sites/env/web/action"#)
-            && html.contains("Web 服务（OpenResty）")
-            && include_str!("../static/skiff.js").contains("data-web-action"),
-        "Web 服务必须是独立行并带各自操作: {html}"
+        !html.contains("data-web-action")
+            && !html.contains("/sites/env/web/action")
+            && !include_str!("../static/skiff.js").contains("data-web-action"),
+        "Web 服务不得再出现在运行环境页: {html}"
+    );
+    let (status, web) = get_page(&h.app, "/p/sites/web", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        web.contains("Web 服务（OpenResty）")
+            && web.contains("data-web-env-ops")
+            && web.contains("/p/sites/env/web/action/"),
+        "Web 服务运维入口必须落在 Web 服务页: {web}"
     );
 
     // 抽屉交互由原生 <dialog> 承担：showModal 自动焦点锁 + Esc，遮罩点击关闭。
@@ -4476,12 +4507,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
     let (_, html) = get_page(&h.app, "/p/sites/env", &admin).await;
     let csrf = csrf_from(&html);
 
-    for (name, version) in [
-        ("PHP-8.5", "8.5"),
-        ("-php", "8.5"),
-        ("php-8.5", "8.5"),
-        ("php-8.5-a", ""),
-    ] {
+    for (name, version) in [("PHP-8.5", "8.5"), ("-php", "8.5"), ("php-8.5-a", "")] {
         let resp = h
             .app
             .clone()
@@ -4512,6 +4538,69 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
             "{name}/{version} 必须把错误带回页面: {location}"
         );
     }
+
+    // 迁移种子行可被同名新建接管：不再以「重名」拒绝，创建后即真实实例。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/env/add")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("name", "php-8.5"),
+                    ("version", "8.5"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        location.contains("notice="),
+        "种子行应被同名新建接管而不是重名拒绝: {location}"
+    );
+    // 接管后已是真实实例，再次同名必须拒绝。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/env/add")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(form_body(&[
+                    ("csrf", &csrf),
+                    ("name", "php-8.5"),
+                    ("version", "8.5"),
+                ]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        location.contains("error="),
+        "真实实例同名新建必须报重名: {location}"
+    );
 
     // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
     std::fs::create_dir_all(h.data_dir.join("www/runtime/php/php-8.4-a")).unwrap();
@@ -5093,9 +5182,9 @@ async fn stopped_site_config_save_validation_failure_does_not_persist() {
     );
 }
 
-/// 新建站点弹窗的运行环境下拉按真实类型取标签，不能把 Rust 复制成 PHP。
+/// 新建站点弹窗的运行环境下拉只列就绪实例：未安装/未运行/未实现的类型不出现。
 #[tokio::test]
-async fn site_new_dialog_labels_runtime_kind_correctly() {
+async fn site_new_dialog_excludes_unready_runtimes() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
     h.state
@@ -5116,12 +5205,16 @@ async fn site_new_dialog_labels_runtime_kind_correctly() {
     let (status, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains("Rust 1.83"),
-        "Rust 运行环境必须显示 Rust 标签: {html}"
+        !html.contains("Rust 1.83") && !html.contains("PHP 8.5"),
+        "未安装或未运行的运行环境不得出现在下拉: {html}"
     );
     assert!(
-        !html.contains("PHP 1.83"),
-        "Rust 环境不得被标成 PHP: {html}"
+        html.contains("没有已就绪的运行环境"),
+        "完全没有就绪实例时必须给明确引导: {html}"
+    );
+    assert!(
+        !html.contains(r#"name="runtime_id"#),
+        "无就绪实例时不得渲染空下拉: {html}"
     );
 }
 
@@ -5490,8 +5583,8 @@ fn ui_hidden_and_dialog_guards_hold() {
     );
     let tpl = include_str!("../templates/site_env.html");
     assert!(
-        tpl.contains(r#"{% if r.container_state == "running" %}"#),
-        "Web 服务行的启动/停止必须按容器状态二选一，不能并列渲染"
+        !tpl.contains("data-web-action"),
+        "Web 服务不再出现在运行环境页，运维入口归 Web 服务页: {tpl}"
     );
 }
 
