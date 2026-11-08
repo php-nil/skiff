@@ -107,7 +107,7 @@
         <label>类型
           <select name="kind" data-runtime-kind>
             {% for k in kinds %}
-            <option value="{{ k.key }}"{% if loop.first %} selected{% endif %}>{{ k.label }}{% if !k.implemented %}（P2 预留）{% endif %}</option>
+            <option value="{{ k.key }}"{% if loop.first %} selected{% endif %}>{{ k.label }}</option>
             {% endfor %}
           </select>
         </label>
@@ -135,7 +135,6 @@
           {% endfor %}
         </div>
       </fieldset>
-      <p class="hint" data-runtime-p2-note hidden>Node.js / Go 为 P2 预留：只会登记运行环境行，不安装容器，也不提供扩展管理。</p>
     </div>
     <div class="modal-actions">
       <button type="button" class="btn ghost" data-runtime-new-close>取消</button>

@@ -186,19 +186,41 @@
 - **修复后恢复**：还原合法配置再启动 → **303**，`.conf` 生成、DB `status=running`，站点正文 `Skiff Rust runtime ready haha version: 1.99 port: 9100`，`nginx -t` 通过、容器 running。
 - **回归抽查**：运行态保存非法 vhost 仍 200 内联报错且 vhost sha 不变、站点 200；`worker_connections=abc` 仍提示「需为 64–65535 的整数」且 DB 保持 **2048**；安装二进制 `df1ba659…` 与包内一致、配置 sha 未变、6 插件 grants 不变（files 7 / cron 6 / ftp 11 / guard 6 / monitor 3 / testkit 6）。
 
+**`2f63aeb` 三块环境受限项复验（2026-11-09 01:40–02:05）**
+
+- **FTP fail2ban 三次封禁（FTP-05）**：第二客户端用 `skiff-ftp-probe-client`（`python:3.13-alpine`，自定义网络 `skiff-ftp-probe-net` 172.31.0.0/24，客户端 IP **172.31.0.2**，与宿主不同网段，绕过 `ignoreself`），目标 `10.10.15.4:2121`。
+  - **缺陷复现**：把 `jail.d/skiff-pureftpd.conf` 退回旧内容（无 `port`）并重启 fail2ban，手动封探针 IP 后 nft 链为 `tcp dport { 20, 21, 989, 990 }`——`fail2ban-client status` 显示已封，但 2121 不被拦（旧实现漏封非 21 端口）。
+  - **产品路径**：`config.save{listen_port:2121}` → jail 落盘含 `port = 2121`，fail2ban 重启，链变为 `tcp dport 2121`。
+  - **三次错误密码**（`wrong1` 超时、`wrong2`/`wrong3` 530）→ `Currently banned: 1`（172.31.0.2）；`banip --with-time` 显示 `2026-11-09 01:54:49 + 600s`；第 4 次同一 IP 用正确口令 → **`ConnectionRefusedError`**（nft reject 生效）；面板 `status` 返回 `currently_banned=1`、`recent_ban` 带时间、`total_banned=2`、`listen_port=2121`、`running=true`。
+  - **解封恢复**：`unbanip` 后同 IP 正确口令 `LOGIN_OK`（`pwd=/`）。
+  - **审计**：`ftp.service.configure`、`ftp.status`、`ftp.uninstall` 有行；逐 IP 封禁不在内核审计（fail2ban journal/nft 为唯一证据），与契约一致。
+  - 修复已由 `2f63aeb` 落地（jail 钉住 `listen_port`，单测 `jail_body_pins_configured_listen_port`）；**本轮为修复后的复验**。
+  - 清理：账号与 `ftp-ban-probe.test` 站点已删；FTP 服务 `uninstall`（`removed_accounts=1, stopped=true`）；全部解封；`jail.d` 仅剩 `[sshd] enabled=false`、`fail2ban` jail 数 0、无 f2b nft 规则；2121 已停。
+- **1Panel 受限形态（DEPLOY-10）**：镜像 `skiff-panel-probe:2f63aeb`（`alpine:3.23` 运行阶段 + 发布包 `skiff`，与 `deploy/Dockerfile` 运行阶段等价，未跑 builder 阶段）；容器 `skiff-panel-probe`，`127.0.0.1:18082→18080`，`SKIFF_FORM=docker`、`SKIFF_ALLOW_INSECURE_HTTP=1`、`SKIFF_TRUSTED_PROXIES=172.16.0.0/12`、`/data` bind、`/var/run/docker.sock`。
+  - 启动正常、`/healthz` **200**、`/skiff health` HEALTHCHECK **healthy**、登录 **303**、数据根 `/data` 0700、首启建库 v15 与 `initial-admin.txt`。
+  - 能力面收缩实测（确认安装均 **400**）：`com.skiff.files`/`monitor`/`guard`/`testkit` →「插件需要能力 fs，当前部署形态不提供（能力面收缩见 §5.4）」；`com.skiff.ftp` →「插件需要能力 ftp…」；`com.skiff.cron` →「要求完整沙箱（requires_full_sandbox = true）…」；`plugins` 表为空。
+  - 容器管理可用：`/containers/rows` 200 列出 5 个容器（含 `skiff-web-nginx`）；`/containers/{id}/stop|start` 均 **303**，`docker inspect` running→exited→running，审计 `docker.containers.stop|start result=ok`。
+  - **文件管理**：入口仍可见且可用（容器内 `/`、`/www` 可列）；仅内核数据目录 `/data` 被拒（`fs.denied`「内核运行配置或数据目录受保护」）。**与「不可见或明确提示能力面未启用」的口径不一致**，记为待定项（见 [TEST_LEDGER.md](TEST_LEDGER.md)）。
+  - 清理：容器/镜像/网络/`/root/iter/panel-probe` 已删；宿主面板 `/healthz` 200、三容器 running。
+- **aarch64（DEPLOY-09）**：包内二进制 **10,702,888 B**、sha256 `8891cf4b7193f2835997b5ba07fb0b0780c88c6a9b90a575b2c64f55425e29ce`；`file` = `ELF 64-bit LSB executable, ARM aarch64, … statically linked, stripped`；`ldd` = `not a dynamic executable`；`qemu-aarch64-static`（10.0.13）下 `skiff version` → `skiff 0.1.0 / arch=arm64 os=linux`，`skiff --help` 正常列出命令，`skiff doctor` 全绿。
+  **结论：qemu-user 冒烟通过，未实机装机，不记为装机通过。**（`--version` 非 CLI 旗标，版本用 `version` 子命令。）
+
 **未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- WAF 拦截能力不存在（仅字段/目录预留），需产品定稿后实现。
-- aarch64 仅核对 sha256，无 arm64 实机装机。
-- FTP fail2ban 三次封禁、1Panel 受限形态、buffer 上机入口、并发 spawn 复验等无环境项。
+- WAF 拦截未实现；`sites.waf_mode` 设置键与 `waf_rules_dir` 规则目录占位已于 2026-11-09 删除，要做需先定规则来源与开关位置。
+- aarch64 仅 qemu-user 冒烟（`file`/`ldd`/`version`/`--help`/`doctor`），未实机装机。
+- 受限形态「文件管理」入口可见且可用（容器内路径），未按「不可见或明确提示能力面未启用」处理，待产品定稿。
+- buffer 上机入口、并发 spawn 复验等无环境项。
 - 主机监控历史页「出站」仍用累计字节（`net_tx_rate` 未产生），待补采样字段后对齐。
 - Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
 - 原两条观察项已在 `8716e51` 关闭：插件 stderr 已转出 journal；`/etc/skiff` 与配置/TLS 私钥已纳入受保护路径。
 
-**收尾状态（2026-11-09 `9e2c6b1` 修复轮后）**
-- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用；`skiff.service` active、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,034,256 B、sha256 `df1ba659…28c0`（与 `9e2c6b1` 包内一致）。
-- 数据：库保持 `user_version=15`，6 个官方插件已装（grants：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 6；testkit 包 322,007 B `df8e361b…`）；站点 1（`iter-rust-1862702.test`，`status=running`）、`site_runtimes` 2；`samples.jsonl` 由 5 分钟 tick 正常追加；`nginx.params_json` 保留复验值 `worker_connections=2048`（无副作用）。
-- 容器：`skiff-web-nginx` / `skiff-php-iter-php-1862702` / `skiff-rust-iter-rust-1862702` 全部 running。
-- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-97edf87`、`/root/iter/a9e2c6b1/`（本轮资产与解压目录）保留；临时 cookie 文件已清理。
+**收尾状态（2026-11-09 `2f63aeb` 复验轮后）**
+- 面板：形态三明文 `http://10.10.15.4:18081/udkwxz96` 可用；`skiff.service` active、`skiff-http-fwd.service` active；`/usr/local/bin/skiff` 13,034,256 B、sha256 `54f660a1…0657d4fd`（与 `2f63aeb` 包内一致）。
+- 资产：x86_64 包 8,808,264 B（`9bb0467f…cc7324`）、aarch64 包 8,401,553 B（`5bfd3cb1…d692060`，包内二进制 `8891cf4b…25e29ce`）。
+- 数据：库保持 `user_version=15`，6 个官方插件已装（grants：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / testkit 6）；站点仍为 1（`iter-rust-1862702.test`，`status=running`）。
+- 清理：FTP 测试账号/站点已删、FTP 服务已 uninstall、封禁全清（jail 仅 `[sshd] enabled=false`、0 jail、无 f2b nft 规则）；探针容器 `skiff-panel-probe`/`skiff-ftp-probe-client`、镜像 `skiff-panel-probe:2f63aeb`/`python:3.13-alpine`/`alpine:3.23`、网络 `skiff-ftp-probe-net`、`/root/iter/panel-probe` 均已删除。
+- 容器：`skiff-web-nginx` / `skiff-php-iter-php-1862702` / `skiff-rust-iter-rust-1862702` 全部 running；宿主面板 `/healthz` 200。
+- 备份：`/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/admin-pw.txt`、`/root/skiff.before-97edf87`、`/root/iter/a2f63aeb/`（本轮资产与解压目录）保留；临时 cookie 文件已清理。
 
 
 ## 9. 数据、备份与清理

@@ -143,7 +143,7 @@ log "数据根 $DATA_DIR（0711 root，可穿越不可列）"
 # 站点寄宿布局：公共 vhost 目录与 PHP socket 对容器内进程可读（0755）。
 # 每个站点自己的 index/log/ssl/conf 建在 $WEB_ROOT/sites/<域名>/ 内，建站时创建。
 mkdir -p "$WEB_ROOT/sites" "$WEB_ROOT/nginx/conf.d" \
-         "$WEB_ROOT/php" "$WEB_ROOT/skiff/waf/rules"
+         "$WEB_ROOT/php"
 chmod 0755 "$WEB_ROOT" "$WEB_ROOT/sites" "$WEB_ROOT/nginx" "$WEB_ROOT/nginx/conf.d" "$WEB_ROOT/php"
 log "站点寄宿根 $WEB_ROOT（sites/<域名>/{index,log,ssl,conf}，公共配置 nginx/conf.d）"
 

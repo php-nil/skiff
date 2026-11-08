@@ -223,7 +223,6 @@ const KEY_PREFIX: &str = "sites.image_prefix";
 const KEY_NGINX_IMAGE: &str = "sites.nginx_image";
 const KEY_PHP_IMAGE: &str = "sites.php_image";
 const KEY_MIRROR: &str = "sites.registry_mirror";
-const KEY_WAF_MODE: &str = "sites.waf_mode";
 
 /// 默认站点 vhost：有默认站点时由代码生成，无默认站点时该文件不存在。
 const DEFAULT_CONF: &str = "00-skiff-default.conf";
@@ -253,7 +252,6 @@ pub struct SiteSettings {
     pub php_image: String,
     pub port: u16,
     pub registry_mirror: String,
-    pub waf_mode: String,
 }
 
 /// 删除站点确认页要展示的「具体量」：目录体积、文件数、关联任务与运行环境绑定。
@@ -398,11 +396,6 @@ impl SiteSettings {
 
     pub fn container_nginx_main_conf(&self) -> &'static str {
         "/usr/local/openresty/nginx/conf/nginx.conf"
-    }
-
-    /// WAF 规则目录（预留；本期不加载、不拦截）。
-    pub fn waf_rules_dir(&self) -> PathBuf {
-        self.web_root.join("skiff").join("waf").join("rules")
     }
 
     /// 内核随包分发的本地工具目录：`<web_root>/skiff/tools`。
@@ -702,8 +695,6 @@ pub struct SiteEnvStatus {
     pub port_message: String,
     pub nginx_image: String,
     pub php_image: String,
-    pub waf_mode: String,
-    pub waf_rules_dir: String,
 }
 
 impl SiteEnvStatus {
@@ -4037,12 +4028,6 @@ impl AppState {
                 .ok()
                 .flatten()
                 .unwrap_or_default(),
-            waf_mode: db
-                .get_setting(KEY_WAF_MODE)
-                .ok()
-                .flatten()
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| "off".into()),
             web_root,
         }
     }
@@ -4113,7 +4098,6 @@ impl AppState {
                 Err(e) => format!("nginx 状态：{nginx_state}；{e}"),
             }
         };
-        let waf_rules_dir = s.waf_rules_dir().display().to_string();
         SiteEnvStatus {
             docker_available: self.docker().available(),
             docker_reason: self.docker().unavailable_reason().to_string(),
@@ -4124,8 +4108,6 @@ impl AppState {
             port_message,
             nginx_image: s.nginx_image,
             php_image: s.php_image,
-            waf_mode: s.waf_mode,
-            waf_rules_dir,
         }
     }
 
@@ -4232,7 +4214,6 @@ impl AppState {
             &s.conf_dir,
             &s.runtime_dir,
             &s.global_log_dir(),
-            &s.waf_rules_dir(),
         ];
         for dir in dirs {
             if let Err(e) = std::fs::create_dir_all(dir) {
@@ -6560,7 +6541,6 @@ mod tests {
             php_image: String::new(),
             port: 80,
             registry_mirror: String::new(),
-            waf_mode: String::new(),
         }
         .php_extension_installer();
         write_if_changed(&path, b"# local v1\n", 0o755).unwrap();
@@ -6797,7 +6777,6 @@ mod tests {
             php_image: DEFAULT_PHP_IMAGE.into(),
             port: DEFAULT_PORT,
             registry_mirror: String::new(),
-            waf_mode: "off".into(),
         }
     }
 
@@ -7168,11 +7147,6 @@ mod tests {
         assert_eq!(
             s.cert_file(site_dir),
             PathBuf::from("/www/sites/example.com/ssl/cert.pem")
-        );
-        assert_eq!(
-            s.waf_rules_dir(),
-            PathBuf::from("/www/skiff/waf/rules"),
-            "WAF 规则目录为预留位，本期不加载规则"
         );
     }
 

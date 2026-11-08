@@ -3,7 +3,7 @@
 //! 版本目录、默认实例名、镜像名与 PHP 扩展的安装脚本都只在这里定义：
 //! Web 下拉框与勾选项由它渲染，安装/重建也按它执行，避免前后端各维护一份。
 
-use skiff_store::{KIND_GO, KIND_NODE, KIND_PHP, KIND_RUST};
+use skiff_store::{KIND_PHP, KIND_RUST};
 
 use crate::sites::{DEFAULT_PHP_IMAGE, DEFAULT_PHP_VERSION};
 
@@ -16,22 +16,13 @@ pub struct RuntimeKindDef {
     pub versions: &'static [&'static str],
 }
 
-/// 可创建的类型目录。Node.js / Go 为 P2 预留：可登记，但不安装容器。
+/// 可创建的类型目录。只列已实现机型（PHP / Rust）；Node.js / Go 未实现，
+/// 不进入目录，新建弹窗与 API 校验都不会接受。
 pub const RUNTIME_KINDS: &[RuntimeKindDef] = &[
     RuntimeKindDef {
         kind: KIND_PHP,
         label: "PHP",
         versions: &["8.5", "8.4", "8.3"],
-    },
-    RuntimeKindDef {
-        kind: KIND_NODE,
-        label: "Node.js",
-        versions: &["22", "20", "18"],
-    },
-    RuntimeKindDef {
-        kind: KIND_GO,
-        label: "Go",
-        versions: &["1.24", "1.23", "1.22"],
     },
     RuntimeKindDef {
         kind: KIND_RUST,
@@ -56,8 +47,7 @@ pub fn version_supported(kind: &str, version: &str) -> bool {
     kind_def(kind).is_some_and(|d| d.versions.contains(&version.trim()))
 }
 
-/// 名称默认跟随版本（`php-8.5` / `node-22` / `go-1.24` / `rust-1.99`）；
-/// 唯一性仍由库里同类型校验。
+/// 名称默认跟随版本（`php-8.5` / `rust-1.99`）；唯一性仍由库里同类型校验。
 pub fn default_name(kind: &str, version: &str) -> String {
     format!("{}-{}", kind, version.trim())
 }
@@ -67,14 +57,12 @@ pub fn image_for(kind: &str, version: &str, configured_php_image: &str) -> Strin
     match kind {
         KIND_PHP if version == DEFAULT_PHP_VERSION => configured_php_image.to_string(),
         KIND_PHP => format!("php:{version}-fpm-alpine"),
-        KIND_NODE => format!("node:{version}-alpine"),
-        KIND_GO => format!("golang:{version}-alpine"),
         KIND_RUST => format!("rust:{version}-slim"),
         _ => format!("{kind}:{version}"),
     }
 }
 
-/// P1 实现 PHP 与 Rust；Node.js/Go 可以落库但不会安装容器。
+/// 当前实现 PHP 与 Rust；Node.js/Go 未实现，也不在 `RUNTIME_KINDS` 目录中。
 pub fn is_implemented(kind: &str) -> bool {
     matches!(kind, KIND_PHP | KIND_RUST)
 }
@@ -84,8 +72,6 @@ pub fn is_implemented(kind: &str) -> bool {
 pub fn version_env_key(kind: &str) -> Option<&'static str> {
     match kind {
         KIND_PHP => Some("PHP_VERSION"),
-        KIND_NODE => Some("NODE_VERSION"),
-        KIND_GO => Some("GOLANG_VERSION"),
         _ => None,
     }
 }
@@ -1146,8 +1132,8 @@ mod tests {
         assert!(version_supported(KIND_PHP, "8.3"));
         assert!(!version_supported(KIND_PHP, "8.2"));
         assert!(!version_supported(KIND_PHP, "8"));
-        assert!(version_supported(KIND_NODE, "22"));
-        assert!(version_supported(KIND_GO, "1.24"));
+        assert!(kind_def("node").is_none(), "Node.js 未实现，不得进入目录");
+        assert!(kind_def("go").is_none(), "Go 未实现，不得进入目录");
         assert!(version_supported(KIND_RUST, "1.99"));
         assert!(version_supported(KIND_RUST, "1.98"));
         assert!(version_supported(KIND_RUST, "1.83"), "保留旧版本可选");
@@ -1165,8 +1151,6 @@ mod tests {
     #[test]
     fn default_name_follows_version() {
         assert_eq!(default_name(KIND_PHP, "8.5"), "php-8.5");
-        assert_eq!(default_name(KIND_NODE, "22"), "node-22");
-        assert_eq!(default_name(KIND_GO, "1.24"), "go-1.24");
         assert_eq!(default_name(KIND_RUST, "1.83"), "rust-1.83");
     }
 
@@ -1179,10 +1163,6 @@ mod tests {
         assert_eq!(
             image_for(KIND_PHP, "8.4", DEFAULT_PHP_IMAGE),
             "php:8.4-fpm-alpine"
-        );
-        assert_eq!(
-            image_for(KIND_NODE, "22", DEFAULT_PHP_IMAGE),
-            "node:22-alpine"
         );
         assert_eq!(
             image_for(KIND_RUST, "1.99", DEFAULT_PHP_IMAGE),
@@ -1205,8 +1185,6 @@ mod tests {
     #[test]
     fn image_version_env_keys_cover_official_images() {
         assert_eq!(version_env_key(KIND_PHP), Some("PHP_VERSION"));
-        assert_eq!(version_env_key(KIND_NODE), Some("NODE_VERSION"));
-        assert_eq!(version_env_key(KIND_GO), Some("GOLANG_VERSION"));
         // Rust 官方镜像没有稳定的版本 ENV：回退目标版本并标注「版本未读取」。
         assert_eq!(version_env_key(KIND_RUST), None);
     }

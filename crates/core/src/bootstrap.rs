@@ -209,8 +209,6 @@ fn prepare_dirs(data_dir: &Path, web_root: &Path, run_dir: &Path) -> Result<()> 
         web_root.join("sites"),
         web_root.join("nginx").join("conf.d"),
         web_root.join("php"),
-        // WAF 规则目录仅预留，本期不加载、不拦截。
-        web_root.join("skiff").join("waf").join("rules"),
         run_dir.to_path_buf(),
         run_dir.join("plugins"),
     ] {

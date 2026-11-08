@@ -1561,7 +1561,6 @@
     var verSel = dlg.querySelector("[data-runtime-version]");
     var nameInput = dlg.querySelector("[data-runtime-name]");
     var extField = dlg.querySelector(".exts-box");
-    var p2Note = dlg.querySelector("[data-runtime-p2-note]");
     var submit = dlg.querySelector('form[action] button[type="submit"]');
     var nameTouched = false;
 
@@ -1616,13 +1615,8 @@
         opt.textContent = v;
         verSel.appendChild(opt);
       });
-      var implemented = !!def.implemented;
       if (extField) extField.hidden = def.key !== "php";
-      if (p2Note) {
-        p2Note.hidden = implemented;
-        if (!implemented) p2Note.textContent = "Node.js / Go 为 P2 预留：只会登记运行环境行，不安装容器，也不提供扩展管理。";
-      }
-      if (submit) submit.textContent = implemented ? "创建并后台安装" : "登记运行环境";
+      if (submit) submit.textContent = "创建并后台安装";
       if (!keepName && nameInput) nameInput.value = def.key + "-" + (def.versions && def.versions[0] || "");
       rebuildExts(def);
     }
