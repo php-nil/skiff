@@ -494,6 +494,7 @@ impl Supervisor {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<Running, SupervisorError>>,
     {
+        self.reap_exited(&rec.id).await;
         {
             let mut running = self.running.lock().await;
             if let Some(r) = running.get_mut(&rec.id) {
@@ -557,6 +558,32 @@ impl Supervisor {
                     .audit("system", "local", "plugin.spawn", &rec.id, "fail", &detail);
                 Err(e)
             }
+        }
+    }
+
+    /// 摘掉已经退出的运行态（外部 kill、插件自崩）。
+    ///
+    /// `ensure` 原先只按 `running` 里有没有条目判断“是否在跑”，外部杀掉子进程后
+    /// 下一个 RPC 会一直连死 socket（Connection refused）：既不复活，也不把崩溃前的
+    /// stderr 转出。复用前先 `try_wait`，已退出就摘掉条目；尾巴留在共享的
+    /// `PluginOutput` 里，由下一次 `spawn` 的 `begin_run` 冻结并写进日志。
+    async fn reap_exited(&self, id: &str) {
+        let dead = {
+            let mut running = self.running.lock().await;
+            let exited = running
+                .get_mut(id)
+                .is_some_and(|r| matches!(r.child.try_wait(), Ok(Some(_))));
+            if exited {
+                running.remove(id)
+            } else {
+                None
+            }
+        };
+        if let Some(mut r) = dead {
+            // 进程已退出，读端很快 EOF；先收尾读取任务，保证尾巴完整。
+            output::drain_pumps(&mut r.pumps).await;
+            let _ = std::fs::remove_file(&r.socket);
+            let _ = self.db.set_plugin_status(id, "installed", "");
         }
     }
 
@@ -1009,6 +1036,102 @@ mod tests {
         );
         assert!(sockets.iter().all(|s| *s == sockets[0]));
         assert!(sup.is_running("com.skiff.concurrent").await);
+    }
+
+    /// 外部 kill 后 supervisor 仍持有旧条目：下一次 ensure 必须摘掉并重新拉起，
+    /// 而不是把死 socket 直接交给调用方（否则 RPC 只会收到 Connection refused）。
+    #[tokio::test]
+    async fn ensure_respawns_after_child_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let sup = supervisor(dir.path());
+        let r = rec("com.skiff.exited");
+
+        let mut guard = exited_child();
+        let _ = guard.wait().await;
+        {
+            let mut running = sup.running.lock().await;
+            running.insert(
+                r.id.clone(),
+                Running::new(
+                    guard,
+                    sup.socket_path(&r.id),
+                    "old".into(),
+                    Arc::new(PluginOutput::default()),
+                    Vec::new(),
+                ),
+            );
+        }
+
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let socket = sup
+            .ensure_spawned(&r, || {
+                spawned.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Running::new(
+                        live_child(),
+                        sup.socket_path(&r.id),
+                        "new".into(),
+                        Arc::new(PluginOutput::default()),
+                        Vec::new(),
+                    ))
+                }
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            spawned.load(Ordering::SeqCst),
+            1,
+            "已退出的旧条目必须被摘掉并重新拉起"
+        );
+        assert_eq!(socket, sup.socket_path(&r.id));
+        assert!(sup.is_running("com.skiff.exited").await);
+    }
+
+    /// 立即退出的替身进程：模拟被外部 kill 的子进程。
+    #[cfg(unix)]
+    fn exited_child() -> ChildGuard {
+        ChildGuard(Some(
+            tokio::process::Command::new("sh")
+                .args(["-c", "exit 7"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("测试替身 sh 拉起失败"),
+        ))
+    }
+
+    #[cfg(windows)]
+    fn exited_child() -> ChildGuard {
+        ChildGuard(Some(
+            tokio::process::Command::new("cmd")
+                .args(["/C", "exit 7"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("测试替身 cmd 拉起失败"),
+        ))
+    }
+
+    /// 仍在运行的替身进程：Windows 下用 `timeout` 撑住，Unix 复用 `fake_child`。
+    #[cfg(unix)]
+    fn live_child() -> ChildGuard {
+        fake_child()
+    }
+
+    #[cfg(windows)]
+    fn live_child() -> ChildGuard {
+        ChildGuard(Some(
+            tokio::process::Command::new("cmd")
+                .args(["/C", "timeout /T 60 /NOBREAK"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("测试替身 timeout 拉起失败"),
+        ))
     }
 
     /// 没有归属的子进程：`Running` 被直接丢弃时必须被回收，而不是继续在后台跑。
