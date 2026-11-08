@@ -12,12 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::audit::{AuditAction, AuditEvent, AuditResult, AuditSink};
-use crate::config::{FsConfig, QuotaTracker};
+use crate::config::{FsConfig, QuotaLimit, QuotaSnapshot, QuotaTracker, QuotaUsage};
 use crate::error::{io_error, FsError};
 use crate::lock::PathLocks;
 use crate::path::{self, PathKind, PathMode, ResolvedPath};
 use crate::subject::{Principal, Scope};
-use crate::trash::TrashStore;
+use crate::trash::{TrashEntry, TrashStore};
 
 pub use copy::CopyLimits;
 
@@ -174,10 +174,18 @@ pub struct CopyOutcome {
     pub entries: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RestoreOutcome {
     pub trash_id: String,
     pub restored_to: String,
+}
+
+/// 清空回收站的结果：失败条目逐条保留，不静默吞掉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearTrashOutcome {
+    pub removed: u64,
+    pub bytes: u64,
+    pub failed: Vec<String>,
 }
 
 /// 文件原语服务。线程安全；内部状态只有路径锁表。
@@ -224,10 +232,6 @@ impl Fs {
 
     pub(crate) fn quota(&self) -> &dyn QuotaTracker {
         self.quota.as_ref()
-    }
-
-    pub(crate) fn quota_usage(&self, root: &std::path::Path) -> u64 {
-        self.quota.usage(root)
     }
 
     pub(crate) fn audit_sink_record(&self, event: crate::audit::AuditEvent) {
@@ -528,6 +532,274 @@ impl Fs {
         }
     }
 
+    /// 命中的配额规则：先取按树配置（最长祖先根），否则退回旧的
+    /// 「授权根/站点目录 + 全局 max_root_bytes」口径。
+    pub(crate) fn quota_target(&self, p: &Principal, r: &ResolvedPath) -> Option<QuotaLimit> {
+        if let Some(limit) = self.quota.limit_for(&r.path) {
+            return Some(limit);
+        }
+        self.quota_key(p, r).map(|root| QuotaLimit {
+            root,
+            max_bytes: Some(self.cfg.max_root_bytes),
+            max_files: None,
+        })
+    }
+
+    /// 写前配额预检：`delta_bytes/files` 是本次操作对目标树用量的增量。
+    /// 超限时返回带根路径与具体数字的可读错误。
+    pub(crate) fn enforce_quota(
+        &self,
+        target: Option<&QuotaLimit>,
+        delta_bytes: i64,
+        delta_files: i64,
+    ) -> Result<(), FsError> {
+        let Some(t) = target else {
+            return Ok(());
+        };
+        let usage = self.quota.usage_stats(&t.root);
+        let projected_bytes = usage.used_bytes.saturating_add_signed(delta_bytes);
+        let projected_files = usage.used_files.saturating_add_signed(delta_files);
+        if let Some(max) = t.max_bytes {
+            if projected_bytes > max {
+                return Err(FsError::QuotaExceeded(format!(
+                    "目录容量配额超限：{} 写入后 {} 字节 > 上限 {} 字节",
+                    t.root.display(),
+                    projected_bytes,
+                    max
+                )));
+            }
+        }
+        if let Some(max) = t.max_files {
+            if projected_files > max {
+                return Err(FsError::QuotaExceeded(format!(
+                    "目录文件数配额超限：{} 写入后 {} 个文件 > 上限 {} 个",
+                    t.root.display(),
+                    projected_files,
+                    max
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 回收站列表：管理员看全部；其他主体只看自己的条目。
+    pub fn trash_list(&self, p: &Principal, ctx: &OpContext) -> Result<Vec<TrashEntry>, FsError> {
+        let mut rows: Vec<TrashEntry> = self
+            .trash_store()
+            .list()
+            .into_iter()
+            .filter(|e| e.is_live() && can_touch_entry(p, e))
+            .collect();
+        rows.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at).then(b.id.cmp(&a.id)));
+        let bytes: u64 = rows.iter().map(|e| e.size).sum();
+        let mut a = ok_args(AuditAction::TrashList);
+        a.bytes = bytes;
+        a.detail = Some(format!("entries={}", rows.len()));
+        self.audit(p, ctx, a);
+        Ok(rows)
+    }
+
+    /// 清空回收站（仅管理员）。逐条彻底删除，失败的条目保留并回报。
+    pub fn clear_trash(
+        &self,
+        p: &Principal,
+        ctx: &OpContext,
+    ) -> Result<ClearTrashOutcome, FsError> {
+        if !p.subject().is_admin() {
+            return Err(FsError::Denied("清空回收站仅管理员可用".into()));
+        }
+        let rows: Vec<TrashEntry> = self
+            .trash_store()
+            .list()
+            .into_iter()
+            .filter(|e| e.is_live())
+            .collect();
+        let mut out = ClearTrashOutcome {
+            removed: 0,
+            bytes: 0,
+            failed: Vec::new(),
+        };
+        for entry in rows {
+            let tpath = PathBuf::from(&entry.trash_path);
+            let res =
+                self.locks
+                    .with_write(std::slice::from_ref(&tpath), self.cfg.lock_timeout, || {
+                        io::remove_object(&tpath)
+                    });
+            match res {
+                Ok(Ok(_)) => {
+                    self.trash_store().remove(&entry.id);
+                    out.removed += 1;
+                    out.bytes = out.bytes.saturating_add(entry.size);
+                }
+                Ok(Err(e)) | Err(e) => {
+                    out.failed.push(format!("{}: {}", entry.id, e.message()));
+                }
+            }
+        }
+        let mut a = AuditArgs::new(
+            AuditAction::TrashClear,
+            if out.failed.is_empty() {
+                AuditResult::Ok
+            } else {
+                AuditResult::Fail
+            },
+        );
+        a.bytes = out.bytes;
+        a.detail = Some(format!(
+            "removed={}, failed={}",
+            out.removed,
+            out.failed.len()
+        ));
+        self.audit(p, ctx, a);
+        Ok(out)
+    }
+
+    /// 配额列表（管理员）。不审计，避免页面刷新产生噪音。
+    pub fn quota_list(&self, p: &Principal) -> Result<Vec<QuotaSnapshot>, FsError> {
+        if !p.subject().is_admin() {
+            return Err(FsError::Denied("配额查看仅管理员可用".into()));
+        }
+        Ok(self.quota.snapshot())
+    }
+
+    /// 重新统计某个目录树并刷新缓存计数（成本 O(条目数)）。
+    pub fn quota_scan(
+        &self,
+        p: &Principal,
+        ctx: &OpContext,
+        raw_root: &str,
+    ) -> Result<QuotaSnapshot, FsError> {
+        let r = match self.resolve(p, raw_root, PathMode::Existing) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(self.quota_fail(p, ctx, AuditAction::QuotaScan, raw_root, e));
+            }
+        };
+        if r.kind != PathKind::Dir {
+            let e = FsError::Conflict("配额根必须是目录".into());
+            return Err(self.quota_fail_resolved(p, ctx, AuditAction::QuotaScan, &r, e));
+        }
+        let usage = match io::scan_usage(&r.path, self.cfg.max_dir_entries) {
+            Ok(u) => u,
+            Err(e) => return Err(self.quota_fail_resolved(p, ctx, AuditAction::QuotaScan, &r, e)),
+        };
+        self.quota.set_usage(&r.path, usage);
+        let mut a = ok_args(AuditAction::QuotaScan);
+        a.set_from_resolved(&r);
+        a.bytes = usage.used_bytes;
+        a.detail = Some(format!("files={}", usage.used_files));
+        self.audit(p, ctx, a);
+        Ok(self.snapshot_for(&r.path, usage))
+    }
+
+    /// 设置/修改配额：先全量统计一次，再写上限；已用量以扫描结果为准。
+    pub fn quota_set(
+        &self,
+        p: &Principal,
+        ctx: &OpContext,
+        raw_root: &str,
+        max_bytes: Option<u64>,
+        max_files: Option<u64>,
+    ) -> Result<QuotaSnapshot, FsError> {
+        let r = match self.resolve(p, raw_root, PathMode::Existing) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(self.quota_fail(p, ctx, AuditAction::QuotaSet, raw_root, e));
+            }
+        };
+        if r.kind != PathKind::Dir {
+            let e = FsError::Conflict("配额根必须是目录".into());
+            return Err(self.quota_fail_resolved(p, ctx, AuditAction::QuotaSet, &r, e));
+        }
+        if max_bytes.is_none() && max_files.is_none() {
+            let e = FsError::Conflict("容量上限与文件数上限至少设置一项".into());
+            return Err(self.quota_fail_resolved(p, ctx, AuditAction::QuotaSet, &r, e));
+        }
+        let usage = match io::scan_usage(&r.path, self.cfg.max_dir_entries) {
+            Ok(u) => u,
+            Err(e) => return Err(self.quota_fail_resolved(p, ctx, AuditAction::QuotaSet, &r, e)),
+        };
+        self.quota.set_usage(&r.path, usage);
+        self.quota.set_limits(&r.path, max_bytes, max_files);
+        let mut a = ok_args(AuditAction::QuotaSet);
+        a.set_from_resolved(&r);
+        a.bytes = usage.used_bytes;
+        a.detail = Some(format!(
+            "max_bytes={}, max_files={}, files={}",
+            max_bytes
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+            max_files
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into()),
+            usage.used_files
+        ));
+        self.audit(p, ctx, a);
+        Ok(self.snapshot_for(&r.path, usage))
+    }
+
+    /// 取消配额上限：保留用量计数，页面继续显示「未设置上限」。
+    pub fn quota_cancel(
+        &self,
+        p: &Principal,
+        ctx: &OpContext,
+        raw_root: &str,
+    ) -> Result<QuotaSnapshot, FsError> {
+        let r = match self.resolve(p, raw_root, PathMode::Existing) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(self.quota_fail(p, ctx, AuditAction::QuotaCancel, raw_root, e));
+            }
+        };
+        self.quota.clear_limits(&r.path);
+        let usage = self.quota.usage_stats(&r.path);
+        let mut a = ok_args(AuditAction::QuotaCancel);
+        a.set_from_resolved(&r);
+        a.bytes = usage.used_bytes;
+        self.audit(p, ctx, a);
+        Ok(self.snapshot_for(&r.path, usage))
+    }
+
+    fn snapshot_for(&self, root: &std::path::Path, usage: QuotaUsage) -> QuotaSnapshot {
+        self.quota
+            .snapshot()
+            .into_iter()
+            .find(|s| s.root == root.display().to_string())
+            .unwrap_or_else(|| QuotaSnapshot {
+                root: root.display().to_string(),
+                max_bytes: None,
+                max_files: None,
+                used_bytes: usage.used_bytes,
+                used_files: usage.used_files,
+                updated_at: None,
+            })
+    }
+
+    fn quota_fail(
+        &self,
+        p: &Principal,
+        ctx: &OpContext,
+        action: AuditAction,
+        raw: &str,
+        e: FsError,
+    ) -> FsError {
+        let _ = self.fail::<()>(p, ctx, action, raw, e.clone());
+        e
+    }
+
+    fn quota_fail_resolved(
+        &self,
+        p: &Principal,
+        ctx: &OpContext,
+        action: AuditAction,
+        r: &ResolvedPath,
+        e: FsError,
+    ) -> FsError {
+        let _ = self.fail_resolved::<()>(p, ctx, action, r, e.clone());
+        e
+    }
+
     pub(crate) fn check_scope(
         &self,
         p: &Principal,
@@ -616,6 +888,21 @@ pub(crate) struct AuditArgs {
 }
 
 impl AuditArgs {
+    pub(crate) fn new(action: AuditAction, result: AuditResult) -> Self {
+        Self {
+            action,
+            result,
+            src: None,
+            dst: None,
+            site: None,
+            protected: false,
+            bytes: 0,
+            code: None,
+            hash: None,
+            detail: None,
+        }
+    }
+
     pub(crate) fn set_from_resolved(&mut self, r: &ResolvedPath) {
         self.src = Some(r.path.display().to_string());
         self.site = r.site.clone();
@@ -663,4 +950,11 @@ pub(crate) fn err_args(action: AuditAction, e: &FsError) -> AuditArgs {
         hash: None,
         detail: None,
     }
+}
+
+/// 管理员可操作全部条目；其他主体只能操作自己创建且未恢复/未清除的条目。
+pub(crate) fn can_touch_entry(p: &Principal, entry: &TrashEntry) -> bool {
+    p.subject().is_admin()
+        || (p.subject().actor_type() == entry.actor_type
+            && p.subject().actor_id() == entry.actor_id)
 }

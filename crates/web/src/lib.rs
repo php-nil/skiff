@@ -83,8 +83,20 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::containers::rows),
         )
         .route(
+            &format!("/{p}/containers/new"),
+            get(handlers::containers::new_page),
+        )
+        .route(
+            &format!("/{p}/containers/create"),
+            post(handlers::containers::create),
+        )
+        .route(
             &format!("/{p}/containers/{{id}}"),
             get(handlers::containers::detail),
+        )
+        .route(
+            &format!("/{p}/containers/{{id}}/limits"),
+            post(handlers::containers::update_limits),
         )
         .route(
             &format!("/{p}/containers/{{id}}/{{action}}"),
@@ -124,6 +136,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/volumes/{{name}}/remove"),
             post(handlers::resources::remove_volume),
+        )
+        .route(&format!("/{p}/compose"), get(handlers::compose::page))
+        .route(
+            &format!("/{p}/compose/validate"),
+            post(handlers::compose::validate),
+        )
+        .route(&format!("/{p}/compose/up"), post(handlers::compose::up))
+        .route(&format!("/{p}/compose/down"), post(handlers::compose::down))
+        .route(
+            &format!("/{p}/compose/{{project}}/{{action}}"),
+            post(handlers::compose::project_action),
         )
         .route(
             &format!("/{p}/docker/settings"),
@@ -209,6 +232,47 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/files/api/remove"),
             post(handlers::files::api_remove),
+        )
+        // ---- 回收站与配额（内核文件管理第二步）----
+        .route(
+            &format!("/{p}/files/trash"),
+            get(handlers::files::trash_page),
+        )
+        .route(
+            &format!("/{p}/files/quotas"),
+            get(handlers::files::quotas_page),
+        )
+        .route(
+            &format!("/{p}/files/api/trash"),
+            get(handlers::files::api_trash_list),
+        )
+        .route(
+            &format!("/{p}/files/api/trash/restore"),
+            post(handlers::files::api_trash_restore),
+        )
+        .route(
+            &format!("/{p}/files/api/trash/purge"),
+            post(handlers::files::api_trash_purge),
+        )
+        .route(
+            &format!("/{p}/files/api/trash/clear"),
+            post(handlers::files::api_trash_clear),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas"),
+            get(handlers::files::api_quota_list),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas/set"),
+            post(handlers::files::api_quota_set),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas/cancel"),
+            post(handlers::files::api_quota_cancel),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas/scan"),
+            post(handlers::files::api_quota_scan),
         )
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
         .route(&format!("/{p}/sites"), get(handlers::sites::list))
@@ -480,6 +544,7 @@ mod tests {
         let cfg = crate::state::WebConfig {
             data_dir: PathBuf::from("skiff-test-data"),
             web_root: PathBuf::from("skiff-test-web"),
+            trash_retention_days: 30,
             config_path: PathBuf::from("skiff-test-config.toml"),
             listen: "127.0.0.1:18080".parse().unwrap(),
             entry_prefix: "p".into(),

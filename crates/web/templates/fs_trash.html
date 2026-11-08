@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}回收站 · Skiff{% endblock %}
+{% block head %}<link rel="stylesheet" href="/{{ ctx.prefix }}/static/fs_extra.css">{% endblock %}
+{% block content %}
+<div class="recycle-page" data-recycle data-prefix="{{ ctx.prefix }}" data-csrf="{{ ctx.csrf }}" data-retention="{{ retention_days }}">
+  <div class="files-head">
+    <div class="files-heading">
+      <h1>回收站</h1>
+      <p class="files-sub">
+        删除的文件先移入回收站，默认保留 {{ retention_days }} 天；到期由内置任务
+        <code>trash-prune</code> 彻底删除。保留期可用 <code>trash_retention_days</code>
+        或 <code>SKIFF_TRASH_RETENTION_DAYS</code> 调整。数据根、<code>plugins/</code>、
+        <code>official/</code>、<code>skiff.db</code> 在删除与恢复两条路径上都会被硬拒。
+      </p>
+    </div>
+    <div class="files-toolbar" role="toolbar" aria-label="回收站操作">
+      <button type="button" class="files-btn" data-recycle-refresh>刷新</button>
+      <button type="button" class="files-btn files-btn-danger" data-recycle-clear>清空回收站</button>
+    </div>
+  </div>
+
+  <div class="files-alert" data-recycle-alert role="alert" hidden>
+    <span data-recycle-alert-text></span>
+    <button type="button" class="files-alert-close" data-recycle-alert-close aria-label="关闭提示">×</button>
+  </div>
+
+  <div class="recycle-summary" data-recycle-summary>加载中…</div>
+
+  <div class="recycle-table-wrap">
+    <table class="recycle-table">
+      <thead>
+        <tr>
+          <th>原路径</th>
+          <th>类型</th>
+          <th>大小</th>
+          <th>文件数</th>
+          <th>删除时间</th>
+          <th>操作者</th>
+          <th>到期时间</th>
+          <th class="recycle-actions-col">操作</th>
+        </tr>
+      </thead>
+      <tbody data-recycle-body>
+        <tr><td colspan="8" class="recycle-empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<script src="/{{ ctx.prefix }}/static/fs_trash.js" defer></script>
+{% endblock %}

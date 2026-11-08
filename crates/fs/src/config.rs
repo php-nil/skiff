@@ -87,19 +87,86 @@ impl Default for FsConfig {
     }
 }
 
-/// 授权根用量计数器（写前预检 + 写后复核）。
+/// 一条目录树配额规则。`root` 是命中该规则的最长祖先根；两个上限都可为 `None`
+/// （单独统计用）。同一条目树被多条规则覆盖时，最长根优先。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaLimit {
+    pub root: PathBuf,
+    pub max_bytes: Option<u64>,
+    pub max_files: Option<u64>,
+}
+
+/// 目录树用量：字节数 = 普通文件大小之和；文件数 = 普通文件个数（目录/链接不计）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct QuotaUsage {
+    pub used_bytes: u64,
+    pub used_files: u64,
+}
+
+/// 配额列表视图：`updated_at` 是最近一次全量统计时间（`None` 表示仅增量计数）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct QuotaSnapshot {
+    pub root: String,
+    pub max_bytes: Option<u64>,
+    pub max_files: Option<u64>,
+    pub used_bytes: u64,
+    pub used_files: u64,
+    pub updated_at: Option<i64>,
+}
+
+/// 授权根/目录树用量计数器（写前预检 + 写后复核）。
 ///
-/// 真实实现由 `skiff-store` 提供（异步刷新，≤60s 误差）；本 crate 只提供
-/// 内存实现供测试与独立运行。`adjust` 的 `delta` 为有符号字节数。
+/// 真实实现由 `skiff-app` 的 SQLite 适配器提供；本 crate 只提供内存实现供测试
+/// 与独立运行。`adjust*` 的 `delta` 为有符号值，不得下溢。
+///
+/// 新增的按树配额方法与持久化方法都带默认实现：只关心字节数的旧实现不受影响。
 pub trait QuotaTracker: Send + Sync {
     fn usage(&self, root: &std::path::Path) -> u64;
     fn adjust(&self, root: &std::path::Path, delta: i64);
+
+    fn usage_stats(&self, root: &std::path::Path) -> QuotaUsage {
+        QuotaUsage {
+            used_bytes: self.usage(root),
+            used_files: 0,
+        }
+    }
+
+    fn adjust_stats(&self, root: &std::path::Path, delta_bytes: i64, delta_files: i64) {
+        let _ = delta_files;
+        self.adjust(root, delta_bytes);
+    }
+
+    /// 命中 `path` 的配额规则（最长祖先根优先）。
+    fn limit_for(&self, _path: &std::path::Path) -> Option<QuotaLimit> {
+        None
+    }
+
+    /// 全量扫描后重写某个根的用量。
+    fn set_usage(&self, _root: &std::path::Path, _usage: QuotaUsage) {}
+
+    /// 设置/修改上限，保留已用量。
+    fn set_limits(
+        &self,
+        _root: &std::path::Path,
+        _max_bytes: Option<u64>,
+        _max_files: Option<u64>,
+    ) {
+    }
+
+    /// 取消上限（用量计数保留，页面继续显示「未设置上限」）。
+    fn clear_limits(&self, _root: &std::path::Path) {}
+
+    /// 配额页列表。
+    fn snapshot(&self) -> Vec<QuotaSnapshot> {
+        Vec::new()
+    }
 }
 
 /// 内存计数：进程生命周期内准确，重启即清零（设计上由真实实现替代）。
 #[derive(Debug, Default)]
 pub struct MemoryQuotaTracker {
-    usage: std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>,
+    usage: std::sync::Mutex<std::collections::HashMap<PathBuf, QuotaUsage>>,
+    limits: std::sync::Mutex<std::collections::HashMap<PathBuf, QuotaLimit>>,
 }
 
 impl MemoryQuotaTracker {
@@ -107,46 +174,129 @@ impl MemoryQuotaTracker {
         Self::default()
     }
 
-    /// 以当前磁盘实际占用初始化某个根（`walk` 的简化版本：只统计普通文件）。
+    /// 以当前磁盘实际占用初始化某个根（只统计普通文件，不跟随符号链接）。
     pub fn seed_from_disk(&self, root: &std::path::Path) -> std::io::Result<u64> {
-        let mut total = 0;
+        let mut usage = QuotaUsage::default();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir)? {
                 let entry = entry?;
-                let meta = entry.metadata()?;
-                if meta.is_dir() {
+                // `DirEntry::metadata()` 会跟随链接；这里必须用 `symlink_metadata`。
+                let meta = std::fs::symlink_metadata(entry.path())?;
+                let ft = meta.file_type();
+                if ft.is_dir() {
                     stack.push(entry.path());
-                } else if meta.is_file() {
-                    total += meta.len();
+                } else if ft.is_file() {
+                    usage.used_bytes = usage.used_bytes.saturating_add(meta.len());
+                    usage.used_files = usage.used_files.saturating_add(1);
                 }
             }
         }
-        *self
-            .usage
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(root.to_path_buf())
-            .or_insert(0) = total;
-        Ok(total)
+        self.set_usage(root, usage);
+        Ok(usage.used_bytes)
+    }
+
+    pub fn set_limit(
+        &self,
+        root: &std::path::Path,
+        max_bytes: Option<u64>,
+        max_files: Option<u64>,
+    ) {
+        self.set_limits(root, max_bytes, max_files);
     }
 }
 
 impl QuotaTracker for MemoryQuotaTracker {
     fn usage(&self, root: &std::path::Path) -> u64 {
+        self.usage_stats(root).used_bytes
+    }
+
+    fn adjust(&self, root: &std::path::Path, delta: i64) {
+        self.adjust_stats(root, delta, 0);
+    }
+
+    fn usage_stats(&self, root: &std::path::Path) -> QuotaUsage {
         self.usage
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(root)
             .copied()
-            .unwrap_or(0)
+            .unwrap_or_default()
     }
 
-    fn adjust(&self, root: &std::path::Path, delta: i64) {
+    fn adjust_stats(&self, root: &std::path::Path, delta_bytes: i64, delta_files: i64) {
         let mut map = self.usage.lock().unwrap_or_else(|e| e.into_inner());
-        let slot = map.entry(root.to_path_buf()).or_insert(0);
-        let next = slot.saturating_add_signed(delta);
-        *slot = next;
+        let slot = map.entry(root.to_path_buf()).or_default();
+        slot.used_bytes = slot.used_bytes.saturating_add_signed(delta_bytes);
+        slot.used_files = slot.used_files.saturating_add_signed(delta_files);
+    }
+
+    fn limit_for(&self, path: &std::path::Path) -> Option<QuotaLimit> {
+        let limits = self.limits.lock().unwrap_or_else(|e| e.into_inner());
+        limits
+            .values()
+            .filter(|l| path.starts_with(&l.root))
+            .max_by_key(|l| l.root.as_os_str().len())
+            .cloned()
+    }
+
+    fn set_usage(&self, root: &std::path::Path, usage: QuotaUsage) {
+        self.usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root.to_path_buf(), usage);
+    }
+
+    fn set_limits(&self, root: &std::path::Path, max_bytes: Option<u64>, max_files: Option<u64>) {
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                root.to_path_buf(),
+                QuotaLimit {
+                    root: root.to_path_buf(),
+                    max_bytes,
+                    max_files,
+                },
+            );
+    }
+
+    fn clear_limits(&self, root: &std::path::Path) {
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(root);
+    }
+
+    fn snapshot(&self) -> Vec<QuotaSnapshot> {
+        let usage = self.usage.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let limits = self
+            .limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut roots: Vec<PathBuf> = usage.keys().cloned().collect();
+        for root in limits.keys() {
+            if !usage.contains_key(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots.sort_by_key(|r| r.as_os_str().len());
+        roots
+            .into_iter()
+            .map(|root| {
+                let limit = limits.get(&root);
+                let used = usage.get(&root).copied().unwrap_or_default();
+                QuotaSnapshot {
+                    root: root.display().to_string(),
+                    max_bytes: limit.and_then(|l| l.max_bytes),
+                    max_files: limit.and_then(|l| l.max_files),
+                    used_bytes: used.used_bytes,
+                    used_files: used.used_files,
+                    updated_at: None,
+                }
+            })
+            .collect()
     }
 }
 

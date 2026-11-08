@@ -156,6 +156,7 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     let web_cfg = WebConfig {
         data_dir: cfg.data_dir.clone(),
         web_root: cfg.web_root.clone(),
+        trash_retention_days: cfg.trash_retention_days,
         config_path: cfg.config_path.clone(),
         listen: cfg.listen,
         entry_prefix,
@@ -389,6 +390,7 @@ mod tests {
             dev_http: true,
             plaintext_behind_proxy: false,
             tls_active: false,
+            trash_retention_days: 30,
         }
     }
 

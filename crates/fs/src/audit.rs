@@ -27,8 +27,13 @@ pub enum AuditAction {
     Rename,
     Copy,
     Stat,
+    TrashList,
     TrashRestore,
     TrashPurge,
+    TrashClear,
+    QuotaScan,
+    QuotaSet,
+    QuotaCancel,
     /// 聚合桶超限时的丢弃标记。
     SampledOut,
 }
@@ -44,8 +49,13 @@ impl AuditAction {
             AuditAction::Rename => "fs.rename",
             AuditAction::Copy => "fs.copy",
             AuditAction::Stat => "fs.stat",
-            AuditAction::TrashRestore => "trash.restore",
-            AuditAction::TrashPurge => "trash.purge",
+            AuditAction::TrashList => "fs.recycle.list",
+            AuditAction::TrashRestore => "fs.recycle.restore",
+            AuditAction::TrashPurge => "fs.recycle.purge",
+            AuditAction::TrashClear => "fs.recycle.clear",
+            AuditAction::QuotaScan => "fs.quota.scan",
+            AuditAction::QuotaSet => "fs.quota.set",
+            AuditAction::QuotaCancel => "fs.quota.cancel",
             AuditAction::SampledOut => "audit.sampled_out",
         }
     }
@@ -59,6 +69,9 @@ impl AuditAction {
                 | AuditAction::Copy
                 | AuditAction::TrashRestore
                 | AuditAction::TrashPurge
+                | AuditAction::TrashClear
+                | AuditAction::QuotaSet
+                | AuditAction::QuotaCancel
         )
     }
 }

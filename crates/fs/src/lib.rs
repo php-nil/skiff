@@ -27,16 +27,17 @@ pub use audit::{
     MemoryAuditSink, NoopAudit, AGG_BUCKETS_PER_SUBJECT_MINUTE, AGG_WINDOW_SECS,
 };
 pub use config::{
-    FsConfig, MemoryQuotaTracker, QuotaTracker, TrashConfig, COPY_MAX_DEPTH, COPY_MAX_ENTRIES,
-    MAX_DIR_ENTRIES, MAX_FILE_BYTES, MAX_REQUEST_BYTES, MAX_ROOT_BYTES,
+    FsConfig, MemoryQuotaTracker, QuotaLimit, QuotaSnapshot, QuotaTracker, QuotaUsage, TrashConfig,
+    COPY_MAX_DEPTH, COPY_MAX_ENTRIES, MAX_DIR_ENTRIES, MAX_FILE_BYTES, MAX_REQUEST_BYTES,
+    MAX_ROOT_BYTES,
 };
 pub use error::FsError;
 pub use hash::sha256_hex;
 pub use lock::{PathLocks, DEFAULT_LOCK_TIMEOUT};
 pub use ops::{
-    now_secs, CopyLimits, CopyOutcome, EntryInfo, Fs, ListPage, ListRequest, MkdirOutcome,
-    OpContext, ReadChunk, ReadRequest, RemoveOutcome, RenameOutcome, RestoreOutcome, StatInfo,
-    StatRequest, WriteMode, WriteOutcome, WriteRequest,
+    now_secs, ClearTrashOutcome, CopyLimits, CopyOutcome, EntryInfo, Fs, ListPage, ListRequest,
+    MkdirOutcome, OpContext, ReadChunk, ReadRequest, RemoveOutcome, RenameOutcome, RestoreOutcome,
+    StatInfo, StatRequest, WriteMode, WriteOutcome, WriteRequest,
 };
 pub use path::{
     normalize_absolute, protected_subdir, site_of, PathKind, PathMode, ResolvedPath,

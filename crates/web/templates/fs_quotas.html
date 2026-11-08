@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}配额管理 · Skiff{% endblock %}
+{% block head %}<link rel="stylesheet" href="/{{ ctx.prefix }}/static/fs_extra.css">{% endblock %}
+{% block content %}
+<div class="quota-page" data-quota data-prefix="{{ ctx.prefix }}" data-csrf="{{ ctx.csrf }}">
+  <div class="files-head">
+    <div class="files-heading">
+      <h1>配额管理</h1>
+      <p class="files-sub">
+        对指定目录树设置容量上限与文件数上限；超限时经 <code>skiff-fs</code> 的写入/复制/改名/恢复
+        原语拒绝，并返回具体超出量。已用量是<strong>缓存计数</strong>：每次成功操作后增量修正，
+        外部改动（SSH/脚本）可能造成偏差；「重新统计」会递归扫描整棵目录树，成本为 O(条目数)，
+        目录越大耗时越长。
+      </p>
+    </div>
+    <div class="files-toolbar" role="toolbar" aria-label="配额操作">
+      <button type="button" class="files-btn" data-quota-refresh>刷新</button>
+    </div>
+  </div>
+
+  <div class="files-alert" data-quota-alert role="alert" hidden>
+    <span data-quota-alert-text></span>
+    <button type="button" class="files-alert-close" data-quota-alert-close aria-label="关闭提示">×</button>
+  </div>
+
+  <form class="quota-form" data-quota-form>
+    <div class="quota-field">
+      <label for="quota-path">目录树（绝对路径）</label>
+      <input id="quota-path" name="path" type="text" placeholder="/www/sites/example.com" required>
+    </div>
+    <div class="quota-field">
+      <label for="quota-bytes">容量上限（字节，留空不限）</label>
+      <input id="quota-bytes" name="max_bytes" type="number" min="0" step="1" placeholder="例如 1073741824">
+    </div>
+    <div class="quota-field">
+      <label for="quota-files">文件数上限（留空不限）</label>
+      <input id="quota-files" name="max_files" type="number" min="0" step="1" placeholder="例如 10000">
+    </div>
+    <div class="quota-form-actions">
+      <button type="submit" class="files-btn files-btn-primary">保存配额</button>
+      <button type="button" class="files-btn" data-quota-reset>清空表单</button>
+    </div>
+  </form>
+
+  <div class="quota-table-wrap">
+    <table class="quota-table">
+      <thead>
+        <tr>
+          <th>目录树</th>
+          <th>已用容量 / 上限</th>
+          <th>已用文件数 / 上限</th>
+          <th>最近统计</th>
+          <th class="quota-actions-col">操作</th>
+        </tr>
+      </thead>
+      <tbody data-quota-body>
+        <tr><td colspan="5" class="quota-empty">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+<script src="/{{ ctx.prefix }}/static/fs_quotas.js" defer></script>
+{% endblock %}

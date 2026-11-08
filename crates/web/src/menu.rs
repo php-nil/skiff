@@ -41,6 +41,7 @@ pub fn canonical_active(active: &str) -> String {
         "images" => "core/docker/images".into(),
         "networks" => "core/docker/networks".into(),
         "volumes" => "core/docker/volumes".into(),
+        "compose" => "core/docker/compose".into(),
         "plugins" => "core/plugins/installed".into(),
         "settings" => "core/settings/security".into(),
         "audit" => "core/settings/audit".into(),
@@ -1178,6 +1179,14 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     href("m/core/docker/volumes"),
                 ),
                 builtin(
+                    "core/docker/compose",
+                    L1_DOCKER,
+                    "Compose",
+                    "list",
+                    45,
+                    href("m/core/docker/compose"),
+                ),
+                builtin(
                     "core/docker/settings",
                     L1_DOCKER,
                     "设置",
@@ -1254,6 +1263,22 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "folder",
                         20,
                         href("m/core/files"),
+                    ));
+                    items.push(builtin(
+                        "core/files/trash",
+                        L1_TOOLS,
+                        "回收站",
+                        "archive",
+                        21,
+                        href("m/core/files/trash"),
+                    ));
+                    items.push(builtin(
+                        "core/files/quotas",
+                        L1_TOOLS,
+                        "配额管理",
+                        "hard-drive",
+                        22,
+                        href("m/core/files/quotas"),
                     ));
                 }
                 items
@@ -1698,6 +1723,7 @@ mod tests {
             idle_timeout_sec: 300,
             max_restarts: 3,
             config_schema: BTreeMap::new(),
+            task: Vec::new(),
             cron: Vec::new(),
             memory_limit_mb: None,
             pids_limit: None,

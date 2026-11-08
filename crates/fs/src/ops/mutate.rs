@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::audit::{AuditAction, AuditEvent, AuditResult};
+use crate::config::QuotaUsage;
 use crate::error::{io_error, FsError};
 use crate::hash::sha256_hex;
 use crate::path::{PathKind, PathMode, ResolvedPath};
@@ -15,8 +16,8 @@ use crate::trash::{new_trash_id, select_evictions, trash_path, TrashEntry, Trash
 
 use super::copy::{self, CopyLimits};
 use super::{
-    io, now_secs, ok_args, OpContext, RemoveOutcome, RenameOutcome, RestoreOutcome, WriteMode,
-    WriteOutcome, WriteRequest,
+    can_touch_entry, io, now_secs, ok_args, OpContext, RemoveOutcome, RenameOutcome,
+    RestoreOutcome, WriteMode, WriteOutcome, WriteRequest,
 };
 
 impl super::Fs {
@@ -71,25 +72,11 @@ impl super::Fs {
                 )),
             );
         }
-        let quota_key = self.quota_key(p, &r);
-        if let Some(key) = quota_key.as_ref() {
-            let projected = self
-                .quota_usage(key)
-                .saturating_sub(old_size)
-                .saturating_add(new_size);
-            if projected > self.config().max_root_bytes {
-                return self.fail_resolved(
-                    p,
-                    ctx,
-                    AuditAction::Write,
-                    &r,
-                    FsError::QuotaExceeded(format!(
-                        "授权根配额超限：{} > {}",
-                        projected,
-                        self.config().max_root_bytes
-                    )),
-                );
-            }
+        let quota_target = self.quota_target(p, &r);
+        let delta_bytes = new_size as i64 - old_size as i64;
+        let delta_files = if r.kind == PathKind::File { 0 } else { 1 };
+        if let Err(e) = self.enforce_quota(quota_target.as_ref(), delta_bytes, delta_files) {
+            return self.fail_resolved(p, ctx, AuditAction::Write, &r, e);
         }
 
         let out = self.locks.with_write(
@@ -122,9 +109,9 @@ impl super::Fs {
             }
         };
 
-        if let Some(key) = quota_key.as_ref() {
-            let delta = out as i64 - old_size as i64;
-            self.quota().adjust(key, delta);
+        if let Some(target) = quota_target.as_ref() {
+            self.quota()
+                .adjust_stats(&target.root, delta_bytes, delta_files);
         }
         let hash = sha256_hex(&req.data);
         let mut a = ok_args(AuditAction::Write);
@@ -179,11 +166,11 @@ impl super::Fs {
         if let Err(e) = self.ensure_write_allowed(p, &r) {
             return self.fail_resolved(p, ctx, AuditAction::Remove, &r, e);
         }
-        let size = match io::object_size(&r.path, self.config().max_dir_entries) {
-            Ok(size) => size,
+        let usage = match io::object_stats(&r.path, self.config().max_dir_entries) {
+            Ok(usage) => usage,
             Err(e) => return self.fail_resolved(p, ctx, AuditAction::Remove, &r, e),
         };
-        let quota_key = self.quota_key(p, &r);
+        let quota_target = self.quota_target(p, &r);
 
         if permanent {
             let out = self.locks.with_write(
@@ -193,12 +180,16 @@ impl super::Fs {
             )?;
             match out {
                 Ok(_) => {
-                    if let Some(key) = quota_key.as_ref() {
-                        self.quota().adjust(key, -(size as i64));
+                    if let Some(target) = quota_target.as_ref() {
+                        self.quota().adjust_stats(
+                            &target.root,
+                            -(usage.used_bytes as i64),
+                            -(usage.used_files as i64),
+                        );
                     }
                     let mut a = ok_args(AuditAction::Remove);
                     a.set_from_resolved(&r);
-                    a.bytes = size;
+                    a.bytes = usage.used_bytes;
                     a.detail = Some(format!("permanent=true, kind={}", kind_name(&r)));
                     self.audit(p, ctx, a);
                     Ok(RemoveOutcome {
@@ -206,13 +197,13 @@ impl super::Fs {
                         kind: r.kind,
                         permanent: true,
                         trash_id: None,
-                        bytes: size,
+                        bytes: usage.used_bytes,
                     })
                 }
                 Err(e) => self.fail_resolved(p, ctx, AuditAction::Remove, &r, e),
             }
         } else {
-            self.remove_to_trash(p, ctx, &r, size, quota_key)
+            self.remove_to_trash(p, ctx, &r, usage, quota_target)
         }
     }
 
@@ -221,9 +212,10 @@ impl super::Fs {
         p: &Principal,
         ctx: &OpContext,
         r: &ResolvedPath,
-        size: u64,
-        quota_key: Option<PathBuf>,
+        usage: QuotaUsage,
+        quota_target: Option<crate::config::QuotaLimit>,
     ) -> Result<RemoveOutcome, FsError> {
+        let size = usage.used_bytes;
         let cfg = &self.config().trash;
         if size > cfg.per_entry_bytes {
             return self.fail_resolved(
@@ -237,9 +229,9 @@ impl super::Fs {
                 )),
             );
         }
-        let root_key = quota_key
+        let root_key = quota_target
             .as_ref()
-            .map(|k| k.display().to_string())
+            .map(|t| t.root.display().to_string())
             .unwrap_or_default();
         let rows = self.trash_store().list();
         let evictions =
@@ -317,6 +309,7 @@ impl super::Fs {
             trash_path: tpath.display().to_string(),
             kind,
             size,
+            files: usage.used_files,
             mode: io::mode_of(&meta),
             owner: io::owner_of(&meta),
             sha256,
@@ -330,8 +323,12 @@ impl super::Fs {
             quota_root: root_key,
         };
         self.trash_store().insert(entry);
-        if let Some(key) = quota_key.as_ref() {
-            self.quota().adjust(key, -(size as i64));
+        if let Some(target) = quota_target.as_ref() {
+            self.quota().adjust_stats(
+                &target.root,
+                -(usage.used_bytes as i64),
+                -(usage.used_files as i64),
+            );
         }
 
         let mut a = ok_args(AuditAction::Remove);
@@ -427,6 +424,32 @@ impl super::Fs {
             }
         }
 
+        let src_usage = match io::object_stats(&from.path, self.config().max_dir_entries) {
+            Ok(u) => u,
+            Err(e) => return self.rename_fail(p, ctx, &from, &to, e),
+        };
+        let dest_old = if to.kind != PathKind::Missing {
+            io::object_stats(&to.path, self.config().max_dir_entries).unwrap_or_default()
+        } else {
+            QuotaUsage::default()
+        };
+        let from_target = self.quota_target(p, &from);
+        let to_target = self.quota_target(p, &to);
+        let same_root = match (&from_target, &to_target) {
+            (Some(a), Some(b)) => a.root == b.root,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_root {
+            if let Err(e) = self.enforce_quota(
+                to_target.as_ref(),
+                src_usage.used_bytes as i64 - dest_old.used_bytes as i64,
+                src_usage.used_files as i64 - dest_old.used_files as i64,
+            ) {
+                return self.rename_fail(p, ctx, &from, &to, e);
+            }
+        }
+
         let out = self.locks.with_write(
             &[from.path.clone(), to.path.clone()],
             self.config().lock_timeout,
@@ -447,6 +470,33 @@ impl super::Fs {
         )?;
         if let Err(e) = out {
             return self.rename_fail(p, ctx, &from, &to, e);
+        }
+        match (from_target.as_ref(), to_target.as_ref()) {
+            (Some(f), Some(t)) if f.root == t.root => {
+                if dest_old != QuotaUsage::default() {
+                    self.quota().adjust_stats(
+                        &t.root,
+                        -(dest_old.used_bytes as i64),
+                        -(dest_old.used_files as i64),
+                    );
+                }
+            }
+            (from_target, to_target) => {
+                if let Some(t) = to_target {
+                    self.quota().adjust_stats(
+                        &t.root,
+                        src_usage.used_bytes as i64 - dest_old.used_bytes as i64,
+                        src_usage.used_files as i64 - dest_old.used_files as i64,
+                    );
+                }
+                if let Some(f) = from_target {
+                    self.quota().adjust_stats(
+                        &f.root,
+                        -(src_usage.used_bytes as i64),
+                        -(src_usage.used_files as i64),
+                    );
+                }
+            }
         }
         let mut a = ok_args(AuditAction::Rename);
         a.set_from_resolved(&from);
@@ -508,7 +558,23 @@ impl super::Fs {
         if to.kind != PathKind::Missing && !overwrite {
             return self.copy_fail(p, ctx, &from, &to, FsError::Conflict("目标已存在".into()));
         }
-        let quota_key = self.quota_key(p, &to);
+        let quota_target = self.quota_target(p, &to);
+        let dest_old = if overwrite && matches!(to.kind, PathKind::File | PathKind::Symlink) {
+            io::object_stats(&to.path, self.config().max_dir_entries).unwrap_or_default()
+        } else {
+            QuotaUsage::default()
+        };
+        let src_usage = match io::object_stats(&from.path, self.config().max_dir_entries) {
+            Ok(u) => u,
+            Err(e) => return self.copy_fail(p, ctx, &from, &to, e),
+        };
+        if let Err(e) = self.enforce_quota(
+            quota_target.as_ref(),
+            src_usage.used_bytes as i64 - dest_old.used_bytes as i64,
+            src_usage.used_files as i64 - dest_old.used_files as i64,
+        ) {
+            return self.copy_fail(p, ctx, &from, &to, e);
+        }
         let limits = CopyLimits {
             max_entries: self.config().copy_max_entries,
             max_depth: self.config().copy_max_depth,
@@ -522,8 +588,12 @@ impl super::Fs {
             Ok(Ok(stats)) => stats,
             Ok(Err(e)) | Err(e) => return self.copy_fail(p, ctx, &from, &to, e),
         };
-        if let Some(key) = quota_key.as_ref() {
-            self.quota().adjust(key, stats.bytes as i64);
+        if let Some(target) = quota_target.as_ref() {
+            self.quota().adjust_stats(
+                &target.root,
+                stats.bytes as i64 - dest_old.used_bytes as i64,
+                stats.files as i64 - dest_old.used_files as i64,
+            );
         }
         let mut a = ok_args(AuditAction::Copy);
         a.set_from_resolved(&from);
@@ -571,14 +641,35 @@ impl super::Fs {
         if !can_touch_entry(p, &entry) {
             return Err(FsError::Denied("只能恢复自己主体的回收站条目".into()));
         }
+        if let Some(parent) = Path::new(&entry.original_path).parent() {
+            if !parent.exists() {
+                return Err(FsError::NotFound(format!(
+                    "原路径的父目录已不存在：{}；请先重建目录后再恢复，或误删后从回收站复制",
+                    parent.display()
+                )));
+            }
+        }
         let target = self.resolve(p, &entry.original_path, PathMode::Create)?;
         if target.kind != PathKind::Missing && !overwrite {
-            return Err(FsError::Conflict("原路径已存在，不覆盖".into()));
+            return Err(FsError::Conflict(
+                "原路径已存在同名对象，不自动覆盖；如需替换请显式选择覆盖".into(),
+            ));
         }
         if overwrite && target.kind == PathKind::Dir {
             return Err(FsError::Conflict("不允许覆盖目录".into()));
         }
         self.ensure_write_allowed(p, &target)?;
+        let quota_target = self.quota_target(p, &target);
+        let dest_old = if overwrite && target.kind != PathKind::Missing {
+            io::object_stats(&target.path, self.config().max_dir_entries).unwrap_or_default()
+        } else {
+            QuotaUsage::default()
+        };
+        self.enforce_quota(
+            quota_target.as_ref(),
+            entry.size as i64 - dest_old.used_bytes as i64,
+            entry.files as i64 - dest_old.used_files as i64,
+        )?;
         let tpath = PathBuf::from(&entry.trash_path);
         if fs::symlink_metadata(&tpath).is_err() {
             return Err(FsError::NotFound(format!(
@@ -608,9 +699,12 @@ impl super::Fs {
             Ok(Err(e)) | Err(e) => return Err(e),
         }
         self.trash_store().mark_restored(trash_id, now_secs());
-        let root = PathBuf::from(&entry.quota_root);
-        if !root.as_os_str().is_empty() {
-            self.quota().adjust(&root, entry.size as i64);
+        if let Some(target) = quota_target.as_ref() {
+            self.quota().adjust_stats(
+                &target.root,
+                entry.size as i64 - dest_old.used_bytes as i64,
+                entry.files as i64 - dest_old.used_files as i64,
+            );
         }
         let mut a = ok_args(AuditAction::TrashRestore);
         a.src = Some(entry.trash_path.clone());
@@ -716,12 +810,6 @@ impl super::Fs {
         ev.detail = Some(detail);
         self.audit_sink_record(ev);
     }
-}
-
-fn can_touch_entry(p: &Principal, entry: &TrashEntry) -> bool {
-    p.subject().is_admin()
-        || (p.subject().actor_type() == entry.actor_type
-            && p.subject().actor_id() == entry.actor_id)
 }
 
 fn existing_size(r: &ResolvedPath) -> u64 {

@@ -58,6 +58,8 @@ pub async fn dispatch(
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         "core/tasks" => handlers::tasks::list(State(state), AuthUser(user), Query(q)).await,
         "core/files" => handlers::files::page(State(state), AuthUser(user), Query(q)).await,
+        "core/files/trash" => handlers::files::trash_page(State(state), AuthUser(user)).await,
+        "core/files/quotas" => handlers::files::quotas_page(State(state), AuthUser(user)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,
         "core/sites/env" => handlers::sites::env_page(State(state), AuthUser(user), Query(q)).await,
         "core/sites/web" => handlers::nginx::index(State(state), AuthUser(user), Query(q)).await,
@@ -66,6 +68,9 @@ pub async fn dispatch(
         }
         "core/docker/containers" => {
             handlers::containers::list(State(state), AuthUser(user), Query(q)).await
+        }
+        "core/docker/compose" => {
+            handlers::compose::page(State(state), AuthUser(user), Query(q)).await
         }
         "core/docker/settings" => {
             handlers::docker_settings::page(State(state), AuthUser(user), Query(q)).await

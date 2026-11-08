@@ -1,0 +1,313 @@
+/* 回收站页样式：只作用于 .recycle-page。 */
+.recycle-page,
+.quota-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.recycle-page .files-head,
+.quota-page .files-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.recycle-page .files-heading h1,
+.quota-page .files-heading h1 {
+  margin: 0;
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+
+.recycle-page .files-sub,
+.quota-page .files-sub {
+  margin: 4px 0 0;
+  max-width: 760px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.recycle-page .files-sub code,
+.quota-page .files-sub code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--nav-panel);
+  color: var(--text);
+}
+
+.recycle-page .files-toolbar,
+.quota-page .files-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.recycle-page .files-btn,
+.quota-page .files-btn {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h-sm);
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.recycle-page .files-btn:hover:not(:disabled),
+.quota-page .files-btn:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.recycle-page .files-btn:disabled,
+.quota-page .files-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.recycle-page .files-btn-primary,
+.quota-page .files-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.recycle-page .files-btn-danger,
+.quota-page .files-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+
+.recycle-page .files-btn-danger:hover:not(:disabled),
+.quota-page .files-btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.recycle-page .files-alert,
+.quota-page .files-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--info-line);
+  border-radius: var(--radius);
+  background: var(--info-soft);
+  color: var(--info);
+  font-size: var(--fs-sm);
+}
+
+.recycle-page .files-alert[hidden],
+.quota-page .files-alert[hidden] {
+  display: none;
+}
+
+.recycle-page .files-alert[data-kind="ok"],
+.quota-page .files-alert[data-kind="ok"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.recycle-page .files-alert[data-kind="warn"],
+.quota-page .files-alert[data-kind="warn"] {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.recycle-page .files-alert[data-kind="danger"],
+.quota-page .files-alert[data-kind="danger"] {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.recycle-page .files-alert-close,
+.quota-page .files-alert-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.recycle-summary {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.recycle-table-wrap,
+.quota-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.recycle-table,
+.quota-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.recycle-table th,
+.quota-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--nav-panel);
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.recycle-table td,
+.quota-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.recycle-table tbody tr:last-child td,
+.quota-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.recycle-table tbody tr:hover,
+.quota-table tbody tr:hover {
+  background: var(--nav-hover);
+}
+
+.recycle-path,
+.quota-root {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+}
+
+.recycle-actions-col,
+.quota-actions-col {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.recycle-row-actions,
+.quota-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.recycle-row-actions .files-btn,
+.quota-row-actions .files-btn {
+  height: 28px;
+  padding: 0 9px;
+}
+
+.recycle-empty,
+.quota-empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.recycle-muted,
+.quota-muted {
+  color: var(--muted);
+}
+
+.recycle-danger {
+  color: var(--danger);
+}
+
+.quota-form {
+  display: grid;
+  grid-template-columns: minmax(240px, 2fr) minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.quota-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.quota-field label {
+  color: var(--muted);
+  font-size: var(--fs-xs, var(--fs-sm));
+}
+
+.quota-field input {
+  height: var(--ctl-h-sm);
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.quota-field input:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--accent-line);
+}
+
+.quota-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.quota-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.quota-usage strong {
+  font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  .quota-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .quota-form-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .quota-form {
+    grid-template-columns: 1fr;
+  }
+}

@@ -19,11 +19,11 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use skiff_fs::{
-    AuditEvent, AuditSink, Fs, FsConfig, FsError, ListRequest, MemoryQuotaTracker,
-    MemoryTrashStore, OpContext, Principal, ReadRequest, TrashConfig, WriteMode, WriteRequest,
-    MAX_REQUEST_BYTES,
+    AuditEvent, AuditSink, ClearTrashOutcome, Fs, FsConfig, FsError, ListRequest, OpContext,
+    Principal, QuotaLimit, QuotaSnapshot, QuotaTracker, QuotaUsage, ReadRequest, RestoreOutcome,
+    TrashConfig, TrashEntry, TrashKind, TrashStore, WriteMode, WriteRequest, MAX_REQUEST_BYTES,
 };
-use skiff_store::Db;
+use skiff_store::{Db, QuotaRow, TrashRow};
 
 use crate::WebConfig;
 
@@ -69,6 +69,227 @@ pub struct WriteResult {
     pub sha256: String,
 }
 
+/// 删除结果：`trash_id` 非空表示已移入回收站，页面据此提示可恢复。
+#[derive(Debug, Serialize)]
+pub struct RemoveResult {
+    pub path: String,
+    pub trash_id: Option<String>,
+}
+
+/// 回收站条目视图（不暴露内部落点 `trash_path`）。
+#[derive(Debug, Serialize)]
+pub struct TrashItem {
+    pub id: String,
+    pub original_path: String,
+    pub kind: String,
+    pub size: u64,
+    pub files: u64,
+    pub deleted_at: i64,
+    pub expires_at: i64,
+    pub actor_type: String,
+    pub actor_id: String,
+    pub site: Option<String>,
+}
+
+impl From<TrashEntry> for TrashItem {
+    fn from(e: TrashEntry) -> Self {
+        Self {
+            id: e.id,
+            original_path: e.original_path,
+            kind: e.kind.as_str().to_string(),
+            size: e.size,
+            files: e.files,
+            deleted_at: e.deleted_at,
+            expires_at: e.expires_at,
+            actor_type: e.actor_type,
+            actor_id: e.actor_id,
+            site: e.site,
+        }
+    }
+}
+
+fn entry_from_row(row: TrashRow) -> TrashEntry {
+    let kind = match row.kind.as_str() {
+        "dir" => TrashKind::Dir,
+        "symlink" => TrashKind::Symlink,
+        _ => TrashKind::File,
+    };
+    TrashEntry {
+        id: row.id,
+        actor_type: row.actor_type,
+        actor_id: row.actor_id,
+        original_path: row.original_path,
+        trash_path: row.trash_path,
+        kind,
+        size: row.size,
+        files: row.files,
+        mode: row.mode,
+        owner: row.owner,
+        sha256: row.sha256,
+        site: row.site,
+        protected: row.protected,
+        deleted_at: row.deleted_at,
+        expires_at: row.expires_at,
+        nlink: row.nlink,
+        restored_at: row.restored_at,
+        purged_at: row.purged_at,
+        quota_root: row.quota_root,
+    }
+}
+
+fn row_from_entry(e: TrashEntry) -> TrashRow {
+    TrashRow {
+        id: e.id,
+        actor_type: e.actor_type,
+        actor_id: e.actor_id,
+        original_path: e.original_path,
+        trash_path: e.trash_path,
+        kind: e.kind.as_str().to_string(),
+        size: e.size,
+        files: e.files,
+        mode: e.mode,
+        owner: e.owner,
+        sha256: e.sha256,
+        site: e.site,
+        protected: e.protected,
+        deleted_at: e.deleted_at,
+        expires_at: e.expires_at,
+        nlink: e.nlink,
+        restored_at: e.restored_at,
+        purged_at: e.purged_at,
+        quota_root: e.quota_root,
+    }
+}
+
+/// 回收站落点：SQLite `trash_entries`。写入失败不阻断文件操作，但下次列表
+/// 会缺失该条目——调用方仍应先落盘成功再报告删除成功。
+struct DbTrashStore {
+    db: Arc<Db>,
+}
+
+impl TrashStore for DbTrashStore {
+    fn insert(&self, entry: TrashEntry) {
+        let _ = self.db.trash_insert(&row_from_entry(entry));
+    }
+
+    fn get(&self, id: &str) -> Option<TrashEntry> {
+        self.db.trash_get(id).ok().flatten().map(entry_from_row)
+    }
+
+    fn remove(&self, id: &str) -> Option<TrashEntry> {
+        self.db.trash_remove(id).ok().flatten().map(entry_from_row)
+    }
+
+    fn mark_restored(&self, id: &str, ts: i64) -> Option<TrashEntry> {
+        self.db
+            .trash_mark_restored(id, ts)
+            .ok()
+            .flatten()
+            .map(entry_from_row)
+    }
+
+    fn mark_purged(&self, id: &str, ts: i64) -> Option<TrashEntry> {
+        self.db
+            .trash_mark_purged(id, ts)
+            .ok()
+            .flatten()
+            .map(entry_from_row)
+    }
+
+    fn list(&self) -> Vec<TrashEntry> {
+        self.db
+            .trash_live()
+            .map(|rows| rows.into_iter().map(entry_from_row).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// 配额缓存：SQLite `fs_quotas`。读路径每次查库（配额行数量很小）；
+/// 写路径每次成功操作后增量修正，另有显式全量重扫。
+struct DbQuotaTracker {
+    db: Arc<Db>,
+}
+
+impl DbQuotaTracker {
+    fn row_to_snapshot(row: QuotaRow) -> QuotaSnapshot {
+        QuotaSnapshot {
+            root: row.root_path,
+            max_bytes: row.max_bytes,
+            max_files: row.max_files,
+            used_bytes: row.used_bytes,
+            used_files: row.used_files,
+            updated_at: row.scanned_at,
+        }
+    }
+}
+
+impl QuotaTracker for DbQuotaTracker {
+    fn usage(&self, root: &Path) -> u64 {
+        self.usage_stats(root).used_bytes
+    }
+
+    fn adjust(&self, root: &Path, delta: i64) {
+        self.adjust_stats(root, delta, 0);
+    }
+
+    fn usage_stats(&self, root: &Path) -> QuotaUsage {
+        self.db
+            .fs_quota_get(&root.display().to_string())
+            .ok()
+            .flatten()
+            .map(|row| QuotaUsage {
+                used_bytes: row.used_bytes,
+                used_files: row.used_files,
+            })
+            .unwrap_or_default()
+    }
+
+    fn adjust_stats(&self, root: &Path, delta_bytes: i64, delta_files: i64) {
+        let _ = self
+            .db
+            .fs_quota_adjust(&root.display().to_string(), delta_bytes, delta_files);
+    }
+
+    fn limit_for(&self, path: &Path) -> Option<QuotaLimit> {
+        let rows = self.db.fs_quota_list().ok()?;
+        rows.into_iter()
+            .filter(|row| row.max_bytes.is_some() || row.max_files.is_some())
+            .filter(|row| path.starts_with(Path::new(&row.root_path)))
+            .max_by_key(|row| row.root_path.len())
+            .map(|row| QuotaLimit {
+                root: PathBuf::from(row.root_path),
+                max_bytes: row.max_bytes,
+                max_files: row.max_files,
+            })
+    }
+
+    fn set_usage(&self, root: &Path, usage: QuotaUsage) {
+        let _ = self.db.fs_quota_set_usage(
+            &root.display().to_string(),
+            usage.used_bytes,
+            usage.used_files,
+            skiff_fs::now_secs(),
+        );
+    }
+
+    fn set_limits(&self, root: &Path, max_bytes: Option<u64>, max_files: Option<u64>) {
+        let _ = self
+            .db
+            .fs_quota_set_limits(&root.display().to_string(), max_bytes, max_files);
+    }
+
+    fn clear_limits(&self, root: &Path) {
+        let _ = self.db.fs_quota_clear_limits(&root.display().to_string());
+    }
+
+    fn snapshot(&self) -> Vec<QuotaSnapshot> {
+        self.db
+            .fs_quota_list()
+            .map(|rows| rows.into_iter().map(Self::row_to_snapshot).collect())
+            .unwrap_or_default()
+    }
+}
+
 /// `skiff-fs` 审计落点：写现有 `audit` 表，`ip` 列记来源 `web`。
 struct DbAuditSink {
     db: Arc<Db>,
@@ -111,21 +332,37 @@ impl AuditSink for DbAuditSink {
 
 pub struct AdminFs {
     fs: Fs,
+    db: Arc<Db>,
     data_dir: PathBuf,
     seq: AtomicU64,
 }
 
 impl AdminFs {
     pub fn new(cfg: &WebConfig, db: Arc<Db>) -> Self {
-        Self::with_paths(cfg.data_dir.clone(), cfg.web_root.clone(), db)
+        Self::with_options(
+            cfg.data_dir.clone(),
+            cfg.web_root.clone(),
+            db,
+            cfg.trash_retention_days,
+        )
     }
 
     pub fn with_paths(data_dir: PathBuf, web_root: PathBuf, db: Arc<Db>) -> Self {
+        Self::with_options(data_dir, web_root, db, 30)
+    }
+
+    pub fn with_options(
+        data_dir: PathBuf,
+        web_root: PathBuf,
+        db: Arc<Db>,
+        trash_retention_days: u32,
+    ) -> Self {
         let site_root = web_root.join("sites");
         let fs_cfg = FsConfig {
             site_root: site_root.to_string_lossy().to_string(),
             trash: TrashConfig {
                 root: data_dir.join("trash"),
+                retention_secs: i64::from(trash_retention_days.max(1)) * 86_400,
                 ..TrashConfig::default()
             },
             ..FsConfig::default()
@@ -133,10 +370,17 @@ impl AdminFs {
         Self {
             fs: Fs::new(
                 fs_cfg,
-                Arc::new(DbAuditSink { db }),
-                Arc::new(MemoryTrashStore::new()),
-                Arc::new(MemoryQuotaTracker::new()),
+                Arc::new(DbAuditSink {
+                    db: Arc::clone(&db),
+                }),
+                Arc::new(DbTrashStore {
+                    db: Arc::clone(&db),
+                }),
+                Arc::new(DbQuotaTracker {
+                    db: Arc::clone(&db),
+                }),
             ),
+            db,
             data_dir,
             seq: AtomicU64::new(1),
         }
@@ -325,13 +569,101 @@ impl AdminFs {
         Ok(())
     }
 
-    /// 第一步删除为永久删除（无回收站 UI）。第二步接入 SQLite 回收站时改为 `permanent = false`。
-    pub fn remove(&self, user: &str, path: &str) -> Result<(), FsError> {
+    /// 删除改为移入回收站；返回 `trash_id` 供页面提示「可恢复」。
+    pub fn remove(&self, user: &str, path: &str) -> Result<RemoveResult, FsError> {
         self.guard(path, false, true)?;
         let p = Self::principal(user);
         let ctx = self.ctx();
-        self.fs.remove(&p, &ctx, path, true)?;
+        let out = self.fs.remove(&p, &ctx, path, false)?;
+        Ok(RemoveResult {
+            path: out.path,
+            trash_id: out.trash_id,
+        })
+    }
+
+    /// 回收站列表（管理员可见全部；插件条目只读展示，恢复仍受路径硬拒）。
+    pub fn trash_list(&self, user: &str) -> Result<Vec<TrashItem>, FsError> {
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        let rows = self.fs.trash_list(&p, &ctx)?;
+        Ok(rows.into_iter().map(TrashItem::from).collect())
+    }
+
+    /// 恢复原位置。恢复前再次做受保护路径硬拒，避免旧条目绕过页面守卫。
+    pub fn trash_restore(
+        &self,
+        user: &str,
+        id: &str,
+        overwrite: bool,
+    ) -> Result<RestoreOutcome, FsError> {
+        let entry = self
+            .db
+            .trash_get(id)
+            .map_err(|e| FsError::Io(format!("读取回收站条目失败: {e}")))?
+            .ok_or_else(|| FsError::NotFound("回收站条目不存在或已清理".into()))?;
+        self.guard(&entry.original_path, true, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.restore(&p, &ctx, id, overwrite)
+    }
+
+    /// 彻底删除单条。
+    pub fn trash_purge(&self, user: &str, id: &str) -> Result<(), FsError> {
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.purge(&p, &ctx, id)?;
         Ok(())
+    }
+
+    /// 清空回收站（逐条彻底删除，失败条目保留并回报）。
+    pub fn trash_clear(&self, user: &str) -> Result<ClearTrashOutcome, FsError> {
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.clear_trash(&p, &ctx)
+    }
+
+    /// 到期清理（内置任务 `trash-prune` 调用）。返回释放字节数。
+    pub fn trash_prune(&self) -> Result<u64, FsError> {
+        let ctx = self.ctx();
+        self.fs.prune_trash(&ctx)
+    }
+
+    /// 配额列表：只展示已设置上限的条目；受保护路径同样过滤掉（防御旧数据/手工写库）。
+    pub fn quota_list(&self, user: &str) -> Result<Vec<QuotaSnapshot>, FsError> {
+        let p = Self::principal(user);
+        let rows = self.fs.quota_list(&p)?;
+        Ok(rows
+            .into_iter()
+            .filter(|q| q.max_bytes.is_some() || q.max_files.is_some())
+            .filter(|q| self.guard(&q.root, false, true).is_ok())
+            .collect())
+    }
+
+    pub fn quota_set(
+        &self,
+        user: &str,
+        root: &str,
+        max_bytes: Option<u64>,
+        max_files: Option<u64>,
+    ) -> Result<QuotaSnapshot, FsError> {
+        self.guard(root, false, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.quota_set(&p, &ctx, root, max_bytes, max_files)
+    }
+
+    pub fn quota_cancel(&self, user: &str, root: &str) -> Result<QuotaSnapshot, FsError> {
+        self.guard(root, false, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.quota_cancel(&p, &ctx, root)
+    }
+
+    pub fn quota_scan(&self, user: &str, root: &str) -> Result<QuotaSnapshot, FsError> {
+        self.guard(root, false, true)?;
+        let p = Self::principal(user);
+        let ctx = self.ctx();
+        self.fs.quota_scan(&p, &ctx, root)
     }
 }
 
@@ -438,5 +770,198 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, FsError::Denied(_)));
         assert_eq!(fs::read_to_string(&big).unwrap(), content);
+    }
+
+    // ---- 回收站 ---------------------------------------------------------
+
+    #[test]
+    fn remove_moves_to_trash_and_restore_brings_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+        let file = web.join("sites/keep.txt");
+        fs::write(&file, "hello").unwrap();
+
+        let out = admin.remove("admin", file.to_str().unwrap()).unwrap();
+        assert!(out.trash_id.is_some(), "删除必须进回收站");
+        assert!(!file.exists());
+
+        let items = admin.trash_list("admin").unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].original_path.ends_with("keep.txt"));
+        assert_eq!(items[0].kind, "file");
+        assert_eq!(items[0].files, 1);
+
+        let id = out.trash_id.unwrap();
+        admin.trash_restore("admin", &id, false).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "hello");
+        assert!(
+            admin.trash_list("admin").unwrap().is_empty(),
+            "恢复后离开回收站"
+        );
+    }
+
+    #[test]
+    fn restore_conflict_needs_explicit_overwrite_and_parent_missing_is_readable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites/sub")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+        let file = web.join("sites/sub/conflict.txt");
+        fs::write(&file, "old").unwrap();
+        let out = admin.remove("admin", file.to_str().unwrap()).unwrap();
+        let id = out.trash_id.unwrap();
+
+        fs::write(&file, "new").unwrap();
+        let err = admin.trash_restore("admin", &id, false).unwrap_err();
+        assert!(matches!(err, FsError::Conflict(_)), "{err:?}");
+        assert!(err.message().contains("同名对象"));
+
+        admin.trash_restore("admin", &id, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "old",
+            "覆盖恢复取回收站版本"
+        );
+
+        // 父目录被删后恢复失败要有可读提示，不能静默。
+        let nested = web.join("sites/sub/nested.txt");
+        fs::write(&nested, "x").unwrap();
+        let out = admin.remove("admin", nested.to_str().unwrap()).unwrap();
+        let id = out.trash_id.unwrap();
+        fs::remove_dir_all(web.join("sites/sub")).unwrap();
+        let err = admin.trash_restore("admin", &id, false).unwrap_err();
+        assert!(
+            err.message().contains("父目录") || err.message().contains("parent"),
+            "{}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn trash_purge_and_clear_remove_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+        let a = web.join("sites/a.txt");
+        let b = web.join("sites/b.txt");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let id = admin.remove("admin", a.to_str().unwrap()).unwrap().trash_id;
+        admin.remove("admin", b.to_str().unwrap()).unwrap();
+
+        admin.trash_purge("admin", id.as_deref().unwrap()).unwrap();
+        assert_eq!(admin.trash_list("admin").unwrap().len(), 1);
+
+        let out = admin.trash_clear("admin").unwrap();
+        assert_eq!(out.removed, 1);
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
+        assert!(admin.trash_list("admin").unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_of_protected_original_path_is_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("skiff.db"), b"db").unwrap();
+        let db = db();
+        let admin = AdminFs::with_paths(data.clone(), web.clone(), db.clone());
+        let row = TrashRow {
+            id: "legacy-1".into(),
+            actor_type: "admin".into(),
+            actor_id: "admin".into(),
+            original_path: data.join("skiff.db").display().to_string(),
+            trash_path: data.join("trash/legacy-1").display().to_string(),
+            kind: "file".into(),
+            size: 2,
+            files: 1,
+            mode: None,
+            owner: None,
+            sha256: None,
+            site: None,
+            protected: false,
+            deleted_at: 1_000,
+            expires_at: 2_000,
+            nlink: 1,
+            restored_at: None,
+            purged_at: None,
+            quota_root: String::new(),
+        };
+        db.trash_insert(&row).unwrap();
+        let err = admin.trash_restore("admin", "legacy-1", false).unwrap_err();
+        assert!(matches!(err, FsError::Denied(_)), "{err:?}");
+    }
+
+    // ---- 配额 -----------------------------------------------------------
+
+    #[test]
+    fn quota_set_rejects_writes_and_scan_updates_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let admin = new_admin(&web, &data);
+        let root = web.join("sites").display().to_string();
+
+        let q = admin.quota_set("admin", &root, Some(200), Some(1)).unwrap();
+        assert_eq!(q.max_bytes, Some(200));
+        assert_eq!(q.max_files, Some(1));
+
+        let first = web.join("sites/first.bin");
+        admin
+            .write("admin", first.to_str().unwrap(), &"x".repeat(120))
+            .unwrap();
+        let second = web.join("sites/second.bin");
+        let err = admin
+            .write("admin", second.to_str().unwrap(), &"x".repeat(120))
+            .unwrap_err();
+        assert!(matches!(err, FsError::QuotaExceeded(_)), "{err:?}");
+        assert!(err.message().contains("体积") || err.message().contains("容量"));
+
+        let scan = admin.quota_scan("admin", &root).unwrap();
+        assert_eq!(scan.used_bytes, 120);
+        assert_eq!(scan.used_files, 1);
+        assert!(admin.quota_list("admin").unwrap().len() == 1);
+
+        let cancel = admin.quota_cancel("admin", &root).unwrap();
+        assert_eq!((cancel.max_bytes, cancel.max_files), (None, None));
+        admin
+            .write("admin", second.to_str().unwrap(), &"x".repeat(150))
+            .unwrap();
+        assert!(
+            admin.quota_list("admin").unwrap().is_empty(),
+            "取消后不再展示"
+        );
+    }
+
+    #[test]
+    fn quota_on_protected_root_is_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("www");
+        let data = tmp.path().join("skiff");
+        fs::create_dir_all(web.join("sites")).unwrap();
+        fs::create_dir_all(data.join("plugins")).unwrap();
+        let admin = new_admin(&web, &data);
+        let err = admin
+            .quota_set(
+                "admin",
+                data.join("plugins").to_str().unwrap(),
+                Some(1),
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, FsError::Denied(_)));
     }
 }

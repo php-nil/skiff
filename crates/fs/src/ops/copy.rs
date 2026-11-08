@@ -21,6 +21,8 @@ pub struct CopyLimits {
 pub struct CopyStats {
     pub bytes: u64,
     pub entries: u64,
+    /// 普通文件个数（目录/符号链接不计）。
+    pub files: u64,
 }
 
 /// 复制一个对象（文件/目录/符号链接），`overwrite` 控制已有目标。
@@ -65,6 +67,7 @@ fn copy_any(
     } else if ft.is_file() {
         copy_file(src, dst, &meta, overwrite)?;
         stats.bytes = stats.bytes.saturating_add(meta.len());
+        stats.files = stats.files.saturating_add(1);
         bump(stats, limits)?;
         Ok(())
     } else {

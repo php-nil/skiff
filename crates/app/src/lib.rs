@@ -33,6 +33,8 @@ pub struct WebConfig {
     pub data_dir: PathBuf,
     /// 站点/nginx/日志/证书/PHP socket 的宿主根（默认 `/www`）。
     pub web_root: PathBuf,
+    /// 回收站保留天数（默认 30）：到期由内置任务 `trash-prune` 彻底删除。
+    pub trash_retention_days: u32,
     /// 面板配置文件的落盘路径（设置页保存端口/前缀/TLS 时写这里）。
     pub config_path: PathBuf,
     /// 当前生效的监听地址（设置页只读展示 + 端口占用检测的排除项）。
@@ -288,6 +290,7 @@ impl AppState {
             Arc::clone(&self.supervisor),
             self.cfg.web_root.clone(),
             self.cfg.data_dir.clone(),
+            self.cfg.trash_retention_days,
         )?;
         self.tasks
             .set(svc)

@@ -155,19 +155,26 @@ pub(crate) fn remove_object(path: &Path) -> Result<bool, FsError> {
     }
 }
 
-/// 对象逻辑大小：文件取 `len`，符号链接 0，目录递归累计（有上限，防无限扫描）。
-pub(crate) fn object_size(path: &Path, cap_entries: usize) -> Result<u64, FsError> {
+/// 对象逻辑用量：字节 = 普通文件大小之和，文件数 = 普通文件个数；符号链接
+/// 既不计字节也不计文件数，目录只递归不计数。有上限，防无限扫描。
+pub(crate) fn object_stats(
+    path: &Path,
+    cap_entries: usize,
+) -> Result<crate::config::QuotaUsage, FsError> {
     let meta = fs::symlink_metadata(path).map_err(|e| io_error(path, e))?;
+    let mut usage = crate::config::QuotaUsage::default();
     if meta.file_type().is_symlink() {
-        return Ok(0);
+        return Ok(usage);
     }
     if meta.is_file() {
-        return Ok(meta.len());
+        return Ok(crate::config::QuotaUsage {
+            used_bytes: meta.len(),
+            used_files: 1,
+        });
     }
     if !meta.is_dir() {
-        return Ok(0);
+        return Ok(usage);
     }
-    let mut total = 0u64;
     let mut seen = 0usize;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -175,18 +182,29 @@ pub(crate) fn object_size(path: &Path, cap_entries: usize) -> Result<u64, FsErro
         for entry in entries {
             seen += 1;
             if seen > cap_entries {
-                return Ok(total);
+                return Ok(usage);
             }
             let entry = entry.map_err(|e| io_error(&dir, e))?;
-            let meta = entry.metadata().map_err(|e| io_error(&dir, e))?;
-            if meta.is_dir() {
+            // 不跟随符号链接：链接本身不计入用量。
+            let meta = fs::symlink_metadata(entry.path()).map_err(|e| io_error(&dir, e))?;
+            let ft = meta.file_type();
+            if ft.is_dir() {
                 stack.push(entry.path());
-            } else if meta.is_file() {
-                total = total.saturating_add(meta.len());
+            } else if ft.is_file() {
+                usage.used_bytes = usage.used_bytes.saturating_add(meta.len());
+                usage.used_files = usage.used_files.saturating_add(1);
             }
         }
     }
-    Ok(total)
+    Ok(usage)
+}
+
+/// 全量扫描目录树用量（配额「重新统计」使用；成本 O(条目数)）。
+pub(crate) fn scan_usage(
+    root: &Path,
+    cap_entries: usize,
+) -> Result<crate::config::QuotaUsage, FsError> {
+    object_stats(root, cap_entries)
 }
 
 /// 文件类型之外的可审计属性。

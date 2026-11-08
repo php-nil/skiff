@@ -183,6 +183,7 @@ mod tests {
         let cfg = WebConfig {
             data_dir: tmp.join("data"),
             web_root: tmp.join("www"),
+            trash_retention_days: 30,
             config_path: tmp.join("config.toml"),
             listen: "127.0.0.1:18080".parse().unwrap(),
             entry_prefix: "p".into(),

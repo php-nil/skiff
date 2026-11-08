@@ -23,6 +23,7 @@ fn test_state(data_dir: std::path::PathBuf) -> Arc<AppState> {
     ));
     let cfg = WebConfig {
         web_root: data_dir.join("www"),
+        trash_retention_days: 30,
         config_path: data_dir.join("config.toml"),
         listen: "127.0.0.1:18080".parse().unwrap(),
         data_dir,

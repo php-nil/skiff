@@ -53,6 +53,11 @@ listen = "127.0.0.1:18080"
 # 面板对外访问地址，用于生成绝对链接与 Cookie 安全策略的兜底判断。
 # external_url = "https://panel.example.com"
 
+# ── 回收站 ──────────────────────────────────────────────────────
+# 保留天数（默认 30，范围 1–365）：到期由内置任务 builtin:trash-prune 每日 04:30 彻底删除。
+# 环境变量 SKIFF_TRASH_RETENTION_DAYS 优先。
+# trash_retention_days = 30
+
 # ── 安全开关（默认全关，开了要能说清为什么）────────────────────
 # 允许安装未签名插件。默认 false：未签名一律拒装（方案 §4.3）。
 # allow_unsigned = false

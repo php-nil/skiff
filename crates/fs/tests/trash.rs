@@ -131,7 +131,7 @@ fn retention_prune_removes_expired_entries() {
     let events = h.audit_events();
     let prune_events: Vec<_> = events
         .iter()
-        .filter(|e| e.action == "trash.purge" && e.actor_type == "system")
+        .filter(|e| e.action == "fs.recycle.purge" && e.actor_type == "system")
         .collect();
     assert_eq!(prune_events.len(), 1);
 }
@@ -162,7 +162,7 @@ fn per_root_quota_evicts_oldest() {
     let evicted = h
         .audit_events()
         .into_iter()
-        .any(|e| e.action == "trash.purge" && e.actor_type == "system");
+        .any(|e| e.action == "fs.recycle.purge" && e.actor_type == "system");
     assert!(evicted, "配额淘汰需留下审计");
 }
 

@@ -6,7 +6,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TrashKind {
     File,
     Dir,
@@ -25,7 +28,7 @@ impl TrashKind {
 
 /// 一条回收站条目。字段与契约 §5.1 对齐；`quota_root` 是内部扩展，用于按
 /// 授权根统计容量（契约要求「每个授权根 1 GiB」）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TrashEntry {
     pub id: String,
     pub actor_type: String,
@@ -34,6 +37,8 @@ pub struct TrashEntry {
     pub trash_path: String,
     pub kind: TrashKind,
     pub size: u64,
+    /// 普通文件个数；恢复时按此回填配额文件数计数。
+    pub files: u64,
     pub mode: Option<u32>,
     /// `uid:gid`；非 Unix 平台为 `None`。
     pub owner: Option<String>,
@@ -237,6 +242,7 @@ mod tests {
             trash_path: format!("/trash/{id}"),
             kind: TrashKind::File,
             size,
+            files: 1,
             mode: Some(0o644),
             owner: Some("0:0".into()),
             sha256: None,

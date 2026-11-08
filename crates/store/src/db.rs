@@ -22,17 +22,19 @@ mod audit;
 mod backup_codes;
 mod plugins;
 mod prefs;
+pub mod quotas;
 pub mod runtimes;
 mod sessions;
 mod settings;
 pub mod sites;
 pub mod tasks;
 mod tokens;
+pub mod trash;
 mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 13;
+pub const CURRENT_SCHEMA_VERSION: i64 = 14;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -164,6 +166,11 @@ impl Db {
             conn.execute_batch(SCHEMA_V13)?;
             conn.execute_batch("PRAGMA user_version = 13")?;
             info!(from = version, to = 13, "schema 迁移完成");
+        }
+        if version < 14 {
+            conn.execute_batch(SCHEMA_V14)?;
+            conn.execute_batch("PRAGMA user_version = 14")?;
+            info!(from = version, to = 14, "schema 迁移完成");
         }
         Ok(())
     }
@@ -601,9 +608,54 @@ UPDATE site_runtimes
  WHERE origin = 'seed';
 "#;
 
+/// v14：内核文件管理第二步——回收站元数据与目录树配额缓存。
+///
+/// 两表都由 `skiff-fs` 的 trait 适配器读写；`fs_quotas` 同时承载上限与增量
+/// 缓存用量，`scanned_at` 记录最近一次全量重扫时间。
+const SCHEMA_V14: &str = r#"
+CREATE TABLE IF NOT EXISTS trash_entries (
+  id TEXT PRIMARY KEY,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  original_path TEXT NOT NULL,
+  trash_path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  files INTEGER NOT NULL DEFAULT 0,
+  mode INTEGER,
+  owner TEXT,
+  sha256 TEXT,
+  site TEXT,
+  protected INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  nlink INTEGER NOT NULL DEFAULT 1,
+  restored_at INTEGER,
+  purged_at INTEGER,
+  quota_root TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_trash_expires
+  ON trash_entries(expires_at);
+CREATE INDEX IF NOT EXISTS idx_trash_deleted
+  ON trash_entries(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_trash_actor
+  ON trash_entries(actor_type, actor_id, deleted_at);
+
+CREATE TABLE IF NOT EXISTS fs_quotas (
+  root_path TEXT PRIMARY KEY,
+  max_bytes INTEGER,
+  max_files INTEGER,
+  used_bytes INTEGER NOT NULL DEFAULT 0,
+  used_files INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  scanned_at INTEGER
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TrashRow;
     use crate::ORIGIN_SEED;
     use skiff_model::Role;
 
@@ -655,6 +707,100 @@ mod tests {
             seeded.socket_path.is_none(),
             "从未安装的种子行不应登记 socket 路径"
         );
+    }
+
+    #[test]
+    fn v13_database_upgrades_to_v14_with_trash_and_quota_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skiff.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 13").unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let v: i64 = db
+            .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 14);
+        let exists = |name: &str| -> bool {
+            db.conn()
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+                    [name],
+                    |_| Ok(()),
+                )
+                .is_ok()
+        };
+        assert!(exists("trash_entries"));
+        assert!(exists("fs_quotas"));
+    }
+
+    #[test]
+    fn trash_rows_roundtrip_and_state_transitions() {
+        let db = Db::open_in_memory().unwrap();
+        let row = TrashRow {
+            id: "t1".into(),
+            actor_type: "admin".into(),
+            actor_id: "admin".into(),
+            original_path: "/www/sites/a/x.txt".into(),
+            trash_path: "/data/trash/2026/11/t1".into(),
+            kind: "file".into(),
+            size: 12,
+            files: 1,
+            mode: Some(0o644),
+            owner: Some("1000:1000".into()),
+            sha256: None,
+            site: Some("a".into()),
+            protected: false,
+            deleted_at: 100,
+            expires_at: 200,
+            nlink: 1,
+            restored_at: None,
+            purged_at: None,
+            quota_root: "/www/sites/a".into(),
+        };
+        db.trash_insert(&row).unwrap();
+        assert_eq!(db.trash_get("t1").unwrap().unwrap(), row);
+        assert_eq!(db.trash_live().unwrap().len(), 1);
+        db.trash_mark_restored("t1", 101).unwrap();
+        assert!(db.trash_live().unwrap().is_empty());
+        let restored = db.trash_get("t1").unwrap().unwrap();
+        assert_eq!(restored.restored_at, Some(101));
+        db.trash_remove("t1").unwrap();
+        assert!(db.trash_get("t1").unwrap().is_none());
+    }
+
+    #[test]
+    fn quota_adjust_set_cancel_roundtrip() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.fs_quota_get("/www/sites/a").unwrap(), None);
+        db.fs_quota_adjust("/www/sites/a", 100, 2).unwrap();
+        let row = db.fs_quota_get("/www/sites/a").unwrap().unwrap();
+        assert_eq!((row.used_bytes, row.used_files), (100, 2));
+        assert_eq!((row.max_bytes, row.max_files), (None, None));
+
+        db.fs_quota_set("/www/sites/a", Some(500), Some(10), 100, 2, 300)
+            .unwrap();
+        let row = db.fs_quota_get("/www/sites/a").unwrap().unwrap();
+        assert_eq!((row.max_bytes, row.max_files), (Some(500), Some(10)));
+        assert_eq!(row.scanned_at, Some(300));
+
+        db.fs_quota_adjust("/www/sites/a", -150, 1).unwrap();
+        let row = db.fs_quota_get("/www/sites/a").unwrap().unwrap();
+        assert_eq!((row.used_bytes, row.used_files), (0, 3));
+        assert_eq!(row.max_bytes, Some(500), "增量修正不能丢上限");
+
+        db.fs_quota_clear_limits("/www/sites/a").unwrap();
+        let row = db.fs_quota_get("/www/sites/a").unwrap().unwrap();
+        assert_eq!((row.max_bytes, row.max_files), (None, None));
+        assert_eq!((row.used_bytes, row.used_files), (0, 3));
     }
 
     #[test]

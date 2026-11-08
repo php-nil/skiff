@@ -36,6 +36,8 @@ pub struct FileConfig {
     pub authorized_roots: Option<Vec<PathBuf>>,
     pub external_url: Option<String>,
     pub login_concurrency: Option<usize>,
+    /// 回收站保留天数（默认 30，范围 1–365）：到期由内置任务 `trash-prune` 彻底删除。
+    pub trash_retention_days: Option<u32>,
     /// 首启管理员是否强制首次登录改密。默认 false（初始口令可直接使用）。
     pub require_initial_password_change: Option<bool>,
 }
@@ -63,6 +65,8 @@ pub struct Config {
     pub authorized_roots: Vec<PathBuf>,
     pub external_url: Option<String>,
     pub login_concurrency: usize,
+    /// 回收站保留天数（默认 30，范围 1–365）。
+    pub trash_retention_days: u32,
     /// 首启管理员是否强制首次登录改密。默认 false，可用配置/环境变量/CLI 显式开启。
     /// 只影响**新建**管理员；已有账号一律不动。
     pub require_initial_password_change: bool,
@@ -187,6 +191,13 @@ impl Config {
 
         let external_url = env_str("SKIFF_EXTERNAL_URL").or(file.external_url.clone());
         let login_concurrency = file.login_concurrency.unwrap_or(2).max(1);
+        let trash_retention_days = match env_str("SKIFF_TRASH_RETENTION_DAYS") {
+            Some(v) => v
+                .parse::<u32>()
+                .with_context(|| format!("SKIFF_TRASH_RETENTION_DAYS 非法: {v}"))?
+                .clamp(1, 365),
+            None => file.trash_retention_days.unwrap_or(30).clamp(1, 365),
+        };
 
         Ok(Config {
             listen,
@@ -208,6 +219,7 @@ impl Config {
             authorized_roots,
             external_url,
             login_concurrency,
+            trash_retention_days,
             require_initial_password_change,
             dev_http: false,
             plaintext_behind_proxy: false,
@@ -390,6 +402,7 @@ mod tests {
             authorized_roots: vec![],
             external_url: None,
             login_concurrency: 2,
+            trash_retention_days: 30,
             require_initial_password_change: false,
             dev_http: false,
             plaintext_behind_proxy: false,
@@ -422,6 +435,7 @@ mod tests {
             authorized_roots: vec![],
             external_url: None,
             login_concurrency: 2,
+            trash_retention_days: 30,
             require_initial_password_change: false,
             dev_http: false,
             plaintext_behind_proxy: false,
