@@ -6,7 +6,7 @@
 
 ## 0. 使用约定
 
-- `$B`：测试机基址（当前地址、端口与 TLS 见 [TEST_ENV.md](TEST_ENV.md) §2，例如 `https://10.10.15.4:18080`）；`$P`：安全入口前缀，从 `journalctl -u skiff | grep 安全入口`、首次安装输出或 TEST_ENV §2 取当前值。
+- `$B`：测试机基址（当前地址、端口与 TLS 见 [TEST_ENV.md](TEST_ENV.md) §2，例如 `http://10.10.15.4:18081`）；`$P`：安全入口前缀，从 `journalctl -u skiff | grep 安全入口`、首次安装输出或 TEST_ENV §2 取当前值。
 - `$J`：已登录管理员的 curl CookieJar；除 AUTH 章外，默认已登录。
 - `[本机]`：开发机即可执行（`cargo test`、`xtask`、模板/路由单测）。
 - `[本机+上机]`：先跑单测，再到测试机补一条手工断言（通常用于路径/权限类）。
@@ -17,7 +17,7 @@
 登录一次的命令：
 
 ```bash
-export B='https://10.10.15.4' P='<entry-prefix>' J=/tmp/skiff.jar
+export B='http://10.10.15.4:18081' P='<entry-prefix>' J=/tmp/skiff.jar
 C=$(curl -ks -c "$J" "$B/$P/login" | grep -o 'name="csrf" value="[^"]*"' | head -1 | cut -d'"' -f4)
 curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev/null -w '%{http_code}\n' "$B/$P/login"
 ```
@@ -121,7 +121,7 @@ curl -ksI -b "$J" "$B/$P/plugins/com.skiff.files/ui/index.html" | grep -i 'conte
 curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/com.skiff.monitor/nope"
 ```
 
-**本轮实测（2026-11-06，测试机 10.10.15.4）**
+**2026-11-06 实测（测试机 10.10.15.4）**
 
 | 编号 | 结果 | 证据 |
 | --- | --- | --- |
@@ -222,7 +222,7 @@ curl -ks -o /dev/null -w 'audit=%{http_code}\n' -b "$J" "$B/$P/audit"
 curl -ks -o /dev/null -w 'files=%{http_code}\n' -b "$J" "$B/$P/plugins/com.skiff.files/main"
 ```
 
-**本轮实测（2026-11-06，测试机 10.10.15.4）**
+**2026-11-06 实测（测试机 10.10.15.4）**
 
 | 编号 | 结果 | 证据 |
 | --- | --- | --- |
@@ -264,7 +264,7 @@ curl -ks -o /dev/null -w 'tasks=%{http_code}\n' -b "$J" "$B/$P/tasks"
 curl -ks -o /dev/null -w 'task_detail=%{http_code}\n' -b "$J" "$B/$P/tasks/builtin:db-vacuum"
 ```
 
-**本轮实测（2026-11-06，测试机 10.10.15.4）**
+**2026-11-06 实测（测试机 10.10.15.4）**
 
 | 编号 | 结果 | 证据 |
 | --- | --- | --- |
@@ -363,7 +363,7 @@ cargo run -p xtask -- check
 | DEPLOY-04 | 配置严格校验与非回环无 TLS 拒绝 | `[上机]` 可改配置 | 写未知字段启动；监听 `0.0.0.0` 且不配 TLS 启动；恢复合法配置 | 未知字段启动失败并指出字段；非回环无 TLS 拒绝启动；合法配置恢复 200 | □通过 / □失败 | `crates/core/src/config.rs`、`deploy/config.toml.example` |
 | DEPLOY-05 | 直连 TLS | `[上机]` 有证书 | 配 `tls_cert`、`tls_key` 指向证书；重启；访问 HTTPS；用 http 访问同一端口 | HTTPS 200 且证书正确；明文 HTTP 无法完成 TLS 握手（不会降级为明文）；面板 Cookie 带 Secure | □通过 / □失败 | `crates/core/src/config.rs`、`crates/core/src/server.rs`（TLS 监听）、`deploy/install.sh` |
 | DEPLOY-06 | 反代信任边界 | `[上机]` 前置反代 | 配 `trusted_proxies` 为反代 CIDR；从可信/不可信来源分别带 `X-Forwarded-Proto`、`X-Forwarded-For` 访问，看审计里的来源 IP 与 scheme | 可信来源的头被采信，来源 IP 为最左真实客户端；不可信来源的头一律忽略，来源 IP 为直连 peer；伪造头不改变客户端识别 | □通过 / □失败 | `crates/core/src/config.rs`、`crates/web/src/middleware.rs` |
-| DEPLOY-07 | 升级覆盖安装与数据保留 | `[上机]` 已有库与站点 | 备份旧二进制与 DB；覆盖安装新 release；重启；登录看站点/任务/插件 | 新版本启动；`user_version` 升到当前 schema（11）；站点、任务、插件数据保留；已装官方插件的 `versions/<ver>` 与随包内容一致（版本或内容不同则更新，`data/` 与既有授权不变）。`[已复验 2026-11-07]` 同包覆盖安装，配置 sha 不变、业务计数保留 | □通过 / □失败 | `deploy/install.sh`、`crates/store/src/db.rs`（迁移） |
+| DEPLOY-07 | 升级覆盖安装与数据保留 | `[上机]` 已有库与站点 | 备份旧二进制与 DB；覆盖安装新 release；重启；登录看站点/任务/插件 | 新版本启动；`user_version` 升到当前 schema（15）；站点、任务、插件数据保留；已装官方插件的 `versions/<ver>` 与随包内容一致（版本或内容不同则更新，`data/` 与既有授权不变）。`[已复验 2026-11-07]` 同包覆盖安装，配置 sha 不变、业务计数保留 | □通过 / □失败 | `deploy/install.sh`、`crates/store/src/db.rs`（迁移） |
 | DEPLOY-08 | 卸载与 purge 边界 | `[上机]` 可丢弃环境 | `deploy/uninstall.sh`；再加 `--purge`；检查数据目录 | 默认卸载保留 `/www/skiff` 数据；`--purge` 明确删除数据与配置并提示。`[已复验 2026-11-07]` 默认卸载删程序保数据（`/www/skiff`、`/etc/skiff`、`/www/sites`），重装恢复一致 | □通过 / □失败 | `deploy/uninstall.sh` |
 | DEPLOY-09 | aarch64 装机 | `[上机]` arm64 Linux | 安装 release arm64 包；起 systemd；建站访问 | 安装/启动/建站均成功；`uname -m` 为 aarch64。`[部分]` 无 arm64 实机，仅 qemu-user 冒烟：`file` = ARM aarch64 静态链接、`ldd` = `not a dynamic executable`、`skiff version/--help/doctor` 正常（2026-11-09，`2f63aeb`）；装机未验 | □通过 / □失败 | `deploy/pack-release.sh`、`.github/workflows/release.yml` |
 | DEPLOY-10 | 1Panel Docker 受限形态 | `[上机]` 1Panel 环境 | 按商店包安装；尝试安装 fs/net 插件；打开三核心 | 面板可用；fs/net 插件因能力面收缩而拒装；docker/identity 正常。`[部分通过]` 2026-11-09 用等价镜像（`alpine:3.23` + 发布包 `skiff`，`SKIFF_FORM=docker`）实测：`/healthz` 200、登录 303、`files/monitor/guard/testkit` 400「需要能力 fs」、`ftp` 400「需要能力 ftp」、`cron` 400「要求完整沙箱」、`/containers/rows` 200 + `stop/start` 303；未在真实 1Panel 商店流程内装。**文件管理已按能力面收口（`607d09b` 复验）**：`core/files`、`core/files/trash`、`core/files/quotas` 入口不渲染，`/{p}/files*`、`/{p}/m/core/files*` 直达均 403「当前部署形态不提供文件管理能力」；回归 `crates/web/tests/main_flow.rs::restricted_form_hides_and_rejects_files_management` | □通过 / □失败 | `deploy/1panel/`、`crates/plugin`、`crates/web/src/middleware.rs`（`check_fs_capability`） |
@@ -431,7 +431,7 @@ curl -s -o /dev/null -w 'rust=%{http_code}\n' -H 'Host: audit-rust.local' http:/
 | PERF-05 | ☑通过 | 宿主 CPU：静态 3.56 / 8.82 / 14.02%，PHP 7.04 / 25.75 / 26.45%，Rust 4.88 / 11.70 / 20.49%；nginx 容器 5.29 / 14.96 / 23.23%（静态）；磁盘写 45 / 291 / 779 KB/s；全程内存无单调增长 |
 | PERF-06 | ☑通过 | `skiff` 主进程 idle 0.05% 单核，负载下 0.03–0.10%，与 rps 无关；tokio 线程自愿切换约 2.4 次/s；guard+monitor 常驻 RSS ≈1.4 MB、CPU ≤0.02%；`NRestarts=0` |
 | PERF-07 | ☑通过（三项 A/B 定量，2026-11-08） | 改前：①PHP 每请求 stdout 日志经 containerd-shim→dockerd，c32 合计 13.78% 单核；②30 s copytruncate 轮转使 `skiff` 写 1/215/464 KB/s（c4/c16/c32）；③`samples.json` 36,549 B 每 300 s 整文件重写；④`read_log` 整文件读入，3 GB 文件 4.53 s/写 2.97 GB/返回空页。改后复测：②`skiff` 写 3/3/3 KB/s、磁盘写 52/124/195 KB/s、p99 2.08/4.11/4.99 ms（CPU 与 p99 在噪声内）；④9.5 MB 峰值 RSS 22,984→12,160 KB，3 GB 4.5 ms/写 16 KB/返回最新 199 行；③一次 `execute` 写 77,824→1,059 B、inode 不变、旧 `samples.json` 不再被写 |
-| PERF-08 | ☑通过 | 临时文件与新增 `access.log.1` 已删；三容器 Up、两站 200；插件/授权/任务计数与压测前一致；`integrity=ok`、`user_version=11`；`NRestarts=0`；`MemAvailable` 约 3301 MB、`load1` 回落 |
+| PERF-08 | ☑通过 | 临时文件与新增 `access.log.1` 已删；三容器 Up、两站 200；插件/授权/任务计数与压测前一致；`integrity=ok`、`user_version` 与压测前一致（当轮 11，现 v15）；`NRestarts=0`；`MemAvailable` 约 3301 MB、`load1` 回落 |
 | PERF-01 备注 | — | 首轮 `collect` 采样脚本变量被覆盖导致无数据，已修复；`load.py` 曾把 nginx `keepalive_requests` 到期断连计为 error，已改计 `reconnects` |
 
 ## K. FTP 与宿主机文件服务
@@ -488,7 +488,7 @@ cargo test -p skiff-app panel_settings --locked
 cargo test -p skiff tls_ --locked
 cargo test -p skiff-web settings --locked
 
-# 测试机（直接明文形态下；$B 为 http://10.10.15.4:18080）
+# 测试机（直接明文形态下；$B 为 http://10.10.15.4:18081）
 curl -s -c /tmp/j "$B/$P/login" | grep -o 'name="csrf" value="[^"]*"'
 curl -s -b /tmp/j -c /tmp/j -D- -d "csrf=...&username=admin&password=..." "$B/$P/login" | grep -i set-cookie
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
@@ -500,8 +500,8 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 | --- | --- | --- |
 | FS-04 | 后端+管理员 UI 已接（第二步） | 回收站接 SQLite `trash_entries`，`/{p}/files/trash` 提供恢复/彻底删除/清空；能力面仍无 `fs.trash` 动词（插件不直接操作回收站） |
 | FS-05 | 后端+管理员 UI 已接（第二步） | 目录树配额接 `fs_quotas`，`/{p}/files/quotas` 提供设置/修改/取消/重扫；能力面无 quota 动词 |
-| TASK-06 | 只有后端没有入口 | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；testkit 无 `scheduler_call`，cron 只代理 `task.*` |
-| TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，本轮实测创建/删除均 200 |
+| TASK-06 | 只有后端没有入口 | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；2026-11-09 起 testkit 已有 `scheduler_probe`/`busy_probe`（只读），但仍无 `buffer.push`/`buffer.stat` 探针；cron 只代理 `task.*` |
+| TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，2026-11-06 实测创建/删除均 200 |
 | DOCKER-10 | 运行时入口已接（单文件） | `/$P/compose` 走 `skiff-compose` 解析 + `Docker::execute` 的 `compose.up/down`；不支持 `-f` 多文件叠加，源文件不落盘；`xtask check` 字段子集校验保留 |
 | DEPLOY-09 | 部分通过：qemu-user 冒烟，未实机装机 | `file`/`ldd` 显示 ARM aarch64 静态链接，`version`/`--help`/`doctor` 通过（2026-11-09 `2f63aeb`）；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
 | DEPLOY-10 | 部分通过：等价镜像实测，未走真实 1Panel 商店流程 | `SKIFF_FORM=docker` 下 healthz 200、登录 303、fs/net/ftp 插件 400 拒装、容器 stop/start 303；文件管理入口已在 `607d09b` 按形态隐藏、页面/深链/API 直达 403 且文案可读 |

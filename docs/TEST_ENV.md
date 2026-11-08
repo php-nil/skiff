@@ -68,7 +68,7 @@
 | 数据库 | 沿用空库直建结果 **`PRAGMA user_version=15`**；`jobs` / `job_logs` / `trash_entries` / `fs_quotas` 均在（`jobs` 含 `cancel_requested` / `log_seq` / `retry_of`）；users 1 / plugins 6 / sites 1 / **site_runtimes 2**（`php-8.5` 种子行在 SITE-10 复验中按无占用路径删除，保留 `iter-php-1862702` 与 `rust-iter-rust-1862702`） |
 | 插件 | 6 个官方插件 CLI 安装成功（grants 数：cron 6 / files 7 / ftp 11 / guard 6 / monitor 3 / **testkit 6**，testkit 新增 `scheduler:read`）；`testkit` 包更新为 322,007 B / md5 `df8e361b…e04411e0`，其余 5 个包字节与 md5 与 `456e040` 轮一致（monitor 358,905 B / `97f805f9…7212`、cron 381,183 B / `ca287744…`、files 395,243 B / `0bd74f4f…`、ftp 327,273 B / `fcd5e7cb…`、guard 354,267 B / `b01c2360…`）；`files` 授权 `object:path:/www`，`monitor`/`testkit` 授权 `object:path:/proc`；manifest 与授权逐项比对无越权 |
 | 服务 | `skiff.service` active、`/healthz` 200；`skiff-http-fwd.service` active（形态三对外转发，脚本 `/root/iter/skiff-http-fwd.py`）；`skiff-tls-proxy.service` 未部署 |
-| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`，本轮覆盖安装前后一致）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）；无 `ext_*_timeout_secs`（超时复验后已删键）。备份 `/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml` |
+| 配置 | `/etc/skiff/config.toml`：`listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP；sha256 `ebcccae69288b36063d2545d89cb86f91df51f277ef2ca9c3b0a079a9cf8816c`，`607d09b` 轮覆盖安装前后一致）；`allow_reduced_sandbox=true`（landlock/cgroups 未实现，测试机显式降级）；无 `ext_*_timeout_secs`（超时复验后已删键）。备份 `/root/iter/config-dev-20261108-fresh.toml`、`/root/iter/config.pre-456e040.toml` |
 
 ## 6. Release 资产（v0.1.0 = `607d09b`，2026-11-09）
 
@@ -83,7 +83,7 @@
 
 - 包内二进制：x86_64 `skiff` 13,050,640 B `01ad573e11cc7a91d30ea929d654e299ff5f9579991840dddf1b80cb985d7348`（= 安装后 `/usr/local/bin/skiff`）；aarch64 `skiff` 10,711,080 B `f165b5701c51b03fcdedd0fdd85ecfa67a38c94065a815c1aab1ba8a7615775c`。
 - 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；Windows 经内网代理 `http://10.66.10.22:1010` 走 API 资产端点下载（缓存 `d:\panel\.workbuddy\release-607d09b\`）；`scp` 到测试机 `/root/iter/a607d09b/` 后校验再解压安装。
-- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；本轮未改插件包，签名指纹不变。
+- 包内 `official/` 含 6 个 `.wbpkg`（guard / monitor / files / cron / ftp / testkit）与 `public-key.txt`；`607d09b` 轮未改插件包，签名指纹不变。
 - 测试期只保留 `v0.1.0` 一个 tag，后续发版一律 force 移动同一 tag、覆盖同一 Release，**不新建版本号**。
 
 ## 7. 最近部署记录
@@ -112,9 +112,12 @@
 | 2026-11-09 01:05 | `d197041` testkit 探针复验版覆盖安装（Release 资产） | 资产 `d197041`；x86_64 8,807,640 B `563a0fc4…`（单资产 sha256 与 API digest 一致） | 解压 `sh install.sh --no-docker` 成功；库保持 v15；`/usr/local/bin/skiff` 13,034,256 B `9e96f596…` 与包内一致；testkit 新包 322,007 B `df8e361b…` 同步到 `/www/skiff/official/`，全新安装 grants 6（含 `scheduler:read`）并种入默认停用探针任务 |
 | 2026-11-09 01:05–01:12 | `d197041` 台账四条复验 | 同资产 | WEB-04 四条候选校验、SITE-10 三种删除路径、files 授权默认/重装、BusyGuard 403 全部通过；详见 §8「台账四项复验」 |
 | 2026-11-09 01:23–01:35 | `9e2c6b1` 修复轮覆盖安装 + 复验（Release 资产） | 资产 `9e2c6b1`；x86_64 8,808,110 B `23c5127d…`（与 API digest 一致） | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；二进制 `df1ba659…` 与包内一致；停止态植入非法配置启动被拒且线上 `nginx -t` 通过，还原后启动成功、站点恢复；详见 §8「`9e2c6b1` 修复轮」 |
+| 2026-11-09 凌晨 | `2f63aeb` FTP jail 修复版覆盖安装（Release 资产） | 资产 `2f63aeb`；x86_64 8,808,264 B `9bb0467f…`、aarch64 8,401,553 B `5bfd3cb1…` | 库保持 v15；二进制 `54f660a1…` 与包内一致、`/healthz` 200；jail 写入 `port = 2121`、fail2ban 单 jail、nft 仅 `tcp dport 2121`；详见 §8 |
 | 2026-11-09 03:25 | `607d09b` 发版覆盖安装（Release 资产） | 资产 `607d09b`；x86_64 8,812,519 B `1284a6cb…4c5c009b`、aarch64 8,403,005 B `fb4c7aa5…4dead7a`，`sha256sum -c` 与外层 `checksums.txt` 均 OK | 解压 `sh install.sh --no-docker` 成功；库保持 v15、配置 sha `ebcccae6…` 未变；`/usr/local/bin/skiff` 13,050,640 B `01ad573e…985d7348` 与包内一致；`/healthz` 200；详见 §8「`607d09b` 发版复验」 |
 
-## 8. 最近一次全链路验收结论（2026-11-08 `1862702` 全新安装 + `9daabd3` 复核轮 + `456e040` 收口轮 + 2026-11-09 `97edf87` 工作台轮 + `d197041` 台账轮 + `9e2c6b1` 修复轮 + `607d09b` 发版轮）
+## 8. 最近一次全链路验收结论（截至 2026-11-09 `v0.1.0` / `607d09b`）
+
+> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-09.md](changes/2026-11-09.md)、[changes/2026-11-08.md](changes/2026-11-08.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
 
 **安装链路（`1862702` 全新安装轮）**
 - 机器已还原：无 `/etc/skiff`、无 `admin` 用户、无旧数据根；按 Release 资产安装，不传本地二进制。
@@ -141,14 +144,11 @@
 - **EACCES / EPERM（403「权限不足」）**：`mkdir /www/iter-eacces` + `chattr +i` 造「可进入不可写」路径。内核管理员面 `POST /{p}/files/api/write` → **403**，`{"error":{"code":"fs.denied","message":"权限不足: /www/iter-eacces/.probe.txt.tmp-66300-0: Operation not permitted (os error 1)"},"ok":false}`；审计 `actor=admin action=fs.write result=deny code=fs.denied`。插件能力面（`com.skiff.files` RPC `fs.write`）→ **HTTP 403**，页面正文「内核返回 HTTP 403: 权限不足: /www/iter-eacces/probe.txt: Operation not permitted (os error 1)」；审计 `actor=plugin:com.skiff.files` 同文案 `result=deny`。两面都不是 500。验后 `chattr -i` 并删除目录。
 - **EDQUOT（507「文件系统配额已用尽」）**：8 MB loop ext4（`mkfs.ext4 -O quota` 内建配额）+ `setquota` KB 级硬限。**关键构造点**：skiff 以 uid 0 运行且 `CapEff=000001ffffffffff` 含 `CAP_SYS_RESOURCE`，配额对 root 直接豁免（前三次构造写 20 KB 都返回 200，`repquota` 显示已超限也没用）；用 `setpriv --reuid=65534` 写同一挂载点会失败，证明配额本身生效。临时 drop-in `[Service] CapabilityBoundingSet=~CAP_SYS_RESOURCE` + `daemon-reload` + restart（`CapEff` 降为 `000001fffeffffff`）后：内核管理员面写 20 KB → **507**，`{"error":{"code":"fs.no_space","message":"文件系统配额已用尽，无法写入: /www/iter-quota/.big.bin.tmp-75024-0"},"ok":false}`；审计 `code=fs.no_space result=fail`。插件能力面同一次写 → **HTTP 400**，正文「…协议错误: 内核返回 HTTP 507: 文件系统配额已用尽，无法写入: /www/iter-quota/big2.bin」——代理层 `rpc_error` 当时只透传 403/404/409。已补 `AppError::NoSpace`（507）+ `rpc_error` 透传 507 + 单测 `rpc_error_passes_kernel_status_through` 覆盖；**插件面 507 已于 `456e040` Release 资产复验通过，见下方「收口轮复验」**。验后移除 drop-in、`daemon-reload` + restart（`CapEff` 回 `000001ffffffffff`）、`quotaoff`+`umount` 并删除镜像与目录。
 
-**沿用通过（`8716e51` 小批收口轮，本轮未复跑全部断言）**
+**沿用通过（`8716e51` 小批收口轮与 `48f57dc` 收口轮，未复跑全部断言）**
 - 装机/升级：Release 资产双架构 `sha256sum -c` OK；`sh install.sh --no-docker` 完成；库保持 **v14**，站点 2 / settings 7 / users 1 / plugins 6 全部保留；配置 sha256 保持 `0103e75a…f053e1`，`/healthz` 200。
 - 配置保护组：删 / 改名 / 覆盖写 `/etc/skiff/config.toml` 全部 **403**「内核运行配置或数据目录受保护…（命中 /etc/skiff/config.toml）」；对 `/etc/skiff` 设配额 **403**（命中 `/etc/skiff`）；`/etc/hosts` 读 200；保护区外 `/www/iter-protect-probe.txt` 写/改名/读/删均 200（`/etc` 内其它路径不撞保护判定，写入被 systemd 只读挡回 500）；重启后服务 active、`/healthz` 与登录 200、配置 sha 前后一致。
 - 插件日志组：journal 可见 monitor 启动横幅（`WARN … stream="stderr"`）；`kill -9` 子进程后 RPC **55 ms** 返回 200 并拉起新 pid，journal 先「上一次运行的 stderr 尾部」后新横幅，新日志不覆盖旧尾巴；初始化失败探针（临时替换二进制为 `exit 9`，已恢复、md5 `6c5ea70b…`）RPC **133 ms** 返回 400，正文、journal `ERROR` 与审计 `plugin.spawn` fail 的 `detail` 均带 `stderr 尾部: BOOT-8716e51 init failed probe`；恢复后 `status=running`、`status_detail` 清空。
-- 上一批回归：回收站 删除→列表→恢复（内容仍为 `hello-a`）→彻底删除，回收站清空归零；配额 100B → 300B 写入 **507**「目录容量配额超限：… 307 字节 > 上限 100 字节」→ 重扫/取消后写回 200；Docker `GET /containers`、`GET /containers/new` 200，创建 `iter-lim-8716e51` 后 `docker inspect` 为 `mem=128MB / cpu=512 / pids=64`，限额更新后即时变 `256MB / 1024 / 128`，删除后容器消失；`GET /compose` 200，合法 YAML「校验通过」、非法 YAML 报错。
-
-**沿用通过（`48f57dc` 收口轮，本轮未复跑全部断言）**
-- FS-10～12 全链路（含同名冲突 409、父目录缺失 403、审计 `fs.recycle.*`/`fs.quota.*`）与 DOCKER-12～14 全链路（坏镜像回显、cgroup `pids.max`、Compose `up/down` 保护标签与卷策略）。
+- 上一批回归：回收站 删除→列表→恢复（内容仍为 `hello-a`）→彻底删除，回收站清空归零；配额 100B → 300B 写入 **507**「目录容量配额超限：… 307 字节 > 上限 100 字节」→ 重扫/取消后写回 200；Docker `GET /containers`、`GET /containers/new` 200，创建 `iter-lim-8716e51` 后 `docker inspect` 为 `mem=128MB / cpu=512 / pids=64`，限额更新后即时变 `256MB / 1024 / 128`，删除后容器消失；`GET /compose` 200，合法 YAML「校验通过」、非法 YAML 报错；FS-10～12 全链路（含同名冲突 409、父目录缺失 403、审计 `fs.recycle.*`/`fs.quota.*`）与 DOCKER-12～14 全链路（坏镜像回显、cgroup `pids.max`、Compose `up/down` 保护标签与卷策略）。
 - monitor/guard 内核调度器（`driver=kernel`、停用任务不采样、卸载清任务、重装重 seed）与 WEB-02 `worker_connections` 无告警。
 - TLS 三形态、430/860px 视觉、工作台标签与吸顶、插件 iframe 等前轮结论继续有效。
 
@@ -196,7 +196,7 @@
   - **三次错误密码**（`wrong1` 超时、`wrong2`/`wrong3` 530）→ `Currently banned: 1`（172.31.0.2）；`banip --with-time` 显示 `2026-11-09 01:54:49 + 600s`；第 4 次同一 IP 用正确口令 → **`ConnectionRefusedError`**（nft reject 生效）；面板 `status` 返回 `currently_banned=1`、`recent_ban` 带时间、`total_banned=2`、`listen_port=2121`、`running=true`。
   - **解封恢复**：`unbanip` 后同 IP 正确口令 `LOGIN_OK`（`pwd=/`）。
   - **审计**：`ftp.service.configure`、`ftp.status`、`ftp.uninstall` 有行；逐 IP 封禁不在内核审计（fail2ban journal/nft 为唯一证据），与契约一致。
-  - 修复已由 `2f63aeb` 落地（jail 钉住 `listen_port`，单测 `jail_body_pins_configured_listen_port`）；**本轮为修复后的复验**。
+  - 修复已由 `2f63aeb` 落地（jail 钉住 `listen_port`，单测 `jail_body_pins_configured_listen_port`）；本条是修复后的 2026-11-09 复验。
   - 清理：账号与 `ftp-ban-probe.test` 站点已删；FTP 服务 `uninstall`（`removed_accounts=1, stopped=true`）；全部解封；`jail.d` 仅剩 `[sshd] enabled=false`、`fail2ban` jail 数 0、无 f2b nft 规则；2121 已停。
 - **1Panel 受限形态（DEPLOY-10）**：镜像 `skiff-panel-probe:2f63aeb`（`alpine:3.23` 运行阶段 + 发布包 `skiff`，与 `deploy/Dockerfile` 运行阶段等价，未跑 builder 阶段）；容器 `skiff-panel-probe`，`127.0.0.1:18082→18080`，`SKIFF_FORM=docker`、`SKIFF_ALLOW_INSECURE_HTTP=1`、`SKIFF_TRUSTED_PROXIES=172.16.0.0/12`、`/data` bind、`/var/run/docker.sock`。
   - 启动正常、`/healthz` **200**、`/skiff health` HEALTHCHECK **healthy**、登录 **303**、数据根 `/data` 0700、首启建库 v15 与 `initial-admin.txt`。
@@ -221,13 +221,8 @@
   - 容器管理仍可用：`/containers` 200 并列出站点容器；临时容器 `skiff-p2-probe` 详情 200、`stop`/`start` 均 **303**，`docker inspect` running→exited→running，审计 `docker.containers.stop|start result=ok`。
   - 清理：探针容器/镜像/`/root/iter/panel-probe2` 与临时容器已删。
 
-**未闭环（详见 [TEST_LEDGER.md](TEST_LEDGER.md)）**
-- WAF 拦截未实现；`sites.waf_mode` 设置键与 `waf_rules_dir` 规则目录占位已于 2026-11-09 删除，要做需先定规则来源与开关位置。
-- aarch64 仅 qemu-user 冒烟（`file`/`ldd`/`version`/`--help`/`doctor`），未实机装机。
-- buffer 上机入口、并发 spawn 复验等无环境项。
-- 主机监控历史页「出站」仍用累计字节（`net_tx_rate` 未产生），待补采样字段后对齐。
-- Release 下载端点直连 `github.com`/`objects.githubusercontent.com` 偶发重置，需走 API 资产端点或代理。
-- 原两条观察项已在 `8716e51` 关闭：插件 stderr 已转出 journal；`/etc/skiff` 与配置/TLS 私钥已纳入受保护路径。
+**未闭环（唯一来源为 [TEST_LEDGER.md](TEST_LEDGER.md)）**
+- WAF 拦截未实现、aarch64 未实机装机、buffer 上机入口与并发 spawn 复验、监控出站速率字段、Release 下载端点容错等未闭环项的当前状态与下一步，统一见台账；本节只记已通过的断言。
 - 受限形态「文件管理」入口与直达已按能力面处理，`607d09b` 装机复验通过，该行已从台账删除。
 
 **收尾状态（2026-11-09 `607d09b` 发版复验轮后）**

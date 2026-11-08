@@ -201,7 +201,7 @@ sh install.sh                     # 可加 --datadir / --listen / --no-docker �
 | 放示例配置 | `/etc/skiff/config.toml`（**仅当不存在时**，已有配置只读不改） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
-| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（5 个 `.wbpkg` + `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（6 个 `.wbpkg` = 5 个官方插件 + testkit，另加 `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
 | 启动 | `systemctl restart skiff` 并验 active（20 s 不起即失败退出；`--no-start` 可跳过） |
 
@@ -452,7 +452,7 @@ rm -f /www/skiff/skiff.db-wal /www/skiff/skiff.db-shm
 systemctl start skiff
 ```
 
-**注意**：SQLite 迁移只向前，不提供降级脚本。跨 schema 版本回滚必须走备份；备份恢复演练属 M5，**本轮未实测**（§8）。
+**注意**：SQLite 迁移只向前，不提供降级脚本。跨 schema 版本回滚必须走备份；备份恢复演练属 M5，**尚未实测**（§8）。
 
 ### 2.7 卸载
 
@@ -519,10 +519,10 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
 skiff plugin list
 ```
 
-**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 5 个已签名的包（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包；`com.skiff.testkit` 为架构测试台），装机时已复制到 `/www/skiff/official/`：
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 6 个已签名的包 = 5 个官方插件（guard/monitor/files/cron/ftp）+ `com.skiff.testkit` 架构测试台（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
 
 ```sh
-ls /www/skiff/official            # com.skiff.{guard,monitor,cron,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.2.wbpkg + public-key.txt
+ls /www/skiff/official            # com.skiff.{guard,monitor,cron,ftp,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.2.wbpkg + public-key.txt
 # public-key.txt 不需要手动导入：首次启动会自动写入信任库（见 §2.11 注）
 # 仅在公钥缺失/指纹不符时，才需显式执行：
 #   skiff trust import /www/skiff/official/public-key.txt --label official
@@ -744,8 +744,8 @@ curl -s -o /dev/null -D - http://10.10.15.4/ | head -2               # 301 + Loc
 curl -sk https://10.10.15.4/ -o /dev/null -w '%{http_code}\n'       # 200
 ```
 
-回滚实测：手工塞入一个坏 conf（`zz-bad.conf`）后点「关闭 HTTPS」，接口返回
-`?error=nginx -t 失败…`，站点 conf 的 md5 与库内 `https/force_https` **均未变化**；
+回滚实测：手工塞入一个坏 conf（`zz-bad.conf`）后点「关闭 HTTPS」，页面以 flash 展示
+「nginx -t 失败…」（不再用 `?error=` 传参），站点 conf 的 md5 与库内 `https/force_https` **均未变化**；
 坏 conf 移除后 `nginx -t` 通过、HTTPS 仍是 200。非法 PEM 上传同样被拒且现有证书不受影响。
 
 > 注意：校验失败时**不得重启 nginx**——若坏 conf 来自外部，重启会让现网 nginx 起不来。
@@ -760,7 +760,7 @@ curl -sk https://10.10.15.4/ -o /dev/null -w '%{http_code}\n'       # 200
 3. 备份：内容有变化时先写 `daemon.json.bak.<时间戳>`，再临时文件 + `rename` 原子替换；
 4. 重启：**有运行中容器**时只落盘不重启，页面明确提示；无运行中容器才 `systemctl restart docker`，
    等 socket 就绪并按最多 8 次、每次 1 s 重试列表接口（避开面板旧连接池的首个失败请求）；
-5. 回滚：重启或可用性检查失败则恢复备份并再次重启，接口返回 `?error=`，库内设置不更新。
+5. 回滚：重启或可用性检查失败则恢复备份并再次重启，接口以 flash 报错（不再用 `?error=` 传参），库内设置不更新。
 
 真机实测（原有 `daemon.json` 含 `log-driver` 等键）：
 
@@ -970,7 +970,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | F1 | 有数据 | `skiff backup` | 生成 `skiff-<ts>.db` + 插件数据，保留 3 份，记录版本与校验和。**不停止插件**：库走 `VACUUM INTO`（在线一致），插件 `data/` 是直接复制，写入中的文件可能不一致 | | |
 | F2 | F1 | 检查备份目录权限 | 0700 | | |
 | F3 | F1 | 对活动库直接 `tar` 后恢复 | **应当失败或数据不一致**——验证“禁止 tar 活动库”这条约束的必要性 | | |
-| F4 | F1 | 新环境恢复备份并登录 | 用户/插件/配置齐全（M5 项，本轮未做） | | |
+| F4 | F1 | 新环境恢复备份并登录 | 用户/插件/配置齐全（M5 项，未做） | | |
 | F5 | 已装 | 插件迁移失败时升级 | 保持停用可回退，或按声明禁止自升级（M4 项） | | |
 | F6 | 已装 | 降级二进制（库 schema 更新） | 拒绝启动并提示 `SchemaTooNew` | | |
 
@@ -1032,7 +1032,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 
 **写文档/对外宣讲时的口径**：上表任意一项都不能说成“已支持”。要么写“已实现”，要么写“设计目标/未实现”。
 
-## 9. 本轮实测记录
+## 9. 实测记录
 
 ### 9.1 开发机（Windows 11 + rustc 1.98.1，MSYS/Git Bash）
 
@@ -1205,7 +1205,7 @@ Release `v0.1.0` 资产被同一 tag 覆盖（run `41945350367`，未新建 tag�
 | 文件管理 | 0.1.2 可用 | 旧 0.1.1 与 Release 官方密钥 key_id 不同，按 TOFU 守卫先 `plugin remove`（保留 data）再安装；`plugin list` = 0.1.2/running；RPC list/mkdir/write/read/rename/remove 全 OK，307,200 B 读 `eof=false`、`page_max=262144`，超限写与越界读 `400` |
 | 插件 UI 浏览器 | 通过（Chromium） | 主题跟随 light↔dark、Ctrl 多选、右键菜单、行内重命名、编辑器保存、超限只读均实测；「新建文件夹」修复 `sandbox` 缺 `allow-forms` 后通过 |
 
-插件 UI 地址：`https://10.10.15.4:18080/<entry_prefix>/m/plugin/com.skiff.files/files`（当轮前缀 `swn4nbhe`；当前值见 [TEST_ENV.md](TEST_ENV.md) §2）。
+插件 UI 地址：`<TEST_ENV §2 的基址>/<entry_prefix>/m/plugin/com.skiff.files/files`（2026-11-05 实测用 `https://10.10.15.4:18080/swn4nbhe`；当前值见 [TEST_ENV.md](TEST_ENV.md) §2）。
 
 ## 变更记录
 

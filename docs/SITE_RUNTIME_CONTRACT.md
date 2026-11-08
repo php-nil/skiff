@@ -3,7 +3,7 @@
 > 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）**。
 > 2026-11-09：Node.js / Go **未实现**，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除，
 > 不再提供登记入口；本文相关章节保留为 P2 设计态说明。
-> 基线：`crates/store/src/db.rs`（schema v11）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
+> 基线：`crates/store/src/db.rs`（schema v15）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
 > 运行环境）、`crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
 > 可点预览：[`docs/ui/site-runtime-preview.html`](./ui/site-runtime-preview.html)。
@@ -173,7 +173,8 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 类型 | 第一步 | 第二步字段 | 创建副作用 | 就绪条件 |
 | --- | --- | --- | --- | --- |
 | 运行环境 · PHP | 选“运行环境” → 选 PHP → 选 PHP 环境 | 主域名、别名、站点目录 | 生成 vhost（fastcgi_pass 指向 `socket_path`）、`index/log/ssl/conf` | PHP 环境 running + socket 可连接 |
-| 运行环境 · Node/Go | 选 kind；P1 仅显示“P2 未实现”，不可提交 | （P2）域名、工作目录、启动命令、端口、健康检查路径 | （P2）站点容器 + vhost 反代 + `app.json` | 环境 running + 端口 bind 成功 + 健康检查通过 |
+| 运行环境 · Rust | 选“运行环境” → 选 Rust → 选 Rust 环境 | 主域名、别名、站点目录 | 构建并运行站点源码的站点容器 + vhost 反代 | 环境 running + 容器端口可访问 |
+| 运行环境 · Node/Go | **2026-11-09 已从 `RUNTIME_KINDS` 与新建弹窗摘除**，向导不出现该类型 | — | —（P2 设计保留在 §4.3，未排期） | — |
 | 静态网站 | 选“静态网站”，不选运行时 | 主域名、别名、站点目录 | 生成静态 vhost、`index/log/ssl/conf` | 无运行时依赖；目录可创建 |
 | 反向代理 | 选“反向代理”，不选运行时 | 主域名、别名、上游 URL、WebSocket 开关 | 生成 proxy vhost、`log/ssl/conf`（不建 `index/`） | 上游 URL 合法；不要求上游当下可达，但保存时给出探测提示 |
 
@@ -185,7 +186,7 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 别名 | 逗号/空格分隔；每个域名单独校验；不得与任何主域名/别名重复 | `别名 api.example.com 已是其他站点的域名` |
 | 站点目录 | 默认 `/www/sites/<主域名>`；规范化后必须是 `/www/sites` 的一级子目录，拒绝 `..`、更深层、越界 | `站点目录必须是 /www/sites/<域名>` |
 | PHP 运行时 | 必须 running；socket 必须可连接 | `PHP 运行环境未就绪，请先启动或重建` |
-| Node/Go 运行时 | P2；P1 选择后提交按钮禁用并说明 | `Node.js 运行环境将在 P2 接入，当前不会创建站点` |
+| Node/Go 运行时 | 已摘除；提交 `kind=node`/`kind=go` 直接拒绝 | `未知运行环境类型` |
 | 启动命令 | P2；非空；不得包含宿主路径或凭据；按 argv 存储 | `启动命令不能为空` |
 | 端口 | P2；整数；`30000–32767`；不与已有站点/保留端口冲突 | `端口 30081 已被站点 api.example.com 占用` |
 | 上游 URL | 仅 `http://` / `https://`；无 userinfo；host 必填；端口 1–65535 | `上游地址必须以 http:// 或 https:// 开头` |
@@ -212,12 +213,12 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 | 列 | 内容 |
 | --- | --- |
-| 类型 | `PHP`、`Node.js`、`Go` |
+| 类型 | `PHP`、`Rust`（Node.js / Go 已于 2026-11-09 摘除，不再出现在列表与向导） |
 | 实例名 | 环境名；默认版本带「默认」标记 |
 | 版本 | 镜像/上游版本号，来自版本目录（见 4.5） |
 | 状态 | 运行中 / 已停止 / 异常 / 安装中（排队、拉镜像、创建容器、启动、失败）+ 进度 |
 | 占用站点 | 绑定站点数 |
-| 接入方式 | 只显示短标识：PHP `sock`、Node/Go `P2`；完整 socket/端口路径放 `title` 悬浮提示与抽屉里，不再单列长路径 |
+| 接入方式 | 只显示短标识：PHP `sock`、Rust 为容器端口；完整 socket/端口路径放 `title` 悬浮提示与抽屉里，不再单列长路径 |
 | 操作 | 只保留一个「详情」入口；整行或按钮都打开右侧抽屉，不再并列「更多」 |
 
 - 表格按内容自适应列宽并铺满容器，不固定撑宽某一列；接入方式列宽度只够放 `sock` / `:8080`。
@@ -529,8 +530,9 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### Q1. P1 是否必须包含 Node.js / Go 站点？
 
-- 推荐：**不包含**。P1 只落模型、列表说明与禁用态；P2 再实现安装、进程、端口与健康检查。
-- 理由：没有构建/进程守护链路时做“能跑”的 Node/Go 必然假实现；先把 PHP/静态/反代闭环做扎实。
+- 已定：**不包含，且已摘除**。2026-11-09 从 `RUNTIME_KINDS` 与新建弹窗移除，不再有「禁用态」占位；
+  安装、进程、端口与健康检查等 P2 设计仍保留在 §4.3，未排期。
+- 理由：没有构建/进程守护链路时做“能跑”的 Node/Go 必然假实现；先把 PHP / Rust / 静态 / 反代闭环做扎实。
 
 ### Q2. PHP socket 路径：固定 `/www/php/php-fpm.sock`，还是每实例独立路径？
 
@@ -558,7 +560,7 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 | 无运行环境 | `还没有运行环境。先安装 PHP 8.5，再创建需要运行时的网站。` |
 | 环境停止 + 有绑定站点 | `环境已停止，3 个站点当前不可访问。启动环境后会恢复。` |
 | 环境异常 | `环境异常：socket 不可连接。查看日志 / 重建环境` |
-| Node/Go P1 | `Node.js / Go 运行环境将在 P2 接入；当前不会创建站点或伪造进程。` |
+| Node/Go（已摘除） | 列表与向导不再出现该类型；直接提交 `kind=node`/`kind=go` 返回 `未知运行环境类型` |
 | proxy 无文档根 | `反向代理站点不创建文档根，只生成转发配置。` |
 | 无绑定站点 | `该环境暂无站点。去网站列表新建。` |
 

@@ -1,6 +1,6 @@
 # 内核 FTP 原语契约（FTP Contract）
 
-> 状态：已上线（2026-11-07，随 `v0.1.0` 发布；DB schema v11）。
+> 状态：已上线（2026-11-07，随 `v0.1.0` 发布；上线时 DB schema v11，当前基线 v15）。
 > 本文件是 `ftp` 能力面的**契约**：主体、授权、账号与权限口径、审计、错误码与测试矩阵。
 > 实现细节见 `crates/core/src/kernel/ftp.rs`；插件实现约定见 `plugins/README.md`；
 > 与内核能力面的关系见本文件 §1.2 与 §8。
@@ -150,7 +150,9 @@
 4. **登录尝试限制**：fail2ban 专用 jail（10 分钟内 3 次失败，`bantime` 10 分钟）；连接上限与每 IP 上限改为配置项（默认 `MaxClientsNumber=30`、`MaxClientsPerIP=3`），`DontResolve=yes` 固定。
    `fail2ban` **不是内核内置**，是宿主系统包：首装且 `login_guard=true` 时与 pure-ftpd 一起
    `apt-get install`；安装前已存在则只复用。jail 写到
-   `/etc/fail2ban/jail.d/skiff-pureftpd.conf`；只有 fail2ban 由本次安装新装时，才在同一文件写
+   `/etc/fail2ban/jail.d/skiff-pureftpd.conf`，内容为 `[pure-ftpd] enabled` / `backend=systemd` /
+   `port = <listen_port>` / `maxretry=3` / `findtime=10m` / `bantime=10m`；`port` 随 `service.configure`
+   的监听端口改写，端口变更后重写 jail 并重启 fail2ban。只有 fail2ban 由本次安装新装时，才在同一文件写
    `[sshd] enabled=false`，避免影响共享宿主机的 SSH；已有 fail2ban 的机子不改其 sshd jail。
    `login_guard=false` 只移除本插件的 pure-ftpd jail（若同文件还保留安装时写的 `[sshd] enabled=false`，
    则重写为仅含该段）并重启 fail2ban，**不卸载 fail2ban 包**，也不改动其它 jail。

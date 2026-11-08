@@ -2,7 +2,7 @@
 
 > 适用范围：`crates/web` 渲染的内核页面（模板 + `static/skiff.css` / `static/skiff.js`）。
 > 插件 iframe 内部不受本规范强制约束，插件视图边界见 [PLUGIN_UI_CONTRACT.md](PLUGIN_UI_CONTRACT.md)。
-> 版本：v1（2026-11-08）。本轮只强制应用于「运行环境」「新建网站」「Web 服务」三处，其余页面见 §13 待对齐清单。
+> 版本：v1（2026-11-08）。v1 只强制应用于「运行环境」「新建网站」「Web 服务」三处，其余页面见 §13 待对齐清单。
 
 ## 1. 三条硬规则
 
@@ -37,7 +37,7 @@
 - 字段级校验用 `.field-error`，不要用 `alert`；请求级失败才用 `alert`。
 - 来源：写操作结果统一用服务端一次性消息（flash，按会话短期存储，页面渲染一次即消费）：
   POST → 303 到无参数地址，渲染时从会话取一条成功/失败。**禁止**把结果塞进
-  `?notice=` / `?error=` / `?ok=1`（刷新会重放、链接带脏数据、错误进历史与日志）。
+  `?notice=` / `?error=` / `?ok=1`（2026-11-08 起统一改 flash；刷新会重放、链接带脏数据、错误进历史与日志）。
   AJAX 响应体也可直达提示条。抽屉内 `data-drawer-post` 表单：fetch 跟随 303 后
   直接用回跳返回的整页 HTML 重绘面板，并把同一份 HTML 里的提示条带回抽屉
   （面板本身在提示条之外，只取面板会丢反馈）。**禁止 `alert()` / `window.alert`**。
@@ -103,7 +103,7 @@
 | 新建/编辑单对象、字段 ≤ 8、确认类 | `<dialog class="modal">` | 480（窄）/ 720（表单） | ×、Esc、取消按钮 |
 | 详情、多页签、日志、长表单 | `<dialog class="drawer">` | 720 常规 / 840 宽 / 92vw 窄屏 | ×、Esc；footer 常驻 |
 
-- **footer 常驻**：`.modal-foot` / `.drawer-foot` 吸底，主操作在右、取消在左；按钮顺序遵守 §9。
+- **footer 常驻**：长表单弹窗（`.site-new-dialog` / `.runtime-dialog`）整窗纵向 flex，`.modal-body` 滚动、`.modal-actions` 固定在底部；普通小弹窗内容不滚动，动作区仍用 `.modal-actions`。抽屉用 `.drawer-foot`（`sticky`）吸底；主操作在右、取消在左；按钮顺序遵守 §9。
 - 点遮罩**不关闭**（防误触），仅 `×` / `Esc` / 取消关闭；关闭后焦点回到触发元素。
 - 同一页面同类弹窗只允许一个实例；抽屉内容由服务端渲染 HTML 注入 `[data-drawer-content]`，不再二次组装 DOM。
 - 弹窗标题用 `h2`，不重复页面 `h1`；弹窗内不再嵌套 `page-head`。
@@ -119,6 +119,7 @@
   - 表单挂 `data-type-confirm="<域名>"`，输入框 `data-type-confirm-input`，提交按钮 `data-type-confirm-submit`；
     JS 在输入 trim 后与域名完全一致前保持 `disabled`。
   - 服务端必须校验提交的 `confirm` 字段等于域名，不能只依赖前端禁用。
+  - **待对齐（2026-11-09 核对）**：`site_delete.html` 当前按钮顺序为「确认删除（danger）」在前、「取消（ghost）」在后，与本节「取消在左、危险在右」相反；本轮只改文档不改代码，后续调整模板后再把本条改为已对齐。
   - 其余危险操作仍走 `[data-confirm-dialog]`；新代码禁止新增 `window.confirm` 分支。
 
 ## 10. 窄屏断点（430 / 860 / 1024）
