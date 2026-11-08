@@ -63,6 +63,113 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::jobs::logs_sse),
         );
 
+    // ---- 内核「文件管理」：管理员侧 fs 服务 + 页面（第一步浏览/编辑）----
+    // 单独成组挂形态门禁：受限形态（`SKIFF_FORM=docker`）能力面只有 docker/identity，
+    // 没有 fs，页面与 API 直达一律 403（入口由 `menu::declarations` 按形态隐藏）。
+    let files = Router::new()
+        .route(&format!("/{p}/files"), get(handlers::files::page))
+        .route(
+            &format!("/{p}/files/api/list"),
+            get(handlers::files::api_list),
+        )
+        .route(
+            &format!("/{p}/files/api/read"),
+            get(handlers::files::api_read),
+        )
+        .route(
+            &format!("/{p}/files/api/write"),
+            post(handlers::files::api_write),
+        )
+        .route(
+            &format!("/{p}/files/api/mkdir"),
+            post(handlers::files::api_mkdir),
+        )
+        .route(
+            &format!("/{p}/files/api/rename"),
+            post(handlers::files::api_rename),
+        )
+        .route(
+            &format!("/{p}/files/api/remove"),
+            post(handlers::files::api_remove),
+        )
+        .route(
+            &format!("/{p}/files/api/tree"),
+            get(handlers::files::api_tree),
+        )
+        .route(
+            &format!("/{p}/files/api/upload"),
+            post(handlers::files::api_upload),
+        )
+        .route(
+            &format!("/{p}/files/api/download"),
+            get(handlers::files::api_download),
+        )
+        .route(
+            &format!("/{p}/files/api/copy"),
+            post(handlers::files::api_copy),
+        )
+        .route(
+            &format!("/{p}/files/api/chmod"),
+            post(handlers::files::api_chmod),
+        )
+        .route(
+            &format!("/{p}/files/api/chown"),
+            post(handlers::files::api_chown),
+        )
+        .route(
+            &format!("/{p}/files/api/archive"),
+            post(handlers::files::api_archive),
+        )
+        .route(
+            &format!("/{p}/files/api/extract"),
+            post(handlers::files::api_extract),
+        )
+        // ---- 回收站与配额（内核文件管理第二步）----
+        .route(
+            &format!("/{p}/files/trash"),
+            get(handlers::files::trash_page),
+        )
+        .route(
+            &format!("/{p}/files/quotas"),
+            get(handlers::files::quotas_page),
+        )
+        .route(
+            &format!("/{p}/files/api/trash"),
+            get(handlers::files::api_trash_list),
+        )
+        .route(
+            &format!("/{p}/files/api/trash/restore"),
+            post(handlers::files::api_trash_restore),
+        )
+        .route(
+            &format!("/{p}/files/api/trash/purge"),
+            post(handlers::files::api_trash_purge),
+        )
+        .route(
+            &format!("/{p}/files/api/trash/clear"),
+            post(handlers::files::api_trash_clear),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas"),
+            get(handlers::files::api_quota_list),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas/set"),
+            post(handlers::files::api_quota_set),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas/cancel"),
+            post(handlers::files::api_quota_cancel),
+        )
+        .route(
+            &format!("/{p}/files/api/quotas/scan"),
+            post(handlers::files::api_quota_scan),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::fs_capability,
+        ));
+
     let ui = Router::new()
         .route(&format!("/{p}"), get(handlers::dashboard::index))
         // 尾斜杠是常见手误（浏览器补全、复制粘贴），不该给个 404
@@ -226,105 +333,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/jobs/{{id}}/logs"),
             get(handlers::jobs::logs_json),
         )
-        // ---- 内核「文件管理」：管理员侧 fs 服务 + 页面（第一步浏览/编辑）----
-        .route(&format!("/{p}/files"), get(handlers::files::page))
-        .route(
-            &format!("/{p}/files/api/list"),
-            get(handlers::files::api_list),
-        )
-        .route(
-            &format!("/{p}/files/api/read"),
-            get(handlers::files::api_read),
-        )
-        .route(
-            &format!("/{p}/files/api/write"),
-            post(handlers::files::api_write),
-        )
-        .route(
-            &format!("/{p}/files/api/mkdir"),
-            post(handlers::files::api_mkdir),
-        )
-        .route(
-            &format!("/{p}/files/api/rename"),
-            post(handlers::files::api_rename),
-        )
-        .route(
-            &format!("/{p}/files/api/remove"),
-            post(handlers::files::api_remove),
-        )
-        .route(
-            &format!("/{p}/files/api/tree"),
-            get(handlers::files::api_tree),
-        )
-        .route(
-            &format!("/{p}/files/api/upload"),
-            post(handlers::files::api_upload),
-        )
-        .route(
-            &format!("/{p}/files/api/download"),
-            get(handlers::files::api_download),
-        )
-        .route(
-            &format!("/{p}/files/api/copy"),
-            post(handlers::files::api_copy),
-        )
-        .route(
-            &format!("/{p}/files/api/chmod"),
-            post(handlers::files::api_chmod),
-        )
-        .route(
-            &format!("/{p}/files/api/chown"),
-            post(handlers::files::api_chown),
-        )
-        .route(
-            &format!("/{p}/files/api/archive"),
-            post(handlers::files::api_archive),
-        )
-        .route(
-            &format!("/{p}/files/api/extract"),
-            post(handlers::files::api_extract),
-        )
-        // ---- 回收站与配额（内核文件管理第二步）----
-        .route(
-            &format!("/{p}/files/trash"),
-            get(handlers::files::trash_page),
-        )
-        .route(
-            &format!("/{p}/files/quotas"),
-            get(handlers::files::quotas_page),
-        )
-        .route(
-            &format!("/{p}/files/api/trash"),
-            get(handlers::files::api_trash_list),
-        )
-        .route(
-            &format!("/{p}/files/api/trash/restore"),
-            post(handlers::files::api_trash_restore),
-        )
-        .route(
-            &format!("/{p}/files/api/trash/purge"),
-            post(handlers::files::api_trash_purge),
-        )
-        .route(
-            &format!("/{p}/files/api/trash/clear"),
-            post(handlers::files::api_trash_clear),
-        )
-        .route(
-            &format!("/{p}/files/api/quotas"),
-            get(handlers::files::api_quota_list),
-        )
-        .route(
-            &format!("/{p}/files/api/quotas/set"),
-            post(handlers::files::api_quota_set),
-        )
-        .route(
-            &format!("/{p}/files/api/quotas/cancel"),
-            post(handlers::files::api_quota_cancel),
-        )
-        .route(
-            &format!("/{p}/files/api/quotas/scan"),
-            post(handlers::files::api_quota_scan),
-        )
+        // ---- 内核「文件管理」路由在 `files` 分组统一登记并挂形态门禁 ----
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
         .route(&format!("/{p}/sites"), get(handlers::sites::list))
         .route(
@@ -532,6 +541,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/plugins", get(handlers::api::plugins))
         .route("/api/v1/plugins/ui", get(handlers::api::plugin_ui_index))
+        // 文件管理分组（自带形态门禁）也在超时层覆盖范围内。
+        .merge(files)
         // 到这里的所有路由都是一次请求一次响应，套超时。
         // 必须在 `.merge(streaming)` **之前**：`Router::layer` 只作用于已加入的路由，
         // SSE（日志）与 WS（终端）因此天然被排除在外。

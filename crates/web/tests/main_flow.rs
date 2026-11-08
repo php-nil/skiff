@@ -2085,6 +2085,51 @@ async fn restricted_form_rejects_plugins_beyond_capability_surface() {
     );
 }
 
+/// 受限形态（`SKIFF_FORM=docker`，能力面只有 docker/identity）没有 fs：
+/// 文件管理入口必须消失，页面/深链/API 直达必须 403 且文案可读（不能借此列出
+/// 容器内 `/`、`/www`）；工具分组里不依赖 fs 的入口与容器管理保持可用。
+#[tokio::test]
+async fn restricted_form_hides_and_rejects_files_management() {
+    let h = harness_with(Form::DockerRestricted);
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, html) = get_page(&h.app, "/p", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    for key in ["core/files", "core/files/trash", "core/files/quotas"] {
+        assert!(
+            !html.contains(&format!(r#"href="/p/m/{key}""#)),
+            "受限形态不得渲染 `{key}` 入口: {html}"
+        );
+    }
+    assert!(
+        html.contains(r#"href="/p/m/core/tasks""#) && html.contains(r#"href="/p/m/core/jobs""#),
+        "工具分组里不依赖 fs 的入口应保留: {html}"
+    );
+
+    for uri in [
+        "/p/m/core/files",
+        "/p/m/core/files/trash",
+        "/p/m/core/files/quotas",
+        "/p/files",
+        "/p/files/trash",
+        "/p/files/quotas",
+        "/p/files/api/list",
+        "/p/files/api/trash",
+        "/p/files/api/quotas",
+    ] {
+        let (status, body) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "`{uri}` 必须 403");
+        assert!(
+            body.contains("当前部署形态不提供文件管理能力"),
+            "`{uri}` 拒绝文案不可读: {body}"
+        );
+    }
+
+    // 受限形态保留 docker 能力面：容器管理页照常可用。
+    let (status, _) = get_page(&h.app, "/p/containers", &token).await;
+    assert_eq!(status, StatusCode::OK, "受限形态的容器管理必须保持可用");
+}
+
 /// 插件功能页的两条 UI 约定（跨插件跳转 + 顶栏插件菜单）：
 /// 1. `?open=` 只作为「定位建议」被清洗后原样透传（控制字符清掉、百分号编码）；
 /// 2. `data-plugins` 白名单只含「已启用且有 UI 入口」的插件——iframe 的

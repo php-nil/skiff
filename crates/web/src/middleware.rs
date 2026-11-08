@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use crate::error::AppError;
 use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::util::parse_cookies;
-use skiff_model::{Permission, ScopeSet};
+use skiff_model::{Form, Permission, ScopeSet};
 
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; \
@@ -56,6 +56,30 @@ pub(crate) async fn timeout_after(dur: Duration, req: Request, next: Next) -> Re
 /// 请求超时（见 `REQUEST_TIMEOUT`）。丢弃 future 即取消下游调用，不留悬挂任务。
 pub async fn request_timeout(req: Request, next: Next) -> Response {
     timeout_after(REQUEST_TIMEOUT, req, next).await
+}
+
+/// 文件能力面门禁（§5.1/§5.4）：`SKIFF_FORM=docker` 的能力面只有 docker/identity，
+/// 内核不提供 fs。路由层（`/{p}/files*`）与菜单深链（`/{p}/m/core/files*`）共用这处判定——
+/// 受限形态下既不能渲染入口，也不能让直达 URL 借道列出容器内 `/`、`/www`。
+pub fn check_fs_capability(state: &AppState) -> Result<(), AppError> {
+    if state.cfg.form == Form::DockerRestricted {
+        return Err(AppError::Forbidden(
+            "当前部署形态不提供文件管理能力（1Panel 受限形态能力面仅 docker/identity）".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `check_fs_capability` 的中间件形态：只挂在文件管理路由组上。
+pub async fn fs_capability(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if let Err(e) = check_fs_capability(&state) {
+        return e.into_response();
+    }
+    next.run(req).await
 }
 
 /// 安全入口（§6.3）：非前缀一律 404（不是 403），只作隐蔽入口、不替代认证。

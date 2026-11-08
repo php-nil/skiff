@@ -785,7 +785,7 @@ docker start skiff-web-nginx skiff-web-php
 |---|---|---|
 | docker | 可用 | 仍走动词/对象/参数三层策略 |
 | identity | 可用 | 登录/会话/TOTP/RBAC/审计 |
-| fs | 不可用 | 需要 fs 的插件装前拒装 |
+| fs | 不可用 | 需要 fs 的插件装前拒装；内核「工具 → 文件管理 / 回收站 / 配额管理」入口隐藏，`/{p}/files*` 与 `/{p}/m/core/files*` 直达一律 403「当前部署形态不提供文件管理能力」 |
 | net | 不可用 | 需要 net 的插件装前拒装；出网收口无法兑付 |
 | 宿主绑定挂载 | 全部 403 | 只能用 named volume |
 | 沙箱 | reduced（独立 UID 有，cgroups/landlock 无） | UI 标 reduced sandbox |
@@ -803,6 +803,7 @@ docker start skiff-web-nginx skiff-web-php
 |---|---|
 | 宿主 bind 挂载（授权根内） | 全拒 |
 | 插件 fs 能力 | 拒装 |
+| 内核文件管理（`/{p}/files*`） | 入口隐藏 + 直达 403 |
 | 插件 net 能力（端口规则） | 拒装 |
 | 完整沙箱（landlock/cgroups） | reduced |
 

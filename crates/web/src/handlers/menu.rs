@@ -49,6 +49,11 @@ pub async fn dispatch(
                 .await;
         }
     }
+    // 受限形态（`SKIFF_FORM=docker`）没有 fs 能力面：菜单入口已隐藏，深链也要拒绝，
+    // 否则直达 `/{p}/m/core/files` 仍能列出容器内 `/`、`/www`。
+    if rest.starts_with("core/files") {
+        crate::middleware::check_fs_capability(&state)?;
+    }
     match rest {
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         "core/tasks" => handlers::tasks::list(State(state), AuthUser(user), Query(q)).await,

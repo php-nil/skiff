@@ -333,6 +333,7 @@
 | 授权根容量 | `/{p}/fs/grants` | Admin（规划中） | 每个 `path:` 根占用/配额/回收站占用 |
 
 - 深链：`/{p}/m/core/files`、`/{p}/m/core/fs/audit`、`/{p}/m/core/files/trash`、`/{p}/m/core/files/quotas`；站点详情页的「文件」入口可深链到按 `site=<domain>` 过滤的审计流。
+- 部署形态：`SKIFF_FORM=docker`（1Panel 受限形态，能力面只有 docker/identity，见 §5.4）不提供内核 fs——「工具 → 文件管理 / 回收站 / 配额管理」入口不渲染，`/{p}/files*` 与 `/{p}/m/core/files*` 直达一律 403「当前部署形态不提供文件管理能力」（判定单一来源：`crates/web/src/middleware.rs::check_fs_capability`）。
 - 恢复/彻底删除/清空：POST + CSRF + 二次确认；结果内联提示（成功/冲突/父目录缺失/失败条目）。
 - 插件 UI（`files`）**已撤销菜单入口**，旧深链 `/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`；插件包可保留安装态与管理页，但不再提供第二套浏览/编辑界面。删除已切换为回收站语义，配额页面与回收站页面同属第二步。
 

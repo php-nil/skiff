@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use skiff_model::Form;
+
 use crate::error::AppError;
 use crate::state::{AppState, CurrentUser};
 
@@ -1265,7 +1267,9 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     ),
                 ];
                 // 文件管理只对管理员开放：viewer 看不到入口，直接访问也会 403。
-                if user.role().as_str() == "admin" {
+                // 受限形态（1Panel Docker 包）能力面只有 docker/identity，没有 fs：
+                // 入口同样隐藏，直达由 `middleware::check_fs_capability` 拒绝。
+                if user.role().as_str() == "admin" && state.cfg.form != Form::DockerRestricted {
                     items.push(builtin(
                         "core/files",
                         L1_TOOLS,
