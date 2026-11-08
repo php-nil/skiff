@@ -582,15 +582,29 @@ impl AdminFs {
                     Some(name) => parent.join(name),
                     None => parent,
                 })
-        } else if p
-            .parent()
-            .and_then(|parent| std::fs::canonicalize(parent).ok())
-            .is_some()
-        {
-            // 目标不存在但父目录可达：只是路径不存在，不能报成「父目录不存在」的 403。
-            return Err(FsError::NotFound(format!("{raw} 不存在")));
         } else {
-            None
+            // 读/删等期望目标存在的操作：父目录可达说明只是目标不存在，报 404；
+            // 但先做数据根硬拒——受保护目录下「不存在的子路径」也必须是 403，
+            // 不能因为不存在就变成 404（那会泄露目录结构且绕过硬拒口径）。
+            match p
+                .parent()
+                .and_then(|parent| std::fs::canonicalize(parent).ok())
+            {
+                Some(parent) => {
+                    let joined = match p.file_name() {
+                        Some(name) => parent.join(name),
+                        None => parent,
+                    };
+                    if let Some(root) = skiff_fs::protected_hit(&self.protected, &joined) {
+                        return Err(FsError::Denied(format!(
+                            "内核运行配置或数据目录受保护，文件管理不能访问: {raw}（命中 {}）",
+                            root.display()
+                        )));
+                    }
+                    return Err(FsError::NotFound(format!("{raw} 不存在")));
+                }
+                None => None,
+            }
         };
         let probe = match probe {
             Some(p) => p,
@@ -1154,6 +1168,12 @@ mod tests {
         let deep = web.join("no-dir/nope.txt");
         assert!(matches!(
             admin.stat("admin", deep.to_str().unwrap()).unwrap_err(),
+            FsError::Denied(_)
+        ));
+        // 数据根下不存在的子路径也必须硬拒（不能因不存在退化成 404）。
+        let hidden = data.join("no-such-plugin-dir");
+        assert!(matches!(
+            admin.stat("admin", hidden.to_str().unwrap()).unwrap_err(),
             FsError::Denied(_)
         ));
     }
