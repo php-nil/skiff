@@ -96,12 +96,20 @@
   // ---- 插件 iframe 高度收敛 ----
   // 规则：短内容贴合（iframe 高 = 内容高，下限 200px 防止极小空块），
   // 长内容以「一屏可用高度」封顶（iframe 内部滚动），外层页面不再被 iframe 撑出
-  // 第二条滚动条。可用高度 = 视口高 - iframe 在文档中的顶部位置 - 16px 余量。
+  // 第二条滚动条。可用高度 = 视口高 - 宿主面板顶边位置 - 面板边框/内外边距 - 16px 余量。
   var FRAME_MIN_H = 200;
   function applyFrameHeight(frame) {
     var content = Number(frame.dataset.contentH);
     if (!isFinite(content) || content < 1) return;
-    var top = frame.getBoundingClientRect().top + (window.scrollY || 0);
+    // 可用高度从 iframe 的宿主面板量起：面板自身还有 1px 边框，只减 iframe 顶边
+    // 会让整页多出 1–2px；窄屏封顶时正好挤出一条 15px 宽的页级滚动条。
+    var host = frame.closest(".workbench-panel") || frame;
+    var hs = getComputedStyle(host);
+    var chromeH = 0;
+    ["borderTopWidth", "paddingTop", "paddingBottom", "borderBottomWidth", "marginBottom"].forEach(function (k) {
+      chromeH += parseFloat(hs[k]) || 0;
+    });
+    var top = host.getBoundingClientRect().top + (window.scrollY || 0);
     // 底部还要让出 main 的下内边距与页脚；否则 iframe 刚好铺满一屏时，
     // 页脚仍会把整页顶出滚动条，形成「iframe 内滚动 + 页面滚动」。
     var gap = 16;
@@ -109,10 +117,20 @@
     if (main) gap += parseFloat(getComputedStyle(main).paddingBottom) || 0;
     var foot = document.querySelector(".foot");
     if (foot) gap += foot.offsetHeight;
-    var maxH = Math.max(FRAME_MIN_H, window.innerHeight - top - gap);
+    var maxH = Math.max(FRAME_MIN_H, window.innerHeight - top - chromeH - gap);
+    var capped = Math.round(content) > maxH;
     var visual = Math.max(FRAME_MIN_H, Math.min(Math.round(content), maxH));
     frame.classList.add("auto-height");
     if (frame.style.height !== visual + "px") frame.style.height = visual + "px";
+    // 封顶模式再按真实滚动高度校正一次：亚像素累计（边框、页脚、非整数 DPR）
+    // 仍可能多出 1px，页级滚动条就是这么冒出来的。
+    if (capped) {
+      var overflow = document.documentElement.scrollHeight - window.innerHeight;
+      if (overflow > 0) {
+        visual = Math.max(FRAME_MIN_H, visual - overflow);
+        if (frame.style.height !== visual + "px") frame.style.height = visual + "px";
+      }
+    }
   }
 
   // ---- 插件 UI 沙箱桥 ----

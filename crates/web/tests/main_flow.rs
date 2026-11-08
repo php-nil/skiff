@@ -3962,8 +3962,16 @@ fn d3b_workbench_topbar_width_and_iframe_height() {
         "父页面必须把 iframe 调到收敛后的高度（短内容贴合）"
     );
     assert!(
-        js.contains("window.innerHeight - top - gap"),
+        js.contains("window.innerHeight - top - chromeH - gap"),
         "长内容必须按一屏可用高度封顶（iframe 内部滚动，不撑出页面第二条滚动条）"
+    );
+    assert!(
+        js.contains("borderTopWidth") && js.contains("marginBottom"),
+        "可用高度要扣掉宿主面板自身的边框/外边距，否则窄屏封顶仍会挤出一条页级滚动条"
+    );
+    assert!(
+        js.contains("document.documentElement.scrollHeight - window.innerHeight"),
+        "封顶模式必须用真实滚动高度做一次溢出校正（亚像素累计会多出 1px）"
     );
     assert!(
         js.contains("FRAME_MIN_H"),
