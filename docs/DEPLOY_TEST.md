@@ -201,7 +201,7 @@ sh install.sh                     # 可加 --datadir / --listen / --no-docker �
 | 放示例配置 | `/etc/skiff/config.toml`（**仅当不存在时**，已有配置只读不改） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
-| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（6 个 `.wbpkg` = 5 个官方插件 + testkit，另加 `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（7 个 `.wbpkg` = 6 个官方插件 + testkit，另加 `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
 | 启动 | `systemctl restart skiff` 并验 active（20 s 不起即失败退出；`--no-start` 可跳过） |
 
@@ -520,10 +520,10 @@ skiff plugin install /root/demo-0.1.0.wbpkg --yes \
 skiff plugin list
 ```
 
-**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 6 个已签名的包 = 5 个官方插件（guard/monitor/files/cron/ftp）+ `com.skiff.testkit` 架构测试台（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
+**官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 7 个已签名的包 = 6 个官方插件（guard/monitor/files/cron/ftp/firewall）+ `com.skiff.testkit` 架构测试台（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
 
 ```sh
-ls /www/skiff/official            # com.skiff.{guard,monitor,cron,ftp,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.2.wbpkg + public-key.txt
+ls /www/skiff/official            # com.skiff.{guard,monitor,cron,firewall,ftp,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.2.wbpkg + public-key.txt
 # public-key.txt 不需要手动导入：首次启动会自动写入信任库（见 §2.11 注）
 # 仅在公钥缺失/指纹不符时，才需显式执行：
 #   skiff trust import /www/skiff/official/public-key.txt --label official
@@ -590,7 +590,7 @@ ps -o user,group,args -p $(systemctl show -p MainPID --value skiff)
   已安装的官方插件由内核在启动早期做版本/内容比对后自动补齐（见 §2.5），
   `data/`、既有授权与停用状态都不变。
 - 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
-- `allow_reduced_sandbox = false` 时，官方 6 个包的 manifest 没有显式关闭 `requires_full_sandbox`
+- `allow_reduced_sandbox = false` 时，官方 7 个包的 manifest 没有显式关闭 `requires_full_sandbox`
   （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
 - 停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 内的库是 **0 插件 / 0 公钥**，且不含 `official/`；
   回到该快照就是回到「未装插件」状态。

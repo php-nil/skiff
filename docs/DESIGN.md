@@ -47,7 +47,7 @@
 | 部署与测试（非章节） | [DEPLOY_TEST.md](DEPLOY_TEST.md) | 两种部署形态的装机步骤、配置矩阵、7 组验收用例（A–G）、未实现清单、实测记录与排查表 |
 | 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、实测结果与已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
-| 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与 5 个（guard/monitor/files/cron/ftp，已落地；原 nginx 已内核化为「网站」）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
+| 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单 6 个（guard/monitor/files/cron/ftp/firewall，已落地；原 nginx 已内核化为「网站」；连同 testkit 共 7 个签名包）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
 | 其余专项文档（非章节） | [AGENTS.md](../AGENTS.md) §四 | 测试环境/台账/矩阵、迭代验证回路、菜单与插件 UI 契约、UI 交互基准、网站运行环境、内核调度/文件系统/FTP 契约与实现说明；完整索引只在 AGENTS.md 维护，本文不重复 |
 
 ### 按角色选读

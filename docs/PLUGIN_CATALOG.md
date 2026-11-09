@@ -16,7 +16,7 @@
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
 | 能力面扩张 | 新增两个内核原语：`ftp`（FTP 管理）与 `firewall`（防火墙 / fail2ban），均涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md) 与 [KERNEL_FIREWALL_CONTRACT.md](KERNEL_FIREWALL_CONTRACT.md) |
 
-**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 6 个官方插件已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
+**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 6 个官方插件（连同 testkit 共 7 个签名包）已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
 
 
 ## 1. 能力现状核对（选型的硬约束）
@@ -172,7 +172,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-6 个官方插件与 testkit 均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
+6 个官方插件与 testkit（共 7 个包）均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
 
 | 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
@@ -279,7 +279,7 @@ plugins/
 - 根 `Cargo.toml` 增加 `exclude = ["plugins"]`，显式声明第二 workspace（已完成）。
 - 每个插件 crate 直接 `skiff-sdk = { path = "../../crates/sdk" }`；不设 `workspace.dependencies`（各有依赖，收敛收益不大）。
 - `plugins/pack.sh`：`build`（`CARGO`/`--target` 交叉）→ 复制 `manifest.toml` + `ui/` + `migrations/` + `bin/<arch>/plugin` 到临时目录 → `stamp` 回填指纹 → `pack --arch` → `verify --arch` 自检 → 输出 `com.skiff.<name>-<version>.wbpkg` 与 `public-key.txt`。
-- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥打 6 个包并逐个验签）。
+- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥打 7 个包并逐个验签）。
 - 发布：`deploy/pack-release.sh --plugin-key <私钥>` 调 `pack.sh`，产物塞进发布包 `official/`；不给私钥且未 `--skip-plugins` 时**拒绝出包**（详见 [`docs/CI.md`](CI.md) §4）。
 - 交叉打包需要 `skiff-plugin pack/verify --arch`（否则按打包机架构找载荷，arm64 包在 amd64 机上会被误判缺载荷）。
 - 多架构是发布者责任：缺哪个架构，该架构上就拒装（§4.4）。
@@ -298,11 +298,11 @@ plugins/
 |---|---|---|
 | 0 决策与目录 | 建 `plugins/` 第二 workspace + 三关门禁 | ✅ 2026-11-01（`exclude`、CI `plugins` job、`plugins/Cargo.lock`） |
 | 1 能力补齐 | fs 宿主授权（`path:` grant、`resolve_data`/`resolve` 双分支、manifests 的 `resource_hints`、Broker 复验）；cron 运行时；interop 契约（manifest `[interop]`、`plugin:` 对象授权、`capability/interop/{call,catalog}`、审计） | ✅ fs / cron / interop 就绪；❌ docker exec、内置官方公钥仍未做 |
-| 2 首批插件 | guard → monitor → files → cron → ftp → firewall（nginx 已内核化） | ✅ 代码 + UI（monitor 进程/网络、firewall、ftp 改造**未经编译验证**）；单测：guard 3 / monitor 10 / files 2 / cron 8 / ftp 3 / firewall 新增 / common 7 |
+| 2 首批插件 | guard → monitor → files → cron → ftp → firewall（nginx 已内核化） | ✅ 代码 + UI，已编译验证（2026-11-10）；单测：guard 3 / monitor 13 / files 2 / cron 8 / ftp 3 / firewall 5 / common 7 |
 | 3 分发 | 官方源目录 + 随包携带 | ✅ 随包携带（`official/` + `public-key.txt`）；❌ 面板内官方插件列表 |
 | 4 第二批 | 备份与恢复、应用模板、数据库 | 未开始 |
 
-> 6 个官方插件与 testkit 的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验；防火墙与 monitor 进程/网络本轮未上机。
+> 6 个官方插件与 testkit（共 7 个包）的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验；防火墙与 monitor 进程/网络本轮未上机。
 
 > 能力补齐与插件开发并行时，先冻结 manifest 字段与协议契约再写插件，否则三份插件要返工。
 

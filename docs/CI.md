@@ -41,7 +41,7 @@
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
-| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 6 个官方插件真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
+| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 7 个官方插件包（6 个插件 + testkit）真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
 | `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |
 | `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
@@ -105,7 +105,7 @@ GitHub → Actions → Release → Run workflow
   version:      0.1.0                      # 沿用现有版本
   publish:      true                       # 上传/覆盖 Release 资产
   release_tag:  v0.1.0                     # 目标 Release 标签（留空则用 v<version>）
-  skip_plugins: false                      # 正式安装包必须带 6 个官方插件包
+  skip_plugins: false                      # 正式安装包必须带 7 个官方插件包（6 个插件 + testkit）
 ```
 
 `publish` job 的行为是**只覆盖资产、绝不建 tag**：
@@ -178,7 +178,7 @@ gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
 | `skiff` / `skiff-plugin` | musl 静态主程序（`ldd` 应为 `not a dynamic executable`）与插件工具 |
 | `install.sh` / `uninstall.sh` / `docker-bootstrap.sh` | 安装/卸载/前置引导（不依赖仓库 `deploy/` 路径） |
 | `skiff.service` / `config.toml.example` | systemd unit 与配置样例 |
-| `official/*.wbpkg` | 官方插件 6 个（guard/monitor/files/cron/ftp/testkit），已签名；只复制到 `/www/skiff/official/`，**不自动安装** |
+| `official/*.wbpkg` | 官方插件包 7 个（guard/monitor/files/cron/ftp/firewall + testkit），已签名；只复制到 `/www/skiff/official/`，**不自动安装** |
 | `official/public-key.txt` | 上面那批包的签名公钥，首启自动信任（TOFU） |
 | `checksums.txt` | **包内**所有文件的 SHA-256（不含自身），解压后可 `sha256sum -c` 复核 |
 | `README.txt` | 简短安装说明（含 Docker 选项与 official 用法） |
