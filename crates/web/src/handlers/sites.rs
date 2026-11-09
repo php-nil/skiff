@@ -915,7 +915,7 @@ pub async fn env_images_save(
         .contains_key("php_image")
         .then(|| form_first(&form, "php_image"));
     state
-        .save_runtime_images(nginx, php)
+        .save_runtime_images(nginx.as_deref(), php.as_deref())
         .map_err(AppError::Internal)?;
     let ip = handlers::client_ip(&state, &parts);
     if let Err(e) = state
@@ -1665,10 +1665,12 @@ pub async fn logs(
     // 日志读取是同步文件 IO（尾部最多 2MB），放到阻塞线程池，避免占住 async worker。
     let st = state.clone();
     let domain_for_read = domain.clone();
-    let (access, error_log) =
-        crate::handlers::blocking_fs(move || st.site_logs(&domain_for_read, 200, &keyword))
-            .await?
-            .map_err(map_err)?;
+    let keyword_for_read = keyword.clone();
+    let (access, error_log) = crate::handlers::blocking_fs(move || {
+        st.site_logs(&domain_for_read, 200, &keyword_for_read)
+    })
+    .await?
+    .map_err(map_err)?;
     let log_dir = state
         .db()
         .site_by_domain(&domain)?
