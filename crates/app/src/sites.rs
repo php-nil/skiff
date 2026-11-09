@@ -495,7 +495,9 @@ fn verify_cert_pair(cert: &Path, key: &Path) -> Result<(), String> {
 #[cfg(unix)]
 fn restrict_mode(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        tracing::debug!(path = %path.display(), error = %e, "设置权限失败");
+    }
 }
 
 #[cfg(not(unix))]
@@ -781,342 +783,15 @@ fn partial_delete_error(completed: &[String], message: String) -> SiteError {
 }
 
 // ---------------------------------------------------------------------------
-// 域名 / 版本 / vhost（纯函数，便于单测）
+// 域名 / 版本 / vhost：纯函数已抽到 `sites_vhost`，这里再导出保持旧调用路径
 // ---------------------------------------------------------------------------
 
-/// 域名白名单：小写字母、数字、`-`、`.`；每段非空且不以 `-` 开头/结尾。
-///
-/// 拒绝 `..`、`/`、端口、通配符与空白；同时限制总长 253、单段 63。
-pub fn validate_domain(raw: &str) -> Result<String, SiteError> {
-    let d = raw.trim().to_ascii_lowercase();
-    if d.is_empty() {
-        return Err(SiteError::BadRequest("域名不能为空".into()));
-    }
-    if d.len() > 253 {
-        return Err(SiteError::BadRequest("域名长度超过 253".into()));
-    }
-    if d.contains('/') || d.contains('\\') || d.contains(' ') || d.contains('_') {
-        return Err(SiteError::BadRequest(
-            "域名只能包含字母、数字、点和中划线".into(),
-        ));
-    }
-    let labels: Vec<&str> = d.split('.').collect();
-    if labels.len() < 2 {
-        return Err(SiteError::BadRequest(
-            "域名至少包含两段（如 example.com）".into(),
-        ));
-    }
-    for label in &labels {
-        if label.is_empty() {
-            return Err(SiteError::BadRequest("域名不能包含空段".into()));
-        }
-        if label.len() > 63 {
-            return Err(SiteError::BadRequest("域名单段长度超过 63".into()));
-        }
-        if label.starts_with('-') || label.ends_with('-') {
-            return Err(SiteError::BadRequest(
-                "域名每段不能以中划线开头或结尾".into(),
-            ));
-        }
-        if !label
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        {
-            return Err(SiteError::BadRequest(
-                "域名只能包含字母、数字、点和中划线".into(),
-            ));
-        }
-    }
-    // 纯数字最后一段（IPv4）不接受：站点按域名建目录，IP 访问请用默认站点。
-    if labels.last().is_some_and(|l| {
-        l.chars().all(|c| c.is_ascii_digit()) && labels[0].chars().all(|c| c.is_ascii_digit())
-    }) {
-        return Err(SiteError::BadRequest(
-            "请使用域名而不是 IP 地址创建站点".into(),
-        ));
-    }
-    Ok(d)
-}
-
-/// 批量别名解析：主域名与别名一次提交，去重与语法校验都收在这里。
-///
-/// `raw` 里每个元素可能是一行粘贴内容（换行/逗号/空格混合），也可能是单行输入。
-/// 重复别名与「别名等于主域名」一律拒绝——不静默丢弃，避免用户以为已经加上。
-pub fn normalize_site_aliases(domain: &str, raw: &[String]) -> Result<Vec<String>, SiteError> {
-    let mut out: Vec<String> = Vec::new();
-    for item in raw {
-        for token in item
-            .split(|c: char| c == ',' || c == '，' || c == ';' || c == '；' || c.is_whitespace())
-        {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-            let alias = validate_domain(token)?;
-            if alias == domain {
-                return Err(SiteError::BadRequest("别名不能与主域名相同".into()));
-            }
-            if out.contains(&alias) {
-                return Err(SiteError::Conflict(format!("域名重复：{alias}")));
-            }
-            out.push(alias);
-        }
-    }
-    Ok(out)
-}
-
-/// 站点目录：用户只填目录名（如 `example.com`），前缀由内核自动补全。
-///
-/// 空值表示与主域名同名；只允许单段目录名，拒绝 `/`、`..` 与空白。
-pub fn site_root_for(
-    sites_dir: &Path,
-    domain: &str,
-    slug: Option<&str>,
-) -> Result<PathBuf, SiteError> {
-    let Some(slug) = slug.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(sites_dir.join(domain));
-    };
-    if slug == "." || slug == ".." || slug.contains(['/', '\\']) || slug.contains("..") {
-        return Err(SiteError::BadRequest(
-            "站点目录只能填写目录名，不能包含 / 或 ..".into(),
-        ));
-    }
-    if slug.chars().any(char::is_whitespace)
-        || !slug
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    {
-        return Err(SiteError::BadRequest(
-            "站点目录只能包含字母、数字、点、中划线与下划线".into(),
-        ));
-    }
-    Ok(sites_dir.join(slug))
-}
-
-/// 站点类型白名单：只接受三类，大小写归一。
-pub fn validate_site_type(raw: &str) -> Result<&'static str, SiteError> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        TYPE_RUNTIME => Ok(TYPE_RUNTIME),
-        TYPE_STATIC => Ok(TYPE_STATIC),
-        TYPE_PROXY => Ok(TYPE_PROXY),
-        other => Err(SiteError::BadRequest(format!(
-            "未知站点类型：{other}（应为 runtime / static / proxy）"
-        ))),
-    }
-}
-
-/// 反向代理上游：必须是 `http(s)://host[:port][/path]`，禁止 userinfo、空白与裸路径。
-pub fn validate_proxy_target(raw: &str) -> Result<String, SiteError> {
-    let t = raw.trim();
-    if t.is_empty() {
-        return Err(SiteError::BadRequest("上游地址不能为空".into()));
-    }
-    if t.chars().any(char::is_whitespace) {
-        return Err(SiteError::BadRequest("上游地址不能包含空白".into()));
-    }
-    let (scheme, rest) = t
-        .split_once("://")
-        .ok_or_else(|| SiteError::BadRequest("上游地址必须以 http:// 或 https:// 开头".into()))?;
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
-        return Err(SiteError::BadRequest(
-            "上游地址只支持 http:// 或 https://".into(),
-        ));
-    }
-    if rest.is_empty() {
-        return Err(SiteError::BadRequest("上游地址缺少主机".into()));
-    }
-    if rest.contains('@') {
-        return Err(SiteError::BadRequest("上游地址不能包含用户名/密码".into()));
-    }
-    let authority = rest.split('/').next().unwrap_or("");
-    let host = authority.split(':').next().unwrap_or("");
-    if host.is_empty() {
-        return Err(SiteError::BadRequest("上游地址缺少主机".into()));
-    }
-    if !host
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-    {
-        return Err(SiteError::BadRequest("上游主机名包含非法字符".into()));
-    }
-    if let Some(port) = authority.split_once(':').map(|(_, p)| p) {
-        let port: u16 = port
-            .parse()
-            .map_err(|_| SiteError::BadRequest("上游端口必须是 1-65535".into()))?;
-        if port == 0 {
-            return Err(SiteError::BadRequest("上游端口必须是 1-65535".into()));
-        }
-    }
-    // 统一小写 scheme，其余保留用户写法（路径大小写敏感）。
-    let normalized = format!(
-        "{}://{}",
-        scheme.to_ascii_lowercase(),
-        rest.trim_end_matches('/')
-    );
-    Ok(normalized)
-}
-
-/// Node/Go 站点端口占位校验（P1 只落字段；P2 才实际分配）。范围与 P2 契约一致。
-pub fn validate_app_port(raw: i64) -> Result<u16, SiteError> {
-    if !(1024..=65535).contains(&raw) {
-        return Err(SiteError::BadRequest(
-            "应用端口必须在 1024-65535 之间".into(),
-        ));
-    }
-    Ok(raw as u16)
-}
-
-/// TLS 参数：证书/私钥使用**容器内** `/www/...` 路径。
-#[derive(Debug, Clone)]
-pub struct VhostTls {
-    pub cert: String,
-    pub key: String,
-    /// 80 端口是否 301 到 443。
-    pub force_https: bool,
-}
-
-/// vhost 的三种业务形态；容器内路径由调用方换算，生成函数不再硬编码 socket。
-#[derive(Debug, Clone)]
-pub enum VhostKind<'a> {
-    /// 静态站：只读文档根，不接 PHP。
-    Static { root: &'a str },
-    /// 运行环境站（PHP）：fastcgi 指向运行环境登记的 socket。
-    Php { root: &'a str, socket: &'a str },
-    /// 运行环境站（Rust）：独立进程监听固定端口，vhost 反代过去。
-    Process { root: &'a str, port: u16 },
-    /// 反向代理：不落文档根，只转发到上游。
-    Proxy { target: &'a str, websocket: bool },
-}
-
-/// 生成站点 vhost。路径里的站点目录已换算为容器内 `/www/...`；
-/// PHP 的 socket 来自 `site_runtimes.socket_path`，不在此硬编码。
-pub fn render_site_vhost(
-    domain: &str,
-    aliases: &[String],
-    kind: VhostKind<'_>,
-    access_log: &str,
-    error_log: &str,
-    tls: Option<&VhostTls>,
-) -> String {
-    let names = if aliases.is_empty() {
-        domain.to_string()
-    } else {
-        format!("{} {}", domain, aliases.join(" "))
-    };
-    let mut out = String::new();
-    if tls.is_some_and(|t| t.force_https) {
-        // 强制 HTTPS：80 只做跳转，不再渲染站点内容。
-        out.push_str("server {\n    listen 80;\n");
-        out.push_str(&format!("    server_name {names};\n"));
-        out.push_str("    return 301 https://$host$request_uri;\n}\n");
-    } else {
-        out.push_str("server {\n    listen 80;\n");
-        out.push_str(&format!("    server_name {names};\n"));
-        push_site_body(&mut out, &kind, access_log, error_log);
-    }
-    if let Some(t) = tls {
-        out.push_str("server {\n    listen 443 ssl;\n");
-        out.push_str(&format!("    server_name {names};\n"));
-        out.push_str(&format!("    ssl_certificate {};\n", t.cert));
-        out.push_str(&format!("    ssl_certificate_key {};\n", t.key));
-        out.push_str("    ssl_protocols TLSv1.2 TLSv1.3;\n");
-        push_site_body(&mut out, &kind, access_log, error_log);
-    }
-    out
-}
-
-fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, error_log: &str) {
-    out.push_str(&format!("    access_log {access_log};\n"));
-    out.push_str(&format!("    error_log {error_log};\n"));
-    match kind {
-        VhostKind::Static { root } => {
-            out.push_str(&format!("    root {root};\n"));
-            out.push_str("    index index.html;\n");
-            out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
-        }
-        VhostKind::Php { root, socket } => {
-            out.push_str(&format!("    root {root};\n"));
-            out.push_str("    index index.php index.html;\n");
-            out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
-            out.push_str(&format!(
-                "    location ~ \\.php$ {{\n\
-                 \x20       include {CONTAINER_FASTCGI_PARAMS};\n\
-                 \x20       fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n"
-            ));
-            out.push_str(&format!("        fastcgi_pass unix:{socket};\n"));
-            out.push_str("        fastcgi_index index.php;\n    }\n");
-        }
-        VhostKind::Process { root, port } => {
-            // Rust 进程自带内容与路由：文档根只作兜底静态资源，主路径反代到端口。
-            out.push_str(&format!("    root {root};\n"));
-            out.push_str("    location / {\n");
-            out.push_str(&format!("        proxy_pass http://127.0.0.1:{port};\n"));
-            out.push_str("        proxy_http_version 1.1;\n");
-            out.push_str("        proxy_set_header Host $host;\n");
-            out.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
-            out.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
-            out.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
-            out.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
-            out.push_str("        proxy_set_header Connection \"upgrade\";\n");
-            out.push_str("        proxy_read_timeout 3600s;\n    }\n");
-        }
-        VhostKind::Proxy { target, websocket } => {
-            out.push_str("    location / {\n");
-            out.push_str(&format!("        proxy_pass {target};\n"));
-            out.push_str("        proxy_http_version 1.1;\n");
-            out.push_str("        proxy_set_header Host $host;\n");
-            out.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
-            out.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
-            out.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
-            if *websocket {
-                out.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
-                out.push_str("        proxy_set_header Connection \"upgrade\";\n");
-            }
-            out.push_str("        proxy_read_timeout 3600s;\n");
-            out.push_str("    }\n");
-        }
-    }
-    out.push_str("}\n");
-}
-
-fn default_probe_php() -> &'static str {
-    "<?php\n// Skiff 站点探针：确认 PHP-FPM 正常渲染。\nphpinfo();\n"
-}
-
-fn default_probe_html() -> &'static str {
-    "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">\
-     <title>Skiff 静态站点</title></head>\n<body><h1>站点已就绪</h1>\
-     <p>把您的静态文件放入 <code>index/</code> 目录即可。</p></body></html>\n"
-}
-
-/// 默认站点 vhost：直接访问 IP:80 时落到该站点的 `public`。
-///
-/// `default_server` 只能有一个；本文件存在时由它接管裸访问，不存在时由
-/// `00-skiff-fallback.conf`（按文件名先于站点 vhost 加载）返回 404。
-pub fn render_default_vhost(
-    domain: &str,
-    kind: VhostKind<'_>,
-    access_log: &str,
-    error_log: &str,
-    tls: Option<&VhostTls>,
-) -> String {
-    let mut out = format!("# Skiff 默认站点：直接访问 IP:80 时展示 {domain}。\n");
-    if tls.is_some_and(|t| t.force_https) {
-        out.push_str("server {\n    listen 80 default_server;\n    server_name _;\n");
-        out.push_str("    return 301 https://$host$request_uri;\n}\n");
-    } else {
-        out.push_str("server {\n    listen 80 default_server;\n    server_name _;\n");
-        push_site_body(&mut out, &kind, access_log, error_log);
-    }
-    if let Some(t) = tls {
-        out.push_str("server {\n    listen 443 ssl default_server;\n    server_name _;\n");
-        out.push_str(&format!("    ssl_certificate {};\n", t.cert));
-        out.push_str(&format!("    ssl_certificate_key {};\n", t.key));
-        out.push_str("    ssl_protocols TLSv1.2 TLSv1.3;\n");
-        push_site_body(&mut out, &kind, access_log, error_log);
-    }
-    out
-}
+use crate::sites_vhost::{default_probe_html, default_probe_php};
+pub use crate::sites_vhost::{
+    normalize_site_aliases, render_default_vhost, render_php_pool, render_php_pool_with,
+    render_site_vhost, site_root_for, validate_app_port, validate_domain, validate_proxy_target,
+    validate_site_type, VhostKind, VhostTls,
+};
 
 /// 一个可直接查看/编辑的 PHP 配置文件。
 #[derive(Debug, Clone)]
@@ -1549,9 +1224,12 @@ impl AppState {
                 } else {
                     "stopped".into()
                 };
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(&rt.id, &rt.desired_state, &cached);
+                    .set_runtime_status(&rt.id, &rt.desired_state, &cached)
+                {
+                    tracing::warn!(runtime = %rt.id, error = %e, "回写运行环境状态失败");
+                }
             }
             // 真实版本来自镜像元数据（image_id 不可变），与容器是否运行无关：
             // 停止但容器仍在时照样显示真实版本。全程不进容器执行进程。
@@ -1604,8 +1282,9 @@ impl AppState {
                 .await
                 .ok()
                 .and_then(|info| {
-                    let kind = out
-                        .get(indices[0])
+                    let kind = indices
+                        .first()
+                        .and_then(|i| out.get(*i))
                         .map(|v| v.runtime.kind.as_str())
                         .unwrap_or_default();
                     let key = runtime_catalog::version_env_key(kind)?;
@@ -1657,7 +1336,7 @@ impl AppState {
                 let Some(c) = rows.iter().find(|c| c.name == NGINX_CONTAINER) else {
                     return Ok(());
                 };
-                self.remove_existing_container(&c.id)
+                self.remove_existing_container(c)
                     .await
                     .map_err(SiteError::Internal)
             }
@@ -1665,6 +1344,28 @@ impl AppState {
                 "不支持的 Web 服务操作：{action}"
             ))),
         }
+    }
+
+    /// 内核自身容器操作的唯一入口：先经 `policy.check(Actor::System, …)`，
+    /// 再交给 `Docker::execute` 单点分发。
+    ///
+    /// 站点与运行环境的每一处容器动作都必须走这里：`Actor::System` 只放行内核
+    /// 托管的对象（`io.skiff.project=sites`），外部面板对象仍被拒。用户角色鉴权
+    /// 由调用方 handler 负责，这里只做对象面收口。
+    async fn kernel_execute(
+        &self,
+        verb: Verb,
+        target: Option<&skiff_docker::ObjectRef>,
+        params: DockerParams,
+    ) -> Result<serde_json::Value, String> {
+        self.cfg
+            .policy
+            .check(&skiff_model::Actor::System, verb, target)
+            .map_err(|e| e.to_string())?;
+        self.docker()
+            .execute(verb, target, params)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn docker_runtime_action(&self, name: &str, verb: Verb) -> Result<(), SiteError> {
@@ -1681,8 +1382,7 @@ impl AppState {
             name: c.name.clone(),
             labels: c.labels.clone(),
         };
-        self.docker()
-            .execute(verb, Some(&obj), DockerParams::None)
+        self.kernel_execute(verb, Some(&obj), DockerParams::None)
             .await
             .map(|_| ())
             .map_err(|e| SiteError::Unavailable(format!("容器 {name} 操作失败：{e}")))
@@ -1741,13 +1441,19 @@ impl AppState {
                 let current = self.runtime_view(id).await?;
                 // 以容器实测为准，纠正「期望运行但实际停了」的漂移缓存。
                 if current.effective_state == "running" {
-                    let _ = self
+                    if let Err(e) = self
                         .db()
-                        .set_runtime_status(id, &rt.desired_state, "running");
+                        .set_runtime_status(id, &rt.desired_state, "running")
+                    {
+                        tracing::warn!(runtime = id, error = %e, "回写运行环境状态失败");
+                    }
                 } else if current.effective_state == "stopped" {
-                    let _ = self
+                    if let Err(e) = self
                         .db()
-                        .set_runtime_status(id, &rt.desired_state, "stopped");
+                        .set_runtime_status(id, &rt.desired_state, "stopped")
+                    {
+                        tracing::warn!(runtime = id, error = %e, "回写运行环境状态失败");
+                    }
                 }
             }
             other => return Err(SiteError::BadRequest(format!("未知运行环境操作：{other}"))),
@@ -1911,7 +1617,9 @@ impl AppState {
                 cancellable: true,
             })
             .map_err(site_error_from_job)?;
-        let _ = self.db().set_runtime_status(id, "running", "installing");
+        if let Err(e) = self.db().set_runtime_status(id, "running", "installing") {
+            tracing::warn!(runtime = id, error = %e, "写入运行环境安装中状态失败");
+        }
         let state = self.clone();
         let rid = id.to_string();
         let job_id = job.id;
@@ -1931,9 +1639,12 @@ impl AppState {
                 } else {
                     self.job_finish_ok(job_id, "安装完成，运行环境已就绪").await;
                 }
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "写入运行环境就绪状态失败");
+                }
             }
             Err(err) => {
                 if self.job_cancelled(job_id).await {
@@ -1943,7 +1654,9 @@ impl AppState {
                     self.job_finish_err(job_id, &err).await;
                 }
                 // 记录失败但保留「期望运行」，这样重试入口与漂移提示仍然成立。
-                let _ = self.db().set_runtime_status(runtime_id, "running", "error");
+                if let Err(e) = self.db().set_runtime_status(runtime_id, "running", "error") {
+                    tracing::warn!(runtime = runtime_id, error = %e, "写入运行环境失败状态失败");
+                }
             }
         }
     }
@@ -2011,14 +1724,13 @@ impl AppState {
             &format!("拉取镜像 {pull_ref}（首次可能较慢）"),
         )
         .await;
-        self.docker()
-            .execute(
-                Verb::ImagePull,
-                None,
-                DockerParams::ImagePull(pull_ref.clone()),
-            )
-            .await
-            .map_err(|e| format!("拉取 {pull_ref} 失败：{e}"))?;
+        self.kernel_execute(
+            Verb::ImagePull,
+            None,
+            DockerParams::ImagePull(pull_ref.clone()),
+        )
+        .await
+        .map_err(|e| format!("拉取 {pull_ref} 失败：{e}"))?;
         let digest = self
             .docker()
             .inspect_image(&pull_ref)
@@ -2133,7 +1845,7 @@ impl AppState {
         .await;
         if let Ok(rows) = self.docker().list_containers().await {
             if let Some(c) = rows.iter().find(|c| c.name == container) {
-                self.remove_existing_container(&c.id)
+                self.remove_existing_container(c)
                     .await
                     .map_err(|e| format!("移除旧容器失败：{e}"))?;
             }
@@ -2243,7 +1955,7 @@ impl AppState {
         .await;
         if let Ok(rows) = self.docker().list_containers().await {
             if let Some(c) = rows.iter().find(|c| c.name == container) {
-                self.remove_existing_container(&c.id)
+                self.remove_existing_container(c)
                     .await
                     .map_err(|e| format!("移除旧容器失败：{e}"))?;
             }
@@ -2513,9 +2225,12 @@ impl AppState {
                     self.job_finish_ok(job_id, "扩展已更新，PHP-FPM 已重载")
                         .await;
                 }
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "回写运行环境状态失败");
+                }
             }
             Err(err) => {
                 if self.job_cancelled(job_id).await {
@@ -2525,9 +2240,12 @@ impl AppState {
                     self.job_finish_err(job_id, &err).await;
                 }
                 // 扩展失败不改变容器可用性：状态回 running，错误留在任务里可重试。
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "回写运行环境状态失败");
+                }
             }
         }
     }
@@ -2805,9 +2523,12 @@ impl AppState {
                     )
                     .await;
                 }
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "回写运行环境状态失败");
+                }
             }
             Err(err) => {
                 if self.job_cancelled(job_id).await {
@@ -2816,9 +2537,12 @@ impl AppState {
                 } else {
                     self.job_finish_err(job_id, &err).await;
                 }
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "回写运行环境状态失败");
+                }
             }
         }
     }
@@ -2863,9 +2587,12 @@ impl AppState {
                     )
                     .await;
                 }
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "回写运行环境状态失败");
+                }
             }
             Err(err) => {
                 if self.job_cancelled(job_id).await {
@@ -2874,9 +2601,12 @@ impl AppState {
                 } else {
                     self.job_finish_err(job_id, &err).await;
                 }
-                let _ = self
+                if let Err(e) = self
                     .db()
-                    .set_runtime_status(runtime_id, "running", "running");
+                    .set_runtime_status(runtime_id, "running", "running")
+                {
+                    tracing::warn!(runtime = runtime_id, error = %e, "回写运行环境状态失败");
+                }
             }
         }
     }
@@ -3022,9 +2752,8 @@ impl AppState {
             self.db()
                 .set_runtime_extensions(runtime_id, &joined)
                 .map_err(|e| format!("写入扩展集合失败：{e}"))?;
-            let _ = self
-                .runtime_installs
-                .try_begin(&format!("{}:{}", rt.kind, rt.name));
+            // 这里不预先抢安装锁：`install_runtime_task` 自己会 `try_begin`，
+            // 先抢再立刻丢弃的守卫既没有互斥效果，还会让嵌套获取误判「正在安装」。
             return self.install_runtime_task(runtime_id, job_id).await;
         }
 
@@ -3228,9 +2957,12 @@ impl AppState {
         {
             if let Some(bytes) = &original {
                 if let Ok(text) = std::str::from_utf8(bytes) {
-                    let _ = self
+                    if let Err(we) = self
                         .admin_fs()
-                        .write(actor, &pool.display().to_string(), text);
+                        .write(actor, &pool.display().to_string(), text)
+                    {
+                        tracing::error!(path = %pool.display(), error = %we, "回滚 PHP 池配置写入失败");
+                    }
                 }
             }
             return Err(SiteError::Unavailable(format!(
@@ -3466,16 +3198,23 @@ impl AppState {
             match &original {
                 Some(bytes) if !bytes.is_empty() => {
                     if let Ok(text) = std::str::from_utf8(bytes) {
-                        let _ = self
-                            .admin_fs()
-                            .write(actor, &path.display().to_string(), text);
+                        if let Err(we) =
+                            self.admin_fs()
+                                .write(actor, &path.display().to_string(), text)
+                        {
+                            tracing::error!(path = %path.display(), error = %we, "回滚站点配置写入失败");
+                        }
                     }
                 }
                 _ => {
-                    let _ = self.admin_fs().remove(actor, &path.display().to_string());
+                    if let Err(e) = self.admin_fs().remove(actor, &path.display().to_string()) {
+                        tracing::debug!(path = %path.display(), error = %e, "回滚新增的 PHP 配置文件失败");
+                    }
                 }
             }
-            let _ = self.docker_runtime_action(&container, Verb::Restart).await;
+            if let Err(e) = self.docker_runtime_action(&container, Verb::Restart).await {
+                tracing::error!(error = %e, runtime = %container, "回滚 PHP 配置后重启运行环境失败");
+            }
             return Err(SiteError::Unavailable(format!(
                 "保存后重启 PHP-FPM 失败，已回滚 {key}：{reason}"
             )));
@@ -3659,10 +3398,13 @@ impl AppState {
                 .iter()
                 .find(|c| c.name == NGINX_CONTAINER && c.state == "running")
             {
-                let _ = self
+                if let Err(e) = self
                     .docker()
                     .exec_capture(&c.id, vec!["nginx".into(), "-s".into(), "reload".into()])
-                    .await;
+                    .await
+                {
+                    tracing::warn!(container = %c.name, error = %e, "nginx -s reload 失败");
+                }
             }
         }
         // Rust 环境失去最后的绑定后，执行目录回落 `app/` 兜底源码。
@@ -3722,8 +3464,7 @@ impl AppState {
                     labels: c.labels.clone(),
                 };
                 if matches!(c.state.as_str(), "running" | "restarting" | "paused") {
-                    self.docker()
-                        .execute(Verb::Stop, Some(&obj), DockerParams::None)
+                    self.kernel_execute(Verb::Stop, Some(&obj), DockerParams::None)
                         .await
                         .map_err(|e| {
                             partial_delete_error(
@@ -3733,19 +3474,18 @@ impl AppState {
                         })?;
                     report.completed.push(format!("容器 {container} 已停止"));
                 }
-                self.docker()
-                    .execute(
-                        Verb::ContainerRemove,
-                        Some(&obj),
-                        DockerParams::ContainerRemove { force: true },
+                self.kernel_execute(
+                    Verb::ContainerRemove,
+                    Some(&obj),
+                    DockerParams::ContainerRemove { force: true },
+                )
+                .await
+                .map_err(|e| {
+                    partial_delete_error(
+                        &report.completed,
+                        format!("删除容器 {container} 失败：{e}"),
                     )
-                    .await
-                    .map_err(|e| {
-                        partial_delete_error(
-                            &report.completed,
-                            format!("删除容器 {container} 失败：{e}"),
-                        )
-                    })?;
+                })?;
                 report.completed.push(format!("容器 {container} 已删除"));
             } else {
                 report
@@ -3930,57 +3670,50 @@ fn socket_mode(path: &str) -> String {
     "—".into()
 }
 
-/// PHP-FPM 池配置：只监听 unix socket（不暴露 9000），socket 目录在共享的 `/www`。
-pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
-    format!(
-        "[www]\n\
-         user = www-data\n\
-         group = www-data\n\
-         listen = {socket}\n\
-         listen.owner = root\n\
-         ; nginx worker 以 nobody(65534) 运行；只给同组读写，others 无权限。\n\
-         listen.group = nobody\n\
-         listen.mode = 0660\n\
-         pm = {pm}\n\
-         pm.max_children = {max_children}\n\
-         pm.start_servers = {start_servers}\n\
-         pm.min_spare_servers = {min_spare_servers}\n\
-         pm.max_spare_servers = {max_spare_servers}\n\
-         pm.max_requests = {max_requests}\n\
-         php_admin_value[memory_limit] = {memory_limit}\n\
-         php_admin_value[upload_max_filesize] = {upload_max_filesize}\n\
-         php_admin_value[post_max_size] = {post_max_size}\n\
-         php_admin_value[max_execution_time] = {max_execution_time}\n\
-         ; 镜像 docker.conf 默认 access.log = /proc/self/fd/2，访问日志经容器 stdout\n\
-         ; 落到 dockerd/shims；nginx 侧已记录同一请求，这里显式关闭以免每请求重复写。\n\
-         access.log = /dev/null\n\
-         catch_workers_output = yes\n",
-        pm = cfg.pm,
-        max_children = cfg.max_children,
-        start_servers = cfg.start_servers,
-        min_spare_servers = cfg.min_spare_servers,
-        max_spare_servers = cfg.max_spare_servers,
-        max_requests = cfg.max_requests,
-        memory_limit = cfg.memory_limit,
-        upload_max_filesize = cfg.upload_max_filesize,
-        post_max_size = cfg.post_max_size,
-        max_execution_time = cfg.max_execution_time,
-    )
-}
-
-/// 安装/默认池：使用默认配置与共享安装 socket。
-pub fn render_php_pool() -> String {
-    render_php_pool_with(
-        &PhpRuntimeConfig::default(),
-        &runtime_container_socket(skiff_store::KIND_PHP, &default_php_name()),
-    )
-}
+// `render_php_pool_with` / `render_php_pool` 已抽到 `sites_vhost`，见文件上方再导出。
 
 // ---------------------------------------------------------------------------
 // AppState 上的网站服务
 // ---------------------------------------------------------------------------
 
 impl AppState {
+    /// 运行环境页「镜像参数」保存：nginx / PHP 基础镜像标签。
+    ///
+    /// 键名只在 `KEY_NGINX_IMAGE` / `KEY_PHP_IMAGE` 定义，handler 不再写字面量。
+    pub fn save_runtime_images(
+        &self,
+        nginx: Option<&str>,
+        php: Option<&str>,
+    ) -> Result<(), String> {
+        if let Some(v) = nginx {
+            self.db()
+                .set_setting(KEY_NGINX_IMAGE, v.trim())
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(v) = php {
+            self.db()
+                .set_setting(KEY_PHP_IMAGE, v.trim())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Docker 设置页的镜像前缀（写入前去掉尾部 `/`，与读取侧口径一致）。
+    pub fn save_image_prefix(&self, raw: &str) -> Result<String, String> {
+        let value = raw.trim().trim_end_matches('/').to_string();
+        self.db()
+            .set_setting(KEY_PREFIX, &value)
+            .map_err(|e| e.to_string())?;
+        Ok(value)
+    }
+
+    /// Docker 设置页的加速源（落 daemon.json 由 `apply_registry_mirror` 负责，这里只记设置）。
+    pub fn save_registry_mirror(&self, raw: &str) -> Result<(), String> {
+        self.db()
+            .set_setting(KEY_MIRROR, raw)
+            .map_err(|e| e.to_string())
+    }
+
     /// 把「网站 → 设置」里的镜像源落到宿主 `/etc/docker/daemon.json`。
     pub async fn apply_registry_mirror(
         &self,
@@ -4232,8 +3965,7 @@ impl AppState {
         self.mark_step(2, StepState::Running, format!("registry: {registry}"))
             .await;
         if let Err(e) = self
-            .docker()
-            .execute(
+            .kernel_execute(
                 Verb::ImagePull,
                 None,
                 DockerParams::ImagePull(s.nginx_image.clone()),
@@ -4263,7 +3995,7 @@ impl AppState {
         self.mark_step(4, StepState::Running, "host 网络，监听宿主 80")
             .await;
         if let Some(c) = existing.iter().find(|c| c.name == NGINX_CONTAINER) {
-            self.remove_existing_container(&c.id).await?;
+            self.remove_existing_container(c).await?;
         }
         if let Err(e) = self.ensure_container(&self.nginx_spec(&s)).await {
             return fail(4, format!("创建/启动 nginx 失败：{e}")).await;
@@ -4280,27 +4012,27 @@ impl AppState {
         Ok(())
     }
 
-    async fn remove_existing_container(&self, id: &str) -> Result<(), String> {
+    /// 移除同名旧容器。对象必须由引擎返回的真实行重建——`Actor::System` 的
+    /// allowlist 只认内核标签，空 labels 会被判成非托管对象而拒绝。
+    async fn remove_existing_container(&self, c: &ContainerRow) -> Result<(), String> {
         let obj = skiff_docker::ObjectRef {
-            id: id.to_string(),
-            name: String::new(),
-            labels: BTreeMap::new(),
+            id: c.id.clone(),
+            name: c.name.clone(),
+            labels: c.labels.clone(),
         };
-        self.docker()
-            .execute(
-                Verb::ContainerRemove,
-                Some(&obj),
-                DockerParams::ContainerRemove { force: true },
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("移除旧容器失败：{e}"))
+        self.kernel_execute(
+            Verb::ContainerRemove,
+            Some(&obj),
+            DockerParams::ContainerRemove { force: true },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("移除旧容器失败：{e}"))
     }
 
     async fn ensure_container(&self, spec: &ContainerSpec) -> Result<(), String> {
         let created = self
-            .docker()
-            .execute(
+            .kernel_execute(
                 Verb::ContainerCreate,
                 None,
                 DockerParams::ContainerCreate(Box::new(spec.clone())),
@@ -4318,10 +4050,9 @@ impl AppState {
         let obj = skiff_docker::ObjectRef {
             id,
             name: spec.name.clone().unwrap_or_default(),
-            labels: BTreeMap::new(),
+            labels: spec.labels.clone(),
         };
-        self.docker()
-            .execute(Verb::Start, Some(&obj), DockerParams::None)
+        self.kernel_execute(Verb::Start, Some(&obj), DockerParams::None)
             .await
             .map(|_| ())
             .map_err(|e| format!("启动容器失败：{e}"))
@@ -4554,7 +4285,9 @@ impl AppState {
             return Ok(());
         }
         if target.is_empty() {
-            let _ = std::fs::remove_file(&marker);
+            if let Err(e) = std::fs::remove_file(&marker) {
+                tracing::debug!(path = %marker.display(), error = %e, "清理 Rust 源码标记失败");
+            }
         } else {
             std::fs::write(&marker, &target)
                 .map_err(|e| SiteError::Internal(format!("写入 Rust 源码标记失败：{e}")))?;
@@ -4766,8 +4499,7 @@ impl AppState {
             name: c.name.clone(),
             labels: c.labels.clone(),
         };
-        self.docker()
-            .execute(Verb::Restart, Some(&obj), DockerParams::None)
+        self.kernel_execute(Verb::Restart, Some(&obj), DockerParams::None)
             .await
             .map(|_| ())
             .map_err(|e| SiteError::Unavailable(format!("重载 nginx 失败：{e}")))
@@ -4958,8 +4690,12 @@ impl AppState {
         restrict_mode(&tmp_cert, 0o644);
         restrict_mode(&tmp_key, 0o600);
         if let Err(e) = verify_cert_pair(&tmp_cert, &tmp_key) {
-            let _ = std::fs::remove_file(&tmp_cert);
-            let _ = std::fs::remove_file(&tmp_key);
+            if let Err(ce) = std::fs::remove_file(&tmp_cert) {
+                tracing::debug!(path = %tmp_cert.display(), error = %ce, "清理临时证书失败");
+            }
+            if let Err(ke) = std::fs::remove_file(&tmp_key) {
+                tracing::debug!(path = %tmp_key.display(), error = %ke, "清理临时私钥失败");
+            }
             return Err(SiteError::BadRequest(e));
         }
         std::fs::rename(&tmp_cert, &cert)
@@ -5000,7 +4736,9 @@ impl AppState {
         for name in ["cert.pem.tmp", "key.pem.tmp"] {
             let p = dir.join(name);
             if p.exists() {
-                let _ = std::fs::remove_file(p);
+                if let Err(e) = std::fs::remove_file(&p) {
+                    tracing::debug!(path = %p.display(), error = %e, "清理上次残留的临时证书失败");
+                }
             }
         }
         Ok(())
@@ -5055,10 +4793,14 @@ impl AppState {
             for (p, old) in snapshot {
                 match old {
                     Some(bytes) => {
-                        let _ = std::fs::write(p, bytes);
+                        if let Err(e) = std::fs::write(p, bytes) {
+                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败");
+                        }
                     }
                     None => {
-                        let _ = std::fs::remove_file(p);
+                        if let Err(e) = std::fs::remove_file(p) {
+                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败（删除新增文件）");
+                        }
                     }
                 }
             }
@@ -5069,25 +4811,35 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("写入 HTTPS 状态失败：{e}")))?;
         if let Err(e) = self.write_site_vhost(&s, domain) {
             restore(&snapshot);
-            let _ = self.db().set_site_tls(domain, old_https, old_force);
+            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
+                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
+            }
             return Err(e);
         }
         if let Err(e) = self.sync_default_conf(&s) {
             restore(&snapshot);
-            let _ = self.db().set_site_tls(domain, old_https, old_force);
+            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
+                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
+            }
             return Err(SiteError::Internal(format!("写入默认站点配置失败：{e}")));
         }
         if let Err(e) = self.validate_nginx().await {
             // 校验失败时运行中的 nginx 还没加载新配置，恢复文件即可；
             // 这里**不能再重启**——若失败源于别的坏 conf，重启会让现网 nginx 起不来。
             restore(&snapshot);
-            let _ = self.db().set_site_tls(domain, old_https, old_force);
+            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
+                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
+            }
             return Err(e);
         }
         if let Err(e) = self.restart_nginx().await {
             restore(&snapshot);
-            let _ = self.db().set_site_tls(domain, old_https, old_force);
-            let _ = self.restart_nginx().await;
+            if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
+                tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
+            }
+            if let Err(re) = self.restart_nginx().await {
+                tracing::error!(domain, error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
+            }
             return Err(e);
         }
         Ok(())
@@ -5111,11 +4863,15 @@ impl AppState {
         if site.status == "running" {
             std::fs::write(&conf, vhost)
                 .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
-            let _ = std::fs::remove_file(&disabled);
+            if let Err(e) = std::fs::remove_file(&disabled) {
+                tracing::debug!(path = %disabled.display(), error = %e, "清理已禁用的站点配置失败");
+            }
         } else {
             std::fs::write(&disabled, vhost)
                 .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
-            let _ = std::fs::remove_file(&conf);
+            if let Err(e) = std::fs::remove_file(&conf) {
+                tracing::debug!(path = %conf.display(), error = %e, "清理生效中的站点配置失败");
+            }
         }
         Ok(())
     }
@@ -5141,10 +4897,14 @@ impl AppState {
             let disabled = s.vhost_disabled(&site_dir, &site.domain);
             if site.status == "running" {
                 std::fs::write(&conf, vhost)?;
-                let _ = std::fs::remove_file(&disabled);
+                if let Err(e) = std::fs::remove_file(&disabled) {
+                    tracing::debug!(path = %disabled.display(), error = %e, "清理已禁用的站点配置失败");
+                }
             } else {
                 std::fs::write(&disabled, vhost)?;
-                let _ = std::fs::remove_file(&conf);
+                if let Err(e) = std::fs::remove_file(&conf) {
+                    tracing::debug!(path = %conf.display(), error = %e, "清理生效中的站点配置失败");
+                }
             }
         }
         Ok(sites.len())
@@ -5351,14 +5111,20 @@ impl AppState {
             .map_err(|e| SiteError::Conflict(format!("保存站点失败：{e}")))?;
         if let Err(e) = db.add_site_aliases(&domain, &aliases) {
             // 别名写失败时把站点行一起撤回，避免半成品。
-            let _ = db.delete_site(&domain);
+            if let Err(re) = db.delete_site(&domain) {
+                tracing::error!(site = %domain, error = %re, "回滚站点行失败");
+            }
             return Err(SiteError::Conflict(format!("保存站点别名失败：{e}")));
         }
 
         // 保证公共配置（默认站投影 + 兜底站 + 站点 include 入口）齐备。
         let rollback = |conf: &Path| {
-            let _ = self.db().delete_site(&domain);
-            let _ = std::fs::remove_file(conf);
+            if let Err(e) = self.db().delete_site(&domain) {
+                tracing::error!(site = %domain, error = %e, "回滚站点行失败");
+            }
+            if let Err(e) = std::fs::remove_file(conf) {
+                tracing::error!(path = %conf.display(), error = %e, "回滚站点配置文件失败");
+            }
         };
         if let Err(e) = self.write_default_vhost(&s) {
             rollback(&s.vhost_file(&root, &domain));
@@ -5402,9 +5168,15 @@ impl AppState {
         let s = self.site_settings();
         let rollback = |this: &Self| {
             let db = this.db();
-            let _ = db.clear_site_aliases(&site.domain);
-            let _ = db.add_site_aliases(&site.domain, previous);
-            let _ = this.write_site_vhost(&s, &site.domain);
+            if let Err(e) = db.clear_site_aliases(&site.domain) {
+                tracing::error!(site = %site.domain, error = %e, "回滚站点别名失败（清理）");
+            }
+            if let Err(e) = db.add_site_aliases(&site.domain, previous) {
+                tracing::error!(site = %site.domain, error = %e, "回滚站点别名失败（恢复）");
+            }
+            if let Err(e) = this.write_site_vhost(&s, &site.domain) {
+                tracing::error!(site = %site.domain, error = %e, "回滚站点配置失败");
+            }
         };
         if let Err(e) = self.write_site_vhost(&s, &site.domain) {
             rollback(self);
@@ -5530,7 +5302,9 @@ impl AppState {
             // 再跑一次完整的线上 include 校验：单站合法但多站 conflict 也要拦。
             if let Err(e) = self.validate_nginx().await {
                 if activated {
-                    let _ = std::fs::rename(&conf, &disabled);
+                    if let Err(re) = std::fs::rename(&conf, &disabled) {
+                        tracing::error!(error = %re, "回滚站点配置重命名失败");
+                    }
                 }
                 return Err(SiteError::Conflict(format!(
                     "拒绝启动：站点配置未通过全局 nginx -t（{e}）"
@@ -5538,8 +5312,12 @@ impl AppState {
             }
             if let Err(e) = self.restart_nginx().await {
                 if activated {
-                    let _ = std::fs::rename(&conf, &disabled);
-                    let _ = self.restart_nginx().await;
+                    if let Err(re) = std::fs::rename(&conf, &disabled) {
+                        tracing::error!(error = %re, "回滚站点配置重命名失败");
+                    }
+                    if let Err(re) = self.restart_nginx().await {
+                        tracing::error!(error = %re, "回滚后重载 nginx 失败");
+                    }
                 }
                 return Err(SiteError::Unavailable(format!("启动站点失败：{e}")));
             }
@@ -5547,8 +5325,12 @@ impl AppState {
             let env = self.site_env_status().await;
             if env.installed && env.nginx_state != "running" {
                 if activated {
-                    let _ = std::fs::rename(&conf, &disabled);
-                    let _ = self.restart_nginx().await;
+                    if let Err(re) = std::fs::rename(&conf, &disabled) {
+                        tracing::error!(error = %re, "回滚站点配置重命名失败");
+                    }
+                    if let Err(re) = self.restart_nginx().await {
+                        tracing::error!(error = %re, "回滚后重载 nginx 失败");
+                    }
                 }
                 return Err(SiteError::Unavailable(format!(
                     "启动站点失败：nginx 未能保持运行（当前状态 {}）",
@@ -5598,7 +5380,9 @@ impl AppState {
                 .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
             if let Err(e) = self.restart_nginx().await {
                 // 重载失败则回滚文件，避免留下未生效的默认指向。
-                let _ = std::fs::remove_file(&conf);
+                if let Err(re) = std::fs::remove_file(&conf) {
+                    tracing::error!(path = %conf.display(), error = %re, "回滚默认站点配置失败");
+                }
                 return Err(e);
             }
             self.db()
@@ -5831,8 +5615,12 @@ impl AppState {
                 ],
             )
             .await;
-        let _ = std::fs::remove_file(&candidate);
-        let _ = std::fs::remove_file(&main);
+        if let Err(ce) = std::fs::remove_file(&candidate) {
+            tracing::debug!(path = %candidate.display(), error = %ce, "清理 nginx -t 候选配置失败");
+        }
+        if let Err(me) = std::fs::remove_file(&main) {
+            tracing::debug!(path = %main.display(), error = %me, "清理 nginx -t 临时主配置失败");
+        }
         let (code, out) =
             result.map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
         if code == 0 {
@@ -5874,7 +5662,9 @@ impl AppState {
         std::fs::write(&tmp, content)
             .map_err(|e| SiteError::Internal(format!("写入临时配置失败：{e}")))?;
         if let Err(e) = std::fs::rename(&tmp, &path) {
-            let _ = std::fs::remove_file(&tmp);
+            if let Err(re) = std::fs::remove_file(&tmp) {
+                tracing::debug!(path = %tmp.display(), error = %re, "清理临时配置失败");
+            }
             return Err(SiteError::Internal(format!("替换配置失败：{e}")));
         }
         if !active {
@@ -5882,7 +5672,9 @@ impl AppState {
         }
         if let Err(e) = self.restart_nginx().await {
             // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
-            let _ = std::fs::write(&path, original);
+            if let Err(re) = std::fs::write(&path, original) {
+                tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
+            }
             return Err(SiteError::Unavailable(format!(
                 "配置已回滚到保存前内容：重载 nginx 失败：{e}"
             )));
@@ -5892,8 +5684,12 @@ impl AppState {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let env = self.site_env_status().await;
         if env.installed && env.nginx_state != "running" {
-            let _ = std::fs::write(&path, original);
-            let _ = self.restart_nginx().await;
+            if let Err(re) = std::fs::write(&path, original) {
+                tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
+            }
+            if let Err(re) = self.restart_nginx().await {
+                tracing::error!(error = %re, "回滚后重载 nginx 失败");
+            }
             return Err(SiteError::Unavailable(format!(
                 "配置已回滚到保存前内容：nginx 未能保持运行（当前状态 {}）",
                 env.nginx_state
@@ -6221,7 +6017,9 @@ fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
         path.extension().and_then(|e| e.to_str()).unwrap_or("log")
     ));
     // Windows 的 rename 不能覆盖已存在目标；Unix 上是原子覆盖，先删也无害。
-    let _ = std::fs::remove_file(&rotated);
+    if let Err(e) = std::fs::remove_file(&rotated) {
+        tracing::debug!(path = %rotated.display(), error = %e, "清理上次轮转的日志失败");
+    }
     std::fs::rename(path, &rotated)?;
     std::fs::File::create(path)?;
     Ok(true)
@@ -6231,7 +6029,10 @@ fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
 /// 保证面板不能停/删自己托管的 Web 服务与运行时容器。
 fn skiff_labels(component: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
-        ("io.skiff.project".to_string(), "sites".to_string()),
+        (
+            skiff_model::LABEL_PROJECT.to_string(),
+            skiff_model::PROJECT_SITES.to_string(),
+        ),
         ("io.skiff.component".to_string(), component.to_string()),
         (skiff_model::LABEL_PROTECTED.to_string(), "true".to_string()),
     ])

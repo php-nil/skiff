@@ -631,7 +631,7 @@ pub async fn create(
     match state.create_site(req).await {
         Ok(result) => {
             let ip = handlers::client_ip(&state, &parts);
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "sites.create",
@@ -853,9 +853,7 @@ pub async fn env_add(
         .await
     {
         Ok((rt, started)) => {
-            let _ = state
-                .db()
-                .audit(&user.user.username, &ip, "sites.env.add", &rt.id, "ok", "");
+            state.audit_or_log(&user.user.username, &ip, "sites.env.add", &rt.id, "ok", "");
             let message = if started {
                 format!(
                     "已提交 {} {} 安装任务（实例 {}）；列表会实时显示进度，打开详情抽屉可看安装日志",
@@ -880,7 +878,7 @@ pub async fn env_add(
             ))
         }
         Err(e) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "sites.env.add",
@@ -910,19 +908,22 @@ pub async fn env_images_save(
     require_admin(&user)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    for (form_key, setting_key) in [
-        ("nginx_image", "sites.nginx_image"),
-        ("php_image", "sites.php_image"),
-    ] {
-        if form.contains_key(form_key) {
-            let value = form_first(&form, form_key);
-            state.db().set_setting(setting_key, value.trim())?;
-        }
-    }
+    let nginx = form
+        .contains_key("nginx_image")
+        .then(|| form_first(&form, "nginx_image"));
+    let php = form
+        .contains_key("php_image")
+        .then(|| form_first(&form, "php_image"));
+    state
+        .save_runtime_images(nginx, php)
+        .map_err(AppError::Internal)?;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state
+    if let Err(e) = state
         .db()
-        .audit(&user.user.username, &ip, "sites.env.images", "-", "ok", "");
+        .audit(&user.user.username, &ip, "sites.env.images", "-", "ok", "")
+    {
+        tracing::error!(error = %e, "运行环境镜像参数审计写入失败");
+    }
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::flash_redirect(
         &state,
@@ -953,7 +954,7 @@ pub async fn action(
         .await
         .map_err(map_err)?;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &ip,
         if running { "sites.start" } else { "sites.stop" },
@@ -997,7 +998,7 @@ pub async fn set_default(
         .await
         .map_err(map_err)?;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &ip,
         "sites.default",
@@ -1045,7 +1046,7 @@ pub async fn domains(
     );
     match result {
         Ok(name) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 if action == "add" {
@@ -1077,7 +1078,7 @@ pub async fn domains(
                 }
                 SiteError::Internal(_) => return Err(map_err(e)),
             };
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 if action == "add" {
@@ -1138,7 +1139,7 @@ pub async fn ssl_action(
     };
     match result {
         Ok(()) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 &format!("sites.ssl.{action}"),
@@ -1156,7 +1157,7 @@ pub async fn ssl_action(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 &format!("sites.ssl.{action}"),
@@ -1444,7 +1445,7 @@ pub async fn set_backup(
         .await
     {
         Ok(_) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "sites.backup",
@@ -1510,7 +1511,7 @@ pub async fn save_config(
     let prefix = &state.cfg.entry_prefix;
     match state.save_site_vhost(&domain, &content).await {
         Ok(outcome) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "sites.config.save",
@@ -1535,7 +1536,7 @@ pub async fn save_config(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "sites.config.save",
@@ -1609,7 +1610,7 @@ pub async fn batch(
         match result {
             Ok(()) => {
                 ok += 1;
-                let _ = state.db().audit(
+                state.audit_or_log(
                     &user.user.username,
                     &ip,
                     &format!("sites.batch.{action}"),
@@ -1620,7 +1621,7 @@ pub async fn batch(
             }
             Err(e) => {
                 failed.push(format!("{domain}: {e}"));
-                let _ = state.db().audit(
+                state.audit_or_log(
                     &user.user.username,
                     &ip,
                     &format!("sites.batch.{action}"),
@@ -1661,7 +1662,13 @@ pub async fn logs(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let keyword = q.get("q").cloned().unwrap_or_default();
-    let (access, error_log) = state.site_logs(&domain, 200, &keyword).map_err(map_err)?;
+    // 日志读取是同步文件 IO（尾部最多 2MB），放到阻塞线程池，避免占住 async worker。
+    let st = state.clone();
+    let domain_for_read = domain.clone();
+    let (access, error_log) =
+        crate::handlers::blocking_fs(move || st.site_logs(&domain_for_read, 200, &keyword))
+            .await?
+            .map_err(map_err)?;
     let log_dir = state
         .db()
         .site_by_domain(&domain)?
@@ -1738,9 +1745,7 @@ pub async fn delete(
     }
     state.delete_site(&domain).await.map_err(map_err)?;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state
-        .db()
-        .audit(&user.user.username, &ip, "sites.delete", &domain, "ok", "");
+    state.audit_or_log(&user.user.username, &ip, "sites.delete", &domain, "ok", "");
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!("/{prefix}/sites")))
 }
@@ -1951,7 +1956,7 @@ pub async fn runtime_config_file_save(
         .await
     {
         Ok(file) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.config_file",
@@ -1975,7 +1980,7 @@ pub async fn runtime_config_file_save(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.config_file",
@@ -2025,7 +2030,7 @@ pub async fn runtime_action(
         let back = format!("/{prefix}/sites/web?tab=status");
         return match state.web_env_action(&action).await {
             Ok(()) => {
-                let _ = state.db().audit(
+                state.audit_or_log(
                     &user.user.username,
                     &ip,
                     &format!("web_env.{action}"),
@@ -2050,7 +2055,7 @@ pub async fn runtime_action(
             }
             Err(e) => {
                 let msg = format!("{e}");
-                let _ = state.db().audit(
+                state.audit_or_log(
                     &user.user.username,
                     &ip,
                     &format!("web_env.{action}"),
@@ -2076,7 +2081,7 @@ pub async fn runtime_action(
                     notice.push_str("；注意：");
                     notice.push_str(&report.skipped.join("；"));
                 }
-                let _ = state.db().audit(
+                state.audit_or_log(
                     &user.user.username,
                     &ip,
                     "runtimes.delete",
@@ -2094,7 +2099,7 @@ pub async fn runtime_action(
             }
             Err(e) => {
                 let msg = format!("{e}");
-                let _ = state.db().audit(
+                state.audit_or_log(
                     &user.user.username,
                     &ip,
                     "runtimes.delete",
@@ -2117,7 +2122,7 @@ pub async fn runtime_action(
         .await
     {
         Ok(_) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 &format!("runtimes.{action}"),
@@ -2140,7 +2145,7 @@ pub async fn runtime_action(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 &format!("runtimes.{action}"),
@@ -2214,7 +2219,7 @@ pub async fn runtime_extensions_save(
         .await
     {
         Ok(changed) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2237,7 +2242,7 @@ pub async fn runtime_extensions_save(
         }
         Err(e) => {
             let msg = e.to_string();
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2274,7 +2279,7 @@ pub async fn runtime_extension_install(
         .await
     {
         Ok(_) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2292,7 +2297,7 @@ pub async fn runtime_extension_install(
         }
         Err(e) => {
             let msg = e.to_string();
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2329,7 +2334,7 @@ pub async fn runtime_extension_uninstall(
         .await
     {
         Ok(_) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2347,7 +2352,7 @@ pub async fn runtime_extension_uninstall(
         }
         Err(e) => {
             let msg = e.to_string();
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2418,7 +2423,7 @@ pub async fn runtime_extensions_batch(
         )),
         Ok(n) => {
             let action = if add { "安装" } else { "卸载" };
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions.batch",
@@ -2436,7 +2441,7 @@ pub async fn runtime_extensions_batch(
         }
         Err(e) => {
             let msg = e.to_string();
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions.batch",
@@ -2489,7 +2494,7 @@ pub async fn runtime_pecl_install(
         )),
         Err(e) => {
             let msg = e.to_string();
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.extensions",
@@ -2551,7 +2556,7 @@ pub async fn runtime_probe(
         .unwrap_or(0);
     match state.probe_runtime_version(&id).await {
         Ok(version) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.probe",
@@ -2588,7 +2593,7 @@ pub async fn runtime_unbind_site(
     let prefix = &state.cfg.entry_prefix;
     match state.unbind_runtime_site(&id, &domain).await {
         Ok(()) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.unbind",
@@ -2606,7 +2611,7 @@ pub async fn runtime_unbind_site(
         }
         Err(e) => {
             let msg = e.to_string();
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.unbind",
@@ -2679,9 +2684,7 @@ pub async fn runtime_config_save(
         .await
     {
         Ok(_) => {
-            let _ = state
-                .db()
-                .audit(&user.user.username, &ip, "runtimes.config", &id, "ok", "");
+            state.audit_or_log(&user.user.username, &ip, "runtimes.config", &id, "ok", "");
             Ok(handlers::flash_redirect(
                 &state,
                 &user,
@@ -2692,7 +2695,7 @@ pub async fn runtime_config_save(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "runtimes.config",
