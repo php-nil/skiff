@@ -248,6 +248,11 @@ git config --global http.https://github.com.sslBackend openssl
 复测：`git ls-remote origin refs/heads/main` 未加任何 `-c` 直接返回 SHA。五个代理当日通断（`curl -x ... -I https://github.com`）：
 `.22` 200 / 3.1 s、`.12` 200 / 2.26 s、`.13` 200 / 1.84 s、`.9` 200 / 2.47 s、`.21` 200 但 10 s 内只收 81 KB（传输超时，仅作兜底）。
 
+**GCM 不继承 git 的代理配置**（2026-11-09 实测）：`http.<url>.proxy` 只作用于 git 自身，`git-credential-manager`
+是独立进程，系统代理关闭且无 `HTTPS_PROXY` 时它自己出不去，登录流程会停在「Connect to GitHub」。需要给 GCM 单独设
+`HTTPS_PROXY`。当日实测：直连 `github.com:443` 超时，经 `10.66.10.12:1010` 返回 200，本机 git 配置当前用的也是 `.12`。
+认证侧的另一个坑（`credential.useHttpPath` 导致键不匹配、同样表现为弹登录框）见 [DEV_ENV.md](DEV_ENV.md) §1。
+
 ## 8. 工具落点
 
 | 文件                           | 作用                                                                            | 状态 |

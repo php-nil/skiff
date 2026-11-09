@@ -92,6 +92,10 @@ PR 突然变红，排查成本很高。升级方式：改 `ci.yml` / `release.ym
 **交付路径固定为「从 GitHub Release 下载安装包 → 校验 → 解压 → 执行 `install.sh`」。**
 开发机工作树直传测试机、目标机就地编译都只算开发调试，**不是交付路径**（见 [DEPLOY_TEST.md](DEPLOY_TEST.md) §0.2）。
 
+> 本节（尤其 §4.1 / §4.2 的触发方式）是**规定**，不是对某次操作的现状描述。实际操作与它不一致时
+> （例如测试期用强移 tag 代替手动 dispatch），差异记在 [TEST_ENV.md](TEST_ENV.md) 的部署记录或
+> `docs/changes/` 里，不要回头把规定改成现状。
+
 ### 4.1 测试期：手动 dispatch，覆盖同一个 Release
 
 测试阶段**不新建 tag、不改版本号**。版本沿用 `0.1.0`，产物上传/覆盖到同一个既有 Release：

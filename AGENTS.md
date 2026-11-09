@@ -76,6 +76,7 @@
 | 架构审查 | `docs/ARCH_REVIEW.md` | 六轮审查记录与 P0–P2 行动清单 |
 | 部署与测试 | `docs/DEPLOY_TEST.md` | 两种部署形态装机、配置矩阵、验收用例、实测记录与权限口径 |
 | 持续集成 | `docs/CI.md` | 工作流门槛、工具链与 MSRV、发布产物流向 |
+| 开发机环境 | `docs/DEV_ENV.md` | 本机 Windows 的推送认证（GCM）、卡死 push 占锁的排障顺序、无 C 编译器导致的可编译范围 |
 | 迭代验证回路 | `docs/ITERATION.md` | 自动化迭代方案：分层编译位置、回滚协同协议、验收口径；测试机访问信息见 `docs/TEST_ENV.md` |
 | 测试环境访问信息 | `docs/TEST_ENV.md` | 测试机地址、面板 URL/入口前缀/TLS、账号与口令文件读取方式、SSH、当前部署版本与 Release 资产摘要、最近验收结论（唯一来源） |
 | 测试台账 | `docs/TEST_LEDGER.md` | 只记「正在处理 / 待处理」两栏的未闭环项；PASS 即删，不保留历史 |
