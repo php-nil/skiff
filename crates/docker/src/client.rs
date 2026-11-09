@@ -192,6 +192,16 @@ pub enum DockerParams {
     ContainerUpdate(Box<ResourceLimits>),
     /// `containers.remove` 是否强制删除。
     ContainerRemove { force: bool },
+    /// `containers.logs` 的尾行数；未指定时沿用 200。
+    ContainerLogs { tail: usize },
+    /// `containers.exec`：容器内命令与硬超时（`None` 表示一直等到进程结束）。
+    ///
+    /// 放在强类型枚举里，`exec` 就不再需要绕开 `Docker::execute` 的专用入口，
+    /// 动词 → 分发仍然只有一处。
+    Exec {
+        cmd: Vec<String>,
+        timeout: Option<std::time::Duration>,
+    },
     /// `compose.up`：已解析、已校验的项目计划。
     ComposeUp(Box<ComposeProject>),
     /// `compose.down`：按项目标签清理；卷删除必须显式勾选。
@@ -330,6 +340,27 @@ impl DockerService {
             .inspect_container(id, None::<qp::InspectContainerOptions>)
             .await
             .map_err(api_err)
+    }
+
+    /// 由**引擎状态**重建对象视图，供能力面授权判定使用。
+    ///
+    /// 插件请求体里的 `name`/`labels` 一律不采信：`io.skiff.owner`、
+    /// `io.skiff.protected` 是授权输入，若由调用方自报就能伪造「自己的容器」，
+    /// 进而对任意 id 执行非破坏性动词。这里按完整 id 精确匹配，不做前缀猜测。
+    pub async fn object_ref(&self, id: &str) -> Result<ObjectRef, DockerError> {
+        if id.is_empty() {
+            return Err(DockerError::Unsupported("缺少容器 id".into()));
+        }
+        let rows = self.list_containers().await?;
+        let row = rows
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| DockerError::Api(format!("容器不存在: {id}")))?;
+        Ok(ObjectRef {
+            id: row.id,
+            name: row.name,
+            labels: row.labels,
+        })
     }
 
     /// 镜像元数据：只读、按 image id 取，用于读取 `*_VERSION` 与 repo digest。
@@ -758,7 +789,13 @@ impl DockerService {
                 let v = self.inspect_container(&id()?).await?;
                 Ok(serde_json::to_value(v).unwrap_or(serde_json::Value::Null))
             }
-            Verb::ContainerLogs => as_value(serde_json::json!(self.logs(&id()?, 200).await?)),
+            Verb::ContainerLogs => {
+                let tail = match params {
+                    DockerParams::ContainerLogs { tail } => tail,
+                    _ => 200,
+                };
+                as_value(serde_json::json!(self.logs(&id()?, tail).await?))
+            }
             Verb::ImagesList => {
                 let rows = self.list_images().await?;
                 Ok(serde_json::to_value(rows).unwrap_or(serde_json::Value::Null))
@@ -836,6 +873,20 @@ impl DockerService {
                     "compose.down 需要项目名与删卷选项".into(),
                 )),
             },
+            Verb::Exec => match params {
+                DockerParams::Exec { cmd, timeout } if !cmd.is_empty() => {
+                    let (code, output, timed_out) =
+                        self.exec_capture_impl(&id()?, cmd, timeout).await?;
+                    Ok(serde_json::json!({
+                        "code": code,
+                        "output": output,
+                        "timed_out": timed_out,
+                    }))
+                }
+                _ => Err(DockerError::Unsupported(
+                    "containers.exec 需要容器目标与非空命令".into(),
+                )),
+            },
             Verb::ImagePull => match params {
                 DockerParams::ImagePull(image) if !image.trim().is_empty() => {
                     self.pull_image(&image).await?;
@@ -860,24 +911,23 @@ impl DockerService {
     }
 
     /// 在容器内跑一条只读命令并收集输出与退出码（用于 `nginx -t` 等校验）。
+    ///
+    /// 对外签名不变，但实际执行走 [`Self::execute`]：动词 → 分发只有一处，
+    /// 需要策略/审计的调用方可以在同一层拦截。
     pub async fn exec_capture(
         &self,
         container: &str,
         cmd: Vec<String>,
     ) -> Result<(i64, String), DockerError> {
-        let exec_id = self.create_exec(container, cmd).await?;
-        let mut out = String::new();
-        if let StartExecResults::Attached { mut output, .. } = self.start_exec(&exec_id).await? {
-            while let Some(chunk) = output.next().await {
-                match chunk {
-                    Ok(v) => out.push_str(&v.to_string()),
-                    Err(e) => return Err(api_err(e)),
-                }
-            }
-        }
-        let info = self.inspect_exec(&exec_id).await?;
-        let code = info.get("ExitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
-        Ok((code, out))
+        let v = self
+            .execute(
+                Verb::Exec,
+                Some(&exec_target(container)),
+                DockerParams::Exec { cmd, timeout: None },
+            )
+            .await?;
+        let (code, output, _) = exec_result(&v);
+        Ok((code, output))
     }
 
     /// 带硬超时的 `exec_capture`：超时后停止等待并**返回已采集的输出**，
@@ -891,19 +941,53 @@ impl DockerService {
         cmd: Vec<String>,
         limit: std::time::Duration,
     ) -> Result<(i64, String, bool), DockerError> {
+        let v = self
+            .execute(
+                Verb::Exec,
+                Some(&exec_target(container)),
+                DockerParams::Exec {
+                    cmd,
+                    timeout: Some(limit),
+                },
+            )
+            .await?;
+        Ok(exec_result(&v))
+    }
+
+    /// `exec` 的实际实现：建 exec → 附加收集输出 → 查询退出码。
+    ///
+    /// 超时只停止等待（Docker 无 kill exec 接口），返回已采集输出与 `timed_out`。
+    async fn exec_capture_impl(
+        &self,
+        container: &str,
+        cmd: Vec<String>,
+        limit: Option<std::time::Duration>,
+    ) -> Result<(i64, String, bool), DockerError> {
         let exec_id = self.create_exec(container, cmd).await?;
         let mut out = String::new();
         let mut timed_out = false;
         if let StartExecResults::Attached { mut output, .. } = self.start_exec(&exec_id).await? {
-            let deadline = tokio::time::Instant::now() + limit;
-            loop {
-                match tokio::time::timeout_at(deadline, output.next()).await {
-                    Ok(Some(Ok(v))) => out.push_str(&v.to_string()),
-                    Ok(Some(Err(e))) => return Err(api_err(e)),
-                    Ok(None) => break,
-                    Err(_) => {
-                        timed_out = true;
-                        break;
+            match limit {
+                Some(limit) => {
+                    let deadline = tokio::time::Instant::now() + limit;
+                    loop {
+                        match tokio::time::timeout_at(deadline, output.next()).await {
+                            Ok(Some(Ok(v))) => out.push_str(&v.to_string()),
+                            Ok(Some(Err(e))) => return Err(api_err(e)),
+                            Ok(None) => break,
+                            Err(_) => {
+                                timed_out = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    while let Some(chunk) = output.next().await {
+                        match chunk {
+                            Ok(v) => out.push_str(&v.to_string()),
+                            Err(e) => return Err(api_err(e)),
+                        }
                     }
                 }
             }
@@ -915,6 +999,33 @@ impl DockerService {
         let code = info.get("ExitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
         Ok((code, out, false))
     }
+}
+
+/// `exec` 目标：`execute` 只认 `id`，这里把容器名同时填进 `id`。
+///
+/// Docker 的容器引用既接受 id 也接受 name，因此旧的 `exec_capture(container)`
+/// 调用点无需改签名。
+fn exec_target(container: &str) -> ObjectRef {
+    ObjectRef {
+        id: container.to_string(),
+        name: container.to_string(),
+        labels: std::collections::BTreeMap::new(),
+    }
+}
+
+/// 解析 `exec` 返回值；字段缺失按失败码 `-1`、非超时处理。
+fn exec_result(v: &serde_json::Value) -> (i64, String, bool) {
+    let code = v.get("code").and_then(|x| x.as_i64()).unwrap_or(-1);
+    let output = v
+        .get("output")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let timed_out = v
+        .get("timed_out")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    (code, output, timed_out)
 }
 
 fn logs_options(tail: usize, follow: bool) -> qp::LogsOptions {

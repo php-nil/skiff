@@ -79,14 +79,16 @@ pub(super) async fn config_get(State(state): State<Arc<AppState>>, req: Request<
     let rows = match state.db().plugin_config(&id) {
         Ok(v) => v,
         Err(e) => {
-            let _ = state.db().audit(
+            if let Err(ae) = state.db().audit(
                 &format!("plugin:{id}"),
                 "uds",
                 "capability.config",
                 "",
                 "fail",
                 &e.to_string(),
-            );
+            ) {
+                tracing::error!(error = %ae, "能力面配置审计写入失败");
+            }
             return (StatusCode::INTERNAL_SERVER_ERROR, "读取插件配置失败").into_response();
         }
     };
@@ -95,14 +97,16 @@ pub(super) async fn config_get(State(state): State<Arc<AppState>>, req: Request<
         obj.insert(k, Value::String(v));
     }
     // 只记条数，绝不记 key 之外的任何内容（secret 值不得入审计）。
-    let _ = state.db().audit(
+    if let Err(e) = state.db().audit(
         &format!("plugin:{id}"),
         "uds",
         "capability.config",
         "",
         "ok",
         &format!("{} 项", obj.len()),
-    );
+    ) {
+        tracing::error!(error = %e, "能力面配置审计写入失败");
+    }
     Json(Value::Object(obj)).into_response()
 }
 
@@ -122,9 +126,13 @@ pub(super) async fn scheduler_call(
         .map(|p| p.0.clone())
         .unwrap_or_default();
     let audit = |action: &str, result: &str, detail: &str| {
-        let _ = state
-            .db()
-            .audit(&format!("plugin:{id}"), "uds", action, &id, result, detail);
+        if let Err(e) =
+            state
+                .db()
+                .audit(&format!("plugin:{id}"), "uds", action, &id, result, detail)
+        {
+            tracing::error!(error = %e, action, "能力面调度审计写入失败");
+        }
     };
 
     let Some(tasks) = state.tasks() else {
@@ -178,7 +186,50 @@ pub(super) async fn docker_call(
     let Some(verb) = Verb::parse(verb_str) else {
         return (StatusCode::FORBIDDEN, "动词不在白名单").into_response();
     };
-    let target = parse_target(&body);
+
+    // 授权判定只认**引擎状态**：容器类动词必须带 id，并由引擎返回的 name/labels
+    // 重建 `ObjectRef`。请求体里的 name/labels 是调用方自报值，绝不能进判定——
+    // 否则伪造 `io.skiff.owner` 就能对任意容器执行非破坏性动词。
+    let target = if verb_targets_container(verb) {
+        let Some(target_id) = body
+            .get("target")
+            .and_then(|t| t.get("id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            if let Err(w) = state.db().audit(
+                &format!("plugin:{id}"),
+                "uds",
+                &verb.audit_action(),
+                "",
+                "deny",
+                "缺少容器 id（不接受只用名字）",
+            ) {
+                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+            }
+            return (StatusCode::BAD_REQUEST, "需要对象 id（不能只用名字）").into_response();
+        };
+        match state.docker().object_ref(target_id).await {
+            Ok(t) => Some(t),
+            Err(e) => {
+                if let Err(w) = state.db().audit(
+                    &format!("plugin:{id}"),
+                    "uds",
+                    &verb.audit_action(),
+                    "",
+                    "fail",
+                    &e.to_string(),
+                ) {
+                    tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+                }
+                return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
+            }
+        }
+    } else {
+        // 其余动词（列表/镜像/网络/卷等）在通用分发里没有容器对象可判定，
+        // 执行层会返回「需要专用参数」；不把请求体目标带进判定。
+        None
+    };
 
     let grants: Vec<Grant> = match state.db().plugin(&id) {
         Ok(Some(p)) => p.grants,
@@ -189,7 +240,7 @@ pub(super) async fn docker_call(
         grants,
     };
     if let Err(e) = state.cfg.policy.check(&actor, verb, target.as_ref()) {
-        let _ = state.db().audit(
+        if let Err(w) = state.db().audit(
             &format!("plugin:{id}"),
             "uds",
             &verb.audit_action(),
@@ -200,19 +251,30 @@ pub(super) async fn docker_call(
                 .as_str(),
             "deny",
             &e.to_string(),
-        );
+        ) {
+            tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+        }
         return (StatusCode::FORBIDDEN, e.to_string()).into_response();
     }
 
+    // `containers.logs` 的尾行数由参数传入；其余动词沿用强类型参数或 None。
+    let params = match verb {
+        Verb::ContainerLogs => skiff_docker::DockerParams::ContainerLogs {
+            tail: body
+                .get("tail")
+                .and_then(Value::as_u64)
+                .unwrap_or(200)
+                .min(10_000) as usize,
+        },
+        _ => skiff_docker::DockerParams::None,
+    };
+
     // 动词 → Docker 方法的映射只在 `Docker::execute` 一处，这里不再自己 match
-    let result = state
-        .docker()
-        .execute(verb, target.as_ref(), skiff_docker::DockerParams::None)
-        .await;
+    let result = state.docker().execute(verb, target.as_ref(), params).await;
 
     match result {
         Ok(v) => {
-            let _ = state.db().audit(
+            if let Err(w) = state.db().audit(
                 &format!("plugin:{id}"),
                 "uds",
                 &verb.audit_action(),
@@ -223,7 +285,9 @@ pub(super) async fn docker_call(
                     .as_str(),
                 "ok",
                 "",
-            );
+            ) {
+                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+            }
             Json(json!({ "result": v })).into_response()
         }
         Err(e) => {
@@ -232,54 +296,47 @@ pub(super) async fn docker_call(
                 skiff_docker::DockerError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
                 _ => StatusCode::BAD_GATEWAY,
             };
-            let _ = state.db().audit(
+            if let Err(w) = state.db().audit(
                 &format!("plugin:{id}"),
                 "uds",
                 &verb.audit_action(),
-                "",
+                target
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default()
+                    .as_str(),
                 if status == StatusCode::NOT_IMPLEMENTED {
                     "unsupported"
                 } else {
                     "fail"
                 },
                 &e.to_string(),
-            );
+            ) {
+                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+            }
             (status, e.to_string()).into_response()
         }
     }
 }
 
-/// 解析 `target`。缺省或显式 `null` 表示「无目标」（如 `containers.list`）。
-///
-/// 不能把 `null` 当成 id/name 全空的容器：策略层会要求 `object:container:` 这条
-/// 永远匹配不上的授权，插件侧只能看到误导性的 403（2026-11-03 实测：
-/// nginx `sites` 静默降级、`reload` 报「缺少授权 object:container:」）。
-fn parse_target(body: &Value) -> Option<skiff_docker::ObjectRef> {
-    let t = body.get("target")?;
-    if t.is_null() {
-        return None;
-    }
-    Some(skiff_docker::ObjectRef {
-        id: t
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        name: t
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        labels: t
-            .get("labels")
-            .and_then(|v| v.as_object())
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default(),
-    })
+/// 目标必须是**容器**的动词。只有这些动词才允许携带容器 id，并必须由引擎重建
+/// `ObjectRef`；`exec.*` 的 id 是 exec 实例、镜像/网络/卷的引用也不是容器 id，
+/// 不能走同一条重建路径。
+fn verb_targets_container(verb: Verb) -> bool {
+    use Verb::*;
+    matches!(
+        verb,
+        ContainerInspect
+            | ContainerLogs
+            | ContainerStats
+            | Start
+            | Stop
+            | Restart
+            | Kill
+            | Exec
+            | ContainerUpdate
+            | ContainerRemove
+    )
 }
 
 /// `net.apply` 尚未实现（nftables 出网收口属 M4 硬门槛）：一律 501 + 审计，
@@ -293,14 +350,16 @@ pub(super) async fn net_unimplemented(
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let _ = state.db().audit(
+    if let Err(e) = state.db().audit(
         &format!("plugin:{id}"),
         "uds",
         "net.apply",
         "",
         "unsupported",
         "nftables 出网收口未实现（M4 门禁）",
-    );
+    ) {
+        tracing::error!(error = %e, "能力面 net 审计写入失败");
+    }
     (
         StatusCode::NOT_IMPLEMENTED,
         "net 能力未实现：nftables owner-match 收口属 M4 硬门槛（§9.1 #17）",
@@ -313,19 +372,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_or_null_target_means_no_target() {
-        assert!(parse_target(&json!({ "verb": "containers.list" })).is_none());
-        assert!(parse_target(&json!({ "verb": "containers.list", "target": null })).is_none());
-    }
-
-    #[test]
-    fn object_target_is_parsed() {
-        let t = parse_target(&json!({
-            "target": { "id": "abc123", "name": "nginx", "labels": { "app": "nginx" } }
-        }))
-        .expect("object target");
-        assert_eq!(t.id, "abc123");
-        assert_eq!(t.name, "nginx");
-        assert_eq!(t.labels.get("app").map(String::as_str), Some("nginx"));
+    fn only_container_verbs_require_engine_object() {
+        assert!(verb_targets_container(Verb::Stop));
+        assert!(verb_targets_container(Verb::ContainerInspect));
+        assert!(verb_targets_container(Verb::ContainerLogs));
+        assert!(!verb_targets_container(Verb::ExecInspect));
+        assert!(!verb_targets_container(Verb::ImagePull));
+        assert!(!verb_targets_container(Verb::ContainersList));
+        assert!(!verb_targets_container(Verb::ComposeUp));
     }
 }
