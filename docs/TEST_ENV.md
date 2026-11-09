@@ -308,6 +308,14 @@
 - SITE + nginx：`POST /sites/env/web/action/install` 拉取 OpenResty 并起容器 `skiff-web-nginx`（running）；建静态站 `matrix.local` 303、站点页可见；vhost 落 `/www/sites/matrix.local/conf/matrix.local.conf`；容器内 `nginx -t` 通过；写入 `index/index.html` 后 `curl -H 'Host: matrix.local' http://127.0.0.1/` 200 且返回 `matrix-ok`。
 - 限制：aarch64 未实机验证；未做 TLS 形态切换与浏览器视觉项。测试目录 `/www/acc-*` 已删，`matrix.local` 站点保留；`trash_entries` 余 1 行为 restore 历史行。
 
+TASK-06 缓冲能力面补验（同日 22:06 之后，经 `com.skiff.testkit` RPC `buffer_probe` / `buffer_push`，登录会话 + `x-csrf-token`）：
+
+- 目标任务 `plugin:com.skiff.testkit:busy-probe`（`capacity_bytes=4096`、`sample_interval_secs=3600`、`enabled=false`、source=`com.skiff.testkit`）；初始 `stat` 为全 0（`points=0 / seq=0 / head_seq=null / tail_seq=null`）。
+- `buffer_push count=100`：`accepted=100 / rejected=0`，`stat` 变为 `points=83 / bytes=4067 / seq=100 / head_seq=17 / tail_seq=99 / dropped_points=17 / dropped_bytes=833 / high_watermark=true`，回执 `signals=["high_watermark","overflow"]` —— drop-oldest 生效，单点约 49 B（序列化 + 32 B 开销）。
+- 限速：两路 `count=100` 并发时，其中一路在第 51 点被内核以 400「buffer.push 超过限速（每任务 100 点/秒）」拒绝（两路交错后同秒内合计越 100 点）。
+- 参数与越权：`count=101` 由 testkit 本地校验 400 拒（1..=100）；`buffer_probe` 对非本插件任务 `builtin:db-vacuum` 返回 **403**（内核 `ensure_owned`）。
+- 内核启动日志确认按 manifest 种入 `plugin:com.skiff.guard:reconcile`、`plugin:com.skiff.monitor:sample`、`plugin:com.skiff.testkit:busy-probe` 三条任务；`rejected_*` 统计仍无法在本轮构造（拒绝发生在入缓冲前）。
+
 
 ## 9. 数据、备份与清理
 
