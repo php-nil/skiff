@@ -412,6 +412,22 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::sites::runtime_config_save),
         )
         .route(
+            &format!("/{p}/sites/env/{{id}}/node-config"),
+            post(handlers::sites::runtime_node_config_save),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/port"),
+            post(handlers::sites::runtime_port_save),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/clone"),
+            post(handlers::sites::runtime_clone),
+        )
+        .route(
+            &format!("/{p}/sites/env/{{id}}/health"),
+            get(handlers::sites::runtime_health),
+        )
+        .route(
             &format!("/{p}/sites/env/{{id}}/config-file"),
             post(handlers::sites::runtime_config_file_save),
         )
@@ -431,6 +447,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/runtimes/{{id}}/config"),
             post(handlers::sites::runtime_config_save),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/node-config"),
+            post(handlers::sites::runtime_node_config_save),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/port"),
+            post(handlers::sites::runtime_port_save),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/clone"),
+            post(handlers::sites::runtime_clone),
+        )
+        .route(
+            &format!("/{p}/runtimes/{{id}}/health"),
+            get(handlers::sites::runtime_health),
         )
         .route(
             &format!("/{p}/runtimes/{{id}}/action/{{action}}"),

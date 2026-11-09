@@ -134,6 +134,69 @@ pub fn runtime_container_name(kind: &str, name: &str) -> String {
     format!("skiff-{kind}-{name}")
 }
 
+/// 进程型环境端口校验：必须落在该类型的区间内，且未被其它环境占用。
+///
+/// 端口是**环境属性**（`site_runtimes.port`），站点侧不接受自定义端口；
+/// 这里同时服务于建环境（走 `allocate_port`）与改端口两条路径。
+fn validate_process_port(kind: &str, port: u16, used_by_others: &[u16]) -> Result<(), String> {
+    let Some(range) = runtime_catalog::port_range(kind) else {
+        return Err(format!(
+            "{} 运行环境不占用宿主端口",
+            runtime_catalog::kind_label(kind)
+        ));
+    };
+    if !range.contains(&port) {
+        return Err(format!(
+            "端口必须落在 {}–{} 之间",
+            range.start(),
+            range.end()
+        ));
+    }
+    if used_by_others.contains(&port) {
+        return Err(format!("端口 {port} 已被其它运行环境占用"));
+    }
+    Ok(())
+}
+
+/// 克隆时复制 `<runtime>/app`，跳过依赖与构建产物（新环境启动时会自行安装/编译）。
+fn copy_runtime_app(from_home: &Path, to_home: &Path) -> Result<(), String> {
+    copy_dir_skip(
+        &from_home.join("app"),
+        &to_home.join("app"),
+        &["node_modules", "target"],
+    )
+}
+
+fn copy_dir_skip(src: &Path, dst: &Path, skip: &[&str]) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst).map_err(|e| format!("创建 {} 失败：{e}", dst.display()))?;
+    let entries =
+        std::fs::read_dir(src).map_err(|e| format!("读取 {} 失败：{e}", src.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败：{e}"))?;
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if skip.contains(&name_str) {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        let ft = entry
+            .file_type()
+            .map_err(|e| format!("读取 {} 类型失败：{e}", from.display()))?;
+        if ft.is_dir() {
+            copy_dir_skip(&from, &to, skip)?;
+        } else if ft.is_file() && !to.exists() {
+            std::fs::copy(&from, &to).map_err(|e| format!("复制 {} 失败：{e}", from.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// 探测单个运行环境的原始容器状态。
 ///
 /// 三种「不在运行」必须分开：Docker 不可达/列表失败是 `unknown`（不知道），
@@ -208,6 +271,14 @@ fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> 
     Ok(())
 }
 
+/// 只在文件缺失时写入：环境 `app/` 是用户的真实代码目录，重建/克隆不得覆盖已有文件。
+fn seed_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    write_if_changed(path, bytes, mode)
+}
+
 /// 站点目录内的固定子目录（一站一目录，整目录备份即整站备份）。
 pub const SITE_INDEX_DIR: &str = "index";
 pub const SITE_LOG_DIR: &str = "log";
@@ -264,8 +335,6 @@ pub struct SiteDeleteStats {
     pub runtime_name: String,
     /// 绑定运行环境的 kind（`php` / `rust` …）；无绑定为空。
     pub runtime_kind: String,
-    /// Rust 站点：`index/` 即运行源码，删除站点等于删除源码。
-    pub rust_source: bool,
 }
 
 /// 递归统计目录体积与文件数：不跟随符号链接，读不到的条目跳过。
@@ -1042,6 +1111,191 @@ impl PhpRuntimeConfig {
     }
 }
 
+/// Node.js 运行环境的专属配置（落库为 `site_runtimes.config_json`）。
+///
+/// Node 与 PHP 的差异都收敛在这里：不走 FastCGI，而是「启动命令 + 监听端口 + 反代」；
+/// 端口由环境分配（`site_runtimes.port`），这里只描述进程怎么起、怎么探活、带哪些环境变量。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRuntimeConfig {
+    /// 容器内工作目录下的启动命令（argv 语义，按空白切分，不经宿主 shell）。
+    pub command: String,
+    /// HTTP 健康检查路径，默认 `/`；安装/重启后按它轮询。
+    pub health_path: String,
+    /// `production` / `development` / `test`，注入 `NODE_ENV`。
+    pub node_env: String,
+    /// 追加环境变量（`KEY=VALUE`），与 `PORT` / `NODE_ENV` / `HOST` 一起注入。
+    pub env: Vec<(String, String)>,
+}
+
+impl Default for NodeRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            command: "npm start".into(),
+            health_path: "/".into(),
+            node_env: "production".into(),
+            env: Vec::new(),
+        }
+    }
+}
+
+impl NodeRuntimeConfig {
+    /// 从 `config_json` 容错读取：缺字段用默认值，坏字段在 `validate` 里报错。
+    pub fn from_json(raw: &str) -> Self {
+        let mut cfg = Self::default();
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return cfg;
+        };
+        if let Some(s) = v.get("command").and_then(|v| v.as_str()) {
+            cfg.command = s.into();
+        }
+        if let Some(s) = v.get("health_path").and_then(|v| v.as_str()) {
+            cfg.health_path = s.into();
+        }
+        if let Some(s) = v.get("node_env").and_then(|v| v.as_str()) {
+            cfg.node_env = s.into();
+        }
+        if let Some(map) = v.get("env").and_then(|v| v.as_object()) {
+            cfg.env = map
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
+            cfg.env.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        cfg
+    }
+
+    pub fn to_json(&self) -> String {
+        let env: std::collections::BTreeMap<&str, &str> = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        serde_json::json!({
+            "command": self.command,
+            "health_path": self.health_path,
+            "node_env": self.node_env,
+            "env": env,
+        })
+        .to_string()
+    }
+
+    /// 启动命令切分为 argv。未通过校验时返回错误，不允许把任意 shell 串塞进容器。
+    pub fn argv(&self) -> Result<Vec<String>, SiteError> {
+        let argv: Vec<String> = self
+            .command
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect();
+        if argv.is_empty() {
+            return Err(SiteError::BadRequest("启动命令不能为空".into()));
+        }
+        Ok(argv)
+    }
+
+    /// 页面 textarea ↔ 结构化 env 的互转：每行 `KEY=VALUE`，`#` 开头为注释。
+    pub fn env_text(&self) -> String {
+        self.env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn set_env_text(&mut self, text: &str) -> Result<(), SiteError> {
+        let mut env = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (key, value) = line
+                .split_once('=')
+                .ok_or_else(|| SiteError::BadRequest(format!("环境变量需为 KEY=VALUE：{line}")))?;
+            let key = key.trim();
+            let value = value.trim();
+            if env.iter().any(|(k, _): &(String, String)| k == key) {
+                return Err(SiteError::BadRequest(format!("环境变量重复：{key}")));
+            }
+            env.push((key.to_string(), value.to_string()));
+        }
+        env.sort_by(|a, b| a.0.cmp(&b.0));
+        self.env = env;
+        Ok(())
+    }
+
+    /// 命令/路径/环境变量的边界校验；任何一项失败都拒绝落盘。
+    pub fn validate(&self) -> Result<(), SiteError> {
+        if self.command.len() > 512 {
+            return Err(SiteError::BadRequest("启动命令不能超过 512 字符".into()));
+        }
+        let argv = self.argv()?;
+        if argv.len() > 32 {
+            return Err(SiteError::BadRequest("启动命令参数不能超过 32 个".into()));
+        }
+        for token in &argv {
+            if token.is_empty()
+                || token.len() > 128
+                || !token.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, '.' | '_' | '-' | '/' | ':' | '@' | '=' | '+')
+                })
+            {
+                return Err(SiteError::BadRequest(format!(
+                    "启动命令包含不支持的字符：{token}"
+                )));
+            }
+        }
+        let path = self.health_path.trim();
+        if !path.starts_with('/') || path.len() > 128 {
+            return Err(SiteError::BadRequest(
+                "健康检查路径必须以 / 开头且不超过 128 字符".into(),
+            ));
+        }
+        if !path.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '?' | '&' | '=' | '%')
+        }) {
+            return Err(SiteError::BadRequest(format!(
+                "健康检查路径包含不支持的字符：{path}"
+            )));
+        }
+        if !matches!(
+            self.node_env.as_str(),
+            "production" | "development" | "test"
+        ) {
+            return Err(SiteError::BadRequest(
+                "NODE_ENV 只支持 production / development / test".into(),
+            ));
+        }
+        if self.env.len() > 32 {
+            return Err(SiteError::BadRequest("环境变量不能超过 32 项".into()));
+        }
+        for (key, value) in &self.env {
+            if key.is_empty()
+                || key.len() > 64
+                || !key
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                || key.starts_with(|c: char| c.is_ascii_digit())
+            {
+                return Err(SiteError::BadRequest(format!(
+                    "环境变量名不合法：{key}（只允许大写字母、数字、下划线，且不以数字开头）"
+                )));
+            }
+            if matches!(key.as_str(), "PORT" | "NODE_ENV" | "HOST") {
+                return Err(SiteError::BadRequest(format!(
+                    "{key} 由内核注入，不能重复配置"
+                )));
+            }
+            if value.len() > 1024 || value.contains('\n') || value.contains('\r') {
+                return Err(SiteError::BadRequest(format!(
+                    "环境变量 {key} 的值不能包含换行且不超过 1024 字符"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// `64M` / `1G` / `1024K` → MiB（向下取整，最小 1）。
 fn parse_size_mb(raw: &str) -> Result<u64, SiteError> {
     let s = raw.trim().to_ascii_uppercase();
@@ -1388,7 +1642,7 @@ impl AppState {
             .map_err(|e| SiteError::Unavailable(format!("容器 {name} 操作失败：{e}")))
     }
 
-    /// 运行环境启停/重建/同步。Node/Go 在 P1 明确返回「P2 未实现」。
+    /// 运行环境启停/重建/同步。Go 未接入，明确返回「尚未接入」。
     ///
     /// `install` / `rebuild` 只登记后台任务并立即返回；页面轮询任务状态与日志。
     pub async fn runtime_action(
@@ -1405,7 +1659,7 @@ impl AppState {
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
         if !runtime_catalog::is_implemented(&rt.kind) {
             return Err(SiteError::Unavailable(format!(
-                "{} 运行环境将在 P2 接入，P1 不提供安装/启停/重建",
+                "{} 运行环境尚未接入，不提供安装/启停/重建",
                 rt.kind
             )));
         }
@@ -1418,6 +1672,10 @@ impl AppState {
             }
             "start" => {
                 self.docker_runtime_action(&container, Verb::Start).await?;
+                if let Err(e) = self.node_health_gate(&rt).await {
+                    let _ = self.db().set_runtime_status(id, "running", "error");
+                    return Err(e);
+                }
                 self.db()
                     .set_runtime_status(id, "running", "running")
                     .map_err(|e| SiteError::Internal(e.to_string()))?;
@@ -1433,6 +1691,10 @@ impl AppState {
             "restart" => {
                 self.docker_runtime_action(&container, Verb::Restart)
                     .await?;
+                if let Err(e) = self.node_health_gate(&rt).await {
+                    let _ = self.db().set_runtime_status(id, "running", "error");
+                    return Err(e);
+                }
                 self.db()
                     .set_runtime_status(id, "running", "running")
                     .map_err(|e| SiteError::Internal(e.to_string()))?;
@@ -1459,6 +1721,26 @@ impl AppState {
             other => return Err(SiteError::BadRequest(format!("未知运行环境操作：{other}"))),
         }
         Ok(())
+    }
+
+    /// Node 进程启动后的健康闸门：PHP / Rust 不需要（PHP 有 socket 探活，Rust 安装期
+    /// 已等端口），只有 Node 需要在「手动启动/重启」时确认应用真的能响应。
+    async fn node_health_gate(&self, rt: &Runtime) -> Result<(), SiteError> {
+        if rt.kind != skiff_store::KIND_NODE {
+            return Ok(());
+        }
+        let port = rt
+            .port
+            .ok_or_else(|| SiteError::Unavailable("Node.js 环境缺少端口，请重建".into()))?;
+        let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
+        if wait_http_ready(port, &cfg.health_path, std::time::Duration::from_secs(60)).await {
+            Ok(())
+        } else {
+            Err(SiteError::Unavailable(format!(
+                "Node.js 进程未通过健康检查（{}），请查看运行环境日志",
+                cfg.health_path
+            )))
+        }
     }
 
     /// 最近一次任务快照（列表/抽屉轮询）。
@@ -1594,7 +1876,7 @@ impl AppState {
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
         if !runtime_catalog::is_implemented(&rt.kind) {
             return Err(SiteError::Unavailable(format!(
-                "{} 运行环境将在 P2 接入，P1 不提供安装",
+                "{} 运行环境尚未接入，不提供安装",
                 runtime_catalog::kind_label(&rt.kind)
             )));
         }
@@ -1627,6 +1909,223 @@ impl AppState {
             state.run_runtime_install_job(&rid, &job_id).await;
         });
         Ok(())
+    }
+
+    /// 修改进程型环境的固定端口：校验区间/占用 → 落库 → 重写绑定站点 vhost →
+    /// 重建容器。端口只属于环境，站点侧不持有，避免出现第二处端口来源。
+    pub async fn change_runtime_port(
+        self: &Arc<Self>,
+        id: &str,
+        port: u16,
+        actor: &str,
+        role: &str,
+    ) -> Result<(), SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        let used: Vec<u16> = self
+            .db()
+            .list_runtimes()
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .into_iter()
+            .filter(|r| r.id != rt.id)
+            .filter_map(|r| r.port)
+            .collect();
+        validate_process_port(&rt.kind, port, &used).map_err(SiteError::BadRequest)?;
+        if rt.port == Some(port) {
+            return Ok(());
+        }
+        // 已有任务时不能改端口：库与 vhost 先变、容器却没重建会留下半成品状态。
+        if self.runtime_job(id).await.is_some_and(|j| j.active()) {
+            return Err(SiteError::Conflict(
+                "该运行环境有进行中的任务，请等待任务结束后再改端口".into(),
+            ));
+        }
+        self.db()
+            .set_runtime_port(id, port)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        // vhost 里写死了旧端口，必须一起重写，否则站点反代到一个不再监听的端点。
+        // 端口已在库中更新，这里只告警不中断：nginx 未启动或重载失败时仍要让容器按新端口重建，
+        // 否则会出现「库/容器新端口、nginx 旧端口」的半成品状态。
+        let s = self.site_settings();
+        let domains = self
+            .db()
+            .runtime_site_domains(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        for domain in &domains {
+            if let Err(e) = self.write_site_vhost(&s, domain) {
+                tracing::warn!(runtime = id, site = %domain, error = %e, "改端口后重写站点 vhost 失败");
+            }
+        }
+        if !domains.is_empty() {
+            if let Err(e) = self.validate_nginx().await {
+                tracing::warn!(runtime = id, error = %e, "改端口后 nginx 配置校验失败");
+            }
+            if let Err(e) = self.restart_nginx().await {
+                tracing::warn!(runtime = id, error = %e, "改端口后重载 nginx 失败");
+            }
+        }
+        // 容器 Env 里的 PORT 来自环境行，必须重建才能换端口。
+        self.start_runtime_install(id, actor, role).await?;
+        Ok(())
+    }
+
+    /// 克隆进程型环境：同版本/镜像、独立代码目录、自动分配新端口，用于并跑第二个应用。
+    ///
+    /// PHP 是共享 FPM 池，克隆没有「第二个进程」语义，暂不支持。
+    pub async fn clone_runtime(
+        self: &Arc<Self>,
+        id: &str,
+        raw_name: &str,
+        actor: &str,
+        role: &str,
+    ) -> Result<Runtime, SiteError> {
+        let src = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if !matches!(
+            src.kind.as_str(),
+            skiff_store::KIND_NODE | skiff_store::KIND_RUST
+        ) {
+            return Err(SiteError::BadRequest(format!(
+                "{} 运行环境暂不支持克隆",
+                runtime_catalog::kind_label(&src.kind)
+            )));
+        }
+        let s = self.site_settings();
+        let name = {
+            let raw = raw_name.trim();
+            if raw.is_empty() {
+                format!("{}-copy", src.name)
+            } else {
+                raw.to_string()
+            }
+        };
+        skiff_store::validate_runtime_name(&name)
+            .map_err(|e| SiteError::BadRequest(format!("环境名不合法：{e}")))?;
+        let dir = s.runtime_home(&src.kind, &name);
+        if dir.exists() {
+            return Err(SiteError::Conflict(format!(
+                "目标目录已存在：{}，请换一个名字",
+                dir.display()
+            )));
+        }
+        if self
+            .db()
+            .runtime_by_name(&src.kind, &name)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .is_some()
+        {
+            return Err(SiteError::Conflict(format!(
+                "{} 环境已存在：{name}",
+                runtime_catalog::kind_label(&src.kind)
+            )));
+        }
+        let used: Vec<u16> = self
+            .db()
+            .list_runtimes()
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .into_iter()
+            .filter(|r| r.kind == src.kind)
+            .filter_map(|r| r.port)
+            .collect();
+        let port = runtime_catalog::allocate_port(&src.kind, &used).ok_or_else(|| {
+            SiteError::Conflict(format!(
+                "{} 端口区间已用满，请先删除不再使用的环境",
+                runtime_catalog::kind_label(&src.kind)
+            ))
+        })?;
+        let image = runtime_catalog::image_for(&src.kind, &src.version, &s.php_image);
+        let cloned = self
+            .db()
+            .create_runtime(&NewRuntime {
+                id: format!("{}-{}", src.kind, name),
+                kind: src.kind.clone(),
+                name,
+                version: src.version.clone(),
+                image,
+                image_digest: String::new(),
+                socket_path: None,
+                port: Some(port),
+                is_default: false,
+            })
+            .map_err(|e| SiteError::Conflict(format!("创建运行环境失败：{e}")))?;
+        if let Err(e) = self.db().set_runtime_config(&cloned.id, &src.config_json) {
+            tracing::warn!(runtime = %cloned.id, error = %e, "克隆运行环境配置失败");
+        }
+        if let Err(e) = copy_runtime_app(
+            &s.runtime_home(&src.kind, &src.name),
+            &s.runtime_home(&cloned.kind, &cloned.name),
+        ) {
+            tracing::warn!(runtime = %cloned.id, error = %e, "克隆代码目录失败，将使用自带脚手架");
+        }
+        self.start_runtime_install(&cloned.id, actor, role).await?;
+        Ok(cloned)
+    }
+
+    /// 按需探测「应用就绪」：容器 running 只说明进程活着，不代表端口/HTTP 已能服务。
+    pub async fn probe_runtime_health(&self, id: &str) -> Result<String, SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if !matches!(
+            rt.kind.as_str(),
+            skiff_store::KIND_NODE | skiff_store::KIND_RUST
+        ) {
+            return Err(SiteError::BadRequest(format!(
+                "{} 运行环境没有独立应用进程",
+                runtime_catalog::kind_label(&rt.kind)
+            )));
+        }
+        let port = rt.port.ok_or_else(|| {
+            SiteError::Unavailable("运行环境缺少固定端口，请重新安装".to_string())
+        })?;
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        let rows = self
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("Docker 不可达：{e}")))?;
+        match rows.iter().find(|c| c.name == container) {
+            None => {
+                return Err(SiteError::Unavailable(
+                    "容器不存在，请先安装运行环境".into(),
+                ))
+            }
+            Some(c) if c.state != "running" => {
+                return Err(SiteError::Unavailable(format!(
+                    "容器未运行（{}），应用不可用",
+                    c.state
+                )))
+            }
+            Some(_) => {}
+        }
+        if rt.kind == skiff_store::KIND_NODE {
+            let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
+            if http_probe_ok(port, &cfg.health_path).await {
+                Ok(format!("应用就绪：HTTP {} 返回 2xx/3xx", cfg.health_path))
+            } else {
+                Err(SiteError::Unavailable(format!(
+                    "容器在运行，但应用未就绪：HTTP {} 无 2xx/3xx 响应（端口 {port}）",
+                    cfg.health_path
+                )))
+            }
+        } else if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            Ok(format!("应用就绪：端口 {port} 已监听"))
+        } else {
+            Err(SiteError::Unavailable(format!(
+                "容器在运行，但端口 {port} 未监听"
+            )))
+        }
     }
 
     async fn run_runtime_install_job(&self, runtime_id: &str, job_id: &str) {
@@ -1790,6 +2289,9 @@ impl AppState {
         if rt.kind == skiff_store::KIND_RUST {
             return self.install_rust_runtime_task(&rt, job_id, &s).await;
         }
+        if rt.kind == skiff_store::KIND_NODE {
+            return self.install_node_runtime_task(&rt, job_id, &s).await;
+        }
         // PHP 扩展安装器随包分发：先落到共享 web_root，容器内 `/www/skiff/tools`
         // 直接可见；运行时不再依赖 GitHub。
         self.ensure_php_extension_installer(&s)
@@ -1929,14 +2431,20 @@ impl AppState {
             .map_err(|e| format!("创建 Rust 日志目录失败：{e}"))?;
         self.job_advance(job_id, "准备工程", 15, "写入最小 HTTP 工程（无第三方依赖）")
             .await;
-        std::fs::write(app_dir.join("Cargo.toml"), rust_cargo_manifest())
-            .map_err(|e| format!("写入 Cargo.toml 失败：{e}"))?;
-        std::fs::write(
-            app_dir.join("src/main.rs"),
-            rust_main_source(&rt.version, port),
+        // 只在缺失时生成脚手架：`app/` 可能已经是用户自己的工程，重建不能覆盖。
+        seed_file(
+            &app_dir.join("Cargo.toml"),
+            rust_cargo_manifest().as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("写入 Cargo.toml 失败：{e}"))?;
+        seed_file(
+            &app_dir.join("src/main.rs"),
+            rust_main_source(&rt.version, port).as_bytes(),
+            0o644,
         )
         .map_err(|e| format!("写入 main.rs 失败：{e}"))?;
-        // 入口脚本每次安装/重建都刷新：绑定站点的源码切换逻辑随版本升级。
+        // 入口脚本是内核资产，每次安装/重建都刷新。
         std::fs::write(dir.join("entry.sh"), rust_entry_script())
             .map_err(|e| format!("写入入口脚本失败：{e}"))?;
 
@@ -1995,6 +2503,126 @@ impl AppState {
         }
         self.job_note(job_id, &format!("端口 {port} 已就绪，Rust 进程返回内容"))
             .await;
+        self.db()
+            .ensure_runtime(&NewRuntime {
+                id: rt.id.clone(),
+                kind: rt.kind.clone(),
+                name: rt.name.clone(),
+                version: rt.version.clone(),
+                image,
+                image_digest,
+                socket_path: None,
+                port: Some(port),
+                is_default: rt.is_default,
+            })
+            .map_err(|e| format!("写入运行环境失败：{e}"))?;
+        Ok(())
+    }
+
+    /// Node.js 环境安装：写最小 HTTP 工程 → 拉镜像 → host 网络起单进程 →
+    /// HTTP 健康检查。日志重定向到 `/www/runtime/node/<name>/log/server.log`。
+    ///
+    /// 与 PHP 的差异：没有 FPM 池/socket，也没有「多站点共享一个池」的模型；
+    /// 一个环境固定一个端口、一个常驻进程、一个代码目录，绑定站点只是域名反代。
+    async fn install_node_runtime_task(
+        &self,
+        rt: &Runtime,
+        job_id: &str,
+        s: &SiteSettings,
+    ) -> Result<(), String> {
+        let port = rt
+            .port
+            .ok_or_else(|| "Node.js 环境缺少固定端口，请删除后重新创建".to_string())?;
+        let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
+        cfg.validate()
+            .map_err(|e| format!("Node.js 配置不合法：{e}"))?;
+        let dir = s.runtime_home(&rt.kind, &rt.name);
+        let app_dir = dir.join("app");
+        std::fs::create_dir_all(&app_dir).map_err(|e| format!("创建 Node 工程目录失败：{e}"))?;
+        std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
+            .map_err(|e| format!("创建 Node 日志目录失败：{e}"))?;
+        self.job_advance(job_id, "准备工程", 15, "写入最小 HTTP 工程（npm start）")
+            .await;
+        // 只在缺失时生成脚手架：`app/` 可能已经是用户自己的代码，重建不能覆盖。
+        seed_file(
+            &app_dir.join("package.json"),
+            node_package_manifest().as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("写入 package.json 失败：{e}"))?;
+        seed_file(
+            &app_dir.join("server.js"),
+            node_server_source(&rt.version, port).as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("写入 server.js 失败：{e}"))?;
+        // 入口脚本是内核资产，每次安装/重建都刷新。
+        write_if_changed(&dir.join("entry.sh"), node_entry_script().as_bytes(), 0o755)
+            .map_err(|e| format!("写入入口脚本失败：{e}"))?;
+
+        let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
+        let image_digest = self
+            .ensure_runtime_image(job_id, &image, &rt.image_digest)
+            .await?;
+
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        self.job_advance(
+            job_id,
+            "创建容器",
+            55,
+            &format!("创建容器 {container}（host 网络，端口 {port}）"),
+        )
+        .await;
+        if let Ok(rows) = self.docker().list_containers().await {
+            if let Some(c) = rows.iter().find(|c| c.name == container) {
+                self.remove_existing_container(c)
+                    .await
+                    .map_err(|e| format!("移除旧容器失败：{e}"))?;
+            }
+        }
+        self.ensure_container(&self.node_spec_for(
+            s,
+            &rt.name,
+            &pinned_image_ref(&image, &image_digest),
+            port,
+            &cfg,
+        ))
+        .await
+        .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
+
+        self.job_advance(
+            job_id,
+            "启动 Node 进程",
+            78,
+            &format!(
+                "{}（监听 127.0.0.1:{port}，健康检查 {}）",
+                cfg.command, cfg.health_path
+            ),
+        )
+        .await;
+        if !wait_http_ready(port, &cfg.health_path, std::time::Duration::from_secs(180)).await {
+            let log =
+                std::fs::read_to_string(s.runtime_log_dir(&rt.kind, &rt.name).join("server.log"))
+                    .unwrap_or_default();
+            let tail: Vec<&str> = log
+                .lines()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            return Err(format!(
+                "端口 {port} 在 180 秒内未通过健康检查（{}），启动失败：\n{}",
+                cfg.health_path,
+                tail.join("\n")
+            ));
+        }
+        self.job_note(
+            job_id,
+            &format!("端口 {port} 已就绪，Node 进程通过健康检查"),
+        )
+        .await;
         self.db()
             .ensure_runtime(&NewRuntime {
                 id: rt.id.clone(),
@@ -2176,7 +2804,7 @@ impl AppState {
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
         if rt.kind != skiff_store::KIND_PHP {
             return Err(SiteError::Unavailable(
-                "Node.js/Go 运行环境将在 P2 接入，暂不支持扩展管理".into(),
+                "只有 PHP 运行环境支持扩展管理".into(),
             ));
         }
         let desired = runtime_catalog::normalize_extensions(selected);
@@ -2860,8 +3488,9 @@ impl AppState {
                 return Err(SiteError::BadRequest(format!("{code}: {reason}")));
             }
         }
-        // Rust 是「独立进程 + 固定端口」：建环境时一次性分配，冲突直接拒绝。
-        let port = if kind == skiff_store::KIND_RUST {
+        // Node.js / Rust 是「独立进程 + 固定端口」：建环境时一次性分配，冲突直接拒绝。
+        // PHP 走 socket，不占宿主端口。
+        let port = if let Some(range) = runtime_catalog::port_range(kind) {
             let used: Vec<u16> = self
                 .db()
                 .list_runtimes()
@@ -2869,11 +3498,12 @@ impl AppState {
                 .iter()
                 .filter_map(|r| r.port)
                 .collect();
-            Some(runtime_catalog::allocate_rust_port(&used).ok_or_else(|| {
+            Some(runtime_catalog::allocate_port(kind, &used).ok_or_else(|| {
                 SiteError::Conflict(format!(
-                    "Rust 端口区间 {}–{} 已用满，请先删除不再使用的环境",
-                    *runtime_catalog::RUST_PORT_RANGE.start(),
-                    *runtime_catalog::RUST_PORT_RANGE.end()
+                    "{} 端口区间 {}–{} 已用满，请先删除不再使用的环境",
+                    runtime_catalog::kind_label(kind),
+                    *range.start(),
+                    *range.end()
                 ))
             })?)
         } else {
@@ -2928,7 +3558,7 @@ impl AppState {
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
         if rt.kind != skiff_store::KIND_PHP {
             return Err(SiteError::Unavailable(format!(
-                "{} 运行环境将在 P2 接入，P1 不提供专属配置",
+                "{} 运行环境不使用 php.ini / FPM 专属配置",
                 rt.kind
             )));
         }
@@ -2973,6 +3603,38 @@ impl AppState {
             .set_runtime_config(id, &cfg.to_json())
             .map_err(|e| SiteError::Internal(e.to_string()))?;
         self.runtime_view(id).await
+    }
+
+    /// 保存 Node.js 专属配置。启动命令/环境变量在容器的 `command` 与 `Env` 里，
+    /// 只能重建容器才生效，所以这里只落库并返回「是否有变化」，由调用方决定是否
+    /// 触发重建任务（与 PHP 写池配置后热重启不同）。
+    pub async fn save_node_runtime_config(
+        &self,
+        id: &str,
+        cfg: &NodeRuntimeConfig,
+        actor: &str,
+    ) -> Result<(RuntimeView, bool), SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if rt.kind != skiff_store::KIND_NODE {
+            return Err(SiteError::Unavailable(format!(
+                "{} 运行环境没有 Node.js 专属配置",
+                rt.kind
+            )));
+        }
+        cfg.validate()?;
+        let previous = NodeRuntimeConfig::from_json(&rt.config_json);
+        let changed = &previous != cfg;
+        if changed {
+            self.db()
+                .set_runtime_config(id, &cfg.to_json())
+                .map_err(|e| SiteError::Internal(e.to_string()))?;
+            tracing::info!(actor = %actor, runtime = %id, "Node.js 运行环境配置已更新");
+        }
+        Ok((self.runtime_view(id).await?, changed))
     }
 
     /// 实例创建时是否已带 `php.ini` / `conf.d` 挂载（决定配置编辑是否真生效）。
@@ -3407,23 +4069,15 @@ impl AppState {
                 }
             }
         }
-        // Rust 环境失去最后的绑定后，执行目录回落 `app/` 兜底源码。
-        if let Ok(Some(rt)) = self.db().runtime_by_id(runtime_id) {
-            if rt.kind == skiff_store::KIND_RUST {
-                if let Err(e) = self.sync_rust_runtime_source(&rt, &s).await {
-                    tracing::warn!(error = %e, "解绑站点后切换 Rust 源码目录失败");
-                }
-            }
-        }
         Ok(())
     }
 
     /// 删除运行环境：有站点绑定时拒绝并列出域名，绝不隐式解绑/级联删除。
     ///
     /// 真正清理的顺序：容器 stop → remove → 运行目录（含 FPM 池配置、socket、
-    /// 日志与 Rust 工程）→ DB 行。任一步失败就停下并保留 DB 行，错误里列出
+    /// 日志与 Rust/Node 工程）→ DB 行。任一步失败就停下并保留 DB 行，错误里列出
     /// 已完成项，避免「记录删了、容器和目录还在」的静默残留。
-    /// 删除不区分 kind：Node/Go 只是未实现安装，已登记的运行环境仍可删除。
+    /// 删除不区分 kind：Go 只是未实现安装，已登记的运行环境仍可删除。
     pub async fn delete_site_runtime(&self, id: &str) -> Result<RuntimeDeleteReport, SiteError> {
         let rt = self
             .db()
@@ -3532,7 +4186,10 @@ impl AppState {
             .runtime_by_id(id)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
-        if rt.kind == skiff_store::KIND_RUST {
+        if matches!(
+            rt.kind.as_str(),
+            skiff_store::KIND_RUST | skiff_store::KIND_NODE
+        ) {
             let s = self.site_settings();
             let path = s.runtime_log_dir(&rt.kind, &rt.name).join("server.log");
             let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -3541,7 +4198,7 @@ impl AppState {
             return Ok(lines[start..].join("\n"));
         }
         if !runtime_catalog::is_implemented(&rt.kind) {
-            return Ok("（P2 未实现：Node.js/Go 运行环境尚未接入）".into());
+            return Ok("（Go 运行环境尚未接入）".into());
         }
         let rows = self
             .docker()
@@ -4244,66 +4901,74 @@ impl AppState {
         }
     }
 
+    /// Node.js 容器：host 网络 + 固定端口，单进程常驻，启动命令来自专属配置。
+    ///
+    /// 不发布端口、不建 bridge：与 Rust 环境保持同一套网络模型，nginx 以
+    /// `127.0.0.1:<port>` 反代；`HOST` 默认 `127.0.0.1`，应用读取它即可避免
+    /// 意外监听全部网卡（应用若硬编码 0.0.0.0，需在宿主防火墙侧限制）。
+    fn node_spec_for(
+        &self,
+        s: &SiteSettings,
+        name: &str,
+        image: &str,
+        port: u16,
+        cfg: &NodeRuntimeConfig,
+    ) -> ContainerSpec {
+        let entry = format!(
+            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/entry.sh",
+            skiff_store::KIND_NODE
+        );
+        let log = format!(
+            "{CONTAINER_RUNTIME_ROOT}/{}/{name}/log/server.log",
+            skiff_store::KIND_NODE
+        );
+        let mut env = BTreeMap::new();
+        env.insert("PORT".to_string(), port.to_string());
+        env.insert("HOST".to_string(), "127.0.0.1".to_string());
+        env.insert("NODE_ENV".to_string(), cfg.node_env.clone());
+        for (key, value) in &cfg.env {
+            env.insert(key.clone(), value.clone());
+        }
+        ContainerSpec {
+            image: image.to_string(),
+            name: Some(runtime_container_name(skiff_store::KIND_NODE, name)),
+            command: Some(node_run_command(
+                &entry,
+                &log,
+                &cfg.argv()
+                    .unwrap_or_else(|_| vec!["npm".into(), "start".into()]),
+            )),
+            entrypoint: None,
+            env,
+            labels: skiff_labels("runtime"),
+            ports: vec![],
+            restart: Some("unless-stopped".into()),
+            healthcheck: None,
+            networks: vec![],
+            network_mode: Some("host".into()),
+            mounts: vec![Mount::Bind {
+                source: s.web_root.display().to_string(),
+                target: CONTAINER_WEB_ROOT.to_string(),
+                read_only: false,
+            }],
+            log_driver: Some("local".into()),
+            log_max_size: Some("10m".into()),
+            memory_limit_mb: None,
+            nano_cpus: None,
+            pids_limit: None,
+            cpu_shares: None,
+            cpu_period: None,
+            cpu_quota: None,
+            memory_swap_mb: None,
+        }
+    }
+
     fn write_default_vhost(&self, s: &SiteSettings) -> std::io::Result<()> {
         std::fs::create_dir_all(&s.conf_dir)?;
         // 兜底文件与站点 include 入口始终存在；默认站点的投影以库里 `is_default` 为准。
         std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)?;
         std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())?;
         self.sync_default_conf(s)
-    }
-
-    /// 把 Rust 运行环境源码切到最早绑定的站点目录；无绑定时回落到自带 `app/`。
-    ///
-    /// 容器整目录挂载 `/www`，改写宿主 `<runtime>/site` 标记即可；仅当容器正在运行
-    /// 时才重启以立即生效，停止的容器下次启动自然读取新标记。多站点绑同一环境时
-    /// 以最早绑定的站点为准（端口固定，只能跑一个进程）。
-    async fn sync_rust_runtime_source(
-        &self,
-        rt: &Runtime,
-        s: &SiteSettings,
-    ) -> Result<(), SiteError> {
-        if rt.kind != skiff_store::KIND_RUST {
-            return Ok(());
-        }
-        let marker = s.runtime_home(&rt.kind, &rt.name).join("site");
-        let domains = self
-            .db()
-            .runtime_site_domains(&rt.id)
-            .map_err(|e| SiteError::Internal(e.to_string()))?;
-        let target = match domains.first() {
-            Some(domain) => {
-                let site = self
-                    .db()
-                    .site_by_domain(domain)
-                    .map_err(|e| SiteError::Internal(e.to_string()))?
-                    .ok_or_else(|| SiteError::Internal(format!("站点行缺失：{domain}")))?;
-                s.container_path(&site_index_dir(Path::new(&site.root_dir)))
-            }
-            None => String::new(),
-        };
-        if std::fs::read_to_string(&marker).unwrap_or_default().trim() == target {
-            return Ok(());
-        }
-        if target.is_empty() {
-            if let Err(e) = std::fs::remove_file(&marker) {
-                tracing::debug!(path = %marker.display(), error = %e, "清理 Rust 源码标记失败");
-            }
-        } else {
-            std::fs::write(&marker, &target)
-                .map_err(|e| SiteError::Internal(format!("写入 Rust 源码标记失败：{e}")))?;
-        }
-        let container = runtime_container_name(&rt.kind, &rt.name);
-        if let Ok(rows) = self.docker().list_containers().await {
-            if rows
-                .iter()
-                .any(|c| c.name == container && c.state == "running")
-            {
-                if let Err(e) = self.docker_runtime_action(&container, Verb::Restart).await {
-                    tracing::warn!(error = %e, "切换 Rust 源码后重启运行环境失败");
-                }
-            }
-        }
-        Ok(())
     }
 
     fn bound_runtime(&self, site: &Site) -> Result<Runtime, SiteError> {
@@ -4335,7 +5000,7 @@ impl AppState {
             .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
         if rt.kind != skiff_store::KIND_PHP {
             return Err(SiteError::Unavailable(format!(
-                "{} 运行环境将在 P2 接入，当前不能生成 vhost",
+                "{} 运行环境不提供 PHP-FPM socket",
                 rt.kind
             )));
         }
@@ -4379,15 +5044,20 @@ impl AppState {
                 websocket: site.proxy_websocket,
             },
             _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
-                Some(skiff_store::KIND_RUST) => VhostKind::Process {
-                    root: &root,
-                    port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
-                        SiteError::Unavailable("Rust 运行环境缺少端口，请重新安装".into())
-                    })?,
-                },
-                Some(skiff_store::KIND_NODE) | Some(skiff_store::KIND_GO) => {
+                Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
+                    VhostKind::Process {
+                        root: &root,
+                        port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
+                            SiteError::Unavailable(format!(
+                                "{} 运行环境缺少端口，请重新安装",
+                                runtime_catalog::kind_label(kind)
+                            ))
+                        })?,
+                    }
+                }
+                Some(skiff_store::KIND_GO) => {
                     return Err(SiteError::Unavailable(
-                        "Node.js / Go 运行环境将在 P2 接入，当前不能生成 vhost".into(),
+                        "Go 运行环境尚未接入，当前不能生成 vhost".into(),
                     ))
                 }
                 _ => VhostKind::Php {
@@ -4437,15 +5107,20 @@ impl AppState {
                 websocket: site.proxy_websocket,
             },
             _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
-                Some(skiff_store::KIND_RUST) => VhostKind::Process {
-                    root: &root,
-                    port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
-                        SiteError::Unavailable("Rust 运行环境缺少端口，请重新安装".into())
-                    })?,
-                },
-                Some(skiff_store::KIND_NODE) | Some(skiff_store::KIND_GO) => {
+                Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
+                    VhostKind::Process {
+                        root: &root,
+                        port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
+                            SiteError::Unavailable(format!(
+                                "{} 运行环境缺少端口，请重新安装",
+                                runtime_catalog::kind_label(kind)
+                            ))
+                        })?,
+                    }
+                }
+                Some(skiff_store::KIND_GO) => {
                     return Err(SiteError::Unavailable(
-                        "Node.js / Go 运行环境将在 P2 接入，当前不能生成 vhost".into(),
+                        "Go 运行环境尚未接入，当前不能生成 vhost".into(),
                     ))
                 }
                 _ => VhostKind::Php {
@@ -4923,7 +5598,7 @@ impl AppState {
             ));
         }
 
-        // 类型专属校验。P1 允许 PHP 与 Rust 运行环境；Node/Go 一律如实拒绝。
+        // 类型专属校验。允许 PHP / Node.js / Rust 运行环境；Go 未接入，如实拒绝。
         let mut runtime_id = None;
         let mut runtime_kind = String::new();
         let mut runtime_version = String::new();
@@ -4945,7 +5620,7 @@ impl AppState {
                     .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
                 if !runtime_catalog::is_implemented(&rt.kind) {
                     return Err(SiteError::Unavailable(format!(
-                        "{} 运行环境将在 P2 接入，当前版本不能创建该类站点",
+                        "{} 运行环境尚未接入，当前版本不能创建该类站点",
                         rt.kind
                     )));
                 }
@@ -5060,8 +5735,8 @@ impl AppState {
             TYPE_RUNTIME => {
                 std::fs::create_dir_all(site_index_dir(&root))
                     .map_err(|e| SiteError::Internal(format!("创建站点文档根失败：{e}")))?;
-                // 按运行环境类型给初始文件：PHP 写探针、Rust 写最小工程，
-                // 禁止所有 runtime 站点一律回落 index.php（Rust 站出现 index.php 即此回落）。
+                // 按运行环境类型给初始文件：只有 PHP 写 index.php 探针；Node.js / Rust
+                // 的代码固定在环境 `app/`，站点目录保持为空，不再写脚手架。
                 for (rel, content) in
                     runtime_site_default_files(&runtime_kind, &runtime_version, runtime_port)
                 {
@@ -5090,19 +5765,14 @@ impl AppState {
             _ => {}
         }
 
-        // Rust 站点的 `index/` 就是运行源码：创建成功后把环境执行目录切过来。
-        let rust_runtime_id = if site_type == TYPE_RUNTIME && runtime_kind == skiff_store::KIND_RUST
-        {
-            runtime_id.clone()
-        } else {
-            None
-        };
         let site = db
             .create_site(&StoreNewSite {
                 domain: domain.clone(),
                 root_dir: root.display().to_string(),
                 site_type: site_type.into(),
                 runtime_id,
+                // 进程型运行环境的端口只属于环境（`site_runtimes.port`），站点侧
+                // 一律留空；vhost 从环境行读取，避免出现“站点自定义端口”的旁路。
                 app_command: None,
                 app_port: None,
                 proxy_target,
@@ -5145,15 +5815,6 @@ impl AppState {
         if let Err(e) = self.restart_nginx().await {
             rollback(&conf);
             return Err(e);
-        }
-        // Rust 站点的 `index/` 就是源码：站点落库后再把环境执行目录切过来。
-        // 失败只告警不回滚站点（源码目录仍可用，`app/` 兜底仍可运行）。
-        if let Some(rid) = rust_runtime_id {
-            if let Ok(Some(rt)) = self.db().runtime_by_id(&rid) {
-                if let Err(e) = self.sync_rust_runtime_source(&rt, &s).await {
-                    tracing::warn!(error = %e, "站点创建后切换 Rust 源码目录失败");
-                }
-            }
         }
         Ok(site)
     }
@@ -5433,7 +6094,6 @@ impl AppState {
             dir_bytes,
             file_count,
             task_count,
-            rust_source: runtime_kind == skiff_store::KIND_RUST,
             runtime_name,
             runtime_kind,
         })
@@ -5474,19 +6134,6 @@ impl AppState {
         self.db()
             .delete_site(&site.domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?;
-        // Rust 站点目录即运行源码：删除站点后让环境切到剩余站点或 `app/` 兜底，
-        // 否则容器仍指着一个已被删掉的目录。
-        if site.site_type == TYPE_RUNTIME {
-            if let Some(rid) = site.runtime_id.as_deref() {
-                if let Ok(Some(rt)) = self.db().runtime_by_id(rid) {
-                    if rt.kind == skiff_store::KIND_RUST {
-                        if let Err(e) = self.sync_rust_runtime_source(&rt, &s).await {
-                            tracing::warn!(error = %e, "删除站点后切换 Rust 源码目录失败");
-                        }
-                    }
-                }
-            }
-        }
         // 级联清理站点定时任务：否则 `builtin:site-backup:<域名>` 会留成指向已不存在
         // 站点的孤儿任务。站点备份是内核种入的 `builtin:` 任务，普通删除入口会被
         // 内置保护拒绝，这里必须走级联删除（仍经任务服务，保证调度器内存与库一致）。
@@ -6050,18 +6697,14 @@ pub fn registry_of(image: &str) -> String {
     }
 }
 
-/// Rust 容器入口脚本：有绑定站点时跑站点 `index/` 源码，否则跑环境自带 `app/`。
+/// Rust 容器入口脚本：工作目录固定为环境自带 `app/`，与站点绑定无关。
 ///
-/// 容器整目录挂载 `/www`，切换源码只重写宿主上的 `<runtime>/site` 标记并重启容器，
-/// 不需要改容器配置，避免出现“站点脚手架”和“运行代码”两套互不同步的副本。
+/// 容器整目录挂载 `/www`，站点只做域名反代；源码只在 `<runtime>/app` 一处维护，
+/// 不再有按绑定站点切换目录的“站点脚手架 + 运行代码”双份副本。
 fn rust_entry_script() -> &'static str {
     "#!/bin/sh\n\
      DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
-     if [ -f \"$DIR/site\" ]; then\n\
-       APP=\"$(cat \"$DIR/site\")\"\n\
-     else\n\
-       APP=\"$DIR/app\"\n\
-     fi\n\
+     APP=\"$DIR/app\"\n\
      if [ ! -f \"$APP/Cargo.toml\" ]; then\n\
        echo \"skiff: rust source missing: $APP/Cargo.toml\" >&2\n\
        exit 1\n\
@@ -6085,21 +6728,16 @@ fn rust_cargo_manifest() -> &'static str {
 
 /// 运行环境站点的初始文档根文件（相对站点 `index/`）。
 ///
-/// **站点 `index/` 就是 Rust 的源码目录**：绑定站点后容器执行
-/// `cargo run --manifest-path /www/sites/<域名>/index/Cargo.toml`，构建产物写运行
-/// 环境 `target/`，不回写站点目录；只有环境**未绑定任何站点**时才回落到
-/// `/www/runtime/rust/<name>/app`。绝不能回落成 `index.php`，否则会误以为站点跑 PHP。
+/// 只有 PHP 站点需要 `index.php` 探针。Node.js / Rust 是「一个环境 = 一个应用进程 =
+/// 一个固定代码目录（`<runtime>/app`）」，站点只是域名入口，源码不落在站点目录，
+/// 因此**不写任何脚手架**，避免让人误以为改站点目录能改应用。
 fn runtime_site_default_files(
     kind: &str,
-    version: &str,
-    port: Option<u16>,
+    _version: &str,
+    _port: Option<u16>,
 ) -> Vec<(&'static str, String)> {
     match kind {
         skiff_store::KIND_PHP => vec![("index.php", default_probe_php().to_string())],
-        skiff_store::KIND_RUST => vec![
-            ("Cargo.toml", rust_cargo_manifest().to_string()),
-            ("src/main.rs", rust_main_source(version, port.unwrap_or(0))),
-        ],
         _ => Vec::new(),
     }
 }
@@ -6147,7 +6785,115 @@ fn main() {{
     )
 }
 
-/// 以 TCP 连接探测端口是否已监听（Rust 等无 socket 环境的就绪判据）。
+/// Node.js 容器入口脚本：工作目录固定为环境自带 `app/`，与站点绑定无关。
+///
+/// 与 PHP 的关键差异：这里不是 FastCGI 池，而是**单进程常驻**。脚本只负责进入固定
+/// 目录、首次安装依赖，然后把启动命令 `exec` 成 PID 1；`PORT` / `NODE_ENV` / `HOST`
+/// 由容器环境注入，应用直接读取即可。绑定站点只是一层域名反代，不参与源码定位。
+fn node_entry_script() -> &'static str {
+    "#!/bin/sh\n\
+     set -e\n\
+     DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
+     APP=\"$DIR/app\"\n\
+     if [ ! -f \"$APP/package.json\" ]; then\n\
+       echo \"skiff: node app missing: $APP/package.json\" >&2\n\
+       exit 1\n\
+     fi\n\
+     cd \"$APP\"\n\
+     if [ ! -d node_modules ]; then\n\
+       if [ -f package-lock.json ]; then\n\
+         npm ci --omit=dev --no-audit --no-fund\n\
+       else\n\
+         npm install --omit=dev --no-audit --no-fund\n\
+       fi\n\
+     fi\n\
+     exec \"$@\"\n"
+}
+
+/// 启动命令必须已按 `NodeRuntimeConfig::validate` 校验；这里只做拼接，
+/// 不经宿主 shell，元字符在落库前已被拒绝。
+fn node_run_command(entry: &str, log: &str, argv: &[String]) -> Vec<String> {
+    let mut cmd = format!("sh {entry}");
+    for arg in argv {
+        cmd.push(' ');
+        cmd.push_str(arg);
+    }
+    cmd.push_str(&format!(" >> {log} 2>&1"));
+    vec!["sh".into(), "-c".into(), cmd]
+}
+
+/// Node 环境的兜底应用（没有站点绑定时运行），监听 `$PORT`。
+fn node_package_manifest() -> &'static str {
+    "{\n  \"name\": \"skiff-node-runtime\",\n  \"private\": true,\n  \"version\": \"0.1.0\",\n  \
+     \"scripts\": { \"start\": \"node server.js\" }\n}\n"
+}
+
+/// 运行环境 `app/` 的初始 Node 工程：一个无三方依赖的最小 HTTP 服务。
+///
+/// 与 Rust 的 `Cargo.toml + src/main.rs` 对齐——一个环境一个固定代码目录，
+/// 容器在 `<runtime>/app` 执行启动命令，站点只做域名反代，不生成 `index.php`。
+fn node_server_source(version: &str, port: u16) -> String {
+    format!(
+        r#"const http = require("http");
+
+const VERSION = "{version}";
+const port = Number(process.env.PORT || "{port}");
+const host = process.env.HOST || "127.0.0.1";
+
+const server = http.createServer((req, res) => {{
+  res.writeHead(200, {{ "Content-Type": "text/plain; charset=utf-8" }});
+  res.end(`Skiff Node.js runtime ready\nversion: ${{VERSION}}\nport: ${{port}}\n`);
+}});
+
+server.listen(port, host, () => {{
+  console.log(`skiff node runtime ${{VERSION}} listening on ${{host}}:${{port}}`);
+}});
+"#
+    )
+}
+
+/// 以 HTTP 探测就绪：Node 进程可能已监听端口但仍在初始化路由，因此比 TCP 更贴近真实可用。
+async fn wait_http_ready(port: u16, path: &str, timeout: std::time::Duration) -> bool {
+    let path = if path.trim().is_empty() {
+        "/"
+    } else {
+        path.trim()
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if http_probe_ok(port, path).await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn http_probe_ok(port: u16, path: &str) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
+        return false;
+    };
+    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).await.is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut buf)).await;
+    let Ok(Ok(n)) = read else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&buf[..n]);
+    let mut parts = head.split_whitespace();
+    let (Some(version), Some(code)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    version.starts_with("HTTP/") && (code.starts_with('2') || code.starts_with('3'))
+}
+
+/// 以 TCP 连接探测端口是否已监听（PHP socket / 一般端口可用性）。
 async fn wait_tcp_port(port: u16, timeout: std::time::Duration) -> bool {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
@@ -6209,22 +6955,125 @@ mod tests {
         let php = runtime_site_default_files(skiff_store::KIND_PHP, "8.5", None);
         assert_eq!(php.len(), 1);
         assert_eq!(php[0].0, "index.php");
-        // Rust 站点：最小工程，绝不出现 PHP 文件。
-        let rust = runtime_site_default_files(skiff_store::KIND_RUST, "1.83", Some(9101));
-        assert!(rust.iter().any(|(p, _)| *p == "Cargo.toml"));
-        assert!(rust.iter().any(|(p, _)| *p == "src/main.rs"));
-        assert!(!rust.iter().any(|(p, _)| *p == "index.php"));
-        // 未实现的类型不给任何默认文件，避免伪造可用性。
-        assert!(runtime_site_default_files("node", "20", None).is_empty());
+        // 方案 A：Node.js / Rust 的代码固定在环境 `app/`，站点只是域名入口，不写脚手架。
+        assert!(runtime_site_default_files(skiff_store::KIND_RUST, "1.83", Some(9101)).is_empty());
+        assert!(runtime_site_default_files(skiff_store::KIND_NODE, "22", Some(9200)).is_empty());
+        // 未接入的 Go 同样不给默认文件，避免伪造可用性。
+        assert!(runtime_site_default_files("go", "1.24", None).is_empty());
     }
 
     #[test]
-    fn rust_entry_script_runs_bound_site_source_with_fallback() {
-        // 入口脚本必须在运行时决定源码目录：标记在 → 站点 index/，否则回落 app/。
+    fn node_entry_script_uses_fixed_app_dir() {
+        // 与 PHP 不同：Node 入口脚本固定进入 `app/`，不读绑定站点标记，也不接 FastCGI。
+        let script = node_entry_script();
+        assert!(script.contains("APP=\"$DIR/app\""));
+        assert!(
+            !script.contains("$DIR/site"),
+            "不得再按绑定站点切换源码目录"
+        );
+        assert!(script.contains("package.json"));
+        assert!(script.contains("exec \"$@\""));
+        assert!(!script.contains("php-fpm"));
+    }
+
+    #[test]
+    fn node_config_defaults_are_single_process_contract() {
+        let cfg = NodeRuntimeConfig::default();
+        assert_eq!(cfg.command, "npm start");
+        assert_eq!(cfg.health_path, "/");
+        assert_eq!(cfg.node_env, "production");
+        assert_eq!(cfg.argv().unwrap(), vec!["npm", "start"]);
+        cfg.validate().expect("默认配置必须合法");
+    }
+
+    #[test]
+    fn node_config_rejects_shell_metacharacters_and_reserved_env() {
+        let cfg = NodeRuntimeConfig {
+            command: "node server.js; rm -rf /www".into(),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "分号必须被拒绝，不能进容器 shell");
+
+        let cfg = NodeRuntimeConfig {
+            command: "node server.js".into(),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+        assert_eq!(cfg.argv().unwrap(), vec!["node", "server.js"]);
+
+        let cfg = NodeRuntimeConfig {
+            env: vec![("PORT".into(), "3000".into())],
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "PORT 由内核注入，不能覆盖");
+
+        let cfg = NodeRuntimeConfig {
+            env: vec![("lower".into(), "1".into())],
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "环境变量名必须大写");
+
+        let cfg = NodeRuntimeConfig {
+            health_path: "health".into(),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "健康检查路径必须以 / 开头");
+    }
+
+    #[test]
+    fn node_config_env_text_roundtrip() {
+        let mut cfg = NodeRuntimeConfig::default();
+        cfg.set_env_text("# 注释\nAPI_BASE=https://api.example.com\nFEATURE_X=1\n\n")
+            .unwrap();
+        assert_eq!(cfg.env.len(), 2);
+        assert_eq!(
+            cfg.env_text(),
+            "API_BASE=https://api.example.com\nFEATURE_X=1"
+        );
+        let json = cfg.to_json();
+        let back = NodeRuntimeConfig::from_json(&json);
+        assert_eq!(back, cfg);
+        assert!(cfg.set_env_text("NOPE").is_err(), "缺 = 必须报错");
+        assert!(cfg.set_env_text("A=1\nA=2").is_err(), "重复键必须报错");
+    }
+
+    #[test]
+    fn rust_entry_script_uses_fixed_app_dir() {
+        // 源码目录固定为环境 `app/`：不再有“绑定站点即源码目录”的切换。
         let script = rust_entry_script();
-        assert!(script.contains("$DIR/site"));
-        assert!(script.contains("$DIR/app"));
+        assert!(script.contains("APP=\"$DIR/app\""));
+        assert!(!script.contains("$DIR/site"));
         assert!(script.contains("--manifest-path"));
+    }
+
+    #[test]
+    fn process_port_must_stay_in_kind_range_and_be_free() {
+        // 端口属于环境：必须落在该 kind 的区间内，且不能被其它环境占用。
+        assert!(validate_process_port(skiff_store::KIND_NODE, 9200, &[]).is_ok());
+        assert!(validate_process_port(skiff_store::KIND_NODE, 9199, &[]).is_err());
+        assert!(validate_process_port(skiff_store::KIND_NODE, 9200, &[9200]).is_err());
+        assert!(validate_process_port(skiff_store::KIND_RUST, 9100, &[9100]).is_err());
+        // PHP 走 unix socket，不占宿主端口。
+        assert!(validate_process_port(skiff_store::KIND_PHP, 9200, &[]).is_err());
+    }
+
+    #[test]
+    fn clone_copy_skips_dependencies_and_keeps_sources() {
+        // 克隆复制 `app/` 时必须跳过 node_modules / target，避免把依赖树复制一份。
+        let base = std::env::temp_dir().join(format!("skiff-clone-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let from = base.join("from/app");
+        let to = base.join("to/app");
+        std::fs::create_dir_all(from.join("src")).expect("mkdir src");
+        std::fs::create_dir_all(from.join("node_modules/dep")).expect("mkdir modules");
+        std::fs::write(from.join("package.json"), "{}").expect("write manifest");
+        std::fs::write(from.join("src/main.js"), "x").expect("write source");
+        std::fs::write(from.join("node_modules/dep/index.js"), "x").expect("write dep");
+        copy_dir_skip(&from, &to, &["node_modules", "target"]).expect("copy");
+        assert!(to.join("package.json").is_file());
+        assert!(to.join("src/main.js").is_file());
+        assert!(!to.join("node_modules").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -7282,7 +8131,7 @@ mod tests {
     #[test]
     fn rust_runtime_uses_non_login_shell() {
         // 回归：`sh -lc` 会重置 PATH，cargo 不在默认 PATH 里，容器退出码 127。
-        // 具体源码目录由 entry.sh 在运行时决定（站点 index/ 或 app/ 兜底）。
+        // 源码目录固定为环境 `app/`，由 entry.sh 直接进入。
         let cmd = rust_run_command(
             "/www/runtime/rust/x/entry.sh",
             "/www/runtime/rust/x/log/server.log",

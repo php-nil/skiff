@@ -22,7 +22,7 @@
     {% if !env.docker_available %}
     <p class="hint">Docker 不可用：{{ env.docker_reason }}。网站依赖 Docker 承载 OpenResty 与语言运行环境。</p>
     {% else if !env.installed %}
-    <p class="hint">尚未安装 Web 服务（OpenResty）；PHP / Rust 是各自独立的运行环境，请在运行环境列表按需安装。</p>
+    <p class="hint">尚未安装 Web 服务（OpenResty）；PHP / Node.js / Rust 是各自独立的运行环境，请在运行环境列表按需安装。</p>
     {% else %}
     <p class="hint">Web 服务容器未运行：{{ env.nginx_state }}。语言运行环境的状态在运行环境列表独立展示。</p>
     {% endif %}

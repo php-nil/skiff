@@ -16,10 +16,10 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::{
-    BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, PhpConfigView, PhpEditorView,
-    PhpFileView, PhpIniValueView, RuntimeDetailPage, RuntimeJobView, RuntimeKindView,
-    RuntimeOptionView, RuntimeRow, SiteBackupView, SiteDeletePage, SiteDetailPage, SiteEnvPage,
-    SiteEnvView, SiteLogsPage, SiteNewForm, SiteTlsView, SiteView, SitesPage,
+    BoundSiteView, DirEntryView, DirListingView, ExtensionOptionView, NodeConfigView,
+    PhpConfigView, PhpEditorView, PhpFileView, PhpIniValueView, RuntimeDetailPage, RuntimeJobView,
+    RuntimeKindView, RuntimeOptionView, RuntimeRow, SiteBackupView, SiteDeletePage, SiteDetailPage,
+    SiteEnvPage, SiteEnvView, SiteLogsPage, SiteNewForm, SiteTlsView, SiteView, SitesPage,
 };
 use crate::util::{encode_uri_component, form_first, human_size, parse_form};
 
@@ -41,6 +41,18 @@ fn type_label(t: &str) -> &'static str {
         TYPE_STATIC => "静态网站",
         TYPE_PROXY => "反向代理",
         _ => "运行环境",
+    }
+}
+
+/// 运行环境动作的中文名：共享环境二次确认页据此说明「将要执行什么」。
+fn action_label(action: &str) -> &'static str {
+    match action {
+        "stop" => "停止",
+        "restart" => "重启",
+        "rebuild" => "重建",
+        "install" => "安装",
+        "port" => "修改端口",
+        _ => "操作",
     }
 }
 
@@ -89,7 +101,7 @@ fn runtime_site_status(
         Some("error") => ("环境异常", "danger"),
         Some("missing") => ("未运行（环境未安装）", "warn"),
         Some("unknown") => ("状态未知（Docker 不可用）", "muted"),
-        Some("unimplemented") => ("运行环境 P2 未实现", "warn"),
+        Some("unimplemented") => ("运行环境尚未接入", "warn"),
         Some(_) => ("未运行（环境已停止）", "warn"),
         None => ("未运行（环境记录缺失）", "warn"),
     }
@@ -121,20 +133,20 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
                 format!("socket {}", v.socket_host)
             }
         }
-        skiff_store::KIND_RUST => match v.runtime.port {
+        skiff_store::KIND_RUST | skiff_store::KIND_NODE => match v.runtime.port {
             Some(port) => format!("http://127.0.0.1:{port}"),
             None => "端口未分配".to_string(),
         },
-        _ => "端口：P2 按站点独立分配".to_string(),
+        _ => "尚未接入".to_string(),
     };
     let endpoint_short = match v.runtime.kind.as_str() {
         skiff_store::KIND_PHP => "sock".to_string(),
-        skiff_store::KIND_RUST => v
+        skiff_store::KIND_RUST | skiff_store::KIND_NODE => v
             .runtime
             .port
             .map(|p| format!(":{p}"))
             .unwrap_or_else(|| "端口".into()),
-        _ => "P2".to_string(),
+        _ => "—".to_string(),
     };
     // 已知真实版本（镜像元数据）优先；容器缺失/未安装 → 目标 + 未安装；
     // 容器在但元数据读不到 → 目标 + 版本未读取。停止的容器仍展示真实版本。
@@ -247,6 +259,7 @@ fn site_view(
     cert_ready: bool,
     runtime: Option<&Runtime>,
     runtime_state: Option<&str>,
+    runtime_site_count: usize,
 ) -> SiteView {
     let runtime_label = runtime
         .map(|r| {
@@ -270,6 +283,12 @@ fn site_view(
     };
     // 列表合并列展示实例名（php-8.5），不拼「PHP · php-8.5」这类冗余；记录缺失时留空由模板兜底。
     let runtime_name = runtime.map(|r| r.name.clone()).unwrap_or_default();
+    // 共享提示：一个环境只有一个进程与端口，重启/升级/改端口会同时影响这些站点。
+    let runtime_shared_hint = if s.site_type == TYPE_RUNTIME && runtime_site_count > 0 {
+        format!("该环境已被 {runtime_site_count} 个站点使用，重启/升级/改端口会影响全部")
+    } else {
+        String::new()
+    };
     SiteView {
         domain: s.domain.clone(),
         // 站点目录本身（整站备份单元）与文档根都展示出来，避免把 `index/` 说成整站。
@@ -282,6 +301,7 @@ fn site_view(
         runtime_id: s.runtime_id.clone().unwrap_or_default(),
         runtime_label,
         runtime_name,
+        runtime_shared_hint,
         proxy_target: s.proxy_target.clone().unwrap_or_default(),
         proxy_websocket: s.proxy_websocket,
         endpoint,
@@ -425,12 +445,19 @@ async fn render_sites(
                 .as_deref()
                 .and_then(|id| runtime_views.iter().find(|v| v.runtime.id == id))
                 .map(|v| v.effective_state.as_str());
+            let runtime_site_count = s
+                .runtime_id
+                .as_deref()
+                .and_then(|id| runtime_views.iter().find(|v| v.runtime.id == id))
+                .map(|v| v.site_count)
+                .unwrap_or(0);
             site_view(
                 s,
                 state.site_aliases(&s.domain),
                 ready,
                 runtime,
                 runtime_state,
+                runtime_site_count,
             )
         })
         .filter(|v| {
@@ -569,9 +596,18 @@ fn runtime_options(views: &[skiff_app::sites::RuntimeView]) -> Vec<RuntimeOption
         .filter(|v| v.implemented && v.effective_state == "running")
         .map(|v| {
             let kind = skiff_app::runtime_catalog::kind_label(&v.runtime.kind);
+            // 同名版本可能被克隆出多个环境，选项里带上实例名与共享影响面。
+            let label = if v.site_count > 0 {
+                format!(
+                    "{kind} {} · {}（已被 {} 个站点使用，重启/升级影响全部）",
+                    v.runtime.version, v.runtime.name, v.site_count
+                )
+            } else {
+                format!("{kind} {} · {}", v.runtime.version, v.runtime.name)
+            };
             RuntimeOptionView {
                 id: v.runtime.id.clone(),
-                label: format!("{kind} {}", v.runtime.version),
+                label,
             }
         })
         .collect()
@@ -1357,6 +1393,7 @@ async fn render_detail(
                 .and_then(|id| state.db().runtime_by_id(id).ok().flatten())
         });
     let runtime_state = runtime_view.as_ref().map(|v| v.effective_state.as_str());
+    let runtime_site_count = runtime_view.as_ref().map(|v| v.site_count).unwrap_or(0);
     let backup = backup_view(&state, &domain).await;
     handlers::render(SiteDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
@@ -1366,6 +1403,7 @@ async fn render_detail(
             cert_ready,
             runtime.as_ref(),
             runtime_state,
+            runtime_site_count,
         ),
         env: env_view(&env),
         can_admin: user.can(skiff_model::Permission::Admin),
@@ -1724,7 +1762,6 @@ pub async fn delete_confirm(
         file_count: stats.file_count,
         task_count: stats.task_count,
         runtime_label,
-        rust_source: stats.rust_source,
     })
 }
 
@@ -1768,14 +1805,17 @@ pub async fn runtime_detail(
     let config = PhpConfigView::from(&skiff_app::sites::PhpRuntimeConfig::from_json(
         &view.runtime.config_json,
     ));
-    let bound_sites = state
+    let bound_site_rows: Vec<Site> = state
         .db()
         .list_sites()?
         .into_iter()
         .filter(|s| s.runtime_id.as_deref() == Some(id.as_str()))
+        .collect();
+    let bound_sites = bound_site_rows
+        .iter()
         .map(|s| BoundSiteView {
             href: format!("/{prefix}/sites/{}", encode_uri_component(&s.domain)),
-            domain: s.domain,
+            domain: s.domain.clone(),
             type_label: type_label(&s.site_type).to_string(),
             status_label: runtime_site_status(&s.status, Some(view.effective_state.as_str()))
                 .0
@@ -1792,6 +1832,30 @@ pub async fn runtime_detail(
     };
     let enabled_exts = view.extensions.clone();
     let is_php = view.runtime.kind == skiff_store::KIND_PHP;
+    let node = if view.runtime.kind == skiff_store::KIND_NODE {
+        let s = state.site_settings();
+        // 一个环境 = 一个应用进程 = 一个固定代码目录；绑定站点不改变工作目录。
+        let workdir = s.container_path(
+            &s.runtime_home(&view.runtime.kind, &view.runtime.name)
+                .join("app"),
+        );
+        let cfg = skiff_app::sites::NodeRuntimeConfig::from_json(&view.runtime.config_json);
+        let env_text = cfg.env_text();
+        NodeConfigView {
+            command: cfg.command,
+            health_path: cfg.health_path,
+            node_env: cfg.node_env,
+            env_text,
+            workdir,
+            port: view.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
+            config_url: format!(
+                "/{prefix}/sites/env/{}/node-config",
+                encode_uri_component(&id)
+            ),
+        }
+    } else {
+        NodeConfigView::default()
+    };
     let mut page_error = String::new();
     let mut php_files = Vec::new();
     let mut php_editor = None;
@@ -1856,6 +1920,16 @@ pub async fn runtime_detail(
         Some(j) => (true, job_view(j)),
         None => (false, RuntimeJobView::default()),
     };
+    // 共享环境的影响面：停用/重启/重建/改端口前先列出绑定站点，二次确认后才执行。
+    // 只接受已知动作，避免 `?confirm=任意值` 渲染出可提交的确认面板。
+    let pending_confirm = q
+        .get("confirm")
+        .map(String::as_str)
+        .filter(|a| matches!(*a, "stop" | "restart" | "rebuild" | "install" | "port"))
+        .unwrap_or_default()
+        .to_string();
+    let pending_confirm_label = action_label(&pending_confirm).to_string();
+    let pending_port = q.get("port").cloned().unwrap_or_default();
     // 安装时未挂载 php/php.ini 与 conf.d 的存量容器：编辑能保存但不生效，
     // 详情页给出重建入口，别让用户对着界面猜。
     let config_mounts_stale = if is_php && view.container_exists {
@@ -1863,11 +1937,29 @@ pub async fn runtime_detail(
     } else {
         false
     };
+    // 进程型环境（Node.js / Rust）：端口可改、应用健康可探测、同配置可克隆。
+    let port_editable = matches!(
+        view.runtime.kind.as_str(),
+        skiff_store::KIND_NODE | skiff_store::KIND_RUST
+    );
+    let port_value = view.runtime.port.map(|p| p.to_string()).unwrap_or_default();
+    let port_range_label = skiff_app::runtime_catalog::port_range(&view.runtime.kind)
+        .map(|r| format!("{}–{}", r.start(), r.end()))
+        .unwrap_or_default();
     handlers::render(RuntimeDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
         runtime: runtime_row(&state, &view),
         config,
+        node,
         bound_sites,
+        pending_confirm,
+        pending_confirm_label,
+        pending_port,
+        port_editable,
+        port_value,
+        port_range_label,
+        health_url: format!("/{prefix}/sites/env/{id}/health"),
+        clone_url: format!("/{prefix}/sites/env/{id}/clone"),
         socket_host: view.socket_host.clone(),
         socket_container: view.socket_container.clone(),
         socket_exists: view.socket_exists,
@@ -1895,7 +1987,10 @@ pub async fn runtime_detail(
             encode_uri_component(&id)
         ),
         env_href: format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
-        runtime_log_path: if view.runtime.kind == skiff_store::KIND_RUST {
+        runtime_log_path: if matches!(
+            view.runtime.kind.as_str(),
+            skiff_store::KIND_RUST | skiff_store::KIND_NODE
+        ) {
             state
                 .site_settings()
                 .runtime_log_dir(&view.runtime.kind, &view.runtime.name)
@@ -2001,6 +2096,172 @@ pub async fn runtime_config_file_save(
     }
 }
 
+/// 修改进程型环境的固定端口。端口属于环境，站点侧不可自定义；有绑定站点时
+/// 先进入与启停一致的二次确认（改端口会重写全部站点反代并重建容器）。
+pub async fn runtime_port_save(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    let back = format!("/{prefix}/sites/env/{id}");
+    let raw = form_first(&form, "port");
+    let port: u16 = raw
+        .trim()
+        .parse()
+        .map_err(|_| AppError::BadRequest(format!("端口不合法：{raw}")))?;
+    let domains = state
+        .db()
+        .runtime_site_domains(&id)
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    if !domains.is_empty() && form_first(&form, "confirm") != "1" {
+        return Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            format!(
+                "该运行环境已被 {} 个站点使用（{}），改端口会重写全部站点反代并重建容器，请确认后执行",
+                domains.len(),
+                domains.join("、")
+            ),
+            format!("/{prefix}/sites/env/{id}?confirm=port&port={port}"),
+        ));
+    }
+    match state
+        .change_runtime_port(&id, port, &user.user.username, user.user.role.as_str())
+        .await
+    {
+        Ok(()) => {
+            state.audit_or_log(
+                &user.user.username,
+                &ip,
+                "runtimes.port",
+                &id,
+                "ok",
+                &format!("port={port}"),
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!("端口已改为 {port}，正在重建运行环境"),
+                back,
+            ))
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            state.audit_or_log(
+                &user.user.username,
+                &ip,
+                "runtimes.port",
+                &id,
+                "failed",
+                &msg,
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                back,
+            ))
+        }
+    }
+}
+
+/// 克隆进程型环境：新名称可留空（默认 `<原名>-copy`），端口由内核重新分配。
+pub async fn runtime_clone(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    let name = form_first(&form, "name");
+    match state
+        .clone_runtime(&id, &name, &user.user.username, user.user.role.as_str())
+        .await
+    {
+        Ok(rt) => {
+            state.audit_or_log(
+                &user.user.username,
+                &ip,
+                "runtimes.clone",
+                &id,
+                "ok",
+                &format!("clone={}", rt.id),
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!(
+                    "已克隆为 {}，端口 {}；正在后台安装",
+                    rt.name,
+                    rt.port.unwrap_or_default()
+                ),
+                format!("/{prefix}/sites/env/{}", encode_uri_component(&rt.id)),
+            ))
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            state.audit_or_log(
+                &user.user.username,
+                &ip,
+                "runtimes.clone",
+                &id,
+                "failed",
+                &msg,
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                format!("/{prefix}/sites/env/{id}"),
+            ))
+        }
+    }
+}
+
+/// 应用健康检查（只读）：容器 running 不等于应用就绪，这里按需探测一次。
+pub async fn runtime_health(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let prefix = &state.cfg.entry_prefix;
+    let back = format!("/{prefix}/sites/env/{id}");
+    match state.probe_runtime_health(&id).await {
+        Ok(msg) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            msg,
+            back,
+        )),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            format!("{e}"),
+            back,
+        )),
+    }
+}
+
 pub async fn runtime_action(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -2074,6 +2335,28 @@ pub async fn runtime_action(
                 ))
             }
         };
+    }
+    // 共享保护：一个环境可被多个域名同时反代，停用/重启/重建会影响全部站点。
+    // 有绑定时先回详情页列出影响面，用户带 `confirm=1` 再次提交才执行。
+    if matches!(action.as_str(), "stop" | "restart" | "rebuild" | "install") {
+        let domains = state
+            .db()
+            .runtime_site_domains(&id)
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        if !domains.is_empty() && form_first(&form, "confirm") != "1" {
+            return Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!(
+                    "该运行环境已被 {} 个站点使用（{}），{}会影响全部站点，请确认后执行",
+                    domains.len(),
+                    domains.join("、"),
+                    action_label(&action)
+                ),
+                format!("/{prefix}/sites/env/{id}?confirm={action}"),
+            ));
+        }
     }
     if action == "delete" {
         return match state.delete_site_runtime(&id).await {
@@ -2711,6 +2994,104 @@ pub async fn runtime_config_save(
                 skiff_app::FlashKind::Error,
                 msg,
                 format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            ))
+        }
+    }
+}
+
+/// Node.js 专属配置：命令 / 健康检查 / NODE_ENV / 额外环境变量。
+///
+/// 这些字段进入容器 `command` 与 `Env`，保存后必须重建才能生效；Handler 在
+/// 「配置确实变化」时提交一次重建任务，避免每次点保存都重启应用。
+pub async fn runtime_node_config_save(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let default = skiff_app::sites::NodeRuntimeConfig::default();
+    let mut cfg = skiff_app::sites::NodeRuntimeConfig {
+        command: form_first(&form, "command").trim().to_string(),
+        health_path: form_first(&form, "health_path").trim().to_string(),
+        node_env: form_first(&form, "node_env").trim().to_string(),
+        env: Vec::new(),
+    };
+    if cfg.command.is_empty() {
+        cfg.command = default.command.clone();
+    }
+    if cfg.health_path.is_empty() {
+        cfg.health_path = default.health_path.clone();
+    }
+    if cfg.node_env.is_empty() {
+        cfg.node_env = default.node_env.clone();
+    }
+    cfg.set_env_text(&form_first(&form, "env"))
+        .map_err(map_err)?;
+    let ip = handlers::client_ip(&state, &parts);
+    let prefix = &state.cfg.entry_prefix;
+    let back = format!("/{prefix}/sites/env/{}", encode_uri_component(&id));
+    match state
+        .save_node_runtime_config(&id, &cfg, &user.user.username)
+        .await
+    {
+        Ok((_view, changed)) => {
+            state.audit_or_log(
+                &user.user.username,
+                &ip,
+                "runtimes.node_config",
+                &id,
+                "ok",
+                "",
+            );
+            if !changed {
+                return Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Notice,
+                    "Node.js 配置未变化，无需重建",
+                    back,
+                ));
+            }
+            match state
+                .start_runtime_install(&id, &user.user.username, user.user.role.as_str())
+                .await
+            {
+                Ok(_) => Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Notice,
+                    "Node.js 配置已保存，正在重建环境以生效",
+                    back,
+                )),
+                Err(e) => Ok(handlers::flash_redirect(
+                    &state,
+                    &user,
+                    skiff_app::FlashKind::Error,
+                    format!("配置已保存，但重建任务未启动：{e}"),
+                    back,
+                )),
+            }
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            state.audit_or_log(
+                &user.user.username,
+                &ip,
+                "runtimes.node_config",
+                &id,
+                "failed",
+                &msg,
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                msg,
+                back,
             ))
         }
     }

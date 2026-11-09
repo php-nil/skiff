@@ -187,7 +187,8 @@ pub fn validate_proxy_target(raw: &str) -> Result<String, SiteError> {
     Ok(normalized)
 }
 
-/// Node/Go 站点端口占位校验（P1 只落字段；P2 才实际分配）。范围与 P2 契约一致。
+/// 站点级 `app_port` 校验（保留给「每站点独立进程」模式；当前 Node.js / Rust 使用
+/// 运行环境固定端口，不写该字段）。
 pub fn validate_app_port(raw: i64) -> Result<u16, SiteError> {
     if !(1024..=65535).contains(&raw) {
         return Err(SiteError::BadRequest(
@@ -213,7 +214,7 @@ pub enum VhostKind<'a> {
     Static { root: &'a str },
     /// 运行环境站（PHP）：fastcgi 指向运行环境登记的 socket。
     Php { root: &'a str, socket: &'a str },
-    /// 运行环境站（Rust）：独立进程监听固定端口，vhost 反代过去。
+    /// 运行环境站（Node.js / Rust）：独立进程监听固定端口，vhost 反代过去。
     Process { root: &'a str, port: u16 },
     /// 反向代理：不落文档根，只转发到上游。
     Proxy { target: &'a str, websocket: bool },

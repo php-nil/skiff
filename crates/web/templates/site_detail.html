@@ -72,6 +72,9 @@
     {% endif %}
     {% if site.site_type == "runtime" %}
     <div><span class="muted">运行环境</span><span class="mono"><a href="/{{ ctx.prefix }}/sites/env/{{ site.runtime_id }}">{{ site.runtime_label }}</a></span></div>
+    {% if !site.runtime_shared_hint.is_empty() %}
+    <div><span class="muted">共享影响</span><span class="muted">{{ site.runtime_shared_hint }}</span></div>
+    {% endif %}
     {% else if site.site_type == "proxy" %}
     <div><span class="muted">上游地址</span><span class="mono wrap">{{ site.proxy_target }}{% if site.proxy_websocket %} · WebSocket{% endif %}</span></div>
     {% else %}
@@ -225,7 +228,7 @@
 
 <section class="panel" id="site-delete">
   <h2>删除站点</h2>
-  <p class="hint">将删除整站目录 <code class="mono">{{ site.root_dir }}</code>（含 index/log/ssl/conf）、vhost 与数据库记录，不可撤销。注意：<code class="mono">index/</code> 是运行环境站点的源码目录（Rust 站点即源码本身），删除站点就等于删除源码。</p>
+  <p class="hint">将删除整站目录 <code class="mono">{{ site.root_dir }}</code>（含 index/log/ssl/conf）、vhost 与数据库记录，不可撤销。运行环境本身与它的代码目录不受影响，只解除绑定。</p>
   {% if can_admin %}
   <a class="btn danger" href="/{{ ctx.prefix }}/sites/{{ site.domain }}/delete">删除站点</a>
   <p class="hint">会先进入确认页：显示将被删除的目录大小、文件数、关联定时任务数与运行环境绑定，并要求输入域名确认。</p>

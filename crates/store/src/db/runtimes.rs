@@ -3,8 +3,8 @@
 //! 运行环境是站点的「版本基线 + 运行实例」业务对象，不是 Docker 容器的别名。
 //! `site_runtimes` 是它的唯一事实源；`sites.runtime_id` 只引用，不复制版本信息。
 //!
-//! P1 只有 PHP 单版本可运行；Node/Go 允许落行（P2 预留字段），但服务层禁止
-//! 安装/启动/创建绑定站点，避免出现「假运行中」。
+//! P1 起 PHP（socket）、Rust 与 Node.js（固定端口进程）均可运行；Go 允许落行
+//! （字段预留），但服务层禁止安装/启动/创建绑定站点，避免出现「假运行中」。
 
 use super::{now, Db, Result};
 use crate::error::StoreError;
@@ -75,7 +75,8 @@ pub struct Runtime {
     pub last_status: String,
     /// 仅 PHP：FPM socket 的宿主绝对路径；vhost 由它换算容器路径，禁止硬编码。
     pub socket_path: Option<String>,
-    /// 仅 Rust：环境固定监听端口（host 网络）；站点 vhost 反代到它。
+    /// 仅进程型环境（Rust / Node.js）：环境固定监听端口（host 网络）；站点 vhost 反代到它。
+    /// PHP 走 socket，此列为空。
     pub port: Option<u16>,
     /// 同一 kind 内最多一个默认版本。
     pub is_default: bool,
@@ -98,7 +99,7 @@ pub struct NewRuntime {
     pub image: String,
     pub image_digest: String,
     pub socket_path: Option<String>,
-    /// 仅 Rust：固定监听端口。
+    /// 仅进程型环境（Rust / Node.js）：固定监听端口。
     pub port: Option<u16>,
     pub is_default: bool,
 }
@@ -287,6 +288,22 @@ impl Db {
         Ok(())
     }
 
+    /// 修改进程型环境（Rust / Node.js）的固定端口。
+    ///
+    /// 调用方必须先用 `runtime_catalog::port_range` 校验区间与占用；这里只负责落库，
+    /// 端口是环境属性，站点侧不持有。
+    pub fn set_runtime_port(&self, id: &str, port: u16) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE site_runtimes SET port = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, i64::from(port), now()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     /// 切换同 kind 的默认版本；部分唯一索引逐行校验，先清旧默认再置新。
     pub fn set_runtime_default(&self, id: &str) -> Result<()> {
         // 先查 kind 再拿连接，避免持锁期间再次 conn() 造成自锁。
@@ -442,11 +459,13 @@ mod tests {
             image: "node:22".into(),
             image_digest: String::new(),
             socket_path: None,
-            port: None,
+            port: Some(9200),
             is_default: false,
         };
         db.create_runtime(&node).unwrap();
-        assert!(db.runtime_by_name(KIND_NODE, "php-8.5").unwrap().is_some());
+        let stored = db.runtime_by_name(KIND_NODE, "php-8.5").unwrap().unwrap();
+        // 进程型环境（Node / Rust）的固定端口随记录持久化，重建时据此复用。
+        assert_eq!(stored.port, Some(9200));
 
         // 同版本多实例允许：name 不同即可。
         let mut same_version = php("php-8.5-a", "8.5", false);

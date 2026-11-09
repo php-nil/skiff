@@ -167,6 +167,8 @@ pub struct SiteView {
     pub runtime_label: String,
     /// 列表合并列用的运行环境实例名（如 `php-8.5`）；运行环境记录缺失时为空。
     pub runtime_name: String,
+    /// 共享环境提示：绑定站点数 > 0 时说明重启/升级/改端口影响全部。
+    pub runtime_shared_hint: String,
     /// 仅 proxy：上游地址。
     pub proxy_target: String,
     /// 仅 proxy：是否升级 WebSocket。
@@ -413,6 +415,20 @@ pub struct PhpConfigView {
     pub max_requests: u32,
 }
 
+/// Node.js 专属配置视图（非 Node 时各字段为空）。
+#[derive(Debug, Clone, Default)]
+pub struct NodeConfigView {
+    pub command: String,
+    pub health_path: String,
+    pub node_env: String,
+    pub env_text: String,
+    /// 容器内工作目录：固定为环境自带 `app/`，与站点绑定无关。
+    pub workdir: String,
+    pub port: String,
+    /// 保存地址：`/{prefix}/sites/env/{id}/node-config`。
+    pub config_url: String,
+}
+
 /// 新建运行环境弹窗的类型选项（版本来自 `runtime_catalog` 单一来源）。
 #[derive(Debug, Clone)]
 pub struct RuntimeKindView {
@@ -497,7 +513,22 @@ pub struct RuntimeDetailPage {
     pub ctx: PageCtx,
     pub runtime: RuntimeRow,
     pub config: PhpConfigView,
+    /// Node.js 专属配置（启动命令 / 健康检查 / 环境变量）。
+    pub node: NodeConfigView,
     pub bound_sites: Vec<BoundSiteView>,
+    /// 待二次确认的动作（stop/restart/rebuild/install/port）；空串表示无。
+    /// 共享环境（有站点绑定）先列出影响面，确认后才真正执行。
+    pub pending_confirm: String,
+    pub pending_confirm_label: String,
+    /// 改端口二次确认时要执行的新端口（其余动作为空）。
+    pub pending_port: String,
+    /// 进程型环境（Node.js / Rust）的端口编辑：端口属于环境，站点不可自定义。
+    pub port_editable: bool,
+    pub port_value: String,
+    pub port_range_label: String,
+    /// 按需健康检查与克隆入口（进程型环境）。
+    pub health_url: String,
+    pub clone_url: String,
     pub socket_host: String,
     pub socket_container: String,
     pub socket_exists: bool,
@@ -514,7 +545,7 @@ pub struct RuntimeDetailPage {
     pub logs_url: String,
     /// 扩展操作基址：`/{prefix}/sites/env/{id}`。
     pub env_href: String,
-    /// Rust 运行日志的宿主路径（其他类型为空）。
+    /// Rust / Node.js 运行日志的宿主路径（其他类型为空）。
     pub runtime_log_path: String,
     /// 安装日志（任务快照）与运行日志分开展示。
     pub logs: String,
@@ -611,8 +642,6 @@ pub struct SiteDeletePage {
     pub task_count: usize,
     /// 绑定的运行环境（kind + name）；无绑定为空串。
     pub runtime_label: String,
-    /// Rust 站点：`index/` 即运行源码，删除站点等于删除源码。
-    pub rust_source: bool,
 }
 
 #[derive(Template)]

@@ -24,9 +24,6 @@
       </tbody>
     </table>
   </div>
-  {% if rust_source %}
-  <div class="alert danger">该站点绑定 Rust 运行环境：<code class="mono">index/</code> 就是运行源码目录，删除站点将同时删除源码。</div>
-  {% endif %}
   <p class="hint">vhost、证书与站点记录一并删除；运行环境不会被删除。</p>
   <form method="post" action="/{{ ctx.prefix }}/sites/{{ domain }}/delete"
         data-type-confirm="{{ domain }}">

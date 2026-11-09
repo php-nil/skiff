@@ -20,15 +20,49 @@
 </div>
 {% endif %}
 
+{% if runtime.site_count > 0 %}
+<div class="alert warn" data-shared-env>
+  该运行环境已被 {{ runtime.site_count }} 个站点使用（{% for s in bound_sites %}{{ s.domain }}{% if !loop.last %}、{% endif %}{% endfor %}）。
+  一个环境只有一个应用进程与一个端口：停止、重启、重建、改端口都会影响全部站点。
+</div>
+{% endif %}
+
+{% if !pending_confirm.is_empty() %}
+<section class="panel" data-confirm-panel>
+  <div class="panel-head"><h2>确认{{ pending_confirm_label }}</h2></div>
+  <div class="alert">
+    {% if pending_confirm == "port" %}
+    「修改端口」会影响以下 {{ bound_sites.len() }} 个站点（{{ port_value }} → {{ pending_port }}），请确认影响面：
+    {% else %}
+    「{{ pending_confirm_label }}」会影响以下 {{ bound_sites.len() }} 个站点，请确认影响面：
+    {% endif %}
+  </div>
+  <ul class="mono small">
+    {% for s in bound_sites %}
+    <li><a href="{{ s.href }}">{{ s.domain }}</a> · {{ s.type_label }} · {{ s.status_label }}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{% if pending_confirm == "port" %}/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/port{% else %}/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/{{ pending_confirm }}{% endif %}" data-drawer-post>
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <input type="hidden" name="confirm" value="1">
+    {% if pending_confirm == "port" %}<input type="hidden" name="port" value="{{ pending_port }}">{% endif %}
+    <div class="wizard-nav">
+      <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}">取消</a>
+      <button class="btn danger" type="submit">确认{{ pending_confirm_label }}</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+
 {% if !runtime.implemented %}
 <section class="panel">
   <div class="not-implemented">
     <div>
       <strong>{{ runtime.kind_label }} {{ runtime.version }} 运行环境</strong><br>
-      P2 预留模型：每站点独立容器、独立 <code>127.0.0.1</code> 端口与独立日志，环境只提供版本/镜像/启动模板。
-      P1 不提供安装、启停、重建与专属配置，也不会伪造进程/端口。
+      暂未接入：当前只登记模型，不提供安装、启停、重建与专属配置，也不会伪造进程/端口。
     </div>
-    <span class="badge warn">P2 未实现</span>
+    <span class="badge warn">尚未接入</span>
   </div>
 </section>
 {% else %}
@@ -48,7 +82,7 @@
   {% if !runtime.container_exists %}
   <div class="empty error-state runtime-install-cta">
     <strong>该实例尚未安装</strong>
-    <p class="hint">安装会拉取镜像、创建容器并写入 socket；失败原因会显示在本页与「日志」页签。</p>
+    <p class="hint">安装会拉取镜像、创建容器并写入运行环境配置；失败原因会显示在本页与「日志」页签。</p>
     {% if can_admin %}
     <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
@@ -350,6 +384,51 @@
     <div><span class="muted">权限</span><span class="mono">{{ socket_mode }}</span></div>
     <div><span class="muted">说明</span><span class="muted">固定 <code>0660 root:nobody</code>，仅 nginx worker 可连；每实例独立 socket，不占 TCP 端口。</span></div>
   </div>
+  {% else if runtime.kind_key == "node" %}
+  <div class="panel-head"><h2>Node.js 运行模型</h2></div>
+  <div class="kv">
+    <div><span class="muted">监听端口</span><span class="mono">{% if node.port.is_empty() %}未分配{% else %}127.0.0.1:{{ node.port }}{% endif %}</span></div>
+    <div><span class="muted">端口分配</span><span class="muted">每环境固定端口（<code>9200-9299</code> 内分配），创建时校验冲突；站点 vhost 用 <code>proxy_pass</code> 反代到该端口。</span></div>
+    <div><span class="muted">工作目录</span><span class="mono">{{ node.workdir }}</span></div>
+    <div><span class="muted">进程模型</span><span class="muted">单进程常驻，不走 FastCGI；容器 <code>restart: unless-stopped</code>、宿主网络，<code>PORT</code> / <code>NODE_ENV</code> / <code>HOST</code> 由内核注入。</span></div>
+    <div><span class="muted">运行日志</span><span class="mono">{% if runtime_log_path.is_empty() %}未登记{% else %}{{ runtime_log_path }}{% endif %}</span></div>
+  </div>
+  {% if can_admin %}
+  <form method="post" action="{{ node.config_url }}">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="form-grid">
+      <label>启动命令
+        <input name="command" value="{{ node.command }}" class="mono" autocomplete="off" required>
+        <p class="hint">在工作目录执行，按空白切分为 argv；默认 <code>npm start</code></p>
+      </label>
+      <label>健康检查路径
+        <input name="health_path" value="{{ node.health_path }}" class="mono" autocomplete="off" required>
+        <p class="hint">启动后轮询 <code>http://127.0.0.1:端口</code> + 该路径，非 2xx/3xx 视为失败</p>
+      </label>
+      <label>NODE_ENV
+        <select name="node_env">
+          <option value="production" {% if node.node_env == "production" %}selected{% endif %}>production</option>
+          <option value="development" {% if node.node_env == "development" %}selected{% endif %}>development</option>
+          <option value="test" {% if node.node_env == "test" %}selected{% endif %}>test</option>
+        </select>
+      </label>
+      <label>额外环境变量
+        <textarea name="env" rows="4" class="mono" spellcheck="false" placeholder="KEY=VALUE">{{ node.env_text }}</textarea>
+        <p class="hint">每行一条，<code>#</code> 开头为注释；<code>PORT</code> / <code>NODE_ENV</code> / <code>HOST</code> 由内核注入，不可覆盖</p>
+      </label>
+    </div>
+    <div class="wizard-nav">
+      <button class="btn" type="submit"{% if has_job %}{% if job.active %} disabled{% endif %}{% endif %}>保存并重建</button>
+      <span class="hint">命令与环境变量在容器启动参数里，保存后自动重建环境以生效。</span>
+    </div>
+  </form>
+  {% else %}
+  <div class="kv">
+    <div><span class="muted">启动命令</span><span class="mono">{{ node.command }}</span></div>
+    <div><span class="muted">健康检查路径</span><span class="mono">{{ node.health_path }}</span></div>
+    <div><span class="muted">NODE_ENV</span><span class="mono">{{ node.node_env }}</span></div>
+  </div>
+  {% endif %}
   {% else if runtime.kind_key == "rust" %}
   <div class="panel-head"><h2>Rust 运行模型</h2></div>
   <div class="kv">
@@ -361,9 +440,56 @@
   </div>
   <p class="hint">源码热更新：修改 <code>/www/runtime/rust/{{ runtime.name }}/app/src/main.rs</code> 后「重启」即可重新编译启动；首次编译在容器内执行，耗时取决于依赖。</p>
   {% else %}
-  <div class="not-implemented"><span class="badge warn">P2 未实现</span> {{ runtime.kind_label }} 的专属配置将在 P2 接入。</div>
+  <div class="not-implemented"><span class="badge warn">尚未接入</span> {{ runtime.kind_label }} 的专属配置暂未接入。</div>
+  {% endif %}
+
+  {% if port_editable %}
+  <div class="panel-head runtime-subhead"><h2>端口与共享</h2></div>
+  <div class="kv">
+    <div><span class="muted">固定端口</span><span class="mono">{{ port_value }}</span></div>
+    <div><span class="muted">可用区间</span><span class="mono">{{ port_range_label }}</span></div>
+    <div><span class="muted">绑定站点</span><span class="muted">{% if runtime.site_count == 0 %}暂无{% else %}{{ runtime.site_count }} 个 · 重启/重建/改端口会影响全部{% endif %}</span></div>
+    <div><span class="muted">代码目录</span><span class="muted">固定为环境 <code>app/</code>，不随站点绑定变化；站点只做域名反代。</span></div>
+  </div>
+  {% if can_admin %}
+  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/port">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="form-grid">
+      <label>修改端口
+        <input name="port" value="{{ port_value }}" class="mono" inputmode="numeric" pattern="[0-9]+" required>
+        <p class="hint">只能落在 {{ port_range_label }}，且不能被其它环境占用；改端口会重写全部绑定站点的反代并重建容器。</p>
+      </label>
+    </div>
+    <div class="wizard-nav"><button class="btn" type="submit">保存端口</button></div>
+  </form>
+  {% endif %}
+  <div class="wizard-nav">
+    <a class="btn ghost" href="{{ health_url }}">检测应用健康</a>
+    <span class="hint">健康检查独立于容器状态：容器 running 只说明进程活着，应用可能还没监听或返回非 2xx/3xx。</span>
+  </div>
   {% endif %}
 </section>
+
+{% if port_editable %}
+<section class="panel">
+  <div class="panel-head"><h2>克隆环境</h2></div>
+  <p class="muted">复制版本、镜像、专属配置与代码目录（跳过 <code>node_modules</code> / <code>target</code>），自动分配新端口，用于并跑第二个应用。新环境默认不绑定站点。</p>
+  {% if can_admin %}
+  <form method="post" action="{{ clone_url }}">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="form-grid">
+      <label>新环境名
+        <input name="name" placeholder="{{ runtime.name }}-copy" class="mono" autocomplete="off">
+        <p class="hint">留空使用 <code>{{ runtime.name }}-copy</code>；同类型内不能重名。</p>
+      </label>
+    </div>
+    <div class="wizard-nav"><button class="btn" type="submit"{% if has_job %}{% if job.active %} disabled{% endif %}{% endif %}>克隆</button></div>
+  </form>
+  {% else %}
+  <p class="hint">需要管理员权限。</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <section class="panel runtime-tab-panel" data-runtime-tab-panel="logs" hidden>
   <div class="panel-head"><h2>安装 / 扩展任务日志</h2></div>

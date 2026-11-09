@@ -11,7 +11,7 @@
       {% if !form_error.is_empty() && form_error_field.is_empty() %}<div class="alert" data-site-server-error>{{ form_error }}</div>{% endif %}
       {% if !env.ready %}
       <div class="alert warn compact">
-        Web 服务未就绪：静态网站与反向代理需要 OpenResty 运行中；运行环境站还需要单独安装并选择对应的语言运行环境（PHP / Rust 各自独立）。
+        Web 服务未就绪：静态网站与反向代理需要 OpenResty 运行中；运行环境站还需要单独安装并选择对应的语言运行环境（PHP / Node.js / Rust 各自独立）。
         <a href="/{{ ctx.prefix }}/sites/web">前往 Web 服务</a>
       </div>
       {% endif %}
@@ -22,7 +22,7 @@
           <label class="seg">
             <input type="radio" name="site_type" value="runtime"
                    {% if form.site_type == "runtime" %}checked{% endif %}>
-            <span><strong>运行环境</strong><small>PHP / Rust</small></span>
+            <span><strong>运行环境</strong><small>PHP / Node.js / Rust</small></span>
           </label>
           <label class="seg">
             <input type="radio" name="site_type" value="static"
@@ -66,7 +66,7 @@
         {% if runtimes.is_empty() %}
         <div class="empty error-state">
           <strong>没有已就绪的运行环境</strong>
-          <p class="hint">运行环境站需要已安装且运行中的实例。请先到运行环境页新建并安装 PHP / Rust，再回来创建站点。</p>
+          <p class="hint">运行环境站需要已安装且运行中的实例。请先到运行环境页新建并安装 PHP / Node.js / Rust，再回来创建站点。</p>
           <a class="btn ghost" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
         </div>
         {% else %}

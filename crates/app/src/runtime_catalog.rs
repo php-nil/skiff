@@ -3,7 +3,7 @@
 //! 版本目录、默认实例名、镜像名与 PHP 扩展的安装脚本都只在这里定义：
 //! Web 下拉框与勾选项由它渲染，安装/重建也按它执行，避免前后端各维护一份。
 
-use skiff_store::{KIND_PHP, KIND_RUST};
+use skiff_store::{KIND_NODE, KIND_PHP, KIND_RUST};
 
 use crate::sites::{DEFAULT_PHP_IMAGE, DEFAULT_PHP_VERSION};
 
@@ -16,13 +16,20 @@ pub struct RuntimeKindDef {
     pub versions: &'static [&'static str],
 }
 
-/// 可创建的类型目录。只列已实现机型（PHP / Rust）；Node.js / Go 未实现，
+/// 可创建的类型目录。只列已实现机型（PHP / Node.js / Rust）；Go 未实现，
 /// 不进入目录，新建弹窗与 API 校验都不会接受。
 pub const RUNTIME_KINDS: &[RuntimeKindDef] = &[
     RuntimeKindDef {
         kind: KIND_PHP,
         label: "PHP",
         versions: &["8.5", "8.4", "8.3"],
+    },
+    RuntimeKindDef {
+        kind: KIND_NODE,
+        label: "Node.js",
+        // Node 只保留 LTS 线：24（Krypton，当前 LTS）、22（维护期 LTS）、
+        // 20（2026-04 已 EOL，仅保留给旧应用）。
+        versions: &["24", "22", "20"],
     },
     RuntimeKindDef {
         kind: KIND_RUST,
@@ -47,7 +54,7 @@ pub fn version_supported(kind: &str, version: &str) -> bool {
     kind_def(kind).is_some_and(|d| d.versions.contains(&version.trim()))
 }
 
-/// 名称默认跟随版本（`php-8.5` / `rust-1.99`）；唯一性仍由库里同类型校验。
+/// 名称默认跟随版本（`php-8.5` / `node-24` / `rust-1.99`）；唯一性仍由库里同类型校验。
 pub fn default_name(kind: &str, version: &str) -> String {
     format!("{}-{}", kind, version.trim())
 }
@@ -57,14 +64,15 @@ pub fn image_for(kind: &str, version: &str, configured_php_image: &str) -> Strin
     match kind {
         KIND_PHP if version == DEFAULT_PHP_VERSION => configured_php_image.to_string(),
         KIND_PHP => format!("php:{version}-fpm-alpine"),
+        KIND_NODE => format!("node:{version}-alpine"),
         KIND_RUST => format!("rust:{version}-slim"),
         _ => format!("{kind}:{version}"),
     }
 }
 
-/// 当前实现 PHP 与 Rust；Node.js/Go 未实现，也不在 `RUNTIME_KINDS` 目录中。
+/// 当前实现 PHP、Node.js 与 Rust；Go 未实现，也不在 `RUNTIME_KINDS` 目录中。
 pub fn is_implemented(kind: &str) -> bool {
-    matches!(kind, KIND_PHP | KIND_RUST)
+    matches!(kind, KIND_PHP | KIND_NODE | KIND_RUST)
 }
 
 /// 官方镜像在 `Config.Env` 里声明的真实版本变量。
@@ -72,6 +80,7 @@ pub fn is_implemented(kind: &str) -> bool {
 pub fn version_env_key(kind: &str) -> Option<&'static str> {
     match kind {
         KIND_PHP => Some("PHP_VERSION"),
+        KIND_NODE => Some("NODE_VERSION"),
         _ => None,
     }
 }
@@ -84,9 +93,26 @@ pub fn default_php_image() -> &'static str {
 /// Rust 运行环境固定端口的可分配区间（host 网络，避开 80/443/面板端口）。
 pub const RUST_PORT_RANGE: std::ops::RangeInclusive<u16> = 9100..=9199;
 
-/// 为新的 Rust 环境分配端口：区间内最小的未占用端口；区间耗尽返回 None。
+/// Node.js 运行环境固定端口的可分配区间；与 Rust 分开，避免两族实例抢端口。
+pub const NODE_PORT_RANGE: std::ops::RangeInclusive<u16> = 9200..=9299;
+
+/// 进程型运行环境（Rust / Node.js）的端口区间。PHP 走 socket，不占宿主端口。
+pub fn port_range(kind: &str) -> Option<std::ops::RangeInclusive<u16>> {
+    match kind {
+        KIND_RUST => Some(RUST_PORT_RANGE),
+        KIND_NODE => Some(NODE_PORT_RANGE),
+        _ => None,
+    }
+}
+
+/// 为新的进程型环境分配端口：区间内最小的未占用端口；区间耗尽返回 None。
+pub fn allocate_port(kind: &str, used: &[u16]) -> Option<u16> {
+    port_range(kind)?.into_iter().find(|p| !used.contains(p))
+}
+
+/// 为新的 Rust 环境分配端口（兼容既有调用）。
 pub fn allocate_rust_port(used: &[u16]) -> Option<u16> {
-    RUST_PORT_RANGE.into_iter().find(|p| !used.contains(p))
+    allocate_port(KIND_RUST, used)
 }
 
 /// 扩展来源：镜像内置 / PHP 源码内置（docker-php-ext-install）/ PECL。
@@ -1132,13 +1158,41 @@ mod tests {
         assert!(version_supported(KIND_PHP, "8.3"));
         assert!(!version_supported(KIND_PHP, "8.2"));
         assert!(!version_supported(KIND_PHP, "8"));
-        assert!(kind_def("node").is_none(), "Node.js 未实现，不得进入目录");
+        assert!(version_supported(KIND_NODE, "24"));
+        assert!(version_supported(KIND_NODE, "22"));
+        assert!(!version_supported(KIND_NODE, "21"));
+        assert!(!version_supported(KIND_NODE, "24.1"));
         assert!(kind_def("go").is_none(), "Go 未实现，不得进入目录");
         assert!(version_supported(KIND_RUST, "1.99"));
         assert!(version_supported(KIND_RUST, "1.98"));
         assert!(version_supported(KIND_RUST, "1.83"), "保留旧版本可选");
         assert!(!version_supported(KIND_RUST, "1.100"));
         assert!(kind_def("unknown").is_none());
+    }
+
+    #[test]
+    fn node_catalog_uses_lts_images() {
+        let node = kind_def(KIND_NODE).expect("node 目录必须存在");
+        assert_eq!(*node.versions.first().unwrap(), "24");
+        assert!(node.versions.len() >= 2, "至少保留一个旧 LTS 可选");
+        assert_eq!(
+            image_for(KIND_NODE, "24", DEFAULT_PHP_IMAGE),
+            "node:24-alpine"
+        );
+        assert_eq!(default_name(KIND_NODE, "22"), "node-22");
+        assert_eq!(version_env_key(KIND_NODE), Some("NODE_VERSION"));
+    }
+
+    #[test]
+    fn node_and_rust_ports_do_not_overlap() {
+        assert_eq!(allocate_port(KIND_NODE, &[]), Some(9200));
+        assert_eq!(allocate_port(KIND_NODE, &[9200, 9201]), Some(9202));
+        let all: Vec<u16> = NODE_PORT_RANGE.collect();
+        assert_eq!(allocate_port(KIND_NODE, &all), None);
+        // 两族区间不相交：同一 used 列表不会把 Node 分到 Rust 端口。
+        assert_eq!(allocate_port(KIND_RUST, &all), Some(9100));
+        assert!(NODE_PORT_RANGE.start() > RUST_PORT_RANGE.end());
+        assert_eq!(allocate_port(KIND_PHP, &[]), None, "PHP 走 socket 不占端口");
     }
 
     #[test]

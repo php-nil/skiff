@@ -1,10 +1,11 @@
 # Skiff 网站运行环境与建站契约（SITE_RUNTIME_CONTRACT）
 
-> 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）**。
-> 2026-11-09：Node.js / Go **未实现**，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除，
-> 不再提供登记入口；本文相关章节保留为 P2 设计态说明。
+> 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）；Node.js 接入见 §4.3（2026-11-09）**。
+> 2026-11-09：Node.js 已在内核接入（运行环境目录、安装/启停/重建、站点绑定与反代）；
+> Go 仍未实现，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除，不再提供登记入口。
 > 基线：`crates/store/src/db.rs`（schema v15）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
-> 运行环境）、`crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
+> 与 Node.js / Rust 进程运行环境）、`crates/app/src/runtime_catalog.rs`、
+> `crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
 > 可点预览：[`docs/ui/site-runtime-preview.html`](./ui/site-runtime-preview.html)。
 
@@ -13,15 +14,15 @@
 1. **站点分三类，先选类型再建站**：`runtime`（绑定运行环境）、`static`（只托管文件）、`proxy`
    （只转发上游）。`runtime` 站点必须绑定一个已就绪的 `RuntimeEnv`；`static` / `proxy` 不绑定运行环境。
 2. **运行环境是“版本基线 + 运行实例”的业务对象**，不是 Docker 容器的别名。PHP 环境以**共享 FPM
-   池 + 共享 socket** 承载多个站点；Node.js / Go 环境以**每站点独立进程 + 独立端口**承载多个站点，
-   环境本身只提供版本、镜像与配置模板。
+   池 + 共享 socket** 承载多个站点；Node.js / Rust 环境以**单进程常驻 + 固定端口 + 反代**承载站点，
+   环境本身提供版本、镜像、启动命令与端口。Node.js / Go 的「每站点独立进程」拆分作为后续演进，不在本轮。
 3. **单一事实源**：`site_runtimes` 表是运行环境的唯一记录，站点通过 `runtime_id` 引用；站点类型、
    kind、端口、上游、WebSocket 等字段落在 `sites` 表。旧的 `php_version` 字段在 schema v7 被
    `runtime_id` 取代，不再保留两份版本信息。
 4. **运行环境页与 Docker 页分工明确**：运行环境页是业务视角（版本、绑定站点、专属配置、启停/重建），
    Docker 页只做原始容器管理。运行环境的**期望状态**存库、**实际状态**读 Docker / 进程探测；
    两页不维护第二份生命周期状态，出现外部改动时显示“状态漂移”并提供重建/同步入口。
-5. **不做假实现**：已落地静态站、PHP / Rust 站、反向代理站；Node.js / Go **未实现**，已从运行环境
+5. **不做假实现**：已落地静态站、PHP / Node.js / Rust 站、反向代理站；Go **未实现**，已从运行环境
    目录与新建弹窗摘除（不显示、不可选、API 直接拒绝「未知运行环境类型」），不再落库占位行。
    PHP 扩展管理、抽屉页签、版本元数据与 Rust 运行环境在 2026-11-06 收口（见 §11）。
 
@@ -32,7 +33,7 @@
 ### 1.1 枚举与关系
 
 ```text
-RuntimeKind  = php | node | go
+RuntimeKind  = php | node | rust   （go 未接入，不登记）
 SiteType     = runtime | static | proxy
 
 RuntimeEnv 1 ─────< Site (SiteType = runtime)
@@ -42,41 +43,47 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 对象 | 字段 | 说明 |
 | --- | --- | --- |
 | `RuntimeEnv` | `id` | 稳定 slug：内置 `php-8.5`；新实例建议 `php-<name>`；全实例唯一，创建后不可改 |
-| | `kind` | `php` / `node` / `go` |
+| | `kind` | `php` / `node` / `rust`（`go` 未接入，不登记） |
 | | `name` | 本地实例标识，规则 `^[a-z0-9][a-z0-9.-]{0,31}$`；同 kind 唯一；目录与容器名只由它推导 |
-| | `version` | 镜像/上游版本（PHP `8.5`、Node `22`、Go `1.24`）；与 `name` 解耦，同版本可多实例 |
+| | `version` | 镜像/上游版本（PHP `8.5`、Node `22`、Rust `1.83`）；与 `name` 解耦，同版本可多实例 |
 | | `image` / `image_digest` | 固定镜像引用与 digest；digest 是重建/校验依据 |
 | | `desired_state` | `running` / `stopped`，用户意图 |
 | | `last_status` | `installing` / `running` / `stopped` / `error`，最近一次探测结果（缓存，不是事实源） |
 | | `socket_path` | 仅 PHP：FPM socket 绝对路径；vhost 只读该字段，禁止硬编码 |
+| | `port` | 仅 Node.js / Rust：环境固定监听端口（Node `9200–9299`、Rust `9100–9199`）；vhost 反代只读该字段 |
 | | `is_default` | 同一 kind 内最多一个默认版本；建站向导默认选中 |
-| | `config_json` | PHP ini / FPM / Node-Go 模板等专属配置的规范化快照 |
+| | `config_json` | PHP ini / FPM 与 Node 启动命令 / `NODE_ENV` / 健康检查 / 额外环境变量的规范化快照 |
 | `Site` | `domain` | 主域名，唯一；别名仍存 `site_aliases` |
 | | `site_type` | `runtime` / `static` / `proxy` |
 | | `runtime_id` | `runtime` 站点必填；其余类型必须为空 |
-| | `app_command` | 仅 Node/Go 站点：容器内启动命令（argv 形式存储，不经宿主 shell） |
-| | `app_port` | 仅 Node/Go 站点：宿主 loopback 端口，全实例唯一 |
+| | `app_command` / `app_port` | 预留给「每站点独立进程」模式；当前 Node.js / Rust 用环境固定端口，站点行保持为空 |
 | | `proxy_target` | 仅 proxy：`http(s)://host[:port]` 上游 |
 | | `proxy_websocket` | 仅 proxy：是否升级 WebSocket |
 | | `index/ log/ ssl/ conf/` | 目录布局不变，见 §2 |
 
 - `kind` 不冗余存在站点表：站点类型为 `runtime` 时，kind/version 由 `runtime_id` join 得到；
   列表页需要分型筛选时由查询层 join，不复制一份可变字段。
+- **Node.js 与 PHP 的核心差异**：Node 不走 FastCGI，而是「启动命令 + 监听端口 + nginx 反代」。
+  启动命令、`NODE_ENV`、健康检查路径与额外环境变量属于**运行环境**（`config_json`），
+  端口属于**运行环境**（`port`）；站点只做域名反代，**不决定工作目录**（固定为环境 `app/`）。
 - 站点不能同时是 `runtime` 与 `proxy`；需要“PHP 站再做反代”时建 proxy 站指向它，或后续引入复合模式，
-  P1/P2 均不提供“一站多模式”开关。
+  P2 均不提供“一站多模式”开关。
 
 ### 1.2 绑定约束（必须由服务层与 DB 双重校验）
 
-1. `site_type = runtime` ⇒ `runtime_id` 非空且引用的环境存在、`kind` 属于 `php/node/go`。
+1. `site_type = runtime` ⇒ `runtime_id` 非空且引用的环境存在、`kind` 属于 `php/node/rust`。
 2. `site_type = static` ⇒ `runtime_id` 为空，`app_command/app_port/proxy_target` 均为空。
 3. `site_type = proxy` ⇒ `runtime_id` 为空，`proxy_target` 非空合法，`app_port/app_command` 为空。
 4. 绑定前必须检查运行环境 `last_status = running` 且 `desired_state = running`：
    - PHP：`socket_path` 存在且可连接（stat 到 socket 文件，权限 `0660`）；
-   - Node/Go：环境镜像可用（P2 才允许创建站点）。
+   - Node.js / Rust：`port` 已分配，且 `http://127.0.0.1:<port><health_path>`（Node）或端口可连接（Rust）；
+   - Go：未实现，禁止创建绑定站点。
 5. 运行环境停止 / 异常时**禁止新建绑定站点**；已有站点保留记录，但列表显示“环境停止/环境异常”，
    不把站点状态误报为 running。
 6. 禁止把 `runtime_id` 指向不同 kind 的站点：PHP 站点只能绑 PHP 环境，Node 站点只能绑 Node 环境，
    Go 同理。`kind` 由环境唯一决定，站点不单独覆盖。
+7. `runtime` 站点的 `app_port` 恒为空：反代端口只从环境 `port` 读取，服务端不接受站点自定义端口；
+   多个 `runtime` 站点可绑定同一环境，即多个域名反代到同一应用进程。
 
 ### 1.3 状态与漂移
 
@@ -102,7 +109,9 @@ Site (static / proxy)  不持有 RuntimeEnv
   www.conf       PHP：FPM pool（宿主托管，可在「配置 → 配置文件」直接编辑）
   php/php.ini    PHP：宿主托管主配置（挂载为容器 /usr/local/etc/php/php.ini）
   php/conf.d/    PHP：宿主托管扩展 ini（挂载为 conf.d-skiff，扫在镜像 conf.d 之后）
-  log/           runtime.log（内核操作）、build.log（重建/扩展构建）、fpm-error.log
+  entry.sh       Node.js / Rust：入口脚本（进入固定 app/、首次装依赖、exec 启动命令）
+  app/           Node.js / Rust：唯一代码目录（与站点绑定无关，可整体替换/克隆）
+  log/           runtime.log（内核操作）、build.log（重建/扩展构建）、fpm-error.log、server.log（进程输出）
   data/          运行环境自身数据（session/临时目录），不放站点代码
 ```
 
@@ -118,30 +127,27 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 ```text
 /www/sites/<域名>/
-  index/   静态/PHP 的文档根；Rust 的运行源码目录（Cargo.toml + src/）；Node/Go 的应用工作目录（入口文件或已编译二进制）
-  log/     access.log / error.log；Node/Go 追加 app.log / app.err.log
+  index/   静态/PHP 的文档根；Node.js / Rust 站点仅占位（代码在环境 app/）
+  log/     access.log / error.log
   ssl/     cert.pem / key.pem（站点 HTTPS）
-  conf/    <域名>.conf；Node/Go 追加 app.json（进程/端口/健康检查快照）
+  conf/    <域名>.conf
 ```
 
-- **布局不变**：现有“一站一目录”保持不变，`config` 只新增 `app.json` 与日志文件，不迁移旧目录。
+- **布局不变**：现有“一站一目录”保持不变，不为 Node.js 新增 `app.json`（命令/端口/健康检查属于运行环境，见 §4.3）。
 - `static`：`index/` 必须存在，根目录是 `<站点目录>/index`。
 - `proxy`：不创建 `index/`；站点目录只含 `conf/ log/ ssl/`。目录页对 proxy 显示“反代站点无文档根”。
 - `runtime`（PHP）：`index/` 是文档根；PHP-FPM 池与 socket 由环境提供，不由站点目录提供。
-- `runtime`（Rust）：**`index/` 就是运行源码目录**。容器执行
-  `cargo run --release --manifest-path /www/sites/<域名>/index/Cargo.toml`，构建产物写到运行环境
-  `target/`，不回写站点目录。只有该环境**未绑定任何站点**时才回落到 `/www/runtime/rust/<name>/app`；
-  新建 Rust 站点只在 `index/` 生成 `Cargo.toml` + `src/main.rs`，**不生成 `index.php`**。
-  同一环境绑定多个站点时以最早绑定的站点为准（端口固定，只能跑一个进程）。
-- `runtime`（Node/Go）：`index/` 是应用工作目录；`conf/app.json` 记录命令、端口、健康检查，
-  由内核生成，站点详情只读展示，不提供任意 Docker 参数编辑。
-- 删除站点：删除该站整目录 + 站点记录 + 别名 + 证书；**不删除运行环境**。Rust 站点的 `index/`
-  即运行源码，删除站点就是删除源码（不可撤销，且不经回收站）。删除确认页必须展示将被删除的具体量：
-  目录大小、文件数、关联定时任务数（`source = site:<域名>`）、绑定的运行环境（删除后仅解除该站点绑定），
-  Rust 站点额外标注「将删除源码目录」；确认方式为输入域名，输入不匹配时提交按钮禁用，服务端同时校验
-  `confirm` 字段。批量操作接口的 `action=delete` 一律拒绝（无 UI 入口，且会绕过输入确认），
-  统一引导到单站确认页。删除后若该 Rust 环境仍绑定其它站点则以最早绑定者为准，否则回落 `app/` 兜底。删除运行环境：被站点引用时
-  拒绝，并列出域名与“先改绑或删除站点”的动作。
+- `runtime`（Node.js / Rust）：**方案 A —— 一个环境 = 一个应用进程 = 一个固定代码目录**。
+  容器进入 `/www/runtime/<kind>/<name>/app` 执行启动命令（Node 默认 `npm start`，Rust
+  `cargo run --release`），`node_modules/` / `target/` 也在该目录；新建环境时若 `app/` 缺失
+  才写最小脚手架（已存在则原样保留，重建/克隆不覆盖用户代码）。
+  绑定站点只在 vhost 里 `proxy_pass http://127.0.0.1:<环境端口>`，**不改工作目录、不写站点
+  `index/`**；多个站点绑同一环境即多个域名反代到同一进程。
+- 删除站点：删除该站整目录 + 站点记录 + 别名 + 证书；**不删除运行环境与其代码目录**。
+  删除确认页展示目录大小、文件数、关联定时任务数与绑定的运行环境（删除后仅解除该站点绑定）；
+  确认方式为输入域名，输入不匹配时提交按钮禁用，服务端同时校验 `confirm` 字段。批量操作的
+  `action=delete` 一律拒绝（无 UI 入口，且会绕过输入确认），统一引导到单站确认页。
+  删除运行环境：被站点引用时拒绝，并列出域名与“先改绑或删除站点”的动作。
 
 ### 2.3 多版本、端口与 socket 分配
 
@@ -154,12 +160,14 @@ Site (static / proxy)  不持有 RuntimeEnv
 | PHP 默认实例 | 建站向导默认选中；删除默认环境前必须先切换默认，存在绑定站点时直接拒绝 |
 | PHP socket | 每个 PHP 实例独立 socket `/www/runtime/<kind>/<name>/php-fpm.sock`；vhost 按站点 `runtime_id` 取该实例 socket，不按版本号推导 |
 | PHP 共享池 | 同一实例所有 PHP 站点共享一个 FPM master / socket / 池；P1 不做站点级池，站点级 php.ini 覆盖留 P2 |
-| Node/Go 端口 | 每站点独立容器/进程 + 独立宿主 loopback 端口，范围 `30000–32767` |
-| 端口分配 | 取范围内最小空闲且数据库未占用、宿主未监听的端口；创建/改端口时做 bind 探测，失败给出端口与占用进程 |
-| 端口暴露 | Node/Go 容器使用 bridge 网络，端口映射固定 `127.0.0.1:<app_port>:<container_port>`；禁止 `0.0.0.0` 映射 |
-| 端口释放 | 站点删除/改绑成功后释放；删除失败不提前释放 |
-| 保留端口 | `80` / `443`（nginx）、`30000` 以下不分配；PHP 不占宿主端口，只走 socket |
-| 健康检查 | Node/Go 站点创建后轮询 `http://127.0.0.1:<app_port><health_path>`（默认 `/`），1s 超时、最多 10 次；失败置 `error` 并保留启动日志，不无限重试 |
+| Node.js 端口 | 每个 Node.js 环境一个固定宿主 loopback 端口，范围 `9200–9299`；端口属于环境，不属于站点 |
+| 端口分配 | 建环境时取区间内最小未占用端口（DB 已用即跳过），区间耗尽拒绝创建；不在站点创建时分配 |
+| 端口变更 | 环境详情可改端口：必须在 kind 区间内且未被其它环境占用；有站点绑定时先列出受影响站点并要求二次确认，确认后重写全部相关 vhost 并重建容器 |
+| 端口与站点 | 站点的反代端口**只从环境读取**（`site_runtimes.port`），站点行 `app_port` 始终为空，不接受用户自定义端口 |
+| 端口暴露 | Node.js / Rust 容器使用 host 网络；应用默认读 `HOST=127.0.0.1`，nginx 反代 `127.0.0.1:<port>`；应用若硬编码 `0.0.0.0`，需在宿主防火墙侧限制 |
+| 端口释放 | 环境删除后释放；删除失败不提前释放 |
+| 保留端口 | `80` / `443`（nginx）以及两段运行区间之外不分配；PHP 不占宿主端口，只走 socket |
+| 健康检查 | Node.js 安装/启动/重建后轮询 `http://127.0.0.1:<port><health_path>`（默认 `/`），1 秒间隔、最多 180 秒；非 2xx/3xx 置 `error` 并保留 `log/server.log`，不无限重试 |
 
 > `proxy` 的 `proxy_target` 不参与端口分配；允许指向本机其他端口，但保存时检测“目标等于本站域名/80/443”
 > 形成回环的情况并拒绝。
@@ -173,8 +181,9 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 类型 | 第一步 | 第二步字段 | 创建副作用 | 就绪条件 |
 | --- | --- | --- | --- | --- |
 | 运行环境 · PHP | 选“运行环境” → 选 PHP → 选 PHP 环境 | 主域名、别名、站点目录 | 生成 vhost（fastcgi_pass 指向 `socket_path`）、`index/log/ssl/conf` | PHP 环境 running + socket 可连接 |
-| 运行环境 · Rust | 选“运行环境” → 选 Rust → 选 Rust 环境 | 主域名、别名、站点目录 | 构建并运行站点源码的站点容器 + vhost 反代 | 环境 running + 容器端口可访问 |
-| 运行环境 · Node/Go | **2026-11-09 已从 `RUNTIME_KINDS` 与新建弹窗摘除**，向导不出现该类型 | — | —（P2 设计保留在 §4.3，未排期） | — |
+| 运行环境 · Node.js | 选“运行环境” → 选 Node.js → 选 Node 环境 | 主域名、别名、站点目录 | 生成反代 vhost（`proxy_pass 127.0.0.1:<环境端口>`）、`index/log/ssl/conf`；站点目录不写代码，环境已有应用则直接可用 | Node 环境 running + 端口通过 HTTP 健康检查 |
+| 运行环境 · Rust | 选“运行环境” → 选 Rust → 选 Rust 环境 | 主域名、别名、站点目录 | 生成反代 vhost（`proxy_pass 127.0.0.1:<环境端口>`）、`index/log/ssl/conf`；代码固定在环境 `app/` | 环境 running + 端口可访问 |
+| 运行环境 · Go | **未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除**，向导不出现该类型 | — | — | — |
 | 静态网站 | 选“静态网站”，不选运行时 | 主域名、别名、站点目录 | 生成静态 vhost、`index/log/ssl/conf` | 无运行时依赖；目录可创建 |
 | 反向代理 | 选“反向代理”，不选运行时 | 主域名、别名、上游 URL、WebSocket 开关 | 生成 proxy vhost、`log/ssl/conf`（不建 `index/`） | 上游 URL 合法；不要求上游当下可达，但保存时给出探测提示 |
 
@@ -186,9 +195,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 别名 | 逗号/空格分隔；每个域名单独校验；不得与任何主域名/别名重复 | `别名 api.example.com 已是其他站点的域名` |
 | 站点目录 | 默认 `/www/sites/<主域名>`；规范化后必须是 `/www/sites` 的一级子目录，拒绝 `..`、更深层、越界 | `站点目录必须是 /www/sites/<域名>` |
 | PHP 运行时 | 必须 running；socket 必须可连接 | `PHP 运行环境未就绪，请先启动或重建` |
-| Node/Go 运行时 | 已摘除；提交 `kind=node`/`kind=go` 直接拒绝 | `未知运行环境类型` |
-| 启动命令 | P2；非空；不得包含宿主路径或凭据；按 argv 存储 | `启动命令不能为空` |
-| 端口 | P2；整数；`30000–32767`；不与已有站点/保留端口冲突 | `端口 30081 已被站点 api.example.com 占用` |
+| Node.js 运行时 | 必须 running；端口已分配且 HTTP 健康检查通过 | `Node.js 运行环境未就绪，请先启动或重建` |
+| Go 运行时 | 未实现；提交 `kind=go` 直接拒绝 | `未知运行环境类型` |
+| 启动命令 | 属于运行环境配置（非建站表单）；非空、按 argv 切分、拒绝 shell 元字符与宿主凭据 | `启动命令不能为空` / `启动命令包含不支持的字符` |
+| 端口 | 属于运行环境（`9200–9299`）；建站表单不填端口，由环境固定 | — |
 | 上游 URL | 仅 `http://` / `https://`；无 userinfo；host 必填；端口 1–65535 | `上游地址必须以 http:// 或 https:// 开头` |
 | WebSocket | 布尔；开启后 vhost 增加 `Upgrade` / `Connection` 头 | — |
 
@@ -196,7 +206,7 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 - 类型卡显示“是否需要运行环境”和“创建后产出什么”，选中后立即显示对应的绑定提示：
   - PHP：`共享 PHP-FPM 池与 socket，一个环境可承载多个站点；修改环境配置会影响全部绑定站点。`
-  - Node/Go：`每站点独立进程与端口；运行环境只提供版本与镜像。`
+  - Node.js：`单进程常驻 + 固定端口 + 反代；启动命令、环境变量与代码目录都属于环境，站点只是域名入口。`
   - 静态：`不绑定运行环境，只创建文档根与 vhost。`
   - 反代：`不创建文档根，只生成转发配置；WebSocket 可选。`
 - 运行环境卡显示：版本、状态、占用站点数、socket 或端口范围、默认标记。未运行环境不可选。
@@ -213,12 +223,12 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 | 列 | 内容 |
 | --- | --- |
-| 类型 | `PHP`、`Rust`（Node.js / Go 已于 2026-11-09 摘除，不再出现在列表与向导） |
+| 类型 | `PHP`、`Node.js`、`Rust`（Go 未实现，不出现在列表与向导） |
 | 实例名 | 环境名；默认版本带「默认」标记 |
 | 版本 | 镜像/上游版本号，来自版本目录（见 4.5） |
 | 状态 | 运行中 / 已停止 / 异常 / 安装中（排队、拉镜像、创建容器、启动、失败）+ 进度 |
 | 占用站点 | 绑定站点数 |
-| 接入方式 | 只显示短标识：PHP `sock`、Rust 为容器端口；完整 socket/端口路径放 `title` 悬浮提示与抽屉里，不再单列长路径 |
+| 接入方式 | 只显示短标识：PHP `sock`、Node.js / Rust `:端口`；完整 socket/端口路径放 `title` 悬浮提示与抽屉里，不再单列长路径 |
 | 操作 | 只保留一个「详情」入口；整行或按钮都打开右侧抽屉，不再并列「更多」 |
 
 - 表格按内容自适应列宽并铺满容器，不固定撑宽某一列；接入方式列宽度只够放 `sock` / `:8080`。
@@ -248,14 +258,30 @@ Site (static / proxy)  不持有 RuntimeEnv
 - 停止 PHP 环境：所有绑定 PHP 站点显示“环境停止”，vhost 保留但请求返回 502/503 维护响应；
   恢复后自动回到运行中，不逐个改站点状态。
 
-### 4.3 Node / Go 环境详情（P2 设计态）
+### 4.3 Node.js 环境详情（2026-11-09 已接入）
 
-- 基础信息：版本、镜像 digest、进程模型（每站点独立容器 + loopback 端口）、启动时间、关联站点数。
-- 专属配置：版本只读；启动命令模板、健康检查路径、重试策略、端口分配范围；不提供任意 Docker 参数。
-- 关联站点：域名、端口、健康状态、最近重启；点击进站点详情。
-- 日志：环境操作日志 + 每个站点 `app.log` / `app.err.log` 的聚合入口。
-- **当前实现**：Node / Go **未实现**，已从运行环境目录与新建弹窗摘除，列表/详情不存在入口；
-  本节仅保留 P2 设计态说明。接入时必须先补齐安装、启动、端口分配与站点反代链路，再恢复目录项。
+- **运行模型**：一个环境 = 一个常驻 Node 进程 = 一个固定端口 = 一个固定代码目录
+  `/www/runtime/node/<name>/app`；不走 FastCGI，不共享 socket，**不随站点绑定切换目录**。
+  多个站点绑同一环境时，只是多个域名反代到同一进程（环境详情与站点详情都提示影响面）。
+- 基础信息：版本、镜像与 digest、监听端口、工作目录、关联站点数、按需“检测应用健康”。
+- 专属配置（`基础信息 / 专属配置 / 日志 / 关联站点` 页内标签）：
+  - 启动命令（默认 `npm start`，按空白切分为 argv，拒绝 `;`、`|`、`$`、反引号等 shell 元字符）；
+  - 健康检查路径（默认 `/`，必须 `/` 开头）；
+  - `NODE_ENV`（`production` / `development` / `test`）；
+  - 额外环境变量（每行 `KEY=VALUE`，大写键名；`PORT` / `NODE_ENV` / `HOST` 由内核注入，不可覆盖）；
+  - 端口（可改，必须在 `9200–9299` 且未被其它环境占用；有站点绑定时先确认影响面）、
+    工作目录（固定只读，不存在“跟随站点”的切换）。
+- **共享保护**：有站点绑定时，停止/重启/重建/改端口都先列出受影响域名并要求二次确认；
+  删除环境直接拒绝，必须先改绑或删除站点。「克隆环境」复制配置与代码目录（跳过
+  `node_modules` / `target`）、自动分配新端口，用于并跑第二个应用。
+- **保存流程**：校验 → 写 `config_json` → 若配置有变化，触发一次重建任务（命令与环境变量在容器
+  `command`/`Env` 里，只有重建才生效）。保存成功但重建未启动时必须如实提示，不假装已生效。
+- 安装/启动/重建流程：写 `entry.sh` 与兜底 `app/` → 拉取固定 digest 镜像 → 创建/启动容器 →
+  轮询健康检查（最多 180 秒）→ 成功后才写 `last_status = running`；失败保留 `log/server.log`
+  尾部作为原因，不无限重试。
+- 日志：`log/server.log`（应用 stdout/stderr）、运行环境操作日志与重建日志；不另建每站点 `app.log`。
+- 依赖安装：入口脚本在 `node_modules/` 不存在时执行 `npm ci`（有 lockfile）或
+  `npm install --omit=dev`；失败原因直接进 `server.log`。
 
 ### 4.4 启停 / 重建 / 删除规则
 
@@ -266,14 +292,15 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 重建 | 同一 `id`、同一版本；生成新容器后原子切换；失败回滚旧容器/旧配置 |
 | 删除 | **存在绑定站点时禁止**；列表给出域名与“先改绑或删除站点”的动作；删除默认版本前先切换默认 |
 | 改版本 | 运行环境不可原地改版本；新建同 kind 新版本，站点逐个改绑（P2 提供批量改绑） |
-| 改绑站点 | 目标环境必须同 kind 且 running；PHP 站点换环境后重新生成 vhost 的 socket；Node/Go 换环境后重建站点容器 |
+| 改绑站点 | 目标环境必须同 kind 且 running；PHP 站点换环境后重新生成 vhost 的 socket；Node.js / Rust 换环境后重建 vhost 端口并按新环境重启进程 |
 
 ### 4.5 新建运行环境与异步安装
 
-- **新建弹窗**：类型下拉（PHP / Rust）→ 版本下拉（大版本下的小版本，如 `8.5 / 8.4 / 8.3`）
-  → 实例名（默认 `php-8.5` 跟随类型与版本，可改；同 kind 内唯一，目标目录已存在直接拒绝）。
-  不允许手填版本；Node / Go **未实现**，已从 `RUNTIME_KINDS` 与弹窗摘除，提交 `kind=node|go` 由后端
-  按「未知运行环境类型」拒绝；Rust 可安装并建站。
+- **新建弹窗**：类型下拉（PHP / Node.js / Rust）→ 版本下拉（PHP `8.5 / 8.4 / 8.3`；
+  Node.js `24 / 22 / 20`；Rust `1.99 / 1.98 / 1.97 / 1.83`）
+  → 实例名（默认跟随类型与版本，如 `php-8.5` / `node-24`，可改；同 kind 内唯一，目标目录已存在直接拒绝）。
+  不允许手填版本；Go **未实现**，已从 `RUNTIME_KINDS` 与弹窗摘除，提交 `kind=go` 由后端按
+  「未知运行环境类型」拒绝。
 - **版本目录单一来源**：`crates/app/src/runtime_catalog.rs` 的 `RUNTIME_KINDS` 同时驱动弹窗下拉、
   安装镜像选择与后端校验；新增版本只改这一处，模板不再硬编码版本列表。
 - **扩展清单单一来源**：同一模块的 `PHP_EXTENSIONS` 同时驱动安装弹窗勾选、抽屉开关、
@@ -299,12 +326,12 @@ Site (static / proxy)  不持有 RuntimeEnv
 | --- | --- | --- |
 | 视角 | 业务：版本、绑定站点、专属配置、影响面 | 基础设施：原始容器、镜像、网络、卷 |
 | 生命周期 | 期望状态 + 重建/删除业务动作 | 原始 start/stop/restart/remove/exec |
-| 配置 | PHP ini / FPM / Node 模板 | 容器参数、挂载、环境变量 |
+| 配置 | PHP ini / FPM / Node 启动命令与环境变量 | 容器参数、挂载、环境变量 |
 | 站点关系 | 展示“影响 N 个站点” | 展示“受管运行环境”徽章与返回链接 |
 
-- 运行环境容器命名确定性：`skiff-rt-<id>`（如 `skiff-rt-php-8.5`）；标签
-  `skiff.managed=runtime`、`skiff.runtime=<id>`。Node/Go 站点容器：`skiff-site-<slug>`，
-  标签 `skiff.managed=site`、`skiff.site=<域名>`。
+- 运行环境容器命名确定性：`skiff-<kind>-<name>`（如 `skiff-node-web`、`skiff-php-8.5`）；
+  Node.js / Rust 的代码固定在环境 `app/`，
+  站点只做域名反代，不额外创建每站点容器。
 - Docker 页**不隐藏**这些容器：显示徽章“运行环境/站点”，操作前提示影响面；删除/停止等破坏性动作
   必须二次确认并说明“将影响 N 个站点，业务页可能出现状态漂移”。
 - 运行环境页提供“在 Docker 中查看”深链：`/{p}/m/core/docker/containers?filter=<container>`；
@@ -393,9 +420,9 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
    `sites` 使用 `site_type/runtime_id/...`，删除 `php_version`（表重建，不做兼容双写）。
 2. **三类站点**：静态站、PHP 站（绑定已就绪 PHP 实例）、反向代理站（含 WebSocket）完整建站、启停、删除、
    配置生成与日志。
-3. **三步向导**：类型选择、运行时选择（列出所有已就绪 PHP / Rust 实例）、类型相关字段、校验与确认；Node/Go 未实现，不出现选项。
-4. **运行环境页**：PHP / Rust 列表与右侧抽屉详情、基础信息、ini/FPM 配置、socket 只读、日志、关联站点、启停/重建/删除
-   保护；列表与详情不常驻安装进度/镜像源；Node/Go 不显示目录项或信息卡。
+3. **三步向导**：类型选择、运行时选择（列出所有已就绪 PHP / Node.js / Rust 实例）、类型相关字段、校验与确认；Go 未实现，不出现选项。
+4. **运行环境页**：PHP / Node.js / Rust 列表与右侧抽屉详情、基础信息、PHP ini/FPM、Node 启动命令/健康检查/环境变量、日志、关联站点、启停/重建/删除
+   保护；列表与详情不常驻安装进度/镜像源；Go 不显示目录项或信息卡。
 5. **多版本 PHP**：同 kind 多实例并行，每实例独立 socket `/www/runtime/php/<name>/php-fpm.sock`；
    vhost 按站点 `runtime_id` 路由；停止实例时绑定站点明确 502/503 且可回环境页，不静默换实例。
 6. **状态与边界**：运行环境停止导致绑定站点显示“环境停止”；删除被引用环境被拒绝；Docker 页徽章与双向深链。
@@ -404,9 +431,9 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 
 ### P2（扩展，不阻塞 P1）
 
-- Node.js / Go 运行环境安装、重建、启停；每站点独立容器 + loopback 端口 + 健康检查 + 应用日志。
-- Go 只运行**用户已编译二进制**，面板不做 `go build`、不假装有构建链路；Node 依赖安装若做，必须有独立
-  构建日志与失败回滚，不能静默假装成功。
+- Go 运行环境安装、重建、启停；只运行**用户已编译二进制**，面板不做 `go build`、不假装有构建链路。
+- 每站点独立 Node 进程/容器（当前为每环境单进程 + 固定端口）、站点级依赖构建日志与失败回滚、
+  站点级健康状态与最近重启。
 - PHP 扩展开关与受控镜像重建（Dockerfile 在 `ext/`，构建日志可见）；站点级 php.ini / 独立 FPM 池。
 - 运行环境漂移检测的“同步状态”、站点改绑向导、批量改绑。
 
@@ -429,25 +456,29 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 | T2 | kind 一致性 | PHP 站点绑 Node 环境拒绝；Node 站点绑 PHP 环境拒绝 | 单测 | P1 |
 | T3 | 运行环境未就绪 | 停止/异常环境不能新建绑定站点；错误含环境状态 | 单测/集成 | P1 |
 | T4 | 共享 PHP socket | 两个 PHP 站点使用同一 `socket_path`；vhost 不硬编码路径 | 集成 | P1 |
-| T5 | Node/Go 端口分配 | 端口唯一、范围 `30000–32767`、占用/监听冲突拒绝、删除后释放 | 单测 | P2 |
+| T5 | 进程型端口归属 | Node `9200–9299`、Rust `9100–9199` 不重叠；端口唯一、区间耗尽拒绝、删除后释放；改端口越界/占用拒绝 | 单测 | P1 |
 | T6 | 反向代理校验 | 非 http(s)、带 userinfo、缺 host、回环到自身均拒绝；WebSocket 头生成 | 单测/集成 | P1 |
 | T7 | 静态站无运行时依赖 | 无任何运行环境也可创建、启停、访问 200 | 集成 | P1 |
 | T8 | 删除被引用运行环境 | 有绑定站点时拒绝；错误列出域名；无绑定时删除成功且不删站点 | 单测/集成 | P1 |
-| T9 | 停止运行环境的级联 | PHP 环境停止后站点显示“环境停止”，恢复后回到运行中；不修改站点自身期望状态 | 集成 | P1 |
+| T9 | 停止运行环境的级联 | PHP / Node.js 环境停止后站点显示“环境停止”，恢复后回到运行中；不修改站点自身期望状态 | 集成 | P1 |
 | T10 | 默认版本 | 同 kind 至多一个默认；删除/切换默认规则；向导默认选中 | 单测 | P1 |
-| T11 | 向导校验 | 域名格式/重复、别名冲突、目录越界、空字段、上游非法、端口冲突逐项报错 | 集成/浏览器 | P1 |
+| T11 | 向导校验 | 域名格式/重复、别名冲突、目录越界、空字段、上游非法逐项报错 | 集成/浏览器 | P1 |
 | T12 | 权限矩阵 | viewer/operator 无写操作；admin 可写；未授权 URL 404；CSRF 缺失拒绝 | 集成 | P1 |
 | T13 | 审计事件 | 建站/启停/删除/环境配置/重建事件名与目标正确；无敏感内容 | 单测/集成 | P1 |
 | T14 | 路由与深链 | 规范 URL 与旧别名均 200；runtime 详情/标签页；未知 id 404 | 集成 | P1 |
 | T15 | Docker 边界 | 受管容器带徽章；Docker 操作后运行环境页显示漂移；双链正确 | 集成/浏览器 | P1 |
 | T16 | 状态漂移 | 外部停止容器后页面显示“状态漂移”；“仅同步状态”不重启容器 | 集成 | P1 |
 | T17 | 迁移 | v6→v8 幂等；旧站点映射到 `php-8.5`；默认站/SSL/别名不丢；`name` 回填 | 单测 | P1 |
-| T18 | Node/Go 未实现 | P1 不出现“安装成功”或假端口；按钮禁用且有 P2 文案 | 集成/浏览器 | P1 |
-| T19 | Node/Go 健康检查 | 健康检查超时置 error、保留日志、不无限重试；恢复后 running | 集成 | P2 |
+| T18 | Go 未实现 | 目录与向导不出现 Go；提交 `kind=go` 返回“未知运行环境类型” | 集成/浏览器 | P1 |
+| T19 | Node.js 健康检查 | 启动/重建超时置 error、保留 `server.log`、不无限重试；恢复后 running；GET 非 2xx/3xx 判定失败 | 集成 | P1 |
 | T20 | 多实例 PHP | 同 kind 不同 `name` 的 socket/容器互不覆盖；站点按 `runtime_id` 指向各自 socket；同版本多实例允许 | 单测/集成 | P1 |
+| T21 | Node.js 命令与端口边界 | 启动命令拒绝 `;`、`|`、`$`、反引号；`PORT`/`NODE_ENV`/`HOST` 不可覆盖；健康检查路径必须 `/` 开头 | 单测 | P1 |
+| T22 | Node.js 站点绑定 | 站点目录不生成 `package.json` / `server.js`（无 `index.php`）；绑定只写 `runtime_id`，vhost 反代到环境端口；解绑/删站点不影响环境代码目录与进程 | 集成 | P1 |
+| T23 | 共享环境保护 | 有绑定站点时：停止/重启/重建/改端口先列出域名并要求 `confirm=1`；无 `confirm` 不执行；删除环境被拒绝 | 单测/集成 | P1 |
+| T24 | 克隆环境 | 复制 `config_json` 与 `app/`（跳过 `node_modules` / `target`），分配同 kind 新端口；重名/目录已存在拒绝；PHP 拒绝克隆 | 单测/集成 | P1 |
 
-浏览器验收至少覆盖：向导三类分支、校验报错、运行环境列表筛选、PHP 详情标签切换、配置保存失败回滚提示、
-Node/Go P2 禁用态、站点列表窄屏无横向滚动。
+浏览器验收至少覆盖：向导三类分支、校验报错、运行环境列表筛选、PHP / Node.js 详情标签切换、
+配置保存失败回滚提示、Go 未接入提示、站点列表窄屏无横向滚动。
 
 ---
 
@@ -499,14 +530,14 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 - 概览的服务健康块新增/扩展“网站运行环境”信号：运行环境异常或状态漂移时显示计数与受影响站点数；
   点击跳 `core/sites/env`。
-- 无运行环境 / 无站点时显示明确空态，不写死数字；P1 不做 Node/Go 伪造指标。
+- 无运行环境 / 无站点时显示明确空态，不写死数字；Go 未接入，不伪造指标。
 
 ### 9.5 现有代码与模板（仅登记影响，不在本轮修改）
 
 | 位置 | 影响 |
 | --- | --- |
 | `crates/store/src/db.rs` / `db/sites.rs` | v7 迁移、`site_runtimes` CRUD、`sites` 字段重建 |
-| `crates/app/src/sites.rs` | 按类型生成 vhost、端口分配、PHP socket 取 `runtime_id`、Node/Go 进程模型（P2） |
+| `crates/app/src/sites.rs` | 按类型生成 vhost、环境端口分配、PHP socket 取 `runtime_id`、Node.js / Rust 进程模型与健康检查 |
 | `crates/web/src/handlers/sites.rs` | 向导三步、运行环境详情、校验、权限、审计改名 |
 | `crates/web/templates/site_new.html` / `site_env.html` / `sites.html` / `site_detail.html` | 三类分支、环境列表与详情、站点类型列 |
 | `crates/web/src/menu.rs` | 仅确认 `core/sites/*` 稳定键，不新增 L2 |
@@ -517,10 +548,10 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 | 1Panel 能力 | Skiff 取舍 |
 | --- | --- |
-| 网站 → 运行环境（PHP/Node/Go 版本安装） | 采纳；但运行环境页只做业务视角，原始容器仍归 Docker |
+| 网站 → 运行环境（PHP / Node.js / Rust 版本安装） | 采纳；但运行环境页只做业务视角，原始容器仍归 Docker |
 | 建站先选“运行环境/静态/反代” | 采纳，作为三步向导第一步 |
 | PHP 扩展、ini、FPM 进程池 | 采纳；P1 ini/FPM 可改，扩展只读，P2 受控重建 |
-| Node/Go 项目一键部署、源码构建 | 不照抄；P1 不提供，P2 Go 只运行已编译二进制，不做 `go build` |
+| Node/Go 项目一键部署、源码构建 | 不照抄；Node 只做「环境内 `npm start` + 反代」，Go 未接入且只运行已编译二进制，面板不做 `go build` |
 | 数据库创建、SSL 一键申请（Let’s Encrypt） | 不做；自签/上传证书保留现状；向导不放假开关 |
 | 应用商店、Compose 编排 | 不做；避免与内核“三核心”边界冲突 |
 
@@ -530,9 +561,10 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 ### Q1. P1 是否必须包含 Node.js / Go 站点？
 
-- 已定：**不包含，且已摘除**。2026-11-09 从 `RUNTIME_KINDS` 与新建弹窗移除，不再有「禁用态」占位；
-  安装、进程、端口与健康检查等 P2 设计仍保留在 §4.3，未排期。
-- 理由：没有构建/进程守护链路时做“能跑”的 Node/Go 必然假实现；先把 PHP / Rust / 静态 / 反代闭环做扎实。
+- 已定：**Node.js 已接入；Go 不包含且已摘除**。2026-11-09 Node.js 恢复 `RUNTIME_KINDS` 目录、
+  安装/启停/重建、站点绑定、专属配置与健康检查；Go 仍从目录与新建弹窗移除，提交 `kind=go` 直接拒绝。
+- 理由：Node 的「单进程 + 端口 + 反代」链路已闭环，与 PHP 的 FastCGI 模型并列；Go 缺少构建/运行链路，
+  做“能跑”必然假实现。
 
 ### Q2. PHP socket 路径：固定 `/www/php/php-fpm.sock`，还是每实例独立路径？
 
@@ -541,10 +573,15 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 - 理由：路径只依赖 `name` 后，同版本多实例（`php-8.5` / `php-8.5-a`）天然隔离；vhost 按站点
   `runtime_id` 取对应实例 socket，不按版本号推导，也不再散落硬编码。
 
-### Q3. Node/Go 的运行模型：每站点独立容器，还是每环境一个常驻进程？
+### Q3. Node.js / Go 的运行模型：每站点独立容器，还是每环境一个常驻进程？
 
-- 推荐：**每站点独立容器 + 独立 loopback 端口 + 独立日志**；运行环境只提供镜像/版本/模板。
-- 理由：站点级启停、日志、端口冲突与影响面清晰；符合内核 Docker 能力面，也避免一个进程崩溃拖垮同环境站点。
+- 已定（2026-11-09 收口为方案 A）：**一个环境 = 一个应用进程 = 一个固定代码目录**
+  `/www/runtime/<kind>/<name>/app`，配固定端口 + 反代，与 Rust 一致；环境提供版本、镜像、
+  启动命令、`NODE_ENV`、健康检查、环境变量、端口与代码目录，站点只存 `runtime_id`。
+- 理由：Node 是单进程常驻模型，一个环境一个端口最贴近「启动命令 + 监听端口 + 反代」；
+  也避免引入第二套站点级容器生命周期。**不采用**“绑定站点即切换源码目录”的做法：多站点共享
+  时目录归属含糊、删除站点会误删代码、克隆也无从下手。代价是同环境多站点共享进程与端口，
+  需在 UI 上显式提示影响面并二次确认；站点级隔离与独立日志留作 P2（见 §7）。
 
 ### Q4. 删除运行环境时存在绑定站点，如何处理？
 
@@ -560,7 +597,8 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 | 无运行环境 | `还没有运行环境。先安装 PHP 8.5，再创建需要运行时的网站。` |
 | 环境停止 + 有绑定站点 | `环境已停止，3 个站点当前不可访问。启动环境后会恢复。` |
 | 环境异常 | `环境异常：socket 不可连接。查看日志 / 重建环境` |
-| Node/Go（已摘除） | 列表与向导不再出现该类型；直接提交 `kind=node`/`kind=go` 返回 `未知运行环境类型` |
+| Node.js / Rust 未就绪 | `环境未就绪：端口未监听或健康检查未通过。查看日志 / 重建环境` |
+| Go（未实现） | 列表与向导不出现 Go；直接提交 `kind=go` 返回 `未知运行环境类型` |
 | proxy 无文档根 | `反向代理站点不创建文档根，只生成转发配置。` |
 | 无绑定站点 | `该环境暂无站点。去网站列表新建。` |
 
@@ -629,18 +667,17 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
   - 端口区间 **9100–9199**，创建时取区间内最小未占用端口并落 `site_runtimes.port`；冲突直接拒绝；
   - 容器 `skiff-rust-<name>`，`network_mode=host`，挂载 `/www`；
   - 容器入口固定为 `sh /www/runtime/rust/<name>/entry.sh`，日志重定向到
-    `/www/runtime/rust/<name>/log/server.log`；`entry.sh` 运行时读取宿主标记
-    `/www/runtime/rust/<name>/site`：
-    - 有标记（环境已绑定站点）→ `cargo run --release --manifest-path <标记指向的站点 index>/Cargo.toml`；
-    - 无标记（未绑定任何站点）→ 回落 `/www/runtime/rust/<name>/app/Cargo.toml`；
+    `/www/runtime/rust/<name>/log/server.log`；`entry.sh` 始终在固定目录运行：
+    `cargo run --release --manifest-path /www/runtime/rust/<name>/app/Cargo.toml`；
+  - 端口同样属于环境（`9100–9199`），站点只反代；改端口与 Node.js 走同一套确认与重建流程；
   - `CARGO_TARGET_DIR=/www/runtime/rust/<name>/target`，构建产物不写站点目录；
   - 安装任务写最小 std HTTP 工程（无第三方依赖），启动后 `wait_tcp_port` 等端口监听，失败回传日志尾部；
-  - 目录结构：`/www/runtime/rust/<name>/{entry.sh,site,app/{Cargo.toml,src/main.rs},log/server.log,target/}`。
-    站点目录与 `app/` 不复用同一份脚手架：站点源码只存在于站点 `index/`，`app/` 仅作无绑定兜底。
-  - 绑定/解绑/删除站点后内核同步 `site` 标记；标记变化且容器在运行时重启容器，停止的容器下次启动自然生效。
+  - 目录结构：`/www/runtime/rust/<name>/{entry.sh,app/{Cargo.toml,src/main.rs},log/server.log,target/}`。
+    `app/` 是唯一代码目录；站点目录不写脚手架，绑定站点不改变工作目录。
+  - 脚手架只在文件缺失时写入，已存在的用户代码在重建/克隆时原样保留。
 - 站点绑定：站点类型 `runtime`，vhost 生成 `proxy_pass http://127.0.0.1:<port>`（不是 `fastcgi_pass`）；
   解绑入口在抽屉「站点」页签，删除环境仍受「存在绑定站点即拒绝」约束。
-- Node / Go 保持 P2 现状，不在本轮改动。
+- Node.js 已接入，见 §11.6；Go 仍未接入，保持不出现目录项与安装入口。
 
 ### 11.4 详情抽屉与扩展管理
 
@@ -679,12 +716,31 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 | Rust | 创建 → 安装异步任务 → 端口监听 → 站点绑定 `runtime` → 反代返回内容；无 Docker 时验证失败链路与渲染 |
 | 抽屉 | 宽度 `min(840px, 92vw)`；五页签可切换；扩展搜索/分类过滤 |
 | 扩展矩阵 | 8.3 imap 可选、8.4/8.5 不可用；alpine oci8 不可用；mbstring/sodium 不产生编译步骤；PECL 失败回传真 stderr |
+| Node.js | 创建 → 安装异步任务 → HTTP 健康检查 → 站点绑定 `runtime` → vhost 反代返回内容；配置变更触发重建；无 Docker 时验证失败链路与渲染 |
+
+### 11.6 Node.js 运行环境（2026-11-09）
+
+- **目录与镜像**：`RUNTIME_KINDS` 新增 `node`，版本白名单 `24 / 22 / 20`，镜像 `node:<ver>-alpine`；
+  `default_name` 为 `node-<ver>`；`NODE_VERSION` 作为镜像真实版本来源。
+- **与 PHP 的差异**：不建 FPM 池、不生成 socket、不走 `fastcgi_pass`；一个环境一个常驻进程、
+  一个固定端口（`9200–9299`），站点 vhost 用 `proxy_pass http://127.0.0.1:<port>`。
+- **目录**：`/www/runtime/node/<name>/{entry.sh,app/{package.json,server.js},log/server.log}`；
+  `app/` 是唯一代码目录，**不随站点绑定切换**，也没有 `site` 标记。
+- **专属配置**（`config_json`）：`command`（默认 `npm start`，argv 切分）、`health_path`（默认 `/`）、
+  `node_env`、`env`。保存后配置有变化即触发重建；`PORT` / `NODE_ENV` / `HOST` 由内核注入。
+- **健康检查**：安装/启动/重建后以 HTTP GET 轮询，最多 180 秒；失败置 `error` 并回传 `server.log` 尾部。
+  详情页可「检测应用健康」，把容器 running 与应用就绪分开呈现。
+- **站点目录**：Node 站点不写 `package.json` / `server.js`，也不生成 `index.php`；只建
+  `index/log/ssl/conf` 与反代 vhost。应用代码放环境 `app/`（已存在则重建不覆盖）。
+- **共享与克隆**：多站点共享一个进程/端口，停启重建改端口须确认影响面；删除环境被拒绝；
+  克隆复制配置与代码（跳过 `node_modules` / `target`）并分配新端口。
+- **未做**：站点级独立进程/容器、站点级日志与最近重启（P2，见 §7）。
 
 ## 12. 运行环境拆分、扩展多选与安装器本地化（2026-11-06）
 
 ### 12.1 取消「基础环境」
 
-- **模型**：运行环境列表只列真实语言实例（`php` / `rust`，以及用户显式创建、尚未实现的 `node` / `go` 登记行），
+- **模型**：运行环境列表只列真实语言实例（`php` / `node` / `rust`，以及尚未实现的 `go` 不允许登记），
   各自安装、各自状态、各自删除，互不连带。**Web 服务（OpenResty）不属于运行环境列表**，归 `/$P/sites/web` 页管理。
   站点创建只做两类独立校验：
   1. Web 服务：`docker_available && nginx 容器存在 && running`，否则提示「装 Web 服务」；
@@ -695,13 +751,13 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
   同类型同名新建时会接管无引用的种子行。种子仍可按 id 直达详情页，模板入口只出现在新建流程。
 - **Web 服务页**：容器名 `skiff-web-nginx`，状态与运维入口（安装/启停/重启/重建/删除）在
   `/$P/sites/web?tab=status`；`install`/`rebuild` 只拉取 OpenResty、重建 vhost、启动 nginx，
-  不触碰任何 PHP/Node/Go/Rust 容器。运行环境页不再有合成 `web` 行与行内 Web 动作。
+  不触碰任何 PHP/Node.js/Rust 容器。运行环境页不再有合成 `web` 行与行内 Web 动作。
 - **删除的耦合**：`add_runtime` 弹窗内的「安装基础环境（OpenResty + 默认 PHP 8.5）」次要表单、
   `/sites/env/install` 路由、`base_install_href` 上下文、`run_site_env_install` 里的 PHP 池配置 /
   PHP 镜像拉取 / PHP 容器创建与 socket 收紧，全部移除。
 - **schema**：`site_runtimes` 无「基础环境」标记；v13 新增 `origin`（`instance` / `seed`），`is_default` 仍是 per-kind 默认实例。
-- **vhost**：站点 vhost 生成只依赖 Web 服务存在 + 所选语言实例的 socket（PHP）或端口（Rust）；
-  任一缺失各自报错（`PHP 实例未登记 socket` / `Rust 实例未分配端口` / `Web 服务未安装`）。
+- **vhost**：站点 vhost 生成只依赖 Web 服务存在 + 所选语言实例的 socket（PHP）或端口（Node.js / Rust）；
+  任一缺失各自报错（`PHP 实例未登记 socket` / `Node.js / Rust 实例未分配端口` / `Web 服务未安装`）。
 
 ### 12.2 扩展多选与二次确认
 
@@ -741,7 +797,7 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 | 用例 | 口径 |
 | --- | --- |
-| Web 行独立 | 列表首行固定 `web`；安装/删除不影响任一 PHP/Node/Go/Rust 行状态 |
+| Web 行独立 | 列表首行固定 `web`；安装/删除不影响任一 PHP/Node.js/Rust 行状态 |
 | 基础环境移除 | 页面无「基础环境」文案与 `runtime-base-install`；无 `/sites/env/install` 路由 |
 | 扩展不可用项 | PHP 8.5 抽屉不出现 `imap`；无「当前不可用」灰显文案 |
 | 多选 + 确认 | 勾选多项 → 确认弹窗列出名称/重启/编译与重项耗时 → 单个 `extensions-batch` 请求 |
@@ -779,7 +835,7 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
    再次尝试重启，并返回回滚原因。
 5. 存量实例：容器创建于本功能之前（宿主缺 `<runtime>/php/.config-mounted` 标记）时，
    页面提示「编辑不生效」并给出直达重建入口；重建只重装容器与挂载，不动站点目录与源码。
-   旧 Rust 站点的 `index.php` 不自动删除。
+   旧 Node.js / Rust 站点的 `index.php` 不自动删除。
 
 ### 13.3 生效值
 
@@ -791,7 +847,8 @@ Node/Go P2 禁用态、站点列表窄屏无横向滚动。
 
 | 用例 | 口径 |
 | --- | --- |
-| 非 PHP 分流 | Rust/Node/Go 详情抽屉无「扩展」页签与 PHP 配置/文件区块；直达 URL 同样不出现 |
+| 非 PHP 分流 | Node.js / Rust / Go 详情抽屉无「扩展」页签与 PHP 配置/文件区块；直达 URL 同样不出现；Node.js 显示启动命令/健康检查/环境变量表单 |
+| Node.js 站点默认文件 | 新建后站点 `index/` 只有 `package.json` + `server.js`，无 `index.php`；vhost 为 `proxy_pass` |
 | Rust 站点默认文件 | 新建后站点 `index/` 只有 `Cargo.toml` + `src/main.rs`，无 `index.php`；静态站为 `index.html`，反代无文件 |
 | 校验失败 | 写入非法 ini → 返回 400 类错误并提示原因，磁盘文件与 FPM 状态不变 |
 | Warning 不阻断 | 写入只触发 `PHP Warning` 的配置 → 保存成功，界面提示条回显 warning 原文 |

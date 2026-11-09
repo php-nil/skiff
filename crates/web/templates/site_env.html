@@ -4,7 +4,7 @@
 <div class="page-runtimes" data-runtime-jobs-url="{{ jobs_href }}">
   <div class="page-head">
     <h1>运行环境</h1>
-    <span class="muted small">语言运行时实例（PHP / Rust）；Web 服务在「Web 服务」页单独管理。</span>
+    <span class="muted small">语言运行时实例（PHP / Node.js / Rust）；Web 服务在「Web 服务」页单独管理。</span>
     {% if can_admin %}
     <div class="actions">
       <button type="button" class="btn primary" data-runtime-new>新建运行环境</button>
@@ -33,7 +33,7 @@
     {% if runtimes.is_empty() %}
     <div class="empty">
       <strong>还没有运行环境</strong>
-      <p class="hint">模板里的 PHP 版本只在新建时出现，安装成功后才进入本列表。点击右上角「新建运行环境」，选择 PHP / Rust 并安装后即可绑定站点。</p>
+      <p class="hint">模板里的版本只在新建时出现，安装成功后才进入本列表。点击右上角「新建运行环境」，选择 PHP / Node.js / Rust 并安装后即可绑定站点。</p>
       {% if can_admin %}<button type="button" class="btn primary" data-runtime-new>新建运行环境</button>{% endif %}
     </div>
     {% else %}
