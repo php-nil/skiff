@@ -17,7 +17,7 @@
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
-| `tools/` | 开发机工具 | `linux-check.sh`（本地 Linux 目标编译级复核）、`iter.sh`（单轮迭代编排：门禁/取包/装/验收/回滚协同） | `docs/ITERATION.md` |
+| `tools/` | 开发机工具 | `linux-check.sh`（本地 Linux 目标编译级复核）、`iter.sh`（单轮迭代编排：门禁/取包/装/验收/回滚协同）、`perf/`（性能观测与报告脚本） | `docs/ITERATION.md` |
 | `.github/workflows/` | CI/CD | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml` 四个工作流 | `docs/CI.md` |
 
 > 顶层目录变动时，须同步更新上表；子项目新增独立规范（`crates/<name>/AGENTS.md`）须在上表登记入口。`target/`、`skiff-run/`、`.workbuddy/` 等是本地产物/工作数据，已被 gitignore，不得入库。
@@ -33,7 +33,7 @@
 * **测试机部署留痕**：任何一次向测试机部署后，必须更新 [docs/TEST_ENV.md](docs/TEST_ENV.md) 的部署记录与验收结论，并在汇报中交代「地址 + 账号」；缺这步视为部署未完成。
 * **红线**（违反即返工）：
   * 分层禁令：`policy` / `pkgfmt` / `wire` 不得依赖 `store` / `docker`；`app` 不含路由与模板；`impl` 必须与类型同 crate。
-  * 单一来源：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`；插件能力面实现只在 `crates/plugin`。
+  * 单一来源：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 `docs/KERNEL_FS_IMPL_NOTES.md` §2.2.1）；插件能力面实现只在 `crates/plugin`。
   * 数字纪律：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
   * 权限口径：数据根与 `plugins/` 保持 0711（可穿越不可列），勿改回 0700，否则降权插件全线 EACCES（详见 `docs/DEPLOY_TEST.md` §1.1）。
 * **编译与测试串行（红线）**：违反即返工。
@@ -42,8 +42,8 @@
   * 禁止为了并行而使用自定义 `CARGO_TARGET_DIR`——它会绕过 cargo 自带的 target 目录锁，是已发生过的真实事故成因。
   * 闸门 `pwsh tools/gate.ps1` 的退出码：`0` 成功、`2` 锁被占用、`3` 内存准入拒绝、`4` 需要 `-AllowFull`。根 workspace 的 `clippy` / `test` / `build` 带 `--workspace` 或 `--all-targets` 且不带 `-Pkg` 时属全量，**必须显式 `-AllowFull`**；`exec` 透传模式不拦，需自行判断。全量测试优先交 CI，本地只跑受影响 crate 的快速回归。
   * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**。
-  * 覆盖不到的入口，一律按红线人工遵守：绝对路径 `C:\Users\dev-bl\.cargo\bin\cargo.exe`、rust-analyzer / IDE 内部调用、CI 与其它机器。`.trae/` 只有 `rules/`，没有 shell 前置钩子，工具层无法再加一道拦截。
-  * **包装是否生效，重启后先自检**：当前 Trae 宿主的 `PATH` 是启动时的旧快照，`D:\panel\tools\bin` 不在其中，裸敲 `cargo` 仍会解析到 `cargo.exe` 并绕过包装；必须重启 Trae（含其终端）才继承新 `PATH`。重启后在新 shell 里执行 `where.exe cargo`，首行应为 `D:\panel\tools\bin\cargo.cmd`；若先出现 `C:\Users\dev-bl\.cargo\bin\cargo.exe`，说明包装未生效，先修 `PATH` 再编译。
+  * 覆盖不到的入口，一律按红线人工遵守：`%USERPROFILE%\.cargo\bin\cargo.exe` 这类绝对路径、rust-analyzer / IDE 内部调用、CI 与其它机器。`.trae/` 只有 `rules/`，没有 shell 前置钩子，工具层无法再加一道拦截。
+  * **包装是否生效，重启后先自检**：Trae 宿主的 `PATH` 是启动时的快照，仓库 `tools\bin` 可能不在其中，裸敲 `cargo` 会解析到 `cargo.exe` 并绕过包装；必须重启 Trae（含其终端）才继承新 `PATH`。重启后在新 shell 里执行 `where.exe cargo`，首行应为 `<仓库>\tools\bin\cargo.cmd`；若先出现 `%USERPROFILE%\.cargo\bin\cargo.exe`，说明包装未生效，先修 `PATH` 再编译。
 * **git 写操作串行（红线）**：与编译共用同一把 `Global\SkiffBuild` 令牌，同样必须经包装入口 `tools\bin\git.cmd` 执行。
   * 写命令（`add` / `commit` / `merge` / `rebase` / `reset` / `checkout` / `switch` / `restore` / `stash` / `gc` / `prune` / `mv` / `rm` / `tag` / `push` / `fetch` 等）拿不到令牌即退出码 2，不排队；只读命令（`status` / `log` / `diff` / `show` 等）不占令牌，但会在 `gate.log` 记一条 `AUDIT git-read`。
   * 仓库已关闭后台自动维护（`gc.auto=0`、`maintenance.auto=false`），避免无人值守时重建 `packed-refs` / 写 `maintenance.lock`；需要回收时人工在闸门里跑一次 `git gc`。

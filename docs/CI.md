@@ -106,7 +106,8 @@ GitHub → Actions → Release → Run workflow
 
 `publish` job 的行为是**只覆盖资产、绝不建 tag**：
 
-1. 先 `git ls-remote --tags origin refs/tags/<tag>` 校验标签已存在，不存在直接报错（不创建）；
+1. 先用 `gh api repos/$GITHUB_REPOSITORY/git/ref/tags/<tag>` 校验标签已存在，不存在直接报错（不创建）。
+   runner 的 checkout 只拉单 ref，`git ls-remote` 会误判标签不存在，故改用 API（run 41841016534）；
 2. Release 已存在 → `gh release upload <tag> dist/* --clobber`（**同名资产直接覆盖**，
    反复 dispatch 不会因「资产已存在」失败）；
 3. Release 不存在但标签存在 → `gh release create --verify-tag`（同样不创建标签）；

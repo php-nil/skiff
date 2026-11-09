@@ -253,7 +253,7 @@ git config --global http.https://github.com.sslBackend openssl
 | 文件                           | 作用                                                                            | 状态 |
 | ---------------------------- | ----------------------------------------------------------------------------- | --- |
 | `deploy/accept.sh`           | §5 可执行版，PASS/FAIL/SKIP + 退出码                                                  | **已建并实跑**（preflight / A / B / D0；D1/D2/E/F/C/G 未实现，缺则报 SKIP） |
-| `tools/iter.sh`              | 单轮编排：门禁 → 取包 → 回滚协同 → 装 → 验收 → 报告                                        | **已建**；gate/fetch/run 三档实跑过，`rollback-wait` 未实测；`fetch` 默认取 Release 资产，workflow artifact 模式保留给本地快包 |
+| `tools/iter.sh`              | 单轮编排：门禁 → 取包 → 回滚协同 → 装 → 验收 → 报告                                        | **已建**；gate/fetch/run 三档实跑过，`rollback-wait` 未实测；`fetch` 只从 Actions artifact 取包（无 Release 模式），交付验证取包按 §4 第 4 步走 Release 资产 |
 | `tools/linux-check.sh`       | 本地 `cargo check --target x86_64-unknown-linux-gnu`，挡 `cfg(unix)` 编译错          | **已建并实跑**：全量（含 `plugins/` 第二 workspace）**50 s**；`--quick` 只查主 workspace |
 | `.github/workflows/iter.yml` | 迭代本地快包：只编 musl x86_64、`--skip-plugins`、`cancel-in-progress: true`、artifact 留 3 天 | **已首次 dispatch 实跑**：main@41beba5 / run 41616343492，出包 **118 s**、产物 9.4 MB；**不再作为交付验证来源** |
 

@@ -10,7 +10,7 @@
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
-| `cron/` | `com.skiff.cron` | identity + interop | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。只调用**插件接口**（不执行宿主 shell），任务可按 `(来源, key)` 幂等登记；内置任务只可启停，删除在插件 RPC 层硬拦截 |
+| `cron/` | `com.skiff.cron` | identity + interop + scheduler | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。调度与执行全在内核，插件只经 `scheduler` 能力面增删改查（不执行宿主 shell）；内置任务只可启停，越界任务在插件 RPC 层硬拦截 |
 | `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径、fail2ban 开关（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相，插件不再写 `service-config.json`；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；仅 Native 形态 |
 | `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
@@ -32,8 +32,8 @@
 - **插件间跳转**：发 `parent.postMessage({type:"skiff.open", nonce, plugin:"com.skiff.<x>", path})`
   请面板切到另一插件界面（`path` 为定位建议，越权仍由目标插件 `path:` 授权根判定）。
   目标须是「已启用且有 UI 入口」的插件，否则父页面回 `skiff.open.result {ok:false}`。
-- **跳转 ≠ 调用**：跳转只改浏览器地址、不授予能力；要**真的执行**对方能力（例：NGINX
-  「新增备份任务」写入计划任务），用 `manifest.toml` 的 `[interop]` 声明 + SDK
+- **跳转 ≠ 调用**：跳转只改浏览器地址、不授予能力；要**真的执行**对方能力（目标插件须在
+  manifest 声明 `[interop].provides`），用 `manifest.toml` 的 `[interop]` 声明 + SDK
   `Plugin::interop_call(target, method, params)`，由内核四道闸判定后转发到目标插件 RPC。
   - `[interop].provides` = 本插件对外开放的方法（`method` + 可选 `label`/`description`）；
     `consumes` = 允许调用的目标，写作 `com.skiff.<x>:<method>` 或 `*`。
@@ -183,12 +183,13 @@ skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg \
 - `monitor`：必须勾 `path:/proc`（否则采样 403）。
 - `cron`：每装一个「被调度」的插件，勾一次对应的 `plugin:<插件 id>`（或 `plugin:*`）；
   只勾了 `plugin:` 却不给目标插件 `interop:call` 权限的一侧，内核按四道闸拒绝，不影响其他调用。
-  `cron` 本身不需要 `fs`/`docker`：它只调插件接口，**不执行宿主 shell**。
+  `cron` 本身不需要 `fs`/`docker`：它只经内核 `scheduler` 能力面管理任务，**不执行宿主 shell**。
 - `guard`：逐个勾要守护的 `container:<name|id>` 或 `project:<p>`；未授权容器只展示不重启。
 - `files`：勾要管理的 `path:` 根（如 `/var/www`、`/etc`）；授权根之外的路径一律 403。
 - `testkit`：勾 `path:/proc`（验证授权读与越界拒绝）；要验证 `interop:call` 时再勾
-  `plugin:com.skiff.cron`（并确保 cron 已安装且声明 `jobs.list`）。它只用只读能力，
-  不执行任何写操作，适合在任何测试环境安装。
+  `plugin:com.skiff.cron`。注意 cron 当前 `[interop].provides` 为空（调度已收归内核），
+  `com.skiff.cron:jobs.list` 会被四道闸拒绝，只能验拒绝路径；成功路径需另装声明 provides 的插件。
+  它只用只读能力，不执行任何写操作，适合在任何测试环境安装。
 
 ## 多架构
 

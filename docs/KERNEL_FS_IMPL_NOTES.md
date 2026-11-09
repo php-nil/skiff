@@ -94,6 +94,19 @@ pub fn resolve(p: &Principal, raw: &str, mode: PathMode, site_root: &str)
     -> Result<ResolvedPath, FsError>;
 ```
 
+#### 2.2.1 与 `skiff_model::path` 的分工（唯一有意例外）
+
+`skiff_model::path` 是**零 I/O 的字符串级**代数（`within` / `normalize_dir` /
+`has_parent_segment` / `is_absolute`），供 policy、插件侧快筛等不碰文件系统的判定复用；
+本文件的 `path.rs` 是 **I/O 感知**的解析器：要 `lstat` 判断末段是否符号链接、按
+`PathMode` 决定是否跟随、按主体 grant 选根，并产出 `ResolvedPath`。两者层次不同，
+因此 `skiff-fs` 保留自有实现——这是仓库里**唯一**「路径判定不在 `skiff_model::path`」
+的有意例外（`skiff-fs` 也不依赖 `skiff-model`，以保持该 crate 可独立复用）。
+
+约束：新增的**字符串级**原语仍只加到 `skiff_model::path`，不得在 `skiff-fs` 里写第二份；
+`skiff-fs` 只保留 `resolve` / `site_of` / `protected_subdir` 这类需要文件系统状态或
+主体上下文的能力。
+
 ### 2.3 服务门面
 
 ```rust

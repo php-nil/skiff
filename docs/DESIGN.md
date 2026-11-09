@@ -33,7 +33,7 @@
 |---|---|---|
 | §1 需求评估 | [sections/01-requirements.md](sections/01-requirements.md) | 显式需求 → 验收项、隐含需求、三处需求冲突、分层边界与明确不做 |
 | §2 技术选型 | [sections/02-tech-stack.md](sections/02-tech-stack.md) | 后端依赖表（含 R1 例外标注）、前端、扩展机制三方案对比 |
-| §3 总体架构 | [sections/03-architecture.md](sections/03-architecture.md) | 分层图、重启容器请求路径、内核四项原子能力 |
+| §3 总体架构 | [sections/03-architecture.md](sections/03-architecture.md) | 分层图、重启容器请求路径、内核四项原子能力、§3.5–3.7 架构三目标（稳定 / 占用低 / 高度扩展） |
 | §4.1–4.3 扩展体系（一） | [sections/04-plugin-package.md](sections/04-plugin-package.md) | `.wbpkg` 包格式与签名编解码、manifest 字段、生命周期与资源兜底、信任模型 |
 | §4.4–4.5 扩展体系（二） | [sections/04-plugin-publish.md](sections/04-plugin-publish.md) | 第三方发布交付物与 CLI、用户侧安装 / 升级 / 回滚 / 卸载 |
 | §5 部署 | [sections/05-deploy.md](sections/05-deploy.md) | systemd 直装、数据与升级、与 1Panel/宝塔共存、1Panel Docker 包、路径与卷校验 |
@@ -48,6 +48,7 @@
 | 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、实测结果与已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
 | 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单与 5 个（guard/monitor/files/cron/ftp，已落地；原 nginx 已内核化为「网站」）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
+| 其余专项文档（非章节） | [AGENTS.md](../AGENTS.md) §四 | 测试环境/台账/矩阵、迭代验证回路、菜单与插件 UI 契约、UI 交互基准、网站运行环境、内核调度/文件系统/FTP 契约与实现说明；完整索引只在 AGENTS.md 维护，本文不重复 |
 
 ### 按角色选读
 
@@ -87,3 +88,4 @@
 | 2026-11-07 | 内核文件管理页第一步（`AdminFs` 接 `skiff-fs`，菜单退役与旧深链 301）；FTP 能力面与 `com.skiff.ftp` 上线（`MinUID=82`，schema v11）；内置任务删除在调度器/能力面/服务层硬拦截；PHP 池显式 `access.log = /dev/null`；站点高风险动作移入「管理」页签。详 [changes/2026-11-07.md](changes/2026-11-07.md)。 |
 | 2026-11-07 | 文档体系收敛：新增 [TEST_ENV.md](TEST_ENV.md) 作为测试机访问信息唯一来源；门槛命令、测试台账、契约与实现说明去重。详 [changes/2026-11-07.md](changes/2026-11-07.md)。 |
 | 2026-11-09 | 收尾清理：Node.js / Go 未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除；WAF 未实现，已移出范围，`sites.waf_mode` 与 `waf_rules_dir` 死配置及目录预留已删除。详 [changes/2026-11-09.md](changes/2026-11-09.md)。 |
+| 2026-11-09 | §3 增补架构三目标：§3.5 稳定（失败隔离、幂等、有界、超时语义、降级边界）、§3.6 占用低（单二进制取舍、惰性、每请求成本、上限策略）、§3.7 高度扩展（主体与能力面、契约演进、新增能力面动作）；资源数字仍只在 §7 维护。 |

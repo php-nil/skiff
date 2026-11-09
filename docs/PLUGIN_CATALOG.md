@@ -150,20 +150,21 @@ resource_hints = []                 # 授权哪些目录由管理员在安装确
 ### 4.6 计划任务 `com.skiff.cron`
 
 ```toml
+id = "com.skiff.cron"
 run = "on-demand"
-requires = ["identity", "interop"]
-cron = ["* * * * *"]                # 每分钟醒一次，按分钟去重后批量执行到期任务
+requires = ["identity", "interop", "scheduler"]
 resource_hints = []                 # 「能调谁」由管理员在安装页勾 plugin:<目标>
 # identity: self
 # interop: call
-# [interop] provides: jobs.create / jobs.list / jobs.remove / jobs.run；consumes = ["*"]
+# scheduler: read / manage / run / admin（admin 只授予这个内核指定 UI）
+# [interop].provides = [] / consumes = []：调度已收归内核，本插件不再对外提供可调度接口
 ```
 
-- **功能面**：任务 = `{表达式, 目标插件, 方法, 参数}`；页面支持新建、改表达式、启停、立即执行、删除，并展示「下次触发」「来源」「上次结果」。任务落插件自身 `data/jobs.json`（上限 200 条），`tick` 时按当前分钟批量执行到期任务（单次上限 `tick_batch`）。
-- **不执行宿主 shell**：这是与 1Panel/宝塔「计划任务」最大的口径差异。任务只能调用**插件接口**，能力仍由目标插件的 manifest 权限与授权对象约束；因此内核不必开放 root 命令执行面（见 §3「明确不做」）。
-- **幂等与归属**：`jobs.create` 按 `(source, key)` upsert——`source` 由内核注入的 `params._interop.caller` 决定（插件伪造无效），`key` 由调用方给。同一来源只能用同一个 key 维护这一条；插件来源的任务不能改/删手动创建的任务。
+- **功能面**：纯管理 UI——列表/详情/历史、新建、改表达式、启停、立即执行、删除，全部翻译成内核 `scheduler` 能力面（`task.*`）调用。任务定义、下次触发与运行历史都在内核（[KERNEL_SCHEDULER_CONTRACT.md](KERNEL_SCHEDULER_CONTRACT.md)），插件不落任务文件，重启不丢任务。
+- **不执行宿主 shell**：这是与 1Panel/宝塔「计划任务」最大的口径差异。插件来源的任务由内核调度器调用**目标插件接口**，能力仍由目标插件的 manifest 权限与授权对象约束；因此内核不必开放 root 命令执行面（见 §3「明确不做」）。
+- **幂等与归属**：任务 id 由内核按 `plugin:<插件 id>:<key>` 生成，按 `(source, key)` upsert——`source` 取内核注入的 caller（插件伪造无效）。本插件只能改/删 `plugin:com.skiff.cron:` 前缀内的任务；内置任务（`builtin:`）只读展示、只可启停。
 - **目标选择器**：读 `capability/interop/catalog`，只列「当前真的调得通」的 `插件:方法`（四道闸全过才出现），避免用户选了再吃 403。
-- **表达式单一来源**：内核装包校验、内核 `tick` 调度、本插件执行全部走 `crates/cron`（`skiff-cron`），三处同一份解析器，不各写一份。
+- **表达式单一来源**：内核装包校验、内核 `tick` 调度、插件新建任务时的表达式校验与预设预览全部走 `crates/cron`（`skiff-cron`），三处同一份解析器，不各写一份。
 - **风险**：任务数量 × 表达式频率决定调用量；「每分钟最多调用几次」这类数字**待实测**，不写资源承诺。禁用/删除任务即时生效，但已开始的调用不能中断（15s 超时兜底）。
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
