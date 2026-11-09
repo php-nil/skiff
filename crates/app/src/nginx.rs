@@ -680,7 +680,9 @@ impl AppState {
         if code != 0 {
             let original = std::fs::read_to_string(s.nginx_main_conf()).unwrap_or_default();
             let diff = diff_summary(&original, content, 6);
-            let _ = std::fs::remove_file(&candidate);
+            if let Err(e) = std::fs::remove_file(&candidate) {
+                tracing::debug!(path = %candidate.display(), error = %e, "清理 nginx 候选配置失败");
+            }
             return Err(SiteError::Conflict(format!(
                 "nginx -t 未通过（{}）：{}；已回滚未替换；差异：{}",
                 container_candidate,
@@ -693,8 +695,12 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("替换主配置失败：{e}")))?;
         if let Err(e) = self.restart_nginx().await {
             if let Some(bytes) = original.clone() {
-                let _ = std::fs::write(s.nginx_main_conf(), bytes);
-                let _ = self.restart_nginx().await;
+                if let Err(we) = std::fs::write(s.nginx_main_conf(), bytes) {
+                    tracing::error!(error = %we, "回滚 nginx 主配置写入失败");
+                }
+                if let Err(re) = self.restart_nginx().await {
+                    tracing::error!(error = %re, "回滚后重载 nginx 失败");
+                }
             }
             return Err(SiteError::Unavailable(format!(
                 "配置已回滚：重载 nginx 失败：{e}"
@@ -707,8 +713,12 @@ impl AppState {
         let env = self.site_env_status().await;
         if env.installed && env.nginx_state != "running" {
             if let Some(bytes) = original.clone() {
-                let _ = std::fs::write(s.nginx_main_conf(), bytes);
-                let _ = self.restart_nginx().await;
+                if let Err(we) = std::fs::write(s.nginx_main_conf(), bytes) {
+                    tracing::error!(error = %we, "nginx 退出后回滚主配置写入失败");
+                }
+                if let Err(re) = self.restart_nginx().await {
+                    tracing::error!(error = %re, "nginx 退出后回滚重启失败");
+                }
             }
             return Err(SiteError::Unavailable(format!(
                 "配置已回滚：nginx 未能保持运行（当前状态 {}）",
@@ -716,7 +726,9 @@ impl AppState {
             )));
         }
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let _ = self.db().set_setting(NGINX_LAST_RELOAD_KEY, &stamp);
+        if let Err(e) = self.db().set_setting(NGINX_LAST_RELOAD_KEY, &stamp) {
+            tracing::warn!(error = %e, "记录 nginx 最近重载时间失败");
+        }
         Ok(test_warnings(&out))
     }
 
@@ -963,7 +975,9 @@ impl AppState {
             Ok(warnings) => Ok(warnings),
             Err(e) => {
                 let rollback = previous.unwrap_or_else(|| NginxParams::default().to_json());
-                let _ = self.db().set_setting(NGINX_PARAMS_KEY, &rollback);
+                if let Err(re) = self.db().set_setting(NGINX_PARAMS_KEY, &rollback) {
+                    tracing::error!(error = %re, "nginx 参数回滚写入失败");
+                }
                 Err(e)
             }
         }

@@ -241,7 +241,11 @@ pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError
             eof: true,
         });
     }
-    let mut f = File::open(path).map_err(|e| io_err(path, e))?;
+    // 最终组件不跟随符号链接：`resolve` 已给出 canonical 路径，这里只防检查后的替换。
+    let mut read_opts = OpenOptions::new();
+    read_opts.read(true);
+    nofollow(&mut read_opts);
+    let mut f = read_opts.open(path).map_err(|e| io_err(path, e))?;
     f.seek(SeekFrom::Start(offset))
         .map_err(|e| io_err(path, e))?;
     // procfs（如 `/proc/stat`）的 `metadata.len()` 恒为 0，但内容非空：
@@ -269,21 +273,100 @@ pub fn read_chunk(path: &Path, offset: u64, max: usize) -> Result<Chunk, FsError
     })
 }
 
+/// 给 `OpenOptions` 加上 `O_NOFOLLOW`：授权判定与 `open` 之间仍可能有链接替换，
+/// 最终组件不允许再跟随符号链接（与 `skiff-fs` 的写入口径一致）。
+#[cfg(unix)]
+fn nofollow(opts: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    opts.custom_flags(libc::O_NOFOLLOW);
+}
+
+#[cfg(not(unix))]
+fn nofollow(_opts: &mut OpenOptions) {}
+
+/// 覆盖写时保留宿主原有属主与权限位：非 root 时 `fchown` 会 EPERM，忽略失败
+/// （与 `skiff-fs::ops::io` 的处理一致）。
+#[cfg(unix)]
+fn preserve_owner(f: &File, existing: &fs::Metadata) {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: fd 来自仍存活的 `File`；失败只影响属主，不影响写入内容。
+    unsafe {
+        libc::fchown(f.as_raw_fd(), existing.uid(), existing.gid());
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = f.set_permissions(fs::Permissions::from_mode(existing.mode() & 0o7777));
+}
+
+#[cfg(not(unix))]
+fn preserve_owner(_f: &File, _existing: &fs::Metadata) {}
+
+/// 同目录临时文件 + `rename` 原子替换。
+///
+/// 整文件一次写入（`append = false` 且 `offset = None`）走这里：崩溃时目标要么是
+/// 旧内容、要么是新内容，不会留下半截文件。临时文件用 `create_new` 创建，
+/// 已存在的同名符号链接会让创建失败而不是被跟随。
+fn atomic_replace(path: &Path, data: &[u8]) -> Result<(usize, u64), FsError> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| FsError::Forbidden("目标路径没有父目录".into()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| FsError::Forbidden("目标路径没有文件名".into()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(
+        ".{}.skiff-tmp-{}-{stamp}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let existing = fs::symlink_metadata(path).ok();
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    nofollow(&mut opts);
+    let write_result = (|| -> Result<(), FsError> {
+        let mut f = opts.open(&tmp).map_err(|e| io_err(&tmp, e))?;
+        f.write_all(data).map_err(|e| io_err(&tmp, e))?;
+        f.flush().map_err(|e| io_err(&tmp, e))?;
+        if let Some(meta) = existing.as_ref() {
+            preserve_owner(&f, meta);
+        }
+        f.sync_all().map_err(|e| io_err(&tmp, e))?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        // 清理失败不掩盖主错误。
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // 显式在文件句柄关闭后 rename：Windows 不允许重命名仍被打开的文件。
+    fs::rename(&tmp, path).map_err(|e| io_err_ctx(path, e, "原子替换失败"))?;
+    Ok((data.len(), data.len() as u64))
+}
+
 /// 写一页，返回 `(本次写入字节数, 写后文件大小)`。
 ///
 /// 语义：`append = true` 追加；否则 `offset = Some(n)` 定位写、`None` 从 0 覆盖写
-/// （先截断）。分块上传的第一页用覆盖写，其余用追加，避免留下的旧尾巴。
+/// （整文件一次写入走临时文件 + rename 原子替换）。分块上传的第一页用覆盖写，
+/// 其余用追加，避免留下的旧尾巴。
 pub fn write_chunk(
     path: &Path,
     data: &[u8],
     offset: Option<u64>,
     append: bool,
 ) -> Result<(usize, u64), FsError> {
+    if !append && offset.is_none() {
+        return atomic_replace(path, data);
+    }
     let mut opts = OpenOptions::new();
     opts.write(true).create(true);
     if append {
         opts.append(true);
     }
+    nofollow(&mut opts);
     let mut f = opts.open(path).map_err(|e| io_err(path, e))?;
     if !append {
         match offset {
@@ -408,6 +491,41 @@ mod tests {
 
     fn grant(value: &str) -> Grant {
         Grant::object(value.to_string())
+    }
+
+    // 未编译验证：本机没有 Rust 工具链，以下用例仅静态编写。
+    #[test]
+    fn whole_file_write_replaces_and_appends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a.txt");
+        let (wrote, size) = write_chunk(&path, b"hello", None, false).unwrap();
+        assert_eq!((wrote, size), (5, 5));
+        // 覆盖写走临时文件 + rename：旧内容必须被整体替换，不留尾巴。
+        write_chunk(&path, b"bye", None, false).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"bye");
+        // 分页：首页覆盖、其余追加。
+        write_chunk(&path, b"0123", None, false).unwrap();
+        write_chunk(&path, b"45", None, true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"012345");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn whole_file_write_replaces_symlink_without_following() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside.txt");
+        fs::write(&outside, b"keep").unwrap();
+        let link = tmp.path().join("link.txt");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        write_chunk(&link, b"evil", None, false).unwrap();
+        // 链接目标不能被改写；链接本身被普通的同名文件替换。
+        assert_eq!(fs::read(&outside).unwrap(), b"keep");
+        assert!(!fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&link).unwrap(), b"evil");
     }
 
     #[test]

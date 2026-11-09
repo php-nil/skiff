@@ -68,14 +68,16 @@ impl AppState {
     ) -> Result<LoginSuccess, LoginError> {
         // 限流先于任何口令计算：被封禁的 IP 不该再消耗 argon2 的 CPU 与内存。
         if let Err(wait) = self.check_login_allowed(ip).await {
-            let _ = self.db.audit(
+            if let Err(e) = self.db.audit(
                 &req.username,
                 ip,
                 "auth.login",
                 channel,
                 "blocked",
                 &format!("限流：还需等待 {wait}s"),
-            );
+            ) {
+                tracing::error!(error = %e, "限流登录的审计写入失败");
+            }
             return Err(LoginError::RateLimited(wait));
         }
 
@@ -93,7 +95,16 @@ impl AppState {
 
         let mut ok = false;
         if let Some(u) = &user {
-            if skiff_identity::verify_password(&req.password, &u.password_hash) {
+            // argon2 是 CPU + 内存密集的同步计算（约 70MB/次），必须在阻塞线程池里跑：
+            // 直接在 async worker 上算会把整个面板（含探针）拖住。
+            let password = req.password.clone();
+            let stored = u.password_hash.clone();
+            let verified = tokio::task::spawn_blocking(move || {
+                skiff_identity::verify_password(&password, &stored)
+            })
+            .await
+            .map_err(|e| LoginError::Internal(format!("口令校验任务失败：{e}")))?;
+            if verified {
                 if u.totp_enabled {
                     let secret = u.totp_secret.clone().unwrap_or_default();
                     let now = unix_now().max(0) as u64;
@@ -114,9 +125,12 @@ impl AppState {
 
         if !ok {
             self.record_login_failure(ip).await;
-            let _ = self
+            if let Err(e) = self
                 .db
-                .audit(&req.username, ip, "auth.login", channel, "fail", "");
+                .audit(&req.username, ip, "auth.login", channel, "fail", "")
+            {
+                tracing::error!(error = %e, "登录失败审计写入失败");
+            }
             return Err(LoginError::Invalid(
                 if user.map(|u| u.totp_enabled).unwrap_or(false) {
                     "用户名、口令或动态码不正确"
@@ -127,7 +141,13 @@ impl AppState {
             ));
         }
 
-        let user = user.expect("口令已校验通过，用户必然存在");
+        // 逻辑上不可达：只有命中用户且口令校验通过才会把 `ok` 置真。这里不 panic——
+        // 登录是最热的请求路径，宁可按内部错误拒绝，也不让一个断言把进程带走。
+        let Some(user) = user else {
+            return Err(LoginError::Internal(
+                "登录状态不一致：口令已通过但用户记录丢失".into(),
+            ));
+        };
         self.reset_login_failures(ip).await;
         let tokens = self.new_session_tokens();
         let now = unix_now();
@@ -142,9 +162,12 @@ impl AppState {
                 now + self.cfg.session.abs_secs,
             )
             .map_err(|e| LoginError::Internal(e.to_string()))?;
-        let _ = self
+        if let Err(e) = self
             .db
-            .audit(&user.username, ip, "auth.login", channel, "ok", "");
+            .audit(&user.username, ip, "auth.login", channel, "ok", "")
+        {
+            tracing::error!(error = %e, "登录成功审计写入失败");
+        }
 
         let csrf_token = self.csrf_token(&tokens.session_token);
         Ok(LoginSuccess {
@@ -156,6 +179,94 @@ impl AppState {
             expires_at: now + self.cfg.session.abs_secs,
             must_change_password: user.must_change_password,
         })
+    }
+
+    /// 注销用例：撤销当前会话并留审计。handler 不再直接写 `sessions` 表。
+    pub fn logout(&self, username: &str, session_id: &str, ip: &str) -> Result<(), String> {
+        self.db
+            .revoke_session(session_id)
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = self
+            .db
+            .audit(username, ip, "auth.logout", "session", "ok", "")
+        {
+            tracing::error!(error = %e, "注销审计写入失败");
+        }
+        Ok(())
+    }
+
+    /// 改密写路径：换口令 → 撤销该用户全部会话 → 立刻重开一个会话（避免把自己踢下线）。
+    ///
+    /// 口令校验与哈希仍在调用方（要 `spawn_blocking`），这里只负责落库与会话轮换。
+    pub fn rotate_password_session(
+        &self,
+        user_id: i64,
+        username: &str,
+        password_hash: &str,
+        ip: &str,
+        user_agent: &str,
+    ) -> Result<skiff_identity::SessionTokens, String> {
+        self.db
+            .set_password(user_id, password_hash)
+            .map_err(|e| e.to_string())?;
+        self.db
+            .revoke_all_sessions(user_id)
+            .map_err(|e| e.to_string())?;
+        let tokens = self.new_session_tokens();
+        let now = unix_now();
+        self.db
+            .create_session(
+                &tokens.session_id,
+                user_id,
+                &tokens.session_token_hash,
+                ip,
+                user_agent,
+                now + self.cfg.session.idle_secs,
+                now + self.cfg.session.abs_secs,
+            )
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = self
+            .db
+            .audit(username, ip, "auth.password.change", "user", "ok", "")
+        {
+            tracing::error!(error = %e, "改密审计写入失败");
+        }
+        Ok(tokens)
+    }
+
+    /// TOTP 密钥写入（生成时 `enabled=false`，验证动态码后置真）。
+    pub fn save_totp_secret(
+        &self,
+        user_id: i64,
+        secret: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.db
+            .set_totp(user_id, Some(secret), enabled)
+            .map_err(|e| e.to_string())
+    }
+
+    /// 启用 TOTP：写备份码 + 置启用位 + 审计，一次调用完成，避免 handler 分三步写库。
+    pub fn enable_totp(
+        &self,
+        user_id: i64,
+        username: &str,
+        secret: &str,
+        backup_hashes: &[String],
+    ) -> Result<(), String> {
+        self.db
+            .replace_backup_codes(user_id, backup_hashes)
+            .map_err(|e| e.to_string())?;
+        self.db
+            .set_totp(user_id, Some(secret), true)
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = self
+            .db
+            .audit(username, "local", "auth.totp.enable", "user", "ok", "")
+        {
+            tracing::error!(error = %e, "TOTP 启用审计写入失败");
+        }
+        Ok(())
     }
 }
 

@@ -30,6 +30,21 @@ use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::templates::PageCtx;
 use crate::util::{form_first, parse_form};
 
+/// 在 tokio 阻塞线程池执行同步文件操作。
+///
+/// `skiff-fs` 的入口是同步的（含路径锁等待、整目录压缩/解压），直接在 handler 的
+/// `async fn` 里调用会占住 async worker；而 `request_timeout` 基于
+/// `tokio::time::timeout`，无法取消已经进入同步阻塞的调用。
+pub async fn blocking_fs<T, F>(f: F) -> Result<T, AppError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| AppError::Internal(format!("后台文件任务执行失败：{e}")))
+}
+
 pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
     let nav_plugins = nav_plugins(state, active);
     let is_admin = user.can(skiff_model::Permission::Admin);

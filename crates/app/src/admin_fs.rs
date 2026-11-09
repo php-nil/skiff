@@ -230,7 +230,9 @@ struct DbTrashStore {
 
 impl TrashStore for DbTrashStore {
     fn insert(&self, entry: TrashEntry) {
-        let _ = self.db.trash_insert(&row_from_entry(entry));
+        if let Err(e) = self.db.trash_insert(&row_from_entry(entry)) {
+            tracing::warn!(error = %e, "回收站条目写入失败");
+        }
     }
 
     fn get(&self, id: &str) -> Option<TrashEntry> {
@@ -306,9 +308,12 @@ impl QuotaTracker for DbQuotaTracker {
     }
 
     fn adjust_stats(&self, root: &Path, delta_bytes: i64, delta_files: i64) {
-        let _ = self
-            .db
-            .fs_quota_adjust(&root.display().to_string(), delta_bytes, delta_files);
+        if let Err(e) =
+            self.db
+                .fs_quota_adjust(&root.display().to_string(), delta_bytes, delta_files)
+        {
+            tracing::warn!(root = %root.display(), error = %e, "配额增量修正失败");
+        }
     }
 
     fn limit_for(&self, path: &Path) -> Option<QuotaLimit> {
@@ -325,22 +330,29 @@ impl QuotaTracker for DbQuotaTracker {
     }
 
     fn set_usage(&self, root: &Path, usage: QuotaUsage) {
-        let _ = self.db.fs_quota_set_usage(
+        if let Err(e) = self.db.fs_quota_set_usage(
             &root.display().to_string(),
             usage.used_bytes,
             usage.used_files,
             skiff_fs::now_secs(),
-        );
+        ) {
+            tracing::warn!(root = %root.display(), error = %e, "配额用量写入失败");
+        }
     }
 
     fn set_limits(&self, root: &Path, max_bytes: Option<u64>, max_files: Option<u64>) {
-        let _ = self
-            .db
-            .fs_quota_set_limits(&root.display().to_string(), max_bytes, max_files);
+        if let Err(e) =
+            self.db
+                .fs_quota_set_limits(&root.display().to_string(), max_bytes, max_files)
+        {
+            tracing::warn!(root = %root.display(), error = %e, "配额上限写入失败");
+        }
     }
 
     fn clear_limits(&self, root: &Path) {
-        let _ = self.db.fs_quota_clear_limits(&root.display().to_string());
+        if let Err(e) = self.db.fs_quota_clear_limits(&root.display().to_string()) {
+            tracing::warn!(root = %root.display(), error = %e, "配额上限清除失败");
+        }
     }
 
     fn snapshot(&self) -> Vec<QuotaSnapshot> {
@@ -379,15 +391,17 @@ impl AuditSink for DbAuditSink {
             "ts": ev.ts,
         })
         .to_string();
-        // 审计写入失败不阻断文件操作（best-effort，与能力面一致）。
-        let _ = self.db.audit(
+        // 审计写入失败不阻断文件操作（best-effort，与能力面一致），但必须留痕。
+        if let Err(e) = self.db.audit(
             &ev.actor_id,
             "web",
             &ev.action,
             &target,
             &ev.result,
             &detail,
-        );
+        ) {
+            tracing::error!(error = %e, action = %ev.action, "文件操作审计写入失败");
+        }
     }
 }
 

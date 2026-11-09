@@ -622,18 +622,10 @@ pub async fn toggle(
     if !enable {
         state.supervisor().stop(&id).await;
     }
-    state.db().set_plugin_enabled(&id, enable)?;
+    let ip = handlers::client_ip(&state, &parts);
     state
-        .db()
-        .set_plugin_status(&id, if enable { "installed" } else { "disabled" }, "")?;
-    let _ = state.db().audit(
-        &user.user.username,
-        &handlers::client_ip(&state, &parts),
-        "plugin.toggle",
-        &id,
-        "ok",
-        &format!("enabled={enable}"),
-    );
+        .set_plugin_enabled(&id, enable, &user.user.username, &ip)
+        .map_err(AppError::Internal)?;
     // 信息页内操作回信息页；插件中心内操作仍回列表（`next` 只接受本站前缀）。
     Ok(handlers::redirect(
         safe_plugin_next(&state, form_first(&form, "next"))

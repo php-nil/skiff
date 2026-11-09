@@ -1,7 +1,8 @@
 //! 审计事件结构与分级策略（契约 §4）。
 //!
 //! 本 crate 只定义**结构**与**聚合器**，不落库：持久化由 trait [`AuditSink`]
-//! 抽象，P1 提供了内存实现与 `Noop` 实现，后续由 `skiff-store` 提供 SQLite 实现。
+//! 抽象，本 crate 提供内存实现与 `Noop` 实现；落库实现在 `skiff-app` 的
+//! `DbAuditSink`（写 `audit` 表，`ip` 列记来源 `web`）。
 //!
 //! 铁律：`AuditEvent` **没有内容字段**，也不允许把文件正文塞进 `detail`；
 //! `sha256` 只用于完整性核对（见 `docs/KERNEL_FS_IMPL_NOTES.md` 接线说明）。

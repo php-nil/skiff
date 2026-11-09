@@ -584,9 +584,13 @@ fn panic_response(
             .unwrap_or("non-string panic payload")
             .to_string();
         tracing::error!(error = %msg, "handler panic，已由 CatchPanic 捕获");
-        let _ = state
+        // 审计写失败只能记日志：panic 已经发生，不能再二次 panic。
+        if let Err(e) = state
             .db()
-            .audit("system", "-", "web.panic", "-", "error", &msg);
+            .audit("system", "-", "web.panic", "-", "error", &msg)
+        {
+            tracing::error!(error = %e, "panic 审计写入失败");
+        }
         crate::error::AppError::Internal("服务器内部错误".into()).into_response()
     }
 }

@@ -466,13 +466,14 @@ impl Buffer {
                 aggregated,
             },
             signals,
-            net_bytes: bytes as i64 - dropped_bytes as i64,
+            // 丢点总量理论上可能超过单点字节数；用饱和减法，避免负数换算时溢出。
+            net_bytes: (bytes as i64).saturating_sub(dropped_bytes.min(i64::MAX as u64) as i64),
         }
     }
 
     fn drop_one(&mut self) -> Option<usize> {
         let point = self.points.pop_front()?;
-        self.bytes -= point.bytes;
+        self.bytes = self.bytes.saturating_sub(point.bytes);
         self.totals.dropped_points += 1;
         self.totals.dropped_bytes += point.bytes as u64;
         Some(point.bytes)
@@ -503,7 +504,7 @@ impl Buffer {
             return false;
         }
         let group_bytes: usize = group.iter().map(|p| p.bytes).sum();
-        self.bytes -= group_bytes;
+        self.bytes = self.bytes.saturating_sub(group_bytes);
         let data = aggregate_data(&group, rule);
         let bytes = Self::estimate_bytes(&data);
         let last = group.last().expect("group.len() >= 2");
@@ -648,7 +649,7 @@ impl Buffer {
         let mut kept = VecDeque::with_capacity(self.points.len());
         while let Some(point) = self.points.pop_front() {
             if point.seq <= upto {
-                self.bytes -= point.bytes;
+                self.bytes = self.bytes.saturating_sub(point.bytes);
                 removed_points += 1;
                 removed_bytes += point.bytes;
                 self.totals.consumed_points += 1;
@@ -669,7 +670,7 @@ impl Buffer {
             let Some(point) = self.points.pop_front() else {
                 break;
             };
-            self.bytes -= point.bytes;
+            self.bytes = self.bytes.saturating_sub(point.bytes);
             removed_points += 1;
             removed_bytes += point.bytes;
             self.totals.dropped_points += 1;

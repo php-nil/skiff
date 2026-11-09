@@ -255,20 +255,22 @@ pub fn plugin_install(
     let info = match skiff_plugin::install_package(&db, &cfg.data_dir, package, &opts) {
         Ok(info) => info,
         Err(e) => {
-            let _ = db.audit(
+            if let Err(ae) = db.audit(
                 "cli",
                 "local",
                 "plugin.install",
                 &meta.manifest.id,
                 "fail",
                 &e.to_string(),
-            );
+            ) {
+                tracing::error!(error = %ae, "插件安装失败审计写入失败");
+            }
             return Err(anyhow::anyhow!(e.to_string()));
         }
     };
 
     // 与 Web 装包同口径留痕：谁在什么时候装了哪个版本、授了哪些权限。
-    let _ = db.audit(
+    if let Err(e) = db.audit(
         "cli",
         "local",
         "plugin.install",
@@ -280,7 +282,9 @@ pub fn plugin_install(
             info.key_id,
             info.grants.len()
         ),
-    );
+    ) {
+        tracing::error!(error = %e, "插件安装审计写入失败");
+    }
 
     println!(
         "已安装 {} {}（grants={}）",

@@ -430,7 +430,9 @@ impl TaskService {
             &clock,
         )
         .map_err(|e| e.to_string())?;
-        let _ = db.mark_tasks_loaded();
+        if let Err(e) = db.mark_tasks_loaded() {
+            tracing::warn!(error = %e, "标记任务已加载失败");
+        }
         // 在把 scheduler 交给 tokio Mutex 之前种内置任务：`open` 既可能在运行时内
         // 调用（bootstrap），也可能在运行时外（单测），不能依赖 `blocking_lock`。
         seed_builtins(&mut scheduler, &clock)?;
@@ -494,10 +496,14 @@ impl TaskService {
             };
             let report = sched.tick(&self.clock, &gate);
             for rec in report.records {
-                let _ = self.persist_record(rec);
+                if let Err(e) = self.persist_record(rec) {
+                    tracing::warn!(error = %e, "任务运行记录落盘失败");
+                }
             }
             for ev in report.audits {
-                let _ = self.persist_audit(ev);
+                if let Err(e) = self.persist_audit(ev) {
+                    tracing::error!(error = %e, "任务审计落盘失败");
+                }
             }
             for ticket in report.runs {
                 let task_id = ticket.context.task_id.to_string();

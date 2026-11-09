@@ -1,6 +1,6 @@
 use axum::extract::Path;
 use axum::http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, VARY};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::Response;
 use rust_embed::RustEmbed;
 
@@ -44,20 +44,26 @@ pub async fn static_file(
 
     let mut resp = Response::new(axum::body::Body::from(data));
     let h = resp.headers_mut();
-    h.insert(CONTENT_TYPE, mime.to_string().parse().unwrap());
+    // `HeaderValue` 解析走显式兜底：静态资源在请求路径上，任何解析失败都不该 panic。
+    h.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&mime.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
     h.insert(
         CACHE_CONTROL,
-        if rel.contains(".min.") {
+        HeaderValue::from_static(if rel.contains(".min.") {
             "public, max-age=86400"
         } else {
             "no-cache"
-        }
-        .parse()
-        .unwrap(),
+        }),
     );
-    h.insert(VARY, "Accept-Encoding".parse().unwrap());
+    h.insert(VARY, HeaderValue::from_static("Accept-Encoding"));
     if let Some(enc) = encoding {
-        h.insert(CONTENT_ENCODING, enc.parse().unwrap());
+        h.insert(
+            CONTENT_ENCODING,
+            HeaderValue::from_str(enc).unwrap_or_else(|_| HeaderValue::from_static("identity")),
+        );
     }
     Ok(resp)
 }

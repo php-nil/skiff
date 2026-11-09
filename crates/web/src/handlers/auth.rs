@@ -190,11 +190,10 @@ pub async fn logout(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    state.db().revoke_session(&user.session_id)?;
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state
-        .db()
-        .audit(&user.user.username, &ip, "auth.logout", "session", "ok", "");
+    state
+        .logout(&user.user.username, &user.session_id, &ip)
+        .map_err(AppError::Internal)?;
 
     let mut resp = handlers::redirect(format!("/{}/login", state.cfg.entry_prefix));
     resp.headers_mut().append(
@@ -228,42 +227,43 @@ pub async fn change_password(
             "两次输入的新口令不一致",
         )));
     }
-    if !skiff_identity::verify_password(&old, &user.user.password_hash) {
+    // argon2 是同步的 CPU/内存密集计算，不能占用 async worker。
+    let verified = handlers::blocking_fs({
+        let old = old.to_string();
+        let stored = user.user.password_hash.clone();
+        move || skiff_identity::verify_password(&old, &stored)
+    })
+    .await?;
+    if !verified {
         return Err(AppError::Redirect(handlers::settings_error_redirect(
             &state,
             &user,
             "当前口令不正确",
         )));
     }
-    let hash = skiff_identity::hash_password(&new).map_err(AppError::BadRequest)?;
-    state.db().set_password(user.user.id, &hash)?;
-    state.db().revoke_all_sessions(user.user.id)?;
-    // 改密后换一个新会话，避免用户被自己的操作踢下线
-    let tokens = state.new_session_tokens();
-    let now = chrono::Utc::now().timestamp();
+    let hash = handlers::blocking_fs({
+        let new = new.to_string();
+        move || skiff_identity::hash_password(&new).map_err(AppError::BadRequest)
+    })
+    .await??;
+    // 改密后换一个新会话，避免用户被自己的操作踢下线（写库与轮换收口在用例层）。
     let ip = handlers::client_ip(&state, &parts);
-    state.db().create_session(
-        &tokens.session_id,
-        user.user.id,
-        &tokens.session_token_hash,
-        &ip,
-        &handlers::host_header(&parts),
-        now + state.cfg.session.idle_secs,
-        now + state.cfg.session.abs_secs,
-    )?;
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        "auth.password.change",
-        "user",
-        "ok",
-        "",
-    );
+    let tokens = state
+        .rotate_password_session(
+            user.user.id,
+            &user.user.username,
+            &hash,
+            &ip,
+            &handlers::host_header(&parts),
+        )
+        .map_err(AppError::Internal)?;
 
     // 首启文件改密成功后删除（§5.2）
     let initial = state.cfg.data_dir.join("initial-admin.txt");
     if initial.exists() {
-        let _ = std::fs::remove_file(&initial);
+        if let Err(e) = std::fs::remove_file(&initial) {
+            tracing::debug!(path = %initial.display(), error = %e, "删除首启口令文件失败");
+        }
     }
 
     let mut resp = handlers::redirect(format!("/{}", state.cfg.entry_prefix));
@@ -289,7 +289,9 @@ pub async fn setup_totp(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let secret = skiff_identity::generate_totp_secret();
-    state.db().set_totp(user.user.id, Some(&secret), false)?;
+    state
+        .save_totp_secret(user.user.id, &secret, false)
+        .map_err(AppError::Internal)?;
     let uri = skiff_identity::otpauth_uri("Skiff", &user.user.username, &secret);
     crate::handlers::settings::render_settings(
         &state,
@@ -320,16 +322,9 @@ pub async fn enable_totp(
         return Err(AppError::BadRequest("动态码不正确".into()));
     }
     let (plain, hashes) = skiff_identity::generate_backup_codes(10);
-    state.db().replace_backup_codes(user.user.id, &hashes)?;
-    state.db().set_totp(user.user.id, Some(&secret), true)?;
-    let _ = state.db().audit(
-        &user.user.username,
-        "local",
-        "auth.totp.enable",
-        "user",
-        "ok",
-        "",
-    );
+    state
+        .enable_totp(user.user.id, &user.user.username, &secret, &hashes)
+        .map_err(AppError::Internal)?;
     crate::handlers::settings::render_settings(
         &state,
         &user,

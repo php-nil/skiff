@@ -227,31 +227,35 @@ pub(super) async fn ftp_call(State(state): State<Arc<AppState>>, req: Request<Bo
         .iter()
         .any(|g| g.kind == "perm" && (g.value == "ftp:*" || g.value == format!("ftp:{method}")));
     if !allowed {
-        let _ = state.db().audit(
+        if let Err(e) = state.db().audit(
             &format!("plugin:{id}"),
             "uds",
             &format!("ftp.deny.{}", method),
             &id,
             "deny",
             "缺少 ftp 能力授权",
-        );
+        ) {
+            tracing::error!(error = %e, "ftp 拒绝审计写入失败");
+        }
         return (StatusCode::FORBIDDEN, "缺少 ftp 能力授权").into_response();
     }
 
     match dispatch(&state, &method, &params).await {
         Ok(v) => {
-            let _ = state.db().audit(
+            if let Err(e) = state.db().audit(
                 &format!("plugin:{id}"),
                 "uds",
                 &format!("ftp.{method}"),
                 "",
                 "ok",
                 &audit_ok_detail(&method, &v),
-            );
+            ) {
+                tracing::error!(error = %e, "ftp 调用审计写入失败");
+            }
             Json(v).into_response()
         }
         Err(e) => {
-            let _ = state.db().audit(
+            if let Err(ae) = state.db().audit(
                 &format!("plugin:{id}"),
                 "uds",
                 &format!("ftp.{method}"),
@@ -262,7 +266,9 @@ pub(super) async fn ftp_call(State(state): State<Arc<AppState>>, req: Request<Bo
                     "fail"
                 },
                 &e.message,
-            );
+            ) {
+                tracing::error!(error = %ae, "ftp 失败审计写入失败");
+            }
             (e.status, e.message).into_response()
         }
     }

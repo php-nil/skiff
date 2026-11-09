@@ -360,7 +360,10 @@ pub async fn api_read(
         .get("path")
         .filter(|p| !p.is_empty())
         .ok_or_else(|| bad_request("缺少 path 参数"))?;
-    match state.admin_fs().read(&user.user.username, path) {
+    let path = path.to_string();
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.read(&name, &path)).await? {
         Ok(file) => Ok(Json(json!({ "ok": true, "file": file }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -375,9 +378,11 @@ pub async fn api_write(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let path = field(&body, "path")?;
-    let content = field(&body, "content")?;
-    match state.admin_fs().write(&user.user.username, path, content) {
+    let path = field(&body, "path")?.to_string();
+    let content = field(&body, "content")?.to_string();
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.write(&name, &path, &content)).await? {
         Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -425,8 +430,10 @@ pub async fn api_remove(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let path = field(&body, "path")?;
-    match state.admin_fs().remove(&user.user.username, path) {
+    let path = field(&body, "path")?.to_string();
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.remove(&name, &path)).await? {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -442,16 +449,15 @@ pub async fn api_copy(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let from = field(&body, "from")?;
-    let to = field(&body, "to")?;
+    let from = field(&body, "from")?.to_string();
+    let to = field(&body, "to")?.to_string();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    match state
-        .admin_fs()
-        .copy(&user.user.username, from, to, overwrite)
-    {
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.copy(&name, &from, &to, overwrite)).await? {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -508,15 +514,16 @@ pub async fn api_archive(
     if sources.is_empty() {
         return Err(bad_request("sources 不能为空"));
     }
-    let dest = field(&body, "dest")?;
-    let format = field(&body, "format")?;
+    let dest = field(&body, "dest")?.to_string();
+    let format = field(&body, "format")?.to_string();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    match state
-        .admin_fs()
-        .archive(&user.user.username, &sources, dest, format, overwrite)
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.archive(&name, &sources, &dest, &format, overwrite))
+        .await?
     {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
@@ -533,16 +540,15 @@ pub async fn api_extract(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let archive = field(&body, "archive")?;
-    let dest = field(&body, "dest")?;
+    let archive = field(&body, "archive")?.to_string();
+    let dest = field(&body, "dest")?.to_string();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    match state
-        .admin_fs()
-        .extract(&user.user.username, archive, dest, overwrite)
-    {
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.extract(&name, &archive, &dest, overwrite)).await? {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -586,15 +592,14 @@ pub async fn api_trash_restore(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let id = field(&body, "id")?;
+    let id = field(&body, "id")?.to_string();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    match state
-        .admin_fs()
-        .trash_restore(&user.user.username, id, overwrite)
-    {
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.trash_restore(&name, &id, overwrite)).await? {
         Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -609,8 +614,10 @@ pub async fn api_trash_purge(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let id = field(&body, "id")?;
-    match state.admin_fs().trash_purge(&user.user.username, id) {
+    let id = field(&body, "id")?.to_string();
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.trash_purge(&name, &id)).await? {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -623,7 +630,9 @@ pub async fn api_trash_clear(
 ) -> ApiResult {
     admin(&user)?;
     csrf(&state, &user, &parts)?;
-    match state.admin_fs().trash_clear(&user.user.username) {
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.trash_clear(&name)).await? {
         Ok(out) => Ok(Json(json!({
             "ok": out.failed.is_empty(),
             "result": {
@@ -706,8 +715,10 @@ pub async fn api_quota_scan(
     admin(&user)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
-    let path = field(&body, "path")?;
-    match state.admin_fs().quota_scan(&user.user.username, path) {
+    let path = field(&body, "path")?.to_string();
+    let fs = state.admin_fs_arc();
+    let name = user.user.username.clone();
+    match handlers::blocking_fs(move || fs.quota_scan(&name, &path)).await? {
         Ok(quota) => Ok(Json(json!({ "ok": true, "quota": quota }))),
         Err(e) => Err(fs_err(e)),
     }

@@ -164,7 +164,9 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
         loop {
             tick.tick().await;
             state.supervisor().reap_idle().await;
-            let _ = state.db().purge_expired_sessions();
+            if let Err(e) = state.db().purge_expired_sessions() {
+                tracing::warn!(error = %e, "清理过期会话失败");
+            }
             // 站点日志轮转由内核巡检做（改名 + 让 nginx 重开日志），不依赖宿主 logrotate。
             // 一站一目录：逐个扫描 `/www/sites/<域名>/log/`。
             let sites_dir = state.cfg.web_root.join("sites");

@@ -119,11 +119,15 @@ pub async fn apply_registry_mirror(
             .err()
             .unwrap_or_else(|| "docker 重启后不可用".to_string());
         if let Some(bak) = &backup {
-            let _ = std::fs::copy(bak, path);
-        } else {
-            let _ = std::fs::remove_file(path);
+            if let Err(e) = std::fs::copy(bak, path) {
+                tracing::error!(error = %e, "恢复 daemon.json 备份失败");
+            }
+        } else if let Err(e) = std::fs::remove_file(path) {
+            tracing::error!(error = %e, "删除失败的 daemon.json 失败");
         }
-        let _ = restart_docker().await;
+        if let Err(e) = restart_docker().await {
+            tracing::error!(error = %e, "恢复 daemon.json 后重启 Docker 失败");
+        }
         return Err(format!("{reason}；已恢复原 daemon.json"));
     }
     Ok(MirrorApply {

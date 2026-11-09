@@ -43,14 +43,16 @@ pub(super) async fn plugin_auth(
     let plugin_id = match uid_to_plugin(&state, uid).await {
         Some(id) => id,
         None => {
-            let _ = state.db().audit(
+            if let Err(e) = state.db().audit(
                 &format!("uid:{uid}"),
                 "uds",
                 "capability.auth",
                 "",
                 "deny",
                 "UID 未映射到插件",
-            );
+            ) {
+                tracing::error!(error = %e, "能力面鉴权审计写入失败");
+            }
             return (StatusCode::FORBIDDEN, "UID 未映射到任何插件").into_response();
         }
     };
@@ -68,14 +70,16 @@ pub(super) async fn plugin_auth(
         .await
         .unwrap_or_default();
     if expected.is_empty() || !skiff_identity::token_matches(&expected, &token) {
-        let _ = state.db().audit(
+        if let Err(e) = state.db().audit(
             &format!("plugin:{plugin_id}"),
             "uds",
             "capability.auth",
             &plugin_id,
             "deny",
             "token 不匹配",
-        );
+        ) {
+            tracing::error!(error = %e, "能力面鉴权审计写入失败");
+        }
         return (StatusCode::FORBIDDEN, "插件身份令牌无效").into_response();
     }
     req.extensions_mut()

@@ -9,6 +9,18 @@ use skiff_model::Role;
 /// 单独起别名是为了让 `query_row` 的闭包签名可读（clippy::type_complexity）。
 type SessionRow = (String, i64, String, String, i64, i64, i64, i64, String);
 
+/// 会话续期写节流窗口（秒）。
+///
+/// 中间件对每个带 Cookie 的请求都会调 `verify_session`，此前每调一次就 UPDATE
+/// 一次 `last_seen/idle_expires`——静态资源也会触发写，单连接的 SQLite 因此
+/// 被高频写锁占住。改为距上次写入不足该窗口时直接跳过续期：
+///
+/// * 只影响「续期写」的频率，不改变过期判定本身——过期仍以库里的
+///   `idle_expires/abs_expires` 为准，`abs_expires` 完全不受影响。
+/// * 代价：空闲窗口的有效上限最多缩短一个窗口长度（活动被延后到最多 30s
+///   之后才落库）。默认空闲窗口至少是分钟级，这个误差可接受。
+const TOUCH_INTERVAL_SECS: i64 = 30;
+
 impl Db {
     #[allow(clippy::too_many_arguments)]
     pub fn create_session(
@@ -42,6 +54,8 @@ impl Db {
     }
 
     /// 校验会话并按需续期空闲窗口。返回 `None` 表示无效/过期/已撤销。
+    ///
+    /// 续期写按 `TOUCH_INTERVAL_SECS` 节流：窗口内的重复请求只读不写。
     pub fn verify_session(&self, token_hash: &str, idle_window: i64) -> Result<Option<Session>> {
         let conn = self.conn();
         let ts = now();
@@ -74,7 +88,7 @@ impl Db {
             username,
             role,
             created_at,
-            _last_seen,
+            last_seen,
             idle_expires,
             abs_expires,
             ip,
@@ -86,18 +100,24 @@ impl Db {
             conn.execute("UPDATE sessions SET revoked = 1 WHERE id = ?1", params![id])?;
             return Ok(None);
         }
-        let new_idle = (ts + idle_window).min(abs_expires);
-        conn.execute(
-            "UPDATE sessions SET last_seen = ?2, idle_expires = ?3 WHERE id = ?1",
-            params![id, ts, new_idle],
-        )?;
+        // 窗口内的请求不做续期写：返回库里已存的过期时间，语义与「刚续期过」一致。
+        let (seen, new_idle) = if ts.saturating_sub(last_seen) < TOUCH_INTERVAL_SECS {
+            (last_seen, idle_expires)
+        } else {
+            let new_idle = (ts + idle_window).min(abs_expires);
+            conn.execute(
+                "UPDATE sessions SET last_seen = ?2, idle_expires = ?3 WHERE id = ?1",
+                params![id, ts, new_idle],
+            )?;
+            (ts, new_idle)
+        };
         Ok(Some(Session {
             id,
             user_id,
             username,
             role: Role::parse(&role).unwrap_or(Role::Viewer),
             created_at,
-            last_seen: ts,
+            last_seen: seen,
             idle_expires: new_idle,
             abs_expires,
             ip,
@@ -142,6 +162,13 @@ mod tests {
         let ts = now();
         db.create_session("s1", uid, "hash-token", "127.0.0.1", "ua", ts + 2, ts + 100)
             .unwrap();
+        // 把 last_seen 推出续期节流窗口，确保这次校验真的会续期。
+        db.conn()
+            .execute(
+                "UPDATE sessions SET last_seen = ?1 WHERE id = 's1'",
+                params![ts - TOUCH_INTERVAL_SECS - 1],
+            )
+            .unwrap();
         let s = db.verify_session("hash-token", 60).unwrap().unwrap();
         assert_eq!(s.username, "a");
         // 空闲窗口被续期，但不超过绝对过期
@@ -163,5 +190,31 @@ mod tests {
             })
             .unwrap();
         assert_eq!(revoked, 1);
+    }
+
+    #[test]
+    fn session_verify_skips_touch_within_window() {
+        let db = Db::open_in_memory().unwrap();
+        let uid = db.create_user("b", "h", Role::Admin, false).unwrap();
+        let ts = now();
+        db.create_session("s2", uid, "tok2", "127.0.0.1", "ua", ts + 60, ts + 600)
+            .unwrap();
+
+        // 窗口内的请求只读不写：返回库里已存的 last_seen/idle_expires。
+        let s = db.verify_session("tok2", 60).unwrap().unwrap();
+        assert_eq!(s.last_seen, ts);
+        assert_eq!(s.idle_expires, ts + 60);
+
+        // 推出窗口后恢复续期写。
+        db.conn()
+            .execute(
+                "UPDATE sessions SET last_seen = ?1 WHERE id = 's2'",
+                params![ts - TOUCH_INTERVAL_SECS - 1],
+            )
+            .unwrap();
+        let s = db.verify_session("tok2", 120).unwrap().unwrap();
+        assert!(s.last_seen >= ts);
+        assert!(s.idle_expires > ts + 60);
+        assert!(s.idle_expires <= s.abs_expires);
     }
 }

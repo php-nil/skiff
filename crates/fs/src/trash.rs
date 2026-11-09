@@ -59,8 +59,9 @@ impl TrashEntry {
     }
 }
 
-/// 回收站元数据存储。写入/恢复/彻底删除的状态流转都经由此 trait，
-/// 后续 `skiff-store` 用 `trash_entries` 表实现即可，不改 `ops`。
+/// 回收站元数据存储。写入/恢复/彻底删除的状态流转都经由此 trait；
+/// 持久化实现在 `skiff-store` 的 `db::trash`（`trash_entries` 表），
+/// 由 `skiff-app` 的 `DbTrashStore` 注入。
 pub trait TrashStore: Send + Sync {
     fn insert(&self, entry: TrashEntry);
     fn get(&self, id: &str) -> Option<TrashEntry>;

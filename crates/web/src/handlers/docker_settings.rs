@@ -48,8 +48,7 @@ pub async fn save(
 
     if form.contains_key("image_prefix") {
         let raw = form_first(&form, "image_prefix");
-        let value = raw.trim().trim_end_matches('/').to_string();
-        state.db().set_setting("sites.image_prefix", &value)?;
+        state.save_image_prefix(&raw).map_err(AppError::Internal)?;
     }
 
     let mut notice = "已保存".to_string();
@@ -63,7 +62,9 @@ pub async fn save(
         if raw != old {
             match state.apply_registry_mirror(raw).await {
                 Ok(r) => {
-                    state.db().set_setting("sites.registry_mirror", raw)?;
+                    state
+                        .save_registry_mirror(raw)
+                        .map_err(AppError::Internal)?;
                     if r.restarted {
                         notice =
                             "镜像源已写入 /etc/docker/daemon.json，Docker 已重启并通过可用性检查"

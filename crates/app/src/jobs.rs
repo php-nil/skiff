@@ -357,36 +357,43 @@ impl JobService {
 
     /// 阶段推进。真实执行步骤调用；`cancellable=false` 表示当前步骤不可中断。
     pub fn set_phase(&self, id: &str, phase: &str, label: &str, progress: i64, cancellable: bool) {
-        let _ = self.db.update_job_phase(
+        if let Err(e) = self.db.update_job_phase(
             id,
             phase,
             label,
             progress.clamp(-1, 100),
             cancellable,
             Self::now(),
-        );
+        ) {
+            tracing::warn!(job = id, error = %e, "作业阶段写入失败");
+        }
         self.cache_route_by_id(id);
     }
 
     /// 当前阶段是否可中断（进入/退出 `docker exec` 等不可中断步骤时切换）。
     pub fn set_cancellable(&self, id: &str, cancellable: bool) {
         if let Ok(Some(job)) = self.db.job(id) {
-            let _ = self.db.update_job_phase(
+            if let Err(e) = self.db.update_job_phase(
                 id,
                 &job.phase,
                 &job.phase_label,
                 job.progress,
                 cancellable,
                 Self::now(),
-            );
+            ) {
+                tracing::warn!(job = id, error = %e, "作业可中断标记写入失败");
+            }
         }
     }
 
     /// 追加一行日志。
     pub fn log(&self, id: &str, stream: &str, line: &str) {
-        let _ = self
-            .db
-            .append_job_logs(id, Self::now(), &[(stream.to_string(), line.to_string())]);
+        if let Err(e) =
+            self.db
+                .append_job_logs(id, Self::now(), &[(stream.to_string(), line.to_string())])
+        {
+            tracing::warn!(job = id, error = %e, "作业日志写入失败");
+        }
     }
 
     pub fn note(&self, id: &str, line: &str) {
@@ -402,14 +409,16 @@ impl JobService {
             .iter()
             .map(|l| (stream.to_string(), l.clone()))
             .collect();
-        let _ = self.db.append_job_logs(id, Self::now(), &entries);
+        if let Err(e) = self.db.append_job_logs(id, Self::now(), &entries) {
+            tracing::warn!(job = id, error = %e, "作业日志批量写入失败");
+        }
     }
 
     pub fn finish_ok(&self, id: &str, line: &str, result: Value) {
         self.note(id, line);
         let now = Self::now();
         let duration = self.duration_ms(id, now);
-        let _ = self.db.finish_job(
+        if let Err(e) = self.db.finish_job(
             id,
             STATUS_SUCCEEDED,
             None,
@@ -417,7 +426,9 @@ impl JobService {
             &result.to_string(),
             now,
             duration,
-        );
+        ) {
+            tracing::warn!(job = id, error = %e, "作业成功收尾写入失败");
+        }
         self.forget_route(id);
     }
 
@@ -425,7 +436,7 @@ impl JobService {
         self.note(id, &format!("失败：{detail}"));
         let now = Self::now();
         let duration = self.duration_ms(id, now);
-        let _ = self.db.finish_job(
+        if let Err(e) = self.db.finish_job(
             id,
             STATUS_FAILED,
             Some(class),
@@ -433,7 +444,9 @@ impl JobService {
             "{}",
             now,
             duration,
-        );
+        ) {
+            tracing::warn!(job = id, error = %e, "作业失败收尾写入失败");
+        }
         self.forget_route(id);
     }
 
@@ -441,7 +454,7 @@ impl JobService {
         self.note(id, detail);
         let now = Self::now();
         let duration = self.duration_ms(id, now);
-        let _ = self.db.finish_job(
+        if let Err(e) = self.db.finish_job(
             id,
             STATUS_CANCELLED,
             Some("cancelled"),
@@ -449,7 +462,9 @@ impl JobService {
             "{}",
             now,
             duration,
-        );
+        ) {
+            tracing::warn!(job = id, error = %e, "作业取消收尾写入失败");
+        }
         self.forget_route(id);
     }
 
@@ -557,7 +572,9 @@ impl JobService {
     /// 清理终态作业（提交时与启动时各一次），失败静默。
     pub fn prune_quietly(&self) {
         let cutoff = Self::now() - JOB_RETENTION_DAYS * 86_400;
-        let _ = self.db.prune_jobs(cutoff, JOB_KEEP_MAX);
+        if let Err(e) = self.db.prune_jobs(cutoff, JOB_KEEP_MAX) {
+            tracing::debug!(error = %e, "清理过期作业失败");
+        }
     }
 
     fn duration_ms(&self, id: &str, now: i64) -> i64 {

@@ -32,14 +32,16 @@ fn interop_deny(
     method: &str,
     d: InteropDeny,
 ) -> Response {
-    let _ = state.db().audit(
+    if let Err(e) = state.db().audit(
         &format!("plugin:{caller}"),
         "uds",
         "interop.call",
         target,
         d.kind.audit_result(),
         &format!("{method}: {}", d.message),
-    );
+    ) {
+        tracing::error!(error = %e, "插件互调拒绝审计写入失败");
+    }
     let status = StatusCode::from_u16(d.kind.status()).unwrap_or(StatusCode::FORBIDDEN);
     (status, d.message).into_response()
 }
@@ -97,14 +99,16 @@ pub(super) async fn interop_catalog(
     };
     let records = state.db().list_plugins().unwrap_or_default();
     let interfaces = interop::catalog(&caller, &manifest, &rec.grants, &records);
-    let _ = state.db().audit(
+    if let Err(e) = state.db().audit(
         &format!("plugin:{caller}"),
         "uds",
         "interop.catalog",
         "",
         "ok",
         &format!("{} 个可调用目标", interfaces.len()),
-    );
+    ) {
+        tracing::error!(error = %e, "插件互调目录审计写入失败");
+    }
     Json(json!({
         "permission": interop::PERM_CALL,
         "interfaces": interfaces,
@@ -253,25 +257,29 @@ pub(super) async fn interop_call(
 
     match outcome {
         Ok(Ok(result)) => {
-            let _ = state.db().audit(
+            if let Err(e) = state.db().audit(
                 &format!("plugin:{caller}"),
                 "uds",
                 "interop.call",
                 &target,
                 "ok",
                 &method,
-            );
+            ) {
+                tracing::error!(error = %e, "插件互调审计写入失败");
+            }
             Json(json!({ "plugin": target, "method": method, "result": result })).into_response()
         }
         Ok(Err(e)) => {
-            let _ = state.db().audit(
+            if let Err(ae) = state.db().audit(
                 &format!("plugin:{caller}"),
                 "uds",
                 "interop.call",
                 &target,
                 "fail",
                 &format!("{method}: {e}"),
-            );
+            ) {
+                tracing::error!(error = %ae, "插件互调审计写入失败");
+            }
             (
                 StatusCode::BAD_GATEWAY,
                 format!("目标插件 {target} 调用失败: {e}"),

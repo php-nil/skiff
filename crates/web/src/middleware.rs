@@ -276,14 +276,16 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                                 .get::<ClientInfo>()
                                 .map(|c| c.ip.clone())
                                 .unwrap_or_else(|| "unknown".into());
-                            let _ = state.db().audit(
+                            if let Err(ae) = state.db().audit(
                                 &user.username,
                                 &ip,
                                 "auth.token_scope",
                                 &user.username,
                                 "deny",
                                 &e,
-                            );
+                            ) {
+                                tracing::error!(error = %ae, "API Token scope 拒绝审计写入失败");
+                            }
                             return Err(AppError::Unauthorized(format!("API Token 配置非法：{e}")));
                         }
                     }

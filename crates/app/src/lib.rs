@@ -12,6 +12,7 @@ pub mod nginx;
 pub mod panel_settings;
 pub mod runtime_catalog;
 pub mod sites;
+pub mod sites_vhost;
 pub mod tasks;
 
 use std::collections::{HashMap, HashSet};
@@ -110,7 +111,7 @@ pub struct AppState {
     /// 测试直接使用，任务服务需要真实库与 Supervisor，由 `bootstrap` 显式初始化。
     tasks: std::sync::OnceLock<Arc<tasks::TaskService>>,
     /// 管理员侧文件服务（`skiff-fs` 的唯一接线点）。
-    admin_fs: admin_fs::AdminFs,
+    admin_fs: Arc<admin_fs::AdminFs>,
     /// 一次性提示（flash）：按会话保存，页面渲染一次即消费。
     ///
     /// 写操作完成后重定向到无参数地址，由下一次渲染从会话取走消息，
@@ -290,7 +291,7 @@ impl AppState {
         version: impl Into<String>,
     ) -> Arc<Self> {
         let permits = cfg.login_concurrency.max(1);
-        let admin_fs = admin_fs::AdminFs::new(&cfg, Arc::clone(&db));
+        let admin_fs = Arc::new(admin_fs::AdminFs::new(&cfg, Arc::clone(&db)));
         let jobs = jobs::JobService::new(Arc::clone(&db));
         jobs.prune_quietly();
         Arc::new(Self {
@@ -336,7 +337,13 @@ impl AppState {
 
     /// 管理员侧文件服务（只读访问）。Web 文件管理页是它的唯一调用方。
     pub fn admin_fs(&self) -> &admin_fs::AdminFs {
-        &self.admin_fs
+        self.admin_fs.as_ref()
+    }
+
+    /// 文件服务句柄的可持有副本：同步文件调用要交给 `spawn_blocking`，
+    /// 闭包必须 `'static`，不能借用 `&self`。
+    pub fn admin_fs_arc(&self) -> Arc<admin_fs::AdminFs> {
+        Arc::clone(&self.admin_fs)
     }
 
     /// 写入一条一次性提示。同一会话重复写入时后写覆盖先写（一个动作只留一条）。
@@ -379,6 +386,29 @@ impl AppState {
     /// 会让「谁负责这条业务规则」变得没有答案。
     pub fn db(&self) -> &Arc<Db> {
         &self.db
+    }
+
+    /// 审计写入的统一出口：写失败必须留痕，不允许静默丢弃。
+    ///
+    /// 参数顺序与 `Db::audit` 完全一致，调用方只替换方法名，审计内容不变。
+    pub fn audit_or_log(
+        &self,
+        actor: &str,
+        ip: &str,
+        action: &str,
+        target: &str,
+        result: &str,
+        detail: &str,
+    ) {
+        if let Err(e) = self.db.audit(actor, ip, action, target, result, detail) {
+            tracing::error!(
+                error = %e,
+                actor,
+                action,
+                target,
+                "审计写入失败（操作已按原结果继续）"
+            );
+        }
     }
 
     /// 任务中心句柄：提交、推进、日志、取消与重试都走它。
@@ -476,6 +506,36 @@ impl AppState {
         SessionTokens::new()
     }
 
+    /// 插件启停写路径：启用标记、状态位与审计一次完成。
+    ///
+    /// 进程启停仍由 `Supervisor` 负责（handler 在调用前已 `stop`），这里只收口写库，
+    /// 避免 handler 分三步直接写 `plugins` 表。
+    pub fn set_plugin_enabled(
+        &self,
+        id: &str,
+        enable: bool,
+        actor: &str,
+        ip: &str,
+    ) -> Result<(), String> {
+        self.db
+            .set_plugin_enabled(id, enable)
+            .map_err(|e| e.to_string())?;
+        self.db
+            .set_plugin_status(id, if enable { "installed" } else { "disabled" }, "")
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = self.db.audit(
+            actor,
+            ip,
+            "plugin.toggle",
+            id,
+            "ok",
+            &format!("enabled={enable}"),
+        ) {
+            tracing::error!(error = %e, "插件启停审计写入失败");
+        }
+        Ok(())
+    }
+
     pub fn docker_unavailable_reason(&self) -> String {
         self.docker.unavailable_reason()
     }
@@ -510,9 +570,12 @@ impl skiff_plugin::capability::CapabilityHost for AppState {
         detail: &str,
     ) {
         // 审计写失败不阻断能力调用：调用结果已由 handler 决定，审计只是流水。
-        let _ = self
+        if let Err(e) = self
             .db
-            .audit(actor, channel, action, target, result, detail);
+            .audit(actor, channel, action, target, result, detail)
+        {
+            tracing::error!(error = %e, action, "能力面审计写入失败");
+        }
     }
 }
 

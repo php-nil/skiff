@@ -200,14 +200,16 @@ pub async fn toggle(
     let ip = handlers::client_ip(&state, &parts);
     match svc.set_enabled_task(&id, enabled).await {
         Ok(_) => {
-            let _ = state.db().audit(
+            if let Err(e) = state.db().audit(
                 &user.user.username,
                 &ip,
                 "tasks.toggle",
                 &id,
                 "ok",
                 if enabled { "启用" } else { "停用" },
-            );
+            ) {
+                tracing::error!(error = %e, "任务启停审计写入失败");
+            }
             Ok(handlers::redirect(back(&id)))
         }
         Err(e) => Ok(handlers::flash_redirect(
@@ -234,14 +236,16 @@ pub async fn run(
     let ip = handlers::client_ip(&state, &parts);
     let actor = skiff_sched::AuditActor::Admin(user.user.username.clone());
     let result = svc.run_task_now(&id, actor).await;
-    let _ = state.db().audit(
+    if let Err(e) = state.db().audit(
         &user.user.username,
         &ip,
         "tasks.run",
         &id,
         if result.is_ok() { "ok" } else { "fail" },
         "",
-    );
+    ) {
+        tracing::error!(error = %e, "任务手动执行审计写入失败");
+    }
     match result {
         Ok(_) => Ok(handlers::flash_redirect(
             &state,
@@ -273,14 +277,16 @@ pub async fn delete(
     let svc = service(&state)?;
     let ip = handlers::client_ip(&state, &parts);
     let result = svc.delete_task(&id).await;
-    let _ = state.db().audit(
+    if let Err(e) = state.db().audit(
         &user.user.username,
         &ip,
         "tasks.delete",
         &id,
         if result.is_ok() { "ok" } else { "fail" },
         "",
-    );
+    ) {
+        tracing::error!(error = %e, "任务删除审计写入失败");
+    }
     match result {
         Ok(()) => Ok(handlers::redirect(format!(
             "/{}/tasks",
