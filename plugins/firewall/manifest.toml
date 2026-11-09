@@ -1,0 +1,122 @@
+# 防火墙：nftables/iptables 规则与 fail2ban 管理。
+#
+# 本插件不直接碰宿主 root：规则与 jail 全部经内核 `firewall` 能力面执行，
+# 插件进程保持降权。详见 docs/KERNEL_FIREWALL_CONTRACT.md。
+id = "com.skiff.firewall"
+name = "防火墙"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.2"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+# `[interop]` 只做提供方（provides），但仍必须声明 interop 能力面。
+requires = ["firewall", "interop"]
+network_egress = []
+resource_hints = []
+
+# 动词与 `skiff_plugin::firewall::dispatch` 的方法一一对应；内核按
+# `firewall:<method>` 逐条校验，未列出的方法一律 403。
+[[permissions]]
+capability = "firewall"
+verbs = [
+  "status",
+  "rules.list",
+  "rule.add",
+  "rule.remove",
+  "port.allow",
+  "fail2ban.status",
+  "fail2ban.install",
+  "fail2ban.jail.ensure",
+  "fail2ban.jail.remove",
+  "fail2ban.banned",
+  "fail2ban.ban",
+  "fail2ban.unban",
+]
+
+[[ui]]
+label = "防火墙规则"
+path = "rules.html"
+
+[[ui]]
+label = "fail2ban"
+path = "fail2ban.html"
+
+# 挂在固定一级「工具」下；两个功能页是 L3 菜单项，不是独立 L2。
+[[menu]]
+id = "firewall"
+parent = "tools"
+label = "防火墙"
+order = 45
+icon = "shield"
+view = "rules"
+
+  [[menu.items]]
+  id = "rules"
+  label = "防火墙规则"
+  order = 10
+  icon = "shield"
+  view = "rules"
+
+  [[menu.items]]
+  id = "fail2ban"
+  label = "fail2ban"
+  order = 20
+  icon = "lock"
+  view = "fail2ban"
+
+[interop]
+consumes = []
+
+# 对外接口：FTP 等插件用 `com.skiff.firewall:<method>` 调用。只暴露 fail2ban
+# 相关面，防火墙规则的增删仍由本插件 UI 承担，避免调用方误改主机规则。
+[[interop.provides]]
+method = "fail2ban.status"
+label = "fail2ban 状态"
+description = "返回 fail2ban 是否安装/运行及 jail 列表"
+
+[[interop.provides]]
+method = "fail2ban.install"
+label = "安装 fail2ban"
+description = "安装或复用宿主 fail2ban；新装时关闭默认 sshd jail"
+
+[[interop.provides]]
+method = "fail2ban.jail.ensure"
+label = "确保 jail"
+description = "写入 skiff-<jail>.conf 并重启 fail2ban（只管理本前端写入的文件）"
+
+[[interop.provides]]
+method = "fail2ban.jail.remove"
+label = "移除 jail"
+description = "删除 skiff-<jail>.conf 并重启 fail2ban"
+
+[[interop.provides]]
+method = "fail2ban.banned"
+label = "封禁列表"
+description = "查看某个 jail 当前封禁的 IP"
+
+[[interop.provides]]
+method = "fail2ban.unban"
+label = "解封 IP"
+description = "把指定 IP 从某个 jail 解封"
+
+[[interop.provides]]
+method = "fail2ban.ban"
+label = "封禁 IP"
+description = "把指定 IP 加入某个 jail 的封禁列表"
+
+[config_schema.default_bantime]
+type = "number"
+default = "3600"
+label = "新建 jail 时的默认封禁时长（秒）"
+
+[config_schema.default_findtime]
+type = "number"
+default = "600"
+label = "新建 jail 时的默认统计窗口（秒）"
+
+[config_schema.default_maxretry]
+type = "number"
+default = "5"
+label = "新建 jail 时的默认失败次数"

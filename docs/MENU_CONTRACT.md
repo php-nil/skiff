@@ -629,8 +629,9 @@ roles = ["admin", "operator", "viewer"]
 |---|---|---|---|---|---|
 | `com.skiff.files` | 工具 `tools` | `files` 文件 | 浏览 / 传输 / 设置（若 UI 不支持可先不声明 L3） | — | B3 |
 | `com.skiff.cron` | 工具 `tools` | `cron` 任务 | 任务列表 / 执行记录 / 设置 | — | B3 |
-| `com.skiff.monitor` | 工具 `tools` | `monitor` 监控 | 总览 / CPU 内存 / 磁盘 | `overview.health` | B2 |
+| `com.skiff.monitor` | 工具 `tools` | `monitor` 监控 | 总览 / 历史采样 / 进程 / 网络 | `overview.health` | B2 |
 | `com.skiff.guard` | 工具 `tools` | `guard` 守护 | 容器 / 事件 / 设置 | — | B3 |
+| `com.skiff.firewall` | 工具 `tools` | `firewall` 防火墙 | 防火墙规则 / fail2ban | — | 已上线（0.1.0，未验收） |
 | `com.skiff.ftp` | 工具 `tools` | `ftp` FTP 管理 | 账号 / 运行状态 | — | 已上线（0.1.0） |
 
 说明：

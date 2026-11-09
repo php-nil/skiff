@@ -48,6 +48,9 @@ fn main() {
             "scheduler": { "driver": "kernel", "task_id": TASK_ID },
         })),
         "history" => Ok(history(&p)),
+        // 进程与网络：只读 `/proc`，与采样共用 path:/proc 授权；不结束进程、不改网络。
+        "processes" => processes(&p, &params),
+        "network" => network(&p, &params),
         "config" => Ok(config(&p)),
         other => Err(RpcError::method_not_found(other)),
     }) {
@@ -254,6 +257,530 @@ fn batch_rows(points: &[Value]) -> Result<Vec<(u64, Value)>, RpcError> {
         rows.push((seq, data));
     }
     Ok(rows)
+}
+
+// ─────────────────────────── 进程视图（只读 /proc） ───────────────────────────
+
+/// Linux 用户态 jiffies 频率；`/proc/[pid]/stat` 的 utime/stime/starttime 都是这个单位。
+/// 极少数架构不是 100，这里按容器/主流 x86、arm64 的默认值处理，并在文档标注口径。
+const USER_HZ: u64 = 100;
+/// 单次进程列表最多扫描的 PID 数，避免极端主机把一次刷新拖成几千次 UDS 读取。
+const PROC_SCAN_MAX: usize = 512;
+/// 进程 CPU% 基线文件（与采样基线分开，避免互相打断窗口）。
+const PREV_PROC_FILE: &str = "prev_proc.json";
+
+#[derive(Debug, Clone)]
+struct ProcStat {
+    pid: u32,
+    name: String,
+    state: char,
+    utime: u64,
+    stime: u64,
+    starttime: u64,
+    rss_pages: u64,
+}
+
+/// 解析 `/proc/[pid]/stat`：第二列 comm 可能含空格与括号，必须从最后一个 `)` 之后切。
+fn parse_proc_stat(text: &str) -> Option<ProcStat> {
+    let pid = text.split_whitespace().next()?.parse::<u32>().ok()?;
+    let open = text.find('(')?;
+    let close = text.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let name = text[open + 1..close].to_string();
+    let rest: Vec<&str> = text[close + 1..].split_whitespace().collect();
+    // rest[0] 是第 3 列 state；utime/stime 是第 14/15 列；starttime 第 22 列；rss 第 24 列。
+    let state = rest.first()?.chars().next().unwrap_or('?');
+    let num = |idx: usize| -> u64 { rest.get(idx).and_then(|v| v.parse().ok()).unwrap_or(0) };
+    Some(ProcStat {
+        pid,
+        name,
+        state,
+        utime: num(11),
+        stime: num(12),
+        starttime: num(19),
+        rss_pages: num(21),
+    })
+}
+
+/// 从 `/proc/[pid]/status` 取 Uid 与 VmRSS（kB）。
+fn parse_proc_status(text: &str) -> (u32, u64) {
+    let mut uid = 0u32;
+    let mut rss_kb = 0u64;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            uid = rest
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("VmRSS:") {
+            rss_kb = rest
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+        }
+    }
+    (uid, rss_kb)
+}
+
+/// `/etc/passwd` → uid 到用户名的映射；读不到（未授权）就退化为数字 uid。
+fn load_passwd(plugin: &Plugin) -> std::collections::HashMap<u32, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(text) = plugin.fs_host_read_text("/etc/passwd") {
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 3 {
+                if let Ok(uid) = parts[2].parse::<u32>() {
+                    map.entry(uid).or_insert_with(|| parts[0].to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// 进程列表：排序、筛选、分页都在插件内完成；CPU% 是**距上次刷新**的差值。
+fn processes(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let now = common::now_secs();
+    let list = plugin
+        .fs_host_list("/proc")
+        .map_err(|e| fs_err(e, "读取 /proc 目录"))?;
+    let items = list
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut pids: Vec<u32> = items
+        .iter()
+        .filter(|it| it.get("dir").and_then(Value::as_bool).unwrap_or(false))
+        .filter_map(|it| it.get("name").and_then(Value::as_str))
+        .filter_map(|n| n.parse::<u32>().ok())
+        .collect();
+    pids.sort_unstable();
+    let truncated = pids.len() > PROC_SCAN_MAX;
+    pids.truncate(PROC_SCAN_MAX);
+
+    let uptime = plugin
+        .fs_host_read_text("/proc/uptime")
+        .ok()
+        .map(|t| parse_uptime(&t))
+        .unwrap_or(0);
+    let (mem_total_kb, _) = plugin
+        .fs_host_read_text("/proc/meminfo")
+        .ok()
+        .map(|t| parse_meminfo(&t))
+        .unwrap_or((0, 0));
+    let stat_total = plugin
+        .fs_host_read_text("/proc/stat")
+        .ok()
+        .and_then(|t| parse_stat(&t))
+        .map(|(total, _)| total)
+        .unwrap_or(0);
+    let users = load_passwd(plugin);
+
+    let prev = common::read_state(plugin, PREV_PROC_FILE);
+    let prev_t = prev.get("t").and_then(Value::as_u64).unwrap_or(0);
+    let prev_total = prev.get("total").and_then(Value::as_u64).unwrap_or(0);
+    let prev_ticks = prev
+        .get("ticks")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let can_delta = prev_t > 0 && now > prev_t && stat_total > prev_total;
+    let dtotal = stat_total.saturating_sub(prev_total) as f64;
+
+    let mut rows = Vec::with_capacity(pids.len());
+    let mut ticks = serde_json::Map::new();
+    let mut scanned = 0usize;
+    for pid in pids {
+        let Ok(stat_text) = plugin.fs_host_read_text(&format!("/proc/{pid}/stat")) else {
+            continue; // 进程在扫描期间退出
+        };
+        let Some(st) = parse_proc_stat(&stat_text) else {
+            continue;
+        };
+        let status_text = plugin
+            .fs_host_read_text(&format!("/proc/{pid}/status"))
+            .unwrap_or_default();
+        let (uid, rss_kb) = parse_proc_status(&status_text);
+        let cmdline = plugin
+            .fs_host_read_text(&format!("/proc/{pid}/cmdline"))
+            .unwrap_or_default();
+        let command = cmdline.replace('\0', " ").trim().to_string();
+        let ticks_now = st.utime.saturating_add(st.stime);
+        ticks.insert(pid.to_string(), json!(ticks_now));
+
+        let cpu = if can_delta && dtotal > 0.0 {
+            let key = pid.to_string();
+            prev_ticks.get(&key).and_then(Value::as_u64).map(|before| {
+                let d = ticks_now.saturating_sub(before) as f64;
+                (d / dtotal * 100.0 * 10.0).round() / 10.0
+            })
+        } else {
+            None
+        };
+        let started = if uptime > 0 {
+            now.saturating_sub(uptime)
+                .saturating_add(st.starttime / USER_HZ)
+        } else {
+            0
+        };
+        let mem_kb = if rss_kb > 0 { rss_kb } else { st.rss_pages * 4 };
+        let user = users.get(&uid).cloned().unwrap_or_else(|| uid.to_string());
+        scanned += 1;
+        rows.push(json!({
+            "pid": st.pid,
+            "user": user,
+            "uid": uid,
+            "state": state_text(st.state),
+            "cpu": cpu,
+            "mem_kb": mem_kb,
+            "mem_pct": if mem_total_kb > 0 {
+                ((mem_kb as f64 / mem_total_kb as f64) * 1000.0).round() / 10.0
+            } else {
+                0.0
+            },
+            "started": started,
+            "elapsed_secs": now.saturating_sub(started),
+            "name": st.name,
+            "command": if command.is_empty() { format!("[{}]", st.name) } else { command },
+        }));
+    }
+
+    // 基线始终更新；下次刷新才有 CPU% 差值。
+    common::write_state(
+        plugin,
+        PREV_PROC_FILE,
+        &json!({ "t": now, "total": stat_total, "ticks": ticks }),
+    )
+    .map_err(common::rpc_err)?;
+
+    let q = params
+        .get("q")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let user_filter = params
+        .get("user")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !q.is_empty() || !user_filter.is_empty() {
+        rows.retain(|r| {
+            let hit = |v: &Value| {
+                v.as_str()
+                    .map(|s| s.to_ascii_lowercase().contains(&q))
+                    .unwrap_or(false)
+            };
+            // PID 是 JSON 数字：按数值比较，避免为比较临时造一个 String。
+            let q_pid = q.parse::<u64>().ok();
+            let q_hit = q.is_empty()
+                || hit(&r["command"])
+                || hit(&r["name"])
+                || (q_pid.is_some() && r["pid"].as_u64() == q_pid);
+            let u_hit = user_filter.is_empty()
+                || r["user"]
+                    .as_str()
+                    .map(|s| s.to_ascii_lowercase().contains(&user_filter))
+                    .unwrap_or(false);
+            q_hit && u_hit
+        });
+    }
+
+    let sort = params.get("sort").and_then(Value::as_str).unwrap_or("cpu");
+    let order = params
+        .get("order")
+        .and_then(Value::as_str)
+        .unwrap_or(if sort == "pid" { "asc" } else { "desc" })
+        .to_ascii_lowercase();
+    let key = |v: &Value| -> f64 {
+        match sort {
+            "mem" | "memory" => v["mem_kb"].as_f64().unwrap_or(0.0),
+            "pid" => v["pid"].as_f64().unwrap_or(0.0),
+            "started" => v["started"].as_f64().unwrap_or(0.0),
+            _ => v["cpu"].as_f64().unwrap_or(-1.0),
+        }
+    };
+    rows.sort_by(|a, b| {
+        let (x, y) = (key(a), key(b));
+        if order == "asc" {
+            x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            y.partial_cmp(&x).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+
+    let total = rows.len();
+    let page = params
+        .get("page")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1);
+    let page_size = params
+        .get("page_size")
+        .and_then(Value::as_u64)
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let start = ((page - 1) as usize * page_size as usize).min(total);
+    let end = (start + page_size as usize).min(total);
+    let page_items = rows[start..end].to_vec();
+
+    Ok(json!({
+        "items": page_items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "scanned": scanned,
+        "truncated": truncated,
+        "cpu_baseline": can_delta,
+        "user_source": if users.is_empty() { "uid" } else { "passwd" },
+        "note": if can_delta {
+            "CPU% 为距上次刷新的差值；首次刷新为 null"
+        } else {
+            "首次刷新没有 CPU 基线，CPU% 为 null；再刷新一次即可"
+        },
+    }))
+}
+
+fn state_text(c: char) -> &'static str {
+    match c {
+        'R' => "running",
+        'S' => "sleeping",
+        'D' => "disk-sleep",
+        'Z' => "zombie",
+        'T' => "stopped",
+        't' => "tracing",
+        'I' => "idle",
+        'X' => "dead",
+        _ => "unknown",
+    }
+}
+
+// ─────────────────────────── 网络视图（只读 /proc/net） ───────────────────────────
+
+/// 单次读取的连接上限，防止高并发主机把响应撑爆。
+const NET_ROW_MAX: usize = 5000;
+
+fn network(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let protocol = params
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("all")
+        .to_ascii_lowercase();
+    let want_tcp = protocol != "udp";
+    let want_udp = protocol != "tcp";
+    let state_filter = params
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("all")
+        .to_ascii_lowercase();
+
+    let mut rows = Vec::new();
+    let mut read_error = None;
+    for (file, proto, v6) in [
+        ("tcp", "tcp", false),
+        ("tcp6", "tcp", true),
+        ("udp", "udp", false),
+        ("udp6", "udp", true),
+    ] {
+        if (proto == "tcp" && !want_tcp) || (proto == "udp" && !want_udp) {
+            continue;
+        }
+        match plugin.fs_host_read_text(&format!("/proc/net/{file}")) {
+            Ok(text) => rows.extend(parse_net_connections(&text, proto, v6)),
+            Err(e) => {
+                read_error.get_or_insert_with(|| format!("{e}"));
+            }
+        }
+        if rows.len() >= NET_ROW_MAX {
+            break;
+        }
+    }
+    rows.truncate(NET_ROW_MAX);
+
+    let q = params
+        .get("q")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !q.is_empty() {
+        rows.retain(|r| {
+            let text_hit = ["local", "remote", "state", "protocol"].iter().any(|k| {
+                r.get(*k)
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_ascii_lowercase().contains(&q))
+                    .unwrap_or(false)
+            });
+            // uid / 端口是 JSON 数字：按数值匹配，q 解析不成就只做文本匹配。
+            let q_num = q.parse::<u64>().ok();
+            let num_hit = |key: &str| q_num.is_some() && r[key].as_u64() == q_num;
+            text_hit || num_hit("uid") || num_hit("local_port") || num_hit("remote_port")
+        });
+    }
+    if state_filter != "all" && !state_filter.is_empty() {
+        rows.retain(|r| {
+            let st = r.get("state").and_then(Value::as_str).unwrap_or("");
+            let listening = r.get("listening").and_then(Value::as_bool).unwrap_or(false);
+            match state_filter.as_str() {
+                "listen" | "listening" => listening,
+                other => st.eq_ignore_ascii_case(other),
+            }
+        });
+    }
+
+    // 监听在前，其次按本地端口；让「谁在对外提供服务」一眼可见。
+    rows.sort_by(|a, b| {
+        let la = a.get("listening").and_then(Value::as_bool).unwrap_or(false);
+        let lb = b.get("listening").and_then(Value::as_bool).unwrap_or(false);
+        lb.cmp(&la).then_with(|| {
+            let pa = a.get("local_port").and_then(Value::as_u64).unwrap_or(0);
+            let pb = b.get("local_port").and_then(Value::as_u64).unwrap_or(0);
+            pa.cmp(&pb)
+        })
+    });
+
+    let total = rows.len();
+    let page = params
+        .get("page")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1);
+    let page_size = params
+        .get("page_size")
+        .and_then(Value::as_u64)
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let start = ((page - 1) as usize * page_size as usize).min(total);
+    let end = (start + page_size as usize).min(total);
+
+    Ok(json!({
+        "items": rows[start..end].to_vec(),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "read_error": read_error,
+        "owner_note": "插件降权运行，/proc/[pid]/fd 只对本进程可读，无法可靠把套接字映射到 PID；这里展示内核 /proc/net/* 给出的 uid",
+    }))
+}
+
+/// 解析 `/proc/net/tcp[6]` / `udp[6]`。地址是小端十六进制，端口也是十六进制。
+fn parse_net_connections(text: &str, protocol: &str, v6: bool) -> Vec<Value> {
+    let mut out = Vec::new();
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 10 {
+            continue;
+        }
+        let Some((local_ip, local_port)) = parse_hex_addr(cols[1], v6) else {
+            continue;
+        };
+        let Some((remote_ip, remote_port)) = parse_hex_addr(cols[2], v6) else {
+            continue;
+        };
+        let state_code = cols[3];
+        let uid = cols[7].parse::<u32>().unwrap_or(0);
+        let inode = cols[9].parse::<u64>().unwrap_or(0);
+        // UDP 的 07 表示「未连接」套接字，沿用 TCP 状态表会误显示为 CLOSE。
+        let state = if protocol == "udp" && state_code == "07" {
+            "UNCONN"
+        } else {
+            tcp_state(state_code)
+        };
+        let listening = protocol == "tcp" && state_code == "0A";
+        out.push(json!({
+            "protocol": protocol,
+            "local": format!("{}:{}", local_ip, local_port),
+            "local_port": local_port,
+            "remote": format!("{}:{}", remote_ip, remote_port),
+            "remote_port": remote_port,
+            "state": state,
+            "listening": listening,
+            "uid": uid,
+            "inode": inode,
+            "pid": null,
+            "process": null,
+            "v6": v6,
+        }));
+    }
+    out
+}
+
+fn parse_hex_addr(s: &str, v6: bool) -> Option<(String, u16)> {
+    let (addr, port) = s.split_once(':')?;
+    let port = u16::from_str_radix(port, 16).ok()?;
+    let ip = if v6 { hex_v6(addr)? } else { hex_v4(addr)? };
+    Some((ip, port))
+}
+
+fn hex_v4(addr: &str) -> Option<String> {
+    if addr.len() != 8 {
+        return None;
+    }
+    let mut bytes = [0u8; 4];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        // /proc/net/tcp 用小端存储：每个 32 位字内字节顺序反转。
+        let start = (3 - i) * 2;
+        *byte = u8::from_str_radix(&addr[start..start + 2], 16).ok()?;
+    }
+    Some(format!(
+        "{}.{}.{}.{}",
+        bytes[0], bytes[1], bytes[2], bytes[3]
+    ))
+}
+
+/// IPv6 在 `/proc/net/tcp6` 里是 4 个 32 位小端字；逐字数按字节反转后拼成 8 组 16 位。
+fn hex_v6(addr: &str) -> Option<String> {
+    if addr.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for word in 0..4 {
+        let base = word * 8;
+        for i in 0..4 {
+            let start = base + (3 - i) * 2;
+            bytes[word * 4 + i] = u8::from_str_radix(&addr[start..start + 2], 16).ok()?;
+        }
+    }
+    let groups: Vec<String> = (0..8)
+        .map(|i| format!("{:x}", (bytes[i * 2] as u16) << 8 | bytes[i * 2 + 1] as u16))
+        .collect();
+    Some(groups.join(":"))
+}
+
+fn tcp_state(code: &str) -> &'static str {
+    match code {
+        "01" => "ESTABLISHED",
+        "02" => "SYN_SENT",
+        "03" => "SYN_RECV",
+        "04" => "FIN_WAIT1",
+        "05" => "FIN_WAIT2",
+        "06" => "TIME_WAIT",
+        "07" => "CLOSE",
+        "08" => "CLOSE_WAIT",
+        "09" => "LAST_ACK",
+        "0A" => "LISTEN",
+        "0B" => "CLOSING",
+        "0C" => "NEW_SYN_RECV",
+        _ => "UNKNOWN",
+    }
+}
+
+/// `fs` 能力错误统一翻译；403 时给出授权排查提示。
+fn fs_err(e: impl std::fmt::Display, what: &str) -> RpcError {
+    let msg = format!("{e}");
+    if msg.contains("403") {
+        RpcError::invalid_params(format!(
+            "缺少 path:/proc 授权，无法{what}；安装插件时需勾选 path:/proc"
+        ))
+    } else {
+        RpcError::internal(format!("{what}失败：{msg}"))
+    }
 }
 
 fn parse_stat(text: &str) -> Option<(u64, u64)> {
@@ -467,5 +994,72 @@ Inter-|   Receive                                                |  Transmit
         std::fs::write(&path, text).unwrap();
         assert_eq!(ring_lines(&p).len(), RING_MAX + 5);
         let _ = std::fs::remove_dir_all(&p.data_dir);
+    }
+
+    // ── 进程视图 ──
+
+    #[test]
+    fn proc_stat_splits_on_last_paren() {
+        // comm 可含空格与括号；字段必须从最后一个 `)` 之后按列号取。
+        let line =
+            "1234 (my app (x)) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23";
+        let st = parse_proc_stat(line).unwrap();
+        assert_eq!(st.pid, 1234);
+        assert_eq!(st.name, "my app (x)");
+        assert_eq!(st.state, 'S');
+        // 本行 state 之后的值依次为 1..23，故 rest[i] == i（i >= 1）。
+        assert_eq!(st.utime, 11); // 第 14 列 = rest[11]
+        assert_eq!(st.stime, 12); // 第 15 列 = rest[12]
+        assert_eq!(st.starttime, 19); // 第 22 列 = rest[19]
+        assert_eq!(st.rss_pages, 21); // 第 24 列 = rest[21]
+        assert!(parse_proc_stat("not a stat line").is_none());
+    }
+
+    #[test]
+    fn proc_status_reads_uid_and_rss() {
+        let text = "Name:\tpure-ftpd\nUid:\t1000\t1000\t1000\t1000\nVmRSS:\t   4096 kB\n";
+        assert_eq!(parse_proc_status(text), (1000, 4096));
+        assert_eq!(parse_proc_status("Name:\tx\n"), (0, 0));
+    }
+
+    // ── 网络视图 ──
+
+    #[test]
+    fn hex_addr_decodes_little_endian() {
+        assert_eq!(hex_v4("0100007F").as_deref(), Some("127.0.0.1"));
+        assert_eq!(hex_v4("00000000").as_deref(), Some("0.0.0.0"));
+        assert!(hex_v4("0100").is_none());
+        assert_eq!(
+            hex_v6("00000000000000000000000001000000").as_deref(),
+            Some("0:0:0:0:0:0:0:1")
+        );
+    }
+
+    #[test]
+    fn net_connections_parse_tcp_table() {
+        let text = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:0035 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345
+   1: 0100007F:1F90 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1000        0 23456
+";
+        let rows = parse_net_connections(text, "tcp", false);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["local"], json!("127.0.0.1:53"));
+        assert_eq!(rows[0]["state"], json!("LISTEN"));
+        assert_eq!(rows[0]["listening"], json!(true));
+        assert_eq!(rows[0]["uid"], json!(0));
+        // 非监听连接排不上 listening，状态按 TCP 状态码表翻译。
+        assert_eq!(rows[1]["local"], json!("127.0.0.1:8080"));
+        assert_eq!(rows[1]["remote"], json!("127.0.0.1:54321"));
+        assert_eq!(rows[1]["state"], json!("ESTABLISHED"));
+        assert_eq!(rows[1]["listening"], json!(false));
+        assert_eq!(rows[1]["uid"], json!(1000));
+    }
+
+    #[test]
+    fn tcp_state_codes_match_proc_net() {
+        assert_eq!(tcp_state("0A"), "LISTEN");
+        assert_eq!(tcp_state("01"), "ESTABLISHED");
+        assert_eq!(tcp_state("FF"), "UNKNOWN");
     }
 }

@@ -13,7 +13,7 @@
 | 路径 | 类型 | 说明 | 文档入口 |
 | --- | --- | --- | --- |
 | `crates/` | 子项目 | Rust workspace 的 16 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
-| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` / `ftp` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
+| `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` / `ftp` / `firewall` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
 | `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
@@ -81,7 +81,7 @@
 | 测试环境访问信息 | `docs/TEST_ENV.md` | 测试机地址、面板 URL/入口前缀/TLS、账号与口令文件读取方式、SSH、当前部署版本与 Release 资产摘要、最近验收结论（唯一来源） |
 | 测试台账 | `docs/TEST_LEDGER.md` | 只记「正在处理 / 待处理」两栏的未闭环项；PASS 即删，不保留历史 |
 | 测试矩阵 | `docs/TEST_MATRIX.md` | 按内核功能域组织的回归清单：稳定编号、触发条件、前置/步骤/预期/判定/代码位置；每章附最小回归命令 |
-| 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、5 个（guard/monitor/files/cron/ftp，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
+| 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、6 个（guard/monitor/files/cron/ftp/firewall，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
 | 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 插件 UI 契约 | `docs/PLUGIN_UI_CONTRACT.md` | 插件信息/管理页与功能页的路由分工、`view` 视图模型与静态文件映射、内核信息页字段与操作、沙箱/CSP、旧包 `[[ui]]` 回落与测试矩阵 |
 | 内核 UI 交互基准 | `docs/UI_CONTRACT.md` | 页面标题/提示条/主次操作/工具栏/表格/空态/弹窗抽屉/危险确认/窄屏断点/类名前缀的统一规范，附现有页面盘点与待对齐清单 |
@@ -90,7 +90,10 @@
 | 内核文件系统契约 | `docs/KERNEL_FS_CONTRACT.md` | 管理员与插件双主体授权、操作面与原子写/路径锁、fs 审计、回收站与配额、受保护路径、站点目录归属、页面与测试矩阵 |
 | 内核定时任务实现说明 | `docs/KERNEL_SCHEDULER_IMPL_NOTES.md` | `skiff-sched` 的任务模型、内存缓冲与回执、tick 语义、审计结构、与契约差异、SQLite/Web 接线边界与顺序 |
 | 内核文件系统实现说明 | `docs/KERNEL_FS_IMPL_NOTES.md` | `skiff-fs` 的授权与路径解析、原子写/路径锁、回收站与配额、审计分级、与契约差异与接线边界 |
-| 内核 FTP 契约 | `docs/KERNEL_FTP_CONTRACT.md` | 新增 `ftp` 能力面的主体与授权（manifest→`perm:ftp:<verb>`）、审计口径、站点账号与 uid/gid 对齐（`MinUID` 只降不升）、安全边界、宿主 pure-ftpd 取舍与测试矩阵 |
+| 内核 FTP 契约 | `docs/KERNEL_FTP_CONTRACT.md` | 新增 `ftp` 能力面的主体与授权（manifest→`perm:ftp:<verb>`）、审计口径、站点账号与 uid/gid 对齐（`MinUID` 只降不升）、安全边界、宿主 pure-ftpd 取舍与测试矩阵；fail2ban 已收口到防火墙插件 |
+| 内核防火墙契约 | `docs/KERNEL_FIREWALL_CONTRACT.md` | 新增 `firewall` 能力面的主体与授权（manifest→`perm:firewall:<verb>`）、方法清单、自有作用域（`inet skiff` / `SKIFF` 链 / `skiff-*.conf`）、审计口径、特权通道、interop 接口与测试矩阵 |
+| SDUI 内核适配手册 | `docs/SDUI_HANDBOOK.md` | 面向 JSON Schema 驱动服务端 UI 的内核适配：现状耦合清单（业务/展示/传输归类）、资源与动作契约、权限校验审计挂接、分阶段迁移与回滚、开发手册与待定项；设计与迁移规范，不代表已实施 |
+| Skiff-server 分发方案 | `docs/SKIFF_SERVER.md` | 中心化静态数据分发：商店/应用模板/运行环境/内核升级四类清单的模型、JSON Schema 与 Ed25519 签名清单、内容寻址与 `seq` 防回滚、镜像同步与多源切换、发布审核与吊销、客户端拉取与商店安装链路、P0–P3 阶段；方案稿，未实施 |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>防火墙 · 规则</title>
+<link rel="stylesheet" href="base.css">
+</head>
+<body data-view="rules">
+<div class="page-head">
+  <div>
+    <h1>防火墙规则</h1>
+    <p class="sub">
+      只管理面板创建的规则：nft 的 <code>inet skiff</code> 表 / iptables 的 <code>SKIFF</code> 链。
+      宿主既有规则只读展示，默认策略保持 accept，不会一键切断主机。
+    </p>
+  </div>
+  <div class="actions">
+    <button id="btn-allow" class="primary">放行端口</button>
+    <button id="btn-rule">自定义规则</button>
+  </div>
+</div>
+<div id="msg"></div>
+
+<div class="card" id="status-card">
+  <div class="title"><strong>后端状态</strong><span id="backend" class="badge">检测中…</span></div>
+  <div class="grid" id="status-grid"><span class="muted">加载中…</span></div>
+</div>
+
+<div class="toolbar">
+  <span class="muted" id="count">0 条托管规则</span>
+  <span class="spacer"></span>
+  <button id="refresh">刷新</button>
+</div>
+<div class="table-wrap">
+  <table>
+    <colgroup>
+      <col style="width:12%"><col style="width:12%"><col style="width:14%">
+      <col style="width:12%"><col style="width:22%"><col style="width:26%">
+    </colgroup>
+    <thead><tr><th>动作</th><th>协议</th><th>端口</th><th>来源</th><th>规则 ID</th><th>操作</th></tr></thead>
+    <tbody id="rules"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="modal-mask" id="allow-mask">
+  <div class="modal">
+    <h2>放行端口</h2>
+    <div class="grid">
+      <label class="field">端口<input id="allow-port" type="number" min="1" max="65535" placeholder="例如 8080"></label>
+      <label class="field">协议
+        <select id="allow-proto">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="both">TCP + UDP</option>
+        </select>
+      </label>
+    </div>
+    <p class="help">放行规则追加到本插件的托管链。宿主默认策略是 accept，因此它主要用于记录与排序；需要显式拦截请用「自定义规则」。</p>
+    <div class="foot"><button data-close>取消</button><button id="allow-go" class="primary">放行</button></div>
+  </div>
+</div>
+
+<div class="modal-mask" id="rule-mask">
+  <div class="modal">
+    <h2>自定义规则</h2>
+    <div class="grid">
+      <label class="field">动作
+        <select id="rule-action"><option value="accept">放行 accept</option><option value="drop">拦截 drop</option></select>
+      </label>
+      <label class="field">协议
+        <select id="rule-proto"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="all">不限</option></select>
+      </label>
+      <label class="field">端口（协议不限时必须留空）<input id="rule-port" type="number" min="1" max="65535" placeholder="可选"></label>
+      <label class="field">来源 IP / CIDR<input id="rule-source" placeholder="例如 203.0.113.0/24"></label>
+    </div>
+    <p class="help">端口与来源至少填一项。规则只写入本插件的托管链。</p>
+    <div class="foot"><button data-close>取消</button><button id="rule-go" class="primary">添加</button></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

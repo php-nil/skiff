@@ -1,0 +1,145 @@
+/* 防火墙插件共享样式。只依赖自身资源；父页面下发主题时切换浅色。 */
+:root {
+  color-scheme: dark;
+  --ui-bg: #0b0d11;
+  --ui-text: #d7dee8;
+  --ui-muted: #8a97a8;
+  --ui-surface: #121722;
+  --ui-btn: #1b2230;
+  --ui-btn-hover: #232c3c;
+  --ui-line: #2a3444;
+  --ui-line-soft: #1c2532;
+  --ui-ok: #7ee787;
+  --ui-warn: #f0b429;
+  --ui-bad: #ff7b72;
+  --ui-danger-line: #5a2226;
+  --ui-danger-text: #ff9b90;
+  --ui-hit: #16324a;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  --ui-bg: #f4f5f7;
+  --ui-text: #101828;
+  --ui-muted: #667085;
+  --ui-surface: #ffffff;
+  --ui-btn: #ffffff;
+  --ui-btn-hover: #f0f2f5;
+  --ui-line: #cfd5dd;
+  --ui-line-soft: #e4e7ec;
+  --ui-ok: #15803d;
+  --ui-warn: #b54708;
+  --ui-bad: #b42318;
+  --ui-danger-line: #f3b4ae;
+  --ui-danger-text: #b42318;
+  --ui-hit: #eff6ff;
+}
+body {
+  margin: 0;
+  padding: 16px;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+}
+h1 { font-size: 18px; margin: 0 0 4px; }
+h2 { font-size: 14px; margin: 16px 0 8px; }
+h3 { font-size: 13px; margin: 0 0 8px; }
+.sub { color: var(--ui-muted); font-size: 12px; margin: 0 0 12px; }
+.muted { color: var(--ui-muted); }
+.page-head { display: flex; align-items: flex-start; gap: 12px; }
+.page-head .actions { margin-left: auto; display: flex; gap: 8px; }
+.spacer { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+
+button {
+  font: inherit;
+  color: var(--ui-text);
+  background: var(--ui-btn);
+  border: 1px solid var(--ui-line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button:hover { background: var(--ui-btn-hover); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { border-color: var(--ui-hit); }
+button.danger { border-color: var(--ui-danger-line); color: var(--ui-danger-text); }
+button.link {
+  background: none;
+  border: 0;
+  padding: 0 4px;
+  color: var(--ui-text);
+  text-decoration: underline;
+}
+
+input, select {
+  font: inherit;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-width: 120px;
+}
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ui-muted); }
+
+.card {
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.card .title { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.card .title strong { font-size: 14px; }
+.badge {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 20px;
+  border: 1px solid var(--ui-line);
+  color: var(--ui-muted);
+}
+.badge.ok { color: var(--ui-ok); border-color: var(--ui-ok); }
+.badge.warn { color: var(--ui-warn); border-color: var(--ui-warn); }
+.badge.bad { color: var(--ui-bad); border-color: var(--ui-bad); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--ui-line); border-radius: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--ui-line-soft); }
+th { color: var(--ui-muted); font-weight: 600; background: var(--ui-surface); }
+tbody tr:last-child td { border-bottom: 0; }
+td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.empty { color: var(--ui-muted); text-align: center; padding: 18px; }
+
+.toolbar { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.toolbar input.search { flex: 1; min-width: 180px; }
+
+/* 页内弹窗：不依赖父页面，避免 iframe 内外定位差异。 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .45);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+.modal-mask.open { display: flex; }
+.modal {
+  width: min(560px, calc(100vw - 32px));
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-line);
+  border-radius: 10px;
+  padding: 16px;
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+}
+.modal .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.mono-list { max-height: 220px; overflow: auto; }
+.help { font-size: 12px; color: var(--ui-muted); margin: 6px 0 0; }
+.warn-text { color: var(--ui-warn); font-size: 12px; }
+#msg { min-height: 20px; font-size: 12px; margin: 6px 0; }
+#msg.err { color: var(--ui-bad); }
+#msg.ok { color: var(--ui-ok); }

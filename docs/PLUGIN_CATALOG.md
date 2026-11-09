@@ -10,13 +10,13 @@
 | 维度 | 结论 |
 |---|---|
 | 选型依据 | 竞品把面板做成「服务器操作系统」，Skiff 只做三核心，**官方插件集就是产品完整度的上限** |
-| 当前 5 个 | **容器守护**（零内核改动，链路验证）→ **主机监控** → **文件管理** → **计划任务** → **FTP 管理**（Nginx 站点已内核化，不再作为插件；按落地难度排序） |
+| 当前 6 个 | **容器守护**（零内核改动，链路验证）→ **主机监控**（含进程/网络只读视图）→ **文件管理** → **计划任务** → **FTP 管理** → **防火墙**（Nginx 站点已内核化，按落地难度排序） |
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
 | 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 已支持 `containers.exec`，仍缺 create/remove/pull/compose；`net` 一律 501 |
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
-| 能力面扩张 | **FTP 管理**是唯一新增内核原语（`ftp`），涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md) |
+| 能力面扩张 | 新增两个内核原语：`ftp`（FTP 管理）与 `firewall`（防火墙 / fail2ban），均涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md) 与 [KERNEL_FIREWALL_CONTRACT.md](KERNEL_FIREWALL_CONTRACT.md) |
 
-**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 5 个官方插件已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
+**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 6 个官方插件已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
 
 
 ## 1. 能力现状核对（选型的硬约束）
@@ -25,7 +25,8 @@
 |---|---|---|---|
 | `docker` | 白名单动词；Broker 执行 `containers.list/inspect/logs/exec`、`images.list`、`networks.list`、`volumes.list`、`info`、`version`、`containers.start/stop/restart/kill`；create、remove、pull、compose 一律返回 Unsupported | `crates/docker/src/client.rs` 的 `Docker::execute` | 一键部署、数据库管理、备份导出仍卡在 create/remove/compose |
 | `fs` | 两条分支：相对路径落插件自身 `data/`；**绝对路径**须命中安装时确认的 `path:` 对象授权根（`fsops::resolve` + `skiff_plugin::fsgrant`），动词 `read/write/list/mkdir/remove/rename`；单次读写 256KiB 分页 | `crates/plugin/src/{capability.rs,fsops.rs,fsgrant.rs}` | 文件管理器、主机监控、Nginx 站点已可做；大文件靠分页而非流式 |
-| `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | 防火墙、ACME 证书不可做 |
+| `net` | 一律 501 + 审计 | `crates/core/src/kernel/capability.rs` 的 `net_unimplemented` | ACME 证书、出网告警仍不可做；防火墙改走新增的 `firewall` 能力面，不依赖 `net` |
+| `firewall` | **新增能力面**（api 1.2）：`status/rules.list/rule.add/rule.remove/port.allow/fail2ban.status/fail2ban.install/fail2ban.jail.ensure/fail2ban.jail.remove/fail2ban.banned/fail2ban.ban/fail2ban.unban`；只动 `inet skiff` 表 / `SKIFF` 链与 `/etc/fail2ban/jail.d/skiff-*.conf`；仅 Native 形态，Linux-only；插件按 `perm:firewall:<verb>` 或 `firewall:*` 取授权 | `crates/plugin/src/firewall.rs`（判定与命令编排）、`crates/core/src/kernel/firewall.rs`（鉴权/审计/特权通道）、`crates/wire`（`CAP_FIREWALL_CALL`）、`crates/pkgfmt`（`Capability::Firewall`）、`crates/sdk`（`firewall_call`） | 防火墙插件只做 UI 与编排；规则与 jail 由能力面经 systemd-run 瞬态单元执行 |
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
 | `ftp` | **新增能力面**（api 1.2）：`status/install/service.configure/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/account.set_enabled/service.restart`；`status` 回传真实监听/连接数/fail2ban 细节，配置持久化到 `/etc/skiff/ftp-service.json`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/core/src/kernel/ftp.rs`、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排，特权动作（apt/systemd/pure-pw/chown）全在内核 |
 | `interop` | 两个路由：`capability/interop/call`（跨插件接口调用，四道闸 + 15s 超时 + busy 防环）、`capability/interop/catalog`（只列**调得通**的接口）；转发时注入 `params._interop.caller` | `crates/core/src/kernel/{routes.rs,interop.rs}`、manifest `[interop]`（`crates/pkgfmt/src/manifest.rs`）、`crates/plugin/src/interop.rs` | 计划任务（调度插件接口）、站点页「一键新增备份任务」这类**插件间协作**可做；不需要给插件宿主 shell |
@@ -43,7 +44,7 @@
 | 网站与证书 | ✅ | ✅ | ⭕ 反代+证书 | ❌ | ❌ | ⭕ 域名 | ❌ | 官方插件 |
 | 数据库管理 | ✅ | ✅ | ✅ | ❌ | ❌ | ⭕ 应用自带 | ❌ | 官方插件 |
 | 主机监控 | ✅ | ✅ | ⭕ | ✅ | ⭕ | ❌ | ❌ | 官方插件 |
-| 防火墙 | ✅ | ✅ | ❌ | ❌ | ❌ | ⭕ | ❌ | 官方插件（net 就绪后） |
+| 防火墙 | ✅ | ✅ | ❌ | ❌ | ❌ | ⭕ | ⭕ 官方插件 | 官方插件（`firewall` 能力面） |
 | 计划任务与备份 | ✅ | ✅ | ✅ | ⭕ | ❌ | ✅ | ⭕ 插件（只调度插件接口） | 官方插件 |
 | 应用一键部署 | ✅ | ✅ | ✅ | ✅ | ⭕ 模板 | ✅ | ❌ | 官方插件 |
 | 用户与 RBAC | ✅ | ⭕ | ✅ | ✅ | ✅ | ✅ | ✅ 内核 | ✅ 内核 |
@@ -61,13 +62,13 @@
 | 优先级 | 插件 id | 名称 | 能力面 | 内核前置 | 竞品对标 | 状态 |
 |---|---|---|---|---|---|---|
 | P0 | `com.skiff.guard` | 容器守护 | `docker` + 自身 `data/` | **零内核改动**（`containers.list/inspect/restart`） | 部分竞品无 | ✅ 0.1.0 已实现 |
-| P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读） | `path:` 只读授权 + cron `tick`（均已就绪） | 1Panel/宝塔 监控 | ✅ 0.1.0 已实现 |
+| P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读，`/etc/passwd` 可选） | `path:` 只读授权 + 内核调度器采样（均已就绪） | 1Panel/宝塔 监控与进程管理 | ✅ 0.1.0 已实现（含进程 / 网络只读视图） |
 | P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
 | P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` + `scheduler`（`read` + `manage`） | `scheduler:read`/`scheduler:manage` 探针（任务列表、缓冲读写）+ 默认停用的执行期 BusyGuard 探针任务 | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
-| P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态） | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现并上机验收通过（FTP-01/05 残留，见 TEST_LEDGER） |
+| P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** + `interop` | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态）；可选登录防护依赖防火墙插件 | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现并上机验收通过（FTP-01/05 残留，见 TEST_LEDGER）；fail2ban 已收口到防火墙插件 |
 | P1 | `com.skiff.apps` | 应用模板一键部署 | `docker` | compose.up/down + 模板随包离线 | 1Panel/宝塔 应用商店 | 未开始（卡 compose） |
-| P1 | `com.skiff.firewall` | 防火墙 | `net` | net 能力 + §10.1 #17 出网收口通过 | 1Panel/宝塔 防火墙 | 未开始（卡 net） |
+| P1 | `com.skiff.firewall` | 防火墙 | **新增内核 `firewall` 能力面** + `interop` | 宿主 nftables/iptables + fail2ban（`apt` + `systemd`；仅 Native 形态） | 1Panel/宝塔 防火墙 | ✅ 0.1.0 已实现（未经真机验收） |
 | P1 | `com.skiff.backup` | 备份与恢复 | `docker` + `fs` | exec、fs 授权、流式导出 | 1Panel/宝塔 备份 | 未开始 |
 | P1 | `com.skiff.db` | 数据库管理 | `docker` | exec + fs 导入导出 | 1Panel/宝塔 数据库 | 未开始 |
 | P2 | `com.skiff.logs` | 日志查看与清理 | `fs` | 已具备（`read/list` + `remove`） | 1Panel/宝塔 日志 | 可做，未排期 |
@@ -83,11 +84,11 @@
 - **不在本期做在线商店**：渠道未决策（§1.4），官方包先随发布物离线分发。
 - **不把终端/日志流做成插件**：内核已有容器 exec 终端与日志 SSE，流式场景按 §4.2 不进插件。
 
-## 4. 当前 5 个：实现与前置
+## 4. 当前 6 个：实现与前置
 
 ### 4.1 实现顺序（按落地难度，已全部落地）
 
-**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）**。
+**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）→ 防火墙（新增 `firewall` 能力面，见 §4.9）**。
 
 `guard` 排在第一位是因为它**不需要任何内核改动**：只用既有 `containers.list/inspect/restart` 与自身 `data/`，可以先把「manifest → 打包 → 装包 → RPC → UI」整条链路验穿，再往上叠能力面。
 
@@ -117,11 +118,13 @@ resource_hints = []                 # 守护对象由管理员逐条勾选
 run = "on-demand"
 requires = ["fs"]
 cron = ["*/5 * * * *"]              # 5 分钟一个采样点
-resource_hints = ["path:/proc"]
+resource_hints = ["path:/proc", "path:/etc/passwd"]  # 后者可选，仅用于 uid → 用户名
 # fs: read / list（只读）
 ```
 
 - **功能面**：读 `/proc/{stat,meminfo,loadavg,uptime,net/dev,cpuinfo}`，算 CPU 使用率（按两次采样的 `total/idle` 差值）、内存、负载、网卡入站/出站速率（`net_rx_rate`/`net_tx_rate`，字节差/秒 = B/s，另回累计 `net_rx`/`net_tx`）、在线时长、CPU 核数。
+- **进程视图**（`processes`）：遍历 `/proc/<pid>/{stat,status,cmdline}`，展示 PID、用户、CPU%、内存、启动时间、状态与命令行；排序（cpu/mem/pid/started）、按 PID/用户/命令筛选、分页（1–200/页）都在插件内完成。CPU% 是**距上次刷新**的差值（基线 `prev_proc.json`），首刷为 `null`；PID 扫描上限 512，超出标 `truncated`。**只读**：不提供结束进程等写操作（权限模型未定，列为决策项）。
+- **网络视图**（`network`）：解析 `/proc/net/{tcp,tcp6,udp,udp6}`，展示协议、本地/对端地址、TCP 状态、监听标记、套接字属主 uid 与 inode；支持协议/状态筛选、搜索与分页。插件降权运行，读不到其它用户的 `/proc/<pid>/fd`，**无法可靠把套接字映射到 PID**，界面明确以 uid 呈现属主。
 - **写盘口径**：内核每 60s 调 `sample`（只更新 `prev.json` 基线），每 5 分钟调 `execute` 把批次**追加**到 `data/samples.jsonl`（一行一点，超 480 行压缩回 240 行）；UI `snapshot` 只算实时值、用独立基线 `prev_ui.json`，不写历史。
 - **前置**：`path:/proc` 只读授权（安装时勾选）+ 内核调度器任务 `plugin:com.skiff.monitor:sample`（manifest `[[task]]` 自动种入）。未授权时 RPC 会返回「缺少 path:/proc 授权」而不是空数据。
 - **风险**：采集频率与保留点数直接影响进程开销，**数字待实测**，不写资源承诺。
@@ -169,15 +172,16 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-5 个官方插件与 testkit 均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
+6 个官方插件与 testkit 均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
 
 | 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
-| `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样（`overview` / `history`） | `overview.health`（`sm`，30s 刷新） |
+| `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样 / 进程 / 网络（`overview` / `history` / `process` / `network`） | `overview.health`（`sm`，30s 刷新） |
 | `com.skiff.files` | 工具 → 文件管理 | 无（单视图 `main`） | — |
 | `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务（`list` / `new`） | — |
 | `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件（`containers` / `events`） | — |
 | `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`）+ 单视图对照 | `overview.actions` |
+| `com.skiff.firewall` | 工具 → 防火墙 | 防火墙规则 / fail2ban（`rules` / `fail2ban`） | — |
 | `com.skiff.ftp` | 工具 → FTP 管理 | 站点账号 / 服务状态（`accounts` / `runtime`） | — |
 
 - `/{p}/plugins/<id>` 是内核信息与管理页，功能页固定 `/{p}/plugins/<id>/<view>`；老包（无 `[[menu]]`）`main` 回落 `ui/index.html`。
@@ -203,10 +207,31 @@ verbs = ["status", "install", "service.configure", "uninstall", "sites.list", "a
 - **安装形态**：宿主 `pure-ftpd` 软件包 + systemd（Debian 默认 standalone），不用容器——避免第三方镜像供应链与 Docker 端口段发布，生命周期与 systemd 直装一致；1Panel 受限形态（`Form::DockerRestricted`）一律 503，`Capability::available_in` 也不把它列入。
 - **账号模型**：账号绑定站点，每站可多账号；登录名 `skiff_<slug16>_<fnv4>_<account>`，密码只经 stdin 交给 `pure-pw`，落 `pureftpd.pdb` 哈希；chroot 固定 `<site_root>/index`。
 - **权限对齐**：建号时在运行容器内 `id -u/-g www-data` 探测 uid/gid（不写死 82），`MinUID` 只降不升；`Umask 002 002`（conf 文件写两个空白分隔的三位八进制数，wrapper 不接受冒号）；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
-- **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`；连接上限与每 IP 上限可配（默认 30/3）；fail2ban 专用 jail（10 分钟 3 次，新装时关闭默认 sshd jail，可开关）；TLS 可关/显式可选/显式强制，证书与私钥路径可配，非法路径直接报错不静默降级。
-- **状态与账号**：`ftp.status` 回传监听端口、是否在监听、当前连接数、fail2ban 安装/jail/封禁详情，未知回传 `null`；账号可启用/禁用；最后登录 pure-ftpd 用户库不记录，明确标注不可得；配额/速率列为后续项。
+- **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`；连接上限与每 IP 上限可配（默认 30/3）；TLS 可关/显式可选/显式强制，证书与私钥路径可配，非法路径直接报错不静默降级。
+- **fail2ban 收口**：FTP 不再安装、配置或卸载 fail2ban，安装时显式 `login_guard=false` 阻止旧内核路径代管；「启用 fail2ban 防护」是可选开关，经 interop 调 `com.skiff.firewall:fail2ban.*`（jail `pure-ftpd`，filter `pure-ftpd`，port 取内核 `listen_port`）。未安装防火墙插件时该选项不可用，不影响 FTP 其它功能。
+- **状态与账号**：`ftp.status` 回传监听端口、是否在监听、当前连接数；登录防护状态另由 `protection` 汇总防火墙插件返回（`available=false` + 原因表示未安装/调用失败）；账号可启用/禁用；最后登录 pure-ftpd 用户库不记录，明确标注不可得；配额/速率列为后续项。
 - **配置持久化**：`/etc/skiff/ftp-service.json` 是唯一真相来源，插件本地不再保留 `service-config.json`。
 - **契约与验收**：主体/授权/审计口径见 [KERNEL_FTP_CONTRACT.md](KERNEL_FTP_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FTP-01`–`FTP-09`。
+
+### 4.9 防火墙 `com.skiff.firewall`（能力面扩张）
+
+```toml
+run = "on-demand"
+requires = ["firewall"]
+resource_hints = []                 # 能力面动词即权限，不落宿主文件授权
+[[permissions]]
+capability = "firewall"
+verbs = ["status", "rules.list", "rule.add", "rule.remove", "port.allow",
+         "fail2ban.status", "fail2ban.install", "fail2ban.jail.ensure",
+         "fail2ban.jail.remove", "fail2ban.banned", "fail2ban.ban", "fail2ban.unban"]
+```
+
+- **为什么必须新增内核原语**：`net` 仍一律 501；`fs` 只能读写授权根，改不了内核规则表；`docker` 与防火墙无关。宿主防火墙与 fail2ban 都需要 root 特权，因此新增 `firewall` 能力面，插件只做 UI 与编排。
+- **规则口径**：只管理自有作用域——nftables `inet skiff` 表的 `input` 链、iptables `SKIFF` 链；默认策略 accept。新规则带 `comment "skiff-<nanos>"` 标识，删除按 nft handle 或 iptables `-S` 序号，不触碰其它表/链。
+- **fail2ban 口径**：`fail2ban.install` 安装/复用宿主 fail2ban（新装时写 `skiff-defaults.conf` 关闭 `sshd` jail）；`jail.ensure` / `jail.remove` 管理 `/etc/fail2ban/jail.d/skiff-<jail>.conf`，改动后 `systemctl restart fail2ban`；`banned` / `ban` / `unban` 走 `fail2ban-client`。不卸载软件包，不改系统级 `jail.conf`。
+- **对外接口**：`[interop].provides` 暴露 `fail2ban.*`，FTP 等插件按需调用；调用方需 `interop:call` 与 `plugin:com.skiff.firewall`。四道闸、15s 超时与审计沿用既有 interop 契约。
+- **特权通道**：能力面实现只在 `crates/plugin/src/firewall.rs`（判定 + 命令编排），内核 `crates/core/src/kernel/firewall.rs` 只做鉴权、审计与 `systemd-run` 瞬态单元执行；受限形态（非 Native）一律 503。
+- **契约与验收**：动词、授权、审计与安全边界见 [KERNEL_FIREWALL_CONTRACT.md](KERNEL_FIREWALL_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FW-01` 起。**本轮代码未经编译验证，未上机验收。**
 
 ## 5. 目录落地：放在哪里
 
@@ -223,7 +248,7 @@ verbs = ["status", "install", "service.configure", "uninstall", "sites.list", "a
 
 ```
 plugins/
-├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/ftp/testkit
+├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/firewall/ftp/testkit
 ├── Cargo.lock              # 必须入库（CI 与 pack.sh 都用 --locked）
 ├── pack.sh                 # 官方插件打包：build → stamp → pack → verify → official/
 ├── README.md               # 官方插件集约定（id、构建自检、打包、装机授权、多架构）
@@ -236,6 +261,8 @@ plugins/
 ├── monitor/                # com.skiff.monitor
 ├── files/                  # com.skiff.files
 ├── cron/                   # com.skiff.cron（provides jobs.create/list/remove/run；consumes *）
+├── firewall/               # com.skiff.firewall（firewall 能力面 + provides fail2ban.*）
+├── ftp/                    # com.skiff.ftp（consumes com.skiff.firewall:fail2ban.*，可选登录防护）
 └── testkit/                # com.skiff.testkit（架构验收：多视图/单视图/槽位/RPC/能力面）
 ```
 
@@ -260,7 +287,7 @@ plugins/
 ### 5.4 开箱即用的三条交付线（1/3 已落地）
 
 1. **内置官方公钥**：命中内置指纹时显示「官方」徽章并免去手动导入（权限确认仍逐条）。**当前仍是缺口**：信任库只有 TOFU，发布包只带 `official/public-key.txt`，需要管理员手动导入。
-2. **随包携带（已落地）**：发布包内有 `official/`（5 个已签名 `.wbpkg` + `public-key.txt`）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
+2. **随包携带（已落地）**：发布包内有 `official/`（7 个已签名 `.wbpkg` + `public-key.txt`，含 testkit）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
 3. **面板「官方插件」列表 + 一键安装**：从本地官方源读取、离线可用、安装仍走权限确认对话框。**未做**（现在只能 `skiff plugin install` 或面板上传）。
 
 > 只把 `.wbpkg` 放 GitHub Release、让用户手动上传，不算「开箱即用」——第 3 条是下一步。
@@ -271,11 +298,11 @@ plugins/
 |---|---|---|
 | 0 决策与目录 | 建 `plugins/` 第二 workspace + 三关门禁 | ✅ 2026-11-01（`exclude`、CI `plugins` job、`plugins/Cargo.lock`） |
 | 1 能力补齐 | fs 宿主授权（`path:` grant、`resolve_data`/`resolve` 双分支、manifests 的 `resource_hints`、Broker 复验）；cron 运行时；interop 契约（manifest `[interop]`、`plugin:` 对象授权、`capability/interop/{call,catalog}`、审计） | ✅ fs / cron / interop 就绪；❌ docker exec、内置官方公钥仍未做 |
-| 2 首批插件 | guard → monitor → files → cron → ftp（nginx 已内核化） | ✅ 代码 + UI + 单测（guard 3 / monitor 5 / files 2 / cron 8 / ftp 3 / common 7） |
+| 2 首批插件 | guard → monitor → files → cron → ftp → firewall（nginx 已内核化） | ✅ 代码 + UI（monitor 进程/网络、firewall、ftp 改造**未经编译验证**）；单测：guard 3 / monitor 10 / files 2 / cron 8 / ftp 3 / firewall 新增 / common 7 |
 | 3 分发 | 官方源目录 + 随包携带 | ✅ 随包携带（`official/` + `public-key.txt`）；❌ 面板内官方插件列表 |
-| 4 第二批 | 防火墙（net #17 通过后）、备份与恢复、应用模板、数据库 | 未开始 |
+| 4 第二批 | 备份与恢复、应用模板、数据库 | 未开始 |
 
-> 5 个官方插件与 testkit 的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验。
+> 6 个官方插件与 testkit 的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验；防火墙与 monitor 进程/网络本轮未上机。
 
 > 能力补齐与插件开发并行时，先冻结 manifest 字段与协议契约再写插件，否则三份插件要返工。
 

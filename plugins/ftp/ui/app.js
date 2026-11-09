@@ -198,9 +198,7 @@
           '</div>' +
           '<div class="form-section">' +
             '<h4>登录失败封禁</h4>' +
-            '<label class="chk"><input type="checkbox" id="cfg-login-guard"> 启用 fail2ban 专用 jail（3 次失败 / 10 分钟）</label>' +
-            '<div class="readonly-row"><span>fail2ban 软件包</span><span id="cfg-f2b">—</span></div>' +
-            '<p class="hint">关闭只会移除本插件的 pure-ftpd jail 并重启 fail2ban，不卸载 fail2ban 软件包，也不改动其它 jail。</p>' +
+            '<p class="hint">fail2ban 已收口到独立的「防火墙」插件，FTP 配置不再安装或维护它。需要登录防护时，请在「运行状态」页的可选防护卡片中开启；未安装防火墙插件时该选项不可用，不影响 FTP 本身。</p>' +
           '</div>' +
           '<div id="cfg-error" class="bad" style="min-height:18px"></div>' +
         '</div>' +
@@ -242,12 +240,7 @@
       $("cfg-tls").value = tls === "required" ? "required" : (tls === "off" ? "off" : "optional");
       $("cfg-cert-path").value = FTPConfig.tls_cert_path || "";
       $("cfg-key-path").value = FTPConfig.tls_key_path || "";
-      $("cfg-login-guard").checked = FTPConfig.login_guard !== false;
       $("cfg-anon").textContent = "强制关闭（内核固定 NoAnonymous=yes）";
-      var f2b = (FTPConfig.status && FTPConfig.status.fail2ban) || {};
-      $("cfg-f2b").textContent = !f2b.installed
-        ? "未安装（开启开关后安装 FTP 时会一并安装）"
-        : (f2b.running ? "已安装并运行" : "已安装，未运行");
       $("cfg-error").textContent = "";
       $("cfg-foot").textContent = "";
       $("cfg-foot").className = "msg muted";
@@ -266,7 +259,6 @@
     var tls = $("cfg-tls").value;
     var cert = $("cfg-cert-path").value.trim();
     var key = $("cfg-key-path").value.trim();
-    var guard = $("cfg-login-guard").checked;
     var saveBtn = $("cfg-save");
     $("cfg-error").textContent = "";
     function intOk(v) { return isFinite(v) && Math.floor(v) === v; }
@@ -300,7 +292,6 @@
       tls_mode: tls,
       tls_cert_path: cert || null,
       tls_key_path: key || null,
-      login_guard: guard,
     }).then(function (r) {
       var res = unwrap(r) || {};
       if (res.status) applyStatus(res.status);
@@ -314,7 +305,6 @@
         FTPConfig.tls_mode = tls;
         FTPConfig.tls_cert_path = cert || null;
         FTPConfig.tls_key_path = key || null;
-        FTPConfig.login_guard = guard;
         toast(res.message || "配置已保存");
         closeConfig();
         refreshPage();
@@ -545,16 +535,12 @@
   function renderStatusLine(st) {
     var box = $("status-line");
     if (!box || !st) return;
-    var f2b = st.fail2ban || {};
-    var guard = f2b.jail_enabled === null || f2b.jail_enabled === undefined
-      ? "登录限制状态未知"
-      : (f2b.jail_enabled ? "fail2ban 已启用" : "fail2ban 未启用");
     var live = st.installed && st.running === true;
     box.innerHTML = live
       ? '<span class="pill ok">服务运行中</span> <span class="muted">pure-ftpd ' + esc(st.version || "") +
         ' · 监听 ' + esc(unknownText(st.listen_port)) +
         ' · 被动端口 ' + esc(st.passive_port_start) + '–' + esc(st.passive_port_end) +
-        ' · TLS ' + esc(tlsText(st.tls_mode)) + ' · ' + esc(guard) + '</span>'
+        ' · TLS ' + esc(tlsText(st.tls_mode)) + '</span>'
       : '<span class="pill bad">' +
         (st.running === null || st.running === undefined ? "服务状态未知" : "服务未运行") +
         '</span> <span class="muted">创建账号前需要先安装并启用 pure-ftpd。</span>';
@@ -692,7 +678,6 @@
     if (!st) return;
     var grid = $("runtime-grid");
     if (!grid) return;
-    var f2b = st.fail2ban || {};
     var certText = (st.tls_cert_path && st.tls_key_path)
       ? st.tls_cert_path + ' + ' + st.tls_key_path
       : "/etc/ssl/private/pure-ftpd.pem（已有或自签）";
@@ -708,7 +693,6 @@
       ["TLS 模式", tlsText(st.tls_mode)],
       ["证书路径", certText],
       ["匿名访问", "强制关闭"],
-      ["登录失败封禁", boolText(f2b.jail_enabled, "fail2ban 专用 jail 已启用", "fail2ban 专用 jail 未启用")],
       ["账号数量", String(st.accounts) + "（启用 " + String(st.accounts_enabled) + " / 禁用 " + String(st.accounts_disabled) + "）"],
       ["用户库", st.passwd_file],
     ].map(function (kv) {
@@ -718,30 +702,85 @@
     if (installBtn) installBtn.style.display = st.installed ? "none" : "";
     var restartBtn = $("btn-restart");
     if (restartBtn) restartBtn.style.display = st.installed ? "" : "none";
-    renderFail2ban(st);
+    loadProtection();
   }
 
-  function renderFail2ban(st) {
+  // 可选登录防护：状态来自独立防火墙插件；未安装时整张卡片只展示原因，不影响 FTP。
+  function renderProtection(p) {
     var box = $("f2b-card");
+    if (!box || !p) return;
+    if (!p.available) {
+      box.innerHTML = '<div class="note" style="margin:0">' + esc(p.reason || "fail2ban 防护不可用") + '</div>';
+      scheduleHeight();
+      return;
+    }
+    var state = p.enabled
+      ? "已启用"
+      : (p.installed ? "未启用（fail2ban 已安装）" : "未启用（fail2ban 未安装）");
+    box.innerHTML =
+      '<div class="readonly-row"><span>防护状态</span><span class="mono">' + esc(state) + '</span></div>' +
+      '<div class="readonly-row"><span>fail2ban 服务</span><span class="mono">' + esc(p.running ? "运行中" : "未运行") + '</span></div>' +
+      '<div class="readonly-row"><span>专用 jail</span><span class="mono">' + esc(p.jail) + '</span></div>' +
+      '<div class="readonly-row"><span>管理方</span><span class="mono">独立防火墙插件 com.skiff.firewall</span></div>' +
+      '<div class="row" style="margin-top:10px">' +
+        '<button id="btn-protect-toggle" class="' + (p.enabled ? "danger" : "primary") + '">' +
+          (p.enabled ? "关闭登录防护" : "开启登录防护") + '</button>' +
+        (p.enabled ? '<button id="btn-protect-banned">查看封禁</button>' : '') +
+      '</div>' +
+      '<div id="protect-banned" class="mono-list"></div>' +
+      '<p class="hint">开启后由防火墙插件写入 pure-ftpd jail（5 次失败 / 10 分钟封禁 1 小时）并重启 fail2ban；关闭只删本 jail，不卸载 fail2ban，也不改动其它 jail。</p>';
+    var toggle = $("btn-protect-toggle");
+    toggle.addEventListener("click", function () {
+      busy(toggle, true, "处理中…");
+      rpc(p.enabled ? "protection.disable" : "protection.enable").then(function (r) {
+        renderProtection(unwrap(r) || {});
+        toast(p.enabled ? "已关闭登录防护" : "已开启登录防护");
+      }).catch(function (e) {
+        toast(e.message || String(e), true);
+        busy(toggle, false);
+      });
+    });
+    var bannedBtn = $("btn-protect-banned");
+    if (bannedBtn) bannedBtn.addEventListener("click", function () { loadBanned(p.jail); });
+    scheduleHeight();
+  }
+
+  function loadProtection() {
+    rpc("protection").then(function (r) {
+      renderProtection(unwrap(r) || {});
+    }).catch(function (e) {
+      var box = $("f2b-card");
+      if (box) box.innerHTML = '<div class="note" style="margin:0">' + esc(e.message || String(e)) + '</div>';
+    });
+  }
+
+  function loadBanned(jail) {
+    var box = $("protect-banned");
     if (!box) return;
-    var f2b = st.fail2ban || {};
-    var installed = f2b.installed === true;
-    var rows = [
-      ["fail2ban 软件包", installed ? "已安装" : "未安装"],
-      ["fail2ban 运行状态", installed ? boolText(f2b.running, "运行中", "未运行") : "不适用（未安装）"],
-      ["专用 jail 已配置", f2b.jail_configured ? "是（/etc/fail2ban/jail.d/skiff-pureftpd.conf）" : "否"],
-      ["专用 jail 已启用", installed
-        ? boolText(f2b.jail_enabled, "是", "否")
-        : "不适用（未安装）"],
-      ["当前封禁数", installed ? unknownText(f2b.currently_banned) : "不适用（未安装）"],
-      ["累计封禁数", installed ? unknownText(f2b.total_banned) : "不适用（未安装）"],
-      ["最近封禁时间", (f2b.recent_ban || "不可得（无封禁记录或 fail2ban 未回传）") +
-        (f2b.recent_ban && f2b.recent_ban_source ? "　口径：" + f2b.recent_ban_source : "")],
-      ["清理口径", "停止回收只删本插件 jail 并重启 fail2ban；不卸载 fail2ban 软件包，也不改动其它 jail"],
-    ];
-    box.innerHTML = rows.map(function (kv) {
-      return '<div class="readonly-row"><span>' + esc(kv[0]) + '</span><span class="mono">' + esc(kv[1]) + '</span></div>';
-    }).join("");
+    box.textContent = "加载中…";
+    rpc("protection.banned", { jail: jail }).then(function (r) {
+      var res = unwrap(r) || {};
+      var ips = res.banned || [];
+      if (!ips.length) {
+        box.innerHTML = '<span class="muted">当前没有封禁 IP</span>';
+        return;
+      }
+      box.innerHTML = ips.map(function (ip) {
+        return '<div class="readonly-row"><span class="mono">' + esc(ip) + '</span>' +
+          '<button class="link" data-unban="' + esc(ip) + '">解封</button></div>';
+      }).join("");
+      Array.prototype.forEach.call(box.querySelectorAll("button[data-unban]"), function (btn) {
+        btn.addEventListener("click", function () {
+          var ip = btn.getAttribute("data-unban");
+          busy(btn, true);
+          rpc("protection.unban", { jail: jail, ip: ip }).then(function () {
+            toast("已解封 " + ip);
+            loadBanned(jail);
+          }).catch(function (e) { toast(e.message || String(e), true); busy(btn, false); });
+        });
+      });
+      scheduleHeight();
+    }).catch(function (e) { box.textContent = e.message || String(e); });
   }
 
   function loadRuntime() {
@@ -791,7 +830,7 @@
     var text = "停止并禁用 pure-ftpd？" +
       (accounts ? "本插件创建的 FTP 账号会被删除，文件保留。" : "账号会保留。") +
       (pkg ? "并卸载 pure-ftpd 软件包。" : "") +
-      " fail2ban 仅移除本插件 jail，不会卸载软件包。";
+      " fail2ban 由独立防火墙插件管理，回收 FTP 不会卸载它。";
     confirmAction("停止并回收 FTP", text, "停止回收").then(function (ok) {
       if (!ok) return;
       var btn = $("btn-uninstall");

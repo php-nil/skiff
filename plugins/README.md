@@ -1,17 +1,19 @@
 # Skiff 官方插件集
 
 这里是官方插件的**第二 workspace**（与根 `crates/` 分开构建），主程序发布包会随包携带
-本目录产出的 `.wbpkg`。插件原则上只做「能力面的组合」，不新增内核接口；唯一例外是
-`com.skiff.ftp`——它需要宿主软件包与 systemd，新增了内核 `ftp` 能力面，
-契约见 [`docs/KERNEL_FTP_CONTRACT.md`](../docs/KERNEL_FTP_CONTRACT.md)。
+本目录产出的 `.wbpkg`。插件原则上只做「能力面的组合」，不新增内核接口；两个例外是
+`com.skiff.ftp` 与 `com.skiff.firewall`——它们需要宿主软件包与特权通道，分别新增了内核
+`ftp` 与 `firewall` 能力面，契约见 [`docs/KERNEL_FTP_CONTRACT.md`](../docs/KERNEL_FTP_CONTRACT.md)
+与 [`docs/KERNEL_FIREWALL_CONTRACT.md`](../docs/KERNEL_FIREWALL_CONTRACT.md)。
 
 | 插件 | id | 能力 | 用途 |
 | --- | --- | --- | --- |
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
-| `monitor/` | `com.skiff.monitor` | fs（`path:/proc`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲 |
+| `monitor/` | `com.skiff.monitor` | fs（`path:/proc`、可选 `path:/etc/passwd`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲；进程视图（PID/用户/CPU/内存/启动时间/命令行，排序/筛选/分页）与网络视图（监听端口、连接状态、对端地址、套接字属主 uid），均为只读 `/proc` |
 | `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
 | `cron/` | `com.skiff.cron` | identity + interop + scheduler | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。调度与执行全在内核，插件只经 `scheduler` 能力面增删改查（不执行宿主 shell）；内置任务只可启停，越界任务在插件 RPC 层硬拦截 |
-| `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径、fail2ban 开关（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相，插件不再写 `service-config.json`；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；仅 Native 形态 |
+| `firewall/` | `com.skiff.firewall` | **firewall（新增能力面）** + interop | 防火墙与 fail2ban：nftables（`inet skiff`）/iptables（`SKIFF` 链）规则查看、增删与端口放行；fail2ban 安装、jail 启停、封禁列表与解封。对外经 interop 提供 `com.skiff.firewall:fail2ban.*`，FTP 等插件按需调用；仅 Native 形态 |
+| `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** + interop | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；**不再安装或维护 fail2ban**，「启用 fail2ban 防护」是可选开关，经 interop 调 `com.skiff.firewall`；仅 Native 形态 |
 | `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
 ## 约定
@@ -62,9 +64,10 @@
 | 插件 | 二级归属 | 三级标签 | 固定页槽位 |
 | --- | --- | --- | --- |
 | guard | 工具 → 容器守护 | 容器 / 事件 | — |
-| monitor | 工具 → 主机监控 | 总览 / 历史采样 | `overview.health` |
+| monitor | 工具 → 主机监控 | 总览 / 历史采样 / 进程 / 网络 | `overview.health` |
 | files | 工具 → 文件管理 | 无（单视图 `main`） | — |
 | cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
+| firewall | 工具 → 防火墙 | 防火墙规则 / fail2ban | — |
 | ftp | 工具 → FTP 管理 | 账号 / 运行状态 | — |
 | testkit | 工具 → 架构测试台 | 主视图 / 检查 / 分组 + 单视图对照 | `overview.actions` |
 
@@ -92,26 +95,40 @@ view = "list"             # 单视图 L2：ui/list.html，不渲染 L3 标签栏
 > 原 `com.skiff.nginx` 已内核化，网站一级与「网站列表 / 运行环境 / 设置」由内核提供，
 > 不再随官方插件发布。
 
-### FTP 与 fail2ban 生命周期（`com.skiff.ftp`）
+### 防火墙与 fail2ban 生命周期（`com.skiff.firewall`）
 
-- **fail2ban 不是内核内置**，是宿主系统包（Debian/Ubuntu 的 `fail2ban`）。它由
-  `com.skiff.ftp` **首次安装**且 `login_guard = true`（内核配置默认值）时，与
-  `pure-ftpd` 一起经 `apt-get install` 装上；机器上原本已有 fail2ban 则只复用，不再重复安装。
-- **专用 jail**：安装时写入 `/etc/fail2ban/jail.d/skiff-pureftpd.conf`，内容为
-  `[pure-ftpd] enabled = true / backend = systemd / maxretry = 3 / findtime = 10m / bantime = 10m`。
-  仅当 `fail2ban` 是本次新装（安装前不存在）时，同一文件追加 `[sshd] enabled = false`，
-  避免新装 fail2ban 把宿主既有 SSH 登录封掉；机器原本已有 fail2ban 时**不改**其既有 sshd jail。
-- **开关口径**：`login_guard=false` 只移除本插件的 pure-ftpd jail；若同文件里还留着安装时写的
-  `[sshd] enabled=false`，则重写为仅含该段，避免顺手把宿主 sshd 防护打开。随后
-  `systemctl restart fail2ban`；**不卸载 fail2ban 软件包**，也不改动系统级
-  `/etc/fail2ban/jail.conf` 或其它 jail。
-- **卸载口径**：`uninstall` 走同一套 jail 清理逻辑；即使勾选 `remove_package`，也只
-  `apt-get remove pure-ftpd` 并清理 pure-ftpd 的 passwd/pdb/conf，不执行 `apt purge`。
-  `/etc/skiff/ftp-service.json` 保留，重装/升级后沿用。
-- **状态可观测性**：内核 `ftp.status` 回传 `fail2ban.installed / running / jail_configured /
-  jail_enabled / currently_banned / total_banned / recent_ban`；取不到时为 `null`，
-  UI 显示「未知（读取失败）」，不伪造 0。`recent_ban` 口径为
-  `fail2ban-client get pure-ftpd banip --with-time`。
+- **fail2ban 不是内核内置**，也不是 FTP 插件的附属物，统一由 `com.skiff.firewall` 管理。
+  防火墙插件首次 `fail2ban.install` 时经 `apt-get install fail2ban` 安装；机器上已有则只复用。
+- **防火墙规则只动自己的表/链**：nftables 用 `inet skiff` 表的 `input` 链，iptables 用
+  `SKIFF` 链；按 `comment "skiff-<nanos>"`（nft handle）或 `-S` 序号删除，不触碰其它表/链，
+  默认策略保持 accept。`port.allow` 是「放行某端口/协议」的便捷入口。
+- **jail 文件**：写入 `/etc/fail2ban/jail.d/skiff-<jail>.conf`，由 `fail2ban.jail.ensure`
+  生成、`fail2ban.jail.remove` 删除；`fail2ban.install` 新装时另写
+  `/etc/fail2ban/jail.d/skiff-defaults.conf` 关闭 `sshd` jail，避免新装 fail2ban 封掉宿主 SSH；
+  已有 fail2ban 的机器不改其既有 sshd jail。改动后 `systemctl restart fail2ban`。
+- **封禁管理**：`fail2ban.banned` 读 `fail2ban-client status <jail>` 的封禁列表，
+  `fail2ban.unban` 调 `fail2ban-client set <jail> unbanip`；**不卸载 fail2ban 软件包**，
+  也不改系统级 `/etc/fail2ban/jail.conf` 或其它插件写的 jail。
+- **对外接口**：`[interop].provides` 暴露 `fail2ban.status` / `fail2ban.install` /
+  `fail2ban.jail.ensure` / `fail2ban.jail.remove` / `fail2ban.banned` / `fail2ban.ban` /
+  `fail2ban.unban`，
+  调用方写 `com.skiff.firewall:<method>` 并声明 `interop:call` 与 `plugin:com.skiff.firewall`。
+- **权限与审计**：能力面动词即 `firewall:<method>`，内核按 manifest 授权逐次校验，
+  成功/失败都记审计，`detail` 只含 `jail/port/protocol/source/action/ip/id`，不含命令行。
+
+### FTP 的可选登录防护（`com.skiff.ftp`）
+
+- FTP 插件**不再安装、配置或卸载 fail2ban**，也不再向内核传 `login_guard=true`；
+  安装时显式 `login_guard=false`，避免旧内核路径继续代管 fail2ban。
+- 「启用 fail2ban 防护」是**可选项**：运行状态页的防护卡片经 interop 调
+  `com.skiff.firewall:fail2ban.install` 与 `fail2ban.jail.ensure`（jail `pure-ftpd`，
+  filter `pure-ftpd`、port 取内核 `ftp.status.config.listen_port`、backend `systemd`），
+  关闭时调 `fail2ban.jail.remove`。封禁列表与解封走 `fail2ban.banned` / `fail2ban.unban`。
+- **未安装防火墙插件时功能不可用，但不影响 FTP 本身**：`protection` 返回
+  `available=false` 与原因，UI 只展示提示；FTP 的安装、账号、配置与启停不依赖它。
+- **卸载口径**：`uninstall` 只回收 pure-ftpd 自身（勾选 `remove_package` 时
+  `apt-get remove pure-ftpd`，不做 `apt purge`）；fail2ban 与 jail 由防火墙插件管理，
+  FTP 卸载不触碰。`/etc/skiff/ftp-service.json` 保留，重装/升级后沿用。
 - **账号口径**：`account.set_enabled` 通过给 passwd 行加/去 `#` 前缀并 `mkdb` 实现；禁用后登录失败，
   账号与目录保留。最后登录不由 pure-ftpd 用户库记录，`accounts.list` 明确返回
   `last_login=null`、`last_login_source=unavailable`；配额与速率是后续项。
@@ -180,7 +197,13 @@ skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg \
 
 各插件的授权要点：
 
-- `monitor`：必须勾 `path:/proc`（否则采样 403）。
+- `monitor`：必须勾 `path:/proc`（否则采样与进程/网络视图 403）；可选勾 `path:/etc/passwd`
+  把 uid 映射成用户名，不勾则显示数字 uid。
+- `firewall`：只需能力面授权 `firewall:*`（安装确认页按 manifest 动词逐条列出）；它不直接读写
+  文件，规则与 jail 由内核能力面经特权通道执行。要供其它插件调用时，对方需 `interop:call`
+  与 `plugin:com.skiff.firewall` 对象授权。
+- `ftp`：可勾 `path:` 站点根用于账号目录校验；要启用可选登录防护，FTP 侧需 `interop:call`
+  与 `plugin:com.skiff.firewall`，防火墙插件未安装时该选项显示不可用，不影响 FTP 其它功能。
 - `cron`：每装一个「被调度」的插件，勾一次对应的 `plugin:<插件 id>`（或 `plugin:*`）；
   只勾了 `plugin:` 却不给目标插件 `interop:call` 权限的一侧，内核按四道闸拒绝，不影响其他调用。
   `cron` 本身不需要 `fs`/`docker`：它只经内核 `scheduler` 能力面管理任务，**不执行宿主 shell**。

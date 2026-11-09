@@ -10,6 +10,8 @@
 //!   这三项是 M4 的硬门槛，见 §9.1 与 docs/DEPLOY_TEST.md「未验证项」。
 
 pub mod capability;
+/// 宿主机防火墙/fail2ban 能力面（内核 `firewall` handler 调用的判定与命令编排）。
+pub mod firewall;
 pub mod fsgrant;
 pub mod fsops;
 pub mod install;

@@ -15,6 +15,9 @@
 //!   `provides` 声明）由 `skiff_plugin::interop` 判定；这里负责查库、防环、超时与审计。
 //!   目标插件仍按自己的授权读写，转发不放宽任何一方。
 //! - `net`：**未实现**（nftables 收口属 M4 门禁），一律 501 + 审计。
+//! - `firewall`：宿主机 nftables/iptables 规则与 fail2ban（仅 Native）。判定与命令
+//!   编排在 `skiff_plugin::firewall`；这里只负责 `PluginId` + grants 校验、审计，
+//!   以及经 `systemd-run` 瞬态单元执行特权命令。
 //!
 //! 文件分工（一个职责一个文件，避免单文件既管 socket 又管判定）：
 //! - `server`（仅 unix）：socket 建立、属组/权限、accept 循环；
@@ -37,6 +40,8 @@ use skiff_app::AppState;
 mod auth;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod capability;
+#[cfg_attr(not(unix), allow(dead_code))]
+mod firewall;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod ftp;
 #[cfg_attr(not(unix), allow(dead_code))]

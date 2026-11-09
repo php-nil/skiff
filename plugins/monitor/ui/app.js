@@ -111,6 +111,30 @@
   }
   function when(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "-"; }
 
+  // ---- 进程 / 网络视图共用的小工具 ----
+  function memKb(kb) {
+    if (kb == null) return "-";
+    var n = Number(kb);
+    if (n >= 1048576) return (n / 1048576).toFixed(2) + " GiB";
+    return (n / 1024).toFixed(1) + " MiB";
+  }
+  function cpuText(v) { return v == null ? "—" : Number(v).toFixed(1) + "%"; }
+  function stateText(s) {
+    var map = {
+      running: "运行", sleeping: "休眠", "disk-sleep": "不可中断", zombie: "僵尸",
+      stopped: "停止", tracing: "跟踪", idle: "空闲", dead: "已退出", unknown: "未知"
+    };
+    return map[s] || s || "-";
+  }
+  function debounce(fn, ms) {
+    var timer = 0;
+    return function () {
+      var ctx = this, args = arguments;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () { fn.apply(ctx, args); }, ms);
+    };
+  }
+
   function card(id, value, bad) {
     var c = el(id);
     // 视图按文件拆开加载：总览文件没有历史表格，历史文件没有指标卡。
@@ -151,8 +175,173 @@
     }).join("");
   }
 
+  // ---- 进程视图：只读 /proc，服务端完成排序/筛选/分页 ----
+  var proc = { page: 1, pageSize: 50, sort: "cpu", order: "desc", q: "", user: "" };
+
+  function loadProcesses() {
+    el("msg").textContent = "";
+    return rpc("processes", {
+      page: proc.page,
+      page_size: proc.pageSize,
+      sort: proc.sort,
+      order: proc.order,
+      q: proc.q,
+      user: proc.user
+    }).then(renderProcesses).catch(function (e) {
+      el("msg").textContent = String(e);
+    });
+  }
+
+  function updateSortMarks() {
+    Array.prototype.forEach.call(document.querySelectorAll("th[data-sort]"), function (th) {
+      var on = th.getAttribute("data-sort") === proc.sort;
+      th.classList.toggle("sorted", on);
+      var mark = th.querySelector(".arrow");
+      if (on) {
+        if (!mark) {
+          mark = document.createElement("span");
+          mark.className = "arrow";
+          th.appendChild(mark);
+        }
+        mark.textContent = proc.order === "asc" ? "▲" : "▼";
+      } else if (mark) {
+        mark.remove();
+      }
+    });
+  }
+
+  function renderProcesses(r) {
+    var tb = el("process-table");
+    if (!tb) return;
+    r = r || {};
+    var items = r.items || [];
+    if (!items.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="muted">没有匹配的进程</td></tr>';
+    } else {
+      tb.innerHTML = items.map(function (p) {
+        return "<tr>" +
+          '<td class="num">' + esc(p.pid) + "</td>" +
+          "<td>" + esc(p.user) + "</td>" +
+          '<td class="num">' + cpuText(p.cpu) + "</td>" +
+          '<td class="num">' + memKb(p.mem_kb) + "</td>" +
+          "<td>" + when(p.started) + "</td>" +
+          "<td>" + esc(stateText(p.state)) + "</td>" +
+          '<td class="cmd">' + esc(p.command) + "</td></tr>";
+      }).join("");
+    }
+    var total = r.total || 0;
+    var pages = Math.max(1, Math.ceil(total / proc.pageSize));
+    el("p-info").textContent = "第 " + (r.page || proc.page) + " / " + pages + " 页 · 共 " +
+      total + " 个进程" + (r.scanned ? "（扫描 " + r.scanned + " 个 PID）" : "") +
+      (r.truncated ? " · 已达扫描上限，结果可能不完整" : "");
+    el("p-note").textContent = r.cpu_baseline === false ? (r.note || "") : "";
+    el("p-prev").disabled = (r.page || proc.page) <= 1;
+    el("p-next").disabled = (r.page || proc.page) >= pages;
+    updateSortMarks();
+    scheduleHeight();
+  }
+
+  function initProcessView() {
+    if (!el("process-table")) return;
+    var q = el("p-q"), user = el("p-user"), size = el("p-size");
+    q.addEventListener("input", debounce(function () {
+      proc.q = q.value.trim(); proc.page = 1; loadProcesses();
+    }, 300));
+    user.addEventListener("input", debounce(function () {
+      proc.user = user.value.trim(); proc.page = 1; loadProcesses();
+    }, 300));
+    size.addEventListener("change", function () {
+      proc.pageSize = Number(size.value) || 50; proc.page = 1; loadProcesses();
+    });
+    el("p-prev").addEventListener("click", function () {
+      if (proc.page > 1) { proc.page--; loadProcesses(); }
+    });
+    el("p-next").addEventListener("click", function () { proc.page++; loadProcesses(); });
+    Array.prototype.forEach.call(document.querySelectorAll("th[data-sort]"), function (th) {
+      th.addEventListener("click", function () {
+        var key = th.getAttribute("data-sort");
+        if (proc.sort === key) {
+          proc.order = proc.order === "asc" ? "desc" : "asc";
+        } else {
+          proc.sort = key;
+          proc.order = key === "pid" ? "asc" : "desc";
+        }
+        proc.page = 1;
+        loadProcesses();
+      });
+    });
+  }
+
+  // ---- 网络视图：只读 /proc/net/*，服务端完成筛选与分页 ----
+  var net = { page: 1, pageSize: 50, protocol: "all", state: "all", q: "" };
+
+  function loadNetwork() {
+    el("msg").textContent = "";
+    return rpc("network", {
+      page: net.page,
+      page_size: net.pageSize,
+      protocol: net.protocol,
+      state: net.state,
+      q: net.q
+    }).then(renderNetwork).catch(function (e) {
+      el("msg").textContent = String(e);
+    });
+  }
+
+  function renderNetwork(r) {
+    var tb = el("network-table");
+    if (!tb) return;
+    r = r || {};
+    var items = r.items || [];
+    if (!items.length) {
+      tb.innerHTML = '<tr><td colspan="6" class="muted">没有匹配的连接</td></tr>';
+    } else {
+      tb.innerHTML = items.map(function (c) {
+        return "<tr" + (c.listening ? ' class="listen"' : "") + ">" +
+          "<td>" + esc(String(c.protocol || "").toUpperCase()) + (c.v6 ? "6" : "") + "</td>" +
+          '<td class="mono">' + esc(c.local) + "</td>" +
+          '<td class="mono">' + esc(c.remote) + "</td>" +
+          '<td class="st">' + esc(c.state) + "</td>" +
+          '<td class="num">' + esc(c.uid) + "</td>" +
+          '<td class="num mono">' + esc(c.inode) + "</td></tr>";
+      }).join("");
+    }
+    var total = r.total || 0;
+    var pages = Math.max(1, Math.ceil(total / net.pageSize));
+    el("n-info").textContent = "第 " + (r.page || net.page) + " / " + pages + " 页 · 共 " + total + " 条连接";
+    el("n-note").textContent = r.read_error
+      ? ("部分 /proc/net 文件读取失败：" + r.read_error)
+      : (r.owner_note || "");
+    el("n-prev").disabled = (r.page || net.page) <= 1;
+    el("n-next").disabled = (r.page || net.page) >= pages;
+    scheduleHeight();
+  }
+
+  function initNetworkView() {
+    if (!el("network-table")) return;
+    var proto = el("n-proto"), state = el("n-state"), q = el("n-q"), size = el("n-size");
+    proto.addEventListener("change", function () {
+      net.protocol = proto.value; net.page = 1; loadNetwork();
+    });
+    state.addEventListener("change", function () {
+      net.state = state.value; net.page = 1; loadNetwork();
+    });
+    q.addEventListener("input", debounce(function () {
+      net.q = q.value.trim(); net.page = 1; loadNetwork();
+    }, 300));
+    size.addEventListener("change", function () {
+      net.pageSize = Number(size.value) || 50; net.page = 1; loadNetwork();
+    });
+    el("n-prev").addEventListener("click", function () {
+      if (net.page > 1) { net.page--; loadNetwork(); }
+    });
+    el("n-next").addEventListener("click", function () { net.page++; loadNetwork(); });
+  }
+
   function refresh() {
     el("msg").textContent = "";
+    if (el("process-table")) return loadProcesses();
+    if (el("network-table")) return loadNetwork();
     return rpc("snapshot").then(function (r) {
       rpc("config").then(function (cfg) { paint(r.sample, cfg || {}); }).catch(function () { paint(r.sample, {}); });
       return rpc("history").then(function (h) { paintHistory(h.samples); });
@@ -161,6 +350,8 @@
     });
   }
 
+  initProcessView();
+  initNetworkView();
   el("refresh").addEventListener("click", refresh);
   refresh();
 })();

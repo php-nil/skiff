@@ -24,7 +24,10 @@
   <div id="runtime-grid" class="kv-grid"><div class="kv"><span>加载中…</span></div></div>
 </div>
 
-<h2>fail2ban（登录失败封禁）</h2>
+<h2>可选登录防护（fail2ban）</h2>
+<div class="note" style="margin:0 0 8px">
+  该功能需要独立「防火墙」插件。未安装时整张卡片只展示原因，FTP 的安装、账号与配置不受影响。
+</div>
 <div class="card" id="f2b-card"><div class="note" style="margin:0">加载中…</div></div>
 
 <h2>安全边界</h2>
@@ -35,9 +38,9 @@
     也到不了别的站点。<br>
     2. 账号文件身份与该站点 PHP 容器内 <span class="mono">www-data</span> 一致（官方 alpine 镜像为 82:82），
     上传文件 owner 为 82、目录 2775、文件 0664，PHP 进程可直接读写。<br>
-    3. 并发连接上限与每 IP 上限可在「服务配置」中调整（默认 30 / 3）；fail2ban 专用 jail
-    对 pure-ftpd 认证失败执行 3 次 / 10 分钟封禁，可在同一配置里开关，关闭不会卸载 fail2ban 软件包。<br>
-    4. 监听端口与被动端口范围都可改，改后需在宿主防火墙同时放行；插件不修改宿主防火墙，避免越权。<br>
+    3. 并发连接上限与每 IP 上限可在「服务配置」中调整（默认 30 / 3）；登录防护由独立
+    「防火墙」插件管理，可在本页按需开启/关闭，关闭不会卸载 fail2ban 软件包。<br>
+    4. 监听端口与被动端口范围都可改，改后需在「防火墙」插件中同时放行；FTP 插件不直接修改宿主防火墙。<br>
     5. 服务配置由内核 <span class="mono">/etc/skiff/ftp-service.json</span> 持久化，重装/升级后沿用；
     插件本地不再保留 <span class="mono">service-config.json</span>，避免双份真相漂移。
   </div>
@@ -52,8 +55,9 @@
   </div>
   <button id="btn-uninstall" class="danger">停止并回收</button>
   <div class="note">
-    fail2ban 是宿主系统包，不是内核内置：首装时与 pure-ftpd 一起安装并写入专用 jail。
-    停止回收只删除本插件的 jail 文件并重启 fail2ban，<strong>不会卸载 fail2ban 软件包</strong>。
+    fail2ban 不再由 FTP 插件安装或维护：它归独立「防火墙」插件管理。
+    停止回收不会卸载 fail2ban 软件包，也不会删除其它插件的 jail；
+    pure-ftpd 的登录防护 jail 仍需在「运行状态」页关闭或在防火墙插件中移除。
   </div>
 </div>
 

@@ -59,7 +59,7 @@ mkdir -p "$OUT"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT INT TERM
 
-PLUGINS="guard monitor files cron ftp testkit"
+PLUGINS="guard monitor files cron ftp firewall testkit"
 BUILT=0
 PUBKEY=""
 for name in $PLUGINS; do

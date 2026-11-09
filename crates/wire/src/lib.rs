@@ -56,6 +56,11 @@ pub mod routes {
     /// 内核新增原语（要装宿主软件包、改 systemd、写 pure-pw 用户库），不是
     /// 插件可自行实现的普通能力。
     pub const CAP_FTP_CALL: &str = "/api/v1/capability/ftp/call";
+    /// 宿主机防火墙/fail2ban 能力面（nftables/iptables 规则、jail 管理）。
+    ///
+    /// 仅 Native 形态可用：`{method, params}` → 内核 `firewall` handler，
+    /// 判定与命令编排在 `skiff_plugin::firewall`，这里是唯一的 UDS 协议入口。
+    pub const CAP_FIREWALL_CALL: &str = "/api/v1/capability/firewall/call";
 
     // ---- 插件提供、内核调用（plugin.sock）----
     pub const PLUGIN_HEALTHZ: &str = "/healthz";

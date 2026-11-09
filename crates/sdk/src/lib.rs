@@ -392,6 +392,19 @@ impl Plugin {
         )
     }
 
+    /// 宿主机防火墙/fail2ban 能力面（manifest 需声明 `firewall` 能力与对应 verbs）。
+    ///
+    /// 方法：`status` / `rules.list` / `rule.add` / `rule.remove` / `port.allow` /
+    /// `fail2ban.status` / `fail2ban.install` / `fail2ban.jail.ensure` /
+    /// `fail2ban.jail.remove` / `fail2ban.banned` / `fail2ban.ban` / `fail2ban.unban`。
+    /// 仅 Native 形态可用；受限形态安装期就不会授予 `firewall`。
+    pub fn firewall_call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_FIREWALL_CALL,
+            json!({ "method": method, "params": params }),
+        )
+    }
+
     /// 回调内核能力面（`/api/v1/capability/*`），带进程级 Bearer token。
     pub fn call_kernel(&self, path: &str, body: Value) -> Result<Value> {
         let payload = serde_json::to_vec(&body).map_err(|e| SdkError::Protocol(e.to_string()))?;

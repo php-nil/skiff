@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>主机监控 · 进程</title>
+<style>
+  /* 默认深色；父页面下发 `light` 时由 app.js 写到 <html data-theme>。 */
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-card-line: #202a38;
+    --ui-warn: #f0b429;
+    --ui-bad: #ff7b72;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-card-line: #e4e7ec;
+    --ui-warn: #b54708;
+    --ui-bad: #b42318;
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--ui-bg); color: var(--ui-text); }
+  button, input, select { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line);
+           border-radius: 6px; padding: 5px 10px; font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: var(--ui-muted); font-size: 12px; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .toolbar input { min-width: 180px; }
+  #msg { font-size: 12px; color: var(--ui-warn); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--ui-line-soft);
+           font-size: 13px; white-space: nowrap; }
+  th { color: var(--ui-muted); font-weight: 500; cursor: pointer; user-select: none; }
+  th.sorted { color: var(--ui-text); }
+  th .arrow { font-size: 10px; margin-left: 2px; }
+  th.num, td.num { text-align: right; }
+  td.cmd { white-space: normal; word-break: break-all; max-width: 540px;
+           font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+</style>
+</head>
+<body>
+<p class="muted">只读视图：读取 /proc/[pid]/stat、status、cmdline；不提供结束进程等写操作。
+CPU% 为距上次刷新的差值，首次刷新显示「—」；用户名为数字表示未授权 /etc/passwd。</p>
+<div data-view="process">
+  <div class="toolbar">
+    <button id="refresh">刷新</button>
+    <input id="p-q" placeholder="搜索 PID / 用户 / 命令">
+    <input id="p-user" placeholder="用户过滤" style="min-width:120px">
+    <select id="p-size" title="每页条数">
+      <option value="25">25 条/页</option>
+      <option value="50" selected>50 条/页</option>
+      <option value="100">100 条/页</option>
+      <option value="200">200 条/页</option>
+    </select>
+    <span id="msg"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th data-sort="pid" class="num">PID</th>
+      <th>用户</th>
+      <th data-sort="cpu" class="num">CPU %</th>
+      <th data-sort="mem" class="num">内存</th>
+      <th data-sort="started">启动时间</th>
+      <th>状态</th>
+      <th>命令行</th>
+    </tr></thead>
+    <tbody id="process-table"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+  </table>
+  <div class="pager">
+    <button id="p-prev">上一页</button>
+    <span id="p-info" class="muted"></span>
+    <button id="p-next">下一页</button>
+  </div>
+  <p class="muted" id="p-note" style="margin:8px 0 0"></p>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>主机监控 · 网络</title>
+<style>
+  /* 默认深色；父页面下发 `light` 时由 app.js 写到 <html data-theme>。 */
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-line: #2a3444;
+    --ui-line-soft: #1c2532;
+    --ui-card-line: #202a38;
+    --ui-warn: #f0b429;
+    --ui-bad: #ff7b72;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-line: #cfd5dd;
+    --ui-line-soft: #e4e7ec;
+    --ui-card-line: #e4e7ec;
+    --ui-warn: #b54708;
+    --ui-bad: #b42318;
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--ui-bg); color: var(--ui-text); }
+  button, input, select { background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line);
+           border-radius: 6px; padding: 5px 10px; font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: var(--ui-muted); font-size: 12px; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .toolbar input { min-width: 180px; }
+  #msg { font-size: 12px; color: var(--ui-warn); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--ui-line-soft);
+           font-size: 13px; white-space: nowrap; }
+  th { color: var(--ui-muted); font-weight: 500; }
+  th.num, td.num { text-align: right; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+  tr.listen td.st { color: var(--ui-warn); }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+</style>
+</head>
+<body>
+<p class="muted">只读视图：解析 /proc/net/tcp、tcp6、udp、udp6。插件降权运行，无法读取其它用户的
+/proc/[pid]/fd，因此「所属进程」以套接字属主 uid 呈现，不指向具体 PID。</p>
+<div data-view="network">
+  <div class="toolbar">
+    <button id="refresh">刷新</button>
+    <select id="n-proto" title="协议">
+      <option value="all" selected>全部协议</option>
+      <option value="tcp">仅 TCP</option>
+      <option value="udp">仅 UDP</option>
+    </select>
+    <select id="n-state" title="连接状态">
+      <option value="all" selected>全部状态</option>
+      <option value="listen">仅监听</option>
+      <option value="ESTABLISHED">ESTABLISHED</option>
+      <option value="TIME_WAIT">TIME_WAIT</option>
+      <option value="CLOSE_WAIT">CLOSE_WAIT</option>
+    </select>
+    <input id="n-q" placeholder="搜索地址 / 端口 / 状态 / uid">
+    <select id="n-size" title="每页条数">
+      <option value="25">25 条/页</option>
+      <option value="50" selected>50 条/页</option>
+      <option value="100">100 条/页</option>
+      <option value="200">200 条/页</option>
+    </select>
+    <span id="msg"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th>协议</th>
+      <th>本地地址</th>
+      <th>对端地址</th>
+      <th>状态</th>
+      <th class="num">所属进程（uid）</th>
+      <th class="num">inode</th>
+    </tr></thead>
+    <tbody id="network-table"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+  </table>
+  <div class="pager">
+    <button id="n-prev">上一页</button>
+    <span id="n-info" class="muted"></span>
+    <button id="n-next">下一页</button>
+  </div>
+  <p class="muted" id="n-note" style="margin:8px 0 0"></p>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

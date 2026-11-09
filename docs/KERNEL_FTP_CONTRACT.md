@@ -14,6 +14,12 @@
 - **服务配置单一真相**：监听端口、被动端口、连接上限、TLS 模式与证书路径、登录防护开关持久化在 `/etc/skiff/ftp-service.json` 由内核唯一维护；插件不再保留 `service-config.json`。
 - **审计口径**：`ftp.<method>`，actor `plugin:<id>`，source `uds`，结果 `ok | fail | deny`；detail 只含配置摘要/登录名/启用状态，密码与私钥不入 argv/日志/审计。
 
+> **2026-11-09 变更（未编译验证）**：fail2ban 已从 FTP 能力面收口到独立防火墙插件
+> `com.skiff.firewall`（契约见 [KERNEL_FIREWALL_CONTRACT.md](KERNEL_FIREWALL_CONTRACT.md)）。
+> FTP 插件安装/保存配置时显式传 `login_guard=false`，登录防护改为可选项并经 interop 调用
+> `fail2ban.*`；内核 `ftp.rs` 内的 fail2ban 分支暂未删除（受「不动内核业务层」约束），
+> 待后续独立提交移除。本文以下涉及 fail2ban 的描述保留为历史口径。
+
 ## 1. 背景与现状
 
 ### 1.1 现状事实（2026-11-07 只读核查，未改服务）

@@ -12,9 +12,10 @@ api = "1.2"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
-requires = ["ftp"]
+requires = ["ftp", "interop"]
 network_egress = []
-resource_hints = []
+# fail2ban 防护是可选项：装了防火墙插件才可用，未装时 FTP 本身照常工作。
+resource_hints = ["plugin:com.skiff.firewall"]
 
 [[permissions]]
 capability = "ftp"
@@ -31,6 +32,11 @@ verbs = [
   "account.set_enabled",
   "service.restart",
 ]
+
+# 只用于调用防火墙插件的 fail2ban 面；不再是 FTP 自己安装/配置 fail2ban。
+[[permissions]]
+capability = "interop"
+verbs = ["call"]
 
 [[ui]]
 label = "FTP 管理"
@@ -59,3 +65,15 @@ view = "accounts"
   order = 20
   icon = "activity"
   view = "runtime"
+
+[interop]
+# fail2ban 由独立防火墙插件管理；FTP 只按需调用它的 jail 接口。
+consumes = [
+  "com.skiff.firewall:fail2ban.status",
+  "com.skiff.firewall:fail2ban.install",
+  "com.skiff.firewall:fail2ban.jail.ensure",
+  "com.skiff.firewall:fail2ban.jail.remove",
+  "com.skiff.firewall:fail2ban.banned",
+  "com.skiff.firewall:fail2ban.unban",
+]
+provides = []

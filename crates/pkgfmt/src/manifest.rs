@@ -33,6 +33,12 @@ pub enum Capability {
     /// 对齐站点目录 uid/gid。受限形态（1Panel Docker 包）没有宿主 systemd
     /// 与 apt，故不提供。
     Ftp,
+    /// 宿主机防火墙/fail2ban 能力面（`/capability/firewall/call`）。
+    ///
+    /// 需要 root 才能改 nftables/iptables 与 `/etc/fail2ban`；受限形态没有
+    /// 宿主网络命名空间与 systemd，故只对 Native 形态提供。契约见
+    /// `docs/KERNEL_FIREWALL_CONTRACT.md`。
+    Firewall,
 }
 
 impl Capability {
@@ -45,6 +51,7 @@ impl Capability {
             Capability::Interop => "interop",
             Capability::Scheduler => "scheduler",
             Capability::Ftp => "ftp",
+            Capability::Firewall => "firewall",
         }
     }
 
@@ -58,6 +65,7 @@ impl Capability {
             Capability::Interop,
             Capability::Scheduler,
             Capability::Ftp,
+            Capability::Firewall,
         ]
     }
 
@@ -78,8 +86,9 @@ impl Capability {
                 Capability::Interop,
                 Capability::Scheduler,
             ],
-            // 注意：`Ftp` 只在 Native 形态出现。它要落宿主 apt/systemd 与
-            // pure-pw 用户库，受限形态没有这些能力面，不能假装可用。
+            // 注意：`Ftp` / `Firewall` 只在 Native 形态出现。它们要落宿主
+            // apt/systemd、pure-pw 用户库与 nftables/iptables，受限形态没有
+            // 这些能力面，不能假装可用。
         }
     }
 }

@@ -38,6 +38,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | J. 站点压测与资源开销 | 8 | 0 项本机可验，8 项必须上机（测试机两站并发 + `/proc` 采样） | `tools/perf/*`；nginx / PHP-FPM / 反代三路径；`skiff` 进程与插件子进程 |
 | K. FTP 与宿主机文件服务 | 9 | 2 项本机可验（FTP-02 账号/密码/端口校验单测、FTP-06 配置校验单测），7 项必须上机（FTP-06 另有持久化断言需上机） | `cargo test -p skiff --bin skiff kernel::ftp`；测试机 pure-ftpd + PHP 容器 |
 | L. 后台端口 / 入口前缀 / TLS | 6 | 2 项本机可验（PANEL-02/03 校验单测，PANEL-06 有 `skiff` 单测兜底），4 项必须上机 | `cargo test -p skiff-app -p skiff`；测试机改端口/前缀/TLS 三形态 |
+| M. 防火墙 / fail2ban / 进程与网络 | 14 | 3 项本机单测（FW-03、MON-N01 解析），其余必须上机；**本轮全部未编译、未执行** | `cargo test -p skiff-plugin firewall`；`plugins/` 第二 workspace 单测；测试机 nft/iptables/fail2ban + `/proc` |
 
 ## A. 身份与会话
 
@@ -496,6 +497,38 @@ cargo test -p skiff-web settings --locked
 curl -s -c /tmp/j "$B/$P/login" | grep -o 'name="csrf" value="[^"]*"'
 curl -s -b /tmp/j -c /tmp/j -D- -d "csrf=...&username=admin&password=..." "$B/$P/login" | grep -i set-cookie
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
+```
+
+## M. 防火墙 / fail2ban / 进程与网络（2026-11-09 新增，未经编译验证）
+
+> 重跑触发：改了 `crates/plugin/src/firewall.rs`、`crates/core/src/kernel/firewall.rs`、
+> `plugins/firewall`、`plugins/ftp` 的 protection 分支、`plugins/monitor` 的 `processes` / `network`。
+> 本轮**只写用例，未编译、未上机**；契约见 [KERNEL_FIREWALL_CONTRACT.md](KERNEL_FIREWALL_CONTRACT.md)。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| FW-01 | 能力面授权拒绝 | `[本机]` 单测 | 以无 `firewall:*` 授权的插件调 `firewall_call("status")` | 403，审计 `firewall.deny.status`；不执行任何宿主命令 | □通过 / □失败 | `crates/core/src/kernel/firewall.rs`、`crates/plugin/src/firewall.rs` |
+| FW-02 | 规则增删只动自有作用域 | `[上机]` 有 nft 或 iptables | `rule.add` 一条 tcp/端口规则；`rules.list` 核对；`rule.remove` 自家 id | 规则出现在 `inet skiff`/`SKIFF` 链且带 `skiff-` 标识；删除后消失；宿主其它规则不变 | □通过 / □失败 | `crates/plugin/src/firewall.rs` |
+| FW-03 | 非法参数拒绝 | `[本机]` 单测 | 依次传非法端口 `0`/`70000`/`9-3`、非法 CIDR、非法 jail 名、非法 backend、非法 id | 全部 400，且不写规则/不写文件 | □通过 / □失败 | `crates/plugin/src/firewall.rs`（`valid_*`、`RuleSpec::parse`） |
+| FW-04 | fail2ban 安装与复用 | `[上机]` 未装 fail2ban | `fail2ban.install`；再调一次 | 首次安装并写 `skiff-defaults.conf` 关闭 sshd；第二次复用不重复安装 | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_install` |
+| FW-05 | jail 生命周期 | `[上机]` fail2ban 已装 | `fail2ban.jail.ensure` 建 `pure-ftpd`；`fail2ban.banned`；`fail2ban.jail.remove` | 生成 `/etc/fail2ban/jail.d/skiff-pure-ftpd.conf` 并重启；封禁列表可读；移除后文件消失，其它 `skiff-*` 不受影响 | □通过 / □失败 | `crates/plugin/src/firewall.rs` |
+| FW-06 | 非 Native 形态拒绝 | `[本机]` 受限形态配置 | 调 `firewall_call("status")` | 503，审计 result=fail | □通过 / □失败 | `crates/core/src/kernel/firewall.rs` |
+| MON-P01 | 进程列表字段与排序 | `[上机]` monitor 已装且授权 `path:/proc` | 打开「进程」页；点 CPU/内存/PID/启动时间表头 | PID/用户/CPU%/内存/启动时间/状态/命令行齐全；排序方向可切换；首刷 CPU% 为「—」 | □通过 / □失败 | `plugins/monitor/src/main.rs::processes`、`plugins/monitor/ui/process.html` |
+| MON-P02 | 过滤与分页 | `[上机]` 同上 | 搜索 PID/用户/命令；输入用户过滤；切换每页条数；翻页 | 结果与筛选一致；分页总数/页码正确；`truncated` 时提示扫描上限 | □通过 / □失败 | `plugins/monitor/src/main.rs::processes`、`plugins/monitor/ui/app.js` |
+| MON-P03 | 无 `/etc/passwd` 授权退化 | `[上机]` 只授权 `path:/proc` | 打开进程页 | 用户列显示数字 uid，不报错；`user_source=uid` | □通过 / □失败 | `plugins/monitor/src/main.rs::load_passwd` |
+| MON-N01 | 网络连接解析 | `[本机]` 单测 + `[上机]` | `cargo test -p skiff-plugin-monitor`；打开「网络」页 | tcp/tcp6/udp/udp6 行解析为可读地址与端口；监听项标记；状态码正确 | □通过 / □失败 | `plugins/monitor/src/main.rs::parse_net_connections` |
+| MON-N02 | 筛选与只读声明 | `[上机]` 同上 | 切协议/状态、搜索、翻页 | 结果与筛选一致；页面明确「所属进程以 uid 呈现」，无结束进程等写操作 | □通过 / □失败 | `plugins/monitor/ui/network.html`、`app.js` |
+| MON-N03 | `/proc` 缺授权 | `[上机]` 不勾 `path:/proc` | 打开进程/网络页 | 返回 403 提示与采样一致；页面展示错误，不崩溃 | □通过 / □失败 | `plugins/monitor/src/main.rs::fs_err` |
+| FTP-P01 | 未装防火墙插件时开启防护 | `[上机]` 只装 ftp | 运行状态页点「启用防护」 | `available=false` + 原因；FTP 安装/账号/配置不受影响 | □通过 / □失败 | `plugins/ftp/src/main.rs::protection_enable` |
+| FTP-P02 | 已装防火墙插件时开启/关闭 | `[上机]` ftp + firewall | 开启防护；查封禁；关闭防护 | 生成 `pure-ftpd` jail（端口取 `listen_port`）；封禁列表可读可解封；关闭只删该 jail，不卸载 fail2ban | □通过 / □失败 | `plugins/ftp/src/main.rs`、`plugins/firewall/src/main.rs` |
+| FTP-P03 | 不再代管 fail2ban | `[上机]` 只装 ftp | 安装 FTP；`grep login_guard /etc/skiff/ftp-service.json` | 安装不触发 fail2ban；持久化中 `login_guard=false` | □通过 / □失败 | `plugins/ftp/src/main.rs::install`、`save_config` |
+
+最小回归命令（本机，需 Rust 工具链；本轮未执行）：
+
+```bash
+cargo test --manifest-path plugins/Cargo.toml -p skiff-plugin-monitor
+cargo test --manifest-path plugins/Cargo.toml -p skiff-plugin-firewall
+cargo test -p skiff-plugin firewall
 ```
 
 ## 附：待核对项结论（2026-11-07 已全部定性）

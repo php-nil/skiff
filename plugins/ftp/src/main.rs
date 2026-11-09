@@ -5,13 +5,23 @@
 //! 不持久化密码。账号列表由内核读 pure-pw 用户库返回，插件保持无状态，
 //! 重装后仍能看到既有账号。
 //!
-//! 服务配置（监听端口、被动端口、连接上限、TLS 与登录防护）由内核
+//! 服务配置（监听端口、被动端口、连接上限、TLS）由内核
 //! `/etc/skiff/ftp-service.json` 持久化，是本插件唯一的真相来源；插件不再
 //! 写本地 `service-config.json`，只把表单原样交给 `service.configure`。
+//!
+//! **fail2ban 不再由 FTP 安装或配置**：启用登录防护是可选能力，经 interop
+//! 调用独立防火墙插件 `com.skiff.firewall` 的 `fail2ban.*` 接口。未安装防火墙
+//! 插件时该功能不可用，但 FTP 的安装、账号与配置不受影响。内核侧旧的
+//! `login_guard` 字段仍在，本插件显式传 `false`，避免内核继续代管 fail2ban。
 
 use serde_json::{json, Value};
 use skiff_plugin_common as common;
 use skiff_sdk::{Plugin, RpcError};
+
+/// 独立防火墙插件 id：fail2ban 的唯一管理方。
+const FIREWALL_PLUGIN: &str = "com.skiff.firewall";
+/// FTP 登录防护使用的 jail 名；与防火墙插件页面的默认值一致。
+const PROTECTION_JAIL: &str = "pure-ftpd";
 
 fn main() {
     let plugin = match Plugin::from_env() {
@@ -35,6 +45,12 @@ fn main() {
         "restart" => restart(&p),
         "config" => config(&p),
         "config.save" | "save_config" => save_config(&p, params),
+        // 可选登录防护：真正的 fail2ban 管理在防火墙插件，这里只做转发与状态拼装。
+        "protection" | "protection.status" => protection(&p),
+        "protection.enable" => protection_enable(&p),
+        "protection.disable" => protection_disable(&p),
+        "protection.banned" => protection_banned(&p, params),
+        "protection.unban" => protection_unban(&p, params),
         other => Err(RpcError::method_not_found(other)),
     }) {
         eprintln!("服务异常退出: {e}");
@@ -56,12 +72,13 @@ fn config(plugin: &Plugin) -> Result<Value, RpcError> {
                 "tls_mode": "optional",
                 "tls_cert_path": null,
                 "tls_key_path": null,
-                "login_guard": true,
             }),
             json!({ "error": e.message }),
         ),
     };
     let mut map = cfg.as_object().cloned().unwrap_or_default();
+    // 登录防护改由防火墙插件管理；内核遗留字段不再暴露给 FTP 表单。
+    map.remove("login_guard");
     map.insert("status".into(), status);
     Ok(Value::Object(map))
 }
@@ -77,7 +94,6 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         "tls_mode",
         "tls_cert_path",
         "tls_key_path",
-        "login_guard",
     ];
     let mut payload = serde_json::Map::new();
     for key in keys {
@@ -85,7 +101,10 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
             payload.insert(key.into(), value.clone());
         }
     }
-    if payload.is_empty() {
+    // 旧内核仍接受 `login_guard`；显式关掉，避免它继续安装/维护 fail2ban。
+    // 登录防护现在由防火墙插件按需开启（`protection.enable`）。
+    payload.insert("login_guard".into(), Value::Bool(false));
+    if payload.len() == 1 {
         return Err(RpcError::invalid_params("没有可保存的配置项"));
     }
     let res = plugin
@@ -114,9 +133,10 @@ fn status(plugin: &Plugin) -> Result<Value, RpcError> {
 }
 
 fn install(plugin: &Plugin) -> Result<Value, RpcError> {
-    // 内核从 `/etc/skiff/ftp-service.json` 读取已保存配置，插件不再叠加本地覆盖值。
+    // 内核从 `/etc/skiff/ftp-service.json` 读取已保存配置，插件不再叠加本地覆盖值；
+    // `login_guard=false` 阻止旧内核顺带安装 fail2ban（登录防护走防火墙插件）。
     plugin
-        .ftp_call("install", json!({}))
+        .ftp_call("install", json!({ "login_guard": false }))
         .map_err(common::rpc_err)
 }
 
@@ -212,4 +232,144 @@ fn restart(plugin: &Plugin) -> Result<Value, RpcError> {
     plugin
         .ftp_call("service.restart", Value::Null)
         .map_err(common::rpc_err)
+}
+
+// ─────────────────── 可选登录防护（fail2ban，经防火墙插件） ───────────────────
+
+/// 查询登录防护状态。**不把「防火墙插件未装」当成错误**：FTP 本身仍然可用，
+/// 只是该可选项不可用，UI 据此禁用开关并展示原因。
+fn protection(plugin: &Plugin) -> Result<Value, RpcError> {
+    match plugin.interop_call(FIREWALL_PLUGIN, "fail2ban.status", json!({})) {
+        Ok(st) => {
+            let jails = st
+                .get("jails")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let enabled = jails.iter().any(|j| j.as_str() == Some(PROTECTION_JAIL));
+            Ok(json!({
+                "available": true,
+                "enabled": enabled,
+                "installed": st.get("installed").and_then(Value::as_bool).unwrap_or(false),
+                "running": st.get("running").and_then(Value::as_bool).unwrap_or(false),
+                "jail": PROTECTION_JAIL,
+                "jails": jails,
+            }))
+        }
+        Err(e) => Ok(json!({
+            "available": false,
+            "enabled": false,
+            "installed": false,
+            "running": false,
+            "jail": PROTECTION_JAIL,
+            "jails": [],
+            "reason": format!(
+                "未安装或未启用独立防火墙插件（{FIREWALL_PLUGIN}），fail2ban 防护不可用；不影响 FTP 安装、账号与配置"
+            ),
+            "error": e.to_string(),
+        })),
+    }
+}
+
+/// 开启登录防护：必要时先让防火墙插件安装 fail2ban，再写入纯 FTP 的 jail。
+fn protection_enable(plugin: &Plugin) -> Result<Value, RpcError> {
+    let st = plugin
+        .interop_call(FIREWALL_PLUGIN, "fail2ban.status", json!({}))
+        .map_err(firewall_err)?;
+    let installed = st
+        .get("installed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !installed {
+        plugin
+            .interop_call(FIREWALL_PLUGIN, "fail2ban.install", json!({}))
+            .map_err(firewall_err)?;
+    }
+
+    // 端口取内核持久化的监听端口；取不到就按 21 处理（pure-ftpd 默认）。
+    let listen_port = plugin
+        .ftp_call("status", Value::Null)
+        .ok()
+        .and_then(|s| {
+            s.get("config")
+                .and_then(|c| c.get("listen_port"))
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(21);
+
+    plugin
+        .interop_call(
+            FIREWALL_PLUGIN,
+            "fail2ban.jail.ensure",
+            json!({
+                "jail": PROTECTION_JAIL,
+                "filter": "pure-ftpd",
+                "port": listen_port.to_string(),
+                "backend": "systemd",
+                "maxretry": 5,
+                "findtime": 600,
+                "bantime": 3600,
+            }),
+        )
+        .map_err(firewall_err)?;
+    protection(plugin)
+}
+
+/// 关闭登录防护：只移除本插件约定的 `pure-ftpd` jail，不卸载 fail2ban。
+fn protection_disable(plugin: &Plugin) -> Result<Value, RpcError> {
+    plugin
+        .interop_call(
+            FIREWALL_PLUGIN,
+            "fail2ban.jail.remove",
+            json!({ "jail": PROTECTION_JAIL }),
+        )
+        .map_err(firewall_err)?;
+    protection(plugin)
+}
+
+fn protection_banned(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
+    let jail = jail_param(&params);
+    let mut out = plugin
+        .interop_call(FIREWALL_PLUGIN, "fail2ban.banned", json!({ "jail": jail }))
+        .map_err(firewall_err)?;
+    if let Value::Object(map) = &mut out {
+        map.insert("available".into(), Value::Bool(true));
+    }
+    Ok(out)
+}
+
+fn protection_unban(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
+    let jail = jail_param(&params);
+    let ip = params
+        .get("ip")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if ip.is_empty() {
+        return Err(RpcError::invalid_params("ip 不能为空"));
+    }
+    plugin
+        .interop_call(
+            FIREWALL_PLUGIN,
+            "fail2ban.unban",
+            json!({ "jail": jail, "ip": ip }),
+        )
+        .map_err(firewall_err)?;
+    Ok(json!({ "ok": true, "jail": jail, "ip": ip }))
+}
+
+fn jail_param(params: &Value) -> &str {
+    params
+        .get("jail")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(PROTECTION_JAIL)
+}
+
+fn firewall_err(e: skiff_sdk::SdkError) -> RpcError {
+    RpcError::invalid_params(format!(
+        "fail2ban 防护调用失败（需要独立防火墙插件 {FIREWALL_PLUGIN}）：{}",
+        common::rpc_err(e).message
+    ))
 }

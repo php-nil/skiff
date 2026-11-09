@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>防火墙 · fail2ban</title>
+<link rel="stylesheet" href="base.css">
+</head>
+<body data-view="fail2ban">
+<div class="page-head">
+  <div>
+    <h1>fail2ban</h1>
+    <p class="sub">
+      只管理本插件写入的 <code>/etc/fail2ban/jail.d/skiff-&lt;jail&gt;.conf</code>。
+      宿主既有 jail 只读展示；新装 fail2ban 时默认关闭 sshd jail，避免误封宿主机 SSH。
+    </p>
+  </div>
+  <div class="actions">
+    <button id="btn-refresh">刷新</button>
+  </div>
+</div>
+<div id="msg"></div>
+
+<div class="card" id="f2b-card">
+  <div class="title"><strong>服务状态</strong><span id="f2b-state" class="badge">检测中…</span></div>
+  <div class="row" id="f2b-actions"></div>
+  <p class="help" id="f2b-help"></p>
+</div>
+
+<div class="card">
+  <div class="title"><strong>新增 / 更新 jail</strong></div>
+  <div class="grid">
+    <label class="field">jail 名称<input id="jail-name" value="pure-ftpd" placeholder="pure-ftpd"></label>
+    <label class="field">filter<input id="jail-filter" value="pure-ftpd" placeholder="pure-ftpd"></label>
+    <label class="field">端口<input id="jail-port" value="21" placeholder="21 或 30000-30100"></label>
+    <label class="field">backend
+      <select id="jail-backend">
+        <option value="systemd">systemd</option>
+        <option value="auto">auto</option>
+        <option value="polling">polling</option>
+      </select>
+    </label>
+    <label class="field">maxretry<input id="jail-maxretry" type="number" min="1" max="100" value="5"></label>
+    <label class="field">findtime（秒）<input id="jail-findtime" type="number" min="1" value="600"></label>
+    <label class="field">bantime（秒）<input id="jail-bantime" type="number" min="1" value="3600"></label>
+    <label class="field">logpath（可选）<input id="jail-logpath" placeholder="/var/log/pure-ftpd/transfer.log"></label>
+  </div>
+  <p class="help">filter 必须是 fail2ban 已安装的过滤器名；port 只允许数字、逗号与连字符。保存后会重启 fail2ban 使配置生效。</p>
+  <div class="row" style="margin-top:10px"><button id="jail-save" class="primary">保存并重启</button><button id="jail-remove" class="danger">移除该 jail 文件</button></div>
+</div>
+
+<h2>jail 列表</h2>
+<div class="table-wrap">
+  <table>
+    <colgroup><col style="width:28%"><col style="width:44%"><col style="width:28%"></colgroup>
+    <thead><tr><th>jail</th><th>当前封禁</th><th>操作</th></tr></thead>
+    <tbody id="jails"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+  </table>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
