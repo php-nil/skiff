@@ -47,7 +47,7 @@ pub async fn static_file(
     // `HeaderValue` 解析走显式兜底：静态资源在请求路径上，任何解析失败都不该 panic。
     h.insert(
         CONTENT_TYPE,
-        HeaderValue::from_str(&mime.to_string())
+        HeaderValue::from_str(mime.as_ref())
             .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     h.insert(
