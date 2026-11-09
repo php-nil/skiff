@@ -35,7 +35,7 @@ pub mod routes {
     pub const CAP_FS_READ: &str = "/api/v1/capability/fs/read";
     pub const CAP_FS_WRITE: &str = "/api/v1/capability/fs/write";
     pub const CAP_FS_LIST: &str = "/api/v1/capability/fs/list";
-    /// 宿主路径类操作（官方插件 files/nginx 用）：路径必须是绝对路径，
+    /// 宿主路径类操作（官方插件 files 用）：路径必须是绝对路径，
     /// 且落在安装时确认过的 `path:` 对象授权根内。
     pub const CAP_FS_MKDIR: &str = "/api/v1/capability/fs/mkdir";
     pub const CAP_FS_REMOVE: &str = "/api/v1/capability/fs/remove";
