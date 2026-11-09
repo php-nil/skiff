@@ -174,8 +174,17 @@ impl Mount {
 /// 三层策略的调用主体。
 #[derive(Debug, Clone)]
 pub enum Actor {
-    User { username: String, role: Role },
-    Plugin { id: String, grants: Vec<Grant> },
+    User {
+        username: String,
+        role: Role,
+    },
+    Plugin {
+        id: String,
+        grants: Vec<Grant>,
+    },
+    /// 内核自身：站点/运行环境的容器动作由内核用例发起，不存在用户角色维度。
+    /// 对象面按 allowlist 收窄（见 `ObjectRef::is_kernel_managed`）。
+    System,
 }
 
 impl Actor {
@@ -183,6 +192,7 @@ impl Actor {
         match self {
             Actor::User { username, .. } => format!("user:{username}"),
             Actor::Plugin { id, .. } => format!("plugin:{id}"),
+            Actor::System => "system".to_string(),
         }
     }
 }
@@ -215,6 +225,14 @@ impl ObjectRef {
         self.labels
             .get(crate::verb::LABEL_OWNER)
             .map(|s| s.as_str())
+    }
+
+    /// 内核「网站」能力自建并托管的容器（nginx / PHP 等）。
+    ///
+    /// 判据是内核自己打的 `io.skiff.project=sites` 标签，不是名字前缀——
+    /// 名字可以被外部容器伪装，标签只由内核写入（`sites::skiff_labels`）。
+    pub fn is_kernel_managed(&self) -> bool {
+        self.project() == Some(crate::verb::PROJECT_SITES)
     }
 
     pub fn project(&self) -> Option<&str> {

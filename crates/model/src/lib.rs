@@ -30,7 +30,7 @@ pub use path::{
 };
 pub use rbac::{Permission, RoleExt};
 pub use scope::{Scope, ScopeSet};
-pub use verb::{Tier, Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED};
+pub use verb::{Tier, Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED, PROJECT_SITES};
 
 /// RBAC 三种角色（§6.3）。危险操作（插件安装、对象 grant、宿主路径授权、
 /// Docker 删除/exec）仅 admin。

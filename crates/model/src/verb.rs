@@ -270,6 +270,10 @@ pub const LABEL_PROJECT: &str = "io.skiff.project";
 pub const LABEL_OWNER: &str = "io.skiff.owner";
 pub const LABEL_PROTECTED: &str = "io.skiff.protected";
 
+/// 内核「网站」能力自建容器的归属值：nginx 与各语言运行环境容器统一打
+/// `io.skiff.project=sites`，也是 `Actor::System` 的对象 allowlist 依据。
+pub const PROJECT_SITES: &str = "sites";
+
 #[cfg(test)]
 mod tests {
     use super::*;

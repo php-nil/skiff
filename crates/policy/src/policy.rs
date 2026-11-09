@@ -112,6 +112,24 @@ impl Policy {
                 }
                 Ok(())
             }
+            // 内核自身主体：没有用户角色维度，改为对象 allowlist——只放行内核托管的
+            // 站点/运行时容器，外部面板对象一律拒绝。无对象的动词（拉镜像、创建容器）
+            // 由 `Docker::execute` 自行校验目标，这里不重复。
+            Actor::System => {
+                if let Some(t) = target {
+                    if t.is_foreign_panel() {
+                        return Err(PolicyError::ForeignPanel {
+                            object: t.name.clone(),
+                        });
+                    }
+                    if !t.is_kernel_managed() {
+                        return Err(PolicyError::Protected {
+                            object: t.name.clone(),
+                        });
+                    }
+                }
+                Ok(())
+            }
             Actor::Plugin { id, grants } => {
                 let perm = format!("docker:{}", verb.as_str());
                 if !grants.iter().any(|g| g.kind == "perm" && g.value == perm) {
@@ -452,6 +470,35 @@ mod tests {
         assert!(p
             .check(&user(Role::Admin), Verb::ContainerCreate, None)
             .is_ok());
+    }
+
+    /// 内核主体只在内核托管的容器上放行；其它对象（含受保护但非托管的）与
+    /// 外部面板对象一律拒绝。这是站点链路统一走 `policy.check` 的判定依据。
+    #[test]
+    fn system_actor_is_restricted_to_kernel_managed_objects() {
+        use skiff_model::PROJECT_SITES;
+        let p = policy(Tier::Lifecycle, Form::Native);
+        let kernel = obj(
+            "skiff-web-nginx",
+            &[(LABEL_PROJECT, PROJECT_SITES), (LABEL_PROTECTED, "true")],
+        );
+        assert!(p
+            .check(&Actor::System, Verb::Restart, Some(&kernel))
+            .is_ok());
+        // 无对象动词（拉镜像/创建容器）交给 Docker::execute 校验目标
+        assert!(p.check(&Actor::System, Verb::ImagePull, None).is_ok());
+        // 受保护但不由内核「网站」能力托管：仍拒绝
+        let other = obj("other", &[(LABEL_PROTECTED, "true")]);
+        assert!(matches!(
+            p.check(&Actor::System, Verb::Restart, Some(&other)),
+            Err(PolicyError::Protected { .. })
+        ));
+        // 外部面板对象：显式报 ForeignPanel
+        let foreign = obj("1panel-app", &[(LABEL_PROJECT, PROJECT_SITES)]);
+        assert!(matches!(
+            p.check(&Actor::System, Verb::Stop, Some(&foreign)),
+            Err(PolicyError::ForeignPanel { .. })
+        ));
     }
 
     /// 角色矩阵的唯一来源是 `Permission` 表：viewer 只读、operator 可启停、
