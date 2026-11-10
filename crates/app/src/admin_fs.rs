@@ -281,6 +281,7 @@ impl DbQuotaTracker {
             max_files: row.max_files,
             used_bytes: row.used_bytes,
             used_files: row.used_files,
+            truncated: row.truncated,
             updated_at: row.scanned_at,
         }
     }
@@ -303,6 +304,7 @@ impl QuotaTracker for DbQuotaTracker {
             .map(|row| QuotaUsage {
                 used_bytes: row.used_bytes,
                 used_files: row.used_files,
+                truncated: row.truncated,
             })
             .unwrap_or_default()
     }
@@ -334,6 +336,7 @@ impl QuotaTracker for DbQuotaTracker {
             &root.display().to_string(),
             usage.used_bytes,
             usage.used_files,
+            usage.truncated,
             skiff_fs::now_secs(),
         ) {
             tracing::warn!(root = %root.display(), error = %e, "配额用量写入失败");

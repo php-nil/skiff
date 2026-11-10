@@ -170,6 +170,7 @@ pub(crate) fn object_stats(
         return Ok(crate::config::QuotaUsage {
             used_bytes: meta.len(),
             used_files: 1,
+            truncated: false,
         });
     }
     if !meta.is_dir() {
@@ -182,6 +183,9 @@ pub(crate) fn object_stats(
         for entry in entries {
             seen += 1;
             if seen > cap_entries {
+                // 达到扫描上限：返回值只是下界，必须带截断标记，页面/API 才能
+                // 提示「用量不完整」而不是把下界当成精确值展示。
+                usage.truncated = true;
                 return Ok(usage);
             }
             let entry = entry.map_err(|e| io_error(&dir, e))?;

@@ -583,6 +583,11 @@ impl Fs {
             return Ok(());
         };
         let usage = self.quota.usage_stats(&t.root);
+        if usage.truncated {
+            // 全量统计被扫描上限截断：用量只是下界，按「未知」处理。
+            // 不能拿下界做超限判定（会误判），也不能据此拒绝写入（需求：截断不拒写）。
+            return Ok(());
+        }
         let projected_bytes = usage.used_bytes.saturating_add_signed(delta_bytes);
         let projected_files = usage.used_files.saturating_add_signed(delta_files);
         if let Some(max) = t.max_bytes {
@@ -714,7 +719,11 @@ impl Fs {
         let mut a = ok_args(AuditAction::QuotaScan);
         a.set_from_resolved(&r);
         a.bytes = usage.used_bytes;
-        a.detail = Some(format!("files={}", usage.used_files));
+        a.detail = Some(if usage.truncated {
+            format!("files>={} (截断)", usage.used_files)
+        } else {
+            format!("files={}", usage.used_files)
+        });
         self.audit(p, ctx, a);
         Ok(self.snapshot_for(&r.path, usage))
     }
@@ -798,6 +807,7 @@ impl Fs {
                 max_files: None,
                 used_bytes: usage.used_bytes,
                 used_files: usage.used_files,
+                truncated: usage.truncated,
                 updated_at: None,
             })
     }

@@ -113,11 +113,15 @@
     });
   }
 
-  function usageCell(used, max, fmt) {
+  function usageCell(used, max, fmt, truncated) {
+    // 扫描超过条目上限时用量只是下界，不能当作精确值展示。
+    var tail = truncated
+      ? '<span class="quota-muted files-warn" title="目录条目超过扫描上限，用量仅为下界">不完整（仅下界）</span>'
+      : "";
     if (max == null) {
       return (
         '<div class="quota-usage"><strong>' + fmt(used) + "</strong>" +
-        '<span class="quota-muted">未设置上限（仅统计）</span></div>'
+        '<span class="quota-muted">未设置上限（仅统计）</span>' + tail + "</div>"
       );
     }
     var pct = max > 0 ? (Number(used) / Number(max)) * 100 : 100;
@@ -125,7 +129,7 @@
     return (
       '<div class="quota-usage"><strong class="' + cls + '">' + fmt(used) +
       " / " + fmt(max) + "</strong>" +
-      '<span class="quota-muted">' + pct.toFixed(1) + "%</span></div>"
+      '<span class="quota-muted">' + pct.toFixed(1) + "%</span>" + tail + "</div>"
     );
   }
 
@@ -144,8 +148,8 @@
         '<tr data-root="' + escapeHtml(q.root) + '">' +
         '<td class="quota-root" title="' + escapeHtml(q.root) + '">' +
         escapeHtml(q.root) + "</td>" +
-        "<td>" + usageCell(q.used_bytes, q.max_bytes, fmtBytes) + "</td>" +
-        "<td>" + usageCell(q.used_files, q.max_files, fmtNumber) + "</td>" +
+        "<td>" + usageCell(q.used_bytes, q.max_bytes, fmtBytes, q.truncated) + "</td>" +
+        "<td>" + usageCell(q.used_files, q.max_files, fmtNumber, q.truncated) + "</td>" +
         "<td>" + fmtTime(q.updated_at) + "</td>" +
         '<td><div class="quota-row-actions">' +
         '<button type="button" class="files-btn" data-act="scan">重新统计</button>' +
@@ -251,8 +255,12 @@
         body: JSON.stringify({ path: root })
       })
         .then(function (data) {
-          showAlert("ok", "统计完成：" + data.quota.root + "，已用 " +
-            fmtBytes(data.quota.used_bytes) + " / " + fmtNumber(data.quota.used_files) + " 个文件");
+          var msg = "统计完成：" + data.quota.root + "，已用 " +
+            fmtBytes(data.quota.used_bytes) + " / " + fmtNumber(data.quota.used_files) + " 个文件";
+          if (data.quota.truncated) {
+            msg += "（目录条目超过扫描上限，统计不完整，用量仅为下界）";
+          }
+          showAlert("ok", msg);
           load();
         })
         .catch(function (err) {

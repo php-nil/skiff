@@ -257,11 +257,12 @@
 
 ### 7.1.1 管理员目录树配额（第二步）
 
-- **规则存储**：SQLite `fs_quotas`（schema v14），字段 `root_path / max_bytes / max_files / used_bytes / used_files / updated_at / scanned_at`。
+- **规则存储**：SQLite `fs_quotas`（schema v16），字段 `root_path / max_bytes / max_files / used_bytes / used_files / truncated / updated_at / scanned_at`。
 - **命中规则**：对整个路径匹配已设置的根，**最长祖先根优先**；同一棵树被多条规则覆盖时只按最近的一条判定。两个上限可单独或同时设置，至少一项；全部留空即视为未设置。
 - **统计口径**：`used_bytes` = 子树内普通文件大小之和；`used_files` = 普通文件个数；符号链接不跟随，目录本身不计入。
 - **刷新口径**：默认是**缓存增量计数**——`skiff-fs` 在每次成功的写/删/改名/复制/恢复后按操作的 `delta_bytes/delta_files` 修正缓存；设置或修改配额、以及管理员点「重新统计」时做**全量重扫**（`scanned_at` 记录时间），成本 O(条目数)，目录越大越慢，页面会二次确认并提示。外部改动（SSH/脚本）不会自动更新计数，需重扫校准。
 - **执行点（唯一接线点）**：`skiff-fs` 的 `write`（含 append/定位写）、`copy`、`rename`（跨根时按目标根预检）、`restore`（回补回收站条目用量）在落盘前调用 `enforce_quota`；Web 层不重复判定。超限返回 `fs.quota_exceeded`，消息含配额根、写入后用量与上限。
+- **统计截断**：全量重扫的条目数达到 `max_dir_entries` 上限时停止计数并置 `truncated=true`；此时 `used_*` 只是**下界**，API 与页面必须标注「不完整（仅下界）」，写前预检按「未知」放行（宁可放过，不因统计不全误拒写入）。置标记后需重新统计或降低目录规模才会清掉。
 - **回收站与配额的关系**：对象移入回收站后**从目录树用量中扣除**（回收站自身由 §5.2 的全局配额单独约束），避免同一份数据被两套上限重复计算；恢复时再回补。
 - **取消配额**：清空 `max_bytes/max_files`，保留用量计数；页面不再展示该条目的上限（列表只显示已设置上限的规则）。
 - **受保护路径**：数据根、`plugins/`、`official/`、`skiff.db`、内核运行配置与 TLS 材料不允许设置为配额根；`quota_set` / `quota_scan` / `quota_cancel` / `quota_list` 都用同一份前缀列表拒绝/过滤。最长祖先根命中时若命中受保护根，按拒绝处理，不会把配置目录纳入统计。

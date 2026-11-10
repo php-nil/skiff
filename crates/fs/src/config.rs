@@ -137,6 +137,9 @@ pub struct QuotaLimit {
 pub struct QuotaUsage {
     pub used_bytes: u64,
     pub used_files: u64,
+    /// 全量统计因条目数超过 `max_dir_entries` 被截断：用量只是下界，
+    /// 页面/API 必须标注「不完整」，写路径不得据此拒绝写入。
+    pub truncated: bool,
 }
 
 /// 配额列表视图：`updated_at` 是最近一次全量统计时间（`None` 表示仅增量计数）。
@@ -147,6 +150,8 @@ pub struct QuotaSnapshot {
     pub max_files: Option<u64>,
     pub used_bytes: u64,
     pub used_files: u64,
+    /// 最近一次全量统计被截断（用量为下界）。
+    pub truncated: bool,
     pub updated_at: Option<i64>,
 }
 
@@ -163,7 +168,7 @@ pub trait QuotaTracker: Send + Sync {
     fn usage_stats(&self, root: &std::path::Path) -> QuotaUsage {
         QuotaUsage {
             used_bytes: self.usage(root),
-            used_files: 0,
+            ..Default::default()
         }
     }
 
@@ -329,6 +334,7 @@ impl QuotaTracker for MemoryQuotaTracker {
                     max_files: limit.and_then(|l| l.max_files),
                     used_bytes: used.used_bytes,
                     used_files: used.used_files,
+                    truncated: used.truncated,
                     updated_at: None,
                 }
             })

@@ -137,3 +137,32 @@ fn quota_cancel_keeps_usage_but_stops_enforcing() {
     let snap = h.fs.quota_list(&admin).unwrap();
     assert_eq!(snap[0].used_bytes, 20, "取消上限后计数继续");
 }
+
+/// 条目数超过扫描上限时：用量只是下界，快照必须带 `truncated`，
+/// 且写路径不得据此拒绝写入（截断=未知，宁可放过）。
+#[test]
+fn truncated_scan_is_flagged_and_does_not_block_writes() {
+    let h = Harness::with_config(|cfg| cfg.max_dir_entries = 1);
+    let admin = h.admin();
+    let root = h.data().display().to_string();
+    h.seed(&h.data_path("a.bin"), b"aaaa");
+    h.seed(&h.data_path("b.bin"), b"bbbb");
+
+    let snap = h.fs.quota_scan(&admin, &ctx(), &root).unwrap();
+    assert!(snap.truncated, "超过 max_dir_entries 必须标记不完整");
+    assert!(snap.used_files <= 1, "截断时只能统计到上限为止");
+
+    let q =
+        h.fs.quota_set(&admin, &ctx(), &root, Some(1), None)
+            .unwrap();
+    assert!(q.truncated, "设置上限同样沿用截断标记");
+
+    // 截断状态下配额判定按「未知」处理，不拒绝写入。
+    let p = h.plugin("com.example.demo");
+    h.fs.write(&p, &ctx(), &write_req(&h.data_path("c.bin"), &[0u8; 100]))
+        .unwrap();
+
+    // 列表（页面/API 数据源）也带标记，供前端提示「不完整」。
+    let list = h.fs.quota_list(&admin).unwrap();
+    assert!(list[0].truncated);
+}

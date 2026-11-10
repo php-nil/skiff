@@ -35,7 +35,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 15;
+pub const CURRENT_SCHEMA_VERSION: i64 = 16;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -103,7 +103,7 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        let steps: [(i64, &str); 15] = [
+        let steps: [(i64, &str); 16] = [
             (1, SCHEMA_V1),
             (2, SCHEMA_V2),
             (3, SCHEMA_V3),
@@ -119,6 +119,7 @@ impl Db {
             (13, SCHEMA_V13),
             (14, SCHEMA_V14),
             (15, SCHEMA_V15),
+            (16, SCHEMA_V16),
         ];
         for (to, schema) in steps {
             if version >= to {
@@ -701,6 +702,13 @@ CREATE TABLE IF NOT EXISTS job_logs (
 );
 "#;
 
+/// v16：配额全量统计可能因条目数超过 `max_dir_entries` 而截断。
+/// `truncated=1` 表示 `used_bytes/used_files` 只是下界（仍在增长），
+/// 页面/API 必须标注「不完整」，写路径不得据此拒绝写入。
+const SCHEMA_V16: &str = r#"
+ALTER TABLE fs_quotas ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,11 +890,15 @@ mod tests {
         assert_eq!((row.used_bytes, row.used_files), (100, 2));
         assert_eq!((row.max_bytes, row.max_files), (None, None));
 
-        db.fs_quota_set("/www/sites/a", Some(500), Some(10), 100, 2, 300)
+        db.fs_quota_set("/www/sites/a", Some(500), Some(10), 100, 2, true, 300)
             .unwrap();
         let row = db.fs_quota_get("/www/sites/a").unwrap().unwrap();
         assert_eq!((row.max_bytes, row.max_files), (Some(500), Some(10)));
         assert_eq!(row.scanned_at, Some(300));
+        assert!(row.truncated, "截断标记必须落库，否则页面刷新后丢失");
+        db.fs_quota_set_usage("/www/sites/a", 100, 2, false, 400)
+            .unwrap();
+        assert!(!db.fs_quota_get("/www/sites/a").unwrap().unwrap().truncated);
 
         db.fs_quota_adjust("/www/sites/a", -150, 1).unwrap();
         let row = db.fs_quota_get("/www/sites/a").unwrap().unwrap();

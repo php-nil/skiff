@@ -16,6 +16,8 @@ pub struct QuotaRow {
     pub used_files: u64,
     pub updated_at: i64,
     pub scanned_at: Option<i64>,
+    /// 最近一次全量统计是否因条目数超限而截断（用量只是下界）。
+    pub truncated: bool,
 }
 
 impl QuotaRow {
@@ -28,12 +30,13 @@ impl QuotaRow {
             used_files: row.get::<_, i64>(4)?.max(0) as u64,
             updated_at: row.get(5)?,
             scanned_at: row.get(6)?,
+            truncated: row.get::<_, i64>(7)? != 0,
         })
     }
 }
 
 const SELECT_COLS: &str =
-    "root_path, max_bytes, max_files, used_bytes, used_files, updated_at, scanned_at";
+    "root_path, max_bytes, max_files, used_bytes, used_files, updated_at, scanned_at, truncated";
 
 impl super::Db {
     pub fn fs_quota_list(&self) -> Result<Vec<QuotaRow>> {
@@ -57,6 +60,7 @@ impl super::Db {
     }
 
     /// 设置/修改上限并写入一次全量统计结果。
+    #[allow(clippy::too_many_arguments)]
     pub fn fs_quota_set(
         &self,
         root_path: &str,
@@ -64,18 +68,20 @@ impl super::Db {
         max_files: Option<u64>,
         used_bytes: u64,
         used_files: u64,
+        truncated: bool,
         scanned_at: i64,
     ) -> Result<()> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO fs_quotas(root_path, max_bytes, max_files, used_bytes, used_files,
-                updated_at, scanned_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?6)
+                truncated, updated_at, scanned_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?7)
              ON CONFLICT(root_path) DO UPDATE SET
                 max_bytes = excluded.max_bytes,
                 max_files = excluded.max_files,
                 used_bytes = excluded.used_bytes,
                 used_files = excluded.used_files,
+                truncated = excluded.truncated,
                 updated_at = excluded.updated_at,
                 scanned_at = excluded.scanned_at",
             params![
@@ -84,6 +90,7 @@ impl super::Db {
                 max_files.map(|v| v as i64),
                 used_bytes as i64,
                 used_files as i64,
+                i64::from(truncated),
                 scanned_at,
             ],
         )?;
@@ -96,19 +103,27 @@ impl super::Db {
         root_path: &str,
         used_bytes: u64,
         used_files: u64,
+        truncated: bool,
         scanned_at: i64,
     ) -> Result<()> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO fs_quotas(root_path, max_bytes, max_files, used_bytes, used_files,
-                updated_at, scanned_at)
-             VALUES (?1,NULL,NULL,?2,?3,?4,?4)
+                truncated, updated_at, scanned_at)
+             VALUES (?1,NULL,NULL,?2,?3,?4,?5,?5)
              ON CONFLICT(root_path) DO UPDATE SET
                 used_bytes = excluded.used_bytes,
                 used_files = excluded.used_files,
+                truncated = excluded.truncated,
                 updated_at = excluded.updated_at,
                 scanned_at = excluded.scanned_at",
-            params![root_path, used_bytes as i64, used_files as i64, scanned_at],
+            params![
+                root_path,
+                used_bytes as i64,
+                used_files as i64,
+                i64::from(truncated),
+                scanned_at
+            ],
         )?;
         Ok(())
     }
