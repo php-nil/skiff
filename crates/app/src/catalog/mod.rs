@@ -20,11 +20,12 @@ use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use sha2::{Digest, Sha256};
+use skiff_plugin::install::version_gt;
 use skiff_store::Db;
 use tracing::{error, info, warn};
 
 use fetch::{Conditional, SharedTransport, UreqTransport};
-use model::{Index, Manifest, PluginEntry, SignatureFile, BLOB_PREFIX};
+use model::{Index, Manifest, PluginEntry, SignatureFile, UpgradeEntry, BLOB_PREFIX};
 
 /// 单次 HTTP 请求的默认硬超时。
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -246,6 +247,15 @@ pub struct PluginPackage {
     pub revoked: Option<String>,
 }
 
+/// 已验证快照里的一个内核升级条目（P3 只读段：提示与手动下载，不执行升级）。
+#[derive(Debug, Clone)]
+pub struct UpgradePackage {
+    pub entry: UpgradeEntry,
+    /// 命中快照的镜像基地址（blob 从同一来源下载）。
+    pub base: String,
+    pub channel: String,
+}
+
 /// blob 下载失败的原因：调用方据此区分「下载失败」与「摘要/大小不符」。
 #[derive(Debug)]
 pub enum DownloadError {
@@ -419,15 +429,7 @@ impl CatalogService {
             .plugins
             .iter()
             .filter(|p| p.id == id && version.map(|v| p.version == v).unwrap_or(true))
-            .max_by(|a, b| {
-                if skiff_plugin::install::version_gt(&a.version, &b.version) {
-                    std::cmp::Ordering::Greater
-                } else if skiff_plugin::install::version_gt(&b.version, &a.version) {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })?
+            .max_by(|a, b| version_cmp(&a.version, &b.version))?
             .clone();
         let revoked = index
             .revoked(&entry.id, &entry.version)
@@ -440,22 +442,99 @@ impl CatalogService {
         })
     }
 
+    /// 在已验证快照里找指定版本、当前架构的内核升级条目。
+    ///
+    /// 与 `plugin_package` 同一取舍：目录未启用、被拒绝或没有可用镜像来源时返回
+    /// `None`——页面据此安静展示「无可用升级」，命令层也不能凭未验证目录下载。
+    pub fn upgrade_package(&self, version: &str, arch: &str) -> Option<UpgradePackage> {
+        let (snapshot, index, base) = self.refresh(false);
+        if matches!(
+            snapshot.state,
+            CatalogState::Disabled | CatalogState::Rejected
+        ) || base.is_empty()
+        {
+            return None;
+        }
+        let index = index?;
+        let entry = index
+            .upgrades
+            .iter()
+            .find(|u| u.version == version && u.arch == arch && u.channel == index.channel)?
+            .clone();
+        Some(UpgradePackage {
+            entry,
+            base,
+            channel: index.channel.clone(),
+        })
+    }
+
+    /// 渠道清单里高于 `current` 的最高升级条目；没有则返回 `None`（页面空态）。
+    pub fn latest_upgrade(&self, current: &str, arch: &str) -> Option<UpgradePackage> {
+        let (snapshot, index, base) = self.refresh(false);
+        if matches!(
+            snapshot.state,
+            CatalogState::Disabled | CatalogState::Rejected
+        ) || base.is_empty()
+        {
+            return None;
+        }
+        let index = index?;
+        let entry = index
+            .upgrades
+            .iter()
+            .filter(|u| u.arch == arch && u.channel == index.channel)
+            .filter(|u| version_gt(&u.version, current))
+            .max_by(|a, b| version_cmp(&a.version, &b.version))?
+            .clone();
+        Some(UpgradePackage {
+            entry,
+            base,
+            channel: index.channel.clone(),
+        })
+    }
+
     /// 按条目摘要下载插件包到 `dest`：先写 `<dest>.part`，大小与 sha256 都通过才 rename。
     ///
     /// 任何失败都不留文件（`dest` 与 `.part` 都清掉）——安装链路不允许半装状态。
     pub fn download_blob(&self, package: &PluginPackage, dest: &Path) -> Result<(), DownloadError> {
         let entry = &package.entry;
-        let sha = entry
-            .pkg_sha256
-            .as_deref()
-            .ok_or_else(|| DownloadError::Digest("目录条目缺少内容摘要".into()))?;
-        let url_path = entry
-            .pkg_url
-            .as_deref()
-            .ok_or_else(|| DownloadError::Digest("目录条目缺少内容寻址 URL".into()))?;
-        let size = entry
-            .size
-            .ok_or_else(|| DownloadError::Digest("目录条目缺少字节数".into()))?;
+        self.download_entry(
+            &package.base,
+            entry.pkg_sha256.as_deref(),
+            entry.pkg_url.as_deref(),
+            entry.size,
+            dest,
+        )
+    }
+
+    /// 按条目摘要下载升级包到 `dest`，校验口径与插件包完全一致。
+    pub fn download_upgrade(
+        &self,
+        package: &UpgradePackage,
+        dest: &Path,
+    ) -> Result<(), DownloadError> {
+        let entry = &package.entry;
+        self.download_entry(
+            &package.base,
+            entry.pkg_sha256.as_deref(),
+            entry.pkg_url.as_deref(),
+            entry.size,
+            dest,
+        )
+    }
+
+    fn download_entry(
+        &self,
+        base: &str,
+        sha: Option<&str>,
+        url_path: Option<&str>,
+        size: Option<u64>,
+        dest: &Path,
+    ) -> Result<(), DownloadError> {
+        let sha = sha.ok_or_else(|| DownloadError::Digest("目录条目缺少内容摘要".into()))?;
+        let url_path =
+            url_path.ok_or_else(|| DownloadError::Digest("目录条目缺少内容寻址 URL".into()))?;
+        let size = size.ok_or_else(|| DownloadError::Digest("目录条目缺少字节数".into()))?;
         let expected = format!("{BLOB_PREFIX}{sha}");
         if url_path != expected {
             return Err(DownloadError::Digest(format!(
@@ -463,7 +542,7 @@ impl CatalogService {
             )));
         }
 
-        let url = format!("{}/{url_path}", package.base.trim_end_matches('/'));
+        let url = format!("{}/{url_path}", base.trim_end_matches('/'));
         let part = dest.with_extension("part");
         let result = self.store_blob(&url, sha, size, &part, dest);
         if result.is_err() {
@@ -933,6 +1012,17 @@ impl CatalogService {
             allow_unsigned: self.settings.allow_unsigned,
             key_configured: self.public_key.is_some(),
         }
+    }
+}
+
+/// 版本比较的唯一入口：与插件安装共用 `skiff_plugin::install::version_gt` 的语义。
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    if version_gt(a, b) {
+        std::cmp::Ordering::Greater
+    } else if version_gt(b, a) {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Equal
     }
 }
 

@@ -1427,6 +1427,140 @@ async fn store_install_rejects_without_verified_catalog() {
     assert_eq!(leftover, 0, "失败不得留下暂存文件");
 }
 
+/// 内核升级下载入口：viewer 无权触发，必须 403 且落 `upgrade.download` deny 审计。
+#[tokio::test]
+async fn upgrade_download_requires_admin_permission() {
+    let key = skiff_pkgfmt::SigningKey::generate();
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            channel: "stable".into(),
+            mirrors: vec!["https://mirror.example/skiff".into()],
+            public_key: Some(key.public_hex()),
+            allow_unsigned: false,
+            timeout: std::time::Duration::from_secs(1),
+        },
+    );
+    let token = login(&h.app, "viewer", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/store/upgrades/0.2.0/download")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "viewer 下载升级包必须 403"
+    );
+    let audit = h.state.db().recent_audit(10).unwrap();
+    assert!(
+        audit.iter().any(|e| e.action == "upgrade.download"
+            && e.target == "0.2.0"
+            && e.result == "deny"
+            && e.detail.contains("reason=permission")),
+        "权限拒绝必须落审计: {audit:?}"
+    );
+}
+
+/// 未配置固定公钥时不得下载升级包：拒绝并落 `no_key` 审计，且不触网。
+#[tokio::test]
+async fn upgrade_download_requires_configured_key() {
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            channel: "stable".into(),
+            mirrors: vec![],
+            public_key: None,
+            allow_unsigned: false,
+            timeout: std::time::Duration::from_secs(1),
+        },
+    );
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/store/upgrades/0.2.0/download")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let audit = h.state.db().recent_audit(10).unwrap();
+    assert!(
+        audit
+            .iter()
+            .any(|e| e.action == "upgrade.download" && e.detail.contains("reason=no_key")),
+        "缺公钥拒绝必须落审计: {audit:?}"
+    );
+}
+
+/// 渠道没有升级数据时安静拒绝：回商店页提示、落 `not_found`、不留暂存目录文件。
+#[tokio::test]
+async fn upgrade_download_without_catalog_data_is_not_found() {
+    let key = skiff_pkgfmt::SigningKey::generate();
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            channel: "stable".into(),
+            // 无镜像：快照为「未配置镜像地址」，不会发起任何网络请求。
+            mirrors: vec![],
+            public_key: Some(key.public_hex()),
+            allow_unsigned: false,
+            timeout: std::time::Duration::from_secs(1),
+        },
+    );
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/store/upgrades/0.2.0/download")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "失败应回商店页");
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(loc, "/p/store");
+    let audit = h.state.db().recent_audit(10).unwrap();
+    assert!(
+        audit.iter().any(|e| e.action == "upgrade.download"
+            && e.result == "fail"
+            && e.detail.contains("reason=not_found")),
+        "无升级数据必须落 not_found 审计: {audit:?}"
+    );
+    let incoming = h.data_dir.join("upgrade").join("incoming");
+    let leftover = std::fs::read_dir(&incoming)
+        .map(|it| it.count())
+        .unwrap_or(0);
+    assert_eq!(leftover, 0, "失败不得留下半包");
+}
+
 /// 上传上限必须由应用层（`DEFAULT_LIMITS.archive_bytes` = 100MB）决定。
 /// axum 默认 body 上限是 2MB，而 `.wbpkg` 内含插件二进制，2MB 必然不够——
 /// 一旦框架默认值先于应用层校验生效，`install` 里的 100MB 判断就永远走不到。

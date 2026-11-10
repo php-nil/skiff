@@ -271,6 +271,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::store::install),
         )
         .route(
+            &format!("/{p}/store/upgrades/{{version}}/download"),
+            get(handlers::store::download_upgrade),
+        )
+        .route(
             &format!("/{p}/plugins/{{id}}"),
             get(handlers::plugins::info),
         )

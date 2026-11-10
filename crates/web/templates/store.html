@@ -19,6 +19,37 @@
   {% if !key_configured %}<span class="tag warn-tag">未配置固定公钥</span>{% endif %}
 </div>
 
+<section class="panel">
+  <div class="panel-head">
+    <h2>内核升级</h2>
+    <span class="muted small">
+      当前 <code>{{ upgrade.current }}</code> · 架构 <code>{{ upgrade.arch }}</code>
+    </span>
+  </div>
+  {% if upgrade.available.is_empty() %}
+  <div class="empty">
+    <strong>{{ upgrade.note }}</strong>
+    <p class="hint">渠道清单没有高于当前版本的升级条目；本页只做提示，不执行升级。</p>
+  </div>
+  {% else %}
+  <div class="toolbar">
+    <span class="muted small">
+      渠道 <code>{{ upgrade.channel }}</code> 可用版本 <code>{{ upgrade.available }}</code>
+      · 最低来源版本 <code>{{ upgrade.min_from }}</code>
+    </span>
+    {% if upgrade.can_download %}
+    <a class="btn ghost" href="/{{ ctx.prefix }}/store/upgrades/{{ upgrade.available }}/download">下载升级包</a>
+    {% else %}
+    <span class="muted small">{{ upgrade.note }}</span>
+    {% endif %}
+  </div>
+  <p class="hint">
+    下载只落到本地暂存并校验 sha256，不执行升级；不停服、不替换包、不跑迁移。
+    变更日志：<a href="{{ upgrade.changelog_url }}" rel="noreferrer noopener" target="_blank">{{ upgrade.changelog_url }}</a>
+  </p>
+  {% endif %}
+</section>
+
 <div class="toolbar">
   <span class="muted small">
     渠道 <code>{{ channel }}</code> · seq <code>{{ seq }}</code> · 拉取于 <code>{{ fetched_at }}</code>

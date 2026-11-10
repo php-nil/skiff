@@ -163,6 +163,11 @@ impl Fixture {
     /// 让假传输层返回一份签名正确的快照。
     fn serve_signed(&self, seq: u64, plugin: &str, etag_m: &str, etag_i: &str) {
         let index = index_json(seq, plugin);
+        self.serve_index(seq, index, etag_m, etag_i);
+    }
+
+    /// 自定义索引的签名快照：升级条目测试要自己拼 `upgrades`。
+    fn serve_index(&self, seq: u64, index: Vec<u8>, etag_m: &str, etag_i: &str) {
         let manifest = manifest_json("stable", seq, &self.key.key_id(), &index);
         let sig = signature_json(&self.key.key_id(), &sign_hello(&self.key, &manifest));
         self.fake
@@ -546,4 +551,80 @@ fn all_mirrors_cooling_uses_cache_until_force_retry() {
     assert_eq!(snap.state, CatalogState::Fresh, "{}", snap.message);
     assert_eq!(snap.seq, Some(3));
     assert_eq!(snap.source, dead_base);
+}
+
+/// 升级条目索引：只关心 `(version, arch, channel, min_from)`，摘要三件套共用占位。
+fn upgrades_index(entries: &[(&str, &str, &str, &str)]) -> Vec<u8> {
+    let upgrades: Vec<_> = entries
+        .iter()
+        .map(|(version, arch, channel, min_from)| {
+            serde_json::json!({
+                "version": version,
+                "arch": arch,
+                "channel": channel,
+                "min_from": min_from,
+                "changelog_url": "https://example.invalid/changelog",
+                "pkg_sha256": BLOB_SHA,
+                "pkg_url": format!("blobs/sha256/{BLOB_SHA}"),
+                "size": 3
+            })
+        })
+        .collect();
+    serde_json::to_vec(&serde_json::json!({
+        "schema": INDEX_SCHEMA,
+        "channel": "stable",
+        "seq": 1,
+        "generated_at": "2026-11-10T00:00:00Z",
+        "upgrades": upgrades
+    }))
+    .unwrap()
+}
+
+#[test]
+fn latest_upgrade_is_quiet_when_channel_has_no_upgrade_data() {
+    let fx = Fixture::new();
+    fx.serve_index(1, upgrades_index(&[]), "e-m", "e-i");
+    let svc = fx.service();
+    assert!(svc.latest_upgrade("0.1.0", "x86_64").is_none());
+    assert!(svc.upgrade_package("0.2.0", "x86_64").is_none());
+}
+
+#[test]
+fn latest_upgrade_picks_highest_matching_channel_and_arch() {
+    let fx = Fixture::new();
+    fx.serve_index(
+        1,
+        upgrades_index(&[
+            ("0.2.0", "x86_64", "stable", "0.1.0"),
+            ("0.4.0", "aarch64", "stable", "0.1.0"),
+            ("0.3.0", "x86_64", "night", "0.1.0"),
+            ("0.1.5", "x86_64", "stable", "0.1.0"),
+        ]),
+        "e-m",
+        "e-i",
+    );
+    let svc = fx.service();
+    let latest = svc.latest_upgrade("0.1.0", "x86_64").expect("应有可用升级");
+    assert_eq!(latest.entry.version, "0.2.0");
+    assert_eq!(latest.channel, "stable");
+    assert_eq!(latest.base, MIRROR);
+
+    // 指定版本查找同样受渠道与架构约束。
+    assert!(svc.upgrade_package("0.2.0", "x86_64").is_some());
+    assert!(svc.upgrade_package("0.2.0", "aarch64").is_none());
+    assert!(svc.upgrade_package("0.3.0", "x86_64").is_none());
+}
+
+#[test]
+fn latest_upgrade_is_none_when_current_is_not_older() {
+    let fx = Fixture::new();
+    fx.serve_index(
+        1,
+        upgrades_index(&[("0.2.0", "x86_64", "stable", "0.1.0")]),
+        "e-m",
+        "e-i",
+    );
+    let svc = fx.service();
+    assert!(svc.latest_upgrade("0.2.0", "x86_64").is_none());
+    assert!(svc.latest_upgrade("0.9.0", "x86_64").is_none());
 }

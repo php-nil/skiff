@@ -55,7 +55,24 @@ pub struct StorePage {
     pub allow_unsigned: bool,
     pub key_configured: bool,
     pub sections: Vec<StoreSection>,
+    pub upgrade: UpgradeHint,
     pub total: usize,
+}
+
+/// 内核升级只读段（P3）：当前版本 vs 渠道可用版本，手动下载入口。
+#[derive(Debug, Clone, Default)]
+pub struct UpgradeHint {
+    pub current: String,
+    pub arch: String,
+    /// 渠道里高于当前版本的可用版本；空表示「无可用升级」。
+    pub available: String,
+    pub channel: String,
+    pub min_from: String,
+    pub changelog_url: String,
+    /// 空态/不可下载时的一句提示。
+    pub note: String,
+    /// 是否显示下载按钮（有可用版本、公钥已配置且目录未被拒）。
+    pub can_download: bool,
 }
 
 /// 商店页的一个分区（插件 / 应用模板 / 运行环境 / 升级通道）。

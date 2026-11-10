@@ -19,10 +19,13 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::AuthUser;
 use crate::state::{AppState, CurrentUser};
-use crate::templates::{PermissionRow, PluginConfirmPage, StorePage, StoreSection};
+use crate::templates::{PermissionRow, PluginConfirmPage, StorePage, StoreSection, UpgradeHint};
 
 /// 商店安装的统一审计动作：成功暂存、各类拒绝都落这一条。
 const AUDIT_ACTION: &str = "store.install";
+
+/// 内核升级只读段的审计动作：手动下载成功与各类拒绝都落这一条。
+const AUDIT_UPGRADE: &str = "upgrade.download";
 
 pub async fn page(
     State(state): State<Arc<AppState>>,
@@ -34,7 +37,16 @@ pub async fn page(
     }
     let force = matches!(q.get("refresh").map(String::as_str), Some("1"));
     let worker = Arc::clone(&state);
-    let snap = handlers::blocking_fs(move || worker.catalog().snapshot(force)).await?;
+    let (snap, latest) = handlers::blocking_fs(move || {
+        let catalog = worker.catalog();
+        let snap = catalog.snapshot(force);
+        let latest = catalog.latest_upgrade(
+            skiff_app::commands::upgrade::KERNEL_VERSION,
+            skiff_app::commands::upgrade::host_arch(),
+        );
+        (snap, latest)
+    })
+    .await?;
 
     let tone = match snap.state {
         CatalogState::Fresh => "ok",
@@ -44,6 +56,38 @@ pub async fn page(
     // 只有公钥已配置且目录没有被拒时才给安装入口：未配置公钥的目录无法完成包验签。
     let can_install = snap.key_configured
         && !matches!(snap.state, CatalogState::Rejected | CatalogState::Disabled);
+    let available = latest
+        .as_ref()
+        .map(|p| p.entry.version.clone())
+        .unwrap_or_default();
+    let can_download = !available.is_empty() && can_install;
+    let upgrade = UpgradeHint {
+        current: skiff_app::commands::upgrade::KERNEL_VERSION.to_string(),
+        arch: skiff_app::commands::upgrade::host_arch().to_string(),
+        available,
+        channel: latest
+            .as_ref()
+            .map(|p| p.channel.clone())
+            .unwrap_or_else(|| snap.channel.clone()),
+        min_from: latest
+            .as_ref()
+            .map(|p| p.entry.min_from.clone())
+            .unwrap_or_default(),
+        changelog_url: latest
+            .as_ref()
+            .map(|p| p.entry.changelog_url.clone())
+            .unwrap_or_default(),
+        note: if latest.is_none() {
+            "无可用升级".into()
+        } else if !snap.key_configured {
+            "未配置固定公钥，不提供升级下载".into()
+        } else if matches!(snap.state, CatalogState::Rejected | CatalogState::Disabled) {
+            "目录校验失败，暂不提供升级下载".into()
+        } else {
+            String::new()
+        },
+        can_download,
+    };
     let total = snap.entries.total();
     handlers::render(StorePage {
         ctx: handlers::page_ctx(&state, &user, "core/plugins/store"),
@@ -93,6 +137,7 @@ pub async fn page(
                 items: snap.entries.upgrades,
             },
         ],
+        upgrade,
         total,
     })
 }
@@ -214,11 +259,116 @@ pub async fn install(
     })
 }
 
+/// 内核升级只读段：手动下载指定版本的升级包到本地暂存并校验 sha256。
+///
+/// 不执行升级。所有判定与拒绝落 `upgrade.download` 审计（`reason=<code>`），
+/// 失败回商店页提示；暂存残留由下载命令保证清理。
+pub async fn download_upgrade(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    Path(version): Path<String>,
+) -> Result<Response, AppError> {
+    if !state.cfg.catalog.enabled {
+        return Err(AppError::NotFound("商店目录未启用".into()));
+    }
+    let ip = handlers::client_ip(&state, &parts);
+    if let Err(e) = handlers::require_permission(&user, Permission::Admin) {
+        audit_upgrade(&state, &user, &ip, &version, "deny", "reason=permission");
+        return Err(e);
+    }
+    if state.cfg.catalog.public_key_hex().is_none() {
+        audit_upgrade(&state, &user, &ip, &version, "deny", "reason=no_key");
+        return Err(AppError::BadRequest(
+            "未配置固定 Ed25519 公钥，不提供升级下载".into(),
+        ));
+    }
+
+    let req = skiff_app::commands::upgrade::UpgradeDownloadRequest {
+        version: Some(version.clone()),
+        arch: skiff_app::commands::upgrade::host_arch().to_string(),
+        current: skiff_app::commands::upgrade::KERNEL_VERSION.to_string(),
+        data_dir: state.cfg.data_dir.clone(),
+    };
+    let worker = Arc::clone(&state);
+    let result = handlers::blocking_fs(move || {
+        skiff_app::commands::upgrade::download(worker.catalog(), &req)
+    })
+    .await?;
+
+    match result {
+        Ok(staged) => {
+            audit_upgrade(
+                &state,
+                &user,
+                &ip,
+                &staged.version,
+                "ok",
+                &format!(
+                    "reason=staged channel={} source={} sha256={} size={} path={} reused={}",
+                    staged.channel,
+                    staged.source,
+                    staged.sha256,
+                    staged.size,
+                    staged.path.display(),
+                    staged.reused
+                ),
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Notice,
+                format!(
+                    "升级包 {} 已暂存并通过 sha256 校验：{}",
+                    staged.version,
+                    staged.path.display()
+                ),
+                format!("/{}/store", state.cfg.entry_prefix),
+            ))
+        }
+        Err(e) => {
+            audit_upgrade(
+                &state,
+                &user,
+                &ip,
+                &version,
+                "fail",
+                &format!("reason={} {e}", e.reason()),
+            );
+            Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                e.message(),
+                format!("/{}/store", state.cfg.entry_prefix),
+            ))
+        }
+    }
+}
+
 fn audit(state: &AppState, user: &CurrentUser, ip: &str, target: &str, result: &str, detail: &str) {
     state.audit_or_log(
         &user.user.username,
         ip,
         AUDIT_ACTION,
+        target,
+        result,
+        detail,
+    );
+}
+
+fn audit_upgrade(
+    state: &AppState,
+    user: &CurrentUser,
+    ip: &str,
+    target: &str,
+    result: &str,
+    detail: &str,
+) {
+    state.audit_or_log(
+        &user.user.username,
+        ip,
+        AUDIT_UPGRADE,
         target,
         result,
         detail,
@@ -231,9 +381,22 @@ mod tests {
     use skiff_app::catalog::CatalogItem;
 
     use crate::menu::PageMenu;
-    use crate::templates::{PageCtx, StoreSection};
+    use crate::templates::{PageCtx, StoreSection, UpgradeHint};
 
     use super::*;
+
+    fn upgrade_hint() -> UpgradeHint {
+        UpgradeHint {
+            current: "0.1.0".into(),
+            arch: "x86_64".into(),
+            available: String::new(),
+            channel: "stable".into(),
+            min_from: String::new(),
+            changelog_url: String::new(),
+            note: "无可用升级".into(),
+            can_download: false,
+        }
+    }
 
     fn ctx() -> PageCtx {
         PageCtx {
@@ -291,6 +454,7 @@ mod tests {
                 installable: true,
                 items: vec![item("com.example.hello")],
             }],
+            upgrade: upgrade_hint(),
             total: 1,
         };
         let html = page.render().unwrap();
@@ -326,6 +490,7 @@ mod tests {
                 installable: false,
                 items: vec![warned],
             }],
+            upgrade: upgrade_hint(),
             total: 1,
         };
         let html = page.render().unwrap();
@@ -356,6 +521,7 @@ mod tests {
                 installable: true,
                 items: vec![warned],
             }],
+            upgrade: upgrade_hint(),
             total: 1,
         };
         let html = page.render().unwrap();
@@ -386,11 +552,46 @@ mod tests {
                 installable: false,
                 items: Vec::new(),
             }],
+            upgrade: upgrade_hint(),
             total: 0,
         };
         let html = page.render().unwrap();
         assert!(html.contains("校验失败"));
         assert!(html.contains("升级通道暂无条目"));
         assert!(html.contains("未配置固定公钥"));
+        assert!(html.contains("无可用升级"), "缺升级数据时必须安静空态");
+    }
+
+    #[test]
+    fn renders_available_upgrade_and_download_entry() {
+        let mut hint = upgrade_hint();
+        hint.available = "0.2.0".into();
+        hint.min_from = "0.1.0".into();
+        hint.changelog_url = "https://example.invalid/changelog".into();
+        hint.note = String::new();
+        hint.can_download = true;
+        let page = StorePage {
+            ctx: ctx(),
+            state_label: "已更新".into(),
+            tone: "ok".into(),
+            message: "ok".into(),
+            channel: "stable".into(),
+            seq: "9".into(),
+            fetched_at: "2026-11-10T00:00:00Z".into(),
+            source: "https://cdn.example/skiff".into(),
+            allow_unsigned: false,
+            key_configured: true,
+            sections: Vec::new(),
+            upgrade: hint,
+            total: 0,
+        };
+        let html = page.render().unwrap();
+        assert!(html.contains("0.2.0"), "可用版本缺失: {html}");
+        assert!(html.contains("0.1.0"), "最低来源版本缺失: {html}");
+        assert!(
+            html.contains("/p1/store/upgrades/0.2.0/download"),
+            "有可用升级时必须提供下载入口: {html}"
+        );
+        assert!(html.contains("不执行升级"), "必须声明只读段边界: {html}");
     }
 }

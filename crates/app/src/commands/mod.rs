@@ -12,6 +12,7 @@ pub mod file;
 pub mod runtime;
 pub mod site;
 pub mod store;
+pub mod upgrade;
 
 /// 命令调用主体：只承载审计需要的身份与来源，不参与权限判定。
 #[derive(Debug, Clone, PartialEq, Eq)]
