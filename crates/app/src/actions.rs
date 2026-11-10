@@ -152,22 +152,23 @@ action_table! {
     RUNTIME_UNBIND_SITE = "runtime.unbind_site": Runtime, Some(Permission::Admin), "commands::runtime::unbind_site", false;
 
     // ---- 容器与 Docker 资源（权限来自 `Verb::permission`，由单测对齐）----
-    CONTAINER_CREATE = "container.create": Container, Some(Permission::DockerLifecycle), "docker::execute", false;
-    CONTAINER_UPDATE = "container.update": Container, Some(Permission::DockerLifecycle), "docker::execute", false;
-    CONTAINER_START = "container.start": Container, Some(Permission::DockerOperate), "docker::execute", false;
-    CONTAINER_STOP = "container.stop": Container, Some(Permission::DockerOperate), "docker::execute", false;
-    CONTAINER_RESTART = "container.restart": Container, Some(Permission::DockerOperate), "docker::execute", false;
-    CONTAINER_KILL = "container.kill": Container, Some(Permission::DockerOperate), "docker::execute", false;
-    CONTAINER_REMOVE = "container.remove": Container, Some(Permission::DockerLifecycle), "docker::execute", true;
+    CONTAINER_CREATE = "container.create": Container, Some(Permission::DockerLifecycle), "commands::docker::container_create", false;
+    CONTAINER_UPDATE = "container.update": Container, Some(Permission::DockerLifecycle), "commands::docker::container_update", false;
+    CONTAINER_START = "container.start": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
+    CONTAINER_STOP = "container.stop": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
+    CONTAINER_RESTART = "container.restart": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
+    CONTAINER_KILL = "container.kill": Container, Some(Permission::DockerOperate), "commands::docker::container_action", false;
+    CONTAINER_REMOVE = "container.remove": Container, Some(Permission::DockerLifecycle), "commands::docker::container_action", true;
+    // exec 是 WS 流式通道，持票据直连 hijack，不经命令层。
     CONTAINER_EXEC = "container.exec": Container, Some(Permission::DockerExec), "docker::execute", true;
-    IMAGE_PULL = "image.pull": Image, Some(Permission::DockerLifecycle), "docker::execute", false;
-    IMAGE_REMOVE = "image.remove": Image, Some(Permission::DockerLifecycle), "docker::execute", true;
-    NETWORK_CREATE = "network.create": Network, Some(Permission::DockerLifecycle), "docker::execute", false;
-    NETWORK_REMOVE = "network.remove": Network, Some(Permission::DockerLifecycle), "docker::execute", true;
-    VOLUME_CREATE = "volume.create": Volume, Some(Permission::DockerLifecycle), "docker::execute", false;
-    VOLUME_REMOVE = "volume.remove": Volume, Some(Permission::DockerLifecycle), "docker::execute", true;
-    COMPOSE_UP = "compose.up": Compose, Some(Permission::DockerLifecycle), "docker::execute", false;
-    COMPOSE_DOWN = "compose.down": Compose, Some(Permission::DockerLifecycle), "docker::execute", true;
+    IMAGE_PULL = "image.pull": Image, Some(Permission::DockerLifecycle), "commands::docker::image_pull", false;
+    IMAGE_REMOVE = "image.remove": Image, Some(Permission::DockerLifecycle), "commands::docker::image_remove", true;
+    NETWORK_CREATE = "network.create": Network, Some(Permission::DockerLifecycle), "commands::docker::network_create", false;
+    NETWORK_REMOVE = "network.remove": Network, Some(Permission::DockerLifecycle), "commands::docker::network_remove", true;
+    VOLUME_CREATE = "volume.create": Volume, Some(Permission::DockerLifecycle), "commands::docker::volume_create", false;
+    VOLUME_REMOVE = "volume.remove": Volume, Some(Permission::DockerLifecycle), "commands::docker::volume_remove", true;
+    COMPOSE_UP = "compose.up": Compose, Some(Permission::DockerLifecycle), "commands::docker::compose_up", false;
+    COMPOSE_DOWN = "compose.down": Compose, Some(Permission::DockerLifecycle), "commands::docker::compose_down", true;
 
     // ---- 文件管理（Admin：全部经 `skiff-fs` 管理员客户端）----
     FILE_BROWSE = "file.browse": File, Some(Permission::Admin), "admin_fs::list", false;
@@ -416,8 +417,37 @@ mod tests {
                 "commands::runtime::",
                 crate::commands::runtime::NAMES,
             ),
+            (
+                Resource::Container,
+                "commands::docker::",
+                crate::commands::docker::NAMES,
+            ),
+            (
+                Resource::Image,
+                "commands::docker::",
+                crate::commands::docker::NAMES,
+            ),
+            (
+                Resource::Network,
+                "commands::docker::",
+                crate::commands::docker::NAMES,
+            ),
+            (
+                Resource::Volume,
+                "commands::docker::",
+                crate::commands::docker::NAMES,
+            ),
+            (
+                Resource::Compose,
+                "commands::docker::",
+                crate::commands::docker::NAMES,
+            ),
         ] {
             for spec in for_resource(resource) {
+                // exec 走 WS 流式通道，没有命令层入口（见动作表注释）。
+                if spec.command == "docker::execute" {
+                    continue;
+                }
                 let name = spec.command.strip_prefix(prefix).unwrap_or_else(|| {
                     panic!("{} 的命令未指向 {prefix}：{}", spec.id, spec.command)
                 });

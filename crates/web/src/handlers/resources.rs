@@ -3,6 +3,8 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::request::Parts;
 use axum::response::Response;
+use skiff_app::commands::docker::{self as docker_cmd, DockerCommandError, NamedResource};
+use skiff_app::commands::Actor;
 use skiff_docker::Verb;
 
 use crate::error::AppError;
@@ -81,20 +83,14 @@ pub async fn pull_image(
         return Err(AppError::BadRequest("镜像名不能为空".into()));
     }
 
-    let result = state.docker().pull_image(&image).await;
-    let ip = handlers::client_ip(&state, &parts);
-    let (result_str, detail) = match &result {
-        Ok(()) => ("ok", String::new()),
-        Err(e) => ("fail", e.to_string()),
-    };
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        &Verb::ImagePull.audit_action(),
-        &image,
-        result_str,
-        &detail,
-    );
+    let result = docker_cmd::image_pull(
+        &state,
+        NamedResource {
+            name: image.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await;
 
     let rows = state
         .docker()
@@ -136,21 +132,15 @@ pub async fn remove_image(
         .policy
         .check(&handlers::actor(&user), Verb::ImageRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker().remove_image(&id, false).await;
-    let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        &Verb::ImageRemove.audit_action(),
-        &id,
-        if result.is_ok() { "ok" } else { "fail" },
-        &result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default(),
-    );
-    result.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    docker_cmd::image_remove(
+        &state,
+        NamedResource {
+            name: id,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
     images(State(state), AuthUser(user)).await
 }
 
@@ -272,21 +262,15 @@ pub async fn create_network(
     {
         return Err(AppError::BadRequest("网络名只允许字母数字与 _-. ".into()));
     }
-    let result = state.docker().create_network(&name).await;
-    let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        &Verb::NetworkCreate.audit_action(),
-        &name,
-        if result.is_ok() { "ok" } else { "fail" },
-        &result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default(),
-    );
-    result.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let result = docker_cmd::network_create(
+        &state,
+        NamedResource {
+            name: name.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await;
+    result.map_err(map_err)?;
     networks(State(state), AuthUser(user)).await
 }
 
@@ -304,21 +288,15 @@ pub async fn remove_network(
         .policy
         .check(&handlers::actor(&user), Verb::NetworkRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker().remove_network(&id).await;
-    let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        &Verb::NetworkRemove.audit_action(),
-        &id,
-        if result.is_ok() { "ok" } else { "fail" },
-        &result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default(),
-    );
-    result.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    docker_cmd::network_remove(
+        &state,
+        NamedResource {
+            name: id,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
     networks(State(state), AuthUser(user)).await
 }
 
@@ -370,21 +348,15 @@ pub async fn create_volume(
     {
         return Err(AppError::BadRequest("卷名只允许字母数字与 _-. ".into()));
     }
-    let result = state.docker().create_volume(&name).await;
-    let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        &Verb::VolumeCreate.audit_action(),
-        &name,
-        if result.is_ok() { "ok" } else { "fail" },
-        &result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default(),
-    );
-    result.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let result = docker_cmd::volume_create(
+        &state,
+        NamedResource {
+            name: name.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await;
+    result.map_err(map_err)?;
     volumes(State(state), AuthUser(user)).await
 }
 
@@ -402,20 +374,30 @@ pub async fn remove_volume(
         .policy
         .check(&handlers::actor(&user), Verb::VolumeRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    let result = state.docker().remove_volume(&name).await;
-    let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
-        &user.user.username,
-        &ip,
-        &Verb::VolumeRemove.audit_action(),
-        &name,
-        if result.is_ok() { "ok" } else { "fail" },
-        &result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default(),
-    );
-    result.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    docker_cmd::volume_remove(
+        &state,
+        NamedResource {
+            name,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
     volumes(State(state), AuthUser(user)).await
+}
+
+/// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
+fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+    Actor {
+        username: user.user.username.clone(),
+        ip: handlers::client_ip(state, parts),
+    }
+}
+
+fn map_err(e: DockerCommandError) -> AppError {
+    match e {
+        DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
+        DockerCommandError::Conflict(m) => AppError::Conflict(m),
+        DockerCommandError::Unavailable(m) => AppError::Unavailable(m),
+    }
 }

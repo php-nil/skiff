@@ -11,8 +11,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
 use axum::response::Response;
 use serde_json::Value;
+use skiff_app::commands::docker::{
+    self as docker_cmd, ComposeDown, ComposeUp, ContainerTarget, DockerCommandError, ProjectAction,
+};
+use skiff_app::commands::Actor;
 use skiff_docker::compose::{normalize_project_name, parse, ComposeProject};
-use skiff_docker::{project_of, service_of, DockerParams, ObjectRef, Verb};
+use skiff_docker::{project_of, service_of, ObjectRef, Verb};
 use skiff_model::Permission;
 
 use crate::error::AppError;
@@ -137,23 +141,15 @@ pub async fn up(
         return render(&state, &user, input.failed(e.to_string())).await;
     }
 
-    let result = state
-        .docker()
-        .execute(
-            Verb::ComposeUp,
-            None,
-            DockerParams::ComposeUp(Box::new(project.clone())),
-        )
-        .await;
-    audit(
+    let value = match docker_cmd::compose_up(
         &state,
-        &user,
-        &parts,
-        Verb::ComposeUp,
-        &project.name,
-        result.as_ref().map(|_| ()),
-    );
-    let value = match result {
+        ComposeUp {
+            project: project.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => return render(&state, &user, input.failed(e.to_string())).await,
     };
@@ -194,26 +190,16 @@ pub async fn down(
     let Some(project) = checked_project(&raw_project)? else {
         return Err(AppError::BadRequest("请填写项目名".into()));
     };
-    let result = state
-        .docker()
-        .execute(
-            Verb::ComposeDown,
-            None,
-            DockerParams::ComposeDown {
-                project: project.clone(),
-                remove_volumes,
-            },
-        )
-        .await;
-    audit(
+    let value = match docker_cmd::compose_down(
         &state,
-        &user,
-        &parts,
-        Verb::ComposeDown,
-        &project,
-        result.as_ref().map(|_| ()),
-    );
-    let value = match result {
+        ComposeDown {
+            project: project.clone(),
+            remove_volumes,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => {
             return render(
@@ -285,7 +271,7 @@ pub async fn project_action(
         .list_containers()
         .await
         .map_err(|e| AppError::Unavailable(e.to_string()))?;
-    let mut done = 0;
+    let mut targets = Vec::new();
     let mut failed = 0;
     for row in rows
         .iter()
@@ -301,24 +287,21 @@ pub async fn project_action(
             failed += 1;
             continue;
         }
-        let result = state
-            .docker()
-            .execute(verb, Some(&obj), DockerParams::None)
-            .await;
-        audit(
-            &state,
-            &user,
-            &parts,
-            verb,
-            &row.name,
-            result.as_ref().map(|_| ()),
-        );
-        if result.is_ok() {
-            done += 1;
-        } else {
-            failed += 1;
-        }
+        targets.push(ContainerTarget::new(row.name.clone(), row.short_id(), obj));
     }
+
+    let report = docker_cmd::compose_project_action(
+        &state,
+        ProjectAction {
+            targets,
+            verb,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
+    let done = report.done;
+    failed += report.failed;
 
     let notice = format!("项目 {project}：成功 {done} 个，失败 {failed} 个");
     let kind = if failed == 0 {
@@ -520,36 +503,19 @@ fn report_rows(
         .unwrap_or_default()
 }
 
-fn audit(
-    state: &AppState,
-    user: &CurrentUser,
-    parts: &Parts,
-    verb: Verb,
-    target: &str,
-    result: Result<(), &skiff_docker::DockerError>,
-) {
-    let ip = handlers::client_ip(state, parts);
-    match result {
-        Ok(()) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                &verb.audit_action(),
-                target,
-                "ok",
-                verb.http_path(),
-            );
-        }
-        Err(e) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                &verb.audit_action(),
-                target,
-                "fail",
-                &e.to_string(),
-            );
-        }
+/// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
+fn actor(state: &AppState, user: &CurrentUser, parts: &Parts) -> Actor {
+    Actor {
+        username: user.user.username.clone(),
+        ip: handlers::client_ip(state, parts),
+    }
+}
+
+fn map_err(e: DockerCommandError) -> AppError {
+    match e {
+        DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
+        DockerCommandError::Conflict(m) => AppError::Conflict(m),
+        DockerCommandError::Unavailable(m) => AppError::Unavailable(m),
     }
 }
 

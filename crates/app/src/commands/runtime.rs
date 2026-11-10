@@ -774,7 +774,9 @@ mod tests {
         );
         let rows = state.db().recent_audit(2).unwrap();
         assert_eq!(rows.len(), 2, "两次失败都应留审计：{rows:?}");
-        assert!(rows.iter().all(|r| r.action == "sites.env.add" && r.result == "failed"));
+        assert!(rows
+            .iter()
+            .all(|r| r.action == "sites.env.add" && r.result == "failed"));
     }
 
     #[tokio::test]

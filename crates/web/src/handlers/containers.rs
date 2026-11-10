@@ -10,7 +10,12 @@ use axum::response::Response;
 use axum::Json;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use skiff_docker::{DockerParams, Mount, ObjectRef, PortMapping, ResourceLimits, Verb};
+use skiff_app::commands::docker::{
+    self as docker_cmd, ContainerAction, ContainerTarget, CreateContainer, DockerCommandError,
+    UpdateContainer,
+};
+use skiff_app::commands::Actor;
+use skiff_docker::{Mount, ObjectRef, PortMapping, ResourceLimits, Verb};
 use skiff_model::ContainerSpec;
 use tokio::io::AsyncWriteExt;
 
@@ -379,34 +384,17 @@ pub async fn create(
         return render_new(&state, &user, form_view(&form), e.to_string()).await;
     }
 
-    let target = spec.name.clone().unwrap_or_else(|| spec.image.clone());
-    let result = state
-        .docker()
-        .execute(
-            Verb::ContainerCreate,
-            None,
-            DockerParams::ContainerCreate(Box::new(spec)),
-        )
-        .await;
-    audit(
-        &state,
-        &user,
-        &parts,
-        Verb::ContainerCreate,
-        &target,
-        result.as_ref().map(|_| ()),
-    );
-    match result {
-        Ok(v) => {
-            let id = v
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AppError::BadRequest("Docker 未返回容器 id".into()))?;
-            Ok(handlers::redirect(format!(
-                "/{}/containers/{}",
-                state.cfg.entry_prefix, id
-            )))
-        }
+    let cmd = CreateContainer {
+        spec,
+        actor: actor(&state, &user, &parts),
+    };
+    match docker_cmd::container_create(&state, cmd).await {
+        Ok(id) => Ok(handlers::redirect(format!(
+            "/{}/containers/{}",
+            state.cfg.entry_prefix, id
+        ))),
+        // 协议异常（Docker 回包缺 id）仍然是传输层 400；引擎失败回填表单页。
+        Err(DockerCommandError::BadRequest(m)) => Err(AppError::BadRequest(m)),
         Err(e) => render_new(&state, &user, form_view(&form), e.to_string()).await,
     }
 }
@@ -438,61 +426,17 @@ pub async fn update_limits(
         return render_detail(&state, &user, &row, e.to_string()).await;
     }
 
-    let result = state
-        .docker()
-        .execute(
-            Verb::ContainerUpdate,
-            Some(&obj),
-            DockerParams::ContainerUpdate(Box::new(limits)),
-        )
-        .await;
-    audit(
-        &state,
-        &user,
-        &parts,
-        Verb::ContainerUpdate,
-        &row.name,
-        result.as_ref().map(|_| ()),
-    );
-    match result {
-        Ok(_) => Ok(handlers::redirect(format!(
+    let cmd = UpdateContainer {
+        target: ContainerTarget::new(row.name.clone(), row.short_id(), obj),
+        limits,
+        actor: actor(&state, &user, &parts),
+    };
+    match docker_cmd::container_update(&state, cmd).await {
+        Ok(()) => Ok(handlers::redirect(format!(
             "/{}/containers/{}",
             state.cfg.entry_prefix, row.id
         ))),
         Err(e) => render_detail(&state, &user, &row, e.to_string()).await,
-    }
-}
-
-fn audit(
-    state: &AppState,
-    user: &crate::state::CurrentUser,
-    parts: &Parts,
-    verb: Verb,
-    target: &str,
-    result: Result<(), &skiff_docker::DockerError>,
-) {
-    let ip = handlers::client_ip(state, parts);
-    match result {
-        Ok(()) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                &verb.audit_action(),
-                target,
-                "ok",
-                verb.http_path(),
-            );
-        }
-        Err(e) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                &verb.audit_action(),
-                target,
-                "fail",
-                &e.to_string(),
-            );
-        }
     }
 }
 
@@ -677,6 +621,22 @@ fn limits_from_form(form: &HashMap<String, Vec<String>>) -> Result<ResourceLimit
     })
 }
 
+/// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
+fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+    Actor {
+        username: user.user.username.clone(),
+        ip: handlers::client_ip(state, parts),
+    }
+}
+
+fn map_err(e: DockerCommandError) -> AppError {
+    match e {
+        DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
+        DockerCommandError::Conflict(m) => AppError::Conflict(m),
+        DockerCommandError::Unavailable(m) => AppError::Unavailable(m),
+    }
+}
+
 /// 页面动作 → 动词白名单。未知动作仍是 400，不能落到别的动词上。
 fn action_verb(action: &str) -> Result<Verb, AppError> {
     match action {
@@ -720,58 +680,15 @@ pub async fn action(
             AppError::Forbidden(e.to_string())
         })?;
 
-    // BusyGuard：容器有进行中的安装/扩展/重建任务时，删除会打断内核自己的任务。
-    if verb == Verb::ContainerRemove {
-        if let Some(reason) = state.container_busy_reason(&row.name).await {
-            let _ = state.db().audit(
-                &user.user.username,
-                &handlers::client_ip(&state, &parts),
-                &verb.audit_action(),
-                &row.name,
-                "deny",
-                &reason,
-            );
-            return Err(AppError::Conflict(reason));
-        }
-    }
-
-    let params = match verb {
-        // 删除即销毁；running 容器一并强制移除，不再拆成 stop→remove 两步。
-        Verb::ContainerRemove => skiff_docker::DockerParams::ContainerRemove { force: true },
-        _ => skiff_docker::DockerParams::None,
+    // BusyGuard 与引擎审计都在命令里；传输层只负责映射错误与跳转。
+    let cmd = ContainerAction {
+        target: ContainerTarget::new(row.name.clone(), row.short_id(), obj),
+        verb,
+        actor: actor(&state, &user, &parts),
     };
-
-    // 分发只在 Docker::execute 一处；这里拿到的 Ok 值（动作类动词为 null）用不上
-    let result = state
-        .docker()
-        .execute(verb, Some(&obj), params)
+    docker_cmd::container_action(&state, cmd)
         .await
-        .map(|_| ());
-
-    let ip = handlers::client_ip(&state, &parts);
-    match &result {
-        Ok(()) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                &verb.audit_action(),
-                &format!("{} ({})", row.name, row.short_id()),
-                "ok",
-                verb.http_path(),
-            );
-        }
-        Err(e) => {
-            let _ = state.db().audit(
-                &user.user.username,
-                &ip,
-                &verb.audit_action(),
-                &row.name,
-                "fail",
-                &e.to_string(),
-            );
-        }
-    }
-    result.map_err(|e| AppError::Unavailable(e.to_string()))?;
+        .map_err(map_err)?;
 
     if handlers::htmx_request(&parts) {
         return rows(State(state), AuthUser(user), Query(HashMap::new())).await;
