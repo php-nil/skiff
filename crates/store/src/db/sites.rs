@@ -138,22 +138,32 @@ impl Db {
     /// 切换默认站点。单条 UPDATE 同时清旧置新，依赖 `idx_sites_default` 保证最多一个。
     pub fn set_site_default(&self, domain: &str, is_default: bool) -> Result<()> {
         let conn = self.conn();
+        // 先确认目标存在：否则 is_default 分支会命中原默认行把它清 0，
+        // 而 `n` 仍为 1，调用方会拿到 Ok 但默认站点已被悄悄清空。
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM sites WHERE domain = ?1",
+                params![domain],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(StoreError::NotFound(domain.to_string()));
+        }
         let ts = now();
-        let n = if is_default {
+        if is_default {
             conn.execute(
                 "UPDATE sites
                  SET is_default = CASE WHEN domain = ?1 THEN 1 ELSE 0 END, updated_at = ?2
                  WHERE is_default = 1 OR domain = ?1",
                 params![domain, ts],
-            )?
+            )?;
         } else {
             conn.execute(
                 "UPDATE sites SET is_default = 0, updated_at = ?2 WHERE domain = ?1",
                 params![domain, ts],
-            )?
-        };
-        if n == 0 {
-            return Err(StoreError::NotFound(domain.to_string()));
+            )?;
         }
         Ok(())
     }
@@ -476,11 +486,13 @@ mod tests {
         db.set_site_default("b.local", false).unwrap();
         assert!(db.default_site().unwrap().is_none());
 
-        // 未知域名不能把默认位“设”出来。
+        // 未知域名不能把默认位“设”出来，也不能把现有默认悄悄清掉。
+        db.set_site_default("a.local", true).unwrap();
         assert!(matches!(
             db.set_site_default("missing.local", true),
             Err(StoreError::NotFound(_))
         ));
+        assert_eq!(db.default_site().unwrap().unwrap().domain, "a.local");
     }
 
     /// 删除被引用的运行环境必须被 FK 拦下；删除站点后即可删除环境。

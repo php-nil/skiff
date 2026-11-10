@@ -139,7 +139,16 @@ impl Db {
         }
         let conn = self.conn();
         let ts = now();
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        // 先把同 kind 的旧默认清掉再插入：`idx_runtime_default` 是部分唯一索引，
+        // 反过来写会让「创建新的默认实例」直接被约束拒绝并误报为「已存在」。
+        if r.is_default {
+            tx.execute(
+                "UPDATE site_runtimes SET is_default = 0 WHERE kind = ?1",
+                params![kind],
+            )?;
+        }
+        tx.execute(
             "INSERT INTO site_runtimes(id, kind, name, version, image, image_digest,
                                        desired_state, last_status, socket_path, port, is_default,
                                        config_json, extensions, origin, created_at, updated_at)
@@ -165,12 +174,7 @@ impl Db {
             }
             other => StoreError::Sqlite(other),
         })?;
-        if r.is_default {
-            conn.execute(
-                "UPDATE site_runtimes SET is_default = 0 WHERE kind = ?1 AND id <> ?2",
-                params![kind, id],
-            )?;
-        }
+        tx.commit()?;
         drop(conn);
         self.runtime_by_id(id)?
             .ok_or_else(|| StoreError::NotFound(id.to_string()))
@@ -405,6 +409,33 @@ mod tests {
         assert_eq!(second.name, "php-8.5-a");
         assert_eq!(second.version, "8.5");
         assert_eq!(db.list_runtimes().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn create_runtime_can_replace_default_of_same_kind() {
+        let db = Db::open_in_memory().unwrap();
+        // v7 迁移种入的 php-8.5 已是默认；新实例应能直接抢过默认位。
+        let rt = db.create_runtime(&php("php-8.4", "8.4", true)).unwrap();
+        assert!(rt.is_default);
+        assert!(!db.runtime_by_id("php-8.5").unwrap().unwrap().is_default);
+        assert_eq!(
+            db.list_runtimes()
+                .unwrap()
+                .iter()
+                .filter(|r| r.is_default)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn create_runtime_failure_does_not_clear_existing_default() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_runtime(&php("php-8.4", "8.4", false)).unwrap();
+        // 重复 name 触发唯一约束：清默认与插入必须一起回滚。
+        let dup = db.create_runtime(&php("php-8.4", "8.4", true));
+        assert!(matches!(dup, Err(StoreError::Conflict(_))));
+        assert!(db.runtime_by_id("php-8.5").unwrap().unwrap().is_default);
     }
 
     #[test]

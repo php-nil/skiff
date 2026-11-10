@@ -103,95 +103,91 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        if version < 1 {
-            conn.execute_batch(SCHEMA_V1)?;
-            conn.execute_batch("PRAGMA user_version = 1")?;
-            info!(from = version, to = 1, "schema 迁移完成");
+        let steps: [(i64, &str); 15] = [
+            (1, SCHEMA_V1),
+            (2, SCHEMA_V2),
+            (3, SCHEMA_V3),
+            (4, SCHEMA_V4),
+            (5, SCHEMA_V5),
+            (6, SCHEMA_V6),
+            (7, SCHEMA_V7),
+            (8, SCHEMA_V8),
+            (9, SCHEMA_V9),
+            (10, SCHEMA_V10),
+            (11, SCHEMA_V11),
+            (12, SCHEMA_V12),
+            (13, SCHEMA_V13),
+            (14, SCHEMA_V14),
+            (15, SCHEMA_V15),
+        ];
+        for (to, schema) in steps {
+            if version >= to {
+                continue;
+            }
+            Self::migrate_step(&conn, version, to, schema)?;
         }
-        if version < 2 {
-            conn.execute_batch(SCHEMA_V2)?;
-            conn.execute_batch("PRAGMA user_version = 2")?;
-            info!(from = version, to = 2, "schema 迁移完成");
+        Ok(())
+    }
+
+    /// 单步迁移：DDL 与 `user_version` 在同一事务内提交。
+    ///
+    /// 之前两条独立语句会让「列已加、版本未推进」成为可能，重启重跑
+    /// `ALTER TABLE ADD COLUMN` 直接 `duplicate column name`，面板永久起不来。
+    /// V8/V11 重建表需要在事务外关外键（`PRAGMA foreign_keys` 在事务内是 no-op）。
+    fn migrate_step(conn: &Connection, from: i64, to: i64, schema: &str) -> Result<()> {
+        let fk_off = matches!(to, 8 | 11);
+        if fk_off {
+            conn.execute_batch("PRAGMA foreign_keys=OFF")?;
         }
-        if version < 3 {
-            conn.execute_batch(SCHEMA_V3)?;
-            conn.execute_batch("PRAGMA user_version = 3")?;
-            info!(from = version, to = 3, "schema 迁移完成");
+        let result = (|| -> Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            conn.execute_batch(schema)?;
+            conn.execute_batch(&format!("PRAGMA user_version = {to}"))?;
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            if let Err(re) = conn.execute_batch("ROLLBACK") {
+                warn!(error = %re, to, "schema 迁移回滚失败");
+            }
+            if fk_off {
+                let _ = conn.execute_batch("PRAGMA foreign_keys=ON");
+            }
+            return Err(e);
         }
-        if version < 4 {
-            conn.execute_batch(SCHEMA_V4)?;
-            conn.execute_batch("PRAGMA user_version = 4")?;
-            info!(from = version, to = 4, "schema 迁移完成");
+        if fk_off {
+            conn.execute_batch("PRAGMA foreign_keys=ON")?;
         }
-        if version < 5 {
-            conn.execute_batch(SCHEMA_V5)?;
-            conn.execute_batch("PRAGMA user_version = 5")?;
-            info!(from = version, to = 5, "schema 迁移完成");
-        }
-        if version < 6 {
-            conn.execute_batch(SCHEMA_V6)?;
-            conn.execute_batch("PRAGMA user_version = 6")?;
-            info!(from = version, to = 6, "schema 迁移完成");
-        }
-        if version < 7 {
-            conn.execute_batch(SCHEMA_V7)?;
-            conn.execute_batch("PRAGMA user_version = 7")?;
-            info!(from = version, to = 7, "schema 迁移完成");
-        }
-        if version < 8 {
-            conn.execute_batch(SCHEMA_V8)?;
-            conn.execute_batch("PRAGMA user_version = 8")?;
-            info!(from = version, to = 8, "schema 迁移完成");
-        }
-        if version < 9 {
-            conn.execute_batch(SCHEMA_V9)?;
-            conn.execute_batch("PRAGMA user_version = 9")?;
-            info!(from = version, to = 9, "schema 迁移完成");
-        }
-        if version < 10 {
-            conn.execute_batch(SCHEMA_V10)?;
-            conn.execute_batch("PRAGMA user_version = 10")?;
-            info!(from = version, to = 10, "schema 迁移完成");
-        }
-        if version < 11 {
-            conn.execute_batch(SCHEMA_V11)?;
-            conn.execute_batch("PRAGMA user_version = 11")?;
-            info!(from = version, to = 11, "schema 迁移完成");
-        }
-        if version < 12 {
-            conn.execute_batch(SCHEMA_V12)?;
-            conn.execute_batch("PRAGMA user_version = 12")?;
-            info!(from = version, to = 12, "schema 迁移完成");
-        }
-        if version < 13 {
-            conn.execute_batch(SCHEMA_V13)?;
-            conn.execute_batch("PRAGMA user_version = 13")?;
-            info!(from = version, to = 13, "schema 迁移完成");
-        }
-        if version < 14 {
-            conn.execute_batch(SCHEMA_V14)?;
-            conn.execute_batch("PRAGMA user_version = 14")?;
-            info!(from = version, to = 14, "schema 迁移完成");
-        }
-        if version < 15 {
-            conn.execute_batch(SCHEMA_V15)?;
-            conn.execute_batch("PRAGMA user_version = 15")?;
-            info!(from = version, to = 15, "schema 迁移完成");
-        }
+        info!(from, to, "schema 迁移完成");
         Ok(())
     }
 
     /// 一致性快照备份（§5.2）：用 `VACUUM INTO`，禁止对活动库直接 tar。
     pub fn backup_to(&self, dest: impl AsRef<Path>) -> Result<()> {
         let dest = dest.as_ref();
+        // 目标必须是活动库之外的路径：否则下面会先 unlink 正在使用的库文件，
+        // 进程继续写已删除 inode，重启后数据全丢。
+        let dest_cmp = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+        let src_cmp = self
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| self.path.clone());
+        if dest_cmp == src_cmp {
+            return Err(StoreError::Conflict("备份目标不能是活动数据库本身".into()));
+        }
         if dest.exists() {
             std::fs::remove_file(dest)?;
         }
         let conn = self.conn();
         let dest_str = dest.to_string_lossy().to_string();
         conn.execute("VACUUM INTO ?1", params![dest_str])?;
-        let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        // 必须打开备份文件本身校验；在源连接上跑 integrity_check 查的是活动库。
+        let check: String =
+            Connection::open_with_flags(dest, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         if check != "ok" {
+            drop(conn);
+            let _ = std::fs::remove_file(dest);
             return Err(StoreError::Decode(format!("备份库完整性检查失败: {check}")));
         }
         Ok(())
@@ -718,6 +714,51 @@ mod tests {
         assert!(db.migrate().is_ok());
         let v: i64 = db
             .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// 单步迁移失败时必须整体回滚：DDL 与 user_version 都不能留下。
+    #[test]
+    fn migration_step_rolls_back_ddl_and_version_on_failure() {
+        let db = Db::open_in_memory().unwrap();
+        let conn = db.conn();
+        let before: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        let err = Db::migrate_step(
+            &conn,
+            before,
+            16,
+            "CREATE TABLE migrate_probe(id INTEGER); INSERT INTO no_such_table VALUES(1);",
+        );
+        assert!(err.is_err());
+        let after: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, before);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'migrate_probe'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "失败步骤建的表必须被回滚");
+    }
+
+    #[test]
+    fn backup_to_rejects_active_db_and_writes_valid_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skiff.db");
+        let db = Db::open(&path).unwrap();
+        assert!(matches!(db.backup_to(&path), Err(StoreError::Conflict(_))));
+
+        let dest = dir.path().join("snapshot.db");
+        db.backup_to(&dest).unwrap();
+        let conn = Connection::open(&dest).unwrap();
+        let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, CURRENT_SCHEMA_VERSION);
