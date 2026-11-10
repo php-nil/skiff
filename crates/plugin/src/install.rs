@@ -40,6 +40,8 @@ pub struct InstallOptions {
     /// 是否允许降级沙箱（landlock/cgroups 未实现时的显式开关）
     pub allow_reduced_sandbox: bool,
     pub arch: String,
+    /// 审计执行者（`cli` / 面板用户名 / `official-sync`），用于升级补授留痕。
+    pub actor: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +73,7 @@ pub fn install_options(
     allow_unsigned: bool,
     form: skiff_model::Form,
     allow_reduced_sandbox: bool,
+    actor: &str,
 ) -> InstallOptions {
     InstallOptions {
         trusted_public_key: trust.trusted_key.clone(),
@@ -80,6 +83,7 @@ pub fn install_options(
         available_capabilities: skiff_pkgfmt::manifest::Capability::available_in(form),
         allow_reduced_sandbox,
         arch: skiff_pkgfmt::host_arch(),
+        actor: actor.to_string(),
     }
 }
 
@@ -213,9 +217,9 @@ pub fn install_package(
     // 授权来源分两条：
     // - 首次安装：只授予用户确认过的子集，且必须是 manifest 声明过的；
     // - 重装/升级：保留库内既有 grants（既有授权绝不清空），按新 manifest 的声明集过滤，
-    //   并把**相对已装版本新声明**的能力动词补齐——上限始终是新 manifest，不会出现越权授权；
-    //   老声明里被用户拒绝过的项不翻案（只在旧 manifest 未声明时才算新增）。
-    //   补齐的写/删除/执行类动词必须留痕（见下方 `plugin.grant_upgrade` 审计），不静默扩权。
+    //   并把**相对已装版本新声明**的能力动词与对象 hint 补齐——上限始终是新 manifest，
+    //   不会出现越权授权；老声明里被用户拒绝过的项不翻案（只在旧 manifest 未声明时才算新增）。
+    //   补齐项必须留痕（见下方 `plugin.grant_upgrade` 审计），不静默扩权。
     let declared = meta.manifest.permission_strings();
     let prev_declared = match &existing {
         Some(prev) => match Manifest::parse(&prev.manifest) {
@@ -229,6 +233,7 @@ pub fn install_package(
         None => None,
     };
     let mut grant_upgrade: Vec<String> = Vec::new();
+    let mut object_upgrade: Vec<String> = Vec::new();
     let grants = match &existing {
         Some(prev) => {
             let mut kept = prev
@@ -247,6 +252,22 @@ pub fn install_package(
                 }
                 grant_upgrade.push(p.clone());
                 kept.push(Grant::perm(p.clone()));
+            }
+
+            // 对象授权（`resource_hints` + 由 `[interop].consumes` 派生的 `plugin:`）同样
+            // 按「相对旧 manifest 新增」补齐：只增不减，已有授权不动；manifest 移除 hint
+            // 不自动回收——回收只走显式卸载。形式校验放在落盘前，失败即整体拒绝，
+            // 不会留下「文件已换、授权没补」的半完成状态。
+            let mut hints = meta.manifest.resource_hints.clone();
+            hints.extend(meta.manifest.interop_resource_hints());
+            for h in hints {
+                skiff_pkgfmt::manifest::validate_resource(&h)
+                    .map_err(|e| PluginError::Rejected(format!("对象 grant {h} 非法: {e}")))?;
+                if kept.iter().any(|g| g.kind == "object" && g.value == h) {
+                    continue;
+                }
+                object_upgrade.push(h.clone());
+                kept.push(Grant::object(h));
             }
             kept
         }
@@ -337,20 +358,31 @@ pub fn install_package(
     )?;
     info!(plugin = %record.id, version = %record.version, "插件安装完成");
 
-    // 升级补齐授权不是静默行为：只读类记日志；写/删除/执行类额外落一条审计，
-    // 写清插件 id、新增动词与来源版本，便于事后核对「这台机器什么时候扩的权」。
-    if !grant_upgrade.is_empty() {
+    // 升级补齐授权不是静默行为：只读动词记日志；写/删除/执行类动词与任何新增对象授权
+    // 额外落一条审计，写清执行者、新增项、来源（manifest 新声明 / `resource_hints`）、
+    // 以及来源版本，便于事后核对「这台机器什么时候、因哪条 hint 扩的权」。
+    if !grant_upgrade.is_empty() || !object_upgrade.is_empty() {
         let version_from = existing
             .as_ref()
             .map(|p| p.version.as_str())
             .unwrap_or("(未安装)");
-        let added = grant_upgrade.join(",");
+        let mut added = grant_upgrade.clone();
+        added.extend(object_upgrade.iter().cloned());
+        let added = added.join(",");
         let sensitive = grant_upgrade
             .iter()
             .filter(|p| is_sensitive_perm(p))
             .cloned()
             .collect::<Vec<String>>();
-        if sensitive.is_empty() {
+        let mut reasons = Vec::new();
+        if !grant_upgrade.is_empty() {
+            reasons.push("manifest 新声明");
+        }
+        if !object_upgrade.is_empty() {
+            reasons.push("resource_hints/[interop]");
+        }
+        let reason = reasons.join(" + ");
+        if sensitive.is_empty() && object_upgrade.is_empty() {
             info!(
                 plugin = %record.id,
                 from = version_from,
@@ -365,20 +397,23 @@ pub fn install_package(
                 to = %record.version,
                 added = %added,
                 sensitive = %sensitive.join(","),
-                "升级新增敏感授权"
+                reason = %reason,
+                "升级补授授权"
             );
+            let sensitive_note = if sensitive.is_empty() {
+                String::new()
+            } else {
+                format!("；敏感: {}", sensitive.join(","))
+            };
             db.audit(
-                "system",
+                &opts.actor,
                 "local",
                 "plugin.grant_upgrade",
                 &record.id,
                 "ok",
                 &format!(
-                    "升级新增授权: {}；版本 {} → {}（敏感: {}）",
-                    added,
-                    version_from,
-                    record.version,
-                    sensitive.join(",")
+                    "升级补授授权: {added}；来源: {reason}；版本 {version_from} → {}{sensitive_note}",
+                    record.version
                 ),
             )?;
         }
@@ -664,14 +699,35 @@ verbs = ["list"]
         perms: &[&str],
         hints: &[&str],
     ) -> PathBuf {
+        build_pkg_full(dir, id, version, perms, hints, &[])
+    }
+
+    /// 同上，另可声明 `[interop].consumes`（派生 `plugin:<id>` hint）。
+    fn build_pkg_full(
+        dir: &Path,
+        id: &str,
+        version: &str,
+        perms: &[&str],
+        hints: &[&str],
+        consumes: &[&str],
+    ) -> PathBuf {
         use skiff_pkgfmt::SigningKey;
         let key = SigningKey::generate();
         // 目录/文件名不能带 `:`（Windows 非法字符），权限串里的冒号替换掉。
-        let tag = format!("{version}-{}", perms.join("_").replace(':', "-"));
+        let tag = format!(
+            "{version}-{}-{}",
+            perms.join("_").replace(':', "-"),
+            consumes.len()
+        );
         let src = dir.join(format!("src-{tag}"));
         let arch = skiff_pkgfmt::host_arch();
         std::fs::create_dir_all(src.join("bin").join(&arch)).unwrap();
         std::fs::write(src.join("bin").join(&arch).join("plugin"), b"test-binary").unwrap();
+        let requires = if consumes.is_empty() {
+            r#"["docker"]"#
+        } else {
+            r#"["docker", "interop"]"#
+        };
         let mut manifest = format!(
             r#"id = "{id}"
 name = "Demo"
@@ -679,7 +735,7 @@ version = "{version}"
 key_id = "{key_id}"
 api = "1.0"
 requires_full_sandbox = false
-requires = ["docker"]
+requires = {requires}
 "#,
             key_id = key.key_id()
         );
@@ -696,6 +752,14 @@ requires = ["docker"]
             manifest.push_str(&format!(
                 "[[permissions]]\ncapability = \"{cap}\"\nverbs = [\"{verb}\"]\n"
             ));
+        }
+        if !consumes.is_empty() {
+            let list = consumes
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            manifest.push_str(&format!("[interop]\nconsumes = [{list}]\n"));
         }
         std::fs::write(src.join("manifest.toml"), manifest).unwrap();
         let out = dir.join(format!("pkg-{tag}.wbpkg"));
@@ -724,6 +788,7 @@ requires = ["docker"]
             available_capabilities: skiff_pkgfmt::manifest::Capability::all().to_vec(),
             allow_reduced_sandbox: true,
             arch: skiff_pkgfmt::host_arch(),
+            actor: "test".into(),
         }
     }
 
@@ -782,8 +847,8 @@ requires = ["docker"]
         assert!(e.contains("不接受降级"), "降级应拒: {e}");
     }
 
-    /// 装 → 授权（最小子集 + 对象）→ 同版本重装：既有授权原样保留，
-    /// 不回到 manifest 默认值；声明集未变，不会补授任何项。
+    /// 装 → 授权（最小子集 + 对象）→ 同版本重装：既有授权原样保留，不回到 manifest 默认值；
+    /// 旧 manifest 已声明、但用户当时没勾的动词（inspect）不翻案；新出现的对象 hint 补授。
     #[test]
     fn reinstall_same_version_preserves_existing_grants() {
         let tmp = tempfile::tempdir().unwrap();
@@ -813,8 +878,9 @@ requires = ["docker"]
             &[("object", "container:abc"), ("perm", "docker:list")],
         );
 
-        // 重装时调用方按 manifest 默认值提交（含新增 inspect 与新 hint），
-        // 也只能沿用既有项：不重置、不新增。
+        // 重装时调用方按 manifest 默认值提交（含 inspect 与新 hint）：
+        // 既有项原样保留，inspect 属旧 manifest 已声明、用户当时未勾，不能翻案；
+        // `container:def` 是新出现的 hint，按补齐语义加入。
         let mut again = opts();
         again.granted_permissions = vec!["docker:list".into(), "docker:inspect".into()];
         again.object_grants = vec!["container:def".into()];
@@ -834,12 +900,16 @@ requires = ["docker"]
         grants_are(
             &db,
             id,
-            &[("object", "container:abc"), ("perm", "docker:list")],
+            &[
+                ("object", "container:abc"),
+                ("object", "container:def"),
+                ("perm", "docker:list"),
+            ],
         );
         assert_eq!(db.plugin(id).unwrap().unwrap().version, "0.1.0");
     }
 
-    /// 升级新声明的能力动词要补齐授权（既有项不清空、对象授权不动），
+    /// 升级新声明的能力动词要补齐授权（既有项不清空）；新出现的对象 hint 同步补齐，
     /// 敏感档（写/删除/执行）额外落一条 `plugin.grant_upgrade` 审计。
     #[test]
     fn upgrade_grants_newly_declared_permissions_and_audits_sensitive() {
@@ -881,6 +951,7 @@ requires = ["docker"]
             id,
             &[
                 ("object", "container:abc"),
+                ("object", "container:def"),
                 ("perm", "docker:list"),
                 ("perm", "docker:restart"),
                 ("perm", "docker:inspect"),
@@ -979,6 +1050,182 @@ requires = ["docker"]
         .unwrap();
 
         grants_are(&db, id, &[("perm", "docker:list")]);
+    }
+
+    /// 旧 grants 里没有任何对象授权 → 升级按新 manifest 的 `resource_hints` 补授，
+    /// 审计写清执行者、来源与具体 hint。
+    #[test]
+    fn upgrade_grants_new_resource_hint_and_audits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &[]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(&db, id, &[("perm", "docker:list")]);
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &["container:def"]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:def"), ("perm", "docker:list")],
+        );
+
+        let rows = db.recent_audit(20).unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.action == "plugin.grant_upgrade")
+            .expect("对象 hint 补授必须留审计");
+        assert_eq!(row.target, id);
+        assert_eq!(row.actor, "test");
+        assert!(row.detail.contains("container:def"), "{}", row.detail);
+        assert!(row.detail.contains("resource_hints"), "{}", row.detail);
+        assert!(row.detail.contains("0.1.0"), "{}", row.detail);
+        assert!(row.detail.contains("0.2.0"), "{}", row.detail);
+    }
+
+    /// 已有 hint 不重复授予，也不产生额外审计噪声。
+    #[test]
+    fn upgrade_keeps_existing_hint_without_duplicate_audit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        let mut first = opts();
+        first.object_grants = vec!["container:abc".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &["container:abc"]),
+            &first,
+        )
+        .unwrap();
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &["container:abc"]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:abc"), ("perm", "docker:list")],
+        );
+
+        let rows = db.recent_audit(20).unwrap();
+        assert!(
+            rows.iter().all(|r| r.action != "plugin.grant_upgrade"),
+            "没有新增项就不该有补授审计: {rows:?}"
+        );
+    }
+
+    /// manifest 移除 hint 不自动回收：只增不减，回收只走显式卸载。
+    #[test]
+    fn upgrade_does_not_revoke_removed_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        let mut first = opts();
+        first.object_grants = vec!["container:abc".into()];
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &["container:abc"]),
+            &first,
+        )
+        .unwrap();
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &[]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[("object", "container:abc"), ("perm", "docker:list")],
+        );
+
+        let rows = db.recent_audit(20).unwrap();
+        assert!(
+            rows.iter().all(|r| r.action != "plugin.grant_upgrade"),
+            "移除 hint 不应产生任何补授或回收审计: {rows:?}"
+        );
+    }
+
+    /// `[interop].consumes` 派生的 `plugin:<id>` 同属 hint：老版本没声明、升级补上后
+    /// 跨插件调用不再 403（对应「先装 ftp、后装 firewall」的升级场景）。
+    #[test]
+    fn upgrade_grants_interop_hint_for_new_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.ftp";
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &[]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(&db, id, &[("perm", "docker:list")]);
+
+        // 0.2.0 首次声明 `[interop]`：`interop:call` 与 `plugin:<id>` 都属新增。
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_full(
+                data_dir,
+                id,
+                "0.2.0",
+                &["docker:list", "interop:call"],
+                &[],
+                &["com.skiff.firewall:protect"],
+            ),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(
+            &db,
+            id,
+            &[
+                ("object", "plugin:com.skiff.firewall"),
+                ("perm", "docker:list"),
+                ("perm", "interop:call"),
+            ],
+        );
+
+        let rows = db.recent_audit(20).unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.action == "plugin.grant_upgrade")
+            .expect("跨插件 hint 补授必须留审计");
+        assert!(
+            row.detail.contains("plugin:com.skiff.firewall"),
+            "{}",
+            row.detail
+        );
+        assert!(row.detail.contains("interop"), "{}", row.detail);
     }
 
     /// 敏感档判定只看动词最后一段。

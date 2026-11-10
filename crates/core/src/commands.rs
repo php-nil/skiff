@@ -251,6 +251,7 @@ pub fn plugin_install(
         allow_unsigned,
         cfg.form,
         cfg.allow_reduced_sandbox,
+        "cli",
     );
     let info = match skiff_plugin::install_package(&db, &cfg.data_dir, package, &opts) {
         Ok(info) => info,

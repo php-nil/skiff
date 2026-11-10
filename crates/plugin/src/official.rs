@@ -170,6 +170,7 @@ fn sync_one(
         allow_unsigned,
         form,
         allow_reduced_sandbox,
+        "official-sync",
     );
     let info = install_package(db, data_dir, package, &opts).map_err(|e| e.to_string())?;
 
@@ -313,6 +314,7 @@ verbs = ["list"]
             available_capabilities: skiff_pkgfmt::manifest::Capability::all().to_vec(),
             allow_reduced_sandbox: true,
             arch: skiff_pkgfmt::host_arch(),
+            actor: "test".into(),
         }
     }
 

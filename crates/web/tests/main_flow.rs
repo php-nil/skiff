@@ -1435,7 +1435,7 @@ async fn plugin_install_confirm_main_flow() {
 }
 
 /// 装 → 授权 → 重装/升级 → 既有授权仍在；升级只补「相对旧 manifest 新声明」的权限，
-/// 用户当初拒绝过的声明项不会被翻案补授；只有显式卸载才清空授权。
+/// 用户当初拒绝过的声明项不会被翻案补授；对象 hint 按「只增不减」补齐；只有显式卸载才清空授权。
 #[tokio::test]
 async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
     let h = harness();
@@ -1506,7 +1506,8 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         &[("object", "container:abc"), ("perm", "docker:list")],
     );
 
-    // 同版本重装：跳过确认页直接安装，授权保持既有最小子集，不重置为 manifest 默认值。
+    // 同版本重装：跳过确认页直接安装，权限仍保持既有最小子集，不重置为 manifest 默认值；
+    // 但 manifest 新增的对象 hint（container:def）按「只增不减」补授。
     let pkg = build_package_version(
         &h.data_dir,
         &key,
@@ -1522,7 +1523,11 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
     );
     assert_grants(
         "重装后",
-        &[("object", "container:abc"), ("perm", "docker:list")],
+        &[
+            ("object", "container:abc"),
+            ("object", "container:def"),
+            ("perm", "docker:list"),
+        ],
     );
     assert_eq!(
         h.state.db().plugin(id).unwrap().unwrap().version,
@@ -1536,8 +1541,8 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         "安装成功必须清理 .incoming 暂存"
     );
 
-    // 升级 0.2.0：既有授权保留；新增声明的 docker:exec 按声明补授（敏感档写审计），
-    // 但旧 manifest 已声明、用户当初未勾选的 docker:inspect 不被翻案补授。
+    // 升级 0.2.0：既有授权与已补的对象 hint 保留；新增声明的 docker:exec 按声明补授
+    // （敏感档写审计），但旧 manifest 已声明、用户当初未勾选的 docker:inspect 不被翻案补授。
     let pkg = build_package_version(
         &h.data_dir,
         &key,
@@ -1555,6 +1560,7 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         "升级后",
         &[
             ("object", "container:abc"),
+            ("object", "container:def"),
             ("perm", "docker:exec"),
             ("perm", "docker:list"),
         ],

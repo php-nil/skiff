@@ -427,6 +427,7 @@ pub async fn install(
             state.cfg.allow_unsigned,
             state.cfg.form,
             state.cfg.allow_reduced_sandbox,
+            &user.user.username,
         );
         let ip = handlers::client_ip(&state, &parts);
         commit_install(&state, &user, &ip, &path, &opts, &meta.manifest.id).await?;
@@ -595,6 +596,7 @@ pub async fn confirm(
         state.cfg.allow_unsigned,
         state.cfg.form,
         state.cfg.allow_reduced_sandbox,
+        &user.user.username,
     );
 
     let ip = handlers::client_ip(&state, &parts);
