@@ -116,7 +116,5 @@ pub fn save(
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
+    crate::atomic::write_atomic(path, bytes, 0o644)
 }

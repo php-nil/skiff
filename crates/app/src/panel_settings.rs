@@ -150,14 +150,9 @@ pub fn write_config_updates(path: &Path, updates: &[(&str, Option<String>)]) -> 
     toml::from_str::<toml::Table>(&text)
         .map_err(|e| format!("生成的 config.toml 非法，已放弃写入: {e}"))?;
 
-    let tmp = path.with_extension("toml.tmp");
-    fs::write(&tmp, text.as_bytes()).map_err(|e| format!("写入 {} 失败: {e}", tmp.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644));
-    }
-    fs::rename(&tmp, path).map_err(|e| format!("替换 {} 失败: {e}", path.display()))?;
+    // 唯一临时名 + rename：并发保存设置时互不踩临时文件。
+    crate::atomic::write_atomic(path, text.as_bytes(), 0o644)
+        .map_err(|e| format!("替换 {} 失败: {e}", path.display()))?;
     Ok(())
 }
 

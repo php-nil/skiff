@@ -98,9 +98,9 @@ pub async fn apply_registry_mirror(
     } else {
         None
     };
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &merged).map_err(|e| format!("写入临时文件失败：{e}"))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("替换 daemon.json 失败：{e}"))?;
+    // 唯一临时名 + rename：并发写 daemon.json 时互不踩临时文件。
+    crate::atomic::write_atomic(path, merged.as_bytes(), 0o644)
+        .map_err(|e| format!("写入 daemon.json 失败：{e}"))?;
 
     let rows = docker
         .list_containers()

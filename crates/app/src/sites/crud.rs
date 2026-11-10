@@ -798,8 +798,9 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
         let cert = s.cert_file(&site_dir);
         let key = s.key_file(&site_dir);
-        let tmp_cert = dir.join("cert.pem.tmp");
-        let tmp_key = dir.join("key.pem.tmp");
+        // 唯一临时名：同名并发上传各写各的，不会互相截断或抢先 rename。
+        let tmp_cert = crate::atomic::sibling_temp(&cert);
+        let tmp_key = crate::atomic::sibling_temp(&key);
         std::fs::write(&tmp_cert, cert_pem)
             .map_err(|e| SiteError::Internal(format!("写入证书失败：{e}")))?;
         std::fs::write(&tmp_key, key_pem)
@@ -849,12 +850,19 @@ impl AppState {
                     .map_err(|e| SiteError::Internal(format!("删除证书文件失败：{e}")))?;
             }
         }
-        // 清理上传时的临时文件，避免半套。
-        for name in ["cert.pem.tmp", "key.pem.tmp"] {
-            let p = dir.join(name);
-            if p.exists() {
-                if let Err(e) = std::fs::remove_file(&p) {
-                    tracing::debug!(path = %p.display(), error = %e, "清理上次残留的临时证书失败");
+        // 清理上传留下的中间件（唯一名以 `.cert.pem.` / `.key.pem.` 开头），避免半套。
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let is_upload_tmp = (name.starts_with(".cert.pem.")
+                    || name.starts_with(".key.pem."))
+                    && name.ends_with(".tmp");
+                if !is_upload_tmp {
+                    continue;
+                }
+                if let Err(e) = std::fs::remove_file(entry.path()) {
+                    tracing::debug!(path = %entry.path().display(), error = %e, "清理残留的临时证书失败");
                 }
             }
         }
@@ -1783,22 +1791,16 @@ impl AppState {
         // 无论启停都先校验：停止态的文件不在 include 内，直接 reload 等于没测。
         self.validate_site_vhost_content(&s, domain, &original_text, content)
             .await?;
-        // 先写临时文件再 rename，避免半截文件被 nginx 加载。
-        let tmp = path.with_extension("conf.tmp");
-        std::fs::write(&tmp, content)
-            .map_err(|e| SiteError::Internal(format!("写入临时配置失败：{e}")))?;
-        if let Err(e) = std::fs::rename(&tmp, &path) {
-            if let Err(re) = std::fs::remove_file(&tmp) {
-                tracing::debug!(path = %tmp.display(), error = %re, "清理临时配置失败");
-            }
-            return Err(SiteError::Internal(format!("替换配置失败：{e}")));
-        }
+        // 先写临时文件再 rename，避免半截文件被 nginx 加载；临时名进程内唯一，
+        // 并发保存同一站点时不会出现「后写者删掉先写者临时文件」。
+        crate::atomic::write_atomic(&path, content.as_bytes(), 0o644)
+            .map_err(|e| SiteError::Internal(format!("替换配置失败：{e}")))?;
         if !active {
             return Ok(VhostSaveOutcome { reloaded: false });
         }
         if let Err(e) = self.restart_nginx().await {
             // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
-            if let Err(re) = std::fs::write(&path, original) {
+            if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
                 tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
             }
             return Err(SiteError::Unavailable(format!(
@@ -1810,7 +1812,7 @@ impl AppState {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let env = self.site_env_status().await;
         if env.installed && env.nginx_state != "running" {
-            if let Err(re) = std::fs::write(&path, original) {
+            if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
                 tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
             }
             if let Err(re) = self.restart_nginx().await {

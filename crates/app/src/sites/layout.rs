@@ -257,14 +257,7 @@ pub(crate) fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<(
     if !unchanged {
         // 临时名必须唯一：同一路径可能被请求与巡检并发写入，共用 `x.tmp`
         // 会让后写者的截断覆盖掉先写者已写完的内容。
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
-        let tmp = path.with_file_name(format!(
-            ".{}.{}.{}.tmp",
-            path.file_name().and_then(|n| n.to_str()).unwrap_or("skiff"),
-            std::process::id(),
-            WRITE_SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
+        let tmp = crate::atomic::sibling_temp(path);
         std::fs::write(&tmp, bytes).map_err(|e| format!("写入 {} 失败：{e}", tmp.display()))?;
         #[cfg(unix)]
         {

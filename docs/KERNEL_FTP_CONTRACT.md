@@ -173,7 +173,7 @@
    `currently_banned` / `total_banned` / `recent_ban`（口径
    `fail2ban-client get pure-ftpd banip --with-time`）；取不到时为 `null`，不返回 0 冒充。
 5. **命令注入**：所有宿主命令用 `Command::new` + 参数数组，不拼 shell；密码只走 stdin；TLS 私钥只读校验后合并写入固定 PEM，不识别的文件内容直接拒绝。
-   **特权临时文件**（passwd 覆盖、自签证书）一律放在 `/run/skiff-ftp`（`install -d -m 0700`，root 独占），不得落在 `/tmp`：`tee` / `openssl` 以 root 经特权通道执行，世界可写的目录允许本地用户预置符号链接，形成 root 任意文件覆盖。自签私钥由 root 以 `0600` 写出，插件进程读不到，拼接 PEM 必须经特权 `cat` 完成；临时私钥无论成败都由特权 `rm` 清理；最终 PEM 也经临时文件 + `install -m 0600` 原子替换，失败即报错，不静默留下宽松权限。
+   **特权临时文件**（passwd 覆盖、自签证书、PEM 拼接）一律放在 `/run/skiff-ftp`（`install -d -m 0700`，root 独占），不得落在 `/tmp`：`tee` / `openssl` 以 root 经特权通道执行，世界可写的目录允许本地用户预置符号链接，形成 root 任意文件覆盖。**临时文件由特权 `install -m 0600 /dev/null` 预建**，`tee` / `openssl` 只截断已有文件、不改其权限，因此含私钥或口令的中间件从创建那一刻就是 `0600`，不依赖父目录兜底。自签私钥由 root 以 `0600` 写出，插件进程读不到，拼接 PEM 必须经特权 `cat` 完成；临时私钥无论成败都由特权 `rm` 清理；最终 PEM 也经临时文件 + `install -m 0600` 原子替换，失败即报错，不静默留下宽松权限。
 6. **服务控制面**：只允许操作 `pure-ftpd.service`；`uninstall` 不清除其它包；`ftp-service.json` 保留供重装沿用。
 7. **配置持久化**：`/etc/skiff/ftp-service.json` 是唯一真相来源（systemd unit 的 `ReadWritePaths` 覆盖 `/etc/skiff`）；插件侧 `service-config.json` 已删除，避免双份真相漂移。
 8. **状态未知态**：`status` 的 `running` / `listening` / `current_connections` / `jail_enabled` / 封禁数在探测失败时为 `null`，UI 显示「未知（读取失败）」。

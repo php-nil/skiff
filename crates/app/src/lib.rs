@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod admin_fs;
+mod atomic;
 pub mod auth;
 pub mod catalog;
 pub mod commands;

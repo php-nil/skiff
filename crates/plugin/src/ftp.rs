@@ -496,7 +496,19 @@ async fn scratch_path<H: FtpHost>(host: &H, stem: &str) -> Result<String, FtpErr
     .await
     .map_err(|e| FtpError::internal(format!("创建特权临时目录失败：{}", e.message)))?;
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    Ok(format!("{SCRATCH_DIR}/{stem}-{}-{n}", std::process::id()))
+    let path = format!("{SCRATCH_DIR}/{stem}-{}-{n}", std::process::id());
+    // 从创建那一刻就是 `0600`：后续 `tee` / `openssl` 只是截断已有文件，
+    // 不会再按 umask 建出 `0644`（`tee` 不会改已存在文件的权限）。
+    run_ok(
+        host,
+        "/usr/bin/install",
+        &svec(&["-m", "0600", "/dev/null", &path]),
+        None,
+        900,
+    )
+    .await
+    .map_err(|e| FtpError::internal(format!("创建特权临时文件失败：{}", e.message)))?;
+    Ok(path)
 }
 
 // ───────────────────────────── 宿主命令封装 ─────────────────────────────
@@ -1335,13 +1347,23 @@ async fn save_service_config(cfg: &ServiceConfig) -> Result<(), FtpError> {
             .await
             .map_err(|e| FtpError::internal(format!("创建 {} 失败：{e}", parent.display())))?;
     }
-    let tmp = format!("{SERVICE_CONFIG_FILE}.tmp");
+    // 唯一临时名：并发的 `service.configure` 不会互相截断或抢先 rename。
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = format!(
+        "{SERVICE_CONFIG_FILE}.{}-{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     tokio::fs::write(&tmp, body.as_bytes())
         .await
         .map_err(|e| FtpError::internal(format!("写入 {SERVICE_CONFIG_FILE} 失败：{e}")))?;
-    tokio::fs::rename(&tmp, SERVICE_CONFIG_FILE)
-        .await
-        .map_err(|e| FtpError::internal(format!("落盘 {SERVICE_CONFIG_FILE} 失败：{e}")))?;
+    if let Err(e) = tokio::fs::rename(&tmp, SERVICE_CONFIG_FILE).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(FtpError::internal(format!(
+            "落盘 {SERVICE_CONFIG_FILE} 失败：{e}"
+        )));
+    }
     Ok(())
 }
 
