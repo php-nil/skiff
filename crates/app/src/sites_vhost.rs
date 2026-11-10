@@ -187,17 +187,6 @@ pub fn validate_proxy_target(raw: &str) -> Result<String, SiteError> {
     Ok(normalized)
 }
 
-/// 站点级 `app_port` 校验（保留给「每站点独立进程」模式；当前 Node.js / Rust 使用
-/// 运行环境固定端口，不写该字段）。
-pub fn validate_app_port(raw: i64) -> Result<u16, SiteError> {
-    if !(1024..=65535).contains(&raw) {
-        return Err(SiteError::BadRequest(
-            "应用端口必须在 1024-65535 之间".into(),
-        ));
-    }
-    Ok(raw as u16)
-}
-
 /// TLS 参数：证书/私钥使用**容器内** `/www/...` 路径。
 #[derive(Debug, Clone)]
 pub struct VhostTls {

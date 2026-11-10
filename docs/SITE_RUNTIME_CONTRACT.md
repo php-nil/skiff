@@ -56,7 +56,6 @@ Site (static / proxy)  不持有 RuntimeEnv
 | `Site` | `domain` | 主域名，唯一；别名仍存 `site_aliases` |
 | | `site_type` | `runtime` / `static` / `proxy` |
 | | `runtime_id` | `runtime` 站点必填；其余类型必须为空 |
-| | `app_command` / `app_port` | 预留给「每站点独立进程」模式；当前 Node.js / Rust 用环境固定端口，站点行保持为空 |
 | | `proxy_target` | 仅 proxy：`http(s)://host[:port]` 上游 |
 | | `proxy_websocket` | 仅 proxy：是否升级 WebSocket |
 | | `index/ log/ ssl/ conf/` | 目录布局不变，见 §2 |
@@ -72,8 +71,8 @@ Site (static / proxy)  不持有 RuntimeEnv
 ### 1.2 绑定约束（必须由服务层与 DB 双重校验）
 
 1. `site_type = runtime` ⇒ `runtime_id` 非空且引用的环境存在、`kind` 属于 `php/node/rust`。
-2. `site_type = static` ⇒ `runtime_id` 为空，`app_command/app_port/proxy_target` 均为空。
-3. `site_type = proxy` ⇒ `runtime_id` 为空，`proxy_target` 非空合法，`app_port/app_command` 为空。
+2. `site_type = static` ⇒ `runtime_id` 为空，`proxy_target` 为空。
+3. `site_type = proxy` ⇒ `runtime_id` 为空，`proxy_target` 非空合法。
 4. 绑定前必须检查运行环境 `last_status = running` 且 `desired_state = running`：
    - PHP：`socket_path` 存在且可连接（stat 到 socket 文件，权限 `0660`）；
    - Node.js / Rust：`port` 已分配，且 `http://127.0.0.1:<port><health_path>`（Node）或端口可连接（Rust）；
@@ -82,7 +81,7 @@ Site (static / proxy)  不持有 RuntimeEnv
    不把站点状态误报为 running。
 6. 禁止把 `runtime_id` 指向不同 kind 的站点：PHP 站点只能绑 PHP 环境，Node 站点只能绑 Node 环境，
    Go 同理。`kind` 由环境唯一决定，站点不单独覆盖。
-7. `runtime` 站点的 `app_port` 恒为空：反代端口只从环境 `port` 读取，服务端不接受站点自定义端口；
+7. `runtime` 站点的反代端口只从环境 `port` 读取，站点表不存端口字段，服务端不接受站点自定义端口；
    多个 `runtime` 站点可绑定同一环境，即多个域名反代到同一应用进程。
 
 ### 1.3 状态与漂移
@@ -179,7 +178,7 @@ Site (static / proxy)  不持有 RuntimeEnv
 | Node.js 端口 | 每个 Node.js 环境一个固定宿主 loopback 端口，范围 `9200–9299`；端口属于环境，不属于站点 |
 | 端口分配 | 建环境时取区间内最小未占用端口（DB 已用即跳过），区间耗尽拒绝创建；不在站点创建时分配 |
 | 端口变更 | 环境详情可改端口：必须在 kind 区间内且未被其它环境占用；有站点绑定时先列出受影响站点并要求二次确认，确认后重写全部相关 vhost 并重建容器 |
-| 端口与站点 | 站点的反代端口**只从环境读取**（`site_runtimes.port`），站点行 `app_port` 始终为空，不接受用户自定义端口 |
+| 端口与站点 | 站点的反代端口**只从环境读取**（`site_runtimes.port`），站点表不含端口字段，不接受用户自定义端口 |
 | 端口暴露 | Node.js / Rust 容器使用 host 网络；应用默认读 `HOST=127.0.0.1`，nginx 反代 `127.0.0.1:<port>`；应用若硬编码 `0.0.0.0`，需在宿主防火墙侧限制 |
 | 端口释放 | 环境删除后释放；删除失败不提前释放 |
 | 保留端口 | `80` / `443`（nginx）以及两段运行区间之外不分配；PHP 不占宿主端口，只走 socket |

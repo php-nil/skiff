@@ -456,8 +456,6 @@ mod tests {
                 root_dir: root.display().to_string(),
                 site_type: "static".into(),
                 runtime_id: None,
-                app_command: None,
-                app_port: None,
                 proxy_target: None,
                 proxy_websocket: false,
             })

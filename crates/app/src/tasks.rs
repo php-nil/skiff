@@ -1947,8 +1947,6 @@ mod tests {
             root_dir: dir.path().join("www/example.com").display().to_string(),
             site_type: skiff_store::TYPE_STATIC.into(),
             runtime_id: None,
-            app_command: None,
-            app_port: None,
             proxy_target: None,
             proxy_websocket: false,
         })

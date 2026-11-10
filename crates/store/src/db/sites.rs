@@ -21,10 +21,6 @@ pub struct Site {
     pub site_type: String,
     /// 仅 runtime：绑定的运行环境 id。
     pub runtime_id: Option<String>,
-    /// 仅 Node/Go（P2）：容器内启动命令（argv 形式存储）。
-    pub app_command: Option<String>,
-    /// 仅 Node/Go（P2）：宿主 loopback 端口，全实例唯一。
-    pub app_port: Option<i64>,
     /// 仅 proxy：`http(s)://host[:port]` 上游。
     pub proxy_target: Option<String>,
     /// 仅 proxy：是否升级 WebSocket。
@@ -48,15 +44,13 @@ pub struct NewSite {
     pub root_dir: String,
     pub site_type: String,
     pub runtime_id: Option<String>,
-    pub app_command: Option<String>,
-    pub app_port: Option<i64>,
     pub proxy_target: Option<String>,
     pub proxy_websocket: bool,
 }
 
-const SITE_COLS: &str = "id, domain, root_dir, site_type, runtime_id, app_command, app_port, \
-                         proxy_target, proxy_websocket, status, created_at, updated_at, \
-                         is_default, https, force_https";
+const SITE_COLS: &str = "id, domain, root_dir, site_type, runtime_id, proxy_target, \
+                         proxy_websocket, status, created_at, updated_at, is_default, https, \
+                         force_https";
 
 fn row_to_site(r: &Row<'_>) -> rusqlite::Result<Site> {
     Ok(Site {
@@ -65,16 +59,14 @@ fn row_to_site(r: &Row<'_>) -> rusqlite::Result<Site> {
         root_dir: r.get(2)?,
         site_type: r.get(3)?,
         runtime_id: r.get(4)?,
-        app_command: r.get(5)?,
-        app_port: r.get(6)?,
-        proxy_target: r.get(7)?,
-        proxy_websocket: r.get::<_, i64>(8)? != 0,
-        status: r.get(9)?,
-        created_at: r.get(10)?,
-        updated_at: r.get(11)?,
-        is_default: r.get::<_, i64>(12)? != 0,
-        https: r.get::<_, i64>(13)? != 0,
-        force_https: r.get::<_, i64>(14)? != 0,
+        proxy_target: r.get(5)?,
+        proxy_websocket: r.get::<_, i64>(6)? != 0,
+        status: r.get(7)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+        is_default: r.get::<_, i64>(10)? != 0,
+        https: r.get::<_, i64>(11)? != 0,
+        force_https: r.get::<_, i64>(12)? != 0,
     })
 }
 
@@ -83,16 +75,14 @@ impl Db {
         let conn = self.conn();
         let ts = now();
         conn.execute(
-            "INSERT INTO sites(domain, root_dir, site_type, runtime_id, app_command, app_port,
-                               proxy_target, proxy_websocket, status, created_at, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'running', ?9, ?9)",
+            "INSERT INTO sites(domain, root_dir, site_type, runtime_id, proxy_target,
+                               proxy_websocket, status, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?7)",
             params![
                 n.domain,
                 n.root_dir,
                 n.site_type,
                 n.runtime_id,
-                n.app_command,
-                n.app_port,
                 n.proxy_target,
                 i64::from(n.proxy_websocket),
                 ts
@@ -307,8 +297,6 @@ mod tests {
             root_dir: format!("/www/sites/{domain}"),
             site_type: TYPE_RUNTIME.into(),
             runtime_id: Some(runtime.into()),
-            app_command: None,
-            app_port: None,
             proxy_target: None,
             proxy_websocket: false,
         }
@@ -320,8 +308,6 @@ mod tests {
             root_dir: format!("/www/sites/{domain}"),
             site_type: TYPE_STATIC.into(),
             runtime_id: None,
-            app_command: None,
-            app_port: None,
             proxy_target: None,
             proxy_websocket: false,
         }
@@ -365,8 +351,6 @@ mod tests {
                 root_dir: "/www/sites/proxy.local".into(),
                 site_type: TYPE_PROXY.into(),
                 runtime_id: None,
-                app_command: None,
-                app_port: None,
                 proxy_target: Some("http://127.0.0.1:8080".into()),
                 proxy_websocket: true,
             })

@@ -1094,8 +1094,8 @@ fn partial_delete_error(completed: &[String], message: String) -> SiteError {
 use crate::sites_vhost::{default_probe_html, default_probe_php};
 pub use crate::sites_vhost::{
     normalize_site_aliases, render_default_vhost, render_php_pool, render_php_pool_with,
-    render_site_vhost, site_root_for, validate_app_port, validate_domain, validate_proxy_target,
-    validate_site_type, VhostKind, VhostTls,
+    render_site_vhost, site_root_for, validate_domain, validate_proxy_target, validate_site_type,
+    VhostKind, VhostTls,
 };
 
 /// 一个可直接查看/编辑的 PHP 配置文件。
@@ -6209,10 +6209,6 @@ impl AppState {
                 root_dir: root.display().to_string(),
                 site_type: site_type.into(),
                 runtime_id,
-                // 进程型运行环境的端口只属于环境（`site_runtimes.port`），站点侧
-                // 一律留空；vhost 从环境行读取，避免出现“站点自定义端口”的旁路。
-                app_command: None,
-                app_port: None,
                 proxy_target,
                 proxy_websocket,
             })
@@ -7822,10 +7818,6 @@ mod tests {
         ] {
             assert!(validate_proxy_target(bad).is_err(), "{bad:?} 应被拒绝");
         }
-
-        assert_eq!(validate_app_port(2048).unwrap(), 2048);
-        assert!(validate_app_port(80).is_err());
-        assert!(validate_app_port(70000).is_err());
     }
 
     #[test]
@@ -8131,8 +8123,6 @@ mod tests {
                 root_dir: site_dir.display().to_string(),
                 site_type: TYPE_STATIC.into(),
                 runtime_id: None,
-                app_command: None,
-                app_port: None,
                 proxy_target: None,
                 proxy_websocket: false,
             })
@@ -8168,8 +8158,6 @@ mod tests {
                 root_dir: site_dir.display().to_string(),
                 site_type: TYPE_STATIC.into(),
                 runtime_id: None,
-                app_command: None,
-                app_port: None,
                 proxy_target: None,
                 proxy_websocket: false,
             })
@@ -8273,8 +8261,6 @@ mod tests {
                     root_dir: s.sites_dir.join(domain).display().to_string(),
                     site_type: TYPE_RUNTIME.into(),
                     runtime_id: Some(runtime_id.into()),
-                    app_command: None,
-                    app_port: None,
                     proxy_target: None,
                     proxy_websocket: false,
                 })
@@ -8897,8 +8883,6 @@ mod tests {
                 root_dir: site_dir.display().to_string(),
                 site_type: TYPE_RUNTIME.into(),
                 runtime_id: Some("php-bound".into()),
-                app_command: None,
-                app_port: None,
                 proxy_target: None,
                 proxy_websocket: false,
             })

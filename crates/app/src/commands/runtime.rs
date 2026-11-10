@@ -736,8 +736,6 @@ mod tests {
                 root_dir: root.display().to_string(),
                 site_type: skiff_store::TYPE_RUNTIME.into(),
                 runtime_id: Some(runtime_id.into()),
-                app_command: None,
-                app_port: None,
                 proxy_target: None,
                 proxy_websocket: false,
             })

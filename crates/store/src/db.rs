@@ -399,8 +399,6 @@ CREATE TABLE sites (
   site_type TEXT NOT NULL DEFAULT 'runtime'
     CHECK(site_type IN ('runtime','static','proxy')),
   runtime_id TEXT REFERENCES site_runtimes(id) ON DELETE RESTRICT,
-  app_command TEXT,
-  app_port INTEGER,
   proxy_target TEXT,
   proxy_websocket INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'running'
@@ -416,15 +414,12 @@ CREATE TABLE sites (
     OR (site_type = 'static' AND runtime_id IS NULL)
     OR (site_type = 'proxy' AND runtime_id IS NULL AND proxy_target IS NOT NULL)
   ),
-  -- 应用进程字段只属于 runtime 站点（P2 Node/Go）。
-  CHECK(site_type = 'runtime' OR (app_command IS NULL AND app_port IS NULL)),
   -- 上游地址只属于 proxy。
   CHECK(site_type = 'proxy' OR proxy_target IS NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_sites_created ON sites(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sites_runtime ON sites(runtime_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_default ON sites(is_default) WHERE is_default = 1;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_app_port ON sites(app_port) WHERE app_port IS NOT NULL;
 
 CREATE TABLE site_aliases (
   domain TEXT PRIMARY KEY,

@@ -24,8 +24,6 @@ fn php_site(domain: &str, root: &str) -> skiff_store::NewSite {
         root_dir: root.into(),
         site_type: skiff_store::TYPE_RUNTIME.into(),
         runtime_id: Some("php-8.5".into()),
-        app_command: None,
-        app_port: None,
         proxy_target: None,
         proxy_websocket: false,
     }
@@ -37,8 +35,6 @@ fn static_site(domain: &str, root: &str) -> skiff_store::NewSite {
         root_dir: root.into(),
         site_type: skiff_store::TYPE_STATIC.into(),
         runtime_id: None,
-        app_command: None,
-        app_port: None,
         proxy_target: None,
         proxy_websocket: false,
     }
@@ -50,8 +46,6 @@ fn proxy_site(domain: &str, root: &str, target: &str, websocket: bool) -> skiff_
         root_dir: root.into(),
         site_type: skiff_store::TYPE_PROXY.into(),
         runtime_id: None,
-        app_command: None,
-        app_port: None,
         proxy_target: Some(target.into()),
         proxy_websocket: websocket,
     }
