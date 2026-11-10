@@ -1813,6 +1813,125 @@
     });
   }
 
+  // ---- 任务详情日志：首屏尾巴已由服务端渲染，之后靠 SSE 增量追加 ----
+  // 独立详情页与任务中心弹窗共用；不依赖 id，避免弹窗与页面重复。
+  function attachJobLogs(scope) {
+    var roots = (scope || document).querySelectorAll("[data-job-log]");
+    roots.forEach(function (box) {
+      if (box.dataset.bound === "1") return;
+      box.dataset.bound = "1";
+      var prefix = box.getAttribute("data-prefix") || "";
+      var id = box.getAttribute("data-job");
+      var cursor = parseInt(box.getAttribute("data-cursor") || "0", 10);
+      var empty = box.parentNode.querySelector("[data-job-log-empty]");
+      var host = box.closest("main") || document;
+      var statusEl = host.querySelector("#job-status");
+      var phaseEl = host.querySelector("#job-phase");
+      var bar = host.querySelector("#job-bar");
+      var progressText = host.querySelector("#job-progress-text");
+      var exitEl = host.querySelector("[data-job-exit]");
+      var es = null;
+      var closed = false;
+
+      // 首屏日志尾巴渲染完后直接滚到底部，后面只追加。
+      if (empty) empty.hidden = box.textContent.trim() !== "";
+      box.scrollTop = box.scrollHeight;
+
+      function append(line) {
+        box.textContent += line + "\n";
+        if (empty) empty.hidden = true;
+        box.scrollTop = box.scrollHeight;
+      }
+      function applyStatus(d) {
+        if (statusEl && d.status_label) statusEl.textContent = d.status_label;
+        if (phaseEl && d.phase_label) phaseEl.textContent = d.phase_label;
+        if (bar && typeof d.progress === "number" && d.progress >= 0) bar.style.width = d.progress + "%";
+        if (progressText && typeof d.progress === "number" && d.progress >= 0) progressText.textContent = d.progress + "%";
+        if (exitEl && typeof d.exit_code === "number") exitEl.textContent = String(d.exit_code);
+      }
+      function connect() {
+        var url = "/" + prefix + "/jobs/" + encodeURIComponent(id) + "/logs/stream?after=" + cursor;
+        es = new EventSource(url);
+        es.addEventListener("log", function (ev) {
+          var d = JSON.parse(ev.data);
+          cursor = d.seq;
+          append("[" + new Date(d.at * 1000).toLocaleTimeString() + "] " + d.line);
+        });
+        es.addEventListener("truncated", function (ev) {
+          var d = JSON.parse(ev.data);
+          append("… 更早日志已截断（现存从 #" + d.before + " 开始）…");
+          cursor = Math.max(cursor, d.before - 1);
+        });
+        es.addEventListener("status", function (ev) { applyStatus(JSON.parse(ev.data)); });
+        es.addEventListener("end", function () { closed = true; es.close(); });
+        es.onerror = function () {
+          es.close();
+          if (!closed) setTimeout(connect, 1500);
+        };
+      }
+      // 弹窗关闭时释放 SSE，避免后台挂着一个已不可见的连接。
+      box.__jobClose = function () {
+        closed = true;
+        if (es) es.close();
+      };
+      connect();
+    });
+  }
+
+  // ---- 任务中心详情弹窗：拉取独立详情页并取 <main>，字段与日志同源 ----
+  function attachJobDialog() {
+    var dlg = document.querySelector("[data-job-dialog]");
+    if (!dlg || dlg.dataset.bound === "1") return;
+    dlg.dataset.bound = "1";
+    var body = dlg.querySelector("[data-job-dialog-body]");
+    var full = dlg.querySelector("[data-job-dialog-full]");
+    var prefix = dlg.getAttribute("data-prefix") || "";
+
+    function release() {
+      body.querySelectorAll("[data-job-log]").forEach(function (b) {
+        if (b.__jobClose) b.__jobClose();
+      });
+    }
+    dlg.addEventListener("close", function () {
+      release();
+      body.innerHTML = "";
+    });
+
+    async function open(id) {
+      var url = "/" + prefix + "/jobs/" + encodeURIComponent(id);
+      if (full) full.setAttribute("href", url);
+      release();
+      body.innerHTML = '<p class="muted">加载中…</p>';
+      if (typeof dlg.showModal !== "function") { location.href = url; return; }
+      if (!dlg.open) dlg.showModal();
+      try {
+        var resp = await fetch(url, {
+          headers: { "X-Requested-With": "fetch" },
+          credentials: "same-origin",
+          cache: "no-store"
+        });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        var doc = new DOMParser().parseFromString(await resp.text(), "text/html");
+        var main = doc.querySelector("main");
+        if (!main) throw new Error("详情结构异常");
+        body.innerHTML = main.innerHTML;
+        body.scrollTop = 0;
+        attachJobLogs(body);
+      } catch (err) {
+        body.innerHTML = '<div class="alert">详情加载失败：' +
+          String((err && err.message) || err).replace(/[<>&]/g, "") + "</div>";
+      }
+    }
+
+    document.addEventListener("click", function (e) {
+      if (!(e.target instanceof Element)) return;
+      var btn = e.target.closest("[data-job-open]");
+      if (!btn) return;
+      e.preventDefault();
+      open(btn.getAttribute("data-job-open"));
+    });
+  }
+
   function boot() {
     attachLogs();
     attachTerminal();
@@ -1828,6 +1947,8 @@
     attachRuntimeDrawer();
     attachRuntimeCreate();
     attachRuntimeJobs();
+    attachJobLogs();
+    attachJobDialog();
     attachNginxTabs();
     attachToasts();
     attachDialogs();

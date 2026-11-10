@@ -107,6 +107,22 @@ fn status_class(status: JobStatus) -> &'static str {
     }
 }
 
+/// 触发来源：任务中心目前只接受手动提交与「重试」两种来源。
+/// 不臆造定时/事件触发——定时任务走内核调度器，不建作业。
+fn trigger_label(job: &Job) -> String {
+    match job.retry_of.as_deref() {
+        Some(parent) => format!("重试 · 原任务 {parent}"),
+        None => format!("手动提交 · {}", job.created_by),
+    }
+}
+
+/// 退出码：只有由单条命令决定成败的作业才有值，其余显示 `-`（不用 0 冒充成功）。
+fn exit_code_text(job: &Job) -> String {
+    job.exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "-".into())
+}
+
 fn row_of(job: &Job) -> JobRowView {
     JobRowView {
         id: job.id.clone(),
@@ -145,6 +161,8 @@ fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDetailView {
         started_at: fmt_ts(job.started_at),
         finished_at: fmt_ts(job.finished_at),
         duration: fmt_duration(job.duration_ms),
+        exit_code: exit_code_text(job),
+        trigger: trigger_label(job),
         error_class: job.error_class.clone().unwrap_or_default(),
         error_detail: job.error_detail.clone().unwrap_or_default(),
         result_json: if job.result.as_object().is_some_and(|o| o.is_empty()) {
@@ -316,6 +334,8 @@ pub async fn logs_json(
             "active": job.active(),
             "cancellable": job.cancellable,
             "cancel_requested": job.cancel_requested,
+            "exit_code": job.exit_code,
+            "duration_ms": job.duration_ms,
         },
         "min_seq": batch.min_seq,
         "max_seq": batch.max_seq,
@@ -342,6 +362,7 @@ fn status_event(job: &Job) -> Event {
             "active": job.active(),
             "cancellable": job.cancellable,
             "cancel_requested": job.cancel_requested,
+            "exit_code": job.exit_code,
             "error_detail": job.error_detail,
         })
         .to_string(),

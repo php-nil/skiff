@@ -1199,6 +1199,10 @@ pub struct JobDetailView {
     pub started_at: String,
     pub finished_at: String,
     pub duration: String,
+    /// 触发来源（手动提交 / 重试），无值时由 handler 兜底。
+    pub trigger: String,
+    /// 退出码文本：无单条命令语义时为 `-`。
+    pub exit_code: String,
     pub error_class: String,
     pub error_detail: String,
     pub result_json: String,

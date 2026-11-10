@@ -134,6 +134,8 @@ pub struct Job {
     pub log_bytes: i64,
     pub log_seq: i64,
     pub retry_of: Option<String>,
+    /// 决定该作业成败的命令退出码；无单条命令语义时为 `None`。
+    pub exit_code: Option<i64>,
 }
 
 impl Job {
@@ -189,6 +191,7 @@ impl Job {
             log_bytes: r.log_bytes,
             log_seq: r.log_seq,
             retry_of: r.retry_of,
+            exit_code: r.exit_code,
         }
     }
 }
@@ -285,6 +288,7 @@ impl JobService {
             log_bytes: 0,
             log_seq: 0,
             retry_of: None,
+            exit_code: None,
         };
         self.db.insert_job(&row)?;
         self.cache_route(&s.target_type, &s.target_id, &id);
@@ -345,6 +349,7 @@ impl JobService {
             log_bytes: 0,
             log_seq: 0,
             retry_of: Some(old.id.clone()),
+            exit_code: None,
         };
         self.db.insert_job(&row)?;
         self.cache_route(&old.target_type, &old.target_id, &new_id);
@@ -398,6 +403,13 @@ impl JobService {
 
     pub fn note(&self, id: &str, line: &str) {
         self.log(id, "note", line);
+    }
+
+    /// 记录决定该作业成败的命令退出码（见 `crates/store` schema v17 注释）。
+    pub fn set_exit_code(&self, id: &str, code: i64) {
+        if let Err(e) = self.db.set_job_exit_code(id, code) {
+            tracing::warn!(job = id, error = %e, "作业退出码写入失败");
+        }
     }
 
     /// 批量追加多行（命令输出的尾巴），一次事务落盘。

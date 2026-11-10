@@ -1387,6 +1387,15 @@ dialog.modal::backdrop { background: rgba(16, 24, 40, .45); }
 .modal-head { padding: var(--sp-4) var(--sp-4) 0; }
 .modal-head h2 { margin: 0; font-size: var(--fs-lg); }
 .modal-body { padding: var(--sp-2) var(--sp-4) var(--sp-4); color: var(--text-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+
+/* 任务详情弹窗：宽版，正文独立滚动；关闭态由 UA 的 dialog:not([open]) 控制。 */
+dialog.modal.job-dialog[open] { display: flex; flex-direction: column; }
+dialog.modal.job-dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(86vh, 900px);
+}
+.job-dialog .job-dialog-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.job-dialog .job-dialog-body > .panel:first-child { padding-top: 0; }
 .modal-actions {
   display: flex;
   justify-content: flex-end;

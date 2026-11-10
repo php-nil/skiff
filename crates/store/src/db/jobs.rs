@@ -61,6 +61,8 @@ pub struct JobRow {
     pub log_bytes: i64,
     pub log_seq: i64,
     pub retry_of: Option<String>,
+    /// 决定该作业成败的那条命令的退出码；无单条命令语义时为 `None`（页面显示 `-`）。
+    pub exit_code: Option<i64>,
 }
 
 /// 一行作业日志（`job_logs`）。
@@ -93,7 +95,7 @@ pub struct JobLogBatch {
 const JOB_COLUMNS: &str = "id, kind, target_type, target_id, title, params_json, phase,
     phase_label, progress, status, cancellable, cancel_requested, created_by,
     created_by_role, requester_ip, created_at, started_at, finished_at, duration_ms,
-    error_class, error_detail, result_json, log_bytes, log_seq, retry_of";
+    error_class, error_detail, result_json, log_bytes, log_seq, retry_of, exit_code";
 
 fn row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
     Ok(JobRow {
@@ -122,6 +124,7 @@ fn row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         log_bytes: r.get(22)?,
         log_seq: r.get(23)?,
         retry_of: r.get(24)?,
+        exit_code: r.get(25)?,
     })
 }
 
@@ -142,9 +145,9 @@ impl Db {
                               phase_label, progress, status, cancellable, cancel_requested,
                               created_by, created_by_role, requester_ip, created_at,
                               started_at, finished_at, duration_ms, error_class, error_detail,
-                              result_json, log_bytes, log_seq, retry_of)
+                              result_json, log_bytes, log_seq, retry_of, exit_code)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 j.id,
                 j.kind,
@@ -171,6 +174,7 @@ impl Db {
                 j.log_bytes,
                 j.log_seq,
                 j.retry_of,
+                j.exit_code,
             ],
         );
         let unique = matches!(&res, Err(err) if is_unique_violation(err));
@@ -210,6 +214,16 @@ impl Db {
                     started_at = COALESCE(started_at, ?6)
               WHERE id = ?1 AND status IN ('queued','running')",
             params![id, phase, phase_label, progress, cancellable as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// 记录退出码：只写 `exit_code`，不改状态/阶段（由收尾逻辑决定成败）。
+    pub fn set_job_exit_code(&self, id: &str, code: i64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE jobs SET exit_code = ?2 WHERE id = ?1",
+            params![id, code],
         )?;
         Ok(())
     }
@@ -537,6 +551,7 @@ mod tests {
             log_bytes: 0,
             log_seq: 0,
             retry_of: None,
+            exit_code: None,
         }
     }
 
@@ -577,6 +592,19 @@ mod tests {
         assert!(batch.entries.len() as i64 <= MAX_LOG_LINES);
         let bounds = db.job_logs_since("j1", last, 10).unwrap();
         assert!(bounds.entries.is_empty());
+    }
+
+    #[test]
+    fn exit_code_round_trips_and_stays_null_when_unknown() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_job(&sample("j1", "rt-1", STATUS_SUCCEEDED))
+            .unwrap();
+        // 未记录退出码：保持 NULL，由展示层显示 `-`。
+        assert_eq!(db.job("j1").unwrap().unwrap().exit_code, None);
+        db.set_job_exit_code("j1", 127).unwrap();
+        assert_eq!(db.job("j1").unwrap().unwrap().exit_code, Some(127));
+        // 只改退出码，不动状态。
+        assert_eq!(db.job("j1").unwrap().unwrap().status, STATUS_SUCCEEDED);
     }
 
     #[test]

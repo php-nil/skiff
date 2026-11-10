@@ -14,11 +14,13 @@
     <div><span class="muted small">目标</span><div>{{ job.target_label }}</div></div>
     <div><span class="muted small">阶段</span><div id="job-phase">{{ job.phase_label }}</div></div>
     <div><span class="muted small">发起人</span><div>{{ job.created_by }}{% if !job.created_by_role.is_empty() %}（{{ job.created_by_role }}）{% endif %}</div></div>
+    <div><span class="muted small">触发来源</span><div>{{ job.trigger }}</div></div>
     <div><span class="muted small">请求 IP</span><div class="mono">{{ job.requester_ip }}</div></div>
     <div><span class="muted small">提交</span><div class="mono">{{ job.created_at }}</div></div>
     <div><span class="muted small">开始</span><div class="mono">{{ job.started_at }}</div></div>
     <div><span class="muted small">结束</span><div class="mono">{{ job.finished_at }}</div></div>
     <div><span class="muted small">耗时</span><div id="job-duration">{{ job.duration }}</div></div>
+    <div><span class="muted small">退出码</span><div class="mono" data-job-exit>{{ job.exit_code }}</div></div>
   </div>
 
   {% if job.indeterminate %}
@@ -73,55 +75,8 @@
     <span class="muted small">流式追加；断线重连会续传，更早的日志被截断时会明确提示</span>
   </div>
   {% if can_admin %}
-  <pre id="job-log" class="mono" data-prefix="{{ ctx.prefix }}" data-job="{{ job.id }}" data-cursor="{{ job.log_cursor }}" style="max-height:420px;overflow:auto;background:var(--bg-soft,#111);padding:12px;border-radius:8px;white-space:pre-wrap">{{ job.log_text }}</pre>
-  <script>
-  (function () {
-    var box = document.getElementById('job-log');
-    var prefix = box.dataset.prefix;
-    var id = box.dataset.job;
-    var cursor = parseInt(box.dataset.cursor || '0', 10);
-    var statusEl = document.getElementById('job-status');
-    var phaseEl = document.getElementById('job-phase');
-    var bar = document.getElementById('job-bar');
-    var progressText = document.getElementById('job-progress-text');
-    var es = null;
-    var closed = false;
-    // 首屏日志尾巴渲染完后直接滚到底部，后面只追加。
-    box.scrollTop = box.scrollHeight;
-
-    function append(line) {
-      box.textContent += line + '\n';
-      box.scrollTop = box.scrollHeight;
-    }
-    function applyStatus(d) {
-      if (statusEl && d.status_label) statusEl.textContent = d.status_label;
-      if (phaseEl && d.phase_label) phaseEl.textContent = d.phase_label;
-      if (bar && typeof d.progress === 'number' && d.progress >= 0) bar.style.width = d.progress + '%';
-      if (progressText && typeof d.progress === 'number' && d.progress >= 0) progressText.textContent = d.progress + '%';
-    }
-    function connect() {
-      var url = '/' + prefix + '/jobs/' + encodeURIComponent(id) + '/logs/stream?after=' + cursor;
-      es = new EventSource(url);
-      es.addEventListener('log', function (ev) {
-        var d = JSON.parse(ev.data);
-        cursor = d.seq;
-        append('[' + new Date(d.at * 1000).toLocaleTimeString() + '] ' + d.line);
-      });
-      es.addEventListener('truncated', function (ev) {
-        var d = JSON.parse(ev.data);
-        append('… 更早日志已截断（现存从 #' + d.before + ' 开始）…');
-        cursor = Math.max(cursor, d.before - 1);
-      });
-      es.addEventListener('status', function (ev) { applyStatus(JSON.parse(ev.data)); });
-      es.addEventListener('end', function () { closed = true; es.close(); });
-      es.onerror = function () {
-        es.close();
-        if (!closed) setTimeout(connect, 1500);
-      };
-    }
-    connect();
-  })();
-  </script>
+  <div class="empty" data-job-log-empty {% if !job.log_text.is_empty() %}hidden{% endif %}>暂无日志</div>
+  <pre class="mono" data-job-log data-prefix="{{ ctx.prefix }}" data-job="{{ job.id }}" data-cursor="{{ job.log_cursor }}" style="max-height:420px;overflow:auto;background:var(--bg-soft,#111);padding:12px;border-radius:8px;white-space:pre-wrap">{{ job.log_text }}</pre>
   {% else %}
   <div class="empty">执行日志包含宿主路径与安装器输出，仅管理员可见。</div>
   {% endif %}

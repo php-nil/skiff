@@ -2802,6 +2802,7 @@ impl AppState {
                 )
                 .await
                 .map_err(|e| format!("批量安装扩展执行失败：{e}"))?;
+            self.jobs().set_exit_code(job_id, code);
             self.job_log_output(job_id, &out).await;
             self.jobs().set_cancellable(job_id, true);
             if timed_out {
@@ -2870,6 +2871,7 @@ impl AppState {
                 )
                 .await
                 .map_err(|e| format!("批量停用扩展执行失败：{e}"))?;
+            self.jobs().set_exit_code(job_id, code);
             self.job_log_output(job_id, &out).await;
             self.jobs().set_cancellable(job_id, true);
             if timed_out {
@@ -3396,6 +3398,7 @@ impl AppState {
             )
             .await
             .map_err(|e| format!("{label} 执行失败：{e}"))?;
+        self.jobs().set_exit_code(job_id, code);
         self.job_log_output(job_id, &out).await;
         // 脚本结束（无论成败）后重新允许取消。
         self.jobs().set_cancellable(job_id, true);

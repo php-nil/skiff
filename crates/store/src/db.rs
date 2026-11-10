@@ -35,7 +35,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 16;
+pub const CURRENT_SCHEMA_VERSION: i64 = 17;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -103,7 +103,7 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        let steps: [(i64, &str); 16] = [
+        let steps: [(i64, &str); 17] = [
             (1, SCHEMA_V1),
             (2, SCHEMA_V2),
             (3, SCHEMA_V3),
@@ -120,6 +120,7 @@ impl Db {
             (14, SCHEMA_V14),
             (15, SCHEMA_V15),
             (16, SCHEMA_V16),
+            (17, SCHEMA_V17),
         ];
         for (to, schema) in steps {
             if version >= to {
@@ -707,6 +708,15 @@ CREATE TABLE IF NOT EXISTS job_logs (
 /// 页面/API 必须标注「不完整」，写路径不得据此拒绝写入。
 const SCHEMA_V16: &str = r#"
 ALTER TABLE fs_quotas ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// v17：任务中心详情要如实展示「退出码」。
+///
+/// 只有由单条命令决定成败的作业（如 PHP 扩展安装/卸载）才有确定退出码；
+/// 其余作业（Docker API 拉起、多步骤安装）保持 NULL，页面显示 `-`，
+/// 不用 0 冒充「成功」。
+const SCHEMA_V17: &str = r#"
+ALTER TABLE jobs ADD COLUMN exit_code INTEGER;
 "#;
 
 #[cfg(test)]

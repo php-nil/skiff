@@ -47,7 +47,7 @@
           <td class="mono">{{ r.created_at }}</td>
           <td>{{ r.duration }}</td>
           <td class="actions-cell">
-            <a class="mini" href="/{{ ctx.prefix }}/jobs/{{ r.id }}">查看详情</a>
+            <button type="button" class="mini" data-job-open="{{ r.id }}">查看详情</button>
           </td>
         </tr>
       {% endfor %}
@@ -56,4 +56,15 @@
   </div>
   {% endif %}
 </section>
+
+{# 任务详情弹窗：数据与独立详情页同源（拉取 /jobs/<id> 后取 main），
+   避免字段两处维护；日志由 skiff.js 的 attachJobLogs 统一接管。 #}
+<dialog class="modal job-dialog" data-job-dialog data-prefix="{{ ctx.prefix }}" aria-labelledby="job-dialog-title">
+  <div class="modal-head"><h2 id="job-dialog-title">任务详情</h2></div>
+  <div class="modal-body job-dialog-body" data-job-dialog-body></div>
+  <div class="modal-actions">
+    <a class="btn ghost" data-job-dialog-full href="/{{ ctx.prefix }}/jobs">在独立页面打开</a>
+    <button type="button" class="btn" data-dialog-close>关闭</button>
+  </div>
+</dialog>
 {% endblock %}

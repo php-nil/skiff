@@ -6512,3 +6512,120 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
     let (status, _) = get_page(&h.app, "/p/m/core/files/trash", &token).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// 任务中心详情的数据链路：`jobs` / `job_logs` 表里的日志必须真的渲染到页面，
+/// 空日志显示「暂无日志」而不是空白块；退出码、耗时、触发来源都要有实际取值落点。
+#[tokio::test]
+async fn job_detail_renders_persisted_logs_and_metadata() {
+    use skiff_app::jobs::JobSubmit;
+
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let job = h
+        .state
+        .jobs()
+        .submit(JobSubmit {
+            kind: "site.create".into(),
+            target_type: "site".into(),
+            target_id: "detail.example.com".into(),
+            title: "创建站点 detail.example.com".into(),
+            params: serde_json::json!({ "name": "detail.example.com" }),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: true,
+        })
+        .unwrap();
+    h.state
+        .jobs()
+        .log_lines(&job.id, "out", &["安装脚本输出第一行".to_string()]);
+    h.state.jobs().set_exit_code(&job.id, 127);
+
+    let (status, html) = get_page(&h.app, &format!("/p/jobs/{}", job.id), &token).await;
+    assert_eq!(status, StatusCode::OK, "详情页必须 200: {html}");
+    assert!(
+        html.contains("任务已创建，等待执行") && html.contains("安装脚本输出第一行"),
+        "详情页必须渲染已落库的执行日志: {html}"
+    );
+    assert!(
+        html.contains("退出码") && html.contains(">127<"),
+        "详情必须渲染退出码的真实取值: {html}"
+    );
+    assert!(
+        html.contains("触发来源") && html.contains("手动提交 · admin"),
+        "详情必须渲染触发来源: {html}"
+    );
+    assert!(
+        html.contains(r#"data-job-log-empty hidden"#),
+        "有日志时空态占位必须隐藏而非移除（供 SSE 追加时切换）: {html}"
+    );
+    // 弹窗的数据源就是同一张详情页：列表侧必须是按钮 + 对话框，且日志容器可被 JS 接管。
+    assert!(
+        html.contains(r#"data-job-log"#),
+        "日志容器缺少 JS 接管标记: {html}"
+    );
+
+    let (_, list) = get_page(&h.app, "/p/jobs", &token).await;
+    assert!(
+        list.contains(&format!(r#"data-job-open="{}""#, job.id)),
+        "任务中心「查看详情」必须打开弹窗: {list}"
+    );
+    assert!(
+        list.contains("data-job-dialog") && list.contains("data-job-dialog-body"),
+        "任务中心必须渲染详情弹窗容器: {list}"
+    );
+}
+
+/// 没有任何日志的作业：详情页与弹窗接口都要明确显示「暂无日志」。
+#[tokio::test]
+async fn job_detail_empty_logs_show_placeholder() {
+    use skiff_store::jobs::{JobRow, STATUS_SUCCEEDED};
+
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    h.state
+        .db()
+        .insert_job(&JobRow {
+            id: "job-empty-log".into(),
+            kind: "compose.up".into(),
+            target_type: "compose".into(),
+            target_id: "empty-log".into(),
+            title: "Compose 启动 empty-log".into(),
+            params_json: "{}".into(),
+            phase: "done".into(),
+            phase_label: "完成".into(),
+            progress: 100,
+            status: STATUS_SUCCEEDED.into(),
+            cancellable: false,
+            cancel_requested: false,
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            created_at: 1_700_000_000,
+            started_at: Some(1_700_000_001),
+            finished_at: Some(1_700_000_004),
+            duration_ms: 3_000,
+            error_class: None,
+            error_detail: None,
+            result_json: "{}".into(),
+            log_bytes: 0,
+            log_seq: 0,
+            retry_of: None,
+            exit_code: None,
+        })
+        .unwrap();
+
+    let (status, html) = get_page(&h.app, "/p/jobs/job-empty-log", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("暂无日志"),
+        "空日志必须显示「暂无日志」而不是空白区块: {html}"
+    );
+    assert!(html.contains("3 秒"), "耗时必须真实渲染: {html}");
+    assert!(
+        html.contains(r#"data-job-exit>-<"#),
+        "无退出码语义时必须显示 `-`，不能用 0 冒充: {html}"
+    );
+}

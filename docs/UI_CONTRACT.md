@@ -102,10 +102,12 @@
 | --- | --- | --- | --- |
 | 新建/编辑单对象、字段 ≤ 8、确认类 | `<dialog class="modal">` | 480（窄）/ 720（表单） | ×、Esc、取消按钮 |
 | 详情、多页签、日志、长表单 | `<dialog class="drawer">` | 720 常规 / 840 宽 / 92vw 窄屏 | ×、Esc；footer 常驻 |
+| 列表内就地查看的作业详情（日志 + 进度） | `<dialog class="modal job-dialog">`（宽版，正文独立滚动） | 920 / 92vw 窄屏 | ×、Esc；footer 常驻 |
 
 - **footer 常驻**：长表单弹窗（`.site-new-dialog` / `.runtime-dialog`）整窗纵向 flex，`.modal-body` 滚动、`.modal-actions` 固定在底部；普通小弹窗内容不滚动，动作区仍用 `.modal-actions`。抽屉用 `.drawer-foot`（`sticky`）吸底；主操作在右、取消在左；按钮顺序遵守 §9。
 - 点遮罩**不关闭**（防误触），仅 `×` / `Esc` / 取消关闭；关闭后焦点回到触发元素。
 - 同一页面同类弹窗只允许一个实例；抽屉内容由服务端渲染 HTML 注入 `[data-drawer-content]`，不再二次组装 DOM。
+- 任务中心「查看详情」走宽版 `modal.job-dialog`：同源拉取 `/{p}/jobs/<id>` 后取 `<main>` 注入 `[data-job-dialog-body]`，字段与日志只维护一份；日志由 `attachJobLogs` 统一接管（首屏已渲染尾巴，之后 SSE 增量），关闭弹窗即断开 SSE；日志为空时服务端渲染 `[data-job-log-empty]`「暂无日志」并在首条日志到达时隐藏，不留空白区块。独立详情页保留为深链与取消/重试的后跳目标。
 - 弹窗标题用 `h2`，不重复页面 `h1`；弹窗内不再嵌套 `page-head`。
 
 ## 9. 危险操作二次确认
