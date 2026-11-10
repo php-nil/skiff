@@ -1,0 +1,8 @@
+{
+  "version": "0.1.1",
+  "arch": "x86_64",
+  "channel": "stable",
+  "min_from": "0.1.0",
+  "changelog_url": "https://example.com/skiff/changelog/0.1.1",
+  "asset": "assets/skiff-0.1.1-x86_64.tar.gz"
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skiff.example/schema/manifest.schema.json",
+  "title": "渠道签名清单（skiff.server.manifest/v1）",
+  "description": "签名覆盖本文件原始字节；index 摘要因此被间接覆盖。key_id 全零表示 P0 未签名占位，客户端必须拒绝。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "channel", "seq", "generated_at", "key_id", "index"],
+  "properties": {
+    "schema": { "const": "skiff.server.manifest/v1" },
+    "channel": { "enum": ["stable", "night"] },
+    "seq": { "type": "integer", "minimum": 1 },
+    "generated_at": { "type": "string", "minLength": 20, "maxLength": 20 },
+    "key_id": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": { "const": "index.json" },
+        "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

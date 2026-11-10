@@ -1,0 +1,20 @@
+{
+  "id": "com.example.hello-app",
+  "version": "0.1.0",
+  "summary": "示例 Docker 应用模板：只用于 P0 产物校验",
+  "min_kernel": "0.1.0",
+  "images": [
+    {
+      "ref": "nginx:1.27-alpine",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "env": [
+    { "key": "TZ", "default": "Asia/Shanghai" }
+  ],
+  "ports": [
+    { "container": 80, "protocol": "tcp" }
+  ],
+  "volumes": ["/data"],
+  "asset": "assets/hello-app.compose.yml"
+}

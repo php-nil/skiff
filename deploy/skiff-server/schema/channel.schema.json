@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skiff.example/schema/channel.schema.json",
+  "title": "Skiff-server 渠道源配置（skiff.server.channel/v1）",
+  "description": "源数据目录中每个渠道一个 channel.json；seq 与 generated_at 由发布者显式给出，保证同输入同输出。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "channel", "seq", "generated_at"],
+  "properties": {
+    "schema": { "const": "skiff.server.channel/v1" },
+    "channel": { "enum": ["stable", "night"] },
+    "seq": { "type": "integer", "minimum": 1 },
+    "generated_at": { "type": "string", "minLength": 20, "maxLength": 20 }
+  }
+}

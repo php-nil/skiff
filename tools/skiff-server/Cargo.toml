@@ -1,0 +1,18 @@
+[package]
+name = "skiff-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff-server P0：商店清单 schema 校验与静态产物生成（无内核依赖、无原生 C 依赖）"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

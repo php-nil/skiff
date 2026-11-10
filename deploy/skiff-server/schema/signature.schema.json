@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skiff.example/schema/signature.schema.json",
+  "title": "分离签名（skiff.server.signature/v1）",
+  "description": "Ed25519 签名置于 manifest.json.sig。sig 为空串表示未签名占位，只允许出现在本地生成物，发布与客户端接入必须拒绝。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["alg", "key_id", "sig"],
+  "properties": {
+    "alg": { "const": "ed25519" },
+    "key_id": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "sig": { "type": "string", "maxLength": 128 }
+  }
+}

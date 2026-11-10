@@ -1,0 +1,3 @@
+P0 placeholder: this is NOT a valid .wbpkg.
+It only exists so the catalog pipeline can exercise content addressing
+and digest verification. Clients must reject it even if the index is signed.

@@ -2033,6 +2033,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "skiff-store"
 version = "0.1.0"
 dependencies = [

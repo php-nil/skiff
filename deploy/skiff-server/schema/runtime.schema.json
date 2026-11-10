@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skiff.example/schema/runtime.schema.json",
+  "title": "运行环境版本条目（skiff.server.runtime/v1）",
+  "description": "P0 只读展示；执行期运行环境目录仍是内核单一来源，服务端清单不改变安装行为。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "version", "image", "image_digest", "eol", "api_min", "default"],
+  "properties": {
+    "kind": { "enum": ["php", "node", "rust"] },
+    "version": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "image": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "image_digest": { "type": "string", "minLength": 71, "maxLength": 71 },
+    "eol": { "type": ["string", "null"], "maxLength": 10 },
+    "api_min": { "type": "string", "minLength": 3, "maxLength": 16 },
+    "default": { "type": "boolean" }
+  }
+}

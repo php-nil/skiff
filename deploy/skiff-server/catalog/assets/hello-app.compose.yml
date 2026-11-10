@@ -1,0 +1,9 @@
+# P0 placeholder compose source for the hello-app catalog entry.
+# Field subset is validated by the existing xtask check, not by this pipeline.
+services:
+  web:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./data:/data

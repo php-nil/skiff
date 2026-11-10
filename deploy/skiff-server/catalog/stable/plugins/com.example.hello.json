@@ -1,0 +1,12 @@
+{
+  "id": "com.example.hello",
+  "version": "0.1.0",
+  "api": "1.0",
+  "channel": "stable",
+  "key_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requires": ["docker"],
+  "summary": "示例插件：只用于 P0 产物校验，占位包不是有效 .wbpkg，客户端必须拒绝安装",
+  "published_at": "2026-11-09T12:00:00Z",
+  "yanked": false,
+  "asset": "assets/hello.wbpkg"
+}
