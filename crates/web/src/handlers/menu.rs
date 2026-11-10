@@ -84,6 +84,7 @@ pub async fn dispatch(
             q.insert("tab".into(), tab.into());
             handlers::plugins::list(State(state), AuthUser(user), Query(q)).await
         }
+        "core/plugins/store" => handlers::store::page(State(state), AuthUser(user), Query(q)).await,
         "core/settings/security" => {
             handlers::settings::page(State(state), AuthUser(user), Query(HashMap::new())).await
         }

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}商店 · Skiff{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>商店</h1>
+  <span class="muted small">
+    只读目录：展示渠道签名清单中的插件、应用模板、运行环境与升级通道。
+    本页不提供安装，安装仍走「插件 → 已安装 / 发现」等既有入口。
+  </span>
+  <div class="actions">
+    <a class="btn ghost" href="?refresh=1">刷新目录</a>
+  </div>
+</div>
+{% include "page_banner.html" %}
+
+<div class="alert {{ tone }}">
+  <strong>{{ state_label }}</strong> · {{ message }}
+  {% if allow_unsigned %}<span class="tag warn-tag">允许未签名（仅开发模式）</span>{% endif %}
+  {% if !key_configured %}<span class="tag warn-tag">未配置固定公钥</span>{% endif %}
+</div>
+
+<div class="toolbar">
+  <span class="muted small">
+    渠道 <code>{{ channel }}</code> · seq <code>{{ seq }}</code> · 拉取于 <code>{{ fetched_at }}</code>
+  </span>
+  <span class="muted small">
+    来源 <code>{{ source }}</code> · 共 {{ total }} 项
+  </span>
+</div>
+
+{% for section in sections %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>{{ section.title }}</h2>
+    <span class="muted small">共 {{ section.items.len() }} 项 · {{ section.hint }}</span>
+  </div>
+  {% if section.items.is_empty() %}
+  <div class="empty">
+    <strong>{{ section.title }}暂无条目</strong>
+    <p class="hint">渠道清单未发布该类条目，或尚未成功拉取。</p>
+  </div>
+  {% else %}
+  <div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>
+        <th>名称</th><th>版本</th><th>来源</th><th>更新时间</th><th>兼容性</th><th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in section.items %}
+      <tr>
+        <td>
+          {{ r.name }}
+          {% if !r.warn.is_empty() %}<span class="tag warn-tag">{{ r.warn }}</span>{% endif %}
+        </td>
+        <td><code>{{ r.version }}</code></td>
+        <td class="muted"><code>{{ r.source }}</code></td>
+        <td class="muted small">{{ r.updated_at }}</td>
+        <td class="muted small">{{ r.compatibility }}</td>
+        <td class="muted small">{{ r.note }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

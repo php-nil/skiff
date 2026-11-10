@@ -39,6 +39,33 @@ pub struct MenuSettingsPage {
     pub notice: String,
 }
 
+/// 商店（Skiff-server P1）：四类目录条目的只读页面。
+#[derive(Debug, Clone, Template)]
+#[template(path = "store.html")]
+pub struct StorePage {
+    pub ctx: PageCtx,
+    pub state_label: String,
+    /// 状态提示条样式：`ok` / `warn` / 空串（错误）。
+    pub tone: String,
+    pub message: String,
+    pub channel: String,
+    pub seq: String,
+    pub fetched_at: String,
+    pub source: String,
+    pub allow_unsigned: bool,
+    pub key_configured: bool,
+    pub sections: Vec<StoreSection>,
+    pub total: usize,
+}
+
+/// 商店页的一个分区（插件 / 应用模板 / 运行环境 / 升级通道）。
+#[derive(Debug, Clone)]
+pub struct StoreSection {
+    pub title: String,
+    pub hint: String,
+    pub items: Vec<skiff_app::catalog::CatalogItem>,
+}
+
 /// 顶栏里的一条插件菜单项。
 #[derive(Debug, Clone)]
 pub struct PluginNav {

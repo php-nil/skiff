@@ -265,6 +265,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::docker_settings::page).post(handlers::docker_settings::save),
         )
         .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
+        .route(&format!("/{p}/store"), get(handlers::store::page))
         .route(
             &format!("/{p}/plugins/{{id}}"),
             get(handlers::plugins::info),
@@ -672,6 +673,7 @@ mod tests {
             login_concurrency: 1,
             ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
             ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+            catalog: Default::default(),
         };
         AppState::new(db, docker, sup, cfg, "csrf-test".into(), "test")
     }

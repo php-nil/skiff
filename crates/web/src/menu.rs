@@ -1209,32 +1209,46 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             pinnable: false,
             default_visible: true,
             roles: None,
-            children: vec![
-                builtin(
-                    "core/plugins/installed",
-                    L1_PLUGINS,
-                    "已安装",
-                    "list",
-                    10,
-                    href("m/core/plugins/installed"),
-                ),
-                builtin(
-                    "core/plugins/discover",
-                    L1_PLUGINS,
-                    "发现",
-                    "activity",
-                    20,
-                    href("m/core/plugins/discover"),
-                ),
-                builtin(
-                    "core/plugins/updates",
-                    L1_PLUGINS,
-                    "可更新",
-                    "archive",
-                    30,
-                    href("m/core/plugins/updates"),
-                ),
-            ],
+            children: {
+                let mut items = vec![
+                    builtin(
+                        "core/plugins/installed",
+                        L1_PLUGINS,
+                        "已安装",
+                        "list",
+                        10,
+                        href("m/core/plugins/installed"),
+                    ),
+                    builtin(
+                        "core/plugins/discover",
+                        L1_PLUGINS,
+                        "发现",
+                        "activity",
+                        20,
+                        href("m/core/plugins/discover"),
+                    ),
+                    builtin(
+                        "core/plugins/updates",
+                        L1_PLUGINS,
+                        "可更新",
+                        "archive",
+                        30,
+                        href("m/core/plugins/updates"),
+                    ),
+                ];
+                // 商店默认关闭：只有显式启用目录接入后才出现入口。
+                if state.cfg.catalog.enabled {
+                    items.push(builtin(
+                        "core/plugins/store",
+                        L1_PLUGINS,
+                        "商店",
+                        "archive",
+                        40,
+                        href("m/core/plugins/store"),
+                    ));
+                }
+                items
+            },
         },
         Decl {
             key: L1_TOOLS.into(),
