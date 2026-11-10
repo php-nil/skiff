@@ -44,9 +44,15 @@ const SERVICE: &str = "pure-ftpd";
 const LOGIN_PREFIX: &str = "skiff_";
 const DEFAULT_PORT_START: u16 = 30000;
 const DEFAULT_PORT_END: u16 = 30100;
-/// `/etc/pure-ftpd/conf/Umask` 的格式是「两个三位八进制数、空白分隔」；
-/// Debian 的 pure-ftpd-wrapper 不接受 `002:002`（会以 exit 255 拒绝启动）。
-const UMASK: &str = "002 002";
+/// `/etc/pure-ftpd/conf/Umask` 的格式是「两个三位八进制数、空白分隔」
+/// （wrapper 的正则硬要求），由 wrapper 拼成 `-U <files>:<dirs>`。
+///
+/// pure-ftpd 以 `0777` 为基准减 umask，**文件也吃同一基准**：
+/// 只写 `002 002` 时上传文件会落成 `0775`（带执行位），与 [`align_tree`] 归一后
+/// 的 `0664` 不一致。文件掩码取 `113` → `0777 & !0113 = 0664`；目录仍是 `002`
+/// → `0775`，再加上父目录继承的 setgid 即 `2775`，与 align 结果同形，
+/// 新建文件无需等归一。
+const UMASK: &str = "113 002";
 /// `pure-pw` 在 Debian/Ubuntu 落在 `/usr/bin`，部分发行版在 `/usr/sbin`。
 const PURE_PW_CANDIDATES: [&str; 2] = ["/usr/bin/pure-pw", "/usr/sbin/pure-pw"];
 /// Debian 的认证链由 `/etc/pure-ftpd/auth` 下的符号链接决定（conf 值只是开关）。
@@ -1486,6 +1492,20 @@ fn resolve_identity(site: &FtpSite) -> Result<(u32, u32), FtpError> {
     }
 }
 
+/// 归一目标权限：目录固定 2775；文件保留可执行位（0775）否则 0664。
+///
+/// 与 [`UMASK`] 推导出的新建权限同形：FTP 上传的文件本身就是 0664、目录是
+/// 2775，因此重复执行归一结果不变。
+fn normalized_mode(is_dir: bool, old: u32) -> u32 {
+    if is_dir {
+        0o2775
+    } else if old & 0o111 != 0 {
+        0o775
+    } else {
+        0o664
+    }
+}
+
 /// 递归对齐文档根：目录 2775、文件 0664（可执行文件 0775），属主/属组为目标身份。
 /// 不跟随符号链接；`log/`、`ssl/`、`conf/` 不在路径内，天然不受影响。
 #[cfg(target_os = "linux")]
@@ -1501,14 +1521,7 @@ fn align_tree(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
         .map_err(|e| format!("chown {} 失败：{e}", path.display()))?;
     let mut perms = meta.permissions();
     let old = perms.mode();
-    let mode = if is_dir {
-        0o2775
-    } else if old & 0o111 != 0 {
-        0o775
-    } else {
-        0o664
-    };
-    perms.set_mode(mode);
+    perms.set_mode(normalized_mode(is_dir, old));
     std::fs::set_permissions(path, perms)
         .map_err(|e| format!("chmod {} 失败：{e}", path.display()))?;
     if is_dir {
@@ -1996,6 +2009,30 @@ mod tests {
         assert!(!valid_umask("02 02"));
         assert!(!valid_umask("008 002"));
         assert!(!valid_umask("002"));
+    }
+
+    /// pure-ftpd 以 0777 为基准减 umask（文件也吃这个基准），目录再继承父目录的
+    /// setgid；结果必须与 `align_tree` 的归一目标同形，否则同一棵 `index/` 的
+    /// 权限会取决于「有没有跑过 align」。
+    #[test]
+    fn umask_matches_align_tree_modes() {
+        let mut fields = UMASK
+            .split_whitespace()
+            .map(|f| u32::from_str_radix(f, 8).expect("三位八进制"));
+        let file_umask = fields.next().expect("文件掩码");
+        let dir_umask = fields.next().expect("目录掩码");
+
+        let uploaded_file = 0o777 & !file_umask;
+        let created_dir = (0o777 & !dir_umask) | 0o2000; // 父目录 setgid 继承
+        assert_eq!(uploaded_file, 0o664);
+        assert_eq!(created_dir, 0o2775);
+
+        // 归一幂等：把新建结果再喂给 align 不变。
+        assert_eq!(normalized_mode(false, uploaded_file), uploaded_file);
+        assert_eq!(normalized_mode(true, created_dir), created_dir);
+        // 可执行文件保持可执行，其余文件归一为 0664。
+        assert_eq!(normalized_mode(false, 0o775), 0o775);
+        assert_eq!(normalized_mode(false, 0o664), 0o664);
     }
 
     #[test]

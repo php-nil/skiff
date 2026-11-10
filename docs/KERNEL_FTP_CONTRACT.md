@@ -132,13 +132,18 @@
 
 ### 4.3 目录与 umask
 
-- `Umask=002:002`：FTP 新建文件/目录对同组可写；`/etc/pure-ftpd/conf/Umask` 必须写
-  `002 002`（两个空白分隔的三位八进制数），Debian `pure-ftpd-wrapper` 不接受 `002:002`。
+- `/etc/pure-ftpd/conf/Umask` 必须写 `113 002`（两个空白分隔的三位八进制数，文件掩码在前），
+  Debian `pure-ftpd-wrapper` 用正则强校验这种格式并拼成 `-U 113:002`，不接受 `113:002` 原文。
+- pure-ftpd 以 `0777` 为基准减 umask，**文件也用这个基准**（不是 0666）。写 `002 002` 时上传
+  文件会落成 `0775`（带执行位），与归一的 `0664` 不一致；`113` 使文件为 `0664`，目录掩码
+  `002` 使新建目录为 `0775`，加上父目录继承的 setgid 即 `2775`——FTP 新建的文件/目录不必等
+  `align_tree` 就与归一结果同形。
 - `pure-pw` 路径按 `/usr/bin` → `/usr/sbin` 顺序探测（Debian/Ubuntu 在 `/usr/bin`）；都不存在时
   返回明确错误，不把 `Failed to find executable` 当成账号冲突。
 - 认证链由 `/etc/pure-ftpd/auth/50pure -> ../conf/PureDB` 符号链接生效；安装时移除包自带的
   `65unix` / `70pam`。Debian wrapper 只认 auth 目录链接，conf 里写 `no` 不会停用 PAM。
 - 首次建号对齐范围**仅** `<site_root>/index` 子树：目录 `chown 201000:201000` + `2775`（setgid 继承组），文件 `0664`/可执行 `0775`；
+  归一幂等：已归一的目录 `2775`、普通文件 `0664` 再跑一次结果不变，可执行文件保持 `0775`；
 - 跳过 symlink（不跟随），不碰 `log/`、`ssl/`、`conf/`，不碰其它站点；
 - 站点父目录与 `/www` 保持 `root:skiff-plugins 0755`/`0711` 口径，不放宽整体可写。
 
