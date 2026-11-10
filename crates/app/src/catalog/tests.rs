@@ -442,3 +442,108 @@ fn mirror_fallback_uses_second_address() {
     assert_eq!(snap.state, CatalogState::Fresh, "{}", snap.message);
     assert_eq!(snap.source, second);
 }
+
+#[test]
+fn auto_refresh_skips_mirror_in_backoff() {
+    let fx = Fixture::new();
+    let second = "https://backup.example/skiff";
+    let index = index_json(1, "com.example.one");
+    let manifest = manifest_json("stable", 1, &fx.key.key_id(), &index);
+    let sig = signature_json(&fx.key.key_id(), &sign_hello(&fx.key, &manifest));
+    fx.fake.push(
+        &format!("{second}/channels/stable/manifest.json"),
+        reply(200, manifest.clone(), Some("e-m")),
+    );
+    fx.fake.push(
+        &format!("{second}/channels/stable/manifest.json.sig"),
+        reply(200, sig.clone(), None),
+    );
+    fx.fake.push(
+        &format!("{second}/channels/stable/index.json"),
+        reply(200, index.clone(), Some("e-i")),
+    );
+
+    let dead = "https://dead.example/skiff";
+    let mut settings = fx.settings();
+    settings.mirrors = vec![dead.into(), second.into()];
+    let svc = fx.service_with(fx.fake.clone(), settings);
+
+    // 手动刷新：第一个镜像不可用 → 记退避，落到第二个。
+    let (snap, _, _) = svc.load(true);
+    assert_eq!(snap.state, CatalogState::Fresh, "{}", snap.message);
+    assert_eq!(snap.source, second);
+    let after_first = fx.fake.calls().len();
+
+    // 自动刷新：退避中的第一个镜像应被跳过，只请求第二个。
+    fx.fake.push(
+        &format!("{second}/channels/stable/manifest.json"),
+        reply(200, manifest, Some("e-m")),
+    );
+    fx.fake.push(
+        &format!("{second}/channels/stable/manifest.json.sig"),
+        reply(200, sig, None),
+    );
+    fx.fake.push(
+        &format!("{second}/channels/stable/index.json"),
+        reply(200, index, Some("e-i")),
+    );
+    let (snap, _, _) = svc.load(false);
+    assert_eq!(snap.state, CatalogState::Fresh, "{}", snap.message);
+    assert_eq!(snap.source, second);
+    let calls = fx.fake.calls();
+    assert_eq!(
+        calls.len(),
+        after_first + 3,
+        "自动刷新应只请求健康的第二个镜像"
+    );
+    assert!(
+        calls[after_first..]
+            .iter()
+            .all(|(url, _)| url.starts_with(second)),
+        "退避期内不应再请求第一个镜像"
+    );
+}
+
+#[test]
+fn all_mirrors_cooling_uses_cache_until_force_retry() {
+    let fx = Fixture::new();
+    fx.serve_signed(2, "com.example.one", "e1", "e2");
+    assert_eq!(fx.service().load(true).0.state, CatalogState::Fresh);
+
+    // 换成一个假传输层没有响应的镜像：手动刷新失败 → 进入退避，展示缓存。
+    let dead_base = "https://dead.example/skiff";
+    let mut settings = fx.settings();
+    settings.mirrors = vec![dead_base.into()];
+    let svc = fx.service_with(fx.fake.clone(), settings);
+    let (snap, _, _) = svc.load(true);
+    assert_eq!(snap.state, CatalogState::Offline, "{}", snap.message);
+    assert_eq!(snap.entries.plugins.len(), 1);
+    let attempted = fx.fake.calls().len();
+
+    // 自动刷新：唯一镜像仍在退避期 → 直接吃缓存，不再发请求。
+    let (snap, _, _) = svc.load(false);
+    assert_eq!(snap.state, CatalogState::Offline);
+    assert!(snap.message.contains("退避"), "{}", snap.message);
+    assert_eq!(fx.fake.calls().len(), attempted, "退避期内不应再请求镜像");
+
+    // 手动刷新绕过退避；镜像恢复后成功并清空退避。
+    let index = index_json(3, "com.example.two");
+    let manifest = manifest_json("stable", 3, &fx.key.key_id(), &index);
+    let sig = signature_json(&fx.key.key_id(), &sign_hello(&fx.key, &manifest));
+    fx.fake.push(
+        &format!("{dead_base}/channels/stable/manifest.json"),
+        reply(200, manifest, Some("m3")),
+    );
+    fx.fake.push(
+        &format!("{dead_base}/channels/stable/manifest.json.sig"),
+        reply(200, sig, None),
+    );
+    fx.fake.push(
+        &format!("{dead_base}/channels/stable/index.json"),
+        reply(200, index, Some("i3")),
+    );
+    let (snap, _, _) = svc.load(true);
+    assert_eq!(snap.state, CatalogState::Fresh, "{}", snap.message);
+    assert_eq!(snap.seq, Some(3));
+    assert_eq!(snap.source, dead_base);
+}

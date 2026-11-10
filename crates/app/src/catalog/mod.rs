@@ -12,6 +12,7 @@ pub mod model;
 pub mod store;
 pub mod verify;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -29,6 +30,10 @@ use model::{Index, Manifest, PluginEntry, SignatureFile, BLOB_PREFIX};
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 页面连续访问时复用内存快照的时长；「刷新」按钮显式绕过。
 pub const DEFAULT_TTL: Duration = Duration::from_secs(30);
+/// 镜像连续失败后的退避基数：10s → 20s → 40s …（只影响自动刷新，手动刷新绕过）。
+const MIRROR_BACKOFF_BASE: Duration = Duration::from_secs(10);
+/// 单个镜像的退避上限：到期后自动刷新会再给它一次机会。
+const MIRROR_BACKOFF_MAX: Duration = Duration::from_secs(300);
 
 /// 目录接入的运行期配置（由 `Config` 的 `[catalog]` 段派生）。
 #[derive(Debug, Clone)]
@@ -270,12 +275,21 @@ struct Memo {
     base: String,
 }
 
+/// 单个镜像的连续失败计数与下次可尝试时间（进程内状态，重启清零）。
+#[derive(Debug, Clone, Copy)]
+struct MirrorHealth {
+    failures: u32,
+    retry_at: Instant,
+}
+
 pub struct CatalogService {
     settings: CatalogSettings,
     root: PathBuf,
     transport: SharedTransport,
     public_key: Option<[u8; 32]>,
     memo: Mutex<Option<Memo>>,
+    /// 按镜像基地址记录的失败退避，避免慢/死镜像每次自动刷新都白等一个超时。
+    health: Mutex<HashMap<String, MirrorHealth>>,
     /// 失败审计出口。未装配时只记日志：目录判定不依赖数据库可用性。
     audit_db: OnceLock<Arc<Db>>,
 }
@@ -306,8 +320,42 @@ impl CatalogService {
             transport,
             public_key,
             memo: Mutex::new(None),
+            health: Mutex::new(HashMap::new()),
             audit_db: OnceLock::new(),
         })
+    }
+
+    /// 该镜像当前是否允许自动刷新尝试（退避未到期则跳过）。
+    fn mirror_ready(&self, base: &str) -> bool {
+        match self.health.lock() {
+            Ok(h) => h.get(base).is_none_or(|m| m.retry_at <= Instant::now()),
+            // 锁中毒不应阻断拉取：按可用处理，让正常路径继续。
+            Err(_) => true,
+        }
+    }
+
+    /// 记录一次「镜像不可用」并进入指数退避；成功一次即清零。
+    fn mark_mirror_failed(&self, base: &str) {
+        if let Ok(mut health) = self.health.lock() {
+            let failures = health.get(base).map_or(0, |m| m.failures) + 1;
+            let exp = failures.saturating_sub(1).min(5);
+            let delay = MIRROR_BACKOFF_BASE
+                .saturating_mul(1u32 << exp)
+                .min(MIRROR_BACKOFF_MAX);
+            health.insert(
+                base.to_string(),
+                MirrorHealth {
+                    failures,
+                    retry_at: Instant::now() + delay,
+                },
+            );
+        }
+    }
+
+    fn mark_mirror_ok(&self, base: &str) {
+        if let Ok(mut health) = self.health.lock() {
+            health.remove(base);
+        }
     }
 
     /// 装配审计出口（启动期调用一次）。重复装配无副作用。
@@ -484,7 +532,7 @@ impl CatalogService {
                 }
             }
         }
-        let (snap, index, base) = self.load();
+        let (snap, index, base) = self.load(force);
         if let Ok(mut memo) = self.memo.lock() {
             *memo = Some(Memo {
                 at: Instant::now(),
@@ -520,7 +568,7 @@ impl CatalogService {
         None
     }
 
-    fn load(&self) -> (CatalogSnapshot, Option<Index>, String) {
+    fn load(&self, force: bool) -> (CatalogSnapshot, Option<Index>, String) {
         let channel = &self.settings.channel;
         let cached = self.cached_for_current_key(channel);
         if self.settings.mirrors.is_empty() {
@@ -540,14 +588,46 @@ impl CatalogService {
             };
         }
 
+        // 自动刷新：跳过仍在退避期的镜像，避免每次 TTL 到期都白等一个超时。
+        // 手动刷新（`force`）绕过退避，用户点击即视为「现在就重试」。
+        let ready: Vec<&String> = if force {
+            self.settings.mirrors.iter().collect()
+        } else {
+            self.settings
+                .mirrors
+                .iter()
+                .filter(|m| self.mirror_ready(m.trim_end_matches('/')))
+                .collect()
+        };
+        let targets: Vec<&String> = if !force && ready.is_empty() {
+            match cached.as_ref() {
+                // 全部退避中且已有快照：直接展示缓存，不再发请求；失败审计已在上次尝试记过，
+                // 这里不再重复写，避免每次页面访问都刷一条。
+                Some(c) => {
+                    return self.cached_snapshot(
+                        c,
+                        CatalogState::Offline,
+                        "所有镜像暂不可用（退避中），展示上次成功快照；点「刷新」可立即重试",
+                    );
+                }
+                // 没有缓存时至少给第一个镜像一次机会，避免首次访问就永久空态。
+                None => self.settings.mirrors.iter().take(1).collect(),
+            }
+        } else {
+            ready
+        };
+
         let mut errors: Vec<String> = Vec::new();
-        for mirror in &self.settings.mirrors {
+        for mirror in targets {
             let base = mirror.trim_end_matches('/');
             if base.is_empty() {
                 continue;
             }
             match self.sync_one(base, cached.as_ref()) {
-                Ok(triple) => return triple,
+                Ok(triple) => {
+                    self.mark_mirror_ok(base);
+                    return triple;
+                }
                 Err(Failure::Rejected(r)) => {
                     warn!(channel = %channel, source = base, reason = %r.kind.code(), detail = %r.detail, "商店目录被拒绝");
                     self.audit_refresh_failure(&format!("reason={} {}", r.kind.code(), r.detail));
@@ -568,7 +648,10 @@ impl CatalogService {
                         ),
                     };
                 }
-                Err(Failure::Unavailable(u)) => errors.push(format!("{base}: {}", u.0)),
+                Err(Failure::Unavailable(u)) => {
+                    self.mark_mirror_failed(base);
+                    errors.push(format!("{base}: {}", u.0));
+                }
             }
         }
 
