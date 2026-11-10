@@ -1309,7 +1309,22 @@ async fn render_detail(
             Err(e) => error = format!("{e}"),
         }
     }
-    let ssl_info = state.site_tls_info(&domain).ok();
+    // `openssl x509` 是同步 fork：必须丢进阻塞线程池，否则详情页会在 async worker
+    // 上等子进程。读取失败只降级 SSL 标签，不让整张详情页报错。
+    let tls_state = state.clone();
+    let tls_domain = domain.clone();
+    let ssl_info =
+        match crate::handlers::blocking_fs(move || tls_state.site_tls_info(&tls_domain)).await {
+            Ok(Ok(info)) => Some(info),
+            Ok(Err(e)) => {
+                tracing::warn!(domain = %domain, error = %e, "读取站点证书信息失败");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(domain = %domain, error = %e, "证书信息后台任务执行失败");
+                None
+            }
+        };
     let cert_ready = ssl_info.as_ref().map(|i| i.cert_exists).unwrap_or(false);
     let ssl = ssl_info.map(tls_view).unwrap_or_default();
     // 实时视图缺失时回查 DB 的运行环境记录；DB 故障直接报错，不伪装成「无运行环境」。

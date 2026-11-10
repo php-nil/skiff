@@ -535,6 +535,108 @@ pub struct SiteTlsInfo {
     pub expires: Option<String>,
 }
 
+/// 证书文本字段（`openssl x509` 的解析结果），缓存的就是这一小块。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TlsCertText {
+    subject: Option<String>,
+    issuer: Option<String>,
+    expires: Option<String>,
+}
+
+/// `(mtime, size)`：证书/私钥被改写、重新生成或删除时至少有一项变化。
+type FileStamp = (Option<std::time::SystemTime>, u64);
+
+#[derive(Debug, Clone)]
+struct TlsInfoCacheEntry {
+    cert: FileStamp,
+    key: FileStamp,
+    text: TlsCertText,
+}
+
+/// 证书解析缓存上限：站点数远小于它，超限时顺手回收已删除站点的条目。
+const TLS_INFO_CACHE_MAX: usize = 256;
+
+/// SSL 标签的进程内缓存（key = 证书路径）。
+///
+/// 详情页每次渲染都会问一次证书信息，而 `openssl x509` 是 fork + PEM 解析，
+/// 比一次 `stat` 贵几个数量级。失效判定用证书与私钥的 `mtime` + `size`：
+/// 上传、重新生成自签证书都会改写文件；站点删除后文件不存在，走
+/// `AppState::site_tls_info` 的「不存在」分支并清掉旧条目。
+static TLS_INFO_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, TlsInfoCacheEntry>>> =
+    std::sync::OnceLock::new();
+
+fn tls_info_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, TlsInfoCacheEntry>> {
+    // 缓存只是性能优化：锁中毒时取回内部数据继续用，不能因此让证书页永久 500。
+    TLS_INFO_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn file_stamp(path: &Path) -> FileStamp {
+    match std::fs::metadata(path) {
+        Ok(meta) => (meta.modified().ok(), meta.len()),
+        Err(_) => (None, 0),
+    }
+}
+
+/// 解析证书文本字段。失败（openssl 缺失/输出异常）时返回空字段，不影响页面。
+fn parse_cert_text(cert: &Path) -> TlsCertText {
+    let mut text = TlsCertText::default();
+    let Ok(out) = std::process::Command::new("openssl")
+        .args([
+            "x509",
+            "-in",
+            &cert.display().to_string(),
+            "-noout",
+            "-subject",
+            "-issuer",
+            "-enddate",
+        ])
+        .output()
+    else {
+        return text;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(v) = line.strip_prefix("subject=") {
+            text.subject = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("issuer=") {
+            text.issuer = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("notAfter=") {
+            text.expires = Some(v.trim().to_string());
+        }
+    }
+    text
+}
+
+/// 命中缓存直接返回，否则跑一次 openssl 再写回。
+///
+/// 锁只保护 map 读写，**不跨 openssl 调用持有**：并发未命中时最多重复解析一次，
+/// 也不会把等锁的线程（含 async worker）堵在 fork 上。
+fn cached_cert_text(cert: &Path, key: &Path) -> TlsCertText {
+    let cert_stamp = file_stamp(cert);
+    let key_stamp = file_stamp(key);
+    {
+        let map = tls_info_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = map.get(cert) {
+            if entry.cert == cert_stamp && entry.key == key_stamp {
+                return entry.text.clone();
+            }
+        }
+    }
+    let text = parse_cert_text(cert);
+    let mut map = tls_info_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() >= TLS_INFO_CACHE_MAX {
+        map.retain(|path, _| path.exists());
+    }
+    map.insert(
+        cert.to_path_buf(),
+        TlsInfoCacheEntry {
+            cert: cert_stamp,
+            key: key_stamp,
+            text: text.clone(),
+        },
+    );
+    text
+}
+
 /// 校验证书与私钥：能解析、且公钥一致。返回中文错误供表单展示。
 fn verify_cert_pair(cert: &Path, key: &Path) -> Result<(), String> {
     let out = |args: &[&str]| -> Result<String, String> {
@@ -5247,29 +5349,16 @@ impl AppState {
             expires: None,
         };
         if info.cert_exists {
-            if let Ok(out) = std::process::Command::new("openssl")
-                .args([
-                    &"x509".to_string(),
-                    &"-in".to_string(),
-                    &cert.display().to_string(),
-                    &"-noout".to_string(),
-                    &"-subject".to_string(),
-                    &"-issuer".to_string(),
-                    &"-enddate".to_string(),
-                ])
-                .output()
-            {
-                let text = String::from_utf8_lossy(&out.stdout).to_string();
-                for line in text.lines() {
-                    if let Some(v) = line.strip_prefix("subject=") {
-                        info.subject = Some(v.trim().to_string());
-                    } else if let Some(v) = line.strip_prefix("issuer=") {
-                        info.issuer = Some(v.trim().to_string());
-                    } else if let Some(v) = line.strip_prefix("notAfter=") {
-                        info.expires = Some(v.trim().to_string());
-                    }
-                }
-            }
+            let text = cached_cert_text(&cert, &key);
+            info.subject = text.subject;
+            info.issuer = text.issuer;
+            info.expires = text.expires;
+        } else {
+            // 站点删除或证书被删：清掉旧条目，避免同名目录下次复用时读到陈旧解析。
+            tls_info_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&cert);
         }
         Ok(info)
     }
@@ -6941,6 +7030,62 @@ mod tests {
             fmt_timeout(std::time::Duration::from_secs(15 * 60)),
             "15 分钟"
         );
+    }
+
+    /// 证书解析缓存只按 `(mtime, size)` 命中：文件改写后必须重新解析，
+    /// 否则换证后 SSL 标签会一直显示旧主体/旧到期时间。
+    #[test]
+    fn tls_cert_text_cache_invalidates_on_file_change() {
+        let dir = std::env::temp_dir().join(format!("skiff-tls-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        std::fs::write(&cert, b"first").expect("写证书");
+        std::fs::write(&key, b"k1").expect("写私钥");
+
+        let (cert_stamp, key_stamp) = (file_stamp(&cert), file_stamp(&key));
+        tls_info_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                cert.clone(),
+                TlsInfoCacheEntry {
+                    cert: cert_stamp,
+                    key: key_stamp,
+                    text: TlsCertText {
+                        subject: Some("CN=old".into()),
+                        issuer: None,
+                        expires: None,
+                    },
+                },
+            );
+
+        // 文件未变：命中缓存，不跑 openssl。
+        assert_eq!(
+            cached_cert_text(&cert, &key).subject.as_deref(),
+            Some("CN=old")
+        );
+
+        // 证书被改写（大小变化）：指纹失效，必须重新解析。
+        std::fs::write(&cert, b"second-certificate").expect("覆写证书");
+        assert_ne!(
+            cached_cert_text(&cert, &key).subject.as_deref(),
+            Some("CN=old"),
+            "文件变化后不得继续返回旧解析结果"
+        );
+
+        // 站点/证书删除：条目不残留（`site_tls_info` 的不存在分支会这样清）。
+        std::fs::remove_file(&cert).expect("删除证书");
+        tls_info_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&cert);
+        assert!(!tls_info_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&cert));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
