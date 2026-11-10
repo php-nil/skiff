@@ -643,6 +643,9 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
 - 升级包不单独签名，签名锚点是渠道 `manifest.json`（§9 决策 4）；因此未配置固定公钥时
   直接拒绝下载（`no_key`），不提供「先下后验」。
 - 拒绝降级与同版本重下：目标版本不高于当前版本即 `downgrade`。
+- 暂存 TTL：`<data_dir>/upgrade/incoming` 与插件 `.incoming` 同口径保留 24h，进程启动与
+  每次下载前各扫一次；只删 `*.tar.gz` 与 `*.part`，刚落的包不会被误删，每个清掉的条目
+  留一条带路径与年龄的日志。
 
 ### 13.3 拒绝语义与审计
 
@@ -666,7 +669,8 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
 - `crates/app/src/catalog/mod.rs`：`UpgradePackage`、`latest_upgrade` / `upgrade_package`
   （只从 `Fresh` 或可用缓存快照取条目）、`download_upgrade`（与插件包共用 `download_entry`）。
 - `crates/app/src/commands/upgrade.rs`：`KERNEL_VERSION`、`host_arch`、拒绝分类、
-  暂存路径、已有文件复核与失败清理。
+  暂存路径、已有文件复核、失败清理与 `INCOMING_TTL` 过期清扫。
+- `crates/core/src/bootstrap.rs`：启动时清理 `<data_dir>/upgrade/incoming`。
 - `crates/web/src/handlers/store.rs`：商店页「内核升级」面板、下载处理器与
   `upgrade.download` 审计。
 - `crates/web/templates/store.html`：升级提示与下载入口；无数据时只渲染空态文案。
@@ -676,7 +680,8 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
 - `crates/app/src/catalog/tests.rs`：无升级数据返回 `None`（安静空态）、按渠道/架构/当前版本
   选最高条目、当前版本不旧于候选时返回 `None`。
 - `crates/app/src/commands/upgrade.rs`：缺公钥不触网、降级/同版本拒绝、成功暂存并校验、
-  二次下载复用不再请求 blob、远端摘要不符不留半包、本地暂存被篡改后丢弃重下。
+  二次下载复用不再请求 blob、远端摘要不符不留半包、本地暂存被篡改后丢弃重下、24h TTL
+  只清过期暂存且不误删新包。
 - `crates/web/src/handlers/store.rs`：升级面板空态与有可用版本时的下载入口渲染。
 - `crates/web/tests/main_flow.rs`：viewer 403 并落 `upgrade.download` deny 审计、缺公钥 400
   并落 `no_key` 审计、无升级数据回商店页并落 `not_found` 审计且无暂存文件。
@@ -684,6 +689,6 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
 ### 13.6 未完成
 
 升级执行段（停服、替换包、数据迁移、回滚与健康检查）、已暂存包在页面上的可见状态与人工
-清理入口、暂存 TTL/配额、升级包与内核二进制的一致性校验、真实签名流水线与内置公钥、
-镜像同步脚本。
+清理入口、暂存配额（TTL 已按 24h 落地）、升级包与内核二进制的一致性校验、真实签名流水线
+与内置公钥、镜像同步脚本。
 

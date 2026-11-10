@@ -140,6 +140,11 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
         &cfg.data_dir,
         skiff_app::commands::store::INCOMING_TTL,
     );
+    // 内核升级包的过期暂存（只读段手动下载会遗留）：同一 24h 口径。
+    skiff_app::commands::upgrade::cleanup_stale_incoming(
+        &cfg.data_dir,
+        skiff_app::commands::upgrade::INCOMING_TTL,
+    );
 
     let docker = Arc::new(DockerService::connect(&cfg.docker_socket));
     if !docker.available() {

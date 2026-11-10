@@ -10,10 +10,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
 use skiff_plugin::install::version_gt;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::catalog::{CatalogService, DownloadError};
 
@@ -25,6 +26,69 @@ pub const UPGRADE_DIR: &str = "upgrade";
 
 /// 暂存子目录：只放待人工处理的升级包与下载中的 `.part`。
 pub const INCOMING_DIR: &str = "incoming";
+
+/// 暂存包保留时长：与插件 `.incoming` 同一 24h 口径。
+pub const INCOMING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// 清理 `<data_dir>/upgrade/incoming` 下超过 `ttl` 的升级包与 `.part`
+/// （进程启动、每次下载前各调用一次）。
+///
+/// 只删本模块命名的 `*.tar.gz` 与 `*.part`，目录里其它文件一律不碰；
+/// 每个被清掉的条目留一条带路径与年龄的日志，便于事后追查。
+pub fn cleanup_stale_incoming(data_dir: &Path, ttl: Duration) -> usize {
+    cleanup_stale_incoming_at(
+        &data_dir.join(UPGRADE_DIR).join(INCOMING_DIR),
+        SystemTime::now(),
+        ttl,
+    )
+}
+
+/// `now` 显式传入以便单测精确控制年龄，不依赖修改 mtime。
+fn cleanup_stale_incoming_at(dir: &Path, now: SystemTime, ttl: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if !(name.ends_with(".tar.gz") || name.ends_with(".part")) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        // 读不到 mtime 或 mtime 在当前时间之后（时钟回拨）时保守跳过，避免误删新文件。
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age < ttl {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                removed += 1;
+                info!(
+                    path = %path.display(),
+                    age_secs = age.as_secs(),
+                    ttl_secs = ttl.as_secs(),
+                    "已清理过期升级暂存包"
+                );
+            }
+            Err(e) => warn!(path = %path.display(), error = %e, "清理过期升级暂存包失败"),
+        }
+    }
+    removed
+}
 
 /// 宿主机架构：清单 `arch` 口径（`x86_64` / `aarch64`），不沿用包内 `amd64`/`arm64`。
 pub fn host_arch() -> &'static str {
@@ -130,6 +194,8 @@ pub fn download(
     catalog: &CatalogService,
     req: &UpgradeDownloadRequest,
 ) -> Result<StagedUpgrade, UpgradeDownloadError> {
+    // 下载前先回收过期暂存：刚落的包 mtime 新，不会被 24h TTL 误删。
+    cleanup_stale_incoming(&req.data_dir, INCOMING_TTL);
     if !catalog.enabled() {
         return Err(UpgradeDownloadError::Disabled);
     }
@@ -508,5 +574,39 @@ mod tests {
         let staged = download(&svc, &fx.request(None)).expect("坏文件应重下");
         assert!(!staged.reused);
         assert_eq!(fs::read(&staged.path).unwrap(), payload);
+    }
+
+    #[test]
+    fn incoming_ttl_sweeps_only_expired_upgrade_files() {
+        let fx = Fixture::new();
+        let dir = fx.incoming();
+        fs::create_dir_all(&dir).unwrap();
+        let pkg = dir.join("skiff-0.2.0-x86_64.tar.gz");
+        let part = dir.join("skiff-0.2.0-x86_64.part");
+        let notes = dir.join("notes.txt");
+        for f in [&pkg, &part, &notes] {
+            fs::write(f, b"x").unwrap();
+        }
+
+        let now = SystemTime::now();
+        // 刚落的包（1h）与未到 TTL（23h）都不能误删。
+        assert_eq!(
+            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(3600), INCOMING_TTL),
+            0
+        );
+        assert_eq!(
+            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(23 * 3600), INCOMING_TTL),
+            0
+        );
+        assert!(pkg.is_file(), "未到 TTL 的升级包不得删除");
+
+        // 25h：只删升级包与 `.part`，目录里的其它文件不动。
+        assert_eq!(
+            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(25 * 3600), INCOMING_TTL),
+            2
+        );
+        assert!(!pkg.exists());
+        assert!(!part.exists());
+        assert!(notes.is_file(), "清理不得动目录里的非暂存文件");
     }
 }
