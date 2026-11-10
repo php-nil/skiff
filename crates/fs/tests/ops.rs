@@ -332,6 +332,31 @@ fn copy_respects_entry_limit() {
     assert_eq!(err.code(), "fs.too_large");
 }
 
+/// 目录复制走「同父临时目录 + 原子 rename」：条目超限中途失败时，目标位置不得
+/// 出现半成品目录，也不得残留 `.skiff-tmp-*` 临时物。
+#[test]
+fn copy_dir_failure_leaves_no_partial_target() {
+    let h = Harness::with_config(|c| c.copy_max_entries = 2);
+    let p = h.plugin("com.example.demo");
+    h.seed(&h.data_path("src/a.txt"), b"a");
+    h.seed(&h.data_path("src/b.txt"), b"b");
+    h.seed(&h.data_path("src/c.txt"), b"c");
+    let err =
+        h.fs.copy(&p, &ctx(), &h.data_path("src"), &h.data_path("dst"), false)
+            .unwrap_err();
+    assert_eq!(err.code(), "fs.too_large");
+    assert!(
+        !std::path::Path::new(&h.data_path("dst")).exists(),
+        "失败时目标目录不得出现"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(h.data())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".skiff-tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时物: {leftovers:?}");
+}
+
 #[test]
 fn rename_rules() {
     let h = Harness::new();

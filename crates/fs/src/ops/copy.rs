@@ -5,11 +5,16 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{io_error, FsError};
 
 use super::io;
+
+/// 临时物名前缀；回收站/复制目录都会在目标同父目录短暂出现，成功后即消失。
+const TEMP_PREFIX: &str = ".skiff-tmp-";
 
 #[derive(Debug, Clone, Copy)]
 pub struct CopyLimits {
@@ -26,12 +31,30 @@ pub struct CopyStats {
 }
 
 /// 复制一个对象（文件/目录/符号链接），`overwrite` 控制已有目标。
+///
+/// 目录复制到**不存在**的目标时走「同父临时目录 + 原子 rename」：中途失败不会在
+/// 目标位置留下半成品目录（`move_object` 的跨盘分支复用同一条路径）。目标已存在
+/// 时保持「合并覆盖」语义——整体原子替换会误删目标里的既有内容。
 pub(crate) fn copy_object(
     src: &Path,
     dst: &Path,
     limits: CopyLimits,
     overwrite: bool,
 ) -> Result<CopyStats, FsError> {
+    let meta = fs::symlink_metadata(src).map_err(|e| io_error(src, e))?;
+    if meta.is_dir() && !path_exists(dst)? {
+        let tmp = temp_sibling(dst);
+        let mut stats = CopyStats::default();
+        if let Err(e) = copy_any(src, &tmp, 0, limits, false, &mut stats) {
+            cleanup_temp(&tmp);
+            return Err(e);
+        }
+        if let Err(e) = fs::rename(&tmp, dst) {
+            cleanup_temp(&tmp);
+            return Err(io_error(dst, e));
+        }
+        return Ok(stats);
+    }
     let mut stats = CopyStats::default();
     copy_any(src, dst, 0, limits, overwrite, &mut stats)?;
     Ok(stats)
@@ -198,7 +221,8 @@ fn preserve_mode(dst: &Path, meta: &fs::Metadata) -> Result<(), FsError> {
     Ok(())
 }
 
-/// 移动对象：同文件系统走 `rename`；跨盘（EXDEV）退回「复制 + 校验 + 删除」。
+/// 移动对象：同文件系统走 `rename`；跨盘（EXDEV）退回「复制到同父临时物 + 原子
+/// rename + 删源」。
 ///
 /// 返回 `(统计, 是否跨盘)`。
 pub(crate) fn move_object(
@@ -208,13 +232,62 @@ pub(crate) fn move_object(
 ) -> Result<(CopyStats, bool), FsError> {
     match fs::rename(src, dst) {
         Ok(()) => Ok((CopyStats::default(), false)),
-        Err(e) if is_cross_device(&e) => {
-            let stats = copy_object(src, dst, limits, false)?;
-            io::remove_object(src)?;
-            Ok((stats, true))
-        }
+        Err(e) if is_cross_device(&e) => move_cross_device(src, dst, limits),
         Err(e) => Err(io_error(src, e)),
     }
+}
+
+/// 跨盘移动：临时物与最终目标同父目录（同一文件系统），复制完成后原子 rename
+/// 到位。复制或 rename 失败清理临时物、源保持原样；删源失败时目标已是完整副本，
+/// 不删目标回滚（回滚可能误删同名的既存数据）。
+fn move_cross_device(
+    src: &Path,
+    dst: &Path,
+    limits: CopyLimits,
+) -> Result<(CopyStats, bool), FsError> {
+    let tmp = temp_sibling(dst);
+    let mut stats = CopyStats::default();
+    if let Err(e) = copy_any(src, &tmp, 0, limits, false, &mut stats) {
+        cleanup_temp(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp, dst) {
+        cleanup_temp(&tmp);
+        return Err(io_error(dst, e));
+    }
+    io::remove_object(src)?;
+    Ok((stats, true))
+}
+
+fn path_exists(p: &Path) -> Result<bool, FsError> {
+    match fs::symlink_metadata(p) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io_error(p, e)),
+    }
+}
+
+/// 目标同父目录下的临时名：`rename` 只在同一文件系统内原子生效，临时物必须与
+/// 最终目标同盘（回收站场景即落在 `<trash>/<yyyy>/<mm>/` 下）。
+fn temp_sibling(dst: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let raw = dst.file_name().and_then(|n| n.to_str()).unwrap_or("skiff");
+    let short: String = raw.chars().take(40).collect();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    dst.with_file_name(format!(
+        "{TEMP_PREFIX}{short}-{}-{nanos}-{seq}",
+        std::process::id()
+    ))
+}
+
+/// 失败清理半成品；临时物可能在首个条目就失败而尚未创建，忽略清理错误
+/// （失败原因已经由返回的错误表达）。
+fn cleanup_temp(tmp: &Path) {
+    let _ = io::remove_object(tmp);
 }
 
 fn is_cross_device(e: &std::io::Error) -> bool {
@@ -225,5 +298,115 @@ fn is_cross_device(e: &std::io::Error) -> bool {
     #[cfg(windows)]
     {
         e.raw_os_error() == Some(17) // ERROR_NOT_SAME_DEVICE
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = e;
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn limits() -> CopyLimits {
+        CopyLimits {
+            max_entries: 100,
+            max_depth: 8,
+        }
+    }
+
+    fn has_temp(dir: &Path) -> bool {
+        fs::read_dir(dir).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(TEMP_PREFIX)
+        })
+    }
+
+    #[test]
+    fn cross_device_move_renames_temp_into_place_and_removes_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), b"AAA").unwrap();
+        fs::write(src.join("sub/b.txt"), b"BBB").unwrap();
+        let dst = dir.path().join("moved");
+
+        let (stats, crossed) = move_cross_device(&src, &dst, limits()).unwrap();
+        assert!(crossed);
+        assert_eq!(stats.files, 2);
+        assert_eq!(stats.entries, 3, "子目录 + 两个文件");
+        assert!(!src.exists(), "源应已删除");
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"AAA");
+        assert_eq!(fs::read(dst.join("sub/b.txt")).unwrap(), b"BBB");
+        assert!(!has_temp(dir.path()), "成功后不应残留临时物");
+    }
+
+    #[test]
+    fn cross_device_move_failure_cleans_temp_and_keeps_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(src.join(name), b"x").unwrap();
+        }
+        let dst = dir.path().join("moved");
+
+        let err = move_cross_device(
+            &src,
+            &dst,
+            CopyLimits {
+                max_entries: 1,
+                max_depth: 4,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "fs.too_large");
+        assert!(src.exists(), "失败时源必须原样保留");
+        assert!(!dst.exists(), "目标不得出现半成品");
+        assert!(!has_temp(dir.path()), "失败后必须清理临时物");
+    }
+
+    #[test]
+    fn copy_dir_to_missing_target_is_atomic_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"AAA").unwrap();
+        let dst = dir.path().join("dst");
+
+        let stats = copy_object(&src, &dst, limits(), false).unwrap();
+        assert_eq!(stats.files, 1);
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"AAA");
+        assert!(src.exists());
+        assert!(!has_temp(dir.path()));
+    }
+
+    #[test]
+    fn copy_dir_failure_does_not_leave_partial_target_or_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(src.join(name), b"x").unwrap();
+        }
+        let dst = dir.path().join("dst");
+
+        let err = copy_object(
+            &src,
+            &dst,
+            CopyLimits {
+                max_entries: 1,
+                max_depth: 4,
+            },
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "fs.too_large");
+        assert!(!dst.exists(), "失败时目标目录不得出现");
+        assert!(!has_temp(dir.path()), "失败后必须清理临时目录");
     }
 }

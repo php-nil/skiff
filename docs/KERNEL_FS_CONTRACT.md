@@ -196,7 +196,7 @@
 - `quota_root` 记录删除时命中的配额根（无规则时为空串），便于审计与迁移核对。
 - 落盘位置：SQLite `trash_entries`（schema v14）。它与 `skiff-fs` 的 `TrashStore` 通过 `skiff-app` 的 `DbTrashStore` 适配，`skiff-fs` 本身不依赖 `skiff-store`。
 
-- `remove` 默认把对象**移动到** `trash_path`（同文件系统 rename；跨盘时复制+校验+删除），并写 `trash_entries`。
+- `remove` 默认把对象**移动到** `trash_path`（同文件系统 rename；跨盘时复制到 `trash_path` 同父临时物 → 原子 rename → 删源，失败清理临时物），并写 `trash_entries`。
 - 原路径元数据（父目录、文件名、模式、属主）完整保留，用于恢复。
 - 同名冲突：目标已存在时拒绝恢复，返回 `fs.conflict`，不覆盖。
 
