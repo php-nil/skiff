@@ -6583,6 +6583,134 @@ async fn job_detail_renders_persisted_logs_and_metadata() {
     );
 }
 
+/// 重试必须复用正常提交的执行器：历史任务重试后会离开 queued 并被结算；
+/// 不支持的类型直接拒绝且不插行，同目标已有活跃任务时明确 409，
+/// 避免僵尸行长期占用 `(target_type,target_id)` 唯一索引。
+#[tokio::test]
+async fn job_retry_reuses_executor_and_rejects_unsupported_kind() {
+    use skiff_app::jobs::JobSubmit;
+
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+    let retry = |id: String| {
+        let app = h.app.clone();
+        let cookie = format!("skiff_dev_session={token}");
+        let csrf = csrf.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/p/jobs/{id}/retry"))
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header(header::COOKIE, cookie)
+                    .body(format!("csrf={csrf}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    // 1) 当前没有执行器的类型：明确拒绝，且不能留下一条 queued 行占索引。
+    let legacy = h
+        .state
+        .jobs()
+        .submit(JobSubmit {
+            kind: "site.create".into(),
+            target_type: "site".into(),
+            target_id: "retry.example.com".into(),
+            title: "创建站点 retry.example.com".into(),
+            params: serde_json::json!({ "name": "retry.example.com" }),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: true,
+        })
+        .unwrap();
+    h.state.jobs().cancel(&legacy.id).unwrap();
+    let before = h.state.jobs().list(200).len();
+    let resp = retry(legacy.id.clone()).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "没有执行器的类型必须拒绝重试"
+    );
+    assert_eq!(
+        h.state.jobs().list(200).len(),
+        before,
+        "拒绝重试时不得插入新行"
+    );
+
+    // 2) 有执行器的类型：新行 retry_of 指向原行，且会被执行器结算而不是永远 queued。
+    let orig = h
+        .state
+        .jobs()
+        .submit(JobSubmit {
+            kind: "runtime.ext.apply".into(),
+            target_type: "runtime".into(),
+            target_id: "php-8.5".into(),
+            title: "更新 PHP 8.5 的扩展".into(),
+            params: serde_json::json!({"runtime_id": "php-8.5", "ext_keys": ["redis"]}),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: true,
+        })
+        .unwrap();
+    h.state.jobs().cancel(&orig.id).unwrap();
+    let resp = retry(orig.id.clone()).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "重试应创建新任务并回跳"
+    );
+
+    let new_id = h
+        .state
+        .jobs()
+        .list(200)
+        .into_iter()
+        .find(|j| j.retry_of.as_deref() == Some(orig.id.as_str()))
+        .map(|j| j.id)
+        .expect("必须存在 retry_of 指向原任务的新行");
+    let mut settled = None;
+    for _ in 0..150 {
+        let cur = h.state.jobs().get(&new_id).unwrap();
+        if !cur.active() {
+            settled = Some(cur);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let settled = settled.expect("重试任务必须被执行器结算，不能永远停在 queued");
+
+    // 3) 同目标仍有活跃任务时再次重试：唯一索引明确拒绝并说明原因，不排队。
+    let blocker = h
+        .state
+        .jobs()
+        .submit(JobSubmit {
+            kind: "runtime.ext.apply".into(),
+            target_type: "runtime".into(),
+            target_id: "php-8.5".into(),
+            title: "占用同目标".into(),
+            params: serde_json::json!({"runtime_id": "php-8.5", "ext_keys": ["redis"]}),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: true,
+        })
+        .unwrap();
+    let resp = retry(orig.id.clone()).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "同目标已有活跃任务必须明确拒绝（{}）",
+        settled.status.label()
+    );
+    h.state.jobs().cancel(&blocker.id).unwrap();
+}
+
 /// 没有任何日志的作业：详情页与弹窗接口都要明确显示「暂无日志」。
 #[tokio::test]
 async fn job_detail_empty_logs_show_placeholder() {

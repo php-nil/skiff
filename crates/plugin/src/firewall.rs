@@ -77,6 +77,8 @@ const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const TEE: &str = "/usr/bin/tee";
 const RM: &str = "/usr/bin/rm";
 const APT_GET: &str = "/usr/bin/apt-get";
+const LS: &str = "/bin/ls";
+const CAT: &str = "/bin/cat";
 
 const IPT_CHAIN: &str = "SKIFF";
 const JAIL_DIR: &str = "/etc/fail2ban/jail.d";
@@ -287,10 +289,7 @@ async fn fail2ban_status<H: FirewallHost>(host: &H) -> Result<Value, FirewallErr
         Err(e) => (false, format!("无法查询服务状态：{}", e.message)),
     };
     let jails = if running {
-        command_output(host, FAIL2BAN_CLIENT, &["status".to_string()])
-            .await
-            .map(|o| parse_jail_list(&o.stdout))
-            .unwrap_or_default()
+        active_jails(host).await
     } else {
         Vec::new()
     };
@@ -331,16 +330,12 @@ async fn require_fail2ban_installed<H: FirewallHost>(
 
 async fn fail2ban_start<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
     require_fail2ban_installed(host, "启动").await?;
-    exec_ok(
-        host,
-        SYSTEMCTL,
-        &svec(&["enable", "--now", "fail2ban"]),
-        None,
-        120,
-    )
-    .await
-    .map_err(|e| FirewallError::internal(format!("启动 fail2ban 失败：{}", e.message)))?;
-    fail2ban_status(host).await
+    // `enable --now` 对已在运行的服务是 no-op，改过的 jail.d 不会被重读；
+    // 开机自启与「本次生效」拆成两步，restart 负责后者。
+    exec_ok(host, SYSTEMCTL, &svec(&["enable", "fail2ban"]), None, 120)
+        .await
+        .map_err(|e| FirewallError::internal(format!("启动 fail2ban 失败：{}", e.message)))?;
+    restart_and_verify(host).await
 }
 
 async fn fail2ban_stop<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
@@ -438,12 +433,11 @@ async fn fail2ban_install<H: FirewallHost>(host: &H) -> Result<Value, FirewallEr
         )
         .await?;
     }
-    let enable: Vec<String> = ["enable", "--now", "fail2ban"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    exec_ok(host, SYSTEMCTL, &enable, None, 300).await?;
-    fail2ban_status(host).await
+    // 包安装的 postinst 会先把服务拉起来，此时 `enable --now` 是 no-op：
+    // 刚写的 jail.d 不会被读取，sshd 之类镜像自带 jail 会继续生效。
+    // 因此这里只负责开机自启，生效交给 restart_and_verify 的显式重启与复核。
+    exec_ok(host, SYSTEMCTL, &svec(&["enable", "fail2ban"]), None, 300).await?;
+    restart_and_verify(host).await
 }
 
 async fn fail2ban_jail_ensure<H: FirewallHost>(
@@ -1198,6 +1192,149 @@ async fn restart_fail2ban<H: FirewallHost>(host: &H) -> Result<(), FirewallError
     exec_ok(host, SYSTEMCTL, &args, None, 300).await.map(|_| ())
 }
 
+async fn append_managed_file<H: FirewallHost>(
+    host: &H,
+    path: &str,
+    content: &str,
+) -> Result<(), FirewallError> {
+    exec_ok(host, TEE, &svec(&["-a", path]), Some(content), 30)
+        .await
+        .map(|_| ())
+}
+
+/// 本能力面托管配置中显式启用的 jail 集合（`skiff-*.conf` 里 `enabled = true`）。
+///
+/// 只读文件名带 `JAIL_PREFIX` 的配置：宿主机自己的 `jail.local` / `defaults-debian.conf`
+/// 不参与判定，避免把别人的选择当成我们的预期。
+async fn managed_jails<H: FirewallHost>(host: &H) -> Vec<String> {
+    let listing = match command_output(host, LS, &svec(&["-1", JAIL_DIR])).await {
+        Ok(o) if o.success => o.stdout,
+        _ => return Vec::new(),
+    };
+    let mut jails: Vec<String> = Vec::new();
+    for name in listing.lines().map(str::trim) {
+        if !name.starts_with(JAIL_PREFIX) || !name.ends_with(".conf") {
+            continue;
+        }
+        let path = format!("{JAIL_DIR}/{name}");
+        let text = match command_output(host, CAT, &[path]).await {
+            Ok(o) if o.success => o.stdout,
+            _ => continue,
+        };
+        for jail in enabled_jails(&text) {
+            if !jails.contains(&jail) {
+                jails.push(jail);
+            }
+        }
+    }
+    jails.sort();
+    jails
+}
+
+/// 解析 ini 里 `enabled = true` 的段名（支持 fail2ban 的 `true/yes/1/on` 写法）。
+fn enabled_jails(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut section: Option<String> = None;
+    for raw in text.lines() {
+        let line = raw.split(['#', ';']).next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            section = rest.strip_suffix(']').map(|s| s.trim().to_string());
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("enabled") {
+            continue;
+        }
+        let on = matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "true" | "yes" | "1" | "on"
+        );
+        if on {
+            if let Some(name) = &section {
+                out.push(name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// 服务实际启用的 jail（`fail2ban-client status` 的 Jail list）。
+async fn active_jails<H: FirewallHost>(host: &H) -> Vec<String> {
+    command_output(host, FAIL2BAN_CLIENT, &svec(&["status"]))
+        .await
+        .map(|o| parse_jail_list(&o.stdout))
+        .unwrap_or_default()
+}
+
+/// 托管默认配置是否存在：存在才说明本能力面拥有 jail 集合的决定权。
+async fn managed_defaults_text<H: FirewallHost>(host: &H) -> Option<String> {
+    let path = format!("{JAIL_DIR}/{JAIL_PREFIX}defaults.conf");
+    match command_output(host, CAT, &[path]).await {
+        Ok(o) if o.success => Some(o.stdout),
+        _ => None,
+    }
+}
+
+/// 配置里是否已经出现过该段（不区分 true/false）。
+fn has_section(text: &str, jail: &str) -> bool {
+    let target = format!("[{jail}]");
+    text.lines().any(|l| l.trim() == target)
+}
+
+/// 显式重启 fail2ban 并复核实际启用的 jail 集合。
+///
+/// 重启是必须的：包安装的 postinst 已经拉起服务，`enable --now` 不会让新写的
+/// `jail.d/*.conf` 生效。重启后对照本能力面托管配置：
+/// - 预期 = `skiff-*.conf` 里 `enabled = true` 的段；
+/// - 多出来的 jail（典型是 Debian 镜像自带的 `sshd`）先 `fail2ban-client stop`
+///   立即生效；`skiff-defaults.conf` 里还没写过该段时，再追加 `enabled = false`
+///   让「关掉」落到配置层，避免下次重启又回来。
+///
+/// 只有在托管默认配置存在时才做这一步：宿主机原本就装了 fail2ban 并自行配置
+/// 的 jail 不属于本能力面的管辖范围，不能被静默关掉。
+async fn restart_and_verify<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
+    restart_fail2ban(host).await?;
+    let mut disabled: Vec<String> = Vec::new();
+    if let Some(defaults) = managed_defaults_text(host).await {
+        let expected = managed_jails(host).await;
+        let unexpected: Vec<String> = active_jails(host)
+            .await
+            .into_iter()
+            .filter(|j| !expected.contains(j))
+            .collect();
+        if !unexpected.is_empty() {
+            let mut extra = String::new();
+            for jail in &unexpected {
+                // stop 失败不阻断：配置层关掉后重启仍能生效。
+                let _ = exec_ok(host, FAIL2BAN_CLIENT, &svec(&["stop", jail]), None, 60).await;
+                if !has_section(&defaults, jail) {
+                    extra.push_str(&format!("[{jail}]\nenabled = false\n"));
+                }
+            }
+            if !extra.is_empty() {
+                append_managed_file(
+                    host,
+                    &format!("{JAIL_DIR}/{JAIL_PREFIX}defaults.conf"),
+                    &extra,
+                )
+                .await?;
+            }
+            restart_fail2ban(host).await?;
+            disabled = unexpected;
+        }
+    }
+    let mut result = fail2ban_status(host).await?;
+    if !disabled.is_empty() {
+        result["disabled_jails"] = json!(disabled);
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1370,6 +1507,181 @@ udp dport 53 drop comment \"skiff-101\" # handle 5
             .unwrap_err();
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(err.message.contains("未安装"));
+    }
+
+    /// 只把 `enabled = true` 的段算作「预期启用」；带注释/引号/大小写都要能读。
+    #[test]
+    fn enabled_jails_reads_enabled_sections_only() {
+        let text = "\
+[sshd]
+enabled = false
+
+[pure-ftpd]
+enabled = true
+port = 21
+
+[skip-me]
+enabled = no
+";
+        assert_eq!(enabled_jails(text), vec!["pure-ftpd"]);
+        assert!(has_section(text, "sshd"));
+        assert!(!has_section(text, "nginx"));
+    }
+
+    /// 装完必须显式 restart；复核发现 sshd 仍在运行时 stop，且不重复追加已有关闭段。
+    #[tokio::test]
+    async fn fail2ban_install_restarts_and_disables_unexpected_jail() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let installed = Arc::new(AtomicBool::new(false));
+        let sshd = Arc::new(AtomicBool::new(true));
+        let (flag, sshd_flag) = (installed.clone(), sshd.clone());
+        let host = FakeHost::new(move |cmd, args| {
+            if cmd.contains("fail2ban-client") {
+                match args.first().map(String::as_str) {
+                    Some("--version") => {
+                        return if flag.load(Ordering::SeqCst) {
+                            ok("Fail2Ban v1.0.2")
+                        } else {
+                            CommandOutput {
+                                success: false,
+                                stdout: String::new(),
+                                stderr: "not found".into(),
+                            }
+                        };
+                    }
+                    Some("stop") => {
+                        sshd_flag.store(false, Ordering::SeqCst);
+                        return ok("");
+                    }
+                    _ => {
+                        return if sshd_flag.load(Ordering::SeqCst) {
+                            ok("Status\n|- Number of jail:\t1\n`- Jail list:\tsshd\n")
+                        } else {
+                            ok("Status\n|- Number of jail:\t0\n`- Jail list:\t\n")
+                        };
+                    }
+                }
+            }
+            if cmd.contains("apt-get") {
+                flag.store(true, Ordering::SeqCst);
+                return ok("");
+            }
+            if cmd.contains("systemctl") {
+                return ok("active\n");
+            }
+            if cmd == LS {
+                return ok("defaults-debian.conf\nskiff-defaults.conf\n");
+            }
+            if cmd == CAT {
+                return ok("[sshd]\nenabled = false\n");
+            }
+            ok("")
+        });
+
+        let res = dispatch(&host, "fail2ban.install", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(res["disabled_jails"], json!(["sshd"]));
+        assert!(res["jails"].as_array().unwrap().is_empty());
+
+        let calls = host.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.contains("enable fail2ban")));
+        let restarts = calls
+            .iter()
+            .filter(|c| c.contains("restart fail2ban"))
+            .count();
+        assert!(restarts >= 2, "写入配置后必须重启两次并复核：{calls:?}");
+        assert!(calls.iter().any(|c| c.ends_with("stop sshd")));
+        // 默认配置里已有 [sshd] 段，不应再追加一份重复段。
+        assert!(
+            !calls.iter().any(|c| c.contains("tee -a")),
+            "已有 [sshd] 段时不应重复追加：{calls:?}"
+        );
+    }
+
+    /// 启动同样要 restart（enable --now 对已运行服务是 no-op），缺失的关闭段要补写。
+    #[tokio::test]
+    async fn fail2ban_start_restarts_and_appends_missing_disable_section() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let sshd = Arc::new(AtomicBool::new(true));
+        let sshd_flag = sshd.clone();
+        let host = FakeHost::new(move |cmd, args| {
+            if cmd.contains("fail2ban-client") {
+                match args.first().map(String::as_str) {
+                    Some("--version") => return ok("Fail2Ban v1.0.2"),
+                    Some("stop") => {
+                        sshd_flag.store(false, Ordering::SeqCst);
+                        return ok("");
+                    }
+                    _ => {
+                        return if sshd_flag.load(Ordering::SeqCst) {
+                            ok("Status\n|- Number of jail:\t1\n`- Jail list:\tsshd\n")
+                        } else {
+                            ok("Status\n|- Number of jail:\t0\n`- Jail list:\t\n")
+                        };
+                    }
+                }
+            }
+            if cmd.contains("systemctl") {
+                return ok("active\n");
+            }
+            if cmd == LS {
+                return ok("skiff-defaults.conf\n");
+            }
+            if cmd == CAT {
+                return ok("# skiff managed defaults\n");
+            }
+            ok("")
+        });
+
+        let res = dispatch(&host, "fail2ban.start", &json!({})).await.unwrap();
+        assert_eq!(res["disabled_jails"], json!(["sshd"]));
+        let calls = host.calls.lock().unwrap().clone();
+        let restarts = calls
+            .iter()
+            .filter(|c| c.contains("restart fail2ban"))
+            .count();
+        assert_eq!(restarts, 2, "停用后要再重启一次：{calls:?}");
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("tee -a /etc/fail2ban/jail.d/skiff-defaults.conf")));
+    }
+
+    /// 宿主机原有 fail2ban（没有本能力面的 defaults）里的 jail 不能被静默关掉。
+    #[tokio::test]
+    async fn fail2ban_start_leaves_host_jails_alone_without_managed_defaults() {
+        let host = FakeHost::new(|cmd, args| {
+            if cmd.contains("fail2ban-client") {
+                return match args.first().map(String::as_str) {
+                    Some("--version") => ok("Fail2Ban v1.0.2"),
+                    _ => ok("Status\n|- Number of jail:\t1\n`- Jail list:\tsshd\n"),
+                };
+            }
+            if cmd.contains("systemctl") {
+                return ok("active\n");
+            }
+            if cmd == CAT {
+                return CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "No such file or directory".into(),
+                };
+            }
+            ok("")
+        });
+        let res = dispatch(&host, "fail2ban.start", &json!({})).await.unwrap();
+        assert_eq!(res["jails"], json!(["sshd"]));
+        assert!(res.get("disabled_jails").is_none());
+        let calls = host.calls.lock().unwrap().clone();
+        assert!(!calls.iter().any(|c| c.contains("stop ")), "{calls:?}");
+        assert!(
+            calls.iter().any(|c| c.contains("restart fail2ban")),
+            "启动必须重启：{calls:?}"
+        );
     }
 
     #[tokio::test]

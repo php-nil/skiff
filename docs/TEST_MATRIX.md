@@ -29,7 +29,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | A. 身份与会话 | 10 | 1 项本机可验（AUTH-06），9 项必须上机 | `cargo test -p skiff-identity`；测试机 curl 登录链路 |
 | B. 菜单与导航 | 8 | 1 项本机可验（MENU-01 常量单测），7 项必须上机 | 路由/模板断言；浏览器手风琴与布局 |
 | C. 插件体系 | 10 | 1 项本机可验（PLUGIN-02），9 项必须上机 | `cargo test -p skiff-plugin`；`.wbpkg` 安装与 iframe |
-| D. 网站与运行环境 | 13 | 1 项本机可验（SITE-13 模板/路由断言），12 项必须上机（crate 单测兜底） | `cargo test -p skiff-web site_detail`；测试机建站与容器 |
+| D. 网站与运行环境 | 14 | 2 项本机可验（SITE-13 模板/路由断言、SITE-14 初始化脚本断言），12 项必须上机（crate 单测兜底） | `cargo test -p skiff-web site_detail`、`cargo test -p skiff-app php_init_script`；测试机建站与容器 |
 | E. Web 服务 | 8 | 0 项本机可验，8 项必须上机（crate 单测兜底） | `cargo test -p skiff-app nginx`；测试机 nginx -t 与日志 |
 | F. 文件系统原语 | 13 | 6 项本机可验（FS-02～05、FS-07、FS-13 集成），7 项必须上机（FS-10～12 为第二步新增） | `pwsh tools/gate.ps1 -Task test -Pkg skiff-fs`；插件能力面；管理员文件页 |
 | G. 调度器 | 9 | 3 项本机可验（TASK-05～07），6 项需上机（TASK-09 另有 `skiff-cron` 单测兜底） | `cargo test -p skiff-sched -p skiff-app -p skiff-cron`；任务页与 cron 插件页 |
@@ -38,7 +38,8 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | J. 站点压测与资源开销 | 8 | 0 项本机可验，8 项必须上机（测试机两站并发 + `/proc` 采样） | `tools/perf/*`；nginx / PHP-FPM / 反代三路径；`skiff` 进程与插件子进程 |
 | K. FTP 与宿主机文件服务 | 10 | 3 项本机可验（FTP-02、FTP-06 配置校验、迁移路径收集单测），7 项必须上机（FTP-06 另有持久化断言需上机） | `cargo test -p skiff --bin skiff kernel::ftp`；测试机 pure-ftpd + PHP 容器 |
 | L. 后台端口 / 入口前缀 / TLS | 6 | 2 项本机可验（PANEL-02/03 校验单测，PANEL-06 有 `skiff` 单测兜底），4 项必须上机 | `cargo test -p skiff-app -p skiff`；测试机改端口/前缀/TLS 三形态 |
-| M. 防火墙 / fail2ban / 进程与网络 | 14 | 3 项本机单测（FW-03、MON-N01 解析），其余必须上机；**本轮全部未编译、未执行** | `cargo test -p skiff-plugin firewall`；`plugins/` 第二 workspace 单测；测试机 nft/iptables/fail2ban + `/proc` |
+| M. 防火墙 / fail2ban / 进程与网络 | 15 | 3 项本机单测（FW-03、FW-18、MON-N01 解析），其余必须上机 | `cargo test -p skiff-plugin firewall`；`plugins/` 第二 workspace 单测；测试机 nft/iptables/fail2ban + `/proc` |
+| N. 任务中心作业 | 3 | 3 项本机可验（`main_flow` 集成测试），需上机复验执行器真实行为 | `cargo test -p skiff-web --test main_flow job_retry`；测试机运行环境安装/扩展任务 |
 
 ## A. 身份与会话
 
@@ -140,7 +141,7 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 
 ## D. 网站与运行环境
 
-> 重跑触发：改了建站表单、vhost 生成、域名/别名、站点目录、运行环境安装/启停/解绑、扩展、socket/端口、SSL 或删除保护。
+> 重跑触发：改了建站表单、vhost 生成、域名/别名、站点目录、运行环境安装/启停/解绑、扩展、socket/端口、SSL、删除保护、PHP 容器身份初始化脚本或池模板。
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -157,6 +158,7 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 | SITE-11 | socket、端口与网络模式 | `[上机]` PHP 与 nginx 运行中 | 检查 `/www/runtime/php/<name>/php-fpm.sock` 权限与属主；`docker inspect skiff-web-nginx` 与 PHP 容器；`ss -ltnp` 看 80 | socket 0660 `0:65534`（root:gid 65534）；PHP 容器挂载 `web_root`（读写）与 pool 配置（只读）；nginx `NetworkMode=host` 且监听 80；面板不占用 80 | □通过 / □失败 | `crates/app/src/sites.rs`（`SOCKET_MODE`/`SOCKET_GID`、`nginx_spec`、`php_spec_for`）、`deploy/install.sh`、`docs/DEPLOY_TEST.md` §1.1 |
 | SITE-12 | 证书与强制 HTTPS | `[上机]` 站点已建 | 生成自签证书；上传证书；开启强制跳转；访问 HTTP 与 HTTPS | 证书落 `/www/sites/<domain>/ssl/`；HTTPS 200；HTTP 301/308 到 HTTPS；`docker exec skiff-web-nginx nginx -t` 通过 | □通过 / □失败 | `crates/app/src/sites.rs`、`templates/site_detail.html` |
 | SITE-13 | 高风险动作只在「管理」页签 | `[本机]` 模板断言；`[上机]` 已登录 admin 且至少 1 个站点 | 打开站点详情概览，检查顶部操作区；再切到「管理」页签启停一次并删除 | 顶部只有访问/日志/默认与返回，无「停止/启动」「删除站点」；管理页签内两种动作均可执行；启停后 303 回 `?tab=manage` 并显示「站点已启动/已停止」；非管理员看不到「管理」页签 | □通过 / □失败 | `crates/web/templates/site_detail.html`、`crates/web/src/handlers/sites.rs`（`render_detail` 的 tab 白名单、`action` 回跳）、`crates/web/tests/main_flow.rs`（`site_detail_risk_actions_only_in_manage_tab`） |
+| SITE-14 | PHP 池 `nobody` 组别名（Debian/Alpine 两家族） | `[本机]` 单测；`[上机]` 两家族镜像各一个运行环境 | 分别用 `php:8.5-fpm`（Debian）与 `php:8.5-fpm-alpine` 建实例并启动；`docker logs` 查 FPM 启动；`docker exec … getent group nobody`、`ls -l /www/runtime/php-*/php-fpm.sock` | 两家族都 running；`getent group nobody` = 65534；socket `root:nobody 0660`；Debian 系无 `cannot get gid for group 'nobody'`；自建镜像同样成立（脚本不按家族分支） | □通过 / □失败 | `crates/app/src/sites.rs`（`PHP_ACCOUNT_INIT_SCRIPT`，单测 `php_init_script_resolves_nobody_from_gid_not_family_name`）、`crates/app/src/sites_vhost.rs` |
 
 最小回归命令：
 
@@ -515,11 +517,12 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 | FW-01 | 能力面授权拒绝 | `[本机]` 单测 | 以无 `firewall:*` 授权的插件调 `firewall_call("status")` | 403，审计 `firewall.deny.status`；不执行任何宿主命令 | □通过 / □失败 | `crates/core/src/kernel/firewall.rs`、`crates/plugin/src/firewall.rs` |
 | FW-02 | 规则增删只动自有作用域 | `[上机]` 有 nft 或 iptables | `rule.add` 一条 tcp/端口规则；`rules.list` 核对；`rule.remove` 自家 id | 规则出现在 `inet skiff`/`SKIFF` 链且带 `skiff-` 标识；删除后消失；宿主其它规则不变 | □通过 / □失败 | `crates/plugin/src/firewall.rs` |
 | FW-03 | 非法参数拒绝 | `[本机]` 单测 | 依次传非法端口 `0`/`70000`/`9-3`、非法 CIDR、非法 jail 名、非法 backend、非法 id | 全部 400，且不写规则/不写文件 | □通过 / □失败 | `crates/plugin/src/firewall.rs`（`valid_*`、`RuleSpec::parse`） |
-| FW-04 | fail2ban 安装与复用 | `[上机]` 未装 fail2ban | `fail2ban.install`；再调一次 | 首次安装并写 `skiff-defaults.conf` 关闭 sshd；第二次复用不重复安装 | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_install` |
+| FW-04 | fail2ban 安装与复用 | `[本机]` 单测 + `[上机]` 未装 fail2ban | `fail2ban.install`；装完立即 `fail2ban-client status`；再调一次 | 首次安装写 `skiff-defaults.conf`、`enable` 后显式 `restart`；`status` 的 jail 列表不含 `sshd`；第二次复用不重复安装且不动宿主既有 jail | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_install/restart_and_verify` |
 | FW-05 | jail 生命周期 | `[上机]` fail2ban 已装 | `fail2ban.jail.ensure` 建 `pure-ftpd`；`fail2ban.banned`；`fail2ban.jail.remove` | 生成 `/etc/fail2ban/jail.d/skiff-pure-ftpd.conf` 并重启；封禁列表可读；移除后文件消失，其它 `skiff-*` 不受影响 | □通过 / □失败 | `crates/plugin/src/firewall.rs` |
 | FW-06 | 非 Native 形态拒绝 | `[本机]` 受限形态配置 | 调 `firewall_call("status")` | 503，审计 result=fail | □通过 / □失败 | `crates/core/src/kernel/firewall.rs` |
 | FW-15 | fail2ban 三态与可读原因 | `[本机]` 单测 + `[上机]` | 分别构造未安装、已安装未运行、运行中三种起点，打开 fail2ban 页 | `state` 分别为 `missing` / `stopped` / `running`；未运行时 `reason` 非空且可读；不停留在旧按钮状态 | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_status/state_reason` |
-| FW-16 | fail2ban 显式启停 | `[本机]` 单测 + `[上机]` | 点「启动」/「停止」；未安装时直接调 `fail2ban.start` | 执行 `systemctl enable --now` / `disable --now`；返回真实状态；未安装 503 且 message 可读 | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_start/fail2ban_stop` |
+| FW-16 | fail2ban 显式启停 | `[本机]` 单测 + `[上机]` | 点「启动」/「停止」；未安装时直接调 `fail2ban.start` | `start` = `systemctl enable` + `restart`，重启后复核 jail（非预期 jail 被 stop/disable，返回可含 `disabled_jails`）；`stop` = `disable --now`；未安装 503 且 message 可读 | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_start/fail2ban_stop/restart_and_verify` |
+| FW-18 | 插件 RPC 状态码与语义一致 | `[本机]` 单测 | `cargo test -p skiff-web --lib rpc_error`；`[上机]` 未安装 fail2ban 时经面板调 `fail2ban.start`/`stop`/`uninstall` | 内核 503 原样返回 503（正文仍为内核原文）；401/403/404/409/500/504/507 各自透传；仅未识别状态与业务错误归 400 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs::rpc_error/kernel_http_status`（`rpc_error_passes_kernel_status_through`） |
 | FW-17 | fail2ban 显式卸载 | `[本机]` 单测 + `[上机]` | 点「卸载」并确认；查审计与 `dpkg -l fail2ban` | 停服务、删除 `skiff-defaults.conf`、`apt-get purge`；返回 `state=missing`；审计 `firewall.fail2ban.uninstall`；其它 `skiff-<jail>.conf` 保留 | □通过 / □失败 | `crates/plugin/src/firewall.rs::fail2ban_uninstall`、`plugins/firewall/ui/app.js` |
 | MON-P01 | 进程列表字段与排序 | `[上机]` monitor 已装且授权 `path:/proc` | 打开「进程」页；点 CPU/内存/PID/启动时间表头 | PID/用户/CPU%/内存/启动时间/状态/命令行齐全；排序方向可切换；首刷 CPU% 为「—」 | □通过 / □失败 | `plugins/monitor/src/main.rs::processes`、`plugins/monitor/ui/process.html` |
 | MON-P02 | 过滤与分页 | `[上机]` 同上 | 搜索 PID/用户/命令；输入用户过滤；切换每页条数；翻页 | 结果与筛选一致；分页总数/页码正确；`truncated` 时提示扫描上限 | □通过 / □失败 | `plugins/monitor/src/main.rs::processes`、`plugins/monitor/ui/app.js` |
@@ -537,7 +540,20 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/<旧前缀>/"
 cargo test --manifest-path plugins/Cargo.toml -p skiff-plugin-monitor
 cargo test --manifest-path plugins/Cargo.toml -p skiff-plugin-firewall
 cargo test -p skiff-plugin firewall
+cargo test -p skiff-web --test main_flow job_retry
+cargo test -p skiff-app php_init_script
 ```
+
+## N. 任务中心作业（2026-11-10 新增）
+
+> 重跑触发：改了 `crates/web/src/handlers/jobs.rs`、`crates/app/src/sites.rs` 的作业提交/重试分支、
+> `crates/store/src/db/jobs.rs` 的唯一索引或执行器 spawn。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| JOB-01 | 重试复用正常执行器 | `[本机]` 集成测试 + `[上机]` 一条失败任务 | 对失败任务点「重试」；观察任务中心状态与日志 | 新任务 `retry_of` 指向原任务，离开 `queued` 并落 `exit_code`/`error_class`；不再永久占索引 | □通过 / □失败 | `crates/app/src/sites.rs::retry_job`、`crates/web/src/handlers/jobs.rs::retry`、`crates/web/tests/main_flow.rs::job_retry_reuses_executor_and_rejects_unsupported_kind` |
+| JOB-02 | 同目标冲突可解释 | `[本机]` 集成测试 + `[上机]` | 重试进行中再对同目标提交/重试 | 明确 409，文案含「该对象已有任务在执行…」，不排队、不插新行 | □通过 / □失败 | `crates/store/src/db/jobs.rs`（`idx_jobs_active_target`）、`crates/web/src/handlers/jobs.rs` |
+| JOB-03 | 无执行器类型拒绝 | `[本机]` 集成测试 | 对 `site.create` 等无执行器 kind 的历史任务点「重试」 | 400 + 「不支持重试」，作业列表不新增行 | □通过 / □失败 | `crates/app/src/sites.rs::retry_job`（`RetryPlan` 解析） |
 
 ## 附：待核对项结论（2026-11-07 已全部定性）
 

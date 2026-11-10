@@ -23,6 +23,7 @@ use skiff_app::jobs::{CancelOutcome, Job, JobStatus};
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
+use crate::state::sites::SiteError;
 use crate::state::AppState;
 use crate::templates::{JobDetailPage, JobDetailView, JobRowView, JobsPage};
 use crate::util::{form_first, parse_form};
@@ -275,9 +276,14 @@ pub async fn retry(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
     let job = state
-        .jobs()
-        .retry(&id, &user.user.username, user.user.role.as_str(), &ip)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .retry_job(&id, &user.user.username, user.user.role.as_str(), &ip)
+        .await
+        .map_err(|e| match e {
+            SiteError::BadRequest(m) => AppError::BadRequest(m),
+            SiteError::Conflict(m) => AppError::Conflict(m),
+            SiteError::Unavailable(m) => AppError::Unavailable(m),
+            SiteError::Internal(m) => AppError::Internal(m),
+        })?;
     let _ = state
         .db()
         .audit(&user.user.username, &ip, "job.retry", &id, "ok", &job.id);

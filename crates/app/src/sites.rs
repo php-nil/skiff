@@ -148,6 +148,22 @@ fi
 mkdir -p /tmp/skiff-opcache
 chown "$SITE_USER:$SITE_USER" /tmp/skiff-opcache
 
+# 池模板固定写 listen.group = nobody，宿主侧 SOCKET_GID 也是 65534。
+# Debian 系 gid 65534 的组名是 nogroup，getgrnam("nobody") 会失败并让 FPM 起不来。
+# 这里不按镜像家族猜组名，而是保证「nobody」这个名字解析到 65534：
+# 65534 已被 nogroup 占用时用 groupadd -o 建同 gid 别名，自建镜像也适用。
+SOCKET_GID=65534
+if ! grep -q '^nobody:' /etc/group; then
+    groupadd -o -g "$SOCKET_GID" nobody 2>/dev/null \
+        || addgroup -g "$SOCKET_GID" -S nobody 2>/dev/null \
+        || printf 'nobody:x:%s:\n' "$SOCKET_GID" >> /etc/group
+fi
+CURRENT_GID=$(awk -F: '$1 == "nobody" { print $3; exit }' /etc/group)
+if [ "$CURRENT_GID" != "$SOCKET_GID" ]; then
+    echo "[skiff] 组 nobody 已存在但 gid=$CURRENT_GID，要求 $SOCKET_GID" >&2
+    exit 1
+fi
+
 exec php-fpm
 "#;
 /// `fastcgi_params` 的容器内绝对路径。
@@ -1008,6 +1024,21 @@ pub struct SiteDirListing {
     pub parent: String,
     pub at_root: bool,
     pub entries: Vec<SiteDirEntry>,
+}
+
+#[derive(Debug, Clone)]
+/// 重试任务的执行计划：在插入新行之前算好，避免留下没有执行器的 queued 僵尸。
+enum RetryPlan {
+    Install,
+    Single {
+        token: String,
+        add: bool,
+    },
+    Apply(Vec<String>),
+    Batch {
+        desired: Vec<String>,
+        targets: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -3328,6 +3359,147 @@ impl AppState {
                 .await;
         });
         Ok(changed.len())
+    }
+
+    /// 重试历史任务：与正常提交共用同一组执行器，避免「只插行不执行」留下 queued 僵尸。
+    ///
+    /// - 只有当前代码仍有执行器的类型可重试；其余直接拒绝，**不插入新行**。
+    /// - 同目标已有活跃任务时，`JobService::retry` 经唯一索引返回 Busy（明确拒绝并给原因），
+    ///   不做排队；取消旧任务后即可再次提交。
+    pub async fn retry_job(
+        self: &Arc<Self>,
+        id: &str,
+        actor: &str,
+        role: &str,
+        ip: &str,
+    ) -> Result<app_jobs::Job, SiteError> {
+        let old = self
+            .jobs()
+            .get(id)
+            .ok_or_else(|| SiteError::BadRequest(format!("任务不存在：{id}")))?;
+        let runtime_id = old
+            .params
+            .get("runtime_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(old.target_id.as_str())
+            .to_string();
+        let ext_keys: Vec<String> = old
+            .params
+            .get("ext_keys")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // 先算好执行计划：未知类型或运行环境已不存在时不插入重试行。
+        let plan = match old.kind.as_str() {
+            "runtime.install" => RetryPlan::Install,
+            "runtime.ext.apply" => RetryPlan::Apply(ext_keys),
+            "runtime.ext.install" | "runtime.ext.uninstall" => {
+                if self
+                    .db()
+                    .runtime_by_id(&runtime_id)
+                    .map_err(|e| SiteError::Internal(e.to_string()))?
+                    .is_none()
+                {
+                    return Err(SiteError::BadRequest(format!(
+                        "运行环境不存在：{runtime_id}"
+                    )));
+                }
+                let add = old
+                    .params
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .map(|a| a == "install")
+                    .unwrap_or(old.kind.ends_with(".install"));
+                if ext_keys.is_empty() {
+                    return Err(SiteError::BadRequest(
+                        "原任务没有记录扩展集合，无法重试".into(),
+                    ));
+                }
+                if ext_keys.len() == 1 {
+                    // 单个扩展与正常提交一致，走单扩展执行器。
+                    RetryPlan::Single {
+                        token: ext_keys[0].clone(),
+                        add,
+                    }
+                } else {
+                    let rt = self
+                        .db()
+                        .runtime_by_id(&runtime_id)
+                        .map_err(|e| SiteError::Internal(e.to_string()))?
+                        .ok_or_else(|| {
+                            SiteError::BadRequest(format!("运行环境不存在：{runtime_id}"))
+                        })?;
+                    // 目标集合与正常提交一致：安装=当前∪选择；卸载=当前−选择。
+                    let mut desired = runtime_catalog::split_extensions(&rt.extensions);
+                    if add {
+                        for key in &ext_keys {
+                            if !desired.iter().any(|k| k == key) {
+                                desired.push(key.clone());
+                            }
+                        }
+                        desired = runtime_catalog::normalize_extensions(&desired);
+                    } else {
+                        desired.retain(|k| !ext_keys.iter().any(|t| t == k));
+                    }
+                    RetryPlan::Batch {
+                        desired,
+                        targets: ext_keys,
+                    }
+                }
+            }
+            other => {
+                return Err(SiteError::BadRequest(format!(
+                    "任务类型 {other} 不支持重试（当前没有对应执行器）"
+                )))
+            }
+        };
+
+        let job = self
+            .jobs()
+            .retry(id, actor, role, ip)
+            .map_err(site_error_from_job)?;
+        let job_id = job.id.clone();
+        let state = self.clone();
+        match plan {
+            RetryPlan::Install => {
+                if let Err(e) = self
+                    .db()
+                    .set_runtime_status(&runtime_id, "running", "installing")
+                {
+                    tracing::warn!(runtime = %runtime_id, error = %e, "重试时写入运行环境状态失败");
+                }
+                tokio::spawn(async move {
+                    state.run_runtime_install_job(&runtime_id, &job_id).await;
+                });
+            }
+            RetryPlan::Single { token, add } => {
+                tokio::spawn(async move {
+                    state
+                        .run_single_extension_job(&runtime_id, &job_id, &token, add)
+                        .await;
+                });
+            }
+            RetryPlan::Apply(desired) => {
+                tokio::spawn(async move {
+                    state
+                        .run_runtime_extensions_job(&runtime_id, &job_id, desired)
+                        .await;
+                });
+            }
+            RetryPlan::Batch { desired, targets } => {
+                tokio::spawn(async move {
+                    state
+                        .run_batch_extensions_job(&runtime_id, &job_id, &desired, &targets)
+                        .await;
+                });
+            }
+        }
+        Ok(job)
     }
 
     async fn run_batch_extensions_job(
@@ -7192,8 +7364,28 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn php_init_script_resolves_nobody_from_gid_not_family_name() {
+        // Debian 的 65534 组名是 nogroup；脚本必须建 `nobody` 同 gid 别名，
+        // 而不是按镜像家族写死组名（自建镜像同样适用）。
+        assert!(PHP_ACCOUNT_INIT_SCRIPT.contains(&format!("SOCKET_GID={SOCKET_GID}")));
+        let block = PHP_ACCOUNT_INIT_SCRIPT
+            .split("池模板固定写 listen.group = nobody")
+            .nth(1)
+            .expect("初始化脚本必须包含 nobody 组别名段");
+        // Debian（groupadd）与 Alpine（addgroup）各自有兜底，最后还有 /etc/group 直写；
+        // 两条路径都只依赖 gid 65534，不依赖某个组名恰好存在。
+        assert!(block.contains("groupadd -o -g \"$SOCKET_GID\" nobody"));
+        assert!(block.contains("addgroup -g \"$SOCKET_GID\" -S nobody"));
+        assert!(block.contains("'nobody:x:%s:\\n'"));
+        // 别名段本身不得再按镜像家族分支：同一段逻辑覆盖两种家族与自建镜像。
+        assert!(!block.contains("alpine-release"));
+        assert!(!block.contains("debian_version"));
+        // 模板不出现 nogroup：Debian 的组名细节只由初始化脚本用 gid 兜住。
+        assert!(!block.contains("listen.group = nogroup"));
+    }
+
+    #[test]
     fn timeout_message_never_renders_zero_minutes() {
-        // 测试机把超时压到秒级时，文案必须说「3 秒」而不是「0 分钟」。
         assert_eq!(fmt_timeout(std::time::Duration::from_secs(3)), "3 秒");
         assert_eq!(fmt_timeout(std::time::Duration::from_secs(90)), "90 秒");
         assert_eq!(

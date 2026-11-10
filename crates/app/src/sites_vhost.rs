@@ -359,6 +359,7 @@ pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
          listen = {socket}\n\
          listen.owner = root\n\
          ; nginx worker 以 nobody(65534) 运行；只给同组读写，others 无权限。\n\
+         ; 容器初始化脚本保证 nobody 组解析到 65534（Debian 的 nogroup 会补同 gid 别名）。\n\
          listen.group = nobody\n\
          listen.mode = 0660\n\
          pm = {pm}\n\
@@ -497,6 +498,7 @@ mod tests {
             "listen = /www/runtime/php/php-8.5/php-fpm.sock\n",
             "listen.owner = root\n",
             "; nginx worker 以 nobody(65534) 运行；只给同组读写，others 无权限。\n",
+            "; 容器初始化脚本保证 nobody 组解析到 65534（Debian 的 nogroup 会补同 gid 别名）。\n",
             "listen.group = nobody\n",
             "listen.mode = 0660\n",
             "pm = dynamic\n",

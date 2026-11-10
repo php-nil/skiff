@@ -149,6 +149,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 - **容器身份约束**：不启用容器级 `--user`、`userns-remap`，也不挂载宿主 `/etc/passwd` 片段。
   PHP 容器保持镜像默认入口（root 启动），经只读挂载的 `php-account-init.sh` 在容器内幂等
   建号后 `exec php-fpm`，由 root master 建 socket 再按池降权；`listen.owner/group` 与 `0660` 不变。
+  **组名口径**：模板固定写 `listen.group = nobody`，但 Debian 系 gid 65534 的组名是 `nogroup`，
+  直接 `getgrnam("nobody")` 会让 FPM 起不来。初始化脚本不按镜像家族猜组名，而是在 `exec php-fpm`
+  前保证 `nobody` 解析到 65534：已存在则校验 gid，缺失则 `groupadd -o`（Alpine 用 `addgroup`）
+  建同 gid 别名，最后兜底直写 `/etc/group`；自建镜像同样适用。池模板与 golden 不变。
 - `runtime`（Node.js / Rust）：**方案 A —— 一个环境 = 一个应用进程 = 一个固定代码目录**。
   容器进入 `/www/runtime/<kind>/<name>/app` 执行启动命令（Node 默认 `npm start`，Rust
   `cargo run --release`），`node_modules/` / `target/` 也在该目录；新建环境时若 `app/` 缺失
