@@ -135,21 +135,21 @@ action_table! {
     SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), "commands::site::backup", false;
 
     // ---- 运行环境（Admin：安装、克隆、扩缩、配置、扩展、探测）----
-    RUNTIME_CREATE = "runtime.create": Runtime, Some(Permission::Admin), "sites::env_add", false;
-    RUNTIME_SAVE_IMAGES = "runtime.save_images": Runtime, Some(Permission::Admin), "sites::env_images_save", false;
-    RUNTIME_SAVE_CONFIG = "runtime.save_config": Runtime, Some(Permission::Admin), "sites::runtime_config_save", false;
-    RUNTIME_SAVE_NODE_CONFIG = "runtime.save_node_config": Runtime, Some(Permission::Admin), "sites::runtime_node_config_save", false;
-    RUNTIME_SAVE_CONFIG_FILE = "runtime.save_config_file": Runtime, Some(Permission::Admin), "sites::runtime_config_file_save", false;
-    RUNTIME_SAVE_PORT = "runtime.save_port": Runtime, Some(Permission::Admin), "sites::runtime_port_save", false;
-    RUNTIME_CLONE = "runtime.clone": Runtime, Some(Permission::Admin), "sites::runtime_clone", false;
-    RUNTIME_ACTION = "runtime.action": Runtime, Some(Permission::Admin), "sites::runtime_action", false;
-    RUNTIME_SAVE_EXTENSIONS = "runtime.save_extensions": Runtime, Some(Permission::Admin), "sites::runtime_extensions_save", false;
-    RUNTIME_INSTALL_EXTENSION = "runtime.install_extension": Runtime, Some(Permission::Admin), "sites::runtime_extension_install", false;
-    RUNTIME_UNINSTALL_EXTENSION = "runtime.uninstall_extension": Runtime, Some(Permission::Admin), "sites::runtime_extension_uninstall", false;
-    RUNTIME_BATCH_EXTENSIONS = "runtime.batch_extensions": Runtime, Some(Permission::Admin), "sites::runtime_extensions_batch", false;
-    RUNTIME_INSTALL_PECL = "runtime.install_pecl": Runtime, Some(Permission::Admin), "sites::runtime_pecl_install", false;
-    RUNTIME_PROBE = "runtime.probe": Runtime, Some(Permission::Admin), "sites::runtime_probe", false;
-    RUNTIME_UNBIND_SITE = "runtime.unbind_site": Runtime, Some(Permission::Admin), "sites::runtime_unbind_site", false;
+    RUNTIME_CREATE = "runtime.create": Runtime, Some(Permission::Admin), "commands::runtime::create", false;
+    RUNTIME_SAVE_IMAGES = "runtime.save_images": Runtime, Some(Permission::Admin), "commands::runtime::save_images", false;
+    RUNTIME_SAVE_CONFIG = "runtime.save_config": Runtime, Some(Permission::Admin), "commands::runtime::save_config", false;
+    RUNTIME_SAVE_NODE_CONFIG = "runtime.save_node_config": Runtime, Some(Permission::Admin), "commands::runtime::save_node_config", false;
+    RUNTIME_SAVE_CONFIG_FILE = "runtime.save_config_file": Runtime, Some(Permission::Admin), "commands::runtime::save_config_file", false;
+    RUNTIME_SAVE_PORT = "runtime.save_port": Runtime, Some(Permission::Admin), "commands::runtime::save_port", false;
+    RUNTIME_CLONE = "runtime.clone": Runtime, Some(Permission::Admin), "commands::runtime::clone", false;
+    RUNTIME_ACTION = "runtime.action": Runtime, Some(Permission::Admin), "commands::runtime::action", false;
+    RUNTIME_SAVE_EXTENSIONS = "runtime.save_extensions": Runtime, Some(Permission::Admin), "commands::runtime::save_extensions", false;
+    RUNTIME_INSTALL_EXTENSION = "runtime.install_extension": Runtime, Some(Permission::Admin), "commands::runtime::install_extension", false;
+    RUNTIME_UNINSTALL_EXTENSION = "runtime.uninstall_extension": Runtime, Some(Permission::Admin), "commands::runtime::uninstall_extension", false;
+    RUNTIME_BATCH_EXTENSIONS = "runtime.batch_extensions": Runtime, Some(Permission::Admin), "commands::runtime::batch_extensions", false;
+    RUNTIME_INSTALL_PECL = "runtime.install_pecl": Runtime, Some(Permission::Admin), "commands::runtime::install_pecl", false;
+    RUNTIME_PROBE = "runtime.probe": Runtime, Some(Permission::Admin), "commands::runtime::probe", false;
+    RUNTIME_UNBIND_SITE = "runtime.unbind_site": Runtime, Some(Permission::Admin), "commands::runtime::unbind_site", false;
 
     // ---- 容器与 Docker 资源（权限来自 `Verb::permission`，由单测对齐）----
     CONTAINER_CREATE = "container.create": Container, Some(Permission::DockerLifecycle), "docker::execute", false;
@@ -403,19 +403,31 @@ mod tests {
     }
 
     #[test]
-    fn site_actions_point_at_registered_commands() {
-        // 站点组已完成 P1 命令拆分：动作登记的命令名必须真实存在于 `commands::site`。
-        for spec in for_resource(Resource::Site) {
-            let prefix = "commands::site::";
-            let name = spec.command.strip_prefix(prefix).unwrap_or_else(|| {
-                panic!("{} 的命令未指向 commands::site：{}", spec.id, spec.command)
-            });
-            assert!(
-                crate::commands::site::NAMES.contains(&name),
-                "{} 指向了未登记的命令 {}",
-                spec.id,
-                name
-            );
+    fn converted_groups_point_at_registered_commands() {
+        // 已完成 P1 命令拆分的资源组：动作登记的命令名必须真实存在于对应命令模块。
+        for (resource, prefix, names) in [
+            (
+                Resource::Site,
+                "commands::site::",
+                crate::commands::site::NAMES,
+            ),
+            (
+                Resource::Runtime,
+                "commands::runtime::",
+                crate::commands::runtime::NAMES,
+            ),
+        ] {
+            for spec in for_resource(resource) {
+                let name = spec.command.strip_prefix(prefix).unwrap_or_else(|| {
+                    panic!("{} 的命令未指向 {prefix}：{}", spec.id, spec.command)
+                });
+                assert!(
+                    names.contains(&name),
+                    "{} 指向了未登记的命令 {}",
+                    spec.id,
+                    name
+                );
+            }
         }
     }
 

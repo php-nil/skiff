@@ -229,7 +229,7 @@
 | 组 | 命令模块 | 状态 |
 |---|---|---|
 | 站点（9 个动作） | `crates/app/src/commands/site.rs` | 已落地；`handlers/sites.rs` 只做表单提取、CSRF、文案与跳转，审计随命令产生 |
-| 运行时（15 个动作） | — | 待做 |
+| 运行时（15 个动作） | `crates/app/src/commands/runtime.rs` | 已落地；Web 服务分支、共享影响面确认、Node 重建结果都以命令出参表达，handler 只渲染 |
 | Docker 资源（容器/镜像/网络/卷/Compose） | — | 待做；需保留 `policy.check` 对象级判定与 exec/日志流式通道 |
 | 文件（22 个 API + 回收站/配额页） | — | 待做；`{ok:false,error:{code,message}}` 形状不变 |
 
