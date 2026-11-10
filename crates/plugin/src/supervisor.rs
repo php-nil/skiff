@@ -538,7 +538,11 @@ impl Supervisor {
                 let socket = r.socket.clone();
                 running.insert(rec.id.clone(), r);
                 self.failures.lock().await.remove(&rec.id);
-                self.db.set_plugin_status(&rec.id, "running", "")?;
+                // 进程已经拉起：状态回写失败不能反过来让调用方以为启动失败，
+                // 否则会重试/误判，而实际进程已在跑。记日志后照常返回 socket。
+                if let Err(e) = self.db.set_plugin_status(&rec.id, "running", "") {
+                    tracing::warn!(plugin = %rec.id, error = %e, "插件状态回写失败（进程已运行）");
+                }
                 Ok(socket)
             }
             Err(e) => {
