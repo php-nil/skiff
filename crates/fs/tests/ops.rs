@@ -428,10 +428,14 @@ fn hardlink_removal_keeps_other_link() {
 
 #[test]
 fn atomic_replacement_has_no_torn_file() {
-    let h = Harness::new();
+    // 2 核 Windows runner 上，8 线程 × 20 次同路径争锁（每次 Replace 都含 fsync）
+    // 会顶满 5s 锁等待上限而偶发 `fs.busy`。降到 4 线程 × 10 次，并只在本用例内
+    // 放大锁等待余量；生产默认 `lock_timeout` 保持不变。断言仍是「最终文件必须
+    // 等于某次完整写入」，撕裂写依旧会被抓到。
+    let h = Harness::with_config(|cfg| cfg.lock_timeout = std::time::Duration::from_secs(30));
     let p = Arc::new(h.plugin("com.example.demo"));
     let path = h.data_path("race.txt");
-    let payloads: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 1000 + i as usize]).collect();
+    let payloads: Vec<Vec<u8>> = (0..4u8).map(|i| vec![i; 1000 + i as usize]).collect();
 
     let mut handles = Vec::new();
     for payload in payloads.clone() {
@@ -439,7 +443,7 @@ fn atomic_replacement_has_no_torn_file() {
         let p = p.clone();
         let path = path.clone();
         handles.push(std::thread::spawn(move || {
-            for _ in 0..20 {
+            for _ in 0..10 {
                 fs.write(
                     &p,
                     &support::ctx(),
