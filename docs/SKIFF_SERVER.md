@@ -469,12 +469,16 @@ TOFU 信任链路。默认关闭。P2 在此基础上补了插件安装入口（
 catalog/
   channels/<channel>/{manifest.json,manifest.json.sig,index.json}
   blobs/sha256/<hex>          # P1 不主动下载，仅本地已有 blob 时复核
-  meta.json                   # 已见 seq、ETag/Last-Modified、上次成功时间与来源
+  meta.json                   # 已见 seq、ETag/Last-Modified、上次成功时间、来源与写入时的公钥指纹
 ```
 
 页面状态（`CatalogState`）四档：`已更新`（200 + 验签通过）、`目录未更新`（304 或未配置镜像，
 使用缓存）、`离线`（全部镜像不可达，展示上次成功快照）、`校验失败`（验签/防回滚/摘要/结构
 失败，**拒绝新清单并保留旧快照**）。内存快照复用 30 秒，页面「刷新目录」强制重拉。
+
+换 `public_key` 后热缓存立即作废：`meta.json` 记录写入时生效的公钥指纹（`key_id =
+sha256(公钥)`），启动或载入缓存时与当前配置不一致即丢弃该缓存。丢弃等价于「没有缓存」——
+新清单生效前不展示旧条目、不允许凭旧条目安装，且条件请求头为空（忽略 ETag）强制重拉。
 
 ### 11.3 校验口径
 
@@ -484,6 +488,9 @@ catalog/
 - `seq` 小于磁盘上已见值时拒绝（防回滚），不覆盖缓存。
 - 条目摘要三件套（`*_sha256` / `*_url` / `size`）必须同时存在且 URL 为 `blobs/sha256/<sha>`；
   本地已存在 blob 时复核大小与 sha256。
+- 拒绝与离线都落审计：验签 / 防回滚 / 摘要失败记 `catalog.refresh`（`result = fail`，
+  `detail` 前缀 `reason=signature|seq|digest`），全部镜像不可用记 `reason=offline`；审计写失败
+  只记日志（`audit_or_log` 口径），不改变拒绝语义。
 
 ### 11.4 代码落点
 
@@ -501,7 +508,9 @@ catalog/
 
 `crates/app/src/catalog/tests.rs`：验签失败拒绝并保留旧快照、`seq` 回退拒绝、索引摘要不符拒绝、
 本地 blob 大小/摘要不符拒绝、条件请求 304 复用缓存、离线回退、未签名默认拒绝且显式允许后放行、
-多镜像按序回退、默认关闭时不触网。`crates/web/src/handlers/store.rs` 单测覆盖商店页最少渲染
+多镜像按序回退、默认关闭时不触网、四类拒绝/离线各自断言 `catalog.refresh` 审计落库、换钥后旧缓存
+作废并忽略 ETag 强制重拉、换钥且离线时不展示旧条目且 `plugin_package` 返回 `None`。
+`crates/web/src/handlers/store.rs` 单测覆盖商店页最少渲染
 （状态提示、四列数据、空态、无安装入口）。`crates/core/src/config.rs` 单测覆盖默认关闭、
 非法渠道/非 https 镜像/非法公钥/零超时被拒、`allow_unsigned` 仅开发模式放行。
 
@@ -529,6 +538,8 @@ P2 只补「插件」这一类：已验证目录条目可在商店页直接进�
 - 下载与校验在 `skiff_app::commands::store::prepare`（阻塞线程池），页面与审计在
   `crates/web/src/handlers/store.rs`；确认页直接复用既有模板与 `/plugins/confirm`。
 - 任一步失败都删除暂存文件及 `.part`，不存在「已下载未装」或「半装」残留。
+- 放弃权限确认页会遗留暂存包：`.incoming` 有 24 小时 TTL，进程启动与每次 `prepare` 前各扫一次，
+  删除超期的 `.wbpkg` / `.part`（目录内其它文件不动，删除失败只留痕）；未过期的暂存不受影响。
 - 安装入口只在 `[catalog].enabled = true` **且**配置了固定公钥时出现；未配置公钥时
   按钮隐藏，直连路由返回 400。
 
@@ -574,7 +585,9 @@ P2 只补「插件」这一类：已验证目录条目可在商店页直接进�
 
 - `crates/app/src/commands/store.rs`：整链路（含 `install_package` 收尾）、下载失败 / 摘要不符 /
   验签失败 / 能力面缺失四类拒绝、内核 API 不符、未配置公钥不触网、条目不存在、`api` 兼容矩阵；
-  每类失败都断言 `.incoming` 无残留。
+  每类失败都断言 `.incoming` 无残留。暂存 TTL：23h 不删 / 25h 只删 `.wbpkg`/`.part`、
+  `prepare` 前清掉 25h 遗留且不误删刚下载的包。`crates/core/src/bootstrap.rs`：启动时清理 25h
+  遗留、保留未过期暂存。
 - `crates/web/src/handlers/store.rs`：有公钥时渲染安装入口、无公钥/告警条目不渲染。
 - `crates/web/tests/main_flow.rs`：viewer 403 且落 `store.install` deny 审计、未配置公钥 400 并落
   `no_key` 审计、目录不可用回商店页并落 `not_found` 审计且无暂存文件。
