@@ -14,7 +14,9 @@ use serde_json::Value;
 use crate::build::{build, read_dir_sorted, sha256_hex, SCHEMA_FILES};
 use crate::model::{IndexFile, ManifestFile, SignatureFile};
 use crate::schema::SchemaSet;
-use crate::sign::{is_placeholder_key, Signer};
+use crate::sign::{
+    is_placeholder_key, key_id_of_hex, manifest_signing_input, verify_detached, Signer,
+};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Summary {
@@ -33,16 +35,35 @@ pub fn run(
     prev: Option<&Path>,
     require_signature: bool,
 ) -> Result<()> {
+    run_with_public_key(catalog_dir, schema_dir, dist, prev, require_signature, None)
+}
+
+/// 与 `run` 相同，但额外用固定公钥做密码学验签。
+///
+/// 发布门禁必须走这一入口：只检查 `sig` 非空不能证明清单由持有私钥的一方签发。
+pub fn run_with_public_key(
+    catalog_dir: &Path,
+    schema_dir: &Path,
+    dist: Option<&Path>,
+    prev: Option<&Path>,
+    require_signature: bool,
+    public_key: Option<&str>,
+) -> Result<()> {
     let schemas = SchemaSet::new(schema_dir);
     let (files, summary) = match dist {
         Some(dist) => {
             let files = read_tree(dist)?;
-            let summary = validate_artifact(&files, &schemas, require_signature)?;
+            let summary =
+                validate_artifact_with(&files, &schemas, require_signature, public_key, false)?;
             (files, summary)
         }
         None => {
+            if public_key.is_some() {
+                bail!("使用固定公钥验签时必须提供 --dist（内存生成的产物没有可验证的签名）");
+            }
             let artifact = build(catalog_dir, schema_dir, &Signer::Unsigned)?;
-            let summary = validate_artifact(&artifact.files, &schemas, require_signature)?;
+            let summary =
+                validate_artifact_with(&artifact.files, &schemas, require_signature, None, false)?;
             (artifact.files, summary)
         }
     };
@@ -65,6 +86,18 @@ pub fn validate_artifact(
     files: &BTreeMap<String, Vec<u8>>,
     schemas: &SchemaSet,
     require_signature: bool,
+) -> Result<Summary> {
+    validate_artifact_with(files, schemas, require_signature, None, false)
+}
+
+/// `public_key` 非空时对每个渠道的 manifest 做密码学验签；`allow_orphan_blobs`
+/// 供镜像目录使用（内容寻址的旧 blob 会保留，不能按孤儿拒绝）。
+pub fn validate_artifact_with(
+    files: &BTreeMap<String, Vec<u8>>,
+    schemas: &SchemaSet,
+    require_signature: bool,
+    public_key: Option<&str>,
+    allow_orphan_blobs: bool,
 ) -> Result<Summary> {
     for schema_file in SCHEMA_FILES {
         if !files.contains_key(&format!("schema/{schema_file}")) {
@@ -114,7 +147,26 @@ pub fn validate_artifact(
             if require_signature {
                 bail!("渠道 {channel} 未签名：P0 占位产物不得发布，客户端必须拒绝");
             }
-            eprintln!("注意：渠道 {channel} 为未签名占位（P0），发布前必须接入签名流水线");
+            eprintln!("注意：渠道 {channel} 为未签名占位，不得发布；发布请走 publish（见 docs/SKIFF_SERVER.md §14）");
+        }
+
+        if let Some(public_key_hex) = public_key {
+            let expected = key_id_of_hex(public_key_hex)
+                .with_context(|| format!("渠道 {channel} 的固定公钥不合法"))?;
+            if signature.key_id != expected || manifest.key_id != expected {
+                bail!("渠道 {channel} 的签名 key_id 与固定公钥不一致");
+            }
+            if signature.sig.is_empty() {
+                bail!("渠道 {channel} 未签名，无法用固定公钥验签");
+            }
+            let sig = hex::decode(&signature.sig)
+                .with_context(|| format!("渠道 {channel} 的签名不是十六进制"))?;
+            verify_detached(
+                public_key_hex,
+                &manifest_signing_input(manifest_bytes),
+                &sig,
+            )
+            .with_context(|| format!("渠道 {channel} 的 manifest 验签失败"))?;
         }
 
         let index_bytes = files
@@ -180,9 +232,11 @@ pub fn validate_artifact(
         }
     }
 
-    for path in files.keys().filter(|key| key.starts_with("blobs/sha256/")) {
-        if !referenced.contains(path) {
-            bail!("存在未被索引引用的 blob: {path}");
+    if !allow_orphan_blobs {
+        for path in files.keys().filter(|key| key.starts_with("blobs/sha256/")) {
+            if !referenced.contains(path) {
+                bail!("存在未被索引引用的 blob: {path}");
+            }
         }
     }
     summary.blobs = referenced.len();
@@ -217,7 +271,8 @@ fn check_reference(
     Ok(())
 }
 
-fn validate_seq_monotonic(files: &BTreeMap<String, Vec<u8>>, prev: &Path) -> Result<()> {
+/// 产物自身的 `seq` 必须严格大于 `prev` 目录里同渠道的 `seq`。
+pub fn validate_seq_monotonic(files: &BTreeMap<String, Vec<u8>>, prev: &Path) -> Result<()> {
     for channel in channel_names(files)? {
         let current = manifest_of(files, &channel)?;
         let prev_path = prev.join("channels").join(&channel).join("manifest.json");

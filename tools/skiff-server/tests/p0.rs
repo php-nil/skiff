@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use skiff_server::build::{build, sha256_hex, write};
 use skiff_server::check;
+use skiff_server::release;
 use skiff_server::schema::SchemaSet;
 use skiff_server::sign::{manifest_signing_input, verify_detached, Signer};
 
@@ -211,6 +212,118 @@ fn signing_interface_produces_verifiable_signature() -> Result<()> {
     assert_eq!(
         sha256_hex(artifact.get(blob).unwrap()),
         blob.rsplit('/').next().unwrap()
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_signing_key_is_a_clear_error() {
+    let error = Signer::from_env_value(None).expect_err("缺密钥必须报错");
+    assert!(error.to_string().contains("SKIFF_SIGNING_KEY"), "{error}");
+
+    let error = Signer::from_env_value(Some("   ".to_string())).expect_err("空白密钥必须报错");
+    assert!(error.to_string().contains("SKIFF_SIGNING_KEY"), "{error}");
+
+    let error = Signer::from_seed_hex(Some("not-hex")).expect_err("非法十六进制必须报错");
+    assert!(error.to_string().contains("十六进制"), "{error}");
+
+    let short = "11".repeat(16);
+    let error = Signer::from_seed_hex(Some(&short)).expect_err("短种子必须报错");
+    assert!(error.to_string().contains("32 字节"), "{error}");
+}
+
+#[test]
+fn publish_rejects_key_mismatch_and_unsigned() -> Result<()> {
+    let out = tempfile::tempdir()?;
+    let signer = Signer::from_seed_hex(Some(&"22".repeat(32)))?;
+    let other = Signer::from_seed_hex(Some(&"33".repeat(32)))?
+        .public_key_hex()
+        .unwrap();
+
+    let error = release::publish(&catalog(), &schema(), out.path(), None, &signer, &other)
+        .expect_err("公钥不一致必须拒绝发布");
+    assert!(error.to_string().contains("不一致"), "{error}");
+
+    let error = release::publish(
+        &catalog(),
+        &schema(),
+        out.path(),
+        None,
+        &Signer::Unsigned,
+        &other,
+    )
+    .expect_err("未签名占位不能发布");
+    assert!(error.to_string().contains("未签名"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn publish_rejects_seq_rollback_without_writing() -> Result<()> {
+    let signer = Signer::from_seed_hex(Some(&"22".repeat(32)))?;
+    let public_key = signer.public_key_hex().unwrap();
+    let previous = tempfile::tempdir()?;
+    let artifact = build(&catalog(), &schema(), &signer)?;
+    write(&artifact, previous.path())?;
+    let manifest_path = previous.path().join("channels/stable/manifest.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+    manifest["seq"] = json!(2);
+    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+    let out = tempfile::tempdir()?;
+    let target = out.path().join("dist");
+    let error = release::publish(
+        &catalog(),
+        &schema(),
+        &target,
+        Some(previous.path()),
+        &signer,
+        &public_key,
+    )
+    .expect_err("seq 未递增必须拒绝发布");
+    assert!(error.to_string().contains("seq"), "{error}");
+    assert!(!target.exists(), "自检失败不得写出产物目录");
+    Ok(())
+}
+
+#[test]
+fn publish_output_passes_strict_verification() -> Result<()> {
+    let signer = Signer::from_seed_hex(Some(&"22".repeat(32)))?;
+    let public_key = signer.public_key_hex().unwrap();
+    let out = tempfile::tempdir()?;
+    release::publish(
+        &catalog(),
+        &schema(),
+        out.path(),
+        None,
+        &signer,
+        &public_key,
+    )?;
+    check::run_with_public_key(
+        &catalog(),
+        &schema(),
+        Some(out.path()),
+        None,
+        true,
+        Some(&public_key),
+    )?;
+
+    // 篡改清单字节后必须验签失败，证明发布门禁真的在做密码学校验。
+    let manifest_path = out.path().join("channels/stable/manifest.json");
+    let mut manifest = fs::read(&manifest_path)?;
+    manifest.push(b' ');
+    fs::write(&manifest_path, &manifest)?;
+    let error = check::run_with_public_key(
+        &catalog(),
+        &schema(),
+        Some(out.path()),
+        None,
+        true,
+        Some(&public_key),
+    )
+    .expect_err("篡改清单必须验签失败");
+    assert!(
+        error.to_string().contains("验签失败") || error.to_string().contains("摘要"),
+        "{error}"
     );
     Ok(())
 }
