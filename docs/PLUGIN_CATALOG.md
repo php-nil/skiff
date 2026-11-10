@@ -222,13 +222,14 @@ resource_hints = []                 # 能力面动词即权限，不落宿主文
 [[permissions]]
 capability = "firewall"
 verbs = ["status", "rules.list", "rule.add", "rule.remove", "port.allow",
-         "fail2ban.status", "fail2ban.install", "fail2ban.jail.ensure",
+         "fail2ban.status", "fail2ban.install", "fail2ban.start", "fail2ban.stop",
+         "fail2ban.uninstall", "fail2ban.jail.ensure",
          "fail2ban.jail.remove", "fail2ban.banned", "fail2ban.ban", "fail2ban.unban"]
 ```
 
 - **为什么必须新增内核原语**：`net` 仍一律 501；`fs` 只能读写授权根，改不了内核规则表；`docker` 与防火墙无关。宿主防火墙与 fail2ban 都需要 root 特权，因此新增 `firewall` 能力面，插件只做 UI 与编排。
 - **规则口径**：只管理自有作用域——nftables `inet skiff` 表的 `input` 链、iptables `SKIFF` 链；默认策略 accept。新规则带 `comment "skiff-<nanos>"` 标识，删除按 nft handle 或 iptables `-S` 序号，不触碰其它表/链。
-- **fail2ban 口径**：`fail2ban.install` 安装/复用宿主 fail2ban（新装时写 `skiff-defaults.conf` 关闭 `sshd` jail）；`jail.ensure` / `jail.remove` 管理 `/etc/fail2ban/jail.d/skiff-<jail>.conf`，改动后 `systemctl restart fail2ban`；`banned` / `ban` / `unban` 走 `fail2ban-client`。不卸载软件包，不改系统级 `jail.conf`。
+- **fail2ban 口径**：`fail2ban.install` 安装/复用宿主 fail2ban（新装时写 `skiff-defaults.conf` 关闭 `sshd` jail）；`start` / `stop` / `uninstall` 提供显式生命周期管理（`enable --now` / `disable --now` / `apt-get purge`），`status` 如实返回未安装/已安装未运行/运行中三态与可读原因；`jail.ensure` / `jail.remove` 管理 `/etc/fail2ban/jail.d/skiff-<jail>.conf`，改动后 `systemctl restart fail2ban`；`banned` / `ban` / `unban` 走 `fail2ban-client`。不改系统级 `jail.conf`，不删用户创建的其它 jail 文件。
 - **对外接口**：`[interop].provides` 暴露 `fail2ban.*`，FTP 等插件按需调用；调用方需 `interop:call` 与 `plugin:com.skiff.firewall`。四道闸、15s 超时与审计沿用既有 interop 契约。
 - **特权通道**：能力面实现只在 `crates/plugin/src/firewall.rs`（判定 + 命令编排），内核 `crates/core/src/kernel/firewall.rs` 只做鉴权、审计与 `systemd-run` 瞬态单元执行；受限形态（非 Native）一律 503。
 - **契约与验收**：动词、授权、审计与安全边界见 [KERNEL_FIREWALL_CONTRACT.md](KERNEL_FIREWALL_CONTRACT.md)；回归项见 [TEST_MATRIX.md](TEST_MATRIX.md) `FW-01` 起。**本轮代码未经编译验证，未上机验收。**

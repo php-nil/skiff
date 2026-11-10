@@ -97,6 +97,9 @@ pub async fn dispatch<H: FirewallHost>(
         "port.allow" => port_allow(host, params).await,
         "fail2ban.status" => fail2ban_status(host).await,
         "fail2ban.install" => fail2ban_install(host).await,
+        "fail2ban.start" => fail2ban_start(host).await,
+        "fail2ban.stop" => fail2ban_stop(host).await,
+        "fail2ban.uninstall" => fail2ban_uninstall(host).await,
         "fail2ban.jail.ensure" => fail2ban_jail_ensure(host, params).await,
         "fail2ban.jail.remove" => fail2ban_jail_remove(host, params).await,
         "fail2ban.banned" => fail2ban_banned(host, params).await,
@@ -265,28 +268,137 @@ async fn fail2ban_status<H: FirewallHost>(host: &H) -> Result<Value, FirewallErr
         return Ok(json!({
             "installed": false,
             "running": false,
+            "state": "missing",
+            "reason": "未安装 fail2ban（找不到 fail2ban-client）",
             "jails": [],
             "service": "fail2ban",
         }));
     }
-    let running = command_output(
+    // `systemctl is-active` 在 inactive 时以非零码退出，用 stdout 区分「已停」与「启动失败」。
+    let (running, reason) = match command_output(
         host,
         SYSTEMCTL,
         &["is-active".to_string(), "fail2ban".to_string()],
     )
     .await
-    .map(|o| o.success && o.stdout.trim() == "active")
-    .unwrap_or(false);
-    let jails = command_output(host, FAIL2BAN_CLIENT, &["status".to_string()])
-        .await
-        .map(|o| parse_jail_list(&o.stdout))
-        .unwrap_or_default();
+    {
+        Ok(o) if o.success && o.stdout.trim() == "active" => (true, String::new()),
+        Ok(o) => (false, state_reason(o.stdout.trim(), o.stderr.trim())),
+        Err(e) => (false, format!("无法查询服务状态：{}", e.message)),
+    };
+    let jails = if running {
+        command_output(host, FAIL2BAN_CLIENT, &["status".to_string()])
+            .await
+            .map(|o| parse_jail_list(&o.stdout))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     Ok(json!({
         "installed": true,
         "running": running,
+        "state": if running { "running" } else { "stopped" },
+        "reason": reason,
         "jails": jails,
         "service": "fail2ban",
     }))
+}
+
+/// 把 `systemctl is-active` 的原始状态翻成可读原因；未知状态原样带出，便于排障。
+fn state_reason(stdout: &str, stderr: &str) -> String {
+    match stdout {
+        "inactive" => "服务未运行".to_string(),
+        "failed" => "服务启动失败（systemd 状态 failed）".to_string(),
+        "activating" => "服务正在启动".to_string(),
+        "deactivating" => "服务正在停止".to_string(),
+        "" if !stderr.is_empty() => stderr.to_string(),
+        "" => "服务未运行".to_string(),
+        other => other.to_string(),
+    }
+}
+
+async fn require_fail2ban_installed<H: FirewallHost>(
+    host: &H,
+    action: &str,
+) -> Result<(), FirewallError> {
+    if !command_works(host, FAIL2BAN_CLIENT, &["--version".to_string()]).await {
+        return Err(FirewallError::unavailable(format!(
+            "fail2ban 未安装，无法{action}；请先安装"
+        )));
+    }
+    Ok(())
+}
+
+async fn fail2ban_start<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
+    require_fail2ban_installed(host, "启动").await?;
+    exec_ok(
+        host,
+        SYSTEMCTL,
+        &svec(&["enable", "--now", "fail2ban"]),
+        None,
+        120,
+    )
+    .await
+    .map_err(|e| FirewallError::internal(format!("启动 fail2ban 失败：{}", e.message)))?;
+    fail2ban_status(host).await
+}
+
+async fn fail2ban_stop<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
+    require_fail2ban_installed(host, "停止").await?;
+    exec_ok(
+        host,
+        SYSTEMCTL,
+        &svec(&["disable", "--now", "fail2ban"]),
+        None,
+        120,
+    )
+    .await
+    .map_err(|e| FirewallError::internal(format!("停止 fail2ban 失败：{}", e.message)))?;
+    fail2ban_status(host).await
+}
+
+/// 卸载宿主 fail2ban：先停服务，再 `apt-get purge`，最后回报真实状态。
+///
+/// 只删除本能力面写入的 `skiff-defaults.conf`；其它 `skiff-<jail>.conf`
+/// 是用户显式创建的配置，保留在原地（重装后仍可复用）。
+async fn fail2ban_uninstall<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
+    require_fail2ban_installed(host, "卸载").await?;
+    // 停止失败不阻断卸载，但要如实带进返回值，避免「看起来干净」。
+    let stop_warning = exec_ok(
+        host,
+        SYSTEMCTL,
+        &svec(&["disable", "--now", "fail2ban"]),
+        None,
+        120,
+    )
+    .await
+    .err()
+    .map(|e| e.message);
+    let defaults = format!("{JAIL_DIR}/{JAIL_PREFIX}defaults.conf");
+    let _ = exec_ok(host, RM, &svec(&["-f", &defaults]), None, 30).await;
+    let out = exec(
+        host,
+        APT_GET,
+        &svec(&["purge", "-y", "fail2ban"]),
+        None,
+        900,
+    )
+    .await?;
+    if !out.success {
+        let detail = if out.stderr.trim().is_empty() {
+            out.stdout.trim().to_string()
+        } else {
+            out.stderr.trim().to_string()
+        };
+        return Err(FirewallError::internal(format!(
+            "卸载 fail2ban 失败：{detail}"
+        )));
+    }
+    let mut result = fail2ban_status(host).await?;
+    if let Some(warning) = stop_warning {
+        result["warning"] = json!(format!("停止服务时出现问题：{warning}"));
+    }
+    Ok(result)
 }
 
 async fn fail2ban_install<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
@@ -1198,6 +1310,104 @@ udp dport 53 drop comment \"skiff-101\" # handle 5
         assert_eq!(spec.port, Some(80));
         let spec = RuleSpec::parse(&json!({"source": "10.0.0.0/8", "action": "drop"})).unwrap();
         assert_eq!(spec.action, "drop");
+    }
+
+    #[tokio::test]
+    async fn fail2ban_status_reports_missing_with_reason() {
+        let host = FakeHost::new(|_cmd, _args| CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "not found".into(),
+        });
+        let res = dispatch(&host, "fail2ban.status", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(res["installed"], false);
+        assert_eq!(res["running"], false);
+        assert_eq!(res["state"], "missing");
+        assert!(res["jails"].as_array().unwrap().is_empty());
+        assert!(res["reason"].as_str().unwrap().contains("未安装"));
+    }
+
+    #[tokio::test]
+    async fn fail2ban_status_reports_stopped_with_systemd_reason() {
+        let host = FakeHost::new(|cmd, args| {
+            if cmd.contains("fail2ban-client")
+                && args.first().map(|s| s == "--version").unwrap_or(false)
+            {
+                return ok("Fail2Ban v1.0.2");
+            }
+            if cmd.contains("systemctl") {
+                return CommandOutput {
+                    success: false,
+                    stdout: "failed\n".into(),
+                    stderr: String::new(),
+                };
+            }
+            ok("")
+        });
+        let res = dispatch(&host, "fail2ban.status", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(res["installed"], true);
+        assert_eq!(res["running"], false);
+        assert_eq!(res["state"], "stopped");
+        assert!(res["reason"].as_str().unwrap().contains("failed"));
+        // 服务未运行时不调用 fail2ban-client status，避免把连接错误当成「没有 jail」。
+        let calls = host.calls.lock().unwrap().clone();
+        assert!(!calls.iter().any(|c| c.ends_with(" status")));
+    }
+
+    #[tokio::test]
+    async fn fail2ban_start_requires_installed() {
+        let host = FakeHost::new(|_cmd, _args| CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        let err = dispatch(&host, "fail2ban.start", &json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(err.message.contains("未安装"));
+    }
+
+    #[tokio::test]
+    async fn fail2ban_uninstall_purges_and_reports_missing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let installed = Arc::new(AtomicBool::new(true));
+        let flag = installed.clone();
+        let host = FakeHost::new(move |cmd, args| {
+            if cmd.contains("fail2ban-client")
+                && args.first().map(|s| s == "--version").unwrap_or(false)
+            {
+                return if flag.load(Ordering::SeqCst) {
+                    ok("Fail2Ban v1.0.2")
+                } else {
+                    CommandOutput {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: "not found".into(),
+                    }
+                };
+            }
+            if cmd.contains("apt-get") && args.first().map(|s| s == "purge").unwrap_or(false) {
+                flag.store(false, Ordering::SeqCst);
+            }
+            ok("")
+        });
+        let res = dispatch(&host, "fail2ban.uninstall", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(res["state"], "missing");
+        let calls = host.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.contains("disable --now fail2ban")));
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("rm -f /etc/fail2ban/jail.d/skiff-defaults.conf")));
+        assert!(calls.iter().any(|c| c.contains("purge -y fail2ban")));
     }
 
     #[tokio::test]

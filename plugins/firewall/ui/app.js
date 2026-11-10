@@ -222,28 +222,49 @@
     var jails = [];
 
     function renderStatus(st) {
-      badge($("f2b-state"), st.running ? "运行中" : (st.installed ? "已安装未运行" : "未安装"),
-        st.running ? "ok" : (st.installed ? "warn" : "bad"));
+      var state = st.state || (st.running ? "running" : (st.installed ? "stopped" : "missing"));
+      badge($("f2b-state"),
+        state === "running" ? "运行中" : (state === "stopped" ? "已安装未运行" : "未安装"),
+        state === "running" ? "ok" : (state === "stopped" ? "warn" : "bad"));
       var actions = $("f2b-actions");
       actions.innerHTML = "";
-      if (!st.installed) {
+
+      function addAction(label, cls, confirmText, method, okText) {
         var b = document.createElement("button");
-        b.className = "primary";
-        b.textContent = "安装 fail2ban";
+        b.className = cls || "";
+        b.textContent = label;
         b.addEventListener("click", function () {
+          if (confirmText && !confirm(confirmText)) return;
           busy(b, true);
-          rpc("fail2ban.install").then(function (r) {
-            say("fail2ban 已安装并启动", "ok");
+          rpc(method).then(function (r) {
+            say(okText, "ok");
             renderStatus(r || {});
             return loadJails();
           }).catch(function (e) {
             say(e.message || String(e), "err");
             busy(b, false);
+            // 失败后重拉状态：服务可能已被外部改动，按钮不能停在旧状态。
+            loadJails();
           });
         });
         actions.appendChild(b);
+      }
+
+      if (state === "missing") {
+        addAction("安装 fail2ban", "primary", "", "fail2ban.install", "fail2ban 已安装并启动");
         $("f2b-help").textContent = "安装后默认关闭 sshd jail，只管理本插件写入的 jail 文件。";
+      } else if (state === "stopped") {
+        addAction("启动 fail2ban", "primary", "", "fail2ban.start", "fail2ban 已启动");
+        addAction("卸载 fail2ban", "danger",
+          "卸载会停止防护并删除 fail2ban 软件包，确定继续？",
+          "fail2ban.uninstall", "fail2ban 已卸载");
+        $("f2b-help").textContent = st.reason || "已安装但未运行，可启动服务或卸载。";
       } else {
+        addAction("停止 fail2ban", "", "停止后所有 jail 暂时失效，确定继续？",
+          "fail2ban.stop", "fail2ban 已停止");
+        addAction("卸载 fail2ban", "danger",
+          "卸载会停止防护并删除 fail2ban 软件包，确定继续？",
+          "fail2ban.uninstall", "fail2ban 已卸载");
         $("f2b-help").textContent = "fail2ban 由宿主机 systemd 管理；本页只增删 skiff-*.conf 并触发重启。";
       }
     }

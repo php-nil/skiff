@@ -58,8 +58,11 @@
 | `rule.add` | `action`(accept/drop)、`protocol`(tcp/udp)、`port`(1–65535 或 `a-b`)、`source`(可选 CIDR)、`comment`(可选) | 在自有链追加一条规则 |
 | `rule.remove` | `id`（nft handle 或 iptables 序号） | 按 id 删除受管规则 |
 | `port.allow` | `port`、`protocol`、`source`(可选) | `rule.add` 的便捷入口：放行某端口/协议 |
-| `fail2ban.status` | — | 安装/运行状态、jail 列表与启用状态、封禁计数；取不到回 `null` |
+| `fail2ban.status` | — | 安装/运行状态（`state` = `missing` / `stopped` / `running`）、未运行时的可读 `reason`、jail 列表与启用状态、封禁计数；取不到回 `null` |
 | `fail2ban.install` | — | 安装或复用宿主 fail2ban；新装时写 `skiff-defaults.conf` 关闭 `sshd` jail |
+| `fail2ban.start` | — | 显式启动并设为开机自启（`systemctl enable --now`）；未安装回 503 |
+| `fail2ban.stop` | — | 显式停止并取消开机自启（`systemctl disable --now`）；未安装回 503 |
+| `fail2ban.uninstall` | — | 停止服务、删除本能力面写入的 `skiff-defaults.conf`、`apt-get purge -y fail2ban`；未安装回 503；停止失败不阻断卸载，原因放返回的 `warning` |
 | `fail2ban.jail.ensure` | `jail`、`filter`、`port`、`backend`、`maxretry`、`findtime`、`bantime`、`logpath`(可选) | 写入 `/etc/fail2ban/jail.d/skiff-<jail>.conf` 并重启 fail2ban |
 | `fail2ban.jail.remove` | `jail` | 删除本能力面写入的 jail 文件并重启 fail2ban；只认 `skiff-` 前缀 |
 | `fail2ban.banned` | `jail` | 读取该 jail 的封禁 IP 列表 |
@@ -81,10 +84,13 @@
   新规则带 `comment "skiff-<nanos>"` 标识；删除按 handle，先 `list` 再删，避免误删同名规则。
 - **iptables**：只操作 `SKIFF` 链；链不存在时创建并挂到 `INPUT`。删除按 `-S` 列出的序号，
   只删 `SKIFF` 链内的行。
-- **fail2ban**：只写 `/etc/fail2ban/jail.d/skiff-*.conf`；不改系统级 `jail.conf`、不改其它 jail；
-  不卸载 fail2ban 软件包。`fail2ban.install` 新装时写 `skiff-defaults.conf` 关闭 `sshd`，
-  避免新装 fail2ban 把宿主 SSH 登录封掉；已有 fail2ban 的机器不改其既有 sshd jail。
-- **不做**：清空全部规则、修改默认策略为 drop、flush 其它表/链、卸载 fail2ban、执行任意命令。
+- **fail2ban**：只写 `/etc/fail2ban/jail.d/skiff-*.conf`；不改系统级 `jail.conf`、不改其它 jail。
+  `fail2ban.install` 新装时写 `skiff-defaults.conf` 关闭 `sshd`，避免新装 fail2ban 把宿主 SSH 登录封掉；
+  已有 fail2ban 的机器不改其既有 sshd jail。显式管理面提供 `start` / `stop` / `uninstall`：
+  卸载会 `apt-get purge` 软件包，但只删除本能力面写入的 `skiff-defaults.conf`，
+  其它 `skiff-<jail>.conf` 保留（重装后可复用）。
+- **不做**：清空全部规则、修改默认策略为 drop、flush 其它表/链、执行任意命令；
+  不删除用户创建的其它 jail 文件。
 
 ## 5. 审计口径
 
@@ -102,7 +108,8 @@
 | --- | --- |
 | 未知方法、参数非法（端口/CIDR/jail/backend/id/ip） | 400 |
 | 非 Native 形态或非 Linux | 503 |
-| 宿主命令执行失败、fail2ban 未安装却调用其方法 | 500 / 503 |
+| 宿主命令执行失败（安装/启停/卸载/jail 写入） | 500，message 带原始 stderr 摘要 |
+| `fail2ban.start` / `stop` / `uninstall` 时未安装 | 503，message 为「fail2ban 未安装，无法…」 |
 
 ## 7. 部署形态与特权通道
 
@@ -116,6 +123,8 @@
 - 防火墙插件 manifest 用 `[[interop.provides]]` 暴露
   `fail2ban.status` / `fail2ban.install` / `fail2ban.jail.ensure` / `fail2ban.jail.remove` /
   `fail2ban.banned` / `fail2ban.ban` / `fail2ban.unban`。
+- `fail2ban.start` / `stop` / `uninstall` **只提供插件 UI 显式管理**，不通过 interop 暴露：
+  调用方（FTP 等）只应确保 jail，生命周期由管理员在防火墙页决定。
 - 调用方写 `com.skiff.firewall:<method>`，并声明 `requires = [..., "interop"]`、
   `[[permissions]] capability = "interop" verbs = ["call"]`、
   `resource_hints = ["plugin:com.skiff.firewall"]`、`[interop].consumes`。
@@ -141,9 +150,13 @@
 | FW-12 | FTP 未装防火墙插件时开启防护 | `available=false` + 原因；FTP 其它功能正常 |
 | FW-13 | FTP 已装防火墙插件时开启防护 | jail `pure-ftpd` 生成，端口取 `listen_port` |
 | FW-14 | FTP 关闭防护 | 只移除 `pure-ftpd` jail，不卸载 fail2ban |
+| FW-15 | `fail2ban.status` 三态 | 未安装 `state=missing`；未运行 `state=stopped` 且 `reason` 可读；运行中 `state=running` |
+| FW-16 | `fail2ban.start` / `stop` | 显式 `enable --now` / `disable --now`，返回真实状态；未安装 503 |
+| FW-17 | `fail2ban.uninstall` | 停服务、删 `skiff-defaults.conf`、`apt-get purge`；返回 `missing`，审计 `firewall.fail2ban.uninstall` |
 
 单元测试见 `crates/plugin/src/firewall.rs` 的 `#[cfg(test)]`（jail/端口/CIDR 校验、
-nft/iptables 解析、fail2ban 输出解析、`RuleSpec` 解析、`port.allow`）。
+nft/iptables 解析、fail2ban 输出解析、`RuleSpec` 解析、`port.allow`、
+fail2ban 三态与可读原因、未安装时启停返回 503、卸载 purge 流程）。
 
 ## 10. 未决与决策项
 

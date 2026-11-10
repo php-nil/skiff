@@ -99,6 +99,8 @@ view = "list"             # 单视图 L2：ui/list.html，不渲染 L3 标签栏
 
 - **fail2ban 不是内核内置**，也不是 FTP 插件的附属物，统一由 `com.skiff.firewall` 管理。
   防火墙插件首次 `fail2ban.install` 时经 `apt-get install fail2ban` 安装；机器上已有则只复用。
+  安装、启动、停止、卸载都由防火墙页显式操作（`fail2ban.start` / `stop` / `uninstall`），
+  不靠「启用防护」隐式触发。
 - **防火墙规则只动自己的表/链**：nftables 用 `inet skiff` 表的 `input` 链，iptables 用
   `SKIFF` 链；按 `comment "skiff-<nanos>"`（nft handle）或 `-S` 序号删除，不触碰其它表/链，
   默认策略保持 accept。`port.allow` 是「放行某端口/协议」的便捷入口。
@@ -107,11 +109,14 @@ view = "list"             # 单视图 L2：ui/list.html，不渲染 L3 标签栏
   `/etc/fail2ban/jail.d/skiff-defaults.conf` 关闭 `sshd` jail，避免新装 fail2ban 封掉宿主 SSH；
   已有 fail2ban 的机器不改其既有 sshd jail。改动后 `systemctl restart fail2ban`。
 - **封禁管理**：`fail2ban.banned` 读 `fail2ban-client status <jail>` 的封禁列表，
-  `fail2ban.unban` 调 `fail2ban-client set <jail> unbanip`；**不卸载 fail2ban 软件包**，
-  也不改系统级 `/etc/fail2ban/jail.conf` 或其它插件写的 jail。
+  `fail2ban.unban` 调 `fail2ban-client set <jail> unbanip`；不改系统级
+  `/etc/fail2ban/jail.conf` 或其它插件写的 jail。显式卸载走 `fail2ban.uninstall`：
+  停服务、`apt-get purge` 软件包、删除本能力面写的 `skiff-defaults.conf`；
+  其它 `skiff-<jail>.conf` 保留，重装后可复用。状态三态（未安装/已安装未运行/运行中）
+  与失败原因由 `fail2ban.status` 返回给页面。
 - **对外接口**：`[interop].provides` 暴露 `fail2ban.status` / `fail2ban.install` /
   `fail2ban.jail.ensure` / `fail2ban.jail.remove` / `fail2ban.banned` / `fail2ban.ban` /
-  `fail2ban.unban`，
+  `fail2ban.unban`（`start` / `stop` / `uninstall` 仅供本插件 UI，不对外），
   调用方写 `com.skiff.firewall:<method>` 并声明 `interop:call` 与 `plugin:com.skiff.firewall`。
 - **权限与审计**：能力面动词即 `firewall:<method>`，内核按 manifest 授权逐次校验，
   成功/失败都记审计，`detail` 只含 `jail/port/protocol/source/action/ip/id`，不含命令行。
