@@ -55,9 +55,9 @@ BASE=https://github.com/<owner>/<repo>/releases/download/v<ver>
 curl -LO $BASE/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz
 curl -LO $BASE/skiff-<ver>-x86_64-unknown-linux-musl.tar.gz.sha256
 sha256sum -c skiff-<ver>-x86_64-unknown-linux-musl.tar.gz.sha256   # 只校本机架构这一份
-# 注意：Release 级 checksums.txt 同时列了 amd64 与 aarch64 两个包。
-# 只下载其中一个架构时不要直接 `sha256sum -c checksums.txt`——另一个架构的
-# 条目会报 "FAILED open or read" 并以非零退出（文件本身没问题）。
+# 注意：Release 级 checksums.txt 同时列了 amd64 / aarch64 两个安装包与两个
+# skiff-server-<target> 裸二进制。只下载其中一部分时不要直接 `sha256sum -c
+# checksums.txt`——未下载的条目会报 "FAILED open or read" 并以非零退出（文件本身没问题）。
 ```
 
 内网/无 GitHub 出网时，用临时 HTTP 静态服务把同一份安装包下发（**这是模拟真实用户路径**，
@@ -105,6 +105,7 @@ CI 出的包与手工出包**是同一份脚本、同一套布局**（CI 只是�
 | `skiff-<ver>-<target>.tar.gz` | 是 | 主程序、安装脚本、官方插件与包内摘要 |
 | 同名 `.tar.gz.sha256` | 是 | 单包摘要校验 |
 | `checksums.txt`（Release 资产） | 否 | 多架构汇总摘要；只装单架构时以同名 `.sha256` 为准（汇总文件直接 `-c` 会因另一架构缺失而非零退出） |
+| `skiff-server-<target>` | 否 | 分发侧静态服务裸二进制（`serve`，musl 静态、不在安装包内）；仅自建商店分发时需要，见 [SKIFF_SERVER.md](SKIFF_SERVER.md) §16 |
 | 源码目录 | 否 | 仅开发调试（本机编译、给插件测试物编 demo），不属交付路径 |
 
 ## 1. 环境与前置条件

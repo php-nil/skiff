@@ -17,7 +17,7 @@
 | 文件 | 触发 | 管什么 |
 |---|---|---|
 | `.github/workflows/ci.yml` | push（main/master）、PR、手动；**纯文档改动不触发** | 质量门槛：格式、lint、单测、MSRV、契约校验、插件包链路、脚本、冒烟；musl 静态产物**仅手动** |
-| `.github/workflows/release.yml` | 手动 dispatch（测试期唯一入口）+ `v*` 标签推送（正式发版） | 出可交付安装包：amd64 / arm64 musl 静态包 + `.sha256` + `checksums.txt`。测试期沿用 0.1.0，`publish` 勾选即把资产**覆盖到同一既有 Release**，不新建 tag |
+| `.github/workflows/release.yml` | 手动 dispatch（测试期唯一入口）+ `v*` 标签推送（正式发版） | 出可交付安装包：amd64 / arm64 musl 静态包 + `.sha256` + `skiff-server-<target>` 裸二进制 + `checksums.txt`。测试期沿用 0.1.0，`publish` 勾选即把资产**覆盖到同一既有 Release**，不新建 tag |
 | `.github/workflows/audit.yml` | 每周一 03:00 UTC、手动 | `cargo audit` 查 RustSec 公告 |
 
 依赖升级不走 Dependabot：`dependabot.yml` 已删（2026-10-31），minor/patch 升级人工按需
@@ -164,13 +164,16 @@ gh secret set PLUGIN_SIGNING_KEY < skiff-official-signing.key
 
 `build` 矩阵并发编译 `x86_64-unknown-linux-musl` 与 `aarch64-unknown-linux-musl`
 （`cross` 自带交叉工具链镜像），逐个跑 `deploy/pack-release.sh`（同一份脚本，CI 只换
-`CARGO=cross` 与 `--target`）。`publish` 汇总后生成 Release 级 `checksums.txt`。
+`CARGO=cross` 与 `--target`）；同一 job 另编 `-p skiff-server` 出裸二进制
+`skiff-server-<target>`（与安装包同轮构建、同一套静态链接自检）。`publish` 汇总后生成
+Release 级 `checksums.txt`，安装包与 `skiff-server-*` 都在覆盖范围内。
 
 | 资产 | 说明 |
 |---|---|
 | `skiff-<ver>-<target>.tar.gz` | 安装压缩包（两个架构各一份），命名含版本与 target |
 | `skiff-<ver>-<target>.tar.gz.sha256` | 单包摘要，装机前先校验 |
-| `checksums.txt` | Release 级汇总摘要（覆盖所有 `.tar.gz`），`sha256sum -c checksums.txt` |
+| `skiff-server-<target>` | 分发侧静态服务裸二进制（两个架构各一份，musl 静态、不进安装包），测试机无 Rust 工具链时直接运行；见 [SKIFF_SERVER.md](SKIFF_SERVER.md) §16 |
+| `checksums.txt` | Release 级汇总摘要（覆盖所有 `.tar.gz` 与 `skiff-server-<target>`），`sha256sum -c checksums.txt` |
 
 压缩包内布局（解压后 `cd` 进去直接 `sh install.sh`）：
 

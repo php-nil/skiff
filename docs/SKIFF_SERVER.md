@@ -853,6 +853,9 @@ cargo run -p skiff-server -- check --dist <线上目录> --prev <上一版目录
 > 它替代临时隧道用于测试与过渡自托管，**不改变** §15 的托管决策；客户端对它没有特殊分支，
 > 与 CDN/对象存储/`python -m http.server` 完全同构。
 >
+> **定位：测试与自建分发用，不是唯一的对外分发形态。** 正式对外分发由后续部署形态决定
+> （Docker 镜像或 systemd 服务托管同一批静态产物）；更换托管方式不改变 §16.2/§16.3 的客户端契约。
+>
 > 本节是契约的**唯一来源**：实现（§14 的 `serve.rs`）、客户端（`crates/app/src/catalog`）与测试都以此为准。
 
 ### 16.1 启动形态与传输
@@ -892,6 +895,21 @@ skiff-server serve --dist ./dist --listen 0.0.0.0:8443 \
 
 客户端侧：`[catalog].mirrors = ["https://<IP>:8443"]`，`[catalog].ca_bundle = "/etc/skiff/catalog-ca.pem"`
 （语义见 §4.5；CA 只追加信任锚，仍强制 https）。
+
+**取二进制**：release 流水线与安装包同轮按架构产出 musl 静态裸二进制
+`skiff-server-x86_64-unknown-linux-musl` / `skiff-server-aarch64-unknown-linux-musl`
+（不在安装包内、不装进 `/usr/local/bin`），并列入 Release 级 `checksums.txt`。
+测试机没有 Rust 工具链时直接下载运行：
+
+```bash
+sha256sum -c checksums.txt                       # 安装包与 skiff-server-<target> 一并校验
+chmod +x skiff-server-x86_64-unknown-linux-musl
+./skiff-server-x86_64-unknown-linux-musl serve --dist ./dist --listen 0.0.0.0:8443 \
+  --tls-cert server.pem --tls-key server.key
+```
+
+该二进制只是把产物目录托管起来的一种方式；正式对外托管后续按部署形态决定（Docker 或 systemd），
+替换掉它不影响客户端。
 
 ### 16.2 路径布局
 

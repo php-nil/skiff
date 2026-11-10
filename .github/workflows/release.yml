@@ -14,7 +14,9 @@
 #                                         vendor/install-php-extensions +
 #                                         checksums.txt + README.txt
 #   skiff-<ver>-<target>.tar.gz.sha256    装机前先校验（单包摘要）
-#   checksums.txt                         所有安装包的汇总摘要（Release 资产）
+#   skiff-server-<target>                 分发侧静态服务裸二进制（musl 静态，不进安装包；
+#                                         测试机无 Rust 工具链时直接取用，见 SKIFF_SERVER.md §16）
+#   checksums.txt                         上面所有资产（安装包 + skiff-server）的汇总摘要
 #
 # 发布物**不做 detached 签名**（§11 决策 12，2026-11-01）：只用 SHA-256 摘要。
 # 插件签名私钥缺失**不阻塞出包**：pack-release.sh 会生成临时签名身份并告警，
@@ -151,6 +153,26 @@ jobs:
           fi
           tail -n 15 "$RUNNER_TEMP/pack.log"
 
+      # 分发侧静态服务（skiff-server serve）也要按架构出裸二进制：
+      # 测试机没有 Rust 工具链，直接从 Release 取包运行即可（契约见 SKIFF_SERVER.md §16）。
+      # 与安装包不重叠：它是运维侧工具，不进 install.sh 的安装包。
+      - name: 构建 skiff-server（分发侧静态服务）
+        run: |
+          set -eu
+          cross build --release --locked -p skiff-server --bin skiff-server \
+            --target "${{ matrix.target }}"
+          out="dist/skiff-server-${{ matrix.target }}"
+          install -m 0755 "target/${{ matrix.target }}/release/skiff-server" "$out"
+          file "$out"
+          if readelf -l "$out" | grep -q INTERP; then
+            echo "::error::skiff-server 不是静态链接（${{ matrix.target }}）"
+            exit 1
+          fi
+          # amd64 的产物能在 runner 上直接跑，做个冒烟；arm64 只做静态检查（不引 qemu）
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            "$out" --help >/dev/null
+          fi
+
       # 验签工具要用宿主二进制：pack-release.sh 里的 skiff-plugin 是按目标架构编的
       # （musl 包内工具），arm64 那份 runner 上跑不起来。这里单独编宿主版本。
       - name: 构建宿主验签工具
@@ -235,8 +257,9 @@ jobs:
         run: |
           set -eu
           ls -l dist
-          # Release 级 checksums.txt：覆盖所有安装包（装机第一步校验）
-          ( cd dist && sha256sum -- *.tar.gz > checksums.txt && cat checksums.txt )
+          # Release 级 checksums.txt：安装包 + 分发侧 skiff-server 裸二进制，
+          # 两者都要能被 `sha256sum -c checksums.txt` 覆盖（装机/取二进制各一步）。
+          ( cd dist && sha256sum -- *.tar.gz skiff-server-* > checksums.txt && cat checksums.txt )
       - name: 建/改 Release（只覆盖资产，不建 tag）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
