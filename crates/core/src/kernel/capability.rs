@@ -59,7 +59,12 @@ pub(super) async fn identity_self(
             "objects": p.grants.iter().filter(|g| g.kind == "object").map(|g| g.value.clone()).collect::<Vec<_>>(),
         }))
         .into_response(),
-        _ => (StatusCode::NOT_FOUND, "插件不存在").into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "插件不存在").into_response(),
+        // 「查库失败」不是「插件不存在」：不能把基础设施故障伪装成 404。
+        Err(e) => {
+            tracing::error!(plugin = %id, error = %e, "读取插件信息失败");
+            (StatusCode::INTERNAL_SERVER_ERROR, "读取插件信息失败").into_response()
+        }
     }
 }
 
@@ -233,7 +238,38 @@ pub(super) async fn docker_call(
 
     let grants: Vec<Grant> = match state.db().plugin(&id) {
         Ok(Some(p)) => p.grants,
-        _ => Vec::new(),
+        Ok(None) => {
+            // 鉴权中间件已确认插件存在；走到这里说明库与 UDS 会话不一致（刚被卸载）。
+            if let Err(w) = state.db().audit(
+                &format!("plugin:{id}"),
+                "uds",
+                &verb.audit_action(),
+                "",
+                "deny",
+                "插件记录不存在（可能已被卸载）",
+            ) {
+                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+            }
+            return (StatusCode::FORBIDDEN, "插件记录不存在").into_response();
+        }
+        // 查库失败不是越权：按依赖不可用回 503，不能伪装成 deny。
+        Err(e) => {
+            if let Err(w) = state.db().audit(
+                &format!("plugin:{id}"),
+                "uds",
+                &verb.audit_action(),
+                "",
+                "fail",
+                &format!("读取插件授权失败: {e}"),
+            ) {
+                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
+            }
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "读取插件授权失败，请稍后重试",
+            )
+                .into_response();
+        }
     };
     let actor = Actor::Plugin {
         id: id.clone(),
