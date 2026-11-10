@@ -46,7 +46,12 @@ pub async fn login_page(
         prefix: state.cfg.entry_prefix.clone(),
         error: String::new(),
         csrf: csrf.clone(),
-        username: q.get("u").cloned().unwrap_or_default(),
+        // 规范参数名 `username`；`u` 为旧链接兼容（URL 契约 §8）。
+        username: q
+            .get("username")
+            .or_else(|| q.get("u"))
+            .cloned()
+            .unwrap_or_default(),
         next: q.get("next").cloned().unwrap_or_default(),
     };
     let body = handlers::render(page)?;

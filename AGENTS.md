@@ -84,6 +84,7 @@
 | 官方插件集规划 | `docs/PLUGIN_CATALOG.md` | 竞品对照、官方插件清单、6 个（guard/monitor/files/cron/ftp/firewall，原 nginx 已内核化为「网站」）落地情况与开箱即用交付线；实现与约定见 `plugins/README.md` |
 | 菜单契约 | `docs/MENU_CONTRACT.md` | 三级菜单模型与归属、manifest 声明、L3 渲染与 iframe 边界、菜单设置/布局持久化、固定页槽位、旧包迁移与验收矩阵 |
 | 插件 UI 契约 | `docs/PLUGIN_UI_CONTRACT.md` | 插件信息/管理页与功能页的路由分工、`view` 视图模型与静态文件映射、内核信息页字段与操作、沙箱/CSP、旧包 `[[ui]]` 回落与测试矩阵 |
+| URL 契约 | `docs/URL_CONTRACT.md` | 全仓库页面与接口路径的唯一依据：前缀与例外、资源命名、层级与页面内接口同构、动作动词表、方法与副作用、查询参数、旧路径兼容与下线 |
 | 内核 UI 交互基准 | `docs/UI_CONTRACT.md` | 页面标题/提示条/主次操作/工具栏/表格/空态/弹窗抽屉/危险确认/窄屏断点/类名前缀的统一规范，附现有页面盘点与待对齐清单 |
 | 网站运行环境契约 | `docs/SITE_RUNTIME_CONTRACT.md` | 运行环境与站点模型、三类建站（运行环境/静态/反向代理）、PHP 专属配置、Docker 页边界、路由权限审计、P1/P2 范围与测试矩阵；可点预览 `docs/ui/site-runtime-preview.html` |
 | 内核定时任务契约 | `docs/KERNEL_SCHEDULER_CONTRACT.md` | 任务模型（kind/source/调度/超时/重试/并发）、内存缓冲与四种回执、执行语义、插件唤醒链路、内置任务、插件分工（cron 降级为 UI）、API/权限/迁移与测试矩阵 |

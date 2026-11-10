@@ -713,7 +713,7 @@ schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runti
   库内 `sites=0`；`/www/sites` 为空。
 - 拒绝路径（均 HTTP 200，表单页内联告警）：重复域名「域名已存在」；`ftp://` 上游
   非 http(s)；`site_type=node|go` 只支持三类；未知 `runtime_id` 运行环境不存在。
-- 运行环境页：`/{p}/runtimes`、`/{p}/sites/env`、`/{p}/sites/env/php-8.5` 均 200；PHP 配置保存 303，
+- 运行环境页：`/{p}/runtimes`、`/{p}/sites/env`、`/{p}/sites/env/php-8.5` 均 200（2026-11-10 起 `/sites/env*` 301 到 `/runtimes*`，见 [`URL_CONTRACT.md`](URL_CONTRACT.md) §7）；PHP 配置保存 303，
   `/www/php/www.conf` 写入 `memory_limit=512M`、`upload_max_filesize=128M`、`post_max_size=256M`、
   `max_execution_time=120`、`pm=ondemand`，PHPInfo 页面显示 `upload_max_filesize=128M`；
   关联站点数 1→0 正确；绑定 `php.local` 时删除运行环境被拒并列出域名。

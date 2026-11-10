@@ -364,25 +364,27 @@
 | 路由 | 方法 | 说明 |
 | --- | --- | --- |
 | `/{p}/files` | GET | 文件管理页（Admin） |
-| `/{p}/files/api/list` | GET | 列目录（`path`） |
-| `/{p}/files/api/read` | GET | 读文本（`path`，上限 256 KiB） |
-| `/{p}/files/api/write` | POST | 原子替换写（CSRF + Admin） |
-| `/{p}/files/api/mkdir` | POST | 新建目录（CSRF + Admin） |
-| `/{p}/files/api/rename` | POST | 重命名/移动（CSRF + Admin） |
-| `/{p}/files/api/remove` | POST | 删除（移入回收站，返回 `trash_id`；CSRF + Admin） |
+| `/{p}/files/list` | GET | 列目录（`path`） |
+| `/{p}/files/read` | GET | 读文本（`path`，上限 256 KiB） |
+| `/{p}/files/write` | POST | 原子替换写（CSRF + Admin） |
+| `/{p}/files/mkdir` | POST | 新建目录（CSRF + Admin） |
+| `/{p}/files/rename` | POST | 重命名/移动（CSRF + Admin） |
+| `/{p}/files/remove` | POST | 删除（移入回收站，返回 `trash_id`；CSRF + Admin） |
 | `/{p}/files/trash` | GET | 回收站页面 |
-| `/{p}/files/api/trash` | GET | 回收站列表 |
-| `/{p}/files/api/trash/restore` | POST | 恢复（`id`、`overwrite`；CSRF/Admin） |
-| `/{p}/files/api/trash/purge` | POST | 彻底删除（`id`；CSRF/Admin） |
-| `/{p}/files/api/trash/clear` | POST | 清空回收站（CSRF/Admin；返回删除数/字节/失败条目） |
+| `/{p}/files/trash/list` | GET | 回收站列表 |
+| `/{p}/files/trash/restore` | POST | 恢复（`id`、`overwrite`；CSRF/Admin） |
+| `/{p}/files/trash/purge` | POST | 彻底删除（`id`；CSRF/Admin） |
+| `/{p}/files/trash/clear` | POST | 清空回收站（CSRF/Admin；返回删除数/字节/失败条目） |
 | `/{p}/files/quotas` | GET | 配额管理页面 |
-| `/{p}/files/api/quotas` | GET | 已设置上限的配额列表 |
-| `/{p}/files/api/quotas/set` | POST | 设置/修改（`root/max_bytes/max_files`；CSRF/Admin） |
-| `/{p}/files/api/quotas/cancel` | POST | 取消上限（`root`；CSRF/Admin） |
-| `/{p}/files/api/quotas/scan` | POST | 全量重扫用量（`root`；CSRF/Admin，O(条目数)） |
+| `/{p}/files/quotas/list` | GET | 已设置上限的配额列表 |
+| `/{p}/files/quotas/set` | POST | 设置/修改（`root/max_bytes/max_files`；CSRF/Admin） |
+| `/{p}/files/quotas/cancel` | POST | 取消上限（`root`；CSRF/Admin） |
+| `/{p}/files/quotas/scan` | POST | 全量重扫用量（`root`；CSRF/Admin，O(条目数)） |
 | `/{p}/fs/audit` | GET | 审计流 |
 | `/{p}/fs/grants` | GET | 授权根容量（规划中） |
 
+- 页面内 JSON 与页面路径同构，不插 `api` 中缀；旧 `/{p}/files/api/*` 以 308 兼容到新路径，
+  统一规则见 [`docs/URL_CONTRACT.md`](URL_CONTRACT.md) §4、§7。
 - 管理面写操作同样走内核操作面（不是另一套 `std::fs` 实现），保证锁、原子性、审计一致。
 
 ## 11. 迁移与兼容

@@ -1,5 +1,5 @@
 /* 内核「文件管理」页前端：左目录树 + 右文件列表。
-   只调用内核 `/files/api/*`，授权、原子写、路径锁、回收站全部由 `skiff-fs` 完成。
+   只调用内核 `/files/*`，授权、原子写、路径锁、回收站全部由 `skiff-fs` 完成。
    前端不做本地权限判定，也不在 Web 层直接拼路径做 IO。
    阶段一覆盖：目录树、面包屑、列表与元数据、新建、上传、下载、重命名、删除（回收站）、编辑。 */
 (function () {
@@ -147,9 +147,10 @@
   // ---- 基础工具 ---------------------------------------------------------
 
   function apiUrl(path) {
-    // 统一在这里补分隔符：调用方传 "/list" 或 "list" 都拼成 /{prefix}/files/api/list。
+    // 统一在这里补分隔符：调用方传 "/list" 或 "list" 都拼成 /{prefix}/files/list。
+    // 页面内 JSON 接口与页面路径同构，不再额外插 `api` 段（URL 契约 §4）。
     var suffix = path.charAt(0) === "/" ? path : "/" + path;
-    return "/" + prefix + "/files/api" + suffix;
+    return "/" + prefix + "/files" + suffix;
   }
 
   function joinPath(dir, name) {

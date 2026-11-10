@@ -471,7 +471,7 @@ pub struct NodeConfigView {
     /// 容器内工作目录：固定为环境自带 `app/`，与站点绑定无关。
     pub workdir: String,
     pub port: String,
-    /// 保存地址：`/{prefix}/sites/env/{id}/node-config`。
+    /// 保存地址：`/{prefix}/runtimes/{id}/node-config`。
     pub config_url: String,
 }
 
@@ -589,7 +589,7 @@ pub struct RuntimeDetailPage {
     pub job_url: String,
     /// 抽屉内日志页签的刷新地址（`?tail=300`）。
     pub logs_url: String,
-    /// 扩展操作基址：`/{prefix}/sites/env/{id}`。
+    /// 扩展操作基址：`/{prefix}/runtimes/{id}`。
     pub env_href: String,
     /// Rust / Node.js 运行日志的宿主路径（其他类型为空）。
     pub runtime_log_path: String,

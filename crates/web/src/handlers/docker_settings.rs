@@ -5,8 +5,10 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::header::LOCATION;
 use axum::http::request::Parts;
-use axum::response::Response;
+use axum::http::{StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
 use crate::handlers;
@@ -14,6 +16,17 @@ use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::DockerSettingsPage;
 use crate::util::{form_first, parse_form};
+
+/// 旧路径 `/{p}/docker/settings` → `/{p}/settings/docker`（308 保留方法与请求体）。
+pub async fn legacy_path(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
+    let prefix = &state.cfg.entry_prefix;
+    let mut target = format!("/{prefix}/settings/docker");
+    if let Some(q) = uri.query() {
+        target.push('?');
+        target.push_str(q);
+    }
+    (StatusCode::PERMANENT_REDIRECT, [(LOCATION, target)]).into_response()
+}
 
 pub async fn page(
     State(state): State<Arc<AppState>>,
@@ -93,7 +106,7 @@ pub async fn save(
                         &user,
                         skiff_app::FlashKind::Error,
                         e,
-                        format!("/{prefix}/docker/settings"),
+                        format!("/{prefix}/settings/docker"),
                     ));
                 }
             }
@@ -114,6 +127,6 @@ pub async fn save(
         &user,
         skiff_app::FlashKind::Notice,
         notice,
-        format!("/{prefix}/docker/settings"),
+        format!("/{prefix}/settings/docker"),
     ))
 }

@@ -40,7 +40,7 @@
     {% endif %}
     {% if can_delete %}
     <div class="row">
-      <form method="post" action="/{{ ctx.prefix }}/containers/{{ container.id }}/remove" class="inline"
+      <form method="post" action="/{{ ctx.prefix }}/containers/{{ container.id }}/delete" class="inline"
             data-confirm="删除后不可恢复，确定删除容器 {{ container.name }}？">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="mini danger" type="submit">删除</button>
       </form>

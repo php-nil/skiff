@@ -71,7 +71,7 @@
     <div><span class="muted">文档根</span><span class="mono wrap">{{ site.index_dir }}</span></div>
     {% endif %}
     {% if site.site_type == "runtime" %}
-    <div><span class="muted">运行环境</span><span class="mono"><a href="/{{ ctx.prefix }}/sites/env/{{ site.runtime_id }}">{{ site.runtime_label }}</a></span></div>
+    <div><span class="muted">运行环境</span><span class="mono"><a href="/{{ ctx.prefix }}/runtimes/{{ site.runtime_id }}">{{ site.runtime_label }}</a></span></div>
     {% if !site.runtime_shared_hint.is_empty() %}
     <div><span class="muted">共享影响</span><span class="muted">{{ site.runtime_shared_hint }}</span></div>
     {% endif %}

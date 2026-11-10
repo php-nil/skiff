@@ -12,7 +12,7 @@
 <section class="panel">
   <h2>镜像加速源</h2>
   <p class="muted">写入宿主 <code>/etc/docker/daemon.json</code> 的 <code>registry-mirrors</code>，用于加速所有镜像拉取。写入前会备份原文件；JSON 非法或 Docker 重启失败会回滚；检测到运行中容器时只落盘、不自动重启。</p>
-  <form method="post" action="/{{ ctx.prefix }}/docker/settings" class="form-grid">
+  <form method="post" action="/{{ ctx.prefix }}/settings/docker" class="form-grid">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
     <label>镜像加速地址
       <input name="registry_mirror" value="{{ registry_mirror }}" placeholder="https://mirror.example.com"{% if !can_admin %} disabled{% endif %}>

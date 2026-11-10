@@ -109,7 +109,7 @@
     <input type="hidden" name="next" value="/{{ ctx.prefix }}/plugins/{{ plugin.id }}">
     <button class="ghost" type="submit">{% if plugin.enabled %}停用插件{% else %}启用插件{% endif %}</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/plugins/{{ plugin.id }}/remove" class="danger-zone">
+  <form method="post" action="/{{ ctx.prefix }}/plugins/{{ plugin.id }}/delete" class="danger-zone">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
     <label class="check"><input type="checkbox" name="delete_data" value="on"> 同时删除插件数据目录（不可恢复）</label>
     <button class="danger" type="submit">卸载插件</button>

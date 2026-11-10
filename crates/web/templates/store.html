@@ -94,7 +94,10 @@
         {% if section.installable %}
         <td>
           {% if r.warn.is_empty() %}
-          <a class="btn ghost" href="/{{ ctx.prefix }}/store/plugins/{{ r.name }}/install">安装</a>
+          <form method="post" action="/{{ ctx.prefix }}/store/plugins/{{ r.name }}/install" class="inline">
+            <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+            <button type="submit" class="btn ghost">安装</button>
+          </form>
           {% else %}
           <span class="muted small">不可安装</span>
           {% endif %}

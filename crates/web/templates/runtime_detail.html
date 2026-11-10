@@ -6,7 +6,7 @@
   <h1 data-runtime-title>{{ runtime.kind_label }} {{ runtime.name }}</h1>
   {% if runtime.is_default %}<span class="tag ok">默认</span>{% endif %}
   <span class="muted small">目标 {{ runtime.version }} · 业务视角</span>
-  <a class="ghost" href="/{{ ctx.prefix }}/sites/env">返回运行环境列表</a>
+  <a class="ghost" href="/{{ ctx.prefix }}/runtimes">返回运行环境列表</a>
 </div>
 {% include "page_banner.html" %}
 
@@ -42,12 +42,12 @@
     <li><a href="{{ s.href }}">{{ s.domain }}</a> · {{ s.type_label }} · {{ s.status_label }}</li>
     {% endfor %}
   </ul>
-  <form method="post" action="{% if pending_confirm == "port" %}/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/port{% else %}/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/{{ pending_confirm }}{% endif %}" data-drawer-post>
+  <form method="post" action="{% if pending_confirm == "port" %}/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/port{% else %}/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/{{ pending_confirm }}{% endif %}" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
     <input type="hidden" name="confirm" value="1">
     {% if pending_confirm == "port" %}<input type="hidden" name="port" value="{{ pending_port }}">{% endif %}
     <div class="wizard-nav">
-      <a class="ghost" href="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}">取消</a>
+      <a class="ghost" href="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}">取消</a>
       <button class="btn danger" type="submit">确认{{ pending_confirm_label }}</button>
     </div>
   </form>
@@ -84,7 +84,7 @@
     <strong>该实例尚未安装</strong>
     <p class="hint">安装会拉取镜像、创建容器并写入运行环境配置；失败原因会显示在本页与「日志」页签。</p>
     {% if can_admin %}
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
+    <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/install" data-drawer-post>
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
       <button class="btn primary" type="submit"{% if has_job && job.active %} disabled{% endif %}>{% if has_job && job.active %}安装中…{% else %}安装运行环境{% endif %}</button>
     </form>
@@ -145,7 +145,7 @@
       <button class="btn danger" type="button" disabled title="仍有站点绑定，删除会被拒绝并列出域名">删除运行环境</button>
       <p class="hint">删除会被拒绝：仍有 {{ runtime.site_count }} 个站点绑定，必须先删除或解绑这些站点。</p>
       {% else %}
-      <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/delete" class="inline">
+      <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/delete" class="inline">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn danger" type="submit">删除运行环境</button>
       </form>
       {% endif %}
@@ -452,7 +452,7 @@
     <div><span class="muted">代码目录</span><span class="muted">固定为环境 <code>app/</code>，不随站点绑定变化；站点只做域名反代。</span></div>
   </div>
   {% if can_admin %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/port">
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/port">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
     <div class="form-grid">
       <label>修改端口
@@ -503,7 +503,7 @@
     <span class="runtime-progress runtime-progress-wide" data-job-progress><span style="width: {{ job.progress }}%"></span></span>
     {% if job.failed %}
     <div class="alert" data-job-error>失败原因：{{ job.error }}</div>
-    <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" data-drawer-post>
+    <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/install" data-drawer-post>
       <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
       <button class="btn" type="submit">重试安装</button>
     </form>
@@ -569,27 +569,27 @@
 {% if can_admin %}
 <div class="drawer-foot runtime-actions" data-runtime-actions>
   {% if runtime.container_exists %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/start" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/start" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">启动</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/stop" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/stop" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">停止</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/restart" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/restart" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重启</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/rebuild" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/rebuild" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn" type="submit">重建</button>
   </form>
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">重新安装</button>
   </form>
   {% else %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/install" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn primary" type="submit">安装运行环境</button>
   </form>
   {% endif %}
-  <form method="post" action="/{{ ctx.prefix }}/sites/env/{{ runtime.id }}/action/sync" class="inline" data-drawer-post>
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/action/sync" class="inline" data-drawer-post>
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}"><button class="btn ghost" type="submit">同步状态</button>
   </form>
 </div>

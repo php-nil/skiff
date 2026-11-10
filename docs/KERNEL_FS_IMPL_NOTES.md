@@ -262,7 +262,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | --- | --- | --- |
 | 应用装配 | `crates/app/src/lib.rs` | `AppState` 持有 `AdminFs`，提供 `admin_fs()` 访问器 |
 | 管理客户端 | `crates/app/src/admin_fs.rs` | 管理员主体调用原语；数据根硬拒；审计落 `audit` 表；256 KiB 编辑上限 |
-| Web 页面/API | `crates/web/src/handlers/files.rs` | `/{p}/files` 与 `/files/api/{list,read,write,mkdir,rename,remove}`；Admin + CSRF |
+| Web 页面/API | `crates/web/src/handlers/files.rs` | `/{p}/files` 与 `/files/{list,read,write,mkdir,rename,remove}`（旧 `/files/api/*` 308 兼容）；Admin + CSRF |
 | 模板/静态 | `templates/files.html`、`static/files.css`、`static/files.js` | 独立样式全部挂 `.files-page`，不改 `skiff.css` |
 | 菜单/深链 | `menu.rs`、`handlers/plugins.rs` | 新增内置 `core/files`；过滤 `com.skiff.files` 插件菜单；旧深链 301 |
 
@@ -277,7 +277,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 
 ### 8.3 第二步落地结果
 
-- 回收站：`AdminFs::remove` 改为 `permanent=false`，接 `DbTrashStore`（SQLite `trash_entries`）；新增 `/{p}/files/trash` 页面与 `files/api/trash[/restore|/purge|/clear]` API。
+- 回收站：`AdminFs::remove` 改为 `permanent=false`，接 `DbTrashStore`（SQLite `trash_entries`）；新增 `/{p}/files/trash` 页面与 `files/trash[/list|/restore|/purge|/clear]` API。
 - 配额：`DbQuotaTracker` 替换 `MemoryQuotaTracker`，`/{p}/files/quotas` 展示已设置上限的目录树与用量；写前预检与写后增量均由 `skiff-fs` 完成。
 - 审计仍写现有 `audit` 表，动作统一 `fs.recycle.*` / `fs.quota.*`；未建 `fs_audit` 表。
 

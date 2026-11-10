@@ -1310,14 +1310,17 @@ async fn store_install_requires_plugin_manage_permission() {
         },
     );
     let token = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
+                .method("POST")
                 .uri("/p/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("csrf={csrf}")))
                 .unwrap(),
         )
         .await
@@ -1353,14 +1356,17 @@ async fn store_install_requires_configured_key() {
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
+                .method("POST")
                 .uri("/p/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("csrf={csrf}")))
                 .unwrap(),
         )
         .await
@@ -1393,14 +1399,17 @@ async fn store_install_rejects_without_verified_catalog() {
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
+                .method("POST")
                 .uri("/p/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("csrf={csrf}")))
                 .unwrap(),
         )
         .await
@@ -1868,7 +1877,7 @@ async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/plugins/com.example.demo/remove")
+                .uri("/p/plugins/com.example.demo/delete")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(form_body(&[("csrf", csrf.as_str())]))
@@ -2427,9 +2436,9 @@ async fn restricted_form_hides_and_rejects_files_management() {
         "/p/files",
         "/p/files/trash",
         "/p/files/quotas",
-        "/p/files/api/list",
-        "/p/files/api/trash",
-        "/p/files/api/quotas",
+        "/p/files/list",
+        "/p/files/trash/list",
+        "/p/files/quotas/list",
     ] {
         let (status, body) = get_page(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "`{uri}` 必须 403");
@@ -2519,7 +2528,7 @@ path = "index.html"
     }
     assert!(
         info_html.contains(r#"action="/p/plugins/com.example.ui/toggle""#)
-            && info_html.contains(r#"action="/p/plugins/com.example.ui/remove""#),
+            && info_html.contains(r#"action="/p/plugins/com.example.ui/delete""#),
         "信息页必须承载启用/停用与卸载动作: {info_html}"
     );
     assert!(
@@ -4847,12 +4856,12 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
 
-    for uri in ["/p/runtimes", "/p/sites/env", "/p/sites/env/php-8.5"] {
+    for uri in ["/p/runtimes", "/p/runtimes/php-8.5"] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains("PHP"), "{uri} 必须展示运行环境类型: {html}");
     }
-    let (status, html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/runtimes/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("PHP 配置"), "{html}");
     assert!(html.contains("socket"), "{html}");
@@ -4867,7 +4876,7 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("PHP 配置"), "{html}");
 
-    for uri in ["/p/runtimes", "/p/sites/env", "/p/sites/env/php-8.5"] {
+    for uri in ["/p/runtimes", "/p/runtimes/php-8.5"] {
         let (status, _) = get_page(&h.app, uri, &viewer).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
     }
@@ -4879,7 +4888,7 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/env/php-8.5/action/start")
+                .uri("/p/runtimes/php-8.5/action/start")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
                 .body(form_body(&[("csrf", "x")]))
@@ -4911,7 +4920,7 @@ async fn runtime_detail_hides_php_blocks_for_non_php_instances() {
         })
         .unwrap();
 
-    for uri in ["/p/sites/env/rust-1.83", "/p/runtimes/rust-1.83"] {
+    for uri in ["/p/runtimes/rust-1.83"] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(
@@ -4930,7 +4939,7 @@ async fn runtime_detail_hides_php_blocks_for_non_php_instances() {
     }
 
     // 同一页面在 PHP 实例上仍完整保留扩展与 PHP 配置。
-    let (_, php_html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
+    let (_, php_html) = get_page(&h.app, "/p/runtimes/php-8.5", &admin).await;
     assert!(
         php_html.contains(r#"data-runtime-tab="extensions""#) && php_html.contains("php.ini"),
         "PHP 实例必须保留扩展页签与 php.ini 查看入口: {php_html}"
@@ -4957,7 +4966,7 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
             is_default: false,
         })
         .unwrap();
-    let (status, html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/runtimes", &admin).await;
     assert_eq!(status, StatusCode::OK);
 
     for gone in [
@@ -4994,14 +5003,14 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
     );
     assert!(html.contains("共 1 个实例"), "列表计数只算真实实例: {html}");
     assert!(
-        !html.contains(r#"data-runtime-open="/p/sites/env/php-8.3""#)
-            && !html.contains(r#"data-runtime-open="/p/sites/env/php-8.4""#)
-            && !html.contains(r#"data-runtime-open="/p/sites/env/php-8.5""#),
+        !html.contains(r#"data-runtime-open="/p/runtimes/php-8.3""#)
+            && !html.contains(r#"data-runtime-open="/p/runtimes/php-8.4""#)
+            && !html.contains(r#"data-runtime-open="/p/runtimes/php-8.5""#),
         "迁移种子行不得在列表占位（模板只在新建流程出现）: {html}"
     );
     assert!(
         html.contains(r#"data-runtime-drawer"#)
-            && html.contains(r#"data-runtime-open="/p/sites/env/php-8.5-a""#)
+            && html.contains(r#"data-runtime-open="/p/runtimes/php-8.5-a""#)
             && html.contains("data-drawer-content"),
         "详情必须是右侧抽屉而不是跳页: {html}"
     );
@@ -5084,7 +5093,7 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
     assert!(
         web.contains("Web 服务（OpenResty）")
             && web.contains("data-web-env-ops")
-            && web.contains("/p/sites/env/web/action/"),
+            && web.contains("/p/runtimes/web/action/"),
         "Web 服务运维入口必须落在 Web 服务页: {web}"
     );
 
@@ -5114,7 +5123,7 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
     assert_eq!(status, StatusCode::NOT_FOUND, "站点设置页必须已移除");
 
     // 新 Docker 设置页：镜像加速源 + 镜像前缀；菜单深链同源。
-    for uri in ["/p/docker/settings", "/p/m/core/docker/settings"] {
+    for uri in ["/p/settings/docker", "/p/m/core/docker/settings"] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK);
         assert!(
@@ -5126,18 +5135,18 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
     }
 
     // 运行环境页接管镜像标签，不再出现加速源/前缀字段。
-    let (status, env_html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    let (status, env_html) = get_page(&h.app, "/p/runtimes", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         env_html.contains(r#"name="nginx_image""#)
             && env_html.contains(r#"name="php_image""#)
-            && env_html.contains("/p/sites/env/images"),
+            && env_html.contains("/p/runtimes/images"),
         "运行环境页必须提供镜像标签保存入口: {env_html}"
     );
 
     // viewer 打开页面只读，保存仍被拒绝。
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/docker/settings", &viewer).await;
+    let (status, html) = get_page(&h.app, "/p/settings/docker", &viewer).await;
     assert_eq!(status, StatusCode::OK);
     let csrf = csrf_from(&html);
     let resp = h
@@ -5146,7 +5155,7 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/docker/settings")
+                .uri("/p/settings/docker")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
                 .body(form_body(&[
@@ -5220,7 +5229,7 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
 async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (_, html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    let (_, html) = get_page(&h.app, "/p/runtimes", &admin).await;
     let csrf = csrf_from(&html);
 
     for (name, version) in [("PHP-8.5", "8.5"), ("-php", "8.5"), ("php-8.5-a", "")] {
@@ -5230,7 +5239,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/p/sites/env/add")
+                    .uri("/p/runtimes/create")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                     .body(form_body(&[
@@ -5250,7 +5259,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
             .to_str()
             .unwrap();
         assert_eq!(
-            location, "/p/sites/env",
+            location, "/p/runtimes",
             "{name}/{version} 回跳不得携带消息参数"
         );
     }
@@ -5262,7 +5271,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/env/add")
+                .uri("/p/runtimes/create")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[
@@ -5282,7 +5291,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .to_str()
         .unwrap()
         .to_string();
-    assert_eq!(location, "/p/sites/env", "回跳不得携带消息参数");
+    assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
     // 接管后已是真实实例，再次同名必须拒绝。
     let resp = h
         .app
@@ -5290,7 +5299,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/env/add")
+                .uri("/p/runtimes/create")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[
@@ -5310,8 +5319,8 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .to_str()
         .unwrap()
         .to_string();
-    assert_eq!(location, "/p/sites/env", "回跳不得携带消息参数");
-    let (_, page) = get_page(&h.app, "/p/sites/env", &admin).await;
+    assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
+    let (_, page) = get_page(&h.app, "/p/runtimes", &admin).await;
     assert!(page.contains("已存在"), "重名原因应经 flash 回显: {page}");
 
     // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
@@ -5322,7 +5331,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/env/add")
+                .uri("/p/runtimes/create")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(form_body(&[
@@ -5342,8 +5351,8 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .to_str()
         .unwrap()
         .to_string();
-    assert_eq!(location, "/p/sites/env", "回跳不得携带消息参数");
-    let (_, page) = get_page(&h.app, "/p/sites/env", &admin).await;
+    assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
+    let (_, page) = get_page(&h.app, "/p/runtimes", &admin).await;
     assert!(
         page.contains("已存在"),
         "目录冲突原因应经 flash 回显: {page}"
@@ -5363,7 +5372,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
 async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/sites/env/php-8.5", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/runtimes/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK, "抽屉内容页应 200");
     assert!(
         html.contains("data-runtime-tabs") && html.contains(r#"data-runtime-tab="extensions""#),
@@ -5396,7 +5405,7 @@ async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
     // 多选安装/卸载：一份表单 + 二次确认，后端接收批量 `op` + 多个 `ext`。
     assert!(
         html.contains(r#"data-ext-batch-form"#)
-            && html.contains(r#"action="/p/sites/env/php-8.5/extensions-batch""#)
+            && html.contains(r#"action="/p/runtimes/php-8.5/extensions-batch""#)
             && html.contains(r#"name="ext""#)
             && html.contains(r#"data-ext-submit="install""#)
             && html.contains(r#"data-ext-submit="uninstall""#)
@@ -5444,7 +5453,7 @@ async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/sites/env/jobs")
+                .uri("/p/runtimes/jobs")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .header("x-requested-with", "fetch")
                 .body(Body::empty())
@@ -5483,7 +5492,7 @@ async fn site_detail_warns_when_bound_runtime_stopped() {
         "必须说明停止版本的后果: {html}"
     );
     assert!(
-        html.contains(r#"href="/p/sites/env/php-8.5""#),
+        html.contains(r#"href="/p/runtimes/php-8.5""#),
         "必须提供回运行环境页的入口: {html}"
     );
 }
@@ -5517,7 +5526,7 @@ async fn runtime_sites_show_unknown_instead_of_running_when_docker_unavailable()
         "Docker 未知时也要给出不可用告警: {detail_html}"
     );
 
-    let (status, env_html) = get_page(&h.app, "/p/sites/env", &admin).await;
+    let (status, env_html) = get_page(&h.app, "/p/runtimes", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         env_html.contains("状态未知"),
@@ -6381,7 +6390,7 @@ async fn files_page_browses_edits_and_redirects_legacy_link() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/p/files/api/list?path={}", encode_query(dir)))
+                .uri(format!("/p/files/list?path={}", encode_query(dir)))
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .unwrap(),
@@ -6400,10 +6409,7 @@ async fn files_page_browses_edits_and_redirects_legacy_link() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/p/files/api/read?path={}",
-                    encode_query(file_path)
-                ))
+                .uri(format!("/p/files/read?path={}", encode_query(file_path)))
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .unwrap(),
@@ -6419,7 +6425,7 @@ async fn files_page_browses_edits_and_redirects_legacy_link() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/files/api/write")
+                .uri("/p/files/write")
                 .header(header::COOKIE, &cookie)
                 .header("x-csrf-token", &csrf)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -6440,7 +6446,7 @@ async fn files_page_browses_edits_and_redirects_legacy_link() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/p/files/api/list?path={}",
+                    "/p/files/list?path={}",
                     encode_query(&h.data_dir.join("plugins").display().to_string())
                 ))
                 .header(header::COOKIE, &cookie)
@@ -6627,5 +6633,73 @@ async fn job_detail_empty_logs_show_placeholder() {
     assert!(
         html.contains(r#"data-job-exit>-<"#),
         "无退出码语义时必须显示 `-`，不能用 0 冒充: {html}"
+    );
+}
+
+/// URL 契约 §7：旧路径必须 301/308 到规范路径，保留方法与查询串，不留死链。
+#[tokio::test]
+async fn legacy_paths_redirect_to_canonical_urls() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    for (old, status, new) in [
+        (
+            "/p/files/api/list?path=%2Fwww",
+            StatusCode::PERMANENT_REDIRECT,
+            "/p/files/list?path=%2Fwww",
+        ),
+        (
+            "/p/docker/settings",
+            StatusCode::PERMANENT_REDIRECT,
+            "/p/settings/docker",
+        ),
+        ("/p/sites/env", StatusCode::MOVED_PERMANENTLY, "/p/runtimes"),
+        (
+            "/p/sites/env/php-8.5",
+            StatusCode::MOVED_PERMANENTLY,
+            "/p/runtimes/php-8.5",
+        ),
+    ] {
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(old)
+                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), status, "{old} 必须重定向");
+        assert_eq!(
+            resp.headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some(new),
+            "{old} 的目标路径"
+        );
+    }
+
+    // 旧的 GET 安装入口不再执行安装，只回商店页（安装必须是带 CSRF 的 POST）。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/store/plugins/com.example.demo/install")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        resp.headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/p/store")
     );
 }

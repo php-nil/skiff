@@ -5,8 +5,10 @@ use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
+use axum::http::header::LOCATION;
 use axum::http::request::Parts;
-use axum::response::Response;
+use axum::http::{StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use skiff_app::actions as act;
 use skiff_app::commands::{runtime as runtime_cmd, site as site_cmd, Actor};
 use skiff_store::{Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
@@ -24,6 +26,33 @@ use crate::templates::{
     SiteEnvPage, SiteEnvView, SiteLogsPage, SiteNewForm, SiteTlsView, SiteView, SitesPage,
 };
 use crate::util::{encode_uri_component, form_first, human_size, parse_form};
+
+/// 旧的运行环境页面入口：`/{p}/sites/env` → `/{p}/runtimes`（301，规范化 URL）。
+///
+/// 运行环境是独立资源，不属于站点；`sites/env` 只作为兼容别名保留，
+/// 旧 POST 动作路由仍指向同一 handler，避免已打开页面提交失败。
+pub async fn legacy_env_page(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
+    let mut target = format!("/{}/runtimes", state.cfg.entry_prefix);
+    if let Some(q) = uri.query() {
+        target.push('?');
+        target.push_str(q);
+    }
+    (StatusCode::MOVED_PERMANENTLY, [(LOCATION, target)]).into_response()
+}
+
+/// 旧运行环境详情入口：`/{p}/sites/env/{id}` → `/{p}/runtimes/{id}`（301）。
+pub async fn legacy_env_detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> Response {
+    let mut target = format!("/{}/runtimes/{}", state.cfg.entry_prefix, id);
+    if let Some(q) = uri.query() {
+        target.push('?');
+        target.push_str(q);
+    }
+    (StatusCode::MOVED_PERMANENTLY, [(LOCATION, target)]).into_response()
+}
 
 fn env_view(env: &SiteEnvStatus) -> SiteEnvView {
     SiteEnvView {
@@ -208,10 +237,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         port: v.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
         implemented: v.implemented,
         is_default: v.runtime.is_default,
-        detail_href: format!(
-            "/{prefix}/sites/env/{}",
-            encode_uri_component(&v.runtime.id)
-        ),
+        detail_href: format!("/{prefix}/runtimes/{}", encode_uri_component(&v.runtime.id)),
         docker_href: format!(
             "/{prefix}/containers/{}",
             encode_uri_component(&v.container_name)
@@ -813,9 +839,9 @@ pub async fn env_page(
             skiff_app::sites::DEFAULT_PHP_VERSION,
             &env.php_image,
         ),
-        jobs_href: format!("/{prefix}/sites/env/jobs"),
-        add_href: format!("/{prefix}/sites/env/add"),
-        images_href: format!("/{prefix}/sites/env/images"),
+        jobs_href: format!("/{prefix}/runtimes/jobs"),
+        add_href: format!("/{prefix}/runtimes/create"),
+        images_href: format!("/{prefix}/runtimes/images"),
         error: String::new(),
         notice: String::new(),
     })
@@ -876,7 +902,7 @@ pub async fn env_add(
                 &user,
                 skiff_app::FlashKind::Notice,
                 message,
-                format!("/{prefix}/sites/env"),
+                format!("/{prefix}/runtimes"),
             ))
         }
         Err(e) => Ok(handlers::flash_redirect(
@@ -884,7 +910,7 @@ pub async fn env_add(
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env"),
+            format!("/{prefix}/runtimes"),
         )),
     }
 }
@@ -921,7 +947,7 @@ pub async fn env_images_save(
         &user,
         skiff_app::FlashKind::Notice,
         "镜像参数已保存，重建 Web 服务或重装对应实例后生效",
-        format!("/{prefix}/sites/env"),
+        format!("/{prefix}/runtimes"),
     ))
 }
 
@@ -1235,7 +1261,7 @@ async fn render_detail(
             },
         };
         let href = format!(
-            "/{}/sites/env/{}",
+            "/{}/runtimes/{}",
             state.cfg.entry_prefix,
             encode_uri_component(&rid)
         );
@@ -1754,7 +1780,7 @@ pub async fn runtime_detail(
             workdir,
             port: view.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
             config_url: format!(
-                "/{prefix}/sites/env/{}/node-config",
+                "/{prefix}/runtimes/{}/node-config",
                 encode_uri_component(&id)
             ),
         }
@@ -1781,7 +1807,7 @@ pub async fn runtime_detail(
                     exists: f.exists,
                     selected,
                     edit_href: format!(
-                        "/{prefix}/sites/env/{}?tab=config&file={}",
+                        "/{prefix}/runtimes/{}?tab=config&file={}",
                         encode_uri_component(&id),
                         encode_uri_component(&f.key)
                     ),
@@ -1863,8 +1889,8 @@ pub async fn runtime_detail(
         port_editable,
         port_value,
         port_range_label,
-        health_url: format!("/{prefix}/sites/env/{id}/health"),
-        clone_url: format!("/{prefix}/sites/env/{id}/clone"),
+        health_url: format!("/{prefix}/runtimes/{id}/health"),
+        clone_url: format!("/{prefix}/runtimes/{id}/clone"),
         socket_host: view.socket_host.clone(),
         socket_container: view.socket_container.clone(),
         socket_exists: view.socket_exists,
@@ -1886,12 +1912,12 @@ pub async fn runtime_detail(
         .collect(),
         has_job,
         job: job_view,
-        job_url: format!("/{prefix}/sites/env/{}/job", encode_uri_component(&id)),
+        job_url: format!("/{prefix}/runtimes/{}/job", encode_uri_component(&id)),
         logs_url: format!(
-            "/{prefix}/sites/env/{}/logs?tail=300",
+            "/{prefix}/runtimes/{}/logs?tail=300",
             encode_uri_component(&id)
         ),
-        env_href: format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+        env_href: format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         runtime_log_path: if matches!(
             view.runtime.kind.as_str(),
             skiff_store::KIND_RUST | skiff_store::KIND_NODE
@@ -1948,7 +1974,7 @@ pub async fn runtime_config_file_save(
     let content = form_first(&form, "content");
     let prefix = &state.cfg.entry_prefix;
     let back = format!(
-        "/{prefix}/sites/env/{}?tab=config&file={}",
+        "/{prefix}/runtimes/{}?tab=config&file={}",
         encode_uri_component(&id),
         encode_uri_component(&key)
     );
@@ -2001,7 +2027,7 @@ pub async fn runtime_port_save(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let prefix = &state.cfg.entry_prefix;
-    let back = format!("/{prefix}/sites/env/{id}");
+    let back = format!("/{prefix}/runtimes/{id}");
     let raw = form_first(&form, "port");
     let port: u16 = raw
         .trim()
@@ -2021,7 +2047,7 @@ pub async fn runtime_port_save(
                 domains.len(),
                 domains.join("、")
             ),
-            format!("/{prefix}/sites/env/{id}?confirm=port&port={port}"),
+            format!("/{prefix}/runtimes/{id}?confirm=port&port={port}"),
         ));
     }
     match runtime_cmd::save_port(
@@ -2085,14 +2111,14 @@ pub async fn runtime_clone(
                 rt.name,
                 rt.port.unwrap_or_default()
             ),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&rt.id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&rt.id)),
         )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             format!("{e}"),
-            format!("/{prefix}/sites/env/{id}"),
+            format!("/{prefix}/runtimes/{id}"),
         )),
     }
 }
@@ -2105,7 +2131,7 @@ pub async fn runtime_health(
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
     let prefix = &state.cfg.entry_prefix;
-    let back = format!("/{prefix}/sites/env/{id}");
+    let back = format!("/{prefix}/runtimes/{id}");
     match state.probe_runtime_health(&id).await {
         Ok(msg) => Ok(handlers::flash_redirect(
             &state,
@@ -2155,7 +2181,7 @@ pub async fn runtime_action(
     let back = if web {
         format!("/{prefix}/sites/web?tab=status")
     } else {
-        format!("/{prefix}/sites/env/{}", encode_uri_component(&id))
+        format!("/{prefix}/runtimes/{}", encode_uri_component(&id))
     };
     let outcome = runtime_cmd::action(
         &state,
@@ -2198,7 +2224,7 @@ pub async fn runtime_action(
                     domains.join("、"),
                     action_label(&action)
                 ),
-                format!("/{prefix}/sites/env/{id}?confirm={action}"),
+                format!("/{prefix}/runtimes/{id}?confirm={action}"),
             ))
         }
         Ok(runtime_cmd::RuntimeActionOutcome::Deleted(report)) => {
@@ -2212,7 +2238,7 @@ pub async fn runtime_action(
                 &user,
                 skiff_app::FlashKind::Notice,
                 notice,
-                format!("/{prefix}/sites/env"),
+                format!("/{prefix}/runtimes"),
             ))
         }
         Ok(runtime_cmd::RuntimeActionOutcome::Done) => {
@@ -2313,7 +2339,7 @@ pub async fn runtime_extensions_save(
                 &user,
                 skiff_app::FlashKind::Notice,
                 notice,
-                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+                format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
             ))
         }
         Err(e) => Ok(handlers::flash_redirect(
@@ -2321,7 +2347,7 @@ pub async fn runtime_extensions_save(
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2354,14 +2380,14 @@ pub async fn runtime_extension_install(
             &user,
             skiff_app::FlashKind::Notice,
             format!("扩展 {key} 安装任务已提交，进度与日志会实时刷新"),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2394,14 +2420,14 @@ pub async fn runtime_extension_uninstall(
             &user,
             skiff_app::FlashKind::Notice,
             format!("扩展 {key} 卸载任务已提交"),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2435,7 +2461,7 @@ pub async fn runtime_extensions_batch(
             &user,
             skiff_app::FlashKind::Error,
             "未选择任何扩展",
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         ));
     }
     match runtime_cmd::batch_extensions(
@@ -2455,7 +2481,7 @@ pub async fn runtime_extensions_batch(
             &user,
             skiff_app::FlashKind::Notice,
             "所选扩展均已是目标状态，无需变更",
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
         Ok(n) => {
             let action = if add { "安装" } else { "卸载" };
@@ -2464,7 +2490,7 @@ pub async fn runtime_extensions_batch(
                 &user,
                 skiff_app::FlashKind::Notice,
                 format!("{n} 项扩展{action}任务已提交（单任务串行执行，日志合流，只重启一次容器）"),
-                format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+                format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
             ))
         }
         Err(e) => Ok(handlers::flash_redirect(
@@ -2472,7 +2498,7 @@ pub async fn runtime_extensions_batch(
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2508,14 +2534,14 @@ pub async fn runtime_pecl_install(
             &user,
             skiff_app::FlashKind::Notice,
             format!("PECL {name} 安装任务已提交"),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2609,14 +2635,14 @@ pub async fn runtime_unbind_site(
             &user,
             skiff_app::FlashKind::Notice,
             format!("站点 {domain} 已解绑并停止"),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             e.to_string(),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2684,14 +2710,14 @@ pub async fn runtime_config_save(
             &user,
             skiff_app::FlashKind::Notice,
             "PHP 配置已保存并重载 FPM",
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             format!("{e}"),
-            format!("/{prefix}/sites/env/{}", encode_uri_component(&id)),
+            format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),
         )),
     }
 }
@@ -2711,7 +2737,7 @@ pub async fn runtime_node_config_save(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let prefix = &state.cfg.entry_prefix;
-    let back = format!("/{prefix}/sites/env/{}", encode_uri_component(&id));
+    let back = format!("/{prefix}/runtimes/{}", encode_uri_component(&id));
     let outcome = runtime_cmd::save_node_config(
         &state,
         runtime_cmd::SaveNodeConfig {

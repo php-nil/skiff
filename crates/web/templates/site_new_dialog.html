@@ -67,7 +67,7 @@
         <div class="empty error-state">
           <strong>没有已就绪的运行环境</strong>
           <p class="hint">运行环境站需要已安装且运行中的实例。请先到运行环境页新建并安装 PHP / Node.js / Rust，再回来创建站点。</p>
-          <a class="btn ghost" href="/{{ ctx.prefix }}/sites/env">前往运行环境</a>
+          <a class="btn ghost" href="/{{ ctx.prefix }}/runtimes">前往运行环境</a>
         </div>
         {% else %}
         <select id="site-runtime" name="runtime_id" aria-required="true"
@@ -76,7 +76,7 @@
           <option value="{{ r.id }}"{% if form.runtime_id == r.id %} selected{% endif %}>{{ r.label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">只列出已安装且运行中的实例；未安装、已停止或未实现的类型不出现在这里。未安装请先到 <a href="/{{ ctx.prefix }}/sites/env">运行环境页</a> 安装。</p>
+        <p class="hint">只列出已安装且运行中的实例；未安装、已停止或未实现的类型不出现在这里。未安装请先到 <a href="/{{ ctx.prefix }}/runtimes">运行环境页</a> 安装。</p>
         {% endif %}
         <p class="field-error" data-error-for="runtime_id"{% if form_error_field == "runtime_id" %} data-has-error{% else %} hidden{% endif %}>{% if form_error_field == "runtime_id" %}{{ form_error }}{% endif %}</p>
       </div>

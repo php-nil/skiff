@@ -460,7 +460,7 @@ fn api_minor(api: &str) -> u32 {
 
 /// `/{p}/plugins/{id}/<view>` 里被内核静态段占用的名字：视图名不能与之同名，
 /// 否则 GET 与 POST/静态托管路由重叠，安装期就拒绝。
-const RESERVED_VIEWS: &[&str] = &["ui", "rpc", "toggle", "remove"];
+const RESERVED_VIEWS: &[&str] = &["ui", "rpc", "toggle", "delete", "remove"];
 
 fn validate_view_name(view: &str) -> Result<()> {
     validate_menu_id(view, "MENU_VIEW_INVALID")?;

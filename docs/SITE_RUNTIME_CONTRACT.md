@@ -307,10 +307,10 @@ Site (static / proxy)  不持有 RuntimeEnv
   `extensions` 字段校验与容器内执行脚本；默认集合为 `default_on` 项（pdo_mysql / mbstring 等）。
 - **异步安装**：点击「创建并后台安装」立即返回（落库 + 入队），后台任务按
   `排队 → 拉镜像 → 创建容器 → 启动 → 完成/失败` 推进；列表与抽屉轮询
-  `/sites/env/jobs`、`/sites/env/{id}/job` 获取状态、进度与日志。
+  `/runtimes/jobs`、`/runtimes/{id}/job` 获取状态、进度与日志。
 - **安装日志**：任务持有最近 300 行日志，抽屉内 `data-job-log` 实时追加；失败保留原因，
   提供「重试安装」入口，不阻塞其它页面操作。
-- **扩展变更**：抽屉提交 `/sites/env/{id}/extensions/{key}/install|uninstall` 或 `/pecl`，异步执行
+- **扩展变更**：抽屉提交 `/runtimes/{id}/extensions/{key}/install|uninstall` 或 `/pecl`，异步执行
   mlocati `install-php-extensions`（下载失败回退手写 apk 依赖 + `docker-php-ext-install` / `pecl install`），
   完成后重启容器、收紧 socket 权限并落库；容器不存在时提示先安装/启动。
 - **持久化**：`site_runtimes.extensions`（schema v9）保存逗号分隔的启用集合，安装/扩展任务成功后回写。
@@ -359,12 +359,12 @@ nginx/PHP 镜像标签归运行环境页的「镜像参数」。
 | 网站列表 | `/{p}/m/core/sites/list` | `/{p}/sites` |
 | 新建网站 | `/{p}/m/core/sites/new`（可带 `?type=runtime|static|proxy`） | `/{p}/sites/new` |
 | 站点详情 | `/{p}/m/core/sites/list/<域名>` | `/{p}/sites/<域名>` |
-| 运行环境列表 | `/{p}/m/core/sites/env` | `/{p}/sites/env` |
-| 运行环境详情 | `/{p}/m/core/sites/env/<runtime-id>` | `/{p}/sites/env/<runtime-id>` |
+| 运行环境列表 | `/{p}/m/core/sites/env` | `/{p}/runtimes`（`/{p}/sites/env` 301 兼容） |
+| 运行环境详情 | `/{p}/m/core/sites/env/<runtime-id>` | `/{p}/runtimes/<runtime-id>`（`/{p}/sites/env/<runtime-id>` 301 兼容） |
 | 运行环境标签页 | `/{p}/m/core/sites/env/<runtime-id>?tab=config|logs|sites` | 同上 |
 
-- 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/m/core/docker/settings`），
-  `nginx_image` / `php_image` 归运行环境页的「镜像参数」。
+- 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/settings/docker`），
+  `nginx_image` / `php_image` 归运行环境页的「镜像参数」。URL 规则统一见 [`URL_CONTRACT.md`](URL_CONTRACT.md)。
 
 - `runtime-id` 只用 `[a-z0-9.-]`（如 `php-8.5`），不把镜像 tag、路径拼进 URL。
 - 深链无 JS 可打开；切换标签只改 query 或服务端渲染，不依赖前端路由。

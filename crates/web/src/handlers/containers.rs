@@ -644,7 +644,8 @@ fn action_verb(action: &str) -> Result<Verb, AppError> {
         "stop" => Ok(Verb::Stop),
         "restart" => Ok(Verb::Restart),
         "kill" => Ok(Verb::Kill),
-        "remove" => Ok(Verb::ContainerRemove),
+        // `delete` 是规范动词；`remove` 为兼容旧链接保留。
+        "delete" | "remove" => Ok(Verb::ContainerRemove),
         other => Err(AppError::BadRequest(format!("未知动作: {other}"))),
     }
 }

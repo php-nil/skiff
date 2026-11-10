@@ -26,9 +26,9 @@
   var quotas = [];
 
   function apiUrl(path) {
-    // 统一在这里补分隔符：调用方传 "quotas" 或 "/quotas" 都拼成 /{prefix}/files/api/quotas。
+    // 统一在这里补分隔符：调用方传 "quotas/list" 或 "/quotas/list" 都拼成 /{prefix}/files/quotas/list。
     var suffix = path.charAt(0) === "/" ? path : "/" + path;
-    return "/" + prefix + "/files/api" + suffix;
+    return "/" + prefix + "/files" + suffix;
   }
 
   function showAlert(kind, text) {
@@ -169,7 +169,7 @@
     if (el.refresh) {
       el.refresh.disabled = true;
     }
-    request("/quotas", { method: "GET" })
+    request("/quotas/list", { method: "GET" })
       .then(function (data) {
         quotas = data.quotas || [];
         render();

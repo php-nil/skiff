@@ -17,9 +17,10 @@ use skiff_model::Permission;
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::middleware::AuthUser;
+use crate::middleware::{check_csrf, AuthUser};
 use crate::state::{AppState, CurrentUser};
 use crate::templates::{PermissionRow, PluginConfirmPage, StorePage, StoreSection, UpgradeHint};
+use crate::util::{form_first, parse_form};
 
 /// 商店安装的统一审计动作：成功暂存、各类拒绝都落这一条。
 const AUDIT_ACTION: &str = "store.install";
@@ -142,6 +143,22 @@ pub async fn page(
     })
 }
 
+/// 旧 GET 安装入口已下线：安装会写盘并落审计，必须是带 CSRF 的 POST。
+/// 保留该路由只为不让旧书签落到 404/405，直接回商店页。
+pub async fn install_legacy_get(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, AppError> {
+    handlers::require_permission(&user, Permission::PluginManage)?;
+    Ok(handlers::flash_redirect(
+        &state,
+        &user,
+        skiff_app::FlashKind::Error,
+        "安装改为 POST 提交：请从商店条目上的「安装」按钮发起",
+        format!("/{}/store", state.cfg.entry_prefix),
+    ))
+}
+
 /// 商店安装第一步：按已验证目录条目下载并验签，成功后渲染权限确认页。
 ///
 /// 拒绝语义按原因落 `store.install` 审计，并回到商店页展示提示；
@@ -151,7 +168,10 @@ pub async fn install(
     AuthUser(user): AuthUser,
     parts: Parts,
     Path(id): Path<String>,
+    body: String,
 ) -> Result<Response, AppError> {
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     if !state.cfg.catalog.enabled {
         return Err(AppError::NotFound("商店目录未启用".into()));
     }
@@ -466,7 +486,7 @@ mod tests {
             html.contains("/p1/store/plugins/com.example.hello/install"),
             "公钥已配置时必须提供安装入口: {html}"
         );
-        assert!(html.contains(">安装</a>"), "安装按钮文案缺失");
+        assert!(html.contains(">安装</button>"), "安装按钮文案缺失");
     }
 
     #[test]
@@ -497,7 +517,10 @@ mod tests {
         assert!(html.contains("校验失败"));
         assert!(html.contains("未配置固定公钥"));
         assert!(!html.contains("/install"), "未配置公钥时不得提供安装入口");
-        assert!(!html.contains(">安装</a>"), "未配置公钥时不得出现安装按钮");
+        assert!(
+            !html.contains(">安装</button>"),
+            "未配置公钥时不得出现安装按钮"
+        );
     }
 
     #[test]

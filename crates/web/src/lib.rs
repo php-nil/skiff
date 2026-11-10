@@ -69,60 +69,49 @@ pub fn router(state: Arc<AppState>) -> Router {
     // 没有 fs，页面与 API 直达一律 403（入口由 `menu::declarations` 按形态隐藏）。
     let files = Router::new()
         .route(&format!("/{p}/files"), get(handlers::files::page))
+        // 页面内 JSON 接口与页面路径同构，不额外插 `api` 段（URL 契约 §4）。
+        .route(&format!("/{p}/files/list"), get(handlers::files::api_list))
+        .route(&format!("/{p}/files/read"), get(handlers::files::api_read))
         .route(
-            &format!("/{p}/files/api/list"),
-            get(handlers::files::api_list),
-        )
-        .route(
-            &format!("/{p}/files/api/read"),
-            get(handlers::files::api_read),
-        )
-        .route(
-            &format!("/{p}/files/api/write"),
+            &format!("/{p}/files/write"),
             post(handlers::files::api_write),
         )
         .route(
-            &format!("/{p}/files/api/mkdir"),
+            &format!("/{p}/files/mkdir"),
             post(handlers::files::api_mkdir),
         )
         .route(
-            &format!("/{p}/files/api/rename"),
+            &format!("/{p}/files/rename"),
             post(handlers::files::api_rename),
         )
         .route(
-            &format!("/{p}/files/api/remove"),
+            &format!("/{p}/files/remove"),
             post(handlers::files::api_remove),
         )
+        .route(&format!("/{p}/files/tree"), get(handlers::files::api_tree))
         .route(
-            &format!("/{p}/files/api/tree"),
-            get(handlers::files::api_tree),
-        )
-        .route(
-            &format!("/{p}/files/api/upload"),
+            &format!("/{p}/files/upload"),
             post(handlers::files::api_upload),
         )
         .route(
-            &format!("/{p}/files/api/download"),
+            &format!("/{p}/files/download"),
             get(handlers::files::api_download),
         )
+        .route(&format!("/{p}/files/copy"), post(handlers::files::api_copy))
         .route(
-            &format!("/{p}/files/api/copy"),
-            post(handlers::files::api_copy),
-        )
-        .route(
-            &format!("/{p}/files/api/chmod"),
+            &format!("/{p}/files/chmod"),
             post(handlers::files::api_chmod),
         )
         .route(
-            &format!("/{p}/files/api/chown"),
+            &format!("/{p}/files/chown"),
             post(handlers::files::api_chown),
         )
         .route(
-            &format!("/{p}/files/api/archive"),
+            &format!("/{p}/files/archive"),
             post(handlers::files::api_archive),
         )
         .route(
-            &format!("/{p}/files/api/extract"),
+            &format!("/{p}/files/extract"),
             post(handlers::files::api_extract),
         )
         // ---- 回收站与配额（内核文件管理第二步）----
@@ -135,36 +124,41 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::files::quotas_page),
         )
         .route(
-            &format!("/{p}/files/api/trash"),
+            &format!("/{p}/files/trash/list"),
             get(handlers::files::api_trash_list),
         )
         .route(
-            &format!("/{p}/files/api/trash/restore"),
+            &format!("/{p}/files/trash/restore"),
             post(handlers::files::api_trash_restore),
         )
         .route(
-            &format!("/{p}/files/api/trash/purge"),
+            &format!("/{p}/files/trash/purge"),
             post(handlers::files::api_trash_purge),
         )
         .route(
-            &format!("/{p}/files/api/trash/clear"),
+            &format!("/{p}/files/trash/clear"),
             post(handlers::files::api_trash_clear),
         )
         .route(
-            &format!("/{p}/files/api/quotas"),
+            &format!("/{p}/files/quotas/list"),
             get(handlers::files::api_quota_list),
         )
         .route(
-            &format!("/{p}/files/api/quotas/set"),
+            &format!("/{p}/files/quotas/set"),
             post(handlers::files::api_quota_set),
         )
         .route(
-            &format!("/{p}/files/api/quotas/cancel"),
+            &format!("/{p}/files/quotas/cancel"),
             post(handlers::files::api_quota_cancel),
         )
         .route(
-            &format!("/{p}/files/api/quotas/scan"),
+            &format!("/{p}/files/quotas/scan"),
             post(handlers::files::api_quota_scan),
+        )
+        // 兼容旧前缀 `/{p}/files/api/*`：308 保留方法与请求体，语义不变（URL 契约 §7）。
+        .route(
+            &format!("/{p}/files/api/{{*rest}}"),
+            axum::routing::any(handlers::files::legacy_api_redirect),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -225,6 +219,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::resources::pull_image),
         )
         .route(
+            &format!("/{p}/images/{{id}}/delete"),
+            post(handlers::resources::remove_image),
+        )
+        .route(
             &format!("/{p}/images/{{id}}/remove"),
             post(handlers::resources::remove_image),
         )
@@ -237,6 +235,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::resources::create_network),
         )
         .route(
+            &format!("/{p}/networks/{{id}}/delete"),
+            post(handlers::resources::remove_network),
+        )
+        .route(
             &format!("/{p}/networks/{{id}}/remove"),
             post(handlers::resources::remove_network),
         )
@@ -244,6 +246,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/volumes/create"),
             post(handlers::resources::create_volume),
+        )
+        .route(
+            &format!("/{p}/volumes/{{name}}/delete"),
+            post(handlers::resources::remove_volume),
         )
         .route(
             &format!("/{p}/volumes/{{name}}/remove"),
@@ -261,14 +267,19 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::compose::project_action),
         )
         .route(
-            &format!("/{p}/docker/settings"),
+            &format!("/{p}/settings/docker"),
             get(handlers::docker_settings::page).post(handlers::docker_settings::save),
+        )
+        // 旧位置兼容：Docker 设置属于「设置」资源，规范路径为 `/{p}/settings/docker`。
+        .route(
+            &format!("/{p}/docker/settings"),
+            axum::routing::any(handlers::docker_settings::legacy_path),
         )
         .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
         .route(&format!("/{p}/store"), get(handlers::store::page))
         .route(
             &format!("/{p}/store/plugins/{{id}}/install"),
-            get(handlers::store::install),
+            post(handlers::store::install).get(handlers::store::install_legacy_get),
         )
         .route(
             &format!("/{p}/store/upgrades/{{version}}/download"),
@@ -299,6 +310,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/plugins/{{id}}/toggle"),
             post(handlers::plugins::toggle),
+        )
+        .route(
+            &format!("/{p}/plugins/{{id}}/delete"),
+            post(handlers::plugins::remove),
         )
         .route(
             &format!("/{p}/plugins/{{id}}/remove"),
@@ -352,7 +367,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(&format!("/{p}/sites/batch"), post(handlers::sites::batch))
         .route(&format!("/{p}/sites/create"), post(handlers::sites::create))
-        .route(&format!("/{p}/sites/env"), get(handlers::sites::env_page))
+        .route(
+            &format!("/{p}/sites/env"),
+            get(handlers::sites::legacy_env_page),
+        )
         .route(
             &format!("/{p}/sites/env/add"),
             post(handlers::sites::env_add),
@@ -415,7 +433,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 运行环境详情与操作；同时提供 `/{p}/runtimes/...` 规范入口。
         .route(
             &format!("/{p}/sites/env/{{id}}"),
-            get(handlers::sites::runtime_detail),
+            get(handlers::sites::legacy_env_detail),
         )
         .route(
             &format!("/{p}/sites/env/{{id}}/config"),
@@ -450,6 +468,24 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::sites::runtime_action),
         )
         .route(&format!("/{p}/runtimes"), get(handlers::sites::env_page))
+        // 静态段必须早于 `{id}` 动态段注册，避免把 `create` / `images` / `jobs` 当成运行环境 id。
+        .route(
+            &format!("/{p}/runtimes/create"),
+            post(handlers::sites::env_add),
+        )
+        // 旧动词 `add` 保留为别名：已打开的表单仍能提交（URL 契约 §7）。
+        .route(
+            &format!("/{p}/runtimes/add"),
+            post(handlers::sites::env_add),
+        )
+        .route(
+            &format!("/{p}/runtimes/images"),
+            post(handlers::sites::env_images_save),
+        )
+        .route(
+            &format!("/{p}/runtimes/jobs"),
+            get(handlers::sites::runtime_jobs),
+        )
         .route(
             &format!("/{p}/runtimes/{{id}}"),
             get(handlers::sites::runtime_detail),
@@ -549,6 +585,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::sites::action),
         )
         .route(
+            &format!("/{p}/settings/keys/create"),
+            post(handlers::settings::import_key),
+        )
+        // 集合 POST 等价别名：保留旧表单与脚本的提交入口。
+        .route(
             &format!("/{p}/settings/keys"),
             post(handlers::settings::import_key),
         )
@@ -556,6 +597,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/settings/panel"),
             post(handlers::settings::panel_update),
+        )
+        .route(
+            &format!("/{p}/settings/keys/{{id}}/delete"),
+            post(handlers::settings::remove_key),
         )
         .route(
             &format!("/{p}/settings/keys/{{id}}/remove"),

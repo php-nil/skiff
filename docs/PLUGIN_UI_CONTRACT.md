@@ -17,7 +17,7 @@
 | `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越 |
 | `/{p}/plugins/{id}/rpc` | POST | 内核代发 | 父页面代发插件 RPC，需要 CSRF 头与管理员权限，逐次审计 |
 | `/{p}/plugins/{id}/toggle` | POST | 内核 | 启用 / 停用；`next` 只接受本站插件前缀 |
-| `/{p}/plugins/{id}/remove` | POST | 内核 | 卸载；可选 `delete_data=on` |
+| `/{p}/plugins/{id}/delete` | POST | 内核 | 卸载；可选 `delete_data=on`。旧 `/{p}/plugins/{id}/remove` 保留为别名（[`URL_CONTRACT.md`](URL_CONTRACT.md) §7） |
 | `/{p}/m/plugin/{id}` | GET | 内核 | 菜单默认视图 |
 | `/{p}/m/plugin/{id}/{l2}` | GET | 内核 | 该 L2 的默认视图 |
 | `/{p}/m/plugin/{id}/{l2}/{l3}` | GET | 内核 | 该 L3 的视图 |
@@ -26,7 +26,7 @@
 
 - `/{p}/plugins/{id}` **不再承载 iframe**，也不再接受 `?menu=` 选择视图。
 - 功能页的规范入口是 `/{p}/plugins/{id}/{view}`；菜单深链 `/{p}/m/...` 是同一视图的另一种寻址方式，二者渲染结果一致。
-- 静态段 `ui` / `rpc` / `toggle` / `remove` 优先于 `{view}`，因此视图名不得使用这四个保留字（安装期校验）。
+- 静态段 `ui` / `rpc` / `toggle` / `delete` / `remove` 优先于 `{view}`，因此视图名不得使用这些保留字（安装期校验）。
 - `{view}` 只允许 `[a-z0-9][a-z0-9-]{0,31}`。
 
 ## 2. manifest 声明模型

@@ -69,7 +69,7 @@
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="mini" type="submit">{% if p.enabled %}停用{% else %}启用{% endif %}</button>
         </form>
-        <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/remove" class="inline"
+        <form method="post" action="/{{ ctx.prefix }}/plugins/{{ p.id }}/delete" class="inline"
               data-confirm="确认卸载插件 {{ p.name }}？插件会从菜单移除，插件 data/ 目录保留；重新安装后可继续使用。"
               data-confirm-verb="卸载">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

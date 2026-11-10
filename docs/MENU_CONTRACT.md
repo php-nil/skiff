@@ -615,7 +615,7 @@ roles = ["admin", "operator", "viewer"]
 | 旧「应用」菜单 | 解散 | — | 网站已内核化；files/cron/monitor/guard → `工具` |
 | `/{p}/compose`（规划） | `core/docker/compose` | `/{p}/m/core/docker/compose` | 无后端前 `route_available` 不渲染 |
 | `/{p}/docker`（规划） | `core/docker/overview` | `/{p}/m/core/docker/overview` | P3 |
-| `/{p}/docker/settings`（规划） | `core/docker/settings` | `/{p}/m/core/docker/settings` | P3 |
+| `/{p}/settings/docker`（原 `/{p}/docker/settings`，旧路径 308） | `core/docker/settings` | `/{p}/m/core/docker/settings` | 页面 URL 归「设置」资源，菜单键仍是 Docker 设置；URL 规则见 [`URL_CONTRACT.md`](URL_CONTRACT.md) |
 
 兼容策略：
 

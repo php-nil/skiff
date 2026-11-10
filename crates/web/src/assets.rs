@@ -124,13 +124,14 @@ mod tests {
         // 回归 1：`prefix` 不带前导斜杠，apiUrl 必须补 `/`，否则在
         // `/{p}/m/core/files` 页面上会被解析成 `/{p}/m/core/{p}/files/api/...` → 404。
         // 回归 2：调用方可能传 `"quotas"` 这类无前导 `/` 的路径，apiUrl 必须在拼接处
-        // 补分隔符，否则拼成 `/{p}/files/apiquotas` → 整页 404。
+        // 补分隔符，否则拼成 `/{p}/filesquotas` → 整页 404。
         // 回归 3：所有字面量调用点都带前导 `/`，两种写法叠加也不会出现双斜杠以外的偏差。
+        // 基址为 `/{p}/files`：页面内 JSON 与页面路径同构，不再插 `api` 段（URL 契约 §4）。
         for name in ["files.js", "fs_quotas.js", "fs_trash.js"] {
             let js = Assets::get(name).unwrap_or_else(|| panic!("{name} 应已嵌入"));
             let text = String::from_utf8_lossy(&js.data);
             assert!(
-                text.contains(r#"return "/" + prefix + "/files/api" + suffix;"#),
+                text.contains(r#"return "/" + prefix + "/files" + suffix;"#),
                 "{name} 的 apiUrl 必须返回以 `/` 开头的绝对路径"
             );
             assert!(
@@ -144,7 +145,7 @@ mod tests {
             for p in paths {
                 assert!(
                     p.starts_with('/'),
-                    "{name} 的 API 调用路径缺少前导 `/`，会拼出 /files/api{p}：{p}"
+                    "{name} 的 API 调用路径缺少前导 `/`，会拼出 /files{p}：{p}"
                 );
             }
         }

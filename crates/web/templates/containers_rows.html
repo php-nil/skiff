@@ -50,7 +50,7 @@
         <span class="muted small">只读</span>
         {% endif %}
         {% if can_delete %}
-        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/remove" hx-target="#rows" hx-swap="innerHTML" class="inline"
+        <form hx-post="/{{ ctx.prefix }}/containers/{{ c.id }}/delete" hx-target="#rows" hx-swap="innerHTML" class="inline"
               data-confirm="确认删除容器 {{ c.name }}？删除后不可恢复，容器内未持久化的数据会丢失。"
               data-confirm-verb="删除">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">

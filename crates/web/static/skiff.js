@@ -1097,7 +1097,7 @@
 
   // ---- 运行环境详情抽屉（原生 <dialog>：Esc/遮罩关闭、焦点锁在抽屉内） ----
   function attachRuntimeDrawer() {
-    // 列表页的抽屉与直达页 `/sites/env/{id}` 共用同一套绑定：
+    // 列表页的抽屉与直达页 `/runtimes/{id}` 共用同一套绑定：
     // 直达页没有 dialog，就把 [data-runtime-panel] 当作内容根。
     var dialog = document.querySelector("[data-runtime-drawer]");
     var scope = dialog || document.querySelector("[data-runtime-panel]");

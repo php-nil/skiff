@@ -19,7 +19,7 @@
   <div class="empty error-state">
     <strong>Docker 不可用，网络列表暂不可读</strong>
     <p class="hint">{{ docker_reason }}。恢复 Docker 后刷新本页。</p>
-    <a class="btn ghost" href="/{{ ctx.prefix }}/docker/settings">前往 Docker 设置</a>
+    <a class="btn ghost" href="/{{ ctx.prefix }}/settings/docker">前往 Docker 设置</a>
   </div>
 </section>
 {% else %}
@@ -99,7 +99,7 @@
           {% if r.name == "bridge" || r.name == "host" || r.name == "none" %}
           <span class="muted small">预定义网络不可删除</span>
           {% else %}
-          <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/remove" class="inline"
+          <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/delete" class="inline"
                 data-confirm="确认删除网络 {{ r.name }}？挂载该网络的容器会失去连接。" data-confirm-verb="删除">
             <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
             <button class="mini danger" type="submit">删除</button>

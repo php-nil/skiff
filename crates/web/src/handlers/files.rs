@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Query, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::extract::{Path, Query, State};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::stream;
@@ -35,6 +35,23 @@ const CHUNK_BYTES: usize = 256 * 1024;
 
 type JsonErr = (StatusCode, Json<Value>);
 type ApiResult = Result<Json<Value>, JsonErr>;
+
+/// 旧页面内 JSON 前缀 `/{p}/files/api/*` 的兼容跳转：308 保留方法与请求体。
+///
+/// 规范路径见 [docs/URL_CONTRACT.md](../../../../docs/URL_CONTRACT.md) §4：
+/// 页面内 JSON 接口与页面同构，不再额外插 `api` 段。
+pub async fn legacy_api_redirect(
+    State(state): State<Arc<AppState>>,
+    Path(rest): Path<String>,
+    uri: Uri,
+) -> Response {
+    let mut target = format!("/{}/files/{}", state.cfg.entry_prefix, rest);
+    if let Some(q) = uri.query() {
+        target.push('?');
+        target.push_str(q);
+    }
+    (StatusCode::PERMANENT_REDIRECT, [(LOCATION, target)]).into_response()
+}
 
 fn app_err(e: AppError) -> JsonErr {
     (

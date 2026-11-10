@@ -24,9 +24,9 @@
   var items = [];
 
   function apiUrl(path) {
-    // 统一在这里补分隔符：调用方传 "trash" 或 "/trash" 都拼成 /{prefix}/files/api/trash。
+    // 统一在这里补分隔符：调用方传 "trash/list" 或 "/trash/list" 都拼成 /{prefix}/files/trash/list。
     var suffix = path.charAt(0) === "/" ? path : "/" + path;
-    return "/" + prefix + "/files/api" + suffix;
+    return "/" + prefix + "/files" + suffix;
   }
 
   function showAlert(kind, text) {
@@ -164,7 +164,7 @@
 
   function load() {
     setBusy(true);
-    request("/trash", { method: "GET" })
+    request("/trash/list", { method: "GET" })
       .then(function (data) {
         items = data.items || [];
         render();

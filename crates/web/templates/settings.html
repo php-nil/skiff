@@ -107,7 +107,7 @@
         <td><code>{{ k.fingerprint_short }}…</code><div class="muted small">{{ k.key_id }}</div></td>
         <td>{{ k.label }}</td>
         <td class="actions-cell">
-          <form method="post" action="/{{ ctx.prefix }}/settings/keys/{{ k.key_id }}/remove" class="inline">
+          <form method="post" action="/{{ ctx.prefix }}/settings/keys/{{ k.key_id }}/delete" class="inline">
             <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
             <button class="mini danger" type="submit">撤销</button>
           </form>
@@ -118,7 +118,7 @@
   </table>
   </div>
   {% endif %}
-  <form method="post" action="/{{ ctx.prefix }}/settings/keys" class="col">
+  <form method="post" action="/{{ ctx.prefix }}/settings/keys/create" class="col">
     <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
     <label>公钥（32 字节 hex）<input name="public_key" placeholder="hex" required></label>
     <label>备注<input name="label" placeholder="如：某作者 / 发布页"></label>

@@ -8,12 +8,12 @@
     {% if can_admin %}
     <div class="actions">
       {% if status.container_state == "missing" || status.container_state.is_empty() %}
-      <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/install" class="inline">
+      <form method="post" action="/{{ ctx.prefix }}/runtimes/web/action/install" class="inline">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
         <button class="btn primary" type="submit">安装 Web 服务</button>
       </form>
       {% else if status.container_state != "running" %}
-      <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/start" class="inline">
+      <form method="post" action="/{{ ctx.prefix }}/runtimes/web/action/start" class="inline">
         <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
         <button class="btn primary" type="submit">启动 Web 服务</button>
       </form>
@@ -114,19 +114,19 @@
         {% if status.container_state == "missing" || status.container_state.is_empty() %}
         <p class="hint">安装入口在页面右上角；安装会拉取 OpenResty 镜像并启动容器。</p>
         {% else %}
-        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/{% if status.container_state == "running" %}stop{% else %}start{% endif %}">
+        <form method="post" action="/{{ ctx.prefix }}/runtimes/web/action/{% if status.container_state == "running" %}stop{% else %}start{% endif %}">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="btn" type="submit">{% if status.container_state == "running" %}停止{% else %}启动{% endif %}</button>
         </form>
-        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/restart">
+        <form method="post" action="/{{ ctx.prefix }}/runtimes/web/action/restart">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="btn" type="submit">重启</button>
         </form>
-        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/rebuild" data-confirm="确认重新安装 Web 服务？将重建 OpenResty 容器，期间所有站点不可访问。">
+        <form method="post" action="/{{ ctx.prefix }}/runtimes/web/action/rebuild" data-confirm="确认重新安装 Web 服务？将重建 OpenResty 容器，期间所有站点不可访问。">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="btn ghost" type="submit">重新安装</button>
         </form>
-        <form method="post" action="/{{ ctx.prefix }}/sites/env/web/action/delete" data-confirm="确认删除 Web 服务容器？删除后所有站点立即不可访问，配置与站点目录保留。">
+        <form method="post" action="/{{ ctx.prefix }}/runtimes/web/action/delete" data-confirm="确认删除 Web 服务容器？删除后所有站点立即不可访问，配置与站点目录保留。">
           <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
           <button class="btn ghost danger" type="submit">删除容器</button>
         </form>
