@@ -14,6 +14,9 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 ed25519-dalek = { workspace = true }
 ureq = { workspace = true }
+rustls-pemfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# 进程内生成自签 CA / 服务器证书，验证 serve 的 https 链路（不触网）
+rcgen = "0.12"

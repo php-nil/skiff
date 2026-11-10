@@ -7,5 +7,6 @@ pub mod check;
 pub mod model;
 pub mod release;
 pub mod schema;
+pub mod serve;
 pub mod sign;
 pub mod sync;

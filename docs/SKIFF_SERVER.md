@@ -10,6 +10,7 @@
 | 维度 | 决策 |
 |---|---|
 | 形态 | 静态目录：`manifest.json` + `index.json` + 内容寻址的 `blobs/`，无账号、无写入 API、无常驻业务服务 |
+| 测试托管 | `skiff-server serve` 把已生成的产物**原样**用 https 提供（`--http` 仅测试）；只是最后一环的自托管，不改变托管决策（§15） |
 | 信任锚 | 每渠道一份 Ed25519 签名的清单，客户端内置官方公钥集；**镜像不被信任，只被校验** |
 | 内容寻址 | 包、模板、升级包按 `sha256` 存入不可变 `blobs/`；索引只引用摘要 |
 | 回滚防护 | 签名清单内单调 `seq`；客户端持久化最大值，拒绝更旧的清单 |
@@ -43,6 +44,8 @@
 | 一致性 | 需要事务与版本管理 | `seq` + 不可变 blob，顺序即语义 |
 
 数据是低频变更的「目录 + 不可变包」，读多写少，官方写入量以「天」为单位；需要在线写入接口的场景（账号、计费、实时数据）已列入非目标。常驻服务只在出现这些需求时才值得引入。
+
+`skiff-server serve`（§16）只是把**已生成的静态产物**原样用 HTTP 提供出去（测试与过渡自托管），没有写入、鉴权或业务逻辑，不属于本节所说的常驻 API 服务，也不改变托管方案（§15）。
 
 ### 1.3 职责划分
 
@@ -153,8 +156,8 @@
 | 资源 | Content-Type | Cache-Control | 校验 |
 |---|---|---|---|
 | `manifest.json` / `.sig` | `application/json` | `no-cache` | ETag 强制校验 |
-| `index.json` | `application/json` | 短 `max-age`（设计目标，可配）+ ETag | 验签通过后按摘要比对 |
-| `blobs/*` | `application/octet-stream` | `immutable, max-age=31536000` | 客户端按 sha256 校验 |
+| `index.json` | `application/json` | `no-cache` + ETag（镜像可自行加短 `max-age`） | 验签通过后按摘要比对 |
+| `blobs/*` | `application/octet-stream` | `public, max-age=31536000, immutable` | 客户端按 sha256 校验 |
 | `schema/*` | `application/schema+json` | 长缓存 | 随产物版本 |
 
 - 压缩：manifest 不压缩；index 可由镜像以 `Content-Encoding: zstd` 或 `gzip` 传输（客户端 `Accept-Encoding`），**验签与摘要针对解压后的原始字节**；blob 本身已是压缩包，不二次压缩。
@@ -197,12 +200,12 @@
 ### 4.1 静态目录与 URL
 
 - 一份产物 = `channels/` + `blobs/` + `schema/` 的纯目录；静态服务器、CDN、对象存储均可直接托管。
-- 客户端只依赖一种拼接：`base_url + "/" + channel + "/manifest.json"`；`pkg_url` 一律相对路径，由客户端基于同一 `base_url` 解析（防镜像拼接错误）。
+- 客户端只依赖一种拼接：`base_url + "/channels/" + channel + "/manifest.json"`；`pkg_url` 一律相对路径，由客户端基于同一 `base_url` 解析（防镜像拼接错误）。`skiff-server serve` 另提供 `base_url + "/" + channel + "/manifest.json"` 短别名，两者等价（§16.2）。
 - 产物不带入口页与目录索引；`blobs/` 不开启目录列表（不列即不可枚举）。
 
 ### 4.2 HTTP 语义
 
-- 只依赖 `GET` / `HEAD`；支持 `If-None-Match`、`If-Modified-Since` 条件请求。断点续传（Range）为可选能力，P0 不承诺。
+- 只依赖 `GET` / `HEAD`；支持 `If-None-Match`、`If-Modified-Since` 条件请求。断点续传（Range）为可选能力：镜像可以不支持，但客户端不使用 Range 也能完成全部下载；`skiff-server serve` 已实现单区间 `Range`（§16.3）。
 - 镜像须正确返回 `Content-Length`、`ETag`、`Last-Modified`、`Content-Type`；**错误页不得以 200 返回 HTML 冒充 JSON**，客户端按 Content-Type 与解析结果判定镜像不可用。
 - 允许重定向（CDN/对象存储常见），客户端限制跳数；是否允许跨域重定向作为配置项，默认仅同域。
 
@@ -788,13 +791,16 @@ cargo run -p skiff-server -- check --dist <线上目录> --prev <上一版目录
 | `tools/skiff-server/src/release.rs` | `publish`：内存严格自检后落盘 |
 | `tools/skiff-server/src/sync.rs` | `Source`（HTTPS/本地目录）、六步同步、原子写、同步后自检 |
 | `tools/skiff-server/src/check.rs` | 固定公钥验签、孤儿 blob 开关、`seq` 单调校验 |
-| `tools/skiff-server/src/main.rs` | `gen` / `publish` / `check` / `sync` 子命令与帮助 |
+| `tools/skiff-server/src/main.rs` | `gen` / `publish` / `check` / `sync` / `serve` 子命令与帮助 |
+| `tools/skiff-server/src/serve.rs` | `serve`：只读静态服务（§16 契约：路径白名单、条件请求、单区间 Range、https 默认） |
 
 - `tests/p0.rs`：缺密钥/空白/非法种子报错；公钥不一致与未签名占位拒绝发布；`seq` 未递增拒绝且
   不写目录；发布产物过严格验签、篡改清单后验签失败。
 - `tests/sync.rs`：首次同步补全 blob 并自检；二次同步全复用且清单不变；新增版本只传新 blob 且旧
   blob 保留；`seq` 回退拒绝；同 `seq` 不同内容拒绝；错公钥在下载 blob 前失败；篡改 blob 报
   `步骤 4/6` 且不写清单。
+- `tests/serve.rs`：条件请求 304、单区间 206/416、`404`/`405`、`HEAD` 无 body、路径穿越与非法 blob 名、
+  `--http` 仅测试语义、TLS 自签 CA 建连（见 §16.6）。
 
 ## 15. 商店目录托管来源评估（待决策）
 
@@ -839,4 +845,131 @@ cargo run -p skiff-server -- check --dist <线上目录> --prev <上一版目录
 | 4 | 内网镜像是否在本阶段交付 | 决定内网 CA 与证书分发是否进入本轮范围 |
 
 > 本节只做方案评估，未改动任何代码或配置；选定后按 §14.4 的顺序补上传脚本与默认镜像地址。
+
+## 16. 静态服务契约（`skiff-server serve`）
+
+> 定位：终态「开发者提交 → 管理员审核 → 生成静态产物 → **静态服务**」里**当前只做最后一环**。
+> `serve` 把已生成的产物目录原样用 HTTP 提供，不做写入、鉴权、审核与上传；`/api/` 只保留命名空间。
+> 它替代临时隧道用于测试与过渡自托管，**不改变** §15 的托管决策；客户端对它没有特殊分支，
+> 与 CDN/对象存储/`python -m http.server` 完全同构。
+>
+> 本节是契约的**唯一来源**：实现（§14 的 `serve.rs`）、客户端（`crates/app/src/catalog`）与测试都以此为准。
+
+### 16.1 启动形态与传输
+
+```bash
+skiff-server serve --dist <dir> [--listen 127.0.0.1:8443] \
+    [--tls-cert <pem> --tls-key <pem> | --http]
+```
+
+- `--dist` 必填，指向 `build` / `sync` 产出的目录根（内含 `channels/` 与 `blobs/`），启动时校验其存在且可读。
+- **默认 https**，且不提供任何隐式降级：既没给 `--tls-cert/--tls-key`、也没带 `--http` → 启动失败并打印用法提示；
+  只给其中一个证书参数 → 启动失败。
+- `--http` 是**显式**开关，只用于本机/内网测试（例如客户端用 `http://127.0.0.1:...` 做客户端联调时）；
+  启动打印 `警告：--http 仅测试用，无 TLS 与证书校验，不要用于任何对外地址`。`--http` 与证书参数互斥。
+- 传输实现复用仓库既有 rustls/ring（经 `ureq::rustls`，版本与客户端一致），不引入 axum/hyper 等框架。
+  线程模型：每连接一线程，处理一个请求后关闭（`Connection: close`），无 keep-alive、无 HTTP/2、无压缩。
+- 只读：没有任何写入路由；进程不持有锁文件，不修改 `--dist` 内任何文件。
+
+自签证书（**openssl 辅助说明**，不在程序内生成；`<IP>` 换成客户端访问用的地址）：
+
+```bash
+# 1) 自签 CA（客户端 [catalog].ca_bundle 指向 catalog-ca.pem）
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout catalog-ca.key -out catalog-ca.pem -days 3650 -subj "/CN=skiff-catalog-test-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+
+# 2) 服务器证书（SAN 必须包含客户端实际访问的 IP/域名）
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout server.key -out server.csr -subj "/CN=<IP>"
+printf "subjectAltName=IP:<IP>\nextendedKeyUsage=serverAuth\n" > server.ext
+openssl x509 -req -in server.csr -CA catalog-ca.pem -CAkey catalog-ca.key -CAcreateserial \
+  -out server.pem -days 825 -extfile server.ext
+
+skiff-server serve --dist ./dist --listen 0.0.0.0:8443 \
+  --tls-cert server.pem --tls-key server.key
+```
+
+客户端侧：`[catalog].mirrors = ["https://<IP>:8443"]`，`[catalog].ca_bundle = "/etc/skiff/catalog-ca.pem"`
+（语义见 §4.5；CA 只追加信任锚，仍强制 https）。
+
+### 16.2 路径布局
+
+| 请求路径 | 对应文件（相对 `--dist`） | 说明 |
+| --- | --- | --- |
+| `/channels/<channel>/manifest.json` | `channels/<channel>/manifest.json` | 规范路径，客户端现行拼接 |
+| `/channels/<channel>/manifest.json.sig` | 同名 | 分离签名 |
+| `/channels/<channel>/index.json` | 同名 | 索引 |
+| `/<channel>/manifest.json` 等三件 | `channels/<channel>/…` | **短别名**，与规范路径等价（兼容「渠道目录 `/stable/`」写法） |
+| `/blobs/sha256/<hex64>` | `blobs/sha256/<hex64>` | 内容寻址，`hex64` 必须是小写 64 位十六进制 |
+| `/api/**` | — | 保留给将来的开发者/审核接口；**当前一律 404**，不属于本契约 |
+| 其他（`/`、目录、`schema/`、`catalog/`、未知文件） | — | 404；不列目录、无入口页 |
+
+- `<channel>` 只认磁盘上 `channels/<name>/manifest.json` 实际存在的目录（当前产物为 `stable` / `night`）；
+  不存在的渠道名 → 404。
+- **不支持 `cur` / `latest` 别名**：客户端已按渠道名固定路径；别名会让同一 URL 的 ETag/缓存语义随「当前最新」
+  漂移，也无法与 `seq` 单调校验建立稳定对应。需要「跟随最新」时由运维改客户端 `channel`，或由发布流程
+  同步复制产物，而不是让服务端维护可变指针。
+- 三个 JSON 与签名必须同渠道同版本；服务端不校验其内部一致性（那是 `check`/`sync` 的职责），也不改写内容。
+
+### 16.3 方法、条件请求与响应头
+
+| 项 | 规则 |
+| --- | --- |
+| 方法 | 仅 `GET` / `HEAD`；其他方法一律 `405` + `Allow: GET, HEAD`（先判方法，再看路径） |
+| `ETag` | **强校验**，格式 `"sha256:<hex>"`；hex = 响应实体字节（200 时为整个文件；blob 时等于文件名 hex）的 SHA-256 |
+| `If-None-Match` | 与 `ETag` 做强比较（忽略可选 `W/` 前缀；`*` 匹配任意）；命中 → `304`，无 body、无 `Content-Length` |
+| `If-Modified-Since` | 仅在没有 `If-None-Match` 时生效；比较 `Last-Modified`（截断到秒），`mtime <= IMS` → `304` |
+| `Last-Modified` | 文件 mtime，格式 `Sun, 06 Nov 1994 08:49:37 GMT`；200/206/304 都带 |
+| `Content-Type` | `manifest.json` / `.sig` / `index.json`：`application/json; charset=utf-8`；blob：`application/octet-stream`；错误体：`text/plain; charset=utf-8` |
+| `Content-Length` | 200/206 必带（206 为区间长度）；`HEAD` 与 200 相同；304 不带 |
+| `Range` | 支持**单个** byte range：`bytes=a-b`、`bytes=a-`、`bytes=-n`；`206` + `Content-Range: bytes a-b/len`。多区间（含 `,`）或 `HEAD` 忽略 Range，按 200 返回整个实体 |
+| `Cache-Control` | JSON 与 `.sig`：`no-cache`（每次校验 ETag）；blob：`public, max-age=31536000, immutable` |
+| `Accept-Ranges` | `bytes`（200/206 都带；304 也带） |
+| `Connection` | `close` |
+| `Content-Encoding` | 不压缩、不协商 |
+
+状态码与触发条件：
+
+| 码 | 触发条件 |
+| --- | --- |
+| `200` | 命中白名单文件；无 Range 或 Range 被忽略 |
+| `206` | 合法且可满足的单区间 Range |
+| `304` | `If-None-Match` 命中，或（无 `If-None-Match` 时）`If-Modified-Since` 命中 |
+| `404` | 路径不在白名单（含 `/api/**`、`schema/**`）、文件不存在、是目录、`<channel>` 不存在、blob 名不合法 |
+| `405` | 方法不是 `GET`/`HEAD` |
+| `416` | Range 语法非法或不可满足（如 `a > b`、`a >= len`、`-0`）；响应带 `Content-Range: bytes */<len>` |
+| `500` | 读文件失败或其他内部错误；只返回固定短文本 `internal error` |
+
+- `404` 与 `405` 的 body 分别为 `not found` / `method not allowed`，不回显请求路径。
+- 条件请求只用于省流量：**客户端正确性不依赖 304 或任何缓存**，缓存丢失也必须能正常工作。
+
+### 16.4 安全边界
+
+- **路径穿越**：先按 `%XX` 做一次百分号解码，再拒绝 `..`、`.`、空段、`\`、NUL 与绝对路径；
+  拼出的路径必须 `canonicalize` 后仍位于 `--dist` 根之内（符号链接指向根外同样 404）。
+  解码后出现二级编码（如 `%252e`）按普通文件名处理，仍受上述规则约束。
+- **只服务白名单的普通文件**：不是目录、不是设备/管道；未知文件名即使存在也不服务。
+- **blob 名校验**：必须匹配 `^[0-9a-f]{64}$`；大写、长度不符、非 hex 一律 404，绝不落到文件系统探测。
+- **目录列表关闭**：任何以 `/` 结尾、指向目录或不以白名单文件名结尾的请求都 404。
+- 不返回 `Server` 版本头；错误页不含堆栈、绝对路径或文件系统信息。
+- 启动时把 `--dist` 解析为绝对路径并 `canonicalize` 一次，后续所有比较基于该根。
+
+### 16.5 版本与兼容
+
+- **路径稳定**：`channels/<channel>/`、`blobs/sha256/` 一旦发布不改；新增渠道只是新增目录，不影响既有路径。
+- **只增不删**：新增响应头、新增可选请求头、新增渠道都属于兼容变更；删除/改名路径、改变 `ETag` 语义、
+  改变 304/416 判定属于破坏性变更，必须同步升级客户端与本节。
+- **客户端依赖点**（少而硬）：`GET {base}/channels/{channel}/manifest.json` → 验签 → `index.json`
+  （摘要/大小对齐）→ `blobs/sha256/<hex>`（sha256 与 size 校验）。除此之外不依赖本服务的任何行为。
+- 本契约变更必须同时改：本节、`tools/skiff-server/src/serve.rs`、`crates/app/src/catalog` 与
+  `docs/TEST_MATRIX.md` 的 STORE 条目；`serve` 的实现细节不是规范，本节才是。
+
+### 16.6 测试覆盖
+
+- `tools/skiff-server/tests/serve.rs`：真实 TCP 上覆盖条件请求 304、单区间 206 与 416、`404`（含 `/api/`、
+  目录、未知文件）、`405`、`HEAD` 无 body、路径穿越与非法 blob 名拒绝、`--http` 明文与默认 https 的启动差异。
+- TLS 链路：进程内生成自签 CA + 服务器证书（`rcgen`），`serve` 以 https 启动后用 ureq 指定该 CA 建连成功，
+  未导入 CA 时失败（与 §4.5 的客户端口径一致）。
+- `serve` 不改变产物：测试只读校验运行前后文件字节不变。
 

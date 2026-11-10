@@ -1,19 +1,21 @@
 //! 命令行入口：`gen` 生成静态产物、`publish` 生成+签名+严格自检、
-//! `check` 做发布前校验、`sync` 从主站同步到镜像目录。
+//! `check` 做发布前校验、`sync` 从主站同步到镜像目录、`serve` 只读提供产物目录。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use skiff_server::build::{build, write};
 use skiff_server::check;
 use skiff_server::release;
+use skiff_server::serve;
 use skiff_server::sign::{Signer, ENV_PUBLIC_KEY};
 use skiff_server::sync::{self, DirSource, HttpSource};
 
 const HELP: &str = "\
-Skiff-server：商店清单校验、静态产物生成、签名发布与镜像同步
+Skiff-server：商店清单校验、静态产物生成、签名发布、镜像同步与静态服务
 
 用法:
   skiff-server gen     [--catalog <dir>] [--schema <dir>] [--out <dir>] [--unsigned]
@@ -21,6 +23,8 @@ Skiff-server：商店清单校验、静态产物生成、签名发布与镜像�
   skiff-server check   [--catalog <dir>] [--schema <dir>] [--dist <dir>] [--prev <dir>]
                        [--require-signature] [--public-key <hex>]
   skiff-server sync    --from <url|dir> --to <dir> [--channel stable] [--public-key <hex>]
+  skiff-server serve   --dist <dir> [--listen 127.0.0.1:8443]
+                       [--tls-cert <pem> --tls-key <pem> | --http]
 
 选项:
   --catalog <dir>       源数据目录，默认 deploy/skiff-server/catalog
@@ -34,6 +38,10 @@ Skiff-server：商店清单校验、静态产物生成、签名发布与镜像�
   --from <url|dir>      同步源：https:// 基地址或本地产物目录
   --to <dir>            同步目标镜像目录
   --channel <name>      同步渠道，默认 stable
+  --listen <addr:port>  serve 监听地址，默认 127.0.0.1:8443
+  --tls-cert <pem>      serve 服务器证书链（默认 https，必须与 --tls-key 成对）
+  --tls-key <pem>       serve 服务器私钥（PEM）
+  --http                serve 明文模式，仅测试用；与证书参数互斥
 
 环境变量:
   SKIFF_SIGNING_KEY     发布私钥种子（64 位十六进制），仅从环境/CI secret 读取
@@ -59,6 +67,7 @@ fn run() -> Result<()> {
         Some("publish") => publish(&args[1..]),
         Some("check") => check_cmd(&args[1..]),
         Some("sync") => sync_cmd(&args[1..]),
+        Some("serve") => serve_cmd(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{HELP}");
             Ok(())
@@ -172,6 +181,48 @@ fn sync_cmd(args: &[String]) -> Result<()> {
         }
     );
     Ok(())
+}
+
+fn serve_cmd(args: &[String]) -> Result<()> {
+    let (options, flags) = parse(args, &["--http"])?;
+    let dist = options
+        .get("--dist")
+        .ok_or_else(|| anyhow::anyhow!("缺少 --dist（产物目录，需含 channels/ 与 blobs/）"))?;
+    let listen = options
+        .get("--listen")
+        .cloned()
+        .unwrap_or_else(|| "127.0.0.1:8443".to_string());
+    let addr: std::net::SocketAddr = listen
+        .parse()
+        .with_context(|| format!("--listen 不是合法地址: {listen}"))?;
+    let cert = options.get("--tls-cert");
+    let key = options.get("--tls-key");
+    let plaintext = flags.contains("--http");
+
+    if plaintext && (cert.is_some() || key.is_some()) {
+        bail!("--http 与 --tls-cert/--tls-key 互斥：要明文就别给证书");
+    }
+    let tls = if plaintext {
+        eprintln!("警告：--http 仅测试用，无 TLS 与证书校验，不要用于任何对外地址");
+        None
+    } else {
+        let (Some(cert), Some(key)) = (cert, key) else {
+            bail!(
+                "默认 https：请同时提供 --tls-cert 与 --tls-key；确需明文测试请显式加 --http\n\n{HELP}"
+            );
+        };
+        Some(serve::tls_config(Path::new(cert), Path::new(key))?)
+    };
+
+    let listener = TcpListener::bind(addr).with_context(|| format!("监听 {addr} 失败"))?;
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    println!("skiff-server serve：{scheme}://{addr}（dist={dist}，Ctrl-C 停止）");
+    if tls.is_some() {
+        println!(
+            "自签证书部署时，客户端需把签发该证书的 CA 配到 [catalog].ca_bundle（仍强制 https）"
+        );
+    }
+    serve::serve(listener, Path::new(dist), tls)
 }
 
 fn public_key(options: &BTreeMap<String, String>) -> Result<Option<String>> {

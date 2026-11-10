@@ -40,7 +40,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | L. 后台端口 / 入口前缀 / TLS | 6 | 2 项本机可验（PANEL-02/03 校验单测，PANEL-06 有 `skiff` 单测兜底），4 项必须上机 | `cargo test -p skiff-app -p skiff`；测试机改端口/前缀/TLS 三形态 |
 | M. 防火墙 / fail2ban / 进程与网络 | 20 | 4 项本机单测（FW-03、FW-18、FW-19、MON-N01 解析），其余必须上机 | `cargo test -p skiff-plugin firewall`；`plugins/` 第二 workspace 单测；测试机 nft/iptables/fail2ban + `/proc` |
 | N. 任务中心作业 | 3 | 3 项本机可验（`main_flow` 集成测试），需上机复验执行器真实行为 | `cargo test -p skiff-web --test main_flow job_retry`；测试机运行环境安装/扩展任务 |
-| O. 商店目录（Skiff-server） | 2 | 2 项本机可验（自签 CA 端到端 + 配置拒绝），建议上机复验内网自签镜像 | `cargo test -p skiff-app catalog::fetch::tls_tests`、`cargo test -p skiff catalog`；测试机内网镜像 |
+| O. 商店目录（Skiff-server） | 3 | 3 项本机可验（自签 CA 端到端 + 配置拒绝 + serve 契约），建议上机复验内网自签镜像与 serve | `cargo test -p skiff-app catalog::fetch::tls_tests`、`cargo test -p skiff catalog`、`cargo test -p skiff-server`；测试机内网镜像 |
 
 ## A. 身份与会话
 
@@ -578,12 +578,14 @@ cargo test -p skiff-app php_init_script
 | --- | --- | --- | --- | --- | --- | --- |
 | STORE-01 | 自签 CA 内网镜像可接入且仍强制 https | `[本机]` crate 单测；`[上机]` 内网静态镜像 + 该 CA 签发的服务器证书 | 不配 `ca_bundle` 访问自签镜像；再把 CA 导出 PEM 配到 `[catalog].ca_bundle` 后重启刷新 | 未配置时连接被拒（证书不受信）；配置后刷新成功、`catalog.refresh` 落库；镜像地址仍只接受 `https://`，无 insecure 开关 | □通过 / □失败 | `crates/app/src/catalog/fetch.rs::{UreqTransport::load_ca_bundle,root_store}`、`catalog::fetch::tls_tests`、`crates/core/src/config.rs::build_catalog_settings` |
 | STORE-02 | `ca_bundle` 空值/非法值的启动语义 | `[本机]` 单测 | 不配置、配置不存在路径、配置非 PEM 内容三种启动 | 空值行为与历史一致（`extra_roots` 为空）；缺失/非法明确报「`catalog.ca_bundle` 非法」并拒绝启动，不静默回退内置根 | □通过 / □失败 | `crates/core/src/config.rs::catalog_ca_bundle_is_optional_and_strict`、`skiff_app::panel_settings::CatalogFile::ca_bundle` |
+| STORE-03 | `skiff-server serve` 符合静态服务契约 | `[本机]` 集成测试；`[上机]` 产物目录 + 自签证书 | 启动 `serve --dist`（默认 https），分别验证条件请求、Range、HEAD、404/405、路径穿越与 `/api/`；再用 `--http` 试一次 | 304/206/416 语义、`HEAD` 无 body、非法 blob 名与穿越 404、`/api/**` 404、普通方法 405；默认无证书拒绝启动，`--http` 打印「仅测试用」；客户端以 `ca_bundle` 导入 CA 后能刷新 | □通过 / □失败 | `tools/skiff-server/src/serve.rs`、`tools/skiff-server/tests/serve.rs`、`docs/SKIFF_SERVER.md` §16 |
 
 最小回归命令：
 
 ```bash
 cargo test -p skiff-app catalog::fetch::tls_tests
 cargo test -p skiff catalog
+cargo test -p skiff-server
 ```
 
 ## 附：待核对项结论（2026-11-07 已全部定性）
