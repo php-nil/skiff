@@ -1199,9 +1199,15 @@ async fn write_passwd_host<H: FtpHost>(host: &H, body: &str) -> Result<(), FtpEr
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = format!("/tmp/skiff-ftp-passwd-{}-{n}.tmp", std::process::id());
-    run_ok(host, "/usr/bin/tee", &[tmp.clone()], Some(body), 900)
-        .await
-        .map_err(|e| FtpError::internal(format!("写入临时账号表失败：{}", e.message)))?;
+    run_ok(
+        host,
+        "/usr/bin/tee",
+        std::slice::from_ref(&tmp),
+        Some(body),
+        900,
+    )
+    .await
+    .map_err(|e| FtpError::internal(format!("写入临时账号表失败：{}", e.message)))?;
     let result = run_ok(
         host,
         "/usr/bin/install",
