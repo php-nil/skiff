@@ -26,7 +26,9 @@
   var quotas = [];
 
   function apiUrl(path) {
-    return "/" + prefix + "/files/api" + path;
+    // 统一在这里补分隔符：调用方传 "quotas" 或 "/quotas" 都拼成 /{prefix}/files/api/quotas。
+    var suffix = path.charAt(0) === "/" ? path : "/" + path;
+    return "/" + prefix + "/files/api" + suffix;
   }
 
   function showAlert(kind, text) {
@@ -167,7 +169,7 @@
     if (el.refresh) {
       el.refresh.disabled = true;
     }
-    request("quotas", { method: "GET" })
+    request("/quotas", { method: "GET" })
       .then(function (data) {
         quotas = data.quotas || [];
         render();
@@ -224,7 +226,7 @@
       showAlert("warn", "容量上限与文件数上限至少设置一项；如需取消请用行内「取消配额」");
       return;
     }
-    request("quotas/set", {
+    request("/quotas/set", {
       method: "POST",
       body: JSON.stringify({
         path: path,
@@ -250,7 +252,7 @@
       if (!ok) {
         return;
       }
-      return request("quotas/scan", {
+      return request("/quotas/scan", {
         method: "POST",
         body: JSON.stringify({ path: root })
       })
@@ -281,7 +283,7 @@
       if (!ok) {
         return;
       }
-      return request("quotas/cancel", {
+      return request("/quotas/cancel", {
         method: "POST",
         body: JSON.stringify({ path: root })
       })

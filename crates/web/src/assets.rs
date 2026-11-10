@@ -103,16 +103,51 @@ mod tests {
         assert!(accepts_gzip_header("gzip;q=0.5"));
     }
 
+    /// 收集静态文件里字面量形式的 API 调用路径，供「拼接分隔符」回归使用。
+    fn quoted_api_paths(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for marker in ["request(\"", "api(\"", "post(\"", "apiUrl(\""] {
+            let mut rest = text;
+            while let Some(pos) = rest.find(marker) {
+                rest = &rest[pos + marker.len()..];
+                match rest.find('"') {
+                    Some(end) => out.push(rest[..end].to_string()),
+                    None => break,
+                }
+            }
+        }
+        out
+    }
+
     #[test]
-    fn files_js_builds_absolute_api_urls() {
-        // 回归：`prefix` 不带前导斜杠，apiUrl 必须补 `/`，否则在
+    fn file_api_js_builds_absolute_and_slash_joined_urls() {
+        // 回归 1：`prefix` 不带前导斜杠，apiUrl 必须补 `/`，否则在
         // `/{p}/m/core/files` 页面上会被解析成 `/{p}/m/core/{p}/files/api/...` → 404。
-        let js = Assets::get("files.js").expect("files.js 应已嵌入");
-        let text = String::from_utf8_lossy(&js.data);
-        assert!(
-            text.contains(r#"return "/" + prefix + "/files/api" + path;"#),
-            "files.js 的 apiUrl 必须返回以 `/` 开头的绝对路径"
-        );
+        // 回归 2：调用方可能传 `"quotas"` 这类无前导 `/` 的路径，apiUrl 必须在拼接处
+        // 补分隔符，否则拼成 `/{p}/files/apiquotas` → 整页 404。
+        // 回归 3：所有字面量调用点都带前导 `/`，两种写法叠加也不会出现双斜杠以外的偏差。
+        for name in ["files.js", "fs_quotas.js", "fs_trash.js"] {
+            let js = Assets::get(name).unwrap_or_else(|| panic!("{name} 应已嵌入"));
+            let text = String::from_utf8_lossy(&js.data);
+            assert!(
+                text.contains(r#"return "/" + prefix + "/files/api" + suffix;"#),
+                "{name} 的 apiUrl 必须返回以 `/` 开头的绝对路径"
+            );
+            assert!(
+                text.contains(r#"var suffix = path.charAt(0) === "/" ? path : "/" + path;"#),
+                "{name} 的 apiUrl 必须为无前导 `/` 的 path 补分隔符"
+            );
+            let mut paths = quoted_api_paths(&text);
+            assert!(!paths.is_empty(), "{name} 应有字面量 API 调用点");
+            paths.sort();
+            paths.dedup();
+            for p in paths {
+                assert!(
+                    p.starts_with('/'),
+                    "{name} 的 API 调用路径缺少前导 `/`，会拼出 /files/api{p}：{p}"
+                );
+            }
+        }
     }
 
     #[test]

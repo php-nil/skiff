@@ -147,7 +147,9 @@
   // ---- 基础工具 ---------------------------------------------------------
 
   function apiUrl(path) {
-    return "/" + prefix + "/files/api" + path;
+    // 统一在这里补分隔符：调用方传 "/list" 或 "list" 都拼成 /{prefix}/files/api/list。
+    var suffix = path.charAt(0) === "/" ? path : "/" + path;
+    return "/" + prefix + "/files/api" + suffix;
   }
 
   function joinPath(dir, name) {

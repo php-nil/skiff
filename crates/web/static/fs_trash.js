@@ -24,7 +24,9 @@
   var items = [];
 
   function apiUrl(path) {
-    return "/" + prefix + "/files/api" + path;
+    // 统一在这里补分隔符：调用方传 "trash" 或 "/trash" 都拼成 /{prefix}/files/api/trash。
+    var suffix = path.charAt(0) === "/" ? path : "/" + path;
+    return "/" + prefix + "/files/api" + suffix;
   }
 
   function showAlert(kind, text) {
@@ -162,7 +164,7 @@
 
   function load() {
     setBusy(true);
-    request("trash", { method: "GET" })
+    request("/trash", { method: "GET" })
       .then(function (data) {
         items = data.items || [];
         render();
@@ -188,7 +190,7 @@
   }
 
   function restore(id, overwrite) {
-    return request("trash/restore", {
+    return request("/trash/restore", {
       method: "POST",
       body: JSON.stringify({ id: id, overwrite: !!overwrite })
     });
@@ -238,7 +240,7 @@
       if (!ok) {
         return;
       }
-      return request("trash/purge", {
+      return request("/trash/purge", {
         method: "POST",
         body: JSON.stringify({ id: id })
       })
@@ -267,7 +269,7 @@
       if (!ok) {
         return;
       }
-      return request("trash/clear", { method: "POST", body: "{}" })
+      return request("/trash/clear", { method: "POST", body: "{}" })
         .then(function (data) {
           var failed = (data.result && data.result.failed) || [];
           if (failed.length) {
