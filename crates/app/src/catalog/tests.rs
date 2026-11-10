@@ -145,6 +145,7 @@ impl Fixture {
             public_key: Some(self.key.public_hex.clone()),
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         }
     }
 

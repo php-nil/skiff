@@ -30,6 +30,9 @@ async-stream = "0.3"
 # 商店目录客户端（P1 只读接入）：同步 HTTP + rustls(ring)，调用方放 spawn_blocking。
 # 关闭 gzip：目录 JSON 体积小，少一层解压面。
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
+# 目录自定义 CA：只追加信任锚，仍强制 https；pem 解析与 ureq 内置根保持一致
+webpki-roots = "0.26"
+rustls-pemfile = "2"
 
 # 序列化 / 配置
 serde = { version = "1", features = ["derive"] }

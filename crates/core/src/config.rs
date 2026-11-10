@@ -429,6 +429,17 @@ fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::Cata
     if timeout == 0 {
         bail!("catalog.timeout_secs 必须大于 0");
     }
+    // 自定义 CA 根：空值 = 只用内置根（历史行为）。指定了就必须可加载——
+    // 文件缺失/格式非法直接拒绝启动，不静默回退到内置根（否则内网镜像会在
+    // 运行时以「证书不受信」失败，排查成本远高于启动即报错）。
+    let ca_bundle = env_str("SKIFF_CATALOG_CA_BUNDLE")
+        .map(PathBuf::from)
+        .or_else(|| file.ca_bundle.clone());
+    let extra_roots = match ca_bundle {
+        Some(path) => skiff_app::catalog::fetch::load_ca_bundle(&path)
+            .map_err(|e| anyhow::anyhow!("catalog.ca_bundle 非法: {e}"))?,
+        None => Vec::new(),
+    };
     Ok(skiff_app::catalog::CatalogSettings {
         enabled,
         channel,
@@ -436,6 +447,7 @@ fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::Cata
         public_key,
         allow_unsigned,
         timeout: std::time::Duration::from_secs(timeout.min(120)),
+        extra_roots,
     })
 }
 
@@ -680,6 +692,57 @@ mod tests {
         assert_eq!(c.catalog.channel, "night");
         assert_eq!(c.catalog.mirrors, vec!["https://cdn.example/skiff"]);
         assert_eq!(c.catalog.timeout.as_secs(), 5);
+    }
+
+    /// `[catalog].ca_bundle`：空值 = 保持现状（只用内置根）；指定了就必须可加载，
+    /// 文件缺失/内容非法直接拒绝启动，绝不静默回退。
+    #[test]
+    fn catalog_ca_bundle_is_optional_and_strict() {
+        // 空值：与历史行为完全一致。
+        let c = Config::load(None, true).unwrap();
+        assert!(
+            c.catalog.extra_roots.is_empty(),
+            "未配置 ca_bundle 时不应有额外根"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let write_cfg = |name: &str, bundle: &std::path::Path| {
+            let path = dir.path().join(name);
+            let value = toml::Value::String(bundle.display().to_string()).to_string();
+            std::fs::write(&path, format!("[catalog]\nca_bundle = {value}\n")).unwrap();
+            path
+        };
+
+        // 文件不存在：拒绝启动，且错误里点明是 ca_bundle。
+        let missing = dir.path().join("no-such-ca.pem");
+        let e = Config::load(Some(write_cfg("missing.toml", &missing)), true)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("ca_bundle"), "{e}");
+
+        // 内容不是 PEM：同样拒绝，不能当成「空根」放行。
+        let broken = dir.path().join("broken.pem");
+        std::fs::write(&broken, "not a certificate").unwrap();
+        let e = Config::load(Some(write_cfg("broken.toml", &broken)), true)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("ca_bundle"), "{e}");
+
+        // 合法 CA：只追加信任锚，内置根仍在（不会顶掉公网根）。
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "skiff-test-ca");
+        params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        let ca = rcgen::Certificate::from_params(params).unwrap();
+        let good = dir.path().join("ca.pem");
+        std::fs::write(&good, ca.serialize_pem().unwrap()).unwrap();
+        let c = Config::load(Some(write_cfg("good.toml", &good)), true).unwrap();
+        assert_eq!(c.catalog.extra_roots.len(), 1);
     }
 
     #[test]

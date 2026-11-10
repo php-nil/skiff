@@ -1301,6 +1301,7 @@ async fn store_install_requires_plugin_manage_permission() {
             public_key: Some(key.public_hex()),
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         },
     );
     let token = login(&h.app, "viewer", "pw-test-123").await;
@@ -1347,6 +1348,7 @@ async fn store_install_requires_configured_key() {
             public_key: None,
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
@@ -1390,6 +1392,7 @@ async fn store_install_rejects_without_verified_catalog() {
             public_key: Some(key.public_hex()),
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
@@ -1444,6 +1447,7 @@ async fn upgrade_download_requires_admin_permission() {
             public_key: Some(key.public_hex()),
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         },
     );
     let token = login(&h.app, "viewer", "pw-test-123").await;
@@ -1487,6 +1491,7 @@ async fn upgrade_download_requires_configured_key() {
             public_key: None,
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
@@ -1527,6 +1532,7 @@ async fn upgrade_download_without_catalog_data_is_not_found() {
             public_key: Some(key.public_hex()),
             allow_unsigned: false,
             timeout: std::time::Duration::from_secs(1),
+            extra_roots: Vec::new(),
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;

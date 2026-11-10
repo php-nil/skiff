@@ -41,3 +41,5 @@ axum-server = { version = "0.7.1", default-features = false, features = ["tls-ru
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+# 进程内生成自签 CA，验证 `[catalog].ca_bundle` 的加载与拒绝路径（不触网）
+rcgen = "0.12"

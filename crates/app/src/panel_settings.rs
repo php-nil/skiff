@@ -68,6 +68,9 @@ pub struct CatalogFile {
     /// 仅开发模式允许接受未签名渠道。
     pub allow_unsigned: Option<bool>,
     pub timeout_secs: Option<u64>,
+    /// 额外信任的 CA 根（PEM 文件路径，可含多张证书）。空值 = 只用内置根。
+    /// 仅追加信任锚，不放松校验，也不允许 http。
+    pub ca_bundle: Option<PathBuf>,
 }
 
 /// 可写键 → (所属表, 段内键名)。`None` 表示顶层。
@@ -109,6 +112,7 @@ const WRITABLE_KEYS: &[(&str, Option<&str>, &str)] = &[
     ("catalog.public_key", Some("catalog"), "public_key"),
     ("catalog.allow_unsigned", Some("catalog"), "allow_unsigned"),
     ("catalog.timeout_secs", Some("catalog"), "timeout_secs"),
+    ("catalog.ca_bundle", Some("catalog"), "ca_bundle"),
 ];
 
 fn writable_key(key: &str) -> Option<(Option<&'static str>, &'static str)> {
@@ -515,6 +519,7 @@ mod tests {
             "catalog.public_key" => toml_string(&"ab".repeat(32)),
             "catalog.allow_unsigned" => "false".into(),
             "catalog.timeout_secs" => "30".into(),
+            "catalog.ca_bundle" => toml_string("/etc/skiff/catalog-ca.pem"),
             other => panic!("可写键 `{other}` 缺少测试样例值"),
         }
     }

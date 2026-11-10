@@ -27,6 +27,10 @@ ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 ureq = { workspace = true }
+webpki-roots = { workspace = true }
+rustls-pemfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# 证书链测试：进程内生成自签 CA 与服务器证书，起一个最小 TLS 服务端，不触网
+rcgen = "0.12"

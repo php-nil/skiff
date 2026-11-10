@@ -883,6 +883,10 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | `SKIFF_CONFIG` | — | `/etc/skiff/config.toml` | 配置文件路径 |
 
 > `login_concurrency` 只能写在配置文件里，**没有**对应环境变量。
+>
+> 商店目录（`[catalog]` 段 / `SKIFF_CATALOG_*`）的键与语义归 [SKIFF_SERVER.md](SKIFF_SERVER.md) §11.1。
+> 内网自签镜像不再要求公网受信证书：把签发证书的 CA 存成 PEM，配 `ca_bundle`
+> （或 `SKIFF_CATALOG_CA_BUNDLE`）即可；镜像仍强制 `https://`，校验不放松，CA 文件非法则启动失败。
 
 ## 6. 验收测试用例
 

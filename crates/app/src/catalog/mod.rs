@@ -49,6 +49,9 @@ pub struct CatalogSettings {
     /// 仅开发模式允许：接受未签名渠道（启动期校验由 core 配置层负责）。
     pub allow_unsigned: bool,
     pub timeout: Duration,
+    /// 额外信任的 CA 根（来自 `[catalog].ca_bundle`）。空 = 只用内置根。
+    /// 只追加信任锚：仍是 https、仍做完整证书链与主机名校验。
+    pub extra_roots: Vec<ureq::rustls::pki_types::CertificateDer<'static>>,
 }
 
 impl Default for CatalogSettings {
@@ -60,6 +63,7 @@ impl Default for CatalogSettings {
             public_key: None,
             allow_unsigned: false,
             timeout: DEFAULT_TIMEOUT,
+            extra_roots: Vec::new(),
         }
     }
 }
@@ -307,7 +311,8 @@ pub struct CatalogService {
 impl CatalogService {
     /// 生产装配：缓存根为 `<data_dir>/catalog`，传输走 ureq。
     pub fn new(settings: CatalogSettings, data_dir: &Path) -> Arc<Self> {
-        let transport: SharedTransport = Arc::new(UreqTransport::new(settings.timeout));
+        let transport: SharedTransport =
+            Arc::new(UreqTransport::new(settings.timeout, &settings.extra_roots));
         Self::build(settings, data_dir.join("catalog"), transport)
     }
 
@@ -324,6 +329,13 @@ impl CatalogService {
         let public_key = settings
             .public_key_hex()
             .and_then(|raw| verify::parse_public_key(raw).ok());
+        if !settings.extra_roots.is_empty() {
+            // 只报数量：证书内容与路径都不进日志。
+            info!(
+                roots = settings.extra_roots.len(),
+                "catalog 已加载额外信任 CA 根（仍强制 https）"
+            );
+        }
         Arc::new(Self {
             settings,
             root,

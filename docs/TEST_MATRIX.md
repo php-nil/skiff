@@ -40,6 +40,7 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 | L. 后台端口 / 入口前缀 / TLS | 6 | 2 项本机可验（PANEL-02/03 校验单测，PANEL-06 有 `skiff` 单测兜底），4 项必须上机 | `cargo test -p skiff-app -p skiff`；测试机改端口/前缀/TLS 三形态 |
 | M. 防火墙 / fail2ban / 进程与网络 | 20 | 4 项本机单测（FW-03、FW-18、FW-19、MON-N01 解析），其余必须上机 | `cargo test -p skiff-plugin firewall`；`plugins/` 第二 workspace 单测；测试机 nft/iptables/fail2ban + `/proc` |
 | N. 任务中心作业 | 3 | 3 项本机可验（`main_flow` 集成测试），需上机复验执行器真实行为 | `cargo test -p skiff-web --test main_flow job_retry`；测试机运行环境安装/扩展任务 |
+| O. 商店目录（Skiff-server） | 2 | 2 项本机可验（自签 CA 端到端 + 配置拒绝），建议上机复验内网自签镜像 | `cargo test -p skiff-app catalog::fetch::tls_tests`、`cargo test -p skiff catalog`；测试机内网镜像 |
 
 ## A. 身份与会话
 
@@ -567,6 +568,23 @@ cargo test -p skiff-app php_init_script
 | JOB-01 | 重试复用正常执行器 | `[本机]` 集成测试 + `[上机]` 一条失败任务 | 对失败任务点「重试」；观察任务中心状态与日志 | 新任务 `retry_of` 指向原任务，离开 `queued` 并落 `exit_code`/`error_class`；不再永久占索引 | □通过 / □失败 | `crates/app/src/sites.rs::retry_job`、`crates/web/src/handlers/jobs.rs::retry`、`crates/web/tests/main_flow.rs::job_retry_reuses_executor_and_rejects_unsupported_kind` |
 | JOB-02 | 同目标冲突可解释 | `[本机]` 集成测试 + `[上机]` | 重试进行中再对同目标提交/重试 | 明确 409，文案含「该对象已有任务在执行…」，不排队、不插新行 | □通过 / □失败 | `crates/store/src/db/jobs.rs`（`idx_jobs_active_target`）、`crates/web/src/handlers/jobs.rs` |
 | JOB-03 | 无执行器类型拒绝 | `[本机]` 集成测试 | 对 `site.create` 等无执行器 kind 的历史任务点「重试」 | 400 + 「不支持重试」，作业列表不新增行 | □通过 / □失败 | `crates/app/src/sites.rs::retry_job`（`RetryPlan` 解析） |
+
+## O. 商店目录（Skiff-server）
+
+> 重跑触发：改了 `crates/app/src/catalog/fetch.rs` 的传输层/TLS 配置、`crates/core/src/config.rs`
+> 的 `[catalog]` 校验，或 `docs/SKIFF_SERVER.md` §4.5 的内网口径。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| STORE-01 | 自签 CA 内网镜像可接入且仍强制 https | `[本机]` crate 单测；`[上机]` 内网静态镜像 + 该 CA 签发的服务器证书 | 不配 `ca_bundle` 访问自签镜像；再把 CA 导出 PEM 配到 `[catalog].ca_bundle` 后重启刷新 | 未配置时连接被拒（证书不受信）；配置后刷新成功、`catalog.refresh` 落库；镜像地址仍只接受 `https://`，无 insecure 开关 | □通过 / □失败 | `crates/app/src/catalog/fetch.rs::{UreqTransport::load_ca_bundle,root_store}`、`catalog::fetch::tls_tests`、`crates/core/src/config.rs::build_catalog_settings` |
+| STORE-02 | `ca_bundle` 空值/非法值的启动语义 | `[本机]` 单测 | 不配置、配置不存在路径、配置非 PEM 内容三种启动 | 空值行为与历史一致（`extra_roots` 为空）；缺失/非法明确报「`catalog.ca_bundle` 非法」并拒绝启动，不静默回退内置根 | □通过 / □失败 | `crates/core/src/config.rs::catalog_ca_bundle_is_optional_and_strict`、`skiff_app::panel_settings::CatalogFile::ca_bundle` |
+
+最小回归命令：
+
+```bash
+cargo test -p skiff-app catalog::fetch::tls_tests
+cargo test -p skiff catalog
+```
 
 ## 附：待核对项结论（2026-11-07 已全部定性）
 
