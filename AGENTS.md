@@ -15,9 +15,9 @@
 | `crates/` | 子项目 | Rust workspace 的 16 个 crate（`xtask` 在顶层单独列出），成员清单以根 `Cargo.toml` 为准；crate 分层与职责见文档入口 | `docs/sections/08-engineering.md` |
 | `plugins/` | 子项目 | **第二个 workspace**（`exclude = ["plugins"]`，不受根 `--workspace` 覆盖）：共享库 `common`、官方插件 `guard` / `monitor` / `files` / `cron` / `ftp` / `firewall` 与 `pack.sh` 打包脚本；发布包 `official/` 的产出源头 | `plugins/README.md` |
 | `xtask/` | 工程校验 | `cargo run -p xtask -- check` 固化两类校验（1Panel 变量、Compose 字段子集）；`verify-pkg` 为独立子命令，校验 `.wbpkg` 结构/摘要/签名 | `docs/sections/08-engineering.md` |
-| `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example` | `docs/DEPLOY_TEST.md` |
+| `deploy/` | 部署物料 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包、`config.toml.example`；`skiff-server/` 为商店清单源数据与 JSON Schema | `docs/DEPLOY_TEST.md`、`docs/SKIFF_SERVER.md` |
 | `docs/` | 全局文档 | 全仓库专项文档 | 见「四、文档索引」 |
-| `tools/` | 开发机工具 | `linux-check.sh`（本地 Linux 目标编译级复核）、`iter.sh`（单轮迭代编排：门禁/取包/装/验收/回滚协同）、`perf/`（性能观测与报告脚本） | `docs/ITERATION.md` |
+| `tools/` | 开发机工具 | `linux-check.sh`（本地 Linux 目标编译级复核）、`iter.sh`（单轮迭代编排：门禁/取包/装/验收/回滚协同）、`perf/`（性能观测与报告脚本）、`skiff-server/`（商店清单校验与静态产物生成，根 workspace 成员） | `docs/ITERATION.md`、`docs/SKIFF_SERVER.md` |
 | `.github/workflows/` | CI/CD | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml` 四个工作流 | `docs/CI.md` |
 
 > 顶层目录变动时，须同步更新上表；子项目新增独立规范（`crates/<name>/AGENTS.md`）须在上表登记入口。`target/`、`skiff-run/`、`.workbuddy/` 等是本地产物/工作数据，已被 gitignore，不得入库。
@@ -93,7 +93,7 @@
 | 内核 FTP 契约 | `docs/KERNEL_FTP_CONTRACT.md` | 新增 `ftp` 能力面的主体与授权（manifest→`perm:ftp:<verb>`）、审计口径、站点账号与 uid/gid 对齐（`MinUID` 只降不升）、安全边界、宿主 pure-ftpd 取舍与测试矩阵；fail2ban 已收口到防火墙插件 |
 | 内核防火墙契约 | `docs/KERNEL_FIREWALL_CONTRACT.md` | 新增 `firewall` 能力面的主体与授权（manifest→`perm:firewall:<verb>`）、方法清单、自有作用域（`inet skiff` / `SKIFF` 链 / `skiff-*.conf`）、审计口径、特权通道、interop 接口与测试矩阵 |
 | SDUI 内核适配手册 | `docs/SDUI_HANDBOOK.md` | 面向 JSON Schema 驱动服务端 UI 的内核适配：现状耦合清单（业务/展示/传输归类）、资源与动作契约、权限校验审计挂接、分阶段迁移与回滚、开发手册与待定项；设计与迁移规范，不代表已实施 |
-| Skiff-server 分发方案 | `docs/SKIFF_SERVER.md` | 中心化静态数据分发：商店/应用模板/运行环境/内核升级四类清单的模型、JSON Schema 与 Ed25519 签名清单、内容寻址与 `seq` 防回滚、镜像同步与多源切换、发布审核与吊销、客户端拉取与商店安装链路、P0–P3 阶段；方案稿，未实施 |
+| Skiff-server 分发方案 | `docs/SKIFF_SERVER.md` | 中心化静态数据分发：商店/应用模板/运行环境/内核升级四类清单的模型、JSON Schema 与 Ed25519 签名清单、内容寻址与 `seq` 防回滚、镜像同步与多源切换、发布审核与吊销、客户端拉取与商店安装链路、P0–P3 阶段；§10 为 P0 服务端产物落地状态（`tools/skiff-server`），客户端接入未实施 |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

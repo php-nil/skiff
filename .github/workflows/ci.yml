@@ -10,6 +10,8 @@
 #               「Windows 本地三关」这条交付口径在 CI 也有复核
 #   msrv        用 workspace 的 rust-version（1.89）做类型检查，防止悄悄抬高 MSRV
 #   verify      xtask check（1Panel 变量对齐 / Compose 字段子集）；另跑空参 verify-pkg，验证「缺包跳过」
+#   server      Skiff-server 静态产物：schema 合规 / 摘要一致 / 索引引用完整 / seq 不回退
+#               （内存生成后自检，不产出任何发布物；未签名占位只告警，发布门禁另有 --require-signature）
 #   pkg-chain   插件包全链路：keygen → new → build → pack → verify（真签真验），
 #              并用 plugins/pack.sh 把 7 个官方插件包（6 个插件 + testkit）真打一遍（发布包靠它出 official/）
 #   plugins     官方插件 workspace（plugins/）的 fmt / clippy / test；
@@ -187,6 +189,24 @@ jobs:
       - run: |
           cargo run --locked -p xtask -- --help
           cargo run --locked -p xtask -- verify-pkg
+
+  # ── Skiff-server 静态产物：schema / 摘要 / 引用 / seq ────────────────
+  server:
+    name: 商店清单（skiff-server check）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: rm -f .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+      # 不带 --dist：内存里生成再自检，CI 不产出发布物。
+      # 未签名占位只告警；发布门禁是 `check --require-signature`（见 docs/SKIFF_SERVER.md §10）
+      - run: cargo run --locked -p skiff-server -- check
 
   # ── 插件包全链路：这一步只有真签真验才算过 ──────────────────────
   pkg-chain:

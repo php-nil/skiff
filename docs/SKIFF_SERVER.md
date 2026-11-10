@@ -387,3 +387,55 @@
 
 > 以上 7 项均不阻塞 P0 开工；其中 1、2、6 建议在 P0 实现前拍板，其余可在对应阶段前定。
 
+## 10. P0 落地状态
+
+P0 只落**服务端产物这一侧**：源数据 → 校验 → 静态产物树。客户端拉取/验签/缓存/回退未接入，签名流水线未接，镜像同步未做。待定项 1 按推荐实现：源数据先放本仓库单目录。
+
+### 10.1 实际目录
+
+| 路径 | 内容 |
+|---|---|
+| `deploy/skiff-server/catalog/` | 源数据：`<channel>/channel.json` + `plugins/` `apps/` `runtimes/` `upgrades/` 四类条目 JSON，`assets/` 下有对应原始资产 |
+| `deploy/skiff-server/schema/` | 8 份 JSON Schema：`channel` / `plugin` / `app` / `runtime` / `upgrade` / `index` / `manifest` / `signature` |
+| `tools/skiff-server/` | 纯 Rust 实现（零原生 C 依赖，故不放进依赖 `zstd`/`rusqlite` 的 `xtask`）；根 workspace 成员 |
+| `target/skiff-server/dist/` | `gen` 的输出目录（不入库）：`channels/<name>/{manifest.json,manifest.json.sig,index.json}` + `blobs/sha256/<hex>` + `schema/` |
+
+源数据形态与产物形态不同：源条目用 `asset` 指向 `catalog/assets/...`，生成器读文件后派生 `*_sha256` / `*_url` / `size` 并移除 `asset`；产物侧若仍带 `asset` 视为非法。
+
+### 10.2 命令
+
+```sh
+# 生成产物（默认未签名占位）
+cargo run -p skiff-server -- gen
+
+# 发布前校验：schema 合规 + 摘要一致 + 索引引用完整 + seq 不回退
+cargo run -p skiff-server -- check --dist target/skiff-server/dist --prev <上一版产物目录>
+
+# 发布门禁：占位/空签名直接失败
+cargo run -p skiff-server -- check --require-signature
+
+# 真签名（私有管道用；种子不入库）
+cargo run -p skiff-server -- gen --sign-key <32 字节 hex>
+```
+
+`check` 不带 `--dist` 时先在内存生成再校验，适合本地快速回归；CI 用默认值即可，无需先跑 `gen`。
+
+### 10.3 校验实现路径
+
+自研最小 JSON Schema 子集校验器（`schema.rs`：`type` / `required` / `properties` / `additionalProperties` / `items` / `enum` / `const` / `minLength` / `maxLength` / `minimum` / `maximum` / `allOf` / 相对文件 `$ref`），加 `model.rs` 的 Rust 语义校验（反向域名 id、semver、`sha256:` 摘要、时间戳格式、URL 形态）。不引入 JSON Schema 引擎，也不把 schema 逻辑塞进任何内核 crate。
+
+摘要与引用校验在 `check.rs`：每渠道 manifest/sig/index 过 schema 与语义 → `key_id` 一致 → index 的 `sha256`/`size`/`seq`/`channel` 与 manifest 对齐 → 每个引用 blob 存在且摘要与大小匹配 → 禁止孤儿 blob。
+
+### 10.4 已覆盖测试
+
+`tools/skiff-server/tests/p0.rs`：样例过 schema 与语义、非法条目被拒（未知字段 / 坏枚举 / 缺必填 / 坏类型）、生成索引含样例、篡改或缺失 blob 被拒、确定性生成（同输入两次字节一致，含固定测试种子签名）、`seq` 回退被拒、未签名产物在严格模式失败、签名接口产出可验签且篡改后验签失败。
+
+### 10.5 未完成
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 签名流水线 | 占位 | `Signer` 与 `manifest.json.sig` 接口就绪；真实私钥托管、离线签发、轮换流程未接。未签名产物客户端必须拒绝（`check --require-signature` 为门禁） |
+| 镜像同步 | 未做 | `blobs/` 天然文件级增量，但缺少同步脚本、多源清单与校验 |
+| 客户端接入 | 未做 | 拉取、验签、缓存、回退、随包快照均未实现 |
+| 增量索引 | 未做 | 按 §2.4 属 P3 |
+
