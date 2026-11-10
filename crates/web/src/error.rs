@@ -192,6 +192,13 @@ impl From<skiff_store::StoreError> for AppError {
     }
 }
 
+/// 表单编码非法属于客户端输入问题，统一 400；错误里带位置与成因，便于排查。
+impl From<crate::util::FormDecodeError> for AppError {
+    fn from(e: crate::util::FormDecodeError) -> Self {
+        AppError::BadRequest(format!("请求体不是合法的 URL 编码：{e}"))
+    }
+}
+
 impl From<skiff_plugin::PluginError> for AppError {
     fn from(e: skiff_plugin::PluginError) -> Self {
         match e {

@@ -11,7 +11,7 @@ use crate::middleware::{check_csrf, AuthUser};
 use crate::state::auth::{LoginError, LoginRequest};
 use crate::state::AppState;
 use crate::templates::LoginPage;
-use crate::util::{form_first, parse_cookies, parse_form};
+use crate::util::{form_first, parse_cookies, parse_form, try_parse_form};
 use skiff_identity::{token_matches, SignedTokenError};
 
 /// 登录页 CSRF token 有效期（与 Cookie Max-Age 一致）。
@@ -65,7 +65,8 @@ pub async fn login_submit(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    let form = parse_form(&body);
+    // 登录是未认证入口：坏编码直接 400，不做替换字符降级（旧实现还会 panic）。
+    let form = try_parse_form(&body)?;
     let ip = handlers::client_ip(&state, &parts);
     let secure = handlers::is_secure_request(&state, &parts);
 
