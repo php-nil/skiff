@@ -71,7 +71,13 @@ pub async fn apply_registry_mirror(
     raw: &str,
 ) -> Result<MirrorApply, String> {
     let mirrors = parse_mirrors(raw)?;
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    // 只有「文件确实不存在」才按空配置合并；读取失败（EACCES/EIO）时若继续，
+    // 合并结果只剩 registry-mirrors，随后整文件覆盖会丢掉 data-root 等既有键。
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),
+    };
     let merged = merge_daemon_json(&existing, &mirrors)?;
     if merged.trim() == existing.trim() {
         return Ok(MirrorApply {

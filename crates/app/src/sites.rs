@@ -6001,7 +6001,16 @@ impl AppState {
         } else if conf.exists() {
             std::fs::rename(&conf, &disabled)
                 .map_err(|e| SiteError::Internal(format!("停用配置失败：{e}")))?;
-            self.restart_nginx().await?;
+            // 与启动分支对称：reload 失败必须把 vhost 恢复回去，否则数据库仍记
+            // running、磁盘上却已停用，之后任何一次 nginx 重启站点都会消失。
+            if let Err(e) = self.restart_nginx().await {
+                if let Err(re) = std::fs::rename(&disabled, &conf) {
+                    tracing::error!(error = %re, "回滚站点停用失败");
+                } else if let Err(re) = self.restart_nginx().await {
+                    tracing::error!(error = %re, "回滚后重载 nginx 失败");
+                }
+                return Err(SiteError::Unavailable(format!("停用站点失败：{e}")));
+            }
         }
         self.db()
             .set_site_status(&site.domain, if running { "running" } else { "stopped" })
@@ -6106,6 +6115,20 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        // 站点目录删除后不可恢复，先读出待级联清理由任务；此前用
+        // `unwrap_or_default()` 会把「读库失败」当成「没有任务」而静默漏清理。
+        let stale_tasks: Vec<String> = if self.tasks().is_some() {
+            let source = format!("site:{}", site.domain);
+            self.db()
+                .scheduled_tasks()
+                .map_err(|e| SiteError::Internal(e.to_string()))?
+                .into_iter()
+                .filter(|t| t.source == source)
+                .map(|t| t.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
         // 删除默认站点时连同默认 conf 一起删，不能留下指向已删目录的 vhost。
         if site.is_default {
             let p = s.conf_dir.join(DEFAULT_CONF);
@@ -6138,16 +6161,7 @@ impl AppState {
         // 站点的孤儿任务。站点备份是内核种入的 `builtin:` 任务，普通删除入口会被
         // 内置保护拒绝，这里必须走级联删除（仍经任务服务，保证调度器内存与库一致）。
         if let Some(tasks) = self.tasks() {
-            let source = format!("site:{}", site.domain);
-            let stale: Vec<String> = self
-                .db()
-                .scheduled_tasks()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|t| t.source == source)
-                .map(|t| t.id)
-                .collect();
-            for id in stale {
+            for id in stale_tasks {
                 if let Err(e) = tasks.delete_task_cascade(&id).await {
                     tracing::warn!(task = %id, error = %e, "删除站点后清理定时任务失败");
                 }
@@ -6459,7 +6473,10 @@ impl AppState {
                 .write_all(req.as_bytes())
                 .map_err(|e| format!("发送请求失败：{e}"))?;
             let mut buf = Vec::new();
+            // 只取响应头部窗口做预览；此前 read_to_end 无上限，
+            // 站点根放一个大文件时点一次探针就会吃满内核内存。
             stream
+                .take(64 * 1024)
                 .read_to_end(&mut buf)
                 .map_err(|e| format!("读取响应失败：{e}"))?;
             let text = String::from_utf8_lossy(&buf).to_string();

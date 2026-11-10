@@ -356,6 +356,17 @@ pub(crate) fn error_line(out: &str) -> String {
         .unwrap_or_else(|| out.trim().to_string())
 }
 
+/// 回滚结果文案：只有真正写回原配置时才允许说「已回滚」。
+fn rollback_message(restored: bool, had_original: bool, cause: &str) -> String {
+    if restored {
+        format!("配置已回滚：{cause}")
+    } else if had_original {
+        format!("回滚写入失败，请人工检查 nginx 主配置：{cause}")
+    } else {
+        format!("原主配置不存在，未能回滚：{cause}")
+    }
+}
+
 /// 收集 `nginx -t` 的告警行。
 ///
 /// `nginx -t` 有告警时退出码仍为 0；只看退出码会把「配置生效但带问题」当成完全成功。
@@ -690,20 +701,37 @@ impl AppState {
                 diff
             )));
         }
-        let original = std::fs::read(s.nginx_main_conf()).ok();
+        let original = match std::fs::read(s.nginx_main_conf()) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(SiteError::Internal(format!(
+                    "读取 nginx 主配置失败，未替换：{e}"
+                )))
+            }
+        };
         std::fs::rename(&candidate, s.nginx_main_conf())
             .map_err(|e| SiteError::Internal(format!("替换主配置失败：{e}")))?;
         if let Err(e) = self.restart_nginx().await {
-            if let Some(bytes) = original.clone() {
-                if let Err(we) = std::fs::write(s.nginx_main_conf(), bytes) {
-                    tracing::error!(error = %we, "回滚 nginx 主配置写入失败");
-                }
-                if let Err(re) = self.restart_nginx().await {
-                    tracing::error!(error = %re, "回滚后重载 nginx 失败");
-                }
-            }
-            return Err(SiteError::Unavailable(format!(
-                "配置已回滚：重载 nginx 失败：{e}"
+            let restored = match &original {
+                Some(bytes) => match std::fs::write(s.nginx_main_conf(), bytes) {
+                    Ok(()) => {
+                        if let Err(re) = self.restart_nginx().await {
+                            tracing::error!(error = %re, "回滚后重载 nginx 失败");
+                        }
+                        true
+                    }
+                    Err(we) => {
+                        tracing::error!(error = %we, "回滚 nginx 主配置写入失败");
+                        false
+                    }
+                },
+                None => false,
+            };
+            return Err(SiteError::Unavailable(rollback_message(
+                restored,
+                original.is_some(),
+                &format!("重载 nginx 失败：{e}"),
             )));
         }
         // Docker restart 返回成功不代表 nginx 仍在运行：配置里的
@@ -712,17 +740,25 @@ impl AppState {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let env = self.site_env_status().await;
         if env.installed && env.nginx_state != "running" {
-            if let Some(bytes) = original.clone() {
-                if let Err(we) = std::fs::write(s.nginx_main_conf(), bytes) {
-                    tracing::error!(error = %we, "nginx 退出后回滚主配置写入失败");
-                }
-                if let Err(re) = self.restart_nginx().await {
-                    tracing::error!(error = %re, "nginx 退出后回滚重启失败");
-                }
-            }
-            return Err(SiteError::Unavailable(format!(
-                "配置已回滚：nginx 未能保持运行（当前状态 {}）",
-                env.nginx_state
+            let restored = match &original {
+                Some(bytes) => match std::fs::write(s.nginx_main_conf(), bytes) {
+                    Ok(()) => {
+                        if let Err(re) = self.restart_nginx().await {
+                            tracing::error!(error = %re, "nginx 退出后回滚重启失败");
+                        }
+                        true
+                    }
+                    Err(we) => {
+                        tracing::error!(error = %we, "nginx 退出后回滚主配置写入失败");
+                        false
+                    }
+                },
+                None => false,
+            };
+            return Err(SiteError::Unavailable(rollback_message(
+                restored,
+                original.is_some(),
+                &format!("nginx 未能保持运行（当前状态 {}）", env.nginx_state),
             )));
         }
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();

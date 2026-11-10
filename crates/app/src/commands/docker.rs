@@ -77,7 +77,7 @@ fn audit(
 ) {
     match result {
         Ok(()) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &actor.username,
                 &actor.ip,
                 &verb.audit_action(),
@@ -87,7 +87,7 @@ fn audit(
             );
         }
         Err(e) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &actor.username,
                 &actor.ip,
                 &verb.audit_action(),
@@ -185,7 +185,7 @@ pub async fn container_action(
     // BusyGuard：容器有进行中的安装/扩展/重建任务时，删除会打断内核自己的任务。
     if cmd.verb == Verb::ContainerRemove {
         if let Some(reason) = state.container_busy_reason(&cmd.target.name).await {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &cmd.actor.username,
                 &cmd.actor.ip,
                 &cmd.verb.audit_action(),
@@ -208,7 +208,7 @@ pub async fn container_action(
         .map(|_| ());
     match &result {
         Ok(()) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &cmd.actor.username,
                 &cmd.actor.ip,
                 &cmd.verb.audit_action(),
@@ -218,7 +218,7 @@ pub async fn container_action(
             );
         }
         Err(e) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &cmd.actor.username,
                 &cmd.actor.ip,
                 &cmd.verb.audit_action(),
