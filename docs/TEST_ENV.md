@@ -450,7 +450,14 @@ TASK-06 缓冲能力面补验（同日 22:06 之后，经 `com.skiff.testkit` RP
   - 源 blob 同长度改 1 字节 → exit **1**「步骤 **4/6** blob 摘要不匹配」，镜像无 `manifest.json`（只落了校验通过的 1 个 blob）；
   - 同步后人为篡改镜像内 blob → `check --dist <mirror> --public-key` 报 blob 摘要不匹配；再跑一次 sync 只补该 blob 并恢复自检通过；
   - 错误公钥 → 步骤 **1/6** 拒绝，镜像无输出。
-- **FAIL（新发现，未修）**：`--require-signature` / `--unsigned` 旗标解析失效。`parse()` 在 `tools/skiff-server/src/main.rs:213-216` 用 `strip_prefix("--")` 后的名字比较 `flags`，调用方传的却是带前缀的 `&["--unsigned"]`（L71）/ `&["--require-signature"]`（L121），永不匹配 → 旗标被当成「带值选项」：`check … --require-signature` 末尾 exit 1「参数 --require-signature 缺少取值」；`check … --require-signature --public-key <hex>` 把 `--public-key` 当值吞掉、`<hex>` 报「无法识别的参数」；`gen --unsigned --out X` 吞掉 `--out`。`publish` 内部仍强制验签（不受影响），但发布/同步门禁无法用严格模式。已记入 [TEST_LEDGER.md](TEST_LEDGER.md)。
+- **FAIL（新发现，已于 `2bb5c90` 修复，见下）**：`--require-signature` / `--unsigned` 旗标解析失效。`parse()` 在 `tools/skiff-server/src/main.rs:213-216` 用 `strip_prefix("--")` 后的名字比较 `flags`，调用方传的却是带前缀的 `&["--unsigned"]`（L71）/ `&["--require-signature"]`（L121），永不匹配 → 旗标被当成「带值选项」：`check … --require-signature` 末尾 exit 1「参数 --require-signature 缺少取值」；`check … --require-signature --public-key <hex>` 把 `--public-key` 当值吞掉、`<hex>` 报「无法识别的参数」；`gen --unsigned --out X` 吞掉 `--out`。`publish` 内部仍强制验签（不受影响），但发布/同步门禁无法用严格模式。该缺陷已在 `2bb5c90` 修复并复验，已从 [TEST_LEDGER.md](TEST_LEDGER.md) 出账。
+- **`2bb5c90` 旗标修复复验（PASS，2026-11-10）**：用重新构建的 `target\debug\skiff-server.exe`（6,375,936 B，sha256 `03d5fea20db02760540416a0ebcac5c557ec5786ef43077fa4ed17cdbb69231b`，2026-11-10 20:19:52，源码 = `2bb5c90`），执行位置与 §9 上文一致（测试机无工具链、开发机无 C 编译器，未改环境）：
+  1. `gen --unsigned --out U1`（无密钥）→ exit 0，14 个文件；`manifest.key_id` = 64 个 `0`、`manifest.json.sig` 的 `sig` 为空串；`--out` 正常识别，不再被吞。
+  2. 设置合法 `SKIFF_SIGNING_KEY` 后再跑 `gen --unsigned` → exit 0，产物仍 `key_id` 全 0 / `sig` 空（`--unsigned` 压过环境密钥）。
+  3. `gen` 不带 `--unsigned` 且无密钥 → exit 1「缺少环境变量 SKIFF_SIGNING_KEY…」，输出目录不存在。
+  4. 未签名产物 U1：`check --dist U1` → exit 0（仅警告「未签名占位」）；`--require-signature` → exit 1「渠道 stable 未签名：P0 占位产物不得发布」；`--require-signature --public-key <pubA>` 同样 exit 1「未签名」，`<hex>` 被正常识别（无「无法识别/缺少取值」）；`--public-key <pubA>` 单独使用 → exit 1「签名 key_id 与固定公钥不一致」。反向证明 `--public-key` 真正生效：已签名 dist 加 `--require-signature --public-key <pubA>` → exit 0，换 `<pubB>` → exit 1 key_id 不一致。
+  5. 回归（与上一轮逐步对齐）：publish 缺私钥 / 公私钥不匹配 / 正常发布（seq=1、index 摘要一致、blob 全匹配）/ `--prev` seq 未递增均一致；sync 首次（复用 0 / 新增 3）、重复（复用 3 / 新增 0）、预置 1 个 blob（复用 1 / 新增 2）、seq 回退（步骤 3/6）、源 blob 篡改（步骤 4/6，镜像无 `manifest.json`）均一致；`check mirror1 --require-signature --public-key` 通过。
+  - 该提交同时新增 `tools/skiff-server/tests/cli.rs` 4 条旗标用例（真实子进程断言）；同提交 CI **11 success + 1 skipped**（跳过项为 `编译（x86_64 musl 静态）`，不触发内核打包路径），`商店清单（skiff-server check）` 与 `单测（Linux/Windows）` 均 success。
 - **无法验证**：测试机上的 CLI 实测（无 `rustc` / `cargo` / `skiff-server`，且约定不为测试机装工具链）；Linux 目标二进制行为（未交叉编译；本轮以 Windows 产物验证同一套库与 CLI 逻辑）。
 
 ## 10. 数据、备份与清理
