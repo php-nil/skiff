@@ -198,6 +198,12 @@ sha256sum -c checksums.txt        # 包内摘要再复核一次（可选，已�
 sh install.sh                     # 可加 --datadir / --listen / --no-docker 等
 ```
 
+> 要留安装日志时用**重定向**，不要把脚本接进管道：
+> `sh install.sh --no-docker >/tmp/install.log 2>&1; rc=$?`。
+> `sh install.sh | tee ...` 的退出码来自 `tee`；用 `${PIPESTATUS[0]}` 取真实码是 bash 语法，
+> 在 `sh`/dash 下会报 `Bad substitution` 并把失败误判成成功（见 `docs/TEST_ENV.md`）。
+> 需要「保留输出 + 原样退出码」时，按 `tools/iter.sh` 的写法先重定向再读 `$?`。
+
 `install.sh` 做的事（幂等，可重复执行）：
 
 | 步骤 | 结果 |

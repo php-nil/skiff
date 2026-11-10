@@ -63,6 +63,12 @@ const AUTH_DB_LINK: &str = "../conf/PureDB";
 const AUTH_STALE: [&str; 2] = ["65unix", "70pam"];
 /// 内核持久化的 FTP 服务配置；`/etc/skiff` 在 systemd unit 的 `ReadWritePaths` 内。
 const SERVICE_CONFIG_FILE: &str = "/etc/skiff/ftp-service.json";
+/// 特权命令的临时目录（`0700`，root 独占）。
+///
+/// `tee` / `openssl` 都经 `systemd-run` 以 root 执行；若把输出落在 `/tmp`，
+/// 本地用户可预置同名符号链接，把 root 的写入重定向到任意文件。
+#[cfg(target_os = "linux")]
+const SCRATCH_DIR: &str = "/run/skiff-ftp";
 /// 允许作为 TLS 源文件的最大尺寸，避免把大文件读进内存。
 const MAX_TLS_SOURCE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_LISTEN_PORT: u16 = 21;
@@ -470,6 +476,27 @@ fn parse_ban_with_time(text: &str) -> Option<String> {
 
 fn svec(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| s.to_string()).collect()
+}
+
+/// 准备特权临时目录（`0700`，root 独占），并返回本进程内唯一的临时文件路径。
+///
+/// 目录由 root 通过特权通道创建，权限 0700，不再落在 `/tmp`：`tee` / `openssl`
+/// 以 root 写入时不会被本地用户预置的符号链接劫持。
+#[cfg(target_os = "linux")]
+async fn scratch_path<H: FtpHost>(host: &H, stem: &str) -> Result<String, FtpError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    run_ok(
+        host,
+        "/usr/bin/install",
+        &svec(&["-d", "-m", "0700", SCRATCH_DIR]),
+        None,
+        900,
+    )
+    .await
+    .map_err(|e| FtpError::internal(format!("创建特权临时目录失败：{}", e.message)))?;
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    Ok(format!("{SCRATCH_DIR}/{stem}-{}-{n}", std::process::id()))
 }
 
 // ───────────────────────────── 宿主命令封装 ─────────────────────────────
@@ -1201,10 +1228,7 @@ async fn toggle_account_line<H: FtpHost>(
 /// 通过临时文件 + `install -m 0600` 覆盖 passwd，避免 `tee` 截断时留下半截账号表。
 #[cfg(target_os = "linux")]
 async fn write_passwd_host<H: FtpHost>(host: &H, body: &str) -> Result<(), FtpError> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = format!("/tmp/skiff-ftp-passwd-{}-{n}.tmp", std::process::id());
+    let tmp = scratch_path(host, "passwd").await?;
     run_ok(
         host,
         "/usr/bin/tee",
@@ -1763,9 +1787,9 @@ async fn ensure_tls_pem<H: FtpHost>(host: &H, cfg: &ServiceConfig) -> Result<(),
         .unwrap_or_else(|_| "skiff.local".into())
         .trim()
         .to_string();
-    let key = "/tmp/skiff-ftp-key.pem";
-    let cert = "/tmp/skiff-ftp-cert.pem";
-    run_ok(
+    let key = scratch_path(host, "tls.key").await?;
+    let cert = scratch_path(host, "tls.crt").await?;
+    let generated = run_ok(
         host,
         "/usr/bin/openssl",
         &svec(&[
@@ -1777,32 +1801,50 @@ async fn ensure_tls_pem<H: FtpHost>(host: &H, cfg: &ServiceConfig) -> Result<(),
             "-days",
             "3650",
             "-keyout",
-            key,
+            key.as_str(),
             "-out",
-            cert,
+            cert.as_str(),
             "-subj",
             &format!("/CN={hostname}"),
         ]),
         None,
         900,
     )
-    .await
-    .map_err(|e| FtpError::internal(format!("生成 TLS 自签证书失败：{}", e.message)))?;
-    let key_body = tokio::fs::read_to_string(key)
-        .await
-        .map_err(|e| FtpError::internal(format!("读取 TLS 私钥失败：{e}")))?;
-    let cert_body = tokio::fs::read_to_string(cert)
-        .await
-        .map_err(|e| FtpError::internal(format!("读取 TLS 证书失败：{e}")))?;
-    let mut pem = String::new();
-    pem.push_str(key_body.trim_end());
-    pem.push('\n');
-    pem.push_str(cert_body.trim_end());
-    pem.push('\n');
-    write_tls_pem(host, &pem).await?;
-    let _ = tokio::fs::remove_file(key).await;
-    let _ = tokio::fs::remove_file(cert).await;
-    Ok(())
+    .await;
+    if let Err(e) = generated {
+        let _ = run_raw(
+            host,
+            "/usr/bin/rm",
+            &svec(&["-f", key.as_str(), cert.as_str()]),
+            None,
+            900,
+        )
+        .await;
+        return Err(FtpError::internal(format!(
+            "生成 TLS 自签证书失败：{}",
+            e.message
+        )));
+    }
+    // 私钥由 root 以 0600 写出，插件进程读不到；拼接必须经特权通道完成。
+    let pem = run_ok(
+        host,
+        "/usr/bin/cat",
+        &svec(&[key.as_str(), cert.as_str()]),
+        None,
+        900,
+    )
+    .await;
+    // 无论拼接成败都清理临时私钥，避免私钥残留在宿主机上。
+    let _ = run_raw(
+        host,
+        "/usr/bin/rm",
+        &svec(&["-f", key.as_str(), cert.as_str()]),
+        None,
+        900,
+    )
+    .await;
+    let pem = pem.map_err(|e| FtpError::internal(format!("读取自签证书失败：{}", e.message)))?;
+    write_tls_pem(host, &pem).await
 }
 
 #[cfg(target_os = "linux")]
@@ -1813,17 +1855,33 @@ async fn write_tls_pem<H: FtpHost>(host: &H, body: &str) -> Result<(), FtpError>
             .await
             .map_err(|e| FtpError::internal(format!("创建证书目录失败：{}", e.message)))?;
     }
-    run_ok(
-        host,
-        "/usr/bin/tee",
-        &[TLS_PEM.to_string()],
-        Some(body),
-        900,
-    )
-    .await
-    .map_err(|e| FtpError::internal(format!("写入 {TLS_PEM} 失败：{}", e.message)))?;
-    let _ = run_raw(host, "/usr/bin/chmod", &svec(&["600", TLS_PEM]), None, 900).await;
-    Ok(())
+    // 先落到 root 独占的临时文件，再用 `install -m 0600` 替换目标：`tee` 直接写
+    // 目标会按 umask 建出 0644 的文件，私钥在 chmod 之前有一段时间是全局可读的。
+    let tmp = scratch_path(host, "tls.pem").await?;
+    let written: Result<(), FtpError> = async {
+        run_ok(
+            host,
+            "/usr/bin/tee",
+            std::slice::from_ref(&tmp),
+            Some(body),
+            900,
+        )
+        .await
+        .map_err(|e| FtpError::internal(format!("写入临时 PEM 失败：{}", e.message)))?;
+        run_ok(
+            host,
+            "/usr/bin/install",
+            &svec(&["-m", "0600", &tmp, TLS_PEM]),
+            None,
+            900,
+        )
+        .await
+        .map_err(|e| FtpError::internal(format!("更新 {TLS_PEM} 失败：{}", e.message)))?;
+        Ok(())
+    }
+    .await;
+    let _ = run_raw(host, "/usr/bin/rm", &svec(&["-f", &tmp]), None, 900).await;
+    written
 }
 
 /// fail2ban jail 内容。必须把 `port` 钉到实际监听端口：jail.conf 自带的

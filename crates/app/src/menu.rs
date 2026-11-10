@@ -924,18 +924,61 @@ pub fn apply_action(
 }
 
 /// 插件卸载后清掉所有用户偏好里的残留键（契约 §2.6）。
+///
+/// 逐个用户读改写；单条失败不影响其余用户，最终把清理结果写成
+/// `plugin.menu.cleanup` 审计（契约要求卸载时必须留痕）。
 pub fn cleanup_plugin_prefs(db: &skiff_store::Db, plugin_id: &str) {
-    let Ok(rows) = db.list_prefs_by_key(PREFS_KEY) else {
-        return;
+    let (cleaned, failed) = match db.list_prefs_by_key(PREFS_KEY) {
+        Ok(rows) => scrub_prefs(db, plugin_id, rows),
+        Err(e) => {
+            tracing::warn!(error = %e, plugin = %plugin_id, "读取菜单偏好失败，跳过插件菜单残留清理");
+            audit_cleanup(db, plugin_id, "fail", &format!("读取菜单偏好失败：{e}"));
+            return;
+        }
     };
+    audit_cleanup(
+        db,
+        plugin_id,
+        if failed == 0 { "ok" } else { "partial" },
+        &format!("users={cleaned} failed={failed}"),
+    );
+}
+
+fn scrub_prefs(db: &skiff_store::Db, plugin_id: &str, rows: Vec<(i64, String)>) -> (usize, usize) {
+    let (mut cleaned, mut failed) = (0usize, 0usize);
     for (user_id, raw) in rows {
         let Ok(mut prefs) = serde_json::from_str::<MenuPrefs>(&raw) else {
+            failed += 1;
             continue;
         };
         drop_plugin_keys(&mut prefs, plugin_id);
-        if let Ok(json) = serde_json::to_string(&prefs) {
-            let _ = db.set_user_pref(user_id, PREFS_KEY, &json);
+        let written = serde_json::to_string(&prefs)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                db.set_user_pref(user_id, PREFS_KEY, &json)
+                    .map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(()) => cleaned += 1,
+            Err(e) => {
+                tracing::warn!(error = %e, user = user_id, plugin = %plugin_id, "清理菜单偏好失败");
+                failed += 1;
+            }
         }
+    }
+    (cleaned, failed)
+}
+
+fn audit_cleanup(db: &skiff_store::Db, plugin_id: &str, result: &str, detail: &str) {
+    if let Err(e) = db.audit(
+        "system",
+        "-",
+        "plugin.menu.cleanup",
+        plugin_id,
+        result,
+        detail,
+    ) {
+        tracing::error!(error = %e, "菜单清理审计写入失败");
     }
 }
 
