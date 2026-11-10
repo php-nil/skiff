@@ -15,6 +15,7 @@ use std::fmt;
 
 mod cidr;
 mod container;
+mod error;
 mod path;
 mod rbac;
 mod scope;
@@ -24,6 +25,7 @@ pub use container::{
     short_id, Actor, ContainerSpec, Healthcheck, Mount, ObjectRef, PortMapping, ResourceLimits,
     SHORT_ID_LEN,
 };
+pub use error::{ErrorCategory, ErrorCode};
 pub use path::{
     any_root_contains, has_parent_segment, hits_a_root_itself, is_absolute, is_posix_absolute,
     is_root_path, normalize_dir, parent_within, within, within_any, within_root,
