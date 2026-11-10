@@ -1585,7 +1585,10 @@ async fn set_default_site_rolls_back_db_and_conf_when_reload_fails() {
 /// nginx 激活策略的内存替身：复现「reload 不改 interrupt 服务、restart 有窗口」。
 mod nginx_activation {
     use super::*;
-    use crate::sites::crud::{activate_with, replace_cert_pair, NginxActivation, NginxControl};
+    use crate::sites::crud::{
+        activate_with, is_nginx_comm, parse_worker_probe, replace_cert_pair, NginxActivation,
+        NginxControl,
+    };
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     struct FakeNginx {
@@ -1721,5 +1724,102 @@ mod nginx_activation {
             "证书已换而私钥失败时必须删掉新证书，回到「无证书」而不是不配对"
         );
         assert_eq!(std::fs::read_to_string(&key).unwrap(), "old-key");
+    }
+
+    /// `children` 直接给出 worker：master（PID 1）排除，重复项折叠。
+    #[test]
+    fn worker_probe_reads_children_and_excludes_master() {
+        assert_eq!(parse_worker_probe("C 12\nC 1\nC 13\nC 12\n"), vec![12, 13]);
+    }
+
+    /// `children` 不可读/为空：退化扫描必须同时认 `nginx` 与 OpenResty 的 `openresty`。
+    #[test]
+    fn worker_probe_fallback_accepts_nginx_and_openresty() {
+        let out = "S 1 openresty\nS 20 nginx\nS 21 openresty\nS 22 sh\nS 23 cat\n";
+        assert_eq!(parse_worker_probe(out), vec![20, 21]);
+    }
+
+    /// 混合输出：两种来源都解析，结果排序去重。
+    #[test]
+    fn worker_probe_mixed_output_keeps_all_workers() {
+        assert_eq!(parse_worker_probe("C 8\nC 7\nS 5 nginx\n"), vec![5, 7, 8]);
+    }
+
+    /// 空输出与无法解析的行不产生 worker（调用方据此回退重启）。
+    #[test]
+    fn worker_probe_empty_or_unparsable_is_empty() {
+        assert!(parse_worker_probe("").is_empty());
+        assert!(parse_worker_probe("garbage\nC not-a-pid\nS 9\n").is_empty());
+        assert!(
+            parse_worker_probe("S 1 nginx\n").is_empty(),
+            "master 不是 worker"
+        );
+    }
+
+    /// 进程名判定只认 nginx 家族，不能把前缀相同的进程（如 `openresty-worker`）算进来。
+    #[test]
+    fn comm_matches_only_nginx_family() {
+        assert!(is_nginx_comm("nginx"));
+        assert!(is_nginx_comm("openresty\n"));
+        assert!(!is_nginx_comm(""));
+        assert!(!is_nginx_comm("sh"));
+        assert!(!is_nginx_comm("openresty-worker"));
+    }
+
+    /// 用真实解析器 + OpenResty 的 `comm` 驱动激活流程：修复前探测恒空，
+    /// 逻辑上永远进不了 reload 分支；现在必须断言返回 [`NginxActivation::Reloaded`]。
+    struct ParsedNginx {
+        reloaded: AtomicBool,
+        reloads: AtomicUsize,
+        restarts: AtomicUsize,
+    }
+
+    impl NginxControl for ParsedNginx {
+        async fn container_running(&self) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        async fn worker_generation(&self) -> Result<String, String> {
+            let raw = if self.reloaded.load(Ordering::SeqCst) {
+                "S 200 openresty\nS 201 openresty\n"
+            } else {
+                "S 100 openresty\nS 101 openresty\n"
+            };
+            let pids = parse_worker_probe(raw);
+            assert!(!pids.is_empty(), "OpenResty 的 comm 必须被识别为 worker");
+            Ok(pids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(" "))
+        }
+
+        async fn reload(&self) -> Result<(), String> {
+            self.reloads.fetch_add(1, Ordering::SeqCst);
+            self.reloaded.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn restart(&self) -> Result<(), String> {
+            self.restarts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn openresty_comm_reaches_reload_branch() {
+        let n = ParsedNginx {
+            reloaded: AtomicBool::new(false),
+            reloads: AtomicUsize::new(0),
+            restarts: AtomicUsize::new(0),
+        };
+        let got = activate_with(&n).await.expect("reload 应成功");
+        assert_eq!(
+            got,
+            NginxActivation::Reloaded,
+            "OpenResty worker 必须走 reload 分支，不能落到 restart"
+        );
+        assert_eq!(n.reloads.load(Ordering::SeqCst), 1);
+        assert_eq!(n.restarts.load(Ordering::SeqCst), 0);
     }
 }

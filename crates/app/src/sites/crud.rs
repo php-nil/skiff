@@ -43,17 +43,31 @@ const RELOAD_CONFIRM_INTERVAL: std::time::Duration = std::time::Duration::from_m
 /// worker 服务，进程同样活着。worker PID 集合换代才证明新配置已被加载。
 pub(crate) async fn activate_with<N: NginxControl>(nginx: &N) -> Result<NginxActivation, String> {
     if nginx.container_running().await? {
-        if let Ok(before) = nginx.worker_generation().await {
-            if !before.is_empty() && nginx.reload().await.is_ok() {
-                for _ in 0..RELOAD_CONFIRM_TRIES {
-                    tokio::time::sleep(RELOAD_CONFIRM_INTERVAL).await;
-                    if let Ok(after) = nginx.worker_generation().await {
-                        if !after.is_empty() && after != before {
-                            return Ok(NginxActivation::Reloaded);
+        match nginx.worker_generation().await {
+            Ok(before) if !before.is_empty() => match nginx.reload().await {
+                Ok(()) => {
+                    for _ in 0..RELOAD_CONFIRM_TRIES {
+                        tokio::time::sleep(RELOAD_CONFIRM_INTERVAL).await;
+                        if let Ok(after) = nginx.worker_generation().await {
+                            if !after.is_empty() && after != before {
+                                tracing::info!(
+                                    before = %before,
+                                    after = %after,
+                                    "nginx 已平滑 reload（worker PID 换代）"
+                                );
+                                return Ok(NginxActivation::Reloaded);
+                            }
                         }
                     }
+                    tracing::warn!(
+                        before = %before,
+                        "nginx reload 后 worker 未换代，回退重启容器"
+                    );
                 }
-            }
+                Err(e) => tracing::warn!(error = %e, "nginx reload 失败，回退重启容器"),
+            },
+            Ok(_) => tracing::warn!("未读到 nginx worker 进程，回退重启容器"),
+            Err(e) => tracing::warn!(error = %e, "读取 nginx worker 进程失败，回退重启容器"),
         }
     }
     nginx.restart().await.map(|()| NginxActivation::Restarted)
@@ -139,12 +153,20 @@ impl NginxControl for DockerNginx<'_> {
 
 /// 容器内 nginx worker 进程集合（排序后）。
 ///
-/// master 是容器 PID 1，`children` 直接给出 worker / cache manager；老内核没有
-/// 该文件时退化为按进程名扫描，并排除 master 自身。
+/// master 是容器 PID 1，`children` 直接给出 worker / cache manager；老内核没有该文件
+/// （procfs 的 `stat` size 恒为 0，不能用 `-s` 判断）或不可读时，退化为按进程名扫描。
+/// 探测只做「读文件 + 打标记」，判定留在 [`parse_worker_probe`] 里，便于单测覆盖。
 async fn nginx_worker_generation(state: &AppState) -> Result<String, String> {
-    const SCRIPT: &str = "if [ -s /proc/1/task/1/children ]; then cat /proc/1/task/1/children; \
-        else for d in /proc/[0-9]*; do grep -qx nginx \"$d/comm\" 2>/dev/null && echo \"${d#/proc/}\"; done; fi \
-        | tr ' ' '\\n' | grep -vx 1 | sort -n";
+    const SCRIPT: &str = r#"if [ -r /proc/1/task/1/children ] && [ -n "$(cat /proc/1/task/1/children 2>/dev/null)" ]; then
+    for p in $(cat /proc/1/task/1/children); do echo "C $p"; done
+else
+    for d in /proc/[0-9]*; do
+        p=${d#/proc/}
+        [ -r "$d/comm" ] || continue
+        c=$(cat "$d/comm" 2>/dev/null) || continue
+        [ -n "$c" ] && echo "S $p $c"
+    done
+fi"#;
     let (code, out) = state
         .docker()
         .exec_capture(
@@ -156,7 +178,58 @@ async fn nginx_worker_generation(state: &AppState) -> Result<String, String> {
     if code != 0 {
         return Err(format!("读取 nginx worker 进程失败：{}", out.trim()));
     }
-    Ok(out.split_whitespace().collect::<Vec<_>>().join(" "))
+    let pids = parse_worker_probe(&out);
+    if pids.is_empty() {
+        return Err(format!("未读到 nginx worker 进程：{}", out.trim()));
+    }
+    Ok(pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+/// 进程名是否属于 nginx 家族。OpenResty 镜像里 master 与 worker 的 `comm` 都是
+/// `openresty`，只匹配 `nginx` 会让退化路径恒空、reload 分支永远走不到。
+pub(crate) fn is_nginx_comm(comm: &str) -> bool {
+    matches!(comm.trim(), "nginx" | "openresty")
+}
+
+/// 解析 worker 探测输出（纯函数）。
+///
+/// 每行两种形态：
+/// - `C <pid>`：`/proc/1/task/1/children` 里的进程号；
+/// - `S <pid> <comm>`：`children` 不可读/为空时，按 `comm` 退化扫描的结果。
+///
+/// 返回排序去重后的 worker PID 集合。master（PID 1）一律排除；退化路径只认
+/// [`is_nginx_comm`] 的进程名，其余（`sh` / `cat` 等）丢弃。
+pub(crate) fn parse_worker_probe(output: &str) -> Vec<u32> {
+    let mut pids = Vec::new();
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("C") => {
+                if let Some(pid) = parts.next().and_then(|p| p.parse::<u32>().ok()) {
+                    if pid != 1 {
+                        pids.push(pid);
+                    }
+                }
+            }
+            Some("S") => {
+                let pid = parts.next().and_then(|p| p.parse::<u32>().ok());
+                let comm = parts.next();
+                if let (Some(pid), Some(comm)) = (pid, comm) {
+                    if pid != 1 && is_nginx_comm(comm) {
+                        pids.push(pid);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
 }
 
 /// 成对替换 cert/key。**调用方必须持有 [`super::nginx_write_lock`]**：
