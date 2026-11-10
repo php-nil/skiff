@@ -241,6 +241,10 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 - `tick_once`：锁内只 `tick` + 落 records/audits + 收集票据；锁外
   `tokio::spawn(drive_run / drive_sample)` 执行。超时由 `timeout` 结算，晚到 `finish`
   按 `run_id` 拒绝；`retain_across_ticks=false` 的清空边界由 crate 的快照 tail 保证。
+- 插件任务超时不丢弃执行体：`drive_run` 把执行体放进独立 task，超时只中断等待，
+  同时把 `task_id -> run_id` 写入 `reentry_block`；新一轮调度命中即以
+  `ErrorClass::ReentryBlocked` 结算失败（`sched.reentry_blocked`），执行体真正返回
+  （回执到达或插件重启报错）后按同一 `run_id` 解除。内置任务维持「超时即丢执行体」。
 - 启动：`Scheduler::new` 装载（声明缓冲的任务写 `buffer.lost_on_restart`）→
   `seed_builtins`（`builtin:db-vacuum`，`0 4 * * 0`）→ `seed_manifest_tasks`
   （按已安装插件的 manifest `[[task]]` 补种，已存在不覆盖；回收插件已卸载或声明已消失的

@@ -65,6 +65,9 @@ pub enum ErrorClass {
     Timeout,
     Unavailable,
     InvalidParams,
+    /// 上一轮已超时结算、但插件尚未回执（或进程未重启）：内核拒绝同一任务重入，
+    /// 避免插件里仍有一次实际执行在跑时再叠加一次。属瞬时错误，回执到达即恢复。
+    ReentryBlocked,
     ExecutorFailed,
     Protocol,
     Cancelled,
@@ -77,17 +80,21 @@ impl ErrorClass {
             ErrorClass::Timeout => "timeout",
             ErrorClass::Unavailable => "unavailable",
             ErrorClass::InvalidParams => "invalid_params",
+            ErrorClass::ReentryBlocked => "reentry_blocked",
             ErrorClass::ExecutorFailed => "executor_failed",
             ErrorClass::Protocol => "protocol",
             ErrorClass::Cancelled => "cancelled",
         }
     }
 
-    /// 只有拉起 / 超时 / 暂不可用属于「瞬时」，可以重试。
+    /// 只有拉起 / 超时 / 暂不可用 / 重入封锁属于「瞬时」，可以重试。
     pub fn is_transient(self) -> bool {
         matches!(
             self,
-            ErrorClass::Spawn | ErrorClass::Timeout | ErrorClass::Unavailable
+            ErrorClass::Spawn
+                | ErrorClass::Timeout
+                | ErrorClass::Unavailable
+                | ErrorClass::ReentryBlocked
         )
     }
 }

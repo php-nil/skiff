@@ -404,6 +404,9 @@ pub struct TaskService {
     /// 正在作为任务执行目标被调用的插件 id。std Mutex 而不是 tokio Mutex：
     /// 守卫要在 `Drop` 里清理，而 `Drop` 不能 await（超时/取消时也要摘除）。
     executing: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// 已超时结算、但插件执行体仍未返回的任务：`task_id -> run_id`。
+    /// 在回执到达（执行体结束）或插件进程重启（调用报错）前禁止同一任务重入。
+    reentry_block: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// `buffer.push` 的每任务限速窗口：`(秒序号, 该秒已收点数)`。
     push_window: std::sync::Mutex<std::collections::HashMap<String, (i64, u32)>>,
     web_root: PathBuf,
@@ -474,6 +477,7 @@ impl TaskService {
             clock,
             scheduler: Mutex::new(scheduler),
             executing: std::sync::Mutex::new(std::collections::HashSet::new()),
+            reentry_block: std::sync::Mutex::new(std::collections::HashMap::new()),
             push_window: std::sync::Mutex::new(std::collections::HashMap::new()),
             web_root,
             data_dir,
@@ -487,6 +491,66 @@ impl TaskService {
             .lock()
             .map(|s| s.contains(plugin_id))
             .unwrap_or(false)
+    }
+
+    /// 记录「已超时但执行体未返回」：回执到达或插件重启前禁止同一任务重入。
+    fn block_reentry(&self, task_id: &str, run_id: &str) {
+        if let Ok(mut map) = self.reentry_block.lock() {
+            map.insert(task_id.to_string(), run_id.to_string());
+        }
+    }
+
+    /// 执行体结束（拿到回执或调用报错）后解除封锁；只解除同一次运行，
+    /// 避免晚到的旧回执把新一轮的封锁误清掉。
+    fn release_reentry(&self, task_id: &str, run_id: &str) -> bool {
+        let Ok(mut map) = self.reentry_block.lock() else {
+            return false;
+        };
+        if map.get(task_id).map(String::as_str) != Some(run_id) {
+            return false;
+        }
+        map.remove(task_id);
+        true
+    }
+
+    /// 该任务当前是否被上一轮超时运行阻塞；返回阻塞的 `run_id`。
+    fn reentry_blocked_by(&self, task_id: &str) -> Option<String> {
+        self.reentry_block
+            .lock()
+            .ok()
+            .and_then(|m| m.get(task_id).cloned())
+    }
+
+    /// 把「重入被拒」结算成一条失败记录，错误码 `reentry_blocked`。
+    async fn settle_reentry_blocked(&self, run_id: &str, task_id: &str, prev_run: &str) {
+        let error = ExecError::new(
+            ErrorClass::ReentryBlocked,
+            ErrorPhase::Call,
+            format!("上一次运行 {prev_run} 已超时但插件尚未回执（或进程未重启），拒绝重入"),
+        );
+        tracing::warn!(
+            task = task_id,
+            run_id,
+            prev_run,
+            "任务重入被拒：上一轮仍在等待回执"
+        );
+        self.settle_run(run_id, Err(error)).await;
+    }
+
+    async fn settle_run(&self, run_id: &str, result: Result<ExecOutput, ExecError>) {
+        let mut sched = self.scheduler.lock().await;
+        let now = self.clock.now();
+        if let Err(e) = sched.finish(run_id, result, now) {
+            tracing::warn!(run_id, error = %e, "运行结算被拒绝（结果已过期或重复）");
+        }
+    }
+
+    async fn settle_run_timeout(&self, run_id: &str) {
+        let mut sched = self.scheduler.lock().await;
+        let now = self.clock.now();
+        if let Err(e) = sched.timeout(run_id, now) {
+            tracing::warn!(run_id, error = %e, "超时结算失败");
+        }
     }
 
     pub fn db_handle(&self) -> &Arc<Db> {
@@ -563,25 +627,60 @@ impl TaskService {
 
     /// 跑一张票：超时即结算 `timeout`；执行体即使晚到返回，`finish` 也会因
     /// `run_id` 已结算而拒绝写入（缓冲与历史都不会被二次消费）。
+    ///
+    /// 插件任务超时后**不丢弃**执行体：内核继续等它的回执，在此之前同一任务
+    /// 一律按 `reentry_blocked` 拒绝重入；插件进程重启会让调用报错，同样解除封锁。
     pub async fn drive_run(self: Arc<Self>, ticket: RunTicket, timeout_secs: u64) {
         let run_id = ticket.context.run_id.clone();
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(timeout_secs.max(1)),
-            self.execute_ticket(&ticket),
-        )
-        .await;
-        let mut sched = self.scheduler.lock().await;
-        let now = self.clock.now();
-        match outcome {
-            Ok(result) => {
-                if let Err(e) = sched.finish(&run_id, result, now) {
-                    tracing::warn!(run_id, error = %e, "运行结算被拒绝（结果已过期或重复）");
-                }
+        let task_id = ticket.context.task_id.to_string();
+        let is_plugin = matches!(&ticket.context.kind, TaskKind::Plugin { .. });
+        let dur = Duration::from_secs(timeout_secs.max(1));
+
+        if let Some(prev_run) = self.reentry_blocked_by(&task_id) {
+            self.settle_reentry_blocked(&run_id, &task_id, &prev_run)
+                .await;
+            return;
+        }
+
+        if !is_plugin {
+            // 内置任务：沿用「超时即丢执行体」的语义（spawn_blocking 也无法强杀）。
+            match tokio::time::timeout(dur, self.execute_ticket(&ticket)).await {
+                Ok(result) => self.settle_run(&run_id, result).await,
+                Err(_) => self.settle_run_timeout(&run_id).await,
+            }
+            return;
+        }
+
+        // 插件任务：把执行体放进独立 task，超时只中断「等待」而不取消调用本身，
+        // 这样回执真正到达时才能解除重入封锁。
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let exec = {
+            let me = Arc::clone(&self);
+            tokio::spawn(async move {
+                let _ = tx.send(me.execute_ticket(&ticket).await);
+            })
+        };
+        match tokio::time::timeout(dur, rx).await {
+            Ok(Ok(result)) => self.settle_run(&run_id, result).await,
+            Ok(Err(_)) => {
+                let error = ExecError::new(
+                    ErrorClass::ExecutorFailed,
+                    ErrorPhase::Call,
+                    "执行体异常退出（未返回回执）",
+                );
+                self.settle_run(&run_id, Err(error)).await;
             }
             Err(_) => {
-                if let Err(e) = sched.timeout(&run_id, now) {
-                    tracing::warn!(run_id, error = %e, "超时结算失败");
-                }
+                self.block_reentry(&task_id, &run_id);
+                self.settle_run_timeout(&run_id).await;
+                let me = Arc::clone(&self);
+                tokio::spawn(async move {
+                    // 等回执或插件重启导致的调用失败，随后解除封锁。
+                    let _ = exec.await;
+                    if me.release_reentry(&task_id, &run_id) {
+                        tracing::info!(task = %task_id, run_id = %run_id, "超时运行的迟到回执已到达，解除重入封锁");
+                    }
+                });
             }
         }
     }
@@ -686,7 +785,19 @@ impl TaskService {
     }
 
     /// 手动触发并等待结算，返回运行记录视图（插件能力 `task.run` 用）。
-    pub async fn run_task_now(&self, id: &str, actor: AuditActor) -> Result<Value, String> {
+    ///
+    /// 与 `drive_run` 同一条重入规则：上一轮超时但未回执时直接拒绝，
+    /// 错误串以 `sched.reentry_blocked` 开头，调用方据此返回 409/失败回执。
+    pub async fn run_task_now(
+        self: &Arc<Self>,
+        id: &str,
+        actor: AuditActor,
+    ) -> Result<Value, String> {
+        if let Some(prev_run) = self.reentry_blocked_by(id) {
+            return Err(format!(
+                "sched.reentry_blocked: 上一次运行 {prev_run} 已超时但插件尚未回执（或进程未重启），拒绝重入"
+            ));
+        }
         let ticket = {
             let mut sched = self.scheduler.lock().await;
             let gate = Gate {
@@ -697,26 +808,62 @@ impl TaskService {
                 .map_err(|e| e.to_string())?
         };
         let run_id = ticket.context.run_id.clone();
+        let task_id = ticket.context.task_id.to_string();
+        let is_plugin = matches!(&ticket.context.kind, TaskKind::Plugin { .. });
         let timeout_secs = {
             let sched = self.scheduler.lock().await;
             sched.get(id).map(|t| t.spec.timeout_secs).unwrap_or(30)
         };
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(timeout_secs.max(1)),
-            self.execute_ticket(&ticket),
-        )
-        .await;
-        let mut sched = self.scheduler.lock().await;
-        let now = self.clock.now();
-        let record = match outcome {
-            Ok(result) => {
-                sched
-                    .finish(&run_id, result, now)
-                    .map_err(|e| e.to_string())?
-                    .record
+        let dur = Duration::from_secs(timeout_secs.max(1));
+        let mut late_receipt = None;
+        let outcome: Option<Result<ExecOutput, ExecError>> = if !is_plugin {
+            tokio::time::timeout(dur, self.execute_ticket(&ticket))
+                .await
+                .ok()
+        } else {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let exec = {
+                let me = Arc::clone(self);
+                tokio::spawn(async move {
+                    let _ = tx.send(me.execute_ticket(&ticket).await);
+                })
+            };
+            match tokio::time::timeout(dur, rx).await {
+                Ok(Ok(result)) => Some(result),
+                Ok(Err(_)) => Some(Err(ExecError::new(
+                    ErrorClass::ExecutorFailed,
+                    ErrorPhase::Call,
+                    "执行体异常退出（未返回回执）",
+                ))),
+                Err(_) => {
+                    self.block_reentry(&task_id, &run_id);
+                    late_receipt = Some(exec);
+                    None
+                }
             }
-            Err(_) => sched.timeout(&run_id, now).map_err(|e| e.to_string())?,
         };
+        let record = {
+            let mut sched = self.scheduler.lock().await;
+            let now = self.clock.now();
+            match outcome {
+                Some(result) => {
+                    sched
+                        .finish(&run_id, result, now)
+                        .map_err(|e| e.to_string())?
+                        .record
+                }
+                None => sched.timeout(&run_id, now).map_err(|e| e.to_string())?,
+            }
+        };
+        if let Some(exec) = late_receipt {
+            let me = Arc::clone(self);
+            tokio::spawn(async move {
+                let _ = exec.await;
+                if me.release_reentry(&task_id, &run_id) {
+                    tracing::info!(task = %task_id, run_id = %run_id, "超时运行的迟到回执已到达，解除重入封锁");
+                }
+            });
+        }
         Ok(run_view(&record))
     }
 
@@ -862,7 +1009,7 @@ impl TaskService {
     /// - `scheduler:admin` 是内核指定的「任务管理 UI」权限（cron 专属），可看/管全量；
     /// - `task.register` 的 kind/source/id 由内核按调用方身份注入，插件无法伪造。
     pub async fn capability(
-        &self,
+        self: &Arc<Self>,
         caller: &str,
         method: &str,
         params: Value,
@@ -2311,5 +2458,67 @@ requires = ["fs"]
             .unwrap();
         assert_eq!(run["trigger"], "manual");
         assert_eq!(run["result"], "ok");
+    }
+
+    /// 重入状态机：上一轮超时结算（单飞已释放、插件尚未回执）→ 同一任务的新一轮
+    /// 必须立刻以 `reentry_blocked` 拒绝，而不是再叠加一次执行；回执到达
+    /// （或插件重启令调用报错）后解除封锁，任务恢复可执行。
+    #[tokio::test]
+    async fn timed_out_run_blocks_reentry_until_receipt_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let db = Arc::clone(svc.db_handle());
+        let task_id = "plugin:com.example.demo:sample";
+        db.upsert_plugin(&plugin_record(
+            "0.1.0",
+            &manifest_with_task("0.1.0", "*/5 * * * *", "execute", "sample", 60, 30),
+        ))
+        .unwrap();
+        svc.sync_manifest_tasks().await;
+
+        // 1) 取一张票，并模拟「已超时结算」：上一轮 run 仍在等插件回执。
+        let ticket = {
+            let mut sched = svc.scheduler.lock().await;
+            sched
+                .run_now(
+                    task_id,
+                    AuditActor::Admin("admin".into()),
+                    svc.clock.now(),
+                    &Gate {
+                        db: Arc::clone(&svc.db),
+                    },
+                )
+                .unwrap()
+        };
+        let prev_run = "run-prev-timeout".to_string();
+        svc.block_reentry(task_id, &prev_run);
+
+        // 2) 新一轮：立即结算为失败并带结构化错误码，未真正调用插件。
+        let run_id = ticket.context.run_id.clone();
+        Arc::clone(&svc).drive_run(ticket, 30).await;
+        let runs = db.task_runs(task_id, 10).unwrap();
+        let rejected = runs
+            .iter()
+            .find(|r| r.id == run_id)
+            .expect("重入被拒也要留痕");
+        assert_eq!(rejected.result, "fail");
+        assert_eq!(rejected.error_class.as_deref(), Some("reentry_blocked"));
+        assert!(
+            rejected
+                .error_detail
+                .as_deref()
+                .unwrap_or("")
+                .contains(&prev_run),
+            "{:?}",
+            rejected.error_detail
+        );
+
+        // 3) 回执到达 → 解除封锁，同一任务恢复可执行（此处插件不可拉起，只验证不再被重入拒绝）。
+        assert!(svc.release_reentry(task_id, &prev_run));
+        let out = svc
+            .run_task_now(task_id, AuditActor::Admin("admin".into()))
+            .await
+            .unwrap();
+        assert_ne!(out["error_class"], "reentry_blocked", "{out}");
     }
 }

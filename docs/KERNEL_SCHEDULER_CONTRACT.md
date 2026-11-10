@@ -205,12 +205,13 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 - 默认 `concurrency=skip`：同一任务单飞；上一轮未结束时本轮记 `skipped_busy`，**不排队、不堆叠**。
 - `concurrency=queue_one`：只保留一个待执行槽；已有待执行时新触发仍记 `skipped_busy`。
 - 执行结束（成功/失败/超时）才释放单飞锁；超时后进入 `grace_secs=60` 冷却，冷却期内触发一律跳过，避免插件实际仍在跑时重入。
+- **超时后的重入封锁**：超时结算释放单飞后，若插件执行体仍未返回（内核继续等待回执而不丢弃调用），该任务进入 `reentry_blocked` 状态；此后任何调度/手动触发都立即失败并返回错误码 `reentry_blocked`，直到**迟到回执到达**或**插件进程重启导致调用报错**才解除。冷却期与重入封锁是两道独立闸门：冷却按时间，封锁按回执。
 
 ### 5.4 失败语义
 
 ```jsonc
 "last_error": {
-  "class": "spawn|timeout|unavailable|invalid_params|executor_failed|protocol",
+  "class": "spawn|timeout|unavailable|reentry_blocked|invalid_params|executor_failed|protocol",
   "message": "…",
   "phase": "ensure|health|call|verdict",
   "plugin_id": "com.skiff.monitor",
@@ -219,14 +220,14 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 }
 ```
 
-- 失败分类决定是否重试：`spawn/timeout/unavailable` 可重试；`invalid_params/protocol/executor_failed` 不重试（业务失败由执行体自担）。
+- 失败分类决定是否重试：`spawn/timeout/unavailable/reentry_blocked` 可重试；`invalid_params/protocol/executor_failed` 不重试（业务失败由执行体自担）。`reentry_blocked` 属瞬时：回执到达即恢复，重试需按 `retry.backoff_secs` 留出等待窗口，避免在封锁期空转。
 - 重试按 `retry.backoff_secs` 序列执行，超过 `retry.max` 停止并记最终失败。
 - 失败不自动停用任务（除插件缺失/停用，见 §6）；连续失败 5 次在列表显示「异常」徽章，不静默。
 
 ### 5.5 超时与取消
 
 - 默认 `timeout_secs=30`（`skiff_sched::DEFAULT_TIMEOUT_SECS`），上限 600s。
-- 超时后内核记 `timeout`、释放逻辑锁、进入冷却；插件 RPC 无法强杀，可能仍在后台完成，其返回值丢弃。
+- 超时后内核记 `timeout`、释放逻辑锁、进入冷却；插件 RPC 无法强杀，可能仍在后台完成，其返回值丢弃。**但内核不丢弃执行体**：继续等待该次调用返回，返回前同一任务按 §5.3 以 `reentry_blocked` 拒绝重入。
 - 取消是协作式的：手动停用/删除任务时，内核标记取消位；执行体可查询 `_task.cancelled`，但不保证即时中断。
 
 ## 6. 插件任务唤醒链路
