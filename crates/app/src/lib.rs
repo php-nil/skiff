@@ -4,6 +4,7 @@
 //! 拿到 db / docker / policy，如果上下文住在 `web`，内核就被迫反向依赖表现层，
 //! 既编译更重，也没法脱离 axum 单测。层序是 `app` → 下层，`web` → `app`。
 
+pub mod actions;
 pub mod admin_fs;
 pub mod auth;
 pub mod docker_daemon;
