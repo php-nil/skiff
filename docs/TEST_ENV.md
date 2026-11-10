@@ -61,29 +61,30 @@
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `v0.1.0`（`5c15b6b`；插件启停 `enabled` 与 `status` 合并为单条 UPDATE、能力面 fs 阻塞 IO 移出 async worker（文件页 12 处同步调用统一走 `blocking_fs`）、审计写失败统一落日志不再静默丢弃、商店镜像失败指数退避（10s 起 / 上限 300s，自动刷新跳过退避镜像、手动刷新立即重试）、Docker 镜像 digest 按仓库名匹配；无 schema 变更，库保持 v16） |
-| tag / 构建提交 | 构建提交 `5c15b6b`；tag `v0.1.0` **未移动，实际指向 `ef7058b`**（2026-11-09 05:54「docs: 补升级刷新与补授权限的实现说明和变更记录」；此前本文 §5/§6 记的 `491da40` 有误，以本行为准），由 dispatch（`ref=main`、`version=0.1.0`、`publish=true`、`release_tag=v0.1.0`、`skip_plugins=false`）构建并覆盖上传同一 Release；Release run `42799634298` **四个 job 全绿**（x86_64 / aarch64 / docker / publish）；同提交 CI run `42798491760` success |
-| 部署时间 | 2026-11-10 18:38（Asia/Shanghai；覆盖升级，保留库与配置） |
-| 部署方式 | `5c15b6b` Release 资产，本地重算 sha256 `4dc3ddb9…7b80d59c` 与 API digest、`checksums.txt` 三方一致 → 经内网代理走 API 资产端点下载（缓存 `%TEMP%\skiff-ops\rel-5c15b6b\`）→ `scp` 到 `/root/iter/rel-5c15b6b/` → 测试机 `sha256sum -c` OK → 解压 → `sh install.sh --no-docker`；安装后 `/usr/local/bin/skiff` 14,446,736 B、sha256 `f22c3f33ab25770b03689a98d17d2225aa7145056ca258024118c5b7e96b954d`（与包内一致）；旧二进制备份 `/root/skiff.before-5c15b6b`（`ae4a533c…3fddf81d`），升级前库快照 `/root/iter/skiff.db.before-5c15b6b` |
-| 数据库 | `PRAGMA user_version=16`（本轮为**同版本覆盖升级**，无迁移）；users 1 / plugins 7 / sites 1（`matrix.local` static running）/ site_runtimes 1（`php-8.5` running，digest `php@sha256:4c281807…`）/ scheduled_tasks 6 / plugin_grants **55**（cron 6 / files 7 / firewall 12 / ftp 13 / guard 6 / monitor 3 / testkit 8）/ jobs 8（历史任务记录）/ fs_quotas 0（验收产生的两条无上限跟踪行已清理） |
+| 版本 | `v0.1.0`（`c8bcb6e`；承接 `9a5ab3f`/`9eb05dc` 的商店 P3 内核升级只读段——渠道清单 `upgrades` 版本提示 + 按清单 sha256/大小校验下载到本地暂存（不执行升级，路由 `GET /{p}/store/upgrades/{version}/download` 仅 Admin，审计 `upgrade.download`），本轮 `c8bcb6e` 新增升级暂存 **24 h TTL**：服务启动与每次下载前各清理一次，只删 `upgrade/incoming/` 下的 `.tar.gz` 与 `.part`；无 schema 变更，库保持 v16） |
+| tag / 构建提交 | 构建提交 `c8bcb6e`；tag `v0.1.0` **未移动，实际指向 `ef7058b`**（2026-11-09 05:54「docs: 补升级刷新与补授权限的实现说明和变更记录」），由 dispatch（`ref=main`、`version=0.1.0`、`publish=true`、`release_tag=v0.1.0`、`skip_plugins=false`）构建并覆盖上传同一 Release；Release run `42809009928` **四个 job 全绿**（x86_64 / aarch64 / docker / publish）；同提交 CI run `42807944935` success |
+| 部署时间 | 2026-11-10 19:46（Asia/Shanghai；覆盖升级，保留库与配置） |
+| 部署方式 | `c8bcb6e` Release 资产，本地重算 sha256 `fceae2cb…c576f09` 与 API digest、`checksums.txt` 三方一致 → 经内网代理走 API 资产端点下载（缓存 `%TEMP%\skiff-ops\rel-c8bcb6e\`）→ `scp` 到 `/root/iter/rel-c8bcb6e/` → 测试机 `sha256sum -c` OK → 解压 → `sh install.sh --no-docker`；安装后 `/usr/local/bin/skiff` 14,475,536 B、sha256 `540a715a4dbe29aa7374369472578f6c704014bf87d3214cec1a6ef263b8a693`（与包内一致）；旧二进制备份 `/root/skiff.before-c8bcb6e`、升级前库快照 `/root/iter/skiff.db.before-c8bcb6e`、配置备份 `/root/iter/config.before-c8bcb6e.toml` |
+| 数据库 | `PRAGMA user_version=16`（本轮为**同版本覆盖升级**，无迁移）；users 1 / plugins 7 / sites 1（`matrix.local` static running）/ site_runtimes 1（`php-8.5` running，digest `php@sha256:4c281807…`）/ scheduled_tasks 6 / plugin_grants **55**（cron 6 / files 7 / firewall 12 / ftp 13 / guard 6 / monitor 3 / testkit 8）/ jobs 8（历史任务记录）/ fs_quotas 0；`upgrade/incoming/` 终态 0 条（验收造件与下载包均已清理） |
 | 插件 | 7 个插件在装且全部 `enabled=1`；`guard`（每分钟 `reconcile`）与 `monitor`（采样）由内核调度器周期性拉起，`status=running`；其余 `status=installed`（按需懒启动），`status_detail` 全空；`/www/skiff/official/` 7 包 + `public-key.txt` 齐备 |
 | 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200（`127.0.0.1:18080` 与转发 `:18081` 均 200）；`skiff-http-fwd.service`、`skiff-catalog-test.service`（18090）、`skiff-tunnel-keepalive.service` 均 active |
-| 配置 | `/etc/skiff/config.toml`：`listen="127.0.0.1:18080"` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP）+ `allow_reduced_sandbox=true`（landlock/cgroups 未实现），并含 `[catalog]`：`enabled=true`、`channel="stable"`、`mirrors=["https://a3af24895cf04571-139-227-130-152.serveousercontent.com/cur"]`（受信 Let's Encrypt 证书，域名每轮重建）、`public_key="315eacce321fd67ca0faeda0de04567017b3b352ba95180451e4536af4c74a28"`（临时测试密钥公钥，私钥种子只在测试机 `/root/iter/catalog-test/seed.hex`）、`timeout_secs=20`；sha256 `cdfde31800b8075f360b10894a51af36d6edf8430a3b61a7a85cbdeb0afc2d88` |
+| 配置 | `/etc/skiff/config.toml`：`listen="127.0.0.1:18080"` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP）+ `allow_reduced_sandbox=true`（landlock/cgroups 未实现），并含 `[catalog]`：`enabled=true`、`channel="stable"`、`mirrors=["https://acde8a7b9cd31080-139-227-130-152.serveousercontent.com/cur"]`（受信 Let's Encrypt 证书，serveo 域名每轮重建）、`public_key="315eacce321fd67ca0faeda0de04567017b3b352ba95180451e4536af4c74a28"`（临时测试密钥公钥，私钥种子只在测试机 `/root/iter/catalog-test/seed.hex`）、`timeout_secs=20`；sha256 `3c46f1d42bf10266a0467bd5e43bb498fbf21f0877a09d0d87fe5e3a07fc8127` |
 
-## 6. Release 资产（v0.1.0 = `5c15b6b`，2026-11-10）
+## 6. Release 资产（v0.1.0 = `c8bcb6e`，2026-11-10）
 
-构建来源：Release workflow run `42799634298`（dispatch `ref=main`/`5c15b6b`；tag `v0.1.0` 未移动，**该 tag 实际指向 `ef7058b`**，资产覆盖同一 Release）。**该 run 四个 job 全绿**：x86_64 / aarch64 构建、`docker` 镜像可构建、`发布到 GitHub Release` 均 success。x86_64 资产在开发机经内网代理走 API 资产端点下载，本地 sha256 与 API digest、`checksums.txt` 三方一致；`scp` 到测试机后再 `sha256sum -c` 复核一致。
+构建来源：Release workflow run `42809009928`（dispatch `ref=main`/`c8bcb6e`；tag `v0.1.0` 未移动，**该 tag 实际指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`**，资产覆盖同一 Release）。**该 run 四个 job 全绿**：x86_64 / aarch64 构建、`docker` 镜像可构建、`发布到 GitHub Release` 均 success。x86_64 资产在开发机经内网代理走 API 资产端点下载，本地 sha256 与 API digest、`checksums.txt` 三方一致；`scp` 到测试机后再 `sha256sum -c` 复核一致。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `1689f85d96f5e2f5e49452ca07192f1f73c8ff25f89712373974643727e60003` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 9,812,106 B | `4dc3ddb9560628fa8f77060046a960172a0766b3a63eb930dd8c7e657b80d59c` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 9,352,764 B | `2adf3b7b25fc969948dad2af6ceab5aca6c29a780315b977df700a7be947a6af` |
+| `checksums.txt` | 223 B | `269a8cbd74aed97cad51cd74470625a25999c1bf13426775cbf13d891e4395dc` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 9,821,046 B | `fceae2cb312538468d0cb489ffa4e8f3bbdacefb3d4030af013020dc3c576f09` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 9,363,268 B | `df3e0bc64897c5ff18524fb2b5e6560ca0426ec19af01d0c644bc4c868d41d59` |
 
-- 包内二进制：x86_64 `skiff` 14,446,736 B `f22c3f33ab25770b03689a98d17d2225aa7145056ca258024118c5b7e96b954d`（= 安装后 `/usr/local/bin/skiff`）；aarch64 二进制未在本轮实机验证。
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；当前开发机经内网代理 `http://10.66.10.22:1010` 走 `api.github.com/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载（缓存 `%TEMP%\skiff-ops\rel-5c15b6b\`），再 `scp` 到测试机 `/root/iter/rel-5c15b6b/`。
-- 包内 `official/` 含 7 个 `.wbpkg`（guard 353,905 B / monitor 400,757 B / files 395,117 B / cron 380,724 B / ftp 337,982 B / firewall 328,740 B / testkit 327,839 B）与 `public-key.txt`。
-- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律覆盖同一 tag 的 Release 资产；**tag 指向（`ef7058b`）与资产构建提交（`5c15b6b`）不同**，这是测试期「不移动 tag + dispatch 覆盖资产」的约定结果，不是异常。
+- 包内二进制：x86_64 `skiff` 14,475,536 B `540a715a4dbe29aa7374369472578f6c704014bf87d3214cec1a6ef263b8a693`（= 安装后 `/usr/local/bin/skiff`）；aarch64 二进制未在本轮实机验证。
+- 逐架构 `.sha256` 侧车文件同轮存在（x86_64 asset id `731235027`、aarch64 `731235025`；主包 asset id 分别 `731235024` / `731235026`）。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；当前开发机经内网代理 `http://10.66.10.22:1010` 走 `api.github.com/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载（缓存 `%TEMP%\skiff-ops\rel-c8bcb6e\`），再 `scp` 到测试机 `/root/iter/rel-c8bcb6e/`。
+- 包内 `official/` 含 7 个 `.wbpkg`（guard 353,905 B / monitor 400,757 B / files 395,117 B / cron 380,724 B / ftp 337,982 B / firewall 328,740 B / testkit 327,839 B）与 `public-key.txt`（与上一轮字节一致）。
+- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律覆盖同一 tag 的 Release 资产；**tag 指向（`ef7058b`）与资产构建提交（`c8bcb6e`）不同**，这是测试期「不移动 tag + dispatch 覆盖资产」的约定结果，不是异常。
 
 ## 7. 最近部署记录
 
@@ -124,10 +125,21 @@
 | 2026-11-10 14:09–14:25 | `38b0bb9` 两处 FAIL 修复复验版覆盖安装（Release 资产） | 资产 `38b0bb9`；x86_64 9,464,733 B `fc13b656…c5aa20`（与 API digest 一致，测试机 `sha256sum -c` OK）、aarch64 9,018,441 B `ce279cf3…04acc1`；旧二进制备份 `/root/skiff.before-38b0bb9`、升级前库快照 `/root/iter/skiff.db.before-38b0bb9` | 解压 `sh install.sh --no-docker` 成功；库保持 **v16**（同版本覆盖，无迁移）、配置 sha `3133d44b…` 未变、前缀仍 `w3qz4vc2`；`/usr/local/bin/skiff` 13,692,688 B `5cf0eadc…81b6` 与包内一致；`/healthz` 200、`NRestarts=0`；配额页 truncated 文案、回收站四动作、AUTH/FS/SITE/TASK 回归全 PASS；详见 §8「`38b0bb9` 两处 FAIL 修复复验」 |
 | 2026-11-10 15:28 起 | `0ee9065` 商店目录（Skiff-server P1+P2）覆盖安装 + 链路实测（Release 资产） | 资产 `0ee9065`；x86_64 9,770,768 B `31cdc789…94b0`（与 API digest 一致，测试机 `sha256sum -c` OK）、aarch64 9,312,509 B `8696818a…b365`；旧二进制备份 `/root/skiff.before-0ee9065`、升级前库快照 `/root/iter/skiff.db.before-0ee9065` | 解压 `sh install.sh --no-docker` 成功；库保持 **v16**（无迁移）、前缀仍 `w3qz4vc2`；`/usr/local/bin/skiff` 14,331,792 B `1f6c08f9…a723` 与包内一致；`/healthz` 200、`NRestarts=0`；商店四类条目、testkit 商店安装全链路与四条反例按预期（两处审计缺口与换钥后缓存不失效记台账）；详见 §8「`0ee9065` 商店目录轮」 |
 | 2026-11-10 18:38 起 | `5c15b6b` 健壮性收口轮覆盖安装 + 五条重点复验（Release 资产） | 资产 `5c15b6b`；x86_64 9,812,106 B `4dc3ddb9…7b80d59c`（与 API digest 一致，测试机 `sha256sum -c` OK）、aarch64 9,352,764 B `2adf3b7b…47a6af`；旧二进制备份 `/root/skiff.before-5c15b6b`、升级前库快照 `/root/iter/skiff.db.before-5c15b6b` | 解压 `sh install.sh --no-docker` 成功；库保持 **v16**（无迁移）、前缀仍 `w3qz4vc2`；`/usr/local/bin/skiff` 14,446,736 B `f22c3f33…96b954d` 与包内一致；`/healthz` 200、`NRestarts=0`；插件启停一致性 / 文件页 26 项 / 审计三条路径 / 镜像退避 15 项 / 镜像 digest 五条全部 PASS；详见 §8「`5c15b6b` 健壮性收口轮」 |
+| 2026-11-10 19:46 起 | `c8bcb6e` 商店 P3 升级只读段 + 暂存 TTL 覆盖安装 + 四条重点复验（Release 资产） | 资产 `c8bcb6e`；x86_64 9,821,046 B `fceae2cb…c576f09`（与 API digest 一致，测试机 `sha256sum -c` OK）、aarch64 9,363,268 B `df3e0bc6…d41d59`；旧二进制备份 `/root/skiff.before-c8bcb6e`、升级前库快照 `/root/iter/skiff.db.before-c8bcb6e`、配置备份 `/root/iter/config.before-c8bcb6e.toml` | 解压 `sh install.sh --no-docker` 成功；库保持 **v16**（无迁移）、前缀仍 `w3qz4vc2`；`/usr/local/bin/skiff` 14,475,536 B `540a715a…b8a693` 与包内一致；`/healthz` 200、`NRestarts=0`；升级提示 / 下载校验 / 暂存 TTL / 商店与插件回归全部 PASS；详见 §8「`c8bcb6e` 内核升级只读段轮」 |
 
-## 8. 最近一次全链路验收结论（截至 2026-11-10 `v0.1.0` / `5c15b6b`）
+## 8. 最近一次全链路验收结论（截至 2026-11-10 `v0.1.0` / `c8bcb6e`）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**`c8bcb6e` 内核升级只读段轮（2026-11-10 19:46 起，Release 资产覆盖升级，保留库）**
+
+- 出包 / 部署：同提交 CI run `42807944935` success；Release run `42809009928` 四个 job 全绿，tag `v0.1.0` 未新建未移动（**该 tag 实际指向 `ef7058b`**）；x86_64 资产 `fceae2cb…c576f09` 在测试机 `sha256sum -c` OK；同版本覆盖，库保持 **v16**、7 插件 / 55 grants / 6 任务 / 1 站点 / 1 运行时全部保留；`/healthz` 200、`NRestarts=0`、前缀仍 `w3qz4vc2`；`/usr/local/bin/skiff` 14,475,536 B `540a715a…b8a693`。
+- 目录夹具：沿用测试机 `/root/iter/catalog-test/`（Ed25519 种子只在 `/root/iter/catalog-test/seed.hex`，公钥 `315eacce…4a28`）；本轮用自写 `mkcat.py` 生成并签名多套变体（`up` 0.2.0 / `same` 0.1.0 / `lower` 0.0.9 / `none` 删除 `upgrades` / `badsig` 签名不匹配），每次 seq 递增；测试包 10,752 B `a0607c69e8b6f45542cc3dc1dcc31c92bdfaa108340497191fb009b375aa09b2`。serveo 隧道本轮再次 502，重开换新域名 `https://acde8a7b…serveousercontent.com/cur`，同步 `[catalog].mirrors` 并重启后恢复。
+- **①升级提示（PASS）**：`up`（version 0.2.0 / arch `x86_64` / channel `stable` / min_from 0.1.0）→ `/store?refresh=1` 的「内核升级」段显示当前 `0.1.0` → 可用 **`0.2.0`**，含 changelog 与下载入口（按渠道 + 架构匹配、取最高一版）；`same`（0.1.0）与 `lower`（0.0.9）→「无可用升级」且无下载入口；`none`（删除 `upgrades` 条目）→ 同上；`badsig`（清单 key_id 与固定公钥不匹配）→ 页面 **200**、状态「校验失败」、提示「目录校验失败，暂不提供升级下载」+「无可用升级」，审计 `catalog.refresh fail reason=signature`，无 500 无白屏；离线（`mirrors` 改为 `https://127.0.0.1:9/cur` 且删掉 `/www/skiff/catalog` 后重启）→ 页面 **200**、「离线 / 无可用快照」+「无可用升级」，恢复镜像后重新显示 `0.2.0`。
+- **②下载与校验（PASS）**：inotify 观测到 `upgrade/incoming/` 下先建 `skiff-0.2.0-x86_64.tar.part`（`CREATE` → `CLOSE_WRITE` → `ATTRIB`（落 `0600`）→ `MOVED_FROM`）再 `MOVED_TO` 为 `skiff-0.2.0-x86_64.tar.gz`，落盘 sha256 `a0607c69…aa09b2` 与清单一致，审计 `upgrade.download ok reason=staged … reused=false`；重复请求复用本地文件（`reused=true`，目录侧无新 blob GET）；本地暂存追加 1 字节后重下 → journal `暂存升级包校验失败，丢弃后重新下载 error=大小不符：清单 10752 字节，本地 10753 字节`，重下后摘要恢复、`reused=false`。远端包截断到 100 B → 审计 `upgrade.download fail reason=digest`（`包大小与目录不符：目录 10752 字节，实得 100 字节`），无 `.tar.gz` 与 `.part` 残留；远端包等长改 1 字节 → `fail reason=digest`（`包摘要与目录不符…实得 1b16b471…`），同样无残留。同版本 `0.1.0` 与降级 `0.0.9` → `fail reason=downgrade`（`拒绝降级或同版本重下：当前 0.1.0，目标 0.1.0/0.0.9`）；清单无 `0.3.0` → `fail reason=not_found`；三类均为 0 次 blob GET。移除 `[catalog].public_key` 重启 → `GET /store/upgrades/0.2.0/download` **400**、审计 `deny reason=no_key`，目录侧访问日志请求数不变（不触网）；`viewer` 角色账号（复制 admin `password_hash` 插入后验完即删）→ **403**、审计 `deny reason=permission`。
+- **③暂存 TTL（PASS）**：安装前在 `upgrade/incoming/` 造 25 h 前的 `skiff-0.9.9-x86_64.part`、`skiff-0.8.0-x86_64.tar.gz` 各一条，另放 1 h 前的 `.tar.gz` 一个与自建 `notes.txt`；`install.sh` 后服务启动即清（journal `已清理过期升级暂存包 path=/www/skiff/upgrade/incoming/skiff-0.9.9-x86_64.part age_secs=90000 ttl_secs=86400` 及 `.tar.gz` 一条），条目 4 → 2，1 h 包与 `notes.txt` 保留；再触发一次下载前的清理（journal `… skiff-0.8.0-x86_64.tar.part age_secs=90002 …`），年龄按 mtime 计算，路径与 `ttl_secs` 均在日志内。
+- **④回归（PASS）**：商店安装 `com.skiff.testkit` 全链路仍通过（确认页 → `POST /plugins/confirm` → 插件页「已安装 7 个 · 已启用 7」，审计 `store.install ok` / `plugin.install ok`）；插件启停一致性 10/10；`/healthz` 200（18080 与转发 18081）；库仍 **v16**、7 插件全部 `enabled=1`（guard / monitor `running`）、grants **55**（cron 6 / files 7 / firewall 12 / ftp 13 / guard 6 / monitor 3 / testkit 8）、6 任务 / 1 站点 / 1 运行时 / 8 jobs 不变。
+- 收尾：目录恢复为 `none`（seq 9），面板终态「无可用升级」；`upgrade/incoming/` 清空；清理验收造的 `viewer-test` 用户与其会话；`/root/iter/rel-c8bcb6e/`、`/root/skiff.before-c8bcb6e`、`/root/iter/skiff.db.before-c8bcb6e`、`/root/iter/config.before-c8bcb6e.toml`、`/root/iter/catalog-test/` 保留。
 
 **`5c15b6b` 健壮性收口轮（2026-11-10 18:38 起，Release 资产覆盖升级，保留库）**
 
