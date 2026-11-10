@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod admin_fs;
 pub mod auth;
+pub mod catalog;
 pub mod commands;
 pub mod docker_daemon;
 pub mod jobs;
@@ -72,6 +73,8 @@ pub struct WebConfig {
     /// 批量扩展脚本（可触发多次编译）的硬超时（默认 30 分钟）。
     /// 配置项 `ext_batch_timeout_secs` 或环境变量 `SKIFF_EXT_BATCH_TIMEOUT_SECS` 可覆盖。
     pub ext_batch_timeout: Duration,
+    /// 商店目录（Skiff-server P1 只读接入）。默认关闭。
+    pub catalog: crate::catalog::CatalogSettings,
 }
 
 /// 装配层持有的三根服务句柄。
@@ -114,6 +117,8 @@ pub struct AppState {
     tasks: std::sync::OnceLock<Arc<tasks::TaskService>>,
     /// 管理员侧文件服务（`skiff-fs` 的唯一接线点）。
     admin_fs: Arc<admin_fs::AdminFs>,
+    /// 商店目录只读客户端（Skiff-server P1）：拉取/验签/缓存/防回滚。
+    catalog: Arc<catalog::CatalogService>,
     /// 一次性提示（flash）：按会话保存，页面渲染一次即消费。
     ///
     /// 写操作完成后重定向到无参数地址，由下一次渲染从会话取走消息，
@@ -296,6 +301,8 @@ impl AppState {
         let admin_fs = Arc::new(admin_fs::AdminFs::new(&cfg, Arc::clone(&db)));
         let jobs = jobs::JobService::new(Arc::clone(&db));
         jobs.prune_quietly();
+        // 商店目录只读客户端：未启用时它一次网络调用都不会发生。
+        let catalog = catalog::CatalogService::new(cfg.catalog.clone(), &cfg.data_dir);
         Arc::new(Self {
             db,
             docker,
@@ -314,6 +321,7 @@ impl AppState {
             image_versions: Mutex::new(HashMap::new()),
             tasks: std::sync::OnceLock::new(),
             admin_fs,
+            catalog,
             flash: std::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -340,6 +348,11 @@ impl AppState {
     /// 管理员侧文件服务（只读访问）。Web 文件管理页是它的唯一调用方。
     pub fn admin_fs(&self) -> &admin_fs::AdminFs {
         self.admin_fs.as_ref()
+    }
+
+    /// 商店目录只读客户端。同步方法，调用方必须放进 `spawn_blocking`。
+    pub fn catalog(&self) -> &catalog::CatalogService {
+        self.catalog.as_ref()
     }
 
     /// 文件服务句柄的可持有副本：同步文件调用要交给 `spawn_blocking`，

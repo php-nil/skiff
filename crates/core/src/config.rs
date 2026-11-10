@@ -44,6 +44,24 @@ pub struct FileConfig {
     pub ext_exec_timeout_secs: Option<u64>,
     /// 批量扩展脚本的硬超时（秒，默认 1800）。
     pub ext_batch_timeout_secs: Option<u64>,
+    /// 商店目录（Skiff-server）只读接入；缺省整段关闭。
+    pub catalog: Option<CatalogFile>,
+}
+
+/// `[catalog]` 段：默认关闭，不拉取、不显示商店入口。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogFile {
+    pub enabled: Option<bool>,
+    /// `stable` 或 `night`。
+    pub channel: Option<String>,
+    /// 镜像基地址，按序回退；必须是 https。
+    pub mirrors: Option<Vec<String>>,
+    /// 固定 Ed25519 公钥（64 位十六进制）。
+    pub public_key: Option<String>,
+    /// 仅开发模式允许接受未签名渠道。
+    pub allow_unsigned: Option<bool>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +96,8 @@ pub struct Config {
     pub ext_exec_timeout: std::time::Duration,
     /// 批量扩展脚本的硬超时（默认 30 分钟）。
     pub ext_batch_timeout: std::time::Duration,
+    /// 商店目录只读接入（默认关闭）。
+    pub catalog: skiff_app::catalog::CatalogSettings,
     /// 由 main 计算：无 TLS 的 loopback 开发模式
     pub dev_http: bool,
     /// 由 main 计算：非 loopback 明文，但显式确认了「可信反代已终止 TLS」
@@ -232,6 +252,10 @@ impl Config {
             30 * 60,
         )?);
 
+        // 商店目录（Skiff-server P1）：默认关闭；开启后只做只读拉取。
+        let catalog_file = file.catalog.clone().unwrap_or_default();
+        let catalog = build_catalog_settings(&catalog_file)?;
+
         Ok(Config {
             listen,
             data_dir,
@@ -256,6 +280,7 @@ impl Config {
             require_initial_password_change,
             ext_exec_timeout,
             ext_batch_timeout,
+            catalog,
             dev_http: false,
             plaintext_behind_proxy: false,
             tls_active: false,
@@ -270,6 +295,19 @@ impl Config {
     /// - 未写 `tls_enabled`：保留旧行为——有证书走 TLS；否则只允许 loopback 调试
     ///   或「非 loopback + allow_insecure_http + 非空 trusted_proxies」的可信反代形态。
     pub fn validate(&mut self) -> Result<()> {
+        self.validate_tls()?;
+        // 未签名渠道只能作为开发期便利：生产形态（TLS 或可信反代终止 TLS）一律拒绝，
+        // 否则「验签」这道门就可以被一行配置绕过。
+        if self.catalog.allow_unsigned && !self.dev_http {
+            bail!(
+                "catalog.allow_unsigned = true 只允许在开发模式（--dev / loopback 明文 / \
+                 tls_enabled = false 的调试形态）下开启：未签名渠道在生产形态必须拒绝"
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_tls(&mut self) -> Result<()> {
         if let Some(prefix) = self.entry_prefix.as_deref() {
             skiff_app::panel_settings::validate_entry_prefix(prefix)
                 .map_err(|e| anyhow::anyhow!("entry_prefix 非法: {e}"))?;
@@ -403,6 +441,64 @@ fn default_web_root() -> PathBuf {
     }
 }
 
+fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::CatalogSettings> {
+    let enabled = env_bool("SKIFF_CATALOG_ENABLED", file.enabled.unwrap_or(false));
+    let channel = env_str("SKIFF_CATALOG_CHANNEL")
+        .or(file.channel.clone())
+        .unwrap_or_else(|| "stable".into());
+    if channel != "stable" && channel != "night" {
+        bail!("catalog.channel 只支持 stable 或 night: {channel}");
+    }
+    let mirrors: Vec<String> = env_str("SKIFF_CATALOG_MIRRORS")
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .or(file.mirrors.clone())
+        .unwrap_or_default();
+    for mirror in &mirrors {
+        // 目录是安全边界上的输入：明文 http 等于把清单交给中间人，直接拒绝。
+        if !mirror.starts_with("https://") {
+            bail!("catalog.mirrors 必须是 https:// 地址: {mirror}");
+        }
+    }
+    let public_key = env_str("SKIFF_CATALOG_PUBLIC_KEY").or(file.public_key.clone());
+    if let Some(raw) = &public_key {
+        skiff_app::catalog::verify::parse_public_key(raw)
+            .map_err(|e| anyhow::anyhow!("catalog.public_key 非法: {e}"))?;
+    }
+    let allow_unsigned = env_bool(
+        "SKIFF_CATALOG_ALLOW_UNSIGNED",
+        file.allow_unsigned.unwrap_or(false),
+    );
+    let timeout = match env_str("SKIFF_CATALOG_TIMEOUT_SECS") {
+        Some(v) => v
+            .parse::<u64>()
+            .with_context(|| format!("SKIFF_CATALOG_TIMEOUT_SECS 非法: {v}"))?,
+        None => file.timeout_secs.unwrap_or(10),
+    };
+    if timeout == 0 {
+        bail!("catalog.timeout_secs 必须大于 0");
+    }
+    Ok(skiff_app::catalog::CatalogSettings {
+        enabled,
+        channel,
+        mirrors,
+        public_key,
+        allow_unsigned,
+        timeout: std::time::Duration::from_secs(timeout.min(120)),
+    })
+}
+
+fn env_bool(key: &str, fallback: bool) -> bool {
+    match std::env::var(key) {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"),
+        Err(_) => fallback,
+    }
+}
+
 fn default_run_dir() -> PathBuf {
     if cfg!(unix) {
         PathBuf::from("/run/skiff")
@@ -441,6 +537,7 @@ mod tests {
             require_initial_password_change: false,
             ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
             ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+            catalog: Default::default(),
             dev_http: false,
             plaintext_behind_proxy: false,
             tls_active: false,
@@ -476,6 +573,7 @@ mod tests {
             require_initial_password_change: false,
             ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
             ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+            catalog: Default::default(),
             dev_http: false,
             plaintext_behind_proxy: false,
             tls_active: false,
@@ -612,5 +710,70 @@ mod tests {
         let mut c = Config::load(None, true).unwrap();
         c.listen = "0.0.0.0:18080".parse().unwrap();
         assert_eq!(c.probe_addr().ip().to_string(), "127.0.0.1");
+    }
+
+    #[test]
+    fn catalog_defaults_off_and_reads_file_section() {
+        let c = Config::load(None, true).unwrap();
+        assert!(!c.catalog.enabled, "商店目录必须默认关闭");
+        assert_eq!(c.catalog.channel, "stable");
+        assert!(c.catalog.mirrors.is_empty());
+        assert!(!c.catalog.allow_unsigned);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[catalog]\nenabled = true\nchannel = \"night\"\n\
+             mirrors = [\"https://cdn.example/skiff\"]\ntimeout_secs = 5\n",
+        )
+        .unwrap();
+        let c = Config::load(Some(path), true).unwrap();
+        assert!(c.catalog.enabled);
+        assert_eq!(c.catalog.channel, "night");
+        assert_eq!(c.catalog.mirrors, vec!["https://cdn.example/skiff"]);
+        assert_eq!(c.catalog.timeout.as_secs(), 5);
+    }
+
+    #[test]
+    fn catalog_rejects_plaintext_mirror_bad_channel_and_bad_key() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            (
+                "mirror",
+                "[catalog]\nmirrors = [\"http://insecure/skiff\"]\n",
+            ),
+            ("channel", "[catalog]\nchannel = \"beta\"\n"),
+            ("key", "[catalog]\npublic_key = \"zz\"\n"),
+            ("timeout", "[catalog]\ntimeout_secs = 0\n"),
+        ] {
+            let path = dir.path().join(format!("{name}.toml"));
+            std::fs::write(&path, body).unwrap();
+            assert!(
+                Config::load(Some(path), true).is_err(),
+                "{name} 非法配置必须启动失败"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_allow_unsigned_only_in_dev_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[catalog]\nenabled = true\nallow_unsigned = true\n").unwrap();
+
+        // 生产形态（非 loopback 明文 + 可信反代终止 TLS）：必须拒绝。
+        let mut c = Config::load(Some(path.clone()), false).unwrap();
+        c.listen = "0.0.0.0:18080".parse().unwrap();
+        c.allow_insecure_http = true;
+        c.trusted_proxies = vec![Cidr::parse("172.18.0.0/16").unwrap()];
+        let e = c.validate().unwrap_err().to_string();
+        assert!(e.contains("allow_unsigned"), "{e}");
+
+        // 开发模式（loopback 明文 / --dev）：放行。
+        let mut dev = Config::load(Some(path), true).unwrap();
+        dev.listen = "127.0.0.1:18080".parse().unwrap();
+        dev.dev_http = true;
+        dev.validate().unwrap();
     }
 }

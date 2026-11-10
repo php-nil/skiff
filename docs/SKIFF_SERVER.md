@@ -436,6 +436,77 @@ cargo run -p skiff-server -- gen --sign-key <32 字节 hex>
 |---|---|---|
 | 签名流水线 | 占位 | `Signer` 与 `manifest.json.sig` 接口就绪；真实私钥托管、离线签发、轮换流程未接。未签名产物客户端必须拒绝（`check --require-signature` 为门禁） |
 | 镜像同步 | 未做 | `blobs/` 天然文件级增量，但缺少同步脚本、多源清单与校验 |
-| 客户端接入 | 未做 | 拉取、验签、缓存、回退、随包快照均未实现 |
+| 客户端接入 | P1 只读已完成 | 拉取/验签/缓存/回退/只读商店页见 §11；安装链路、blob 预下载与真实公钥仍未接 |
 | 增量索引 | 未做 | 按 §2.4 属 P3 |
+
+## 11. P1 落地状态（客户端只读接入）
+
+P1 只到「看得见、校验过、失败可回退」：内核拉取渠道清单并在「插件 → 商店」只读展示
+插件 / 应用模板 / 运行环境 / 升级通道四类条目，**不提供安装按钮**，不改动既有插件安装与
+TOFU 信任链路。默认关闭。
+
+### 11.1 配置
+
+`/etc/skiff/config.toml` 新增 `[catalog]` 段（环境变量 `SKIFF_CATALOG_*` 同义）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `false` | 关闭时不拉取、不显示商店入口；页面路由也返回 404 |
+| `channel` | `stable` | 只允许 `stable` / `night` |
+| `mirrors` | `[]` | 镜像基地址，按序回退；必须是 `https://`，否则启动失败 |
+| `public_key` | 空 | 固定 Ed25519 公钥（64 位十六进制）；未配置时拒绝一切已签名渠道 |
+| `allow_unsigned` | `false` | 仅开发模式（`--dev` / loopback 明文 / `tls_enabled=false`）可开，生产形态启动失败 |
+| `timeout_secs` | `10` | 单次 HTTP 硬超时，上限 120 |
+
+内置公钥常量 `skiff_app::catalog::verify::BUILTIN_PUBLIC_KEY` 目前为空：仓库不放真实私钥，
+因此部署侧必须显式配置 `public_key` 才能接受签名渠道。
+
+### 11.2 缓存与状态
+
+缓存根 `<data_dir>/catalog/`：
+
+```text
+catalog/
+  channels/<channel>/{manifest.json,manifest.json.sig,index.json}
+  blobs/sha256/<hex>          # P1 不主动下载，仅本地已有 blob 时复核
+  meta.json                   # 已见 seq、ETag/Last-Modified、上次成功时间与来源
+```
+
+页面状态（`CatalogState`）四档：`已更新`（200 + 验签通过）、`目录未更新`（304 或未配置镜像，
+使用缓存）、`离线`（全部镜像不可达，展示上次成功快照）、`校验失败`（验签/防回滚/摘要/结构
+失败，**拒绝新清单并保留旧快照**）。内存快照复用 30 秒，页面「刷新目录」强制重拉。
+
+### 11.3 校验口径
+
+- 先 `manifest.json` 原文验签：`key_id == sha256(公钥)`、签名文件 `key_id` 与清单一致、
+  签名对象为 `SKIFF-SERVER-MANIFEST-v1\0` + manifest 原始字节。
+- 索引必须与 manifest 声明的 `sha256` / `size` 一致，且 `channel` / `seq` 相同。
+- `seq` 小于磁盘上已见值时拒绝（防回滚），不覆盖缓存。
+- 条目摘要三件套（`*_sha256` / `*_url` / `size`）必须同时存在且 URL 为 `blobs/sha256/<sha>`；
+  本地已存在 blob 时复核大小与 sha256。
+
+### 11.4 代码落点
+
+| 路径 | 内容 |
+|---|---|
+| `crates/app/src/catalog/model.rs` | 清单/索引模型与字段校验 |
+| `crates/app/src/catalog/fetch.rs` | `Transport` 抽象 + ureq(HTTPS) 实现 + 测试假传输层 |
+| `crates/app/src/catalog/verify.rs` | Ed25519 验签、公钥解析与 `key_id` |
+| `crates/app/src/catalog/store.rs` | 缓存原子读写与 `meta.json` |
+| `crates/app/src/catalog/mod.rs` | `CatalogService`：按镜像回退、条件请求、状态机 |
+| `crates/web/src/handlers/store.rs` + `templates/store.html` | 只读商店页（登录即可访问） |
+| `crates/web/src/menu.rs` | 仅 `enabled` 时追加「插件 → 商店」菜单项 |
+
+### 11.5 已覆盖测试
+
+`crates/app/src/catalog/tests.rs`：验签失败拒绝并保留旧快照、`seq` 回退拒绝、索引摘要不符拒绝、
+本地 blob 大小/摘要不符拒绝、条件请求 304 复用缓存、离线回退、未签名默认拒绝且显式允许后放行、
+多镜像按序回退、默认关闭时不触网。`crates/web/src/handlers/store.rs` 单测覆盖商店页最少渲染
+（状态提示、四列数据、空态、无安装入口）。`crates/core/src/config.rs` 单测覆盖默认关闭、
+非法渠道/非 https 镜像/非法公钥/零超时被拒、`allow_unsigned` 仅开发模式放行。
+
+### 11.6 未完成
+
+安装链路（插件/应用模板/运行环境安装与升级）、blob 预下载与本地缓存淘汰、真实签名流水线与
+内置公钥、镜像同步脚本、增量索引。
 

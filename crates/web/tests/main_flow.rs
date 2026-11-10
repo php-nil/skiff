@@ -115,6 +115,7 @@ fn harness_full(form: Form, tier: Tier) -> Harness {
         login_concurrency: 2,
         ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
         ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+        catalog: Default::default(),
     };
     let state = AppState::new(db, docker, sup, cfg, "csrf-test-secret".into(), "test");
     let app = skiff_web::router(state.clone());

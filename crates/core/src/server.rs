@@ -223,6 +223,7 @@ mod tests {
             require_initial_password_change: false,
             ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
             ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+            catalog: Default::default(),
             dev_http: true,
             plaintext_behind_proxy: false,
             tls_active: false,

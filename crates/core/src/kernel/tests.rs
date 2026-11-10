@@ -45,6 +45,7 @@ fn test_state(data_dir: std::path::PathBuf) -> Arc<AppState> {
         login_concurrency: 1,
         ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
         ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+        catalog: Default::default(),
     };
     AppState::new(db, docker, sup, cfg, "csrf-test-secret".into(), "test")
 }
