@@ -7432,42 +7432,7 @@ mod tests {
 
     /// 第（无 Docker）测试用应用上下文：数据目录落在临时目录，避免污染源码树。
     fn app_state_at(root: &Path) -> Arc<AppState> {
-        use crate::WebConfig;
-        use skiff_docker::{DockerService, Form, Policy, Tier};
-        use skiff_identity::SessionLimits;
-        use skiff_plugin::{Supervisor, SupervisorConfig};
-        let db = Arc::new(skiff_store::Db::open_in_memory().unwrap());
-        let docker = Arc::new(DockerService::connect("/nonexistent/docker.sock"));
-        let sup = Arc::new(Supervisor::new(
-            SupervisorConfig::new(root.join("data"), root.join("run")),
-            db.clone(),
-        ));
-        let cfg = WebConfig {
-            data_dir: root.join("data"),
-            web_root: root.join("www"),
-            trash_retention_days: 30,
-            config_path: root.join("config.toml"),
-            listen: "127.0.0.1:18080".parse().unwrap(),
-            entry_prefix: "p".into(),
-            entry_prefix_previous: None,
-            tls_enabled: false,
-            tls_cert: None,
-            tls_key: None,
-            allow_insecure_http: true,
-            dev_http: true,
-            trusted_proxies: vec![],
-            external_url: None,
-            tier: Tier::Basic,
-            form: Form::Native,
-            allow_unsigned: true,
-            allow_reduced_sandbox: true,
-            policy: Policy::new(Tier::Basic, Form::Native, vec![]).unwrap(),
-            session: SessionLimits::default(),
-            login_concurrency: 1,
-            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
-            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
-        };
-        AppState::new(db, docker, sup, cfg, "csrf-test".into(), "test")
+        crate::commands::test_support::state_at(root)
     }
 
     /// 内核自建容器（Web 服务 + 各运行环境）必须统一带保护标签，

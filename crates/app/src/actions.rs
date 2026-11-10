@@ -124,15 +124,15 @@ macro_rules! action_table {
 
 action_table! {
     // ---- 站点（Admin：建站、改配置、域名、SSL、备份、删除）----
-    SITE_CREATE = "site.create": Site, Some(Permission::Admin), "sites::create", false;
-    SITE_BATCH_CREATE = "site.batch_create": Site, Some(Permission::Admin), "sites::batch", false;
-    SITE_SAVE_CONFIG = "site.save_config": Site, Some(Permission::Admin), "sites::save_config", false;
-    SITE_DELETE = "site.delete": Site, Some(Permission::Admin), "sites::delete", true;
-    SITE_ACTION = "site.action": Site, Some(Permission::Admin), "sites::action", false;
-    SITE_SET_DEFAULT = "site.set_default": Site, Some(Permission::Admin), "sites::set_default", false;
-    SITE_UPDATE_DOMAINS = "site.update_domains": Site, Some(Permission::Admin), "sites::domains", false;
-    SITE_SSL = "site.ssl": Site, Some(Permission::Admin), "sites::ssl_action", false;
-    SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), "sites::set_backup", false;
+    SITE_CREATE = "site.create": Site, Some(Permission::Admin), "commands::site::create", false;
+    SITE_BATCH_CREATE = "site.batch_create": Site, Some(Permission::Admin), "commands::site::batch", false;
+    SITE_SAVE_CONFIG = "site.save_config": Site, Some(Permission::Admin), "commands::site::save_config", false;
+    SITE_DELETE = "site.delete": Site, Some(Permission::Admin), "commands::site::delete", true;
+    SITE_ACTION = "site.action": Site, Some(Permission::Admin), "commands::site::power", false;
+    SITE_SET_DEFAULT = "site.set_default": Site, Some(Permission::Admin), "commands::site::set_default", false;
+    SITE_UPDATE_DOMAINS = "site.update_domains": Site, Some(Permission::Admin), "commands::site::update_domains", false;
+    SITE_SSL = "site.ssl": Site, Some(Permission::Admin), "commands::site::ssl", false;
+    SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), "commands::site::backup", false;
 
     // ---- 运行环境（Admin：安装、克隆、扩缩、配置、扩展、探测）----
     RUNTIME_CREATE = "runtime.create": Runtime, Some(Permission::Admin), "sites::env_add", false;
@@ -399,6 +399,23 @@ mod tests {
         ] {
             assert!(!resource.as_str().is_empty());
             assert_eq!(resource.as_str(), resource.as_str().to_ascii_lowercase());
+        }
+    }
+
+    #[test]
+    fn site_actions_point_at_registered_commands() {
+        // 站点组已完成 P1 命令拆分：动作登记的命令名必须真实存在于 `commands::site`。
+        for spec in for_resource(Resource::Site) {
+            let prefix = "commands::site::";
+            let name = spec.command.strip_prefix(prefix).unwrap_or_else(|| {
+                panic!("{} 的命令未指向 commands::site：{}", spec.id, spec.command)
+            });
+            assert!(
+                crate::commands::site::NAMES.contains(&name),
+                "{} 指向了未登记的命令 {}",
+                spec.id,
+                name
+            );
         }
     }
 

@@ -8,9 +8,10 @@ use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
 use axum::response::Response;
 use skiff_app::actions as act;
+use skiff_app::commands::{site as site_cmd, Actor};
 use skiff_store::{Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
-use crate::state::sites::{NewSite, SiteEnvStatus, SiteError};
+use crate::state::sites::{SiteEnvStatus, SiteError};
 
 use crate::error::AppError;
 use crate::handlers;
@@ -381,6 +382,14 @@ fn map_err(e: SiteError) -> AppError {
     }
 }
 
+/// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
+fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+    Actor {
+        username: user.user.username.clone(),
+        ip: handlers::client_ip(state, parts),
+    }
+}
+
 /// 可回填到弹窗的用户侧错误文案；内部错误返回 `None`，交给错误页。
 fn site_error_text(e: &SiteError) -> Option<String> {
     match e {
@@ -559,26 +568,8 @@ fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
     }
 }
 
-/// 用户只填目录名；这里容错剥掉 `/www/sites/` 或宿主机前缀，避免把整段路径当目录名。
-fn root_slug(raw: &str, sites_dir: &FsPath) -> Option<String> {
-    let value = raw.trim().replace('\\', "/");
-    if value.is_empty() {
-        return None;
-    }
-    let value = value.trim_start_matches('/').to_string();
-    for prefix in ["www/sites/", "sites/"] {
-        if let Some(rest) = value.strip_prefix(prefix) {
-            return Some(rest.trim_start_matches('/').to_string());
-        }
-    }
-    let host = sites_dir.to_string_lossy().replace('\\', "/");
-    let host = host.trim_start_matches('/');
-    if let Some(rest) = value.strip_prefix(&format!("{host}/")) {
-        return Some(rest.to_string());
-    }
-    Some(value)
-}
-
+/// 用户只填目录名；容错剥掉 `/www/sites/` 或宿主机前缀的逻辑在命令层
+/// （`skiff_app::commands::site`），handler 只负责原样提交表单值。
 fn collect_aliases(form: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut out = form.get("aliases").cloned().unwrap_or_default();
     if let Some(bulk) = form.get("aliases_bulk") {
@@ -641,41 +632,18 @@ pub async fn create(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let values = new_form(&form);
-    let settings = state.site_settings();
-    let prepared = skiff_app::sites::validate_domain(&values.domain).and_then(|domain| {
-        let slug = root_slug(&values.root_dir, &settings.sites_dir);
-        skiff_app::sites::site_root_for(&settings.sites_dir, &domain, slug.as_deref())
-            .map(|root| (domain, root))
-    });
-    let (domain, root_dir) = match prepared {
-        Ok(v) => v,
-        Err(e) => match site_error_text(&e) {
-            Some(message) => {
-                return render_sites(&state, &user, &HashMap::new(), values, message, true).await
-            }
-            None => return Err(map_err(e)),
-        },
-    };
-    let req = NewSite {
-        domain,
-        root_dir: Some(root_dir.display().to_string()),
+    let cmd = site_cmd::CreateSite {
+        domain: values.domain.clone(),
+        root_dir: values.root_dir.clone(),
         site_type: values.site_type.clone(),
-        runtime_id: Some(values.runtime_id.clone()).filter(|v| !v.is_empty()),
+        runtime_id: Some(values.runtime_id.clone()),
         proxy_target: values.proxy_target.clone(),
         proxy_websocket: values.proxy_websocket,
         aliases: collect_aliases(&form),
+        actor: actor(&state, &user, &parts),
     };
-    match state.create_site(req).await {
+    match site_cmd::create(&state, cmd).await {
         Ok(result) => {
-            let ip = handlers::client_ip(&state, &parts);
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "sites.create",
-                &result.domain,
-                "ok",
-                &result.root_dir,
-            );
             let prefix = &state.cfg.entry_prefix;
             Ok(handlers::flash_redirect(
                 &state,
@@ -986,19 +954,16 @@ pub async fn action(
         "stop" => false,
         _ => return Err(AppError::BadRequest(format!("未知站点操作：{action}"))),
     };
-    state
-        .set_site_running(&domain, running)
-        .await
-        .map_err(map_err)?;
-    let ip = handlers::client_ip(&state, &parts);
-    state.audit_or_log(
-        &user.user.username,
-        &ip,
-        if running { "sites.start" } else { "sites.stop" },
-        &domain,
-        "ok",
-        "",
-    );
+    site_cmd::power(
+        &state,
+        site_cmd::SitePower {
+            domain: domain.clone(),
+            running,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::flash_redirect(
         &state,
@@ -1030,19 +995,16 @@ pub async fn set_default(
         form_first(&form, "enabled").trim(),
         "1" | "on" | "true" | "yes"
     );
-    state
-        .set_default_site(&domain, enabled)
-        .await
-        .map_err(map_err)?;
-    let ip = handlers::client_ip(&state, &parts);
-    state.audit_or_log(
-        &user.user.username,
-        &ip,
-        "sites.default",
-        &domain,
-        "ok",
-        if enabled { "set" } else { "unset" },
-    );
+    site_cmd::set_default(
+        &state,
+        site_cmd::SetDefaultSite {
+            domain: domain.clone(),
+            enabled,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::flash_redirect(
         &state,
@@ -1070,32 +1032,37 @@ pub async fn domains(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let action = form_first(&form, "action").trim().to_string();
     let alias = form_first(&form, "alias").trim().to_string();
-    let result = match action.as_str() {
-        "add" => state.add_site_alias(&domain, &alias).await,
-        "remove" => state.remove_site_alias(&domain, &alias).await,
-        _ => Err(SiteError::BadRequest(format!("未知域名操作：{action}"))),
-    };
-    let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
     let target = format!(
         "/{prefix}/sites/{}?tab=domains",
         encode_uri_component(&domain)
     );
+    let op = match action.as_str() {
+        "add" => site_cmd::AliasOp::Add,
+        "remove" => site_cmd::AliasOp::Remove,
+        _ => {
+            return Ok(handlers::flash_redirect(
+                &state,
+                &user,
+                skiff_app::FlashKind::Error,
+                format!("未知域名操作：{action}"),
+                target,
+            ))
+        }
+    };
+    let result = site_cmd::update_domains(
+        &state,
+        site_cmd::UpdateDomains {
+            domain: domain.clone(),
+            op,
+            alias,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await;
     match result {
-        Ok(name) => {
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                if action == "add" {
-                    "sites.domains.add"
-                } else {
-                    "sites.domains.remove"
-                },
-                &domain,
-                "ok",
-                &name,
-            );
-            let notice = if action == "add" {
+        Ok(_) => {
+            let notice = if op == site_cmd::AliasOp::Add {
                 "别名已添加"
             } else {
                 "别名已删除"
@@ -1115,18 +1082,6 @@ pub async fn domains(
                 }
                 SiteError::Internal(_) => return Err(map_err(e)),
             };
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                if action == "add" {
-                    "sites.domains.add"
-                } else {
-                    "sites.domains.remove"
-                },
-                &domain,
-                "fail",
-                &message,
-            );
             Ok(handlers::flash_redirect(
                 &state,
                 &user,
@@ -1150,66 +1105,56 @@ pub async fn ssl_action(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let action = form_first(&form, "action");
-    let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    let result = match action.as_str() {
-        "generate" => state.generate_self_signed(&domain).await,
-        "upload" => {
-            state
-                .upload_cert(
-                    &domain,
-                    &form_first(&form, "cert_pem"),
-                    &form_first(&form, "key_pem"),
-                )
-                .await
-        }
-        "force" => {
-            let enabled = matches!(
+    let target = format!("/{prefix}/sites/{}?tab=ssl", encode_uri_component(&domain));
+    let op = match action.as_str() {
+        "generate" => site_cmd::SslOp::Generate,
+        "upload" => site_cmd::SslOp::Upload {
+            cert_pem: form_first(&form, "cert_pem"),
+            key_pem: form_first(&form, "key_pem"),
+        },
+        "force" => site_cmd::SslOp::Force {
+            enabled: matches!(
                 form_first(&form, "enabled").trim(),
                 "1" | "on" | "true" | "yes"
-            );
-            state.set_force_https(&domain, enabled).await
-        }
-        "disable" => state.disable_tls(&domain).await,
-        "delete_cert" => state.delete_cert(&domain).await,
-        _ => Err(SiteError::BadRequest(format!("未知 SSL 操作：{action}"))),
-    };
-    match result {
-        Ok(()) => {
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                &format!("sites.ssl.{action}"),
-                &domain,
-                "ok",
-                "",
-            );
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Notice,
-                "SSL 设置已更新并重载 nginx",
-                format!("/{prefix}/sites/{}?tab=ssl", encode_uri_component(&domain)),
-            ))
-        }
-        Err(e) => {
-            let msg = format!("{e}");
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                &format!("sites.ssl.{action}"),
-                &domain,
-                "failed",
-                &msg,
-            );
-            Ok(handlers::flash_redirect(
+            ),
+        },
+        "disable" => site_cmd::SslOp::Disable,
+        "delete_cert" => site_cmd::SslOp::DeleteCert,
+        _ => {
+            return Ok(handlers::flash_redirect(
                 &state,
                 &user,
                 skiff_app::FlashKind::Error,
-                msg,
-                format!("/{prefix}/sites/{}?tab=ssl", encode_uri_component(&domain)),
+                format!("未知 SSL 操作：{action}"),
+                target,
             ))
         }
+    };
+    let result = site_cmd::ssl(
+        &state,
+        site_cmd::SiteSsl {
+            domain: domain.clone(),
+            op,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await;
+    match result {
+        Ok(()) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            "SSL 设置已更新并重载 nginx",
+            target,
+        )),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            format!("{e}"),
+            target,
+        )),
     }
 }
 
@@ -1478,40 +1423,32 @@ pub async fn set_backup(
     let svc = state
         .tasks()
         .ok_or_else(|| AppError::Unavailable("内核任务服务未初始化".into()))?;
-    let ip = handlers::client_ip(&state, &parts);
-    match svc
-        .set_site_backup(&domain, enabled, &user.user.username)
-        .await
+    match site_cmd::backup(
+        &state,
+        svc,
+        site_cmd::SetSiteBackup {
+            domain: domain.clone(),
+            enabled,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
     {
-        Ok(_) => {
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "sites.backup",
-                &domain,
-                "ok",
-                if enabled {
-                    "开启站点备份"
-                } else {
-                    "关闭站点备份"
-                },
-            );
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Notice,
-                if enabled {
-                    "站点备份已开启（每日 03:00）"
-                } else {
-                    "站点备份已关闭"
-                },
-                format!(
-                    "/{}/sites/{}",
-                    state.cfg.entry_prefix,
-                    encode_uri_component(&domain)
-                ),
-            ))
-        }
+        Ok(()) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            if enabled {
+                "站点备份已开启（每日 03:00）"
+            } else {
+                "站点备份已关闭"
+            },
+            format!(
+                "/{}/sites/{}",
+                state.cfg.entry_prefix,
+                encode_uri_component(&domain)
+            ),
+        )),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
@@ -1546,50 +1483,35 @@ pub async fn save_config(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let content = form_first(&form, "content");
-    let ip = handlers::client_ip(&state, &parts);
     let prefix = &state.cfg.entry_prefix;
-    match state.save_site_vhost(&domain, &content).await {
-        Ok(outcome) => {
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "sites.config.save",
-                &domain,
-                "ok",
-                if outcome.reloaded {
-                    "已保存并重载 nginx"
-                } else {
-                    "已保存并通过校验（站点未运行）"
-                },
-            );
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Notice,
-                save_config_notice(outcome.reloaded),
-                format!(
-                    "/{prefix}/sites/{}?tab=config",
-                    encode_uri_component(&domain)
-                ),
-            ))
-        }
+    match site_cmd::save_config(
+        &state,
+        site_cmd::SaveSiteConfig {
+            domain: domain.clone(),
+            content: content.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    {
+        Ok(outcome) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            save_config_notice(outcome.reloaded),
+            format!(
+                "/{prefix}/sites/{}?tab=config",
+                encode_uri_component(&domain)
+            ),
+        )),
         Err(e) => {
-            let msg = format!("{e}");
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "sites.config.save",
-                &domain,
-                "failed",
-                &msg,
-            );
             // 校验失败原地回显：把本次提交内容带回配置标签页；跳转会重读磁盘，冲掉编辑。
             render_detail(
                 state,
                 user,
                 domain,
                 "config".to_string(),
-                msg,
+                format!("{e}"),
                 String::new(),
                 None,
                 Some(content),
@@ -1627,65 +1549,44 @@ pub async fn batch(
             format!("/{prefix}/sites"),
         ));
     }
-    // 批量删除没有「输入域名确认」这一关，留着就是绕过删除确认的后门：
-    // 一律拒绝并引导到单站确认页（那里会展示将被删除的量并要求输入域名）。
-    if action == "delete" {
-        return Err(AppError::BadRequest(
-            "删除站点请走「站点详情 → 删除确认页」（需输入域名确认）".into(),
-        ));
-    }
-    if !matches!(action.as_str(), "start" | "stop") {
-        return Err(AppError::BadRequest(format!("未知批量操作：{action}")));
-    }
-    let ip = handlers::client_ip(&state, &parts);
-    let mut ok = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-    for domain in &domains {
-        let result = match action.as_str() {
-            "start" => state.set_site_running(domain, true).await.map_err(map_err),
-            // 上面已限制只有 start/stop 两种动作。
-            _ => state.set_site_running(domain, false).await.map_err(map_err),
-        };
-        match result {
-            Ok(()) => {
-                ok += 1;
-                state.audit_or_log(
-                    &user.user.username,
-                    &ip,
-                    &format!("sites.batch.{action}"),
-                    domain,
-                    "ok",
-                    "",
-                );
-            }
-            Err(e) => {
-                failed.push(format!("{domain}: {e}"));
-                state.audit_or_log(
-                    &user.user.username,
-                    &ip,
-                    &format!("sites.batch.{action}"),
-                    domain,
-                    "failed",
-                    &format!("{e}"),
-                );
-            }
-        }
-    }
-    if failed.is_empty() {
+    let op = match action.as_str() {
+        "start" => site_cmd::BatchOp::Start,
+        "stop" => site_cmd::BatchOp::Stop,
+        // 批量删除必须走单站确认页，由命令层拒绝，这里保留可识别分支。
+        "delete" => site_cmd::BatchOp::Delete,
+        _ => return Err(AppError::BadRequest(format!("未知批量操作：{action}"))),
+    };
+    let report = site_cmd::batch(
+        &state,
+        site_cmd::BatchSites {
+            op,
+            domains,
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
+    if report.failures.is_empty() {
         Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Notice,
-            format!("批量操作完成：{ok} 个站点"),
+            format!("批量操作完成：{} 个站点", report.succeeded),
             format!("/{prefix}/sites"),
         ))
     } else {
+        let failed: Vec<String> = report
+            .failures
+            .into_iter()
+            .map(|f| format!("{}: {}", f.domain, map_err(f.error)))
+            .collect();
         Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
             format!(
-                "成功 {ok} 个，失败 {} 个：{}",
+                "成功 {} 个，失败 {} 个：{}",
+                report.succeeded,
                 failed.len(),
                 failed.join("；")
             ),
@@ -1783,9 +1684,15 @@ pub async fn delete(
             "请输入站点域名 {domain} 以确认删除"
         )));
     }
-    state.delete_site(&domain).await.map_err(map_err)?;
-    let ip = handlers::client_ip(&state, &parts);
-    state.audit_or_log(&user.user.username, &ip, "sites.delete", &domain, "ok", "");
+    site_cmd::delete(
+        &state,
+        site_cmd::DeleteSite {
+            domain: domain.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(map_err)?;
     let prefix = &state.cfg.entry_prefix;
     Ok(handlers::redirect(format!("/{prefix}/sites")))
 }
@@ -3101,9 +3008,50 @@ pub async fn runtime_node_config_save(
 #[cfg(test)]
 mod tests {
     use super::{
-        error_field, runtime_site_status, save_config_notice, state_class, state_label,
-        version_display,
+        error_field, map_err, runtime_site_status, save_config_notice, site_error_text,
+        state_class, state_label, version_display,
     };
+    use crate::state::sites::SiteError;
+    use skiff_model::ErrorCode;
+
+    #[test]
+    fn domain_errors_map_to_transport_status_and_code() {
+        // 命令层只表达领域结论，HTTP 状态与稳定错误码在这一层一一对应；
+        // 这里锁住映射，防止某天把冲突改成 400 或把依赖故障吞成 500。
+        let cases = [
+            (
+                SiteError::BadRequest("x".into()),
+                400,
+                ErrorCode::InvalidShape,
+            ),
+            (SiteError::Conflict("x".into()), 409, ErrorCode::Conflict),
+            (
+                SiteError::Unavailable("x".into()),
+                503,
+                ErrorCode::Unavailable,
+            ),
+            (SiteError::Internal("x".into()), 500, ErrorCode::Internal),
+        ];
+        for (err, status, code) in cases {
+            let mapped = map_err(err);
+            assert_eq!(mapped.status().as_u16(), status);
+            assert_eq!(mapped.error_code(), code);
+            assert_eq!(mapped.message(), "x");
+        }
+    }
+
+    #[test]
+    fn only_internal_domain_errors_break_out_of_the_page() {
+        // 业务错误由页面就地提示（返回 Some），内部错误才升级成错误页（None）。
+        for err in [
+            SiteError::BadRequest("x".into()),
+            SiteError::Conflict("x".into()),
+            SiteError::Unavailable("x".into()),
+        ] {
+            assert_eq!(site_error_text(&err).as_deref(), Some("x"));
+        }
+        assert_eq!(site_error_text(&SiteError::Internal("x".into())), None);
+    }
 
     #[test]
     fn runtime_site_status_distinguishes_unknown_missing_and_stopped() {

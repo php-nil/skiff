@@ -222,6 +222,24 @@
 
 尚未做（留待 P1 及以后）：写 handler 的「解析 → 命令 → 响应」拆分、DTO 收口、动作端点与可见动作计算。`user.can` 在模板中只用于按钮显隐。
 
+#### P1 落地状态（2026-11-10）
+
+按资源组逐批拆分，每组一次提交、可独立回滚；旧页面输出与交互不变，不改 `plugins/`。
+
+| 组 | 命令模块 | 状态 |
+|---|---|---|
+| 站点（9 个动作） | `crates/app/src/commands/site.rs` | 已落地；`handlers/sites.rs` 只做表单提取、CSRF、文案与跳转，审计随命令产生 |
+| 运行时（15 个动作） | — | 待做 |
+| Docker 资源（容器/镜像/网络/卷/Compose） | — | 待做；需保留 `policy.check` 对象级判定与 exec/日志流式通道 |
+| 文件（22 个 API + 回收站/配额页） | — | 待做；`{ok:false,error:{code,message}}` 形状不变 |
+
+站点组的边界约定（其余组沿用）：
+
+- DTO 在 `crates/app/src/commands/` 定义，只含业务输入与 `Actor { username, ip }`；展示字段（文案、URL、CSS、按钮状态）不进 DTO。
+- 命令返回领域结果或 `SiteError`；`AppError`、HTTP 状态、flash 与跳转只在 `crates/web` 映射。
+- 权限仍在写入口由 `web::authz` 按动作注册表判定；命令不做二次授权，避免两套口径。
+- 单测直接调用命令（内存库 + 不可达 Docker），覆盖形状校验、领域冲突、依赖不可用与审计字段；错误映射在 `handlers/sites.rs` 的单测里锁定状态码与机器码。
+
 ### 3.3 页面切换顺序
 
 | 顺序 | 页面 | 风险 | 依赖 | 备注 |

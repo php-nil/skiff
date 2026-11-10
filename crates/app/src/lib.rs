@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod admin_fs;
 pub mod auth;
+pub mod commands;
 pub mod docker_daemon;
 pub mod jobs;
 pub mod nginx;
