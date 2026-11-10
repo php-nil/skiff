@@ -101,7 +101,13 @@ impl TaskStore for SqliteTaskStore {
     }
 
     fn put_task(&mut self, task: Task) -> Result<(), TaskError> {
-        self.put_row(&task)
+        // 调度器对持久化结果只做 `let _ =`，失败必须在存储层留下痕迹，
+        // 否则任务停在内存里、重启即丢，运维完全看不到。
+        let out = self.put_row(&task);
+        if let Err(e) = &out {
+            tracing::warn!(error = %e, task = %task.id(), "持久化定时任务失败");
+        }
+        out
     }
 
     fn delete_task(&mut self, id: &str) -> Result<Option<Task>, TaskError> {
@@ -113,9 +119,14 @@ impl TaskStore for SqliteTaskStore {
     }
 
     fn append_run(&mut self, run: RunRecord) -> Result<(), TaskError> {
-        self.db
+        let out = self
+            .db
             .append_task_run(&run_row(&run))
-            .map_err(|e| TaskError::Store(e.to_string()))
+            .map_err(|e| TaskError::Store(e.to_string()));
+        if let Err(e) = &out {
+            tracing::warn!(error = %e, task = %run.task_id, run = %run.id, "写入任务运行记录失败");
+        }
+        out
     }
 
     fn list_runs(&self, task_id: &str, limit: usize) -> Vec<RunRecord> {
@@ -129,7 +140,8 @@ impl TaskStore for SqliteTaskStore {
     }
 
     fn append_audit(&mut self, event: AuditEvent) -> Result<(), TaskError> {
-        self.db
+        let out = self
+            .db
             .audit(
                 &event.actor.as_string(),
                 "sched",
@@ -138,7 +150,11 @@ impl TaskStore for SqliteTaskStore {
                 event.outcome.as_str(),
                 event.detail.as_deref().unwrap_or(""),
             )
-            .map_err(|e| TaskError::Store(e.to_string()))
+            .map_err(|e| TaskError::Store(e.to_string()));
+        if let Err(e) = &out {
+            tracing::warn!(error = %e, target = %event.target, "写入调度审计失败");
+        }
+        out
     }
 
     fn list_audits(&self, limit: usize) -> Vec<AuditEvent> {
