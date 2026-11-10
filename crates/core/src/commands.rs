@@ -322,8 +322,7 @@ pub fn plugin_set_enabled(cfg: &Config, id: &str, enabled: bool) -> Result<()> {
     if db.plugin(id)?.is_none() {
         bail!("插件不存在: {id}");
     }
-    db.set_plugin_enabled(id, enabled)?;
-    db.set_plugin_status(id, if enabled { "installed" } else { "disabled" }, "")?;
+    db.set_plugin_enabled_state(id, enabled)?;
     println!("{id} enabled={enabled}");
     Ok(())
 }

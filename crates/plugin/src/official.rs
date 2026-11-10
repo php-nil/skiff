@@ -177,9 +177,7 @@ fn sync_one(
     // 安装器把记录重置为 installed/enabled=true；官方同步是后台行为，不得把管理员
     // 显式停用的插件重新启用。
     if !prev.enabled {
-        db.set_plugin_enabled(&info.id, false)
-            .map_err(|e| e.to_string())?;
-        db.set_plugin_status(&info.id, "disabled", "")
+        db.set_plugin_enabled_state(&info.id, false)
             .map_err(|e| e.to_string())?;
     }
 
@@ -507,8 +505,7 @@ verbs = ["list"]
         let old = build_pkg(data, id, "0.1.0", "old");
         let installed = put_official(&official, &old);
         install_package(&db, data, &installed, &install_opts()).unwrap();
-        db.set_plugin_enabled(id, false).unwrap();
-        db.set_plugin_status(id, "disabled", "").unwrap();
+        db.set_plugin_enabled_state(id, false).unwrap();
 
         let new = build_pkg(data, id, "0.1.0", "new");
         let dest = official.join(installed.file_name().unwrap());

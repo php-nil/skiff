@@ -3122,7 +3122,7 @@ provides = [{ method = "probe", label = "探针" }]
     // 停用后信息页仍可见（用于恢复/卸载），但不再提供功能页入口。
     h.state
         .db()
-        .set_plugin_enabled("com.example.info", false)
+        .set_plugin_enabled_state("com.example.info", false)
         .unwrap();
     let (status, html) = get_page(&h.app, "/p/plugins/com.example.info", &admin).await;
     assert_eq!(status, StatusCode::OK);

@@ -535,10 +535,7 @@ impl AppState {
         ip: &str,
     ) -> Result<(), String> {
         self.db
-            .set_plugin_enabled(id, enable)
-            .map_err(|e| e.to_string())?;
-        self.db
-            .set_plugin_status(id, if enable { "installed" } else { "disabled" }, "")
+            .set_plugin_enabled_state(id, enable)
             .map_err(|e| e.to_string())?;
         if let Err(e) = self.db.audit(
             actor,

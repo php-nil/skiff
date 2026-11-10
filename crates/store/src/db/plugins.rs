@@ -108,11 +108,22 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_plugin_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    /// 合并写启用标记与状态位：两列必须在同一条 `UPDATE` 里改。
+    ///
+    /// 分两次写会在第二次失败时留下「`enabled` 已变、`status` 未变」的窗口；单条 UPDATE
+    /// 本身就是一个隐式事务，天然原子。状态映射也收在这里（启用 → `installed`，
+    /// 停用 → `disabled`），避免各调用点各写一遍、写漏一处就不一致。
+    pub fn set_plugin_enabled_state(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self.conn();
         conn.execute(
-            "UPDATE plugins SET enabled = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, enabled as i64, now()],
+            "UPDATE plugins SET enabled = ?2, status = ?3, status_detail = '', updated_at = ?4
+             WHERE id = ?1",
+            params![
+                id,
+                enabled as i64,
+                if enabled { "installed" } else { "disabled" },
+                now()
+            ],
         )?;
         Ok(())
     }
@@ -228,6 +239,25 @@ mod tests {
             db.plugin("com.example.demo").unwrap().unwrap().version,
             "0.1.0"
         );
+    }
+
+    #[test]
+    fn plugin_enabled_state_writes_both_columns() {
+        let db = Db::open_in_memory().unwrap();
+        let p = record("com.example.toggle");
+        db.upsert_plugin(&p).unwrap();
+
+        db.set_plugin_enabled_state(&p.id, false).unwrap();
+        let off = db.plugin(&p.id).unwrap().unwrap();
+        assert!(!off.enabled);
+        assert_eq!(off.status, "disabled");
+        assert_eq!(off.status_detail, "");
+
+        db.set_plugin_enabled_state(&p.id, true).unwrap();
+        let on = db.plugin(&p.id).unwrap().unwrap();
+        assert!(on.enabled);
+        assert_eq!(on.status, "installed");
+        assert_eq!(on.status_detail, "");
     }
 
     #[test]
