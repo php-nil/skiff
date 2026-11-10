@@ -2268,9 +2268,8 @@ impl AppState {
     /// - 登记 digest 与本地一致：跳过拉取。
     /// - 登记 digest 与本地不一致（tag 漂移）：按登记 digest 拉取固定版本并提示。
     ///
-    /// 注意：`primary_digest` 目前取的是 `repo_digests` 首个 `@sha256:` 条目，未按 tag
-    /// 匹配（见 `skiff_docker::ImageInfo::primary_digest` 的待办）。该值参与这里的
-    /// 跳过/回填/漂移判定，属于行为而非展示，故先按现状保留。
+    /// 注意：`primary_digest_for` 按镜像引用（仓库名）匹配 `repo_digests`，同一镜像存在
+    /// 多个仓库条目时不会取错；Docker 的 `RepoDigests` 不含 tag，故无法按 tag 精确匹配。
     async fn ensure_runtime_image(
         &self,
         job_id: &str,
@@ -2283,7 +2282,7 @@ impl AppState {
             .inspect_image(image)
             .await
             .ok()
-            .and_then(|i| i.primary_digest());
+            .and_then(|i| i.primary_digest_for(image));
         if let Some(local_digest) = &local {
             if registered.is_empty() {
                 self.job_note(
@@ -2341,7 +2340,7 @@ impl AppState {
             .inspect_image(&pull_ref)
             .await
             .ok()
-            .and_then(|i| i.primary_digest());
+            .and_then(|i| i.primary_digest_for(&pull_ref));
         let digest = match digest {
             Some(d) if !registered.is_empty() && digest_sha256(&d) != registered => {
                 return Err(format!(

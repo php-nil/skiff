@@ -136,21 +136,51 @@ impl ImageInfo {
             .filter(|v| !v.is_empty())
     }
 
-    /// 本地镜像的首选 digest。
+    /// 本地镜像的首选 digest（兜底：调用方没有镜像引用时用）。
     ///
-    /// **待办（内核健壮性第 5 项）**：这里的实现只是取 `repo_digests` 里第一个含
-    /// `@sha256:` 的条目，**并没有按 tag 匹配**（`repo_digests` 形如 `php@sha256:…`）。
-    /// 该值参与 `app/src/sites.rs::ensure_runtime_image` 的拉取判定（本地已存在则跳过、
-    /// 与登记值漂移则按 digest 重拉、新环境回填），并落库 `site_runtimes.image_digest`，
-    /// 属于「影响行为」而非纯展示，故暂不改匹配规则。
-    /// 后续若要改：应按 `tags` 里选中的 tag 去匹配 digest；多 tag 镜像
-    /// （同时存在 `php:8.3-fpm` 与 `php:latest`）下当前取首个条目的写法可能误判漂移。
+    /// Docker 的 `RepoDigests` 条目形如 `<repo>@sha256:…`，**不含 tag**，所以只能按仓库名
+    /// 匹配，不能按 tag 匹配。有镜像引用时请用 [`Self::primary_digest_for`]，避免同一镜像
+    /// 存在多个仓库条目（同一本地镜像同时打了 `php` 与 `myorg/php`）时取错仓库的 digest。
     pub fn primary_digest(&self) -> Option<String> {
         self.repo_digests
             .iter()
             .find(|d| d.contains("@sha256:"))
             .or_else(|| self.repo_digests.first())
             .cloned()
+    }
+
+    /// 按镜像引用（`repo[:tag]` 或 `repo@sha256:…`）匹配仓库名后的 digest。
+    ///
+    /// 匹配时归一化 registry 别名与 Docker Hub `library/` 前缀，命中不到才退回
+    /// [`Self::primary_digest`] 的首个条目。
+    pub fn primary_digest_for(&self, image: &str) -> Option<String> {
+        let want = normalize_repo(image);
+        self.repo_digests
+            .iter()
+            .find(|entry| {
+                entry.split_once('@').is_some_and(|(repo, digest)| {
+                    !digest.is_empty() && normalize_repo(repo) == want
+                })
+            })
+            .cloned()
+            .or_else(|| self.primary_digest())
+    }
+}
+
+/// 仓库名归一化：去掉 tag / digest 与 registry 别名，补全 Docker Hub 官方镜像前缀，
+/// 让 `php:8.5-fpm`、`docker.io/library/php@sha256:…` 与 `library/php` 互相命中。
+fn normalize_repo(image: &str) -> String {
+    let base = image.split('@').next().unwrap_or(image);
+    let (name, _tag) = image_pull_ref(base);
+    let name = name
+        .strip_prefix("docker.io/")
+        .or_else(|| name.strip_prefix("index.docker.io/"))
+        .or_else(|| name.strip_prefix("registry-1.docker.io/"))
+        .unwrap_or(&name);
+    if name.contains('/') {
+        name.to_string()
+    } else {
+        format!("library/{name}")
     }
 }
 
@@ -1357,6 +1387,11 @@ mod tests {
         assert_eq!(info.env_value("PHP_VERSION_EXTRA"), None);
         assert_eq!(info.env_value("MISSING"), None);
         assert_eq!(info.primary_digest(), Some("php@sha256:111".into()));
+        // 有镜像引用时按仓库名匹配：两者都归一化到 `library/php`，取首个条目。
+        assert_eq!(
+            info.primary_digest_for("php:8.5-fpm-alpine"),
+            Some("php@sha256:111".into())
+        );
 
         // 空值与纯空白不算已读到版本。
         let blank = ImageInfo {
@@ -1364,6 +1399,35 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(blank.env_value("PHP_VERSION"), None);
+    }
+
+    #[test]
+    fn primary_digest_matches_repo_not_first_entry() {
+        // 同一本地镜像同时打了官方 `php` 与自有 `myorg/php`，两个仓库的 digest 不同。
+        let info = ImageInfo {
+            repo_digests: vec!["myorg/php@sha256:aaa".into(), "php@sha256:bbb".into()],
+            tags: vec!["php:8.5-fpm-alpine".into(), "myorg/php:8.5".into()],
+            ..Default::default()
+        };
+        // 按引用命中各自仓库，而不是盲取第一个条目。
+        assert_eq!(
+            info.primary_digest_for("php:8.5-fpm-alpine"),
+            Some("php@sha256:bbb".into())
+        );
+        assert_eq!(
+            info.primary_digest_for("myorg/php:8.5"),
+            Some("myorg/php@sha256:aaa".into())
+        );
+        // registry 别名与 Docker Hub 官方前缀归一化后仍能命中。
+        assert_eq!(
+            info.primary_digest_for("docker.io/library/php@sha256:bbb"),
+            Some("php@sha256:bbb".into())
+        );
+        // 引用里没有该仓库时退回首个条目，保持旧兜底语义。
+        assert_eq!(
+            info.primary_digest_for("nginx:latest"),
+            Some("myorg/php@sha256:aaa".into())
+        );
     }
 
     #[test]
