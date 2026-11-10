@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 
 use skiff_app::actions as act;
 use skiff_app::admin_fs::{FsErr, FsPathKind, MAX_EDIT_BYTES};
+use skiff_app::commands::file as file_cmd;
 
 use crate::error::AppError;
 use crate::handlers;
@@ -126,7 +127,13 @@ pub async fn api_tree(
         .get("path")
         .filter(|p| !p.is_empty())
         .ok_or_else(|| bad_request("缺少 path 参数"))?;
-    match state.admin_fs().list_dirs(&user.user.username, path) {
+    match file_cmd::list_dirs(
+        state.admin_fs(),
+        file_cmd::ListDirs {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+        },
+    ) {
         Ok(dirs) => Ok(Json(json!({ "ok": true, "path": path, "dirs": dirs }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -163,10 +170,15 @@ pub async fn api_upload(
             })),
         ));
     }
-    match state
-        .admin_fs()
-        .upload_chunk(&user.user.username, path, offset, &body)
-    {
+    match file_cmd::upload(
+        state.admin_fs(),
+        file_cmd::UploadChunk {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+            offset,
+            data: &body,
+        },
+    ) {
         Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -183,10 +195,14 @@ pub async fn api_download(
         .get("path")
         .filter(|p| !p.is_empty())
         .ok_or_else(|| bad_request("缺少 path 参数"))?;
-    let stat = state
-        .admin_fs()
-        .stat(&user.user.username, path)
-        .map_err(fs_err)?;
+    let stat = file_cmd::stat(
+        state.admin_fs(),
+        file_cmd::StatPath {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+        },
+    )
+    .map_err(fs_err)?;
     if stat.kind == FsPathKind::Dir {
         return download_dir(state, user.user.username.clone(), path).await;
     }
@@ -238,8 +254,16 @@ async fn download_dir(state: Arc<AppState>, user: String, path: &str) -> Result<
         let user = user.clone();
         let source = path.to_string();
         tokio::task::spawn_blocking(move || {
-            st.admin_fs()
-                .archive(&user, &[source], &dest_str, "zip", false)
+            file_cmd::archive(
+                st.admin_fs(),
+                file_cmd::ArchiveEntries {
+                    user,
+                    sources: vec![source],
+                    dest: dest_str,
+                    format: "zip".into(),
+                    overwrite: false,
+                },
+            )
         })
         .await
         .map_err(|e| {
@@ -346,7 +370,13 @@ pub async fn api_list(
         .get("path")
         .filter(|p| !p.is_empty())
         .ok_or_else(|| bad_request("缺少 path 参数"))?;
-    match state.admin_fs().list(&user.user.username, path) {
+    match file_cmd::list(
+        state.admin_fs(),
+        file_cmd::ListDir {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+        },
+    ) {
         Ok(listing) => Ok(Json(json!({ "ok": true, "listing": listing }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -364,8 +394,8 @@ pub async fn api_read(
         .ok_or_else(|| bad_request("缺少 path 参数"))?;
     let path = path.to_string();
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.read(&name, &path))
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || file_cmd::read(&fs, file_cmd::ReadFile { user, path }))
         .await
         .map_err(app_err)?
     {
@@ -386,10 +416,19 @@ pub async fn api_write(
     let path = field(&body, "path")?.to_string();
     let content = field(&body, "content")?.to_string();
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.write(&name, &path, &content))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::write(
+            &fs,
+            file_cmd::WriteFile {
+                user,
+                path,
+                content,
+            },
+        )
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
         Err(e) => Err(fs_err(e)),
@@ -406,7 +445,13 @@ pub async fn api_mkdir(
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
-    match state.admin_fs().mkdir(&user.user.username, path) {
+    match file_cmd::mkdir(
+        state.admin_fs(),
+        file_cmd::MakeDir {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+        },
+    ) {
         Ok(path) => Ok(Json(json!({ "ok": true, "path": path }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -423,7 +468,14 @@ pub async fn api_rename(
     let body = body_json(&body)?;
     let from = field(&body, "from")?;
     let to = field(&body, "to")?;
-    match state.admin_fs().rename(&user.user.username, from, to) {
+    match file_cmd::rename(
+        state.admin_fs(),
+        file_cmd::RenameEntry {
+            user: user.user.username.clone(),
+            from: from.to_string(),
+            to: to.to_string(),
+        },
+    ) {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -440,8 +492,8 @@ pub async fn api_remove(
     let body = body_json(&body)?;
     let path = field(&body, "path")?.to_string();
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.remove(&name, &path))
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || file_cmd::remove(&fs, file_cmd::RemoveEntry { user, path }))
         .await
         .map_err(app_err)?
     {
@@ -467,10 +519,20 @@ pub async fn api_copy(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.copy(&name, &from, &to, overwrite))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::copy(
+            &fs,
+            file_cmd::CopyEntry {
+                user,
+                from,
+                to,
+                overwrite,
+            },
+        )
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
@@ -489,7 +551,14 @@ pub async fn api_chmod(
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
     let mode = mode_field(&body, "mode")?;
-    match state.admin_fs().chmod(&user.user.username, path, mode) {
+    match file_cmd::chmod(
+        state.admin_fs(),
+        file_cmd::ChmodEntry {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+            mode,
+        },
+    ) {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -508,7 +577,15 @@ pub async fn api_chown(
     let path = field(&body, "path")?;
     let uid = u32_field(&body, "uid")?;
     let gid = u32_field(&body, "gid")?;
-    match state.admin_fs().chown(&user.user.username, path, uid, gid) {
+    match file_cmd::chown(
+        state.admin_fs(),
+        file_cmd::ChownEntry {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+            uid,
+            gid,
+        },
+    ) {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -535,10 +612,21 @@ pub async fn api_archive(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.archive(&name, &sources, &dest, &format, overwrite))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::archive(
+            &fs,
+            file_cmd::ArchiveEntries {
+                user,
+                sources,
+                dest,
+                format,
+                overwrite,
+            },
+        )
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
@@ -562,10 +650,20 @@ pub async fn api_extract(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.extract(&name, &archive, &dest, overwrite))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::extract(
+            &fs,
+            file_cmd::ExtractArchive {
+                user,
+                archive,
+                dest,
+                overwrite,
+            },
+        )
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
         Err(e) => Err(fs_err(e)),
@@ -591,7 +689,12 @@ pub async fn api_trash_list(
     AuthUser(user): AuthUser,
 ) -> ApiResult {
     admin(&user, act::FILE_TRASH_READ)?;
-    match state.admin_fs().trash_list(&user.user.username) {
+    match file_cmd::trash_list(
+        state.admin_fs(),
+        file_cmd::TrashList {
+            user: user.user.username.clone(),
+        },
+    ) {
         Ok(items) => Ok(Json(json!({
             "ok": true,
             "items": items,
@@ -616,10 +719,19 @@ pub async fn api_trash_restore(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.trash_restore(&name, &id, overwrite))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::trash_restore(
+            &fs,
+            file_cmd::TrashRestore {
+                user,
+                id,
+                overwrite,
+            },
+        )
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
         Err(e) => Err(fs_err(e)),
@@ -637,10 +749,12 @@ pub async fn api_trash_purge(
     let body = body_json(&body)?;
     let id = field(&body, "id")?.to_string();
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.trash_purge(&name, &id))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::trash_purge(&fs, file_cmd::TrashPurge { user, id })
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(e) => Err(fs_err(e)),
@@ -655,8 +769,8 @@ pub async fn api_trash_clear(
     admin(&user, act::FILE_TRASH_CLEAR)?;
     csrf(&state, &user, &parts)?;
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.trash_clear(&name))
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || file_cmd::trash_clear(&fs, file_cmd::TrashClear { user }))
         .await
         .map_err(app_err)?
     {
@@ -690,7 +804,12 @@ pub async fn api_quota_list(
     AuthUser(user): AuthUser,
 ) -> ApiResult {
     admin(&user, act::FILE_QUOTA_READ)?;
-    match state.admin_fs().quota_list(&user.user.username) {
+    match file_cmd::quota_list(
+        state.admin_fs(),
+        file_cmd::QuotaList {
+            user: user.user.username.clone(),
+        },
+    ) {
         Ok(quotas) => Ok(Json(json!({ "ok": true, "quotas": quotas }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -708,10 +827,15 @@ pub async fn api_quota_set(
     let path = field(&body, "path")?;
     let max_bytes = opt_u64(&body, "max_bytes")?;
     let max_files = opt_u64(&body, "max_files")?;
-    match state
-        .admin_fs()
-        .quota_set(&user.user.username, path, max_bytes, max_files)
-    {
+    match file_cmd::quota_set(
+        state.admin_fs(),
+        file_cmd::QuotaSet {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+            max_bytes,
+            max_files,
+        },
+    ) {
         Ok(quota) => Ok(Json(json!({ "ok": true, "quota": quota }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -727,7 +851,13 @@ pub async fn api_quota_cancel(
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
-    match state.admin_fs().quota_cancel(&user.user.username, path) {
+    match file_cmd::quota_cancel(
+        state.admin_fs(),
+        file_cmd::QuotaCancel {
+            user: user.user.username.clone(),
+            path: path.to_string(),
+        },
+    ) {
         Ok(quota) => Ok(Json(json!({ "ok": true, "quota": quota }))),
         Err(e) => Err(fs_err(e)),
     }
@@ -744,10 +874,12 @@ pub async fn api_quota_scan(
     let body = body_json(&body)?;
     let path = field(&body, "path")?.to_string();
     let fs = state.admin_fs_arc();
-    let name = user.user.username.clone();
-    match handlers::blocking_fs(move || fs.quota_scan(&name, &path))
-        .await
-        .map_err(app_err)?
+    let user = user.user.username.clone();
+    match handlers::blocking_fs(move || {
+        file_cmd::quota_scan(&fs, file_cmd::QuotaScan { user, path })
+    })
+    .await
+    .map_err(app_err)?
     {
         Ok(quota) => Ok(Json(json!({ "ok": true, "quota": quota }))),
         Err(e) => Err(fs_err(e)),

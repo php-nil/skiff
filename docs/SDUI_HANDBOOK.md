@@ -231,7 +231,7 @@
 | 站点（9 个动作） | `crates/app/src/commands/site.rs` | 已落地；`handlers/sites.rs` 只做表单提取、CSRF、文案与跳转，审计随命令产生 |
 | 运行时（15 个动作） | `crates/app/src/commands/runtime.rs` | 已落地；Web 服务分支、共享影响面确认、Node 重建结果都以命令出参表达，handler 只渲染 |
 | Docker 资源（容器/镜像/网络/卷/Compose） | `crates/app/src/commands/docker.rs` | 已落地；`policy.check` 对象级判定、`validate_spec`/`validate_limits` 仍在写入口，命令只接收已授权目标；exec 与日志流式通道不进命令层 |
-| 文件（22 个 API + 回收站/配额页） | — | 待做；`{ok:false,error:{code,message}}` 形状不变 |
+| 文件（22 个 API + 回收站/配额页） | `crates/app/src/commands/file.rs` | 已落地；`authorize`/`blocking_fs`/JSON 形状仍在 handler，`FsError` 原样映射 `{ok:false,error:{code,message}}`；下载分块流不进命令层 |
 
 站点组的边界约定（其余组沿用）：
 

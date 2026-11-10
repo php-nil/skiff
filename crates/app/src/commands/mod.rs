@@ -8,6 +8,7 @@
 //! 调用方使用；这样旧页面、`/api/v1` 与未来的 SDUI 动作端点拿到的是同一份业务结论。
 
 pub mod docker;
+pub mod file;
 pub mod runtime;
 pub mod site;
 
