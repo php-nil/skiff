@@ -10,7 +10,7 @@
 - **新增能力面 `ftp`**：内核在 Linux 宿主机上管理 pure-ftpd（apt 安装、systemd 托管、`pure-pw` 账号、chroot、监听端口、被动端口、连接上限、TLS、fail2ban）。
 - **唯一调用方是插件**：经 Supervisor 的 UDS 调用，内核从 `cap::PluginId` 取主体、从 grants 校验动词；插件自身不装包、不碰 `/etc`、不执行宿主命令。
 - **只在 Native 形态提供**：`Form::DockerRestricted` 下返回 503；`pkgfmt` 的 `available_in` 亦不列 Docker 受限形态。
-- **账号绑定站点**：一个站点可多账号，共用该站点 PHP 容器内 `www-data` 的 uid/gid；chroot 固定 `<site_root>/index`，看不到 `conf/`、`log/`、`ssl/`，也到不了别的站点。
+- **账号绑定站点**：一个站点可多账号，统一使用站点固定身份 `skiff-web`（**201000:201000**，宿主与 PHP 容器同名同号）；chroot 固定 `<site_root>/index`，看不到 `conf/`、`log/`、`ssl/`，也到不了别的站点。
 - **服务配置单一真相**：监听端口、被动端口、连接上限、TLS 模式与证书路径、登录防护开关持久化在 `/etc/skiff/ftp-service.json` 由内核唯一维护；插件不再保留 `service-config.json`。
 - **审计口径**：`ftp.<method>`，actor `plugin:<id>`，source `uds`，结果 `ok | fail | deny`；detail 只含配置摘要/登录名/启用状态，密码与私钥不入 argv/日志/审计。
 
@@ -27,8 +27,8 @@
 | 事实 | 值 | 影响 |
 | --- | --- | --- |
 | 测试机系统 | Debian 13，Docker 29.7.2 | `pure-ftpd`/`fail2ban` 可从官方源安装 |
-| 测试机 PHP 容器 | `skiff-php-batch1`（PHP 8.5-fpm-alpine） | 容器内 `www-data` = **82:82**；宿主 `www-data` = **33:33** |
-| 站点目录 | `/www/sites/<domain>` = `root:skiff-plugins 0755`，`index/` 同为 `root:988 0755` | PHP 现状**写不进** `index/`，FTP 首次建号必须只对齐 `index/` 子树 |
+| 测试机 PHP 容器 | `skiff-php-batch1`（PHP 8.5-fpm-alpine） | 容器内 `www-data` = **82:82**（镜像自带，保留但不再使用）；站点统一身份为 `skiff-web` **201000:201000** |
+| 站点目录 | `/www/sites/<domain>` = `root:skiff-plugins 0755`，`index/` 归 `skiff-web:skiff-web` | 建站/迁移后统一身份可写 `index/`；FTP 与 PHP 池共用同一 uid |
 | 端口 | 21 与 30000–30100 空闲；无活动防火墙（nft 在、iptables 无规则） | 默认被动端口段可用 |
 | fail2ban | 未安装；自带 `pure-ftpd` filter（journalmatch `pure-ftpd.service`） | 登录尝试限制走专用 jail |
 
@@ -110,23 +110,25 @@
 - **最后登录/配额/速率**：pure-ftpd 的 passwd/PureDB 不记录最后登录，内核不解析 journal 冒充；`accounts.list` 明确返回 `last_login=null` + `last_login_source=unavailable`。配额与速率未实现，返回 `quota_supported=false`、`rate_supported=false`，列为后续项，不做半成品。
 - **chroot**：`ChrootEveryone=yes`，账号 home 固定 `<site_root>/index`；FTP 用户只能看到该目录子树。
 
-## 4. 权限模型（uid/gid 与 PHP 容器对齐）
+## 4. 权限模型（固定站点统一身份）
 
-### 4.1 身份探测
+### 4.1 身份来源：固定 `skiff-web` 201000:201000
 
 | 站点类型 | uid | gid | 说明 |
 | --- | --- | --- | --- |
-| `runtime`（PHP） | `docker exec -u www-data <runtime容器> id -u` | `id -g` | 容器内值，**不是宿主值**（实测 82:82 vs 33:33） |
-| `static` | 系统用户 `skiff-ftp`（无登录 shell） | 站点 `index/` 的组 | 静态站点无 PHP 进程；拒绝 uid 0 |
+| `runtime`（PHP） | `skiff_model::SITE_UID` = 201000 | `SITE_GID` = 201000 | 宿主与容器内同名同号；不探测容器 `www-data` |
+| `static` | 201000 | 201000 | 与 PHP 站同一身份，不再动态创建 `skiff-ftp` |
 | `proxy` | 拒绝 | — | 没有文档根可写 |
+
+常量只在 `crates/model/src/site.rs` 定义；FLV 建站、`account.create`、面板文件管理写入、
+插件 `fs` 写宿主 `index/` 路径，四处共用。数值固定（任何机器一致），安装脚本 preflight
+发现 201000 被其它账号/组占用时直接拒绝，**不静默换号**。
 
 ### 4.2 MinUID：只降不升
 
-`pure-ftpd` 的 `MinUID` 是全局配置（默认 1000）。实测容器 uid 为 82 时，1000 会拒绝登录。策略：
-
-- `install` **不写死** `MinUID`；
-- `account.create` 每次探测到 uid 后调用 `ensure_min_uid(uid)`：`MinUID = min(当前值, 探测值)`；
-- 只下调，避免换镜像后把已存在账号（低 uid）全部锁死；换高 uid 镜像时无需改动。
+`pure-ftpd` 的 `MinUID` 是全局配置（默认 1000）。统一身份 201000 高于该阈值，正常无需改写；
+`install` 仍不写死 `MinUID`，`account.create` 调 `ensure_min_uid(201000)` 时按
+`MinUID = min(当前值, 201000)` 保留历史上被下调过的值，避免旧账号被锁死。
 
 ### 4.3 目录与 umask
 
@@ -136,7 +138,7 @@
   返回明确错误，不把 `Failed to find executable` 当成账号冲突。
 - 认证链由 `/etc/pure-ftpd/auth/50pure -> ../conf/PureDB` 符号链接生效；安装时移除包自带的
   `65unix` / `70pam`。Debian wrapper 只认 auth 目录链接，conf 里写 `no` 不会停用 PAM。
-- 首次建号对齐范围**仅** `<site_root>/index` 子树：目录 `chown uid:gid` + `2775`（setgid 继承组），文件 `0664`/可执行 `0775`；
+- 首次建号对齐范围**仅** `<site_root>/index` 子树：目录 `chown 201000:201000` + `2775`（setgid 继承组），文件 `0664`/可执行 `0775`；
 - 跳过 symlink（不跟随），不碰 `log/`、`ssl/`、`conf/`，不碰其它站点；
 - 站点父目录与 `/www` 保持 `root:skiff-plugins 0755`/`0711` 口径，不放宽整体可写。
 
@@ -144,7 +146,7 @@
 
 ```
 /www/sites/<domain>/            root:skiff-plugins 0755   （站点边界）
-├── index/                      <容器 uid>:<容器 gid> 2775  （FTP chroot 根）
+├── index/                      skiff-web:skiff-web 2775  （FTP chroot 根）
 ├── conf/  log/  ssl/           root:skiff-plugins 0755   （FTP 不可见）
 ```
 
@@ -247,3 +249,4 @@
 | 2026-11-07 | 初版：新增 `ftp` 能力面（wire/pkgfmt/SDK/内核/插件）；宿主 pure-ftpd；MinUID 改按探测值只降不升；审计与安全边界定稿 |
 | 2026-11-07 | 补充 §8.1：宿主落盘动作改经 `systemd-run` 瞬态单元执行，绕开 `ProtectSystem=full` 的只读限制（上机 install 实测暴露） |
 | 2026-11-08 | 能力面扩容：监听端口/连接上限/TLS 证书路径/登录防护开关可配并持久化到 `/etc/skiff/ftp-service.json`；新增 `service.configure` 与 `account.set_enabled`；`status` 回传监听/连接数与 fail2ban 详情；插件删除本地 `service-config.json`，只读标注改为真实交互 |
+| 2026-11-10 | 站点身份收敛为固定 `skiff-web` 201000:201000：删除容器内 `www-data` 探测与动态 `skiff-ftp`；§4 重写；MinUID 只降不升口径保留 |

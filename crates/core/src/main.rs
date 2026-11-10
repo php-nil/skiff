@@ -123,6 +123,11 @@ fn run() -> Result<ExitCode> {
             commands::backup(&cfg, out)?;
             Ok(ExitCode::SUCCESS)
         }
+        cli::Command::SitesChownIndex { dry_run } => {
+            let cfg = config::Config::load(config_path, dev)?;
+            commands::sites_chown_index(&cfg, dry_run)?;
+            Ok(ExitCode::SUCCESS)
+        }
         cli::Command::Serve => serve(config_path, dev, require_initial_password_change),
     }
 }

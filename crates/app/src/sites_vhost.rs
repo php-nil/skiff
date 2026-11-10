@@ -354,8 +354,8 @@ pub fn render_default_vhost(
 pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
     format!(
         "[www]\n\
-         user = www-data\n\
-         group = www-data\n\
+         user = {user}\n\
+         group = {group}\n\
          listen = {socket}\n\
          listen.owner = root\n\
          ; nginx worker 以 nobody(65534) 运行；只给同组读写，others 无权限。\n\
@@ -371,10 +371,16 @@ pub fn render_php_pool_with(cfg: &PhpRuntimeConfig, socket: &str) -> String {
          php_admin_value[upload_max_filesize] = {upload_max_filesize}\n\
          php_admin_value[post_max_size] = {post_max_size}\n\
          php_admin_value[max_execution_time] = {max_execution_time}\n\
+         ; Debian 系默认 session.save_path 归 www-data；worker 换成 skiff-web 后\n\
+         ; 写不进去，这里显式改到 /tmp（目录由容器初始化脚本建好并归属该账号）。\n\
+         php_admin_value[session.save_path] = /tmp\n\
+         php_admin_value[opcache.file_cache] = /tmp/skiff-opcache\n\
          ; 镜像 docker.conf 默认 access.log = /proc/self/fd/2，访问日志经容器 stdout\n\
          ; 落到 dockerd/shims；nginx 侧已记录同一请求，这里显式关闭以免每请求重复写。\n\
          access.log = /dev/null\n\
          catch_workers_output = yes\n",
+        user = skiff_model::SITE_USER,
+        group = skiff_model::SITE_USER,
         pm = cfg.pm,
         max_children = cfg.max_children,
         start_servers = cfg.start_servers,
@@ -486,8 +492,8 @@ mod tests {
         let pool = render_php_pool_with(&cfg, "/www/runtime/php/php-8.5/php-fpm.sock");
         let expected = concat!(
             "[www]\n",
-            "user = www-data\n",
-            "group = www-data\n",
+            "user = skiff-web\n",
+            "group = skiff-web\n",
             "listen = /www/runtime/php/php-8.5/php-fpm.sock\n",
             "listen.owner = root\n",
             "; nginx worker 以 nobody(65534) 运行；只给同组读写，others 无权限。\n",
@@ -503,6 +509,10 @@ mod tests {
             "php_admin_value[upload_max_filesize] = 64M\n",
             "php_admin_value[post_max_size] = 64M\n",
             "php_admin_value[max_execution_time] = 30\n",
+            "; Debian 系默认 session.save_path 归 www-data；worker 换成 skiff-web 后\n",
+            "; 写不进去，这里显式改到 /tmp（目录由容器初始化脚本建好并归属该账号）。\n",
+            "php_admin_value[session.save_path] = /tmp\n",
+            "php_admin_value[opcache.file_cache] = /tmp/skiff-opcache\n",
             "; 镜像 docker.conf 默认 access.log = /proc/self/fd/2，访问日志经容器 stdout\n",
             "; 落到 dockerd/shims；nginx 侧已记录同一请求，这里显式关闭以免每请求重复写。\n",
             "access.log = /dev/null\n",

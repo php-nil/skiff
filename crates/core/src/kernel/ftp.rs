@@ -732,8 +732,8 @@ async fn apply_service_config(cfg: &ServiceConfig, allow_install: bool) -> Resul
     write_conf("PAMAuthentication", "no").await?;
     write_conf("UnixAuthentication", "no").await?;
     write_conf("PureDB", PDB_FILE).await?;
-    // MinUID 不写死：pure-ftpd 默认 1000，而 PHP 镜像的 www-data 常见 82。
-    // 建号时按容器内探测到的 uid 只降不升（见 ensure_min_uid），换镜像不会全线登录失败。
+    // MinUID 不写死：pure-ftpd 默认 1000。站点统一身份固定 201000，天然高于该阈值；
+    // 这里仍取「当前值与本次身份取小」的口径（只降不升），兼容历史上被下调过的机器。
     // Debian 的 pure-ftpd-wrapper 只认 `conf/Bind`（`-S [addr,]port`）；写 `conf/Port` 会被当作未知项。
     write_conf("Bind", &cfg.listen_port.to_string()).await?;
     write_conf(
@@ -1390,6 +1390,10 @@ fn validate_index(state: &AppState, site: &Site) -> Result<PathBuf, FtpError> {
     Ok(real_index)
 }
 
+/// 所有可服务站点统一使用固定身份 `skiff-web` 201000:201000。
+///
+/// 不再按站点类型动态分配 `skiff-ftp`，也不探测容器内 `www-data`：
+/// 宿主文档根、FTP 上传与 PHP-FPM 池共用同一 uid，`ls -ln` 可直接判断权限。
 #[cfg(target_os = "linux")]
 async fn resolve_identity(state: &AppState, site: &Site) -> Result<(u32, u32), FtpError> {
     match &site.site_type[..] {
@@ -1409,86 +1413,12 @@ async fn resolve_identity(state: &AppState, site: &Site) -> Result<(u32, u32), F
                     rt.kind
                 )));
             }
-            let container = skiff_app::sites::runtime_container_name("php", &rt.name);
-            let uid = probe_id(state, &container, "-u").await?;
-            let gid = probe_id(state, &container, "-g").await?;
-            if uid == 0 || gid == 0 {
-                return Err(FtpError::bad("PHP 容器返回了 root 身份，拒绝对齐"));
-            }
-            Ok((uid, gid))
+            Ok((skiff_model::SITE_UID, skiff_model::SITE_GID))
         }
-        TYPE_STATIC => static_identity(site).await,
+        TYPE_STATIC => Ok((skiff_model::SITE_UID, skiff_model::SITE_GID)),
         TYPE_PROXY => Err(FtpError::bad("反向代理站点不能作为 FTP 文档根")),
         other => Err(FtpError::bad(format!("未知站点类型：{other}"))),
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn probe_id(state: &AppState, container: &str, flag: &str) -> Result<u32, FtpError> {
-    let (code, out) = state
-        .docker()
-        .exec_capture(container, vec!["id".into(), flag.into(), "www-data".into()])
-        .await
-        .map_err(|e| FtpError::bad(format!("无法探测 PHP 容器身份：{e}")))?;
-    if code != 0 {
-        return Err(FtpError::bad(format!(
-            "PHP 容器未运行或缺少 www-data（退出码 {code}）：{}",
-            out.trim()
-        )));
-    }
-    out.trim()
-        .parse::<u32>()
-        .map_err(|_| FtpError::bad(format!("容器身份输出无法解析：{}", out.trim())))
-}
-
-/// 非 PHP 站点：用专门的系统 uid，gid 沿用站点目录属组（通常是 skiff-plugins）。
-#[cfg(target_os = "linux")]
-async fn static_identity(site: &Site) -> Result<(u32, u32), FtpError> {
-    let uid = ensure_static_user().await?;
-    let root = Path::new(&site.root_dir);
-    let gid = std::fs::symlink_metadata(root)
-        .map(|m| std::os::unix::fs::MetadataExt::gid(&m))
-        .unwrap_or(uid);
-    let gid = if gid == 0 { uid } else { gid };
-    if uid == 0 || gid == 0 {
-        return Err(FtpError::bad("静态站点身份解析为 root，拒绝创建"));
-    }
-    Ok((uid, gid))
-}
-
-#[cfg(target_os = "linux")]
-async fn ensure_static_user() -> Result<u32, FtpError> {
-    if let Ok(out) = run("getent", &["passwd", "skiff-ftp"], None).await {
-        if let Some(uid) = out.trim().split(':').nth(2).and_then(|s| s.parse().ok()) {
-            return Ok(uid);
-        }
-    }
-    run_host(
-        "/usr/sbin/useradd",
-        &[
-            "--system",
-            "--no-create-home",
-            "--shell",
-            "/usr/sbin/nologin",
-            "skiff-ftp",
-        ],
-        None,
-    )
-    .await
-    .map_err(|e| FtpError::internal(format!("创建 skiff-ftp 系统用户失败：{e}")))?;
-    let out = run("getent", &["passwd", "skiff-ftp"], None)
-        .await
-        .map_err(|e| FtpError::internal(format!("读取 skiff-ftp 失败：{e}")))?;
-    let uid: u32 = out
-        .trim()
-        .split(':')
-        .nth(2)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| FtpError::internal("无法解析 skiff-ftp uid"))?;
-    if uid == 0 {
-        return Err(FtpError::internal("skiff-ftp 解析为 root，拒绝"));
-    }
-    Ok(uid)
 }
 
 /// 递归对齐文档根：目录 2775、文件 0664（可执行文件 0775），属主/属组为目标身份。
@@ -1700,9 +1630,9 @@ async fn write_conf(name: &str, value: &str) -> Result<(), FtpError> {
 
 /// pure-ftpd 的 `MinUID` 是全局配置：只允许它随实际站点身份**下调**。
 ///
-/// 上调会让已有账号（例如容器 uid 82）在下次登录时被拒，因此这里取
-/// 「当前值」与「本次探测 uid」的较小者；探测值来自容器内的 `www-data`，
-/// 不是宿主 id，也不是写死的 82。
+/// 上调会让已有账号在下次登录时被拒，因此这里取「当前值」与「本次身份 uid」的较小者。
+/// 统一身份固定 201000（高于默认 1000），正常情况下不会改写该配置；保留这段是为了
+/// 兼容历史上被下调过的机器，避免装回默认值后旧账号登录失败。
 #[cfg(target_os = "linux")]
 async fn ensure_min_uid(uid: u32) -> Result<(), FtpError> {
     let current = read_conf("MinUID")

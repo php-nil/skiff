@@ -301,6 +301,29 @@ fn preserve_owner(f: &File, existing: &fs::Metadata) {
 #[cfg(not(unix))]
 fn preserve_owner(_f: &File, _existing: &fs::Metadata) {}
 
+/// 插件写宿主站点文档根后归还统一站点身份（`sites/<domain>/index/...`）。
+///
+/// 这是「保持宿主原属主」的唯一例外：站点文档根要求与 FTP、面板、PHP 池
+/// 共用 `skiff-web`(201000:201000)。只改链接本身，不跟随符号链接。
+#[cfg(unix)]
+fn restore_site_owner(path: &Path) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    if !skiff_model::is_site_index_path(path) {
+        return;
+    }
+    let Ok(raw) = CString::new(path.as_os_str().as_bytes()) else {
+        return;
+    };
+    // SAFETY: `raw` 在本调用期间有效；失败只影响属主，不影响写入内容。
+    unsafe {
+        libc::lchown(raw.as_ptr(), skiff_model::SITE_UID, skiff_model::SITE_GID);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_site_owner(_path: &Path) {}
+
 /// 同目录临时文件 + `rename` 原子替换。
 ///
 /// 整文件一次写入（`append = false` 且 `offset = None`）走这里：崩溃时目标要么是
@@ -344,6 +367,7 @@ fn atomic_replace(path: &Path, data: &[u8]) -> Result<(usize, u64), FsError> {
     }
     // 显式在文件句柄关闭后 rename：Windows 不允许重命名仍被打开的文件。
     fs::rename(&tmp, path).map_err(|e| io_err_ctx(path, e, "原子替换失败"))?;
+    restore_site_owner(path);
     Ok((data.len(), data.len() as u64))
 }
 
@@ -379,6 +403,7 @@ pub fn write_chunk(
     f.write_all(data).map_err(|e| io_err(path, e))?;
     f.flush().map_err(|e| io_err(path, e))?;
     let size = f.metadata().map_err(|e| io_err(path, e))?.len();
+    restore_site_owner(path);
     Ok((data.len(), size))
 }
 

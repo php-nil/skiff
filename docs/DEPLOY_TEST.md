@@ -123,6 +123,7 @@ CI 出的包与手工出包**是同一份脚本、同一套布局**（CI 只是�
 | 运行身份 | root | 主形态固定 root（§5.1）：需建插件 UID/GID、读 docker.sock、后续 nftables |
 | 时钟 | 与真实时间偏差 < 30s | TOTP 依赖；容器形态注意 `TZ` 与宿主一致 |
 | 运行组 | `skiff-plugins` | 由 `install.sh` 创建；插件进程靠它拿到 `/run/skiff` 与 `kernel.sock` 的组权限 |
+| 站点统一身份 | `skiff-web` = **201000:201000** | 由 `install.sh` 固定创建（宿主与 PHP 容器同名同号）；安装前 preflight，UID/GID 被其它账号占用直接拒绝，不静默换号 |
 
 安装前自检（在目标机器上逐条跑，全绿再装）：
 
@@ -133,6 +134,8 @@ docker version --format '{{.Server.Version}}' 2>/dev/null || echo "Docker 不可
 ss -lntp | grep -E ':(18080|10086|8888)' || echo "端口空闲"
 id -u                                   # 必须是 0
 getent group skiff-plugins || echo "运行组尚未创建（install.sh 会建）"
+getent passwd 201000 && echo "201000 已被占用，install.sh 会拒绝安装（站点统一身份要求固定值）"
+getent group 201000 && echo "201000 已被占用，install.sh 会拒绝安装"
 mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅记录）"
 ```
 
@@ -156,6 +159,9 @@ mount | grep -q 'cgroup2' && echo "cgroups v2 已挂载（限额未实现，仅�
 | `/run/skiff` | 0711 | root:skiff-plugins | 可穿越；socket 本身仍按组判权 |
 | `/run/skiff/kernel.sock` | 0660 | root:skiff-plugins | 插件靠**附加组**进来，不是靠 umask |
 | `/run/skiff/plugins/{id}/plugin.sock` | 0600 | 插件 UID | 只允许内核连这个插件的 RPC |
+| `/www/sites/<domain>/` | 0755 | root:skiff-plugins | 站点边界；`index/` 之外的 `log/ssl/conf` 仍归 root |
+| `/www/sites/<domain>/index/` | 2775（目录）/ 0664（文件） | `skiff-web:skiff-web` | 站点内容统一身份：建站、FTP、面板文件管理、插件写入四处一致；`ls -ln` 可直接判断权限 |
+| `/www/skiff/php-account-init.sh` | 0644 | root:root | PHP 容器只读挂载的初始化脚本；容器内幂等建号后 `exec php-fpm` |
 
 > 插件 UID 是 `sha256(id)` 取模分配的 200000–200999，**不是**系统 passwd 里的用户；`getent passwd` 查不到是正常的。
 
@@ -197,6 +203,7 @@ sh install.sh                     # 可加 --datadir / --listen / --no-docker �
 | 步骤 | 结果 |
 |---|---|
 | 建运行组 | `skiff-plugins`（system 组，已存在则跳过） |
+| 建站点统一身份 | `skiff-web` 201000:201000（已存在同名同号则复用；UID/GID 被其它账号占用则 `die`，不换号） |
 | 建数据目录 | `/www/skiff` 0711 root:root，含 `plugins/ logs/ backup/` |
 | 放示例配置 | `/etc/skiff/config.toml`（**仅当不存在时**，已有配置只读不改） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
@@ -208,6 +215,21 @@ sh install.sh                     # 可加 --datadir / --listen / --no-docker �
 `--no-systemd` 只装二进制（容器/CI 用）；`--prefix /opt/skiff` 改安装前缀时，**unit 里的 `ExecStart` 要同步改**，否则 systemd 找不到可执行文件。
 
 装完立刻按 §1.1 对一遍权限，再进 §2.3。
+
+**旧站点一次性迁移**（安装/升级后执行；无 schema 变更，幂等）：
+
+```sh
+skiff sites chown-index --dry-run   # 先打印将调整的路径与数量，不落盘
+skiff sites chown-index             # 逐站 chown -R 到 skiff-web:skiff-web
+```
+
+范围仅 `<web_root>/sites/<domain>/index`，跳过符号链接；每站一条 `sites.chown-index` 审计，
+单站失败不影响其它站（该站本次已改项会尽量回滚）。`log/`、`ssl/`、`conf/` 不动。
+
+> **容器身份相关约束**：不启用容器级 `--user`、不启用 `userns-remap`、不挂载宿主
+> `/etc/passwd` 片段。PHP 容器保持镜像默认入口（root 启动），由只读挂载的
+> `php-account-init.sh` 在容器内幂等建立 `skiff-web` 后 `exec php-fpm`，再按池配置降权。
+> Node / Rust 运行时站点的代码目录仍归 root；FTP v1 不服务这两类站点。
 
 ### 2.3 首启与首次登录
 

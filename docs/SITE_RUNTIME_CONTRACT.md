@@ -137,6 +137,18 @@ Site (static / proxy)  不持有 RuntimeEnv
 - `static`：`index/` 必须存在，根目录是 `<站点目录>/index`。
 - `proxy`：不创建 `index/`；站点目录只含 `conf/ log/ ssl/`。目录页对 proxy 显示“反代站点无文档根”。
 - `runtime`（PHP）：`index/` 是文档根；PHP-FPM 池与 socket 由环境提供，不由站点目录提供。
+  池模板的 `user/group` 固定为统一身份 `skiff-web`（201000:201000），不再使用镜像自带的
+  `www-data`；debian 系镜像的 `session.save_path` 与 `opcache.file_cache` 在池模板里显式指到
+  `/tmp`（容器初始化脚本会建好 `skiff-web` 可写的 `/tmp/skiff-opcache`）。
+- **站点内容统一身份**：`index/` 子树归 `skiff-web:skiff-web`（目录 2775、文件 0664）。
+  建站落盘即对齐；FTP 账号绑定同一 uid；面板文件管理写完归还属主；插件经 `fs` 写宿主
+  `sites/<domain>/index/` 后同样归还（唯一例外，见 `docs/KERNEL_FS_CONTRACT.md` §8.1）。
+  `/www`、数据根与会话目录仍是 0711 可穿越不可列；只改 `index/` 子树属主。
+- **Node.js / Rust 例外**：代码目录 `/www/runtime/<kind>/<name>/app` 仍归 root，站点
+  `index/` 只是占位；FTP v1 不服务这两类站点。
+- **容器身份约束**：不启用容器级 `--user`、`userns-remap`，也不挂载宿主 `/etc/passwd` 片段。
+  PHP 容器保持镜像默认入口（root 启动），经只读挂载的 `php-account-init.sh` 在容器内幂等
+  建号后 `exec php-fpm`，由 root master 建 socket 再按池降权；`listen.owner/group` 与 `0660` 不变。
 - `runtime`（Node.js / Rust）：**方案 A —— 一个环境 = 一个应用进程 = 一个固定代码目录**。
   容器进入 `/www/runtime/<kind>/<name>/app` 执行启动命令（Node 默认 `npm start`，Rust
   `cargo run --release`），`node_modules/` / `target/` 也在该目录；新建环境时若 `app/` 缺失

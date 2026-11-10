@@ -124,6 +124,10 @@ pub struct ImageInfo {
     pub env: Vec<String>,
     pub repo_digests: Vec<String>,
     pub tags: Vec<String>,
+    /// `Config.User`：非空表示镜像默认以非 root 运行，Skiff 的容器内建号会失败。
+    pub user: Option<String>,
+    /// `Config.Entrypoint`：PHP 官方镜像为 `["docker-php-entrypoint"]`。
+    pub entrypoint: Vec<String>,
 }
 
 impl ImageInfo {
@@ -426,6 +430,8 @@ impl DockerService {
             env: config.env.unwrap_or_default(),
             repo_digests: i.repo_digests.unwrap_or_default(),
             tags: i.repo_tags.unwrap_or_default(),
+            user: config.user,
+            entrypoint: config.entrypoint.unwrap_or_default(),
         })
     }
 
@@ -1380,6 +1386,8 @@ mod tests {
                 "php:8.5-fpm-alpine@sha256:222".into(),
             ],
             tags: vec![],
+            user: Some(String::new()),
+            entrypoint: vec!["docker-php-entrypoint".into()],
         };
         assert_eq!(info.env_value("PHP_VERSION"), Some("8.5.12".into()));
         assert_eq!(info.env_value("PATH"), Some("/usr/local/bin".into()));

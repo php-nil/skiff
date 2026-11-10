@@ -126,6 +126,44 @@ else
     log "已创建运行组 $PLUGIN_GROUP"
 fi
 
+# 1.1 站点统一身份：固定 skiff-web 201000:201000（任何机器一致，不静默换号）
+#
+# 站点文档根 index/ 归这个身份：建站落盘、FTP 建号、面板文件管理写入、插件写宿主
+# 站点路径都对齐它，`ls -ln` 一眼可判权限是否正确。数值固定，所以安装前先做
+# preflight：201000 已被别的账号/组占用就拒绝，而不是换一个号继续装——换了号
+# 跨机就不一致，同样的排查经验在别的机器上会失效。
+SITE_USER=skiff-web
+SITE_ID=201000
+if getent passwd "$SITE_ID" >/dev/null 2>&1; then
+    existing=$(getent passwd "$SITE_ID" | cut -d: -f1)
+    [ "$existing" = "$SITE_USER" ] || die "UID $SITE_ID 已被账号 $existing 占用；站点统一身份要求固定 $SITE_USER，请先处理该账号"
+fi
+if getent group "$SITE_ID" >/dev/null 2>&1; then
+    existing=$(getent group "$SITE_ID" | cut -d: -f1)
+    [ "$existing" = "$SITE_USER" ] || die "GID $SITE_ID 已被组 $existing 占用；站点统一身份要求固定 $SITE_USER，请先处理该组"
+fi
+if getent group "$SITE_USER" >/dev/null 2>&1; then
+    existing=$(getent group "$SITE_USER" | cut -d: -f3)
+    [ "$existing" = "$SITE_ID" ] || die "组 $SITE_USER 已存在但 GID=$existing（要求 $SITE_ID）"
+    log "站点统一身份组 $SITE_USER 已存在"
+else
+    groupadd -g "$SITE_ID" "$SITE_USER" 2>/dev/null \
+        || addgroup -g "$SITE_ID" -S "$SITE_USER"
+    log "已创建站点统一身份组 $SITE_USER($SITE_ID)"
+fi
+if getent passwd "$SITE_USER" >/dev/null 2>&1; then
+    existing=$(getent passwd "$SITE_USER" | cut -d: -f3)
+    [ "$existing" = "$SITE_ID" ] || die "账号 $SITE_USER 已存在但 UID=$existing（要求 $SITE_ID）"
+    log "站点统一身份账号 $SITE_USER 已存在"
+else
+    if useradd -u "$SITE_ID" -g "$SITE_ID" -M -s /usr/sbin/nologin "$SITE_USER" 2>/dev/null; then
+        :
+    else
+        adduser -u "$SITE_ID" -D -H -S -G "$SITE_USER" "$SITE_USER"
+    fi
+    log "已创建站点统一身份账号 $SITE_USER($SITE_ID)"
+fi
+
 # 2. 数据与配置目录
 #
 # 属性要分开看：数据根本身 0711（可穿越、不可列目录），backup 0700，

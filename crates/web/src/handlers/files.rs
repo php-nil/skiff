@@ -194,6 +194,7 @@ pub async fn api_upload(
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
     let path = path.to_string();
+    let owner_path = path.clone();
     match handlers::blocking_fs(move || {
         file_cmd::upload(
             &fs,
@@ -208,7 +209,10 @@ pub async fn api_upload(
     .await
     .map_err(app_err)?
     {
-        Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
+        Ok(out) => {
+            state.restore_site_index_owner(&owner_path);
+            Ok(Json(json!({ "ok": true, "result": out })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -453,6 +457,7 @@ pub async fn api_write(
     let body = body_json(&body)?;
     let path = field(&body, "path")?.to_string();
     let content = field(&body, "content")?.to_string();
+    let owner_path = path.clone();
     let fs = state.admin_fs_arc();
     let user = user.user.username.clone();
     match handlers::blocking_fs(move || {
@@ -468,7 +473,10 @@ pub async fn api_write(
     .await
     .map_err(app_err)?
     {
-        Ok(out) => Ok(Json(json!({ "ok": true, "result": out }))),
+        Ok(out) => {
+            state.restore_site_index_owner(&owner_path);
+            Ok(Json(json!({ "ok": true, "result": out })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -492,7 +500,10 @@ pub async fn api_mkdir(
     .await
     .map_err(app_err)?
     {
-        Ok(path) => Ok(Json(json!({ "ok": true, "path": path }))),
+        Ok(path) => {
+            state.restore_site_index_owner(&path);
+            Ok(Json(json!({ "ok": true, "path": path })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -512,6 +523,7 @@ pub async fn api_rename(
     let owner = user.user.username.clone();
     let from = from.to_string();
     let to = to.to_string();
+    let owner_path = to.clone();
     match handlers::blocking_fs(move || {
         file_cmd::rename(
             &fs,
@@ -525,7 +537,10 @@ pub async fn api_rename(
     .await
     .map_err(app_err)?
     {
-        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Ok(()) => {
+            state.restore_site_index_owner_tree(&owner_path);
+            Ok(Json(json!({ "ok": true })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -563,6 +578,7 @@ pub async fn api_copy(
     let body = body_json(&body)?;
     let from = field(&body, "from")?.to_string();
     let to = field(&body, "to")?.to_string();
+    let owner_path = to.clone();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
@@ -583,7 +599,10 @@ pub async fn api_copy(
     .await
     .map_err(app_err)?
     {
-        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Ok(result) => {
+            state.restore_site_index_owner_tree(&owner_path);
+            Ok(Json(json!({ "ok": true, "result": result })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -672,6 +691,7 @@ pub async fn api_archive(
     }
     let dest = field(&body, "dest")?.to_string();
     let format = field(&body, "format")?.to_string();
+    let owner_path = dest.clone();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
@@ -693,7 +713,10 @@ pub async fn api_archive(
     .await
     .map_err(app_err)?
     {
-        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Ok(result) => {
+            state.restore_site_index_owner(&owner_path);
+            Ok(Json(json!({ "ok": true, "result": result })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -710,6 +733,7 @@ pub async fn api_extract(
     let body = body_json(&body)?;
     let archive = field(&body, "archive")?.to_string();
     let dest = field(&body, "dest")?.to_string();
+    let owner_path = dest.clone();
     let overwrite = body
         .get("overwrite")
         .and_then(Value::as_bool)
@@ -730,7 +754,10 @@ pub async fn api_extract(
     .await
     .map_err(app_err)?
     {
-        Ok(result) => Ok(Json(json!({ "ok": true, "result": result }))),
+        Ok(result) => {
+            state.restore_site_index_owner_tree(&owner_path);
+            Ok(Json(json!({ "ok": true, "result": result })))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }

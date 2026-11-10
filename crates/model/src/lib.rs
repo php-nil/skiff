@@ -19,6 +19,7 @@ mod error;
 mod path;
 mod rbac;
 mod scope;
+mod site;
 mod verb;
 pub use cidr::Cidr;
 pub use container::{
@@ -32,6 +33,7 @@ pub use path::{
 };
 pub use rbac::{Permission, RoleExt};
 pub use scope::{Scope, ScopeSet};
+pub use site::{is_site_index_path, SITE_GID, SITE_INDEX_DIR, SITE_UID, SITE_USER};
 pub use verb::{Tier, Verb, LABEL_OWNER, LABEL_PROJECT, LABEL_PROTECTED, PROJECT_SITES};
 
 /// RBAC 三种角色（§6.3）。危险操作（插件安装、对象 grant、宿主路径授权、

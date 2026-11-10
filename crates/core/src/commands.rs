@@ -482,6 +482,230 @@ pub fn backup(cfg: &Config, out: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// `sites chown-index`：把每个站点 `index/` 子树的属主对齐到统一站点身份。
+///
+/// 迁移口径（无 schema 变更）：
+/// - 幂等：只改属主与统一身份不一致的项，重复执行不会再动已对齐的文件；
+/// - 跳过符号链接：不跟随链接目标，也不修改链接本身（避免把链接指到的宿主文件带偏）；
+/// - 逐站审计：每站一条 `sites.chown-index`，ok/fail + 数量或失败原因；
+/// - 单站失败不影响其它站：该站本次已改项尽量回滚，保持原状。
+pub fn sites_chown_index(cfg: &Config, dry_run: bool) -> Result<()> {
+    let db = open_db(cfg)?;
+    let root = cfg.web_root.join("sites");
+    if !root.is_dir() {
+        println!("没有站点目录: {}（无需迁移）", root.display());
+        return Ok(());
+    }
+    let mut domains: Vec<std::ffi::OsString> = std::fs::read_dir(&root)
+        .with_context(|| format!("读取站点目录失败: {}", root.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type()
+                .map(|t| t.is_dir() && !t.is_symlink())
+                .unwrap_or(false)
+        })
+        .map(|e| e.file_name())
+        .collect();
+    domains.sort();
+    if domains.is_empty() {
+        println!("没有站点目录: {}（无需迁移）", root.display());
+        return Ok(());
+    }
+
+    let (mut ok, mut failed) = (0usize, 0usize);
+    for domain in domains {
+        let name = domain.to_string_lossy().to_string();
+        match chown_site_index(&root.join(&domain), dry_run) {
+            Ok(outcome) => {
+                ok += 1;
+                let detail = if !outcome.index_present {
+                    "无 index 目录，跳过".to_string()
+                } else if dry_run {
+                    format!(
+                        "dry-run：将调整 {} 项到 {}:{}",
+                        outcome.changed,
+                        skiff_model::SITE_UID,
+                        skiff_model::SITE_GID
+                    )
+                } else {
+                    format!(
+                        "{} 项已对齐 {}:{}",
+                        outcome.changed,
+                        skiff_model::SITE_UID,
+                        skiff_model::SITE_GID
+                    )
+                };
+                println!("[ok] {name}: {detail}");
+                if let Err(e) = db.audit("cli", "local", "sites.chown-index", &name, "ok", &detail)
+                {
+                    eprintln!("[!!] {name}: 审计写入失败（不影响属主结果）：{e}");
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                let detail = format!("{e:#}");
+                println!("[!!] {name}: {detail}（失败站点保持原状）");
+                if let Err(e) =
+                    db.audit("cli", "local", "sites.chown-index", &name, "fail", &detail)
+                {
+                    eprintln!("[!!] {name}: 审计写入失败：{e}");
+                }
+            }
+        }
+    }
+    println!(
+        "完成：成功 {ok} 站，失败 {failed} 站{}",
+        if dry_run {
+            "（dry-run，未落盘）"
+        } else {
+            ""
+        }
+    );
+    if failed > 0 {
+        return Err(anyhow::anyhow!(
+            "{failed} 个站点迁移失败，原因见上方输出与 sites.chown-index 审计"
+        ));
+    }
+    Ok(())
+}
+
+struct SiteChown {
+    changed: usize,
+    index_present: bool,
+}
+
+/// 单站迁移：递归 `index/`，跳过符号链接，返回本次实际调整项数。
+#[cfg(unix)]
+fn chown_site_index(site_dir: &Path, dry_run: bool) -> Result<SiteChown> {
+    use std::os::unix::fs::MetadataExt;
+
+    let index = site_dir.join(skiff_model::SITE_INDEX_DIR);
+    let meta = match std::fs::symlink_metadata(&index) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SiteChown {
+                changed: 0,
+                index_present: false,
+            })
+        }
+        Err(e) => return Err(e).with_context(|| format!("读取 {} 失败", index.display())),
+    };
+    // index 本身是符号链接时整站跳过：跟随会把改动带到链接目标（可能在别的站点）。
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Ok(SiteChown {
+            changed: 0,
+            index_present: false,
+        });
+    }
+
+    let mut entries = vec![index.clone()];
+    collect_tree(&index, &mut entries)?;
+    let target = (skiff_model::SITE_UID, skiff_model::SITE_GID);
+
+    if dry_run {
+        let mut count = 0usize;
+        for path in &entries {
+            let Ok(m) = std::fs::symlink_metadata(path) else {
+                continue;
+            };
+            if m.file_type().is_symlink() {
+                continue;
+            }
+            if (m.uid(), m.gid()) != target {
+                println!(
+                    "  [dry-run] {}（{}:{} → {}:{}）",
+                    path.display(),
+                    m.uid(),
+                    m.gid(),
+                    target.0,
+                    target.1
+                );
+                count += 1;
+            }
+        }
+        return Ok(SiteChown {
+            changed: count,
+            index_present: true,
+        });
+    }
+
+    let mut changed: Vec<(PathBuf, u32, u32)> = Vec::new();
+    for path in &entries {
+        let m = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(e) => {
+                rollback(&changed);
+                return Err(e).with_context(|| format!("读取 {} 失败", path.display()));
+            }
+        };
+        if m.file_type().is_symlink() {
+            continue;
+        }
+        let old = (m.uid(), m.gid());
+        if old == target {
+            continue;
+        }
+        if let Err(e) = lchown(path, target) {
+            rollback(&changed);
+            return Err(e).with_context(|| format!("调整 {} 属主失败", path.display()));
+        }
+        changed.push((path.clone(), old.0, old.1));
+    }
+    Ok(SiteChown {
+        changed: changed.len(),
+        index_present: true,
+    })
+}
+
+#[cfg(not(unix))]
+fn chown_site_index(_site_dir: &Path, _dry_run: bool) -> Result<SiteChown> {
+    Ok(SiteChown {
+        changed: 0,
+        index_present: false,
+    })
+}
+
+/// 递归收集目录项，跳过符号链接（不跟随、不收集链接本身）。
+#[cfg_attr(not(unix), allow(dead_code))]
+fn collect_tree(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("读取目录失败: {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        out.push(path.clone());
+        if meta.is_dir() {
+            collect_tree(&path, out)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn lchown(path: &Path, (uid, gid): (u32, u32)) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let raw = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "路径含 NUL"))?;
+    // SAFETY: 合法 C 字符串；失败由 last_os_error 带出可读原因。
+    if unsafe { libc::lchown(raw.as_ptr(), uid, gid) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// 回滚本次已改项，尽量让失败站点保持原状。
+#[cfg(unix)]
+fn rollback(changed: &[(PathBuf, u32, u32)]) {
+    for (path, uid, gid) in changed.iter().rev() {
+        let _ = lchown(path, (*uid, *gid));
+    }
+}
+
 fn copy_plugin_data(src: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     for entry in std::fs::read_dir(src)? {
@@ -596,5 +820,41 @@ mod tests {
         assert!(hint.contains("skiff trust import"));
         assert!(hint.contains(&official.join("public-key.txt").display().to_string()));
         assert!(!hint.contains("包自带公钥但尚未信任"));
+    }
+
+    /// 迁移只处理普通目录与文件：符号链接既不跟随、也不收集。
+    #[test]
+    fn collect_tree_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/file.txt"), b"x").unwrap();
+        std::fs::write(root.join("top.txt"), b"y").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("a"), root.join("link-dir")).unwrap();
+            std::os::unix::fs::symlink(root.join("top.txt"), root.join("link-file")).unwrap();
+        }
+
+        let mut out = Vec::new();
+        collect_tree(root, &mut out).unwrap();
+        let names: Vec<String> = out
+            .iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"a/b".to_string()));
+        assert!(names.contains(&"a/file.txt".to_string()));
+        assert!(names.contains(&"top.txt".to_string()));
+        #[cfg(unix)]
+        assert!(
+            !names.iter().any(|n| n.starts_with("link-")),
+            "符号链接应被跳过: {names:?}"
+        );
     }
 }

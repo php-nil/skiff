@@ -102,6 +102,10 @@ pub const CONTAINER_PHP_POOL: &str = "/usr/local/etc/php-fpm.d/www.conf";
 pub const CONTAINER_PHP_INI: &str = "/usr/local/etc/php/php.ini";
 /// 宿主托管的扩展 ini 目录在容器内的位置。
 pub const CONTAINER_PHP_SKIFF_CONFD: &str = "/usr/local/etc/php/conf.d-skiff";
+/// 数据根中的 PHP 容器身份初始化脚本（宿主侧，只读挂载进容器）。
+pub const PHP_INIT_SCRIPT_NAME: &str = "php-account-init.sh";
+/// 初始化脚本在容器内的固定挂载点。
+pub const CONTAINER_PHP_INIT: &str = "/usr/local/etc/skiff-php-init.sh";
 /// PHP 启动时扫描的 ini 目录：镜像自带 conf.d 在前，Skiff 托管目录在后。
 pub const PHP_INI_SCAN_DIR_VALUE: &str =
     ":/usr/local/etc/php/conf.d:/usr/local/etc/php/conf.d-skiff";
@@ -114,6 +118,38 @@ pub const DEFAULT_PHP_INI: &str =
     "; Skiff 托管的 PHP 主配置（挂载为 /usr/local/etc/php/php.ini）。\n\
      ; 保存前会用容器内 `php -c` 校验；保存后重启 FPM，失败自动回滚。\n\
      ; 注意：页面「PHP 参数」写入 FPM 池的 php_admin_value，优先级高于本文件同名项。\n";
+
+/// PHP 容器身份初始化脚本（数据根、只读挂载、root 执行）。
+///
+/// 不修改镜像：按包管理器分支幂等建立 `skiff-web` 201000:201000，随后
+/// `exec php-fpm` 让 master 仍以 root 启动、再按池配置降权。
+pub const PHP_ACCOUNT_INIT_SCRIPT: &str = r#"#!/bin/sh
+# Skiff 统一站点身份初始化：容器内幂等建立 skiff-web(201000:201000)。
+# 由 root 执行；建号失败直接退出，不带着不一致身份启动 php-fpm。
+set -eu
+
+SITE_USER=skiff-web
+SITE_ID=201000
+
+if id -u "$SITE_USER" >/dev/null 2>&1; then
+    if [ "$(id -u "$SITE_USER")" != "$SITE_ID" ]; then
+        echo "[skiff] $SITE_USER 已存在但 uid=$(id -u "$SITE_USER")，要求 $SITE_ID" >&2
+        exit 1
+    fi
+elif [ -f /etc/alpine-release ]; then
+    addgroup -g "$SITE_ID" -S "$SITE_USER" 2>/dev/null || true
+    adduser -u "$SITE_ID" -D -H -S -G "$SITE_USER" "$SITE_USER"
+else
+    groupadd -g "$SITE_ID" "$SITE_USER" 2>/dev/null || true
+    useradd -u "$SITE_ID" -g "$SITE_ID" -M -s /usr/sbin/nologin "$SITE_USER"
+fi
+
+# Debian 系默认 session.save_path 归 www-data；换 uid 后统一改到 /tmp。
+mkdir -p /tmp/skiff-opcache
+chown "$SITE_USER:$SITE_USER" /tmp/skiff-opcache
+
+exec php-fpm
+"#;
 /// `fastcgi_params` 的容器内绝对路径。
 ///
 /// vhost 里的 `include` 必须写绝对路径：主配置编辑会用
@@ -280,7 +316,7 @@ fn seed_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 }
 
 /// 站点目录内的固定子目录（一站一目录，整目录备份即整站备份）。
-pub const SITE_INDEX_DIR: &str = "index";
+pub use skiff_model::SITE_INDEX_DIR;
 pub const SITE_LOG_DIR: &str = "log";
 pub const SITE_SSL_DIR: &str = "ssl";
 pub const SITE_CONF_DIR: &str = "conf";
@@ -319,6 +355,8 @@ pub struct SiteSettings {
     pub conf_dir: PathBuf,
     /// 运行环境根目录；每个 PHP 版本在 `runtime/php-<version>/` 下独立成套。
     pub runtime_dir: PathBuf,
+    /// 数据根：PHP 容器身份初始化脚本等宿主托管文件放在这里。
+    pub data_dir: PathBuf,
     pub nginx_image: String,
     pub php_image: String,
     pub port: u16,
@@ -371,6 +409,64 @@ fn dir_usage(root: &Path) -> (u64, u64) {
 pub fn site_index_dir(site_dir: &Path) -> PathBuf {
     site_dir.join(SITE_INDEX_DIR)
 }
+
+/// 把单个路径归还站点统一身份；`lchown` 不跟随符号链接。
+///
+/// 非 root 运行（开发机 / 受限部署）时只记一条告警，不阻断业务；
+/// 真实环境由安装脚本保证 Skiff 以 root 运行，缺失的属主由迁移子命令兜底。
+#[cfg(unix)]
+fn lchown_site(path: &Path) {
+    use std::os::unix::fs::lchown;
+    if let Err(e) = lchown(
+        path,
+        Some(skiff_model::SITE_UID),
+        Some(skiff_model::SITE_GID),
+    ) {
+        eprintln!("[skiff] 归还站点属主失败 {}：{e}", path.display());
+    }
+}
+
+#[cfg(not(unix))]
+fn lchown_site(_path: &Path) {}
+
+/// 递归把站点文档根归还统一身份（`skiff-web` 201000:201000）。
+///
+/// 用 `symlink_metadata` 判定类型：符号链接只改链接本身，绝不顺着链接读目录，
+/// 避免把改动带到站点之外。
+pub fn align_site_index_owner(root: &Path) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let is_dir = match std::fs::symlink_metadata(&path) {
+            Ok(m) => {
+                if m.file_type().is_symlink() {
+                    lchown_site(&path);
+                    continue;
+                }
+                m.is_dir()
+            }
+            Err(_) => continue,
+        };
+        lchown_site(&path);
+        if !is_dir {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() && !ft.is_symlink() {
+                stack.push(entry.path());
+            } else {
+                // 普通文件或符号链接：只改自身，不跟随
+                lchown_site(&entry.path());
+            }
+        }
+    }
+}
+
+/// 判断宿主路径是否位于某个站点的 `index/` 子树（`<web_root>/sites/<domain>/index/...`）。
+pub use skiff_model::is_site_index_path;
 
 pub fn site_log_dir(site_dir: &Path) -> PathBuf {
     site_dir.join(SITE_LOG_DIR)
@@ -2420,6 +2516,8 @@ impl AppState {
             .map_err(|e| format!("创建依赖包缓存目录失败：{e}"))?;
         let socket_container = runtime_container_socket(&rt.kind, &rt.name);
         self.ensure_php_config_files(&s, &rt.kind, &rt.name)?;
+        self.ensure_php_account_init(&s)
+            .map_err(|e| format!("准备 PHP 容器身份初始化脚本失败：{e}"))?;
         // 标记“本实例创建时已带 php.ini / conf.d 挂载”：只有安装流程写这个标记，
         // 保存配置时补目录不写，旧实例的“编辑不生效”提示就不会被误清掉。
         std::fs::write(
@@ -2438,6 +2536,9 @@ impl AppState {
         let image_digest = self
             .ensure_runtime_image(job_id, &image, &rt.image_digest)
             .await?;
+        let pinned = pinned_image_ref(&image, &image_digest);
+        // 统一身份依赖镜像「root 启动 + 官方入口」；不满足直接失败，不猜。
+        self.verify_php_image_identity(&pinned).await?;
         if self.job_cancelled(job_id).await {
             return Err("已取消".into());
         }
@@ -2457,14 +2558,9 @@ impl AppState {
                     .map_err(|e| format!("移除旧容器失败：{e}"))?;
             }
         }
-        self.ensure_container(&self.php_spec_for(
-            &s,
-            &rt.kind,
-            &rt.name,
-            &pinned_image_ref(&image, &image_digest),
-        ))
-        .await
-        .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
+        self.ensure_container(&self.php_spec_for(&s, &rt.kind, &rt.name, &pinned))
+            .await
+            .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
 
         let enabled = runtime_catalog::split_extensions(&rt.extensions);
         if enabled.is_empty() {
@@ -4518,6 +4614,7 @@ impl AppState {
             sites_dir: web_root.join("sites"),
             conf_dir: web_root.join("nginx").join("conf.d"),
             runtime_dir: web_root.join("runtime"),
+            data_dir: self.cfg.data_dir.clone(),
             nginx_image: pick(KEY_NGINX_IMAGE, DEFAULT_NGINX_IMAGE),
             php_image: pick(KEY_PHP_IMAGE, DEFAULT_PHP_IMAGE),
             port,
@@ -4561,6 +4658,65 @@ impl AppState {
             write_if_changed(&ini, DEFAULT_PHP_INI.as_bytes(), 0o644)?;
         }
         Ok(())
+    }
+
+    /// 写数据根的 PHP 容器身份初始化脚本（幂等；内容一致不重写）。
+    ///
+    /// 脚本只读挂载进容器，由 root 执行：按包管理器幂等建立 `skiff-web`
+    /// 201000:201000，再 `exec php-fpm`；镜像自带的 `www-data` 保留不动。
+    fn ensure_php_account_init(&self, s: &SiteSettings) -> Result<PathBuf, String> {
+        std::fs::create_dir_all(&s.data_dir)
+            .map_err(|e| format!("创建数据根 {} 失败：{e}", s.data_dir.display()))?;
+        let path = s.data_dir.join(PHP_INIT_SCRIPT_NAME);
+        write_if_changed(&path, PHP_ACCOUNT_INIT_SCRIPT.as_bytes(), 0o644)?;
+        Ok(path)
+    }
+
+    /// 核验实际拉取的 PHP 镜像满足前提：`Config.User` 为空、带 `docker-php-entrypoint`。
+    ///
+    /// 不满足时明确拒绝，不静默换号或改用别的启动路径。
+    async fn verify_php_image_identity(&self, image: &str) -> Result<(), String> {
+        let info = self
+            .docker()
+            .inspect_image(image)
+            .await
+            .map_err(|e| format!("读取 PHP 镜像元数据失败：{e}"))?;
+        let user = info.user.as_deref().unwrap_or("").trim();
+        if !user.is_empty() {
+            return Err(format!(
+                "PHP 镜像 {image} 的 Config.User 为 {user}（要求为空），容器内无法建立统一站点账号"
+            ));
+        }
+        if !info
+            .entrypoint
+            .iter()
+            .any(|e| e.contains("docker-php-entrypoint"))
+        {
+            return Err(format!(
+                "PHP 镜像 {image} 缺少 docker-php-entrypoint，未按官方入口约定，拒绝使用"
+            ));
+        }
+        Ok(())
+    }
+
+    /// 面板写入站点文档根后归还统一身份（仅 `sites/<domain>/index` 子树）。
+    ///
+    /// 只处理写入目标本身：单文件保存/上传/新建目录走这里，避免每次写都遍历整棵树。
+    pub fn restore_site_index_owner(&self, path: &str) {
+        let p = Path::new(path);
+        if is_site_index_path(p) {
+            lchown_site(p);
+        }
+    }
+
+    /// 同 [`Self::restore_site_index_owner`]，但递归处理整棵子树。
+    ///
+    /// 用于复制、解压与重命名这类可能一次生成/移动大量文件的动作。
+    pub fn restore_site_index_owner_tree(&self, path: &str) {
+        let p = Path::new(path);
+        if is_site_index_path(p) {
+            align_site_index_owner(p);
+        }
     }
 
     pub async fn site_env_status(&self) -> SiteEnvStatus {
@@ -4913,7 +5069,8 @@ impl AppState {
         ContainerSpec {
             image: image.to_string(),
             name: Some(runtime_container_name(kind, name)),
-            command: None,
+            // 以 root 起、脚本内建号后再 exec php-fpm；不改镜像本身。
+            command: Some(vec!["/bin/sh".to_string(), CONTAINER_PHP_INIT.to_string()]),
             entrypoint: None,
             env,
             labels: skiff_labels("php"),
@@ -4942,6 +5099,11 @@ impl AppState {
                 Mount::Bind {
                     source: s.runtime_php_confd(kind, name).display().to_string(),
                     target: CONTAINER_PHP_SKIFF_CONFD.to_string(),
+                    read_only: true,
+                },
+                Mount::Bind {
+                    source: s.data_dir.join(PHP_INIT_SCRIPT_NAME).display().to_string(),
+                    target: CONTAINER_PHP_INIT.to_string(),
                     read_only: true,
                 },
                 Mount::Bind {
@@ -5859,6 +6021,8 @@ impl AppState {
             }
             _ => {}
         }
+        // 文档根统一归属站点身份：宿主 FTP 与容器内 PHP 都以同一 uid 写这棵树。
+        align_site_index_owner(&site_index_dir(&root));
 
         let site = db
             .create_site(&StoreNewSite {
@@ -7355,6 +7519,7 @@ mod tests {
             sites_dir: dir.join("sites"),
             conf_dir: dir.join("nginx").join("conf.d"),
             runtime_dir: dir.join("runtime"),
+            data_dir: dir.join("data"),
             nginx_image: String::new(),
             php_image: String::new(),
             port: 80,
@@ -7591,6 +7756,7 @@ mod tests {
             sites_dir: root.join("sites"),
             conf_dir: root.join("nginx").join("conf.d"),
             runtime_dir: root.join("runtime"),
+            data_dir: root.join("data"),
             nginx_image: DEFAULT_NGINX_IMAGE.into(),
             php_image: DEFAULT_PHP_IMAGE.into(),
             port: DEFAULT_PORT,

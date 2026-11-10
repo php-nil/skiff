@@ -59,6 +59,10 @@ pub enum Command {
     Backup {
         out: Option<PathBuf>,
     },
+    /// 一次性把站点文档根 `index/` 的属主对齐到统一身份（幂等）
+    SitesChownIndex {
+        dry_run: bool,
+    },
 }
 
 pub const HELP: &str = "\
@@ -88,6 +92,9 @@ Skiff（轻舟）· 极简 Linux 服务器管理面板
                             缺省 docker:read（最小权限）。docker:write 蕴含 docker:read
   audit [n]                 输出最近 n 条审计（默认 20）
   backup [--out <path>]     备份数据库与插件数据（VACUUM INTO）
+  sites chown-index [--dry-run]
+                            把 /www/sites/<域名>/index 的属主对齐到统一站点身份
+                            （默认 201000:201000；幂等，跳过符号链接，逐站审计）
 
 全局选项:
   --config <path>           配置文件路径（默认 /etc/skiff/config.toml）
@@ -111,6 +118,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
     let mut allow_unsigned = false;
     let mut out: Option<PathBuf> = None;
     let mut label = "manual".to_string();
+    let mut dry_run = false;
 
     while i < args.len() {
         let a = &args[i];
@@ -124,6 +132,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
             "--yes" | "-y" => yes = true,
             "--delete-data" => delete_data = true,
             "--allow-unsigned" => allow_unsigned = true,
+            "--dry-run" => dry_run = true,
             "--grant" => {
                 i += 1;
                 grants.push(args.get(i).ok_or("--grant 缺少参数")?.clone());
@@ -236,6 +245,10 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
             limit: positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(20),
         },
         "backup" => Command::Backup { out },
+        "sites" => match positional.get(1).map(|s| s.as_str()) {
+            Some("chown-index") => Command::SitesChownIndex { dry_run },
+            other => return Err(format!("未知 sites 子命令: {other:?}\n\n{HELP}")),
+        },
         other => return Err(format!("未知命令: {other}\n\n{HELP}")),
     };
     Ok(Cli {
@@ -324,6 +337,21 @@ mod tests {
         // 缺公钥文件路径必须报错，不能静默落到 serve。
         assert!(parse(args(&["trust", "import"])).is_err());
         assert!(parse(args(&["trust", "nope"])).is_err());
+    }
+
+    #[test]
+    fn parses_sites_chown_index_with_dry_run() {
+        let c = parse(args(&["sites", "chown-index"])).unwrap();
+        assert!(matches!(
+            c.command,
+            Command::SitesChownIndex { dry_run: false }
+        ));
+        let c = parse(args(&["sites", "chown-index", "--dry-run"])).unwrap();
+        assert!(matches!(
+            c.command,
+            Command::SitesChownIndex { dry_run: true }
+        ));
+        assert!(parse(args(&["sites", "nope"])).is_err());
     }
 
     #[test]

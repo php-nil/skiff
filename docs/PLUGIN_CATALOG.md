@@ -206,7 +206,7 @@ verbs = ["status", "install", "service.configure", "uninstall", "sites.list", "a
 - **为什么必须新增内核原语**：`fs` 只能在授权根内读写，装不了宿主包；`docker` 白名单不开放 `create/exec`，且 FTP 不走容器；`scheduler` 只调度任务，不执行宿主命令。三条现有能力面都不足以完成「apt 安装 pure-ftpd + `pure-pw` 建号 + chown 对齐 + systemd 启停」，因此新增 `ftp` 能力面，插件只做 UI 与编排。
 - **安装形态**：宿主 `pure-ftpd` 软件包 + systemd（Debian 默认 standalone），不用容器——避免第三方镜像供应链与 Docker 端口段发布，生命周期与 systemd 直装一致；1Panel 受限形态（`Form::DockerRestricted`）一律 503，`Capability::available_in` 也不把它列入。
 - **账号模型**：账号绑定站点，每站可多账号；登录名 `skiff_<slug16>_<fnv4>_<account>`，密码只经 stdin 交给 `pure-pw`，落 `pureftpd.pdb` 哈希；chroot 固定 `<site_root>/index`。
-- **权限对齐**：建号时在运行容器内 `id -u/-g www-data` 探测 uid/gid（不写死 82），`MinUID` 只降不升；`Umask 002 002`（conf 文件写两个空白分隔的三位八进制数，wrapper 不接受冒号）；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
+- **权限对齐**：站点统一身份固定 `skiff-web` 201000:201000（不再探测容器内 `www-data`，静态站也不再动态建 `skiff-ftp`）；`MinUID` 只降不升；`Umask 002 002`（conf 文件写两个空白分隔的三位八进制数，wrapper 不接受冒号）；只递归对齐 `index/`（目录 2775、文件 0664/0775），不碰 `log/`、`ssl/`、`conf/` 与其它站点。
 - **安全边界**：`ChrootEveryone`、`NoAnonymous`、`PureDB`；连接上限与每 IP 上限可配（默认 30/3）；TLS 可关/显式可选/显式强制，证书与私钥路径可配，非法路径直接报错不静默降级。
 - **fail2ban 收口**：FTP 不再安装、配置或卸载 fail2ban，安装时显式 `login_guard=false` 阻止旧内核路径代管；「启用 fail2ban 防护」是可选开关，经 interop 调 `com.skiff.firewall:fail2ban.*`（jail `pure-ftpd`，filter `pure-ftpd`，port 取内核 `listen_port`）。未安装防火墙插件时该选项不可用，不影响 FTP 其它功能。
 - **状态与账号**：`ftp.status` 回传监听端口、是否在监听、当前连接数；登录防护状态另由 `protection` 汇总防火墙插件返回（`available=false` + 原因表示未安装/调用失败）；账号可启用/禁用；最后登录 pure-ftpd 用户库不记录，明确标注不可得；配额/速率列为后续项。
