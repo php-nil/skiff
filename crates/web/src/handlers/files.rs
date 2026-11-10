@@ -20,8 +20,8 @@ use axum::Json;
 use futures_util::stream;
 use serde_json::{json, Value};
 
+use skiff_app::actions as act;
 use skiff_app::admin_fs::{FsErr, FsPathKind, MAX_EDIT_BYTES};
-use skiff_model::Permission;
 
 use crate::error::AppError;
 use crate::handlers;
@@ -66,8 +66,10 @@ fn bad_request(message: impl Into<String>) -> JsonErr {
     )
 }
 
-fn admin(user: &crate::state::CurrentUser) -> Result<(), JsonErr> {
-    handlers::require_permission(user, Permission::Admin).map_err(app_err)
+fn admin(user: &crate::state::CurrentUser, action: act::Action) -> Result<(), JsonErr> {
+    crate::authz::authorize(user, action)
+        .map(|_| ())
+        .map_err(app_err)
 }
 
 fn csrf(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Result<(), JsonErr> {
@@ -89,7 +91,7 @@ pub async fn page(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    handlers::require_permission(&user, Permission::Admin)?;
+    crate::authz::authorize(&user, act::FILE_BROWSE)?;
     let start_path = q
         .get("path")
         .filter(|p| p.starts_with('/'))
@@ -119,7 +121,7 @@ pub async fn api_tree(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_BROWSE)?;
     let path = q
         .get("path")
         .filter(|p| !p.is_empty())
@@ -138,7 +140,7 @@ pub async fn api_upload(
     parts: Parts,
     body: Bytes,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_UPLOAD)?;
     csrf(&state, &user, &parts)?;
     let path = q
         .get("path")
@@ -176,7 +178,7 @@ pub async fn api_download(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, JsonErr> {
-    admin(&user)?;
+    admin(&user, act::FILE_BROWSE)?;
     let path = q
         .get("path")
         .filter(|p| !p.is_empty())
@@ -339,7 +341,7 @@ pub async fn api_list(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_BROWSE)?;
     let path = q
         .get("path")
         .filter(|p| !p.is_empty())
@@ -355,7 +357,7 @@ pub async fn api_read(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_READ)?;
     let path = q
         .get("path")
         .filter(|p| !p.is_empty())
@@ -378,7 +380,7 @@ pub async fn api_write(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_WRITE)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?.to_string();
@@ -400,7 +402,7 @@ pub async fn api_mkdir(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_MKDIR)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
@@ -416,7 +418,7 @@ pub async fn api_rename(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_RENAME)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let from = field(&body, "from")?;
@@ -433,7 +435,7 @@ pub async fn api_remove(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_REMOVE)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?.to_string();
@@ -455,7 +457,7 @@ pub async fn api_copy(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_COPY)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let from = field(&body, "from")?.to_string();
@@ -482,7 +484,7 @@ pub async fn api_chmod(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_CHMOD)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
@@ -500,7 +502,7 @@ pub async fn api_chown(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_CHOWN)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
@@ -519,7 +521,7 @@ pub async fn api_archive(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_ARCHIVE)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let sources = string_array(&body, "sources")?;
@@ -550,7 +552,7 @@ pub async fn api_extract(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_EXTRACT)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let archive = field(&body, "archive")?.to_string();
@@ -576,7 +578,7 @@ pub async fn trash_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    handlers::require_permission(&user, Permission::Admin)?;
+    crate::authz::authorize(&user, act::FILE_TRASH_READ)?;
     let page = FsTrashPage {
         ctx: handlers::page_ctx(&state, &user, "core/files/trash"),
         retention_days: state.cfg.trash_retention_days,
@@ -588,7 +590,7 @@ pub async fn api_trash_list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_TRASH_READ)?;
     match state.admin_fs().trash_list(&user.user.username) {
         Ok(items) => Ok(Json(json!({
             "ok": true,
@@ -605,7 +607,7 @@ pub async fn api_trash_restore(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_TRASH_RESTORE)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let id = field(&body, "id")?.to_string();
@@ -630,7 +632,7 @@ pub async fn api_trash_purge(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_TRASH_PURGE)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let id = field(&body, "id")?.to_string();
@@ -650,7 +652,7 @@ pub async fn api_trash_clear(
     AuthUser(user): AuthUser,
     parts: Parts,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_TRASH_CLEAR)?;
     csrf(&state, &user, &parts)?;
     let fs = state.admin_fs_arc();
     let name = user.user.username.clone();
@@ -676,7 +678,7 @@ pub async fn quotas_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    handlers::require_permission(&user, Permission::Admin)?;
+    crate::authz::authorize(&user, act::FILE_QUOTA_READ)?;
     let page = FsQuotasPage {
         ctx: handlers::page_ctx(&state, &user, "core/files/quotas"),
     };
@@ -687,7 +689,7 @@ pub async fn api_quota_list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_QUOTA_READ)?;
     match state.admin_fs().quota_list(&user.user.username) {
         Ok(quotas) => Ok(Json(json!({ "ok": true, "quotas": quotas }))),
         Err(e) => Err(fs_err(e)),
@@ -700,7 +702,7 @@ pub async fn api_quota_set(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_QUOTA_SET)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
@@ -721,7 +723,7 @@ pub async fn api_quota_cancel(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_QUOTA_CANCEL)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?;
@@ -737,7 +739,7 @@ pub async fn api_quota_scan(
     parts: Parts,
     body: String,
 ) -> ApiResult {
-    admin(&user)?;
+    admin(&user, act::FILE_QUOTA_SCAN)?;
     csrf(&state, &user, &parts)?;
     let body = body_json(&body)?;
     let path = field(&body, "path")?.to_string();

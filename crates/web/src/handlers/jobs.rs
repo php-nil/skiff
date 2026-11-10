@@ -17,12 +17,13 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
+use skiff_app::actions as act;
 use skiff_app::jobs::{CancelOutcome, Job, JobStatus};
 
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
-use crate::state::{AppState, CurrentUser};
+use crate::state::AppState;
 use crate::templates::{JobDetailPage, JobDetailView, JobRowView, JobsPage};
 use crate::util::{form_first, parse_form};
 
@@ -30,10 +31,6 @@ use crate::util::{form_first, parse_form};
 const LOG_PAGE: i64 = 500;
 /// SSE 尾随间隔：服务端尾随 DB，客户端只负责追加。
 const TAIL_INTERVAL: Duration = Duration::from_millis(400);
-
-fn require_admin(user: &CurrentUser) -> Result<(), AppError> {
-    handlers::require_permission(user, skiff_model::Permission::Admin)
-}
 
 fn fmt_ts(ts: Option<i64>) -> String {
     use chrono::TimeZone;
@@ -219,7 +216,7 @@ pub async fn cancel(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::JOB_CANCEL)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let outcome = state
@@ -255,7 +252,7 @@ pub async fn retry(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::JOB_RETRY)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -282,7 +279,7 @@ pub async fn logs_json(
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::JOB_LOGS)?;
     let job = load_job(&state, &id)?;
     let after = q
         .get("after")
@@ -362,7 +359,7 @@ pub async fn logs_sse(
     Query(q): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::JOB_LOGS)?;
     load_job(&state, &id)?;
     let mut cursor = q
         .get("after")

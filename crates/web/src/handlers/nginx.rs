@@ -9,6 +9,8 @@ use axum::response::Response;
 
 use crate::error::AppError;
 use crate::handlers;
+use skiff_app::actions as act;
+
 use crate::handlers::sites::require_admin;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
@@ -125,7 +127,7 @@ pub async fn save_main(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::WEB_CONFIG_MAIN_SAVE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let content = form_first(&form, "content");
@@ -183,7 +185,7 @@ pub async fn save_params(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::WEB_CONFIG_PARAMS_SAVE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);

@@ -12,6 +12,8 @@ use axum::http::request::Parts;
 use axum::response::Response;
 use serde_json::Value;
 
+use skiff_app::actions as act;
+
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
@@ -170,10 +172,6 @@ pub async fn detail(
     })
 }
 
-fn require_admin(user: &crate::state::CurrentUser) -> Result<(), AppError> {
-    handlers::require_permission(user, skiff_model::Permission::Admin)
-}
-
 fn back(id: &str) -> String {
     format!(
         "/{}/tasks/{}",
@@ -189,7 +187,7 @@ pub async fn toggle(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::TASK_TOGGLE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let svc = service(&state)?;
@@ -229,7 +227,7 @@ pub async fn run(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::TASK_RUN)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let svc = service(&state)?;
@@ -271,7 +269,7 @@ pub async fn delete(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::TASK_DELETE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let svc = service(&state)?;

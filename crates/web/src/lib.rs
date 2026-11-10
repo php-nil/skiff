@@ -7,6 +7,7 @@
 //! 与表单字段，放不进 layer。登录限流同理，只在 `handlers/auth` 路径生效。
 
 pub mod assets;
+pub mod authz;
 pub mod error;
 pub mod handlers;
 pub mod menu;

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
 use axum::response::Response;
+use skiff_app::actions as act;
 use skiff_store::{Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::state::sites::{NewSite, SiteEnvStatus, SiteError};
@@ -636,7 +637,7 @@ pub async fn create(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_CREATE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let values = new_form(&form);
@@ -857,7 +858,7 @@ pub async fn env_add(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_CREATE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let kind = form_first(&form, "kind").trim().to_string();
@@ -941,7 +942,7 @@ pub async fn env_images_save(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_IMAGES)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let nginx = form
@@ -977,7 +978,7 @@ pub async fn action(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_ACTION)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let running = match action.as_str() {
@@ -1022,7 +1023,7 @@ pub async fn set_default(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_SET_DEFAULT)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let enabled = matches!(
@@ -1064,7 +1065,7 @@ pub async fn domains(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_UPDATE_DOMAINS)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let action = form_first(&form, "action").trim().to_string();
@@ -1145,7 +1146,7 @@ pub async fn ssl_action(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_SSL)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let action = form_first(&form, "action");
@@ -1467,7 +1468,7 @@ pub async fn set_backup(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_SET_BACKUP)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let enabled = matches!(
@@ -1541,7 +1542,7 @@ pub async fn save_config(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_SAVE_CONFIG)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let content = form_first(&form, "content");
@@ -1604,7 +1605,7 @@ pub async fn batch(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_BATCH_CREATE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let action = form_first(&form, "action");
@@ -1772,7 +1773,7 @@ pub async fn delete(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::SITE_DELETE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     // 输入域名确认：前端按钮禁用只是防手滑，服务端也必须校验，
@@ -2036,7 +2037,7 @@ pub async fn runtime_config_file_save(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_CONFIG_FILE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let key = form_first(&form, "key");
@@ -2105,7 +2106,7 @@ pub async fn runtime_port_save(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_PORT)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -2183,7 +2184,7 @@ pub async fn runtime_clone(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_CLONE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -2269,7 +2270,7 @@ pub async fn runtime_action(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_ACTION)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     if !matches!(
@@ -2493,7 +2494,7 @@ pub async fn runtime_extensions_save(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_EXTENSIONS)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let selected = form.get("ext").cloned().unwrap_or_default();
@@ -2554,7 +2555,7 @@ pub async fn runtime_extension_install(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_INSTALL_EXTENSION)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -2609,7 +2610,7 @@ pub async fn runtime_extension_uninstall(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_UNINSTALL_EXTENSION)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -2664,7 +2665,7 @@ pub async fn runtime_extensions_batch(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_BATCH_EXTENSIONS)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let op = form_first(&form, "op").trim().to_string();
@@ -2753,7 +2754,7 @@ pub async fn runtime_pecl_install(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_INSTALL_PECL)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let name = form_first(&form, "name").trim().to_string();
@@ -2831,7 +2832,7 @@ pub async fn runtime_probe(
     parts: Parts,
     body: String,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_PROBE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -2871,7 +2872,7 @@ pub async fn runtime_unbind_site(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_UNBIND_SITE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let ip = handlers::client_ip(&state, &parts);
@@ -2922,7 +2923,7 @@ pub async fn runtime_config_save(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_CONFIG)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let default = skiff_app::sites::PhpRuntimeConfig::default();
@@ -3010,7 +3011,7 @@ pub async fn runtime_node_config_save(
     parts: Parts,
     body: String,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_NODE_CONFIG)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let default = skiff_app::sites::NodeRuntimeConfig::default();
