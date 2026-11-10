@@ -11,6 +11,7 @@ pub mod model;
 pub mod store;
 pub mod verify;
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,7 +21,7 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use fetch::{Conditional, SharedTransport, UreqTransport};
-use model::{Index, Manifest, SignatureFile};
+use model::{Index, Manifest, PluginEntry, SignatureFile, BLOB_PREFIX};
 
 /// 单次 HTTP 请求的默认硬超时。
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -179,12 +180,52 @@ impl From<Unavailable> for Failure {
     }
 }
 
+/// 已验证快照里的一个插件条目（安装链路用）。
+#[derive(Debug, Clone)]
+pub struct PluginPackage {
+    pub entry: PluginEntry,
+    /// 命中快照的镜像基地址（blob 从同一来源下载）。
+    pub base: String,
+    pub channel: String,
+    /// 该 `(id, version)` 已被服务端吊销时的原因。
+    pub revoked: Option<String>,
+}
+
+/// blob 下载失败的原因：调用方据此区分「下载失败」与「摘要/大小不符」。
+#[derive(Debug)]
+pub enum DownloadError {
+    /// 网络、HTTP 状态或非 200。
+    Download(String),
+    /// 条目缺摘要/URL/大小，或下载内容与目录声明不符。
+    Digest(String),
+    /// 写临时文件失败。
+    Io(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Download(m) | Self::Digest(m) | Self::Io(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+/// 内存快照及其原始索引：安装链路既要展示行，也要条目里的摘要/URL/大小。
+struct Memo {
+    at: Instant,
+    snapshot: CatalogSnapshot,
+    index: Option<Index>,
+    base: String,
+}
+
 pub struct CatalogService {
     settings: CatalogSettings,
     root: PathBuf,
     transport: SharedTransport,
     public_key: Option<[u8; 32]>,
-    memo: Mutex<Option<(Instant, CatalogSnapshot)>>,
+    memo: Mutex<Option<Memo>>,
 }
 
 impl CatalogService {
@@ -228,30 +269,153 @@ impl CatalogService {
     ///
     /// 本方法会做阻塞网络 I/O，调用方必须放进 `spawn_blocking`。
     pub fn snapshot(&self, force: bool) -> CatalogSnapshot {
+        self.refresh(force).0
+    }
+
+    /// 在已验证快照里找插件条目（安装链路用）。
+    ///
+    /// 未启用、校验失败、没有可用镜像来源时返回 `None`：这些状态下页面不提供
+    /// 安装入口，命令层也不能凭一份未验证的目录下载任何东西。
+    pub fn plugin_package(&self, id: &str, version: Option<&str>) -> Option<PluginPackage> {
+        let (snapshot, index, base) = self.refresh(false);
+        if matches!(
+            snapshot.state,
+            CatalogState::Disabled | CatalogState::Rejected
+        ) || base.is_empty()
+        {
+            return None;
+        }
+        let index = index?;
+        let entry = index
+            .plugins
+            .iter()
+            .filter(|p| p.id == id && version.map(|v| p.version == v).unwrap_or(true))
+            .max_by(|a, b| {
+                if skiff_plugin::install::version_gt(&a.version, &b.version) {
+                    std::cmp::Ordering::Greater
+                } else if skiff_plugin::install::version_gt(&b.version, &a.version) {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })?
+            .clone();
+        let revoked = index
+            .revoked(&entry.id, &entry.version)
+            .map(|r| r.reason.clone());
+        Some(PluginPackage {
+            entry,
+            base,
+            channel: index.channel.clone(),
+            revoked,
+        })
+    }
+
+    /// 按条目摘要下载插件包到 `dest`：先写 `<dest>.part`，大小与 sha256 都通过才 rename。
+    ///
+    /// 任何失败都不留文件（`dest` 与 `.part` 都清掉）——安装链路不允许半装状态。
+    pub fn download_blob(&self, package: &PluginPackage, dest: &Path) -> Result<(), DownloadError> {
+        let entry = &package.entry;
+        let sha = entry
+            .pkg_sha256
+            .as_deref()
+            .ok_or_else(|| DownloadError::Digest("目录条目缺少内容摘要".into()))?;
+        let url_path = entry
+            .pkg_url
+            .as_deref()
+            .ok_or_else(|| DownloadError::Digest("目录条目缺少内容寻址 URL".into()))?;
+        let size = entry
+            .size
+            .ok_or_else(|| DownloadError::Digest("目录条目缺少字节数".into()))?;
+        let expected = format!("{BLOB_PREFIX}{sha}");
+        if url_path != expected {
+            return Err(DownloadError::Digest(format!(
+                "内容寻址 URL 与摘要不一致: {url_path}"
+            )));
+        }
+
+        let url = format!("{}/{url_path}", package.base.trim_end_matches('/'));
+        let part = dest.with_extension("part");
+        let result = self.store_blob(&url, sha, size, &part, dest);
+        if result.is_err() {
+            let _ = fs::remove_file(&part);
+            let _ = fs::remove_file(dest);
+        }
+        result
+    }
+
+    fn store_blob(
+        &self,
+        url: &str,
+        sha: &str,
+        size: u64,
+        part: &Path,
+        dest: &Path,
+    ) -> Result<(), DownloadError> {
+        let reply = self
+            .transport
+            .get_blob(url)
+            .map_err(|e| DownloadError::Download(format!("下载失败: {e}")))?;
+        if reply.status != 200 {
+            return Err(DownloadError::Download(format!(
+                "下载失败: HTTP {}",
+                reply.status
+            )));
+        }
+        if reply.body.len() as u64 != size {
+            return Err(DownloadError::Digest(format!(
+                "包大小与目录不符：目录 {size} 字节，实得 {} 字节",
+                reply.body.len()
+            )));
+        }
+        let actual = hex::encode(Sha256::digest(&reply.body));
+        if actual != sha {
+            return Err(DownloadError::Digest(format!(
+                "包摘要与目录不符：目录 {sha}，实得 {actual}"
+            )));
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| DownloadError::Io(e.to_string()))?;
+        }
+        fs::write(part, &reply.body).map_err(|e| DownloadError::Io(e.to_string()))?;
+        set_private(part)?;
+        fs::rename(part, dest).map_err(|e| DownloadError::Io(e.to_string()))
+    }
+
+    fn refresh(&self, force: bool) -> (CatalogSnapshot, Option<Index>, String) {
         if !self.settings.enabled {
-            return CatalogSnapshot::empty(
-                &self.settings,
-                CatalogState::Disabled,
-                "商店目录未启用".into(),
+            return (
+                CatalogSnapshot::empty(
+                    &self.settings,
+                    CatalogState::Disabled,
+                    "商店目录未启用".into(),
+                ),
+                None,
+                String::new(),
             );
         }
         if !force {
             if let Ok(memo) = self.memo.lock() {
-                if let Some((at, snap)) = memo.as_ref() {
-                    if at.elapsed() < DEFAULT_TTL {
-                        return snap.clone();
+                if let Some(m) = memo.as_ref() {
+                    if m.at.elapsed() < DEFAULT_TTL {
+                        return (m.snapshot.clone(), m.index.clone(), m.base.clone());
                     }
                 }
             }
         }
-        let snap = self.load();
+        let (snap, index, base) = self.load();
         if let Ok(mut memo) = self.memo.lock() {
-            *memo = Some((Instant::now(), snap.clone()));
+            *memo = Some(Memo {
+                at: Instant::now(),
+                snapshot: snap.clone(),
+                index: index.clone(),
+                base: base.clone(),
+            });
         }
-        snap
+        (snap, index, base)
     }
 
-    fn load(&self) -> CatalogSnapshot {
+    fn load(&self) -> (CatalogSnapshot, Option<Index>, String) {
         let channel = &self.settings.channel;
         let cached = store::load(&self.root, channel);
         if self.settings.mirrors.is_empty() {
@@ -259,10 +423,14 @@ impl CatalogService {
                 Some(c) => {
                     self.cached_snapshot(&c, CatalogState::Cached, "未配置镜像地址，展示本地缓存")
                 }
-                None => CatalogSnapshot::empty(
-                    &self.settings,
-                    CatalogState::Rejected,
-                    "未配置镜像地址，且没有本地缓存".into(),
+                None => (
+                    CatalogSnapshot::empty(
+                        &self.settings,
+                        CatalogState::Rejected,
+                        "未配置镜像地址，且没有本地缓存".into(),
+                    ),
+                    None,
+                    String::new(),
                 ),
             };
         }
@@ -274,7 +442,7 @@ impl CatalogService {
                 continue;
             }
             match self.sync_one(base, cached.as_ref()) {
-                Ok(snap) => return snap,
+                Ok(triple) => return triple,
                 Err(Failure::Rejected(r)) => {
                     warn!(channel = %channel, source = base, reason = %r.0, "商店目录被拒绝");
                     return match cached {
@@ -283,10 +451,14 @@ impl CatalogService {
                             CatalogState::Rejected,
                             format!("校验失败：{}；已拒绝该清单并保留上次成功快照", r.0),
                         ),
-                        None => CatalogSnapshot::empty(
-                            &self.settings,
-                            CatalogState::Rejected,
-                            format!("校验失败：{}", r.0),
+                        None => (
+                            CatalogSnapshot::empty(
+                                &self.settings,
+                                CatalogState::Rejected,
+                                format!("校验失败：{}", r.0),
+                            ),
+                            None,
+                            String::new(),
                         ),
                     };
                 }
@@ -301,10 +473,14 @@ impl CatalogService {
                 CatalogState::Offline,
                 format!("离线：{detail}；展示上次成功快照"),
             ),
-            None => CatalogSnapshot::empty(
-                &self.settings,
-                CatalogState::Offline,
-                format!("离线：{detail}；没有可用快照"),
+            None => (
+                CatalogSnapshot::empty(
+                    &self.settings,
+                    CatalogState::Offline,
+                    format!("离线：{detail}；没有可用快照"),
+                ),
+                None,
+                String::new(),
             ),
         }
     }
@@ -313,7 +489,7 @@ impl CatalogService {
         &self,
         base: &str,
         cached: Option<&store::CachedCatalog>,
-    ) -> Result<CatalogSnapshot, Failure> {
+    ) -> Result<(CatalogSnapshot, Option<Index>, String), Failure> {
         let channel = &self.settings.channel;
         let manifest_url = format!("{base}/channels/{channel}/manifest.json");
         let cond = Conditional {
@@ -468,13 +644,17 @@ impl CatalogService {
                 format!("已从 {base} 更新到 seq {}", manifest.seq),
             )
         };
-        Ok(self.snapshot_from(
-            &manifest,
-            &index,
-            state,
-            message,
+        Ok((
+            self.snapshot_from(
+                &manifest,
+                &index,
+                state,
+                message,
+                base.to_string(),
+                fetched_at,
+            ),
+            Some(index),
             base.to_string(),
-            fetched_at,
         ))
     }
 
@@ -528,7 +708,7 @@ impl CatalogService {
         cached: &store::CachedCatalog,
         state: CatalogState,
         message: impl Into<String>,
-    ) -> CatalogSnapshot {
+    ) -> (CatalogSnapshot, Option<Index>, String) {
         let mut snap = self.snapshot_from(
             &cached.manifest,
             &cached.index,
@@ -538,7 +718,7 @@ impl CatalogService {
             cached.meta.fetched_at.clone(),
         );
         snap.seq = Some(cached.manifest.seq);
-        snap
+        (snap, Some(cached.index.clone()), cached.meta.source.clone())
     }
 
     fn snapshot_from(
@@ -562,6 +742,19 @@ impl CatalogService {
             key_configured: self.public_key.is_some(),
         }
     }
+}
+
+/// 暂存包只给安装进程读：unix 下落 0600（与上传路径一致）。
+fn set_private(path: &Path) -> Result<(), DownloadError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| DownloadError::Io(e.to_string()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// 四类条目 → 页面行。只做展示映射，不再引入新的语义。

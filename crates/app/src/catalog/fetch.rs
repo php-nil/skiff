@@ -7,6 +7,8 @@ use std::time::Duration;
 
 /// 响应体上限：目录 JSON 只有几十 KB，超过即视为异常源。
 pub const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+/// 插件包 blob 的下载上限：与安装侧的 `DEFAULT_LIMITS.archive_bytes`（100MiB）同量级。
+pub const MAX_BLOB_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct Conditional<'a> {
@@ -24,6 +26,12 @@ pub struct HttpReply {
 
 pub trait Transport: Send + Sync {
     fn get(&self, url: &str, cond: &Conditional<'_>) -> Result<HttpReply, String>;
+
+    /// 二进制 blob 下载（安装链路用）。目录 JSON 的 8MiB 上限装不下插件包，
+    /// 因此单独放宽；假传输层无需覆写，默认复用 `get`。
+    fn get_blob(&self, url: &str) -> Result<HttpReply, String> {
+        self.get(url, &Conditional::default())
+    }
 }
 
 /// 真实实现：同步阻塞，调用方必须放在 `spawn_blocking`。
@@ -51,10 +59,22 @@ impl Transport for UreqTransport {
             req = req.set("If-Modified-Since", last);
         }
         match req.call() {
-            Ok(resp) => Ok(read_reply(resp)),
+            Ok(resp) => Ok(read_reply(resp, MAX_BODY_BYTES)),
             // 条件请求的 304 与 4xx/5xx 都从 Status 分支返回，交给上层判定。
             Err(ureq::Error::Status(code, resp)) => {
-                let mut reply = read_reply(resp);
+                let mut reply = read_reply(resp, MAX_BODY_BYTES);
+                reply.status = code;
+                Ok(reply)
+            }
+            Err(ureq::Error::Transport(e)) => Err(e.to_string()),
+        }
+    }
+
+    fn get_blob(&self, url: &str) -> Result<HttpReply, String> {
+        match self.agent.get(url).call() {
+            Ok(resp) => Ok(read_reply(resp, MAX_BLOB_BYTES)),
+            Err(ureq::Error::Status(code, resp)) => {
+                let mut reply = read_reply(resp, MAX_BLOB_BYTES);
                 reply.status = code;
                 Ok(reply)
             }
@@ -63,16 +83,13 @@ impl Transport for UreqTransport {
     }
 }
 
-fn read_reply(resp: ureq::Response) -> HttpReply {
+fn read_reply(resp: ureq::Response, limit: u64) -> HttpReply {
     let status = resp.status();
     let header = |name: &str| resp.header(name).map(str::to_string);
     let (etag, last_modified) = (header("etag"), header("last-modified"));
     let mut body = Vec::new();
     // 读失败按空体处理：上层会用摘要/大小校验兜底，不会把残缺内容当有效清单。
-    let _ = resp
-        .into_reader()
-        .take(MAX_BODY_BYTES)
-        .read_to_end(&mut body);
+    let _ = resp.into_reader().take(limit).read_to_end(&mut body);
     HttpReply {
         status,
         body,
