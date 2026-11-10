@@ -202,11 +202,31 @@ pub async fn load_session(
     });
     if let Some(token) = cookies.get(state.cookie_name()) {
         let hash = skiff_identity::sha256_hex(token);
-        if let Ok(Some(session)) = state
+        // 这里必须区分「没有会话」与「查不到库」：前者按未登录继续，后者是依赖故障。
+        // 旧实现用 `if let Ok(Some(..))` 把 Err 一并吞成未登录——数据库挂掉时所有
+        // 已登录用户被静默踢回登录页，日志里一条痕迹都没有。
+        let session = match state
             .db()
             .verify_session(&hash, state.cfg.session.idle_secs)
         {
-            if let Ok(Some(user)) = state.db().user_by_id(session.user_id) {
+            Ok(session) => session,
+            Err(e) => {
+                tracing::error!(error = %e, "校验会话失败，数据库不可用");
+                return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
+                    .into_response();
+            }
+        };
+        if let Some(session) = session {
+            let user = match state.db().user_by_id(session.user_id) {
+                Ok(user) => user,
+                Err(e) => {
+                    tracing::error!(error = %e, "读取会话用户失败，数据库不可用");
+                    return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
+                        .into_response();
+                }
+            };
+            // 会话指向的用户已被删除：按未登录处理（不是故障）。
+            if let Some(user) = user {
                 let current = CurrentUser {
                     user,
                     session_id: session.id.clone(),
@@ -258,50 +278,78 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             if let Some(tok) = auth.strip_prefix("Bearer ") {
                 let token = tok.trim().to_string();
                 let hash = skiff_identity::sha256_hex(&token);
-                if let Ok(Some((user, scopes))) = state.db().verify_api_token(&hash) {
-                    // scope 解析是严格的（§6.1）：拼错的 token 必须立刻失败并留审计，
-                    // 而不是被当成「空权限」或（更糟）「全权限」。
-                    match ScopeSet::parse(&scopes) {
-                        Ok(set) => {
-                            return Ok(AuthUser(CurrentUser {
-                                user,
-                                session_id: "api-token".into(),
-                                session_token: token,
-                                scopes: Some(set),
-                            }))
-                        }
-                        Err(e) => {
-                            let ip = parts
-                                .extensions
-                                .get::<ClientInfo>()
-                                .map(|c| c.ip.clone())
-                                .unwrap_or_else(|| "unknown".into());
-                            if let Err(ae) = state.db().audit(
-                                &user.username,
-                                &ip,
-                                "auth.token_scope",
-                                &user.username,
-                                "deny",
-                                &e,
-                            ) {
-                                tracing::error!(error = %ae, "API Token scope 拒绝审计写入失败");
+                // 与 Cookie 路径同口径：查询失败（Err）是依赖故障，必须 503 + 日志，
+                // 不能和「token 不存在」（Ok(None)）一起掉进「需要登录」。
+                match state.db().verify_api_token(&hash) {
+                    Ok(Some((user, scopes))) => {
+                        // scope 解析是严格的（§6.1）：拼错的 token 必须立刻失败并留审计，
+                        // 而不是被当成「空权限」或（更糟）「全权限」。
+                        match ScopeSet::parse(&scopes) {
+                            Ok(set) => {
+                                return Ok(AuthUser(CurrentUser {
+                                    user,
+                                    session_id: "api-token".into(),
+                                    session_token: token,
+                                    scopes: Some(set),
+                                }))
                             }
-                            return Err(AppError::Unauthorized(format!("API Token 配置非法：{e}")));
+                            Err(e) => {
+                                let ip = parts
+                                    .extensions
+                                    .get::<ClientInfo>()
+                                    .map(|c| c.ip.clone())
+                                    .unwrap_or_else(|| "unknown".into());
+                                if let Err(ae) = state.db().audit(
+                                    &user.username,
+                                    &ip,
+                                    "auth.token_scope",
+                                    &user.username,
+                                    "deny",
+                                    &e,
+                                ) {
+                                    tracing::error!(error = %ae, "API Token scope 拒绝审计写入失败");
+                                }
+                                return Err(AppError::Unauthorized(format!(
+                                    "API Token 配置非法：{e}"
+                                )));
+                            }
                         }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "校验 API Token 失败，数据库不可用");
+                        return Err(AppError::Unavailable(
+                            "API Token 校验失败：数据库暂不可用".into(),
+                        ));
                     }
                 }
                 // API 登录签发的会话令牌同样可作为 Bearer 使用
-                if let Ok(Some(session)) = state
+                match state
                     .db()
                     .verify_session(&hash, state.cfg.session.idle_secs)
                 {
-                    if let Ok(Some(user)) = state.db().user_by_id(session.user_id) {
-                        return Ok(AuthUser(CurrentUser {
-                            user,
-                            session_id: session.id,
-                            session_token: token,
-                            scopes: None,
-                        }));
+                    Ok(Some(session)) => match state.db().user_by_id(session.user_id) {
+                        Ok(Some(user)) => {
+                            return Ok(AuthUser(CurrentUser {
+                                user,
+                                session_id: session.id,
+                                session_token: token,
+                                scopes: None,
+                            }))
+                        }
+                        // 令牌有效但用户已删除：按未登录处理。
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::error!(error = %e, "读取令牌用户失败，数据库不可用");
+                            return Err(AppError::Unavailable(
+                                "会话校验失败：数据库暂不可用".into(),
+                            ));
+                        }
+                    },
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "校验会话令牌失败，数据库不可用");
+                        return Err(AppError::Unavailable("会话校验失败：数据库暂不可用".into()));
                     }
                 }
             }

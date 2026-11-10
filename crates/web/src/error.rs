@@ -188,7 +188,19 @@ impl IntoResponse for ApiError {
 
 impl From<skiff_store::StoreError> for AppError {
     fn from(e: skiff_store::StoreError) -> Self {
-        AppError::Internal(e.to_string())
+        use skiff_store::StoreError as Store;
+        match &e {
+            // 业务结果：记录不存在 / 唯一约束冲突，按 404 / 409 返回，别混成 500。
+            Store::NotFound(_) => AppError::NotFound(e.to_string()),
+            Store::Conflict(_) => AppError::Conflict(e.to_string()),
+            // 依赖故障：SQLite / IO / 锁忙。可重试，返回 `dependency.unavailable`，
+            // 让前端能区分「数据库暂时不可用」和「代码 500」。
+            Store::Sqlite(_) | Store::Io(_) | Store::Busy(_) => {
+                tracing::error!(error = %e, "数据库依赖失败");
+                AppError::Unavailable(format!("数据库暂不可用：{e}"))
+            }
+            Store::SchemaTooNew { .. } | Store::Decode(_) => AppError::Internal(e.to_string()),
+        }
     }
 }
 
@@ -302,5 +314,28 @@ mod tests {
         let err = AppError::Redirect("/sites".into());
         assert_eq!(err.status(), StatusCode::SEE_OTHER);
         assert_eq!(err.error_code(), ErrorCode::Internal);
+    }
+
+    /// 「查不到记录」是业务结果，「查不了库」是依赖故障：两者不能都塌成 500，
+    /// 更不能被上层当成「未登录 / 空列表」。
+    #[test]
+    fn store_errors_split_missing_records_from_dependency_failure() {
+        let missing: AppError = skiff_store::StoreError::NotFound("site:demo".into()).into();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing.error_code(), ErrorCode::NotFound);
+
+        let conflict: AppError = skiff_store::StoreError::Conflict("domain".into()).into();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(conflict.error_code(), ErrorCode::Conflict);
+
+        let busy: AppError = skiff_store::StoreError::Busy("db".into()).into();
+        assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(busy.error_code(), ErrorCode::Unavailable);
+        assert_eq!(busy.envelope().error.code, "dependency.unavailable");
+        assert!(busy.envelope().error.retryable);
+
+        let decode: AppError = skiff_store::StoreError::Decode("bad row".into()).into();
+        assert_eq!(decode.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(decode.error_code(), ErrorCode::Internal);
     }
 }

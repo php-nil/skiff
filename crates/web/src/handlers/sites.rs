@@ -430,7 +430,8 @@ async fn render_sites(
     let needle = keyword.trim().to_lowercase();
     // 证书列与详情 SSL 标签同源：直接看站点证书目录下的 cert.pem/key.pem 是否存在。
     let cert_settings = state.site_settings();
-    let runtimes = state.db().list_runtimes().unwrap_or_default();
+    // DB 读失败不能当成「没有运行环境」：列表会伪装成空态，用户以为实例被删了。
+    let runtimes = state.db().list_runtimes()?;
     // 站点列表的运行态以 Docker 实时容器状态为准；DB last_status 只是缓存，不能直接展示。
     let runtime_views = state.runtime_views().await.unwrap_or_default();
     let runtime_opts = runtime_options(&runtime_views);
@@ -1225,18 +1226,14 @@ async fn render_detail(
         == skiff_store::TYPE_RUNTIME
     {
         let rid = site.runtime_id.clone().unwrap_or_default();
-        let name = runtime_view
-            .as_ref()
-            .map(|v| v.runtime.name.clone())
-            .or_else(|| {
-                state
-                    .db()
-                    .runtime_by_id(&rid)
-                    .ok()
-                    .flatten()
-                    .map(|r| r.name)
-            })
-            .unwrap_or_else(|| rid.clone());
+        // 实时视图拿不到时才回查 DB；DB 故障要显式失败，不能降级成「用 id 当名字」。
+        let name = match runtime_view.as_ref() {
+            Some(v) => v.runtime.name.clone(),
+            None => match state.db().runtime_by_id(&rid)? {
+                Some(r) => r.name,
+                None => rid.clone(),
+            },
+        };
         let href = format!(
             "/{}/sites/env/{}",
             state.cfg.entry_prefix,
@@ -1315,14 +1312,14 @@ async fn render_detail(
     let ssl_info = state.site_tls_info(&domain).ok();
     let cert_ready = ssl_info.as_ref().map(|i| i.cert_exists).unwrap_or(false);
     let ssl = ssl_info.map(tls_view).unwrap_or_default();
-    let runtime = runtime_view
-        .as_ref()
-        .map(|v| v.runtime.clone())
-        .or_else(|| {
-            site.runtime_id
-                .as_deref()
-                .and_then(|id| state.db().runtime_by_id(id).ok().flatten())
-        });
+    // 实时视图缺失时回查 DB 的运行环境记录；DB 故障直接报错，不伪装成「无运行环境」。
+    let runtime = match runtime_view.as_ref() {
+        Some(v) => Some(v.runtime.clone()),
+        None => match site.runtime_id.as_deref() {
+            Some(id) => state.db().runtime_by_id(id)?,
+            None => None,
+        },
+    };
     let runtime_state = runtime_view.as_ref().map(|v| v.effective_state.as_str());
     let runtime_site_count = runtime_view.as_ref().map(|v| v.site_count).unwrap_or(0);
     let backup = backup_view(&state, &domain).await;
