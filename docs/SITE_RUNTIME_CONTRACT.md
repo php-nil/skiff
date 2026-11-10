@@ -3,7 +3,7 @@
 > 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）；Node.js 接入见 §4.3（2026-11-09）**。
 > 2026-11-09：Node.js 已在内核接入（运行环境目录、安装/启停/重建、站点绑定与反代）；
 > Go 仍未实现，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除，不再提供登记入口。
-> 基线：`crates/store/src/db.rs`（schema v15）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
+> 基线：`crates/store/src/db.rs`（schema v18）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
 > 与 Node.js / Rust 进程运行环境）、`crates/app/src/runtime_catalog.rs`、
 > `crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
