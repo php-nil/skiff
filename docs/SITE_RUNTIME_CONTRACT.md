@@ -624,7 +624,12 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 - **唯一保留的 exec**：抽屉「实测版本」按钮，用户主动点击才执行 `php -r 'echo PHP_VERSION;'`
   （2 秒超时），显示结果与时间戳，并注明「仅代表当前运行中的容器」。
 - **digest 落库**：安装/重建拉完镜像后从 `ImageInspect.repo_digests` 取 manifest digest 写入
-  `site_runtimes.image_digest`；默认仍按 tag 重建，digest 只作复现/回滚信息与详情展示。
+  `site_runtimes.image_digest`；该值参与「本地已有→跳过拉取 / 与登记值不一致→按 digest 重拉 /
+  新环境回填」判定（`ensure_runtime_image`），不只是展示。
+  **已知待办**：`ImageInfo::primary_digest` 目前取 `repo_digests` 中第一个 `@sha256:` 条目，
+  并未真正「按 tag 匹配」；多 tag 镜像（如同时存在 `php:8.3-fpm` 与 `php:latest`）下首个条目
+  可能属于别的 tag，存在误判漂移的风险。因该值参与拉取判定，先保持行为不变、仅留 TODO，
+  待改成按 tag 取 digest 后再动。
   登记镜像与容器实际 `image_id` 对应镜像不一致时，抽屉提示「登记镜像与容器镜像不一致」，只提示不自动修。
 
 ### 11.2 镜像来源结论与 1Panel 对比

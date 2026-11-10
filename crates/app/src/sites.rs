@@ -2267,6 +2267,10 @@ impl AppState {
     /// - 登记 digest 为空（新环境）：采用本地 tag 的真实 digest 落库，不再冷拉。
     /// - 登记 digest 与本地一致：跳过拉取。
     /// - 登记 digest 与本地不一致（tag 漂移）：按登记 digest 拉取固定版本并提示。
+    ///
+    /// 注意：`primary_digest` 目前取的是 `repo_digests` 首个 `@sha256:` 条目，未按 tag
+    /// 匹配（见 `skiff_docker::ImageInfo::primary_digest` 的待办）。该值参与这里的
+    /// 跳过/回填/漂移判定，属于行为而非展示，故先按现状保留。
     async fn ensure_runtime_image(
         &self,
         job_id: &str,

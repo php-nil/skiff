@@ -136,7 +136,15 @@ impl ImageInfo {
             .filter(|v| !v.is_empty())
     }
 
-    /// 首选与 tag 相同的 repo digest；否则取第一个。
+    /// 本地镜像的首选 digest。
+    ///
+    /// **待办（内核健壮性第 5 项）**：这里的实现只是取 `repo_digests` 里第一个含
+    /// `@sha256:` 的条目，**并没有按 tag 匹配**（`repo_digests` 形如 `php@sha256:…`）。
+    /// 该值参与 `app/src/sites.rs::ensure_runtime_image` 的拉取判定（本地已存在则跳过、
+    /// 与登记值漂移则按 digest 重拉、新环境回填），并落库 `site_runtimes.image_digest`，
+    /// 属于「影响行为」而非纯展示，故暂不改匹配规则。
+    /// 后续若要改：应按 `tags` 里选中的 tag 去匹配 digest；多 tag 镜像
+    /// （同时存在 `php:8.3-fpm` 与 `php:latest`）下当前取首个条目的写法可能误判漂移。
     pub fn primary_digest(&self) -> Option<String> {
         self.repo_digests
             .iter()
