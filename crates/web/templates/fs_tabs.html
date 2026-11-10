@@ -1,0 +1,12 @@
+{# 内核「文件管理」工作台 L3 标签栏：浏览 / 回收站。
+   与插件工作台共用 .workbench-tabs 结构与当前态样式；无 JS 可直达。 #}
+<nav class="workbench-tabs" aria-label="文件管理标签">
+  <a class="workbench-tab{% if fs_tab == "browse" %} on{% endif %}"
+     data-menu-key="core/files"
+     href="/{{ ctx.prefix }}/m/core/files"
+     {% if fs_tab == "browse" %}aria-current="page"{% endif %}>浏览</a>
+  <a class="workbench-tab{% if fs_tab == "trash" %} on{% endif %}"
+     data-menu-key="core/files/trash"
+     href="/{{ ctx.prefix }}/m/core/files/trash"
+     {% if fs_tab == "trash" %}aria-current="page"{% endif %}>回收站</a>
+</nav>

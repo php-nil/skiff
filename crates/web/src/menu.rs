@@ -1284,22 +1284,27 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                 // 受限形态（1Panel Docker 包）能力面只有 docker/identity，没有 fs：
                 // 入口同样隐藏，直达由 `middleware::check_fs_capability` 拒绝。
                 if user.role().as_str() == "admin" && state.cfg.form != Form::DockerRestricted {
-                    items.push(builtin(
+                    // 回收站是「文件管理」的 L3 视图，不再作为独立二级菜单项。
+                    // 页面路由 `/{p}/files/trash` 与深链 `/{p}/m/core/files/trash` 不变。
+                    let files = builtin(
                         "core/files",
                         L1_TOOLS,
                         "文件管理",
                         "folder",
                         20,
                         href("m/core/files"),
-                    ));
-                    items.push(builtin(
-                        "core/files/trash",
-                        L1_TOOLS,
-                        "回收站",
-                        "archive",
-                        21,
-                        href("m/core/files/trash"),
-                    ));
+                    );
+                    items.push(Decl {
+                        children: vec![builtin(
+                            "core/files/trash",
+                            "core/files",
+                            "回收站",
+                            "archive",
+                            10,
+                            href("m/core/files/trash"),
+                        )],
+                        ..files
+                    });
                     items.push(builtin(
                         "core/files/quotas",
                         L1_TOOLS,

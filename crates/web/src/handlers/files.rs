@@ -102,6 +102,7 @@ pub async fn page(
     let roots = handlers::blocking_fs(move || fs.roots()).await?;
     let page = FilesPage {
         ctx: handlers::page_ctx(&state, &user, "core/files"),
+        fs_tab: "browse".into(),
         start_path,
         roots: roots
             .into_iter()
@@ -726,6 +727,7 @@ pub async fn trash_page(
     crate::authz::authorize(&user, act::FILE_TRASH_READ)?;
     let page = FsTrashPage {
         ctx: handlers::page_ctx(&state, &user, "core/files/trash"),
+        fs_tab: "trash".into(),
         retention_days: state.cfg.trash_retention_days,
     };
     handlers::render(page)

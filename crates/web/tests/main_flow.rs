@@ -6466,3 +6466,49 @@ async fn files_page_browses_edits_and_redirects_legacy_link() {
     assert_eq!(legacy.status(), StatusCode::MOVED_PERMANENTLY);
     assert_eq!(legacy.headers().get(header::LOCATION).unwrap(), "/p/files");
 }
+
+/// 回收站是「工具 → 文件管理」的 L3 视图（菜单契约 §1.1），不再是独立二级菜单：
+/// 导航里没有独立入口，两个页面共用同一标签栏，旧页面路由与深链保持可用。
+#[tokio::test]
+async fn trash_is_files_l3_tab_not_standalone_menu_item() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, nav) = get_page(&h.app, "/p", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        nav.contains(r#"href="/p/m/core/files""#),
+        "文件管理二级入口必须保留: {nav}"
+    );
+    assert!(
+        !nav.contains(r#"href="/p/m/core/files/trash""#),
+        "回收站不得再作为独立二级菜单项渲染: {nav}"
+    );
+    assert!(
+        nav.contains(r#"href="/p/m/core/files/quotas""#),
+        "配额管理仍是独立二级入口: {nav}"
+    );
+
+    let (status, files) = get_page(&h.app, "/p/files", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        files.contains(r#"class="workbench-tabs""#),
+        "文件管理页必须渲染共用标签栏: {files}"
+    );
+    assert!(
+        files.contains(r#"data-menu-key="core/files/trash""#)
+            && files.contains(r#"aria-current="page">浏览"#),
+        "浏览标签应为当前态且回收站作为同级标签存在: {files}"
+    );
+
+    let (status, trash) = get_page(&h.app, "/p/files/trash", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        trash.contains(r#"aria-current="page">回收站"#),
+        "回收站标签应为当前态: {trash}"
+    );
+
+    // 旧深链（现在是 L3 深链）仍可解析，不因菜单结构变化 404。
+    let (status, _) = get_page(&h.app, "/p/m/core/files/trash", &token).await;
+    assert_eq!(status, StatusCode::OK);
+}

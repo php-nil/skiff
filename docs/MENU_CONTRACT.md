@@ -834,6 +834,12 @@ roles = ["admin", "operator", "viewer"]
 - `skiff-web` 集成：信息页字段与管理动作、`/plugins/<id>/<view>` 规范路由、未知视图 404、无 L3 不渲染标签栏、旧包 `ui/index.html` 回落、testkit 多视图与 `overview.actions` 槽位。
 - 完整契约与测试矩阵见 [`docs/PLUGIN_UI_CONTRACT.md`](PLUGIN_UI_CONTRACT.md)。
 
+**内核「工具 → 文件管理」的 L3（回收站合并）**
+- 回收站不再作为独立二级菜单项，改为内核固定二级 `core/files`（文件管理）的 L3 `core/files/trash`；二级只剩「文件管理 / 配额管理」。
+- 两个页面由内核渲染同款 `.workbench-tabs`（`data-menu-key` + `aria-current`），不新造菜单机制；无 JS 可直达。
+- 旧入口不 404：页面路由 `/{p}/files/trash` 与深链 `/{p}/m/core/files/trash` 原样保留（后者即新的 L3 深链）；用户偏好里遗留的 `core/files/trash` 排序/固定键由 `apply_order` 与固定项过滤自动丢弃。
+- 菜单设置页仍只列 L1/L2（§12 口径），不提供 L3 单独隐藏/排序。
+
 ---
 
 ## 附录 A：内置一级与默认 L2 注册表

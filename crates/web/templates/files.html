@@ -9,11 +9,11 @@
     <h1>文件管理</h1>
     <span class="muted small">内核 fs 服务 · 原子写入 · 删除进回收站</span>
     <div class="actions">
-      <a class="btn ghost small" href="/{{ ctx.prefix }}/files/trash">回收站</a>
       <a class="btn ghost small" href="/{{ ctx.prefix }}/files/quotas">配额</a>
       <button type="button" class="btn primary" data-files-upload-open>上传文件</button>
     </div>
   </div>
+  {% include "fs_tabs.html" %}
   {% include "page_banner.html" %}
 
   <div class="files-alert" data-files-alert role="alert" hidden>

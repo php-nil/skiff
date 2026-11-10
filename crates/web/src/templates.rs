@@ -1019,6 +1019,8 @@ pub struct TabView {
 #[template(path = "files.html")]
 pub struct FilesPage {
     pub ctx: PageCtx,
+    /// 当前 L3 视图：`browse`（本页）/ `trash`（回收站）。
+    pub fs_tab: String,
     /// 首屏目录（来自 `?path=`，缺省为内核站点根 `/www`）。
     pub start_path: String,
     /// 左栏目录树根入口（服务端已按存在性与保护规则过滤）。
@@ -1039,6 +1041,8 @@ pub struct FilesRootView {
 #[template(path = "fs_trash.html")]
 pub struct FsTrashPage {
     pub ctx: PageCtx,
+    /// 当前 L3 视图：`browse` / `trash`（本页）。
+    pub fs_tab: String,
     /// 默认保留天数，页面用于提示「到期自动清理」。
     pub retention_days: u32,
 }
