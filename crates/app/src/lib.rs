@@ -303,6 +303,8 @@ impl AppState {
         jobs.prune_quietly();
         // 商店目录只读客户端：未启用时它一次网络调用都不会发生。
         let catalog = catalog::CatalogService::new(cfg.catalog.clone(), &cfg.data_dir);
+        // 目录刷新失败要落 `catalog.refresh` 审计；写失败只记日志，不影响拒绝语义。
+        catalog.set_audit_db(Arc::clone(&db));
         Arc::new(Self {
             db,
             docker,

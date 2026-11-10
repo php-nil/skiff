@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
+use skiff_store::Db;
 
 use super::fetch::testing::FakeTransport;
 use super::fetch::HttpReply;
@@ -12,6 +13,17 @@ use super::*;
 
 const MIRROR: &str = "https://mirror.example/skiff";
 const BLOB_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// 断言最近审计里有该原因的 `catalog.refresh` 失败。
+fn assert_refresh_audit(db: &Db, reason: &str) {
+    let audit = db.recent_audit(20).unwrap();
+    assert!(
+        audit.iter().any(|e| e.action == "catalog.refresh"
+            && e.result == "fail"
+            && e.detail.starts_with(&format!("reason={reason} "))),
+        "缺少 reason={reason} 的目录审计: {audit:?}"
+    );
+}
 
 fn manifest_url() -> String {
     format!("{MIRROR}/channels/stable/manifest.json")
@@ -231,17 +243,26 @@ fn tampered_signature_is_rejected_and_old_snapshot_kept() {
     fx.serve_signed(1, "com.example.one", "etag-m", "etag-i");
     assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
 
-    // 同一个渠道换成另一把公钥：key_id 与清单不符 → 拒绝。
-    let other = test_key(9);
-    let mut settings = fx.settings();
-    settings.public_key = Some(other.public_hex.clone());
-    fx.serve_signed(2, "com.example.two", "etag-m2", "etag-i2");
-    let snap = fx.service_with(fx.fake.clone(), settings).snapshot(true);
+    // 同一把公钥、清单内容被换掉但签名仍来自旧内容 → 验签失败。
+    let index = index_json(2, "com.example.two");
+    let manifest = manifest_json("stable", 2, &fx.key.key_id(), &index);
+    let sig = signature_json(&fx.key.key_id(), &sign_hello(&test_key(9), &manifest));
+    fx.fake
+        .push(&manifest_url(), reply(200, manifest, Some("etag-m2")));
+    fx.fake.push(&sig_url(), reply(200, sig, None));
+    fx.fake
+        .push(&index_url(), reply(200, index, Some("etag-i2")));
+
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let svc = fx.service();
+    svc.set_audit_db(Arc::clone(&db));
+    let snap = svc.snapshot(true);
     assert_eq!(snap.state, CatalogState::Rejected);
     assert!(snap.message.contains("校验失败"), "{}", snap.message);
     // 旧快照（seq 1）仍可展示
     assert_eq!(snap.seq, Some(1));
     assert_eq!(snap.entries.plugins[0].name, "com.example.one");
+    assert_refresh_audit(&db, "signature");
 }
 
 #[test]
@@ -251,11 +272,15 @@ fn seq_rollback_is_rejected() {
     assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
 
     fx.serve_signed(4, "com.example.four", "etag-m2", "etag-i2");
-    let snap = fx.service().snapshot(true);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let svc = fx.service();
+    svc.set_audit_db(Arc::clone(&db));
+    let snap = svc.snapshot(true);
     assert_eq!(snap.state, CatalogState::Rejected);
     assert!(snap.message.contains("防回滚"), "{}", snap.message);
     assert_eq!(snap.seq, Some(5));
     assert_eq!(snap.entries.plugins[0].name, "com.example.five");
+    assert_refresh_audit(&db, "seq");
 }
 
 #[test]
@@ -277,9 +302,13 @@ fn index_digest_mismatch_is_rejected() {
         .push(&manifest_url(), reply(200, manifest, Some("e")));
     fx.fake.push(&sig_url(), reply(200, sig, None));
     fx.fake.push(&index_url(), reply(200, tampered, Some("e")));
-    let snap = fx.service().snapshot(true);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let svc = fx.service();
+    svc.set_audit_db(Arc::clone(&db));
+    let snap = svc.snapshot(true);
     assert_eq!(snap.state, CatalogState::Rejected);
     assert!(snap.message.contains("摘要"), "{}", snap.message);
+    assert_refresh_audit(&db, "digest");
 }
 
 #[test]
@@ -319,13 +348,15 @@ fn offline_falls_back_to_last_successful_snapshot() {
     fx.serve_signed(2, "com.example.two", "etag-m", "etag-i");
     assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
 
-    let snap = fx
-        .service_with(FakeTransport::new(), fx.settings())
-        .snapshot(true);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let svc = fx.service_with(FakeTransport::new(), fx.settings());
+    svc.set_audit_db(Arc::clone(&db));
+    let snap = svc.snapshot(true);
     assert_eq!(snap.state, CatalogState::Offline);
     assert!(snap.message.contains("离线"), "{}", snap.message);
     assert_eq!(snap.seq, Some(2));
     assert_eq!(snap.entries.plugins[0].name, "com.example.two");
+    assert_refresh_audit(&db, "offline");
 }
 
 #[test]

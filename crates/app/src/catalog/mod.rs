@@ -4,7 +4,8 @@
 //! 用固定 Ed25519 公钥验签、做 `seq` 防回滚与摘要校验、把最近一次成功快照落本地缓存。
 //! 任何一步失败都**不使用**新清单：页面继续展示上次成功快照并标注状态。
 //!
-//! 本模块不碰现有插件安装/信任链路：它只产出展示用快照，不写库、不触发安装。
+//! 本模块不碰现有插件安装/信任链路：它只产出展示用快照，不写业务表；唯一写库的是
+//! `catalog.refresh` 失败审计（写失败只记日志，不改变拒绝语义）。
 
 pub mod fetch;
 pub mod model;
@@ -13,12 +14,13 @@ pub mod verify;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use skiff_store::Db;
+use tracing::{error, info, warn};
 
 use fetch::{Conditional, SharedTransport, UreqTransport};
 use model::{Index, Manifest, PluginEntry, SignatureFile, BLOB_PREFIX};
@@ -159,7 +161,55 @@ impl CatalogSnapshot {
 }
 
 /// 确认性问题（验签/防回滚/摘要/结构）——不再尝试下一个镜像，直接拒绝。
-struct Rejected(String);
+struct Rejected {
+    kind: RejectKind,
+    detail: String,
+}
+
+impl Rejected {
+    fn signature(detail: impl Into<String>) -> Self {
+        Self {
+            kind: RejectKind::Signature,
+            detail: detail.into(),
+        }
+    }
+
+    fn seq(detail: impl Into<String>) -> Self {
+        Self {
+            kind: RejectKind::Seq,
+            detail: detail.into(),
+        }
+    }
+
+    fn digest(detail: impl Into<String>) -> Self {
+        Self {
+            kind: RejectKind::Digest,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// 拒绝原因分类：审计里落 `reason=<code>`，页面仍用 `detail` 原文。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RejectKind {
+    /// 验签失败、未签名、缺公钥或签名文件损坏。
+    Signature,
+    /// `seq` 小于已见值（防回滚）。
+    Seq,
+    /// 清单/索引结构不符、大小或 sha256 不一致。
+    Digest,
+}
+
+impl RejectKind {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Signature => "signature",
+            Self::Seq => "seq",
+            Self::Digest => "digest",
+        }
+    }
+}
+
 /// 该镜像不可用（网络、HTTP 状态、解析）——按序回退下一个镜像。
 struct Unavailable(String);
 
@@ -226,6 +276,8 @@ pub struct CatalogService {
     transport: SharedTransport,
     public_key: Option<[u8; 32]>,
     memo: Mutex<Option<Memo>>,
+    /// 失败审计出口。未装配时只记日志：目录判定不依赖数据库可用性。
+    audit_db: OnceLock<Arc<Db>>,
 }
 
 impl CatalogService {
@@ -254,7 +306,36 @@ impl CatalogService {
             transport,
             public_key,
             memo: Mutex::new(None),
+            audit_db: OnceLock::new(),
         })
+    }
+
+    /// 装配审计出口（启动期调用一次）。重复装配无副作用。
+    pub fn set_audit_db(&self, db: Arc<Db>) {
+        let _ = self.audit_db.set(db);
+    }
+
+    /// 验收/审计口径：`catalog.refresh` 失败落一条审计；写失败只记日志，
+    /// 拒绝语义与页面展示不受影响。
+    fn audit_refresh_failure(&self, detail: &str) {
+        let Some(db) = self.audit_db.get() else {
+            return;
+        };
+        if let Err(e) = db.audit(
+            "system",
+            "-",
+            "catalog.refresh",
+            &self.settings.channel,
+            "fail",
+            detail,
+        ) {
+            error!(
+                error = %e,
+                action = "catalog.refresh",
+                channel = %self.settings.channel,
+                "审计写入失败（目录判定已按原结果继续）"
+            );
+        }
     }
 
     pub fn settings(&self) -> &CatalogSettings {
@@ -444,18 +525,19 @@ impl CatalogService {
             match self.sync_one(base, cached.as_ref()) {
                 Ok(triple) => return triple,
                 Err(Failure::Rejected(r)) => {
-                    warn!(channel = %channel, source = base, reason = %r.0, "商店目录被拒绝");
+                    warn!(channel = %channel, source = base, reason = %r.kind.code(), detail = %r.detail, "商店目录被拒绝");
+                    self.audit_refresh_failure(&format!("reason={} {}", r.kind.code(), r.detail));
                     return match cached {
                         Some(c) => self.cached_snapshot(
                             &c,
                             CatalogState::Rejected,
-                            format!("校验失败：{}；已拒绝该清单并保留上次成功快照", r.0),
+                            format!("校验失败：{}；已拒绝该清单并保留上次成功快照", r.detail),
                         ),
                         None => (
                             CatalogSnapshot::empty(
                                 &self.settings,
                                 CatalogState::Rejected,
-                                format!("校验失败：{}", r.0),
+                                format!("校验失败：{}", r.detail),
                             ),
                             None,
                             String::new(),
@@ -467,6 +549,7 @@ impl CatalogService {
         }
 
         let detail = errors.join("；");
+        self.audit_refresh_failure(&format!("reason=offline {detail}"));
         match cached {
             Some(c) => self.cached_snapshot(
                 &c,
@@ -521,9 +604,9 @@ impl CatalogService {
             .map_err(|e| Unavailable(format!("manifest 解析失败: {e}")))?;
         manifest
             .validate()
-            .map_err(|e| Rejected(format!("manifest 校验失败: {e}")))?;
+            .map_err(|e| Rejected::digest(format!("manifest 校验失败: {e}")))?;
         if manifest.channel != *channel {
-            return Err(Rejected(format!(
+            return Err(Rejected::digest(format!(
                 "manifest 渠道 {} 与配置渠道 {channel} 不一致",
                 manifest.channel
             ))
@@ -547,7 +630,7 @@ impl CatalogService {
         // 防回滚：seq 一旦见过更大的值，小值直接拒绝（不覆盖缓存）。
         if let Some(c) = cached {
             if manifest.seq < c.meta.seq {
-                return Err(Rejected(format!(
+                return Err(Rejected::seq(format!(
                     "清单 seq {} 小于已见值 {}（防回滚）",
                     manifest.seq, c.meta.seq
                 ))
@@ -579,7 +662,7 @@ impl CatalogService {
         };
 
         if index_bytes.len() as u64 != manifest.index.size {
-            return Err(Rejected(format!(
+            return Err(Rejected::digest(format!(
                 "索引大小与 manifest 声明不符：声明 {} 字节，实得 {} 字节",
                 manifest.index.size,
                 index_bytes.len()
@@ -588,7 +671,7 @@ impl CatalogService {
         }
         let actual = hex::encode(Sha256::digest(&index_bytes));
         if actual != manifest.index.sha256 {
-            return Err(Rejected(format!(
+            return Err(Rejected::digest(format!(
                 "索引摘要与 manifest 不符：声明 {}，实得 {actual}",
                 manifest.index.sha256
             ))
@@ -596,9 +679,9 @@ impl CatalogService {
         }
 
         let index: Index = serde_json::from_slice(&index_bytes)
-            .map_err(|e| Rejected(format!("索引解析失败: {e}")))?;
+            .map_err(|e| Rejected::digest(format!("索引解析失败: {e}")))?;
         if index.channel != manifest.channel || index.seq != manifest.seq {
-            return Err(Rejected(format!(
+            return Err(Rejected::digest(format!(
                 "索引与 manifest 不一致：索引 {}/seq {}，manifest {}/seq {}",
                 index.channel, index.seq, manifest.channel, manifest.seq
             ))
@@ -606,7 +689,7 @@ impl CatalogService {
         }
         index
             .validate(Some(&store::blob_dir(&self.root)))
-            .map_err(|e| Rejected(format!("索引条目校验失败: {e}")))?;
+            .map_err(|e| Rejected::digest(format!("索引条目校验失败: {e}")))?;
 
         let fetched_at = now_rfc3339();
         let meta = store::CacheMeta {
@@ -672,7 +755,7 @@ impl CatalogService {
         match reply.status {
             200 => match serde_json::from_slice::<SignatureFile>(&reply.body) {
                 Ok(sig) => Ok(Some((reply.body, sig))),
-                Err(e) => Err(Rejected(format!("签名文件解析失败: {e}")).into()),
+                Err(e) => Err(Rejected::signature(format!("签名文件解析失败: {e}")).into()),
             },
             404 => Ok(None),
             code => Err(Unavailable(format!("签名 HTTP {code}")).into()),
@@ -691,16 +774,16 @@ impl CatalogService {
                 Ok(())
             } else {
                 Err(
-                    Rejected("渠道未签名或签名为占位，默认拒绝（仅开发模式可显式允许）".into())
+                    Rejected::signature("渠道未签名或签名为占位，默认拒绝（仅开发模式可显式允许）")
                         .into(),
                 )
             };
         }
         let Some(key) = self.public_key.as_ref() else {
-            return Err(Rejected("渠道已签名，但客户端未配置固定 Ed25519 公钥".into()).into());
+            return Err(Rejected::signature("渠道已签名，但客户端未配置固定 Ed25519 公钥").into());
         };
         verify::verify_manifest(key, manifest_bytes, manifest, signature.unwrap())
-            .map_err(|e| Rejected(format!("验签失败: {e}")).into())
+            .map_err(|e| Rejected::signature(format!("验签失败: {e}")).into())
     }
 
     fn cached_snapshot(
