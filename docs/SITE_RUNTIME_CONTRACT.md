@@ -327,8 +327,15 @@ Site (static / proxy)  不持有 RuntimeEnv
 - **安装日志**：任务持有最近 300 行日志，抽屉内 `data-job-log` 实时追加；失败保留原因，
   提供「重试安装」入口，不阻塞其它页面操作。
 - **扩展变更**：抽屉提交 `/runtimes/{id}/extensions/{key}/install|uninstall` 或 `/pecl`，异步执行
-  mlocati `install-php-extensions`（下载失败回退手写 apk 依赖 + `docker-php-ext-install` / `pecl install`），
+  mlocati `install-php-extensions`（下载失败回退手写依赖 + `docker-php-ext-install` / `pecl install`），
   完成后重启容器、收紧 socket 权限并落库；容器不存在时提示先安装/启动。
+- **两家族可用性（Debian / Alpine）**：扩展安装脚本在**容器内**用 `command -v apk` / `apt-get`
+  判定包管理器后分支，不在宿主侧按镜像标签猜（自建镜像、换基础镜像同样成立）。
+  Alpine 保持「运行库显式安装 + `.skiff-build` 虚拟构建包 + 编译后清理」；
+  Debian 走 `apt-get install --no-install-recommends` 装映射后的 `-dev` 包（运行库随依赖保留，
+  不做 `apk del` 式清理）。`/etc/apk/config`、`apk add/del` 等 Alpine 专属路径只出现在
+  `apk` 分支内；两边都没有包管理器时脚本明确报错退出，不盲写 Alpine 路径。
+  官方 `php:*-fpm`（Debian）与 `php:*-fpm-alpine` 都必须能装扩展并成功重启 FPM。
 - **持久化**：`site_runtimes.extensions`（schema v9）保存逗号分隔的启用集合，安装/扩展任务成功后回写。
 - **PHP 池日志口径**：FPM 池显式 `access.log = /dev/null`，站点访问日志只由 Nginx 写；`error_log` 仍指 fd 2，由容器日志承接，不在站点目录重复落盘。
 

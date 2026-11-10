@@ -188,27 +188,99 @@ impl PhpExtensionDef {
             out
         }
     }
+}
 
+/// apk 包名 → Debian 构建依赖包名。
+///
+/// 只在容器内确认是 apt 系时才用到；未列出的名字按同名处理（`autoconf` / `g++` /
+/// `make` / `re2c` 等构建工具两家族同名）。Debian 只装 `-dev` 包——运行库会作为
+/// 依赖被带上并保留，因此不需要 apk 那套「运行库单独装、构建包后清理」的步骤。
+fn debian_build_package(apk: &str) -> String {
+    match apk {
+        "postgresql-dev" => "libpq-dev",
+        "unixodbc-dev" => "unixodbc-dev",
+        "libpng-dev" => "libpng-dev",
+        "libjpeg-turbo-dev" => "libjpeg62-turbo-dev",
+        "freetype-dev" => "libfreetype6-dev",
+        "imagemagick-dev" => "libmagickwand-dev",
+        "gmp-dev" => "libgmp-dev",
+        // Alpine 的 pkgconf 在 Debian 叫 pkg-config。
+        "pkgconf" => "pkg-config",
+        "libzip-dev" => "libzip-dev",
+        "icu-dev" => "libicu-dev",
+        "bzip2-dev" => "libbz2-dev",
+        "libxslt-dev" => "libxslt1-dev",
+        "openldap-dev" => "libldap2-dev",
+        "net-snmp-dev" => "libsnmp-dev",
+        "tidyhtml-dev" => "libtidy-dev",
+        other => other,
+    }
+    .to_string()
+}
+
+/// 生成「在容器内按实际存在的包管理器安装编译依赖」的 shell 片段。
+///
+/// 判据只看容器里有没有 `apk` / `apt-get`，不看镜像标签：宿主侧无法可靠知道
+/// 自建镜像或换了基础镜像的实例用哪套包管理器。Alpine 保持原策略（运行库单独
+/// 装、构建包用 `.skiff-build` 虚拟包并在编译后清理）；Debian 只装映射后的
+/// `-dev` 包，不碰任何 `/etc/apk/*` 路径。两者都没有时明确报错退出。
+fn legacy_deps_branch(build: &[String], runtime: &[String]) -> String {
+    let mut alpine: Vec<String> = Vec::new();
+    if !runtime.is_empty() {
+        alpine.push(format!("apk add --no-cache {}", runtime.join(" ")));
+    }
+    if !build.is_empty() {
+        alpine.push(format!(
+            "apk add --no-cache --virtual .skiff-build {}",
+            build.join(" ")
+        ));
+    }
+    let alpine = if alpine.is_empty() {
+        "true".to_string()
+    } else {
+        alpine.join(" && ")
+    };
+    let debian_pkgs: Vec<String> = build.iter().map(|p| debian_build_package(p)).collect();
+    let debian = if debian_pkgs.is_empty() {
+        "true".to_string()
+    } else {
+        format!(
+            "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {}",
+            debian_pkgs.join(" ")
+        )
+    };
+    format!(
+        "skiff_pm=other\n\
+         if command -v apk >/dev/null 2>&1; then\n\
+         \tskiff_pm=apk\n\
+         \t{alpine}\n\
+         elif command -v apt-get >/dev/null 2>&1; then\n\
+         \tskiff_pm=apt\n\
+         \t{debian}\n\
+         else\n\
+         \techo \"[skiff] 容器内既没有 apk 也没有 apt-get，无法安装扩展编译依赖\" >&2\n\
+         \texit 3\n\
+         fi"
+    )
+}
+
+/// `.skiff-build` 只有 Alpine 虚拟包语义：Debian 的 `-dev` 包保留即可，
+/// 强删会连带运行库并让已编译的 `.so` 缺库。
+fn legacy_cleanup_suffix() -> &'static str {
+    "if [ \"$skiff_pm\" = apk ]; then apk del .skiff-build; fi"
+}
+
+impl PhpExtensionDef {
     /// 旧的手写依赖 + `docker-php-ext-install` 路径：仅在 mlocati 主路径失败时兜底。
     fn legacy_install_script(&self) -> String {
-        let mut out = String::new();
-        let mut clean = false;
-        // 运行库必须显式安装：`apk del .skiff-build` 会把作为虚拟包依赖装进来的
-        // 运行库一起带走，导致 .so 编译成功但启动时缺库（gd 实测 libpng16.so.16 丢失）。
-        if !self.runtime_deps.is_empty() {
-            out.push_str("apk add --no-cache ");
-            out.push_str(&self.runtime_deps.join(" "));
-            out.push_str(" && ");
-        }
-        if !self.deps.is_empty() {
-            out.push_str("apk add --no-cache --virtual .skiff-build ");
-            out.push_str(&self.deps.join(" "));
-            out.push_str(" && ");
-            clean = true;
-        }
+        let build: Vec<String> = self.deps.iter().map(|s| s.to_string()).collect();
+        let runtime: Vec<String> = self.runtime_deps.iter().map(|s| s.to_string()).collect();
+        let mut out = legacy_deps_branch(&build, &runtime);
+        out.push_str(" && ");
         out.push_str(&self.legacy_compile_command());
-        if clean {
-            out.push_str(" && apk del .skiff-build");
+        if !build.is_empty() {
+            out.push_str(" && ");
+            out.push_str(legacy_cleanup_suffix());
         }
         out
     }
@@ -273,13 +345,19 @@ pub const PHP_EXTENSION_INSTALLER: &str =
 /// 落盘**（只留索引）。安装器的 `IPE_APK_FLAGS` 在脚本内部被重置为 `''`，无法从
 /// 环境注入，因此在 prelude 里写 `/etc/apk/config` 显式打开 `cache-packages`，
 /// 让主路径的 `apk add` 把包副本落进挂载的 `/var/cache/apk`。
+///
+/// 这段只对 Alpine 成立：Debian 镜像没有 `/etc/apk`，无条件写会让脚本在 `set -e`
+/// 下第 5 行就退出（`cannot create /etc/apk/config`）。因此先 `command -v apk`
+/// 判家族，再决定是否写。
 fn installer_prelude() -> String {
     format!(
         "set -e\n\
          IPE_KEEP_SYSPKG_CACHE=1\n\
          export IPE_KEEP_SYSPKG_CACHE\n\
-         if [ ! -f /etc/apk/config ] || ! grep -q '^cache-packages' /etc/apk/config; then\n\
-         \tprintf 'cache-packages yes\\n' >> /etc/apk/config\n\
+         if command -v apk >/dev/null 2>&1; then\n\
+         \tif [ ! -f /etc/apk/config ] || ! grep -q '^cache-packages' /etc/apk/config; then\n\
+         \t\tprintf 'cache-packages yes\\n' >> /etc/apk/config\n\
+         \tfi\n\
          fi\n\
          SKIFF_LOCAL_IPE='{local}'\n\
          if [ -f \"$SKIFF_LOCAL_IPE\" ]; then\n\
@@ -287,7 +365,7 @@ fn installer_prelude() -> String {
          \tif [ \"$SKIFF_IPE_VER\" = '{ver}' ]; then\n\
          \t\tcp \"$SKIFF_LOCAL_IPE\" /usr/local/bin/install-php-extensions\n\
          \t\tchmod 0755 /usr/local/bin/install-php-extensions\n\
-         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}；apk 包缓存 /var/cache/apk 已启用）\"\n\
+         \t\techo \"[skiff] 扩展安装器：使用本地副本 $SKIFF_LOCAL_IPE（mlocati {ver}，sha256 {sha}；Alpine 下已启用 apk 包缓存 /var/cache/apk）\"\n\
          \telse\n\
          \t\techo \"[skiff] 本地扩展安装器版本不符：$SKIFF_IPE_VER（期望 {ver}）；回退下载固定版本\" >&2\n\
          \t\tcurl -fsSL {url} -o /usr/local/bin/install-php-extensions && chmod 0755 /usr/local/bin/install-php-extensions || true\n\
@@ -319,7 +397,7 @@ fn fallback_script(pkg: &str, legacy: &str) -> String {
          \t\techo \"[skiff] 主路径失败（exit $skiff_main_rc），已回退手写依赖表：{pkg}\" >&2\n\
          \tfi\n\
          fi\n\
-         if {legacy}; then\n\
+         if {{ {legacy}; }}; then\n\
          \texit 0\n\
          else\n\
          \tskiff_legacy_rc=$?\n\
@@ -381,15 +459,8 @@ pub fn batch_install_script(keys: &[String]) -> Option<String> {
         return None;
     }
     let pkgs: Vec<String> = items.iter().map(|(p, _, _)| p.clone()).collect();
-    let mut legacy = String::from("export MAKE=\"make -j$(nproc)\"");
-    if !runtime_deps.is_empty() {
-        legacy.push_str(" && apk add --no-cache ");
-        legacy.push_str(&runtime_deps.join(" "));
-    }
-    if !build_deps.is_empty() {
-        legacy.push_str(" && apk add --no-cache --virtual .skiff-build ");
-        legacy.push_str(&build_deps.join(" "));
-    }
+    let mut legacy = legacy_deps_branch(&build_deps, &runtime_deps);
+    legacy.push_str(" && export MAKE=\"make -j$(nproc)\"");
     for (idx, (_, cmd, label)) in items.iter().enumerate() {
         legacy.push_str(&format!(
             "\necho \"[skiff] --- 回退安装 {label}（{}/{total}）---\"\n\
@@ -405,7 +476,8 @@ pub fn batch_install_script(keys: &[String]) -> Option<String> {
         ));
     }
     if !build_deps.is_empty() {
-        legacy.push_str(" && apk del .skiff-build");
+        legacy.push_str(" && ");
+        legacy.push_str(legacy_cleanup_suffix());
     }
     Some(fallback_script(&pkgs.join(" "), &legacy))
 }
@@ -1053,11 +1125,18 @@ pub fn extension_install_script(token: &str) -> Option<String> {
     };
     // PECL 自定义扩展：同样优先本地 mlocati（依赖解析 + 清理），失败保留真实 stderr；
     // 本地副本缺失/不可用或主路径执行失败时回退 `pecl install`
-    // （PTY 下用 `yes ''` 防提问挂起；MAKE 并行缩短编译）。
+    // （PTY 下用 `yes ''` 防提问挂起；MAKE 并行缩短编译）。回退路径的构建工具
+    // 同样在容器内按 apk/apt-get 分支安装，不写死 Alpine 路径。
+    let build_tools: Vec<String> = ["autoconf", "g++", "make", "pkgconf", "re2c"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     Some(fallback_script(
         &pkg,
         &format!(
-            "export MAKE=\"make -j$(nproc)\" && apk add --no-cache --virtual .skiff-build autoconf g++ make pkgconf re2c && yes '' | pecl install {pkg} && docker-php-ext-enable {name} && apk del .skiff-build"
+            "{} && export MAKE=\"make -j$(nproc)\" && yes '' | pecl install {pkg} && docker-php-ext-enable {name} && {}",
+            legacy_deps_branch(&build_tools, &[]),
+            legacy_cleanup_suffix()
         ),
     ))
 }
@@ -1320,7 +1399,7 @@ mod tests {
         // 把作为虚拟包依赖装进来的运行库一起删了。运行库必须显式安装且排在编译依赖之前。
         for e in PHP_EXTENSIONS.iter().filter(|e| !e.runtime_deps.is_empty()) {
             let script = e.install_script();
-            let head = format!("apk add --no-cache {} &&", e.runtime_deps.join(" "));
+            let head = format!("apk add --no-cache {}", e.runtime_deps.join(" "));
             assert!(script.contains(&head), "{}：运行库未显式安装", e.key);
             let head_at = script.find(&head).expect("head");
             let build_at = script
@@ -1333,8 +1412,55 @@ mod tests {
             );
         }
         let gd = extension_install_script("gd").expect("gd");
-        assert!(gd.contains("apk add --no-cache libpng libjpeg-turbo freetype &&"));
+        assert!(gd.contains("apk add --no-cache libpng libjpeg-turbo freetype"));
         assert!(gd.contains("apk del .skiff-build"));
+    }
+
+    /// 扩展安装必须在容器内按实际包管理器分支：Debian 镜像没有 `/etc/apk`，
+    /// 宿主侧按镜像标签猜会在自建镜像上再次踩坑。
+    #[test]
+    fn extension_scripts_branch_on_container_package_manager() {
+        let gd = extension_install_script("gd").expect("gd");
+        assert!(
+            gd.contains("if command -v apk >/dev/null 2>&1; then"),
+            "{gd}"
+        );
+        assert!(
+            gd.contains("elif command -v apt-get >/dev/null 2>&1; then"),
+            "{gd}"
+        );
+        // apk 包名映射成 Debian 的 -dev 包名；运行库不单独装（随依赖保留）。
+        assert!(
+            gd.contains(
+                "apt-get install -y --no-install-recommends libpng-dev libjpeg62-turbo-dev libfreetype6-dev"
+            ),
+            "{gd}"
+        );
+        assert!(
+            gd.contains("DEBIAN_FRONTEND=noninteractive apt-get install -y"),
+            "{gd}"
+        );
+        // 清理只在 Alpine 生效：Debian 强删 -dev 会连带运行库。
+        assert!(
+            gd.contains("if [ \"$skiff_pm\" = apk ]; then apk del .skiff-build; fi"),
+            "{gd}"
+        );
+        // 两家族都不可用时明确失败，而不是盲写 Alpine 路径。
+        assert!(gd.contains("既没有 apk 也没有 apt-get"), "{gd}");
+
+        // 自定义 PECL token 走同一分支，且 pkgconf → pkg-config。
+        let custom = extension_install_script("pecl:swoole@5.1.2").expect("custom pecl");
+        assert!(
+            custom.contains(
+                "apt-get install -y --no-install-recommends autoconf g++ make pkg-config re2c"
+            ),
+            "{custom}"
+        );
+        assert!(
+            custom.contains("yes '' | pecl install swoole-5.1.2"),
+            "{custom}"
+        );
+        assert!(custom.contains("--virtual .skiff-build"), "{custom}");
     }
 
     #[test]
@@ -1660,7 +1786,21 @@ mod tests {
         // 会出现「目录有文件但二装不命中包」的假优化。必须显式打开 cache-packages。
         let script = php_extension("redis").expect("redis").install_script();
         assert!(script.contains("cache-packages yes"), "{script}");
-        assert!(script.contains("/etc/apk/config"), "{script}");
+        // 但这段只对 Alpine 成立：Debian 镜像没有 /etc/apk，必须在 apk 判家族的
+        // 守卫内，否则 `set -e` 下会在写配置这一步直接失败。
+        let guard = script
+            .find("if command -v apk >/dev/null 2>&1; then")
+            .expect("缺 apk 守卫生");
+        let apk_cfg = script.find("/etc/apk/config").expect("缺 /etc/apk/config");
+        let after_guard = script.find("SKIFF_LOCAL_IPE=").expect("缺安装器本地副本段");
+        assert!(
+            guard < apk_cfg,
+            "写 /etc/apk/config 必须在 apk 守卫内（先判 command -v apk）"
+        );
+        assert!(
+            script[guard..after_guard].contains("printf 'cache-packages yes"),
+            "cache-packages 必须落在守卫内"
+        );
         // 安装器收尾默认 `rm -rf /var/cache/apk/*`，保留缓存才能跨安装复用。
         assert!(script.contains("IPE_KEEP_SYSPKG_CACHE=1"), "{script}");
     }

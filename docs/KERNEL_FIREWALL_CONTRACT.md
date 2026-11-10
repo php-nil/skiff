@@ -96,7 +96,11 @@
   `fail2ban-client stop <jail>` 立即生效；`skiff-defaults.conf` 尚无该段时追加 `enabled = false`
   再重启一次，把「关闭」落到配置层。只有 `skiff-defaults.conf` 存在时才做这步复核——
   宿主原有 fail2ban 且没有本能力面 defaults 时，`start` 只重启、不改其既有 jail。
-  返回体在发生关闭时带 `disabled_jails`。
+- **返回体一致性**：`disabled_jails` / `residual_jails` 都以**最终复核后的** `fail2ban-client status`
+  实际 jail 集合为准，而不是「已请求停用」集合。请求停用且复核后确实消失的 jail 记入
+  `disabled_jails`；请求停用但复核后仍在（典型是宿主 `jail.d/zz-*.conf` 排序晚于 `skiff-*.conf`
+  重新覆盖）记入 `residual_jails`。两个数组互斥，且与同一响应的 `jails` 不交叉：
+  `jails` 里的 jail 一定不出现在 `disabled_jails` 里。
 - **不做**：清空全部规则、修改默认策略为 drop、flush 其它表/链、执行任意命令；
   不删除用户创建的其它 jail 文件。
 

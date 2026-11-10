@@ -1292,14 +1292,19 @@ fn has_section(text: &str, jail: &str) -> bool {
 /// `jail.d/*.conf` 生效。重启后对照本能力面托管配置：
 /// - 预期 = `skiff-*.conf` 里 `enabled = true` 的段；
 /// - 多出来的 jail（典型是 Debian 镜像自带的 `sshd`）先 `fail2ban-client stop`
-///   立即生效；`skiff-defaults.conf` 里还没写过该段时，再追加 `enabled = false`
-///   让「关掉」落到配置层，避免下次重启又回来。
+///   立即生效；`skiff-defaults.conf` 里还没写过该段时，再追加 `enabled = false`，
+///   最后重启让「关掉」落到配置层。
+///
+/// 返回体以**复核后的真实状态**为准：宿主的覆盖文件排序晚于我们的配置
+/// （如 `zz-sshd.conf`）时，重启会把它重新启用，此时 `jails` 仍含该 jail。
+/// 因此 `disabled_jails` 只登记「请求停用且复核已消失」的 jail；请求停用但
+/// 复核后仍存在的写进 `residual_jails`，避免同一响应里两处自相矛盾。
 ///
 /// 只有在托管默认配置存在时才做这一步：宿主机原本就装了 fail2ban 并自行配置
 /// 的 jail 不属于本能力面的管辖范围，不能被静默关掉。
 async fn restart_and_verify<H: FirewallHost>(host: &H) -> Result<Value, FirewallError> {
     restart_fail2ban(host).await?;
-    let mut disabled: Vec<String> = Vec::new();
+    let mut requested: Vec<String> = Vec::new();
     if let Some(defaults) = managed_defaults_text(host).await {
         let expected = managed_jails(host).await;
         let unexpected: Vec<String> = active_jails(host)
@@ -1325,12 +1330,34 @@ async fn restart_and_verify<H: FirewallHost>(host: &H) -> Result<Value, Firewall
                 .await?;
             }
             restart_fail2ban(host).await?;
-            disabled = unexpected;
+            requested = unexpected;
         }
     }
     let mut result = fail2ban_status(host).await?;
-    if !disabled.is_empty() {
-        result["disabled_jails"] = json!(disabled);
+    if !requested.is_empty() {
+        let active: Vec<String> = result["jails"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut disabled: Vec<String> = Vec::new();
+        let mut residual: Vec<String> = Vec::new();
+        for jail in requested {
+            if active.iter().any(|a| a == &jail) {
+                residual.push(jail);
+            } else {
+                disabled.push(jail);
+            }
+        }
+        if !disabled.is_empty() {
+            result["disabled_jails"] = json!(disabled);
+        }
+        if !residual.is_empty() {
+            result["residual_jails"] = json!(residual);
+        }
     }
     Ok(result)
 }
@@ -1651,7 +1678,46 @@ enabled = no
             .any(|c| c.contains("tee -a /etc/fail2ban/jail.d/skiff-defaults.conf")));
     }
 
-    /// 宿主机原有 fail2ban（没有本能力面的 defaults）里的 jail 不能被静默关掉。
+    /// 宿主覆盖文件（如 `zz-sshd.conf`）排序晚于托管配置时，重启后 sshd 会回来：
+    /// 返回体必须反映复核后的真实状态，不能 `disabled_jails` 与 `jails` 同时含它。
+    #[tokio::test]
+    async fn fail2ban_reports_residual_jail_when_host_override_wins() {
+        let host = FakeHost::new(|cmd, args| {
+            if cmd.contains("fail2ban-client") {
+                return match args.first().map(String::as_str) {
+                    Some("--version") => ok("Fail2Ban v1.0.2"),
+                    Some("stop") => ok(""),
+                    // 每次重启后 sshd 都因 zz-sshd.conf 重新启用。
+                    _ => ok("Status\n|- Number of jail:\t1\n`- Jail list:\tsshd\n"),
+                };
+            }
+            if cmd.contains("systemctl") {
+                return ok("active\n");
+            }
+            if cmd == LS {
+                return ok("skiff-defaults.conf\nzz-sshd.conf\n");
+            }
+            if cmd == CAT {
+                return ok("# skiff managed defaults\n");
+            }
+            ok("")
+        });
+
+        let res = dispatch(&host, "fail2ban.start", &json!({})).await.unwrap();
+        assert_eq!(
+            res["jails"],
+            json!(["sshd"]),
+            "jails 必须是复核后的真实集合"
+        );
+        assert!(
+            res.get("disabled_jails").is_none(),
+            "仍在运行的 jail 不能登记为已停用：{res}"
+        );
+        assert_eq!(res["residual_jails"], json!(["sshd"]));
+        let calls = host.calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|c| c.ends_with("stop sshd")), "{calls:?}");
+    }
+
     #[tokio::test]
     async fn fail2ban_start_leaves_host_jails_alone_without_managed_defaults() {
         let host = FakeHost::new(|cmd, args| {
