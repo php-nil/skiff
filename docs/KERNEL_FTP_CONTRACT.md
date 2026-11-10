@@ -2,7 +2,7 @@
 
 > 状态：已上线（2026-11-07，随 `v0.1.0` 发布；上线时 DB schema v11，当前基线 v15）。
 > 本文件是 `ftp` 能力面的**契约**：主体、授权、账号与权限口径、审计、错误码与测试矩阵。
-> 实现细节见 `crates/core/src/kernel/ftp.rs`；插件实现约定见 `plugins/README.md`；
+> 实现细节见 `crates/plugin/src/ftp.rs`（判定与编排）与 `crates/core/src/kernel/ftp.rs`（grants/审计/特权通道）；插件实现约定见 `plugins/README.md`；
 > 与内核能力面的关系见本文件 §1.2 与 §8。
 
 ## 0. 一页结论
@@ -77,7 +77,7 @@
    - 取不到 `PluginId` → 403；
    - grants 无 `ftp:*` 且无 `ftp:<method>` → 403，并审计 `ftp.deny.<method>`；
    - 通过后进 `dispatch`，结果审计 `ftp.<method>`。
-4. 单点实现：能力面枚举只在 `crates/pkgfmt`；UDS 路径常量只在 `crates/wire`；SDK 只在 `crates/sdk` 暴露 `ftp_call`；实际动作只在 `crates/core/src/kernel/ftp.rs`。
+4. 单点实现：能力面枚举只在 `crates/pkgfmt`；UDS 路径常量只在 `crates/wire`；SDK 只在 `crates/sdk` 暴露 `ftp_call`；判定与命令编排在 `crates/plugin/src/ftp.rs`（`skiff_plugin::ftp`），内核侧 `crates/core/src/kernel/ftp.rs` 只保留 grants 校验、审计与 `systemd-run` 特权执行通道（站点快照由内核注入 `FtpContext`，插件不查库）。
 
 ### 2.3 方法清单（api = 1.2）
 

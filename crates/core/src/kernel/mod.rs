@@ -18,6 +18,9 @@
 //! - `firewall`：宿主机 nftables/iptables 规则与 fail2ban（仅 Native）。判定与命令
 //!   编排在 `skiff_plugin::firewall`；这里只负责 `PluginId` + grants 校验、审计，
 //!   以及经 `systemd-run` 瞬态单元执行特权命令。
+//! - `ftp`：宿主机 pure-ftpd 安装、服务配置与站点账号（仅 Native）。判定与命令
+//!   编排在 `skiff_plugin::ftp`；这里只负责 grants 校验、审计，以及经 `systemd-run`
+//!   瞬态单元执行特权命令（站点快照由这里注入，插件不查库）。
 //!
 //! 文件分工（一个职责一个文件，避免单文件既管 socket 又管判定）：
 //! - `server`（仅 unix）：socket 建立、属组/权限、accept 循环；

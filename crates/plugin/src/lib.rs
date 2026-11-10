@@ -14,6 +14,8 @@ pub mod capability;
 pub mod firewall;
 pub mod fsgrant;
 pub mod fsops;
+/// 宿主机 pure-ftpd 能力面（内核 `ftp` handler 调用的判定与命令编排）。
+pub mod ftp;
 pub mod install;
 pub mod interop;
 pub mod ipc;
