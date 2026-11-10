@@ -519,7 +519,7 @@ P2 三项与 `AppState` 下沉仍未动（与 §9 一致）：`db.rs` 1023 行�
 `plugin enable/disable`：Web 会先 `supervisor.stop()` 再改库并写 `plugin.toggle` 审计
 （`web/handlers/plugins.rs:402-416`）；CLI 只改库两列，**不停进程、不写审计**（`core/commands.rs:201-210`）。
 服务运行期间用 CLI 停用一个插件，进程继续跑、审计无痕、UI 显示已停用——三处状态互相矛盾。
-`set_plugin_enabled` + `set_plugin_status` 这对调用也在两处各写一遍。
+`set_plugin_enabled` + `set_plugin_status` 这对调用也在两处各写一遍（两列合并写已于 2026-11-10 收口到 `Db::set_plugin_enabled_state`；CLI 仍无 `supervisor.stop()` 与审计，本条副作用差异未变）。
 
 **4. 上传暂存是业务逻辑，却住在表现层。**
 `web/handlers/plugins.rs:195-286` 自己做：读 multipart → 落 `.incoming/` → `0600` → 生成 24 字符令牌 → 二次提交时按令牌复原路径。
@@ -556,7 +556,7 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 | 5 | `Grant` 的 `kind:value` 字符串 | `core/commands.rs:65`、`core/kernel/capability.rs:57`、`web/handlers/api.rs:168`、`web/handlers/plugins.rs:48` | 4 处手写，改格式必漏 | `impl fmt::Display for skiff_model::Grant` |
 | 6 | TTL 表回收 | `app/lib.rs:99-115`（登录限流）、`app/lib.rs:173-185`（exec 票据） | 两段逻辑同构：retain 过期 → 超限按时间淘汰到 3/4 | 泛型 `TtlMap<V>`（`retain_live` + `evict_oldest_to(3/4)`），两张表共用，各带一条边界测试 |
 | 7 | 24 字符短令牌 | `web/handlers/plugins.rs:125`（nonce）、`:230-231`（上传令牌） | 同上手法写两遍 | `skiff_identity::short_token(n)` |
-| 8 | 插件启停的两列写入 | `web/handlers/plugins.rs:405-408`、`core/commands.rs:206-207` | `enabled` 与 `status` 必须同步改，漏一处就不一致 | `Db::set_plugin_enabled_state(id, enabled)` |
+| 8 | 插件启停的两列写入 | `web/handlers/plugins.rs:405-408`、`core/commands.rs:206-207` | `enabled` 与 `status` 必须同步改，漏一处就不一致 | **已收口（2026-11-10）**：`Db::set_plugin_enabled_state(id, enabled)` 单条 `UPDATE` 同时写两列，状态映射收在仓储层；Web / CLI / 官方同步 / 集成测试四处调用点全部改调 |
 | 9 | `PluginId` 取值 | `core/kernel/capability.rs` 5 处手写 `req.extensions().get::<cap::PluginId>()`、`core/kernel/interop.rs` 同形 | `skiff_plugin::capability::plugin_of` 已有现成函数，core 没用 | core 统一调 `cap::plugin_of(&req)` |
 | 10 | kernel 能力面转发壳 | `core/kernel/capability.rs:24-41` 6 个 5 行函数 | 只做 `State<Arc<AppState>> → &*state` 转换 | 一个泛型函数 + 路由表闭包，或让 `CapabilityHost` 直接实现对 `Arc<AppState>` |
 
@@ -585,7 +585,7 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 | P1 | 插件 UI 加认证 | `plugin_ui` 挂 `AuthUser`；`is_exempt` 只豁免 `/static/` 与 `/healthz` | 与 JSON 侧口径一致，恢复隐蔽入口语义 | iframe 需带 Cookie（本来就会带） | 小 |
 | P2 | `plugin` 去 axum | 能力面签名改框架中立（`&H, Value → (u16, Value)`），axum 适配回 `core::kernel` | `plugin` 可无 web 框架单测，编译面缩小 | 6 个 fs handler + 3 个能力 handler 改签名 | 中 |
 | P2 | exec 泵浦下沉 | `DockerService::exec_session(container) -> (impl Sink, impl Stream)`，`web` 只做 WS 编解码 | 域逻辑回归 `docker`；可脱平台测试 | `docker` 需定义流类型 | 中 |
-| P2 | 小项清理 | `Grant: Display`、`within_root` 两处替换、`TtlMap`、`short_token`、`set_plugin_enabled_state`、`cap::plugin_of` 复用 | 重复清零 | 无行为变化 | 小–中 |
+| P2 | 小项清理 | `Grant: Display`、`within_root` 两处替换、`TtlMap`、`short_token`、`cap::plugin_of` 复用（`set_plugin_enabled_state` 已于 2026-11-10 收口） | 重复清零 | 无行为变化 | 小–中 |
 | P2 | 首登改密白名单入 model | 把「必须改密时允许的页面」变成 `model` 里的策略函数 | 新增页面不再需要改中间件 | 无 | 小 |
 
 ### 14.8 未覆盖（不要据此下结论）
