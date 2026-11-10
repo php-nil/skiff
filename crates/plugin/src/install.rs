@@ -1,5 +1,6 @@
 //! 安装 / 升级 / 卸载（§4.3、§4.5）。
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -221,9 +222,9 @@ pub fn install_package(
     //   不会出现越权授权；老声明里被用户拒绝过的项不翻案（只在旧 manifest 未声明时才算新增）。
     //   补齐项必须留痕（见下方 `plugin.grant_upgrade` 审计），不静默扩权。
     let declared = meta.manifest.permission_strings();
-    let prev_declared = match &existing {
+    let prev_manifest = match &existing {
         Some(prev) => match Manifest::parse(&prev.manifest) {
-            Ok(m) => Some(m.permission_strings()),
+            Ok(m) => Some(m),
             Err(e) => {
                 // 旧 manifest 读不出来就无法判断「新增」，按保守口径不补授。
                 warn!(plugin = %prev.id, error = %e, "旧 manifest 不可解析，升级不自动补授新增权限");
@@ -232,6 +233,14 @@ pub fn install_package(
         },
         None => None,
     };
+    let prev_declared = prev_manifest.as_ref().map(|m| m.permission_strings());
+    // 旧 manifest 声明过的对象 hint（含 `[interop].consumes` 派生项）：只有**新 manifest
+    // 新增**的 hint 才补授；旧 manifest 已声明但用户当初没勾的 hint 同样不翻案。
+    let prev_hints = prev_manifest.as_ref().map(|m| {
+        let mut set: BTreeSet<String> = m.resource_hints.iter().cloned().collect();
+        set.extend(m.interop_resource_hints());
+        set
+    });
     let mut grant_upgrade: Vec<String> = Vec::new();
     let mut object_upgrade: Vec<String> = Vec::new();
     let grants = match &existing {
@@ -255,19 +264,25 @@ pub fn install_package(
             }
 
             // 对象授权（`resource_hints` + 由 `[interop].consumes` 派生的 `plugin:`）同样
-            // 按「相对旧 manifest 新增」补齐：只增不减，已有授权不动；manifest 移除 hint
+            // 只补「相对旧 manifest 新增」的项：只增不减，已有授权不动；manifest 移除 hint
             // 不自动回收——回收只走显式卸载。形式校验放在落盘前，失败即整体拒绝，
             // 不会留下「文件已换、授权没补」的半完成状态。
-            let mut hints = meta.manifest.resource_hints.clone();
-            hints.extend(meta.manifest.interop_resource_hints());
-            for h in hints {
-                skiff_pkgfmt::manifest::validate_resource(&h)
-                    .map_err(|e| PluginError::Rejected(format!("对象 grant {h} 非法: {e}")))?;
-                if kept.iter().any(|g| g.kind == "object" && g.value == h) {
-                    continue;
+            // 旧 manifest 不可解析时无法判断新增，保守不补（与权限动词同口径）。
+            if let Some(old_hints) = &prev_hints {
+                let mut hints = meta.manifest.resource_hints.clone();
+                hints.extend(meta.manifest.interop_resource_hints());
+                for h in hints {
+                    skiff_pkgfmt::manifest::validate_resource(&h)
+                        .map_err(|e| PluginError::Rejected(format!("对象 grant {h} 非法: {e}")))?;
+                    if old_hints.contains(&h) {
+                        continue;
+                    }
+                    if kept.iter().any(|g| g.kind == "object" && g.value == h) {
+                        continue;
+                    }
+                    object_upgrade.push(h.clone());
+                    kept.push(Grant::object(h));
                 }
-                object_upgrade.push(h.clone());
-                kept.push(Grant::object(h));
             }
             kept
         }
@@ -1169,6 +1184,41 @@ requires = {requires}
         assert!(
             rows.iter().all(|r| r.action != "plugin.grant_upgrade"),
             "移除 hint 不应产生任何补授或回收审计: {rows:?}"
+        );
+    }
+
+    /// 旧 manifest 已声明、但用户安装时没勾的 hint 不翻案：只有「新增声明」才补授。
+    #[test]
+    fn upgrade_does_not_regrant_declined_old_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        // 0.1.0 已声明 container:abc，但用户没勾（object_grants 为空）。
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &["container:abc"]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(&db, id, &[("perm", "docker:list")]);
+
+        // 0.2.0 仍然只声明同一条 hint：不是新增，不补授。
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &["container:abc"]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(&db, id, &[("perm", "docker:list")]);
+
+        let rows = db.recent_audit(20).unwrap();
+        assert!(
+            rows.iter().all(|r| r.action != "plugin.grant_upgrade"),
+            "用户没勾的旧 hint 不该被翻案补授: {rows:?}"
         );
     }
 

@@ -35,7 +35,7 @@ manifest 字段分两组：**包标识与兼容性**、**能力、权限与运�
 |---|---|
 | `requires` | 必需内核能力数组（内核提供 `docker`、`identity`、`fs`、`net`、`interop`）。**安装时**校验是否提供，未提供直接拒装（而不是装上再坏）。受限形态（DockerRestricted）只提供 `docker` / `identity` / `interop` |
 | `permissions` | 调用范围：`docker` / `identity` / `fs` / `net` / `interop` 动词白名单（Broker 逐次校验）。安装时逐条向用户确认；Docker 动词还须叠加 §6 对象 grant。**`fs` 是两把钥匙**：权限串（`read/write/list/mkdir/remove/rename`）+ 安装时确认的 `path:<绝对路径>` 对象授权根；绝对路径（宿主文件）缺授权根一律 403。单次读写上限 256KiB（留在 1MiB 单帧内），大文件由调用方按 `offset` 分页。`interop` 目前只有一个动词 `call`（跨插件接口调用，见下方 `interop` 字段） |
-| `resource_hints` | 安装确认页的**建议**授权对象（`path:/var/www`、`container:demo`、`plugin:com.skiff.cron` 等），只用于预填勾选项，不是自动授权；形式须与 `requires` 对得上（声明 `path:` 建议却不需要 `fs`、声明 `plugin:` 建议却不需要 `interop` 视为 manifest 非法）。空数组表示不预设（如 `files`、`guard` 让管理员自己选）。`plugin:` 支持 `plugin:*`（全量）但不允许 `plugin:com.*` 这类部分通配 |
+| `resource_hints` | 安装确认页的**建议**授权对象（`path:/var/www`、`container:demo`、`plugin:com.skiff.cron` 等），只用于预填勾选项，首次安装不是自动授权；重装/升级时对**新 manifest 相对已装 manifest 新增**的 hint 自动补授（只增不减，回收只走显式卸载，补授写 `plugin.grant_upgrade` 审计）。形式须与 `requires` 对得上（声明 `path:` 建议却不需要 `fs`、声明 `plugin:` 建议却不需要 `interop` 视为 manifest 非法）。空数组表示不预设（如 `files`、`guard` 让管理员自己选）。`plugin:` 支持 `plugin:*`（全量）但不允许 `plugin:com.*` 这类部分通配 |
 | `network_egress` | 可选出网目标范围（MVP 仅 IP/CIDR + 端口，不做动态域名放行；`unrestricted` 表示接受完全开放）；默认空集即拒绝出网，安装时单独确认。reduced sandbox 无法保证执行时，见 §5.4 |
 | `ui` | 菜单注册项：`label` 即插件界面名，挂到顶栏「插件」一级菜单的二级项（与内核页面「已安装」并列；不再单占一级入口）；`path` 是 `ui/` 下的相对入口。导航口径见 §3.4。内核托管 `/plugins/{id}/ui/*` 后以**沙箱 iframe**（opaque origin）加载，通信只走父页面 postMessage 桥——能力调用 `skiff.rpc`、插件间跳转 `skiff.open`（§4.2「UI 托管」） |
 | `idle_timeout_sec` / `max_restarts` | 空闲回收秒数与重启次数上限，默认 300 / 3 |

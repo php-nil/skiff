@@ -307,11 +307,13 @@ cargo test   --manifest-path plugins/Cargo.toml --locked            # 21 passed;
   走 `Scheduler::update`；`enabled`、`created_by`、`created_at`、`last_run`、`state` 与
   `task_runs` 历史一律保留（不做删了重建）。manifest 撤掉的声明任务按 `created_by =
   "system:manifest"` 回收。
-- **授权补齐**（2026-11-09 补）：`crates/plugin/src/install.rs` 升级时先按新声明过滤既有
+- **授权补齐**（2026-11-09 补，2026-11-10 扩对象 hint）：`crates/plugin/src/install.rs` 升级时先按新声明过滤既有
   grants（未声明的 perm 清除），再只在「相对已装 manifest 新声明的 perm」上补授——
-  不翻案用户当初拒绝过的项，旧 manifest 不可解析时保守不补。只读动词仅记 `info`；
-  命中敏感动词（写/删除/执行类，`is_sensitive_perm`）时记 `warn` 与审计
-  `plugin.grant_upgrade`，detail 为 `升级新增授权: {全部新增动词}；版本 {from} → {to}（敏感: {敏感动词}）`。
+  不翻案用户当初拒绝过的项，旧 manifest 不可解析时保守不补。对象授权同口径：`resource_hints`
+  与 `[interop].consumes` 派生的 `plugin:<id>` 只补新增项，只增不减（移除 hint 不回收）。
+  只读动词且无新增对象授权仅记 `info`；命中敏感动词（写/删除/执行类，`is_sensitive_perm`）
+  或任何新增对象授权时记 `warn` 与审计 `plugin.grant_upgrade`，detail 为
+  `升级补授授权: {全部新增项}；来源: {manifest 新声明 / resource_hints/[interop]}；版本 {from} → {to}（敏感: {敏感动词}）`。
 - **monitor**：任务 `plugin:com.skiff.monitor:sample`（kind `plugin:com.skiff.monitor:execute`，
   source `plugin:com.skiff.monitor`，`sample_interval=60s`、`schedule=*/5`、缓冲 4 MiB / 批 512 KiB）。
   插件只留 `sample`（返回点、更新 `prev.json` 基线）、`execute`（批次**追加** `samples.jsonl`，
