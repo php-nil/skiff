@@ -25,6 +25,11 @@ COPY crates ./crates
 # workspace 的成员里有 xtask：少这一份 manifest，cargo 会直接崩在
 # "failed to load manifest for workspace member xtask" —— 镜像根本构建不出来
 COPY xtask ./xtask
+# 同理，tools/skiff-server 也是根 workspace 成员（商店清单生成/校验工具）。
+# 即使这里只 `-p skiff`，cargo 仍要加载全部成员 manifest，少一份就崩在
+# "failed to load manifest for workspace member tools/skiff-server"。
+# 它只在构建期参与 manifest 解析，不会被打进运行镜像。
+COPY tools/skiff-server ./tools/skiff-server
 # PHP 扩展安装器按 include_str!("../../../deploy/vendor/install-php-extensions") 编进
 # skiff-app：构建上下文必须带上 deploy/vendor，否则镜像构建死在 couldn't read。
 COPY deploy/vendor ./deploy/vendor
