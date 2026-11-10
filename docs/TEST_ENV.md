@@ -61,30 +61,30 @@
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `v0.1.0`（`244ea76`，含 `49781a7` 全部内容 + 默认站点切换修复 + 枚举约定单测 + ARCH_REVIEW §15 待办；库 **v18**，本轮无迁移） |
-| tag / 构建提交 | 构建提交 `244ea76`；tag `v0.1.0` **未移动，仍指 `ef7058b`**，由 dispatch（`ref=main`、`version=0.1.0`、`publish=true`、`release_tag=v0.1.0`、`skip_plugins=false`）构建并覆盖上传同一 Release；Release run `42897690842` **四个 job 全绿**；同提交 CI 全绿（12 项 check-run：11 success + `编译（x86_64 musl 静态）` skipped） |
-| 部署时间 | 2026-11-11 04:47–04:52（Asia/Shanghai；先备份二进制/库/配置，再保库覆盖安装；本轮无 schema 迁移，启动日志仅 `Skiff 已启动`；`skiff.service` 最近一次 ActiveEnter `04:49:23`） |
-| 部署方式 | `244ea76` Release 资产，本地 sha256 `d150659f0804175290355f58128b9ed4d740ba18bd2a2e11aadb55e3dabcec99`（9,907,191 B）与 API digest、`checksums.txt`、逐资产侧车四方一致 → 经内网代理走 API 资产端点下载（缓存 `%TEMP%\skiff-ops\rel-244ea76\`）→ `scp` 到 `/root/iter/rel-244ea76/` → 测试机 `sha256sum -c` OK → 解压（包内顶层目录 `skiff-0.1.0-x86_64-unknown-linux-musl/`）→ `sh -n install.sh` **exit 0** → `sh install.sh --no-docker` **真实退出码 0**（按「重定向 + `rc=$?`」姿势执行，`Bad substitution` 未复现）；安装后 `/usr/local/bin/skiff` 14,684,560 B、sha256 `d35af82175f70db09d0e0dc91c8a963b3c902ec9bd4e857cdf3a485016b7cc62`（与包内解压二进制一致）；旧二进制备份 `/root/iter/skiff.bin.before-244ea76`（14,672,144 B `18c59a0c…72d2509`）、升级前库快照 `/root/iter/skiff.db.before-244ea76`（4,382,720 B）、配置备份 `/root/iter/config.toml.before-244ea76` |
-| 数据库 | 库保持 **v18**（本轮无迁移）：启动日志无 `schema 迁移完成` 行；`PRAGMA integrity_check=ok`；计数 plugins 7 / plugin_grants 58 / sites 2 / site_aliases 0 / site_runtimes 1 / users 1；配置 sha256 `ec42b7652a47809d70d90ef7a9b02a9d4dcf7374126ee2f1d4e7e3b1972c51af` 未变 |
+| 版本 | `v0.1.0`（`bf0c4fe`，含 `244ea76` 全部内容 + FTP TLS 拼接件从创建即 `0600` + 全局唯一临时名原子写；库 **v18**，本轮无迁移） |
+| tag / 构建提交 | 构建提交 `bf0c4fe`；tag `v0.1.0` **未移动，仍指 `ef7058b`**，由 dispatch（`ref=main`、`version=0.1.0`、`publish=true`、`release_tag=v0.1.0`、`skip_plugins=false`）构建并覆盖上传同一 Release；Release run `42904415350` **四个 job 全绿**；同提交 CI 全绿（12 项 check-run：11 success + `编译（x86_64 musl 静态）` skipped） |
+| 部署时间 | 2026-11-11 05:30–05:31（Asia/Shanghai；先备份二进制/库/配置，再保库覆盖安装；本轮无 schema 迁移；`skiff.service` 最近一次 ActiveEnter `2026-11-11 05:31:18 HKT`） |
+| 部署方式 | `bf0c4fe` Release 资产，本地 sha256 `53a4b6c3fa968eef4ac55611e5d4f5e99602d38b9cf8263ddd921e2a165b3f59`（9,904,582 B）与 API digest、`checksums.txt`、逐资产侧车四方一致 → 经内网代理走 API 资产端点下载（缓存 `%TEMP%\skiff-ops\rel-bf0c4fe\`）→ `scp` 到 `/root/iter/rel-bf0c4fe/` → 测试机 `sha256sum -c` OK → 解压（包内顶层目录 `skiff-0.1.0-x86_64-unknown-linux-musl/`）→ `sh -n install.sh` **exit 0** → `sh install.sh --no-docker` **退出码 0**（按「重定向 + `rc=$?`」姿势执行，`Bad substitution` 未复现）；安装后 `/usr/local/bin/skiff` 14,684,560 B、sha256 `bd364d334fd2575e520c7ff84fe8d03b8e7f6cf1de8c12f20d66fab1cc51dbe0`（与包内解压二进制一致）；旧二进制备份 `/root/iter/skiff.bin.before-bf0c4fe`（14,684,560 B `d35af82…16b7cc62`）、升级前库快照 `/root/iter/skiff.db.before-bf0c4fe`（4,530,176 B）、配置备份 `/root/iter/config.toml.before-bf0c4fe` |
+| 数据库 | 库保持 **v18**（本轮无迁移）：启动日志无 `schema 迁移完成` 行；`PRAGMA integrity_check=ok`；计数 plugins 7 / plugin_grants 58 / sites 2 / site_aliases 0 / site_runtimes 1 / users 1 / `user_prefs` 0；配置 sha256 `40386ab7b1cac7c4f687ca141540e88618cc7eeda8e893c18b387db4db50c74a`（§8 并发面板设置测试后由 `/{p}/settings/panel` 原子重写，追加显式 `entry_prefix="w3qz4vc2"` 与 `tls_enabled=false`，形态仍为三） |
 | 插件 | 7 个插件在装且全部 `enabled=1`；`install.sh` 按包内 `official/` 重放安装；本轮 FTP RPC（`status`/`config.save`/`create`/`delete`/`accounts`）与视图实测见 §8 |
 | 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200（`127.0.0.1:18080` 与转发 `:18081` 均 200）；`skiff-http-fwd.service`、`skiff-catalog-test.service`（18090）、`skiff-tunnel-keepalive.service` 均 active；`fail2ban.service` active（jail `pure-ftpd`）；宿主 `pure-ftpd` running（`/etc/pure-ftpd/conf/Umask` = `113 002`，本轮 `install` 重放后生效；`pureftpd.passwd` 0 行）、`skiff-web` = 201000:201000 已由 `install.sh` 幂等创建；站点容器 `skiff-php-php-8.5`（PHP 站 `a.com`）与 `skiff-web-nginx` 正常运行 |
-| 配置 | `/etc/skiff/config.toml`：`listen="127.0.0.1:18080"` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP）+ `allow_reduced_sandbox=true`（landlock/cgroups 未实现），并含 `[catalog]`：`enabled=true`、`channel="stable"`、`mirrors=["https://65f3f271cb611d89-139-227-130-152.serveousercontent.com/cur"]`（受信 Let's Encrypt 证书，serveo 域名每轮重建；本轮收尾时该隧道已 502，`/store` 按设计降级为「离线 + 上次成功快照」）、`public_key="315eacce321fd67ca0faeda0de04567017b3b352ba95180451e4536af4c74a28"`（临时测试密钥公钥，私钥种子只在测试机 `/root/iter/catalog-test/seed.hex`）、`timeout_secs=20`；sha256 `ec42b7652a47809d70d90ef7a9b02a9d4dcf7374126ee2f1d4e7e3b1972c51af` |
+| 配置 | `/etc/skiff/config.toml`：`listen="127.0.0.1:18080"` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP）+ `allow_reduced_sandbox=true`（landlock/cgroups 未实现），并含 `[catalog]`：`enabled=true`、`channel="stable"`、`mirrors=["https://65f3f271cb611d89-139-227-130-152.serveousercontent.com/cur"]`（受信 Let's Encrypt 证书，serveo 域名每轮重建；本轮收尾时该隧道已 502，`/store` 按设计降级为「离线 + 上次成功快照」）、`public_key="315eacce321fd67ca0faeda0de04567017b3b352ba95180451e4536af4c74a28"`（临时测试密钥公钥，私钥种子只在测试机 `/root/iter/catalog-test/seed.hex`）、`timeout_secs=20`；另有面板设置测试写入的显式 `entry_prefix="w3qz4vc2"`（L103）与 `tls_enabled=false`（L104）；sha256 `40386ab7b1cac7c4f687ca141540e88618cc7eeda8e893c18b387db4db50c74a` |
 
-## 6. Release 资产（v0.1.0 = `244ea76`，2026-11-11）
+## 6. Release 资产（v0.1.0 = `bf0c4fe`，2026-11-11）
 
-构建来源：Release workflow run `42897690842`（dispatch `ref=main`，head_sha `244ea76`；tag `v0.1.0` 未移动，**该 tag 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`**，资产覆盖同一 Release）。**该 run 四个 job 全绿**：x86_64 / aarch64 构建、`docker` 镜像可构建、`发布到 GitHub Release` 均 success。x86_64 资产在开发机经内网代理走 API 资产端点下载，本地 sha256 与 API digest、`checksums.txt`、逐资产侧车四方一致；`scp` 到测试机后再 `sha256sum -c` 复核一致。
+构建来源：Release workflow run `42904415350`（dispatch `ref=main`，head_sha `bf0c4fe`；tag `v0.1.0` 未移动，**该 tag 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`**，资产覆盖同一 Release）。**该 run 四个 job 全绿**：x86_64 / aarch64 构建、`docker` 镜像可构建、`发布到 GitHub Release` 均 success。x86_64 资产在开发机经内网代理走 API 资产端点下载，本地 sha256 与 API digest、`checksums.txt`、逐资产侧车四方一致；`scp` 到测试机后再 `sha256sum -c` 复核一致。
 
 | 资产 | 大小 | sha256 |
 | --- | --- | --- |
-| `checksums.txt` | 223 B | `4ad24026646ff7a74464cac4ed2f577568386b1914acc9d068e341a70c248270` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 9,907,191 B | `d150659f0804175290355f58128b9ed4d740ba18bd2a2e11aadb55e3dabcec99` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 9,439,433 B | `4dc7f908ae92aff1276dc92270ab79820c0e18c3407b12536eb5cd4895b4beb3` |
+| `checksums.txt` | 223 B | `5855d246a5c458ebca860fabb315c8c8322c6cbe8957fd455656de1a593c6fcd` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 9,904,582 B | `53a4b6c3fa968eef4ac55611e5d4f5e99602d38b9cf8263ddd921e2a165b3f59` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 9,439,362 B | `da5550ce132ff97bb5e28f8059062080256e4cd95046bbba083a5e5c74abb40d` |
 
-- 包内二进制：x86_64 `skiff` 14,684,560 B `d35af82175f70db09d0e0dc91c8a963b3c902ec9bd4e857cdf3a485016b7cc62`（开发机解压与安装后 `/usr/local/bin/skiff` 两处 `sha256sum` 一致）；aarch64 二进制未在本轮实机验证。
-- 逐架构 `.sha256` 侧车文件同轮存在（x86_64 主包 asset id `732893602`、侧车 `732893608`（111 B `39e91f35…`）；aarch64 主包 `732893599`、侧车 `732893603`（112 B）；`checksums.txt` `732893598`）。
-- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；当前开发机经内网代理 `http://10.66.10.22:1010` 走 `api.github.com/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载（缓存 `%TEMP%\skiff-ops\rel-244ea76\`），再 `scp` 到测试机 `/root/iter/rel-244ea76/`。
+- 包内二进制：x86_64 `skiff` 14,684,560 B `bd364d334fd2575e520c7ff84fe8d03b8e7f6cf1de8c12f20d66fab1cc51dbe0`（包内解压与安装后 `/usr/local/bin/skiff` 两处 `sha256sum` 一致）；aarch64 二进制未在本轮实机验证。
+- 逐架构 `.sha256` 侧车文件同轮存在（x86_64 主包 asset id `733014584`、侧车 `733014583`（111 B，侧车文件自身 sha256 `f6fb08ee…a218cf6`）；aarch64 主包 `733014579`、侧车 `733014580`（112 B）；`checksums.txt` `733014581`）。
+- 下载端点：`https://github.com/php-nil/skiff/releases/download/v0.1.0/<资产名>`；当前开发机经内网代理 `http://10.66.10.22:1010` 走 `api.github.com/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载（缓存 `%TEMP%\skiff-ops\rel-bf0c4fe\`），再 `scp` 到测试机 `/root/iter/rel-bf0c4fe/`。
 - 包内 `official/` 含 7 个 `.wbpkg` 与 `public-key.txt`（本轮未改 `plugins/`）；解压后顶层目录为 `skiff-0.1.0-x86_64-unknown-linux-musl/`。
-- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律覆盖同一 tag 的 Release 资产；**tag 指向（`ef7058b`）与资产构建提交（`244ea76`）不同**，这是测试期「不移动 tag + dispatch 覆盖资产」的约定结果，不是异常。
+- 测试期只保留 `v0.1.0` 一个 tag，后续发版一律覆盖同一 tag 的 Release 资产；**tag 指向（`ef7058b`）与资产构建提交（`bf0c4fe`）不同**，这是测试期「不移动 tag + dispatch 覆盖资产」的约定结果，不是异常。
 
 ## 7. 最近部署记录
 
@@ -133,11 +133,32 @@
 | 2026-11-11 03:45–03:58 | `e2d6240`（含 `912c1f3`）菜单下移 + FTP 权限对齐复验版覆盖安装（Release 资产，**保留旧库**，无 schema 变更） | 资产 `e2d6240`；x86_64 9,900,537 B `1949ae54…50227a5`（与 API digest、`checksums.txt`、侧车四方一致，测试机 `sha256sum -c` OK）、aarch64 9,437,650 B `af0d659f…d0466b`；旧二进制备份 `/root/skiff.before-e2d6240`（`2951777a…`）、升级前库快照 `/root/iter/skiff.db.before-e2d6240`（4,263,936 B `ff52fc79…`）、配置备份 `/root/iter/config.before-e2d6240.toml` | `sh -n install.sh` OK；库保持 **v18**（无迁移）、`integrity_check=ok`、计数不变（sites 2 / plugins 7 / grants 58 / users 1）；`/usr/local/bin/skiff` 14,672,144 B `45fa416b…02cc05a4` 与包内一致；`/healthz` 200、`NRestarts=0`；菜单 41 项 + FTP 权限 16 项断言全 PASS；工具分组实际项与顶栏「应用」菜单两处口径差异见 §8 与台账；详见 §8「`e2d6240` 菜单下移 + FTP 权限对齐」 |
 | 2026-11-11 04:08–04:20 | `97694b4` 站点/任务纯结构拆分回归覆盖安装（Release 资产，**保留旧库**，无 schema 变更） | 资产 `97694b4`；x86_64 9,900,885 B `00f4efdc…14db6c9`（与 API digest、`checksums.txt`、侧车四方一致，测试机 `sha256sum -c` OK）、aarch64 9,437,602 B `345e26d0…1914f45`；旧二进制备份 `/root/iter/skiff.bin.before-97694b4`（`45fa416b…`）、升级前库快照 `/root/iter/skiff.db.before-97694b4`、配置备份 `/root/iter/config.toml.before-97694b4` | `sh -n install.sh` **exit 0**、`sh install.sh --no-docker` **exit 0**（真实退出码，无 `Bad substitution`）；库保持 **v18**（无迁移）、`integrity_check=ok`、计数一致（sites 2 / plugins 7 / grants 58 / users 1）；`/usr/local/bin/skiff` 14,672,144 B `18c59a0c…72d2509` 与包内一致；`/healthz` 200、`NRestarts=0`；站点全流程 47/48、任务中心 32/32（1 项 FAIL 为既有 `set_site_default` UNIQUE 冲突，非本轮引入，见 §8 与台账） |
 | 2026-11-11 04:47–04:52 | `244ea76` 默认站点切换修复 + `97694b4` 两处结构拆分回归覆盖安装（Release 资产，**保留旧库**，无 schema 变更） | 资产 `244ea76`；x86_64 9,907,191 B `d150659f…3dabcec99`（与 API digest、`checksums.txt`、侧车四方一致，测试机 `sha256sum -c` OK）、aarch64 9,439,433 B `4dc7f908…4895b4beb3`；旧二进制备份 `/root/iter/skiff.bin.before-244ea76`（14,672,144 B `18c59a0c…72d2509`）、升级前库快照 `/root/iter/skiff.db.before-244ea76`（4,382,720 B）、配置备份 `/root/iter/config.toml.before-244ea76` | `sh -n install.sh` **exit 0**、`sh install.sh --no-docker` **真实退出码 0**（重定向 + `rc=$?`，`Bad substitution` 未复现）；库保持 **v18**（无迁移）、`integrity_check=ok`、计数一致（sites 2 / plugins 7 / grants 58 / users 1 / `user_prefs` 0）；`/usr/local/bin/skiff` 14,684,560 B `d35af82…16b7cc62` 与包内一致；`/healthz` 200（18080 与 18081 均 200）、`NRestarts=0`；默认站 48/48、FTP/TLS 35/36、并发写 17/17、站点全流程 48/48、任务中心 32/32；唯一 FAIL 为 `tls.pem` 中间文件 0644（目录 0700 兜底），详见 §8 |
+| 2026-11-11 05:30–05:31 | `bf0c4fe` TLS 临时件权限 + 唯一临时名收尾覆盖安装（Release 资产，**保留旧库**，无 schema 变更） | 资产 `bf0c4fe`；x86_64 9,904,582 B `53a4b6c3…a165b3f59`（与 API digest、`checksums.txt`、侧车四方一致，测试机 `sha256sum -c` OK）、aarch64 9,439,362 B `da5550ce…e5c74abb40d`；旧二进制备份 `/root/iter/skiff.bin.before-bf0c4fe`（14,684,560 B `d35af82…16b7cc62`）、升级前库快照 `/root/iter/skiff.db.before-bf0c4fe`（4,530,176 B）、配置备份 `/root/iter/config.toml.before-bf0c4fe` | `sh -n install.sh` **exit 0**、`sh install.sh --no-docker` **退出码 0**；库保持 **v18**（无迁移）、`integrity_check=ok`、计数一致（sites 2 / plugins 7 / grants 58 / users 1 / `user_prefs` 0）；`/usr/local/bin/skiff` 14,684,560 B `bd364d33…f1cc51dbe0` 与包内一致；`/healthz` 200、`NRestarts=0`；FTP TLS 权限 14/14、唯一临时名并发 26/26、回滚路径 5/5 全 PASS；详见 §8 |
 
 
-## 8. 最近一次全链路验收结论（截至 2026-11-11 `v0.1.0` / `244ea76`）
+## 8. 最近一次全链路验收结论（截至 2026-11-11 `v0.1.0` / `bf0c4fe`）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**`bf0c4fe` TLS 临时件权限 + 唯一临时名收尾验收（2026-11-11 05:30–06:10，Release 资产覆盖升级，保留库，无迁移）**
+
+本轮只改两处收尾项：FTP TLS/账号拼接件「从创建那一刻即 `0600`」（`install -m 0600 /dev/null` 预建 + 截断写入），以及引入 `crates/app/src/atomic.rs` 的 `sibling_temp`（`.<name>.<pid>.<seq>.tmp`）统一 vhost、证书、`config.toml`、`daemon.json`、catalog 索引等落盘与回滚写。验收目标即上轮两条实测未修项是否出账。
+
+- 出包 / 部署：同提交 CI 12 项 check-run 全绿（11 success + `编译（x86_64 musl 静态）` skipped）；Release run `42904415350` 四个 job 全绿（head_sha `bf0c4fe`）；tag `v0.1.0` 未移动（仍指 `ef7058b`）；x86_64 9,904,582 B `53a4b6c3…a165b3f59` 与 API digest、`checksums.txt`、侧车四方一致，测试机 `sha256sum -c` OK；`sh -n install.sh` **exit 0**、`sh install.sh --no-docker` **退出码 0**（「重定向 + `rc=$?`」姿势，`Bad substitution` 未复现）；`/usr/local/bin/skiff` 14,684,560 B `bd364d33…f1cc51dbe0` = 包内解压二进制；库保持 **v18**（无迁移）、`integrity_check=ok`、计数与部署前一致（sites 2 / site_aliases 0 / site_runtimes 1 / plugins 7 / plugin_grants 58 / users 1 / `user_prefs` 0）；`/healthz` 200（18080 与 18081 均 200）、`NRestarts=0`。
+- **① TLS 中间件权限（14/14 PASS，`/root/iter/m13-tls-perms.py`，日志 `m13.log`）**
+  - 采样强度：删除 PEM 后触发 `config.save` + 账号创建，监控线程全程忙轮询 `/run/skiff-ftp/*` 与目标 PEM 共 **1,797,270 次** `lstat`；`tls.pem-*` 6,674 次、`tls.key-*` 15,802 次、`tls.crt-*` 11,356 次、`/etc/ssl/private/pure-ftpd.pem` 1,763,438 次，**全部为 `0600`，无一次 `0644`**（上轮 `tls.pem-*` 0644 FAIL 已消除）。
+  - 终态：`/etc/ssl/private/pure-ftpd.pem` `0600 root`。
+  - FTPS：显式 `FTP_TLS`（connect → login → `PROT P`）成功，上传 + 建目录正常；目录 `2775`、文件 `664`、属主 `201000`，站点 200。
+  - `tls_mode`：`required` → `status.config.tls_mode=required`，`optional` → `optional`，两次 `config.save` 均 200。
+  - 失败路径：`rm -f` PEM + `chattr +i /etc/ssl/private` 使落盘失败 → RPC **500**，`/run/skiff-ftp` **无残骸**；解锁后重新生成 PEM `0600 root`。
+- **② 唯一临时名（26/26 PASS，`/root/iter/m14-unique-tmp.py`，日志 `m14.log`）**
+  - **并发 vhost**：4 个独立会话并发保存 `a.com` vhost 35 s，共 **254 次**（220 次 303 + 34 次 200 安全拒绝）：**0 次 5xx**、**0 次 `No such file or directory`**（上轮固定名 `<domain>.conf.tmp` 的 9 次 rename ENOENT 已消除）。34 次 200 全是「保存前校验」或「回滚」的安全拒绝：2 次 `Web 服务（OpenResty）未运行，无法校验配置`、3 次 `站点配置校验未通过`、29 次 `配置已回滚到保存前内容：nginx 未能保持运行（当前状态 exited）`——根因是每次保存都会 `docker restart skiff-web-nginx`，并发下另一会话撞上容器重启窗口，**非临时名缺陷**。
+  - 结果面：vhost 花括号配平且为某次完整提交（无半截）、conf 目录无 `.tmp`、`nginx -t` 通过、站点 200；恢复基线后 sha256 `e50ca07d…bd989f6a` 与保存前一致。
+  - **并发面板设置**：4 会话并发保存 `/{p}/settings/panel` 6 s 共 **110 次**，全部 200；`config.toml` 仍可被 `tomllib` 解析、内容与预热一致（sha `40386ab7…db50c74a`）、`/etc/skiff` 无 `.tmp`。
+  - **并发证书替换**：4 会话 × 3 轮 = **12 次**上传全部 303；最终 `ssl/cert.pem` 与 `ssl/key.pem` 属于同一组自签对（4 组中命中第 1 组）、`ssl/` 无 `.tmp`、`nginx -t` 通过、站点 200。**观察项**：证书与私钥仍是两次独立原子写，并发窗口内 nginx 日志曾出现一次 `SSL_CTX_use_PrivateKey ... key values mismatch`（随后重启即恢复，最终态成对一致）；如需绝对成对，应改为单目录级锁或双文件打包写入。
+  - **失败路径（回滚写）**：`docker rename skiff-web-nginx` 使保存前校验直接拒绝（200 `Web 服务（OpenResty）未运行`），conf sha 未变、无探针、无 `.tmp`、`nginx -t` 通过、站点 200；另以 `/www/nginx/conf.d/zz-m14-bad.conf` 注入「候选隔离校验能过、真实 nginx 起不来」的故障（`/root/iter/m14c-rollback.py`），保存返回 **200 + `配置已回滚到保存前内容：nginx 未能保持运行（当前状态 restarting）`**，回滚后 conf 与保存前 sha 一致、**无 `.tmp` 残留**、清理故障文件后 `nginx -t` 通过、站点 200。
+- **③ 回归**：登录态下 `/sites` `/plugins` `/store` `/jobs` `/files` 均 **200**，`/healthz` 200；`a.com` 与 `matrix.local` 均 200；库 **v18** / `integrity_check=ok` / plugins 7 / plugin_grants 58 / sites 2 / users 1；`NRestarts=0`。
+- 清理与终态：FTP 测试账号删除（`pureftpd.passwd` 0 行）、`/run/skiff-ftp` 空 `root:root 0700`；上传证书删除、`ssl/` 空；`a.com` vhost 回到无 TLS 基线 `e50ca07d…bd989f6a`；`/tmp/m14-*` 与 `zz-m14-bad.conf` 清理；`config.toml` 因并发面板设置测试被原子重写为显式 `entry_prefix="w3qz4vc2"` + `tls_enabled=false`（语义同形态三，sha `40386ab7…db50c74a`）。**环境修复留痕**：失败注入测试（`docker update --memory` / 改名）曾使 `skiff-web-nginx` 进入异常态，已按其原配置重建（同镜像 digest `openresty/openresty:alpine@sha256:2cb90d64…`、`--network host`、`/www/nginx/nginx.conf` + `/www` + `/www/nginx/conf.d` 三挂载、`io.skiff.*` 标签、无内存/pids 限制），重建后 `nginx -t` 通过、两站 200。
 
 **`244ea76` 默认站切换修复 + 结构拆分覆盖面回归（2026-11-11 04:47–05:10，Release 资产覆盖升级，保留库，无迁移）**
 
