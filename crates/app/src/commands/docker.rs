@@ -67,6 +67,24 @@ impl ContainerTarget {
     }
 }
 
+fn audit_status(
+    state: &AppState,
+    actor: &Actor,
+    verb: Verb,
+    target: &str,
+    status: &str,
+    detail: &str,
+) {
+    state.audit_or_log(
+        &actor.username,
+        &actor.ip,
+        &verb.audit_action(),
+        target,
+        status,
+        detail,
+    );
+}
+
 fn audit(
     state: &AppState,
     actor: &Actor,
@@ -76,27 +94,14 @@ fn audit(
     ok_detail: &str,
 ) {
     match result {
-        Ok(()) => {
-            state.audit_or_log(
-                &actor.username,
-                &actor.ip,
-                &verb.audit_action(),
-                target,
-                "ok",
-                ok_detail,
-            );
-        }
-        Err(e) => {
-            state.audit_or_log(
-                &actor.username,
-                &actor.ip,
-                &verb.audit_action(),
-                target,
-                "fail",
-                &e.to_string(),
-            );
-        }
+        Ok(()) => audit_status(state, actor, verb, target, "ok", ok_detail),
+        Err(e) => audit_status(state, actor, verb, target, "fail", &e.to_string()),
     }
+}
+
+/// 报告里的失败计数（`compose.up` / `compose.down` 的 `failed` 字段）。
+fn report_failed(value: &Value) -> u64 {
+    value.get("failed").and_then(Value::as_u64).unwrap_or(0)
 }
 
 #[derive(Debug, Clone)]
@@ -354,14 +359,25 @@ pub async fn compose_up(
             DockerParams::ComposeUp(Box::new(cmd.project.clone())),
         )
         .await;
-    audit(
-        state,
-        &cmd.actor,
-        Verb::ComposeUp,
-        &cmd.project.name,
-        result.as_ref().map(|_| ()),
-        Verb::ComposeUp.http_path(),
-    );
+    // 部分成功不能记成 ok：`failed > 0` 时审计落 `partial`，保留完整追溯。
+    match &result {
+        Ok(v) if report_failed(v) > 0 => audit_status(
+            state,
+            &cmd.actor,
+            Verb::ComposeUp,
+            &cmd.project.name,
+            "partial",
+            &format!("{} 个服务未成功启动", report_failed(v)),
+        ),
+        _ => audit(
+            state,
+            &cmd.actor,
+            Verb::ComposeUp,
+            &cmd.project.name,
+            result.as_ref().map(|_| ()),
+            Verb::ComposeUp.http_path(),
+        ),
+    }
     result.map_err(|e| DockerCommandError::Unavailable(e.to_string()))
 }
 
@@ -387,14 +403,25 @@ pub async fn compose_down(
             },
         )
         .await;
-    audit(
-        state,
-        &cmd.actor,
-        Verb::ComposeDown,
-        &cmd.project,
-        result.as_ref().map(|_| ()),
-        Verb::ComposeDown.http_path(),
-    );
+    // 清理里出现 stop/remove/inspect 失败同样记 `partial`。
+    match &result {
+        Ok(v) if report_failed(v) > 0 => audit_status(
+            state,
+            &cmd.actor,
+            Verb::ComposeDown,
+            &cmd.project,
+            "partial",
+            &format!("{} 个容器清理失败", report_failed(v)),
+        ),
+        _ => audit(
+            state,
+            &cmd.actor,
+            Verb::ComposeDown,
+            &cmd.project,
+            result.as_ref().map(|_| ()),
+            Verb::ComposeDown.http_path(),
+        ),
+    }
     result.map_err(|e| DockerCommandError::Unavailable(e.to_string()))
 }
 

@@ -169,7 +169,17 @@ pub async fn up(
             project.services.len()
         );
     }
-    render(&state, &user, input).await
+    let resp = render(&state, &user, input).await?;
+    Ok(with_partial_status(resp, failed))
+}
+
+/// 部分失败时页面照常渲染（带逐服务报告），但 HTTP 状态不能仍是 2xx——
+/// 否则调用方与监控会把「部分失败」当整体成功。
+fn with_partial_status(mut resp: Response, failed: u64) -> Response {
+    if failed > 0 {
+        *resp.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    resp
 }
 
 pub async fn down(
@@ -224,9 +234,8 @@ pub async fn down(
         .and_then(Value::as_array)
         .map(|a| a.len())
         .unwrap_or(0);
-    render(
-        &state,
-        &user,
+    let failed = value.get("failed").and_then(Value::as_u64).unwrap_or(0);
+    let input = if failed == 0 {
         PageInput {
             selected_project: project.clone(),
             notice: format!(
@@ -240,9 +249,18 @@ pub async fn down(
             report_title: "清理结果".to_string(),
             report: report_rows(&value, "containers", "", "container"),
             ..Default::default()
-        },
-    )
-    .await
+        }
+    } else {
+        PageInput {
+            selected_project: project.clone(),
+            error: format!("项目 {project} 清理时有 {failed} 个容器失败，详见下表"),
+            report_title: "清理结果".to_string(),
+            report: report_rows(&value, "containers", "", "container"),
+            ..Default::default()
+        }
+    };
+    let resp = render(&state, &user, input).await?;
+    Ok(with_partial_status(resp, failed))
 }
 
 /// 项目级起停/重启：逐容器复用既有动词分发，权限与审计按单容器判定。

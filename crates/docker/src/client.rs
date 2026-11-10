@@ -38,6 +38,11 @@ pub enum DockerError {
     Api(String),
     /// 参数或形态不支持
     Unsupported(String),
+    /// Engine 返回 304：对象已处于目标状态（例如停止一个已停止的容器）。
+    ///
+    /// 单独一个变体是为了让调用方做结构化判定，而不是在 Display 文案里
+    /// `contains("304")` / `contains("not running")`——那种判定随 Docker 文案变化即失效。
+    NotModified,
 }
 
 impl std::fmt::Display for DockerError {
@@ -46,6 +51,7 @@ impl std::fmt::Display for DockerError {
             DockerError::Unavailable(m) => write!(f, "Docker 不可用: {m}"),
             DockerError::Api(m) => write!(f, "Docker API 错误: {m}"),
             DockerError::Unsupported(m) => write!(f, "不支持的 Docker 操作: {m}"),
+            DockerError::NotModified => write!(f, "Docker 对象已处于目标状态"),
         }
     }
 }
@@ -54,12 +60,18 @@ impl std::error::Error for DockerError {}
 
 impl From<bollard::errors::Error> for DockerError {
     fn from(e: bollard::errors::Error) -> Self {
-        DockerError::Api(e.to_string())
+        api_err(e)
     }
 }
 
 fn api_err(e: bollard::errors::Error) -> DockerError {
-    DockerError::Api(e.to_string())
+    // 304 是「已处于目标状态」，结构化保留；其余错误仍按原文文案透出。
+    match e {
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 304, ..
+        } => DockerError::NotModified,
+        other => DockerError::Api(other.to_string()),
+    }
 }
 
 /// 镜像引用拆成 Docker `fromImage` + `tag`。
@@ -387,7 +399,8 @@ impl DockerService {
     }
 
     pub async fn stop_container(&self, id: &str) -> Result<(), DockerError> {
-        self.client()?
+        let result = self
+            .client()?
             .stop_container(
                 id,
                 Some(qp::StopContainerOptions {
@@ -396,7 +409,12 @@ impl DockerService {
                 }),
             )
             .await
-            .map_err(api_err)
+            .map_err(api_err);
+        match result {
+            // 容器本来就没在跑：Docker 返回 304，按幂等成功处理。
+            Err(DockerError::NotModified) => Ok(()),
+            other => other,
+        }
     }
 
     pub async fn restart_container(&self, id: &str) -> Result<(), DockerError> {
@@ -1282,6 +1300,23 @@ mod tests {
         let len = out.len();
         push_exec_output(&mut out, "cccc", &mut truncated);
         assert_eq!(out.len(), len);
+    }
+
+    /// 304 必须结构化成 `NotModified`，调用方不再靠 Display 文案里的
+    /// `contains("304")` / `contains("not running")` 判定。
+    #[test]
+    fn not_modified_is_detected_structurally() {
+        let e = bollard::errors::Error::DockerResponseServerError {
+            status_code: 304,
+            message: "container is already stopped".into(),
+        };
+        assert!(matches!(api_err(e), DockerError::NotModified));
+
+        let err = bollard::errors::Error::DockerResponseServerError {
+            status_code: 409,
+            message: "conflict".into(),
+        };
+        assert!(matches!(api_err(err), DockerError::Api(_)));
     }
 
     #[test]

@@ -100,7 +100,9 @@ impl DockerService {
 
         Ok(json!({
             "project": project.name,
-            "failed": failed_services.len(),
+            "failed": count_unstarted(&report),
+            // `partial` 让上层（审计 / 响应码）不必再自己数报告行。
+            "status": if count_unstarted(&report) == 0 { "ok" } else { "partial" },
             "services": report,
         }))
     }
@@ -134,37 +136,39 @@ impl DockerService {
                 }));
                 continue;
             }
-            if let Ok(info) = self.inspect_container(&row.id).await {
-                for mount in info.mounts.unwrap_or_default() {
-                    if mount.typ.as_deref() == Some("volume") {
-                        if let Some(name) = mount.name {
-                            if name.starts_with(&prefix) {
-                                volume_names.insert(name);
+            match self.inspect_container(&row.id).await {
+                Ok(info) => {
+                    for mount in info.mounts.unwrap_or_default() {
+                        if mount.typ.as_deref() == Some("volume") {
+                            if let Some(name) = mount.name {
+                                if name.starts_with(&prefix) {
+                                    volume_names.insert(name);
+                                }
                             }
                         }
                     }
-                }
-                let attached: Vec<String> = info
-                    .network_settings
-                    .and_then(|n| n.networks)
-                    .map(|n| n.into_keys().collect())
-                    .unwrap_or_default();
-                for name in attached {
-                    if name.starts_with(&prefix) {
-                        network_names.insert(name);
+                    let attached: Vec<String> = info
+                        .network_settings
+                        .and_then(|n| n.networks)
+                        .map(|n| n.into_keys().collect())
+                        .unwrap_or_default();
+                    for name in attached {
+                        if name.starts_with(&prefix) {
+                            network_names.insert(name);
+                        }
                     }
                 }
+                // inspect 失败以前被 `if let Ok(info)` 静默跳过：卷/网络收集不到，
+                // 报告里也没有痕迹，用户只看到「已删除」。现在必须显式留一行。
+                Err(e) => report.push(inspect_failed_entry(&row.name, &e.to_string())),
             }
 
             if let Err(e) = self.stop_container(&row.id).await {
-                // 已停止的容器返回 304，视为正常。
-                if !e.to_string().contains("304") && !e.to_string().contains("not running") {
-                    report.push(json!({
-                        "container": row.name,
-                        "status": "stop-failed",
-                        "error": e.to_string(),
-                    }));
-                }
+                report.push(json!({
+                    "container": row.name,
+                    "status": "stop-failed",
+                    "error": e.to_string(),
+                }));
             }
             match self.remove_container(&row.id, false).await {
                 Ok(()) => report.push(json!({
@@ -214,6 +218,7 @@ impl DockerService {
 
         Ok(json!({
             "project": project,
+            "failed": count_down_failures(&report),
             "containers": report,
             "removed_networks": removed_networks,
             "removed_volumes": removed_volumes,
@@ -281,6 +286,37 @@ pub fn service_of(labels: &BTreeMap<String, String>) -> Option<&str> {
     labels.get(LABEL_COMPOSE_SERVICE).map(String::as_str)
 }
 
+/// 部署报告里「没有成功启动」的服务数：`started` 之外（failed /
+/// created-not-started / skipped）都算。纯函数，便于在无 Docker 的环境里
+/// 锁定「部分成功不被当成整体成功」的语义。
+pub(crate) fn count_unstarted(services: &[Value]) -> usize {
+    services
+        .iter()
+        .filter(|s| s.get("status").and_then(Value::as_str) != Some("started"))
+        .count()
+}
+
+/// 清理报告里显式失败的行数（stop / remove / inspect 失败）。
+/// 受保护容器的 `skipped` 是预期行为，不计入失败。
+pub(crate) fn count_down_failures(rows: &[Value]) -> usize {
+    rows.iter()
+        .filter(|r| {
+            r.get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.ends_with("-failed"))
+        })
+        .count()
+}
+
+/// inspect 失败的报告行：没有它，卷/网络收集失败就完全不可见。
+fn inspect_failed_entry(container: &str, error: &str) -> Value {
+    json!({
+        "container": container,
+        "status": "inspect-failed",
+        "error": error,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +342,42 @@ mod tests {
         let mut kernel = BTreeMap::new();
         kernel.insert(LABEL_PROJECT.to_string(), "demo".to_string());
         assert_eq!(project_of(&kernel), Some("demo"));
+    }
+
+    /// 部分成功必须能被数出来：`started` 之外（失败、创建未启动、依赖跳过）
+    /// 都算未成功，否则上层会把 2xx 当整体成功。
+    #[test]
+    fn up_report_counts_partial_failures() {
+        let report = vec![
+            json!({"service": "a", "status": "started"}),
+            json!({"service": "b", "status": "failed", "error": "image pull"}),
+            json!({"service": "c", "status": "created-not-started", "error": "port busy"}),
+            json!({"service": "d", "status": "skipped", "error": "依赖服务 b 失败"}),
+        ];
+        assert_eq!(count_unstarted(&report), 3);
+        assert_eq!(count_unstarted(&report[..1]), 0);
+    }
+
+    /// down 的失败行（stop / remove / inspect）都要计入 `failed`，
+    /// 受保护容器的 `skipped` 不算失败。
+    #[test]
+    fn down_report_counts_stop_remove_and_inspect_failures() {
+        let rows = vec![
+            json!({"container": "a", "status": "removed"}),
+            json!({"container": "b", "status": "stop-failed", "error": "timeout"}),
+            json!({"container": "c", "status": "remove-failed", "error": "busy"}),
+            json!({"container": "d", "status": "inspect-failed", "error": "engine busy"}),
+            json!({"container": "e", "status": "skipped", "error": "受保护容器"}),
+        ];
+        assert_eq!(count_down_failures(&rows), 3);
+    }
+
+    /// inspect 失败必须显式留痕，不能像旧实现那样静默跳过。
+    #[test]
+    fn inspect_failure_is_recorded_not_silently_skipped() {
+        let row = inspect_failed_entry("web", "engine busy");
+        assert_eq!(row["status"], "inspect-failed");
+        assert_eq!(row["container"], "web");
+        assert_eq!(count_down_failures(&[row]), 1);
     }
 }
