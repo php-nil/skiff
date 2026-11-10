@@ -159,8 +159,7 @@ fn protected_deny<H: CapabilityHost>(
 
 /// 列父目录时隐藏受保护子项（FS-08）：整页报错会让插件连 `/www` 都列不了，
 /// 因此按名字过滤 `items`，并据保留项重建 `entries`（两者同源，避免前端两套口径）。
-fn filter_protected<H: CapabilityHost>(host: &H, dir: &Path, mut v: Value) -> Value {
-    let data = host.data_dir();
+fn filter_protected(data: &Path, dir: &Path, mut v: Value) -> Value {
     let items: Vec<Value> = v
         .get("items")
         .and_then(|i| i.as_array())
@@ -185,6 +184,22 @@ fn filter_protected<H: CapabilityHost>(host: &H, dir: &Path, mut v: Value) -> Va
         obj.insert("items".to_string(), json!(items));
     }
     v
+}
+
+/// 把可能阻塞的文件系统调用挪到阻塞线程池。
+///
+/// 能力面 handler 跑在 tokio worker 上；`read_dir`、整文件写的
+/// `sync_all`（临时文件 + fsync + rename）以及大目录逐项 `canonicalize`
+/// 都可能在慢盘上阻塞数百毫秒，直接在 worker 上做会拖住内核的其它请求。
+async fn offload_fs<T, F>(f: F) -> Result<T, fsops::FsError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, fsops::FsError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(r) => r,
+        Err(e) => Err(fsops::FsError::Io(format!("文件操作后台任务失败: {e}"))),
+    }
 }
 
 pub async fn fs_read<H: CapabilityHost>(host: &H, req: Request<Body>) -> Response {
@@ -213,7 +228,8 @@ pub async fn fs_read<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respons
             return r;
         }
     }
-    let chunk = match fsops::read_chunk(&path, offset, max) {
+    let io_path = path.clone();
+    let chunk = match offload_fs(move || fsops::read_chunk(&io_path, offset, max)).await {
         Ok(c) => c,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
@@ -272,14 +288,22 @@ pub async fn fs_write<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
             return r;
         }
     }
-    let (wrote, size) = match fsops::write_chunk(&path, &bytes, offset, append) {
+    let io_path = path.clone();
+    let owner_id = id.clone();
+    let owned = scope == fsops::Scope::Data;
+    let (wrote, size) = match offload_fs(move || {
+        let r = fsops::write_chunk(&io_path, &bytes, offset, append)?;
+        // 只在插件自己的 data/ 里把属主交还插件；宿主文件保持宿主原有属主（多为 root:root）。
+        if owned {
+            fsops::own_by_plugin(&io_path, &owner_id);
+        }
+        Ok(r)
+    })
+    .await
+    {
         Ok(v) => v,
         Err(e) => return fs_fail(host, &id, perm, raw, e),
     };
-    // 只在插件自己的 data/ 里把属主交还插件；宿主文件保持宿主原有属主（多为 root:root）。
-    if scope == fsops::Scope::Data {
-        fsops::own_by_plugin(&path, &id);
-    }
     fs_ok(host, &id, perm, raw);
     Json(json!({ "ok": true, "wrote": wrote, "size": size })).into_response()
 }
@@ -303,13 +327,20 @@ pub async fn fs_list<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respons
             return r;
         }
     }
-    match fsops::list(&path) {
+    let io_path = path.clone();
+    let data_dir = host.data_dir().to_path_buf();
+    let is_host = scope == fsops::Scope::Host;
+    let listed = offload_fs(move || {
+        let v = fsops::list(&io_path)?;
+        Ok(if is_host {
+            filter_protected(&data_dir, &io_path, v)
+        } else {
+            v
+        })
+    })
+    .await;
+    match listed {
         Ok(v) => {
-            let v = if scope == fsops::Scope::Host {
-                filter_protected(host, &path, v)
-            } else {
-                v
-            };
             fs_ok(host, &id, perm, raw);
             Json(v).into_response()
         }
@@ -337,7 +368,8 @@ pub async fn fs_mkdir<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respon
             return r;
         }
     }
-    match fsops::make_dir(&path) {
+    let io_path = path.clone();
+    match offload_fs(move || fsops::make_dir(&io_path)).await {
         Ok(()) => {
             fs_ok(host, &id, perm, raw);
             Json(json!({ "ok": true })).into_response()
@@ -374,7 +406,8 @@ pub async fn fs_remove<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respo
             fsops::FsError::Forbidden("不允许删除授权根目录本身".into()),
         );
     }
-    match fsops::remove(&path) {
+    let io_path = path.clone();
+    match offload_fs(move || fsops::remove(&io_path)).await {
         Ok(was_dir) => {
             fs_ok(host, &id, perm, raw);
             Json(json!({ "ok": true, "dir": was_dir })).into_response()
@@ -428,7 +461,7 @@ pub async fn fs_rename<H: CapabilityHost>(host: &H, req: Request<Body>) -> Respo
             fsops::FsError::Forbidden("不允许改名授权根目录本身".into()),
         );
     }
-    match fsops::rename(&from, &to) {
+    match offload_fs(move || fsops::rename(&from, &to)).await {
         Ok(()) => {
             fs_ok(host, &id, perm, from_raw);
             Json(json!({ "ok": true, "to": to_raw })).into_response()
