@@ -12,6 +12,178 @@ use skiff_store::{Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 use super::*;
 use crate::AppState;
 
+/// nginx 激活结果：平滑 reload（已自证 worker 换代）或回退到容器重启。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NginxActivation {
+    Reloaded,
+    Restarted,
+}
+
+/// nginx 激活动作的抽象：生产走 Docker；单测注入内存实现复现并发重启窗口。
+#[allow(async_fn_in_trait)]
+pub(crate) trait NginxControl {
+    async fn container_running(&self) -> Result<bool, String>;
+    async fn worker_generation(&self) -> Result<String, String>;
+    async fn reload(&self) -> Result<(), String>;
+    async fn restart(&self) -> Result<(), String>;
+}
+
+/// reload 后等待 worker 换代的轮询：50ms × 20 = 最多 1s。
+const RELOAD_CONFIRM_TRIES: u32 = 20;
+const RELOAD_CONFIRM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// 重载优先的激活流程（调用方必须持有 [`super::nginx_write_lock`]）。
+///
+/// - 容器未运行：直接走重启（重启也能把停止的容器拉起来）；
+/// - reload 返回失败：回退重启；
+/// - reload 成功但 worker 未换代：master 没有采纳新配置，回退重启，
+///   让原有「重启后仍起不来就回滚」的失败语义继续兜底。
+///
+/// 不能只以「进程还活着」判断 reload 生效：master 读到坏配置时会继续用旧
+/// worker 服务，进程同样活着。worker PID 集合换代才证明新配置已被加载。
+pub(crate) async fn activate_with<N: NginxControl>(nginx: &N) -> Result<NginxActivation, String> {
+    if nginx.container_running().await? {
+        if let Ok(before) = nginx.worker_generation().await {
+            if !before.is_empty() && nginx.reload().await.is_ok() {
+                for _ in 0..RELOAD_CONFIRM_TRIES {
+                    tokio::time::sleep(RELOAD_CONFIRM_INTERVAL).await;
+                    if let Ok(after) = nginx.worker_generation().await {
+                        if !after.is_empty() && after != before {
+                            return Ok(NginxActivation::Reloaded);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    nginx.restart().await.map(|()| NginxActivation::Restarted)
+}
+
+/// 生产环境的 nginx 激活实现。
+struct DockerNginx<'a> {
+    state: &'a AppState,
+}
+
+impl NginxControl for DockerNginx<'_> {
+    async fn container_running(&self) -> Result<bool, String> {
+        let rows = self
+            .state
+            .docker()
+            .list_containers()
+            .await
+            .map_err(|e| format!("读取容器列表失败：{e}"))?;
+        let c = rows
+            .iter()
+            .find(|c| c.name == NGINX_CONTAINER)
+            .ok_or_else(|| "nginx 运行环境未安装".to_string())?;
+        Ok(c.state == "running")
+    }
+
+    async fn worker_generation(&self) -> Result<String, String> {
+        nginx_worker_generation(self.state).await
+    }
+
+    async fn reload(&self) -> Result<(), String> {
+        let first = match self
+            .state
+            .docker()
+            .exec_capture(
+                NGINX_CONTAINER,
+                vec!["nginx".into(), "-s".into(), "reload".into()],
+            )
+            .await
+        {
+            Ok((0, _)) => return Ok(()),
+            Ok((_, out)) => format!("nginx -s reload：{}", out.trim()),
+            Err(e) => format!("nginx -s reload：{e}"),
+        };
+        // OpenResty 镜像的入口脚本名是 `openresty`，不同构建的 PATH 可能只暴露其一。
+        if let Ok((0, _)) = self
+            .state
+            .docker()
+            .exec_capture(
+                NGINX_CONTAINER,
+                vec!["openresty".into(), "-s".into(), "reload".into()],
+            )
+            .await
+        {
+            return Ok(());
+        }
+        // 最后按主配置里的 pid 文件直接给 master 发 SIGHUP（`nginx -s` 内部也是这么做的）。
+        let hup = self
+            .state
+            .docker()
+            .exec_capture(
+                NGINX_CONTAINER,
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "kill -HUP \"$(cat /var/run/nginx.pid)\"".into(),
+                ],
+            )
+            .await;
+        match hup {
+            Ok((0, _)) => Ok(()),
+            Ok((_, out)) => Err(format!("{first}；kill -HUP：{}", out.trim())),
+            Err(e) => Err(format!("{first}；kill -HUP：{e}")),
+        }
+    }
+
+    async fn restart(&self) -> Result<(), String> {
+        self.state
+            .restart_nginx_locked()
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// 容器内 nginx worker 进程集合（排序后）。
+///
+/// master 是容器 PID 1，`children` 直接给出 worker / cache manager；老内核没有
+/// 该文件时退化为按进程名扫描，并排除 master 自身。
+async fn nginx_worker_generation(state: &AppState) -> Result<String, String> {
+    const SCRIPT: &str = "if [ -s /proc/1/task/1/children ]; then cat /proc/1/task/1/children; \
+        else for d in /proc/[0-9]*; do grep -qx nginx \"$d/comm\" 2>/dev/null && echo \"${d#/proc/}\"; done; fi \
+        | tr ' ' '\\n' | grep -vx 1 | sort -n";
+    let (code, out) = state
+        .docker()
+        .exec_capture(
+            NGINX_CONTAINER,
+            vec!["sh".into(), "-c".into(), SCRIPT.into()],
+        )
+        .await
+        .map_err(|e| format!("读取 nginx worker 进程失败：{e}"))?;
+    if code != 0 {
+        return Err(format!("读取 nginx worker 进程失败：{}", out.trim()));
+    }
+    Ok(out.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// 成对替换 cert/key。**调用方必须持有 [`super::nginx_write_lock`]**：
+/// 两次 `rename` 之间不允许任何 nginx reload 插入，否则会读到
+/// 「新证书 + 旧私钥」这种不配对组合（`key values mismatch`）。
+pub(crate) fn replace_cert_pair(
+    tmp_cert: &Path,
+    tmp_key: &Path,
+    cert: &Path,
+    key: &Path,
+) -> Result<(), SiteError> {
+    if let Err(e) = std::fs::rename(tmp_cert, cert) {
+        let _ = std::fs::remove_file(tmp_cert);
+        let _ = std::fs::remove_file(tmp_key);
+        return Err(SiteError::Internal(format!("保存证书失败：{e}")));
+    }
+    if let Err(e) = std::fs::rename(tmp_key, key) {
+        // 证书已换、私钥没换：删掉新证书让站点回到「无证书」而不是不配对。
+        let _ = std::fs::remove_file(cert);
+        let _ = std::fs::remove_file(tmp_key);
+        return Err(SiteError::Internal(format!("保存私钥失败：{e}")));
+    }
+    restrict_mode(cert, 0o644);
+    restrict_mode(key, 0o600);
+    Ok(())
+}
+
 impl AppState {
     /// 运行环境页「镜像参数」保存：nginx / PHP 基础镜像标签。
     ///
@@ -614,7 +786,20 @@ impl AppState {
         }
     }
 
+    /// 让 nginx 按当前配置生效（reload 优先，必要时回退重启）。
+    ///
+    /// 持锁执行：并发的保存/证书操作不会在同一个重启窗口里互相踩踏。
+    async fn activate_nginx_locked(&self) -> Result<NginxActivation, String> {
+        activate_with(&DockerNginx { state: self }).await
+    }
+
     pub async fn restart_nginx(&self) -> Result<(), SiteError> {
+        let _guard = super::nginx_write_lock().lock().await;
+        self.restart_nginx_locked().await
+    }
+
+    /// 重启容器。**调用方必须已持有 [`super::nginx_write_lock`]**。
+    async fn restart_nginx_locked(&self) -> Result<(), SiteError> {
         let rows = self
             .docker()
             .list_containers()
@@ -655,6 +840,13 @@ impl AppState {
 
     /// 容器内 `nginx -t`；失败返回可读错误（调用方负责回滚）。
     pub async fn validate_nginx(&self) -> Result<(), SiteError> {
+        let _guard = super::nginx_write_lock().lock().await;
+        self.validate_nginx_locked().await
+    }
+
+    /// 同上。**调用方必须已持有 [`super::nginx_write_lock`]**，否则可能在证书
+    /// 两次 rename 之间读到不配对的文件。
+    async fn validate_nginx_locked(&self) -> Result<(), SiteError> {
         let rows = self
             .docker()
             .list_containers()
@@ -731,11 +923,15 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
         let cert = s.cert_file(&site_dir);
         let key = s.key_file(&site_dir);
+        // 先生成到进程内唯一临时名，再在锁内成对替换：openssl 生成期间不占锁，
+        // 也不会让 nginx 读到「新证书 + 旧私钥」的中间态。
+        let tmp_cert = crate::atomic::sibling_temp(&cert);
+        let tmp_key = crate::atomic::sibling_temp(&key);
         let mut san = format!("DNS:{}", site.domain);
         for a in &aliases {
             san.push_str(&format!(",DNS:{a}"));
         }
-        let (cert2, key2) = (cert.clone(), key.clone());
+        let (cert2, key2) = (tmp_cert.clone(), tmp_key.clone());
         let domain2 = site.domain.clone();
         let status = tokio::task::spawn_blocking(move || {
             std::process::Command::new("openssl")
@@ -764,14 +960,16 @@ impl AppState {
         let out = status
             .map_err(|e| SiteError::Internal(format!("无法执行 openssl（请安装 openssl）：{e}")))?;
         if !out.status.success() {
+            let _ = std::fs::remove_file(&tmp_cert);
+            let _ = std::fs::remove_file(&tmp_key);
             return Err(SiteError::Internal(format!(
                 "生成自签证书失败：{}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
-        restrict_mode(&cert, 0o644);
-        restrict_mode(&key, 0o600);
-        self.apply_tls(domain, true, false).await
+        let _guard = super::nginx_write_lock().lock().await;
+        replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key)?;
+        self.apply_tls_locked(domain, true, false).await
     }
 
     /// 上传证书与私钥（PEM 文本）；校验证书/私钥有效且配对后启用 HTTPS。
@@ -816,13 +1014,10 @@ impl AppState {
             }
             return Err(SiteError::BadRequest(e));
         }
-        std::fs::rename(&tmp_cert, &cert)
-            .map_err(|e| SiteError::Internal(format!("保存证书失败：{e}")))?;
-        std::fs::rename(&tmp_key, &key)
-            .map_err(|e| SiteError::Internal(format!("保存私钥失败：{e}")))?;
-        restrict_mode(&cert, 0o644);
-        restrict_mode(&key, 0o600);
-        self.apply_tls(domain, true, false).await
+        // 成对替换与 reload 必须在一把锁内完成：中间态对 nginx 不可见。
+        let _guard = super::nginx_write_lock().lock().await;
+        replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key)?;
+        self.apply_tls_locked(domain, true, false).await
     }
 
     /// 关闭 HTTPS（保留证书文件）。
@@ -832,7 +1027,9 @@ impl AppState {
 
     /// 删除证书文件并关闭 HTTPS。
     pub async fn delete_cert(&self, domain: &str) -> Result<(), SiteError> {
-        self.apply_tls(domain, false, false).await?;
+        // 先关 HTTPS 再删文件，两步都在锁内：不会与上传/生成交错。
+        let _guard = super::nginx_write_lock().lock().await;
+        self.apply_tls_locked(domain, false, false).await?;
         let site = self
             .db()
             .site_by_domain(domain)
@@ -884,8 +1081,20 @@ impl AppState {
         self.apply_tls(domain, site.https, force).await
     }
 
-    /// 改写站点 vhost + 默认站 vhost，校验 `nginx -t` 后重启；任一步失败回滚文件与库状态。
+    /// 改写站点 vhost + 默认站 vhost，校验 `nginx -t` 后让 nginx 生效；任一步失败回滚文件与库状态。
     async fn apply_tls(
+        &self,
+        domain: &str,
+        https: bool,
+        force_https: bool,
+    ) -> Result<(), SiteError> {
+        let _guard = super::nginx_write_lock().lock().await;
+        self.apply_tls_locked(domain, https, force_https).await
+    }
+
+    /// 同上。**调用方必须已持有 [`super::nginx_write_lock`]**（证书成对写入后还要
+    /// 在同一个临界区内完成 reload）。
+    async fn apply_tls_locked(
         &self,
         domain: &str,
         https: bool,
@@ -948,7 +1157,7 @@ impl AppState {
             }
             return Err(SiteError::Internal(format!("写入默认站点配置失败：{e}")));
         }
-        if let Err(e) = self.validate_nginx().await {
+        if let Err(e) = self.validate_nginx_locked().await {
             // 校验失败时运行中的 nginx 还没加载新配置，恢复文件即可；
             // 这里**不能再重启**——若失败源于别的坏 conf，重启会让现网 nginx 起不来。
             restore(&snapshot);
@@ -957,15 +1166,15 @@ impl AppState {
             }
             return Err(e);
         }
-        if let Err(e) = self.restart_nginx().await {
+        if let Err(e) = self.activate_nginx_locked().await {
             restore(&snapshot);
             if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
                 tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
             }
-            if let Err(re) = self.restart_nginx().await {
-                tracing::error!(domain, error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
+            if let Err(re) = self.restart_nginx_locked().await {
+                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
             }
-            return Err(e);
+            return Err(SiteError::Unavailable(e));
         }
         Ok(())
     }
@@ -1768,8 +1977,8 @@ impl AppState {
         }
     }
 
-    /// 保存 vhost：先隔离校验候选内容，通过后才落盘；运行中的站点再重载，
-    /// 停止的站点只落盘不重载（`.conf.disabled` 不在线上 include 内）。
+    /// 保存 vhost：先隔离校验候选内容，通过后才落盘；运行中的站点再让 nginx 生效
+    /// （优先平滑 reload），停止的站点只落盘不重载（`.conf.disabled` 不在线上 include 内）。
     pub async fn save_site_vhost(
         &self,
         domain: &str,
@@ -1791,6 +2000,9 @@ impl AppState {
         // 无论启停都先校验：停止态的文件不在 include 内，直接 reload 等于没测。
         self.validate_site_vhost_content(&s, domain, &original_text, content)
             .await?;
+        // 写入与生效在同一把锁内：并发保存同一站点不会互相吃半套配置，也不会
+        // 与本模块的证书成对写入（`upload_cert` / `generate_self_signed`）交错。
+        let _guard = super::nginx_write_lock().lock().await;
         // 先写临时文件再 rename，避免半截文件被 nginx 加载；临时名进程内唯一，
         // 并发保存同一站点时不会出现「后写者删掉先写者临时文件」。
         crate::atomic::write_atomic(&path, content.as_bytes(), 0o644)
@@ -1798,32 +2010,38 @@ impl AppState {
         if !active {
             return Ok(VhostSaveOutcome { reloaded: false });
         }
-        if let Err(e) = self.restart_nginx().await {
-            // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
-            if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
-                tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
+        match self.activate_nginx_locked().await {
+            // reload 已由 worker 换代自证生效：服务不中断，也不必再等启动窗口。
+            Ok(NginxActivation::Reloaded) => Ok(VhostSaveOutcome { reloaded: true }),
+            Ok(NginxActivation::Restarted) => {
+                // 回退重启：返回成功不代表 nginx 配置有效，容器仍可能在启动后立即退出。
+                // 留出极短启动窗口再核对状态，失败则回滚并尽量把旧配置重新拉起。
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let env = self.site_env_status().await;
+                if env.installed && env.nginx_state != "running" {
+                    if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
+                        tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
+                    }
+                    if let Err(re) = self.restart_nginx_locked().await {
+                        tracing::error!(error = %re, "回滚后重载 nginx 失败");
+                    }
+                    return Err(SiteError::Unavailable(format!(
+                        "配置已回滚到保存前内容：nginx 未能保持运行（当前状态 {}）",
+                        env.nginx_state
+                    )));
+                }
+                Ok(VhostSaveOutcome { reloaded: true })
             }
-            return Err(SiteError::Unavailable(format!(
-                "配置已回滚到保存前内容：重载 nginx 失败：{e}"
-            )));
+            Err(e) => {
+                // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
+                if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
+                    tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
+                }
+                Err(SiteError::Unavailable(format!(
+                    "配置已回滚到保存前内容：重载 nginx 失败：{e}"
+                )))
+            }
         }
-        // Docker restart 返回成功不代表 nginx 配置有效：容器可能在启动后立即退出。
-        // 留出极短启动窗口再核对状态，失败则回滚并尽量把旧配置重新拉起。
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let env = self.site_env_status().await;
-        if env.installed && env.nginx_state != "running" {
-            if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
-                tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
-            }
-            if let Err(re) = self.restart_nginx().await {
-                tracing::error!(error = %re, "回滚后重载 nginx 失败");
-            }
-            return Err(SiteError::Unavailable(format!(
-                "配置已回滚到保存前内容：nginx 未能保持运行（当前状态 {}）",
-                env.nginx_state
-            )));
-        }
-        Ok(VhostSaveOutcome { reloaded: true })
     }
 
     /// 站点根目录只读浏览；`rel` 为空表示根。拒绝 `..` 与越界路径。

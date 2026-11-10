@@ -43,6 +43,18 @@ pub use layout::*;
 pub use logs::*;
 pub use spec::*;
 
+/// nginx 配置/证书写入与重载的进程内串行锁。
+///
+/// 证书与私钥是两个文件，各自 `rename` 之间存在一个极短窗口。任何在这期间
+/// 重新读取配置的 nginx（保存 vhost、TLS 变更、证书上传、巡检）都可能读到
+/// 「新证书 + 旧私钥」并报 `key values mismatch`。因此：
+/// - 写对的一方持锁完成两次 `rename` 与随后的 reload；
+/// - 所有会让 nginx 重新加载配置的动作（含定时巡检）都先取同一把锁。
+pub fn nginx_write_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub const NGINX_CONTAINER: &str = "skiff-web-nginx";
 /// 每个 PHP 实例一个独立容器：`skiff-php-<name>`。
 pub const PHP_CONTAINER_PREFIX: &str = "skiff-php";

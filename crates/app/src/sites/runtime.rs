@@ -2725,6 +2725,8 @@ impl AppState {
             .set_site_static_unbound(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?;
         // 停用 vhost 后重载 nginx；容器不在运行则留待下次启动加载。
+        // 与证书成对写入共用一把锁：reload 不得在 cert/key 两次 rename 之间插入。
+        let _guard = super::nginx_write_lock().lock().await;
         if let Ok(rows) = self.docker().list_containers().await {
             if let Some(c) = rows
                 .iter()

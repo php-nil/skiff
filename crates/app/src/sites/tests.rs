@@ -1581,3 +1581,145 @@ async fn set_default_site_rolls_back_db_and_conf_when_reload_fails() {
     );
     assert!(!text.contains("b.local"), "不得残留失败方向的投影：{text}");
 }
+
+/// nginx 激活策略的内存替身：复现「reload 不改 interrupt 服务、restart 有窗口」。
+mod nginx_activation {
+    use super::*;
+    use crate::sites::crud::{activate_with, replace_cert_pair, NginxActivation, NginxControl};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    struct FakeNginx {
+        running: AtomicBool,
+        generation: AtomicU64,
+        reloads: AtomicUsize,
+        restarts: AtomicUsize,
+        reload_fails: AtomicBool,
+        reload_no_effect: AtomicBool,
+        restart_fails: AtomicBool,
+    }
+
+    impl FakeNginx {
+        fn online() -> Self {
+            Self {
+                running: AtomicBool::new(true),
+                generation: AtomicU64::new(1),
+                reloads: AtomicUsize::new(0),
+                restarts: AtomicUsize::new(0),
+                reload_fails: AtomicBool::new(false),
+                reload_no_effect: AtomicBool::new(false),
+                restart_fails: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl NginxControl for FakeNginx {
+        async fn container_running(&self) -> Result<bool, String> {
+            Ok(self.running.load(Ordering::SeqCst))
+        }
+
+        async fn worker_generation(&self) -> Result<String, String> {
+            Ok(format!("w{}", self.generation.load(Ordering::SeqCst)))
+        }
+
+        async fn reload(&self) -> Result<(), String> {
+            self.reloads.fetch_add(1, Ordering::SeqCst);
+            if self.reload_fails.load(Ordering::SeqCst) {
+                return Err("bad config".into());
+            }
+            if !self.reload_no_effect.load(Ordering::SeqCst) {
+                self.generation.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+
+        async fn restart(&self) -> Result<(), String> {
+            self.restarts.fetch_add(1, Ordering::SeqCst);
+            if self.restart_fails.load(Ordering::SeqCst) {
+                return Err("restart failed".into());
+            }
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// 在线容器：reload 优先，worker 换代即确认，不重启。
+    #[tokio::test]
+    async fn reload_is_preferred_when_workers_turn_over() {
+        let n = FakeNginx::online();
+        let got = activate_with(&n).await.expect("reload 应成功");
+        assert_eq!(got, NginxActivation::Reloaded);
+        assert_eq!(n.reloads.load(Ordering::SeqCst), 1);
+        assert_eq!(n.restarts.load(Ordering::SeqCst), 0, "健康配置不应重启容器");
+    }
+
+    /// reload 返回成功但 worker 没换代：master 没采纳新配置，必须回退重启。
+    #[tokio::test]
+    async fn reload_without_worker_turnover_falls_back_to_restart() {
+        let n = FakeNginx::online();
+        n.reload_no_effect.store(true, Ordering::SeqCst);
+        let got = activate_with(&n).await.expect("应回退重启成功");
+        assert_eq!(got, NginxActivation::Restarted);
+        assert_eq!(n.restarts.load(Ordering::SeqCst), 1);
+    }
+
+    /// 容器未运行：不尝试 reload，直接重启。
+    #[tokio::test]
+    async fn stopped_container_goes_straight_to_restart() {
+        let n = FakeNginx::online();
+        n.running.store(false, Ordering::SeqCst);
+        let got = activate_with(&n).await.expect("重启应成功");
+        assert_eq!(got, NginxActivation::Restarted);
+        assert_eq!(n.reloads.load(Ordering::SeqCst), 0);
+    }
+
+    /// 并发保存同一站点：reload 路径没有重启窗口，回滚次数应从「每次重启都可能
+    /// 撞窗口」降到 0；真正加载不了的坏配置仍会失败并触发回滚。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_saves_do_not_collide_in_restart_windows() {
+        let n = Arc::new(FakeNginx::online());
+        let mut tasks = Vec::new();
+        for _ in 0..48 {
+            let n = n.clone();
+            tasks.push(tokio::spawn(async move { activate_with(&*n).await }));
+        }
+        for t in tasks {
+            assert_eq!(t.await.unwrap().unwrap(), NginxActivation::Reloaded);
+        }
+        assert_eq!(
+            n.restarts.load(Ordering::SeqCst),
+            0,
+            "并发保存健康配置时不应触发任何容器重启（旧实现 254 次里 29 次撞上重启窗口）"
+        );
+
+        let bad = FakeNginx::online();
+        bad.reload_fails.store(true, Ordering::SeqCst);
+        bad.restart_fails.store(true, Ordering::SeqCst);
+        assert!(activate_with(&bad).await.is_err(), "坏配置必须失败");
+        assert_eq!(
+            bad.restarts.load(Ordering::SeqCst),
+            1,
+            "reload 失败后必须尝试重启兜底，仍失败才回滚"
+        );
+    }
+
+    /// 证书替换失败时不能留下「新证书 + 旧私钥」的不配对组合。
+    #[test]
+    fn cert_pair_failure_removes_new_cert_instead_of_mismatching() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        std::fs::write(&cert, "old-cert").unwrap();
+        std::fs::write(&key, "old-key").unwrap();
+        let tmp_cert = crate::atomic::sibling_temp(&cert);
+        let missing_key = crate::atomic::sibling_temp(&key);
+        std::fs::write(&tmp_cert, "new-cert").unwrap();
+
+        let err = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
+        assert!(matches!(err, SiteError::Internal(_)), "{err}");
+        assert!(
+            !cert.exists(),
+            "证书已换而私钥失败时必须删掉新证书，回到「无证书」而不是不配对"
+        );
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "old-key");
+    }
+}

@@ -175,6 +175,9 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
                     .unwrap_or(0);
             if rotated > 0 {
                 // 改名后原 fd 仍指向 `.1`；不重开就会一直写进旧文件、新文件永远为空。
+                // 与站点的证书成对写入共用一把锁：巡检不会在 cert/key 两次 rename
+                // 之间取用配置（reopen 本身不读配置，锁住的是一致性契约）。
+                let _guard = skiff_app::sites::nginx_write_lock().lock().await;
                 if let Err(e) = state
                     .docker()
                     .exec_capture(
