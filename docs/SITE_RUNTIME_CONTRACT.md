@@ -626,10 +626,10 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 - **digest 落库**：安装/重建拉完镜像后从 `ImageInspect.repo_digests` 取 manifest digest 写入
   `site_runtimes.image_digest`；该值参与「本地已有→跳过拉取 / 与登记值不一致→按 digest 重拉 /
   新环境回填」判定（`ensure_runtime_image`），不只是展示。
-  **已知待办**：`ImageInfo::primary_digest` 目前取 `repo_digests` 中第一个 `@sha256:` 条目，
-  并未真正「按 tag 匹配」；多 tag 镜像（如同时存在 `php:8.3-fpm` 与 `php:latest`）下首个条目
-  可能属于别的 tag，存在误判漂移的风险。因该值参与拉取判定，先保持行为不变、仅留 TODO，
-  待改成按 tag 取 digest 后再动。
+  **实现口径**：`ImageInfo::primary_digest_for(image)` 按镜像引用的**仓库名**匹配
+  `repo_digests`（归一化 `docker.io` / `index.docker.io` 别名与 Docker Hub `library/` 前缀），
+  命中不到才退回首个 `@sha256:` 条目。Docker 的 `RepoDigests` 条目本身不含 tag，因此无法按
+  tag 精确匹配；同一本地镜像打多个仓库时按仓库名取对应 digest，避免取错仓库导致误判漂移。
   登记镜像与容器实际 `image_id` 对应镜像不一致时，抽屉提示「登记镜像与容器镜像不一致」，只提示不自动修。
 
 ### 11.2 镜像来源结论与 1Panel 对比
