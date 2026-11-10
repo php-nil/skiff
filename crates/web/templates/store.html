@@ -4,8 +4,8 @@
 <div class="page-head">
   <h1>商店</h1>
   <span class="muted small">
-    只读目录：展示渠道签名清单中的插件、应用模板、运行环境与升级通道。
-    本页不提供安装，安装仍走「插件 → 已安装 / 发现」等既有入口。
+    目录来自渠道签名清单：插件可按已验证条目直接安装（下载 → 摘要 → 验签 → 权限确认）；
+    应用模板、运行环境与升级通道本页只展示。
   </span>
   <div class="actions">
     <a class="btn ghost" href="?refresh=1">刷新目录</a>
@@ -45,6 +45,7 @@
     <thead>
       <tr>
         <th>名称</th><th>版本</th><th>来源</th><th>更新时间</th><th>兼容性</th><th>说明</th>
+        {% if section.installable %}<th>操作</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -59,6 +60,15 @@
         <td class="muted small">{{ r.updated_at }}</td>
         <td class="muted small">{{ r.compatibility }}</td>
         <td class="muted small">{{ r.note }}</td>
+        {% if section.installable %}
+        <td>
+          {% if r.warn.is_empty() %}
+          <a class="btn ghost" href="/{{ ctx.prefix }}/store/plugins/{{ r.name }}/install">安装</a>
+          {% else %}
+          <span class="muted small">不可安装</span>
+          {% endif %}
+        </td>
+        {% endif %}
       </tr>
     {% endfor %}
     </tbody>

@@ -81,7 +81,7 @@ fn plugin_views(state: &AppState) -> Result<Vec<PluginView>, AppError> {
 }
 
 /// manifest 里的插件间接口：`(对外提供的 method · label, 允许调用的目标列表)`。
-fn interop_rows(manifest: &Manifest) -> (Vec<String>, Vec<String>) {
+pub(crate) fn interop_rows(manifest: &Manifest) -> (Vec<String>, Vec<String>) {
     let provides = manifest
         .interop
         .provides

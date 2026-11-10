@@ -39,7 +39,7 @@ pub struct MenuSettingsPage {
     pub notice: String,
 }
 
-/// 商店（Skiff-server P1）：四类目录条目的只读页面。
+/// 商店（Skiff-server P1/P2）：四类目录条目展示；插件分区按已验证目录提供安装入口。
 #[derive(Debug, Clone, Template)]
 #[template(path = "store.html")]
 pub struct StorePage {
@@ -63,6 +63,8 @@ pub struct StorePage {
 pub struct StoreSection {
     pub title: String,
     pub hint: String,
+    /// 该分区条目是否提供安装入口（本轮只有插件分区、且公钥已配置时开启）。
+    pub installable: bool,
     pub items: Vec<skiff_app::catalog::CatalogItem>,
 }
 

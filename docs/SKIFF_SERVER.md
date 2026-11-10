@@ -436,14 +436,14 @@ cargo run -p skiff-server -- gen --sign-key <32 字节 hex>
 |---|---|---|
 | 签名流水线 | 占位 | `Signer` 与 `manifest.json.sig` 接口就绪；真实私钥托管、离线签发、轮换流程未接。未签名产物客户端必须拒绝（`check --require-signature` 为门禁） |
 | 镜像同步 | 未做 | `blobs/` 天然文件级增量，但缺少同步脚本、多源清单与校验 |
-| 客户端接入 | P1 只读已完成 | 拉取/验签/缓存/回退/只读商店页见 §11；安装链路、blob 预下载与真实公钥仍未接 |
+| 客户端接入 | P1 只读 + P2 插件安装已完成 | 拉取/验签/缓存/回退/只读商店页见 §11；插件从目录安装见 §12；应用模板/运行环境安装、blob 本地缓存与真实公钥仍未接 |
 | 增量索引 | 未做 | 按 §2.4 属 P3 |
 
 ## 11. P1 落地状态（客户端只读接入）
 
 P1 只到「看得见、校验过、失败可回退」：内核拉取渠道清单并在「插件 → 商店」只读展示
 插件 / 应用模板 / 运行环境 / 升级通道四类条目，**不提供安装按钮**，不改动既有插件安装与
-TOFU 信任链路。默认关闭。
+TOFU 信任链路。默认关闭。P2 在此基础上补了插件安装入口（见 §12）。
 
 ### 11.1 配置
 
@@ -509,4 +509,78 @@ catalog/
 
 安装链路（插件/应用模板/运行环境安装与升级）、blob 预下载与本地缓存淘汰、真实签名流水线与
 内置公钥、镜像同步脚本、增量索引。
+
+## 12. P2 落地状态（从商店目录安装插件）
+
+P2 只补「插件」这一类：已验证目录条目可在商店页直接进入安装；Docker 应用模板与运行环境
+仍只展示，不做安装。信任口径与既有上传安装完全一致——目录清单的固定公钥只证明「条目可信」，
+插件包本身仍走 `.wbpkg` 验签与 TOFU/固定公钥（`plugin::trust::resolve`），权限确认页仍是
+独立一道闸，最终安装复用 `install_package` 与 `plugin.install` 审计。
+
+### 12.1 安装链路
+
+```text
+商店页「安装」→ 权限判定（PluginManage）→ 目录条目兼容性预检
+  → 按条目摘要下载 blob（`blobs/sha256/<sha>`）→ 校验大小 + sha256
+  → 写 `<data_dir>/plugins/.incoming/<token>.wbpkg`（0600，`.part` 原子 rename）
+  → `resolve_trust` 验签 → 权限确认页 → POST /plugins/confirm → install_package
+```
+
+- 下载与校验在 `skiff_app::commands::store::prepare`（阻塞线程池），页面与审计在
+  `crates/web/src/handlers/store.rs`；确认页直接复用既有模板与 `/plugins/confirm`。
+- 任一步失败都删除暂存文件及 `.part`，不存在「已下载未装」或「半装」残留。
+- 安装入口只在 `[catalog].enabled = true` **且**配置了固定公钥时出现；未配置公钥时
+  按钮隐藏，直连路由返回 400。
+
+### 12.2 安装前兼容性校验
+
+| 维度 | 判定 |
+|---|---|
+| 内核 API | 条目 `api` 主版本必须等于 `KERNEL_API`，次版本不得高于内核（当前 `1.2`） |
+| 能力面 | 条目 `requires` 必须全部在 `Capability::available_in(form)` 内 |
+| 版本 | 低于已装版本拒绝（同版本重装、较高版本升级放行） |
+| 撤回 | `yanked = true` 或索引 `revoked` 命中该摘要即拒绝 |
+
+### 12.3 拒绝语义与审计
+
+统一动作 `store.install`，`detail` 前缀 `reason=<code>`：
+
+| 原因码 | 场景 | 页面表现 |
+|---|---|---|
+| `permission` | 当前角色无 `PluginManage` | 403 错误页 |
+| `no_key` | 未配置固定公钥 | 400 错误页 |
+| `not_found` | 已验证目录无该条目（未更新/被拒/版本不存在） | 回商店页提示 |
+| `revoked` | 条目被撤回 | 回商店页提示 |
+| `compatibility` | 内核 API / 能力面 / 降级不满足 | 回商店页提示 |
+| `download` | 网络、HTTP 非 200、传输层错误 | 回商店页提示 |
+| `digest` | 条目缺三件套、大小或 sha256 不符 | 回商店页提示 |
+| `signature` | 包结构/签名失败，或公钥未导入 | 回商店页提示 |
+| `io` / `store` | 写暂存或读库失败 | 回商店页提示 |
+
+成功暂存记 `result = ok`（`reason=prepared`，含版本/渠道/来源），最终安装仍由
+`plugin.install` 记录一次。
+
+### 12.4 代码落点
+
+| 路径 | 内容 |
+|---|---|
+| `crates/app/src/catalog/mod.rs` | `plugin_package`（已验证索引取条目）与 `download_blob`（大小/摘要校验、原子落盘、失败清理） |
+| `crates/app/src/catalog/fetch.rs` | `Transport::get_blob`（二进制放宽到 128MiB，目录 JSON 仍 8MiB） |
+| `crates/app/src/commands/store.rs` | `prepare`：兼容性预检、下载、验签、暂存；`StoreInstallError` 原因码 |
+| `crates/web/src/handlers/store.rs` | 插件分区的安装入口、权限判定与 `store.install` 审计、确认页渲染 |
+| `crates/web/templates/store.html` | 「操作」列（仅插件分区；撤回/告警条目不显示安装） |
+
+### 12.5 已覆盖测试
+
+- `crates/app/src/commands/store.rs`：整链路（含 `install_package` 收尾）、下载失败 / 摘要不符 /
+  验签失败 / 能力面缺失四类拒绝、内核 API 不符、未配置公钥不触网、条目不存在、`api` 兼容矩阵；
+  每类失败都断言 `.incoming` 无残留。
+- `crates/web/src/handlers/store.rs`：有公钥时渲染安装入口、无公钥/告警条目不渲染。
+- `crates/web/tests/main_flow.rs`：viewer 403 且落 `store.install` deny 审计、未配置公钥 400 并落
+  `no_key` 审计、目录不可用回商店页并落 `not_found` 审计且无暂存文件。
+
+### 12.6 未完成
+
+应用模板与运行环境安装、blob 本地缓存与淘汰、真实签名流水线与内置公钥、镜像同步脚本、
+增量索引、商店内的升级/回滚操作。
 
