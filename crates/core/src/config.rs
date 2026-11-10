@@ -4,65 +4,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
 use skiff_docker::{Form, Tier};
 use skiff_model::Cidr;
 
-/// 配置文件形态（`/etc/skiff/config.toml`）。字段全部可选，缺失走默认。
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileConfig {
-    pub listen: Option<String>,
-    pub data_dir: Option<PathBuf>,
-    /// 站点/nginx/日志/证书/PHP socket 根（默认 `/www`）
-    pub web_root: Option<PathBuf>,
-    pub run_dir: Option<PathBuf>,
-    pub docker_socket: Option<String>,
-    /// `native`（默认）或 `docker`（受限形态，§5.4）
-    pub form: Option<String>,
-    /// `basic`（M2）或 `lifecycle`（M3，默认）
-    pub docker_tier: Option<String>,
-    pub tls_cert: Option<PathBuf>,
-    pub tls_key: Option<PathBuf>,
-    /// `true` 启用 TLS；`false` 直接明文监听（Cookie 降级）；缺省走旧行为自动推断。
-    pub tls_enabled: Option<bool>,
-    pub allow_insecure_http: Option<bool>,
-    /// 安全入口前缀；缺省时沿用数据库里首启随机生成的值。
-    pub entry_prefix: Option<String>,
-    pub allow_unsigned: Option<bool>,
-    pub allow_reduced_sandbox: Option<bool>,
-    pub trusted_proxies: Option<Vec<String>>,
-    /// 绑定挂载授权根（native 形态，§5.5）
-    pub authorized_roots: Option<Vec<PathBuf>>,
-    pub external_url: Option<String>,
-    pub login_concurrency: Option<usize>,
-    /// 回收站保留天数（默认 30，范围 1–365）：到期由内置任务 `trash-prune` 彻底删除。
-    pub trash_retention_days: Option<u32>,
-    /// 首启管理员是否强制首次登录改密。默认 false（初始口令可直接使用）。
-    pub require_initial_password_change: Option<bool>,
-    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（秒，默认 900）。
-    pub ext_exec_timeout_secs: Option<u64>,
-    /// 批量扩展脚本的硬超时（秒，默认 1800）。
-    pub ext_batch_timeout_secs: Option<u64>,
-    /// 商店目录（Skiff-server）只读接入；缺省整段关闭。
-    pub catalog: Option<CatalogFile>,
-}
-
-/// `[catalog]` 段：默认关闭，不拉取、不显示商店入口。
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogFile {
-    pub enabled: Option<bool>,
-    /// `stable` 或 `night`。
-    pub channel: Option<String>,
-    /// 镜像基地址，按序回退；必须是 https。
-    pub mirrors: Option<Vec<String>>,
-    /// 固定 Ed25519 公钥（64 位十六进制）。
-    pub public_key: Option<String>,
-    /// 仅开发模式允许接受未签名渠道。
-    pub allow_unsigned: Option<bool>,
-    pub timeout_secs: Option<u64>,
-}
+// 文件结构的唯一定义在写入端（`skiff-app`）：加载与落盘前的语义复验共用同一份类型，
+// 避免「写进去合法、启动解析失败」的漂移。
+pub use skiff_app::panel_settings::{CatalogFile, FileConfig};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -775,5 +722,33 @@ mod tests {
         dev.listen = "127.0.0.1:18080".parse().unwrap();
         dev.dev_http = true;
         dev.validate().unwrap();
+    }
+
+    /// 面板写入 → 重启加载的往返：文件末尾是 `[catalog]` 时写顶层键，
+    /// 新文件必须能按真实结构重新加载（旧实现会把键并进 `[catalog]` 导致 startup crash-loop）。
+    #[test]
+    fn panel_write_then_restart_loads_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "listen = \"127.0.0.1:18080\"\n\n[catalog]\nchannel = \"stable\"\n",
+        )
+        .unwrap();
+
+        skiff_app::panel_settings::write_config_updates(
+            &path,
+            &[
+                ("listen", Some("\"127.0.0.1:18443\"".into())),
+                ("entry_prefix", Some("\"abc12345\"".into())),
+                ("tls_enabled", Some("false".into())),
+            ],
+        )
+        .unwrap();
+
+        let reloaded = Config::load(Some(path), true).expect("写入后的配置必须能被重启加载");
+        assert_eq!(reloaded.listen, "127.0.0.1:18443".parse().unwrap());
+        assert_eq!(reloaded.entry_prefix.as_deref(), Some("abc12345"));
+        assert_eq!(reloaded.tls_enabled, Some(false));
     }
 }
