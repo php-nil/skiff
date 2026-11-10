@@ -70,6 +70,12 @@
 | 服务 | `skiff.service` active、`NRestarts=0`、`/healthz` 200（`127.0.0.1:18080` 与转发 `:18081` 均 200）；`skiff-http-fwd.service`、`skiff-catalog-test.service`（18090）、`skiff-tunnel-keepalive.service` 均 active；`fail2ban.service` active（jail `pure-ftpd`）；宿主 `pure-ftpd` running（`/etc/pure-ftpd/conf/Umask` = `113 002`，本轮 `install` 重放后生效；`pureftpd.passwd` 0 行）、`skiff-web` = 201000:201000 已由 `install.sh` 幂等创建；站点容器 `skiff-php-php-8.5`（PHP 站 `a.com`）与 `skiff-web-nginx` 正常运行 |
 | 配置 | `/etc/skiff/config.toml`：`listen="127.0.0.1:18080"` + `allow_insecure_http=true` + `tls_enabled=false`（形态三明文 dev HTTP）+ `allow_reduced_sandbox=true`（landlock/cgroups 未实现），并含 `[catalog]`：`enabled=true`、`channel="stable"`、`mirrors=["https://65f3f271cb611d89-139-227-130-152.serveousercontent.com/cur"]`（受信 Let's Encrypt 证书，serveo 域名每轮重建；本轮收尾时该隧道已 502，`/store` 按设计降级为「离线 + 上次成功快照」）、`public_key="315eacce321fd67ca0faeda0de04567017b3b352ba95180451e4536af4c74a28"`（临时测试密钥公钥，私钥种子只在测试机 `/root/iter/catalog-test/seed.hex`）、`timeout_secs=20`；面板设置复验保存后，顶层键 `tls_enabled = false` 位于**第 1 行**（首个表头 `[catalog]` 在第 98 行之前），`entry_prefix="w3qz4vc2"` 与 `listen` 均在顶层、`[catalog]` 段内容逐行未变、文件尾部无追加；sha256 **`eb8ba7f35590e77270613298d5b0b326826f89d9809f8e4fcf407053b995f89a`** |
 
+**备份口径（硬性）**：部署前备份必须先用**可信来源**（Release 资产 `sha256sum -c`、`checksums.txt`、已安装二进制 `sha256sum`）确认内容版本，再按「`<内容> = <版本/提交> + <sha256>`」落名；禁止只按执行先后命名为 `before-<目标提交>` 而不校验内容。
+
+- 正例：`/root/iter/rel-a5dcdeb/skiff-0.1.0-x86_64-unknown-linux-musl/skiff`（随资产校验，a5dcdeb `271aa90c…`）、`/root/iter/skiff.bin.before-a5dcdeb`（实测 bf0c4fe `bd364d33…`）。
+- 反例（2026-11-11）：`/root/iter/skiff.bin.before-790c01c` 因部署脚本被重跑、备份发生在安装之后，实测 sha 与新装二进制相同（`550c0fe6…`），**不是** 790c01c 之前那一版，**不能**作为回退点。
+- 操作要求：备份后立即 `sha256sum <备份文件>` 与预期来源比对，并把「备份路径 = sha256」写进本节/台账；不一致就重做备份，或明确标注该备份作废，不得留歧义文件名。
+
 ## 6. Release 资产（v0.1.0 = `790c01c`，2026-11-11）
 
 构建来源：Release workflow run `42916533236`（dispatch `ref=main`，head_sha `790c01c745a80f83af083e9e57fb95ba323c7952`；tag `v0.1.0` 未移动，**该 tag 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`**，资产覆盖同一 Release）。**该 run 四个 job 全绿**：x86_64 / aarch64 构建、`docker` 镜像可构建、`发布到 GitHub Release` 均 success。x86_64 资产在开发机经内网代理走 API 资产端点下载，本地 sha256 与 API digest、`checksums.txt`、逐资产侧车四方一致；`scp` 到测试机后再 `sha256sum -c` 复核一致。
