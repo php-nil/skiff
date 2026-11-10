@@ -41,6 +41,18 @@ pub const DB_VACUUM_TASK_ID: &str = "builtin:db-vacuum";
 pub const BUILTIN_TRASH_PRUNE: &str = "trash-prune";
 /// 内置任务 id：回收站到期清理（全局唯一）。
 pub const TRASH_PRUNE_TASK_ID: &str = "builtin:trash-prune";
+/// 内置任务名：审计按保留期清理。
+pub const BUILTIN_AUDIT_PRUNE: &str = "audit-prune";
+/// 内置任务 id：审计清理（全局唯一）。
+pub const AUDIT_PRUNE_TASK_ID: &str = "builtin:audit-prune";
+/// 审计保留天数：只读审计不采样、保留完整追溯，靠时间窗裁剪。
+pub const AUDIT_RETENTION_DAYS: i64 = 90;
+
+/// 保留截止时间：`now - 90 天`（秒）。删除条件是严格 `ts < cutoff`，
+/// 即恰好 90 天前的记录仍在窗口内。
+fn audit_cutoff(now: i64) -> i64 {
+    now.saturating_sub(AUDIT_RETENTION_DAYS * 24 * 3600)
+}
 
 /// 站点备份任务 id。内置任务以 `(kind, source)` 唯一，id 里带域名只为可读性。
 pub fn site_backup_task_id(domain: &str) -> String {
@@ -1216,6 +1228,22 @@ fn seed_builtins(
             .register(spec, clock.now(), clock)
             .map_err(|e| e.to_string())?;
     }
+    if sched.get(AUDIT_PRUNE_TASK_ID).is_none() {
+        let mut spec = TaskSpec::new(
+            AUDIT_PRUNE_TASK_ID,
+            TaskKind::builtin(BUILTIN_AUDIT_PRUNE).map_err(|e| e.to_string())?,
+            TaskSource::System,
+            Schedule::cron("0 5 * * *"),
+        )
+        .map_err(|e| e.to_string())?;
+        spec.payload = json!({});
+        spec.created_by = "system".into();
+        spec.created_at = clock.now();
+        spec.updated_at = spec.created_at;
+        sched
+            .register(spec, clock.now(), clock)
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1452,6 +1480,7 @@ fn run_builtin(
         BUILTIN_SITE_BACKUP => site_backup(ctx, db, web_root, data_dir),
         BUILTIN_DB_VACUUM => db_vacuum(ctx, db, data_dir),
         BUILTIN_TRASH_PRUNE => trash_prune(ctx, db, web_root, data_dir, trash_retention_days),
+        BUILTIN_AUDIT_PRUNE => audit_prune(db),
         other => Err(ExecError::new(
             ErrorClass::Unavailable,
             ErrorPhase::Ensure,
@@ -1564,6 +1593,26 @@ fn trash_prune(
         verdict: None,
         detail: Some(format!("released_bytes={bytes}")),
         output_bytes: bytes as usize,
+    })
+}
+
+/// 审计保留清理：按 90 天时间窗删除。删多少条写进任务详情（可在任务运行记录里追溯），
+/// 失败则整次运行记失败，由调度器留痕。
+fn audit_prune(db: &Db) -> Result<ExecOutput, ExecError> {
+    let cutoff = audit_cutoff(Local::now().timestamp());
+    let deleted = db
+        .purge_audit_before(cutoff)
+        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+    tracing::info!(
+        deleted,
+        cutoff,
+        retention_days = AUDIT_RETENTION_DAYS,
+        "审计保留清理完成"
+    );
+    Ok(ExecOutput {
+        verdict: None,
+        detail: Some(format!("deleted={deleted} cutoff={cutoff}")),
+        output_bytes: 0,
     })
 }
 
@@ -1966,6 +2015,18 @@ requires = ["fs"]
         let sched = reloaded.scheduler.blocking_lock();
         assert!(sched.get(DB_VACUUM_TASK_ID).is_some());
         assert!(sched.get(TRASH_PRUNE_TASK_ID).is_some());
+        assert!(sched.get(AUDIT_PRUNE_TASK_ID).is_some());
+    }
+
+    /// 保留窗口是 90 天整：`cutoff = now - 90d`；删除条件是严格小于，
+    /// 所以恰好 90 天前的记录仍在窗口内（边界由 store 的 `ts < cutoff` 保证）。
+    #[test]
+    fn audit_retention_window_is_ninety_days() {
+        let now = 1_800_000_000_i64;
+        let cutoff = audit_cutoff(now);
+        assert_eq!(cutoff, now - 90 * 24 * 3600);
+        // 超长的时间戳不会因为乘法溢出而回绕。
+        assert_eq!(audit_cutoff(i64::MIN / 2), i64::MIN / 2 - 90 * 24 * 3600);
     }
 
     #[tokio::test]

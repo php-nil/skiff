@@ -288,7 +288,7 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 ### 7.3 保留与清理
 
 - `task_runs`：默认保留 30 天或每任务 500 条，先到为准；由内置 `db-vacuum` 或 `task-runs-prune` 清理。
-- 审计：沿用现有审计保留策略（若未实现，P1 补 90 天清理，见 FS 契约 §5）。
+- 审计：保留 90 天，由内置 `audit-prune` 每日按时间窗清理（见 FS 契约 §4.3）。
 - 删除任务时历史保留 7 天便于回溯，随后异步清理；站点级联删除除外（立即清理）。
 
 ### 7.4 落盘目标
@@ -304,6 +304,7 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 | `builtin:site-backup` | `site:<domain>` | `30 3 * * *` + jitter 120s | `{keep:7, include:[index,conf,ssl]}` | `backups/sites/<domain>/<YYYYMMDD-HHmmss>/` + `manifest.json` | ✅ |
 | `builtin:cert-renew` | `site:<domain>` | `0 4 * * *` | `{}` | 证书续期（Let’s Encrypt） | ⛔ P2 占位 |
 | `builtin:db-vacuum` | `system` | `0 3 * * 0` | `{keep:7}` | `backups/db/skiff-<date>.db`（`VACUUM INTO`） | ✅ |
+| `builtin:audit-prune` | `system` | `0 5 * * *` | `{}` | 删除 `audit.ts < now-90d`，详情记 `deleted=<n>` | ✅ |
 | `builtin:metrics-rollup` | `system` | `*/5 * * * *` | `{window:300}` | 内核指标聚合表 | ⛔ P2（依赖 monitor 迁移） |
 | `builtin:metrics-prune` | `system` | `0 2 * * *` | `{keep_days:7}` | 清理聚合/原始指标 | ⛔ P2 |
 | `builtin:task-runs-prune`（建议新增） | `system` | `0 2 * * *` | `{keep_days:30}` | 清理 `task_runs` | ✅（可并入 db-vacuum） |
