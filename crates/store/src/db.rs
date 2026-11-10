@@ -336,7 +336,8 @@ CREATE INDEX IF NOT EXISTS idx_sites_created ON sites(created_at DESC);
 /// v4：站点「默认站点」标记。
 ///
 /// 状态只存库（`is_default`），vhost 文件是它的投影；部分唯一索引保证
-/// 同一时间最多一个默认站点，切换时由 `set_site_default` 在同一语句内清旧置新。
+/// 同一时间最多一个默认站点，切换时由 `set_site_default` 在同一事务内先清旧再置新
+/// （单条 `UPDATE ... CASE` 会因逐行检查 UNIQUE 索引而在「切回小 rowid」时失败）。
 const SCHEMA_V4: &str = r#"
 ALTER TABLE sites ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_default ON sites(is_default) WHERE is_default = 1;

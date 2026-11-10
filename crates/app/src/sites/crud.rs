@@ -602,7 +602,7 @@ impl AppState {
                 let content = self
                     .render_default_vhost_for(s, &site, tls.as_ref())
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
-                std::fs::write(conf, content)
+                write_if_changed(&conf, content.as_bytes(), 0o644).map_err(std::io::Error::other)
             }
             Ok(None) => {
                 if conf.exists() {
@@ -1458,7 +1458,9 @@ impl AppState {
         Ok(())
     }
 
-    /// 设为/取消默认站点。库是状态源，conf 是投影：文件写成功并 reload 后才落库。
+    /// 设为/取消默认站点。库是状态源，conf 是投影：**先落库、再写文件并 reload**；
+    /// 文件或 reload 失败时把库与 conf 一起恢复到切换前，避免留下
+    /// 「conf 已切、库没变」或反向的不一致。
     pub async fn set_default_site(&self, domain: &str, enabled: bool) -> Result<(), SiteError> {
         let s = self.site_settings();
         let site = self
@@ -1466,52 +1468,75 @@ impl AppState {
             .site_by_domain(domain)
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
-        let conf = s.conf_dir.join(DEFAULT_CONF);
+        if enabled && site.status != "running" {
+            return Err(SiteError::BadRequest(
+                "站点已停止，请先启动再设为默认".into(),
+            ));
+        }
+        if !enabled && !site.is_default {
+            return Ok(());
+        }
+        let prev = self
+            .db()
+            .default_site()
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
 
-        if enabled {
-            if site.status != "running" {
-                return Err(SiteError::BadRequest(
-                    "站点已停止，请先启动再设为默认".into(),
-                ));
-            }
-            std::fs::create_dir_all(&s.conf_dir)
-                .map_err(|e| SiteError::Internal(format!("创建配置目录失败：{e}")))?;
-            if !s.conf_dir.join(FALLBACK_CONF).exists() {
-                std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)
-                    .map_err(|e| SiteError::Internal(format!("写入兜底配置失败：{e}")))?;
-            }
-            if !s.conf_dir.join(SITES_INCLUDE_CONF).exists() {
-                std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())
-                    .map_err(|e| SiteError::Internal(format!("写入站点 include 失败：{e}")))?;
-            }
-            let tls = self.site_tls(&s, &site);
-            let content = self.render_default_vhost_for(&s, &site, tls.as_ref())?;
-            std::fs::write(&conf, content)
-                .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
-            if let Err(e) = self.restart_nginx().await {
-                // 重载失败则回滚文件，避免留下未生效的默认指向。
-                if let Err(re) = std::fs::remove_file(&conf) {
-                    tracing::error!(path = %conf.display(), error = %re, "回滚默认站点配置失败");
-                }
-                return Err(e);
-            }
-            self.db()
-                .set_site_default(domain, true)
-                .map_err(|e| SiteError::Internal(e.to_string()))?;
+        self.db()
+            .set_site_default(domain, enabled)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+
+        let applied = if enabled {
+            self.write_default_conf(&s, &site).await
         } else {
-            if !site.is_default {
-                return Ok(());
+            self.remove_default_conf(&s).await
+        };
+        if let Err(e) = applied {
+            // 库已切换但文件/reload 没跟上：按切换前的默认站点回滚库，再让 conf
+            // 重新与库对齐。reload 本身失败时 nginx 仍在跑旧配置，所以不需要再 reload。
+            let restored = match prev.as_ref() {
+                Some(prev) => self.db().set_site_default(&prev.domain, true),
+                None => self.db().set_site_default(domain, false),
+            };
+            if let Err(re) = restored {
+                tracing::error!(error = %re, "回滚默认站点库状态失败");
             }
-            if conf.exists() {
-                std::fs::remove_file(&conf)
-                    .map_err(|e| SiteError::Internal(format!("删除默认站点配置失败：{e}")))?;
+            if let Err(re) = self.sync_default_conf(&s) {
+                tracing::error!(error = %re, "回滚默认站点配置失败");
             }
-            self.restart_nginx().await?;
-            self.db()
-                .set_site_default(domain, false)
-                .map_err(|e| SiteError::Internal(e.to_string()))?;
+            return Err(e);
         }
         Ok(())
+    }
+
+    /// 写 `00-skiff-default.conf` 并 reload nginx。
+    async fn write_default_conf(&self, s: &SiteSettings, site: &Site) -> Result<(), SiteError> {
+        std::fs::create_dir_all(&s.conf_dir)
+            .map_err(|e| SiteError::Internal(format!("创建配置目录失败：{e}")))?;
+        if !s.conf_dir.join(FALLBACK_CONF).exists() {
+            std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)
+                .map_err(|e| SiteError::Internal(format!("写入兜底配置失败：{e}")))?;
+        }
+        if !s.conf_dir.join(SITES_INCLUDE_CONF).exists() {
+            std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())
+                .map_err(|e| SiteError::Internal(format!("写入站点 include 失败：{e}")))?;
+        }
+        let tls = self.site_tls(s, site);
+        let content = self.render_default_vhost_for(s, site, tls.as_ref())?;
+        // 原子替换：写到一半失败时旧 conf 仍在，不会让 nginx 读到半截配置。
+        write_if_changed(&s.conf_dir.join(DEFAULT_CONF), content.as_bytes(), 0o644)
+            .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
+        self.restart_nginx().await
+    }
+
+    /// 删除 `00-skiff-default.conf` 并 reload nginx。
+    async fn remove_default_conf(&self, s: &SiteSettings) -> Result<(), SiteError> {
+        let conf = s.conf_dir.join(DEFAULT_CONF);
+        match std::fs::remove_file(&conf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(SiteError::Internal(format!("删除默认站点配置失败：{e}"))),
+        }
+        self.restart_nginx().await
     }
 
     /// 删除确认页的具体量：目录体积/文件数、关联定时任务数、运行环境绑定。

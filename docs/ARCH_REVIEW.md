@@ -595,6 +595,37 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 - **性能**：未做剖析。已知的低效点仍在：`resolve_container` 每次动作都全量 `list_containers`（`handlers/mod.rs:242-256`），容器多时是 O(n) 拉取。
 - **`plugins/` 第二 workspace**：只核对了它对 `skiff-model` 的复用（`plugins/common/src/lib.rs:70-88` 转出 `within` / `within_any` / `normalize_dir`），未逐 crate 审查其内部结构。
 
+## 15. 待办：async 路径上的同步 SQLite（2026-11-11 登记，只记录不改码）
+
+**结论**：`skiff_store::Db` 是 `std::sync::Mutex<rusqlite::Connection>` + 同步 `rusqlite`，所有查询都直接
+跑在 tokio worker 线程上，没有 `spawn_blocking`。常规语句在微秒–毫秒级，本轮扫描未观测到
+实际故障，因此只登记，不修改。
+
+**涉及入口**（均为 async 上下文中的同步调用）：
+
+| 入口 | 每请求调用次数 | 说明 |
+| --- | --- | --- |
+| `crates/web/src/handlers/**`（如 [sites/crud.rs](crates/web/src/handlers/sites/crud.rs) `list_sites` / `list_runtimes`） | 1–N | 所有 handler 都是 async，读库直接占用所在 worker |
+| `crates/app/src/menu.rs::apply_action` / `load_prefs` | 2（读 + 写） | 由 web handler 同步调用；`cleanup_plugin_prefs` 还按用户逐条读写 |
+| `crates/app/src/tasks.rs::tick_once` → `tasks/store.rs` | 每 tick 全量 | 调度循环在 async 里同步读写任务表与回执 |
+| `crates/app/src/tasks.rs::drop_plugin_tasks` | 卸载时 N 条 | async 卸载请求里顺序删除 |
+| `crates/core/src/kernel/ftp.rs::ftp_call` / `context` | 3–N | 鉴权、审计、站点快照（`list_sites` + 每站点 `runtime_by_id`，N+1） |
+
+**触发条件**（同时成立才会被感知）：
+
+1. 单次语句/事务明显变慢：大表审计保留期裁剪、SQLite `busy` 重试、WAL checkpoint、磁盘 fsync 抖动，
+   或入口本身是 N+1 循环；
+2. 并发请求数超过 tokio worker 数（本机 2 核 4 线程 → 4 个 worker）；
+3. 多个调用争用同一把 `Mutex<Connection>`：等待方是**阻塞线程**而不是让出任务，同一 worker 上的
+   其它请求会一起被拖住，表现为整页卡顿而非单个接口慢。
+
+**边界**：`std::sync::MutexGuard` 不是 `Send`，无法跨 `.await` 持有，所以不会出现「持锁 await」
+型死锁；风险是阻塞，不是死锁。
+
+**建议方向（不在本轮实施）**：给 `Db` 加 `spawn_blocking` 包装（或在 web/kernel 层集中投递），
+先迁最长的三类入口（调度 tick、审计写入、N+1 站点快照），再评估是否换连接池。迁移需要配套
+压测口径，否则无法证明收益。
+
 ## 变更记录
 
 | 日期 | 变更 |
@@ -607,3 +638,4 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 | 2026-10-31 | 第四轮 §12：§11.2 四项全部落地——exec 单连票据（30s/一次性/绑定会话与容器）、API Token scope 语义与强制（角色权限 ∩ scope）、按路由分组的请求超时（SSE/WS 排除，504 错误页）、`AppState` 下沉 `skiff-app`（kernel 不再依赖 `skiff-web`）。13 crate + xtask，测试 136 → 149 |
 | 2026-11-01 | 第五轮 §13：结构收敛「全部执行」——角色矩阵统一到 `skiff_model::Permission`、路径代数统一到 `skiff_model::path`、能力面迁回 `crates/plugin`（`CapabilityHost` 解环）、值类型下沉 `model`、`AppState` 收口 + 登录用例统一、`core/kernel.rs` 拆为 `kernel/` 子模块并修正中间件顺序。根 212 项通过、plugins 29 项全绿 |
 | 2026-11-02 | 第六轮 §14：全量复审（只审查不修码）。实测基线 14 crate + xtask、21,536 行 / 83 文件、215 项测试（212 通过 + 3 项既存 Windows 文件锁红，Linux CI 待复跑）、0 条死依赖。核心发现：**「授权 → 执行 → 留痕」没有唯一入口**，13 个判权点里 11 个不留越权痕迹，`restart` 有两份实现；装/卸包各写两条审计（域函数与调用方都写）；CLI 启停不停进程、不写审计；插件 UI 静态文件无认证且豁免入口前缀。新发现 10 项重复实现（均在动作编排层，判定/格式层仍单点），给出 P0 两项 / P1 三项 / P2 四项行动清单 |
+| 2026-11-11 | 追加 §15 待办：async 路径上的同步 SQLite（`Db` 为 `std::sync::Mutex<Connection>`，涉及 web handler、菜单偏好、调度 tick、插件卸载、内核能力面；风险是阻塞 worker 而非死锁）。只登记不改码，`spawn_blocking` 迁移单独立项 |

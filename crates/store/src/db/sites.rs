@@ -125,9 +125,14 @@ impl Db {
         .map_err(StoreError::from)
     }
 
-    /// 切换默认站点。单条 UPDATE 同时清旧置新，依赖 `idx_sites_default` 保证最多一个。
+    /// 切换默认站点：同一事务内先清旧、再置新。
+    ///
+    /// 不能合并成单条 `UPDATE ... CASE`：SQLite 对 UNIQUE 索引是逐行检查的，
+    /// 语句按 rowid 顺序处理行时，若目标站点 rowid 小于原默认站点，会先命中
+    /// 目标行置 1 —— 这一瞬间旧默认仍是 1，直接撞 `idx_sites_default`。
+    /// 拆成两步后与行处理顺序无关，且事务保证外部看不到中间态。
     pub fn set_site_default(&self, domain: &str, is_default: bool) -> Result<()> {
-        let conn = self.conn();
+        let mut conn = self.conn();
         // 先确认目标存在：否则 is_default 分支会命中原默认行把它清 0，
         // 而 `n` 仍为 1，调用方会拿到 Ok 但默认站点已被悄悄清空。
         let exists = conn
@@ -142,19 +147,24 @@ impl Db {
             return Err(StoreError::NotFound(domain.to_string()));
         }
         let ts = now();
+        let tx = conn.transaction()?;
         if is_default {
-            conn.execute(
-                "UPDATE sites
-                 SET is_default = CASE WHEN domain = ?1 THEN 1 ELSE 0 END, updated_at = ?2
-                 WHERE is_default = 1 OR domain = ?1",
+            tx.execute(
+                "UPDATE sites SET is_default = 0, updated_at = ?2
+                 WHERE is_default = 1 AND domain <> ?1",
+                params![domain, ts],
+            )?;
+            tx.execute(
+                "UPDATE sites SET is_default = 1, updated_at = ?2 WHERE domain = ?1",
                 params![domain, ts],
             )?;
         } else {
-            conn.execute(
+            tx.execute(
                 "UPDATE sites SET is_default = 0, updated_at = ?2 WHERE domain = ?1",
                 params![domain, ts],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -477,6 +487,35 @@ mod tests {
             Err(StoreError::NotFound(_))
         ));
         assert_eq!(db.default_site().unwrap().unwrap().domain, "a.local");
+    }
+
+    /// 默认站点切换必须与站点 rowid 顺序无关：单条 `CASE` 写法在
+    /// 「切回 rowid 更小的站点」时会先置 1 再清旧，撞部分唯一索引。
+    #[test]
+    fn default_site_switches_in_both_rowid_directions() {
+        let db = Db::open_in_memory().unwrap();
+        // 先建的 rowid 更小。
+        db.create_site(&php_site("a.local", "php-8.5")).unwrap();
+        db.create_site(&php_site("b.local", "php-8.5")).unwrap();
+
+        // 小 → 大。
+        db.set_site_default("a.local", true).unwrap();
+        db.set_site_default("b.local", true).unwrap();
+        assert_eq!(db.default_site().unwrap().unwrap().domain, "b.local");
+        assert!(!db.site_by_domain("a.local").unwrap().unwrap().is_default);
+
+        // 大 → 小：曾经撞 UNIQUE 的方向。
+        db.set_site_default("a.local", true).unwrap();
+        assert_eq!(db.default_site().unwrap().unwrap().domain, "a.local");
+        assert!(!db.site_by_domain("b.local").unwrap().unwrap().is_default);
+        assert_eq!(
+            db.list_sites()
+                .unwrap()
+                .iter()
+                .filter(|s| s.is_default)
+                .count(),
+            1
+        );
     }
 
     /// 删除被引用的运行环境必须被 FK 拦下；删除站点后即可删除环境。

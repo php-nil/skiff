@@ -307,3 +307,41 @@ impl ParseAction for String {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::enum_str;
+    use skiff_sched::{BlockedReason, Concurrency, MissedPolicy, TaskState};
+
+    /// `enum_str` 依赖 `serde_json::to_value().as_str()`，只对 unit variant 成立；
+    /// 带载荷的变体会静默落空串。逐个变体钉住这个约定：新增带载荷变体时先在这里红。
+    #[test]
+    fn enum_str_requires_unit_variants() {
+        for v in [Concurrency::Skip, Concurrency::QueueOne] {
+            assert!(!enum_str(&v).is_empty(), "Concurrency::{v:?} 落库为空串");
+        }
+        for v in [MissedPolicy::Skip, MissedPolicy::Once, MissedPolicy::All] {
+            assert!(!enum_str(&v).is_empty(), "MissedPolicy::{v:?} 落库为空串");
+        }
+        for v in [
+            BlockedReason::NotInstalled,
+            BlockedReason::PluginDisabled,
+            BlockedReason::ApiMismatch,
+            BlockedReason::InvalidSchedule,
+            BlockedReason::ClockSkew,
+            BlockedReason::MissingExecutor,
+        ] {
+            assert!(!enum_str(&v).is_empty(), "BlockedReason::{v:?} 落库为空串");
+        }
+        for v in [
+            TaskState::Idle,
+            TaskState::Queued,
+            TaskState::Running,
+            TaskState::Blocked,
+            TaskState::Failed,
+            TaskState::Disabled,
+        ] {
+            assert!(!enum_str(&v).is_empty(), "TaskState::{v:?} 落库为空串");
+        }
+    }
+}

@@ -1538,3 +1538,46 @@ async fn deleting_runtime_with_bound_site_is_rejected_and_keeps_everything() {
         "有绑定时不得删除记录"
     );
 }
+
+/// 默认站点切换的失败路径：reload 失败（本机无 Docker）时必须把库和 conf
+/// 一起回滚到切换前，不能留下「conf 已切、库没变」。
+#[tokio::test]
+async fn set_default_site_rolls_back_db_and_conf_when_reload_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = app_state_at(dir.path());
+    let s = state.site_settings();
+    for domain in ["a.local", "b.local"] {
+        let site_dir = s.sites_dir.join(domain);
+        std::fs::create_dir_all(site_index_dir(&site_dir)).unwrap();
+        state
+            .db()
+            .create_site(&StoreNewSite {
+                domain: domain.into(),
+                root_dir: site_dir.display().to_string(),
+                site_type: TYPE_STATIC.into(),
+                runtime_id: None,
+                proxy_target: None,
+                proxy_websocket: false,
+            })
+            .unwrap();
+    }
+    state.db().set_site_default("a.local", true).unwrap();
+    std::fs::create_dir_all(&s.conf_dir).unwrap();
+    let conf = s.conf_dir.join("00-skiff-default.conf");
+    std::fs::write(&conf, "# 切换前的旧投影\n").unwrap();
+
+    let err = state.set_default_site("b.local", true).await.unwrap_err();
+    assert!(matches!(err, SiteError::Unavailable(_)), "{err}");
+
+    assert_eq!(
+        state.db().default_site().unwrap().unwrap().domain,
+        "a.local",
+        "reload 失败后库必须回到切换前的默认站点"
+    );
+    let text = std::fs::read_to_string(&conf).unwrap();
+    assert!(
+        text.contains("a.local"),
+        "conf 必须按回滚后的默认站点重写：{text}"
+    );
+    assert!(!text.contains("b.local"), "不得残留失败方向的投影：{text}");
+}
