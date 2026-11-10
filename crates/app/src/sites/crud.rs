@@ -232,25 +232,111 @@ pub(crate) fn parse_worker_probe(output: &str) -> Vec<u32> {
     pids
 }
 
+/// 成对替换证书的失败落点。
+///
+/// 失败时**不允许**留下「vhost/库引用一个已不存在的 cert.pem」的悬空状态：
+/// 原来有成对文件就恢复旧内容，原来没有就清理成「无证书」并由调用方同步
+/// vhost 与库里的 HTTPS 标记。
+#[derive(Debug)]
+pub(crate) enum CertPairError {
+    /// 替换前有成对文件：两个文件已恢复为替换前内容。
+    Restored(SiteError),
+    /// 替换前没有成对文件：已清理为「无证书」。
+    Cleared(SiteError),
+}
+
+impl CertPairError {
+    /// `true` 表示失败后处于「无证书」，调用方需要把 vhost/库同步成 HTTPS 关闭。
+    pub(crate) fn was_cleared(&self) -> bool {
+        matches!(self, Self::Cleared(_))
+    }
+
+    pub(crate) fn into_site_error(self) -> SiteError {
+        match self {
+            Self::Restored(e) | Self::Cleared(e) => e,
+        }
+    }
+}
+
+fn read_backup(path: &Path) -> Result<Option<Vec<u8>>, SiteError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(SiteError::Internal(format!(
+            "备份 {} 失败：{e}",
+            path.display()
+        ))),
+    }
+}
+
+/// 恢复成备份内容；原本不存在则删除当前文件。
+fn restore_backup(path: &Path, old: Option<&[u8]>, mode: u32) {
+    match old {
+        Some(bytes) => {
+            if let Err(e) = crate::atomic::write_atomic(path, bytes, mode) {
+                tracing::error!(path = %path.display(), error = %e, "恢复证书文件失败");
+            }
+        }
+        None => remove_quietly(path),
+    }
+}
+
+fn remove_quietly(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::debug!(path = %path.display(), error = %e, "清理临时/新证书文件失败");
+        }
+    }
+}
+
 /// 成对替换 cert/key。**调用方必须持有 [`super::nginx_write_lock`]**：
 /// 两次 `rename` 之间不允许任何 nginx reload 插入，否则会读到
 /// 「新证书 + 旧私钥」这种不配对组合（`key values mismatch`）。
+///
+/// 替换前先把现有文件读进内存备份；任一 `rename` 失败时两个文件都回到替换前
+/// 的内容（而不是只删掉新证书，留下 vhost 指向不存在的文件）。
 pub(crate) fn replace_cert_pair(
     tmp_cert: &Path,
     tmp_key: &Path,
     cert: &Path,
     key: &Path,
-) -> Result<(), SiteError> {
+) -> Result<(), CertPairError> {
+    let cert_old = match read_backup(cert) {
+        Ok(v) => v,
+        Err(e) => {
+            remove_quietly(tmp_cert);
+            remove_quietly(tmp_key);
+            return Err(CertPairError::Restored(e));
+        }
+    };
+    let key_old = match read_backup(key) {
+        Ok(v) => v,
+        Err(e) => {
+            remove_quietly(tmp_cert);
+            remove_quietly(tmp_key);
+            return Err(CertPairError::Restored(e));
+        }
+    };
+    let had_pair = cert_old.is_some() && key_old.is_some();
+
+    let fail = |e: std::io::Error, what: &str| -> CertPairError {
+        restore_backup(cert, cert_old.as_deref(), 0o644);
+        restore_backup(key, key_old.as_deref(), 0o600);
+        remove_quietly(tmp_cert);
+        remove_quietly(tmp_key);
+        let err = SiteError::Internal(format!("{what}失败：{e}"));
+        if had_pair {
+            CertPairError::Restored(err)
+        } else {
+            CertPairError::Cleared(err)
+        }
+    };
+
     if let Err(e) = std::fs::rename(tmp_cert, cert) {
-        let _ = std::fs::remove_file(tmp_cert);
-        let _ = std::fs::remove_file(tmp_key);
-        return Err(SiteError::Internal(format!("保存证书失败：{e}")));
+        return Err(fail(e, "保存证书"));
     }
     if let Err(e) = std::fs::rename(tmp_key, key) {
-        // 证书已换、私钥没换：删掉新证书让站点回到「无证书」而不是不配对。
-        let _ = std::fs::remove_file(cert);
-        let _ = std::fs::remove_file(tmp_key);
-        return Err(SiteError::Internal(format!("保存私钥失败：{e}")));
+        return Err(fail(e, "保存私钥"));
     }
     restrict_mode(cert, 0o644);
     restrict_mode(key, 0o600);
@@ -1041,7 +1127,12 @@ impl AppState {
             )));
         }
         let _guard = super::nginx_write_lock().lock().await;
-        replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key)?;
+        if let Err(failure) = replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key) {
+            if failure.was_cleared() {
+                self.repair_no_cert_state(domain).await;
+            }
+            return Err(failure.into_site_error());
+        }
         self.apply_tls_locked(domain, true, false).await
     }
 
@@ -1089,7 +1180,12 @@ impl AppState {
         }
         // 成对替换与 reload 必须在一把锁内完成：中间态对 nginx 不可见。
         let _guard = super::nginx_write_lock().lock().await;
-        replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key)?;
+        if let Err(failure) = replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key) {
+            if failure.was_cleared() {
+                self.repair_no_cert_state(domain).await;
+            }
+            return Err(failure.into_site_error());
+        }
         self.apply_tls_locked(domain, true, false).await
     }
 
@@ -1250,6 +1346,32 @@ impl AppState {
             return Err(SiteError::Unavailable(e));
         }
         Ok(())
+    }
+
+    /// 证书替换失败且原本没有成对文件时的收尾：把库里的 HTTPS 标记与 vhost 里的
+    /// `ssl_certificate` 引用一起改回「无证书」。否则会留下「vhost 声明证书、
+    /// 文件却不存在」的悬空状态，下一次 `nginx -t` 直接失败。
+    ///
+    /// **调用方必须已持有 [`super::nginx_write_lock`]**。这里只做尽力而为的修复：
+    /// 每一步失败都记日志，但原始错误优先返回给调用方。
+    pub(crate) async fn repair_no_cert_state(&self, domain: &str) {
+        if let Err(e) = self.db().set_site_tls(domain, false, false) {
+            tracing::error!(domain, error = %e, "证书写入失败后回滚 HTTPS 状态失败");
+        }
+        let s = self.site_settings();
+        if let Err(e) = self.write_site_vhost(&s, domain) {
+            tracing::error!(domain, error = %e, "证书写入失败后重写站点配置失败");
+        }
+        if let Err(e) = self.sync_default_conf(&s) {
+            tracing::error!(domain, error = %e, "证书写入失败后重写默认站点配置失败");
+        }
+        if let Err(e) = self.validate_nginx_locked().await {
+            tracing::warn!(error = %e, "证书写入失败后 nginx -t 未通过（配置已不含证书引用）");
+            return;
+        }
+        if let Err(e) = self.activate_nginx_locked().await {
+            tracing::warn!(error = %e, "证书写入失败后 nginx 重载失败");
+        }
     }
 
     /// 按库里的最新状态重写单个站点 vhost（运行中写 .conf，停止写 .conf.disabled）。

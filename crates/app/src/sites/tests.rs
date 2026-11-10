@@ -1586,8 +1586,8 @@ async fn set_default_site_rolls_back_db_and_conf_when_reload_fails() {
 mod nginx_activation {
     use super::*;
     use crate::sites::crud::{
-        activate_with, is_nginx_comm, parse_worker_probe, replace_cert_pair, NginxActivation,
-        NginxControl,
+        activate_with, is_nginx_comm, parse_worker_probe, replace_cert_pair, CertPairError,
+        NginxActivation, NginxControl,
     };
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -1705,9 +1705,10 @@ mod nginx_activation {
         );
     }
 
-    /// 证书替换失败时不能留下「新证书 + 旧私钥」的不配对组合。
+    /// 替换失败但原本有成对证书：两个文件都回到替换前内容。
+    /// 旧文件与未改动的 vhost 一起构成原来那套可用状态（`nginx -t` 的加载前提不变）。
     #[test]
-    fn cert_pair_failure_removes_new_cert_instead_of_mismatching() {
+    fn cert_pair_failure_restores_previous_pair() {
         let dir = tempfile::tempdir().unwrap();
         let cert = dir.path().join("cert.pem");
         let key = dir.path().join("key.pem");
@@ -1717,13 +1718,119 @@ mod nginx_activation {
         let missing_key = crate::atomic::sibling_temp(&key);
         std::fs::write(&tmp_cert, "new-cert").unwrap();
 
-        let err = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
-        assert!(matches!(err, SiteError::Internal(_)), "{err}");
+        let failure = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
         assert!(
-            !cert.exists(),
-            "证书已换而私钥失败时必须删掉新证书，回到「无证书」而不是不配对"
+            matches!(failure, CertPairError::Restored(_)),
+            "原本有成对文件时必须回滚成旧内容"
         );
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), "old-cert");
         assert_eq!(std::fs::read_to_string(&key).unwrap(), "old-key");
+        assert!(!tmp_cert.exists(), "临时证书必须清理");
+        assert!(!missing_key.exists());
+    }
+
+    /// 替换前没有证书（首次上传）失败：清理成「无证书」，不留半套文件。
+    #[test]
+    fn cert_pair_failure_without_previous_pair_clears_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        let tmp_cert = crate::atomic::sibling_temp(&cert);
+        let missing_key = crate::atomic::sibling_temp(&key);
+        std::fs::write(&tmp_cert, "new-cert").unwrap();
+
+        let failure = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
+        assert!(
+            failure.was_cleared(),
+            "首次上传失败必须回到「无证书」，调用方据此同步 vhost/库"
+        );
+        assert!(!cert.exists(), "已换上的新证书必须删掉，不能留下悬空引用");
+        assert!(!key.exists());
+        assert!(!tmp_cert.exists());
+    }
+
+    /// 成功替换后不留备份或临时文件（备份在内存里，随调用结束丢弃）。
+    #[test]
+    fn cert_pair_success_leaves_no_backup_or_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        std::fs::write(&cert, "old-cert").unwrap();
+        std::fs::write(&key, "old-key").unwrap();
+        let tmp_cert = crate::atomic::sibling_temp(&cert);
+        let tmp_key = crate::atomic::sibling_temp(&key);
+        std::fs::write(&tmp_cert, "new-cert").unwrap();
+        std::fs::write(&tmp_key, "new-key").unwrap();
+
+        replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), "new-cert");
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "new-key");
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["cert.pem", "key.pem"], "不能残留备份/临时文件");
+    }
+
+    /// 首次上传失败后，vhost 与库必须同步回到「无证书」，
+    /// 不能出现「库 https=1、vhost 声明证书、文件却不存在」的悬空引用。
+    #[tokio::test]
+    async fn failed_first_upload_repairs_dangling_ssl_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = state.site_settings();
+        let domain = "t.local";
+        let site_dir = s.sites_dir.join(domain);
+        std::fs::create_dir_all(site_index_dir(&site_dir)).unwrap();
+        state
+            .db()
+            .create_site(&StoreNewSite {
+                domain: domain.into(),
+                root_dir: site_dir.display().to_string(),
+                site_type: TYPE_STATIC.into(),
+                runtime_id: None,
+                proxy_target: None,
+                proxy_websocket: false,
+            })
+            .unwrap();
+        // 模拟替换前已有的悬空状态：库里 https=1、vhost 引用证书，但磁盘没有证书文件。
+        state.db().set_site_tls(domain, true, false).unwrap();
+        let site = state.db().site_by_domain(domain).unwrap().unwrap();
+        let vhost = if site.status == "running" {
+            s.vhost_file(&site_dir, domain)
+        } else {
+            s.vhost_disabled(&site_dir, domain)
+        };
+        std::fs::create_dir_all(vhost.parent().unwrap()).unwrap();
+        std::fs::write(
+            &vhost,
+            "server {\n    ssl_certificate /www/t.local/ssl/cert.pem;\n}\n",
+        )
+        .unwrap();
+
+        let cert = s.cert_file(&site_dir);
+        let key = s.key_file(&site_dir);
+        std::fs::create_dir_all(cert.parent().unwrap()).unwrap();
+        let tmp_cert = crate::atomic::sibling_temp(&cert);
+        std::fs::write(&tmp_cert, "new-cert").unwrap();
+        let missing_key = crate::atomic::sibling_temp(&key);
+        let failure = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
+        assert!(failure.was_cleared());
+
+        state.repair_no_cert_state(domain).await;
+
+        assert!(
+            !state.db().site_by_domain(domain).unwrap().unwrap().https,
+            "库里的 HTTPS 标记必须回到关闭"
+        );
+        let text = std::fs::read_to_string(&vhost).unwrap();
+        assert!(
+            !text.contains("ssl_certificate"),
+            "vhost 不能继续引用不存在的证书:\n{text}"
+        );
+        assert!(!cert.exists() && !key.exists());
     }
 
     /// `children` 直接给出 worker：master（PID 1）排除，重复项折叠。
