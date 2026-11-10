@@ -747,7 +747,7 @@ roles = ["admin", "operator", "viewer"]
 
 **已完成**
 - `skiff-pkgfmt`：`[[menu]]` / `[[menu.items]]` / `[[mount]]` 解析与校验；错误码 `MENU_PARENT_UNKNOWN` / `MENU_ID_INVALID` / `MENU_ID_CONFLICT` / `MENU_VIEW_INVALID` / `MENU_VIEW_MISSING` / `MENU_VIEW_CONFLICT` / `MENU_ROLE_INVALID` / `MENU_GATE_INVALID` / `MENU_ORDER_INVALID` / `MENU_LABEL_INVALID` / `MENU_TOO_MANY_ITEMS` / `MENU_NO_UI_ENTRY` / `MENU_API_VERSION` / `MOUNT_*`；安装验包时校验视图文件确实在 `ui/` 内。
-- 内核菜单注册表 `crates/web/src/menu.rs`：六个固定 L1、内置 L2、启用插件声明合并、角色/能力门、旧包 `[[ui]]` legacy 降级、稳定键与规范深链。
+- 内核菜单注册表 `crates/app/src/menu.rs`（领域逻辑，`crates/web/src/menu.rs` 只做再导出）：六个固定 L1、内置 L2、启用插件声明合并、角色/能力门、旧包 `[[ui]]` legacy 降级、稳定键与规范深链。
 - 渲染：同一份菜单 DOM，`body[data-layout]` 在 `top`/`left` 间切换；左侧栏分组内联展开；点击为主、悬停 320ms 辅助、Escape/焦点/空白关闭、方向键导航、≤860px 抽屉。
 - 菜单设置页 `/settings/menu`：L1/L2 上移/下移、隐藏/显示、固定/取消固定、恢复默认、布局切换；偏好写 `user_prefs`（schema v2），仅当前用户。
 - 空态：工具无提供者保留一级并给出「去插件中心」动作；已安装未启用时直接指向已安装列表；网站为内核固定 L2，无空态。
@@ -781,7 +781,7 @@ roles = ["admin", "operator", "viewer"]
 - 插件 UI 侧新增 `setView(tab)`：无 `tab` 参数（插件中心直接打开）时保持旧行为「全部视图可见」；有 `tab` 时只显示对应 `[data-view]`。
 
 **固定页槽位（契约 §5）**
-- `crates/web/src/menu.rs::mount_views` 按槽位收集「已启用 + 角色可见」的 `[[mount]]`，返回渲染所需 nonce / rpc / csrf / 白名单。
+- `crates/app/src/menu.rs::mount_views` 按槽位收集「已启用 + 角色可见」的 `[[mount]]`，返回渲染所需 nonce / rpc / csrf / 白名单。
 - 内核模板 `mount_card.html` 统一负责卡片外框、标题、`sm/md/lg` 尺寸、失败降级与重试；插件只提供 iframe 内容。
 - `overview.health` 有挂载时替换内核默认健康块；插件停用、角色不可见或未声明时自动回落原生健康块。
 - `overview.actions` / `overview.side` 同机制渲染；当前官方插件只声明 `overview.health`。

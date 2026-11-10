@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod commands;
 pub mod docker_daemon;
 pub mod jobs;
+pub mod menu;
 pub mod nginx;
 pub mod panel_settings;
 pub mod runtime_catalog;

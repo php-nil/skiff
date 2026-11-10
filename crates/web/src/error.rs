@@ -204,6 +204,16 @@ impl From<skiff_store::StoreError> for AppError {
     }
 }
 
+/// 菜单领域错误：数据层失败沿用 StoreError 的映射，序列化失败按 500。
+impl From<skiff_app::menu::MenuError> for AppError {
+    fn from(e: skiff_app::menu::MenuError) -> Self {
+        match e {
+            skiff_app::menu::MenuError::Store(e) => e.into(),
+            skiff_app::menu::MenuError::Internal(m) => AppError::Internal(m),
+        }
+    }
+}
+
 /// 表单编码非法属于客户端输入问题，统一 400；错误里带位置与成因，便于排查。
 impl From<crate::util::FormDecodeError> for AppError {
     fn from(e: crate::util::FormDecodeError) -> Self {

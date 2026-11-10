@@ -104,27 +104,13 @@ pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
 /// 只列**已启用且有 UI 入口**的插件。DB 读失败或某个 manifest 解析失败时跳过该项
 /// （导航少几项不影响页面本身渲染，坏包也不该拖垮整站导航）。
 pub fn nav_plugins(state: &AppState, active: &str) -> Vec<crate::templates::PluginNav> {
-    let Ok(list) = state.db().list_plugins() else {
-        return Vec::new();
-    };
-    list.iter()
-        .filter(|p| p.enabled)
-        // 文件管理入口由内核「工具 → 文件管理」承担；插件只保留安装态与管理页。
-        .filter(|p| p.id != "com.skiff.files")
-        .filter_map(|p| {
-            let m = skiff_pkgfmt::Manifest::parse(&p.manifest).ok()?;
-            let ui = m.ui.first()?;
-            let label = if ui.label.is_empty() {
-                p.name.clone()
-            } else {
-                ui.label.clone()
-            };
-            Some(crate::templates::PluginNav {
-                // 详情页把 active 记作 `plugin:<id>`，其余页面不会命中。
-                active: active == format!("plugin:{}", p.id),
-                id: p.id.clone(),
-                label,
-            })
+    skiff_app::menu::enabled_ui_plugins(state)
+        .into_iter()
+        .map(|p| crate::templates::PluginNav {
+            // 详情页把 active 记作 `plugin:<id>`，其余页面不会命中。
+            active: active == format!("plugin:{}", p.id),
+            id: p.id,
+            label: p.label,
         })
         .collect()
 }
