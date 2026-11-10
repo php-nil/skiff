@@ -210,14 +210,15 @@ fn parse(args: &[String], flags: &[&str]) -> Result<(BTreeMap<String, String>, B
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
-        let Some(name) = arg.strip_prefix("--") else {
-            bail!("无法识别的参数: {arg}");
-        };
-        if flags.contains(&name) {
-            seen_flags.insert(name.to_string());
+        // 旗标与选项统一用带 `--` 的完整形式表示，比较也按完整形式，避免与调用方口径错位。
+        if flags.contains(&arg.as_str()) {
+            seen_flags.insert(arg.clone());
             index += 1;
             continue;
         }
+        let Some(name) = arg.strip_prefix("--") else {
+            bail!("无法识别的参数: {arg}");
+        };
         if let Some((key, value)) = name.split_once('=') {
             options.insert(format!("--{key}"), value.to_string());
             index += 1;
