@@ -135,6 +135,11 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
 
     // 插件 run/ 重启即清（§5.2）
     skiff_plugin::supervisor::clean_run_dirs(&cfg.data_dir);
+    // 商店安装的过期暂存包（放弃权限确认页会遗留）：启动时先扫一次。
+    skiff_app::commands::store::cleanup_stale_incoming(
+        &cfg.data_dir,
+        skiff_app::commands::store::INCOMING_TTL,
+    );
 
     let docker = Arc::new(DockerService::connect(&cfg.docker_socket));
     if !docker.available() {
@@ -565,6 +570,37 @@ mod tests {
             tmp.path().join("config.toml"),
         );
         bootstrap(&cfg).expect("坏官方包不得让面板启动失败");
+    }
+
+    /// 放弃权限确认页会遗留 `.incoming/<token>.wbpkg`：启动时清理超过 24h 的暂存物。
+    #[test]
+    fn bootstrap_sweeps_expired_incoming_staged_packages() {
+        use std::time::{Duration, SystemTime};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(
+            tmp.path().join("data"),
+            tmp.path().join("www"),
+            tmp.path().join("run"),
+            tmp.path().join("config.toml"),
+        );
+        let incoming = cfg.data_dir.join("plugins").join(".incoming");
+        std::fs::create_dir_all(&incoming).unwrap();
+        let stale = incoming.join("abandoned.wbpkg");
+        let fresh = incoming.join("just-staged.wbpkg");
+        std::fs::write(&stale, b"old").unwrap();
+        std::fs::write(&fresh, b"new").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(25 * 3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        bootstrap(&cfg).expect("bootstrap 应成功");
+        assert!(!stale.exists(), "超过 24h 的暂存包必须被启动清理");
+        assert!(fresh.is_file(), "未过期的暂存包不得被误删");
     }
 
     /// 没有公钥文件 / 文件为空时不写库、也不报错（未携带公钥是合法状态）。

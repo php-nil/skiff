@@ -8,13 +8,73 @@
 //! 由调用方落审计并给出页面提示；任何一步失败都清理暂存文件，不留半装状态。
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use skiff_plugin::TrustDecision;
 use skiff_store::Db;
+use tracing::{info, warn};
 
 use crate::catalog::{CatalogService, DownloadError, PluginPackage};
 use crate::tasks::KERNEL_API;
+
+/// 暂存包最长保留时长：放弃权限确认页后由启动/准备安装前的清扫回收。
+pub const INCOMING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// 清理 `.incoming` 下超过 `ttl` 的暂存物（进程启动、每次准备安装前各调用一次）。
+///
+/// 只删单次安装的中间产物（`<token>.wbpkg` 与下载中的 `.part`），目录里其它文件
+/// 一律不碰；单个文件删除失败只留痕，不影响调用方流程。
+pub fn cleanup_stale_incoming(data_dir: &Path, ttl: Duration) -> usize {
+    let removed = cleanup_stale_incoming_at(
+        &data_dir.join("plugins").join(".incoming"),
+        SystemTime::now(),
+        ttl,
+    );
+    if removed > 0 {
+        info!(removed, ttl_secs = ttl.as_secs(), "已清理过期插件暂存包");
+    }
+    removed
+}
+
+/// `now` 显式传入以便单测精确控制年龄，不依赖修改 mtime。
+fn cleanup_stale_incoming_at(dir: &Path, now: SystemTime, ttl: Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let staged = matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("wbpkg" | "part")
+        );
+        if !staged {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        // 读不到 mtime 或 mtime 在当前时间之后（时钟回拨）时保守跳过，避免误删新文件。
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age < ttl {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => warn!(path = %path.display(), error = %e, "清理过期插件暂存包失败"),
+        }
+    }
+    removed
+}
 
 /// 一次商店安装的输入（不含展示字段）。
 #[derive(Debug, Clone)]
@@ -116,6 +176,9 @@ pub fn prepare(
     db: &Db,
     req: &StoreInstallRequest,
 ) -> Result<PreparedInstall, StoreInstallError> {
+    // 放弃确认页会遗留暂存包：每次准备安装前先扫一次过期文件。
+    cleanup_stale_incoming(&req.data_dir, INCOMING_TTL);
+
     if !catalog.enabled() {
         return Err(StoreInstallError::Disabled);
     }
@@ -622,5 +685,62 @@ verbs = ["list"]
         assert!(!api_compatible("1.3", "1.2"));
         assert!(!api_compatible("2.0", "1.2"));
         assert!(!api_compatible("abc", "1.2"));
+    }
+
+    #[test]
+    fn incoming_ttl_sweeps_only_expired_staged_files() {
+        let fx = Fixture::new();
+        let dir = fx.incoming();
+        std::fs::create_dir_all(&dir).unwrap();
+        let staged = dir.join("abandoned.wbpkg");
+        let part = dir.join("downloading.part");
+        let other = dir.join("notes.txt");
+        for f in [&staged, &part, &other] {
+            std::fs::write(f, b"x").unwrap();
+        }
+
+        // 23 小时：未到 TTL，一个都不删。
+        let now = SystemTime::now();
+        assert_eq!(
+            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(23 * 3600), INCOMING_TTL),
+            0
+        );
+        assert!(staged.is_file());
+
+        // 25 小时：只删暂存物，目录里的其它文件不动。
+        assert_eq!(
+            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(25 * 3600), INCOMING_TTL),
+            2
+        );
+        assert!(!staged.exists());
+        assert!(!part.exists());
+        assert!(other.is_file(), "清理不得动目录里的非暂存文件");
+    }
+
+    #[test]
+    fn prepare_sweeps_expired_staged_packages() {
+        let fx = Fixture::new();
+        let (bytes, sha) = fx.package(&["docker"], "1.0");
+        fx.serve(PLUGIN_ID, "1.0", &["docker"], &sha, bytes.len() as u64);
+        fx.serve_blob(&sha, bytes.clone());
+        fx.trust_plugin_key();
+
+        // 模拟「放弃权限确认页」遗留的暂存包：mtime 拨回 25 小时前。
+        std::fs::create_dir_all(fx.incoming()).unwrap();
+        let stale = fx.incoming().join("abandoned.wbpkg");
+        std::fs::write(&stale, b"old").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(25 * 3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        let svc = fx.service();
+        let prepared = prepare(&svc, &fx.db, &fx.request()).expect("准备安装应成功");
+        assert!(!stale.exists(), "超过 24h 的暂存包必须在准备安装前被清理");
+        assert!(prepared.path.is_file(), "本次刚下载的暂存包不得被误删");
+        let _ = fs::remove_file(&prepared.path);
     }
 }
