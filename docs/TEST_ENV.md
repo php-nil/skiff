@@ -432,7 +432,28 @@ TASK-06 缓冲能力面补验（同日 22:06 之后，经 `com.skiff.testkit` RP
 - 清理：删 `/www/iter-q-38b0bb9`、`/www/iter-fs-38b0bb9` 与 `fs_quotas` 验证行；终态 users 1 / plugins 7 / sites 1 / site_runtimes 1（`php-8.5` stopped）/ scheduled_tasks 6 / plugin_grants 54 / jobs 4 / fs_quotas 0；`/root/iter/rel-38b0bb9/`、`/root/skiff.before-38b0bb9`、`/root/iter/skiff.db.before-38b0bb9` 保留。
 - 备注：该轮 CI 首次红在 Windows 单测 `crates/fs/tests/ops.rs::atomic_replacement_has_no_torn_file`（路径锁等待超时，`Busy(...)`），仅 rerun 失败 job 后转绿，已记入台账。
 
-## 9. 数据、备份与清理
+## 9. 工具链验收（`tools/skiff-server` publish / sync，2026-11-10 `b094375`）
+
+> 该提交只改 `tools/skiff-server`（新增 `publish` / `sync`），不动内核包，**本轮未重新部署面板**；面板仍为 §5 的 `c8bcb6e`。
+
+- 执行位置：**测试机没有 Rust 工具链**（`cargo` / `rustc` / `skiff-server` 均不在 PATH，`rustc --version` 不存在），按约定未为其安装；**开发机没有 C 编译器**（`cl` / `clang` / `gcc` 均无，`ring` 构建脚本无法通过），未新编 Linux 产物。实际使用开发机既有 `target\debug\skiff-server.exe`（6,375,936 B，sha256 `b86b7fa77143fcfc40aa26bcb3453b94ae4135a5a851e6e271e3bd03dc043d4bb`，2026-11-10 20:07:25）；`cargo build -p skiff-server` 报 up-to-date，源码 = `b094375`（`2026-11-10T20:07:43+08:00`）。
+- CI（同提交）：12 个 check-run = **11 success + 1 skipped**，其中 **`商店清单（skiff-server check）` success**；`单测（Linux）` / `单测（Windows）` success（两个平台都跑过 `tools/skiff-server/tests/p0.rs` 12 项与 `tests/sync.rs` 6 项）；skipped 项为 `编译（x86_64 musl 静态）`（本提交不触发内核打包路径）。
+- publish（PASS，Windows 本地 CLI 实测）：
+  - 缺私钥：不设 `SKIFF_SIGNING_KEY` → exit **1**「缺少环境变量 SKIFF_SIGNING_KEY…」，输出目录**不存在**，无任何清单；
+  - 公私钥不匹配：seed A + `--public-key <pubB>` → exit **1**「公钥与私钥不一致」，输出目录不存在；
+  - 正常发布：`manifest.seq=1`、`index` 声明的 sha256/size 与实测逐字节一致、3 个 blob 文件名 = 各自 sha256；`check --public-key <pubA>` 校验通过，`check --public-key <pubB>` 被拒；用 openssl（`pkeyutl -verify -rawin`，消息 = `SKIFF-SERVER-MANIFEST-v1\0` + manifest 原始字节）独立验签 **exit 0**；
+  - seq 回退：catalog `seq=1` + `--prev <seq=2 产物>` → exit **1**「seq 未递增」，无输出。
+- sync（PASS，Windows 本地 CLI 实测；源为本地目录，绕开 TLS）：
+  - 空镜像：复用 0 / 新增 3；重复同步：复用 3 / 新增 0，清单未变化；
+  - 预置 1 个 blob 的镜像：复用 1 / 新增 2（只补缺失，不重复写）；
+  - seq 回退：`--from <seq=1>` 同步到 `seq=2` 镜像 → exit **1**「步骤 **3/6** seq 回退被拒绝：主站 1，镜像 2」，镜像清单保持 seq=2；
+  - 源 blob 同长度改 1 字节 → exit **1**「步骤 **4/6** blob 摘要不匹配」，镜像无 `manifest.json`（只落了校验通过的 1 个 blob）；
+  - 同步后人为篡改镜像内 blob → `check --dist <mirror> --public-key` 报 blob 摘要不匹配；再跑一次 sync 只补该 blob 并恢复自检通过；
+  - 错误公钥 → 步骤 **1/6** 拒绝，镜像无输出。
+- **FAIL（新发现，未修）**：`--require-signature` / `--unsigned` 旗标解析失效。`parse()` 在 `tools/skiff-server/src/main.rs:213-216` 用 `strip_prefix("--")` 后的名字比较 `flags`，调用方传的却是带前缀的 `&["--unsigned"]`（L71）/ `&["--require-signature"]`（L121），永不匹配 → 旗标被当成「带值选项」：`check … --require-signature` 末尾 exit 1「参数 --require-signature 缺少取值」；`check … --require-signature --public-key <hex>` 把 `--public-key` 当值吞掉、`<hex>` 报「无法识别的参数」；`gen --unsigned --out X` 吞掉 `--out`。`publish` 内部仍强制验签（不受影响），但发布/同步门禁无法用严格模式。已记入 [TEST_LEDGER.md](TEST_LEDGER.md)。
+- **无法验证**：测试机上的 CLI 实测（无 `rustc` / `cargo` / `skiff-server`，且约定不为测试机装工具链）；Linux 目标二进制行为（未交叉编译；本轮以 Windows 产物验证同一套库与 CLI 逻辑）。
+
+## 10. 数据、备份与清理
 
 | 项 | 路径 / 约定 |
 | --- | --- |
