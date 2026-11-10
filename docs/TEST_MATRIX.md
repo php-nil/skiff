@@ -159,7 +159,7 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 | SITE-12 | 证书与强制 HTTPS | `[上机]` 站点已建 | 生成自签证书；上传证书；开启强制跳转；访问 HTTP 与 HTTPS | 证书落 `/www/sites/<domain>/ssl/`；HTTPS 200；HTTP 301/308 到 HTTPS；`docker exec skiff-web-nginx nginx -t` 通过 | □通过 / □失败 | `crates/app/src/sites.rs`、`templates/site_detail.html` |
 | SITE-13 | 高风险动作只在「管理」页签 | `[本机]` 模板断言；`[上机]` 已登录 admin 且至少 1 个站点 | 打开站点详情概览，检查顶部操作区；再切到「管理」页签启停一次并删除 | 顶部只有访问/日志/默认与返回，无「停止/启动」「删除站点」；管理页签内两种动作均可执行；启停后 303 回 `?tab=manage` 并显示「站点已启动/已停止」；非管理员看不到「管理」页签 | □通过 / □失败 | `crates/web/templates/site_detail.html`、`crates/web/src/handlers/sites.rs`（`render_detail` 的 tab 白名单、`action` 回跳）、`crates/web/tests/main_flow.rs`（`site_detail_risk_actions_only_in_manage_tab`） |
 | SITE-14 | PHP 池 `nobody` 组别名（Debian/Alpine 两家族） | `[本机]` 单测；`[上机]` 两家族镜像各一个运行环境 | 分别用 `php:8.5-fpm`（Debian）与 `php:8.5-fpm-alpine`（Alpine）建实例并启动；`docker logs` 查 FPM 启动；`docker exec … getent group nobody`、`ls -l /www/runtime/php-*/php-fpm.sock` | 两家族都 running；`getent group nobody` = 65534；socket `root:nobody 0660`；Debian 系无 `cannot get gid for group 'nobody'`；自建镜像同样成立（脚本不按家族分支） | □通过 / □失败 | `crates/app/src/sites.rs`（`PHP_ACCOUNT_INIT_SCRIPT`，单测 `php_init_script_resolves_nobody_from_gid_not_family_name`）、`crates/app/src/sites_vhost.rs` |
-| SITE-15 | PHP 扩展安装在 Debian/Alpine 两家族可用 | `[本机]` 单测；`[上机]` 两家族 PHP 运行环境各一个，均 running | 在 `php:8.5-fpm`（Debian）与 `php:8.5-fpm-alpine`（Alpine）环境分别安装一个需编译的扩展（如 `gd` / `redis`）；看安装任务日志；`docker exec … php -m`；访问绑定站点 | 两家族都 `succeeded`；日志无 `cannot create /etc/apk/config`；`/etc/apk/config`、`apk add/del` 只出现在 Alpine 分支；Debian 走 `apt-get install --no-install-recommends` 装 `-dev` 包；`php -m` 出现扩展；站点仍 200；容器内无 `apk` 也无 `apt-get` 时明确报错退出码非 0 | □通过 / □失败 | `crates/app/src/runtime_catalog.rs`（`installer_prelude`、`legacy_deps_branch`、`debian_build_package`，单测 `extension_scripts_branch_on_container_package_manager`、`installer_prelude_enables_apk_package_cache`） |
+| SITE-15 | PHP 扩展安装在 Debian/Alpine 两家族可用 | `[本机]` 单测；`[上机]` 两家族 PHP 运行环境各一个，均 running 且**已按新环境变量重建** | 在 `php:8.5-fpm`（Debian）与 `php:8.5-fpm-alpine`（Alpine）环境分别安装一个需编译的扩展（如 `imagick` / `redis` / PECL `msgpack`）；看安装任务日志；`docker exec … php --ini`、`php -m`；访问绑定站点 | 两家族都 `succeeded`、主路径 exit 0；日志无 `cannot create /etc/apk/config`；`php --ini` 中 `conf.d` 与 `conf.d-skiff` **各出现一次**，无 `Module already loaded` 告警；`/etc/apk/config`、`apk add/del` 只出现在 Alpine 分支；Debian 走 `apt-get install --no-install-recommends` 装 `-dev` 包；`php -m` 出现扩展且站点仍 200；容器内无 `apk` 也无 `apt-get` 时明确报错退出码非 0 | □通过 / □失败 | `crates/app/src/runtime_catalog.rs`（`installer_prelude`、`legacy_deps_branch`、`debian_build_package`）、`crates/app/src/sites.rs`（`PHP_INI_SCAN_DIR_VALUE`，单测 `php_ini_scan_dir_lists_each_directory_once`、`extension_scripts_branch_on_container_package_manager`、`installer_prelude_enables_apk_package_cache`） |
 
 最小回归命令：
 
@@ -172,11 +172,12 @@ curl -ks -o /dev/null -w 'traversal=%{http_code}\n' -b "$J" "$B/$P/sites/matrix.
 curl -ks -o /dev/null -w 'site_manage=%{http_code}\n' -b "$J" "$B/$P/sites/matrix.local?tab=manage"
 ```
 
-本机脚本断言（扩展安装两家族分支、`nobody` 组别名）：
+本机脚本断言（扩展安装两家族分支、`nobody` 组别名、ini 扫描目录不重复）：
 
 ```bash
 cargo test -p skiff-app runtime_catalog
 cargo test -p skiff-app php_init_script
+cargo test -p skiff-app php_ini_scan_dir
 ```
 
 ## E. Web 服务

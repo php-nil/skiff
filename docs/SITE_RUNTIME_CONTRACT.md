@@ -728,6 +728,11 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
   `/www/skiff/tools/install-php-extensions`，**运行时默认不访问 GitHub**；本地副本缺失时打印明确
   错误并回退固定版本下载，仍失败再回退原手写依赖表。依赖名修正 `ldap-dev → openldap-dev`、
   `tidy → tidyhtml-dev`、`snmp → net-snmp-dev`。
+- **ini 扫描目录**：容器 `PHP_INI_SCAN_DIR` 显式为
+  `/usr/local/etc/php/conf.d:/usr/local/etc/php/conf.d-skiff`，两个目录各扫一次。
+  **不得带前导冒号**——PHP 的前导冒号表示「沿用编译期默认扫描目录」，而官方镜像默认目录就是
+  `conf.d`，会重复扫描同一目录、扩展 ini 加载两次（`Module already loaded`），
+  `install-php-extensions` 的 `checkModuleWorking` 因此判失败；不依赖「沿用默认」语义。
 - **热装与重建**：`hot=true` 的扩展在运行中的容器内安装/卸载后重启容器即可；
   `hot=false` 或镜像层依赖变化（如新增系统库、需要改基础镜像）必须重建容器。
   编译很重的 PECL（`grpc` / `swoole` / `mongodb`）允许安装，但 UI 标注预计耗时，失败回传真实 stderr。

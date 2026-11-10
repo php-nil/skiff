@@ -100,6 +100,8 @@ pub const SOCKET_MODE: u32 = 0o660;
 pub const CONTAINER_PHP_POOL: &str = "/usr/local/etc/php-fpm.d/www.conf";
 /// PHP 主配置（宿主 `php/php.ini` 挂到这里）。
 pub const CONTAINER_PHP_INI: &str = "/usr/local/etc/php/php.ini";
+/// 镜像自带的扩展 ini 目录（官方 PHP 镜像的编译期默认扫描目录）。
+pub const CONTAINER_PHP_CONFD: &str = "/usr/local/etc/php/conf.d";
 /// 宿主托管的扩展 ini 目录在容器内的位置。
 pub const CONTAINER_PHP_SKIFF_CONFD: &str = "/usr/local/etc/php/conf.d-skiff";
 /// 数据根中的 PHP 容器身份初始化脚本（宿主侧，只读挂载进容器）。
@@ -107,8 +109,13 @@ pub const PHP_INIT_SCRIPT_NAME: &str = "php-account-init.sh";
 /// 初始化脚本在容器内的固定挂载点。
 pub const CONTAINER_PHP_INIT: &str = "/usr/local/etc/skiff-php-init.sh";
 /// PHP 启动时扫描的 ini 目录：镜像自带 conf.d 在前，Skiff 托管目录在后。
+///
+/// **不能带前导冒号**：PHP 语义里前导冒号表示「把编译期默认扫描目录追加到最前」，
+/// 而官方 PHP 镜像的默认目录就是 `conf.d`，会让同一目录被扫两次、扩展 ini 重复加载
+/// （`Module already loaded`），`install-php-extensions` 的 `checkModuleWorking`
+/// 因此判失败。这里显式列出两个目录，各扫一次。
 pub const PHP_INI_SCAN_DIR_VALUE: &str =
-    ":/usr/local/etc/php/conf.d:/usr/local/etc/php/conf.d-skiff";
+    "/usr/local/etc/php/conf.d:/usr/local/etc/php/conf.d-skiff";
 /// 宿主侧标记：本实例是新版安装（`php.ini` / `conf.d` 已挂载，编辑才会生效）。
 ///
 /// 旧实例的容器没有这两个挂载，编辑能保存但不生效；详情页据此提示重建。
@@ -7382,6 +7389,41 @@ mod tests {
         assert!(!block.contains("debian_version"));
         // 模板不出现 nogroup：Debian 的组名细节只由初始化脚本用 gid 兜住。
         assert!(!block.contains("listen.group = nogroup"));
+    }
+
+    #[test]
+    fn php_ini_scan_dir_lists_each_directory_once() {
+        // 前导冒号在 PHP 里表示「沿用编译期默认扫描目录」；官方镜像的默认目录
+        // 就是 conf.d，一旦保留就会重复扫描并让扩展 ini 加载两次。
+        assert!(
+            !PHP_INI_SCAN_DIR_VALUE.starts_with(':'),
+            "前导冒号会重新引入默认目录，导致 conf.d 被扫两次：{PHP_INI_SCAN_DIR_VALUE}"
+        );
+        let dirs: Vec<&str> = PHP_INI_SCAN_DIR_VALUE.split(':').collect();
+        assert_eq!(
+            dirs,
+            vec![CONTAINER_PHP_CONFD, CONTAINER_PHP_SKIFF_CONFD],
+            "必须显式列出 conf.d 与 conf.d-skiff，且顺序为镜像目录在前"
+        );
+        // 空段等价于默认目录，同样会造成重复。
+        assert!(
+            dirs.iter().all(|d| !d.is_empty()),
+            "扫描目录不能有空段：{dirs:?}"
+        );
+        let mut unique = dirs.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), dirs.len(), "扫描目录不得重复：{dirs:?}");
+
+        // 容器环境变量必须与常量一致，避免测试与真实 spec 分叉。
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_at(dir.path());
+        let s = settings_at(dir.path());
+        let php = state.php_spec_for(&s, "php", "scan1", "php:8.5-fpm-alpine");
+        assert_eq!(
+            php.env.get("PHP_INI_SCAN_DIR").map(String::as_str),
+            Some(PHP_INI_SCAN_DIR_VALUE)
+        );
     }
 
     #[test]
