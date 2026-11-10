@@ -221,7 +221,7 @@ async fn apply_panel_update(
         .set_setting(skiff_app::panel_settings::KEY_ENTRY_PREFIX, &prefix)
         .map_err(|e| format!("保存入口前缀失败: {e}"))?;
 
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         "local",
         "settings.panel.update",
@@ -299,7 +299,7 @@ pub async fn import_key(
         .map_err(|e| AppError::BadRequest(format!("公钥非法: {e}")))?;
     let key_id = skiff_pkgfmt::key_id_of(&vk.to_bytes());
     state.db().trust_key(&key_id, &public_hex, &label)?;
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         "local",
         "settings.key.import",
@@ -328,7 +328,7 @@ pub async fn remove_key(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state.db().remove_trusted_key(&key_id)?;
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         "local",
         "settings.key.remove",
@@ -375,7 +375,7 @@ pub async fn menu_update(
         (!width.is_empty()).then_some(width.as_str()),
         (!max.is_empty()).then_some(max.as_str()),
     )?;
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         "local",
         "settings.menu.update",

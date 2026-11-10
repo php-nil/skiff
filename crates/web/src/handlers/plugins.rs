@@ -519,7 +519,7 @@ async fn commit_install(
     }
     match &result {
         Ok(info) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 ip,
                 "plugin.install",
@@ -534,7 +534,7 @@ async fn commit_install(
             );
         }
         Err(e) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 ip,
                 "plugin.install",
@@ -663,7 +663,7 @@ pub async fn remove(
     }
     // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
     crate::menu::cleanup_plugin_prefs(state.db(), &id);
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &handlers::client_ip(&state, &parts),
         "plugin.uninstall",
@@ -734,7 +734,7 @@ pub async fn rpc(
         return Err(AppError::BadRequest("插件已停用".into()));
     }
     let result = state.supervisor().call(&rec, &method, params).await;
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &handlers::client_ip(&state, &parts),
         "plugin.rpc",

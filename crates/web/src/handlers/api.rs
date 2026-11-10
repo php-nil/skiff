@@ -129,7 +129,7 @@ pub async fn restart_container(
         .await
         .map(|_| ());
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &ip,
         &Verb::Restart.audit_action(),

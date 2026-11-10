@@ -228,7 +228,7 @@ pub async fn cancel(
         CancelOutcome::Requested => "已请求取消，将在当前步骤结束后停止",
         CancelOutcome::Terminal => "任务已结束，无需取消",
     };
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &handlers::client_ip(&state, &parts),
         "job.cancel",

@@ -136,7 +136,7 @@ pub async fn save_main(
     match state.save_nginx_main(&content).await {
         Ok(warnings) => {
             let detail = warnings.join("；");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "nginx.config.save",
@@ -163,7 +163,7 @@ pub async fn save_main(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "nginx.config.save",
@@ -195,7 +195,7 @@ pub async fn save_params(
     let params = match parse_params(&form) {
         Ok(p) => p,
         Err(msg) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "nginx.params.save",
@@ -215,7 +215,7 @@ pub async fn save_params(
     match state.save_nginx_params(&params).await {
         Ok(warnings) => {
             let detail = warnings.join("；");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "nginx.params.save",
@@ -242,7 +242,7 @@ pub async fn save_params(
         }
         Err(e) => {
             let msg = format!("{e}");
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &ip,
                 "nginx.params.save",

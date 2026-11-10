@@ -80,7 +80,7 @@ pub async fn save(
                 }
                 Err(e) => {
                     let ip = handlers::client_ip(&state, &parts);
-                    let _ = state.db().audit(
+                    state.audit_or_log(
                         &user.user.username,
                         &ip,
                         "docker.settings.save",
@@ -101,7 +101,7 @@ pub async fn save(
     }
 
     let ip = handlers::client_ip(&state, &parts);
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         &ip,
         "docker.settings.save",

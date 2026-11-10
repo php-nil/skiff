@@ -215,7 +215,7 @@ pub async fn install(
 }
 
 fn audit(state: &AppState, user: &CurrentUser, ip: &str, target: &str, result: &str, detail: &str) {
-    let _ = state.db().audit(
+    state.audit_or_log(
         &user.user.username,
         ip,
         AUDIT_ACTION,

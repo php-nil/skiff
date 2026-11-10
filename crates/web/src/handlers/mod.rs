@@ -46,6 +46,30 @@ where
         .map_err(|e| AppError::Internal(format!("后台文件任务执行失败：{e}")))
 }
 
+/// 审计写入的统一兜底：写失败必须留痕，不允许静默丢弃。
+///
+/// 与 `AppState::audit_or_log` 同语义；用于闭包里只拿得到 `Arc<Db>`、
+/// 拿不到 `AppState` 的场景（如 WebSocket 会话任务）。
+pub fn audit_db(
+    db: &skiff_store::Db,
+    actor: &str,
+    ip: &str,
+    action: &str,
+    target: &str,
+    result: &str,
+    detail: &str,
+) {
+    if let Err(e) = db.audit(actor, ip, action, target, result, detail) {
+        tracing::error!(
+            error = %e,
+            actor,
+            action,
+            target,
+            "审计写入失败（操作已按原结果继续）"
+        );
+    }
+}
+
 pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
     let nav_plugins = nav_plugins(state, active);
     let is_admin = user.can(skiff_model::Permission::Admin);

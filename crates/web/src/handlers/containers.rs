@@ -669,7 +669,7 @@ pub async fn action(
         .policy
         .check(&handlers::actor(&user), verb, Some(&obj))
         .map_err(|e| {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &user.user.username,
                 &handlers::client_ip(&state, &parts),
                 &verb.audit_action(),
@@ -833,7 +833,8 @@ pub async fn exec_ws(
     let cname = row.name.clone();
 
     Ok(ws.on_upgrade(move |socket| async move {
-        let _ = db.audit(
+        handlers::audit_db(
+            &db,
             &username,
             "ws",
             &Verb::Exec.audit_action(),
@@ -842,7 +843,8 @@ pub async fn exec_ws(
             "",
         );
         if let Err(e) = run_exec(docker, cid, socket).await {
-            let _ = db.audit(
+            handlers::audit_db(
+                &db,
                 &username,
                 "ws",
                 &Verb::Exec.audit_action(),
@@ -851,7 +853,8 @@ pub async fn exec_ws(
                 &e,
             );
         } else {
-            let _ = db.audit(
+            handlers::audit_db(
+                &db,
                 &username,
                 "ws",
                 &Verb::Exec.audit_action(),

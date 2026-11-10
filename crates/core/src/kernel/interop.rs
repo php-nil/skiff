@@ -287,7 +287,7 @@ pub(super) async fn interop_call(
                 .into_response()
         }
         Err(_) => {
-            let _ = state.db().audit(
+            state.audit_or_log(
                 &format!("plugin:{caller}"),
                 "uds",
                 "interop.call",
