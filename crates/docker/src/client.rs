@@ -26,6 +26,10 @@ use crate::policy::{ContainerSpec, ObjectRef, Verb};
 use bollard::models::ContainerUpdateBody;
 use skiff_model::ResourceLimits;
 
+/// `exec_capture` 的输出去重上限。命令由插件/管理员指定，此前无界累积，
+/// 一条 `cat` 大文件就能把内核进程内存打满；超限后继续把流读空但不入内存。
+const EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub enum DockerError {
     /// 未连接上 Engine（socket 不存在 / 权限不足 / 非 Linux 开发机）
@@ -965,6 +969,7 @@ impl DockerService {
     ) -> Result<(i64, String, bool), DockerError> {
         let exec_id = self.create_exec(container, cmd).await?;
         let mut out = String::new();
+        let mut truncated = false;
         let mut timed_out = false;
         if let StartExecResults::Attached { mut output, .. } = self.start_exec(&exec_id).await? {
             match limit {
@@ -972,7 +977,9 @@ impl DockerService {
                     let deadline = tokio::time::Instant::now() + limit;
                     loop {
                         match tokio::time::timeout_at(deadline, output.next()).await {
-                            Ok(Some(Ok(v))) => out.push_str(&v.to_string()),
+                            Ok(Some(Ok(v))) => {
+                                push_exec_output(&mut out, &v.to_string(), &mut truncated)
+                            }
                             Ok(Some(Err(e))) => return Err(api_err(e)),
                             Ok(None) => break,
                             Err(_) => {
@@ -985,7 +992,7 @@ impl DockerService {
                 None => {
                     while let Some(chunk) = output.next().await {
                         match chunk {
-                            Ok(v) => out.push_str(&v.to_string()),
+                            Ok(v) => push_exec_output(&mut out, &v.to_string(), &mut truncated),
                             Err(e) => return Err(api_err(e)),
                         }
                     }
@@ -999,6 +1006,27 @@ impl DockerService {
         let code = info.get("ExitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
         Ok((code, out, false))
     }
+}
+
+/// 把 exec 输出追加到缓冲；超过上限后只写一次截断标记，后续 chunk 丢弃。
+///
+/// 调用方仍需继续消费流（否则容器侧可能阻塞在写端），这里只负责不再吃内存。
+fn push_exec_output(out: &mut String, chunk: &str, truncated: &mut bool) {
+    if *truncated {
+        return;
+    }
+    let room = EXEC_OUTPUT_MAX_BYTES.saturating_sub(out.len());
+    if chunk.len() <= room {
+        out.push_str(chunk);
+        return;
+    }
+    let mut cut = room.min(chunk.len());
+    while cut > 0 && !chunk.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    out.push_str(&chunk[..cut]);
+    out.push_str("\n[输出超过 1 MiB，已截断]\n");
+    *truncated = true;
 }
 
 /// `exec` 目标：`execute` 只认 `id`，这里把容器名同时填进 `id`。
@@ -1153,8 +1181,8 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
 
     let healthcheck = spec.healthcheck.as_ref().map(|h| HealthConfig {
         test: Some(h.test.clone()),
-        interval: h.interval_secs.map(|s| s * 1_000_000_000),
-        timeout: h.timeout_secs.map(|s| s * 1_000_000_000),
+        interval: h.interval_secs.map(|s| s.saturating_mul(1_000_000_000)),
+        timeout: h.timeout_secs.map(|s| s.saturating_mul(1_000_000_000)),
         retries: h.retries,
         start_period: None,
         start_interval: None,
@@ -1210,10 +1238,14 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
             restart_policy,
             network_mode: spec.network_mode.clone(),
             log_config,
-            memory: spec.memory_limit_mb.map(|m| m * 1024 * 1024),
-            memory_swap: spec
-                .memory_swap_mb
-                .map(|m| if m < 0 { m } else { m * 1024 * 1024 }),
+            memory: spec.memory_limit_mb.map(|m| m.saturating_mul(1024 * 1024)),
+            memory_swap: spec.memory_swap_mb.map(|m| {
+                if m < 0 {
+                    m
+                } else {
+                    m.saturating_mul(1024 * 1024)
+                }
+            }),
             nano_cpus: spec.nano_cpus,
             pids_limit: spec.pids_limit,
             cpu_shares: spec.cpu_shares,
@@ -1232,6 +1264,34 @@ mod tests {
     use super::*;
     use crate::policy::{ContainerSpec, Mount, PortMapping};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn exec_output_is_capped_and_marks_truncation() {
+        let mut out = String::new();
+        let mut truncated = false;
+        push_exec_output(&mut out, &"a".repeat(EXEC_OUTPUT_MAX_BYTES), &mut truncated);
+        assert!(!truncated);
+        assert_eq!(out.len(), EXEC_OUTPUT_MAX_BYTES);
+
+        push_exec_output(&mut out, "b", &mut truncated);
+        assert!(truncated);
+        assert!(out.len() < EXEC_OUTPUT_MAX_BYTES + 64);
+        assert!(out.contains("已截断"));
+
+        // 截断后不再累积。
+        let len = out.len();
+        push_exec_output(&mut out, "cccc", &mut truncated);
+        assert_eq!(out.len(), len);
+    }
+
+    #[test]
+    fn exec_output_keeps_utf8_boundaries() {
+        let mut out = String::from_utf8(vec![b'a'; EXEC_OUTPUT_MAX_BYTES - 1]).unwrap();
+        let mut truncated = false;
+        push_exec_output(&mut out, "中文", &mut truncated);
+        assert!(truncated);
+        assert!(out.is_char_boundary(out.len()));
+    }
 
     #[test]
     fn image_info_env_parsing_and_digest() {
