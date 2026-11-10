@@ -28,6 +28,10 @@ pub struct CacheMeta {
     pub fetched_at: String,
     /// 命中的镜像地址（多地址回退时记录实际来源）。
     pub source: String,
+    /// 写入这份缓存时生效的公钥指纹（`sha256(公钥)`）。载入时与当前配置比对，
+    /// 不一致即丢弃缓存并忽略 ETag 强制重拉；未配置公钥（未签名渠道）为 `None`。
+    #[serde(default)]
+    pub key_id: Option<String>,
     pub etag_manifest: Option<String>,
     pub last_modified_manifest: Option<String>,
     pub etag_index: Option<String>,

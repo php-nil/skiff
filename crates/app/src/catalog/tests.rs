@@ -360,6 +360,63 @@ fn offline_falls_back_to_last_successful_snapshot() {
 }
 
 #[test]
+fn key_rotation_invalidates_cache_and_forces_refetch() {
+    let fx = Fixture::new();
+    fx.serve_signed(3, "com.example.one", "etag-m", "etag-i");
+    assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
+
+    // 换 `catalog.public_key`：同一缓存目录，新公钥 + 新签名快照。
+    let rotated = Fixture {
+        dir: fx.dir,
+        fake: FakeTransport::new(),
+        key: test_key(8),
+    };
+    rotated.serve_signed(4, "com.example.two", "etag-m2", "etag-i2");
+    let snap = rotated.service().snapshot(true);
+    assert_eq!(snap.state, CatalogState::Fresh, "{}", snap.message);
+    assert_eq!(snap.seq, Some(4));
+    assert_eq!(snap.entries.plugins[0].name, "com.example.two");
+
+    // 旧缓存已作废 → 请求不带条件头，忽略 ETag 强制重拉。
+    let calls = rotated.fake.calls();
+    let manifest_calls: Vec<_> = calls
+        .iter()
+        .filter(|(url, _)| url.ends_with("/manifest.json"))
+        .collect();
+    assert_eq!(manifest_calls.len(), 1);
+    assert_eq!(manifest_calls[0].1.etag, None, "换钥后不得复用旧 ETag");
+    let index_calls: Vec<_> = calls
+        .iter()
+        .filter(|(url, _)| url.ends_with("/index.json"))
+        .collect();
+    assert_eq!(index_calls.len(), 1);
+    assert_eq!(index_calls[0].1.etag, None, "换钥后不得复用旧 ETag");
+}
+
+#[test]
+fn key_rotation_hides_stale_cache_when_offline() {
+    let fx = Fixture::new();
+    fx.serve_signed(3, "com.example.one", "etag-m", "etag-i");
+    assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
+
+    // 换钥后离线：旧条目既不得展示，也不得作为安装来源。
+    let rotated = Fixture {
+        dir: fx.dir,
+        fake: FakeTransport::new(),
+        key: test_key(8),
+    };
+    let svc = rotated.service();
+    let snap = svc.snapshot(true);
+    assert_eq!(snap.state, CatalogState::Offline, "{}", snap.message);
+    assert_eq!(snap.seq, None);
+    assert_eq!(snap.entries.total(), 0);
+    assert!(
+        svc.plugin_package("com.example.one", None).is_none(),
+        "换钥后旧缓存条目不得用于安装"
+    );
+}
+
+#[test]
 fn mirror_fallback_uses_second_address() {
     let fx = Fixture::new();
     let index = index_json(1, "com.example.one");

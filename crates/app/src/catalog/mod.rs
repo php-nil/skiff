@@ -496,9 +496,33 @@ impl CatalogService {
         (snap, index, base)
     }
 
+    /// 当前配置的公钥指纹；未配置公钥（仅开发模式允许未签名渠道）时为 `None`。
+    fn current_key_id(&self) -> Option<String> {
+        self.public_key.as_ref().map(verify::key_id_of)
+    }
+
+    /// 读缓存，但只接受「写入时的公钥指纹 == 当前配置」的那份。
+    ///
+    /// 换钥后旧快照不能再用：既不展示旧条目，也不允许凭旧条目安装；同时让它
+    /// 等价于「没有缓存」，条件请求头自然为空 → 忽略 ETag 强制重拉新清单。
+    fn cached_for_current_key(&self, channel: &str) -> Option<store::CachedCatalog> {
+        let cached = store::load(&self.root, channel)?;
+        let current = self.current_key_id();
+        if cached.meta.key_id == current {
+            return Some(cached);
+        }
+        info!(
+            channel = %channel,
+            cached_key = cached.meta.key_id.as_deref().unwrap_or("-"),
+            current_key = current.as_deref().unwrap_or("-"),
+            "商店目录公钥已变更，丢弃旧缓存并强制重新拉取"
+        );
+        None
+    }
+
     fn load(&self) -> (CatalogSnapshot, Option<Index>, String) {
         let channel = &self.settings.channel;
-        let cached = store::load(&self.root, channel);
+        let cached = self.cached_for_current_key(channel);
         if self.settings.mirrors.is_empty() {
             return match cached {
                 Some(c) => {
@@ -697,6 +721,8 @@ impl CatalogService {
             seq: manifest.seq,
             fetched_at: fetched_at.clone(),
             source: base.to_string(),
+            // 记录写入时生效的公钥指纹，供下次载入判断「是否已换钥」。
+            key_id: self.current_key_id(),
             etag_manifest,
             last_modified_manifest,
             etag_index,
