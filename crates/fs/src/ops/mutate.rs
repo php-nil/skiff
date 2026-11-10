@@ -852,9 +852,5 @@ fn kind_name(r: &ResolvedPath) -> &'static str {
 }
 
 fn file_hash(path: &Path) -> std::io::Result<String> {
-    use std::io::Read;
-    let mut f = fs::File::open(path)?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    Ok(sha256_hex(&buf))
+    crate::hash::sha256_file(path)
 }

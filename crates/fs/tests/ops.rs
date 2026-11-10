@@ -242,6 +242,35 @@ fn list_is_sorted_and_paged() {
     assert!(!page2.has_more);
 }
 
+#[cfg(unix)]
+#[test]
+fn list_reports_symlink_kind_and_survives_dangling_link() {
+    let h = Harness::new();
+    let p = h.plugin("com.example.demo");
+    h.seed(&h.data_path("real.txt"), b"x");
+    std::os::unix::fs::symlink("real.txt", h.data().join("link.txt")).unwrap();
+    // 悬空链接不能让整个目录列表失败（此前 DirEntry::metadata 会跟随链接报 NotFound）。
+    std::os::unix::fs::symlink("missing-target", h.data().join("dangling")).unwrap();
+
+    let page =
+        h.fs.list(
+            &p,
+            &ctx(),
+            &skiff_fs::ListRequest {
+                path: h.data().to_string_lossy().to_string(),
+                page: 1,
+                page_size: 10,
+            },
+        )
+        .unwrap();
+    assert_eq!(page.total, 3);
+    let link = page.entries.iter().find(|e| e.name == "link.txt").unwrap();
+    assert_eq!(link.kind, PathKind::Symlink);
+    assert_eq!(link.link_target.as_deref(), Some("real.txt"));
+    let dangling = page.entries.iter().find(|e| e.name == "dangling").unwrap();
+    assert_eq!(dangling.kind, PathKind::Symlink);
+}
+
 #[test]
 fn mkdir_and_conflict() {
     let h = Harness::new();

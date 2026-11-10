@@ -141,9 +141,19 @@ fn copy_file(src: &Path, dst: &Path, meta: &fs::Metadata, overwrite: bool) -> Re
         .create_new(true)
         .open(dst)
         .map_err(|e| io_error(dst, e))?;
-    copy_stream(&mut reader, &mut writer, dst)?;
+    // 失败时删掉半成品：目标此前不存在（create_new），删除不会误伤既有数据；
+    // 否则残留的不完整文件会被后续「目标已存在」挡住，并可能被当成正常副本。
+    if let Err(e) = copy_stream(&mut reader, &mut writer, dst) {
+        drop(writer);
+        let _ = fs::remove_file(dst);
+        return Err(e);
+    }
     drop(writer);
-    preserve_mode(dst, meta)
+    if let Err(e) = preserve_mode(dst, meta) {
+        let _ = fs::remove_file(dst);
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn copy_stream(reader: &mut File, writer: &mut File, dst: &Path) -> Result<(), FsError> {

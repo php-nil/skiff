@@ -299,7 +299,10 @@ impl Fs {
                     continue;
                 }
             };
-            let meta = item.metadata().map_err(|e| io_error(&item.path(), e))?;
+            // 必须用 symlink_metadata：DirEntry::metadata 会跟随链接，导致
+            // 符号链接永远显示成目标类型，且悬空链接直接让整个目录列表失败。
+            let meta =
+                std::fs::symlink_metadata(item.path()).map_err(|e| io_error(&item.path(), e))?;
             let ft = meta.file_type();
             let kind = if ft.is_symlink() {
                 PathKind::Symlink
@@ -394,8 +397,7 @@ impl Fs {
             None
         };
         let sha256 = if with_hash && meta.is_file() {
-            let bytes = std::fs::read(&r.path).map_err(|e| io_error(&r.path, e))?;
-            Some(crate::hash::sha256_hex(&bytes))
+            Some(crate::hash::sha256_file(&r.path).map_err(|e| io_error(&r.path, e))?)
         } else {
             None
         };
