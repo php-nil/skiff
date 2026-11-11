@@ -9,8 +9,6 @@
 
 | 事项 | 涉及模块/文件 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
-| R1 yank 撤包原因未进入客户端可见文案 | `tools/skiff-server`（索引条目/`build`）、`crates/app/src/catalog/mod.rs`、`crates/app/src/commands/store.rs`、商店与插件页模板 | **功能 PASS、文案未达标（2026-11-11 `7d4a9b4`）**：yank 后插件页显示「该版本已被服务端下架（yanked），请升级到新版本」，安装被拒回显也不带原因；原因只存在于 `state/takedowns/` 与提交详情。吊销（`revoked[]`）会正常显示「…撤回：<原因>」 | 索引条目加可选 `yank_reason`（不升 schema，旧客户端忽略未知字段），`build` 从 takedown 记录填充；插件页与安装被拒文案在有原因时显示原因、无原因保持通用文案。修复出包后按 R1 用例②复验两处文案，并回归旧索引解析、`revoked.json` 缺失 vs `[]` 字节一致、revoke 与越权 403、serve 404/304/206/405 |
-| `/api/v1/audit?sid=` 查不到 release 环节 | `tools/skiff-server/src/api/{audit,job}.rs`、`docs/SKIFF_SERVER.md` §17 | **功能 PASS、审计归因未达标（2026-11-11 `7d4a9b4`）**：`release` 审计行 `submission_id`/`key_id` 为空（原始 jsonl 只有 `submissions[]`），按 sid 只能查到 submit/approve；`action=release` 可独立查到 3 条 | 审计返回体加 `submission_ids` 数组，`?sid=` 命中任一元素即返回该行；复验 `?sid=<sid>` 一次返回 submit / approve / release 三类动作，且字段白名单、分页上限 200、时间过滤、越权 403 不受影响 |
 | 回滚协同与基线校验 | `tools/iter.sh`、`/etc/skiff-baseline`、`deploy/docker-bootstrap.sh` | **部分实测（2026-11-09）**：`deploy/docker-bootstrap.sh --check-only` 在 Docker 就绪的测试机 exit **0** 并正确识别「已就绪」；`/etc/skiff-baseline` 在本机不存在，基线名校验未构造；`tools/iter.sh rollback-wait` 需真实快照回滚（外部 hypervisor）+ `.workbuddy/server.env`，本机无法构造 | 在具备快照回滚的环境（双机/CI）先写最小 `server.env` 跑一次 `rollback-wait`；另手工创建 `/etc/skiff-baseline` 覆盖基线名校验 |
 | files 编辑器弹窗关闭路径（保留插件 UI 入口时） | `plugins/files/ui/main.html`、`plugins/files/ui/app.js`、`crates/web/tests/main_flow.rs` | 修复已随 `v0.1.0` 发版（`.editor-dialog` 作者样式 `display:flex` 盖掉 `dialog:not([open])`，关闭/ESC/遮罩三条路径失效）；本地复现台同 CSP + mock RPC 真浏览器全过，测试机面板内未复验（入口已撤销，默认随入口关闭）；`com.skiff.files` 菜单入口已撤销，主路径改由内核 `/{p}/files` 承担 | 若保留插件 UI 入口，测试机浏览器复验三条关闭路径、未保存确认、关闭后焦点回列表；否则本项随入口一并关闭 |
 
