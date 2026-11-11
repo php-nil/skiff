@@ -25,6 +25,7 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   skiff-server sync    --from <url|dir> --to <dir> [--channel stable] [--public-key <hex>]
   skiff-server serve   --dist <dir> [--listen 127.0.0.1:8443]
                        [--tls-cert <pem> --tls-key <pem> | --http]
+                       [--access-log [<path>]]
 
 选项:
   --catalog <dir>       源数据目录，默认 deploy/skiff-server/catalog
@@ -42,6 +43,8 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   --tls-cert <pem>      serve 服务器证书链（默认 https，必须与 --tls-key 成对）
   --tls-key <pem>       serve 服务器私钥（PEM）
   --http                serve 明文模式，仅测试用；与证书参数互斥
+  --access-log [<path>] serve 访问日志，默认关闭；给路径则追加写该文件，缺省取值或 `-`
+                        写 stderr（systemd 下即 journal）；每请求一行，不影响协议语义
 
 环境变量:
   SKIFF_SIGNING_KEY     发布私钥种子（64 位十六进制），仅从环境/CI secret 读取
@@ -184,7 +187,8 @@ fn sync_cmd(args: &[String]) -> Result<()> {
 }
 
 fn serve_cmd(args: &[String]) -> Result<()> {
-    let (options, flags) = parse(args, &["--http"])?;
+    let args = normalize_access_log(args);
+    let (options, flags) = parse(&args, &["--http"])?;
     let dist = options
         .get("--dist")
         .ok_or_else(|| anyhow::anyhow!("缺少 --dist（产物目录，需含 channels/ 与 blobs/）"))?;
@@ -214,15 +218,51 @@ fn serve_cmd(args: &[String]) -> Result<()> {
         Some(serve::tls_config(Path::new(cert), Path::new(key))?)
     };
 
+    // 访问日志默认关闭：不指定时整条日志路径不存在（不建文件、不写 stderr）。
+    let (access_log, access_desc) = match options.get("--access-log") {
+        None => (None, None),
+        Some(value) if value == "-" => (
+            Some(serve::AccessLog::stderr()),
+            Some("stderr（systemd 下即 journal）".to_string()),
+        ),
+        Some(value) => (
+            Some(serve::AccessLog::file(Path::new(value))?),
+            Some(value.clone()),
+        ),
+    };
+
     let listener = TcpListener::bind(addr).with_context(|| format!("监听 {addr} 失败"))?;
     let scheme = if tls.is_some() { "https" } else { "http" };
     println!("skiff-server serve：{scheme}://{addr}（dist={dist}，Ctrl-C 停止）");
+    if let Some(desc) = access_desc {
+        println!("访问日志：{desc}（每请求一行；写失败不影响响应）");
+    }
     if tls.is_some() {
         println!(
             "自签证书部署时，客户端需把签发该证书的 CA 配到 [catalog].ca_bundle（仍强制 https）"
         );
     }
-    serve::serve(listener, Path::new(dist), tls)
+    serve::serve(listener, Path::new(dist), tls, access_log)
+}
+
+/// `--access-log` 的取值可省略：裸写等价于 `--access-log -`（写 stderr/journal）。
+fn normalize_access_log(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--access-log" {
+            let has_value = args
+                .get(index + 1)
+                .is_some_and(|next| !next.starts_with("--"));
+            out.push(if has_value {
+                arg.clone()
+            } else {
+                "--access-log=-".to_string()
+            });
+        } else {
+            out.push(arg.clone());
+        }
+    }
+    out
 }
 
 fn public_key(options: &BTreeMap<String, String>) -> Result<Option<String>> {

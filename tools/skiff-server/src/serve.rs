@@ -88,6 +88,109 @@ impl Response {
     }
 }
 
+/// 可选访问日志（默认关闭）。开启后每请求一行，用于服务端侧取证
+/// （304 的命中来源、206 的区间）。**不改变任何协议语义**；
+/// 写失败一律忽略：日志不是响应路径的一部分，也不允许 panic。
+#[derive(Debug, Clone)]
+pub struct AccessLog {
+    sink: AccessSink,
+}
+
+#[derive(Debug, Clone)]
+enum AccessSink {
+    /// stderr：systemd 下直接进 journal（`journalctl -u <unit> -f`）。
+    Stderr,
+    File(PathBuf),
+}
+
+impl AccessLog {
+    pub fn stderr() -> Self {
+        Self {
+            sink: AccessSink::Stderr,
+        }
+    }
+
+    /// 追加写文件：启动时验证可写，之后每行重新打开，兼容 logrotate（不持有常驻 fd）。
+    pub fn file(path: &Path) -> Result<Self> {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("--access-log 无法写入: {}", path.display()))?;
+        Ok(Self {
+            sink: AccessSink::File(path.to_path_buf()),
+        })
+    }
+
+    fn write_line(&self, line: &str) {
+        let _ = match &self.sink {
+            AccessSink::Stderr => {
+                eprintln!("{line}");
+                Ok(())
+            }
+            AccessSink::File(path) => fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes())),
+        };
+    }
+}
+
+/// 304 的命中来源，仅用于访问日志。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheHit {
+    None,
+    IfNoneMatch,
+    IfModifiedSince,
+}
+
+impl CacheHit {
+    fn label(self) -> &'static str {
+        match self {
+            CacheHit::None => "none",
+            CacheHit::IfNoneMatch => "inm",
+            CacheHit::IfModifiedSince => "ims",
+        }
+    }
+}
+
+/// 实际生效的单区间，仅用于访问日志。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeLog {
+    None,
+    Satisfied(u64, u64),
+    Unsatisfiable,
+}
+
+impl RangeLog {
+    fn label(self) -> String {
+        match self {
+            RangeLog::None => "none".to_string(),
+            RangeLog::Satisfied(start, end) => format!("{start}-{end}"),
+            RangeLog::Unsatisfiable => "unsatisfiable".to_string(),
+        }
+    }
+}
+
+/// 响应 + 日志所需的判定结果（两者同源，避免日志与响应各算一遍）。
+#[derive(Debug)]
+struct Outcome {
+    response: Response,
+    cache: CacheHit,
+    range: RangeLog,
+}
+
+impl Outcome {
+    fn plain(response: Response) -> Self {
+        Self {
+            response,
+            cache: CacheHit::None,
+            range: RangeLog::None,
+        }
+    }
+}
+
 /// 加载 PEM 证书与私钥，构造 rustls 服务端配置。格式非法/文件缺失返回可读错误。
 pub fn tls_config(cert: &Path, key: &Path) -> Result<Arc<rustls::ServerConfig>> {
     let certs = read_pem_certs(cert)?;
@@ -125,10 +228,12 @@ fn read_pem_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>
 /// 阻塞式服务循环：每连接一线程，处理一个请求后关闭。
 ///
 /// `root` 在启动时 canonicalize 一次；后续所有包含性检查都基于它。
+/// `access_log` 为 `None` 时整条日志路径不存在：不打开文件、不写 stderr。
 pub fn serve(
     listener: TcpListener,
     root: &Path,
     tls: Option<Arc<rustls::ServerConfig>>,
+    access_log: Option<AccessLog>,
 ) -> Result<()> {
     let root =
         fs::canonicalize(root).with_context(|| format!("--dist 目录不可用: {}", root.display()))?;
@@ -143,7 +248,8 @@ pub fn serve(
         let Ok(stream) = incoming else { continue };
         let root = Arc::clone(&root);
         let tls = tls.clone();
-        std::thread::spawn(move || handle_connection(stream, &root, tls));
+        let access_log = access_log.clone();
+        std::thread::spawn(move || handle_connection(stream, &root, tls, access_log.as_ref()));
     }
     Ok(())
 }
@@ -152,6 +258,7 @@ fn handle_connection(
     stream: std::net::TcpStream,
     root: &Path,
     tls: Option<Arc<rustls::ServerConfig>>,
+    access_log: Option<&AccessLog>,
 ) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
@@ -159,25 +266,31 @@ fn handle_connection(
         Some(config) => match rustls::ServerConnection::new(config) {
             Ok(conn) => {
                 let mut stream = rustls::StreamOwned::new(conn, stream);
-                handle_http(&mut stream, root);
+                handle_http(&mut stream, root, access_log);
             }
             Err(error) => tracing_free_log(&format!("TLS 会话建立失败: {error}")),
         },
         None => {
             let mut stream = stream;
-            handle_http(&mut stream, root);
+            handle_http(&mut stream, root, access_log);
         }
     }
 }
 
-fn handle_http<S: Read + Write>(stream: &mut S, root: &Path) {
+fn handle_http<S: Read + Write>(stream: &mut S, root: &Path, access_log: Option<&AccessLog>) {
     let Some(request) = read_request(stream) else {
         return;
     };
     let head_only = request.method.eq_ignore_ascii_case("HEAD");
-    let response = respond(root, &request);
-    if let Err(error) = write_response(stream, &response, head_only) {
-        tracing_free_log(&format!("写响应失败: {error}"));
+    let outcome = respond_full(root, &request);
+    match write_response(stream, &outcome.response, head_only) {
+        Ok(written) => {
+            // 先回响应再写日志：日志永远不参与响应路径。
+            if let Some(access_log) = access_log {
+                access_log.write_line(&access_line(&request, &outcome, written));
+            }
+        }
+        Err(error) => tracing_free_log(&format!("写响应失败: {error}")),
     }
 }
 
@@ -219,11 +332,12 @@ fn read_request<S: Read>(stream: &mut S) -> Option<Request> {
     })
 }
 
+/// 写完整响应，返回实际写出的响应体字节数（HEAD 恒为 0），供访问日志使用。
 fn write_response<S: Write>(
     stream: &mut S,
     response: &Response,
     head_only: bool,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let mut head = format!(
         "HTTP/1.1 {} {}\r\n",
         response.status,
@@ -238,18 +352,23 @@ fn write_response<S: Write>(
     head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes())?;
     if head_only {
-        return stream.flush();
+        stream.flush()?;
+        return Ok(0);
     }
-    match &response.body {
-        Body::Empty => {}
-        Body::Bytes(bytes) => stream.write_all(bytes)?,
+    let written = match &response.body {
+        Body::Empty => 0,
+        Body::Bytes(bytes) => {
+            stream.write_all(bytes)?;
+            bytes.len() as u64
+        }
         Body::File { path, offset, len } => {
             let mut file = fs::File::open(path)?;
             file.seek(SeekFrom::Start(*offset))?;
-            io::copy(&mut file.take(*len), stream)?;
+            io::copy(&mut file.take(*len), stream)?
         }
-    }
-    stream.flush()
+    };
+    stream.flush()?;
+    Ok(written)
 }
 
 fn reason(status: u16) -> &'static str {
@@ -266,25 +385,34 @@ fn reason(status: u16) -> &'static str {
 
 /// 契约核心：方法 → 路径白名单 → 条件请求 → Range。
 pub fn respond(root: &Path, request: &Request) -> Response {
+    respond_full(root, request).response
+}
+
+/// 契约核心：方法 → 路径白名单 → 条件请求 → Range；同时带回访问日志所需判定。
+fn respond_full(root: &Path, request: &Request) -> Outcome {
     if !(request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD"))
     {
-        return text_response(405, "method not allowed", vec![("Allow", "GET, HEAD")]);
+        return Outcome::plain(text_response(
+            405,
+            "method not allowed",
+            vec![("Allow", "GET, HEAD")],
+        ));
     }
     let head_only = request.method.eq_ignore_ascii_case("HEAD");
     let Some((path, kind)) = resolve(root, &request.target) else {
-        return not_found();
+        return Outcome::plain(not_found());
     };
     let Ok(canonical) = fs::canonicalize(&path) else {
-        return not_found();
+        return Outcome::plain(not_found());
     };
     if !canonical.starts_with(root) {
-        return not_found();
+        return Outcome::plain(not_found());
     }
     let Ok(meta) = fs::metadata(&canonical) else {
-        return not_found();
+        return Outcome::plain(not_found());
     };
     if !meta.is_file() {
-        return not_found();
+        return Outcome::plain(not_found());
     }
 
     let len = meta.len();
@@ -304,10 +432,10 @@ pub fn respond(root: &Path, request: &Request) -> Response {
         Kind::Blob { hex } => (format!("\"sha256:{hex}\""), None),
         Kind::Json => {
             if len > MAX_JSON_BYTES {
-                return text_response(500, "internal error", Vec::new());
+                return Outcome::plain(text_response(500, "internal error", Vec::new()));
             }
             let Ok(body) = fs::read(&canonical) else {
-                return text_response(500, "internal error", Vec::new());
+                return Outcome::plain(text_response(500, "internal error", Vec::new()));
             };
             (etag_for(&body), Some(body))
         }
@@ -320,11 +448,16 @@ pub fn respond(root: &Path, request: &Request) -> Response {
         ("Accept-Ranges".to_string(), "bytes".to_string()),
     ];
 
-    if not_modified(request, &etag, modified) {
-        return Response {
-            status: 304,
-            headers,
-            body: Body::Empty,
+    let cache = cache_hit(request, &etag, modified);
+    if cache != CacheHit::None {
+        return Outcome {
+            response: Response {
+                status: 304,
+                headers,
+                body: Body::Empty,
+            },
+            cache,
+            range: RangeLog::None,
         };
     }
 
@@ -346,10 +479,14 @@ pub fn respond(root: &Path, request: &Request) -> Response {
                 "text/plain; charset=utf-8".to_string(),
             ));
             headers.push(("Content-Length".to_string(), text.len().to_string()));
-            Response {
-                status: 416,
-                headers,
-                body: Body::Bytes(text.as_bytes().to_vec()),
+            Outcome {
+                response: Response {
+                    status: 416,
+                    headers,
+                    body: Body::Bytes(text.as_bytes().to_vec()),
+                },
+                cache: CacheHit::None,
+                range: RangeLog::Unsatisfiable,
             }
         }
         RangeOutcome::Satisfiable(start, end) => {
@@ -368,10 +505,14 @@ pub fn respond(root: &Path, request: &Request) -> Response {
                     len: count,
                 },
             };
-            Response {
-                status: 206,
-                headers,
-                body: if head_only { Body::Empty } else { body },
+            Outcome {
+                response: Response {
+                    status: 206,
+                    headers,
+                    body: if head_only { Body::Empty } else { body },
+                },
+                cache: CacheHit::None,
+                range: RangeLog::Satisfied(start, end),
             }
         }
         RangeOutcome::Ignored => {
@@ -385,10 +526,14 @@ pub fn respond(root: &Path, request: &Request) -> Response {
                     len,
                 },
             };
-            Response {
-                status: 200,
-                headers,
-                body: if head_only { Body::Empty } else { body },
+            Outcome {
+                response: Response {
+                    status: 200,
+                    headers,
+                    body: if head_only { Body::Empty } else { body },
+                },
+                cache: CacheHit::None,
+                range: RangeLog::None,
             }
         }
     }
@@ -424,12 +569,19 @@ pub fn etag_for(bytes: &[u8]) -> String {
     format!("\"sha256:{}\"", hex::encode(Sha256::digest(bytes)))
 }
 
-fn not_modified(request: &Request, etag: &str, modified: SystemTime) -> bool {
+/// 条件请求判定：`If-None-Match` 优先（强比较），无 INM 时才看 `If-Modified-Since`。
+/// 返回值同时作为访问日志里 `cache=` 字段的来源。
+fn cache_hit(request: &Request, etag: &str, modified: SystemTime) -> CacheHit {
     if let Some(inm) = request.header("if-none-match") {
-        return inm.split(',').any(|tag| {
+        let hit = inm.split(',').any(|tag| {
             let tag = tag.trim();
             tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == etag
         });
+        return if hit {
+            CacheHit::IfNoneMatch
+        } else {
+            CacheHit::None
+        };
     }
     if let Some(ims) = request
         .header("if-modified-since")
@@ -439,9 +591,36 @@ fn not_modified(request: &Request, etag: &str, modified: SystemTime) -> bool {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        return mtime <= ims;
+        return if mtime <= ims {
+            CacheHit::IfModifiedSince
+        } else {
+            CacheHit::None
+        };
     }
-    false
+    CacheHit::None
+}
+
+/// 每请求一行访问日志。只记方法、原始 target（含查询串）、状态码、写出的字节数、
+/// 304 命中来源与生效区间；不记请求头全文，避免把凭据带进日志。
+fn access_line(request: &Request, outcome: &Outcome, written: u64) -> String {
+    format!(
+        "{} {} {} status={} bytes={} cache={} range={}",
+        http_date(SystemTime::now()),
+        sanitize(&request.method),
+        sanitize(&request.target),
+        outcome.response.status,
+        written,
+        outcome.cache.label(),
+        outcome.range.label()
+    )
+}
+
+/// 日志字段清洗：控制字符（含换行）替换为 `?`，杜绝日志注入。
+fn sanitize(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -953,5 +1132,131 @@ mod tests {
             Some(784_111_777)
         );
         assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 PST"), None);
+    }
+
+    /// 内存双端流：喂原始请求、收原始响应，用来在单测里跑完整的 `handle_http`。
+    struct MockIo {
+        input: std::io::Cursor<Vec<u8>>,
+        output: Vec<u8>,
+    }
+
+    impl MockIo {
+        fn new(raw: &str) -> Self {
+            Self {
+                input: std::io::Cursor::new(raw.as_bytes().to_vec()),
+                output: Vec::new(),
+            }
+        }
+    }
+
+    impl Read for MockIo {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.input.read(buf)
+        }
+    }
+
+    impl Write for MockIo {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.output.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn run(root: &Path, raw: &str, access_log: Option<&AccessLog>) -> String {
+        let mut io = MockIo::new(raw);
+        handle_http(&mut io, root, access_log);
+        String::from_utf8_lossy(&io.output).to_string()
+    }
+
+    #[test]
+    fn access_log_records_inm_hit_as_304() {
+        let (dir, root) = fixture();
+        let etag = etag_for(MANIFEST);
+        let raw = format!(
+            "GET /channels/stable/manifest.json?x=1 HTTP/1.1\r\nHost: t\r\n\
+             If-None-Match: {etag}\r\n\r\n"
+        );
+        let path = dir.path().join("access.log");
+        let access = AccessLog::file(&path).unwrap();
+
+        let response = run(&root, &raw, Some(&access));
+        assert!(response.starts_with("HTTP/1.1 304"), "{response}");
+
+        let log = fs::read_to_string(&path).unwrap();
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(
+            log.contains("GET /channels/stable/manifest.json?x=1"),
+            "{log}"
+        );
+        assert!(log.contains("status=304"), "{log}");
+        assert!(log.contains("bytes=0"), "{log}");
+        assert!(log.contains("cache=inm"), "{log}");
+        assert!(log.contains("range=none"), "{log}");
+    }
+
+    #[test]
+    fn access_log_records_range_206() {
+        let (dir, root) = fixture();
+        let raw = "GET /channels/stable/manifest.json HTTP/1.1\r\nHost: t\r\n\
+                   Range: bytes=0-3\r\n\r\n";
+        let path = dir.path().join("access.log");
+        let access = AccessLog::file(&path).unwrap();
+
+        let response = run(&root, raw, Some(&access));
+        assert!(response.starts_with("HTTP/1.1 206"), "{response}");
+
+        let log = fs::read_to_string(&path).unwrap();
+        assert!(log.contains("status=206"), "{log}");
+        assert!(log.contains("bytes=4"), "{log}");
+        assert!(log.contains("range=0-3"), "{log}");
+        assert!(log.contains("cache=none"), "{log}");
+    }
+
+    #[test]
+    fn access_log_records_405() {
+        let (dir, root) = fixture();
+        let raw = "POST /channels/stable/manifest.json HTTP/1.1\r\nHost: t\r\n\r\n";
+        let path = dir.path().join("access.log");
+        let access = AccessLog::file(&path).unwrap();
+
+        let response = run(&root, raw, Some(&access));
+        assert!(response.starts_with("HTTP/1.1 405"), "{response}");
+
+        let log = fs::read_to_string(&path).unwrap();
+        assert!(log.contains("POST /channels/stable/manifest.json"), "{log}");
+        assert!(log.contains("status=405"), "{log}");
+        assert!(log.contains("bytes=18"), "{log}");
+        assert!(log.contains("cache=none"), "{log}");
+        assert!(log.contains("range=none"), "{log}");
+    }
+
+    #[test]
+    fn access_log_disabled_creates_nothing() {
+        let (dir, root) = fixture();
+        let path = dir.path().join("access.log");
+        let raw = "GET /channels/stable/manifest.json HTTP/1.1\r\nHost: t\r\n\r\n";
+
+        let response = run(&root, raw, None);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(!path.exists(), "未开启访问日志时不得创建或写入任何文件");
+    }
+
+    #[test]
+    fn access_log_write_failure_keeps_response_intact() {
+        let (dir, root) = fixture();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        let path = dir.path().join("logs/access.log");
+        let access = AccessLog::file(&path).unwrap();
+        // 启动后目录被移除：逐行打开会失败，但不能影响响应，也不能 panic。
+        fs::remove_dir_all(dir.path().join("logs")).unwrap();
+
+        let raw = "GET /channels/stable/manifest.json HTTP/1.1\r\nHost: t\r\n\r\n";
+        let response = run(&root, raw, Some(&access));
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = String::from_utf8_lossy(MANIFEST);
+        assert!(response.ends_with(body.as_ref()), "{response}");
     }
 }

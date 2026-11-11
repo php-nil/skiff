@@ -30,7 +30,7 @@ fn start(root: PathBuf, tls: Option<Arc<ureq::rustls::ServerConfig>>) -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
-        let _ = serve::serve(listener, &root, tls);
+        let _ = serve::serve(listener, &root, tls, None);
     });
     port
 }
@@ -220,6 +220,111 @@ fn cli_http_mode_warns_and_serves() {
     let _ = child.wait();
     let log = std::fs::read_to_string(&stderr_path).unwrap();
     assert!(log.contains("仅测试用"), "{log}");
+}
+
+fn spawn_http_with_log(root: &Path, port: u16, extra: &[&str]) -> std::process::Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_skiff-server"));
+    command
+        .arg("serve")
+        .arg("--dist")
+        .arg(root)
+        .arg("--http")
+        .arg("--listen")
+        .arg(format!("127.0.0.1:{port}"));
+    command.args(extra);
+    command.stdout(Stdio::null()).spawn().unwrap()
+}
+
+fn wait_ready(port: u16) {
+    for _ in 0..50 {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("serve 未在预期时间内开始监听");
+}
+
+#[test]
+fn cli_access_log_file_gets_one_line_per_request() {
+    let (dir, root) = dist();
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let log_path = dir.path().join("access.log");
+    let mut child = spawn_http_with_log(&root, port, &["--access-log", log_path.to_str().unwrap()]);
+    wait_ready(port);
+
+    let (head, _) = request(
+        port,
+        "GET /channels/stable/manifest.json HTTP/1.1\r\nHost: test\r\n\r\n",
+    );
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let (head, _) = request(
+        port,
+        "POST /channels/stable/manifest.json HTTP/1.1\r\nHost: test\r\n\r\n",
+    );
+    assert!(head.starts_with("HTTP/1.1 405"), "{head}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    assert!(
+        lines[0].contains("GET /channels/stable/manifest.json status=200 bytes=9 cache=none"),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("POST /channels/stable/manifest.json status=405 bytes=18"),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
+fn cli_bare_access_log_writes_stderr() {
+    let (dir, root) = dist();
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let stderr_path = dir.path().join("stderr.log");
+    let stderr = std::fs::File::create(&stderr_path).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_skiff-server"))
+        .arg("serve")
+        .arg("--dist")
+        .arg(&root)
+        .arg("--http")
+        .arg("--listen")
+        .arg(format!("127.0.0.1:{port}"))
+        .arg("--access-log")
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    wait_ready(port);
+
+    let (head, _) = request(
+        port,
+        "GET /channels/stable/manifest.json HTTP/1.1\r\nHost: test\r\n\r\n",
+    );
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let log = std::fs::read_to_string(&stderr_path).unwrap();
+    // 启动信息在 stdout（此处已丢弃）；访问日志行必须落在 stderr。
+    assert!(
+        log.contains("GET /channels/stable/manifest.json status=200 bytes=9"),
+        "{log}"
+    );
 }
 
 fn pem_pair(dir: &Path) -> (PathBuf, PathBuf, Vec<u8>) {

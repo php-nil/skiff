@@ -778,6 +778,17 @@ SKIFF_SERVER_PUBLIC_KEY=<64 hex> \
 # 5) 抽验：对线上目录再跑一次严格校验
 cargo run -p skiff-server -- check --dist <线上目录> --prev <上一版目录> \
   --require-signature --public-key <64 hex>
+
+# 6) 自建分发：起静态服务（默认 https）；访问日志默认关闭，需要取证时显式开
+skiff-server serve --dist <线上目录> --listen 0.0.0.0:8443 \
+  --tls-cert server.pem --tls-key server.key \
+  --access-log /var/log/skiff-catalog-access.log
+
+# 7) 304 服务端取证：先取 ETag，再带 If-None-Match 重放，然后读日志那一行
+etag=$(curl -sI https://<IP>:8443/channels/stable/manifest.json | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '\r')
+curl -sk -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $etag" \
+  https://<IP>:8443/channels/stable/manifest.json
+grep 'status=304' /var/log/skiff-catalog-access.log | tail -1
 ```
 
 - 同一渠道的发布与上传必须串行，避免 `seq` 竞争；`stable` 与 `night` 各自独立。
@@ -792,7 +803,7 @@ cargo run -p skiff-server -- check --dist <线上目录> --prev <上一版目录
 | `tools/skiff-server/src/sync.rs` | `Source`（HTTPS/本地目录）、六步同步、原子写、同步后自检 |
 | `tools/skiff-server/src/check.rs` | 固定公钥验签、孤儿 blob 开关、`seq` 单调校验 |
 | `tools/skiff-server/src/main.rs` | `gen` / `publish` / `check` / `sync` / `serve` 子命令与帮助 |
-| `tools/skiff-server/src/serve.rs` | `serve`：只读静态服务（§16 契约：路径白名单、条件请求、单区间 Range、https 默认） |
+| `tools/skiff-server/src/serve.rs` | `serve`：只读静态服务（§16 契约：路径白名单、条件请求、单区间 Range、https 默认）；可选访问日志默认关闭 |
 
 - `tests/p0.rs`：缺密钥/空白/非法种子报错；公钥不一致与未签名占位拒绝发布；`seq` 未递增拒绝且
   不写目录；发布产物过严格验签、篡改清单后验签失败。
@@ -862,7 +873,7 @@ cargo run -p skiff-server -- check --dist <线上目录> --prev <上一版目录
 
 ```bash
 skiff-server serve --dist <dir> [--listen 127.0.0.1:8443] \
-    [--tls-cert <pem> --tls-key <pem> | --http]
+    [--tls-cert <pem> --tls-key <pem> | --http] [--access-log [<path>]]
 ```
 
 - `--dist` 必填，指向 `build` / `sync` 产出的目录根（内含 `channels/` 与 `blobs/`），启动时校验其存在且可读。
@@ -873,6 +884,19 @@ skiff-server serve --dist <dir> [--listen 127.0.0.1:8443] \
 - 传输实现复用仓库既有 rustls/ring（经 `ureq::rustls`，版本与客户端一致），不引入 axum/hyper 等框架。
   线程模型：每连接一线程，处理一个请求后关闭（`Connection: close`），无 keep-alive、无 HTTP/2、无压缩。
 - 只读：没有任何写入路由；进程不持有锁文件，不修改 `--dist` 内任何文件。
+- **可选访问日志（默认关闭）**：`--access-log <path>` 追加写该文件（启动时验证可写，之后每行重新打开，
+  兼容 logrotate）；裸写 `--access-log` 或 `--access-log -` 写 stderr（systemd 下即 journal）。
+  不指定时**不产生任何额外输出或 IO**（不建文件、不写日志）。每请求一行：
+
+  ```
+  Wed, 11 Nov 2026 10:00:00 GMT GET /channels/stable/manifest.json?x=1 status=304 bytes=0 cache=inm range=none
+  ```
+
+  字段依次为：UTC 时间、方法、**原始 target（含查询串）**、状态码、实际写出的响应体字节数、
+  `cache=none|inm|ims`（304 的命中来源）、`range=none|<a-b>|unsatisfiable`（实际生效的区间）。
+  目标串中的控制字符替换为 `?`；**不记录请求头全文**，不会把凭据写进日志；**写日志失败被忽略**
+  （不影响响应、不 panic）。该可选项**不改变任何协议语义**：不新增/修改请求头、状态码、304 判定与缓存头，
+  只用于服务端取证（例如确认 304 确实由 `If-None-Match` 命中，而非客户端缓存推断）。
 
 自签证书（**openssl 辅助说明**，不在程序内生成；`<IP>` 换成客户端访问用的地址）：
 
@@ -986,7 +1010,10 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
 ### 16.6 测试覆盖
 
 - `tools/skiff-server/tests/serve.rs`：真实 TCP 上覆盖条件请求 304、单区间 206 与 416、`404`（含 `/api/`、
-  目录、未知文件）、`405`、`HEAD` 无 body、路径穿越与非法 blob 名拒绝、`--http` 明文与默认 https 的启动差异。
+  目录、未知文件）、`405`、`HEAD` 无 body、路径穿越与非法 blob 名拒绝、`--http` 明文与默认 https 的启动差异；
+  访问日志另覆盖「一请求一行」与裸 `--access-log` 落 stderr。
+- `serve.rs` 单测覆盖日志行本身：`status=304 bytes=0 cache=inm`、`status=206 … range=0-3`、`status=405`；
+  未开启时不创建文件、不产生输出；启动后日志目录消失（写失败）时响应仍完整。
 - TLS 链路：进程内生成自签 CA + 服务器证书（`rcgen`），`serve` 以 https 启动后用 ureq 指定该 CA 建连成功，
   未导入 CA 时失败（与 §4.5 的客户端口径一致）。
 - `serve` 不改变产物：测试只读校验运行前后文件字节不变。
