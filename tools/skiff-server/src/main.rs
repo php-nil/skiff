@@ -1,6 +1,7 @@
 //! 命令行入口：`gen` 生成静态产物、`publish` 生成+签名+严格自检、
 //! `check` 做发布前校验、`sync` 从主站同步到镜像目录、`serve` 只读提供产物目录、
-//! `api` 发布面提交/审核（默认关闭、独立进程）、`release` 把已审提交落成产物。
+//! `api` 发布面提交/审核（默认关闭、独立进程）、`release` 把已审提交落成产物、
+//! `notify` 独立投递 webhook 事件（API 进程不发起网络请求）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpListener;
@@ -11,6 +12,7 @@ use anyhow::{bail, Context, Result};
 use skiff_server::api;
 use skiff_server::build::{build, write};
 use skiff_server::check;
+use skiff_server::notify::{self, NotifyOptions};
 use skiff_server::release;
 use skiff_server::serve;
 use skiff_server::sign::{Signer, ENV_PUBLIC_KEY};
@@ -34,6 +36,8 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   skiff-server release --state <dir> --catalog <dir> [--schema <dir>] [--channel stable]
                        [--staging-out <dir> | --dist <dir> --swap]
                        [--seq <n>] [--prev <dir>] [--submission <sid>] [--public-key <hex>]
+  skiff-server notify  --state <dir> [--webhooks <json>] [--once] [--interval <secs>]
+                       [--allow-private] [--allow-http]
 
 选项:
   --catalog <dir>       源数据目录，默认 deploy/skiff-server/catalog
@@ -62,10 +66,16 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   --swap                release 显式换入 --dist（同机部署属测试姿态）
   --seq <n>             release 由调用方指定 seq；缺省从 --prev/--dist 只读读取 +1
   --submission <sid>    release 只处理一个提交
+  --webhooks <json>     notify 的订阅配置，默认 <state>/webhooks.json
+  --once                notify 只跑一轮后退出（适合 systemd timer / CI）
+  --interval <secs>     notify 常驻模式的轮询间隔，默认 10 秒
+  --allow-private       notify 允许投递到回环/私有地址（内部 webhook，默认拒绝）
+  --allow-http          notify 允许 http://（仅本地联调；生产必须 https）
 
 环境变量:
   SKIFF_SIGNING_KEY     发布私钥种子（64 位十六进制），仅从环境/CI secret 读取
   SKIFF_SERVER_PUBLIC_KEY  客户端固定公钥（64 位十六进制）
+  SKIFF_WEBHOOK_SIGNING_KEY  webhook 签名私钥种子（64 位十六进制），仅 notify 读取
 
 退出码: 0 通过，1 失败。
 ";
@@ -90,6 +100,7 @@ fn run() -> Result<()> {
         Some("serve") => serve_cmd(&args[1..]),
         Some("api") => api_cmd(&args[1..]),
         Some("release") => release_cmd(&args[1..]),
+        Some("notify") => notify_cmd(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{HELP}");
             Ok(())
@@ -369,6 +380,50 @@ fn release_cmd(args: &[String]) -> Result<()> {
         }
     );
     Ok(())
+}
+
+fn notify_cmd(args: &[String]) -> Result<()> {
+    let (options, flags) = parse(args, &["--once", "--allow-private", "--allow-http"])?;
+    let state = required_path(&options, "--state")?;
+    let webhooks = options
+        .get("--webhooks")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.join("webhooks.json"));
+    let interval = options
+        .get("--interval")
+        .map(|value| value.parse::<u64>().context("--interval 不是合法秒数"))
+        .transpose()?
+        .unwrap_or(10)
+        .max(1);
+
+    let signing = notify::signing_key_from_env()?;
+    let config = notify::load_config(&webhooks)?;
+    let mut notify_options = NotifyOptions {
+        allow_private: flags.contains("--allow-private"),
+        allow_http: flags.contains("--allow-http"),
+        ..NotifyOptions::default()
+    };
+    if let Some(value) = options.get("--timeout") {
+        notify_options.timeout =
+            std::time::Duration::from_secs(value.parse::<u64>().context("--timeout 不是合法秒数")?);
+    }
+    if let Some(value) = options.get("--max-attempts") {
+        notify_options.max_attempts = value
+            .parse::<u32>()
+            .context("--max-attempts 不是合法数字")?;
+    }
+
+    loop {
+        let report = notify::run_once(&state, &config, &signing, &notify_options)?;
+        println!(
+            "notify: delivered={} retried={} dead={} skipped={} pruned={}",
+            report.delivered, report.retried, report.dead, report.skipped, report.pruned
+        );
+        if flags.contains("--once") {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
 }
 
 fn required_path(options: &BTreeMap<String, String>, name: &str) -> Result<PathBuf> {

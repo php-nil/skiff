@@ -5,8 +5,10 @@
 pub mod api;
 pub mod build;
 pub mod check;
+pub mod events;
 pub mod http;
 pub mod model;
+pub mod notify;
 pub mod release;
 pub mod schema;
 pub mod serve;

@@ -13,6 +13,7 @@ use ed25519_dalek::SigningKey;
 use sha2::Digest;
 use skiff_pkgfmt::signature::SigningKey as PkgSigningKey;
 use skiff_server::api::{self, ApiServer};
+use skiff_server::events;
 use skiff_server::http::Request;
 use skiff_server::serve;
 
@@ -650,6 +651,104 @@ fn failed_release_does_not_touch_dist() {
     )
     .unwrap();
     assert_eq!(record["state"], "approved", "失败后不得标记 published");
+}
+
+fn pending_events(state: &Path) -> Vec<serde_json::Value> {
+    let Ok(entries) = fs::read_dir(events::pending_dir(state)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
+        .collect()
+}
+
+fn event_types(state: &Path) -> Vec<String> {
+    pending_events(state)
+        .iter()
+        .filter_map(|event| event["type"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn submit_succeeds_when_outbox_cannot_be_written() {
+    let fx = Fixture::new();
+    // 让 outbox 路径变成普通文件：事件写不进去，但业务必须照常成功。
+    fs::write(fx.state.join("outbox"), b"not a directory").unwrap();
+    let created = submit(&fx, "com.example.demo", "1.0.0");
+    assert_eq!(created.status, 201, "{:?}", created.json());
+}
+
+#[test]
+fn release_failure_emits_event() {
+    let fx = Fixture::new();
+    let created = submit(&fx, "com.example.demo", "1.0.0");
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    let approve = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/approve"),
+        &[],
+        b"",
+    );
+    assert_eq!(approve.status, 202);
+
+    let staging = tempfile::tempdir_in(fx.dir.path()).unwrap();
+    let job = api::job::JobOptions {
+        state: fx.state.clone(),
+        catalog: fx.catalog.clone(),
+        // 不存在的 schema 目录 → 发布在写盘前失败。
+        schema: fx.dir.path().join("missing-schema"),
+        channel: "stable".to_string(),
+        staging_out: Some(staging.path().to_path_buf()),
+        dist: None,
+        swap: false,
+        seq: Some(1),
+        prev: None,
+        submission: None,
+        public_key: None,
+    };
+    assert!(api::job::run(&job).is_err());
+    assert!(
+        event_types(&fx.state).iter().any(|t| t == "release.failed"),
+        "发布失败必须留下 release.failed 事件"
+    );
+}
+
+#[test]
+fn api_actions_emit_outbox_events() {
+    let fx = Fixture::new();
+    published_submission(&fx);
+    let yank = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        "/api/v1/plugins/com.example.demo/versions/1.0.0/yank",
+        &[("Content-Type", "application/json")],
+        br#"{"reason":"policy violation"}"#,
+    );
+    assert_eq!(yank.status, 202);
+
+    let types = event_types(&fx.state);
+    for expected in [
+        "submission.created",
+        "submission.approved",
+        "submission.published",
+        "takedown.yanked",
+    ] {
+        assert!(
+            types.iter().any(|t| t == expected),
+            "缺少事件 {expected}: {types:?}"
+        );
+    }
+    for event in pending_events(&fx.state) {
+        let text = serde_json::to_string(&event).unwrap();
+        for forbidden in ["package", "signature", "wbpkg"] {
+            assert!(!text.contains(forbidden), "{text}");
+        }
+    }
 }
 
 #[test]

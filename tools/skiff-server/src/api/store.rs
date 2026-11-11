@@ -15,6 +15,7 @@ use super::auth::{sha256_hex, Authenticated};
 use super::multipart;
 use super::package;
 use super::{json_response, now_rfc3339, ApiError, ApiServer, MAX_PACKAGE_BYTES};
+use crate::events::{self, Event};
 use crate::http::{Request, Response};
 use crate::model::{PluginEntry, KNOWN_CHANNELS};
 
@@ -283,6 +284,19 @@ pub fn create(
             reopened.updated_at = now;
             write_record(&server.state, &reopened)?;
             server.audit(&auth.key_id, "submit", &sid, "reopened");
+            // 通知失败不影响提交结果：outbox 写入是 best-effort。
+            let _ = events::emit(
+                &server.state,
+                &Event::new(
+                    events::EVENT_TYPE_SUBMISSION_CREATED,
+                    &format!("{sid}:reopened:{}", reopened.updated_at),
+                    &server.channel,
+                )
+                .actor(&auth.key_id)
+                .subject("plugin", &reopened.plugin_id, &reopened.version)
+                .submission(&sid)
+                .reopened(true),
+            );
             return Ok(json_response(
                 200,
                 &serde_json::to_value(&reopened).unwrap_or_default(),
@@ -353,6 +367,13 @@ pub fn create(
     };
     write_record(&server.state, &submission)?;
     server.audit(&auth.key_id, "submit", &sid, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_SUBMISSION_CREATED, &sid, &server.channel)
+            .actor(&auth.key_id)
+            .subject("plugin", &submission.plugin_id, &submission.version)
+            .submission(&sid),
+    );
     Ok(json_response(
         201,
         &serde_json::to_value(&submission).unwrap_or_default(),
@@ -455,6 +476,13 @@ pub fn approve(server: &ApiServer, auth: &Authenticated, sid: &str) -> Result<Re
     });
     write_record(&server.state, &record)?;
     server.audit(&auth.key_id, "approve", sid, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_SUBMISSION_APPROVED, sid, &server.channel)
+            .actor(&auth.key_id)
+            .subject("plugin", &record.plugin_id, &record.version)
+            .submission(sid),
+    );
     Ok(json_response(
         202,
         &serde_json::to_value(&record).unwrap_or_default(),
@@ -509,6 +537,13 @@ pub fn reject(
     });
     write_record(&server.state, &record)?;
     server.audit(&auth.key_id, "reject", sid, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_SUBMISSION_REJECTED, sid, &server.channel)
+            .actor(&auth.key_id)
+            .subject("plugin", &record.plugin_id, &record.version)
+            .submission(sid),
+    );
     Ok(json_response(
         200,
         &serde_json::to_value(&record).unwrap_or_default(),
@@ -531,6 +566,17 @@ pub fn withdraw(server: &ApiServer, auth: &Authenticated, sid: &str) -> Result<R
     record.updated_at = now_rfc3339();
     write_record(&server.state, &record)?;
     server.audit(&auth.key_id, "withdraw", sid, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(
+            events::EVENT_TYPE_SUBMISSION_WITHDRAWN,
+            sid,
+            &server.channel,
+        )
+        .actor(&auth.key_id)
+        .subject("plugin", &record.plugin_id, &record.version)
+        .submission(sid),
+    );
     Ok(json_response(
         200,
         &serde_json::to_value(&record).unwrap_or_default(),

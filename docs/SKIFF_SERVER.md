@@ -1189,7 +1189,7 @@ R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工�
 - 鉴权：审核者看全部；作者默认只看自己，显式查他人 `key_id` 一律 403。
 - 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`submission_ids`/`result`，**不含签名、包内容或请求体**。
 
-**R2（后续，按需）**：应用模板与运行环境复用同一套提交/审核模型；组织级命名空间；发布 job 队列化与并发控制。
+**R2（分步实施）**：R2a webhook 事件通知已实施（§17.11）；R2b `kind` 抽象待做；R2c/R2d 应用模板与运行环境提交、R2e 分 kind 撤包按序推进。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
 
 统一错误体：`{"code": "...", "message": "...", "detail": {...}}`；`401` 签名缺失/无效/过期，`403` 密钥未登记、命名空间不匹配或自我审核，`409` 版本或摘要冲突，`413` 超限，`422` 校验失败，`500` 内部错误（不回显路径与堆栈）。
 
@@ -1260,5 +1260,17 @@ skiff-server release  → 写源数据 → 调既有 publish → 产出签名产
 - **客户端**：`skiff-app` 的索引模型对 `yank_reason` 用 `serde(default)`；`CatalogService::cached_takedown` 只读内存/本地缓存，不触网，有原因时返回原因，无原因时保持通用文案。安装侧仍在 `commands::store::prepare` 拒绝 `revoked` 与 `yanked` 并带出原因。
 - **审计串联**：`release` 行携带 `submissions[]`；`GET /api/v1/audit` 解析为 `submission_ids[]` 并让 `?sid=` 命中任一元素，因此一个 sid 能同时追到 submit / approve / release。
 - **R1 测试**：`tests/api.rs` 覆盖 yank 幂等/404/403、吊销后提交与审核 403、历史版本进入 `revoked[]`、审计分页/越权/sid 串联；`tests/p0.rs` 覆盖 `revoked.json` 缺省/非法/签名字节与 `yank_reason` 进入索引；`crates/app` 覆盖旧索引解析不变、新索引拒绝原因，以及「源数据 → 构建产物 → 客户端视图」的端到端用例。
+
+### 17.11 R2a 落地说明：webhook 事件通知（`tools/skiff-server`）
+
+- **形态**：业务侧只写 `state/outbox/pending/<event_id>.json`，`skiff-server notify` 独立进程负责投递；API 与 `release` 都不发起网络请求。`notify` 默认常驻轮询，`--once` 适合 systemd timer/CI。
+- **事件集**：`submission.created`（`reopened` 带标记）、`submission.approved`、`submission.rejected`、`submission.withdrawn`、`submission.published`（带 `seq` 与 `submission_ids`）、`takedown.yanked`、`key.revoked`、`release.failed`。`duplicate` 不发；事件载荷不含包体、签名、请求体。
+- **事件 id**：`evt-` + `sha256(type\0业务键)[..24]`。同一业务动作重复 emit 命中同一文件名，`create_new` 去重；`submission.published` 的业务键是 `channel:seq:release`。
+- **订阅**：`state/webhooks.json` 手工维护，字段 `id/url/events[]/channels[]/enabled`；`events`/`channels` 为空表示全部。只允许 `https://`，默认拒绝回环/私有地址，内部目标需 `--allow-private`；本地联调才用 `--allow-http`。
+- **投递**：at-least-once。2xx 成功；网络错误/超时/408/429/5xx 重试，其余 4xx 进 `dead/`；退避默认 5s/30s/2m/10m/1h/6h，最多 8 次，尊重 `Retry-After`。接收方按 `X-Skiff-Event-Id` 去重；不承诺事件顺序。
+- **签名**：独立域 `SKIFF-SERVER-WEBHOOK-v1`，输入为 `域\0event_id\0timestamp\0sha256(body)`；私钥只在 `notify` 的 `SKIFF_WEBHOOK_SIGNING_KEY`，不复用 API 签名域。请求头：`X-Skiff-Event-Id`、`X-Skiff-Timestamp`、`X-Skiff-Signature: v1=<hex>`。
+- **失败隔离**：outbox 写失败只记日志/返回 `Err` 给调用方忽略，业务响应不变；`notify` 与 API 是两个进程，投递失败不影响提交、审核、发布与撤包。
+- **保留期**：pending 默认 30 天（超期转 dead）、dead 默认 90 天（超期删除），`NotifyOptions` 可配置；`notify.lock` 防止多实例并发投递，崩溃遗留锁超过 10 分钟视为过期。
+- **R2a 测试**：`events` 覆盖确定性 id、重复 emit 去重、载荷不含敏感字段；`notify` 覆盖签名可验、5xx 重试后成功、4xx 不重试、超时重试并最终 dead、事件过滤；`tests/api.rs` 覆盖 outbox 不可写仍 201、`release.failed` 事件、submit/approve/release/yank 事件集合。
 
 

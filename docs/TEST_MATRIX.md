@@ -610,6 +610,10 @@ cargo test -p skiff-server
 | API-11 | `revoked.json` 纳入签名覆盖 | 临时源数据（一条插件） | 缺 `revoked.json` 构建一次；写入 `[]` 再构建；写入非法 JSON；写入一条吊销记录 | 缺文件与空数组产物逐字节一致；非法 JSON 构建失败；有效记录进入 `index.revoked` 且 `manifest.index.sha256` 覆盖索引字节 | □通过 / □失败 | `src/build.rs`、`tests/p0.rs::revoked_json_*` |
 | API-12 | 撤包原因端到端可见 | 源条目 `yanked=true` + `yank_reason` | 构建索引；客户端解析并取 `plugin_package`/`cached_takedown`；再尝试安装该版本 | 索引含 `yank_reason`；插件页提示带原因；安装被拒文案带原因；无原因时仍是通用文案；旧索引无该字段时解析与安装不变 | □通过 / □失败 | `src/model.rs`、`src/api/job.rs`、`crates/app/tests/takedown_reason.rs`、`commands/store.rs::check_compatibility` |
 | API-13 | 审计按 sid 串起发布 | 提交→审核→release，并执行 yank | `GET /api/v1/audit?sid=<sid>` | 同一次查询返回 submit / approve / release 三类动作；release 行含 `submission_ids[]` 且命中该 sid；仍不含签名与包内容 | □通过 / □失败 | `src/api/audit.rs`、`tests/api.rs::audit_sid_chains_submit_approve_and_release` |
+| API-14 | webhook 事件生成与去重 | 已配置订阅；执行 submit/approve/release/yank | 观察 `state/outbox/pending/` | 生成 created/approved/published/yanked 事件；同一业务动作重复 emit 只有一条；载荷无包体/签名 | □通过 / □失败 | `src/events.rs`、`tests/api.rs::api_actions_emit_outbox_events` |
+| API-15 | webhook 投递与签名 | 本地假接收端 | 500 后 200；400；超时；校验签名 | 5xx/超时重试，4xx 直接 dead；成功移入 delivered；Ed25519 签名可用独立域验证 | □通过 / □失败 | `src/notify.rs` 单测 |
+| API-16 | 通知失败隔离 | `state/outbox` 被替换为普通文件 | 正常提交 | 提交仍 201，业务状态不受影响 | □通过 / □失败 | `tests/api.rs::submit_succeeds_when_outbox_cannot_be_written` |
+| API-17 | `release.failed` 事件 | 已 approve 提交 + 不存在的 schema 目录 | 执行 release | 发布失败并留下 `release.failed` 事件；不影响线上目录 | □通过 / □失败 | `src/api/job.rs`、`tests/api.rs::release_failure_emits_event` |
 
 最小回归命令：
 

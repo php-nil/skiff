@@ -13,6 +13,7 @@ use serde_json::json;
 use crate::api::now_rfc3339;
 use crate::api::store::{self, Submission, TakedownInfo};
 use crate::api::takedown::{self, Kind, Takedown};
+use crate::events::{self, Event};
 use crate::model::{ChannelFile, PluginEntry};
 use crate::sign::Signer;
 
@@ -48,6 +49,41 @@ pub struct JobReport {
 }
 
 pub fn run(options: &JobOptions) -> Result<JobReport> {
+    match run_inner(options) {
+        Ok(Some(report)) => {
+            let ids: Vec<String> = report.released.iter().map(|(sid, _)| sid.clone()).collect();
+            // 通知是 best-effort：写 outbox 失败不能让已完成的发布回滚。
+            let _ = events::emit(
+                &options.state,
+                &Event::new(
+                    events::EVENT_TYPE_SUBMISSION_PUBLISHED,
+                    &format!("{}:{}:release", options.channel, report.seq),
+                    &options.channel,
+                )
+                .submissions(&ids)
+                .seq(report.seq),
+            );
+            Ok(report)
+        }
+        Ok(None) => {
+            bail!("没有 approved 的提交，也没有待发布的撤包/吊销；先 approve 或先发起 yank/revoke")
+        }
+        Err(error) => {
+            let _ = events::emit(
+                &options.state,
+                &Event::new(
+                    events::EVENT_TYPE_RELEASE_FAILED,
+                    &format!("{}:{}", options.channel, now_rfc3339()),
+                    &options.channel,
+                )
+                .error_code("release_failed"),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn run_inner(options: &JobOptions) -> Result<Option<JobReport>> {
     validate_destination(options)?;
 
     let mut approved = store::approved_for(&options.state, &options.channel)
@@ -62,7 +98,7 @@ pub fn run(options: &JobOptions) -> Result<JobReport> {
         takedown::pending(&options.state).map_err(|_| anyhow::anyhow!("读取撤包状态失败"))?;
     takedowns.retain(|record| record.channel == options.channel);
     if approved.is_empty() && takedowns.is_empty() {
-        bail!("没有 approved 的提交，也没有待发布的撤包/吊销；先 approve 或先发起 yank/revoke");
+        return Ok(None);
     }
 
     let prev = resolve_prev(options);
@@ -150,13 +186,13 @@ pub fn run(options: &JobOptions) -> Result<JobReport> {
         &output,
         swapped,
     );
-    Ok(JobReport {
+    Ok(Some(JobReport {
         released,
         takedowns: released_takedowns,
         seq,
         output,
         swapped,
-    })
+    }))
 }
 
 fn validate_destination(options: &JobOptions) -> Result<()> {

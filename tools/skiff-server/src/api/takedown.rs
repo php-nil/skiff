@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use super::auth::Authenticated;
 use super::{json_response, now_rfc3339, ApiError, ApiServer};
+use crate::events::{self, Event};
 use crate::http::Response;
 
 pub const TAKEDOWN_SCHEMA: &str = "skiff.server.takedown/v1";
@@ -194,6 +195,14 @@ pub fn yank(
     };
     write_record(&server.state, &record)?;
     server.audit(&auth.key_id, "yank", &id, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_TAKEDOWN_YANKED, &id, &server.channel)
+            .actor(&auth.key_id)
+            .subject("plugin", plugin_id, version)
+            .submission(&id)
+            .reason(&record.reason),
+    );
     Ok(json_response(
         202,
         &serde_json::to_value(&record).unwrap_or_default(),
@@ -260,6 +269,13 @@ pub fn revoke_key(
     }
 
     server.audit(&auth.key_id, "revoke", key_id, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_KEY_REVOKED, key_id, &server.channel)
+            .actor(&auth.key_id)
+            .submission(key_id)
+            .reason(&entry.reason),
+    );
     Ok(json_response(
         202,
         &serde_json::to_value(&entry).unwrap_or_default(),
