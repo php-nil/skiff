@@ -454,6 +454,23 @@ impl CatalogService {
         })
     }
 
+    /// 已安装插件在**不联网**前提下的撤包提示：只读内存快照或本地缓存。
+    ///
+    /// 页面用它给「已安装但已被撤包/吊销」的插件加一条提示；离线、无镜像、
+    /// 目录未刷新时同样可用，因为信息来自上次验签通过的签名索引。
+    pub fn cached_takedown(&self, id: &str, version: &str) -> Option<String> {
+        if !self.settings.enabled {
+            return None;
+        }
+        if let Ok(memo) = self.memo.lock() {
+            if let Some(index) = memo.as_ref().and_then(|m| m.index.as_ref()) {
+                return takedown_note(index, id, version);
+            }
+        }
+        let cached = self.cached_for_current_key(&self.settings.channel)?;
+        takedown_note(&cached.index, id, version)
+    }
+
     /// 在已验证快照里找指定版本、当前架构的内核升级条目。
     ///
     /// 与 `plugin_package` 同一取舍：目录未启用、被拒绝或没有可用镜像来源时返回
@@ -1025,6 +1042,18 @@ impl CatalogService {
             key_configured: self.public_key.is_some(),
         }
     }
+}
+
+/// 撤包提示的唯一口径：`revoked[]` 优先于 `yanked`，两者都不命中则返回 `None`。
+fn takedown_note(index: &Index, id: &str, version: &str) -> Option<String> {
+    if let Some(entry) = index.revoked(id, version) {
+        return Some(format!("该版本已被服务端撤回：{}", entry.reason));
+    }
+    index
+        .plugins
+        .iter()
+        .any(|p| p.id == id && p.version == version && p.yanked)
+        .then(|| "该版本已被服务端下架（yanked），请升级到新版本".to_string())
 }
 
 /// 版本比较的唯一入口：与插件安装共用 `skiff_plugin::install::version_gt` 的语义。

@@ -29,6 +29,7 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
                        [--tls-cert <pem> --tls-key <pem> | --http]
                        [--access-log [<path>]]
   skiff-server api     --state <dir> --authors <json> --reviewers <json>
+                       [--catalog <dir>] [--channel stable]
                        [--listen 127.0.0.1:9443] [--allow-remote]
   skiff-server release --state <dir> --catalog <dir> [--schema <dir>] [--channel stable]
                        [--staging-out <dir> | --dist <dir> --swap]
@@ -289,6 +290,11 @@ fn api_cmd(args: &[String]) -> Result<()> {
     let state = required_path(&options, "--state")?;
     let authors = required_path(&options, "--authors")?;
     let reviewers = required_path(&options, "--reviewers")?;
+    let catalog = path_option(&options, "--catalog", "deploy/skiff-server/catalog");
+    let channel = options
+        .get("--channel")
+        .cloned()
+        .unwrap_or_else(|| "stable".to_string());
     let listen = options
         .get("--listen")
         .cloned()
@@ -297,8 +303,14 @@ fn api_cmd(args: &[String]) -> Result<()> {
         .parse()
         .with_context(|| format!("--listen 不是合法地址: {listen}"))?;
 
-    let server =
-        api::ApiServer::prepare(state, authors, reviewers, flags.contains("--allow-remote"))?;
+    let server = api::ApiServer::prepare(
+        state,
+        authors,
+        reviewers,
+        catalog,
+        channel,
+        flags.contains("--allow-remote"),
+    )?;
     server.check_listen(&addr)?;
 
     let listener = TcpListener::bind(addr).with_context(|| format!("监听 {addr} 失败"))?;
@@ -345,9 +357,10 @@ fn release_cmd(args: &[String]) -> Result<()> {
     };
     let report = api::job::run(&job)?;
     println!(
-        "✓ 发布完成：seq={}，提交 {} 个 → {}{}",
+        "✓ 发布完成：seq={}，提交 {} 个、撤包 {} 条 → {}{}",
         report.seq,
         report.released.len(),
+        report.takedowns.len(),
         report.output.display(),
         if report.swapped {
             "（已换入线上目录）"

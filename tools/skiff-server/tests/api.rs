@@ -24,6 +24,7 @@ const MANIFEST_DOMAIN: &[u8] = b"SKIFF-SERVER-MANIFEST-v1\0";
 struct Fixture {
     dir: tempfile::TempDir,
     state: PathBuf,
+    catalog: PathBuf,
     addr: SocketAddr,
     author: SigningKey,
     reviewer: SigningKey,
@@ -81,8 +82,17 @@ impl Fixture {
         set_mode(&authors_path, 0o600);
         set_mode(&reviewers_path, 0o600);
 
-        let server =
-            ApiServer::prepare(state.clone(), authors_path, reviewers_path, false).unwrap();
+        let catalog = dir.path().join("catalog");
+        prepare_catalog(&catalog);
+        let server = ApiServer::prepare(
+            state.clone(),
+            authors_path,
+            reviewers_path,
+            catalog.clone(),
+            "stable".to_string(),
+            false,
+        )
+        .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
@@ -91,6 +101,7 @@ impl Fixture {
         Self {
             dir,
             state,
+            catalog,
             addr,
             author,
             reviewer,
@@ -329,8 +340,7 @@ fn signed_submit_approve_and_release_produces_pullable_artifacts() {
     assert_eq!(approve.status, 202, "{:?}", approve.json());
 
     // 源数据 + 产物：只产出 staging，不碰线上目录。
-    let catalog = fx.dir.path().join("catalog");
-    prepare_catalog(&catalog);
+    let catalog = fx.catalog.clone();
     let schema = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/skiff-server/schema");
     let staging = fx.dir.path().join("staging");
     let signer = SigningKey::from_bytes(&[11u8; 32]);
@@ -604,8 +614,7 @@ fn failed_release_does_not_touch_dist() {
     );
     assert_eq!(approve.status, 202);
 
-    let catalog = fx.dir.path().join("catalog");
-    prepare_catalog(&catalog);
+    let catalog = fx.catalog.clone();
     // 空的 schema 目录 → publish 在写盘前失败。
     let schema = fx.dir.path().join("empty-schema");
     fs::create_dir_all(&schema).unwrap();
@@ -648,6 +657,365 @@ fn serve_still_returns_404_for_api_paths() {
     let dir = tempfile::tempdir().unwrap();
     let response = serve::respond(dir.path(), &Request::new("GET", "/api/v1/submissions"));
     assert_eq!(response.status, 404);
+}
+
+/// 只产出 staging 的发布 helper：seq 显式给定，避免并行测试共享 `--prev`。
+fn publish(fx: &Fixture, seq: u64) -> (api::job::JobReport, tempfile::TempDir) {
+    let schema = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/skiff-server/schema");
+    let staging = tempfile::tempdir_in(fx.dir.path()).unwrap();
+    let signer = SigningKey::from_bytes(&[11u8; 32]);
+    std::env::set_var("SKIFF_SIGNING_KEY", hex::encode(signer.to_bytes()));
+    std::env::set_var(
+        "SKIFF_SERVER_PUBLIC_KEY",
+        hex::encode(signer.verifying_key().to_bytes()),
+    );
+    let job = api::job::JobOptions {
+        state: fx.state.clone(),
+        catalog: fx.catalog.clone(),
+        schema,
+        channel: "stable".to_string(),
+        staging_out: Some(staging.path().to_path_buf()),
+        dist: None,
+        swap: false,
+        seq: Some(seq),
+        prev: None,
+        submission: None,
+        public_key: None,
+    };
+    let report = api::job::run(&job).unwrap();
+    (report, staging)
+}
+
+fn key_id(key: &SigningKey) -> String {
+    hex::encode(sha2::Sha256::digest(key.verifying_key().to_bytes()))
+}
+
+/// 提交 → 审核 → 发布到 seq 1，返回 `sid`。
+fn published_submission(fx: &Fixture) -> String {
+    let created = submit(fx, "com.example.demo", "1.0.0");
+    assert_eq!(created.status, 201, "{:?}", created.json());
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    let approve = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/approve"),
+        &[],
+        b"",
+    );
+    assert_eq!(approve.status, 202, "{:?}", approve.json());
+    publish(fx, 1);
+    sid
+}
+
+#[test]
+fn yank_requires_reviewer_is_idempotent_and_404s_unknown_versions() {
+    let fx = Fixture::new();
+    published_submission(&fx);
+
+    let denied = signed_call(
+        fx.addr,
+        &fx.author,
+        "POST",
+        "/api/v1/plugins/com.example.demo/versions/1.0.0/yank",
+        &[("Content-Type", "application/json")],
+        br#"{"reason":"author cannot"}"#,
+    );
+    assert_eq!(denied.status, 403, "{:?}", denied.json());
+
+    let unknown = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        "/api/v1/plugins/com.example.demo/versions/9.9.9/yank",
+        &[("Content-Type", "application/json")],
+        br#"{"reason":"nope"}"#,
+    );
+    assert_eq!(unknown.status, 404, "{:?}", unknown.json());
+
+    let body = br#"{"reason":"malicious behavior"}"#;
+    let first = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        "/api/v1/plugins/com.example.demo/versions/1.0.0/yank",
+        &[("Content-Type", "application/json")],
+        body,
+    );
+    assert_eq!(first.status, 202, "{:?}", first.json());
+    let id = first.json()["id"].as_str().unwrap().to_string();
+    assert_eq!(first.json()["kind"], "yank");
+    assert_eq!(first.json()["state"], "pending");
+
+    let second = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        "/api/v1/plugins/com.example.demo/versions/1.0.0/yank",
+        &[("Content-Type", "application/json")],
+        body,
+    );
+    assert_eq!(second.status, 200, "{:?}", second.json());
+    assert_eq!(second.json()["id"], id, "重复 yank 必须返回同一记录");
+}
+
+#[test]
+fn yank_release_marks_index_and_submission_and_is_not_repeatable() {
+    let fx = Fixture::new();
+    let sid = published_submission(&fx);
+
+    let yank = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        "/api/v1/plugins/com.example.demo/versions/1.0.0/yank",
+        &[("Content-Type", "application/json")],
+        br#"{"reason":"policy violation"}"#,
+    );
+    assert_eq!(yank.status, 202, "{:?}", yank.json());
+
+    let (report, staging) = publish(&fx, 2);
+    assert_eq!(report.seq, 2);
+    assert_eq!(report.takedowns.len(), 1);
+    let index: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["seq"], 2);
+    assert_eq!(index["plugins"][0]["yanked"], true, "{index}");
+    assert_eq!(index["revoked"].as_array().unwrap().len(), 0);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["seq"], 2);
+
+    // 作者视角的站内状态：提交记录带撤包原因，状态仍是 published。
+    let record: serde_json::Value = serde_json::from_slice(
+        &fs::read(fx.state.join("submissions").join(format!("{sid}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["state"], "published");
+    assert_eq!(record["takedown"]["kind"], "yank");
+    assert_eq!(record["takedown"]["reason"], "policy violation");
+
+    // 没有新的撤包/提交：再跑一次必须失败且不产生新 seq 的产物。
+    let schema = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/skiff-server/schema");
+    let staging2 = tempfile::tempdir_in(fx.dir.path()).unwrap();
+    let job = api::job::JobOptions {
+        state: fx.state.clone(),
+        catalog: fx.catalog.clone(),
+        schema,
+        channel: "stable".to_string(),
+        staging_out: Some(staging2.path().to_path_buf()),
+        dist: None,
+        swap: false,
+        seq: Some(3),
+        prev: None,
+        submission: None,
+        public_key: None,
+    };
+    assert!(api::job::run(&job).is_err(), "无待发布项时不得空转递增 seq");
+}
+
+#[test]
+fn revoked_key_blocks_submit_and_review_and_revokes_history() {
+    let fx = Fixture::new();
+    published_submission(&fx);
+    let author_key = key_id(&fx.author);
+
+    let unknown = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/keys/{}/revoke", "f".repeat(64)),
+        &[("Content-Type", "application/json")],
+        br#"{"reason":"unknown"}"#,
+    );
+    assert_eq!(unknown.status, 404, "{:?}", unknown.json());
+
+    let body = br#"{"reason":"private key leaked"}"#;
+    let first = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/keys/{author_key}/revoke"),
+        &[("Content-Type", "application/json")],
+        body,
+    );
+    assert_eq!(first.status, 202, "{:?}", first.json());
+    let second = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/keys/{author_key}/revoke"),
+        &[("Content-Type", "application/json")],
+        body,
+    );
+    assert_eq!(second.status, 200, "{:?}", second.json());
+
+    // 该 key 立即失效：提交与查询都不再放行。
+    let submit_again = submit(&fx, "com.example.demo", "1.1.0");
+    assert_eq!(submit_again.status, 403, "{:?}", submit_again.json());
+
+    // 历史版本进入待发布：一次 release 同时写 yanked 与 revoked[]。
+    let (report, staging) = publish(&fx, 2);
+    assert_eq!(report.seq, 2);
+    assert_eq!(report.takedowns.len(), 1);
+    let index: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["plugins"][0]["yanked"], true, "{index}");
+    assert_eq!(index["revoked"][0]["id"], "com.example.demo");
+    assert_eq!(index["revoked"][0]["version"], "1.0.0");
+    assert_eq!(index["revoked"][0]["reason"], "private key leaked");
+    let revoked: serde_json::Value =
+        serde_json::from_slice(&fs::read(fx.catalog.join("stable/revoked.json")).unwrap()).unwrap();
+    assert_eq!(revoked[0]["id"], "com.example.demo");
+
+    // 审计可按 key_id 追到该作者的提交链路，按 sid 追到以该 key 为对象的吊销动作。
+    let by_key = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "GET",
+        &format!("/api/v1/audit?key_id={author_key}"),
+        &[],
+        b"",
+    );
+    assert_eq!(by_key.status, 200, "{:?}", by_key.json());
+    let actions: Vec<String> = by_key.json()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(actions.iter().any(|a| a == "submit"), "{actions:?}");
+
+    let by_sid = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "GET",
+        &format!("/api/v1/audit?sid={author_key}"),
+        &[],
+        b"",
+    );
+    assert_eq!(by_sid.status, 200, "{:?}", by_sid.json());
+    assert_eq!(by_sid.json()["entries"][0]["action"], "revoke");
+    assert!(by_sid.json()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["action"] == "revoke" && e["result"] == "ok"));
+}
+
+#[test]
+fn revoked_reviewer_key_cannot_approve() {
+    let fx = Fixture::new();
+    let created = submit(&fx, "com.example.demo", "1.0.0");
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    let reviewer_key = key_id(&fx.reviewer);
+
+    let revoke = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/keys/{reviewer_key}/revoke"),
+        &[("Content-Type", "application/json")],
+        br#"{"reason":"laptop lost"}"#,
+    );
+    assert_eq!(revoke.status, 202, "{:?}", revoke.json());
+
+    let approve = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/approve"),
+        &[],
+        b"",
+    );
+    assert_eq!(approve.status, 403, "{:?}", approve.json());
+}
+
+#[test]
+fn audit_query_is_scoped_and_paginated_without_sensitive_fields() {
+    let fx = Fixture::new();
+    let created = submit(&fx, "com.example.demo", "1.0.0");
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/approve"),
+        &[],
+        b"",
+    );
+
+    let by_sid = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "GET",
+        &format!("/api/v1/audit?sid={sid}"),
+        &[],
+        b"",
+    );
+    assert_eq!(by_sid.status, 200, "{:?}", by_sid.json());
+    let entries = by_sid.json()["entries"].as_array().unwrap().clone();
+    assert!(entries.len() >= 2, "{entries:?}");
+    for entry in &entries {
+        assert_eq!(entry["submission_id"], sid);
+        for forbidden in ["signature", "package", "body", "sha256"] {
+            assert!(
+                entry.get(forbidden).is_none(),
+                "审计不得返回 {forbidden}: {entry}"
+            );
+        }
+    }
+    assert!(entries.iter().any(|e| e["action"] == "submit"));
+    assert!(entries.iter().any(|e| e["action"] == "approve"));
+
+    // 分页：limit=1 时 next_offset 指向第二条。
+    let page = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "GET",
+        &format!("/api/v1/audit?sid={sid}&limit=1"),
+        &[],
+        b"",
+    );
+    assert_eq!(page.json()["entries"].as_array().unwrap().len(), 1);
+    assert!(page.json()["total"].as_u64().unwrap() >= 2);
+    assert_eq!(page.json()["next_offset"], 1);
+
+    // 作者默认只看自己；显式查他人一律 403。
+    let own = signed_call(fx.addr, &fx.author, "GET", "/api/v1/audit", &[], b"");
+    assert_eq!(own.status, 200);
+    let own_key = key_id(&fx.author);
+    assert!(own.json()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["key_id"] == own_key));
+
+    let other = signed_call(
+        fx.addr,
+        &fx.author,
+        "GET",
+        &format!("/api/v1/audit?key_id={}", key_id(&fx.reviewer)),
+        &[],
+        b"",
+    );
+    assert_eq!(other.status, 403, "{:?}", other.json());
+
+    let bad = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "GET",
+        "/api/v1/audit?limit=abc",
+        &[],
+        b"",
+    );
+    assert_eq!(bad.status, 400, "{:?}", bad.json());
 }
 
 fn prepare_catalog(catalog: &Path) {

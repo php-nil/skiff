@@ -138,6 +138,83 @@ fn generation_is_deterministic() -> Result<()> {
     Ok(())
 }
 
+/// 临时源数据：只放一条插件样例，便于对比 `revoked.json` 的三种状态。
+fn temp_catalog() -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    let stable = dir.path().join("stable");
+    for sub in ["plugins", "apps", "runtimes", "upgrades"] {
+        fs::create_dir_all(stable.join(sub))?;
+    }
+    fs::create_dir_all(dir.path().join("assets"))?;
+    fs::write(
+        stable.join("channel.json"),
+        br#"{
+  "schema": "skiff.server.channel/v1",
+  "channel": "stable",
+  "seq": 1,
+  "generated_at": "2026-11-09T12:00:00Z"
+}
+"#,
+    )?;
+    let plugin = plugin_sample();
+    fs::write(
+        stable.join("plugins/com.example.hello.json"),
+        serde_json::to_vec_pretty(&plugin)?,
+    )?;
+    fs::copy(
+        catalog().join("assets/hello.wbpkg"),
+        dir.path().join("assets/hello.wbpkg"),
+    )?;
+    Ok(dir)
+}
+
+#[test]
+fn revoked_json_missing_and_empty_are_byte_identical() -> Result<()> {
+    let dir = temp_catalog()?;
+    let baseline = build(dir.path(), &schema(), &Signer::Unsigned)?;
+
+    // 缺文件与空数组必须产出逐字节一致的结果（不打破缓存与「失败不污染 dist」）。
+    fs::write(dir.path().join("stable/revoked.json"), b"[]\n")?;
+    let empty = build(dir.path(), &schema(), &Signer::Unsigned)?;
+    assert_eq!(baseline.files, empty.files);
+    Ok(())
+}
+
+#[test]
+fn revoked_json_is_validated_and_covers_index_digest() -> Result<()> {
+    let dir = temp_catalog()?;
+    fs::write(dir.path().join("stable/revoked.json"), b"{not-json")?;
+    let error = build(dir.path(), &schema(), &Signer::Unsigned)
+        .expect_err("非法 revoked.json 必须拒绝构建，不得静默丢弃");
+    assert!(error.to_string().contains("revoked.json"), "{error}");
+
+    fs::write(
+        dir.path().join("stable/revoked.json"),
+        br#"[
+  {
+    "id": "com.example.hello",
+    "version": "0.1.0",
+    "reason": "private key leaked",
+    "at": "2026-11-11T00:00:00Z"
+  }
+]
+"#,
+    )?;
+    let artifact = build(dir.path(), &schema(), &Signer::Unsigned)?;
+    let index_bytes = artifact.get("channels/stable/index.json").unwrap();
+    let index: Value = serde_json::from_slice(index_bytes)?;
+    assert_eq!(index["revoked"][0]["id"], "com.example.hello");
+    assert_eq!(index["revoked"][0]["reason"], "private key leaked");
+    // 条目保留（只增不删）：撤包是打标，不是物理删除。
+    assert_eq!(index["plugins"].as_array().unwrap().len(), 1);
+
+    let manifest: Value =
+        serde_json::from_slice(artifact.get("channels/stable/manifest.json").unwrap())?;
+    assert_eq!(manifest["index"]["sha256"], sha256_hex(index_bytes));
+    assert_eq!(manifest["index"]["size"], index_bytes.len());
+    Ok(())
+}
+
 #[test]
 fn seq_regression_is_rejected() -> Result<()> {
     let artifact = build(&catalog(), &schema(), &Signer::Unsigned)?;

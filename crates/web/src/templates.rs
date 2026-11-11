@@ -128,6 +128,8 @@ pub struct PluginView {
     pub running: bool,
     /// manifest `[[ui]]` 的第一个入口（相对 `ui/` 的路径）；空串表示无 UI。
     pub ui_path: String,
+    /// 已安装版本被服务端撤包/吊销时的提示（来自本地签名索引快照，不触网）。
+    pub takedown_note: String,
 }
 
 #[derive(Debug, Clone)]

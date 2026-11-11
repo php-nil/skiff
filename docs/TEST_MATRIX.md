@@ -588,11 +588,12 @@ cargo test -p skiff catalog
 cargo test -p skiff-server
 ```
 
-## P. 发布面 API（Skiff-server R0，2026-11-11 新增）
+## P. 发布面 API（Skiff-server R0/R1，2026-11-11 更新）
 
-> 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/http.rs`、`src/main.rs` 的 `api`/`release`
-> 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/产物口径。
+> 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/http.rs`、`src/build.rs`、`src/main.rs` 的
+> `api`/`release` 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/产物口径。
 > R0 默认关闭、默认只绑回环；`serve` 与 `api` 是两个进程，`serve` 对 `/api/**` 仍一律 404。
+> R1 只填充 v1 索引既有字段（`yanked` / `revoked`），不升 schema。
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -602,6 +603,11 @@ cargo test -p skiff-server
 | API-04 | 传输严格性 | `[本机]` 集成测试 | POST 不带 `Content-Length`；带 `Transfer-Encoding: chunked`；声明 999999999 字节 | 分别 411 / 400 / 413；413 不读取 body | □通过 / □失败 | `tools/skiff-server/src/api/mod.rs::read_body`、`api/multipart.rs` |
 | API-05 | 产物生成与失败隔离 | `[本机]` 集成测试；`SKIFF_SIGNING_KEY` + `SKIFF_SERVER_PUBLIC_KEY` | 提交→approve→`release --staging-out`；再构造 schema 缺失让 `release --dist --swap` 失败 | staging 的 `manifest` seq=1 且验签通过、`blobs/sha256/<hex>` 存在；失败时 `--dist` 的 marker 原样保留、提交仍为 `approved` | □通过 / □失败 | `api/job.rs`、`tests/api.rs::failed_release_does_not_touch_dist` |
 | API-06 | `serve` 零改动 | `[本机]` 集成测试 | 抽取 `http.rs` 后重跑既有 serve 契约用例（304 / 206 / 405 / 404、HEAD、穿越、访问日志） | 行为与抽取前一致，`/api/**` 仍 404 | □通过 / □失败 | `tools/skiff-server/src/http.rs`、`tests/serve.rs` |
+| API-07 | yank 撤包 API 与发布 | 已发布 `com.example.demo 1.0.0` | 作者调 yank；审核钥撤未知版本；审核钥撤真实版本并重复一次；`release` 到 seq+1 | 作者 403、未知版本 404、首次 202、重复 200 且同一记录；索引该条 `yanked=true`、`seq` +1、提交记录出现 `takedown` | □通过 / □失败 | `api/takedown.rs::yank`、`api/job.rs`、`tests/api.rs::yank_*` |
+| API-08 | 密钥吊销与历史处置 | 已发布版本 + 待审提交 | 审核钥吊销作者钥并重复；作者再提交；审核该 key 的历史/待审提交；`release` | 首次 202、重复 200、未登记 key 404；该 key 提交/审核均 403；历史版本 `yanked=true` 且进入 `revoked[]`；待审提交 approve 409 | □通过 / □失败 | `api/takedown.rs::revoke_key`、`api/auth.rs::authenticate`、`api/store.rs::approve` |
+| API-09 | 客户端离线读取撤包信息 | 已生成的旧索引（seq=2，`yanked=false`、`revoked=[]`）与新索引 | 用当前客户端解析旧索引进安装；再用填充 `yanked`/`revoked` 的新索引安装 | 旧索引解析成功、`yanked=false`、`revoked` 为空，安装链路与 R1 前一致；新索引不报解析失败，安装返回 `revoked` 原因；已安装卡片提示来自本地缓存，不触网 | □通过 / □失败 | `crates/app/src/catalog/{model,mod}.rs`、`commands/store.rs::check_compatibility`、`crates/web/src/handlers/plugins.rs` |
+| API-10 | 审计查询 | 已有 submit/approve/yank/revoke 记录 | 按 `sid`、`key_id`、`action`、`result`、`since/until`、`limit/offset` 查询；作者查他人 `key_id` | 审核者可见全部；作者默认只看自己、显式查他人 403；分页返回 `total`/`next_offset`；字段只有时间/主体/动作/对象/结果，不含签名与包内容 | □通过 / □失败 | `api/audit.rs`、`tests/api.rs::audit_query_is_scoped_and_paginated_without_sensitive_fields` |
+| API-11 | `revoked.json` 纳入签名覆盖 | 临时源数据（一条插件） | 缺 `revoked.json` 构建一次；写入 `[]` 再构建；写入非法 JSON；写入一条吊销记录 | 缺文件与空数组产物逐字节一致；非法 JSON 构建失败；有效记录进入 `index.revoked` 且 `manifest.index.sha256` 覆盖索引字节 | □通过 / □失败 | `src/build.rs`、`tests/p0.rs::revoked_json_*` |
 
 最小回归命令：
 

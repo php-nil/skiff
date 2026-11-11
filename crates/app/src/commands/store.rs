@@ -439,7 +439,7 @@ verbs = ["list"]
 
         /// 让假传输层返回一份签名正确、条目指向 `blob` 的快照。
         fn serve(&self, plugin: &str, api: &str, requires: &[&str], sha: &str, size: u64) {
-            let index = serde_json::to_vec(&serde_json::json!({
+            self.serve_index(serde_json::json!({
                 "schema": INDEX_SCHEMA,
                 "channel": "stable",
                 "seq": 1,
@@ -456,12 +456,17 @@ verbs = ["list"]
                     "pkg_url": format!("blobs/sha256/{sha}"),
                     "size": size
                 }]
-            }))
-            .unwrap();
+            }));
+        }
+
+        /// 自定义索引内容：撤包/吊销测试要改 `yanked` 或追加 `revoked[]`。
+        fn serve_index(&self, index: serde_json::Value) {
+            let seq = index.get("seq").and_then(|v| v.as_u64()).unwrap_or(1);
+            let index = serde_json::to_vec(&index).unwrap();
             let manifest = serde_json::to_vec(&serde_json::json!({
                 "schema": MANIFEST_SCHEMA,
                 "channel": "stable",
-                "seq": 1,
+                "seq": seq,
                 "generated_at": "2026-11-10T00:00:00Z",
                 "key_id": self.catalog_key.key_id(),
                 "index": {
@@ -743,5 +748,94 @@ verbs = ["list"]
         assert!(!stale.exists(), "超过 24h 的暂存包必须在准备安装前被清理");
         assert!(prepared.path.is_file(), "本次刚下载的暂存包不得被误删");
         let _ = fs::remove_file(&prepared.path);
+    }
+
+    /// 只改撤包字段的索引：用于验证 R1 新字段不改变旧安装行为。
+    fn takedown_index(
+        sha: &str,
+        size: u64,
+        yanked: bool,
+        reason: Option<&str>,
+    ) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "schema": INDEX_SCHEMA,
+            "channel": "stable",
+            "seq": 2,
+            "generated_at": "2026-11-10T00:00:00Z",
+            "plugins": [{
+                "id": PLUGIN_ID,
+                "version": "0.1.0",
+                "api": "1.0",
+                "requires": ["docker"],
+                "summary": "示例插件",
+                "published_at": "2026-11-09T00:00:00Z",
+                "yanked": yanked,
+                "pkg_sha256": sha,
+                "pkg_url": format!("blobs/sha256/{sha}"),
+                "size": size
+            }]
+        });
+        if let Some(reason) = reason {
+            value["revoked"] = serde_json::json!([{
+                "id": PLUGIN_ID,
+                "version": "0.1.0",
+                "reason": reason,
+                "at": "2026-11-11T00:00:00Z"
+            }]);
+        }
+        value
+    }
+
+    #[test]
+    fn pre_r1_index_without_revoked_field_installs_unchanged() {
+        let fx = Fixture::new();
+        let (bytes, sha) = fx.package(&["docker"], "1.0");
+        // `serve` 产出的索引没有 `revoked` 字段（R1 之前的形状），yanked=false。
+        fx.serve(PLUGIN_ID, "1.0", &["docker"], &sha, bytes.len() as u64);
+        fx.serve_blob(&sha, bytes.clone());
+        fx.trust_plugin_key();
+        let svc = fx.service();
+
+        let prepared = prepare(&svc, &fx.db, &fx.request()).expect("旧索引必须与现在一样可安装");
+        assert!(prepared.path.is_file());
+        assert!(svc.cached_takedown(PLUGIN_ID, "0.1.0").is_none());
+        let _ = fs::remove_file(&prepared.path);
+    }
+
+    #[test]
+    fn yanked_entry_is_rejected_with_reason_not_parse_failure() {
+        let fx = Fixture::new();
+        let (bytes, sha) = fx.package(&["docker"], "1.0");
+        fx.serve_index(takedown_index(&sha, bytes.len() as u64, true, None));
+        fx.trust_plugin_key();
+        let svc = fx.service();
+
+        let err = prepare(&svc, &fx.db, &fx.request()).unwrap_err();
+        assert!(matches!(err, StoreInstallError::Revoked(_)), "{err}");
+        assert!(err.message().contains("已被服务端撤回"), "{err}");
+        assert!(fx.incoming_files().is_empty(), "撤包拒绝不得留下暂存文件");
+    }
+
+    #[test]
+    fn revoked_entry_is_rejected_with_catalog_reason() {
+        let fx = Fixture::new();
+        let (bytes, sha) = fx.package(&["docker"], "1.0");
+        fx.serve_index(takedown_index(
+            &sha,
+            bytes.len() as u64,
+            false,
+            Some("private key leaked"),
+        ));
+        fx.trust_plugin_key();
+        let svc = fx.service();
+
+        let err = prepare(&svc, &fx.db, &fx.request()).unwrap_err();
+        assert!(matches!(err, StoreInstallError::Revoked(_)), "{err}");
+        assert!(err.message().contains("private key leaked"), "{err}");
+        assert!(svc
+            .cached_takedown(PLUGIN_ID, "0.1.0")
+            .unwrap()
+            .contains("private key leaked"));
+        assert!(fx.incoming_files().is_empty());
     }
 }

@@ -9,14 +9,14 @@
 
 | 维度 | 决策 |
 |---|---|
-| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
+| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
 | 测试托管 | `skiff-server serve` 把已生成的产物**原样**用 https 提供（`--http` 仅测试）；只是最后一环的自托管，不改变托管决策（§15） |
 | 信任锚 | 每渠道一份 Ed25519 签名的清单，客户端内置官方公钥集；**镜像不被信任，只被校验** |
 | 内容寻址 | 包、模板、升级包按 `sha256` 存入不可变 `blobs/`；索引只引用摘要 |
 | 回滚防护 | 签名清单内单调 `seq`；客户端持久化最大值，拒绝更旧的清单 |
 | 渠道 | `stable` / `night` 两份独立清单，各自递增，互不覆盖 |
 | 客户端出网 | 仅访问配置的镜像地址，由**内核**拉取；插件 `net` 仍为 501，不参与 |
-| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0 已实施**，R1 待做） |
+| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1 已实施**，R2 待做） |
 
 **主结论**：官方只承担「编辑、审核、签名、发布」，镜像方只承担「搬运与托管」，客户端只信签名不信源。因此商店与升级通道不需要常驻服务、账号体系与在线状态，断网、内网、自建镜像都消费同一份产物；插件安装仍沿用现有 `.wbpkg` 验签与权限确认链路，商店只补「发现与下载」。发布面若要自动化审核，另走 §17 的**可选**独立服务，不改变本节对分发面的结论，也不被客户端访问。
 
@@ -47,7 +47,7 @@
 
 `skiff-server serve`（§16）只是把**已生成的静态产物**原样用 HTTP 提供出去（测试与过渡自托管），没有写入、鉴权或业务逻辑，不属于本节所说的常驻 API 服务，也不改变托管方案（§15）。
 
-§17 的发布面审核 API 是**另一个面**：它只服务开发者与审核者，不参与分发，也不被客户端访问；形态是独立子命令 `skiff-server api`（独立进程、默认关闭、默认只绑回环、可以完全不部署），R0 已实施，R1 待做。它不构成「为分发引入常驻 API 服务」，本节结论保持不变：分发面只要静态文件，`serve` 的 `/api/**` 一律 404（§16.2），`serve` 侧不存在任何写入接口。
+§17 的发布面审核 API 是**另一个面**：它只服务开发者与审核者，不参与分发，也不被客户端访问；形态是独立子命令 `skiff-server api`（独立进程、默认关闭、默认只绑回环、可以完全不部署），R0/R1 已实施。它不构成「为分发引入常驻 API 服务」，本节结论保持不变：分发面只要静态文件，`serve` 的 `/api/**` 一律 404（§16.2），`serve` 侧不存在任何写入接口。
 
 ### 1.3 职责划分
 
@@ -62,7 +62,7 @@
 - 账号、登录、订阅、计费、授权码与付费内容（发布面同样不做账号体系：身份即已登记公钥，§17）。
 - 在线状态上报、安装量统计、遥测；如需统计须另立明确同意的方案。
 - 远程控制、下发命令、在线改配置（客户端只读消费）。
-- 客户端侧在线 API（吊销、版本提示等一律走签名清单）；`/api/**` 只属于 §17 的发布面（R0 已实施、默认关闭），客户端不访问。
+- 客户端侧在线 API（吊销、版本提示等一律走签名清单）；`/api/**` 只属于 §17 的发布面（R0/R1 已实施、默认关闭），客户端不访问。
 - 评分、评论、举报等 UGC 与推荐算法。
 - 服务端搜索、个性化排序、实时数据。
 - 在线 CRL/OCSP：吊销走签名清单内的撤销列表。
@@ -947,7 +947,7 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
 | `/channels/<channel>/index.json` | 同名 | 索引 |
 | `/<channel>/manifest.json` 等三件 | `channels/<channel>/…` | **短别名**，与规范路径等价（兼容「渠道目录 `/stable/`」写法） |
 | `/blobs/sha256/<hex64>` | `blobs/sha256/<hex64>` | 内容寻址，`hex64` 必须是小写 64 位十六进制 |
-| `/api/**` | — | 只属于 §17 的发布面（独立子命令 `skiff-server api`，R0 已实施）；`serve` 不实现也不代理，**一律 404**，不属于本契约 |
+| `/api/**` | — | 只属于 §17 的发布面（独立子命令 `skiff-server api`，R0/R1 已实施）；`serve` 不实现也不代理，**一律 404**，不属于本契约 |
 | 其他（`/`、目录、`schema/`、`catalog/`、未知文件） | — | 404；不列目录、无入口页 |
 
 - `<channel>` 只认磁盘上 `channels/<name>/manifest.json` 实际存在的目录（当前产物为 `stable` / `night`）；
@@ -1021,11 +1021,11 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
   未导入 CA 时失败（与 §4.5 的客户端口径一致）。
 - `serve` 不改变产物：测试只读校验运行前后文件字节不变。
 
-## 17. 发布面 `/api/**` 接口（R0 已实施，R1 待做）
+## 17. 发布面 `/api/**` 接口（R0/R1 已实施，R2 待做）
 
 > 定位：终态链路「开发者提交 → 管理员审核 → 生成静态产物 → 静态分发」里，**分发面已由 §16 定稿并上机闭环**，
-> 本节补**发布面**的接口边界。**R0 已在 `tools/skiff-server` 落地**（`api` 与 `release` 两个子命令），
-> R1/R2 仍是草案。客户端不访问本节任何接口。
+> 本节补**发布面**的接口边界。**R0 与 R1 已在 `tools/skiff-server` 落地**（`api` 与 `release` 两个子命令），
+> R2 仍是草案。客户端不访问本节任何接口。
 > 一句话原则：**客户端只读静态文件，不访问任何 `api`；API 只服务人与发布流水线，且永不持有清单签名私钥。**
 
 ### 17.1 与既有口径的关系（含一处措辞冲突）
@@ -1105,14 +1105,14 @@ pending --approve--> approved --release ok--> published
    v                    v
 rejected            approved（保留 last_error，可重试，不发布）
 pending --withdraw（作者）--> withdrawn
-published --yank/revoke（R0 走源数据）--> 条目保留 + 递增 seq
+published --yank/revoke（R1 走 API）--> 条目保留 + 递增 seq
 ```
 
 - 审核动作只改状态并写入源数据，**不直接改 `--dist`**；产物仍由 `publish` 生成。
 - **不得自我审核**：请求者 `key_id` 与提交者相同 → 403（R0 规则，避免单人闭环）。
 - 驳回必须带 `reason_code`（`invalid_signature`、`schema`、`id_ownership`、`policy`、`other`）与可选说明；作者按新摘要重提同一 `(id, version)` 允许（尚未发布，不违反版本不可变）。
 - `seq` 单调：**API 不预分配 `seq`**。发布 job 在受控环境读线上当前值后 +1（§14.2 的 `--prev` 语义不变），同渠道发布串行；并发审批后到者自然拿到后一个 `seq`。
-- 只增不删：索引条目只追加；下架用 `yanked`（条目保留、拒绝新装），安全处置用 `revoked`（摘要黑名单），两者都递增 `seq`（§5.3）。R0 的 yank/revoke 仍走源数据 PR，不开 API（应急需要人在场）。
+- 只增不删：索引条目只追加；下架用 `yanked`（条目保留、拒绝新装），安全处置用 `revoked`（摘要黑名单），两者都递增 `seq`（§5.3）。R1 起 `yank` 与密钥吊销走 API：API 只写 `state/takedowns/`，由 `release` 把 `yanked`/`revoked[]` 写进源数据并递增 `seq`。
 - 审计：提交、审核、发布结果追加到 `state/audit.jsonl`（JSON Lines：`key_id`、动作、`submission_id`、结果、时间）；这是发布面审计，与内核 `audit` 表无关。
 
 ### 17.5 产物生成
@@ -1156,7 +1156,37 @@ approved 提交 → 写入源数据（等价于合并 PR）→ 触发发布 job
 
 R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工维护；发布 job 用「扫描源数据变更」或「显式触发」二选一（实现时定，语义等价）；状态与审计落 `state/` 文件，不引入数据库（`tools/skiff-server` 刻意保持零原生 C 依赖，§10.1）。
 
-**R1（后续）**：`yank` 与 `revoked` 的 API 化、审核通知（webhook 或轮询回调）、审计查询、提交列表分页与筛选、多审核人。
+**R1（已实施）**：撤包与密钥吊销 API 化、站内状态通知、审计查询。模板与运行环境仍留 R2。
+
+| 方法 | 路径 | 主体 | 幂等 | 说明 |
+|---|---|---|---|---|
+| POST | `/api/v1/plugins/{id}/versions/{version}/yank` | 审核者 | 按 `(id, version)` | 202；body 可带 `reason`（1..=200 字符）；重复 200；未知版本/已撤回 404/409 |
+| POST | `/api/v1/keys/{key_id}/revoke` | 审核者 | 按 `key_id` | 202；重复 200；未登记 key 404；吊销立即生效 |
+| GET | `/api/v1/audit` | 作者或审核者 | — | 查询参数 `sid`/`key_id`/`action`/`result`/`since`/`until`/`limit`/`offset`；作者默认只看自己，显式查他人 403 |
+
+**索引契约（不升 schema）**
+
+- `plugins[].yanked` 与 `revoked[]` 是 `skiff.server.index/v1` 的既有字段；R1 只开始填充，schema 版本与字段集合不变。
+- 旧版客户端读到未知字段一律忽略；读到 `yanked=true` 或 `revoked` 命中时，按已有拒绝语义给原因（不是解析失败）。R1 前的旧索引（`yanked=false`、`revoked=[]`）解析与安装行为完全不变。
+- `seq` 单调与「已发布只增不删」继续成立：撤包是给既有条目打 `yanked` 标记并追加 `revoked[]`，**不物理删除**；每次生效都递增 `seq`，客户端防回滚不受影响。
+
+**状态机与边界**
+
+- `published → yanked` 由**审核钥**触发，不可逆；恢复只能发更高版本，不提供 `unyank`。
+- 密钥吊销（`revoked`）按 `key_id` 一次性覆盖该 key 的历史版本：源条目 `yanked=true` 且追加 `revoked[]`；`revoked` 不可逆，也不能再审——该 key 之后既不能提交也不能审核，换钥按新作者重新登记。
+- 已有安装者不自动卸载；`GET /api/v1/submissions/{sid}` 与内核插件页给「该版本已被撤回：<reason>」提示。
+- 撤销/吊销只写 `state/` 记录，产物与签名仍由 `release` 在受控环境生成。
+
+**通知的最小形态**
+
+不引入 SMTP、webhook 或第三方依赖：撤包/吊销立即落 `state/audit.jsonl`，同时把状态回写到提交记录 `takedown` 并在插件页展示。通知失败只影响可见性，不影响撤包生效；同一 `(id, version)` 重复请求幂等，不重复产生记录。确需外推时再新增可重试的 webhook，R1 不做。
+
+**审计查询**
+
+- 数据源是 `state/audit.jsonl`，倒序返回；`limit` 默认 50、上限 200，`offset` 分页，返回 `total` 与 `next_offset`。
+- 过滤：`sid`（含以 key_id 为对象的吊销记录）、`key_id`、`action`、`result`、`since`/`until`（UTC RFC3339）。
+- 鉴权：审核者看全部；作者默认只看自己，显式查他人 `key_id` 一律 403。
+- 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`result`，**不含签名、包内容或请求体**。
 
 **R2（后续，按需）**：应用模板与运行环境复用同一套提交/审核模型；组织级命名空间；发布 job 队列化与并发控制。
 
@@ -1217,5 +1247,15 @@ skiff-server release  → 写源数据 → 调既有 publish → 产出签名产
 
 - `tests/api.rs`：签名正例（提交→审核→发布出可拉取的 `manifest/index/blobs`）、篡改 body、错误域前缀、过期时间戳、重放 nonce、非审核钥 approve、自我审核、同摘要幂等、非法状态迁移、缺 `Content-Length`/`Transfer-Encoding`、超长 `Content-Length`、失败不污染 `--dist`、`serve` 对 `/api/**` 仍 404。
 - 复用 `skiff-pkgfmt` 校验（与 `xtask verify-pkg` 同源），不另写验签。
+
+### 17.10 R1 落地说明（`tools/skiff-server`）
+
+- **端点与存储**：`yank` / `keys/{key_id}/revoke` / `audit` 三个新端点与 R0 六端点共用同一签名域与错误体。撤包记录落 `state/takedowns/<tak-…>.json`，密钥吊销落 `state/revoked_keys.json`；`api` 仍不读签名私钥、不写 `--dist`。
+- **鉴权**：`authenticate` 在公钥一致性检查后、验签前查 `revoked_keys.json`，命中即 403；读取失败 503 失败关闭。密钥吊销即时生效，不等待发布。
+- **发布 job**：`release` 同时处理 `approved` 提交与 `pending` 撤包记录。一次运行只递增一个 `seq`：先写源数据（新条目 / `yanked=true` / `revoked.json`），再 `publish`，最后回写 `published`、`released` 与提交记录的 `takedown`。没有待发布项时直接失败，不空转递增 `seq`。
+- **并发**：yank 记录按 `(kind, id, version)` 稳定命名并用文件锁串行；重复 yank 返回 200 同一记录。发布 job 是 `pending → released` 的唯一写入者；并发到达的新 yank 留给下一次 `release`。
+- **`revoked.json` 与签名覆盖**：`build` 读取 `<channel>/revoked.json` 填入 `index.revoked`；缺文件等价于空数组，产物逐字节一致；文件存在但 JSON 非法时构建直接失败。manifest 的 `index.sha256` 继续覆盖整份索引字节，因此吊销列表也被签名间接覆盖。
+- **客户端**：`skiff-app` 的索引模型沿用 `serde(default)`；`CatalogService::cached_takedown` 只读内存/本地缓存，不触网，供插件页给已安装但被撤包的版本加提示。安装侧仍在 `commands::store::prepare` 拒绝 `revoked` 与 `yanked`。
+- **R1 测试**：`tests/api.rs` 覆盖 yank 幂等/404/403、吊销后提交与审核 403、历史版本进入 `revoked[]`、审计分页与越权；`tests/p0.rs` 覆盖 `revoked.json` 缺省/非法/签名字节；`crates/app` 覆盖旧索引解析不变与新索引拒绝原因。
 
 

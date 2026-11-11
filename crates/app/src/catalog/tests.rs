@@ -629,3 +629,65 @@ fn latest_upgrade_is_none_when_current_is_not_older() {
     assert!(svc.latest_upgrade("0.2.0", "x86_64").is_none());
     assert!(svc.latest_upgrade("0.9.0", "x86_64").is_none());
 }
+
+/// R1 之前生成的旧索引（seq=2 的形状：`yanked` 为 false、`revoked` 为空）。
+/// 这是客户端在 R1 之前见到的真实产物形态；解析器必须原样接受。
+const LEGACY_INDEX: &str = r#"{
+  "schema": "skiff.server.index/v1",
+  "channel": "stable",
+  "seq": 2,
+  "generated_at": "2026-11-10T08:00:00Z",
+  "plugins": [
+    {
+      "id": "com.example.demo",
+      "version": "1.0.0",
+      "api": "1.0",
+      "requires": ["docker"],
+      "summary": "示例插件",
+      "published_at": "2026-11-09T00:00:00Z",
+      "yanked": false,
+      "pkg_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "pkg_url": "blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size": 3
+    }
+  ],
+  "apps": [],
+  "runtimes": [],
+  "upgrades": [],
+  "revoked": []
+}"#;
+
+#[test]
+fn legacy_index_without_takedown_marks_parses_unchanged() {
+    let index: Index = serde_json::from_str(LEGACY_INDEX).expect("旧索引必须能解析");
+    index.validate(None).expect("旧索引必须通过校验");
+    assert_eq!(index.seq, 2);
+    assert!(!index.plugins[0].yanked);
+    assert!(index.revoked.is_empty());
+    assert!(index.revoked("com.example.demo", "1.0.0").is_none());
+    assert!(takedown_note(&index, "com.example.demo", "1.0.0").is_none());
+    assert!(entries_of(&index).plugins[0].warn.is_empty());
+}
+
+#[test]
+fn new_index_with_takedown_fields_parses_and_reports_reason() {
+    let mut value: serde_json::Value = serde_json::from_str(LEGACY_INDEX).unwrap();
+    value["plugins"][0]["yanked"] = serde_json::json!(true);
+    value["revoked"] = serde_json::json!([{
+        "id": "com.example.demo",
+        "version": "1.0.0",
+        "reason": "private key leaked",
+        "at": "2026-11-11T00:00:00Z"
+    }]);
+    let index: Index = serde_json::from_value(value).expect("新索引必须能解析而不是解析失败");
+    index.validate(None).expect("新索引仍符合 v1 校验");
+    assert!(index.plugins[0].yanked);
+    assert_eq!(
+        index.revoked("com.example.demo", "1.0.0").unwrap().reason,
+        "private key leaked"
+    );
+    assert!(takedown_note(&index, "com.example.demo", "1.0.0")
+        .unwrap()
+        .contains("private key leaked"));
+    assert!(entries_of(&index).plugins[0].warn.contains("已撤回"));
+}

@@ -68,6 +68,10 @@ fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppErro
         reduced,
         running: false,
         ui_path: ui.map(|u| u.path.clone()).unwrap_or_default(),
+        takedown_note: state
+            .catalog()
+            .cached_takedown(&p.id, &p.version)
+            .unwrap_or_default(),
     })
 }
 

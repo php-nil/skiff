@@ -56,6 +56,9 @@
         {% endif %}
       </div>
       <div class="muted small">v{{ p.version }} · api {{ p.api }} · {% if p.signed %}已验签{% else %}未验签{% endif %}{% if p.reduced %} · reduced sandbox{% endif %}</div>
+      {% if !p.takedown_note.is_empty() %}
+      <div class="banner warn" role="status">当前已安装版本不可再用于新装：{{ p.takedown_note }}；请从商店升级到未撤回版本。</div>
+      {% endif %}
       <div class="muted small">
         {% if p.running %}<span class="tag">运行中</span>{% endif %}
         {% if !p.ui_path.is_empty() %}<span class="tag">有界面</span>{% else %}<span class="tag warn-tag">无界面</span>{% endif %}

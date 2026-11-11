@@ -74,6 +74,15 @@ pub struct ReleaseInfo {
     pub at: String,
 }
 
+/// 站内可见的撤回信息（不触发任何推送；`GET /submissions/{sid}` 直接展示）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TakedownInfo {
+    pub kind: String,
+    pub reason: String,
+    pub key_id: String,
+    pub at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Submission {
     pub schema: String,
@@ -94,6 +103,9 @@ pub struct Submission {
     pub review: Option<Review>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseInfo>,
+    /// 已发布版本被撤包/吊销后的站内提示（不推送；`GET /submissions/{sid}` 直接展示）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takedown: Option<TakedownInfo>,
 }
 
 fn submissions_dir(state: &Path) -> PathBuf {
@@ -336,6 +348,7 @@ pub fn create(
         updated_at: now,
         review: None,
         release: None,
+        takedown: None,
     };
     write_record(&server.state, &submission)?;
     server.audit(&auth.key_id, "submit", &sid, "ok");
@@ -414,6 +427,10 @@ pub fn approve(server: &ApiServer, auth: &Authenticated, sid: &str) -> Result<Re
         .ok_or_else(|| ApiError::new(404, "not_found", "not found"))?;
     if record.key_id == auth.key_id {
         return Err(ApiError::forbidden());
+    }
+    // 提交者密钥已吊销：历史版本只能下架，不允许再审出新发布。
+    if super::takedown::revoked_key(&server.state, &record.key_id)? {
+        return Err(ApiError::conflict("提交者密钥已吊销，不能继续审核"));
     }
     match record.state {
         State::Approved | State::Published => {
@@ -544,6 +561,32 @@ pub fn mark_published(state: &Path, sid: &str, seq: u64) -> Result<(), ApiError>
         at: record.updated_at.clone(),
     });
     write_record(state, &record)
+}
+
+/// 发布 job 用：给已发布提交回写撤包/吊销提示（按 `(plugin_id, version)` 命中）。
+pub fn attach_takedown(
+    state: &Path,
+    plugin_id: &str,
+    version: &str,
+    info: &TakedownInfo,
+) -> Result<usize, ApiError> {
+    let mut count = 0;
+    for mut record in all_records(state)? {
+        if record.state != State::Published
+            || record.plugin_id != plugin_id
+            || record.version != version
+        {
+            continue;
+        }
+        if record.takedown.is_some() {
+            continue;
+        }
+        record.takedown = Some(info.clone());
+        record.updated_at = now_rfc3339();
+        write_record(state, &record)?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// 包体路径（发布 job 复制到 `catalog/assets/`）。

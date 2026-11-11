@@ -4,11 +4,13 @@
 //! 暂存包与审计。产物生成由独立的 `release` 子命令完成（私钥只在受控环境）。
 //! `serve` 与 `api` 是两个进程，`serve` 对 `/api/**` 仍然一律 404。
 
+pub mod audit;
 pub mod auth;
 pub mod job;
 pub mod multipart;
 pub mod package;
 pub mod store;
+pub mod takedown;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -106,15 +108,19 @@ pub struct ApiServer {
     pub state: PathBuf,
     pub authors: PathBuf,
     pub reviewers: PathBuf,
+    pub catalog: PathBuf,
+    pub channel: String,
     pub allow_remote: bool,
 }
 
 impl ApiServer {
-    /// 启动校验：state 目录存在且 0700、白名单存在且 0600 且可解析，否则拒启。
+    /// 启动校验：state 目录 0700、白名单 0600 且可解析、源数据渠道目录存在，否则拒启。
     pub fn prepare(
         state: PathBuf,
         authors: PathBuf,
         reviewers: PathBuf,
+        catalog: PathBuf,
+        channel: String,
         allow_remote: bool,
     ) -> Result<Arc<Self>> {
         require_dir_mode(&state, 0o700, "state 目录")?;
@@ -122,7 +128,11 @@ impl ApiServer {
         require_file_mode(&reviewers, 0o600, "reviewers.json")?;
         auth::load_authors(&authors).context("authors.json 非法")?;
         auth::load_reviewers(&reviewers).context("reviewers.json 非法")?;
-        for sub in ["submissions", "nonces"] {
+        let channel_dir = catalog.join(&channel);
+        if !channel_dir.is_dir() {
+            bail!("源数据渠道目录不存在: {}", channel_dir.display());
+        }
+        for sub in ["submissions", "nonces", "takedowns"] {
             let dir = state.join(sub);
             fs::create_dir_all(&dir).with_context(|| format!("创建失败: {}", dir.display()))?;
             set_dir_mode(&dir, 0o700)?;
@@ -131,6 +141,8 @@ impl ApiServer {
             state,
             authors,
             reviewers,
+            catalog,
+            channel,
             allow_remote,
         }))
     }
@@ -355,14 +367,52 @@ fn route(server: &ApiServer, request: &Request, body: &[u8]) -> Result<Response,
     }
     let auth = auth::authenticate(server, request, body)?;
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    // ["api","v1","submissions", ...]
-    if parts.len() < 3 || parts[2] != "submissions" {
+    if parts.len() < 3 {
         return Err(ApiError::new(404, "not_found", "not found"));
     }
+    match parts[2] {
+        "submissions" => route_submissions(server, &auth, request, body, &parts),
+        "plugins" if parts.len() == 7 && parts[4] == "versions" && parts[6] == "yank" => {
+            match request.method.as_str() {
+                "POST" => takedown::yank(server, &auth, parts[3], parts[5], body),
+                _ => Err(ApiError::new(
+                    405,
+                    "method_not_allowed",
+                    "method not allowed",
+                )),
+            }
+        }
+        "keys" if parts.len() == 5 && parts[4] == "revoke" => match request.method.as_str() {
+            "POST" => takedown::revoke_key(server, &auth, parts[3], body),
+            _ => Err(ApiError::new(
+                405,
+                "method_not_allowed",
+                "method not allowed",
+            )),
+        },
+        "audit" if parts.len() == 3 => match request.method.as_str() {
+            "GET" => audit::query(server, &auth, query_only(&request.target)),
+            _ => Err(ApiError::new(
+                405,
+                "method_not_allowed",
+                "method not allowed",
+            )),
+        },
+        _ => Err(ApiError::new(404, "not_found", "not found")),
+    }
+}
+
+fn route_submissions(
+    server: &ApiServer,
+    auth: &auth::Authenticated,
+    request: &Request,
+    body: &[u8],
+    parts: &[&str],
+) -> Result<Response, ApiError> {
     if parts.len() == 3 {
         return match request.method.as_str() {
-            "POST" => store::create(server, &auth, request, body),
-            "GET" => store::list(server, &auth, query_only(&request.target)),
+            "POST" => store::create(server, auth, request, body),
+            "GET" => store::list(server, auth, query_only(&request.target)),
             _ => Err(ApiError::new(
                 405,
                 "method_not_allowed",
@@ -373,7 +423,7 @@ fn route(server: &ApiServer, request: &Request, body: &[u8]) -> Result<Response,
     let sid = parts[3];
     if parts.len() == 4 {
         return match request.method.as_str() {
-            "GET" => store::get(server, &auth, sid),
+            "GET" => store::get(server, auth, sid),
             _ => Err(ApiError::new(
                 405,
                 "method_not_allowed",
@@ -383,9 +433,9 @@ fn route(server: &ApiServer, request: &Request, body: &[u8]) -> Result<Response,
     }
     if parts.len() == 5 {
         return match (request.method.as_str(), parts[4]) {
-            ("POST", "approve") => store::approve(server, &auth, sid),
-            ("POST", "reject") => store::reject(server, &auth, sid, body),
-            ("POST", "withdraw") => store::withdraw(server, &auth, sid),
+            ("POST", "approve") => store::approve(server, auth, sid),
+            ("POST", "reject") => store::reject(server, auth, sid, body),
+            ("POST", "withdraw") => store::withdraw(server, auth, sid),
             _ => Err(ApiError::new(
                 405,
                 "method_not_allowed",

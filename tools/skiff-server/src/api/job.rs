@@ -11,7 +11,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use crate::api::now_rfc3339;
-use crate::api::store::{self, Submission};
+use crate::api::store::{self, Submission, TakedownInfo};
+use crate::api::takedown::{self, Kind, Takedown};
 use crate::model::{ChannelFile, PluginEntry};
 use crate::sign::Signer;
 
@@ -39,6 +40,8 @@ pub struct JobOptions {
 pub struct JobReport {
     /// 已标记发布的 `(sid, seq)`。
     pub released: Vec<(String, u64)>,
+    /// 已随本次发布生效的撤包/吊销记录 id。
+    pub takedowns: Vec<String>,
     pub seq: u64,
     pub output: PathBuf,
     pub swapped: bool,
@@ -55,17 +58,18 @@ pub fn run(options: &JobOptions) -> Result<JobReport> {
             bail!("提交 {only} 不存在或不是 approved");
         }
     }
-    if approved.is_empty() {
-        bail!("没有 approved 的提交；先让管理员 approve 再发布");
+    let mut takedowns =
+        takedown::pending(&options.state).map_err(|_| anyhow::anyhow!("读取撤包状态失败"))?;
+    takedowns.retain(|record| record.channel == options.channel);
+    if approved.is_empty() && takedowns.is_empty() {
+        bail!("没有 approved 的提交，也没有待发布的撤包/吊销；先 approve 或先发起 yank/revoke");
     }
 
     let prev = resolve_prev(options);
     let seq = resolve_seq(options, prev.as_deref())?;
     let now = now_rfc3339();
 
-    // 1) 源数据：包体 + 条目 + 渠道 seq。全部先写源数据，再触发 publish。
-    write_sources(options, &approved, seq, &now)?;
-
+    // 私钥与固定公钥必须在写源数据之前就绪：缺钥时不能先改源。
     let signer = Signer::from_env()?;
     let public_key = options
         .public_key
@@ -76,6 +80,9 @@ pub fn run(options: &JobOptions) -> Result<JobReport> {
         .ok_or_else(|| {
             anyhow::anyhow!("缺少固定公钥：请设置 SKIFF_SERVER_PUBLIC_KEY 或 --public-key")
         })?;
+
+    // 1) 源数据：包体 + 条目 + 撤包标记 + 渠道 seq。全部先写源数据，再触发 publish。
+    write_sources(options, &approved, &takedowns, seq, &now)?;
 
     // 2) 产物：publish 在内存完成验签自检后才写盘；staging 不碰线上目录。
     let (output, swapped) = match (&options.staging_out, &options.dist) {
@@ -116,9 +123,36 @@ pub fn run(options: &JobOptions) -> Result<JobReport> {
             .map_err(|_| anyhow::anyhow!("回写发布状态失败: {}", submission.sid))?;
         released.push((submission.sid.clone(), seq));
     }
-    append_release_log(options, &released, seq, &output, swapped);
+    let mut released_takedowns = Vec::new();
+    for record in &takedowns {
+        takedown::mark_released(&options.state, &record.id, seq)
+            .map_err(|_| anyhow::anyhow!("回写撤包状态失败: {}", record.id))?;
+        // 站内可见状态：已安装/已发布方能在自己的提交详情里看到撤包原因。
+        store::attach_takedown(
+            &options.state,
+            &record.plugin_id,
+            &record.version,
+            &TakedownInfo {
+                kind: record.kind.as_str().to_string(),
+                reason: record.reason.clone(),
+                key_id: record.key_id.clone(),
+                at: record.at.clone(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("回写撤包提示失败: {}", record.id))?;
+        released_takedowns.push(record.id.clone());
+    }
+    append_release_log(
+        options,
+        &released,
+        &released_takedowns,
+        seq,
+        &output,
+        swapped,
+    );
     Ok(JobReport {
         released,
+        takedowns: released_takedowns,
         seq,
         output,
         swapped,
@@ -191,7 +225,13 @@ fn resolve_seq(options: &JobOptions, prev: Option<&Path>) -> Result<u64> {
     Ok(seq + 1)
 }
 
-fn write_sources(options: &JobOptions, approved: &[Submission], seq: u64, now: &str) -> Result<()> {
+fn write_sources(
+    options: &JobOptions,
+    approved: &[Submission],
+    takedowns: &[Takedown],
+    seq: u64,
+    now: &str,
+) -> Result<()> {
     let channel_dir = options.catalog.join(&options.channel);
     let channel_file = channel_dir.join("channel.json");
     if !channel_file.is_file() {
@@ -244,6 +284,28 @@ fn write_sources(options: &JobOptions, approved: &[Submission], seq: u64, now: &
             .with_context(|| format!("写入条目失败: {}", path.display()))?;
     }
 
+    // 撤包/吊销：只改既有条目的 `yanked` 与追加 `revoked[]`，不删除任何条目。
+    for record in takedowns {
+        takedown::mark_source_yanked(
+            &options.catalog,
+            &options.channel,
+            &record.plugin_id,
+            &record.version,
+        )
+        .map_err(anyhow::Error::msg)?;
+        if record.kind == Kind::Revoke {
+            takedown::append_source_revocation(
+                &options.catalog,
+                &options.channel,
+                &record.plugin_id,
+                &record.version,
+                &record.reason,
+                now,
+            )
+            .map_err(anyhow::Error::msg)?;
+        }
+    }
+
     channel.seq = seq;
     channel.generated_at = now.to_string();
     channel.validate()?;
@@ -287,6 +349,7 @@ fn swap_into(staging: &Path, dist: &Path) -> Result<()> {
 fn append_release_log(
     options: &JobOptions,
     released: &[(String, u64)],
+    takedowns: &[String],
     seq: u64,
     output: &Path,
     swapped: bool,
@@ -297,6 +360,7 @@ fn append_release_log(
         "channel": options.channel,
         "seq": seq,
         "submissions": released.iter().map(|(sid, _)| sid).collect::<Vec<_>>(),
+        "takedowns": takedowns,
         "output": output.display().to_string(),
         "swapped": swapped,
     });

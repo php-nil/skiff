@@ -210,6 +210,10 @@ pub fn authenticate(
             return Err(ApiError::unavailable());
         }
     }
+    // 已吊销的 key 既不能提交也不能审核；读失败按 503 失败关闭。
+    if super::takedown::revoked_key(&server.state, key_id)? {
+        return Err(ApiError::forbidden());
+    }
 
     let signed = canonical(
         &request.method,
@@ -280,6 +284,13 @@ fn verify_signature(
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+/// 该 key_id 是否在白名单里登记过（作者或审核者，含 disabled 作者）。
+pub fn key_registered(server: &ApiServer, key_id: &str) -> Result<bool, ApiError> {
+    let authors = load_authors(&server.authors).map_err(|_| ApiError::unavailable())?;
+    let reviewers = load_reviewers(&server.reviewers).map_err(|_| ApiError::unavailable())?;
+    Ok(authors.iter().any(|a| a.key_id == key_id) || reviewers.iter().any(|r| r.key_id == key_id))
 }
 
 /// 进程内 single-flight：nonce 检查与写入必须原子，否则两个并发请求可同时通过。

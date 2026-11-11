@@ -155,11 +155,23 @@ pub fn build(catalog_dir: &Path, schema_dir: &Path, signer: &Signer) -> Result<A
         reject_duplicate_ids("运行环境", runtimes.iter().map(|e| (&e.kind, &e.version)))?;
         reject_duplicate_ids("升级条目", upgrades.iter().map(|e| (&e.version, &e.arch)))?;
 
+        // 吊销列表：可选源文件，条目同索引里的 `revoked[]`（只增不删）。
+        let revoked_path = channel_dir.join("revoked.json");
+        let revoked = if revoked_path.is_file() {
+            let text = fs::read_to_string(&revoked_path)
+                .with_context(|| format!("读取失败: {}", revoked_path.display()))?;
+            serde_json::from_str::<Vec<crate::model::RevokedEntry>>(&text)
+                .with_context(|| format!("解析失败: {}", revoked_path.display()))?
+        } else {
+            Vec::new()
+        };
+
         let index = IndexFile {
             plugins,
             apps,
             runtimes,
             upgrades,
+            revoked,
             ..IndexFile::empty(&name, channel.seq, &channel.generated_at)
         };
         index.validate()?;
