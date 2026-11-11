@@ -228,7 +228,7 @@ async fn context(state: &AppState) -> Result<FtpContext, FtpError> {
         Ok(out)
     })
     .await
-    .map_err(|e| FtpError::internal(format!("投递站点快照失败：{e}")))?;
+    .map_err(|e| FtpError::internal(format!("投递站点快照失败：{e}")))??;
     Ok(FtpContext { sites, sites_root })
 }
 
