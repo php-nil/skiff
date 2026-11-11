@@ -43,6 +43,33 @@ impl State {
     }
 }
 
+/// 提交的条目类型（§17.3）：插件是既有形态，模板/运行环境在 R2c/R2d 接入。
+///
+/// 与 `TakedownInfo::kind`（yank / revoke）不是一回事，后者描述处置动作。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    #[default]
+    Plugin,
+    App,
+    Runtime,
+}
+
+impl EntryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntryKind::Plugin => "plugin",
+            EntryKind::App => "app",
+            EntryKind::Runtime => "runtime",
+        }
+    }
+
+    /// 插件是唯一既有形态：记录里不落 `kind`，保持旧文件与旧客户端看到的字节不变。
+    pub fn is_plugin(&self) -> bool {
+        *self == EntryKind::Plugin
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntryMeta {
@@ -88,6 +115,9 @@ pub struct TakedownInfo {
 pub struct Submission {
     pub schema: String,
     pub sid: String,
+    /// 缺省即插件：旧 `state/submissions/*.json` 没有该字段，照常解析。
+    #[serde(default, skip_serializing_if = "EntryKind::is_plugin")]
+    pub kind: EntryKind,
     pub plugin_id: String,
     pub version: String,
     pub api: String,
@@ -349,6 +379,7 @@ pub fn create(
     let submission = Submission {
         schema: SUBMISSION_SCHEMA.to_string(),
         sid: sid.clone(),
+        kind: EntryKind::Plugin,
         plugin_id: manifest.id.clone(),
         version: manifest.version.clone(),
         api: manifest.api.clone(),

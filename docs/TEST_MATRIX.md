@@ -588,12 +588,12 @@ cargo test -p skiff catalog
 cargo test -p skiff-server
 ```
 
-## P. 发布面 API（Skiff-server R0/R1，2026-11-11 更新）
+## P. 发布面 API（Skiff-server R0/R1/R2a/R2b，2026-11-12 更新）
 
-> 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/http.rs`、`src/build.rs`、`src/main.rs` 的
-> `api`/`release` 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/产物口径。
-> R0 默认关闭、默认只绑回环；`serve` 与 `api` 是两个进程，`serve` 对 `/api/**` 仍一律 404。
-> R1 只填充 v1 索引既有字段（`yanked` / `revoked`），不升 schema。
+> 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/events.rs`、`src/notify.rs`、`src/http.rs`、`src/build.rs`、`src/main.rs` 的
+> `api`/`notify`/`release` 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/事件/产物口径。
+> R0 默认关闭、默认只绑回环；`serve` 与 `api`/`notify` 是不同进程，`serve` 对 `/api/**` 仍一律 404。
+> R1 只填充 v1 索引既有字段（`yanked` / `revoked`），不升 schema；R2b 的 `kind` 对插件记录不落盘。
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -614,6 +614,7 @@ cargo test -p skiff-server
 | API-15 | webhook 投递与签名 | 本地假接收端 | 500 后 200；400；超时；校验签名 | 5xx/超时重试，4xx 直接 dead；成功移入 delivered；Ed25519 签名可用独立域验证 | □通过 / □失败 | `src/notify.rs` 单测 |
 | API-16 | 通知失败隔离 | `state/outbox` 被替换为普通文件 | 正常提交 | 提交仍 201，业务状态不受影响 | □通过 / □失败 | `tests/api.rs::submit_succeeds_when_outbox_cannot_be_written` |
 | API-17 | `release.failed` 事件 | 已 approve 提交 + 不存在的 schema 目录 | 执行 release | 发布失败并留下 `release.failed` 事件；不影响线上目录 | □通过 / □失败 | `src/api/job.rs`、`tests/api.rs::release_failure_emits_event` |
+| API-18 | 提交记录 `kind` 与旧记录兼容 | 旧格式 `state/submissions/*.json`（无 `kind`） | 提交插件并检查落盘/响应；再 approve→release 检查源条目与索引 | 插件记录不出现 `kind`；无 `kind` 的旧记录解析为 `plugin`；源条目与 `index.json` 字节不变 | □通过 / □失败 | `src/api/store.rs`（`EntryKind`）、`tests/api.rs::plugin_records_omit_kind_and_legacy_records_still_load` |
 
 最小回归命令：
 

@@ -547,6 +547,47 @@ fn same_digest_resubmit_returns_same_submission() {
 }
 
 #[test]
+fn plugin_records_omit_kind_and_legacy_records_still_load() {
+    let fx = Fixture::new();
+    let created = submit(&fx, "com.example.demo", "1.0.0");
+    assert_eq!(created.status, 201, "{:?}", created.json());
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    assert!(
+        created.json().get("kind").is_none(),
+        "插件提交响应不应出现 kind: {}",
+        created.json()
+    );
+
+    let path = fx.state.join("submissions").join(format!("{sid}.json"));
+    let raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert!(raw.get("kind").is_none(), "插件记录不应落 kind: {raw}");
+
+    // 旧记录（无 kind）按 plugin 解析：R1 时代落盘的文件不需要迁移。
+    let legacy: api::store::Submission = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(legacy.kind, api::store::EntryKind::Plugin);
+
+    // 全链路：approve → release 后源条目与索引都不出现 kind。
+    let approve = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/approve"),
+        &[],
+        b"",
+    );
+    assert_eq!(approve.status, 202, "{:?}", approve.json());
+    let (_, staging) = publish(&fx, 1);
+    let source = fx
+        .catalog
+        .join("stable/plugins/com.example.demo-1.0.0.json");
+    let source_text = fs::read_to_string(&source).unwrap();
+    assert!(!source_text.contains("\"kind\""), "{source_text}");
+    let index_text = fs::read_to_string(staging.path().join("channels/stable/index.json")).unwrap();
+    assert!(index_text.contains("com.example.demo"), "{index_text}");
+    assert!(!index_text.contains("\"kind\""), "{index_text}");
+}
+
+#[test]
 fn illegal_state_transition_is_rejected() {
     let fx = Fixture::new();
     let created = submit(&fx, "com.example.demo", "1.0.0");
