@@ -962,7 +962,7 @@ async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
     let files_manifest = format!(
         r#"id = "com.skiff.files"
 name = "站点文件"
-version = "0.1.2"
+version = "0.1.3"
 key_id = "{}"
 api = "1.2"
 requires = ["fs"]
@@ -1052,7 +1052,7 @@ async fn site_files_plugin_menu_hangs_under_sites() {
     let manifest = format!(
         r#"id = "com.skiff.files"
 name = "站点文件"
-version = "0.1.2"
+version = "0.1.3"
 key_id = "{}"
 api = "1.2"
 requires = ["fs"]

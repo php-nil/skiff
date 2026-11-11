@@ -63,7 +63,7 @@
 |---|---|---|---|---|---|---|
 | P0 | `com.skiff.guard` | 容器守护 | `docker` + 自身 `data/` | **零内核改动**（`containers.list/inspect/restart`） | 部分竞品无 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读，`/etc/passwd` 可选） | `path:` 只读授权 + 内核调度器采样（均已就绪） | 1Panel/宝塔 监控与进程管理 | ✅ 0.1.0 已实现（含进程 / 网络只读视图） |
-| P0 | `com.skiff.files` | 站点文件 | `fs`（全 6 动词） | `path:` 授权（仅接受 `/www/sites/<域名>/index`）+ 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现（站点级入口） |
+| P0 | `com.skiff.files` | 站点文件 | `fs`（全 6 动词） | `path:` 授权（仅接受 `/www/sites/<域名>/index`）+ 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.3 已实现（站点级入口） |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
 | P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` + `scheduler`（`read` + `manage`） | `scheduler:read`/`scheduler:manage` 探针（任务列表、缓冲读写）+ 默认停用的执行期 BusyGuard 探针任务 | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
 | P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** + `interop` | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态）；可选登录防护依赖防火墙插件 | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现并上机验收通过（FTP-01/05 残留，见 TEST_LEDGER）；fail2ban 已收口到防火墙插件 |

@@ -265,7 +265,7 @@
     return null;
   }
   function updateRoots() {
-    $("roots").textContent = state.roots.length ? state.roots.join("、") : "未授权任何路径";
+    $("roots").textContent = state.roots.length ? state.roots.join("、") : "未配置授权根";
   }
   function renderCrumbs() {
     var root = rootOf(state.cwd);
@@ -375,6 +375,25 @@
     $("list").innerHTML = '<div class="row loading" style="cursor:default;grid-template-columns:1fr">读取目录中…</div>';
   }
   var lastErrorPath = "";
+  // 站点文件插件允许「先装后授权」：没有授权根时给明确指引，而不是空白目录或泛化错误。
+  function showNoGrant() {
+    lastErrorPath = "";
+    state.items = [];
+    state.selection = {};
+    state.active = -1;
+    $("list").innerHTML = "";
+    $("empty").hidden = true;
+    $("error-state").hidden = false;
+    $("error-title").textContent = "尚未配置站点目录";
+    $("error-detail").textContent =
+      "安装时没有添加 path:/www/sites/<域名>/index。请到「插件中心 → 站点文件 → 详情」" +
+      "添加站点内容目录的 path: 授权，然后点「重试」。回收站、配额、上传下载请用内核「工具 → 文件管理」。";
+    $("error-grant").hidden = false;
+    $("error-back").hidden = true;
+    setBanner("未配置授权根", "请先到插件详情添加站点内容目录（path:/www/sites/<域名>/index）");
+    renderCrumbs();
+    renderStatus();
+  }
   function showError(path, err) {
     var msg = errText(err);
     lastErrorPath = path || "";
@@ -383,6 +402,8 @@
     state.active = -1;
     $("list").innerHTML = "";
     $("empty").hidden = true;
+    $("error-grant").hidden = true;
+    $("error-back").hidden = false;
     $("error-state").hidden = false;
     $("error-title").textContent = /授权|forbidden|EACCES|denied|403/i.test(msg) ? "无权访问该路径" : "读取目录失败";
     $("error-detail").textContent = "请求：" + (path || "(默认目录)") + " · " + msg +
@@ -442,6 +463,11 @@
       return true;
     }).catch(function (e) {
       if (token !== navToken) return true;
+      // 首屏/刷新时没有授权根：走专门的「未配置」指引，避免空白页被当成故障。
+      if (!state.roots.length && /授权|grant|403|forbidden/i.test(errText(e))) {
+        showNoGrant();
+        return false;
+      }
       showError(path, e);
       return false;
     });
@@ -985,6 +1011,8 @@
   });
   var kernelLink = $("kernel-link");
   if (kernelLink) kernelLink.href = "/" + prefix + "/files";
+  var errorGrant = $("error-grant");
+  if (errorGrant) errorGrant.href = "/" + prefix + "/plugins/com.skiff.files";
   $("error-retry").addEventListener("click", function () { navigate(lastErrorPath); });
 
   Array.prototype.forEach.call(document.querySelectorAll("[data-close]"), function (btn) {

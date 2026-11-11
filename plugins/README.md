@@ -197,7 +197,7 @@ sh plugins/pack.sh --key /path/to/skiff-signing.key \
 
 ```sh
 ls /www/skiff/official
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.2.wbpkg \
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.3.wbpkg \
     --resource path:/www/sites/example.com/index   # 交互逐条确认；非交互用 --yes --grant ...
 ```
 

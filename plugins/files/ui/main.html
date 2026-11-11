@@ -331,8 +331,7 @@
       授权根：<code id="roots">-</code><br>
       单次读写上限 <b>256 KiB</b>，保存为全量覆盖。<br>
       <a id="kernel-link" href="#" target="_top">在内核页打开（回收站 / 配额 / 上传下载）</a><br>
-      <span class="warn-text">删除 = 永久删除，不进回收站。</span>
-    </div>
+      <span class="warn-text">删除 = 永久删除，不进回收站。</span>    </div>
   </aside>
 
   <main class="main">
@@ -378,6 +377,7 @@
         <b id="error-title">无权访问该路径</b>
         <span class="detail" id="error-detail"></span>
         <div class="actions">
+          <a id="error-grant" class="btn primary" target="_top" hidden>去插件详情配置授权</a>
           <button id="error-back" class="btn primary">返回授权根</button>
           <button id="error-retry" class="btn">重试</button>
         </div>

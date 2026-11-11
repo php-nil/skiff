@@ -553,7 +553,7 @@ skiff plugin list
 **官方插件（随包携带，E 组推荐先用它们冒烟）**——发布包 `official/` 里是 7 个已签名的包 = 6 个官方插件（guard/monitor/files/cron/ftp/firewall）+ `com.skiff.testkit` 架构测试台（原 nginx 插件已于 2026-11-04 内核化为「网站」一级功能，不再随包），装机时已复制到 `/www/skiff/official/`：
 
 ```sh
-ls /www/skiff/official            # com.skiff.{guard,monitor,cron,firewall,ftp,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.2.wbpkg + public-key.txt
+ls /www/skiff/official            # com.skiff.{guard,monitor,cron,firewall,ftp,testkit}-0.1.0.wbpkg + com.skiff.files-0.1.3.wbpkg + public-key.txt
 # public-key.txt 不需要手动导入：首次启动会自动写入信任库（见 §2.11 注）
 # 仅在公钥缺失/指纹不符时，才需显式执行：
 #   skiff trust import /www/skiff/official/public-key.txt --label official
@@ -567,7 +567,7 @@ skiff plugin install /www/skiff/official/com.skiff.guard-0.1.0.wbpkg --yes \
 
 # 文件管理：默认授权 path:/www（resource_hints 预勾选），装完即可浏览；
 # 想缩小范围就显式覆盖，例如 --resource path:/var/www
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.2.wbpkg --yes
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.3.wbpkg --yes
 
 # 计划任务：manifest 已声明 scheduler:read/manage/run/admin 与 interop:call；
 # 要调度别的插件再追加 --resource plugin:<id>
@@ -642,10 +642,10 @@ cp -a /root/iter/official/. /www/skiff/official/
 cd /www/skiff/official
 skiff plugin install com.skiff.monitor-0.1.0.wbpkg --yes \
   --grant fs:read --grant fs:list --resource path:/proc
-skiff plugin install com.skiff.files-0.1.0.wbpkg --yes \
+skiff plugin install com.skiff.files-0.1.3.wbpkg --yes \
   --grant fs:read --grant fs:write --grant fs:list --grant fs:mkdir \
   --grant fs:remove --grant fs:rename \
-  --resource path:/var/www --resource path:/etc/nginx/conf.d
+  --resource path:/www/sites/example.com/index
 skiff plugin install com.skiff.guard-0.1.0.wbpkg --yes \
   --grant docker:containers.list --grant docker:containers.inspect \
   --grant docker:containers.restart --grant fs:read --grant fs:write --grant fs:list \
