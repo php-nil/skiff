@@ -15,7 +15,7 @@
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection};
 use tracing::{info, warn};
@@ -24,6 +24,12 @@ use super::{Db, Result};
 
 /// 进程内维护串行锁：同一时刻只允许一个维护操作。
 static SERIAL: Mutex<()> = Mutex::new(());
+
+/// 审计裁剪单批行数：把一次大 DELETE 拆成多个小事务，锁只在一批内持有。
+const AUDIT_PRUNE_BATCH: usize = 5000;
+/// 批间让出时长：给短事务车道一个插入窗口，避免维护把锁一直攥在手里。
+/// 取值以「等待方足够拿到一次锁」为准，不追求更长；单批本身才是等待上界。
+const BATCH_YIELD: Duration = Duration::from_millis(5);
 
 fn serial_lock() -> MutexGuard<'static, ()> {
     // 与 `Db::conn` 同口径：锁中毒说明之前有 panic，取回内部值继续，避免永久卡死。
@@ -89,21 +95,40 @@ impl Db {
 
     /// 保留策略：删除 `ts < cutoff` 的审计记录，返回删除条数。
     ///
-    /// 幂等：重复执行只会删除新落入窗口外的记录，已删的不会重复计数。
+    /// 分批删除：每批 [`AUDIT_PRUNE_BATCH`] 行、一个自动提交事务，批间让出
+    /// [`BATCH_YIELD`]。每批持锁时间与单批行数成正比，短事务车道可在间隙插入；
+    /// 部分完成是安全的（幂等 + 保留窗口），崩溃后已提交批次保留，下次继续。
     pub fn purge_audit_before(&self, cutoff: i64) -> Result<usize> {
         let _serial = serial_lock();
         let started = Instant::now();
-        let conn = self.conn_lane("maintenance");
-        let deleted = conn.execute("DELETE FROM audit WHERE ts < ?1", params![cutoff])?;
-        drop(conn);
+        let mut total = 0usize;
+        let mut batches = 0u32;
+        loop {
+            let deleted = {
+                let conn = self.conn_lane("maintenance");
+                conn.execute(
+                    "DELETE FROM audit WHERE id IN (
+                         SELECT id FROM audit WHERE ts < ?1 ORDER BY ts LIMIT ?2
+                     )",
+                    params![cutoff, AUDIT_PRUNE_BATCH as i64],
+                )?
+            };
+            total += deleted;
+            batches += 1;
+            if deleted < AUDIT_PRUNE_BATCH {
+                break;
+            }
+            std::thread::sleep(BATCH_YIELD);
+        }
         info!(
             lane = "maintenance",
             op = "audit_prune",
             duration_ms = elapsed_ms(started),
-            rows = deleted,
+            rows = total,
+            batches,
             "维护操作完成"
         );
-        Ok(deleted)
+        Ok(total)
     }
 }
 
@@ -129,5 +154,46 @@ mod tests {
 
         // 幂等：再跑一次不重复计数。
         assert_eq!(db.purge_audit_before(i64::MAX).unwrap(), 0);
+    }
+
+    /// 超过单批上限的裁剪：分批删完、计数累计，窗口内的行保留。
+    #[test]
+    fn purge_audit_before_batches_large_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skiff.db");
+        let db = Db::open(&path).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("BEGIN").unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO audit(ts, actor, ip, action, target, result, detail)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .unwrap();
+            for i in 0..12_345 {
+                stmt.execute(params![1, "a", "1.2.3.4", "old", format!("t{i}"), "ok", ""])
+                    .unwrap();
+            }
+            for i in 0..5 {
+                stmt.execute(params![
+                    1000,
+                    "a",
+                    "1.2.3.4",
+                    "keep",
+                    format!("k{i}"),
+                    "ok",
+                    ""
+                ])
+                .unwrap();
+            }
+            drop(stmt);
+            conn.execute_batch("COMMIT").unwrap();
+        }
+
+        assert_eq!(db.purge_audit_before(100).unwrap(), 12_345);
+        assert_eq!(db.recent_audit(10).unwrap().len(), 5);
+        // 已清空：再跑一次不重复计数。
+        assert_eq!(db.purge_audit_before(100).unwrap(), 0);
     }
 }
