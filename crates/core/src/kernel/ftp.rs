@@ -198,8 +198,10 @@ async fn dispatch_host(state: &AppState, method: &str, params: &Value) -> Result
 async fn context(state: &AppState) -> Result<FtpContext, FtpError> {
     let db = Arc::clone(state.db());
     let sites_root = state.cfg.web_root.join("sites");
-    let snapshot = skiff_app::db_async::run(move || -> Result<Vec<FtpSite>, String> {
-        let sites = db.list_sites().map_err(|e| format!("读取站点失败：{e}"))?;
+    let sites = skiff_app::db_async::run(move || -> Result<Vec<FtpSite>, FtpError> {
+        let sites = db
+            .list_sites()
+            .map_err(|e| FtpError::internal(format!("读取站点失败：{e}")))?;
         let mut out = Vec::with_capacity(sites.len());
         for s in sites {
             let (runtime_kind, runtime_name, container) =
@@ -226,12 +228,8 @@ async fn context(state: &AppState) -> Result<FtpContext, FtpError> {
         Ok(out)
     })
     .await
-    .map_err(|e| FtpError::internal(format!("投递站点快照失败：{e}")))?
-    .map_err(|e| FtpError::internal(e))?;
-    Ok(FtpContext {
-        sites: snapshot,
-        sites_root,
-    })
+    .map_err(|e| FtpError::internal(format!("投递站点快照失败：{e}")))?;
+    Ok(FtpContext { sites, sites_root })
 }
 
 #[cfg(target_os = "linux")]
