@@ -714,7 +714,8 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 - `menu` / `page_ctx`：同步函数被所有页面渲染复用，改 async 需动全部 handler 签名；
 - `jobs` 日志逐行写入：需把作业执行器整体改为 async 感知；
 - `app/sites/**` 的同步 helper：位于动作编排深处，先按 §14 收口动作层再迁；
-- `purge_audit_before` / `backup_to` 这类秒级长操作：需要「独立只读连接/快照」而非线程池，见 §15.5。
+- `purge_audit_before` / `backup_to` 这类秒级长操作：不属于线程池问题，已按 §15.5 的维护车道单独处理
+  （分批删除 + 第二连接快照），不经过 `db_async` 的 permit。
 
 **边界**：`std::sync::MutexGuard` 不是 `Send`，不会出现「持锁跨 await」型死锁；本轮同时修正
 `supervisor.rs:537-545` 在 `running` 异步锁内写库的问题（先释放再写）。所有迁入 `spawn_blocking`
@@ -727,12 +728,13 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 
 1. 该测量程序用 `std::thread` 直接调 `Db::verify_session` / `Db::backup_to`，全程没有 tokio、没有
    `db_async`、没有 permit，等待只可能发生在 `Db.conn` 的 `std::sync::Mutex` 上；
-2. `Db::backup_to`（`crates/store/src/db.rs:169-197`）先取 `self.conn()` 守卫，再在守卫内执行
-   `VACUUM INTO`，守卫直到函数结束才释放——备份窗口 = 持锁窗口；
+2. `Db::backup_to`（当日位于 `crates/store/src/db.rs`，现为
+   `crates/store/src/db/maintenance.rs`）先取 `self.conn` 守卫，再在守卫内执行 `VACUUM INTO`，
+   守卫直到函数结束才释放——备份窗口 = 持锁窗口；
 3. 因此最坏等待约等于整个备份时长，是 SQLite 单连接串行化的直接结果，`spawn_blocking` 只能保证
    等待期间**不占 worker**，不能缩短等待本身。
 
-现状核对（决定「是否给维护操作单独限流」）：
+现状核对（**下表为归因当日状态**；维护车道已于 2026-11-12 按下文「实施结果」落地）：
 
 | 操作 | 调用路径 | 是否走 `db_async` / 占 permit | 持锁表现 |
 | --- | --- | --- | --- |
@@ -744,20 +746,40 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 经过该池子；即使给它们单独 1 个额度，普通请求仍会在 `Db` 互斥上等满整个维护窗口。真正能缩短等待的
 办法只有一条：**让维护操作不再持共享连接**。
 
-**剩余风险（如实记录）**：
+**实施结果（2026-11-12，第 0–2 步）**：维护车道收口到 `crates/store/src/db/maintenance.rs`。
 
-- 维护窗口内（当前 20 万审计行：备份 193 ms、裁剪 182 ms；百万行级进入秒级）所有请求的 DB 调用都会
-  在 `Db` 互斥上排队，表现为整站短暂卡顿，而不只是某个接口慢；
-- 跨进程 CLI 备份/体检与在线写入撞车时，请求最多被卡 `busy_timeout` 5 s，且该等待不可中断；
-- 本轮只解决「阻塞 worker」，**未解决 DB 层串行等待**，不能把 §15.4 的迁移当作这条风险的收敛。
+1. **可观测**：`Db::conn_lane(lane)` 在拿到锁后记录等待，≥50 ms 打 warn（`lane=short|maintenance`）；
+   维护方法统一打 `lane="maintenance"` + `op` / `duration_ms` / `rows` / `bytes`；`db_async` 模块文档
+   写明「覆盖范围只到 `short` 车道」，加大 permit 对维护窗口无效。
+2. **审计裁剪分批**：5000 行/批、每批一个自动提交事务、批间让出 5 ms；累计删除数仍是返回值与
+   `rows` 日志，调用方（`tasks.rs` 的 `audit_prune`）语义不变。
+3. **备份走维护专用第二连接**：普通读写方式打开——**不要改成 `SQLITE_OPEN_READ_ONLY`**，WAL 库的
+   只读连接仍要读写同目录 `-shm` / `-wal`，缺写权限会 `SQLITE_CANTOPEN`（约束写在代码注释里）；
+   `busy_timeout=1500ms`（主连接 5 s 是面向带外 CLI 进程的），争用即失败上抛，不与它叠加；该连接
+   只发读语句与 `VACUUM INTO`，备份后在同一连接上跑一次 `PRAGMA wal_checkpoint(PASSIVE)`。
+   dest≠源、dest 完整性校验、失败清理保持原样。
+4. **串行性**：维护写操作仍全部走主连接，并由进程内静态 `Mutex` 串行；备份与审计裁剪不会并行，
+   第二连接只读快照，不引入第二写者。
 
-**后续项（P1，单独立项，不与本轮混改）**：
+实测（release，Windows 动态内存虚拟机 4.92 GB / 2C4T，200,000 审计行，4 个读线程并发
+`recent_audit(50)`，直接运行已构建二进制以避开闸门编译争用；**Linux 测试机尚未复测**）：
 
-1. `backup_to` 改走独立只读连接执行 `VACUUM INTO`（WAL 下读快照不阻塞在线读写），保持输出文件与
-   完整性校验语义不变；
-2. `purge_audit_before` 改独立连接 + 分批小事务删除（每批上限固定），把单次持锁从「整条 DELETE」
-   降到「一个批次」；
-3. 两项都完成前，`db-vacuum` / `audit-prune` 维持低峰调度；若线上库已到百万行，先手工错峰。
+| 操作 | 改造前（§15.2） | 改造后 |
+| --- | --- | --- |
+| 备份 | 备份期间 5075 次查询，最坏单次等待 92.9 ms（= 持锁窗口） | 快照 22.2 MB，耗时 381 / 391 / 411 ms；读者 p99 7.7–11.8 ms、最坏 13.3–23.8 ms |
+| 审计裁剪 | 182 ms，最坏等待 182 ms | 维护窗口 646–676 ms；读者 p50 0.18–0.35 ms、p99 21.2–22.6 ms、最坏 39.1–39.6 ms |
+
+读等待从「等于维护窗口」降到「单批 / 单次 checkpoint 的 I/O 抖动」量级（约 4–7x）；代价是裁剪总窗口
+因批次与让出变长约 3.6x，备份后多一次 PASSIVE checkpoint。以上只代表本机这一组样本，不外推生产。
+
+**剩余风险（更新）**：
+
+- 备份不再占 `Db` 互斥，但 `VACUUM INTO` 仍要读全库；期间跨进程 CLI 写库会与它争 SQLite 锁，
+  维护侧 1.5 s 后直接失败上抛（有意不排队）。
+- `purge_audit_before` 的写仍在主连接上：单批内仍会短暂独占互斥，批量越小等待越短、总窗口越长。
+- 维护操作仍由内置任务低峰调度；百万行级库的窗口继续线性放大，届时需重新评估。
+
+**遗留（P1，本轮不做）**：rusqlite `backup` feature 的在线备份（可增量、可限定步数）与「维护背压标志」。
 
 ## 变更记录
 
@@ -774,3 +796,4 @@ CLI 因此完全没有这个能力（`skiff plugin install` 只有单阶段）�
 | 2026-11-11 | 追加 §15 待办：async 路径上的同步 SQLite（`Db` 为 `std::sync::Mutex<Connection>`，涉及 web handler、菜单偏好、调度 tick、插件卸载、内核能力面；风险是阻塞 worker 而非死锁）。只登记不改码，`spawn_blocking` 迁移单独立项 |
 | 2026-11-11 | §15 第二轮：完成 async 侧同步 SQLite 的清点与实测（release：常规语句 p99 ≤ 0.34 ms、WAL checkpoint 峰值 8–12 ms、审计裁剪 182 ms、`VACUUM INTO` 193 ms，另留 debug 对照；worker 仅 2 个），对比三种方案后选「`spawn_blocking` + 有界并发」，迁移会话中间件、内核能力面鉴权/快照、概览页与 tick 落盘，并修正 supervisor 在异步锁内写库 |
 | 2026-11-11 | §15.5 归因备份争用：最坏等待等于备份窗口，属 `Db` 单连接互斥而非 `db_async` 信号量；备份/审计裁剪不经过 permit 池，单独限流无收益。剩余风险（维护窗口内整站 DB 排队、跨进程 busy 5 s）如实保留，维护操作改独立连接/分批删除列为 P1 遗留项 |
+| 2026-11-12 | §15.5 第 0–2 步落地：维护车道收口 `store::maintenance`（`lane=short/maintenance` 日志、连接等待 ≥50 ms warn）；审计裁剪改 5000 行/批 + 批间让出；备份改维护专用第二连接（普通读写打开、`busy_timeout=1500ms`、只读快照、结束 PASSIVE checkpoint），保留 dest 完整性校验。release 实测：备份读者最坏等待 92.9 ms → 13.3–23.8 ms，裁剪 182 ms → 最坏 39.1–39.6 ms（窗口 646–676 ms）。rusqlite 在线备份与维护背压标志仍为遗留 P1 |
