@@ -1,5 +1,6 @@
 //! 命令行入口：`gen` 生成静态产物、`publish` 生成+签名+严格自检、
-//! `check` 做发布前校验、`sync` 从主站同步到镜像目录、`serve` 只读提供产物目录。
+//! `check` 做发布前校验、`sync` 从主站同步到镜像目录、`serve` 只读提供产物目录、
+//! `api` 发布面提交/审核（默认关闭、独立进程）、`release` 把已审提交落成产物。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpListener;
@@ -7,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
+use skiff_server::api;
 use skiff_server::build::{build, write};
 use skiff_server::check;
 use skiff_server::release;
@@ -15,7 +17,7 @@ use skiff_server::sign::{Signer, ENV_PUBLIC_KEY};
 use skiff_server::sync::{self, DirSource, HttpSource};
 
 const HELP: &str = "\
-Skiff-server：商店清单校验、静态产物生成、签名发布、镜像同步与静态服务
+Skiff-server：商店清单校验、静态产物生成、签名发布、镜像同步、静态服务与发布面 API
 
 用法:
   skiff-server gen     [--catalog <dir>] [--schema <dir>] [--out <dir>] [--unsigned]
@@ -26,6 +28,11 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   skiff-server serve   --dist <dir> [--listen 127.0.0.1:8443]
                        [--tls-cert <pem> --tls-key <pem> | --http]
                        [--access-log [<path>]]
+  skiff-server api     --state <dir> --authors <json> --reviewers <json>
+                       [--listen 127.0.0.1:9443] [--allow-remote]
+  skiff-server release --state <dir> --catalog <dir> [--schema <dir>] [--channel stable]
+                       [--staging-out <dir> | --dist <dir> --swap]
+                       [--seq <n>] [--prev <dir>] [--submission <sid>] [--public-key <hex>]
 
 选项:
   --catalog <dir>       源数据目录，默认 deploy/skiff-server/catalog
@@ -33,18 +40,27 @@ Skiff-server：商店清单校验、静态产物生成、签名发布、镜像�
   --out <dir>           gen/publish 的输出目录，默认 target/skiff-server/dist（生成前会清空）
   --unsigned            仅本地演练：产出未签名占位；发布请用 publish
   --dist <dir>          校验已生成的产物目录；缺省则先在内存生成再校验
-  --prev <dir>          上一版产物目录，用于拒绝 seq 回退
+  --prev <dir>          上一版产物目录，用于拒绝 seq 回退 / release 的 seq 基准
   --require-signature   占位/空签名直接判失败（发布门禁用）
   --public-key <hex>    固定 Ed25519 公钥；缺省读环境变量 SKIFF_SERVER_PUBLIC_KEY
   --from <url|dir>      同步源：https:// 基地址或本地产物目录
   --to <dir>            同步目标镜像目录
-  --channel <name>      同步渠道，默认 stable
-  --listen <addr:port>  serve 监听地址，默认 127.0.0.1:8443
+  --channel <name>      渠道，默认 stable
+  --listen <addr:port>  serve 默认 127.0.0.1:8443；api 默认 127.0.0.1:9443
   --tls-cert <pem>      serve 服务器证书链（默认 https，必须与 --tls-key 成对）
   --tls-key <pem>       serve 服务器私钥（PEM）
   --http                serve 明文模式，仅测试用；与证书参数互斥
   --access-log [<path>] serve 访问日志，默认关闭；给路径则追加写该文件，缺省取值或 `-`
                         写 stderr（systemd 下即 journal）；每请求一行，不影响协议语义
+  --state <dir>         api/release 的提交状态目录（必须 0700）
+  --authors <json>      作者公钥白名单（必须 0600）
+  --reviewers <json>    审核公钥白名单（必须 0600）
+  --allow-remote        api 允许监听非回环地址（必须前置 TLS 反代，不推荐）
+  --staging-out <dir>   release 只产出 staging，不碰线上目录（推荐给离线发布机/CI）
+  --dist <dir>          release 线上产物目录（必须显式 --swap 才换入）
+  --swap                release 显式换入 --dist（同机部署属测试姿态）
+  --seq <n>             release 由调用方指定 seq；缺省从 --prev/--dist 只读读取 +1
+  --submission <sid>    release 只处理一个提交
 
 环境变量:
   SKIFF_SIGNING_KEY     发布私钥种子（64 位十六进制），仅从环境/CI secret 读取
@@ -71,6 +87,8 @@ fn run() -> Result<()> {
         Some("check") => check_cmd(&args[1..]),
         Some("sync") => sync_cmd(&args[1..]),
         Some("serve") => serve_cmd(&args[1..]),
+        Some("api") => api_cmd(&args[1..]),
+        Some("release") => release_cmd(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
             print!("{HELP}");
             Ok(())
@@ -263,6 +281,88 @@ fn normalize_access_log(args: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// 发布面 API：默认关闭、独立进程、默认只绑回环；TLS 由前置反代终止。
+fn api_cmd(args: &[String]) -> Result<()> {
+    let (options, flags) = parse(args, &["--allow-remote"])?;
+    let state = required_path(&options, "--state")?;
+    let authors = required_path(&options, "--authors")?;
+    let reviewers = required_path(&options, "--reviewers")?;
+    let listen = options
+        .get("--listen")
+        .cloned()
+        .unwrap_or_else(|| "127.0.0.1:9443".to_string());
+    let addr: std::net::SocketAddr = listen
+        .parse()
+        .with_context(|| format!("--listen 不是合法地址: {listen}"))?;
+
+    let server =
+        api::ApiServer::prepare(state, authors, reviewers, flags.contains("--allow-remote"))?;
+    server.check_listen(&addr)?;
+
+    let listener = TcpListener::bind(addr).with_context(|| format!("监听 {addr} 失败"))?;
+    if !addr.ip().is_loopback() {
+        eprintln!(
+            "警告：api 监听非回环地址 {addr}，包体与元数据将以明文传输；\
+             生产必须由 TLS 反代终止并转发到 127.0.0.1"
+        );
+    }
+    println!("skiff-server api：http://{addr}（默认关闭、独立进程；客户端不访问本服务）");
+    println!(
+        "提交状态：{}（0700）；白名单每请求重读，改文件即生效",
+        server.state.display()
+    );
+    api::serve(listener, server)
+}
+
+/// 发布 job：把 approved 提交落成源数据并复用 `publish` 生成签名产物。
+fn release_cmd(args: &[String]) -> Result<()> {
+    let (options, flags) = parse(args, &["--swap"])?;
+    let seq = match options.get("--seq") {
+        Some(value) => Some(
+            value
+                .parse::<u64>()
+                .with_context(|| format!("--seq 不是合法数字: {value}"))?,
+        ),
+        None => None,
+    };
+    let job = api::job::JobOptions {
+        state: required_path(&options, "--state")?,
+        catalog: path_option(&options, "--catalog", "deploy/skiff-server/catalog"),
+        schema: path_option(&options, "--schema", "deploy/skiff-server/schema"),
+        channel: options
+            .get("--channel")
+            .cloned()
+            .unwrap_or_else(|| "stable".to_string()),
+        staging_out: options.get("--staging-out").map(PathBuf::from),
+        dist: options.get("--dist").map(PathBuf::from),
+        swap: flags.contains("--swap"),
+        seq,
+        prev: options.get("--prev").map(PathBuf::from),
+        submission: options.get("--submission").cloned(),
+        public_key: public_key(&options)?,
+    };
+    let report = api::job::run(&job)?;
+    println!(
+        "✓ 发布完成：seq={}，提交 {} 个 → {}{}",
+        report.seq,
+        report.released.len(),
+        report.output.display(),
+        if report.swapped {
+            "（已换入线上目录）"
+        } else {
+            "（仅 staging，需由发布机/CI 搬运）"
+        }
+    );
+    Ok(())
+}
+
+fn required_path(options: &BTreeMap<String, String>, name: &str) -> Result<PathBuf> {
+    options
+        .get(name)
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("缺少 {name}"))
 }
 
 fn public_key(options: &BTreeMap<String, String>) -> Result<Option<String>> {

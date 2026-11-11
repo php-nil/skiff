@@ -2086,6 +2086,7 @@ name = "skiff-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "ed25519-dalek",
  "hex",
  "rcgen",
@@ -2093,6 +2094,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "skiff-pkgfmt",
  "tempfile",
  "ureq",
 ]

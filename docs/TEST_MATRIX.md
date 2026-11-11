@@ -588,6 +588,34 @@ cargo test -p skiff catalog
 cargo test -p skiff-server
 ```
 
+## P. 发布面 API（Skiff-server R0，2026-11-11 新增）
+
+> 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/http.rs`、`src/main.rs` 的 `api`/`release`
+> 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/产物口径。
+> R0 默认关闭、默认只绑回环；`serve` 与 `api` 是两个进程，`serve` 对 `/api/**` 仍一律 404。
+
+| 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
+| --- | --- | --- | --- | --- | --- | --- |
+| API-01 | 请求签名与重放防护 | `[本机]` 集成测试；作者/审核两把 Ed25519 钥 | 正例提交；再把 body 改一个字节、改用清单签名域、把时间戳拨到 −301s、复用同一 nonce 重放 | 正例 201；其余全部 401，且不产生提交记录 | □通过 / □失败 | `tools/skiff-server/src/api/auth.rs`、`tests/api.rs` |
+| API-02 | 权限分离 | 作者的 `id_prefixes` 限定 `com.example` | 作者钥调 approve；同一把钥同时登记为审核钥后自我审核；提交前缀外 id | 均 403 且响应体统一 `forbidden`；审计不记签名与包内容 | □通过 / □失败 | `api/auth.rs::Authenticated`、`api/store.rs::{approve,reject}` |
+| API-03 | 幂等与状态机 | 同一份签名 `.wbpkg` | 同摘要重提；approved 后作者 withdraw；已发布版本再提交 | 重提 200 且 `sid` 相同；非法迁移 412；已发布同版本 409 | □通过 / □失败 | `api/store.rs::{sid_of,approve,withdraw}` |
+| API-04 | 传输严格性 | `[本机]` 集成测试 | POST 不带 `Content-Length`；带 `Transfer-Encoding: chunked`；声明 999999999 字节 | 分别 411 / 400 / 413；413 不读取 body | □通过 / □失败 | `tools/skiff-server/src/api/mod.rs::read_body`、`api/multipart.rs` |
+| API-05 | 产物生成与失败隔离 | `[本机]` 集成测试；`SKIFF_SIGNING_KEY` + `SKIFF_SERVER_PUBLIC_KEY` | 提交→approve→`release --staging-out`；再构造 schema 缺失让 `release --dist --swap` 失败 | staging 的 `manifest` seq=1 且验签通过、`blobs/sha256/<hex>` 存在；失败时 `--dist` 的 marker 原样保留、提交仍为 `approved` | □通过 / □失败 | `api/job.rs`、`tests/api.rs::failed_release_does_not_touch_dist` |
+| API-06 | `serve` 零改动 | `[本机]` 集成测试 | 抽取 `http.rs` 后重跑既有 serve 契约用例（304 / 206 / 405 / 404、HEAD、穿越、访问日志） | 行为与抽取前一致，`/api/**` 仍 404 | □通过 / □失败 | `tools/skiff-server/src/http.rs`、`tests/serve.rs` |
+
+最小回归命令：
+
+```bash
+cargo test -p skiff-server --test api
+cargo test -p skiff-server --test serve
+cargo test -p skiff-server
+```
+
+上机（R0 全链路，仅测试姿态）：先起 `skiff-server api --state <0700> --authors <0600> --reviewers <0600>`，
+用作者钥提交并让审核钥 approve，再在可持有 `SKIFF_SIGNING_KEY` 的环境执行
+`skiff-server release --state <dir> --catalog <dir> --staging-out <dir>`；把 staging 交给分发主机后，
+现有 Skiff 刷新目录应看到新版本。**生产不得把发布私钥放到分发主机上同机 `--swap`。**
+
 ## 附：待核对项结论（2026-11-07 已全部定性）
 
 | 编号 | 结论 | 依据 |

@@ -2,8 +2,10 @@
 //!
 //! 只做服务端产物这一侧，不依赖内核 crate，也不引入常驻服务。
 
+pub mod api;
 pub mod build;
 pub mod check;
+pub mod http;
 pub mod model;
 pub mod release;
 pub mod schema;

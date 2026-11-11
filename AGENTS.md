@@ -94,7 +94,7 @@
 | 内核 FTP 契约 | `docs/KERNEL_FTP_CONTRACT.md` | 新增 `ftp` 能力面的主体与授权（manifest→`perm:ftp:<verb>`）、审计口径、站点账号与 uid/gid 对齐（`MinUID` 只降不升）、安全边界、宿主 pure-ftpd 取舍与测试矩阵；fail2ban 已收口到防火墙插件 |
 | 内核防火墙契约 | `docs/KERNEL_FIREWALL_CONTRACT.md` | 新增 `firewall` 能力面的主体与授权（manifest→`perm:firewall:<verb>`）、方法清单、自有作用域（`inet skiff` / `SKIFF` 链 / `skiff-*.conf`）、审计口径、特权通道、interop 接口与测试矩阵 |
 | SDUI 内核适配手册 | `docs/SDUI_HANDBOOK.md` | 面向 JSON Schema 驱动服务端 UI 的内核适配：现状耦合清单（业务/展示/传输归类）、资源与动作契约、权限校验审计挂接、分阶段迁移与回滚、开发手册与待定项；设计与迁移规范，不代表已实施 |
-| Skiff-server 分发方案 | `docs/SKIFF_SERVER.md` | 中心化静态数据分发：商店/应用模板/运行环境/内核升级四类清单的模型、JSON Schema 与 Ed25519 签名清单、内容寻址与 `seq` 防回滚、镜像同步与多源切换、发布审核与吊销、客户端拉取与商店安装链路、P0–P3 落地与签名发布/镜像同步命令、静态服务契约（`skiff-server serve`，§16）、发布面 `/api/**` 接口草案（§17，可选独立子命令，R0 未实施）；托管来源待决策（§15） |
+| Skiff-server 分发方案 | `docs/SKIFF_SERVER.md` | 中心化静态数据分发：商店/应用模板/运行环境/内核升级四类清单的模型、JSON Schema 与 Ed25519 签名清单、内容寻址与 `seq` 防回滚、镜像同步与多源切换、发布审核与吊销、客户端拉取与商店安装链路、P0–P3 落地与签名发布/镜像同步命令、静态服务契约（`skiff-server serve`，§16）、发布面 `/api/**`（§17，可选独立子命令，R0 已实施、R1 待做）；托管来源待决策（§15） |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
 > 新增全局专项文档须同步在此登记。

@@ -15,6 +15,9 @@ hex = { workspace = true }
 ed25519-dalek = { workspace = true }
 ureq = { workspace = true }
 rustls-pemfile = { workspace = true }
+chrono = { workspace = true }
+# `.wbpkg` 校验复用仓库唯一实现（xtask verify-pkg 同源），不另写验签。
+skiff-pkgfmt = { path = "../../crates/pkgfmt" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
