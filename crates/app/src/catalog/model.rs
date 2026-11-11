@@ -73,6 +73,9 @@ pub struct PluginEntry {
     pub published_at: String,
     #[serde(default)]
     pub yanked: bool,
+    /// 撤包原因（R1 新增可选字段；旧索引没有该字段，旧客户端忽略未知字段）。
+    #[serde(default)]
+    pub yank_reason: Option<String>,
     pub pkg_sha256: Option<String>,
     pub pkg_url: Option<String>,
     pub size: Option<u64>,
@@ -391,6 +394,7 @@ mod tests {
             summary: "示例插件".into(),
             published_at: "2026-11-10T00:00:00Z".into(),
             yanked: false,
+            yank_reason: None,
             pkg_sha256: Some(sha.into()),
             pkg_url: Some(format!("{BLOB_PREFIX}{sha}")),
             size: Some(size),

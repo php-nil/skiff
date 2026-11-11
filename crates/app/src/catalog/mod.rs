@@ -1049,11 +1049,16 @@ fn takedown_note(index: &Index, id: &str, version: &str) -> Option<String> {
     if let Some(entry) = index.revoked(id, version) {
         return Some(format!("该版本已被服务端撤回：{}", entry.reason));
     }
-    index
+    let entry = index
         .plugins
         .iter()
-        .any(|p| p.id == id && p.version == version && p.yanked)
-        .then(|| "该版本已被服务端下架（yanked），请升级到新版本".to_string())
+        .find(|p| p.id == id && p.version == version && p.yanked)?;
+    Some(match entry.yank_reason.as_deref() {
+        Some(reason) if !reason.trim().is_empty() => {
+            format!("该版本已被服务端下架：{reason}")
+        }
+        _ => "该版本已被服务端下架（yanked），请升级到新版本".to_string(),
+    })
 }
 
 /// 版本比较的唯一入口：与插件安装共用 `skiff_plugin::install::version_gt` 的语义。
@@ -1103,7 +1108,12 @@ fn entries_of(index: &Index) -> CatalogEntries {
                     note: p.summary.clone(),
                     warn: match (revoked, p.yanked) {
                         (Some(r), _) => format!("已撤回：{}", r.reason),
-                        (None, true) => "已撤回".into(),
+                        (None, true) => match p.yank_reason.as_deref() {
+                            Some(reason) if !reason.trim().is_empty() => {
+                                format!("已撤回：{reason}")
+                            }
+                            _ => "已撤回".into(),
+                        },
                         (None, false) => String::new(),
                     },
                 }

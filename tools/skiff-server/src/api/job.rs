@@ -266,6 +266,7 @@ fn write_sources(
             summary: submission.entry.summary.clone(),
             published_at: now.to_string(),
             yanked: false,
+            yank_reason: None,
             pkg_sha256: None,
             pkg_url: None,
             size: None,
@@ -291,6 +292,7 @@ fn write_sources(
             &options.channel,
             &record.plugin_id,
             &record.version,
+            &record.reason,
         )
         .map_err(anyhow::Error::msg)?;
         if record.kind == Kind::Revoke {

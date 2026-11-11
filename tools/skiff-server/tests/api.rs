@@ -783,6 +783,10 @@ fn yank_release_marks_index_and_submission_and_is_not_repeatable() {
     .unwrap();
     assert_eq!(index["seq"], 2);
     assert_eq!(index["plugins"][0]["yanked"], true, "{index}");
+    assert_eq!(
+        index["plugins"][0]["yank_reason"], "policy violation",
+        "撤包原因必须随条目进入索引: {index}"
+    );
     assert_eq!(index["revoked"].as_array().unwrap().len(), 0);
     let manifest: serde_json::Value = serde_json::from_slice(
         &fs::read(staging.path().join("channels/stable/manifest.json")).unwrap(),
@@ -867,6 +871,7 @@ fn revoked_key_blocks_submit_and_review_and_revokes_history() {
     )
     .unwrap();
     assert_eq!(index["plugins"][0]["yanked"], true, "{index}");
+    assert_eq!(index["plugins"][0]["yank_reason"], "private key leaked");
     assert_eq!(index["revoked"][0]["id"], "com.example.demo");
     assert_eq!(index["revoked"][0]["version"], "1.0.0");
     assert_eq!(index["revoked"][0]["reason"], "private key leaked");
@@ -907,6 +912,48 @@ fn revoked_key_blocks_submit_and_review_and_revokes_history() {
         .unwrap()
         .iter()
         .any(|e| e["action"] == "revoke" && e["result"] == "ok"));
+}
+
+#[test]
+fn audit_sid_chains_submit_approve_and_release() {
+    let fx = Fixture::new();
+    let sid = published_submission(&fx);
+
+    let response = signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "GET",
+        &format!("/api/v1/audit?sid={sid}"),
+        &[],
+        b"",
+    );
+    assert_eq!(response.status, 200, "{:?}", response.json());
+    let entries = response.json()["entries"].as_array().unwrap().clone();
+    let actions: Vec<String> = entries
+        .iter()
+        .map(|e| e["action"].as_str().unwrap_or_default().to_string())
+        .collect();
+    for expected in ["submit", "approve", "release"] {
+        assert!(
+            actions.iter().any(|a| a == expected),
+            "按 sid 查询必须能串起 {expected}: {actions:?}"
+        );
+    }
+    let release = entries
+        .iter()
+        .find(|e| e["action"] == "release")
+        .expect("release 行必须可查");
+    assert!(
+        release["submission_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == &serde_json::Value::String(sid.clone())),
+        "release 行必须暴露 submission_ids: {release}"
+    );
+    for forbidden in ["signature", "package", "body", "sha256"] {
+        assert!(release.get(forbidden).is_none(), "{release}");
+    }
 }
 
 #[test]

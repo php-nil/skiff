@@ -181,6 +181,26 @@ fn revoked_json_missing_and_empty_are_byte_identical() -> Result<()> {
 }
 
 #[test]
+fn yank_reason_flows_from_source_into_index() -> Result<()> {
+    let dir = temp_catalog()?;
+    let path = dir.path().join("stable/plugins/com.example.hello.json");
+    let mut entry: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    entry["yanked"] = json!(true);
+    entry["yank_reason"] = json!("policy violation");
+    fs::write(&path, serde_json::to_vec_pretty(&entry)?)?;
+
+    let artifact = build(dir.path(), &schema(), &Signer::Unsigned)?;
+    let index: Value = serde_json::from_slice(
+        artifact
+            .get("channels/stable/index.json")
+            .expect("索引必须生成"),
+    )?;
+    assert_eq!(index["plugins"][0]["yanked"], true);
+    assert_eq!(index["plugins"][0]["yank_reason"], "policy violation");
+    Ok(())
+}
+
+#[test]
 fn revoked_json_is_validated_and_covers_index_digest() -> Result<()> {
     let dir = temp_catalog()?;
     fs::write(dir.path().join("stable/revoked.json"), b"{not-json")?;

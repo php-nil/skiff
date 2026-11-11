@@ -608,6 +608,8 @@ cargo test -p skiff-server
 | API-09 | 客户端离线读取撤包信息 | 已生成的旧索引（seq=2，`yanked=false`、`revoked=[]`）与新索引 | 用当前客户端解析旧索引进安装；再用填充 `yanked`/`revoked` 的新索引安装 | 旧索引解析成功、`yanked=false`、`revoked` 为空，安装链路与 R1 前一致；新索引不报解析失败，安装返回 `revoked` 原因；已安装卡片提示来自本地缓存，不触网 | □通过 / □失败 | `crates/app/src/catalog/{model,mod}.rs`、`commands/store.rs::check_compatibility`、`crates/web/src/handlers/plugins.rs` |
 | API-10 | 审计查询 | 已有 submit/approve/yank/revoke 记录 | 按 `sid`、`key_id`、`action`、`result`、`since/until`、`limit/offset` 查询；作者查他人 `key_id` | 审核者可见全部；作者默认只看自己、显式查他人 403；分页返回 `total`/`next_offset`；字段只有时间/主体/动作/对象/结果，不含签名与包内容 | □通过 / □失败 | `api/audit.rs`、`tests/api.rs::audit_query_is_scoped_and_paginated_without_sensitive_fields` |
 | API-11 | `revoked.json` 纳入签名覆盖 | 临时源数据（一条插件） | 缺 `revoked.json` 构建一次；写入 `[]` 再构建；写入非法 JSON；写入一条吊销记录 | 缺文件与空数组产物逐字节一致；非法 JSON 构建失败；有效记录进入 `index.revoked` 且 `manifest.index.sha256` 覆盖索引字节 | □通过 / □失败 | `src/build.rs`、`tests/p0.rs::revoked_json_*` |
+| API-12 | 撤包原因端到端可见 | 源条目 `yanked=true` + `yank_reason` | 构建索引；客户端解析并取 `plugin_package`/`cached_takedown`；再尝试安装该版本 | 索引含 `yank_reason`；插件页提示带原因；安装被拒文案带原因；无原因时仍是通用文案；旧索引无该字段时解析与安装不变 | □通过 / □失败 | `src/model.rs`、`src/api/job.rs`、`crates/app/tests/takedown_reason.rs`、`commands/store.rs::check_compatibility` |
+| API-13 | 审计按 sid 串起发布 | 提交→审核→release，并执行 yank | `GET /api/v1/audit?sid=<sid>` | 同一次查询返回 submit / approve / release 三类动作；release 行含 `submission_ids[]` 且命中该 sid；仍不含签名与包内容 | □通过 / □失败 | `src/api/audit.rs`、`tests/api.rs::audit_sid_chains_submit_approve_and_release` |
 
 最小回归命令：
 

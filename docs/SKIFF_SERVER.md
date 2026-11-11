@@ -1166,15 +1166,16 @@ R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工�
 
 **索引契约（不升 schema）**
 
-- `plugins[].yanked` 与 `revoked[]` 是 `skiff.server.index/v1` 的既有字段；R1 只开始填充，schema 版本与字段集合不变。
-- 旧版客户端读到未知字段一律忽略；读到 `yanked=true` 或 `revoked` 命中时，按已有拒绝语义给原因（不是解析失败）。R1 前的旧索引（`yanked=false`、`revoked=[]`）解析与安装行为完全不变。
+- `plugins[].yanked` 与 `revoked[]` 是 `skiff.server.index/v1` 的既有字段；R1 只开始填充，schema 版本不变。
+- R1 后续增量新增**可选**字段 `plugins[].yank_reason`（string，1..=200）：旧客户端忽略未知字段，旧索引不出现该字段，因此**仍不升 schema 版本**。有原因时客户端展示原因，无原因时保持通用文案。
+- 旧版客户端读到未知字段一律忽略；读到 `yanked=true` 或 `revoked` 命中时，按已有拒绝语义给原因（不是解析失败）。R1 前的旧索引（`yanked=false`、`revoked=[]`、无 `yank_reason`）解析与安装行为完全不变。
 - `seq` 单调与「已发布只增不删」继续成立：撤包是给既有条目打 `yanked` 标记并追加 `revoked[]`，**不物理删除**；每次生效都递增 `seq`，客户端防回滚不受影响。
 
 **状态机与边界**
 
 - `published → yanked` 由**审核钥**触发，不可逆；恢复只能发更高版本，不提供 `unyank`。
 - 密钥吊销（`revoked`）按 `key_id` 一次性覆盖该 key 的历史版本：源条目 `yanked=true` 且追加 `revoked[]`；`revoked` 不可逆，也不能再审——该 key 之后既不能提交也不能审核，换钥按新作者重新登记。
-- 已有安装者不自动卸载；`GET /api/v1/submissions/{sid}` 与内核插件页给「该版本已被撤回：<reason>」提示。
+- 已有安装者不自动卸载；`GET /api/v1/submissions/{sid}` 与内核插件页从索引的 `yank_reason` / `revoked[].reason` 读取撤包原因并提示（无原因时用通用文案）。
 - 撤销/吊销只写 `state/` 记录，产物与签名仍由 `release` 在受控环境生成。
 
 **通知的最小形态**
@@ -1184,9 +1185,9 @@ R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工�
 **审计查询**
 
 - 数据源是 `state/audit.jsonl`，倒序返回；`limit` 默认 50、上限 200，`offset` 分页，返回 `total` 与 `next_offset`。
-- 过滤：`sid`（含以 key_id 为对象的吊销记录）、`key_id`、`action`、`result`、`since`/`until`（UTC RFC3339）。
+- 过滤：`sid`（匹配 `submission_id` 或 release 行的 `submission_ids[]` 任一元素，可串起 submit / approve / release）、`key_id`、`action`、`result`、`since`/`until`（UTC RFC3339）。
 - 鉴权：审核者看全部；作者默认只看自己，显式查他人 `key_id` 一律 403。
-- 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`result`，**不含签名、包内容或请求体**。
+- 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`submission_ids`/`result`，**不含签名、包内容或请求体**。
 
 **R2（后续，按需）**：应用模板与运行环境复用同一套提交/审核模型；组织级命名空间；发布 job 队列化与并发控制。
 
@@ -1252,10 +1253,12 @@ skiff-server release  → 写源数据 → 调既有 publish → 产出签名产
 
 - **端点与存储**：`yank` / `keys/{key_id}/revoke` / `audit` 三个新端点与 R0 六端点共用同一签名域与错误体。撤包记录落 `state/takedowns/<tak-…>.json`，密钥吊销落 `state/revoked_keys.json`；`api` 仍不读签名私钥、不写 `--dist`。
 - **鉴权**：`authenticate` 在公钥一致性检查后、验签前查 `revoked_keys.json`，命中即 403；读取失败 503 失败关闭。密钥吊销即时生效，不等待发布。
-- **发布 job**：`release` 同时处理 `approved` 提交与 `pending` 撤包记录。一次运行只递增一个 `seq`：先写源数据（新条目 / `yanked=true` / `revoked.json`），再 `publish`，最后回写 `published`、`released` 与提交记录的 `takedown`。没有待发布项时直接失败，不空转递增 `seq`。
+- **发布 job**：`release` 同时处理 `approved` 提交与 `pending` 撤包记录。一次运行只递增一个 `seq`：先写源数据（新条目 / `yanked=true` + `yank_reason` / `revoked.json`），再 `publish`，最后回写 `published`、`released` 与提交记录的 `takedown`。没有待发布项时直接失败，不空转递增 `seq`。
 - **并发**：yank 记录按 `(kind, id, version)` 稳定命名并用文件锁串行；重复 yank 返回 200 同一记录。发布 job 是 `pending → released` 的唯一写入者；并发到达的新 yank 留给下一次 `release`。
 - **`revoked.json` 与签名覆盖**：`build` 读取 `<channel>/revoked.json` 填入 `index.revoked`；缺文件等价于空数组，产物逐字节一致；文件存在但 JSON 非法时构建直接失败。manifest 的 `index.sha256` 继续覆盖整份索引字节，因此吊销列表也被签名间接覆盖。
-- **客户端**：`skiff-app` 的索引模型沿用 `serde(default)`；`CatalogService::cached_takedown` 只读内存/本地缓存，不触网，供插件页给已安装但被撤包的版本加提示。安装侧仍在 `commands::store::prepare` 拒绝 `revoked` 与 `yanked`。
-- **R1 测试**：`tests/api.rs` 覆盖 yank 幂等/404/403、吊销后提交与审核 403、历史版本进入 `revoked[]`、审计分页与越权；`tests/p0.rs` 覆盖 `revoked.json` 缺省/非法/签名字节；`crates/app` 覆盖旧索引解析不变与新索引拒绝原因。
+- **撤包原因**：`build` 把源条目的可选 `yank_reason` 原样带进索引；该字段不出现时输出与 R1 前逐字节一致。旧客户端忽略未知字段，因此不需要 schema 版本迁移。
+- **客户端**：`skiff-app` 的索引模型对 `yank_reason` 用 `serde(default)`；`CatalogService::cached_takedown` 只读内存/本地缓存，不触网，有原因时返回原因，无原因时保持通用文案。安装侧仍在 `commands::store::prepare` 拒绝 `revoked` 与 `yanked` 并带出原因。
+- **审计串联**：`release` 行携带 `submissions[]`；`GET /api/v1/audit` 解析为 `submission_ids[]` 并让 `?sid=` 命中任一元素，因此一个 sid 能同时追到 submit / approve / release。
+- **R1 测试**：`tests/api.rs` 覆盖 yank 幂等/404/403、吊销后提交与审核 403、历史版本进入 `revoked[]`、审计分页/越权/sid 串联；`tests/p0.rs` 覆盖 `revoked.json` 缺省/非法/签名字节与 `yank_reason` 进入索引；`crates/app` 覆盖旧索引解析不变、新索引拒绝原因，以及「源数据 → 构建产物 → 客户端视图」的端到端用例。
 
 

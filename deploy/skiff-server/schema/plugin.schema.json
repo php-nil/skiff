@@ -19,6 +19,7 @@
     "summary": { "type": "string", "minLength": 1, "maxLength": 200 },
     "published_at": { "type": "string", "minLength": 20, "maxLength": 20 },
     "yanked": { "type": "boolean" },
+    "yank_reason": { "type": "string", "minLength": 1, "maxLength": 200 },
     "pkg_sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
     "pkg_url": { "type": "string", "minLength": 1, "maxLength": 512 },
     "size": { "type": "integer", "minimum": 0 },

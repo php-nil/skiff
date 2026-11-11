@@ -406,12 +406,13 @@ fn revoked_in_source(
     }))
 }
 
-/// 发布 job 用：把 yanked 标记写回源条目（只改这一个字段，保留其余内容）。
+/// 发布 job 用：把 yanked 标记与原因写回源条目（只改这两个字段，保留其余内容）。
 pub fn mark_source_yanked(
     catalog: &Path,
     channel: &str,
     plugin_id: &str,
     version: &str,
+    reason: &str,
 ) -> Result<(), String> {
     let dir = catalog.join(channel).join("plugins");
     let entries = fs::read_dir(&dir).map_err(|e| format!("读取源条目失败: {e}"))?;
@@ -429,10 +430,15 @@ pub fn mark_source_yanked(
         {
             continue;
         }
-        if value.get("yanked").and_then(Value::as_bool) == Some(true) {
+        if value.get("yanked").and_then(Value::as_bool) == Some(true)
+            && value.get("yank_reason").and_then(Value::as_str).is_some()
+        {
             return Ok(());
         }
         value["yanked"] = Value::Bool(true);
+        if !reason.is_empty() {
+            value["yank_reason"] = Value::String(reason.to_string());
+        }
         let mut out = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
         out.push(b'\n');
         fs::write(&path, out).map_err(|e| format!("写回源条目失败: {e}"))?;

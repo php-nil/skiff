@@ -665,6 +665,7 @@ fn legacy_index_without_takedown_marks_parses_unchanged() {
     assert!(!index.plugins[0].yanked);
     assert!(index.revoked.is_empty());
     assert!(index.revoked("com.example.demo", "1.0.0").is_none());
+    assert!(index.plugins[0].yank_reason.is_none());
     assert!(takedown_note(&index, "com.example.demo", "1.0.0").is_none());
     assert!(entries_of(&index).plugins[0].warn.is_empty());
 }
@@ -690,4 +691,22 @@ fn new_index_with_takedown_fields_parses_and_reports_reason() {
         .unwrap()
         .contains("private key leaked"));
     assert!(entries_of(&index).plugins[0].warn.contains("已撤回"));
+}
+
+#[test]
+fn yanked_reason_is_reported_by_the_client_view() {
+    let mut value: serde_json::Value = serde_json::from_str(LEGACY_INDEX).unwrap();
+    value["plugins"][0]["yanked"] = serde_json::json!(true);
+    value["plugins"][0]["yank_reason"] = serde_json::json!("policy violation");
+    let index: Index = serde_json::from_value(value).expect("带 yank_reason 的索引必须能解析");
+    index.validate(None).expect("新增可选字段不影响 v1 校验");
+    assert_eq!(
+        index.plugins[0].yank_reason.as_deref(),
+        Some("policy violation")
+    );
+    let note = takedown_note(&index, "com.example.demo", "1.0.0").unwrap();
+    assert!(note.contains("policy violation"), "{note}");
+    assert!(entries_of(&index).plugins[0]
+        .warn
+        .contains("policy violation"));
 }

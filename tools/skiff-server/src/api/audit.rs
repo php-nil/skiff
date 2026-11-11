@@ -1,7 +1,8 @@
 //! 审计查询（§17.7 R1）：`GET /api/v1/audit`。
 //!
-//! 数据源是 `state/audit.jsonl`（追加写）。只回 `at/key_id/action/submission_id/result`，
-//! **不回签名、包内容或任何请求体**。审核者看全部；作者默认只看自己，显式查他人 403。
+//! 数据源是 `state/audit.jsonl`（追加写）。只回 `at/key_id/action/submission_id/submission_ids/result`，
+//! **不回签名、包内容或任何请求体**。`release` 行用 `submission_ids` 串起一次发布的全部提交，
+//! 因此 `?sid=` 能同时命中 submit / approve / release。审核者看全部；作者默认只看自己，显式查他人 403。
 
 use std::fs;
 
@@ -24,6 +25,9 @@ struct Entry {
     action: String,
     #[serde(default)]
     submission_id: String,
+    /// release 行携带的批量提交 id（jsonl 里叫 `submissions[]`）；`?sid=` 命中任一元素即返回。
+    #[serde(default, rename = "submissions", alias = "submission_ids")]
+    submission_ids: Vec<String>,
     #[serde(default)]
     result: String,
 }
@@ -77,7 +81,7 @@ pub fn query(server: &ApiServer, auth: &Authenticated, query: &str) -> Result<Re
         .rev()
         .filter(|entry| {
             sid.as_ref()
-                .map(|v| &entry.submission_id == v)
+                .map(|v| &entry.submission_id == v || entry.submission_ids.iter().any(|s| s == v))
                 .unwrap_or(true)
                 && key_id.as_ref().map(|v| &entry.key_id == v).unwrap_or(true)
                 && action.as_ref().map(|v| &entry.action == v).unwrap_or(true)
@@ -101,6 +105,7 @@ pub fn query(server: &ApiServer, auth: &Authenticated, query: &str) -> Result<Re
             "key_id": entry.key_id,
             "action": entry.action,
             "submission_id": entry.submission_id,
+            "submission_ids": entry.submission_ids,
             "result": entry.result,
         })).collect::<Vec<_>>(),
         "total": total,

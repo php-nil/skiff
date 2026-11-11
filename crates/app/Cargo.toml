@@ -32,5 +32,7 @@ rustls-pemfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# 撤包原因端到端：用真实的 skiff-server 构建产物喂给客户端解析与视图
+skiff-server = { path = "../../tools/skiff-server" }
 # 证书链测试：进程内生成自签 CA 与服务器证书，起一个最小 TLS 服务端，不触网
 rcgen = "0.12"

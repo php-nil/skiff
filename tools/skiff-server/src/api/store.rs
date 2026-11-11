@@ -322,6 +322,7 @@ pub fn create(
         summary: entry.summary.clone(),
         published_at: now.clone(),
         yanked: false,
+        yank_reason: None,
         pkg_sha256: None,
         pkg_url: None,
         size: None,

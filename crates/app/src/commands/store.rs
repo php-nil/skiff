@@ -248,10 +248,13 @@ fn check_compatibility(
         )));
     }
     if entry.yanked {
-        return Err(StoreInstallError::Revoked(format!(
-            "{} {} 已被服务端撤回",
-            entry.id, entry.version
-        )));
+        let detail = entry
+            .yank_reason
+            .as_deref()
+            .filter(|reason| !reason.trim().is_empty())
+            .map(|reason| format!("{} {} 已被服务端撤回：{reason}", entry.id, entry.version))
+            .unwrap_or_else(|| format!("{} {} 已被服务端撤回", entry.id, entry.version));
+        return Err(StoreInstallError::Revoked(detail));
     }
     if !api_compatible(&entry.api, KERNEL_API) {
         return Err(StoreInstallError::Compatibility(format!(
@@ -755,27 +758,32 @@ verbs = ["list"]
         sha: &str,
         size: u64,
         yanked: bool,
-        reason: Option<&str>,
+        yank_reason: Option<&str>,
+        revoked_reason: Option<&str>,
     ) -> serde_json::Value {
+        let mut plugin = serde_json::json!({
+            "id": PLUGIN_ID,
+            "version": "0.1.0",
+            "api": "1.0",
+            "requires": ["docker"],
+            "summary": "示例插件",
+            "published_at": "2026-11-09T00:00:00Z",
+            "yanked": yanked,
+            "pkg_sha256": sha,
+            "pkg_url": format!("blobs/sha256/{sha}"),
+            "size": size
+        });
+        if let Some(reason) = yank_reason {
+            plugin["yank_reason"] = serde_json::json!(reason);
+        }
         let mut value = serde_json::json!({
             "schema": INDEX_SCHEMA,
             "channel": "stable",
             "seq": 2,
             "generated_at": "2026-11-10T00:00:00Z",
-            "plugins": [{
-                "id": PLUGIN_ID,
-                "version": "0.1.0",
-                "api": "1.0",
-                "requires": ["docker"],
-                "summary": "示例插件",
-                "published_at": "2026-11-09T00:00:00Z",
-                "yanked": yanked,
-                "pkg_sha256": sha,
-                "pkg_url": format!("blobs/sha256/{sha}"),
-                "size": size
-            }]
+            "plugins": [plugin]
         });
-        if let Some(reason) = reason {
+        if let Some(reason) = revoked_reason {
             value["revoked"] = serde_json::json!([{
                 "id": PLUGIN_ID,
                 "version": "0.1.0",
@@ -806,13 +814,27 @@ verbs = ["list"]
     fn yanked_entry_is_rejected_with_reason_not_parse_failure() {
         let fx = Fixture::new();
         let (bytes, sha) = fx.package(&["docker"], "1.0");
-        fx.serve_index(takedown_index(&sha, bytes.len() as u64, true, None));
+        fx.serve_index(takedown_index(
+            &sha,
+            bytes.len() as u64,
+            true,
+            Some("policy violation"),
+            None,
+        ));
         fx.trust_plugin_key();
         let svc = fx.service();
 
         let err = prepare(&svc, &fx.db, &fx.request()).unwrap_err();
         assert!(matches!(err, StoreInstallError::Revoked(_)), "{err}");
         assert!(err.message().contains("已被服务端撤回"), "{err}");
+        assert!(
+            err.message().contains("policy violation"),
+            "安装被拒文案必须带撤包原因: {err}"
+        );
+        assert!(svc
+            .cached_takedown(PLUGIN_ID, "0.1.0")
+            .unwrap()
+            .contains("policy violation"));
         assert!(fx.incoming_files().is_empty(), "撤包拒绝不得留下暂存文件");
     }
 
@@ -824,6 +846,7 @@ verbs = ["list"]
             &sha,
             bytes.len() as u64,
             false,
+            None,
             Some("private key leaked"),
         ));
         fx.trust_plugin_key();

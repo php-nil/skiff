@@ -1924,6 +1924,7 @@ dependencies = [
  "skiff-pkgfmt",
  "skiff-plugin",
  "skiff-sched",
+ "skiff-server",
  "skiff-store",
  "tar",
  "tempfile",

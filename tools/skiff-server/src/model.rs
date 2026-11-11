@@ -65,6 +65,9 @@ pub struct PluginEntry {
     pub published_at: String,
     #[serde(default)]
     pub yanked: bool,
+    /// 撤包原因（可选）。R1 新增字段：旧客户端忽略未知字段，因此不升 schema 版本。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yank_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pkg_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,6 +87,9 @@ impl PluginEntry {
         validate_hex64(&self.key_id, "插件 key_id")?;
         validate_summary(&self.summary, "插件 summary")?;
         validate_timestamp(&self.published_at)?;
+        if let Some(reason) = &self.yank_reason {
+            validate_summary(reason, "插件 yank_reason")?;
+        }
         let mut seen = BTreeSet::new();
         for capability in &self.requires {
             if !KNOWN_CAPABILITIES.contains(&capability.as_str()) {
