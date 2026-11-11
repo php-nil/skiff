@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | `guard/` | `com.skiff.guard` | docker + fs + identity | 容器守护：每分钟巡检，`dead`/`restarting`/`unhealthy`（可选 `exited`）按冷却与小时预算重启 |
 | `monitor/` | `com.skiff.monitor` | fs（`path:/proc`、可选 `path:/etc/passwd`） | 主机监控：CPU/内存/负载/网卡/运行时长，5 分钟采样进环形缓冲；进程视图（PID/用户/CPU/内存/启动时间/命令行，排序/筛选/分页）与网络视图（监听端口、连接状态、对端地址、套接字属主 uid），均为只读 `/proc` |
-| `files/` | `com.skiff.files` | fs + identity | 文件管理：授权根内浏览/新建/删除/改名/编辑（256KiB 分页） |
+| `files/` | `com.skiff.files` | fs + identity | 站点文件：仅 `/www/sites/<域名>/index` 内浏览/新建/删除/改名/编辑（256KiB 分页） |
 | `cron/` | `com.skiff.cron` | identity + interop + scheduler | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。调度与执行全在内核，插件只经 `scheduler` 能力面增删改查（不执行宿主 shell）；内置任务只可启停，越界任务在插件 RPC 层硬拦截 |
 | `firewall/` | `com.skiff.firewall` | **firewall（新增能力面）** + interop | 防火墙与 fail2ban：nftables（`inet skiff`）/iptables（`SKIFF` 链）规则查看、增删与端口放行；fail2ban 安装、jail 启停、封禁列表与解封。对外经 interop 提供 `com.skiff.firewall:fail2ban.*`，FTP 等插件按需调用；仅 Native 形态 |
 | `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** + interop | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；**不再安装或维护 fail2ban**，「启用 fail2ban 防护」是可选开关，经 interop 调 `com.skiff.firewall`；仅 Native 形态 |
@@ -51,10 +51,11 @@
 - **主题协议**：插件页缺省深色（`html[data-theme="dark"]`）；父面板切换主题时向 iframe 发
   `{type:"skiff.theme", theme:"light"|"dark"}`，插件写 `html[data-theme]` 由 CSS token 覆盖即可。
   iframe 先于父脚本就绪时主动发 `skiff.theme.request` 索取一次；不监听消息的老插件保持深色缺省。
-- **files 文件管理**：左目录树 + 快捷入口、可点面包屑、名称/大小/修改时间列表；支持
+- **files 站点文件**：左目录树 + 快捷入口、可点面包屑、名称/大小/修改时间列表；支持
   Ctrl/Cmd 点击多选、Shift 连选、方向键/Home/End/Enter/F2/Delete/Backspace/空格、右键菜单、
   行内重命名、新建目录、编辑弹窗（行号 + 等宽 + 未保存提示）。只用 `list/read/write/remove/rename/mkdir`；
   单次读写 256 KiB，超限只读第一页；保存是全量覆盖；不提供上传/下载。
+  入口在「网站 → 站点文件」，与内核「工具 → 文件管理」是两个不同页面。
 
 ## 菜单与槽位声明（P2）
 
@@ -65,7 +66,7 @@
 | --- | --- | --- | --- |
 | guard | 工具 → 容器守护 | 容器 / 事件 | — |
 | monitor | 工具 → 主机监控 | 总览 / 历史采样 / 进程 / 网络 | `overview.health` |
-| files | 工具 → 文件管理 | 无（单视图 `main`） | — |
+| files | 网站 → 站点文件 | 无（单视图 `main`） | — |
 | cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
 | firewall | 工具 → 防火墙 | 防火墙规则 / fail2ban | — |
 | ftp | 工具 → FTP 管理 | 账号 / 运行状态 | — |
@@ -196,8 +197,8 @@ sh plugins/pack.sh --key /path/to/skiff-signing.key \
 
 ```sh
 ls /www/skiff/official
-skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg \
-    --resource path:/var/www          # 交互逐条确认；非交互用 --yes --grant ... --resource ...
+skiff plugin install /www/skiff/official/com.skiff.files-0.1.2.wbpkg \
+    --resource path:/www/sites/example.com/index   # 交互逐条确认；非交互用 --yes --grant ...
 ```
 
 各插件的授权要点：
@@ -213,7 +214,8 @@ skiff plugin install /www/skiff/official/com.skiff.files-0.1.0.wbpkg \
   只勾了 `plugin:` 却不给目标插件 `interop:call` 权限的一侧，内核按四道闸拒绝，不影响其他调用。
   `cron` 本身不需要 `fs`/`docker`：它只经内核 `scheduler` 能力面管理任务，**不执行宿主 shell**。
 - `guard`：逐个勾要守护的 `container:<name|id>` 或 `project:<p>`；未授权容器只展示不重启。
-- `files`：勾要管理的 `path:` 根（如 `/var/www`、`/etc`）；授权根之外的路径一律 403。
+- `files`：只勾站点内容目录 `path:/www/sites/<域名>/index`；插件会拒绝其它形态的授权根，
+  站点之外的路径一律 403。回收站/配额/上传下载请用内核「工具 → 文件管理」页。
 - `testkit`：勾 `path:/proc`（验证授权读与越界拒绝）；要验证 `interop:call` 时再勾
   `plugin:com.skiff.cron`。注意 cron 当前 `[interop].provides` 为空（调度已收归内核），
   `com.skiff.cron:jobs.list` 会被四道闸拒绝，只能验拒绝路径；成功路径需另装声明 provides 的插件。

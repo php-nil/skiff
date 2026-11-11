@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>文件管理</title>
+<title>站点文件</title>
 <!-- 插件 UI 的 CSP 是 default-src 'none'; script-src 'self'; connect-src 'none'。
      所有资源必须随包同源分发：脚本只能是 app.js 与 vendor/ 下的本地文件，
      不允许 CDN、外链字体/图标，也不允许内联脚本（逻辑全在 app.js）。 -->
@@ -83,6 +83,9 @@
   .side-section + .side-section { margin-top: 14px; }
   .side-title { padding: 6px 8px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
                 color: var(--ui-muted); }
+  .side-foot a { color: var(--ui-accent); text-decoration: none; }
+  .side-foot a:hover { text-decoration: underline; }
+  .side-foot .warn-text { color: var(--ui-warn); }
   .quick, .tree { list-style: none; margin: 0; padding: 0; }
   .quick-item, .tree-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px;
                            padding: 3px 8px; border: 0; border-radius: 6px; background: transparent;
@@ -312,6 +315,7 @@
   <aside class="side" aria-label="目录导航">
     <div class="side-head">
       <svg class="ico lg" style="color: var(--ui-accent)"><use href="#i-folder"/></svg>
+      <div class="title" id="site-label">站点文件</div>
     </div>
     <div class="side-scroll">
       <section class="side-section">
@@ -325,7 +329,9 @@
     </div>
     <div class="side-foot">
       授权根：<code id="roots">-</code><br>
-      单次读写上限 <b>256 KiB</b>，保存为全量覆盖。
+      单次读写上限 <b>256 KiB</b>，保存为全量覆盖。<br>
+      <a id="kernel-link" href="#" target="_top">在内核页打开（回收站 / 配额 / 上传下载）</a><br>
+      <span class="warn-text">删除 = 永久删除，不进回收站。</span>
     </div>
   </aside>
 
@@ -344,7 +350,7 @@
       <button id="refresh" class="btn ghost"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
       <button id="mkdir" class="btn"><svg class="ico"><use href="#i-folder-plus"/></svg>新建文件夹</button>
       <button id="rename" class="btn" disabled><svg class="ico"><use href="#i-pencil"/></svg>重命名</button>
-      <button id="remove" class="btn danger" disabled><svg class="ico"><use href="#i-trash"/></svg>删除</button>
+      <button id="remove" class="btn danger" disabled title="永久删除（不进回收站）"><svg class="ico"><use href="#i-trash"/></svg>永久删除</button>
       <span class="spacer"></span>
       <label class="filter">
         <svg class="ico"><use href="#i-search"/></svg>

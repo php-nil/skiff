@@ -10,6 +10,9 @@
 
   var qs = new URLSearchParams(location.search);
   var nonce = qs.get("nonce") || "";
+  // 面板入口前缀取自本页路径（`/<prefix>/plugins/com.skiff.files/main`），
+  // 用于「在内核页打开」跳转；不依赖任何额外参数。
+  var prefix = location.pathname.split("/")[1] || "";
   // 跨插件跳转的目标位置（由另一个插件经父页面 `skiff.open` 转发过来）：
   // 这里只是「建议打开的路径」，能否读仍由内核按本插件的 path: 授权根判定。
   var openHint = qs.get("open") || "";
@@ -222,6 +225,22 @@
   };
   function selectedPaths() { return Object.keys(state.selection); }
   function selectedCount() { return selectedPaths().length; }
+
+  // 站点域名：只对 `path:/www/sites/<域名>/index` 形态的授权根生效。
+  function siteOfRoot(root) {
+    var m = /^\/www\/sites\/([^\/]+)\/index(?:\/|$)/.exec(root || "");
+    return m ? m[1] : "";
+  }
+  function updateSiteLabel() {
+    var el = $("site-label");
+    if (!el) return;
+    var names = [];
+    state.roots.forEach(function (r) {
+      var d = siteOfRoot(r);
+      if (d && names.indexOf(d) < 0) names.push(d);
+    });
+    el.textContent = names.length ? names.join("、") : "站点文件";
+  }
   function visibleItems() {
     if (!state.filter) return state.items;
     var f = state.filter.toLowerCase();
@@ -412,6 +431,7 @@
       state.anchor = state.items.length ? 0 : -1;
       state.active = state.items.length ? 0 : -1;
       updateRoots();
+      updateSiteLabel();
       renderCrumbs();
       renderQuick();
       renderList();
@@ -728,17 +748,17 @@
     var single = itemAt(paths[0]);
     var text;
     if (paths.length === 1) {
-      text = "将删除 " + (single && single.dir ? "目录（含其中全部内容）" : "文件") +
-        " <code>" + esc(paths[0]) + "</code>，此操作不可恢复。";
+      text = "将永久删除 " + (single && single.dir ? "目录（含其中全部内容）" : "文件") +
+        " <code>" + esc(paths[0]) + "</code>，不进回收站，操作不可恢复。";
     } else {
-      text = "将删除以下 " + paths.length + " 个条目（目录会连同内容一起删除），此操作不可恢复：<ul>" +
+      text = "将永久删除以下 " + paths.length + " 个条目（目录会连同内容一起删除），不进回收站，不可恢复：<ul>" +
         paths.slice(0, 8).map(function (p) { return "<li><code>" + esc(baseName(p)) + "</code></li>"; }).join("") +
         (paths.length > 8 ? "<li>…</li>" : "") + "</ul>";
     }
     askConfirm({
-      title: paths.length === 1 ? "删除条目" : "删除 " + paths.length + " 个条目",
+      title: paths.length === 1 ? "永久删除条目" : "永久删除 " + paths.length + " 个条目",
       text: text,
-      okText: "删除",
+      okText: "永久删除",
       danger: true,
       onOk: function () {
         var removed = paths.slice();
@@ -748,7 +768,7 @@
         });
         chain.then(function () {
           if (state.editor && removed.indexOf(state.editor.path) >= 0) closeEditorForce();
-          message("已删除 " + removed.length + " 项");
+          message("已永久删除 " + removed.length + " 项");
           return navigate(state.cwd);
         }).catch(function (e) {
           message("删除失败：" + errText(e), "bad");
@@ -963,6 +983,8 @@
   $("error-back").addEventListener("click", function () {
     if (state.roots.length) navigate(state.roots[0]);
   });
+  var kernelLink = $("kernel-link");
+  if (kernelLink) kernelLink.href = "/" + prefix + "/files";
   $("error-retry").addEventListener("click", function () { navigate(lastErrorPath); });
 
   Array.prototype.forEach.call(document.querySelectorAll("[data-close]"), function (btn) {

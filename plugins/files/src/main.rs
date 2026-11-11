@@ -13,6 +13,28 @@ use skiff_sdk::{Plugin, RpcError};
 
 const MAX_PAGE: usize = skiff_sdk::HOST_IO_MAX;
 
+/// 本插件只服务站点内容目录：`/www/sites/<域名>/index`（含其子目录）。
+///
+/// 站点域名在打包时未知，`resource_hints` 无法预置；安装时由管理员手动添加。
+/// 这里对授权根做**形态收口**：不是站点内容目录的根一律拒绝，避免插件变成
+/// 跨站点/全盘文件管理器（内核「工具 → 文件管理」才是管理员客户端）。
+const SITE_CONTENT_PREFIX: &str = "/www/sites/";
+
+/// 从授权根或路径取站点域名；不是站点内容目录返回 `None`。
+fn site_domain(path: &str) -> Option<String> {
+    let rest = path.strip_prefix(SITE_CONTENT_PREFIX)?;
+    let (domain, tail) = rest.split_once('/')?;
+    if domain.is_empty() {
+        return None;
+    }
+    let tail = tail.trim_end_matches('/');
+    if tail == "index" || tail.starts_with("index/") {
+        Some(domain.to_string())
+    } else {
+        None
+    }
+}
+
 fn main() {
     let plugin = match Plugin::from_env() {
         Ok(p) => p,
@@ -40,6 +62,10 @@ fn main() {
 fn config(plugin: &Plugin) -> Value {
     let cfg = common::load_config(plugin);
     let roots = plugin.path_roots().unwrap_or_default();
+    let sites: Vec<String> = roots
+        .iter()
+        .filter_map(|r| site_domain(&common::normalize_dir(r)))
+        .collect();
     let start = pick_start(&common::cfg_str(&cfg, "start_dir", ""), &roots);
     let map = cfg
         .into_iter()
@@ -48,6 +74,7 @@ fn config(plugin: &Plugin) -> Value {
     json!({
         "config": Value::Object(map),
         "roots": roots,
+        "sites": sites,
         "start_dir": start,
     })
 }
@@ -66,12 +93,28 @@ fn fs_err(e: skiff_sdk::SdkError) -> RpcError {
 }
 
 fn granted_roots(plugin: &Plugin) -> Result<Vec<String>, RpcError> {
-    plugin.path_roots().map_err(common::rpc_err)
+    let roots = plugin.path_roots().map_err(common::rpc_err)?;
+    if roots.is_empty() {
+        return Err(no_grant());
+    }
+    let bad: Vec<String> = roots
+        .iter()
+        .filter(|r| site_domain(&common::normalize_dir(r)).is_none())
+        .cloned()
+        .collect();
+    if !bad.is_empty() {
+        return Err(RpcError::invalid_params(format!(
+            "站点文件只接受 /www/sites/<域名>/index 形态的授权根；以下授权根不在范围内：{}",
+            bad.join("、")
+        )));
+    }
+    Ok(roots)
 }
 
 fn no_grant() -> RpcError {
     RpcError::invalid_params(
-        "未授权任何宿主路径：安装插件时需勾选 path: 根（如 path:/var/www），否则只能看不能动"
+        "未授权站点目录：安装插件时需添加 path:/www/sites/<域名>/index（站点内容目录），\
+         回收站/配额/上传下载请用内核「工具 → 文件管理」"
             .to_string(),
     )
 }
@@ -220,6 +263,23 @@ fn rename(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn site_domain_accepts_only_index_roots() {
+        assert_eq!(
+            site_domain("/www/sites/a.com/index").as_deref(),
+            Some("a.com")
+        );
+        assert_eq!(
+            site_domain("/www/sites/a.com/index/sub").as_deref(),
+            Some("a.com")
+        );
+        assert_eq!(site_domain("/www/sites/a.com").as_deref(), None);
+        assert_eq!(site_domain("/www/sites/a.com/ssl").as_deref(), None);
+        assert_eq!(site_domain("/www").as_deref(), None);
+        assert_eq!(site_domain("/www/sites/").as_deref(), None);
+        assert_eq!(site_domain("/etc/index").as_deref(), None);
+    }
 
     #[test]
     fn start_dir_prefers_authorized_config() {

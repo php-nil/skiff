@@ -97,6 +97,36 @@ pub async fn read_json(req: Request<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+/// 审计附加字段：命中的授权根 + 站点域名。
+///
+/// 站点文件插件只拿 `path:/www/sites/<域名>/index`，能力面审计主体是 `plugin:<id>`；
+/// 为了让定责可读，把「哪个授权根、哪个站点」写进 `detail`。这只影响审计文本，
+/// 不改变授权判定（越界仍由 `fsops::resolve` 拒绝）。
+fn audit_scope<H: CapabilityHost>(host: &H, id: &str, target: &str) -> String {
+    let roots = fsgrant::roots_of(&host.plugin_grants(id));
+    let root = roots
+        .iter()
+        .filter(|r| target == r.as_str() || target.starts_with(&format!("{r}/")))
+        .max_by_key(|r| r.len())
+        .cloned()
+        .unwrap_or_default();
+    let site = target
+        .strip_prefix("/www/sites/")
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("");
+    let mut out = String::new();
+    if !root.is_empty() {
+        out.push_str(&format!("grant={root}"));
+    }
+    if !site.is_empty() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("site={site}"));
+    }
+    out
+}
+
 /// fs 类失败统一出口：审计 + 状态码（越权记 `deny`，其余记 `fail`）。
 fn fs_fail<H: CapabilityHost>(
     host: &H,
@@ -105,26 +135,33 @@ fn fs_fail<H: CapabilityHost>(
     target: &str,
     e: fsops::FsError,
 ) -> Response {
+    let scope = audit_scope(host, id, target);
+    let mut detail = e.message().to_string();
+    if !scope.is_empty() {
+        detail.push_str("; ");
+        detail.push_str(&scope);
+    }
     host.audit(
         &format!("plugin:{id}"),
         "uds",
         &perm.replace(':', "."),
         target,
         e.audit_result(),
-        e.message(),
+        &detail,
     );
     let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, e.message().to_string()).into_response()
 }
 
 fn fs_ok<H: CapabilityHost>(host: &H, id: &str, perm: &str, target: &str) {
+    let scope = audit_scope(host, id, target);
     host.audit(
         &format!("plugin:{id}"),
         "uds",
         &perm.replace(':', "."),
         target,
         "ok",
-        "",
+        scope.as_str(),
     );
 }
 

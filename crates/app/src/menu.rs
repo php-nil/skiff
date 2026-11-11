@@ -48,15 +48,15 @@ pub struct UiPluginEntry {
 
 /// 已启用且有 UI 入口的插件（顶栏「应用」菜单与插件挂载的公共数据源）。
 ///
-/// 只列已启用、带 `[[ui]]` 的插件；`com.skiff.files` 的入口由内核「工具 → 文件
-/// 管理」承担，不再重复出现在插件菜单。DB 读失败或 manifest 解析失败时跳过该项，
+/// 只列已启用、带 `[[ui]]` 的插件。入口归属完全由 manifest 的 `parent` 决定，
+/// 这里不做任何「某个插件例外」的硬过滤。DB 读失败或 manifest 解析失败时跳过该项，
 /// 坏包不拖垮整站导航。
 pub fn enabled_ui_plugins(state: &AppState) -> Vec<UiPluginEntry> {
     let Ok(list) = state.db().list_plugins() else {
         return Vec::new();
     };
     list.iter()
-        .filter(|p| p.enabled && p.id != "com.skiff.files")
+        .filter(|p| p.enabled)
         .filter_map(|p| {
             let m = skiff_pkgfmt::Manifest::parse(&p.manifest).ok()?;
             let ui = m.ui.first()?;
@@ -1465,19 +1465,20 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
     root.retain(|l1| l1.children.iter().all(|c| c.roles_ok(role)) && l1.roles_ok(role));
 
     let mut plugin_decls: HashMap<String, Vec<Decl>> = HashMap::new();
+    // 受限形态（`SKIFF_FORM=docker`）没有 fs 能力面：依赖 fs 的插件入口不渲染，
+    // 深链由 `plugins::view` 回退到内核页；判定与 `middleware::check_fs_capability` 同源。
+    let fs_ok = state.cfg.form != Form::DockerRestricted;
     if let Ok(list) = state.db().list_plugins() {
         for p in &list {
             if !p.enabled {
                 continue;
             }
-            // 文件管理已由内核接管：插件包保留安装态与信息页，但不再声明菜单入口，
-            // 避免同一能力出现两套 UI（旧深链由 `plugins::view` 301 到新页）。
-            if p.id == "com.skiff.files" {
-                continue;
-            }
             let Ok(m) = skiff_pkgfmt::Manifest::parse(&p.manifest) else {
                 continue;
             };
+            if !fs_ok && m.requires.iter().any(|c| c.as_str() == "fs") {
+                continue;
+            }
             let decls = plugin_menu_decls(&m, &p.id, prefix, state.docker().available(), role);
             for d in decls {
                 plugin_decls.entry(d.parent.clone()).or_default().push(d);

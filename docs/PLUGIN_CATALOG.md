@@ -10,7 +10,7 @@
 | 维度 | 结论 |
 |---|---|
 | 选型依据 | 竞品把面板做成「服务器操作系统」，Skiff 只做三核心，**官方插件集就是产品完整度的上限** |
-| 当前 6 个 | **容器守护**（零内核改动，链路验证）→ **主机监控**（含进程/网络只读视图）→ **文件管理** → **计划任务** → **FTP 管理** → **防火墙**（Nginx 站点已内核化，按落地难度排序） |
+| 当前 6 个 | **容器守护**（零内核改动，链路验证）→ **主机监控**（含进程/网络只读视图）→ **站点文件**（站点级浏览/编辑）→ **计划任务** → **FTP 管理** → **防火墙**（Nginx 站点已内核化，按落地难度排序） |
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
 | 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 已支持 `containers.exec`，仍缺 create/remove/pull/compose；`net` 一律 501 |
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
@@ -63,7 +63,7 @@
 |---|---|---|---|---|---|---|
 | P0 | `com.skiff.guard` | 容器守护 | `docker` + 自身 `data/` | **零内核改动**（`containers.list/inspect/restart`） | 部分竞品无 | ✅ 0.1.0 已实现 |
 | P0 | `com.skiff.monitor` | 主机监控 | `fs`（`/proc` 只读，`/etc/passwd` 可选） | `path:` 只读授权 + 内核调度器采样（均已就绪） | 1Panel/宝塔 监控与进程管理 | ✅ 0.1.0 已实现（含进程 / 网络只读视图） |
-| P0 | `com.skiff.files` | 文件管理 | `fs`（全 6 动词） | `path:` 授权 + 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现 |
+| P0 | `com.skiff.files` | 站点文件 | `fs`（全 6 动词） | `path:` 授权（仅接受 `/www/sites/<域名>/index`）+ 256KiB 分页 | 1Panel/宝塔 文件 | ✅ 0.1.0 已实现（站点级入口） |
 | P0 | `com.skiff.cron` | 计划任务 | `identity` + `interop` | interop 契约（内核转发 + 四道闸），**不需要**宿主命令执行 | 1Panel/宝塔 计划任务 | ✅ 0.1.0 已实现（只调度插件接口） |
 | P0 | `com.skiff.testkit` | 插件架构测试台 | `fs`（`/proc` 只读）+ `identity` + `interop` + `scheduler`（`read` + `manage`） | `scheduler:read`/`scheduler:manage` 探针（任务列表、缓冲读写）+ 默认停用的执行期 BusyGuard 探针任务 | 无 | ✅ 0.1.0 已实现（随包携带，不自动安装） |
 | P1 | `com.skiff.ftp` | FTP 管理 | **新增内核 `ftp` 能力面** + `interop` | 宿主 pure-ftpd（`apt` + `systemd`；仅 Native 形态）；可选登录防护依赖防火墙插件 | 1Panel/宝塔 FTP | ✅ 0.1.0 已实现并上机验收通过（FTP-01/05 残留，见 TEST_LEDGER）；fail2ban 已收口到防火墙插件 |
@@ -136,7 +136,7 @@ vhost 生成、启停 / 删除 / 日志都由内核实现，菜单归属固定�
 插件侧不再维护该 manifest、UI 与备份接口；定时备份仍可复用 `com.skiff.cron` 对内核站点的能力
 （待后续提供 interop 入口）。
 
-### 4.5 文件管理 `com.skiff.files`
+### 4.5 站点文件 `com.skiff.files`
 
 ```toml
 run = "on-demand"
@@ -145,10 +145,11 @@ resource_hints = []                 # 授权哪些目录由管理员在安装确
 # fs: read / write / list / mkdir / remove / rename（全 6 动词）
 ```
 
-- **功能面**：授权根内浏览、读（256KiB 分页）、写（覆盖 / 追加 / 按 offset 续写）、新建目录、删除、改名；UI 带文本编辑器与手写 UTF-8 ⇄ base64（不依赖 `atob` 的 Latin-1 语义）。
-- **刻意不预设路径**：`resource_hints` 为空，不给「顺手放权」的默认建议；`start_dir` 留空等于第一个授权根。
-- **限制（未做）**：大文件仍是分页 + 文本编辑，**没有**二进制上传/下载与流式传输契约——那需要新的内核传输面（规划见 §7）。
-- **风险**：写宿主路径的误伤面大，建议授权根默认只读、写权限单独确认；越权一律 403 + 审计。
+- **功能面**：站点内容目录内浏览、读（256KiB 分页）、写（覆盖 / 追加 / 按 offset 续写）、新建目录、删除、改名；UI 带文本编辑器与手写 UTF-8 ⇄ base64。入口挂在「网站」一级下，不与内核「工具 → 文件管理」抢位置。
+- **范围收口**：只接受 `/www/sites/<域名>/index` 形态的授权根，其余根一律拒绝；`resource_hints` 为空，站点域名在打包时未知，必须安装确认页手动添加。回收站、配额、上传/下载、归档、chmod/chown 一律走内核页（插件页给跳转）。
+- **限制（未做）**：大文件仍是分页 + 文本编辑，**没有**二进制上传/下载与流式传输契约——那需要新的内核传输面（规划见 §7）。回收站、配额、归档、chmod/chown 也不在插件内，统一走内核「工具 → 文件管理」页。
+- **审计**：走能力面时 actor 是 `plugin:com.skiff.files`，`detail` 追加 `grant=<授权根> site=<域名>`；这是「不把 `/www/sites` 全量授权给插件」换来的定责可读性（见 KERNEL_FS_CONTRACT §4.4）。
+- **风险**：插件侧 `remove` 是**永久删除**（内核页默认进回收站），UI 文案与审计必须显式区分；越权一律 403 + 审计。
 
 ### 4.6 计划任务 `com.skiff.cron`
 
@@ -177,7 +178,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 | 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
 | `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样 / 进程 / 网络（`overview` / `history` / `process` / `network`） | `overview.health`（`sm`，30s 刷新） |
-| `com.skiff.files` | 工具 → 文件管理 | 无（单视图 `main`） | — |
+| `com.skiff.files` | 网站 → 站点文件 | 无（单视图 `main`） | — |
 | `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务（`list` / `new`） | — |
 | `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件（`containers` / `events`） | — |
 | `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`）+ 单视图对照 | `overview.actions` |

@@ -612,7 +612,7 @@ roles = ["admin", "operator", "viewer"]
 | `/{p}/settings` / `settings` | `core/settings/security` | `/{p}/m/core/settings/security` | |
 | `/{p}/settings/menu`（新增） | `core/settings/menu` | `/{p}/m/core/settings/menu` | 菜单设置 |
 | `/{p}/audit` / `audit` | `core/settings/audit` | `/{p}/m/core/settings/audit` | |
-| 旧「应用」菜单 | 解散 | — | 网站已内核化；files/cron/monitor/guard → `工具` |
+| 旧「应用」菜单 | 解散 | — | 网站已内核化；cron/monitor/guard → `工具`，files → `网站`（站点文件） |
 | `/{p}/compose`（规划） | `core/docker/compose` | `/{p}/m/core/docker/compose` | 无后端前 `route_available` 不渲染 |
 | `/{p}/docker`（规划） | `core/docker/overview` | `/{p}/m/core/docker/overview` | P3 |
 | `/{p}/settings/docker`（原 `/{p}/docker/settings`，旧路径 308） | `core/docker/settings` | `/{p}/m/core/docker/settings` | 页面 URL 归「设置」资源，菜单键仍是 Docker 设置；URL 规则见 [`URL_CONTRACT.md`](URL_CONTRACT.md) |
@@ -627,7 +627,7 @@ roles = ["admin", "operator", "viewer"]
 
 | 插件 | L1 | 插件 L2 | L3 | 固定页槽位 | 批次 |
 |---|---|---|---|---|---|
-| `com.skiff.files` | 工具 `tools` | `files` 文件 | 浏览 / 传输 / 设置（若 UI 不支持可先不声明 L3） | — | B3 |
+| `com.skiff.files` | 网站 `sites` | `files` 站点文件 | 无（单视图 `main`） | — | B3 |
 | `com.skiff.cron` | 工具 `tools` | `cron` 任务 | 任务列表 / 执行记录 / 设置 | — | B3 |
 | `com.skiff.monitor` | 工具 `tools` | `monitor` 监控 | 总览 / 历史采样 / 进程 / 网络 | `overview.health` | B2 |
 | `com.skiff.guard` | 工具 `tools` | `guard` 守护 | 容器 / 事件 / 设置 | — | B3 |
@@ -792,14 +792,15 @@ roles = ["admin", "operator", "viewer"]
 
 | 插件 | 一级 | 二级 | 三级 | 槽位 |
 |---|---|---|---|---|
-| files | 工具 `tools` | 文件管理 `plugin/com.skiff.files/files` | 无（单视图） | — |
+| files | 网站 `sites` | 站点文件 `plugin/com.skiff.files/files` | 无（单视图） | — |
 | cron | 工具 `tools` | 计划任务 `plugin/com.skiff.cron/jobs` | 任务列表 / 新建任务 | — |
 | monitor | 工具 `tools` | 主机监控 `plugin/com.skiff.monitor/monitor` | 总览 / 历史采样 | `overview.health` |
 | guard | 工具 `tools` | 容器守护 `plugin/com.skiff.guard/guard` | 容器 / 事件 | — |
 
 - P3 起 `[[ui]].path` 指向 `main.html`（旧包回落 `ui/index.html`）；插件中心入口改为信息页 + 规范功能页。
 - 未声明「磁盘」「执行记录」「守护设置」等视图：插件 UI 没有对应内容时不造假标签（契约 §7.3）。
-- 工具内顺序：files 10 / cron 20 / monitor 30 / guard 40，同层 `order` 稳定。
+- 工具内顺序：cron 20 / monitor 30 / guard 40；`files` 已迁到「网站」下（`order` 60），
+  与内核「工具 → 文件管理」互不占位。内核文件管理仍是独立的管理员客户端（含回收站/配额/上传下载）。
 
 **测试**
 - `skiff-pkgfmt`：官方 4 包全部解析、菜单/槽位引用的 `ui` 文件存在、monitor 声明 `overview.health`。
@@ -827,7 +828,7 @@ roles = ["admin", "operator", "viewer"]
 - 旧包（只有 `[[ui]]`，无 `[[menu]]`）：`main` 指向原 `ui/index.html`，其余 `[[ui]]` 按原顺序合成 `legacy-2`… 标签。
 
 **官方插件**
-- files → 单视图 `main`（`ui/main.html`）；cron → `list` / `new`；guard → `containers` / `events`；monitor → `overview` / `history`（保留 `overview.health` 槽位）。
+- files → 网站下的单视图 `main`（`ui/main.html`，站点内容目录）；cron → `list` / `new`；guard → `containers` / `events`；monitor → `overview` / `history`（保留 `overview.health` 槽位）。
 - 新增 `plugins/testkit`（`com.skiff.testkit`）作为架构验收插件，覆盖多视图、单视图、槽位、RPC、能力面与主题。
 
 **测试**

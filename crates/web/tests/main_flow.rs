@@ -958,13 +958,28 @@ async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
         "NGINX 站点",
         true,
     );
-    seed_plugin(
-        h.state.db().as_ref(),
-        "com.skiff.files",
-        "文件管理",
-        "文件管理",
-        false,
+    // 站点文件插件：新定位是「网站 → 站点文件」，与内核「工具 → 文件管理」并存。
+    let files_manifest = format!(
+        r#"id = "com.skiff.files"
+name = "站点文件"
+version = "0.1.2"
+key_id = "{}"
+api = "1.2"
+requires = ["fs"]
+[[ui]]
+label = "站点文件"
+path = "main.html"
+[[menu]]
+id = "files"
+parent = "sites"
+label = "站点文件"
+order = 60
+icon = "file"
+view = "main"
+"#,
+        "0".repeat(64)
     );
+    seed_declared_plugin(h.state.db().as_ref(), files_manifest, false);
     let token = login(&h.app, "admin", "pw-test-123").await;
 
     let resp = h
@@ -991,14 +1006,14 @@ async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
             && html.contains(r#"href="/p/m/plugin/com.skiff.nginx/legacy""#),
         "插件二级必须用 [[ui]].label，并指向规范深链: {html}"
     );
-    // 文件管理已由内核接管：菜单里只能出现内核入口，不能再有插件入口。
+    // 内核「工具 → 文件管理」是独立入口；未启用的站点文件插件不得出现在菜单里。
     assert!(
         html.contains(r#"href="/p/m/core/files""#),
         "内核「工具 → 文件管理」入口必须存在: {html}"
     );
     assert!(
-        !html.contains(r#"href="/p/m/plugin/com.skiff.files"#),
-        "文件管理插件入口必须撤销: {html}"
+        !html.contains(r#"href="/p/m/plugin/com.skiff.files/files""#),
+        "未启用的站点文件插件不得出现在菜单: {html}"
     );
 
     // 插件中心卡片仍能看见未启用插件，并给出启用动作而不是打开入口
@@ -1027,6 +1042,68 @@ async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
     assert!(
         !center_html.contains(r#"href="/p/plugins/com.skiff.files/main""#),
         "未启用插件不得渲染功能页面死入口: {center_html}"
+    );
+}
+
+/// 站点文件插件启用后挂「网站」一级，与「工具 → 文件管理」并存、不抢位。
+#[tokio::test]
+async fn site_files_plugin_menu_hangs_under_sites() {
+    let h = harness();
+    let manifest = format!(
+        r#"id = "com.skiff.files"
+name = "站点文件"
+version = "0.1.2"
+key_id = "{}"
+api = "1.2"
+requires = ["fs"]
+[[ui]]
+label = "站点文件"
+path = "main.html"
+[[menu]]
+id = "files"
+parent = "sites"
+label = "站点文件"
+order = 60
+icon = "file"
+view = "main"
+"#,
+        "0".repeat(64)
+    );
+    seed_declared_plugin(h.state.db().as_ref(), manifest, true);
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let page = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/m/overview")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = body_text(page).await;
+    let sites_start = html
+        .find(r#"data-menu-key="sites""#)
+        .expect("网站一级必须存在");
+    let docker_start = html
+        .find(r#"data-menu-key="docker""#)
+        .expect("Docker 一级必须存在");
+    let sites = &html[sites_start..docker_start];
+    assert!(
+        sites.contains(r#"href="/p/m/plugin/com.skiff.files/files""#),
+        "站点文件应挂在「网站」下: {sites}"
+    );
+    assert!(sites.contains("站点文件"), "菜单文案应为站点文件: {sites}");
+    assert!(
+        !sites.contains(r#"href="/p/m/core/files""#),
+        "站点文件不得与内核文件管理同组: {sites}"
+    );
+    assert!(
+        html.contains(r#"href="/p/m/core/files""#),
+        "内核「工具 → 文件管理」入口必须保留: {html}"
     );
 }
 
@@ -6349,7 +6426,7 @@ fn encode_query(value: &str) -> String {
 
 /// 第一步验收：页面可打开、目录可浏览、文本可读可写、旧深链 301。
 #[tokio::test]
-async fn files_page_browses_edits_and_redirects_legacy_link() {
+async fn files_page_browses_edits_and_falls_back_plugin_link() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
     let cookie = format!("skiff_dev_session={token}");
@@ -6469,7 +6546,7 @@ async fn files_page_browses_edits_and_redirects_legacy_link() {
         )
         .await
         .unwrap();
-    assert_eq!(legacy.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(legacy.status(), StatusCode::FOUND);
     assert_eq!(legacy.headers().get(header::LOCATION).unwrap(), "/p/files");
 }
 

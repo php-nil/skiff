@@ -1,10 +1,15 @@
-# 文件管理：只动安装时勾选的 path: 授权根，不碰目录之外的任何东西。
+# 站点文件：站点内容的浏览 + 文本编辑（站点级，不碰站点之外的路径）。
+#
+# 定位：内核「工具 → 文件管理」是管理员客户端（含回收站 / 配额 / 上传下载 / 归档）；
+# 本插件只做「站点内容」的轻量编辑入口，挂在「网站」下，不与内核页抢位置。
+# 授权范围**只接受** `/www/sites/<域名>/index`（含子目录），其余授权根一律拒绝：
+# 不申请 `/www/sites` 或 `/`，避免跨站点读写与审计定责失真。
 #
 # 浏览/读写走宿主 fs 能力面；大文件按 256KiB 分页（单帧 1MiB 的协议上限）。
-# 默认建议授权 `/www`（站点与面板数据的宿主根）：确认页预勾选，装完即可浏览；
-# 管理员可取消后自行填写更小的授权根（如 `/var/www`、`/etc`）。
+# `resource_hints` 故意留空：站点域名在打包时未知，必须在安装确认页手动添加
+# `path:/www/sites/<域名>/index`。
 id = "com.skiff.files"
-name = "文件管理"
+name = "站点文件"
 version = "0.1.2"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -14,27 +19,27 @@ idle_timeout_sec = 300
 max_restarts = 3
 requires = ["fs", "identity"]
 network_egress = []
-# 安装确认页的默认勾选值：官方包声明默认授权，避免「装完打不开」。
-resource_hints = ["path:/www"]
+resource_hints = []
 
 [[permissions]]
 capability = "fs"
 verbs = ["read", "write", "list", "mkdir", "remove", "rename"]
 
 [[ui]]
-label = "文件管理"
+label = "站点文件"
 path = "main.html"
+icon = "file"
 
-# 单视图工具：只声明二级，不造假的三级标签（PLUGIN_UI_CONTRACT §3.2）。
+# 挂在「网站」一级下（站点相关位置），不与「工具 → 文件管理」抢同一位置。
 [[menu]]
 id = "files"
-parent = "tools"
-label = "文件管理"
-order = 10
+parent = "sites"
+label = "站点文件"
+order = 60
 icon = "file"
 view = "main"
 
 [config_schema.start_dir]
 type = "string"
 default = ""
-label = "默认打开的目录（留空 = 第一个授权根）"
+label = "默认打开的目录（留空 = 第一个已授权的站点目录）"

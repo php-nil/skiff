@@ -182,18 +182,27 @@ pub async fn view(
     Path((id, view_name)): Path<(String, String)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    // 文件管理已由内核接管：旧深链（如 `/plugins/com.skiff.files/main`）永久
-    // 重定向到新页面，旧收藏与外部链接不失效。
+    // 站点文件插件（`com.skiff.files`）是可选入口：未安装/未启用，或受限形态没有
+    // fs 能力面时，回退到内核「文件管理」页（不 404）。插件可用时按正常视图渲染。
     if id == "com.skiff.files" {
-        let to = format!("/{}/files", state.cfg.entry_prefix);
-        // 显式 301：`Redirect::permanent` 在 axum 里是 308。
-        let mut resp = axum::response::Response::new(axum::body::Body::empty());
-        *resp.status_mut() = axum::http::StatusCode::MOVED_PERMANENTLY;
-        if let Ok(value) = axum::http::HeaderValue::from_str(&to) {
-            resp.headers_mut()
-                .insert(axum::http::header::LOCATION, value);
+        let usable = state
+            .db()
+            .plugin(&id)
+            .ok()
+            .flatten()
+            .map(|r| r.enabled)
+            .unwrap_or(false)
+            && crate::middleware::check_fs_capability(&state).is_ok();
+        if !usable {
+            let to = format!("/{}/files", state.cfg.entry_prefix);
+            let mut resp = axum::response::Response::new(axum::body::Body::empty());
+            *resp.status_mut() = axum::http::StatusCode::FOUND;
+            if let Ok(value) = axum::http::HeaderValue::from_str(&to) {
+                resp.headers_mut()
+                    .insert(axum::http::header::LOCATION, value);
+            }
+            return Ok(resp);
         }
-        return Ok(resp);
     }
     let rec = state
         .db()
