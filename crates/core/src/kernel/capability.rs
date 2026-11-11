@@ -12,6 +12,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
+use skiff_app::db_async;
 use skiff_app::AppState;
 use skiff_docker::{Actor, Verb};
 use skiff_store::Grant;
@@ -47,8 +48,13 @@ pub(super) async fn identity_self(
     let Some(id) = req.extensions().get::<cap::PluginId>().map(|p| p.0.clone()) else {
         return (StatusCode::FORBIDDEN, "未认证").into_response();
     };
-    match state.db().plugin(&id) {
-        Ok(Some(p)) => Json(json!({
+    let plugin = {
+        let db = Arc::clone(state.db());
+        let id = id.clone();
+        db_async::run(move || db.plugin(&id)).await
+    };
+    match plugin {
+        Ok(Ok(Some(p))) => Json(json!({
             "id": p.id,
             "version": p.version,
             "api": p.api,
@@ -59,10 +65,14 @@ pub(super) async fn identity_self(
             "objects": p.grants.iter().filter(|g| g.kind == "object").map(|g| g.value.clone()).collect::<Vec<_>>(),
         }))
         .into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "插件不存在").into_response(),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "插件不存在").into_response(),
         // 「查库失败」不是「插件不存在」：不能把基础设施故障伪装成 404。
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::error!(plugin = %id, error = %e, "读取插件信息失败");
+            (StatusCode::INTERNAL_SERVER_ERROR, "读取插件信息失败").into_response()
+        }
+        Err(e) => {
+            tracing::error!(plugin = %id, error = %e, "投递插件信息查询失败");
             (StatusCode::INTERNAL_SERVER_ERROR, "读取插件信息失败").into_response()
         }
     }
@@ -81,19 +91,30 @@ pub(super) async fn config_get(State(state): State<Arc<AppState>>, req: Request<
         .get::<cap::PluginId>()
         .map(|p| p.0.clone())
         .unwrap_or_default();
-    let rows = match state.db().plugin_config(&id) {
-        Ok(v) => v,
-        Err(e) => {
-            if let Err(ae) = state.db().audit(
-                &format!("plugin:{id}"),
-                "uds",
-                "capability.config",
-                "",
-                "fail",
-                &e.to_string(),
-            ) {
-                tracing::error!(error = %ae, "能力面配置审计写入失败");
+    let rows = {
+        let db = Arc::clone(state.db());
+        let id = id.clone();
+        db_async::run(move || db.plugin_config(&id)).await
+    };
+    let rows = match rows {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            let db = Arc::clone(state.db());
+            let actor = format!("plugin:{id}");
+            let detail = e.to_string();
+            let audited = db_async::run(move || {
+                db.audit(&actor, "uds", "capability.config", "", "fail", &detail)
+            })
+            .await;
+            match audited {
+                Ok(Ok(())) => {}
+                Ok(Err(ae)) => tracing::error!(error = %ae, "能力面配置审计写入失败"),
+                Err(ae) => tracing::error!(error = %ae, "投递能力面配置审计失败"),
             }
+            return (StatusCode::INTERNAL_SERVER_ERROR, "读取插件配置失败").into_response();
+        }
+        Err(e) => {
+            tracing::error!(plugin = %id, error = %e, "投递插件配置查询失败");
             return (StatusCode::INTERNAL_SERVER_ERROR, "读取插件配置失败").into_response();
         }
     };
@@ -102,15 +123,16 @@ pub(super) async fn config_get(State(state): State<Arc<AppState>>, req: Request<
         obj.insert(k, Value::String(v));
     }
     // 只记条数，绝不记 key 之外的任何内容（secret 值不得入审计）。
-    if let Err(e) = state.db().audit(
-        &format!("plugin:{id}"),
-        "uds",
-        "capability.config",
-        "",
-        "ok",
-        &format!("{} 项", obj.len()),
-    ) {
-        tracing::error!(error = %e, "能力面配置审计写入失败");
+    let db = Arc::clone(state.db());
+    let actor = format!("plugin:{id}");
+    let detail = format!("{} 项", obj.len());
+    let audited =
+        db_async::run(move || db.audit(&actor, "uds", "capability.config", "", "ok", &detail))
+            .await;
+    match audited {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(error = %e, "能力面配置审计写入失败"),
+        Err(e) => tracing::error!(error = %e, "投递能力面配置审计失败"),
     }
     Json(Value::Object(obj)).into_response()
 }

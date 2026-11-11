@@ -534,9 +534,13 @@ impl Supervisor {
 
         match spawn().await {
             Ok(r) => {
-                let mut running = self.running.lock().await;
                 let socket = r.socket.clone();
-                running.insert(rec.id.clone(), r);
+                {
+                    let mut running = self.running.lock().await;
+                    running.insert(rec.id.clone(), r);
+                }
+                // 异步锁先释放再写库：`set_plugin_status` 是同步 SQLite，
+                // 持着 `running` 锁做磁盘 I/O 会拖住所有插件启动/查询（§15）。
                 self.failures.lock().await.remove(&rec.id);
                 // 进程已经拉起：状态回写失败不能反过来让调用方以为启动失败，
                 // 否则会重试/误判，而实际进程已在跑。记日志后照常返回 socket。

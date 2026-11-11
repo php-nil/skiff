@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
+use skiff_app::db_async;
 use skiff_app::AppState;
 
 /// 协议版本闸：插件必须声明与内核一致的协议版本（§4.2）。
@@ -43,15 +44,23 @@ pub(super) async fn plugin_auth(
     let plugin_id = match uid_to_plugin(&state, uid).await {
         Some(id) => id,
         None => {
-            if let Err(e) = state.db().audit(
-                &format!("uid:{uid}"),
-                "uds",
-                "capability.auth",
-                "",
-                "deny",
-                "UID 未映射到插件",
-            ) {
-                tracing::error!(error = %e, "能力面鉴权审计写入失败");
+            let db = Arc::clone(state.db());
+            let actor = format!("uid:{uid}");
+            let audited = db_async::run(move || {
+                db.audit(
+                    &actor,
+                    "uds",
+                    "capability.auth",
+                    "",
+                    "deny",
+                    "UID 未映射到插件",
+                )
+            })
+            .await;
+            match audited {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::error!(error = %e, "能力面鉴权审计写入失败"),
+                Err(e) => tracing::error!(error = %e, "投递能力面鉴权审计失败"),
             }
             return (StatusCode::FORBIDDEN, "UID 未映射到任何插件").into_response();
         }
@@ -70,15 +79,24 @@ pub(super) async fn plugin_auth(
         .await
         .unwrap_or_default();
     if expected.is_empty() || !skiff_identity::token_matches(&expected, &token) {
-        if let Err(e) = state.db().audit(
-            &format!("plugin:{plugin_id}"),
-            "uds",
-            "capability.auth",
-            &plugin_id,
-            "deny",
-            "token 不匹配",
-        ) {
-            tracing::error!(error = %e, "能力面鉴权审计写入失败");
+        let db = Arc::clone(state.db());
+        let actor = format!("plugin:{plugin_id}");
+        let target = plugin_id.clone();
+        let audited = db_async::run(move || {
+            db.audit(
+                &actor,
+                "uds",
+                "capability.auth",
+                &target,
+                "deny",
+                "token 不匹配",
+            )
+        })
+        .await;
+        match audited {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(error = %e, "能力面鉴权审计写入失败"),
+            Err(e) => tracing::error!(error = %e, "投递能力面鉴权审计失败"),
         }
         return (StatusCode::FORBIDDEN, "插件身份令牌无效").into_response();
     }
@@ -88,10 +106,9 @@ pub(super) async fn plugin_auth(
 }
 
 async fn uid_to_plugin(state: &AppState, uid: u32) -> Option<String> {
-    state
-        .db()
-        .list_plugins()
-        .ok()?
+    let db = Arc::clone(state.db());
+    let plugins = db_async::run(move || db.list_plugins()).await.ok()?.ok()?;
+    plugins
         .into_iter()
         .find(|p| skiff_plugin::install::plugin_uid(&p.id) == uid)
         .map(|p| p.id)

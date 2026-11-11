@@ -37,12 +37,31 @@ pub async fn index(
     } else {
         "-".into()
     };
-    let plugins = state.db().list_plugins()?;
+    // 概览页的 5 条读合并成一次阻塞投递（§15）：既不在 worker 上跑，也避免 5 次排队。
+    let (plugins, sites, runtimes, totp_enabled, audit_rows) = {
+        let db = std::sync::Arc::clone(state.db());
+        let uid = user.user.id;
+        let loaded = skiff_app::db_async::run(move || {
+            let plugins = db.list_plugins()?;
+            let sites = db.list_sites()?;
+            let runtimes = db.list_runtimes()?;
+            let totp_enabled = db.user_by_id(uid)?.map(|u| u.totp_enabled).unwrap_or(false);
+            let audit = db.recent_audit(6)?;
+            Ok::<_, skiff_store::StoreError>((plugins, sites, runtimes, totp_enabled, audit))
+        })
+        .await;
+        match loaded {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(AppError::from(e)),
+            Err(e) => {
+                tracing::error!(error = %e, "投递概览页读库失败");
+                return Err(AppError::Unavailable(format!("数据库暂不可用：{e}")));
+            }
+        }
+    };
     let plugin_enabled = plugins.iter().filter(|p| p.enabled).count();
     let plugin_disabled = plugins.len().saturating_sub(plugin_enabled);
-    let sites = state.db().list_sites()?;
     let site_abnormal = sites.iter().filter(|s| s.status != "running").count();
-    let runtimes = state.db().list_runtimes()?;
     let runtime_total = runtimes.len();
     let mut runtime_abnormal = 0usize;
     let mut runtime_uninstalled = 0usize;
@@ -59,11 +78,6 @@ pub async fn index(
             Some(_) => {}
         }
     }
-    let totp_enabled = state
-        .db()
-        .user_by_id(user.user.id)?
-        .map(|u| u.totp_enabled)
-        .unwrap_or(false);
     let prefix = state.cfg.entry_prefix.clone();
     let docker_reason = state.docker_unavailable_reason().to_string();
     let initial_admin_pending = state.cfg.data_dir.join("initial-admin.txt").exists();
@@ -78,9 +92,7 @@ pub async fn index(
         totp_enabled,
         site_abnormal,
     );
-    let audit = state
-        .db()
-        .recent_audit(6)?
+    let audit = audit_rows
         .into_iter()
         .map(|a| AuditRow {
             ts: chrono::DateTime::from_timestamp(a.ts, 0)

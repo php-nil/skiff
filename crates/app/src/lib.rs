@@ -10,6 +10,7 @@ mod atomic;
 pub mod auth;
 pub mod catalog;
 pub mod commands;
+pub mod db_async;
 pub mod docker_daemon;
 pub mod jobs;
 pub mod menu;

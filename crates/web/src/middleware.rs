@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use crate::error::AppError;
 use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::util::parse_cookies;
+use skiff_app::db_async;
 use skiff_model::{Form, Permission, ScopeSet};
 
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
@@ -205,24 +206,43 @@ pub async fn load_session(
         // 这里必须区分「没有会话」与「查不到库」：前者按未登录继续，后者是依赖故障。
         // 旧实现用 `if let Ok(Some(..))` 把 Err 一并吞成未登录——数据库挂掉时所有
         // 已登录用户被静默踢回登录页，日志里一条痕迹都没有。
-        let session = match state
-            .db()
-            .verify_session(&hash, state.cfg.session.idle_secs)
-        {
-            Ok(session) => session,
-            Err(e) => {
-                tracing::error!(error = %e, "校验会话失败，数据库不可用");
-                return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
-                    .into_response();
+        //
+        // 同步 SQLite 投递到有界阻塞线程（§15）；错误与状态码口径保持不变：
+        // 业务 Err 与投递失败都按「依赖故障」返回 503。
+        let session = {
+            let db = Arc::clone(state.db());
+            let hash = hash.clone();
+            let idle = state.cfg.session.idle_secs;
+            match db_async::run(move || db.verify_session(&hash, idle)).await {
+                Ok(Ok(session)) => session,
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "校验会话失败，数据库不可用");
+                    return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "投递会话校验失败");
+                    return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
+                        .into_response();
+                }
             }
         };
         if let Some(session) = session {
-            let user = match state.db().user_by_id(session.user_id) {
-                Ok(user) => user,
-                Err(e) => {
-                    tracing::error!(error = %e, "读取会话用户失败，数据库不可用");
-                    return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
-                        .into_response();
+            let user = {
+                let db = Arc::clone(state.db());
+                let uid = session.user_id;
+                match db_async::run(move || db.user_by_id(uid)).await {
+                    Ok(Ok(user)) => user,
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "读取会话用户失败，数据库不可用");
+                        return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
+                            .into_response();
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "投递会话用户查询失败");
+                        return AppError::Unavailable("会话校验失败：数据库暂不可用".into())
+                            .into_response();
+                    }
                 }
             };
             // 会话指向的用户已被删除：按未登录处理（不是故障）。
@@ -280,8 +300,13 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                 let hash = skiff_identity::sha256_hex(&token);
                 // 与 Cookie 路径同口径：查询失败（Err）是依赖故障，必须 503 + 日志，
                 // 不能和「token 不存在」（Ok(None)）一起掉进「需要登录」。
-                match state.db().verify_api_token(&hash) {
-                    Ok(Some((user, scopes))) => {
+                let token_lookup = {
+                    let db = Arc::clone(state.db());
+                    let hash = hash.clone();
+                    db_async::run(move || db.verify_api_token(&hash)).await
+                };
+                match token_lookup {
+                    Ok(Ok(Some((user, scopes)))) => {
                         // scope 解析是严格的（§6.1）：拼错的 token 必须立刻失败并留审计，
                         // 而不是被当成「空权限」或（更糟）「全权限」。
                         match ScopeSet::parse(&scopes) {
@@ -299,15 +324,29 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                                     .get::<ClientInfo>()
                                     .map(|c| c.ip.clone())
                                     .unwrap_or_else(|| "unknown".into());
-                                if let Err(ae) = state.db().audit(
-                                    &user.username,
-                                    &ip,
-                                    "auth.token_scope",
-                                    &user.username,
-                                    "deny",
-                                    &e,
-                                ) {
-                                    tracing::error!(error = %ae, "API Token scope 拒绝审计写入失败");
+                                let db = Arc::clone(state.db());
+                                let actor = user.username.clone();
+                                let target = user.username.clone();
+                                let detail = e.clone();
+                                let audited = db_async::run(move || {
+                                    db.audit(
+                                        &actor,
+                                        &ip,
+                                        "auth.token_scope",
+                                        &target,
+                                        "deny",
+                                        &detail,
+                                    )
+                                })
+                                .await;
+                                match audited {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(ae)) => {
+                                        tracing::error!(error = %ae, "API Token scope 拒绝审计写入失败")
+                                    }
+                                    Err(ae) => {
+                                        tracing::error!(error = %ae, "投递 API Token 审计失败")
+                                    }
                                 }
                                 return Err(AppError::Unauthorized(format!(
                                     "API Token 配置非法：{e}"
@@ -315,40 +354,66 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                             }
                         }
                     }
-                    Ok(None) => {}
-                    Err(e) => {
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => {
                         tracing::error!(error = %e, "校验 API Token 失败，数据库不可用");
+                        return Err(AppError::Unavailable(
+                            "API Token 校验失败：数据库暂不可用".into(),
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "投递 API Token 校验失败");
                         return Err(AppError::Unavailable(
                             "API Token 校验失败：数据库暂不可用".into(),
                         ));
                     }
                 }
                 // API 登录签发的会话令牌同样可作为 Bearer 使用
-                match state
-                    .db()
-                    .verify_session(&hash, state.cfg.session.idle_secs)
-                {
-                    Ok(Some(session)) => match state.db().user_by_id(session.user_id) {
-                        Ok(Some(user)) => {
-                            return Ok(AuthUser(CurrentUser {
-                                user,
-                                session_id: session.id,
-                                session_token: token,
-                                scopes: None,
-                            }))
+                let session_lookup = {
+                    let db = Arc::clone(state.db());
+                    let hash = hash.clone();
+                    let idle = state.cfg.session.idle_secs;
+                    db_async::run(move || db.verify_session(&hash, idle)).await
+                };
+                match session_lookup {
+                    Ok(Ok(Some(session))) => {
+                        let uid = session.user_id;
+                        let user = {
+                            let db = Arc::clone(state.db());
+                            db_async::run(move || db.user_by_id(uid)).await
+                        };
+                        match user {
+                            Ok(Ok(Some(user))) => {
+                                return Ok(AuthUser(CurrentUser {
+                                    user,
+                                    session_id: session.id,
+                                    session_token: token,
+                                    scopes: None,
+                                }))
+                            }
+                            // 令牌有效但用户已删除：按未登录处理。
+                            Ok(Ok(None)) => {}
+                            Ok(Err(e)) => {
+                                tracing::error!(error = %e, "读取令牌用户失败，数据库不可用");
+                                return Err(AppError::Unavailable(
+                                    "会话校验失败：数据库暂不可用".into(),
+                                ));
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "投递令牌用户查询失败");
+                                return Err(AppError::Unavailable(
+                                    "会话校验失败：数据库暂不可用".into(),
+                                ));
+                            }
                         }
-                        // 令牌有效但用户已删除：按未登录处理。
-                        Ok(None) => {}
-                        Err(e) => {
-                            tracing::error!(error = %e, "读取令牌用户失败，数据库不可用");
-                            return Err(AppError::Unavailable(
-                                "会话校验失败：数据库暂不可用".into(),
-                            ));
-                        }
-                    },
-                    Ok(None) => {}
-                    Err(e) => {
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => {
                         tracing::error!(error = %e, "校验会话令牌失败，数据库不可用");
+                        return Err(AppError::Unavailable("会话校验失败：数据库暂不可用".into()));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "投递会话令牌校验失败");
                         return Err(AppError::Unavailable("会话校验失败：数据库暂不可用".into()));
                     }
                 }

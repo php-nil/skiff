@@ -23,11 +23,10 @@ use chrono::{Local, TimeZone};
 use serde_json::{json, Value};
 use skiff_plugin::supervisor::{Supervisor, SupervisorError};
 use skiff_sched::{
-    AuditActor, AuditEvent, Batch, BufferConfig, BufferSignal, Clock, ErrorClass, ErrorPhase,
-    ExecError, ExecOutput, PluginGate, PluginStatus, PushOutcome, PushReport, RejectReason,
-    RunContext, RunRecord, RunTicket, SampleTicket, Schedule, Scheduler, SchedulerConfig,
-    SystemClock, Task, TaskError, TaskFilter, TaskKind, TaskPatch, TaskSource, TaskSpec, TaskState,
-    Trigger,
+    AuditActor, Batch, BufferConfig, BufferSignal, Clock, ErrorClass, ErrorPhase, ExecError,
+    ExecOutput, PluginGate, PluginStatus, PushOutcome, PushReport, RejectReason, RunContext,
+    RunRecord, RunTicket, SampleTicket, Schedule, Scheduler, SchedulerConfig, SystemClock, Task,
+    TaskError, TaskFilter, TaskKind, TaskPatch, TaskSource, TaskSpec, TaskState, Trigger,
 };
 use skiff_store::{Db, Grant, PluginRecord};
 use tokio::sync::Mutex;
@@ -289,25 +288,22 @@ impl TaskService {
     }
 
     /// 1s tick：拿票 → 执行体独立 task → 结算。**不在锁内执行任何 RPC**。
+    ///
+    /// 串行不变量：票据（以及 `Running`/`Queued` 状态与 `last_run`）全部在 `sched.tick`
+    /// 内、调度锁下产出；锁外只做两件事——把 `RunRecord`/审计物化落盘、派发执行体。
+    /// 因此即使落盘改到后台，第二个 tick 也拿不到同一任务的第二张票；tick 循环本身是
+    /// 单任务顺序 `await`（`core::server::spawn_task_loop`），不会并发重入。
     pub async fn tick_once(self: &Arc<Self>) {
         let mut runs = Vec::new();
         let mut samples = Vec::new();
-        {
+        let (records, audits) = {
             let mut sched = self.scheduler.lock().await;
             let gate = Gate {
                 db: Arc::clone(&self.db),
             };
             let report = sched.tick(&self.clock, &gate);
-            for rec in report.records {
-                if let Err(e) = self.persist_record(rec) {
-                    tracing::warn!(error = %e, "任务运行记录落盘失败");
-                }
-            }
-            for ev in report.audits {
-                if let Err(e) = self.persist_audit(ev) {
-                    tracing::error!(error = %e, "任务审计落盘失败");
-                }
-            }
+            let records = report.records;
+            let audits = report.audits;
             for ticket in report.runs {
                 let task_id = ticket.context.task_id.to_string();
                 let timeout = sched
@@ -323,6 +319,33 @@ impl TaskService {
                     .and_then(|t| t.spec.plugin_id().map(str::to_string));
                 samples.push((ticket, plugin));
             }
+            (records, audits)
+        };
+
+        // 落盘与调度判定解耦：锁外、有界阻塞线程上把运行记录与审计写库。
+        let db = Arc::clone(&self.db);
+        let persisted = crate::db_async::run(move || {
+            for rec in records {
+                if let Err(e) = db.append_task_run(&run_row(&rec)) {
+                    tracing::warn!(error = %e, "任务运行记录落盘失败");
+                }
+            }
+            for ev in audits {
+                if let Err(e) = db.audit(
+                    &ev.actor.as_string(),
+                    "sched",
+                    ev.action_str(),
+                    &ev.target,
+                    ev.outcome.as_str(),
+                    ev.detail.as_deref().unwrap_or(""),
+                ) {
+                    tracing::error!(error = %e, "任务审计落盘失败");
+                }
+            }
+        })
+        .await;
+        if let Err(e) = persisted {
+            tracing::error!(error = %e, "投递任务落盘失败");
         }
 
         for (ticket, timeout_secs) in runs {
@@ -411,25 +434,6 @@ impl TaskService {
         if let Err(e) = sched.apply_sample(&ticket, result, self.clock.now()) {
             tracing::warn!(task = %ticket.context.task_id, error = %e, "采样结果写入失败");
         }
-    }
-
-    fn persist_record(&self, rec: RunRecord) -> Result<(), TaskError> {
-        self.db
-            .append_task_run(&run_row(&rec))
-            .map_err(|e| TaskError::Store(e.to_string()))
-    }
-
-    fn persist_audit(&self, ev: AuditEvent) -> Result<(), TaskError> {
-        self.db
-            .audit(
-                &ev.actor.as_string(),
-                "sched",
-                ev.action_str(),
-                &ev.target,
-                ev.outcome.as_str(),
-                ev.detail.as_deref().unwrap_or(""),
-            )
-            .map_err(|e| TaskError::Store(e.to_string()))
     }
 
     async fn execute_ticket(&self, ticket: &RunTicket) -> Result<ExecOutput, ExecError> {
@@ -2229,5 +2233,55 @@ requires = ["fs"]
             .await
             .unwrap();
         assert_ne!(out["error_class"], "reentry_blocked", "{out}");
+    }
+
+    /// 串行不变量：落盘移出调度锁后，并发的两轮 tick 仍只能为同一任务出一张票。
+    ///
+    /// 票据与 `Running`/`Queued` 状态在 `sched.tick` 内、锁下产出；锁外只是把
+    /// `RunRecord` 物化写库，因此第二个 tick 看到的是「已取走」，不会重复执行。
+    #[tokio::test]
+    async fn concurrent_ticks_issue_at_most_one_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let task_id = "builtin:test-tick-once";
+        {
+            let mut sched = svc.scheduler.lock().await;
+            let mut spec = TaskSpec::new(
+                task_id,
+                TaskKind::builtin(BUILTIN_AUDIT_PRUNE).unwrap(),
+                // source 用 Site 而不是 System：内置任务按 `(kind, source)` 去重，
+                // System + audit-prune 会命中启动时种下的那条并发起「更新」。
+                TaskSource::Site("tick-once-test".into()),
+                Schedule::interval(5),
+            )
+            .unwrap();
+            spec.payload = json!({});
+            spec.created_by = "system".into();
+            spec.created_at = svc.clock.now();
+            spec.updated_at = spec.created_at;
+            sched.register(spec, svc.clock.now(), &svc.clock).unwrap();
+        }
+
+        // interval 的最小粒度是 5 s，首次触发落在下一个整 5 秒边界。
+        tokio::time::sleep(Duration::from_millis(5200)).await;
+        let a = Arc::clone(&svc);
+        let b = Arc::clone(&svc);
+        let (ra, rb) = tokio::join!(
+            tokio::spawn(async move { a.tick_once().await }),
+            tokio::spawn(async move { b.tick_once().await })
+        );
+        ra.unwrap();
+        rb.unwrap();
+
+        // 等执行体结算写回（内置任务在 spawn_blocking 里跑，audit-prune 很快）。
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let runs = svc.db_handle().task_runs(task_id, 10).unwrap();
+        assert_eq!(
+            runs.len(),
+            1,
+            "并发 tick 只能出一张票，实际 {} 条：{:?}",
+            runs.len(),
+            runs.iter().map(|r| (&r.id, &r.result)).collect::<Vec<_>>()
+        );
     }
 }

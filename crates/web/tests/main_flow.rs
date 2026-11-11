@@ -6831,3 +6831,32 @@ async fn legacy_paths_redirect_to_canonical_urls() {
         Some("/p/store")
     );
 }
+
+/// 并发页面请求：会话中间件与概览页的 DB 读走有界阻塞投递后，
+/// 多请求并发仍应全部成功（不在 worker 上排队互拖）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_page_requests_all_succeed() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let app = h.app.clone();
+        let token = token.clone();
+        tasks.push(tokio::spawn(async move {
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/p")
+                        .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            resp.status()
+        }));
+    }
+    for t in tasks {
+        assert_eq!(t.await.unwrap(), StatusCode::OK);
+    }
+}

@@ -186,43 +186,51 @@ async fn dispatch_host(
 
 #[cfg(target_os = "linux")]
 async fn dispatch_host(state: &AppState, method: &str, params: &Value) -> Result<Value, FtpError> {
-    let ctx = context(state)?;
+    let ctx = context(state).await?;
     skiff_plugin::ftp::dispatch(&KernelHost, &ctx, method, params).await
 }
 
 /// 从 DB 读站点快照并算好运行环境信息，插件侧不再查库。
+///
+/// `list_sites` + 每站点 `runtime_by_id` 是 N+1：整段投递到一次阻塞任务里，
+/// 既不在 worker 上跑，也不为每个站点各排一次队。
 #[cfg(target_os = "linux")]
-fn context(state: &AppState) -> Result<FtpContext, FtpError> {
-    let sites = state
-        .db()
-        .list_sites()
-        .map_err(|e| FtpError::internal(format!("读取站点失败：{e}")))?;
-    let mut out = Vec::with_capacity(sites.len());
-    for s in sites {
-        let (runtime_kind, runtime_name, container) =
-            match (&s.site_type[..], s.runtime_id.as_deref()) {
-                (TYPE_RUNTIME, Some(id)) => match state.db().runtime_by_id(id) {
-                    Ok(Some(r)) => (
-                        Some(r.kind.clone()),
-                        Some(r.name.clone()),
-                        Some(skiff_app::sites::runtime_container_name("php", &r.name)),
-                    ),
-                    _ => (Some("missing".into()), None, None),
-                },
-                _ => (None, None, None),
-            };
-        out.push(FtpSite {
-            domain: s.domain,
-            site_type: s.site_type,
-            root_dir: s.root_dir,
-            runtime_kind,
-            runtime_name,
-            container,
-        });
-    }
+async fn context(state: &AppState) -> Result<FtpContext, FtpError> {
+    let db = Arc::clone(state.db());
+    let sites_root = state.cfg.web_root.join("sites");
+    let snapshot = skiff_app::db_async::run(move || -> Result<Vec<FtpSite>, String> {
+        let sites = db.list_sites().map_err(|e| format!("读取站点失败：{e}"))?;
+        let mut out = Vec::with_capacity(sites.len());
+        for s in sites {
+            let (runtime_kind, runtime_name, container) =
+                match (&s.site_type[..], s.runtime_id.as_deref()) {
+                    (TYPE_RUNTIME, Some(id)) => match db.runtime_by_id(id) {
+                        Ok(Some(r)) => (
+                            Some(r.kind.clone()),
+                            Some(r.name.clone()),
+                            Some(skiff_app::sites::runtime_container_name("php", &r.name)),
+                        ),
+                        _ => (Some("missing".into()), None, None),
+                    },
+                    _ => (None, None, None),
+                };
+            out.push(FtpSite {
+                domain: s.domain,
+                site_type: s.site_type,
+                root_dir: s.root_dir,
+                runtime_kind,
+                runtime_name,
+                container,
+            });
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| FtpError::internal(format!("投递站点快照失败：{e}")))?
+    .map_err(|e| FtpError::internal(e))?;
     Ok(FtpContext {
-        sites: out,
-        sites_root: state.cfg.web_root.join("sites"),
+        sites: snapshot,
+        sites_root,
     })
 }
 
