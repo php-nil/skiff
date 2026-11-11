@@ -13,6 +13,14 @@
 //!
 //! **语义边界**：闭包里只能放自包含的单条语句或完整事务（即 `Db` 现有方法），不要在里面
 //! 再 await、也不要持有其它锁进来。
+//!
+//! ## 覆盖范围
+//!
+//! 本模块只覆盖**短事务车道**（日志字段 `lane = "short"`）：请求处理、内核能力面、会话校验等
+//! 显式调用 [`run`] 的位置。它**不覆盖维护车道**（`crate::db` 的 `maintenance` 模块：备份、
+//! 审计裁剪），那些操作由调度内置任务自己的 `spawn_blocking` 执行，真正的串行点是 `Db` 的
+//! 连接互斥。因此**加大 [`MAX_CONCURRENT`] 或给维护操作单独 permit 都不会缩短维护窗口内的
+//! 等待**；归因与剩余风险见 `docs/ARCH_REVIEW.md` §15.5（唯一口径，其它文档引用不复述）。
 
 use std::cell::Cell;
 use std::fmt;
@@ -101,6 +109,7 @@ where
         Err(_) => {
             let waited = queued_at.elapsed();
             tracing::warn!(
+                lane = "short",
                 waited_ms = waited.as_millis(),
                 limit = MAX_CONCURRENT,
                 "DB 阻塞队列等待超限，本次调用快速失败"
@@ -111,6 +120,7 @@ where
     let waited = queued_at.elapsed();
     if waited >= QUEUE_LOG {
         tracing::debug!(
+            lane = "short",
             waited_ms = waited.as_millis(),
             limit = MAX_CONCURRENT,
             "DB 阻塞任务排队后执行"

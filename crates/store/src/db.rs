@@ -10,9 +10,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use tracing::{info, warn};
 
 use crate::error::StoreError;
@@ -21,6 +21,7 @@ use crate::Result;
 mod audit;
 mod backup_codes;
 pub mod jobs;
+pub mod maintenance;
 mod plugins;
 mod prefs;
 pub mod quotas;
@@ -89,9 +90,28 @@ impl Db {
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn_lane("short")
+    }
+
+    /// 按调用车道取连接，并在等待超过阈值时留痕。
+    ///
+    /// `lane` 只有两个值：`short`（请求/短事务，经 `db_async` 投递）与
+    /// `maintenance`（备份、审计裁剪等长操作，见 [`crate::maintenance`]）。
+    /// 日志用于区分「谁在占锁」，不要把维护等待误算进短事务池。
+    fn conn_lane(&self, lane: &'static str) -> std::sync::MutexGuard<'_, Connection> {
         // 单连接 + 短事务；锁中毒意味着有 handler panic，直接取回内部值继续，
         // 避免一次 panic 让整个面板永久 500。
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+        let started = Instant::now();
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let waited = started.elapsed();
+        if waited >= Duration::from_millis(50) {
+            warn!(
+                lane,
+                waited_ms = waited.as_millis() as u64,
+                "Db 连接等待超过 50ms"
+            );
+        }
+        guard
     }
 
     fn migrate(&self) -> Result<()> {
@@ -162,37 +182,6 @@ impl Db {
             conn.execute_batch("PRAGMA foreign_keys=ON")?;
         }
         info!(from, to, "schema 迁移完成");
-        Ok(())
-    }
-
-    /// 一致性快照备份（§5.2）：用 `VACUUM INTO`，禁止对活动库直接 tar。
-    pub fn backup_to(&self, dest: impl AsRef<Path>) -> Result<()> {
-        let dest = dest.as_ref();
-        // 目标必须是活动库之外的路径：否则下面会先 unlink 正在使用的库文件，
-        // 进程继续写已删除 inode，重启后数据全丢。
-        let dest_cmp = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
-        let src_cmp = self
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| self.path.clone());
-        if dest_cmp == src_cmp {
-            return Err(StoreError::Conflict("备份目标不能是活动数据库本身".into()));
-        }
-        if dest.exists() {
-            std::fs::remove_file(dest)?;
-        }
-        let conn = self.conn();
-        let dest_str = dest.to_string_lossy().to_string();
-        conn.execute("VACUUM INTO ?1", params![dest_str])?;
-        // 必须打开备份文件本身校验；在源连接上跑 integrity_check 查的是活动库。
-        let check: String =
-            Connection::open_with_flags(dest, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?
-                .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-        if check != "ok" {
-            drop(conn);
-            let _ = std::fs::remove_file(dest);
-            return Err(StoreError::Decode(format!("备份库完整性检查失败: {check}")));
-        }
         Ok(())
     }
 }

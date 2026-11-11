@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{Local, TimeZone};
 use serde_json::{json, Value};
@@ -1357,6 +1357,7 @@ fn site_backup(
     web_root: &Path,
     data_dir: &Path,
 ) -> Result<ExecOutput, ExecError> {
+    let started = Instant::now();
     let domain = ctx
         .payload
         .get("domain")
@@ -1407,6 +1408,14 @@ fn site_backup(
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len() as usize)
         .unwrap_or(0);
+    tracing::info!(
+        lane = "maintenance",
+        op = "site_backup",
+        duration_ms = started.elapsed().as_millis() as u64,
+        bytes,
+        domain,
+        "维护任务完成"
+    );
     Ok(ExecOutput {
         verdict: None,
         detail: Some(path.display().to_string()),
@@ -1415,6 +1424,7 @@ fn site_backup(
 }
 
 fn db_vacuum(ctx: &BuiltinCtx, db: &Db, data_dir: &Path) -> Result<ExecOutput, ExecError> {
+    let started = Instant::now();
     let _ = ctx;
     let dir = data_dir.join("backups").join("db");
     std::fs::create_dir_all(&dir)
@@ -1426,6 +1436,13 @@ fn db_vacuum(ctx: &BuiltinCtx, db: &Db, data_dir: &Path) -> Result<ExecOutput, E
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len() as usize)
         .unwrap_or(0);
+    tracing::info!(
+        lane = "maintenance",
+        op = "db_backup",
+        duration_ms = started.elapsed().as_millis() as u64,
+        bytes,
+        "维护任务完成"
+    );
     Ok(ExecOutput {
         verdict: None,
         detail: Some(path.display().to_string()),
@@ -1440,6 +1457,7 @@ fn trash_prune(
     data_dir: &Path,
     trash_retention_days: u32,
 ) -> Result<ExecOutput, ExecError> {
+    let started = Instant::now();
     let _ = ctx;
     // 任务服务与 Web 页面共用同一个 `data/trash` 目录与 `trash_entries` 表。
     let admin = crate::admin_fs::AdminFs::with_options(
@@ -1451,6 +1469,13 @@ fn trash_prune(
     let bytes = admin
         .trash_prune()
         .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.message()))?;
+    tracing::info!(
+        lane = "maintenance",
+        op = "trash_prune",
+        duration_ms = started.elapsed().as_millis() as u64,
+        bytes,
+        "维护任务完成"
+    );
     Ok(ExecOutput {
         verdict: None,
         detail: Some(format!("released_bytes={bytes}")),
@@ -1461,11 +1486,15 @@ fn trash_prune(
 /// 审计保留清理：按 90 天时间窗删除。删多少条写进任务详情（可在任务运行记录里追溯），
 /// 失败则整次运行记失败，由调度器留痕。
 fn audit_prune(db: &Db) -> Result<ExecOutput, ExecError> {
+    let started = Instant::now();
     let cutoff = audit_cutoff(Local::now().timestamp());
     let deleted = db
         .purge_audit_before(cutoff)
         .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
     tracing::info!(
+        lane = "maintenance",
+        op = "audit_prune",
+        duration_ms = started.elapsed().as_millis() as u64,
         deleted,
         cutoff,
         retention_days = AUDIT_RETENTION_DAYS,

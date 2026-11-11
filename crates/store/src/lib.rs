@@ -14,6 +14,7 @@ pub use db::jobs::{
     is_active_status, JobLogBatch, JobLogRow, JobRow, LogAppend, JOB_KEEP_MAX, JOB_RETENTION_DAYS,
     MAX_LOG_BYTES, MAX_LOG_LINES,
 };
+pub use db::maintenance;
 pub use db::quotas::QuotaRow;
 pub use db::runtimes::{
     validate_runtime_name, NewRuntime, Runtime, KIND_GO, KIND_NODE, KIND_PHP, KIND_RUST,
