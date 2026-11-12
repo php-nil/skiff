@@ -1842,8 +1842,8 @@ pub async fn job_detail(
             "created_by_role": view.created_by_role,
             "requester_ip": view.requester_ip,
             "created_at": rfc3339(job.created_at),
-            "started_at": job.started_at.map(|v| rfc3339(v)),
-            "finished_at": job.finished_at.map(|v| rfc3339(v)),
+            "started_at": job.started_at.map(rfc3339),
+            "finished_at": job.finished_at.map(rfc3339),
             "duration": view.duration,
             "exit_code": view.exit_code,
             "trigger": view.trigger,
@@ -1860,6 +1860,183 @@ pub async fn job_detail(
         }
     }))
     .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// 设置页「后台端口 / 安全入口 / TLS」区块（字段冻结，只增不改）。
+#[derive(Debug, Serialize)]
+pub struct SettingsPanelItem {
+    pub listen_addr: String,
+    pub listen_port: u16,
+    pub entry_prefix: String,
+    /// `auto` / `on` / `off`，与旧页面三态回显同口径。
+    pub tls_mode: String,
+    pub tls_cert: String,
+    pub tls_key: String,
+    pub config_path: String,
+    pub plaintext_behind_proxy: bool,
+    /// 首启口令文件仍在：提示尽快改密（只提示，不拦截）。
+    pub initial_admin_pending: bool,
+}
+
+/// 设置页账户安全区块（口令 / TOTP 表单仍在旧版设置页）。
+#[derive(Debug, Serialize)]
+pub struct SettingsAccountItem {
+    pub totp_enabled: bool,
+    pub must_change_password: bool,
+}
+
+/// 信任公钥行（仅管理员可见，非管理员返回空数组）。
+#[derive(Debug, Serialize)]
+pub struct SettingsKeyItem {
+    pub key_id: String,
+    pub fingerprint_short: String,
+    pub label: String,
+}
+
+/// 设置页一次性提示（本次读取消费，刷新不重放）。
+#[derive(Debug, Serialize)]
+pub struct SettingsFlashItem {
+    pub notice: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SettingsData {
+    pub panel: SettingsPanelItem,
+    pub account: SettingsAccountItem,
+    pub keys: Vec<SettingsKeyItem>,
+    pub can_admin: bool,
+    pub flash: SettingsFlashItem,
+}
+
+/// `GET /ui/v1/settings`：设置页只读快照。
+///
+/// 写操作按钮显隐只看 `can_admin`；口令与 TOTP 仍走旧版设置页，不在本接口返回秘密材料。
+pub async fn settings(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+) -> Result<Response, ApiError> {
+    let can_admin = user.can(skiff_model::Permission::Admin);
+    let user_row = state
+        .db()
+        .user_by_id(user.user.id)
+        .map_err(|e| ApiError(AppError::from(e)))?
+        .ok_or_else(|| ApiError(AppError::NotFound("用户不存在".into())))?;
+    let keys = if can_admin {
+        state
+            .db()
+            .list_trusted_keys()
+            .map_err(|e| ApiError(AppError::from(e)))?
+            .into_iter()
+            .map(|(key_id, _pk, label)| SettingsKeyItem {
+                fingerprint_short: key_id.chars().take(16).collect(),
+                key_id,
+                label,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let tls_mode = if state.cfg.tls_enabled {
+        "on"
+    } else if !state.cfg.dev_http {
+        "auto"
+    } else if !state.cfg.listen.ip().is_loopback() {
+        "off"
+    } else {
+        "auto"
+    };
+    let (notice, error) = match state.take_flash(&user.session_id) {
+        Some(msg) => match msg.kind {
+            skiff_app::FlashKind::Notice => (msg.text, String::new()),
+            skiff_app::FlashKind::Error => (String::new(), msg.text),
+        },
+        None => (String::new(), String::new()),
+    };
+    let data = SettingsData {
+        panel: SettingsPanelItem {
+            listen_addr: state.cfg.listen.ip().to_string(),
+            listen_port: state.cfg.listen.port(),
+            entry_prefix: state.cfg.entry_prefix.clone(),
+            tls_mode: tls_mode.into(),
+            tls_cert: state
+                .cfg
+                .tls_cert
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            tls_key: state
+                .cfg
+                .tls_key
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            config_path: state.cfg.config_path.display().to_string(),
+            plaintext_behind_proxy: !state.cfg.dev_http
+                && !state.cfg.tls_enabled
+                && !state.cfg.trusted_proxies.is_empty(),
+            initial_admin_pending: state.cfg.data_dir.join("initial-admin.txt").exists(),
+        },
+        account: SettingsAccountItem {
+            totp_enabled: user_row.totp_enabled,
+            must_change_password: user.must_change_password(),
+        },
+        keys,
+        can_admin,
+        flash: SettingsFlashItem { notice, error },
+    };
+    let mut resp = Json(json!({ "data": data })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SettingsPanelBody {
+    #[serde(default)]
+    pub listen_addr: String,
+    #[serde(default)]
+    pub listen_port: String,
+    #[serde(default)]
+    pub entry_prefix: String,
+    #[serde(default)]
+    pub tls_mode: String,
+    #[serde(default)]
+    pub tls_cert: String,
+    #[serde(default)]
+    pub tls_key: String,
+}
+
+/// `POST /ui/v1/settings/panel`：保存监听地址 / 入口前缀 / TLS。
+///
+/// 复用旧表单的 `apply_panel_update`（同一校验、同一落盘、同一审计），只把传输层
+/// 换成 JSON；CSRF 用 `/ui/v1` 统一的 `x-csrf-token` 头。
+pub async fn settings_panel_update(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<SettingsPanelBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::require_permission(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    let mut form: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (key, value) in [
+        ("listen_addr", body.listen_addr),
+        ("listen_port", body.listen_port),
+        ("entry_prefix", body.entry_prefix),
+        ("tls_mode", body.tls_mode),
+        ("tls_cert", body.tls_cert),
+        ("tls_key", body.tls_key),
+    ] {
+        form.insert(key.to_string(), vec![value]);
+    }
+    let message = handlers::settings::apply_panel_update(&state, &user, &form)
+        .await
+        .map_err(|m| ApiError(AppError::BadRequest(m)))?;
+    let mut resp = Json(json!({ "data": { "message": message } })).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

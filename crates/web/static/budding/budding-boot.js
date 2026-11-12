@@ -200,7 +200,8 @@
     if (cssHref) options.css = cssHref;
     options.actions = {
       skiffContainerAction: containerAction,
-      skiffComposeAction: composeAction
+      skiffComposeAction: composeAction,
+      skiffSettingsSave: settingsSave
     };
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
@@ -991,6 +992,209 @@
     };
   }
 
+  // 设置页：只读快照 + 面板表单（监听地址 / 入口前缀 / TLS）。口令与 TOTP 仍在旧版页。
+  function settingsSchema(data) {
+    var body = [];
+    var panel = data.panel;
+    if (data.flash && data.flash.error) {
+      body.push({ type: 'alert', props: { type: 'error', text: data.flash.error } });
+    }
+    if (data.flash && data.flash.notice) {
+      body.push({ type: 'alert', props: { type: 'success', text: data.flash.notice } });
+    }
+    if (data.account.must_change_password) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: '首次登录必须修改口令',
+          text: '修改口令后其他页面才恢复访问；口令表单在旧版设置页。'
+        }
+      });
+    }
+    if (panel.initial_admin_pending && !data.account.must_change_password) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'info',
+          text: '建议尽快修改初始口令：当前口令仍保存在数据目录的 initial-admin.txt。'
+        }
+      });
+    }
+    if (panel.plaintext_behind_proxy) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          text:
+            '当前为「可信反代终止 TLS」形态：面板只监听明文，请确保只有 trusted_proxies 中的反代能直连本端口。'
+        }
+      });
+    }
+    if (panel.tls_mode === 'off' && panel.listen_addr !== '127.0.0.1' && panel.listen_addr !== '::1') {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          text:
+            '已显式关闭 TLS 并监听非 loopback 地址：管理面为明文 HTTP，仅限内网或反向代理之后使用。'
+        }
+      });
+    }
+    body.push(
+      detailLines('账户安全', [
+        '两步验证（TOTP）：' + (data.account.totp_enabled ? '已启用' : '未启用'),
+        '口令与 TOTP 表单在旧版设置页，本页只读展示状态。'
+      ])
+    );
+    body.push({
+      type: 'link',
+      props: {
+        text: '打开旧版设置页（修改口令 / TOTP / 信任公钥增删）',
+        href: prefix + '/m/core/settings/security'
+      }
+    });
+
+    var panelLines = [
+      '当前监听：' + panel.listen_addr + ':' + panel.listen_port,
+      '入口前缀：/' + panel.entry_prefix,
+      'TLS：' + (panel.tls_mode === 'on' ? '已启用（本进程终止 TLS）' : panel.tls_mode === 'off' ? '已关闭（明文 HTTP）' : '自动推断')
+    ];
+    if (!data.can_admin) {
+      panelLines.push('只有管理员可以修改监听端口、入口前缀与 TLS 配置。');
+      body.push(detailLines('后台端口 / 安全入口 / TLS', panelLines));
+    } else {
+      body.push({
+        type: 'form',
+        onEvent: { submit: [{ type: 'skiffSettingsSave' }] },
+        props: {
+          api: { method: 'POST', url: apiBase + '/settings/panel', sendOn: false },
+          successMessage: '已保存',
+          actionsAlign: 'end',
+          initialValues: {
+            listen_addr: panel.listen_addr,
+            listen_port: String(panel.listen_port),
+            entry_prefix: panel.entry_prefix,
+            tls_mode: panel.tls_mode,
+            tls_cert: panel.tls_cert,
+            tls_key: panel.tls_key
+          }
+        },
+        body: [
+          {
+            type: 'input-text',
+            props: { name: 'listen_addr', label: '监听地址（IPv4 / IPv6 字面量）', required: true }
+          },
+          {
+            type: 'input-text',
+            props: { name: 'listen_port', label: '监听端口（1–65535）', required: true }
+          },
+          {
+            type: 'input-text',
+            props: {
+              name: 'entry_prefix',
+              label: '安全入口前缀（6–32 位，字母/数字/-/_）',
+              required: true
+            }
+          },
+          {
+            type: 'input-text',
+            props: { name: 'tls_mode', label: 'TLS 模式', hint: 'auto / on / off' }
+          },
+          {
+            type: 'input-text',
+            props: { name: 'tls_cert', label: 'TLS 证书路径（PEM）' }
+          },
+          {
+            type: 'input-text',
+            props: { name: 'tls_key', label: 'TLS 私钥路径（PEM）' }
+          }
+        ],
+        content: {
+          actions: [
+            {
+              type: 'button',
+              props: { text: '保存（重启后生效）', color: 'primary' },
+              action: { type: 'submit' }
+            }
+          ]
+        }
+      });
+      body.push(
+        noticeCard(
+          '端口 / 前缀 / TLS 会写入 ' +
+            panel.config_path +
+            '，必须重启 skiff 服务后才生效；重启前当前入口仍然可用。'
+        )
+      );
+    }
+
+    if (data.can_admin) {
+      if (data.keys.length === 0) {
+        body.push(detailLines('信任公钥（TOFU）', ['信任库为空：未签名包默认拒装']));
+      } else {
+        body.push(
+          detailLines(
+            '信任公钥（TOFU）',
+            data.keys.map(function (k) {
+              return k.fingerprint_short + '… · ' + (k.label || '（无备注）') + ' · ' + k.key_id;
+            })
+          )
+        );
+      }
+    }
+    return {
+      type: 'page',
+      props: { title: '设置 · Skiff', subtitle: '口令、安全入口与面板偏好' },
+      body: body
+    };
+  }
+
+  // 面板设置保存：复用旧表单校验/落盘/审计，只把传输层换成 JSON。
+  function settingsSave(args, ctx) {
+    var values = null;
+    try {
+      values = ctx.scope.get('values');
+    } catch (e) {
+      values = null;
+    }
+    values = values || {};
+    var payload = {
+      listen_addr: String(values.listen_addr || ''),
+      listen_port: String(values.listen_port || ''),
+      entry_prefix: String(values.entry_prefix || ''),
+      tls_mode: String(values.tls_mode || ''),
+      tls_cert: String(values.tls_cert || ''),
+      tls_key: String(values.tls_key || '')
+    };
+    return fetch(apiBase + '/settings/panel', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify(payload)
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        window.alert((res.body && res.body.data && res.body.data.message) || '已保存');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   function embedWithError(schema) {
     if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
       showError('前端产物未加载（budding 脚本不可用）。');
@@ -1139,6 +1343,12 @@
       if (parts[0] === 'jobs' && parts.length === 2) {
         getJson('/jobs/' + encodeURIComponent(parts[1]), function (data) {
           embedWithError(jobDetailSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'settings') {
+        getJson('/settings', function (data) {
+          embedWithError(settingsSchema(data));
         });
         return;
       }

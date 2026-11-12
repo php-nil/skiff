@@ -191,6 +191,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/tasks/{id}", get(handlers::ui_api::task_detail))
         .route("/ui/v1/jobs", get(handlers::ui_api::jobs))
         .route("/ui/v1/jobs/{id}", get(handlers::ui_api::job_detail))
+        .route("/ui/v1/settings", get(handlers::ui_api::settings))
+        .route(
+            "/ui/v1/settings/panel",
+            post(handlers::ui_api::settings_panel_update),
+        )
         .route("/ui/v1/containers", get(handlers::ui_api::containers))
         .route(
             "/ui/v1/containers/{id}",
@@ -355,7 +360,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/menu"),
             get(handlers::settings::menu_page).post(handlers::settings::menu_update),
         )
-        .route(&format!("/{p}/settings"), get(handlers::settings::page))
+        // 设置页已进入 budding 适配：规范页回落到壳页，旧 SSR（口令 / TOTP / 公钥 /
+        // 完整面板表单）保留在 `/{p}/m/core/settings/security`；写操作仍走旧表单。
         // ---- 内核定时任务：viewer 只读，写操作 Admin + CSRF ----
         // 任务与作业列表/详情已迁 budding（旧 SSR 在 `/{p}/m/core/{tasks|jobs}*`）。
         .route(

@@ -701,6 +701,33 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - **待办（解除阻塞所需）**：审计表增加 `keyword + before(ts,id)` 查询（或等价索引查询），返回 `{items, next_cursor}`；落地后再补 `GET /ui/v1/audit` 与 buds 表格翻页，字段冻结为 `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`。
 - 本批无新增 `/ui/v1` 接口与新增测试用例（仅 `audit_canonical_path_serves_placeholder_shell` 覆盖落点与权限）。
 
+### 5.14 设置（第七批）
+
+- `GET /{p}/settings` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/settings/security`（口令、TOTP、信任公钥增删与完整面板表单仍在该页）。
+- 写操作只迁移「后台端口 / 安全入口 / TLS」：`POST /ui/v1/settings/panel` 复用 `settings::apply_panel_update`（同一校验、落盘、审计），CSRF 走 `x-csrf-token`，Admin 权限沿用 `Permission::Admin`。
+- 口令 / TOTP 表单不在本批迁移范围：强改密期间中间件放行 `/{p}/m/core/settings/*`，改密失败仍 PRG 回旧页并消费一次 flash。
+- `GET /ui/v1/settings` 返回 `panel` / `account` / `keys` / `can_admin` / `flash`；公钥仅对管理员返回，非管理员为空数组。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/settings` → `{ "data": { panel, account, keys, can_admin, flash } }`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `panel.listen_addr` / `listen_port` | string / number | 当前监听地址与端口 |
+| `panel.entry_prefix` | string | 当前入口前缀（不含 `/`） |
+| `panel.tls_mode` | string | `auto` / `on` / `off`（与旧页面三态同口径） |
+| `panel.tls_cert` / `tls_key` | string | 证书 / 私钥路径（未配置为空串） |
+| `panel.config_path` | string | `config.toml` 路径 |
+| `panel.plaintext_behind_proxy` | bool | 可信反代终止 TLS 形态 |
+| `panel.initial_admin_pending` | bool | 首启口令文件仍在 |
+| `account.totp_enabled` / `must_change_password` | bool | 账户安全状态（只读） |
+| `keys[]` | array | `{key_id, fingerprint_short, label}`；仅管理员返回，viewer 为空 |
+| `can_admin` | bool | 是否可编辑面板配置 |
+| `flash.notice` / `flash.error` | string | 本次读取消费的会话提示（刷新不重放） |
+
+`POST /ui/v1/settings/panel`，body `{listen_addr, listen_port, entry_prefix, tls_mode, tls_cert, tls_key}`（字符串）→ `{ "data": { "message": "..." } }`；校验失败 400 `shape.invalid`，无权限 403 `auth.forbidden`，CSRF 失败 403 `auth.csrf_invalid`。
+
 ---
 
 ## 6. 能力缺口与建议

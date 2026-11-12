@@ -269,7 +269,9 @@ pub async fn load_session(
                         || path == format!("/{prefix}/login")
                         || path == format!("/{prefix}/password")
                         || path == format!("/{prefix}/logout")
-                        || path == format!("/{prefix}/settings");
+                        || path == format!("/{prefix}/settings")
+                        // 旧版设置页承载口令 / TOTP 表单，强改密期间必须可达。
+                        || path.starts_with(&format!("/{prefix}/m/core/settings/"));
                     if !allowed {
                         return AppError::Redirect(format!("/{prefix}/settings?force=1"))
                             .into_response();

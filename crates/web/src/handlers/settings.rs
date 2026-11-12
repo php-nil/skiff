@@ -117,7 +117,7 @@ pub async fn panel_update(
     render_settings(&state, &user, "", &updated, None, Vec::new(), false).await
 }
 
-async fn apply_panel_update(
+pub(crate) async fn apply_panel_update(
     state: &Arc<AppState>,
     user: &CurrentUser,
     form: &std::collections::HashMap<String, Vec<String>>,

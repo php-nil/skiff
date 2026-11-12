@@ -583,12 +583,15 @@ async fn change_password_failure_redirects_back_to_settings() {
         .to_str()
         .unwrap()
         .to_string();
-    assert_eq!(loc, "/p/settings", "回跳设置页不得携带消息参数");
+    assert_eq!(
+        loc, "/p/m/core/settings/security",
+        "回跳旧版设置页不得携带消息参数"
+    );
 
     let fetch = |cookie: String| {
         h.app.clone().oneshot(
             Request::builder()
-                .uri("/p/settings")
+                .uri("/p/m/core/settings/security")
                 .header(header::COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
@@ -698,7 +701,7 @@ async fn session_cookie_in_second_cookie_header_is_recognized() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/settings")
+                .uri("/p/m/core/settings/security")
                 .header(header::COOKIE, "skiff_login=stale")
                 .header(
                     header::COOKIE,
@@ -1192,7 +1195,7 @@ async fn current_state_highlights_plugin_center_and_settings_items() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/settings")
+                .uri("/p/m/core/settings/security")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -7909,6 +7912,155 @@ async fn audit_canonical_path_serves_placeholder_shell() {
     let (status, ssr) = get_page(&h.app, "/p/m/core/settings/audit", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
+}
+
+/// 带会话与可选 CSRF 的 JSON POST，返回（状态码，响应体）。
+async fn post_ui_json(
+    app: &Router,
+    uri: &str,
+    token: &str,
+    csrf: Option<&str>,
+    body: &serde_json::Value,
+) -> (StatusCode, String) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, format!("skiff_dev_session={token}"));
+    if let Some(c) = csrf {
+        req = req.header("x-csrf-token", c);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, body_text(resp).await)
+}
+
+/// 设置规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/settings/security`。
+#[tokio::test]
+async fn settings_canonical_path_serves_shell() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    for token in [&admin, &viewer] {
+        let (status, html) = get_html(&h.app, "/p/settings", token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    }
+    for token in [&admin, &viewer] {
+        let (status, ssr) = get_page(&h.app, "/p/m/core/settings/security", token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
+    }
+}
+
+/// 设置只读快照：未认证 401；字段冻结；信任公钥只对管理员返回。
+#[tokio::test]
+async fn ui_settings_returns_frozen_fields_and_scopes_keys() {
+    let h = harness();
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["panel"]["listen_addr"], "127.0.0.1");
+    assert_eq!(data["panel"]["listen_port"], 18080);
+    assert_eq!(data["panel"]["entry_prefix"], "p");
+    assert!(data["panel"]["tls_mode"].is_string());
+    assert!(data["panel"]["config_path"].is_string());
+    assert!(data["panel"]["plaintext_behind_proxy"].is_boolean());
+    assert!(data["panel"]["initial_admin_pending"].is_boolean());
+    assert_eq!(data["account"]["totp_enabled"], false);
+    assert_eq!(data["account"]["must_change_password"], false);
+    assert_eq!(data["can_admin"], true);
+    assert!(data["keys"].is_array());
+    assert!(data["flash"]["notice"].is_string());
+    assert!(data["flash"]["error"].is_string());
+
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["can_admin"], false);
+    assert!(
+        data["keys"].as_array().unwrap().is_empty(),
+        "viewer 不得看到信任公钥"
+    );
+}
+
+/// 面板保存：CSRF 头、Admin 权限与字段校验都复用旧表单口径。
+#[tokio::test]
+async fn ui_settings_panel_update_keeps_csrf_and_admin_semantics() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+    let body = serde_json::json!({
+        "listen_addr": "127.0.0.1",
+        "listen_port": "18080",
+        "entry_prefix": "skiffx",
+        "tls_mode": "auto",
+        "tls_cert": "",
+        "tls_key": ""
+    });
+
+    // 未带 CSRF 头：403 auth.csrf_invalid。
+    let (status, text) = post_ui_json(&h.app, "/ui/v1/settings/panel", &admin, None, &body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+
+    // viewer 即便带 CSRF 也无权写（Admin 权限）。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/panel",
+        &viewer,
+        Some(&viewer_csrf),
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
+
+    // 字段非法：400 shape.invalid，不落盘。
+    let invalid = serde_json::json!({
+        "listen_addr": "127.0.0.1",
+        "listen_port": "abc",
+        "entry_prefix": "p",
+        "tls_mode": "auto"
+    });
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/panel",
+        &admin,
+        Some(&csrf),
+        &invalid,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "shape.invalid");
+
+    // 合法保存（地址/端口不变，仅验证复用旧 handler 的成功路径与提示）。
+    let (status, text) =
+        post_ui_json(&h.app, "/ui/v1/settings/panel", &admin, Some(&csrf), &body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["data"]["message"].as_str().unwrap().contains("已写入"),
+        "{text}"
+    );
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。
