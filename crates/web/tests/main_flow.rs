@@ -673,6 +673,7 @@ async fn session_survives_login_redirect_and_reaches_pages() {
                 Request::builder()
                     .uri(path)
                     .header(header::COOKIE, &cookie)
+                    .header(header::ACCEPT, "text/html")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1350,7 +1351,9 @@ async fn unauthenticated_page_redirects_to_login() {
         .clone()
         .oneshot(
             Request::builder()
+                // 壳页白名单只对浏览器导航回落；未登录也应按页面惯例 303 到登录页。
                 .uri("/p/containers")
+                .header(header::ACCEPT, "text/html")
                 .body(Body::empty())
                 .unwrap(),
         )
