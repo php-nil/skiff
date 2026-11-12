@@ -174,10 +174,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::ui_api::login_config).post(handlers::ui_api::login_submit),
         )
         .route("/ui/v1/session", get(handlers::ui_api::session))
+        .route("/ui/v1/overview", get(handlers::ui_api::overview))
         .route("/ui/v1/session/logout", post(handlers::ui_api::logout));
 
     let ui = Router::new()
-        .route(&format!("/{p}"), get(handlers::dashboard::index))
+        .route(&format!("/{p}"), get(handlers::spa::root_shell))
         // 尾斜杠是常见手误（浏览器补全、复制粘贴），不该给个 404
         .route(&format!("/{p}/"), get(handlers::dashboard::root_redirect))
         .route(

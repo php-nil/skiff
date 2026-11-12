@@ -405,6 +405,44 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | 终端 | 票据 + WS | **未决**：budding 无 WS；需独立 xterm 页（iframe）或等待上游通道能力，不能用旧 UI 页面兜底 |
 | 文件上传 | 分片 `offset` 协议 | budding `file` 只支持单次 FormData POST；见 §6 |
 
+### 5.7 概览页（第四批，只读）
+
+**页面与数据**
+
+- `GET /{p}` 交付 budding 壳（未认证 303 到登录页，已登录渲染概览）；SSR 概览仍保留在 `GET /{p}/m/overview` 菜单深链，直到插件概览槽位迁入 budding。
+- 壳启动脚本先取 `GET /ui/v1/session`，路径为入口根时再取 `GET /ui/v1/overview`；其余白名单深链仍渲染「该功能正在适配中」占位。
+- 数据只复用 `dashboard::load_overview` 的既有查询（Docker 容器列表 + 插件/站点/运行环境/审计），**没有新增聚合 SQL**；本批不返回列表、不做写操作、不做图表、不做实时刷新。
+- 图表位按 D14–D16 未定，页面用 `alert` 明确占位（「D14–D16 尚未定案」），不引入任何图表库。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/overview` → `{ "data": ... }`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `collected_at` | string | RFC3339 UTC 单字段（D9） |
+| `docker.status.code` | string | `available` / `unavailable` |
+| `docker.status.label` | string | 中文文案「可用」/「不可用」（D8 双字段） |
+| `docker.reason` | string | 不可用时为宿主给出的原因，可用时为空串 |
+| `containers.running` | number | 运行中容器数 |
+| `containers.total` | number | 容器总数 |
+| `sites.total` | number | 站点总数 |
+| `sites.abnormal` | number | `status != running` 的站点数 |
+| `plugins.total` | number | 插件总数 |
+| `plugins.enabled` | number | 已启用数 |
+| `plugins.disabled` | number | 停用数（`total - enabled`） |
+| `runtimes.total` | number | 运行环境总数 |
+| `runtimes.abnormal` | number | 有容器但非 running 的数量 |
+| `runtimes.uninstalled` | number | 尚无容器的数量 |
+
+错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、数据库不可用 `dependency.unavailable`（503）。本批没有列表，因此不涉及 `limit`/`cursor`（D10）。
+
+**渲染映射**
+
+- `docker.status.code != available` → 顶部 warning `alert`（标题用 `label`，正文用 `reason`）。
+- 四张计数卡片：容器 / 网站 / 插件 / 运行环境；文案由前端 schema 生成，数字来自接口。
+- 「趋势图表」卡片内固定 `alert` 占位，禁止在占位里暗示已选定图表库。
+
 ---
 
 ## 6. 能力缺口与建议
@@ -441,6 +479,7 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | G13 | 表单字段错误不自动回填 | 站点/运行环境表单 | 自定义动作写 `ctx.extras.form.errors` | 内置 `error.field` 回填 | 我方适配 |
 | G14 | JSON 无 schema 版本字段 | 契约演进 | 用 `apiVersion` + 路径版本；字段只增不改 | schema 版本字段 | 我方适配 |
 | G15 | 产物无内容 hash | 升级缓存 | 版本化文件名 + `?v=` | 产物 hash 命名 | 我方适配（D11） |
+| G16 | `input-text` 不支持 `type` / `autocomplete` | 登录口令框必须掩码 | 临时桥接：`crates/web/static/budding/budding-login.js` 的 `maskPassword` / `watchPasswordMask` 在渲染后改 DOM `type` 并观察重建 | `input-text` 透传 `type`/`autocomplete`（上游 T6） | 需上游改动；桥接待 T6 落地后删除 |
 
 ### 6.3 对外需求条目（提交给上游，不由本仓库实现）
 
@@ -594,3 +633,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | 后端地基落地（第一批）：新增 `/ui/v1` 命名空间（`handlers::ui_api`，`entry_guard` 与 `/api/v1` 并列豁免，`/ui/` 其它形态 404），`UiAuthUser` 使未认证统一 401 JSON；`GET /ui/v1/session` 下发用户/角色/CSRF/入口前缀/能力开关，`POST /ui/v1/session/logout` 复用 `x-csrf-token` 校验；`handlers::spa::fallback` 按 §2.1 白名单做壳页回落（仅 GET + `Accept: text/html`，写请求永不回落；`method_not_allowed_fallback` 覆盖 POST-only 路径上的 GET 深链），壳页只含挂载点、占位提示与 `budding.min.js` 引用。未复制前端产物，未改 `assets.rs` / `build.rs`。 |
 | 2026-11-12 | 产物入库与壳页启动（第二批）：`budding-1.6.0.min.js` / `budding-1.6.0.min.css` 入库到 `crates/web/static/budding/`（字节与上游 embed 一致），稳定别名改为 `assets.rs` 映射而非第二份文件；新增同源 `budding-boot.js`（普通 script，无内联）：先取 `/ui/v1/session`，成功 `embed()` 极小 schema（page + 「该功能正在适配中」卡片），失败渲染错误；壳页引用版本化 JS `?v=`，CSS 以 `data-budding-css` 显式传参，`routerMode=history`、`routerBase=/{p}`，不传 packs、不引 loader。真实浏览器验证：登录后深链渲染卡片、`/ui/v1/session` 200、控制台无报错。 |
 | 2026-11-12 | 登录页 budding 化（第三批）：`GET /{p}/login` 改为 budding 登录壳（未认证 200，不落入匿名 303；已登录仍回 `/{p}`）；新增 `GET /ui/v1/auth/login`（公开读，签发与表单同一签名 CSRF + `skiff_login` 兼容 Cookie、`no-store`）与 `POST /ui/v1/auth/login`（JSON `{username,password,otp,csrf,next}`，复用 `AppState::login`、`session_cookie` 与登录 CSRF/来源判定）；失败文案沿用现有中文并按既有 `code` 返回，错误经 `sessionStorage` 回显后清除；新增同源 `budding-login.js`。budding 1.6.0 缺口令输入类型，脚本渲染后将口令框 DOM `type` 置为 `password` 作为临时桥接（已标注待上游组件）。旧登录模板与 `POST /{p}/login` 表单路径保留为无 JS 兜底。补 7 条 `main_flow` 用例（壳页未认证 200、配置 200、成功/深链回跳、错口令/空提交、CSRF/跨站、TOTP 分支）。 |
+| 2026-11-12 | 概览页 budding 化（第四批，只读）：`GET /{p}` 改交付壳页，启动脚本在入口根取 `GET /ui/v1/overview` 渲染四张计数卡片（容器/网站/插件/运行环境）与 Docker 状态提示；图表位用 `alert` 明确占位（D14–D16 未定），不引图表库、不做写操作/实时刷新。新增 `dashboard::load_overview` 供 SSR 与 JSON 共用同一批查询（无新增聚合 SQL）；`overview` DTO 字段冻结（`collected_at` RFC3339 UTC、`docker.status {code,label}`）。SSR 概览暂留 `GET /{p}/m/overview`，插件概览槽位仍有落点，待迁入 budding 后删除。同步 URL 契约 §9、SDUI §5.7 与上游 T6（`input-text` type/autocomplete）。 |

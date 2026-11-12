@@ -92,6 +92,12 @@ pub async fn method_not_allowed(State(state): State<Arc<AppState>>, parts: Parts
     (StatusCode::METHOD_NOT_ALLOWED, "405 Method Not Allowed").into_response()
 }
 
+/// 入口根 `/`（概览）同样交付壳页：已登录渲染 budding 概览，未登录 303 到登录页。
+/// 概览的 SSR 版本仍由 `/{p}/m/overview` 菜单深链提供，直到插件槽位迁完。
+pub async fn root_shell(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
+    shell_for(&state, &parts)
+}
+
 /// 壳页交付：受会话保护，未登录仍按页面惯例 303 到登录页
 /// （`/ui/v1/*` 的 401 只适用于 JSON）。
 fn shell_for(state: &AppState, parts: &Parts) -> Response {

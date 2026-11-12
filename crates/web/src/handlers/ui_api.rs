@@ -154,6 +154,130 @@ pub async fn login_submit(
     Ok(resp)
 }
 
+/// 概览卡片的计数（只读；数据来自 `dashboard::load_overview` 的既有查询）。
+#[derive(Debug, Serialize)]
+pub struct OverviewCounts {
+    pub collected_at: String,
+    pub docker: OverviewDocker,
+    pub containers: OverviewContainers,
+    pub sites: OverviewSites,
+    pub plugins: OverviewPlugins,
+    pub runtimes: OverviewRuntimes,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewDocker {
+    pub status: OverviewStatus,
+    pub reason: String,
+}
+
+/// 文案与状态统一走 `{code,label}` 双字段（D8）。
+#[derive(Debug, Serialize)]
+pub struct OverviewStatus {
+    pub code: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewContainers {
+    pub running: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewSites {
+    pub total: usize,
+    pub abnormal: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewPlugins {
+    pub total: usize,
+    pub enabled: usize,
+    pub disabled: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewRuntimes {
+    pub total: usize,
+    pub abnormal: usize,
+    pub uninstalled: usize,
+}
+
+/// `GET /ui/v1/overview`：只读概览计数。
+///
+/// 复用 `GET /{p}` 的同一批查询（容器列表 + 插件/站点/运行环境列表），不新增聚合 SQL；
+/// 本批不含列表、写操作、图表或实时刷新，图表位由前端 schema 明确占位。
+pub async fn overview(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+) -> Result<Response, ApiError> {
+    let data = crate::handlers::dashboard::load_overview(&state, user.user.id).await?;
+    let containers = data.containers;
+    let running = containers.iter().filter(|c| c.state == "running").count();
+    let plugin_enabled = data.plugins.iter().filter(|p| p.enabled).count();
+    let site_abnormal = data.sites.iter().filter(|s| s.status != "running").count();
+    let mut runtime_abnormal = 0usize;
+    let mut runtime_uninstalled = 0usize;
+    for r in &data.runtimes {
+        let name = if r.kind == skiff_store::KIND_PHP {
+            skiff_app::sites::runtime_container_name(&r.kind, &r.name)
+        } else {
+            format!("skiff-runtime-{}", r.id)
+        };
+        match containers.iter().find(|c| c.name == name) {
+            Some(c) if c.state != "running" => runtime_abnormal += 1,
+            None => runtime_uninstalled += 1,
+            Some(_) => {}
+        }
+    }
+    let docker = if data.docker_ok {
+        OverviewDocker {
+            status: OverviewStatus {
+                code: "available",
+                label: "可用",
+            },
+            reason: String::new(),
+        }
+    } else {
+        OverviewDocker {
+            status: OverviewStatus {
+                code: "unavailable",
+                label: "不可用",
+            },
+            reason: data.docker_reason,
+        }
+    };
+    let collected_at = skiff_app::time_fmt::epoch_to_rfc3339_utc(chrono::Utc::now().timestamp())
+        .unwrap_or_default();
+    let counts = OverviewCounts {
+        collected_at,
+        docker,
+        containers: OverviewContainers {
+            running,
+            total: containers.len(),
+        },
+        sites: OverviewSites {
+            total: data.sites.len(),
+            abnormal: site_abnormal,
+        },
+        plugins: OverviewPlugins {
+            total: data.plugins.len(),
+            enabled: plugin_enabled,
+            disabled: data.plugins.len().saturating_sub(plugin_enabled),
+        },
+        runtimes: OverviewRuntimes {
+            total: data.runtimes.len(),
+            abnormal: runtime_abnormal,
+            uninstalled: runtime_uninstalled,
+        },
+    };
+    let mut resp = Json(json!({ "data": counts })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 /// `GET /ui/v1/session`：当前用户、角色、CSRF、入口前缀与壳页能力开关。
 ///
 /// 未登录由 `UiAuthUser` 返回 401 JSON（`auth.unauthenticated`）。

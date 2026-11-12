@@ -469,7 +469,7 @@ async fn login_session_and_dashboard() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p")
+                .uri("/p/m/overview")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -624,7 +624,7 @@ async fn explicit_must_change_password_still_redirects() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p")
+                .uri("/p/m/overview")
                 .header(
                     header::COOKIE,
                     format!("{}={token}", skiff_identity::session_cookie_name(true)),
@@ -994,7 +994,7 @@ view = "main"
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p")
+                .uri("/p/m/overview")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1218,7 +1218,7 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p")
+                .uri("/p/m/overview")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -2218,7 +2218,12 @@ async fn bare_root_is_hidden_404_and_prefix_redirects_to_login() {
     let resp = h
         .app
         .clone()
-        .oneshot(Request::builder().uri("/p").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/p/m/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -2494,7 +2499,7 @@ async fn restricted_form_hides_and_rejects_files_management() {
     let h = harness_with(Form::DockerRestricted);
     let token = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p", &token).await;
+    let (status, html) = get_page(&h.app, "/p/m/overview", &token).await;
     assert_eq!(status, StatusCode::OK);
     for key in ["core/files", "core/files/trash", "core/files/quotas"] {
         assert!(
@@ -2751,7 +2756,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/p")
+                    .uri("/p/m/overview")
                     .header(header::COOKIE, format!("skiff_dev_session={token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2772,7 +2777,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/p")
+                    .uri("/p/m/overview")
                     .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2811,7 +2816,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/p")
+                    .uri("/p/m/overview")
                     .header(header::COOKIE, format!("skiff_dev_session={token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2851,7 +2856,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/p")
+                    .uri("/p/m/overview")
                     .header(header::COOKIE, format!("skiff_dev_session={token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2886,7 +2891,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/p")
+                    .uri("/p/m/overview")
                     .header(header::COOKIE, format!("skiff_dev_session={token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2986,7 +2991,7 @@ async fn deep_links_legacy_routes_and_role_filtered_menu() {
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri("/p")
+                        .uri("/p/m/overview")
                         .header(header::COOKIE, format!("skiff_dev_session={token}"))
                         .body(Body::empty())
                         .unwrap(),
@@ -3218,7 +3223,7 @@ roles = ["admin"]
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
 
     // 已启用 + 角色可见：内核卡片外框 + 插件 iframe，且替换默认健康块。
-    let (status, html) = get_page(&h.app, "/p", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/overview", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"data-slot="overview.health""#), "{html}");
     assert!(html.contains("/p/plugins/com.example.health/ui/health.html?nonce="));
@@ -3234,14 +3239,14 @@ roles = ["admin"]
     );
 
     // 角色过滤：viewer 看不到 admin-only 槽位，回落内核默认健康块。
-    let (status, html) = get_page(&h.app, "/p", &viewer).await;
+    let (status, html) = get_page(&h.app, "/p/m/overview", &viewer).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!html.contains(r#"data-slot="overview.health""#));
     assert!(html.contains(r#"class="health-grid""#));
 
     // 插件停用：槽位消失，同样回落默认健康块。
     seed_declared_plugin(h.state.db().as_ref(), manifest, false);
-    let (status, html) = get_page(&h.app, "/p", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/overview", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!html.contains(r#"data-slot="overview.health""#));
     assert!(html.contains(r#"class="health-grid""#));
@@ -3550,7 +3555,7 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
         "单视图 L2 不得渲染标签栏: {html}"
     );
 
-    let (status, html) = get_page(&h.app, "/p", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/overview", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"data-slot="overview.actions""#),
@@ -6632,7 +6637,7 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, nav) = get_page(&h.app, "/p", &token).await;
+    let (status, nav) = get_page(&h.app, "/p/m/overview", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         nav.contains(r#"href="/p/m/core/files""#),
@@ -6998,7 +7003,7 @@ async fn concurrent_page_requests_all_succeed() {
             let resp = app
                 .oneshot(
                     Request::builder()
-                        .uri("/p")
+                        .uri("/p/m/overview")
                         .header(header::COOKIE, format!("skiff_dev_session={token}"))
                         .body(Body::empty())
                         .unwrap(),
@@ -7593,6 +7598,76 @@ async fn ui_login_submit_preserves_totp_branch() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "正确动态码必须通过");
+}
+
+// ---- budding 概览页（第四批）：入口根壳页 + /ui/v1/overview 只读计数 ----
+
+/// 入口根对已登录用户交付 budding 壳（概览由启动脚本渲染），不再返回 SSR 页面。
+#[tokio::test]
+async fn overview_root_serves_budding_shell_for_authenticated() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_page(&h.app, "/p", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    assert!(
+        html.contains(r#"src="/p/static/budding/budding-boot.js""#),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"id="skiff-main-nav""#),
+        "壳页不应再输出旧 SSR 导航"
+    );
+    // SSR 概览保留在菜单深链，插件概览槽位仍有落点。
+    let (status, legacy) = get_page(&h.app, "/p/m/overview", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(legacy.contains(r#"id="skiff-main-nav""#), "{legacy}");
+}
+
+/// `GET /ui/v1/overview`：未认证 401；认证后返回冻结字段的真实计数。
+#[tokio::test]
+async fn ui_overview_requires_auth_and_returns_frozen_counts() {
+    let h = harness();
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/overview", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    seed_declared_plugin(
+        h.state.db().as_ref(),
+        r#"id = "com.example.count"
+name = "Count Demo"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.2"
+requires_full_sandbox = false
+"#
+        .to_string(),
+        true,
+    );
+
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, content_type, body) = get_ui(&h.app, "/ui/v1/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.starts_with("application/json"));
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["plugins"]["total"], 1);
+    assert_eq!(data["plugins"]["enabled"], 1);
+    assert_eq!(data["plugins"]["disabled"], 0);
+    assert_eq!(data["containers"]["total"], 0);
+    assert_eq!(data["containers"]["running"], 0);
+    assert_eq!(data["sites"]["total"], 0);
+    assert_eq!(data["runtimes"]["abnormal"], 0);
+    // 测试环境可能预置运行环境（无对应容器），未安装数应等于总数。
+    assert_eq!(data["runtimes"]["uninstalled"], data["runtimes"]["total"]);
+    // 测试环境非 Linux，Docker 不可用：状态走 `{code,label}` 双字段。
+    assert_eq!(data["docker"]["status"]["code"], "unavailable");
+    assert_eq!(data["docker"]["status"]["label"], "不可用");
+    // D9：时间单字段 RFC3339 UTC。
+    let collected = data["collected_at"].as_str().unwrap();
+    assert!(collected.ends_with('Z'), "{collected}");
+    assert!(chrono::DateTime::parse_from_rfc3339(collected).is_ok());
 }
 
 // ---- budding 产物入库：D11 缓存契约与壳页引用可解析 ----

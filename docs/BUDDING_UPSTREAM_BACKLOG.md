@@ -30,6 +30,7 @@
 | T3 | 日志查看器（虚拟滚动、行号、跟随、搜索、全量复制） | 官方 advanced 渲染器 | T0 | 站点/Nginx/作业日志 |
 | T4 | 代码查看器（只读、行号、纯 JS 高亮、大文件分段） | 官方 advanced 渲染器 | T0 | 文本文件查看 |
 | T5 | 终端渲染器（xterm 内联、ResizeObserver、WS 生命周期） | 官方 advanced 渲染器 | P1 | Docker 容器终端 |
+| T6 | `input-text` 支持 `type` 与 `autocomplete` 透传 | 官方表单能力补齐 | 无 | 登录口令框、邮箱/数字输入 |
 
 ### 0.3 统一约束（所有任务都适用）
 
@@ -458,6 +459,49 @@
 
 ---
 
+## T6 `input-text` 支持 `type` 与 `autocomplete` 透传
+
+- **产出形态**：官方表单能力补齐（`input-text` 渲染器）
+- **依赖**：无
+- **关键约束**：字段只增不改；不传 `type` 时保持现有行为。
+
+### 可粘贴提示词
+
+```text
+[任务]
+让 budding 的 input-text 渲染器支持 type 与 autocomplete，并透传到原生 input 元素。
+
+[背景事实]
+1. budding 1.6.0 的 input-text 只能传值与外观，没有 type 字段；渲染出的原生 input 固定为文本类型。
+2. Skiff 的登录页用 input-text 渲染口令框，只能由启动脚本在渲染后把 DOM type 改成 password（crates/web/static/budding/budding-login.js 的 maskPassword/watchPasswordMask），属于临时桥接。
+3. 该桥接依赖渲染后的 DOM 结构，渲染器重建 input 时需要 MutationObserver 兜底，既脆弱又让宿主承担了本应由组件负责的安全属性。
+
+[要产出]
+1. input-text 新增 props：
+   - type: 'text' | 'password' | 'email' | 'number'，默认 'text'；
+   - autocomplete: string，可选，透传到原生 input 的 autocomplete 属性。
+2. 渲染时把 type 与 autocomplete 绑定到原生 input 元素（不是只放在外层容器）。
+3. 类型变化时保持值与校验状态不变。
+
+[验收标准]
+- 渲染出的 DOM input type 与 schema 声明一致（password 时浏览器表现为掩码输入）。
+- autocomplete 出现在原生 input 上。
+- 口令框不依赖任何后置脚本改写 DOM 属性即可掩码。
+- 现有不传 type 的 schema 行为不变（仍为 text，值绑定与校验不回归）。
+- 补单元测试覆盖四种 type、默认值与 autocomplete。
+
+[明确不做]
+- 不做新的口令组件、不做密码强度指示、不做显示/隐藏切换按钮。
+- 不改动表单值收集、校验与提交链路。
+- 不做文件/日期/时间等其它 input 类型（后续按需再提）。
+
+[约束]
+- 向后兼容：字段只增不改，不传 type 时与 1.6.0 行为一致。
+- 必须补单元测试；离线可用；不引入 eval / new Function。
+```
+
+---
+
 ## 执行顺序与依赖说明
 
 1. **P1、P2 先出文档**：不阻塞编码，但决定 T5 能否联调、以及字体/资源类问题是否会误判为框架缺陷。
@@ -479,5 +523,6 @@
 | T3 | 用 `VVirtualScroll` + 等宽文本自建 `skiff:log-viewer` | 无「跳到最新」的可靠定位（受 T0 限制）；搜索高亮需自写 |
 | T4 | 用只读 `<pre>` 展示，不做高亮 | 大文件卡顿、无行号；仅能作为临时查看 |
 | T5 | 独立的 xterm 页面（非 iframe 嵌入业务页） | 与主界面割裂；仍需自己处理票据、resize 与重连 |
+| T6 | 启动脚本在渲染后把口令框 DOM `type` 改为 `password`（`crates/web/static/budding/budding-login.js` 的 `maskPassword` / `watchPasswordMask`） | 依赖渲染后 DOM，组件重建 input 时靠 MutationObserver 兜底；上游落地后必须删除该桥接 |
 
 **共同注意**：任何 `skiff:*` 临时实现都必须遵守同一套 CSP、离线与测试约束，并且在对应上游任务交付后能够平滑替换，不得把临时实现固化成第二套契约。

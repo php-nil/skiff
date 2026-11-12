@@ -78,6 +78,7 @@
   }
 
   // 临时桥接：口令框必须是 password 类型。渲染器可能重建 input，用 MutationObserver 兜底。
+  // TODO(T6)：budding 上游 `input-text` 支持 `type` 后删除本函数与 watchPasswordMask。
   function maskPassword() {
     passwordInputs().forEach(function (input) {
       if (input.type !== 'password') {
