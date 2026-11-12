@@ -18,6 +18,7 @@ use axum::Json;
 use serde_json::{json, Value};
 
 use skiff_app::actions as act;
+use skiff_app::commands::{job as job_cmd, Actor};
 use skiff_app::jobs::{CancelOutcome, Job, JobStatus};
 
 use crate::error::AppError;
@@ -228,6 +229,14 @@ fn job_back(state: &AppState, id: &str) -> String {
     format!("/{}/jobs/{id}", state.cfg.entry_prefix)
 }
 
+/// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
+fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+    Actor {
+        username: user.user.username.clone(),
+        ip: handlers::client_ip(state, parts),
+    }
+}
+
 pub async fn cancel(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -238,23 +247,20 @@ pub async fn cancel(
     crate::authz::authorize(&user, act::JOB_CANCEL)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let outcome = state
-        .jobs()
-        .cancel(&id)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let outcome = job_cmd::cancel(
+        &state,
+        job_cmd::CancelJob {
+            id: id.clone(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let msg = match outcome {
         CancelOutcome::CancelledNow => "已取消（任务尚未开始）",
         CancelOutcome::Requested => "已请求取消，将在当前步骤结束后停止",
         CancelOutcome::Terminal => "任务已结束，无需取消",
     };
-    state.audit_or_log(
-        &user.user.username,
-        &handlers::client_ip(&state, &parts),
-        "job.cancel",
-        &id,
-        "ok",
-        msg,
-    );
     Ok(handlers::flash_redirect(
         &state,
         &user,
@@ -274,19 +280,21 @@ pub async fn retry(
     crate::authz::authorize(&user, act::JOB_RETRY)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let ip = handlers::client_ip(&state, &parts);
-    let job = state
-        .retry_job(&id, &user.user.username, user.user.role.as_str(), &ip)
-        .await
-        .map_err(|e| match e {
-            SiteError::BadRequest(m) => AppError::BadRequest(m),
-            SiteError::Conflict(m) => AppError::Conflict(m),
-            SiteError::Unavailable(m) => AppError::Unavailable(m),
-            SiteError::Internal(m) => AppError::Internal(m),
-        })?;
-    let _ = state
-        .db()
-        .audit(&user.user.username, &ip, "job.retry", &id, "ok", &job.id);
+    let job = job_cmd::retry(
+        &state,
+        job_cmd::RetryJob {
+            id: id.clone(),
+            role: user.user.role.as_str().to_string(),
+            actor: actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        SiteError::BadRequest(m) => AppError::BadRequest(m),
+        SiteError::Conflict(m) => AppError::Conflict(m),
+        SiteError::Unavailable(m) => AppError::Unavailable(m),
+        SiteError::Internal(m) => AppError::Internal(m),
+    })?;
     Ok(handlers::flash_redirect(
         &state,
         &user,

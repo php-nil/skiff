@@ -9,9 +9,11 @@
 
 pub mod docker;
 pub mod file;
+pub mod job;
 pub mod runtime;
 pub mod site;
 pub mod store;
+pub mod task;
 pub mod upgrade;
 
 /// 命令调用主体：只承载审计需要的身份与来源，不参与权限判定。

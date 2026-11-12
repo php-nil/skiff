@@ -13,6 +13,7 @@ use axum::response::Response;
 use serde_json::Value;
 
 use skiff_app::actions as act;
+use skiff_app::commands::{task as task_cmd, Actor};
 
 use crate::error::AppError;
 use crate::handlers;
@@ -21,6 +22,15 @@ use crate::state::AppState;
 use crate::templates::{TaskDetailPage, TaskRow, TaskRunRow, TasksPage};
 use crate::util::{form_first, parse_form};
 
+/// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
+fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+    Actor {
+        username: user.user.username.clone(),
+        ip: handlers::client_ip(state, parts),
+    }
+}
+
+/// 只读页面取任务服务；写路径统一走命令层。
 fn service(state: &AppState) -> Result<&Arc<skiff_app::tasks::TaskService>, AppError> {
     state
         .tasks()
@@ -190,31 +200,23 @@ pub async fn toggle(
     crate::authz::authorize(&user, act::TASK_TOGGLE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let svc = service(&state)?;
     let enabled = matches!(
         form_first(&form, "enabled").trim(),
         "1" | "on" | "true" | "yes"
     );
-    let ip = handlers::client_ip(&state, &parts);
-    match svc.set_enabled_task(&id, enabled).await {
-        Ok(_) => {
-            if let Err(e) = state.db().audit(
-                &user.user.username,
-                &ip,
-                "tasks.toggle",
-                &id,
-                "ok",
-                if enabled { "启用" } else { "停用" },
-            ) {
-                tracing::error!(error = %e, "任务启停审计写入失败");
-            }
-            Ok(handlers::redirect(back(&id)))
-        }
+    let cmd = task_cmd::ToggleTask {
+        id: id.clone(),
+        enabled,
+        actor: actor(&state, &user, &parts),
+    };
+    match task_cmd::toggle(&state, cmd).await {
+        Ok(_) => Ok(handlers::redirect(back(&id))),
+        Err(task_cmd::TaskCommandError::Unavailable(m)) => Err(AppError::Unavailable(m)),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
-            e,
+            e.to_string(),
             back(&id),
         )),
     }
@@ -230,21 +232,11 @@ pub async fn run(
     crate::authz::authorize(&user, act::TASK_RUN)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let svc = service(&state)?;
-    let ip = handlers::client_ip(&state, &parts);
-    let actor = skiff_sched::AuditActor::Admin(user.user.username.clone());
-    let result = svc.run_task_now(&id, actor).await;
-    if let Err(e) = state.db().audit(
-        &user.user.username,
-        &ip,
-        "tasks.run",
-        &id,
-        if result.is_ok() { "ok" } else { "fail" },
-        "",
-    ) {
-        tracing::error!(error = %e, "任务手动执行审计写入失败");
-    }
-    match result {
+    let cmd = task_cmd::RunTask {
+        id: id.clone(),
+        actor: actor(&state, &user, &parts),
+    };
+    match task_cmd::run(&state, cmd).await {
         Ok(_) => Ok(handlers::flash_redirect(
             &state,
             &user,
@@ -252,11 +244,12 @@ pub async fn run(
             "任务已执行",
             back(&id),
         )),
+        Err(task_cmd::TaskCommandError::Unavailable(m)) => Err(AppError::Unavailable(m)),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
-            e,
+            e.to_string(),
             back(&id),
         )),
     }
@@ -272,29 +265,21 @@ pub async fn delete(
     crate::authz::authorize(&user, act::TASK_DELETE)?;
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let svc = service(&state)?;
-    let ip = handlers::client_ip(&state, &parts);
-    let result = svc.delete_task(&id).await;
-    if let Err(e) = state.db().audit(
-        &user.user.username,
-        &ip,
-        "tasks.delete",
-        &id,
-        if result.is_ok() { "ok" } else { "fail" },
-        "",
-    ) {
-        tracing::error!(error = %e, "任务删除审计写入失败");
-    }
-    match result {
+    let cmd = task_cmd::DeleteTask {
+        id: id.clone(),
+        actor: actor(&state, &user, &parts),
+    };
+    match task_cmd::delete(&state, cmd).await {
         Ok(()) => Ok(handlers::redirect(format!(
             "/{}/tasks",
             crate::templates::entry_prefix()
         ))),
+        Err(task_cmd::TaskCommandError::Unavailable(m)) => Err(AppError::Unavailable(m)),
         Err(e) => Ok(handlers::flash_redirect(
             &state,
             &user,
             skiff_app::FlashKind::Error,
-            e,
+            e.to_string(),
             back(&id),
         )),
     }
