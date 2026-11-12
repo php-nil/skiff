@@ -338,27 +338,26 @@ D13 结论：地址栏保持 `/{p}/sites/xxx` 形态，history 路由 + 白名�
 
 ### 5.1 登录页与 CSRF（D3 定案：登录页也只用 budding）
 
-**页面与公开引导**
+**已实施（2026-11-12，第三批）**
 
-- `GET /{p}/login` 返回 budding 壳，不含任何用户数据，不要求会话。
-- 壳启动后调用公开引导端点 `GET /ui/v1/bootstrap`（无会话、无 CSRF）：返回 `{ entry_prefix, version, login_csrf, csrf_ttl_secs }`，并顺带下发 `skiff_login` Cookie 作为兼容信号。
-- 引导端点只回登录所需的最小配置，不返回用户名、角色、插件或环境信息。
+- `GET /{p}/login` 返回 budding 登录壳（`id="skiff-login"` 挂载点），未认证直接 200，不经过 SPA 回落的匿名 303 分支；已登录访问仍 303 到 `/{p}`。壳只引用版本化 `budding-1.6.0.min.js`、`budding-1.6.0.min.css` 与 `budding-login.js`，不含内联脚本。
+- 页面启动后调用 `GET /ui/v1/auth/login`（未认证、禁止缓存）：返回 `{ data: { csrf_token, entry_prefix, api_version } }`，并下发 `skiff_login` Cookie 作为兼容信号。
+- 提交走 `POST /ui/v1/auth/login`（未认证）：JSON 体 `{ username, password, otp, csrf, next }`，CSRF 放 JSON 体 `csrf` 字段（与表单路径同一个签名 token，前端不额外造头）。
+- CSRF：沿用现有签名 token（`skiff_identity::signed_token`，TTL 600 秒，密钥取持久化 `security.csrf_secret`）；**签名 token 仍是唯一权威**，Cookie 只在浏览器完全没有来源头时作兼容。失败沿用现有 `code` 字段：`auth.csrf_invalid`（伪造/过期，文案区分「已过期」与「校验失败」）、`auth.unauthenticated`（用户名/口令或动态码错误）。
+- 来源判定：仍在内核 handler 读 `Sec-Fetch-Site` / `Origin` / `Referer`；跨站返回 403 与现有文案「跨站登录请求被拒绝」，budding 不参与判定。
+- 限流：沿用 `skiff_app::auth::login` 的失败计数与并发闸门；超限返回 503（现有 `dependency.unavailable`）与「登录失败次数过多，请 N 秒后重试」。
+- TOTP：现有实现是**单步表单**，没有第二步分支；`otp` 字段原样保留，错误文案仍为「用户名、口令或动态码不正确」，不用新建错误码。
+- 失败呈现：服务端 JSON `error.message` 由启动脚本写入 `sessionStorage` 并重载登录页，页面内 budding `alert` 展示后即清除；错误文案不写 URL（避免可构造的伪造提示），用户名保留、口令清空——与旧页 POST 后重渲染的观感一致。
+- 会话 Cookie：登录成功响应带 `{ data: { redirect_to, username, role } }` 与 `Set-Cookie`；Cookie 形态完全复用 `skiff_identity::session_cookie`（`HttpOnly; SameSite=Lax`，`Secure` 由可信代理解析后的 scheme 决定）。
+- 跳转：`redirect_to` 由内核按与表单登录同一函数计算（首登强制改密 → `/{p}/settings?force=1`；站内 `next` 深链原样；否则 `/{p}`），前端只做 `location.assign`。
+- 登出：`POST /ui/v1/session/logout`（会话 + CSRF 头），由内核清 Cookie。
 
-**登录提交**
+**仍待实施 / 与早期设计稿的差异**
 
-- `POST /ui/v1/session`，JSON 体 `{ username, password, otp, next }`，CSRF 放 `x-csrf-token` 头。
-- CSRF：沿用现有签名 token（`skiff_identity::signed_token`，TTL 600 秒，密钥取持久化 `security.csrf_secret`）；**表单签名 token 仍是唯一权威**，Cookie 只作兼容。过期返回 `auth.csrf_expired`。
-- 来源判定：仍在内核传输层（handler）读 `Sec-Fetch-Site` / `Origin` / `Referer` 并与 Host、`external_url` 比对；budding 不参与该判定。`same-origin` 与 `none` 放行，`cross-site` 与 `same-site` 拒绝并返回 `auth.cross_site`。
-- 限流：沿用内核 `skiff_app::auth::login` 的失败计数与并发闸门（按 IP，必要时叠加用户名）；超限返回 `auth.rate_limited` 并带 `retry_after`。现实现按 503 返回，建议改为 429，属实现期确认项。
-- TOTP：仍单步提交 `otp`。口令正确但缺 OTP 时返回 `auth.totp_required`，前端切到 OTP 输入后重提；OTP 错误返回 `auth.totp_invalid`。若现有命令层无法区分「口令正确但缺 OTP」与「口令错误」，需新增错误码（内部工作量，不改变校验逻辑）。
-
-**会话 Cookie**
-
-- 保持 `HttpOnly; SameSite=Lax`；`Secure` 由可信代理解析后的 scheme 决定；budding 脚本接触不到会话令牌。
-- 登录成功响应：`{ user, role, permissions, acl, csrf_token, api_version, next }`；前端据此 `embed` 并落到 `next`。
-- 失败呈现：统一 `{ error: { code, message } }`；锁定/等待提示走 `notices`，不写 URL。
-- 登出：`POST /ui/v1/session/logout`（会话 + CSRF），由内核清 Cookie。
-- 口令与 TOTP 管理：`POST /ui/v1/session/password`、`/session/totp`、`/session/totp/enable`，与现有 `/{p}/password`、`/{p}/totp`、`/{p}/totp/enable` 一一对应，判定逻辑复用命令层。
+- 早期设计稿的 `GET /ui/v1/bootstrap`、`POST /ui/v1/session`、`x-csrf-token` 头与 `auth.csrf_expired` / `auth.cross_site` / `auth.rate_limited` / `auth.totp_*` 细分码**未采用**：当前实现复用既有 `auth.csrf_invalid` / `auth.unauthenticated` / `dependency.unavailable` 与现有中文文案，避免在登录链路上新造第二套错误码。后续如确需机器可判别 TOTP 缺省/错误，再单独提案。
+- 登录成功响应暂不返回 `permissions/acl`（当前 `/{p}/login` 成功后由服务端页面加载，壳页会话接口 `GET /ui/v1/session` 提供角色与 CSRF）；接入第一张真实业务页时再按 §5.3 补 ACL 快照。
+- **上游组件缺口（临时桥接）**：budding 1.6.0 的 `input-text` 未暴露 `type`，口令框默认会是明文输入。`budding-login.js` 在渲染后把口令框 DOM `type` 改为 `password`（并用 MutationObserver 兜底重渲染），待上游提供 `type` 或独立口令组件后删除该桥接；这属于演示层补齐，不涉及认证逻辑。
+- 旧 askama 登录模板与 `POST /{p}/login` 表单 handler 暂保留：新页通过测试前不删，且它仍是「前端产物加载失败」时唯一可用的兜底提交路径（无 JS 客户端可直达）。
 
 ### 5.2 401 / 403
 
@@ -594,3 +593,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | D13 定案：history 路由 + 白名单前缀回落，地址栏保持 `/{p}/sites/xxx`，不用 hash。同步更新 §2.3、§4.5.1（转为「已同步」）、§8.1、§8.2、§8.4，并把 §2 例外、SPA 回落白名单、§6 方法例外与 §9 路由清单真正写入 `URL_CONTRACT.md`；同时修正 `SITE_RUNTIME_CONTRACT.md` §9.1 的过期 schema 版本。未改业务代码。 |
 | 2026-11-12 | 后端地基落地（第一批）：新增 `/ui/v1` 命名空间（`handlers::ui_api`，`entry_guard` 与 `/api/v1` 并列豁免，`/ui/` 其它形态 404），`UiAuthUser` 使未认证统一 401 JSON；`GET /ui/v1/session` 下发用户/角色/CSRF/入口前缀/能力开关，`POST /ui/v1/session/logout` 复用 `x-csrf-token` 校验；`handlers::spa::fallback` 按 §2.1 白名单做壳页回落（仅 GET + `Accept: text/html`，写请求永不回落；`method_not_allowed_fallback` 覆盖 POST-only 路径上的 GET 深链），壳页只含挂载点、占位提示与 `budding.min.js` 引用。未复制前端产物，未改 `assets.rs` / `build.rs`。 |
 | 2026-11-12 | 产物入库与壳页启动（第二批）：`budding-1.6.0.min.js` / `budding-1.6.0.min.css` 入库到 `crates/web/static/budding/`（字节与上游 embed 一致），稳定别名改为 `assets.rs` 映射而非第二份文件；新增同源 `budding-boot.js`（普通 script，无内联）：先取 `/ui/v1/session`，成功 `embed()` 极小 schema（page + 「该功能正在适配中」卡片），失败渲染错误；壳页引用版本化 JS `?v=`，CSS 以 `data-budding-css` 显式传参，`routerMode=history`、`routerBase=/{p}`，不传 packs、不引 loader。真实浏览器验证：登录后深链渲染卡片、`/ui/v1/session` 200、控制台无报错。 |
+| 2026-11-12 | 登录页 budding 化（第三批）：`GET /{p}/login` 改为 budding 登录壳（未认证 200，不落入匿名 303；已登录仍回 `/{p}`）；新增 `GET /ui/v1/auth/login`（公开读，签发与表单同一签名 CSRF + `skiff_login` 兼容 Cookie、`no-store`）与 `POST /ui/v1/auth/login`（JSON `{username,password,otp,csrf,next}`，复用 `AppState::login`、`session_cookie` 与登录 CSRF/来源判定）；失败文案沿用现有中文并按既有 `code` 返回，错误经 `sessionStorage` 回显后清除；新增同源 `budding-login.js`。budding 1.6.0 缺口令输入类型，脚本渲染后将口令框 DOM `type` 置为 `password` 作为临时桥接（已标注待上游组件）。旧登录模板与 `POST /{p}/login` 表单路径保留为无 JS 兜底。补 7 条 `main_flow` 用例（壳页未认证 200、配置 200、成功/深链回跳、错口令/空提交、CSRF/跨站、TOTP 分支）。 |

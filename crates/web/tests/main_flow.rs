@@ -230,24 +230,30 @@ fn form_body(pairs: &[(&str, &str)]) -> Body {
     Body::from(s)
 }
 
-/// GET 登录页，返回（表单里的签名 CSRF token，Set-Cookie 下发的 `skiff_login` 值）。
+/// GET 登录配置，返回（签名 CSRF token，Set-Cookie 下发的 `skiff_login` 值）。
 ///
-/// 浏览器等价链路以表单 token 为准；Cookie 只用于验证「兼容路径」仍可用。
+/// budding 登录页通过 `GET /ui/v1/auth/login` 取 token；表单兼容路径仍带同一个
+/// `skiff_login` Cookie，因此这里的 token 也能直接用于 `POST /p/login`。
 async fn login_page_tokens(app: &Router) -> (String, String) {
     let page = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/login")
+                .uri("/ui/v1/auth/login")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
-    let cookie = set_cookie_value(&page, "skiff_login").expect("登录页应下发 CSRF cookie");
-    let html = body_text(page).await;
-    (csrf_from(&html), cookie)
+    let cookie = set_cookie_value(&page, "skiff_login").expect("登录配置应下发 CSRF cookie");
+    let body = body_text(page).await;
+    let value: serde_json::Value = serde_json::from_str(&body).expect("登录配置必须是 JSON 信封");
+    let csrf = value["data"]["csrf_token"]
+        .as_str()
+        .expect("登录配置必须带 csrf_token")
+        .to_string();
+    (csrf, cookie)
 }
 
 /// 提交登录表单。`sec_fetch_site` 模拟浏览器来源头；`cookie` 为 `None` 表示浏览器
@@ -7370,6 +7376,223 @@ async fn ui_logout_requires_csrf_header() {
     // 登出后同一会话失效：回到 401 JSON。
     let (status, _, _) = get_ui(&h.app, "/ui/v1/session", Some(&token), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---- budding 登录页（第三批）：未认证壳页 + /ui/v1/auth/login 读写接口 ----
+
+/// 提交 budding 登录 JSON；`site` 模拟浏览器的 `Sec-Fetch-Site`。
+async fn post_ui_login(
+    app: &Router,
+    body: &serde_json::Value,
+    site: Option<&str>,
+) -> axum::response::Response {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/ui/v1/auth/login")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(site) = site {
+        req = req.header("sec-fetch-site", site);
+    }
+    app.clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+}
+
+/// 未认证时登录页必须直接 200 渲染 budding 壳，不能落入「匿名 303 跳登录」的回落
+/// 分支——否则会自己跳自己，形成死循环。
+#[tokio::test]
+async fn login_page_renders_budding_shell_without_session() {
+    let h = harness();
+    let resp = get_raw(&h.app, "/p/login?next=%2Fp%2Fsites%2Fa", &[]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers().get(header::LOCATION).is_none(),
+        "未认证登录页不得 303"
+    );
+    assert_eq!(header_str(&resp, "cache-control"), "no-store");
+    let html = body_text(resp).await;
+    assert!(html.contains(r#"id="skiff-login""#), "{html}");
+    assert!(html.contains(r#"data-next="/p/sites/a""#), "{html}");
+    assert!(
+        html.contains(r#"src="/p/static/budding/budding-1.6.0.min.js?v=1.6.0""#),
+        "登录页应引用版本化 budding 产物"
+    );
+    assert!(
+        html.contains(r#"src="/p/static/budding/budding-login.js""#),
+        "登录页应加载启动脚本"
+    );
+    assert!(!html.contains("<script>"), "CSP 禁止内联脚本");
+}
+
+/// `GET /ui/v1/auth/login` 未认证可读，签发与表单路径同一个签名 CSRF。
+#[tokio::test]
+async fn ui_login_config_is_public_and_issues_csrf() {
+    let h = harness();
+    let resp = get_raw(&h.app, "/ui/v1/auth/login", &[]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(header_str(&resp, "content-type").starts_with("application/json"));
+    assert_eq!(header_str(&resp, "cache-control"), "no-store");
+    assert!(
+        set_cookie_value(&resp, "skiff_login").is_some(),
+        "应下发兼容 Cookie"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    let csrf = v["data"]["csrf_token"].as_str().unwrap();
+    assert!(!csrf.is_empty());
+    assert_eq!(v["data"]["entry_prefix"], "p");
+    assert_eq!(v["data"]["api_version"], "v1");
+    assert!(skiff_identity::verify_signed_token(
+        &h.state.csrf_secret,
+        "login",
+        csrf,
+        600,
+        chrono::Utc::now().timestamp()
+    )
+    .is_ok());
+}
+
+/// 登录成功后返回 `redirect_to` 并下发与页面登录同形态的会话 Cookie。
+#[tokio::test]
+async fn ui_login_submit_authenticates_and_returns_redirect() {
+    let h = harness();
+    let (csrf, _) = login_page_tokens(&h.app).await;
+    let resp = post_ui_login(
+        &h.app,
+        &serde_json::json!({
+            "username": "admin",
+            "password": "pw-test-123",
+            "otp": "",
+            "csrf": csrf,
+            "next": "/p/sites/example.com/open"
+        }),
+        Some("same-origin"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let session = set_cookie_value(&resp, skiff_identity::session_cookie_name(true))
+        .expect("登录成功应下发会话 Cookie");
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert_eq!(v["data"]["redirect_to"], "/p/sites/example.com/open");
+    assert_eq!(v["data"]["username"], "admin");
+    assert_eq!(v["data"]["role"], "admin");
+
+    // 回跳深链用同一条会话直接可用。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&session), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["username"], "admin");
+}
+
+/// 用户名/口令错误与空提交都必须 401，并沿用现有中文提示。
+#[tokio::test]
+async fn ui_login_submit_rejects_bad_and_empty_credentials() {
+    let h = harness();
+    for (username, password) in [("admin", "wrong-password"), ("", "")] {
+        let (csrf, _) = login_page_tokens(&h.app).await;
+        let resp = post_ui_login(
+            &h.app,
+            &serde_json::json!({
+                "username": username,
+                "password": password,
+                "csrf": csrf,
+            }),
+            Some("same-origin"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{username:?}");
+        let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+        assert_eq!(v["error"]["code"], "auth.unauthenticated");
+        assert_eq!(v["error"]["message"], "用户名或口令不正确");
+    }
+}
+
+/// CSRF 缺失/伪造/过期、跨站来源都必须拒绝，错误码走既有信封。
+#[tokio::test]
+async fn ui_login_submit_requires_csrf_and_same_origin() {
+    let h = harness();
+    let body = |csrf: &str| {
+        serde_json::json!({
+            "username": "admin",
+            "password": "pw-test-123",
+            "csrf": csrf,
+        })
+    };
+
+    let resp = post_ui_login(&h.app, &body("forged"), Some("same-origin")).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+    assert_eq!(v["error"]["message"], "CSRF 校验失败，请刷新页面后重试");
+
+    let expired = skiff_identity::signed_token(
+        &h.state.csrf_secret,
+        "login",
+        chrono::Utc::now().timestamp() - 601,
+    );
+    let resp = post_ui_login(&h.app, &body(&expired), Some("same-origin")).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("登录页已过期"));
+
+    let (csrf, _) = login_page_tokens(&h.app).await;
+    let resp = post_ui_login(&h.app, &body(&csrf), Some("cross-site")).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert_eq!(v["error"]["message"], "跨站登录请求被拒绝");
+}
+
+/// TOTP 分支保留：启用 TOTP 后缺动态码失败且提示区分，正确动态码可登录。
+#[tokio::test]
+async fn ui_login_submit_preserves_totp_branch() {
+    let h = harness();
+    let secret = skiff_identity::generate_totp_secret();
+    let user = h
+        .state
+        .db()
+        .user_by_name("admin")
+        .unwrap()
+        .expect("admin 必须存在");
+    h.state.save_totp_secret(user.id, &secret, true).unwrap();
+
+    let (csrf, _) = login_page_tokens(&h.app).await;
+    let resp = post_ui_login(
+        &h.app,
+        &serde_json::json!({
+            "username": "admin",
+            "password": "pw-test-123",
+            "csrf": csrf,
+            "otp": "",
+        }),
+        Some("same-origin"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("动态码"),
+        "TOTP 失败提示必须区分：{v}"
+    );
+
+    let code =
+        skiff_identity::totp::totp_now(&secret, chrono::Utc::now().timestamp().max(0) as u64)
+            .expect("应能生成动态码");
+    let (csrf, _) = login_page_tokens(&h.app).await;
+    let resp = post_ui_login(
+        &h.app,
+        &serde_json::json!({
+            "username": "admin",
+            "password": "pw-test-123",
+            "csrf": csrf,
+            "otp": code,
+        }),
+        Some("same-origin"),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "正确动态码必须通过");
 }
 
 // ---- budding 产物入库：D11 缓存契约与壳页引用可解析 ----

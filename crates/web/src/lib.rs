@@ -169,6 +169,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     // ---- budding 前端 JSON 命名空间（/ui/v1）：无入口前缀、未认证 401、只返 JSON ----
     // 鉴权与语义口径见 URL 契约 §2/§6；路由清单按资源逐步登记（本批只有会话引导与登出）。
     let ui_json = Router::new()
+        .route(
+            "/ui/v1/auth/login",
+            get(handlers::ui_api::login_config).post(handlers::ui_api::login_submit),
+        )
         .route("/ui/v1/session", get(handlers::ui_api::session))
         .route("/ui/v1/session/logout", post(handlers::ui_api::logout));
 
