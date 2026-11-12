@@ -49,6 +49,7 @@
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
 | 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单 6 个（guard/monitor/files/cron/ftp/firewall，已落地；原 nginx 已内核化为「网站」；连同 testkit 共 7 个签名包）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
 | Skiff-server 分发（非章节） | [SKIFF_SERVER.md](SKIFF_SERVER.md) | 中心化静态分发：清单模型、Ed25519 签名与 `seq` 防回滚、镜像同步、客户端接入 P0–P4、静态服务契约（§16）、发布面 `/api/**`（§17，R0/R1 已实施、R2 待做） |
+| budding 接入（非章节） | [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) | 具体框架 budding 作为前端渲染层的接入规则：产物与离线分发、JSON 信封与动作元数据、既有契约沿用与补条款、登录/权限/审计桥接、能力缺口与待决策项；规则稿，不代表已实施 |
 | 其余专项文档（非章节） | [AGENTS.md](../AGENTS.md) §四 | 测试环境/台账/矩阵、迭代验证回路、菜单与插件 UI 契约、UI 交互基准、网站运行环境、内核调度/文件系统/FTP 契约与实现说明；完整索引只在 AGENTS.md 维护，本文不重复 |
 
 ### 按角色选读
@@ -91,3 +92,4 @@
 | 2026-11-09 | 收尾清理：Node.js / Go 未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除；WAF 未实现，已移出范围，`sites.waf_mode` 与 `waf_rules_dir` 死配置及目录预留已删除。详 [changes/2026-11-09.md](changes/2026-11-09.md)。 |
 | 2026-11-09 | §3 增补架构三目标：§3.5 稳定（失败隔离、幂等、有界、超时语义、降级边界）、§3.6 占用低（单二进制取舍、惰性、每请求成本、上限策略）、§3.7 高度扩展（主体与能力面、契约演进、新增能力面动作）；资源数字仍只在 §7 维护。 |
 | 2026-11-11 | 新增 [SKIFF_SERVER.md](SKIFF_SERVER.md) §17 发布面 `/api/**`：身份即公钥（作者钥签包、审核钥签请求、发布钥只在受控环境）、提交与幂等、审核状态机与 `seq` 只增、产物仍由 `publish` 生成、**客户端不依赖 API**、R0/R1/R2 最小集与不做项；同步对齐 §0「形态」与 §1.2/§1.4。**R0 已实施**于 `tools/skiff-server`（`api` 六端点 + `release` 发布 job），**R1 已实施**（yank、密钥吊销、审计查询；索引仍为 v1，撤包打 `yanked`/`revoked` 标记并递增 `seq`，不升 schema），R2 待做。 |
+| 2026-11-12 | 新增 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)：budding 作为前端渲染层的接入规则（产物与离线分发、JSON 信封与动作元数据、既有契约沿用与补条款、桥接、能力缺口与待决策项）；本文档地图登记入口。**仅规则稿，未切换前端、未改业务代码。** |
