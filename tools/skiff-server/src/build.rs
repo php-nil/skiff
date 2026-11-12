@@ -153,6 +153,21 @@ pub fn build(catalog_dir: &Path, schema_dir: &Path, signer: &Signer) -> Result<A
         reject_duplicate_ids("插件", plugins.iter().map(|e| (&e.id, &e.version)))?;
         reject_duplicate_ids("应用", apps.iter().map(|e| (&e.id, &e.version)))?;
         reject_duplicate_ids("运行环境", runtimes.iter().map(|e| (&e.kind, &e.version)))?;
+        // 同 kind 至多一个 default：这是 release 时的兜底，API 的元数据修订不做跨条目预判。
+        let mut defaults: BTreeMap<&str, &str> = BTreeMap::new();
+        for entry in &runtimes {
+            if !entry.default {
+                continue;
+            }
+            if let Some(previous) = defaults.insert(entry.kind.as_str(), entry.version.as_str()) {
+                bail!(
+                    "运行环境 {} 存在多个 default 版本: {} 与 {}",
+                    entry.kind,
+                    previous,
+                    entry.version
+                );
+            }
+        }
         reject_duplicate_ids("升级条目", upgrades.iter().map(|e| (&e.version, &e.arch)))?;
 
         // 吊销列表：可选源文件，条目同索引里的 `revoked[]`（只增不删）。

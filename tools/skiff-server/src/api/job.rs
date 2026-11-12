@@ -11,10 +11,10 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use crate::api::now_rfc3339;
-use crate::api::store::{self, EntryKind, Submission, TakedownInfo};
+use crate::api::store::{self, EntryKind, RuntimeRevision, Submission, TakedownInfo};
 use crate::api::takedown::{self, Kind, Takedown};
 use crate::events::{self, Event};
-use crate::model::{AppEntry, ChannelFile, PluginEntry};
+use crate::model::{AppEntry, ChannelFile, PluginEntry, RuntimeEntry};
 use crate::sign::Signer;
 
 #[derive(Debug, Clone)]
@@ -97,7 +97,12 @@ fn run_inner(options: &JobOptions) -> Result<Option<JobReport>> {
     let mut takedowns =
         takedown::pending(&options.state).map_err(|_| anyhow::anyhow!("读取撤包状态失败"))?;
     takedowns.retain(|record| record.channel == options.channel);
-    if approved.is_empty() && takedowns.is_empty() {
+    let revisions = store::pending_runtime_revisions(&options.state)
+        .map_err(|_| anyhow::anyhow!("读取运行环境修订失败"))?
+        .into_iter()
+        .filter(|revision| revision.channel == options.channel)
+        .collect::<Vec<_>>();
+    if approved.is_empty() && takedowns.is_empty() && revisions.is_empty() {
         return Ok(None);
     }
 
@@ -117,8 +122,9 @@ fn run_inner(options: &JobOptions) -> Result<Option<JobReport>> {
             anyhow::anyhow!("缺少固定公钥：请设置 SKIFF_SERVER_PUBLIC_KEY 或 --public-key")
         })?;
 
-    // 1) 源数据：包体 + 条目 + 撤包标记 + 渠道 seq。全部先写源数据，再触发 publish。
+    // 1) 源数据：包体 + 条目 + 撤包标记 + 运行环境元数据修订 + 渠道 seq。全部先写源数据，再触发 publish。
     write_sources(options, &approved, &takedowns, seq, &now)?;
+    apply_runtime_revisions(options, &revisions)?;
 
     // 2) 产物：publish 在内存完成验签自检后才写盘；staging 不碰线上目录。
     let (output, swapped) = match (&options.staging_out, &options.dist) {
@@ -178,6 +184,10 @@ fn run_inner(options: &JobOptions) -> Result<Option<JobReport>> {
         .map_err(|_| anyhow::anyhow!("回写撤包提示失败: {}", record.id))?;
         released_takedowns.push(record.id.clone());
     }
+    for revision in &revisions {
+        store::mark_runtime_revision_released(&options.state, &revision.id, seq)
+            .map_err(|_| anyhow::anyhow!("回写运行环境修订状态失败: {}", revision.id))?;
+    }
     append_release_log(
         options,
         &released,
@@ -193,6 +203,37 @@ fn run_inner(options: &JobOptions) -> Result<Option<JobReport>> {
         output,
         swapped,
     }))
+}
+
+/// 已发布运行环境的元数据修订：只改 `eol` / `default`，镜像与 digest 必须与源条目一致。
+fn apply_runtime_revisions(options: &JobOptions, revisions: &[RuntimeRevision]) -> Result<()> {
+    for revision in revisions {
+        let path = options
+            .catalog
+            .join(&options.channel)
+            .join("runtimes")
+            .join(format!("{}-{}.json", revision.kind, revision.version));
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("读取运行环境源条目失败: {}", path.display()))?;
+        let mut entry: RuntimeEntry = serde_json::from_str(&text)
+            .with_context(|| format!("解析运行环境源条目失败: {}", path.display()))?;
+        if entry.image_digest != revision.image_digest {
+            bail!(
+                "运行环境 {} {} 的 image_digest 与修订不一致（digest 不可改）",
+                revision.kind,
+                revision.version
+            );
+        }
+        entry.eol = revision.eol.clone();
+        entry.default = revision.default;
+        entry
+            .validate()
+            .with_context(|| format!("运行环境修订不合法: {}", revision.id))?;
+        let bytes = serde_json::to_vec_pretty(&entry)?;
+        fs::write(&path, bytes_with_newline(bytes))
+            .with_context(|| format!("写入运行环境源条目失败: {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn validate_destination(options: &JobOptions) -> Result<()> {
@@ -361,7 +402,31 @@ fn write_sources(
                     .with_context(|| format!("写入条目失败: {}", path.display()))?;
             }
             EntryKind::Runtime => {
-                bail!("运行环境提交尚未接入发布（R2d）: {}", submission.sid)
+                let meta = submission.runtime.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("运行环境提交 {} 缺少 runtime 元数据", submission.sid)
+                })?;
+                let runtimes = channel_dir.join("runtimes");
+                fs::create_dir_all(&runtimes).context("创建 runtimes 目录失败")?;
+                let entry = RuntimeEntry {
+                    kind: submission.plugin_id.clone(),
+                    version: submission.version.clone(),
+                    image: meta.image.clone(),
+                    image_digest: meta.image_digest.clone(),
+                    eol: meta.eol.clone(),
+                    api_min: submission.api.clone(),
+                    default: meta.default,
+                };
+                entry.validate().context("源条目不合法")?;
+                let path = runtimes.join(format!("{}-{}.json", entry.kind, entry.version));
+                if path.exists() {
+                    bail!(
+                        "源数据已存在同版本运行环境（可能来自另一份提交）: {}",
+                        path.display()
+                    );
+                }
+                let bytes = serde_json::to_vec_pretty(&entry)?;
+                fs::write(&path, bytes_with_newline(bytes))
+                    .with_context(|| format!("写入条目失败: {}", path.display()))?;
             }
         }
     }

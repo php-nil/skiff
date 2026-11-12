@@ -9,14 +9,14 @@
 
 | 维度 | 决策 |
 |---|---|
-| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1/R2a/R2b/R2c 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
+| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1/R2a/R2b/R2c/R2d 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
 | 测试托管 | `skiff-server serve` 把已生成的产物**原样**用 https 提供（`--http` 仅测试）；只是最后一环的自托管，不改变托管决策（§15） |
 | 信任锚 | 每渠道一份 Ed25519 签名的清单，客户端内置官方公钥集；**镜像不被信任，只被校验** |
 | 内容寻址 | 包、模板、升级包按 `sha256` 存入不可变 `blobs/`；索引只引用摘要 |
 | 回滚防护 | 签名清单内单调 `seq`；客户端持久化最大值，拒绝更旧的清单 |
 | 渠道 | `stable` / `night` 两份独立清单，各自递增，互不覆盖 |
 | 客户端出网 | 仅访问配置的镜像地址，由**内核**拉取；插件 `net` 仍为 501，不参与 |
-| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1/R2a/R2b/R2c 已实施**，R2d/R2e 按序推进） |
+| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1/R2a/R2b/R2c/R2d 已实施**，R2e 待做） |
 
 **主结论**：官方只承担「编辑、审核、签名、发布」，镜像方只承担「搬运与托管」，客户端只信签名不信源。因此商店与升级通道不需要常驻服务、账号体系与在线状态，断网、内网、自建镜像都消费同一份产物；插件安装仍沿用现有 `.wbpkg` 验签与权限确认链路，商店只补「发现与下载」。发布面若要自动化审核，另走 §17 的**可选**独立服务，不改变本节对分发面的结论，也不被客户端访问。
 
@@ -1021,7 +1021,7 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
   未导入 CA 时失败（与 §4.5 的客户端口径一致）。
 - `serve` 不改变产物：测试只读校验运行前后文件字节不变。
 
-## 17. 发布面 `/api/**` 接口（R0/R1/R2a/R2b/R2c 已实施，R2d/R2e 按序推进）
+## 17. 发布面 `/api/**` 接口（R0/R1/R2a/R2b/R2c/R2d 已实施，R2e 待做）
 
 > 定位：终态链路「开发者提交 → 管理员审核 → 生成静态产物 → 静态分发」里，**分发面已由 §16 定稿并上机闭环**，
 > 本节补**发布面**的接口边界。**R0/R1/R2a/R2b 已在 `tools/skiff-server` 落地**（`api`、`notify` 与 `release` 子命令），
@@ -1110,6 +1110,22 @@ signed = "SKIFF-SERVER-API-v1\0" + method + "\n" + path + "\n" + query + "\n"
 - 版本规则与插件一致：同 `(id, version)` 不同摘要、或已发布 → 409；同摘要重复提交 → 200 同一 `sid`。
 - 审核/发布复用 `submissions/{sid}/approve|reject|withdraw` 与 `release`，事件 `subject.kind = "app"`；一次 `release` 只 +1 `seq`，插件与应用同批进入同一索引。
 - **R2c 不做安装**：客户端只从签名索引展示 `apps[]`（商店「应用模板」分区），安装仍走内置目录，索引不驱动安装。
+
+**运行环境提交（R2d，`POST /api/v1/runtimes`）**：JSON 载荷，无二进制资产，只做提交/审核/展示。
+
+| 字段 | 说明 |
+|---|---|
+| `kind` | `php` / `node` / `rust` |
+| `version` | 明文版本号（如 `8.5`） |
+| `image` / `image_digest` | 镜像引用与 `sha256:` 摘要；**提交后不可改** |
+| `eol` | 可选，`YYYY-MM-DD` |
+| `api_min` | 兼容的内核 API 版本 |
+| `default` | 提交时必须为 `false`；发布后只能通过元数据修订设置 |
+
+- 身份是 `(kind, version, image_digest)`；同 `(kind, version)` 已有别的 digest、或已发布 → 409。
+- **元数据修订**（独立动作）：`POST /api/v1/submissions/{sid}/revise`，body 只接受 `eol` / `default`（`deny_unknown_fields`，带 `image`/`image_digest` 一律 422），仅审核者可调用，只有 `published` 记录可修订。修订先落 `state/runtime_revisions/<id>.json` 并写审计 `action=revise`，由下一次 `release` 应用到源数据并递增 `seq`。
+- **`default` 唯一性在 release 时校验**：同 kind 出现多个 `default=true` 时发布失败（`release.failed`），不会生成相互矛盾的索引。
+- 运行环境只展示，不驱动安装：客户端从索引 `runtimes[]` 渲染版本/EOL/默认标记，安装仍走内置目录。
 
 ### 17.4 审核侧
 
@@ -1204,7 +1220,7 @@ R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工�
 - 鉴权：审核者看全部；作者默认只看自己，显式查他人 `key_id` 一律 403。
 - 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`submission_ids`/`result`，**不含签名、包内容或请求体**。
 
-**R2（分步实施）**：R2a webhook 事件通知、R2b 提交记录 `kind` 抽象、R2c 应用模板提交/审核/发布已实施（§17.11–§17.13）；R2d 运行环境提交、R2e 分 kind 撤包按序推进。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
+**R2（分步实施）**：R2a webhook 事件通知、R2b 提交记录 `kind` 抽象、R2c 应用模板提交/审核/发布、R2d 运行环境提交与元数据修订已实施（§17.11–§17.14）；R2e 分 kind 撤包待做。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
 
 统一错误体：`{"code": "...", "message": "...", "detail": {...}}`；`401` 签名缺失/无效/过期，`403` 密钥未登记、命名空间不匹配或自我审核，`409` 版本或摘要冲突，`413` 超限，`422` 校验失败，`500` 内部错误（不回显路径与堆栈）。
 
@@ -1309,5 +1325,20 @@ skiff-server release  → 写源数据 → 调既有 publish → 产出签名产
   - `same_app_version_with_different_compose_conflicts`：同摘要 200 同一 `sid`，同版本不同摘要 409；
   - `plugin_and_app_release_share_one_seq`：一次 `release` 同时发布插件与应用，`seq = 1`、`released.len() == 2`，索引两数组各 1 条。
   - 合计 `cargo test -p skiff-server`：34 单测 + 27 API + 4 CLI + 15 P0 + 7 serve + 6 sync = 93 项全绿。
+
+### 17.14 R2d 落地说明：运行环境提交、审核与元数据修订（`tools/skiff-server`）
+
+- **提交**：`POST /api/v1/runtimes`（JSON `entry`，见 §17.3）。作者 `require_author`、审核者 `require_reviewer`；提交时 `default` 必须为 `false`，镜像与 digest 落记录后不可改。
+- **身份与版本**：`sid = sha256("runtime\0kind\0version\0image_digest")`；同 `(kind, version)` 不同 digest 或已发布 → 409；同一 digest 换了 `image` 引用 → 409。
+- **发布**：`release` 写 `catalog/<channel>/runtimes/<kind>-<version>.json`（`RuntimeEntry`），由既有 `build` 生成 `index.runtimes[]`；`build` 同时兜底校验「同 kind 至多一个 `default`」，违反则发布失败并留 `release.failed` 事件。
+- **元数据修订**：`POST /api/v1/submissions/{sid}/revise`（审核者、仅 `published`）。只接受 `eol`/`default`；写 `state/runtime_revisions/<id>.json`（`seq=null` 表示未应用）并审计 `revise`；下一次 `release` 校验源条目 digest 与修订一致后应用、递增 `seq` 并标记 `seq`。镜像与 digest 没有任何写入路径，因此不可改。
+- **范围**：只做提交/审核/展示；客户端继续从签名索引 `runtimes[]` 展示，安装仍走内置目录，`serve` 与 §16 契约零变化。
+- **R2d 测试**（`tests/api.rs`）：
+  - `runtime_submit_approve_release_writes_index_entry`：201→202→release 后 `index.runtimes[0]` 的 `kind`/`version`/`image`/`image_digest`/`api_min`/`default` 正确，源条目落在 `catalog/stable/runtimes/php-8.5.json`；
+  - `runtime_default_must_be_false_at_submission`：提交带 `default=true` → 422；
+  - `runtime_revision_changes_eol_and_default_with_audit`：带 `image_digest` 的修订 422；`eol`+`default` 修订 202，下一次 release 生效，`audit.jsonl` 有 `action=revise`；
+  - `runtime_revision_requires_reviewer_and_published_state`：未发布 412、作者 403；
+  - `release_rejects_multiple_defaults_per_kind`：两个同 kind 条目都改 `default=true` 后 release 失败。
+  - 合计 `cargo test -p skiff-server`：34 单测 + 32 API + 4 CLI + 15 P0 + 7 serve + 6 sync = 98 项全绿。
 
 

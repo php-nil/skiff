@@ -17,7 +17,9 @@ use super::package;
 use super::{json_response, now_rfc3339, ApiError, ApiServer, MAX_PACKAGE_BYTES};
 use crate::events::{self, Event};
 use crate::http::{Request, Response};
-use crate::model::{AppEntry, AppEnv, AppImage, AppPort, PluginEntry, KNOWN_CHANNELS};
+use crate::model::{
+    AppEntry, AppEnv, AppImage, AppPort, PluginEntry, RuntimeEntry, KNOWN_CHANNELS,
+};
 
 const SUBMISSION_SCHEMA: &str = "skiff.server.submission/v1";
 
@@ -129,6 +131,38 @@ pub struct AppMeta {
     pub volumes: Vec<String>,
 }
 
+/// 运行环境专有元数据：镜像与 digest 在提交后不可改，`eol`/`default` 只能走元数据修订。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeMeta {
+    pub image: String,
+    pub image_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eol: Option<String>,
+    #[serde(default)]
+    pub default: bool,
+}
+
+/// 已发布的运行环境条目的元数据修订（R2d）：只允许改 `eol` / `default`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeRevision {
+    pub schema: String,
+    pub id: String,
+    pub sid: String,
+    pub kind: String,
+    pub version: String,
+    pub image_digest: String,
+    pub channel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eol: Option<String>,
+    pub default: bool,
+    pub key_id: String,
+    pub at: String,
+    /// `release` 应用后写入的 `seq`；`None` 表示尚未应用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Submission {
     pub schema: String,
@@ -158,6 +192,9 @@ pub struct Submission {
     /// 应用模板专有元数据；插件记录不落该字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<AppMeta>,
+    /// 运行环境专有元数据；插件与应用记录不落该字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeMeta>,
 }
 
 fn submissions_dir(state: &Path) -> PathBuf {
@@ -176,6 +213,12 @@ pub fn sid_of(plugin_id: &str, version: &str, sha256: &str) -> String {
 /// 应用模板的 `sid`：与插件加 `app` 域前缀，避免同名同版本的插件/应用撞 id。
 pub fn sid_of_app(id: &str, version: &str, sha256: &str) -> String {
     let digest = Sha256::digest(format!("app\0{id}\0{version}\0{sha256}").as_bytes());
+    format!("sub-{}", &hex::encode(digest)[..24])
+}
+
+/// 运行环境的 `sid`：身份是 `(kind, version, image_digest)`。
+pub fn sid_of_runtime(kind: &str, version: &str, image_digest: &str) -> String {
+    let digest = Sha256::digest(format!("runtime\0{kind}\0{version}\0{image_digest}").as_bytes());
     format!("sub-{}", &hex::encode(digest)[..24])
 }
 
@@ -402,6 +445,7 @@ pub fn create(
         release: None,
         takedown: None,
         app: None,
+        runtime: None,
     };
     write_record(&server.state, &submission)?;
     server.audit(&auth.key_id, "submit", &sid, "ok");
@@ -596,6 +640,7 @@ pub fn create_app(
             ports: input.ports,
             volumes: input.volumes,
         }),
+        runtime: None,
     };
     write_record(&server.state, &submission)?;
     server.audit(&auth.key_id, "submit", &sid, "ok");
@@ -623,6 +668,283 @@ fn multipart_error(message: String) -> ApiError {
     } else {
         ApiError::bad_request(message)
     }
+}
+
+const RUNTIME_REVISION_SCHEMA: &str = "skiff.server.runtime-revision/v1";
+
+fn revisions_dir(state: &Path) -> PathBuf {
+    state.join("runtime_revisions")
+}
+
+fn revision_path(state: &Path, id: &str) -> PathBuf {
+    revisions_dir(state).join(format!("{id}.json"))
+}
+
+/// `release` 用：尚未应用到源数据的运行环境元数据修订。
+pub fn pending_runtime_revisions(state: &Path) -> Result<Vec<RuntimeRevision>, ApiError> {
+    let dir = revisions_dir(state);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let Ok(revision) = serde_json::from_slice::<RuntimeRevision>(&bytes) else {
+            continue;
+        };
+        if revision.seq.is_none() {
+            out.push(revision);
+        }
+    }
+    out.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));
+    Ok(out)
+}
+
+/// `release` 用：修订已随产物发布，记录其 `seq`。
+pub fn mark_runtime_revision_released(state: &Path, id: &str, seq: u64) -> Result<(), ApiError> {
+    let path = revision_path(state, id);
+    let bytes = fs::read(&path).map_err(|_| ApiError::internal())?;
+    let mut revision: RuntimeRevision =
+        serde_json::from_slice(&bytes).map_err(|_| ApiError::internal())?;
+    revision.seq = Some(seq);
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(&revision).map_err(|_| ApiError::internal())?;
+    fs::write(&tmp, bytes).map_err(|_| ApiError::internal())?;
+    fs::rename(&tmp, &path).map_err(|_| ApiError::internal())
+}
+
+/// POST /api/v1/runtimes
+///
+/// 运行环境只做提交/审核/展示：提交只登记元数据，不携带任何二进制资产。
+/// `default` 必须在提交时为 `false`，发布后通过 `POST /api/v1/submissions/{sid}/revise` 调整。
+pub fn create_runtime(
+    server: &ApiServer,
+    auth: &Authenticated,
+    _request: &Request,
+    body: &[u8],
+) -> Result<Response, ApiError> {
+    auth.require_author()?;
+    let input: RuntimeEntryInput = serde_json::from_slice(body)
+        .map_err(|e| ApiError::unprocessable(format!("entry 不是合法 JSON: {e}")))?;
+    if input.default {
+        return Err(ApiError::unprocessable(
+            "default 只能在发布后通过元数据修订设置",
+        ));
+    }
+    let source_entry = RuntimeEntry {
+        kind: input.kind.clone(),
+        version: input.version.clone(),
+        image: input.image.clone(),
+        image_digest: input.image_digest.clone(),
+        eol: input.eol.clone(),
+        api_min: input.api_min.clone(),
+        default: false,
+    };
+    source_entry
+        .validate()
+        .map_err(|e| ApiError::unprocessable(format!("条目不合法: {e}")))?;
+
+    let sha = input.image_digest.clone();
+    let sid = sid_of_runtime(&input.kind, &input.version, &sha);
+    let _lock = SidLock::acquire(&server.state, &sid)?;
+    let now = now_rfc3339();
+
+    if let Some(existing) = read_record(&server.state, &sid)? {
+        if let Some(meta) = &existing.runtime {
+            if meta.image != input.image {
+                return Err(ApiError::conflict("同一 image_digest 的镜像引用不可改"));
+            }
+        }
+        if existing.state == State::Rejected || existing.state == State::Withdrawn {
+            return reopen_record(server, auth, existing);
+        }
+        server.audit(&auth.key_id, "submit", &sid, "duplicate");
+        return Ok(json_response(
+            200,
+            &serde_json::to_value(&existing).unwrap_or_default(),
+        ));
+    }
+
+    // 版本不可变：同 (kind, version) 已有别的 digest，或已发布。
+    for other in all_records(&server.state)? {
+        if other.kind != EntryKind::Runtime
+            || other.plugin_id != input.kind
+            || other.version != input.version
+        {
+            continue;
+        }
+        if other.state == State::Published {
+            return Err(ApiError::conflict("该版本已发布，版本不可变"));
+        }
+        if other.sha256 != sha {
+            return Err(ApiError::conflict("同版本已有不同 digest 的提交"));
+        }
+    }
+
+    let submission = Submission {
+        schema: SUBMISSION_SCHEMA.to_string(),
+        sid: sid.clone(),
+        kind: EntryKind::Runtime,
+        plugin_id: input.kind.clone(),
+        version: input.version.clone(),
+        // 运行环境的 `api_min` 复用记录的 `api` 字段。
+        api: input.api_min.clone(),
+        key_id: auth.key_id.clone(),
+        sha256: sha,
+        size: 0,
+        state: State::Pending,
+        channel: server.channel.clone(),
+        entry: EntryMeta {
+            summary: String::new(),
+            channel: server.channel.clone(),
+            requires: Vec::new(),
+            changelog_url: None,
+            license: None,
+            source_url: None,
+        },
+        requires: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+        review: None,
+        release: None,
+        takedown: None,
+        app: None,
+        runtime: Some(RuntimeMeta {
+            image: input.image,
+            image_digest: input.image_digest,
+            eol: input.eol,
+            default: false,
+        }),
+    };
+    write_record(&server.state, &submission)?;
+    server.audit(&auth.key_id, "submit", &sid, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_SUBMISSION_CREATED, &sid, &server.channel)
+            .actor(&auth.key_id)
+            .subject(
+                submission.kind.as_str(),
+                &submission.plugin_id,
+                &submission.version,
+            )
+            .submission(&sid),
+    );
+    Ok(json_response(
+        201,
+        &serde_json::to_value(&submission).unwrap_or_default(),
+    ))
+}
+
+/// POST /api/v1/submissions/{sid}/revise
+///
+/// 已发布运行环境的元数据修订：只接受 `eol` 与 `default`，镜像与 digest 一律不可改。
+/// 修订先落 `state/runtime_revisions/`，由下一次 `release` 应用到源数据并递增 `seq`。
+pub fn revise_runtime(
+    server: &ApiServer,
+    auth: &Authenticated,
+    sid: &str,
+    body: &[u8],
+) -> Result<Response, ApiError> {
+    auth.require_reviewer()?;
+    let input: ReviseInput = serde_json::from_slice(body)
+        .map_err(|e| ApiError::unprocessable(format!("revise 不是合法 JSON: {e}")))?;
+    if input.eol.is_none() && input.default.is_none() {
+        return Err(ApiError::unprocessable("修订必须至少给出 eol 或 default"));
+    }
+    let record = read_record(&server.state, sid)?
+        .ok_or_else(|| ApiError::new(404, "not_found", "submission not found"))?;
+    if record.kind != EntryKind::Runtime {
+        return Err(ApiError::precondition("只有运行环境提交支持元数据修订"));
+    }
+    if record.state != State::Published {
+        return Err(ApiError::precondition("只有已发布的运行环境才能修订元数据"));
+    }
+    let meta = record.runtime.as_ref().ok_or_else(ApiError::internal)?;
+    let effective = RuntimeEntry {
+        kind: record.plugin_id.clone(),
+        version: record.version.clone(),
+        image: meta.image.clone(),
+        image_digest: meta.image_digest.clone(),
+        eol: input.eol.clone().or_else(|| meta.eol.clone()),
+        api_min: record.api.clone(),
+        default: input.default.unwrap_or(meta.default),
+    };
+    effective
+        .validate()
+        .map_err(|e| ApiError::unprocessable(format!("修订后条目不合法: {e}")))?;
+
+    let now = now_rfc3339();
+    let digest = Sha256::digest(
+        format!(
+            "{sid}\0{now}\0{}\0{}",
+            effective.eol.as_deref().unwrap_or("-"),
+            effective.default
+        )
+        .as_bytes(),
+    );
+    let revision = RuntimeRevision {
+        schema: RUNTIME_REVISION_SCHEMA.to_string(),
+        id: format!("rev-{}", &hex::encode(digest)[..16]),
+        sid: sid.to_string(),
+        kind: record.plugin_id.clone(),
+        version: record.version.clone(),
+        image_digest: meta.image_digest.clone(),
+        channel: record.channel.clone(),
+        eol: effective.eol.clone(),
+        default: effective.default,
+        key_id: auth.key_id.clone(),
+        at: now,
+        seq: None,
+    };
+    let dir = revisions_dir(&server.state);
+    fs::create_dir_all(&dir).map_err(|_| ApiError::internal())?;
+    let path = revision_path(&server.state, &revision.id);
+    let bytes = serde_json::to_vec_pretty(&revision).map_err(|_| ApiError::internal())?;
+    match fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&bytes).map_err(|_| ApiError::internal())?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(ApiError::internal()),
+    }
+    server.audit(&auth.key_id, "revise", sid, "ok");
+    Ok(json_response(
+        202,
+        &serde_json::to_value(&revision).unwrap_or_default(),
+    ))
+}
+
+/// 提交与修订的输入结构（派生字段一律由服务端生成）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeEntryInput {
+    kind: String,
+    version: String,
+    image: String,
+    image_digest: String,
+    #[serde(default)]
+    eol: Option<String>,
+    api_min: String,
+    #[serde(default)]
+    default: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviseInput {
+    #[serde(default)]
+    eol: Option<String>,
+    #[serde(default)]
+    default: Option<bool>,
 }
 
 fn namespace_allows(prefixes: &[String], id: &str) -> bool {

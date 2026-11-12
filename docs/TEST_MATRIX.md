@@ -588,7 +588,7 @@ cargo test -p skiff catalog
 cargo test -p skiff-server
 ```
 
-## P. 发布面 API（Skiff-server R0/R1/R2a/R2b/R2c，2026-11-12 更新）
+## P. 发布面 API（Skiff-server R0/R1/R2a/R2b/R2c/R2d，2026-11-12 更新）
 
 > 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/events.rs`、`src/notify.rs`、`src/http.rs`、`src/build.rs`、`src/main.rs` 的
 > `api`/`notify`/`release` 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/事件/产物口径。
@@ -619,6 +619,10 @@ cargo test -p skiff-server
 | API-20 | compose 严格子集校验 | 含 `build:` 或非 UTF-8 的 compose | 提交应用模板 | 422，不落任何提交状态；不另写第二套解析器（复用 `skiff-compose`） | □通过 / □失败 | `src/api/store.rs::create_app`、`tests/api.rs::app_compose_outside_supported_subset_is_rejected` |
 | API-21 | 应用版本不可变与幂等 | 同 id/version 的 compose A、B | 先提 A，再提 A，再提 B | 201；重复 A → 200 同一 `sid`；B → 409 | □通过 / □失败 | `src/api/store.rs::create_app`、`tests/api.rs::same_app_version_with_different_compose_conflicts` |
 | API-22 | 插件与应用共享单次 `seq` | 同一渠道各一份 approved 提交 | 一次 release | `seq = 1`、`released.len() == 2`，索引 `plugins[]`/`apps[]` 各 1 条 | □通过 / □失败 | `src/api/job.rs`、`tests/api.rs::plugin_and_app_release_share_one_seq` |
+| API-23 | 运行环境提交→发布全链路 | 作者/审核者钥已登记 | `POST /api/v1/runtimes` → approve → release | 201/202；`index.runtimes[]` 的 `kind`/`version`/`image`/`image_digest`/`api_min`/`default` 正确；源条目落 `catalog/<ch>/runtimes/<kind>-<version>.json` | □通过 / □失败 | `src/api/store.rs::create_runtime`、`src/api/job.rs`、`tests/api.rs::runtime_submit_approve_release_writes_index_entry` |
+| API-24 | 运行环境 `default` 提交约束 | `entry.default = true` | 提交运行环境 | 422；`default` 只能在发布后走元数据修订 | □通过 / □失败 | `src/api/store.rs::create_runtime`、`tests/api.rs::runtime_default_must_be_false_at_submission` |
+| API-25 | 运行环境元数据修订 | 已发布运行环境 | `POST /api/v1/submissions/{sid}/revise`（`eol`/`default`）→ release | 202；下一次 release 应用到源数据并递增 `seq`；`audit.jsonl` 有 `action=revise`；带 `image`/`image_digest` 的修订 422；未发布 412、作者 403 | □通过 / □失败 | `src/api/store.rs::revise_runtime`、`src/api/job.rs::apply_runtime_revisions`、`tests/api.rs::runtime_revision_changes_eol_and_default_with_audit`、`runtime_revision_requires_reviewer_and_published_state` |
+| API-26 | 同 kind 多个 `default` 被 release 拒绝 | 同 kind 两个已发布运行环境均修订为 `default=true` | 再次 release | 发布失败并留 `release.failed`；不生成矛盾索引 | □通过 / □失败 | `src/build.rs`（default 唯一性）、`tests/api.rs::release_rejects_multiple_defaults_per_kind` |
 
 最小回归命令：
 

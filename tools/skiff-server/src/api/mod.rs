@@ -277,7 +277,10 @@ fn action_name(request: &Request) -> String {
         "reject"
     } else if path.ends_with("/withdraw") {
         "withdraw"
-    } else if request.method == "POST" && (path == "/api/v1/submissions" || path == "/api/v1/apps")
+    } else if path.ends_with("/revise") {
+        "revise"
+    } else if request.method == "POST"
+        && (path == "/api/v1/submissions" || path == "/api/v1/apps" || path == "/api/v1/runtimes")
     {
         "submit"
     } else if request.method == "GET" {
@@ -381,6 +384,14 @@ fn route(server: &ApiServer, request: &Request, body: &[u8]) -> Result<Response,
                 "method not allowed",
             )),
         },
+        "runtimes" if parts.len() == 3 => match request.method.as_str() {
+            "POST" => store::create_runtime(server, &auth, request, body),
+            _ => Err(ApiError::new(
+                405,
+                "method_not_allowed",
+                "method not allowed",
+            )),
+        },
         "plugins" if parts.len() == 7 && parts[4] == "versions" && parts[6] == "yank" => {
             match request.method.as_str() {
                 "POST" => takedown::yank(server, &auth, parts[3], parts[5], body),
@@ -445,6 +456,7 @@ fn route_submissions(
             ("POST", "approve") => store::approve(server, auth, sid),
             ("POST", "reject") => store::reject(server, auth, sid, body),
             ("POST", "withdraw") => store::withdraw(server, auth, sid),
+            ("POST", "revise") => store::revise_runtime(server, auth, sid, body),
             _ => Err(ApiError::new(
                 405,
                 "method_not_allowed",

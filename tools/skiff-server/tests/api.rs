@@ -376,6 +376,40 @@ fn approve(fx: &Fixture, sid: &str) -> Reply {
     )
 }
 
+fn runtime_entry(kind: &str, version: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "version": version,
+        "image": format!("php:{version}-fpm-alpine"),
+        "image_digest": format!("sha256:{}", "b".repeat(64)),
+        "eol": null,
+        "api_min": "1.0",
+        "default": false
+    })
+}
+
+fn submit_runtime(fx: &Fixture, entry: &serde_json::Value) -> Reply {
+    signed_call(
+        fx.addr,
+        &fx.author,
+        "POST",
+        "/api/v1/runtimes",
+        &[("Content-Type", "application/json")],
+        entry.to_string().as_bytes(),
+    )
+}
+
+fn revise(fx: &Fixture, sid: &str, body: &serde_json::Value) -> Reply {
+    signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/revise"),
+        &[("Content-Type", "application/json")],
+        body.to_string().as_bytes(),
+    )
+}
+
 #[test]
 fn signed_submit_approve_and_release_produces_pullable_artifacts() {
     let fx = Fixture::new();
@@ -767,6 +801,140 @@ fn plugin_and_app_release_share_one_seq() {
 }
 
 #[test]
+fn runtime_submit_approve_release_writes_index_entry() {
+    let fx = Fixture::new();
+    let created = submit_runtime(&fx, &runtime_entry("php", "8.5"));
+    assert_eq!(created.status, 201, "{:?}", created.json());
+    let body = created.json();
+    assert_eq!(body["kind"], "runtime");
+    assert_eq!(body["plugin_id"], "php");
+    assert_eq!(body["runtime"]["image"], "php:8.5-fpm-alpine");
+    assert_eq!(body["runtime"]["default"], false);
+    let sid = body["sid"].as_str().unwrap().to_string();
+
+    assert_eq!(approve(&fx, &sid).status, 202);
+    let (report, staging) = publish(&fx, 1);
+    assert_eq!(report.seq, 1);
+
+    let index: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/index.json")).unwrap(),
+    )
+    .unwrap();
+    let runtime = &index["runtimes"][0];
+    assert_eq!(runtime["kind"], "php");
+    assert_eq!(runtime["version"], "8.5");
+    assert_eq!(runtime["image"], "php:8.5-fpm-alpine");
+    assert_eq!(
+        runtime["image_digest"],
+        format!("sha256:{}", "b".repeat(64))
+    );
+    assert_eq!(runtime["api_min"], "1.0");
+    assert_eq!(runtime["default"], false);
+    assert!(runtime["eol"].is_null());
+    assert!(fx.catalog.join("stable/runtimes/php-8.5.json").is_file());
+}
+
+#[test]
+fn runtime_default_must_be_false_at_submission() {
+    let fx = Fixture::new();
+    let mut entry = runtime_entry("php", "8.5");
+    entry["default"] = serde_json::json!(true);
+    let reply = submit_runtime(&fx, &entry);
+    assert_eq!(reply.status, 422, "{:?}", reply.json());
+    let text = serde_json::to_string(&reply.json()).unwrap();
+    assert!(text.contains("修订"), "{text}");
+}
+
+#[test]
+fn runtime_revision_changes_eol_and_default_with_audit() {
+    let fx = Fixture::new();
+    let created = submit_runtime(&fx, &runtime_entry("php", "8.5"));
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    assert_eq!(approve(&fx, &sid).status, 202);
+    publish(&fx, 1);
+
+    // 镜像与 digest 不可改：带 image_digest 的修订直接 422。
+    let rejected = revise(
+        &fx,
+        &sid,
+        &serde_json::json!({ "image_digest": format!("sha256:{}", "c".repeat(64)) }),
+    );
+    assert_eq!(rejected.status, 422, "{:?}", rejected.json());
+
+    let revised = revise(
+        &fx,
+        &sid,
+        &serde_json::json!({ "eol": "2027-01-31", "default": true }),
+    );
+    assert_eq!(revised.status, 202, "{:?}", revised.json());
+    assert!(revised.json()["seq"].is_null());
+
+    let (report, staging) = publish(&fx, 2);
+    assert_eq!(report.seq, 2);
+    let index: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["runtimes"][0]["eol"], "2027-01-31");
+    assert_eq!(index["runtimes"][0]["default"], true);
+
+    let audit = fs::read_to_string(fx.state.join("audit.jsonl")).unwrap();
+    assert!(
+        audit
+            .lines()
+            .any(|line| line.contains("\"action\":\"revise\"") && line.contains(&sid)),
+        "{audit}"
+    );
+}
+
+#[test]
+fn runtime_revision_requires_reviewer_and_published_state() {
+    let fx = Fixture::new();
+    let created = submit_runtime(&fx, &runtime_entry("php", "8.5"));
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+
+    // 未发布：412。
+    let pending = revise(&fx, &sid, &serde_json::json!({ "eol": "2027-01-31" }));
+    assert_eq!(pending.status, 412, "{:?}", pending.json());
+
+    // 作者不能修订。
+    let author = signed_call(
+        fx.addr,
+        &fx.author,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/revise"),
+        &[("Content-Type", "application/json")],
+        b"{\"default\":true}",
+    );
+    assert_eq!(author.status, 403, "{:?}", author.json());
+}
+
+#[test]
+fn release_rejects_multiple_defaults_per_kind() {
+    let fx = Fixture::new();
+    let first = submit_runtime(&fx, &runtime_entry("php", "8.5"));
+    let first_sid = first.json()["sid"].as_str().unwrap().to_string();
+    let second = submit_runtime(&fx, &runtime_entry("php", "8.4"));
+    let second_sid = second.json()["sid"].as_str().unwrap().to_string();
+    assert_eq!(approve(&fx, &first_sid).status, 202);
+    assert_eq!(approve(&fx, &second_sid).status, 202);
+    publish(&fx, 1);
+
+    assert_eq!(
+        revise(&fx, &first_sid, &serde_json::json!({ "default": true })).status,
+        202
+    );
+    assert_eq!(
+        revise(&fx, &second_sid, &serde_json::json!({ "default": true })).status,
+        202
+    );
+    let (result, _staging) = publish_raw(&fx, 2);
+    let error = result.expect_err("同 kind 两个 default 必须让 release 失败");
+    let message = format!("{error:#}");
+    assert!(message.contains("default"), "{message}");
+}
+
+#[test]
 fn illegal_state_transition_is_rejected() {
     let fx = Fixture::new();
     let created = submit(&fx, "com.example.demo", "1.0.0");
@@ -980,6 +1148,13 @@ fn serve_still_returns_404_for_api_paths() {
 
 /// 只产出 staging 的发布 helper：seq 显式给定，避免并行测试共享 `--prev`。
 fn publish(fx: &Fixture, seq: u64) -> (api::job::JobReport, tempfile::TempDir) {
+    let (report, staging) = publish_raw(fx, seq);
+    let report = report.unwrap_or_else(|error| panic!("{error:#}"));
+    (report, staging)
+}
+
+/// 同 `publish`，但把失败原样交给调用方（用于断言 release 拒绝）。
+fn publish_raw(fx: &Fixture, seq: u64) -> (anyhow::Result<api::job::JobReport>, tempfile::TempDir) {
     let schema = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/skiff-server/schema");
     let staging = tempfile::tempdir_in(fx.dir.path()).unwrap();
     let signer = SigningKey::from_bytes(&[11u8; 32]);
@@ -1001,8 +1176,7 @@ fn publish(fx: &Fixture, seq: u64) -> (api::job::JobReport, tempfile::TempDir) {
         submission: None,
         public_key: None,
     };
-    let report = api::job::run(&job).unwrap();
-    (report, staging)
+    (api::job::run(&job), staging)
 }
 
 fn key_id(key: &SigningKey) -> String {
