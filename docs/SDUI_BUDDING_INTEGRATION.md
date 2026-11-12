@@ -577,7 +577,7 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | D10 复合索引 | `store` 的 schema 迁移（审计、作业） | 已落地（2026-11-12，schema v19）：`(ts DESC, id DESC)`、`(created_at DESC, id DESC)`、`(status, created_at DESC, id DESC)`；迁移测试 `v18_database_upgrades_keyset_indexes_and_keeps_rows` |
 | D11 缓存头 | `assets.rs` 缓存策略 + 壳页版本化引用 | 已落地（2026-11-12）：版本化文件名或非空 `?v=` → `immutable`，稳定别名 → `no-cache`；回归 `cache_control_follows_versioning` |
 | D12 CSP 回归 | 响应头断言与逐页控制台巡检 | 回归测试已加（2026-11-12，见 §2.5）；逐页控制台巡检待切换前 |
-| D13 深链 | `URL_CONTRACT.md` §2.1 白名单 + `entry_guard` 回落分支 | 契约已同步（2026-11-12）；`entry_guard` 实现待切换，前端未匹配路由渲染 404 |
+| D13 深链 | `URL_CONTRACT.md` §2.1 白名单 + `Router::fallback` 回落（`crates/web/src/handlers/spa.rs`） | 契约已同步（2026-11-12）；壳页回落、`/ui/v1/session` 与 401 语义已落地（2026-11-12）；前端未匹配路由渲染 404 |
 
 补充：D8 中「消除 Vuetify 内部英文」属上游 `createVuetify()` 注入 locale，本仓库不落地、不阻塞。
 
@@ -592,3 +592,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | D8–D12 定案：文案 key+中文兜底且结构文案归前端 schema、时间统一 RFC3339 UTC、审计/作业/文件 keyset 分页与小列表上限 500、静态产物版本化且稳定别名 no-cache、CSP 保持严格并按实测最小补充。同步更新 §0/§2.4/§2.5/§3.2/§3.4/§3.5/§3.6/§8.1/§8.2，新增 §8.4 定案落地位置。D13 仍待定。未改业务代码。 |
 | 2026-11-12 | D9–D12 中「不随旧页删除作废」的部分落地：新增 `crates/app/src/time_fmt.rs`（epoch → RFC3339 UTC）与 `crates/app/src/cursor.rs`（不透明签名游标）；schema v19 补审计/作业 keyset 索引；`assets.rs` 区分版本化产物与稳定别名缓存；补全局 CSP、插件 CSP 与 iframe 沙箱回归测试。现有页面与列表查询未改。 |
 | 2026-11-12 | D13 定案：history 路由 + 白名单前缀回落，地址栏保持 `/{p}/sites/xxx`，不用 hash。同步更新 §2.3、§4.5.1（转为「已同步」）、§8.1、§8.2、§8.4，并把 §2 例外、SPA 回落白名单、§6 方法例外与 §9 路由清单真正写入 `URL_CONTRACT.md`；同时修正 `SITE_RUNTIME_CONTRACT.md` §9.1 的过期 schema 版本。未改业务代码。 |
+| 2026-11-12 | 后端地基落地（第一批）：新增 `/ui/v1` 命名空间（`handlers::ui_api`，`entry_guard` 与 `/api/v1` 并列豁免，`/ui/` 其它形态 404），`UiAuthUser` 使未认证统一 401 JSON；`GET /ui/v1/session` 下发用户/角色/CSRF/入口前缀/能力开关，`POST /ui/v1/session/logout` 复用 `x-csrf-token` 校验；`handlers::spa::fallback` 按 §2.1 白名单做壳页回落（仅 GET + `Accept: text/html`，写请求永不回落；`method_not_allowed_fallback` 覆盖 POST-only 路径上的 GET 深链），壳页只含挂载点、占位提示与 `budding.min.js` 引用。未复制前端产物，未改 `assets.rs` / `build.rs`。 |

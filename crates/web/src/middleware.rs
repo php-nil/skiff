@@ -90,7 +90,10 @@ pub async fn entry_guard(State(state): State<Arc<AppState>>, req: Request, next:
         let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
         let prefix_ok = first == state.cfg.entry_prefix
             || state.cfg.entry_prefix_previous.as_deref() == Some(first)
-            || (first == "api" && path.starts_with("/api/v1/"));
+            || (first == "api" && path.starts_with("/api/v1/"))
+            // `/ui/v1` 是 budding 前端的 JSON 命名空间，与 `/api/v1` 并列放行；
+            // `/ui/` 下其它形态仍一律 404（URL 契约 §2）。
+            || (first == "ui" && path.starts_with("/ui/v1/"));
         if !prefix_ok {
             return AppError::NotFound("404 Not Found".into()).into_response();
         }
@@ -261,6 +264,8 @@ pub async fn load_session(
                     let prefix = &state.cfg.entry_prefix;
                     let allowed = path.starts_with(&format!("/{prefix}/static/"))
                         || path.starts_with("/api/")
+                        // JSON 命名空间只出状态码与信封，不能 303 到页面。
+                        || path.starts_with("/ui/")
                         || path == format!("/{prefix}/login")
                         || path == format!("/{prefix}/password")
                         || path == format!("/{prefix}/logout")
@@ -419,7 +424,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                 }
             }
         }
-        if parts.uri.path().starts_with("/api/") {
+        if parts.uri.path().starts_with("/api/") || parts.uri.path().starts_with("/ui/v1/") {
             Err(AppError::Unauthorized("需要登录".into()))
         } else {
             let next = parts
@@ -433,6 +438,24 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
                 // Location 头要的是 URL 编码，不是 HTML 转义
                 crate::util::encode_uri_component(&next)
             )))
+        }
+    }
+}
+
+/// `/ui/v1/*` 的认证提取器：判定复用 `AuthUser`（Cookie / Bearer 同一套），
+/// 但把失败统一映射成 JSON 信封（401/403/503），**不产生页面 303**（URL 契约 §6）。
+pub struct UiAuthUser(pub CurrentUser);
+
+impl FromRequestParts<Arc<AppState>> for UiAuthUser {
+    type Rejection = crate::error::ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        match AuthUser::from_request_parts(parts, state).await {
+            Ok(AuthUser(user)) => Ok(UiAuthUser(user)),
+            Err(e) => Err(crate::error::ApiError(e)),
         }
     }
 }

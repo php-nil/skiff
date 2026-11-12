@@ -166,6 +166,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             middleware::fs_capability,
         ));
 
+    // ---- budding 前端 JSON 命名空间（/ui/v1）：无入口前缀、未认证 401、只返 JSON ----
+    // 鉴权与语义口径见 URL 契约 §2/§6；路由清单按资源逐步登记（本批只有会话引导与登出）。
+    let ui_json = Router::new()
+        .route("/ui/v1/session", get(handlers::ui_api::session))
+        .route("/ui/v1/session/logout", post(handlers::ui_api::logout));
+
     let ui = Router::new()
         .route(&format!("/{p}"), get(handlers::dashboard::index))
         // 尾斜杠是常见手误（浏览器补全、复制粘贴），不该给个 404
@@ -631,6 +637,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/plugins/ui", get(handlers::api::plugin_ui_index))
         // 文件管理分组（自带形态门禁）也在超时层覆盖范围内。
         .merge(files)
+        .merge(ui_json)
+        // 命中路径但方法不匹配时同样走壳页判定（GET 导航可能是 POST-only 路由的形态）。
+        // 必须在 `.layer(...)` 之前：它会替换各 MethodRouter 的默认 405 兜底，
+        // 之后再套层才会把会话/超时中间件包在兜底上。
+        .method_not_allowed_fallback(handlers::spa::method_not_allowed)
+        // SPA 壳页回落（URL 契约 §2.1）：必须在 `.layer(...)` 之前设置，
+        // 这样壳页同样经过会话加载（未登录 303）与安全响应头。
+        .fallback(handlers::spa::fallback)
         // 到这里的所有路由都是一次请求一次响应，套超时。
         // 必须在 `.merge(streaming)` **之前**：`Router::layer` 只作用于已加入的路由，
         // SSE（日志）与 WS（终端）因此天然被排除在外。

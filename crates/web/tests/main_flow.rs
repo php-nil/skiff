@@ -7071,3 +7071,299 @@ async fn store_page_returns_200_when_mirror_silently_drops_packets() {
         "5 分钟冷却内不得再次发起抓取"
     );
 }
+
+// ---- budding 后端地基：/ui/v1 会话引导与 SPA 壳页回落（URL 契约 §2/§2.1/§6）----
+
+/// 带可选会话与 `Accept` 的 GET，返回（状态码，Content-Type，响应体）。
+async fn get_ui(
+    app: &Router,
+    uri: &str,
+    token: Option<&str>,
+    accept: Option<&str>,
+) -> (StatusCode, String, String) {
+    let mut req = Request::builder().uri(uri);
+    if let Some(t) = token {
+        req = req.header(
+            header::COOKIE,
+            format!("{}={t}", skiff_identity::session_cookie_name(true)),
+        );
+    }
+    if let Some(a) = accept {
+        req = req.header(header::ACCEPT, a);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    (status, ct, body_text(resp).await)
+}
+
+/// 未认证时必须 401 JSON，不能退回页面 303（SDUI 集成 §5.2）。
+#[tokio::test]
+async fn ui_session_requires_login_with_json_401() {
+    let h = harness();
+    let (status, ct, body) = get_ui(&h.app, "/ui/v1/session", None, None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "未认证必须是 401，不能 303"
+    );
+    assert!(
+        ct.starts_with("application/json"),
+        "401 必须是 JSON 信封，实际 Content-Type: {ct}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body).expect("401 响应必须是 JSON");
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+    assert_eq!(v["error"]["status"], 401);
+    assert_eq!(v["error"]["retryable"], false);
+}
+
+/// 会话引导返回用户、角色、CSRF、入口前缀与壳页能力开关。
+#[tokio::test]
+async fn ui_session_returns_identity_csrf_and_prefix() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("session 响应必须是 JSON");
+    assert_eq!(v["data"]["username"], "admin");
+    assert_eq!(v["data"]["role"], "admin");
+    assert_eq!(v["data"]["entry_prefix"], "p");
+    assert_eq!(v["data"]["api_version"], "v1");
+    assert_eq!(v["data"]["features"]["shell_fallback"], true);
+    assert_eq!(v["data"]["features"]["placeholders"], true);
+    assert_eq!(v["data"]["features"]["plugin_iframe"], true);
+    // CSRF 与页面写路径同源：sha256(secret:session token)，不新造第二种生成方式。
+    assert_eq!(
+        v["data"]["csrf_token"],
+        skiff_identity::sha256_hex(format!("csrf-test-secret:{token}"))
+    );
+}
+
+/// `/ui/` 下除 `/ui/v1/*` 之外的形态一律 404，不能当静态资源或页面旁路。
+#[tokio::test]
+async fn ui_namespace_other_shapes_are_404() {
+    let h = harness();
+    for uri in [
+        "/ui",
+        "/ui/",
+        "/ui/v1",
+        "/ui/v2/session",
+        "/ui/v1/session/unknown",
+    ] {
+        let (status, _, _) = get_ui(&h.app, uri, None, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 应 404");
+    }
+}
+
+/// 白名单深链回落壳页：只给挂载点、占位提示与产物引用。
+#[tokio::test]
+async fn shell_fallback_serves_whitelisted_deep_links() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    for uri in [
+        "/p/sites/example.com/open/detail",
+        "/p/containers/abc/unknown",
+        "/p/files/a/b",
+        "/p/plugins/demo.plugin/view/deep",
+        "/p/settings/deep",
+        "/p/jobs/1/logs/deep",
+    ] {
+        let (status, ct, body) = get_ui(&h.app, uri, Some(&token), Some("text/html")).await;
+        assert_eq!(status, StatusCode::OK, "{uri} 应回落壳页");
+        assert!(ct.starts_with("text/html; charset=utf-8"), "{uri}");
+        assert!(body.contains("该功能正在适配中"), "{uri} 应有占位提示");
+        assert!(
+            body.contains(r#"src="/p/static/budding/budding.min.js""#),
+            "{uri} 应引用 budding 稳定别名产物"
+        );
+    }
+}
+
+/// 白名单外、写请求、非 HTML `Accept` 都不回落（URL 契约 §2.1）。
+#[tokio::test]
+async fn shell_fallback_never_catches_unlisted_or_non_get() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let deep = "/p/sites/example.com/open/detail";
+
+    // 路径段边界：`/p/sitesfoo` 不算 `/{p}/sites`。
+    for uri in ["/p/sitesfoo", "/p/unknown"] {
+        let (status, _, body) = get_ui(&h.app, uri, Some(&token), Some("text/html")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 不应命中白名单");
+        assert!(!body.contains("该功能正在适配中"));
+    }
+
+    // 写请求永不回落。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(deep)
+                .header(header::ACCEPT, "text/html")
+                .header(
+                    header::COOKIE,
+                    format!("{}={token}", skiff_identity::session_cookie_name(true)),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(!body_text(resp).await.contains("该功能正在适配中"));
+
+    // 非 HTML 的 Accept 不回落（API/脚本取数据不应拿到壳页）。
+    let (status, _, body) = get_ui(&h.app, deep, Some(&token), Some("application/json")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!body.contains("该功能正在适配中"));
+}
+
+/// 命中「路径存在但方法不匹配」时：GET 导航仍回落壳页，写请求仍 405。
+///
+/// `/p/containers/{id}/{action}` 只注册了 POST，GET 旧实现直接 405，`Router::fallback`
+/// 不会触发；`method_not_allowed_fallback` 必须补上这条路径。
+#[tokio::test]
+async fn shell_fallback_covers_method_not_allowed_paths() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let path = "/p/containers/abc/unknown";
+
+    let (status, ct, body) = get_ui(&h.app, path, Some(&token), Some("text/html")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "POST-only 模式上的 GET 深链应回落壳页，而不是 405"
+    );
+    assert!(ct.starts_with("text/html; charset=utf-8"));
+    assert!(body.contains("该功能正在适配中"));
+
+    // 非 HTML Accept 不回落，保持 405。
+    let (status, _, body) = get_ui(&h.app, path, Some(&token), Some("application/json")).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(!body.contains("该功能正在适配中"));
+
+    // 写请求不回落：`/p/sites/new` 只注册 GET，POST 必须是 405。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/sites/new")
+                .header(header::ACCEPT, "text/html")
+                .header(
+                    header::COOKIE,
+                    format!("{}={token}", skiff_identity::session_cookie_name(true)),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(!body_text(resp).await.contains("该功能正在适配中"));
+}
+
+/// 壳页受会话保护：未登录的页面请求仍按页面惯例 303 到登录页。
+#[tokio::test]
+async fn shell_fallback_redirects_anonymous_to_login() {
+    let h = harness();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/sites/example.com/open/detail")
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        location.starts_with("/p/login?next="),
+        "应 303 到登录页，实际: {location}"
+    );
+}
+
+/// `/ui/v1` 写路径：CSRF 缺失/错误必须 403 JSON，正确令牌才生效。
+#[tokio::test]
+async fn ui_logout_requires_csrf_header() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/v1/session/logout")
+                .header(
+                    header::COOKIE,
+                    format!("{}={token}", skiff_identity::session_cookie_name(true)),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "缺 CSRF 必须 403");
+    assert!(resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .starts_with("application/json"));
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+
+    // 用 session 下发的令牌重试：成功并清 Cookie。
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&token), None).await;
+    let csrf = serde_json::from_str::<serde_json::Value>(&body).unwrap()["data"]["csrf_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/v1/session/logout")
+                .header(
+                    header::COOKIE,
+                    format!("{}={token}", skiff_identity::session_cookie_name(true)),
+                )
+                .header("x-csrf-token", csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert_eq!(v["data"]["ok"], true);
+
+    // 登出后同一会话失效：回到 401 JSON。
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/session", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
