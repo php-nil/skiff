@@ -410,13 +410,8 @@ impl RuntimeJobState {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Queued => "排队中",
-            Self::Running => "执行中",
-            Self::Done => "已完成",
-            Self::Failed => "失败",
-        }
+    pub fn active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
     }
 }
 

@@ -91,16 +91,6 @@ impl JobStatus {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Queued => "排队中",
-            Self::Running => "执行中",
-            Self::Succeeded => "已完成",
-            Self::Failed => "失败",
-            Self::Cancelled => "已取消",
-        }
-    }
-
     pub fn terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
     }

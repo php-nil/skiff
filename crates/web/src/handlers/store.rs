@@ -136,7 +136,7 @@ pub async fn page(
     let total = snap.entries.total();
     handlers::render(StorePage {
         ctx: handlers::page_ctx(&state, &user, "core/plugins/store"),
-        state_label: snap.state.label().to_string(),
+        state_label: crate::labels::catalog_state(snap.state).to_string(),
         tone: tone.to_string(),
         message: snap.message.clone(),
         channel: snap.channel.clone(),

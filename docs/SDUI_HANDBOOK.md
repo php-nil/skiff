@@ -98,6 +98,7 @@
 | 内置网络不可删除 | 只在 `networks.html` 按名字隐藏按钮，后端依赖 Docker 报错 | `NetworkRow::builtin/can_remove` 判定；视图读 `can_remove`，`network_remove` 命令层先拒绝内置网络并写失败审计 |
 | 任务/作业审计 | Web 的 `tasks.toggle/run/delete` 与 `job.cancel/retry` 在 handler 内联写审计 | 审计随 `commands::task` / `commands::job` 产生；`middleware.rs`/`lib.rs` 的会话与 panic 审计按传输/进程保留 |
 | 站点表单错误→字段 | `web::handlers::sites::error_field` 用中文子串匹配 | `SiteError::Field(SiteField, ...)` 携带字段码；Web 只查表，未知码回顶部提示，文案与原二分逻辑不变 |
+| 领域枚举中文展示 | App 的 `JobStatus::label`、`RuntimeJobState::label`、`ExtSource::label`、`CatalogState::label` | App 只留 `as_str`；中文集中在 `web::labels`，模板与 JSON 共用；`kind_label` 的产品名仍留在 App 供错误文案使用 |
 
 ---
 

@@ -89,16 +89,6 @@ pub enum CatalogState {
 }
 
 impl CatalogState {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Disabled => "未启用",
-            Self::Fresh => "已更新",
-            Self::Cached => "目录未更新",
-            Self::Offline => "离线",
-            Self::Rejected => "校验失败",
-        }
-    }
-
     pub fn is_failure(self) -> bool {
         matches!(self, Self::Rejected)
     }

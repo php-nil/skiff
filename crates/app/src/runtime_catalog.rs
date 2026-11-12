@@ -123,16 +123,6 @@ pub enum ExtSource {
     Pecl,
 }
 
-impl ExtSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            ExtSource::Builtin => "镜像内置",
-            ExtSource::Build => "源码内置",
-            ExtSource::Pecl => "PECL",
-        }
-    }
-}
-
 /// PHP 扩展定义：勾选界面、安装脚本、卸载与分类都复用这一处。
 #[derive(Debug, Clone, Copy)]
 pub struct PhpExtensionDef {

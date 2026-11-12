@@ -6851,7 +6851,7 @@ async fn job_retry_reuses_executor_and_rejects_unsupported_kind() {
         resp.status(),
         StatusCode::CONFLICT,
         "同目标已有活跃任务必须明确拒绝（{}）",
-        settled.status.label()
+        skiff_web::labels::job_status(settled.status)
     );
     h.state.jobs().cancel(&blocker.id).unwrap();
 }

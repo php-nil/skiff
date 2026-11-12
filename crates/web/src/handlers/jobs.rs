@@ -131,7 +131,7 @@ fn row_of(job: &Job) -> JobRowView {
         title: job.title.clone(),
         kind_label: kind_label(&job.kind).to_string(),
         target_label: target_label(job),
-        status_label: job.status.label().to_string(),
+        status_label: crate::labels::job_status(job.status).to_string(),
         status_class: status_class(job.status).to_string(),
         phase_label: job.phase_label.clone(),
         progress: job.progress,
@@ -149,7 +149,7 @@ fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDetailView {
         title: job.title.clone(),
         kind_label: kind_label(&job.kind).to_string(),
         target_label: target_label(job),
-        status_label: job.status.label().to_string(),
+        status_label: crate::labels::job_status(job.status).to_string(),
         status_class: status_class(job.status).to_string(),
         phase_label: job.phase_label.clone(),
         progress: job.progress,
@@ -342,7 +342,7 @@ pub async fn logs_json(
         "job": {
             "id": job.id,
             "status": job.status.as_str(),
-            "status_label": job.status.label(),
+            "status_label": crate::labels::job_status(job.status),
             "phase": job.phase,
             "phase_label": job.phase_label,
             "progress": job.progress,
@@ -370,7 +370,7 @@ fn status_event(job: &Job) -> Event {
     Event::default().event("status").data(
         json!({
             "status": job.status.as_str(),
-            "status_label": job.status.label(),
+            "status_label": crate::labels::job_status(job.status),
             "phase": job.phase,
             "phase_label": job.phase_label,
             "progress": job.progress,

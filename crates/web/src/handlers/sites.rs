@@ -205,7 +205,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
         image_mismatch: v.image_mismatch,
         state_label: if let Some(j) = job.as_ref().filter(|j| j.active()) {
             // 安装中优先显示任务阶段，避免「未安装」与正在拉镜像互相矛盾。
-            format!("{}：{}", j.state.label(), j.step)
+            format!("{}：{}", crate::labels::runtime_job_state(j.state), j.step)
         } else if v.drift {
             "状态漂移".to_string()
         } else if job_failed && v.container_state != "running" {
@@ -240,7 +240,7 @@ fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRo
 fn job_view(job: &skiff_app::sites::RuntimeJob) -> RuntimeJobView {
     RuntimeJobView {
         state: job.state.as_str().to_string(),
-        state_label: job.state.label().to_string(),
+        state_label: crate::labels::runtime_job_state(job.state).to_string(),
         step: job.step.clone(),
         progress: job.progress,
         error: job.error.clone(),
@@ -256,7 +256,7 @@ fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
     serde_json::json!({
         "id": job.runtime_id,
         "state": job.state.as_str(),
-        "state_label": job.state.label(),
+        "state_label": crate::labels::runtime_job_state(job.state),
         "step": job.step,
         "progress": job.progress,
         "error": job.error,

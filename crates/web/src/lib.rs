@@ -10,6 +10,7 @@ pub mod assets;
 pub mod authz;
 pub mod error;
 pub mod handlers;
+pub mod labels;
 pub mod menu;
 pub mod middleware;
 mod templates;

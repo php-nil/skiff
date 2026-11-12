@@ -86,7 +86,7 @@ fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<Exte
                     default_on: e.default_on,
                     builtin: e.builtin,
                     category: e.category.to_string(),
-                    source: e.source.label().to_string(),
+                    source: crate::labels::ext_source(e.source).to_string(),
                     hot: e.hot,
                     heavy: skiff_app::runtime_catalog::extension_is_heavy(e.key),
                     estimated_time: skiff_app::runtime_catalog::extension_estimated_time(e.key)
@@ -108,8 +108,7 @@ fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<Exte
                 default_on: false,
                 builtin: false,
                 category: skiff_app::runtime_catalog::CATEGORY_OTHER.to_string(),
-                source: skiff_app::runtime_catalog::ExtSource::Pecl
-                    .label()
+                source: crate::labels::ext_source(skiff_app::runtime_catalog::ExtSource::Pecl)
                     .to_string(),
                 hot: true,
                 heavy: skiff_app::runtime_catalog::extension_is_heavy(token),
