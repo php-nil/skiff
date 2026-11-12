@@ -5419,7 +5419,7 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
     let (status, _) = get_page(&h.app, "/p/containers/new", &viewer).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "viewer 不得进入创建页");
 
-    let (status, html) = get_page(&h.app, "/p/compose", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/docker/compose", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"name="compose""#)
@@ -5434,7 +5434,7 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
     );
 
     // viewer 只读：页面可看，但不得出现部署/删除按钮。
-    let (status, viewer_html) = get_page(&h.app, "/p/compose", &viewer).await;
+    let (status, viewer_html) = get_page(&h.app, "/p/m/core/docker/compose", &viewer).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         !viewer_html.contains("/p/compose/up") && !viewer_html.contains("/p/compose/down"),
@@ -7887,6 +7887,64 @@ async fn ui_resource_lists_keep_auth_and_docker_unavailable_semantics() {
         assert!(data["docker_reason"].is_string(), "{uri}");
         assert!(data["can_admin"].is_boolean(), "{uri}");
     }
+}
+
+/// compose 只读接口与写操作：未认证 401；无 Docker 时项目为空；
+/// 项目动作与 down 必须先过 `x-csrf-token`。
+#[tokio::test]
+async fn ui_compose_keeps_auth_csrf_and_docker_unavailable_semantics() {
+    let h = harness();
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert!(data["projects"].as_array().unwrap().is_empty());
+    assert!(data["services"].as_array().unwrap().is_empty());
+    assert_eq!(data["docker_available"], false);
+    assert!(data["can_admin"].is_boolean());
+
+    for (method, uri) in [
+        ("POST", "/ui/v1/compose/demo/start"),
+        ("POST", "/ui/v1/compose/down"),
+    ] {
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"project":"demo","remove_volumes":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
+        let body = body_text(resp).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+    }
+}
+
+/// compose 规范页交付壳页；旧 SSR 仍在 `/m/core/docker/compose`。
+#[tokio::test]
+async fn compose_canonical_path_serves_shell() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_html(&h.app, "/p/compose", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    let (status, ssr) = get_page(&h.app, "/p/m/core/docker/compose", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
 }
 
 /// 镜像/网络/卷规范页交付壳页；旧 SSR 仍在 `/m/core/docker/*`。

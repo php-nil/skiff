@@ -613,6 +613,41 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 三个页面共用 `table`（本地 `items`、`pagination:false`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
 - Docker 不可用时顶部 warning `alert`；`next_cursor` 非空时提示翻页待接入；底部固定提示「写操作仍走旧版页面」并给 `/m/core/docker/*` 链接。
 
+### 5.11 编排 Compose（第四批）
+
+- `GET /{p}/compose` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/compose`，编辑/校验/部署仍走该落点。
+- 列表复用 `compose::status_of`（容器标签归组，不持久化 compose 源文件），不新增 SQL；项目按名称排序。
+- 项目级启停/重启与 down 已提供 JSON 动作，复用现有 `compose_project_action` / `compose_down` 与逐容器权限判定、审计。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/compose?project=` → `{ "data": { projects, services, selected_project, docker_available, docker_reason, can_admin } }`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `projects[].name` | string | 项目名（来自 `io.skiff.project` 或 compose 标签） |
+| `projects[].managed` | bool | 是否为内核托管项目 |
+| `projects[].services` / `running` | number | 服务总数 / 运行中数量 |
+| `services[].service` / `container` / `id` | string | 服务名、容器名、容器 id |
+| `services[].state` | `{code,label}` | 容器状态（D8） |
+| `services[].status` / `image` | string | 状态描述与镜像 |
+| `services[].managed` | bool | 容器是否带内核保护标签 |
+| `services[].logs` | string | 选中项目时最近 100 行日志（未选中为空串） |
+| `selected_project` | string | 请求的 `project` 参数原样回显 |
+| `docker_available` / `docker_reason` | bool / string | 与旧页面同口径；`docker_reason` 在列表读取失败时给错误文本 |
+| `can_admin` | bool | 是否具备 `DockerLifecycle`（编辑/部署入口由旧页判定） |
+
+`POST /ui/v1/compose/{project}/{action}`（`start` / `stop` / `restart`）→ `{ "data": { project, action, done, failed } }`；`failed` 含策略拒绝与命令失败。
+
+`POST /ui/v1/compose/down`，body `{ "project": "...", "remove_volumes": false }` → `{ "data": { project, remove_volumes, report } }`，`report` 为既有命令返回的逐容器结果。
+
+错误：未认证 `auth.unauthenticated`（401）、CSRF `auth.csrf_invalid`（403）、无编排权限 `auth.forbidden`（403）、未知动作 `shape.invalid`（400）、Docker 不可达 `dependency.unavailable`（503）。
+
+**渲染映射**
+
+- 项目表格：项目 / 归属 / 服务数 / 运行中，行内按钮启动、停止、重启、清理（清理前确认，卷默认保留）。
+- 编辑、校验与部署仍链回旧版 `/m/core/docker/compose`；服务日志暂由旧页展示（日志查看器待 T3）。
+
 ---
 
 ## 6. 能力缺口与建议

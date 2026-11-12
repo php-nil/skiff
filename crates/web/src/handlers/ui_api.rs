@@ -1431,6 +1431,194 @@ pub async fn volumes(
     Ok(resp)
 }
 
+#[derive(Debug, Serialize)]
+pub struct ComposeProjectItem {
+    pub name: String,
+    pub managed: bool,
+    pub services: usize,
+    pub running: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ComposeServiceItem {
+    pub service: String,
+    pub container: String,
+    pub id: String,
+    pub state: StatusDto,
+    pub status: String,
+    pub image: String,
+    pub managed: bool,
+    pub logs: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ComposeQuery {
+    pub project: Option<String>,
+}
+
+/// `GET /ui/v1/compose`：compose 项目列表；选中项目时附带服务与最近日志。
+///
+/// 与旧页面同一 `status_of`（容器标签归组，不持久化 compose 源文件）。
+pub async fn compose(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<ComposeQuery>,
+) -> Result<Response, ApiError> {
+    let selected = q.project.unwrap_or_default();
+    let (projects, services, docker_error) = handlers::compose::status_of(&state, &selected).await;
+    let projects: Vec<ComposeProjectItem> = projects
+        .into_iter()
+        .map(|p| ComposeProjectItem {
+            name: p.name,
+            managed: p.managed,
+            services: p.services,
+            running: p.running,
+        })
+        .collect();
+    let services: Vec<ComposeServiceItem> = services
+        .into_iter()
+        .map(|s| ComposeServiceItem {
+            service: s.service,
+            container: s.container,
+            id: s.id,
+            state: StatusDto {
+                code: s.state.clone(),
+                label: container_state_label(&s.state).to_string(),
+            },
+            status: s.status,
+            image: s.image,
+            managed: s.managed,
+            logs: s.logs,
+        })
+        .collect();
+    let mut resp = Json(json!({
+        "data": {
+            "projects": projects,
+            "services": services,
+            "selected_project": selected,
+            "docker_available": state.docker().available(),
+            "docker_reason": docker_error,
+            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ComposeDownBody {
+    pub project: String,
+    #[serde(default)]
+    pub remove_volumes: bool,
+}
+
+/// `POST /ui/v1/compose/down`：清理内核托管项目（外部项目只读）。
+pub async fn compose_down(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<ComposeDownBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    let project = skiff_app::commands::docker::prepare_project(&body.project)
+        .map_err(|e| ApiError(handlers::compose::map_err(e)))?;
+    let value = skiff_app::commands::docker::compose_down(
+        &state,
+        skiff_app::commands::docker::ComposeDown {
+            project: project.clone(),
+            remove_volumes: body.remove_volumes,
+            actor: handlers::compose::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::compose::map_err(e)))?;
+    let mut resp = Json(json!({
+        "data": {
+            "project": project,
+            "remove_volumes": body.remove_volumes,
+            "report": value,
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `POST /ui/v1/compose/{project}/{action}`：项目级启动/停止/重启。
+///
+/// 逐容器复用既有动词分发与权限判定；策略拒绝计入 `failed`，不中断其余容器。
+pub async fn compose_project_action(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path((project, action)): Path<(String, String)>,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    let verb = match action.as_str() {
+        "start" => skiff_docker::Verb::Start,
+        "stop" => skiff_docker::Verb::Stop,
+        "restart" => skiff_docker::Verb::Restart,
+        _ => return Err(ApiError(AppError::BadRequest("未知的项目动作".into()))),
+    };
+    let project = skiff_app::commands::docker::prepare_project(&project)
+        .map_err(|e| ApiError(handlers::compose::map_err(e)))?;
+    let rows = state
+        .docker()
+        .list_containers()
+        .await
+        .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?;
+    let mut targets = Vec::new();
+    let mut failed = 0usize;
+    for row in rows
+        .iter()
+        .filter(|r| skiff_docker::project_of(&r.labels) == Some(project.as_str()))
+    {
+        let obj = handlers::object_ref(row);
+        if state
+            .cfg
+            .policy
+            .check(&handlers::actor(&user), verb, Some(&obj))
+            .is_err()
+        {
+            failed += 1;
+            continue;
+        }
+        targets.push(skiff_app::commands::docker::ContainerTarget::new(
+            row.name.clone(),
+            row.short_id(),
+            obj,
+        ));
+    }
+    let report = skiff_app::commands::docker::compose_project_action(
+        &state,
+        skiff_app::commands::docker::ProjectAction {
+            project: project.clone(),
+            targets,
+            verb,
+            actor: handlers::compose::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::compose::map_err(e)))?;
+    let mut resp = Json(json!({
+        "data": {
+            "project": project,
+            "action": action,
+            "done": report.done,
+            "failed": failed + report.failed,
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 /// `GET /ui/v1/session`：当前用户、角色、CSRF、入口前缀与壳页能力开关。
 ///
 /// 未登录由 `UiAuthUser` 返回 401 JSON（`auth.unauthenticated`）。

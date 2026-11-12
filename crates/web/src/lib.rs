@@ -181,6 +181,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/images", get(handlers::ui_api::images))
         .route("/ui/v1/networks", get(handlers::ui_api::networks))
         .route("/ui/v1/volumes", get(handlers::ui_api::volumes))
+        .route("/ui/v1/compose", get(handlers::ui_api::compose))
+        .route("/ui/v1/compose/down", post(handlers::ui_api::compose_down))
+        .route(
+            "/ui/v1/compose/{project}/{action}",
+            post(handlers::ui_api::compose_project_action),
+        )
         .route("/ui/v1/containers", get(handlers::ui_api::containers))
         .route(
             "/ui/v1/containers/{id}",
@@ -273,7 +279,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/volumes/{{name}}/remove"),
             post(handlers::resources::remove_volume),
         )
-        .route(&format!("/{p}/compose"), get(handlers::compose::page))
+        // 编排页已迁 budding（旧 SSR 在 `/{p}/m/core/docker/compose`）。
         .route(
             &format!("/{p}/compose/validate"),
             post(handlers::compose::validate),

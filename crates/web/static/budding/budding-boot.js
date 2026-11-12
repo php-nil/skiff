@@ -198,7 +198,10 @@
   function embed(schema) {
     var options = { routerMode: 'history', routerBase: prefix };
     if (cssHref) options.css = cssHref;
-    options.actions = { skiffContainerAction: containerAction };
+    options.actions = {
+      skiffContainerAction: containerAction,
+      skiffComposeAction: composeAction
+    };
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
     });
@@ -703,6 +706,114 @@
     );
   }
 
+  // compose 项目级操作：启停/重启走逐容器分发，删除走 compose down。
+  function composeAction(args) {
+    var project = args.project;
+    var action = args.action;
+    if (
+      action === 'down' &&
+      !window.confirm('确认清理项目 ' + project + '？内核托管的容器会被删除，卷默认保留。')
+    ) {
+      return Promise.resolve();
+    }
+    var url =
+      action === 'down'
+        ? apiBase + '/compose/down'
+        : apiBase + '/compose/' + encodeURIComponent(project) + '/' + action;
+    var init = {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      }
+    };
+    if (action === 'down') {
+      init.headers['content-type'] = 'application/json';
+      init.body = JSON.stringify({ project: project, remove_volumes: false });
+    }
+    return fetch(url, init)
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function composeButton(text, action) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'tonal' },
+      onEvent: {
+        click: {
+          actions: [
+            {
+              type: 'skiffComposeAction',
+              props: { project: '${name}', action: action }
+            }
+          ]
+        }
+      }
+    };
+  }
+
+  function composeSchema(data) {
+    var body = [];
+    if (!data.docker_available) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: 'Docker 不可用',
+          text: data.docker_reason || 'Docker 守护进程当前不可达，项目列表为空。'
+        }
+      });
+    }
+    var table = statusTable(
+      [
+        { key: 'name', label: '项目' },
+        { key: 'managed', label: '归属', text: '${managed}' },
+        { key: 'services', label: '服务数', type: 'number' },
+        { key: 'running', label: '运行中', type: 'number' }
+      ],
+      data.projects,
+      'name'
+    );
+    table.props.rowActions = [
+      composeButton('启动', 'start'),
+      composeButton('停止', 'stop'),
+      composeButton('重启', 'restart'),
+      composeButton('清理', 'down')
+    ];
+    body.push(table);
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '粘贴/编辑 compose 文本、校验与部署仍在旧版页面；服务日志查看器待 T3。'
+      }
+    });
+    body.push({
+      type: 'link',
+      props: { text: '打开旧版编排页（编辑 / 校验 / 部署）', href: prefix + '/m/core/docker/compose' }
+    });
+    return {
+      type: 'page',
+      props: { title: '编排 · Skiff', subtitle: '项目列表与启停；编辑/部署走旧版页面' },
+      body: body
+    };
+  }
+
   function embedWithError(schema) {
     if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
       showError('前端产物未加载（budding 脚本不可用）。');
@@ -821,6 +932,12 @@
       if (parts[0] === 'volumes' && parts.length === 1) {
         getJson('/volumes' + listQuery(), function (data) {
           embedWithError(volumesSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'compose' && parts.length === 1) {
+        getJson('/compose', function (data) {
+          embedWithError(composeSchema(data));
         });
         return;
       }

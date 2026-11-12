@@ -359,7 +359,7 @@ async fn render(
 }
 
 /// 读取容器列表并按项目归组；选中项目时附带每个服务最近 100 行日志。
-async fn status_of(
+pub(crate) async fn status_of(
     state: &AppState,
     selected: &str,
 ) -> (Vec<ComposeProjectView>, Vec<ComposeServiceView>, String) {
@@ -426,7 +426,7 @@ async fn status_of(
     (projects, services, String::new())
 }
 
-fn require_compose_admin(state: &AppState, user: &CurrentUser) -> Result<(), AppError> {
+pub(crate) fn require_compose_admin(state: &AppState, user: &CurrentUser) -> Result<(), AppError> {
     state
         .cfg
         .policy
@@ -501,14 +501,14 @@ fn report_rows(
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-fn actor(state: &AppState, user: &CurrentUser, parts: &Parts) -> Actor {
+pub(crate) fn actor(state: &AppState, user: &CurrentUser, parts: &Parts) -> Actor {
     Actor {
         username: user.user.username.clone(),
         ip: handlers::client_ip(state, parts),
     }
 }
 
-fn map_err(e: DockerCommandError) -> AppError {
+pub(crate) fn map_err(e: DockerCommandError) -> AppError {
     match e {
         DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
         DockerCommandError::Conflict(m) => AppError::Conflict(m),
