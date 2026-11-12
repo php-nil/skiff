@@ -3565,7 +3565,10 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
 #[tokio::test]
 async fn official_packages_declare_usable_install_defaults() {
     const NO_DEFAULT_GRANT: &[(&str, &str)] = &[
-        ("com.skiff.guard", "守护对象由管理员逐条勾选 container:/project:"),
+        (
+            "com.skiff.guard",
+            "守护对象由管理员逐条勾选 container:/project:",
+        ),
         ("com.skiff.cron", "只调度插件接口，无宿主资源"),
         (
             "com.skiff.firewall",
