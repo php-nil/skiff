@@ -18,6 +18,19 @@ const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// 稳定别名（`budding.min.js` / `budding.css`）必须每次回源校验，避免升级后继续加载旧 bundle。
 const CACHE_NO_CACHE: &str = "no-cache";
 
+/// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
+/// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
+pub const BUDDING_VERSION: &str = "1.6.0";
+
+/// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
+fn resolve_alias(rel: &str) -> String {
+    match rel {
+        "budding/budding.min.js" => format!("budding/budding-{BUDDING_VERSION}.min.js"),
+        "budding/budding.css" => format!("budding/budding-{BUDDING_VERSION}.min.css"),
+        _ => rel.to_string(),
+    }
+}
+
 /// 静态资源（打进二进制，§2.2）。文件名带内容版本前缀由模板控制。
 ///
 /// 预压缩变体（`.gz`，`build.rs` 生成）按 `Accept-Encoding` 协商返回，
@@ -34,8 +47,10 @@ pub async fn static_file(
     if rel.ends_with(".gz") {
         return Err(AppError::NotFound("静态资源不存在".into()));
     }
-    let file = Assets::get(rel).ok_or_else(|| AppError::NotFound("静态资源不存在".into()))?;
-    let mime = mime_guess::from_path(rel).first_or_octet_stream();
+    // 稳定别名映射到同名的版本化产物：字节只有一份，缓存策略仍按别名本身判定。
+    let asset = resolve_alias(rel);
+    let file = Assets::get(&asset).ok_or_else(|| AppError::NotFound("静态资源不存在".into()))?;
+    let mime = mime_guess::from_path(&asset).first_or_octet_stream();
 
     let accepts_gzip = headers
         .get(ACCEPT_ENCODING)
@@ -43,7 +58,7 @@ pub async fn static_file(
         .map(accepts_gzip_header)
         .unwrap_or(false);
     let (data, encoding, hash) = if accepts_gzip {
-        match Assets::get(&format!("{rel}.gz")) {
+        match Assets::get(&format!("{asset}.gz")) {
             Some(gz) => {
                 // ETag 必须对应**实际返回的字节**：gzip 变体与原始文件是两个表示，
                 // 同一个 URL 下各自的 ETag 不同，配合 `Vary: Accept-Encoding` 才正确。
@@ -233,6 +248,20 @@ mod tests {
             cache_control_for("budding-extra.txt", false),
             CACHE_NO_CACHE
         );
+    }
+
+    /// 稳定别名只做映射，不复制字节：解析结果必须是同上架版本化文件名。
+    #[test]
+    fn stable_aliases_map_to_versioned_artifacts() {
+        assert_eq!(
+            resolve_alias("budding/budding.min.js"),
+            format!("budding/budding-{BUDDING_VERSION}.min.js")
+        );
+        assert_eq!(
+            resolve_alias("budding/budding.css"),
+            format!("budding/budding-{BUDDING_VERSION}.min.css")
+        );
+        assert_eq!(resolve_alias("skiff.css"), "skiff.css");
     }
 
     #[test]

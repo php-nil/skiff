@@ -17,7 +17,7 @@ skiff-config.toml
 !deploy/**/*.example
 
 # 前端资源预压缩生成物（build.rs 每次构建重生成）
-crates/web/static/*.gz
+crates/web/static/**/*.gz
 
 # 编辑器
 .vscode/

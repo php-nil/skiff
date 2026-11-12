@@ -7182,8 +7182,12 @@ async fn shell_fallback_serves_whitelisted_deep_links() {
         assert!(ct.starts_with("text/html; charset=utf-8"), "{uri}");
         assert!(body.contains("该功能正在适配中"), "{uri} 应有占位提示");
         assert!(
-            body.contains(r#"src="/p/static/budding/budding.min.js""#),
-            "{uri} 应引用 budding 稳定别名产物"
+            body.contains(r#"src="/p/static/budding/budding-1.6.0.min.js?v=1.6.0""#),
+            "{uri} 应引用 budding 版本化产物"
+        );
+        assert!(
+            body.contains(r#"data-budding-css="/p/static/budding/budding-1.6.0.min.css?v=1.6.0""#),
+            "{uri} 应显式下发版本化 CSS 路径"
         );
     }
 }
@@ -7366,4 +7370,133 @@ async fn ui_logout_requires_csrf_header() {
     // 登出后同一会话失效：回到 401 JSON。
     let (status, _, _) = get_ui(&h.app, "/ui/v1/session", Some(&token), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---- budding 产物入库：D11 缓存契约与壳页引用可解析 ----
+
+/// 原始 GET（需自读响应头时用；`get_ui` 只返回状态码/类型/正文）。
+async fn get_raw(app: &Router, uri: &str, headers: &[(&str, &str)]) -> axum::response::Response {
+    let mut req = Request::builder().uri(uri);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    app.clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+fn header_str(resp: &axum::response::Response, name: &str) -> String {
+    resp.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// HTML 属性里以 `attr="..."` 形式出现的值（壳页引用解析用）。
+fn attr_values(html: &str, attr: &str) -> Vec<String> {
+    let marker = format!("{attr}=\"");
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(pos) = rest.find(&marker) {
+        rest = &rest[pos + marker.len()..];
+        match rest.find('"') {
+            Some(end) => out.push(rest[..end].to_string()),
+            None => break,
+        }
+    }
+    out
+}
+
+/// 版本化产物 immutable、稳定别名 no-cache，两者同一份字节 → 同一强 ETag；
+/// gzip 变体与 identity 是两个表示（ETag 不同）。
+#[tokio::test]
+async fn budding_static_assets_follow_d11_cache_contract() {
+    let h = harness();
+    const JS_V: &str = "/p/static/budding/budding-1.6.0.min.js";
+    const JS_A: &str = "/p/static/budding/budding.min.js";
+    const CSS_V: &str = "/p/static/budding/budding-1.6.0.min.css";
+    const CSS_A: &str = "/p/static/budding/budding.css";
+
+    for (uri, immutable) in [(JS_V, true), (CSS_V, true), (JS_A, false), (CSS_A, false)] {
+        let resp = get_raw(&h.app, uri, &[]).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri} 应 200");
+        let cc = header_str(&resp, "cache-control");
+        if immutable {
+            assert_eq!(cc, "public, max-age=31536000, immutable", "{uri}");
+        } else {
+            assert_eq!(cc, "no-cache", "{uri}");
+        }
+        let etag = header_str(&resp, "etag");
+        assert!(
+            etag.starts_with('"') && etag.ends_with('"') && etag.len() == 66,
+            "{uri} 必须是强 ETag，实际: {etag}"
+        );
+        let ct = header_str(&resp, "content-type");
+        assert!(
+            ct.starts_with(if uri.ends_with(".css") {
+                "text/css"
+            } else {
+                "text/javascript"
+            }),
+            "{uri} Content-Type 不对: {ct}"
+        );
+    }
+
+    // 别名与版本化指向同一份内嵌字节：ETag 必须相同（不复制第二份文件）。
+    let versioned = get_raw(&h.app, JS_V, &[]).await;
+    let alias = get_raw(&h.app, JS_A, &[]).await;
+    let etag = header_str(&versioned, "etag");
+    assert_eq!(etag, header_str(&alias, "etag"));
+
+    // If-None-Match 命中 304，ETag/Cache-Control 原样保留。
+    let resp = get_raw(&h.app, JS_V, &[("if-none-match", &etag)]).await;
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(header_str(&resp, "etag"), etag);
+    assert_eq!(
+        header_str(&resp, "cache-control"),
+        "public, max-age=31536000, immutable"
+    );
+
+    // gzip 变体：有 Content-Encoding，ETag 与 identity 不同，字节确实是 gzip。
+    let gz = get_raw(&h.app, JS_V, &[("accept-encoding", "gzip")]).await;
+    assert_eq!(gz.status(), StatusCode::OK);
+    assert_eq!(header_str(&gz, "content-encoding"), "gzip");
+    let gz_etag = header_str(&gz, "etag");
+    assert_ne!(gz_etag, etag, "gzip 与 identity 的 ETag 必须不同");
+    let bytes = axum::body::to_bytes(gz.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(bytes.len() > 2 && bytes[0] == 0x1f && bytes[1] == 0x8b);
+    let gz_alias = get_raw(&h.app, JS_A, &[("accept-encoding", "gzip")]).await;
+    assert_eq!(gz_etag, header_str(&gz_alias, "etag"));
+}
+
+/// 壳页里引用的 JS/CSS（含 data 属性里的 CSS 与启动脚本）都必须真实可 200：
+/// 防「引用写错、上线才 404」。
+#[tokio::test]
+async fn shell_html_asset_references_resolve() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, html) = get_ui(
+        &h.app,
+        "/p/files/deep/link",
+        Some(&token),
+        Some("text/html"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut uris: Vec<String> = attr_values(&html, "src");
+    uris.extend(attr_values(&html, "data-budding-css"));
+    uris.retain(|u| u.starts_with("/p/static/"));
+    assert!(
+        uris.len() >= 3,
+        "壳页应引用产物 JS、启动脚本与 CSS: {uris:?}"
+    );
+    for uri in uris {
+        let resp = get_raw(&h.app, &uri, &[]).await;
+        assert_eq!(resp.status(), StatusCode::OK, "壳页引用必须可取: {uri}");
+    }
 }

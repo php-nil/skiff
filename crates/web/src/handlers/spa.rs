@@ -121,13 +121,16 @@ fn shell_for(state: &AppState, parts: &Parts) -> Response {
 
 /// 极简壳页：挂载点 + 占位提示 + 产物 script。
 ///
-/// - 只用普通 `<script src>`（内联脚本会被全局 CSP `script-src 'self'` 拦掉）；
-///   budding 会按 `document.currentScript` 推导同目录的 `budding.css`，无需 `<link>`。
-/// - 产物稳定别名是 `budding.min.js`；版本化文件名到位后按 D11 换成带 `?v=` 的版本化引用。
-/// - 初始化参数（history 路由的 `routerBase`、API 基址）先以 data 属性挂在挂载点上，
-///   前端产物接入时读取，避免在壳页内联脚本。
+/// - 只用普通 `<script src>`（内联脚本会被全局 CSP `script-src 'self'` 拦掉，
+///   且 budding 依赖 `document.currentScript` 推导目录）。
+/// - 产物按 D11 引用版本化文件名并带 `?v=`；稳定别名只作兼容入口，壳页不引用。
+/// - CSS 文件名是 budding 构建期写死的 `budding.css`，版本化后无法自动推导，
+///   因此通过 data 属性传给启动脚本显式 `css` 选项。
+/// - 初始化参数（history 路由的 `routerBase`、API 基址）挂在挂载点上，
+///   由外部启动脚本 `budding-boot.js` 读取，避免内联脚本。
 pub fn shell_html(prefix: &str) -> String {
     let prefix = escape_html(prefix);
+    let ver = crate::assets::BUDDING_VERSION;
     format!(
         r#"<!doctype html>
 <html lang="zh-CN">
@@ -137,13 +140,14 @@ pub fn shell_html(prefix: &str) -> String {
 <title>Skiff</title>
 </head>
 <body>
-<div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history">
+<div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
   <main data-skiff-placeholder>
     <h1>该功能正在适配中</h1>
     <p>页面正在切换到新的前端运行时，当前为占位视图。</p>
   </main>
 </div>
-<script src="/{prefix}/static/budding/budding.min.js"></script>
+<script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
+<script src="/{prefix}/static/budding/budding-boot.js"></script>
 </body>
 </html>
 "#
@@ -173,12 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn shell_html_references_stable_alias_and_placeholder() {
+    fn shell_html_references_versioned_artifacts_and_placeholder() {
         let html = shell_html("p");
         assert!(html.contains("该功能正在适配中"));
-        assert!(html.contains(r#"<script src="/p/static/budding/budding.min.js"></script>"#));
-        assert!(html.contains(r#"data-api-base="/ui/v1""#));
-        // 不许出现内联脚本（全局 CSP 会拦），也不引用外部加载器
+        let ver = crate::assets::BUDDING_VERSION;
+        assert!(html.contains(&format!(
+            r#"<script src="/p/static/budding/budding-{ver}.min.js?v={ver}"></script>"#
+        )));
+        assert!(html.contains(&format!(
+            r#"data-budding-css="/p/static/budding/budding-{ver}.min.css?v={ver}""#
+        )));
+        assert!(html.contains(r#"<script src="/p/static/budding/budding-boot.js"></script>"#));
+        // 壳页不引用稳定别名（D11），也不许出现内联脚本或外部加载器。
+        assert!(!html.contains("budding.min.js"));
         assert!(!html.contains("<script>"));
         assert!(!html.contains("dist/loader"));
     }

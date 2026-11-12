@@ -72,9 +72,9 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 |---|---|
 | 技术栈 | Vue 3.5 + Vuetify 4 + TypeScript；pnpm workspace + Vite 8 |
 | 构建 | `pnpm build:package`；要求 Node ≥ 24 |
-| 产物 | `budding-<ver>.min.js`（IIFE）+ `budding.css`，**无内容 hash** |
-| 稳定别名 | `budding.min.js` / `budding.css` + sha256 清单 |
-| 体积 | JS 1,221,352 B（gzip 387,557）；CSS 652,578 B（gzip 79,035） |
+| 产物 | `budding-<ver>.min.js`（IIFE）+ `budding-<ver>.min.css`，**无内容 hash** |
+| 稳定别名 | `budding.min.js` / `budding.css`，**由 `assets.rs` 路由映射，不复制第二份字节** |
+| 体积 | 入库 1.6.0 实测：JS 1,243,322 B（gzip 393,123）；CSS 652,578 B（gzip 78,049） |
 | 消费方式 | `<script src>` + 挂载点 + `BuddingSDK.embed(target, schema, opts)`；加载后不自动渲染 |
 | CSS 加载 | 运行时按 `document.currentScript` 推导目录并插入 `<link>`，**同目录即可** |
 | 路由 | 默认 hash；history 模式需 `routerBase` |
@@ -83,14 +83,14 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 
 ### 2.2 放置与嵌入
 
-建议目录：`crates/web/static/budding/`，文件为版本化名 + 稳定别名。
+建议目录：`crates/web/static/budding/`，文件只放版本化名；稳定别名由 `assets.rs` 映射到版本化文件（不复制字节）。版本号唯一来源是 `assets.rs::BUDDING_VERSION`，壳页引用与别名映射共用。
 
 - 产物由上游 `pnpm build:package` 生成后直接复制；**本项目不执行该命令，CI 不新增 Node job**（D1）。
 
 - `RustEmbed` 在编译期把目录打进二进制，对外路径 `/{p}/static/budding/<file>`。
 - `crates/web/build.rs` 会为每个文件生成 `.gz` 变体，`assets.rs` 按 `Accept-Encoding` 协商；新增产物自动获得 gzip 能力，**不需要改部署脚本**。
 - 现有测试 `every_static_asset_has_gzip_variant` 会覆盖新文件，构建期自动校验。
-- 体积影响（估算，待实测）：原始约 1.83 MiB + gzip 约 0.45 MiB，二进制预计增加约 2.3 MiB；与设计目标「单二进制 ≤ 14MB」存在张力（§7）。
+- 体积影响（1.6.0 实测）：budding 三件（JS/CSS/启动脚本）raw 1,899,900 B / gzip 472,906 B；全仓库静态资源 raw 2,517,780 B / gzip 625,915 B。与设计目标「单二进制 ≤ 14MB」的张力见 §7。
 
 ### 2.3 壳页形态
 
@@ -593,3 +593,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | D9–D12 中「不随旧页删除作废」的部分落地：新增 `crates/app/src/time_fmt.rs`（epoch → RFC3339 UTC）与 `crates/app/src/cursor.rs`（不透明签名游标）；schema v19 补审计/作业 keyset 索引；`assets.rs` 区分版本化产物与稳定别名缓存；补全局 CSP、插件 CSP 与 iframe 沙箱回归测试。现有页面与列表查询未改。 |
 | 2026-11-12 | D13 定案：history 路由 + 白名单前缀回落，地址栏保持 `/{p}/sites/xxx`，不用 hash。同步更新 §2.3、§4.5.1（转为「已同步」）、§8.1、§8.2、§8.4，并把 §2 例外、SPA 回落白名单、§6 方法例外与 §9 路由清单真正写入 `URL_CONTRACT.md`；同时修正 `SITE_RUNTIME_CONTRACT.md` §9.1 的过期 schema 版本。未改业务代码。 |
 | 2026-11-12 | 后端地基落地（第一批）：新增 `/ui/v1` 命名空间（`handlers::ui_api`，`entry_guard` 与 `/api/v1` 并列豁免，`/ui/` 其它形态 404），`UiAuthUser` 使未认证统一 401 JSON；`GET /ui/v1/session` 下发用户/角色/CSRF/入口前缀/能力开关，`POST /ui/v1/session/logout` 复用 `x-csrf-token` 校验；`handlers::spa::fallback` 按 §2.1 白名单做壳页回落（仅 GET + `Accept: text/html`，写请求永不回落；`method_not_allowed_fallback` 覆盖 POST-only 路径上的 GET 深链），壳页只含挂载点、占位提示与 `budding.min.js` 引用。未复制前端产物，未改 `assets.rs` / `build.rs`。 |
+| 2026-11-12 | 产物入库与壳页启动（第二批）：`budding-1.6.0.min.js` / `budding-1.6.0.min.css` 入库到 `crates/web/static/budding/`（字节与上游 embed 一致），稳定别名改为 `assets.rs` 映射而非第二份文件；新增同源 `budding-boot.js`（普通 script，无内联）：先取 `/ui/v1/session`，成功 `embed()` 极小 schema（page + 「该功能正在适配中」卡片），失败渲染错误；壳页引用版本化 JS `?v=`，CSS 以 `data-budding-css` 显式传参，`routerMode=history`、`routerBase=/{p}`，不传 packs、不引 loader。真实浏览器验证：登录后深链渲染卡片、`/ui/v1/session` 200、控制台无报错。 |
