@@ -41,7 +41,8 @@
   * 第二层是单次调用内部：`.cargo/config.toml` 固化 `[build] jobs = 1`，同一时刻只跑一路 `rustc`；`plugins/` 无本地 `.cargo/config.toml`，继承根配置，闸门的插件任务另显式带 `--jobs 1`。`cargo fmt` 不取 cargo 的 target 锁，只能靠包装入口拦住，因此 `fmt` 同样必须走该入口。
   * 禁止为了并行而使用自定义 `CARGO_TARGET_DIR`——它会绕过 cargo 自带的 target 目录锁，是已发生过的真实事故成因。
   * 闸门 `pwsh tools/gate.ps1` 的退出码：`0` 成功、`2` 锁被占用、`3` 内存准入拒绝、`4` 需要 `-AllowFull`。根 workspace 的 `clippy` / `test` / `build` 带 `--workspace` 或 `--all-targets` 且不带 `-Pkg` 时属全量，**必须显式 `-AllowFull`**；`exec` 透传模式不拦，需自行判断。全量测试优先交 CI，本地只跑受影响 crate 的快速回归。
-  * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机是动态内存虚拟机，实测物理 **4.92GB / 2 核 4 线程**。
+  * 内存准入只看可用物理内存绝对下限（默认 1024MB，可用 `SKIFF_GATE_MIN_AVAILABLE_MB` 调整），不看 commit 比例：本机为 Dell Vostro 15 3510，11th Gen Intel Core i5-1135G7（4 核 8 线程），物理 **8GB**（约 7.75GB 可用），页面文件 24GB、提交上限 31.75GB。
+  * 若出现**系统提交量远大于各进程提交量之和**（曾实测 31.19GB/31.75GB vs 进程合计 5.25GB），且编译报 LLVM OOM，属约 25GB 无法归属进程的提交泄漏（疑似 rustc `0xC0000409` 异常退出残留的内核/会话提交），杀进程无效，**重启回收**；不要靠改 build 参数或 `CARGO_TARGET_DIR` 绕过。
   * 覆盖不到的入口，一律按红线人工遵守：`%USERPROFILE%\.cargo\bin\cargo.exe` 这类绝对路径、rust-analyzer / IDE 内部调用、CI 与其它机器。`.trae/` 只有 `rules/`，没有 shell 前置钩子，工具层无法再加一道拦截。
   * **包装是否生效，重启后先自检**：Trae 宿主的 `PATH` 是启动时的快照，仓库 `tools\bin` 可能不在其中，裸敲 `cargo` 会解析到 `cargo.exe` 并绕过包装；必须重启 Trae（含其终端）才继承新 `PATH`。重启后在新 shell 里执行 `where.exe cargo`，首行应为 `<仓库>\tools\bin\cargo.cmd`；若先出现 `%USERPROFILE%\.cargo\bin\cargo.exe`，说明包装未生效，先修 `PATH` 再编译。
 * **git 写操作串行（红线）**：与编译共用同一把 `Global\SkiffBuild` 令牌，同样必须经包装入口 `tools\bin\git.cmd` 执行。
