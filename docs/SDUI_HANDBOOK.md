@@ -93,6 +93,7 @@
 | Compose 保留项目名与归一化 | `web::handlers::compose::checked_project` | `commands::docker::prepare_project`；`compose_up`/`compose_down`/`compose_project_action` 入口强制校验，Web 无保留名常量 |
 | 概览「待办」业务判定与排序 | `web::handlers::dashboard::dashboard_todos` | `skiff_app::attention::collect` 只产出 code/level/count；中文文案与深链留在 Web 的 `todo_view` |
 | 站点/运行时/Docker/文件写命令 | 各写 handler 内联领域调用与审计 | P1 四组已拆到 `crates/app/src/commands/`，handler 只做解析、授权入口、错误映射与响应 |
+| 站点证书就绪与运行态分类 | Web 列表自判 cert+key；`runtime_site_status`/`version_display` 在展示层做优先级 | `SiteSettings::cert_ready` 为唯一判定；`SiteRuntimeStatus`/`RuntimeVersionState` 在 app 分类，Web 只映射文案与配色 |
 
 ---
 

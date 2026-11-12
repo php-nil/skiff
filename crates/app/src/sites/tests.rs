@@ -152,6 +152,53 @@ fn runtime_container_state_distinguishes_unknown_missing_and_stopped() {
 }
 
 #[test]
+fn runtime_site_status_distinguishes_unknown_missing_and_stopped() {
+    use SiteRuntimeStatus as S;
+    // 记录缺失 / 容器不存在 / 容器停止 / Docker 不可达 / 安装中 / 异常 / 未接入必须分开。
+    assert_eq!(site_runtime_status("running", None), S::RecordMissing);
+    assert_eq!(site_runtime_status("running", Some("missing")), S::Missing);
+    assert_eq!(
+        site_runtime_status("running", Some("stopped")),
+        S::EnvironmentStopped
+    );
+    assert_eq!(
+        site_runtime_status("running", Some("unknown")),
+        S::DockerUnavailable
+    );
+    assert_eq!(site_runtime_status("running", Some("running")), S::Running);
+    assert_eq!(
+        site_runtime_status("running", Some("installing")),
+        S::Installing
+    );
+    assert_eq!(site_runtime_status("running", Some("error")), S::Error);
+    assert_eq!(
+        site_runtime_status("running", Some("unimplemented")),
+        S::Unimplemented
+    );
+    // 站点自身已停止时优先展示站点状态。
+    assert_eq!(
+        site_runtime_status("stopped", Some("running")),
+        S::SiteStopped
+    );
+}
+
+#[test]
+fn runtime_version_state_distinguishes_actual_missing_and_unreadable() {
+    assert_eq!(
+        runtime_version_state(Some("8.5.12"), true),
+        RuntimeVersionState::Actual("8.5.12")
+    );
+    assert_eq!(
+        runtime_version_state(None, false),
+        RuntimeVersionState::NotInstalled
+    );
+    assert_eq!(
+        runtime_version_state(None, true),
+        RuntimeVersionState::Unreadable
+    );
+}
+
+#[test]
 fn runtime_site_defaults_follow_runtime_kind() {
     // PHP 站点：探针 index.php。
     let php = runtime_site_default_files(skiff_store::KIND_PHP, "8.5", None);

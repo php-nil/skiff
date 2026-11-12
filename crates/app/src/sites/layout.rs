@@ -225,6 +225,11 @@ impl SiteSettings {
         site_ssl_dir(site_dir).join("key.pem")
     }
 
+    /// 证书就绪：`cert.pem` 与 `key.pem` 同时存在；列表与详情共用这一判定。
+    pub fn cert_ready(&self, site_dir: &Path) -> bool {
+        self.cert_file(site_dir).is_file() && self.key_file(site_dir).is_file()
+    }
+
     /// 站点 vhost：`<站点目录>/conf/<域名>.conf`。
     pub fn vhost_file(&self, site_dir: &Path, domain: &str) -> PathBuf {
         site_conf_dir(site_dir).join(format!("{domain}.conf"))

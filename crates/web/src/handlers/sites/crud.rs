@@ -65,8 +65,7 @@ async fn render_sites(
     let views: Vec<SiteView> = sites
         .iter()
         .map(|s| {
-            let ready = cert_settings.cert_file(FsPath::new(&s.root_dir)).is_file()
-                && cert_settings.key_file(FsPath::new(&s.root_dir)).is_file();
+            let ready = cert_settings.cert_ready(FsPath::new(&s.root_dir));
             let runtime = s
                 .runtime_id
                 .as_deref()

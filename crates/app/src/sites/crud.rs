@@ -1047,7 +1047,7 @@ impl AppState {
             force_https: site.force_https,
             cert_path: cert.display().to_string(),
             key_path: key.display().to_string(),
-            cert_exists: cert.is_file() && key.is_file(),
+            cert_exists: s.cert_ready(&site_dir),
             subject: None,
             issuer: None,
             expires: None,

@@ -210,6 +210,58 @@ pub(crate) fn runtime_effective_state(raw: &str) -> &'static str {
     }
 }
 
+/// 运行环境站点的对外状态分类。
+///
+/// 判定顺序是领域事实：站点自身未启用时优先展示站点状态，否则再看运行环境实例；
+/// 容器不存在 / 已停止 / Docker 不可达必须分开。中文文案与配色由传输层映射。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteRuntimeStatus {
+    SiteStopped,
+    Running,
+    Installing,
+    Error,
+    Missing,
+    DockerUnavailable,
+    Unimplemented,
+    EnvironmentStopped,
+    RecordMissing,
+}
+
+pub fn site_runtime_status(site_status: &str, runtime_state: Option<&str>) -> SiteRuntimeStatus {
+    if site_status != "running" {
+        return SiteRuntimeStatus::SiteStopped;
+    }
+    match runtime_state {
+        Some("running") => SiteRuntimeStatus::Running,
+        Some("installing") => SiteRuntimeStatus::Installing,
+        Some("error") => SiteRuntimeStatus::Error,
+        Some("missing") => SiteRuntimeStatus::Missing,
+        Some("unknown") => SiteRuntimeStatus::DockerUnavailable,
+        Some("unimplemented") => SiteRuntimeStatus::Unimplemented,
+        Some(_) => SiteRuntimeStatus::EnvironmentStopped,
+        None => SiteRuntimeStatus::RecordMissing,
+    }
+}
+
+/// 列表版本列的版本来源：真实版本 / 未安装 / 容器在但元数据读不到。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeVersionState<'a> {
+    Actual(&'a str),
+    NotInstalled,
+    Unreadable,
+}
+
+pub fn runtime_version_state(
+    actual: Option<&str>,
+    container_exists: bool,
+) -> RuntimeVersionState<'_> {
+    match actual {
+        Some(actual) => RuntimeVersionState::Actual(actual),
+        None if !container_exists => RuntimeVersionState::NotInstalled,
+        None => RuntimeVersionState::Unreadable,
+    }
+}
+
 /// 从 `repo@sha256:...` 取出摘要部分；已是摘要时原样返回。
 pub(crate) fn digest_sha256(digest: &str) -> &str {
     match digest.find("@sha256:") {

@@ -103,40 +103,42 @@ fn state_class(state: &str) -> &'static str {
     }
 }
 
-/// 运行环境站点的对外状态：站点自身停止优先，否则以 Docker 实时容器状态为准。
-///
-/// 容器不存在 / 已停止 / Docker 不可达分别给出不同文案，禁止把「未知」当成运行中。
+/// 运行环境站点的对外状态：领域分类在 `skiff_app::sites`，这里只映射文案与配色。
 fn runtime_site_status(
     site_status: &str,
     runtime_state: Option<&str>,
 ) -> (&'static str, &'static str) {
-    if site_status != "running" {
-        return ("已停止", "");
-    }
-    match runtime_state {
-        Some("running") => ("运行中", "ok"),
-        Some("installing") => ("环境安装中", "warn"),
-        Some("error") => ("环境异常", "danger"),
-        Some("missing") => ("未运行（环境未安装）", "warn"),
-        Some("unknown") => ("状态未知（Docker 不可用）", "muted"),
-        Some("unimplemented") => ("运行环境尚未接入", "warn"),
-        Some(_) => ("未运行（环境已停止）", "warn"),
-        None => ("未运行（环境记录缺失）", "warn"),
+    use skiff_app::sites::SiteRuntimeStatus as Status;
+    match skiff_app::sites::site_runtime_status(site_status, runtime_state) {
+        Status::SiteStopped => ("已停止", ""),
+        Status::Running => ("运行中", "ok"),
+        Status::Installing => ("环境安装中", "warn"),
+        Status::Error => ("环境异常", "danger"),
+        Status::Missing => ("未运行（环境未安装）", "warn"),
+        Status::DockerUnavailable => ("状态未知（Docker 不可用）", "muted"),
+        Status::Unimplemented => ("运行环境尚未接入", "warn"),
+        Status::EnvironmentStopped => ("未运行（环境已停止）", "warn"),
+        Status::RecordMissing => ("未运行（环境记录缺失）", "warn"),
     }
 }
 
-/// 列表版本列：已知真实版本优先；容器缺失 → 目标 + 「未安装」；
-/// 容器在但元数据读不到 → 目标 + 「版本未读取」。停止的容器仍展示真实版本。
+/// 列表版本列：版本来源由内核分类，文案与镜像副行在这里格式化。
 pub(crate) fn version_display(
     actual: Option<&str>,
     target: &str,
     image: &str,
     container_exists: bool,
 ) -> (String, String) {
-    match actual {
-        Some(actual) => (actual.to_string(), format!("目标 {target} · {image}")),
-        None if !container_exists => (target.to_string(), "未安装".into()),
-        None => (target.to_string(), "版本未读取".into()),
+    match skiff_app::sites::runtime_version_state(actual, container_exists) {
+        skiff_app::sites::RuntimeVersionState::Actual(v) => {
+            (v.to_string(), format!("目标 {target} · {image}"))
+        }
+        skiff_app::sites::RuntimeVersionState::NotInstalled => {
+            (target.to_string(), "未安装".into())
+        }
+        skiff_app::sites::RuntimeVersionState::Unreadable => {
+            (target.to_string(), "版本未读取".into())
+        }
     }
 }
 
@@ -466,31 +468,27 @@ mod tests {
     }
 
     #[test]
-    fn runtime_site_status_distinguishes_unknown_missing_and_stopped() {
-        // 记录缺失 / 容器不存在 / 容器停止 / Docker 不可达必须是四种不同文案。
-        assert_eq!(
-            runtime_site_status("running", None).0,
-            "未运行（环境记录缺失）"
-        );
-        assert_eq!(
-            runtime_site_status("running", Some("missing")).0,
-            "未运行（环境未安装）"
-        );
-        assert_eq!(
-            runtime_site_status("running", Some("stopped")).0,
-            "未运行（环境已停止）"
-        );
-        assert_eq!(
-            runtime_site_status("running", Some("unknown")).0,
-            "状态未知（Docker 不可用）"
-        );
-        assert_eq!(runtime_site_status("running", Some("running")).0, "运行中");
-        // 配色同样区分：未知是 muted（无法确认），停止/未安装是 warn（确认不可用）。
-        assert_eq!(runtime_site_status("running", Some("unknown")).1, "muted");
-        assert_eq!(runtime_site_status("running", Some("stopped")).1, "warn");
-        assert_eq!(runtime_site_status("running", Some("running")).1, "ok");
-        // 站点自身已停止时优先展示站点状态。
-        assert_eq!(runtime_site_status("stopped", Some("running")).0, "已停止");
+    fn runtime_status_labels_are_stable() {
+        // 领域分类在 app（见 `site_runtime_status` 单测）；这里锁定对外文案与配色。
+        let cases = [
+            ("stopped", Some("running"), "已停止", ""),
+            ("running", Some("running"), "运行中", "ok"),
+            ("running", Some("installing"), "环境安装中", "warn"),
+            ("running", Some("error"), "环境异常", "danger"),
+            ("running", Some("missing"), "未运行（环境未安装）", "warn"),
+            (
+                "running",
+                Some("unknown"),
+                "状态未知（Docker 不可用）",
+                "muted",
+            ),
+            ("running", Some("unimplemented"), "运行环境尚未接入", "warn"),
+            ("running", Some("stopped"), "未运行（环境已停止）", "warn"),
+            ("running", None, "未运行（环境记录缺失）", "warn"),
+        ];
+        for (site, runtime, label, class) in cases {
+            assert_eq!(runtime_site_status(site, runtime), (label, class));
+        }
     }
 
     #[test]
