@@ -9,14 +9,14 @@
 
 | 维度 | 决策 |
 |---|---|
-| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1/R2a/R2b 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
+| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1/R2a/R2b/R2c 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
 | 测试托管 | `skiff-server serve` 把已生成的产物**原样**用 https 提供（`--http` 仅测试）；只是最后一环的自托管，不改变托管决策（§15） |
 | 信任锚 | 每渠道一份 Ed25519 签名的清单，客户端内置官方公钥集；**镜像不被信任，只被校验** |
 | 内容寻址 | 包、模板、升级包按 `sha256` 存入不可变 `blobs/`；索引只引用摘要 |
 | 回滚防护 | 签名清单内单调 `seq`；客户端持久化最大值，拒绝更旧的清单 |
 | 渠道 | `stable` / `night` 两份独立清单，各自递增，互不覆盖 |
 | 客户端出网 | 仅访问配置的镜像地址，由**内核**拉取；插件 `net` 仍为 501，不参与 |
-| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1/R2a/R2b 已实施**，R2c/d/e 按序推进） |
+| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1/R2a/R2b/R2c 已实施**，R2d/R2e 按序推进） |
 
 **主结论**：官方只承担「编辑、审核、签名、发布」，镜像方只承担「搬运与托管」，客户端只信签名不信源。因此商店与升级通道不需要常驻服务、账号体系与在线状态，断网、内网、自建镜像都消费同一份产物；插件安装仍沿用现有 `.wbpkg` 验签与权限确认链路，商店只补「发现与下载」。发布面若要自动化审核，另走 §17 的**可选**独立服务，不改变本节对分发面的结论，也不被客户端访问。
 
@@ -1021,7 +1021,7 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
   未导入 CA 时失败（与 §4.5 的客户端口径一致）。
 - `serve` 不改变产物：测试只读校验运行前后文件字节不变。
 
-## 17. 发布面 `/api/**` 接口（R0/R1/R2a/R2b 已实施，R2c/d/e 按序推进）
+## 17. 发布面 `/api/**` 接口（R0/R1/R2a/R2b/R2c 已实施，R2d/R2e 按序推进）
 
 > 定位：终态链路「开发者提交 → 管理员审核 → 生成静态产物 → 静态分发」里，**分发面已由 §16 定稿并上机闭环**，
 > 本节补**发布面**的接口边界。**R0/R1/R2a/R2b 已在 `tools/skiff-server` 落地**（`api`、`notify` 与 `release` 子命令），
@@ -1096,6 +1096,20 @@ signed = "SKIFF-SERVER-API-v1\0" + method + "\n" + path + "\n" + query + "\n"
 | 同 `(id, version)` 不同 `sha256`，尚未发布 | 409，作者需撤回后重新提交 |
 | 已 `published` 的 `(id, version)` | 409，版本不可变（§2.4） |
 | 上传中断 | 不做分块续传，整体重传；服务端按摘要判定是否已有相同 blob |
+
+**应用模板提交（R2c，`POST /api/v1/apps`）**：载荷同样是两个部分，但第二段是 compose 原文。
+
+| 部分 | 内容 | 说明 |
+|---|---|---|
+| `entry` | `id`、`version`、`summary`、`min_kernel`、`images[{ref,digest}]`、`env[]`、`ports[]`、`volumes[]` | 派生字段（`asset`/`compose_sha256`/`compose_url`/`size`）一律由服务端生成，带上即 422（`deny_unknown_fields`） |
+| `compose` | 严格子集内的 compose YAML 原文（UTF-8，≤ 1 MiB） | 校验复用 `skiff-compose`，与运行时/xtask 同一实现 |
+
+- 信任模型按裁决 1：**API 请求签名 + 服务端摘要 + 审核**，不要求作者额外签名信封；服务端是提交时刻的信任边界。
+- compose 原文落在 `state/submissions/<sid>/compose.yaml`；发布时按 `sha256` 复制成 `catalog/assets/<sha>.yaml` 并作为内容寻址 blob 进入产物（`compose_url = blobs/sha256/<sha>`）。
+- `sid` 派生对应用加 `app` 域前缀（`app\0id\0version\0sha256`），与插件同 id 同版本不撞 id。
+- 版本规则与插件一致：同 `(id, version)` 不同摘要、或已发布 → 409；同摘要重复提交 → 200 同一 `sid`。
+- 审核/发布复用 `submissions/{sid}/approve|reject|withdraw` 与 `release`，事件 `subject.kind = "app"`；一次 `release` 只 +1 `seq`，插件与应用同批进入同一索引。
+- **R2c 不做安装**：客户端只从签名索引展示 `apps[]`（商店「应用模板」分区），安装仍走内置目录，索引不驱动安装。
 
 ### 17.4 审核侧
 
@@ -1190,7 +1204,7 @@ R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工�
 - 鉴权：审核者看全部；作者默认只看自己，显式查他人 `key_id` 一律 403。
 - 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`submission_ids`/`result`，**不含签名、包内容或请求体**。
 
-**R2（分步实施）**：R2a webhook 事件通知、R2b 提交记录 `kind` 抽象已实施（§17.11、§17.12）；R2c/R2d 应用模板与运行环境提交、R2e 分 kind 撤包按序推进。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
+**R2（分步实施）**：R2a webhook 事件通知、R2b 提交记录 `kind` 抽象、R2c 应用模板提交/审核/发布已实施（§17.11–§17.13）；R2d 运行环境提交、R2e 分 kind 撤包按序推进。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
 
 统一错误体：`{"code": "...", "message": "...", "detail": {...}}`；`401` 签名缺失/无效/过期，`403` 密钥未登记、命名空间不匹配或自我审核，`409` 版本或摘要冲突，`413` 超限，`422` 校验失败，`500` 内部错误（不回显路径与堆栈）。
 
@@ -1280,5 +1294,20 @@ skiff-server release  → 写源数据 → 调既有 publish → 产出签名产
 - **范围**：R2b 只做模型与兼容性，不新增接口。提交、审核、发布、撤包、事件、`sid` 派生、源条目与签名产物仍全按插件路径执行，字节不变。
 - **后续用途**：R2c/R2d 按 `kind` 分别校验模板与运行环境，R2e 按 `kind` 撤包并写入 `revoked_apps[]` / `revoked_runtimes[]`；`revoked[]` 继续只表示插件。
 - **R2b 测试**：`tests/api.rs::plugin_records_omit_kind_and_legacy_records_still_load` 断言插件提交响应与落盘记录都没有 `kind`、无 `kind` 的旧记录解析为 `plugin`、approve→release 后源条目与 `index.json` 都不出现 `kind`；其余 22 项 API 测试（签名、幂等、状态机、撤包、吊销、审计、事件）全绿，证明插件全链路行为未变。
+
+### 17.13 R2c 落地说明：应用模板提交与发布（`tools/skiff-server`）
+
+- **提交端点**：`POST /api/v1/apps`（`entry` + `compose`，见 §17.3）。作者身份仍由请求签名确立，`id` 必须落在 `authors.json` 的前缀命名空间内。
+- **compose 校验单一实现**：直接依赖 `skiff-compose`（与 `skiff-docker`、`xtask` 同源），严格子集外的字段（如 `build:`）一律 422；服务端不另写解析器，也不靠测试向量对齐两份实现。
+- **存储**：compose 原文 `state/submissions/<sid>/compose.yaml`；记录 `kind = "app"`、`app` 字段保存 `min_kernel`/`images`/`env`/`ports`/`volumes`；`api` 留空表示不适用。
+- **发布**：`release` 把 compose 复制成 `catalog/assets/<sha>.yaml`，写源条目 `catalog/<channel>/apps/<id>-<version>.json`（`asset` 指向该文件），`build` 已有的 apps 分支据此生成 `index.apps[]` 与 `compose_sha256`/`compose_url`；`seq` 每次 `release` 只 +1，插件与应用同批发布共享同一个 `seq`。
+- **客户端边界**：客户端继续只消费签名索引，`CatalogEntries.apps` 已展示「应用模板」分区；**不提供安装入口**，安装来源仍是内置目录，`serve` 与 §16 契约零变化。
+- **失败隔离**：`submission.created/approved/published` 等事件仍走 best-effort outbox，写 outbox 失败不影响提交/审核/发布结果。
+- **R2c 测试**（`tests/api.rs`）：
+  - `app_submit_approve_release_writes_compose_blob_and_index`：201 → 202 → release 后 `index.apps[0]` 的 `compose_sha256`/`compose_url` 正确、blob 字节与提交原文一致、源条目 `asset` 指向 `assets/<sha>.yaml`；
+  - `app_compose_outside_supported_subset_is_rejected`：`build:` 与非 UTF-8 均 422 且不落状态；
+  - `same_app_version_with_different_compose_conflicts`：同摘要 200 同一 `sid`，同版本不同摘要 409；
+  - `plugin_and_app_release_share_one_seq`：一次 `release` 同时发布插件与应用，`seq = 1`、`released.len() == 2`，索引两数组各 1 条。
+  - 合计 `cargo test -p skiff-server`：34 单测 + 27 API + 4 CLI + 15 P0 + 7 serve + 6 sync = 93 项全绿。
 
 

@@ -277,7 +277,8 @@ fn action_name(request: &Request) -> String {
         "reject"
     } else if path.ends_with("/withdraw") {
         "withdraw"
-    } else if request.method == "POST" && path == "/api/v1/submissions" {
+    } else if request.method == "POST" && (path == "/api/v1/submissions" || path == "/api/v1/apps")
+    {
         "submit"
     } else if request.method == "GET" {
         "read"
@@ -372,6 +373,14 @@ fn route(server: &ApiServer, request: &Request, body: &[u8]) -> Result<Response,
     }
     match parts[2] {
         "submissions" => route_submissions(server, &auth, request, body, &parts),
+        "apps" if parts.len() == 3 => match request.method.as_str() {
+            "POST" => store::create_app(server, &auth, request, body),
+            _ => Err(ApiError::new(
+                405,
+                "method_not_allowed",
+                "method not allowed",
+            )),
+        },
         "plugins" if parts.len() == 7 && parts[4] == "versions" && parts[6] == "yank" => {
             match request.method.as_str() {
                 "POST" => takedown::yank(server, &auth, parts[3], parts[5], body),

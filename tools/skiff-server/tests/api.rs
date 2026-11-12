@@ -322,6 +322,60 @@ fn submit(fx: &Fixture, id: &str, version: &str) -> Reply {
     )
 }
 
+const APP_COMPOSE: &str =
+    "services:\n  web:\n    image: nginx:1.27-alpine\n    ports:\n      - \"8080:80\"\n";
+
+fn app_body(entry: &serde_json::Value, compose: &[u8]) -> (String, Vec<u8>) {
+    let boundary = "skiff-app-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"entry\"\r\n\r\n");
+    body.extend_from_slice(entry.to_string().as_bytes());
+    body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"compose\"; filename=\"compose.yaml\"\r\n\r\n",
+    );
+    body.extend_from_slice(compose);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn app_entry(id: &str, version: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "version": version,
+        "summary": "示例应用",
+        "min_kernel": "1.2.0",
+        "images": [{ "ref": "nginx:1.27-alpine", "digest": format!("sha256:{}", "a".repeat(64)) }],
+        "env": [{ "key": "TZ", "default": "UTC" }],
+        "ports": [{ "container": 80, "protocol": "tcp" }],
+        "volumes": ["/data"]
+    })
+}
+
+fn submit_app(fx: &Fixture, id: &str, version: &str, compose: &[u8]) -> Reply {
+    let (content_type, body) = app_body(&app_entry(id, version), compose);
+    signed_call(
+        fx.addr,
+        &fx.author,
+        "POST",
+        "/api/v1/apps",
+        &[("Content-Type", &content_type)],
+        &body,
+    )
+}
+
+fn approve(fx: &Fixture, sid: &str) -> Reply {
+    signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        &format!("/api/v1/submissions/{sid}/approve"),
+        &[],
+        b"",
+    )
+}
+
 #[test]
 fn signed_submit_approve_and_release_produces_pullable_artifacts() {
     let fx = Fixture::new();
@@ -585,6 +639,131 @@ fn plugin_records_omit_kind_and_legacy_records_still_load() {
     let index_text = fs::read_to_string(staging.path().join("channels/stable/index.json")).unwrap();
     assert!(index_text.contains("com.example.demo"), "{index_text}");
     assert!(!index_text.contains("\"kind\""), "{index_text}");
+}
+
+#[test]
+fn app_submit_approve_release_writes_compose_blob_and_index() {
+    let fx = Fixture::new();
+    let created = submit_app(&fx, "com.example.blog", "1.0.0", APP_COMPOSE.as_bytes());
+    assert_eq!(created.status, 201, "{:?}", created.json());
+    let body = created.json();
+    assert_eq!(body["kind"], "app");
+    assert_eq!(body["plugin_id"], "com.example.blog");
+    assert_eq!(body["app"]["min_kernel"], "1.2.0");
+    assert_eq!(body["app"]["ports"][0]["container"], 80);
+    let sid = body["sid"].as_str().unwrap().to_string();
+
+    let approved = approve(&fx, &sid);
+    assert_eq!(approved.status, 202, "{:?}", approved.json());
+
+    let (report, staging) = publish(&fx, 1);
+    assert_eq!(report.released.len(), 1);
+    assert_eq!(report.seq, 1);
+
+    let index: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["seq"], 1);
+    assert_eq!(index["plugins"].as_array().unwrap().len(), 0);
+    let app = &index["apps"][0];
+    let sha = hex::encode(sha2::Sha256::digest(APP_COMPOSE.as_bytes()));
+    assert_eq!(app["id"], "com.example.blog");
+    assert_eq!(app["version"], "1.0.0");
+    assert_eq!(app["compose_sha256"], sha);
+    assert_eq!(app["compose_url"], format!("blobs/sha256/{sha}"));
+    assert_eq!(
+        fs::read(staging.path().join("blobs/sha256").join(&sha)).unwrap(),
+        APP_COMPOSE.as_bytes()
+    );
+
+    let source: serde_json::Value = serde_json::from_slice(
+        &fs::read(fx.catalog.join("stable/apps/com.example.blog-1.0.0.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(source["asset"], format!("assets/{sha}.yaml"));
+    assert_eq!(
+        fs::read(fx.catalog.join(format!("assets/{sha}.yaml"))).unwrap(),
+        APP_COMPOSE.as_bytes()
+    );
+}
+
+#[test]
+fn app_compose_outside_supported_subset_is_rejected() {
+    let fx = Fixture::new();
+    let compose = b"services:\n  web:\n    build: .\n";
+    let reply = submit_app(&fx, "com.example.blog", "1.0.0", compose);
+    assert_eq!(reply.status, 422, "{:?}", reply.json());
+    let text = serde_json::to_string(&reply.json()).unwrap();
+    assert!(text.contains("compose"), "{text}");
+
+    let (content_type, body) = app_body(
+        &app_entry("com.example.blog", "1.0.0"),
+        b"services:\n  web:\n    image: nginx\n\xff\n",
+    );
+    let reply = signed_call(
+        fx.addr,
+        &fx.author,
+        "POST",
+        "/api/v1/apps",
+        &[("Content-Type", &content_type)],
+        &body,
+    );
+    assert_eq!(reply.status, 422, "{:?}", reply.json());
+    assert!(fs::read_dir(fx.state.join("submissions"))
+        .map(|d| d.count() == 0)
+        .unwrap_or(true));
+}
+
+#[test]
+fn same_app_version_with_different_compose_conflicts() {
+    let fx = Fixture::new();
+    let first = submit_app(&fx, "com.example.blog", "1.0.0", APP_COMPOSE.as_bytes());
+    assert_eq!(first.status, 201, "{:?}", first.json());
+    let sid = first.json()["sid"].as_str().unwrap().to_string();
+
+    // 同摘要重复提交：幂等 200，返回同一 sid。
+    let again = submit_app(&fx, "com.example.blog", "1.0.0", APP_COMPOSE.as_bytes());
+    assert_eq!(again.status, 200, "{:?}", again.json());
+    assert_eq!(again.json()["sid"], sid);
+
+    // 同版本不同摘要：409。
+    let changed = APP_COMPOSE.replace("8080:80", "8081:80");
+    let conflict = submit_app(&fx, "com.example.blog", "1.0.0", changed.as_bytes());
+    assert_eq!(conflict.status, 409, "{:?}", conflict.json());
+}
+
+#[test]
+fn plugin_and_app_release_share_one_seq() {
+    let fx = Fixture::new();
+    let plugin = submit(&fx, "com.example.demo", "1.0.0");
+    assert_eq!(plugin.status, 201, "{:?}", plugin.json());
+    let plugin_sid = plugin.json()["sid"].as_str().unwrap().to_string();
+    let app = submit_app(&fx, "com.example.blog", "1.0.0", APP_COMPOSE.as_bytes());
+    assert_eq!(app.status, 201, "{:?}", app.json());
+    let app_sid = app.json()["sid"].as_str().unwrap().to_string();
+
+    assert_eq!(approve(&fx, &plugin_sid).status, 202);
+    assert_eq!(approve(&fx, &app_sid).status, 202);
+
+    let (report, staging) = publish(&fx, 1);
+    assert_eq!(report.seq, 1);
+    assert_eq!(report.released.len(), 2);
+    assert!(
+        report.released.iter().all(|(_, seq)| *seq == 1),
+        "{:?}",
+        report.released
+    );
+
+    let index: serde_json::Value = serde_json::from_slice(
+        &fs::read(staging.path().join("channels/stable/index.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["seq"], 1);
+    assert_eq!(index["plugins"].as_array().unwrap().len(), 1);
+    assert_eq!(index["apps"].as_array().unwrap().len(), 1);
+    assert_eq!(index["plugins"][0]["id"], "com.example.demo");
+    assert_eq!(index["apps"][0]["id"], "com.example.blog");
 }
 
 #[test]

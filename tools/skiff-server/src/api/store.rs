@@ -17,7 +17,7 @@ use super::package;
 use super::{json_response, now_rfc3339, ApiError, ApiServer, MAX_PACKAGE_BYTES};
 use crate::events::{self, Event};
 use crate::http::{Request, Response};
-use crate::model::{PluginEntry, KNOWN_CHANNELS};
+use crate::model::{AppEntry, AppEnv, AppImage, AppPort, PluginEntry, KNOWN_CHANNELS};
 
 const SUBMISSION_SCHEMA: &str = "skiff.server.submission/v1";
 
@@ -111,6 +111,24 @@ pub struct TakedownInfo {
     pub at: String,
 }
 
+/// 应用模板的提交元数据（除 `id`/`version`/`summary` 之外的部分）。
+///
+/// compose 文件本身不在这里：它以原始字节落在 `state/submissions/<sid>/compose.yaml`，
+/// 发布时按摘要复制成内容寻址 blob。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppMeta {
+    pub min_kernel: String,
+    #[serde(default)]
+    pub images: Vec<AppImage>,
+    #[serde(default)]
+    pub env: Vec<AppEnv>,
+    #[serde(default)]
+    pub ports: Vec<AppPort>,
+    #[serde(default)]
+    pub volumes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Submission {
     pub schema: String,
@@ -137,6 +155,9 @@ pub struct Submission {
     /// 已发布版本被撤包/吊销后的站内提示（不推送；`GET /submissions/{sid}` 直接展示）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takedown: Option<TakedownInfo>,
+    /// 应用模板专有元数据；插件记录不落该字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppMeta>,
 }
 
 fn submissions_dir(state: &Path) -> PathBuf {
@@ -149,6 +170,12 @@ fn record_path(state: &Path, sid: &str) -> PathBuf {
 
 pub fn sid_of(plugin_id: &str, version: &str, sha256: &str) -> String {
     let digest = Sha256::digest(format!("{plugin_id}\0{version}\0{sha256}").as_bytes());
+    format!("sub-{}", &hex::encode(digest)[..24])
+}
+
+/// 应用模板的 `sid`：与插件加 `app` 域前缀，避免同名同版本的插件/应用撞 id。
+pub fn sid_of_app(id: &str, version: &str, sha256: &str) -> String {
+    let digest = Sha256::digest(format!("app\0{id}\0{version}\0{sha256}").as_bytes());
     format!("sub-{}", &hex::encode(digest)[..24])
 }
 
@@ -309,28 +336,7 @@ pub fn create(
     if let Some(existing) = read_record(&server.state, &sid)? {
         if existing.state == State::Rejected || existing.state == State::Withdrawn {
             // 被驳回/撤回后允许同一摘要重新进入待审（不新建记录）。
-            let mut reopened = existing.clone();
-            reopened.state = State::Pending;
-            reopened.updated_at = now;
-            write_record(&server.state, &reopened)?;
-            server.audit(&auth.key_id, "submit", &sid, "reopened");
-            // 通知失败不影响提交结果：outbox 写入是 best-effort。
-            let _ = events::emit(
-                &server.state,
-                &Event::new(
-                    events::EVENT_TYPE_SUBMISSION_CREATED,
-                    &format!("{sid}:reopened:{}", reopened.updated_at),
-                    &server.channel,
-                )
-                .actor(&auth.key_id)
-                .subject("plugin", &reopened.plugin_id, &reopened.version)
-                .submission(&sid)
-                .reopened(true),
-            );
-            return Ok(json_response(
-                200,
-                &serde_json::to_value(&reopened).unwrap_or_default(),
-            ));
+            return reopen_record(server, auth, existing);
         }
         server.audit(&auth.key_id, "submit", &sid, "duplicate");
         return Ok(json_response(
@@ -395,6 +401,7 @@ pub fn create(
         review: None,
         release: None,
         takedown: None,
+        app: None,
     };
     write_record(&server.state, &submission)?;
     server.audit(&auth.key_id, "submit", &sid, "ok");
@@ -402,13 +409,220 @@ pub fn create(
         &server.state,
         &Event::new(events::EVENT_TYPE_SUBMISSION_CREATED, &sid, &server.channel)
             .actor(&auth.key_id)
-            .subject("plugin", &submission.plugin_id, &submission.version)
+            .subject(
+                submission.kind.as_str(),
+                &submission.plugin_id,
+                &submission.version,
+            )
             .submission(&sid),
     );
     Ok(json_response(
         201,
         &serde_json::to_value(&submission).unwrap_or_default(),
     ))
+}
+
+/// 被驳回/撤回后同一摘要重新提交：复用原记录，重新进入待审。
+fn reopen_record(
+    server: &ApiServer,
+    auth: &Authenticated,
+    mut record: Submission,
+) -> Result<Response, ApiError> {
+    record.state = State::Pending;
+    record.updated_at = now_rfc3339();
+    write_record(&server.state, &record)?;
+    server.audit(&auth.key_id, "submit", &record.sid, "reopened");
+    // 通知失败不影响提交结果：outbox 写入是 best-effort。
+    let _ = events::emit(
+        &server.state,
+        &Event::new(
+            events::EVENT_TYPE_SUBMISSION_CREATED,
+            &format!("{}:reopened:{}", record.sid, record.updated_at),
+            &server.channel,
+        )
+        .actor(&auth.key_id)
+        .subject(record.kind.as_str(), &record.plugin_id, &record.version)
+        .submission(&record.sid)
+        .reopened(true),
+    );
+    Ok(json_response(
+        200,
+        &serde_json::to_value(&record).unwrap_or_default(),
+    ))
+}
+
+/// 应用模板提交的 `entry` 部分（派生字段一律由服务端生成）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppEntryInput {
+    id: String,
+    version: String,
+    summary: String,
+    min_kernel: String,
+    #[serde(default)]
+    images: Vec<AppImage>,
+    #[serde(default)]
+    env: Vec<AppEnv>,
+    #[serde(default)]
+    ports: Vec<AppPort>,
+    #[serde(default)]
+    volumes: Vec<String>,
+}
+
+/// POST /api/v1/apps
+///
+/// 与插件提交共用审核链路（`/api/v1/submissions/{sid}/…`），区别只有三点：
+/// 载荷是 `entry` + `compose`，compose 必须落在受支持子集内（`skiff-compose`），
+/// 且作者身份由请求签名确立（不要求额外签名信封）。
+pub fn create_app(
+    server: &ApiServer,
+    auth: &Authenticated,
+    request: &Request,
+    body: &[u8],
+) -> Result<Response, ApiError> {
+    let author = auth.require_author()?.clone();
+    let content_type = request
+        .header("content-type")
+        .ok_or_else(|| ApiError::bad_request("缺少 Content-Type"))?;
+    let parts = multipart::parse(content_type, body).map_err(multipart_error)?;
+    if !parts.package.is_empty() {
+        return Err(ApiError::bad_request("应用提交不接受 package 部分"));
+    }
+    if parts.compose.is_empty() {
+        return Err(ApiError::unprocessable("compose 为空"));
+    }
+    let input: AppEntryInput = serde_json::from_slice(&parts.entry)
+        .map_err(|e| ApiError::unprocessable(format!("entry 不是合法 JSON: {e}")))?;
+    let text = std::str::from_utf8(&parts.compose)
+        .map_err(|_| ApiError::unprocessable("compose 必须是 UTF-8 文本"))?;
+    // 严格子集：与运行时/xtask 共用 `skiff-compose`，不在这里另写一套解析。
+    skiff_compose::parse(text, "skiff-app")
+        .map_err(|e| ApiError::unprocessable(format!("compose 不在受支持子集内: {e}")))?;
+    if !namespace_allows(&author.id_prefixes, &input.id) {
+        return Err(ApiError::forbidden());
+    }
+
+    let sha = sha256_hex(&parts.compose);
+    let size = parts.compose.len() as u64;
+    let source_entry = AppEntry {
+        id: input.id.clone(),
+        version: input.version.clone(),
+        summary: input.summary.clone(),
+        min_kernel: input.min_kernel.clone(),
+        images: input.images.clone(),
+        env: input.env.clone(),
+        ports: input.ports.clone(),
+        volumes: input.volumes.clone(),
+        compose_sha256: None,
+        compose_url: None,
+        size: None,
+        asset: Some(format!("assets/{sha}.yaml")),
+    };
+    source_entry
+        .validate_source()
+        .map_err(|e| ApiError::unprocessable(format!("条目不合法: {e}")))?;
+
+    let sid = sid_of_app(&input.id, &input.version, &sha);
+    let _lock = SidLock::acquire(&server.state, &sid)?;
+    let now = now_rfc3339();
+
+    if let Some(existing) = read_record(&server.state, &sid)? {
+        if existing.state == State::Rejected || existing.state == State::Withdrawn {
+            return reopen_record(server, auth, existing);
+        }
+        server.audit(&auth.key_id, "submit", &sid, "duplicate");
+        return Ok(json_response(
+            200,
+            &serde_json::to_value(&existing).unwrap_or_default(),
+        ));
+    }
+
+    // 版本不可变：同 (kind=app, id, version) 已有别的摘要，或已发布。
+    for other in all_records(&server.state)? {
+        if other.kind != EntryKind::App
+            || other.plugin_id != input.id
+            || other.version != input.version
+        {
+            continue;
+        }
+        if other.state == State::Published {
+            return Err(ApiError::conflict("该版本已发布，版本不可变"));
+        }
+        if other.sha256 != sha {
+            return Err(ApiError::conflict("同版本已有不同摘要的提交"));
+        }
+    }
+
+    let tmp_dir = server.state.join("tmp");
+    fs::create_dir_all(&tmp_dir).map_err(|_| ApiError::internal())?;
+    let tmp_path = tmp_dir.join(format!("{sha}.yaml"));
+    fs::write(&tmp_path, &parts.compose).map_err(|_| ApiError::internal())?;
+    let _tmp_guard = TempFile(tmp_path.clone());
+    let final_dir = submissions_dir(&server.state).join(&sid);
+    fs::create_dir_all(&final_dir).map_err(|_| ApiError::internal())?;
+    fs::rename(&tmp_path, compose_path(&server.state, &sid)).map_err(|_| ApiError::internal())?;
+
+    let submission = Submission {
+        schema: SUBMISSION_SCHEMA.to_string(),
+        sid: sid.clone(),
+        kind: EntryKind::App,
+        plugin_id: input.id.clone(),
+        version: input.version.clone(),
+        // 应用模板没有插件 manifest 的 `api` 字段；留空表示不适用。
+        api: String::new(),
+        key_id: auth.key_id.clone(),
+        sha256: sha,
+        size,
+        state: State::Pending,
+        channel: server.channel.clone(),
+        entry: EntryMeta {
+            summary: input.summary.clone(),
+            channel: server.channel.clone(),
+            requires: Vec::new(),
+            changelog_url: None,
+            license: None,
+            source_url: None,
+        },
+        requires: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+        review: None,
+        release: None,
+        takedown: None,
+        app: Some(AppMeta {
+            min_kernel: input.min_kernel,
+            images: input.images,
+            env: input.env,
+            ports: input.ports,
+            volumes: input.volumes,
+        }),
+    };
+    write_record(&server.state, &submission)?;
+    server.audit(&auth.key_id, "submit", &sid, "ok");
+    let _ = events::emit(
+        &server.state,
+        &Event::new(events::EVENT_TYPE_SUBMISSION_CREATED, &sid, &server.channel)
+            .actor(&auth.key_id)
+            .subject(
+                submission.kind.as_str(),
+                &submission.plugin_id,
+                &submission.version,
+            )
+            .submission(&sid),
+    );
+    Ok(json_response(
+        201,
+        &serde_json::to_value(&submission).unwrap_or_default(),
+    ))
+}
+
+/// multipart 解析失败到 API 错误的映射（超限是 413，其余是 400）。
+fn multipart_error(message: String) -> ApiError {
+    if message.contains("64 MiB") || message.contains("1 MiB") {
+        ApiError::new(413, "payload_too_large", message)
+    } else {
+        ApiError::bad_request(message)
+    }
 }
 
 fn namespace_allows(prefixes: &[String], id: &str) -> bool {
@@ -511,7 +725,7 @@ pub fn approve(server: &ApiServer, auth: &Authenticated, sid: &str) -> Result<Re
         &server.state,
         &Event::new(events::EVENT_TYPE_SUBMISSION_APPROVED, sid, &server.channel)
             .actor(&auth.key_id)
-            .subject("plugin", &record.plugin_id, &record.version)
+            .subject(record.kind.as_str(), &record.plugin_id, &record.version)
             .submission(sid),
     );
     Ok(json_response(
@@ -572,7 +786,7 @@ pub fn reject(
         &server.state,
         &Event::new(events::EVENT_TYPE_SUBMISSION_REJECTED, sid, &server.channel)
             .actor(&auth.key_id)
-            .subject("plugin", &record.plugin_id, &record.version)
+            .subject(record.kind.as_str(), &record.plugin_id, &record.version)
             .submission(sid),
     );
     Ok(json_response(
@@ -605,7 +819,7 @@ pub fn withdraw(server: &ApiServer, auth: &Authenticated, sid: &str) -> Result<R
             &server.channel,
         )
         .actor(&auth.key_id)
-        .subject("plugin", &record.plugin_id, &record.version)
+        .subject(record.kind.as_str(), &record.plugin_id, &record.version)
         .submission(sid),
     );
     Ok(json_response(
@@ -670,4 +884,9 @@ pub fn attach_takedown(
 /// 包体路径（发布 job 复制到 `catalog/assets/`）。
 pub fn package_path(state: &Path, sid: &str) -> PathBuf {
     submissions_dir(state).join(sid).join("package.wbpkg")
+}
+
+/// 应用模板的 compose 原文路径（发布 job 按摘要复制到 `catalog/assets/`）。
+pub fn compose_path(state: &Path, sid: &str) -> PathBuf {
+    submissions_dir(state).join(sid).join("compose.yaml")
 }

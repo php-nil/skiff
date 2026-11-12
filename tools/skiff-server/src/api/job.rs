@@ -11,10 +11,10 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use crate::api::now_rfc3339;
-use crate::api::store::{self, Submission, TakedownInfo};
+use crate::api::store::{self, EntryKind, Submission, TakedownInfo};
 use crate::api::takedown::{self, Kind, Takedown};
 use crate::events::{self, Event};
-use crate::model::{ChannelFile, PluginEntry};
+use crate::model::{AppEntry, ChannelFile, PluginEntry};
 use crate::sign::Signer;
 
 #[derive(Debug, Clone)]
@@ -284,41 +284,86 @@ fn write_sources(
     fs::create_dir_all(&assets).context("创建 assets 目录失败")?;
     let plugins = channel_dir.join("plugins");
     fs::create_dir_all(&plugins).context("创建 plugins 目录失败")?;
+    let apps = channel_dir.join("apps");
+    fs::create_dir_all(&apps).context("创建 apps 目录失败")?;
 
     for submission in approved {
-        let source = store::package_path(&options.state, &submission.sid);
-        let asset_name = format!("assets/{}.wbpkg", submission.sha256);
-        let target = options.catalog.join(&asset_name);
-        fs::copy(&source, &target)
-            .with_context(|| format!("复制包体失败: {}", source.display()))?;
+        match submission.kind {
+            EntryKind::Plugin => {
+                let source = store::package_path(&options.state, &submission.sid);
+                let asset_name = format!("assets/{}.wbpkg", submission.sha256);
+                let target = options.catalog.join(&asset_name);
+                fs::copy(&source, &target)
+                    .with_context(|| format!("复制包体失败: {}", source.display()))?;
 
-        let entry = PluginEntry {
-            id: submission.plugin_id.clone(),
-            version: submission.version.clone(),
-            api: submission.api.clone(),
-            channel: submission.channel.clone(),
-            key_id: submission.key_id.clone(),
-            requires: submission.requires.clone(),
-            summary: submission.entry.summary.clone(),
-            published_at: now.to_string(),
-            yanked: false,
-            yank_reason: None,
-            pkg_sha256: None,
-            pkg_url: None,
-            size: None,
-            asset: Some(asset_name.clone()),
-        };
-        entry.validate_source().context("源条目不合法")?;
-        let path = plugins.join(format!("{}-{}.json", entry.id, entry.version));
-        if path.exists() {
-            bail!(
-                "源数据已存在同版本条目（可能来自另一份提交）: {}",
-                path.display()
-            );
+                let entry = PluginEntry {
+                    id: submission.plugin_id.clone(),
+                    version: submission.version.clone(),
+                    api: submission.api.clone(),
+                    channel: submission.channel.clone(),
+                    key_id: submission.key_id.clone(),
+                    requires: submission.requires.clone(),
+                    summary: submission.entry.summary.clone(),
+                    published_at: now.to_string(),
+                    yanked: false,
+                    yank_reason: None,
+                    pkg_sha256: None,
+                    pkg_url: None,
+                    size: None,
+                    asset: Some(asset_name.clone()),
+                };
+                entry.validate_source().context("源条目不合法")?;
+                let path = plugins.join(format!("{}-{}.json", entry.id, entry.version));
+                if path.exists() {
+                    bail!(
+                        "源数据已存在同版本条目（可能来自另一份提交）: {}",
+                        path.display()
+                    );
+                }
+                let bytes = serde_json::to_vec_pretty(&entry)?;
+                fs::write(&path, bytes_with_newline(bytes))
+                    .with_context(|| format!("写入条目失败: {}", path.display()))?;
+            }
+            EntryKind::App => {
+                let meta = submission.app.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("应用提交 {} 缺少 app 元数据", submission.sid)
+                })?;
+                let source = store::compose_path(&options.state, &submission.sid);
+                let asset_name = format!("assets/{}.yaml", submission.sha256);
+                let target = options.catalog.join(&asset_name);
+                fs::copy(&source, &target)
+                    .with_context(|| format!("复制 compose 失败: {}", source.display()))?;
+
+                let entry = AppEntry {
+                    id: submission.plugin_id.clone(),
+                    version: submission.version.clone(),
+                    summary: submission.entry.summary.clone(),
+                    min_kernel: meta.min_kernel.clone(),
+                    images: meta.images.clone(),
+                    env: meta.env.clone(),
+                    ports: meta.ports.clone(),
+                    volumes: meta.volumes.clone(),
+                    compose_sha256: None,
+                    compose_url: None,
+                    size: None,
+                    asset: Some(asset_name),
+                };
+                entry.validate_source().context("源条目不合法")?;
+                let path = apps.join(format!("{}-{}.json", entry.id, entry.version));
+                if path.exists() {
+                    bail!(
+                        "源数据已存在同版本应用（可能来自另一份提交）: {}",
+                        path.display()
+                    );
+                }
+                let bytes = serde_json::to_vec_pretty(&entry)?;
+                fs::write(&path, bytes_with_newline(bytes))
+                    .with_context(|| format!("写入条目失败: {}", path.display()))?;
+            }
+            EntryKind::Runtime => {
+                bail!("运行环境提交尚未接入发布（R2d）: {}", submission.sid)
+            }
         }
-        let bytes = serde_json::to_vec_pretty(&entry)?;
-        fs::write(&path, bytes_with_newline(bytes))
-            .with_context(|| format!("写入条目失败: {}", path.display()))?;
     }
 
     // 撤包/吊销：只改既有条目的 `yanked` 与追加 `revoked[]`，不删除任何条目。

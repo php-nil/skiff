@@ -588,7 +588,7 @@ cargo test -p skiff catalog
 cargo test -p skiff-server
 ```
 
-## P. 发布面 API（Skiff-server R0/R1/R2a/R2b，2026-11-12 更新）
+## P. 发布面 API（Skiff-server R0/R1/R2a/R2b/R2c，2026-11-12 更新）
 
 > 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/events.rs`、`src/notify.rs`、`src/http.rs`、`src/build.rs`、`src/main.rs` 的
 > `api`/`notify`/`release` 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/事件/产物口径。
@@ -615,6 +615,10 @@ cargo test -p skiff-server
 | API-16 | 通知失败隔离 | `state/outbox` 被替换为普通文件 | 正常提交 | 提交仍 201，业务状态不受影响 | □通过 / □失败 | `tests/api.rs::submit_succeeds_when_outbox_cannot_be_written` |
 | API-17 | `release.failed` 事件 | 已 approve 提交 + 不存在的 schema 目录 | 执行 release | 发布失败并留下 `release.failed` 事件；不影响线上目录 | □通过 / □失败 | `src/api/job.rs`、`tests/api.rs::release_failure_emits_event` |
 | API-18 | 提交记录 `kind` 与旧记录兼容 | 旧格式 `state/submissions/*.json`（无 `kind`） | 提交插件并检查落盘/响应；再 approve→release 检查源条目与索引 | 插件记录不出现 `kind`；无 `kind` 的旧记录解析为 `plugin`；源条目与 `index.json` 字节不变 | □通过 / □失败 | `src/api/store.rs`（`EntryKind`）、`tests/api.rs::plugin_records_omit_kind_and_legacy_records_still_load` |
+| API-19 | 应用模板提交→发布全链路 | 作者钥已登记 `com.example` 前缀 | `POST /api/v1/apps`（`entry`+`compose`）→ approve → release | 201/202；`index.apps[]` 带 `compose_sha256`/`compose_url`，`blobs/sha256/<sha>` 与提交原文逐字节一致，源条目 `asset` 指向 `assets/<sha>.yaml` | □通过 / □失败 | `src/api/store.rs::create_app`、`src/api/job.rs`、`tests/api.rs::app_submit_approve_release_writes_compose_blob_and_index` |
+| API-20 | compose 严格子集校验 | 含 `build:` 或非 UTF-8 的 compose | 提交应用模板 | 422，不落任何提交状态；不另写第二套解析器（复用 `skiff-compose`） | □通过 / □失败 | `src/api/store.rs::create_app`、`tests/api.rs::app_compose_outside_supported_subset_is_rejected` |
+| API-21 | 应用版本不可变与幂等 | 同 id/version 的 compose A、B | 先提 A，再提 A，再提 B | 201；重复 A → 200 同一 `sid`；B → 409 | □通过 / □失败 | `src/api/store.rs::create_app`、`tests/api.rs::same_app_version_with_different_compose_conflicts` |
+| API-22 | 插件与应用共享单次 `seq` | 同一渠道各一份 approved 提交 | 一次 release | `seq = 1`、`released.len() == 2`，索引 `plugins[]`/`apps[]` 各 1 条 | □通过 / □失败 | `src/api/job.rs`、`tests/api.rs::plugin_and_app_release_share_one_seq` |
 
 最小回归命令：
 

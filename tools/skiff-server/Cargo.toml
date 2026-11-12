@@ -18,6 +18,8 @@ rustls-pemfile = { workspace = true }
 chrono = { workspace = true }
 # `.wbpkg` 校验复用仓库唯一实现（xtask verify-pkg 同源），不另写验签。
 skiff-pkgfmt = { path = "../../crates/pkgfmt" }
+# 应用模板的 compose 严格子集校验复用唯一实现（skiff-docker / xtask 同源）。
+skiff-compose = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

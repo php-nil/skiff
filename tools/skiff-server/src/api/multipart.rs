@@ -1,7 +1,8 @@
 //! 最小 `multipart/form-data` 解析（只服务提交端点）。
 //!
 //! 严格优先：必须给出 boundary；boundary 长度与字符集受限；每部分头部数量、
-//! 单行长度与总长都有上限；只接受 `entry` 与 `package` 两个命名部分。
+//! 单行长度与总长都有上限；只接受 `entry` 与 `package`/`compose` 三个命名部分，
+//! 其中 `package`（插件）与 `compose`（应用模板）二选一。
 //! **文件名只允许出现在头部里，绝不参与任何路径拼接。**
 
 use std::collections::BTreeMap;
@@ -13,11 +14,14 @@ const MAX_PART_HEADERS: usize = 16;
 const MAX_PART_HEADER_BYTES: usize = 4096;
 const MAX_HEADER_LINE_BYTES: usize = 1024;
 const MAX_ENTRY_BYTES: usize = 16 * 1024;
+/// compose 文本上限（YAML 属于小型声明文件；64 MiB 的包体额度不适用于它）。
+pub const MAX_COMPOSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct Parts {
     pub entry: Vec<u8>,
     pub package: Vec<u8>,
+    pub compose: Vec<u8>,
 }
 
 /// 解析 `multipart/form-data`；错误信息只描述格式问题，不回显内容。
@@ -27,6 +31,7 @@ pub fn parse(content_type: &str, body: &[u8]) -> Result<Parts, String> {
     let mut parts = Parts::default();
     let mut seen_entry = false;
     let mut seen_package = false;
+    let mut seen_compose = false;
     let mut count = 0usize;
 
     let mut cursor = 0usize;
@@ -84,6 +89,16 @@ pub fn parse(content_type: &str, body: &[u8]) -> Result<Parts, String> {
                         seen_package = true;
                         parts.package = data.to_vec();
                     }
+                    "compose" => {
+                        if seen_compose {
+                            return Err("compose 部分重复".to_string());
+                        }
+                        if data.len() > MAX_COMPOSE_BYTES {
+                            return Err("compose 超过 1 MiB 上限".to_string());
+                        }
+                        seen_compose = true;
+                        parts.compose = data.to_vec();
+                    }
                     other => return Err(format!("未知的 multipart 部分: {other}")),
                 }
             }
@@ -92,8 +107,11 @@ pub fn parse(content_type: &str, body: &[u8]) -> Result<Parts, String> {
         cursor = data_start + next + 2;
     }
 
-    if !seen_entry || !seen_package {
-        return Err("multipart 必须同时包含 entry 与 package".to_string());
+    if !seen_entry {
+        return Err("multipart 必须包含 entry".to_string());
+    }
+    if seen_package == seen_compose {
+        return Err("multipart 必须且只能包含 package 或 compose 之一".to_string());
     }
     Ok(parts)
 }
@@ -192,6 +210,39 @@ mod tests {
             br#"{"summary":"x","channel":"stable"}"#.to_vec()
         );
         assert_eq!(parts.package, b"PKG".to_vec());
+    }
+
+    #[test]
+    fn parses_compose_part_for_app_submissions() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            b"--b\r\nContent-Disposition: form-data; name=\"entry\"\r\n\r\n{\"id\":\"com.example.app\"}\r\n",
+        );
+        bytes.extend_from_slice(
+            b"--b\r\nContent-Disposition: form-data; name=\"compose\"\r\n\r\nservices:\r\n  web:\r\n    image: nginx\r\n",
+        );
+        bytes.extend_from_slice(b"--b--\r\n");
+        let parts = parse("multipart/form-data; boundary=b", &bytes).unwrap();
+        assert!(parts.package.is_empty());
+        assert!(String::from_utf8(parts.compose)
+            .unwrap()
+            .contains("services:"));
+    }
+
+    #[test]
+    fn rejects_package_and_compose_together() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            b"--b\r\nContent-Disposition: form-data; name=\"entry\"\r\n\r\n{}\r\n",
+        );
+        bytes.extend_from_slice(
+            b"--b\r\nContent-Disposition: form-data; name=\"package\"\r\n\r\nPKG\r\n",
+        );
+        bytes.extend_from_slice(
+            b"--b\r\nContent-Disposition: form-data; name=\"compose\"\r\n\r\nservices: {}\r\n",
+        );
+        bytes.extend_from_slice(b"--b--\r\n");
+        assert!(parse("multipart/form-data; boundary=b", &bytes).is_err());
     }
 
     #[test]
