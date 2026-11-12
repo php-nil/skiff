@@ -728,6 +728,38 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 `POST /ui/v1/settings/panel`，body `{listen_addr, listen_port, entry_prefix, tls_mode, tls_cert, tls_key}`（字符串）→ `{ "data": { "message": "..." } }`；校验失败 400 `shape.invalid`，无权限 403 `auth.forbidden`，CSRF 失败 403 `auth.csrf_invalid`。
 
+### 5.15 商店（第八批）
+
+- `GET /{p}/store` 交付 budding 壳页；旧 SSR（目录状态、四类条目、升级包下载、表单确认页）保留在 `GET /{p}/m/core/plugins/store`。
+- `GET /ui/v1/store?refresh=1` 与旧页面共用 `store::load_view`：同一目录快照、同一可安装版本判定与升级提示。
+- 安装分两步，均复用旧链路与审计：
+  1. `POST /ui/v1/store/plugins/{id}/install` → 调用 `store::prepare`（下载、摘要/大小、验签、版本与降级校验），返回权限确认数据；审计动作与旧表单一致（`store.install`）。
+  2. `POST /ui/v1/plugins/confirm` → 调用 `plugins::verify_for_confirm` + `commit_install`（同一信任判定、授权落库、暂存包清理），与旧确认页同一条收尾路径。
+- 进度：下载验签是单次同步请求，前端只给「正在下载并验签」占位提示，不引入 SSE/轮询。
+- 升级包下载不在本批迁移：仍走旧页 `GET /{p}/store/upgrades/{version}/download`（GET 带副作用，不适合 JSON 动作）。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/store` → `{ "data": { state, message, channel, seq, fetched_at, source, allow_unsigned, key_configured, can_install, total, sections[], upgrade } }`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `state` | `{code,label}` | `disabled` / `fresh` / `cached` / `offline` / `rejected` |
+| `message` | string | 目录状态说明（与旧页面提示条同一文案） |
+| `channel` / `seq` / `fetched_at` / `source` | string | 目录元信息；空值由前端显示 `—` |
+| `allow_unsigned` / `key_configured` | bool | 开发态放行 / 固定公钥已配置 |
+| `can_install` | bool | 插件分区是否给安装入口 |
+| `total` | number | 四类条目合计 |
+| `sections[]` | array | `{title, hint, installable, items[]}`，固定四项顺序：插件 / 应用模板 / 运行环境 / 升级通道 |
+| `sections[].items[]` | array | `{name, version, source, updated_at, compatibility, note, warn, installable, action, install_note}` |
+| `upgrade` | object | `{current, arch, available, channel, min_from, changelog_url, note, can_download}` |
+
+`POST /ui/v1/store/plugins/{id}/install` body `{version?}` → `{ "data": { token, id, name, version, api, key_id, signed, permissions[], resources[], interop_provides[], interop_consumes[], requires[], egress[], channel, source } }`
+
+`POST /ui/v1/plugins/confirm` body `{token, grant[], resource[], extra_resource}` → `{ "data": { id, redirect_to } }`
+
+错误码：目录未启用 404 `lookup.not_found`；未配公钥 / 包校验或版本失败 400 `shape.invalid`；无 `PluginManage` 403 `auth.forbidden`；CSRF 失败 403 `auth.csrf_invalid`。
+
 ---
 
 ## 6. 能力缺口与建议

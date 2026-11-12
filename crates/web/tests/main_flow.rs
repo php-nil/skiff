@@ -7126,7 +7126,7 @@ async fn store_page_returns_200_when_mirror_silently_drops_packets() {
     let get_store = |app: Router, token: String| async move {
         app.oneshot(
             Request::builder()
-                .uri("/p/store")
+                .uri("/p/m/core/plugins/store")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -8061,6 +8061,128 @@ async fn ui_settings_panel_update_keeps_csrf_and_admin_semantics() {
         v["data"]["message"].as_str().unwrap().contains("已写入"),
         "{text}"
     );
+}
+
+/// 商店规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/plugins/store`（目录启用时 200）。
+#[tokio::test]
+async fn store_canonical_path_serves_shell() {
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_html(&h.app, "/p/store", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    let (status, ssr) = get_page(&h.app, "/p/m/core/plugins/store", &token).await;
+    assert_eq!(status, StatusCode::OK, "{ssr}");
+}
+
+/// 商店只读接口：未认证 401；目录未启用 404；启用后返回冻结字段与四个分区。
+#[tokio::test]
+async fn ui_store_keeps_auth_and_frozen_fields() {
+    let h = harness();
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/store", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/store", Some(&token), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "lookup.not_found");
+
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/store", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert!(data["state"]["code"].is_string());
+    assert!(data["state"]["label"].is_string());
+    assert!(data["message"].is_string());
+    assert_eq!(data["channel"], "stable");
+    assert!(data["key_configured"].is_boolean());
+    assert_eq!(data["can_install"], data["key_configured"]);
+    assert_eq!(data["total"], 0);
+    assert_eq!(data["sections"].as_array().unwrap().len(), 4);
+    for (i, title) in ["插件", "应用模板", "运行环境", "升级通道"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(data["sections"][i]["title"], *title);
+        assert!(data["sections"][i]["items"].is_array());
+    }
+    assert!(data["upgrade"]["current"].is_string());
+    assert!(data["upgrade"]["can_download"].is_boolean());
+}
+
+/// 商店安装与确认：CSRF、PluginManage 权限和确认令牌校验都复用旧链路。
+#[tokio::test]
+async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    // 未带 CSRF：403 auth.csrf_invalid。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/store/plugins/com.example.demo/install",
+        &admin,
+        None,
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+
+    // viewer 无 PluginManage：403 auth.forbidden。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/store/plugins/com.example.demo/install",
+        &viewer,
+        Some(&viewer_csrf),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
+
+    // 确认接口：令牌非法时 400，且绝不触碰暂存目录。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/plugins/confirm",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({ "token": "bad-token" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "shape.invalid");
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。

@@ -28,16 +28,21 @@ const AUDIT_ACTION: &str = "store.install";
 /// 内核升级只读段的审计动作：手动下载成功与各类拒绝都落这一条。
 const AUDIT_UPGRADE: &str = "upgrade.download";
 
-pub async fn page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
+/// 商店页只读视图：SSR 页面与 `/ui/v1/store` 共用同一份数据装配。
+pub(crate) struct StoreView {
+    pub snapshot: skiff_app::catalog::CatalogSnapshot,
+    pub plugins: Vec<skiff_app::catalog::CatalogItem>,
+    pub upgrade: UpgradeHint,
+    pub can_install: bool,
+    pub tone: String,
+}
+
+/// 拉取目录快照并装配页面视图（含插件行的可安装状态与升级提示）。
+pub(crate) async fn load_view(state: &Arc<AppState>, force: bool) -> Result<StoreView, AppError> {
     if !state.cfg.catalog.enabled {
         return Err(AppError::NotFound("商店目录未启用".into()));
     }
-    let force = matches!(q.get("refresh").map(String::as_str), Some("1"));
-    let worker = Arc::clone(&state);
+    let worker = Arc::clone(state);
     let (snap, latest) = handlers::blocking_fs(move || {
         let catalog = worker.catalog();
         let snap = catalog.snapshot(force);
@@ -133,11 +138,28 @@ pub async fn page(
                 .unwrap_or_else(|| "目录中没有可安装的版本".into());
         }
     }
+    Ok(StoreView {
+        snapshot: snap,
+        plugins,
+        upgrade,
+        can_install,
+        tone: tone.to_string(),
+    })
+}
+
+pub async fn page(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let force = matches!(q.get("refresh").map(String::as_str), Some("1"));
+    let view = load_view(&state, force).await?;
+    let snap = view.snapshot;
     let total = snap.entries.total();
     handlers::render(StorePage {
         ctx: handlers::page_ctx(&state, &user, "core/plugins/store"),
         state_label: crate::labels::catalog_state(snap.state).to_string(),
-        tone: tone.to_string(),
+        tone: view.tone,
         message: snap.message.clone(),
         channel: snap.channel.clone(),
         seq: snap
@@ -160,8 +182,8 @@ pub async fn page(
             StoreSection {
                 title: "插件".into(),
                 hint: "已验证目录条目可直接安装：下载 → 摘要/大小 → 验签 → 权限确认。".into(),
-                installable: can_install,
-                items: plugins,
+                installable: view.can_install,
+                items: view.plugins,
             },
             StoreSection {
                 title: "应用模板".into(),
@@ -182,7 +204,7 @@ pub async fn page(
                 items: snap.entries.upgrades,
             },
         ],
-        upgrade,
+        upgrade: view.upgrade,
         total,
     })
 }
@@ -418,7 +440,14 @@ pub async fn download_upgrade(
     }
 }
 
-fn audit(state: &AppState, user: &CurrentUser, ip: &str, target: &str, result: &str, detail: &str) {
+pub(crate) fn audit(
+    state: &AppState,
+    user: &CurrentUser,
+    ip: &str,
+    target: &str,
+    result: &str,
+    detail: &str,
+) {
     state.audit_or_log(
         &user.user.username,
         ip,

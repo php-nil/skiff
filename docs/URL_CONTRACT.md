@@ -182,13 +182,13 @@
 | 回收站 | `GET /{p}/files/trash`、`/files/trash/list`；`POST /files/trash/restore`、`/purge`、`/clear` |
 | 配额 | `GET /{p}/files/quotas`、`/files/quotas/list`；`POST /files/quotas/set`、`/cancel`、`/scan` |
 | 插件 | `GET /{p}/plugins`、`/plugins/{id}`、`/plugins/{id}/{view}`、`/plugins/{id}/ui/{path}`；`POST /plugins/install`、`/confirm`、`/{id}/toggle`、`/{id}/delete`、`/{id}/rpc` |
-| 商店 | `GET /{p}/store`、`/store/upgrades/{version}/download`；`POST /store/plugins/{id}/install` |
+| 商店 | `GET /{p}/store` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/plugins/store`）；旧表单入口 `POST /store/plugins/{id}/install`、`GET /store/upgrades/{version}/download` 保留；JSON 等价接口 `GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`、`POST /ui/v1/plugins/confirm` |
 | 设置 | `GET /{p}/settings` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/settings/security`，口令 / TOTP / 公钥增删仍在旧页）；`GET /{p}/settings/menu`、`/{p}/settings/docker`；`POST /settings/menu`、`/settings/docker`、`/settings/keys/create`、`/settings/keys/{id}/delete`、`/settings/panel`（JSON 等价接口 `POST /ui/v1/settings/panel`） |
 | 审计 | `GET /{p}/audit` 已交付 budding 占位壳页（后端尚无关键字 + 游标查询，旧 SSR 保留在 `GET /{p}/m/core/settings/audit`，最近 200 条；`AuditRead` 权限不变，viewer 直接访问 403、菜单不可见） |
 | 定时任务 | `GET /{p}/tasks`、`/tasks/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/tasks[/{id}]`）；`POST /tasks/{id}/toggle`、`/run`、`/delete` |
 | 任务中心 | `GET /{p}/jobs`、`/jobs/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/jobs[/{id}]`）；`GET /jobs/{id}/logs`、`/logs/stream`；`POST /jobs/{id}/cancel`、`/retry` |
 | 菜单深链 | `GET /{p}/m/{rest}` |
-| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/runtimes`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers/{id}/{action}`、`GET /ui/v1/images`、`GET /ui/v1/networks`、`GET /ui/v1/volumes`、`GET /ui/v1/compose`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}`、`GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`、`GET /ui/v1/settings`、`POST /ui/v1/settings/panel`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
+| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/runtimes`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers/{id}/{action}`、`GET /ui/v1/images`、`GET /ui/v1/networks`、`GET /ui/v1/volumes`、`GET /ui/v1/compose`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}`、`GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`、`GET /ui/v1/settings`、`POST /ui/v1/settings/panel`、`GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`、`POST /ui/v1/plugins/confirm`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
 | 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） |
 | 静态资源 | `GET /{p}/static/{path}` |
 | API v1 | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart` |
@@ -212,3 +212,4 @@
 | 2026-11-13 | 第五批任务与作业只读迁移：`GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/tasks|jobs[/{id}]`；`/ui/v1` 新增四个只读接口，启停/取消/重试/日志流仍走旧版。 |
 | 2026-11-13 | 第六批审计迁移受阻：后端只有 `recent_audit(limit)`，无关键字/游标查询；按红线不自行新增 SQL，`GET /{p}/audit` 先交付 budding 占位壳页，旧 SSR 保留在 `GET /{p}/m/core/settings/audit`，待审计查询落地后再补 JSON 接口与翻页。 |
 | 2026-11-13 | 第七批设置页迁移：`GET /{p}/settings` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/settings/security`；`/ui/v1` 新增 `GET /settings` 与 `POST /settings/panel`（复用旧表单校验/落盘/审计），口令 / TOTP / 公钥增删仍走旧页。 |
+| 2026-11-13 | 第八批商店页迁移：`GET /{p}/store` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/plugins/store`；新增 `GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`、`POST /ui/v1/plugins/confirm`，下载验签与安装收尾分别复用 `store::prepare`、`plugins::verify_for_confirm` + `commit_install`；升级包下载仍走旧页 GET。 |

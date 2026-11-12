@@ -509,7 +509,7 @@ pub async fn install(
     handlers::render(page)
 }
 
-fn verify_for_confirm(
+pub(crate) fn verify_for_confirm(
     state: &AppState,
     path: &FsPath,
 ) -> Result<skiff_plugin::TrustDecision, AppError> {
@@ -527,7 +527,7 @@ fn verify_for_confirm(
 ///
 /// 首次安装（确认页提交）与重装/升级（跳过确认页）共用这一条收尾路径，
 /// 避免两个入口的审计字段、临时文件清理和错误话术各写一遍。
-async fn commit_install(
+pub(crate) async fn commit_install(
     state: &AppState,
     user: &crate::state::CurrentUser,
     ip: &str,

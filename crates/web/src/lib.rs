@@ -196,6 +196,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/settings/panel",
             post(handlers::ui_api::settings_panel_update),
         )
+        .route("/ui/v1/store", get(handlers::ui_api::store))
+        .route(
+            "/ui/v1/store/plugins/{id}/install",
+            post(handlers::ui_api::store_install),
+        )
+        .route(
+            "/ui/v1/plugins/confirm",
+            post(handlers::ui_api::plugin_confirm),
+        )
         .route("/ui/v1/containers", get(handlers::ui_api::containers))
         .route(
             "/ui/v1/containers/{id}",
@@ -309,7 +318,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::any(handlers::docker_settings::legacy_path),
         )
         .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
-        .route(&format!("/{p}/store"), get(handlers::store::page))
+        // 商店规范页已进入 budding 适配：`GET /{p}/store` 回落到壳页，
+        // 旧 SSR（目录状态/条目/升级下载/表单确认页）保留在 `/{p}/m/core/plugins/store`。
         .route(
             &format!("/{p}/store/plugins/{{id}}/install"),
             post(handlers::store::install).get(handlers::store::install_legacy_get),

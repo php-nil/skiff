@@ -201,7 +201,9 @@
     options.actions = {
       skiffContainerAction: containerAction,
       skiffComposeAction: composeAction,
-      skiffSettingsSave: settingsSave
+      skiffSettingsSave: settingsSave,
+      skiffStoreInstall: storeInstall,
+      skiffStoreConfirm: storeConfirm
     };
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
@@ -1195,6 +1197,233 @@
       });
   }
 
+  // 商店：目录只读快照 + 插件安装（下载验签后二次确认）。
+  var pendingInstall = null;
+
+  function storeItemTable(section, canInstall) {
+    if (!section.items || section.items.length === 0) {
+      return textLine(section.title + '暂无条目');
+    }
+    var table = statusTable(
+      [
+        { key: 'name', label: '名称' },
+        { key: 'version', label: '版本' },
+        { key: 'source', label: '来源' },
+        { key: 'compatibility', label: '兼容性' },
+        { key: 'updated_at', label: '更新时间' },
+        { key: 'note', label: '说明' },
+        { key: 'install_note', label: '安装提示' }
+      ],
+      section.items,
+      'name'
+    );
+    if (canInstall && section.title === '插件') {
+      table.props.rowActions = [
+        {
+          type: 'button',
+          props: { text: '安装 / 升级', variant: 'tonal' },
+          onEvent: { click: { actions: [{ type: 'skiffStoreInstall' }] } }
+        }
+      ];
+    }
+    return table;
+  }
+
+  function storeSchema(data) {
+    var body = [];
+    if (data.state && data.state.code !== 'fresh') {
+      body.push({
+        type: 'alert',
+        props: {
+          type: data.state.code === 'rejected' ? 'error' : 'warning',
+          title: '目录状态：' + data.state.label,
+          text: data.message || '目录当前不是最新状态，展示缓存或空列表。'
+        }
+      });
+    }
+    if (data.allow_unsigned) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          text: '当前允许未签名渠道（开发模式），生产环境应导入固定公钥。'
+        }
+      });
+    }
+    body.push(
+      detailLines('目录信息', [
+        '渠道：' + data.channel + ' · seq：' + data.seq,
+        '拉取时间：' + (data.fetched_at || '—'),
+        '来源：' + (data.source || '—'),
+        '条目总数：' + data.total,
+        '公钥已配置：' + (data.key_configured ? '是' : '否')
+      ])
+    );
+    (data.sections || []).forEach(function (section) {
+      body.push({
+        type: 'card',
+        props: { title: section.title, subtitle: section.hint },
+        content: { body: [storeItemTable(section, data.can_install)] }
+      });
+    });
+    var upgrade = data.upgrade || {};
+    var upgradeLines = [
+      '当前版本：' + upgrade.current + '（' + upgrade.arch + '）',
+      '目录可用版本：' + (upgrade.available || '无'),
+      '渠道：' + upgrade.channel,
+      '最低来源版本：' + (upgrade.min_from || '—')
+    ];
+    if (upgrade.changelog_url) upgradeLines.push('更新说明：' + upgrade.changelog_url);
+    if (upgrade.note) upgradeLines.push(upgrade.note);
+    body.push(detailLines('内核升级通道', upgradeLines));
+    body.push({
+      type: 'link',
+      props: {
+        text: '打开旧版商店（升级包下载 / 表单确认页）',
+        href: prefix + '/m/core/plugins/store'
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: '商店 · Skiff', subtitle: '目录快照与插件安装' },
+      body: body
+    };
+  }
+
+  function storeInstall(args) {
+    if (!args || args.installable === false) {
+      window.alert((args && args.install_note) || '该条目当前不可安装');
+      return Promise.resolve();
+    }
+    var name = args.name;
+    // 下载 + 验签是同步阻塞的单次请求，暂无进度事件；用明确提示占位。
+    window.alert('正在下载并验签 ' + name + ' ' + (args.version || '') + '，请稍候…');
+    return fetch(apiBase + '/store/plugins/' + encodeURIComponent(name) + '/install', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify({ version: args.version || '' })
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200 || !res.body || !res.body.data) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        pendingInstall = res.body.data;
+        embedWithError(storeConfirmSchema(res.body.data));
+      })
+      .catch(function (error) {
+        window.alert('安装准备失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function storeConfirmSchema(data) {
+    var body = [];
+    body.push(
+      detailLines('待安装插件', [
+        '名称：' + data.name + '（' + data.id + '）',
+        '版本：' + data.version + ' · API ' + data.api,
+        '来源：' + data.channel + ' · ' + data.source,
+        '签名：' + (data.signed ? '已验证' : '未验证') + ' · 公钥 ' + data.key_id,
+        '宿主能力：' + (data.requires.length ? data.requires.join(', ') : '无'),
+        '出网：' + (data.egress.length ? data.egress.join(', ') : '无（默认拒绝）')
+      ])
+    );
+    body.push(
+      detailLines(
+        '申请权限',
+        data.permissions.length ? data.permissions : ['无额外动作权限']
+      )
+    );
+    body.push(
+      detailLines(
+        '对象授权',
+        data.resources.length ? data.resources : ['无资源对象']
+      )
+    );
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '确认即按上述权限安装；暂存包在安装完成或失败后都会清理。'
+      }
+    });
+    body.push({
+      type: 'flex',
+      props: { gap: 8 },
+      content: {
+        body: [
+          {
+            type: 'button',
+            props: { text: '确认安装', color: 'primary' },
+            onEvent: { click: { actions: [{ type: 'skiffStoreConfirm' }] } }
+          },
+          {
+            type: 'button',
+            props: { text: '取消', variant: 'tonal' },
+            onEvent: {
+              click: { actions: [{ type: 'navigate', props: { url: prefix + '/store' } }] }
+            }
+          }
+        ]
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: '确认安装 · 商店', subtitle: data.name },
+      body: body
+    };
+  }
+
+  function storeConfirm() {
+    if (!pendingInstall) {
+      window.alert('待确认的安装已失效，请返回商店重新发起。');
+      return Promise.resolve();
+    }
+    var data = pendingInstall;
+    return fetch(apiBase + '/plugins/confirm', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify({
+        token: data.token,
+        grant: data.permissions,
+        resource: data.resources,
+        extra_resource: ''
+      })
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        pendingInstall = null;
+        window.alert('安装完成');
+        location.assign((res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins');
+      })
+      .catch(function (error) {
+        window.alert('安装失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   function embedWithError(schema) {
     if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
       showError('前端产物未加载（budding 脚本不可用）。');
@@ -1343,6 +1572,13 @@
       if (parts[0] === 'jobs' && parts.length === 2) {
         getJson('/jobs/' + encodeURIComponent(parts[1]), function (data) {
           embedWithError(jobDetailSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'store') {
+        var refresh = new URLSearchParams(location.search).get('refresh') === '1' ? '?refresh=1' : '';
+        getJson('/store' + refresh, function (data) {
+          embedWithError(storeSchema(data));
         });
         return;
       }
