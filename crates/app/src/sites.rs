@@ -567,12 +567,61 @@ enum RetryPlan {
     },
 }
 
+/// 站点表单字段：领域错误携带它，展示层据此高亮，禁止按中文文案反推。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteField {
+    Domain,
+    RootDir,
+    RuntimeId,
+    ProxyTarget,
+    Aliases,
+}
+
+impl SiteField {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Domain => "domain",
+            Self::RootDir => "root_dir",
+            Self::RuntimeId => "runtime_id",
+            Self::ProxyTarget => "proxy_target",
+            Self::Aliases => "aliases",
+        }
+    }
+}
+
+/// 站点领域错误。`Field` 只附加可判定字段，不改变原变体、文案与传输分类。
 #[derive(Debug, Clone)]
 pub enum SiteError {
     BadRequest(String),
     Conflict(String),
     Unavailable(String),
     Internal(String),
+    Field(SiteField, Box<SiteError>),
+}
+
+impl SiteError {
+    /// 给错误附加表单字段；已有字段时保持最内层判定。
+    pub fn at(field: SiteField, error: SiteError) -> SiteError {
+        match error {
+            SiteError::Field(..) => error,
+            other => SiteError::Field(field, Box::new(other)),
+        }
+    }
+
+    pub fn field(&self) -> Option<SiteField> {
+        match self {
+            SiteError::Field(field, _) => Some(*field),
+            _ => None,
+        }
+    }
+
+    /// 去掉字段包装，得到原有传输分类；用于传输层映射。
+    pub fn unfield(self) -> SiteError {
+        match self {
+            SiteError::Field(_, inner) => inner.unfield(),
+            other => other,
+        }
+    }
 }
 
 impl std::fmt::Display for SiteError {
@@ -582,6 +631,7 @@ impl std::fmt::Display for SiteError {
             SiteError::Conflict(m) => write!(f, "{m}"),
             SiteError::Unavailable(m) => write!(f, "{m}"),
             SiteError::Internal(m) => write!(f, "{m}"),
+            SiteError::Field(_, inner) => write!(f, "{inner}"),
         }
     }
 }

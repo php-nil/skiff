@@ -16,7 +16,7 @@ use skiff_store::{Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::state::sites::{SiteEnvStatus, SiteError};
+use crate::state::sites::{SiteEnvStatus, SiteError, SiteField};
 use crate::state::AppState;
 use crate::templates::{RuntimeJobView, RuntimeRow, SiteEnvView, SiteTlsView, SiteView};
 use crate::util::encode_uri_component;
@@ -389,11 +389,12 @@ fn tls_view(info: skiff_app::sites::SiteTlsInfo) -> SiteTlsView {
 }
 
 fn map_err(e: SiteError) -> AppError {
-    match e {
+    match e.unfield() {
         SiteError::BadRequest(m) => AppError::BadRequest(m),
         SiteError::Conflict(m) => AppError::Conflict(m),
         SiteError::Unavailable(m) => AppError::Unavailable(m),
         SiteError::Internal(m) => AppError::Internal(m),
+        SiteError::Field(_, inner) => AppError::Internal(inner.to_string()),
     }
 }
 
@@ -412,6 +413,7 @@ fn site_error_text(e: &SiteError) -> Option<String> {
             Some(m.clone())
         }
         SiteError::Internal(_) => None,
+        SiteError::Field(_, inner) => site_error_text(inner),
     }
 }
 
@@ -519,35 +521,19 @@ mod tests {
 
     #[test]
     fn server_error_maps_to_visible_field_only() {
-        // 重复站点落到主域名字段旁。
-        assert_eq!(error_field("站点已存在：shop.local", "static"), "domain");
-        // 别名冲突落到别名区。
-        assert_eq!(
-            error_field("域名已被站点使用：www.shop.local", "runtime"),
-            "aliases"
-        );
-        assert_eq!(error_field("域名重复：www.shop.local", "proxy"), "aliases");
+        use crate::state::sites::SiteField as F;
+        // 每个码映射到唯一字段。
+        assert_eq!(error_field(Some(F::Domain), "static"), "domain");
+        assert_eq!(error_field(Some(F::Aliases), "runtime"), "aliases");
+        assert_eq!(error_field(Some(F::RootDir), "runtime"), "root_dir");
         // 类型专属错误只在对应类型下落到字段，否则回顶部提示。
-        assert_eq!(error_field("上游地址不能为空", "proxy"), "proxy_target");
-        assert_eq!(error_field("上游地址不能为空", "static"), "");
-        assert_eq!(error_field("请选择运行环境", "runtime"), "runtime_id");
-        assert_eq!(error_field("请选择运行环境", "static"), "");
-        // 环境级错误不属于任何输入字段。
-        assert_eq!(
-            error_field(
-                "Web 服务（OpenResty）未就绪：请先在「网站 → 运行环境」安装/启动 Web 服务",
-                "static"
-            ),
-            ""
-        );
-        assert_eq!(
-            error_field(
-                "Web 服务（OpenResty）未就绪：请先在「网站 → 运行环境」安装/启动 Web 服务",
-                "runtime"
-            ),
-            ""
-        );
-        assert_eq!(error_field("Docker 不可用：socket 不存在", "runtime"), "");
+        assert_eq!(error_field(Some(F::ProxyTarget), "proxy"), "proxy_target");
+        assert_eq!(error_field(Some(F::ProxyTarget), "static"), "");
+        assert_eq!(error_field(Some(F::RuntimeId), "runtime"), "runtime_id");
+        assert_eq!(error_field(Some(F::RuntimeId), "static"), "");
+        // 没有字段码（含环境级错误）一律回顶部，不再按文案猜。
+        assert_eq!(error_field(None, "runtime"), "");
+        assert_eq!(error_field(None, "static"), "");
     }
 
     #[test]

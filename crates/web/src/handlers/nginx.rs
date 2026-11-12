@@ -89,12 +89,16 @@ async fn page(
             .unwrap_or(0)
             .min(100_000),
     });
-    let mut config = state.nginx_config_view().await.map_err(|e| match e {
-        skiff_app::sites::SiteError::Internal(m) => AppError::Internal(m),
-        skiff_app::sites::SiteError::BadRequest(m) => AppError::BadRequest(m),
-        skiff_app::sites::SiteError::Unavailable(m) => AppError::Unavailable(m),
-        skiff_app::sites::SiteError::Conflict(m) => AppError::Conflict(m),
-    })?;
+    let mut config = state
+        .nginx_config_view()
+        .await
+        .map_err(|e| match e.unfield() {
+            skiff_app::sites::SiteError::Internal(m) => AppError::Internal(m),
+            skiff_app::sites::SiteError::BadRequest(m) => AppError::BadRequest(m),
+            skiff_app::sites::SiteError::Unavailable(m) => AppError::Unavailable(m),
+            skiff_app::sites::SiteError::Conflict(m) => AppError::Conflict(m),
+            skiff_app::sites::SiteError::Field(_, inner) => AppError::Internal(inner.to_string()),
+        })?;
     if let Some(text) = submitted {
         config.main_content = text;
     }

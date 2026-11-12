@@ -8,7 +8,9 @@ use std::path::Path;
 use skiff_store::Site;
 
 use super::Actor;
-use crate::sites::{site_root_for, validate_domain, NewSite, SiteError, VhostSaveOutcome};
+use crate::sites::{
+    site_root_for, validate_domain, NewSite, SiteError, SiteField, VhostSaveOutcome,
+};
 use crate::tasks::TaskService;
 use crate::AppState;
 
@@ -60,9 +62,10 @@ fn root_slug(raw: &str, sites_dir: &Path) -> Option<String> {
 
 pub async fn create(state: &AppState, cmd: CreateSite) -> Result<Site, SiteError> {
     let settings = state.site_settings();
-    let domain = validate_domain(&cmd.domain)?;
+    let domain = validate_domain(&cmd.domain).map_err(|e| SiteError::at(SiteField::Domain, e))?;
     let slug = root_slug(&cmd.root_dir, &settings.sites_dir);
-    let root_dir = site_root_for(&settings.sites_dir, &domain, slug.as_deref())?;
+    let root_dir = site_root_for(&settings.sites_dir, &domain, slug.as_deref())
+        .map_err(|e| SiteError::at(SiteField::RootDir, e))?;
     let req = NewSite {
         domain,
         root_dir: Some(root_dir.display().to_string()),
@@ -484,18 +487,34 @@ mod tests {
         let err = create(&state, create_cmd("bad domain", ""))
             .await
             .unwrap_err();
+        assert_eq!(err.field(), Some(SiteField::Domain), "{err}");
         assert!(
-            matches!(err, SiteError::BadRequest(ref m) if m.contains("域名只能包含")),
-            "非法域名必须给字段级错误：{err}"
+            err.to_string().contains("域名只能包含"),
+            "非法域名文案不得变化：{err}"
         );
         assert!(state.db().site_by_domain("bad domain").unwrap().is_none());
 
         let err = create(&state, create_cmd("shop.local", ".."))
             .await
             .unwrap_err();
+        assert_eq!(err.field(), Some(SiteField::RootDir), "{err}");
         assert!(
-            matches!(err, SiteError::BadRequest(ref m) if m.contains("站点目录")),
-            "越界目录必须给字段级错误：{err}"
+            err.to_string().contains("站点目录"),
+            "越界目录文案不得变化：{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_alias_conflict_carries_alias_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_at(dir.path());
+        let mut cmd = create_cmd("shop.local", "");
+        cmd.aliases = vec!["shop.local".into()];
+        let err = create(&state, cmd).await.unwrap_err();
+        assert_eq!(err.field(), Some(SiteField::Aliases), "{err}");
+        assert!(
+            err.to_string().contains("主域名"),
+            "别名文案不得变化：{err}"
         );
     }
 

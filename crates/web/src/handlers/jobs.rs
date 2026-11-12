@@ -289,11 +289,12 @@ pub async fn retry(
         },
     )
     .await
-    .map_err(|e| match e {
+    .map_err(|e| match e.unfield() {
         SiteError::BadRequest(m) => AppError::BadRequest(m),
         SiteError::Conflict(m) => AppError::Conflict(m),
         SiteError::Unavailable(m) => AppError::Unavailable(m),
         SiteError::Internal(m) => AppError::Internal(m),
+        SiteError::Field(_, inner) => AppError::Internal(inner.to_string()),
     })?;
     Ok(handlers::flash_redirect(
         &state,

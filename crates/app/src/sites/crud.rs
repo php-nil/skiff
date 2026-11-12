@@ -1440,10 +1440,12 @@ impl AppState {
     }
 
     pub async fn create_site(&self, req: NewSite) -> Result<Site, SiteError> {
-        let domain = validate_domain(&req.domain)?;
+        let domain =
+            validate_domain(&req.domain).map_err(|e| SiteError::at(SiteField::Domain, e))?;
         let site_type = validate_site_type(&req.site_type)?;
         // 别名先做语法与去重校验，再查库冲突；拒绝与主域名重复。
-        let aliases = normalize_site_aliases(&domain, &req.aliases)?;
+        let aliases = normalize_site_aliases(&domain, &req.aliases)
+            .map_err(|e| SiteError::at(SiteField::Aliases, e))?;
         let s = self.site_settings();
         let env = self.site_env_status().await;
         if !env.docker_available || !env.installed || env.nginx_state != "running" {
@@ -1466,36 +1468,59 @@ impl AppState {
                     .as_deref()
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
-                    .ok_or_else(|| SiteError::BadRequest("请选择运行环境".into()))?;
+                    .ok_or_else(|| {
+                        SiteError::at(
+                            SiteField::RuntimeId,
+                            SiteError::BadRequest("请选择运行环境".into()),
+                        )
+                    })?;
                 let rt = self
                     .db()
                     .runtime_by_id(rid)
                     .map_err(|e| SiteError::Internal(e.to_string()))?
-                    .ok_or_else(|| SiteError::Unavailable(format!("运行环境不存在：{rid}")))?;
+                    .ok_or_else(|| {
+                        SiteError::at(
+                            SiteField::RuntimeId,
+                            SiteError::Unavailable(format!("运行环境不存在：{rid}")),
+                        )
+                    })?;
                 if !runtime_catalog::is_implemented(&rt.kind) {
-                    return Err(SiteError::Unavailable(format!(
-                        "{} 运行环境尚未接入，当前版本不能创建该类站点",
-                        rt.kind
-                    )));
+                    return Err(SiteError::at(
+                        SiteField::RuntimeId,
+                        SiteError::Unavailable(format!(
+                            "{} 运行环境尚未接入，当前版本不能创建该类站点",
+                            rt.kind
+                        )),
+                    ));
                 }
                 if rt.desired_state != "running" || rt.last_status != "running" {
-                    return Err(SiteError::Unavailable(format!(
-                        "语言运行环境 {} 当前未运行，请先在「运行环境」页启动",
-                        rt.version
-                    )));
+                    return Err(SiteError::at(
+                        SiteField::RuntimeId,
+                        SiteError::Unavailable(format!(
+                            "语言运行环境 {} 当前未运行，请先在「运行环境」页启动",
+                            rt.version
+                        )),
+                    ));
                 }
                 if rt.kind == skiff_store::KIND_PHP {
                     let socket = rt.socket_path.as_deref().ok_or_else(|| {
-                        SiteError::Unavailable("运行环境缺少 socket 路径，请先重新安装".into())
+                        SiteError::at(
+                            SiteField::RuntimeId,
+                            SiteError::Unavailable("运行环境缺少 socket 路径，请先重新安装".into()),
+                        )
                     })?;
                     if !Path::new(socket).exists() {
-                        return Err(SiteError::Unavailable(format!(
-                            "PHP socket 未就绪：{socket}（请检查 FPM 是否已启动）"
-                        )));
+                        return Err(SiteError::at(
+                            SiteField::RuntimeId,
+                            SiteError::Unavailable(format!(
+                                "PHP socket 未就绪：{socket}（请检查 FPM 是否已启动）"
+                            )),
+                        ));
                     }
                 } else if rt.port.is_none() {
-                    return Err(SiteError::Unavailable(
-                        "运行环境缺少固定端口，请先重新安装".into(),
+                    return Err(SiteError::at(
+                        SiteField::RuntimeId,
+                        SiteError::Unavailable("运行环境缺少固定端口，请先重新安装".into()),
                     ));
                 }
                 runtime_kind = rt.kind.clone();
@@ -1504,7 +1529,8 @@ impl AppState {
                 runtime_id = Some(rid.to_string());
             }
             TYPE_PROXY => {
-                let target = validate_proxy_target(&req.proxy_target)?;
+                let target = validate_proxy_target(&req.proxy_target)
+                    .map_err(|e| SiteError::at(SiteField::ProxyTarget, e))?;
                 let authority = target
                     .split_once("://")
                     .map(|(_, r)| r)
@@ -1516,8 +1542,9 @@ impl AppState {
                 if host.eq_ignore_ascii_case(&domain)
                     || aliases.iter().any(|a| a.eq_ignore_ascii_case(host))
                 {
-                    return Err(SiteError::BadRequest(
-                        "上游地址不能指向站点自身，否则会形成回环".into(),
+                    return Err(SiteError::at(
+                        SiteField::ProxyTarget,
+                        SiteError::BadRequest("上游地址不能指向站点自身，否则会形成回环".into()),
                     ));
                 }
                 proxy_target = Some(target);
@@ -1532,7 +1559,10 @@ impl AppState {
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .is_some()
         {
-            return Err(SiteError::Conflict(format!("站点已存在：{domain}")));
+            return Err(SiteError::at(
+                SiteField::Domain,
+                SiteError::Conflict(format!("站点已存在：{domain}")),
+            ));
         }
         for alias in &aliases {
             if db
@@ -1540,15 +1570,19 @@ impl AppState {
                 .map_err(|e| SiteError::Internal(e.to_string()))?
                 .is_some()
             {
-                return Err(SiteError::Conflict(format!("域名已被站点使用：{alias}")));
+                return Err(SiteError::at(
+                    SiteField::Aliases,
+                    SiteError::Conflict(format!("域名已被站点使用：{alias}")),
+                ));
             }
             if let Some(owner) = db
                 .alias_owner(alias)
                 .map_err(|e| SiteError::Internal(e.to_string()))?
             {
-                return Err(SiteError::Conflict(format!(
-                    "域名已作为 {owner} 的别名存在：{alias}"
-                )));
+                return Err(SiteError::at(
+                    SiteField::Aliases,
+                    SiteError::Conflict(format!("域名已作为 {owner} 的别名存在：{alias}")),
+                ));
             }
         }
         let root = match req
@@ -1566,10 +1600,13 @@ impl AppState {
                     || !within(&normalized, &s.sites_dir.display().to_string())
                     || path.parent() != Some(s.sites_dir.as_path())
                 {
-                    return Err(SiteError::BadRequest(format!(
-                        "站点目录必须是 {} 下的一级子目录",
-                        s.sites_dir.display()
-                    )));
+                    return Err(SiteError::at(
+                        SiteField::RootDir,
+                        SiteError::BadRequest(format!(
+                            "站点目录必须是 {} 下的一级子目录",
+                            s.sites_dir.display()
+                        )),
+                    ));
                 }
                 PathBuf::from(normalized)
             }

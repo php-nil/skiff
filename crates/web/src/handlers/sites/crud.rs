@@ -30,7 +30,16 @@ pub async fn list(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let open = q.contains_key("new") || q.contains_key("type");
-    render_sites(&state, &user, &q, default_new_form(&q), String::new(), open).await
+    render_sites(
+        &state,
+        &user,
+        &q,
+        default_new_form(&q),
+        String::new(),
+        None,
+        open,
+    )
+    .await
 }
 
 /// 列表页与新建弹窗共用一次渲染：校验失败时把表单值与错误一并带回，
@@ -41,6 +50,7 @@ async fn render_sites(
     q: &HashMap<String, String>,
     form: SiteNewForm,
     form_error: String,
+    form_error_code: Option<SiteField>,
     form_open: bool,
 ) -> Result<Response, AppError> {
     let mut form = form;
@@ -99,7 +109,7 @@ async fn render_sites(
         })
         .collect();
     let settings = state.site_settings();
-    let form_error_field = error_field(&form_error, &form.site_type).to_string();
+    let form_error_field = error_field(form_error_code, &form.site_type).to_string();
     handlers::render(SitesPage {
         ctx: handlers::page_ctx(state, user, "core/sites/list"),
         sites: views,
@@ -131,37 +141,18 @@ fn default_new_form(q: &HashMap<String, String>) -> SiteNewForm {
     }
 }
 
-/// 服务端错误落到具体字段，前端只做高亮，不重复解释前缀规则。
+/// 服务端错误落到具体字段：只查领域错误携带的 `SiteField`，不做中文文案匹配。
 ///
 /// 两类错误回到顶部提示，避免落到当前类型下不可见的字段：
-/// - 环境级错误（nginx/Docker 未就绪）不属于任何输入；
+/// - 环境级错误没有字段码；
 /// - 类型专属字段与当前选中的类型不匹配（如静态站报运行环境错误）。
-pub(super) fn error_field(error: &str, site_type: &str) -> &'static str {
-    let field = if (error.contains("未就绪")
-        && (error.contains("OpenResty") || error.contains("nginx")))
-        || error.contains("Docker 不可用")
-    {
-        ""
-    } else if error.contains("别名") || error.contains("域名重复") || error.contains("域名已被")
-    {
-        "aliases"
-    } else if error.contains("上游") {
-        "proxy_target"
-    } else if error.contains("运行环境") || error.contains("FPM") || error.contains("socket") {
-        "runtime_id"
-    } else if error.contains("站点目录") || error.contains("目录") {
-        "root_dir"
-    } else if error.contains("域名") || error.contains("站点已存在") {
-        "domain"
-    } else {
-        ""
-    };
-    if (field == "runtime_id" && site_type != TYPE_RUNTIME)
-        || (field == "proxy_target" && site_type != TYPE_PROXY)
-    {
-        return "";
+pub(super) fn error_field(field: Option<SiteField>, site_type: &str) -> &'static str {
+    match field {
+        None => "",
+        Some(SiteField::RuntimeId) if site_type != TYPE_RUNTIME => "",
+        Some(SiteField::ProxyTarget) if site_type != TYPE_PROXY => "",
+        Some(field) => field.as_str(),
     }
-    field
 }
 
 fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
@@ -274,12 +265,13 @@ pub async fn create(
             ))
         }
         Err(e) => {
+            let field = e.field();
             let message = match site_error_text(&e) {
                 Some(m) => m,
                 None => return Err(map_err(e)),
             };
             // 校验失败仍留在列表页，弹窗保持展开并回填，不做二次确认。
-            render_sites(&state, &user, &HashMap::new(), values, message, true).await
+            render_sites(&state, &user, &HashMap::new(), values, message, field, true).await
         }
     }
 }
@@ -426,6 +418,10 @@ pub async fn domains(
                     m.clone()
                 }
                 SiteError::Internal(_) => return Err(map_err(e)),
+                SiteError::Field(_, inner) => match **inner {
+                    SiteError::Internal(_) => return Err(map_err(e)),
+                    _ => inner.to_string(),
+                },
             };
             Ok(handlers::flash_redirect(
                 &state,
