@@ -81,17 +81,16 @@ pub async fn index(
     let prefix = state.cfg.entry_prefix.clone();
     let docker_reason = state.docker_unavailable_reason().to_string();
     let initial_admin_pending = state.cfg.data_dir.join("initial-admin.txt").exists();
-    let todos = dashboard_todos(
-        &prefix,
-        user.must_change_password(),
-        initial_admin_pending,
-        docker_ok,
-        &docker_reason,
-        abnormal.len(),
-        plugin_disabled,
+    let attention = skiff_app::attention::collect(skiff_app::attention::AttentionSignals {
+        must_change_password: user.must_change_password(),
+        initial_password_pending: initial_admin_pending,
+        docker_available: docker_ok,
+        abnormal_containers: abnormal.len(),
+        abnormal_sites: site_abnormal,
+        disabled_plugins: plugin_disabled,
         totp_enabled,
-        site_abnormal,
-    );
+    });
+    let todos = todo_views(&attention, &prefix, &docker_reason);
     let audit = audit_rows
         .into_iter()
         .map(|a| AuditRow {
@@ -142,20 +141,25 @@ pub async fn index(
     handlers::render(page)
 }
 
-/// 概览待办：只由**真实信号**生成（会话强制改密、初始口令未改、Docker 可用性、
-/// 异常容器、停用插件、TOTP 状态）。按影响排序：危险 → 警告；同级保持生成顺序。
-#[allow(clippy::too_many_arguments)]
-fn dashboard_todos(
+/// 概览待办：业务判定与排序在 `skiff_app::attention`，这里只映射文案与深链。
+fn todo_views(
+    items: &[skiff_app::attention::AttentionItem],
     prefix: &str,
-    must_change: bool,
-    initial_admin_pending: bool,
-    docker_ok: bool,
     docker_reason: &str,
-    abnormal_containers: usize,
-    disabled_plugins: usize,
-    totp_enabled: bool,
-    abnormal_sites: usize,
 ) -> Vec<DashboardTodo> {
+    items
+        .iter()
+        .map(|item| todo_view(item, prefix, docker_reason))
+        .collect()
+}
+
+fn todo_view(
+    item: &skiff_app::attention::AttentionItem,
+    prefix: &str,
+    docker_reason: &str,
+) -> DashboardTodo {
+    use skiff_app::attention::AttentionCode;
+
     let link = |path: &str| {
         if path.is_empty() {
             format!("/{prefix}")
@@ -172,82 +176,64 @@ fn dashboard_todos(
             action: action.into(),
         };
 
-    let mut todos = Vec::new();
-    if must_change {
-        todos.push(todo(
+    match item.code {
+        AttentionCode::PasswordChangeRequired => todo(
             "danger",
             "首次登录必须修改口令".into(),
             "当前会话在改密前不能执行其他管理操作。".into(),
             link("settings?force=1"),
             "去改口令",
-        ));
-    } else if initial_admin_pending {
-        // 默认口径下不强制跳转，只给一条可忽略的建议。
-        todos.push(todo(
+        ),
+        AttentionCode::InitialPasswordPending => todo(
             "warn",
             "建议修改初始口令".into(),
             "当前口令仍保存在数据目录的 initial-admin.txt；修改成功后文件会自动删除。".into(),
             link("settings#password"),
             "去修改",
-        ));
-    }
-    if !docker_ok {
-        let reason = if docker_reason.trim().is_empty() {
-            "Docker 守护进程当前不可达"
-        } else {
-            docker_reason
-        };
-        todos.push(todo(
+        ),
+        AttentionCode::DockerUnavailable => {
+            let reason = if docker_reason.trim().is_empty() {
+                "Docker 守护进程当前不可达"
+            } else {
+                docker_reason
+            };
+            todo(
+                "danger",
+                "Docker 不可用".into(),
+                format!("{reason}；容器、镜像、网络、卷操作会返回 503。"),
+                link("containers"),
+                "查看容器页",
+            )
+        }
+        AttentionCode::AbnormalContainers => todo(
             "danger",
-            "Docker 不可用".into(),
-            format!("{reason}；容器、镜像、网络、卷操作会返回 503。"),
-            link("containers"),
-            "查看容器页",
-        ));
-    }
-    if abnormal_containers > 0 {
-        todos.push(todo(
-            "danger",
-            format!("{abnormal_containers} 个容器处于异常状态"),
+            format!("{} 个容器处于异常状态", item.count),
             "exited / dead / restarting / paused 需要人工确认；进容器详情可看日志与重启。".into(),
             link("containers?filter=error"),
             "查看异常容器",
-        ));
-    }
-    if abnormal_sites > 0 {
-        todos.push(todo(
+        ),
+        AttentionCode::AbnormalSites => todo(
             "danger",
-            format!("{abnormal_sites} 个站点已停止或异常"),
+            format!("{} 个站点已停止或异常", item.count),
             "站点配置未启用或 nginx 重载失败；进「网站列表」可启动站点并查看日志。".into(),
             link("m/core/sites/list"),
             "查看站点",
-        ));
-    }
-    if disabled_plugins > 0 {
-        todos.push(todo(
+        ),
+        AttentionCode::DisabledPlugins => todo(
             "warn",
-            format!("{disabled_plugins} 个插件已停用"),
+            format!("{} 个插件已停用", item.count),
             "停用的插件不会出现在「应用」菜单；需要时到插件中心重新启用。".into(),
             link("plugins"),
             "去插件中心",
-        ));
-    }
-    if !totp_enabled {
-        todos.push(todo(
+        ),
+        AttentionCode::TotpDisabled => todo(
             "warn",
             "两步验证未开启".into(),
             "账号目前只靠口令保护；开启 TOTP 后登录会多一步校验。".into(),
             link("settings#totp"),
             "去开启",
-        ));
+        ),
     }
-
-    todos.sort_by_key(|t| match t.level.as_str() {
-        "danger" => 0,
-        "warn" => 1,
-        _ => 2,
-    });
-    todos
 }
 
 fn format_uptime(secs: u64) -> String {
@@ -266,17 +252,36 @@ fn format_uptime(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_app::attention::{collect, AttentionSignals};
+
+    fn healthy() -> AttentionSignals {
+        AttentionSignals {
+            must_change_password: false,
+            initial_password_pending: false,
+            docker_available: true,
+            abnormal_containers: 0,
+            abnormal_sites: 0,
+            disabled_plugins: 0,
+            totp_enabled: true,
+        }
+    }
 
     #[test]
     fn todos_are_empty_when_everything_is_healthy() {
-        let todos = dashboard_todos("p", false, false, true, "", 0, 0, true, 0);
-        assert!(todos.is_empty());
+        assert!(todo_views(&collect(healthy()), "p", "").is_empty());
     }
 
     /// 默认口径：初始口令未改时只给非阻塞警告，不产生强制跳转条目。
     #[test]
     fn initial_password_pending_only_suggests_change() {
-        let todos = dashboard_todos("p", false, true, true, "", 0, 0, true, 0);
+        let todos = todo_views(
+            &collect(AttentionSignals {
+                initial_password_pending: true,
+                ..healthy()
+            }),
+            "p",
+            "",
+        );
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].level, "warn");
         assert_eq!(todos[0].href, "/p/settings#password");
@@ -285,7 +290,19 @@ mod tests {
 
     #[test]
     fn todos_are_impact_ordered_and_deep_linked() {
-        let todos = dashboard_todos("p", true, false, false, "socket missing", 2, 1, false, 1);
+        let todos = todo_views(
+            &collect(AttentionSignals {
+                must_change_password: true,
+                docker_available: false,
+                abnormal_containers: 2,
+                abnormal_sites: 1,
+                disabled_plugins: 1,
+                totp_enabled: false,
+                ..healthy()
+            }),
+            "p",
+            "socket missing",
+        );
         let levels: Vec<&str> = todos.iter().map(|t| t.level.as_str()).collect();
         assert_eq!(
             levels,

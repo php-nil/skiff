@@ -86,6 +86,14 @@
 7. **查询参数各自为政**：`?filter=`、`?q=`、`?tab=` 由各页自行解释，审计固定取 200 条、作业固定取 limit，没有统一分页模型。
 8. **导航与授权混写**：菜单既要读 manifest 声明、按角色过滤，又要排序、落库偏好、生成渲染模型；前两者属内核，后两者属表现层。逻辑已迁到 `app/menu.rs`，混写事实仍在。
 
+### 1.5 已解耦条目（2026-11-12）
+
+| 条目 | 原落点 | 当前事实 |
+|---|---|---|
+| Compose 保留项目名与归一化 | `web::handlers::compose::checked_project` | `commands::docker::prepare_project`；`compose_up`/`compose_down`/`compose_project_action` 入口强制校验，Web 无保留名常量 |
+| 概览「待办」业务判定与排序 | `web::handlers::dashboard::dashboard_todos` | `skiff_app::attention::collect` 只产出 code/level/count；中文文案与深链留在 Web 的 `todo_view` |
+| 站点/运行时/Docker/文件写命令 | 各写 handler 内联领域调用与审计 | P1 四组已拆到 `crates/app/src/commands/`，handler 只做解析、授权入口、错误映射与响应 |
+
 ---
 
 ## 2. 目标分层
