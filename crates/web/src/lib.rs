@@ -187,6 +187,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/compose/{project}/{action}",
             post(handlers::ui_api::compose_project_action),
         )
+        .route("/ui/v1/tasks", get(handlers::ui_api::tasks))
+        .route("/ui/v1/tasks/{id}", get(handlers::ui_api::task_detail))
+        .route("/ui/v1/jobs", get(handlers::ui_api::jobs))
+        .route("/ui/v1/jobs/{id}", get(handlers::ui_api::job_detail))
         .route("/ui/v1/containers", get(handlers::ui_api::containers))
         .route(
             "/ui/v1/containers/{id}",
@@ -353,8 +357,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(&format!("/{p}/settings"), get(handlers::settings::page))
         // ---- 内核定时任务：viewer 只读，写操作 Admin + CSRF ----
-        .route(&format!("/{p}/tasks"), get(handlers::tasks::list))
-        .route(&format!("/{p}/tasks/{{id}}"), get(handlers::tasks::detail))
+        // 任务与作业列表/详情已迁 budding（旧 SSR 在 `/{p}/m/core/{tasks|jobs}*`）。
         .route(
             &format!("/{p}/tasks/{{id}}/toggle"),
             post(handlers::tasks::toggle),
@@ -368,8 +371,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::tasks::delete),
         )
         // ---- 任务中心：一次性异步作业（安装/拉镜像/Compose 等）----
-        .route(&format!("/{p}/jobs"), get(handlers::jobs::list))
-        .route(&format!("/{p}/jobs/{{id}}"), get(handlers::jobs::detail))
         .route(
             &format!("/{p}/jobs/{{id}}/cancel"),
             post(handlers::jobs::cancel),

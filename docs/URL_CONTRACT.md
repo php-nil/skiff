@@ -185,10 +185,10 @@
 | 商店 | `GET /{p}/store`、`/store/upgrades/{version}/download`；`POST /store/plugins/{id}/install` |
 | 设置 | `GET /{p}/settings`、`/settings/menu`、`/settings/docker`；`POST /settings/menu`、`/settings/docker`、`/settings/keys/create`、`/settings/keys/{id}/delete`、`/settings/panel` |
 | 审计 | `GET /{p}/audit`（系统级只读资源，允许平铺） |
-| 定时任务 | `GET /{p}/tasks`、`/tasks/{id}`；`POST /tasks/{id}/toggle`、`/run`、`/delete` |
-| 任务中心 | `GET /{p}/jobs`、`/jobs/{id}`、`/jobs/{id}/logs`、`/jobs/{id}/logs/stream`；`POST /jobs/{id}/cancel`、`/retry` |
+| 定时任务 | `GET /{p}/tasks`、`/tasks/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/tasks[/{id}]`）；`POST /tasks/{id}/toggle`、`/run`、`/delete` |
+| 任务中心 | `GET /{p}/jobs`、`/jobs/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/jobs[/{id}]`）；`GET /jobs/{id}/logs`、`/logs/stream`；`POST /jobs/{id}/cancel`、`/retry` |
 | 菜单深链 | `GET /{p}/m/{rest}` |
-| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/runtimes`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers/{id}/{action}`、`GET /ui/v1/images`、`GET /ui/v1/networks`、`GET /ui/v1/volumes`、`GET /ui/v1/compose`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
+| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/runtimes`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers/{id}/{action}`、`GET /ui/v1/images`、`GET /ui/v1/networks`、`GET /ui/v1/volumes`、`GET /ui/v1/compose`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}`、`GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
 | 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） |
 | 静态资源 | `GET /{p}/static/{path}` |
 | API v1 | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart` |
@@ -209,3 +209,4 @@
 | 2026-11-13 | 第二批容器页迁移：`GET /{p}/containers`、`/{p}/containers/{id}` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`；`/ui/v1` 新增 `GET /containers`、`GET /containers/{id}`、`POST /containers/{id}/{action}`（CSRF 走 `x-csrf-token`，动作与旧 htmx 路径同策略同审计）。 |
 | 2026-11-13 | 第三批镜像/网络/卷列表迁移：`GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/docker/images|networks|volumes`；`/ui/v1` 新增三个只读列表接口，写操作本批未迁移。 |
 | 2026-11-13 | 第四批编排页迁移：`GET /{p}/compose` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/docker/compose`；`/ui/v1` 新增 `GET /compose`、`POST /compose/down`、`POST /compose/{project}/{action}`（编辑/校验/部署仍走旧版页面）。 |
+| 2026-11-13 | 第五批任务与作业只读迁移：`GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/tasks|jobs[/{id}]`；`/ui/v1` 新增四个只读接口，启停/取消/重试/日志流仍走旧版。 |

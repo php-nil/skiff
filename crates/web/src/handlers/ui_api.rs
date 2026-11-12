@@ -1619,6 +1619,252 @@ pub async fn compose_project_action(
     Ok(resp)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskItem {
+    pub id: String,
+    pub name: String,
+    pub expr: String,
+    pub next_text: String,
+    pub source: String,
+    pub target: String,
+    pub method: String,
+    pub enabled: bool,
+    pub state_label: String,
+    pub state_class: String,
+    pub last_text: String,
+    pub last_class: String,
+    pub builtin: bool,
+}
+
+fn task_item(v: &serde_json::Value) -> TaskItem {
+    let r = handlers::tasks::row_of(v);
+    TaskItem {
+        id: r.id,
+        name: r.name,
+        expr: r.expr,
+        next_text: r.next_text,
+        source: r.source,
+        target: r.target,
+        method: r.method,
+        enabled: r.enabled,
+        state_label: r.state_label,
+        state_class: r.state_class,
+        last_text: r.last_text,
+        last_class: r.last_class,
+        builtin: r.builtin,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskRunItem {
+    pub trigger: String,
+    pub started_text: String,
+    pub duration: String,
+    pub result: String,
+    pub result_class: String,
+    pub detail: String,
+    pub missed: i64,
+}
+
+/// `GET /ui/v1/tasks`：定时任务列表（只读）。
+pub async fn tasks(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Response, ApiError> {
+    let svc = handlers::tasks::service(&state).map_err(ApiError)?;
+    let needle = q.q.as_deref().unwrap_or("").trim().to_lowercase();
+    let views = svc.list_views().await;
+    let rows: Vec<(String, TaskItem)> = views
+        .iter()
+        .map(task_item)
+        .filter(|t| {
+            needle.is_empty()
+                || t.name.to_lowercase().contains(&needle)
+                || t.id.to_lowercase().contains(&needle)
+                || t.target.to_lowercase().contains(&needle)
+                || t.source.to_lowercase().contains(&needle)
+        })
+        .map(|t| (t.id.clone(), t))
+        .collect();
+    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
+    let mut resp = Json(json!({
+        "data": {
+            "items": items,
+            "total": total,
+            "next_cursor": next_cursor,
+            "can_admin": user.can(skiff_model::Permission::Admin),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `GET /ui/v1/tasks/{id}`：任务详情 + 最近 50 次执行（只读）。
+pub async fn task_detail(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let svc = handlers::tasks::service(&state).map_err(ApiError)?;
+    let view = svc
+        .detail_view(&id, 50)
+        .await
+        .ok_or_else(|| ApiError(AppError::NotFound(format!("任务不存在：{id}"))))?;
+    let task = task_item(&view["task"]);
+    let payload = view["task"]["payload"].clone();
+    let runs: Vec<TaskRunItem> = view["runs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    let r = handlers::tasks::run_row(v);
+                    TaskRunItem {
+                        trigger: r.trigger,
+                        started_text: r.started_text,
+                        duration: r.duration,
+                        result: r.result,
+                        result_class: r.result_class,
+                        detail: r.detail,
+                        missed: r.missed,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut resp = Json(json!({
+        "data": {
+            "task": task,
+            "payload": payload,
+            "runs": runs,
+            "can_admin": user.can(skiff_model::Permission::Admin),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobItem {
+    pub id: String,
+    pub title: String,
+    pub kind_label: String,
+    pub target_label: String,
+    pub status_label: String,
+    pub status_class: String,
+    pub phase_label: String,
+    pub progress: i64,
+    pub indeterminate: bool,
+    pub duration: String,
+    pub created_by: String,
+    /// RFC3339 UTC（D9）。
+    pub created_at: String,
+    pub active: bool,
+}
+
+fn job_item(job: &skiff_app::jobs::Job) -> JobItem {
+    let r = handlers::jobs::row_of(job);
+    JobItem {
+        id: r.id,
+        title: r.title,
+        kind_label: r.kind_label,
+        target_label: r.target_label,
+        status_label: r.status_label,
+        status_class: r.status_class,
+        phase_label: r.phase_label,
+        progress: r.progress,
+        indeterminate: r.indeterminate,
+        duration: r.duration,
+        created_by: r.created_by,
+        created_at: rfc3339(job.created_at),
+        active: r.active,
+    }
+}
+
+/// `GET /ui/v1/jobs`：作业列表（只读，最近 200 条）。
+pub async fn jobs(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(_user): UiAuthUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Response, ApiError> {
+    let rows: Vec<(String, JobItem)> = state
+        .jobs()
+        .list(200)
+        .iter()
+        .map(|job| {
+            let item = job_item(job);
+            (item.id.clone(), item)
+        })
+        .collect();
+    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
+    let mut resp = Json(json!({
+        "data": { "items": items, "total": total, "next_cursor": next_cursor }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `GET /ui/v1/jobs/{id}`：作业详情 + 首屏日志尾巴（纯文本）。
+pub async fn job_detail(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let job = handlers::jobs::load_job(&state, &id).map_err(ApiError)?;
+    let tail = state.jobs().tail(&job.id, 200);
+    let cursor = tail.last().map(|r| r.seq).unwrap_or(0);
+    let log_text = tail
+        .iter()
+        .map(|r| format!("[{}] {}", handlers::jobs::fmt_log_time(r.at), r.line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let view = handlers::jobs::detail_of(&job, cursor, log_text);
+    let mut resp = Json(json!({
+        "data": {
+            "id": view.id,
+            "title": view.title,
+            "kind_label": view.kind_label,
+            "target_label": view.target_label,
+            "status_label": view.status_label,
+            "status_class": view.status_class,
+            "phase_label": view.phase_label,
+            "progress": view.progress,
+            "indeterminate": view.indeterminate,
+            "cancellable": view.cancellable,
+            "cancel_requested": view.cancel_requested,
+            "created_by": view.created_by,
+            "created_by_role": view.created_by_role,
+            "requester_ip": view.requester_ip,
+            "created_at": rfc3339(job.created_at),
+            "started_at": job.started_at.map(|v| rfc3339(v)),
+            "finished_at": job.finished_at.map(|v| rfc3339(v)),
+            "duration": view.duration,
+            "exit_code": view.exit_code,
+            "trigger": view.trigger,
+            "error_class": view.error_class,
+            "error_detail": view.error_detail,
+            "result": job.result.clone(),
+            "params": job.params.clone(),
+            "retry_of": view.retry_of,
+            "can_cancel": view.can_cancel,
+            "can_retry": view.can_retry,
+            "lookback": cursor,
+            "logs": view.log_text,
+            "can_admin": user.can(skiff_model::Permission::Admin),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 /// `GET /ui/v1/session`：当前用户、角色、CSRF、入口前缀与壳页能力开关。
 ///
 /// 未登录由 `UiAuthUser` 返回 401 JSON（`auth.unauthenticated`）。

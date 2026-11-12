@@ -648,6 +648,52 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 项目表格：项目 / 归属 / 服务数 / 运行中，行内按钮启动、停止、重启、清理（清理前确认，卷默认保留）。
 - 编辑、校验与部署仍链回旧版 `/m/core/docker/compose`；服务日志暂由旧页展示（日志查看器待 T3）。
 
+### 5.12 任务与作业（第五批，只读）
+
+- `GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/tasks[/{id}]`、`/{p}/m/core/jobs[/{id}]`。
+- 列表/详情复用 `TaskService::list_views` / `detail_view` 与 `Jobs::list` / `tail` / `detail_of`，不新增 SQL。
+- 启停、立即运行、删除、取消/重试与 SSE 实时日志仍在旧版页面；日志查看器待 T3。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/tasks?q=&limit=50&cursor=` → `{ "data": { items, total, next_cursor, can_admin } }`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `items[].id` / `name` | string | 任务 id / 名称 |
+| `items[].expr` / `next_text` | string | 调度表达式与下次运行展示文案 |
+| `items[].source` / `target` / `method` | string | 来源、目标、执行方式 |
+| `items[].enabled` | bool | 是否启用 |
+| `items[].state_label` / `state_class` | string | 状态文案 / 配色 class |
+| `items[].last_text` / `last_class` | string | 最近结果文案 / 配色 |
+| `items[].builtin` | bool | 内置任务 |
+| `next_cursor` | string \| null | 上一页末项任务 id（D10） |
+
+`GET /ui/v1/tasks/{id}` → `{ "data": { task, payload, runs, can_admin } }`；`payload` 为原样 JSON 对象，`runs[]` 字段 `trigger` / `started_text` / `duration` / `result` / `result_class` / `detail` / `missed`。
+
+`GET /ui/v1/jobs?limit=50&cursor=` → `{ "data": { items, total, next_cursor } }`
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `items[].id` / `title` | string | 作业 id / 标题 |
+| `items[].kind_label` / `target_label` | string | 类型与目标文案 |
+| `items[].status_label` / `status_class` / `phase_label` | string | 状态与阶段 |
+| `items[].progress` | number | 进度百分比；`indeterminate` 表示不确定进度 |
+| `items[].duration` / `created_by` | string | 耗时与提交人 |
+| `items[].created_at` | string | RFC3339 UTC（D9） |
+| `items[].active` | bool | 是否进行中 |
+
+`GET /ui/v1/jobs/{id}` → `{ "data": ... }`：作业元数据（同上）+ `created_at` / `started_at` / `finished_at`（RFC3339 UTC，D9，未开始/结束为 null）+ `cancellable` / `cancel_requested` / `created_by_role` / `requester_ip` / `exit_code` / `trigger` / `error_class` / `error_detail` / `result` / `params` / `retry_of` / `can_cancel` / `can_retry` / `lookback` / `logs`（首屏尾巴纯文本，`[HH:MM:SS] 行`）/ `can_admin`。
+
+错误：未认证 401、任务/作业不存在 404、任务服务不可用 503。
+
+**渲染映射**
+
+- 任务列表：表格（任务/方式/目标/调度/下次运行/状态/最近结果），行点击进详情；启停/运行/删除链回旧版。
+- 任务详情：信息、参数、最近执行表格三块；旧版详情链接保留写操作。
+- 作业列表：表格（作业/标题/类型/目标/状态/耗时/提交人/创建时间），行点击进详情。
+- 作业详情：元数据、参数、结果、日志四条 `card`；日志按行 `text` 平铺（无代码查看器，T3 待落地），实时流/取消/重试链回旧版。
+
 ---
 
 ## 6. 能力缺口与建议

@@ -31,7 +31,7 @@ fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> A
 }
 
 /// 只读页面取任务服务；写路径统一走命令层。
-fn service(state: &AppState) -> Result<&Arc<skiff_app::tasks::TaskService>, AppError> {
+pub(crate) fn service(state: &AppState) -> Result<&Arc<skiff_app::tasks::TaskService>, AppError> {
     state
         .tasks()
         .ok_or_else(|| AppError::Unavailable("内核任务服务未初始化".into()))
@@ -52,7 +52,7 @@ fn state_label(v: &Value) -> (String, String) {
     ("待执行".into(), "ok".into())
 }
 
-fn row_of(v: &Value) -> TaskRow {
+pub(crate) fn row_of(v: &Value) -> TaskRow {
     let id = v["id"].as_str().unwrap_or("").to_string();
     let (state_text, state_class) = state_label(v);
     let (last_text, last_class) = match v.get("last").and_then(|l| l.as_object()) {
@@ -91,7 +91,7 @@ fn row_of(v: &Value) -> TaskRow {
     }
 }
 
-fn run_row(v: &Value) -> TaskRunRow {
+pub(crate) fn run_row(v: &Value) -> TaskRunRow {
     let result = v["result"].as_str().unwrap_or("");
     let (result_text, class) = match result {
         "ok" => ("成功", "ok"),

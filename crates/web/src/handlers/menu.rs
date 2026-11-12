@@ -60,6 +60,13 @@ pub async fn dispatch(
             .await;
         }
     }
+    // 作业详情旧 SSR 落点：`/{p}/m/core/jobs/{id}`。
+    if let Some(id) = rest.strip_prefix("core/jobs/") {
+        if !id.is_empty() && !id.contains('/') {
+            return handlers::jobs::detail(State(state), AuthUser(user), Path(id.to_string()))
+                .await;
+        }
+    }
     // 受限形态（`SKIFF_FORM=docker`）没有 fs 能力面：菜单入口已隐藏，深链也要拒绝，
     // 否则直达 `/{p}/m/core/files` 仍能列出容器内 `/`、`/www`。
     if rest.starts_with("core/files") {

@@ -814,6 +814,183 @@
     };
   }
 
+  function tasksSchema(data) {
+    var body = [];
+    if (data.next_cursor) {
+      body.push(
+        noticeCard(
+          '共 ' + data.total + ' 个任务，当前显示前 ' + data.items.length + ' 条；翻页待接入。'
+        )
+      );
+    }
+    var table = statusTable(
+      [
+        { key: 'name', label: '任务' },
+        { key: 'method', label: '方式' },
+        { key: 'target', label: '目标' },
+        { key: 'expr', label: '调度' },
+        { key: 'next_text', label: '下次运行' },
+        { key: 'state_label', label: '状态' },
+        { key: 'last_text', label: '最近结果' }
+      ],
+      data.items,
+      'id'
+    );
+    table.onEvent = {
+      rowClick: {
+        actions: [{ type: 'navigate', props: { url: prefix + '/tasks/${id}' } }]
+      }
+    };
+    body.push(table);
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '启停、立即运行与删除仍在旧版任务页，待写操作批次迁移。'
+      }
+    });
+    body.push({
+      type: 'link',
+      props: { text: '打开旧版任务页', href: prefix + '/m/core/tasks' }
+    });
+    return {
+      type: 'page',
+      props: { title: '定时任务 · Skiff', subtitle: '只读列表' },
+      body: body
+    };
+  }
+
+  function taskDetailSchema(data) {
+    var t = data.task;
+    var body = [];
+    body.push(
+      detailLines('任务信息', [
+        '名称：' + t.name + '（' + t.id + '）',
+        '方式：' + t.method + ' · 目标：' + t.target,
+        '调度：' + t.expr,
+        '下次运行：' + (t.next_text || '—'),
+        '状态：' + t.state_label,
+        '最近结果：' + (t.last_text || '—'),
+        '来源：' + (t.source || '—') + ' · 内置：' + (t.builtin ? '是' : '否')
+      ])
+    );
+    body.push(detailLines('参数', ['payload = ' + JSON.stringify(data.payload)]));
+    body.push({
+      type: 'card',
+      props: { title: '最近执行（' + data.runs.length + '）' },
+      content: {
+        body: [
+          statusTable(
+            [
+              { key: 'started_text', label: '开始' },
+              { key: 'trigger', label: '触发' },
+              { key: 'duration', label: '耗时' },
+              { key: 'result', label: '结果' },
+              { key: 'detail', label: '说明' }
+            ],
+            data.runs,
+            'started_text'
+          )
+        ]
+      }
+    });
+    body.push({
+      type: 'link',
+      props: {
+        text: '打开旧版任务详情（启停 / 立即运行 / 删除）',
+        href: prefix + '/m/core/tasks/' + encodeURIComponent(t.id)
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: t.name + ' · 定时任务', subtitle: '只读详情' },
+      body: body
+    };
+  }
+
+  function jobsSchema(data) {
+    var body = [];
+    var table = statusTable(
+      [
+        { key: 'id', label: '作业' },
+        { key: 'title', label: '标题' },
+        { key: 'kind_label', label: '类型' },
+        { key: 'target_label', label: '目标' },
+        { key: 'status_label', label: '状态' },
+        { key: 'duration', label: '耗时' },
+        { key: 'created_by', label: '提交人' },
+        { key: 'created_at', label: '创建时间' }
+      ],
+      data.items,
+      'id'
+    );
+    table.onEvent = {
+      rowClick: {
+        actions: [{ type: 'navigate', props: { url: prefix + '/jobs/${id}' } }]
+      }
+    };
+    body.push(table);
+    return {
+      type: 'page',
+      props: { title: '作业中心 · Skiff', subtitle: '只读列表（最近 200 条）' },
+      body: body
+    };
+  }
+
+  function jobDetailSchema(data) {
+    var body = [];
+    body.push(
+      detailLines('作业信息', [
+        '标题：' + data.title + '（' + data.id + '）',
+        '类型：' + data.kind_label + ' · 目标：' + data.target_label,
+        '状态：' + data.status_label + (data.phase_label ? ' · ' + data.phase_label : ''),
+        '进度：' + data.progress + '%' + (data.indeterminate ? '（不确定）' : ''),
+        '创建：' + (data.created_at || '—') + ' · 提交人：' + data.created_by,
+        '开始：' + (data.started_at || '—'),
+        '结束：' + (data.finished_at || '—'),
+        '耗时：' + (data.duration || '—') + ' · 退出码：' + data.exit_code,
+        '触发：' + (data.trigger || '—'),
+        '错误：' + (data.error_class ? data.error_class + ' ' + data.error_detail : '—')
+      ])
+    );
+    body.push(detailLines('参数', ['params = ' + JSON.stringify(data.params)]));
+    body.push(detailLines('结果', ['result = ' + JSON.stringify(data.result)]));
+    var logLines = (data.logs || '').split('\n').filter(function (line) {
+      return line !== '';
+    });
+    body.push({
+      type: 'card',
+      props: { title: '日志（首屏尾巴 ' + logLines.length + ' 行）' },
+      content: {
+        body:
+          logLines.length === 0
+            ? [textLine('暂无日志')]
+            : logLines.map(function (line) {
+                return { type: 'text', props: { text: line } };
+              })
+      }
+    });
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '实时日志流（SSE）与取消/重试仍在旧版作业详情；日志查看器待 T3。'
+      }
+    });
+    body.push({
+      type: 'link',
+      props: {
+        text: '打开旧版作业详情（实时日志 / 取消 / 重试）',
+        href: prefix + '/m/core/jobs/' + encodeURIComponent(data.id)
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: data.title + ' · 作业', subtitle: '只读详情' },
+      body: body
+    };
+  }
+
   function embedWithError(schema) {
     if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
       showError('前端产物未加载（budding 脚本不可用）。');
@@ -938,6 +1115,30 @@
       if (parts[0] === 'compose' && parts.length === 1) {
         getJson('/compose', function (data) {
           embedWithError(composeSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'tasks' && parts.length === 1) {
+        getJson('/tasks' + listQuery(), function (data) {
+          embedWithError(tasksSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'tasks' && parts.length === 2) {
+        getJson('/tasks/' + encodeURIComponent(parts[1]), function (data) {
+          embedWithError(taskDetailSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'jobs' && parts.length === 1) {
+        getJson('/jobs' + listQuery(), function (data) {
+          embedWithError(jobsSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'jobs' && parts.length === 2) {
+        getJson('/jobs/' + encodeURIComponent(parts[1]), function (data) {
+          embedWithError(jobDetailSchema(data));
         });
         return;
       }

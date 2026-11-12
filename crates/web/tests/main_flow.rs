@@ -6450,7 +6450,7 @@ async fn tasks_page_is_read_only_for_viewer_and_requires_csrf_for_admin() {
 
     // viewer：能看到列表与历史入口，但没有任何写操作表单。
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/tasks", &viewer).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/tasks", &viewer).await;
     assert_eq!(status, StatusCode::OK, "viewer 应能读任务页");
     assert!(html.contains("计划任务"), "任务页标题缺失: {html}");
     assert!(
@@ -6773,7 +6773,7 @@ async fn job_detail_renders_persisted_logs_and_metadata() {
         .log_lines(&job.id, "out", &["安装脚本输出第一行".to_string()]);
     h.state.jobs().set_exit_code(&job.id, 127);
 
-    let (status, html) = get_page(&h.app, &format!("/p/jobs/{}", job.id), &token).await;
+    let (status, html) = get_page(&h.app, &format!("/p/m/core/jobs/{}", job.id), &token).await;
     assert_eq!(status, StatusCode::OK, "详情页必须 200: {html}");
     assert!(
         html.contains("任务已创建，等待执行") && html.contains("安装脚本输出第一行"),
@@ -6797,7 +6797,7 @@ async fn job_detail_renders_persisted_logs_and_metadata() {
         "日志容器缺少 JS 接管标记: {html}"
     );
 
-    let (_, list) = get_page(&h.app, "/p/jobs", &token).await;
+    let (_, list) = get_page(&h.app, "/p/m/core/jobs", &token).await;
     assert!(
         list.contains(&format!(r#"data-job-open="{}""#, job.id)),
         "任务中心「查看详情」必须打开弹窗: {list}"
@@ -6976,7 +6976,7 @@ async fn job_detail_empty_logs_show_placeholder() {
         })
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/jobs/job-empty-log", &token).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/jobs/job-empty-log", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("暂无日志"),
@@ -7887,6 +7887,72 @@ async fn ui_resource_lists_keep_auth_and_docker_unavailable_semantics() {
         assert!(data["docker_reason"].is_string(), "{uri}");
         assert!(data["can_admin"].is_boolean(), "{uri}");
     }
+}
+
+/// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。
+#[tokio::test]
+async fn ui_tasks_and_jobs_keep_auth_and_read_only_shapes() {
+    let h = harness();
+    for uri in [
+        "/ui/v1/tasks",
+        "/ui/v1/tasks/missing",
+        "/ui/v1/jobs",
+        "/ui/v1/jobs/missing",
+    ] {
+        let (status, _, body) = get_ui(&h.app, uri, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], "auth.unauthenticated", "{uri}");
+    }
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    // 测试装配未启动调度器：任务接口与旧 SSR 一致返回 503，不得伪造空列表。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/tasks", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "dependency.unavailable");
+
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/tasks/missing", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/jobs", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["items"].is_array());
+
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/jobs/missing", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// 任务/作业规范页交付壳页；旧 SSR 仍在 `/m/core/tasks|jobs`。
+#[tokio::test]
+async fn tasks_and_jobs_canonical_paths_serve_shell() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    for uri in [
+        "/p/tasks",
+        "/p/tasks/builtin:db-vacuum",
+        "/p/jobs",
+        "/p/jobs/abc",
+    ] {
+        let (status, html) = get_html(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-root""#),
+            "{uri} 应为壳页: {html}"
+        );
+    }
+    for uri in ["/p/m/core/jobs"] {
+        let (status, html) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-main-nav""#),
+            "{uri} 旧 SSR 必须保留: {html}"
+        );
+    }
+    // 测试装配未启动调度器，任务旧 SSR 与 JSON 接口同为 503。
+    let (status, _) = get_page(&h.app, "/p/m/core/tasks", &token).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 /// compose 只读接口与写操作：未认证 401；无 Docker 时项目为空；

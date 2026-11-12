@@ -41,7 +41,7 @@ fn fmt_ts(ts: Option<i64>) -> String {
         .unwrap_or_else(|| "-".into())
 }
 
-fn fmt_log_time(at: i64) -> String {
+pub(crate) fn fmt_log_time(at: i64) -> String {
     use chrono::TimeZone;
     chrono::Local
         .timestamp_opt(at, 0)
@@ -125,7 +125,7 @@ fn exit_code_text(job: &Job) -> String {
         .unwrap_or_else(|| "-".into())
 }
 
-fn row_of(job: &Job) -> JobRowView {
+pub(crate) fn row_of(job: &Job) -> JobRowView {
     JobRowView {
         id: job.id.clone(),
         title: job.title.clone(),
@@ -143,7 +143,7 @@ fn row_of(job: &Job) -> JobRowView {
     }
 }
 
-fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDetailView {
+pub(crate) fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDetailView {
     JobDetailView {
         id: job.id.clone(),
         title: job.title.clone(),
@@ -197,7 +197,7 @@ pub async fn list(
     })
 }
 
-fn load_job(state: &AppState, id: &str) -> Result<Job, AppError> {
+pub(crate) fn load_job(state: &AppState, id: &str) -> Result<Job, AppError> {
     state
         .jobs()
         .get(id)
