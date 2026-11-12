@@ -6588,7 +6588,7 @@ async fn files_page_browses_edits_and_falls_back_plugin_link() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/files")
+                .uri("/p/m/core/files")
                 .header(header::COOKIE, &cookie)
                 .body(Body::empty())
                 .unwrap(),
@@ -6724,7 +6724,7 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
         "配额管理仍是独立二级入口: {nav}"
     );
 
-    let (status, files) = get_page(&h.app, "/p/files", &token).await;
+    let (status, files) = get_page(&h.app, "/p/m/core/files", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         files.contains(r#"class="workbench-tabs""#),
@@ -8315,6 +8315,26 @@ async fn ui_plugin_toggle_and_delete_keep_csrf_and_permission_semantics() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["error"]["code"], "auth.forbidden");
+}
+
+/// 文件管理规范页交付占位壳页；旧 SSR（浏览/回收站/配额）仍在 `/m/core/files`。
+#[tokio::test]
+async fn files_canonical_path_serves_placeholder_shell() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    for token in [&admin, &viewer] {
+        let (status, html) = get_html(&h.app, "/p/files", token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"id="skiff-root""#), "{html}");
+        assert!(html.contains("该功能正在适配中"), "{html}");
+    }
+    // 旧 SSR 仍按 FILE_BROWSE 授权：admin 可进，viewer 403。
+    let (status, ssr) = get_page(&h.app, "/p/m/core/files", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ssr.contains(r#"class="workbench-tabs""#), "{ssr}");
+    let (status, _) = get_page(&h.app, "/p/m/core/files", &viewer).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。

@@ -114,6 +114,11 @@ fn shell_for(state: &AppState, parts: &Parts) -> Response {
         ))
         .into_response();
     }
+    shell_page(state)
+}
+
+/// 已认证请求的壳页响应（供带能力面门禁的页面复用，如 `/{p}/files`）。
+pub fn shell_page(state: &AppState) -> Response {
     let body = shell_html(&state.cfg.entry_prefix);
     (
         [

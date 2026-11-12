@@ -1864,6 +1864,31 @@
         });
         return;
       }
+      if (parts[0] === 'files') {
+        embedWithError({
+          type: 'page',
+          props: { title: '文件管理 · Skiff', subtitle: '该功能正在适配中' },
+          body: [
+            {
+              type: 'alert',
+              props: {
+                type: 'warning',
+                title: '该功能正在适配中',
+                text:
+                  '文件浏览器、上传与容器终端依赖上游组件（T1 虚拟滚动 / T2 文件浏览器 / T5 终端），组件到位前不在前端自造；实时终端另需 WS 契约，本批不做。'
+              }
+            },
+            {
+              type: 'link',
+              props: {
+                text: '打开旧版文件管理（浏览 / 回收站 / 配额）',
+                href: prefix + '/m/core/files'
+              }
+            }
+          ]
+        });
+        return;
+      }
       if (parts[0] === 'plugins') {
         if (parts.length > 1 && parts[1]) {
           getJson('/plugins/' + encodeURIComponent(parts[1]), function (data) {

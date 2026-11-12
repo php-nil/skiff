@@ -104,7 +104,19 @@ fn field<'a>(body: &'a Value, key: &str) -> Result<&'a str, JsonErr> {
         .ok_or_else(|| bad_request(format!("缺少字段 {key}")))
 }
 
+/// 规范路径 `/{p}/files`：budding 壳页（占位）。
+///
+/// 文件浏览器 / 上传 / 终端依赖上游组件（T1/T2/T5），本批只交付占位与旧页入口；
+/// 旧 SSR（浏览 / 回收站 / 配额）保留在 `/{p}/m/core/files`。
 pub async fn page(
+    State(state): State<Arc<AppState>>,
+    AuthUser(_user): AuthUser,
+    Query(_q): Query<HashMap<String, String>>,
+) -> Response {
+    crate::handlers::spa::shell_page(&state)
+}
+
+pub async fn legacy_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,

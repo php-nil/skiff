@@ -83,7 +83,7 @@ pub async fn dispatch(
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         "core/tasks" => handlers::tasks::list(State(state), AuthUser(user), Query(q)).await,
         "core/jobs" => handlers::jobs::list(State(state), AuthUser(user)).await,
-        "core/files" => handlers::files::page(State(state), AuthUser(user), Query(q)).await,
+        "core/files" => handlers::files::legacy_page(State(state), AuthUser(user), Query(q)).await,
         "core/files/trash" => handlers::files::trash_page(State(state), AuthUser(user)).await,
         "core/files/quotas" => handlers::files::quotas_page(State(state), AuthUser(user)).await,
         "core/sites/list" => handlers::sites::list(State(state), AuthUser(user), Query(q)).await,

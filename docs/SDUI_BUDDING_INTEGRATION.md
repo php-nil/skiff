@@ -781,6 +781,13 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 错误码：插件不存在 404 `lookup.not_found`；无 `PluginManage` 403 `auth.forbidden`；CSRF 失败 403 `auth.csrf_invalid`。
 
+### 5.17 文件管理与终端（第十批，占位）
+
+- `GET /{p}/files` 交付 budding 占位壳页（「该功能正在适配中」+ 旧页入口），保留 fs 能力面门禁：受限形态仍 403。
+- 旧 SSR（浏览 / 回收站 / 配额）保留在 `GET /{p}/m/core/files`、`/{p}/m/core/files/trash`、`/{p}/m/core/files/quotas`；`/{p}/files/*` 接口全部不变。
+- 阻塞依赖：T1 虚拟滚动、T2 文件浏览器、T5 终端；容器终端是 WS 流，需另立实时契约后才能迁。
+- 本批无新增 `/ui/v1` 接口与字段；新增测试 `files_canonical_path_serves_placeholder_shell`。
+
 ---
 
 ## 6. 能力缺口与建议
