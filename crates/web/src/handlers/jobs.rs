@@ -173,8 +173,8 @@ fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDetailView {
         },
         params_json: serde_json::to_string_pretty(&job.params).unwrap_or_default(),
         retry_of: job.retry_of.clone().unwrap_or_default(),
-        can_cancel: job.active(),
-        can_retry: job.status.terminal(),
+        can_cancel: job.can_cancel(),
+        can_retry: job.can_retry(),
         log_cursor,
         log_text,
     }

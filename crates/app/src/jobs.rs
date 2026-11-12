@@ -143,6 +143,17 @@ impl Job {
         matches!(self.status, JobStatus::Queued | JobStatus::Running)
     }
 
+    /// 界面动作可用性：活动作业可取消，终态作业可重试。
+    ///
+    /// 展示字段不能代替校验——`cancel`/`retry` 仍会独立检查状态。
+    pub fn can_cancel(&self) -> bool {
+        self.active()
+    }
+
+    pub fn can_retry(&self) -> bool {
+        self.status.terminal()
+    }
+
     /// 参数里的扩展 token（安装/卸载任务用于 UI 高亮）。
     pub fn ext_keys(&self) -> Vec<String> {
         self.params
@@ -705,6 +716,25 @@ mod tests {
         assert_eq!(retry.status, JobStatus::Queued);
         assert_eq!(retry.created_by, "operator");
         assert_eq!(retry.ext_keys(), vec!["redis".to_string()]);
+    }
+
+    #[test]
+    fn can_cancel_and_retry_follow_job_state() {
+        let s = svc();
+        let job = submit(&s, "rt-1");
+        // 排队：可取消、不可重试。
+        assert!(job.can_cancel());
+        assert!(!job.can_retry());
+        // 运行中：仍可取消、不可重试。
+        s.set_phase(&job.id, "extensions", "安装扩展", 65, false);
+        let running = s.get(&job.id).unwrap();
+        assert!(running.can_cancel());
+        assert!(!running.can_retry());
+        // 终态：不可取消、可重试。
+        s.finish_err(&job.id, "script", "退出码 1");
+        let failed = s.get(&job.id).unwrap();
+        assert!(!failed.can_cancel());
+        assert!(failed.can_retry());
     }
 
     #[test]
