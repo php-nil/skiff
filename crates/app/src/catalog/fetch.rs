@@ -13,6 +13,8 @@ use ureq::rustls;
 pub const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 /// 插件包 blob 的下载上限：与安装侧的 `DEFAULT_LIMITS.archive_bytes`（100MiB）同量级。
 pub const MAX_BLOB_BYTES: u64 = 128 * 1024 * 1024;
+/// 单次建连超时。ureq 默认 30 秒，镜像被静默丢包时会拖满整个页面预算，必须单独收紧。
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Default)]
 pub struct Conditional<'a> {
@@ -31,6 +33,17 @@ pub struct HttpReply {
 pub trait Transport: Send + Sync {
     fn get(&self, url: &str, cond: &Conditional<'_>) -> Result<HttpReply, String>;
 
+    /// 带剩余预算的 GET：真实实现把本次请求的总超时压到 `budget`，
+    /// 假实现默认忽略预算（测试可覆写以模拟「连接无响应」）。
+    fn get_within(
+        &self,
+        url: &str,
+        cond: &Conditional<'_>,
+        _budget: Duration,
+    ) -> Result<HttpReply, String> {
+        self.get(url, cond)
+    }
+
     /// 二进制 blob 下载（安装链路用）。目录 JSON 的 8MiB 上限装不下插件包，
     /// 因此单独放宽；假传输层无需覆写，默认复用 `get`。
     fn get_blob(&self, url: &str) -> Result<HttpReply, String> {
@@ -41,6 +54,8 @@ pub trait Transport: Send + Sync {
 /// 真实实现：同步阻塞，调用方必须放在 `spawn_blocking`。
 pub struct UreqTransport {
     agent: ureq::Agent,
+    /// 单次请求的总超时（连接 + 读响应）。
+    total: Duration,
 }
 
 impl UreqTransport {
@@ -49,7 +64,12 @@ impl UreqTransport {
     /// 追加自定义根**不放松校验**：仍是 https、仍做完整证书链与主机名校验，
     /// 只是多信任若干个 CA；没有任何 http 或 insecure 开关。
     pub fn new(timeout: Duration, extra_roots: &[CertificateDer<'static>]) -> Self {
-        let mut builder = ureq::AgentBuilder::new().timeout(timeout).redirects(3);
+        // `timeout_connect` 优先于总超时：不显式设置时 ureq 会用 30 秒等 TCP 建连，
+        // 静默丢包就会把页面拖到框架超时。
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .timeout_connect(CONNECT_TIMEOUT.min(timeout))
+            .redirects(3);
         if !extra_roots.is_empty() {
             // 配置加载阶段已用同一个 `root_store` 校验过，这里不会失败。
             let roots = root_store(extra_roots).expect("CA 根已在配置加载阶段校验");
@@ -64,6 +84,20 @@ impl UreqTransport {
         }
         Self {
             agent: builder.build(),
+            total: timeout,
+        }
+    }
+
+    fn call(&self, req: ureq::Request, limit: u64) -> Result<HttpReply, String> {
+        match req.call() {
+            Ok(resp) => Ok(read_reply(resp, limit)),
+            // 条件请求的 304 与 4xx/5xx 都从 Status 分支返回，交给上层判定。
+            Err(ureq::Error::Status(code, resp)) => {
+                let mut reply = read_reply(resp, limit);
+                reply.status = code;
+                Ok(reply)
+            }
+            Err(ureq::Error::Transport(e)) => Err(e.to_string()),
         }
     }
 }
@@ -97,35 +131,31 @@ fn root_store(extra: &[CertificateDer<'static>]) -> Result<rustls::RootCertStore
 
 impl Transport for UreqTransport {
     fn get(&self, url: &str, cond: &Conditional<'_>) -> Result<HttpReply, String> {
-        let mut req = self.agent.get(url);
+        self.get_within(url, cond, self.total)
+    }
+
+    fn get_within(
+        &self,
+        url: &str,
+        cond: &Conditional<'_>,
+        budget: Duration,
+    ) -> Result<HttpReply, String> {
+        let budget = budget.min(self.total);
+        if budget.is_zero() {
+            return Err("目录抓取预算已耗尽".into());
+        }
+        let mut req = self.agent.get(url).timeout(budget);
         if let Some(etag) = cond.etag {
             req = req.set("If-None-Match", etag);
         }
         if let Some(last) = cond.last_modified {
             req = req.set("If-Modified-Since", last);
         }
-        match req.call() {
-            Ok(resp) => Ok(read_reply(resp, MAX_BODY_BYTES)),
-            // 条件请求的 304 与 4xx/5xx 都从 Status 分支返回，交给上层判定。
-            Err(ureq::Error::Status(code, resp)) => {
-                let mut reply = read_reply(resp, MAX_BODY_BYTES);
-                reply.status = code;
-                Ok(reply)
-            }
-            Err(ureq::Error::Transport(e)) => Err(e.to_string()),
-        }
+        self.call(req, MAX_BODY_BYTES)
     }
 
     fn get_blob(&self, url: &str) -> Result<HttpReply, String> {
-        match self.agent.get(url).call() {
-            Ok(resp) => Ok(read_reply(resp, MAX_BLOB_BYTES)),
-            Err(ureq::Error::Status(code, resp)) => {
-                let mut reply = read_reply(resp, MAX_BLOB_BYTES);
-                reply.status = code;
-                Ok(reply)
-            }
-            Err(ureq::Error::Transport(e)) => Err(e.to_string()),
-        }
+        self.call(self.agent.get(url), MAX_BLOB_BYTES)
     }
 }
 

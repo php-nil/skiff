@@ -34,6 +34,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// 拉取失败（离线 / 校验失败）后的重试间隔：5 分钟，失败不顶满一天。
 pub const FAILURE_TTL: Duration = Duration::from_secs(5 * 60);
+/// 一次目录刷新中所有镜像共享的总预算。单个镜像再慢也不能把页面预算吃光；
+/// 最坏情况还要叠加一次建连上限（[`fetch::CONNECT_TIMEOUT`]）。
+pub const FETCH_BUDGET: Duration = Duration::from_secs(10);
 /// 镜像连续失败后的退避基数：10s → 20s → 40s …（只影响自动刷新，手动刷新绕过）。
 const MIRROR_BACKOFF_BASE: Duration = Duration::from_secs(10);
 /// 单个镜像的退避上限：到期后自动刷新会再给它一次机会。
@@ -305,6 +308,8 @@ pub struct CatalogService {
     memo: Mutex<Option<Memo>>,
     /// 按镜像基地址记录的失败退避，避免慢/死镜像每次自动刷新都白等一个超时。
     health: Mutex<HashMap<String, MirrorHealth>>,
+    /// 单次刷新的总预算（所有镜像共享）；测试可注入短预算。
+    fetch_budget: Duration,
     /// 失败审计出口。未装配时只记日志：目录判定不依赖数据库可用性。
     audit_db: OnceLock<Arc<Db>>,
 }
@@ -326,6 +331,20 @@ impl CatalogService {
         Self::build(settings, root, transport)
     }
 
+    /// 测试装配：额外指定单次刷新的总预算（生产固定 [`FETCH_BUDGET`]）。
+    pub fn with_transport_budget(
+        settings: CatalogSettings,
+        root: PathBuf,
+        transport: SharedTransport,
+        fetch_budget: Duration,
+    ) -> Arc<Self> {
+        let mut svc = Self::build(settings, root, transport);
+        Arc::get_mut(&mut svc)
+            .expect("刚构造的 Arc 独占")
+            .fetch_budget = fetch_budget;
+        svc
+    }
+
     fn build(settings: CatalogSettings, root: PathBuf, transport: SharedTransport) -> Arc<Self> {
         let public_key = settings
             .public_key_hex()
@@ -344,6 +363,7 @@ impl CatalogService {
             public_key,
             memo: Mutex::new(None),
             health: Mutex::new(HashMap::new()),
+            fetch_budget: FETCH_BUDGET,
             audit_db: OnceLock::new(),
         })
     }
@@ -786,12 +806,21 @@ impl CatalogService {
         };
 
         let mut errors: Vec<String> = Vec::new();
+        // 所有镜像共享同一个截止时间：慢镜像/静默丢包不能把页面预算耗在逐个回退上。
+        let deadline = Instant::now() + self.fetch_budget;
         for mirror in targets {
             let base = mirror.trim_end_matches('/');
             if base.is_empty() {
                 continue;
             }
-            match self.sync_one(base, cached.as_ref()) {
+            if deadline.saturating_duration_since(Instant::now()).is_zero() {
+                errors.push(format!(
+                    "{base}: 目录抓取总预算 {}s 已耗尽",
+                    self.fetch_budget.as_secs()
+                ));
+                break;
+            }
+            match self.sync_one(base, cached.as_ref(), deadline) {
                 Ok(triple) => {
                     self.mark_mirror_ok(base);
                     return triple;
@@ -847,6 +876,7 @@ impl CatalogService {
         &self,
         base: &str,
         cached: Option<&store::CachedCatalog>,
+        deadline: Instant,
     ) -> Result<(CatalogSnapshot, Option<Index>, String), Failure> {
         let channel = &self.settings.channel;
         let manifest_url = format!("{base}/channels/{channel}/manifest.json");
@@ -856,7 +886,7 @@ impl CatalogService {
         };
         let reply = self
             .transport
-            .get(&manifest_url, &cond)
+            .get_within(&manifest_url, &cond, remaining_budget(deadline)?)
             .map_err(|e| Unavailable(format!("manifest 拉取失败: {e}")))?;
         let (manifest_bytes, etag_manifest, last_modified_manifest, not_modified) = match reply
             .status
@@ -893,7 +923,7 @@ impl CatalogService {
         let signature = if not_modified {
             cached.and_then(|c| c.signature.clone())
         } else {
-            let fetched = self.fetch_signature(&manifest_url)?;
+            let fetched = self.fetch_signature(&manifest_url, deadline)?;
             self.check_signature(
                 &manifest_bytes,
                 &manifest,
@@ -920,7 +950,7 @@ impl CatalogService {
         };
         let reply = self
             .transport
-            .get(&index_url, &cond)
+            .get_within(&index_url, &cond, remaining_budget(deadline)?)
             .map_err(|e| Unavailable(format!("index 拉取失败: {e}")))?;
         let (index_bytes, etag_index, last_modified_index) = match reply.status {
             200 => (reply.body, reply.etag, reply.last_modified),
@@ -1023,11 +1053,12 @@ impl CatalogService {
     fn fetch_signature(
         &self,
         manifest_url: &str,
+        deadline: Instant,
     ) -> Result<Option<(Vec<u8>, SignatureFile)>, Failure> {
         let url = format!("{manifest_url}.sig");
         let reply = self
             .transport
-            .get(&url, &Conditional::default())
+            .get_within(&url, &Conditional::default(), remaining_budget(deadline)?)
             .map_err(|e| Unavailable(format!("签名拉取失败: {e}")))?;
         match reply.status {
             200 => match serde_json::from_slice::<SignatureFile>(&reply.body) {
@@ -1304,6 +1335,16 @@ pub fn newest_versions(items: &[CatalogItem]) -> HashMap<String, String> {
 /// 索引级入口：与 [`installable_versions`] 同一口径（先映射成页面行再选最大）。
 fn installable_version_in(index: &Index, id: &str) -> Option<String> {
     installable_versions(&entries_of(index).plugins).remove(id)
+}
+
+/// 距本轮抓取截止时间还剩多少；耗尽即按「拉取超时」失败，不再发起新请求。
+fn remaining_budget(deadline: Instant) -> Result<Duration, Failure> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(Unavailable("目录抓取超时（总预算已耗尽）".into()).into())
+    } else {
+        Ok(remaining)
+    }
 }
 
 /// 磁盘快照是否仍在 JSON TTL 内。按 `meta.json` 的 `fetched_at` 判定，跨进程有效；

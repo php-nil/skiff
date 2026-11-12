@@ -6,6 +6,7 @@
 //! - kernel.sock / Supervisor 拉起插件进程是 unix-only，不在 Windows 测试面内。
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -7004,4 +7005,69 @@ async fn concurrent_page_requests_all_succeed() {
     for t in tasks {
         assert_eq!(t.await.unwrap(), StatusCode::OK);
     }
+}
+
+/// 镜像源被静默丢包（TCP 能连上、但永不回包）时：
+/// 页面必须正常 200 并展示降级提示，且 5 分钟冷却内不再发起第二次抓取。
+#[tokio::test]
+async fn store_page_returns_200_when_mirror_silently_drops_packets() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = accepted.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            counter.fetch_add(1, Ordering::SeqCst);
+            // 持有连接但一个字节都不回：模拟「连得上、无响应」。
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                drop(stream);
+            });
+        }
+    });
+
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            channel: "stable".into(),
+            mirrors: vec![format!("http://127.0.0.1:{port}")],
+            public_key: None,
+            allow_unsigned: false,
+            timeout: std::time::Duration::from_millis(800),
+            extra_roots: Vec::new(),
+        },
+    );
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let get_store = |app: Router, token: String| async move {
+        app.oneshot(
+            Request::builder()
+                .uri("/p/store")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    };
+
+    let resp = get_store(h.app.clone(), token.clone()).await;
+    assert_eq!(resp.status(), StatusCode::OK, "抓取超时不得变成框架 504");
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("镜像源不可达") || body.contains("尚未连上任何镜像源"),
+        "应展示降级提示: {body}"
+    );
+    assert!(accepted.load(Ordering::SeqCst) >= 1, "首次访问应尝试建连");
+
+    let before = accepted.load(Ordering::SeqCst);
+    let resp = get_store(h.app.clone(), token).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        before,
+        "5 分钟冷却内不得再次发起抓取"
+    );
 }

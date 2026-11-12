@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use skiff_store::Db;
 
 use super::fetch::testing::FakeTransport;
-use super::fetch::HttpReply;
+use super::fetch::{Conditional, HttpReply, Transport};
 use super::model::{INDEX_SCHEMA, MANIFEST_SCHEMA};
 use super::verify::testing::{sign_hello, test_key, TestKey};
 use super::*;
@@ -126,6 +126,41 @@ struct Fixture {
     dir: tempfile::TempDir,
     fake: Arc<FakeTransport>,
     key: TestKey,
+}
+
+/// 模拟「连接被静默丢包」：TCP 能通但永不回包，请求要等满剩余预算才超时失败。
+struct HangingTransport {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl HangingTransport {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Transport for HangingTransport {
+    fn get(&self, _url: &str, _cond: &Conditional<'_>) -> Result<HttpReply, String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err("连接超时（模拟静默丢包）".into())
+    }
+
+    fn get_within(
+        &self,
+        _url: &str,
+        _cond: &Conditional<'_>,
+        budget: Duration,
+    ) -> Result<HttpReply, String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(budget);
+        Err("连接超时（模拟静默丢包）".into())
+    }
 }
 
 impl Fixture {
@@ -379,6 +414,65 @@ fn unreachable_mirror_without_cache_explains_next_step() {
     );
     assert!(snap.message.contains("设置"), "{}", snap.message);
     assert!(snap.entries.plugins.is_empty());
+}
+
+/// 静默丢包（连得上但无响应）：抓取必须在总预算内失败，走离线缓存路径并进入冷却。
+#[test]
+fn silent_drop_uses_cache_and_enters_cooldown() {
+    let fx = Fixture::new();
+    fx.serve_signed(2, "com.example.one", "e-m", "e-i");
+    assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
+
+    let hang = HangingTransport::new();
+    let svc = CatalogService::with_transport_budget(
+        fx.settings(),
+        fx.dir.path().join("catalog"),
+        hang.clone(),
+        Duration::from_millis(120),
+    );
+    let started = Instant::now();
+    let snap = svc.snapshot(true);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "抓取必须受总预算约束"
+    );
+    assert_eq!(snap.state, CatalogState::Offline, "{}", snap.message);
+    assert!(snap.message.contains("镜像源不可达"), "{}", snap.message);
+    assert!(snap.message.contains("本地缓存"), "{}", snap.message);
+    assert_eq!(snap.entries.plugins.len(), 1, "应继续展示上次快照");
+    assert_eq!(hang.calls(), 1);
+
+    // 5 分钟冷却内：不再发请求。
+    let snap = svc.snapshot(false);
+    assert_eq!(snap.state, CatalogState::Offline);
+    assert_eq!(hang.calls(), 1, "失败冷却期内不得重试");
+}
+
+/// 多个镜像共享同一个总预算：不能每个源各等一个超时。
+#[test]
+fn multiple_mirrors_share_one_fetch_budget() {
+    let fx = Fixture::new();
+    let hang = HangingTransport::new();
+    let mut settings = fx.settings();
+    settings.mirrors = (0..3)
+        .map(|i| format!("https://m{i}.example/skiff"))
+        .collect();
+    let svc = CatalogService::with_transport_budget(
+        settings,
+        fx.dir.path().join("catalog"),
+        hang.clone(),
+        Duration::from_millis(150),
+    );
+
+    let started = Instant::now();
+    let snap = svc.snapshot(true);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "总耗时应受共享预算约束"
+    );
+    assert_eq!(snap.state, CatalogState::Offline);
+    assert_eq!(hang.calls(), 1, "预算耗尽后不应再逐个尝试剩余镜像");
+    assert!(snap.message.contains("总预算"), "{}", snap.message);
 }
 
 #[test]
