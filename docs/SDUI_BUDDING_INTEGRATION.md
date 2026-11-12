@@ -694,6 +694,13 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 作业列表：表格（作业/标题/类型/目标/状态/耗时/提交人/创建时间），行点击进详情。
 - 作业详情：元数据、参数、结果、日志四条 `card`；日志按行 `text` 平铺（无代码查看器，T3 待落地），实时流/取消/重试链回旧版。
 
+### 5.13 审计（第六批，阻塞为占位）
+
+- **阻塞原因**：后端只有 `Store::recent_audit(limit)`（最近 N 条），没有关键字过滤与 keyset 游标查询；按「不写新聚合 SQL」的红线，本批不自行补查询。
+- `GET /{p}/audit` 交付 budding 占位壳页（「该功能正在适配中」+ 说明），旧 SSR 保留在 `GET /{p}/m/core/settings/audit`（最近 200 条，`AuditRead` 权限不变：viewer 直接访问 403，菜单不可见）。
+- **待办（解除阻塞所需）**：审计表增加 `keyword + before(ts,id)` 查询（或等价索引查询），返回 `{items, next_cursor}`；落地后再补 `GET /ui/v1/audit` 与 buds 表格翻页，字段冻结为 `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`。
+- 本批无新增 `/ui/v1` 接口与新增测试用例（仅 `audit_canonical_path_serves_placeholder_shell` 覆盖落点与权限）。
+
 ---
 
 ## 6. 能力缺口与建议

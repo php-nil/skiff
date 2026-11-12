@@ -184,7 +184,7 @@
 | 插件 | `GET /{p}/plugins`、`/plugins/{id}`、`/plugins/{id}/{view}`、`/plugins/{id}/ui/{path}`；`POST /plugins/install`、`/confirm`、`/{id}/toggle`、`/{id}/delete`、`/{id}/rpc` |
 | 商店 | `GET /{p}/store`、`/store/upgrades/{version}/download`；`POST /store/plugins/{id}/install` |
 | 设置 | `GET /{p}/settings`、`/settings/menu`、`/settings/docker`；`POST /settings/menu`、`/settings/docker`、`/settings/keys/create`、`/settings/keys/{id}/delete`、`/settings/panel` |
-| 审计 | `GET /{p}/audit`（系统级只读资源，允许平铺） |
+| 审计 | `GET /{p}/audit` 已交付 budding 占位壳页（后端尚无关键字 + 游标查询，旧 SSR 保留在 `GET /{p}/m/core/settings/audit`，最近 200 条；`AuditRead` 权限不变，viewer 直接访问 403、菜单不可见） |
 | 定时任务 | `GET /{p}/tasks`、`/tasks/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/tasks[/{id}]`）；`POST /tasks/{id}/toggle`、`/run`、`/delete` |
 | 任务中心 | `GET /{p}/jobs`、`/jobs/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/jobs[/{id}]`）；`GET /jobs/{id}/logs`、`/logs/stream`；`POST /jobs/{id}/cancel`、`/retry` |
 | 菜单深链 | `GET /{p}/m/{rest}` |
@@ -210,3 +210,4 @@
 | 2026-11-13 | 第三批镜像/网络/卷列表迁移：`GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/docker/images|networks|volumes`；`/ui/v1` 新增三个只读列表接口，写操作本批未迁移。 |
 | 2026-11-13 | 第四批编排页迁移：`GET /{p}/compose` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/docker/compose`；`/ui/v1` 新增 `GET /compose`、`POST /compose/down`、`POST /compose/{project}/{action}`（编辑/校验/部署仍走旧版页面）。 |
 | 2026-11-13 | 第五批任务与作业只读迁移：`GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/tasks|jobs[/{id}]`；`/ui/v1` 新增四个只读接口，启停/取消/重试/日志流仍走旧版。 |
+| 2026-11-13 | 第六批审计迁移受阻：后端只有 `recent_audit(limit)`，无关键字/游标查询；按红线不自行新增 SQL，`GET /{p}/audit` 先交付 budding 占位壳页，旧 SSR 保留在 `GET /{p}/m/core/settings/audit`，待审计查询落地后再补 JSON 接口与翻页。 |

@@ -623,7 +623,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/keys/{{id}}/remove"),
             post(handlers::settings::remove_key),
         )
-        .route(&format!("/{p}/audit"), get(handlers::settings::audit))
+        // 审计页已进入 budding 适配：后端尚无关键字 + 游标查询，规范页先给占位，
+        // 旧 SSR 保留在 `/{p}/m/core/settings/audit`（最近 200 条）。
         // 契约里的规范深链：旧路由继续可用，这里只是内部转发到同一 handler。
         .route(&format!("/{p}/m/{{*rest}}"), get(handlers::menu::dispatch))
         // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。

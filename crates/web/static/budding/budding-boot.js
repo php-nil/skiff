@@ -1142,6 +1142,28 @@
         });
         return;
       }
+      if (parts[0] === 'audit') {
+        embedWithError({
+          type: 'page',
+          props: { title: '审计日志 · Skiff', subtitle: '该功能正在适配中' },
+          body: [
+            {
+              type: 'alert',
+              props: {
+                type: 'warning',
+                title: '该功能正在适配中',
+                text:
+                  '审计检索需要后端提供关键字 + 游标查询（当前只有最近 200 条），按约定不在前端自造分页；旧版页面暂保留完整列表。'
+              }
+            },
+            {
+              type: 'link',
+              props: { text: '打开旧版审计页（最近 200 条）', href: prefix + '/m/core/settings/audit' }
+            }
+          ]
+        });
+        return;
+      }
       embed(placeholderSchema(session));
     })
     .catch(function (error) {

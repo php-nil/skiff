@@ -1212,7 +1212,7 @@ async fn current_state_highlights_plugin_center_and_settings_items() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/audit")
+                .uri("/p/m/core/settings/audit")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -7887,6 +7887,28 @@ async fn ui_resource_lists_keep_auth_and_docker_unavailable_semantics() {
         assert!(data["docker_reason"].is_string(), "{uri}");
         assert!(data["can_admin"].is_boolean(), "{uri}");
     }
+}
+
+/// 审计规范页：后端尚无关键字游标查询，交付占位壳页；旧 SSR 仍按权限拒绝 viewer。
+#[tokio::test]
+async fn audit_canonical_path_serves_placeholder_shell() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    for token in [&admin, &viewer] {
+        let (status, html) = get_html(&h.app, "/p/audit", token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    }
+    let (status, _) = get_page(&h.app, "/p/m/core/settings/audit", &viewer).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "旧审计页对 viewer 应维持 AuditRead 拒绝（403），不得泄露数据"
+    );
+    let (status, ssr) = get_page(&h.app, "/p/m/core/settings/audit", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。
