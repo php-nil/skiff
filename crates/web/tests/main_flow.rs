@@ -3493,7 +3493,12 @@ async fn legacy_ui_only_package_maps_main_to_index_html() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // 信息页也必须存在，并给出 main 入口与旧包菜单深链。
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.legacy", &admin).await;
+    let (status, html) = get_page(
+        &h.app,
+        "/p/m/core/plugins/info/com.example.legacy",
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"href="/p/plugins/com.example.legacy/main""#),
