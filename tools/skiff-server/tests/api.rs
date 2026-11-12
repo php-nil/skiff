@@ -934,6 +934,163 @@ fn release_rejects_multiple_defaults_per_kind() {
     assert!(message.contains("default"), "{message}");
 }
 
+fn yank(fx: &Fixture, path: &str, reason: &str) -> Reply {
+    let body = serde_json::json!({ "reason": reason }).to_string();
+    signed_call(
+        fx.addr,
+        &fx.reviewer,
+        "POST",
+        path,
+        &[("Content-Type", "application/json")],
+        body.as_bytes(),
+    )
+}
+
+#[test]
+fn yank_app_marks_source_and_revoked_apps_only() {
+    let fx = Fixture::new();
+    let created = submit_app(&fx, "com.example.blog", "1.0.0", APP_COMPOSE.as_bytes());
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    assert_eq!(approve(&fx, &sid).status, 202);
+    publish(&fx, 1);
+
+    let reply = yank(
+        &fx,
+        "/api/v1/apps/com.example.blog/versions/1.0.0/yank",
+        "compose 引用不可信镜像",
+    );
+    assert_eq!(reply.status, 202, "{:?}", reply.json());
+    assert_eq!(reply.json()["entry_kind"], "app");
+
+    let (report, staging) = publish(&fx, 2);
+    assert_eq!(report.seq, 2);
+    let text = fs::read_to_string(staging.path().join("channels/stable/index.json")).unwrap();
+    let index: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(index["apps"][0]["yanked"], true);
+    assert_eq!(index["apps"][0]["yank_reason"], "compose 引用不可信镜像");
+    let sha = hex::encode(sha2::Sha256::digest(APP_COMPOSE.as_bytes()));
+    let revoked = &index["revoked_apps"][0];
+    assert_eq!(revoked["id"], "com.example.blog");
+    assert_eq!(revoked["version"], "1.0.0");
+    assert_eq!(revoked["sha256"], sha);
+    assert_eq!(revoked["reason"], "compose 引用不可信镜像");
+    assert!(revoked["at"].as_str().unwrap().len() == 20);
+    assert_eq!(index["revoked"].as_array().unwrap().len(), 0);
+    assert!(!text.contains("revoked_runtimes"), "{text}");
+
+    let source: serde_json::Value = serde_json::from_slice(
+        &fs::read(fx.catalog.join("stable/apps/com.example.blog-1.0.0.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(source["yanked"], true);
+
+    let record: serde_json::Value = serde_json::from_slice(
+        &fs::read(fx.state.join("submissions").join(format!("{sid}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["takedown"]["kind"], "yank");
+    assert_eq!(record["takedown"]["reason"], "compose 引用不可信镜像");
+}
+
+#[test]
+fn yank_runtime_marks_revoked_runtimes_only() {
+    let fx = Fixture::new();
+    let created = submit_runtime(&fx, &runtime_entry("php", "8.5"));
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    assert_eq!(approve(&fx, &sid).status, 202);
+    publish(&fx, 1);
+
+    let reply = yank(
+        &fx,
+        "/api/v1/runtimes/php/versions/8.5/yank",
+        "基础镜像 CVE",
+    );
+    assert_eq!(reply.status, 202, "{:?}", reply.json());
+    assert_eq!(reply.json()["entry_kind"], "runtime");
+
+    let (_, staging) = publish(&fx, 2);
+    let text = fs::read_to_string(staging.path().join("channels/stable/index.json")).unwrap();
+    let index: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(index["runtimes"][0]["yanked"], true);
+    let revoked = &index["revoked_runtimes"][0];
+    assert_eq!(revoked["id"], "php");
+    assert_eq!(revoked["version"], "8.5");
+    assert_eq!(revoked["sha256"], "b".repeat(64));
+    assert_eq!(index["revoked"].as_array().unwrap().len(), 0);
+    assert!(!text.contains("revoked_apps"), "{text}");
+}
+
+#[test]
+fn yank_kind_endpoints_are_reviewer_only_and_idempotent() {
+    let fx = Fixture::new();
+    let created = submit_app(&fx, "com.example.blog", "1.0.0", APP_COMPOSE.as_bytes());
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    assert_eq!(approve(&fx, &sid).status, 202);
+    publish(&fx, 1);
+
+    // 作者不能撤包。
+    let author = signed_call(
+        fx.addr,
+        &fx.author,
+        "POST",
+        "/api/v1/apps/com.example.blog/versions/1.0.0/yank",
+        &[],
+        b"",
+    );
+    assert_eq!(author.status, 403, "{:?}", author.json());
+
+    // 不存在的目标 404。
+    let missing = yank(
+        &fx,
+        "/api/v1/apps/com.example.none/versions/9.9.9/yank",
+        "no such app",
+    );
+    assert_eq!(missing.status, 404, "{:?}", missing.json());
+
+    let first = yank(
+        &fx,
+        "/api/v1/apps/com.example.blog/versions/1.0.0/yank",
+        "下架",
+    );
+    assert_eq!(first.status, 202, "{:?}", first.json());
+    let again = yank(
+        &fx,
+        "/api/v1/apps/com.example.blog/versions/1.0.0/yank",
+        "下架",
+    );
+    assert_eq!(again.status, 200, "{:?}", again.json());
+    assert_eq!(again.json()["id"], first.json()["id"]);
+}
+
+#[test]
+fn plugin_yank_keeps_revoked_namespaces_untouched() {
+    let fx = Fixture::new();
+    let created = submit(&fx, "com.example.demo", "1.0.0");
+    let sid = created.json()["sid"].as_str().unwrap().to_string();
+    assert_eq!(approve(&fx, &sid).status, 202);
+    publish(&fx, 1);
+
+    let reply = yank(
+        &fx,
+        "/api/v1/plugins/com.example.demo/versions/1.0.0/yank",
+        "插件下架",
+    );
+    assert_eq!(reply.status, 202, "{:?}", reply.json());
+    assert!(
+        reply.json().get("entry_kind").is_none(),
+        "插件撤包记录不应出现 entry_kind: {}",
+        reply.json()
+    );
+
+    let (_, staging) = publish(&fx, 2);
+    let text = fs::read_to_string(staging.path().join("channels/stable/index.json")).unwrap();
+    let index: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(index["plugins"][0]["yanked"], true);
+    assert_eq!(index["revoked"].as_array().unwrap().len(), 0);
+    assert!(!text.contains("revoked_apps"), "{text}");
+    assert!(!text.contains("revoked_runtimes"), "{text}");
+}
+
 #[test]
 fn illegal_state_transition_is_rejected() {
     let fx = Fixture::new();

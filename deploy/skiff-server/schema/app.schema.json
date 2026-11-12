@@ -51,6 +51,8 @@
     "compose_sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
     "compose_url": { "type": "string", "minLength": 1, "maxLength": 512 },
     "size": { "type": "integer", "minimum": 0 },
-    "asset": { "type": "string", "minLength": 1, "maxLength": 512 }
+    "asset": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "yanked": { "type": "boolean" },
+    "yank_reason": { "type": "string", "minLength": 1, "maxLength": 200 }
   }
 }

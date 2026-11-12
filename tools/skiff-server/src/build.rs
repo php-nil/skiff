@@ -171,15 +171,10 @@ pub fn build(catalog_dir: &Path, schema_dir: &Path, signer: &Signer) -> Result<A
         reject_duplicate_ids("升级条目", upgrades.iter().map(|e| (&e.version, &e.arch)))?;
 
         // 吊销列表：可选源文件，条目同索引里的 `revoked[]`（只增不删）。
-        let revoked_path = channel_dir.join("revoked.json");
-        let revoked = if revoked_path.is_file() {
-            let text = fs::read_to_string(&revoked_path)
-                .with_context(|| format!("读取失败: {}", revoked_path.display()))?;
-            serde_json::from_str::<Vec<crate::model::RevokedEntry>>(&text)
-                .with_context(|| format!("解析失败: {}", revoked_path.display()))?
-        } else {
-            Vec::new()
-        };
+        // 应用与运行环境各有独立命名空间（R2e），`revoked[]` 仍只表示插件。
+        let revoked = load_revocations(&channel_dir, "revoked.json")?;
+        let revoked_apps = load_revocations(&channel_dir, "revoked_apps.json")?;
+        let revoked_runtimes = load_revocations(&channel_dir, "revoked_runtimes.json")?;
 
         let index = IndexFile {
             plugins,
@@ -187,6 +182,8 @@ pub fn build(catalog_dir: &Path, schema_dir: &Path, signer: &Signer) -> Result<A
             runtimes,
             upgrades,
             revoked,
+            revoked_apps,
+            revoked_runtimes,
             ..IndexFile::empty(&name, channel.seq, &channel.generated_at)
         };
         index.validate()?;
@@ -317,6 +314,17 @@ fn collect_asset(
     let size = bytes.len() as u64;
     blobs.insert(sha.clone(), bytes);
     Ok((sha, size))
+}
+
+/// 读取渠道级吊销源文件（`revoked.json` / `revoked_apps.json` / `revoked_runtimes.json`）。
+fn load_revocations(channel_dir: &Path, name: &str) -> Result<Vec<crate::model::RevokedEntry>> {
+    let path = channel_dir.join(name);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("读取失败: {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("解析失败: {}", path.display()))
 }
 
 fn reject_duplicate_ids<'a>(

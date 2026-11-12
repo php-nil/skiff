@@ -13,6 +13,8 @@
     "image_digest": { "type": "string", "minLength": 71, "maxLength": 71 },
     "eol": { "type": ["string", "null"], "maxLength": 10 },
     "api_min": { "type": "string", "minLength": 3, "maxLength": 16 },
-    "default": { "type": "boolean" }
+    "default": { "type": "boolean" },
+    "yanked": { "type": "boolean" },
+    "yank_reason": { "type": "string", "minLength": 1, "maxLength": 200 }
   }
 }

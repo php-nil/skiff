@@ -9,14 +9,14 @@
 
 | 维度 | 决策 |
 |---|---|
-| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1/R2a/R2b/R2c/R2d 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
+| 形态 | **现状（已实施）**：静态目录（`manifest.json` + `index.json` + 内容寻址的 `blobs/`）；分发面无账号、无写入、无常驻业务服务，`serve` 只读且 `/api/**` 一律 404。**发布面（R0/R1/R2a–R2e 已实施，默认关闭）**：可选的审核 API，独立子命令 `skiff-server api`、独立进程、默认只绑回环、客户端不依赖，详见 §17 |
 | 测试托管 | `skiff-server serve` 把已生成的产物**原样**用 https 提供（`--http` 仅测试）；只是最后一环的自托管，不改变托管决策（§15） |
 | 信任锚 | 每渠道一份 Ed25519 签名的清单，客户端内置官方公钥集；**镜像不被信任，只被校验** |
 | 内容寻址 | 包、模板、升级包按 `sha256` 存入不可变 `blobs/`；索引只引用摘要 |
 | 回滚防护 | 签名清单内单调 `seq`；客户端持久化最大值，拒绝更旧的清单 |
 | 渠道 | `stable` / `night` 两份独立清单，各自递增，互不覆盖 |
 | 客户端出网 | 仅访问配置的镜像地址，由**内核**拉取；插件 `net` 仍为 501，不参与 |
-| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1/R2a/R2b/R2c/R2d 已实施**，R2e 待做） |
+| 阶段 | P0 服务端产物 → P1 客户端只读接入 → P2 商店安装 → P3 内核升级 → P4 镜像生态与模板；发布面另见 §17 的 R0/R1/R2（**R0/R1/R2a–R2e 已实施**） |
 
 **主结论**：官方只承担「编辑、审核、签名、发布」，镜像方只承担「搬运与托管」，客户端只信签名不信源。因此商店与升级通道不需要常驻服务、账号体系与在线状态，断网、内网、自建镜像都消费同一份产物；插件安装仍沿用现有 `.wbpkg` 验签与权限确认链路，商店只补「发现与下载」。发布面若要自动化审核，另走 §17 的**可选**独立服务，不改变本节对分发面的结论，也不被客户端访问。
 
@@ -1021,7 +1021,7 @@ chmod +x skiff-server-x86_64-unknown-linux-musl
   未导入 CA 时失败（与 §4.5 的客户端口径一致）。
 - `serve` 不改变产物：测试只读校验运行前后文件字节不变。
 
-## 17. 发布面 `/api/**` 接口（R0/R1/R2a/R2b/R2c/R2d 已实施，R2e 待做）
+## 17. 发布面 `/api/**` 接口（R0/R1/R2a–R2e 已实施）
 
 > 定位：终态链路「开发者提交 → 管理员审核 → 生成静态产物 → 静态分发」里，**分发面已由 §16 定稿并上机闭环**，
 > 本节补**发布面**的接口边界。**R0/R1/R2a/R2b 已在 `tools/skiff-server` 落地**（`api`、`notify` 与 `release` 子命令），
@@ -1144,6 +1144,11 @@ published --yank/revoke（R1 走 API）--> 条目保留 + 递增 seq
 - 驳回必须带 `reason_code`（`invalid_signature`、`schema`、`id_ownership`、`policy`、`other`）与可选说明；作者按新摘要重提同一 `(id, version)` 允许（尚未发布，不违反版本不可变）。
 - `seq` 单调：**API 不预分配 `seq`**。发布 job 在受控环境读线上当前值后 +1（§14.2 的 `--prev` 语义不变），同渠道发布串行；并发审批后到者自然拿到后一个 `seq`。
 - 只增不删：索引条目只追加；下架用 `yanked`（条目保留、拒绝新装），安全处置用 `revoked`（摘要黑名单），两者都递增 `seq`（§5.3）。R1 起 `yank` 与密钥吊销走 API：API 只写 `state/takedowns/`，由 `release` 把 `yanked`/`revoked[]` 写进源数据并递增 `seq`。
+- **R2e 分 kind 撤包**：`POST /api/v1/plugins|apps|runtimes/{id}/versions/{version}/yank`，审核者调用，body 可带 `reason`；重复撤包 200 幂等，目标不存在 404。
+  - 插件保持 R1 语义：源条目 `yanked=true` + `yank_reason`，索引 `plugins[]` 带标记，`revoked[]` 继续只表示插件密钥吊销。
+  - 应用与运行环境没有作者密钥：撤包在打 `yanked` 标记的同时，把该版本登记进独立命名空间 `catalog/<ch>/revoked_apps.json` / `revoked_runtimes.json`，索引输出 `revoked_apps[]` / `revoked_runtimes[]`（应用记 compose 摘要、运行环境记镜像 digest 的 hex），`revoked[]` 不参与。
+  - 撤包记录 `state/takedowns/*.json` 新增可选 `entry_kind`（缺省 `plugin`，旧记录无需迁移）；`release` 按 kind 写回对应源目录并回写提交的站内提示。
+  - 兼容：`revoked_apps[]` / `revoked_runtimes[]` 为空时不落盘（`skip_serializing_if`），插件索引与旧客户端看到的字节不变；客户端忽略不认识的数组。
 - 审计：提交、审核、发布结果追加到 `state/audit.jsonl`（JSON Lines：`key_id`、动作、`submission_id`、结果、时间）；这是发布面审计，与内核 `audit` 表无关。
 
 ### 17.5 产物生成
@@ -1220,7 +1225,7 @@ R0 的运维侧（不新增 API）：`authors.json` 与 `reviewers.json` 手工�
 - 鉴权：审核者看全部；作者默认只看自己，显式查他人 `key_id` 一律 403。
 - 返回字段只有 `at`/`key_id`/`action`/`submission_id`/`submission_ids`/`result`，**不含签名、包内容或请求体**。
 
-**R2（分步实施）**：R2a webhook 事件通知、R2b 提交记录 `kind` 抽象、R2c 应用模板提交/审核/发布、R2d 运行环境提交与元数据修订已实施（§17.11–§17.14）；R2e 分 kind 撤包待做。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
+**R2（分步实施）**：R2a webhook 事件通知、R2b 提交记录 `kind` 抽象、R2c 应用模板提交/审核/发布、R2d 运行环境提交与元数据修订、R2e 分 kind 撤包与独立吊销命名空间已实施（§17.11–§17.15）。裁决：apps 接受「API 请求签名 + 服务端摘要 + 审核」，不要求额外签名信封；compose 校验保持单一实现；runtimes 只做提交/审核/展示，不驱动安装；`eol`/`default` 允许独立元数据修订（image/digest 不变）；吊销用独立 `revoked_apps[]`/`revoked_runtimes[]`。组织级命名空间与发布 job 队列化仍不做。
 
 统一错误体：`{"code": "...", "message": "...", "detail": {...}}`；`401` 签名缺失/无效/过期，`403` 密钥未登记、命名空间不匹配或自我审核，`409` 版本或摘要冲突，`413` 超限，`422` 校验失败，`500` 内部错误（不回显路径与堆栈）。
 
@@ -1340,5 +1345,20 @@ skiff-server release  → 写源数据 → 调既有 publish → 产出签名产
   - `runtime_revision_requires_reviewer_and_published_state`：未发布 412、作者 403；
   - `release_rejects_multiple_defaults_per_kind`：两个同 kind 条目都改 `default=true` 后 release 失败。
   - 合计 `cargo test -p skiff-server`：34 单测 + 32 API + 4 CLI + 15 P0 + 7 serve + 6 sync = 98 项全绿。
+
+### 17.15 R2e 落地说明：分 kind 撤包与独立吊销命名空间（`tools/skiff-server`）
+
+- **端点**：`POST /api/v1/plugins/{id}/versions/{v}/yank`、`POST /api/v1/apps/{id}/versions/{v}/yank`、`POST /api/v1/runtimes/{kind}/versions/{v}/yank`，共用 `takedown::yank` 单实现；审核者调用，幂等 200，目标不存在 404，已撤回/已在吊销列表 409。
+- **记录**：`Takedown` 增加 `entry_kind`（缺省 `plugin` 且不落盘，旧 `state/takedowns/*.json` 无需迁移）；记录 id 对插件保持 R1 派生式不变，其它 kind 加类型域前缀，避免同 id/version 撞记录。
+- **源数据**：`release` 按 kind 定位 `plugins/` / `apps/` / `runtimes/` 目录（运行环境的 id 字段是 `kind`），只改 `yanked` / `yank_reason`；非插件撤包同时追加 `revoked_apps.json` / `revoked_runtimes.json`（应用取 compose 摘要，运行环境取镜像 digest 的 hex）。
+- **索引**：`IndexFile` 新增 `revoked_apps` / `revoked_runtimes`（空时省略），`apps[]` / `runtimes[]` 条目在撤包后带 `yanked` / `yank_reason`（未撤包不落字段）；`revoked[]` 语义与字节不变。
+- **客户端提示**：`crates/app` 的索引模型解析新数组与 `yanked` 字段，商店「应用模板」「运行环境」分区的 `warn` 按「吊销命中 → 已撤回：原因」「yanked → 已下架：原因」「EOL」优先级展示；不新增安装入口，`serve` 与 §16 契约零变化。
+- **R2e 测试**：
+  - `yank_app_marks_source_and_revoked_apps_only`：应用撤包后索引 `apps[0].yanked`、`revoked_apps[0]`（含 compose 摘要）正确，`revoked[]` 为空，提交记录带站内提示；
+  - `yank_runtime_marks_revoked_runtimes_only`：运行环境撤包写入 `revoked_runtimes[]`（digest hex），`revoked_apps[]` 不出现；
+  - `yank_kind_endpoints_are_reviewer_only_and_idempotent`：作者 403、未知目标 404、重复撤包 200 同一 id；
+  - `plugin_yank_keeps_revoked_namespaces_untouched`：插件撤包记录不含 `entry_kind`，索引不出现两个新数组；
+  - `crates/app/src/catalog/tests.rs::app_and_runtime_takedown_use_their_own_namespaces`：客户端解析新数组并按命名空间给出提示。
+  - 合计：`cargo test -p skiff-server` 102 项、`cargo test -p skiff-app catalog` 57 项全绿；`clippy -D warnings` 通过。
 
 

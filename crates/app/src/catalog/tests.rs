@@ -694,6 +694,79 @@ fn new_index_with_takedown_fields_parses_and_reports_reason() {
 }
 
 #[test]
+fn app_and_runtime_takedown_use_their_own_namespaces() {
+    let mut value: serde_json::Value = serde_json::from_str(LEGACY_INDEX).unwrap();
+    value["apps"] = serde_json::json!([{
+        "id": "com.example.blog",
+        "version": "1.0.0",
+        "summary": "示例应用",
+        "min_kernel": "1.2.0",
+        "compose_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "compose_url": "blobs/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "yanked": true,
+        "yank_reason": "模板损坏"
+    }]);
+    value["runtimes"] = serde_json::json!([{
+        "kind": "php",
+        "version": "8.5",
+        "image": "php:8.5-fpm-alpine",
+        "image_digest": format!("sha256:{}", "c".repeat(64)),
+        "eol": null,
+        "api_min": "1.0",
+        "default": false,
+        "yanked": true,
+        "yank_reason": "基础镜像 CVE"
+    }]);
+    value["revoked_apps"] = serde_json::json!([{
+        "id": "com.example.blog",
+        "version": "1.0.0",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reason": "compose 篡改",
+        "at": "2026-11-12T00:00:00Z"
+    }]);
+    value["revoked_runtimes"] = serde_json::json!([{
+        "id": "php",
+        "version": "8.5",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "reason": "镜像 CVE-2026-0001",
+        "at": "2026-11-12T00:00:00Z"
+    }]);
+
+    let index: Index = serde_json::from_value(value).expect("R2e 索引必须能解析");
+    index.validate(None).expect("R2e 索引仍符合 v1 校验");
+    assert!(index.revoked.is_empty(), "revoked[] 只表示插件");
+
+    let entries = entries_of(&index);
+    assert!(
+        entries.apps[0].warn.contains("compose 篡改"),
+        "{:?}",
+        entries.apps[0]
+    );
+    assert!(
+        entries.runtimes[0].warn.contains("CVE-2026-0001"),
+        "{:?}",
+        entries.runtimes[0]
+    );
+
+    // 只有 yanked 没有吊销命中时，退回 yank_reason。
+    let mut only_yanked: serde_json::Value = serde_json::from_str(LEGACY_INDEX).unwrap();
+    only_yanked["apps"] = serde_json::json!([{
+        "id": "com.example.blog",
+        "version": "1.0.0",
+        "summary": "示例应用",
+        "min_kernel": "1.2.0",
+        "compose_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "compose_url": "blobs/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "size": 10,
+        "yanked": true,
+        "yank_reason": "模板损坏"
+    }]);
+    let index: Index = serde_json::from_value(only_yanked).unwrap();
+    assert!(entries_of(&index).apps[0].warn.contains("模板损坏"));
+}
+
+#[test]
 fn yanked_reason_is_reported_by_the_client_view() {
     let mut value: serde_json::Value = serde_json::from_str(LEGACY_INDEX).unwrap();
     value["plugins"][0]["yanked"] = serde_json::json!(true);

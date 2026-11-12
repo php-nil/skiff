@@ -277,6 +277,8 @@ fn action_name(request: &Request) -> String {
         "reject"
     } else if path.ends_with("/withdraw") {
         "withdraw"
+    } else if path.ends_with("/yank") {
+        "yank"
     } else if path.ends_with("/revise") {
         "revise"
     } else if request.method == "POST"
@@ -394,7 +396,48 @@ fn route(server: &ApiServer, request: &Request, body: &[u8]) -> Result<Response,
         },
         "plugins" if parts.len() == 7 && parts[4] == "versions" && parts[6] == "yank" => {
             match request.method.as_str() {
-                "POST" => takedown::yank(server, &auth, parts[3], parts[5], body),
+                "POST" => takedown::yank(
+                    server,
+                    &auth,
+                    store::EntryKind::Plugin,
+                    parts[3],
+                    parts[5],
+                    body,
+                ),
+                _ => Err(ApiError::new(
+                    405,
+                    "method_not_allowed",
+                    "method not allowed",
+                )),
+            }
+        }
+        "apps" if parts.len() == 7 && parts[4] == "versions" && parts[6] == "yank" => {
+            match request.method.as_str() {
+                "POST" => takedown::yank(
+                    server,
+                    &auth,
+                    store::EntryKind::App,
+                    parts[3],
+                    parts[5],
+                    body,
+                ),
+                _ => Err(ApiError::new(
+                    405,
+                    "method_not_allowed",
+                    "method not allowed",
+                )),
+            }
+        }
+        "runtimes" if parts.len() == 7 && parts[4] == "versions" && parts[6] == "yank" => {
+            match request.method.as_str() {
+                "POST" => takedown::yank(
+                    server,
+                    &auth,
+                    store::EntryKind::Runtime,
+                    parts[3],
+                    parts[5],
+                    body,
+                ),
                 _ => Err(ApiError::new(
                     405,
                     "method_not_allowed",

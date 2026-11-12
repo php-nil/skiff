@@ -1061,6 +1061,38 @@ fn takedown_note(index: &Index, id: &str, version: &str) -> Option<String> {
     })
 }
 
+/// 应用模板提示（R2e）：独立吊销命名空间优先于 `yanked`。
+fn app_note(index: &Index, entry: &crate::catalog::model::AppEntry) -> String {
+    if let Some(revoked) = index.revoked_app(&entry.id, &entry.version) {
+        return format!("已撤回：{}", revoked.reason);
+    }
+    if entry.yanked {
+        return match entry.yank_reason.as_deref() {
+            Some(reason) if !reason.trim().is_empty() => format!("已下架：{reason}"),
+            _ => "已下架".into(),
+        };
+    }
+    String::new()
+}
+
+/// 运行环境提示（R2e）：吊销 > 下架 > EOL。
+fn runtime_note(index: &Index, entry: &crate::catalog::model::RuntimeEntry) -> String {
+    if let Some(revoked) = index.revoked_runtime(&entry.kind, &entry.version) {
+        return format!("已撤回：{}", revoked.reason);
+    }
+    if entry.yanked {
+        return match entry.yank_reason.as_deref() {
+            Some(reason) if !reason.trim().is_empty() => format!("已下架：{reason}"),
+            _ => "已下架".into(),
+        };
+    }
+    entry
+        .eol
+        .as_ref()
+        .map(|eol| format!("已 EOL（{eol}）"))
+        .unwrap_or_default()
+}
+
 /// 版本比较的唯一入口：与插件安装共用 `skiff_plugin::install::version_gt` 的语义。
 fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     if version_gt(a, b) {
@@ -1129,7 +1161,7 @@ fn entries_of(index: &Index) -> CatalogEntries {
                 updated_at: updated.clone(),
                 compatibility: format!("内核 ≥ {}", a.min_kernel),
                 note: a.summary.clone(),
-                warn: String::new(),
+                warn: app_note(index, a),
             })
             .collect(),
         runtimes: index
@@ -1146,11 +1178,7 @@ fn entries_of(index: &Index) -> CatalogEntries {
                     if r.default { " · 默认" } else { "" }
                 ),
                 note: r.image_digest.clone(),
-                warn: r
-                    .eol
-                    .as_ref()
-                    .map(|eol| format!("已 EOL（{eol}）"))
-                    .unwrap_or_default(),
+                warn: runtime_note(index, r),
             })
             .collect(),
         upgrades: index

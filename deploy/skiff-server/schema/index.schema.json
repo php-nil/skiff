@@ -29,6 +29,38 @@
           "at": { "type": "string", "minLength": 20, "maxLength": 20 }
         }
       }
+    },
+    "revoked_apps": {
+      "description": "应用模板的吊销命名空间；`revoked` 继续只表示插件。",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version", "reason", "at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+          "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "at": { "type": "string", "minLength": 20, "maxLength": 20 }
+        }
+      }
+    },
+    "revoked_runtimes": {
+      "description": "运行环境的吊销命名空间；条目 id 即 kind（如 php），可比插件 id 短。",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version", "reason", "at"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "sha256": { "type": "string", "minLength": 64, "maxLength": 64 },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "at": { "type": "string", "minLength": 20, "maxLength": 20 }
+        }
+      }
     }
   }
 }

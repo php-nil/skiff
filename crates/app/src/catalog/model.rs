@@ -59,6 +59,12 @@ pub struct Index {
     pub upgrades: Vec<UpgradeEntry>,
     #[serde(default)]
     pub revoked: Vec<RevokedEntry>,
+    /// 应用模板的吊销命名空间（R2e）；`revoked` 继续只表示插件。
+    #[serde(default)]
+    pub revoked_apps: Vec<RevokedEntry>,
+    /// 运行环境的吊销命名空间（R2e）。
+    #[serde(default)]
+    pub revoked_runtimes: Vec<RevokedEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +96,11 @@ pub struct AppEntry {
     pub compose_sha256: Option<String>,
     pub compose_url: Option<String>,
     pub size: Option<u64>,
+    /// 单版本下架（R2e 可选字段；旧索引没有该字段）。
+    #[serde(default)]
+    pub yanked: bool,
+    #[serde(default)]
+    pub yank_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +113,11 @@ pub struct RuntimeEntry {
     pub api_min: String,
     #[serde(default)]
     pub default: bool,
+    /// 单版本下架（R2e 可选字段；旧索引没有该字段）。
+    #[serde(default)]
+    pub yanked: bool,
+    #[serde(default)]
+    pub yank_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -221,6 +237,14 @@ impl Index {
             validate_timestamp(&entry.at)?;
             validate_summary(&entry.reason, "吊销原因")?;
         }
+        for entry in &self.revoked_apps {
+            validate_timestamp(&entry.at)?;
+            validate_summary(&entry.reason, "应用吊销原因")?;
+        }
+        for entry in &self.revoked_runtimes {
+            validate_timestamp(&entry.at)?;
+            validate_summary(&entry.reason, "运行环境吊销原因")?;
+        }
         Ok(())
     }
 
@@ -229,6 +253,20 @@ impl Index {
         self.revoked
             .iter()
             .find(|r| r.id == id && r.version == version)
+    }
+
+    /// 应用模板的吊销命中（R2e 独立命名空间）。
+    pub fn revoked_app(&self, id: &str, version: &str) -> Option<&RevokedEntry> {
+        self.revoked_apps
+            .iter()
+            .find(|r| r.id == id && r.version == version)
+    }
+
+    /// 运行环境的吊销命中（`id` 是 `kind`）。
+    pub fn revoked_runtime(&self, kind: &str, version: &str) -> Option<&RevokedEntry> {
+        self.revoked_runtimes
+            .iter()
+            .find(|r| r.id == kind && r.version == version)
     }
 }
 
@@ -412,6 +450,8 @@ mod tests {
             runtimes: Vec::new(),
             upgrades: Vec::new(),
             revoked: Vec::new(),
+            revoked_apps: Vec::new(),
+            revoked_runtimes: Vec::new(),
         }
     }
 

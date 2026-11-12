@@ -588,7 +588,7 @@ cargo test -p skiff catalog
 cargo test -p skiff-server
 ```
 
-## P. 发布面 API（Skiff-server R0/R1/R2a/R2b/R2c/R2d，2026-11-12 更新）
+## P. 发布面 API（Skiff-server R0/R1/R2a–R2e，2026-11-12 更新）
 
 > 重跑触发：改了 `tools/skiff-server/src/api/**`、`src/events.rs`、`src/notify.rs`、`src/http.rs`、`src/build.rs`、`src/main.rs` 的
 > `api`/`notify`/`release` 子命令，或 `docs/SKIFF_SERVER.md` §17 的签名/状态机/事件/产物口径。
@@ -623,6 +623,11 @@ cargo test -p skiff-server
 | API-24 | 运行环境 `default` 提交约束 | `entry.default = true` | 提交运行环境 | 422；`default` 只能在发布后走元数据修订 | □通过 / □失败 | `src/api/store.rs::create_runtime`、`tests/api.rs::runtime_default_must_be_false_at_submission` |
 | API-25 | 运行环境元数据修订 | 已发布运行环境 | `POST /api/v1/submissions/{sid}/revise`（`eol`/`default`）→ release | 202；下一次 release 应用到源数据并递增 `seq`；`audit.jsonl` 有 `action=revise`；带 `image`/`image_digest` 的修订 422；未发布 412、作者 403 | □通过 / □失败 | `src/api/store.rs::revise_runtime`、`src/api/job.rs::apply_runtime_revisions`、`tests/api.rs::runtime_revision_changes_eol_and_default_with_audit`、`runtime_revision_requires_reviewer_and_published_state` |
 | API-26 | 同 kind 多个 `default` 被 release 拒绝 | 同 kind 两个已发布运行环境均修订为 `default=true` | 再次 release | 发布失败并留 `release.failed`；不生成矛盾索引 | □通过 / □失败 | `src/build.rs`（default 唯一性）、`tests/api.rs::release_rejects_multiple_defaults_per_kind` |
+| API-27 | 应用撤包进独立命名空间 | 已发布应用 | `POST /api/v1/apps/{id}/versions/{v}/yank` → release | 源条目 `yanked=true`；索引 `apps[].yanked`/`yank_reason` 正确；`revoked_apps[]` 含 compose 摘要；`revoked[]` 为空；提交记录带站内提示 | □通过 / □失败 | `src/api/takedown.rs`、`src/api/job.rs`、`tests/api.rs::yank_app_marks_source_and_revoked_apps_only` |
+| API-28 | 运行环境撤包进独立命名空间 | 已发布运行环境 | `POST /api/v1/runtimes/{kind}/versions/{v}/yank` → release | 索引 `runtimes[].yanked` 正确；`revoked_runtimes[]` 含 digest hex；`revoked_apps[]` 不出现 | □通过 / □失败 | `src/api/takedown.rs`、`tests/api.rs::yank_runtime_marks_revoked_runtimes_only` |
+| API-29 | 分 kind 撤包权限与幂等 | 作者钥、未知目标 | 作者撤包 / 未知版本 / 重复撤包 | 403 / 404 / 200 且同一记录 id | □通过 / □失败 | `src/api/mod.rs`、`src/api/takedown.rs`、`tests/api.rs::yank_kind_endpoints_are_reviewer_only_and_idempotent` |
+| API-30 | 插件撤包字节与命名空间不变 | 已发布插件 | 撤包 → release | 记录不含 `entry_kind`；索引 `plugins[].yanked` 正确；不出现 `revoked_apps`/`revoked_runtimes` | □通过 / □失败 | `src/api/takedown.rs`、`tests/api.rs::plugin_yank_keeps_revoked_namespaces_untouched` |
+| API-31 | 客户端分 kind 提示 | 索引含 `yanked` 与两个吊销数组 | 解析并生成商店条目 | 吊销原因优先于 `yank_reason`，其次 EOL；`revoked[]` 仍只表示插件 | □通过 / □失败 | `crates/app/src/catalog/{model,mod}.rs`、`crates/app/src/catalog/tests.rs::app_and_runtime_takedown_use_their_own_namespaces` |
 
 最小回归命令：
 

@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::auth::Authenticated;
+use super::store::EntryKind;
 use super::{json_response, now_rfc3339, ApiError, ApiServer};
 use crate::events::{self, Event};
 use crate::http::Response;
@@ -51,6 +52,9 @@ pub struct Takedown {
     pub schema: String,
     pub id: String,
     pub kind: Kind,
+    /// 撤包目标的条目类型（R2e）；插件为缺省，旧记录无需迁移。
+    #[serde(default, skip_serializing_if = "EntryKind::is_plugin")]
+    pub entry_kind: EntryKind,
     pub plugin_id: String,
     pub version: String,
     pub reason: String,
@@ -92,8 +96,20 @@ fn record_path(state: &Path, id: &str) -> PathBuf {
     dir(state).join(format!("{id}.json"))
 }
 
-pub fn record_id(kind: Kind, plugin_id: &str, version: &str) -> String {
-    let digest = Sha256::digest(format!("{}\0{plugin_id}\0{version}", kind.as_str()).as_bytes());
+/// 记录 id：插件保持 R1 的派生式不变（旧记录继续命中）；其它 kind 加类型域前缀。
+pub fn record_id(entry_kind: EntryKind, kind: Kind, id: &str, version: &str) -> String {
+    let digest = if entry_kind.is_plugin() {
+        Sha256::digest(format!("{}\0{id}\0{version}", kind.as_str()).as_bytes())
+    } else {
+        Sha256::digest(
+            format!(
+                "{}\0{}\0{id}\0{version}",
+                kind.as_str(),
+                entry_kind.as_str()
+            )
+            .as_bytes(),
+        )
+    };
     format!("tak-{}", &hex::encode(digest)[..16])
 }
 
@@ -143,20 +159,24 @@ impl Drop for RecordLock {
     }
 }
 
-/// POST /api/v1/plugins/{id}/versions/{version}/yank
+/// POST /api/v1/{plugins|apps|runtimes}/…/yank
+///
+/// 插件沿用 R1 语义（`yanked` 打标）；应用与运行环境没有作者密钥，撤包同时把该版本
+/// 登记到各自的 `revoked_apps[]` / `revoked_runtimes[]` 命名空间。
 pub fn yank(
     server: &ApiServer,
     auth: &Authenticated,
-    plugin_id: &str,
+    entry_kind: EntryKind,
+    id: &str,
     version: &str,
     body: &[u8],
 ) -> Result<Response, ApiError> {
     auth.require_reviewer()?;
     let reason = optional_reason(body)?.unwrap_or_else(|| "manual takedown".to_string());
-    let id = record_id(Kind::Yank, plugin_id, version);
-    let _lock = RecordLock::acquire(&server.state, &id)?;
+    let takedown_id = record_id(entry_kind, Kind::Yank, id, version);
+    let _lock = RecordLock::acquire(&server.state, &takedown_id)?;
 
-    if let Some(existing) = read_record(&server.state, &id)? {
+    if let Some(existing) = read_record(&server.state, &takedown_id)? {
         server.audit(&auth.key_id, "yank", &existing.id, "duplicate");
         return Ok(json_response(
             200,
@@ -164,7 +184,7 @@ pub fn yank(
         ));
     }
     // 源数据必须真实存在该版本；否则只会得到一份空操作。
-    let Some(entry) = find_source_entry(&server.catalog, &server.channel, plugin_id, version)?
+    let Some(entry) = find_source_entry(&server.catalog, &server.channel, entry_kind, id, version)?
     else {
         return Err(ApiError::new(404, "not_found", "not found"));
     };
@@ -176,15 +196,16 @@ pub fn yank(
         // 已经撤回（可能来自密钥吊销或运维改源数据）：无可再撤。
         return Err(ApiError::conflict("该版本已撤回"));
     }
-    if revoked_in_source(&server.catalog, &server.channel, plugin_id, version)? {
+    if revoked_in_source(&server.catalog, &server.channel, entry_kind, id, version)? {
         return Err(ApiError::conflict("该版本已在吊销列表中"));
     }
 
     let record = Takedown {
         schema: TAKEDOWN_SCHEMA.to_string(),
-        id: id.clone(),
+        id: takedown_id.clone(),
         kind: Kind::Yank,
-        plugin_id: plugin_id.to_string(),
+        entry_kind,
+        plugin_id: id.to_string(),
         version: version.to_string(),
         reason,
         channel: server.channel.clone(),
@@ -194,14 +215,18 @@ pub fn yank(
         release: None,
     };
     write_record(&server.state, &record)?;
-    server.audit(&auth.key_id, "yank", &id, "ok");
+    server.audit(&auth.key_id, "yank", &takedown_id, "ok");
     let _ = events::emit(
         &server.state,
-        &Event::new(events::EVENT_TYPE_TAKEDOWN_YANKED, &id, &server.channel)
-            .actor(&auth.key_id)
-            .subject("plugin", plugin_id, version)
-            .submission(&id)
-            .reason(&record.reason),
+        &Event::new(
+            events::EVENT_TYPE_TAKEDOWN_YANKED,
+            &takedown_id,
+            &server.channel,
+        )
+        .actor(&auth.key_id)
+        .subject(entry_kind.as_str(), id, version)
+        .submission(&takedown_id)
+        .reason(&record.reason),
     );
     Ok(json_response(
         202,
@@ -248,7 +273,7 @@ pub fn revoke_key(
         if owner != key_id {
             continue;
         }
-        let id = record_id(Kind::Revoke, &plugin_id, &version);
+        let id = record_id(EntryKind::Plugin, Kind::Revoke, &plugin_id, &version);
         if read_record(&server.state, &id)?.is_some() {
             continue;
         }
@@ -256,6 +281,7 @@ pub fn revoke_key(
             schema: TAKEDOWN_SCHEMA.to_string(),
             id,
             kind: Kind::Revoke,
+            entry_kind: EntryKind::Plugin,
             plugin_id,
             version,
             reason: reason.clone(),
@@ -375,14 +401,32 @@ pub fn mark_released(state: &Path, id: &str, seq: u64) -> Result<(), ApiError> {
     write_record(state, &record)
 }
 
-/// 源数据里的插件条目（`plugins/*.json`），用于确认撤包目标真实存在。
+/// 源数据目录名：插件 / 应用 / 运行环境。
+fn source_dir(entry_kind: EntryKind) -> &'static str {
+    match entry_kind {
+        EntryKind::Plugin => "plugins",
+        EntryKind::App => "apps",
+        EntryKind::Runtime => "runtimes",
+    }
+}
+
+/// 源条目里表示「条目 id」的字段：运行环境用 `kind`，其余用 `id`。
+fn source_id_field(entry_kind: EntryKind) -> &'static str {
+    match entry_kind {
+        EntryKind::Runtime => "kind",
+        _ => "id",
+    }
+}
+
+/// 源数据里的条目（按 kind 目录 + id 字段），用于确认撤包目标真实存在。
 fn find_source_entry(
     catalog: &Path,
     channel: &str,
-    plugin_id: &str,
+    entry_kind: EntryKind,
+    id: &str,
     version: &str,
 ) -> Result<Option<Value>, ApiError> {
-    let dir = catalog.join(channel).join("plugins");
+    let dir = catalog.join(channel).join(source_dir(entry_kind));
     let Ok(entries) = fs::read_dir(&dir) else {
         return Ok(None);
     };
@@ -395,7 +439,10 @@ fn find_source_entry(
         let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
             continue;
         };
-        if value.get("id").and_then(Value::as_str) == Some(plugin_id)
+        if value
+            .get(source_id_field(entry_kind))
+            .and_then(Value::as_str)
+            == Some(id)
             && value.get("version").and_then(Value::as_str) == Some(version)
         {
             return Ok(Some(value));
@@ -404,20 +451,30 @@ fn find_source_entry(
     Ok(None)
 }
 
+fn revocation_file(entry_kind: EntryKind) -> &'static str {
+    match entry_kind {
+        EntryKind::Plugin => "revoked.json",
+        EntryKind::App => "revoked_apps.json",
+        EntryKind::Runtime => "revoked_runtimes.json",
+    }
+}
+
 fn revoked_in_source(
     catalog: &Path,
     channel: &str,
-    plugin_id: &str,
+    entry_kind: EntryKind,
+    id: &str,
     version: &str,
 ) -> Result<bool, ApiError> {
-    let path = catalog.join(channel).join("revoked.json");
+    let name = revocation_file(entry_kind);
+    let path = catalog.join(channel).join(name);
     let Ok(bytes) = fs::read(&path) else {
         return Ok(false);
     };
     let list: Vec<Value> = serde_json::from_slice(&bytes)
-        .map_err(|_| ApiError::new(503, "unavailable", "revoked.json 非法"))?;
+        .map_err(|_| ApiError::new(503, "unavailable", format!("{name} 非法")))?;
     Ok(list.iter().any(|v| {
-        v.get("id").and_then(Value::as_str) == Some(plugin_id)
+        v.get("id").and_then(Value::as_str) == Some(id)
             && v.get("version").and_then(Value::as_str) == Some(version)
     }))
 }
@@ -426,11 +483,12 @@ fn revoked_in_source(
 pub fn mark_source_yanked(
     catalog: &Path,
     channel: &str,
-    plugin_id: &str,
+    entry_kind: EntryKind,
+    id: &str,
     version: &str,
     reason: &str,
 ) -> Result<(), String> {
-    let dir = catalog.join(channel).join("plugins");
+    let dir = catalog.join(channel).join(source_dir(entry_kind));
     let entries = fs::read_dir(&dir).map_err(|e| format!("读取源条目失败: {e}"))?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -441,7 +499,10 @@ pub fn mark_source_yanked(
         let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
             continue;
         };
-        if value.get("id").and_then(Value::as_str) != Some(plugin_id)
+        if value
+            .get(source_id_field(entry_kind))
+            .and_then(Value::as_str)
+            != Some(id)
             || value.get("version").and_then(Value::as_str) != Some(version)
         {
             continue;
@@ -460,40 +521,85 @@ pub fn mark_source_yanked(
         fs::write(&path, out).map_err(|e| format!("写回源条目失败: {e}"))?;
         return Ok(());
     }
-    Err(format!("源数据中找不到 {plugin_id} {version}"))
+    Err(format!("源数据中找不到 {id} {version}"))
 }
 
-/// 发布 job 用：把吊销条目追加到 `<channel>/revoked.json`（按 id+version 去重）。
+/// 发布 job 用：把吊销条目追加到该 kind 的吊销源文件（按 id+version 去重）。
 pub fn append_source_revocation(
     catalog: &Path,
     channel: &str,
-    plugin_id: &str,
-    version: &str,
-    reason: &str,
-    at: &str,
+    record: &Takedown,
+    sha256: Option<&str>,
 ) -> Result<(), String> {
-    let path = catalog.join(channel).join("revoked.json");
+    let entry_kind = record.entry_kind;
+    let (id, version, reason, at) = (
+        record.plugin_id.as_str(),
+        record.version.as_str(),
+        record.reason.as_str(),
+        record.at.as_str(),
+    );
+    let name = revocation_file(entry_kind);
+    let path = catalog.join(channel).join(name);
     let mut list: Vec<Value> = if path.is_file() {
-        let bytes = fs::read(&path).map_err(|e| format!("读取 revoked.json 失败: {e}"))?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("解析 revoked.json 失败: {e}"))?
+        let bytes = fs::read(&path).map_err(|e| format!("读取 {name} 失败: {e}"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("解析 {name} 失败: {e}"))?
     } else {
         Vec::new()
     };
     if list.iter().any(|v| {
-        v.get("id").and_then(Value::as_str) == Some(plugin_id)
+        v.get("id").and_then(Value::as_str) == Some(id)
             && v.get("version").and_then(Value::as_str) == Some(version)
     }) {
         return Ok(());
     }
-    list.push(json!({
-        "id": plugin_id,
+    let mut entry = json!({
+        "id": id,
         "version": version,
         "reason": reason,
         "at": at,
-    }));
+    });
+    if let Some(sha) = sha256 {
+        entry["sha256"] = Value::String(sha.to_string());
+    }
+    list.push(entry);
     let mut out = serde_json::to_vec_pretty(&list).map_err(|e| e.to_string())?;
     out.push(b'\n');
-    fs::write(&path, out).map_err(|e| format!("写入 revoked.json 失败: {e}"))
+    fs::write(&path, out).map_err(|e| format!("写入 {name} 失败: {e}"))
+}
+
+/// 发布 job 用：源条目对应的摘要（应用取 compose 摘要，运行环境取镜像 digest 的 hex 部分）。
+pub fn source_digest(
+    catalog: &Path,
+    channel: &str,
+    entry_kind: EntryKind,
+    id: &str,
+    version: &str,
+) -> Result<Option<String>, String> {
+    let Some(value) = find_source_entry(catalog, channel, entry_kind, id, version)
+        .map_err(|_| "读取源条目失败".to_string())?
+    else {
+        return Ok(None);
+    };
+    let digest = match entry_kind {
+        // 应用源条目只有 `asset = assets/<sha>.yaml`，摘要从文件名取。
+        EntryKind::App => value
+            .get("asset")
+            .and_then(Value::as_str)
+            .and_then(|asset| asset.rsplit('/').next())
+            .and_then(|name| name.strip_suffix(".yaml"))
+            .map(ToString::to_string),
+        // 运行环境存的是 `sha256:<hex>`，吊销列表按 hex64 口径。
+        EntryKind::Runtime => value
+            .get("image_digest")
+            .and_then(Value::as_str)
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+            .map(ToString::to_string),
+        EntryKind::Plugin => value
+            .get("pkg_sha256")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    };
+    Ok(digest)
 }
 
 /// 发布 job / 吊销登记用：某渠道源数据里的全部插件条目。

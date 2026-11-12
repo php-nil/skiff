@@ -168,6 +168,11 @@ pub struct AppEntry {
     pub size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset: Option<String>,
+    /// 单版本下架（R2e）：与应用同名的插件 `yanked` 语义一致。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub yanked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yank_reason: Option<String>,
 }
 
 impl AppEntry {
@@ -249,6 +254,11 @@ pub struct RuntimeEntry {
     pub eol: Option<String>,
     pub api_min: String,
     pub default: bool,
+    /// 单版本下架（R2e）：运行环境没有作者密钥，撤包以本标记 + `revoked_runtimes[]` 表达。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub yanked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yank_reason: Option<String>,
 }
 
 impl RuntimeEntry {
@@ -344,6 +354,12 @@ pub struct IndexFile {
     pub runtimes: Vec<RuntimeEntry>,
     pub upgrades: Vec<UpgradeEntry>,
     pub revoked: Vec<RevokedEntry>,
+    /// 应用模板的吊销命名空间（R2e）：`revoked[]` 继续只表示插件。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revoked_apps: Vec<RevokedEntry>,
+    /// 运行环境的吊销命名空间（R2e）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revoked_runtimes: Vec<RevokedEntry>,
 }
 
 impl IndexFile {
@@ -358,6 +374,8 @@ impl IndexFile {
             runtimes: Vec::new(),
             upgrades: Vec::new(),
             revoked: Vec::new(),
+            revoked_apps: Vec::new(),
+            revoked_runtimes: Vec::new(),
         }
     }
 
@@ -388,6 +406,25 @@ impl IndexFile {
             validate_timestamp(&entry.at)?;
             if let Some(sha) = &entry.sha256 {
                 validate_hex64(sha, "吊销 sha256")?;
+            }
+        }
+        for entry in &self.revoked_apps {
+            validate_id(&entry.id, "应用吊销 id")?;
+            validate_summary(&entry.reason, "应用吊销原因")?;
+            validate_timestamp(&entry.at)?;
+            if let Some(sha) = &entry.sha256 {
+                validate_hex64(sha, "应用吊销 sha256")?;
+            }
+        }
+        for entry in &self.revoked_runtimes {
+            // 运行环境条目 id 是 `kind`（如 `php`），比插件 id 的 4 字符下限短。
+            if entry.id.is_empty() || entry.id.len() > 128 {
+                bail!("运行环境吊销 id 长度必须在 1..=128: {}", entry.id);
+            }
+            validate_summary(&entry.reason, "运行环境吊销原因")?;
+            validate_timestamp(&entry.at)?;
+            if let Some(sha) = &entry.sha256 {
+                validate_hex64(sha, "运行环境吊销 sha256")?;
             }
         }
         Ok(())
@@ -630,6 +667,10 @@ pub fn validate_timestamp(value: &str) -> Result<()> {
         bail!("时间戳超出合法范围: {value}");
     }
     Ok(())
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn validate_date(value: &str) -> Result<()> {

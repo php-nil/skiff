@@ -172,6 +172,7 @@ fn run_inner(options: &JobOptions) -> Result<Option<JobReport>> {
         // 站内可见状态：已安装/已发布方能在自己的提交详情里看到撤包原因。
         store::attach_takedown(
             &options.state,
+            record.entry_kind,
             &record.plugin_id,
             &record.version,
             &TakedownInfo {
@@ -388,6 +389,8 @@ fn write_sources(
                     compose_url: None,
                     size: None,
                     asset: Some(asset_name),
+                    yanked: false,
+                    yank_reason: None,
                 };
                 entry.validate_source().context("源条目不合法")?;
                 let path = apps.join(format!("{}-{}.json", entry.id, entry.version));
@@ -415,6 +418,8 @@ fn write_sources(
                     eol: meta.eol.clone(),
                     api_min: submission.api.clone(),
                     default: meta.default,
+                    yanked: false,
+                    yank_reason: None,
                 };
                 entry.validate().context("源条目不合法")?;
                 let path = runtimes.join(format!("{}-{}.json", entry.kind, entry.version));
@@ -431,24 +436,36 @@ fn write_sources(
         }
     }
 
-    // 撤包/吊销：只改既有条目的 `yanked` 与追加 `revoked[]`，不删除任何条目。
+    // 撤包/吊销：只改既有条目的 `yanked` 与追加对应 kind 的吊销列表，不删除任何条目。
     for record in takedowns {
         takedown::mark_source_yanked(
             &options.catalog,
             &options.channel,
+            record.entry_kind,
             &record.plugin_id,
             &record.version,
             &record.reason,
         )
         .map_err(anyhow::Error::msg)?;
-        if record.kind == Kind::Revoke {
+        let revoke = match record.kind {
+            Kind::Revoke => record.entry_kind.is_plugin(),
+            // 应用/运行环境没有作者密钥可吊销：撤包即登记到该 kind 的独立命名空间。
+            Kind::Yank => !record.entry_kind.is_plugin(),
+        };
+        if revoke {
+            let sha = takedown::source_digest(
+                &options.catalog,
+                &options.channel,
+                record.entry_kind,
+                &record.plugin_id,
+                &record.version,
+            )
+            .map_err(anyhow::Error::msg)?;
             takedown::append_source_revocation(
                 &options.catalog,
                 &options.channel,
-                &record.plugin_id,
-                &record.version,
-                &record.reason,
-                now,
+                record,
+                sha.as_deref(),
             )
             .map_err(anyhow::Error::msg)?;
         }

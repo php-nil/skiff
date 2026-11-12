@@ -561,6 +561,8 @@ pub fn create_app(
         compose_url: None,
         size: None,
         asset: Some(format!("assets/{sha}.yaml")),
+        yanked: false,
+        yank_reason: None,
     };
     source_entry
         .validate_source()
@@ -743,6 +745,8 @@ pub fn create_runtime(
         eol: input.eol.clone(),
         api_min: input.api_min.clone(),
         default: false,
+        yanked: false,
+        yank_reason: None,
     };
     source_entry
         .validate()
@@ -872,6 +876,8 @@ pub fn revise_runtime(
         eol: input.eol.clone().or_else(|| meta.eol.clone()),
         api_min: record.api.clone(),
         default: input.default.unwrap_or(meta.default),
+        yanked: false,
+        yank_reason: None,
     };
     effective
         .validate()
@@ -1177,9 +1183,10 @@ pub fn mark_published(state: &Path, sid: &str, seq: u64) -> Result<(), ApiError>
     write_record(state, &record)
 }
 
-/// 发布 job 用：给已发布提交回写撤包/吊销提示（按 `(plugin_id, version)` 命中）。
+/// 发布 job 用：给已发布提交回写撤包/吊销提示（按 `(kind, id, version)` 命中）。
 pub fn attach_takedown(
     state: &Path,
+    kind: EntryKind,
     plugin_id: &str,
     version: &str,
     info: &TakedownInfo,
@@ -1187,6 +1194,7 @@ pub fn attach_takedown(
     let mut count = 0;
     for mut record in all_records(state)? {
         if record.state != State::Published
+            || record.kind != kind
             || record.plugin_id != plugin_id
             || record.version != version
         {
