@@ -15,7 +15,7 @@ use skiff_app::commands::docker::{
     self as docker_cmd, ComposeDown, ComposeUp, ContainerTarget, DockerCommandError, ProjectAction,
 };
 use skiff_app::commands::Actor;
-use skiff_docker::compose::{normalize_project_name, parse, ComposeProject};
+use skiff_docker::compose::{parse, ComposeProject};
 use skiff_docker::{project_of, service_of, ObjectRef, Verb};
 use skiff_model::Permission;
 
@@ -25,8 +25,6 @@ use crate::middleware::{check_csrf, AuthUser};
 use crate::state::{AppState, CurrentUser};
 use crate::templates::{ComposePage, ComposeProjectView, ComposeReportRow, ComposeServiceView};
 use crate::util::{form_first, parse_form};
-
-const RESERVED_PROJECTS: [&str; 2] = ["sites", "skiff"];
 
 #[derive(Default)]
 struct PageInput {
@@ -197,9 +195,7 @@ pub async fn down(
         "on" | "true" | "1"
     );
 
-    let Some(project) = checked_project(&raw_project)? else {
-        return Err(AppError::BadRequest("请填写项目名".into()));
-    };
+    let project = docker_cmd::prepare_project(&raw_project).map_err(map_err)?;
     let value = match docker_cmd::compose_down(
         &state,
         ComposeDown {
@@ -280,9 +276,7 @@ pub async fn project_action(
         "restart" => Verb::Restart,
         _ => return Err(AppError::BadRequest("未知的项目动作".into())),
     };
-    let Some(project) = checked_project(&project)? else {
-        return Err(AppError::BadRequest("项目名无效".into()));
-    };
+    let project = docker_cmd::prepare_project(&project).map_err(map_err)?;
 
     let rows = state
         .docker()
@@ -311,6 +305,7 @@ pub async fn project_action(
     let report = docker_cmd::compose_project_action(
         &state,
         ProjectAction {
+            project: project.clone(),
             targets,
             verb,
             actor: actor(&state, &user, &parts),
@@ -458,24 +453,8 @@ fn planned_project(text: &str, raw_project: &str) -> Result<ComposeProject, AppE
     if text.trim().is_empty() {
         return Err(AppError::BadRequest("请粘贴 compose 内容或选择文件".into()));
     }
-    let Some(project) = checked_project(raw_project)? else {
-        return Err(AppError::BadRequest("请填写项目名".into()));
-    };
+    let project = docker_cmd::prepare_project(raw_project).map_err(map_err)?;
     parse(text, &project).map_err(|e| AppError::BadRequest(e.to_string()))
-}
-
-/// 归一化并拒绝内核保留项目名（`sites` / `skiff` 由内核或站点模块持有）。
-fn checked_project(raw: &str) -> Result<Option<String>, AppError> {
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    let name = normalize_project_name(raw);
-    if RESERVED_PROJECTS.contains(&name.as_str()) {
-        return Err(AppError::BadRequest(format!(
-            "项目名 {name} 为内核保留，请换一个"
-        )));
-    }
-    Ok(Some(name))
 }
 
 fn report_rows(
@@ -558,13 +537,9 @@ mod tests {
 
     #[test]
     fn reserved_project_names_are_rejected() {
-        assert!(checked_project("sites").is_err());
-        assert!(checked_project("Skiff").is_err());
-        assert_eq!(checked_project("").unwrap(), None);
-        assert_eq!(
-            checked_project("My App").unwrap().as_deref(),
-            Some("my-app")
-        );
+        // 页面路径只验证错误映射；拒绝规则本身在命令层（见 app 的 prepare_project 测试）。
+        assert!(planned_project("services:\n  web:\n    image: nginx:alpine\n", "sites").is_err());
+        assert!(planned_project("services:\n  web:\n    image: nginx:alpine\n", "Skiff").is_err());
     }
 
     #[test]

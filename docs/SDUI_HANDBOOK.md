@@ -23,30 +23,30 @@
 
 ### 1.1 观测口径
 
-以下计数为 2026-11-09 对 `crates/web/src` 与 `crates/web/templates` 的静态观测，用于说明耦合形态，不作为能力指标或性能数字引用。
+以下计数为 **2026-11-12** 对 `crates/web/src`、`crates/web/templates` 与 `crates/web/static` 的静态观测（`Select-String` 正则计数，未过滤注释），用于说明耦合形态，不作为能力指标或性能数字引用。
 
 | 项 | 数量 | 说明 |
 |---|---|---|
-| Web 源码 | 24 个文件、约 1.4 万行 | 不含模板与静态资产 |
-| 页面处理器 | 137 个 `pub async fn` | 多数同时承担解析、鉴权、业务、审计与响应 |
-| 模板 | 36 个 `.html`、32 个 askama `Template` 结构体 | 其余为基础布局与可复用片段（弹窗、卡片、提示条） |
-| 表单解析 | 56 处 `parse_form`、101 个 `<form>` | 字段名即事实接口，无 schema |
-| 重定向 / flash | 82 处（其中 59 处 `flash_redirect`） | 写操作结果经会话内存 flash 传给下一次渲染 |
-| 审计调用 | 39 处 `db().audit(...)` | 与响应渲染混在同一 handler |
-| 授权判定 | 13 处 `policy.check`、10 处 `require_permission`、24 处 `user.can`、2 个中间件提取器 | 四套入口并存，判定与按钮显隐混用 |
-| 查询参数 | 23 处 `Query<HashMap<String, String>>` | 每页自取，无统一分页/筛选契约 |
-| 内联脚本 | 13 个 `<script>` 块 | 另有 5 个独立前端脚本与 xterm |
-| 静态资产 | `skiff.css` 80KB、`skiff.js` 75KB、`htmx` 50KB、`xterm` 283KB、`files.js` 65KB | 由 `rust-embed` 打包 |
-| 菜单模块 | `menu.rs` 约 62KB | 声明解析、排序、偏好写库与渲染模型混在一起 |
+| Web 源码 | 30 个文件、13,862 行 | 不含模板与静态资产 |
+| 页面处理器 | 154 个 `pub async fn` | 四组写路径已拆为「解析 → 命令 → 响应」，读处理器仍多职责 |
+| 模板 | 38 个 `.html`、33 个 askama `Template` 结构体 | 其余为基础布局与可复用片段（弹窗、卡片、提示条） |
+| 表单解析 | 64 处 `parse_form`、105 个 `<form>` | 字段名即事实接口，无 schema |
+| 重定向 / flash | 87 处（其中 71 处 `flash_redirect`、16 处直接 `handlers::redirect`） | 写操作结果经会话内存 flash 传给下一次渲染 |
+| 审计调用 | Web 7 处、App 16 处 `.audit(...)` | 写审计已随 P1 命令层；Web 剩余为 panic、会话、任务与作业 |
+| 授权判定 | 17 处 `policy.check`、12 处 `require_permission`、25 处 `user.can`、2 个中间件提取器 | 写路径已统一到 `web::authz`；其余分别用于对象级、读页与按钮显隐 |
+| 查询参数 | 24 处 `Query<HashMap<String, String>>` | 每页自取，无统一分页/筛选契约 |
+| 内联脚本 | 12 个 `<script>` 块（分布在 9 个模板） | 另有 5 个独立前端脚本与 xterm |
+| 静态资产 | `skiff.css` 82,641B、`skiff.js` 81,800B、`htmx` 50,917B、`xterm` 289,441B、`files.js` 66,308B | 由 `rust-embed` 打包 |
+| 菜单模块 | `app/menu.rs` 66,018B；`web/menu.rs` 310B 仅再导出 | 声明解析、排序、偏好写库与渲染模型仍混在一起 |
 
 ### 1.2 三类归类
 
 | 能力面 | 现状落点 | 归类 | 应归属 |
 |---|---|---|---|
-| 角色权限判定、对象解析（容器/站点/任务） | `policy.check`（13）、`require_permission`（10）、`user.can`（24）、中间件提取器 | 业务逻辑 | 内核（统一到命令层） |
-| 领域不变量与参数语义校验 | `limits_from_form`、`validate_domain`、`NginxParams::validate`、Compose 子集 | 业务逻辑 | 内核（命令层） |
+| 角色权限判定、对象解析（容器/站点/任务） | 写路径统一走 `web::authz`；另有 `policy.check`（对象级）、`require_permission`（读页）、`user.can`（按钮显隐）与中间件提取器 | 业务逻辑（判定在内核） | 内核（统一到命令层） |
+| 领域不变量与参数语义校验 | `limits_from_form`（传输形状）、`validate_domain`、`NginxParams::validate`、Compose 子集 | 业务逻辑 | 内核（命令层） |
 | 状态迁移、幂等与并发互斥 | `Docker::execute`、`JobService`、运行环境安装锁、exec 票据 | 业务逻辑 | 内核（领域服务） |
-| 审计事实 | 39 处 `db().audit` / `audit_or_log` | 业务逻辑（留痕） | 内核（随命令产生） |
+| 审计事实 | Web 7 处、App 16 处 `.audit(...)`；写审计已随 P1 命令层 | 业务逻辑（留痕） | 内核（随命令产生） |
 | 异步作业与进度 | `JobService`（提交、阶段、进度、日志、取消、重试） | 业务逻辑 + 契约 | 内核产出，传输层消费 |
 | 资源读模型字段语义 | `app` 的 `RuntimeView`、`Job` 等 | 业务逻辑 | 内核（字段稳定、无展示语义） |
 | 页面视图模型与格式化 | `web::templates` 的 `*View`、`human_size`、`truncate`、`"—"`/「未知」占位 | 展示逻辑 | SDUI |
@@ -54,7 +54,7 @@
 | 模板、片段与局部刷新 | askama 模板、`/containers/rows`、`hx-request` 分支 | 展示逻辑 | SDUI |
 | 表单控件、字段级错误高亮 | `site_error_text` 把错误映射到字段名 | 展示逻辑 | SDUI（内核只给 `field`） |
 | 重定向、PRG、flash 提示 | `flash_redirect`、`FlashKind`（位于 `skiff-app`） | 展示逻辑 | SDUI（内核改为直接返回结果） |
-| 导航与菜单渲染、偏好排布 | `menu.rs` 的 `build`/`settings_view`/`apply_action` | 展示逻辑（含少量授权） | 声明与授权留内核，渲染归 SDUI |
+| 导航与菜单渲染、偏好排布 | `app/menu.rs` 的 `build`/`settings_view`/`apply_action`（`web/menu.rs` 仅再导出） | 展示逻辑（含少量授权） | 声明与授权留内核，渲染归 SDUI |
 | CSS、主题、静态资产、xterm 集成 | `static/`、`base.html` 内联脚本 | 展示逻辑 | SDUI |
 | 入口前缀、404、状态码语义 | `router`、`entry_guard`、`AppError` | 传输契约 | 内核 |
 | 会话 Cookie、Bearer、CSRF | `middleware`、`check_csrf`、`x-csrf-token` | 传输契约 | 内核 |
@@ -77,14 +77,14 @@
 
 ### 1.4 耦合的根因
 
-1. **五合一 handler**：解析表单、CSRF、授权、调用领域、写审计、拼响应都在同一函数。改一个页面的交互会牵动业务判定，反之亦然。
+1. **五合一 handler**：解析表单、CSRF、授权、调用领域、写审计、拼响应都在同一函数。站点、运行时、Docker、文件四组写路径已拆为「解析 → 命令 → 响应」，读 handler 与插件/任务/作业仍是多职责一体。
 2. **视图模型带表现语义**：`state_class`（`ok`/`warn`/`danger`）、`state_label`（中文）、格式化后的字符串进入视图结构；同类数据在 `app` 与 `web` 各写一遍（如运行环境的两种视图）。
 3. **表单字段名即接口**：字段名散落在模板与 handler，改名等于破坏契约；没有字段类型、必填、范围的可机读描述。
 4. **三套错误出口**：`AppError` 渲染 HTML 错误页，`ApiError` 输出 `{code,message}`，写操作错误又走 flash 文案；没有稳定机器码，也没有字段定位。
 5. **结果经重定向传递**：写操作不返回结果本体，而是「写会话 flash + 303」，客户端拿不到结构化结果，无法做局部更新。
 6. **列表重取写在写 handler 里**：如镜像删除成功后递归调用列表 handler 重新渲染整页，读与写路径缠在一起。
 7. **查询参数各自为政**：`?filter=`、`?q=`、`?tab=` 由各页自行解释，审计固定取 200 条、作业固定取 limit，没有统一分页模型。
-8. **导航与授权混写**：菜单既要读 manifest 声明、按角色过滤，又要排序、落库偏好、生成渲染模型；前两者属内核，后两者属表现层。
+8. **导航与授权混写**：菜单既要读 manifest 声明、按角色过滤，又要排序、落库偏好、生成渲染模型；前两者属内核，后两者属表现层。逻辑已迁到 `app/menu.rs`，混写事实仍在。
 
 ---
 

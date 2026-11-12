@@ -347,10 +347,27 @@ pub struct ComposeUp {
     pub actor: Actor,
 }
 
+/// 归一化并校验 compose 项目名：空值与内核保留名（`sites` / `skiff`）在命令层拒绝。
+///
+/// 所有 compose 写命令都必须经过它，避免只有旧页面做校验、JSON 端点或直接调用绕过。
+pub fn prepare_project(raw: &str) -> Result<String, DockerCommandError> {
+    if raw.trim().is_empty() {
+        return Err(DockerCommandError::BadRequest("请填写项目名".into()));
+    }
+    let name = skiff_docker::compose::normalize_project_name(raw);
+    if matches!(name.as_str(), "sites" | "skiff") {
+        return Err(DockerCommandError::BadRequest(format!(
+            "项目名 {name} 为内核保留，请换一个"
+        )));
+    }
+    Ok(name)
+}
+
 pub async fn compose_up(
     state: &Arc<AppState>,
     cmd: ComposeUp,
 ) -> Result<Value, DockerCommandError> {
+    prepare_project(&cmd.project.name)?;
     let result = state
         .docker()
         .execute(
@@ -392,13 +409,14 @@ pub async fn compose_down(
     state: &Arc<AppState>,
     cmd: ComposeDown,
 ) -> Result<Value, DockerCommandError> {
+    let project = prepare_project(&cmd.project)?;
     let result = state
         .docker()
         .execute(
             Verb::ComposeDown,
             None,
             DockerParams::ComposeDown {
-                project: cmd.project.clone(),
+                project: project.clone(),
                 remove_volumes: cmd.remove_volumes,
             },
         )
@@ -409,7 +427,7 @@ pub async fn compose_down(
             state,
             &cmd.actor,
             Verb::ComposeDown,
-            &cmd.project,
+            &project,
             "partial",
             &format!("{} 个容器清理失败", report_failed(v)),
         ),
@@ -417,7 +435,7 @@ pub async fn compose_down(
             state,
             &cmd.actor,
             Verb::ComposeDown,
-            &cmd.project,
+            &project,
             result.as_ref().map(|_| ()),
             Verb::ComposeDown.http_path(),
         ),
@@ -427,6 +445,8 @@ pub async fn compose_down(
 
 #[derive(Debug, Clone)]
 pub struct ProjectAction {
+    /// 项目名；命令入口统一做归一化与保留名校验。
+    pub project: String,
     /// 已通过对象级授权的容器；命令不再重复判定权限。
     pub targets: Vec<ContainerTarget>,
     pub verb: Verb,
@@ -443,6 +463,7 @@ pub async fn compose_project_action(
     state: &Arc<AppState>,
     cmd: ProjectAction,
 ) -> Result<ProjectActionReport, DockerCommandError> {
+    prepare_project(&cmd.project)?;
     let mut report = ProjectActionReport::default();
     for target in &cmd.targets {
         let result = state
@@ -675,6 +696,69 @@ mod tests {
         assert!(actions.contains(&"docker.compose.down"), "{actions:?}");
     }
 
+    #[test]
+    fn prepare_project_normalizes_and_rejects_reserved() {
+        assert_eq!(prepare_project("My App").unwrap(), "my-app");
+        assert!(matches!(
+            prepare_project("  "),
+            Err(DockerCommandError::BadRequest(ref m)) if m == "请填写项目名"
+        ));
+        for raw in ["sites", "Skiff"] {
+            assert!(
+                matches!(
+                    prepare_project(raw),
+                    Err(DockerCommandError::BadRequest(ref m)) if m.contains("内核保留")
+                ),
+                "{raw}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn compose_commands_reject_reserved_project_when_called_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_at(dir.path());
+        let project =
+            skiff_docker::compose::parse("services:\n  web:\n    image: nginx:alpine\n", "sites")
+                .unwrap();
+        assert!(matches!(
+            compose_up(
+                &state,
+                ComposeUp {
+                    project,
+                    actor: actor(),
+                }
+            )
+            .await,
+            Err(DockerCommandError::BadRequest(ref m)) if m.contains("内核保留")
+        ));
+        assert!(matches!(
+            compose_down(
+                &state,
+                ComposeDown {
+                    project: "skiff".into(),
+                    remove_volumes: false,
+                    actor: actor(),
+                }
+            )
+            .await,
+            Err(DockerCommandError::BadRequest(ref m)) if m.contains("内核保留")
+        ));
+        assert!(matches!(
+            compose_project_action(
+                &state,
+                ProjectAction {
+                    project: "sites".into(),
+                    targets: Vec::new(),
+                    verb: Verb::Restart,
+                    actor: actor(),
+                }
+            )
+            .await,
+            Err(DockerCommandError::BadRequest(ref m)) if m.contains("内核保留")
+        ));
+    }
+
     #[tokio::test]
     async fn project_action_without_targets_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
@@ -683,6 +767,7 @@ mod tests {
         let report = compose_project_action(
             &state,
             ProjectAction {
+                project: "demo".into(),
                 targets: Vec::new(),
                 verb: Verb::Restart,
                 actor: actor(),
