@@ -120,6 +120,12 @@ pub struct CatalogItem {
     pub note: String,
     /// 非空时按警示展示（已撤回 / 已 EOL 等）。
     pub warn: String,
+    /// 该行是否为当前可安装版本（商店页选择器与安装 POST 同源）。
+    pub installable: bool,
+    /// 按钮文案：安装 / 升级。
+    pub action: String,
+    /// 不可安装或推荐版本说明（按钮旁展示）。
+    pub install_note: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -452,6 +458,49 @@ impl CatalogService {
             channel: index.channel.clone(),
             revoked,
         })
+    }
+
+    /// 可安装版本：未 yank、未命中 `revoked[]` 的最大版本。
+    ///
+    /// 商店页选择器与安装 POST 共用这一处判定（页面显示哪个版本就装哪个）。
+    pub fn installable_package(&self, id: &str) -> Option<PluginPackage> {
+        let (snapshot, index, base) = self.refresh(false);
+        if matches!(
+            snapshot.state,
+            CatalogState::Disabled | CatalogState::Rejected
+        ) || base.is_empty()
+        {
+            return None;
+        }
+        let index = index?;
+        let version = installable_versions(&snapshot.entries.plugins).remove(id)?;
+        let entry = index
+            .plugins
+            .iter()
+            .find(|p| p.id == id && p.version == version)?
+            .clone();
+        Some(PluginPackage {
+            entry,
+            base,
+            channel: index.channel.clone(),
+            revoked: None,
+        })
+    }
+
+    /// 已安装插件能否升级：返回当前可安装版本（未 yank/吊销的最大版本）。
+    ///
+    /// 与 [`Self::installable_package`] 同源；只读内存快照或本地缓存，不联网。
+    pub fn cached_installable_version(&self, id: &str) -> Option<String> {
+        if !self.settings.enabled {
+            return None;
+        }
+        if let Ok(memo) = self.memo.lock() {
+            if let Some(index) = memo.as_ref().and_then(|m| m.index.as_ref()) {
+                return installable_version_in(index, id);
+            }
+        }
+        let cached = self.cached_for_current_key(&self.settings.channel)?;
+        installable_version_in(&cached.index, id)
     }
 
     /// 已安装插件在**不联网**前提下的撤包提示：只读内存快照或本地缓存。
@@ -1148,6 +1197,9 @@ fn entries_of(index: &Index) -> CatalogEntries {
                         },
                         (None, false) => String::new(),
                     },
+                    installable: true,
+                    action: "安装".into(),
+                    install_note: String::new(),
                 }
             })
             .collect(),
@@ -1162,6 +1214,9 @@ fn entries_of(index: &Index) -> CatalogEntries {
                 compatibility: format!("内核 ≥ {}", a.min_kernel),
                 note: a.summary.clone(),
                 warn: app_note(index, a),
+                installable: true,
+                action: "安装".into(),
+                install_note: String::new(),
             })
             .collect(),
         runtimes: index
@@ -1179,6 +1234,9 @@ fn entries_of(index: &Index) -> CatalogEntries {
                 ),
                 note: r.image_digest.clone(),
                 warn: runtime_note(index, r),
+                installable: true,
+                action: "安装".into(),
+                install_note: String::new(),
             })
             .collect(),
         upgrades: index
@@ -1192,9 +1250,49 @@ fn entries_of(index: &Index) -> CatalogEntries {
                 compatibility: format!("≥ {} · {}", u.min_from, u.arch),
                 note: u.changelog_url.clone(),
                 warn: String::new(),
+                installable: true,
+                action: "安装".into(),
+                install_note: String::new(),
             })
             .collect(),
     }
+}
+
+/// 同一 id 的可安装版本：`warn` 为空（未 yank、未命中 `revoked[]`）的最大版本。
+///
+/// **商店页选择器与安装 POST 共用这一处判定**：页面显示哪个版本，`prepare`
+/// 就装哪个版本。`warn` 本身由 [`entries_of`] 从 `revoked[]` / `yanked` 推导，
+/// 因此不存在第二套「最大版本」算法。
+pub fn installable_versions(items: &[CatalogItem]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    for it in items.iter().filter(|i| i.warn.is_empty()) {
+        match out.get(&it.name) {
+            Some(cur) if version_cmp(&it.version, cur) != std::cmp::Ordering::Greater => {}
+            _ => {
+                out.insert(it.name.clone(), it.version.clone());
+            }
+        }
+    }
+    out
+}
+
+/// 同一 id 的最高版本（不看 yank/吊销）：用于「全部不可安装」时在原行展示原因。
+pub fn newest_versions(items: &[CatalogItem]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    for it in items {
+        match out.get(&it.name) {
+            Some(cur) if version_cmp(&it.version, cur) != std::cmp::Ordering::Greater => {}
+            _ => {
+                out.insert(it.name.clone(), it.version.clone());
+            }
+        }
+    }
+    out
+}
+
+/// 索引级入口：与 [`installable_versions`] 同一口径（先映射成页面行再选最大）。
+fn installable_version_in(index: &Index, id: &str) -> Option<String> {
+    installable_versions(&entries_of(index).plugins).remove(id)
 }
 
 fn now_rfc3339() -> String {

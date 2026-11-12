@@ -68,10 +68,23 @@ fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppErro
         reduced,
         running: false,
         ui_path: ui.map(|u| u.path.clone()).unwrap_or_default(),
-        takedown_note: state
-            .catalog()
-            .cached_takedown(&p.id, &p.version)
-            .unwrap_or_default(),
+        takedown_note: {
+            // 已装版本被撤包时给出明确升级指向：有可安装新版本就报版本号，
+            // 没有就说明当前无可装版本（不把用户留到点「安装」才被拒）。
+            let mut note = state
+                .catalog()
+                .cached_takedown(&p.id, &p.version)
+                .unwrap_or_default();
+            if !note.is_empty() {
+                match state.catalog().cached_installable_version(&p.id) {
+                    Some(v) if skiff_plugin::install::version_gt(&v, &p.version) => {
+                        note.push_str(&format!("；请升级到 {v}"))
+                    }
+                    _ => note.push_str("；当前没有可安装的新版本"),
+                }
+            }
+            note
+        },
     })
 }
 

@@ -80,6 +80,9 @@ fn cleanup_stale_incoming_at(dir: &Path, now: SystemTime, ttl: Duration) -> usiz
 #[derive(Debug, Clone)]
 pub struct StoreInstallRequest {
     pub plugin_id: String,
+    /// 商店页选择器显示的版本；与 `CatalogService::installable_package` 交叉校验。
+    /// 旧页面不带该字段时按当前可安装版本处理。
+    pub version: Option<String>,
     /// 当前部署形态（能力面收缩口径随之变化）。
     pub form: skiff_model::Form,
     /// 有效未签名开关（与上传安装一致：只看配置，不看命令行标志）。
@@ -186,14 +189,38 @@ pub fn prepare(
         return Err(StoreInstallError::KeyMissing);
     }
 
-    let package = catalog
-        .plugin_package(&req.plugin_id, None)
-        .ok_or_else(|| {
-            StoreInstallError::NotFound(format!(
-                "已验证目录中没有插件 {}（目录未更新、校验失败或条目不存在）",
+    // 版本选择与商店页同源：只认「未 yank、未命中 revoked 的最大版本」。
+    // 页面带 `version` 时必须与当前选择一致（目录已变化则要求刷新，不静默改装别的版本）。
+    let package = match catalog.installable_package(&req.plugin_id) {
+        Some(pkg) => {
+            if let Some(asked) = req.version.as_deref() {
+                if pkg.entry.version != asked {
+                    return Err(StoreInstallError::NotFound(format!(
+                        "可安装版本已变为 {}（请求 {asked}，可能已被撤回/下架）；请刷新商店页后重试",
+                        pkg.entry.version
+                    )));
+                }
+            }
+            pkg
+        }
+        None => {
+            // 全部不可安装：用最高版本条目走兼容性检查，把 yank/吊销原因原样带回
+            // （与 R1 的拒绝文案一致），没有任何条目才报 not_found。
+            let newest = catalog
+                .plugin_package(&req.plugin_id, None)
+                .ok_or_else(|| {
+                    StoreInstallError::NotFound(format!(
+                        "已验证目录中没有插件 {}（目录未更新、校验失败或条目不存在）",
+                        req.plugin_id
+                    ))
+                })?;
+            check_compatibility(db, req, &newest)?;
+            return Err(StoreInstallError::NotFound(format!(
+                "已验证目录中没有可安装的版本（{} 全部被撤回/下架）",
                 req.plugin_id
-            ))
-        })?;
+            )));
+        }
+    };
     check_compatibility(db, req, &package)?;
 
     let token = new_token();
@@ -379,6 +406,7 @@ mod tests {
         fn request(&self) -> StoreInstallRequest {
             StoreInstallRequest {
                 plugin_id: PLUGIN_ID.into(),
+                version: None,
                 form: skiff_model::Form::Native,
                 allow_unsigned: false,
                 allow_reduced_sandbox: true,
@@ -404,8 +432,13 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        /// 打包一个真实 `.wbpkg`，返回（字节、sha256）。
+        /// 打包一个真实 `.wbpkg`（版本固定 0.1.0），返回（字节、sha256）。
         fn package(&self, requires: &[&str], api: &str) -> (Vec<u8>, String) {
+            self.package_at("0.1.0", requires, api)
+        }
+
+        /// 指定版本打包：多版本选择器测试用。
+        fn package_at(&self, version: &str, requires: &[&str], api: &str) -> (Vec<u8>, String) {
             let src = self.dir.path().join("pkg-src");
             let _ = std::fs::remove_dir_all(&src);
             let arch = skiff_pkgfmt::host_arch();
@@ -420,7 +453,7 @@ mod tests {
             let manifest = format!(
                 r#"id = "{PLUGIN_ID}"
 name = "Demo"
-version = "0.1.0"
+version = "{version}"
 key_id = "{}"
 api = "{api}"
 requires_full_sandbox = false
@@ -433,7 +466,7 @@ verbs = ["list"]
                 self.plugin_key.key_id()
             );
             std::fs::write(src.join("manifest.toml"), manifest).unwrap();
-            let out = self.dir.path().join("demo.wbpkg");
+            let out = self.dir.path().join(format!("demo-{version}.wbpkg"));
             skiff_pkgfmt::package::pack_dir(&src, &out, &self.plugin_key.seed_hex()).unwrap();
             let bytes = std::fs::read(&out).unwrap();
             let sha = hex::encode(Sha256::digest(&bytes));
@@ -860,5 +893,93 @@ verbs = ["list"]
             .unwrap()
             .contains("private key leaked"));
         assert!(fx.incoming_files().is_empty());
+    }
+
+    /// 最新版被撤包时，页面选择器与 POST 一起回退到「未 yank 的最大版本」。
+    #[test]
+    fn latest_yanked_falls_back_to_previous_installable_version() {
+        let fx = Fixture::new();
+        let (old_bytes, old_sha) = fx.package(&["docker"], "1.0");
+        let (new_bytes, new_sha) = fx.package_at("0.2.0", &["docker"], "1.0");
+        fx.serve_index(serde_json::json!({
+            "schema": INDEX_SCHEMA,
+            "channel": "stable",
+            "seq": 1,
+            "generated_at": "2026-11-10T00:00:00Z",
+            "plugins": [
+                {
+                    "id": PLUGIN_ID,
+                    "version": "0.1.0",
+                    "api": "1.0",
+                    "requires": ["docker"],
+                    "summary": "示例插件",
+                    "published_at": "2026-11-09T00:00:00Z",
+                    "yanked": false,
+                    "pkg_sha256": old_sha,
+                    "pkg_url": format!("blobs/sha256/{old_sha}"),
+                    "size": old_bytes.len() as u64
+                },
+                {
+                    "id": PLUGIN_ID,
+                    "version": "0.2.0",
+                    "api": "1.0",
+                    "requires": ["docker"],
+                    "summary": "示例插件",
+                    "published_at": "2026-11-10T00:00:00Z",
+                    "yanked": true,
+                    "yank_reason": "policy violation",
+                    "pkg_sha256": new_sha,
+                    "pkg_url": format!("blobs/sha256/{new_sha}"),
+                    "size": new_bytes.len() as u64
+                }
+            ]
+        }));
+        fx.serve_blob(&old_sha, old_bytes.clone());
+        fx.serve_blob(&new_sha, new_bytes.clone());
+        fx.trust_plugin_key();
+        let svc = fx.service();
+
+        assert_eq!(
+            svc.installable_package(PLUGIN_ID).unwrap().entry.version,
+            "0.1.0",
+            "选择器必须跳过被 yank 的 0.2.0"
+        );
+        let prepared = prepare(&svc, &fx.db, &fx.request()).expect("应安装未撤包的 0.1.0");
+        assert!(prepared.path.is_file());
+        let _ = fs::remove_file(&prepared.path);
+
+        // 过期页面把被撤包版本 POST 上来：拒绝并提示刷新，不静默改装别的版本。
+        let mut stale = fx.request();
+        stale.version = Some("0.2.0".into());
+        let err = prepare(&svc, &fx.db, &stale).unwrap_err();
+        assert!(matches!(err, StoreInstallError::NotFound(_)), "{err}");
+        assert!(err.message().contains("0.1.0"), "{err}");
+    }
+
+    /// 全部版本都被撤包：没有可安装版本，拒绝文案带原因且不留暂存文件。
+    #[test]
+    fn all_versions_yanked_rejects_with_reason_and_no_staging() {
+        let fx = Fixture::new();
+        let (bytes, sha) = fx.package_at("0.2.0", &["docker"], "1.0");
+        let mut index = takedown_index(
+            &sha,
+            bytes.len() as u64,
+            true,
+            Some("policy violation"),
+            None,
+        );
+        index["plugins"][0]["version"] = serde_json::json!("0.2.0");
+        fx.serve_index(index);
+        fx.trust_plugin_key();
+        let svc = fx.service();
+
+        assert!(
+            svc.installable_package(PLUGIN_ID).is_none(),
+            "全部 yank 时选择器必须为空"
+        );
+        let err = prepare(&svc, &fx.db, &fx.request()).unwrap_err();
+        assert!(matches!(err, StoreInstallError::Revoked(_)), "{err}");
+        assert!(err.message().contains("policy violation"), "{err}");
+        assert!(fx.incoming_files().is_empty(), "拒绝不得留下暂存文件");
     }
 }

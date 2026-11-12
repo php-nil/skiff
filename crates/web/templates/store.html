@@ -93,13 +93,17 @@
         <td class="muted small">{{ r.note }}</td>
         {% if section.installable %}
         <td>
-          {% if r.warn.is_empty() %}
+          {% if r.installable %}
           <form method="post" action="/{{ ctx.prefix }}/store/plugins/{{ r.name }}/install" class="inline">
             <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
-            <button type="submit" class="btn ghost">安装</button>
+            <input type="hidden" name="version" value="{{ r.version }}">
+            <button type="submit" class="btn ghost">{{ r.action }}</button>
           </form>
           {% else %}
-          <span class="muted small">不可安装</span>
+          <button type="button" class="btn ghost" disabled title="{{ r.install_note }}">不可安装</button>
+          {% if !r.install_note.is_empty() %}
+          <div class="muted small">{{ r.install_note }}</div>
+          {% endif %}
           {% endif %}
         </td>
         {% endif %}

@@ -89,6 +89,50 @@ pub async fn page(
         },
         can_download,
     };
+    // 版本选择器：一个 id 只有一个可安装版本（未 yank、未吊销的最大版本）；
+    // 与安装 POST 共用 `installable_versions`，页面显示哪个就装哪个。
+    let mut plugins = snap.entries.plugins.clone();
+    let installable = skiff_app::catalog::installable_versions(&plugins);
+    let newest = skiff_app::catalog::newest_versions(&plugins);
+    // 最高版本行的撤回/下架原因：同 id 其它版本没有自带原因时复用它。
+    let newest_warn: HashMap<String, String> = plugins
+        .iter()
+        .filter(|r| !r.warn.is_empty())
+        .filter(|r| newest.get(&r.name).is_some_and(|v| v == &r.version))
+        .map(|r| (r.name.clone(), r.warn.clone()))
+        .collect();
+    for r in plugins.iter_mut() {
+        r.installable = installable.get(&r.name).is_some_and(|v| v == &r.version);
+        if r.installable {
+            // 已装旧版本时按钮改「升级」；同版本重装仍是「安装」。
+            // 已装版本高于可安装版本时不提供降级入口（后端同样拒绝）。
+            if let Ok(Some(installed)) = state.db().plugin(&r.name) {
+                if installed.version != r.version {
+                    if skiff_plugin::install::version_gt(&r.version, &installed.version) {
+                        r.action = "升级".into();
+                    } else {
+                        r.installable = false;
+                        r.install_note = format!(
+                            "已安装 {} 高于目录可安装版本 {}，不接受降级",
+                            installed.version, r.version
+                        );
+                    }
+                }
+            }
+        } else if !r.warn.is_empty() {
+            // 本行自带撤回/下架原因：按钮旁直接说明。
+            r.install_note = r.warn.clone();
+        } else if let Some(chosen) = installable.get(&r.name) {
+            r.install_note = format!("请安装 {chosen}");
+        } else {
+            // 全部不可安装：最高版本行没有自身原因时回落到该 id 的最高版本原因，
+            // 再没有就保持通用文案，按钮始终禁用。
+            r.install_note = newest_warn
+                .get(&r.name)
+                .cloned()
+                .unwrap_or_else(|| "目录中没有可安装的版本".into());
+        }
+    }
     let total = snap.entries.total();
     handlers::render(StorePage {
         ctx: handlers::page_ctx(&state, &user, "core/plugins/store"),
@@ -117,7 +161,7 @@ pub async fn page(
                 title: "插件".into(),
                 hint: "已验证目录条目可直接安装：下载 → 摘要/大小 → 验签 → 权限确认。".into(),
                 installable: can_install,
-                items: snap.entries.plugins,
+                items: plugins,
             },
             StoreSection {
                 title: "应用模板".into(),
@@ -189,6 +233,14 @@ pub async fn install(
 
     let req = skiff_app::commands::store::StoreInstallRequest {
         plugin_id: id.clone(),
+        version: {
+            let v = form_first(&form, "version");
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        },
         form: state.cfg.form,
         allow_unsigned: state.cfg.allow_unsigned,
         allow_reduced_sandbox: state.cfg.allow_reduced_sandbox,
@@ -452,6 +504,9 @@ mod tests {
             compatibility: "API 1.0".into(),
             note: "示例条目".into(),
             warn: String::new(),
+            installable: true,
+            action: "安装".into(),
+            install_note: String::new(),
         }
     }
 
@@ -487,6 +542,10 @@ mod tests {
             "公钥已配置时必须提供安装入口: {html}"
         );
         assert!(html.contains(">安装</button>"), "安装按钮文案缺失");
+        assert!(
+            html.contains(r#"name="version" value="1.0.0""#),
+            "安装表单必须带上选择器显示的版本（前后端同源）: {html}"
+        );
     }
 
     #[test]
@@ -527,6 +586,8 @@ mod tests {
     fn warned_item_is_marked_not_installable() {
         let mut warned = item("com.example.yanked");
         warned.warn = "已撤回".into();
+        warned.installable = false;
+        warned.install_note = "已撤回：policy violation".into();
         let page = StorePage {
             ctx: ctx(),
             state_label: "已更新".into(),
@@ -550,6 +611,10 @@ mod tests {
         let html = page.render().unwrap();
         assert!(html.contains("已撤回"));
         assert!(html.contains("不可安装"));
+        assert!(
+            html.contains("policy violation"),
+            "禁用按钮旁必须给出撤回原因: {html}"
+        );
         assert!(
             !html.contains("com.example.yanked/install"),
             "撤回条目不得渲染安装链接: {html}"

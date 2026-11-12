@@ -783,3 +783,86 @@ fn yanked_reason_is_reported_by_the_client_view() {
         .warn
         .contains("policy violation"));
 }
+
+/// 选择器口径：未 yank、未命中 `revoked[]` 的最大版本；全部不可装时为空。
+#[test]
+fn selector_skips_yanked_and_revoked_versions() {
+    fn variant(
+        base: &serde_json::Value,
+        ver: &str,
+        yanked: bool,
+        reason: Option<&str>,
+    ) -> serde_json::Value {
+        let mut p = base.clone();
+        p["version"] = serde_json::json!(ver);
+        p["yanked"] = serde_json::json!(yanked);
+        if let Some(reason) = reason {
+            p["yank_reason"] = serde_json::json!(reason);
+        }
+        p
+    }
+
+    let base_value: serde_json::Value = serde_json::from_str(LEGACY_INDEX).unwrap();
+    let base = base_value["plugins"][0].clone();
+
+    // 最新版 yanked → 回退到中间版本；更高但被吊销的版本同样跳过。
+    let mut value = base_value.clone();
+    value["plugins"] = serde_json::json!([
+        variant(&base, "1.0.0", false, None),
+        variant(&base, "1.1.0", false, None),
+        variant(&base, "1.2.0", true, Some("policy violation")),
+        variant(&base, "1.3.0", false, None),
+    ]);
+    value["revoked"] = serde_json::json!([{
+        "id": "com.example.demo",
+        "version": "1.3.0",
+        "reason": "private key leaked",
+        "at": "2026-11-11T00:00:00Z"
+    }]);
+    let index: Index = serde_json::from_value(value).unwrap();
+    index.validate(None).unwrap();
+    let items = entries_of(&index).plugins;
+    assert_eq!(
+        installable_versions(&items)
+            .get("com.example.demo")
+            .map(String::as_str),
+        Some("1.1.0"),
+        "必须跳过 yanked 与 revoked 的更高版本"
+    );
+    assert_eq!(
+        newest_versions(&items)
+            .get("com.example.demo")
+            .map(String::as_str),
+        Some("1.3.0"),
+        "最高版本只用于展示原因，不代表可安装"
+    );
+
+    // 全部 yank → 没有可安装版本，最高版本行带可读原因。
+    let mut value = base_value.clone();
+    value["plugins"] = serde_json::json!([
+        variant(&base, "1.0.0", true, None),
+        variant(&base, "1.1.0", true, Some("policy violation")),
+    ]);
+    let index: Index = serde_json::from_value(value).unwrap();
+    let items = entries_of(&index).plugins;
+    assert!(!installable_versions(&items).contains_key("com.example.demo"));
+    let newest = newest_versions(&items)["com.example.demo"].clone();
+    let row = items
+        .iter()
+        .find(|r| r.version == newest)
+        .expect("最高版本行必须存在");
+    assert!(
+        row.warn.contains("policy violation"),
+        "禁用按钮所在行必须带 yank 原因: {row:?}"
+    );
+
+    // 未撤包的单版本：行为不变。
+    let index: Index = serde_json::from_str(LEGACY_INDEX).unwrap();
+    let items = entries_of(&index).plugins;
+    assert_eq!(
+        installable_versions(&items)
+            .get("com.example.demo")
+            .map(String::as_str),
+        Some("1.0.0")
+    );
+}
