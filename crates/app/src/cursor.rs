@@ -1,7 +1,8 @@
 //! 列表游标编解码（SDUI D10）。
 //!
 //! 游标是「上一页最后一条的排序键」＋「产生它的筛选条件指纹」，由服务端用 HMAC
-//! 签名后 base64url 编码。客户端既读不出结构也改不了内容：
+//! 签名后 base64url 编码。安全性来自签名而不是编码：载荷可以 base64url 解开看到，
+//! 但**无法伪造**，也改不了任何一位：
 //!
 //! - 改任意一个字符 → 签名不匹配（`Tampered`）；
 //! - 换一套筛选条件继续翻页 → 指纹不匹配（`FilterMismatch`）；
@@ -21,8 +22,10 @@ const CURSOR_VERSION: u8 = 1;
 /// HMAC-SHA256 十六进制签名长度。
 const SIG_LEN: usize = 64;
 
-/// 游标长度上限：正常游标不到 200 字符，超长输入直接拒绝，避免解码大对象。
-pub const CURSOR_MAX_LEN: usize = 512;
+/// 游标长度上限。审计/作业游标不到 200 字符，但文件列表的排序键含文件名
+/// （单段最长 255 字节），两列排序键编码后约 540 字符；取 1024 留出余量，
+/// 同时仍拒绝超长输入，避免解码大对象。
+pub const CURSOR_MAX_LEN: usize = 1024;
 
 /// 游标被拒绝的原因。文案面向调用方直接回 400，不做二次解释。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +61,8 @@ struct Payload {
     v: u8,
     /// 排序键，按索引列顺序；数字以十进制字符串保存，避免 JSON 数字精度问题。
     sort: Vec<String>,
-    /// 筛选指纹（由调用方按声明过的筛选字段计算）。
+    /// 筛选指纹的 SHA-256。存摘要而不是原文：长度恒定（64 字符），
+    /// 游标大小不随搜索词/路径等筛选值增长，也不把筛选原文带进 URL 与日志。
     filter: String,
 }
 
@@ -82,7 +86,7 @@ impl CursorCodec {
         let payload = Payload {
             v: CURSOR_VERSION,
             sort: sort.to_vec(),
-            filter: filter_fp.to_string(),
+            filter: filter_digest(filter_fp),
         };
         let json = serde_json::to_vec(&payload).expect("游标载荷是纯字符串结构，序列化不会失败");
         let body = B64.encode(json);
@@ -108,7 +112,7 @@ impl CursorCodec {
         if payload.v != CURSOR_VERSION {
             return Err(CursorError::Malformed);
         }
-        if payload.filter != filter_fp {
+        if payload.filter != filter_digest(filter_fp) {
             return Err(CursorError::FilterMismatch);
         }
         Ok(payload.sort)
@@ -117,6 +121,11 @@ impl CursorCodec {
     fn sign(&self, body: &str) -> String {
         hmac_sha256_hex(&self.secret, &format!("cursor:{}", self.scope), body)
     }
+}
+
+/// 筛选指纹入载荷前先摘要：把可变长输入压成固定 64 字符，保证游标大小有上界。
+fn filter_digest(filter_fp: &str) -> String {
+    skiff_identity::sha256_hex(filter_fp)
 }
 
 #[cfg(test)]
@@ -138,12 +147,31 @@ mod tests {
         assert_eq!(c.decode(&cur, "action=login").unwrap(), keys());
     }
 
-    /// 游标对调用方不透明：不应出现明文排序键。
+    /// 载荷是 base64url 编码（不是加密）：这里只确认排序键与筛选原文不会以字面量
+    /// 出现在 URL 或日志里；防伪由签名负责，见下面的篡改用例。
     #[test]
-    fn cursor_does_not_leak_plaintext_keys() {
+    fn cursor_payload_is_encoded_not_plaintext() {
         let cur = codec().encode(&keys(), "action=login");
         assert!(!cur.contains("1730000000"));
         assert!(!cur.contains("action=login"));
+    }
+
+    /// 文件列表的排序键含 255 字节文件名：服务端签出的游标必须仍能自己解开，
+    /// 否则翻页会在含长文件名的页上直接报「游标格式非法」。
+    #[test]
+    fn long_file_name_key_roundtrips_within_limit() {
+        let c = codec();
+        let name = "名".repeat(85);
+        assert_eq!(name.len(), 255, "用例本身要覆盖最长的单段文件名");
+        let keys = vec!["0".to_string(), name];
+        let filter = "path=/www/sites/example.com/index&sort=name";
+        let cur = c.encode(&keys, filter);
+        assert!(
+            cur.len() <= CURSOR_MAX_LEN,
+            "游标 {} 字符超过上限 {CURSOR_MAX_LEN}",
+            cur.len()
+        );
+        assert_eq!(c.decode(&cur, filter).unwrap(), keys);
     }
 
     #[test]
