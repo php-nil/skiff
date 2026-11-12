@@ -450,7 +450,15 @@ impl TaskService {
                 })
                 .await
                 .map_err(|e| {
-                    ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string())
+                    // JoinError 只说明执行体异常结束，补上任务 id 才能定位是哪一次运行。
+                    ExecError::new(
+                        ErrorClass::ExecutorFailed,
+                        ErrorPhase::Call,
+                        format!(
+                            "内置任务 {} 的执行体异常结束（未返回结果，请查看服务日志）：{e}",
+                            ticket.context.task_id.as_str()
+                        ),
+                    )
                 })?
             }
             TaskKind::Plugin { id, method } => {
@@ -1351,6 +1359,43 @@ fn run_builtin(
     }
 }
 
+/// 内置任务失败的统一描述：`<任务>：<动作>失败：<目标>（<下一步>）：<原因>`。
+///
+/// 调度层只在前面拼 `[phase:class]`、不吞内层文案（`sched::scheduler` 的失败记录），
+/// 因此「哪个任务 / 卡在哪一步 / 用户能做什么」必须在这里一次说清；
+/// `error_class` / `error_detail` 等结构化字段不变。
+fn builtin_error(
+    task: &str,
+    action: &str,
+    target: Option<&Path>,
+    hint: Option<&str>,
+    cause: impl std::fmt::Display,
+) -> ExecError {
+    let mut message = format!("{task}：{action}失败");
+    if let Some(target) = target {
+        message.push_str(&format!("：{}", target.display()));
+    }
+    if let Some(hint) = hint {
+        message.push_str(&format!("（{hint}）"));
+    }
+    message.push_str(&format!("：{cause}"));
+    ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, message)
+}
+
+/// 把 `os error 17` 这类裸 errno 翻译成用户能照着做的下一步。
+fn io_hint(e: &std::io::Error) -> &'static str {
+    match e.kind() {
+        std::io::ErrorKind::AlreadyExists => "该路径已被同名文件占用，请移除或改名后重试",
+        std::io::ErrorKind::PermissionDenied => "检查数据目录的属主与写权限",
+        std::io::ErrorKind::NotFound => "检查数据目录是否存在，以及安装配置里的数据根路径",
+        _ => "检查数据目录空间、属主与挂载状态后重试",
+    }
+}
+
+fn io_builtin_error(task: &str, action: &str, target: &Path, e: &std::io::Error) -> ExecError {
+    builtin_error(task, action, Some(target), Some(io_hint(e)), e)
+}
+
 fn site_backup(
     ctx: &BuiltinCtx,
     db: &Db,
@@ -1366,17 +1411,17 @@ fn site_backup(
             ExecError::new(
                 ErrorClass::InvalidParams,
                 ErrorPhase::Call,
-                "payload 缺少 domain",
+                format!("{BUILTIN_SITE_BACKUP}：payload 缺少 domain"),
             )
         })?;
     let site = db
         .site_by_domain(domain)
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?
+        .map_err(|e| builtin_error(BUILTIN_SITE_BACKUP, "读取站点记录", None, None, e))?
         .ok_or_else(|| {
             ExecError::new(
                 ErrorClass::InvalidParams,
                 ErrorPhase::Call,
-                format!("站点 {domain} 不存在"),
+                format!("{BUILTIN_SITE_BACKUP}：站点 {domain} 不存在"),
             )
         })?;
     let root = PathBuf::from(&site.root_dir);
@@ -1389,22 +1434,22 @@ fn site_backup(
         return Err(ExecError::new(
             ErrorClass::InvalidParams,
             ErrorPhase::Call,
-            format!("站点目录不存在: {}", root.display()),
+            format!("{BUILTIN_SITE_BACKUP}：站点目录不存在: {}", root.display()),
         ));
     }
 
     let dir = data_dir.join("backups").join("sites").join(domain);
     std::fs::create_dir_all(&dir)
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+        .map_err(|e| io_builtin_error(BUILTIN_SITE_BACKUP, "创建站点备份目录", &dir, &e))?;
     let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let path = dir.join(format!("{ts}.tar"));
     let file = std::fs::File::create(&path)
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+        .map_err(|e| io_builtin_error(BUILTIN_SITE_BACKUP, "创建备份归档文件", &path, &e))?;
     let mut builder = tar::Builder::new(file);
     builder
         .append_dir_all(".", &root)
         .and_then(|_| builder.into_inner().map(|_| ()))
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+        .map_err(|e| io_builtin_error(BUILTIN_SITE_BACKUP, "打包站点目录", &root, &e))?;
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len() as usize)
         .unwrap_or(0);
@@ -1428,11 +1473,18 @@ fn db_vacuum(ctx: &BuiltinCtx, db: &Db, data_dir: &Path) -> Result<ExecOutput, E
     let _ = ctx;
     let dir = data_dir.join("backups").join("db");
     std::fs::create_dir_all(&dir)
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+        .map_err(|e| io_builtin_error(BUILTIN_DB_VACUUM, "创建数据库备份目录", &dir, &e))?;
     let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let path = dir.join(format!("skiff-{ts}.db"));
-    db.backup_to(&path)
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+    db.backup_to(&path).map_err(|e| {
+        builtin_error(
+            BUILTIN_DB_VACUUM,
+            "生成数据库快照",
+            Some(&path),
+            Some("检查数据目录空间与属主权限后重试；若目标文件冲突，稍后重试"),
+            e,
+        )
+    })?;
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len() as usize)
         .unwrap_or(0);
@@ -1466,9 +1518,15 @@ fn trash_prune(
         Arc::clone(db),
         trash_retention_days,
     );
-    let bytes = admin
-        .trash_prune()
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.message()))?;
+    let bytes = admin.trash_prune().map_err(|e| {
+        builtin_error(
+            BUILTIN_TRASH_PRUNE,
+            "清理回收站到期文件",
+            None,
+            Some("检查 data/trash 的属主与写权限后重试"),
+            format!("{}（{}）", e.message(), e.code()),
+        )
+    })?;
     tracing::info!(
         lane = "maintenance",
         op = "trash_prune",
@@ -1488,9 +1546,15 @@ fn trash_prune(
 fn audit_prune(db: &Db) -> Result<ExecOutput, ExecError> {
     let started = Instant::now();
     let cutoff = audit_cutoff(Local::now().timestamp());
-    let deleted = db
-        .purge_audit_before(cutoff)
-        .map_err(|e| ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, e.to_string()))?;
+    let deleted = db.purge_audit_before(cutoff).map_err(|e| {
+        builtin_error(
+            BUILTIN_AUDIT_PRUNE,
+            "按保留期删除审计记录",
+            None,
+            Some("检查数据库文件与 WAL 的属主权限后重试"),
+            e,
+        )
+    })?;
     tracing::info!(
         lane = "maintenance",
         op = "audit_prune",
@@ -1962,6 +2026,33 @@ requires = ["fs"]
             .unwrap()
             .count();
         assert_eq!(archived, 1);
+    }
+
+    /// 真失败路径：备份目录被同名普通文件占住（上机回归复现的正是这个）。
+    /// 断言运行记录里能说清「哪个任务 / 哪一步 / 怎么办」，而不是裸 `os error`。
+    #[tokio::test]
+    async fn db_vacuum_failure_names_task_action_and_next_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+        let blocked = dir.path().join("backups").join("db");
+        std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+        std::fs::write(&blocked, b"occupied by a file").unwrap();
+        // 用同一条件在测试侧取一次底层错误串，避免把平台相关的 errno 文案写死。
+        let cause = std::fs::create_dir_all(&blocked).unwrap_err().to_string();
+
+        let record = svc
+            .run_task_now(DB_VACUUM_TASK_ID, AuditActor::Admin("admin".into()))
+            .await
+            .unwrap();
+        assert_eq!(record["result"], "fail");
+        assert_eq!(record["error_class"], "executor_failed");
+        let detail = record["error_detail"].as_str().unwrap_or_default();
+        assert!(detail.starts_with("[call:executor_failed] "), "{detail}");
+        assert!(detail.contains(BUILTIN_DB_VACUUM), "{detail}");
+        assert!(detail.contains("创建数据库备份目录失败"), "{detail}");
+        assert!(detail.contains(&blocked.display().to_string()), "{detail}");
+        assert!(detail.contains("同名文件占用"), "{detail}");
+        assert!(detail.contains(&cause), "缺少底层原因 {cause}：{detail}");
     }
 
     #[tokio::test]
