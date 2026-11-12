@@ -60,6 +60,14 @@ pub fn verify_signed_token(
     Ok(())
 }
 
+/// 面向调用方的确定性 HMAC-SHA256（十六进制）。
+///
+/// 与 `signed_token` 共用同一实现，`purpose` 做域分隔（不同用途的签名互不通用）。
+/// 用于需要「服务端可验证、客户端不可读改」的不透明字符串，如分页游标。
+pub fn hmac_sha256_hex(secret: &str, purpose: &str, message: &str) -> String {
+    sign(secret, purpose, message)
+}
+
 fn sign(secret: &str, purpose: &str, payload: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC 接受任意长度密钥");
     mac.update(purpose.as_bytes());
@@ -93,6 +101,16 @@ pub fn token_matches(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 确定性签名：同输入同输出；换 purpose/密钥即不同（游标等不透明串依赖它）。
+    #[test]
+    fn hmac_is_deterministic_and_purpose_separated() {
+        let a = hmac_sha256_hex("secret", "cursor:audit", "payload");
+        assert_eq!(a, hmac_sha256_hex("secret", "cursor:audit", "payload"));
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, hmac_sha256_hex("secret", "cursor:jobs", "payload"));
+        assert_ne!(a, hmac_sha256_hex("other", "cursor:audit", "payload"));
+    }
 
     #[test]
     fn tokens_are_unique_and_url_safe() {

@@ -124,7 +124,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 配套规则：
 
 - 升级时**删除旧产物**，避免二进制随版本累积膨胀；`build.rs` 会为新文件名生成 `.gz` 变体。
-- 现有 `.min.` 一律 `max-age=86400` 的策略需要按目录或查询串区分（`assets.rs`）。
+- 现有 `.min.` 的 `max-age=86400` 策略已按文件名与查询串区分（`assets.rs`，2026-11-12 落地）：版本化文件名或带非空 `?v=` 的请求返回 `immutable`，稳定别名 `no-cache`，其余维持原值。
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
 
@@ -152,6 +152,7 @@ base-uri 'none'; form-action 'self'; object-src 'none'
 - CSS 由运行时插同源 `<link>`，`style-src 'self'` 可满足；Vuetify 内联样式依赖现有 `'unsafe-inline'`。
 - `connect-src 'self'` 已覆盖同源 JSON 与轮询；`ws(s)://同源` 的实际浏览器行为**待实测**。
 - 插件 iframe 的独立 CSP（`PLUGIN_UI_CSP`）与沙箱属性**不得改动**；父页放宽不会传递到子页，也不得为此修改子页策略。
+- 回归测试（2026-11-12）：`middleware::tests::global_csp_directives_are_not_loosened` 逐条冻结全局指令集，`handlers::plugins::tests::plugin_ui_csp_is_frozen` 与 `plugin_iframe_sandbox_is_frozen` 冻结插件侧 CSP 与沙箱属性。
 
 ### 2.6 离线与部署前提
 
@@ -590,11 +591,11 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | 定案 | 生效位置 | 落地时机 |
 |---|---|---|
 | D8 文案双字段 | `/ui/v1` 的 DTO、`actions`、`notices`、`error`；页面结构文案在前端 schema | 新建 JSON 端点时生效；旧页不动 |
-| D9 RFC3339 | `/ui/v1` 所有 `*_at` 出口 | 新建 JSON 端点时生效；旧页格式化随切换删除 |
-| D10 分页契约 | `/ui/v1` 列表参数、游标编码、400 错误码 | 新建列表端点时生效 |
-| D10 复合索引 | `store` 的 schema 迁移（审计、作业） | **本仓库现在就能做**，不依赖前端 |
-| D11 缓存头 | `assets.rs` 缓存策略 + 壳页版本化引用 | **本仓库现在就能改**；产物入库后生效 |
-| D12 CSP 回归 | 响应头断言与逐页控制台巡检 | **本仓库现在就能加测试**；放宽只在实测后 |
+| D9 RFC3339 | `crates/app/src/time_fmt.rs::epoch_to_rfc3339_utc`；`/ui/v1` 所有 `*_at` 出口 | 工具已落地（2026-11-12，含 0/负数/闰秒/跨年/超范围单测）；JSON 出口在新建端点时接入，旧页不动 |
+| D10 分页契约 | `crates/app/src/cursor.rs`（HMAC 签名 + 筛选指纹）；`/ui/v1` 列表参数、400 错误码 | 游标编解码与篡改单测已落地（2026-11-12）；列表端点接入时生效，现有 handler 未改写 |
+| D10 复合索引 | `store` 的 schema 迁移（审计、作业） | 已落地（2026-11-12，schema v19）：`(ts DESC, id DESC)`、`(created_at DESC, id DESC)`、`(status, created_at DESC, id DESC)`；迁移测试 `v18_database_upgrades_keyset_indexes_and_keeps_rows` |
+| D11 缓存头 | `assets.rs` 缓存策略 + 壳页版本化引用 | 已落地（2026-11-12）：版本化文件名或非空 `?v=` → `immutable`，稳定别名 → `no-cache`；回归 `cache_control_follows_versioning` |
+| D12 CSP 回归 | 响应头断言与逐页控制台巡检 | 回归测试已加（2026-11-12，见 §2.5）；逐页控制台巡检待切换前 |
 | D13 深链 | 壳页路由与 URL 契约例外 | **仍待定**，不在本次落地范围 |
 
 补充：D8 中「消除 Vuetify 内部英文」属上游 `createVuetify()` 注入 locale，本仓库不落地、不阻塞。
@@ -608,3 +609,4 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | 2026-11-12 | 初稿：budding 只读盘点结论落地为接入规则；覆盖定位边界、产物与离线分发、JSON 信封与动作元数据、既有契约沿用与补条款、登录/权限/审计/CSRF 桥接、能力缺口、风险与待决策项。未实施切换。 |
 | 2026-11-12 | P0 七条定案：产物直接入库且不引入 Node、JSON 走 `/ui/v1`、登录页也用 budding、要求上游随包提供 admin Pack、按 MIT、文件管理页用 budding 重做、一次性切换。同步更新 §0/§1.4/§2/§3.1/§4.5/§5/§6/§7/§8，新增 URL 契约补条款草案、登录桥接设计、文件管理阻塞项、admin Pack 对外需求与一次性切换验收清单。未改业务代码。 |
 | 2026-11-12 | D8–D12 定案：文案 key+中文兜底且结构文案归前端 schema、时间统一 RFC3339 UTC、审计/作业/文件 keyset 分页与小列表上限 500、静态产物版本化且稳定别名 no-cache、CSP 保持严格并按实测最小补充。同步更新 §0/§2.4/§2.5/§3.2/§3.4/§3.5/§3.6/§8.1/§8.2，新增 §8.4 定案落地位置。D13 仍待定。未改业务代码。 |
+| 2026-11-12 | D9–D12 中「不随旧页删除作废」的部分落地：新增 `crates/app/src/time_fmt.rs`（epoch → RFC3339 UTC）与 `crates/app/src/cursor.rs`（不透明签名游标）；schema v19 补审计/作业 keyset 索引；`assets.rs` 区分版本化产物与稳定别名缓存；补全局 CSP、插件 CSP 与 iframe 沙箱回归测试。现有页面与列表查询未改。 |

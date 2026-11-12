@@ -997,4 +997,33 @@ mod tests {
             "不得放开 eval 或任意来源脚本: {PLUGIN_UI_CSP}"
         );
     }
+
+    /// SDUI 切换前的护栏（D12）：插件 UI 的独立 CSP 逐字冻结，不得放宽。
+    #[test]
+    fn plugin_ui_csp_is_frozen() {
+        const EXPECTED: &str = "default-src 'none'; script-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; \
+             form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'";
+        assert_eq!(PLUGIN_UI_CSP, EXPECTED);
+        assert!(PLUGIN_UI_CSP.contains("frame-ancestors 'self'"));
+        assert!(!PLUGIN_UI_CSP.contains("'unsafe-eval'"));
+        assert!(!PLUGIN_UI_CSP.contains('*'));
+        assert!(!PLUGIN_UI_CSP.contains("http:") && !PLUGIN_UI_CSP.contains("https:"));
+    }
+
+    /// 插件 iframe 的沙箱属性与「不加 allow-same-origin」的边界不得改动。
+    #[test]
+    fn plugin_iframe_sandbox_is_frozen() {
+        const SANDBOX: &str = r#"sandbox="allow-scripts allow-modals allow-forms""#;
+        for tpl in [
+            include_str!("../../templates/plugin_view.html"),
+            include_str!("../../templates/mount_card.html"),
+        ] {
+            assert!(tpl.contains(SANDBOX), "插件 iframe 沙箱属性被改动");
+            assert!(
+                !tpl.contains("allow-same-origin"),
+                "插件 iframe 不得加 allow-same-origin"
+            );
+        }
+    }
 }

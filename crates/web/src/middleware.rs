@@ -502,3 +502,75 @@ pub fn check_csrf(state: &AppState, user: &CurrentUser, provided: &str) -> Resul
         Err(AppError::Forbidden("CSRF 校验失败，请刷新页面重试".into()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// SDUI 切换前的护栏（D12）：全局 CSP 只允许保持现状，任何放宽都必须先改这里
+    /// 并走评审。字符串按指令顺序逐字写死，改一个字符就会失败。
+    const EXPECTED_GLOBAL_CSP: &str = "default-src 'self'; script-src 'self'; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+         frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+
+    /// 指令 → 来源列表，用于逐条比对（顺序无关）。
+    fn directives(policy: &str) -> BTreeMap<String, String> {
+        policy
+            .split(';')
+            .filter_map(|d| {
+                let d = d.trim();
+                if d.is_empty() {
+                    return None;
+                }
+                let mut parts = d.split_whitespace();
+                let name = parts.next()?.to_string();
+                Some((name, parts.collect::<Vec<_>>().join(" ")))
+            })
+            .collect()
+    }
+
+    /// 下发给浏览器的头必须与常量完全一致，不允许中间件里再拼一次。
+    #[test]
+    fn global_csp_header_matches_constant() {
+        assert_eq!(CSP, EXPECTED_GLOBAL_CSP);
+        assert_eq!(csp_header().to_str().unwrap(), EXPECTED_GLOBAL_CSP);
+    }
+
+    /// 逐条比对现有指令集：数量、名称、来源都不许变。
+    #[test]
+    fn global_csp_directives_are_not_loosened() {
+        let got = directives(CSP);
+        assert_eq!(got, directives(EXPECTED_GLOBAL_CSP));
+        assert_eq!(got.len(), 9, "指令数量变化需评审: {got:?}");
+        for name in [
+            "default-src",
+            "script-src",
+            "style-src",
+            "img-src",
+            "connect-src",
+            "frame-ancestors",
+            "base-uri",
+            "form-action",
+            "object-src",
+        ] {
+            assert!(got.contains_key(name), "缺少指令 {name}");
+        }
+
+        assert_eq!(got["default-src"], "'self'");
+        assert_eq!(got["script-src"], "'self'", "脚本不得放开内联或外链");
+        assert_eq!(got["connect-src"], "'self'", "连接只能同源");
+        assert_eq!(got["frame-ancestors"], "'none'");
+        assert_eq!(got["base-uri"], "'none'");
+        assert_eq!(got["form-action"], "'self'");
+        assert_eq!(got["object-src"], "'none'");
+        // 现有样式内联是 Vuetify 之前的页面需要的，保持原样即可
+        assert_eq!(got["style-src"], "'self' 'unsafe-inline'");
+
+        assert!(!CSP.contains("'unsafe-eval'"), "不得放开 eval");
+        assert!(!CSP.contains("'unsafe-hashes'"));
+        assert!(!CSP.contains('*'), "不得出现通配来源");
+        assert!(!CSP.contains("http:") && !CSP.contains("https:"));
+        assert!(!CSP.contains("blob:"));
+    }
+}

@@ -19,6 +19,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# 列表游标（SDUI D10）：base64url 编码，签名走 skiff-identity 的 HMAC
+base64 = { workspace = true }
 chrono = { workspace = true }
 tar = { workspace = true }
 toml = { workspace = true }

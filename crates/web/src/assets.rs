@@ -1,6 +1,6 @@
 use axum::extract::Path;
 use axum::http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, VARY};
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, Uri};
 use axum::response::Response;
 use rust_embed::RustEmbed;
 
@@ -10,12 +10,19 @@ use crate::error::AppError;
 #[folder = "static"]
 struct Assets;
 
+/// 版本化产物（文件名带版本，或请求带 `?v=`）的缓存策略：一年 + 不可变。
+/// 升级后 URL 必变，浏览器不必回源校验。
+const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// 稳定别名（`budding.min.js` / `budding.css`）必须每次回源校验，避免升级后继续加载旧 bundle。
+const CACHE_NO_CACHE: &str = "no-cache";
+
 /// 静态资源（打进二进制，§2.2）。文件名带内容版本前缀由模板控制。
 ///
 /// 预压缩变体（`.gz`，`build.rs` 生成）按 `Accept-Encoding` 协商返回，
 /// `Content-Type` 始终按原始文件名判定；`.gz` 路径本身不对外提供（避免双重编码）。
 pub async fn static_file(
     Path(path): Path<String>,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let rel = path.trim_start_matches('/');
@@ -52,11 +59,7 @@ pub async fn static_file(
     );
     h.insert(
         CACHE_CONTROL,
-        HeaderValue::from_static(if rel.contains(".min.") {
-            "public, max-age=86400"
-        } else {
-            "no-cache"
-        }),
+        HeaderValue::from_static(cache_control_for(rel, has_version_query(uri.query()))),
     );
     h.insert(VARY, HeaderValue::from_static("Accept-Encoding"));
     if let Some(enc) = encoding {
@@ -66,6 +69,58 @@ pub async fn static_file(
         );
     }
     Ok(resp)
+}
+
+/// 静态资源的缓存策略（SDUI D11）。
+///
+/// budding 产物没有内容 hash，因此分两类处理：
+/// - 版本化文件名（`budding-<ver>.min.js` / `budding-<ver>.css`）或带 `?v=` 的请求：
+///   URL 随升级变化，可长期强缓存；
+/// - 稳定别名（`budding.min.js` / `budding.css`）：URL 不变，必须回源校验。
+///
+/// 其余资源维持原策略：`.min.` 资源缓存一天，其余 `no-cache`。
+fn cache_control_for(rel: &str, versioned_query: bool) -> &'static str {
+    if budding_versioned(rel) || versioned_query {
+        CACHE_IMMUTABLE
+    } else if budding_stable_alias(rel) {
+        CACHE_NO_CACHE
+    } else if rel.contains(".min.") {
+        "public, max-age=86400"
+    } else {
+        CACHE_NO_CACHE
+    }
+}
+
+/// 文件名是否形如 `budding-<ver>.min.js` / `budding-<ver>.css`（版本段非空）。
+fn budding_versioned(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let Some(rest) = name.strip_prefix("budding-") else {
+        return false;
+    };
+    let version = rest
+        .strip_suffix(".min.js")
+        .or_else(|| rest.strip_suffix(".css"));
+    version.map(|v| !v.is_empty()).unwrap_or(false)
+}
+
+/// 是否为 budding 的稳定别名（升级后 URL 不变，必须 `no-cache`）。
+fn budding_stable_alias(rel: &str) -> bool {
+    matches!(
+        rel.rsplit('/').next().unwrap_or(rel),
+        "budding.min.js" | "budding.css"
+    )
+}
+
+/// 请求是否带非空 `v` 查询参数（`?v=<版本>`）：不同版本即不同缓存键。
+fn has_version_query(query: Option<&str>) -> bool {
+    query
+        .map(|q| {
+            q.split('&').any(|pair| {
+                let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                name == "v" && !value.is_empty()
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// `Accept-Encoding` 是否接受 gzip（`q=0` 视为明确拒绝）。
@@ -101,6 +156,59 @@ mod tests {
         assert!(!accepts_gzip_header("gzip;q=0"));
         assert!(!accepts_gzip_header("gzip;q=0.0"));
         assert!(accepts_gzip_header("gzip;q=0.5"));
+    }
+
+    /// D11：版本化产物可长缓存，稳定别名必须回源校验，其余资源策略不变。
+    #[test]
+    fn cache_control_follows_versioning() {
+        assert_eq!(
+            cache_control_for("budding/budding-0.1.0.min.js", false),
+            CACHE_IMMUTABLE
+        );
+        assert_eq!(
+            cache_control_for("budding/budding-0.1.0.css", false),
+            CACHE_IMMUTABLE
+        );
+        assert_eq!(
+            cache_control_for("budding/budding.min.js", false),
+            CACHE_NO_CACHE
+        );
+        assert_eq!(
+            cache_control_for("budding/budding.css", false),
+            CACHE_NO_CACHE
+        );
+        // `?v=` 让任意资源变成版本化 URL
+        assert_eq!(cache_control_for("skiff.css", true), CACHE_IMMUTABLE);
+        assert_eq!(
+            cache_control_for("budding/budding.min.js", true),
+            CACHE_IMMUTABLE
+        );
+        // 既有资源策略不变
+        assert_eq!(cache_control_for("skiff.css", false), CACHE_NO_CACHE);
+        assert_eq!(
+            cache_control_for("htmx.min.js", false),
+            "public, max-age=86400"
+        );
+        // 只有 `budding-<非空版本>` 才算版本化；名字不匹配时回落到原有规则
+        assert_eq!(
+            cache_control_for("budding-.min.js", false),
+            "public, max-age=86400"
+        );
+        assert_eq!(
+            cache_control_for("budding-extra.txt", false),
+            CACHE_NO_CACHE
+        );
+    }
+
+    #[test]
+    fn version_query_detection() {
+        assert!(has_version_query(Some("v=0.1.0")));
+        assert!(has_version_query(Some("a=1&v=0.1.0")));
+        assert!(has_version_query(Some("v=1&x=%2F")));
+        assert!(!has_version_query(Some("v=")));
+        assert!(!has_version_query(Some("v")));
+        assert!(!has_version_query(Some("version=1")));
+        assert!(!has_version_query(None));
     }
 
     /// 收集静态文件里字面量形式的 API 调用路径，供「拼接分隔符」回归使用。

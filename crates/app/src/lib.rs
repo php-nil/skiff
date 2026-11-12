@@ -11,6 +11,7 @@ pub mod attention;
 pub mod auth;
 pub mod catalog;
 pub mod commands;
+pub mod cursor;
 pub mod db_async;
 pub mod docker_daemon;
 pub mod jobs;
@@ -21,6 +22,7 @@ pub mod runtime_catalog;
 pub mod sites;
 pub mod sites_vhost;
 pub mod tasks;
+pub mod time_fmt;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

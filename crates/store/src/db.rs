@@ -36,7 +36,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -123,7 +123,7 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        let steps: [(i64, &str); 18] = [
+        let steps: [(i64, &str); 19] = [
             (1, SCHEMA_V1),
             (2, SCHEMA_V2),
             (3, SCHEMA_V3),
@@ -142,6 +142,7 @@ impl Db {
             (16, SCHEMA_V16),
             (17, SCHEMA_V17),
             (18, SCHEMA_V18),
+            (19, SCHEMA_V19),
         ];
         for (to, schema) in steps {
             if version >= to {
@@ -753,6 +754,26 @@ CREATE INDEX IF NOT EXISTS idx_sites_runtime ON sites(runtime_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_default ON sites(is_default) WHERE is_default = 1;
 "#;
 
+/// v19：列表 keyset 分页（SDUI D10）。
+///
+/// 游标翻页的排序键是 `(时间, id)` 两列，旧索引只有时间列，第二列要靠回表过滤。
+/// 这里把三张索引直接扩成完整排序键（旧索引是新的前缀，保留纯属冗余）：
+/// - 审计：`(ts DESC, id DESC)`；
+/// - 作业列表：`(created_at DESC, id DESC)`；
+/// - 作业按状态筛选：`(status, created_at DESC, id DESC)`。
+///
+/// 只改索引，不动表结构与既有查询。
+const SCHEMA_V19: &str = r#"
+DROP INDEX IF EXISTS idx_audit_ts;
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts DESC, id DESC);
+
+DROP INDEX IF EXISTS idx_jobs_created;
+CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC, id DESC);
+
+DROP INDEX IF EXISTS idx_jobs_status;
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at DESC, id DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -941,6 +962,89 @@ mod tests {
         let site = db.site_by_domain("keep.local").unwrap().unwrap();
         assert_eq!(site.site_type, "static");
         assert_eq!(db.site_aliases("keep.local").unwrap(), vec!["alias.local"]);
+    }
+
+    /// v19：keyset 分页索引必须覆盖 `(时间, id)`，迁移前已有的审计/作业数据原样保留。
+    #[test]
+    fn v18_database_upgrades_keyset_indexes_and_keeps_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skiff.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+                SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 18").unwrap();
+            conn.execute(
+                "INSERT INTO audit(ts, actor, ip, action, target, result, detail)
+                 VALUES(100, 'admin', '127.0.0.1', 'login', 'session', 'ok', '')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO jobs(id, kind, target_type, target_id, title, phase, phase_label,
+                                   status, created_by, created_by_role, created_at)
+                 VALUES('j1', 'image.pull', 'image', 'php:8.5', '拉取镜像', 'pull', '拉取',
+                        'failed', 'admin', 'admin', 200)",
+                [],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let version: i64 = db
+            .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+
+        let index_sql = |name: &str| -> String {
+            db.conn()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert!(
+            index_sql("idx_audit_ts").contains("id DESC"),
+            "审计索引缺 id 排序键"
+        );
+        assert!(
+            index_sql("idx_jobs_created").contains("id DESC"),
+            "作业列表索引缺 id 排序键"
+        );
+        assert!(
+            index_sql("idx_jobs_status").contains("id DESC"),
+            "作业状态索引缺 id 排序键"
+        );
+
+        // 索引真的被 keyset 查询用上，而不只是建了放着。
+        let plan = |sql: &str| -> String {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+                .join(" | ")
+        };
+        assert!(
+            plan("SELECT id FROM audit ORDER BY ts DESC, id DESC LIMIT 5").contains("idx_audit_ts"),
+            "审计 keyset 查询未走新索引"
+        );
+        assert!(
+            plan("SELECT id FROM jobs WHERE status='failed' ORDER BY created_at DESC, id DESC LIMIT 5")
+                .contains("idx_jobs_status"),
+            "作业状态筛选未走新索引"
+        );
+
+        assert_eq!(db.recent_audit(10).unwrap().len(), 1);
+        assert!(db.job("j1").unwrap().is_some());
     }
 
     #[test]
