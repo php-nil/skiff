@@ -513,6 +513,58 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 运行环境列表：`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；安装与配置仍链回旧版页面。
 - **D10 翻页限制**：budding `table` 的远程分页发送 `page/perPage`，与内核 keyset 游标不一致；本批只取首页 50 条并在 `next_cursor` 非空时显示提示。翻页组件接入前不做假装分页，记录为待办。
 
+### 5.9 容器（第二批）
+
+**页面与数据**
+
+- `GET /{p}/containers`、`/{p}/containers/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`（菜单深链新增详情段）。
+- 列表复用 `Docker::list_containers` 与 `handlers::container_view`，`filter=error` 与旧页面同一判定（`container_abnormal`），不新增 SQL。
+- 详情复用 `resolve_container` + `inspect_container`；读权限仍是 `policy.check(ContainerInspect)`，不新增权限规则。
+- 启停/重启/删除：`POST /ui/v1/containers/{id}/{action}`，CSRF 走 `x-csrf-token` 头；策略判定、deny 审计与 `docker_cmd::container_action` 与旧 htmx 路径完全同源。
+- 资源限制编辑、日志（T3）、终端（T5）仍留在旧 SSR 详情页，页面明确提示并给出回退链接。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/containers?limit=50&cursor=&filter=error` → `{ "data": { items, total, next_cursor, filter, docker_available, docker_reason, can_operate, can_delete } }`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `items[].id` / `short_id` / `name` | string | 容器完整 id、短 id、名称 |
+| `items[].image` | string | 展示用镜像名（与旧表格同样截断 60 字符） |
+| `items[].state` | `{code,label}` | Docker 状态码 + 中文（D8） |
+| `items[].status` | string | Docker 状态描述（截断 60 字符） |
+| `items[].project` | string | compose 项目名，非 compose 为空串 |
+| `items[].protected` | bool | 受保护容器（禁止删除） |
+| `items[].unprotected_kernel` | bool | 内核托管但缺保护标签的存量容器 |
+| `filter` | string | 原样回显（空串或 `error`） |
+| `docker_available` / `docker_reason` | bool / string | 与旧页面同口径的可用性与原因 |
+| `can_operate` / `can_delete` | bool | 当前角色是否可启停 / 删除 |
+| `next_cursor` | string \| null | 上一页末项 `id`（D10） |
+
+`GET /ui/v1/containers/{id}` → `{ "data": ... }`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `container` | object | 上面 `items[]` 的全部字段 |
+| `image` / `cmd` / `health` | string | 镜像、启动命令（空格连接）、健康检查状态 |
+| `created_at` | string | Docker 返回的 RFC3339 UTC 原值（D9） |
+| `ports[]` | object[] | `host` / `container` / `protocol` |
+| `mounts[]` | object[] | `kind` / `source` / `target` / `read_only` |
+| `networks` | string[] | 接入网络名 |
+| `labels[]` | object[] | `key` / `value`，按 key 排序 |
+| `limits` | object | 表单原始值：`cpu_shares` / `cpu_period` / `cpu_quota` / `memory_limit_mb` / `memory_swap_mb` / `pids_limit` |
+| `limits_effective[]` | object[] | `label` / `value`，与旧详情「当前生效」同一文案 |
+| `can_exec` / `can_operate` / `can_delete` | bool | 当前角色的动作能力 |
+| `docker_reason` | string | Docker 不可用原因，正常为空串 |
+
+`POST /ui/v1/containers/{id}/{action}`（`start` / `stop` / `restart` / `kill` / `delete|remove`）→ `{ "data": { id, name, action, removed } }`。错误信封沿用全局：未认证 `auth.unauthenticated`（401）、CSRF 失败 `auth.csrf_invalid`（403）、策略拒绝 `auth.forbidden`（403）、容器不存在 `not_found`（404）、Docker 不可达 `dependency.unavailable`（503）、未知动作 `shape.invalid`（400）。
+
+**渲染映射**
+
+- 列表：`table`（本地 `items`、`pagination:false`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/containers/{id}`。`filter=error` 由 URL 查询参数传入接口。
+- 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
+- **D10 翻页限制**同 5.8：本批只取首页 50 条，`next_cursor` 非空时提示，翻页组件待接入。
+
 ---
 
 ## 6. 能力缺口与建议

@@ -178,6 +178,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/sites", get(handlers::ui_api::sites))
         .route("/ui/v1/sites/{domain}", get(handlers::ui_api::site_detail))
         .route("/ui/v1/runtimes", get(handlers::ui_api::runtimes))
+        .route("/ui/v1/containers", get(handlers::ui_api::containers))
+        .route(
+            "/ui/v1/containers/{id}",
+            get(handlers::ui_api::container_detail),
+        )
+        .route(
+            "/ui/v1/containers/{id}/{action}",
+            post(handlers::ui_api::container_action),
+        )
         .route("/ui/v1/session/logout", post(handlers::ui_api::logout));
 
     let ui = Router::new()
@@ -198,7 +207,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/totp/enable"),
             post(handlers::auth::enable_totp),
         )
-        .route(&format!("/{p}/containers"), get(handlers::containers::list))
+        // 容器列表与详情已迁 budding（壳页回落，旧 SSR 在 `/{p}/m/core/docker/containers*`）。
         .route(
             &format!("/{p}/containers/rows"),
             get(handlers::containers::rows),
@@ -210,10 +219,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/containers/create"),
             post(handlers::containers::create),
-        )
-        .route(
-            &format!("/{p}/containers/{{id}}"),
-            get(handlers::containers::detail),
         )
         .route(
             &format!("/{p}/containers/{{id}}/limits"),

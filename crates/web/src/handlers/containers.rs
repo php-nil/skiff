@@ -622,14 +622,14 @@ fn limits_from_form(form: &HashMap<String, Vec<String>>) -> Result<ResourceLimit
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
     Actor {
         username: user.user.username.clone(),
         ip: handlers::client_ip(state, parts),
     }
 }
 
-fn map_err(e: DockerCommandError) -> AppError {
+pub(crate) fn map_err(e: DockerCommandError) -> AppError {
     match e {
         DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
         DockerCommandError::Conflict(m) => AppError::Conflict(m),
@@ -638,7 +638,7 @@ fn map_err(e: DockerCommandError) -> AppError {
 }
 
 /// 页面动作 → 动词白名单。未知动作仍是 400，不能落到别的动词上。
-fn action_verb(action: &str) -> Result<Verb, AppError> {
+pub(crate) fn action_verb(action: &str) -> Result<Verb, AppError> {
     match action {
         "start" => Ok(Verb::Start),
         "stop" => Ok(Verb::Stop),

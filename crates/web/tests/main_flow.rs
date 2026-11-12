@@ -897,7 +897,7 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/containers")
+                .uri("/p/m/core/docker/containers")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1265,7 +1265,7 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/containers?filter=error")
+                .uri("/p/m/core/docker/containers?filter=error")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -2556,7 +2556,7 @@ async fn restricted_form_hides_and_rejects_files_management() {
     }
 
     // 受限形态保留 docker 能力面：容器管理页照常可用。
-    let (status, _) = get_page(&h.app, "/p/containers", &token).await;
+    let (status, _) = get_page(&h.app, "/p/m/core/docker/containers", &token).await;
     assert_eq!(status, StatusCode::OK, "受限形态的容器管理必须保持可用");
 }
 
@@ -2956,6 +2956,8 @@ async fn deep_links_legacy_routes_and_role_filtered_menu() {
                 Request::builder()
                     .uri(uri)
                     .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                    // 规范页已迁 budding 壳页：浏览器导航带 Accept，旧 SSR 走 /m 深链。
+                    .header(header::ACCEPT, "text/html")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5021,6 +5023,15 @@ async fn site_domains_tab_manages_aliases() {
         !loc.contains("error=") && !loc.contains("notice="),
         "结果不得走 query: {loc}"
     );
+    assert_eq!(
+        loc, "/p/sites/dom.local?tab=domains",
+        "写操作仍应重定向到规范页"
+    );
+    // 跟随重定向必须落在规范页（budding 壳页），而不是旧 SSR 或 404。
+    let (status, shell) = get_html(&h.app, &loc, &admin).await;
+    assert_eq!(status, StatusCode::OK, "跟随重定向应落在规范页");
+    assert!(shell.contains(r#"id="skiff-root""#), "{shell}");
+    // 写操作迁移前，提示文案仍由旧 SSR 回退落点呈现，确认没有丢失。
     let m_loc = loc.replace("/p/sites/", "/p/m/core/sites/list/");
     let (_, page) = get_page(&h.app, &m_loc, &admin).await;
     assert!(page.contains("主域名不能作为别名删除"), "{page}");
@@ -7796,6 +7807,76 @@ async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
         let created = item["created_at"].as_str().unwrap();
         assert!(created.ends_with('Z'), "{created}");
     }
+}
+
+/// 容器只读接口在无 Docker 环境下的口径：列表 200 + 空态原因，详情 503，
+/// 写操作严格校验 `x-csrf-token`（未带令牌 403 `auth.csrf_invalid`）。
+#[tokio::test]
+async fn ui_containers_keep_auth_csrf_and_docker_unavailable_semantics() {
+    let h = harness();
+    for uri in ["/ui/v1/containers", "/ui/v1/containers/abc"] {
+        let (status, _, body) = get_ui(&h.app, uri, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], "auth.unauthenticated", "{uri}");
+    }
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/containers", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert!(data["items"].as_array().unwrap().is_empty());
+    assert_eq!(data["total"], 0);
+    assert_eq!(data["docker_available"], false);
+    assert!(data["can_operate"].is_boolean());
+    assert!(data["can_delete"].is_boolean());
+
+    // 无 Docker 时解析容器失败 → 503，与旧页面同口径。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/containers/abc", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "dependency.unavailable");
+
+    // 未带 CSRF 头的写请求必须 403，且不能触达 Docker 命令。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/v1/containers/abc/start")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_text(resp).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+}
+
+/// 容器规范页交付壳页；旧 SSR 仍在 `/m/core/docker/containers`。
+#[tokio::test]
+async fn containers_canonical_paths_serve_shell() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    for uri in ["/p/containers", "/p/containers/abc"] {
+        let (status, html) = get_html(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-root""#),
+            "{uri} 应为壳页: {html}"
+        );
+    }
+    let (status, html) = get_page(&h.app, "/p/m/core/docker/containers", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"id="skiff-main-nav""#),
+        "旧容器列表必须保留在 /m 深链: {html}"
+    );
 }
 
 /// 站点/运行环境规范页交付壳页；旧 SSR 仍在 `/{p}/m/core/sites/*` 菜单深链。

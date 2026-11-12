@@ -171,7 +171,7 @@
 | --- | --- |
 | 概览 | `GET /{p}`、`GET /{p}/`（尾斜杠 302 到根） |
 | 会话 | `GET|POST /{p}/login`、`POST /{p}/logout`、`POST /{p}/password`、`POST /{p}/totp`、`POST /{p}/totp/enable` |
-| 容器 | `GET /{p}/containers`、`/containers/rows`、`/containers/new`、`/containers/{id}`；`POST /containers/create`、`/{id}/limits`、`/{id}/{action}`、`/{id}/exec/ticket`；`GET /{id}/logs`、`/{id}/exec` |
+| 容器 | `GET /{p}/containers`、`/{p}/containers/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`）；`GET /containers/rows`、`/containers/new`；`POST /containers/create`、`/{id}/limits`、`/{id}/{action}`、`/{id}/exec/ticket`；`GET /{id}/logs`、`/{id}/exec` |
 | 镜像 | `GET /{p}/images`；`POST /images/pull`、`/images/{id}/delete` |
 | 网络 | `GET /{p}/networks`；`POST /networks/create`、`/networks/{id}/delete` |
 | 卷 | `GET /{p}/volumes`；`POST /volumes/create`、`/volumes/{name}/delete` |
@@ -188,7 +188,7 @@
 | 定时任务 | `GET /{p}/tasks`、`/tasks/{id}`；`POST /tasks/{id}/toggle`、`/run`、`/delete` |
 | 任务中心 | `GET /{p}/jobs`、`/jobs/{id}`、`/jobs/{id}/logs`、`/jobs/{id}/logs/stream`；`POST /jobs/{id}/cancel`、`/retry` |
 | 菜单深链 | `GET /{p}/m/{rest}` |
-| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/runtimes`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
+| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/runtimes`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers/{id}/{action}`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
 | 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） |
 | 静态资源 | `GET /{p}/static/{path}` |
 | API v1 | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart` |
@@ -206,3 +206,4 @@
 | --- | --- |
 | 2026-11-12 | 新增 `/ui/v1` JSON 命名空间例外（无前缀、Cookie + CSRF、未认证 401、仅 `handlers::ui_api`、只返 JSON）；`/ui/` 其它形态一律 404；新增 §2.1 SPA 壳页回落白名单（仅 `GET` + `Accept: text/html` + 命中页面前缀；写请求永不回落）；§6 补 `/ui/v1` 方法与认证例外；§9 登记 `/ui/v1` 与壳页回落。D13 定案：history 路由，地址栏保持 `/{p}/sites/xxx`。 |
 | 2026-11-13 | 第一批只读页迁移：`GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/sites/list[/{domain}]` 与 `/{p}/m/core/sites/env[/{id}]`；`/ui/v1` 新增 `GET /sites`、`GET /sites/{domain}`、`GET /runtimes`（未认证 401、viewer 读站点、运行环境仅管理员）。 |
+| 2026-11-13 | 第二批容器页迁移：`GET /{p}/containers`、`/{p}/containers/{id}` 改交付 budding 壳页，旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`；`/ui/v1` 新增 `GET /containers`、`GET /containers/{id}`、`POST /containers/{id}/{action}`（CSRF 走 `x-csrf-token`，动作与旧 htmx 路径同策略同审计）。 |

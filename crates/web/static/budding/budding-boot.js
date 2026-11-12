@@ -153,9 +153,52 @@
     };
   }
 
+  var sessionState = null;
+
+  function errorMessage(res) {
+    return res.body && res.body.error && res.body.error.message
+      ? res.body.error.message
+      : '服务返回状态 ' + res.status;
+  }
+
+  // 容器启停/重启/删除：走 /ui/v1 同策略、同审计的 JSON 端点。
+  function containerAction(args) {
+    var id = args.id;
+    var action = args.action;
+    var name = args.name || id;
+    if (action === 'delete' && !window.confirm('确认删除容器 ' + name + '？删除后不可恢复，容器内未持久化的数据会丢失。')) {
+      return Promise.resolve();
+    }
+    return fetch(apiBase + '/containers/' + encodeURIComponent(id) + '/' + action, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      }
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        if (action === 'delete') location.href = prefix + '/containers';
+        else location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   function embed(schema) {
     var options = { routerMode: 'history', routerBase: prefix };
     if (cssHref) options.css = cssHref;
+    options.actions = { skiffContainerAction: containerAction };
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
     });
@@ -378,6 +421,204 @@
     };
   }
 
+  function containersSchema(data) {
+    var body = [];
+    if (!data.docker_available) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: 'Docker 不可用',
+          text:
+            data.docker_reason ||
+            'Docker 守护进程当前不可达，容器列表为空，相关操作会返回 503。'
+        }
+      });
+    }
+    if (data.next_cursor) {
+      body.push(
+        noticeCard(
+          '共 ' +
+            data.total +
+            ' 个容器，当前显示前 ' +
+            data.items.length +
+            ' 条；翻页交互待后续批次接入。'
+        )
+      );
+    }
+    var table = statusTable(
+      [
+        { key: 'name', label: '名称' },
+        { key: 'short_id', label: 'ID' },
+        { key: 'image', label: '镜像' },
+        { key: 'state', label: '状态', text: '${state.label}' },
+        { key: 'status', label: '状态描述' },
+        { key: 'project', label: 'Compose 项目' }
+      ],
+      data.items,
+      'id'
+    );
+    table.onEvent = {
+      rowClick: {
+        actions: [
+          {
+            type: 'navigate',
+            props: { url: prefix + '/containers/${id}' }
+          }
+        ]
+      }
+    };
+    body.push(table);
+    body.push({
+      type: 'link',
+      props: { text: '新建容器（旧版表单，待迁移）', href: prefix + '/containers/new' }
+    });
+    return {
+      type: 'page',
+      props: {
+        title: '容器 · Skiff',
+        subtitle: '只读列表；启停/重启/删除在详情页操作'
+      },
+      body: body
+    };
+  }
+
+  function buttonNode(text, action, container) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'tonal' },
+      onEvent: {
+        click: {
+          actions: [
+            {
+              type: 'skiffContainerAction',
+              props: {
+                id: container.id,
+                name: container.name,
+                action: action
+              }
+            }
+          ]
+        }
+      }
+    };
+  }
+
+  function detailLines(title, lines) {
+    return {
+      type: 'card',
+      props: { title: title },
+      content: { body: lines.map(textLine) }
+    };
+  }
+
+  function containerDetailSchema(data) {
+    var c = data.container;
+    var body = [];
+    if (data.docker_reason) {
+      body.push({
+        type: 'alert',
+        props: { type: 'warning', title: 'Docker 不可用', text: data.docker_reason }
+      });
+    }
+    if (c.unprotected_kernel) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          text: '该容器是内核托管的存量实例但缺少保护标签，重建 Web 服务或运行环境后才会生效。'
+        }
+      });
+    }
+    var actions = [];
+    if (data.can_operate) {
+      if (c.state.code === 'running') {
+        actions.push(buttonNode('重启', 'restart', c));
+        actions.push(buttonNode('停止', 'stop', c));
+      } else {
+        actions.push(buttonNode('启动', 'start', c));
+      }
+    }
+    if (data.can_delete) {
+      actions.push(buttonNode('删除', 'delete', c));
+    }
+    if (actions.length > 0) {
+      body.push({ type: 'flex', props: { gap: 8 }, content: { body: actions } });
+    }
+    body.push(
+      detailLines('基本信息', [
+        '名称：' + c.name + '（' + c.short_id + '）',
+        '镜像：' + data.image,
+        '状态：' + c.state.label + ' · ' + c.status,
+        '创建时间：' + (data.created_at || '—'),
+        '健康检查：' + data.health,
+        '启动命令：' + (data.cmd || '—')
+      ])
+    );
+    body.push(
+      detailLines(
+        '端口',
+        data.ports.length === 0
+          ? ['未映射端口']
+          : data.ports.map(function (p) {
+              return (
+                (p.host ? p.host + ' → ' : '') + p.container + '/' + p.protocol
+              );
+            })
+      )
+    );
+    body.push(
+      detailLines(
+        '挂载',
+        data.mounts.length === 0
+          ? ['无挂载']
+          : data.mounts.map(function (m) {
+              return (
+                m.source + ' → ' + m.target + (m.read_only ? '（只读）' : '') + ' [' + m.kind + ']'
+              );
+            })
+      )
+    );
+    body.push(detailLines('网络', data.networks.length === 0 ? ['未接入网络'] : data.networks));
+    body.push(
+      detailLines(
+        '资源限制',
+        data.limits_effective.map(function (line) {
+          return line.label + '：' + line.value;
+        })
+      )
+    );
+    body.push(
+      detailLines(
+        '标签',
+        data.labels.length === 0
+          ? ['无标签']
+          : data.labels.map(function (l) {
+              return l.key + ' = ' + l.value;
+            })
+      )
+    );
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '资源限制编辑、日志与终端仍在旧版详情页；日志查看器待 T3，终端待 T5。'
+      }
+    });
+    body.push({
+      type: 'link',
+      props: {
+        text: '打开旧版详情（资源限制 / 日志 / 终端）',
+        href: prefix + '/m/core/docker/containers/' + encodeURIComponent(c.id)
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: c.name + ' · 容器', subtitle: '只读详情；操作按钮走 /ui/v1' },
+      body: body
+    };
+  }
+
   function embedWithError(schema) {
     if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
       showError('前端产物未加载（budding 脚本不可用）。');
@@ -437,6 +678,7 @@
         return;
       }
       var session = res.body.data;
+      sessionState = session;
       if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
         showError('前端产物未加载（budding 脚本不可用）。');
         return;
@@ -463,6 +705,20 @@
       if (parts[0] === 'runtimes' && parts.length === 1) {
         getJson('/runtimes' + listQuery(), function (data) {
           embedWithError(runtimesSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'containers' && parts.length === 1) {
+        var containerFilter =
+          new URLSearchParams(location.search).get('filter') === 'error' ? 'filter=error' : '';
+        getJson('/containers' + listQuery(containerFilter), function (data) {
+          embedWithError(containersSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'containers' && parts.length === 2) {
+        getJson('/containers/' + encodeURIComponent(parts[1]), function (data) {
+          embedWithError(containerDetailSchema(data));
         });
         return;
       }
