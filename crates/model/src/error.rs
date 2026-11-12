@@ -63,6 +63,11 @@ pub enum ErrorCode {
     Forbidden,
     /// API Token 缺少所需 scope。
     ScopeMissing,
+    /// CSRF 令牌缺失、失效或与当前会话不匹配。
+    ///
+    /// 与 `Forbidden` 分开：CSRF 失败的正确处置是「刷新页面重试」，
+    /// 而不是「你没有权限」；HTML 页仍按 403 呈现，JSON 路径可据此给出不同提示。
+    CsrfInvalid,
     /// 与当前状态冲突（重复创建、已被占用等）。
     Conflict,
     /// 当前状态不允许该动作（如已结束的作业不能取消）。
@@ -89,6 +94,7 @@ impl ErrorCode {
             Unauthenticated,
             Forbidden,
             ScopeMissing,
+            CsrfInvalid,
             Conflict,
             InvalidState,
             NotFound,
@@ -103,7 +109,7 @@ impl ErrorCode {
         use ErrorCode::*;
         match self {
             InvalidShape | InvalidField => ErrorCategory::Shape,
-            Unauthenticated | Forbidden | ScopeMissing => ErrorCategory::Unauthorized,
+            Unauthenticated | Forbidden | ScopeMissing | CsrfInvalid => ErrorCategory::Unauthorized,
             Conflict | InvalidState => ErrorCategory::Conflict,
             NotFound => ErrorCategory::NotFound,
             Unavailable | Timeout | NoSpace => ErrorCategory::Unavailable,
@@ -120,6 +126,7 @@ impl ErrorCode {
             Unauthenticated => "auth.unauthenticated",
             Forbidden => "auth.forbidden",
             ScopeMissing => "auth.scope_missing",
+            CsrfInvalid => "auth.csrf_invalid",
             Conflict => "domain.conflict",
             InvalidState => "domain.invalid_state",
             NotFound => "lookup.not_found",
@@ -136,7 +143,7 @@ impl ErrorCode {
         match self {
             InvalidShape | InvalidField => 400,
             Unauthenticated => 401,
-            Forbidden | ScopeMissing => 403,
+            Forbidden | ScopeMissing | CsrfInvalid => 403,
             NotFound => 404,
             Conflict | InvalidState => 409,
             Internal => 500,

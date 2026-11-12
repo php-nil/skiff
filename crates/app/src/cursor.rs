@@ -6,9 +6,15 @@
 //!
 //! - 改任意一个字符 → 签名不匹配（`Tampered`）；
 //! - 换一套筛选条件继续翻页 → 指纹不匹配（`FilterMismatch`）；
+//! - 载荷结构版本不同 → `VersionMismatch`，按「版本已过期」提示重新开始；
 //! - 拿另一个资源/另一把密钥签发的游标 → 同样按签名失败拒绝。
 //!
+//! 资源域由**类型**表达（[`AuditScope`] / [`JobScope`] / [`FileScope`]），不接收裸字符串：
+//! 拼错 scope 在编译期就不成立，审计游标也不能顺手拿到作业列表用。
 //! 这里只提供编解码，不重写任何现有列表查询；排序键与筛选字段由各资源契约声明。
+
+use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -17,7 +23,7 @@ use skiff_identity::hmac_sha256_hex;
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-/// 载荷结构版本：字段布局变化时递增，旧游标按非法拒绝而不是猜读。
+/// 载荷结构版本：字段布局变化时递增，旧游标按「版本过期」拒绝而不是猜读。
 const CURSOR_VERSION: u8 = 1;
 /// HMAC-SHA256 十六进制签名长度。
 const SIG_LEN: usize = 64;
@@ -30,8 +36,10 @@ pub const CURSOR_MAX_LEN: usize = 1024;
 /// 游标被拒绝的原因。文案面向调用方直接回 400，不做二次解释。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorError {
-    /// 不是 `payload.signature` 形式、base64/JSON 非法、版本未知或超长。
+    /// 不是 `payload.signature` 形式、base64/JSON 非法或超长。
     Malformed,
+    /// 载荷结构版本与当前服务端不一致：不是伪造，而是旧版本签出的游标。
+    VersionMismatch,
     /// 签名不匹配：被篡改、换了密钥，或来自另一个资源。
     Tampered,
     /// 签名有效，但筛选指纹与当前请求不一致（换了筛选条件还沿用旧游标）。
@@ -42,6 +50,7 @@ impl CursorError {
     pub fn message(self) -> &'static str {
         match self {
             CursorError::Malformed => "游标格式非法",
+            CursorError::VersionMismatch => "游标版本已过期，请从第一页重新开始",
             CursorError::Tampered => "游标校验失败，请从第一页重新开始",
             CursorError::FilterMismatch => "游标与当前筛选条件不匹配，请从第一页重新开始",
         }
@@ -66,27 +75,56 @@ struct Payload {
     filter: String,
 }
 
-/// 某个资源的游标编解码器。`scope` 做域分隔：审计游标不能拿到作业列表用。
-#[derive(Debug, Clone)]
-pub struct CursorCodec {
-    secret: String,
-    scope: String,
+/// 列表资源的游标域。每个资源一个标记类型，scope 字符串只出现一次。
+///
+/// 新增资源时同时加一个标记类型并登记进单测的 `ALL_SCOPES`，
+/// 这样「用了错误的 scope」在编译期就不成立，重复 scope 由测试拦截。
+pub trait CursorScope {
+    const SCOPE: &'static str;
 }
 
-impl CursorCodec {
-    pub fn new(secret: impl Into<String>, scope: impl Into<String>) -> Self {
+/// 审计列表（`(ts, id)` keyset）。
+#[derive(Debug, Clone, Copy)]
+pub struct AuditScope;
+impl CursorScope for AuditScope {
+    const SCOPE: &'static str = "audit";
+}
+
+/// 作业中心列表（`(created_at, id)` keyset，含状态筛选）。
+#[derive(Debug, Clone, Copy)]
+pub struct JobScope;
+impl CursorScope for JobScope {
+    const SCOPE: &'static str = "jobs";
+}
+
+/// 文件列表（`(is_dir, name)` keyset，排序键由文件系统给出）。
+#[derive(Debug, Clone, Copy)]
+pub struct FileScope;
+impl CursorScope for FileScope {
+    const SCOPE: &'static str = "files";
+}
+
+/// 某个资源的游标编解码器。`scope` 由类型参数给出：审计游标不能拿到作业列表用。
+#[derive(Debug, Clone)]
+pub struct CursorCodec<S: CursorScope> {
+    secret: String,
+    _scope: PhantomData<S>,
+}
+
+impl<S: CursorScope> CursorCodec<S> {
+    pub fn new(secret: impl Into<String>) -> Self {
         Self {
             secret: secret.into(),
-            scope: scope.into(),
+            _scope: PhantomData,
         }
     }
 
-    /// 编码：`sort` 为排序键（按索引列顺序），`filter_fp` 为筛选指纹。
-    pub fn encode(&self, sort: &[String], filter_fp: &str) -> String {
+    /// 编码：`sort` 为排序键（按索引列顺序），`filter` 为筛选条件集合。
+    pub fn encode(&self, sort: &[String], filter: &FilterSet) -> String {
         let payload = Payload {
             v: CURSOR_VERSION,
             sort: sort.to_vec(),
-            filter: filter_digest(filter_fp),
+            filter: filter.digest(),
         };
         let json = serde_json::to_vec(&payload).expect("游标载荷是纯字符串结构，序列化不会失败");
         let body = B64.encode(json);
@@ -94,9 +132,9 @@ impl CursorCodec {
         format!("{body}.{sig}")
     }
 
-    /// 解码并校验。先验签名再比对指纹：被改过的载荷报 `Tampered`，
-    /// 而不是把篡改后的筛选指纹当成「条件不匹配」放过去。
-    pub fn decode(&self, cursor: &str, filter_fp: &str) -> Result<Vec<String>, CursorError> {
+    /// 解码并校验。先验签名再比对版本/指纹：被改过的载荷报 `Tampered`，
+    /// 而不是把篡改后的内容当成「条件不匹配」或「版本过期」放过去。
+    pub fn decode(&self, cursor: &str, filter: &FilterSet) -> Result<Vec<String>, CursorError> {
         if cursor.len() > CURSOR_MAX_LEN {
             return Err(CursorError::Malformed);
         }
@@ -110,48 +148,113 @@ impl CursorCodec {
         let raw = B64.decode(body).map_err(|_| CursorError::Malformed)?;
         let payload: Payload = serde_json::from_slice(&raw).map_err(|_| CursorError::Malformed)?;
         if payload.v != CURSOR_VERSION {
-            return Err(CursorError::Malformed);
+            return Err(CursorError::VersionMismatch);
         }
-        if payload.filter != filter_digest(filter_fp) {
+        if payload.filter != filter.digest() {
             return Err(CursorError::FilterMismatch);
         }
         Ok(payload.sort)
     }
 
     fn sign(&self, body: &str) -> String {
-        hmac_sha256_hex(&self.secret, &format!("cursor:{}", self.scope), body)
+        hmac_sha256_hex(&self.secret, &format!("cursor:{}", S::SCOPE), body)
     }
 }
 
-/// 筛选指纹入载荷前先摘要：把可变长输入压成固定 64 字符，保证游标大小有上界。
-fn filter_digest(filter_fp: &str) -> String {
-    skiff_identity::sha256_hex(filter_fp)
+/// 列表筛选条件：调用方只给键值对，规范化与摘要格式由这里统一决定。
+///
+/// 规范化规则（改动会改变已有游标的指纹，等于让它们失效，必须评审）：
+/// - key 去首尾空白；**大小写敏感**（键由资源契约声明为固定小写，折叠会撞名）；
+/// - value 去首尾空白；`None` 与空串等价，统一存为空值；
+/// - 同一 key 后写覆盖先写（与查询串语义一致）；
+/// - 摘要按 key 排序后序列化，与插入顺序无关。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilterSet {
+    entries: BTreeMap<String, String>,
+}
+
+impl FilterSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置一项筛选。`None` 与 `Some("")` 等价。
+    ///
+    /// 空 key 属调用方错误：debug 构建直接断言失败，release 下忽略该项
+    /// （不把 `=value` 这种无主条件混进指纹）。
+    pub fn set(mut self, key: &str, value: Option<&str>) -> Self {
+        let key = key.trim();
+        debug_assert!(!key.is_empty(), "筛选键不能为空");
+        if key.is_empty() {
+            return self;
+        }
+        self.entries
+            .insert(key.to_string(), value.unwrap_or("").trim().to_string());
+        self
+    }
+
+    /// `set(key, Some(value))` 的便捷写法。
+    pub fn with(self, key: &str, value: &str) -> Self {
+        self.set(key, Some(value))
+    }
+
+    /// 规范化摘要：按 key 排序后的 `[[k, v], ...]` JSON 的 SHA-256。
+    pub fn digest(&self) -> String {
+        let pairs: Vec<(&str, &str)> = self
+            .entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let json = serde_json::to_string(&pairs).expect("筛选键值对序列化不会失败");
+        skiff_identity::sha256_hex(json)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
-    fn codec() -> CursorCodec {
-        CursorCodec::new("secret", "audit")
+    fn codec() -> CursorCodec<AuditScope> {
+        CursorCodec::new("secret")
+    }
+
+    fn jobs_codec() -> CursorCodec<JobScope> {
+        CursorCodec::new("secret")
     }
 
     fn keys() -> Vec<String> {
         vec!["1730000000".into(), "42".into()]
     }
 
+    fn filter() -> FilterSet {
+        FilterSet::new().with("action", "login")
+    }
+
+    /// 每个资源的 scope 必须唯一且非空，避免两个列表共用一个域。
+    #[test]
+    fn declared_scopes_are_unique_and_non_empty() {
+        let scopes = [AuditScope::SCOPE, JobScope::SCOPE, FileScope::SCOPE];
+        let mut seen = BTreeSet::new();
+        for s in scopes {
+            assert!(!s.is_empty());
+            assert!(seen.insert(s), "游标 scope 重复: {s}");
+        }
+    }
+
     #[test]
     fn roundtrip_preserves_sort_keys() {
         let c = codec();
-        let cur = c.encode(&keys(), "action=login");
-        assert_eq!(c.decode(&cur, "action=login").unwrap(), keys());
+        let cur = c.encode(&keys(), &filter());
+        assert_eq!(c.decode(&cur, &filter()).unwrap(), keys());
     }
 
     /// 载荷是 base64url 编码（不是加密）：这里只确认排序键与筛选原文不会以字面量
     /// 出现在 URL 或日志里；防伪由签名负责，见下面的篡改用例。
     #[test]
     fn cursor_payload_is_encoded_not_plaintext() {
-        let cur = codec().encode(&keys(), "action=login");
+        let cur = codec().encode(&keys(), &filter());
         assert!(!cur.contains("1730000000"));
         assert!(!cur.contains("action=login"));
     }
@@ -160,52 +263,104 @@ mod tests {
     /// 否则翻页会在含长文件名的页上直接报「游标格式非法」。
     #[test]
     fn long_file_name_key_roundtrips_within_limit() {
-        let c = codec();
+        let c = CursorCodec::<FileScope>::new("secret");
         let name = "名".repeat(85);
         assert_eq!(name.len(), 255, "用例本身要覆盖最长的单段文件名");
         let keys = vec!["0".to_string(), name];
-        let filter = "path=/www/sites/example.com/index&sort=name";
-        let cur = c.encode(&keys, filter);
+        let filter = FilterSet::new()
+            .with("path", "/www/sites/example.com/index")
+            .with("sort", "name");
+        let cur = c.encode(&keys, &filter);
         assert!(
             cur.len() <= CURSOR_MAX_LEN,
             "游标 {} 字符超过上限 {CURSOR_MAX_LEN}",
             cur.len()
         );
-        assert_eq!(c.decode(&cur, filter).unwrap(), keys);
+        assert_eq!(c.decode(&cur, &filter).unwrap(), keys);
     }
 
     #[test]
     fn filter_fingerprint_must_match() {
         let c = codec();
-        let cur = c.encode(&keys(), "action=login");
+        let cur = c.encode(&keys(), &filter());
         assert_eq!(
-            c.decode(&cur, "action=delete"),
+            c.decode(&cur, &FilterSet::new().with("action", "delete")),
             Err(CursorError::FilterMismatch)
         );
+    }
+
+    /// 同参数不同插入顺序必须得到同一指纹，否则调用方按字段顺序拼参数就会翻页失败。
+    #[test]
+    fn same_params_in_any_order_share_one_fingerprint() {
+        let a = FilterSet::new()
+            .with("action", "login")
+            .with("actor", "admin");
+        let b = FilterSet::new()
+            .with("actor", "admin")
+            .with("action", "login");
+        assert_eq!(a.digest(), b.digest());
+
+        let c = codec();
+        let cur = c.encode(&keys(), &a);
+        assert_eq!(c.decode(&cur, &b).unwrap(), keys());
+    }
+
+    /// 空值与缺省等价：`None` / `Some("")` / 纯空白都归一为同一指纹。
+    #[test]
+    fn empty_and_missing_values_are_equivalent() {
+        let missing = FilterSet::new().set("q", None);
+        let empty = FilterSet::new().set("q", Some(""));
+        let blank = FilterSet::new().set("q", Some("   "));
+        assert_eq!(missing.digest(), empty.digest());
+        assert_eq!(missing.digest(), blank.digest());
+
+        // 空值参与排序但内容为空：与「没有这个 key」不同，避免漏掉「显式清空」的语义
+        assert_ne!(missing.digest(), FilterSet::new().digest());
+
+        let c = codec();
+        let cur = c.encode(&keys(), &empty);
+        assert_eq!(c.decode(&cur, &missing).unwrap(), keys());
+    }
+
+    /// 键大小写敏感：`Action` 与 `action` 是不同的筛选条件（不允许静默折叠）。
+    #[test]
+    fn filter_keys_are_case_sensitive() {
+        let lower = FilterSet::new().with("action", "login");
+        let upper = FilterSet::new().with("Action", "login");
+        assert_ne!(lower.digest(), upper.digest());
+    }
+
+    /// 同一 key 后写覆盖先写（与查询串「后者生效」一致）。
+    #[test]
+    fn duplicate_keys_last_one_wins() {
+        let overwritten = FilterSet::new()
+            .with("action", "login")
+            .with("action", "delete");
+        assert_eq!(overwritten, FilterSet::new().with("action", "delete"));
     }
 
     /// 改签名最后一个字符：结构仍合法，必须报篡改。
     #[test]
     fn tampered_signature_is_rejected() {
         let c = codec();
-        let cur = c.encode(&keys(), "f");
+        let cur = c.encode(&keys(), &filter());
         let (body, sig) = cur.split_once('.').unwrap();
         let last = if sig.ends_with('0') { '1' } else { '0' };
         let forged = format!("{body}.{}{last}", &sig[..sig.len() - 1]);
-        assert_eq!(c.decode(&forged, "f"), Err(CursorError::Tampered));
+        assert_eq!(c.decode(&forged, &filter()), Err(CursorError::Tampered));
     }
 
     /// 改载荷（换一个 base64 字符）：签名先失败，不会被解码后误判成条件不匹配。
     #[test]
     fn tampered_payload_is_rejected() {
         let c = codec();
-        let cur = c.encode(&keys(), "f");
+        let cur = c.encode(&keys(), &filter());
         let (body, sig) = cur.split_once('.').unwrap();
         let mut chars: Vec<char> = body.chars().collect();
         chars[0] = if chars[0] == 'A' { 'B' } else { 'A' };
         let forged: String = chars.into_iter().collect();
         assert_eq!(
-            c.decode(&format!("{forged}.{sig}"), "f"),
+            c.decode(&format!("{forged}.{sig}"), &filter()),
             Err(CursorError::Tampered)
         );
     }
@@ -213,13 +368,13 @@ mod tests {
     /// 换密钥或换资源（scope）都不通用。
     #[test]
     fn cursor_is_bound_to_secret_and_scope() {
-        let cur = codec().encode(&keys(), "f");
+        let cur = codec().encode(&keys(), &filter());
         assert_eq!(
-            CursorCodec::new("other", "audit").decode(&cur, "f"),
+            CursorCodec::<AuditScope>::new("other").decode(&cur, &filter()),
             Err(CursorError::Tampered)
         );
         assert_eq!(
-            CursorCodec::new("secret", "jobs").decode(&cur, "f"),
+            jobs_codec().decode(&cur, &filter()),
             Err(CursorError::Tampered)
         );
     }
@@ -228,26 +383,29 @@ mod tests {
     fn malformed_cursors_are_rejected() {
         let c = codec();
         for bad in ["", ".", "abc", "abc.def", "a.b.c", "!!!.abc"] {
-            assert_eq!(c.decode(bad, "f"), Err(CursorError::Malformed), "{bad}");
+            assert_eq!(
+                c.decode(bad, &filter()),
+                Err(CursorError::Malformed),
+                "{bad}"
+            );
         }
         let long = "a".repeat(CURSOR_MAX_LEN + 1);
-        assert_eq!(c.decode(&long, "f"), Err(CursorError::Malformed));
+        assert_eq!(c.decode(&long, &filter()), Err(CursorError::Malformed));
     }
 
-    /// 签名合法但版本未知：按非法拒绝，避免旧游标被按新结构误读。
+    /// 签名合法但版本未知：单独报「版本过期」，不复用「格式非法」的文案。
     #[test]
-    fn unknown_version_is_rejected() {
+    fn unknown_version_reports_version_mismatch() {
         let c = codec();
         let payload = Payload {
             v: CURSOR_VERSION + 1,
             sort: keys(),
-            filter: "f".into(),
+            filter: filter().digest(),
         };
         let body = B64.encode(serde_json::to_vec(&payload).unwrap());
         let sig = c.sign(&body);
-        assert_eq!(
-            c.decode(&format!("{body}.{sig}"), "f"),
-            Err(CursorError::Malformed)
-        );
+        let err = c.decode(&format!("{body}.{sig}"), &filter()).unwrap_err();
+        assert_eq!(err, CursorError::VersionMismatch);
+        assert!(err.message().contains("版本"), "{}", err.message());
     }
 }

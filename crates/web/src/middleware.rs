@@ -499,7 +499,7 @@ pub fn check_csrf(state: &AppState, user: &CurrentUser, provided: &str) -> Resul
     if skiff_identity::token_matches(&expected, provided) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("CSRF 校验失败，请刷新页面重试".into()))
+        Err(AppError::Csrf("CSRF 校验失败，请刷新页面重试".into()))
     }
 }
 

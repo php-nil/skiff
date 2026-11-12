@@ -1,6 +1,8 @@
 use axum::extract::Path;
-use axum::http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, VARY};
-use axum::http::{HeaderMap, HeaderValue, Uri};
+use axum::http::header::{
+    ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_TYPE, ETAG, IF_NONE_MATCH, VARY,
+};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::Response;
 use rust_embed::RustEmbed;
 
@@ -40,16 +42,33 @@ pub async fn static_file(
         .and_then(|v| v.to_str().ok())
         .map(accepts_gzip_header)
         .unwrap_or(false);
-    let (data, encoding) = if accepts_gzip {
+    let (data, encoding, hash) = if accepts_gzip {
         match Assets::get(&format!("{rel}.gz")) {
-            Some(gz) => (gz.data.into_owned(), Some("gzip")),
-            None => (file.data.into_owned(), None),
+            Some(gz) => {
+                // ETag 必须对应**实际返回的字节**：gzip 变体与原始文件是两个表示，
+                // 同一个 URL 下各自的 ETag 不同，配合 `Vary: Accept-Encoding` 才正确。
+                let hash = gz.metadata.sha256_hash();
+                (gz.data.into_owned(), Some("gzip"), hash)
+            }
+            None => {
+                let hash = file.metadata.sha256_hash();
+                (file.data.into_owned(), None, hash)
+            }
         }
     } else {
-        (file.data.into_owned(), None)
+        let hash = file.metadata.sha256_hash();
+        (file.data.into_owned(), None, hash)
     };
 
-    let mut resp = Response::new(axum::body::Body::from(data));
+    // 强 ETag：rust_embed 的内容 sha256，不加 `W/`。
+    let etag = format!("\"{}\"", hex::encode(hash));
+    let mut resp = if if_none_match_matches(headers.get(IF_NONE_MATCH), &etag) {
+        let mut r = Response::new(axum::body::Body::empty());
+        *r.status_mut() = StatusCode::NOT_MODIFIED;
+        r
+    } else {
+        Response::new(axum::body::Body::from(data))
+    };
     let h = resp.headers_mut();
     // `HeaderValue` 解析走显式兜底：静态资源在请求路径上，任何解析失败都不该 panic。
     h.insert(
@@ -61,6 +80,10 @@ pub async fn static_file(
         CACHE_CONTROL,
         HeaderValue::from_static(cache_control_for(rel, has_version_query(uri.query()))),
     );
+    h.insert(
+        ETAG,
+        HeaderValue::from_str(&etag).unwrap_or_else(|_| HeaderValue::from_static("\"\"")),
+    );
     h.insert(VARY, HeaderValue::from_static("Accept-Encoding"));
     if let Some(enc) = encoding {
         h.insert(
@@ -69,6 +92,18 @@ pub async fn static_file(
         );
     }
     Ok(resp)
+}
+
+/// `If-None-Match` 弱比较（RFC 9110 §13.1.2）：忽略 `W/` 前缀，按不透明标签比对；
+/// `*` 匹配任意当前表示。强 ETag 与弱验证器在这里是等价的。
+fn if_none_match_matches(header: Option<&HeaderValue>, etag: &str) -> bool {
+    let Some(raw) = header.and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    raw.split(',').any(|item| {
+        let item = item.trim();
+        item == "*" || item.strip_prefix("W/").unwrap_or(item) == etag
+    })
 }
 
 /// 静态资源的缓存策略（SDUI D11）。
@@ -209,6 +244,138 @@ mod tests {
         assert!(!has_version_query(Some("v")));
         assert!(!has_version_query(Some("version=1")));
         assert!(!has_version_query(None));
+    }
+
+    // ---- ETag / 304（强 ETag 取 rust_embed 的内容 sha256，且与实际返回字节一致）----
+
+    const CSS: &str = "skiff.css";
+
+    async fn fetch(path: &str, headers: HeaderMap) -> Response {
+        static_file(
+            Path(path.to_string()),
+            Uri::from_static("/p/static/x"),
+            headers,
+        )
+        .await
+        .expect("静态资源应存在")
+    }
+
+    async fn body_of(resp: Response) -> Vec<u8> {
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("读取响应体")
+            .to_vec()
+    }
+
+    fn etag_of(resp: &Response) -> String {
+        resp.headers()
+            .get(ETAG)
+            .expect("静态资源必须带 ETag")
+            .to_str()
+            .expect("ETag 必须是可见 ASCII")
+            .to_string()
+    }
+
+    fn with_if_none_match(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(IF_NONE_MATCH, HeaderValue::from_str(value).unwrap());
+        h
+    }
+
+    fn with_gzip() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        h
+    }
+
+    /// 强 ETag 形如 `"<64 位十六进制>"`，同一内容多次请求必须相同。
+    #[tokio::test]
+    async fn etag_is_strong_and_stable() {
+        let first = etag_of(&fetch(CSS, HeaderMap::new()).await);
+        let second = etag_of(&fetch(CSS, HeaderMap::new()).await);
+        assert_eq!(first, second);
+        assert!(first.starts_with('"') && first.ends_with('"'), "{first}");
+        assert_eq!(first.len(), 66, "64 位 sha256 十六进制 + 两个引号: {first}");
+        assert!(first[1..65].chars().all(|c| c.is_ascii_hexdigit()));
+        let body = body_of(fetch(CSS, HeaderMap::new()).await).await;
+        assert!(!body.is_empty());
+    }
+
+    /// 命中 `If-None-Match`：304、空体、ETag 与 Cache-Control 原样保留。
+    #[tokio::test]
+    async fn if_none_match_hits_304() {
+        let first = fetch(CSS, HeaderMap::new()).await;
+        let etag = etag_of(&first);
+        let cache = first
+            .headers()
+            .get(CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let resp = fetch(CSS, with_if_none_match(&etag)).await;
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(etag_of(&resp), etag);
+        assert_eq!(
+            resp.headers().get(CACHE_CONTROL).unwrap().to_str().unwrap(),
+            cache,
+            "304 的缓存分层必须与 200 一致"
+        );
+        assert!(body_of(resp).await.is_empty());
+    }
+
+    /// 弱验证器、列表与 `*` 都按弱比较命中。
+    #[tokio::test]
+    async fn weak_and_listed_validators_hit_304() {
+        let etag = etag_of(&fetch(CSS, HeaderMap::new()).await);
+        for value in [
+            format!("W/{etag}"),
+            format!("\"other\", {etag}"),
+            "*".to_string(),
+        ] {
+            let resp = fetch(CSS, with_if_none_match(&value)).await;
+            assert_eq!(resp.status(), StatusCode::NOT_MODIFIED, "{value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn if_none_match_miss_returns_200() {
+        let resp = fetch(CSS, with_if_none_match("\"deadbeef\"")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!body_of(resp).await.is_empty());
+    }
+
+    /// gzip 变体与原始文件是两个表示：ETag 必须不同，且各自的验证器只匹配自己。
+    #[tokio::test]
+    async fn gzip_variant_has_its_own_etag() {
+        let identity = fetch(CSS, HeaderMap::new()).await;
+        let identity_etag = etag_of(&identity);
+        let gz = fetch(CSS, with_gzip()).await;
+        assert_eq!(
+            gz.headers()
+                .get(CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip"),
+            "Accept-Encoding: gzip 时应返回预压缩变体"
+        );
+        let gz_etag = etag_of(&gz);
+        assert_ne!(identity_etag, gz_etag, "两个表示的 ETag 不能相同");
+
+        // 拿 identity 的 ETag 请求 gzip 表示：不命中，返回 200。
+        let mut headers = with_gzip();
+        headers.insert(
+            IF_NONE_MATCH,
+            HeaderValue::from_str(&identity_etag).unwrap(),
+        );
+        assert_eq!(fetch(CSS, headers).await.status(), StatusCode::OK);
+
+        // gzip 自己的 ETag 命中 304。
+        let mut headers = with_gzip();
+        headers.insert(IF_NONE_MATCH, HeaderValue::from_str(&gz_etag).unwrap());
+        let resp = fetch(CSS, headers).await;
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert!(body_of(resp).await.is_empty());
     }
 
     /// 收集静态文件里字面量形式的 API 调用路径，供「拼接分隔符」回归使用。

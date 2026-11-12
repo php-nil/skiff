@@ -25,6 +25,8 @@ mime_guess = { workspace = true }
 futures-util = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
+# 静态资源 ETag：把 rust_embed 的内容 sha256 编成十六进制
+hex = { workspace = true }
 tracing = { workspace = true }
 tempfile = { workspace = true }
 

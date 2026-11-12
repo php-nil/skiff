@@ -10,6 +10,9 @@ pub enum AppError {
     NotFound(String),
     Unauthorized(String),
     Forbidden(String),
+    /// CSRF 令牌缺失/失效/不匹配。HTTP 仍是 403（不改变既有页面行为），
+    /// 但错误码独立为 `auth.csrf_invalid`，JSON 路径可提示「刷新后重试」而非「无权限」。
+    Csrf(String),
     BadRequest(String),
     /// 形状成立但字段值不合法；`field` 用于让客户端定位到具体控件。
     InvalidField {
@@ -33,7 +36,7 @@ impl AppError {
         match self {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::Forbidden(_) | AppError::Csrf(_) => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) | AppError::InvalidField { .. } => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::NoSpace(_) => StatusCode::INSUFFICIENT_STORAGE,
@@ -52,6 +55,7 @@ impl AppError {
             AppError::NotFound(_) => ErrorCode::NotFound,
             AppError::Unauthorized(_) => ErrorCode::Unauthenticated,
             AppError::Forbidden(_) => ErrorCode::Forbidden,
+            AppError::Csrf(_) => ErrorCode::CsrfInvalid,
             AppError::BadRequest(_) => ErrorCode::InvalidShape,
             AppError::InvalidField { .. } => ErrorCode::InvalidField,
             AppError::Conflict(_) => ErrorCode::Conflict,
@@ -89,6 +93,7 @@ impl AppError {
             AppError::NotFound(m)
             | AppError::Unauthorized(m)
             | AppError::Forbidden(m)
+            | AppError::Csrf(m)
             | AppError::BadRequest(m)
             | AppError::Conflict(m)
             | AppError::NoSpace(m)
@@ -243,6 +248,7 @@ mod tests {
                 401,
             ),
             (AppError::Forbidden("x".into()), ErrorCode::Forbidden, 403),
+            (AppError::Csrf("x".into()), ErrorCode::CsrfInvalid, 403),
             (
                 AppError::BadRequest("x".into()),
                 ErrorCode::InvalidShape,
@@ -316,6 +322,18 @@ mod tests {
         ] {
             assert!(!err.envelope().error.retryable);
         }
+    }
+
+    /// 401 / 403 / 503 三类失败必须可区分：CSRF 失败仍是 403（页面行为不变），
+    /// 但机器码独立，JSON 客户端能提示「刷新后重试」而不是「无权限」。
+    #[test]
+    fn csrf_failure_has_dedicated_code() {
+        let csrf = AppError::Csrf("CSRF 校验失败，请刷新页面重试".into());
+        assert_eq!(csrf.status(), StatusCode::FORBIDDEN);
+        assert_eq!(csrf.error_code(), ErrorCode::CsrfInvalid);
+        assert_eq!(csrf.envelope().error.code, "auth.csrf_invalid");
+        assert_ne!(csrf.envelope().error.code, ErrorCode::Forbidden.as_str());
+        assert!(!csrf.envelope().error.retryable);
     }
 
     #[test]
