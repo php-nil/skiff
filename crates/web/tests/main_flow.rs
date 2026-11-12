@@ -3555,8 +3555,10 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     );
 }
 
-/// 官方包「装完即可用」回归：files 必须有默认 path: 授权建议，
-/// cron 必须声明 scheduler 能力（否则全新安装后 files RPC / cron 列表 400）。
+/// 官方包「装完即可用」回归：files 必须声明站点文件所需的 fs 权限，
+/// 且**不得**给出 `path:` 授权建议（站点域名打包时未知，装完由用户在确认页填写，
+/// 避免申请 `/www/sites` 或 `/` 这种跨站点根）；cron 必须声明 scheduler 能力
+/// （否则全新安装后 files RPC / cron 列表 400）。
 #[tokio::test]
 async fn official_packages_declare_usable_install_defaults() {
     let files = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/files/manifest.toml"))
@@ -3566,8 +3568,8 @@ async fn official_packages_declare_usable_install_defaults() {
         assert!(perms.iter().any(|x| x == p), "files 缺少 {p}: {perms:?}");
     }
     assert!(
-        files.resource_hints.iter().any(|h| h.starts_with("path:/")),
-        "files 必须给出默认 path: 授权建议，否则安装后无法浏览: {:?}",
+        files.resource_hints.is_empty(),
+        "files 不得预置 path: 授权建议（站点未知，且会放大到跨站点）: {:?}",
         files.resource_hints
     );
 
