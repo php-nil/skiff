@@ -406,9 +406,10 @@ fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::Cata
         .or(file.mirrors.clone())
         .unwrap_or_default();
     for mirror in &mirrors {
-        // 目录是安全边界上的输入：明文 http 等于把清单交给中间人，直接拒绝。
-        if !mirror.starts_with("https://") {
-            bail!("catalog.mirrors 必须是 https:// 地址: {mirror}");
+        // 允许 http：信任来自签名 + 摘要 + 单调 seq，不来自传输层（§9 第 8 项）。
+        // 这里只拦非法协议，避免把 ftp/file 之类的地址带进拉取链路。
+        if !is_http_url(mirror) {
+            bail!("catalog.mirrors 必须是 http:// 或 https:// 地址: {mirror}");
         }
     }
     let public_key = env_str("SKIFF_CATALOG_PUBLIC_KEY").or(file.public_key.clone());
@@ -449,6 +450,10 @@ fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::Cata
         timeout: std::time::Duration::from_secs(timeout.min(120)),
         extra_roots,
     })
+}
+
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 fn env_bool(key: &str, fallback: bool) -> bool {
@@ -676,7 +681,10 @@ mod tests {
         let c = Config::load(None, true).unwrap();
         assert!(!c.catalog.enabled, "商店目录必须默认关闭");
         assert_eq!(c.catalog.channel, "stable");
-        assert!(c.catalog.mirrors.is_empty());
+        assert!(
+            c.catalog.mirrors.is_empty(),
+            "默认镜像地址待连通性确认后写入"
+        );
         assert!(!c.catalog.allow_unsigned);
 
         let dir = tempfile::tempdir().unwrap();
@@ -692,6 +700,37 @@ mod tests {
         assert_eq!(c.catalog.channel, "night");
         assert_eq!(c.catalog.mirrors, vec!["https://cdn.example/skiff"]);
         assert_eq!(c.catalog.timeout.as_secs(), 5);
+    }
+
+    /// 显式 `mirrors = []` 表示「不联网、只用本地快照」，不能被默认值顶掉。
+    #[test]
+    fn catalog_explicit_empty_mirrors_is_respected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[catalog]\nmirrors = []\n").unwrap();
+        let c = Config::load(Some(path), true).unwrap();
+        assert!(c.catalog.mirrors.is_empty());
+    }
+
+    /// 协议只收 http/https：内网 HTTP 是定案形态，其它协议仍拒绝。
+    #[test]
+    fn catalog_accepts_http_mirrors_but_rejects_other_schemes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("http.toml");
+        std::fs::write(
+            &path,
+            "[catalog]\nmirrors = [\"http://mirror.example/skiff\", \"https://cdn.example/skiff\"]\n",
+        )
+        .unwrap();
+        let c = Config::load(Some(path), true).unwrap();
+        assert_eq!(
+            c.catalog.mirrors,
+            vec!["http://mirror.example/skiff", "https://cdn.example/skiff"]
+        );
+
+        let bad = dir.path().join("ftp.toml");
+        std::fs::write(&bad, "[catalog]\nmirrors = [\"ftp://mirror/skiff\"]\n").unwrap();
+        assert!(Config::load(Some(bad), true).is_err());
     }
 
     /// `[catalog].ca_bundle`：空值 = 保持现状（只用内置根）；指定了就必须可加载，
@@ -746,12 +785,12 @@ mod tests {
     }
 
     #[test]
-    fn catalog_rejects_plaintext_mirror_bad_channel_and_bad_key() {
+    fn catalog_rejects_bad_scheme_channel_and_bad_key() {
         let dir = tempfile::tempdir().unwrap();
         for (name, body) in [
             (
                 "mirror",
-                "[catalog]\nmirrors = [\"http://insecure/skiff\"]\n",
+                "[catalog]\nmirrors = [\"ftp://insecure/skiff\"]\n",
             ),
             ("channel", "[catalog]\nchannel = \"beta\"\n"),
             ("key", "[catalog]\npublic_key = \"zz\"\n"),

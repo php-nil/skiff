@@ -554,6 +554,75 @@ fn all_mirrors_cooling_uses_cache_until_force_retry() {
     assert_eq!(snap.source, dead_base);
 }
 
+#[test]
+fn ttl_reuses_snapshot_and_force_bypasses() {
+    let fx = Fixture::new();
+    fx.serve_signed(1, "com.example.one", "e-m", "e-i");
+    let svc = fx.service();
+    assert_eq!(svc.snapshot(false).state, CatalogState::Fresh);
+    let calls = fx.fake.calls().len();
+
+    // TTL 内：直接复用内存快照，不联网。
+    let snap = svc.snapshot(false);
+    assert_eq!(snap.state, CatalogState::Fresh);
+    assert_eq!(snap.seq, Some(1));
+    assert_eq!(fx.fake.calls().len(), calls, "TTL 内不应重拉");
+
+    // 强制刷新绕过 TTL：304 复用缓存，但请求确实发出去了。
+    fx.fake.push(&manifest_url(), reply(304, Vec::new(), None));
+    fx.fake.push(&index_url(), reply(304, Vec::new(), None));
+    let snap = svc.snapshot(true);
+    assert_eq!(snap.state, CatalogState::Cached, "{}", snap.message);
+    assert_eq!(fx.fake.calls().len(), calls + 2, "强制刷新必须真的发请求");
+}
+
+#[test]
+fn failure_is_retried_after_failure_ttl_not_a_day() {
+    let fx = Fixture::new();
+    let dead = "https://dead.example/skiff";
+    let mut settings = fx.settings();
+    settings.mirrors = vec![dead.into()];
+    let svc = fx.service_with(fx.fake.clone(), settings);
+
+    assert_eq!(svc.snapshot(false).state, CatalogState::Offline);
+    let calls = fx.fake.calls().len();
+    assert_eq!(svc.snapshot(false).state, CatalogState::Offline);
+    assert_eq!(fx.fake.calls().len(), calls, "失败冷却期内不应重试");
+
+    // 把失败时间往前拨过 5 分钟：应重新尝试，而不是等满一天。
+    if let Ok(mut memo) = svc.memo.lock() {
+        let m = memo.as_mut().expect("失败也应写入 memo");
+        m.at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
+    }
+    assert_eq!(svc.snapshot(false).state, CatalogState::Offline);
+    assert!(
+        fx.fake.calls().len() > calls,
+        "失败冷却到期后应重新请求镜像"
+    );
+}
+
+#[test]
+fn restarted_process_reuses_fresh_disk_cache_without_network() {
+    let fx = Fixture::new();
+    fx.serve_signed(1, "com.example.one", "e-m", "e-i");
+    assert_eq!(fx.service().snapshot(true).state, CatalogState::Fresh);
+    let calls = fx.fake.calls().len();
+
+    // 新实例 = 进程重启，内存 memo 为空；磁盘 fetched_at 未过一天。
+    let svc = fx.service();
+    let snap = svc.snapshot(false);
+    assert_eq!(snap.state, CatalogState::Cached, "{}", snap.message);
+    assert_eq!(snap.seq, Some(1));
+    assert_eq!(fx.fake.calls().len(), calls, "未过一天的磁盘缓存不应联网");
+
+    // 强制刷新同样绕过磁盘 TTL。
+    fx.fake.push(&manifest_url(), reply(304, Vec::new(), None));
+    fx.fake.push(&index_url(), reply(304, Vec::new(), None));
+    let snap = svc.snapshot(true);
+    assert_eq!(snap.state, CatalogState::Cached, "{}", snap.message);
+    assert!(fx.fake.calls().len() > calls);
+}
+
 /// 升级条目索引：只关心 `(version, arch, channel, min_from)`，摘要三件套共用占位。
 fn upgrades_index(entries: &[(&str, &str, &str, &str)]) -> Vec<u8> {
     let upgrades: Vec<_> = entries

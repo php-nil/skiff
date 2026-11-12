@@ -29,8 +29,11 @@ use model::{Index, Manifest, PluginEntry, SignatureFile, UpgradeEntry, BLOB_PREF
 
 /// 单次 HTTP 请求的默认硬超时。
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-/// 页面连续访问时复用内存快照的时长；「刷新」按钮显式绕过。
-pub const DEFAULT_TTL: Duration = Duration::from_secs(30);
+/// JSON 类资源（`manifest.json` / `.sig` / `index.json`）的本地缓存有效期：一天。
+/// `blobs/sha256/*` 内容寻址，视为永久；「刷新」按钮显式绕过。
+pub const DEFAULT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// 拉取失败（离线 / 校验失败）后的重试间隔：5 分钟，失败不顶满一天。
+pub const FAILURE_TTL: Duration = Duration::from_secs(5 * 60);
 /// 镜像连续失败后的退避基数：10s → 20s → 40s …（只影响自动刷新，手动刷新绕过）。
 const MIRROR_BACKOFF_BASE: Duration = Duration::from_secs(10);
 /// 单个镜像的退避上限：到期后自动刷新会再给它一次机会。
@@ -283,6 +286,8 @@ struct Memo {
     snapshot: CatalogSnapshot,
     index: Option<Index>,
     base: String,
+    /// 这次结果是否算「成功」（Fresh / Cached）。失败只冷却 [`FAILURE_TTL`]。
+    ok: bool,
 }
 
 /// 单个镜像的连续失败计数与下次可尝试时间（进程内状态，重启清零）。
@@ -412,7 +417,7 @@ impl CatalogService {
         self.settings.enabled
     }
 
-    /// 取当前快照。`force` 为 true 时绕过内存 TTL（页面「刷新」）。
+    /// 取当前快照。`force` 为 true 时绕过 TTL、失败冷却与镜像退避（页面「刷新」）。
     ///
     /// 本方法会做阻塞网络 I/O，调用方必须放进 `spawn_blocking`。
     pub fn snapshot(&self, force: bool) -> CatalogSnapshot {
@@ -673,19 +678,33 @@ impl CatalogService {
         if !force {
             if let Ok(memo) = self.memo.lock() {
                 if let Some(m) = memo.as_ref() {
-                    if m.at.elapsed() < DEFAULT_TTL {
+                    // 成功按一天复用；失败只冷却 5 分钟，允许较快重试。
+                    let ttl = if m.ok { DEFAULT_TTL } else { FAILURE_TTL };
+                    if m.at.elapsed() < ttl {
                         return (m.snapshot.clone(), m.index.clone(), m.base.clone());
                     }
                 }
             }
+            // 进程重启后内存为空：磁盘快照未过 JSON TTL 时直接复用，不联网。
+            if let Some(cached) = self.cached_for_current_key(&self.settings.channel) {
+                if cache_fresh(&cached.meta.fetched_at) {
+                    return self.cached_snapshot(
+                        &cached,
+                        CatalogState::Cached,
+                        "本地缓存未过期（JSON TTL 一天），直接复用；点「刷新」可强制重拉",
+                    );
+                }
+            }
         }
         let (snap, index, base) = self.load(force);
+        let ok = !matches!(snap.state, CatalogState::Offline | CatalogState::Rejected);
         if let Ok(mut memo) = self.memo.lock() {
             *memo = Some(Memo {
                 at: Instant::now(),
                 snapshot: snap.clone(),
                 index: index.clone(),
                 base: base.clone(),
+                ok,
             });
         }
         (snap, index, base)
@@ -1283,6 +1302,16 @@ pub fn newest_versions(items: &[CatalogItem]) -> HashMap<String, String> {
 /// 索引级入口：与 [`installable_versions`] 同一口径（先映射成页面行再选最大）。
 fn installable_version_in(index: &Index, id: &str) -> Option<String> {
     installable_versions(&entries_of(index).plugins).remove(id)
+}
+
+/// 磁盘快照是否仍在 JSON TTL 内。按 `meta.json` 的 `fetched_at` 判定，跨进程有效；
+/// 时间戳缺失/无法解析一律视为过期（宁可多拉一次，不把坏元数据当新鲜）。
+fn cache_fresh(fetched_at: &str) -> bool {
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(fetched_at) else {
+        return false;
+    };
+    let age = chrono::Utc::now().signed_duration_since(at.with_timezone(&chrono::Utc));
+    age < chrono::Duration::from_std(DEFAULT_TTL).unwrap_or(chrono::Duration::days(1))
 }
 
 fn now_rfc3339() -> String {

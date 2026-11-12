@@ -95,7 +95,9 @@ listen = "127.0.0.1:18080"
 # enabled = true
 # 渠道：stable（默认）或 night。
 # channel = "stable"
-# 镜像基地址，按序回退；必须是 https://（明文 http 会把清单交给中间人，启动即拒绝）。
+# 镜像基地址（有序，按优先级回落、不合并）；允许 http:// 与 https://。
+# 一期默认指向内网 serve 源，具体地址待连通性确认后写入；显式 [] 表示不联网、只用本地快照。
+# 信任来自签名 + seq 防回滚，传输层不加密只影响保密性。
 # 每个地址下面需有 channels/<channel>/{manifest.json,manifest.json.sig,index.json}。
 # mirrors = ["https://cdn.example.com/skiff"]
 # 固定 Ed25519 公钥（64 位十六进制，key_id = sha256(公钥)）。未配置时只能拒绝已签名渠道。
