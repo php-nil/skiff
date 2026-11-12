@@ -3555,23 +3555,86 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     );
 }
 
-/// 官方包「装完即可用」回归：files 必须声明站点文件所需的 fs 权限，
-/// 且**不得**给出 `path:` 授权建议（站点域名打包时未知，装完由用户在确认页填写，
-/// 避免申请 `/www/sites` 或 `/` 这种跨站点根）；cron 必须声明 scheduler 能力
-/// （否则全新安装后 files RPC / cron 列表 400）。
+/// 官方包「装完即可用」回归。
+///
+/// 规则：**每个**官方包要么声明至少一条可用的默认授权建议（`path:` / `container:`
+/// / `project:` / `plugin:`），要么在下表里**显式列名并写明原因**；新包既没默认授权、
+/// 又没登记时会直接红。站点文件是唯一「预置 `path:` 反而有害」的例外：站点域名打包时
+/// 未知，预置只能写成 `/www/sites` 这类跨站点根，因此只允许它为空且必须有可读提示。
+/// cron 还必须声明 scheduler 能力（否则全新安装后列表 400）。
 #[tokio::test]
 async fn official_packages_declare_usable_install_defaults() {
+    const NO_DEFAULT_GRANT: &[(&str, &str)] = &[
+        ("com.skiff.guard", "守护对象由管理员逐条勾选 container:/project:"),
+        ("com.skiff.cron", "只调度插件接口，无宿主资源"),
+        (
+            "com.skiff.firewall",
+            "能力面自带受控作用域（inet skiff / SKIFF 链），无需 path: 授权",
+        ),
+    ];
+    const OFFICIAL: &[(&str, &str)] = &[
+        (
+            "guard",
+            include_str!("../../../plugins/guard/manifest.toml"),
+        ),
+        (
+            "monitor",
+            include_str!("../../../plugins/monitor/manifest.toml"),
+        ),
+        (
+            "files",
+            include_str!("../../../plugins/files/manifest.toml"),
+        ),
+        ("cron", include_str!("../../../plugins/cron/manifest.toml")),
+        ("ftp", include_str!("../../../plugins/ftp/manifest.toml")),
+        (
+            "firewall",
+            include_str!("../../../plugins/firewall/manifest.toml"),
+        ),
+        (
+            "testkit",
+            include_str!("../../../plugins/testkit/manifest.toml"),
+        ),
+    ];
+
+    for (name, src) in OFFICIAL {
+        let m = skiff_pkgfmt::Manifest::parse(src)
+            .unwrap_or_else(|e| panic!("{name} manifest 必须可解析: {e}"));
+        let usable = |h: &String| {
+            h.starts_with("path:/")
+                || h.starts_with("container:")
+                || h.starts_with("project:")
+                || h.starts_with("plugin:")
+        };
+        for h in &m.resource_hints {
+            assert!(
+                usable(h),
+                "{name} 的默认授权建议不可用（{h}），只接受 path:/ container:/ project:/ plugin: 前缀"
+            );
+        }
+        if m.id == "com.skiff.files" {
+            assert!(
+                m.resource_hints.is_empty(),
+                "站点文件不得预置 path:（域名打包时未知，会放大成跨站点授权）: {:?}",
+                m.resource_hints
+            );
+            continue;
+        }
+        if !m.resource_hints.iter().any(usable) {
+            assert!(
+                NO_DEFAULT_GRANT.iter().any(|(id, _)| *id == m.id),
+                "{} 必须声明可用的默认授权建议，或在 NO_DEFAULT_GRANT 里显式列名并说明原因",
+                m.id
+            );
+        }
+    }
+
     let files = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/files/manifest.toml"))
         .expect("files manifest 必须可解析");
     let perms = files.permission_strings();
     for p in ["fs:read", "fs:write", "fs:list", "fs:mkdir", "fs:rename"] {
         assert!(perms.iter().any(|x| x == p), "files 缺少 {p}: {perms:?}");
     }
-    assert!(
-        files.resource_hints.is_empty(),
-        "files 不得预置 path: 授权建议（站点未知，且会放大到跨站点）: {:?}",
-        files.resource_hints
-    );
 
     let cron = skiff_pkgfmt::Manifest::parse(include_str!("../../../plugins/cron/manifest.toml"))
         .expect("cron manifest 必须可解析");

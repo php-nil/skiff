@@ -114,7 +114,7 @@ fn granted_roots(plugin: &Plugin) -> Result<Vec<String>, RpcError> {
 fn no_grant() -> RpcError {
     RpcError::invalid_params(
         "未授权站点目录：安装插件时需添加 path:/www/sites/<域名>/index（站点内容目录），\
-         回收站/配额/上传下载请用内核「工具 → 文件管理」"
+         回收站/配额/更多操作请用内核「工具 → 文件管理」"
             .to_string(),
     )
 }

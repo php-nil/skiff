@@ -387,7 +387,7 @@
     $("error-title").textContent = "尚未配置站点目录";
     $("error-detail").textContent =
       "安装时没有添加 path:/www/sites/<域名>/index。请到「插件中心 → 站点文件 → 详情」" +
-      "添加站点内容目录的 path: 授权，然后点「重试」。回收站、配额、上传下载请用内核「工具 → 文件管理」。";
+      "添加站点内容目录的 path: 授权，然后点「重试」。回收站、配额与更多操作请用内核「工具 → 文件管理」。";
     $("error-grant").hidden = false;
     $("error-back").hidden = true;
     setBanner("未配置授权根", "请先到插件详情添加站点内容目录（path:/www/sites/<域名>/index）");
