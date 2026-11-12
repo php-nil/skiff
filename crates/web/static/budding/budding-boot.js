@@ -619,6 +619,90 @@
     };
   }
 
+  function resourceSchema(title, subtitle, columns, data, fallbackText, fallbackHref) {
+    var body = [];
+    if (!data.docker_available) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: 'Docker 不可用',
+          text: data.docker_reason || 'Docker 守护进程当前不可达，列表为空。'
+        }
+      });
+    }
+    if (data.next_cursor) {
+      body.push(
+        noticeCard(
+          '共 ' +
+            data.total +
+            ' 条，当前显示前 ' +
+            data.items.length +
+            ' 条；翻页交互待后续批次接入。'
+        )
+      );
+    }
+    body.push(statusTable(columns, data.items, 'id'));
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '创建/拉取/删除等写操作仍走旧版页面，待写操作批次迁移。'
+      }
+    });
+    body.push({ type: 'link', props: { text: fallbackText, href: fallbackHref } });
+    return { type: 'page', props: { title: title, subtitle: subtitle }, body: body };
+  }
+
+  function imagesSchema(data) {
+    return resourceSchema(
+      '镜像 · Skiff',
+      '只读列表',
+      [
+        { key: 'name', label: '镜像' },
+        { key: 'meta', label: '大小' },
+        { key: 'warn', label: '提示' }
+      ],
+      data,
+      '打开旧版镜像页（拉取 / 删除）',
+      prefix + '/m/core/docker/images'
+    );
+  }
+
+  function networksSchema(data) {
+    return resourceSchema(
+      '网络 · Skiff',
+      '只读列表',
+      [
+        { key: 'name', label: '名称' },
+        { key: 'driver', label: '驱动' },
+        { key: 'scope', label: '范围' },
+        { key: 'subnet', label: '子网' },
+        { key: 'gateway', label: '网关' },
+        { key: 'container_count', label: '容器' },
+        { key: 'internal', label: '内部/外部' }
+      ],
+      data,
+      '打开旧版网络页（创建 / 删除）',
+      prefix + '/m/core/docker/networks'
+    );
+  }
+
+  function volumesSchema(data) {
+    return resourceSchema(
+      '卷 · Skiff',
+      '只读列表',
+      [
+        { key: 'name', label: '名称' },
+        { key: 'meta', label: '驱动与挂载点' },
+        { key: 'warn', label: '提示' }
+      ],
+      data,
+      '打开旧版卷页（创建 / 删除）',
+      prefix + '/m/core/docker/volumes'
+    );
+  }
+
   function embedWithError(schema) {
     if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
       showError('前端产物未加载（budding 脚本不可用）。');
@@ -719,6 +803,24 @@
       if (parts[0] === 'containers' && parts.length === 2) {
         getJson('/containers/' + encodeURIComponent(parts[1]), function (data) {
           embedWithError(containerDetailSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'images' && parts.length === 1) {
+        getJson('/images' + listQuery(), function (data) {
+          embedWithError(imagesSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'networks' && parts.length === 1) {
+        getJson('/networks' + listQuery(), function (data) {
+          embedWithError(networksSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'volumes' && parts.length === 1) {
+        getJson('/volumes' + listQuery(), function (data) {
+          embedWithError(volumesSchema(data));
         });
         return;
       }

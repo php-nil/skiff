@@ -296,6 +296,36 @@ fn page_limit(q: &ListQuery) -> usize {
     q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
+/// 内存 keyset 分页：`rows` 已按展示顺序排列，游标为上一页末项的键。
+fn paginate<T>(
+    rows: Vec<(String, T)>,
+    limit: usize,
+    cursor: Option<&str>,
+) -> (Vec<T>, Option<String>, usize) {
+    let total = rows.len();
+    let start = match cursor {
+        Some(cursor) => rows
+            .iter()
+            .position(|(key, _)| key == cursor)
+            .map(|i| i + 1)
+            .unwrap_or(0),
+        None => 0,
+    };
+    let end = (start + limit).min(total);
+    let next_cursor = if end < total && end > start {
+        rows.get(end - 1).map(|(key, _)| key.clone())
+    } else {
+        None
+    };
+    let page = rows
+        .into_iter()
+        .skip(start)
+        .take(end - start)
+        .map(|(_, item)| item)
+        .collect();
+    (page, next_cursor, total)
+}
+
 fn rfc3339(epoch: i64) -> String {
     skiff_app::time_fmt::epoch_to_rfc3339_utc(epoch).unwrap_or_default()
 }
@@ -1188,6 +1218,211 @@ pub async fn container_action(
             "name": row.name,
             "action": action,
             "removed": removed,
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// 镜像 / 网络 / 卷的通用行。
+#[derive(Debug, Clone, Serialize)]
+pub struct ResourceItem {
+    pub id: String,
+    pub name: String,
+    pub meta: String,
+    pub warn: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkContainerItem {
+    pub name: String,
+    pub ipv4: String,
+    pub ipv6: String,
+    pub mac: String,
+}
+
+/// 网络行（字段冻结，只增不改；与旧页面 `NetworkRowView` 同源）。
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkItem {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub scope: String,
+    pub ipam_driver: String,
+    pub subnet: String,
+    pub gateway: String,
+    pub internal: String,
+    pub attachable: String,
+    pub container_count: String,
+    pub containers_known: bool,
+    pub containers: Vec<NetworkContainerItem>,
+    pub builtin: bool,
+    pub can_remove: bool,
+}
+
+fn network_item(v: crate::templates::NetworkRowView) -> NetworkItem {
+    NetworkItem {
+        id: v.id,
+        name: v.name,
+        driver: v.driver,
+        scope: v.scope,
+        ipam_driver: v.ipam_driver,
+        subnet: v.subnet,
+        gateway: v.gateway,
+        internal: v.internal,
+        attachable: v.attachable,
+        container_count: v.container_count,
+        containers_known: v.containers_known,
+        containers: v
+            .containers
+            .into_iter()
+            .map(|c| NetworkContainerItem {
+                name: c.name,
+                ipv4: c.ipv4,
+                ipv6: c.ipv6,
+                mac: c.mac,
+            })
+            .collect(),
+        builtin: v.builtin,
+        can_remove: v.can_remove,
+    }
+}
+
+/// `GET /ui/v1/images`：镜像列表（只读）。
+pub async fn images(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Response, ApiError> {
+    let available = state.docker().available();
+    let rows = if available {
+        state
+            .docker()
+            .list_images()
+            .await
+            .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?
+            .into_iter()
+            .map(|i| {
+                let name = if i.tags.is_empty() {
+                    format!("<none> ({})", i.short_id())
+                } else {
+                    i.tags.join(", ")
+                };
+                (
+                    i.id.clone(),
+                    ResourceItem {
+                        id: i.id,
+                        name,
+                        meta: crate::util::human_size(i.size),
+                        warn: String::new(),
+                    },
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
+    let mut resp = Json(json!({
+        "data": {
+            "items": items,
+            "total": total,
+            "next_cursor": next_cursor,
+            "docker_available": available,
+            "docker_reason": state.docker_unavailable_reason(),
+            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `GET /ui/v1/networks`：网络列表（只读）。
+pub async fn networks(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Response, ApiError> {
+    let available = state.docker().available();
+    let rows = if available {
+        state
+            .docker()
+            .list_networks()
+            .await
+            .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?
+            .into_iter()
+            .map(|n| {
+                let item = network_item(handlers::resources::network_view(n));
+                (item.id.clone(), item)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
+    let mut resp = Json(json!({
+        "data": {
+            "items": items,
+            "total": total,
+            "next_cursor": next_cursor,
+            "docker_available": available,
+            "docker_reason": state.docker_unavailable_reason(),
+            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `GET /ui/v1/volumes`：卷列表（只读）。
+pub async fn volumes(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<ListQuery>,
+) -> Result<Response, ApiError> {
+    let available = state.docker().available();
+    let rows = if available {
+        state
+            .docker()
+            .list_volumes()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|v| {
+                let name = v.name.clone();
+                (
+                    name.clone(),
+                    ResourceItem {
+                        id: name.clone(),
+                        name,
+                        meta: format!("{} → {}", v.driver, v.mountpoint),
+                        warn: if v.host_binding {
+                            "宿主绑定语义".to_string()
+                        } else {
+                            String::new()
+                        },
+                    },
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
+    let mut resp = Json(json!({
+        "data": {
+            "items": items,
+            "total": total,
+            "next_cursor": next_cursor,
+            "docker_available": available,
+            "docker_reason": state.docker_unavailable_reason(),
+            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
         }
     }))
     .into_response();

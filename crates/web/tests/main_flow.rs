@@ -1283,7 +1283,11 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
         "异常筛选深链必须可解释且可恢复: {filtered_html}"
     );
     // Docker 不可达时，镜像/网络/卷入口都要给出同一个恢复出口，而不是裸错误。
-    for path in ["/p/images", "/p/networks", "/p/volumes"] {
+    for path in [
+        "/p/m/core/docker/images",
+        "/p/m/core/docker/networks",
+        "/p/m/core/docker/volumes",
+    ] {
         let resp = h
             .app
             .clone()
@@ -7856,6 +7860,57 @@ async fn ui_containers_keep_auth_csrf_and_docker_unavailable_semantics() {
     let body = body_text(resp).await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+}
+
+/// 镜像/网络/卷只读接口：未认证 401；无 Docker 时 200 空态并给出原因与能力位。
+#[tokio::test]
+async fn ui_resource_lists_keep_auth_and_docker_unavailable_semantics() {
+    let h = harness();
+    for uri in ["/ui/v1/images", "/ui/v1/networks", "/ui/v1/volumes"] {
+        let (status, _, body) = get_ui(&h.app, uri, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], "auth.unauthenticated", "{uri}");
+    }
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    for uri in ["/ui/v1/images", "/ui/v1/networks", "/ui/v1/volumes"] {
+        let (status, _, body) = get_ui(&h.app, uri, Some(&admin), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let data = &v["data"];
+        assert!(data["items"].as_array().unwrap().is_empty(), "{uri}");
+        assert_eq!(data["total"], 0, "{uri}");
+        assert_eq!(data["docker_available"], false, "{uri}");
+        assert!(data["docker_reason"].is_string(), "{uri}");
+        assert!(data["can_admin"].is_boolean(), "{uri}");
+    }
+}
+
+/// 镜像/网络/卷规范页交付壳页；旧 SSR 仍在 `/m/core/docker/*`。
+#[tokio::test]
+async fn resource_canonical_paths_serve_shell() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    for uri in ["/p/images", "/p/networks", "/p/volumes"] {
+        let (status, html) = get_html(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-root""#),
+            "{uri} 应为壳页: {html}"
+        );
+    }
+    for uri in [
+        "/p/m/core/docker/images",
+        "/p/m/core/docker/networks",
+        "/p/m/core/docker/volumes",
+    ] {
+        let (status, html) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-main-nav""#),
+            "{uri} 旧 SSR 必须保留: {html}"
+        );
+    }
 }
 
 /// 容器规范页交付壳页；旧 SSR 仍在 `/m/core/docker/containers`。

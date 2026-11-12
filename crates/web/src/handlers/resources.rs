@@ -161,7 +161,7 @@ fn network_page(
     })
 }
 
-fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView {
+pub(crate) fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView {
     use crate::templates::{NetworkContainerView, NetworkRowView};
 
     let builtin = n.builtin();

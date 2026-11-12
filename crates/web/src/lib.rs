@@ -178,6 +178,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/sites", get(handlers::ui_api::sites))
         .route("/ui/v1/sites/{domain}", get(handlers::ui_api::site_detail))
         .route("/ui/v1/runtimes", get(handlers::ui_api::runtimes))
+        .route("/ui/v1/images", get(handlers::ui_api::images))
+        .route("/ui/v1/networks", get(handlers::ui_api::networks))
+        .route("/ui/v1/volumes", get(handlers::ui_api::volumes))
         .route("/ui/v1/containers", get(handlers::ui_api::containers))
         .route(
             "/ui/v1/containers/{id}",
@@ -233,7 +236,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/containers/{{id}}/exec/ticket"),
             post(handlers::containers::exec_ticket),
         )
-        .route(&format!("/{p}/images"), get(handlers::resources::images))
+        // 镜像/网络/卷列表已迁 budding（旧 SSR 在 `/{p}/m/core/docker/*`）。
         .route(
             &format!("/{p}/images/pull"),
             post(handlers::resources::pull_image),
@@ -247,10 +250,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::resources::remove_image),
         )
         .route(
-            &format!("/{p}/networks"),
-            get(handlers::resources::networks),
-        )
-        .route(
             &format!("/{p}/networks/create"),
             post(handlers::resources::create_network),
         )
@@ -262,7 +261,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/networks/{{id}}/remove"),
             post(handlers::resources::remove_network),
         )
-        .route(&format!("/{p}/volumes"), get(handlers::resources::volumes))
         .route(
             &format!("/{p}/volumes/create"),
             post(handlers::resources::create_volume),

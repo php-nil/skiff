@@ -565,6 +565,54 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
 - **D10 翻页限制**同 5.8：本批只取首页 50 条，`next_cursor` 非空时提示，翻页组件待接入。
 
+### 5.10 镜像 / 网络 / 卷（第三批，只读）
+
+- `GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/{images|networks|volumes}`。
+- 复用 `list_images` / `list_networks` / `list_volumes` 与旧页面的 `ResourceRow` / `NetworkRowView` 展示模型，不新增 SQL。
+- 本批只读：拉取/删除镜像、创建/删除网络与卷仍走旧版页面；壳页给出回退链接与说明，待写操作批次迁移。
+
+**字段表（冻结，只增不改）**
+
+三个列表统一信封：`{ "data": { items, total, next_cursor, docker_available, docker_reason, can_admin } }`；`next_cursor` 为上一页末项 `id`（D10）。
+
+`GET /ui/v1/images` 的 `items[]`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 镜像完整 id（sha256） |
+| `name` | string | 标签列表（逗号连接）；无标签为 `<none> (短id)` |
+| `meta` | string | 人类可读大小（与旧页面同一 `human_size`） |
+| `warn` | string | 旧页面预留提示位，当前为空串 |
+
+`GET /ui/v1/networks` 的 `items[]`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` / `name` | string | 网络 id 与名称 |
+| `driver` / `scope` | string | 驱动与作用域 |
+| `ipam_driver` / `subnet` / `gateway` | string | 原样文案，未知显式「未知」/「—」 |
+| `internal` / `attachable` | string | 「内部/外部」「可附加/不可附加/未知」 |
+| `container_count` | string | 「N 个」或「未知」 |
+| `containers_known` | bool | Docker 是否返回了容器列表 |
+| `containers[]` | object[] | `name` / `ipv4` / `ipv6` / `mac` |
+| `builtin` | bool | Docker 预定义网络 |
+| `can_remove` | bool | 当前网络是否允许删除 |
+
+`GET /ui/v1/volumes` 的 `items[]`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` / `name` | string | 卷名 |
+| `meta` | string | `driver → mountpoint` |
+| `warn` | string | 宿主绑定语义时为「宿主绑定语义」，否则空串 |
+
+错误与容器列表一致：未认证 `auth.unauthenticated`（401）、Docker 不可达时列表仍 200 但 `docker_available=false` 并给原因。
+
+**渲染映射**
+
+- 三个页面共用 `table`（本地 `items`、`pagination:false`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
+- Docker 不可用时顶部 warning `alert`；`next_cursor` 非空时提示翻页待接入；底部固定提示「写操作仍走旧版页面」并给 `/m/core/docker/*` 链接。
+
 ---
 
 ## 6. 能力缺口与建议
