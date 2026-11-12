@@ -404,7 +404,7 @@ fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::Cata
                 .collect()
         })
         .or(file.mirrors.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(default_catalog_mirrors);
     for mirror in &mirrors {
         // 允许 http：信任来自签名 + 摘要 + 单调 seq，不来自传输层（§9 第 8 项）。
         // 这里只拦非法协议，避免把 ftp/file 之类的地址带进拉取链路。
@@ -450,6 +450,13 @@ fn build_catalog_settings(file: &CatalogFile) -> Result<skiff_app::catalog::Cata
         timeout: std::time::Duration::from_secs(timeout.min(120)),
         extra_roots,
     })
+}
+
+/// 一期默认镜像：本机内网静态源。协议放宽到 HTTP，信任由签名 + `seq` 保证（§15.5）。
+const DEFAULT_CATALOG_MIRROR: &str = "http://10.66.52.7:8080";
+
+fn default_catalog_mirrors() -> Vec<String> {
+    vec![DEFAULT_CATALOG_MIRROR.to_string()]
 }
 
 fn is_http_url(url: &str) -> bool {
@@ -681,9 +688,10 @@ mod tests {
         let c = Config::load(None, true).unwrap();
         assert!(!c.catalog.enabled, "商店目录必须默认关闭");
         assert_eq!(c.catalog.channel, "stable");
-        assert!(
-            c.catalog.mirrors.is_empty(),
-            "默认镜像地址待连通性确认后写入"
+        assert_eq!(
+            c.catalog.mirrors,
+            vec!["http://10.66.52.7:8080"],
+            "默认镜像是一期内网 HTTP 源"
         );
         assert!(!c.catalog.allow_unsigned);
 
