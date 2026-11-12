@@ -445,6 +445,76 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 ---
 
+### 5.8 站点与运行环境（第一批，只读）
+
+**页面与数据**
+
+- `GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/sites/list[/{domain}]`、`GET /{p}/m/core/sites/env[/{id}]`，写操作仍走旧表单。
+- 列表复用 `list_sites` / `list_runtimes` / `runtime_views` 与页面 `site_view` / `runtime_row` 展示模型，**没有新增 SQL**；`q` 关键字过滤与旧列表页同源（域名 / 目录 / 接入方式 / 别名）。
+- `GET /ui/v1/runtimes` 与旧运行环境页同权限：`require_admin`，viewer 返回 403（`auth.forbidden`）。
+- 本批只读：创建/启停/删除/配置/扩展等写操作未迁移，页面用链接指回旧 SSR 落点。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/sites?limit=50&cursor=&q=` → `{ "data": { "items": [...], "total": n, "next_cursor": "..."|null } }`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `items[].domain` | string | 主域名 |
+| `items[].root_dir` | string | 站点目录（整站备份单元） |
+| `items[].index_dir` | string | 文档根（文件能力授权根） |
+| `items[].site_type` | string | `runtime` / `static` / `proxy` |
+| `items[].type_label` | string | 中文类型文案 |
+| `items[].runtime_id` / `runtime_label` / `runtime_name` | string | 仅 runtime；记录缺失时为空串 |
+| `items[].runtime_shared_hint` | string | 共享环境提示，无提示为空串 |
+| `items[].proxy_target` / `proxy_websocket` | string / bool | 仅 proxy |
+| `items[].endpoint` | string | 列表「接入方式」列 |
+| `items[].status` | `{code,label}` | D8；code 为 `running` / `stopped` / `error` 等 |
+| `items[].https` | `{enabled,force_https,label,class}` | 证书/HTTPS 徽标 |
+| `items[].is_default` | bool | 默认站点 |
+| `items[].aliases` | string[] | 附加域名 |
+| `items[].created_at` | string | RFC3339 UTC 单字段（D9） |
+| `total` | number | 过滤后的总数 |
+| `next_cursor` | string \| null | 站点游标 `created_at:id`（键集分页，D10）；末页为 null |
+
+`GET /ui/v1/sites/{domain}` → `{ "data": ... }`：上面全部列表字段 + 下列字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `ssl` | object | `enabled` / `force_https` / `cert_exists` / `cert_path` / `key_path` / `subject` / `issuer` / `expires` |
+| `runtime` | object \| null | 绑定运行环境快照：`id` / `name` / `kind{code,label}` / `version` / `state{code,label}` / `site_count` |
+| `runtime_down` | bool | 绑定环境未运行或 socket 缺失 |
+| `runtime_alert` | string | 不可用时的中文原因，正常为空串 |
+
+`GET /ui/v1/runtimes?limit=50&cursor=&q=` → 同上信封：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `items[].id` / `name` / `container_name` | string | 实例标识与容器名 |
+| `items[].kind` | `{code,label}` | `php` / `node` / `go` / `rust` 及中文 |
+| `items[].version` / `version_display` / `version_note` / `image` | string | 目标版本、展示版本、说明与镜像 |
+| `items[].state` | `{code,label}` | 实时状态；`code` 为 `running` / `stopped` / `missing` / `error` 等 |
+| `items[].state_class` | string | `ok` / `warn` / `danger` / `muted` |
+| `items[].drift` | bool | 期望运行但容器未运行 |
+| `items[].site_count` | number | 绑定站点数 |
+| `items[].container_state` | string | 底层容器实测状态 |
+| `items[].endpoint_short` / `endpoint_full` | string | 列表短标识 / 完整接入方式 |
+| `items[].implemented` / `is_default` | bool | 类型已接入 / 默认版本 |
+| `items[].created_at` / `updated_at` | string | RFC3339 UTC（D9） |
+| `items[].job` | object \| null | `state` / `label` / `step` / `progress` / `error` / `active` / `failed` / `started_at` / `updated_at` |
+| `next_cursor` | string \| null | 运行环境游标为上一页末项 `id`（D10） |
+
+错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、viewer 读运行环境 `auth.forbidden`（403）、站点不存在 `not_found`（404）、数据库不可用 `dependency.unavailable`（503）。
+
+**渲染映射**
+
+- 站点列表：`table`（本地 `items`、`pagination:false`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{domain}`。
+- 站点详情：运行环境不可用时顶部 warning `alert`；「站点信息」「证书」两张 `card`；末尾链接到旧版详情处理配置/域名/SSL/目录。
+- 运行环境列表：`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；安装与配置仍链回旧版页面。
+- **D10 翻页限制**：budding `table` 的远程分页发送 `page/perPage`，与内核 keyset 游标不一致；本批只取首页 50 条并在 `next_cursor` 非空时显示提示。翻页组件接入前不做假装分页，记录为待办。
+
+---
+
 ## 6. 能力缺口与建议
 
 判定列：**我方适配** = 只用现有能力即可；**需上游改动** = 必须框架侧补，本仓库不得修改 budding；**需负责人决策** = 有替代路径，但取舍明显。

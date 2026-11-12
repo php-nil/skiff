@@ -161,8 +161,256 @@
     });
   }
 
-  function isRootPath() {
-    return location.pathname === prefix || location.pathname === prefix + '/';
+  /// 把当前地址拆成入口前缀之后的路径段（已解码）。
+  function routeParts() {
+    var path = location.pathname;
+    if (path === prefix || path === prefix + '/') return [];
+    if (path.indexOf(prefix + '/') !== 0) return ['__outside'];
+    return path
+      .slice(prefix.length + 1)
+      .split('/')
+      .filter(function (s) {
+        return s !== '';
+      })
+      .map(function (s) {
+        try {
+          return decodeURIComponent(s);
+        } catch (e) {
+          return s;
+        }
+      });
+  }
+
+  function listQuery(extra) {
+    var query = '?limit=50';
+    return extra ? query + '&' + extra : query;
+  }
+
+  function noticeCard(notice) {
+    return {
+      type: 'alert',
+      props: { type: 'info', text: notice }
+    };
+  }
+
+  function statusTable(columns, items, rowKey) {
+    return {
+      type: 'table',
+      props: {
+        items: items,
+        columns: columns,
+        rowKey: rowKey,
+        pagination: false,
+        density: 'compact',
+        emptyText: '暂无数据'
+      }
+    };
+  }
+
+  // 站点列表：列取接口字段，行点击进入 budding 详情。
+  function sitesSchema(data) {
+    var body = [];
+    if (data.next_cursor) {
+      body.push(
+        noticeCard(
+          '共 ' +
+            data.total +
+            ' 个站点，当前显示前 ' +
+            data.items.length +
+            ' 条；翻页交互待后续批次接入。'
+        )
+      );
+    }
+    var table = statusTable(
+      [
+        { key: 'domain', label: '域名' },
+        { key: 'type_label', label: '类型' },
+        { key: 'endpoint', label: '接入' },
+        { key: 'status', label: '状态', text: '${status.label}' },
+        { key: 'https', label: 'HTTPS', text: '${https.label}' },
+        { key: 'runtime_name', label: '运行环境' },
+        { key: 'created_at', label: '创建时间', width: 180 }
+      ],
+      data.items,
+      'domain'
+    );
+    table.onEvent = {
+      rowClick: {
+        actions: [
+          {
+            type: 'navigate',
+            props: { url: prefix + '/sites/${domain}' }
+          }
+        ]
+      }
+    };
+    body.push(table);
+    body.push({
+      type: 'link',
+      props: {
+        text: '新建站点（旧版表单，待迁移）',
+        href: prefix + '/m/core/sites/list?new=1'
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: '网站 · Skiff', subtitle: '只读列表；写操作仍走旧版页面' },
+      body: body
+    };
+  }
+
+  function siteDetailSchema(data) {
+    var rows = [
+      ['类型', data.type_label],
+      ['状态', data.status.label],
+      ['HTTPS', data.https.label],
+      ['接入方式', data.endpoint || '—'],
+      ['运行环境', data.runtime_label || '—'],
+      ['站点目录', data.root_dir],
+      ['文档根', data.index_dir],
+      ['附加域名', data.aliases && data.aliases.length ? data.aliases.join('、') : '—'],
+      ['创建时间', data.created_at]
+    ];
+    if (data.runtime_shared_hint) rows.push(['共享提示', data.runtime_shared_hint]);
+    var body = [];
+    if (data.runtime_down && data.runtime_alert) {
+      body.push({
+        type: 'alert',
+        props: { type: 'warning', title: '运行环境不可用', text: data.runtime_alert }
+      });
+    }
+    body.push({
+      type: 'card',
+      props: { title: '站点信息' },
+      content: { body: rows.map(function (row) {
+        return {
+          type: 'flex',
+          props: { gap: 12 },
+          content: {
+            body: [
+              { type: 'text', props: { text: row[0], weight: 'medium' } },
+              { type: 'text', props: { text: row[1] } }
+            ]
+          }
+        };
+      }) }
+    });
+    body.push({
+      type: 'card',
+      props: { title: '证书' },
+      content: {
+        body: [
+          textLine(data.ssl.cert_exists ? '已检测到证书文件' : '未检测到证书文件'),
+          textLine('证书路径：' + (data.ssl.cert_path || '—')),
+          textLine('主体：' + (data.ssl.subject || '—')),
+          textLine('签发者：' + (data.ssl.issuer || '—')),
+          textLine('到期：' + (data.ssl.expires || '—')),
+          {
+            type: 'alert',
+            props: {
+              type: 'info',
+              text: '配置、域名、SSL 与目录管理仍走旧版详情页，待写操作批次迁移。'
+            }
+          },
+          {
+            type: 'link',
+            props: {
+              text: '打开旧版详情（配置 / 域名 / SSL / 目录）',
+              href:
+                prefix +
+                '/m/core/sites/list/' +
+                encodeURIComponent(data.domain)
+            }
+          }
+        ]
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: data.domain + ' · 网站', subtitle: '只读概览' },
+      body: body
+    };
+  }
+
+  function runtimesSchema(data) {
+    var body = [];
+    if (data.next_cursor) {
+      body.push(
+        noticeCard(
+          '共 ' +
+            data.total +
+            ' 个运行环境，当前显示前 ' +
+            data.items.length +
+            ' 条；翻页交互待后续批次接入。'
+        )
+      );
+    }
+    body.push(
+      statusTable(
+        [
+          { key: 'kind', label: '类型', text: '${kind.label}' },
+          { key: 'name', label: '实例' },
+          { key: 'version_display', label: '版本' },
+          { key: 'version_note', label: '说明' },
+          { key: 'state', label: '状态', text: '${state.label}' },
+          { key: 'site_count', label: '站点数', type: 'number' },
+          { key: 'endpoint_short', label: '接入' }
+        ],
+        data.items,
+        'id'
+      )
+    );
+    body.push({
+      type: 'alert',
+      props: {
+        type: 'info',
+        text: '安装、配置、扩展与日志仍走旧版运行环境页，待写操作批次迁移。'
+      }
+    });
+    body.push({
+      type: 'link',
+      props: { text: '打开旧版运行环境管理', href: prefix + '/m/core/sites/env' }
+    });
+    return {
+      type: 'page',
+      props: { title: '运行环境 · Skiff', subtitle: '只读列表；安装状态来自实时容器探测' },
+      body: body
+    };
+  }
+
+  function embedWithError(schema) {
+    if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
+      showError('前端产物未加载（budding 脚本不可用）。');
+      return;
+    }
+    embed(schema);
+  }
+
+  function getJson(path, onOk) {
+    fetch(apiBase + path, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200 || !res.body || !res.body.data) {
+          var message =
+            res.body && res.body.error && res.body.error.message
+              ? res.body.error.message
+              : '服务返回状态 ' + res.status;
+          showError(message);
+          return;
+        }
+        onOk(res.body.data);
+      })
+      .catch(function (error) {
+        showError('无法连接服务：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
   fetch(apiBase + '/session', {
@@ -193,34 +441,32 @@
         showError('前端产物未加载（budding 脚本不可用）。');
         return;
       }
-      if (!isRootPath()) {
-        embed(placeholderSchema(session));
+      var parts = routeParts();
+      if (parts.length === 0) {
+        getJson('/overview', function (data) {
+          embedWithError(overviewSchema(data));
+        });
         return;
       }
-      fetch(apiBase + '/overview', {
-        method: 'GET',
-        credentials: 'same-origin',
-        headers: { Accept: 'application/json' }
-      })
-        .then(function (resp) {
-          return readJson(resp).then(function (body) {
-            return { status: resp.status, body: body };
-          });
-        })
-        .then(function (res) {
-          if (res.status !== 200 || !res.body || !res.body.data) {
-            var message =
-              res.body && res.body.error && res.body.error.message
-                ? res.body.error.message
-                : '服务返回状态 ' + res.status;
-            showError(message);
-            return;
-          }
-          embed(overviewSchema(res.body.data));
-        })
-        .catch(function (error) {
-          showError('无法连接服务：' + (error && error.message ? error.message : String(error)));
+      if (parts[0] === 'sites' && parts.length === 1) {
+        getJson('/sites' + listQuery(), function (data) {
+          embedWithError(sitesSchema(data));
         });
+        return;
+      }
+      if (parts[0] === 'sites' && parts.length === 2) {
+        getJson('/sites/' + encodeURIComponent(parts[1]), function (data) {
+          embedWithError(siteDetailSchema(data));
+        });
+        return;
+      }
+      if (parts[0] === 'runtimes' && parts.length === 1) {
+        getJson('/runtimes' + listQuery(), function (data) {
+          embedWithError(runtimesSchema(data));
+        });
+        return;
+      }
+      embed(placeholderSchema(session));
     })
     .catch(function (error) {
       showError('无法连接服务：' + (error && error.message ? error.message : String(error)));

@@ -175,6 +175,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/ui/v1/session", get(handlers::ui_api::session))
         .route("/ui/v1/overview", get(handlers::ui_api::overview))
+        .route("/ui/v1/sites", get(handlers::ui_api::sites))
+        .route("/ui/v1/sites/{domain}", get(handlers::ui_api::site_detail))
+        .route("/ui/v1/runtimes", get(handlers::ui_api::runtimes))
         .route("/ui/v1/session/logout", post(handlers::ui_api::logout));
 
     let ui = Router::new()
@@ -372,7 +375,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         // ---- 内核「文件管理」路由在 `files` 分组统一登记并挂形态门禁 ----
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
-        .route(&format!("/{p}/sites"), get(handlers::sites::list))
+        // 列表与详情已迁 budding（壳页回落，旧 SSR 留在 `/{p}/m/core/sites/*`）；
+        // 写操作路由本批保持原样，等前端表单覆盖后再逐步切换。
         .route(
             &format!("/{p}/sites/new"),
             get(handlers::sites::new_page_get),
@@ -479,7 +483,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/env/{{id}}/action/{{action}}"),
             post(handlers::sites::runtime_action),
         )
-        .route(&format!("/{p}/runtimes"), get(handlers::sites::env_page))
         // 静态段必须早于 `{id}` 动态段注册，避免把 `create` / `images` / `jobs` 当成运行环境 id。
         .route(
             &format!("/{p}/runtimes/create"),
@@ -497,10 +500,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/runtimes/jobs"),
             get(handlers::sites::runtime_jobs),
-        )
-        .route(
-            &format!("/{p}/runtimes/{{id}}"),
-            get(handlers::sites::runtime_detail),
         )
         .route(
             &format!("/{p}/runtimes/{{id}}/config"),
@@ -557,10 +556,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/runtimes/{{id}}/extensions"),
             post(handlers::sites::runtime_extensions_save),
-        )
-        .route(
-            &format!("/{p}/sites/{{domain}}"),
-            get(handlers::sites::detail),
         )
         .route(
             &format!("/{p}/sites/{{domain}}/logs"),

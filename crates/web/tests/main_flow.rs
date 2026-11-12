@@ -460,6 +460,24 @@ async fn get_page(app: &Router, uri: &str, token: &str) -> (StatusCode, String) 
     (status, body_text(resp).await)
 }
 
+/// 带 `Accept: text/html` 的页面导航请求：壳页回落只对浏览器导航生效。
+async fn get_html(app: &Router, uri: &str, token: &str) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, body_text(resp).await)
+}
+
 #[tokio::test]
 async fn login_session_and_dashboard() {
     let h = harness();
@@ -3726,7 +3744,7 @@ async fn sites_list_shows_default_badge_and_toggle() {
         .unwrap();
     h.state.db().set_site_default("demo.local", true).unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("demo.local"), "{html}");
     assert!(html.contains("默认</span>"), "默认标记必须出现");
@@ -3739,7 +3757,7 @@ async fn sites_list_shows_default_badge_and_toggle() {
         "列表不得再有默认切换按钮: {html}"
     );
 
-    let (status, detail) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    let (status, detail) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         detail.contains("/p/sites/demo.local/default"),
@@ -3789,7 +3807,7 @@ async fn sites_list_merges_type_column_and_hides_empty_alias() {
         ))
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("类型 / 运行环境"),
@@ -3819,7 +3837,7 @@ async fn sites_list_merges_type_column_and_hides_empty_alias() {
         !html.contains("row-menu") && !html.contains("更多操作"),
         "行内「⋯ 更多」菜单必须移除: {html}"
     );
-    let (_, detail) = get_page(&h.app, "/p/sites/plain.local", &admin).await;
+    let (_, detail) = get_page(&h.app, "/p/m/core/sites/list/plain.local", &admin).await;
     assert!(
         detail.contains("设为默认站点") || detail.contains("取消默认站点"),
         "默认站点切换必须落到详情页: {detail}"
@@ -3890,7 +3908,7 @@ async fn sites_list_cert_column_matches_ssl_files() {
         .set_site_tls("demo.local", true, false)
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("已启用 HTTPS"),
@@ -3902,7 +3920,7 @@ async fn sites_list_cert_column_matches_ssl_files() {
         .db()
         .set_site_tls("demo.local", false, false)
         .unwrap();
-    let (_, html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (_, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     assert!(
         html.contains("证书已上传"),
         "证书文件存在但未启用时应显示已上传: {html}"
@@ -4752,7 +4770,7 @@ async fn sites_new_dialog_defaults_and_validation() {
         "必填字段必须有可见的必填标识"
     );
 
-    let (status, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("data-site-dialog"),
@@ -4884,7 +4902,7 @@ async fn sites_new_dialog_defaults_and_validation() {
 async fn sites_create_rejects_duplicate_aliases() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (_, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    let (_, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
     let csrf = csrf_from(&html);
 
     let resp = h
@@ -4915,7 +4933,7 @@ async fn sites_create_rejects_duplicate_aliases() {
     );
 
     // 别名等于主域名同样拒绝。
-    let (_, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    let (_, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
     let csrf = csrf_from(&html);
     let resp = h
         .app
@@ -4959,7 +4977,8 @@ async fn site_domains_tab_manages_aliases() {
         .add_site_aliases("dom.local", &["www.dom.local".to_string()])
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites/dom.local?tab=domains", &admin).await;
+    let (status, html) =
+        get_page(&h.app, "/p/m/core/sites/list/dom.local?tab=domains", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("主域名"), "{html}");
     assert!(html.contains("www.dom.local"), "{html}");
@@ -5002,7 +5021,8 @@ async fn site_domains_tab_manages_aliases() {
         !loc.contains("error=") && !loc.contains("notice="),
         "结果不得走 query: {loc}"
     );
-    let (_, page) = get_page(&h.app, &loc, &admin).await;
+    let m_loc = loc.replace("/p/sites/", "/p/m/core/sites/list/");
+    let (_, page) = get_page(&h.app, &m_loc, &admin).await;
     assert!(page.contains("主域名不能作为别名删除"), "{page}");
 }
 
@@ -5013,12 +5033,12 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
 
-    for uri in ["/p/runtimes", "/p/runtimes/php-8.5"] {
+    for uri in ["/p/m/core/sites/env", "/p/m/core/sites/env/php-8.5"] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains("PHP"), "{uri} 必须展示运行环境类型: {html}");
     }
-    let (status, html) = get_page(&h.app, "/p/runtimes/php-8.5", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("PHP 配置"), "{html}");
     assert!(html.contains("socket"), "{html}");
@@ -5033,10 +5053,29 @@ async fn runtime_pages_are_admin_only_and_render_business_view() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("PHP 配置"), "{html}");
 
+    // 规范页已迁 budding 壳页：viewer 能打开壳页，但 JSON 列表接口与写操作必须 403。
     for uri in ["/p/runtimes", "/p/runtimes/php-8.5"] {
-        let (status, _) = get_page(&h.app, uri, &viewer).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
+        let (status, _) = get_html(&h.app, uri, &viewer).await;
+        assert_eq!(status, StatusCode::OK, "{uri} 壳页对登录用户可见");
     }
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ui/v1/runtimes")
+                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "viewer 不得读取运行环境列表"
+    );
 
     // viewer 的写操作同样 403，且不产生副作用。
     let resp = h
@@ -5077,7 +5116,7 @@ async fn runtime_detail_hides_php_blocks_for_non_php_instances() {
         })
         .unwrap();
 
-    for uri in ["/p/runtimes/rust-1.83"] {
+    for uri in ["/p/m/core/sites/env/rust-1.83"] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(
@@ -5096,7 +5135,7 @@ async fn runtime_detail_hides_php_blocks_for_non_php_instances() {
     }
 
     // 同一页面在 PHP 实例上仍完整保留扩展与 PHP 配置。
-    let (_, php_html) = get_page(&h.app, "/p/runtimes/php-8.5", &admin).await;
+    let (_, php_html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
     assert!(
         php_html.contains(r#"data-runtime-tab="extensions""#) && php_html.contains("php.ini"),
         "PHP 实例必须保留扩展页签与 php.ini 查看入口: {php_html}"
@@ -5123,7 +5162,7 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
             is_default: false,
         })
         .unwrap();
-    let (status, html) = get_page(&h.app, "/p/runtimes", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
     assert_eq!(status, StatusCode::OK);
 
     for gone in [
@@ -5275,9 +5314,13 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    // 旧入口与页面都不再存在。
-    let (status, _) = get_page(&h.app, "/p/sites/settings", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "站点设置页必须已移除");
+    // 旧入口不再渲染站点设置页；`/sites` 前缀命中壳页白名单，回落为 budding 占位。
+    let (status, html) = get_html(&h.app, "/p/sites/settings", &admin).await;
+    assert_eq!(status, StatusCode::OK, "白名单深链应回落壳页");
+    assert!(
+        !html.contains("镜像加速源") && !html.contains(r#"name="registry_mirror""#),
+        "站点设置页必须已移除，不得借壳页回退: {html}"
+    );
 
     // 新 Docker 设置页：镜像加速源 + 镜像前缀；菜单深链同源。
     for uri in ["/p/settings/docker", "/p/m/core/docker/settings"] {
@@ -5292,7 +5335,7 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
     }
 
     // 运行环境页接管镜像标签，不再出现加速源/前缀字段。
-    let (status, env_html) = get_page(&h.app, "/p/runtimes", &admin).await;
+    let (status, env_html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         env_html.contains(r#"name="nginx_image""#)
@@ -5386,7 +5429,7 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
 async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (_, html) = get_page(&h.app, "/p/runtimes", &admin).await;
+    let (_, html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
     let csrf = csrf_from(&html);
 
     for (name, version) in [("PHP-8.5", "8.5"), ("-php", "8.5"), ("php-8.5-a", "")] {
@@ -5477,7 +5520,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .unwrap()
         .to_string();
     assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    let (_, page) = get_page(&h.app, "/p/runtimes", &admin).await;
+    let (_, page) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
     assert!(page.contains("已存在"), "重名原因应经 flash 回显: {page}");
 
     // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
@@ -5509,7 +5552,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .unwrap()
         .to_string();
     assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    let (_, page) = get_page(&h.app, "/p/runtimes", &admin).await;
+    let (_, page) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
     assert!(
         page.contains("已存在"),
         "目录冲突原因应经 flash 回显: {page}"
@@ -5529,7 +5572,7 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
 async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/runtimes/php-8.5", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
     assert_eq!(status, StatusCode::OK, "抽屉内容页应 200");
     assert!(
         html.contains("data-runtime-tabs") && html.contains(r#"data-runtime-tab="extensions""#),
@@ -5641,7 +5684,7 @@ async fn site_detail_warns_when_bound_runtime_stopped() {
         .set_runtime_status("php-8.5", "running", "stopped")
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("data-runtime-down"), "{html}");
     assert!(
@@ -5665,14 +5708,14 @@ async fn runtime_sites_show_unknown_instead_of_running_when_docker_unavailable()
         .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
 
-    let (status, list_html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (status, list_html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         list_html.contains("状态未知（Docker 不可用）"),
         "站点列表必须把 Docker 不可达标成未知，而不是运行中: {list_html}"
     );
 
-    let (status, detail_html) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    let (status, detail_html) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         detail_html.contains("状态未知（Docker 不可用）"),
@@ -5683,7 +5726,7 @@ async fn runtime_sites_show_unknown_instead_of_running_when_docker_unavailable()
         "Docker 未知时也要给出不可用告警: {detail_html}"
     );
 
-    let (status, env_html) = get_page(&h.app, "/p/runtimes", &admin).await;
+    let (status, env_html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         env_html.contains("状态未知"),
@@ -5904,7 +5947,7 @@ async fn three_site_types_are_rendered_in_list() {
         ))
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("类型 / 运行环境"),
@@ -5924,7 +5967,7 @@ async fn three_site_types_are_rendered_in_list() {
         "反代必须展示上游与 WS 标记: {html}"
     );
 
-    let (status, html) = get_page(&h.app, "/p/sites/proxy.local", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list/proxy.local", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("上游地址"), "{html}");
     assert!(!html.contains("?tab=dir"), "反代详情不应有目录标签: {html}");
@@ -6009,7 +6052,7 @@ async fn stopped_site_config_save_validation_failure_does_not_persist() {
     let original = "server { listen 80; server_name demo.local; }";
     std::fs::write(&disabled, original).unwrap();
 
-    let (_, sites_html) = get_page(&h.app, "/p/sites", &admin).await;
+    let (_, sites_html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
     let csrf = csrf_from(&sites_html);
     let resp = h
         .app
@@ -6082,7 +6125,7 @@ async fn site_new_dialog_excludes_unready_runtimes() {
         })
         .unwrap();
 
-    let (status, html) = get_page(&h.app, "/p/sites?new=1", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         !html.contains("Rust 1.83") && !html.contains("PHP 8.5"),
@@ -6155,11 +6198,17 @@ async fn site_detail_tabs_are_reachable() {
     .unwrap();
 
     for (uri, marker) in [
-        ("/p/sites/demo.local", "站点概览"),
-        ("/p/sites/demo.local?tab=domains", "别名"),
-        ("/p/sites/demo.local?tab=config", "保存并重载 nginx"),
-        ("/p/sites/demo.local?tab=dir", "文档根"),
-        ("/p/sites/demo.local?tab=ssl", "生成自签证书并启用"),
+        ("/p/m/core/sites/list/demo.local", "站点概览"),
+        ("/p/m/core/sites/list/demo.local?tab=domains", "别名"),
+        (
+            "/p/m/core/sites/list/demo.local?tab=config",
+            "保存并重载 nginx",
+        ),
+        ("/p/m/core/sites/list/demo.local?tab=dir", "文档根"),
+        (
+            "/p/m/core/sites/list/demo.local?tab=ssl",
+            "生成自签证书并启用",
+        ),
     ] {
         let (status, html) = get_page(&h.app, uri, &admin).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
@@ -6179,7 +6228,7 @@ async fn site_detail_risk_actions_only_in_manage_tab() {
         .create_site(&php_site("demo.local", &root.display().to_string()))
         .unwrap();
 
-    let (status, overview) = get_page(&h.app, "/p/sites/demo.local", &admin).await;
+    let (status, overview) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
     assert_eq!(status, StatusCode::OK);
     // 顶部操作区 = page-head 内 actions 容器内的内容。
     let head = overview
@@ -6201,7 +6250,8 @@ async fn site_detail_risk_actions_only_in_manage_tab() {
         "日志/访问仍应留在顶部：{head}"
     );
 
-    let (status, manage) = get_page(&h.app, "/p/sites/demo.local?tab=manage", &admin).await;
+    let (status, manage) =
+        get_page(&h.app, "/p/m/core/sites/list/demo.local?tab=manage", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         manage.contains("/sites/demo.local/stop"),
@@ -6232,7 +6282,7 @@ async fn site_dir_traversal_returns_bad_request() {
         .unwrap();
 
     for path in ["../log", "../ssl", "../log/access.log"] {
-        let uri = format!("/p/sites/demo.local?tab=dir&path={path}");
+        let uri = format!("/p/m/core/sites/list/demo.local?tab=dir&path={path}");
         let (status, _) = get_page(&h.app, &uri, &admin).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path} 必须 400");
     }
@@ -7668,6 +7718,112 @@ requires_full_sandbox = false
     let collected = data["collected_at"].as_str().unwrap();
     assert!(collected.ends_with('Z'), "{collected}");
     assert!(chrono::DateTime::parse_from_rfc3339(collected).is_ok());
+}
+
+// ---- 站点 / 运行环境只读页（第一批）：JSON 列表 + keyset 游标 + 壳页回落 ----
+
+/// `/ui/v1/sites`、`/ui/v1/sites/{domain}`、`/ui/v1/runtimes` 的鉴权与冻结字段。
+/// 列表走 keyset 游标（D10）：`limit` 截断后返回 `next_cursor`，下一页从游标继续。
+#[tokio::test]
+async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
+    let h = harness();
+    for uri in ["/ui/v1/sites", "/ui/v1/sites/demo.local", "/ui/v1/runtimes"] {
+        let (status, _, body) = get_ui(&h.app, uri, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], "auth.unauthenticated", "{uri}");
+    }
+
+    for domain in ["a.local", "b.local", "c.local"] {
+        let root = h.data_dir.join(format!("www/sites/{domain}"));
+        std::fs::create_dir_all(&root).unwrap();
+        h.state
+            .db()
+            .create_site(&php_site(domain, &root.display().to_string()))
+            .unwrap();
+    }
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, content_type, body) =
+        get_ui(&h.app, "/ui/v1/sites?limit=2", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.starts_with("application/json"));
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["total"], 3);
+    assert_eq!(data["items"].as_array().unwrap().len(), 2);
+    let first = &data["items"][0];
+    assert_eq!(first["site_type"], "runtime");
+    assert_eq!(first["type_label"], "运行环境");
+    assert!(first["status"]["code"].is_string());
+    assert!(first["status"]["label"].is_string());
+    assert!(first["https"]["label"].is_string());
+    // D9：创建时间单字段 RFC3339 UTC。
+    let created = first["created_at"].as_str().unwrap();
+    assert!(created.ends_with('Z'), "{created}");
+    assert!(chrono::DateTime::parse_from_rfc3339(created).is_ok());
+    let cursor = data["next_cursor"].as_str().unwrap().to_string();
+
+    let second_uri = format!("/ui/v1/sites?limit=2&cursor={cursor}");
+    let (status, _, body) = get_ui(&h.app, &second_uri, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["items"].as_array().unwrap().len(), 1);
+    assert!(data["next_cursor"].is_null(), "最后一页不应再给游标");
+
+    // 详情：列表字段 + 证书 + 运行环境状态，均为只读。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites/a.local", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["domain"], "a.local");
+    assert!(data["ssl"].is_object());
+    assert!(data["runtime_alert"].is_string());
+    assert!(data["runtime_down"].is_boolean());
+
+    // 运行环境列表：管理员可读，字段含安装状态与任务快照。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert!(data["items"].is_array());
+    for item in data["items"].as_array().unwrap() {
+        assert!(item["kind"]["code"].is_string());
+        assert!(item["kind"]["label"].is_string());
+        assert!(item["state"]["code"].is_string());
+        assert!(item["state"]["label"].is_string());
+        let created = item["created_at"].as_str().unwrap();
+        assert!(created.ends_with('Z'), "{created}");
+    }
+}
+
+/// 站点/运行环境规范页交付壳页；旧 SSR 仍在 `/{p}/m/core/sites/*` 菜单深链。
+#[tokio::test]
+async fn sites_and_runtimes_canonical_paths_serve_shell() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    for uri in [
+        "/p/sites",
+        "/p/sites/a.local",
+        "/p/runtimes",
+        "/p/runtimes/php-8.5",
+    ] {
+        let (status, html) = get_html(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-root""#),
+            "{uri} 应为壳页: {html}"
+        );
+    }
+    for uri in ["/p/m/core/sites/list", "/p/m/core/sites/env"] {
+        let (status, html) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains(r#"id="skiff-main-nav""#),
+            "{uri} 应保留 SSR: {html}"
+        );
+    }
 }
 
 // ---- budding 产物入库：D11 缓存契约与壳页引用可解析 ----

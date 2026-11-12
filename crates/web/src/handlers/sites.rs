@@ -74,7 +74,7 @@ fn action_label(action: &str) -> &'static str {
     }
 }
 
-fn state_label(state: &str) -> &'static str {
+pub(crate) fn state_label(state: &str) -> &'static str {
     match state {
         "running" => "运行中",
         // Docker 的终止态统一说「已停止」，别再落到兜底的「未知」。
@@ -142,7 +142,7 @@ pub(crate) fn version_display(
     }
 }
 
-fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRow {
+pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRow {
     let prefix = &state.cfg.entry_prefix;
     let kind_label = skiff_app::runtime_catalog::kind_label(&v.runtime.kind);
     let endpoint_full = match v.runtime.kind.as_str() {
@@ -270,7 +270,7 @@ fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
     })
 }
 
-fn site_view(
+pub(crate) fn site_view(
     s: &Site,
     aliases: Vec<String>,
     cert_ready: bool,
