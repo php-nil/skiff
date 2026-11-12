@@ -203,7 +203,9 @@
       skiffComposeAction: composeAction,
       skiffSettingsSave: settingsSave,
       skiffStoreInstall: storeInstall,
-      skiffStoreConfirm: storeConfirm
+      skiffStoreConfirm: storeConfirm,
+      skiffPluginToggle: pluginToggle,
+      skiffPluginDelete: pluginDelete
     };
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
@@ -1197,6 +1199,293 @@
       });
   }
 
+  // 插件中心：列表（已安装 / 发现 / 可更新）与信息页（身份、授权、管理动作）。
+  function pluginActions(p, includeDelete) {
+    var actions = [
+      {
+        type: 'button',
+        props: { text: p.enabled ? '停用插件' : '启用插件', variant: 'tonal' },
+        onEvent: {
+          click: { actions: [{ type: 'skiffPluginToggle', props: { id: p.id } }] }
+        }
+      }
+    ];
+    if (includeDelete) {
+      actions.push({
+        type: 'button',
+        props: { text: '卸载（保留数据）', variant: 'tonal' },
+        onEvent: {
+          click: {
+            actions: [{ type: 'skiffPluginDelete', props: { id: p.id, delete_data: false } }]
+          }
+        }
+      });
+      actions.push({
+        type: 'button',
+        props: { text: '卸载并删除数据', color: 'danger' },
+        onEvent: {
+          click: {
+            actions: [{ type: 'skiffPluginDelete', props: { id: p.id, delete_data: true } }]
+          }
+        }
+      });
+    }
+    return actions;
+  }
+
+  function pluginCard(p, canAdmin, includeDelete) {
+    var lines = [
+      '标识：' + p.id + ' · 版本 ' + p.version + ' · API ' + p.api,
+      '状态：' + p.status.label + (p.running ? ' · 进程运行中' : ' · 进程未运行'),
+      '签名：' + (p.signed ? '已验签' : '未验签') + ' · 沙箱：' + (p.reduced ? '降权' : '完整'),
+      '宿主能力：' + (p.requires || '无'),
+      '动作权限：' + (p.permissions || '无'),
+      '对象授权：' + (p.grants || '无')
+    ];
+    if (p.takedown_note) lines.push('下游提示：' + p.takedown_note);
+    var body = [detailLines(p.name, lines)];
+    body.push({
+      type: 'link',
+      props: { text: '信息与管理页', href: prefix + '/plugins/' + encodeURIComponent(p.id) }
+    });
+    if (canAdmin) {
+      body.push({
+        type: 'flex',
+        props: { gap: 8 },
+        content: { body: pluginActions(p, includeDelete) }
+      });
+    }
+    return { type: 'card', props: { title: p.name }, content: { body: body } };
+  }
+
+  function pluginsSchema(data) {
+    var tab = new URLSearchParams(location.search).get('tab') || 'installed';
+    var body = [];
+    body.push({
+      type: 'flex',
+      props: { gap: 12 },
+      content: {
+        body: [
+          { type: 'link', props: { text: '已安装 (' + data.plugins.length + ')', href: prefix + '/plugins' } },
+          { type: 'link', props: { text: '发现', href: prefix + '/plugins?tab=discover' } },
+          { type: 'link', props: { text: '可更新', href: prefix + '/plugins?tab=updates' } }
+        ]
+      }
+    });
+    body.push(
+      noticeCard(
+        '已启用 ' +
+          data.enabled_count +
+          ' 个 · 已停用 ' +
+          data.disabled_count +
+          ' 个；启停与卸载只对管理员开放。'
+      )
+    );
+    if (tab === 'discover') {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'info',
+          title: '发现',
+          text: '内核尚未接入在线官方源；上传已验签 .wbpkg 与商店安装仍在旧版页面。'
+        }
+      });
+      body.push({
+        type: 'link',
+        props: { text: '打开旧版「发现」页上传安装包', href: prefix + '/m/core/plugins/discover' }
+      });
+      return {
+        type: 'page',
+        props: { title: '插件中心 · Skiff', subtitle: '发现' },
+        body: body
+      };
+    }
+    if (tab === 'updates') {
+      var downstream = data.plugins.filter(function (p) {
+        return p.takedown_note;
+      });
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'info',
+          title: '可更新',
+          text: '内核尚未接入更新检查源；下方只列出目录已撤回/下架的已装版本。'
+        }
+      });
+      downstream.forEach(function (p) {
+        body.push(pluginCard(p, false, false));
+      });
+      body.push({
+        type: 'link',
+        props: { text: '去旧版「发现」页重新上传升级', href: prefix + '/m/core/plugins/discover' }
+      });
+      return {
+        type: 'page',
+        props: { title: '插件中心 · Skiff', subtitle: '可更新' },
+        body: body
+      };
+    }
+    if (data.plugins.length === 0) {
+      body.push(noticeCard('还没有安装插件；到「发现」上传已验签的 .wbpkg。'));
+    } else {
+      data.plugins.forEach(function (p) {
+        body.push(pluginCard(p, data.can_admin, data.can_admin));
+      });
+    }
+    return {
+      type: 'page',
+      props: { title: '插件中心 · Skiff', subtitle: '安装、授权、启停与更新' },
+      body: body
+    };
+  }
+
+  function pluginInfoSchema(data) {
+    var p = data.plugin;
+    var body = [];
+    body.push(
+      detailLines('身份', [
+        '标识：' + p.id,
+        '名称：' + p.name + ' · 版本 ' + p.version + ' · API ' + p.api,
+        '状态：' + p.status.label + (p.running ? ' · 进程运行中' : ' · 进程未运行'),
+        '签名状态：' + (p.signed ? '已验签' : '未验签'),
+        '密钥指纹：' + (p.key_id || '未签名包'),
+        '沙箱模式：' + (p.reduced ? '降权沙箱' : '完整沙箱'),
+        '声明能力面：' + (p.requires || '无'),
+        '动作权限：' + (p.permissions || '无')
+      ])
+    );
+    if (p.takedown_note) {
+      body.push({ type: 'alert', props: { type: 'warning', text: p.takedown_note } });
+    }
+    body.push(
+      detailLines(
+        '对象授权',
+        data.grants.length
+          ? data.grants.map(function (g) {
+              return g.kind + ':' + g.value;
+            })
+          : ['无对象授权']
+      )
+    );
+    body.push(
+      detailLines(
+        '插件间接口',
+        ['提供：' + (data.interop_provides.length ? data.interop_provides.join('；') : '无')].concat([
+          '允许调用：' + (data.interop_consumes.length ? data.interop_consumes.join('；') : '无')
+        ])
+      )
+    );
+    if (data.menus.length === 0) {
+      body.push(noticeCard('该插件没有声明菜单或功能页。'));
+    } else {
+      data.menus.forEach(function (group) {
+        var links = [
+          {
+            type: 'link',
+            props: { text: group.label, href: group.href }
+          }
+        ];
+        group.children.forEach(function (child) {
+          links.push({
+            type: 'link',
+            props: { text: '　↳ ' + child.label, href: child.href }
+          });
+        });
+        body.push({ type: 'flex', props: { gap: 12 }, content: { body: links } });
+      });
+    }
+    if (data.entry_href) {
+      body.push({
+        type: 'link',
+        props: { text: '打开功能页（内核 iframe 槽位）', href: data.entry_href }
+      });
+    }
+    if (data.can_admin) {
+      body.push({
+        type: 'flex',
+        props: { gap: 8 },
+        content: { body: pluginActions(p, true) }
+      });
+    }
+    body.push({
+      type: 'link',
+      props: { text: '返回插件中心', href: prefix + '/plugins' }
+    });
+    body.push({
+      type: 'link',
+      props: { text: '打开旧版信息页', href: prefix + '/m/core/plugins/info/' + encodeURIComponent(p.id) }
+    });
+    return {
+      type: 'page',
+      props: { title: p.name + ' · 插件', subtitle: p.id },
+      body: body
+    };
+  }
+
+  function pluginToggle(args) {
+    var id = args.id;
+    return fetch(apiBase + '/plugins/' + encodeURIComponent(id) + '/toggle', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      }
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        window.alert(res.body.data.enabled ? '插件已启用' : '插件已停用');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function pluginDelete(args) {
+    var id = args.id;
+    var deleteData = args.delete_data === true;
+    var text = deleteData
+      ? '确认卸载 ' + id + ' 并删除其数据目录？此操作不可恢复。'
+      : '确认卸载 ' + id + '？数据目录会保留。';
+    if (!window.confirm(text)) return Promise.resolve();
+    return fetch(apiBase + '/plugins/' + encodeURIComponent(id) + '/delete', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify({ delete_data: deleteData })
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        location.assign(
+          (res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins'
+        );
+      })
+      .catch(function (error) {
+        window.alert('卸载失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   // 商店：目录只读快照 + 插件安装（下载验签后二次确认）。
   var pendingInstall = null;
 
@@ -1573,6 +1862,18 @@
         getJson('/jobs/' + encodeURIComponent(parts[1]), function (data) {
           embedWithError(jobDetailSchema(data));
         });
+        return;
+      }
+      if (parts[0] === 'plugins') {
+        if (parts.length > 1 && parts[1]) {
+          getJson('/plugins/' + encodeURIComponent(parts[1]), function (data) {
+            embedWithError(pluginInfoSchema(data));
+          });
+        } else {
+          getJson('/plugins', function (data) {
+            embedWithError(pluginsSchema(data));
+          });
+        }
         return;
       }
       if (parts[0] === 'store') {

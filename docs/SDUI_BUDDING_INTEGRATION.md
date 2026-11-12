@@ -760,6 +760,27 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 错误码：目录未启用 404 `lookup.not_found`；未配公钥 / 包校验或版本失败 400 `shape.invalid`；无 `PluginManage` 403 `auth.forbidden`；CSRF 失败 403 `auth.csrf_invalid`。
 
+### 5.16 插件（第九批）
+
+- `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表保留在 `/{p}/m/core/plugins/{installed|discover|updates}`，信息页新增深链 `/{p}/m/core/plugins/info/{id}`。
+- iframe 槽位按现状：`/{p}/plugins/{id}/{view}`、`/{p}/plugins/{id}/ui/{path}` 不动，信息页的 `entry_href` 直接指向内核既有视图路由，不自定形态。
+- 启停 / 卸载分别复用 `plugins::apply_toggle`、`plugins::apply_remove`（停进程、审计、任务回收、菜单偏好清理语义不变）。
+- 上传安装包（发现页）与 RPC 桥仍走旧链路，不在本批迁移。
+
+**字段表（冻结，只增不改）**
+
+`GET /ui/v1/plugins` → `{ "data": { plugins[], enabled_count, disabled_count, can_admin, allow_unsigned, reduced_allowed } }`
+
+`plugins[]`：`{id, name, version, api, status:{code,label}, enabled, key_id, signed, reduced, running, requires, permissions, grants, ui_path, takedown_note}`
+
+`GET /ui/v1/plugins/{id}` → `{ "data": { plugin, grants[{kind,value}], interop_provides[], interop_consumes[], menus[{label,href,icon,children[{label,href,icon}]}], entry_href, can_admin, allow_unsigned, reduced_allowed } }`
+
+`POST /ui/v1/plugins/{id}/toggle` → `{ "data": { id, enabled } }`
+
+`POST /ui/v1/plugins/{id}/delete` body `{delete_data?}` → `{ "data": { id, redirect_to } }`
+
+错误码：插件不存在 404 `lookup.not_found`；无 `PluginManage` 403 `auth.forbidden`；CSRF 失败 403 `auth.csrf_invalid`。
+
 ---
 
 ## 6. 能力缺口与建议

@@ -34,7 +34,7 @@ const PLUGIN_UI_CSP: &str =
      object-src 'none'; frame-ancestors 'self'";
 
 /// 一条插件记录 → 列表/详情通用的视图。
-fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppError> {
+pub(crate) fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppError> {
     let signed = !p.key_id.is_empty() && state.db().trusted_key(&p.key_id)?.is_some();
     let manifest = Manifest::parse(&p.manifest).ok();
     let reduced = manifest
@@ -88,7 +88,7 @@ fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppErro
     })
 }
 
-fn plugin_views(state: &AppState) -> Result<Vec<PluginView>, AppError> {
+pub(crate) fn plugin_views(state: &AppState) -> Result<Vec<PluginView>, AppError> {
     state
         .db()
         .list_plugins()?
@@ -633,6 +633,55 @@ pub async fn confirm(
     )))
 }
 
+/// 启停插件的共用实现：停用先停进程，再落库并审计；返回新状态。
+pub(crate) async fn apply_toggle(
+    state: &Arc<AppState>,
+    user: &crate::state::CurrentUser,
+    id: &str,
+    ip: &str,
+) -> Result<bool, AppError> {
+    let rec = state
+        .db()
+        .plugin(id)?
+        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
+    let enable = !rec.enabled;
+    if !enable {
+        state.supervisor().stop(id).await;
+    }
+    state
+        .set_plugin_enabled(id, enable, &user.user.username, ip)
+        .map_err(AppError::Internal)?;
+    Ok(enable)
+}
+
+/// 卸载插件的共用实现：停进程 → 删包/数据 → 回收任务与菜单偏好 → 审计。
+pub(crate) async fn apply_remove(
+    state: &Arc<AppState>,
+    user: &crate::state::CurrentUser,
+    id: &str,
+    delete_data: bool,
+    ip: &str,
+) -> Result<(), AppError> {
+    state.supervisor().stop(id).await;
+    skiff_plugin::uninstall_package(state.db(), &state.cfg.data_dir, id, delete_data)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // 卸载即回收该插件名下的内核任务；否则 source=plugin:<id> 的任务会指向不存在的插件。
+    if let Some(tasks) = state.tasks() {
+        tasks.drop_plugin_tasks(id).await;
+    }
+    // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
+    crate::menu::cleanup_plugin_prefs(state.db(), id);
+    state.audit_or_log(
+        &user.user.username,
+        ip,
+        "plugin.uninstall",
+        id,
+        "ok",
+        &format!("delete_data={delete_data}"),
+    );
+    Ok(())
+}
+
 pub async fn toggle(
     State(state): State<Arc<AppState>>,
     PluginManagerUser(user): PluginManagerUser,
@@ -642,18 +691,8 @@ pub async fn toggle(
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let rec = state
-        .db()
-        .plugin(&id)?
-        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
-    let enable = !rec.enabled;
-    if !enable {
-        state.supervisor().stop(&id).await;
-    }
     let ip = handlers::client_ip(&state, &parts);
-    state
-        .set_plugin_enabled(&id, enable, &user.user.username, &ip)
-        .map_err(AppError::Internal)?;
+    apply_toggle(&state, &user, &id, &ip).await?;
     // 信息页内操作回信息页；插件中心内操作仍回列表（`next` 只接受本站前缀）。
     Ok(handlers::redirect(
         safe_plugin_next(&state, form_first(&form, "next"))
@@ -680,23 +719,8 @@ pub async fn remove(
     let form = parse_form(&body);
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let delete_data = form_first(&form, "delete_data") == "on";
-    state.supervisor().stop(&id).await;
-    skiff_plugin::uninstall_package(state.db(), &state.cfg.data_dir, &id, delete_data)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    // 卸载即回收该插件名下的内核任务；否则 source=plugin:<id> 的任务会指向不存在的插件。
-    if let Some(tasks) = state.tasks() {
-        tasks.drop_plugin_tasks(&id).await;
-    }
-    // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
-    crate::menu::cleanup_plugin_prefs(state.db(), &id);
-    state.audit_or_log(
-        &user.user.username,
-        &handlers::client_ip(&state, &parts),
-        "plugin.uninstall",
-        &id,
-        "ok",
-        &format!("delete_data={delete_data}"),
-    );
+    let ip = handlers::client_ip(&state, &parts);
+    apply_remove(&state, &user, &id, delete_data, &ip).await?;
     Ok(handlers::redirect(format!(
         "/{}/plugins",
         state.cfg.entry_prefix

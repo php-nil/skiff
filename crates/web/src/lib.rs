@@ -205,6 +205,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/plugins/confirm",
             post(handlers::ui_api::plugin_confirm),
         )
+        .route("/ui/v1/plugins", get(handlers::ui_api::plugins))
+        .route("/ui/v1/plugins/{id}", get(handlers::ui_api::plugin_info))
+        .route(
+            "/ui/v1/plugins/{id}/toggle",
+            post(handlers::ui_api::plugin_toggle),
+        )
+        .route(
+            "/ui/v1/plugins/{id}/delete",
+            post(handlers::ui_api::plugin_delete),
+        )
         .route("/ui/v1/containers", get(handlers::ui_api::containers))
         .route(
             "/ui/v1/containers/{id}",
@@ -317,9 +327,9 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/docker/settings"),
             axum::routing::any(handlers::docker_settings::legacy_path),
         )
-        .route(&format!("/{p}/plugins"), get(handlers::plugins::list))
-        // 商店规范页已进入 budding 适配：`GET /{p}/store` 回落到壳页，
-        // 旧 SSR（目录状态/条目/升级下载/表单确认页）保留在 `/{p}/m/core/plugins/store`。
+        // 插件中心与信息页已进入 budding 适配：`GET /{p}/plugins`、`/{p}/plugins/{id}`
+        // 回落到壳页；旧 SSR 保留在 `/{p}/m/core/plugins/{installed|discover|updates}`
+        // 与 `/{p}/m/core/plugins/info/{id}`。功能页 `/{p}/plugins/{id}/{view}` 不变。
         .route(
             &format!("/{p}/store/plugins/{{id}}/install"),
             post(handlers::store::install).get(handlers::store::install_legacy_get),
@@ -327,10 +337,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/store/upgrades/{{version}}/download"),
             get(handlers::store::download_upgrade),
-        )
-        .route(
-            &format!("/{p}/plugins/{{id}}"),
-            get(handlers::plugins::info),
         )
         .route(
             &format!("/{p}/plugins/{{id}}/{{view}}"),

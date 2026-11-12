@@ -1051,7 +1051,7 @@ view = "main"
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/plugins")
+                .uri("/p/m/core/plugins/installed")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1141,8 +1141,8 @@ async fn plugin_center_tabs_use_honest_empty_states() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
     for (uri, expected) in [
-        ("/p/plugins?tab=discover", "没有接入在线官方源"),
-        ("/p/plugins?tab=updates", "尚未接入更新检查源"),
+        ("/p/m/core/plugins/discover", "没有接入在线官方源"),
+        ("/p/m/core/plugins/updates", "尚未接入更新检查源"),
     ] {
         let resp = h
             .app
@@ -1176,7 +1176,7 @@ async fn current_state_highlights_plugin_center_and_settings_items() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/plugins")
+                .uri("/p/m/core/plugins/installed")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -2626,7 +2626,8 @@ path = "index.html"
         .unwrap();
 
     // 信息页：由内核渲染身份、授权与管理动作，不嵌 iframe。
-    let (status, info_html) = get_page(&h.app, "/p/plugins/com.example.ui", &token).await;
+    let (status, info_html) =
+        get_page(&h.app, "/p/m/core/plugins/info/com.example.ui", &token).await;
     assert_eq!(status, StatusCode::OK);
     for marker in [
         "标识",
@@ -3343,7 +3344,7 @@ provides = [{ method = "probe", label = "探针" }]
         .unwrap();
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.info", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/plugins/info/com.example.info", &admin).await;
     assert_eq!(status, StatusCode::OK);
     for marker in [
         "com.example.info",
@@ -3386,7 +3387,7 @@ provides = [{ method = "probe", label = "探针" }]
         .db()
         .set_plugin_enabled_state("com.example.info", false)
         .unwrap();
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.info", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/plugins/info/com.example.info", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("已停用") && html.contains("启用插件"),
@@ -3547,7 +3548,7 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     seed_declared_plugin(h.state.db().as_ref(), manifest, true);
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p/plugins/com.skiff.testkit", &admin).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/plugins/info/com.skiff.testkit", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("插件架构测试台"), "{html}");
     assert!(
@@ -8183,6 +8184,137 @@ async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["error"]["code"], "shape.invalid");
+}
+
+/// 插件中心与信息页规范路径交付壳页；旧 SSR 仍在 `/m/core/plugins/*`。
+#[tokio::test]
+async fn plugins_canonical_paths_serve_shell() {
+    let h = harness();
+    seed_plugin(h.state.db(), "com.example.ui", "示例界面", "示例", true);
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    for uri in ["/p/plugins", "/p/plugins/com.example.ui"] {
+        let (status, html) = get_html(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
+    }
+    for uri in [
+        "/p/m/core/plugins/installed",
+        "/p/m/core/plugins/info/com.example.ui",
+    ] {
+        let (status, ssr) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(ssr.contains(r#"id="skiff-main-nav""#), "{uri}: {ssr}");
+    }
+}
+
+/// 插件列表与信息页只读接口：未认证 401；冻结字段；未知插件 404。
+#[tokio::test]
+async fn ui_plugins_list_and_info_freeze_fields() {
+    let h = harness();
+    seed_plugin(h.state.db(), "com.example.ui", "示例界面", "示例", true);
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["enabled_count"], 1);
+    assert_eq!(data["disabled_count"], 0);
+    assert_eq!(data["can_admin"], true);
+    assert_eq!(data["plugins"][0]["id"], "com.example.ui");
+    assert_eq!(data["plugins"][0]["status"]["code"], "enabled");
+    assert_eq!(data["plugins"][0]["status"]["label"], "已启用");
+    assert!(data["plugins"][0]["key_id"].is_string());
+    assert!(data["plugins"][0]["ui_path"].is_string());
+
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["can_admin"], false);
+
+    let (status, _, body) =
+        get_ui(&h.app, "/ui/v1/plugins/com.example.ui", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["plugin"]["id"], "com.example.ui");
+    assert!(data["entry_href"]
+        .as_str()
+        .unwrap()
+        .starts_with("/p/plugins/"));
+    assert!(data["menus"].is_array());
+    assert!(data["grants"].is_array());
+    assert_eq!(data["can_admin"], true);
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins/nope", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "lookup.not_found");
+}
+
+/// 插件启停/卸载：CSRF 与 PluginManage 权限复用旧 handler 口径。
+#[tokio::test]
+async fn ui_plugin_toggle_and_delete_keep_csrf_and_permission_semantics() {
+    let h = harness();
+    seed_plugin(h.state.db(), "com.example.off", "停用示例", "示例", false);
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/plugins/com.example.off/toggle",
+        &admin,
+        None,
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/plugins/com.example.off/toggle",
+        &viewer,
+        Some(&viewer_csrf),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/plugins/com.example.off/toggle",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["enabled"], true);
+
+    // 卸载：无权限时在触碰文件系统之前就被拒绝。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/plugins/com.example.off/delete",
+        &viewer,
+        Some(&viewer_csrf),
+        &serde_json::json!({ "delete_data": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。
