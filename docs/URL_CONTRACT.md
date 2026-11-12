@@ -17,12 +17,38 @@
 | 范围 | 形状 | 说明 |
 | --- | --- | --- |
 | 页面 / 页面内接口 / 表单 | `/{p}/...` | `p` 为安全入口前缀（`config.toml` 的 `entry_prefix`），默认 `p`，运行时可变 |
+| 前端 JSON 接口 | `/ui/v1/...` | 无入口前缀；会话 Cookie + CSRF；未认证返回 401；仅 `handlers::ui_api`；只返 JSON |
 | 机器 API | `/api/v1/...` | 无入口前缀、Token/会话鉴权，版本号固定；仅 `handlers::api` |
 | 探针 | `/healthz` | 无前缀、无鉴权，只回健康状态 |
 | 菜单深链 | `/{p}/m/{...}` | 由 `handlers::menu::dispatch` 内部转发到同一 handler，不是第二套页面 |
 
 - 代码中一律用 `state.cfg.entry_prefix` 或模板 `ctx.prefix` 拼接，禁止硬编码 `/p`。
 - 根路径 `/static`、`/plugins/...`、`/files/...` 一律 404，不能绕过入口前缀。
+- `/ui/v1/` 与 `/api/v1/` 并列；`/ui/` 下其它形态一律 404，不得作为静态资源或页面旁路。
+
+### 2.1 SPA 壳页回落白名单
+
+仅当 `GET`、`Accept: text/html` 且路径命中下表前缀（按**路径段边界**匹配，`/{p}/sitesfoo` 不算命中 `/{p}/sites`）时返回前端壳页：
+
+| 前缀 | 说明 |
+| --- | --- |
+| `/{p}` | 概览根（仅精确匹配） |
+| `/{p}/sites` | 站点 |
+| `/{p}/containers`、`/{p}/images`、`/{p}/networks`、`/{p}/volumes`、`/{p}/compose` | Docker |
+| `/{p}/runtimes` | 运行环境 |
+| `/{p}/files` | 文件管理 |
+| `/{p}/plugins` | 插件（功能页仍走 iframe 外壳路由） |
+| `/{p}/store` | 商店 |
+| `/{p}/settings` | 设置 |
+| `/{p}/audit` | 审计 |
+| `/{p}/tasks` | 定时任务 |
+| `/{p}/jobs` | 任务中心 |
+
+- 白名单之外仍返回 404（HTML 或 JSON 由 `Accept` 决定），不得回落壳页。
+- `POST` 等写请求**永不回落**，即使 `Accept: text/html`。
+- `/{p}/static/*`、`/{p}/m/*`、`/ui/v1/*`、`/api/v1/*`、`/healthz` 不在白名单内。
+- 命中白名单但前端路由不认识时，由前端渲染 404 视图；内核不回退到 `error.html`。
+- 白名单变更必须同步本表、`docs/SDUI_BUDDING_INTEGRATION.md` 与 `main_flow` 测试。
 
 ## 3. 资源命名
 
@@ -101,6 +127,8 @@
 - 删除确认页（`GET /{p}/sites/{domain}/delete`）与执行（`POST` 同一路径）同路径，靠方法区分。
 - 长连接：`GET /{p}/containers/{id}/logs`（SSE）、`/{p}/containers/{id}/exec`（WS，需先 `POST .../exec/ticket` 换票）。
 - 失败回执：写操作 303 回页面，错误用 flash（`?` 不携带结果消息），不在 URL 里表达成败。
+- `/ui/v1/*` 的写操作一律 POST + CSRF；公开引导 `GET /ui/v1/bootstrap` 与登录 `POST /ui/v1/session` 为未认证端点（登录用签名 CSRF token + 来源判定）；`POST /ui/v1/session/logout`、`session/password`、`session/totp`、`session/totp/enable` 为认证类例外，语义与 `/{p}/logout`、`/{p}/password`、`/{p}/totp`、`/{p}/totp/enable` 一一对应。
+- `/ui/v1/*` 未认证返回 401 JSON，不做 303；已认证但权限不足返回 403 JSON。
 
 ## 7. 兼容与下线
 
@@ -160,6 +188,8 @@
 | 定时任务 | `GET /{p}/tasks`、`/tasks/{id}`；`POST /tasks/{id}/toggle`、`/run`、`/delete` |
 | 任务中心 | `GET /{p}/jobs`、`/jobs/{id}`、`/jobs/{id}/logs`、`/jobs/{id}/logs/stream`；`POST /jobs/{id}/cancel`、`/retry` |
 | 菜单深链 | `GET /{p}/m/{rest}` |
+| 前端 JSON（UI） | `GET|POST /ui/v1/...`（按资源实现前逐条登记：session、认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
+| 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） |
 | 静态资源 | `GET /{p}/static/{path}` |
 | API v1 | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart` |
 
@@ -169,3 +199,9 @@
 2. 改已有路径必须同时提供兼容（§7）或明确下线记录，并更新引用它的模板、静态资源与测试。
 3. 代码侧守门：`crates/web/src/assets.rs` 校验静态资源 API 基址；`main_flow.rs` 校验旧路径跳转。
 4. 文档侧引用：`MENU_CONTRACT.md` 的旧路由映射表只描述**菜单键 → URL**，URL 形状以本文为准。
+
+## 11. 变更记录
+
+| 日期 | 变更 |
+| --- | --- |
+| 2026-11-12 | 新增 `/ui/v1` JSON 命名空间例外（无前缀、Cookie + CSRF、未认证 401、仅 `handlers::ui_api`、只返 JSON）；`/ui/` 其它形态一律 404；新增 §2.1 SPA 壳页回落白名单（仅 `GET` + `Accept: text/html` + 命中页面前缀；写请求永不回落）；§6 补 `/ui/v1` 方法与认证例外；§9 登记 `/ui/v1` 与壳页回落。D13 定案：history 路由，地址栏保持 `/{p}/sites/xxx`。 |

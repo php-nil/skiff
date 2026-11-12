@@ -508,7 +508,8 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 
 ### 9.1 数据库
 
-- 当前 `CURRENT_SCHEMA_VERSION = 8`；本契约目标 v8。
+- 当前 `CURRENT_SCHEMA_VERSION = 19`（2026-11-12 核对）；本契约涉及的站点/运行环境表自 v8 起持续扩展，当前基线为 v19。
+- > 2026-11-12 更正：本节此前写作「= 8 / 目标 v8」，与实际不符；仅修正文档口径，不涉及表结构变更。
 - `site_runtimes`：
   ```sql
   CREATE TABLE site_runtimes (
