@@ -741,6 +741,25 @@ mod tests {
         assert!(Config::load(Some(bad), true).is_err());
     }
 
+    /// 文件里显式写的 `mirrors` 必须原样生效，不能被新的默认值覆盖
+    /// （测试机已配置 `https://10.10.15.4:8443`，升级后必须保留）。
+    #[test]
+    fn catalog_explicit_mirrors_are_not_replaced_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[catalog]\nmirrors = [\"https://10.10.15.4:8443\"]\n",
+        )
+        .unwrap();
+        let c = Config::load(Some(path), true).unwrap();
+        assert_eq!(
+            c.catalog.mirrors,
+            vec!["https://10.10.15.4:8443"],
+            "显式配置优先于默认值"
+        );
+    }
+
     /// `[catalog].ca_bundle`：空值 = 保持现状（只用内置根）；指定了就必须可加载，
     /// 文件缺失/内容非法直接拒绝启动，绝不静默回退。
     #[test]

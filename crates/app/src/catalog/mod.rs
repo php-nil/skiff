@@ -739,14 +739,16 @@ impl CatalogService {
         let cached = self.cached_for_current_key(channel);
         if self.settings.mirrors.is_empty() {
             return match cached {
-                Some(c) => {
-                    self.cached_snapshot(&c, CatalogState::Cached, "未配置镜像地址，展示本地缓存")
-                }
+                Some(c) => self.cached_snapshot(
+                    &c,
+                    CatalogState::Cached,
+                    "未配置镜像地址，正在使用本地缓存",
+                ),
                 None => (
                     CatalogSnapshot::empty(
                         &self.settings,
                         CatalogState::Rejected,
-                        "未配置镜像地址，且没有本地缓存".into(),
+                        "尚未配置镜像地址，也没有本地缓存；请在「设置 → 商店目录」填写镜像地址后刷新".into(),
                     ),
                     None,
                     String::new(),
@@ -773,7 +775,7 @@ impl CatalogService {
                     return self.cached_snapshot(
                         c,
                         CatalogState::Offline,
-                        "所有镜像暂不可用（退避中），展示上次成功快照；点「刷新」可立即重试",
+                        "镜像源暂不可达（退避中），正在使用本地缓存；点「刷新」可立即重试",
                     );
                 }
                 // 没有缓存时至少给第一个镜像一次机会，避免首次访问就永久空态。
@@ -827,13 +829,13 @@ impl CatalogService {
             Some(c) => self.cached_snapshot(
                 &c,
                 CatalogState::Offline,
-                format!("离线：{detail}；展示上次成功快照"),
+                format!("镜像源不可达，正在使用本地缓存；点「刷新」可立即重试（{detail}）"),
             ),
             None => (
                 CatalogSnapshot::empty(
                     &self.settings,
                     CatalogState::Offline,
-                    format!("离线：{detail}；没有可用快照"),
+                    format!("尚未连上任何镜像源，也没有本地缓存；请在「设置 → 商店目录」填写镜像地址后刷新（{detail}）"),
                 ),
                 None,
                 String::new(),

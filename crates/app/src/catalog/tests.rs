@@ -359,10 +359,26 @@ fn offline_falls_back_to_last_successful_snapshot() {
     svc.set_audit_db(Arc::clone(&db));
     let snap = svc.snapshot(true);
     assert_eq!(snap.state, CatalogState::Offline);
-    assert!(snap.message.contains("离线"), "{}", snap.message);
+    assert!(snap.message.contains("镜像源不可达"), "{}", snap.message);
+    assert!(snap.message.contains("本地缓存"), "{}", snap.message);
     assert_eq!(snap.seq, Some(2));
     assert_eq!(snap.entries.plugins[0].name, "com.example.two");
     assert_refresh_audit(&db, "offline");
+}
+
+/// 默认源不可达且没有任何缓存：文案必须给出「去设置里填镜像地址」的下一步，而不是裸错误串。
+#[test]
+fn unreachable_mirror_without_cache_explains_next_step() {
+    let fx = Fixture::new();
+    let snap = fx.service().snapshot(true);
+    assert_eq!(snap.state, CatalogState::Offline);
+    assert!(
+        snap.message.contains("尚未连上任何镜像源"),
+        "{}",
+        snap.message
+    );
+    assert!(snap.message.contains("设置"), "{}", snap.message);
+    assert!(snap.entries.plugins.is_empty());
 }
 
 #[test]
