@@ -95,6 +95,7 @@
 | 内核防火墙契约 | `docs/KERNEL_FIREWALL_CONTRACT.md` | 新增 `firewall` 能力面的主体与授权（manifest→`perm:firewall:<verb>`）、方法清单、自有作用域（`inet skiff` / `SKIFF` 链 / `skiff-*.conf`）、审计口径、特权通道、interop 接口与测试矩阵 |
 | SDUI 内核适配手册 | `docs/SDUI_HANDBOOK.md` | 面向 JSON Schema 驱动服务端 UI 的内核适配：现状耦合清单（业务/展示/传输归类）、资源与动作契约、权限校验审计挂接、分阶段迁移与回滚、开发手册与待定项；设计与迁移规范，不代表已实施 |
 | budding 接入规则 | `docs/SDUI_BUDDING_INTEGRATION.md` | 具体框架 budding 作为前端渲染层的接入边界：产物与离线分发、JSON 信封与动作元数据、URL/UI/菜单/插件契约的沿用与补条款、登录/权限/审计/CSRF 桥接、能力缺口与待决策项；规则与设计稿，不代表已实施 |
+| budding 上游任务清单 | `docs/BUDDING_UPSTREAM_BACKLOG.md` | 交给 budding 团队依次实现的能力清单（可直接粘贴的 AI 提示词）：虚拟滚动实例方法、文件浏览器、上传 MVP、日志查看器、代码查看器、终端；含依赖顺序与 Skiff 侧临时替代对照；外部协作清单，不代表本仓库实施 |
 | Skiff-server 分发方案 | `docs/SKIFF_SERVER.md` | 中心化静态数据分发：商店/应用模板/运行环境/内核升级四类清单的模型、JSON Schema 与 Ed25519 签名清单、内容寻址与 `seq` 防回滚、镜像同步与多源切换、发布审核与吊销、客户端拉取与商店安装链路、P0–P3 落地与签名发布/镜像同步命令、静态服务契约（`skiff-server serve`，§16）、发布面 `/api/**`（§17，可选独立子命令，R0–R2 已实施）；托管已定案为内网 HTTP 先行（§15.5） |
 | 变更日志 | `docs/changes/` | 详细变更记录存放目录（`YYYY-MM-DD.md`） |
 
