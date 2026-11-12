@@ -229,6 +229,21 @@ pub struct NetworkRow {
     pub containers: Option<Vec<NetworkAttachment>>,
 }
 
+impl NetworkRow {
+    /// Docker 预定义网络（bridge/host/none）不可删除。
+    pub fn builtin_name(name: &str) -> bool {
+        matches!(name, "bridge" | "host" | "none")
+    }
+
+    pub fn builtin(&self) -> bool {
+        Self::builtin_name(&self.name)
+    }
+
+    pub fn can_remove(&self) -> bool {
+        !self.builtin()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NetworkAttachment {
     pub container: String,

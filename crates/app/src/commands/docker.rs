@@ -297,6 +297,28 @@ pub async fn network_remove(
     state: &Arc<AppState>,
     cmd: NamedResource,
 ) -> Result<(), DockerCommandError> {
+    // 预定义网络在命令层就拒绝：页面隐藏按钮只是展示结果，不能成为唯一防线。
+    // 路由传的是网络 id，所以按 id/name 解析出真实名称；查询失败则交给删除路径报错。
+    let builtin = skiff_docker::NetworkRow::builtin_name(&cmd.name)
+        || match state.docker().list_networks().await {
+            Ok(rows) => rows
+                .iter()
+                .find(|n| n.id == cmd.name || n.name == cmd.name)
+                .is_some_and(skiff_docker::NetworkRow::builtin),
+            Err(_) => false,
+        };
+    if builtin {
+        let msg = format!("网络 {} 为 Docker 预定义网络，不能删除", cmd.name);
+        audit_status(
+            state,
+            &cmd.actor,
+            Verb::NetworkRemove,
+            &cmd.name,
+            "fail",
+            &msg,
+        );
+        return Err(DockerCommandError::BadRequest(msg));
+    }
     let result = state.docker().remove_network(&cmd.name).await;
     audit(
         state,
@@ -694,6 +716,34 @@ mod tests {
         let actions: Vec<&str> = rows.iter().map(|r| r.action.as_str()).collect();
         assert!(actions.contains(&"docker.compose.up"), "{actions:?}");
         assert!(actions.contains(&"docker.compose.down"), "{actions:?}");
+    }
+
+    #[tokio::test]
+    async fn network_remove_rejects_builtin_before_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_at(dir.path());
+
+        for name in ["bridge", "host", "none"] {
+            let err = network_remove(
+                &state,
+                NamedResource {
+                    name: name.into(),
+                    actor: actor(),
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, DockerCommandError::BadRequest(ref m) if m.contains("预定义网络")),
+                "{name}: {err}"
+            );
+        }
+
+        let rows = state.db().recent_audit(3).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|r| r.result == "fail" && r.detail.contains("预定义网络")));
     }
 
     #[test]

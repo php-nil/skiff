@@ -96,8 +96,10 @@
         </td>
         <td class="actions-cell">
           {% if can_admin %}
-          {% if r.name == "bridge" || r.name == "host" || r.name == "none" %}
+          {% if r.builtin %}
           <span class="muted small">预定义网络不可删除</span>
+          {% else if !r.can_remove %}
+          <span class="muted small">不可删除</span>
           {% else %}
           <form method="post" action="/{{ ctx.prefix }}/networks/{{ r.id }}/delete" class="inline"
                 data-confirm="确认删除网络 {{ r.name }}？挂载该网络的容器会失去连接。" data-confirm-verb="删除">

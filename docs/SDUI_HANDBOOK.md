@@ -95,6 +95,7 @@
 | 站点/运行时/Docker/文件写命令 | 各写 handler 内联领域调用与审计 | P1 四组已拆到 `crates/app/src/commands/`，handler 只做解析、授权入口、错误映射与响应 |
 | 站点证书就绪与运行态分类 | Web 列表自判 cert+key；`runtime_site_status`/`version_display` 在展示层做优先级 | `SiteSettings::cert_ready` 为唯一判定；`SiteRuntimeStatus`/`RuntimeVersionState` 在 app 分类，Web 只映射文案与配色 |
 | 作业可取消/可重试 | Web 详情页按 `active()`/`status.terminal()` 自行计算 | `Job::can_cancel`/`can_retry` 在 app；`JobService::cancel`/`retry` 仍独立校验，Web 只读字段 |
+| 内置网络不可删除 | 只在 `networks.html` 按名字隐藏按钮，后端依赖 Docker 报错 | `NetworkRow::builtin/can_remove` 判定；视图读 `can_remove`，`network_remove` 命令层先拒绝内置网络并写失败审计 |
 
 ---
 

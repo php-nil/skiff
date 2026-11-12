@@ -164,6 +164,8 @@ fn network_page(
 fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView {
     use crate::templates::{NetworkContainerView, NetworkRowView};
 
+    let builtin = n.builtin();
+    let can_remove = n.can_remove();
     // 未知（Docker 未返回）必须显式显示「未知」，不能显示 0 或留空。
     let ipam_driver = match n.ipam_driver.as_deref() {
         Some(d) if !d.is_empty() => d.to_string(),
@@ -219,6 +221,8 @@ fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView
         container_count,
         containers_known,
         containers,
+        builtin,
+        can_remove,
     }
 }
 
@@ -399,5 +403,32 @@ fn map_err(e: DockerCommandError) -> AppError {
         DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
         DockerCommandError::Conflict(m) => AppError::Conflict(m),
         DockerCommandError::Unavailable(m) => AppError::Unavailable(m),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, id: &str) -> skiff_docker::NetworkRow {
+        skiff_docker::NetworkRow {
+            id: id.into(),
+            name: name.into(),
+            driver: "bridge".into(),
+            scope: "local".into(),
+            ipam_driver: None,
+            subnets: None,
+            gateways: None,
+            internal: None,
+            attachable: None,
+            containers: None,
+        }
+    }
+
+    #[test]
+    fn builtin_networks_cannot_be_removed_from_view() {
+        // 判定在 `NetworkRow`，视图只消费 can_remove。
+        assert!(!network_view(row("bridge", "abc")).can_remove);
+        assert!(network_view(row("app-net", "def")).can_remove);
     }
 }

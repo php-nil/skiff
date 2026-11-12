@@ -896,6 +896,9 @@ pub struct NetworkRowView {
     pub container_count: String,
     pub containers_known: bool,
     pub containers: Vec<NetworkContainerView>,
+    /// Docker 预定义网络（bridge/host/none）；删除按钮只看 `can_remove`。
+    pub builtin: bool,
+    pub can_remove: bool,
 }
 
 #[derive(Debug, Clone)]
