@@ -59,7 +59,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 20:11 就地升级到 `3d00543`（当前生效）**
+> **2026-11-13 20:55 就地升级到 `1abcf4d`（当前生效）**
+> - 出包：CI（push）11 项全绿（`编译（x86_64 musl 静态）` skipped 属预期）；`release.yml` dispatch run `43427115488`（ref=main、head `1abcf4d`，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,861,899 B** `b76aff6defc4ae94a3fd1beb7806ce9f9f560a4c7d32c3eb594c7b6e39e11a6f`（开发机 `Get-FileHash`、随包 `.sha256` 与测试机 `sha256sum` 一致）。
+> - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-22585404eef78dd261c1771c848dced9e9afec6cabc3d09a093e521d2cf9640b`（19,207,440 B）；库快照 `/root/iter/backup/skiff-ae754e2694e27e3a0d3eec0a832989864230f3775d0569e88f40162e50ada15b.db`（1,429,504 B）；`official/*.wbpkg` 已覆盖，插件内容无变化（未触发重装）。
+> - 新二进制：`/usr/local/bin/skiff` **19,207,440 B** `77a9a4c2e7fbc07763d965e7b1fb3552339258c779dc75051b943ce739763d9b`。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写（`listen=127.0.0.1:18080`、`allow_insecure_http=true`、`allow_reduced_sandbox=true`）。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 20:11 就地升级到 `3d00543`（已被同日 20:55 升级取代，保留作过程记录）**
 > - 出包：CI（push）11 项全绿（`编译（x86_64 musl 静态）` skipped 属预期）；`release.yml` dispatch run `43421228044`（ref=main、head `3d00543`，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,861,301 B** `3ec95dd683634d4e17a30120bae40be11d7be46b43452de95c396a1ec057b14e`（开发机 `Get-FileHash`、随包 `.sha256` 与测试机 `sha256sum` 三方一致）。
 > - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-ba4914e8a22e59f16f6ba8c8c5a773612e3179f24bdeee34f78fe1a8f9ec1510`（19,203,344 B）；库快照 `/root/iter/backup/skiff-cafd596839f326754866a3bad34cbc485ac288ccaf3018de50d72c81597e6661.db`（1,417,216 B）；`official/*.wbpkg` 已按发布包覆盖，重启后 `com.skiff.files` 升到 0.1.3（日志「官方插件内容已随发布包更新（同版本重装）」）。
 > - 新二进制：`/usr/local/bin/skiff` **19,207,440 B** `22585404eef78dd261c1771c848dced9e9afec6cabc3d09a093e521d2cf9640b`。
@@ -220,6 +227,7 @@
 | 2026-11-12 15:44–15:47 | **商店抓取静默丢包超时修复**（`7e322a3`）：主包覆盖替换（`skiff-server` 未变），无 schema 迁移；两份临时实例（默认源 / 多源回落）验完即清理 | Release run `43176330913`（`ref=main` head `7e322a3`）四 job 全绿；主包 10,005,871 B `795484c0…ac77b`、`checksums.txt` 434 B `19d41673…06b74` 四路一致；旧件按内容命名备份 `/root/iter/m30/backup/{skiff-e5d41ab43fda,skiff-server-3b60e6013aae,skiff-pluginsdir-d16c3759b618.tar.gz}` | 库保持 **v18**、配置 sha `86610cdb…` 未变、前缀 `u9kiz9qb`；`/usr/local/bin/skiff` 14,906,640 B `3d4db293…5252`；四条全 PASS：默认源静默丢包首访 **200 / 3005 ms** +「镜像源不可达，正在使用本地缓存」、冷却期 4 访各 **1 ms** 且 0 新建连、死源+正常源首访 **3031 ms** / 刷新 **3023 ms** 成功 seq 26、生产刷新 **6 ms**（304）且 mirrors/sha 未变；回归 probe 15/15（含登录；同既往 14 项覆盖）、五页 200、安装/升级、serve 13/13、两服务 `NRestarts=0`；详见 §8 |
 | 2026-11-13 19:53 | **就地升级**（五个插件功能页原生化 + firewall/cron 写通路 + 全站抽查） | 出包 run `43418974721`（head `4da21cd`）；主包 11,838,621 B `c29ee5c6…e9a3` 双端一致；新二进制 19,203,344 B `ba4914e8…1510`；旧二进制与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 18080/18081 均 200；12 个插件页 iframe 0、RPC 200、数据真实；firewall 规则增删与 cron 任务增删均落审计；全站 7 页抽查无回退；`com.skiff.files/main` 仍为占位（见 §8） |
 | 2026-11-13 20:11 | **就地升级**（补验 files 原生页与概览系统状态卡） | 出包 run `43421228044`（head `3d00543`）；主包 11,861,301 B `3ec95dd6…b14e` 三方一致；新二进制 19,207,440 B `22585404…640b`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；files 原生页站点下拉/平铺浏览/文本编辑保存全部通过，`?legacy=1` 保留旧工作台；概览系统状态卡为真实数据；停用 monitor 时卡片消失、无原因提示（见 §8） |
+| 2026-11-13 20:55 | **就地升级**（验内置任务解锁、健康卡片三态、菜单链接与三页抽查） | 出包 run `43427115488`（head `1abcf4d`）；主包 11,861,899 B `b76aff6d…1a6f` 双端一致；新二进制 19,207,440 B `77a9a4c2…3d9b`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；guard reconcile 与 monitor sample 不再 `api_mismatch`，按 tick 产生成功记录；健康卡片启用/停用/撤授权三态齐全；菜单 href 改为原生路径；概览/插件/任务页 iframe 0 |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -237,6 +245,21 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 20:55–21:06 `1abcf4d` 四项修复验收**
+
+前置：就地升级到 `1abcf4d`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件（monitor 0.1.0 / API 1.3）；Chromium 1440×900。
+
+- **内置任务解锁（通过）**：`/{p}/tasks` 全表 **0 处**「已阻塞 / api_mismatch」。guard reconcile（`* * * * *`）升级后每分钟执行，20:56、20:57、20:58 … 21:05 均 result=ok；monitor sample（`*/5 * * * *`）在 **21:05** tick 首次执行 `ok`（`追加 2 点，环形保留 436 点`），任务页「最近结果」显示 `2026-11-13 21:05:00 · 成功`、下次 21:10。
+  - 说明：健康卡片「撤授权」用例对 monitor 做了 `remove` + `install`，任务行随卸载删除、安装时不重种；`systemctl restart skiff` 后按 manifest 重新种入（日志「按 manifest 种入内核任务」），再等 21:05 tick 取得执行记录。属测试操作副作用，不是缺陷。
+- **健康卡片三态（通过）**：
+  - 启用：`CPU 0.2% · 内存 488 MiB / 3.83 GiB (12.4%)`、`负载 0.00 / 0.00 / 0.00`、`运行时长 13 时 10 分`、采集时间 `13:05:35Z`，两次采样间数值变化；iframe 0。
+  - 停用：`skiff plugin disable com.skiff.monitor` 后显示「系统状态 暂不可用：主机监控插件 com.skiff.monitor 已停用；启用后此处显示 CPU、内存与负载。」并附检查项提示，**非空白**；iframe 0。
+  - 撤授权：`remove` + `install --resource path:/tmp`（grants=3）后显示「IPC: 插件返回错误 -32602: 缺少 path:/proc 授权：安装插件时需勾选 path:/proc（或由管理员追加）」，为**可读原因**而非只有状态码；前端 RPC 400 仍会在控制台留一条资源错误。
+  - 恢复：`remove` + `install --yes` 恢复 `path:/proc`、`path:/etc/passwd`、`fs:list/read`；重启后任务重种，卡片回到真实数据。
+- **菜单链接（通过）**：`/ui/v1/menu` 的 8 个插件项 href 全部为 `/{p}/plugins/{id}/{view}`（files=`/34h8y9da/plugins/com.skiff.files/main`、cron=`…/plugins/com.skiff.cron/list`、monitor=`…/overview`、guard=`…/containers`、firewall=`…/rules`、ftp=`…/accounts`、testkit=`…/main|single`）；壳内点「站点文件」落到该路径，**iframe 0**，页面为原生「未授权站点目录」空态；`?legacy=1` 仍保留旧工作台。
+- **抽查（通过）**：概览、插件列表、任务页均 200、**iframe 0**；控制台概览 1 条 `/favicon.ico` 404（全站既有），插件列表与任务页 **0 条**。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/r8-{overview,plugins,tasks,menu-files}.png`；`round8-report.json`、`round8b.out.txt`、`health-disabled.out.txt`、`health-revoked.out.txt`、`tasks-runs5.txt`。
 
 **2026-11-13 20:11–20:20 files 原生页与概览系统状态卡补验（`3d00543`）**
 
