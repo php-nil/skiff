@@ -1,571 +1,607 @@
-# budding 上游能力任务清单（文件管理 / 上传 / 日志 / 代码 / 终端）
+# budding 上游能力核对与任务清单（1.8.0）
 
-> 状态：**外部协作清单，不代表本仓库实施**。本文档交给 budding 团队按序实现；Skiff 侧只读消费，不修改 budding 仓库。
-> 事实来源：budding 1.6.0 产物与源码只读盘点（2026-11-12）；Skiff 侧需求见 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) §6。
-> 标注约定：**待实测** = 尚未验证的数字或行为；**推断，需核实** = 依据现有信息推断、执行前需在仓库内确认。
+> **核对日期**：2026-11-13
+> **对应 budding 版本**：**1.8.0**（`dist/package/budding-1.8.0.manifest.json`，`builtAt 2026-11-13T01:25Z`；`dist/docs/catalog.json` 为 1.8.0 / 57 条目；`dist/embed` 四个文件与 `dist/packs` 六个 Pack 变体）
+> **上游答复**：[BUDDING_UPSTREAM_BACKLOG-UP.md](BUDDING_UPSTREAM_BACKLOG-UP.md)（逐条核对对象，保留备查）
+> **用途**：直接转给 budding 团队执行的缺口清单。本文只描述「新版本下具体还差什么」，已解决项不再重复提需求。
+> **读者**：budding 团队及其 AI 执行者；每条未闭环任务都是一段可直接粘贴的提示词。
+> **标注约定**：**产物实测** = 在 1.8.0 产物/catalog 上检索或读取得到；**读文档确认** = 来自 1.8.0 随包手册；**推断** = 依据现有信息推断，执行前需核实。
 
 ---
 
 ## 0. 一页说明
 
-### 0.1 这份清单给谁、怎么用
+### 0.1 本轮结论
 
-- **读者**：budding 团队及其 AI 执行者。每条任务都是一段可直接粘贴的提示词。
-- **顺序**：先做前置文档项（P1、P2），再按 T0 → T1 → T2 → T3 → T4 → T5 → T6 → T7 推进；T0 是 T1/T3/T4 的硬前置。
-- **产出形态**分三类，每条任务开头注明：
-  - **框架能力补齐**：修改 budding 仓库的组件/渲染器基础设施；
-  - **官方 advanced 渲染器**：在 budding 内新增或扩展渲染器；
-  - **仅文档约定**：只产出规范与示例，不改运行时行为。
-- **名称规则**：新增渲染器/类型一律遵循 `vendor:type`，本清单统一使用 `budding:*`；注册位置沿用现有 `builtin-groups` 机制（具体文件以仓库为准，**需核实**）。
+| 分类 | 数量 | 条目 |
+|---|---|---|
+| 已闭环（或方案已采纳并落地主体） | 8 | P1、P2、T0、T1、T2（阶段 1）、T3、T4、T5 |
+| 未闭环（重写） | 2 | T6、T7 |
+| 未闭环（本轮新增） | 8 | T8、T9、T10、T11、T12、T13、T14、T15 |
+| **合计未闭环** | **10** | 见 §0.3 |
 
-### 0.2 任务总览
+关键变化：**1.8.0 补齐了后台壳（`admin` / `nav-menu` / `page-tabs` / `outlet`）、表单族（`select` / `textarea` / `checkbox` / 日期时间 / 数字）、表格服务端分页排序与多选、`virtual-list` 程序化滚动、`code-viewer` + 纯 JS 高亮、`terminal` 按需 Pack、图标字体随包**。原清单里「缺组件」类需求大部分已消失，剩余问题集中在**列表的数据分页语义、滚动生命周期、上传大文件、终端通道契约、schema 安全策略**，以及一个始终未做的表单属性透传。
 
-| 编号 | 任务 | 产出形态 | 依赖 | Skiff 用途 |
-|---|---|---|---|---|
-| P1 | `connect-src` 对 ws/wss 的官方结论与终端 CSP 指引 | 仅文档约定 | 无 | 终端页在严格 CSP 下可用 |
-| P2 | 渲染器内资源加载的 MIME / 缓存 / 同源约定 | 仅文档约定 | 无 | 字体、图标、xterm 资源加载不触发 CSP 违规 |
-| T0 | `VVirtualScroll` 暴露 `scrollToIndex` / `scrollTo` 等实例方法 | 框架能力补齐 | 无 | 日志尾部跟随、代码跳行、文件列表回顶 |
-| T1 | 官方「文件浏览器」渲染器（面包屑 + 平铺列表，禁止树形） | 官方 advanced 渲染器 | T0 | 文件管理页主视图 |
-| T2 | 上传渲染器 MVP（单文件、固定分片、进度、取消、重试一次） | 官方 advanced 渲染器 | 无（可与 T1 并行） | 文件上传 |
-| T3 | 日志查看器（虚拟滚动、行号、跟随、搜索、全量复制） | 官方 advanced 渲染器 | T0 | 站点/Nginx/作业日志 |
-| T4 | 代码查看器（只读、行号、纯 JS 高亮、大文件分段） | 官方 advanced 渲染器 | T0 | 文本文件查看 |
-| T5 | 终端渲染器（xterm 内联、ResizeObserver、WS 生命周期） | 官方 advanced 渲染器 | P1 | Docker 容器终端 |
-| T6 | `input-text` 支持 `type` 与 `autocomplete` 透传 | 官方表单能力补齐 | 无 | 登录口令框、邮箱/数字输入 |
-| T7 | 插件 UI 以 Schema 交付（替代插件自带 HTML + 内核 iframe 槽位） | 插件侧/上游需求（含包格式提案） | 无（需先定案包格式与渲染约定） | 插件功能页原生渲染，壳页不承载 iframe |
+### 0.2 能力核对表（我们需要的 → 1.8.0 实际）
 
-### 0.3 统一约束（所有任务都适用）
+| 我们需要的能力 | 1.8.0 现状（证据） | 结论 |
+|---|---|---|
+| 严格 CSP 下用 WebSocket | P1 文档 + 13 探针 × 6 场景矩阵 + 门禁 | ✅ 已闭环 |
+| 渲染器资源 MIME / 缓存 / 同源 | P2 文档 + 示例 + 门禁 | ✅ 已闭环 |
+| 虚拟列表程序化滚动 | `virtual-list` 6 指令：`scrollTo` / `scrollToTop` / `scrollToIndex` / `getScrollTop` / `reload` / `setData`（产物实测） | ✅ 定位够用；❌ 无滚动事件（T9） |
+| 文件浏览（面包屑 + 平铺 + 虚拟） | `breadcrumbs` + `table`（`tree` / `virtual` / `selectable` / `filters` / 列 `sortable` / `perPage` / `rowActions` / `expand` / `exportable` / `quickEdit`） | ✅ 主体够用；❌ 游标分页（T10）、选择策略（T11） |
+| 上传进度 / 取消 / 重试 | `file` 40 字段：`uploadProgressTarget` / `maxRetries` / `retryDelayMs` + `cancelUpload` / `retryUpload` | ✅ 单文件整体够用；❌ 分片/续传/多文件（T12） |
+| 日志查看（虚拟滚动 + 跟随） | `virtual-list` + `input-text` + `copy` 动作可组合；无行号 gutter / 命中计数 | ⚠️ 组合可用；跟随即时性依赖 T9 |
+| 代码只读查看 + 行号 + 高亮 | `code-viewer` 17 字段 + `@budding/highlight`（Prism 默认；产物 `wasm` / `WebAssembly` 命中 0） | ✅ 主体够用；❌ 分段与定位（T13） |
+| 终端内联（非 iframe） | `terminal` Pack：13 字段 / 5 触点 / 3 指令；`resizeFormat: json`；`registerTerminalTransport` | ✅ 渲染够用；❌ 通道契约（T14） |
+| 登录口令框 | `input-text` 33 字段，**无 `type`、无 `autocomplete`**（catalog + 产物核对） | ❌ 未解决（T6） |
+| 下拉 / 多行文本 / 复选 / 弹窗 | `select`（单选）、`textarea`、`checkbox`（布尔）、`dialog` / `drawer` / `confirm` 动作 | ✅ 基本够用；❌ 多选下拉与复选组（T15） |
+| 表格分页 / 排序 / 多选 | `paramNames.page/perPage/orderBy/orderDir/keywords`、`selectable` 多选列、列级 `sortable` | ✅ 页式够用；❌ 游标式（T10） |
+| 插件页以 Schema 交付 | 路由 `schema: "/pages/x.json"` + `platform.loadJson`；`service.schemaApi` 可运行时取 schema；`custom` + `registerAction` | ✅ 加载够用；❌ 动作白名单 / 禁外链（T7） |
+| 图标字体随包 | `budding-icons.css` 3.5KB + `.woff2` 2.4KB，59 个 mdi 子集，`manifest.icons.optional = true` | ✅ 可用；❌ 版本化与缓存约定（T8） |
+| 后台壳与页签 | `admin` 22 字段 / 7 区域、`nav-menu`、`page-tabs`、`outlet`（catalog 实测） | ✅ 已闭环（原 D4 消失） |
 
-1. **不破坏现有契约**：现有 54 个渲染器、schema 字段、`embed(target, schema, opts)` 返回值 `{ manifest?, unmount }` 必须保持可用；不得引入 breaking change，字段只增不改。
-2. **必须补测试**：每个任务都要有单元测试；涉及浏览器 API（ResizeObserver、WebSocket、AbortController）时用可注入的 mock，测试环境沿用上游现有测试栈。
-3. **离线可用**：运行时不依赖 CDN、外网字体或远程图标；所有资源随包分发。
-4. **禁止 `eval` / `new Function`**：必须满足官方 CSP 建议 `script-src 'self'`；动态 `import()` 无法携带 nonce、SRI 不生效，不得依赖它们做安全边界（**推断，需核实**上游对动态 import 的实际策略）。
-5. **无沙箱假设**：渲染器是应用树内的普通 Vue 组件，从 `__BUDDING_SHARED__['vue']` / `['vuetify/components']` 取用；不要依赖 iframe 隔离来实现功能。
-6. **无实例句柄**：不要假设调用方能拿到组件实例；需要程序化控制时，通过受控 props/事件或 `runtime`（自定义动作第三参）完成。
-7. **类型命名**：遵循 `vendor:type`，如 `budding:file-browser`、`budding:upload`、`budding:log-viewer`、`budding:code-viewer`、`budding:terminal`。
+### 0.3 未闭环任务总览
+
+| 编号 | 任务 | 产出形态 | 依赖 | Skiff 用途 | 规模 |
+|---|---|---|---|---|---|
+| T6 | `input-text` 透传 `type` / `autocomplete` | 框架能力补齐 | 无 | 登录口令、FTP 改密、表单邮箱/数字 | S |
+| T7 | 插件 Schema 的运行时安全策略（动作白名单 / 禁外链 / 静态校验） | 框架能力补齐 + 文档 | 无 | 插件功能页原生渲染的信任边界 | M |
+| T8 | 图标字体的版本化文件名、缓存与子集清单 | 构建/文档 | 无 | 离线升级不踩旧缓存 | S |
+| T9 | `virtual-list` 滚动生命周期触点（`scroll` / `reachBottom` / `scrollToKey`） | 框架能力补齐 | 无 | 日志跟随、无限加载、按 key 定位 | S–M |
+| T10 | `table` 游标分页与追加加载 | 框架能力补齐 | 无 | 文件列表、作业列表（`next_cursor`） | M |
+| T11 | `table` 选择策略、打开语义、行级下载与图标列 | 框架能力补齐 | 无 | 文件多选、双击进入、下载 | S–M |
+| T12 | 上传阶段 2：分片 / 续传 / 暂停 / 多文件进度 | 框架能力补齐 + 宿主适配 | T2 阶段 1 | 大文件、备份包、多文件队列 | M–L |
+| T13 | `code-viewer` 分段加载、`scrollToLine`、语言/主题清单 | 框架能力补齐 + 发布 | T4 | 大文件查看、跳到指定行、nginx/ini 配置 | S–M |
+| T14 | 终端 WS 通道契约（票据、关闭码、心跳、审计钩子） | 文档 + 小幅代码 | T5 | Docker 容器终端 | S–M |
+| T15 | `select` 多选与 `checkbox` 组 | 框架能力补齐 | 无 | 多状态筛选、批量卸载选项 | S |
+
+### 0.4 统一约束（所有任务适用）
+
+1. **只增不改**：现有 57 个渲染器、`embed(target, schema, opts)` 返回值、动作与指令语义保持可用；字段只增不改。
+2. **必须补测试**：单测沿用上游测试栈；涉及滚动、WebSocket、AbortController 时用可注入 mock。
+3. **离线可用**：运行时不依赖 CDN、外网字体或远程图标；不引入 `eval` / `new Function`（`budding.js` 产物实测 0 命中），保持 `script-src 'self'`。
+4. **无沙箱假设**：渲染器是应用树内普通 Vue 组件，能力经 props / 动作 / `runtime` 暴露，不依赖 iframe 隔离。
+5. **数字纪律**：未实测的性能数字标注「待实测」，不得写成既定事实。
+6. **命名**：新增组件/渲染器遵循 `vendor:type`；官方新增沿用现有内置组，不新造分组语义。
 
 ---
 
-## P1 `connect-src` 对 ws/wss 的官方结论与终端 CSP 指引
+## 1. 已解决：落地版本与 Skiff 侧替代口径
 
-- **产出形态**：仅文档约定
+> 以下条目**不再提需求**，仅保留结论，便于双方对齐。
+
+| 条目 | 落地版本 | 我们侧对应口径 | 遗留 |
+|---|---|---|---|
+| P1 `connect-src` ws/wss | 1.7 起，1.8.0 文档 + 矩阵 + 门禁 | CSP 保持 `default-src 'self'`；终端走同源 `wss://`，跨源显式列源，不引入通配 | 无 |
+| P2 资源 MIME / 缓存 / 同源 | 1.7 起，1.8.0 文档 + 门禁 | 渲染器资源一律同源相对路径；字体 `.woff2` 以 `font/woff2` 下发；不使用 worker / wasm | 图标文件名缓存见 T8 |
+| T0 虚拟滚动定位 | 1.8.0 `virtual-list` | 一律用 `invoke` 调 `scrollToIndex` / `scrollToTop` / `scrollTo`，不再靠重新挂载回顶 | 滚动事件见 T9 |
+| T1 文件浏览（table + breadcrumbs，不新建 type） | 1.8.0 主体交付 | 采用 `table` + `breadcrumbs`：`tree` / `virtual` / `selectable` / `filters` / 列 `sortable` / `rowActions` 直接用；目录状态走数据域 `dir` | 游标分页 T10、选择策略与下载 T11 |
+| T2 上传阶段 1 | 1.8.0 | 单文件整体上传：`uploadProgressTarget` + `cancelUpload` / `retryUpload`；宿主实现 `PlatformAdapter.upload` 以拿到真实进度 | 分片/续传/多文件见 T12 |
+| T3 日志查看（组合，不新建组件） | 1.8.0 能力齐备 | 先用 `virtual-list` + `input-text` + 过滤数据 + `copy` 动作；10 万行不承诺，行号/命中计数由页面自拼 | 跟随即时性与「上滚暂停」见 T9 |
+| T4 代码查看（`code-viewer` + `@budding/highlight`） | 1.8.0 | 只读用 `code-viewer`；高亮由同源 highlight Pack 提供；禁用 WASM 方案（产物无 `WebAssembly`） | 分段/定位/语言见 T13 |
+| T5 终端（`@budding/terminal` Pack） | 1.8.0 | 采用 `terminal` + 宿主 transport；`resizeFormat: "json"`；重连用 `reconnect` / `reconnectDelay` / `reconnectLimit` | 通道契约见 T14 |
+| P3 Pack 分发产物 | 1.8.0 `dist/packs`（上游答复新增，非原清单条目） | 六个产物（echarts / highlight / terminal 各自自包含 + external）；宿主统一用 external 变体避免重复 Vue | highlight 未进 `manifest.packages`，并入 T13 |
+
+**已删除的过时描述**：原清单中「无 select / textarea / checkbox / dialog / page-tabs / nav-menu」「必须自建 `skiff:file-browser`」「表格不支持多选」「高亮必须自研」等结论在 1.8.0 均不成立，已从本文件移除；历史决策留在上游答复文件与 git 历史中。
+
+---
+
+## 2. 未闭环条目（可直接粘贴的提示词）
+
+### T6 `input-text` 透传 `type` 与 `autocomplete`
+
+- **产出形态**：官方表单能力补齐
 - **依赖**：无
-- **为什么先做**：Skiff 的终端必须走 WebSocket；若官方不能明确 `connect-src 'self'` 是否覆盖 `ws://` 与 `wss://`，终端任务会在联调阶段才发现被 CSP 拦截。
-
-### 可粘贴提示词
-
-```text
-[任务]
-给出 budding 渲染器在严格 CSP 下使用 WebSocket 的官方结论，并写入文档与一个最小示例。不要修改运行时行为。
-
-[背景事实]
-1. budding 官方 CSP 建议为 script-src 'self'，不使用 eval / new Function；动态 import 无法携带 nonce，SRI 不生效。
-2. budding 全仓目前没有 EventSource / WebSocket / ReadableStream 的封装；但渲染器内可以直接使用原生 API。
-3. Skiff 的终端方案是「一次性票据 + 同源 WebSocket」，需要明确 connect-src 的写法。
-
-[要产出]
-1. 一份文档章节，明确以下矩阵，并给出每个结论的依据（浏览器规范或实测）：
-   - connect-src 'self' 是否允许同源 ws:// 与 wss://；
-   - 同源不同端口（如 ws://host:8080）是否仍算 'self'；
-   - 显式写 ws://host、wss://host 时的写法与通配限制；
-   - https 页面连接 ws:// 是否被浏览器拦截。
-2. 一个最小可运行示例：终端渲染器只建立连接、收发文本、显示连接状态，不实现 xterm。
-3. 示例页在严格 CSP 下运行，控制台零违规的记录方式（截图或日志）。
-
-[验收标准]
-- 文档矩阵覆盖 http 页面 / https 页面 × ws / wss × 同源同端口 / 同源不同端口 / 跨源，共 9 种组合中的每一种都有明确结论。
-- 示例在推荐 CSP 下可连接、可收发、可关闭；被拦截的组合给出预期报错。
-- 文档明确写出 Skiff 侧应使用的 connect-src 值，并标注「待实测」项。
-
-[明确不做]
-- 不实现终端 UI、重连策略、resize；这些属于 T5。
-- 不修改全局 CSP 默认值。
-- 不引入第三方 WebSocket 库。
-
-[约束]
-- 不引入 eval / new Function。
-- 文档与示例随仓库离线可用。
-- 结论中凡未实测的组合必须标注「待实测」，不得写成既定事实。
-```
-
----
-
-## P2 渲染器内资源加载的 MIME / 缓存 / 同源约定
-
-- **产出形态**：仅文档约定
-- **依赖**：无
-- **为什么先做**：日志、代码、终端渲染器要加载自身 CSS、字体、worker 或静态资源；Skiff 的 CSP 严格，MIME 与路径约定不清会直接表现为白屏或字体缺失。
-
-### 可粘贴提示词
-
-```text
-[任务]
-定义 budding 渲染器加载自身静态资源（CSS、字体、图标、worker、wasm 若未来引入）的官方约定，并给出一个符合约定的示例。不要修改运行时默认行为。
-
-[背景事实]
-1. budding 渲染器是应用树内普通 Vue 组件，无沙箱。
-2. Skiff 的全局 CSP 为：default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'；font-src、worker-src、wasm 相关指令当前未显式声明。
-3. 运行时会按 document.currentScript 推导目录并插入 CSS <link>；查询串可能被丢弃（推断，需核实）。
-
-[要产出]
-1. 一份约定文档，至少覆盖：
-   - 资源必须使用与渲染器同源的相对路径，禁止 CDN 与绝对外链；
-   - 各类资源的推荐 MIME：.js / .css / .woff2 / .svg / .json；
-   - 缓存建议：版本化文件名 + 长缓存；非版本化文件 no-cache；
-   - 字体优先使用独立文件而不是 data URI；若必须 data URI，明确需要 font-src 'self' data:；
-   - worker 与 wasm 的默认态度：默认不使用；确需使用时列出最小 CSP 增量（worker-src 'self' blob: / script-src 'self' 'wasm-unsafe-eval'）。
-2. 一个示例渲染器，加载同源 CSS 与字体，在严格 CSP 下正常渲染。
-3. 一份「常见违规 → 现象 → 最小修复」对照表。
-
-[验收标准]
-- 示例在 default-src 'self' 下加载成功，控制台零违规。
-- 文档明确回答：字体用 data URI 时是否必须加 font-src；worker 与 wasm 是否默认禁止。
-- 对照表至少覆盖字体、图片、worker、wasm、样式内联五类。
-
-[明确不做]
-- 不修改 Skiff 的 CSP；只给出建议值。
-- 不引入外部字体服务。
-- 不实现具体业务渲染器。
-
-[约束]
-- 不引入 eval / new Function。
-- 文档与示例离线可用。
-- 未实测的结论标注「待实测」。
-```
-
----
-
-## T0 `VVirtualScroll` 暴露 `scrollToIndex` / `scrollTo` 等实例方法
-
-- **产出形态**：框架能力补齐
-- **依赖**：无（T1/T3/T4 的硬前置）
-- **现状事实**：`VVirtualScroll` 已支持动态行高（每项通过 `onUpdate:height` 回报，`virtual.js` 重算 offsets），但**组件未 `expose()`**，模板 ref 拿不到 `scrollToIndex`，因此无法实现「日志尾部跟随」「跳到第 N 行」「文件列表回顶」。
-
-### 可粘贴提示词
-
-```text
-[任务]
-为 budding 内置的 VVirtualScroll（Vuetify 4.3.3，组件已内联进 bundle）补充程序化滚动能力，且不破坏任何现有用法。
-
-[背景事实]
-1. 渲染器从 __BUDDING_SHARED__['vue'] / ['vuetify/components'] 取用组件，是应用树内普通 Vue 组件，无沙箱。
-2. 当前 VVirtualScroll 支持动态行高：子项通过 onUpdate:height 回报高度，virtual.js 负责重算 offsets。
-3. 组件没有 expose()，所以父组件通过模板 ref 无法调用任何滚动方法。
-4. 现有 54 个渲染器可能已经在使用 VVirtualScroll，必须保持行为不变。
-
-[要产出]
-1. 在 VVirtualScroll 上通过 defineExpose 暴露以下方法（名称固定）：
-   - scrollToIndex(index: number, opts?: { align?: 'start' | 'center' | 'end' | 'nearest'; behavior?: 'auto' | 'smooth' }): void
-   - scrollTo(offset: { top?: number; left?: number; behavior?: 'auto' | 'smooth' }): void
-   - scrollToTop(opts?: { behavior?: 'auto' | 'smooth' }): void
-   - getScrollTop(): number
-2. 行为要求：
-   - index 越界时钳制到 [0, itemCount-1]，不抛异常；
-   - align 为 'nearest' 时，目标已在可视区则不滚动；
-   - 动态行高下以当前 offsets 计算目标位置；数据量变化后再次调用仍正确；
-   - 平滑滚动沿用浏览器原生 behavior，不自定义动画。
-3. 类型声明：补充到组件导出类型中，调用方在 TypeScript 下可直接使用。
-4. 一个演示页：1 万条可变行高数据，按钮触发 scrollToIndex(0 / 5000 / 9999) 与 scrollToTop。
-
-[验收标准]
-- 新增单元测试覆盖：越界钳制、四种 align、动态高度、数据量增加后调用、空列表调用。
-- 现有 VVirtualScroll 相关测试全部通过，既有渲染器不需要改代码。
-- 演示页中三个跳转目标均能到达且无跳变异常；性能数字标注「待实测」。
-- 不新增必需 props，不改变现有事件名与插槽。
-
-[明确不做]
-- 不重写虚拟滚动算法，不改变行高估算策略。
-- 不暴露内部 offsets 数组或 DOM 节点。
-- 不新增额外依赖。
-
-[约束]
-- 向后兼容：只增不改。
-- 必须补单元测试。
-- 不引入 eval / new Function；离线可用。
-```
-
----
-
-## T1 官方「文件浏览器」渲染器（面包屑 + 平铺列表，禁止树形）
-
-- **产出形态**：官方 advanced 渲染器（`budding:file-browser`）
-- **依赖**：T0
-- **关键决定**：**明确禁止树形**。原因：budding 无独立 tree 组件；大目录下懒加载树会放大请求数量；平铺列表 + 面包屑 + 虚拟滚动在实现与性能上更可控。
-
-### 可粘贴提示词
-
-```text
-[任务]
-在 budding 中新增官方文件浏览器渲染器 budding:file-browser，用于浏览目录与进入子目录。只做浏览，不做上传/删除/重命名/拖拽。
-
-[背景事实]
-1. 可用组件：VBreadcrumbs、VSheet、VToolbar、VTextField、VDataTable、VDataTableVirtual、VEmptyState、VSkeletonLoader；VVirtualScroll 由 T0 提供 scrollToIndex/scrollToTop。
-2. budding 无独立 tree / tree-select 组件；本任务明确不引入树形。
-3. 大目录场景需要游标分页与虚拟滚动，不能用一次性全量渲染。
-
-[要产出]
-1. 渲染器 budding:file-browser，注册到 builtin-groups（具体文件以仓库为准，需核实）。
-2. 数据契约（props）：
-   - initialPath: string，默认 '/'
-   - source: 由宿主提供的取数函数，签名 load({ path, cursor, sort, showHidden }) => Promise<{ items: Entry[]; next_cursor: string | null }>
-   - Entry = { name: string; is_dir: boolean; size: number; mtime: string; kind?: string }
-   - sort: { key: 'name' | 'size' | 'mtime'; dir: 'asc' | 'desc' }，默认 { key: 'name', dir: 'asc' }
-   - showHidden: boolean，默认 false
-   - selectionMode: 'none' | 'single' | 'multi'，默认 'single'
-3. 布局与交互：
-   - 顶部 VBreadcrumbs 展示当前路径，点击任意层级导航；
-   - 主体为平铺列表（禁止树形），列：名称、大小、修改时间、类型；
-   - 双击目录进入；双击文件触发 open 事件；
-   - 排序切换会重置游标并重新加载；
-   - 目录优先排序，同级按当前 sort 排序；
-   - 空目录显示 VEmptyState；加载中显示 VSkeletonLoader；错误显示可重试状态；
-   - 列表使用虚拟滚动，滚动到底部自动加载 next_cursor；
-   - 切换路径或排序时清空选择。
-4. 事件：navigate({ path })、open({ entry })、selectionChange({ entries })、refresh()。
-5. 状态机：loading | ready | empty | error；error 状态必须保留重试入口。
-
-[验收标准]
-- 单元测试覆盖：路径切换重置游标、排序切换重置游标、空目录、错误重试、目录优先排序、选择在导航后清空。
-- 1 万条目下滚动流畅且只渲染可视窗口（用 mock 高度断言渲染数量远小于总数，具体数字待实测）。
-- 面包屑点击与双击进入均触发正确事件，不直接修改内部状态之外的宿主数据。
-- 空态、加载态、错误态三态可分别用测试夹具复现。
-
-[明确不做]
-- 不做树形视图、不做拖拽、不做右键菜单。
-- 不做上传、删除、重命名、移动、复制、下载。
-- 不做多标签页或多窗格。
-
-[约束]
-- 不破坏现有渲染器与 schema 契约；新增字段只增不改。
-- 必须补单元测试；离线可用；不引入 eval / new Function。
-```
-
----
-
-## T2 上传渲染器 MVP（单文件、固定分片、进度、取消、失败重试一次）
-
-- **产出形态**：官方 advanced 渲染器（`budding:upload`）
-- **依赖**：无（可与 T1 并行）
-- **现状事实**：budding 的 `file` 渲染器（`FileInput.vue`）只有布尔 `loading`，`FormData` 单次请求，**无分片、无进度、无取消、无 `onEvent` 触点**。
-
-### 可粘贴提示词
-
-```text
-[任务]
-在 budding 中新增上传渲染器 budding:upload，提供单文件分片上传的 MVP 能力。
-
-[背景事实]
-1. 现有 FileInput.vue 的 file 渲染器只有布尔 loading，FormData 单次 POST，没有分片、进度、取消或事件钩子。
-2. platform.request 只把响应读成 text 再 parse，不暴露流；因此进度必须来自上传适配器本身，而不是响应流。
-3. Skiff 服务端使用 offset 分片协议，本渲染器必须允许宿主注入会话/分片/完成/中止四类适配函数。
-
-[要产出]
-1. 渲染器 budding:upload，注册到 builtin-groups（具体文件以仓库为准，需核实）。
-2. Props：
-   - accept?: string
-   - maxSizeBytes?: number
-   - chunkSize: number（可配置；默认值与取值理由写入文档，待实测）
-   - session?: (file: File) => Promise<{ uploadId: string; chunkSize?: number }>
-   - uploadChunk: (args: { uploadId: string; offset: number; chunk: Blob; signal: AbortSignal }) => Promise<{ received: number }>
-   - complete?: (args: { uploadId: string }) => Promise<void>
-   - abort?: (args: { uploadId: string }) => Promise<void>
-3. 默认适配：未提供 session/uploadChunk 时，退化为单次 FormData POST，保持与现有 file 渲染器相同的兼容行为。
-4. 行为：
-   - 顺序发送分片，offset 单调递增；
-   - 进度事件 progress({ loaded, total, percent })；
-   - 取消使用 AbortController，取消后不得再发送新分片；
-   - 网络错误或 5xx 自动重试一次，4xx 不重试；
-   - 成功后触发 success，失败触发 error，取消触发 cancelled；
-   - 取消或失败时若提供 abort 适配器，必须调用它。
-5. 状态机：idle → preparing → uploading → retrying → success | error | cancelled。
-
-[验收标准]
-- 用 mock 适配器断言分片顺序、offset 连续性、总分片数。
-- 进度单调不减，百分比的最终值为 100（允许浮点误差）。
-- 5xx 时恰好重试一次；4xx 时不重试。
-- 取消后不再调用 uploadChunk，且调用一次 abort。
-- 不提供分片适配器时，单次 POST 路径与现有行为一致。
-
-[明确不做]
-- 不做跨会话续传、暂停/恢复。
-- 不做并发上传（并发数固定为 1）。
-- 不做目录上传、拖拽上传、多文件队列。
-- 不做压缩、加密、秒传。
-
-[约束]
-- 不破坏现有 file 渲染器；新增事件只增不改。
-- 必须补单元测试；离线可用；不引入 eval / new Function。
-```
-
----
-
-## T3 日志查看器（虚拟滚动、行号、跟随、搜索、全量复制）
-
-- **产出形态**：官方 advanced 渲染器（`budding:log-viewer`）
-- **依赖**：T0
-- **现状事实**：`VCode` 只是 `createSimpleFunctional('v-code','code')`，无高亮、无行号、无滚动；`VHighlight` 只做关键词高亮。
-
-### 可粘贴提示词
-
-```text
-[任务]
-在 budding 中新增日志查看器渲染器 budding:log-viewer，用于查看大体积纯文本日志。
-
-[背景事实]
-1. VVirtualScroll 支持动态行高，但本任务使用定高行以降低复杂度；T0 已提供 scrollToIndex 与 scrollTo。
-2. VCode 无行号、无滚动、无高亮能力；VHighlight 只做关键词高亮。
-3. Skiff 的日志是纯文本，不含 ANSI 控制序列（终端颜色属于 T5）。
-
-[要产出]
-1. 渲染器 budding:log-viewer，注册到 builtin-groups（具体文件以仓库为准，需核实）。
-2. Props：
-   - lines: string[] 或 source: (args: { cursor?: string; limit: number }) => Promise<{ lines: string[]; next_cursor?: string | null }>，二选一
-   - rowHeight: number（可配置，默认值写入文档，待实测）
-   - follow: boolean，默认 true
-   - wrap: boolean，默认 false
-   - maxLines?: number（环形缓冲上限，超出丢弃最旧行）
-3. 行为：
-   - 定高行虚拟滚动，左侧行号 gutter；
-   - follow=true 且处于底部时，新行到达自动滚到底；
-   - 用户向上滚动时暂停跟随，并显示「跳到最新」按钮；点击后恢复跟随；
-   - 搜索框输入关键词后，用 VHighlight 标记命中；显示命中计数与上一个/下一个跳转；
-   - 「复制全部」从数据模型拼接完整文本写入剪贴板，不依赖 DOM 选区。
-4. 明确记录虚拟化限制：浏览器原生「全选/复制」只能拿到可视窗口附近的 DOM 行（约 ±100px），因此必须提供基于数据模型的复制全部。
-
-[验收标准]
-- 10 万行夹具下首屏可交互（具体耗时待实测），滚动过程无卡顿异常。
-- 跟随行为可测：底部时新行到达自动到底；上滚后不自动滚动；点击「跳到最新」恢复。
-- 搜索命中计数与高亮数量一致；上一个/下一个能定位到命中行。
-- 「复制全部」的内容包含可视窗口之外的行，且行序与原数据一致。
-- 行号与内容严格对齐；wrap=false 时超长行水平滚动。
-
-[明确不做]
-- 不做 ANSI 颜色解析、不做时间戳解析、不做日志级别过滤。
-- 不做文件下载、不做日志搜索后端、不做正则搜索（MVP 只做字面量）。
-- 不做 wrap=true 的复杂选区复制（可后续单独立项）。
-
-[约束]
-- 不破坏现有渲染器与 schema 契约。
-- 必须补单元测试；离线可用；不引入 eval / new Function。
-```
-
----
-
-## T4 代码查看器（只读、行号、纯 JS 高亮、大文件分段）
-
-- **产出形态**：官方 advanced 渲染器（`budding:code-viewer`）
-- **依赖**：T0
-- **关键约束**：**不得依赖 WASM**，避免引入 `wasm-unsafe-eval`；高亮必须是纯 JavaScript 实现。
-
-### 可粘贴提示词
-
-```text
-[任务]
-在 budding 中新增只读代码查看器渲染器 budding:code-viewer。
-
-[背景事实]
-1. VCode 只是 createSimpleFunctional('v-code','code')，没有高亮、行号或滚动能力。
-2. Skiff 的 CSP 保持严格，不接受 wasm-unsafe-eval；因此不得使用 Shiki/Oniguruma 之类的 WASM 高亮方案。
-3. 大文件不能一次性全部渲染，需要按行区间分段加载。
-
-[要产出]
-1. 渲染器 budding:code-viewer，注册到 builtin-groups（具体文件以仓库为准，需核实）。
-2. Props：
-   - text?: string 或 source: (args: { start_line: number; end_line: number }) => Promise<{ lines: string[]; total_lines: number }>
-   - language: 'text' | 'javascript' | 'typescript' | 'json' | 'shell'，默认 'text'
-   - startLine: number，默认 1
-   - showLineNumbers: boolean，默认 true
-   - wrap: boolean，默认 false
-   - segmentLines: number（分段阈值，默认值写入文档，待实测）
-3. 行为：
-   - 只读，不可编辑；
-   - 行号与内容对齐；
-   - 纯 JS 词法高亮，MVP 至少识别：关键字、字符串、注释、数字、布尔/null；
-   - 高亮必须使用文本节点或安全转义，禁止把未转义内容塞进 innerHTML；
-   - 大文件按 segmentLines 分段请求/渲染，滚动到边界时加载下一段；
-   - 提供 scrollToLine(line) 受控方法或事件入口，内部使用 T0 的 scrollToIndex。
-4. 状态机：loading | ready | error。
-
-[验收标准]
-- 夹具包含 `<script>alert(1)</script>` 与 `</code>`，渲染后必须显示为文本，不得执行或破坏结构。
-- 行号计数与 total_lines 一致；滚动到分段边界能加载下一段且不重复。
-- 关键词、字符串、注释、数字各有至少一条高亮断言。
-- 不加载任何 .wasm 文件；产物中检索 `WebAssembly` 与 `wasm` 无命中。
-- 10 万行分段夹具可滚动浏览（性能数字待实测）。
-
-[明确不做]
-- 不做编辑、保存、Diff、LSP、跳转定义。
-- 不做完整语言语法树，只做词法级高亮。
-- 不做代码折叠、不做 minimap。
-- 不引入 WASM 或远程高亮服务。
-
-[约束]
-- 不破坏现有渲染器与 schema 契约。
-- 必须补单元测试；离线可用；不引入 eval / new Function。
-```
-
----
-
-## T5 终端渲染器（xterm 内联、ResizeObserver、WS 生命周期）
-
-- **产出形态**：官方 advanced 渲染器（`budding:terminal`）
-- **依赖**：P1
-- **关键约束**：**必须内联挂载 xterm，禁止 iframe**。
-
-> **Skiff 侧缺口（2026-11-13 实测记录，仅登记不实现）**：内核目前**没有** `GET /{prefix}/terminal` 路由，
-> 测试机访问返回 404「页面不存在」。终端页依赖本任务 T5 的渲染器（及 P1 的 `connect-src` 结论），
-> 在 T5 落地前不新建占位路由；本批只交付 `/{prefix}/files` 的占位壳页。
-
-### 可粘贴提示词
-
-```text
-[任务]
-在 budding 中新增终端渲染器 budding:terminal，将 xterm 直接挂载在渲染器容器内，不使用 iframe。
-
-[背景事实]
-1. budding 渲染器是应用树内普通 Vue 组件，无沙箱；因此可以直接操作 DOM 与原生 WebSocket。
-2. 渲染器内可直接使用原生 API；budding 目前没有 WebSocket / ResizeObserver 封装，需自行实现并清理。
-3. Skiff 的终端是「一次性票据 + 同源 WebSocket」，连接地址由宿主传入。
-4. CSP 的 connect-src 结论见 P1，本任务依赖该结论。
-
-[要产出]
-1. 渲染器 budding:terminal，注册到 builtin-groups（具体文件以仓库为准，需核实）。
-2. Props：
-   - connect: () => WebSocket 或 wsUrl: string，二选一
-   - fontSize: number，默认 14
-   - theme?: Record<string, string>
-   - reconnect?: { maxAttempts: number; baseDelayMs: number }
-   - readOnly?: boolean，默认 false
-3. 行为：
-   - 在容器内创建并挂载 xterm，不使用 iframe；
-   - ResizeObserver 监听容器尺寸，配合 FitAddon 计算 cols/rows；尺寸变化时通过 WS 发送 resize 消息（消息格式由 props 回调或约定给定，需在文档写明）；
-   - 自动聚焦，并在点击容器时恢复焦点；
-   - WS 生命周期：open → 数据双向转发 → close/error 时更新状态；
-   - 重连：仅在非用户主动关闭时重连，指数退避，次数上限由 reconnect.maxAttempts 控制；
-   - 卸载时：关闭 WS、断开并 disconnect ResizeObserver、dispose xterm、移除所有事件监听。
-4. 事件：connected、disconnected、reconnecting({ attempt })、exit({ code })、error。
-5. 状态：idle | connecting | connected | reconnecting | closed | error。
-
-[验收标准]
-- 用 mock WebSocket 与 mock ResizeObserver 断言：挂载后发起连接；尺寸变化发送正确的 cols/rows；卸载后 socket.close 被调用且监听器数量归零。
-- 服务端主动断开时按退避重连，达到上限后进入 closed；用户主动关闭后不再重连。
-- 容器内不存在 iframe 元素。
-- 在 P1 推荐的 CSP 下可连接；不得要求放宽 script-src。
-
-[明确不做]
-- 不做 SSH 客户端、不做多路复用、不做文件传输（sz/rz）。
-- 不做多标签终端、不做分屏。
-- 不做终端录制与回放。
-- 不引入第三方终端库（除 xterm 本身）。
-
-[约束]
-- 不破坏现有渲染器与 schema 契约。
-- 必须补单元测试；离线可用；不引入 eval / new Function。
-```
-
----
-
-## T6 `input-text` 支持 `type` 与 `autocomplete` 透传
-
-- **产出形态**：官方表单能力补齐（`input-text` 渲染器）
-- **依赖**：无
-- **关键约束**：字段只增不改；不传 `type` 时保持现有行为。
-
-### 可粘贴提示词
+- **现状（产物实测）**：1.8.0 的 `input-text` 共 33 个字段，**没有 `type`，也没有 `autocomplete`**；渲染出的原生 `input` 固定为文本类型。`time` 组件内部使用原生 `type=time`，说明链路允许，只是 `input-text` 未开放。
+- **缺口表现**：Skiff 登录页只能用启动脚本在渲染后把 DOM 改成 `password`（`crates/web/static/budding/budding-login.js` 的 `maskPassword` / `watchPasswordMask`），口令在首帧存在明文窗口；浏览器密码管理器无法识别登录表单；无法声明 `autocomplete="off"` 阻止浏览器错误回填。FTP 改密、SMTP 口令等页面同样受影响。
 
 ```text
 [任务]
 让 budding 的 input-text 渲染器支持 type 与 autocomplete，并透传到原生 input 元素。
 
 [背景事实]
-1. budding 1.6.0 的 input-text 只能传值与外观，没有 type 字段；渲染出的原生 input 固定为文本类型。
-2. Skiff 的登录页用 input-text 渲染口令框，只能由启动脚本在渲染后把 DOM type 改成 password（crates/web/static/budding/budding-login.js 的 maskPassword/watchPasswordMask），属于临时桥接。
-3. 该桥接依赖渲染后的 DOM 结构，渲染器重建 input 时需要 MutationObserver 兜底，既脆弱又让宿主承担了本应由组件负责的安全属性。
+1. 1.8.0 的 input-text 有 33 个字段，没有 type 与 autocomplete；原生 input 固定为文本类型。
+2. 同版本 time 组件已使用原生 type=time，透传链路存在，只是 input-text 未开放。
+3. Skiff 登录页当前用运行后脚本改写 DOM type=password，属于临时桥接，必须在上游落地后删除。
 
 [要产出]
-1. input-text 新增 props：
-   - type: 'text' | 'password' | 'email' | 'number'，默认 'text'；
-   - autocomplete: string，可选，透传到原生 input 的 autocomplete 属性。
-2. 渲染时把 type 与 autocomplete 绑定到原生 input 元素（不是只放在外层容器）。
-3. 类型变化时保持值与校验状态不变。
+1. input-text 新增字段：
+   - type: 'text' | 'password' | 'email' | 'number' | 'tel' | 'url'，默认 'text'；
+   - autocomplete: string，可选，原样透传到原生 input 的 autocomplete（含 'off' / 'new-password' / 'current-password'）。
+2. type 与 autocomplete 必须绑定到原生 input 元素，而不是只放在外层容器。
+3. 类型变化时保持值与校验状态不变；password 时浏览器表现为掩码输入。
+4. 文档补字段表与一个登录表单示例。
 
 [验收标准]
-- 渲染出的 DOM input type 与 schema 声明一致（password 时浏览器表现为掩码输入）。
-- autocomplete 出现在原生 input 上。
-- 口令框不依赖任何后置脚本改写 DOM 属性即可掩码。
-- 现有不传 type 的 schema 行为不变（仍为 text，值绑定与校验不回归）。
-- 补单元测试覆盖四种 type、默认值与 autocomplete。
+- 渲染后的 DOM input 上可断言 type 与 autocomplete 与 schema 一致。
+- 四种以上 type 各有单测；不传 type 时与 1.8.0 行为完全一致。
+- 口令框不依赖任何后置脚本改写 DOM 即可掩码。
+- 现有表单值收集、校验与提交链路不回归。
 
 [明确不做]
-- 不做新的口令组件、不做密码强度指示、不做显示/隐藏切换按钮。
-- 不改动表单值收集、校验与提交链路。
-- 不做文件/日期/时间等其它 input 类型（后续按需再提）。
+- 不做密码强度、显示/隐藏切换、文件/日期/时间等其它类型。
+- 不改表单校验与提交实现。
 
 [约束]
-- 向后兼容：字段只增不改，不传 type 时与 1.6.0 行为一致。
-- 必须补单元测试；离线可用；不引入 eval / new Function。
+- 字段只增不改；离线可用；不引入 eval / new Function。
 ```
 
 ---
 
-## T7 插件 UI 以 Schema 交付（替代 iframe 槽位）
+### T7 插件 Schema 的运行时安全策略（动作白名单 / 禁外链 / 静态校验）
 
-- **产出形态**：插件侧/上游需求（manifest 包格式提案 + budding 渲染约定）
-- **依赖**：无编码依赖；开始前需先定案「包内 UI 如何声明 Schema」
-- **背景**：Skiff 的 budding 后台外壳（`admin` + `outlet`）不承载 iframe，也不自造 iframe 渲染器；插件自带 HTML 的功能页（guard / monitor / files / cron / ftp / firewall 各自界面）不再作为新产品入口，当前统一渲染「插件功能页正在切换为原生渲染」占位。旧 SSR iframe 路由保留兼容，但不承接新入口。
-- **关键约束**：本次不改插件包二进制格式、不改内核插件加载逻辑；涉及 `[[ui]]` 由 HTML 改为 Schema 时必须先出提案再实施。
+- **产出形态**：框架能力补齐 + 文档
+- **依赖**：无（Skiff 侧包格式另行定义，不阻塞本任务）
+- **现状（读文档 + 产物实测）**：
+  - **随包 / 远程 schema 加载已具备**：路由记录可写 `"schema": "/pages/x.json"`，经 `platform.loadJson(url, { kind })` 加载；`service` 组件另有 `schemaApi`（返回 Schema 的接口）与内联 `schema`。这一半需求可以划掉。
+  - **动作可控性不足**：内核动作（`ajax` / `navigate` / `copy` 等）对任何 schema 永远可用；只有 `custom` 要求宿主 `registerAction`，未注册才报错。
+  - **无外链约束**：`ajax` 的 `url`、`navigate` 的 `url`、`source`/`schemaApi` 都可指向任意外部地址，内核不做宿主白名单。
+  - **无静态校验与限额**：没有公开的 `validateSchema`；节点数、深度、字节数无上限；`usedTypes` 在内部编译结果里，未作为公开 API 暴露。
+  - 未知 `type` 现在会让类型加载失败并进入整页错误态，无法只让单节点降级。
 
-### 可粘贴提示词
+- **缺口表现**：第三方/插件提供的 schema 与内核页面 schema 拥有同等能力，无法在渲染前拒绝「读其它接口」「跳外链」「超大 schema」；插件页一旦改成原生渲染，iframe 原有的同源隔离消失，需要这一层来兜底。
 
 ```text
 [任务]
-定义「插件 UI 以 Schema 交付」的方案与最小落地路径，替代当前的插件自带 HTML + 内核 iframe 槽位。先出提案，不改现有包格式与内核加载逻辑。
+为「非第一方 Schema」（插件、第三方、远程下发）提供运行时安全策略与静态校验，且不影响现有第一方页面。
 
 [背景事实]
-1. Skiff 的新前端运行时是 budding，后台外壳用 admin + outlet，不提供也不允许自造 iframe 渲染器。
-2. 现有插件包用 [[ui]] 指向包内 ui/<view>.html，由内核 iframe 承载；该形态在新前端不再作为入口，只保留旧 SSR 兼容。
-3. budding 的渲染器是应用树内的普通 Vue 组件，schema 由宿主生成；插件功能页需要能被同一套渲染器渲染。
+1. 1.8.0 支持路由 schema 走 platform.loadJson、service.schemaApi 运行时取 Schema。
+2. 内核动作对任何 schema 恒可用；只有 custom 动作要求宿主注册。
+3. ajax / navigate / source / schemaApi 的 URL 目前不受宿主白名单约束。
+4. 编译阶段内部已有 usedTypes，但未公开；未知 type 会导致整页错误态。
 
 [要产出]
-1. 包格式提案：插件如何在 manifest 中声明「功能页 UI 以 Schema 交付」（字段、版本轴、向后兼容与降级规则）。
-2. Schema 交付约定：插件提交的 Schema 允许使用哪些渲染器/动作、如何避免 eval / new Function、如何与宿主共享主题与国际化。
-3. 最小示例：一个只读功能页（如监控）的 schema 与宿主渲染流程。
-4. 迁移与回滚：旧 [[ui]] HTML 包的行为、检测与提示文案。
+1. 实例级配置 schemaPolicy（或 embed 的 options.schemaPolicy）：
+   - allowedActions?: string[]：仅放行列出的动作类型（如 ['invoke','setValue','custom:skiff:*']），未列出的动作在执行前被拒绝并上报；
+   - allowedHosts?: string[]：ajax / navigate / source / schemaApi 的 URL 仅允许同源或列出的 host，其余拒绝；
+   - maxNodes / maxDepth / maxBytes：超限直接拒绝，不进入渲染；
+   - onViolation?: 'error' | 'strip'：整页失败或剥离违规节点后继续。
+2. 公开一个纯函数 validateSchema(schema, policy) => { ok, violations: [{ path, code, message }] }，可在加载前调用。
+3. 编译结果公开 usedTypes（只读数组），供宿主在渲染前判断需要的 Pack。
+4. 未知 type 的降级规范：单节点渲染占位 + 上报 phase/type/path，不整页崩。
 
 [验收标准]
-- 提案包含字段定义、版本兼容、错误码与降级路径，且明确不改现有 iframe 页的运行行为。
-- 示例 Schema 在 budding 渲染器内可渲染，无 eval、无外部资源依赖，满足 script-src 'self'。
-- 明确哪些能力需要新增渲染器（若有），并保持字段只增不改。
+- 含外链 ajax / navigate 的 schema 在 allowedHosts 下被拒绝或剥离，可断言 violations。
+- 超出 maxNodes / maxDepth / maxBytes 的 schema 被拒绝且不挂载。
+- 未列入 allowedActions 的动作不产生任何请求或跳转。
+- 未配置 schemaPolicy 时，现有页面行为逐字节不变（含错误态文案）。
+- validateSchema 对同一 schema 与运行时判定结论一致（用测试向量对齐）。
 
 [明确不做]
-- 不在本任务内修改 Skiff 的插件加载逻辑或包格式实现。
-- 不引入 iframe 渲染器，不以 iframe 作为过渡形态。
-- 不修改现有插件二进制的字节格式；提案通过后另开实施任务。
+- 不做插件签名、信任链、包验签（属宿主职责）。
+- 不改变第一方内置组的默认行为。
+- 不引入 eval / new Function。
+
+[约束]
+- 只增不改；必须补单测；离线可用。
 ```
 
 ---
 
-## 执行顺序与依赖说明
+### T8 图标字体的版本化文件名、缓存与子集清单
 
-1. **P1、P2 先出文档**：不阻塞编码，但决定 T5 能否联调、以及字体/资源类问题是否会误判为框架缺陷。
-2. **T0 必须最先完成**：T1 的滚动加载、T3 的「跳到最新」、T4 的 `scrollToLine` 都直接依赖它；T0 未完成时，上层只能靠重新挂载组件绕过，体验和状态保持都会退化。
-3. **T1 与 T2 可并行**：两者互不依赖；但文件管理页最终需要二者同页协作，建议 T1 先出骨架、T2 后接入。
-4. **T3、T4 在 T0 之后可并行**：二者都基于定高行虚拟滚动，可复用 T0 的滚动方法；代码高亮不要引入 WASM，否则会迫使 Skiff 放宽 CSP。
-5. **T5 最后做**：依赖 P1 的 CSP 结论，且与其它任务没有代码耦合；它是唯一需要处理长连接生命周期的任务。
-6. **顺序不是发布顺序**：每个任务都应独立可回滚、独立补测试；不得为了赶进度把 T0 的改动混进 T1。
-7. **T7 独立于渲染器任务**：它先产出包格式与 Schema 交付提案，提案通过后才进入实施；在提案落地前，Skiff 壳页对插件功能页只给占位，不回退 iframe。
+- **产出形态**：构建产物 + 文档
+- **依赖**：无
+- **现状（产物实测）**：
+  - `budding-icons.css` 3529 B、`budding-icons.woff2` 2456 B，共 **59** 个 mdi 图标；CSS 用相对路径 `url("./budding-icons.woff2")`，`font-display: block`。
+  - `manifest.icons = { style, font, optional: true, fontFamily }`，`files[]` 内给了 sha256；但**两个图标文件名都不带版本**，而 JS/CSS 是 `budding-1.8.0.min.{js,css}` + 稳定别名 `budding.min.js` / `budding.css`。
+  - 文档只写了「必须与 budding.js 同批升级」，没有给缓存头建议。
+- **缺口表现**：站点对静态资源设长缓存时，升级 1.8.0 → 1.8.1 会出现「JS 已更新、图标字体还是旧的」，缺字形（空白图标）且难以排查；子集清单不可机读，宿主无法在构建期校验「我用到的图标是否都在子集里」。
 
-### Skiff 可以先自己顶上（`skiff:*` Pack 对照）
+```text
+[任务]
+把随包图标字体改成可长期缓存、可机读、可校验的交付形态。
 
-> 仅为应急对照，不代表最终取舍；取舍由负责人决定。
+[背景事实]
+1. 1.8.0 产出 budding-icons.css / budding-icons.woff2，59 个 mdi 子集，文件名不带版本。
+2. JS/CSS 已是「版本化文件名 + 稳定别名」；图标没有跟上。
+3. manifest.icons 只有 style/font/optional/fontFamily 与 files[] 的 sha256。
 
-| 任务 | Skiff 不等上游的临时做法 | 代价 |
+[要产出]
+1. 产物改为版本化文件名 + 稳定别名：
+   - budding-icons-<version>.css / .woff2（内容寻址或版本号），并保留 budding-icons.css / .woff2 作为别名；
+   - CSS 内 url 指向同版本 woff2，不依赖查询串。
+2. manifest.icons 增 version、files[{ file, bytes, sha256 }]、integrity（可选）；别名关系写入文档。
+3. 产出 budding-icons.json：{ version, fontFamily, icons: ["alert", ...] }，与 CSS 中的 ::before 规则一一对应。
+4. 文档给出缓存建议：版本化文件 immutable（一年），别名 no-cache；字体 MIME 必须 font/woff2。
+5. 构建门禁：图标清单与 CSS 规则数量不一致、或缺字形时构建失败。
+
+[验收标准]
+- 升级版本后，仅靠版本化文件名即可绕过旧缓存；别名仍可用。
+- budding-icons.json 的 icons 数量与 CSS 规则数一致（当前 59）。
+- manifest 内 sha256 与文件实际内容一致。
+- 文档明确「引官方子集 / 换完整 @mdi/font / 不引」三种用法的缓存差异。
+
+[明确不做]
+- 不把完整 @mdi/font 打进默认产物。
+- 不改 Vuetify 的 mdi 渲染方式。
+
+[约束]
+- 只增不改；离线可用；兼容现有 `<link rel="stylesheet" href="/budding-icons.css">` 写法。
+```
+
+---
+
+### T9 `virtual-list` 滚动生命周期触点（`scroll` / `reachBottom` / `scrollToKey`）
+
+- **产出形态**：框架能力补齐
+- **依赖**：无（T3 组合方案、日志跟随、无限加载的上游）
+- **现状（产物实测）**：
+  - 定位 API **够用**：`scrollTo({ top, behavior })`、`scrollToTop()`、`scrollToIndex({ index, position })`、`getScrollTop()`、`reload`、`setData`。
+  - **事件只有 `init` / `refresh`**：没有 `scroll` 触点，也没有「到达底部」触点；组件不暴露滚动容器，宿主无法在不侵入 DOM 的情况下判断用户是否上滚。
+  - 定位只按 index / 偏移，没有「按业务 key 定位」。
+- **缺口表现**：日志页无法实现「用户上滚 → 暂停跟随 + 显示跳到最新」；无限加载无法在到底时自动取下一页（只能靠分页器或按钮）；作业详情要滚到某条记录时只能先自己算 index。
+
+```text
+[任务]
+为 virtual-list 补齐滚动生命周期触点与按 key 定位，定位指令保持现状不变。
+
+[背景事实]
+1. 1.8.0 的 virtual-list 有 6 个指令：scrollTo / scrollToTop / scrollToIndex / getScrollTop / reload / setData。
+2. 触点只有 init / refresh；组件不暴露滚动容器与 offsets。
+3. 条目有 itemKey 字段，但定位指令只接受 index 或像素偏移。
+
+[要产出]
+1. 新增触点：
+   - scroll({ top, atTop, atBottom, direction })：节流不少于 100ms，程序化滚动与用户滚动都要触发；
+   - reachBottom({ reason: 'user' | 'programmatic' })：每次「从非底部进入底部」只触发一次，避免连续触发。
+2. 新增指令 scrollToKey({ key, position? })，position 语义同 scrollToIndex 的 start/center/end；key 不存在时不抛异常，返回 false。
+3. 可选字段 stickToBottom（boolean）：为 true 且当前在底部时，items 增长后自动跟随；用户上滚后自动解除，回到顶部按钮可恢复。若实现成本高，可只交付触点，由宿主组合。
+4. 文档补触点载荷、触发时机与节流口径。
+
+[验收标准]
+- mock 滚动事件下，scroll 按节流触发；reachBottom 从非底部到只触发一次。
+- 程序化 scrollTo 触发的 reachBottom 带 reason=programmatic，宿主可忽略。
+- scrollToKey 命中、未命中、重复 key 三种情况均有单测。
+- 组件卸载后滚动监听与定时器数量归零。
+- 现有 6 个指令行为与签名不变。
+
+[明确不做]
+- 不改虚拟化算法、不暴露 offsets / DOM。
+- 不做双向无限加载、拖拽排序、动态行高重算策略调整。
+
+[约束]
+- 只增不改；必须补单测；离线可用。
+```
+
+---
+
+### T10 `table` 游标分页与追加加载
+
+- **产出形态**：框架能力补齐
+- **依赖**：无（与 T9 的 reachBottom 可组合）
+- **现状（产物实测）**：`table` 的服务端模式只有**页式**语义：`paramNames.page` / `perPage` / `orderBy` / `orderDir` / `keywords`，配合 `totalPath`、底部分页器。**没有** `cursorPath`、`nextCursorPath`、`loadMore`、派发追加（`concatData` 只在 `source` 上存在，不是表格语义）。
+- **缺口表现**：Skiff 的文件列表、作业列表、审计列表返回 `{ items, next_cursor }`，没有 total 与页码；现在只能「取第一页 + 隐藏分页」，无法继续往后取。改成页码需要内核伪造 offset 语义，属于为了 UI 组件改协议，不接受。
+
+```text
+[任务]
+为 table 增加游标分页模式，支持首屏加载 + 追加下一页，且不改变现有页式模式。
+
+[背景事实]
+1. table 现有服务端参数只有 page / perPage / orderBy / orderDir / keywords，并以 totalPath 驱动分页器。
+2. 宿主侧存在大量 { items, next_cursor } 形态接口，没有 total 与页码。
+3. 表格已支持 virtual 与 height，追加模式需要与虚拟滚动共存。
+
+[要产出]
+1. 新增字段 paginationMode: 'page' | 'cursor'，默认 'page'（现有行为不变）。
+2. cursor 模式字段：
+   - cursorParam: string（默认 cursor），首屏为空时不发送该参数；
+   - cursorPath: string（默认 next_cursor），从响应取下一页游标；
+   - loadMoreText: string；
+   - 指令 loadMore()：无游标或正在加载时不重复请求；
+   - 追加语义：新行追加到现有 items，重复 rowKey 去重。
+3. cursor 模式下隐藏页码与总数，底部显示「加载更多」；可与分页器（pagination 组件）互斥。
+4. 排序 / 筛选变化时清空游标并回到首屏；错误态保留重试入口。
+5. 文档写清 cursor 模式与 page 模式的参数契约差异。
+
+[验收标准]
+- mock 接口断言：首屏不带 cursor；第二页带上一页 next_cursor；next_cursor 为空后按钮消失。
+- 重复 rowKey 不重复插入；排序变化后游标重置。
+- cursor 模式 + virtual 同时开启时只渲染可视窗口（渲染数量远小于总数，具体数字待实测）。
+- page 模式回归：现有表格的请求参数、分页器、总数展示完全不变。
+
+[明确不做]
+- 不改 page 模式默认行为与参数名。
+- 不做双向游标、不做离线缓存、不做跨页选择（属 T11）。
+
+[约束]
+- 只增不改；必须补单测；离线可用。
+```
+
+---
+
+### T11 `table` 选择策略、打开语义、行级下载与图标列
+
+- **产出形态**：框架能力补齐
+- **依赖**：可与 T10 并行
+- **现状（产物实测）**：`selectable` 只表示「显示多选列」，`selectionChange` 已存在；**没有** `selectStrategy`（page / all）、**没有** shift 区间选择、**没有** `openOn`（单击/双击）、**没有**列图标映射；动作清单里**没有 `download`**（19 个内核/UI 动作中无此项）。
+- **缺口表现**：文件列表翻页后选择被清空，无法「选中若干再批量删除」；单击行就进入目录，移动端误触；文件名前无法显示文件夹/文件图标；没有原生下载动作，只能 `navigate` 到下载地址，无法带 token 或 POST。
+
+```text
+[任务]
+补齐 table 的选择策略、打开语义、行级下载动作与列图标，保持现有默认行为。
+
+[背景事实]
+1. selectable 目前只控制多选列显示；selectionChange 只回传当前页选择。
+2. 没有 selectStrategy / rangeSelect / openOn / iconMap 字段。
+3. 动作清单（1.8.0）没有 download 动作。
+
+[要产出]
+1. selectStrategy: 'page' | 'all'，默认 'page'（现状）：
+   - 'all' 时选择跨页保留，modelValue 存 rowKey 列表，翻页后回显；
+   - 提供 clearSelection 指令。
+2. rangeSelect: boolean，默认 false：开启后支持 shift 连选当前页区间。
+3. openOn: 'single' | 'double'，默认 'single'：控制 rowClick 触发的点击次数；双击时单击不再触发。
+4. 新增动作 download：
+   - { type: 'download', props: { url, filename?, method?, data?, headers? } }；
+   - 走宿主 platform（可带鉴权头），不得用 location 直接跳转；失败触发 toast 或 error 上报。
+5. 列图标：columns[].icon（string 或 { map, key }），按行值映射；缺省不显示。
+6. 文档补四项的字段表与示例。
+
+[验收标准]
+- all 策略下翻页后已选项仍高亮，selectionChange 回传跨页集合；clearSelection 清空。
+- shift 连选区间正确，反向选择与取消可断言。
+- openOn=double 时单击不触发 rowClick，双击只触发一次。
+- download 动作带 headers 发出请求，文件名与响应一致；4xx 有可见错误。
+- 默认配置（page / false / single / 无 icon）下现有表格行为不变。
+
+[明确不做]
+- 不做拖拽选择、不做服务端选择持久化、不做批量操作容器（crud 已有）。
+- 不改变 selectionChange 现有载荷字段，只增不改。
+
+[约束]
+- 只增不改；必须补单测；离线可用。
+```
+
+---
+
+### T12 上传阶段 2：分片 / 续传 / 暂停 / 多文件进度
+
+- **产出形态**：框架能力补齐 + 宿主适配接口
+- **依赖**：T2 阶段 1（已交付）
+- **现状（产物实测）**：`file` 40 字段，阶段 1 已具备：`uploadApi` / `uploadField` / `uploadData` / `uploadTarget` / `uploadProgressTarget`（写 `{status, loaded, total, percent, attempt}`）/ `maxRetries` / `retryDelayMs`，指令 `cancelUpload` / `retryUpload`，宿主 `PlatformAdapter.upload(req)`。**没有**分片、续传、暂停/恢复、多文件独立进度、并发控制；`multiple` 存在但进度是单一对象。
+- **缺口表现**：几百 MB 的镜像/备份包单请求易超时且失败只能整文件重传；断网后无法从已上传偏移继续；多文件时只有一个总百分比，无法展示每个文件的状态；没有暂停。
+
+```text
+[任务]
+在阶段 1 基础上补齐分片上传、断点续传、暂停/恢复与多文件进度，保持单请求模式为默认。
+
+[背景事实]
+1. 阶段 1 已有整体进度、取消、整文件重试与 PlatformAdapter.upload。
+2. Skiff 服务端使用 offset 分片协议：创建会话 → 按 offset 上传分片 → 完成 → 可中止。
+3. 多文件时 uploadProgressTarget 目前只写单一对象，无法表达每个文件。
+
+[要产出]
+1. 新增字段：
+   - uploadMode: 'single' | 'chunked'，默认 'single'；
+   - chunkSize: number（chunked 必填，下限与默认值写入文档，待实测）；
+   - maxConcurrent: number，默认 1；
+   - resumeTokenPath: string，用于把会话/已收偏移写回数据域并在重挂载后恢复。
+2. 新增宿主适配（全部可选，缺省回退到 uploadApi）：
+   - uploadSession(file) => { uploadId, chunkSize?, received? }
+   - uploadChunk({ uploadId, offset, chunk, signal }) => { received }
+   - uploadComplete({ uploadId })
+   - uploadAbort({ uploadId })
+3. 行为：
+   - 分片顺序发送，offset 单调递增；received 与本地偏移不一致时以服务端为准；
+   - 进度按文件写入 { files: [{ name, size, loaded, total, percent, status, attempt }], percent }；
+   - 新增指令 pauseUpload / resumeUpload；暂停后不再发新分片，恢复从 received 继续；
+   - 5xx / 408 / 429 按 maxRetries 重试当前分片，4xx（除 408/429）不重试并终止；
+   - 取消或失败调用 uploadAbort（若提供）。
+4. 状态机：idle → preparing → uploading → paused | retrying → success | error | cancelled。
+
+[验收标准]
+- mock 适配器断言分片数、offset 连续性、总分片数、received 回填后的续传起点。
+- 暂停后无新请求；恢复从服务端 received 继续；取消调用一次 abort。
+- 多文件进度各自独立且总和与整体一致；4xx 不重试。
+- uploadMode=single 时请求形态、字段与 1.8.0 完全一致。
+
+[明确不做]
+- 不做秒传、加密、目录上传、拖拽排序队列。
+- 不改 uploadApi / uploadField / uploadData 的既有语义。
+
+[约束]
+- 只增不改；必须补单测；离线可用。
+```
+
+---
+
+### T13 `code-viewer` 分段加载、`scrollToLine`、语言与主题清单
+
+- **产出形态**：框架能力补齐 + 发布补齐
+- **依赖**：T4（已交付）
+- **现状（产物实测 + 读文档）**：
+  - 主体已具备：`code-viewer` 17 字段、5 指令（`setValue` / `getValue` / `focus` / `scrollToTop` / `getScrollTop`）、3 触点（`init` / `change` / `copy`）；`tokens` 支持服务端下发；只读/编辑双模式；`@budding/highlight` 默认 Prism，产物 `wasm` / `WebAssembly` 命中 **0**（纯 JS）。
+  - 语言：产物字符串可检出约 12 类（markup/html/xml、css、clike、javascript/typescript、json、bash/shell、python、ruby、yaml、sql、markdown）；**无 nginx、toml、ini、dockerfile、diff、go、rust、java**。
+  - 主题：字段只有 `auto` / `dark` / `light` 与「已注册主题名」；产物内未检出 github / monokai / dracula 等具名主题。
+  - **无 `scrollToLine`**；**无分段 `source`**（只有整串 `modelValue`）；`@budding/highlight` 未出现在 `manifest.packages`（`dist/packs` 有产物，但清单只列 kernel / ui-vuetify / echarts / terminal）。
+- **缺口表现**：打开 10 万行日志或大配置文件时必须整串塞进 `modelValue`，首屏慢且占内存；无法「跳到报错行」；nginx.conf / toml / ini 只能按纯文本显示；离线宿主无法从 manifest 拿到 highlight Pack 的地址与 integrity。
+
+```text
+[任务]
+补齐 code-viewer 的分段加载与按行定位，明确语言/主题清单与注册方式，并把 highlight Pack 纳入发布清单。
+
+[背景事实]
+1. code-viewer 目前只有整串 modelValue，没有分段 source；指令里没有 scrollToLine。
+2. highlight Pack 为纯 JS（Prism 默认），产物无 wasm；语言覆盖约 12 类，缺 nginx/toml/ini/dockerfile/diff。
+3. dist/packs 已有 highlight 产物，但 manifest.packages 未列出。
+
+[要产出]
+1. 字段 source?: (args: { start_line, end_line, signal }) => Promise<{ lines, total_lines }>，与 modelValue 二选一；滚动到分段边界时加载相邻段且不重复。
+2. 指令 scrollToLine({ line, position? })，内部复用 virtual-list 的 scrollToIndex；行号越界钳制。
+3. 语言与主题：
+   - 文档列出当前内置语言 id 与别名；说明 registerLanguage 的扩展方式（宿主可自带 Prism grammar）；
+   - 至少补 nginx、toml、ini、dockerfile、diff 五类常用语法（纯 JS，不得引入 WASM）；
+   - 文档列出内置主题名，并说明 registerTheme / adapter 的注册入口。
+4. 发布：@budding/highlight 进入 manifest.packages 与 Pack 发布清单，提供 url、types、integrity；保证同源离线加载。
+5. 大文件口径：给出「多少行开始建议分段」的实测数字或明确标注待实测。
+
+[验收标准]
+- 分段夹具：滚动跨边界时只请求相邻段，行号连续、无重复、无空洞；总行数与 total_lines 一致。
+- scrollToLine 命中可视区，越界钳制且不抛异常。
+- 五类新语法各有一条高亮断言；产物仍无 `WebAssembly` / `.wasm`。
+- manifest 可解析出 highlight 的 url 与 integrity，缺失时加载失败有明确报错。
+- 不配置 source 时整串模式行为与 1.8.0 一致。
+
+[明确不做]
+- 不做 LSP、diff、折叠、minimap、协同编辑。
+- 不引入 WASM 或远程高亮服务。
+
+[约束]
+- 只增不改；必须补单测；离线可用；不引入 eval / new Function。
+```
+
+---
+
+### T14 终端 WS 通道契约（票据、关闭码、心跳、审计钩子）
+
+- **产出形态**：文档约定 + 小幅代码
+- **依赖**：T5（已交付）
+- **现状（产物实测 + 读文档）**：
+  - 渲染侧已具备：`wsUrl`（仅接受 `ws://` / `wss://`，模板求值）、`height`、`fontSize`、`theme`、`readOnly`、`reconnect` / `reconnectDelay`（200–30000ms）/ `reconnectLimit`（0–20）、`resizeFormat`（`json` 时发 `{ type: 'resize', cols, rows }`）、`ariaLabel`、`emptyText`。
+  - 触点：`connected` / `disconnected({ code, reason, willReconnect })` / `reconnecting({ attempt, delay })` / `exit({ code, reason })` / `error({ message })`；指令：`reconnect` / `disconnect` / `focus`。
+  - 传输可注入：`registerTerminalTransport(factory)`，默认 `createWebSocketTransport`（`send` / `close` / `onOpen` / `onMessage` / `onClose` / `onError`，`binaryType=arraybuffer`）。
+  - **未约定**：浏览器 WS 无法带 `Authorization` 头时票据怎么放；鉴权失败/权限不足时用哪个关闭码、是否停止重连；心跳/空闲超时；`readOnly` 是否在传输层强制；「一次终端会话」的审计边界。
+- **缺口表现**：不约定关闭码，鉴权失败会被当成网络抖动无限重连，形成 401 风暴并刷满审计；没心跳时中间设备静默断链只能等 TCP 超时；`readOnly` 只禁本地输入，服务端仍可能收到输入（需宿主自行防）。
+
+```text
+[任务]
+定义终端渲染器与宿主 WebSocket 通道之间的契约，并补上关闭码策略与心跳能力。
+只约定通道，不实现 SSH、不实现业务鉴权。
+
+[背景事实]
+1. terminal Pack 已有重连、resize（json 格式）与可注入 transport。
+2. 浏览器 WebSocket 不能设置自定义请求头；票据只能走 URL query、子协议或 Cookie。
+3. disconnected 触点是唯一能拿到关闭码的位置，但当前没有「哪些码不重连」的约定。
+
+[要产出]
+1. 文档章节「终端通道契约」，至少覆盖：
+   - 票据传递：推荐 `wss://host/path?ticket=<一次性票据>`；备选 `Sec-WebSocket-Protocol: skiff.v1, ticket.<t>`；明确票据必须一次性、短 TTL、用完即失效，且不得出现在日志；
+   - 关闭码语义：4401（未认证/票据无效）与 4403（无权限）不得自动重连，直接进入 exit 并触发 error；1000 正常关闭不重连；1006/1011 等异常码按 reconnectLimit 退避重连；
+   - 心跳：新增 heartbeat: { intervalMs, payload? } 或允许 transport 注入 ping；空闲超过阈值时主动断开并走重连；
+   - 审计钩子：新增 onInput（仅计数/时间，不含内容）或 input 触点，供宿主记录「会话开始/结束/输入次数」，并说明不承诺内容审计；
+   - readOnly 的边界：渲染器只禁止本地输入，服务端权限由宿主强制，文档必须写明；
+   - resize 消息的上下限（cols/rows 合理范围）与发送时机（连接成功后一次 + 尺寸变化）。
+2. 代码：按上述关闭码实现「不重连」判定；心跳定时器在卸载/断开时清理。
+3. 示例：最小票据流程（宿主 source 取票据 → wsUrl 模板 → connected → 断开码处理）。
+
+[验收标准]
+- mock WS 关闭码 4401 / 4403 时不重连且触发 error；1006 时按 reconnectLimit 退避。
+- 心跳定时器在 disconnect 与卸载后归零；不会在已关闭的 socket 上 send。
+- 卸载后 socket.close 被调用、监听器归零。
+- 文档明确写出票据、关闭码、审计三项的双方职责边界。
+
+[明确不做]
+- 不做 SSH 客户端、多路复用、sz/rz、多标签、录制回放。
+- 不引入第三方 WebSocket 库。
+
+[约束]
+- 只增不改；必须补单测；离线可用；不引入 eval / new Function。
+```
+
+---
+
+### T15 `select` 多选与 `checkbox` 组
+
+- **产出形态**：框架能力补齐
+- **依赖**：无
+- **现状（产物实测）**：`select` 36 个字段，只有单选（`items` / `itemTitle` / `itemValue` / `itemsPath` / `clearable`），**没有 `multiple`**；`autocomplete` 有 `multiple` + `chips`，是目前唯一的多值近似；`checkbox` 16 个字段，只表达布尔，**没有 items 组形态**。
+- **缺口表现**：Cron 的「状态」筛选、防火墙的协议/端口集合、FTP 卸载时的多个选项，只能用 autocomplete 伪装成多选（可搜索、交互不同），或用 `each` + checkbox 手拼（值收集要自己写），表单校验与提交语义不统一。
+
+```text
+[任务]
+让 select 支持多选，并为 checkbox 提供编组形态，默认行为保持不变。
+
+[背景事实]
+1. select 目前只有单选；autocomplete 已有 multiple + chips，但交互语义不同（可搜索）。
+2. checkbox 只表达布尔，没有 items 组；多值只能用 each 手拼。
+3. Skiff 的多状态筛选、批量卸载选项需要标准多值表单字段。
+
+[要产出]
+1. select 新增字段：
+   - multiple: boolean，默认 false；
+   - chips: boolean，多选时以标签展示；
+   - max: number，最多可选数量（可选）。
+   modelValue 为数组；提交、校验（required 至少一项）与清空语义与单值一致。
+2. checkbox 组（二选一实现）：
+   - checkbox 增 items: Option[]，提供 items 时 modelValue 为数组；或
+   - 新增 checkbox-group 类型，items + itemTitle/itemValue + 方向。
+   两种方案都需在文档写明值与表单提交语义。
+3. 文档补多选示例（多状态筛选 + 批量选项）。
+
+[验收标准]
+- 多选值按数组序列化并进入表单提交；required 在多选下表示至少一项。
+- 清空、禁用、默认值、回填四种场景有单测。
+- 不配置 multiple / items 时，select 与 checkbox 行为与 1.8.0 完全一致。
+- 文档明确「多选下拉」与 `autocomplete multiple` 的选型差异。
+
+[明确不做]
+- 不做树形下拉、分组下拉、虚拟化下拉。
+- 不改 autocomplete 现有行为。
+
+[约束]
+- 只增不改；必须补单测；离线可用。
+```
+
+---
+
+## 3. 依赖与建议顺序
+
+1. **T6 先做**：改动面最小（表单属性透传），收益立竿见影（登录/口令类页面不再依赖 DOM 桥接），且无依赖。
+2. **T15、T8 可并行**：都是小改动，不阻塞其它任务；T8 只动构建与文档。
+3. **T10 与 T9 是列表能力的地基**：T10 解决「数据怎么继续取」，T9 解决「何时取」；两者完成后，文件浏览与日志页才具备完整交互。
+4. **T11 依赖 T10 的选择语义**：跨页选择与游标分页要一起验证，避免「追加后选择错位」。
+5. **T12 与 T13 互不依赖**：上传与代码查看各自独立；T12 需要先与宿主确认分片协议字段命名。
+6. **T14 只约定通道，不阻塞渲染**：可在 T5 已交付的渲染器上直接对接；关闭码与心跳属于增量。
+7. **T7 建议最后做但必须做**：它是插件页原生渲染的安全兜底；在 Skiff 侧插件包格式定案前不动手，接口按本文草案先行评审。
+8. **顺序不是发布顺序**：每条独立可回滚、独立补测试；不得把 T9 的改动混进 T10。
+
+### Skiff 侧当前的临时做法（上游落地后需删除）
+
+| 条目 | 临时做法 | 代价 |
 |---|---|---|
-| T0 | 无法可靠替代；只能通过「重新挂载列表」回到顶部/底部 | 状态丢失、滚动位置跳变；日志跟随不可用 |
-| T1 | 用 `VDataTableVirtual` + `VBreadcrumbs` 自建 `skiff:file-browser` | 需自行维护游标、排序与空态；上游实现到位后需迁移 |
-| T2 | 用 `platform.request` + 自定义 XHR 适配器做单文件上传 | 进度与取消要自写；与服务端 offset 协议的对接需自行测试 |
-| T3 | 用 `VVirtualScroll` + 等宽文本自建 `skiff:log-viewer` | 无「跳到最新」的可靠定位（受 T0 限制）；搜索高亮需自写 |
-| T4 | 用只读 `<pre>` 展示，不做高亮 | 大文件卡顿、无行号；仅能作为临时查看 |
-| T5 | 独立的 xterm 页面（非 iframe 嵌入业务页） | 与主界面割裂；仍需自己处理票据、resize 与重连 |
-| T6 | 启动脚本在渲染后把口令框 DOM `type` 改为 `password`（`crates/web/static/budding/budding-login.js` 的 `maskPassword` / `watchPasswordMask`） | 依赖渲染后 DOM，组件重建 input 时靠 MutationObserver 兜底；上游落地后必须删除该桥接 |
+| T6 | 启动脚本在渲染后改 DOM `type=password`（`budding-login.js` 的 `maskPassword` / `watchPasswordMask`） | 首帧明文窗口；组件重建 input 需 MutationObserver 兜底 |
+| T10 | 只取首屏 + 隐藏分页，提示「翻页待接入」 | 文件/作业列表无法浏览第二页 |
+| T9 | 跟随靠整表重挂载；无「上滚暂停」 | 滚动位置跳变，日志不可用 |
+| T12 | 单请求上传 + 整体进度 | 大文件超时只能整文件重传 |
+| T14 | 未建终端入口（内核暂无 `/terminal` 路由） | 终端功能待通道契约定案后另立 |
+| T7 | 插件功能页保留旧 SSR，新壳只给占位 | 插件功能在新前端不可达 |
 
-**共同注意**：任何 `skiff:*` 临时实现都必须遵守同一套 CSP、离线与测试约束，并且在对应上游任务交付后能够平滑替换，不得把临时实现固化成第二套契约。
+---
+
+## 4. 事实与推测边界
+
+### 4.1 产物实测（1.8.0）
+
+- `catalog.json`：57 个组件、19 个动作；`virtual-list` 17 字段 / 6 指令 / 2 触点；`table` 31 字段（`paramNames.*`、`selectable`、`tree`、`virtual`、`filters`）；`file` 40 字段；`input-text` 33 字段且无 `type` / `autocomplete`；`select` 无 `multiple`；`checkbox` 无 `items`。
+- `dist/embed/budding.js`：`cursorPath` / `scrollToLine` / `new Function` / `WebAssembly` 均 0 命中；`autocomplete` 命中仅来自 Vuetify 内部；`loadMore` 命中来自 Vuetify infinite-scroll 文案。
+- `dist/packs/highlight.mjs`：`prism` 26 次、`wasm` 0 次；语言标识可检出约 12 类。
+- `dist/packs/terminal.external.mjs`：导出 `registerTerminalTransport` / `createWebSocketTransport` / `resizePayload` 等；关闭码只透传，不含策略。
+- `dist/embed/budding-icons.css` + `.woff2`：59 条 `::before` 规则，相对路径引用，无版本号。
+- `dist/package/budding-1.8.0.manifest.json`：`packages` 只含 kernel / ui-vuetify / echarts / terminal；`icons.optional = true`。
+
+### 4.2 读文档确认
+
+- `platform.loadJson(url, { kind })` 是 schema 与路由表的统一加载通道；路由记录可写 `"schema": "/pages/x.json"`。
+- `service.schemaApi` 为「返回 Schema 的接口」，是运行时 schema 的公开入口。
+- `custom` 动作未注册会报错；内核动作不可被同名覆盖。
+- `schemaPolicy`、`validateSchema`、`usedTypes` 公开 API **不存在**（文档与产物均未出现）。
+- 图标子集数量、缓存与「同批升级」要求来自随包手册「零构建接入 → 图标字体」。
+
+### 4.3 推断（需上游确认）
+
+- highlight 未进 `manifest.packages` 是否为疏漏（`dist/packs` 已有产物）；本清单按「需要发布补齐」处理。
+- 具名主题（github / monokai 等）可能通过 `registerTheme` 由宿主注入，产物内未检出；需上游给准确清单。
+- 未知 `type` 是否在所有路径都导致整页错误态，未逐场景验证；按「需要单节点降级」提需求。
+- 各任务规模（S/M/L）为按字段数、触点与测试面的经验估算，无试点数据。
+
+---
+
+## 5. 变更记录
+
+| 日期 | 变更 |
+|---|---|
+| 2026-11-12 | 首版：P1–P2 + T0–T7，基于 budding 1.6.0 产物盘点。 |
+| 2026-11-13 | 对照 budding 1.8.0 与上游答复重写：P1/P2/T0/T1/T2 阶段 1/T3/T4/T5 标为已闭环并删除过时描述；T6、T7 按新版重写；新增 T8–T15（图标版本化、滚动触点、游标分页、选择与下载、上传阶段 2、代码分段、终端通道契约、多选表单）。未闭环 10 条。 |
