@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "data": {
+    "history": { "method": "history" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "主机监控 · 历史采样",
+      "subtitle": "内核调度器每 60s 采样、每 5 分钟批量落盘；这里只展示最近 30 个点"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "history" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "返回总览", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "overview" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "alert",
+        "props": {
+          "type": "info",
+          "text": "暂无历史采样（内核调度器每 5 分钟生成一次）"
+        },
+        "when": "{{data.history.rows_empty}}"
+      },
+      {
+        "type": "card",
+        "props": { "title": "采样点" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.history.rows}}",
+                "rowKey": "t",
+                "pagination": false,
+                "density": "compact",
+                "emptyText": "暂无历史采样",
+                "columns": [
+                  { "key": "t_text", "label": "时间 (UTC)" },
+                  { "key": "cpu_text", "label": "CPU %", "align": "end" },
+                  { "key": "mem_pct_text", "label": "内存 %", "align": "end" },
+                  { "key": "load1_text", "label": "负载 1m", "align": "end" },
+                  { "key": "net_rx_text", "label": "入站", "align": "end" },
+                  { "key": "net_tx_text", "label": "出站", "align": "end" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

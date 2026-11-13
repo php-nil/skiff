@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "data": {
+    "processes": {
+      "method": "processes",
+      "params": { "all": true }
+    }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "主机监控 · 进程",
+      "subtitle": "只读 /proc 扫描：排序、筛选与分页都在前端表格完成；不提供结束进程等写操作"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "process" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "alert",
+        "props": {
+          "type": "warning",
+          "text": "已触及单次扫描上限（前 512 个 PID），结果可能不完整。"
+        },
+        "when": "{{data.processes.truncated}}"
+      },
+      {
+        "type": "text",
+        "props": { "text": "{{data.processes.note}}；表头筛选框可搜索命令与用户名。" }
+      },
+      {
+        "type": "card",
+        "props": { "title": "进程列表" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.processes.items}}",
+                "rowKey": "pid",
+                "pagination": true,
+                "perPage": 50,
+                "perPageOptions": [25, 50, 100, 200],
+                "density": "compact",
+                "emptyText": "没有匹配的进程",
+                "filters": { "command": "text", "user": "text" },
+                "columns": [
+                  { "key": "pid", "label": "PID", "type": "number", "align": "end" },
+                  { "key": "user", "label": "用户" },
+                  { "key": "cpu", "label": "CPU %", "type": "number", "precision": 1, "align": "end" },
+                  { "key": "mem_mb", "label": "内存 MiB", "type": "number", "precision": 1, "align": "end" },
+                  { "key": "started_text", "label": "启动时间 (UTC)" },
+                  { "key": "state_text", "label": "状态" },
+                  { "key": "command", "label": "命令行" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

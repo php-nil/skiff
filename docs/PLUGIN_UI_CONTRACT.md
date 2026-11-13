@@ -307,3 +307,4 @@ object-src 'none'; frame-ancestors 'self'
 | 2026-11-05 | 首版：`/{p}/plugins/{id}` 信息页与 `/{p}/plugins/{id}/{view}` 功能页拆分；`view` 视图模型；旧包 `ui/index.html` 回落；新增 `com.skiff.testkit` 验收插件 |
 | 2026-11-05 | 页面级标题改由内核单一提供：清理 5 个插件页内标题；内核托管 HTML 注入 `data-plugin-title` 抑制规则 |
 | 2026-11-13 | 插件功能页原生化（第一批 guard）：`api = "1.3"` 起支持 `ui/schema/<name>.json`，安装期静态校验 + 动作白名单；新增 `GET /{p}/plugins/{id}/schema/{view}`；功能页/schema/旧 SSR 与 RPC 权限统一为 `PluginManage`；iframe 与 CSP 降级为 legacy 路径 |
+| 2026-11-13 | 插件功能页原生化（第二批 monitor）：总览 / 历史采样 / 进程 / 网络四个只读视图改用 schema；进程与网络一次取回快照（RPC `all`），排序 / 表头筛选 / 分页由表格本地完成；`overview.health` 槽位仍由旧页承载 |

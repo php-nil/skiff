@@ -330,6 +330,7 @@ Skiff 侧对应约束：
 - 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、`PLUGIN_UI_CSP` 只作用于旧 SSR 页，保持不变。
 - 槽位（`[[mount]]`）已支持 `schema` 声明与安装期校验；新壳的槽位渲染 API 尚未落地，当前仍由旧页承载。
 - 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺，`files` 插件本轮保持占位。
+- 已原生化的只读批次：guard（containers / events）、monitor（overview / history / process / network）。monitor 的进程与网络页把当前快照一次取回（RPC `all: true`，进程仍受 512 PID、连接仍受 5000 条上限），排序 / 表头筛选 / 分页交给 budding 表格本地完成；展示文案由插件派生，schema 只做绑定。两页都没有写入口。
 
 ### 4.5 需要补的条款（新增）
 

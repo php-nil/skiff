@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "data": {
+    "snapshot": { "method": "snapshot" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "主机监控 · 总览",
+      "subtitle": "只读 /proc 采样；CPU 使用率来自两次采样差值，历史点由内核调度器每 5 分钟生成"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "overview" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "历史采样", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "history" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "alert",
+        "props": {
+          "type": "warning",
+          "title": "CPU 使用率超过阈值",
+          "text": "当前 {{data.snapshot.sample.cpu_text}}；阈值来自插件配置 alert_cpu。"
+        },
+        "when": "{{data.snapshot.sample.cpu_high}}"
+      },
+      {
+        "type": "alert",
+        "props": {
+          "type": "warning",
+          "title": "内存使用率超过阈值",
+          "text": "当前 {{data.snapshot.sample.mem_text}}；阈值来自插件配置 alert_mem。"
+        },
+        "when": "{{data.snapshot.sample.mem_high}}"
+      },
+      {
+        "type": "grid",
+        "props": { "columns": 4, "gap": 16 },
+        "content": {
+          "body": [
+            {
+              "type": "card",
+              "props": { "title": "CPU" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.cpu_text}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "内存" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.mem_text}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "负载 (1/5/15)" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.load_text}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "网卡入站" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.net_rx_text}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "网卡出站" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.net_tx_text}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "运行时长" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.uptime_text}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "CPU 核心" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.snapshot.sample.cpus}}" } }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "text",
+        "props": { "text": "采集时间 {{data.snapshot.sample.t_text}}（UTC）" }
+      }
+    ]
+  }
+}

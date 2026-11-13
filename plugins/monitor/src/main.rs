@@ -41,12 +41,17 @@ fn main() {
         // 内核执行出票 → 批次落盘并回执。
         "execute" => execute(&p, &params),
         // UI 现取现算，不写历史缓冲；基线用独立文件，不打断内核 60s 采样窗口。
-        "snapshot" => Ok(json!({
-            "ok": true,
-            "sample": read_point(&p, PREV_UI_FILE)?,
-            "ring_max": RING_MAX,
-            "scheduler": { "driver": "kernel", "task_id": TASK_ID },
-        })),
+        // 展示用文案（百分比/容量/速率/时间）在插件内派生，schema 只做绑定。
+        "snapshot" => {
+            let mut sample = read_point(&p, PREV_UI_FILE)?;
+            decorate_sample(&mut sample, &p);
+            Ok(json!({
+                "ok": true,
+                "sample": sample,
+                "ring_max": RING_MAX,
+                "scheduler": { "driver": "kernel", "task_id": TASK_ID },
+            }))
+        }
         "history" => Ok(history(&p)),
         // 进程与网络：只读 `/proc`，与采样共用 path:/proc 授权；不结束进程、不改网络。
         "processes" => processes(&p, &params),
@@ -69,7 +74,182 @@ fn config(plugin: &Plugin) -> Value {
 }
 
 fn history(plugin: &Plugin) -> Value {
-    json!({ "samples": ring_lines(plugin) })
+    let samples = ring_lines(plugin);
+    // 新壳表格按「最新在前、最多 30 条」展示；旧 `samples` 原样保留。
+    let rows: Vec<Value> = samples.iter().rev().take(30).map(history_row).collect();
+    let rows_empty = rows.is_empty();
+    json!({
+        "samples": samples,
+        "rows": rows,
+        "rows_empty": rows_empty,
+    })
+}
+
+/// 历史表格行：保留原始数值，另给展示文案，避免 schema 里做格式化。
+fn history_row(sample: &Value) -> Value {
+    let mem_pct = mem_percent(sample);
+    let num = |key: &str| sample.get(key).and_then(Value::as_f64);
+    json!({
+        "t": sample.get("t").cloned().unwrap_or(json!(0)),
+        "t_text": sample
+            .get("t")
+            .and_then(Value::as_u64)
+            .map(date_text)
+            .unwrap_or_else(|| "-".to_string()),
+        "cpu_text": pct_text(num("cpu")),
+        "mem_pct_text": pct_text(mem_pct),
+        "load1_text": num("load1").map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
+        "net_rx_text": rate_text(num("net_rx_rate")),
+        "net_tx_text": rate_text(num("net_tx_rate")),
+    })
+}
+
+/// 采样点的内存占用率（百分比，未做 SQL/显示格式化）。
+fn mem_percent(sample: &Value) -> Option<f64> {
+    let total = sample.get("mem_total_kb").and_then(Value::as_u64)?;
+    if total == 0 {
+        return None;
+    }
+    let used = sample.get("mem_used_kb").and_then(Value::as_u64)?;
+    Some(used as f64 / total as f64 * 100.0)
+}
+
+/// 给 `snapshot` 的采样点补展示字段；内核采样（`sample`）不走这里，
+/// 否则派生文案会被写进历史。
+fn decorate_sample(sample: &mut Value, plugin: &Plugin) {
+    let cfg = common::load_config(plugin);
+    let cpu_warn = common::cfg_u64(&cfg, "alert_cpu", 90) as f64;
+    let mem_warn = common::cfg_u64(&cfg, "alert_mem", 90) as f64;
+    let cpu = sample.get("cpu").and_then(Value::as_f64);
+    let mem_pct = mem_percent(sample);
+    let total_kb = sample
+        .get("mem_total_kb")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let used_kb = sample
+        .get("mem_used_kb")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let load = |key: &str| {
+        sample
+            .get(key)
+            .and_then(Value::as_f64)
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| "-".to_string())
+    };
+    let load_text = format!("{} / {} / {}", load("load1"), load("load5"), load("load15"));
+    let rx_text = rate_text(sample.get("net_rx_rate").and_then(Value::as_f64));
+    let tx_text = rate_text(sample.get("net_tx_rate").and_then(Value::as_f64));
+    let uptime_text = sample
+        .get("uptime")
+        .and_then(Value::as_u64)
+        .map(dur_text)
+        .unwrap_or_else(|| "-".to_string());
+    let t_text = sample
+        .get("t")
+        .and_then(Value::as_u64)
+        .map(date_text)
+        .unwrap_or_else(|| "-".to_string());
+    let Some(obj) = sample.as_object_mut() else {
+        return;
+    };
+    obj.insert("cpu_text".into(), json!(pct_text(cpu)));
+    obj.insert(
+        "cpu_high".into(),
+        json!(cpu.map(|v| v >= cpu_warn).unwrap_or(false)),
+    );
+    obj.insert("mem_text".into(), json!(mem_text(used_kb, total_kb)));
+    obj.insert(
+        "mem_high".into(),
+        json!(mem_pct.map(|v| v >= mem_warn).unwrap_or(false)),
+    );
+    obj.insert("load_text".into(), json!(load_text));
+    obj.insert("net_rx_text".into(), json!(rx_text));
+    obj.insert("net_tx_text".into(), json!(tx_text));
+    obj.insert("uptime_text".into(), json!(uptime_text));
+    obj.insert("t_text".into(), json!(t_text));
+}
+
+fn pct_text(v: Option<f64>) -> String {
+    v.map(|n| format!("{n:.1}%"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// 容量：≥1 GiB 用 GiB，否则 MiB；0 视为未知。
+fn kb_text(kb: u64) -> String {
+    if kb == 0 {
+        return "-".into();
+    }
+    if kb >= 1024 * 1024 {
+        format!("{:.2} GiB", kb as f64 / 1048576.0)
+    } else {
+        format!("{:.0} MiB", kb as f64 / 1024.0)
+    }
+}
+
+fn mem_text(used_kb: u64, total_kb: u64) -> String {
+    if total_kb == 0 {
+        return "-".into();
+    }
+    let pct = used_kb as f64 / total_kb as f64 * 100.0;
+    format!("{} / {} ({pct:.1}%)", kb_text(used_kb), kb_text(total_kb))
+}
+
+fn rate_text(v: Option<f64>) -> String {
+    let Some(n) = v else {
+        return "-".into();
+    };
+    if n < 1024.0 {
+        format!("{n:.0} B/s")
+    } else if n < 1048576.0 {
+        format!("{:.1} KiB/s", n / 1024.0)
+    } else {
+        format!("{:.2} MiB/s", n / 1048576.0)
+    }
+}
+
+fn dur_text(secs: u64) -> String {
+    if secs == 0 {
+        return "-".into();
+    }
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    if d > 0 {
+        format!("{d} 天 {h} 时 {m} 分")
+    } else {
+        format!("{h} 时 {m} 分")
+    }
+}
+
+/// Unix 秒 → `YYYY-MM-DD HH:MM:SS`（UTC）。
+///
+/// 插件依赖里没有时间库，这里用 Howard Hinnant 的 civil-from-days 算法，
+/// 避免为一行格式化引入新依赖；宿主页面会标注 UTC。
+fn date_text(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+fn civil_from_days(z: i64) -> (i64, u64, u64) {
+    // 以 0000-03-01 为纪元，400 年一个 era。
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// 读回环形文件：一行一个采样点（JSON Lines）。
@@ -515,20 +695,30 @@ fn processes(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
         }
     });
 
+    // 展示字段在分页前补齐；旧字段保持原样。
+    for row in rows.iter_mut() {
+        decorate_process_row(row);
+    }
+
     let total = rows.len();
+    let all = params.get("all").and_then(Value::as_bool).unwrap_or(false);
     let page = params
         .get("page")
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1);
-    let page_size = params
-        .get("page_size")
-        .and_then(Value::as_u64)
-        .unwrap_or(50)
-        .clamp(1, 200);
+    let page_size = if all {
+        total as u64
+    } else {
+        params
+            .get("page_size")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200)
+    };
     let start = ((page - 1) as usize * page_size as usize).min(total);
     let end = (start + page_size as usize).min(total);
-    let page_items = rows[start..end].to_vec();
+    let page_items = if all { rows } else { rows[start..end].to_vec() };
 
     Ok(json!({
         "items": page_items,
@@ -559,6 +749,49 @@ fn state_text(c: char) -> &'static str {
         'X' => "dead",
         _ => "unknown",
     }
+}
+
+fn state_zh(state: &str) -> &'static str {
+    match state {
+        "running" => "运行",
+        "sleeping" => "休眠",
+        "disk-sleep" => "不可中断",
+        "zombie" => "僵尸",
+        "stopped" => "停止",
+        "tracing" => "跟踪",
+        "idle" => "空闲",
+        "dead" => "已退出",
+        _ => "未知",
+    }
+}
+
+/// 进程表的展示字段：保留 `state` / `cpu` / `mem_kb` / `started` 供排序，
+/// 另给可读文案；`mem_mb` 是表格数字列用的数值。
+fn decorate_process_row(row: &mut Value) {
+    let cpu = row.get("cpu").and_then(Value::as_f64);
+    let mem_mb = (row.get("mem_kb").and_then(Value::as_u64).unwrap_or(0) as f64 / 1024.0 * 10.0)
+        .round()
+        / 10.0;
+    let started = row.get("started").and_then(Value::as_u64).unwrap_or(0);
+    let state = row
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let Some(obj) = row.as_object_mut() else {
+        return;
+    };
+    obj.insert("cpu_text".into(), json!(pct_text(cpu)));
+    obj.insert("mem_mb".into(), json!(mem_mb));
+    obj.insert(
+        "started_text".into(),
+        json!(if started > 0 {
+            date_text(started)
+        } else {
+            "-".to_string()
+        }),
+    );
+    obj.insert("state_text".into(), json!(state_zh(&state)));
 }
 
 // ─────────────────────────── 网络视图（只读 /proc/net） ───────────────────────────
@@ -645,28 +878,63 @@ fn network(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
         })
     });
 
+    for row in rows.iter_mut() {
+        decorate_net_row(row);
+    }
+
     let total = rows.len();
+    let all = params.get("all").and_then(Value::as_bool).unwrap_or(false);
     let page = params
         .get("page")
         .and_then(Value::as_u64)
         .unwrap_or(1)
         .max(1);
-    let page_size = params
-        .get("page_size")
-        .and_then(Value::as_u64)
-        .unwrap_or(50)
-        .clamp(1, 200);
+    let page_size = if all {
+        total as u64
+    } else {
+        params
+            .get("page_size")
+            .and_then(Value::as_u64)
+            .unwrap_or(50)
+            .clamp(1, 200)
+    };
     let start = ((page - 1) as usize * page_size as usize).min(total);
     let end = (start + page_size as usize).min(total);
+    let page_items = if all { rows } else { rows[start..end].to_vec() };
 
     Ok(json!({
-        "items": rows[start..end].to_vec(),
+        "items": page_items,
         "total": total,
         "page": page,
         "page_size": page_size,
         "read_error": read_error,
         "owner_note": "插件降权运行，/proc/[pid]/fd 只对本进程可读，无法可靠把套接字映射到 PID；这里展示内核 /proc/net/* 给出的 uid",
     }))
+}
+
+/// 连接表的展示字段：`protocol_text` 区分 v4/v6，`key` 供表格 rowKey。
+fn decorate_net_row(row: &mut Value) {
+    let protocol = row
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let v6 = row.get("v6").and_then(Value::as_bool).unwrap_or(false);
+    let label = match (protocol.as_str(), v6) {
+        ("tcp", true) => "TCP6",
+        ("tcp", false) => "TCP",
+        ("udp", true) => "UDP6",
+        _ => "UDP",
+    };
+    let local = row.get("local").and_then(Value::as_str).unwrap_or("");
+    let remote = row.get("remote").and_then(Value::as_str).unwrap_or("");
+    let inode = row.get("inode").and_then(Value::as_u64).unwrap_or(0);
+    let key = format!("{label}:{local}>{remote}:{inode}");
+    let Some(obj) = row.as_object_mut() else {
+        return;
+    };
+    obj.insert("protocol_text".into(), json!(label));
+    obj.insert("key".into(), json!(key));
 }
 
 /// 解析 `/proc/net/tcp[6]` / `udp[6]`。地址是小端十六进制，端口也是十六进制。
@@ -1061,5 +1329,64 @@ Inter-|   Receive                                                |  Transmit
         assert_eq!(tcp_state("0A"), "LISTEN");
         assert_eq!(tcp_state("01"), "ESTABLISHED");
         assert_eq!(tcp_state("FF"), "UNKNOWN");
+    }
+
+    // ── 原生 schema 的展示字段 ──
+
+    #[test]
+    fn date_text_is_utc() {
+        assert_eq!(date_text(0), "1970-01-01 00:00:00");
+        assert_eq!(date_text(1_700_000_000), "2023-11-14 22:13:20");
+        // 闰日：2024-02-29 00:00:00 UTC
+        assert_eq!(date_text(1_709_164_800), "2024-02-29 00:00:00");
+    }
+
+    #[test]
+    fn rate_and_duration_texts() {
+        assert_eq!(rate_text(Some(512.0)), "512 B/s");
+        assert_eq!(rate_text(Some(2048.0)), "2.0 KiB/s");
+        assert_eq!(rate_text(Some(3.0 * 1048576.0)), "3.00 MiB/s");
+        assert_eq!(rate_text(None), "-");
+        assert_eq!(dur_text(0), "-");
+        assert_eq!(dur_text(90061), "1 天 1 时 1 分");
+    }
+
+    #[test]
+    fn memory_texts() {
+        assert_eq!(mem_text(0, 0), "-");
+        // 512 MiB / 1 GiB
+        assert_eq!(mem_text(524_288, 1_048_576), "512 MiB / 1.00 GiB (50.0%)");
+        assert_eq!(pct_text(None), "-");
+        assert_eq!(pct_text(Some(12.34)), "12.3%");
+    }
+
+    #[test]
+    fn process_rows_get_display_fields() {
+        let mut row = json!({
+            "pid": 1,
+            "user": "root",
+            "state": "sleeping",
+            "cpu": null,
+            "mem_kb": 2048,
+            "started": 1_700_000_000u64,
+        });
+        decorate_process_row(&mut row);
+        assert_eq!(row["cpu_text"], json!("-"));
+        assert_eq!(row["mem_mb"], json!(2.0));
+        assert_eq!(row["started_text"], json!("2023-11-14 22:13:20"));
+        assert_eq!(row["state_text"], json!("休眠"));
+        // 原始字段不丢，旧 UI 仍可直接使用。
+        assert_eq!(row["mem_kb"], json!(2048));
+    }
+
+    #[test]
+    fn net_rows_get_protocol_and_key() {
+        let mut row = json!({
+            "protocol": "tcp", "v6": true,
+            "local": "0.0.0.0:80", "remote": "0.0.0.0:0", "inode": 7,
+        });
+        decorate_net_row(&mut row);
+        assert_eq!(row["protocol_text"], json!("TCP6"));
+        assert_eq!(row["key"], json!("TCP6:0.0.0.0:80>0.0.0.0:0:7"));
     }
 }
