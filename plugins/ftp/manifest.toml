@@ -8,7 +8,7 @@ name = "FTP 管理"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.2"
+api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -58,6 +58,7 @@ view = "accounts"
   order = 10
   icon = "user"
   view = "accounts"
+  schema = "accounts.json"
 
   [[menu.items]]
   id = "runtime"
@@ -65,6 +66,7 @@ view = "accounts"
   order = 20
   icon = "activity"
   view = "runtime"
+  schema = "runtime.json"
 
 [interop]
 # fail2ban 由独立防火墙插件管理；FTP 只按需调用它的 jail 接口。

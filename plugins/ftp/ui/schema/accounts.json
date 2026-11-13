@@ -1,0 +1,326 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "status" },
+    "sites": { "method": "sites" },
+    "accounts": { "method": "accounts" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "FTP 管理 · 账号",
+      "subtitle": "账号只能访问所属站点的 index/；同名站点多账号共用该站点运行用户，站点之间由 chroot 隔离"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "accounts" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "运行状态", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "runtime" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "安装并启用", "color": "primary" },
+              "when": "!{{data.status.installed}}",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "skiffPluginRpc",
+                      "props": {
+                        "method": "install",
+                        "confirm": "安装并启用 pure-ftpd？会使用已保存的服务配置。"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "服务状态" },
+        "content": {
+          "body": [
+            { "type": "text", "props": { "text": "状态：{{data.status.state_text}}" } },
+            {
+              "type": "text",
+              "props": {
+                "text": "监听 {{data.status.listen_text}} · 被动 {{data.status.passive_text}} · TLS {{data.status.tls_text}} · 账号 {{data.status.accounts_text}}"
+              }
+            },
+            {
+              "type": "alert",
+              "props": {
+                "type": "warning",
+                "text": "创建账号前需要先安装并启用 pure-ftpd。"
+              },
+              "when": "!{{data.status.installed}}"
+            }
+          ]
+        }
+      },
+      {
+        "type": "grid",
+        "props": { "columns": 2, "gap": 16 },
+        "content": {
+          "body": [
+            {
+              "type": "card",
+              "props": { "title": "新建账号" },
+              "content": {
+                "body": [
+                  {
+                    "type": "form",
+                    "props": { "actionsAlign": "end" },
+                    "body": [
+                      {
+                        "type": "select",
+                        "props": {
+                          "name": "site",
+                          "label": "站点",
+                          "items": "{{data.sites.options}}"
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "account",
+                          "label": "账号名（1–32 位）",
+                          "placeholder": "deploy"
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "password",
+                          "label": "密码（8–128 字节）",
+                          "type": "password",
+                          "autocomplete": "new-password"
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "props": {
+                          "text": "密码只在提交时经内核传给 pure-pw，不回显、不落日志；本页不再做二次确认，请自行核对。"
+                        }
+                      }
+                    ],
+                    "content": {
+                      "actions": [
+                        {
+                          "type": "button",
+                          "props": { "text": "创建账号", "color": "primary" },
+                          "onEvent": {
+                            "click": {
+                              "actions": [
+                                {
+                                  "type": "skiffPluginRpc",
+                                  "props": {
+                                    "method": "create",
+                                    "params": {
+                                      "site": "${site}",
+                                      "account": "${account}",
+                                      "password": "${password}"
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "重置密码" },
+              "content": {
+                "body": [
+                  {
+                    "type": "form",
+                    "props": { "actionsAlign": "end" },
+                    "body": [
+                      {
+                        "type": "select",
+                        "props": {
+                          "name": "login",
+                          "label": "账号",
+                          "defaultValue": "{{query.login}}",
+                          "items": "{{data.accounts.login_options}}"
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "password",
+                          "label": "新密码（8–128 字节）",
+                          "type": "password",
+                          "autocomplete": "new-password"
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "props": { "text": "在账号列表点「重置密码」可把账号带到这里的下拉框。" }
+                      }
+                    ],
+                    "content": {
+                      "actions": [
+                        {
+                          "type": "button",
+                          "props": { "text": "保存密码", "color": "primary" },
+                          "onEvent": {
+                            "click": {
+                              "actions": [
+                                {
+                                  "type": "skiffPluginRpc",
+                                  "props": {
+                                    "method": "password",
+                                    "params": {
+                                      "login": "${login}",
+                                      "password": "${password}"
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "text",
+        "props": { "text": "{{data.sites.unsupported_note}}" },
+        "when": "{{data.sites.unsupported_note}}"
+      },
+      {
+        "type": "card",
+        "props": { "title": "账号列表" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.accounts.accounts}}",
+                "rowKey": "login",
+                "pagination": true,
+                "perPage": 50,
+                "density": "compact",
+                "emptyText": "还没有 FTP 账号",
+                "filters": {
+                  "site": "text",
+                  "login": "text",
+                  "home_text": "text"
+                },
+                "columns": [
+                  { "key": "site", "label": "站点" },
+                  { "key": "login", "label": "登录名" },
+                  { "key": "cred_text", "label": "uid:gid" },
+                  { "key": "home_text", "label": "根目录" },
+                  { "key": "status_text", "label": "状态" },
+                  { "key": "last_text", "label": "最后登录 / 备注" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "${toggle_text}", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "toggle",
+                              "params": {
+                                "login": "${login}",
+                                "enabled": "${toggle_enabled}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "重置密码", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "accounts",
+                              "query": { "login": "${login}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "删除", "variant": "text", "color": "danger" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "delete",
+                              "params": { "login": "${login}" },
+                              "confirm": "删除 FTP 账号 ${login}？账号立即无法登录，已上传的文件会保留。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "text",
+        "props": {
+          "text": "密码不会回显到列表或日志；最后登录 pure-ftpd 用户库不记录，列表显示「不可得」；配额/速率为后续项。"
+        }
+      }
+    ]
+  }
+}

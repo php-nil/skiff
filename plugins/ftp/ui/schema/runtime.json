@@ -1,0 +1,309 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "status" },
+    "protection": { "method": "protection" },
+    "banned": {
+      "method": "protection.banned",
+      "params": { "jail": "pure-ftpd" }
+    }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "FTP 管理 · 运行状态",
+      "subtitle": "pure-ftpd 由宿主 systemd 托管；本插件通过内核 ftp 能力面安装、配置与重载，不直接执行宿主命令"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "runtime" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "账号", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "accounts" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "安装并启用", "color": "primary" },
+              "when": "!{{data.status.installed}}",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "skiffPluginRpc",
+                      "props": {
+                        "method": "install",
+                        "confirm": "安装并启用 pure-ftpd？会使用已保存的服务配置。"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "重启服务", "color": "primary" },
+              "when": "{{data.status.installed}}",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginRpc", "props": { "method": "restart" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "服务状态" },
+        "content": {
+          "body": [
+            { "type": "text", "props": { "text": "当前：{{data.status.state_text}}" } },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.status.detail_rows}}",
+                "rowKey": "label",
+                "pagination": false,
+                "density": "compact",
+                "emptyText": "暂无状态",
+                "columns": [
+                  { "key": "label", "label": "项目" },
+                  { "key": "value", "label": "值" }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "可选登录防护（fail2ban）" },
+        "content": {
+          "body": [
+            {
+              "type": "alert",
+              "props": {
+                "type": "info",
+                "text": "{{data.protection.reason_text}}"
+              },
+              "when": "!{{data.protection.available}}"
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "防护状态：{{data.protection.state_text}} · fail2ban 服务：{{data.protection.running_text}} · 专用 jail：{{data.protection.jail}}"
+              },
+              "when": "{{data.protection.available}}"
+            },
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "开启登录防护", "color": "primary" },
+                    "when": "{{data.protection.can_enable}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "protection.enable",
+                              "confirm": "开启后由防火墙插件写入 pure-ftpd jail（5 次失败 / 10 分钟封禁 1 小时）并重启 fail2ban。继续？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "关闭登录防护", "color": "danger" },
+                    "when": "{{data.protection.can_disable}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "protection.disable",
+                              "confirm": "关闭只删除 pure-ftpd jail，不卸载 fail2ban，也不改动其它 jail。继续？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "text",
+              "props": { "text": "封禁列表（jail pure-ftpd）" },
+              "when": "{{data.protection.show_banned}}"
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.banned.items}}",
+                "rowKey": "ip",
+                "pagination": true,
+                "perPage": 50,
+                "density": "compact",
+                "emptyText": "当前没有封禁 IP",
+                "columns": [
+                  { "key": "ip", "label": "IP" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "解封", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "protection.unban",
+                              "params": { "jail": "pure-ftpd", "ip": "${ip}" },
+                              "confirm": "解封 ${ip}？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "when": "{{data.protection.show_banned}}"
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "安全边界" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": {
+                "text": "1. 每个账号 chroot 到所属站点的 index/，看不到 conf/、log/、ssl/，也到不了别的站点。"
+              }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "2. 账号文件身份与该站点 PHP 容器内 www-data 一致（官方 alpine 镜像为 82:82）；上传文件 owner 82、目录 2775、文件 0664。"
+              }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "3. 并发连接上限与每 IP 上限在服务配置中调整（默认 30 / 3）；登录防护由独立防火墙插件管理。"
+              }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "4. 监听端口与被动端口范围都可改，改后需在防火墙插件中同时放行；FTP 插件不直接修改宿主防火墙。"
+              }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "5. 服务配置由内核 /etc/skiff/ftp-service.json 持久化，重装/升级后沿用；插件本地不再保留 service-config.json。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "停止并回收" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": {
+                "text": "停用前请确认没有业务仍在使用 FTP；删除账号不会删除已上传的文件。fail2ban 不随 FTP 回收而卸载。"
+              }
+            },
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "checkbox",
+                  "props": {
+                    "name": "remove_accounts",
+                    "label": "删除本插件创建的 FTP 账号",
+                    "defaultValue": true
+                  }
+                },
+                {
+                  "type": "checkbox",
+                  "props": {
+                    "name": "remove_package",
+                    "label": "同时卸载 pure-ftpd 软件包并清除配置",
+                    "defaultValue": false
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "停止并回收", "color": "danger" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "uninstall",
+                              "params": {
+                                "remove_accounts": "${remove_accounts}",
+                                "remove_package": "${remove_package}"
+                              },
+                              "confirm": "停止并禁用 pure-ftpd？删除账号不会删除已上传的文件。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
