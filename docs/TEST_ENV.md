@@ -222,6 +222,13 @@
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
 
+**2026-11-13 20:15–20:40 转发层 10 s 超时修复与复验（18081 → 18080）**
+
+- 脚本：`/root/iter/skiff-http-fwd.py`（由 `/etc/systemd/system/skiff-http-fwd.service` 以 `python3` 直跑，`Restart=always`；不进仓库）。旧版备份 `/root/iter/skiff-http-fwd.py.bak-20261113`。
+- 改动：`socket.create_connection(TARGET, timeout=10)` 只保留「建连」语义，建连成功后补 `upstream.settimeout(None)`，清掉留在 upstream 套接字上的 10 s 超时；管道逻辑与监听参数未动。改完 `systemctl restart skiff-http-fwd`，服务 `active`，`0.0.0.0:18081` 正常监听。
+- 复验（同一 compose 项目、同一 `down` 载荷）：经 **18081** `POST /ui/v1/compose/down` → **200**，`total=10.397 s`，无 `Empty reply`，容器 `fwd-a-web` 与网络 `fwd-a_default` 均已删除；同参数经 **18080** 直连 → 200，`total=10.377 s`。两者差约 20 ms。
+- 结论：首次请求被服务端提前关闭的现象**不再复现**，转发路径耗时与直连一致。转发层要求已写入 [DEPLOY_TEST.md](DEPLOY_TEST.md) §2.4.3。
+
 **2026-11-13 18:55–20:10 compose down 断连诊断 + 商店真实安装链路（镜像站恢复）**
 
 - **compose down 断连诊断（只查未改）**：18080 直连 `down` 正常（11 s，200，容器与网络都已删）；18081 经 `skiff-http-fwd` 复现 `curl: (52) Empty reply from server`，约 10.4 s 断开。根因在转发层：`/root/iter/skiff-http-fwd.py` 用 `socket.create_connection(TARGET, timeout=10)`，该 10 s 超时会留在**上游 socket**上，超过 10 s 无数据即 `socket.timeout` → 管道退出 → 客户端收到 EOF；skiff 侧无 panic/错误日志（容器已被 kill，handler 随客户端断连中断，故容器/网络未删）。影响面仅形态三 18081 转发路径上**单请求静默超过 10 s** 的操作（compose down/冷启动、运行环境安装等）；18080 直连不受影响。修复方向（未执行）：转发脚本对上游 `settimeout(None)` 或改用空闲超时。

@@ -449,6 +449,35 @@ tls_key  = "/etc/skiff/tls/privkey.pem"
 **18081 明文端口不涉及本轮**：内核配置只有单一 `listen`，`Config` 无第二监听字段；要给 API 联调提供
 loopback 明文入口，需要单独加一个监听（未实现，也没有临时 hack）。本轮 18081 未改动。
 
+#### 2.4.3 前置反向代理 / 转发层的超时要求（长静默请求）
+
+转发层（nginx 反代、TCP 转发脚本、负载均衡）**必须允许长时间不产出字节的请求**，否则下面这类
+操作会在面板上报失败，而实际动作已经完成。
+
+- 受影响操作：`compose down`、`compose up`（含拉镜像）、运行环境安装、大文件/镜像相关请求。
+  实测 `compose down` 全程约 **10.4 s** 未向客户端写出任何字节（容器 kill → 网络回收完成后才回包）。
+- 现象：浏览器/curl 报连接被提前关闭（`curl: (52) Empty reply from server`）或网关报 502/504；
+  但服务端动作已生效——容器与网络实际已删除，审计里有对应记录，`journalctl -u skiff` 无 panic/错误。
+- 判定方法（按顺序，一条即可定性）：
+  1. 同一请求分别打**直连端口**与**经转发端口**：直连 200 且耗时与断开时刻接近，经转发失败 → 转发层超时。
+  2. `nginx` 的 `error.log` 出现 `upstream timed out (110: Connection timed out)` → 读取超时阈值小于操作耗时。
+  3. 检查实际结果（`docker ps -a`、`docker network ls`、运行环境列表）已生效 → 动作完成，失败只是响应没回来。
+- nginx 配置要求（按最长操作的耗时留余量，示例 300 s）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:18080;
+    proxy_read_timeout 300s;   # 上游迟迟不写响应（默认 60s，长操作会踩线）
+    proxy_send_timeout 300s;   # 上游迟迟不收请求体
+    proxy_http_version 1.1;
+}
+```
+
+- 自写 TCP 转发脚本：建连超时可以用（如 10 s），但**建连成功后必须清掉**（Python 例：
+  `upstream.settimeout(None)`）。`socket.create_connection(timeout=10)` 的超时会一直留在已连上的
+  套接字上，静默超过 10 s 即被判超时并断开——测试机 18081 曾因此复现该现象，修复与复验见
+  [TEST_ENV.md](TEST_ENV.md) §8（2026-11-13 20:15 条目）。
+
 ### 2.5 升级
 
 ```sh
