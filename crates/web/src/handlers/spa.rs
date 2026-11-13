@@ -137,7 +137,8 @@ pub fn shell_page(state: &AppState) -> Response {
 /// - 产物按 D11 引用版本化文件名并带 `?v=`；稳定别名只作兼容入口，壳页不引用。
 /// - CSS 文件名是 budding 构建期写死的 `budding.css`，版本化后无法自动推导，
 ///   因此通过 data 属性传给启动脚本显式 `css` 选项。
-/// - MDI 图标字体不在 budding bundle 内，单独版本化入库并由壳页 `<link>` 引入。
+/// - 图标字体自 1.8.0 起由 budding 官方包自带（`Budding Icons` 子集），单独版本化入库并由壳页 `<link>` 引入；
+///   子集只覆盖组件内部图标，壳页不声明自定义菜单图标。
 /// - 初始化参数（入口前缀、API 基址）挂在挂载点上，由外部启动脚本
 ///   `budding-boot.js` 读取，避免内联脚本；路由表由 `/ui/v1/menu` 下发。
 pub fn shell_html(prefix: &str) -> String {

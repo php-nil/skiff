@@ -7371,12 +7371,17 @@ async fn shell_fallback_serves_whitelisted_deep_links() {
         assert_eq!(status, StatusCode::OK, "{uri} 应回落壳页");
         assert!(ct.starts_with("text/html; charset=utf-8"), "{uri}");
         assert!(body.contains("该功能正在适配中"), "{uri} 应有占位提示");
+        let ver = skiff_web::assets::BUDDING_VERSION;
         assert!(
-            body.contains(r#"src="/p/static/budding/budding-1.6.0.min.js?v=1.6.0""#),
+            body.contains(&format!(
+                r#"src="/p/static/budding/budding-{ver}.min.js?v={ver}""#
+            )),
             "{uri} 应引用 budding 版本化产物"
         );
         assert!(
-            body.contains(r#"data-budding-css="/p/static/budding/budding-1.6.0.min.css?v=1.6.0""#),
+            body.contains(&format!(
+                r#"data-budding-css="/p/static/budding/budding-{ver}.min.css?v={ver}""#
+            )),
             "{uri} 应显式下发版本化 CSS 路径"
         );
     }
@@ -7598,8 +7603,11 @@ async fn login_page_renders_budding_shell_without_session() {
     let html = body_text(resp).await;
     assert!(html.contains(r#"id="skiff-login""#), "{html}");
     assert!(html.contains(r#"data-next="/p/sites/a""#), "{html}");
+    let ver = skiff_web::assets::BUDDING_VERSION;
     assert!(
-        html.contains(r#"src="/p/static/budding/budding-1.6.0.min.js?v=1.6.0""#),
+        html.contains(&format!(
+            r#"src="/p/static/budding/budding-{ver}.min.js?v={ver}""#
+        )),
         "登录页应引用版本化 budding 产物"
     );
     assert!(
@@ -8686,12 +8694,18 @@ fn attr_values(html: &str, attr: &str) -> Vec<String> {
 #[tokio::test]
 async fn budding_static_assets_follow_d11_cache_contract() {
     let h = harness();
-    const JS_V: &str = "/p/static/budding/budding-1.6.0.min.js";
-    const JS_A: &str = "/p/static/budding/budding.min.js";
-    const CSS_V: &str = "/p/static/budding/budding-1.6.0.min.css";
-    const CSS_A: &str = "/p/static/budding/budding.css";
+    let ver = skiff_web::assets::BUDDING_VERSION;
+    let js_v = format!("/p/static/budding/budding-{ver}.min.js");
+    let js_a = "/p/static/budding/budding.min.js".to_string();
+    let css_v = format!("/p/static/budding/budding-{ver}.min.css");
+    let css_a = "/p/static/budding/budding.css".to_string();
 
-    for (uri, immutable) in [(JS_V, true), (CSS_V, true), (JS_A, false), (CSS_A, false)] {
+    for (uri, immutable) in [
+        (js_v.as_str(), true),
+        (css_v.as_str(), true),
+        (js_a.as_str(), false),
+        (css_a.as_str(), false),
+    ] {
         let resp = get_raw(&h.app, uri, &[]).await;
         assert_eq!(resp.status(), StatusCode::OK, "{uri} 应 200");
         let cc = header_str(&resp, "cache-control");
@@ -8717,13 +8731,13 @@ async fn budding_static_assets_follow_d11_cache_contract() {
     }
 
     // 别名与版本化指向同一份内嵌字节：ETag 必须相同（不复制第二份文件）。
-    let versioned = get_raw(&h.app, JS_V, &[]).await;
-    let alias = get_raw(&h.app, JS_A, &[]).await;
+    let versioned = get_raw(&h.app, js_v.as_str(), &[]).await;
+    let alias = get_raw(&h.app, js_a.as_str(), &[]).await;
     let etag = header_str(&versioned, "etag");
     assert_eq!(etag, header_str(&alias, "etag"));
 
     // If-None-Match 命中 304，ETag/Cache-Control 原样保留。
-    let resp = get_raw(&h.app, JS_V, &[("if-none-match", &etag)]).await;
+    let resp = get_raw(&h.app, js_v.as_str(), &[("if-none-match", &etag)]).await;
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
     assert_eq!(header_str(&resp, "etag"), etag);
     assert_eq!(
@@ -8732,7 +8746,7 @@ async fn budding_static_assets_follow_d11_cache_contract() {
     );
 
     // gzip 变体：有 Content-Encoding，ETag 与 identity 不同，字节确实是 gzip。
-    let gz = get_raw(&h.app, JS_V, &[("accept-encoding", "gzip")]).await;
+    let gz = get_raw(&h.app, js_v.as_str(), &[("accept-encoding", "gzip")]).await;
     assert_eq!(gz.status(), StatusCode::OK);
     assert_eq!(header_str(&gz, "content-encoding"), "gzip");
     let gz_etag = header_str(&gz, "etag");
@@ -8741,7 +8755,7 @@ async fn budding_static_assets_follow_d11_cache_contract() {
         .await
         .unwrap();
     assert!(bytes.len() > 2 && bytes[0] == 0x1f && bytes[1] == 0x8b);
-    let gz_alias = get_raw(&h.app, JS_A, &[("accept-encoding", "gzip")]).await;
+    let gz_alias = get_raw(&h.app, js_a.as_str(), &[("accept-encoding", "gzip")]).await;
     assert_eq!(gz_etag, header_str(&gz_alias, "etag"));
 }
 

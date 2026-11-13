@@ -20,13 +20,14 @@ const CACHE_NO_CACHE: &str = "no-cache";
 
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
-pub const BUDDING_VERSION: &str = "1.6.0";
+pub const BUDDING_VERSION: &str = "1.8.0";
 
-/// 入库的 MDI 图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
+/// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
 ///
-/// 图标字体不是 budding 产物的一部分（bundle CSS 内不含 `@font-face`），
-/// 由宿主按 D11 版本化入库；woff2 本身已压缩，体积按原字节计。
-pub const BUDDING_ICONS_VERSION: &str = "7.4.47";
+/// 1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体（CSS 3,533 B + woff2 2,456 B），
+/// 宿主不再另存完整 @mdi/font；子集只覆盖组件内部用到的图标，壳页不据此声明自定义菜单图标。
+/// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
+pub const BUDDING_ICONS_VERSION: &str = "1.8.0";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

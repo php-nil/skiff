@@ -125,7 +125,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；未适配页面返回统一占位。
 - **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）无 iframe 渲染能力，先不渲染。
-- **图标**：budding bundle CSS 不含 MDI 字体，壳页额外 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；子集只覆盖组件内部图标，菜单不声明自定义图标。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -142,7 +142,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - 现有 `.min.` 的 `max-age=86400` 策略已按文件名与查询串区分（`assets.rs`，2026-11-12 落地）：版本化文件名或带非空 `?v=` 的请求返回 `immutable`，稳定别名 `no-cache`，其余维持原值。
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
-- **图标资产单独版本化**：`budding-icons-7.4.47.min.css`（323,052 字节）与 `budding-icons-7.4.47.woff2`（403,216 字节）由壳页 `<link>` 引入，带 `?v=7.4.47` 时返回 `immutable`。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+- **图标资产随包版本化**：`budding-icons-1.8.0.min.css`（3,533 字节）与 `budding-icons-1.8.0.woff2`（2,456 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0` 时返回 `immutable`。它是 `Budding Icons` 子集（仅组件内部用到的字形），不承担自定义菜单图标；宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
 
@@ -359,7 +359,7 @@ D13 结论：地址栏保持 `/{p}/sites/xxx` 形态，history 路由 + 白名�
 
 **已实施（2026-11-12，第三批）**
 
-- `GET /{p}/login` 返回 budding 登录壳（`id="skiff-login"` 挂载点），未认证直接 200，不经过 SPA 回落的匿名 303 分支；已登录访问仍 303 到 `/{p}`。壳只引用版本化 `budding-1.6.0.min.js`、`budding-1.6.0.min.css` 与 `budding-login.js`，不含内联脚本。
+- `GET /{p}/login` 返回 budding 登录壳（`id="skiff-login"` 挂载点），未认证直接 200，不经过 SPA 回落的匿名 303 分支；已登录访问仍 303 到 `/{p}`。壳只引用版本化 `budding-<ver>.min.js`、`budding-<ver>.min.css` 与 `budding-login.js`，不含内联脚本。
 - 页面启动后调用 `GET /ui/v1/auth/login`（未认证、禁止缓存）：返回 `{ data: { csrf_token, entry_prefix, api_version } }`，并下发 `skiff_login` Cookie 作为兼容信号。
 - 提交走 `POST /ui/v1/auth/login`（未认证）：JSON 体 `{ username, password, otp, csrf, next }`，CSRF 放 JSON 体 `csrf` 字段（与表单路径同一个签名 token，前端不额外造头）。
 - CSRF：沿用现有签名 token（`skiff_identity::signed_token`，TTL 600 秒，密钥取持久化 `security.csrf_secret`）；**签名 token 仍是唯一权威**，Cookie 只在浏览器完全没有来源头时作兼容。失败沿用现有 `code` 字段：`auth.csrf_invalid`（伪造/过期，文案区分「已过期」与「校验失败」）、`auth.unauthenticated`（用户名/口令或动态码错误）。
@@ -1001,3 +1001,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | 登录页 budding 化（第三批）：`GET /{p}/login` 改为 budding 登录壳（未认证 200，不落入匿名 303；已登录仍回 `/{p}`）；新增 `GET /ui/v1/auth/login`（公开读，签发与表单同一签名 CSRF + `skiff_login` 兼容 Cookie、`no-store`）与 `POST /ui/v1/auth/login`（JSON `{username,password,otp,csrf,next}`，复用 `AppState::login`、`session_cookie` 与登录 CSRF/来源判定）；失败文案沿用现有中文并按既有 `code` 返回，错误经 `sessionStorage` 回显后清除；新增同源 `budding-login.js`。budding 1.6.0 缺口令输入类型，脚本渲染后将口令框 DOM `type` 置为 `password` 作为临时桥接（已标注待上游组件）。旧登录模板与 `POST /{p}/login` 表单路径保留为无 JS 兜底。补 7 条 `main_flow` 用例（壳页未认证 200、配置 200、成功/深链回跳、错口令/空提交、CSRF/跨站、TOTP 分支）。 |
 | 2026-11-12 | 概览页 budding 化（第四批，只读）：`GET /{p}` 改交付壳页，启动脚本在入口根取 `GET /ui/v1/overview` 渲染四张计数卡片（容器/网站/插件/运行环境）与 Docker 状态提示；图表位用 `alert` 明确占位（D14–D16 未定），不引图表库、不做写操作/实时刷新。新增 `dashboard::load_overview` 供 SSR 与 JSON 共用同一批查询（无新增聚合 SQL）；`overview` DTO 字段冻结（`collected_at` RFC3339 UTC、`docker.status {code,label}`）。SSR 概览暂留 `GET /{p}/m/overview`，插件概览槽位仍有落点，待迁入 budding 后删除。同步 URL 契约 §9、SDUI §5.7 与上游 T6（`input-text` type/autocomplete）。 |
 | 2026-11-13 | 后台外壳接入：壳页改为 `admin` Schema + `outlet`，新增 `GET /ui/v1/menu`（投影 `skiff_app::menu::build`，DTO 只含 key/label/icon/href/plugin/empty），前端按菜单键映射已迁移路由并保留 `/{p}/...` history 形态（path 带前缀、不设 `routerBase`）；新增 `skiff:<kind>` 路由 Schema 经 `platform.loadJson` 按地址栏取数，详情页与商店安装确认改走路由。MDI 图标字体（CSS 323,052 B + woff2 403,216 B）版本化入库并由壳页 `<link>` 引入，`build.rs` 跳过已压缩格式的 `.gz`。插件功能页不再作为入口：菜单丢弃 `plugin/*`，任何直接导航 `/plugins/{id}/{view}` 显示「插件功能页正在切换为原生渲染」占位，旧 SSR 工作台只接受显式 `?legacy=1`（§4.4、backlog T7）。 |
+| 2026-11-13 | budding 升级 1.8.0：入库 `budding-1.8.0.min.js`（1,260,779 B）/`.min.css`（657,142 B），删除 1.6.0 双份；官方包自带 `Budding Icons` 子集（CSS 3,529 B + woff2 2,456 B），移除宿主自存的完整 @mdi/font（CSS 323,052 B + woff2 403,216 B），壳页改引 `budding-icons-1.8.0.*`。子集不含自定义菜单图标，侧栏不再声明图标，避免缺字形回退成 `mdi-xxx` 文本。新包含 code-view/highlight、virtual-list、增强上传与 terminal Pack，作为后续剩余页面切换的基础。 |

@@ -195,29 +195,14 @@
       });
   }
 
-  /// 内核内置菜单图标名 → MDI 图标名（只是 UI 层词汇转换，不改变菜单语义）。
+  /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
+  ///
+  /// 1.8.0 的图标字体只是组件自用子集，没有完整的菜单图标；这里只映射确有的几个，
+  /// 其余不传 icon（宁可不画，也不能让缺失字形回退成 "mdi-xxx" 文本）。
   var MENU_ICONS = {
-    overview: 'mdi-view-dashboard-outline',
-    globe: 'mdi-web',
-    docker: 'mdi-docker',
-    plug: 'mdi-puzzle-outline',
-    tools: 'mdi-tools',
-    settings: 'mdi-cog-outline',
-    container: 'mdi-cube-outline',
-    image: 'mdi-layers-outline',
-    network: 'mdi-lan',
-    disk: 'mdi-harddisk',
-    'hard-drive': 'mdi-harddisk',
-    list: 'mdi-format-list-bulleted',
-    archive: 'mdi-archive-outline',
     clock: 'mdi-clock-outline',
-    activity: 'mdi-pulse',
-    lock: 'mdi-lock-outline',
-    folder: 'mdi-folder-outline',
-    file: 'mdi-file-outline',
-    shield: 'mdi-shield-outline',
-    user: 'mdi-account-outline',
-    dot: 'mdi-circle-small'
+    file: 'mdi-file-document',
+    dot: 'mdi-circle'
   };
 
   function iconFor(name) {
