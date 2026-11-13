@@ -59,7 +59,21 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 18:20 就地升级到 `b7771c3`（当前生效）**
+> **2026-11-13 20:11 就地升级到 `3d00543`（当前生效）**
+> - 出包：CI（push）11 项全绿（`编译（x86_64 musl 静态）` skipped 属预期）；`release.yml` dispatch run `43421228044`（ref=main、head `3d00543`，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,861,301 B** `3ec95dd683634d4e17a30120bae40be11d7be46b43452de95c396a1ec057b14e`（开发机 `Get-FileHash`、随包 `.sha256` 与测试机 `sha256sum` 三方一致）。
+> - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-ba4914e8a22e59f16f6ba8c8c5a773612e3179f24bdeee34f78fe1a8f9ec1510`（19,203,344 B）；库快照 `/root/iter/backup/skiff-cafd596839f326754866a3bad34cbc485ac288ccaf3018de50d72c81597e6661.db`（1,417,216 B）；`official/*.wbpkg` 已按发布包覆盖，重启后 `com.skiff.files` 升到 0.1.3（日志「官方插件内容已随发布包更新（同版本重装）」）。
+> - 新二进制：`/usr/local/bin/skiff` **19,207,440 B** `22585404eef78dd261c1771c848dced9e9afec6cabc3d09a093e521d2cf9640b`。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写（`listen=127.0.0.1:18080`、`allow_insecure_http=true`、`allow_reduced_sandbox=true`）。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 19:53 就地升级到 `4da21cd`（已被同日 20:11 升级取代，保留作过程记录）**
+> - 出包：CI 绿；`release.yml` run `43418974721`（ref=main、head `4da21cd`，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,838,621 B** `c29ee5c684d9ea9515d43cb0bb04326a1364f7abf992eb5331dcf143ebffe9a3`（开发机与测试机一致）。
+> - 升级方式：就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-a07229c2eb6cb77b528174c0280be6f94311811763bbb887e78eaca9c9acd286`（19,129,616 B）；库快照 `/root/iter/backup/skiff-f88aee37b6caef87ce6cbd0a1cc3967e8e30f47044fbe9990440f4fd5a60277f.db`（1,363,968 B）。
+> - 插件：`official/*.wbpkg` 覆盖到 `/www/skiff/official/` 后重启，6 个已装插件同版本重装；`com.skiff.ftp` 用 `skiff plugin install /www/skiff/official/com.skiff.ftp-0.1.0.wbpkg --yes` 补装（13 grants），共 7 插件、API 1.3。
+> - 新二进制：`/usr/local/bin/skiff` **19,203,344 B** `ba4914e8a22e59f16f6ba8c8c5a773612e3179f24bdeee34f78fe1a8f9ec1510`。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 18:20 就地升级到 `b7771c3`（已被同日 19:53 / 20:11 升级取代，保留作过程记录）**
 > - 出包：run `43410030908`（`release.yml` dispatch，ref=main、head `b7771c3`，publish=false、skip_plugins=false），两架构 job 全绿；artifact `release-amd64` 主包 **11,696,078 B** `974374db6ea662929d778f1a0ddf780fcecb2b15d7e7f0d0aeba59d722e9d9ba`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
 > - 升级方式：就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-18299b5f4604f3dc37b56299ddb6e6b841cb8b94a4b641c1a170d24bde0a4e46`；库快照 `/root/iter/backup/skiff-d9abd0558a7b7dcbba5b44a4c6891d46a46d1c1d7c2b3a1c9ee9d75ad35bd6db.db`。
 > - 新二进制：`/usr/local/bin/skiff` **19,129,616 B** `a07229c2eb6cb77b528174c0280be6f94311811763bbb887e78eaca9c9acd286`（`skiff 0.1.0 arch=amd64 os=linux`）。
@@ -204,6 +218,8 @@
 | 2026-11-12 12:47–12:52 | **SDUI 解耦八条上机回归**（`0eeabbe`）：主包覆盖替换（`skiff-server` 未变），无 schema 迁移 | Release run `43154627962`（`ref=main` head `0eeabbe`）四 job 全绿；主包 10,000,757 B `18e976d8…ad22`、`checksums.txt` 434 B `213dd1d2…b224` 四路一致；旧件按内容命名备份 `/root/iter/m28/backup/{skiff-cdf449faced9,skiff-server-3b60e6013aae,skiff-pluginsdir-52b8e2f9ce32.tar.gz}` | 库保持 **v18**、配置 sha `86610cdb…` 未变、前缀 `u9kiz9qb`；`/usr/local/bin/skiff` 14,894,352 B `6fb1187c…db130`；`/healthz` 200、两服务 `NRestarts=0`；七条对照（compose 保留名、概览待办危险优先与空态、站点四态+证书/版本列、网络预定义删除守卫与 `fail` 审计、作业两态按钮与 303 结果、任务/作业五条 `ok` 审计、建站表单三字段高亮与未知错误横幅）全 PASS；回归 probe 14/14、五页 200、store 304、serve 13/13；唯一观察为 compose 空项目名文案由「项目名无效」统一为「请填写项目名」 |
 | 2026-11-12 14:58–15:04 | **商店目录 TTL 与降级**（`a988085`）：主包覆盖替换（`skiff-server` 未变），dist seq 25→26（TTL 夹具），临时开启 serve 访问日志后还原 | Release run `43171292002`（`ref=main` head `a988085`，其后 `main` 仅前移测试文件 `7e47eda`）四 job 全绿；主包 10,002,925 B `c4dc7e7c…0762`、`checksums.txt` 434 B `7294b17d…eaf4` 四路一致；旧件按内容命名备份 `/root/iter/m29/backup/{skiff-6fb1187c9532,skiff-server-3b60e6013aae,skiff-pluginsdir-25573554e5c2.tar.gz}` | 库保持 **v18**、配置 sha `86610cdb…` 未变、前缀 `u9kiz9qb`；`/usr/local/bin/skiff` 14,906,640 B `e5d41ab4…c820`；五条缓存/降级全 PASS（显式 mirrors 保留、24h TTL 下重启+三访零请求、刷新立即取 seq 26、死源冷却期 4 访零新增请求且强制刷新绕过冷却、无缓存+死源空态页、默认源 `http://10.66.52.7:8080` 代码路径+临时实例确认）；回归 probe 14/14、五页 200、store 304、serve 13/13、安装/升级路径、两服务 `NRestarts=0`；观察：默认源被网络静默丢包时首访会等 30s 触发面板 504（已在下一轮 `7e322a3` 修复） |
 | 2026-11-12 15:44–15:47 | **商店抓取静默丢包超时修复**（`7e322a3`）：主包覆盖替换（`skiff-server` 未变），无 schema 迁移；两份临时实例（默认源 / 多源回落）验完即清理 | Release run `43176330913`（`ref=main` head `7e322a3`）四 job 全绿；主包 10,005,871 B `795484c0…ac77b`、`checksums.txt` 434 B `19d41673…06b74` 四路一致；旧件按内容命名备份 `/root/iter/m30/backup/{skiff-e5d41ab43fda,skiff-server-3b60e6013aae,skiff-pluginsdir-d16c3759b618.tar.gz}` | 库保持 **v18**、配置 sha `86610cdb…` 未变、前缀 `u9kiz9qb`；`/usr/local/bin/skiff` 14,906,640 B `3d4db293…5252`；四条全 PASS：默认源静默丢包首访 **200 / 3005 ms** +「镜像源不可达，正在使用本地缓存」、冷却期 4 访各 **1 ms** 且 0 新建连、死源+正常源首访 **3031 ms** / 刷新 **3023 ms** 成功 seq 26、生产刷新 **6 ms**（304）且 mirrors/sha 未变；回归 probe 15/15（含登录；同既往 14 项覆盖）、五页 200、安装/升级、serve 13/13、两服务 `NRestarts=0`；详见 §8 |
+| 2026-11-13 19:53 | **就地升级**（五个插件功能页原生化 + firewall/cron 写通路 + 全站抽查） | 出包 run `43418974721`（head `4da21cd`）；主包 11,838,621 B `c29ee5c6…e9a3` 双端一致；新二进制 19,203,344 B `ba4914e8…1510`；旧二进制与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 18080/18081 均 200；12 个插件页 iframe 0、RPC 200、数据真实；firewall 规则增删与 cron 任务增删均落审计；全站 7 页抽查无回退；`com.skiff.files/main` 仍为占位（见 §8） |
+| 2026-11-13 20:11 | **就地升级**（补验 files 原生页与概览系统状态卡） | 出包 run `43421228044`（head `3d00543`）；主包 11,861,301 B `3ec95dd6…b14e` 三方一致；新二进制 19,207,440 B `22585404…640b`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；files 原生页站点下拉/平铺浏览/文本编辑保存全部通过，`?legacy=1` 保留旧工作台；概览系统状态卡为真实数据；停用 monitor 时卡片消失、无原因提示（见 §8） |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -221,6 +237,35 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 20:11–20:20 files 原生页与概览系统状态卡补验（`3d00543`）**
+
+前置：就地升级到 `3d00543`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件（`com.skiff.files` 0.1.3）；Chromium 1440×900。
+
+- **files 原生页（通过）**：临时建 `/www/sites/demo.local/index/index.html`（144 B，含 `skiff-files-acceptance` 标记），`plugin remove` + `install --resource path:/www/sites/demo.local/index` 后 grants=7。`/{p}/plugins/com.skiff.files/main` **200**、**iframe 0**，页内站点下拉为 `demo.local`（`root_options` 返回 `{title:"demo.local",value:"/www/sites/demo.local/index"}`），当前目录 `/www/sites/demo.local/index`，文件表 1 行 `index.html 144 B 刚刚`。
+- **编辑与保存（通过）**：点行内「编辑」→ URL 带 `path` 与 `file`，textarea 预填原文（`read_text` 200）；改后点「保存」→ `plugin.rpc method=write` **200**，列表刷新为 **181 B**；测试机 `cat` 确认写入 `<!-- saved-by-acceptance-3d00543 -->`、mtime 更新。审计同时有 `admin plugin.rpc com.skiff.files method=write ok` 与 `plugin:com.skiff.files fs.write /www/sites/demo.local/index/index.html grant=… site=demo.local ok`。
+- **旧工作台入口**：`?legacy=1` 返回旧工作台（标题「站点文件 · 站点文件 · Skiff」，**iframe 1**，指向 `plugins/com.skiff.files/ui/main.html`）；壳内菜单「站点文件」点击落到 `/plugins/com.skiff.files/main`、iframe 0。**观察**：`/ui/v1/menu` 的 `href` 仍是 `/m/plugin/com.skiff.files/files`，直接访问该 href 仍渲染旧工作台（iframe 1）——属服务端回落，面板内无导航指向它。
+- **概览系统状态卡（通过）**：`/ui/v1/overview` 的 `health_plugin=com.skiff.monitor`，壳页调 `snapshot` 后渲染「系统状态」卡：`CPU 0.3% · 内存 468 MiB / 3.83 GiB (11.9%)`、`负载 0.00 / 0.00 / 0.00 · 运行时长 12 时 19 分`、采集时间 `2026-11-13 12:14:13（UTC）`，与随后一次采样（CPU 1.0%、12 时 21 分）同源变化；审计有 6 条 `fs.read /proc/*` 与 `plugin.rpc method=snapshot`。iframe 0。
+- **降级分支**：monitor 已启用但临时只授权 `path:/tmp` 时，卡片显示「系统状态 暂不可用：服务返回状态 400（需要启用主机监控插件，且当前角色具备插件管理权限）」——有提示但未透出 RPC 原始原因（观察）。`skiff plugin disable com.skiff.monitor` 后概览**完全没有「系统状态」卡**（无原因文案），与「未运行也要显示原因」的验收口径不符，记缺口（未改代码）。
+- **控制台**：files 原生页与概览各 1 条 `/favicon.ico` 404（全站既有，`curl /favicon.ico` 实测 404）；`?legacy=1` 0 条。
+- 清理：`plugin remove` + `install --yes` 使 files 回到 6 项 grant（无路径对象）、删除 `/www/sites/demo.local` 与空 `/www/sites`；monitor `remove` + `install --yes` 恢复 `path:/proc`、`path:/etc/passwd`；7 插件 enabled。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/files-native.png`、`files-editor.png`、`files-saved.png`、`files-legacy.png`、`files-menu-click.png`、`overview-health.png`、`overview-no-monitor.png`；报告 `files-health-report.json`、`menu-files-report.json`、`overview-off-report.json`。
+
+**2026-11-13 19:53–20:00 插件功能页原生化验收（`4da21cd`）**
+
+前置：就地升级到 `4da21cd`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件（API 1.3）；Chromium 1440×900。全部页面 iframe 0、RPC 200、数据非空壳。
+
+- **guard**：容器页 1 行、事件页 1 行（「暂无事件」）；只读卡片与表格均为原生 schema。
+- **monitor**：总览 / 历史采样 10 行 / 进程 50 行 / 网络 38 行；排序、筛选、分页在壳页本地完成，无写入口。
+- **firewall**：规则页显示 nftables 与 iptables 均可用、fail2ban 未安装、规则列表为空；fail2ban 页在未安装时给出降级原因而非报错。
+- **ftp**：账号 1 行、运行状态 10 行；`pure-ftpd` 未安装时显示降级原因；防火墙插件缺失场景由 `protection` 返回原因而不是整页失败（本轮防火墙在装，分支按代码路径与返回字段记录）。
+- **cron**：任务列表 6 行。
+- **写通路**：firewall 页面填来源 `10.99.99.0/24` → 添加，规则 id `skiff-1794570914810341684-0`；删除后消失。审计 `firewall.rule.add`（`rule.add source=10.99.99.0/24`，11:55:14Z）与 `firewall.rule.remove`（`rule.remove id=…`，11:55:18Z）均 `ok`。cron 页面「目标插件」下拉为空：`targets` RPC 返回 `interfaces: []`，真实原因是 cron 未持有 `plugin:<id>` 对象授权（manifest 要求安装时勾选），页面创建被拒（400）；改走同一 RPC 通道 `create` 成功（`plugin:com.skiff.cron:job1794570985`、`*/10 * * * *`、next_run 20:00）→ `remove` 200，列表回到 6 个；审计 `task.create` / `task.delete` 与 `plugin.rpc method=create/remove` 均 `ok`。临时规则与任务已删除。
+- **files**：`/{p}/plugins/com.skiff.files/main` 仍是占位，`/plugins/com.skiff.files/schema/main` 404（当轮 `3d00543` 尚未合入，见上一块补验）。
+- **全站抽查**：概览、网站、容器、插件、设置、文件、审计 7 页均 200、iframe 0、控制台 0 错误（概览仅 `/favicon.ico` 404）。
+- **插件状态标签**：与 `/ui/v1/plugins` 一致——cron / firewall / ftp / guard / monitor 为「已启用 · 运行中」，files / testkit 为「已启用 · 未运行」。
+- 观察：guard 的 reconcile 与 monitor 的 sample 两个既有任务显示「已阻塞：api_mismatch」，未深查原因（既有任务状态，非本轮引入）。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/`、`plugin-report.json`、`write-report.json`、`spot-report.json`、`status.out.txt`。
 
 **2026-11-13 20:15–20:40 转发层 10 s 超时修复与复验（18081 → 18080）**
 
