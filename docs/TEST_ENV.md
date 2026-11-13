@@ -59,7 +59,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 20:55 就地升级到 `1abcf4d`（当前生效）**
+> **2026-11-13 21:37 就地升级到 `150357f`（代码同 `91813f1`，budding 1.8.0-r3；当前生效）**
+> - 出包：CI run `43431945593`（head `91813f1`）11 项全绿（`编译（x86_64 musl 静态）` skipped 属预期）；`release.yml` dispatch run `43433228776`（ref=main、head `150357f`，仅比 `91813f1` 多一条验收文档提交，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,881,370 B** `38ff0c18af4662a542566b09c9bcbb42c01c20963cb091b31987b46f0d9129ff`（开发机、随包 `.sha256` 与测试机一致）。
+> - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-77a9a4c2e7fbc07763d965e7b1fb3552339258c779dc75051b943ce739763d9b`（19,207,440 B）；库快照 `/root/iter/backup/skiff-10f065eedbc092994ded2f7a75b7287ebb7112236c131545e7fe7791297841b6.db`（1,495,040 B）；`official/*.wbpkg` 已覆盖，插件无内容变化。
+> - 新二进制：`/usr/local/bin/skiff` **19,244,304 B** `06d86211943f639653ed8e0f4eab79899038822f18d005de936b94d41dec58bd`。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写（`listen=127.0.0.1:18080`、`allow_insecure_http=true`、`allow_reduced_sandbox=true`）。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 20:55 就地升级到 `1abcf4d`（已被同日 21:37 升级取代，保留作过程记录）**
 > - 出包：CI（push）11 项全绿（`编译（x86_64 musl 静态）` skipped 属预期）；`release.yml` dispatch run `43427115488`（ref=main、head `1abcf4d`，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,861,899 B** `b76aff6defc4ae94a3fd1beb7806ce9f9f560a4c7d32c3eb594c7b6e39e11a6f`（开发机 `Get-FileHash`、随包 `.sha256` 与测试机 `sha256sum` 一致）。
 > - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-22585404eef78dd261c1771c848dced9e9afec6cabc3d09a093e521d2cf9640b`（19,207,440 B）；库快照 `/root/iter/backup/skiff-ae754e2694e27e3a0d3eec0a832989864230f3775d0569e88f40162e50ada15b.db`（1,429,504 B）；`official/*.wbpkg` 已覆盖，插件内容无变化（未触发重装）。
 > - 新二进制：`/usr/local/bin/skiff` **19,207,440 B** `77a9a4c2e7fbc07763d965e7b1fb3552339258c779dc75051b943ce739763d9b`。
@@ -228,6 +235,7 @@
 | 2026-11-13 19:53 | **就地升级**（五个插件功能页原生化 + firewall/cron 写通路 + 全站抽查） | 出包 run `43418974721`（head `4da21cd`）；主包 11,838,621 B `c29ee5c6…e9a3` 双端一致；新二进制 19,203,344 B `ba4914e8…1510`；旧二进制与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 18080/18081 均 200；12 个插件页 iframe 0、RPC 200、数据真实；firewall 规则增删与 cron 任务增删均落审计；全站 7 页抽查无回退；`com.skiff.files/main` 仍为占位（见 §8） |
 | 2026-11-13 20:11 | **就地升级**（补验 files 原生页与概览系统状态卡） | 出包 run `43421228044`（head `3d00543`）；主包 11,861,301 B `3ec95dd6…b14e` 三方一致；新二进制 19,207,440 B `22585404…640b`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；files 原生页站点下拉/平铺浏览/文本编辑保存全部通过，`?legacy=1` 保留旧工作台；概览系统状态卡为真实数据；停用 monitor 时卡片消失、无原因提示（见 §8） |
 | 2026-11-13 20:55 | **就地升级**（验内置任务解锁、健康卡片三态、菜单链接与三页抽查） | 出包 run `43427115488`（head `1abcf4d`）；主包 11,861,899 B `b76aff6d…1a6f` 双端一致；新二进制 19,207,440 B `77a9a4c2…3d9b`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；guard reconcile 与 monitor sample 不再 `api_mismatch`，按 tick 产生成功记录；健康卡片启用/停用/撤授权三态齐全；菜单 href 改为原生路径；概览/插件/任务页 iframe 0 |
+| 2026-11-13 21:37 | **就地升级**（budding 1.8.0-r3：游标分页、图标、代码查看器、行内删除） | 出包 run `43433228776`（head `150357f`，代码同 `91813f1`）；主包 11,881,370 B `38ff0c18…29ff` 三方一致；新二进制 19,244,304 B `06d86211…58bd`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；容器/镜像/网络/卷分页 2 页且 0 重复；**审计页每页仅渲染 10/50 条**；图标 17 组字形齐全、4 个条目无图标；**代码查看器报「组件未发布：code-viewer」**；行内删除与 viewer 隐藏通过 |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -245,6 +253,19 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 21:37–22:05 `91813f1`（budding 1.8.0-r3）验收**
+
+前置：就地升级到 `150357f`（代码同 `91813f1`，见 §5）；为分页临时创建 55 容器 / 55 镜像 / 57 网络 / 55 卷，验完全部清理（回到 0 / 3 / 3 / 0）。
+
+- **游标分页**：
+  - 通过：容器 50→55、镜像 50→58、网络 50→57、卷 50→55，各点 1 次「加载更多」，`行数 == 去重行数`（重复 0），末页按钮消失；站点 0 条、作业 1 条、任务 6 条均**不出现**「加载更多」。
+  - **缺陷**：审计页 `/ui/v1/audit` 一次返回 50 条、页脚写「本页 50 条」，表格却只渲染 **10 行**（DOM 仅 10 个 `tr`，无滚动容器）；点「下一页」后游标直接跳过余下 40 条。实测 3 页页间 0 重叠，但第 1 页最后可见记录 21:47:50、第 2 页首条 21:43:50，中间 40 条不可达（每页丢 40 条）。
+- **图标**：17 个语义图标字形全部有 `::before` 内容（`missing=[]`），页面可见文本 0 处 `mdi-xxx`；侧栏展开 33 项中 29 项有图标，**镜像 / 卷 / 文件管理 / 配额管理 4 项无图标**（图标子集缺 image/disk/folder/hard-drive，映射表也未含），既不是图形也没有文本兜底。
+- **代码查看器（失败）**：`/files/view?path=/tmp/skiff-code-demo.conf` 返回 200，`budding-code-1.8.0-r3.min.js` 200、无静态 404，但页面显示「组件未发布：code-viewer」，无 `<pre>`、高亮 token 0；刷新 3 次仍复现。包内实际发布 `type: "code"`，宿主 schema 仍用 `code-viewer`，类型名不一致；影响所有用 `code-viewer` 的页面（文件查看、任务/站点日志）。
+- **行内删除**：admin 下镜像 / 网络 / 卷首行均有行内「删除」；临时创建 `r9viewer`（role=viewer，复用 admin 口令，验后删除）登录后，`/ui/v1/networks` 的 `can_admin=false` 使 `rowActions` 为空，三页 **0 个删除按钮**，`can_remove` 仍按行标记（内置网络 false）。临时 viewer 账号与 2 个 `docker:read` token 已删除。
+- **抽查**：概览、插件列表、文件管理、任务页均 200、iframe 0、控制台 0 错误；容器页与审计页仅 `/favicon.ico` 404。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/r9-{containers,images,networks,volumes,audit-page3,code-viewer,sidebar-expanded,viewer-*}.png`；`round9-report.json`、`round9b-report.json`、`viewer-report.json`、`code-diag.json`。
 
 **2026-11-13 20:55–21:06 `1abcf4d` 四项修复验收**
 
