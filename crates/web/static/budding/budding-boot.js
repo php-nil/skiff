@@ -621,6 +621,7 @@
         skiffDockerWrite: dockerWrite,
         skiffSiteWrite: siteWrite,
         skiffComposeAction: composeAction,
+        skiffComposeEdit: composeEdit,
         skiffSettingsSave: settingsSave,
         skiffPasswordChange: passwordChange,
         skiffTotpSetup: totpSetup,
@@ -1851,22 +1852,97 @@
       composeButton('清理', 'down')
     ];
     body.push(table);
-    body.push({
-      type: 'alert',
-      props: {
-        type: 'info',
-        text: '粘贴/编辑 compose 文本、校验与部署仍在旧版页面；服务日志查看器待 T3。'
-      }
-    });
-    body.push({
-      type: 'link',
-      props: { text: '打开旧版编排页（编辑 / 校验 / 部署）', href: prefix + '/m/core/docker/compose' }
-    });
+    if (data.can_admin) {
+      body.push(
+        writeCard(
+          '编辑 / 校验 / 部署',
+          'compose 源文件不持久化：校验只解析，不触达 Docker；部署会创建/更新项目。',
+          writeForm(
+            apiBase + '/compose/validate',
+            { type: 'skiffComposeEdit' },
+            [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'project',
+                  label: '项目名（必填，不能为 skiff / sites）',
+                  required: true,
+                  rules: { required: true, messages: { required: '请填写项目名' } }
+                }
+              },
+              {
+                type: 'textarea',
+                props: {
+                  name: 'compose',
+                  label: 'docker-compose.yml',
+                  rows: 14,
+                  required: true,
+                  rules: { required: true, messages: { required: '请粘贴 compose 内容' } }
+                }
+              },
+              {
+                type: 'select',
+                props: {
+                  name: 'action',
+                  label: '操作',
+                  defaultValue: 'validate',
+                  items: [
+                    { title: '仅校验', value: 'validate' },
+                    { title: '校验并部署', value: 'up' }
+                  ]
+                }
+              }
+            ],
+            '执行'
+          )
+        )
+      );
+    } else {
+      body.push({
+        type: 'alert',
+        props: { type: 'info', text: '编辑、校验与部署需要 Docker 生命周期权限。' }
+      });
+    }
     return {
       type: 'page',
-      props: { title: '编排 · Skiff', subtitle: '项目列表与启停；编辑/部署走旧版页面' },
+      props: { title: '编排 · Skiff', subtitle: '项目列表、启停、校验与部署均在原生页面完成' },
       body: body
     };
+  }
+
+  /// Compose 编辑/校验/部署：校验结果直接弹窗，部署后刷新项目列表。
+  function composeEdit(args, ctx) {
+    var values = formValues(ctx);
+    var op = formText(values.action) === 'up' ? 'up' : 'validate';
+    return submitJson('/compose/' + op, {
+      project: formText(values.project),
+      compose: formText(values.compose)
+    })
+      .then(function (data) {
+        if (op === 'up') {
+          var failed = data.failed || 0;
+          if (failed > 0) {
+            window.alert('项目 ' + data.project + ' 部署完成，但有 ' + failed + ' 个服务失败。');
+          } else {
+            window.alert('项目 ' + data.project + ' 已部署。');
+          }
+          location.reload();
+          return;
+        }
+        window.alert(
+          '校验通过\n项目：' +
+            data.project +
+            '\n服务顺序：' +
+            (data.services || []).join(' → ') +
+            '\n网络：' +
+            ((data.networks || []).join('、') || '—') +
+            '\n卷：' +
+            ((data.volumes || []).join('、') || '—')
+        );
+      })
+      .catch(function (error) {
+        window.alert('校验失败：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
   function tasksSchema(data) {

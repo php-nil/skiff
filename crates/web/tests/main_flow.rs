@@ -7421,6 +7421,65 @@ async fn shell_fallback_never_catches_unlisted_or_non_get() {
     assert!(!body.contains("该功能正在适配中"));
 }
 
+/// 未认证的 GET 页面请求：settings（只靠回落）与 files（有注册路由）必须一致 303 登录。
+///
+/// 覆盖回落、尾部斜杠、注册路由与「路径存在但方法不匹配」四种入口；写请求仍不回落。
+#[tokio::test]
+async fn shell_unauthenticated_get_redirects_consistently() {
+    let h = harness();
+    for uri in [
+        "/p/settings",
+        "/p/settings/",
+        "/p/files",
+        "/p/files/trash",
+        "/p/settings/panel",
+    ] {
+        for accept in [None, Some("text/html"), Some("application/json")] {
+            let mut builder = Request::builder().method("GET").uri(uri);
+            if let Some(value) = accept {
+                builder = builder.header(header::ACCEPT, value);
+            }
+            let resp = h
+                .app
+                .clone()
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::SEE_OTHER,
+                "{uri} accept={accept:?} 未认证应 303"
+            );
+            let location = resp
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                location.starts_with("/p/login?next="),
+                "{uri} accept={accept:?} 应跳登录页，实际 {location}"
+            );
+        }
+    }
+
+    // 写请求不因未认证而回落或跳转：`/p/settings` 没有任何写路由，保持 404。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/settings")
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 /// 命中「路径存在但方法不匹配」时：GET 导航仍回落壳页，写请求仍 405。
 ///
 /// `/p/containers/{id}/{action}` 只注册了 POST，GET 旧实现直接 405，`Router::fallback`
@@ -8254,6 +8313,66 @@ async fn site_new_canonical_path_serves_native_shell() {
 
     let (status, _) = get_page(&h.app, "/p/sites/new", &viewer).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Compose 校验/部署：CSRF 与管理员门禁先行；校验不触达 Docker，部署无引擎时 503。
+#[tokio::test]
+async fn ui_compose_validate_and_up_require_csrf_and_permission() {
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+    let project = "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - \"8080:80\"\n";
+
+    for uri in ["/ui/v1/compose/validate", "/ui/v1/compose/up"] {
+        let body = json!({ "project": "demo", "compose": project });
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden");
+    }
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/compose/validate",
+        &admin,
+        Some(&csrf),
+        &json!({ "project": "demo", "compose": "services: [oops" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/compose/validate",
+        &admin,
+        Some(&csrf),
+        &json!({ "project": "demo", "compose": project }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["project"], "demo");
+    assert_eq!(v["data"]["services"], json!(["web"]));
+    assert_eq!(v["data"]["valid"], true);
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/compose/up",
+        &admin,
+        Some(&csrf),
+        &json!({ "project": "demo", "compose": project }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "dependency.unavailable");
 }
 
 /// 审计规范页交 budding 壳；旧 SSR 仍按 `AuditRead` 拒绝 viewer。

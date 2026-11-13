@@ -2457,6 +2457,82 @@ pub async fn compose_down(
     Ok(resp)
 }
 
+/// compose 源文本 + 可选项目名（与旧页面同名）。
+#[derive(Debug, Default, Deserialize)]
+pub struct ComposeSourceBody {
+    #[serde(default)]
+    pub compose: String,
+    #[serde(default)]
+    pub project: String,
+}
+
+fn planned_compose(
+    state: &AppState,
+    user: &crate::state::CurrentUser,
+    body: &ComposeSourceBody,
+) -> Result<skiff_docker::compose::ComposeProject, ApiError> {
+    if body.compose.trim().is_empty() {
+        return Err(ApiError(AppError::BadRequest(
+            "compose 内容不能为空".into(),
+        )));
+    }
+    let project =
+        handlers::compose::planned_project(&body.compose, &body.project).map_err(ApiError)?;
+    handlers::compose::validate_specs(state, user, &project).map_err(ApiError)?;
+    Ok(project)
+}
+
+/// `POST /ui/v1/compose/validate`：只解析与校验，不触达 Docker，不改状态。
+pub async fn compose_validate(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<ComposeSourceBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    let project = planned_compose(&state, &user, &body)?;
+    let services: Vec<String> = project.services.iter().map(|s| s.service.clone()).collect();
+    write_done(json!({
+        "project": project.name,
+        "services": services,
+        "networks": project.networks,
+        "volumes": project.volumes,
+        "valid": true,
+    }))
+}
+
+/// `POST /ui/v1/compose/up`：校验通过后部署项目；部分服务失败如实回传。
+pub async fn compose_up(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<ComposeSourceBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    let project = planned_compose(&state, &user, &body)?;
+    let name = project.name.clone();
+    let value = skiff_app::commands::docker::compose_up(
+        &state,
+        skiff_app::commands::docker::ComposeUp {
+            project,
+            actor: handlers::compose::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::compose::map_err(e)))?;
+    let failed = value
+        .get("failed")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let services = value
+        .get("services")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    write_done(json!({ "project": name, "failed": failed, "services": services }))
+}
+
 /// `POST /ui/v1/compose/{project}/{action}`：项目级启动/停止/重启。
 ///
 /// 逐容器复用既有动词分发与权限判定；策略拒绝计入 `failed`，不中断其余容器。

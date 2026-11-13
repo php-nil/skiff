@@ -434,7 +434,7 @@ pub(crate) fn require_compose_admin(state: &AppState, user: &CurrentUser) -> Res
         .map_err(|e| AppError::Forbidden(e.to_string()))
 }
 
-fn validate_specs(
+pub(crate) fn validate_specs(
     state: &AppState,
     user: &CurrentUser,
     project: &ComposeProject,
@@ -449,7 +449,7 @@ fn validate_specs(
     Ok(())
 }
 
-fn planned_project(text: &str, raw_project: &str) -> Result<ComposeProject, AppError> {
+pub(crate) fn planned_project(text: &str, raw_project: &str) -> Result<ComposeProject, AppError> {
     if text.trim().is_empty() {
         return Err(AppError::BadRequest("请粘贴 compose 内容或选择文件".into()));
     }

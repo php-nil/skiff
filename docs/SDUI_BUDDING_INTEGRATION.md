@@ -650,9 +650,10 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 ### 5.11 编排 Compose（第四批）
 
-- `GET /{p}/compose` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/compose`，编辑/校验/部署仍走该落点。
+- `GET /{p}/compose` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/compose`。
 - 列表复用 `compose::status_of`（容器标签归组，不持久化 compose 源文件），不新增 SQL；项目按名称排序。
 - 项目级启停/重启与 down 已提供 JSON 动作，复用现有 `compose_project_action` / `compose_down` 与逐容器权限判定、审计。
+- 编辑/校验/部署已原生化：`POST /ui/v1/compose/validate` 只解析与 `validate_specs`，不触达 Docker；`POST /ui/v1/compose/up` 校验后走 `compose_up`。源文本不持久化。
 
 **字段表（冻结，只增不改）**
 
@@ -670,9 +671,13 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `services[].logs` | string | 选中项目时最近 100 行日志（未选中为空串） |
 | `selected_project` | string | 请求的 `project` 参数原样回显 |
 | `docker_available` / `docker_reason` | bool / string | 与旧页面同口径；`docker_reason` 在列表读取失败时给错误文本 |
-| `can_admin` | bool | 是否具备 `DockerLifecycle`（编辑/部署入口由旧页判定） |
+| `can_admin` | bool | 是否具备 `DockerLifecycle`（编辑/部署表单显隐） |
 
 `POST /ui/v1/compose/{project}/{action}`（`start` / `stop` / `restart`）→ `{ "data": { project, action, done, failed } }`；`failed` 含策略拒绝与命令失败。
+
+`POST /ui/v1/compose/validate`，body `{ "project": "...", "compose": "..." }` → `{ "data": { project, services, networks, volumes, valid } }`；只做解析、项目名归一与 `validate_specs`，不访问 Docker。
+
+`POST /ui/v1/compose/up`，同一 body → `{ "data": { project, failed, services } }`；`failed > 0` 如实回传（命令层审计落 `partial`）。
 
 `POST /ui/v1/compose/down`，body `{ "project": "...", "remove_volumes": false }` → `{ "data": { project, remove_volumes, report } }`，`report` 为既有命令返回的逐容器结果。
 
@@ -681,7 +686,8 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 **渲染映射**
 
 - 项目表格：项目 / 归属 / 服务数 / 运行中，行内按钮启动、停止、重启、清理（清理前确认，卷默认保留）。
-- 编辑、校验与部署仍链回旧版 `/m/core/docker/compose`；服务日志暂由旧页展示（日志查看器待 T3）。
+- `can_admin` 时追加「编辑 / 校验 / 部署」卡片：项目名（必填，不能为 `skiff` / `sites`）、compose 文本域、操作下拉（仅校验 / 校验并部署）。校验结果以弹窗展示服务顺序、网络与卷；部署后刷新列表。viewer 只看到权限提示。
+- 服务日志暂由旧页展示（日志查看器待 T3）。
 
 ### 5.12 任务与作业（第五批，只读）
 
@@ -1077,3 +1083,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十六批日志入口收口：容器日志改 budding 页（尾部快照），SSE 移至 `/{p}/containers/{id}/logs/stream` 仅旧详情跟随；运行环境日志新增 budding 页（旧抽屉 JSON 移至 `/logs.json`）；两端各加 `/ui/v1` 快照接口（`ContainerLogs`/`DockerRead` 与 Admin），详情占位页提供原生日志入口；`?legacy=1` 未新增。补 2 条 `main_flow` 用例 + 无头浏览器实测。 |
 | 2026-11-13 | 第十七批 Docker 写操作原生化：`GET /{p}/containers/new` 改交付壳页原生表单；`/ui/v1` 新增容器新建 `POST /containers`、资源限制 `POST /containers/{id}/limits`、镜像 `POST /images/pull` 与 `/images/{id}/remove`、网络 `POST /networks` 与 `/networks/{id}/remove`、卷 `POST /volumes` 与 `/volumes/{name}/remove`。参数解析复用旧表单函数（`spec_from_form` / `limits_from_form` / `validate_name`），执行仍走 `docker_cmd` 与既有权限/CSRF/审计；容器详情补资源限制表单，三个资源页补创建表单与逐项删除。补 `main_flow` 用例（CSRF / viewer 403 / 无 Docker 失败 / 非法名称 400）。**真实 Docker 引擎上的创建与限制热更新仍需 Linux 测试机验收**。 |
 | 2026-11-13 | 第十八批站点写操作原生化：`GET /{p}/sites/new` 改交付壳页原生表单；`/ui/v1` 新增 `POST /sites`（建站）、`/sites/batch`（批量启停）、`/sites/{domain}/{action}`（启停）、`/default`、`/domains`、`/config`、`/ssl`、`/backup`、`/delete`。全部复用 `SITE_*` 动作、`x-csrf-token`、审计与 `commands::site`；详情新增 `config` / `backup` / `can_manage`，列表新增 `can_admin`。站点列表补新建与批量启停，详情补站点操作、配置编辑、域名增删、证书与备份卡片。补 `main_flow` 用例（CSRF / viewer 403 / 确认串与空批量 400 / 详情按角色显隐）。**建站、配置保存与证书动作需 OpenResty/真实运行环境，测试机验收后再算完全闭环**。 |
+| 2026-11-13 | 第十九批 Compose 原生化 + 壳页未认证一致性：`/ui/v1` 新增 `POST /compose/validate` 与 `POST /compose/up`，复用 `planned_project` / `validate_specs` / `compose_up`；`/{p}/compose` 补编辑、校验、部署卡片。修复 SPA 回落未认证分支：命中白名单的 GET 不再先看 `Accept`，与 `/{p}/files` 一致 303 到 `/{p}/login?next=...`；已认证非 HTML `Accept` 仍 404，写请求仍不回落。补 `main_flow` 一致性用例与 `ui_compose_*` 用例。**部署动作需真实 Docker 引擎，测试机验收后再算完全闭环**。 |

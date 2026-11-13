@@ -234,6 +234,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::ui_api::volume_remove),
         )
         .route("/ui/v1/compose", get(handlers::ui_api::compose))
+        .route(
+            "/ui/v1/compose/validate",
+            post(handlers::ui_api::compose_validate),
+        )
+        .route("/ui/v1/compose/up", post(handlers::ui_api::compose_up))
         .route("/ui/v1/compose/down", post(handlers::ui_api::compose_down))
         .route(
             "/ui/v1/compose/{project}/{action}",

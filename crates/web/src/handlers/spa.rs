@@ -1,9 +1,10 @@
 //! SPA 壳页回落（URL 契约 §2.1；SDUI 集成 D13）。
 //!
 //! 只由 `Router::fallback` 触发，即**所有已注册路由都没匹配上**时才进入：
-//! 仅 `GET` + `Accept` 含 `text/html` + 命中白名单前缀（按路径段边界，
-//! `/{p}/sitesfoo` 不算 `/{p}/sites`）三者同时满足才返回壳页；
-//! 其余一律沿用原有 404 错误页。写请求永不回落。
+//! 仅 `GET` + 命中白名单前缀（按路径段边界，`/{p}/sitesfoo` 不算 `/{p}/sites`）
+//! 才进入页面分支。未认证一律 303 到登录页（与 `/files` 等注册路由一致，不先看
+//! `Accept`）；已认证仍需 `Accept` 含 `text/html` 才给壳页，其余沿用 404。
+//! 写请求永不回落。
 //!
 //! 壳页本批只给挂载点、占位提示与产物 script 引用：产物入库由另一路负责，
 //! 这里不复制静态文件，也不改 `assets.rs` / `build.rs`。
@@ -68,13 +69,18 @@ fn accepts_html(parts: &Parts) -> bool {
 /// 路由兜底：命中白名单返回壳页，否则保持原有的 404 行为。
 pub async fn fallback(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
     let path = parts.uri.path();
-    if parts.method != Method::GET
-        || !accepts_html(&parts)
-        || !is_shell_path(&state.cfg.entry_prefix, path)
-    {
+    if parts.method != Method::GET || !is_shell_path(&state.cfg.entry_prefix, path) {
         return AppError::NotFound("404 Not Found".into()).into_response();
     }
-    shell_for(&state, &parts)
+    // 未认证的 GET 不论 Accept 一律回登录页：`/files` 这类有注册路由的页面本来就
+    // 303，而 `/settings` 只靠回落；若在认证前先卡 Accept，会让两组前缀行为分裂。
+    if parts.extensions.get::<CurrentUser>().is_none() {
+        return login_redirect(&state, &parts);
+    }
+    if !accepts_html(&parts) {
+        return AppError::NotFound("404 Not Found".into()).into_response();
+    }
+    shell_page(&state)
 }
 
 /// 「路径存在但方法不匹配」兜底（axum 默认直接 405，`Router::fallback` 不会触发）。
@@ -83,11 +89,13 @@ pub async fn fallback(State(state): State<Arc<AppState>>, parts: Parts) -> Respo
 /// `/p/containers/{id}/{action}`；这类深链同样应拿到壳页。写请求与非 HTML
 /// `Accept` 仍保持 405，不回落。
 pub async fn method_not_allowed(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
-    if parts.method == Method::GET
-        && accepts_html(&parts)
-        && is_shell_path(&state.cfg.entry_prefix, parts.uri.path())
-    {
-        return shell_for(&state, &parts);
+    if parts.method == Method::GET && is_shell_path(&state.cfg.entry_prefix, parts.uri.path()) {
+        if parts.extensions.get::<CurrentUser>().is_none() {
+            return login_redirect(&state, &parts);
+        }
+        if accepts_html(&parts) {
+            return shell_page(&state);
+        }
     }
     (StatusCode::METHOD_NOT_ALLOWED, "405 Method Not Allowed").into_response()
 }
@@ -102,19 +110,24 @@ pub async fn root_shell(State(state): State<Arc<AppState>>, parts: Parts) -> Res
 /// （`/ui/v1/*` 的 401 只适用于 JSON）。
 fn shell_for(state: &AppState, parts: &Parts) -> Response {
     if parts.extensions.get::<CurrentUser>().is_none() {
-        let next = parts
-            .uri
-            .path_and_query()
-            .map(|p| p.as_str().to_string())
-            .unwrap_or_default();
-        return AppError::Redirect(format!(
-            "/{}/login?next={}",
-            state.cfg.entry_prefix,
-            crate::util::encode_uri_component(&next)
-        ))
-        .into_response();
+        return login_redirect(state, parts);
     }
     shell_page(state)
+}
+
+/// 未认证页面请求统一跳登录页，`next` 保留原始 path + query。
+fn login_redirect(state: &AppState, parts: &Parts) -> Response {
+    let next = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+    AppError::Redirect(format!(
+        "/{}/login?next={}",
+        state.cfg.entry_prefix,
+        crate::util::encode_uri_component(&next)
+    ))
+    .into_response()
 }
 
 /// 已认证请求的壳页响应（供带能力面门禁的页面复用，如 `/{p}/files`）。
