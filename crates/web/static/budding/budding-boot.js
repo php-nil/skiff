@@ -20,6 +20,7 @@
   // 版本化 CSS 必须显式传：budding 构建期写死的自动推导名是 `budding.css`，
   // 而入库的是带版本号的文件名。
   var cssHref = mount.getAttribute('data-budding-css') || '';
+  var buddingVersion = mount.getAttribute('data-budding-version') || '';
 
   function showError(message) {
     mount.textContent = '';
@@ -325,6 +326,27 @@
       meta: { activeMenu: prefix + '/jobs' }
     });
     routes.push({
+      path: prefix + '/jobs/:id/logs',
+      title: '作业日志',
+      hidden: true,
+      schema: 'skiff:job-logs',
+      meta: { activeMenu: prefix + '/jobs' }
+    });
+    routes.push({
+      path: prefix + '/files/view',
+      title: '代码查看器',
+      hidden: true,
+      schema: 'skiff:file-view',
+      meta: { activeMenu: prefix + '/files' }
+    });
+    routes.push({
+      path: prefix + '/sites/:domain/logs',
+      title: '站点日志',
+      hidden: true,
+      schema: 'skiff:site-logs',
+      meta: { activeMenu: prefix + '/sites' }
+    });
+    routes.push({
       path: prefix + '/plugins/:id',
       title: '插件详情',
       hidden: true,
@@ -407,6 +429,9 @@
         skiffFileMkdir: fileMkdir,
         skiffFileRename: fileRename,
         skiffFileRemove: fileRemove,
+        skiffLogSwitch: logSwitch,
+        skiffLogFilter: logFilter,
+        skiffLogReload: logReload,
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
         skiffPluginToggle: pluginToggle,
@@ -419,11 +444,31 @@
       }
     };
     if (cssHref) options.css = cssHref;
+    registerPacks();
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
     });
   }
 
+
+  /// 独立 Pack：code-viewer 的语法高亮由 @budding/highlight 提供。
+  /// 未注册或加载失败时组件按纯文本工作，不影响只读查看。
+  function registerPacks() {
+    if (!buddingVersion || !window.BuddingSDK) return;
+    if (typeof window.BuddingSDK.registerPack !== 'function') return;
+    try {
+      window.BuddingSDK.registerPack(
+        'highlight',
+        prefix +
+          '/static/budding/budding-highlight-' +
+          buddingVersion +
+          '.min.js?v=' +
+          buddingVersion
+      );
+    } catch (e) {
+      /* 注册失败只影响高亮，查看器仍可用 */
+    }
+  }
 
   /// 把当前地址拆成入口前缀之后的路径段（已解码）。
   function routeParts() {
@@ -558,6 +603,21 @@
           }
         };
       }) }
+    });
+    body.push({
+      type: 'flex',
+      props: { gap: 12, wrap: true },
+      content: {
+        body: [
+          {
+            type: 'link',
+            props: {
+              text: '查看访问 / 错误日志',
+              href: prefix + '/sites/' + encodeURIComponent(data.domain) + '/logs'
+            }
+          }
+        ]
+      }
     });
     body.push({
       type: 'card',
@@ -1183,23 +1243,43 @@
         body:
           logLines.length === 0
             ? [textLine('暂无日志')]
-            : logLines.map(function (line) {
-                return { type: 'text', props: { text: line } };
-              })
+            : [
+                {
+                  type: 'code-viewer',
+                  props: {
+                    code: logLines.join('\n'),
+                    language: 'plaintext',
+                    readonly: true,
+                    height: 320,
+                    lineNumbers: true,
+                    wrap: false,
+                    copyable: true,
+                    ariaLabel: '作业日志（首屏）'
+                  }
+                }
+              ]
       }
     });
     body.push({
-      type: 'alert',
-      props: {
-        type: 'info',
-        text: '实时日志流（SSE）与取消/重试仍在旧版作业详情；日志查看器待 T3。'
-      }
-    });
-    body.push({
-      type: 'link',
-      props: {
-        text: '打开旧版作业详情（实时日志 / 取消 / 重试）',
-        href: prefix + '/m/core/jobs/' + encodeURIComponent(data.id)
+      type: 'flex',
+      props: { gap: 12, wrap: true },
+      content: {
+        body: [
+          {
+            type: 'link',
+            props: {
+              text: '查看完整日志（按需加载）',
+              href: prefix + '/jobs/' + encodeURIComponent(data.id) + '/logs'
+            }
+          },
+          {
+            type: 'link',
+            props: {
+              text: '旧版作业详情（取消 / 重试）',
+              href: prefix + '/m/core/jobs/' + encodeURIComponent(data.id)
+            }
+          }
+        ]
       }
     });
     return {
@@ -1209,7 +1289,7 @@
     };
   }
 
-  // 设置页：只读快照 + 面板表单（监听地址 / 入口前缀 / TLS）。口令与 TOTP 仍在旧版页。
+  // 设置页：账户安全（口令 / TOTP / 公钥）+ 面板表单（监听地址 / 入口前缀 / TLS）。
   function settingsSchema(data) {
     var body = [];
     var panel = data.panel;
@@ -1225,7 +1305,7 @@
         props: {
           type: 'warning',
           title: '首次登录必须修改口令',
-          text: '修改口令后其他页面才恢复访问；口令表单在旧版设置页。'
+          text: '修改口令后其他页面才恢复访问；请在下方「修改口令」表单完成修改。'
         }
       });
     }
@@ -1799,8 +1879,11 @@
   }
 
   function fileOpen(args) {
-    window.location.href =
-      prefix + '/files?path=' + encodeURIComponent(String(args.path || ''));
+    var path = String(args.path || '');
+    var isDir = args.dir === true || args.dir === 'true';
+    window.location.href = isDir
+      ? prefix + '/files?path=' + encodeURIComponent(path)
+      : prefix + '/files/view?path=' + encodeURIComponent(path);
   }
 
   function fileDownload(args) {
@@ -1865,6 +1948,42 @@
       .catch(function (error) {
         window.alert('删除失败：' + (error && error.message ? error.message : String(error)));
       });
+  }
+
+  function logPageUrl(part, domain, tail, keyword) {
+    return (
+      prefix +
+      '/sites/' +
+      encodeURIComponent(domain) +
+      '/logs?part=' +
+      (part === 'error' ? 'error' : 'access') +
+      '&tail=' +
+      encodeURIComponent(String(tail || '200')) +
+      (keyword ? '&q=' + encodeURIComponent(keyword) : '')
+    );
+  }
+
+  function logSwitch(args) {
+    window.location.href = logPageUrl(
+      args.part,
+      args.domain,
+      args.tail,
+      String(args.q || '')
+    );
+  }
+
+  function logFilter(args, ctx) {
+    var values = formValues(ctx);
+    window.location.href = logPageUrl(
+      args.part,
+      args.domain,
+      args.tail,
+      String(values.q || '').trim()
+    );
+  }
+
+  function logReload() {
+    window.location.reload();
   }
 
   // 插件中心：列表（已安装 / 发现 / 可更新）与信息页（身份、授权、管理动作）。
@@ -1999,7 +2118,11 @@
             type: 'button',
             props: { text: '${item.name_label}', variant: 'text' },
             onEvent: {
-              click: { actions: [{ type: 'skiffFileOpen', props: { path: '${item.path}' } }] }
+              click: {
+                actions: [
+                  { type: 'skiffFileOpen', props: { path: '${item.path}', dir: '${item.dir}' } }
+                ]
+              }
             }
           },
           { type: 'text', props: { text: '${item.size_label}', size: 'small' } },
@@ -2048,6 +2171,343 @@
           }
         ]
       }
+    };
+  }
+
+  // ---- 代码查看器与日志查看器（第十三批） --------------------------------
+
+  var LANG_BY_EXT = {
+    js: 'javascript',
+    mjs: 'javascript',
+    cjs: 'javascript',
+    ts: 'typescript',
+    json: 'json',
+    css: 'css',
+    scss: 'scss',
+    less: 'less',
+    html: 'markup',
+    htm: 'markup',
+    xml: 'markup',
+    md: 'markdown',
+    rs: 'rust',
+    py: 'python',
+    sh: 'bash',
+    bash: 'bash',
+    zsh: 'bash',
+    yml: 'yaml',
+    yaml: 'yaml',
+    toml: 'toml',
+    sql: 'sql',
+    go: 'go',
+    java: 'java',
+    php: 'php',
+    c: 'c',
+    h: 'c',
+    cpp: 'cpp',
+    hpp: 'cpp',
+    ini: 'ini',
+    conf: 'ini'
+  };
+
+  function languageOf(name) {
+    var ext = String(name || '')
+      .split('.')
+      .pop()
+      .toLowerCase();
+    return LANG_BY_EXT[ext] || 'plaintext';
+  }
+
+  function fileViewSchema(data) {
+    var text = String(data.text || '');
+    var binary = text.indexOf('\u0000') >= 0;
+    var name = String(data.path || '').split(/[\\/]/).pop();
+    var parent = String(data.path || '').replace(/[\\/][^\\/]*$/, '');
+    var body = [
+      {
+        type: 'flex',
+        props: { gap: 12, wrap: true, align: 'center' },
+        content: {
+          body: [
+            {
+              type: 'link',
+              props: {
+                text: '返回目录',
+                href: prefix + '/files?path=' + encodeURIComponent(parent)
+              }
+            },
+            {
+              type: 'button',
+              props: { text: '下载', variant: 'text' },
+              onEvent: {
+                click: {
+                  actions: [{ type: 'skiffFileDownload', props: { path: data.path } }]
+                }
+              }
+            }
+          ]
+        }
+      }
+    ];
+    if (binary) {
+      body.push({
+        type: 'alert',
+        props: { type: 'warning', text: '该文件疑似二进制（含 NUL 字节），未渲染内容。' }
+      });
+    }
+    if (data.truncated) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'info',
+          text:
+            '文件超过单次读取上限（' +
+            data.max_edit_bytes +
+            ' 字节），当前只显示开头部分；可下载查看完整内容。'
+        }
+      });
+    }
+    body.push({
+      type: 'code-viewer',
+      props: {
+        code: binary ? '' : text,
+        language: languageOf(name),
+        readonly: true,
+        height: 560,
+        lineNumbers: true,
+        wrap: false,
+        copyable: true,
+        ariaLabel: name
+      }
+    });
+    body.push({
+      type: 'text',
+      props: {
+        text:
+          '大小 ' +
+          humanSize(data.size) +
+          (data.truncated ? '（已截断）' : '') +
+          ' · 只读 · 高亮由 @budding/highlight Pack 在前端完成',
+        size: 'small'
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: name + ' · 代码查看器', subtitle: '只读，纯前端高亮（不引 WASM）' },
+      body: body
+    };
+  }
+
+  function logSwitchButton(text, props) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'tonal' },
+      onEvent: { click: { actions: [{ type: 'skiffLogSwitch', props: props }] } }
+    };
+  }
+
+  function siteLogsSchema(domain, part, tail, keyword, data) {
+    var lines = data.lines || [];
+    var body = [
+      {
+        type: 'flex',
+        props: { gap: 8, wrap: true, align: 'center' },
+        content: {
+          body: [
+            {
+              type: 'link',
+              props: {
+                text: '返回站点详情',
+                href: prefix + '/sites/' + encodeURIComponent(domain)
+              }
+            },
+            logSwitchButton('访问日志', {
+              domain: domain,
+              part: 'access',
+              tail: tail,
+              q: keyword
+            }),
+            logSwitchButton('错误日志', {
+              domain: domain,
+              part: 'error',
+              tail: tail,
+              q: keyword
+            }),
+            {
+              type: 'button',
+              props: { text: '刷新', variant: 'text' },
+              onEvent: { click: { actions: [{ type: 'skiffLogReload' }] } }
+            }
+          ]
+        }
+      },
+      {
+        type: 'form',
+        onEvent: {
+          submit: [
+            {
+              type: 'skiffLogFilter',
+              props: { domain: domain, part: part, tail: tail }
+            }
+          ]
+        },
+        props: {
+          api: { method: 'POST', url: apiBase + '/sites/logs', sendOn: false },
+          actionsAlign: 'end'
+        },
+        body: [
+          {
+            type: 'input-text',
+            props: {
+              name: 'q',
+              label: '关键字（只过滤文件尾部窗口）',
+              defaultValue: keyword
+            }
+          }
+        ],
+        content: {
+          actions: [
+            {
+              type: 'button',
+              props: { text: '过滤', variant: 'tonal' },
+              action: { type: 'submit' }
+            }
+          ]
+        }
+      }
+    ];
+    if (lines.length === 0) {
+      body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
+    } else {
+      body.push({
+        type: 'code-viewer',
+        props: {
+          code: lines.join('\n'),
+          language: 'plaintext',
+          readonly: true,
+          height: 560,
+          lineNumbers: true,
+          wrap: false,
+          copyable: true,
+          ariaLabel: domain + ' ' + part + ' 日志'
+        }
+      });
+    }
+    body.push({
+      type: 'text',
+      props: {
+        text:
+          '共 ' +
+          lines.length +
+          ' 行（文件尾部最多 2MB 窗口、最新在前）· ' +
+          (data.log_dir || ''),
+        size: 'small'
+      }
+    });
+    return {
+      type: 'page',
+      props: {
+        title: domain + ' · ' + (part === 'error' ? '错误日志' : '访问日志'),
+        subtitle: '定高滚动 · 按需拉取（不加载 SSE）'
+      },
+      body: body
+    };
+  }
+
+  /// 作业日志：按 `after` 游标最多取 10 页，避免长作业一次性拉爆页面。
+  function loadJobLogs(jobId) {
+    var lines = [];
+    var after = 0;
+    var pages = 0;
+    var job = null;
+    function step() {
+      return fetchRawJson(
+        prefix + '/jobs/' + encodeURIComponent(jobId) + '/logs?after=' + after
+      ).then(function (batch) {
+        job = batch.job || job;
+        var entries = batch.entries || [];
+        entries.forEach(function (entry) {
+          var when = entry.at ? formatTime(new Date(entry.at * 1000)) : '';
+          lines.push(
+            (when ? when + ' ' : '') +
+              '[' +
+              (entry.stream || 'stdout') +
+              '] ' +
+              entry.line
+          );
+        });
+        pages += 1;
+        var maxSeq = batch.max_seq || 0;
+        if (entries.length > 0 && maxSeq > after && pages < 10) {
+          after = maxSeq;
+          return step();
+        }
+        return { lines: lines, job: job || {}, truncated: entries.length > 0 && pages >= 10 };
+      });
+    }
+    return step();
+  }
+
+  function jobLogsSchema(jobId, result) {
+    var lines = result.lines || [];
+    var job = result.job || {};
+    var body = [
+      {
+        type: 'flex',
+        props: { gap: 8, wrap: true, align: 'center' },
+        content: {
+          body: [
+            {
+              type: 'link',
+              props: {
+                text: '返回作业详情',
+                href: prefix + '/jobs/' + encodeURIComponent(jobId)
+              }
+            },
+            {
+              type: 'button',
+              props: { text: '刷新', variant: 'text' },
+              onEvent: { click: { actions: [{ type: 'skiffLogReload' }] } }
+            }
+          ]
+        }
+      }
+    ];
+    if (lines.length === 0) {
+      body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
+    } else {
+      body.push({
+        type: 'code-viewer',
+        props: {
+          code: lines.join('\n'),
+          language: 'plaintext',
+          readonly: true,
+          height: 560,
+          lineNumbers: true,
+          wrap: false,
+          copyable: true,
+          ariaLabel: '作业日志'
+        }
+      });
+    }
+    body.push({
+      type: 'text',
+      props: {
+        text:
+          '共 ' +
+          lines.length +
+          ' 行 · 状态 ' +
+          (job.status_label || '—') +
+          (result.truncated ? ' · 仅加载前 10 页，可刷新继续' : ''),
+        size: 'small'
+      }
+    });
+    return {
+      type: 'page',
+      props: {
+        title: '作业日志 · ' + jobId,
+        subtitle: '按需加载（不做 SSE 实时流）'
+      },
+      body: body
     };
   }
 
@@ -2627,6 +3087,27 @@
       });
   }
 
+  /// 直接读非 `/ui/v1` 的既有 JSON 接口（如作业增量日志），不假设 `data` 信封。
+  function fetchRawJson(url) {
+    return fetch(url, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    }).then(function (resp) {
+      return readJson(resp).then(function (body) {
+        if (resp.status === 401) throw new Error('会话已过期，请刷新页面后重新登录。');
+        if (resp.status !== 200) {
+          throw new Error(
+            body && body.error && body.error.message
+              ? body.error.message
+              : '服务返回状态 ' + resp.status
+          );
+        }
+        return body;
+      });
+    });
+  }
+
   /// 未适配页面的统一占位（保留旧 SSR 入口，仅限非插件页）。
   function notReadyPage(title, text, oldHref, oldText) {
     var body = [{ type: 'alert', props: { type: 'warning', title: '该功能正在适配中', text: text } }];
@@ -2710,6 +3191,40 @@
       return fetchData(
         '/files' + (filePath ? '?path=' + encodeURIComponent(filePath) : '')
       ).then(filesSchema);
+    }
+    if (kind === 'file-view') {
+      var viewPath = new URLSearchParams(location.search).get('path') || '';
+      if (!viewPath) {
+        return Promise.resolve(
+          notReadyPage('代码查看器', '缺少 path 参数。', '/files', '返回文件管理')
+        );
+      }
+      return fetchData('/files/read?path=' + encodeURIComponent(viewPath)).then(fileViewSchema);
+    }
+    if (kind === 'site-logs') {
+      var logDomain = parts[1] || '';
+      var logQuery = new URLSearchParams(location.search);
+      var logPart = logQuery.get('part') === 'error' ? 'error' : 'access';
+      var logTail = logQuery.get('tail') || '200';
+      var logKeyword = logQuery.get('q') || '';
+      return fetchData(
+        '/sites/' +
+          encodeURIComponent(logDomain) +
+          '/logs?part=' +
+          logPart +
+          '&tail=' +
+          encodeURIComponent(logTail) +
+          '&q=' +
+          encodeURIComponent(logKeyword)
+      ).then(function (data) {
+        return siteLogsSchema(logDomain, logPart, logTail, logKeyword, data);
+      });
+    }
+    if (kind === 'job-logs') {
+      var logJobId = parts[1] || '';
+      return loadJobLogs(logJobId).then(function (result) {
+        return jobLogsSchema(logJobId, result);
+      });
     }
     if (kind === 'plugins') {
       return fetchData('/plugins').then(pluginsSchema);

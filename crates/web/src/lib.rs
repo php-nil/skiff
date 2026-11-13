@@ -218,6 +218,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::ui_api::settings_key_remove),
         )
         .route("/ui/v1/files", get(handlers::ui_api::files))
+        .route("/ui/v1/files/read", get(handlers::ui_api::files_read))
+        .route(
+            "/ui/v1/sites/{domain}/logs",
+            get(handlers::ui_api::site_logs),
+        )
         .route("/ui/v1/files/mkdir", post(handlers::ui_api::files_mkdir))
         .route("/ui/v1/files/rename", post(handlers::ui_api::files_rename))
         .route("/ui/v1/files/remove", post(handlers::ui_api::files_remove))

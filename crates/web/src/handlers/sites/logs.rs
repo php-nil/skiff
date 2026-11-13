@@ -22,6 +22,11 @@ pub async fn logs(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let keyword = q.get("q").cloned().unwrap_or_default();
+    // 新一代前端（budding 壳）承载日志查看器；旧 SSR 只保留给显式 ?legacy=1
+    // 的无 JS / 兼容请求，面板内不再导航到它。
+    if !q.get("legacy").map(|v| v == "1").unwrap_or(false) {
+        return Ok(crate::handlers::spa::shell_page(&state));
+    }
     // 日志读取是同步文件 IO（尾部最多 2MB），放到阻塞线程池，避免占住 async worker。
     let st = state.clone();
     let domain_for_read = domain.clone();

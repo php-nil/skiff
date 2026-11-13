@@ -3034,6 +3034,102 @@ pub async fn files_remove(
     })))
 }
 
+/// `GET /ui/v1/files/read?path=`：只读文本（代码查看器）；二进制判定归前端。
+pub async fn files_read(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize(&user, act::FILE_READ).map_err(ApiError)?;
+    let path = q
+        .get("path")
+        .map(|p| p.trim().to_string())
+        .filter(|p| std::path::Path::new(p).is_absolute())
+        .ok_or_else(|| ApiError(AppError::BadRequest("缺少 path 参数或不是绝对路径".into())))?;
+    let fs = state.admin_fs_arc();
+    let owner = user.user.username.clone();
+    let file = handlers::blocking_fs(move || fs.read(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
+    Ok(Json(json!({
+        "data": {
+            "path": file.path,
+            "text": file.text,
+            "size": file.size,
+            "truncated": file.truncated,
+            "max_edit_bytes": skiff_app::admin_fs::MAX_EDIT_BYTES,
+        }
+    })))
+}
+
+/// `skiff_app::sites::SiteError` → `/ui/v1` 信封。
+fn site_api_error(e: skiff_app::sites::SiteError) -> ApiError {
+    match e {
+        skiff_app::sites::SiteError::Field(_, inner) => site_api_error(*inner),
+        skiff_app::sites::SiteError::BadRequest(m) => ApiError(AppError::BadRequest(m)),
+        skiff_app::sites::SiteError::Conflict(m) => ApiError(AppError::Conflict(m)),
+        skiff_app::sites::SiteError::Unavailable(m) => ApiError(AppError::Unavailable(m)),
+        skiff_app::sites::SiteError::Internal(m) => ApiError(AppError::Internal(m)),
+    }
+}
+
+/// `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`：日志查看器数据。
+///
+/// 与旧 SSR 页面同权限口径（登录即可读）；读取逻辑复用 `AppState::site_logs`：
+/// 只看文件尾部 2MB 窗口，时间倒序，关键字只作用于该窗口。
+pub async fn site_logs(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(_user): UiAuthUser,
+    Path(domain): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let part = match q.get("part").map(|s| s.as_str()) {
+        Some("error") => "error",
+        _ => "access",
+    };
+    let tail = q
+        .get("tail")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 2000);
+    let keyword = q.get("q").cloned().unwrap_or_default();
+    let st = state.clone();
+    let domain_read = domain.clone();
+    let keyword_read = keyword.clone();
+    let (access, error) =
+        handlers::blocking_fs(move || st.site_logs(&domain_read, tail, &keyword_read))
+            .await
+            .map_err(ApiError)?
+            .map_err(site_api_error)?;
+    let text = if part == "error" { error } else { access };
+    let lines: Vec<String> = text
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+    let log_dir = state
+        .db()
+        .site_by_domain(&domain)
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?
+        .map(|s| {
+            skiff_app::sites::site_log_dir(std::path::Path::new(&s.root_dir))
+                .display()
+                .to_string()
+        })
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "data": {
+            "domain": domain,
+            "part": part,
+            "tail": tail,
+            "keyword": keyword,
+            "log_dir": log_dir,
+            "lines": lines,
+        }
+    })))
+}
+
 /// `GET /ui/v1/session`：当前用户、角色、CSRF、入口前缀与壳页能力开关。
 ///
 /// 未登录由 `UiAuthUser` 返回 401 JSON（`auth.unauthenticated`）。

@@ -8403,6 +8403,106 @@ async fn ui_files_list_is_flat_and_admin_only() {
     assert_eq!(status, StatusCode::FORBIDDEN, "文件管理仅管理员");
 }
 
+/// 代码查看器：只读文本接口，管理员可取内容，viewer 403；截断标记与上限随响应下发。
+#[tokio::test]
+async fn ui_files_read_returns_text_and_requires_admin() {
+    let h = harness();
+    let scratch = tempfile::tempdir().unwrap();
+    let file = scratch.path().join("hello.rs");
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+    let uri = format!(
+        "/ui/v1/files/read?path={}",
+        file.display().to_string().replace('\\', "/")
+    );
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, &uri, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["text"], "fn main() {}\n");
+    assert_eq!(v["data"]["size"], 13);
+    assert_eq!(v["data"]["truncated"], false);
+    assert!(v["data"]["max_edit_bytes"].as_u64().unwrap_or(0) > 0);
+
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, _, _) = get_ui(&h.app, &uri, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "代码查看器仅管理员");
+}
+
+/// 站点日志查看器数据：只出尾部窗口、最新在前，关键字只过滤该窗口。
+#[tokio::test]
+async fn ui_site_logs_json_lists_tail_and_filters() {
+    let h = harness();
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_path_buf();
+    std::fs::create_dir_all(root.join("log")).unwrap();
+    std::fs::write(
+        root.join("log/access.log"),
+        "old-line\nkeep-abc-line\nnew-line\n",
+    )
+    .unwrap();
+    h.state
+        .db()
+        .create_site(&static_site("logs.local", &root.display().to_string()))
+        .unwrap();
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/sites/logs.local/logs?tail=2",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let lines = v["data"]["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 2, "tail=2 只取最后两行: {body}");
+    assert_eq!(lines[0], "new-line", "最新在前: {body}");
+    assert!(v["data"]["log_dir"].as_str().unwrap_or("").ends_with("log"));
+
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/sites/logs.local/logs?q=abc",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let lines = v["data"]["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 1, "关键字只命中一行: {body}");
+    assert_eq!(lines[0], "keep-abc-line");
+
+    // 与旧 SSR 页面同口径：登录即可读，viewer 也能查看。
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/sites/logs.local/logs", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// 站点日志页：默认交 budding 壳（查看器），`?legacy=1` 仍可拿到旧 SSR。
+#[tokio::test]
+async fn site_logs_page_serves_shell_unless_legacy() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_html(&h.app, "/p/sites/logs.local/logs", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    let (status, legacy) = get_html(&h.app, "/p/sites/logs.local/logs?legacy=1", &admin).await;
+    // 站点不存在时旧 SSR 返回 400；只要不返回壳页即可。
+    if status == StatusCode::OK {
+        assert!(
+            !legacy.contains(r#"id="skiff-root""#),
+            "legacy 请求不得返回壳页"
+        );
+    } else {
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+            "{status}"
+        );
+    }
+}
+
 /// 文件写动作：mkdir → rename → remove（进回收站）闭环；无 CSRF 头 403 且无副作用。
 #[tokio::test]
 async fn ui_files_mkdir_rename_remove_roundtrip() {

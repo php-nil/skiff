@@ -155,7 +155,7 @@ pub fn shell_html(prefix: &str) -> String {
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
 </head>
 <body>
-<div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
+<div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-version="{ver}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
   <main data-skiff-placeholder>
     <h1>该功能正在适配中</h1>
     <p>页面正在切换到新的前端运行时，当前为占位视图。</p>

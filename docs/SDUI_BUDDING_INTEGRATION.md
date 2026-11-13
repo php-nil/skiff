@@ -16,7 +16,7 @@
 | 仓库关系 | **禁止修改 budding 仓库**；产物由上游发版打包后复制进本仓库；缺能力只提建议，由项目负责人决策 |
 | 接入前提 | 产物入库 + 单二进制嵌入（`RustEmbed`）；**本项目不引入 Node 工具链**；测试机无公网，部署期不得依赖 npm 或 CDN |
 | 最大外部阻塞 | 上游 admin Pack（`admin` / `nav-menu` / `page-tabs`）与文件管理所需能力（§6.1）均未随发行包提供（D4、D6） |
-| 最大硬缺口 | 终端需要 WebSocket 通道与 terminal Pack（第十一批后文件管理、代码/日志查看器所需的虚拟列表、上传增强与 highlight 均已具备）；终端实时通道契约待定（§5.18） |
+| 最大硬缺口 | 终端需要 WebSocket 通道与 terminal Pack（第十一批后文件管理、代码/日志查看器所需的虚拟列表、上传增强、code-viewer 与 highlight 均已具备）；终端实时通道契约待定（待第 4 组） |
 | 最大分发风险 | 上游无 LICENSE 文件；「按 MIT」目前只是我方口径，需上游补 LICENSE 或书面确认（D5、§7.1） |
 | 回滚 | 一次性切换，无运行时开关；回滚只能靠 git 版本回退并重新部署（D7） |
 
@@ -142,6 +142,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - 现有 `.min.` 的 `max-age=86400` 策略已按文件名与查询串区分（`assets.rs`，2026-11-12 落地）：版本化文件名或带非空 `?v=` 的请求返回 `immutable`，稳定别名 `no-cache`，其余维持原值。
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
+- 独立 Pack（`budding-highlight-<ver>.min.js`）同样按版本化文件名入库，启动脚本带 `?v=<ver>` 引用，命中 immutable；升级时与主包一起替换。
 - **图标资产随包版本化**：`budding-icons-1.8.0-r2.min.css`（3,626 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r2.woff2`（2,612 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r2` 时返回 `immutable`。它是 `Budding Icons` 子集（仅组件内部用到的字形），不承担自定义菜单图标；宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
@@ -825,8 +826,16 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 写动作：`POST /ui/v1/files/mkdir`（`FILE_WRITE`）、`POST /ui/v1/files/rename`（`FILE_WRITE`）、`POST /ui/v1/files/remove`（`FILE_REMOVE`，进回收站并回传 `trash_id`）；均要求 `x-csrf-token`，失败按 `AppError` 信封返回。
 - 列表用 `virtual-list`（`itemHeight: 52`、`height: 560`）虚拟滚动；条目操作是 budding 按钮：打开 / 下载 / 重命名 / 删除。下载仍走既有 `GET /{p}/files/download`。
 - 上传走宿主 `PlatformAdapter.upload`：前端按服务端下发的 `upload_chunk_bytes`（256 KiB）切片，逐片 POST 既有 `/{p}/files/upload?path=&offset=`（同一授权、同一审计），按字节上报进度，组件负责进度、取消与重试。**宿主必须同时注入 `platform.request`**：上游 `createPlatformAdapter` 只在提供 `request` 时保留 `upload`。
-- 终端不在本批：仍待 WS 契约与 terminal Pack（§5.18）。
+- 终端不在本批：仍待 WS 契约与 terminal Pack（待第 4 组）。
 - 旧 SSR（浏览 / 回收站 / 配额）保留但不再是入口；回收站与配额页仍走旧页。
+
+### 5.18 代码查看器与日志查看器（第十三批）
+
+- 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code-viewer`（只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
+- 高亮 Pack：入库 `budding-highlight-1.8.0-r2.min.js`（54,270 B，取自 `dist/packs/highlight.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('highlight', …?v=<ver>)` 注册；未注册或加载失败时 `code-viewer` 退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
+- 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code-viewer` 定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
+- 作业日志：`GET /{p}/jobs/{id}/logs` 新增 budding 隐藏路由，直接消费既有 `GET /{p}/jobs/{id}/logs?after=`（同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code-viewer`，并保留旧详情入口用于取消 / 重试。
+- 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
 
 ---
 
@@ -844,7 +853,7 @@ D6 定案后，原先「可绕」的缺口升级为阻塞项。以下全部属�
 | F1 | 分片上传与续传 | 大文件、弱网、上传中断后不重传；内核现有上传是 `offset` 分片协议 | `file` 组件本身仍是单次 FormData POST；**1.8.0 起宿主可实现 `PlatformAdapter.upload`**，由宿主切片后逐片调用既有分片接口（第十一批已落地，续传待人机交互另定） | 组件内建 `chunkSize` / 断点续传（可选，非阻塞） | 已绕 |
 | F2 | 上传进度与取消 | 大文件需要可见进度并可取消，否则用户只能等待超时 | 1.8.0 上传增强：`uploadProgressTarget` 写回 `{status,loaded,total,percent,attempt}`，`cancelUpload` / `retryUpload` 指令；宿主 `PlatformAdapter.upload` 按字节上报 | 无（已具备） | 已解决 |
 | F3 | 目录树 | 文件管理的主导航是目录树 + 懒加载 + 面包屑联动 | 无独立 `tree` / `tree-select`；basic 16 / layout 11 / data 8 中无树组件 | 产品口径改为**平铺 + 面包屑**，负责人明确禁止树形（第十一批） | 已降级关闭 |
-| F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | 无代码/日志查看器；只有基础排版能力，无虚拟滚动 | 只读查看器：行号、换行、搜索、虚拟滚动；可选编辑模式 | B2 |
+| F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | **已解决**：1.8.0 提供 `code-viewer`（行号、折行、复制、固定高度）+ `@budding/highlight` Pack；代码查看器与站点/作业日志查看器已落地，纯前端高亮不引 WASM | 编辑模式（当前只读） | 已关闭（只读口径） |
 | F5 | 只读详情（descriptions） | 文件属性、权限、大小、时间等只读信息面板 | 无 descriptions，需用 basic 组件逐个拼 | `descriptions` 组件 | B3 |
 
 F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失目录全貌，是否接受由负责人确认；F4 的降级说明：小文件可用基础排版，万行级日志不可用。
@@ -1024,3 +1033,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十一批设置页补齐（口令 / TOTP / 公钥原生化）：`/ui/v1` 新增 `POST /settings/password`（argon2 校验 + 会话轮换 + 新 CSRF + 删除首启口令文件）、`POST /settings/totp/setup`、`POST /settings/totp/enable`（一次性备份码）、`POST /settings/keys`、`POST /settings/keys/{id}`（仅 Admin，审计 `settings.key.import` / `settings.key.remove`）；`GET /ui/v1/settings` 的 `account` 补 `totp_pending_secret` / `totp_pending_uri`（未启用暂存态）；前端用 `className: 'skiff-password'` + `MutationObserver` 把口令输入框改为 `type=password`。错误文案沿用旧 SSR。设置页不再依赖旧 SSR，旧页仅作无 JS 兜底。 |
 | 2026-11-13 | 第十二批文件管理原生化：`/ui/v1` 新增 `GET /files?path=`（平铺列表 + 父路径 + 根入口 + `upload_chunk_bytes`）、`POST /files/mkdir|rename|remove`（CSRF，删除进回收站）；前端 `virtual-list` 渲染目录、面包屑导航、条目按钮；上传由宿主 `PlatformAdapter.upload` 按 256 KiB 切片复用 `/{p}/files/upload`，并补 `platform.request`（上游仅在提供 `request` 时保留 `upload`）。**不做目录树**，§6.1 F3 按降级口径关闭。终端仍待 WS 契约。补两条 `main_flow` 用例，无头浏览器实测上传与新建目录成功。 |
 | 2026-11-13 | budding 重打包基线 `1.8.0-r2`：上游 manifest 仍为 1.8.0（builtAt 2026-11-13T04:13:45Z）但字节已变（JS 1,261,442 B / CSS 657,324 B，仓内 gzip 398,697 / 78,970；上游 manifest 记 400,024 / 79,966，压缩级别不同），本地用 `-r2` 后缀避免同 URL 命中旧 `immutable` 缓存；图标同步为 `budding-icons-1.8.0-r2.min.css`（3,626 B）+ `.woff2`（2,612 B）。`input-text` 起支持原生 `type`：登录页与设置页改为 `type: 'password'`，删除 `maskPassword` / `watchPasswordMask` / `skiff-password` 与 MutationObserver，首帧即掩码（无头浏览器实测 `type=password`）；`autocomplete` 声明已写入 schema，但当前构建仍未透传到 DOM（输入框 `autocomplete` 属性为空），待上游补字段。G16 的 `type` 部分关闭。 |
+| 2026-11-13 | 第十三批代码/日志查看器：新增 `GET /ui/v1/files/read?path=`（`FILE_READ`）、`GET /ui/v1/sites/{domain}/logs?part=&tail=&q=`（复用 `AppState::site_logs`）；新增路由 `/{p}/files/view`、`/{p}/sites/{domain}/logs`、`/{p}/jobs/{id}/logs`。渲染统一用 `code-viewer`（只读、行号、定高 560），高亮走入库的 `budding-highlight-1.8.0-r2.min.js`（`BuddingSDK.registerPack`，54,270 B），不引 WASM；站点日志页旧 SSR 仅接受 `?legacy=1`，作业日志按 `after` 游标最多 10 页、不建 SSE。§6.1 F4 关闭（只读口径）。 |
