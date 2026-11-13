@@ -1170,6 +1170,77 @@ pub async fn container_detail(
     Ok(resp)
 }
 
+/// `GET /ui/v1/containers/{id}/logs?tail=`：容器日志尾部快照（只读）。
+///
+/// 与旧 SSE 流同策略（`Verb::ContainerLogs` → `DockerRead`），只是改成一次性取尾行；
+/// 页面按需刷新，不建立长连接。
+pub async fn container_logs(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let row = handlers::resolve_container(&state, &id)
+        .await
+        .map_err(ApiError)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::ContainerLogs,
+            Some(&handlers::object_ref(&row)),
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    let tail = q
+        .get("tail")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(500)
+        .clamp(1, 2000);
+    let text = state
+        .docker()
+        .logs(&row.id, tail)
+        .await
+        .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?;
+    Ok(Json(json!({
+        "data": {
+            "id": row.id,
+            "name": row.name,
+            "state": row.state,
+            "tail": tail,
+            "text": text,
+        }
+    })))
+}
+
+/// `GET /ui/v1/runtimes/{id}/logs?tail=`：运行环境日志尾部快照（Admin）。
+///
+/// 复用 `AppState::runtime_logs`（与旧详情抽屉同一读取路径），页面按需刷新。
+pub async fn runtime_logs(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    let tail = q
+        .get("tail")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(300)
+        .clamp(1, 2000);
+    let text = state
+        .runtime_logs(&id, tail)
+        .await
+        .map_err(site_api_error)?;
+    Ok(Json(json!({
+        "data": {
+            "runtime_id": id,
+            "tail": tail,
+            "text": text,
+        }
+    })))
+}
+
 /// `POST /ui/v1/containers/{id}/{action}`：启动/停止/重启/删除。
 ///
 /// 与旧 htmx 路径同一策略判定、同一审计与同一命令；CSRF 用 `/ui/v1` 统一的

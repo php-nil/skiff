@@ -421,8 +421,8 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 |---|---|---|
 | 作业进度 | 作业中心 `progress` + SSE 日志 | 用现有轮询端点 + `source.autoRefresh`；SSE 暂不接 |
 | 运行环境安装进度 | `GET /runtimes/jobs` 轮询 | 直接映射为轮询 |
-| 容器日志 | SSE | 轮询降级或等待上游 SSE；D7 后不能用旧页兜底 |
-| 终端 | 票据 + WS | **未决**：budding 无 WS；需独立 xterm 页（iframe）或等待上游通道能力，不能用旧 UI 页面兜底 |
+| 容器日志 | 原 SSE 流 | 已改为尾部快照 + 刷新（`GET /ui/v1/containers/{id}/logs`，§5.20）；SSE 仅旧 SSR 详情页跟随 |
+| 终端 | 票据 + WS | 已落地：`terminal` Pack 内联 + 既有 exec 票据/WS（§5.19）；WS 真连待 Linux 测试机验收 |
 | 文件上传 | 分片 `offset` 协议 | budding `file` 只支持单次 FormData POST；见 §6 |
 
 ### 5.7 概览页（第四批，只读）
@@ -853,6 +853,14 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - Pack：入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B，取自 `dist/packs/terminal.mjs`，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
 - **验证边界**：本机（Windows、无 Docker）只验证了路由、壳页与取票失败时的错误页；WS 真连与容器内 `/bin/sh` 交互必须在 Linux 测试机验收，未验前不得记为已完成。
 
+### 5.20 日志入口收口（第十六批）
+
+- 容器日志：`GET /{p}/containers/{id}/logs` 从旧 SSR SSE 页改为 budding 日志页（尾部快照 + 刷新，不做实时流）；SSE 流只保留在 `GET /{p}/containers/{id}/logs/stream`，供旧 SSR 详情页 `data-src` 跟随。新增 `GET /ui/v1/containers/{id}/logs?tail=`（策略同旧 SSE：`Verb::ContainerLogs` → `DockerRead`；`tail` 默认 500、上限 2000），容器详情新增「查看日志」入口，旧版链接收窄为「资源限制编辑」。
+- 运行环境日志：新增 `GET /{p}/runtimes/{id}/logs` budding 日志页与 `GET /ui/v1/runtimes/{id}/logs?tail=`（Admin，复用 `AppState::runtime_logs`）；旧详情抽屉的快照接口移到 `GET /{p}/runtimes/{id}/logs.json`（`logs_url` 已同步），让 `/logs` 可以交壳页；运行环境列表行可点进详情占位页，占位页提供「查看运行日志」与「旧版配置 / 安装 / 扩展」两个明确入口。
+- 前端统一用 `code-viewer`（`language: 'plaintext'`、固定高度、行号、可复制），刷新走整页重载；不新增 SSE/WS 契约，也不在前端造分页或流式缓冲。
+- `?legacy=1` 现状：仅插件 iframe 工作台与站点日志旧 SSR 两处保留（前者是插件嵌入兼容，后者是无 JS 兜底）；本轮未新增 legacy 分支。
+- 验证：`main_flow` 覆盖「页面交壳 + JSON 未认证 401 / 无 Docker 503 / viewer 403 / 实例不存在 400」；无头浏览器实测三个页面（容器日志错误页、运行环境日志错误页、运行环境详情占位页）均无 iframe、无脚本错误。
+
 ---
 
 ## 6. 能力缺口与建议
@@ -1006,7 +1014,7 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | # | 对齐项 | 判定方式 |
 |---|---|---|
 | 1 | 路由 → JSON 端点映射 | 口径：`crates/web/src/lib.rs` 现有 **167 条** `.route(` 注册（2026-11-12 计数）。逐条登记去向：GET 页面 → 壳或 JSON 读端点，POST 动作 → `/ui/v1` 动作或删除；不允许存在未登记路由 |
-| 2 | 必须保留的非 JSON 通道 | GET 文件下载（`Content-Disposition`）、插件 iframe HTML 与 `ui/*` 静态、插件 RPC、作业/容器日志 SSE、终端票据 + WS。每条有契约测试，且 CSP/沙箱策略未放宽 |
+| 2 | 必须保留的非 JSON 通道 | GET 文件下载（`Content-Disposition`）、插件 iframe HTML 与 `ui/*` 静态、插件 RPC、旧 SSR 容器日志 SSE（budding 页走尾快照）、终端票据 + WS。每条有契约测试，且 CSP/沙箱策略未放宽 |
 | 3 | 权限与审计覆盖 | 动作注册表矩阵逐项测试；每个写动作产生审计；CSRF 失败、401、403、限流四类拒绝路径均有审计或兜底日志 |
 | 4 | 错误与空态 | 每个资源具备稳定错误码、字段码与 `empty_reason`；列表空态能说明「为什么空 + 下一步」 |
 | 5 | 菜单与页签 | L1 固定 6 项、L2/L3 来自内核 JSON；admin Pack 已到位；菜单偏好与固定槽位行为一致 |
@@ -1052,3 +1060,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十三批代码/日志查看器：新增 `GET /ui/v1/files/read?path=`（`FILE_READ`）、`GET /ui/v1/sites/{domain}/logs?part=&tail=&q=`（复用 `AppState::site_logs`）；新增路由 `/{p}/files/view`、`/{p}/sites/{domain}/logs`、`/{p}/jobs/{id}/logs`。渲染统一用 `code-viewer`（只读、行号、定高 560），高亮走入库的 `budding-highlight-1.8.0-r2.min.js`（`BuddingSDK.registerPack`，54,270 B），不引 WASM；站点日志页旧 SSR 仅接受 `?legacy=1`，作业日志按 `after` 游标最多 10 页、不建 SSE。§6.1 F4 关闭（只读口径）。 |
 | 2026-11-13 | 第十四批容器终端：新增 `GET /{p}/containers/{id}/terminal`（budding 隐藏路由，容器详情加「打开终端」）。复用既有 `POST …/exec/ticket`（Admin + CSRF + `Verb::Exec`，票据绑定会话与容器、30 秒、一次即废）+ `GET …/exec?ticket=` WS（Origin 严格校验，start/fail/end 写 `Verb::Exec` 审计），无内核改动、不新建 WS 契约。前端用 `terminal` 组件内联，`resizeFormat: 'none'`、`reconnect: false`；Pack 入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B）。**WS 真连待 Linux 测试机验收**。 |
 | 2026-11-13 | 第十五批审计页原生化：`GET /{p}/audit` 不再占位。`store` 新增 `audit_page(keyword, before(ts,id), limit)`（`instr(lower(...))` 命中 actor/ip/action/target/detail，排序走既有 `idx_audit_ts(ts DESC, id DESC)`，未改表/加索引）；`/ui/v1/audit?q=&limit=&cursor=` 用 `AuditScope` 签名游标（绑定筛选指纹，换关键字/篡改/旧版本 400），权限保持 `AuditRead`；前端表单 + `table` + 「下一页」。补 store 3 条单测与 `main_flow` 权限/过滤/游标用例，无头浏览器实测页面、过滤与游标翻页。 |
+| 2026-11-13 | 第十六批日志入口收口：容器日志改 budding 页（尾部快照），SSE 移至 `/{p}/containers/{id}/logs/stream` 仅旧详情跟随；运行环境日志新增 budding 页（旧抽屉 JSON 移至 `/logs.json`）；两端各加 `/ui/v1` 快照接口（`ContainerLogs`/`DockerRead` 与 Admin），详情占位页提供原生日志入口；`?legacy=1` 未新增。补 2 条 `main_flow` 用例 + 无头浏览器实测。 |

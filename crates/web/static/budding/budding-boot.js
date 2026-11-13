@@ -333,6 +333,20 @@
       meta: { activeMenu: prefix + '/containers' }
     });
     routes.push({
+      path: prefix + '/containers/:id/logs',
+      title: '容器日志',
+      hidden: true,
+      schema: 'skiff:container-logs',
+      meta: { activeMenu: prefix + '/containers' }
+    });
+    routes.push({
+      path: prefix + '/runtimes/:id/logs',
+      title: '运行环境日志',
+      hidden: true,
+      schema: 'skiff:runtime-logs',
+      meta: { activeMenu: prefix + '/runtimes' }
+    });
+    routes.push({
       path: prefix + '/jobs/:id/logs',
       title: '作业日志',
       hidden: true,
@@ -689,31 +703,35 @@
         )
       );
     }
-    body.push(
-      statusTable(
-        [
-          { key: 'kind', label: '类型', text: '${kind.label}' },
-          { key: 'name', label: '实例' },
-          { key: 'version_display', label: '版本' },
-          { key: 'version_note', label: '说明' },
-          { key: 'state', label: '状态', text: '${state.label}' },
-          { key: 'site_count', label: '站点数', type: 'number' },
-          { key: 'endpoint_short', label: '接入' }
-        ],
-        data.items,
-        'id'
-      )
+    var table = statusTable(
+      [
+        { key: 'kind', label: '类型', text: '${kind.label}' },
+        { key: 'name', label: '实例' },
+        { key: 'version_display', label: '版本' },
+        { key: 'version_note', label: '说明' },
+        { key: 'state', label: '状态', text: '${state.label}' },
+        { key: 'site_count', label: '站点数', type: 'number' },
+        { key: 'endpoint_short', label: '接入' }
+      ],
+      data.items,
+      'id'
     );
+    table.onEvent = {
+      rowClick: {
+        actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}' } }]
+      }
+    };
+    body.push(table);
     body.push({
       type: 'alert',
       props: {
         type: 'info',
-        text: '安装、配置、扩展与日志仍走旧版运行环境页，待写操作批次迁移。'
+        text: '运行日志在实例详情页内原生化查看；安装、配置与扩展仍走旧版运行环境页。'
       }
     });
     body.push({
       type: 'link',
-      props: { text: '打开旧版运行环境管理', href: prefix + '/m/core/sites/env' }
+      props: { text: '打开旧版运行环境管理（安装 / 配置 / 扩展）', href: prefix + '/m/core/sites/env' }
     });
     return {
       type: 'page',
@@ -832,6 +850,14 @@
       });
     }
     var actions = [];
+    // 日志只需 DockerRead，与详情读取同权限；终端才需要 DockerExec。
+    actions.push({
+      type: 'link',
+      props: {
+        text: '查看日志',
+        href: prefix + '/containers/' + encodeURIComponent(c.id) + '/logs'
+      }
+    });
     // 终端权限与执行票据同源（DockerExec），不与启停的 DockerOperate 混用。
     if (data.can_exec) {
       actions.push({
@@ -913,13 +939,13 @@
       type: 'alert',
       props: {
         type: 'info',
-        text: '资源限制编辑、日志与终端仍在旧版详情页；日志查看器待 T3，终端待 T5。'
+        text: '日志与终端已原生化；资源限制编辑仍在旧版详情页。'
       }
     });
     body.push({
       type: 'link',
       props: {
-        text: '打开旧版详情（资源限制 / 日志 / 终端）',
+        text: '打开旧版详情（资源限制编辑）',
         href: prefix + '/m/core/docker/containers/' + encodeURIComponent(c.id)
       }
     });
@@ -2768,6 +2794,153 @@
     };
   }
 
+  /// 日志读取失败的统一落地页（Docker 不可用 / 权限 / 实例不存在）。
+  function logErrorPage(title, backHref, backText, error) {
+    return {
+      type: 'page',
+      props: { title: title, subtitle: '读取失败' },
+      body: [
+        {
+          type: 'alert',
+          props: {
+            type: 'error',
+            text:
+              '无法读取日志：' +
+              (error && error.message ? error.message : String(error))
+          }
+        },
+        { type: 'link', props: { text: backText, href: backHref } }
+      ]
+    };
+  }
+
+  /// 容器日志：一次性尾部快照 + 刷新，不建 SSE 长连接。
+  function containerLogsSchema(containerId, data) {
+    var text = String(data.text || '');
+    var lines = text.split('\n').filter(function (line) {
+      return line !== '';
+    });
+    var body = [
+      {
+        type: 'flex',
+        props: { gap: 8, wrap: true, align: 'center' },
+        content: {
+          body: [
+            {
+              type: 'link',
+              props: {
+                text: '返回容器详情',
+                href: prefix + '/containers/' + encodeURIComponent(containerId)
+              }
+            },
+            {
+              type: 'button',
+              props: { text: '刷新', variant: 'text' },
+              onEvent: { click: { actions: [{ type: 'skiffLogReload' }] } }
+            }
+          ]
+        }
+      }
+    ];
+    if (lines.length === 0) {
+      body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
+    } else {
+      body.push({
+        type: 'code-viewer',
+        props: {
+          code: lines.join('\n'),
+          language: 'plaintext',
+          readonly: true,
+          height: 560,
+          lineNumbers: true,
+          wrap: false,
+          copyable: true,
+          ariaLabel: (data.name || containerId) + ' 容器日志'
+        }
+      });
+    }
+    body.push({
+      type: 'text',
+      props: {
+        text:
+          '共 ' +
+          lines.length +
+          ' 行 · 取尾部 ' +
+          (data.tail || 500) +
+          ' 行 · 状态 ' +
+          (data.state || '—'),
+        size: 'small'
+      }
+    });
+    return {
+      type: 'page',
+      props: {
+        title: (data.name || containerId) + ' · 容器日志',
+        subtitle: '尾部快照；需要跟随时请用旧版详情页'
+      },
+      body: body
+    };
+  }
+
+  /// 运行环境日志：复用既有 `runtime_logs` 读取路径，一次性快照 + 刷新。
+  function runtimeLogsSchema(runtimeId, data) {
+    var text = String(data.text || '');
+    var lines = text.split('\n').filter(function (line) {
+      return line !== '';
+    });
+    var body = [
+      {
+        type: 'flex',
+        props: { gap: 8, wrap: true, align: 'center' },
+        content: {
+          body: [
+            {
+              type: 'link',
+              props: {
+                text: '返回运行环境详情',
+                href: prefix + '/runtimes/' + encodeURIComponent(runtimeId)
+              }
+            },
+            {
+              type: 'button',
+              props: { text: '刷新', variant: 'text' },
+              onEvent: { click: { actions: [{ type: 'skiffLogReload' }] } }
+            }
+          ]
+        }
+      }
+    ];
+    if (lines.length === 0) {
+      body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
+    } else {
+      body.push({
+        type: 'code-viewer',
+        props: {
+          code: lines.join('\n'),
+          language: 'plaintext',
+          readonly: true,
+          height: 560,
+          lineNumbers: true,
+          wrap: false,
+          copyable: true,
+          ariaLabel: runtimeId + ' 运行日志'
+        }
+      });
+    }
+    body.push({
+      type: 'text',
+      props: {
+        text: '共 ' + lines.length + ' 行 · 取尾部 ' + (data.tail || 300) + ' 行',
+        size: 'small'
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: runtimeId + ' · 运行环境日志', subtitle: '尾部快照，不做 SSE 实时流' },
+      body: body
+    };
+  }
+
   function filesSchema(data) {
     var body = [];
     if (data.truncated) {
@@ -3402,14 +3575,41 @@
       return fetchData('/runtimes' + listQuery()).then(runtimesSchema);
     }
     if (kind === 'runtime-detail') {
-      return Promise.resolve(
-        notReadyPage(
-          '运行环境详情',
-          '运行环境详情的聚合查询尚未迁移，按约定不在前端自造。旧版页面暂保留完整配置编辑。',
-          '/m/core/sites/env',
-          '打开旧版运行环境页'
-        )
-      );
+      return Promise.resolve({
+        type: 'page',
+        props: { title: '运行环境详情', subtitle: '运行日志已原生化；配置仍走旧版页面' },
+        body: [
+          {
+            type: 'alert',
+            props: {
+              type: 'info',
+              text: '运行环境详情的聚合查询尚未迁移，配置、安装与扩展仍由旧版页面承载；运行日志可在这里原生化查看。'
+            }
+          },
+          {
+            type: 'flex',
+            props: { gap: 12, wrap: true, align: 'center' },
+            content: {
+              body: [
+                {
+                  type: 'link',
+                  props: {
+                    text: '查看运行日志',
+                    href: prefix + '/runtimes/' + encodeURIComponent(parts[1] || '') + '/logs'
+                  }
+                },
+                {
+                  type: 'link',
+                  props: {
+                    text: '打开旧版运行环境页（配置 / 安装 / 扩展）',
+                    href: prefix + '/m/core/sites/env'
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      });
     }
     if (kind === 'containers') {
       var containerFilter =
@@ -3482,6 +3682,42 @@
       return loadJobLogs(logJobId).then(function (result) {
         return jobLogsSchema(logJobId, result);
       });
+    }
+    if (kind === 'container-logs') {
+      var logContainerId = parts[1] || '';
+      return fetchData(
+        '/containers/' + encodeURIComponent(logContainerId) + '/logs?tail=500'
+      ).then(
+        function (data) {
+          return containerLogsSchema(logContainerId, data);
+        },
+        function (error) {
+          return logErrorPage(
+            '容器日志',
+            prefix + '/containers/' + encodeURIComponent(logContainerId),
+            '返回容器详情',
+            error
+          );
+        }
+      );
+    }
+    if (kind === 'runtime-logs') {
+      var logRuntimeId = parts[1] || '';
+      return fetchData(
+        '/runtimes/' + encodeURIComponent(logRuntimeId) + '/logs?tail=300'
+      ).then(
+        function (data) {
+          return runtimeLogsSchema(logRuntimeId, data);
+        },
+        function (error) {
+          return logErrorPage(
+            '运行环境日志',
+            prefix + '/runtimes/' + encodeURIComponent(logRuntimeId),
+            '返回运行环境详情',
+            error
+          );
+        }
+      );
     }
     if (kind === 'container-terminal') {
       var terminalId = parts[1] || '';

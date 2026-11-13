@@ -499,7 +499,7 @@ pub async fn runtime_detail(
         job: job_view,
         job_url: format!("/{prefix}/runtimes/{}/job", encode_uri_component(&id)),
         logs_url: format!(
-            "/{prefix}/runtimes/{}/logs?tail=300",
+            "/{prefix}/runtimes/{}/logs.json?tail=300",
             encode_uri_component(&id)
         ),
         env_href: format!("/{prefix}/runtimes/{}", encode_uri_component(&id)),

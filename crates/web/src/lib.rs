@@ -53,7 +53,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     // 长连接路由单独成组：不挂超时（见下方 `.layer(request_timeout)` 的位置）。
     let streaming = Router::new()
         .route(
-            &format!("/{p}/containers/{{id}}/logs"),
+            &format!("/{p}/containers/{{id}}/logs/stream"),
             get(handlers::containers::logs_sse),
         )
         .route(
@@ -194,6 +194,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/jobs/{id}", get(handlers::ui_api::job_detail))
         .route("/ui/v1/settings", get(handlers::ui_api::settings))
         .route("/ui/v1/audit", get(handlers::ui_api::audit))
+        .route(
+            "/ui/v1/containers/{id}/logs",
+            get(handlers::ui_api::container_logs),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/logs",
+            get(handlers::ui_api::runtime_logs),
+        )
         .route(
             "/ui/v1/settings/panel",
             post(handlers::ui_api::settings_panel_update),
@@ -600,8 +608,9 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/runtimes/{{id}}/pecl"),
             post(handlers::sites::runtime_pecl_install),
         )
+        // 旧详情抽屉的运行日志快照接口；`/runtimes/{id}/logs` 留给 budding 页面。
         .route(
-            &format!("/{p}/runtimes/{{id}}/logs"),
+            &format!("/{p}/runtimes/{{id}}/logs.json"),
             get(handlers::sites::runtime_logs),
         )
         .route(

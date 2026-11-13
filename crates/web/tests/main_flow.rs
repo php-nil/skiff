@@ -8605,6 +8605,49 @@ async fn container_terminal_page_serves_shell() {
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
 }
 
+/// 容器日志页交 budding 壳；JSON 只读、未认证 401、无 Docker 503（不再有 SSE 页面入口）。
+#[tokio::test]
+async fn container_logs_page_and_json_keep_read_only_semantics() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_html(&h.app, "/p/containers/abc123/logs", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/containers/abc123/logs", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/containers/abc123/logs?tail=500",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "dependency.unavailable");
+}
+
+/// 运行环境日志：页面交壳，JSON 仅 Admin（viewer 403），实例不存在 400。
+#[tokio::test]
+async fn runtime_logs_page_and_json_are_admin_only() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    for token in [&admin, &viewer] {
+        let (status, html) = get_html(&h.app, "/p/runtimes/php82/logs", token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    }
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php82/logs", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php82/logs", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php82/logs", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
 /// 文件写动作：mkdir → rename → remove（进回收站）闭环；无 CSRF 头 403 且无副作用。
 #[tokio::test]
 async fn ui_files_mkdir_rename_remove_roundtrip() {
