@@ -392,7 +392,7 @@
       routerMode: 'history',
       routes: routes,
       documentTitle: 'Skiff · {title}',
-      platform: { loadJson: loadJson },
+      platform: { loadJson: loadJson, request: apiRequest, upload: uploadFile },
       actions: {
         skiffContainerAction: containerAction,
         skiffComposeAction: composeAction,
@@ -402,6 +402,11 @@
         skiffTotpEnable: totpEnable,
         skiffKeyImport: keyImport,
         skiffKeyRemove: keyRemove,
+        skiffFileOpen: fileOpen,
+        skiffFileDownload: fileDownload,
+        skiffFileMkdir: fileMkdir,
+        skiffFileRename: fileRename,
+        skiffFileRemove: fileRemove,
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
         skiffPluginToggle: pluginToggle,
@@ -1684,6 +1689,185 @@
       });
   }
 
+  // ---- 文件管理：分片上传适配器与目录动作 --------------------------------
+
+  /// budding 的平台请求适配器：内核只在提供 `request` 时才保留 `upload`
+  /// （见上游 `createPlatformAdapter`），因此这里给出与默认 fetch 同语义的最小实现：
+  /// 同源 Cookie、JSON 解析、非 2xx 抛错（错误文案取信封 message）。
+  function apiRequest(req) {
+    var method = (req && req.method) || 'GET';
+    var headers = {};
+    var key;
+    if (req && req.headers) {
+      for (key in req.headers) headers[key] = req.headers[key];
+    }
+    if (!headers.Accept) headers.Accept = 'application/json';
+    var url = String((req && req.url) || '');
+    if (req && req.params) {
+      var qs = new URLSearchParams();
+      Object.keys(req.params).forEach(function (k) {
+        qs.append(k, String(req.params[k]));
+      });
+      var text = qs.toString();
+      if (text) url += (url.indexOf('?') >= 0 ? '&' : '?') + text;
+    }
+    var opts = { method: method, credentials: 'same-origin', headers: headers };
+    if (req && req.signal) opts.signal = req.signal;
+    if (req && req.data !== undefined && req.data !== null) {
+      if (typeof FormData !== 'undefined' && req.data instanceof FormData) {
+        opts.body = req.data;
+      } else {
+        headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(req.data);
+      }
+    }
+    return fetch(url, opts).then(function (resp) {
+      return readJson(resp).then(function (body) {
+        if (!resp.ok) {
+          var message =
+            body && body.error && body.error.message
+              ? body.error.message
+              : '服务返回状态 ' + resp.status;
+          var error = new Error(message);
+          error.status = resp.status;
+          error.body = body;
+          throw error;
+        }
+        return body;
+      });
+    });
+  }
+
+  /// 宿主上传适配器（budding `PlatformAdapter.upload`）：组件给 FormData，
+  /// 这里按单片上限切片，逐片 POST 到既有 `/{p}/files/upload`（同授权、同审计），
+  /// 并按字节回报进度；失败直接抛错，由组件展示重试。
+  function uploadFile(req) {
+    var form = req && req.body;
+    var file = form && form.get ? form.get('file') : null;
+    if (!file) return Promise.reject(new Error('未选择文件'));
+    var dir = '';
+    try {
+      dir = new URL(String(req.url || ''), window.location.origin).searchParams.get('dir') || '';
+    } catch (e) {
+      dir = '';
+    }
+    if (!dir) return Promise.reject(new Error('缺少上传目标目录'));
+    var target = dir.replace(/\/+$/, '') + '/' + file.name;
+    var chunkBytes = 256 * 1024;
+    var offset = 0;
+    function nextChunk() {
+      if (req.signal && req.signal.aborted) {
+        return Promise.reject(new Error('上传已取消'));
+      }
+      var end = Math.min(offset + chunkBytes, file.size);
+      var url =
+        prefix +
+        '/files/upload?path=' +
+        encodeURIComponent(target) +
+        '&offset=' +
+        offset;
+      return fetch(url, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/octet-stream',
+          'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+        },
+        body: file.slice(offset, end),
+        signal: req.signal
+      })
+        .then(function (resp) {
+          return readJson(resp).then(function (body) {
+            return { status: resp.status, body: body };
+          });
+        })
+        .then(function (res) {
+          if (res.status !== 200) throw new Error(errorMessage(res));
+          offset = end;
+          if (typeof req.onProgress === 'function') {
+            req.onProgress({ loaded: offset, total: file.size });
+          }
+          if (offset < file.size) return nextChunk();
+          return { data: { path: target, size: file.size, message: '已上传 ' + file.name } };
+        });
+    }
+    return nextChunk().then(function (result) {
+      window.alert(result.data.message);
+      window.location.reload();
+      return result;
+    });
+  }
+
+  function fileOpen(args) {
+    window.location.href =
+      prefix + '/files?path=' + encodeURIComponent(String(args.path || ''));
+  }
+
+  function fileDownload(args) {
+    if (args.dir === true || args.dir === 'true') {
+      window.alert('目录不能下载，请先进入目录选择文件。');
+      return;
+    }
+    window.location.href =
+      prefix + '/files/download?path=' + encodeURIComponent(String(args.path || ''));
+  }
+
+  function fileMkdir(args, ctx) {
+    var values = formValues(ctx);
+    var name = String(values.name || '').trim();
+    if (!name) {
+      window.alert('请输入目录名');
+      return Promise.resolve();
+    }
+    var base = String(args.dir || '').replace(/\/+$/, '');
+    return submitJson('/files/mkdir', { path: base + '/' + name })
+      .then(function (data) {
+        window.alert(data.message || '目录已创建');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('新建目录失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function fileRename(args) {
+    var current = String(args.path || '');
+    var name = String(args.name || '');
+    var next = window.prompt('新的名称', name);
+    if (next === null) return Promise.resolve();
+    next = next.trim();
+    if (!next || next === name) return Promise.resolve();
+    var parent = current.replace(/\/[^/]*$/, '');
+    return submitJson('/files/rename', { from: current, to: parent + '/' + next })
+      .then(function (data) {
+        window.alert(data.message || '已重命名');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('重命名失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function fileRemove(args) {
+    var name = String(args.name || '');
+    var path = String(args.path || '');
+    if (!window.confirm('确认删除 ' + name + '？删除后进入回收站，可在回收站恢复。')) {
+      return Promise.resolve();
+    }
+    return submitJson('/files/remove', { path: path })
+      .then(function (data) {
+        window.alert(
+          (data.message || '已移入回收站') +
+            (data.trash_id ? '（回收站编号 ' + data.trash_id + '）' : '')
+        );
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('删除失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   // 临时桥接：口令框必须是 password 类型（budding `input-text` 暂不直传 type，见上游 T6）。
   // TODO(T6)：上游支持 type 后删除本函数与观察器。
   function maskPasswordInputs() {
@@ -1762,6 +1946,235 @@
       });
     }
     return { type: 'card', props: { title: p.name }, content: { body: body } };
+  }
+
+  // ---- 文件管理：平铺目录 + 面包屑 + 虚拟列表 -----------------------------
+
+  function humanSize(bytes) {
+    var n = Number(bytes) || 0;
+    if (n < 1024) return n + ' B';
+    var units = ['KB', 'MB', 'GB', 'TB'];
+    var i = -1;
+    do {
+      n = n / 1024;
+      i += 1;
+    } while (n >= 1024 && i < units.length - 1);
+    return (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10) + ' ' + units[i];
+  }
+
+  function formatTime(value) {
+    if (!value) return '—';
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return value;
+    return d.toLocaleString();
+  }
+
+  function breadcrumbFlex(path) {
+    var segments = String(path || '/')
+      .split('/')
+      .filter(function (s) {
+        return s !== '';
+      });
+    var body = [
+      {
+        type: 'link',
+        props: { text: '根目录', href: prefix + '/files?path=' + encodeURIComponent('/') }
+      }
+    ];
+    var acc = '';
+    segments.forEach(function (seg) {
+      acc += '/' + seg;
+      body.push({ type: 'text', props: { text: '/' } });
+      body.push({
+        type: 'link',
+        props: { text: seg, href: prefix + '/files?path=' + encodeURIComponent(acc) }
+      });
+    });
+    return { type: 'flex', props: { gap: 4, wrap: true, align: 'center' }, content: { body: body } };
+  }
+
+  function rootsLine(data) {
+    if (!data.roots || !data.roots.length) {
+      return textLine('可直接在面包屑路径内浏览。');
+    }
+    return {
+      type: 'flex',
+      props: { gap: 12, wrap: true },
+      content: {
+        body: data.roots.map(function (r) {
+          return {
+            type: 'link',
+            props: { text: r.label, href: prefix + '/files?path=' + encodeURIComponent(r.path) }
+          };
+        })
+      }
+    };
+  }
+
+  function fileRowSchema() {
+    return {
+      type: 'flex',
+      props: { gap: 12, align: 'center' },
+      content: {
+        body: [
+          {
+            type: 'button',
+            props: { text: '${item.name_label}', variant: 'text' },
+            onEvent: {
+              click: { actions: [{ type: 'skiffFileOpen', props: { path: '${item.path}' } }] }
+            }
+          },
+          { type: 'text', props: { text: '${item.size_label}', size: 'small' } },
+          { type: 'text', props: { text: '${item.mtime_label}', size: 'small' } },
+          {
+            type: 'button',
+            props: { text: '下载', variant: 'text' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'skiffFileDownload',
+                    props: { path: '${item.path}', dir: '${item.dir}' }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            type: 'button',
+            props: { text: '重命名', variant: 'text' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'skiffFileRename',
+                    props: { path: '${item.path}', name: '${item.name}' }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            type: 'button',
+            props: { text: '删除', variant: 'text', color: 'danger' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'skiffFileRemove',
+                    props: { path: '${item.path}', name: '${item.name}' }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    };
+  }
+
+  function filesSchema(data) {
+    var body = [];
+    if (data.truncated) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          text: '目录条目超过单页上限（1000 条），当前只显示前 1000 条；请进入子目录继续浏览。'
+        }
+      });
+    }
+    var items = (data.entries || []).map(function (e) {
+      var copy = {};
+      Object.keys(e).forEach(function (k) {
+        copy[k] = e[k];
+      });
+      copy.name_label = e.dir ? e.name + '/' : e.name;
+      copy.size_label = e.dir ? '—' : humanSize(e.size);
+      copy.mtime_label = formatTime(e.mtime);
+      return copy;
+    });
+    body.push({
+      type: 'card',
+      props: { title: '位置' },
+      content: { body: [breadcrumbFlex(data.path), rootsLine(data)] }
+    });
+    body.push({
+      type: 'card',
+      props: { title: '新建与上传' },
+      content: {
+        body: [
+          {
+            type: 'form',
+            onEvent: {
+              submit: [{ type: 'skiffFileMkdir', props: { dir: data.path } }]
+            },
+            props: {
+              api: { method: 'POST', url: apiBase + '/files/mkdir', sendOn: false },
+              actionsAlign: 'end'
+            },
+            body: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'name',
+                  label: '新目录名',
+                  required: true,
+                  rules: { required: true, messages: { required: '请输入目录名' } }
+                }
+              }
+            ],
+            content: {
+              actions: [
+                {
+                  type: 'button',
+                  props: { text: '新建目录', variant: 'tonal' },
+                  action: { type: 'submit' }
+                }
+              ]
+            }
+          },
+          {
+            type: 'file',
+            props: {
+              name: 'file',
+              label: '选择文件后立即上传（单文件，分片 256 KiB）',
+              multiple: false,
+              uploadField: 'file',
+              uploadApi: {
+                method: 'POST',
+                url: apiBase + '/files/upload?dir=' + encodeURIComponent(data.path)
+              },
+              uploadProgressTarget: 'uploadProgress'
+            }
+          }
+        ]
+      }
+    });
+    body.push({
+      type: 'virtual-list',
+      props: {
+        items: items,
+        itemKey: 'path',
+        itemHeight: 52,
+        height: 560,
+        emptyText: '目录为空',
+        ariaLabel: '目录条目'
+      },
+      content: { body: fileRowSchema() }
+    });
+    body.push({
+      type: 'text',
+      props: {
+        text: '共 ' + items.length + ' 项；目录在前、按名称排序。删除进回收站，可在旧版回收站页恢复。',
+        size: 'small'
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: '文件管理 · Skiff', subtitle: '平铺目录 + 面包屑（不使用树形）' },
+      body: body
+    };
   }
 
   function pluginsSchema(data) {
@@ -2315,14 +2728,10 @@
       return fetchData('/jobs/' + encodeURIComponent(parts[1])).then(jobDetailSchema);
     }
     if (kind === 'files') {
-      return Promise.resolve(
-        notReadyPage(
-          '文件管理',
-          '文件浏览器、上传与容器终端依赖上游组件（T1 虚拟滚动 / T2 文件浏览器 / T5 终端），组件到位前不在前端自造；实时终端另需 WS 契约，本批不做。',
-          '/m/core/files',
-          '打开旧版文件管理（浏览 / 回收站 / 配额）'
-        )
-      );
+      var filePath = new URLSearchParams(location.search).get('path') || '';
+      return fetchData(
+        '/files' + (filePath ? '?path=' + encodeURIComponent(filePath) : '')
+      ).then(filesSchema);
     }
     if (kind === 'plugins') {
       return fetchData('/plugins').then(pluginsSchema);

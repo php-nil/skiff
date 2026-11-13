@@ -31,7 +31,8 @@ use crate::state::AppState;
 use crate::templates::{FilesPage, FilesRootView, FsQuotasPage, FsTrashPage};
 
 /// 上传/下载的单片字节数（与 `skiff-fs` 的单次读写上限一致）。
-const CHUNK_BYTES: usize = 256 * 1024;
+/// `pub(crate)`：`/ui/v1/files` 要把同一数值告诉前端上传适配器，避免前端硬编码。
+pub(crate) const CHUNK_BYTES: usize = 256 * 1024;
 
 type JsonErr = (StatusCode, Json<Value>);
 type ApiResult = Result<Json<Value>, JsonErr>;

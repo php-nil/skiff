@@ -27,6 +27,7 @@ use crate::handlers::{self, LOGIN_CSRF_COOKIE};
 use crate::middleware::UiAuthUser;
 use crate::state::auth::{LoginError, LoginRequest};
 use crate::state::AppState;
+use skiff_app::actions as act;
 
 /// 接口版本：与路径段 `v1` 一致，前端只做兼容判断（SDUI 集成 §3.7）。
 pub const API_VERSION: &str = "v1";
@@ -2825,6 +2826,212 @@ pub async fn settings_key_remove(
         "撤销后该公钥签名的包将无法安装/升级",
     );
     Ok(Json(json!({ "data": { "message": "已撤销该公钥" } })).into_response())
+}
+
+// ---- 文件管理（第十一批：平铺 + 面包屑） --------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct FileRootItem {
+    pub label: String,
+    pub path: String,
+}
+
+/// 目录项：只出机器可读字段（时间按 D9 出 RFC3339 UTC），本地化归前端。
+#[derive(Debug, Serialize)]
+pub struct FileEntryItem {
+    pub name: String,
+    /// 绝对路径；前端直接用于下载 / 重命名 / 删除，不再自行拼接。
+    pub path: String,
+    pub dir: bool,
+    pub symlink: bool,
+    pub size: u64,
+    pub mtime: Option<String>,
+    pub mode: Option<u32>,
+    pub owner: Option<String>,
+    pub nlink: u64,
+    pub link_target: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FilesData {
+    pub path: String,
+    pub parent: Option<String>,
+    pub roots: Vec<FileRootItem>,
+    pub entries: Vec<FileEntryItem>,
+    /// 条目数超过单页上限（1000），前端必须提示而不是静默截断。
+    pub truncated: bool,
+    pub max_edit_bytes: usize,
+    /// 分片上传单片字节数，前端上传适配器按它切片。
+    pub upload_chunk_bytes: usize,
+}
+
+/// `skiff-fs` 稳定错误码 → `/ui/v1` 信封：状态由 `FsError::http_status` 决定。
+fn fs_api_error(e: skiff_app::admin_fs::FsErr) -> ApiError {
+    let message = e.message().to_string();
+    ApiError(match e.http_status() {
+        400 | 413 => AppError::BadRequest(message),
+        403 => AppError::Forbidden(message),
+        404 => AppError::NotFound(message),
+        409 => AppError::Conflict(message),
+        507 => AppError::NoSpace(message),
+        503 => AppError::Unavailable(message),
+        504 => AppError::Timeout(message),
+        _ => AppError::Internal(message),
+    })
+}
+
+/// `GET /ui/v1/files?path=`：平铺目录列表（不提供树形）。
+///
+/// 授权、路径硬拒、配额与审计全部沿用 `AdminFs`；这里只做 DTO 形状转换。
+pub async fn files(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize(&user, act::FILE_BROWSE).map_err(ApiError)?;
+    let path = q
+        .get("path")
+        .map(|p| p.trim().to_string())
+        .filter(|p| std::path::Path::new(p).is_absolute())
+        .unwrap_or_else(|| state.cfg.web_root.display().to_string());
+    let fs = state.admin_fs_arc();
+    let owner = user.user.username.clone();
+    let requested = path.clone();
+    let (roots, listing) = handlers::blocking_fs(move || {
+        let roots = fs.roots();
+        let listing = fs.list(&owner, &requested)?;
+        Ok((roots, listing))
+    })
+    .await
+    .map_err(ApiError)?
+    .map_err(fs_api_error)?;
+
+    let entries = listing
+        .entries
+        .into_iter()
+        .map(|e| {
+            let child = std::path::Path::new(&listing.path).join(&e.name);
+            FileEntryItem {
+                name: e.name,
+                path: child.display().to_string(),
+                dir: e.dir,
+                symlink: e.symlink,
+                size: e.size,
+                mtime: e.mtime.and_then(skiff_app::time_fmt::epoch_to_rfc3339_utc),
+                mode: e.mode,
+                owner: e.owner,
+                nlink: e.nlink,
+                link_target: e.link_target,
+            }
+        })
+        .collect();
+    let data = FilesData {
+        path: listing.path,
+        parent: listing.parent,
+        roots: roots
+            .into_iter()
+            .map(|r| FileRootItem {
+                label: r.label,
+                path: r.path,
+            })
+            .collect(),
+        entries,
+        truncated: listing.truncated,
+        max_edit_bytes: skiff_app::admin_fs::MAX_EDIT_BYTES,
+        upload_chunk_bytes: handlers::files::CHUNK_BYTES,
+    };
+    Ok(Json(json!({ "data": data })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FilePathBody {
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileRenameBody {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+}
+
+/// `POST /ui/v1/files/mkdir`：新建目录（管理员 + CSRF）。
+pub async fn files_mkdir(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<FilePathBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize(&user, act::FILE_WRITE).map_err(ApiError)?;
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let path = body.path.trim().to_string();
+    if path.is_empty() {
+        return Err(ApiError(AppError::BadRequest("目录路径不能为空".into())));
+    }
+    let fs = state.admin_fs_arc();
+    let owner = user.user.username.clone();
+    let created = handlers::blocking_fs(move || fs.mkdir(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
+    Ok(Json(
+        json!({ "data": { "path": created, "message": "目录已创建" } }),
+    ))
+}
+
+/// `POST /ui/v1/files/rename`：重命名（同目录或移动，覆盖规则由 `skiff-fs` 决定）。
+pub async fn files_rename(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<FileRenameBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize(&user, act::FILE_WRITE).map_err(ApiError)?;
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let from = body.from.trim().to_string();
+    let to = body.to.trim().to_string();
+    if from.is_empty() || to.is_empty() {
+        return Err(ApiError(AppError::BadRequest(
+            "重命名需要同时提供原路径与新路径".into(),
+        )));
+    }
+    let fs = state.admin_fs_arc();
+    let owner = user.user.username.clone();
+    handlers::blocking_fs(move || fs.rename(&owner, &from, &to))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
+    Ok(Json(json!({ "data": { "message": "已重命名" } })))
+}
+
+/// `POST /ui/v1/files/remove`：删除（进回收站，`trash_id` 非空即可恢复）。
+pub async fn files_remove(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<FilePathBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize(&user, act::FILE_REMOVE).map_err(ApiError)?;
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let path = body.path.trim().to_string();
+    if path.is_empty() {
+        return Err(ApiError(AppError::BadRequest("路径不能为空".into())));
+    }
+    let fs = state.admin_fs_arc();
+    let owner = user.user.username.clone();
+    let removed = handlers::blocking_fs(move || fs.remove(&owner, &path))
+        .await
+        .map_err(ApiError)?
+        .map_err(fs_api_error)?;
+    Ok(Json(json!({
+        "data": {
+            "path": removed.path,
+            "trash_id": removed.trash_id,
+            "message": "已移入回收站"
+        }
+    })))
 }
 
 /// `GET /ui/v1/session`：当前用户、角色、CSRF、入口前缀与壳页能力开关。

@@ -8335,6 +8335,141 @@ async fn ui_settings_keys_enforce_admin_and_key_shape() {
     assert!(text.contains("公钥非法"), "{text}");
 }
 
+/// 文件管理只读列表：管理员可平铺浏览（父路径、根入口、绝对路径、RFC3339 时间），
+/// viewer 403；不提供树形字段。
+#[tokio::test]
+async fn ui_files_list_is_flat_and_admin_only() {
+    let h = harness();
+    // harness 的 data_dir 是受保护路径，文件管理不能访问；用独立临时目录当浏览目标。
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_path_buf();
+    std::fs::create_dir_all(root.join("sites/sub")).unwrap();
+    std::fs::write(root.join("note.txt"), b"hello").unwrap();
+    let uri = format!(
+        "/ui/v1/files?path={}",
+        root.to_string_lossy().replace('\\', "/")
+    );
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, &uri, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("files 响应必须是 JSON");
+    let data = &v["data"];
+    assert!(
+        data["path"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/")
+            .ends_with(root.file_name().unwrap().to_string_lossy().as_ref()),
+        "必须回显浏览目录: {body}"
+    );
+    assert!(data["parent"].is_string(), "面包屑需要父路径: {body}");
+    assert!(
+        data["roots"].is_array(),
+        "根入口必须下发（数组；测试环境 Web 根未落盘时可为空）: {body}"
+    );
+    assert!(
+        data["upload_chunk_bytes"].as_u64().unwrap_or(0) > 0,
+        "前端上传适配器需要分片大小: {body}"
+    );
+    let entries = data["entries"].as_array().expect("entries 必须是数组");
+    let sites = entries
+        .iter()
+        .find(|e| e["name"] == "sites")
+        .expect("目录应平铺出现");
+    assert_eq!(sites["dir"], true);
+    assert!(
+        sites["path"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/")
+            .ends_with("sites"),
+        "条目必须带绝对路径: {sites}"
+    );
+    let note = entries
+        .iter()
+        .find(|e| e["name"] == "note.txt")
+        .expect("文件应平铺出现");
+    assert_eq!(note["dir"], false);
+    assert_eq!(note["size"], 5);
+    assert!(
+        note["mtime"].is_string() || note["mtime"].is_null(),
+        "时间只出 RFC3339 或 null: {note}"
+    );
+    assert!(note.get("children").is_none(), "不得下发树形子项");
+
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/files", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "文件管理仅管理员");
+}
+
+/// 文件写动作：mkdir → rename → remove（进回收站）闭环；无 CSRF 头 403 且无副作用。
+#[tokio::test]
+async fn ui_files_mkdir_rename_remove_roundtrip() {
+    let h = harness();
+    // harness 的 data_dir 是受保护路径；写动作在独立临时目录里做闭环。
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_path_buf();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let dir = root.join("newdir");
+    let dir_json = dir.display().to_string();
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/mkdir",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({ "path": dir_json }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(dir.is_dir(), "mkdir 必须真正建目录");
+
+    let renamed = root.join("renamed");
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/rename",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({
+            "from": dir.display().to_string(),
+            "to": renamed.display().to_string()
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(renamed.is_dir() && !dir.exists());
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/remove",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({ "path": renamed.display().to_string() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["data"]["trash_id"].is_string(),
+        "删除必须进回收站: {text}"
+    );
+    assert!(!renamed.exists());
+
+    let other = root.join("no-csrf");
+    let (status, _) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/mkdir",
+        &admin,
+        None,
+        &serde_json::json!({ "path": other.display().to_string() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "写动作必须校验 CSRF");
+    assert!(!other.exists(), "CSRF 失败不得产生副作用");
+}
+
 /// 商店规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/plugins/store`（目录启用时 200）。
 #[tokio::test]
 async fn store_canonical_path_serves_shell() {
@@ -8588,9 +8723,9 @@ async fn ui_plugin_toggle_and_delete_keep_csrf_and_permission_semantics() {
     assert_eq!(v["error"]["code"], "auth.forbidden");
 }
 
-/// 文件管理规范页交付占位壳页；旧 SSR（浏览/回收站/配额）仍在 `/m/core/files`。
+/// 文件管理规范页交付 budding 壳页（原生平铺目录）；旧 SSR（浏览/回收站/配额）仍在 `/m/core/files`。
 #[tokio::test]
-async fn files_canonical_path_serves_placeholder_shell() {
+async fn files_canonical_path_serves_shell() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
@@ -8598,7 +8733,6 @@ async fn files_canonical_path_serves_placeholder_shell() {
         let (status, html) = get_html(&h.app, "/p/files", token).await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
-        assert!(html.contains("该功能正在适配中"), "{html}");
     }
     // 旧 SSR 仍按 FILE_BROWSE 授权：admin 可进，viewer 403。
     let (status, ssr) = get_page(&h.app, "/p/m/core/files", &admin).await;

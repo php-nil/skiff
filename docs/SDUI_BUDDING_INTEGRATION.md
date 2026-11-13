@@ -16,7 +16,7 @@
 | 仓库关系 | **禁止修改 budding 仓库**；产物由上游发版打包后复制进本仓库；缺能力只提建议，由项目负责人决策 |
 | 接入前提 | 产物入库 + 单二进制嵌入（`RustEmbed`）；**本项目不引入 Node 工具链**；测试机无公网，部署期不得依赖 npm 或 CDN |
 | 最大外部阻塞 | 上游 admin Pack（`admin` / `nav-menu` / `page-tabs`）与文件管理所需能力（§6.1）均未随发行包提供（D4、D6） |
-| 最大硬缺口 | 文件管理页重做所需的分片上传与续传、上传进度、目录树、日志/代码查看器、只读详情均缺（§6.1） |
+| 最大硬缺口 | 终端需要 WebSocket 通道与 terminal Pack（第十一批后文件管理、代码/日志查看器所需的虚拟列表、上传增强与 highlight 均已具备）；终端实时通道契约待定（§5.18） |
 | 最大分发风险 | 上游无 LICENSE 文件；「按 MIT」目前只是我方口径，需上游补 LICENSE 或书面确认（D5、§7.1） |
 | 回滚 | 一次性切换，无运行时开关；回滚只能靠 git 版本回退并重新部署（D7） |
 
@@ -818,12 +818,15 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 错误码：插件不存在 404 `lookup.not_found`；无 `PluginManage` 403 `auth.forbidden`；CSRF 失败 403 `auth.csrf_invalid`。
 
-### 5.17 文件管理与终端（第十批，占位）
+### 5.17 文件管理（第十一批）
 
-- `GET /{p}/files` 交付 budding 占位壳页（「该功能正在适配中」+ 旧页入口），保留 fs 能力面门禁：受限形态仍 403。
-- 旧 SSR（浏览 / 回收站 / 配额）保留在 `GET /{p}/m/core/files`、`/{p}/m/core/files/trash`、`/{p}/m/core/files/quotas`；`/{p}/files/*` 接口全部不变。
-- 阻塞依赖：T1 虚拟滚动、T2 文件浏览器、T5 终端；容器终端是 WS 流，需另立实时契约后才能迁。
-- 本批无新增 `/ui/v1` 接口与字段；新增测试 `files_canonical_path_serves_placeholder_shell`。
+- `GET /{p}/files` 交付 budding 原生页：**平铺目录 + 面包屑，不做目录树**（负责人定案：禁止树形；原 F3 缺口按降级口径关闭）。
+- `GET /ui/v1/files?path=` 返回 `{path,parent,roots[],entries[],truncated,max_edit_bytes,upload_chunk_bytes}`；条目 `{name,path,dir,symlink,size,mtime,mode,owner,nlink,link_target}`，`mtime` 为 RFC3339 UTC 或 `null`（D9）。默认路径是 Web 根；授权沿用 `FILE_BROWSE`（仅 Admin），路径硬拒 / 配额 / 审计仍由 `AdminFs` + `skiff-fs` 单一来源决定。
+- 写动作：`POST /ui/v1/files/mkdir`（`FILE_WRITE`）、`POST /ui/v1/files/rename`（`FILE_WRITE`）、`POST /ui/v1/files/remove`（`FILE_REMOVE`，进回收站并回传 `trash_id`）；均要求 `x-csrf-token`，失败按 `AppError` 信封返回。
+- 列表用 `virtual-list`（`itemHeight: 52`、`height: 560`）虚拟滚动；条目操作是 budding 按钮：打开 / 下载 / 重命名 / 删除。下载仍走既有 `GET /{p}/files/download`。
+- 上传走宿主 `PlatformAdapter.upload`：前端按服务端下发的 `upload_chunk_bytes`（256 KiB）切片，逐片 POST 既有 `/{p}/files/upload?path=&offset=`（同一授权、同一审计），按字节上报进度，组件负责进度、取消与重试。**宿主必须同时注入 `platform.request`**：上游 `createPlatformAdapter` 只在提供 `request` 时保留 `upload`。
+- 终端不在本批：仍待 WS 契约与 terminal Pack（§5.18）。
+- 旧 SSR（浏览 / 回收站 / 配额）保留但不再是入口；回收站与配额页仍走旧页。
 
 ---
 
@@ -838,9 +841,9 @@ D6 定案后，原先「可绕」的缺口升级为阻塞项。以下全部属�
 
 | # | 缺口 | 文件管理页为什么需要 | budding 当前能力边界（实测事实） | 建议上游补什么 | 阻塞等级 |
 |---|---|---|---|---|---|
-| F1 | 分片上传与续传 | 大文件、弱网、上传中断后不重传；内核现有上传是 `offset` 分片协议 | `file` 组件仅单次 FormData POST，**无分片、无续传**；动作集 19 个不含分片语义 | 上传组件支持 `chunkSize` / `offset` / 并发 / 重试 / 断点续传 | B1 |
-| F2 | 上传进度与取消 | 大文件需要可见进度并可取消，否则用户只能等待超时 | 无上传进度事件；`progress` 是任务展示组件，`source.autoRefresh` 是数据轮询，二者都不是上传进度 | 上传进度/取消事件，或允许注入自定义 XHR/fetch 上传适配器 | B1 |
-| F3 | 目录树 | 文件管理的主导航是目录树 + 懒加载 + 面包屑联动 | 无独立 `tree` / `tree-select`；basic 16 / layout 11 / data 8 中无树组件 | `tree` + 懒加载 + 多选（拖拽可后置） | B2 |
+| F1 | 分片上传与续传 | 大文件、弱网、上传中断后不重传；内核现有上传是 `offset` 分片协议 | `file` 组件本身仍是单次 FormData POST；**1.8.0 起宿主可实现 `PlatformAdapter.upload`**，由宿主切片后逐片调用既有分片接口（第十一批已落地，续传待人机交互另定） | 组件内建 `chunkSize` / 断点续传（可选，非阻塞） | 已绕 |
+| F2 | 上传进度与取消 | 大文件需要可见进度并可取消，否则用户只能等待超时 | 1.8.0 上传增强：`uploadProgressTarget` 写回 `{status,loaded,total,percent,attempt}`，`cancelUpload` / `retryUpload` 指令；宿主 `PlatformAdapter.upload` 按字节上报 | 无（已具备） | 已解决 |
+| F3 | 目录树 | 文件管理的主导航是目录树 + 懒加载 + 面包屑联动 | 无独立 `tree` / `tree-select`；basic 16 / layout 11 / data 8 中无树组件 | 产品口径改为**平铺 + 面包屑**，负责人明确禁止树形（第十一批） | 已降级关闭 |
 | F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | 无代码/日志查看器；只有基础排版能力，无虚拟滚动 | 只读查看器：行号、换行、搜索、虚拟滚动；可选编辑模式 | B2 |
 | F5 | 只读详情（descriptions） | 文件属性、权限、大小、时间等只读信息面板 | 无 descriptions，需用 basic 组件逐个拼 | `descriptions` 组件 | B3 |
 
@@ -1019,3 +1022,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 后台外壳接入：壳页改为 `admin` Schema + `outlet`，新增 `GET /ui/v1/menu`（投影 `skiff_app::menu::build`，DTO 只含 key/label/icon/href/plugin/empty），前端按菜单键映射已迁移路由并保留 `/{p}/...` history 形态（path 带前缀、不设 `routerBase`）；新增 `skiff:<kind>` 路由 Schema 经 `platform.loadJson` 按地址栏取数，详情页与商店安装确认改走路由。MDI 图标字体（CSS 323,052 B + woff2 403,216 B）版本化入库并由壳页 `<link>` 引入，`build.rs` 跳过已压缩格式的 `.gz`。插件功能页不再作为入口：菜单丢弃 `plugin/*`，任何直接导航 `/plugins/{id}/{view}` 显示「插件功能页正在切换为原生渲染」占位，旧 SSR 工作台只接受显式 `?legacy=1`（§4.4、backlog T7）。 |
 | 2026-11-13 | budding 升级 1.8.0：入库 `budding-1.8.0.min.js`（1,260,779 B）/`.min.css`（657,142 B），删除 1.6.0 双份；官方包自带 `Budding Icons` 子集（CSS 3,533 B + woff2 2,456 B），移除宿主自存的完整 @mdi/font（CSS 323,052 B + woff2 403,216 B），壳页改引 `budding-icons-1.8.0.*`。子集不含自定义菜单图标，侧栏不再声明图标，避免缺字形回退成 `mdi-xxx` 文本。新包含 code-view/highlight、virtual-list、增强上传与 terminal Pack，作为后续剩余页面切换的基础。 |
 | 2026-11-13 | 第十一批设置页补齐（口令 / TOTP / 公钥原生化）：`/ui/v1` 新增 `POST /settings/password`（argon2 校验 + 会话轮换 + 新 CSRF + 删除首启口令文件）、`POST /settings/totp/setup`、`POST /settings/totp/enable`（一次性备份码）、`POST /settings/keys`、`POST /settings/keys/{id}`（仅 Admin，审计 `settings.key.import` / `settings.key.remove`）；`GET /ui/v1/settings` 的 `account` 补 `totp_pending_secret` / `totp_pending_uri`（未启用暂存态）；前端用 `className: 'skiff-password'` + `MutationObserver` 把口令输入框改为 `type=password`。错误文案沿用旧 SSR。设置页不再依赖旧 SSR，旧页仅作无 JS 兜底。 |
+| 2026-11-13 | 第十二批文件管理原生化：`/ui/v1` 新增 `GET /files?path=`（平铺列表 + 父路径 + 根入口 + `upload_chunk_bytes`）、`POST /files/mkdir|rename|remove`（CSRF，删除进回收站）；前端 `virtual-list` 渲染目录、面包屑导航、条目按钮；上传由宿主 `PlatformAdapter.upload` 按 256 KiB 切片复用 `/{p}/files/upload`，并补 `platform.request`（上游仅在提供 `request` 时保留 `upload`）。**不做目录树**，§6.1 F3 按降级口径关闭。终端仍待 WS 契约。补两条 `main_flow` 用例，无头浏览器实测上传与新建目录成功。 |

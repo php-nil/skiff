@@ -217,6 +217,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/settings/keys/{id}",
             post(handlers::ui_api::settings_key_remove),
         )
+        .route("/ui/v1/files", get(handlers::ui_api::files))
+        .route("/ui/v1/files/mkdir", post(handlers::ui_api::files_mkdir))
+        .route("/ui/v1/files/rename", post(handlers::ui_api::files_rename))
+        .route("/ui/v1/files/remove", post(handlers::ui_api::files_remove))
         .route("/ui/v1/store", get(handlers::ui_api::store))
         .route(
             "/ui/v1/store/plugins/{id}/install",
