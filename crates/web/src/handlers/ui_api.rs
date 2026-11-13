@@ -1925,7 +1925,8 @@ pub struct PluginInfoData {
 /// 启用且运行中、启用但未运行、未启用、异常（未知状态码）。
 fn plugin_status_label(status: &str, enabled: bool, running: bool) -> &'static str {
     match status {
-        "enabled" | "installed" | "disabled" => match (enabled, running) {
+        // `running` 是 supervisor 进程起来后写回库的常态，不是异常。
+        "enabled" | "installed" | "disabled" | "running" => match (enabled, running) {
             (true, true) => "已启用 · 运行中",
             (true, false) => "已启用 · 未运行",
             (false, _) => "已安装 · 未启用",
@@ -2750,6 +2751,11 @@ mod tests {
         assert_eq!(
             plugin_status_label("enabled", true, false),
             "已启用 · 未运行"
+        );
+        // supervisor 正常拉起进程后库内写的是 `running`，必须落正常分支。
+        assert_eq!(
+            plugin_status_label("running", true, true),
+            "已启用 · 运行中"
         );
     }
 

@@ -2664,7 +2664,7 @@ path = "index.html"
 
     let (status, html) = get_page(
         &h.app,
-        "/p/plugins/com.example.ui/main?open=%2Fvar%2Fwww%2Fsite%20one",
+        "/p/plugins/com.example.ui/main?legacy=1&open=%2Fvar%2Fwww%2Fsite%20one",
         &token,
     )
     .await;
@@ -2708,7 +2708,7 @@ path = "index.html"
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/plugins/com.example.ui/main?open=%2Fetc%2F%0Apasswd")
+                .uri("/p/plugins/com.example.ui/main?legacy=1&open=%2Fetc%2F%0Apasswd")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -3191,20 +3191,27 @@ view = "info"
     );
 
     // 规范功能路由：视图名直接寻址，未知视图 404。
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.tabs/list", &admin).await;
+    let (status, html) =
+        get_page(&h.app, "/p/plugins/com.example.tabs/list?legacy=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("tab=list") && html.contains(r#"class="workbench-tabs""#),
         "{html}"
     );
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.tabs/backup", &admin).await;
+    let (status, html) = get_page(
+        &h.app,
+        "/p/plugins/com.example.tabs/backup?legacy=1",
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("tab=backup"), "{html}");
-    let (status, _) = get_page(&h.app, "/p/plugins/com.example.tabs/nope", &admin).await;
+    let (status, _) = get_page(&h.app, "/p/plugins/com.example.tabs/nope?legacy=1", &admin).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "未知视图必须 404");
 
     // 无 L3 的 L2：隐式主视图，不渲染标签栏，但深链仍可直达。
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.tabs/info", &admin).await;
+    let (status, html) =
+        get_page(&h.app, "/p/plugins/com.example.tabs/info?legacy=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("/p/plugins/com.example.tabs/ui/info.html?nonce="),
@@ -3369,7 +3376,8 @@ provides = [{ method = "probe", label = "探针" }]
     );
 
     // 单视图 L2：规范视图路由可直达，且不渲染标签栏。
-    let (status, view_html) = get_page(&h.app, "/p/plugins/com.example.info/main", &admin).await;
+    let (status, view_html) =
+        get_page(&h.app, "/p/plugins/com.example.info/main?legacy=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         view_html.contains("/p/plugins/com.example.info/ui/main.html?nonce="),
@@ -3379,7 +3387,7 @@ provides = [{ method = "probe", label = "探针" }]
         !view_html.contains(r#"class="workbench-tabs""#),
         "{view_html}"
     );
-    let (status, _) = get_page(&h.app, "/p/plugins/com.example.info/nope", &admin).await;
+    let (status, _) = get_page(&h.app, "/p/plugins/com.example.info/nope?legacy=1", &admin).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // 停用后信息页仍可见（用于恢复/卸载），但不再提供功能页入口。
@@ -3399,34 +3407,37 @@ provides = [{ method = "probe", label = "探针" }]
     );
 }
 
-/// 地址栏直达插件功能页时不再交付 iframe 工作台，而是外壳页占位：
-/// 新一代前端不承载 iframe（PLUGIN_UI_CONTRACT 2026-11-13 方向变更）。
+/// 任何直接导航到插件功能页都只能拿到原生占位页，DOM 里不得出现 iframe；
+/// 旧 SSR 工作台只接受显式 `?legacy=1`（兼容嵌入），不再作为产品入口。
 #[tokio::test]
 async fn plugin_view_document_navigation_serves_shell_placeholder() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/plugins/com.example.info/main")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .header(header::ACCEPT, "text/html")
-                .header("sec-fetch-dest", "document")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let html = body_text(resp).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("该功能正在适配中"), "{html}");
-    assert!(
-        !html.contains("data-workbench-frame"),
-        "壳页占位不得内嵌 iframe 工作台: {html}"
-    );
+
+    // 不带任何 Sec-Fetch-* 头（反向代理剥离后的形态）也必须落到占位页。
+    for headers in [None, Some(("sec-fetch-dest", "document"))] {
+        let mut builder = Request::builder()
+            .uri("/p/plugins/com.example.info/main")
+            .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+            .header(header::ACCEPT, "text/html");
+        if let Some((name, value)) = headers {
+            builder = builder.header(name, value);
+        }
+        let resp = h
+            .app
+            .clone()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let html = body_text(resp).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("该功能正在适配中"), "{html}");
+        assert!(
+            !html.contains("<iframe") && !html.contains("data-workbench-frame"),
+            "壳页占位不得内嵌 iframe 工作台: {html}"
+        );
+    }
 }
 
 /// 内核兜底：第三方插件托管 HTML 会被注入标题抑制规则，残留的
@@ -3509,7 +3520,12 @@ async fn legacy_ui_only_package_maps_main_to_index_html() {
     );
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p/plugins/com.example.legacy/main", &admin).await;
+    let (status, html) = get_page(
+        &h.app,
+        "/p/plugins/com.example.legacy/main?legacy=1",
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("/p/plugins/com.example.legacy/ui/index.html?nonce="),
@@ -3519,7 +3535,12 @@ async fn legacy_ui_only_package_maps_main_to_index_html() {
         !html.contains(r#"class="workbench-tabs""#),
         "旧包单入口不得渲染标签栏: {html}"
     );
-    let (status, _) = get_page(&h.app, "/p/plugins/com.example.legacy/other", &admin).await;
+    let (status, _) = get_page(
+        &h.app,
+        "/p/plugins/com.example.legacy/other?legacy=1",
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // 信息页也必须存在，并给出 main 入口与旧包菜单深链。
@@ -3591,7 +3612,12 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
         "{html}"
     );
 
-    let (status, html) = get_page(&h.app, "/p/plugins/com.skiff.testkit/check", &admin).await;
+    let (status, html) = get_page(
+        &h.app,
+        "/p/plugins/com.skiff.testkit/check?legacy=1",
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"class="workbench-tabs""#),
@@ -3606,7 +3632,12 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
         "{html}"
     );
 
-    let (status, html) = get_page(&h.app, "/p/plugins/com.skiff.testkit/single", &admin).await;
+    let (status, html) = get_page(
+        &h.app,
+        "/p/plugins/com.skiff.testkit/single?legacy=1",
+        &admin,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains("/p/plugins/com.skiff.testkit/ui/single.html?nonce="),

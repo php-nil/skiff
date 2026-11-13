@@ -1454,7 +1454,7 @@
   function pluginCard(p, canAdmin, includeDelete) {
     var lines = [
       '标识：' + p.id + ' · 版本 ' + p.version + ' · API ' + p.api,
-      '状态：' + p.status.label + (p.running ? ' · 进程运行中' : ' · 进程未运行'),
+      '状态：' + p.status.label,
       '签名：' + (p.signed ? '已验签' : '未验签') + ' · 沙箱：' + (p.reduced ? '降权' : '完整'),
       '宿主能力：' + (p.requires || '无'),
       '动作权限：' + (p.permissions || '无'),
@@ -1556,7 +1556,7 @@
       detailLines('身份', [
         '标识：' + p.id,
         '名称：' + p.name + ' · 版本 ' + p.version + ' · API ' + p.api,
-        '状态：' + p.status.label + (p.running ? ' · 进程运行中' : ' · 进程未运行'),
+        '状态：' + p.status.label,
         '签名状态：' + (p.signed ? '已验签' : '未验签'),
         '密钥指纹：' + (p.key_id || '未签名包'),
         '沙箱模式：' + (p.reduced ? '降权沙箱' : '完整沙箱'),
