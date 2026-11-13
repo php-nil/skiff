@@ -59,7 +59,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 09:52 就地升级到 `281dc9d`（当前生效）**
+> **2026-11-13 14:46 就地升级到 `4c1a1aa`（当前生效）**
+> - 出包：run `43379837914`（`release.yml` dispatch，ref=main、head `4c1a1aa`，publish=false、skip_plugins=false），两架构 job 全绿；artifact `release-amd64` 主包 **11,458,156 B** `7ce6f3f711f724eb4eb3630e65b9b5839a88c8c56bbeb9d6b9a2ab8d097c9e75`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
+> - 升级方式：就地覆盖二进制（不重跑 `install.sh`、不改配置）；旧二进制备份 `/root/iter/backup/skiff-fbe640f2c05145aebe72f934335847da9864d4b06101aa2151da2acdf123472d`；库快照 `/root/iter/backup/skiff-415bd19daf7f7212b699f82035de387eaace3a783d3520fc3de6ad238c1748eb.db`。
+> - 新二进制：`/usr/local/bin/skiff` **18,515,216 B** `18299b5f4604f3dc37b56299ddb6e6b841cb8b94a4b641c1a170d24bde0a4e46`（`skiff 0.1.0 arch=amd64 os=linux`）。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 09:52 就地升级到 `281dc9d`（已被同日 14:46 升级取代，保留作过程记录）**
 > - 出包：run `43346854352`（`release.yml` dispatch，ref=main、head `281dc9d`，publish=false、skip_plugins=false），两架构 job 全绿；artifact `release-amd64` 主包 **11,646,514 B** `7c7e0808c09aa214e94588f47a8226cf4acc0bc396e585848b6e3270cb99f12b`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
 > - 升级方式：就地覆盖二进制（不重跑 `install.sh`、不改配置）；旧二进制备份 `/root/iter/backup/skiff-bd4d3ed8717fc637818e18711e0595d420de226633809698b57ab7228a4419fd`；库快照 `/root/iter/backup/skiff-dba0a5779a0b24a2bae59d404006e8b037d28befce00d1786a7c9781f7f6e4c6.db`。
 > - 新二进制：`/usr/local/bin/skiff` **18,486,544 B** `fbe640f2c05145aebe72f934335847da9864d4b06101aa2151da2acdf123472d`（`skiff 0.1.0 arch=amd64 os=linux`），`NRestarts=0`。
@@ -198,6 +205,7 @@
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
 
 
+| 2026-11-13 14:46 | **就地升级**（验收容器终端 / 审计 / 日志） | run `43379837914`（head `4c1a1aa`）；主包 11,458,156 B `7ce6f3f7…9e75`；新二进制 18,515,216 B `18299b5f…4e46`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 均 200；终端真连通过、审计过滤/翻页/游标 400 通过、日志与 9 页抽查无回退 |
 | 2026-11-13 09:52 | **就地升级**（复验插件标签与插件功能页占位） | run `43346854352`（head `281dc9d`）；主包 11,646,514 B `7c7e0808…f12b`；新二进制 18,486,544 B `fbe640f2…472d`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；两项复验通过，抽检 4 页无回退 |
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
 
@@ -205,6 +213,17 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 14:46–16:05 终端 / 审计 / 日志验收（`4c1a1aa`）**
+
+前置：就地升级到 `4c1a1aa`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件、`/healthz` 200；Chromium 1440×900 从开发机访问。
+
+- **容器终端（真连通过）**：建短命容器 `skiff-accept-term`（`alpine sleep 600`）→ 详情页「打开终端」以 `target=_blank` 新开 `/{p}/containers/{id}/terminal` → xterm 渲染并显示「已连接」→ 键入 `printf 'UITAB:%s\n' $((6*7))` 回显 **`UITAB:42`**；点「重新连接（重新取票）」后重新「已连接」，`echo RECONNECT-OK` 正常回显；WS 直连另测 `echo hi` / `echo again` 均成功；**已用票据重放被拒**（握手失败，票据单次消费生效）；审计里 `docker.containers.exec` / target `skiff-accept-term` 的 `start` 与 `end` 成对出现。容器停止后终端显示「连接已关闭」属预期。
+- **审计页**：`/ui/v1/audit?limit=5` 共 5 条且 `has_more=true`；带 `next_cursor` 取第二页 5 条，与第一页 **0 重叠**且时间更早；换关键字 `q=docker` 复用旧游标 → **400**；`q=exec` 过滤 10 条全部命中；页面 iframe 0、无控制台错误。
+- **日志页**：容器日志页尾部显示 `skiff-log-line-2026`（共 1 行，取尾部 500 行），iframe 0、无控制台错误；运行环境页无实例时为空态「暂无数据」，iframe 0、无控制台错误。
+- **全站抽查**：概览、网站、容器、插件、设置、文件管理、审计、任务、作业 9 页均 200，iframe 均 0，控制台错误 0（`/favicon.ico` 404 为全站既有）。
+- 观察：未登录直接请求 `/{p}/settings` 返回 **404**（`/{p}/files` 返回 303 登录跳转），壳页回落的未认证分支对部分路径不一致；不影响已登录使用。
+- 截图与报告：`skiff-run/budding-acceptance/shots-remote-round4/`（`r4-01…r4-14` + `round4b-report.json`、`round4c-report.json`、`terminal-report.json`、`terminal-ui-report.json`、`terminal-entry-report.json`）。
 
 **2026-11-13 09:52–10:00 复验 `281dc9d`（上轮两项不通过）**
 
