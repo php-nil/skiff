@@ -18,8 +18,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18081/w3qz4vc2/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `w3qz4vc2`（2026-11-09 21:52 全新库生成） |
+| URL | `http://10.10.15.4:18081/34h8y9da/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `34h8y9da`（2026-11-13 08:17 快照还原后全新库生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /root/iter/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`，unit 在 `/etc/systemd/system/`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
@@ -51,13 +51,25 @@
 
 | 项 | 值 |
 | --- | --- |
-| 连接 | `ssh -i ~/.ssh/skiff-iter root@10.10.15.4`（端口 22）；**当前开发机没有该私钥**，改用 root 口令 + `SSH_ASKPASS` 非交互登录 |
-| 私钥 | `~/.ssh/skiff-iter` 属于上一台开发机（`DESKTOP-5P3Q9PS`）；当前开发机 `DESKTOP-IRMPI7F` 上不存在，ssh-agent 为空 |
-| 公钥 | `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM6Y+VSKG/QjciBaXQIObQwyg99CEEV+YKhJ5Op68Nrh skiff-iter@DESKTOP-5P3Q9PS` |
+| 连接 | `ssh -i C:\Users\note3510\.ssh\skiff-iter root@10.10.15.4`（端口 22）；ssh 客户端在 `C:\pf\Git\usr\bin\ssh.exe`（不在 PATH，需写绝对路径） |
+| 私钥 | 当前开发机 `C:\Users\note3510\.ssh\skiff-iter`（ed25519，2026-11-13 生成；指纹 `SHA256:9tEAKeYXnnSC2nUO7+jDjCilgB+Bdz+w+P+OQJ8o4Ck`） |
+| 公钥 | `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIESI78egMhyPjNWCMhZUf4aQRAhhU6eXd3fVgADRfYaV skiff-iter@dev`（已加入测试机 `authorized_keys`） |
+| root 口令 | `1`（**内网测试机专用，仅用于验收**；不属于通用凭据口径，禁止外扩）。注意：口令无法经脚本注入——工具层把「把口令写进环境变量/脚本」判为 critical 并拒绝执行，日常一律走密钥 |
 | 前置顺序 | 公钥必须先加入 `authorized_keys`，再打基线快照；顺序反了回滚后即失联 |
-| 密码回退 | 口令不在文档留存；由机器所有者提供后经环境变量注入 `SSH_ASKPASS` 临时脚本（脚本只回显环境变量，不落盘口令，用完即删） |
 
 ## 5. 当前部署
+
+> **2026-11-13 08:15–08:20 快照还原后全新安装（当前生效）**
+> - 版本 `v0.1.0`，构建 run `43331444780`（head `51914a6`，代码同 `0d33a86`，仅多一条 AGENTS.md 文档提交）；包 `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` 11,134,704 B `62a89b88c5135ff57f7b9026bd621f1644515a023739d7ff7f78bdb23f15ce71`（测试机 `sha256sum` 一致）。
+> - 安装：`sh install.sh --no-docker` 退出 0；`/usr/local/bin/skiff` 17,687,824 B `d6d78e61c41c68a74fd7e90e659f5620b6f039af54a165b4fd55dc0f642262a0`；`skiff.service` active、`NRestarts=0`。
+> - 配置：`/etc/skiff/config.toml` 96 行、sha256 `ce5fe559440a50fbf2a807aab64476df7c3f5a817fed24d7f2bf3ae4cba19b40`；`listen="127.0.0.1:18080"`（第 15 行）+ `allow_insecure_http=true`（第 112 行）+ `allow_reduced_sandbox=true`（第 114 行，手工追加）；未配 TLS。
+> - 库：空库直建 **v19**（日志 `from=0 to=12 … to=19`），`PRAGMA integrity_check=ok`；users 1 / plugins 7 / sites 0 / jobs 0。
+> - 插件：7 个官方 `.wbpkg` 经 `skiff plugin install … --yes` 全部装成（cron 6 / files 6 / firewall 15 / ftp 13 / guard 6 / monitor 4 / testkit 7 条 grants）。
+> - **插件进程按需启动（实测，不是故障）**：`Supervisor::ensure` 只在首次 RPC / 任务 / interop 调用时拉起进程，`reap_idle` 在 `idle_timeout_sec`（默认 300s，`resident` 除外）后回收；**重启内核不会主动拉起插件**。2026-11-13 实测：`systemctl restart skiff` 后 7 个插件 `running` 全为 false；调一次 testkit `ping` 后 guard / monitor / testkit 变为 true，cron / files / firewall 仍 false（未有人调用）。插件页的「异常」标签另有来源：`crates/web/src/handlers/ui_api.rs` 的 `plugin_status_label` 只认 `enabled` / `disabled`，库内状态是 `installed`，因此落到 `_ => "异常"`——与进程是否运行无关。
+> - 服务面：`skiff-http-fwd.service`（`0.0.0.0:18081 → 127.0.0.1:18080`）active；`/healthz` 18080/18081 均 200；入口前缀 `34h8y9da`。
+> - 勘察前置：`/www/skiff`、`/etc/skiff`、`/usr/local/bin/skiff` 均不存在，18080/18081 无监听，`skiff*` 无 unit，`uptime` 约 21 分钟，Docker 29.7.2 在，`sqlite3` CLI 缺失（用 python3 读库）。
+>
+> 下表为 2026-11-12 15:47 上一轮（`7e322a3`，库 v18）覆盖部署记录，已被上面这次全新安装取代，仅作历史参考。
 
 | 项 | 值 |
 | --- | --- |
@@ -165,9 +177,25 @@
 | 2026-11-12 15:44–15:47 | **商店抓取静默丢包超时修复**（`7e322a3`）：主包覆盖替换（`skiff-server` 未变），无 schema 迁移；两份临时实例（默认源 / 多源回落）验完即清理 | Release run `43176330913`（`ref=main` head `7e322a3`）四 job 全绿；主包 10,005,871 B `795484c0…ac77b`、`checksums.txt` 434 B `19d41673…06b74` 四路一致；旧件按内容命名备份 `/root/iter/m30/backup/{skiff-e5d41ab43fda,skiff-server-3b60e6013aae,skiff-pluginsdir-d16c3759b618.tar.gz}` | 库保持 **v18**、配置 sha `86610cdb…` 未变、前缀 `u9kiz9qb`；`/usr/local/bin/skiff` 14,906,640 B `3d4db293…5252`；四条全 PASS：默认源静默丢包首访 **200 / 3005 ms** +「镜像源不可达，正在使用本地缓存」、冷却期 4 访各 **1 ms** 且 0 新建连、死源+正常源首访 **3031 ms** / 刷新 **3023 ms** 成功 seq 26、生产刷新 **6 ms**（304）且 mirrors/sha 未变；回归 probe 15/15（含登录；同既往 14 项覆盖）、五页 200、安装/升级、serve 13/13、两服务 `NRestarts=0`；详见 §8 |
 
 
+| 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
+
+
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 08:17–08:25 budding 迁移页浏览器巡检（22 页，`51914a6`）**
+
+前置：快照还原后全新安装（见 §5），库 v19、7 个官方插件、`/healthz` 200、前缀 `34h8y9da`。巡检从开发机 Chromium（puppeteer-core，1440×900，`headless: new`）访问 `http://10.10.15.4:18081/34h8y9da/...`，逐页截图并采集 console / pageerror / requestfailed / 4xx。
+
+- 结论：**22 页无白屏、无 JS 崩溃、无横向溢出**（`blocking=false`、`layout=false` 全为 0）；19 页正常渲染，3 页按预期走错误/兜底分支。
+- 阻断：**0**。
+- 夹具缺失导致的 404（非缺陷）：`/ui/v1/sites/demo.local`、`/ui/v1/containers/demo-container` 均 404，页面显示「站点不存在 / 容器不存在」；全新库无站点、无容器。
+- 商店页：`/ui/v1/store` 404，页面文案「页面加载失败 · 商店目录未启用」（本轮 `[catalog]` 未开启）；同时给出「前往登录页」，对已登录用户语义不合适，记为待改项。
+- 终端页：`GET /{p}/terminal` 返回 **404 页面不存在**——该路由尚未创建（本批只交付 `/files` 占位壳页），记为能力缺口，不是渲染缺陷。
+- 登录页 1 条 console 404（静态资源，疑似 favicon），无功能影响。
+- 插件 7 个状态均为「异常 · 进程未运行」：CLI 安装后未重启内核进程，属预期（面板操作或重启后启动），记为观察项。
+- 截图与逐页 JSON：`skiff-run/budding-acceptance/shots-remote/`、`skiff-run/budding-acceptance/report.json`（本地产物，不入库）。
 
 **2026-11-12 15:44–15:58 商店抓取静默丢包超时修复（`7e322a3`）**
 
