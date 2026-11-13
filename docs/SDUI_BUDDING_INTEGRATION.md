@@ -801,6 +801,14 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - `GET /ui/v1/settings/menu` → `{layout, width, max_width, groups[{key,label,items[{key,label,href,hidden,pinned,pinnable,plugin,icon}]}]}`；读对登录用户开放（偏好按账号隔离）。页面用「布局按钮 + 内容宽度表单 + 分组表格」，行内「↑ / ↓ / 显隐 / 固定」，底部「恢复默认」（确认后 `action=reset`）。
 - `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
 
+**运行环境详情（第二十三批）**
+
+- `/runtimes` 列表新增「安装运行环境」表单（类型来自 `GET /ui/v1/runtimes/catalog`，版本可留空）与「镜像参数」表单（`GET|POST /ui/v1/runtimes/images`）。
+- `/runtimes/{id}` 改为真实原生页（原占位与旧版链接删除）：`GET /ui/v1/runtimes/{id}` 一次返回运行环境行、PHP 参数、Node 配置、端口、扩展清单、配置文件列表、当前选中的配置文件内容（`?file=key`）、绑定站点与 `config_mounts_stale`。
+- 写操作：生命周期按钮（start/stop/restart/rebuild/sync/delete）走 `POST /ui/v1/runtimes/{id}/action/{action}`，有绑定站点时前端先确认；`POST .../probe` 只回显实测版本；PHP 参数、Node 配置、端口、配置文件、PECL、克隆、解绑各有独立端点，全部复用 `runtime_cmd` 与既有动作权限。
+- 扩展表行内「安装 / 卸载」调用 `POST /ui/v1/runtimes/{id}/extensions/{key}/{op}`；批量端点 `POST .../extensions/batch` 已登记，当前页面按单项操作。
+- 详情聚合仍是 Admin-only（与旧页 `require_admin` 一致）；viewer 直接请求 403，菜单不可见。
+
 ### 5.15 商店（第八批）
 
 - `GET /{p}/store` 交付 budding 壳页；旧 SSR（目录状态、四类条目、升级包下载、表单确认页）保留在 `GET /{p}/m/core/plugins/store`。

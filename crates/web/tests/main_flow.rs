@@ -9634,6 +9634,129 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
     assert_eq!(images["hidden"], true, "{body}");
 }
 
+/// 运行环境配置/安装/扩展写接口：未认证 401、viewer 403、缺 CSRF 403；
+/// 详情聚合查询复用旧页同一数据源（只验证形状与门禁，真实安装需 Docker）。
+#[tokio::test]
+async fn ui_runtime_writes_require_csrf_and_permission() {
+    let h = harness();
+    h.state
+        .db()
+        .create_runtime(&skiff_store::NewRuntime {
+            id: "php-8.5-test".into(),
+            kind: "php".into(),
+            name: "php-8.5-test".into(),
+            version: "8.5".into(),
+            image: "php:8.5-fpm".into(),
+            image_digest: String::new(),
+            socket_path: None,
+            port: None,
+            is_default: false,
+        })
+        .unwrap();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php-8.5-test", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    let (status, _, body) =
+        get_ui(&h.app, "/ui/v1/runtimes/php-8.5-test", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, _, body) =
+        get_ui(&h.app, "/ui/v1/runtimes/php-8.5-test", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["runtime"]["id"], "php-8.5-test", "{body}");
+    assert_eq!(v["data"]["is_php"], true, "{body}");
+    assert!(v["data"]["config"]["memory_limit"].is_string(), "{body}");
+    assert!(v["data"]["extensions"].is_array(), "{body}");
+    assert!(v["data"]["files"].is_array(), "{body}");
+
+    // 规范详情页交 budding 壳页（旧 SSR 留在 /m/core/sites/env/{id}）。
+    let (status, html) = get_html(&h.app, "/p/runtimes/php-8.5-test", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+
+    let cases = [
+        (
+            "/ui/v1/runtimes",
+            json!({ "kind": "php", "version": "8.5", "name": "new-php" }),
+        ),
+        (
+            "/ui/v1/runtimes/php-8.5-test/action/restart",
+            json!({ "confirm": true }),
+        ),
+        (
+            "/ui/v1/runtimes/php-8.5-test/config",
+            json!({ "memory_limit": "128M" }),
+        ),
+        ("/ui/v1/runtimes/php-8.5-test/node-config", json!({})),
+        (
+            "/ui/v1/runtimes/php-8.5-test/port",
+            json!({ "port": 9000, "confirm": true }),
+        ),
+        ("/ui/v1/runtimes/php-8.5-test/clone", json!({})),
+        (
+            "/ui/v1/runtimes/php-8.5-test/extensions",
+            json!({ "extensions": [] }),
+        ),
+        (
+            "/ui/v1/runtimes/php-8.5-test/extensions/batch",
+            json!({ "op": "install", "keys": ["redis"] }),
+        ),
+        (
+            "/ui/v1/runtimes/php-8.5-test/extensions/redis/install",
+            json!({}),
+        ),
+        (
+            "/ui/v1/runtimes/php-8.5-test/pecl",
+            json!({ "name": "yaml" }),
+        ),
+        (
+            "/ui/v1/runtimes/php-8.5-test/config-file",
+            json!({ "key": "php-ini", "content": ";" }),
+        ),
+        ("/ui/v1/runtimes/php-8.5-test/probe", json!({})),
+        (
+            "/ui/v1/runtimes/php-8.5-test/sites/example.com/unbind",
+            json!({}),
+        ),
+        (
+            "/ui/v1/runtimes/images",
+            json!({ "nginx_image": "", "php_image": "" }),
+        ),
+    ];
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 缺 CSRF: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+    }
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+    }
+
+    // 管理员过门禁：镜像参数写库不依赖 Docker，必须 200。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/runtimes/images",
+        &admin,
+        Some(&csrf),
+        &json!({ "nginx_image": "", "php_image": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。
 #[tokio::test]
 async fn ui_tasks_and_jobs_keep_auth_and_read_only_shapes() {

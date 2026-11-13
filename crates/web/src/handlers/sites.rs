@@ -24,6 +24,8 @@ use crate::util::encode_uri_component;
 mod crud;
 mod logs;
 mod runtime;
+
+pub(crate) use runtime::extension_options;
 mod tls;
 
 pub use crud::{
@@ -391,7 +393,7 @@ fn tls_view(info: skiff_app::sites::SiteTlsInfo) -> SiteTlsView {
 
 pub(crate) use tls::backup_view;
 
-fn map_err(e: SiteError) -> AppError {
+pub(crate) fn map_err(e: SiteError) -> AppError {
     match e.unfield() {
         SiteError::BadRequest(m) => AppError::BadRequest(m),
         SiteError::Conflict(m) => AppError::Conflict(m),

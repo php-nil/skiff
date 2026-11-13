@@ -835,6 +835,18 @@
         skiffSettingsSave: settingsSave,
         skiffMenuWrite: menuWrite,
         skiffDockerWrite: dockerSettingsWrite,
+        skiffRuntimeCreate: runtimeCreate,
+        skiffRuntimeImages: runtimeImagesWrite,
+        skiffRuntimeAction: runtimeAction,
+        skiffRuntimeProbe: runtimeProbe,
+        skiffRuntimeConfig: runtimeConfigWrite,
+        skiffRuntimeNode: runtimeNodeWrite,
+        skiffRuntimePort: runtimePortWrite,
+        skiffRuntimeFile: runtimeFileWrite,
+        skiffRuntimeExt: runtimeExt,
+        skiffRuntimePecl: runtimePecl,
+        skiffRuntimeClone: runtimeClone,
+        skiffRuntimeUnbind: runtimeUnbind,
         skiffPasswordChange: passwordChange,
         skiffTotpSetup: totpSetup,
         skiffTotpEnable: totpEnable,
@@ -1386,7 +1398,7 @@
     };
   }
 
-  function runtimesSchema(data) {    var body = [];
+  function runtimesSchema(data, images, catalog) {    var body = [];
     if (data.next_cursor) {
       body.push(
         noticeCard(
@@ -1417,20 +1429,439 @@
       }
     };
     body.push(table);
-    body.push({
-      type: 'alert',
-      props: {
-        type: 'info',
-        text: '运行日志在实例详情页内原生化查看；安装、配置与扩展仍走旧版运行环境页。'
-      }
+    var kinds = ((catalog && catalog.kinds) || []).map(function (k) {
+      return { title: k.label, value: k.key };
     });
-    body.push({
-      type: 'link',
-      props: { text: '打开旧版运行环境管理（安装 / 配置 / 扩展）', href: prefix + '/m/core/sites/env' }
-    });
+    body.push(
+      writeCard(
+        '安装运行环境',
+        'PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中实时显示。',
+        writeForm(
+          apiBase + '/runtimes',
+          { type: 'skiffRuntimeCreate' },
+          [
+            {
+              type: 'select',
+              props: { name: 'kind', label: '类型', items: kinds }
+            },
+            {
+              type: 'input-text',
+              props: {
+                name: 'version',
+                label: '版本',
+                hint: '留空使用该类型默认版本；PHP 默认 ' +
+                  ((catalog && catalog.default_php_version) || '8.5')
+              }
+            },
+            {
+              type: 'input-text',
+              props: { name: 'name', label: '实例名（可选，默认按类型自动生成）' }
+            }
+          ],
+          '创建并安装'
+        )
+      )
+    );
+    var imagesForm = writeForm(
+      apiBase + '/runtimes/images',
+      { type: 'skiffRuntimeImages' },
+      [
+        {
+          type: 'input-text',
+          props: {
+            name: 'nginx_image',
+            label: 'Web 服务镜像标签',
+            hint: 'OpenResty 基础镜像；留空使用内置默认值'
+          }
+        },
+        {
+          type: 'input-text',
+          props: {
+            name: 'php_image',
+            label: 'PHP 基础镜像标签',
+            hint: '仅影响之后新建或重建的 PHP 实例'
+          }
+        }
+      ],
+      '保存镜像参数'
+    );
+    imagesForm.props.initialValues = {
+      nginx_image: (images && images.nginx_image) || '',
+      php_image: (images && images.php_image) || ''
+    };
+    body.push(writeCard('镜像参数', '镜像前缀与加速源在 Docker 设置中维护。', imagesForm));
     return {
       type: 'page',
-      props: { title: '运行环境 · Skiff', subtitle: '只读列表；安装状态来自实时容器探测' },
+      props: { title: '运行环境 · Skiff', subtitle: '安装、配置与扩展走同一业务入口' },
+      body: body
+    };
+  }
+
+  /// 运行环境按钮：写操作统一走 `skiffRuntime*` 动作。
+  function runtimeBtn(text, actionType, props) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'text', color: 'primary' },
+      onEvent: { click: { actions: [{ type: actionType, props: props }] } }
+    };
+  }
+
+  function runtimeActionBtn(text, op, id, confirmText, color) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'text', color: color || 'primary' },
+      onEvent: {
+        click: {
+          actions: [
+            {
+              type: 'skiffRuntimeAction',
+              props: { id: id, op: op, confirm_text: confirmText || '' }
+            }
+          ]
+        }
+      }
+    };
+  }
+
+  function runtimeDetailSchema(data, runtimeId) {
+    var rt = data.runtime || {};
+    var body = [
+      {
+        type: 'card',
+        props: { title: (rt.kind && rt.kind.label) + ' / ' + rt.name },
+        content: {
+          body: [
+            detailLines('实例', [
+              '版本：' + (rt.version_display || rt.version) + '（' + (rt.image || '') + '）',
+              '状态：' + ((rt.state && rt.state.label) || '') + '；容器：' + (rt.container_state || '—'),
+              '接入：' + (rt.endpoint_full || rt.endpoint_short || '—'),
+              '站点数：' + (rt.site_count || 0)
+            ]),
+            {
+              type: 'flex',
+              props: { gap: 8, wrap: true },
+              content: {
+                body: [
+                  runtimeActionBtn('启动', 'start', runtimeId),
+                  runtimeActionBtn('停止', 'stop', runtimeId, rt.site_count ? '该环境被站点使用，停止会影响全部绑定站点。确认停止？' : ''),
+                  runtimeActionBtn('重启', 'restart', runtimeId, rt.site_count ? '该环境被站点使用，重启会短暂中断全部绑定站点。确认重启？' : ''),
+                  runtimeActionBtn('重建', 'rebuild', runtimeId, '重建会按当前配置重新创建容器，期间服务中断。确认重建？'),
+                  runtimeActionBtn('同步', 'sync', runtimeId),
+                  runtimeActionBtn('删除', 'delete', runtimeId, '删除运行环境不可恢复，绑定站点会受影响。确认删除？', 'danger')
+                ]
+              }
+            },
+            {
+              type: 'flex',
+              props: { gap: 8, wrap: true },
+              content: {
+                body: [
+                  runtimeBtn('实测版本', 'skiffRuntimeProbe', { id: runtimeId }),
+                  {
+                    type: 'link',
+                    props: {
+                      text: '查看运行日志',
+                      href: prefix + '/runtimes/' + encodeURIComponent(runtimeId) + '/logs'
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ];
+
+    if (data.config_mounts_stale) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: '配置目录未挂载',
+          text: '当前容器未挂载 php.ini / conf.d，配置能保存但不生效；请先执行「重建」再编辑配置。'
+        }
+      });
+    }
+
+    if (data.is_php) {
+      var cfg = data.config || {};
+      var configForm = writeForm(
+        apiBase + '/runtimes/' + encodeURIComponent(runtimeId) + '/config',
+        { type: 'skiffRuntimeConfig', props: { id: runtimeId } },
+        [
+          { type: 'input-text', props: { name: 'memory_limit', label: 'memory_limit' } },
+          { type: 'input-text', props: { name: 'upload_max_filesize', label: 'upload_max_filesize' } },
+          { type: 'input-text', props: { name: 'post_max_size', label: 'post_max_size' } },
+          { type: 'input-text', props: { name: 'max_execution_time', label: 'max_execution_time（秒）' } },
+          { type: 'input-text', props: { name: 'pm', label: '进程管理 pm（dynamic/static/ondemand）' } },
+          { type: 'input-text', props: { name: 'max_children', label: 'max_children' } },
+          { type: 'input-text', props: { name: 'start_servers', label: 'start_servers' } },
+          { type: 'input-text', props: { name: 'min_spare_servers', label: 'min_spare_servers' } },
+          { type: 'input-text', props: { name: 'max_spare_servers', label: 'max_spare_servers' } },
+          { type: 'input-text', props: { name: 'max_requests', label: 'max_requests' } }
+        ],
+        '保存并重载 FPM'
+      );
+      configForm.props.initialValues = {
+        memory_limit: cfg.memory_limit || '',
+        upload_max_filesize: cfg.upload_max_filesize || '',
+        post_max_size: cfg.post_max_size || '',
+        max_execution_time: String(cfg.max_execution_time || ''),
+        pm: cfg.pm || '',
+        max_children: String(cfg.max_children || ''),
+        start_servers: String(cfg.start_servers || ''),
+        min_spare_servers: String(cfg.min_spare_servers || ''),
+        max_spare_servers: String(cfg.max_spare_servers || ''),
+        max_requests: String(cfg.max_requests || '')
+      };
+      body.push(writeCard('PHP 运行参数', '保存后自动重载 FPM；非法值会被拒绝并保留原配置。', configForm));
+
+      var fileRows = (data.files || []).map(function (f) {
+        return {
+          key: f.key,
+          label: f.label,
+          state: f.exists ? '已就绪' : '未创建'
+        };
+      });
+      var fileTable = statusTable(
+        [
+          { key: 'label', label: '配置文件' },
+          { key: 'state', label: '状态' }
+        ],
+        fileRows,
+        'key'
+      );
+      fileTable.props = Object.assign({}, fileTable.props, {
+        rowActions: [
+          {
+            type: 'button',
+            props: { text: '编辑', variant: 'text', color: 'primary' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'navigate',
+                    props: {
+                      url:
+                        prefix +
+                        '/runtimes/' +
+                        encodeURIComponent(runtimeId) +
+                        '?file=${key}'
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      });
+      body.push({
+        type: 'card',
+        props: { title: '配置文件' },
+        content: { body: [fileTable] }
+      });
+      if (data.editor) {
+        var editorForm = writeForm(
+          apiBase +
+            '/runtimes/' +
+            encodeURIComponent(runtimeId) +
+            '/config-file',
+          { type: 'skiffRuntimeFile', props: { id: runtimeId, key: data.editor.key } },
+          [
+            {
+              type: 'textarea',
+              props: {
+                name: 'content',
+                label: data.editor.label + '（' + data.editor.container_path + '）',
+                rows: 18
+              }
+            }
+          ],
+          '保存配置文件'
+        );
+        editorForm.props.initialValues = { content: data.editor.content || '' };
+        body.push(writeCard('编辑：' + data.editor.label, data.editor.note || '保存前会在容器内做语法校验。', editorForm));
+      }
+
+      var extRows = (data.extensions || []).map(function (e) {
+        return {
+          key: e.key,
+          label: e.label,
+          category: e.category,
+          source: e.source,
+          state: e.enabled ? '已启用' : '未启用',
+          note: e.support_note || e.description
+        };
+      });
+      var extTable = statusTable(
+        [
+          { key: 'label', label: '扩展' },
+          { key: 'category', label: '分类' },
+          { key: 'source', label: '来源' },
+          { key: 'state', label: '状态' },
+          { key: 'note', label: '说明' }
+        ],
+        extRows,
+        'key'
+      );
+      extTable.props = Object.assign({}, extTable.props, {
+        rowActions: [
+          {
+            type: 'button',
+            props: { text: '安装', variant: 'text', color: 'primary' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'skiffRuntimeExt',
+                    props: { id: runtimeId, key: '${key}', op: 'install' }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            type: 'button',
+            props: { text: '卸载', variant: 'text', color: 'danger' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'skiffRuntimeExt',
+                    props: { id: runtimeId, key: '${key}', op: 'uninstall', confirm_text: '卸载扩展需要重启容器，绑定站点会短暂中断。确认卸载 ${key}？' }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      });
+      body.push({
+        type: 'card',
+        props: { title: 'PHP 扩展' },
+        content: { body: [extTable] }
+      });
+      body.push(
+        writeCard(
+          '按名字安装 PECL 扩展',
+          '用于目录里没有的扩展；安装任务会编译并重启一次容器。',
+          writeForm(
+            apiBase + '/runtimes/' + encodeURIComponent(runtimeId) + '/pecl',
+            { type: 'skiffRuntimePecl', props: { id: runtimeId } },
+            [
+              { type: 'input-text', props: { name: 'name', label: 'PECL 扩展名' } },
+              { type: 'input-text', props: { name: 'version', label: '版本（可选）' } }
+            ],
+            '安装 PECL 扩展'
+          )
+        )
+      );
+    }
+
+    if (data.is_node) {
+      var node = data.node || {};
+      var port = data.port || {};
+      var nodeForm = writeForm(
+        apiBase + '/runtimes/' + encodeURIComponent(runtimeId) + '/node-config',
+        { type: 'skiffRuntimeNode', props: { id: runtimeId } },
+        [
+          { type: 'input-text', props: { name: 'command', label: '启动命令', hint: '如 npm start；留空使用镜像默认' } },
+          { type: 'input-text', props: { name: 'health_path', label: '健康检查路径（如 /healthz）' } },
+          { type: 'input-text', props: { name: 'node_env', label: 'NODE_ENV' } },
+          { type: 'textarea', props: { name: 'env', label: '额外环境变量（每行 KEY=VALUE）', rows: 4 } }
+        ],
+        '保存 Node.js 配置'
+      );
+      nodeForm.props.initialValues = {
+        command: node.command || '',
+        health_path: node.health_path || '',
+        node_env: node.node_env || '',
+        env: node.env || ''
+      };
+      body.push(writeCard('Node.js 配置', '配置变化会触发一次重建；未变化不重启。', nodeForm));
+      if (port.editable) {
+        var portForm = writeForm(
+          apiBase + '/runtimes/' + encodeURIComponent(runtimeId) + '/port',
+          { type: 'skiffRuntimePort', props: { id: runtimeId } },
+          [
+            {
+              type: 'input-text',
+              props: {
+                name: 'port',
+                label: '固定端口' + (port.range ? '（' + port.range + '）' : '')
+              }
+            }
+          ],
+          '保存端口'
+        );
+        portForm.props.initialValues = { port: String(port.value || '') };
+        body.push(
+          writeCard(
+            '端口',
+            (rt.site_count ? '当前有 ' + rt.site_count + ' 个站点绑定，改端口会重写全部站点反代并重建容器。' : '端口由内核分配，修改后会重建容器。'),
+            portForm
+          )
+        );
+      }
+    }
+
+    var siteRows = (data.sites || []).map(function (s) {
+      return { domain: s.domain, site_type: s.site_type, status: s.status };
+    });
+    if (siteRows.length) {
+      var siteTable = statusTable(
+        [
+          { key: 'domain', label: '站点' },
+          { key: 'site_type', label: '类型' },
+          { key: 'status', label: '状态' }
+        ],
+        siteRows,
+        'domain'
+      );
+      siteTable.props = Object.assign({}, siteTable.props, {
+        rowActions: [
+          {
+            type: 'button',
+            props: { text: '解绑', variant: 'text', color: 'danger' },
+            onEvent: {
+              click: {
+                actions: [
+                  {
+                    type: 'skiffRuntimeUnbind',
+                    props: { id: runtimeId, domain: '${domain}' }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      });
+      body.push({
+        type: 'card',
+        props: { title: '绑定站点' },
+        content: { body: [siteTable] }
+      });
+    }
+
+    body.push(
+      writeCard(
+        '克隆',
+        '复制当前配置与新实例；端口由内核重新分配，名称可留空（默认追加 -copy）。',
+        writeForm(
+          apiBase + '/runtimes/' + encodeURIComponent(runtimeId) + '/clone',
+          { type: 'skiffRuntimeClone', props: { id: runtimeId } },
+          [{ type: 'input-text', props: { name: 'name', label: '新实例名（可留空）' } }],
+          '克隆并安装'
+        )
+      )
+    );
+    body.push(noticeCard('安装、扩展与配置文件编辑都在后台任务中执行；失败原因会写审计并显示在日志页。'));
+    return {
+      type: 'page',
+      props: {
+        title: '运行环境详情 · Skiff',
+        subtitle: (rt.kind && rt.kind.label) + ' / ' + rt.name
+      },
       body: body
     };
   }
@@ -2980,6 +3411,194 @@
       .catch(function (error) {
         window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
       });
+  }
+
+  /// 运行环境写操作统一收尾：成功提示、失败展示，均复用 `/ui/v1` 错误信封。
+  function runtimeDone(data, fallback) {
+    window.alert((data && data.message) || fallback || '操作已完成');
+    location.reload();
+  }
+
+  function runtimeFail(error) {
+    window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+  }
+
+  function runtimeNum(raw) {
+    var text = formText(raw).trim();
+    if (!text) return null;
+    var n = parseInt(text, 10);
+    return isNaN(n) ? null : n;
+  }
+
+  function runtimeCreate(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes', {
+      kind: formText(v.kind).trim(),
+      version: formText(v.version).trim(),
+      name: formText(v.name).trim()
+    })
+      .then(function (data) {
+        runtimeDone(data, '安装任务已提交');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeImagesWrite(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes/images', {
+      nginx_image: formText(v.nginx_image).trim(),
+      php_image: formText(v.php_image).trim()
+    })
+      .then(function (data) {
+        runtimeDone(data, '镜像参数已保存');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeAction(args) {
+    if (args.confirm_text && !window.confirm(args.confirm_text)) return Promise.resolve();
+    return submitJson(
+      '/runtimes/' + encodeURIComponent(args.id) + '/action/' + encodeURIComponent(args.op),
+      {}
+    )
+      .then(function (data) {
+        runtimeDone(data, '操作已完成');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeProbe(args) {
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/probe', {})
+      .then(function (data) {
+        window.alert(
+          data.ok ? '实测版本：' + data.version : '探测失败：' + (data.error || '未知错误')
+        );
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeConfigWrite(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/config', {
+      memory_limit: formText(v.memory_limit).trim(),
+      upload_max_filesize: formText(v.upload_max_filesize).trim(),
+      post_max_size: formText(v.post_max_size).trim(),
+      max_execution_time: runtimeNum(v.max_execution_time),
+      pm: formText(v.pm).trim(),
+      max_children: runtimeNum(v.max_children),
+      start_servers: runtimeNum(v.start_servers),
+      min_spare_servers: runtimeNum(v.min_spare_servers),
+      max_spare_servers: runtimeNum(v.max_spare_servers),
+      max_requests: runtimeNum(v.max_requests)
+    })
+      .then(function (data) {
+        runtimeDone(data, 'PHP 配置已保存');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeNodeWrite(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/node-config', {
+      command: formText(v.command).trim(),
+      health_path: formText(v.health_path).trim(),
+      node_env: formText(v.node_env).trim(),
+      env: formText(v.env)
+    })
+      .then(function (data) {
+        runtimeDone(data, 'Node.js 配置已保存');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimePortWrite(args, ctx) {
+    var v = formValues(ctx);
+    var port = runtimeNum(v.port);
+    if (port === null) {
+      window.alert('端口必须是整数');
+      return Promise.resolve();
+    }
+    if (!window.confirm('改端口会重写全部绑定站点反代并重建容器，确认继续？')) {
+      return Promise.resolve();
+    }
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/port', {
+      port: port,
+      confirm: true
+    })
+      .then(function (data) {
+        runtimeDone(data, '端口已保存');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeFileWrite(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/config-file', {
+      key: args.key,
+      content: formText(v.content)
+    })
+      .then(function (data) {
+        runtimeDone(data, '配置文件已保存');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeExt(args) {
+    if (args.confirm_text && !window.confirm(args.confirm_text)) return Promise.resolve();
+    return submitJson(
+      '/runtimes/' +
+        encodeURIComponent(args.id) +
+        '/extensions/' +
+        encodeURIComponent(args.key) +
+        '/' +
+        encodeURIComponent(args.op),
+      {}
+    )
+      .then(function (data) {
+        runtimeDone(data, '扩展任务已提交');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimePecl(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/pecl', {
+      name: formText(v.name).trim(),
+      version: formText(v.version).trim()
+    })
+      .then(function (data) {
+        runtimeDone(data, 'PECL 安装任务已提交');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeClone(args, ctx) {
+    var v = formValues(ctx);
+    return submitJson('/runtimes/' + encodeURIComponent(args.id) + '/clone', {
+      name: formText(v.name).trim()
+    })
+      .then(function (data) {
+        runtimeDone(data, '克隆任务已提交');
+      })
+      .catch(runtimeFail);
+  }
+
+  function runtimeUnbind(args) {
+    if (!window.confirm('解绑后站点会转为静态并停止，确认解绑 ' + args.domain + '？')) {
+      return Promise.resolve();
+    }
+    return submitJson(
+      '/runtimes/' +
+        encodeURIComponent(args.id) +
+        '/sites/' +
+        encodeURIComponent(args.domain) +
+        '/unbind',
+      {}
+    )
+      .then(function (data) {
+        runtimeDone(data, '站点已解绑');
+      })
+      .catch(runtimeFail);
   }
 
   // 面板设置保存：复用旧表单校验/落盘/审计，只把传输层换成 JSON。
@@ -5084,43 +5703,27 @@
       return fetchData('/sites/' + encodeURIComponent(parts[1])).then(siteDetailSchema);
     }
     if (kind === 'runtimes') {
-      return fetchData('/runtimes' + listQuery()).then(runtimesSchema);
+      return Promise.all([
+        fetchData('/runtimes' + listQuery()),
+        fetchRawJson(apiBase + '/runtimes/images'),
+        fetchRawJson(apiBase + '/runtimes/catalog')
+      ]).then(function (res) {
+        return runtimesSchema(
+          res[0],
+          (res[1] && res[1].data) || {},
+          (res[2] && res[2].data) || {}
+        );
+      });
     }
     if (kind === 'runtime-detail') {
-      return Promise.resolve({
-        type: 'page',
-        props: { title: '运行环境详情', subtitle: '运行日志已原生化；配置仍走旧版页面' },
-        body: [
-          {
-            type: 'alert',
-            props: {
-              type: 'info',
-              text: '运行环境详情的聚合查询尚未迁移，配置、安装与扩展仍由旧版页面承载；运行日志可在这里原生化查看。'
-            }
-          },
-          {
-            type: 'flex',
-            props: { gap: 12, wrap: true, align: 'center' },
-            content: {
-              body: [
-                {
-                  type: 'link',
-                  props: {
-                    text: '查看运行日志',
-                    href: prefix + '/runtimes/' + encodeURIComponent(parts[1] || '') + '/logs'
-                  }
-                },
-                {
-                  type: 'link',
-                  props: {
-                    text: '打开旧版运行环境页（配置 / 安装 / 扩展）',
-                    href: prefix + '/m/core/sites/env'
-                  }
-                }
-              ]
-            }
-          }
-        ]
+      var runtimeId = parts[1] || '';
+      var fileKey = new URLSearchParams(location.search).get('file') || '';
+      var detailUrl =
+        '/runtimes/' +
+        encodeURIComponent(runtimeId) +
+        (fileKey ? '?file=' + encodeURIComponent(fileKey) : '');
+      return fetchData(detailUrl).then(function (data) {
+        return runtimeDetailSchema(data || {}, runtimeId);
       });
     }
     if (kind === 'containers') {
@@ -5159,12 +5762,12 @@
       return fetchData('/jobs/' + encodeURIComponent(parts[1])).then(jobDetailSchema);
     }
     if (kind === 'files-trash') {
-      return fetchRawJson(prefix + '/files/api/trash/list').then(function (data) {
+      return fetchRawJson(prefix + '/files/trash/list').then(function (data) {
         return filesTrashSchema(data || {});
       });
     }
     if (kind === 'files-quotas') {
-      return fetchRawJson(prefix + '/files/api/quotas/list').then(function (data) {
+      return fetchRawJson(prefix + '/files/quotas/list').then(function (data) {
         return filesQuotasSchema(data || {});
       });
     }

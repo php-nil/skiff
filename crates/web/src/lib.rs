@@ -273,6 +273,67 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::ui_api::runtime_logs),
         )
         .route(
+            "/ui/v1/runtimes/images",
+            get(handlers::ui_api::runtime_images).post(handlers::ui_api::runtime_images_save),
+        )
+        .route(
+            "/ui/v1/runtimes/catalog",
+            get(handlers::ui_api::runtime_catalog),
+        )
+        .route("/ui/v1/runtimes", post(handlers::ui_api::runtime_create))
+        .route(
+            "/ui/v1/runtimes/{id}",
+            get(handlers::ui_api::runtime_detail),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/action/{action}",
+            post(handlers::ui_api::runtime_action),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/config",
+            post(handlers::ui_api::runtime_config_save),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/node-config",
+            post(handlers::ui_api::runtime_node_config_save),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/port",
+            post(handlers::ui_api::runtime_port_save),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/clone",
+            post(handlers::ui_api::runtime_clone),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/extensions",
+            post(handlers::ui_api::runtime_extensions_save),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/extensions/batch",
+            post(handlers::ui_api::runtime_extensions_batch),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/extensions/{key}/{op}",
+            post(handlers::ui_api::runtime_extension_change),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/pecl",
+            post(handlers::ui_api::runtime_pecl_install),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/config-file",
+            post(handlers::ui_api::runtime_config_file_save),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/probe",
+            post(handlers::ui_api::runtime_probe),
+        )
+        .route(
+            "/ui/v1/runtimes/{id}/sites/{domain}/unbind",
+            post(handlers::ui_api::runtime_unbind_site),
+        )
+        .route(
             "/ui/v1/settings/menu",
             get(handlers::ui_api::settings_menu).post(handlers::ui_api::settings_menu_update),
         )

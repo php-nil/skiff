@@ -62,7 +62,11 @@ fn runtime_kind_views() -> Vec<RuntimeKindView> {
         .collect()
 }
 
-fn extension_options(enabled: &[String], version: &str, image: &str) -> Vec<ExtensionOptionView> {
+pub(crate) fn extension_options(
+    enabled: &[String],
+    version: &str,
+    image: &str,
+) -> Vec<ExtensionOptionView> {
     let base = skiff_app::runtime_catalog::base_image_of(image);
     let mut out: Vec<ExtensionOptionView> =
         skiff_app::runtime_catalog::extensions_for(version, base)
