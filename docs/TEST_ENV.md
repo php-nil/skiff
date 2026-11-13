@@ -59,7 +59,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 09:18 就地升级到 `d06bdab`（当前生效）**
+> **2026-11-13 09:52 就地升级到 `281dc9d`（当前生效）**
+> - 出包：run `43346854352`（`release.yml` dispatch，ref=main、head `281dc9d`，publish=false、skip_plugins=false），两架构 job 全绿；artifact `release-amd64` 主包 **11,646,514 B** `7c7e0808c09aa214e94588f47a8226cf4acc0bc396e585848b6e3270cb99f12b`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
+> - 升级方式：就地覆盖二进制（不重跑 `install.sh`、不改配置）；旧二进制备份 `/root/iter/backup/skiff-bd4d3ed8717fc637818e18711e0595d420de226633809698b57ab7228a4419fd`；库快照 `/root/iter/backup/skiff-dba0a5779a0b24a2bae59d404006e8b037d28befce00d1786a7c9781f7f6e4c6.db`。
+> - 新二进制：`/usr/local/bin/skiff` **18,486,544 B** `fbe640f2c05145aebe72f934335847da9864d4b06101aa2151da2acdf123472d`（`skiff 0.1.0 arch=amd64 os=linux`），`NRestarts=0`。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 09:18 就地升级到 `d06bdab`（已被同日 09:52 升级取代，保留作过程记录）**
 > - 出包：run `43342855257`（`release.yml` dispatch，ref=main、head `d06bdab`，publish=false、skip_plugins=false），两个架构 job 全绿；artifact `release-amd64` 13,579,024 B，内含主包 11,647,063 B `daad92da867d4abc6fa8b8a9184378aa447b3038dfac0e06dfb3164c3cc31df0`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
 > - 升级方式：**就地覆盖二进制**（不重跑 `install.sh`、不改配置）：旧二进制备份 `/root/iter/backup/skiff-d6d78e61c41c68a74fd7e90e659f5620b6f039af54a165b4fd55dc0f642262a0`（17,687,824 B）；库经 sqlite backup API 做一致性快照 `/root/iter/backup/skiff-d893d2e4c9a6ac0db049efed269cbd28aa69e83878c0565a4d1a2d6504882ced.db`。
 > - 新二进制：`/usr/local/bin/skiff` **18,256,296 B** `bd4d3ed8717fc637818e18711e0595d420de226633809698b57ab7228a4419fd`，`skiff 0.1.0 arch=amd64 os=linux`；模板与静态资源内嵌，无额外文件替换。
@@ -191,9 +198,22 @@
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
 
 
+| 2026-11-13 09:52 | **就地升级**（复验插件标签与插件功能页占位） | run `43346854352`（head `281dc9d`）；主包 11,646,514 B `7c7e0808…f12b`；新二进制 18,486,544 B `fbe640f2…472d`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；两项复验通过，抽检 4 页无回退 |
+| 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
+
+
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 09:52–10:00 复验 `281dc9d`（上轮两项不通过）**
+
+- 前置：就地升级到 `281dc9d`（见 §5）；库 v19、前缀 `34h8y9da`；Chromium 1440×900。
+- 通过 1（标签）：`/ui/v1/plugins` 中 guard / monitor 为 `running` → 「已启用 · 运行中」；cron / files / firewall / ftp / testkit 为「已启用 · 未运行」；页面与接口 **0 处「异常」**，卡片不再重复「进程未运行」后缀。
+- 通过 2（插件功能页）：直达 `/{p}/plugins/com.skiff.files/main` 与 `/{p}/plugins/guard/main` 均为原生占位（含「正在切换为原生渲染」），`iframe` 数量 **0**，无控制台错误。
+- 抽检未回退：`/`、`/sites`、`/containers`、`/plugins` 四页正常渲染，iframe 0、控制台 0 错误。
+- 观察：新开浏览器首次访问会请求 `/favicon.ico` 得到 404（全站既有，非本轮引入）。
+- 截图：`skiff-run/budding-acceptance/shots-remote-shell2/`（`re-01…re-06`），汇总 `verify-report.json`。
 
 **2026-11-13 09:18–09:30 admin 外壳 + 插件标签修复验收（22 页 + 外壳专项，`d06bdab`）**
 
