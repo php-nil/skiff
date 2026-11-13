@@ -286,19 +286,6 @@ async fn render_detail(
     handlers::render(page)
 }
 
-/// 新建容器页面（admin / DockerLifecycle）。
-pub async fn new_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    state
-        .cfg
-        .policy
-        .check(&handlers::actor(&user), Verb::ContainerCreate, None)
-        .map_err(|e| AppError::Forbidden(e.to_string()))?;
-    render_new(&state, &user, ContainerFormView::default(), String::new()).await
-}
-
 /// 新建容器页（admin / DockerLifecycle）：交付 budding 原生表单，权限门禁仍在这里。
 pub async fn new_shell(
     State(state): State<Arc<AppState>>,

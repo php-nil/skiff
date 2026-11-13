@@ -818,13 +818,13 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 ### 5.15 商店（第八批）
 
-- `GET /{p}/store` 交付 budding 壳页；旧 SSR（目录状态、四类条目、升级包下载、表单确认页）保留在 `GET /{p}/m/core/plugins/store`。
+- `GET /{p}/store` 交付 budding 壳页；旧 SSR（目录状态、四类条目、升级包下载、表单确认页）保留在 `GET /{p}/m/core/plugins/store`，仅作无 JS 兜底，产品页面不再链接它。
 - `GET /ui/v1/store?refresh=1` 与旧页面共用 `store::load_view`：同一目录快照、同一可安装版本判定与升级提示。
 - 安装分两步，均复用旧链路与审计：
   1. `POST /ui/v1/store/plugins/{id}/install` → 调用 `store::prepare`（下载、摘要/大小、验签、版本与降级校验），返回权限确认数据；审计动作与旧表单一致（`store.install`）。
   2. `POST /ui/v1/plugins/confirm` → 调用 `plugins::verify_for_confirm` + `commit_install`（同一信任判定、授权落库、暂存包清理），与旧确认页同一条收尾路径。
 - 进度：下载验签是单次同步请求，前端只给「正在下载并验签」占位提示，不引入 SSE/轮询。
-- 升级包下载不在本批迁移：仍走旧页 `GET /{p}/store/upgrades/{version}/download`（GET 带副作用，不适合 JSON 动作）。
+- 升级包下载（第二十五批）：`POST /ui/v1/store/upgrades/{version}/download`（Admin + `x-csrf-token`）与旧表单 GET 共用 `store::apply_upgrade_download`——同一目录启用/公钥判定、同一暂存与 sha256 校验、同一 `upgrade.download` 审计；成功返回 `{version,arch,channel,source,sha256,size,path,reused}`。商店页在 `upgrade.can_download` 时给出原生下载按钮，不再跳旧页。
 
 **字段表（冻结，只增不改）**
 
@@ -851,6 +851,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 ### 5.16 插件（第九批）
 
 - `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表保留在 `/{p}/m/core/plugins/{installed|discover|updates}`，但不再从新页面链出。
+- 菜单键 `core/plugins/discover`、`core/plugins/updates` 映射为原生路由 `/{p}/plugins/discover`、`/{p}/plugins/updates`，页内以「发现 / 可更新」标签呈现；页内标签链接同路径，旧 `?tab=` 继续兼容（第二十五批）。
 - **插件功能页不再作为新入口**：菜单与路由不下发 `plugin/*` 项；`/{p}/plugins/{id}/{view}` 任何直接导航都渲染统一占位（「插件功能页正在切换为原生渲染」），不复用旧 iframe 页。旧 SSR 工作台仅在显式 `?legacy=1` 时返回以兼容嵌入请求，不承载新产品入口（§4.4、backlog T7）。
 - 插件详情页把声明的功能页以纯文本列出（不生成链接），并说明功能将以 Schema 形式交付后原生渲染。
 - 启停 / 卸载分别复用 `plugins::apply_toggle`、`plugins::apply_remove`（停进程、审计、任务回收、菜单偏好清理语义不变）。

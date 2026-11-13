@@ -686,8 +686,10 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
 
 ### 13.2 手动下载与校验
 
-- 入口：`GET /{prefix}/store/upgrades/{version}/download`，仅 `Admin`；与商店安装一致是
-  只读跳转式 GET，不引入新表单或 CSRF 面。
+- 入口：旧表单 `GET /{prefix}/store/upgrades/{version}/download` 继续保留（无 JS 兜底）；
+  budding 商店页走 `POST /ui/v1/store/upgrades/{version}/download`（仅 `Admin`，写路径先过
+  `x-csrf-token`）。两条入口共用 `store::apply_upgrade_download` 的目录启用/公钥判定、
+  暂存、sha256 校验与 `upgrade.download` 审计，不另起一套业务。
 - 版本与摘要只取自已验证索引：条目必须同时具备 `pkg_sha256` / `pkg_url` / `size`，且
   `pkg_url == blobs/sha256/<sha>`；缺任一或 URL 与摘要不一致按 `digest` 拒绝。
 - 落盘 `<data_dir>/upgrade/incoming/skiff-<version>-<arch>.tar.gz`：先写 `.part`，

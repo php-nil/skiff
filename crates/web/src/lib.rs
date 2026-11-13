@@ -384,6 +384,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::ui_api::store_install),
         )
         .route(
+            "/ui/v1/store/upgrades/{version}/download",
+            post(handlers::ui_api::store_upgrade_download),
+        )
+        .route(
             "/ui/v1/plugins/confirm",
             post(handlers::ui_api::plugin_confirm),
         )

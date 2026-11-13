@@ -565,6 +565,8 @@
     'core/docker/volumes': { path: '/volumes', schema: 'skiff:volumes' },
     'core/docker/compose': { path: '/compose', schema: 'skiff:compose' },
     'core/plugins/installed': { path: '/plugins', schema: 'skiff:plugins' },
+    'core/plugins/discover': { path: '/plugins/discover', schema: 'skiff:plugins' },
+    'core/plugins/updates': { path: '/plugins/updates', schema: 'skiff:plugins' },
     'core/plugins/store': { path: '/store', schema: 'skiff:store' },
     'core/tasks': { path: '/tasks', schema: 'skiff:tasks' },
     'core/jobs': { path: '/jobs', schema: 'skiff:jobs' },
@@ -871,6 +873,7 @@
         },
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
+        skiffUpgradeDownload: storeUpgradeDownload,
         skiffPluginToggle: pluginToggle,
         skiffPluginDelete: pluginDelete,
         skiffLogout: function () {
@@ -5455,8 +5458,10 @@
     };
   }
 
-  function pluginsSchema(data) {
-    var tab = new URLSearchParams(location.search).get('tab') || 'installed';
+  function pluginsSchema(data, tab) {
+    // 菜单深链 `/plugins/discover|updates` 与页内标签都以路径表达；
+    // 旧 `?tab=` 保留兼容（书签与既有链接）。
+    tab = tab || new URLSearchParams(location.search).get('tab') || 'installed';
     var body = [];
     body.push({
       type: 'flex',
@@ -5464,8 +5469,8 @@
       content: {
         body: [
           { type: 'link', props: { text: '已安装 (' + data.plugins.length + ')', href: prefix + '/plugins' } },
-          { type: 'link', props: { text: '发现', href: prefix + '/plugins?tab=discover' } },
-          { type: 'link', props: { text: '可更新', href: prefix + '/plugins?tab=updates' } }
+          { type: 'link', props: { text: '发现', href: prefix + '/plugins/discover' } },
+          { type: 'link', props: { text: '可更新', href: prefix + '/plugins/updates' } }
         ]
       }
     });
@@ -5747,18 +5752,61 @@
     if (upgrade.changelog_url) upgradeLines.push('更新说明：' + upgrade.changelog_url);
     if (upgrade.note) upgradeLines.push(upgrade.note);
     body.push(detailLines('内核升级通道', upgradeLines));
-    body.push({
-      type: 'link',
-      props: {
-        text: '打开旧版商店（升级包下载 / 表单确认页）',
-        href: prefix + '/m/core/plugins/store'
-      }
-    });
+    if (upgrade.can_download && upgrade.available) {
+      body.push({
+        type: 'button',
+        props: { text: '下载升级包 ' + upgrade.available, variant: 'tonal' },
+        onEvent: {
+          click: {
+            actions: [
+              { type: 'skiffUpgradeDownload', props: { version: upgrade.available } }
+            ]
+          }
+        }
+      });
+    }
     return {
       type: 'page',
       props: { title: '商店 · Skiff', subtitle: '目录快照与插件安装' },
       body: body
     };
+  }
+
+  /// 升级包下载：复用 `/ui/v1/store/upgrades/{version}/download`，
+  /// 不跳旧商店；校验、暂存与 `upgrade.download` 审计由内核同一入口完成。
+  function storeUpgradeDownload(args) {
+    var version = (args && args.version) || '';
+    if (!version) {
+      window.alert('目录中没有可下载的升级版本。');
+      return Promise.resolve();
+    }
+    window.alert('正在下载并校验 ' + version + ' 升级包，请稍候…');
+    return fetch(apiBase + '/store/upgrades/' + encodeURIComponent(version) + '/download', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      }
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200 || !res.body || !res.body.data) {
+          window.alert(errorMessage(res));
+          return;
+        }
+        var data = res.body.data;
+        window.alert(
+          '升级包 ' + data.version + ' 已暂存并通过 sha256 校验：' + data.path
+        );
+      })
+      .catch(function (error) {
+        window.alert('升级包下载失败：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
   function storeInstall(args, ctx, runtime) {
@@ -6168,7 +6216,10 @@
       );
     }
     if (kind === 'plugins') {
-      return fetchData('/plugins').then(pluginsSchema);
+      var pluginTab = parts[1] === 'discover' || parts[1] === 'updates' ? parts[1] : '';
+      return fetchData('/plugins').then(function (data) {
+        return pluginsSchema(data, pluginTab);
+      });
     }
     if (kind === 'plugin-info') {
       return fetchData('/plugins/' + encodeURIComponent(parts[1])).then(pluginInfoSchema);

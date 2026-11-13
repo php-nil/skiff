@@ -610,9 +610,9 @@ roles = ["admin", "operator", "viewer"]
 | `/{p}/images` / `images` | `core/docker/images` | `/{p}/m/core/docker/images` | |
 | `/{p}/networks` / `networks` | `core/docker/networks` | `/{p}/m/core/docker/networks` | |
 | `/{p}/volumes` / `volumes` | `core/docker/volumes` | `/{p}/m/core/docker/volumes` | |
-| `/{p}/plugins` / `plugins` | `core/plugins/installed` | `/{p}/m/core/plugins/installed` | 页内 tab 仍可 `?tab=discover/updates` |
-| `/{p}/plugins?tab=discover` | `core/plugins/discover` | `/{p}/m/core/plugins/discover` | L2 直达 |
-| `/{p}/plugins?tab=updates` | `core/plugins/updates` | `/{p}/m/core/plugins/updates` | L2 直达 |
+| `/{p}/plugins` / `plugins` | `core/plugins/installed` | `/{p}/plugins`（旧深链 `/{p}/m/core/plugins/installed` 保留） | 页内 tab 走原生路径 |
+| `/{p}/plugins?tab=discover` | `core/plugins/discover` | `/{p}/plugins/discover`（旧深链 `/{p}/m/core/plugins/discover` 保留） | L2 直达；壳页内呈现「发现」标签，旧 `?tab=discover` 兼容 |
+| `/{p}/plugins?tab=updates` | `core/plugins/updates` | `/{p}/plugins/updates`（旧深链 `/{p}/m/core/plugins/updates` 保留） | L2 直达；壳页内呈现「可更新」标签，旧 `?tab=updates` 兼容 |
 | `/{p}/plugins/{id}` / `plugin:<id>` | `plugin/<id>/<declared-l2>`；旧包 `plugin/<id>/legacy` | 由声明决定 | 不再有统一「应用」 |
 | `/{p}/settings` / `settings` | `core/settings/security` | `/{p}/m/core/settings/security` | |
 | `/{p}/settings/menu`（新增） | `core/settings/menu` | `/{p}/m/core/settings/menu` | 菜单设置 |

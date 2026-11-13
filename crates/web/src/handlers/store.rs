@@ -353,38 +353,43 @@ pub async fn install(
     })
 }
 
-/// 内核升级只读段：手动下载指定版本的升级包到本地暂存并校验 sha256。
+/// 一次升级包下载的结果：成功暂存，或已落审计的业务失败（由调用方决定提示方式）。
+pub(crate) enum UpgradeDownloadOutcome {
+    Staged(skiff_app::commands::upgrade::StagedUpgrade),
+    Failed(String),
+}
+
+/// 升级包下载的共享业务入口：旧表单 GET 与 `/ui/v1` 共用同一权限、审计与校验。
 ///
-/// 不执行升级。所有判定与拒绝落 `upgrade.download` 审计（`reason=<code>`），
-/// 失败回商店页提示；暂存残留由下载命令保证清理。
-pub async fn download_upgrade(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    parts: Parts,
-    Path(version): Path<String>,
-) -> Result<Response, AppError> {
+/// 目录未启用 / 权限不足 / 未配置公钥仍以 `Err` 返回（页面 403/400、JSON 同码）；
+/// 下载阶段失败返回 `Failed`，因为旧页面把它渲染成 flash 提示而不是错误页。
+pub(crate) async fn apply_upgrade_download(
+    state: &Arc<AppState>,
+    user: &CurrentUser,
+    ip: &str,
+    version: &str,
+) -> Result<UpgradeDownloadOutcome, AppError> {
     if !state.cfg.catalog.enabled {
         return Err(AppError::NotFound("商店目录未启用".into()));
     }
-    let ip = handlers::client_ip(&state, &parts);
-    if let Err(e) = handlers::require_permission(&user, Permission::Admin) {
-        audit_upgrade(&state, &user, &ip, &version, "deny", "reason=permission");
+    if let Err(e) = handlers::require_permission(user, Permission::Admin) {
+        audit_upgrade(state, user, ip, version, "deny", "reason=permission");
         return Err(e);
     }
     if state.cfg.catalog.public_key_hex().is_none() {
-        audit_upgrade(&state, &user, &ip, &version, "deny", "reason=no_key");
+        audit_upgrade(state, user, ip, version, "deny", "reason=no_key");
         return Err(AppError::BadRequest(
             "未配置固定 Ed25519 公钥，不提供升级下载".into(),
         ));
     }
 
     let req = skiff_app::commands::upgrade::UpgradeDownloadRequest {
-        version: Some(version.clone()),
+        version: Some(version.to_string()),
         arch: skiff_app::commands::upgrade::host_arch().to_string(),
         current: skiff_app::commands::upgrade::KERNEL_VERSION.to_string(),
         data_dir: state.cfg.data_dir.clone(),
     };
-    let worker = Arc::clone(&state);
+    let worker = Arc::clone(state);
     let result = handlers::blocking_fs(move || {
         skiff_app::commands::upgrade::download(worker.catalog(), &req)
     })
@@ -393,9 +398,9 @@ pub async fn download_upgrade(
     match result {
         Ok(staged) => {
             audit_upgrade(
-                &state,
-                &user,
-                &ip,
+                state,
+                user,
+                ip,
                 &staged.version,
                 "ok",
                 &format!(
@@ -408,35 +413,53 @@ pub async fn download_upgrade(
                     staged.reused
                 ),
             );
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Notice,
-                format!(
-                    "升级包 {} 已暂存并通过 sha256 校验：{}",
-                    staged.version,
-                    staged.path.display()
-                ),
-                format!("/{}/store", state.cfg.entry_prefix),
-            ))
+            Ok(UpgradeDownloadOutcome::Staged(staged))
         }
         Err(e) => {
             audit_upgrade(
-                &state,
-                &user,
-                &ip,
-                &version,
+                state,
+                user,
+                ip,
+                version,
                 "fail",
                 &format!("reason={} {e}", e.reason()),
             );
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Error,
-                e.message(),
-                format!("/{}/store", state.cfg.entry_prefix),
-            ))
+            Ok(UpgradeDownloadOutcome::Failed(e.message()))
         }
+    }
+}
+
+/// 内核升级只读段：手动下载指定版本的升级包到本地暂存并校验 sha256。
+///
+/// 不执行升级。所有判定与拒绝落 `upgrade.download` 审计（`reason=<code>`），
+/// 失败回商店页提示；暂存残留由下载命令保证清理。
+pub async fn download_upgrade(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    Path(version): Path<String>,
+) -> Result<Response, AppError> {
+    let ip = handlers::client_ip(&state, &parts);
+    let outcome = apply_upgrade_download(&state, &user, &ip, &version).await?;
+    match outcome {
+        UpgradeDownloadOutcome::Staged(staged) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            format!(
+                "升级包 {} 已暂存并通过 sha256 校验：{}",
+                staged.version,
+                staged.path.display()
+            ),
+            format!("/{}/store", state.cfg.entry_prefix),
+        )),
+        UpgradeDownloadOutcome::Failed(message) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            message,
+            format!("/{}/store", state.cfg.entry_prefix),
+        )),
     }
 }
 

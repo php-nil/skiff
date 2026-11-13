@@ -4604,6 +4604,46 @@ pub async fn store_install(
     Ok(resp)
 }
 
+/// `POST /ui/v1/store/upgrades/{version}/download`：下载升级包到本地暂存并校验。
+///
+/// 仅管理员，写路径先过 `x-csrf-token`；业务与旧表单入口共用
+/// `store::apply_upgrade_download`（同一公钥校验、暂存、sha256 与 `upgrade.download` 审计）。
+pub async fn store_upgrade_download(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(version): Path<String>,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let ip = handlers::client_ip(&state, &parts);
+    let outcome = handlers::store::apply_upgrade_download(&state, &user, &ip, &version)
+        .await
+        .map_err(ApiError)?;
+    match outcome {
+        handlers::store::UpgradeDownloadOutcome::Staged(staged) => {
+            let mut resp = Json(json!({
+                "data": {
+                    "version": staged.version,
+                    "arch": staged.arch,
+                    "channel": staged.channel,
+                    "source": staged.source,
+                    "sha256": staged.sha256,
+                    "size": staged.size,
+                    "path": staged.path.display().to_string(),
+                    "reused": staged.reused,
+                }
+            }))
+            .into_response();
+            resp.headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            Ok(resp)
+        }
+        handlers::store::UpgradeDownloadOutcome::Failed(message) => {
+            Err(ApiError(AppError::BadRequest(message)))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PluginConfirmBody {
     pub token: String,

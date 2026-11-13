@@ -9327,6 +9327,100 @@ async fn ui_store_keeps_auth_and_frozen_fields() {
     assert!(data["upgrade"]["can_download"].is_boolean());
 }
 
+/// 升级包下载：未认证 401、缺 CSRF 403、viewer 403；管理员在无固定公钥时不假成功。
+#[tokio::test]
+async fn ui_store_upgrade_download_requires_csrf_and_admin() {
+    // 目录未启用时也先按未认证处理，不泄露目录状态。
+    let h = harness();
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/store/upgrades/0.2.0/download",
+        "",
+        None,
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{text}");
+
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    // 缺 CSRF：403，先于权限与下载。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/store/upgrades/0.2.0/download",
+        &admin,
+        None,
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.csrf_invalid");
+
+    // viewer 无 Admin：403 auth.forbidden，不发起下载。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/store/upgrades/0.2.0/download",
+        &viewer,
+        Some(&viewer_csrf),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
+
+    // 管理员但目录未配置固定公钥：400 明确拒绝，不发起下载。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/store/upgrades/0.2.0/download",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("公钥"), "{text}");
+}
+
+/// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
+/// 不得再退回旧 SSR（旧路由与模板按约定保留，只是产品前端不再链接）。
+#[test]
+fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("'core/plugins/discover': { path: '/plugins/discover'"),
+        "发现必须映射到原生插件页"
+    );
+    assert!(
+        js.contains("'core/plugins/updates': { path: '/plugins/updates'"),
+        "可更新必须映射到原生插件页"
+    );
+    assert!(
+        js.contains("text: '发现', href: prefix + '/plugins/discover'"),
+        "页内标签应使用原生路径"
+    );
+    assert!(
+        js.contains("/store/upgrades/' + encodeURIComponent(version) + '/download'"),
+        "升级包下载应走 /ui/v1"
+    );
+    assert!(
+        !js.contains("/m/core/plugins/store"),
+        "商店页不得再链出旧 SSR"
+    );
+}
+
 /// 商店安装与确认：CSRF、PluginManage 权限和确认令牌校验都复用旧链路。
 #[tokio::test]
 async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {
