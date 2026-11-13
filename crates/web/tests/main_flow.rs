@@ -8228,7 +8228,7 @@ async fn ui_plugins_list_and_info_freeze_fields() {
     assert_eq!(data["can_admin"], true);
     assert_eq!(data["plugins"][0]["id"], "com.example.ui");
     assert_eq!(data["plugins"][0]["status"]["code"], "enabled");
-    assert_eq!(data["plugins"][0]["status"]["label"], "已启用");
+    assert_eq!(data["plugins"][0]["status"]["label"], "已启用 · 未运行");
     assert!(data["plugins"][0]["key_id"].is_string());
     assert!(data["plugins"][0]["ui_path"].is_string());
 

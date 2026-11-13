@@ -1920,10 +1920,16 @@ pub struct PluginInfoData {
     pub reduced_allowed: bool,
 }
 
-fn plugin_status_label(status: &str) -> &'static str {
+/// 插件状态标签：库内状态是 `enabled` / `installed` / `disabled`（`installed` 就是已安装），
+/// 展示口径与 SSR 插件页一致（「已启用」「已安装 · 未启用」「运行中」），四态固定：
+/// 启用且运行中、启用但未运行、未启用、异常（未知状态码）。
+fn plugin_status_label(status: &str, enabled: bool, running: bool) -> &'static str {
     match status {
-        "enabled" => "已启用",
-        "disabled" => "已停用",
+        "enabled" | "installed" | "disabled" => match (enabled, running) {
+            (true, true) => "已启用 · 运行中",
+            (true, false) => "已启用 · 未运行",
+            (false, _) => "已安装 · 未启用",
+        },
         _ => "异常",
     }
 }
@@ -1932,7 +1938,7 @@ fn plugin_item(view: crate::templates::PluginView) -> PluginItem {
     PluginItem {
         status: StatusDto {
             code: view.status.clone(),
-            label: plugin_status_label(&view.status).into(),
+            label: plugin_status_label(&view.status, view.enabled, view.running).into(),
         },
         id: view.id,
         name: view.name,
@@ -2612,6 +2618,84 @@ pub async fn session(
     Json(json!({ "data": data }))
 }
 
+/// `GET /ui/v1/menu` 的响应数据：内核菜单树的 JSON 投影（契约 §1.1 的三级归属不变）。
+///
+/// 只做 wire 形状转换，不另造菜单语义：L1/L2 的可见性、顺序、角色与能力门、
+/// 用户隐藏偏好全部由 `skiff_app::menu::build` 决定，与 SSR 导航同源。
+#[derive(Debug, Serialize)]
+pub struct MenuData {
+    pub groups: Vec<MenuGroupData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MenuGroupData {
+    /// 稳定键：固定 L1 id（`overview` / `sites` / ...）。
+    pub key: String,
+    pub label: String,
+    pub icon: String,
+    /// 非空 = 一级直达链接（概览）；纯分组为空串。
+    pub href: String,
+    pub items: Vec<MenuLinkData>,
+    /// 插件支撑型一级的空态（`工具` 无可见提供者时）。
+    pub empty: Option<MenuEmptyData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MenuLinkData {
+    /// 稳定键：`core/...` 或 `plugin/<id>/<l2>`。
+    pub key: String,
+    pub label: String,
+    pub icon: String,
+    /// 规范深链 `/{p}/m/...`；插件页仍由内核 SSR 承载。
+    pub href: String,
+    pub plugin: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MenuEmptyData {
+    pub text: String,
+    pub href: String,
+    pub action: String,
+}
+
+/// `GET /ui/v1/menu`：budding 壳的菜单数据（需登录，401 口径同 `/ui/v1/session`）。
+///
+/// 菜单数据是路由表的来源：前端据 `key` 映射到已迁移的 budding 页面，
+/// 未迁移项保留内核深链 `href`（插件功能页仍走 SSR + iframe）。
+pub async fn menu(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+) -> Json<serde_json::Value> {
+    let page = skiff_app::menu::build(&state, &user, "");
+    let groups = page
+        .groups
+        .into_iter()
+        .map(|group| MenuGroupData {
+            key: group.key,
+            label: group.label,
+            icon: group.icon,
+            href: group.href,
+            items: group
+                .items
+                .into_iter()
+                .map(|item| MenuLinkData {
+                    key: item.key,
+                    label: item.label,
+                    icon: item.icon,
+                    href: item.href,
+                    plugin: item.plugin,
+                })
+                .collect(),
+            empty: group.empty.map(|empty| MenuEmptyData {
+                text: empty.text,
+                href: empty.href,
+                action: empty.action,
+            }),
+        })
+        .collect();
+    Json(json!({ "data": MenuData { groups } }))
+}
+
 /// `POST /ui/v1/session/logout`：撤销当前会话并清 Cookie。
 ///
 /// 写路径 CSRF 与页面写操作同源：令牌放 `x-csrf-token` 头，判定复用
@@ -2638,4 +2722,40 @@ pub async fn logout(
         .unwrap(),
     );
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plugin_status_label;
+
+    #[test]
+    fn plugin_status_label_maps_installed_states_without_abnormal() {
+        // `installed` 是常态，不是异常；按启用 + 运行两维给出四态中的三态。
+        assert_eq!(
+            plugin_status_label("installed", true, true),
+            "已启用 · 运行中"
+        );
+        assert_eq!(
+            plugin_status_label("installed", true, false),
+            "已启用 · 未运行"
+        );
+        assert_eq!(
+            plugin_status_label("installed", false, false),
+            "已安装 · 未启用"
+        );
+        assert_eq!(
+            plugin_status_label("disabled", false, false),
+            "已安装 · 未启用"
+        );
+        assert_eq!(
+            plugin_status_label("enabled", true, false),
+            "已启用 · 未运行"
+        );
+    }
+
+    #[test]
+    fn plugin_status_label_keeps_unknown_status_abnormal() {
+        assert_eq!(plugin_status_label("revoked", true, true), "异常");
+        assert_eq!(plugin_status_label("", false, false), "异常");
+    }
 }
