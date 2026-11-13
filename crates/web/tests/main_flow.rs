@@ -934,7 +934,7 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
         "网站一级保留列表/运行环境；站点级设置入口已移除: {html}"
     );
     assert!(
-        html.contains(r#"href="/p/m/core/docker/settings""#)
+        html.contains(r#"href="/p/settings/docker""#)
             && html.contains(r#"href="/p/m/core/docker/compose""#),
         "Docker 一级必须提供设置与 Compose 入口（镜像加速源/前缀）: {html}"
     );
@@ -950,7 +950,7 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
     assert!(
         html.contains(r#"aria-controls="nav-menu-settings""#)
             && html.contains(r#"href="/p/m/core/settings/security""#)
-            && html.contains(r#"href="/p/m/core/settings/menu""#)
+            && html.contains(r#"href="/p/settings/menu""#)
             && html.contains(r#"href="/p/m/core/settings/audit""#),
         "设置二级必须是安全设置 / 菜单设置 / 审计日志: {html}"
     );
@@ -2735,7 +2735,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/settings/menu")
+                .uri("/p/m/core/settings/menu")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -5408,17 +5408,18 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
         "站点设置页必须已移除，不得借壳页回退: {html}"
     );
 
-    // 新 Docker 设置页：镜像加速源 + 镜像前缀；菜单深链同源。
-    for uri in ["/p/settings/docker", "/p/m/core/docker/settings"] {
-        let (status, html) = get_page(&h.app, uri, &admin).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(
-            html.contains("镜像加速源")
-                && html.contains(r#"name="registry_mirror""#)
-                && html.contains(r#"name="image_prefix""#),
-            "{uri} 必须承载镜像加速源与镜像前缀: {html}"
-        );
-    }
+    // 新 Docker 设置页：规范入口交 budding 壳页，旧菜单深链保留完整表单。
+    let (status, html) = get_html(&h.app, "/p/settings/docker", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    let (status, html) = get_page(&h.app, "/p/m/core/docker/settings", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("镜像加速源")
+            && html.contains(r#"name="registry_mirror""#)
+            && html.contains(r#"name="image_prefix""#),
+        "旧 SSR 深链必须承载镜像加速源与镜像前缀: {html}"
+    );
 
     // 运行环境页接管镜像标签，不再出现加速源/前缀字段。
     let (status, env_html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
@@ -5430,9 +5431,9 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
         "运行环境页必须提供镜像标签保存入口: {env_html}"
     );
 
-    // viewer 打开页面只读，保存仍被拒绝。
+    // viewer 打开旧页只读，保存仍被拒绝。
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/settings/docker", &viewer).await;
+    let (status, html) = get_page(&h.app, "/p/m/core/docker/settings", &viewer).await;
     assert_eq!(status, StatusCode::OK);
     let csrf = csrf_from(&html);
     let resp = h
@@ -9522,6 +9523,115 @@ async fn files_trash_and_quota_writes_require_csrf_and_permission() {
             assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {text}");
         }
     }
+}
+
+/// 设置里的菜单与 Docker 设置：规范页交壳页、读接口按角色返回、写接口 CSRF 先行、
+/// Docker 写仅管理员可用，菜单偏好可写自己的账号。
+#[tokio::test]
+async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    for uri in ["/ui/v1/settings/menu", "/ui/v1/settings/docker"] {
+        let (status, _, body) = get_ui(&h.app, uri, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], "auth.unauthenticated", "{uri}");
+    }
+
+    for token in [&admin, &viewer] {
+        for uri in ["/p/settings/menu", "/p/settings/docker"] {
+            let (status, html) = get_html(&h.app, uri, token).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
+        }
+    }
+
+    // 菜单读对登录用户开放；Docker 读对 viewer 也开放但 can_admin=false。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["groups"].is_array(), "{body}");
+    assert!(v["data"]["layout"].is_string(), "{body}");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/docker", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["can_admin"], false, "{body}");
+
+    // 写接口：缺 CSRF 一律 403，先于权限与业务。
+    for (uri, body) in [
+        (
+            "/ui/v1/settings/menu",
+            json!({ "action": "layout", "layout": "left" }),
+        ),
+        (
+            "/ui/v1/settings/docker",
+            json!({ "registry_mirror": "", "image_prefix": "" }),
+        ),
+    ] {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+    }
+
+    // Docker 写：viewer 即使有 CSRF 也被权限矩阵拒绝。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/docker",
+        &viewer,
+        Some(&viewer_csrf),
+        &json!({ "registry_mirror": "", "image_prefix": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
+
+    // 管理员写：镜像源留空不触达宿主 daemon.json，只落镜像前缀。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/docker",
+        &admin,
+        Some(&csrf),
+        &json!({ "registry_mirror": "", "image_prefix": "mirror.example.com" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    // 菜单偏好：viewer 与管理员各自可写自己的账号；隐藏后读响应立即反映。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/menu",
+        &viewer,
+        Some(&viewer_csrf),
+        &json!({ "action": "layout", "layout": "top" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/menu",
+        &admin,
+        Some(&csrf),
+        &json!({ "action": "hide", "key": "core/docker/images" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&admin), None).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let images = v["data"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["items"].as_array().unwrap())
+        .find(|i| i["key"] == "core/docker/images")
+        .expect("菜单快照必须包含 Docker→镜像");
+    assert_eq!(images["hidden"], true, "{body}");
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。

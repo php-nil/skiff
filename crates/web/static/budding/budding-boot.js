@@ -569,6 +569,8 @@
     'core/jobs': { path: '/jobs', schema: 'skiff:jobs' },
     'core/files': { path: '/files', schema: 'skiff:files' },
     'core/settings/security': { path: '/settings', schema: 'skiff:settings' },
+    'core/settings/menu': { path: '/settings/menu', schema: 'skiff:menu-settings' },
+    'core/docker/settings': { path: '/settings/docker', schema: 'skiff:docker-settings' },
     'core/settings/audit': { path: '/audit', schema: 'skiff:audit' }
   };
 
@@ -731,6 +733,20 @@
       meta: { activeMenu: prefix + '/files' }
     });
     routes.push({
+      path: prefix + '/settings/menu',
+      title: '菜单设置',
+      hidden: true,
+      schema: 'skiff:menu-settings',
+      meta: { activeMenu: prefix + '/settings' }
+    });
+    routes.push({
+      path: prefix + '/settings/docker',
+      title: 'Docker 设置',
+      hidden: true,
+      schema: 'skiff:docker-settings',
+      meta: { activeMenu: prefix + '/settings' }
+    });
+    routes.push({
       path: prefix + '/sites/:domain/logs',
       title: '站点日志',
       hidden: true,
@@ -817,6 +833,8 @@
         skiffComposeAction: composeAction,
         skiffComposeEdit: composeEdit,
         skiffSettingsSave: settingsSave,
+        skiffMenuWrite: menuWrite,
+        skiffDockerWrite: dockerSettingsWrite,
         skiffPasswordChange: passwordChange,
         skiffTotpSetup: totpSetup,
         skiffTotpEnable: totpEnable,
@@ -2734,6 +2752,234 @@
       props: { title: '设置 · Skiff', subtitle: '口令、安全入口与面板偏好' },
       body: body
     };
+  }
+
+  /// 菜单设置行内按钮（rowActions 元素必须是完整节点）。
+  function menuBtn(text, props, active) {
+    return {
+      type: 'button',
+      props: { text: text, variant: active ? 'tonal' : 'text', color: 'primary' },
+      onEvent: { click: { actions: [{ type: 'skiffMenuWrite', props: props }] } }
+    };
+  }
+
+  /// 菜单设置：布局/内容宽度 + 每个菜单项的上移下移、显隐与固定。
+  function menuSettingsSchema(data) {
+    var body = [
+      {
+        type: 'alert',
+        props: {
+          type: 'info',
+          text: '顺序、隐藏与固定只影响当前账号；换账号或换设备不共享。插件升级新增的菜单会自动插到相邻位置。'
+        }
+      },
+      writeCard(
+        '布局',
+        '默认「左右（侧栏）」；只改变呈现方式，菜单结构与顺序不变。',
+        {
+          type: 'flex',
+          props: { gap: 8, wrap: true },
+          content: {
+            body: [
+              menuBtn('上下（顶栏）', { action: 'layout', layout: 'top' }, data.layout === 'top'),
+              menuBtn('左右（侧栏）', { action: 'layout', layout: 'left' }, data.layout === 'left')
+            ]
+          }
+        }
+      )
+    ];
+    var widthForm = writeForm(
+      apiBase + '/settings/menu',
+      { type: 'skiffMenuWrite', props: { action: 'width' } },
+      [
+        {
+          type: 'select',
+          props: {
+            name: 'width',
+            label: '内容宽度',
+            items: [
+              { title: '自适应（铺满）', value: 'auto' },
+              { title: '固定', value: 'fixed' }
+            ]
+          }
+        },
+        {
+          type: 'input-text',
+          props: { name: 'max', label: '固定时最大宽度（px，960–4096）' }
+        }
+      ],
+      '保存内容宽度'
+    );
+    widthForm.props.initialValues = {
+      width: data.width,
+      max: String(data.max_width)
+    };
+    body.push(
+      writeCard(
+        '内容宽度',
+        '默认「自适应」：侧栏之外的可用宽度全部给内容；固定时正文最多展开到设定上限（默认 1440px）。',
+        widthForm
+      )
+    );
+
+    (data.groups || []).forEach(function (group) {
+      var rows = (group.items || []).map(function (item) {
+        var flags = [];
+        if (item.plugin) flags.push('插件');
+        if (item.hidden) flags.push('已隐藏');
+        if (item.pinned) flags.push('已固定');
+        return {
+          key: item.key,
+          label: item.label,
+          state: flags.join(' / ') || '—',
+          toggle_action: item.hidden ? 'show' : 'hide',
+          pin_action: item.pinned ? 'unpin' : 'pin'
+        };
+      });
+      if (rows.length === 0) return;
+      var table = statusTable(
+        [
+          { key: 'label', label: '菜单' },
+          { key: 'state', label: '状态' }
+        ],
+        rows,
+        'key'
+      );
+      table.props = Object.assign({}, table.props, {
+        rowActions: [
+          menuBtn('↑', { action: 'up', key: '${key}' }),
+          menuBtn('↓', { action: 'down', key: '${key}' }),
+          menuBtn('显隐', { action: '${toggle_action}', key: '${key}' }),
+          menuBtn('固定', { action: '${pin_action}', key: '${key}' })
+        ]
+      });
+      body.push({
+        type: 'card',
+        props: { title: group.label },
+        content: { body: [table] }
+      });
+    });
+
+    body.push({
+      type: 'flex',
+      props: { gap: 8, wrap: true },
+      content: {
+        body: [menuBtn('恢复默认', { action: 'reset' }, false)]
+      }
+    });
+    body.push(
+      noticeCard('恢复默认会清除本账号的顺序、隐藏与固定偏好；布局回到管理员默认值。')
+    );
+    return {
+      type: 'page',
+      props: { title: '菜单设置 · Skiff', subtitle: '偏好按账号保存，写操作复用 settings/menu 业务入口' },
+      body: body
+    };
+  }
+
+  /// Docker 设置：镜像加速源与镜像前缀；只有管理员可编辑。
+  function dockerSettingsSchema(data) {
+    var body = [
+      {
+        type: 'alert',
+        props: {
+          type: 'info',
+          text:
+            '镜像加速源写入宿主 /etc/docker/daemon.json 的 registry-mirrors，用于加速所有镜像拉取。写入前会备份原文件；JSON 非法或 Docker 重启失败会回滚；检测到运行中容器时只落盘、不自动重启。'
+        }
+      }
+    ];
+    if (!data.can_admin) {
+      body.push(
+        detailLines('镜像拉取参数', [
+          '镜像加速源：' + (data.registry_mirror || '未设置'),
+          '镜像前缀：' + (data.image_prefix || '未设置'),
+          '只有管理员可以修改 Docker 设置。'
+        ])
+      );
+      return {
+        type: 'page',
+        props: { title: 'Docker 设置 · Skiff', subtitle: '只读；写操作需要管理员权限' },
+        body: body
+      };
+    }
+    var form = writeForm(
+      apiBase + '/settings/docker',
+      { type: 'skiffDockerWrite' },
+      [
+        {
+          type: 'input-text',
+          props: {
+            name: 'registry_mirror',
+            label: '镜像加速地址',
+            hint: 'http:// 或 https:// 开头；多个用逗号或换行分隔'
+          }
+        },
+        {
+          type: 'input-text',
+          props: {
+            name: 'image_prefix',
+            label: '镜像前缀（可选）',
+            hint: '拉取站点运行环境镜像（nginx / PHP）时拼在镜像名前；不填则直接使用原镜像名'
+          }
+        }
+      ],
+      '保存'
+    );
+    form.props.initialValues = {
+      registry_mirror: data.registry_mirror,
+      image_prefix: data.image_prefix
+    };
+    body.push(writeCard('镜像拉取参数', '只写宿主配置，不改动已有容器。', form));
+    return {
+      type: 'page',
+      props: { title: 'Docker 设置 · Skiff', subtitle: '镜像拉取参数' },
+      body: body
+    };
+  }
+
+  /// 菜单偏好写操作：复用 `/ui/v1/settings/menu`（同一校验与审计）。
+  function menuWrite(args, ctx) {
+    var action = args.action || '';
+    if (action === 'reset' && !window.confirm('确认恢复默认菜单偏好？本账号的顺序、隐藏与固定将被清除。')) {
+      return Promise.resolve();
+    }
+    var payload = {
+      action: action,
+      key: args.key || '',
+      layout: args.layout || '',
+      width: args.width || '',
+      max: args.max || ''
+    };
+    if (action === 'width') {
+      var values = formValues(ctx);
+      payload.width = formText(values.width).trim();
+      payload.max = formText(values.max).trim();
+    }
+    return submitJson('/settings/menu', payload)
+      .then(function (data) {
+        window.alert((data && data.message) || '已保存菜单偏好');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  /// Docker 设置写操作：复用 `/ui/v1/settings/docker`（同一落盘与审计）。
+  function dockerSettingsWrite(args, ctx) {
+    var values = formValues(ctx);
+    return submitJson('/settings/docker', {
+      registry_mirror: formText(values.registry_mirror).trim(),
+      image_prefix: formText(values.image_prefix).trim()
+    })
+      .then(function (data) {
+        window.alert((data && data.message) || '已保存');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
   // 面板设置保存：复用旧表单校验/落盘/审计，只把传输层换成 JSON。
@@ -5086,6 +5332,12 @@
     }
     if (kind === 'settings') {
       return fetchData('/settings').then(settingsSchema);
+    }
+    if (kind === 'menu-settings') {
+      return fetchData('/settings/menu').then(menuSettingsSchema);
+    }
+    if (kind === 'docker-settings') {
+      return fetchData('/settings/docker').then(dockerSettingsSchema);
     }
     if (kind === 'audit') {
       var auditParams = new URLSearchParams(location.search);

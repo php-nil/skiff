@@ -791,6 +791,15 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `/ui/v1/settings/totp/enable` | `{code}` | `{backup_codes[], message}`（备份码仅此一次） |
 | `/ui/v1/settings/keys` | `{public_key, label}` | `{key_id, message}`；仅 Admin |
 | `/ui/v1/settings/keys/{id}` | 无 | `{message}`；仅 Admin |
+| `/ui/v1/settings/menu` | `{action, key?, layout?, width?, max?}` | `{message}`；偏好只写当前账号，动作与旧表单同源（`up`/`down`/`hide`/`show`/`pin`/`unpin`/`layout`/`width`/`reset`） |
+| `/ui/v1/settings/docker` | `{registry_mirror, image_prefix}` | `{message}`；仅 Admin，落盘/回滚/审计与旧表单同源 |
+
+**菜单设置与 Docker 设置（第二十二批）**
+
+- `GET /{p}/settings/menu`、`GET /{p}/settings/docker` 交付 budding 壳页；旧 SSR 分别保留在 `GET /{p}/m/core/settings/menu`、`GET /{p}/m/core/docker/settings`（菜单深链，无 JS 兜底）。
+- 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/settings/docker`，不再以 `/m/core/...` 作为产品入口；`/{p}/docker/settings` 的 308 兼容不变。
+- `GET /ui/v1/settings/menu` → `{layout, width, max_width, groups[{key,label,items[{key,label,href,hidden,pinned,pinnable,plugin,icon}]}]}`；读对登录用户开放（偏好按账号隔离）。页面用「布局按钮 + 内容宽度表单 + 分组表格」，行内「↑ / ↓ / 显隐 / 固定」，底部「恢复默认」（确认后 `action=reset`）。
+- `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
 
 ### 5.15 商店（第八批）
 

@@ -340,6 +340,16 @@ pub async fn remove_key(
 }
 
 /// 设置 → 菜单设置（按用户，scope = 当前账号）。
+/// `GET /{p}/settings/menu` 规范入口：交付 budding 壳页。
+///
+/// 旧 SSR 保留在 `GET /{p}/m/core/settings/menu`（菜单深链），供无 JS 兜底。
+pub async fn menu_shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Response, AppError> {
+    Ok(crate::handlers::spa::shell_page(&state))
+}
+
 pub async fn menu_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -354,6 +364,30 @@ pub async fn menu_page(
     })
 }
 
+/// 菜单设置写操作：SSR 表单与 `/ui/v1/settings/menu` 共用的唯一业务入口。
+///
+/// 偏好校验/落盘仍在 `skiff_app::menu::apply_action`，这里只补同一条审计。
+pub(crate) fn apply_menu_update(
+    state: &AppState,
+    user: &CurrentUser,
+    action: &str,
+    key: &str,
+    layout: Option<&str>,
+    width: Option<&str>,
+    max: Option<&str>,
+) -> Result<(), AppError> {
+    menu::apply_action(state, user, action, key, layout, width, max)?;
+    state.audit_or_log(
+        &user.user.username,
+        "local",
+        "settings.menu.update",
+        action,
+        "ok",
+        key,
+    );
+    Ok(())
+}
+
 pub async fn menu_update(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -366,7 +400,7 @@ pub async fn menu_update(
     let layout = form_first(&form, "layout");
     let width = form_first(&form, "width");
     let max = form_first(&form, "max");
-    menu::apply_action(
+    apply_menu_update(
         &state,
         &user,
         &action,
@@ -375,14 +409,6 @@ pub async fn menu_update(
         (!width.is_empty()).then_some(width.as_str()),
         (!max.is_empty()).then_some(max.as_str()),
     )?;
-    state.audit_or_log(
-        &user.user.username,
-        "local",
-        "settings.menu.update",
-        &action,
-        "ok",
-        &key,
-    );
     Ok(handlers::flash_redirect(
         &state,
         &user,

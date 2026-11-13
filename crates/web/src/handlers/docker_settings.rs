@@ -2,6 +2,7 @@
 //!
 //! 原挂在「网站设置」下，但两项都只影响镜像拉取，与站点业务无关，因此迁到 Docker 一级。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -13,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
-use crate::state::AppState;
+use crate::state::{AppState, CurrentUser};
 use crate::templates::DockerSettingsPage;
 use crate::util::{form_first, parse_form};
 
@@ -26,6 +27,16 @@ pub async fn legacy_path(State(state): State<Arc<AppState>>, uri: Uri) -> Respon
         target.push_str(q);
     }
     (StatusCode::PERMANENT_REDIRECT, [(LOCATION, target)]).into_response()
+}
+
+/// `GET /{p}/settings/docker` 规范入口：交付 budding 壳页。
+///
+/// 旧 SSR 保留在 `GET /{p}/m/core/docker/settings`（菜单深链），供无 JS 兜底。
+pub async fn shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Response, AppError> {
+    Ok(crate::handlers::spa::shell_page(&state))
 }
 
 pub async fn page(
@@ -48,25 +59,24 @@ pub async fn page(
     })
 }
 
-pub async fn save(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    handlers::require_permission(&user, skiff_model::Permission::Admin)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let prefix = &state.cfg.entry_prefix;
-
+/// Docker 设置写操作：SSR 表单与 `/ui/v1/settings/docker` 共用的唯一业务入口。
+///
+/// 镜像前缀落库、镜像源写入宿主 `daemon.json`、失败审计与成功审计都在这里，
+/// 调用方只决定「表单跳转」还是「JSON 信封」。
+pub(crate) async fn apply_settings(
+    state: &AppState,
+    user: &CurrentUser,
+    ip: &str,
+    form: &HashMap<String, Vec<String>>,
+) -> Result<String, AppError> {
     if form.contains_key("image_prefix") {
-        let raw = form_first(&form, "image_prefix");
+        let raw = form_first(form, "image_prefix");
         state.save_image_prefix(&raw).map_err(AppError::Internal)?;
     }
 
     let mut notice = "已保存".to_string();
     if form.contains_key("registry_mirror") {
-        let raw = form_first(&form, "registry_mirror");
+        let raw = form_first(form, "registry_mirror");
         let raw = raw.trim();
         let old = state
             .db()
@@ -92,41 +102,57 @@ pub async fn save(
                     }
                 }
                 Err(e) => {
-                    let ip = handlers::client_ip(&state, &parts);
                     state.audit_or_log(
                         &user.user.username,
-                        &ip,
+                        ip,
                         "docker.settings.save",
                         "registry_mirror",
                         "failed",
                         &e,
                     );
-                    return Ok(handlers::flash_redirect(
-                        &state,
-                        &user,
-                        skiff_app::FlashKind::Error,
-                        e,
-                        format!("/{prefix}/settings/docker"),
-                    ));
+                    return Err(AppError::BadRequest(e));
                 }
             }
         }
     }
 
-    let ip = handlers::client_ip(&state, &parts);
     state.audit_or_log(
         &user.user.username,
-        &ip,
+        ip,
         "docker.settings.save",
         "-",
         "ok",
         "",
     );
-    Ok(handlers::flash_redirect(
-        &state,
-        &user,
-        skiff_app::FlashKind::Notice,
-        notice,
-        format!("/{prefix}/settings/docker"),
-    ))
+    Ok(notice)
+}
+
+pub async fn save(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    handlers::require_permission(&user, skiff_model::Permission::Admin)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let prefix = &state.cfg.entry_prefix;
+    let ip = handlers::client_ip(&state, &parts);
+
+    match apply_settings(&state, &user, &ip, &form).await {
+        Ok(notice) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            notice,
+            format!("/{prefix}/settings/docker"),
+        )),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            e.message(),
+            format!("/{prefix}/settings/docker"),
+        )),
+    }
 }

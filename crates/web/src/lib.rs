@@ -273,6 +273,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::ui_api::runtime_logs),
         )
         .route(
+            "/ui/v1/settings/menu",
+            get(handlers::ui_api::settings_menu).post(handlers::ui_api::settings_menu_update),
+        )
+        .route(
+            "/ui/v1/settings/docker",
+            get(handlers::ui_api::settings_docker).post(handlers::ui_api::settings_docker_update),
+        )
+        .route(
             "/ui/v1/settings/panel",
             post(handlers::ui_api::settings_panel_update),
         )
@@ -436,7 +444,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             &format!("/{p}/settings/docker"),
-            get(handlers::docker_settings::page).post(handlers::docker_settings::save),
+            get(handlers::docker_settings::shell).post(handlers::docker_settings::save),
         )
         // 旧位置兼容：Docker 设置属于「设置」资源，规范路径为 `/{p}/settings/docker`。
         .route(
@@ -490,7 +498,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             &format!("/{p}/settings/menu"),
-            get(handlers::settings::menu_page).post(handlers::settings::menu_update),
+            get(handlers::settings::menu_shell).post(handlers::settings::menu_update),
         )
         // 设置页已进入 budding 适配：规范页回落到壳页，旧 SSR（口令 / TOTP / 公钥 /
         // 完整面板表单）保留在 `/{p}/m/core/settings/security`；写操作仍走旧表单。

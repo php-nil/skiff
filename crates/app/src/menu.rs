@@ -1299,7 +1299,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "设置",
                     "settings",
                     50,
-                    href("m/core/docker/settings"),
+                    href("settings/docker"),
                 ),
             ],
         },
@@ -1448,7 +1448,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "菜单设置",
                     "list",
                     20,
-                    href("m/core/settings/menu"),
+                    href("settings/menu"),
                 ),
                 builtin_role(
                     "core/settings/audit",

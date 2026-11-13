@@ -3823,6 +3823,172 @@ pub async fn settings_panel_update(
     Ok(resp)
 }
 
+#[derive(Debug, Serialize)]
+pub struct MenuSettingsItem {
+    pub key: String,
+    pub label: String,
+    pub href: String,
+    pub hidden: bool,
+    pub pinned: bool,
+    pub pinnable: bool,
+    pub plugin: bool,
+    pub icon: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MenuSettingsGroup {
+    pub key: String,
+    pub label: String,
+    pub items: Vec<MenuSettingsItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MenuSettingsData {
+    pub layout: String,
+    pub width: String,
+    pub max_width: u32,
+    pub groups: Vec<MenuSettingsGroup>,
+}
+
+/// `GET /ui/v1/settings/menu`：菜单设置页的只读快照（当前账号偏好）。
+pub async fn settings_menu(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+) -> Result<Response, ApiError> {
+    let groups = crate::menu::settings_view(&state, &user)
+        .into_iter()
+        .map(|g| MenuSettingsGroup {
+            key: g.key,
+            label: g.label,
+            items: g
+                .items
+                .into_iter()
+                .map(|i| MenuSettingsItem {
+                    key: i.key,
+                    label: i.label,
+                    href: i.href,
+                    hidden: i.hidden,
+                    pinned: i.pinned,
+                    pinnable: i.pinnable,
+                    plugin: i.plugin,
+                    icon: i.icon,
+                })
+                .collect(),
+        })
+        .collect();
+    let data = MenuSettingsData {
+        layout: crate::menu::current_layout(&state, &user),
+        width: crate::menu::current_width(&state, &user),
+        max_width: crate::menu::current_max_width(&state, &user),
+        groups,
+    };
+    let mut resp = Json(json!({ "data": data })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MenuUpdateBody {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub layout: String,
+    #[serde(default)]
+    pub width: String,
+    #[serde(default)]
+    pub max: String,
+}
+
+/// `POST /ui/v1/settings/menu`：复用 `settings::apply_menu_update`（同一校验与审计）。
+pub async fn settings_menu_update(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<MenuUpdateBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::settings::apply_menu_update(
+        &state,
+        &user,
+        &body.action,
+        &body.key,
+        (!body.layout.is_empty()).then_some(body.layout.as_str()),
+        (!body.width.is_empty()).then_some(body.width.as_str()),
+        (!body.max.is_empty()).then_some(body.max.as_str()),
+    )
+    .map_err(ApiError)?;
+    let mut resp = Json(json!({ "data": { "message": "已保存菜单偏好" } })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerSettingsData {
+    pub registry_mirror: String,
+    pub image_prefix: String,
+    pub can_admin: bool,
+}
+
+/// `GET /ui/v1/settings/docker`：镜像加速源与镜像前缀快照。
+///
+/// 读取对已登录用户开放（与旧页一致，表单只对管理员可编辑）；写操作仍要求 Admin。
+pub async fn settings_docker(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+) -> Result<Response, ApiError> {
+    let data = DockerSettingsData {
+        registry_mirror: state
+            .db()
+            .get_setting("sites.registry_mirror")
+            .map_err(|e| ApiError(AppError::from(e)))?
+            .unwrap_or_default(),
+        image_prefix: state
+            .db()
+            .get_setting("sites.image_prefix")
+            .map_err(|e| ApiError(AppError::from(e)))?
+            .unwrap_or_default(),
+        can_admin: user.can(skiff_model::Permission::Admin),
+    };
+    let mut resp = Json(json!({ "data": data })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerSettingsBody {
+    #[serde(default)]
+    pub registry_mirror: String,
+    #[serde(default)]
+    pub image_prefix: String,
+}
+
+/// `POST /ui/v1/settings/docker`：复用 `docker_settings::apply_settings`（同一落盘与审计）。
+pub async fn settings_docker_update(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<DockerSettingsBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    handlers::require_permission(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    let mut form: HashMap<String, Vec<String>> = HashMap::new();
+    form.insert("registry_mirror".into(), vec![body.registry_mirror]);
+    form.insert("image_prefix".into(), vec![body.image_prefix]);
+    let ip = handlers::client_ip(&state, &parts);
+    let notice = handlers::docker_settings::apply_settings(&state, &user, &ip, &form)
+        .await
+        .map_err(ApiError)?;
+    let mut resp = Json(json!({ "data": { "message": notice } })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PasswordBody {
     #[serde(default)]
