@@ -8,9 +8,8 @@
  * 失败提示沿用服务端返回的中文（`error.message`）：写入 sessionStorage 后重载同一
  * 登录页，由本脚本读回并渲染，避免把错误文案放进 URL（可被外部构造）。
  *
- * 已知上游能力缺口：budding 1.6.0 的 `input-text` 未暴露 `type`，口令框会渲染成
- * 明文输入。这里在渲染后把口令框的 DOM `type` 改为 `password` 作为临时桥接，
- * 待上游提供 `type` / 口令组件后删除（见 docs/SDUIBUDDING_INTEGRATION.md）。
+ * 口令框直接用 `input-text` 的原生 `type: 'password'` 与 `autocomplete`（budding 1.8.0
+ * 重打包起支持），不再在渲染后改写 DOM，因此首帧即掩码。
  */
 (function () {
   'use strict';
@@ -69,34 +68,6 @@
     window.location.replace(window.location.pathname + window.location.search);
   }
 
-  function passwordInputs() {
-    var found = mount.querySelectorAll(
-      '[data-bud-field="password"] input, input[data-bud-field="password"], ' +
-        '.skiff-password input, input.skiff-password'
-    );
-    return Array.prototype.slice.call(found);
-  }
-
-  // 临时桥接：口令框必须是 password 类型。渲染器可能重建 input，用 MutationObserver 兜底。
-  // TODO(T6)：budding 上游 `input-text` 支持 `type` 后删除本函数与 watchPasswordMask。
-  function maskPassword() {
-    passwordInputs().forEach(function (input) {
-      if (input.type !== 'password') {
-        input.type = 'password';
-        input.setAttribute('autocomplete', 'current-password');
-      }
-    });
-  }
-
-  function watchPasswordMask() {
-    maskPassword();
-    if (typeof MutationObserver !== 'function') return;
-    var observer = new MutationObserver(function () {
-      maskPassword();
-    });
-    observer.observe(mount, { childList: true, subtree: true });
-  }
-
   function loginSchema(config) {
     var body = [];
     if (storedError) {
@@ -122,16 +93,18 @@
           props: {
             name: 'username',
             label: '用户名',
+            autocomplete: 'username',
             required: true,
             rules: { required: true, messages: { required: '请输入用户名' } }
           }
         },
         {
           type: 'input-text',
-          className: 'skiff-password',
           props: {
             name: 'password',
             label: '口令',
+            type: 'password',
+            autocomplete: 'current-password',
             required: true,
             rules: { required: true, messages: { required: '请输入口令' } }
           }
@@ -141,7 +114,8 @@
           props: {
             name: 'otp',
             label: '动态码（启用 TOTP 后必填）',
-            hint: '未启用 TOTP 可留空'
+            hint: '未启用 TOTP 可留空',
+            autocomplete: 'one-time-code'
           }
         }
       ],
@@ -245,13 +219,9 @@
         }
       };
       if (cssHref) options.css = cssHref;
-      window.BuddingSDK.embed(mount, loginSchema(config), options)
-        .then(function () {
-          watchPasswordMask();
-        })
-        .catch(function (error) {
-          showFatal('初始化失败：' + (error && error.message ? error.message : String(error)));
-        });
+      window.BuddingSDK.embed(mount, loginSchema(config), options).catch(function (error) {
+        showFatal('初始化失败：' + (error && error.message ? error.message : String(error)));
+      });
     })
     .catch(function (error) {
       showFatal('无法连接服务：' + (error && error.message ? error.message : String(error)));

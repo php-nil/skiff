@@ -142,7 +142,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - 现有 `.min.` 的 `max-age=86400` 策略已按文件名与查询串区分（`assets.rs`，2026-11-12 落地）：版本化文件名或带非空 `?v=` 的请求返回 `immutable`，稳定别名 `no-cache`，其余维持原值。
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
-- **图标资产随包版本化**：`budding-icons-1.8.0.min.css`（3,533 字节）与 `budding-icons-1.8.0.woff2`（2,456 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0` 时返回 `immutable`。它是 `Budding Icons` 子集（仅组件内部用到的字形），不承担自定义菜单图标；宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+- **图标资产随包版本化**：`budding-icons-1.8.0-r2.min.css`（3,626 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r2.woff2`（2,612 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r2` 时返回 `immutable`。它是 `Budding Icons` 子集（仅组件内部用到的字形），不承担自定义菜单图标；宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
 
@@ -375,7 +375,7 @@ D13 结论：地址栏保持 `/{p}/sites/xxx` 形态，history 路由 + 白名�
 
 - 早期设计稿的 `GET /ui/v1/bootstrap`、`POST /ui/v1/session`、`x-csrf-token` 头与 `auth.csrf_expired` / `auth.cross_site` / `auth.rate_limited` / `auth.totp_*` 细分码**未采用**：当前实现复用既有 `auth.csrf_invalid` / `auth.unauthenticated` / `dependency.unavailable` 与现有中文文案，避免在登录链路上新造第二套错误码。后续如确需机器可判别 TOTP 缺省/错误，再单独提案。
 - 登录成功响应暂不返回 `permissions/acl`（当前 `/{p}/login` 成功后由服务端页面加载，壳页会话接口 `GET /ui/v1/session` 提供角色与 CSRF）；接入第一张真实业务页时再按 §5.3 补 ACL 快照。
-- **上游组件缺口（临时桥接）**：budding 1.6.0 的 `input-text` 未暴露 `type`，口令框默认会是明文输入。`budding-login.js` 在渲染后把口令框 DOM `type` 改为 `password`（并用 MutationObserver 兜底重渲染），待上游提供 `type` 或独立口令组件后删除该桥接；这属于演示层补齐，不涉及认证逻辑。
+- **口令输入（已原生）**：budding 1.8.0 重打包起 `input-text` 透传原生 `type`（含 `password`）；登录页与设置页直接声明 `type: 'password'`，首帧即掩码，不再有渲染后改 DOM 的临时桥接。`autocomplete` 尚未被上游透传（schema 已声明，DOM 属性为空），待补。
 - 旧 askama 登录模板与 `POST /{p}/login` 表单 handler 暂保留：新页通过测试前不删，且它仍是「前端产物加载失败」时唯一可用的兜底提交路径（无 JS 客户端可直达）。
 
 ### 5.2 401 / 403
@@ -730,7 +730,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
   - TOTP 两步：`POST /ui/v1/settings/totp/setup` 生成并暂存密钥（未启用态），`POST /ui/v1/settings/totp/enable` 校验动态码后启用并一次性返回 10 条备份码。错误文案沿用旧页：「动态码不正确，请确认设备时间后重试」。
   - 公钥 `POST /ui/v1/settings/keys`（导入）与 `POST /ui/v1/settings/keys/{id}`（撤销）→ `decode_public_key` + `trust_key` / `remove_trusted_key`，审计事件 `settings.key.import` / `settings.key.remove`，仅 Admin。
 - 强改密期间的中间件放行只服务旧 SSR，不改动；新前端失败一律按 JSON 信封回显，不 PRG。
-- 口令输入框在前端把 `input-text` 的 DOM `type` 改写为 `password`（budding 无密码型输入节点，用 `className: 'skiff-password'` 定位并 `MutationObserver` 保持）。
+- 口令框直接声明原生 `type: 'password'`（`autocomplete`：当前口令 `current-password`，新口令 `new-password`）。
 - `GET /ui/v1/settings` 返回 `panel` / `account` / `keys` / `can_admin` / `flash`；公钥仅对管理员返回，非管理员为空数组。
 
 **字段表（冻结，只增不改）**
@@ -864,7 +864,7 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | G13 | 表单字段错误不自动回填 | 站点/运行环境表单 | 自定义动作写 `ctx.extras.form.errors` | 内置 `error.field` 回填 | 我方适配 |
 | G14 | JSON 无 schema 版本字段 | 契约演进 | 用 `apiVersion` + 路径版本；字段只增不改 | schema 版本字段 | 我方适配 |
 | G15 | 产物无内容 hash | 升级缓存 | 版本化文件名 + `?v=` | 产物 hash 命名 | 我方适配（D11） |
-| G16 | `input-text` 不支持 `type` / `autocomplete` | 登录口令框必须掩码 | 临时桥接：`crates/web/static/budding/budding-login.js` 的 `maskPassword` / `watchPasswordMask` 在渲染后改 DOM `type` 并观察重建 | `input-text` 透传 `type`/`autocomplete`（上游 T6） | 需上游改动；桥接待 T6 落地后删除 |
+| G16 | `input-text` 不支持 `type` / `autocomplete` | 登录口令框必须掩码 | **type 已解决**：1.8.0 重打包起 `input-text` 透传 `type`（含 `password`），登录页与设置页已用原生声明，DOM 桥接与 MutationObserver 全部删除；`autocomplete` 仍被忽略（DOM 属性为空） | `input-text` 透传 `autocomplete` | type 已关闭；autocomplete 待上游 |
 
 ### 6.3 对外需求条目（提交给上游，不由本仓库实现）
 
@@ -1023,3 +1023,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | budding 升级 1.8.0：入库 `budding-1.8.0.min.js`（1,260,779 B）/`.min.css`（657,142 B），删除 1.6.0 双份；官方包自带 `Budding Icons` 子集（CSS 3,533 B + woff2 2,456 B），移除宿主自存的完整 @mdi/font（CSS 323,052 B + woff2 403,216 B），壳页改引 `budding-icons-1.8.0.*`。子集不含自定义菜单图标，侧栏不再声明图标，避免缺字形回退成 `mdi-xxx` 文本。新包含 code-view/highlight、virtual-list、增强上传与 terminal Pack，作为后续剩余页面切换的基础。 |
 | 2026-11-13 | 第十一批设置页补齐（口令 / TOTP / 公钥原生化）：`/ui/v1` 新增 `POST /settings/password`（argon2 校验 + 会话轮换 + 新 CSRF + 删除首启口令文件）、`POST /settings/totp/setup`、`POST /settings/totp/enable`（一次性备份码）、`POST /settings/keys`、`POST /settings/keys/{id}`（仅 Admin，审计 `settings.key.import` / `settings.key.remove`）；`GET /ui/v1/settings` 的 `account` 补 `totp_pending_secret` / `totp_pending_uri`（未启用暂存态）；前端用 `className: 'skiff-password'` + `MutationObserver` 把口令输入框改为 `type=password`。错误文案沿用旧 SSR。设置页不再依赖旧 SSR，旧页仅作无 JS 兜底。 |
 | 2026-11-13 | 第十二批文件管理原生化：`/ui/v1` 新增 `GET /files?path=`（平铺列表 + 父路径 + 根入口 + `upload_chunk_bytes`）、`POST /files/mkdir|rename|remove`（CSRF，删除进回收站）；前端 `virtual-list` 渲染目录、面包屑导航、条目按钮；上传由宿主 `PlatformAdapter.upload` 按 256 KiB 切片复用 `/{p}/files/upload`，并补 `platform.request`（上游仅在提供 `request` 时保留 `upload`）。**不做目录树**，§6.1 F3 按降级口径关闭。终端仍待 WS 契约。补两条 `main_flow` 用例，无头浏览器实测上传与新建目录成功。 |
+| 2026-11-13 | budding 重打包基线 `1.8.0-r2`：上游 manifest 仍为 1.8.0（builtAt 2026-11-13T04:13:45Z）但字节已变（JS 1,261,442 B / CSS 657,324 B，仓内 gzip 398,697 / 78,970；上游 manifest 记 400,024 / 79,966，压缩级别不同），本地用 `-r2` 后缀避免同 URL 命中旧 `immutable` 缓存；图标同步为 `budding-icons-1.8.0-r2.min.css`（3,626 B）+ `.woff2`（2,612 B）。`input-text` 起支持原生 `type`：登录页与设置页改为 `type: 'password'`，删除 `maskPassword` / `watchPasswordMask` / `skiff-password` 与 MutationObserver，首帧即掩码（无头浏览器实测 `type=password`）；`autocomplete` 声明已写入 schema，但当前构建仍未透传到 DOM（输入框 `autocomplete` 属性为空），待上游补字段。G16 的 `type` 部分关闭。 |

@@ -1,7 +1,7 @@
 /* Budding 内建图标子集：由 scripts/build-embed-icons.mjs 生成，勿手改。 */
 @font-face {
   font-family: "Budding Icons";
-  src: url("budding-icons-1.8.0.woff2") format("woff2");
+  src: url("budding-icons-1.8.0-r2.woff2") format("woff2");
   font-weight: normal;
   font-style: normal;
   font-display: block;
@@ -124,6 +124,14 @@
 
 .mdi-dots-horizontal::before {
   content: "\F01D8";
+}
+
+.mdi-eye::before {
+  content: "\F0208";
+}
+
+.mdi-eye-off::before {
+  content: "\F0209";
 }
 
 .mdi-eyedropper::before {

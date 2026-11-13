@@ -20,14 +20,19 @@ const CACHE_NO_CACHE: &str = "no-cache";
 
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
-pub const BUDDING_VERSION: &str = "1.8.0";
+///
+/// 上游 2026-11-13 的重打包未改 semver（manifest 仍是 `1.8.0`，builtAt
+/// 2026-11-13T04:13:45Z），但字节已变（JS 1,261,442 B / CSS 657,324 B）。
+/// 版本化文件名带 `immutable`，同一 URL 换字节会让老缓存继续命中旧包，
+/// 因此本地用 `-r2` 后缀区分重打包基线；上游下次提升 semver 时改回纯版本号。
+pub const BUDDING_VERSION: &str = "1.8.0-r2";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
 ///
-/// 1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体（CSS 3,533 B + woff2 2,456 B），
+/// budding 官方包自带 `Budding Icons` 子集字体（CSS 3,626 B + woff2 2,612 B），
 /// 宿主不再另存完整 @mdi/font；子集只覆盖组件内部用到的图标，壳页不据此声明自定义菜单图标。
 /// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.0";
+pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r2";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

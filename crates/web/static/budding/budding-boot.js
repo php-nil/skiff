@@ -419,13 +419,9 @@
       }
     };
     if (cssHref) options.css = cssHref;
-    window.BuddingSDK.embed(mount, schema, options)
-      .then(function () {
-        watchPasswordMask();
-      })
-      .catch(function (error) {
-        showError('初始化失败：' + (error && error.message ? error.message : String(error)));
-      });
+    window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
+      showError('初始化失败：' + (error && error.message ? error.message : String(error)));
+    });
   }
 
 
@@ -1281,30 +1277,33 @@
       body: [
         {
           type: 'input-text',
-          className: 'skiff-password',
           props: {
             name: 'old_password',
             label: '当前口令',
+            type: 'password',
+            autocomplete: 'current-password',
             required: true,
             rules: { required: true, messages: { required: '请输入当前口令' } }
           }
         },
         {
           type: 'input-text',
-          className: 'skiff-password',
           props: {
             name: 'new_password',
             label: '新口令',
+            type: 'password',
+            autocomplete: 'new-password',
             required: true,
             rules: { required: true, messages: { required: '请输入新口令' } }
           }
         },
         {
           type: 'input-text',
-          className: 'skiff-password',
           props: {
             name: 'confirm_password',
             label: '确认新口令',
+            type: 'password',
+            autocomplete: 'new-password',
             required: true,
             rules: { required: true, messages: { required: '请再次输入新口令' } }
           }
@@ -1866,27 +1865,6 @@
       .catch(function (error) {
         window.alert('删除失败：' + (error && error.message ? error.message : String(error)));
       });
-  }
-
-  // 临时桥接：口令框必须是 password 类型（budding `input-text` 暂不直传 type，见上游 T6）。
-  // TODO(T6)：上游支持 type 后删除本函数与观察器。
-  function maskPasswordInputs() {
-    var found = mount.querySelectorAll('.skiff-password input, input.skiff-password');
-    Array.prototype.forEach.call(found, function (input) {
-      if (input.type !== 'password') {
-        input.type = 'password';
-        input.setAttribute('autocomplete', 'current-password');
-      }
-    });
-  }
-
-  function watchPasswordMask() {
-    maskPasswordInputs();
-    if (typeof MutationObserver !== 'function') return;
-    var observer = new MutationObserver(function () {
-      maskPasswordInputs();
-    });
-    observer.observe(mount, { childList: true, subtree: true });
   }
 
   // 插件中心：列表（已安装 / 发现 / 可更新）与信息页（身份、授权、管理动作）。
