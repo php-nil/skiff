@@ -222,6 +222,13 @@
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
 
+**2026-11-13 18:55–20:10 compose down 断连诊断 + 商店真实安装链路（镜像站恢复）**
+
+- **compose down 断连诊断（只查未改）**：18080 直连 `down` 正常（11 s，200，容器与网络都已删）；18081 经 `skiff-http-fwd` 复现 `curl: (52) Empty reply from server`，约 10.4 s 断开。根因在转发层：`/root/iter/skiff-http-fwd.py` 用 `socket.create_connection(TARGET, timeout=10)`，该 10 s 超时会留在**上游 socket**上，超过 10 s 无数据即 `socket.timeout` → 管道退出 → 客户端收到 EOF；skiff 侧无 panic/错误日志（容器已被 kill，handler 随客户端断连中断，故容器/网络未删）。影响面仅形态三 18081 转发路径上**单请求静默超过 10 s** 的操作（compose down/冷启动、运行环境安装等）；18080 直连不受影响。修复方向（未执行）：转发脚本对上游 `settimeout(None)` 或改用空闲超时。
+- **商店真实链路（临时启用，已恢复）**：本机镜像站 `C:\pf\node\node.exe server.js`（8080）从测试机 `curl` **200**（37 ms）。`gen --unsigned` 产物无法安装（400「未配置固定 Ed25519 公钥」）；`publish` 依赖 `SKIFF_SIGNING_KEY`，受工具安全策略限制未执行。改法：临时 dist 用 `gen --unsigned` 装入发布包内 `com.skiff.ftp-0.1.0.wbpkg`，测试机 `[catalog]` 置 `enabled=true / mirrors=[10.66.52.7:8080] / allow_unsigned=true / public_key=<本次生成的测试公钥>` 并重启。结果：`/ui/v1/store` `total=1`、`seq=2`、`state=fresh`、`can_install=true`；`install` 返回 token、`signed=true`、12 项权限 + 1 项资源；`plugins/confirm` 200 安装成功；标签「已启用 · 未运行」→ 停用「已安装 · 未启用」→ 启用 → 卸载 200 回到 6 个插件。
+- 恢复：`/etc/skiff/config.toml` 用备份还原（`[catalog]` 0 处），服务重启后 `/ui/v1/store` 恢复 404；镜像站换回原签名 dist（`seq=26`）并保持运行；测试用签名私钥与临时目录已删除。
+- 备注：`allow_unsigned=true` 仅限本机明文测试形态；正式发布须 `publish` 签名清单并固定公钥。
+
 **2026-11-13 18:20–19:00 写操作验收（Docker / Compose / 运行环境 / 商店 / 文件 / Web 页，`b7771c3`）**
 
 前置：就地升级到 `b7771c3`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件；Chromium 1440×900。
