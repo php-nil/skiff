@@ -176,8 +176,40 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/session", get(handlers::ui_api::session))
         .route("/ui/v1/menu", get(handlers::ui_api::menu))
         .route("/ui/v1/overview", get(handlers::ui_api::overview))
-        .route("/ui/v1/sites", get(handlers::ui_api::sites))
+        .route(
+            "/ui/v1/sites",
+            get(handlers::ui_api::sites).post(handlers::ui_api::site_create),
+        )
+        .route("/ui/v1/sites/batch", post(handlers::ui_api::site_batch))
         .route("/ui/v1/sites/{domain}", get(handlers::ui_api::site_detail))
+        .route(
+            "/ui/v1/sites/{domain}/default",
+            post(handlers::ui_api::site_set_default),
+        )
+        .route(
+            "/ui/v1/sites/{domain}/domains",
+            post(handlers::ui_api::site_domains),
+        )
+        .route(
+            "/ui/v1/sites/{domain}/config",
+            post(handlers::ui_api::site_save_config),
+        )
+        .route(
+            "/ui/v1/sites/{domain}/ssl",
+            post(handlers::ui_api::site_ssl),
+        )
+        .route(
+            "/ui/v1/sites/{domain}/backup",
+            post(handlers::ui_api::site_backup),
+        )
+        .route(
+            "/ui/v1/sites/{domain}/delete",
+            post(handlers::ui_api::site_delete),
+        )
+        .route(
+            "/ui/v1/sites/{domain}/{action}",
+            post(handlers::ui_api::site_power),
+        )
         .route("/ui/v1/runtimes", get(handlers::ui_api::runtimes))
         .route("/ui/v1/images", get(handlers::ui_api::images))
         .route("/ui/v1/images/pull", post(handlers::ui_api::image_pull))
@@ -474,10 +506,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
         // 列表与详情已迁 budding（壳页回落，旧 SSR 留在 `/{p}/m/core/sites/*`）；
         // 写操作路由本批保持原样，等前端表单覆盖后再逐步切换。
-        .route(
-            &format!("/{p}/sites/new"),
-            get(handlers::sites::new_page_get),
-        )
+        .route(&format!("/{p}/sites/new"), get(handlers::sites::new_shell))
         .route(&format!("/{p}/sites/batch"), post(handlers::sites::batch))
         .route(&format!("/{p}/sites/create"), post(handlers::sites::create))
         .route(

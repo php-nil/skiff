@@ -285,6 +285,83 @@
       });
   }
 
+  /// 站点写操作统一入口：建站、启停、默认、域名、配置、证书、备份、删除、批量。
+  /// 权限、CSRF 与审计全部由 `/ui/v1` 复用既有站点命令。
+  function siteWrite(args, ctx) {
+    var values = formValues(ctx);
+    var op = args.op;
+    var domain = args.domain || '';
+    var path = '';
+    var payload = {};
+    if (op === 'create') {
+      path = '/sites';
+      payload = {
+        site_type: formText(values.site_type),
+        domain: formText(values.domain),
+        root_dir: formText(values.root_dir),
+        runtime_id: formText(values.runtime_id),
+        proxy_target: formText(values.proxy_target),
+        proxy_websocket: !!values.proxy_websocket,
+        aliases: formLines(values.aliases),
+        aliases_bulk: ''
+      };
+    } else if (op === 'power') {
+      path = '/sites/' + encodeURIComponent(domain) + '/' + args.action;
+    } else if (op === 'default') {
+      path = '/sites/' + encodeURIComponent(domain) + '/default';
+      payload = { enabled: !!args.enabled };
+    } else if (op === 'domains') {
+      path = '/sites/' + encodeURIComponent(domain) + '/domains';
+      payload = { action: args.action, alias: args.alias || formText(values.alias) };
+    } else if (op === 'config') {
+      path = '/sites/' + encodeURIComponent(domain) + '/config';
+      payload = { content: formText(values.content) };
+    } else if (op === 'ssl') {
+      if (args.action === 'delete_cert' && !window.confirm('确认删除站点证书？')) {
+        return Promise.resolve();
+      }
+      path = '/sites/' + encodeURIComponent(domain) + '/ssl';
+      payload = {
+        action: args.action,
+        enabled: !!args.enabled,
+        cert_pem: formText(values.cert_pem),
+        key_pem: formText(values.key_pem)
+      };
+    } else if (op === 'backup') {
+      path = '/sites/' + encodeURIComponent(domain) + '/backup';
+      payload = { enabled: !!args.enabled };
+    } else if (op === 'delete') {
+      var typed = window.prompt('删除站点不可恢复。请输入域名 ' + domain + ' 以确认：');
+      if (typed === null) return Promise.resolve();
+      path = '/sites/' + encodeURIComponent(domain) + '/delete';
+      payload = { confirm: typed.trim() };
+    } else if (op === 'batch') {
+      path = '/sites/batch';
+      payload = {
+        action: args.action || formText(values.action),
+        domains: formLines(values.domains)
+      };
+    } else {
+      window.alert('未知的站点操作：' + op);
+      return Promise.resolve();
+    }
+    return submitJson(path, payload)
+      .then(function (data) {
+        if (op === 'create' && data.domain) {
+          location.href = prefix + '/sites/' + encodeURIComponent(data.domain);
+          return;
+        }
+        if (op === 'delete') {
+          location.href = prefix + '/sites';
+          return;
+        }
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
   /// 1.8.0 的图标字体只是组件自用子集，没有完整的菜单图标；这里只映射确有的几个，
@@ -379,6 +456,13 @@
       });
     });
     // 详情页：菜单不出现，但地址栏直达与列表行内跳转都走同一路由。
+    routes.push({
+      path: prefix + '/sites/new',
+      title: '新建站点',
+      hidden: true,
+      schema: 'skiff:site-new',
+      meta: { activeMenu: prefix + '/sites' }
+    });
     routes.push({
       path: prefix + '/sites/:domain',
       title: '站点详情',
@@ -535,6 +619,7 @@
       actions: {
         skiffContainerAction: containerAction,
         skiffDockerWrite: dockerWrite,
+        skiffSiteWrite: siteWrite,
         skiffComposeAction: composeAction,
         skiffSettingsSave: settingsSave,
         skiffPasswordChange: passwordChange,
@@ -685,16 +770,68 @@
       }
     };
     body.push(table);
-    body.push({
-      type: 'link',
-      props: {
-        text: '新建站点（旧版表单，待迁移）',
-        href: prefix + '/m/core/sites/list?new=1'
-      }
-    });
+    if (data.can_admin) {
+      body.push({
+        type: 'flex',
+        props: { gap: 8, wrap: true },
+        content: {
+          body: [
+            {
+              type: 'button',
+              props: { text: '新建站点', color: 'primary' },
+              onEvent: {
+                click: {
+                  actions: [
+                    { type: 'navigate', props: { url: prefix + '/sites/new' } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      });
+      body.push(
+        writeCard(
+          '批量启停',
+          '每行一个域名；批量删除仍走站点详情的删除确认。',
+          writeForm(
+            apiBase + '/sites/batch',
+            { type: 'skiffSiteWrite', props: { op: 'batch' } },
+            [
+              {
+                type: 'select',
+                props: {
+                  name: 'action',
+                  label: '操作',
+                  defaultValue: 'start',
+                  items: [
+                    { title: '启动', value: 'start' },
+                    { title: '停止', value: 'stop' }
+                  ]
+                }
+              },
+              {
+                type: 'textarea',
+                props: {
+                  name: 'domains',
+                  label: '域名（每行一个）',
+                  rows: 3,
+                  required: true,
+                  rules: { required: true, messages: { required: '请填写域名' } }
+                }
+              }
+            ],
+            '执行批量操作'
+          )
+        )
+      );
+    }
     return {
       type: 'page',
-      props: { title: '网站 · Skiff', subtitle: '只读列表；写操作仍走旧版页面' },
+      props: {
+        title: '网站 · Skiff',
+        subtitle: data.can_admin ? '建站、启停、配置与删除均在原生页面完成' : '只读列表；写操作需要管理员权限'
+      },
       body: body
     };
   }
@@ -735,6 +872,36 @@
         };
       }) }
     });
+
+    if (data.can_manage) {
+      var actions = [];
+      if (data.status.code === 'running') {
+        actions.push(siteBtn('停止站点', { op: 'power', action: 'stop', domain: data.domain }, 'warning'));
+      } else {
+        actions.push(siteBtn('启动站点', { op: 'power', action: 'start', domain: data.domain }, 'primary'));
+      }
+      actions.push(
+        siteBtn(
+          data.is_default ? '取消默认站点' : '设为默认站点',
+          { op: 'default', enabled: !data.is_default, domain: data.domain },
+          'secondary'
+        )
+      );
+      actions.push(
+        siteBtn('删除站点', { op: 'delete', domain: data.domain }, 'danger', 'text')
+      );
+      body.push({
+        type: 'card',
+        props: { title: '站点操作' },
+        content: { body: [{ type: 'flex', props: { gap: 8, wrap: true }, content: { body: actions } }] }
+      });
+    } else {
+      body.push({
+        type: 'alert',
+        props: { type: 'info', text: '写操作需要管理员权限；当前为只读视图。' }
+      });
+    }
+
     body.push({
       type: 'flex',
       props: { gap: 12, wrap: true },
@@ -750,45 +917,263 @@
         ]
       }
     });
-    body.push({
-      type: 'card',
-      props: { title: '证书' },
-      content: {
-        body: [
-          textLine(data.ssl.cert_exists ? '已检测到证书文件' : '未检测到证书文件'),
-          textLine('证书路径：' + (data.ssl.cert_path || '—')),
-          textLine('主体：' + (data.ssl.subject || '—')),
-          textLine('签发者：' + (data.ssl.issuer || '—')),
-          textLine('到期：' + (data.ssl.expires || '—')),
-          {
-            type: 'alert',
-            props: {
-              type: 'info',
-              text: '配置、域名、SSL 与目录管理仍走旧版详情页，待写操作批次迁移。'
+
+    // 配置：错误时只展示提示；正常时给可编辑 textarea，保存仍走 SITE_SAVE_CONFIG。
+    if (data.config.error) {
+      body.push({
+        type: 'alert',
+        props: { type: 'warning', title: '配置读取失败', text: data.config.error }
+      });
+    } else if (data.can_manage) {
+      body.push(
+        writeCard(
+          'vhost 配置',
+          (data.config.path || '—') + (data.config.active ? ' · 已启用' : ' · 未启用'),
+          writeForm(
+            apiBase + '/sites/' + encodeURIComponent(data.domain) + '/config',
+            { type: 'skiffSiteWrite', props: { op: 'config', domain: data.domain } },
+            [
+              {
+                type: 'textarea',
+                props: {
+                  name: 'content',
+                  label: '配置内容',
+                  rows: 16,
+                  defaultValue: data.config.content,
+                  required: true,
+                  rules: { required: true, messages: { required: '配置内容不能为空' } }
+                }
+              }
+            ],
+            '保存配置'
+          )
+        )
+      );
+    } else {
+      body.push(
+        writeCard(
+          'vhost 配置',
+          (data.config.path || '—') + '（只读）',
+          { type: 'code-viewer', props: { code: data.config.content, language: 'nginx' } }
+        )
+      );
+    }
+
+    // 域名：列表逐项删除 + 新增表单。
+    var domainBody = [];
+    if (!data.aliases || data.aliases.length === 0) {
+      domainBody.push(textLine('暂无附加域名。'));
+    } else {
+      data.aliases.forEach(function (alias) {
+        var line = [textLine(alias)];
+        if (data.can_manage) {
+          line.push(
+            siteBtn('删除', { op: 'domains', action: 'remove', alias: alias, domain: data.domain }, 'danger', 'text')
+          );
+        }
+        domainBody.push({
+          type: 'flex',
+          props: { gap: 8 },
+          content: { body: line }
+        });
+      });
+    }
+    if (data.can_manage) {
+      domainBody.push(
+        writeForm(
+          apiBase + '/sites/' + encodeURIComponent(data.domain) + '/domains',
+          { type: 'skiffSiteWrite', props: { op: 'domains', action: 'add', domain: data.domain } },
+          [
+            {
+              type: 'input-text',
+              props: {
+                name: 'alias',
+                label: '新增附加域名',
+                required: true,
+                rules: { required: true, messages: { required: '请输入域名' } }
+              }
             }
-          },
-          {
-            type: 'link',
-            props: {
-              text: '打开旧版详情（配置 / 域名 / SSL / 目录）',
-              href:
-                prefix +
-                '/m/core/sites/list/' +
-                encodeURIComponent(data.domain)
-            }
-          }
-        ]
+          ],
+          '添加'
+        )
+      );
+    }
+    body.push({ type: 'card', props: { title: '附加域名' }, content: { body: domainBody } });
+
+    // 证书：生成/强制/关闭/删除 + PEM 上传。
+    var sslBody = [
+      textLine(data.ssl.cert_exists ? '已检测到证书文件' : '未检测到证书文件'),
+      textLine('证书路径：' + (data.ssl.cert_path || '—')),
+      textLine('主体：' + (data.ssl.subject || '—')),
+      textLine('签发者：' + (data.ssl.issuer || '—')),
+      textLine('到期：' + (data.ssl.expires || '—'))
+    ];
+    if (data.can_manage) {
+      sslBody.push({
+        type: 'flex',
+        props: { gap: 8, wrap: true },
+        content: {
+          body: [
+            siteBtn('生成自签证书', { op: 'ssl', action: 'generate', domain: data.domain }, 'primary'),
+            siteBtn(
+              data.ssl.force_https ? '关闭强制 HTTPS' : '开启强制 HTTPS',
+              { op: 'ssl', action: 'force', enabled: !data.ssl.force_https, domain: data.domain },
+              'secondary'
+            ),
+            siteBtn('关闭 HTTPS', { op: 'ssl', action: 'disable', domain: data.domain }, 'warning'),
+            siteBtn(
+              '删除证书',
+              { op: 'ssl', action: 'delete_cert', domain: data.domain },
+              'danger',
+              'text'
+            )
+          ]
+        }
+      });
+      sslBody.push(
+        writeForm(
+          apiBase + '/sites/' + encodeURIComponent(data.domain) + '/ssl',
+          { type: 'skiffSiteWrite', props: { op: 'ssl', action: 'upload', domain: data.domain } },
+          [
+            { type: 'textarea', props: { name: 'cert_pem', label: '证书 PEM', rows: 6 } },
+            { type: 'textarea', props: { name: 'key_pem', label: '私钥 PEM', rows: 6 } }
+          ],
+          '上传证书'
+        )
+      );
+    }
+    body.push({ type: 'card', props: { title: '证书 / HTTPS' }, content: { body: sslBody } });
+
+    // 备份开关。
+    var backupBody = [];
+    if (!data.backup.available) {
+      backupBody.push({
+        type: 'alert',
+        props: { type: 'warning', text: '内核任务服务未初始化，站点备份暂不可用。' }
+      });
+    } else {
+      backupBody.push(textLine(data.backup.enabled ? '备份已开启（每日 03:00）' : '备份未开启'));
+      backupBody.push(textLine('上次：' + (data.backup.last_text || '从未执行')));
+      backupBody.push(textLine('下次：' + (data.backup.next_text || '—')));
+      if (data.can_manage) {
+        backupBody.push(
+          siteBtn(
+            data.backup.enabled ? '关闭备份' : '开启备份',
+            { op: 'backup', enabled: !data.backup.enabled, domain: data.domain },
+            data.backup.enabled ? 'warning' : 'primary'
+          )
+        );
       }
-    });
+    }
+    body.push({ type: 'card', props: { title: '站点备份' }, content: { body: backupBody } });
+
     return {
       type: 'page',
-      props: { title: data.domain + ' · 网站', subtitle: '只读概览' },
+      props: {
+        title: data.domain + ' · 网站',
+        subtitle: data.can_manage ? '写操作复用既有权限、CSRF 与审计' : '只读概览'
+      },
       body: body
     };
   }
 
-  function runtimesSchema(data) {
-    var body = [];
+  function siteBtn(text, props, color, variant) {
+    return {
+      type: 'button',
+      props: { text: text, color: color, variant: variant || 'tonal' },
+      onEvent: {
+        click: {
+          actions: [{ type: 'skiffSiteWrite', props: props }]
+        }
+      }
+    };
+  }
+
+  /// 新建站点（原生化）：类型/域名/目录/运行环境/反代/别名与旧表单同名。
+  function siteNewSchema(runtimes) {
+    var typeQuery = '';
+    try {
+      typeQuery = new URLSearchParams(location.search).get('type') || '';
+    } catch (e) {
+      typeQuery = '';
+    }
+    var items = (runtimes || []).map(function (r) {
+      return {
+        title:
+          r.kind.label + ' ' + (r.version || '') + ' · ' + r.name +
+          (r.state && r.state.code !== 'running' ? '（' + r.state.label + '）' : ''),
+        value: r.id
+      };
+    });
+    return {
+      type: 'page',
+      props: { title: '新建站点 · Skiff', subtitle: '提交后进入站点详情页' },
+      body: [
+        {
+          type: 'alert',
+          props: {
+            type: 'info',
+            text: '运行环境站点需选择已运行的实例；静态站点只需目录；反向代理需填目标地址。别名每行一个。'
+          }
+        },
+        writeForm(
+          apiBase + '/sites',
+          { type: 'skiffSiteWrite', props: { op: 'create' } },
+          [
+            {
+              type: 'select',
+              props: {
+                name: 'site_type',
+                label: '站点类型',
+                defaultValue: typeQuery === 'runtime' || typeQuery === 'proxy' ? typeQuery : 'static',
+                items: [
+                  { title: '运行环境（PHP / Node）', value: 'runtime' },
+                  { title: '静态站点', value: 'static' },
+                  { title: '反向代理', value: 'proxy' }
+                ]
+              }
+            },
+            {
+              type: 'input-text',
+              props: {
+                name: 'domain',
+                label: '域名（必填）',
+                required: true,
+                rules: { required: true, messages: { required: '请输入域名' } }
+              }
+            },
+            {
+              type: 'input-text',
+              props: { name: 'root_dir', label: '站点目录（可留空，由系统生成）' }
+            },
+            {
+              type: 'select',
+              props: {
+                name: 'runtime_id',
+                label: '运行环境（runtime 类型必选）',
+                items: items
+              }
+            },
+            {
+              type: 'input-text',
+              props: { name: 'proxy_target', label: '反代目标（proxy 类型必填，如 http://127.0.0.1:3000）' }
+            },
+            {
+              type: 'checkbox',
+              props: { name: 'proxy_websocket', label: '反代启用 WebSocket' }
+            },
+            {
+              type: 'textarea',
+              props: { name: 'aliases', label: '附加域名（每行一个）', rows: 3 }
+            }
+          ],
+          '创建站点'
+        )
+      ]
+    };
+  }
+
+  function runtimesSchema(data) {    var body = [];
     if (data.next_cursor) {
       body.push(
         noticeCard(
@@ -3903,6 +4288,15 @@
     }
     if (kind === 'sites') {
       return fetchData('/sites' + listQuery()).then(sitesSchema);
+    }
+    if (kind === 'site-new') {
+      return fetchData('/runtimes?limit=200')
+        .then(function (data) {
+          return siteNewSchema(data.items || []);
+        })
+        .catch(function () {
+          return siteNewSchema([]);
+        });
     }
     if (kind === 'site-detail') {
       return fetchData('/sites/' + encodeURIComponent(parts[1])).then(siteDetailSchema);

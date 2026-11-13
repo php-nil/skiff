@@ -27,9 +27,10 @@ mod runtime;
 mod tls;
 
 pub use crud::{
-    action, batch, create, delete, delete_confirm, detail, domains, list, new_page_get,
+    action, batch, create, delete, delete_confirm, detail, domains, list, new_page_get, new_shell,
     save_config, set_default,
 };
+pub(crate) use crud::{collect_aliases, new_form, save_config_notice};
 pub use logs::logs;
 pub use runtime::{
     env_add, env_images_save, env_page, legacy_env_detail, legacy_env_page, runtime_action,
@@ -388,6 +389,8 @@ fn tls_view(info: skiff_app::sites::SiteTlsInfo) -> SiteTlsView {
     }
 }
 
+pub(crate) use tls::backup_view;
+
 fn map_err(e: SiteError) -> AppError {
     match e.unfield() {
         SiteError::BadRequest(m) => AppError::BadRequest(m),
@@ -399,7 +402,7 @@ fn map_err(e: SiteError) -> AppError {
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
     Actor {
         username: user.user.username.clone(),
         ip: handlers::client_ip(state, parts),

@@ -155,7 +155,7 @@ pub(super) fn error_field(field: Option<SiteField>, site_type: &str) -> &'static
     }
 }
 
-fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
+pub(crate) fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
     SiteNewForm {
         site_type: form_first(form, "site_type").trim().to_string(),
         domain: form_first(form, "domain").trim().to_string(),
@@ -181,7 +181,7 @@ fn new_form(form: &HashMap<String, Vec<String>>) -> SiteNewForm {
 
 /// 用户只填目录名；容错剥掉 `/www/sites/` 或宿主机前缀的逻辑在命令层
 /// （`skiff_app::commands::site`），handler 只负责原样提交表单值。
-fn collect_aliases(form: &HashMap<String, Vec<String>>) -> Vec<String> {
+pub(crate) fn collect_aliases(form: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut out = form.get("aliases").cloned().unwrap_or_default();
     if let Some(bulk) = form.get("aliases_bulk") {
         out.extend(bulk.iter().cloned());
@@ -231,6 +231,15 @@ pub async fn new_page_get(
         }
     }
     Ok(handlers::redirect(url))
+}
+
+/// 规范入口 `/{p}/sites/new`：交付 budding 壳页原生表单（`SITE_CREATE` 门禁不变）。
+pub async fn new_shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, AppError> {
+    crate::authz::authorize(&user, act::SITE_CREATE)?;
+    Ok(crate::handlers::spa::shell_page(&state))
 }
 
 pub async fn create(
@@ -656,7 +665,7 @@ async fn render_detail(
 }
 
 /// 保存站点的成功文案：只有真正重载成功才能说「已重载」。
-pub(super) fn save_config_notice(reloaded: bool) -> &'static str {
+pub(crate) fn save_config_notice(reloaded: bool) -> &'static str {
     if reloaded {
         "配置已保存、校验通过并已重载 nginx"
     } else {

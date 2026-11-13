@@ -470,14 +470,14 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 **页面与数据**
 
-- `GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/sites/list[/{domain}]`、`GET /{p}/m/core/sites/env[/{id}]`，写操作仍走旧表单。
+- `GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/sites/new`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/sites/list[/{domain}]`、`GET /{p}/m/core/sites/env[/{id}]`。站点写操作已原生化，运行环境的安装/配置/扩展仍待后续批次。
 - 列表复用 `list_sites` / `list_runtimes` / `runtime_views` 与页面 `site_view` / `runtime_row` 展示模型，**没有新增 SQL**；`q` 关键字过滤与旧列表页同源（域名 / 目录 / 接入方式 / 别名）。
 - `GET /ui/v1/runtimes` 与旧运行环境页同权限：`require_admin`，viewer 返回 403（`auth.forbidden`）。
-- 本批只读：创建/启停/删除/配置/扩展等写操作未迁移，页面用链接指回旧 SSR 落点。
+- 站点写操作：`POST /ui/v1/sites`、`/{domain}/{action}`（start/stop）、`/{domain}/default`、`/{domain}/domains`、`/{domain}/config`、`/{domain}/ssl`、`/{domain}/backup`、`/{domain}/delete`、`/sites/batch`；全部复用 `SITE_*` 动作与 `skiff_app::commands::site`，CSRF 走 `x-csrf-token`，不新增权限来源。
 
 **字段表（冻结，只增不改）**
 
-`GET /ui/v1/sites?limit=50&cursor=&q=` → `{ "data": { "items": [...], "total": n, "next_cursor": "..."|null } }`：
+`GET /ui/v1/sites?limit=50&cursor=&q=` → `{ "data": { items, total, next_cursor, can_admin } }`：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -497,6 +497,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `items[].created_at` | string | RFC3339 UTC 单字段（D9） |
 | `total` | number | 过滤后的总数 |
 | `next_cursor` | string \| null | 站点游标 `created_at:id`（键集分页，D10）；末页为 null |
+| `can_admin` | bool | 是否具备 Admin（新建站点、批量启停入口显隐） |
 
 `GET /ui/v1/sites/{domain}` → `{ "data": ... }`：上面全部列表字段 + 下列字段：
 
@@ -506,6 +507,9 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `runtime` | object \| null | 绑定运行环境快照：`id` / `name` / `kind{code,label}` / `version` / `state{code,label}` / `site_count` |
 | `runtime_down` | bool | 绑定环境未运行或 socket 缺失 |
 | `runtime_alert` | string | 不可用时的中文原因，正常为空串 |
+| `config` | object | `path` / `content` / `active` / `error`；读取失败时 `error` 非空、其余为空 |
+| `backup` | object | `available` / `enabled` / `task_id` / `last_text` / `next_text` |
+| `can_manage` | bool | 是否具备 Admin（详情页写操作入口显隐） |
 
 `GET /ui/v1/runtimes?limit=50&cursor=&q=` → 同上信封：
 
@@ -525,12 +529,13 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `items[].job` | object \| null | `state` / `label` / `step` / `progress` / `error` / `active` / `failed` / `started_at` / `updated_at` |
 | `next_cursor` | string \| null | 运行环境游标为上一页末项 `id`（D10） |
 
-错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、viewer 读运行环境 `auth.forbidden`（403）、站点不存在 `not_found`（404）、数据库不可用 `dependency.unavailable`（503）。
+错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、CSRF 失败 `auth.csrf_invalid`（403）、viewer 写站点 `auth.forbidden`（403）、站点不存在 `not_found`（404）、域名/配置字段错误 `shape.invalid`（400）、域名冲突 `conflict`（409）、Web 服务未就绪或数据库不可用 `dependency.unavailable`（503）。
 
 **渲染映射**
 
-- 站点列表：`table`（本地 `items`、`pagination:false`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{domain}`。
-- 站点详情：运行环境不可用时顶部 warning `alert`；「站点信息」「证书」两张 `card`；末尾链接到旧版详情处理配置/域名/SSL/目录。
+- 站点列表：`table`（本地 `items`、`pagination:false`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{domain}`；`can_admin` 时提供「新建站点」与批量启停卡片。
+- 站点详情：运行环境不可用时顶部 warning `alert`；「站点信息」+「站点操作」（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用 `prompt` 要求输入域名，服务端同样校验 `confirm`；配置 textarea 预填当前内容，保存失败直接展示字段错误。
+- 新建站点：`/{p}/sites/new` 隐藏路由 + 原生表单；运行环境下拉来自 `GET /ui/v1/runtimes`，无就绪实例时保持空选项并由后端拒绝。
 - 运行环境列表：`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；安装与配置仍链回旧版页面。
 - **D10 翻页限制**：budding `table` 的远程分页发送 `page/perPage`，与内核 keyset 游标不一致；本批只取首页 50 条并在 `next_cursor` 非空时显示提示。翻页组件接入前不做假装分页，记录为待办。
 
@@ -1071,3 +1076,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十五批审计页原生化：`GET /{p}/audit` 不再占位。`store` 新增 `audit_page(keyword, before(ts,id), limit)`（`instr(lower(...))` 命中 actor/ip/action/target/detail，排序走既有 `idx_audit_ts(ts DESC, id DESC)`，未改表/加索引）；`/ui/v1/audit?q=&limit=&cursor=` 用 `AuditScope` 签名游标（绑定筛选指纹，换关键字/篡改/旧版本 400），权限保持 `AuditRead`；前端表单 + `table` + 「下一页」。补 store 3 条单测与 `main_flow` 权限/过滤/游标用例，无头浏览器实测页面、过滤与游标翻页。 |
 | 2026-11-13 | 第十六批日志入口收口：容器日志改 budding 页（尾部快照），SSE 移至 `/{p}/containers/{id}/logs/stream` 仅旧详情跟随；运行环境日志新增 budding 页（旧抽屉 JSON 移至 `/logs.json`）；两端各加 `/ui/v1` 快照接口（`ContainerLogs`/`DockerRead` 与 Admin），详情占位页提供原生日志入口；`?legacy=1` 未新增。补 2 条 `main_flow` 用例 + 无头浏览器实测。 |
 | 2026-11-13 | 第十七批 Docker 写操作原生化：`GET /{p}/containers/new` 改交付壳页原生表单；`/ui/v1` 新增容器新建 `POST /containers`、资源限制 `POST /containers/{id}/limits`、镜像 `POST /images/pull` 与 `/images/{id}/remove`、网络 `POST /networks` 与 `/networks/{id}/remove`、卷 `POST /volumes` 与 `/volumes/{name}/remove`。参数解析复用旧表单函数（`spec_from_form` / `limits_from_form` / `validate_name`），执行仍走 `docker_cmd` 与既有权限/CSRF/审计；容器详情补资源限制表单，三个资源页补创建表单与逐项删除。补 `main_flow` 用例（CSRF / viewer 403 / 无 Docker 失败 / 非法名称 400）。**真实 Docker 引擎上的创建与限制热更新仍需 Linux 测试机验收**。 |
+| 2026-11-13 | 第十八批站点写操作原生化：`GET /{p}/sites/new` 改交付壳页原生表单；`/ui/v1` 新增 `POST /sites`（建站）、`/sites/batch`（批量启停）、`/sites/{domain}/{action}`（启停）、`/default`、`/domains`、`/config`、`/ssl`、`/backup`、`/delete`。全部复用 `SITE_*` 动作、`x-csrf-token`、审计与 `commands::site`；详情新增 `config` / `backup` / `can_manage`，列表新增 `can_admin`。站点列表补新建与批量启停，详情补站点操作、配置编辑、域名增删、证书与备份卡片。补 `main_flow` 用例（CSRF / viewer 403 / 确认串与空批量 400 / 详情按角色显隐）。**建站、配置保存与证书动作需 OpenResty/真实运行环境，测试机验收后再算完全闭环**。 |

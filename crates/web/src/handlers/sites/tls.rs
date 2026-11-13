@@ -94,7 +94,7 @@ fn fmt_ts(ts: i64) -> String {
 
 /// 站点备份开关的视图。任务服务未初始化（旧库/未接线）时渲染为「不可用」，
 /// 不把整页拖成 503——站点页的主要信息仍然可用。
-pub(super) async fn backup_view(state: &AppState, domain: &str) -> SiteBackupView {
+pub(crate) async fn backup_view(state: &AppState, domain: &str) -> SiteBackupView {
     let Some(tasks) = state.tasks() else {
         return SiteBackupView::default();
     };

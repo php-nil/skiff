@@ -8079,6 +8079,183 @@ async fn ui_docker_writes_require_csrf_and_permission() {
     }
 }
 
+/// 站点写操作 JSON 接口：CSRF 先行、viewer 一律 403、管理员校验字段后再执行；
+/// 建站成功并能在详情里看到配置/备份/写权限字段。
+#[tokio::test]
+async fn ui_site_writes_require_csrf_and_permission() {
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+    let root = h.data_dir.join("www/sites/x.local");
+    std::fs::create_dir_all(&root).unwrap();
+    h.state
+        .db()
+        .create_site(&static_site("x.local", &root.display().to_string()))
+        .unwrap();
+
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        (
+            "/ui/v1/sites",
+            json!({ "site_type": "static", "domain": "api.local" }),
+        ),
+        (
+            "/ui/v1/sites/x.local/config",
+            json!({ "content": "server {}" }),
+        ),
+        ("/ui/v1/sites/x.local/start", json!({})),
+        ("/ui/v1/sites/x.local/default", json!({ "enabled": true })),
+        (
+            "/ui/v1/sites/x.local/domains",
+            json!({ "action": "add", "alias": "www.x.local" }),
+        ),
+        ("/ui/v1/sites/x.local/ssl", json!({ "action": "generate" })),
+        ("/ui/v1/sites/x.local/backup", json!({ "enabled": true })),
+        (
+            "/ui/v1/sites/x.local/delete",
+            json!({ "confirm": "x.local" }),
+        ),
+        (
+            "/ui/v1/sites/batch",
+            json!({ "action": "start", "domains": ["x.local"] }),
+        ),
+    ];
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} 缺 CSRF 必须 403: {text}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} viewer 必须 403: {text}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+    }
+
+    // 字段校验先于业务执行：确认串不符、批量为空、未知子动作都必须是 400。
+    let (status, _) = post_ui_json(
+        &h.app,
+        "/ui/v1/sites/x.local/delete",
+        &admin,
+        Some(&csrf),
+        &json!({ "confirm": "wrong.local" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(h.state.db().site_by_domain("x.local").unwrap().is_some());
+
+    let (status, _) = post_ui_json(
+        &h.app,
+        "/ui/v1/sites/batch",
+        &admin,
+        Some(&csrf),
+        &json!({ "action": "start", "domains": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    for (uri, body) in [
+        (
+            "/ui/v1/sites/x.local/domains",
+            json!({ "action": "unknown", "alias": "a.local" }),
+        ),
+        ("/ui/v1/sites/x.local/ssl", json!({ "action": "unknown" })),
+    ] {
+        let (status, _) = post_ui_json(&h.app, uri, &admin, Some(&csrf), &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+
+    // 建站：测试机无 OpenResty，命令层必须返回依赖不可用而不是假成功。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/sites",
+        &admin,
+        Some(&csrf),
+        &json!({
+            "site_type": "static",
+            "domain": "new.local",
+            "aliases": ["www.new.local"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "建站失败: {text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "dependency.unavailable");
+}
+
+/// 站点详情：管理员有 can_manage 与配置内容；viewer 只读。
+#[tokio::test]
+async fn ui_site_detail_exposes_write_surface_by_role() {
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let root = h.data_dir.join("www/sites/role.local");
+    std::fs::create_dir_all(&root).unwrap();
+    h.state
+        .db()
+        .create_site(&static_site("role.local", &root.display().to_string()))
+        .unwrap();
+
+    let (status, _, text) = get_ui(
+        &h.app,
+        "/ui/v1/sites/role.local",
+        Some(&admin),
+        Some("application/json"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["can_manage"], true);
+    assert!(v["data"]["config"].is_object());
+    assert!(
+        v["data"]["config"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("role.local"),
+        "直插站点没有 vhost 文件时应回传可读错误而不是 500: {text}"
+    );
+    assert!(v["data"]["backup"].is_object());
+
+    let (status, _, text) = get_ui(
+        &h.app,
+        "/ui/v1/sites/role.local",
+        Some(&viewer),
+        Some("application/json"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["can_manage"], false);
+}
+
+/// 规范新建站点入口交付 budding 壳页；viewer 仍被 `SITE_CREATE` 拒绝。
+#[tokio::test]
+async fn site_new_canonical_path_serves_native_shell() {
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+
+    let (status, html) = get_page(&h.app, "/p/sites/new", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"id="skiff-root""#),
+        "新建站点页应交付 budding 壳页: {html}"
+    );
+
+    let (status, _) = get_page(&h.app, "/p/sites/new", &viewer).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 /// 审计规范页交 budding 壳；旧 SSR 仍按 `AuditRead` 拒绝 viewer。
 #[tokio::test]
 async fn audit_canonical_path_serves_native_shell() {

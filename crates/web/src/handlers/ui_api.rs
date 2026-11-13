@@ -434,7 +434,7 @@ fn parse_site_cursor(cursor: &str) -> Option<(i64, i64)> {
 /// 分页为内存 keyset（排序沿用 `list_sites` 的 `created_at DESC, id DESC`）。
 pub async fn sites(
     State(state): State<Arc<AppState>>,
-    UiAuthUser(_user): UiAuthUser,
+    UiAuthUser(user): UiAuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, ApiError> {
     let sites = state
@@ -483,7 +483,12 @@ pub async fn sites(
     };
     let items: Vec<SiteItem> = rows.drain(start..end).map(|(_, _, item)| item).collect();
     let mut resp = Json(json!({
-        "data": { "items": items, "total": total, "next_cursor": next_cursor }
+        "data": {
+            "items": items,
+            "total": total,
+            "next_cursor": next_cursor,
+            "can_admin": user.can(skiff_model::Permission::Admin),
+        }
     }))
     .into_response();
     resp.headers_mut()
@@ -515,7 +520,26 @@ pub struct SiteRuntimeRef {
     pub site_count: usize,
 }
 
-/// 站点详情响应数据（列表项字段 + 证书 + 运行环境状态）。
+/// 站点 vhost 配置快照；读取失败时 `error` 非空，其余字段为空。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SiteConfigInfo {
+    pub path: String,
+    pub content: String,
+    pub active: bool,
+    pub error: String,
+}
+
+/// 站点备份开关快照（任务服务未初始化时 `enabled=false`、`available=false`）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SiteBackupInfo {
+    pub available: bool,
+    pub enabled: bool,
+    pub task_id: String,
+    pub last_text: String,
+    pub next_text: String,
+}
+
+/// 站点详情响应数据（列表项字段 + 证书 + 运行环境状态 + 配置/备份 + 写权限）。
 #[derive(Debug, Serialize)]
 pub struct SiteDetailData {
     #[serde(flatten)]
@@ -524,6 +548,9 @@ pub struct SiteDetailData {
     pub runtime: Option<SiteRuntimeRef>,
     pub runtime_down: bool,
     pub runtime_alert: String,
+    pub config: SiteConfigInfo,
+    pub backup: SiteBackupInfo,
+    pub can_manage: bool,
 }
 
 /// `GET /ui/v1/sites/{domain}`：站点详情（只读）。
@@ -532,7 +559,7 @@ pub struct SiteDetailData {
 /// 配置/目录/域名等标签页的写操作留给后续批次。
 pub async fn site_detail(
     State(state): State<Arc<AppState>>,
-    UiAuthUser(_user): UiAuthUser,
+    UiAuthUser(user): UiAuthUser,
     Path(domain): Path<String>,
 ) -> Result<Response, ApiError> {
     let site = state
@@ -657,17 +684,440 @@ pub async fn site_detail(
         },
         site_count: v.site_count,
     });
+    let config = match state.read_site_vhost(&domain) {
+        Ok((path, content, active)) => SiteConfigInfo {
+            path,
+            content,
+            active,
+            error: String::new(),
+        },
+        Err(e) => SiteConfigInfo {
+            error: e.to_string(),
+            ..Default::default()
+        },
+    };
+    let backup_view = handlers::sites::backup_view(&state, &domain).await;
+    let backup = SiteBackupInfo {
+        available: state.tasks().is_some(),
+        enabled: backup_view.enabled,
+        task_id: backup_view.task_id,
+        last_text: backup_view.last_text,
+        next_text: backup_view.next_text,
+    };
     let data = SiteDetailData {
         site: item,
         ssl,
         runtime: runtime_ref,
         runtime_down,
         runtime_alert,
+        config,
+        backup,
+        can_manage: user.can(skiff_model::Permission::Admin),
     };
     let mut resp = Json(json!({ "data": data })).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
+}
+
+/// 站点写操作的领域错误：字段级错误在 JSON 里按 400 返回，而不是 500。
+fn site_write_err(e: crate::state::sites::SiteError) -> AppError {
+    use crate::state::sites::SiteError;
+    match e.unfield() {
+        SiteError::BadRequest(m) => AppError::BadRequest(m),
+        SiteError::Conflict(m) => AppError::Conflict(m),
+        SiteError::Unavailable(m) => AppError::Unavailable(m),
+        SiteError::Internal(m) => AppError::Internal(m),
+        SiteError::Field(_, inner) => AppError::BadRequest(inner.to_string()),
+    }
+}
+
+/// `POST /ui/v1/sites` 的请求体：字段与旧新建表单同名。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteCreateBody {
+    #[serde(default)]
+    pub site_type: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub aliases_bulk: String,
+    #[serde(default)]
+    pub root_dir: String,
+    #[serde(default)]
+    pub runtime_id: String,
+    #[serde(default)]
+    pub proxy_target: String,
+    #[serde(default)]
+    pub proxy_websocket: bool,
+}
+
+fn site_create_form(body: &SiteCreateBody) -> HashMap<String, Vec<String>> {
+    let mut form = HashMap::new();
+    for (key, value) in [
+        ("site_type", &body.site_type),
+        ("domain", &body.domain),
+        ("aliases_bulk", &body.aliases_bulk),
+        ("root_dir", &body.root_dir),
+        ("runtime_id", &body.runtime_id),
+        ("proxy_target", &body.proxy_target),
+    ] {
+        form.insert(key.to_string(), vec![value.to_string()]);
+    }
+    form.insert(
+        "proxy_websocket".to_string(),
+        vec![if body.proxy_websocket { "1" } else { "" }.to_string()],
+    );
+    if !body.aliases.is_empty() {
+        form.insert("aliases".to_string(), body.aliases.clone());
+    }
+    form
+}
+
+/// `POST /ui/v1/sites`：新建站点（`SITE_CREATE`）。
+pub async fn site_create(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<SiteCreateBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_CREATE).map_err(ApiError)?;
+    let form = site_create_form(&body);
+    let values = handlers::sites::new_form(&form);
+    let cmd = skiff_app::commands::site::CreateSite {
+        domain: values.domain.clone(),
+        root_dir: values.root_dir.clone(),
+        site_type: values.site_type.clone(),
+        runtime_id: Some(values.runtime_id.clone()),
+        proxy_target: values.proxy_target.clone(),
+        proxy_websocket: values.proxy_websocket,
+        aliases: handlers::sites::collect_aliases(&form),
+        actor: handlers::sites::actor(&state, &user, &parts),
+    };
+    let result = skiff_app::commands::site::create(&state, cmd)
+        .await
+        .map_err(site_write_err)
+        .map_err(ApiError)?;
+    write_done(json!({ "domain": result.domain, "created": true }))
+}
+
+/// `POST /ui/v1/sites/{domain}/{action}`：启动 / 停止（`SITE_ACTION`）。
+pub async fn site_power(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path((domain, action)): Path<(String, String)>,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_ACTION).map_err(ApiError)?;
+    let running = match action.as_str() {
+        "start" => true,
+        "stop" => false,
+        _ => {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "未知站点操作：{action}"
+            ))))
+        }
+    };
+    skiff_app::commands::site::power(
+        &state,
+        skiff_app::commands::site::SitePower {
+            domain: domain.clone(),
+            running,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "action": action, "running": running }))
+}
+
+/// `POST /ui/v1/sites/{domain}/default`：设为 / 取消默认站点（`SITE_SET_DEFAULT`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct EnabledBody {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+pub async fn site_set_default(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    Json(body): Json<EnabledBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_SET_DEFAULT).map_err(ApiError)?;
+    skiff_app::commands::site::set_default(
+        &state,
+        skiff_app::commands::site::SetDefaultSite {
+            domain: domain.clone(),
+            enabled: body.enabled,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "is_default": body.enabled }))
+}
+
+/// `POST /ui/v1/sites/{domain}/domains`：新增 / 删除别名（`SITE_UPDATE_DOMAINS`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteDomainBody {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub alias: String,
+}
+
+pub async fn site_domains(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    Json(body): Json<SiteDomainBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_UPDATE_DOMAINS).map_err(ApiError)?;
+    let op = match body.action.as_str() {
+        "add" => skiff_app::commands::site::AliasOp::Add,
+        "remove" => skiff_app::commands::site::AliasOp::Remove,
+        _ => {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "未知域名操作：{}",
+                body.action
+            ))))
+        }
+    };
+    skiff_app::commands::site::update_domains(
+        &state,
+        skiff_app::commands::site::UpdateDomains {
+            domain: domain.clone(),
+            op,
+            alias: body.alias.clone(),
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "action": body.action, "alias": body.alias }))
+}
+
+/// `POST /ui/v1/sites/{domain}/config`：保存 vhost 配置（`SITE_SAVE_CONFIG`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteConfigBody {
+    #[serde(default)]
+    pub content: String,
+}
+
+pub async fn site_save_config(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    Json(body): Json<SiteConfigBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_SAVE_CONFIG).map_err(ApiError)?;
+    let outcome = skiff_app::commands::site::save_config(
+        &state,
+        skiff_app::commands::site::SaveSiteConfig {
+            domain: domain.clone(),
+            content: body.content,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({
+        "domain": domain,
+        "reloaded": outcome.reloaded,
+        "notice": handlers::sites::save_config_notice(outcome.reloaded),
+    }))
+}
+
+/// `POST /ui/v1/sites/{domain}/ssl`：证书生成 / 上传 / 强制跳转 / 关闭 / 删除（`SITE_SSL`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteSslBody {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub cert_pem: String,
+    #[serde(default)]
+    pub key_pem: String,
+}
+
+pub async fn site_ssl(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    Json(body): Json<SiteSslBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_SSL).map_err(ApiError)?;
+    let op = match body.action.as_str() {
+        "generate" => skiff_app::commands::site::SslOp::Generate,
+        "upload" => skiff_app::commands::site::SslOp::Upload {
+            cert_pem: body.cert_pem,
+            key_pem: body.key_pem,
+        },
+        "force" => skiff_app::commands::site::SslOp::Force {
+            enabled: body.enabled,
+        },
+        "disable" => skiff_app::commands::site::SslOp::Disable,
+        "delete_cert" => skiff_app::commands::site::SslOp::DeleteCert,
+        _ => {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "未知 SSL 操作：{}",
+                body.action
+            ))))
+        }
+    };
+    skiff_app::commands::site::ssl(
+        &state,
+        skiff_app::commands::site::SiteSsl {
+            domain: domain.clone(),
+            op,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "action": body.action }))
+}
+
+/// `POST /ui/v1/sites/{domain}/backup`：站点备份开关（`SITE_SET_BACKUP`）。
+pub async fn site_backup(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    Json(body): Json<EnabledBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_SET_BACKUP).map_err(ApiError)?;
+    let svc = state
+        .tasks()
+        .ok_or_else(|| ApiError(AppError::Unavailable("内核任务服务未初始化".into())))?;
+    skiff_app::commands::site::backup(
+        &state,
+        svc,
+        skiff_app::commands::site::SetSiteBackup {
+            domain: domain.clone(),
+            enabled: body.enabled,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "enabled": body.enabled }))
+}
+
+/// `POST /ui/v1/sites/{domain}/delete`：删除站点，服务端强制域名确认（`SITE_DELETE`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteDeleteBody {
+    #[serde(default)]
+    pub confirm: String,
+}
+
+pub async fn site_delete(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(domain): Path<String>,
+    parts: Parts,
+    Json(body): Json<SiteDeleteBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_DELETE).map_err(ApiError)?;
+    if body.confirm.trim() != domain {
+        return Err(ApiError(AppError::BadRequest(format!(
+            "请输入站点域名 {domain} 以确认删除"
+        ))));
+    }
+    skiff_app::commands::site::delete(
+        &state,
+        skiff_app::commands::site::DeleteSite {
+            domain: domain.clone(),
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "removed": true }))
+}
+
+/// `POST /ui/v1/sites/batch`：批量启停（`SITE_BATCH_CREATE`；批量删除仍由命令层拒绝）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteBatchBody {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
+
+pub async fn site_batch(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<SiteBatchBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    crate::authz::authorize(&user, act::SITE_BATCH_CREATE).map_err(ApiError)?;
+    let domains: Vec<String> = body
+        .domains
+        .into_iter()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .collect();
+    if domains.is_empty() {
+        return Err(ApiError(AppError::BadRequest(
+            "请先选择至少一个站点".into(),
+        )));
+    }
+    let op = match body.action.as_str() {
+        "start" => skiff_app::commands::site::BatchOp::Start,
+        "stop" => skiff_app::commands::site::BatchOp::Stop,
+        "delete" => skiff_app::commands::site::BatchOp::Delete,
+        _ => {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "未知批量操作：{}",
+                body.action
+            ))))
+        }
+    };
+    let report = skiff_app::commands::site::batch(
+        &state,
+        skiff_app::commands::site::BatchSites {
+            op,
+            domains,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    let failures: Vec<serde_json::Value> = report
+        .failures
+        .into_iter()
+        .map(|f| json!({ "domain": f.domain, "error": f.error.to_string() }))
+        .collect();
+    write_done(json!({
+        "succeeded": report.succeeded,
+        "failed": failures.len(),
+        "failures": failures,
+    }))
 }
 
 /// 运行环境最近一次异步任务（安装/扩展）；字段与页面抽屉同源。
