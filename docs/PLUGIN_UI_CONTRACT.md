@@ -311,3 +311,4 @@ object-src 'none'; frame-ancestors 'self'
 | 2026-11-13 | 插件功能页原生化（第三批 firewall）：规则 / fail2ban 两页改用 schema，首次验证写通路——表单内按钮 `skiffPluginRpc` 合并表单值后走 `POST /rpc`，行内删除 / 解封用 `${row}` 插值；新增 `skiffPluginView.query`（仅标量）做 jail 封禁下钻；插件侧把数值字符串归一化为整数，内核校验不变 |
 | 2026-11-13 | 插件功能页原生化（第四批 ftp）：账号 / 运行状态两页改用 schema；新建、重置密码、启停账号、配置、防护、解封、回收全部经 `skiffPluginRpc`；`status` / `sites` / `accounts` / `protection` 补派生展示与下拉；可选依赖（防火墙插件）缺失时返回原因/空列表，不阻塞页面 |
 | 2026-11-13 | 插件功能页原生化（第五批 cron）：任务列表 + 新建/编辑共用一个 schema；`?id=` 走 `detail` 预填，`params_json` 文本域由插件解析为对象，`target_plugin` 在插件侧改名 `target`；执行/启停/删除/创建/更新经统一 RPC；预设编辑器保留旧界面，表单联动显隐登记为上游 T17 |
+| 2026-11-13 | 插件功能页原生化（第六批 files）：`com.skiff.files` 升 `api = "1.3"`，`main` 视图默认由壳页加载 `main.json`；只原生化「已授权站点目录浏览 + 文本编辑/保存」，全盘管理 / 回收站 / 配额 / 上传仍只在内核「工具 → 文件管理」；旧完整工作台只保留显式 `?legacy=1`，菜单与列表不再链出；文件正文以 `text_safe` 转义 `${` 后绑定，登记上游 T18 |

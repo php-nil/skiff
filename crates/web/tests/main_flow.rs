@@ -8062,6 +8062,14 @@ version = "0.1.0"
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
 api = "1.2"
 requires_full_sandbox = false
+
+[[ui]]
+label = "Count"
+path = "index.html"
+
+[[mount]]
+slot = "overview.health"
+ui = "health.html"
 "#
         .to_string(),
         true,
@@ -8076,6 +8084,8 @@ requires_full_sandbox = false
     assert_eq!(data["plugins"]["total"], 1);
     assert_eq!(data["plugins"]["enabled"], 1);
     assert_eq!(data["plugins"]["disabled"], 0);
+    // 已启用插件声明 overview.health 槽位时，概览把提供者 id 交给前端走 RPC。
+    assert_eq!(data["health_plugin"], "com.example.count");
     assert_eq!(data["containers"]["total"], 0);
     assert_eq!(data["containers"]["running"], 0);
     assert_eq!(data["sites"]["total"], 0);

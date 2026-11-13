@@ -1,0 +1,291 @@
+{
+  "version": 1,
+  "data": {
+    "config": { "method": "config" },
+    "list": {
+      "method": "list",
+      "params": { "path": "{{query.path}}" }
+    },
+    "file": {
+      "method": "read_text",
+      "params": { "path": "{{query.file}}" }
+    }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "站点文件",
+      "subtitle": "只读写已授权站点目录（/www/sites/<域名>/index）；全盘管理、回收站、配额与上传请用「工具 → 文件管理」"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "skiffPluginView",
+                      "props": {
+                        "view": "main",
+                        "query": { "path": "{{data.list.path}}" }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "返回上级", "variant": "text" },
+              "when": "{{data.list.parent}}",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "skiffPluginView",
+                      "props": {
+                        "view": "main",
+                        "query": { "path": "{{data.list.parent}}" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "alert",
+        "props": { "type": "warning", "text": "{{data.list.error}}" },
+        "when": "{{data.list.error}}"
+      },
+      {
+        "type": "card",
+        "props": { "title": "站点根目录" },
+        "content": {
+          "body": [
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "select",
+                  "props": {
+                    "name": "root",
+                    "label": "已授权站点",
+                    "defaultValue": "{{data.config.start_dir}}",
+                    "items": "{{data.config.root_options}}"
+                  }
+                },
+                {
+                  "type": "text",
+                  "props": {
+                    "text": "授权根只能在安装确认页或由 admin 追加；本页不接受站点目录之外的路径。"
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "打开", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "${root}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "当前目录" },
+        "content": {
+          "body": [
+            { "type": "text", "props": { "text": "{{data.list.path}}" } },
+            {
+              "type": "text",
+              "props": { "text": "目录" }
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.list.dirs}}",
+                "rowKey": "path",
+                "pagination": true,
+                "perPage": 50,
+                "density": "compact",
+                "emptyText": "没有子目录",
+                "columns": [
+                  { "key": "name", "label": "名称" },
+                  { "key": "mtime_text", "label": "修改时间" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "进入", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "${path}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "text",
+              "props": { "text": "文件" }
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.list.files}}",
+                "rowKey": "path",
+                "pagination": true,
+                "perPage": 50,
+                "density": "compact",
+                "emptyText": "没有文件",
+                "columns": [
+                  { "key": "name", "label": "名称" },
+                  { "key": "size_text", "label": "大小" },
+                  { "key": "mtime_text", "label": "修改时间" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "编辑", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": {
+                                "path": "{{data.list.path}}",
+                                "file": "${path}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "文本编辑" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": { "text": "文件：{{data.file.path}}（{{data.file.size_text}}）" }
+            },
+            {
+              "type": "alert",
+              "props": { "type": "warning", "text": "{{data.file.error}}" },
+              "when": "{{data.file.error}}"
+            },
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "textarea",
+                  "props": {
+                    "name": "text",
+                    "label": "内容",
+                    "rows": 20,
+                    "defaultValue": "{{data.file.text_safe}}"
+                  }
+                },
+                {
+                  "type": "text",
+                  "props": {
+                    "text": "保存会整文件覆盖；语法高亮只在旧界面（地址加 ?legacy=1）。上传、新建、重命名、删除、回收站与配额请用内核「工具 → 文件管理」。"
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "保存", "color": "primary" },
+                    "when": "{{data.file.can_save}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "write",
+                              "params": {
+                                "path": "{{data.file.path}}",
+                                "text": "${text}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "关闭", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "{{data.list.path}}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "when": "{{data.file.open}}"
+      }
+    ]
+  }
+}

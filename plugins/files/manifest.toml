@@ -13,7 +13,7 @@ name = "站点文件"
 version = "0.1.3"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.2"
+api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -38,6 +38,7 @@ label = "站点文件"
 order = 60
 icon = "file"
 view = "main"
+schema = "main.json"
 
 [config_schema.start_dir]
 type = "string"

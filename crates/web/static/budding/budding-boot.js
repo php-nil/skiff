@@ -131,6 +131,64 @@
         ]
       }
     });
+    // `overview.health` 槽位的原生替代：数据来自主机监控插件的 snapshot RPC。
+    if (data.health) {
+      if (data.health.error) {
+        body.push({
+          type: 'alert',
+          props: {
+            type: 'info',
+            title: '系统状态',
+            text:
+              '暂不可用：' +
+              data.health.error +
+              '（需要启用主机监控插件，且当前角色具备插件管理权限）'
+          }
+        });
+      } else {
+        if (data.health.cpu_high || data.health.mem_high) {
+          body.push({
+            type: 'alert',
+            props: {
+              type: 'warning',
+              text:
+                '主机资源超过阈值：CPU ' +
+                data.health.cpu_text +
+                '，内存 ' +
+                data.health.mem_text
+            }
+          });
+        }
+        body.push({
+          type: 'card',
+          props: { title: '系统状态' },
+          content: {
+            body: [
+              {
+                type: 'text',
+                props: {
+                  text: 'CPU ' + data.health.cpu_text + ' · 内存 ' + data.health.mem_text
+                }
+              },
+              {
+                type: 'text',
+                props: {
+                  text:
+                    '负载 ' +
+                    data.health.load_text +
+                    ' · 运行时长 ' +
+                    data.health.uptime_text
+                }
+              },
+              {
+                type: 'text',
+                props: { text: '采集时间 ' + data.health.t_text + '（UTC）' }
+              }
+            ]
+          }
+        });
+      }
+    }
     body.push({
       type: 'card',
       props: { title: '趋势图表' },
@@ -6320,7 +6378,23 @@
   function pageSchema(kind) {
     var parts = routeParts();
     if (kind === 'overview') {
-      return fetchData('/overview').then(overviewSchema);
+      return fetchData('/overview').then(function (data) {
+        // 健康槽位不再走 iframe：从 overview 拿到提供者后，用统一 RPC 取数，
+        // 失败（未启用/无权限）也只影响这一块，不拖垮整页。
+        if (!data.health_plugin) return overviewSchema(data);
+        return pluginRpcCall(data.health_plugin, 'snapshot', {})
+          .then(function (rpc) {
+            data.health = rpc && rpc.sample ? rpc.sample : null;
+            if (!data.health) data.health = { error: '插件没有返回采样数据' };
+            return overviewSchema(data);
+          })
+          .catch(function (error) {
+            data.health = {
+              error: error && error.message ? error.message : String(error)
+            };
+            return overviewSchema(data);
+          });
+      });
     }
     if (kind === 'sites') {
       return fetchData('/sites' + listQuery()).then(sitesSchema);

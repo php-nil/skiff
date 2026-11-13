@@ -348,7 +348,7 @@
 - 目录归属按 [`docs/MENU_CONTRACT.md`](MENU_CONTRACT.md) 的三级模型：文件管理是内核固定二级（稳定键 `core/files`），回收站是其 L3（`core/files/trash`）；两个页面都由内核渲染同款 `.workbench-tabs` 标签栏，不引入第二套菜单机制。
 - 部署形态：`SKIFF_FORM=docker`（1Panel 受限形态，能力面只有 docker/identity，见 §5.4）不提供内核 fs——「工具 → 文件管理 / 回收站 / 配额管理」入口不渲染，`/{p}/files*` 与 `/{p}/m/core/files*` 直达一律 403「当前部署形态不提供文件管理能力」（判定单一来源：`crates/web/src/middleware.rs::check_fs_capability`）。
 - 恢复/彻底删除/清空：POST + CSRF + 二次确认；结果内联提示（成功/冲突/父目录缺失/失败条目）。
-- 插件 UI（`files`）**已撤销菜单入口**，旧深链 `/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`；插件包可保留安装态与管理页，但不再提供第二套浏览/编辑界面。删除已切换为回收站语义，配额页面与回收站页面同属第二步。
+- 站点文件插件（`com.skiff.files`）保留在「网站」菜单，只服务 `path:/www/sites/<域名>/index`：默认入口为壳页原生 schema（浏览 + 文本编辑/保存），旧完整工作台仅接受显式 `?legacy=1`；全盘管理、上传、回收站与配额仍只在 `core/files`，不提供第二套语义。插件未安装/未启用或当前形态没有 fs 能力时，`/{p}/plugins/com.skiff.files/main` 301 到 `/{p}/files`。
 
 ## 10. API 形态
 

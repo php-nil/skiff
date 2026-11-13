@@ -168,6 +168,11 @@ pub struct OverviewCounts {
     pub sites: OverviewSites,
     pub plugins: OverviewPlugins,
     pub runtimes: OverviewRuntimes,
+    /// `overview.health` 槽位的提供者（已启用插件）。
+    ///
+    /// 新壳不渲染 iframe 槽位：前端拿到插件 id 后走统一 RPC 取数，再用 schema 渲染卡片。
+    /// 没有提供者时为 `null`，概览页不显示健康块。
+    pub health_plugin: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -255,6 +260,16 @@ pub async fn overview(
     };
     let collected_at = skiff_app::time_fmt::epoch_to_rfc3339_utc(chrono::Utc::now().timestamp())
         .unwrap_or_default();
+    // 从已启用插件的 manifest 里找 `overview.health` 槽位提供者；不读槽位 HTML，
+    // 只把插件 id 交给前端走 RPC（权限与审计仍由 RPC 通道负责）。
+    let health_plugin = data.plugins.iter().filter(|p| p.enabled).find_map(|p| {
+        let manifest = skiff_pkgfmt::Manifest::parse(&p.manifest).ok()?;
+        manifest
+            .mount
+            .iter()
+            .any(|m| m.slot == "overview.health")
+            .then(|| p.id.clone())
+    });
     let counts = OverviewCounts {
         collected_at,
         docker,
@@ -276,6 +291,7 @@ pub async fn overview(
             abnormal: runtime_abnormal,
             uninstalled: runtime_uninstalled,
         },
+        health_plugin,
     };
     let mut resp = Json(json!({ "data": counts })).into_response();
     resp.headers_mut()

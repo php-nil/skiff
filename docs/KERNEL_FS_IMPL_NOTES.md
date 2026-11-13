@@ -264,7 +264,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | 管理客户端 | `crates/app/src/admin_fs.rs` | 管理员主体调用原语；数据根硬拒；审计落 `audit` 表；256 KiB 编辑上限 |
 | Web 页面/API | `crates/web/src/handlers/files.rs` | `/{p}/files` 与 `/files/{list,read,write,mkdir,rename,remove}`（旧 `/files/api/*` 308 兼容）；Admin + CSRF |
 | 模板/静态 | `templates/files.html`、`static/files.css`、`static/files.js` | 独立样式全部挂 `.files-page`，不改 `skiff.css` |
-| 菜单/深链 | `menu.rs`、`handlers/plugins.rs` | 新增内置 `core/files`；过滤 `com.skiff.files` 插件菜单；旧深链 301 |
+| 菜单/深链 | `menu.rs`、`handlers/plugins.rs` | 新增内置 `core/files`；站点文件插件 `com.skiff.files` 挂在「网站」下（站点级授权根）；插件不可用时旧深链 301 到 `/{p}/files` |
 
 ### 8.2 语义与边界
 
@@ -272,7 +272,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 - **编辑上限**：读、写都限制 256 KiB；超限文件只读并禁用保存，避免「读到一半再保存」截断原文件。二进制（非 UTF-8）返回 `fs.unsupported`，页面提示并保留原编辑内容。
 - **写语义**：`write` 走 `WriteMode::Replace` 原子替换；`rename` 默认不覆盖；`remove` 第一步 `permanent = true`（永久删除），第二步改 `false` 接 SQLite 回收站，**路由与页面不需要改**。
 - **审计**：`DbAuditSink` 把 `AuditEvent` 压成 `detail` JSON 写现有 `audit` 表（`actor=用户名`、`ip=web`、`action=fs.*`），本轮不建 `fs_audit` 表；回收站/配额的持久化仍在第二步。
-- **菜单退役**：`menu::build` 与 `nav_plugins` 同时过滤 `com.skiff.files`；旧深链 `/{p}/plugins/com.skiff.files/main` 返回 **301** 到 `/{p}/files`（注意 axum `Redirect::permanent` 是 308，已手写 301）。
+- **站点文件插件**：`com.skiff.files` 保留「网站」菜单入口，但只申请站点内容目录（`/www/sites/<域名>/index`），默认入口是壳页原生 schema（浏览 + 文本编辑/保存），旧工作台仅 `?legacy=1`；未安装/未启用或没有 fs 能力时 `/{p}/plugins/com.skiff.files/main` 返回 **301** 到 `/{p}/files`（注意 axum `Redirect::permanent` 是 308，已手写 301）。
 - **错误提示**：API 统一 `{ok:false,error:{code,message}}`，HTTP 状态取 `FsError::http_status()`；前端按 `code` 显示且保存失败不清空 textarea。
 
 ### 8.3 第二步落地结果

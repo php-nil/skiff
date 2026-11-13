@@ -328,12 +328,13 @@ Skiff 侧对应约束：
 - 权限口径：`GET /{p}/plugins/{id}/{view}`、`GET /{p}/plugins/{id}/schema/{view}` 与 RPC 一致，均要求 `PluginManage`；旧 SSR 工作台（`/{p}/m/plugin/...`）同权限。**权限不足返回 403，不伪装成 404**（不隐藏资源存在性），因此 viewer 从旧用例的 404 变为 403，这是口径修正而非路由消失。
 - 旧 SSR/iframe 不删除：`/plugins/{id}/ui/{path}`、工作台模板与 `?legacy=1` 分支继续可用，但面板内不再有入口。
 - 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、`PLUGIN_UI_CSP` 只作用于旧 SSR 页，保持不变。
-- 槽位（`[[mount]]`）已支持 `schema` 声明与安装期校验；新壳的槽位渲染 API 尚未落地，当前仍由旧页承载。
-- 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺，`files` 插件本轮保持占位。
+- 槽位（`[[mount]]`）已支持 `schema` 声明与安装期校验；新壳仍没有通用槽位渲染 API。`overview.health` 由内核改为「取数 + 原生渲染」：`GET /ui/v1/overview` 返回启用插件的 `health_plugin`，壳页对其调 `snapshot` RPC 后用卡片渲染 CPU / 内存 / 负载 / 运行时长，失败降级为说明性 `alert`；不是 iframe，也不是通用槽位渲染器。
+- 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺。站点文件插件（`com.skiff.files`）只原生化「站点目录浏览 + 文本编辑/保存」，全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」，不做第二套文件管理器。
 - 已原生化的只读批次：guard（containers / events）、monitor（overview / history / process / network）。monitor 的进程与网络页把当前快照一次取回（RPC `all: true`，进程仍受 512 PID、连接仍受 5000 条上限），排序 / 表头筛选 / 分页交给 budding 表格本地完成；展示文案由插件派生，schema 只做绑定。两页都没有写入口。
 - 已原生化的写批次：firewall（rules / fail2ban）。表单内按钮的 `skiffPluginRpc` 会合并表单值（空值不发送），仍走 `POST /plugins/{id}/rpc`，CSRF、`PluginManage`、逐条审计不变；行内删除 / 解封用 `${row}` 插值。`skiffPluginView.query` 只接受标量，由壳页拼到同一插件页的 query，用于「查看某 jail 的封禁」这类只读下钻；schema 仍不能写 URL 或直接 `fetch`。数值字段由插件归一化（字符串 → 整数），内核参数校验不放宽。
 - ftp（accounts / runtime）同样原生：账号新建 / 重置密码改为页内表单（schema 没有弹窗与二次确认，页面已明确提示）；`status` / `sites` / `accounts` / `protection` 的展示文案与下拉选项由插件派生。防火墙插件缺失时 `protection` 返回原因、`protection.banned` 返回空列表，FTP 页面不因可选依赖而整页失败。
 - cron（list）原生：列表 + 新建/编辑共用一个 schema，`?id=` 走 `detail` 预填；`params_json` 文本域由插件解析为对象；执行/启停/删除/创建/更新仍走统一 RPC。budding 的 `when` 不随表单值重算，原生表单只收 5 段 cron，预设编辑器保留在旧界面 `?legacy=1`；内置与其它插件任务只读，编辑/删除由后端拒绝。该联动能力已登记为上游 T17。
+- files（main）原生：站点级文件浏览 + 文本编辑。`list` 把当前目录拆成 `dirs` / `files` 两表（`rowActions` 不能按行隐藏，避免对目录显示「编辑」）；文件正文经 `read_text` 返回 `text_safe`（把 `${` 转义为 `${'${'}`，避免 budding 模板求值改写正文，见上游 T18），保存仍提交原文并走 `write` RPC。超过 256 KiB 或非 UTF-8 的文件只读展示并提示改用内核文件管理；语法高亮、上传、新建、重命名、删除、回收站与配额不在插件页复制。默认入口是原生页，旧完整工作台只保留显式 `?legacy=1`，菜单与列表不再链接。
 
 ### 4.5 需要补的条款（新增）
 
@@ -437,7 +438,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 - `GET /{p}` 交付 budding 壳（未认证 303 到登录页，已登录渲染概览）；SSR 概览仍保留在 `GET /{p}/m/overview` 菜单深链，直到插件概览槽位迁入 budding。
 - 壳启动脚本先取 `GET /ui/v1/session` 与 `GET /ui/v1/menu`，按菜单生成路由表后渲染 admin 外壳；地址栏路径命中路由时加载对应页面，未适配页面渲染统一占位（§2.3.1）。
-- 概览的 `[[mount]]` 固定页插件槽位暂时不渲染（无 iframe 渲染能力，见 §4.4）。
+- 概览的 `[[mount]]` 固定页插件槽位不再走 iframe：`health_plugin` 非空时壳页对其调 `snapshot` RPC，用卡片渲染 CPU / 内存 / 负载 / 运行时长；插件缺失、未启用或无 `PluginManage` 时降级为 info `alert`，不整页失败（见 §4.4）。
 - 数据只复用 `dashboard::load_overview` 的既有查询（Docker 容器列表 + 插件/站点/运行环境/审计），**没有新增聚合 SQL**；本批不返回列表、不做写操作、不做图表、不做实时刷新。
 - 图表位按 D14–D16 未定，页面用 `alert` 明确占位（「D14–D16 尚未定案」），不引入任何图表库。
 
@@ -461,6 +462,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `runtimes.total` | number | 运行环境总数 |
 | `runtimes.abnormal` | number | 有容器但非 running 的数量 |
 | `runtimes.uninstalled` | number | 尚无容器的数量 |
+| `health_plugin` | string \| null | `overview.health` 槽位的提供者（已启用插件的 id）；无提供者为 `null` |
 
 错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、数据库不可用 `dependency.unavailable`（503）。本批没有列表，因此不涉及 `limit`/`cursor`（D10）。
 
@@ -468,6 +470,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 - `docker.status.code != available` → 顶部 warning `alert`（标题用 `label`，正文用 `reason`）。
 - 四张计数卡片：容器 / 网站 / 插件 / 运行环境；文案由前端 schema 生成，数字来自接口。
+- 健康卡片：`health_plugin` 存在时取 `snapshot`，超过阈值（`cpu_high` / `mem_high`）追加 warning `alert`；取数失败显示「系统状态 暂不可用」+ 原因，不隐藏其它卡片。
 - 「趋势图表」卡片内固定 `alert` 占位，禁止在占位里暗示已选定图表库。
 
 ---
@@ -1120,3 +1123,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十七批 Docker 写操作原生化：`GET /{p}/containers/new` 改交付壳页原生表单；`/ui/v1` 新增容器新建 `POST /containers`、资源限制 `POST /containers/{id}/limits`、镜像 `POST /images/pull` 与 `/images/{id}/remove`、网络 `POST /networks` 与 `/networks/{id}/remove`、卷 `POST /volumes` 与 `/volumes/{name}/remove`。参数解析复用旧表单函数（`spec_from_form` / `limits_from_form` / `validate_name`），执行仍走 `docker_cmd` 与既有权限/CSRF/审计；容器详情补资源限制表单，三个资源页补创建表单与逐项删除。补 `main_flow` 用例（CSRF / viewer 403 / 无 Docker 失败 / 非法名称 400）。**真实 Docker 引擎上的创建与限制热更新仍需 Linux 测试机验收**。 |
 | 2026-11-13 | 第十八批站点写操作原生化：`GET /{p}/sites/new` 改交付壳页原生表单；`/ui/v1` 新增 `POST /sites`（建站）、`/sites/batch`（批量启停）、`/sites/{domain}/{action}`（启停）、`/default`、`/domains`、`/config`、`/ssl`、`/backup`、`/delete`。全部复用 `SITE_*` 动作、`x-csrf-token`、审计与 `commands::site`；详情新增 `config` / `backup` / `can_manage`，列表新增 `can_admin`。站点列表补新建与批量启停，详情补站点操作、配置编辑、域名增删、证书与备份卡片。补 `main_flow` 用例（CSRF / viewer 403 / 确认串与空批量 400 / 详情按角色显隐）。**建站、配置保存与证书动作需 OpenResty/真实运行环境，测试机验收后再算完全闭环**。 |
 | 2026-11-13 | 第二十批任务与作业写操作原生化：`/ui/v1` 新增 `POST /tasks/{id}/toggle|run|delete` 与 `POST /jobs/{id}/cancel|retry`，复用 `TASK_*` / `JOB_*` 动作、CSRF 头、审计与既有命令层；任务列表行内与详情补启停/运行/删除，作业详情补取消/重试；作业列表新增 `can_admin`（只增不改）。补 `main_flow` 用例（CSRF / viewer 403 / 无调度器 503 / 作业取消与不可重试 400）。**任务运行与作业取消的真实执行仍需测试机验收**。 |
+| 2026-11-13 | 插件功能页原生化（第六批 files）+ 概览健康卡片：`com.skiff.files` 升 `api = "1.3"`，`/{p}/plugins/com.skiff.files/main` 默认入口改由壳页加载 `main.json`（已授权站点目录的平铺浏览 + 文本编辑/保存，保存走 `write` RPC）；旧完整工作台只保留显式 `?legacy=1`，菜单与列表不再链出。全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」，不复制第二套语义。`GET /ui/v1/overview` 新增 `health_plugin`（已启用且声明 `overview.health` 槽位的插件 id），壳页对其调 `snapshot` 后用卡片渲染 CPU/内存/负载/运行时长，失败降级为 info `alert`；不新增槽位渲染器、不改上游。文件正文经 `text_safe`（`${` → `${'${'}`）规避模板求值，登记上游 T18。 |
