@@ -323,7 +323,7 @@ Skiff 侧对应约束：
 
 - 插件功能页以**随签名包分发的静态 schema**（`ui/schema/<view>.json`）交付：manifest 的 `[[menu.items]]` / 单视图 `[[menu]]` / `[[mount]]` 用 `schema` 字段声明，`api = "1.3"` 起生效；安装期由 `skiff-pkgfmt` 完成静态校验。
 - 校验边界（宿主侧自担，不依赖上游）：节点类型白名单、禁止外链资源与外部 URL、禁止 `api`/`url`/`html` 等绕过字段、动作白名单（`skiffPluginRpc` / `skiffPluginView` / 表单 `submit`）、节点数/深度/字节数上限。schema 本身没有网络能力。
-- 数据与写操作：壳页按 schema 的 `data.<name>.method` 调 `POST /{p}/plugins/{id}/rpc`；写操作只能经 `skiffPluginRpc`，沿用 CSRF 头、权限矩阵与逐次 `plugin.rpc` 审计。schema 不允许直接写 URL。
+- 数据与写操作：壳页按 schema 的 `data.<name>.method` 调 `POST /{p}/plugins/{id}/rpc`；写操作只能经 `skiffPluginRpc`，沿用 CSRF 头、权限矩阵与逐次 `plugin.rpc` 审计。schema 不允许直接写 URL。RPC 成功返回 `{ result }`，失败返回统一 JSON 错误信封（`{ error: { code, message } }`），壳页直接展示 `error.message`；旧 iframe 桥先按其 JSON 解析、再回退 HTML 文本，行为不变。
 - 绑定语法：`{{data.<path>}}` 取已取回的 RPC 数据，`{{query.<key>}}` 取地址栏参数，`when` 支持 `{{data.x}}` / `!{{data.x}}`；budding 自己的 `${row.field}` 行内插值保持原样。
 - 权限口径：`GET /{p}/plugins/{id}/{view}`、`GET /{p}/plugins/{id}/schema/{view}` 与 RPC 一致，均要求 `PluginManage`；旧 SSR 工作台（`/{p}/m/plugin/...`）同权限。**权限不足返回 403，不伪装成 404**（不隐藏资源存在性），因此 viewer 从旧用例的 404 变为 403，这是口径修正而非路由消失。
 - 旧 SSR/iframe 不删除：`/plugins/{id}/ui/{path}`、工作台模板与 `?legacy=1` 分支继续可用，但面板内不再有入口。
@@ -438,7 +438,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 - `GET /{p}` 交付 budding 壳（未认证 303 到登录页，已登录渲染概览）；SSR 概览仍保留在 `GET /{p}/m/overview` 菜单深链，直到插件概览槽位迁入 budding。
 - 壳启动脚本先取 `GET /ui/v1/session` 与 `GET /ui/v1/menu`，按菜单生成路由表后渲染 admin 外壳；地址栏路径命中路由时加载对应页面，未适配页面渲染统一占位（§2.3.1）。
-- 概览的 `[[mount]]` 固定页插件槽位不再走 iframe：`health_plugin` 非空时壳页对其调 `snapshot` RPC，用卡片渲染 CPU / 内存 / 负载 / 运行时长；插件缺失、未启用或无 `PluginManage` 时降级为 info `alert`，不整页失败（见 §4.4）。
+- 概览的 `[[mount]]` 固定页插件槽位不再走 iframe：`health_plugin` 非空时壳页对其调 `snapshot` RPC，用卡片渲染 CPU / 内存 / 负载 / 运行时长；插件缺失、未启用或无 `PluginManage` 时渲染原因卡片（`health_reason` 或 RPC `error.message`），不整页失败、也不静默缺块（见 §4.4）。
 - 数据只复用 `dashboard::load_overview` 的既有查询（Docker 容器列表 + 插件/站点/运行环境/审计），**没有新增聚合 SQL**；本批不返回列表、不做写操作、不做图表、不做实时刷新。
 - 图表位按 D14–D16 未定，页面用 `alert` 明确占位（「D14–D16 尚未定案」），不引入任何图表库。
 
@@ -463,6 +463,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `runtimes.abnormal` | number | 有容器但非 running 的数量 |
 | `runtimes.uninstalled` | number | 尚无容器的数量 |
 | `health_plugin` | string \| null | `overview.health` 槽位的提供者（已启用插件的 id）；无提供者为 `null` |
+| `health_reason` | string | 无可用提供者时的可读原因（已停用 / 未安装声明槽位的插件）；有提供者时为空串 |
 
 错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、数据库不可用 `dependency.unavailable`（503）。本批没有列表，因此不涉及 `limit`/`cursor`（D10）。
 
@@ -470,7 +471,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 - `docker.status.code != available` → 顶部 warning `alert`（标题用 `label`，正文用 `reason`）。
 - 四张计数卡片：容器 / 网站 / 插件 / 运行环境；文案由前端 schema 生成，数字来自接口。
-- 健康卡片：`health_plugin` 存在时取 `snapshot`，超过阈值（`cpu_high` / `mem_high`）追加 warning `alert`；取数失败显示「系统状态 暂不可用」+ 原因，不隐藏其它卡片。
+- 健康卡片：`health_plugin` 存在时取 `snapshot`，超过阈值（`cpu_high` / `mem_high`）追加 warning `alert`；`health_plugin` 为空或取数失败时都渲染「系统状态」原因卡片（空值用 `health_reason`，失败用 RPC `error.message`），不隐藏其它卡片。
 - 「趋势图表」卡片内固定 `alert` 占位，禁止在占位里暗示已选定图表库。
 
 ---
@@ -1124,3 +1125,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十八批站点写操作原生化：`GET /{p}/sites/new` 改交付壳页原生表单；`/ui/v1` 新增 `POST /sites`（建站）、`/sites/batch`（批量启停）、`/sites/{domain}/{action}`（启停）、`/default`、`/domains`、`/config`、`/ssl`、`/backup`、`/delete`。全部复用 `SITE_*` 动作、`x-csrf-token`、审计与 `commands::site`；详情新增 `config` / `backup` / `can_manage`，列表新增 `can_admin`。站点列表补新建与批量启停，详情补站点操作、配置编辑、域名增删、证书与备份卡片。补 `main_flow` 用例（CSRF / viewer 403 / 确认串与空批量 400 / 详情按角色显隐）。**建站、配置保存与证书动作需 OpenResty/真实运行环境，测试机验收后再算完全闭环**。 |
 | 2026-11-13 | 第二十批任务与作业写操作原生化：`/ui/v1` 新增 `POST /tasks/{id}/toggle|run|delete` 与 `POST /jobs/{id}/cancel|retry`，复用 `TASK_*` / `JOB_*` 动作、CSRF 头、审计与既有命令层；任务列表行内与详情补启停/运行/删除，作业详情补取消/重试；作业列表新增 `can_admin`（只增不改）。补 `main_flow` 用例（CSRF / viewer 403 / 无调度器 503 / 作业取消与不可重试 400）。**任务运行与作业取消的真实执行仍需测试机验收**。 |
 | 2026-11-13 | 插件功能页原生化（第六批 files）+ 概览健康卡片：`com.skiff.files` 升 `api = "1.3"`，`/{p}/plugins/com.skiff.files/main` 默认入口改由壳页加载 `main.json`（已授权站点目录的平铺浏览 + 文本编辑/保存，保存走 `write` RPC）；旧完整工作台只保留显式 `?legacy=1`，菜单与列表不再链出。全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」，不复制第二套语义。`GET /ui/v1/overview` 新增 `health_plugin`（已启用且声明 `overview.health` 槽位的插件 id），壳页对其调 `snapshot` 后用卡片渲染 CPU/内存/负载/运行时长，失败降级为 info `alert`；不新增槽位渲染器、不改上游。文件正文经 `text_safe`（`${` → `${'${'}`）规避模板求值，登记上游 T18。 |
+| 2026-11-13 | 测试机四问题修复：`KERNEL_API` 升 `1.3`，任务门与商店安装共用 `skiff_pkgfmt::manifest::api_compatible`（修复 1.3 插件的内置任务被误判 `api_mismatch`）；概览新增 `health_reason`，`health_plugin` 为空或取数失败均渲染「系统状态」原因卡片；`POST /plugins/{id}/rpc` 失败改为 JSON 错误信封，壳页展示可读 `error.message`；`GET /ui/v1/menu` 插件项 `href` 改指原生 `/{p}/plugins/{id}/{view}`。 |

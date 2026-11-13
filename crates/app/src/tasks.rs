@@ -31,8 +31,11 @@ use skiff_sched::{
 use skiff_store::{Db, Grant, PluginRecord};
 use tokio::sync::Mutex;
 
-/// 内核插件 API 版本（manifest `api` 不匹配即视为不可用）。
-pub const KERNEL_API: &str = "1.2";
+/// 内核插件 API 版本（manifest `api` 不兼容即视为不可用）。
+///
+/// 1.3 起支持随包 schema（`ui/schema/<view>.json`）；兼容判定统一用
+/// `skiff_pkgfmt::manifest::api_compatible`，旧 1.0–1.2 插件仍可用。
+pub const KERNEL_API: &str = "1.3";
 /// 内置任务名：站点备份。
 pub const BUILTIN_SITE_BACKUP: &str = "site-backup";
 /// 内置任务名：数据库整理。
@@ -91,7 +94,7 @@ impl PluginGate for Gate {
             Ok(Some(p)) => {
                 if !p.enabled {
                     PluginStatus::Disabled
-                } else if p.api != KERNEL_API {
+                } else if !skiff_pkgfmt::manifest::api_compatible(&p.api, KERNEL_API) {
                     PluginStatus::ApiMismatch
                 } else {
                     PluginStatus::Ready

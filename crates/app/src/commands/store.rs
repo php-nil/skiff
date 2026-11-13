@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use skiff_pkgfmt::manifest::api_compatible;
 use skiff_plugin::TrustDecision;
 use skiff_store::Db;
 use tracing::{info, warn};
@@ -316,25 +317,6 @@ fn check_compatibility(
         }
     }
     Ok(())
-}
-
-/// 条目声明的 `api` 与内核 `KERNEL_API` 是否兼容：主版本必须一致，次版本不高于内核。
-fn api_compatible(required: &str, kernel: &str) -> bool {
-    fn parse(v: &str) -> Option<(u64, u64)> {
-        let (major, minor) = v.split_once('.')?;
-        if major.is_empty()
-            || minor.is_empty()
-            || !major.bytes().all(|b| b.is_ascii_digit())
-            || !minor.bytes().all(|b| b.is_ascii_digit())
-        {
-            return None;
-        }
-        Some((major.parse().ok()?, minor.parse().ok()?))
-    }
-    match (parse(required), parse(kernel)) {
-        (Some((rm, rn)), Some((km, kn))) => rm == km && rn <= kn,
-        _ => false,
-    }
 }
 
 /// 确认令牌：24 位字母数字，与上传安装的 `.incoming/<token>.wbpkg` 同一格式，

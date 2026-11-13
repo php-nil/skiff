@@ -1,6 +1,8 @@
 # 插件功能页去 iframe、改 Schema 原生渲染：可行性与工作量评估
 
 > 状态：**评估稿（2026-11-13），未实施**。本文只做事实盘点、契约影响与工作量估算，不改任何代码与既有契约正文。
+>
+> **后续进展（2026-11-13）**：插件功能页原生化已按本文推荐路线落地（guard → monitor → firewall → ftp → cron → files），并由 `overview.health` 改为「RPC 取数 + 原生卡片」替代槽位渲染。本文中「插件菜单被丢弃」「files 保留占位」等现状描述已过期；当前口径以 [PLUGIN_UI_CONTRACT.md](PLUGIN_UI_CONTRACT.md) 与 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 为准。
 > 事实来源：`plugins/*/manifest.toml`、`plugins/*/ui/*`、`crates/web/src/handlers/plugins.rs`、`crates/web/src/lib.rs`、`crates/pkgfmt/src/manifest.rs`、`crates/web/static/budding/budding-boot.js`（逐条读代码确认，标注方式见 §6）。
 > 相关文档：[PLUGIN_UI_CONTRACT.md](PLUGIN_UI_CONTRACT.md)、[MENU_CONTRACT.md](MENU_CONTRACT.md)、[SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)、[URL_CONTRACT.md](URL_CONTRACT.md)。
 

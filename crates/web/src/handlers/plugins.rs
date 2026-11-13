@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use skiff_pkgfmt::Manifest;
 use skiff_store::PluginRecord;
 
-use crate::error::AppError;
+use crate::error::{ApiError, AppError};
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser, PluginManagerUser};
 use crate::state::AppState;
@@ -770,13 +770,17 @@ fn rpc_error(message: String) -> AppError {
 }
 
 /// 插件 UI 的 RPC 桥（父页面代发）。admin 专属，逐次审计。
+///
+/// 成功返回 `{ result }`，失败返回统一 JSON 错误信封（`{ error: { code, message } }`）。
+/// 旧 iframe 桥先按 JSON 解析、再回退 HTML 文本；新壳直接读 `error.message`，
+/// 不把可读原因退化成「服务返回状态 400」。
 pub async fn rpc(
     State(state): State<Arc<AppState>>,
     PluginManagerUser(user): PluginManagerUser,
     Path(id): Path<String>,
     parts: Parts,
     body: String,
-) -> Result<Response, AppError> {
+) -> Result<Response, ApiError> {
     handlers::check_csrf_header(&state, &user, &parts)?;
     let req: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("请求体不是 JSON: {e}")))?;
@@ -792,10 +796,11 @@ pub async fn rpc(
 
     let rec = state
         .db()
-        .plugin(&id)?
+        .plugin(&id)
+        .map_err(AppError::from)?
         .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
     if !rec.enabled {
-        return Err(AppError::BadRequest("插件已停用".into()));
+        return Err(AppError::BadRequest("插件已停用".into()).into());
     }
     let result = state.supervisor().call(&rec, &method, params).await;
     state.audit_or_log(
@@ -808,7 +813,7 @@ pub async fn rpc(
     );
     match result {
         Ok(v) => Ok(axum::Json(serde_json::json!({ "result": v })).into_response()),
-        Err(e) => Err(rpc_error(e.to_string())),
+        Err(e) => Err(ApiError(rpc_error(e.to_string()))),
     }
 }
 

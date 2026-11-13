@@ -132,17 +132,22 @@
       }
     });
     // `overview.health` 槽位的原生替代：数据来自主机监控插件的 snapshot RPC。
+    // 没有提供者时也渲染原因卡片，不让整块静默消失。
     if (data.health) {
       if (data.health.error) {
         body.push({
-          type: 'alert',
-          props: {
-            type: 'info',
-            title: '系统状态',
-            text:
-              '暂不可用：' +
-              data.health.error +
-              '（需要启用主机监控插件，且当前角色具备插件管理权限）'
+          type: 'card',
+          props: { title: '系统状态' },
+          content: {
+            body: [
+              { type: 'text', props: { text: '暂不可用：' + data.health.error } },
+              {
+                type: 'text',
+                props: {
+                  text: '请检查主机监控插件是否已启用、授权根（path:/proc）是否完整，以及当前角色是否具备插件管理权限。'
+                }
+              }
+            ]
           }
         });
       } else {
@@ -6381,7 +6386,12 @@
       return fetchData('/overview').then(function (data) {
         // 健康槽位不再走 iframe：从 overview 拿到提供者后，用统一 RPC 取数，
         // 失败（未启用/无权限）也只影响这一块，不拖垮整页。
-        if (!data.health_plugin) return overviewSchema(data);
+        if (!data.health_plugin) {
+          data.health = {
+            error: data.health_reason || '未启用主机监控插件'
+          };
+          return overviewSchema(data);
+        }
         return pluginRpcCall(data.health_plugin, 'snapshot', {})
           .then(function (rpc) {
             data.health = rpc && rpc.sample ? rpc.sample : null;

@@ -247,7 +247,7 @@ sample RPC  ──►  ring/append  ──►  只读批次（≤ max_batch） �
 - 复用 `Supervisor::ensure/call`（`crates/plugin/src/supervisor.rs:121-189`）；熔断（连续 3 次启动失败、退避 0.5s/2s/8s）不重复实现。
 - 等待就绪以「socket 可连接 + 首次 ping 成功」为准，超时 5s；P1 若 Supervisor 没有显式健康探针，需要在 `ensure` 内补一个轻量 ping（属于实现，不在本文档展开）。
 - 插件被停用：任务不删除，`state=blocked`；每轮只检查状态，不重复写审计（状态变化时写一次）。
-- 插件版本/API 不匹配：`blocked(api_mismatch)`，提示升级内核或插件；不尝试降级调用。
+- 插件版本/API 不匹配：`blocked(api_mismatch)`，提示升级内核或插件；不尝试降级调用。兼容判定为「主版本一致、次版本不高于内核」，与商店安装共用 `skiff_pkgfmt::manifest::api_compatible`（当前内核 `1.3`）。
 
 ### 6.1 常驻与保活
 

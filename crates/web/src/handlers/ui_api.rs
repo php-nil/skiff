@@ -171,8 +171,13 @@ pub struct OverviewCounts {
     /// `overview.health` 槽位的提供者（已启用插件）。
     ///
     /// 新壳不渲染 iframe 槽位：前端拿到插件 id 后走统一 RPC 取数，再用 schema 渲染卡片。
-    /// 没有提供者时为 `null`，概览页不显示健康块。
+    /// 没有可用提供者时为 `null`。
     pub health_plugin: Option<String>,
+    /// 没有可用提供者时的可读原因（已停用 / 未安装声明槽位的插件）。
+    ///
+    /// 前端在 `health_plugin` 为空时渲染原因卡片，不静默消失；取数失败的原因
+    /// 由 RPC 错误信封带回，不复用本字段。
+    pub health_reason: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,14 +267,32 @@ pub async fn overview(
         .unwrap_or_default();
     // 从已启用插件的 manifest 里找 `overview.health` 槽位提供者；不读槽位 HTML，
     // 只把插件 id 交给前端走 RPC（权限与审计仍由 RPC 通道负责）。
-    let health_plugin = data.plugins.iter().filter(|p| p.enabled).find_map(|p| {
-        let manifest = skiff_pkgfmt::Manifest::parse(&p.manifest).ok()?;
-        manifest
-            .mount
-            .iter()
-            .any(|m| m.slot == "overview.health")
-            .then(|| p.id.clone())
-    });
+    // 没有可用提供者时给出可读原因（停用 / 未安装），避免概览静默缺块。
+    let mut health_plugin = None;
+    let mut health_disabled: Option<String> = None;
+    for p in &data.plugins {
+        let Some(manifest) = skiff_pkgfmt::Manifest::parse(&p.manifest).ok() else {
+            continue;
+        };
+        if !manifest.mount.iter().any(|m| m.slot == "overview.health") {
+            continue;
+        }
+        if p.enabled {
+            health_plugin = Some(p.id.clone());
+            break;
+        }
+        if health_disabled.is_none() {
+            health_disabled = Some(p.id.clone());
+        }
+    }
+    let health_reason = if health_plugin.is_some() {
+        String::new()
+    } else if let Some(id) = health_disabled {
+        format!("主机监控插件 {id} 已停用；启用后此处显示 CPU、内存与负载。")
+    } else {
+        "未安装声明 overview.health 的插件；安装并启用主机监控插件后，此处显示系统状态。"
+            .to_string()
+    };
     let counts = OverviewCounts {
         collected_at,
         docker,
@@ -292,6 +315,7 @@ pub async fn overview(
             uninstalled: runtime_uninstalled,
         },
         health_plugin,
+        health_reason,
     };
     let mut resp = Json(json!({ "data": counts })).into_response();
     resp.headers_mut()
@@ -5664,7 +5688,7 @@ pub struct MenuLinkData {
     pub key: String,
     pub label: String,
     pub icon: String,
-    /// 规范深链 `/{p}/m/...`；插件页已可由壳页原生渲染（schema）。
+    /// 规范深链：内置项为 `/{p}/...`；插件功能页为原生 `/{p}/plugins/{id}/{view}`。
     pub href: String,
     pub plugin: bool,
     /// 插件 id（内置页面为空串）。
@@ -5736,12 +5760,14 @@ pub struct MenuEmptyData {
 
 /// `GET /ui/v1/menu`：budding 壳的菜单数据（需登录，401 口径同 `/ui/v1/session`）。
 ///
-/// 菜单数据是路由表的来源：前端据 `key` 映射到已迁移的 budding 页面，
-/// 未迁移项保留内核深链 `href`（插件功能页仍走 SSR + iframe）。
+/// 菜单数据是路由表的来源：前端据 `key` 映射到已迁移的 budding 页面。
+/// 插件项下发的 `href` 直接指向原生 `/{p}/plugins/{id}/{view}`，不再落到
+/// `/{p}/m/plugin/...` 旧工作台；旧路径只保留给显式 `?legacy=1` 兼容请求。
 pub async fn menu(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Json<serde_json::Value> {
+    let prefix = state.cfg.entry_prefix.clone();
     let page = skiff_app::menu::build(&state, &user, "");
     let groups = page
         .groups
@@ -5760,11 +5786,18 @@ pub async fn menu(
                     } else {
                         (String::new(), String::new(), Vec::new())
                     };
+                    // 插件菜单在原生命令下是 `/{p}/plugins/{id}/{view}`；
+                    // 只有 manifest 解析失败（拿不到视图）时才保留内核旧深链兜底。
+                    let href = if !plugin_id.is_empty() && !default_view.is_empty() {
+                        format!("/{prefix}/plugins/{plugin_id}/{default_view}")
+                    } else {
+                        item.href
+                    };
                     MenuLinkData {
                         key: item.key,
                         label: item.label,
                         icon: item.icon,
-                        href: item.href,
+                        href,
                         plugin: item.plugin,
                         plugin_id,
                         default_view,

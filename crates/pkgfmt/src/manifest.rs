@@ -520,6 +520,28 @@ fn api_minor(api: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// 条目声明的 `api` 与内核支持的 API 是否兼容：主版本必须一致，次版本不高于内核。
+///
+/// 单一来源：安装兼容性（商店目录）与插件任务门（调度器）共用这一处判定，
+/// 避免「能装不能用」或「能用不能装」的两套口径。
+pub fn api_compatible(required: &str, kernel: &str) -> bool {
+    fn parse(v: &str) -> Option<(u64, u64)> {
+        let (major, minor) = v.split_once('.')?;
+        if major.is_empty()
+            || minor.is_empty()
+            || !major.bytes().all(|b| b.is_ascii_digit())
+            || !minor.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    }
+    match (parse(required), parse(kernel)) {
+        (Some((rm, rn)), Some((km, kn))) => rm == km && rn <= kn,
+        _ => false,
+    }
+}
+
 /// `/{p}/plugins/{id}/<view>` 里被内核静态段占用的名字：视图名不能与之同名，
 /// 否则 GET 与 POST/静态托管路由重叠，安装期就拒绝。
 const RESERVED_VIEWS: &[&str] = &["ui", "rpc", "toggle", "delete", "remove"];
@@ -1418,6 +1440,17 @@ secret = true
             "ZZ",
         );
         assert!(Manifest::parse(&bad).is_err());
+    }
+
+    #[test]
+    fn api_compatibility_allows_same_major_not_newer_minor() {
+        assert!(api_compatible("1.0", "1.3"));
+        assert!(api_compatible("1.2", "1.3"));
+        assert!(api_compatible("1.3", "1.3"));
+        assert!(!api_compatible("1.4", "1.3"));
+        assert!(!api_compatible("1.3", "1.2"));
+        assert!(!api_compatible("2.0", "1.3"));
+        assert!(!api_compatible("abc", "1.3"));
     }
 
     #[test]

@@ -8086,6 +8086,7 @@ ui = "health.html"
     assert_eq!(data["plugins"]["disabled"], 0);
     // 已启用插件声明 overview.health 槽位时，概览把提供者 id 交给前端走 RPC。
     assert_eq!(data["health_plugin"], "com.example.count");
+    assert_eq!(data["health_reason"], "", "有提供者时不需要原因文案");
     assert_eq!(data["containers"]["total"], 0);
     assert_eq!(data["containers"]["running"], 0);
     assert_eq!(data["sites"]["total"], 0);
@@ -8101,8 +8102,145 @@ ui = "health.html"
     assert!(chrono::DateTime::parse_from_rfc3339(collected).is_ok());
 }
 
-// ---- 站点 / 运行环境只读页（第一批）：JSON 列表 + keyset 游标 + 壳页回落 ----
+/// 没有可用的 `overview.health` 提供者时，概览必须给出可读原因，
+/// 而不是让「系统状态」整块静默消失（停用与未安装分别给不同文案）。
+#[tokio::test]
+async fn ui_overview_reports_health_reason_without_enabled_provider() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
 
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["health_plugin"].is_null());
+    let reason = v["data"]["health_reason"].as_str().unwrap();
+    assert!(reason.contains("未安装"), "{reason}");
+
+    seed_declared_plugin(
+        h.state.db().as_ref(),
+        r#"id = "com.example.health"
+name = "Health Demo"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.2"
+requires_full_sandbox = false
+
+[[ui]]
+label = "Health"
+path = "index.html"
+
+[[mount]]
+slot = "overview.health"
+ui = "health.html"
+"#
+        .to_string(),
+        false,
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["health_plugin"].is_null());
+    let reason = v["data"]["health_reason"].as_str().unwrap();
+    assert!(reason.contains("com.example.health"), "{reason}");
+    assert!(reason.contains("已停用"), "{reason}");
+}
+
+/// 插件菜单 JSON 的 `href` 指向原生功能页，不再落到 `/m/plugin/...` 旧工作台。
+#[tokio::test]
+async fn ui_menu_plugin_href_points_to_native_route() {
+    let h = harness();
+    seed_declared_plugin(
+        h.state.db().as_ref(),
+        r#"id = "com.example.native"
+name = "Native Demo"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.3"
+requires_full_sandbox = false
+
+[[ui]]
+label = "Native"
+path = "main.html"
+
+[[menu]]
+id = "main"
+parent = "tools"
+label = "Native"
+order = 10
+view = "main"
+schema = "main.json"
+"#
+        .to_string(),
+        true,
+    );
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let item = v["data"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|g| g["items"].as_array())
+        .flat_map(|items| items.iter())
+        .find(|i| i["key"] == "plugin/com.example.native/main")
+        .expect("插件菜单项必须存在");
+    assert_eq!(item["href"], "/p/plugins/com.example.native/main");
+    assert_eq!(item["default_view"], "main");
+    assert!(
+        !item["href"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/m/plugin/"),
+        "菜单 href 不得再指向旧工作台"
+    );
+}
+
+/// 插件 RPC 失败必须返回统一 JSON 错误信封（壳页读 `error.message`），
+/// 不能退回 HTML 错误页导致前端只剩「服务返回状态 4xx」。
+#[tokio::test]
+async fn ui_plugin_rpc_errors_are_json_with_readable_message() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/p/plugins/com.example.missing/rpc")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    header::COOKIE,
+                    format!("{}={}", skiff_identity::session_cookie_name(true), token),
+                )
+                .header("x-csrf-token", csrf)
+                .body(Body::from(r#"{"method":"snapshot","params":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.starts_with("application/json"), "content-type: {ct}");
+    let v: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("插件不存在"),
+        "{v}"
+    );
+}
+
+// ---- 站点 / 运行环境只读页（第一批）：JSON 列表 + keyset 游标 + 壳页回落 ----
 /// `/ui/v1/sites`、`/ui/v1/sites/{domain}`、`/ui/v1/runtimes` 的鉴权与冻结字段。
 /// 列表走 keyset 游标（D10）：`limit` 截断后返回 `next_cursor`，下一页从游标继续。
 #[tokio::test]

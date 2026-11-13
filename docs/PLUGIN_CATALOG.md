@@ -30,7 +30,7 @@
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
 | `ftp` | **新增能力面**（api 1.2）：`status/install/service.configure/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/account.set_enabled/service.restart`；`status` 回传真实监听/连接数/fail2ban 细节，配置持久化到 `/etc/skiff/ftp-service.json`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/plugin/src/ftp.rs`（判定与编排）、`crates/core/src/kernel/ftp.rs`（grants/审计/`systemd-run` 通道）、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排；能力面的特权动作（apt/systemd/pure-pw/chown）由插件编排、经内核的特权通道执行 |
 | `interop` | 两个路由：`capability/interop/call`（跨插件接口调用，四道闸 + 15s 超时 + busy 防环）、`capability/interop/catalog`（只列**调得通**的接口）；转发时注入 `params._interop.caller` | `crates/core/src/kernel/{routes.rs,interop.rs}`、manifest `[interop]`（`crates/pkgfmt/src/manifest.rs`）、`crates/plugin/src/interop.rs` | 计划任务（调度插件接口）、站点页「一键新增备份任务」这类**插件间协作**可做；不需要给插件宿主 shell |
-| 插件 UI | 沙箱 iframe（无 same-origin）+ 父页面 postMessage 桥 + CSP `connect-src 'none'`；单帧上限 1MiB | `crates/web/src/handlers/plugins.rs` 的 `plugin_ui` / `rpc`、`crates/web/static/skiff.js` 的 `attachPluginBridges` | 插件 UI 不能直连内核，所有数据走插件 RPC；**大文件上传下载会被帧上限卡死**，文件管理器需要新增传输契约 |
+| 插件 UI | 默认由壳页加载随包 schema 原生渲染（`api = 1.3`）；旧沙箱 iframe 工作台（无 same-origin + postMessage 桥，单帧上限 1MiB）只在显式 `?legacy=1` 时使用 | `crates/web/src/handlers/plugins.rs`、`crates/web/static/budding/budding-boot.js`、`crates/pkgfmt/src/schema.rs` | 插件 UI 不能直连内核，所有数据与写操作走 `POST /{p}/plugins/{id}/rpc`（CSRF + 权限 + 审计）；**大文件上传下载仍受帧上限限制**，文件管理器需新增传输契约 |
 | 信任 | DB 信任库 + TOFU 三段式；**没有内置官方公钥**（§4.3 承诺「内置官方公钥」尚未落地） | `crates/plugin/src/trust.rs` 的 `resolve` / `decide` | 官方插件「开箱即用」的第一道门未开：现在仍要手动导入公钥 |
 | 分发 | 渠道未决策（§1.4），安装全程离线可用 | [§4.4](sections/04-plugin-publish.md) | 开箱即用只能靠「随包携带 + 本地官方源」，不能依赖在线商店 |
 
@@ -173,7 +173,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-6 个官方插件与 testkit（共 7 个包）均改为 `api = "1.2"` + `[[menu]]` + `view` 声明，内核渲染全部导航与功能页外框；插件只负责 `ui/<view>.html`。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
+6 个官方插件与 testkit（共 7 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。完整契约见 `docs/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/MENU_CONTRACT.md`。
 
 | 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
