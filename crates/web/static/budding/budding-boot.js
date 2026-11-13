@@ -577,10 +577,28 @@
     'core/settings/audit': { path: '/audit', schema: 'skiff:audit' }
   };
 
+  /// 插件菜单键 → `/ui/v1/menu` 下发的视图元数据（id / 默认视图 / 视图列表）。
+  var pluginMeta = {};
+
   /// 一个菜单项 → 一条路由记录。命中已迁移页面时给出 budding 路径与 Schema；
-  /// 插件自带 HTML/iframe 的入口一律不进路由（新一代前端不承载 iframe 功能页）。
+  /// 插件功能页走 `/plugins/<id>/<view>`，由壳页加载随包 schema 原生渲染。
   function menuRoute(key, label, icon, href) {
-    if (key.indexOf('plugin/') === 0) return null;
+    if (key.indexOf('plugin/') === 0) {
+      var meta = pluginMeta[key];
+      if (!meta || !meta.plugin_id || !meta.default_view) return null;
+      return {
+        path:
+          prefix +
+          '/plugins/' +
+          encodeURIComponent(meta.plugin_id) +
+          '/' +
+          encodeURIComponent(meta.default_view),
+        title: label,
+        icon: iconFor(icon),
+        schema: 'skiff:plugin-view',
+        meta: { activeMenu: prefix + '/plugins' }
+      };
+    }
     var page = BUILTIN_PAGES[key];
     if (page) {
       return {
@@ -603,6 +621,13 @@
   /// 内核菜单树 → budding 路由表（菜单是路由的投影，不另造第二份菜单）。
   function buildRoutes(menuData) {
     var routes = [];
+    (menuData.groups || []).forEach(function (group) {
+      (group.items || []).forEach(function (item) {
+        if (item.plugin && item.plugin_id && item.views) {
+          pluginMeta[item.key] = item;
+        }
+      });
+    });
     (menuData.groups || []).forEach(function (group, index) {
       var order = index * 10;
       if (!group.items || group.items.length === 0) {
@@ -770,14 +795,25 @@
       schema: 'skiff:store-confirm',
       meta: { activeMenu: prefix + '/store' }
     });
-    // 插件功能页：旧 SSR 仍是内核 iframe 槽位，但不是新一代前端的入口；
-    // 直达时给统一占位，等插件 UI 以 schema 形式交付后再替换。
-    routes.push({
-      path: prefix + '/plugins/:id/:view',
-      title: '插件功能页',
-      hidden: true,
-      schema: 'skiff:plugin-view',
-      meta: { activeMenu: prefix + '/plugins' }
+    // 插件功能页：每个可见视图一条路由；页面结构由随包 schema 提供，
+    // 壳页只做数据绑定与 RPC 转发。
+    Object.keys(pluginMeta).forEach(function (key) {
+      var meta = pluginMeta[key];
+      (meta.views || []).forEach(function (v) {
+        if (!v || !v.view || v.view === meta.default_view) return;
+        routes.push({
+          path:
+            prefix +
+            '/plugins/' +
+            encodeURIComponent(meta.plugin_id) +
+            '/' +
+            encodeURIComponent(v.view),
+          title: meta.label + ' · ' + v.label,
+          hidden: true,
+          schema: 'skiff:plugin-view',
+          meta: { activeMenu: prefix + '/plugins' }
+        });
+      });
     });
     return routes;
   }
@@ -876,6 +912,8 @@
         skiffUpgradeDownload: storeUpgradeDownload,
         skiffPluginToggle: pluginToggle,
         skiffPluginDelete: pluginDelete,
+        skiffPluginRpc: pluginRpcAction,
+        skiffPluginView: pluginViewAction,
         skiffLogout: function () {
           return logout().catch(function (error) {
             window.alert('退出失败：' + (error && error.message ? error.message : String(error)));
@@ -5584,8 +5622,8 @@
         type: 'alert',
         props: {
           type: 'info',
-          title: '插件功能页正在切换为原生渲染',
-          text: '上述功能页由插件自带 HTML 渲染（旧版以 iframe 承载），新一代前端不承载 iframe，因此不再提供跳转入口；功能将以 Schema 形式交付后在此原生渲染。'
+          title: '功能页由随包 Schema 原生渲染',
+          text: '已声明 schema 的功能页从左侧菜单进入，由壳页直接渲染；未声明 schema 的旧视图仍保留在旧 SSR 工作台（显式 ?legacy=1），不再作为面板内入口。'
         }
       });
     }
@@ -6018,6 +6056,237 @@
     );
   }
 
+  // ---- 插件功能页：随包 Schema + RPC ----
+
+  function pluginBase(id) {
+    return prefix + '/plugins/' + encodeURIComponent(id);
+  }
+
+  /// 壳页唯一的插件动作通道：与旧 iframe 桥完全同一条 RPC 路径
+  /// （CSRF 头、权限矩阵、逐次审计都由内核裁决）。
+  function pluginRpcCall(id, method, params) {
+    return fetch(pluginBase(id) + '/rpc', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'content-type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify({ method: method, params: params == null ? null : params })
+    }).then(function (resp) {
+      return readJson(resp).then(function (body) {
+        return { status: resp.status, body: body };
+      });
+    })
+      .then(function (res) {
+        if (res.status !== 200) {
+          throw new Error(errorMessage(res));
+        }
+        return res.body ? res.body.result : null;
+      });
+  }
+
+  function pluginQuery() {
+    var out = {};
+    new URLSearchParams(location.search).forEach(function (value, key) {
+      out[key] = value;
+    });
+    return out;
+  }
+
+  /// 绑定路径求值：`data.*` 取已取回的数据，`query.*` 取地址栏参数。
+  function pluginGet(ctx, path) {
+    var parts = String(path).split('.');
+    var cur = parts[0] === 'data' ? ctx.data : parts[0] === 'query' ? ctx.query : null;
+    for (var i = 1; i < parts.length && cur != null; i++) {
+      cur = cur[parts[i]];
+    }
+    return cur;
+  }
+
+  var PLUGIN_BINDING = /^\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}$/;
+  var PLUGIN_INLINE = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
+
+  function pluginSubstitute(value, ctx) {
+    var exact = PLUGIN_BINDING.exec(value);
+    if (exact) {
+      var bound = pluginGet(ctx, exact[1]);
+      return bound == null ? null : bound;
+    }
+    return value.replace(PLUGIN_INLINE, function (_, path) {
+      var v = pluginGet(ctx, path);
+      return v == null ? '' : String(v);
+    });
+  }
+
+  /// 递归解析：`when` 条件、`{{data.x}}` 绑定；不改动 budding 自己的
+  /// `${row.field}` 行内插值（那是渲染期由组件处理的）。
+  function pluginResolve(value, ctx) {
+    if (Array.isArray(value)) {
+      var arr = [];
+      value.forEach(function (item) {
+        var resolved = pluginResolve(item, ctx);
+        if (resolved !== null && resolved !== undefined) arr.push(resolved);
+      });
+      return arr;
+    }
+    if (!value || typeof value !== 'object') return value;
+    if (typeof value.when === 'string') {
+      var raw = value.when.trim();
+      var negate = raw.charAt(0) === '!';
+      if (negate) raw = raw.slice(1).trim();
+      var bound = PLUGIN_BINDING.exec(raw);
+      var ok = bound ? !!pluginGet(ctx, bound[1]) : false;
+      if (negate) ok = !ok;
+      if (!ok) return null;
+    }
+    var out = {};
+    Object.keys(value).forEach(function (key) {
+      if (key === 'when') return;
+      var v = value[key];
+      if (typeof v === 'string') out[key] = pluginSubstitute(v, ctx);
+      else if (v && typeof v === 'object') out[key] = pluginResolve(v, ctx);
+      else out[key] = v;
+    });
+    return out;
+  }
+
+  function pluginMetaById(id) {
+    var keys = Object.keys(pluginMeta);
+    for (var i = 0; i < keys.length; i++) {
+      if (pluginMeta[keys[i]].plugin_id === id) return pluginMeta[keys[i]];
+    }
+    return null;
+  }
+
+  /// 页内视图切换：budding 1.8.0 没有 page-tabs，先用按钮行承担 L3 入口。
+  function pluginTabs(page, id, view) {
+    var meta = pluginMetaById(id);
+    if (!meta || !meta.views || meta.views.length < 2) return page;
+    var tabs = meta.views.map(function (v) {
+      var props = { text: v.label, variant: 'text' };
+      if (v.view === view) props.color = 'primary';
+      return {
+        type: 'button',
+        props: props,
+        onEvent: {
+          click: { actions: [{ type: 'skiffPluginView', props: { view: v.view } }] }
+        }
+      };
+    });
+    page.body = [
+      { type: 'flex', props: { gap: 8, wrap: true }, content: { body: tabs } }
+    ].concat(page.body || []);
+    return page;
+  }
+
+  function pluginErrorPage(id, view, error) {
+    var detail = error && error.message ? error.message : String(error);
+    return {
+      type: 'page',
+      props: { title: '插件功能页', subtitle: id + ' / ' + view },
+      body: [
+        {
+          type: 'alert',
+          props: { type: 'error', title: '插件功能页加载失败', text: detail }
+        },
+        { type: 'link', props: { text: '返回插件页', href: prefix + '/plugins' } }
+      ]
+    };
+  }
+
+  function pluginPage(id, view) {
+    if (!id || !view) {
+      return Promise.resolve(
+        pluginErrorPage(id || '未知插件', view || '未知视图', '地址栏缺少插件 id 或视图名')
+      );
+    }
+    return fetch(pluginBase(id) + '/schema/' + encodeURIComponent(view), {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) {
+          if (res.status === 403) throw new Error('当前角色无权访问该插件功能页');
+          if (res.status === 404) throw new Error('该视图没有随包 schema（可能仍是旧 HTML 界面）');
+          throw new Error(errorMessage(res));
+        }
+        var doc = res.body;
+        if (!doc || !doc.page) throw new Error('schema 格式不正确');
+        var ctx = { data: {}, query: pluginQuery() };
+        var names = Object.keys(doc.data || {});
+        return Promise.all(
+          names.map(function (name) {
+            var decl = doc.data[name] || {};
+            var params = pluginResolve(decl.params || {}, ctx);
+            return pluginRpcCall(id, decl.method, params).then(function (value) {
+              return [name, value];
+            });
+          })
+        ).then(function (pairs) {
+          pairs.forEach(function (pair) {
+            ctx.data[pair[0]] = pair[1];
+          });
+          return pluginTabs(pluginResolve(doc.page, ctx), id, view);
+        });
+      })
+      .catch(function (error) {
+        return pluginErrorPage(id, view, error);
+      });
+  }
+
+  /// 页内视图切换（只允许跳到同一插件的视图）。
+  function pluginViewAction(args) {
+    var parts = routeParts();
+    var id = parts[0] === 'plugins' ? parts[1] : '';
+    if (!id || !args || !args.view) return Promise.resolve();
+    var target = pluginBase(id) + '/' + encodeURIComponent(args.view);
+    if (location.pathname === target) location.reload();
+    else location.assign(target);
+    return Promise.resolve();
+  }
+
+  /// schema 声明的写操作：表单值 + 静态 params 合并后走统一 RPC 通道。
+  function pluginRpcAction(args) {
+    var parts = routeParts();
+    var id = parts[0] === 'plugins' ? parts[1] : '';
+    if (!id) {
+      window.alert('无法定位当前插件');
+      return Promise.resolve();
+    }
+    var method = args && args.method;
+    if (!method) {
+      window.alert('动作缺少 method');
+      return Promise.resolve();
+    }
+    if (args.confirm && !window.confirm(String(args.confirm))) {
+      return Promise.resolve();
+    }
+    var params = {};
+    if (args.params && typeof args.params === 'object') {
+      Object.keys(args.params).forEach(function (k) {
+        params[k] = args.params[k];
+      });
+    }
+    var reserved = { method: 1, params: 1, confirm: 1, reload: 1, id: 1 };
+    Object.keys(args).forEach(function (key) {
+      if (!reserved[key]) params[key] = args[key];
+    });
+    return pluginRpcCall(id, method, params)
+      .then(function () {
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   function pageSchema(kind) {
     var parts = routeParts();
     if (kind === 'overview') {
@@ -6225,25 +6494,7 @@
       return fetchData('/plugins/' + encodeURIComponent(parts[1])).then(pluginInfoSchema);
     }
     if (kind === 'plugin-view') {
-      return Promise.resolve({
-        type: 'page',
-        props: { title: '插件功能页', subtitle: '插件功能页正在切换为原生渲染' },
-        body: [
-          {
-            type: 'alert',
-            props: {
-              type: 'info',
-              title: '插件功能页正在切换为原生渲染',
-              text:
-                '该入口属于插件自带的 HTML 界面（旧 SSR 以 iframe 承载），新一代前端不再承载 iframe。插件功能将以 Schema 形式交付后在此原生渲染；当前请使用插件页的列表、详情、启停与卸载能力。'
-            }
-          },
-          {
-            type: 'link',
-            props: { text: '返回插件页', href: prefix + '/plugins' }
-          }
-        ]
-      });
+      return pluginPage(parts[1] || '', parts[2] || '');
     }
     if (kind === 'store') {
       var refresh = new URLSearchParams(location.search).get('refresh') === '1' ? '?refresh=1' : '';

@@ -617,6 +617,7 @@ dependencies = [
  "hex",
  "rand",
  "serde",
+ "serde_json",
  "sha2",
  "skiff-cron",
  "skiff-model",

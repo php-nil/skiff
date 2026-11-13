@@ -5648,9 +5648,67 @@ pub struct MenuLinkData {
     pub key: String,
     pub label: String,
     pub icon: String,
-    /// 规范深链 `/{p}/m/...`；插件页仍由内核 SSR 承载。
+    /// 规范深链 `/{p}/m/...`；插件页已可由壳页原生渲染（schema）。
     pub href: String,
     pub plugin: bool,
+    /// 插件 id（内置页面为空串）。
+    pub plugin_id: String,
+    /// 插件默认视图名（内置页面为空串）。
+    pub default_view: String,
+    /// 插件视图列表：壳页据此生成路由与页内标签。
+    pub views: Vec<MenuViewData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MenuViewData {
+    pub view: String,
+    pub label: String,
+}
+
+/// 插件菜单键 → (插件 id, 默认视图, 视图列表)。
+///
+/// 只读 manifest，不另造菜单语义：视图顺序与 `[[menu.items]]` 的排序一致。
+fn plugin_menu_views(state: &AppState, key: &str) -> (String, String, Vec<MenuViewData>) {
+    let Some(rest) = key.strip_prefix("plugin/") else {
+        return (String::new(), String::new(), Vec::new());
+    };
+    let Some((id, l2)) = rest.split_once('/') else {
+        return (String::new(), String::new(), Vec::new());
+    };
+    let Some(manifest) = state
+        .db()
+        .plugin(id)
+        .ok()
+        .flatten()
+        .and_then(|r| skiff_pkgfmt::Manifest::parse(&r.manifest).ok())
+    else {
+        return (id.to_string(), String::new(), Vec::new());
+    };
+    let Some(decl) = manifest.menu.iter().find(|m| m.id == l2) else {
+        return (id.to_string(), String::new(), Vec::new());
+    };
+    let mut views: Vec<MenuViewData> = if decl.items.is_empty() {
+        vec![MenuViewData {
+            view: decl.view.clone(),
+            label: decl.label.clone(),
+        }]
+    } else {
+        let mut items: Vec<&skiff_pkgfmt::MenuItem> = decl.items.iter().collect();
+        items.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+        items
+            .into_iter()
+            .map(|it| MenuViewData {
+                view: it.view.clone().unwrap_or_else(|| it.id.clone()),
+                label: it.label.clone(),
+            })
+            .collect()
+    };
+    views.dedup_by(|a, b| a.view == b.view);
+    let default_view = views
+        .first()
+        .map(|v| v.view.clone())
+        .unwrap_or_else(|| decl.view.clone());
+    (id.to_string(), default_view, views)
 }
 
 #[derive(Debug, Serialize)]
@@ -5680,12 +5738,22 @@ pub async fn menu(
             items: group
                 .items
                 .into_iter()
-                .map(|item| MenuLinkData {
-                    key: item.key,
-                    label: item.label,
-                    icon: item.icon,
-                    href: item.href,
-                    plugin: item.plugin,
+                .map(|item| {
+                    let (plugin_id, default_view, views) = if item.plugin {
+                        plugin_menu_views(&state, &item.key)
+                    } else {
+                        (String::new(), String::new(), Vec::new())
+                    };
+                    MenuLinkData {
+                        key: item.key,
+                        label: item.label,
+                        icon: item.icon,
+                        href: item.href,
+                        plugin: item.plugin,
+                        plugin_id,
+                        default_view,
+                        views,
+                    }
                 })
                 .collect(),
             empty: group.empty.map(|empty| MenuEmptyData {

@@ -5,11 +5,10 @@
 >
 > 一句话结论：`/{p}/plugins/{id}` 是内核渲染的插件信息与管理页；插件只负责 `/{p}/plugins/{id}/<view>` 里的功能内容。
 >
-> **2026-11-13 方向变更**：budding 新前端不承载 iframe，`/{p}/plugins/{id}/<view>`
-> 不再作为新产品入口（菜单与路由不下发），直达时渲染「插件功能页正在切换为原生渲染」占位。
-> 本文的 iframe 沙箱、CSP、nonce 与 postMessage 桥接仅对旧 SSR 页继续有效；
-> 插件 UI 需以 Schema 形式交付（见 [`BUDDING_UPSTREAM_BACKLOG.md`](BUDDING_UPSTREAM_BACKLOG.md) T7），
-> 插件包二进制格式（`[[ui]]` 仍指向包内 HTML）本次不变。
+> **2026-11-13 原生化**：budding 新前端的插件功能页改为**随包 Schema 原生渲染**
+> （`api = "1.3"` 起，`ui/schema/<name>.json`，安装期静态校验）。旧 iframe / SSR
+> 工作台保留为 legacy（`/{p}/m/plugin/...` 与 `?legacy=1`），不再作为面板内入口。
+> iframe 沙箱、CSP、nonce 与 postMessage 桥接仅对旧 SSR 页继续有效；新壳的安全边界见 §4.0。
 
 ## 1. 路由分工
 
@@ -19,8 +18,9 @@
 |---|---|---|---|
 | `/{p}/plugins` | GET | 内核 | 插件中心（已安装 / 发现 / 可更新） |
 | `/{p}/plugins/{id}` | GET | 内核 | **插件信息与管理页**：身份、版本、密钥指纹、签名、沙箱、授权、菜单、运行状态、日志/事件入口、管理动作 |
-| `/{p}/plugins/{id}/{view}` | GET | 内核框架 + 插件 iframe | **插件功能页**：按视图名加载 `ui/<view>.html`，内核只渲染页面标题区 + 顶部 L3 通栏，iframe 为纯内容区 |
-| `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越 |
+| `/{p}/plugins/{id}/{view}` | GET | 壳页（schema） | **插件功能页**：声明了 schema 的视图由壳页原生渲染；未声明的旧视图回落旧 SSR 工作台（`?legacy=1` 显式兼容） |
+| `/{p}/plugins/{id}/schema/{view}` | GET | 内核 | 返回该视图的随包 schema JSON（`application/json`，`no-store`）；要求 `PluginManage`，与 RPC 同权限 |
+| `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越；legacy iframe 使用 |
 | `/{p}/plugins/{id}/rpc` | POST | 内核代发 | 父页面代发插件 RPC，需要 CSRF 头与管理员权限，逐次审计 |
 | `/{p}/plugins/{id}/toggle` | POST | 内核 | 启用 / 停用；`next` 只接受本站插件前缀 |
 | `/{p}/plugins/{id}/delete` | POST | 内核 | 卸载；可选 `delete_data=on`。旧 `/{p}/plugins/{id}/remove` 保留为别名（[`URL_CONTRACT.md`](URL_CONTRACT.md) §7） |
@@ -32,33 +32,32 @@
 
 - `/{p}/plugins/{id}` **不再承载 iframe**，也不再接受 `?menu=` 选择视图。
 - 功能页的规范入口是 `/{p}/plugins/{id}/{view}`；菜单深链 `/{p}/m/...` 是同一视图的另一种寻址方式，二者渲染结果一致。
-- 静态段 `ui` / `rpc` / `toggle` / `delete` / `remove` 优先于 `{view}`，因此视图名不得使用这些保留字（安装期校验）。
+- **权限口径**：功能页、schema 端点、旧 SSR 深链与 `POST /rpc` 一致，均要求 `PluginManage`；不允许「页面只要登录、取数才 403」。
+- 静态段 `ui` / `rpc` / `schema` / `toggle` / `delete` / `remove` 优先于 `{view}`，因此视图名不得使用这些保留字（安装期校验）。
 - `{view}` 只允许 `[a-z0-9][a-z0-9-]{0,31}`。
 
 ## 2. manifest 声明模型
 
 ### 2.1 字段
 
-菜单声明要求 `api = "1.2"`。字段只在 `skiff-pkgfmt::Manifest` 定义一处：
+菜单声明要求 `api = "1.2"`；声明随包 schema 要求 `api = "1.3"`。字段只在 `skiff-pkgfmt::Manifest` 定义一处：
 
 | 位置 | 字段 | 类型 | 默认 | 语义 |
 |---|---|---|---|---|
 | `[[menu]]` | `view` | string | `main` | 该 L2 的默认视图；无 L3 时是唯一视图 |
+| `[[menu]]` | `schema` | string | — | 单视图 L2 的 schema 文件名（相对 `ui/schema/`），与 `items` 互斥 |
 | `[[menu.items]]` | `id` | string | — | L3 稳定局部 id |
 | `[[menu.items]]` | `view` | string | 等于 `id` | 该 L3 的视图名 |
+| `[[menu.items]]` | `schema` | string | — | 该视图的 schema 文件名（相对 `ui/schema/`） |
 | `[[ui]]` | `path` | string | — | 旧包入口 / 插件中心元数据，不参与视图解析（见 §5） |
-| `[[mount]]` | `ui` | string | — | 槽位内容文件，直接相对 `ui/`，不经视图映射 |
+| `[[mount]]` | `ui` | string | — | 旧 HTML 槽位文件，直接相对 `ui/`，不经视图映射 |
+| `[[mount]]` | `schema` | string | — | 槽位 schema 文件名；与 `ui` 二选一 |
 
-有效视图集合（`ManifestMenu::effective_views`）：
-
-- `items` 为空 → `[view]`（单视图，隐式主视图）。
-- `items` 非空 → 每个 item 的 `view`（缺省 `id`）。
-
-视图 → 文件映射：
+视图 → 内容映射（schema 优先；未声明 schema 时才要求 HTML）：
 
 ```text
-main        → ui/main.html
-{view}      → ui/{view}.html
+{view} + schema = "x.json" → ui/schema/x.json（壳页原生渲染）
+{view}                     → ui/{view}.html（旧 SSR / iframe）
 ```
 
 ### 2.2 校验与错误码
@@ -69,9 +68,12 @@ main        → ui/main.html
 |---|---|
 | 视图名非法（含大写、下划线、`..`、保留字） | `MENU_VIEW_INVALID` |
 | 视图名在同一插件内重复（L2 与 L3 合并计算） | `MENU_VIEW_CONFLICT` |
-| `ui/<view>.html` 不存在 | `MENU_VIEW_MISSING` |
+| `ui/<view>.html` 不存在（且未声明 schema） | `MENU_VIEW_MISSING` |
 | `[[menu]]` 但 `api < 1.2` | `MENU_API_VERSION` |
-| 旧包无 `[[ui]]` 却声明菜单 | `MENU_NO_UI_ENTRY` |
+| 声明 schema 但 `api < 1.3` | `MENU_SCHEMA_API_VERSION` |
+| schema 文件名非法 / 与 HTML 声明冲突 / 包内缺失 | `MENU_SCHEMA_INVALID` / `MENU_SCHEMA_CONFLICT` / `MENU_SCHEMA_MISSING` |
+| schema 含未知节点、外链、`api`/`url`/`html`、未允许动作或超限 | `MENU_SCHEMA_INVALID` |
+| 旧包无 `[[ui]]` 且无 schema 却声明菜单/槽位 | `MENU_NO_UI_ENTRY` / `MOUNT_NO_UI_ENTRY` |
 
 ### 2.3 未知视图与不可见视图
 
@@ -111,6 +113,46 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
   label = "新建任务"
   view = "new"         # ui/new.html
 ```
+
+### 2.5 Schema 视图
+
+`ui/schema/<name>.json` 是壳页的**页面结构**，数据仍由插件 RPC 提供：
+
+```json
+{
+  "version": 1,
+  "data": { "status": { "method": "status", "params": {} } },
+  "page": {
+    "type": "page",
+    "props": { "title": "示例面板" },
+    "body": [
+      {
+        "type": "table",
+        "props": {
+          "items": "{{data.status.rows}}",
+          "rowKey": "name",
+          "columns": [{ "key": "name", "label": "名称" }]
+        }
+      },
+      {
+        "type": "button",
+        "props": { "text": "清理" },
+        "onEvent": {
+          "click": {
+            "actions": [
+              { "type": "skiffPluginRpc", "props": { "method": "purge", "confirm": "确认清理？" } }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+- 绑定：`{{data.<path>}}` 取 `data.<name>` 的 RPC 结果，`{{query.<key>}}` 取地址栏参数；`when` 支持 `{{data.x}}` / `!{{data.x}}`。budding 的 `${row.field}` 行内插值保持原样。
+- 数据源只声明 `method` 与 `params`；壳页统一调 `POST /{p}/plugins/{id}/rpc`（CSRF + 权限 + 审计）。
+- 页面/槽位的 schema 文件名在 manifest 中显式声明；`api < 1.3` 的包行为不变。
 
 ## 3. 内核信息页
 
@@ -157,9 +199,20 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 | `plugin.uninstall` | 卸载 | `ok`，detail `delete_data=<bool>` |
 | `plugin.rpc` | 每次 UI 代发 RPC | `ok` / `fail`，detail `method=<name>` |
 
-## 4. iframe 沙箱与 CSP
+## 4. 安全边界
 
-功能页由内核渲染外框，插件内容在 iframe 中：
+### 4.0 Schema 渲染（新壳）
+
+- **信任等级**：schema 与内核页面不同级。安装验包期由 `skiff-pkgfmt` 静态校验，运行期 `GET /schema/{view}` 再校验一次；未通过不进入渲染。
+- **节点白名单**：`page`/`card`/`alert`/`text`/`flex`/`grid`/`table`/`form`/`input-text`/`select`/`textarea`/`checkbox`/`button`；未知类型拒装。
+- **禁外链**：任何字符串命中 `http(s)://`、协议相对 `//`、`data:`、`javascript:`、`vbscript:`、`file:`、`mailto:` 即拒；禁止 `api`/`url`/`href`/`src`/`html`/`raw`/`target` 字段。
+- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换）与表单 `submit`。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。
+- **限额**：单文件 128 KiB、节点 512、嵌套 16 层、字符串 8 KiB、数据源 8 个。
+- 组件缺失时不自造渲染，记入上游清单并给占位。
+
+### 4.1 旧 SSR iframe 沙箱与 CSP（legacy）
+
+旧 SSR 工作台仍由内核渲染外框，插件内容在 iframe 中：
 
 ```html
 <iframe sandbox="allow-scripts allow-modals allow-forms"
@@ -186,7 +239,7 @@ object-src 'none'; frame-ancestors 'self'
 - 切换 L3 或 `ui` 文件时父页面清空上报高度，等新页面重新上报。
 - 跨插件跳转使用 `skiff.open`，目标必须在父页面 `data-plugins` 白名单（已启用且有 UI 入口）内。
 
-### 4.1 页面级标题
+### 4.2 页面级标题
 
 **页面级标题（插件名 + 视图名）由内核单一提供，插件不得渲染。** 父页面已经画好标题与 L3 标签栏，插件页内再写 `<h1>插件名 · 视图名</h1>` 只会重复。
 
@@ -203,6 +256,8 @@ object-src 'none'; frame-ancestors 'self'
 | 多条 `[[ui]]` | 第一条 → `main`；其余 → `legacy-2`、`legacy-3`… 作为 L3，各自 `path` |
 | 旧深链 `/{p}/m/plugin/{id}/legacy` | 升级为声明式后落到首个可见 L2，不 404 |
 | 新包声明 `[[menu]]` | `[[ui]]` 不再参与视图解析；`[[ui]].path` 仅用于插件中心元数据 |
+| `api = "1.3"` 且视图声明 `schema` | 壳页原生渲染 schema；同名 HTML 可以保留（旧 SSR 仍可用），但不再是新壳入口 |
+| `api <= "1.2"` | 行为完全不变：继续 HTML + iframe，仅旧 SSR 可达 |
 
 **何时废弃 `ui/index.html`**
 
@@ -230,7 +285,10 @@ object-src 'none'; frame-ancestors 'self'
 | U1 | 信息页字段 | 含标识、版本/API、运行状态、指纹、签名、沙箱、能力、权限、授权、互操作、关联菜单、日志入口 | 集成 |
 | U2 | 信息页动作 | 含 `toggle` / `remove` 表单与 `next` 回跳；停用后无「打开功能界面」 | 集成 |
 | U3 | 信息页不嵌 iframe | 无 `data-workbench-frame` | 集成 |
-| U4 | 规范功能页 | `/{p}/plugins/{id}/main` 200，iframe 为 `ui/main.html` | 集成 |
+| U4 | 规范功能页（schema） | `/{p}/plugins/{id}/main` 200；壳页加载 `schema` 并渲染，无 iframe | 集成 |
+| U15 | 旧 HTML 功能页（legacy） | 未声明 schema 的视图 `?legacy=1` 200，iframe 为 `ui/main.html` | 集成 |
+| U16 | schema 安全 | 外链 / `api` / 未知节点 / 未允许动作 / 超限在安装期失败；`GET /schema/{view}` 无权限 403、未知视图 404 | 单测/集成 |
+| U17 | 权限一致 | 功能页、schema、旧 SSR 深链与 RPC 对同一角色结论一致 | 集成 |
 | U5 | 多视图 | `/{p}/plugins/{id}/check` 200，标签栏含 `main/check/group`，`tab=check` | 集成 |
 | U6 | 单视图 | 无 L3 时 200 且不渲染标签栏；深链 `/<l2>/<l2-view>` 可用 | 集成 |
 | U7 | 未知视图 | 404，不回退 `main` | 集成 |
@@ -248,3 +306,4 @@ object-src 'none'; frame-ancestors 'self'
 |---|---|
 | 2026-11-05 | 首版：`/{p}/plugins/{id}` 信息页与 `/{p}/plugins/{id}/{view}` 功能页拆分；`view` 视图模型；旧包 `ui/index.html` 回落；新增 `com.skiff.testkit` 验收插件 |
 | 2026-11-05 | 页面级标题改由内核单一提供：清理 5 个插件页内标题；内核托管 HTML 注入 `data-plugin-title` 抑制规则 |
+| 2026-11-13 | 插件功能页原生化（第一批 guard）：`api = "1.3"` 起支持 `ui/schema/<name>.json`，安装期静态校验 + 动作白名单；新增 `GET /{p}/plugins/{id}/schema/{view}`；功能页/schema/旧 SSR 与 RPC 权限统一为 `PluginManage`；iframe 与 CSP 降级为 legacy 路径 |

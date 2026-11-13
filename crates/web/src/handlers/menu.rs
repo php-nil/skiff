@@ -8,7 +8,7 @@ use axum::response::Response;
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::middleware::AuthUser;
+use crate::middleware::{AuthUser, PluginManagerUser};
 use crate::state::AppState;
 
 pub async fn dispatch(
@@ -116,6 +116,10 @@ pub async fn dispatch(
         "core/settings/menu" => handlers::settings::menu_page(State(state), AuthUser(user)).await,
         "core/settings/audit" => handlers::settings::audit(State(state), AuthUser(user)).await,
         other if other.starts_with("plugin/") => {
+            // 功能页与 RPC 同权限：只有插件管理角色能进旧工作台/新 schema 页。
+            if !user.can(skiff_model::Permission::PluginManage) {
+                return Err(AppError::Forbidden("需要插件管理权限".into()));
+            }
             let mut parts = other.split('/');
             let _ = parts.next();
             let Some(id) = parts.next() else {
@@ -127,7 +131,7 @@ pub async fn dispatch(
                 // 首个视图；老包落到 `main` → 原 `ui/index.html`）。
                 return handlers::plugins::menu_view(
                     State(state),
-                    AuthUser(user),
+                    PluginManagerUser(user),
                     Path((id.to_string(), None, None)),
                     Query(q),
                 )
@@ -140,7 +144,7 @@ pub async fn dispatch(
             }
             handlers::plugins::menu_view(
                 State(state),
-                AuthUser(user),
+                PluginManagerUser(user),
                 Path((id.to_string(), Some(local.to_string()), l3)),
                 Query(q),
             )

@@ -1832,6 +1832,7 @@ mod tests {
             default_visible: true,
             pinnable: true,
             view: "main".into(),
+            schema: None,
             items: Vec::new(),
         }
     }

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "status" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "容器守护 · 事件",
+      "subtitle": "由内核调度器每分钟巡检一次；只对已授权对象执行重启（未授权容器仅展示）"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新状态", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "events" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "最近事件" },
+        "content": {
+          "body": [
+            {
+              "type": "alert",
+              "props": { "type": "info", "text": "暂无事件" },
+              "when": "{{data.status.events_empty}}"
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.status.events}}",
+                "rowKey": "t",
+                "pagination": false,
+                "density": "compact",
+                "emptyText": "暂无事件",
+                "columns": [
+                  { "key": "t_text", "label": "时间" },
+                  { "key": "name", "label": "容器" },
+                  { "key": "result", "label": "结果" },
+                  { "key": "detail", "label": "详情" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

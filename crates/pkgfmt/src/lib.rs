@@ -5,6 +5,7 @@
 
 pub mod manifest;
 pub mod package;
+pub mod schema;
 pub mod signature;
 
 pub use manifest::{
@@ -13,6 +14,7 @@ pub use manifest::{
 pub use package::{
     host_arch, pack_dir, verify_file, PackageLimits, PackageMeta, UnpackedPackage, DEFAULT_LIMITS,
 };
+pub use schema::PluginSchema;
 pub use signature::{decode_public_key, key_id_of, verify_bytes, SigningKey};
 
 #[derive(Debug, thiserror::Error)]

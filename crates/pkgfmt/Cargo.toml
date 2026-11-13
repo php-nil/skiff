@@ -9,6 +9,7 @@ license.workspace = true
 skiff-cron = { workspace = true }
 skiff-model = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 ed25519-dalek = { workspace = true }

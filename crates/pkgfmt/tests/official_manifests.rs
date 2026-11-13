@@ -50,6 +50,14 @@ fn official_manifests_parse_and_match_directory_ids() {
         let ui_dir = path.join("ui");
         m.validate_menu_assets(|p| ui_dir.join(p).is_file())
             .unwrap_or_else(|e| panic!("{} 菜单/槽位引用的 ui 缺失: {e}", manifest_path.display()));
+        // 随包 schema 与安装期同一份静态校验：节点白名单/禁外链/动作白名单/限额。
+        for name in m.schema_files() {
+            let schema_path = ui_dir.join("schema").join(name);
+            let bytes = std::fs::read(&schema_path)
+                .unwrap_or_else(|e| panic!("读取 {} 失败: {e}", schema_path.display()));
+            skiff_pkgfmt::PluginSchema::parse(&bytes)
+                .unwrap_or_else(|e| panic!("{} 校验失败: {e}", schema_path.display()));
+        }
         if dir_name == "monitor" {
             assert!(
                 m.mount.iter().any(|x| x.slot == "overview.health"),

@@ -5,9 +5,10 @@
 > 基线：`crates/pkgfmt/src/manifest.rs`、`crates/web/src/handlers/mod.rs`、`crates/web/templates/base.html`、`plugins/*/manifest.toml`。
 > 契约版本：v1 · 2026-11-03（P1 同日落地，P2 同日补记）。
 >
-> **2026-11-13 方向变更**：budding 后台外壳（admin + outlet）不承载 iframe，
-> 菜单与前端路由不再下发插件功能页（`plugin/*`）入口；本文的三级归属与
-> 固定 L1 仍然有效，但「内核渲染 L3 标签栏 + 插件内容 iframe」只对旧 SSR 页有效。
+> **2026-11-13 原生化**：budding 后台外壳（admin + outlet）不再用 iframe 承载插件功能页；
+> 已声明 `schema`（`api = "1.3"`）的视图由壳页原生渲染，未声明的旧视图仍走旧 SSR 工作台。
+> 菜单继续下发 `plugin/*` 入口；本文的三级归属与固定 L1 仍然有效，「内核渲染 L3 标签栏 +
+> 插件内容 iframe」只对旧 SSR 页有效，新壳用页内按钮行承担 L3 入口。
 > 插件 UI 的交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](BUDDING_UPSTREAM_BACKLOG.md) T7）。
 
 ## 0. 四个结论
@@ -39,14 +40,14 @@
 | 系统内置 L2（Docker 容器等） | 内核 | 内核 | 否 |
 | 插件 L2 | 插件 manifest | 内核 | 只能改自己的声明 |
 | 插件 L3 标签栏 | 插件 manifest | 内核 | 只能改自己的 L3 |
-| L2/L3 内容页 | 插件 | 插件 iframe | 是（仅自己的 `ui/`） |
+| L2/L3 内容页 | 插件声明 + 内核校验（schema），旧页回退 iframe | 壳页原生渲染 schema；legacy 用 iframe | 是（仅自己的 `ui/`） |
 | 菜单设置、布局实现 | 内核 | 内核 | 否 |
 
 **硬规则**：插件只负责「声明菜单」与「对应菜单呈现的内容」。内核负责所有可见导航 DOM、样式、交互、当前态、权限过滤与 URL。插件不得输出导航 HTML/CSS/JS 到父页面。
 
 ### 1.3 L3 为什么由内核渲染
 
-结论：**内核渲染 L3 标签栏，插件只渲染内容 iframe。**
+结论：**内核渲染导航 chrome，插件只声明内容结构（schema）；旧包仍以 iframe 承载内容。**
 
 理由：
 

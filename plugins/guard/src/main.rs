@@ -253,14 +253,91 @@ fn reconcile(plugin: &Plugin, _params: Value) -> Result<Value, RpcError> {
     }))
 }
 
+fn relative_ago(now: u64, ts: u64) -> String {
+    if ts == 0 {
+        return "-".into();
+    }
+    let d = now.saturating_sub(ts);
+    if d < 60 {
+        "刚刚".into()
+    } else if d < 3600 {
+        format!("{} 分钟前", d / 60)
+    } else if d < 86400 {
+        format!("{} 小时前", d / 3600)
+    } else {
+        format!("{} 天前", d / 86400)
+    }
+}
+
 fn status(plugin: &Plugin) -> Result<Value, RpcError> {
     let st = common::read_state(plugin, STATE_FILE);
     let objects = plugin.objects().unwrap_or_default();
+    let cfg = common::load_config(plugin);
+    let now = common::now_secs();
+    // 旧 UI 直接读 `state.containers`（对象表）；新壳的静态 schema 只消费数组，
+    // 这里补一份派生的行数组，避免页面模板承担对象→数组的转换逻辑。
+    let mut containers: Vec<Value> = st
+        .get("containers")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .map(|(name, row)| {
+                    let last = row.get("last").and_then(|v| v.as_u64()).unwrap_or(0);
+                    json!({
+                        "name": name,
+                        "last": last,
+                        "last_text": relative_ago(now, last),
+                        "total": row.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    containers.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .cmp(&b.get("name").and_then(|v| v.as_str()))
+    });
+    let mut events: Vec<Value> = st
+        .get("events")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .rev()
+                .map(|e| {
+                    let t = e.get("t").and_then(|v| v.as_u64()).unwrap_or(0);
+                    json!({
+                        "t": t,
+                        "t_text": relative_ago(now, t),
+                        "name": e.get("name").cloned().unwrap_or(json!("")),
+                        "result": e.get("result").cloned().unwrap_or(json!("")),
+                        "detail": e.get("detail").cloned().unwrap_or(json!("")),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if events.len() > MAX_EVENTS {
+        events.truncate(MAX_EVENTS);
+    }
+    let dry_run = common::cfg_bool(&cfg, "dry_run", false);
+    let containers_empty = containers.is_empty();
+    let events_empty = events.is_empty();
+    let objects_count = objects.len();
+    let hour_count = st.get("count").cloned().unwrap_or(json!(0));
     Ok(json!({
         "state": st,
-        "granted": plugin.granted(),
+        "containers": containers,
+        "containers_empty": containers_empty,
+        "events": events,
+        "events_empty": events_empty,
         "objects": objects,
-        "config": common::load_config(plugin),
+        "objects_count": objects_count,
+        "hour_count": hour_count,
+        "dry_run": dry_run,
+        "dry_run_text": if dry_run { "开" } else { "关" },
+        "granted": plugin.granted(),
+        "config": cfg,
         "scheduler": { "driver": "kernel", "task_id": TASK_ID },
     }))
 }

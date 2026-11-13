@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "status" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "容器守护 · 容器",
+      "subtitle": "由内核调度器每分钟巡检一次；只对已授权对象执行重启（未授权容器仅展示）"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新状态", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "containers" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "grid",
+        "props": { "columns": 3, "gap": 16 },
+        "content": {
+          "body": [
+            {
+              "type": "card",
+              "props": { "title": "本小时重启次数" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.status.hour_count}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "已授权对象" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.status.objects_count}}" } }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "演练模式" },
+              "content": {
+                "body": [
+                  { "type": "text", "props": { "text": "{{data.status.dry_run_text}}" } }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "容器重启记录" },
+        "content": {
+          "body": [
+            {
+              "type": "alert",
+              "props": { "type": "info", "text": "暂无记录" },
+              "when": "{{data.status.containers_empty}}"
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.status.containers}}",
+                "rowKey": "name",
+                "pagination": false,
+                "density": "compact",
+                "emptyText": "暂无记录",
+                "columns": [
+                  { "key": "name", "label": "容器" },
+                  { "key": "last_text", "label": "最近重启" },
+                  { "key": "total", "label": "累计" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

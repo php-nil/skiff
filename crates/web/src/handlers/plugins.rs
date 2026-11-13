@@ -191,7 +191,7 @@ pub async fn info(
 /// 内核渲染 L3 标签栏后把 iframe 指向 `ui/<view>.html`（未知视图 404）。
 pub async fn view(
     State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
+    PluginManagerUser(user): PluginManagerUser,
     Path((id, view_name)): Path<(String, String)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
@@ -244,7 +244,7 @@ pub async fn view(
 /// 避免旧收藏与旧入口失效。
 pub async fn menu_view(
     State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
+    PluginManagerUser(user): PluginManagerUser,
     Path((id, l2_raw, l3_raw)): Path<(String, Option<String>, Option<String>)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
@@ -884,6 +884,65 @@ pub async fn plugin_ui(
         .insert(CONTENT_SECURITY_POLICY, PLUGIN_UI_CSP.parse().unwrap());
     Ok(resp)
 }
+/// 托管插件页面 Schema：`/plugins/{id}/schema/{view}`。
+///
+/// 权限口径与 `POST /plugins/{id}/rpc` **完全一致**（`PluginManagerUser`）：
+/// 能取到 schema 的人，才有资格让壳页代发 RPC。旧 HTML 视图没有 schema，
+/// 这里返回 404，由旧 SSR（`/m/plugin/...`）继续承载。
+pub async fn schema(
+    State(state): State<Arc<AppState>>,
+    PluginManagerUser(user): PluginManagerUser,
+    Path((id, view_name)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let rec = state
+        .db()
+        .plugin(&id)?
+        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
+    if !rec.enabled {
+        return Err(AppError::NotFound("插件已停用".into()));
+    }
+    // 视图必须属于该插件且对当前角色可见（与菜单/工作台同源判定）。
+    crate::menu::resolve_plugin_view(&state, &user, &id, &view_name).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "插件 {id} 不存在视图 {view_name}，或该视图对当前角色不可见"
+        ))
+    })?;
+    let manifest = Manifest::parse(&rec.manifest)
+        .map_err(|e| AppError::Internal(format!("插件 manifest 非法: {e}")))?;
+    let Some(name) = manifest.schema_for_view(&view_name).map(str::to_string) else {
+        return Err(AppError::NotFound(format!(
+            "视图 {view_name} 仍为旧 HTML 界面，没有随包 schema"
+        )));
+    };
+    let root = state
+        .cfg
+        .data_dir
+        .join("plugins")
+        .join(&rec.id)
+        .join("versions")
+        .join(&rec.active_version)
+        .join("ui")
+        .join("schema");
+    let target = root.join(&name);
+    let canon_root = std::fs::canonicalize(&root)
+        .map_err(|_| AppError::NotFound("该插件没有 schema 目录".into()))?;
+    let canon = std::fs::canonicalize(&target)
+        .map_err(|_| AppError::NotFound(format!("schema 不存在: {name}")))?;
+    if !canon.starts_with(&canon_root) || !canon.is_file() {
+        return Err(AppError::NotFound(format!("schema 不存在: {name}")));
+    }
+    let data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;
+    // 安装期已校验；这里再跑一次，防止运行期文件被替换成未校验内容。
+    skiff_pkgfmt::PluginSchema::parse(&data)
+        .map_err(|e| AppError::Internal(format!("schema 校验失败: {e}")))?;
+    let mut resp = Response::new(axum::body::Body::from(data));
+    resp.headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

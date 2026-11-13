@@ -3181,8 +3181,10 @@ view = "info"
     // 不存在的 L3 直接 404；角色过滤在菜单层完成（不是渲染后 403）。
     let (status, _) = get_page(&h.app, &format!("{base}/sites/nope"), &admin).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    // viewer 被 `PluginManage` 前置挡住 → 403（与 RPC 同权限），不是视图不存在。
+    // 这里刻意不把权限不足伪装成 404：功能页权限口径必须与对应 RPC 一致。
     let (status, _) = get_page(&h.app, &format!("{base}/sites/list"), &viewer).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
     // 旧深链 `legacy` 升级到声明式后落到首个可见 L2，不破坏旧链接。
     let (status, html) = get_page(&h.app, &format!("{base}/legacy"), &admin).await;
@@ -3226,8 +3228,9 @@ view = "info"
     let (status, html) = get_page(&h.app, &format!("{base}/info/info"), &admin).await;
     assert_eq!(status, StatusCode::OK, "单视图深链应接受隐式主视图名");
     assert!(html.contains("tab=info"), "{html}");
+    // viewer 同样被 `PluginManage` 前置挡住（403），不再以 404 伪装权限不足。
     let (status, _) = get_page(&h.app, &format!("{base}/info/nope"), &viewer).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 /// P2：`overview.health` 槽位成功渲染；插件停用/角色不可见时回落内核健康块。
@@ -3438,6 +3441,106 @@ async fn plugin_view_document_navigation_serves_shell_placeholder() {
         assert!(
             !html.contains("<iframe") && !html.contains("data-workbench-frame"),
             "壳页占位不得内嵌 iframe 工作台: {html}"
+        );
+    }
+}
+
+/// 插件 schema 端点：与 RPC 同权限（`PluginManage`），只返回通过静态校验的 JSON；
+/// 未知视图 404，viewer 不得取 schema，也不得打开功能页。
+#[tokio::test]
+async fn plugin_schema_is_permission_gated_and_serves_json() {
+    let h = harness();
+    let manifest = r#"id = "com.example.schema"
+name = "Schema Demo"
+version = "0.1.0"
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.3"
+requires_full_sandbox = false
+[[ui]]
+label = "Schema 演示"
+path = "legacy.html"
+[[menu]]
+id = "schema-demo"
+parent = "tools"
+label = "Schema 演示"
+view = "list"
+  [[menu.items]]
+  id = "list"
+  label = "列表"
+  view = "list"
+  schema = "list.json"
+"#
+    .to_string();
+    seed_declared_plugin(h.state.db().as_ref(), manifest, true);
+    let schema_dir = h
+        .data_dir
+        .join("plugins/com.example.schema/versions/0.1.0/ui/schema");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    std::fs::write(
+        schema_dir.join("list.json"),
+        r#"{"version":1,"data":{"status":{"method":"status"}},"page":{"type":"page","props":{"title":"列表"},"body":[{"type":"text","props":{"text":"{{data.status.count}}"}}]}}"#,
+    )
+    .unwrap();
+
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.schema/schema/list")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json")
+    );
+    assert!(body_text(resp).await.contains("\"version\":1"));
+
+    // 未知视图：不回落 main。
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.schema/schema/nope")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // viewer：功能页与 schema 都应 403（和 RPC 同权限口径）。
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    for uri in [
+        "/p/plugins/com.example.schema/list",
+        "/p/plugins/com.example.schema/schema/list",
+    ] {
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "viewer 访问 {uri} 必须 403"
         );
     }
 }

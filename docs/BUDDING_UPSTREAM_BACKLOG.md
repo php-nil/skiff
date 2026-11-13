@@ -9,7 +9,6 @@
 | 编号 | 任务 | 产出形态 | 依赖 | Skiff 用途 | 规模 |
 |---|---|---|---|---|---|
 | T6 | `input-text` 透传 `autocomplete` | 框架能力补齐 | 无 | 登录框与改密框被浏览器密码管理器正确识别 | S |
-| T7 | 插件 Schema 的运行时安全策略（动作白名单 / 禁外链 / 静态校验） | 框架能力补齐 + 文档 | 无 | 插件功能页原生渲染的信任边界 | M |
 | T8 | 图标字体的版本化文件名、缓存与子集清单 | 构建/文档 | 无 | 离线升级不踩旧缓存 | S |
 | T9 | `virtual-list` 滚动生命周期触点（`scroll` / `reachBottom` / `scrollToKey`） | 框架能力补齐 | 无 | 日志跟随、无限加载、按 key 定位 | S–M |
 | T10 | `table` 游标分页与追加加载 | 框架能力补齐 | 无 | 文件列表、作业列表（`next_cursor`） | M |
@@ -67,57 +66,6 @@
 
 [约束]
 - 字段只增不改；离线可用；不引入 eval / new Function。
-```
-
----
-
-### T7 插件 Schema 的运行时安全策略（动作白名单 / 禁外链 / 静态校验）
-
-- **产出形态**：框架能力补齐 + 文档
-- **依赖**：无（Skiff 侧包格式另行定义，不阻塞本任务）
-- **现状（读文档 + 产物实测）**：
-  - **随包 / 远程 schema 加载已具备**：路由记录可写 `"schema": "/pages/x.json"`，经 `platform.loadJson(url, { kind })` 加载；`service` 组件另有 `schemaApi`（返回 Schema 的接口）与内联 `schema`。这一半需求可以划掉。
-  - **动作可控性不足**：内核动作（`ajax` / `navigate` / `copy` 等）对任何 schema 永远可用；只有 `custom` 要求宿主 `registerAction`，未注册才报错。
-  - **无外链约束**：`ajax` 的 `url`、`navigate` 的 `url`、`source`/`schemaApi` 都可指向任意外部地址，内核不做宿主白名单。
-  - **无静态校验与限额**：没有公开的 `validateSchema`；节点数、深度、字节数无上限；`usedTypes` 在内部编译结果里，未作为公开 API 暴露。
-  - 未知 `type` 现在会让类型加载失败并进入整页错误态，无法只让单节点降级。
-
-- **缺口表现**：第三方/插件提供的 schema 与内核页面 schema 拥有同等能力，无法在渲染前拒绝「读其它接口」「跳外链」「超大 schema」；插件页一旦改成原生渲染，iframe 原有的同源隔离消失，需要这一层来兜底。
-
-```text
-[任务]
-为「非第一方 Schema」（插件、第三方、远程下发）提供运行时安全策略与静态校验，且不影响现有第一方页面。
-
-[背景事实]
-1. 1.8.0 支持路由 schema 走 platform.loadJson、service.schemaApi 运行时取 Schema。
-2. 内核动作对任何 schema 恒可用；只有 custom 动作要求宿主注册。
-3. ajax / navigate / source / schemaApi 的 URL 目前不受宿主白名单约束。
-4. 编译阶段内部已有 usedTypes，但未公开；未知 type 会导致整页错误态。
-
-[要产出]
-1. 实例级配置 schemaPolicy（或 embed 的 options.schemaPolicy）：
-   - allowedActions?: string[]：仅放行列出的动作类型（如 ['invoke','setValue','custom:skiff:*']），未列出的动作在执行前被拒绝并上报；
-   - allowedHosts?: string[]：ajax / navigate / source / schemaApi 的 URL 仅允许同源或列出的 host，其余拒绝；
-   - maxNodes / maxDepth / maxBytes：超限直接拒绝，不进入渲染；
-   - onViolation?: 'error' | 'strip'：整页失败或剥离违规节点后继续。
-2. 公开一个纯函数 validateSchema(schema, policy) => { ok, violations: [{ path, code, message }] }，可在加载前调用。
-3. 编译结果公开 usedTypes（只读数组），供宿主在渲染前判断需要的 Pack。
-4. 未知 type 的降级规范：单节点渲染占位 + 上报 phase/type/path，不整页崩。
-
-[验收标准]
-- 含外链 ajax / navigate 的 schema 在 allowedHosts 下被拒绝或剥离，可断言 violations。
-- 超出 maxNodes / maxDepth / maxBytes 的 schema 被拒绝且不挂载。
-- 未列入 allowedActions 的动作不产生任何请求或跳转。
-- 未配置 schemaPolicy 时，现有页面行为逐字节不变（含错误态文案）。
-- validateSchema 对同一 schema 与运行时判定结论一致（用测试向量对齐）。
-
-[明确不做]
-- 不做插件签名、信任链、包验签（属宿主职责）。
-- 不改变第一方内置组的默认行为。
-- 不引入 eval / new Function。
-
-[约束]
-- 只增不改；必须补单测；离线可用。
 ```
 
 ---
@@ -566,8 +514,7 @@
 4. **T11 依赖 T10 的选择语义**：跨页选择与游标分页要一起验证，避免「追加后选择错位」。
 5. **T12 与 T13 互不依赖**：上传与代码查看各自独立；T12 需要先与宿主确认分片协议字段命名。
 6. **T14 只约定通道，不阻塞渲染**：可直接在现有渲染器上对接；关闭码与心跳属于增量。
-7. **T7 建议最后做但必须做**：它是插件页原生渲染的安全兜底；在 Skiff 侧插件包格式定案前不动手，接口按本文草案先行评审。
-8. **顺序不是发布顺序**：每条独立可回滚、独立补测试；不得把 T9 的改动混进 T10。
+7. **顺序不是发布顺序**：每条独立可回滚、独立补测试；不得把 T9 的改动混进 T10。
 
 ## Skiff 侧当前的临时做法（上游落地后需删除）
 
@@ -577,7 +524,6 @@
 | T9 | 跟随靠整表重挂载；无「上滚暂停」 | 滚动位置跳变，日志不可用 |
 | T12 | 单请求上传 + 整体进度 | 大文件超时只能整文件重传 |
 | T14 | 未建终端入口（内核暂无 `/terminal` 路由） | 终端功能待通道契约定案后另立 |
-| T7 | 插件功能页保留旧 SSR，新壳只给占位 | 插件功能在新前端不可达 |
 | T16 | 侧栏菜单项不声明图标、只显示文字；不额外挂完整 `@mdi/font`，不自造图标字体 | 导航缺少视觉锚点，分组辨识度下降 |
 
 ---

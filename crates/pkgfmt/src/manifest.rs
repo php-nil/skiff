@@ -220,6 +220,9 @@ pub struct MenuItem {
     /// 视图名；缺省等于 `id`。内核按 `ui/<view>.html` 托管（`docs/PLUGIN_UI_CONTRACT.md`）。
     #[serde(default)]
     pub view: Option<String>,
+    /// 随包 schema 文件名（相对 `ui/schema/`）。声明后该视图由壳页原生渲染。
+    #[serde(default)]
+    pub schema: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -246,6 +249,9 @@ pub struct ManifestMenu {
     /// 该 L2 的默认视图；无 L3 时是唯一视图。缺省 `main`，映射 `ui/main.html`。
     #[serde(default = "default_menu_view")]
     pub view: String,
+    /// 单视图 L2 的随包 schema（相对 `ui/schema/`）；与 `items` 互斥使用。
+    #[serde(default)]
+    pub schema: Option<String>,
     #[serde(default)]
     pub items: Vec<MenuItem>,
 }
@@ -254,7 +260,12 @@ pub struct ManifestMenu {
 #[serde(deny_unknown_fields)]
 pub struct ManifestMount {
     pub slot: String,
+    /// 旧 HTML 槽位（相对 `ui/`）。
+    #[serde(default)]
     pub ui: String,
+    /// 随包 schema 文件名（相对 `ui/schema/`）；与 `ui` 二选一。
+    #[serde(default)]
+    pub schema: Option<String>,
     #[serde(default)]
     pub height: Option<String>,
     #[serde(default)]
@@ -448,6 +459,57 @@ impl ManifestMenu {
                 .map(|it| it.view.as_deref().unwrap_or(it.id.as_str()))
                 .collect()
         }
+    }
+
+    /// 视图名 → 随包 schema（没有声明返回 `None`）。
+    pub fn schema_for_view(&self, view: &str) -> Option<&str> {
+        if self.items.is_empty() {
+            return (self.view == view)
+                .then_some(self.schema.as_deref())
+                .flatten();
+        }
+        self.items.iter().find_map(|it| {
+            let v = it.view.as_deref().unwrap_or(it.id.as_str());
+            (v == view).then_some(it.schema.as_deref()).flatten()
+        })
+    }
+}
+
+impl Manifest {
+    /// 是否声明了至少一个随包 schema（菜单或槽位）。
+    pub fn uses_schema(&self) -> bool {
+        self.menu
+            .iter()
+            .any(|m| m.schema.is_some() || m.items.iter().any(|i| i.schema.is_some()))
+            || self.mount.iter().any(|m| m.schema.is_some())
+    }
+
+    /// 全部 schema 文件名（去重，相对 `ui/schema/`）。
+    pub fn schema_files(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for m in &self.menu {
+            if let Some(s) = &m.schema {
+                out.push(s);
+            }
+            for it in &m.items {
+                if let Some(s) = &it.schema {
+                    out.push(s);
+                }
+            }
+        }
+        for m in &self.mount {
+            if let Some(s) = &m.schema {
+                out.push(s);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// 视图名 → schema 文件名（菜单里未声明 schema 的视图返回 `None`）。
+    pub fn schema_for_view(&self, view: &str) -> Option<&str> {
+        self.menu.iter().find_map(|m| m.schema_for_view(view))
     }
 }
 
@@ -673,14 +735,19 @@ impl Manifest {
         if self.menu.is_empty() {
             return Ok(());
         }
-        if self.ui.is_empty() {
+        if self.ui.is_empty() && !self.uses_schema() {
             return Err(PkgError::Manifest(
-                "MENU_NO_UI_ENTRY: 声明 [[menu]] 的插件必须至少有一个 [[ui]] 入口".into(),
+                "MENU_NO_UI_ENTRY: 声明 [[menu]] 的插件必须至少有一个 [[ui]] 入口或 schema".into(),
             ));
         }
         if api_minor(&self.api) < 2 {
             return Err(PkgError::Manifest(
                 "MENU_API_VERSION: 菜单声明要求 api = \"1.2\"（旧包请继续用 [[ui]]）".into(),
+            ));
+        }
+        if self.uses_schema() && api_minor(&self.api) < 3 {
+            return Err(PkgError::Manifest(
+                "MENU_SCHEMA_API_VERSION: 随包 schema 要求 api = \"1.3\"".into(),
             ));
         }
         let mut seen_l2 = BTreeSet::new();
@@ -705,6 +772,15 @@ impl Manifest {
                 }
             }
             validate_view_name(&m.view)?;
+            if let Some(schema) = &m.schema {
+                crate::schema::validate_file_name(schema)?;
+                if !m.items.is_empty() {
+                    return Err(PkgError::Manifest(format!(
+                        "MENU_SCHEMA_CONFLICT: L2 {} 声明了 items，schema 必须逐项声明",
+                        m.id
+                    )));
+                }
+            }
             if m.items.is_empty() && !seen_views.insert(m.view.as_str()) {
                 return Err(PkgError::Manifest(format!(
                     "MENU_VIEW_CONFLICT: 重复的视图名 {:?}",
@@ -736,6 +812,9 @@ impl Manifest {
                 }
                 let view = it.view.as_deref().unwrap_or(it.id.as_str());
                 validate_view_name(view)?;
+                if let Some(schema) = &it.schema {
+                    crate::schema::validate_file_name(schema)?;
+                }
                 if !seen_views.insert(view) {
                     return Err(PkgError::Manifest(format!(
                         "MENU_VIEW_CONFLICT: 重复的视图名 {view:?}"
@@ -751,14 +830,20 @@ impl Manifest {
         if self.mount.is_empty() {
             return Ok(());
         }
-        if self.ui.is_empty() {
+        if self.ui.is_empty() && !self.uses_schema() {
             return Err(PkgError::Manifest(
-                "MOUNT_NO_UI_ENTRY: 声明 [[mount]] 的插件必须至少有一个 [[ui]] 入口".into(),
+                "MOUNT_NO_UI_ENTRY: 声明 [[mount]] 的插件必须至少有一个 [[ui]] 入口或 schema"
+                    .into(),
             ));
         }
         if api_minor(&self.api) < 1 {
             return Err(PkgError::Manifest(
                 "MOUNT_API_VERSION: 槽位声明要求 api = \"1.1\"".into(),
+            ));
+        }
+        if self.mount.iter().any(|m| m.schema.is_some()) && api_minor(&self.api) < 3 {
+            return Err(PkgError::Manifest(
+                "MOUNT_SCHEMA_API_VERSION: 槽位 schema 要求 api = \"1.3\"".into(),
             ));
         }
         let mut seen = BTreeSet::new();
@@ -775,7 +860,22 @@ impl Manifest {
                     m.slot
                 )));
             }
-            validate_menu_asset(&m.ui)?;
+            match (m.ui.trim().is_empty(), &m.schema) {
+                (true, None) => {
+                    return Err(PkgError::Manifest(format!(
+                        "MOUNT_TARGET_INVALID: 槽位 {} 必须声明 ui 或 schema",
+                        m.slot
+                    )))
+                }
+                (false, Some(_)) => {
+                    return Err(PkgError::Manifest(format!(
+                        "MOUNT_TARGET_CONFLICT: 槽位 {} 不能同时声明 ui 与 schema",
+                        m.slot
+                    )))
+                }
+                (false, None) => validate_menu_asset(&m.ui)?,
+                (true, Some(schema)) => crate::schema::validate_file_name(schema)?,
+            }
             if let Some(h) = &m.height {
                 if !matches!(h.as_str(), "sm" | "md" | "lg") {
                     return Err(PkgError::Manifest(format!(
@@ -881,23 +981,48 @@ impl Manifest {
     /// 校验菜单/槽位引用的 `ui/` 文件确实在包内。
     ///
     /// `Manifest::parse` 只做形式校验（不知道包内容）；安装验包时用这里的
-    /// `exists` 回调把「声明了但没打进包」的菜单挡在安装前。
+    /// `exists` 回调把「声明了但没打进包」的菜单挡在安装前。声明了 schema 的
+    /// 视图不再要求同名 HTML（旧模板可以继续留在包里，只是不再被新壳使用）。
     pub fn validate_menu_assets(&self, exists: impl Fn(&str) -> bool) -> Result<()> {
         for m in &self.menu {
             for view in m.effective_views() {
-                if !exists(&format!("{view}.html")) {
-                    return Err(PkgError::Manifest(format!(
-                        "MENU_VIEW_MISSING: 视图 {view} 的文件不存在于包内 ui/：{view}.html"
-                    )));
+                let schema = m.schema_for_view(view);
+                match schema {
+                    Some(name) => {
+                        if !exists(&format!("schema/{name}")) {
+                            return Err(PkgError::Manifest(format!(
+                                "MENU_SCHEMA_MISSING: 视图 {view} 的 schema 不存在于包内 ui/：schema/{name}"
+                            )));
+                        }
+                    }
+                    None => {
+                        if !exists(&format!("{view}.html")) {
+                            return Err(PkgError::Manifest(format!(
+                                "MENU_VIEW_MISSING: 视图 {view} 的文件不存在于包内 ui/：{view}.html"
+                            )));
+                        }
+                    }
                 }
             }
         }
         for m in &self.mount {
-            if !exists(&m.ui) {
-                return Err(PkgError::Manifest(format!(
-                    "MOUNT_TARGET_INVALID: 槽位 {} 的 ui 不存在于包内 ui/：{}",
-                    m.slot, m.ui
-                )));
+            match &m.schema {
+                Some(name) => {
+                    if !exists(&format!("schema/{name}")) {
+                        return Err(PkgError::Manifest(format!(
+                            "MOUNT_SCHEMA_MISSING: 槽位 {} 的 schema 不存在于包内 ui/：schema/{name}",
+                            m.slot
+                        )));
+                    }
+                }
+                None => {
+                    if !exists(&m.ui) {
+                        return Err(PkgError::Manifest(format!(
+                            "MOUNT_TARGET_INVALID: 槽位 {} 的 ui 不存在于包内 ui/：{}",
+                            m.slot, m.ui
+                        )));
+                    }
+                }
             }
         }
         Ok(())

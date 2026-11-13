@@ -268,6 +268,8 @@ fn scan(path: &Path, opts: &VerifyOptions) -> Result<(PackageMeta, Vec<RawEntry>
     let mut manifest: Option<Vec<u8>> = None;
     let mut files_list: Option<Vec<u8>> = None;
     let mut sig: Option<Vec<u8>> = None;
+    // 随包 schema 需在安装期静态校验，先读入内存（受 SCHEMA_MAX_BYTES 限制）。
+    let mut schemas: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
     let entries = archive
         .entries()
@@ -346,6 +348,25 @@ fn scan(path: &Path, opts: &VerifyOptions) -> Result<(PackageMeta, Vec<RawEntry>
                 is_files,
                 is_sig,
             });
+        } else if path_norm.starts_with("ui/schema/") {
+            if size > crate::schema::SCHEMA_MAX_BYTES as u64 {
+                return Err(PkgError::Format(format!(
+                    "schema 文件超过 {} 字节上限: {path_norm}",
+                    crate::schema::SCHEMA_MAX_BYTES
+                )));
+            }
+            let mut buf = Vec::with_capacity(size as usize);
+            entry.read_to_end(&mut buf).map_err(PkgError::Io)?;
+            let mut h = Sha256::new();
+            h.update(&buf);
+            raw.push(RawEntry {
+                path: path_norm.clone(),
+                size,
+                sha256: hex::encode(h.finalize()),
+                is_files,
+                is_sig,
+            });
+            schemas.insert(path_norm, buf);
         } else {
             let mut hw = HashWriter::new();
             std::io::copy(&mut entry, &mut hw).map_err(PkgError::Io)?;
@@ -372,6 +393,17 @@ fn scan(path: &Path, opts: &VerifyOptions) -> Result<(PackageMeta, Vec<RawEntry>
     let manifest = Manifest::parse(manifest_text)?;
     // 菜单/槽位引用的 ui 文件必须真的打进包；否则安装后是死链。
     manifest.validate_menu_assets(|p| raw.iter().any(|e| e.path == format!("ui/{p}")))?;
+    // 声明了 schema 的视图还要在安装期做完静态校验：节点白名单、禁外链、
+    // 动作白名单与体积/深度/数量上限。运行期壳页只消费已通过校验的结构。
+    for name in manifest.schema_files() {
+        let key = format!("ui/schema/{name}");
+        let Some(bytes) = schemas.get(&key) else {
+            return Err(PkgError::Manifest(format!(
+                "MENU_SCHEMA_MISSING: 包内缺少 {key}"
+            )));
+        };
+        crate::schema::PluginSchema::parse(bytes)?;
+    }
 
     if let Some(bin) = raw
         .iter()
