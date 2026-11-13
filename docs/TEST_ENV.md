@@ -59,7 +59,15 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 08:15–08:20 快照还原后全新安装（当前生效）**
+> **2026-11-13 09:18 就地升级到 `d06bdab`（当前生效）**
+> - 出包：run `43342855257`（`release.yml` dispatch，ref=main、head `d06bdab`，publish=false、skip_plugins=false），两个架构 job 全绿；artifact `release-amd64` 13,579,024 B，内含主包 11,647,063 B `daad92da867d4abc6fa8b8a9184378aa447b3038dfac0e06dfb3164c3cc31df0`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
+> - 升级方式：**就地覆盖二进制**（不重跑 `install.sh`、不改配置）：旧二进制备份 `/root/iter/backup/skiff-d6d78e61c41c68a74fd7e90e659f5620b6f039af54a165b4fd55dc0f642262a0`（17,687,824 B）；库经 sqlite backup API 做一致性快照 `/root/iter/backup/skiff-d893d2e4c9a6ac0db049efed269cbd28aa69e83878c0565a4d1a2d6504882ced.db`。
+> - 新二进制：`/usr/local/bin/skiff` **18,256,296 B** `bd4d3ed8717fc637818e18711e0595d420de226633809698b57ab7228a4419fd`，`skiff 0.1.0 arch=amd64 os=linux`；模板与静态资源内嵌，无额外文件替换。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；管理员口令未变（沿用 08:17 初始口令）。
+> - 配置未改写：`listen=127.0.0.1:18080`、`allow_insecure_http=true`、`allow_reduced_sandbox=true`。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 08:15–08:20 快照还原后全新安装（已被同日 09:18 升级取代，保留作过程记录）**
 > - 版本 `v0.1.0`，构建 run `43331444780`（head `51914a6`，代码同 `0d33a86`，仅多一条 AGENTS.md 文档提交）；包 `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` 11,134,704 B `62a89b88c5135ff57f7b9026bd621f1644515a023739d7ff7f78bdb23f15ce71`（测试机 `sha256sum` 一致）。
 > - 安装：`sh install.sh --no-docker` 退出 0；`/usr/local/bin/skiff` 17,687,824 B `d6d78e61c41c68a74fd7e90e659f5620b6f039af54a165b4fd55dc0f642262a0`；`skiff.service` active、`NRestarts=0`。
 > - 配置：`/etc/skiff/config.toml` 96 行、sha256 `ce5fe559440a50fbf2a807aab64476df7c3f5a817fed24d7f2bf3ae4cba19b40`；`listen="127.0.0.1:18080"`（第 15 行）+ `allow_insecure_http=true`（第 112 行）+ `allow_reduced_sandbox=true`（第 114 行，手工追加）；未配 TLS。
@@ -180,9 +188,23 @@
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
 
 
+| 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
+
+
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 09:18–09:30 admin 外壳 + 插件标签修复验收（22 页 + 外壳专项，`d06bdab`）**
+
+前置：就地升级到 `d06bdab`（见 §5），库 v19、7 个官方插件、`/healthz` 200、前缀 `34h8y9da`；仍从开发机 Chromium（1440×900）访问 `http://10.10.15.4:18081/34h8y9da/...`。
+
+- 22 页：**阻断 0、样式错位 0**；21 页 200，`/{p}/terminal` 仍 404（能力缺口，已登记 T5）。
+- 外壳：侧栏六分组齐全（概览 / 网站 / Docker / 插件 / 工具 / 设置）；点「网站列表」「运行环境」均为 SPA 跳转（`window` marker 保留、无整页刷新），URL 与菜单一致，高亮正确，面包屑「网站 › 网站列表」「网站 › 运行环境」正确；页面 iframe 0。
+- **问题 1（标签，未修）**：guard / monitor 仍显示「异常」。库内运行时状态写的是 `running`（`supervisor.rs:547`），而 `plugin_status_label` 只认 `enabled` / `installed` / `disabled`，`running` 落 `_ => "异常"`；其余 5 个未启动插件正确显示「已启用 · 未运行」。补一个 `"running"` 分支即可。
+- **问题 2（插件功能页，未修）**：直达 `/{p}/plugins/com.skiff.files/main` 仍返回**旧 SSR 工作台 + 1 个 iframe**（导航为「Skiff v0.1.0 … 站点文件」），没有「正在切换为原生渲染」占位；侧栏也不渲染插件功能页入口（菜单 API 下发了 `/m/plugin/...`，壳路由按设计丢弃）。与 `docs/PLUGIN_UI_CONTRACT.md`「直达渲染占位、不复用 iframe」的表述不一致。
+- 观察：插件卡片状态文案出现「已启用 · 未运行 · 进程未运行」重复后缀（标签与运行态各写一次）；`/sites`、`/runtimes` 页仍保留「写操作走旧版页面」入口，属迁移中预期。
+- 截图：`skiff-run/budding-acceptance/shots-remote-shell/`（22 页 + `shell-01…shell-08`）；逐页 JSON `report.json`，外壳 JSON `shots-remote-shell/shell-report.json`、`shell-report2.json`。
 
 **2026-11-13 08:17–08:25 budding 迁移页浏览器巡检（22 页，`51914a6`）**
 
