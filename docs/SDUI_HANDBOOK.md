@@ -1,6 +1,6 @@
 # SDUI 内核适配手册（JSON Schema 驱动的服务端 UI）
 
-> 状态：**设计稿，未实施**（2026-11-09）。本文只描述目标、契约与推进方式，不代表当前代码已具备这些能力。
+> 状态：**设计稿；P0/P1 已落地（2026-11-10），P2 未实施**（最近核对 2026-11-13）。本文描述目标、契约与推进方式；落地范围以 §P0/P1 状态为准。
 > 前置：SDUI 框架由外部提供，其组件集、事件模型与布局能力尚未确定（见 §6）。
 > 关系：视觉与交互基准见 [UI_CONTRACT.md](UI_CONTRACT.md)，插件页路由与 iframe 边界见 [PLUGIN_UI_CONTRACT.md](PLUGIN_UI_CONTRACT.md)，菜单声明模型见 [MENU_CONTRACT.md](MENU_CONTRACT.md)，分层红线见 [AGENTS.md](../AGENTS.md) §3.1 与 [03-architecture.md](sections/03-architecture.md) §3.1。本文不重复上述结论，只回答「内核要交出什么、保留什么、怎么迁」。
 

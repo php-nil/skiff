@@ -1,6 +1,6 @@
 # Skiff-server：中心化静态数据分发方案
 
-> 状态：**方案稿（未实施）** ｜ 日期：2026-11-09
+> 状态：**静态分发已实施；发布面 R0–R2e 已实施、默认关闭** ｜ 日期：2026-11-09（最近核对 2026-11-13）
 > 定位：官方维护的**中心化数据源**，最终打包成一份**静态资产目录**，供任何 Skiff 实例拉取或自行镜像——插件商店清单、Docker 应用模板、运行环境版本清单、内核升级元数据。
 > 关联：[§1.4 分层边界](sections/01-requirements.md)、[§4.1 包格式与信任](sections/04-plugin-package.md)、[§4.4–4.5 发布与部署](sections/04-plugin-publish.md)、[PLUGIN_CATALOG.md](PLUGIN_CATALOG.md)、[PLUGIN_UI_CONTRACT.md](PLUGIN_UI_CONTRACT.md)、[CI.md](CI.md)、[DEPLOY_TEST.md](DEPLOY_TEST.md)、[SITE_RUNTIME_CONTRACT.md](SITE_RUNTIME_CONTRACT.md)。
 > 本文只定协议、流程与阶段，不含实现代码；具体规模、频率与超时数字未实测，均标注为「设计目标 / 待实测」。

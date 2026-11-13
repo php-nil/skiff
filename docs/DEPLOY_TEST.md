@@ -23,7 +23,7 @@
 | 闸 | 命令（在目标机或同架构 Linux 上） | 通过标准 | 不过怎么办 |
 |---|---|---|---|
 | 1 编译 | `cargo check --workspace` | 0 error、0 warning | 停下来修，不要带着编译错误上机 |
-| 2 单测 | `cargo test --workspace` | Linux 目标机复跑应为 215 项全过（待实测）；Windows 上 212 ok、3 项 `remove_dir_all` 文件锁红（既存限制，见 §9.4） | 同上；失败项按输出定位，别整体重跑蒙过去 |
+| 2 单测 | `cargo test --workspace` | 以 CI 的 `test` / `test-win` job 与 [TEST_MATRIX.md](TEST_MATRIX.md) 为准；Windows 既存的 `remove_dir_all` 文件锁用例见 §9.4 历史说明 | 同上；失败项按输出定位，别整体重跑蒙过去 |
 | 3 结构 | `cargo run -p xtask -- check` | 结尾「全部通过 ✅」 | 商店包变量/Compose 字段对齐被改坏了 |
 
 三道都过再往下走。只拿预编译二进制、机器上没有 Rust 的话，跳过这三闸，但**必须**做 §2.1 的摘要校验和 §2.10 的权限链自检。
@@ -1044,15 +1044,15 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 
 | 项 | 现状 | 影响 | 对应 §12 |
 |---|---|---|---|
-| **插件安装后的代码目录可执行位** | **已修（2026-11-03），未上机复验** | 修前官方插件装完即 `Permission denied`（`versions/{ver}` 0700、`bin/plugin` 0644）；修后仅过本机门禁，需重新出包复验 | §4.2 |
-| **Docker 容器生命周期 / 资源限制 / Compose 运行时** | **未实测**：测试机无镜像（registry 443 超时），且 Web 无 create/remove 路由 | 只验到「非法动词 400 / 不存在容器 404 / 列表与 `docker ps` 一致」；不得说「容器管理已可用」 | §5.3、§12 |
+| **插件安装后的代码目录可执行位** | **已修并上机复验**：后续 7 个官方插件长期 enabled、可正常拉起（见 [TEST_ENV.md](TEST_ENV.md) §5） | 修前官方插件装完即 `Permission denied`（`versions/{ver}` 0700、`bin/plugin` 0644） | §4.2 |
+| **Docker 容器生命周期 / 资源限制 / Compose 运行时** | **已实现并上机**：容器/镜像/网络/卷/Compose 的创建、启停、删除入口已上线；资源限制与 Compose 运行时细节以 [TEST_MATRIX.md](TEST_MATRIX.md) H 章为准 | 不得把未覆盖的边界说成「全量已验证」 | §5.3、§12 |
 | **HSTS 响应头** | **未实现**：`crates/` 内无 `Strict-Transport-Security` 下发，实测响应头也没有 | 浏览器首次仍可被诱导到同端口明文地址（该地址不返回页面）；不得声称已启用 HSTS | §12 |
 | landlock 隔离 | **未实现** | 插件隔离主力是“独立 UID + 目录权限 + 附加组” | §12、§9.1 #16 |
 | cgroups v2 限额（内存/PID/CPU） | **未实现** | 只有 `setrlimit`（AS 256MB / NOFILE 256 / NPROC / FSIZE / CORE） | §12 |
 | nftables 出网收口（net 能力） | **未实现**，kernel RPC 返回 501 | 插件出网不受控；`net` 能力插件不可用 | §9.1 #17 |
 | project quota | **未实现** | 磁盘只有软限额 | §12 |
 | **bind 挂载的 TOCTOU 窗口** | `canonicalize` 校验；`open_dir_nofollow` 已实现但**未接入** | 校验与 Docker 实际挂载之间有窗口（D8 会通过）。**不得声称已消除** | §5.5 |
-| **Linux 目标的完整编译** | **部分**：`model/policy/wire` 已用 `--target x86_64-unknown-linux-gnu` 检查通过；`plugin/sdk/core/web` 因 C 依赖无法在 Windows 上为该目标编译 | 这三个 crate 的 unix 分支目前只经过人工审阅（已修 3 个编译错误，见 §9.4），**必须**在目标机 `cargo check --workspace` 再确认一次 | §12 |
+| **Linux 目标的完整编译** | **已由 CI 覆盖**：`test` 与 musl 构建 job 在 Linux 全量编译（含 `plugins/`）；Windows 本地仍只跑无 C 依赖子集 | 以 CI 结果为准，本机不再承担 Linux 全量类型检查 | §12 |
 | **备份的一致性** | `skiff backup` 不停插件：库 `VACUUM INTO` 一致，插件 `data/` 直接复制可能抓到写一半的文件 | 需要强一致时先停服再备（§2.5） | §12 |
 | **插件 UID 只有 1000 个槽位** | 哈希取模；撞车**装前拒绝**，但没有换槽/动态分配 | 装到几十个插件后可能出现「装不上」 | §4.2 |
 | 运行时支持矩阵（Go/JVM/.NET 在 AS 256MB 下） | **未实测** | 决定哪些运行时能跑插件 | §12 |
@@ -1060,7 +1060,7 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 | 备份恢复演练 | **未做** | “备份成功”不等于可恢复 | §12 |
 | 与 1Panel/宝塔共存实测 | **未做** | 仅设计上不冲突 | §12 |
 | **Linux 发行包的二进制体积** | **未实测** | 本机只产出 Windows PE（6.65 MB）；Linux x86_64 的实测体积与 `≤14MB` 目标的对照要在目标机上补 | §7、§12 |
-| 发布包（Linux）实跑 | 打包链路**已验证**，Linux 产物**已产出未装机** | `pack-release.sh` 的构建→打包→摘要链路在开发机与 CI（run 41270406760，双 musl）均跑通；产物为 musl 静态、过 `readelf` 自检，**但尚未在目标机实跑安装** | §5.1 |
+| 发布包（Linux）实跑 | **已装机实测**：当前测试机运行 `7e322a3` 的 Release 覆盖包（见 [TEST_ENV.md](TEST_ENV.md) §5）；打包链路同时由 CI 覆盖 | 以 [TEST_ENV.md](TEST_ENV.md) 的部署记录为准 | §5.1 |
 | 多架构发布包（arm64） | CI 已出包，**装机未实测** | `CARGO=cross sh deploy/pack-release.sh --target aarch64-...` 已在 run 41270406760 跑通；目标机实跑待补 | §12 |
 | 1Panel 商店上架 | 包结构就绪，**未上架** | `xtask check-1panel` 只校验变量对齐 | §5.4 |
 | 插件配置的管理界面 | **未实现**（`config_schema` 渲染表单没有） | 只能用 `skiff plugin config <id> <key> <value>` 写；插件侧 `Plugin::config()` 与内核 `capability/config` 路由已通 | §5.2 |
@@ -1068,6 +1068,8 @@ SKIFF_DATA_DIR=./tmp-data SKIFF_RUN_DIR=./tmp-run \
 **写文档/对外宣讲时的口径**：上表任意一项都不能说成“已支持”。要么写“已实现”，要么写“设计目标/未实现”。
 
 ## 9. 实测记录
+
+> 本节是 2026-10-31 前后的开发机实测快照，测试数、二进制体积与「未装机」结论均已过期；当前结论以 [CI.md](CI.md)、[TEST_ENV.md](TEST_ENV.md) 与 [TEST_MATRIX.md](TEST_MATRIX.md) 为准。
 
 ### 9.1 开发机（Windows 11 + rustc 1.98.1，MSYS/Git Bash）
 

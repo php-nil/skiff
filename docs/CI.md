@@ -144,7 +144,7 @@ GitHub → Actions → Release → Run workflow
 | Secret 缺失 | **不失败**：`pack-release.sh` 生成临时签名身份并打 `::warning::`，包仍可装可验，但签名人不稳定，**仅供测试**；正式发行前必须配置正式私钥 |
 | `skip_plugins=true` | 出「裸包」，`::warning::` 明确标注不能作为正式发布物 |
 
-`build` 自检会数 `official/` 下是否 **6** 个 `.wbpkg`（guard/monitor/files/cron/ftp/testkit），读取
+`build` 自检会数 `official/` 下是否 **7** 个 `.wbpkg`（guard/monitor/files/cron/ftp/firewall + testkit），读取
 `official/public-key.txt`（64 位 hex）逐个 `skiff-plugin verify --arch <矩阵架构>`——
 既验签名，也复核「载荷架构没错位」。插件构建一律从仓库根用
 `--manifest-path plugins/Cargo.toml` 调（`cross` 按 cwd 判定挂载哪个 workspace，

@@ -48,9 +48,9 @@
 | 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、实测结果与已知风险 |
 | 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
 | 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单 6 个（guard/monitor/files/cron/ftp/firewall，已落地；原 nginx 已内核化为「网站」；连同 testkit 共 7 个签名包）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
-| Skiff-server 分发（非章节） | [SKIFF_SERVER.md](SKIFF_SERVER.md) | 中心化静态分发：清单模型、Ed25519 签名与 `seq` 防回滚、镜像同步、客户端接入 P0–P4、静态服务契约（§16）、发布面 `/api/**`（§17，R0/R1 已实施、R2 待做） |
+| Skiff-server 分发（非章节） | [SKIFF_SERVER.md](SKIFF_SERVER.md) | 中心化静态分发：清单模型、Ed25519 签名与 `seq` 防回滚、镜像同步、客户端接入 P0–P4、静态服务契约（§16）、发布面 `/api/**`（§17，R0–R2a–R2e 已实施、默认关闭） |
 | budding 接入（非章节） | [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) | 具体框架 budding 作为前端渲染层的接入规则：产物与离线分发、JSON 信封与动作元数据、既有契约沿用与补条款、登录/权限/审计桥接、能力缺口与待决策项；规则稿，不代表已实施 |
-| 其余专项文档（非章节） | [AGENTS.md](../AGENTS.md) §四 | 测试环境/台账/矩阵、迭代验证回路、菜单与插件 UI 契约、UI 交互基准、网站运行环境、内核调度/文件系统/FTP 契约与实现说明；完整索引只在 AGENTS.md 维护，本文不重复 |
+| 其余专项文档（非章节） | [docs/README.md](README.md) | 测试环境/台账/矩阵、迭代验证回路、菜单与插件 UI 契约、UI 交互基准、网站运行环境、内核调度/文件系统/FTP/防火墙契约与实现说明；完整索引、分类与状态只在 docs/README.md 维护，本文不重复 |
 
 ### 按角色选读
 
