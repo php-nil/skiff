@@ -7,6 +7,7 @@
 //!
 //! 本批只落地会话引导与登出：壳页启动时据此判定登录态、取 CSRF、入口前缀与能力开关。
 
+use std::collections::HashMap;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
@@ -917,6 +918,7 @@ pub async fn containers(
             "docker_reason": state.docker_unavailable_reason(),
             "can_operate": user.can(skiff_model::Permission::DockerOperate),
             "can_delete": user.can(skiff_model::Permission::DockerLifecycle),
+            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
         }
     }))
     .into_response();
@@ -1299,6 +1301,190 @@ pub async fn container_action(
     Ok(resp)
 }
 
+/// `POST /ui/v1/containers` 的请求体：与旧表单同名，空串按未填处理。
+#[derive(Debug, Default, Deserialize)]
+pub struct ContainerCreateBody {
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub ports: String,
+    #[serde(default)]
+    pub env: String,
+    #[serde(default)]
+    pub binds: String,
+    #[serde(default)]
+    pub volumes: String,
+    #[serde(default)]
+    pub restart: String,
+    #[serde(default)]
+    pub cpu_shares: String,
+    #[serde(default)]
+    pub cpu_period: String,
+    #[serde(default)]
+    pub cpu_quota: String,
+    #[serde(default)]
+    pub memory_limit_mb: String,
+    #[serde(default)]
+    pub memory_swap_mb: String,
+    #[serde(default)]
+    pub pids_limit: String,
+    #[serde(default)]
+    pub networks: Vec<String>,
+}
+
+fn create_form(body: &ContainerCreateBody) -> HashMap<String, Vec<String>> {
+    let mut form = HashMap::new();
+    for (key, value) in [
+        ("image", &body.image),
+        ("name", &body.name),
+        ("ports", &body.ports),
+        ("env", &body.env),
+        ("binds", &body.binds),
+        ("volumes", &body.volumes),
+        ("restart", &body.restart),
+        ("cpu_shares", &body.cpu_shares),
+        ("cpu_period", &body.cpu_period),
+        ("cpu_quota", &body.cpu_quota),
+        ("memory_limit_mb", &body.memory_limit_mb),
+        ("memory_swap_mb", &body.memory_swap_mb),
+        ("pids_limit", &body.pids_limit),
+    ] {
+        form.insert(key.to_string(), vec![value.to_string()]);
+    }
+    if !body.networks.is_empty() {
+        form.insert("networks".to_string(), body.networks.clone());
+    }
+    form
+}
+
+/// `POST /ui/v1/containers`：新建容器。
+///
+/// 参数解析、`ContainerCreate` 策略判定与 `validate_spec` 全部复用旧表单路径
+/// （`containers::spec_from_form`），执行仍走 `docker_cmd::container_create`。
+pub async fn container_create(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<ContainerCreateBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::ContainerCreate,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    let form = create_form(&body);
+    let spec = handlers::containers::spec_from_form(&form).map_err(ApiError)?;
+    state
+        .cfg
+        .policy
+        .validate_spec(&spec, &handlers::actor(&user))
+        .map_err(|e| ApiError(AppError::BadRequest(e.to_string())))?;
+    let id = skiff_app::commands::docker::container_create(
+        &state,
+        skiff_app::commands::docker::CreateContainer {
+            spec,
+            actor: handlers::containers::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::containers::map_err(e)))?;
+    let mut resp = Json(json!({ "data": { "id": id } })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `POST /ui/v1/containers/{id}/limits` 的请求体：空串沿用旧表单语义（0 = 清除）。
+#[derive(Debug, Default, Deserialize)]
+pub struct ContainerLimitsBody {
+    #[serde(default)]
+    pub cpu_shares: String,
+    #[serde(default)]
+    pub cpu_period: String,
+    #[serde(default)]
+    pub cpu_quota: String,
+    #[serde(default)]
+    pub memory_limit_mb: String,
+    #[serde(default)]
+    pub memory_swap_mb: String,
+    #[serde(default)]
+    pub pids_limit: String,
+}
+
+fn limits_form(body: &ContainerLimitsBody) -> HashMap<String, Vec<String>> {
+    let mut form = HashMap::new();
+    for (key, value) in [
+        ("cpu_shares", &body.cpu_shares),
+        ("cpu_period", &body.cpu_period),
+        ("cpu_quota", &body.cpu_quota),
+        ("memory_limit_mb", &body.memory_limit_mb),
+        ("memory_swap_mb", &body.memory_swap_mb),
+        ("pids_limit", &body.pids_limit),
+    ] {
+        form.insert(key.to_string(), vec![value.to_string()]);
+    }
+    form
+}
+
+/// `POST /ui/v1/containers/{id}/limits`：资源限制热更新（同 `containers.update`）。
+pub async fn container_limits_update(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    Json(body): Json<ContainerLimitsBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let row = handlers::resolve_container(&state, &id)
+        .await
+        .map_err(ApiError)?;
+    let obj = handlers::object_ref(&row);
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::ContainerUpdate,
+            Some(&obj),
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    let form = limits_form(&body);
+    let limits = handlers::containers::limits_from_form(&form).map_err(ApiError)?;
+    state
+        .cfg
+        .policy
+        .validate_limits(&limits)
+        .map_err(|e| ApiError(AppError::BadRequest(e.to_string())))?;
+    skiff_app::commands::docker::container_update(
+        &state,
+        skiff_app::commands::docker::UpdateContainer {
+            target: skiff_app::commands::docker::ContainerTarget::new(
+                row.name.clone(),
+                row.short_id(),
+                obj,
+            ),
+            limits,
+            actor: handlers::containers::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::containers::map_err(e)))?;
+    let mut resp = Json(json!({
+        "data": { "id": row.id, "name": row.name, "updated": true }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 /// 镜像 / 网络 / 卷的通用行。
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourceItem {
@@ -1502,6 +1688,206 @@ pub async fn volumes(
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ImagePullBody {
+    #[serde(default)]
+    pub image: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct NameBody {
+    #[serde(default)]
+    pub name: String,
+}
+
+fn write_done(value: serde_json::Value) -> Result<Response, ApiError> {
+    let mut resp = Json(json!({ "data": value })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `POST /ui/v1/images/pull`：拉取镜像（同 `images.pull`）。
+pub async fn image_pull(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<ImagePullBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), skiff_docker::Verb::ImagePull, None)
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    let image = body.image.trim().to_string();
+    if image.is_empty() {
+        return Err(ApiError(AppError::BadRequest("镜像名不能为空".into())));
+    }
+    skiff_app::commands::docker::image_pull(
+        &state,
+        skiff_app::commands::docker::NamedResource {
+            name: image.clone(),
+            actor: handlers::resources::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::resources::map_err(e)))?;
+    write_done(json!({ "image": image, "pulled": true }))
+}
+
+/// `POST /ui/v1/images/{id}/remove`：删除镜像。
+pub async fn image_remove(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::ImageRemove,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    if id.trim().is_empty() {
+        return Err(ApiError(AppError::BadRequest("镜像 id 不能为空".into())));
+    }
+    skiff_app::commands::docker::image_remove(
+        &state,
+        skiff_app::commands::docker::NamedResource {
+            name: id.clone(),
+            actor: handlers::resources::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::resources::map_err(e)))?;
+    write_done(json!({ "id": id, "removed": true }))
+}
+
+/// `POST /ui/v1/networks`：创建网络（同 `networks.create`）。
+pub async fn network_create(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<NameBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::NetworkCreate,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    let name = body.name.trim().to_string();
+    handlers::resources::validate_name("网络", &name).map_err(ApiError)?;
+    skiff_app::commands::docker::network_create(
+        &state,
+        skiff_app::commands::docker::NamedResource {
+            name: name.clone(),
+            actor: handlers::resources::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::resources::map_err(e)))?;
+    write_done(json!({ "name": name, "created": true }))
+}
+
+/// `POST /ui/v1/networks/{id}/remove`：删除网络。
+pub async fn network_remove(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::NetworkRemove,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    skiff_app::commands::docker::network_remove(
+        &state,
+        skiff_app::commands::docker::NamedResource {
+            name: id.clone(),
+            actor: handlers::resources::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::resources::map_err(e)))?;
+    write_done(json!({ "id": id, "removed": true }))
+}
+
+/// `POST /ui/v1/volumes`：创建卷（同 `volumes.create`）。
+pub async fn volume_create(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<NameBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::VolumeCreate,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    let name = body.name.trim().to_string();
+    handlers::resources::validate_name("卷", &name).map_err(ApiError)?;
+    skiff_app::commands::docker::volume_create(
+        &state,
+        skiff_app::commands::docker::NamedResource {
+            name: name.clone(),
+            actor: handlers::resources::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::resources::map_err(e)))?;
+    write_done(json!({ "name": name, "created": true }))
+}
+
+/// `POST /ui/v1/volumes/{name}/remove`：删除卷。
+pub async fn volume_remove(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(name): Path<String>,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::VolumeRemove,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    skiff_app::commands::docker::volume_remove(
+        &state,
+        skiff_app::commands::docker::NamedResource {
+            name: name.clone(),
+            actor: handlers::resources::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(handlers::resources::map_err(e)))?;
+    write_done(json!({ "id": name, "removed": true }))
 }
 
 #[derive(Debug, Serialize)]

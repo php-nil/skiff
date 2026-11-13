@@ -180,8 +180,27 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/sites/{domain}", get(handlers::ui_api::site_detail))
         .route("/ui/v1/runtimes", get(handlers::ui_api::runtimes))
         .route("/ui/v1/images", get(handlers::ui_api::images))
-        .route("/ui/v1/networks", get(handlers::ui_api::networks))
-        .route("/ui/v1/volumes", get(handlers::ui_api::volumes))
+        .route("/ui/v1/images/pull", post(handlers::ui_api::image_pull))
+        .route(
+            "/ui/v1/images/{id}/remove",
+            post(handlers::ui_api::image_remove),
+        )
+        .route(
+            "/ui/v1/networks",
+            get(handlers::ui_api::networks).post(handlers::ui_api::network_create),
+        )
+        .route(
+            "/ui/v1/networks/{id}/remove",
+            post(handlers::ui_api::network_remove),
+        )
+        .route(
+            "/ui/v1/volumes",
+            get(handlers::ui_api::volumes).post(handlers::ui_api::volume_create),
+        )
+        .route(
+            "/ui/v1/volumes/{name}/remove",
+            post(handlers::ui_api::volume_remove),
+        )
         .route("/ui/v1/compose", get(handlers::ui_api::compose))
         .route("/ui/v1/compose/down", post(handlers::ui_api::compose_down))
         .route(
@@ -254,10 +273,17 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/plugins/{id}/delete",
             post(handlers::ui_api::plugin_delete),
         )
-        .route("/ui/v1/containers", get(handlers::ui_api::containers))
+        .route(
+            "/ui/v1/containers",
+            get(handlers::ui_api::containers).post(handlers::ui_api::container_create),
+        )
         .route(
             "/ui/v1/containers/{id}",
             get(handlers::ui_api::container_detail),
+        )
+        .route(
+            "/ui/v1/containers/{id}/limits",
+            post(handlers::ui_api::container_limits_update),
         )
         .route(
             "/ui/v1/containers/{id}/{action}",
@@ -290,7 +316,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             &format!("/{p}/containers/new"),
-            get(handlers::containers::new_page),
+            get(handlers::containers::new_shell),
         )
         .route(
             &format!("/{p}/containers/create"),

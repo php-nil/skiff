@@ -542,11 +542,12 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 列表复用 `Docker::list_containers` 与 `handlers::container_view`，`filter=error` 与旧页面同一判定（`container_abnormal`），不新增 SQL。
 - 详情复用 `resolve_container` + `inspect_container`；读权限仍是 `policy.check(ContainerInspect)`，不新增权限规则。
 - 启停/重启/删除：`POST /ui/v1/containers/{id}/{action}`，CSRF 走 `x-csrf-token` 头；策略判定、deny 审计与 `docker_cmd::container_action` 与旧 htmx 路径完全同源。
-- 资源限制编辑、日志（T3）、终端（T5）仍留在旧 SSR 详情页，页面明确提示并给出回退链接。
+- 新建容器：`GET /{p}/containers/new` 交付壳页原生表单（`ContainerCreate` 门禁仍在页面入口），提交走 `POST /ui/v1/containers`；参数解析复用 `containers::spec_from_form`，`validate_spec` 与 `docker_cmd::container_create` 不变。
+- 资源限制编辑：`POST /ui/v1/containers/{id}/limits`，沿用 `ContainerUpdate` 策略、`containers::limits_from_form`（空串 = 0 = 清除）与 `docker_cmd::container_update`；详情页直接给表单，不再跳旧 SSR。
 
 **字段表（冻结，只增不改）**
 
-`GET /ui/v1/containers?limit=50&cursor=&filter=error` → `{ "data": { items, total, next_cursor, filter, docker_available, docker_reason, can_operate, can_delete } }`：
+`GET /ui/v1/containers?limit=50&cursor=&filter=error` → `{ "data": { items, total, next_cursor, filter, docker_available, docker_reason, can_operate, can_delete, can_admin } }`：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -560,6 +561,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `filter` | string | 原样回显（空串或 `error`） |
 | `docker_available` / `docker_reason` | bool / string | 与旧页面同口径的可用性与原因 |
 | `can_operate` / `can_delete` | bool | 当前角色是否可启停 / 删除 |
+| `can_admin` | bool | 是否具备 `DockerLifecycle`（新建容器入口显隐；与 `can_delete` 同源） |
 | `next_cursor` | string \| null | 上一页末项 `id`（D10） |
 
 `GET /ui/v1/containers/{id}` → `{ "data": ... }`：
@@ -580,17 +582,23 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 `POST /ui/v1/containers/{id}/{action}`（`start` / `stop` / `restart` / `kill` / `delete|remove`）→ `{ "data": { id, name, action, removed } }`。错误信封沿用全局：未认证 `auth.unauthenticated`（401）、CSRF 失败 `auth.csrf_invalid`（403）、策略拒绝 `auth.forbidden`（403）、容器不存在 `not_found`（404）、Docker 不可达 `dependency.unavailable`（503）、未知动作 `shape.invalid`（400）。
 
+`POST /ui/v1/containers`，body 与旧表单同名：`image`（必填）、`name`、`ports`、`env`、`binds`、`volumes`、`restart`、`cpu_shares` / `cpu_period` / `cpu_quota`、`memory_limit_mb` / `memory_swap_mb`、`pids_limit`、`networks`（string[]）→ `{ "data": { id } }`。`ports` / `env` / `binds` / `volumes` / `networks` 前端按行或逗号拆成文本后由后端同一解析器处理。
+
+`POST /ui/v1/containers/{id}/limits`，body 六个字符串字段（`cpu_shares` / `cpu_period` / `cpu_quota` / `memory_limit_mb` / `memory_swap_mb` / `pids_limit`），空串按旧表单语义转 0（清除）→ `{ "data": { id, name, updated } }`。
+
 **渲染映射**
 
 - 列表：`table`（本地 `items`、`pagination:false`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/containers/{id}`。`filter=error` 由 URL 查询参数传入接口。
-- 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
+- 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
+- 新建容器：`/{p}/containers/new` 隐藏路由 + 原生 `form`，字段与旧表单同名；创建成功后跳转 `/{p}/containers/{id}`，失败展示统一错误信封文案。
 - **D10 翻页限制**同 5.8：本批只取首页 50 条，`next_cursor` 非空时提示，翻页组件待接入。
 
-### 5.10 镜像 / 网络 / 卷（第三批，只读）
+### 5.10 镜像 / 网络 / 卷（第三批，读写）
 
 - `GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/{images|networks|volumes}`。
 - 复用 `list_images` / `list_networks` / `list_volumes` 与旧页面的 `ResourceRow` / `NetworkRowView` 展示模型，不新增 SQL。
-- 本批只读：拉取/删除镜像、创建/删除网络与卷仍走旧版页面；壳页给出回退链接与说明，待写操作批次迁移。
+- 写操作已原生化：`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`；逐项复用 `ImagePull` / `ImageRemove` / `NetworkCreate` / `NetworkRemove` / `VolumeCreate` / `VolumeRemove` 策略与 `docker_cmd` 审计。
+- 网络名/卷名的字符集判定抽到 `resources::validate_name`，旧表单与 `/ui/v1` 共用一份。
 
 **字段表（冻结，只增不改）**
 
@@ -632,7 +640,8 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 **渲染映射**
 
 - 三个页面共用 `table`（本地 `items`、`pagination:false`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
-- Docker 不可用时顶部 warning `alert`；`next_cursor` 非空时提示翻页待接入；底部固定提示「写操作仍走旧版页面」并给 `/m/core/docker/*` 链接。
+- Docker 不可用时顶部 warning `alert`；`next_cursor` 非空时提示翻页待接入。
+- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与逐项删除按钮（网络只列 `can_remove` 的项）；删除前 `window.confirm`，成功后刷新当前页。viewer 保持只读并提示需要管理员权限。
 
 ### 5.11 编排 Compose（第四批）
 
@@ -1061,3 +1070,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十四批容器终端：新增 `GET /{p}/containers/{id}/terminal`（budding 隐藏路由，容器详情加「打开终端」）。复用既有 `POST …/exec/ticket`（Admin + CSRF + `Verb::Exec`，票据绑定会话与容器、30 秒、一次即废）+ `GET …/exec?ticket=` WS（Origin 严格校验，start/fail/end 写 `Verb::Exec` 审计），无内核改动、不新建 WS 契约。前端用 `terminal` 组件内联，`resizeFormat: 'none'`、`reconnect: false`；Pack 入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B）。**WS 真连待 Linux 测试机验收**。 |
 | 2026-11-13 | 第十五批审计页原生化：`GET /{p}/audit` 不再占位。`store` 新增 `audit_page(keyword, before(ts,id), limit)`（`instr(lower(...))` 命中 actor/ip/action/target/detail，排序走既有 `idx_audit_ts(ts DESC, id DESC)`，未改表/加索引）；`/ui/v1/audit?q=&limit=&cursor=` 用 `AuditScope` 签名游标（绑定筛选指纹，换关键字/篡改/旧版本 400），权限保持 `AuditRead`；前端表单 + `table` + 「下一页」。补 store 3 条单测与 `main_flow` 权限/过滤/游标用例，无头浏览器实测页面、过滤与游标翻页。 |
 | 2026-11-13 | 第十六批日志入口收口：容器日志改 budding 页（尾部快照），SSE 移至 `/{p}/containers/{id}/logs/stream` 仅旧详情跟随；运行环境日志新增 budding 页（旧抽屉 JSON 移至 `/logs.json`）；两端各加 `/ui/v1` 快照接口（`ContainerLogs`/`DockerRead` 与 Admin），详情占位页提供原生日志入口；`?legacy=1` 未新增。补 2 条 `main_flow` 用例 + 无头浏览器实测。 |
+| 2026-11-13 | 第十七批 Docker 写操作原生化：`GET /{p}/containers/new` 改交付壳页原生表单；`/ui/v1` 新增容器新建 `POST /containers`、资源限制 `POST /containers/{id}/limits`、镜像 `POST /images/pull` 与 `/images/{id}/remove`、网络 `POST /networks` 与 `/networks/{id}/remove`、卷 `POST /volumes` 与 `/volumes/{name}/remove`。参数解析复用旧表单函数（`spec_from_form` / `limits_from_form` / `validate_name`），执行仍走 `docker_cmd` 与既有权限/CSRF/审计；容器详情补资源限制表单，三个资源页补创建表单与逐项删除。补 `main_flow` 用例（CSRF / viewer 403 / 无 Docker 失败 / 非法名称 400）。**真实 Docker 引擎上的创建与限制热更新仍需 Linux 测试机验收**。 |

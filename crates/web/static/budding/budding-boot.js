@@ -196,6 +196,95 @@
       });
   }
 
+  function formText(value) {
+    return String(value === undefined || value === null ? '' : value);
+  }
+
+  function formLines(value) {
+    return formText(value)
+      .split(/[\n,]/)
+      .map(function (s) {
+        return s.trim();
+      })
+      .filter(function (s) {
+        return s !== '';
+      });
+  }
+
+  /// Docker 写操作统一入口：容器新建/资源限制、镜像拉取/删除、网络与卷增删。
+  /// 全部走 `/ui/v1` 的 JSON 端点，复用既有权限矩阵、CSRF 与审计。
+  function dockerWrite(args, ctx) {
+    var values = formValues(ctx);
+    var kind = args.kind;
+    var op = args.op;
+    if (op === 'remove') {
+      var display = args.name || args.id;
+      if (!window.confirm('确认删除 ' + display + '？此操作不可撤销。')) {
+        return Promise.resolve();
+      }
+    }
+    var path = '';
+    var payload = {};
+    if (kind === 'container' && op === 'create') {
+      path = '/containers';
+      payload = {
+        image: formText(values.image),
+        name: formText(values.name),
+        ports: formText(values.ports),
+        env: formText(values.env),
+        binds: formText(values.binds),
+        volumes: formText(values.volumes),
+        restart: formText(values.restart),
+        cpu_shares: formText(values.cpu_shares),
+        cpu_period: formText(values.cpu_period),
+        cpu_quota: formText(values.cpu_quota),
+        memory_limit_mb: formText(values.memory_limit_mb),
+        memory_swap_mb: formText(values.memory_swap_mb),
+        pids_limit: formText(values.pids_limit),
+        networks: formLines(values.networks)
+      };
+    } else if (kind === 'container' && op === 'limits') {
+      path = '/containers/' + encodeURIComponent(args.id) + '/limits';
+      payload = {
+        cpu_shares: formText(values.cpu_shares),
+        cpu_period: formText(values.cpu_period),
+        cpu_quota: formText(values.cpu_quota),
+        memory_limit_mb: formText(values.memory_limit_mb),
+        memory_swap_mb: formText(values.memory_swap_mb),
+        pids_limit: formText(values.pids_limit)
+      };
+    } else if (kind === 'image' && op === 'pull') {
+      path = '/images/pull';
+      payload = { image: formText(values.image) };
+    } else if (kind === 'image' && op === 'remove') {
+      path = '/images/' + encodeURIComponent(args.id) + '/remove';
+    } else if (kind === 'network' && op === 'create') {
+      path = '/networks';
+      payload = { name: formText(values.name) };
+    } else if (kind === 'network' && op === 'remove') {
+      path = '/networks/' + encodeURIComponent(args.id) + '/remove';
+    } else if (kind === 'volume' && op === 'create') {
+      path = '/volumes';
+      payload = { name: formText(values.name) };
+    } else if (kind === 'volume' && op === 'remove') {
+      path = '/volumes/' + encodeURIComponent(args.id) + '/remove';
+    } else {
+      window.alert('未知的 Docker 操作：' + kind + '/' + op);
+      return Promise.resolve();
+    }
+    return submitJson(path, payload)
+      .then(function (data) {
+        if (kind === 'container' && op === 'create' && data.id) {
+          location.href = prefix + '/containers/' + encodeURIComponent(data.id);
+          return;
+        }
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
   /// 1.8.0 的图标字体只是组件自用子集，没有完整的菜单图标；这里只映射确有的几个，
@@ -303,6 +392,13 @@
       hidden: true,
       schema: 'skiff:runtime-detail',
       meta: { activeMenu: prefix + '/runtimes' }
+    });
+    routes.push({
+      path: prefix + '/containers/new',
+      title: '新建容器',
+      hidden: true,
+      schema: 'skiff:container-new',
+      meta: { activeMenu: prefix + '/containers' }
     });
     routes.push({
       path: prefix + '/containers/:id',
@@ -438,6 +534,7 @@
       platform: { loadJson: loadJson, request: apiRequest, upload: uploadFile },
       actions: {
         skiffContainerAction: containerAction,
+        skiffDockerWrite: dockerWrite,
         skiffComposeAction: composeAction,
         skiffSettingsSave: settingsSave,
         skiffPasswordChange: passwordChange,
@@ -788,15 +885,35 @@
       }
     };
     body.push(table);
-    body.push({
-      type: 'link',
-      props: { text: '新建容器（旧版表单，待迁移）', href: prefix + '/containers/new' }
-    });
+    if (data.can_admin) {
+      body.push({
+        type: 'flex',
+        props: { gap: 8 },
+        content: {
+          body: [
+            {
+              type: 'button',
+              props: { text: '新建容器', color: 'primary' },
+              onEvent: {
+                click: {
+                  actions: [
+                    {
+                      type: 'navigate',
+                      props: { url: prefix + '/containers/new' }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      });
+    }
     return {
       type: 'page',
       props: {
         title: '容器 · Skiff',
-        subtitle: '只读列表；启停/重启/删除在详情页操作'
+        subtitle: '启停/重启/删除在详情页操作，资源限制可在详情页编辑'
       },
       body: body
     };
@@ -935,28 +1052,122 @@
             })
       )
     );
-    body.push({
-      type: 'alert',
-      props: {
-        type: 'info',
-        text: '日志与终端已原生化；资源限制编辑仍在旧版详情页。'
-      }
-    });
-    body.push({
-      type: 'link',
-      props: {
-        text: '打开旧版详情（资源限制编辑）',
-        href: prefix + '/m/core/docker/containers/' + encodeURIComponent(c.id)
-      }
-    });
+    if (data.can_delete) {
+      body.push(
+        writeCard(
+          '编辑资源限制',
+          '留空表示清除该限制（Engine 默认）。当前生效值见上方「资源限制」。',
+          limitsForm(c.id, data.limits)
+        )
+      );
+    } else {
+      body.push({
+        type: 'alert',
+        props: { type: 'info', text: '资源限制编辑需要 Docker 生命周期权限。' }
+      });
+    }
     return {
       type: 'page',
-      props: { title: c.name + ' · 容器', subtitle: '只读详情；操作按钮走 /ui/v1' },
+      props: { title: c.name + ' · 容器', subtitle: '操作与资源限制均走 /ui/v1' },
       body: body
     };
   }
 
-  function resourceSchema(title, subtitle, columns, data, fallbackText, fallbackHref) {
+  /// 卡片 + 说明 + 表单的统一外壳（写操作页共用）。
+  function writeCard(title, notice, form) {
+    var content = [];
+    if (notice) content.push(textLine(notice));
+    content.push(form);
+    return { type: 'card', props: { title: title }, content: { body: content } };
+  }
+
+  function limitsForm(containerId, limits) {
+    var current = limits || {};
+    function field(name, label) {
+      var value = current[name] || '';
+      return {
+        type: 'input-text',
+        props: {
+          name: name,
+          label: label,
+          placeholder: value ? '当前 ' + value : '当前未设置'
+        }
+      };
+    }
+    return writeForm(
+      apiBase + '/containers/' + encodeURIComponent(containerId) + '/limits',
+      { type: 'skiffDockerWrite', props: { kind: 'container', op: 'limits', id: containerId } },
+      [
+        field('cpu_shares', 'CPU 份额'),
+        field('cpu_period', 'CPU 周期（μs）'),
+        field('cpu_quota', 'CPU 配额（μs）'),
+        field('memory_limit_mb', '内存上限（MB）'),
+        field('memory_swap_mb', '内存+交换（MB）'),
+        field('pids_limit', 'PIDs 上限')
+      ],
+      '保存限制'
+    );
+  }
+
+  /// 新建容器（原生化）：字段与旧 SSR 表单同名，解析与校验仍在后端复用。
+  function containerNewSchema() {
+    function area(name, label) {
+      return { type: 'textarea', props: { name: name, label: label, rows: 3 } };
+    }
+    return {
+      type: 'page',
+      props: { title: '新建容器 · Skiff', subtitle: '提交后进入容器详情页' },
+      body: [
+        {
+          type: 'alert',
+          props: {
+            type: 'info',
+            text: '端口、环境变量、绑定与卷均按每行一条；网络每行一个名称。留空表示不设置。'
+          }
+        },
+        writeForm(
+          apiBase + '/containers',
+          { type: 'skiffDockerWrite', props: { kind: 'container', op: 'create' } },
+          [
+            {
+              type: 'input-text',
+              props: {
+                name: 'image',
+                label: '镜像（必填）',
+                required: true,
+                rules: { required: true, messages: { required: '请输入镜像' } }
+              }
+            },
+            { type: 'input-text', props: { name: 'name', label: '容器名（可选）' } },
+            area('ports', '端口映射（host:container[/udp]，每行一条）'),
+            area('env', '环境变量（KEY=VALUE，每行一条）'),
+            area('binds', '宿主绑定（源:目标[:ro]，每行一条）'),
+            area('volumes', '命名卷（卷名:目标[:ro]，每行一条）'),
+            {
+              type: 'input-text',
+              props: {
+                name: 'restart',
+                label: '重启策略（如 unless-stopped）'
+              }
+            },
+            area('networks', '网络（每行一个，可留空）'),
+            { type: 'input-text', props: { name: 'cpu_shares', label: 'CPU 份额' } },
+            { type: 'input-text', props: { name: 'cpu_period', label: 'CPU 周期（μs）' } },
+            { type: 'input-text', props: { name: 'cpu_quota', label: 'CPU 配额（μs）' } },
+            { type: 'input-text', props: { name: 'memory_limit_mb', label: '内存上限（MB）' } },
+            {
+              type: 'input-text',
+              props: { name: 'memory_swap_mb', label: '内存+交换（MB）' }
+            },
+            { type: 'input-text', props: { name: 'pids_limit', label: 'PIDs 上限' } }
+          ],
+          '创建容器'
+        )
+      ]
+    };
+  }
+
+  function resourceSchema(title, subtitle, columns, data, extra) {
     var body = [];
     if (!data.docker_available) {
       body.push({
@@ -980,36 +1191,114 @@
       );
     }
     body.push(statusTable(columns, data.items, 'id'));
-    body.push({
-      type: 'alert',
-      props: {
-        type: 'info',
-        text: '创建/拉取/删除等写操作仍走旧版页面，待写操作批次迁移。'
-      }
-    });
-    body.push({ type: 'link', props: { text: fallbackText, href: fallbackHref } });
+    if (extra && extra.length > 0) body = body.concat(extra);
     return { type: 'page', props: { title: title, subtitle: subtitle }, body: body };
   }
 
+  /// 逐项删除卡片：每行一个按钮，动作走同一个 `skiffDockerWrite`。
+  function deleteCard(kind, items, title) {
+    return {
+      type: 'card',
+      props: { title: title },
+      content: {
+        body: items.map(function (item) {
+          var display = item.name || item.id;
+          return {
+            type: 'flex',
+            props: { gap: 8 },
+            content: {
+              body: [
+                textLine(display),
+                {
+                  type: 'button',
+                  props: { text: '删除', variant: 'text', color: 'danger' },
+                  onEvent: {
+                    click: {
+                      actions: [
+                        {
+                          type: 'skiffDockerWrite',
+                          props: {
+                            kind: kind,
+                            op: 'remove',
+                            id: item.id,
+                            name: display
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          };
+        })
+      }
+    };
+  }
+
   function imagesSchema(data) {
+    var extra = [];
+    if (data.can_admin) {
+      extra.push(
+        writeCard(
+          '拉取镜像',
+          '镜像名支持 tag 与仓库前缀，例如 nginx:1.27。',
+          writeForm(
+            apiBase + '/images/pull',
+            { type: 'skiffDockerWrite', props: { kind: 'image', op: 'pull' } },
+            [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'image',
+                  label: '镜像名',
+                  required: true,
+                  rules: { required: true, messages: { required: '请输入镜像名' } }
+                }
+              }
+            ],
+            '拉取'
+          )
+        )
+      );
+      if (data.items.length > 0) extra.push(deleteCard('image', data.items, '删除镜像'));
+    }
     return resourceSchema(
       '镜像 · Skiff',
-      '只读列表',
+      data.can_admin ? '拉取与删除走 /ui/v1' : '只读列表；写操作需要管理员权限',
       [
         { key: 'name', label: '镜像' },
         { key: 'meta', label: '大小' },
         { key: 'warn', label: '提示' }
       ],
       data,
-      '打开旧版镜像页（拉取 / 删除）',
-      prefix + '/m/core/docker/images'
+      extra
     );
   }
 
   function networksSchema(data) {
+    var extra = [];
+    if (data.can_admin) {
+      extra.push(
+        writeCard(
+          '创建网络',
+          '名称只允许字母数字与 _-.',
+          writeForm(
+            apiBase + '/networks',
+            { type: 'skiffDockerWrite', props: { kind: 'network', op: 'create' } },
+            [nameField('网络名')],
+            '创建'
+          )
+        )
+      );
+      var removable = data.items.filter(function (item) {
+        return item.can_remove;
+      });
+      if (removable.length > 0) extra.push(deleteCard('network', removable, '删除网络'));
+    }
     return resourceSchema(
       '网络 · Skiff',
-      '只读列表',
+      data.can_admin ? '创建与删除走 /ui/v1' : '只读列表；写操作需要管理员权限',
       [
         { key: 'name', label: '名称' },
         { key: 'driver', label: '驱动' },
@@ -1020,24 +1309,71 @@
         { key: 'internal', label: '内部/外部' }
       ],
       data,
-      '打开旧版网络页（创建 / 删除）',
-      prefix + '/m/core/docker/networks'
+      extra
     );
   }
 
   function volumesSchema(data) {
+    var extra = [];
+    if (data.can_admin) {
+      extra.push(
+        writeCard(
+          '创建卷',
+          '名称只允许字母数字与 _-.',
+          writeForm(
+            apiBase + '/volumes',
+            { type: 'skiffDockerWrite', props: { kind: 'volume', op: 'create' } },
+            [nameField('卷名')],
+            '创建'
+          )
+        )
+      );
+      if (data.items.length > 0) extra.push(deleteCard('volume', data.items, '删除卷'));
+    }
     return resourceSchema(
       '卷 · Skiff',
-      '只读列表',
+      data.can_admin ? '创建与删除走 /ui/v1' : '只读列表；写操作需要管理员权限',
       [
         { key: 'name', label: '名称' },
         { key: 'meta', label: '驱动与挂载点' },
         { key: 'warn', label: '提示' }
       ],
       data,
-      '打开旧版卷页（创建 / 删除）',
-      prefix + '/m/core/docker/volumes'
+      extra
     );
+  }
+
+  function nameField(label) {
+    return {
+      type: 'input-text',
+      props: {
+        name: 'name',
+        label: label,
+        required: true,
+        rules: { required: true, messages: { required: '请输入名称' } }
+      }
+    };
+  }
+
+  function writeForm(url, submitAction, fields, submitText) {
+    return {
+      type: 'form',
+      props: {
+        api: { method: 'POST', url: url, sendOn: false },
+        actionsAlign: 'end'
+      },
+      onEvent: { submit: [submitAction] },
+      body: fields,
+      content: {
+        actions: [
+          {
+            type: 'button',
+            props: { text: submitText, color: 'primary' },
+            action: { type: 'submit' }
+          }
+        ]
+      }
+    };
   }
 
   // compose 项目级操作：启停/重启走逐容器分发，删除走 compose down。
@@ -3615,6 +3951,9 @@
       var containerFilter =
         new URLSearchParams(location.search).get('filter') === 'error' ? 'filter=error' : '';
       return fetchData('/containers' + listQuery(containerFilter)).then(containersSchema);
+    }
+    if (kind === 'container-new') {
+      return Promise.resolve(containerNewSchema());
     }
     if (kind === 'container-detail') {
       return fetchData('/containers/' + encodeURIComponent(parts[1])).then(containerDetailSchema);

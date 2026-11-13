@@ -299,6 +299,19 @@ pub async fn new_page(
     render_new(&state, &user, ContainerFormView::default(), String::new()).await
 }
 
+/// 新建容器页（admin / DockerLifecycle）：交付 budding 原生表单，权限门禁仍在这里。
+pub async fn new_shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, AppError> {
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), Verb::ContainerCreate, None)
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    Ok(crate::handlers::spa::shell_page(&state))
+}
+
 fn form_view(form: &HashMap<String, Vec<String>>) -> ContainerFormView {
     ContainerFormView {
         image: form_first(form, "image"),
@@ -559,7 +572,9 @@ fn parse_mounts(text: &str, volume: bool) -> Result<Vec<Mount>, AppError> {
     Ok(out)
 }
 
-fn spec_from_form(form: &HashMap<String, Vec<String>>) -> Result<ContainerSpec, AppError> {
+pub(crate) fn spec_from_form(
+    form: &HashMap<String, Vec<String>>,
+) -> Result<ContainerSpec, AppError> {
     let image = form_first(form, "image");
     if image.trim().is_empty() {
         return Err(AppError::BadRequest("镜像不能为空".into()));
@@ -603,7 +618,9 @@ fn spec_from_form(form: &HashMap<String, Vec<String>>) -> Result<ContainerSpec, 
 }
 
 /// 更新表单：空值 = 0（清除/Engine 默认），避免「空字段 = 不修改」的二义性。
-fn limits_from_form(form: &HashMap<String, Vec<String>>) -> Result<ResourceLimits, AppError> {
+pub(crate) fn limits_from_form(
+    form: &HashMap<String, Vec<String>>,
+) -> Result<ResourceLimits, AppError> {
     let field = |key: &str, label: &str| -> Result<Option<i64>, AppError> {
         let raw = form_first(form, key);
         if raw.trim().is_empty() {

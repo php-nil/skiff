@@ -18,6 +18,8 @@ use skiff_store::{Db, PluginRecord, Role};
 use skiff_web::{AppState, WebConfig};
 use tower::ServiceExt;
 
+use serde_json::json;
+
 /// 测试用 PHP 站点：绑定 v7 迁移种入的 php-8.5 运行环境。
 fn php_site(domain: &str, root: &str) -> skiff_store::NewSite {
     skiff_store::NewSite {
@@ -5469,17 +5471,8 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
     let (status, html) = get_page(&h.app, "/p/containers/new", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains(r#"name="image""#)
-            && html.contains(r#"name="ports""#)
-            && html.contains(r#"name="env""#)
-            && html.contains(r#"name="volumes""#)
-            && html.contains(r#"name="restart""#),
-        "创建容器页必须覆盖镜像/端口/环境变量/卷/重启策略: {html}"
-    );
-    // 页头右上主操作通过 form= 关联表单，满足「一页一个主操作」。
-    assert!(
-        html.contains(r#"form="container-form""#),
-        "创建容器主操作必须在页头并关联表单: {html}"
+        html.contains(r#"id="skiff-root""#),
+        "新建容器页应交付 budding 壳页（原生表单）: {html}"
     );
 
     let (status, _) = get_page(&h.app, "/p/containers/new", &viewer).await;
@@ -8005,6 +7998,84 @@ async fn ui_resource_lists_keep_auth_and_docker_unavailable_semantics() {
         assert_eq!(data["docker_available"], false, "{uri}");
         assert!(data["docker_reason"].is_string(), "{uri}");
         assert!(data["can_admin"].is_boolean(), "{uri}");
+    }
+}
+
+/// Docker 写操作 JSON 接口：CSRF 先于一切、viewer 被权限矩阵拒绝、
+/// 管理员在无 Docker 环境下得到失败而不是「假成功」；非法名称在触达 Docker 前 400。
+#[tokio::test]
+async fn ui_docker_writes_require_csrf_and_permission() {
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("/ui/v1/containers", json!({ "image": "nginx:1.27" })),
+        (
+            "/ui/v1/containers/abc/limits",
+            json!({ "cpu_shares": "512" }),
+        ),
+        ("/ui/v1/images/pull", json!({ "image": "nginx:1.27" })),
+        ("/ui/v1/images/sha256:abc/remove", json!({})),
+        ("/ui/v1/networks", json!({ "name": "app-net" })),
+        ("/ui/v1/networks/app-net/remove", json!({})),
+        ("/ui/v1/volumes", json!({ "name": "app-data" })),
+        ("/ui/v1/volumes/app-data/remove", json!({})),
+    ];
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} 缺 CSRF 必须 403: {text}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+    }
+
+    for (uri, body) in &cases {
+        if uri.ends_with("/limits") {
+            // 资源限制先解析容器再判权限；无 Docker 时解析失败，同样不能执行写操作。
+            let (status, _) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+            assert_ne!(status, StatusCode::OK, "{uri} viewer 不得执行写操作");
+            continue;
+        }
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} viewer 必须 403: {text}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+    }
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, Some(&csrf), body).await;
+        assert_ne!(status, StatusCode::OK, "{uri} 无 Docker 时不得成功: {text}");
+        assert_ne!(status, StatusCode::FORBIDDEN, "{uri} 管理员不应被权限拒绝");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            v["error"]["code"] == "dependency.unavailable" || v["error"]["code"] == "shape.invalid",
+            "{uri} 错误码必须是依赖不可用或参数错误: {text}"
+        );
+    }
+
+    for uri in ["/ui/v1/networks", "/ui/v1/volumes"] {
+        let (status, text) = post_ui_json(
+            &h.app,
+            uri,
+            &admin,
+            Some(&csrf),
+            &json!({ "name": "bad name" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "shape.invalid", "{uri}");
     }
 }
 

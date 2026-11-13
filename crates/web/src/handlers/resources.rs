@@ -245,6 +245,20 @@ pub async fn networks(
     }
 }
 
+/// 网络/卷名：只允许字母数字与 `_-.`（旧页面与 `/ui/v1` 共用同一判定）。
+pub(crate) fn validate_name(kind: &str, name: &str) -> Result<(), AppError> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
+    {
+        return Err(AppError::BadRequest(format!(
+            "{kind}名只允许字母数字与 _-. "
+        )));
+    }
+    Ok(())
+}
+
 pub async fn create_network(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -259,13 +273,7 @@ pub async fn create_network(
         .check(&handlers::actor(&user), Verb::NetworkCreate, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
     let name = form_first(&form, "name").trim().to_string();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
-    {
-        return Err(AppError::BadRequest("网络名只允许字母数字与 _-. ".into()));
-    }
+    validate_name("网络", &name)?;
     let result = docker_cmd::network_create(
         &state,
         NamedResource {
@@ -345,13 +353,7 @@ pub async fn create_volume(
         .check(&handlers::actor(&user), Verb::VolumeCreate, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
     let name = form_first(&form, "name").trim().to_string();
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
-    {
-        return Err(AppError::BadRequest("卷名只允许字母数字与 _-. ".into()));
-    }
+    validate_name("卷", &name)?;
     let result = docker_cmd::volume_create(
         &state,
         NamedResource {
@@ -391,14 +393,14 @@ pub async fn remove_volume(
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
     Actor {
         username: user.user.username.clone(),
         ip: handlers::client_ip(state, parts),
     }
 }
 
-fn map_err(e: DockerCommandError) -> AppError {
+pub(crate) fn map_err(e: DockerCommandError) -> AppError {
     match e {
         DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
         DockerCommandError::Conflict(m) => AppError::Conflict(m),
