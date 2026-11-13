@@ -1,0 +1,368 @@
+{
+  "version": 1,
+  "data": {
+    "jobs": { "method": "list" },
+    "targets": { "method": "targets" },
+    "config": { "method": "config" },
+    "detail": {
+      "method": "detail",
+      "params": { "id": "{{query.id}}" }
+    }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "计划任务",
+      "subtitle": "由内核调度器统一执行：任务定义与历史在内核库，插件重启不丢；按服务器本地时区调度，只支持 5 段 cron（分 时 日 月 周）"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "list" } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "新建任务", "color": "primary" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "list" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "任务列表" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.jobs.jobs}}",
+                "rowKey": "id",
+                "pagination": true,
+                "perPage": 20,
+                "density": "compact",
+                "emptyText": "还没有任务",
+                "filters": {
+                  "name": "text",
+                  "target_method_text": "text",
+                  "source_text": "text"
+                },
+                "columns": [
+                  { "key": "name", "label": "任务" },
+                  { "key": "schedule_text", "label": "调度" },
+                  { "key": "next_text", "label": "下次执行" },
+                  { "key": "target_method_text", "label": "目标" },
+                  { "key": "source_text", "label": "来源" },
+                  { "key": "last_text", "label": "上次" },
+                  { "key": "state_text", "label": "状态" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "执行", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "run",
+                              "params": { "id": "${id}" },
+                              "confirm": "立即执行任务「${name}」？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "${toggle_text}", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "toggle",
+                              "params": {
+                                "id": "${id}",
+                                "enabled": "${toggle_enabled}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "编辑", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "list",
+                              "query": { "id": "${id}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "删除", "variant": "text", "color": "danger" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "remove",
+                              "params": { "id": "${id}" },
+                              "confirm": "删除任务「${name}」？任务会立即停止调度，无法恢复。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "alert",
+        "props": { "type": "info", "text": "{{data.detail.readonly_text}}" },
+        "when": "{{data.detail.readonly}}"
+      },
+      {
+        "type": "card",
+        "props": { "title": "{{data.detail.title}}" },
+        "content": {
+          "body": [
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "name",
+                    "label": "任务名称（最多 64 字符）",
+                    "defaultValue": "{{data.detail.name_default}}",
+                    "placeholder": "例如：网站配置每日备份"
+                  }
+                },
+                {
+                  "type": "select",
+                  "props": {
+                    "name": "target_plugin",
+                    "label": "目标插件",
+                    "defaultValue": "{{data.detail.target_default}}",
+                    "items": "{{data.targets.target_options}}"
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "method",
+                    "label": "目标方法",
+                    "defaultValue": "{{data.detail.method_default}}",
+                    "placeholder": "例如 backup"
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "key",
+                    "label": "幂等 key（可空）",
+                    "defaultValue": "{{data.detail.key_default}}",
+                    "placeholder": "留空由内核生成"
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "expr",
+                    "label": "cron 表达式（5 段）",
+                    "defaultValue": "{{data.detail.expr_default}}",
+                    "placeholder": "0 3 * * *"
+                  }
+                },
+                {
+                  "type": "textarea",
+                  "props": {
+                    "name": "params_json",
+                    "label": "调用参数（JSON 对象，可空）",
+                    "defaultValue": "{{data.detail.params_json}}",
+                    "rows": 4
+                  }
+                },
+                {
+                  "type": "checkbox",
+                  "props": {
+                    "name": "enabled",
+                    "label": "启用任务",
+                    "defaultValue": "{{data.detail.enabled_default}}"
+                  }
+                },
+                {
+                  "type": "grid",
+                  "props": { "columns": 3, "gap": 16 },
+                  "content": {
+                    "body": [
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "timeout_secs",
+                          "label": "超时（秒，1–600）",
+                          "type": "number",
+                          "defaultValue": "{{data.detail.timeout_default}}"
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "retry_max",
+                          "label": "重试次数（0–10）",
+                          "type": "number",
+                          "defaultValue": "{{data.detail.retry_default}}"
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "backoff_secs",
+                          "label": "重试退避（秒）",
+                          "type": "number",
+                          "defaultValue": "{{data.detail.backoff_default}}"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "select",
+                  "props": {
+                    "name": "concurrency",
+                    "label": "并发策略",
+                    "defaultValue": "skip",
+                    "items": [
+                      { "title": "跳过重叠", "value": "skip" },
+                      { "title": "排队一次", "value": "queue_one" }
+                    ]
+                  }
+                },
+                {
+                  "type": "text",
+                  "props": {
+                    "text": "原生表单直接用 5 段 cron，不做预设联动；预设编辑器仍保留在旧界面（地址加 ?legacy=1）。超时、重试与并发随本次保存写入。"
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "创建任务", "color": "primary" },
+                    "when": "{{data.detail.is_new}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "create",
+                              "params": {
+                                "name": "${name}",
+                                "target_plugin": "${target_plugin}",
+                                "method": "${method}",
+                                "key": "${key}",
+                                "expr": "${expr}",
+                                "params_json": "${params_json}",
+                                "enabled": "${enabled}",
+                                "timeout_secs": "${timeout_secs}",
+                                "retry_max": "${retry_max}",
+                                "backoff_secs": "${backoff_secs}",
+                                "concurrency": "${concurrency}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "保存修改", "color": "primary" },
+                    "when": "{{data.detail.editable}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "update",
+                              "params": {
+                                "id": "{{data.detail.job.id}}",
+                                "name": "${name}",
+                                "expr": "${expr}",
+                                "params_json": "${params_json}",
+                                "enabled": "${enabled}",
+                                "timeout_secs": "${timeout_secs}",
+                                "retry_max": "${retry_max}",
+                                "backoff_secs": "${backoff_secs}",
+                                "concurrency": "${concurrency}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "取消编辑", "variant": "text" },
+                    "when": "!{{data.detail.is_new}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "type": "skiffPluginView", "props": { "view": "list" } }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "when": "!{{data.detail.readonly}}"
+      }
+    ]
+  }
+}

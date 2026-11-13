@@ -44,13 +44,15 @@ fn main() {
     if let Err(e) = plugin.serve(move |method, params| match method {
         // 旧插件 RPC 名称保留为薄别名：面板 UI（app.js）与旧调用方都能平滑切换。
         "jobs.list" | "list" | "jobs" => list(&p, &params),
-        "jobs.create" | "create" => create(&p, &params),
+        "jobs.create" | "create" => create(&p, &normalize_params(&params)),
         // 编辑已有任务：与新建共用弹窗，但走 `task.update`，不改任务身份（id/kind/source）。
-        "jobs.update" | "update" => update_job(&p, &params),
-        "jobs.toggle" | "toggle" => toggle(&p, &params),
+        "jobs.update" | "update" => update_job(&p, &normalize_params(&params)),
+        "jobs.toggle" | "toggle" => toggle(&p, &normalize_params(&params)),
         "jobs.remove" | "remove" => remove(&p, &params),
         "jobs.run" | "run" => run_now(&p, &params),
-        "jobs.reschedule" | "reschedule" => reschedule(&p, &params),
+        "jobs.reschedule" | "reschedule" => reschedule(&p, &normalize_params(&params)),
+        // 新壳编辑表单：按 query 里的 job 预填，空 id 表示新建。
+        "detail" => detail(&p, &params),
         "targets" => targets(&p),
         "schedule.describe" | "schedule" => schedule_describe(&params),
         "schedule.build" => schedule_build(&params),
@@ -71,6 +73,38 @@ fn config(plugin: &Plugin) -> Value {
     out["jobs"] = json!(count_tasks(plugin).unwrap_or(0));
     out["now"] = json!(common::now_secs());
     out
+}
+
+/// schema 表单值都是字符串：写入口按需归一化类型，未提供的字段保持缺省。
+fn normalize_params(params: &Value) -> Value {
+    let Some(mut obj) = params.as_object().cloned() else {
+        return params.clone();
+    };
+    for key in ["timeout_secs", "retry_max", "backoff_secs"] {
+        if let Some(Value::String(text)) = obj.get(key) {
+            if let Ok(n) = text.trim().parse::<u64>() {
+                obj.insert(key.to_string(), json!(n));
+            }
+        }
+    }
+    if let Some(Value::String(text)) = obj.get("enabled") {
+        obj.insert(
+            "enabled".to_string(),
+            json!(matches!(text.trim(), "true" | "1" | "on")),
+        );
+    }
+    for key in ["name", "key", "target", "method", "expr", "id", "source"] {
+        if let Some(Value::String(text)) = obj.get(key) {
+            obj.insert(key.to_string(), json!(text.trim()));
+        }
+    }
+    // schema 校验禁止 `target` 作为字段名（防链接注入），表单用 `target_plugin`。
+    if let Some(value) = obj.remove("target_plugin") {
+        obj.insert("target".to_string(), value);
+    }
+    // 空字符串等价于未填写；但 `params_json` 的空串也直接丢弃。
+    obj.retain(|_, v| !v.as_str().is_some_and(|s| s.trim().is_empty()));
+    Value::Object(obj)
 }
 
 fn count_tasks(plugin: &Plugin) -> Result<usize, String> {
@@ -359,7 +393,32 @@ fn read_name(params: &Value, fallback: Option<String>) -> Result<String, RpcErro
 /// 调用参数：必须是 JSON 对象，且不超过 `MAX_PARAMS_BYTES`。
 fn read_params_object(params: &Value) -> Result<Option<Value>, RpcError> {
     let Some(value) = params.get("params").filter(|v| !v.is_null()) else {
-        return Ok(None);
+        // schema 的 textarea 只能给字符串：接受 `params_json` 并在这里解析成对象。
+        let Some(text) = params
+            .get("params_json")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        let value: Value = serde_json::from_str(text)
+            .map_err(|e| RpcError::invalid_params(format!("调用参数不是合法 JSON：{e}")))?;
+        if !value.is_object() {
+            return Err(RpcError::invalid_params(
+                "params 必须是 JSON 对象".to_string(),
+            ));
+        }
+        if serde_json::to_vec(&value)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX)
+            > MAX_PARAMS_BYTES
+        {
+            return Err(RpcError::invalid_params(format!(
+                "params 超过 {MAX_PARAMS_BYTES} 字节"
+            )));
+        }
+        return Ok(Some(value));
     };
     if !value.is_object() {
         return Err(RpcError::invalid_params(
@@ -433,6 +492,7 @@ fn list(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let body = plugin
         .scheduler_call("task.list", json!({}))
         .map_err(|e| RpcError::internal(call_err("调度器", &e.to_string())))?;
+    let now = common::now_secs();
     let jobs: Vec<Value> = jobs_of(&body)
         .into_iter()
         .filter(|j| {
@@ -443,8 +503,221 @@ fn list(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
                 || (source == "ui" && (src == "ui" || src == "system"))
         })
         .filter(|j| target.is_empty() || j["target"].as_str() == Some(target.as_str()))
+        .map(|j| decorate_job(j, now))
         .collect();
-    Ok(json!({ "ok": true, "jobs": jobs, "now": common::now_secs() }))
+    Ok(json!({ "ok": true, "jobs": jobs, "now": now }))
+}
+
+/// 列表/编辑表单的展示字段与行内状态；原始字段保留给旧 UI。
+fn decorate_job(mut job: Value, now: u64) -> Value {
+    let id = job
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let builtin = id.starts_with(BUILTIN_PREFIX);
+    let own = !builtin && id.starts_with(SELF_TASK_PREFIX);
+    let enabled = job.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+    let state = job.get("state").and_then(Value::as_str).unwrap_or("");
+    let lifecycle = job.get("lifecycle").and_then(Value::as_str).unwrap_or("");
+    let blocked = job
+        .get("blocked_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let source = job
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let expr_human = job
+        .get("expr_human")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let target = job
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let method = job
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let last = job.get("last").cloned().unwrap_or(Value::Null);
+    let last_at = last.get("at").and_then(Value::as_u64).unwrap_or(0);
+    let last_ok = last.get("result").and_then(Value::as_str) == Some("ok");
+    let last_text = if last_at == 0 {
+        "从未执行".to_string()
+    } else {
+        format!(
+            "{} · {}",
+            relative_ago(now, last_at),
+            if last_ok { "成功" } else { "失败" }
+        )
+    };
+    let next_text = job
+        .get("next_run")
+        .and_then(|n| n.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("（表达式无效）")
+        .to_string();
+    let state_text = if state == "blocked" || lifecycle == "blocked" {
+        if blocked.is_empty() {
+            "已阻塞".to_string()
+        } else {
+            format!("已阻塞：{blocked}")
+        }
+    } else if state == "running" {
+        "执行中".to_string()
+    } else {
+        String::new()
+    };
+    let source_text = if source == "ui" {
+        "本面板"
+    } else {
+        source.as_str()
+    };
+    let schedule_text = if expr_human.is_empty() {
+        "自定义表达式".to_string()
+    } else {
+        expr_human
+    };
+    let Some(obj) = job.as_object_mut() else {
+        return job;
+    };
+    obj.insert("builtin".into(), json!(builtin));
+    obj.insert("own".into(), json!(own));
+    obj.insert("editable".into(), json!(own));
+    obj.insert("last_text".into(), json!(last_text));
+    obj.insert("last_ok".into(), json!(last_ok));
+    obj.insert("next_text".into(), json!(next_text));
+    obj.insert("state_text".into(), json!(state_text));
+    obj.insert("source_text".into(), json!(source_text));
+    obj.insert("schedule_text".into(), json!(schedule_text));
+    obj.insert(
+        "target_method_text".into(),
+        json!(format!("{target} / {method}")),
+    );
+    obj.insert(
+        "toggle_text".into(),
+        json!(if enabled { "停用" } else { "启用" }),
+    );
+    obj.insert("toggle_enabled".into(), json!(!enabled));
+    job
+}
+
+fn relative_ago(now: u64, ts: u64) -> String {
+    if ts == 0 {
+        return "-".into();
+    }
+    let d = now.saturating_sub(ts);
+    if d < 60 {
+        "刚刚".into()
+    } else if d < 3600 {
+        format!("{} 分钟前", d / 60)
+    } else if d < 86400 {
+        format!("{} 小时前", d / 3600)
+    } else {
+        format!("{} 天前", d / 86400)
+    }
+}
+
+/// 编辑表单预填：空 id 表示新建；否则读 `task.get` 并给出可编辑判定。
+fn detail(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let cfg = common::load_config(plugin);
+    let default_expr = common::cfg_str(&cfg, "default_expr", "0 3 * * *");
+    let id = common::param_str(params, "id");
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(json!({
+            "is_new": true,
+            "editable": false,
+            "builtin": false,
+            "readonly": false,
+            "readonly_text": "",
+            "title": "新建任务",
+            "job": Value::Null,
+            "name_default": "",
+            "target_default": "",
+            "method_default": "",
+            "key_default": "",
+            "expr_default": default_expr,
+            "params_json": "",
+            "enabled_default": true,
+            "timeout_default": DEFAULT_TIMEOUT_SECS,
+            "retry_default": 0,
+            "backoff_default": DEFAULT_BACKOFF_SECS,
+        }));
+    }
+    let body = plugin
+        .scheduler_call("task.get", json!({ "id": id }))
+        .map_err(|e| RpcError::internal(call_err(id, &e.to_string())))?;
+    let task = body.get("task").cloned().unwrap_or(Value::Null);
+    if task.is_null() {
+        return Ok(json!({
+            "is_new": true,
+            "editable": false,
+            "builtin": false,
+            "readonly": false,
+            "readonly_text": "",
+            "title": "任务不存在，按新建处理",
+            "job": Value::Null,
+            "name_default": "",
+            "target_default": "",
+            "method_default": "",
+            "key_default": "",
+            "expr_default": default_expr,
+            "params_json": "",
+            "enabled_default": true,
+            "timeout_default": DEFAULT_TIMEOUT_SECS,
+            "retry_default": 0,
+            "backoff_default": DEFAULT_BACKOFF_SECS,
+            "missing": true,
+        }));
+    }
+    let builtin = id.starts_with(BUILTIN_PREFIX);
+    let editable = !builtin && id.starts_with(SELF_TASK_PREFIX);
+    let job = decorate_job(task_to_job(&task), common::now_secs());
+    let name = job.get("name").and_then(Value::as_str).unwrap_or("");
+    let params_json = task
+        .get("payload")
+        .and_then(|p| p.get("params"))
+        .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
+        .unwrap_or_default();
+    let readonly = !editable;
+    let readonly_text = if !readonly {
+        ""
+    } else if builtin {
+        "内置任务只读：可执行或启停，不能编辑/删除。"
+    } else {
+        "该任务不属于本面板创建，仅可执行或启停；编辑请到它的来源界面。"
+    };
+    let title = if editable {
+        format!("编辑任务：{name}")
+    } else {
+        format!("任务详情（只读）：{name}")
+    };
+    Ok(json!({
+        "is_new": false,
+        "editable": editable,
+        "builtin": builtin,
+        "readonly": readonly,
+        "readonly_text": readonly_text,
+        "title": title,
+        "job": job,
+        "name_default": name,
+        "target_default": job.get("target").and_then(Value::as_str).unwrap_or(""),
+        "method_default": job.get("method").and_then(Value::as_str).unwrap_or(""),
+        "key_default": job.get("key").and_then(Value::as_str).unwrap_or(""),
+        "expr_default": job.get("expr").and_then(Value::as_str).unwrap_or(default_expr.as_str()),
+        "params_json": params_json,
+        "enabled_default": job.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        "timeout_default": job.get("timeout_secs").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_SECS),
+        "retry_default": 0,
+        "backoff_default": DEFAULT_BACKOFF_SECS,
+    }))
 }
 
 fn create(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
@@ -680,9 +953,21 @@ fn targets(plugin: &Plugin) -> Result<Value, RpcError> {
     let body = plugin
         .interop_catalog()
         .map_err(|e| RpcError::internal(call_err("目标插件", &e.to_string())))?;
+    let interfaces = body.get("interfaces").cloned().unwrap_or(json!([]));
+    // 新壳只做「目标插件 + 方法名」，不做联动下拉；目标清单来自内核目录。
+    let target_options: Vec<Value> = interfaces
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| i.get("id").and_then(Value::as_str))
+                .map(|id| json!({ "title": id, "value": id }))
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(json!({
         "ok": true,
-        "interfaces": body.get("interfaces").cloned().unwrap_or(json!([])),
+        "interfaces": interfaces,
+        "target_options": target_options,
     }))
 }
 
@@ -844,6 +1129,73 @@ mod tests {
             Some(json!({"k": 1}))
         );
         assert_eq!(read_params_object(&json!({})).unwrap(), None);
+        // schema 的 textarea 给字符串，这里解析成对象。
+        assert_eq!(
+            read_params_object(&json!({"params_json": "{\"k\":2}"})).unwrap(),
+            Some(json!({"k": 2}))
+        );
+        assert!(read_params_object(&json!({"params_json": "[1]"})).is_err());
+        assert!(read_params_object(&json!({"params_json": "{bad"})).is_err());
+        assert_eq!(
+            read_params_object(&json!({"params_json": "  "})).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn form_values_are_normalized() {
+        let v = normalize_params(&json!({
+            "name": " 夜间备份 ",
+            "target": " com.skiff.ftp ",
+            "method": " accounts ",
+            "expr": " 0 3 * * * ",
+            "timeout_secs": "120",
+            "retry_max": "2",
+            "backoff_secs": "45",
+            "enabled": "false",
+            "params_json": "{\"a\":1}",
+        }));
+        assert_eq!(v["name"], json!("夜间备份"));
+        assert_eq!(v["target"], json!("com.skiff.ftp"));
+        assert_eq!(v["method"], json!("accounts"));
+        assert_eq!(v["expr"], json!("0 3 * * *"));
+        assert_eq!(v["timeout_secs"], json!(120));
+        assert_eq!(v["retry_max"], json!(2));
+        assert_eq!(v["backoff_secs"], json!(45));
+        assert_eq!(v["enabled"], json!(false));
+        assert_eq!(v["params_json"], json!("{\"a\":1}"));
+    }
+
+    #[test]
+    fn job_view_gets_display_fields() {
+        let job = decorate_job(
+            json!({
+                "id": "plugin:com.skiff.cron:nightly",
+                "name": "夜间备份",
+                "expr": "0 3 * * *",
+                "expr_human": "每天 03:00 执行",
+                "enabled": false,
+                "state": "blocked",
+                "lifecycle": "blocked",
+                "blocked_reason": "目标插件未启用",
+                "source": "ui",
+                "target": "com.skiff.ftp",
+                "method": "accounts",
+                "last": { "at": 1_700_000_000u64, "result": "ok" },
+                "next_run": { "text": "2026-11-14 03:00:00" },
+            }),
+            1_700_000_600,
+        );
+        assert_eq!(job["builtin"], json!(false));
+        assert_eq!(job["own"], json!(true));
+        assert_eq!(job["editable"], json!(true));
+        assert_eq!(job["last_text"], json!("10 分钟前 · 成功"));
+        assert_eq!(job["next_text"], json!("2026-11-14 03:00:00"));
+        assert_eq!(job["state_text"], json!("已阻塞：目标插件未启用"));
+        assert_eq!(job["source_text"], json!("本面板"));
+        assert_eq!(job["target_method_text"], json!("com.skiff.ftp / accounts"));
+        assert_eq!(job["toggle_text"], json!("启用"));
+        assert_eq!(job["toggle_enabled"], json!(true));
     }
 
     #[test]

@@ -13,7 +13,7 @@ name = "计划任务"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.2"
+api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -54,7 +54,7 @@ label = "任务编辑器"
 order = 20
 icon = "clock"
 view = "list"
-
+schema = "list.json"
 [interop]
 # 内核调度器负责执行任务；本插件不再提供任何可被调度的接口。
 consumes = []

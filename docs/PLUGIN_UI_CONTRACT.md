@@ -310,3 +310,4 @@ object-src 'none'; frame-ancestors 'self'
 | 2026-11-13 | 插件功能页原生化（第二批 monitor）：总览 / 历史采样 / 进程 / 网络四个只读视图改用 schema；进程与网络一次取回快照（RPC `all`），排序 / 表头筛选 / 分页由表格本地完成；`overview.health` 槽位仍由旧页承载 |
 | 2026-11-13 | 插件功能页原生化（第三批 firewall）：规则 / fail2ban 两页改用 schema，首次验证写通路——表单内按钮 `skiffPluginRpc` 合并表单值后走 `POST /rpc`，行内删除 / 解封用 `${row}` 插值；新增 `skiffPluginView.query`（仅标量）做 jail 封禁下钻；插件侧把数值字符串归一化为整数，内核校验不变 |
 | 2026-11-13 | 插件功能页原生化（第四批 ftp）：账号 / 运行状态两页改用 schema；新建、重置密码、启停账号、配置、防护、解封、回收全部经 `skiffPluginRpc`；`status` / `sites` / `accounts` / `protection` 补派生展示与下拉；可选依赖（防火墙插件）缺失时返回原因/空列表，不阻塞页面 |
+| 2026-11-13 | 插件功能页原生化（第五批 cron）：任务列表 + 新建/编辑共用一个 schema；`?id=` 走 `detail` 预填，`params_json` 文本域由插件解析为对象，`target_plugin` 在插件侧改名 `target`；执行/启停/删除/创建/更新经统一 RPC；预设编辑器保留旧界面，表单联动显隐登记为上游 T17 |

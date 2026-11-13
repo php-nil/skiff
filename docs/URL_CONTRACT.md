@@ -234,3 +234,4 @@
 | 2026-11-13 | 插件功能页原生化（第二批 monitor）：`/{p}/plugins/com.skiff.monitor/{overview,history,process,network}` 改由壳页加载随包 schema；`processes` / `network` RPC 新增只读 `all` 参数（一次取回当前快照，供表格本地排序/筛选/分页），旧分页参数与返回字段不变；`GET /{p}/plugins/{id}/schema/{view}` 与 `POST /{id}/rpc` 权限不变；`overview.health` 槽位仍由旧页承载。 |
 | 2026-11-13 | 插件功能页原生化（第三批 firewall）：`/{p}/plugins/com.skiff.firewall/{rules,fail2ban}` 改由壳页加载 schema；写操作仍只经 `POST /{id}/rpc`（CSRF + `PluginManage` + 审计），表单值由壳页合并、数值由插件归一化；`skiffPluginView.query` 只承载标量并拼到当前插件页 query（如 `?jail=sshd`），不产生新路由。 |
 | 2026-11-13 | 插件功能页原生化（第四批 ftp）：`/{p}/plugins/com.skiff.ftp/{accounts,runtime}` 改由壳页加载 schema；账号行「重置密码」用 `?login=<name>` 预填页内下拉，不新增路由；所有写操作仍只经 `POST /{id}/rpc`，可选防火墙插件缺失时防护接口返回原因/空列表。 |
+| 2026-11-13 | 插件功能页原生化（第五批 cron）：`/{p}/plugins/com.skiff.cron/list` 改由壳页加载 schema；列表行「编辑」用 `?id=<task-id>` 预填同一表单，不新增路由；执行/启停/删除/创建/更新仍只经 `POST /{id}/rpc`；旧 SSR 与 `?legacy=1` 预设编辑器保留。 |

@@ -333,6 +333,7 @@ Skiff 侧对应约束：
 - 已原生化的只读批次：guard（containers / events）、monitor（overview / history / process / network）。monitor 的进程与网络页把当前快照一次取回（RPC `all: true`，进程仍受 512 PID、连接仍受 5000 条上限），排序 / 表头筛选 / 分页交给 budding 表格本地完成；展示文案由插件派生，schema 只做绑定。两页都没有写入口。
 - 已原生化的写批次：firewall（rules / fail2ban）。表单内按钮的 `skiffPluginRpc` 会合并表单值（空值不发送），仍走 `POST /plugins/{id}/rpc`，CSRF、`PluginManage`、逐条审计不变；行内删除 / 解封用 `${row}` 插值。`skiffPluginView.query` 只接受标量，由壳页拼到同一插件页的 query，用于「查看某 jail 的封禁」这类只读下钻；schema 仍不能写 URL 或直接 `fetch`。数值字段由插件归一化（字符串 → 整数），内核参数校验不放宽。
 - ftp（accounts / runtime）同样原生：账号新建 / 重置密码改为页内表单（schema 没有弹窗与二次确认，页面已明确提示）；`status` / `sites` / `accounts` / `protection` 的展示文案与下拉选项由插件派生。防火墙插件缺失时 `protection` 返回原因、`protection.banned` 返回空列表，FTP 页面不因可选依赖而整页失败。
+- cron（list）原生：列表 + 新建/编辑共用一个 schema，`?id=` 走 `detail` 预填；`params_json` 文本域由插件解析为对象；执行/启停/删除/创建/更新仍走统一 RPC。budding 的 `when` 不随表单值重算，原生表单只收 5 段 cron，预设编辑器保留在旧界面 `?legacy=1`；内置与其它插件任务只读，编辑/删除由后端拒绝。该联动能力已登记为上游 T17。
 
 ### 4.5 需要补的条款（新增）
 
