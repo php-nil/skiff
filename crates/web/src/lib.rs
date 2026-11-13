@@ -197,6 +197,26 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/settings/panel",
             post(handlers::ui_api::settings_panel_update),
         )
+        .route(
+            "/ui/v1/settings/password",
+            post(handlers::ui_api::settings_password_update),
+        )
+        .route(
+            "/ui/v1/settings/totp/setup",
+            post(handlers::ui_api::settings_totp_setup),
+        )
+        .route(
+            "/ui/v1/settings/totp/enable",
+            post(handlers::ui_api::settings_totp_enable),
+        )
+        .route(
+            "/ui/v1/settings/keys",
+            post(handlers::ui_api::settings_key_import),
+        )
+        .route(
+            "/ui/v1/settings/keys/{id}",
+            post(handlers::ui_api::settings_key_remove),
+        )
         .route("/ui/v1/store", get(handlers::ui_api::store))
         .route(
             "/ui/v1/store/plugins/{id}/install",

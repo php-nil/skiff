@@ -397,6 +397,11 @@
         skiffContainerAction: containerAction,
         skiffComposeAction: composeAction,
         skiffSettingsSave: settingsSave,
+        skiffPasswordChange: passwordChange,
+        skiffTotpSetup: totpSetup,
+        skiffTotpEnable: totpEnable,
+        skiffKeyImport: keyImport,
+        skiffKeyRemove: keyRemove,
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
         skiffPluginToggle: pluginToggle,
@@ -409,9 +414,13 @@
       }
     };
     if (cssHref) options.css = cssHref;
-    window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
-      showError('初始化失败：' + (error && error.message ? error.message : String(error)));
-    });
+    window.BuddingSDK.embed(mount, schema, options)
+      .then(function () {
+        watchPasswordMask();
+      })
+      .catch(function (error) {
+        showError('初始化失败：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
 
@@ -1248,19 +1257,124 @@
         }
       });
     }
-    body.push(
-      detailLines('账户安全', [
-        '两步验证（TOTP）：' + (data.account.totp_enabled ? '已启用' : '未启用'),
-        '口令与 TOTP 表单在旧版设置页，本页只读展示状态。'
-      ])
-    );
+    var accountLines = [
+      '两步验证（TOTP）：' + (data.account.totp_enabled ? '已启用' : '未启用')
+    ];
+    if (data.account.must_change_password) {
+      accountLines.push('当前账号仍在使用首启口令，请尽快修改。');
+    }
+    body.push(detailLines('账户安全', accountLines));
+    body.push(detailLines('修改口令', ['修改成功后当前会话会轮换，无需重新登录。']));
     body.push({
-      type: 'link',
+      type: 'form',
+      onEvent: { submit: [{ type: 'skiffPasswordChange' }] },
       props: {
-        text: '打开旧版设置页（修改口令 / TOTP / 信任公钥增删）',
-        href: prefix + '/m/core/settings/security'
+        api: { method: 'POST', url: apiBase + '/settings/password', sendOn: false },
+        successMessage: '口令已修改',
+        actionsAlign: 'end'
+      },
+      body: [
+        {
+          type: 'input-text',
+          className: 'skiff-password',
+          props: {
+            name: 'old_password',
+            label: '当前口令',
+            required: true,
+            rules: { required: true, messages: { required: '请输入当前口令' } }
+          }
+        },
+        {
+          type: 'input-text',
+          className: 'skiff-password',
+          props: {
+            name: 'new_password',
+            label: '新口令',
+            required: true,
+            rules: { required: true, messages: { required: '请输入新口令' } }
+          }
+        },
+        {
+          type: 'input-text',
+          className: 'skiff-password',
+          props: {
+            name: 'confirm_password',
+            label: '确认新口令',
+            required: true,
+            rules: { required: true, messages: { required: '请再次输入新口令' } }
+          }
+        }
+      ],
+      content: {
+        actions: [
+          {
+            type: 'button',
+            props: { text: '修改口令', color: 'primary' },
+            action: { type: 'submit' }
+          }
+        ]
       }
     });
+
+    if (data.account.totp_enabled) {
+      body.push(detailLines('两步验证（TOTP）', ['已启用：登录时需要输入动态码。']));
+    } else if (data.account.totp_pending_secret) {
+      body.push(
+        detailLines('两步验证（TOTP）', [
+          '密钥：' + data.account.totp_pending_secret,
+          'otpauth URI：' + data.account.totp_pending_uri,
+          '在验证器中录入后输入当前动态码完成启用。'
+        ])
+      );
+      body.push({
+        type: 'form',
+        onEvent: { submit: [{ type: 'skiffTotpEnable' }] },
+        props: {
+          api: { method: 'POST', url: apiBase + '/settings/totp/enable', sendOn: false },
+          actionsAlign: 'end'
+        },
+        body: [
+          {
+            type: 'input-text',
+            props: {
+              name: 'code',
+              label: '动态码（6 位）',
+              required: true,
+              rules: { required: true, messages: { required: '请输入动态码' } }
+            }
+          }
+        ],
+        content: {
+          actions: [
+            {
+              type: 'button',
+              props: { text: '完成启用', color: 'primary' },
+              action: { type: 'submit' }
+            }
+          ]
+        }
+      });
+    } else {
+      body.push(
+        noticeCard('生成密钥后，用验证器 App 录入密钥或 otpauth URI，再输入动态码完成启用。')
+      );
+      body.push({
+        type: 'button',
+        props: { text: '生成 TOTP 密钥', variant: 'tonal' },
+        onEvent: { click: { actions: [{ type: 'skiffTotpSetup' }] } }
+      });
+    }
+    var backupCodes = takeBackupCodes();
+    if (backupCodes.length > 0) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: '备份码（只显示一次，请立即保存）',
+          text: backupCodes.join('   ')
+        }
+      });
+    }
 
     var panelLines = [
       '当前监听：' + panel.listen_addr + ':' + panel.listen_port,
@@ -1340,15 +1454,66 @@
       if (data.keys.length === 0) {
         body.push(detailLines('信任公钥（TOFU）', ['信任库为空：未签名包默认拒装']));
       } else {
-        body.push(
-          detailLines(
-            '信任公钥（TOFU）',
-            data.keys.map(function (k) {
-              return k.fingerprint_short + '… · ' + (k.label || '（无备注）') + ' · ' + k.key_id;
-            })
-          )
-        );
+        var keyNodes = data.keys.map(function (k) {
+          return {
+            type: 'flex',
+            props: { align: 'center', gap: 8 },
+            content: {
+              body: [
+                {
+                  type: 'text',
+                  props: {
+                    text: k.fingerprint_short + '… · ' + (k.label || '（无备注）')
+                  }
+                },
+                {
+                  type: 'button',
+                  props: { text: '撤销', variant: 'text', color: 'danger' },
+                  onEvent: {
+                    click: {
+                      actions: [
+                        { type: 'skiffKeyRemove', props: { key_id: k.key_id } }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          };
+        });
+        body.push(detailLines('信任公钥（TOFU）', ['共 ' + data.keys.length + ' 个；撤销后该公钥签名的包将无法安装/升级。']));
+        body.push({ type: 'flex', props: { direction: 'column', gap: 8 }, content: { body: keyNodes } });
       }
+      body.push(detailLines('导入信任公钥', ['公钥为 Ed25519 的 64 位十六进制字符串，请与发布者公布值逐位核对。']));
+      body.push({
+        type: 'form',
+        onEvent: { submit: [{ type: 'skiffKeyImport' }] },
+        props: {
+          api: { method: 'POST', url: apiBase + '/settings/keys', sendOn: false },
+          actionsAlign: 'end'
+        },
+        body: [
+          {
+            type: 'input-text',
+            props: {
+              name: 'public_key',
+              label: '公钥（64 位十六进制）',
+              required: true,
+              rules: { required: true, messages: { required: '请输入公钥' } }
+            }
+          },
+          { type: 'input-text', props: { name: 'label', label: '备注（可选）' } }
+        ],
+        content: {
+          actions: [
+            {
+              type: 'button',
+              props: { text: '导入公钥', color: 'primary' },
+              action: { type: 'submit' }
+            }
+          ]
+        }
+      });
     }
     return {
       type: 'page',
@@ -1400,6 +1565,144 @@
       .catch(function (error) {
         window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
       });
+  }
+
+  /// 一次性备份码：放在 sessionStorage，页面重载后展示一次即清除。
+  function takeBackupCodes() {
+    try {
+      var raw = window.sessionStorage.getItem('skiff_backup_codes');
+      if (!raw) return [];
+      window.sessionStorage.removeItem('skiff_backup_codes');
+      var list = JSON.parse(raw);
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /// `/ui/v1` JSON 写请求：统一 CSRF 头与错误信封解析，失败抛出可展示文案。
+  function submitJson(path, payload) {
+    return fetch(apiBase + path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify(payload || {})
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status !== 200) throw new Error(errorMessage(res));
+        return res.body.data || {};
+      });
+  }
+
+  function formValues(ctx) {
+    try {
+      return ctx.scope.get('values') || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  /// 改密：成功后轮换会话并回写新 CSRF，然后整页刷新让表单与状态归位。
+  function passwordChange(args, ctx) {
+    var values = formValues(ctx);
+    return submitJson('/settings/password', {
+      old_password: String(values.old_password || ''),
+      new_password: String(values.new_password || ''),
+      confirm_password: String(values.confirm_password || '')
+    })
+      .then(function (data) {
+        if (sessionState) sessionState.csrf_token = data.csrf_token || sessionState.csrf_token;
+        window.alert(data.message || '口令已修改');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('修改失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function totpSetup() {
+    return submitJson('/settings/totp/setup', {})
+      .then(function () {
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('生成密钥失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function totpEnable(args, ctx) {
+    var values = formValues(ctx);
+    return submitJson('/settings/totp/enable', { code: String(values.code || '') })
+      .then(function (data) {
+        window.sessionStorage.setItem(
+          'skiff_backup_codes',
+          JSON.stringify(data.backup_codes || [])
+        );
+        window.alert(data.message || '两步验证已启用');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('启用失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function keyImport(args, ctx) {
+    var values = formValues(ctx);
+    return submitJson('/settings/keys', {
+      public_key: String(values.public_key || ''),
+      label: String(values.label || '')
+    })
+      .then(function (data) {
+        window.alert(data.message || '已导入公钥');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('导入失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  function keyRemove(args) {
+    if (!window.confirm('撤销后该公钥签名的包将无法安装/升级，确定撤销？')) {
+      return Promise.resolve();
+    }
+    return submitJson('/settings/keys/' + encodeURIComponent(args.key_id), {})
+      .then(function (data) {
+        window.alert(data.message || '已撤销该公钥');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        window.alert('撤销失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  // 临时桥接：口令框必须是 password 类型（budding `input-text` 暂不直传 type，见上游 T6）。
+  // TODO(T6)：上游支持 type 后删除本函数与观察器。
+  function maskPasswordInputs() {
+    var found = mount.querySelectorAll('.skiff-password input, input.skiff-password');
+    Array.prototype.forEach.call(found, function (input) {
+      if (input.type !== 'password') {
+        input.type = 'password';
+        input.setAttribute('autocomplete', 'current-password');
+      }
+    });
+  }
+
+  function watchPasswordMask() {
+    maskPasswordInputs();
+    if (typeof MutationObserver !== 'function') return;
+    var observer = new MutationObserver(function () {
+      maskPasswordInputs();
+    });
+    observer.observe(mount, { childList: true, subtree: true });
   }
 
   // 插件中心：列表（已安装 / 发现 / 可更新）与信息页（身份、授权、管理动作）。

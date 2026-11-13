@@ -2441,6 +2441,10 @@ pub struct SettingsPanelItem {
 pub struct SettingsAccountItem {
     pub totp_enabled: bool,
     pub must_change_password: bool,
+    /// 已生成但未启用的 TOTP 密钥（仅本人可见；空串表示没有待启用的密钥）。
+    pub totp_pending_secret: String,
+    /// 待启用密钥的 otpauth URI（与 secret 同时为空/非空）。
+    pub totp_pending_uri: String,
 }
 
 /// 信任公钥行（仅管理员可见，非管理员返回空数组）。
@@ -2511,6 +2515,13 @@ pub async fn settings(
         },
         None => (String::new(), String::new()),
     };
+    let (pending_secret, pending_uri) = match user_row.totp_secret.as_deref() {
+        Some(secret) if !user_row.totp_enabled => (
+            secret.to_string(),
+            skiff_identity::otpauth_uri("Skiff", &user.user.username, secret),
+        ),
+        _ => (String::new(), String::new()),
+    };
     let data = SettingsData {
         panel: SettingsPanelItem {
             listen_addr: state.cfg.listen.ip().to_string(),
@@ -2538,6 +2549,8 @@ pub async fn settings(
         account: SettingsAccountItem {
             totp_enabled: user_row.totp_enabled,
             must_change_password: user.must_change_password(),
+            totp_pending_secret: pending_secret.clone(),
+            totp_pending_uri: pending_uri,
         },
         keys,
         can_admin,
@@ -2595,6 +2608,223 @@ pub async fn settings_panel_update(
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordBody {
+    #[serde(default)]
+    pub old_password: String,
+    #[serde(default)]
+    pub new_password: String,
+    #[serde(default)]
+    pub confirm_password: String,
+}
+
+/// `POST /ui/v1/settings/password`：改密，复用与会话轮换同一套实现。
+///
+/// 口令比较/hash 是 CPU 密集的同步计算，走 `blocking_fs` 线程池；成功后轮换会话
+/// 并回写 Cookie，响应里带回新 CSRF，前端不必重新登录。
+pub async fn settings_password_update(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<PasswordBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    if body.new_password != body.confirm_password {
+        return Err(ApiError(AppError::BadRequest(
+            "两次输入的新口令不一致".into(),
+        )));
+    }
+    let verified = handlers::blocking_fs({
+        let old = body.old_password.clone();
+        let stored = user.user.password_hash.clone();
+        move || skiff_identity::verify_password(&old, &stored)
+    })
+    .await?;
+    if !verified {
+        return Err(ApiError(AppError::BadRequest("当前口令不正确".into())));
+    }
+    let hash = handlers::blocking_fs({
+        let new = body.new_password.clone();
+        move || skiff_identity::hash_password(&new).map_err(AppError::BadRequest)
+    })
+    .await??;
+    let ip = handlers::client_ip(&state, &parts);
+    let tokens = state
+        .rotate_password_session(
+            user.user.id,
+            &user.user.username,
+            &hash,
+            &ip,
+            &handlers::host_header(&parts),
+        )
+        .map_err(AppError::Internal)?;
+    // 首启文件改密成功后删除（与 SSR 改密一致）。
+    let initial = state.cfg.data_dir.join("initial-admin.txt");
+    if initial.exists() {
+        if let Err(e) = std::fs::remove_file(&initial) {
+            tracing::debug!(path = %initial.display(), error = %e, "删除首启口令文件失败");
+        }
+    }
+    let mut resp = Json(json!({
+        "data": {
+            "message": "口令已修改",
+            "csrf_token": state.csrf_token(&tokens.session_token),
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp.headers_mut().append(
+        SET_COOKIE,
+        skiff_identity::session_cookie(
+            state.cookie_name(),
+            &tokens.session_token,
+            state.cfg.session.abs_secs,
+            handlers::is_secure_request(&state, &parts),
+        )
+        .parse()
+        .unwrap(),
+    );
+    Ok(resp)
+}
+
+/// `POST /ui/v1/settings/totp/setup`：生成并暂存 TOTP 密钥（未启用）。
+///
+/// 返回密钥与 otpauth URI 供前端原生展示；密钥在启用前可通过 `GET /settings` 的
+/// `account.totp_pending_*` 再次取回，刷新不丢。
+pub async fn settings_totp_setup(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let secret = skiff_identity::generate_totp_secret();
+    state
+        .save_totp_secret(user.user.id, &secret, false)
+        .map_err(|e| ApiError(AppError::Internal(e)))?;
+    let uri = skiff_identity::otpauth_uri("Skiff", &user.user.username, &secret);
+    let mut resp = Json(json!({
+        "data": { "secret": secret, "otpauth_uri": uri, "message": "已生成密钥，请输入动态码完成启用" }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TotpEnableBody {
+    #[serde(default)]
+    pub code: String,
+}
+
+/// `POST /ui/v1/settings/totp/enable`：校验动态码并启用，返回一次性备份码。
+pub async fn settings_totp_enable(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<TotpEnableBody>,
+) -> Result<Response, ApiError> {
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let secret = user.user.totp_secret.clone().unwrap_or_default();
+    let now = chrono::Utc::now().timestamp().try_into().unwrap_or(0);
+    if !skiff_identity::verify_totp(&secret, body.code.trim(), now, 1) {
+        return Err(ApiError(AppError::BadRequest(
+            "动态码不正确，请确认设备时间后重试".into(),
+        )));
+    }
+    let (plain, hashes) = skiff_identity::generate_backup_codes(10);
+    state
+        .enable_totp(user.user.id, &user.user.username, &secret, &hashes)
+        .map_err(|e| ApiError(AppError::Internal(e)))?;
+    state.audit_or_log(
+        &user.user.username,
+        "local",
+        "auth.totp.enable",
+        &user.user.username,
+        "ok",
+        "启用两步验证",
+    );
+    let mut resp = Json(json!({
+        "data": {
+            "backup_codes": plain,
+            "message": "两步验证已启用，请保存备份码（只显示一次）"
+        }
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KeyImportBody {
+    #[serde(default)]
+    pub public_key: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+/// `POST /ui/v1/settings/keys`：导入信任公钥（管理员），语义与 SSR 表单一致。
+pub async fn settings_key_import(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<KeyImportBody>,
+) -> Result<Response, ApiError> {
+    if !user.can(skiff_model::Permission::Admin) {
+        return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
+    }
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    let public_hex = body.public_key.trim().to_lowercase();
+    let label = body.label.trim().to_string();
+    let vk = skiff_pkgfmt::decode_public_key(&public_hex)
+        .map_err(|e| ApiError(AppError::BadRequest(format!("公钥非法: {e}"))))?;
+    let key_id = skiff_pkgfmt::key_id_of(&vk.to_bytes());
+    state
+        .db()
+        .trust_key(&key_id, &public_hex, &label)
+        .map_err(|e| ApiError(AppError::from(e)))?;
+    state.audit_or_log(
+        &user.user.username,
+        "local",
+        "settings.key.import",
+        &key_id,
+        "ok",
+        &label,
+    );
+    Ok(Json(json!({
+        "data": { "key_id": key_id, "message": "已导入公钥（请与发布者公布值逐位核对）" }
+    }))
+    .into_response())
+}
+
+/// `POST /ui/v1/settings/keys/{id}`：撤销信任公钥（管理员），语义与 SSR 表单一致。
+pub async fn settings_key_remove(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Path(key_id): Path<String>,
+) -> Result<Response, ApiError> {
+    if !user.can(skiff_model::Permission::Admin) {
+        return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
+    }
+    handlers::check_csrf_header(&state, &user, &parts)?;
+    state
+        .db()
+        .remove_trusted_key(&key_id)
+        .map_err(|e| ApiError(AppError::from(e)))?;
+    state.audit_or_log(
+        &user.user.username,
+        "local",
+        "settings.key.remove",
+        &key_id,
+        "ok",
+        "撤销后该公钥签名的包将无法安装/升级",
+    );
+    Ok(Json(json!({ "data": { "message": "已撤销该公钥" } })).into_response())
 }
 
 /// `GET /ui/v1/session`：当前用户、角色、CSRF、入口前缀与壳页能力开关。

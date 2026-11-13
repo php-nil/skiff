@@ -8179,6 +8179,162 @@ async fn ui_settings_panel_update_keeps_csrf_and_admin_semantics() {
     );
 }
 
+/// 改密：旧口令校验失败即 400；成功后会话轮换，旧 Cookie 立即失效。
+#[tokio::test]
+async fn ui_password_change_rotates_session() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+
+    let wrong = serde_json::json!({
+        "old_password": "not-the-password",
+        "new_password": "new-pw-456",
+        "confirm_password": "new-pw-456"
+    });
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/password",
+        &admin,
+        Some(&csrf),
+        &wrong,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("当前口令不正确"), "{text}");
+
+    let mismatch = serde_json::json!({
+        "old_password": "pw-test-123",
+        "new_password": "new-pw-456",
+        "confirm_password": "new-pw-789"
+    });
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/password",
+        &admin,
+        Some(&csrf),
+        &mismatch,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("两次输入的新口令不一致"), "{text}");
+
+    let ok = serde_json::json!({
+        "old_password": "pw-test-123",
+        "new_password": "new-pw-456",
+        "confirm_password": "new-pw-456"
+    });
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/v1/settings/password")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-csrf-token", &csrf)
+                .body(Body::from(ok.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let cookie = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with("skiff_dev_session="))
+        .expect("改密成功必须回写会话 Cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .trim_start_matches("skiff_dev_session=")
+        .to_string();
+    let text = body_text(resp).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(v["data"]["csrf_token"].as_str().unwrap().len() > 10);
+
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/session", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "旧会话必须失效");
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/session", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK, "新会话必须可用");
+}
+
+/// TOTP：setup 生成密钥并在 GET /settings 中可再次取回；错误动态码不得启用。
+#[tokio::test]
+async fn ui_totp_setup_exposes_pending_secret_and_rejects_bad_code() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/totp/setup",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let secret = v["data"]["secret"].as_str().unwrap().to_string();
+    assert!(secret.len() >= 16, "{text}");
+    assert!(v["data"]["otpauth_uri"]
+        .as_str()
+        .unwrap()
+        .starts_with("otpauth://"));
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["account"]["totp_pending_secret"], secret);
+    assert_eq!(
+        v["data"]["account"]["totp_enabled"],
+        serde_json::Value::Bool(false)
+    );
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/totp/enable",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({ "code": "000000" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("动态码不正确"), "{text}");
+}
+
+/// 信任公钥：非管理员 403，管理员非法公钥 400（合法导入走既有 TOFU 用例）。
+#[tokio::test]
+async fn ui_settings_keys_enforce_admin_and_key_shape() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+    let body = serde_json::json!({ "public_key": "zz", "label": "x" });
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/keys",
+        &viewer,
+        Some(&viewer_csrf),
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden");
+
+    let (status, text) =
+        post_ui_json(&h.app, "/ui/v1/settings/keys", &admin, Some(&csrf), &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("公钥非法"), "{text}");
+}
+
 /// 商店规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/plugins/store`（目录启用时 200）。
 #[tokio::test]
 async fn store_canonical_path_serves_shell() {

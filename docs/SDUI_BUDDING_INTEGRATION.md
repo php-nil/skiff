@@ -721,11 +721,16 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - **待办（解除阻塞所需）**：审计表增加 `keyword + before(ts,id)` 查询（或等价索引查询），返回 `{items, next_cursor}`；落地后再补 `GET /ui/v1/audit` 与 buds 表格翻页，字段冻结为 `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`。
 - 本批无新增 `/ui/v1` 接口与新增测试用例（仅 `audit_canonical_path_serves_placeholder_shell` 覆盖落点与权限）。
 
-### 5.14 设置（第七批）
+### 5.14 设置（第七批 + 第十一批补齐）
 
-- `GET /{p}/settings` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/settings/security`（口令、TOTP、信任公钥增删与完整面板表单仍在该页）。
-- 写操作只迁移「后台端口 / 安全入口 / TLS」：`POST /ui/v1/settings/panel` 复用 `settings::apply_panel_update`（同一校验、落盘、审计），CSRF 走 `x-csrf-token`，Admin 权限沿用 `Permission::Admin`。
-- 口令 / TOTP 表单不在本批迁移范围：强改密期间中间件放行 `/{p}/m/core/settings/*`，改密失败仍 PRG 回旧页并消费一次 flash。
+- `GET /{p}/settings` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/settings/security`，但不再是产品入口。
+- 写操作全部迁到 `/ui/v1`，复用旧链路的校验、落盘、审计与错误文案，CSRF 走 `x-csrf-token`：
+  - 面板配置 `POST /ui/v1/settings/panel` → `settings::apply_panel_update`（端口 / 安全入口 / TLS）。
+  - 口令 `POST /ui/v1/settings/password` → argon2 校验旧口令、写新散列、`rotate_password_session` 轮换会话（响应回传新 `csrf_token` 并重设会话 Cookie）、删除首启 `initial-admin.txt`。错误文案沿用旧页：旧口令错「当前口令不正确」、两次不一致「两次输入的新口令不一致」。
+  - TOTP 两步：`POST /ui/v1/settings/totp/setup` 生成并暂存密钥（未启用态），`POST /ui/v1/settings/totp/enable` 校验动态码后启用并一次性返回 10 条备份码。错误文案沿用旧页：「动态码不正确，请确认设备时间后重试」。
+  - 公钥 `POST /ui/v1/settings/keys`（导入）与 `POST /ui/v1/settings/keys/{id}`（撤销）→ `decode_public_key` + `trust_key` / `remove_trusted_key`，审计事件 `settings.key.import` / `settings.key.remove`，仅 Admin。
+- 强改密期间的中间件放行只服务旧 SSR，不改动；新前端失败一律按 JSON 信封回显，不 PRG。
+- 口令输入框在前端把 `input-text` 的 DOM `type` 改写为 `password`（budding 无密码型输入节点，用 `className: 'skiff-password'` 定位并 `MutationObserver` 保持）。
 - `GET /ui/v1/settings` 返回 `panel` / `account` / `keys` / `can_admin` / `flash`；公钥仅对管理员返回，非管理员为空数组。
 
 **字段表（冻结，只增不改）**
@@ -742,11 +747,22 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 | `panel.plaintext_behind_proxy` | bool | 可信反代终止 TLS 形态 |
 | `panel.initial_admin_pending` | bool | 首启口令文件仍在 |
 | `account.totp_enabled` / `must_change_password` | bool | 账户安全状态（只读） |
+| `account.totp_pending_secret` / `totp_pending_uri` | string | 已生成但未启用的 TOTP 密钥与 `otpauth://` 绑定串；无暂存密钥时为空串 |
 | `keys[]` | array | `{key_id, fingerprint_short, label}`；仅管理员返回，viewer 为空 |
 | `can_admin` | bool | 是否可编辑面板配置 |
 | `flash.notice` / `flash.error` | string | 本次读取消费的会话提示（刷新不重放） |
 
 `POST /ui/v1/settings/panel`，body `{listen_addr, listen_port, entry_prefix, tls_mode, tls_cert, tls_key}`（字符串）→ `{ "data": { "message": "..." } }`；校验失败 400 `shape.invalid`，无权限 403 `auth.forbidden`，CSRF 失败 403 `auth.csrf_invalid`。
+
+其余写动作同形（均为 POST + `x-csrf-token`）：
+
+| 路径 | body | 成功返回 |
+|---|---|---|
+| `/ui/v1/settings/password` | `{old_password, new_password, confirm_password}` | `{message, csrf_token}`，并下发新会话 Cookie |
+| `/ui/v1/settings/totp/setup` | 无 | `{secret, otpauth_uri, message}` |
+| `/ui/v1/settings/totp/enable` | `{code}` | `{backup_codes[], message}`（备份码仅此一次） |
+| `/ui/v1/settings/keys` | `{public_key, label}` | `{key_id, message}`；仅 Admin |
+| `/ui/v1/settings/keys/{id}` | 无 | `{message}`；仅 Admin |
 
 ### 5.15 商店（第八批）
 
@@ -1001,4 +1017,5 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | 登录页 budding 化（第三批）：`GET /{p}/login` 改为 budding 登录壳（未认证 200，不落入匿名 303；已登录仍回 `/{p}`）；新增 `GET /ui/v1/auth/login`（公开读，签发与表单同一签名 CSRF + `skiff_login` 兼容 Cookie、`no-store`）与 `POST /ui/v1/auth/login`（JSON `{username,password,otp,csrf,next}`，复用 `AppState::login`、`session_cookie` 与登录 CSRF/来源判定）；失败文案沿用现有中文并按既有 `code` 返回，错误经 `sessionStorage` 回显后清除；新增同源 `budding-login.js`。budding 1.6.0 缺口令输入类型，脚本渲染后将口令框 DOM `type` 置为 `password` 作为临时桥接（已标注待上游组件）。旧登录模板与 `POST /{p}/login` 表单路径保留为无 JS 兜底。补 7 条 `main_flow` 用例（壳页未认证 200、配置 200、成功/深链回跳、错口令/空提交、CSRF/跨站、TOTP 分支）。 |
 | 2026-11-12 | 概览页 budding 化（第四批，只读）：`GET /{p}` 改交付壳页，启动脚本在入口根取 `GET /ui/v1/overview` 渲染四张计数卡片（容器/网站/插件/运行环境）与 Docker 状态提示；图表位用 `alert` 明确占位（D14–D16 未定），不引图表库、不做写操作/实时刷新。新增 `dashboard::load_overview` 供 SSR 与 JSON 共用同一批查询（无新增聚合 SQL）；`overview` DTO 字段冻结（`collected_at` RFC3339 UTC、`docker.status {code,label}`）。SSR 概览暂留 `GET /{p}/m/overview`，插件概览槽位仍有落点，待迁入 budding 后删除。同步 URL 契约 §9、SDUI §5.7 与上游 T6（`input-text` type/autocomplete）。 |
 | 2026-11-13 | 后台外壳接入：壳页改为 `admin` Schema + `outlet`，新增 `GET /ui/v1/menu`（投影 `skiff_app::menu::build`，DTO 只含 key/label/icon/href/plugin/empty），前端按菜单键映射已迁移路由并保留 `/{p}/...` history 形态（path 带前缀、不设 `routerBase`）；新增 `skiff:<kind>` 路由 Schema 经 `platform.loadJson` 按地址栏取数，详情页与商店安装确认改走路由。MDI 图标字体（CSS 323,052 B + woff2 403,216 B）版本化入库并由壳页 `<link>` 引入，`build.rs` 跳过已压缩格式的 `.gz`。插件功能页不再作为入口：菜单丢弃 `plugin/*`，任何直接导航 `/plugins/{id}/{view}` 显示「插件功能页正在切换为原生渲染」占位，旧 SSR 工作台只接受显式 `?legacy=1`（§4.4、backlog T7）。 |
-| 2026-11-13 | budding 升级 1.8.0：入库 `budding-1.8.0.min.js`（1,260,779 B）/`.min.css`（657,142 B），删除 1.6.0 双份；官方包自带 `Budding Icons` 子集（CSS 3,529 B + woff2 2,456 B），移除宿主自存的完整 @mdi/font（CSS 323,052 B + woff2 403,216 B），壳页改引 `budding-icons-1.8.0.*`。子集不含自定义菜单图标，侧栏不再声明图标，避免缺字形回退成 `mdi-xxx` 文本。新包含 code-view/highlight、virtual-list、增强上传与 terminal Pack，作为后续剩余页面切换的基础。 |
+| 2026-11-13 | budding 升级 1.8.0：入库 `budding-1.8.0.min.js`（1,260,779 B）/`.min.css`（657,142 B），删除 1.6.0 双份；官方包自带 `Budding Icons` 子集（CSS 3,533 B + woff2 2,456 B），移除宿主自存的完整 @mdi/font（CSS 323,052 B + woff2 403,216 B），壳页改引 `budding-icons-1.8.0.*`。子集不含自定义菜单图标，侧栏不再声明图标，避免缺字形回退成 `mdi-xxx` 文本。新包含 code-view/highlight、virtual-list、增强上传与 terminal Pack，作为后续剩余页面切换的基础。 |
+| 2026-11-13 | 第十一批设置页补齐（口令 / TOTP / 公钥原生化）：`/ui/v1` 新增 `POST /settings/password`（argon2 校验 + 会话轮换 + 新 CSRF + 删除首启口令文件）、`POST /settings/totp/setup`、`POST /settings/totp/enable`（一次性备份码）、`POST /settings/keys`、`POST /settings/keys/{id}`（仅 Admin，审计 `settings.key.import` / `settings.key.remove`）；`GET /ui/v1/settings` 的 `account` 补 `totp_pending_secret` / `totp_pending_uri`（未启用暂存态）；前端用 `className: 'skiff-password'` + `MutationObserver` 把口令输入框改为 `type=password`。错误文案沿用旧 SSR。设置页不再依赖旧 SSR，旧页仅作无 JS 兜底。 |
