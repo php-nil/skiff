@@ -6242,18 +6242,42 @@
   }
 
   /// 页内视图切换（只允许跳到同一插件的视图）。
-  function pluginViewAction(args) {
+  /// 页内导航：`view` 之外的同级 props 与表单值都作为 query 参数。
+  /// 用于「查看某 jail 的封禁」这类只读下钻；不写 URL、不跨插件。
+  function pluginViewAction(args, ctx) {
     var parts = routeParts();
     var id = parts[0] === 'plugins' ? parts[1] : '';
     if (!id || !args || !args.view) return Promise.resolve();
+    var params = {};
+    var reserved = { view: 1, query: 1 };
+    if (args.query && typeof args.query === 'object') {
+      Object.keys(args.query).forEach(function (k) {
+        if (!reserved[k]) params[k] = args.query[k];
+      });
+    }
+    Object.keys(args).forEach(function (key) {
+      if (!reserved[key]) params[key] = args[key];
+    });
+    var values = ctx ? formValues(ctx) : {};
+    Object.keys(values).forEach(function (key) {
+      var v = values[key];
+      if (v !== null && v !== undefined && String(v).trim() !== '') params[key] = v;
+    });
+    var qs = new URLSearchParams();
+    Object.keys(params).forEach(function (key) {
+      var v = params[key];
+      if (v !== null && v !== undefined && String(v).trim() !== '') qs.append(key, String(v));
+    });
     var target = pluginBase(id) + '/' + encodeURIComponent(args.view);
-    if (location.pathname === target) location.reload();
+    var text = qs.toString();
+    if (text) target += '?' + text;
+    if (location.pathname + location.search === target) location.reload();
     else location.assign(target);
     return Promise.resolve();
   }
 
   /// schema 声明的写操作：表单值 + 静态 params 合并后走统一 RPC 通道。
-  function pluginRpcAction(args) {
+  function pluginRpcAction(args, ctx) {
     var parts = routeParts();
     var id = parts[0] === 'plugins' ? parts[1] : '';
     if (!id) {
@@ -6274,9 +6298,15 @@
         params[k] = args.params[k];
       });
     }
-    var reserved = { method: 1, params: 1, confirm: 1, reload: 1, id: 1 };
+    var reserved = { method: 1, params: 1, confirm: 1, reload: 1 };
     Object.keys(args).forEach(function (key) {
       if (!reserved[key]) params[key] = args[key];
+    });
+    // 表单字段优先于静态 params；空值等价于未填写，不随请求发送。
+    var values = ctx ? formValues(ctx) : {};
+    Object.keys(values).forEach(function (key) {
+      var v = values[key];
+      if (v !== null && v !== undefined && String(v).trim() !== '') params[key] = v;
     });
     return pluginRpcCall(id, method, params)
       .then(function () {

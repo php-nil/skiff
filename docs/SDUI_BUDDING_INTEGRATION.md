@@ -331,6 +331,7 @@ Skiff 侧对应约束：
 - 槽位（`[[mount]]`）已支持 `schema` 声明与安装期校验；新壳的槽位渲染 API 尚未落地，当前仍由旧页承载。
 - 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺，`files` 插件本轮保持占位。
 - 已原生化的只读批次：guard（containers / events）、monitor（overview / history / process / network）。monitor 的进程与网络页把当前快照一次取回（RPC `all: true`，进程仍受 512 PID、连接仍受 5000 条上限），排序 / 表头筛选 / 分页交给 budding 表格本地完成；展示文案由插件派生，schema 只做绑定。两页都没有写入口。
+- 已原生化的写批次：firewall（rules / fail2ban）。表单内按钮的 `skiffPluginRpc` 会合并表单值（空值不发送），仍走 `POST /plugins/{id}/rpc`，CSRF、`PluginManage`、逐条审计不变；行内删除 / 解封用 `${row}` 插值。`skiffPluginView.query` 只接受标量，由壳页拼到同一插件页的 query，用于「查看某 jail 的封禁」这类只读下钻；schema 仍不能写 URL 或直接 `fetch`。数值字段由插件归一化（字符串 → 整数），内核参数校验不放宽。
 
 ### 4.5 需要补的条款（新增）
 

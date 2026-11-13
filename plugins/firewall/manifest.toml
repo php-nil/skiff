@@ -7,7 +7,7 @@ name = "防火墙"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.2"
+api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -61,6 +61,7 @@ view = "rules"
   order = 10
   icon = "shield"
   view = "rules"
+  schema = "rules.json"
 
   [[menu.items]]
   id = "fail2ban"
@@ -68,6 +69,7 @@ view = "rules"
   order = 20
   icon = "lock"
   view = "fail2ban"
+  schema = "fail2ban.json"
 
 [interop]
 consumes = []

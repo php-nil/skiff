@@ -381,7 +381,7 @@ fn validate_action(action: &Value, node_type: &str) -> Result<()> {
             .and_then(Value::as_object)
             .ok_or_else(|| invalid("skiffPluginView 缺少 props"))?;
         for key in props.keys() {
-            if key != "view" {
+            if !matches!(key.as_str(), "view" | "query") {
                 return Err(invalid(format!("skiffPluginView 不允许字段 {key:?}")));
             }
         }
@@ -391,6 +391,27 @@ fn validate_action(action: &Value, node_type: &str) -> Result<()> {
             .ok_or_else(|| invalid("skiffPluginView 缺少 view"))?;
         if !is_token(view, 32) {
             return Err(invalid(format!("skiffPluginView.view 非法: {view:?}")));
+        }
+        // 只读下钻：query 只能是标量键值，宿主据此拼当前插件页的 query，
+        // 不允许携带 URL / 外链。
+        if let Some(query) = props.get("query") {
+            let query = query
+                .as_object()
+                .ok_or_else(|| invalid("skiffPluginView.query 必须是对象"))?;
+            for (key, value) in query {
+                if !is_token(key, 32) {
+                    return Err(invalid(format!("skiffPluginView.query 键名非法: {key:?}")));
+                }
+                match value {
+                    Value::Null | Value::Bool(_) | Value::Number(_) => {}
+                    Value::String(s) => validate_string(s)?,
+                    _ => {
+                        return Err(invalid(
+                            "skiffPluginView.query 的值只能是标量（字符串/数字/布尔）",
+                        ))
+                    }
+                }
+            }
         }
     }
     if let Some(props) = obj.get("props") {
@@ -540,6 +561,33 @@ mod tests {
             "onEvent": { "click": { "actions": [ { "type": "skiffPluginRpc", "props": { "method": "restart", "params": { "name": "${name}" } } } ] } }
         }));
         validate_schema(&v).unwrap();
+    }
+
+    #[test]
+    fn skiff_plugin_view_query_is_scalar_only() {
+        let mut v = sample();
+        v["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "查看封禁" },
+            "onEvent": { "click": { "actions": [ {
+                "type": "skiffPluginView",
+                "props": { "view": "fail2ban", "query": { "jail": "${name}" } }
+            } ] } }
+        }));
+        validate_schema(&v).unwrap();
+
+        // query 只承载标量；嵌套对象会变成 URL 里的未知结构，直接拒装。
+        let mut bad = sample();
+        bad["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "x" },
+            "onEvent": { "click": { "actions": [ {
+                "type": "skiffPluginView",
+                "props": { "view": "fail2ban", "query": { "jail": { "a": 1 } } }
+            } ] } }
+        }));
+        let e = validate_schema(&bad).unwrap_err().to_string();
+        assert!(e.contains("标量"), "{e}");
     }
 
     #[test]

@@ -1,0 +1,275 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "status" },
+    "rules": { "method": "rules.list" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "防火墙 · 规则",
+      "subtitle": "规则经内核 firewall 能力面执行（仅操作 skiff- 前缀链），写操作保留 CSRF、插件权限与逐条审计"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "rules" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "运行状态" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": { "text": "后端：{{data.status.backend_text}}" }
+            },
+            {
+              "type": "grid",
+              "props": { "columns": 3, "gap": 16 },
+              "content": {
+                "body": [
+                  {
+                    "type": "text",
+                    "props": { "text": "nftables：{{data.status.nftables_text}}" }
+                  },
+                  {
+                    "type": "text",
+                    "props": { "text": "iptables：{{data.status.iptables_text}}" }
+                  },
+                  {
+                    "type": "text",
+                    "props": { "text": "fail2ban：{{data.status.fail2ban_text}}" }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "alert",
+              "props": {
+                "type": "warning",
+                "text": "{{data.status.warnings_text}}"
+              },
+              "when": "{{data.status.warnings_any}}"
+            }
+          ]
+        }
+      },
+      {
+        "type": "grid",
+        "props": { "columns": 2, "gap": 16 },
+        "content": {
+          "body": [
+            {
+              "type": "card",
+              "props": { "title": "放行端口" },
+              "content": {
+                "body": [
+                  {
+                    "type": "form",
+                    "props": { "actionsAlign": "end" },
+                    "body": [
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "port",
+                          "label": "端口",
+                          "type": "number",
+                          "placeholder": "8080"
+                        }
+                      },
+                      {
+                        "type": "select",
+                        "props": {
+                          "name": "protocol",
+                          "label": "协议",
+                          "defaultValue": "tcp",
+                          "items": [
+                            { "title": "TCP", "value": "tcp" },
+                            { "title": "UDP", "value": "udp" },
+                            { "title": "TCP + UDP", "value": "both" }
+                          ]
+                        }
+                      }
+                    ],
+                    "content": {
+                      "actions": [
+                        {
+                          "type": "button",
+                          "props": { "text": "放行", "color": "primary" },
+                          "onEvent": {
+                            "click": {
+                              "actions": [
+                                {
+                                  "type": "skiffPluginRpc",
+                                  "props": {
+                                    "method": "port.allow",
+                                    "params": {
+                                      "port": "${port}",
+                                      "protocol": "${protocol}"
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "card",
+              "props": { "title": "自定义规则" },
+              "content": {
+                "body": [
+                  {
+                    "type": "form",
+                    "props": { "actionsAlign": "end" },
+                    "body": [
+                      {
+                        "type": "select",
+                        "props": {
+                          "name": "action",
+                          "label": "动作",
+                          "defaultValue": "accept",
+                          "items": [
+                            { "title": "放行", "value": "accept" },
+                            { "title": "拦截", "value": "drop" }
+                          ]
+                        }
+                      },
+                      {
+                        "type": "select",
+                        "props": {
+                          "name": "protocol",
+                          "label": "协议",
+                          "defaultValue": "tcp",
+                          "items": [
+                            { "title": "TCP", "value": "tcp" },
+                            { "title": "UDP", "value": "udp" },
+                            { "title": "全部", "value": "all" }
+                          ]
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "port",
+                          "label": "端口（可选）",
+                          "type": "number",
+                          "placeholder": "协议为「全部」时不要填端口"
+                        }
+                      },
+                      {
+                        "type": "input-text",
+                        "props": {
+                          "name": "source",
+                          "label": "来源 CIDR（可选）",
+                          "placeholder": "10.0.0.0/8"
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "props": { "text": "端口与来源至少填一个；协议为「全部」时不能指定端口。" }
+                      }
+                    ],
+                    "content": {
+                      "actions": [
+                        {
+                          "type": "button",
+                          "props": { "text": "添加规则", "color": "primary" },
+                          "onEvent": {
+                            "click": {
+                              "actions": [
+                                {
+                                  "type": "skiffPluginRpc",
+                                  "props": {
+                                    "method": "rule.add",
+                                    "params": {
+                                      "action": "${action}",
+                                      "protocol": "${protocol}",
+                                      "port": "${port}",
+                                      "source": "${source}"
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "规则列表" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.rules.items}}",
+                "rowKey": "id",
+                "pagination": true,
+                "perPage": 50,
+                "density": "compact",
+                "emptyText": "还没有 skiff 管理的规则",
+                "columns": [
+                  { "key": "action_text", "label": "动作" },
+                  { "key": "protocol_text", "label": "协议" },
+                  { "key": "port_text", "label": "端口" },
+                  { "key": "source_text", "label": "来源" },
+                  { "key": "id", "label": "标识" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "删除", "variant": "text", "color": "danger" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "rule.remove",
+                              "params": { "id": "${id}" },
+                              "confirm": "确认删除这条规则？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

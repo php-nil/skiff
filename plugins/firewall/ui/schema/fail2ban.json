@@ -1,0 +1,366 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "fail2ban.status" },
+    "banned": {
+      "method": "banned",
+      "params": { "jail": "{{query.jail}}" }
+    }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "防火墙 · fail2ban",
+      "subtitle": "只管理本插件写入的 /etc/fail2ban/jail.d/skiff-<jail>.conf；宿主既有 jail 只读，新装时默认关闭 sshd jail"
+    },
+    "body": [
+      {
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true },
+        "content": {
+          "body": [
+            {
+              "type": "button",
+              "props": { "text": "刷新", "variant": "text" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    { "type": "skiffPluginView", "props": { "view": "fail2ban" } }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "服务状态" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": { "text": "状态：{{data.status.state_text}}" }
+            },
+            {
+              "type": "text",
+              "props": { "text": "{{data.status.reason_text}}" },
+              "when": "{{data.status.reason_text}}"
+            },
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "安装", "color": "primary" },
+                    "when": "{{data.status.missing}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fail2ban.install",
+                              "confirm": "安装或复用宿主 fail2ban？新装时会关闭默认 sshd jail。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "启动", "color": "primary" },
+                    "when": "{{data.status.stopped}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "type": "skiffPluginRpc", "props": { "method": "fail2ban.start" } }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "停止", "color": "warning" },
+                    "when": "{{data.status.running}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fail2ban.stop",
+                              "confirm": "停止 fail2ban？已有封禁会立即失效。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "卸载", "color": "danger" },
+                    "when": "!{{data.status.missing}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fail2ban.uninstall",
+                              "confirm": "卸载 fail2ban？宿主的 jail 文件不会被删除。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "新增 / 更新 jail" },
+        "content": {
+          "body": [
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "jail",
+                    "label": "jail 名称",
+                    "defaultValue": "sshd",
+                    "placeholder": "sshd"
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "filter",
+                    "label": "filter",
+                    "defaultValue": "sshd",
+                    "placeholder": "sshd"
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "port",
+                    "label": "端口",
+                    "defaultValue": "ssh",
+                    "placeholder": "ssh 或 30000-30100"
+                  }
+                },
+                {
+                  "type": "select",
+                  "props": {
+                    "name": "backend",
+                    "label": "backend",
+                    "defaultValue": "systemd",
+                    "items": [
+                      { "title": "systemd", "value": "systemd" },
+                      { "title": "auto", "value": "auto" },
+                      { "title": "polling", "value": "polling" }
+                    ]
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "maxretry",
+                    "label": "maxretry",
+                    "type": "number",
+                    "defaultValue": 5
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "findtime",
+                    "label": "findtime（秒）",
+                    "type": "number",
+                    "defaultValue": 600
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "bantime",
+                    "label": "bantime（秒）",
+                    "type": "number",
+                    "defaultValue": 3600
+                  }
+                },
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "logpath",
+                    "label": "logpath（可选）",
+                    "placeholder": "/var/log/pure-ftpd/transfer.log"
+                  }
+                },
+                {
+                  "type": "text",
+                  "props": { "text": "filter 必须是 fail2ban 已安装的过滤器名；保存后会重启 fail2ban 使配置生效。" }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "保存并重启", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fail2ban.jail.ensure",
+                              "params": {
+                                "jail": "${jail}",
+                                "filter": "${filter}",
+                                "port": "${port}",
+                                "backend": "${backend}",
+                                "maxretry": "${maxretry}",
+                                "findtime": "${findtime}",
+                                "bantime": "${bantime}",
+                                "logpath": "${logpath}"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "jail 列表" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.status.jail_rows}}",
+                "rowKey": "name",
+                "pagination": false,
+                "density": "compact",
+                "emptyText": "还没有 jail",
+                "columns": [
+                  { "key": "name", "label": "jail" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "查看封禁", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "fail2ban",
+                              "query": { "jail": "${name}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "移除", "variant": "text", "color": "danger" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fail2ban.jail.remove",
+                              "params": { "jail": "${name}" },
+                              "confirm": "移除 jail ${name} 的 skiff 配置文件并重启 fail2ban？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "封禁列表" },
+        "content": {
+          "body": [
+            {
+              "type": "alert",
+              "props": {
+                "type": "info",
+                "text": "在上方 jail 列表点「查看封禁」选择 jail。"
+              },
+              "when": "!{{data.banned.jail}}"
+            },
+            {
+              "type": "text",
+              "props": { "text": "当前 jail：{{data.banned.jail}}" },
+              "when": "{{data.banned.jail}}"
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.banned.items}}",
+                "rowKey": "ip",
+                "pagination": true,
+                "perPage": 50,
+                "density": "compact",
+                "emptyText": "该 jail 暂无封禁记录",
+                "columns": [
+                  { "key": "ip", "label": "IP" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "解封", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fail2ban.unban",
+                              "params": { "jail": "${jail}", "ip": "${ip}" },
+                              "confirm": "解封 ${ip}？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "when": "{{data.banned.jail}}"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

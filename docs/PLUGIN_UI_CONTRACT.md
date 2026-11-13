@@ -150,8 +150,8 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 }
 ```
 
-- 绑定：`{{data.<path>}}` 取 `data.<name>` 的 RPC 结果，`{{query.<key>}}` 取地址栏参数；`when` 支持 `{{data.x}}` / `!{{data.x}}`。budding 的 `${row.field}` 行内插值保持原样。
-- 数据源只声明 `method` 与 `params`；壳页统一调 `POST /{p}/plugins/{id}/rpc`（CSRF + 权限 + 审计）。
+- 绑定：`{{data.<path>}}` 取 `data.<name>` 的 RPC 结果，`{{query.<key>}}` 取地址栏参数；`when` 支持 `{{data.x}}` / `!{{data.x}}`。budding 的 `${row.field}` 行内插值保持原样（包括 `params` / `query` 里的嵌套值）。
+- 数据源只声明 `method` 与 `params`；壳页统一调 `POST /{p}/plugins/{id}/rpc`（CSRF + 权限 + 审计）。`skiffPluginView` 可用 `query`（仅标量键值）做同插件只读下钻，例如 `query: { jail: "${name}" }`，壳页只把它拼到当前插件页的 query，不接受 URL。
 - 页面/槽位的 schema 文件名在 manifest 中显式声明；`api < 1.3` 的包行为不变。
 
 ## 3. 内核信息页
@@ -206,7 +206,7 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 - **信任等级**：schema 与内核页面不同级。安装验包期由 `skiff-pkgfmt` 静态校验，运行期 `GET /schema/{view}` 再校验一次；未通过不进入渲染。
 - **节点白名单**：`page`/`card`/`alert`/`text`/`flex`/`grid`/`table`/`form`/`input-text`/`select`/`textarea`/`checkbox`/`button`；未知类型拒装。
 - **禁外链**：任何字符串命中 `http(s)://`、协议相对 `//`、`data:`、`javascript:`、`vbscript:`、`file:`、`mailto:` 即拒；禁止 `api`/`url`/`href`/`src`/`html`/`raw`/`target` 字段。
-- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换）与表单 `submit`。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。
+- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换，可带标量 `query`）与表单 `submit`。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。表单内按钮的 `skiffPluginRpc` 会合并当前表单值（空值视为未填写）；插件侧负责把数值字段从字符串归一化，内核参数校验不放宽。
 - **限额**：单文件 128 KiB、节点 512、嵌套 16 层、字符串 8 KiB、数据源 8 个。
 - 组件缺失时不自造渲染，记入上游清单并给占位。
 
@@ -308,3 +308,4 @@ object-src 'none'; frame-ancestors 'self'
 | 2026-11-05 | 页面级标题改由内核单一提供：清理 5 个插件页内标题；内核托管 HTML 注入 `data-plugin-title` 抑制规则 |
 | 2026-11-13 | 插件功能页原生化（第一批 guard）：`api = "1.3"` 起支持 `ui/schema/<name>.json`，安装期静态校验 + 动作白名单；新增 `GET /{p}/plugins/{id}/schema/{view}`；功能页/schema/旧 SSR 与 RPC 权限统一为 `PluginManage`；iframe 与 CSP 降级为 legacy 路径 |
 | 2026-11-13 | 插件功能页原生化（第二批 monitor）：总览 / 历史采样 / 进程 / 网络四个只读视图改用 schema；进程与网络一次取回快照（RPC `all`），排序 / 表头筛选 / 分页由表格本地完成；`overview.health` 槽位仍由旧页承载 |
+| 2026-11-13 | 插件功能页原生化（第三批 firewall）：规则 / fail2ban 两页改用 schema，首次验证写通路——表单内按钮 `skiffPluginRpc` 合并表单值后走 `POST /rpc`，行内删除 / 解封用 `${row}` 插值；新增 `skiffPluginView.query`（仅标量）做 jail 封禁下钻；插件侧把数值字符串归一化为整数，内核校验不变 |
