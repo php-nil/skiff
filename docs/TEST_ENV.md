@@ -59,7 +59,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-13 14:46 就地升级到 `4c1a1aa`（当前生效）**
+> **2026-11-13 18:20 就地升级到 `b7771c3`（当前生效）**
+> - 出包：run `43410030908`（`release.yml` dispatch，ref=main、head `b7771c3`，publish=false、skip_plugins=false），两架构 job 全绿；artifact `release-amd64` 主包 **11,696,078 B** `974374db6ea662929d778f1a0ddf780fcecb2b15d7e7f0d0aeba59d722e9d9ba`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
+> - 升级方式：就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-18299b5f4604f3dc37b56299ddb6e6b841cb8b94a4b641c1a170d24bde0a4e46`；库快照 `/root/iter/backup/skiff-d9abd0558a7b7dcbba5b44a4c6891d46a46d1c1d7c2b3a1c9ee9d75ad35bd6db.db`。
+> - 新二进制：`/usr/local/bin/skiff` **19,129,616 B** `a07229c2eb6cb77b528174c0280be6f94311811763bbb887e78eaca9c9acd286`（`skiff 0.1.0 arch=amd64 os=linux`）。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写（`[catalog]` 保持默认未启用）。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-13 14:46 就地升级到 `4c1a1aa`（已被同日 18:20 升级取代，保留作过程记录）**
 > - 出包：run `43379837914`（`release.yml` dispatch，ref=main、head `4c1a1aa`，publish=false、skip_plugins=false），两架构 job 全绿；artifact `release-amd64` 主包 **11,458,156 B** `7ce6f3f711f724eb4eb3630e65b9b5839a88c8c56bbeb9d6b9a2ab8d097c9e75`（开发机 `Get-FileHash` 与测试机 `sha256sum` 一致）。
 > - 升级方式：就地覆盖二进制（不重跑 `install.sh`、不改配置）；旧二进制备份 `/root/iter/backup/skiff-fbe640f2c05145aebe72f934335847da9864d4b06101aa2151da2acdf123472d`；库快照 `/root/iter/backup/skiff-415bd19daf7f7212b699f82035de387eaace3a783d3520fc3de6ad238c1748eb.db`。
 > - 新二进制：`/usr/local/bin/skiff` **18,515,216 B** `18299b5f4604f3dc37b56299ddb6e6b841cb8b94a4b641c1a170d24bde0a4e46`（`skiff 0.1.0 arch=amd64 os=linux`）。
@@ -205,6 +212,7 @@
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
 
 
+| 2026-11-13 18:20 | **就地升级**（验 Docker/Compose/运行环境/商店/文件/Web 页写操作） | run `43410030908`（head `b7771c3`）；主包 11,696,078 B `974374db…d9ba`；新二进制 19,129,616 B `a07229c2…d286`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 均 200；Docker/Compose/运行环境/文件/Web 全部实做通过；商店目录未启用且镜像站不可达，改用官方 .wbpkg 走 CLI 安装 + 面板四项 UI 复验 |
 | 2026-11-13 14:46 | **就地升级**（验收容器终端 / 审计 / 日志） | run `43379837914`（head `4c1a1aa`）；主包 11,458,156 B `7ce6f3f7…9e75`；新二进制 18,515,216 B `18299b5f…4e46`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 均 200；终端真连通过、审计过滤/翻页/游标 400 通过、日志与 9 页抽查无回退 |
 | 2026-11-13 09:52 | **就地升级**（复验插件标签与插件功能页占位） | run `43346854352`（head `281dc9d`）；主包 11,646,514 B `7c7e0808…f12b`；新二进制 18,486,544 B `fbe640f2…472d`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；两项复验通过，抽检 4 页无回退 |
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
@@ -213,6 +221,20 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-13 18:20–19:00 写操作验收（Docker / Compose / 运行环境 / 商店 / 文件 / Web 页，`b7771c3`）**
+
+前置：就地升级到 `b7771c3`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件；Chromium 1440×900。
+
+- **Docker 写操作（通过）**：建 `skiff-accept-w1`（alpine）→ 停 → 启 → 改限（memory 160MB / cpu_shares 256，详情回读生效）→ 删，五步均 200；审计有 create/start/stop/update/remove 记录。
+- **Compose（通过，附一次超时）**：`validate` 合法（services=web）→ `up` 200、failed=0，容器 `skiff-accept-cmp-web` 与网络 `skiff-accept-cmp_default` 真实创建 → `down` **首次请求被服务端提前关闭**（容器已 kill 但未删），重试 200 完成删除；列为观察项（`compose down` 可能超过服务端请求超时）。
+- **运行环境（通过）**：PHP **8.5**（`php:8.5-fpm-alpine` 镜像已在机）创建即 running；详情含 `max_children=20` 等配置与扩展清单；`probe` 返回真实 `PHP 8.5.12`；删除 200，列表清空、容器消失。
+- **商店（走备用路径）**：镜像站 `http://10.66.52.7:8080/channels/stable/manifest.json` **不可达**（curl `code=000`，0.017s）；`[catalog]` 在 `/etc/skiff/config.toml` 全部注释、实际默认未启用，`POST /ui/v1/store/plugins/com.skiff.guard/install` 返回 **404**。改走第 2 条：面板卸载 `com.skiff.ftp`（200）→ CLI 安装发布包 `official/com.skiff.ftp-0.1.0.wbpkg`（验签通过、13 项授权）→ 面板列表 7 个、标签「已启用 · 未运行」→ 停用「已安装 · 未启用」→ 启用「已启用 · 未运行」。`[catalog]` 全程未改动。
+- **文件（通过）**：上传 `/tmp/skiff-accept-upload.txt` 200 → 读回内容一致 → 删除进回收站（返回 `trash_id`）→ 回收站列表可见 → 恢复 200 且内容一致 → 配额 `set/list/cancel` 均 200；收尾已删文件、purge 回收站、删目录，回收站与配额均空。
+- **Web 服务页（通过）**：`/sites/web` 200，如实显示「Web 服务不可用 / nginx 运行环境未安装」，未安装 nginx；iframe 0。
+- **抽查**：概览 / 网站 / 设置 / 审计 均 200、iframe 0、控制台 0 错误（`/favicon.ico` 404 为既有）。
+- 清理：临时容器、compose 项目与网络、PHP 实例、上传文件与配额目录全部删除；7 个官方插件恢复原状。
+- 截图与 JSON：`skiff-run/budding-acceptance/shots-remote-round5/`、`writeops-report.json`。
 
 **2026-11-13 14:46–16:05 终端 / 审计 / 日志验收（`4c1a1aa`）**
 
