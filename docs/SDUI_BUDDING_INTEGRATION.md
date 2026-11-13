@@ -16,7 +16,7 @@
 | 仓库关系 | **禁止修改 budding 仓库**；产物由上游发版打包后复制进本仓库；缺能力只提建议，由项目负责人决策 |
 | 接入前提 | 产物入库 + 单二进制嵌入（`RustEmbed`）；**本项目不引入 Node 工具链**；测试机无公网，部署期不得依赖 npm 或 CDN |
 | 最大外部阻塞 | 上游 admin Pack（`admin` / `nav-menu` / `page-tabs`）与文件管理所需能力（§6.1）均未随发行包提供（D4、D6） |
-| 最大硬缺口 | 终端需要 WebSocket 通道与 terminal Pack（第十一批后文件管理、代码/日志查看器所需的虚拟列表、上传增强、code-viewer 与 highlight 均已具备）；终端实时通道契约待定（待第 4 组） |
+| 最大硬缺口 | 终端 UI 已完成（复用既有 exec 票据 + WS，`terminal` Pack 入库，§5.19）；WS 真连与容器内交互待 Linux 测试机验收；`input-text` 仍未透传 `autocomplete` |
 | 最大分发风险 | 上游无 LICENSE 文件；「按 MIT」目前只是我方口径，需上游补 LICENSE 或书面确认（D5、§7.1） |
 | 回滚 | 一次性切换，无运行时开关；回滚只能靠 git 版本回退并重新部署（D7） |
 
@@ -837,6 +837,17 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 作业日志：`GET /{p}/jobs/{id}/logs` 新增 budding 隐藏路由，直接消费既有 `GET /{p}/jobs/{id}/logs?after=`（同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code-viewer`，并保留旧详情入口用于取消 / 重试。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
 
+### 5.19 容器终端（第十四批）
+
+- 路由：`GET /{p}/containers/{id}/terminal`（budding 隐藏路由），入口在容器详情的「打开终端」。**不使用 iframe，也不自建 xterm**。
+- 通道完全复用既有契约，本轮无内核改动：
+  - `POST /{p}/containers/{id}/exec/ticket`（`AdminUser` + `x-csrf-token` + `Verb::Exec` 策略）签发单连票据，绑定「当前会话 + 容器」，30 秒有效、一次即废；
+  - `GET /{p}/containers/{id}/exec?ticket=` 升级 WS，`Origin` 严格校验；
+  - WS 的 start / fail / end 继续写 `Verb::Exec` 审计。
+- 前端：页面先取票再渲染 `terminal` 组件；`wsUrl` 由 `location.protocol` 推出 `ws://` / `wss://`，`resizeFormat: 'none'`（内核 exec 只透传 stdin，不解析 resize JSON），`reconnect: false` + 手动「重新连接（重新取票）」。
+- Pack：入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B，取自 `dist/packs/terminal.mjs`，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
+- **验证边界**：本机（Windows、无 Docker）只验证了路由、壳页与取票失败时的错误页；WS 真连与容器内 `/bin/sh` 交互必须在 Linux 测试机验收，未验前不得记为已完成。
+
 ---
 
 ## 6. 能力缺口与建议
@@ -1034,3 +1045,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第十二批文件管理原生化：`/ui/v1` 新增 `GET /files?path=`（平铺列表 + 父路径 + 根入口 + `upload_chunk_bytes`）、`POST /files/mkdir|rename|remove`（CSRF，删除进回收站）；前端 `virtual-list` 渲染目录、面包屑导航、条目按钮；上传由宿主 `PlatformAdapter.upload` 按 256 KiB 切片复用 `/{p}/files/upload`，并补 `platform.request`（上游仅在提供 `request` 时保留 `upload`）。**不做目录树**，§6.1 F3 按降级口径关闭。终端仍待 WS 契约。补两条 `main_flow` 用例，无头浏览器实测上传与新建目录成功。 |
 | 2026-11-13 | budding 重打包基线 `1.8.0-r2`：上游 manifest 仍为 1.8.0（builtAt 2026-11-13T04:13:45Z）但字节已变（JS 1,261,442 B / CSS 657,324 B，仓内 gzip 398,697 / 78,970；上游 manifest 记 400,024 / 79,966，压缩级别不同），本地用 `-r2` 后缀避免同 URL 命中旧 `immutable` 缓存；图标同步为 `budding-icons-1.8.0-r2.min.css`（3,626 B）+ `.woff2`（2,612 B）。`input-text` 起支持原生 `type`：登录页与设置页改为 `type: 'password'`，删除 `maskPassword` / `watchPasswordMask` / `skiff-password` 与 MutationObserver，首帧即掩码（无头浏览器实测 `type=password`）；`autocomplete` 声明已写入 schema，但当前构建仍未透传到 DOM（输入框 `autocomplete` 属性为空），待上游补字段。G16 的 `type` 部分关闭。 |
 | 2026-11-13 | 第十三批代码/日志查看器：新增 `GET /ui/v1/files/read?path=`（`FILE_READ`）、`GET /ui/v1/sites/{domain}/logs?part=&tail=&q=`（复用 `AppState::site_logs`）；新增路由 `/{p}/files/view`、`/{p}/sites/{domain}/logs`、`/{p}/jobs/{id}/logs`。渲染统一用 `code-viewer`（只读、行号、定高 560），高亮走入库的 `budding-highlight-1.8.0-r2.min.js`（`BuddingSDK.registerPack`，54,270 B），不引 WASM；站点日志页旧 SSR 仅接受 `?legacy=1`，作业日志按 `after` 游标最多 10 页、不建 SSE。§6.1 F4 关闭（只读口径）。 |
+| 2026-11-13 | 第十四批容器终端：新增 `GET /{p}/containers/{id}/terminal`（budding 隐藏路由，容器详情加「打开终端」）。复用既有 `POST …/exec/ticket`（Admin + CSRF + `Verb::Exec`，票据绑定会话与容器、30 秒、一次即废）+ `GET …/exec?ticket=` WS（Origin 严格校验，start/fail/end 写 `Verb::Exec` 审计），无内核改动、不新建 WS 契约。前端用 `terminal` 组件内联，`resizeFormat: 'none'`、`reconnect: false`；Pack 入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B）。**WS 真连待 Linux 测试机验收**。 |

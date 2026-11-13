@@ -8503,6 +8503,16 @@ async fn site_logs_page_serves_shell_unless_legacy() {
     }
 }
 
+/// 容器终端页交 budding 壳；真正的 WS 连接需 Linux 测试机，本机不做断言。
+#[tokio::test]
+async fn container_terminal_page_serves_shell() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let (status, html) = get_html(&h.app, "/p/containers/abc123/terminal", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+}
+
 /// 文件写动作：mkdir → rename → remove（进回收站）闭环；无 CSRF 头 403 且无副作用。
 #[tokio::test]
 async fn ui_files_mkdir_rename_remove_roundtrip() {

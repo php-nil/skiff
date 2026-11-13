@@ -171,7 +171,7 @@
 | --- | --- |
 | 概览 | `GET /{p}`、`GET /{p}/`（尾斜杠 302 到根） |
 | 会话 | `GET|POST /{p}/login`、`POST /{p}/logout`、`POST /{p}/password`、`POST /{p}/totp`、`POST /{p}/totp/enable` |
-| 容器 | `GET /{p}/containers`、`/{p}/containers/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`）；`GET /containers/rows`、`/containers/new`；`POST /containers/create`、`/{id}/limits`、`/{id}/{action}`、`/{id}/exec/ticket`；`GET /{id}/logs`、`/{id}/exec` |
+| 容器 | `GET /{p}/containers`、`/{p}/containers/{id}` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`）；`GET /{p}/containers/{id}/terminal` 为 budding 终端页（复用既有 exec 票据 + WS）；`GET /containers/rows`、`/containers/new`；`POST /containers/create`、`/{id}/limits`、`/{id}/{action}`、`/{id}/exec/ticket`；`GET /{id}/logs`、`/{id}/exec` |
 | 镜像 | `GET /{p}/images` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/docker/images`）；`POST /images/pull`、`/images/{id}/delete` |
 | 网络 | `GET /{p}/networks` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/docker/networks`）；`POST /networks/create`、`/networks/{id}/delete` |
 | 卷 | `GET /{p}/volumes` 已交付 budding 壳页（旧 SSR 保留在 `GET /{p}/m/core/docker/volumes`）；`POST /volumes/create`、`/volumes/{name}/delete` |
@@ -219,3 +219,4 @@
 | 2026-11-13 | 第十一批设置页补齐：`/ui/v1` 新增 `POST /settings/password`（轮换会话并回传新 `csrf_token`）、`/settings/totp/setup`、`/settings/totp/enable`、`/settings/keys`、`/settings/keys/{id}`（公钥两项仅 Admin，审计 `settings.key.import` / `settings.key.remove`）；设置页口令 / TOTP / 公钥不再依赖旧 SSR，旧页仅作无 JS 兜底。 |
 | 2026-11-13 | 第十二批文件管理原生化：`GET /{p}/files` 改为 budding 原生平铺目录（面包屑，无树形）；`/ui/v1` 新增 `GET /files`、`POST /files/mkdir`、`POST /files/rename`、`POST /files/remove`（CSRF，删除进回收站）；上传仍走既有 `POST /{p}/files/upload` 分片接口（前端按 `upload_chunk_bytes` 切片），旧 SSR 仅保留回收站 / 配额页。 |
 | 2026-11-13 | 第十三批代码/日志查看器：`/{p}/files/view?path=`（代码查看器）、`/{p}/jobs/{id}/logs`（作业日志查看器）新增；`/{p}/sites/{domain}/logs` 默认交壳页，旧 SSR 仅 `?legacy=1`；`/ui/v1` 新增 `GET /files/read`、`GET /sites/{domain}/logs?part=&tail=&q=`；日志按需加载，不建 SSE。 |
+| 2026-11-13 | 第十四批容器终端：新增 `GET /{p}/containers/{id}/terminal` budding 页；通道复用既有 `POST /{p}/containers/{id}/exec/ticket` 与 `GET /{p}/containers/{id}/exec?ticket=`（票据 30 秒、一次即废、绑定会话与容器，Origin 严格校验，审计沿用 `Verb::Exec`），不新建 WS 契约、不新增权限来源。 |

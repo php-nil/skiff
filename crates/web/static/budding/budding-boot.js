@@ -326,6 +326,13 @@
       meta: { activeMenu: prefix + '/jobs' }
     });
     routes.push({
+      path: prefix + '/containers/:id/terminal',
+      title: '容器终端',
+      hidden: true,
+      schema: 'skiff:container-terminal',
+      meta: { activeMenu: prefix + '/containers' }
+    });
+    routes.push({
       path: prefix + '/jobs/:id/logs',
       title: '作业日志',
       hidden: true,
@@ -432,6 +439,9 @@
         skiffLogSwitch: logSwitch,
         skiffLogFilter: logFilter,
         skiffLogReload: logReload,
+        skiffTerminalReconnect: function () {
+          window.location.reload();
+        },
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
         skiffPluginToggle: pluginToggle,
@@ -465,8 +475,16 @@
           '.min.js?v=' +
           buddingVersion
       );
+      window.BuddingSDK.registerPack(
+        'terminal',
+        prefix +
+          '/static/budding/budding-terminal-' +
+          buddingVersion +
+          '.min.js?v=' +
+          buddingVersion
+      );
     } catch (e) {
-      /* 注册失败只影响高亮，查看器仍可用 */
+      /* 注册失败只影响高亮/终端，其余页面仍可用 */
     }
   }
 
@@ -812,6 +830,16 @@
       });
     }
     var actions = [];
+    // 终端权限与执行票据同源（DockerExec），不与启停的 DockerOperate 混用。
+    if (data.can_exec) {
+      actions.push({
+        type: 'link',
+        props: {
+          text: '打开终端',
+          href: prefix + '/containers/' + encodeURIComponent(c.id) + '/terminal'
+        }
+      });
+    }
     if (data.can_operate) {
       if (c.state.code === 'running') {
         actions.push(buttonNode('重启', 'restart', c));
@@ -1685,6 +1713,113 @@
         if (res.status !== 200) throw new Error(errorMessage(res));
         return res.body.data || {};
       });
+  }
+
+  /// 入口前缀内的 JSON 写请求（如 exec 票据）：不加 `/ui/v1` 前缀，返回原始响应体。
+  function postPrefixJson(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      },
+      body: JSON.stringify(payload || {})
+    }).then(function (resp) {
+      return readJson(resp).then(function (body) {
+        if (resp.status !== 200) {
+          throw new Error(
+            body && body.error && body.error.message
+              ? body.error.message
+              : '服务返回状态 ' + resp.status
+          );
+        }
+        return body || {};
+      });
+    });
+  }
+
+  /// 终端：每次打开/重连都走既有 `POST /{p}/containers/{id}/exec/ticket`
+  /// （Admin + CSRF + `Verb::Exec` 策略），票据绑定会话与容器、单次使用。
+  function loadTerminalUrl(containerId) {
+    return postPrefixJson(
+      prefix + '/containers/' + encodeURIComponent(containerId) + '/exec/ticket',
+      {}
+    ).then(function (body) {
+      var ticket = body.ticket || '';
+      if (!ticket) throw new Error('未拿到终端票据');
+      var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return {
+        expiresIn: body.expires_in || 0,
+        wsUrl:
+          proto +
+          '//' +
+          window.location.host +
+          prefix +
+          '/containers/' +
+          encodeURIComponent(containerId) +
+          '/exec?ticket=' +
+          encodeURIComponent(ticket)
+      };
+    });
+  }
+
+  /// 终端页：budding `terminal` 组件内联渲染（@budding/terminal Pack 自带 xterm 与样式）。
+  /// `resizeFormat: 'none'`：内核 exec WS 只透传 stdin，不解析 resize JSON。
+  function terminalSchema(containerId, info) {
+    return {
+      type: 'page',
+      props: { title: '容器终端', subtitle: '复用单次票据 + 既有 exec WS 通道' },
+      body: [
+        {
+          type: 'alert',
+          props: {
+            type: 'info',
+            text:
+              '终端在容器内启动 /bin/sh；票据绑定当前会话与容器、' +
+              (info.expiresIn || 30) +
+              ' 秒内有效且只用一次。断开或离开页面后请重新连接（会重新取票）。'
+          }
+        },
+        {
+          type: 'flex',
+          props: { gap: 12, wrap: true, align: 'center' },
+          content: {
+            body: [
+              {
+                type: 'link',
+                props: {
+                  text: '返回容器详情',
+                  href: prefix + '/containers/' + encodeURIComponent(containerId)
+                }
+              },
+              {
+                type: 'button',
+                props: { text: '重新连接（重新取票）', variant: 'tonal' },
+                onEvent: {
+                  click: { actions: [{ type: 'skiffTerminalReconnect' }] }
+                }
+              }
+            ]
+          }
+        },
+        {
+          type: 'terminal',
+          props: {
+            wsUrl: info.wsUrl,
+            height: 560,
+            fontSize: 13,
+            theme: 'auto',
+            readOnly: false,
+            reconnect: false,
+            reconnectLimit: 0,
+            resizeFormat: 'none',
+            ariaLabel: '容器终端'
+          }
+        }
+      ]
+    };
   }
 
   function formValues(ctx) {
@@ -3225,6 +3360,38 @@
       return loadJobLogs(logJobId).then(function (result) {
         return jobLogsSchema(logJobId, result);
       });
+    }
+    if (kind === 'container-terminal') {
+      var terminalId = parts[1] || '';
+      return loadTerminalUrl(terminalId).then(
+        function (info) {
+          return terminalSchema(terminalId, info);
+        },
+        function (error) {
+          return {
+            type: 'page',
+            props: { title: '容器终端', subtitle: '打开失败' },
+            body: [
+              {
+                type: 'alert',
+                props: {
+                  type: 'error',
+                  text:
+                    '无法打开终端：' +
+                    (error && error.message ? error.message : String(error))
+                }
+              },
+              {
+                type: 'link',
+                props: {
+                  text: '返回容器详情',
+                  href: prefix + '/containers/' + encodeURIComponent(terminalId)
+                }
+              }
+            ]
+          };
+        }
+      );
     }
     if (kind === 'plugins') {
       return fetchData('/plugins').then(pluginsSchema);
