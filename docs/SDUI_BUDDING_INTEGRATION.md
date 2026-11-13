@@ -125,7 +125,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
 - **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
-- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；1.8.0-r3 子集已含 17 个业务菜单语义字形，菜单按语义名映射到 mdi 名。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；1.8.0-r3 子集含 17 个业务菜单语义字形，菜单按语义名映射到 mdi 名。`folder` / `disk` 分别用 `mdi-file-document` / `mdi-archive-outline` 就近兜底；`image` / `hard-drive` 子集缺字形，映射表显式置 `null`（菜单项不渲染图标，不留悬空占位），已登记上游 T19。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -745,7 +745,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 任务列表：表格（任务/方式/目标/调度/下次运行/状态/最近结果），行点击进详情；`can_admin` 时行内提供「切换启停 / 立即运行」（删除放详情页，便于按内置任务显隐）。
 - 任务详情：信息、参数、最近执行表格三块 + 任务操作卡片（启停 / 立即运行 / 删除）。
 - 作业列表：表格（作业/标题/类型/目标/状态/耗时/提交人/创建时间），行点击进详情。
-- 作业详情：元数据、参数、结果、日志四条 `card`；`can_cancel` / `can_retry` 时给「请求取消 / 重试作业」，取消前确认，重试成功跳新作业详情；日志用 `code-viewer`，实时流仍待 SSE 通道。
+- 作业详情：元数据、参数、结果、日志四条 `card`；`can_cancel` / `can_retry` 时给「请求取消 / 重试作业」，取消前确认，重试成功跳新作业详情；日志用 `code` 组件，实时流仍待 SSE 通道。
 
 ### 5.13 审计（第六批占位 → 第十五批落地）
 
@@ -757,6 +757,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
   - 游标是 `app::cursor::CursorCodec<AuditScope>` 签名游标（HMAC，密钥复用持久化 CSRF 派生密钥，签名域 `cursor:audit:` 隔离），载荷为上一页末项 `(ts,id)` 并与筛选指纹绑定：换关键字沿用旧游标 400、篡改 400、旧版本 400。`limit` 默认 50、上限 200。
   - 字段冻结：`id` / `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`（截断 200 字符）。
 - 前端：关键字表单 + `table` 列表 + 「下一页（更早记录）」按钮；翻页是向更早的 keyset 前进，不提供随机跳页。
+- 列表渲染：`table` 固定 `perPage: -1`，把宿主给出的本页全部行渲染出来；审计页再加 `virtual` + `height: 420` 定高内部滚动。服务端游标取本页第 `limit` 条的 `(ts,id)`，与本页最后一条实际渲染行一致，不再出现「本页 50 条只显示 10 条、翻页跳过 40 条」。其余本地列表（运行环境配置/扩展、站点解绑、Compose 项目、菜单、回收站、配额、商店）同规则，不与组件默认每页 10 条错位。
 - 本地验证：`main_flow` 覆盖 viewer 403、关键字命中、翻页游标、换关键字与篡改 400；无头浏览器实测页面渲染、`?q=` 过滤与接口层游标翻页（10 条验收数据内，后翻 id 递减、换关键字 400）。
 
 ### 5.14 设置（第七批 + 第十一批补齐）
@@ -895,10 +896,10 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 ### 5.18 代码查看器与日志查看器（第十三批）
 
-- 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code-viewer`（只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
-- 代码 Pack：入库 `budding-code-1.8.0-r3.min.js`（84,813 B，取自 `dist/packs/code.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；未注册或加载失败时 `code-viewer` 退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
-- 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code-viewer` 定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
-- 作业日志：`GET /{p}/jobs/{id}/logs` 新增 budding 隐藏路由，直接消费既有 `GET /{p}/jobs/{id}/logs?after=`（同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code-viewer`，并保留旧详情入口用于取消 / 重试。
+- 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
+- 代码 Pack：入库 `budding-code-1.8.0-r3.min.js`（84,813 B，取自 `dist/packs/code.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
+- 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
+- 作业日志：`GET /{p}/jobs/{id}/logs` 新增 budding 隐藏路由，直接消费既有 `GET /{p}/jobs/{id}/logs?after=`（同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code` 组件，并保留旧详情入口用于取消 / 重试。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
 
 ### 5.19 容器终端（第十四批）
@@ -916,7 +917,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 - 容器日志：`GET /{p}/containers/{id}/logs` 从旧 SSR SSE 页改为 budding 日志页（尾部快照 + 刷新，不做实时流）；SSE 流只保留在 `GET /{p}/containers/{id}/logs/stream`，供旧 SSR 详情页 `data-src` 跟随。新增 `GET /ui/v1/containers/{id}/logs?tail=`（策略同旧 SSE：`Verb::ContainerLogs` → `DockerRead`；`tail` 默认 500、上限 2000），容器详情新增「查看日志」入口，旧版链接收窄为「资源限制编辑」。
 - 运行环境日志：新增 `GET /{p}/runtimes/{id}/logs` budding 日志页与 `GET /ui/v1/runtimes/{id}/logs?tail=`（Admin，复用 `AppState::runtime_logs`）；旧详情抽屉的快照接口移到 `GET /{p}/runtimes/{id}/logs.json`（`logs_url` 已同步），让 `/logs` 可以交壳页；运行环境列表行可点进详情占位页，占位页提供「查看运行日志」与「旧版配置 / 安装 / 扩展」两个明确入口。
-- 前端统一用 `code-viewer`（`language: 'plaintext'`、固定高度、行号、可复制），刷新走整页重载；不新增 SSE/WS 契约，也不在前端造分页或流式缓冲。
+- 前端统一用 `code` 组件（`language: 'plaintext'`、固定高度、行号、可复制），刷新走整页重载；不新增 SSE/WS 契约，也不在前端造分页或流式缓冲。
 - `?legacy=1` 现状：仅插件 iframe 工作台与站点日志旧 SSR 两处保留（前者是插件嵌入兼容，后者是无 JS 兜底）；本轮未新增 legacy 分支。
 - 验证：`main_flow` 覆盖「页面交壳 + JSON 未认证 401 / 无 Docker 503 / viewer 403 / 实例不存在 400」；无头浏览器实测三个页面（容器日志错误页、运行环境日志错误页、运行环境详情占位页）均无 iframe、无脚本错误。
 
@@ -936,7 +937,7 @@ D6 定案后，原先「可绕」的缺口升级为阻塞项。以下全部属�
 | F1 | 分片上传与续传 | 大文件、弱网、上传中断后不重传；内核现有上传是 `offset` 分片协议 | `file` 组件本身仍是单次 FormData POST；**1.8.0 起宿主可实现 `PlatformAdapter.upload`**，由宿主切片后逐片调用既有分片接口（第十一批已落地，续传待人机交互另定） | 组件内建 `chunkSize` / 断点续传（可选，非阻塞） | 已绕 |
 | F2 | 上传进度与取消 | 大文件需要可见进度并可取消，否则用户只能等待超时 | 1.8.0 上传增强：`uploadProgressTarget` 写回 `{status,loaded,total,percent,attempt}`，`cancelUpload` / `retryUpload` 指令；宿主 `PlatformAdapter.upload` 按字节上报 | 无（已具备） | 已解决 |
 | F3 | 目录树 | 文件管理的主导航是目录树 + 懒加载 + 面包屑联动 | 无独立 `tree` / `tree-select`；basic 16 / layout 11 / data 8 中无树组件 | 产品口径改为**平铺 + 面包屑**，负责人明确禁止树形（第十一批） | 已降级关闭 |
-| F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | **已解决**：1.8.0 提供 `code-viewer`（行号、折行、复制、固定高度）+ `@budding/code` Pack（1.8.0-r3 起，含 `scrollToLine` 与语言/主题清单）；代码查看器与站点/作业日志查看器已落地，纯前端高亮不引 WASM | 编辑模式（当前只读） | 已关闭（只读口径） |
+| F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | **已解决**：1.8.0 提供 `code` 组件（旧名 `code-viewer`，行号、折行、复制、固定高度）+ `@budding/code` Pack（1.8.0-r3 起，含 `scrollToLine` 与语言/主题清单）；代码查看器与站点/作业日志查看器已落地，纯前端高亮不引 WASM | 编辑模式（当前只读） | 已关闭（只读口径） |
 | F5 | 只读详情（descriptions） | 文件属性、权限、大小、时间等只读信息面板 | 无 descriptions，需用 basic 组件逐个拼 | `descriptions` 组件 | B3 |
 
 F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失目录全貌，是否接受由负责人确认；F4 的降级说明：小文件可用基础排版，万行级日志不可用。

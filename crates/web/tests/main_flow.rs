@@ -9717,6 +9717,42 @@ fn budding_boot_drops_pre_r3_workarounds() {
     assert!(!js.contains("旧版详情页"), "容器日志不得再指向旧详情页");
 }
 
+/// 1.8.0-r3 的代码渲染器注册名是 `code`、文本字段是 `modelValue`；
+/// 列表必须渲染宿主给定的全部行（审计页定高内部滚动），游标才与本页末行对齐。
+#[test]
+fn budding_boot_uses_registered_code_component_and_full_rows() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        !js.contains("code-viewer"),
+        "宿主不得再使用未注册的 code-viewer 类型"
+    );
+    assert!(
+        !js.contains("props: { code:"),
+        "code 组件的文本字段是 modelValue，不是 code"
+    );
+    let code_nodes = js.matches("type: 'code'").count();
+    assert!(code_nodes >= 7, "代码/日志查看器节点不应减少：{code_nodes}");
+    assert_eq!(
+        js.matches("modelValue:").count(),
+        code_nodes,
+        "每个 code 节点都必须以 modelValue 传文本"
+    );
+    // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
+    assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
+    assert!(js.contains("{ height: 420 }"), "审计列表应定高并内部滚动");
+    // 四个缺失图标：能就近映射的两个已映射，确实缺字形的两个显式留空。
+    assert!(
+        js.contains("folder: 'mdi-file-document'"),
+        "文件管理应就近映射"
+    );
+    assert!(js.contains("disk: 'mdi-archive-outline'"), "卷应就近映射");
+    assert!(js.contains("image: null"), "镜像缺字形应显式留空");
+    assert!(
+        js.contains("'hard-drive': null"),
+        "配额管理缺字形应显式留空"
+    );
+}
+
 /// 商店安装与确认：CSRF、PluginManage 权限和确认令牌校验都复用旧链路。
 #[tokio::test]
 async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {

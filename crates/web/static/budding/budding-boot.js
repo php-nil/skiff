@@ -603,8 +603,9 @@
 
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
-  /// 1.8.0-r3 的子集已含全部业务语义字形（17 名），映射表按内核 / 插件声明的
-  /// 不透明语义名给出 mdi 名；未列出的名字不传 icon（避免缺失字形回退成 "mdi-xxx" 文本）。
+  /// 1.8.0-r3 的子集已含 17 个通用业务字形；`image` / `hard-drive` 在子集里没有
+  /// 对应字形，显式映射为 null（菜单不渲染图标，避免空白悬空项），并登记到上游清单。
+  /// `folder` / `disk` 用语义最近的 `mdi-file-document` / `mdi-archive-outline` 兜底。
   var MENU_ICONS = {
     overview: 'mdi-view-dashboard',
     globe: 'mdi-web',
@@ -622,11 +623,22 @@
     archive: 'mdi-archive-outline',
     clock: 'mdi-clock-outline',
     file: 'mdi-file-document',
-    dot: 'mdi-circle'
+    dot: 'mdi-circle',
+    folder: 'mdi-file-document',
+    disk: 'mdi-archive-outline',
+    image: null,
+    'hard-drive': null
   };
 
   function iconFor(name) {
-    return MENU_ICONS[name];
+    return MENU_ICONS[name] || null;
+  }
+
+  /// 没有字形时直接省略 icon 字段：避免导航渲染出空白图标占位。
+  function withIcon(route, name) {
+    var icon = iconFor(name);
+    if (icon) route.icon = icon;
+    return route;
   }
 
   /// 已迁移到 budding 的菜单项：稳定键 → 路由路径（相对入口前缀）。
@@ -663,36 +675,42 @@
     if (key.indexOf('plugin/') === 0) {
       var meta = pluginMeta[key];
       if (!meta || !meta.plugin_id || !meta.default_view) return null;
-      return {
-        path:
-          prefix +
-          '/plugins/' +
-          encodeURIComponent(meta.plugin_id) +
-          '/' +
-          encodeURIComponent(meta.default_view),
-        title: label,
-        icon: iconFor(icon),
-        schema: 'skiff:plugin-view',
-        meta: { activeMenu: prefix + '/plugins' }
-      };
+      return withIcon(
+        {
+          path:
+            prefix +
+            '/plugins/' +
+            encodeURIComponent(meta.plugin_id) +
+            '/' +
+            encodeURIComponent(meta.default_view),
+          title: label,
+          schema: 'skiff:plugin-view',
+          meta: { activeMenu: prefix + '/plugins' }
+        },
+        icon
+      );
     }
     var page = BUILTIN_PAGES[key];
     if (page) {
-      return {
-        path: page.path ? prefix + page.path : prefix,
-        title: label,
-        icon: iconFor(icon),
-        schema: page.schema
-      };
+      return withIcon(
+        {
+          path: page.path ? prefix + page.path : prefix,
+          title: label,
+          schema: page.schema
+        },
+        icon
+      );
     }
     if (!href) return null;
-    return {
-      path: prefix + '/__menu-item/' + encodeURIComponent(key),
-      href: href,
-      target: '_self',
-      title: label,
-      icon: iconFor(icon)
-    };
+    return withIcon(
+      {
+        path: prefix + '/__menu-item/' + encodeURIComponent(key),
+        href: href,
+        target: '_self',
+        title: label
+      },
+      icon
+    );
   }
 
   /// 内核菜单树 → budding 路由表（菜单是路由的投影，不另造第二份菜单）。
@@ -730,13 +748,17 @@
       }
       if (children.length === 0) return;
       // 分组本身不是地址：用入口前缀下的保留段承载菜单层级，子项用绝对路径。
-      routes.push({
-        path: prefix + '/__menu/' + encodeURIComponent(group.key),
-        title: group.label,
-        icon: iconFor(group.icon),
-        meta: { order: order },
-        children: children
-      });
+      routes.push(
+        withIcon(
+          {
+            path: prefix + '/__menu/' + encodeURIComponent(group.key),
+            title: group.label,
+            meta: { order: order },
+            children: children
+          },
+          group.icon
+        )
+      );
     });
     // 详情页：菜单不出现，但地址栏直达与列表行内跳转都走同一路由。
     routes.push({
@@ -1006,7 +1028,7 @@
   }
 
 
-  /// 独立 Pack：code-viewer 的语法高亮由 @budding/code 提供。
+  /// 独立 Pack：`code` 组件的语法高亮由 @budding/code 提供。
   /// 未注册或加载失败时组件按纯文本工作，不影响只读查看。
   function registerPacks() {
     if (!buddingVersion || !window.BuddingSDK) return;
@@ -1060,17 +1082,27 @@
     };
   }
 
-  function statusTable(columns, items, rowKey) {
+  function statusTable(columns, items, rowKey, options) {
+    options = options || {};
+    var props = {
+      items: items,
+      columns: columns,
+      rowKey: rowKey,
+      pagination: false,
+      // 列表行由宿主一次性给出（本页 / 已累计），不能再被组件默认每页 10 条截断；
+      // -1 表示「全部渲染」，游标分页的下一页游标才会与本页实际展示的最后一行对齐。
+      perPage: -1,
+      density: 'compact',
+      emptyText: '暂无数据'
+    };
+    if (options.height) {
+      // 定高 + 内部滚动：避免长列表把整页撑开，同时保证本页所有行都可达。
+      props.virtual = true;
+      props.height = options.height;
+    }
     return {
       type: 'table',
-      props: {
-        items: items,
-        columns: columns,
-        rowKey: rowKey,
-        pagination: false,
-        density: 'compact',
-        emptyText: '暂无数据'
-      }
+      props: props
     };
   }
 
@@ -1297,7 +1329,7 @@
         writeCard(
           'vhost 配置',
           (data.config.path || '—') + '（只读）',
-          { type: 'code-viewer', props: { code: data.config.content, language: 'nginx' } }
+          { type: 'code', props: { modelValue: data.config.content, language: 'nginx' } }
         )
       );
     }
@@ -2863,9 +2895,9 @@
             ? [textLine('暂无日志')]
             : [
                 {
-                  type: 'code-viewer',
+                  type: 'code',
                   props: {
-                    code: logLines.join('\n'),
+                    modelValue: logLines.join('\n'),
                     language: 'plaintext',
                     readonly: true,
                     height: 320,
@@ -4523,7 +4555,8 @@
           { key: 'detail', label: '详情' }
         ],
         items,
-        'key'
+        'key',
+        { height: 420 }
       )
     ];
     if (data.has_more && data.next_cursor) {
@@ -4842,9 +4875,9 @@
       });
     }
     body.push({
-      type: 'code-viewer',
+      type: 'code',
       props: {
-        code: binary ? '' : text,
+        modelValue: binary ? '' : text,
         language: languageOf(name),
         readonly: true,
         height: 560,
@@ -4954,9 +4987,9 @@
       body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
     } else {
       body.push({
-        type: 'code-viewer',
+        type: 'code',
         props: {
-          code: lines.join('\n'),
+          modelValue: lines.join('\n'),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -5051,9 +5084,9 @@
       body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
     } else {
       body.push({
-        type: 'code-viewer',
+        type: 'code',
         props: {
-          code: lines.join('\n'),
+          modelValue: lines.join('\n'),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -5138,9 +5171,9 @@
       body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
     } else {
       body.push({
-        type: 'code-viewer',
+        type: 'code',
         props: {
-          code: lines.join('\n'),
+          modelValue: lines.join('\n'),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -5206,9 +5239,9 @@
       body.push({ type: 'alert', props: { type: 'info', text: '暂无日志。' } });
     } else {
       body.push({
-        type: 'code-viewer',
+        type: 'code',
         props: {
-          code: lines.join('\n'),
+          modelValue: lines.join('\n'),
           language: 'plaintext',
           readonly: true,
           height: 560,

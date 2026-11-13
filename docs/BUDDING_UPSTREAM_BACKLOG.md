@@ -12,6 +12,7 @@
 | T13 | `code` 分段加载与常用配置语法 | 框架能力补齐 + 发布 | 分段加载需后端协议先行 | 大文件查看、nginx / toml / ini 配置高亮 | S–M |
 | T17 | `when` / `disabled` 随表单值与行作用域求值 | 框架能力补齐 | 无 | 按类型联动表单项、按行隐藏不适用操作 | S–M |
 | T18 | 文本字面量绑定（不解析 `${...}`）与 `textarea` 只读/代码模式 | 框架能力补齐 | 无（与 T13 独立） | 站点文件插件显示/编辑含 `${...}` 的 Shell、JS、模板文件 | S |
+| T19 | 图标子集补 `image` / `hard-drive` 字形 | 框架产物 | 无 | 镜像、配额管理菜单图标 | S |
 
 ## 统一约束（所有任务适用）
 
@@ -251,6 +252,40 @@
 
 ---
 
+### T19 图标子集补齐 `image` / `hard-drive` 字形
+
+- **产出形态**：框架产物（`scripts/build-embed-icons.mjs` 的字形 allowlist）
+- **现状（r3 产物实测）**：`budding-icons-1.8.0-r3.woff2` 共 75 字形，无 image / disk / folder / hard-drive 对应字形。宿主已用 `mdi-file-document` / `mdi-archive-outline` 就近兜底 `folder` / `disk`；`image` 与 `hard-drive` 显式置空，对应菜单项暂不显示图标。
+- **缺口表现**：Docker → 镜像、工具 → 配额管理两个二级菜单无图标，与同级项不齐；无字形时不能回退成 `mdi-xxx` 文本。
+- **Skiff 用途**：内核 `MENU_ICONS` 语义名 `image`、`hard-drive` 的原生字形。
+
+```text
+[任务]
+在图标子集 allowlist 中补齐 image / hard-drive（建议顺带 folder-outline），重新生成 woff2 与 CSS。
+
+[背景事实]
+1. 1.8.0-r3 的 75 字形子集没有 image / disk / folder / hard-drive。
+2. 宿主菜单语义名固定为 image / disk / folder / hard-drive，不随上游改动。
+3. 无字形时宿主只能留空，不能渲染 mdi-xxx 文本。
+
+[要产出]
+1. allowlist 增加 mdi-image-outline（或 mdi-image）、mdi-harddisk、mdi-folder-outline。
+2. 重新生成 budding-icons-<ver>.min.css 与 .woff2，manifest 记录新版本。
+
+[验收标准]
+- 三个 mdi 类名在 CSS 中有 ::before，woff2 字形数相应增加。
+- 宿主把 image / hard-drive 映射到新字形后菜单无空白占位。
+
+[明确不做]
+- 不引入外链图标或运行时下载。
+- 不改变现有 75 个字形的类名与编码。
+
+[约束]
+- 只增不改；离线可用。
+```
+
+---
+
 ## Skiff 侧当前的临时做法（上游落地后需删除）
 
 | 条目 | 临时做法 | 代价 |
@@ -260,6 +295,7 @@
 | T13 | 整串 `modelValue` 读取；nginx / toml / ini 按纯文本显示 | 大文件首屏慢，配置无可读高亮 |
 | T17 | 拆成多表单/多表格 + 服务端派生布尔；不适用的行内操作保留按钮，由后端拒绝 | 表单更长，内置/异构任务仍显示不适用操作 |
 | T18 | 插件把文件正文的 `${` 统一转义成 `${'${'}` 再绑定（`text_safe`），保存仍提交原文；只读态靠隐藏保存按钮 + 后端拒绝 | 依赖表达式求值结果拼回原文 |
+| T19 | `folder` / `disk` 用近似字形，`image` / `hard-drive` 不渲染图标 | 两个菜单项与同级不齐 |
 
 ## 事实与推测边界
 
