@@ -195,22 +195,240 @@
       });
   }
 
-  function embed(schema) {
-    var options = { routerMode: 'history', routerBase: prefix };
-    if (cssHref) options.css = cssHref;
-    options.actions = {
-      skiffContainerAction: containerAction,
-      skiffComposeAction: composeAction,
-      skiffSettingsSave: settingsSave,
-      skiffStoreInstall: storeInstall,
-      skiffStoreConfirm: storeConfirm,
-      skiffPluginToggle: pluginToggle,
-      skiffPluginDelete: pluginDelete
+  /// 内核内置菜单图标名 → MDI 图标名（只是 UI 层词汇转换，不改变菜单语义）。
+  var MENU_ICONS = {
+    overview: 'mdi-view-dashboard-outline',
+    globe: 'mdi-web',
+    docker: 'mdi-docker',
+    plug: 'mdi-puzzle-outline',
+    tools: 'mdi-tools',
+    settings: 'mdi-cog-outline',
+    container: 'mdi-cube-outline',
+    image: 'mdi-layers-outline',
+    network: 'mdi-lan',
+    disk: 'mdi-harddisk',
+    'hard-drive': 'mdi-harddisk',
+    list: 'mdi-format-list-bulleted',
+    archive: 'mdi-archive-outline',
+    clock: 'mdi-clock-outline',
+    activity: 'mdi-pulse',
+    lock: 'mdi-lock-outline',
+    folder: 'mdi-folder-outline',
+    file: 'mdi-file-outline',
+    shield: 'mdi-shield-outline',
+    user: 'mdi-account-outline',
+    dot: 'mdi-circle-small'
+  };
+
+  function iconFor(name) {
+    return MENU_ICONS[name];
+  }
+
+  /// 已迁移到 budding 的菜单项：稳定键 → 路由路径（相对入口前缀）。
+  /// 未列出的键保留内核深链 `href`（插件功能页仍是内核 SSR + iframe）。
+  var BUILTIN_PAGES = {
+    overview: { path: '', schema: 'skiff:overview' },
+    'core/sites/list': { path: '/sites', schema: 'skiff:sites' },
+    'core/sites/env': { path: '/runtimes', schema: 'skiff:runtimes' },
+    'core/docker/containers': { path: '/containers', schema: 'skiff:containers' },
+    'core/docker/images': { path: '/images', schema: 'skiff:images' },
+    'core/docker/networks': { path: '/networks', schema: 'skiff:networks' },
+    'core/docker/volumes': { path: '/volumes', schema: 'skiff:volumes' },
+    'core/docker/compose': { path: '/compose', schema: 'skiff:compose' },
+    'core/plugins/installed': { path: '/plugins', schema: 'skiff:plugins' },
+    'core/plugins/store': { path: '/store', schema: 'skiff:store' },
+    'core/tasks': { path: '/tasks', schema: 'skiff:tasks' },
+    'core/jobs': { path: '/jobs', schema: 'skiff:jobs' },
+    'core/files': { path: '/files', schema: 'skiff:files' },
+    'core/settings/security': { path: '/settings', schema: 'skiff:settings' },
+    'core/settings/audit': { path: '/audit', schema: 'skiff:audit' }
+  };
+
+  /// 一个菜单项 → 一条路由记录。命中已迁移页面时给出 budding 路径与 Schema；
+  /// 插件自带 HTML/iframe 的入口一律不进路由（新一代前端不承载 iframe 功能页）。
+  function menuRoute(key, label, icon, href) {
+    if (key.indexOf('plugin/') === 0) return null;
+    var page = BUILTIN_PAGES[key];
+    if (page) {
+      return {
+        path: page.path ? prefix + page.path : prefix,
+        title: label,
+        icon: iconFor(icon),
+        schema: page.schema
+      };
+    }
+    if (!href) return null;
+    return {
+      path: prefix + '/__menu-item/' + encodeURIComponent(key),
+      href: href,
+      target: '_self',
+      title: label,
+      icon: iconFor(icon)
     };
+  }
+
+  /// 内核菜单树 → budding 路由表（菜单是路由的投影，不另造第二份菜单）。
+  function buildRoutes(menuData) {
+    var routes = [];
+    (menuData.groups || []).forEach(function (group, index) {
+      var order = index * 10;
+      if (!group.items || group.items.length === 0) {
+        var leaf = menuRoute(group.key, group.label, group.icon, group.href);
+        if (leaf) {
+          leaf.meta = { order: order };
+          routes.push(leaf);
+        }
+        return;
+      }
+      var children = [];
+      group.items.forEach(function (item) {
+        var child = menuRoute(item.key, item.label, item.icon, item.href);
+        if (child) children.push(child);
+      });
+      // 工具空态：保留内核空态文案，指向已原生渲染的插件中心。
+      if (children.length === 0 && group.empty) {
+        children.push({
+          path: prefix + '/__menu-empty/' + encodeURIComponent(group.key),
+          title: group.empty.text
+        });
+        children[0].schema = 'skiff:plugins';
+      }
+      if (children.length === 0) return;
+      // 分组本身不是地址：用入口前缀下的保留段承载菜单层级，子项用绝对路径。
+      routes.push({
+        path: prefix + '/__menu/' + encodeURIComponent(group.key),
+        title: group.label,
+        icon: iconFor(group.icon),
+        meta: { order: order },
+        children: children
+      });
+    });
+    // 详情页：菜单不出现，但地址栏直达与列表行内跳转都走同一路由。
+    routes.push({
+      path: prefix + '/sites/:domain',
+      title: '站点详情',
+      hidden: true,
+      schema: 'skiff:site-detail',
+      meta: { activeMenu: prefix + '/sites' }
+    });
+    routes.push({
+      path: prefix + '/runtimes/:id',
+      title: '运行环境详情',
+      hidden: true,
+      schema: 'skiff:runtime-detail',
+      meta: { activeMenu: prefix + '/runtimes' }
+    });
+    routes.push({
+      path: prefix + '/containers/:id',
+      title: '容器详情',
+      hidden: true,
+      schema: 'skiff:container-detail',
+      meta: { activeMenu: prefix + '/containers' }
+    });
+    routes.push({
+      path: prefix + '/tasks/:id',
+      title: '任务详情',
+      hidden: true,
+      schema: 'skiff:task-detail',
+      meta: { activeMenu: prefix + '/tasks' }
+    });
+    routes.push({
+      path: prefix + '/jobs/:id',
+      title: '作业详情',
+      hidden: true,
+      schema: 'skiff:job-detail',
+      meta: { activeMenu: prefix + '/jobs' }
+    });
+    routes.push({
+      path: prefix + '/plugins/:id',
+      title: '插件详情',
+      hidden: true,
+      schema: 'skiff:plugin-info',
+      meta: { activeMenu: prefix + '/plugins' }
+    });
+    routes.push({
+      path: prefix + '/store/confirm',
+      title: '安装确认',
+      hidden: true,
+      schema: 'skiff:store-confirm',
+      meta: { activeMenu: prefix + '/store' }
+    });
+    // 插件功能页：旧 SSR 仍是内核 iframe 槽位，但不是新一代前端的入口；
+    // 直达时给统一占位，等插件 UI 以 schema 形式交付后再替换。
+    routes.push({
+      path: prefix + '/plugins/:id/:view',
+      title: '插件功能页',
+      hidden: true,
+      schema: 'skiff:plugin-view',
+      meta: { activeMenu: prefix + '/plugins' }
+    });
+    return routes;
+  }
+
+  /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
+  function shellSchema(session) {
+    return {
+      type: 'admin',
+      props: { title: 'Skiff', brandTitle: 'Skiff' },
+      content: {
+        actions: [
+          {
+            type: 'text',
+            props: { text: session.username + '（' + session.role + '）', size: 'small' }
+          },
+          {
+            type: 'button',
+            props: { text: '退出登录', variant: 'text' },
+            onEvent: { click: { actions: [{ type: 'skiffLogout' }] } }
+          }
+        ],
+        body: [{ type: 'outlet' }]
+      }
+    };
+  }
+
+  /// 登出：复用 `/ui/v1/session/logout` 与页面写操作同一个 CSRF 头。
+  function logout() {
+    return fetch(apiBase + '/session/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
+      }
+    }).then(function (resp) {
+      if (!resp.ok) throw new Error('服务返回状态 ' + resp.status);
+      window.location.href = prefix + '/login';
+    });
+  }
+
+  function embed(schema, routes) {
+    var options = {
+      routerMode: 'history',
+      routes: routes,
+      documentTitle: 'Skiff · {title}',
+      platform: { loadJson: loadJson },
+      actions: {
+        skiffContainerAction: containerAction,
+        skiffComposeAction: composeAction,
+        skiffSettingsSave: settingsSave,
+        skiffStoreInstall: storeInstall,
+        skiffStoreConfirm: storeConfirm,
+        skiffPluginToggle: pluginToggle,
+        skiffPluginDelete: pluginDelete,
+        skiffLogout: function () {
+          return logout().catch(function (error) {
+            window.alert('退出失败：' + (error && error.message ? error.message : String(error)));
+          });
+        }
+      }
+    };
+    if (cssHref) options.css = cssHref;
     window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
       showError('初始化失败：' + (error && error.message ? error.message : String(error)));
     });
   }
+
 
   /// 把当前地址拆成入口前缀之后的路径段（已解码）。
   function routeParts() {
@@ -1287,12 +1505,8 @@
         props: {
           type: 'info',
           title: '发现',
-          text: '内核尚未接入在线官方源；上传已验签 .wbpkg 与商店安装仍在旧版页面。'
+          text: '上传已验签 .wbpkg 尚未原生渲染；商店安装已可用。旧版发现页不再作为入口。'
         }
-      });
-      body.push({
-        type: 'link',
-        props: { text: '打开旧版「发现」页上传安装包', href: prefix + '/m/core/plugins/discover' }
       });
       return {
         type: 'page',
@@ -1314,10 +1528,6 @@
       });
       downstream.forEach(function (p) {
         body.push(pluginCard(p, false, false));
-      });
-      body.push({
-        type: 'link',
-        props: { text: '去旧版「发现」页重新上传升级', href: prefix + '/m/core/plugins/discover' }
       });
       return {
         type: 'page',
@@ -1378,26 +1588,21 @@
     if (data.menus.length === 0) {
       body.push(noticeCard('该插件没有声明菜单或功能页。'));
     } else {
+      var declared = [];
       data.menus.forEach(function (group) {
-        var links = [
-          {
-            type: 'link',
-            props: { text: group.label, href: group.href }
-          }
-        ];
+        declared.push(group.label);
         group.children.forEach(function (child) {
-          links.push({
-            type: 'link',
-            props: { text: '　↳ ' + child.label, href: child.href }
-          });
+          declared.push('　↳ ' + child.label);
         });
-        body.push({ type: 'flex', props: { gap: 12 }, content: { body: links } });
       });
-    }
-    if (data.entry_href) {
+      body.push(detailLines('声明的功能页', declared));
       body.push({
-        type: 'link',
-        props: { text: '打开功能页（内核 iframe 槽位）', href: data.entry_href }
+        type: 'alert',
+        props: {
+          type: 'info',
+          title: '插件功能页正在切换为原生渲染',
+          text: '上述功能页由插件自带 HTML 渲染（旧版以 iframe 承载），新一代前端不承载 iframe，因此不再提供跳转入口；功能将以 Schema 形式交付后在此原生渲染。'
+        }
       });
     }
     if (data.can_admin) {
@@ -1410,10 +1615,6 @@
     body.push({
       type: 'link',
       props: { text: '返回插件中心', href: prefix + '/plugins' }
-    });
-    body.push({
-      type: 'link',
-      props: { text: '打开旧版信息页', href: prefix + '/m/core/plugins/info/' + encodeURIComponent(p.id) }
     });
     return {
       type: 'page',
@@ -1488,6 +1689,8 @@
 
   // 商店：目录只读快照 + 插件安装（下载验签后二次确认）。
   var pendingInstall = null;
+  /// 暂存的安装确认页数据；确认路由按它渲染，刷新后失效（需回商店重选）。
+  var pendingConfirm = null;
 
   function storeItemTable(section, canInstall) {
     if (!section.items || section.items.length === 0) {
@@ -1579,7 +1782,7 @@
     };
   }
 
-  function storeInstall(args) {
+  function storeInstall(args, ctx, runtime) {
     if (!args || args.installable === false) {
       window.alert((args && args.install_note) || '该条目当前不可安装');
       return Promise.resolve();
@@ -1608,7 +1811,13 @@
           return;
         }
         pendingInstall = res.body.data;
-        embedWithError(storeConfirmSchema(res.body.data));
+        pendingConfirm = res.body.data;
+        if (runtime && typeof runtime.navigateTo === 'function') {
+          runtime.navigateTo({ path: prefix + '/store/confirm' });
+          return;
+        }
+        // 兜底：没有路由能力时退回商店页（避免二次嵌入另一个 Vue 实例）。
+        window.location.href = prefix + '/store';
       })
       .catch(function (error) {
         window.alert('安装准备失败：' + (error && error.message ? error.message : String(error)));
@@ -1705,6 +1914,7 @@
           return;
         }
         pendingInstall = null;
+        pendingConfirm = null;
         window.alert('安装完成');
         location.assign((res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins');
       })
@@ -1713,16 +1923,9 @@
       });
   }
 
-  function embedWithError(schema) {
-    if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
-      showError('前端产物未加载（budding 脚本不可用）。');
-      return;
-    }
-    embed(schema);
-  }
-
-  function getJson(path, onOk) {
-    fetch(apiBase + path, {
+  /// 统一的 `/ui/v1` 数据读取：401 / 非 200 / 缺 `data` 都转成可展示的错误。
+  function fetchData(path) {
+    return fetch(apiBase + path, {
       method: 'GET',
       credentials: 'same-origin',
       headers: { Accept: 'application/json' }
@@ -1733,212 +1936,216 @@
         });
       })
       .then(function (res) {
+        if (res.status === 401) throw new Error('会话已过期，请刷新页面后重新登录。');
         if (res.status !== 200 || !res.body || !res.body.data) {
-          var message =
+          throw new Error(
             res.body && res.body.error && res.body.error.message
               ? res.body.error.message
-              : '服务返回状态 ' + res.status;
-          showError(message);
+              : '服务返回状态 ' + res.status
+          );
+        }
+        return res.body.data;
+      });
+  }
+
+  /// 未适配页面的统一占位（保留旧 SSR 入口，仅限非插件页）。
+  function notReadyPage(title, text, oldHref, oldText) {
+    var body = [{ type: 'alert', props: { type: 'warning', title: '该功能正在适配中', text: text } }];
+    if (oldHref) {
+      body.push({ type: 'link', props: { text: oldText || '打开旧版页面', href: prefix + oldHref } });
+    }
+    return { type: 'page', props: { title: title, subtitle: '该功能正在适配中' }, body: body };
+  }
+
+  /// 路由 Schema 加载：`skiff:<kind>` 由本脚本按当前地址栏与 `/ui/v1` 数据生成；
+  /// 其它 URL 走普通 JSON 读取（保留给将来的远程 Schema）。
+  function loadJson(url, info) {
+    if (typeof url === 'string' && url.indexOf('skiff:') === 0) {
+      return pageSchema(url.slice('skiff:'.length));
+    }
+    return fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(
+      function (resp) {
+        return readJson(resp);
+      }
+    );
+  }
+
+  function pageSchema(kind) {
+    var parts = routeParts();
+    if (kind === 'overview') {
+      return fetchData('/overview').then(overviewSchema);
+    }
+    if (kind === 'sites') {
+      return fetchData('/sites' + listQuery()).then(sitesSchema);
+    }
+    if (kind === 'site-detail') {
+      return fetchData('/sites/' + encodeURIComponent(parts[1])).then(siteDetailSchema);
+    }
+    if (kind === 'runtimes') {
+      return fetchData('/runtimes' + listQuery()).then(runtimesSchema);
+    }
+    if (kind === 'runtime-detail') {
+      return Promise.resolve(
+        notReadyPage(
+          '运行环境详情',
+          '运行环境详情的聚合查询尚未迁移，按约定不在前端自造。旧版页面暂保留完整配置编辑。',
+          '/m/core/sites/env',
+          '打开旧版运行环境页'
+        )
+      );
+    }
+    if (kind === 'containers') {
+      var containerFilter =
+        new URLSearchParams(location.search).get('filter') === 'error' ? 'filter=error' : '';
+      return fetchData('/containers' + listQuery(containerFilter)).then(containersSchema);
+    }
+    if (kind === 'container-detail') {
+      return fetchData('/containers/' + encodeURIComponent(parts[1])).then(containerDetailSchema);
+    }
+    if (kind === 'images') {
+      return fetchData('/images' + listQuery()).then(imagesSchema);
+    }
+    if (kind === 'networks') {
+      return fetchData('/networks' + listQuery()).then(networksSchema);
+    }
+    if (kind === 'volumes') {
+      return fetchData('/volumes' + listQuery()).then(volumesSchema);
+    }
+    if (kind === 'compose') {
+      return fetchData('/compose').then(composeSchema);
+    }
+    if (kind === 'tasks') {
+      return fetchData('/tasks' + listQuery()).then(tasksSchema);
+    }
+    if (kind === 'task-detail') {
+      return fetchData('/tasks/' + encodeURIComponent(parts[1])).then(taskDetailSchema);
+    }
+    if (kind === 'jobs') {
+      return fetchData('/jobs' + listQuery()).then(jobsSchema);
+    }
+    if (kind === 'job-detail') {
+      return fetchData('/jobs/' + encodeURIComponent(parts[1])).then(jobDetailSchema);
+    }
+    if (kind === 'files') {
+      return Promise.resolve(
+        notReadyPage(
+          '文件管理',
+          '文件浏览器、上传与容器终端依赖上游组件（T1 虚拟滚动 / T2 文件浏览器 / T5 终端），组件到位前不在前端自造；实时终端另需 WS 契约，本批不做。',
+          '/m/core/files',
+          '打开旧版文件管理（浏览 / 回收站 / 配额）'
+        )
+      );
+    }
+    if (kind === 'plugins') {
+      return fetchData('/plugins').then(pluginsSchema);
+    }
+    if (kind === 'plugin-info') {
+      return fetchData('/plugins/' + encodeURIComponent(parts[1])).then(pluginInfoSchema);
+    }
+    if (kind === 'plugin-view') {
+      return Promise.resolve({
+        type: 'page',
+        props: { title: '插件功能页', subtitle: '插件功能页正在切换为原生渲染' },
+        body: [
+          {
+            type: 'alert',
+            props: {
+              type: 'info',
+              title: '插件功能页正在切换为原生渲染',
+              text:
+                '该入口属于插件自带的 HTML 界面（旧 SSR 以 iframe 承载），新一代前端不再承载 iframe。插件功能将以 Schema 形式交付后在此原生渲染；当前请使用插件页的列表、详情、启停与卸载能力。'
+            }
+          },
+          {
+            type: 'link',
+            props: { text: '返回插件页', href: prefix + '/plugins' }
+          }
+        ]
+      });
+    }
+    if (kind === 'store') {
+      var refresh = new URLSearchParams(location.search).get('refresh') === '1' ? '?refresh=1' : '';
+      return fetchData('/store' + refresh).then(storeSchema);
+    }
+    if (kind === 'store-confirm') {
+      if (!pendingConfirm) {
+        return Promise.resolve({
+          type: 'page',
+          props: { title: '安装确认', subtitle: '安装确认已失效' },
+          body: [
+            {
+              type: 'alert',
+              props: {
+                type: 'warning',
+                title: '安装确认已失效',
+                text: '页面刷新或超时后暂存的安装信息已清空，请回到商店重新选择版本。'
+              }
+            },
+            {
+              type: 'link',
+              props: { text: '返回商店', href: prefix + '/store' }
+            }
+          ]
+        });
+      }
+      return Promise.resolve(storeConfirmSchema(pendingConfirm));
+    }
+    if (kind === 'settings') {
+      return fetchData('/settings').then(settingsSchema);
+    }
+    if (kind === 'audit') {
+      return Promise.resolve(
+        notReadyPage(
+          '审计日志',
+          '审计检索需要后端提供关键字 + 游标查询（当前只有最近 200 条），按约定不在前端自造分页；旧版页面暂保留完整列表。',
+          '/m/core/settings/audit',
+          '打开旧版审计页（最近 200 条）'
+        )
+      );
+    }
+    return Promise.resolve(
+      notReadyPage('页面不存在', '地址栏路径没有对应的前端路由，请从左侧菜单进入。')
+    );
+  }
+
+  function boot() {
+    fetch(apiBase + '/session', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    })
+      .then(function (resp) {
+        return readJson(resp).then(function (body) {
+          return { status: resp.status, body: body };
+        });
+      })
+      .then(function (res) {
+        if (res.status === 401) {
+          showError('会话已过期，请刷新页面后重新登录。');
           return;
         }
-        onOk(res.body.data);
+        if (res.status !== 200 || !res.body || !res.body.data) {
+          showError(
+            res.body && res.body.error && res.body.error.message
+              ? res.body.error.message
+              : '服务返回状态 ' + res.status
+          );
+          return;
+        }
+        if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
+          showError('前端产物未加载（budding 脚本不可用）。');
+          return;
+        }
+        sessionState = res.body.data;
+        return fetchData('/menu').then(function (menu) {
+          embed(shellSchema(sessionState), buildRoutes(menu));
+        });
       })
       .catch(function (error) {
         showError('无法连接服务：' + (error && error.message ? error.message : String(error)));
       });
   }
 
-  fetch(apiBase + '/session', {
-    method: 'GET',
-    credentials: 'same-origin',
-    headers: { Accept: 'application/json' }
-  })
-    .then(function (resp) {
-      return readJson(resp).then(function (body) {
-        return { status: resp.status, body: body };
-      });
-    })
-    .then(function (res) {
-      if (res.status === 401) {
-        showError('会话已过期，请刷新页面后重新登录。');
-        return;
-      }
-      if (res.status !== 200 || !res.body || !res.body.data) {
-        var message =
-          res.body && res.body.error && res.body.error.message
-            ? res.body.error.message
-            : '服务返回状态 ' + res.status;
-        showError(message);
-        return;
-      }
-      var session = res.body.data;
-      sessionState = session;
-      if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
-        showError('前端产物未加载（budding 脚本不可用）。');
-        return;
-      }
-      var parts = routeParts();
-      if (parts.length === 0) {
-        getJson('/overview', function (data) {
-          embedWithError(overviewSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'sites' && parts.length === 1) {
-        getJson('/sites' + listQuery(), function (data) {
-          embedWithError(sitesSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'sites' && parts.length === 2) {
-        getJson('/sites/' + encodeURIComponent(parts[1]), function (data) {
-          embedWithError(siteDetailSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'runtimes' && parts.length === 1) {
-        getJson('/runtimes' + listQuery(), function (data) {
-          embedWithError(runtimesSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'containers' && parts.length === 1) {
-        var containerFilter =
-          new URLSearchParams(location.search).get('filter') === 'error' ? 'filter=error' : '';
-        getJson('/containers' + listQuery(containerFilter), function (data) {
-          embedWithError(containersSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'containers' && parts.length === 2) {
-        getJson('/containers/' + encodeURIComponent(parts[1]), function (data) {
-          embedWithError(containerDetailSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'images' && parts.length === 1) {
-        getJson('/images' + listQuery(), function (data) {
-          embedWithError(imagesSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'networks' && parts.length === 1) {
-        getJson('/networks' + listQuery(), function (data) {
-          embedWithError(networksSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'volumes' && parts.length === 1) {
-        getJson('/volumes' + listQuery(), function (data) {
-          embedWithError(volumesSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'compose' && parts.length === 1) {
-        getJson('/compose', function (data) {
-          embedWithError(composeSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'tasks' && parts.length === 1) {
-        getJson('/tasks' + listQuery(), function (data) {
-          embedWithError(tasksSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'tasks' && parts.length === 2) {
-        getJson('/tasks/' + encodeURIComponent(parts[1]), function (data) {
-          embedWithError(taskDetailSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'jobs' && parts.length === 1) {
-        getJson('/jobs' + listQuery(), function (data) {
-          embedWithError(jobsSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'jobs' && parts.length === 2) {
-        getJson('/jobs/' + encodeURIComponent(parts[1]), function (data) {
-          embedWithError(jobDetailSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'files') {
-        embedWithError({
-          type: 'page',
-          props: { title: '文件管理 · Skiff', subtitle: '该功能正在适配中' },
-          body: [
-            {
-              type: 'alert',
-              props: {
-                type: 'warning',
-                title: '该功能正在适配中',
-                text:
-                  '文件浏览器、上传与容器终端依赖上游组件（T1 虚拟滚动 / T2 文件浏览器 / T5 终端），组件到位前不在前端自造；实时终端另需 WS 契约，本批不做。'
-              }
-            },
-            {
-              type: 'link',
-              props: {
-                text: '打开旧版文件管理（浏览 / 回收站 / 配额）',
-                href: prefix + '/m/core/files'
-              }
-            }
-          ]
-        });
-        return;
-      }
-      if (parts[0] === 'plugins') {
-        if (parts.length > 1 && parts[1]) {
-          getJson('/plugins/' + encodeURIComponent(parts[1]), function (data) {
-            embedWithError(pluginInfoSchema(data));
-          });
-        } else {
-          getJson('/plugins', function (data) {
-            embedWithError(pluginsSchema(data));
-          });
-        }
-        return;
-      }
-      if (parts[0] === 'store') {
-        var refresh = new URLSearchParams(location.search).get('refresh') === '1' ? '?refresh=1' : '';
-        getJson('/store' + refresh, function (data) {
-          embedWithError(storeSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'settings') {
-        getJson('/settings', function (data) {
-          embedWithError(settingsSchema(data));
-        });
-        return;
-      }
-      if (parts[0] === 'audit') {
-        embedWithError({
-          type: 'page',
-          props: { title: '审计日志 · Skiff', subtitle: '该功能正在适配中' },
-          body: [
-            {
-              type: 'alert',
-              props: {
-                type: 'warning',
-                title: '该功能正在适配中',
-                text:
-                  '审计检索需要后端提供关键字 + 游标查询（当前只有最近 200 条），按约定不在前端自造分页；旧版页面暂保留完整列表。'
-              }
-            },
-            {
-              type: 'link',
-              props: { text: '打开旧版审计页（最近 200 条）', href: prefix + '/m/core/settings/audit' }
-            }
-          ]
-        });
-        return;
-      }
-      embed(placeholderSchema(session));
-    })
-    .catch(function (error) {
-      showError('无法连接服务：' + (error && error.message ? error.message : String(error)));
-    });
+  boot();
 })();
+

@@ -3399,6 +3399,36 @@ provides = [{ method = "probe", label = "探针" }]
     );
 }
 
+/// 地址栏直达插件功能页时不再交付 iframe 工作台，而是外壳页占位：
+/// 新一代前端不承载 iframe（PLUGIN_UI_CONTRACT 2026-11-13 方向变更）。
+#[tokio::test]
+async fn plugin_view_document_navigation_serves_shell_placeholder() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.info/main")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .header(header::ACCEPT, "text/html")
+                .header("sec-fetch-dest", "document")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let html = body_text(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("该功能正在适配中"), "{html}");
+    assert!(
+        !html.contains("data-workbench-frame"),
+        "壳页占位不得内嵌 iframe 工作台: {html}"
+    );
+}
+
 /// 内核兜底：第三方插件托管 HTML 会被注入标题抑制规则，残留的
 /// `data-plugin-title` 页面标题在 iframe 内不显示（标题统一由内核提供）。
 #[tokio::test]
@@ -7230,6 +7260,51 @@ async fn ui_session_returns_identity_csrf_and_prefix() {
         v["data"]["csrf_token"],
         skiff_identity::sha256_hex(format!("csrf-test-secret:{token}"))
     );
+}
+
+/// `/ui/menu` 是 budding 壳的菜单数据：直接投影内核菜单树（L1/L2 归属、顺序、
+/// 可见性同源），且不把插件自带 HTML/iframe 的功能页入口下发到新一代前端。
+#[tokio::test]
+async fn ui_menu_projects_kernel_menu_without_plugin_pages() {
+    let h = harness();
+    let (status, _, _) = get_ui(&h.app, "/ui/v1/menu", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "未认证必须是 401");
+
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("menu 响应必须是 JSON");
+    let groups = v["data"]["groups"].as_array().expect("groups 必须是数组");
+    assert_eq!(groups[0]["key"], "overview", "固定 L1 顺序从概览开始");
+    assert_eq!(groups[0]["href"], "/p/m/overview", "概览仍是直达链接");
+    assert!(
+        groups[0]["items"]
+            .as_array()
+            .expect("items 必须是数组")
+            .is_empty(),
+        "直达链接型 L1 没有子项"
+    );
+
+    let sites = groups
+        .iter()
+        .find(|g| g["key"] == "sites")
+        .expect("网站分组必须存在");
+    let site_items = sites["items"].as_array().expect("网站分组必须有子项");
+    assert!(site_items.iter().any(|i| i["key"] == "core/sites/list"));
+    assert!(site_items.iter().any(|i| i["key"] == "core/sites/env"));
+
+    // 插件功能页（旧 SSR iframe）不再作为新产品入口：菜单里不得出现 plugin/* 键。
+    for group in groups {
+        if let Some(items) = group["items"].as_array() {
+            for item in items {
+                let key = item["key"].as_str().unwrap_or_default();
+                assert!(
+                    !key.starts_with("plugin/"),
+                    "插件功能页入口不得下发到壳页菜单：{key}"
+                );
+            }
+        }
+    }
 }
 
 /// `/ui/` 下除 `/ui/v1/*` 之外的形态一律 404，不能当静态资源或页面旁路。

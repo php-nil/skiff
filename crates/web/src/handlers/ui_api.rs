@@ -50,7 +50,7 @@ pub struct SessionFeatures {
     pub shell_fallback: bool,
     /// 尚未适配的页面用统一占位呈现。
     pub placeholders: bool,
-    /// 插件功能页仍走 iframe 外壳路由（PLUGIN_UI_CONTRACT）。
+    /// 旧 SSR 插件页仍以 iframe 承载（仅兼容保留，不再是新前端入口）。
     pub plugin_iframe: bool,
 }
 

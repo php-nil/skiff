@@ -7,6 +7,7 @@ use axum::body::Bytes;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_FRAME_OPTIONS};
 use axum::http::request::Parts;
+use axum::http::HeaderMap;
 use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 
@@ -192,6 +193,7 @@ pub async fn info(
 pub async fn view(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
+    headers: HeaderMap,
     Path((id, view_name)): Path<(String, String)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
@@ -216,6 +218,17 @@ pub async fn view(
             }
             return Ok(resp);
         }
+    }
+    // 新一代前端（budding 壳）不承载 iframe：地址栏直达（浏览器顶层文档导航）改交
+    // 壳页渲染「插件功能页正在切换为原生渲染」占位；旧 SSR 工作台仍保留给嵌入/兼容请求
+    // （`Sec-Fetch-Dest` 非 `document` 或缺省），不再作为新产品入口。
+    if headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("document"))
+        .unwrap_or(false)
+    {
+        return Ok(crate::handlers::spa::shell_page(&state));
     }
     let rec = state
         .db()

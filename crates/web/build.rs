@@ -19,6 +19,20 @@ fn main() {
         if entry.extension().map(|e| e == "gz").unwrap_or(false) {
             continue;
         }
+        // 已压缩格式（woff2 等）再 gzip 只会增加字节，还让客户端多做一次解压。
+        if entry
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "woff2" | "woff" | "png" | "jpg" | "jpeg" | "webp" | "zip" | "gz"
+                )
+            })
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let input = match fs::read(&entry) {
             Ok(v) => v,
             Err(e) => {

@@ -22,6 +22,12 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 pub const BUDDING_VERSION: &str = "1.6.0";
 
+/// 入库的 MDI 图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
+///
+/// 图标字体不是 budding 产物的一部分（bundle CSS 内不含 `@font-face`），
+/// 由宿主按 D11 版本化入库；woff2 本身已压缩，体积按原字节计。
+pub const BUDDING_ICONS_VERSION: &str = "7.4.47";
+
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
     match rel {

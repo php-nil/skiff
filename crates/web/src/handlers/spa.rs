@@ -137,11 +137,13 @@ pub fn shell_page(state: &AppState) -> Response {
 /// - 产物按 D11 引用版本化文件名并带 `?v=`；稳定别名只作兼容入口，壳页不引用。
 /// - CSS 文件名是 budding 构建期写死的 `budding.css`，版本化后无法自动推导，
 ///   因此通过 data 属性传给启动脚本显式 `css` 选项。
-/// - 初始化参数（history 路由的 `routerBase`、API 基址）挂在挂载点上，
-///   由外部启动脚本 `budding-boot.js` 读取，避免内联脚本。
+/// - MDI 图标字体不在 budding bundle 内，单独版本化入库并由壳页 `<link>` 引入。
+/// - 初始化参数（入口前缀、API 基址）挂在挂载点上，由外部启动脚本
+///   `budding-boot.js` 读取，避免内联脚本；路由表由 `/ui/v1/menu` 下发。
 pub fn shell_html(prefix: &str) -> String {
     let prefix = escape_html(prefix);
     let ver = crate::assets::BUDDING_VERSION;
+    let icons = crate::assets::BUDDING_ICONS_VERSION;
     format!(
         r#"<!doctype html>
 <html lang="zh-CN">
@@ -149,6 +151,7 @@ pub fn shell_html(prefix: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skiff</title>
+<link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
 </head>
 <body>
 <div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
@@ -199,6 +202,10 @@ mod tests {
             r#"data-budding-css="/p/static/budding/budding-{ver}.min.css?v={ver}""#
         )));
         assert!(html.contains(r#"<script src="/p/static/budding/budding-boot.js"></script>"#));
+        let icons = crate::assets::BUDDING_ICONS_VERSION;
+        assert!(html.contains(&format!(
+            r#"<link rel="stylesheet" href="/p/static/budding/budding-icons-{icons}.min.css?v={icons}">"#
+        )));
         // 壳页不引用稳定别名（D11），也不许出现内联脚本或外部加载器。
         assert!(!html.contains("budding.min.js"));
         assert!(!html.contains("<script>"));

@@ -174,6 +174,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(handlers::ui_api::login_config).post(handlers::ui_api::login_submit),
         )
         .route("/ui/v1/session", get(handlers::ui_api::session))
+        .route("/ui/v1/menu", get(handlers::ui_api::menu))
         .route("/ui/v1/overview", get(handlers::ui_api::overview))
         .route("/ui/v1/sites", get(handlers::ui_api::sites))
         .route("/ui/v1/sites/{domain}", get(handlers::ui_api::site_detail))
