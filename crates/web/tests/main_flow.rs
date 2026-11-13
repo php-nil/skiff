@@ -8008,9 +8008,9 @@ async fn ui_resource_lists_keep_auth_and_docker_unavailable_semantics() {
     }
 }
 
-/// 审计规范页：后端尚无关键字游标查询，交付占位壳页；旧 SSR 仍按权限拒绝 viewer。
+/// 审计规范页交 budding 壳；旧 SSR 仍按 `AuditRead` 拒绝 viewer。
 #[tokio::test]
-async fn audit_canonical_path_serves_placeholder_shell() {
+async fn audit_canonical_path_serves_native_shell() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
@@ -8028,6 +8028,98 @@ async fn audit_canonical_path_serves_placeholder_shell() {
     let (status, ssr) = get_page(&h.app, "/p/m/core/settings/audit", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
+}
+
+/// 审计查询：关键字命中 + 签名 keyset 游标；换关键字沿用旧游标被拒，篡改被拒。
+#[tokio::test]
+async fn ui_audit_filters_and_walks_signed_cursor() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    for _ in 0..3 {
+        h.state
+            .db()
+            .audit(
+                "admin",
+                "10.8.8.8",
+                "site.create",
+                "audit-needle.example",
+                "ok",
+                "seed",
+            )
+            .unwrap();
+        h.state
+            .db()
+            .audit(
+                "admin",
+                "10.8.8.8",
+                "site.delete",
+                "audit-needle.example",
+                "ok",
+                "seed",
+            )
+            .unwrap();
+    }
+
+    // 权限与旧 SSR 同口径：viewer 无 AuditRead。
+    let (status, _) = get_page(&h.app, "/ui/v1/audit", &viewer).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = get_page(&h.app, "/ui/v1/audit?q=audit-needle", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let items = v["data"]["items"].as_array().expect("items");
+    assert_eq!(items.len(), 6, "{body}");
+    assert!(
+        items[0]["ts"].as_str().unwrap_or_default().contains('T'),
+        "ts 应为 RFC3339 UTC：{body}"
+    );
+    assert_eq!(items[0]["action"], "site.delete", "按时间倒序");
+
+    // 首页只取 1 条，用返回的签名游标取下一页。
+    let (status, body) = get_page(&h.app, "/ui/v1/audit?q=audit-needle&limit=1", &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let first_id = v["data"]["items"][0]["id"].as_i64().expect("id");
+    let cursor = v["data"]["next_cursor"]
+        .as_str()
+        .expect("next_cursor")
+        .to_string();
+    assert_eq!(v["data"]["has_more"], true);
+
+    let (status, body) = get_page(
+        &h.app,
+        &format!("/ui/v1/audit?q=audit-needle&limit=2&cursor={cursor}"),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_ne!(v["data"]["items"][0]["id"].as_i64(), Some(first_id));
+
+    // 换关键字沿用旧游标：筛选指纹不匹配，400 而不是悄悄从头开始。
+    let (status, body) = get_page(
+        &h.app,
+        &format!("/ui/v1/audit?q=other&limit=1&cursor={cursor}"),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("筛选条件"), "{body}");
+
+    // 篡改签名最后一个字符：400，文案区分「校验失败」。
+    let mut chars: Vec<char> = cursor.chars().collect();
+    let last = chars.len() - 1;
+    chars[last] = if chars[last] == '0' { '1' } else { '0' };
+    let forged: String = chars.into_iter().collect();
+    let (status, body) = get_page(
+        &h.app,
+        &format!("/ui/v1/audit?q=audit-needle&limit=1&cursor={forged}"),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("游标校验失败"), "{body}");
 }
 
 /// 带会话与可选 CSRF 的 JSON POST，返回（状态码，响应体）。

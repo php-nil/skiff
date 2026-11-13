@@ -439,6 +439,8 @@
         skiffLogSwitch: logSwitch,
         skiffLogFilter: logFilter,
         skiffLogReload: logReload,
+        skiffAuditSearch: auditSearch,
+        skiffAuditNext: auditNext,
         skiffTerminalReconnect: function () {
           window.location.reload();
         },
@@ -2121,6 +2123,126 @@
     window.location.reload();
   }
 
+  // ---- 审计日志（第十五批） ----------------------------------------------
+  // 只读；后端 `/ui/v1/audit` 用签名 keyset 游标，前端只按地址栏参数取页。
+
+  function auditPageUrl(keyword, cursor) {
+    var params = [];
+    if (keyword) params.push('q=' + encodeURIComponent(keyword));
+    if (cursor) params.push('cursor=' + encodeURIComponent(cursor));
+    return prefix + '/audit' + (params.length ? '?' + params.join('&') : '');
+  }
+
+  function auditSearch(args, ctx) {
+    var values = formValues(ctx);
+    window.location.href = auditPageUrl(String(values.q || '').trim(), '');
+  }
+
+  function auditNext(args) {
+    window.location.href = auditPageUrl(
+      String(args.q || ''),
+      String(args.cursor || '')
+    );
+  }
+
+  function auditSchema(data) {
+    var keyword = String(data.keyword || '');
+    var items = (data.items || []).map(function (a) {
+      var copy = {};
+      Object.keys(a).forEach(function (k) {
+        copy[k] = a[k];
+      });
+      copy.key = String(a.id);
+      copy.ts_label = formatTime(a.ts);
+      return copy;
+    });
+    var body = [
+      {
+        type: 'form',
+        onEvent: { submit: [{ type: 'skiffAuditSearch' }] },
+        props: {
+          api: { method: 'POST', url: apiBase + '/audit', sendOn: false },
+          actionsAlign: 'end'
+        },
+        body: [
+          {
+            type: 'input-text',
+            props: {
+              name: 'q',
+              label: '关键字（操作者 / IP / 动作 / 对象 / 详情）',
+              defaultValue: keyword
+            }
+          }
+        ],
+        content: {
+          actions: [
+            {
+              type: 'button',
+              props: { text: '查询', variant: 'tonal' },
+              action: { type: 'submit' }
+            }
+          ]
+        }
+      },
+      {
+        type: 'flex',
+        props: { gap: 12, wrap: true, align: 'center' },
+        content: {
+          body: [
+            { type: 'link', props: { text: '重置', href: prefix + '/audit' } },
+            { type: 'text', props: { text: '按时间倒序；只读，权限沿用 AuditRead。', size: 'small' } }
+          ]
+        }
+      },
+      statusTable(
+        [
+          { key: 'ts_label', label: '时间', width: 170 },
+          { key: 'actor', label: '操作者' },
+          { key: 'ip', label: 'IP' },
+          { key: 'action', label: '动作' },
+          { key: 'target', label: '对象' },
+          { key: 'result', label: '结果' },
+          { key: 'detail', label: '详情' }
+        ],
+        items,
+        'key'
+      )
+    ];
+    if (data.has_more && data.next_cursor) {
+      body.push({
+        type: 'button',
+        props: { text: '下一页（更早记录）', variant: 'tonal' },
+        onEvent: {
+          click: {
+            actions: [
+              {
+                type: 'skiffAuditNext',
+                props: { q: keyword, cursor: data.next_cursor }
+              }
+            ]
+          }
+        }
+      });
+    }
+    body.push(
+      textLine(
+        '本页 ' +
+          items.length +
+          ' 条' +
+          (data.has_more ? '，还有更早记录。' : '，已到末尾。') +
+          (keyword ? '关键字：' + keyword : '')
+      )
+    );
+    return {
+      type: 'page',
+      props: {
+        title: '审计日志 · Skiff',
+        subtitle: '关键字过滤 + 签名游标（只读）'
+      },
+      body: body
+    };
+  }
+
   // 插件中心：列表（已安装 / 发现 / 可更新）与信息页（身份、授权、管理动作）。
   function pluginActions(p, includeDelete) {
     var actions = [
@@ -3451,14 +3573,14 @@
       return fetchData('/settings').then(settingsSchema);
     }
     if (kind === 'audit') {
-      return Promise.resolve(
-        notReadyPage(
-          '审计日志',
-          '审计检索需要后端提供关键字 + 游标查询（当前只有最近 200 条），按约定不在前端自造分页；旧版页面暂保留完整列表。',
-          '/m/core/settings/audit',
-          '打开旧版审计页（最近 200 条）'
-        )
-      );
+      var auditParams = new URLSearchParams(location.search);
+      var auditQ = auditParams.get('q') || '';
+      var auditCursor = auditParams.get('cursor') || '';
+      var auditQuery =
+        '?limit=50' +
+        (auditQ ? '&q=' + encodeURIComponent(auditQ) : '') +
+        (auditCursor ? '&cursor=' + encodeURIComponent(auditCursor) : '');
+      return fetchData('/audit' + auditQuery).then(auditSchema);
     }
     return Promise.resolve(
       notReadyPage('页面不存在', '地址栏路径没有对应的前端路由，请从左侧菜单进入。')

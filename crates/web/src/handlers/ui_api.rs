@@ -28,6 +28,7 @@ use crate::middleware::UiAuthUser;
 use crate::state::auth::{LoginError, LoginRequest};
 use crate::state::AppState;
 use skiff_app::actions as act;
+use skiff_app::cursor::{AuditScope, CursorCodec, CursorError, FilterSet};
 
 /// 接口版本：与路径段 `v1` 一致，前端只做兼容判断（SDUI 集成 §3.7）。
 pub const API_VERSION: &str = "v1";
@@ -1864,6 +1865,102 @@ pub async fn job_detail(
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
+}
+
+/// 审计列表查询参数：关键字 `q`、`limit`（默认 50 / 上限 200）与签名游标。
+#[derive(Debug, Default, Deserialize)]
+pub struct AuditQuery {
+    pub q: Option<String>,
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+}
+
+/// 一条审计流水；`ts` 为 RFC3339 UTC（D9）。
+#[derive(Debug, Serialize)]
+pub struct AuditItem {
+    pub id: i64,
+    pub ts: String,
+    pub actor: String,
+    pub ip: String,
+    pub action: String,
+    pub target: String,
+    pub result: String,
+    pub detail: String,
+}
+
+/// 解码审计游标：排序键固定为 `(ts, id)`，结构不符按格式非法处理。
+fn parse_audit_cursor(
+    codec: &CursorCodec<AuditScope>,
+    cursor: &str,
+    filter: &FilterSet,
+) -> Result<(i64, i64), ApiError> {
+    let keys = codec
+        .decode(cursor, filter)
+        .map_err(|e: CursorError| ApiError(AppError::BadRequest(e.message().into())))?;
+    let parsed = match keys.as_slice() {
+        [ts, id] => ts.parse::<i64>().ok().zip(id.parse::<i64>().ok()),
+        _ => None,
+    };
+    parsed.ok_or_else(|| {
+        ApiError(AppError::BadRequest(
+            CursorError::Malformed.message().into(),
+        ))
+    })
+}
+
+/// `GET /ui/v1/audit?q=&limit=&cursor=`：审计流水（只读，`AuditRead`）。
+///
+/// 关键字命中 actor / ip / action / target / detail；游标是 `AuditScope` 签名游标，
+/// 载荷为上一页末项的 `(ts, id)`，与筛选条件指纹绑定，换关键字后旧游标直接拒绝。
+pub async fn audit(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<AuditQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::authz::authorize_for(&user, skiff_model::Permission::AuditRead).map_err(ApiError)?;
+    let keyword = q.q.as_deref().unwrap_or("").trim().to_string();
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    // 复用持久化的 CSRF 派生密钥：签名域由 `AuditScope`（`cursor:audit:`）隔离。
+    let codec = CursorCodec::<AuditScope>::new(state.csrf_secret.clone());
+    let filter = FilterSet::new().with("q", &keyword);
+    let before = match q.cursor.as_deref().filter(|c| !c.is_empty()) {
+        Some(cursor) => Some(parse_audit_cursor(&codec, cursor, &filter)?),
+        None => None,
+    };
+    let mut rows = state
+        .db()
+        .audit_page(&keyword, before, limit + 1)
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    // 多取一条只用于判断下一页；游标取本页最后一条的排序键。
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let next_cursor = if has_more {
+        rows.last()
+            .map(|a| codec.encode(&[a.ts.to_string(), a.id.to_string()], &filter))
+    } else {
+        None
+    };
+    let items: Vec<AuditItem> = rows
+        .into_iter()
+        .map(|a| AuditItem {
+            id: a.id,
+            ts: rfc3339(a.ts),
+            actor: a.actor,
+            ip: a.ip,
+            action: a.action,
+            target: a.target,
+            result: a.result,
+            detail: crate::util::truncate(&a.detail, 200),
+        })
+        .collect();
+    Ok(Json(json!({
+        "data": {
+            "items": items,
+            "keyword": keyword,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+    })))
 }
 
 /// 插件列表/信息页共用的一条插件投影。

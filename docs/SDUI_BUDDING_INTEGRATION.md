@@ -715,12 +715,17 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 作业列表：表格（作业/标题/类型/目标/状态/耗时/提交人/创建时间），行点击进详情。
 - 作业详情：元数据、参数、结果、日志四条 `card`；日志按行 `text` 平铺（无代码查看器，T3 待落地），实时流/取消/重试链回旧版。
 
-### 5.13 审计（第六批，阻塞为占位）
+### 5.13 审计（第六批占位 → 第十五批落地）
 
-- **阻塞原因**：后端只有 `Store::recent_audit(limit)`（最近 N 条），没有关键字过滤与 keyset 游标查询；按「不写新聚合 SQL」的红线，本批不自行补查询。
-- `GET /{p}/audit` 交付 budding 占位壳页（「该功能正在适配中」+ 说明），旧 SSR 保留在 `GET /{p}/m/core/settings/audit`（最近 200 条，`AuditRead` 权限不变：viewer 直接访问 403，菜单不可见）。
-- **待办（解除阻塞所需）**：审计表增加 `keyword + before(ts,id)` 查询（或等价索引查询），返回 `{items, next_cursor}`；落地后再补 `GET /ui/v1/audit` 与 buds 表格翻页，字段冻结为 `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`。
-- 本批无新增 `/ui/v1` 接口与新增测试用例（仅 `audit_canonical_path_serves_placeholder_shell` 覆盖落点与权限）。
+- `GET /{p}/audit` 交付 budding 壳页，页面为原生只读审计列表；旧 SSR 保留在 `GET /{p}/m/core/settings/audit`（最近 200 条）作无 JS 兜底。
+- 权限两处同源：页面与 `GET /ui/v1/audit` 都按 `Permission::AuditRead` 判定（viewer 403，菜单不可见），不新增权限来源。
+- 查询：`GET /ui/v1/audit?q=&limit=&cursor=`，落 `{ items, keyword, has_more, next_cursor }`。
+  - 关键字非空时对 actor / ip / action / target / detail 做 ASCII 不区分大小写的子串匹配（`instr(lower(...))`，`%`/`_` 按字面量处理）。
+  - 排序 `(ts DESC, id DESC)`，走既有 `idx_audit_ts(ts DESC, id DESC)`（schema v19），**未改表、未加索引**；关键字只做行内过滤。
+  - 游标是 `app::cursor::CursorCodec<AuditScope>` 签名游标（HMAC，密钥复用持久化 CSRF 派生密钥，签名域 `cursor:audit:` 隔离），载荷为上一页末项 `(ts,id)` 并与筛选指纹绑定：换关键字沿用旧游标 400、篡改 400、旧版本 400。`limit` 默认 50、上限 200。
+  - 字段冻结：`id` / `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`（截断 200 字符）。
+- 前端：关键字表单 + `table` 列表 + 「下一页（更早记录）」按钮；翻页是向更早的 keyset 前进，不提供随机跳页。
+- 本地验证：`main_flow` 覆盖 viewer 403、关键字命中、翻页游标、换关键字与篡改 400；无头浏览器实测页面渲染、`?q=` 过滤与接口层游标翻页（10 条验收数据内，后翻 id 递减、换关键字 400）。
 
 ### 5.14 设置（第七批 + 第十一批补齐）
 
@@ -1046,3 +1051,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | budding 重打包基线 `1.8.0-r2`：上游 manifest 仍为 1.8.0（builtAt 2026-11-13T04:13:45Z）但字节已变（JS 1,261,442 B / CSS 657,324 B，仓内 gzip 398,697 / 78,970；上游 manifest 记 400,024 / 79,966，压缩级别不同），本地用 `-r2` 后缀避免同 URL 命中旧 `immutable` 缓存；图标同步为 `budding-icons-1.8.0-r2.min.css`（3,626 B）+ `.woff2`（2,612 B）。`input-text` 起支持原生 `type`：登录页与设置页改为 `type: 'password'`，删除 `maskPassword` / `watchPasswordMask` / `skiff-password` 与 MutationObserver，首帧即掩码（无头浏览器实测 `type=password`）；`autocomplete` 声明已写入 schema，但当前构建仍未透传到 DOM（输入框 `autocomplete` 属性为空），待上游补字段。G16 的 `type` 部分关闭。 |
 | 2026-11-13 | 第十三批代码/日志查看器：新增 `GET /ui/v1/files/read?path=`（`FILE_READ`）、`GET /ui/v1/sites/{domain}/logs?part=&tail=&q=`（复用 `AppState::site_logs`）；新增路由 `/{p}/files/view`、`/{p}/sites/{domain}/logs`、`/{p}/jobs/{id}/logs`。渲染统一用 `code-viewer`（只读、行号、定高 560），高亮走入库的 `budding-highlight-1.8.0-r2.min.js`（`BuddingSDK.registerPack`，54,270 B），不引 WASM；站点日志页旧 SSR 仅接受 `?legacy=1`，作业日志按 `after` 游标最多 10 页、不建 SSE。§6.1 F4 关闭（只读口径）。 |
 | 2026-11-13 | 第十四批容器终端：新增 `GET /{p}/containers/{id}/terminal`（budding 隐藏路由，容器详情加「打开终端」）。复用既有 `POST …/exec/ticket`（Admin + CSRF + `Verb::Exec`，票据绑定会话与容器、30 秒、一次即废）+ `GET …/exec?ticket=` WS（Origin 严格校验，start/fail/end 写 `Verb::Exec` 审计），无内核改动、不新建 WS 契约。前端用 `terminal` 组件内联，`resizeFormat: 'none'`、`reconnect: false`；Pack 入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B）。**WS 真连待 Linux 测试机验收**。 |
+| 2026-11-13 | 第十五批审计页原生化：`GET /{p}/audit` 不再占位。`store` 新增 `audit_page(keyword, before(ts,id), limit)`（`instr(lower(...))` 命中 actor/ip/action/target/detail，排序走既有 `idx_audit_ts(ts DESC, id DESC)`，未改表/加索引）；`/ui/v1/audit?q=&limit=&cursor=` 用 `AuditScope` 签名游标（绑定筛选指纹，换关键字/篡改/旧版本 400），权限保持 `AuditRead`；前端表单 + `table` + 「下一页」。补 store 3 条单测与 `main_flow` 权限/过滤/游标用例，无头浏览器实测页面、过滤与游标翻页。 |

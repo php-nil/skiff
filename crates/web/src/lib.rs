@@ -193,6 +193,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui/v1/jobs", get(handlers::ui_api::jobs))
         .route("/ui/v1/jobs/{id}", get(handlers::ui_api::job_detail))
         .route("/ui/v1/settings", get(handlers::ui_api::settings))
+        .route("/ui/v1/audit", get(handlers::ui_api::audit))
         .route(
             "/ui/v1/settings/panel",
             post(handlers::ui_api::settings_panel_update),
@@ -675,8 +676,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/keys/{{id}}/remove"),
             post(handlers::settings::remove_key),
         )
-        // 审计页已进入 budding 适配：后端尚无关键字 + 游标查询，规范页先给占位，
-        // 旧 SSR 保留在 `/{p}/m/core/settings/audit`（最近 200 条）。
+        // 审计页已原生渲染（第十五批）：数据走 `/ui/v1/audit`（关键字 + 签名 keyset 游标），
+        // 旧 SSR 仅保留在 `/{p}/m/core/settings/audit`（最近 200 条）。
         // 契约里的规范深链：旧路由继续可用，这里只是内部转发到同一 handler。
         .route(&format!("/{p}/m/{{*rest}}"), get(handlers::menu::dispatch))
         // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。
