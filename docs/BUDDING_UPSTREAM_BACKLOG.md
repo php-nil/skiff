@@ -1,13 +1,14 @@
 # budding 上游缺口清单（1.8.0）
 
 > **核对日期/版本**：2026-11-13，budding **1.8.0**（`dist/package/budding-1.8.0.manifest.json`，catalog 1.8.0 / 57 条目）。
+> **本版字节变化**：上游重新打包，manifest 版本号仍为 1.8.0、`builtAt 2026-11-13T04:13:45Z`；宿主人库标记为 **`1.8.0-r2`**，按 `-r2` 区分产物（本清单以 r2 为准，`input-text` 已透传 `type`）。
 > 本文只列仍未闭环、需要 budding 团队执行的事项；每条都是可直接粘贴给 AI 的提示词。
 
 ## 未闭环任务总览
 
 | 编号 | 任务 | 产出形态 | 依赖 | Skiff 用途 | 规模 |
 |---|---|---|---|---|---|
-| T6 | `input-text` 透传 `type` / `autocomplete` | 框架能力补齐 | 无 | 登录口令、FTP 改密、表单邮箱/数字 | S |
+| T6 | `input-text` 透传 `autocomplete` | 框架能力补齐 | 无 | 登录框与改密框被浏览器密码管理器正确识别 | S |
 | T7 | 插件 Schema 的运行时安全策略（动作白名单 / 禁外链 / 静态校验） | 框架能力补齐 + 文档 | 无 | 插件功能页原生渲染的信任边界 | M |
 | T8 | 图标字体的版本化文件名、缓存与子集清单 | 构建/文档 | 无 | 离线升级不踩旧缓存 | S |
 | T9 | `virtual-list` 滚动生命周期触点（`scroll` / `reachBottom` / `scrollToKey`） | 框架能力补齐 | 无 | 日志跟随、无限加载、按 key 定位 | S–M |
@@ -32,38 +33,36 @@
 
 ## 未闭环任务（可直接粘贴的提示词）
 
-### T6 `input-text` 透传 `type` 与 `autocomplete`
+### T6 `input-text` 未透传 `autocomplete`
 
 - **产出形态**：官方表单能力补齐
 - **依赖**：无
-- **现状（产物实测）**：1.8.0 的 `input-text` 共 33 个字段，**没有 `type`，也没有 `autocomplete`**；渲染出的原生 `input` 固定为文本类型。`time` 组件内部使用原生 `type=time`，说明链路允许，只是 `input-text` 未开放。
-- **缺口表现**：Skiff 登录页只能用启动脚本在渲染后把 DOM 改成 `password`（`crates/web/static/budding/budding-login.js` 的 `maskPassword` / `watchPasswordMask`），口令在首帧存在明文窗口；浏览器密码管理器无法识别登录表单；无法声明 `autocomplete="off"` 阻止浏览器错误回填。FTP 改密、SMTP 口令等页面同样受影响。
+- **现状（r2 产物实测）**：`1.8.0-r2` 已透传 `type`：登录页与设置页的口令框首帧即为 `type="password"`，宿主侧的 DOM 改写补丁已删除。但 `autocomplete` 仍被忽略：schema 里写 `current-password` / `new-password` 后，原生 `input` 上该属性为空。
+- **缺口表现**：浏览器密码管理器无法区分「登录」与「改密」（`current-password` / `new-password`），会出现不提示保存、或把新口令回填到登录框；也无法声明 `autocomplete="off"` 阻止错误回填。
 
 ```text
 [任务]
-让 budding 的 input-text 渲染器支持 type 与 autocomplete，并透传到原生 input 元素。
+让 budding 的 input-text 渲染器把 autocomplete 透传到原生 input 元素。
 
 [背景事实]
-1. 1.8.0 的 input-text 有 33 个字段，没有 type 与 autocomplete；原生 input 固定为文本类型。
-2. 同版本 time 组件已使用原生 type=time，透传链路存在，只是 input-text 未开放。
-3. Skiff 登录页当前用运行后脚本改写 DOM type=password，属于临时桥接，必须在上游落地后删除。
+1. 1.8.0-r2 已支持 type，口令框首帧即为 type=password，宿主已删除 DOM 改写补丁。
+2. 同一版本中 autocomplete 字段仍被忽略：schema 写 current-password / new-password 后，DOM 上该属性为空。
+3. 宿主 schema 已按登录/改密分别写入 current-password 与 new-password，只等上游透传。
 
 [要产出]
-1. input-text 新增字段：
-   - type: 'text' | 'password' | 'email' | 'number' | 'tel' | 'url'，默认 'text'；
-   - autocomplete: string，可选，原样透传到原生 input 的 autocomplete（含 'off' / 'new-password' / 'current-password'）。
-2. type 与 autocomplete 必须绑定到原生 input 元素，而不是只放在外层容器。
-3. 类型变化时保持值与校验状态不变；password 时浏览器表现为掩码输入。
-4. 文档补字段表与一个登录表单示例。
+1. input-text 新增字段 autocomplete: string，可选，原样透传到原生 input 的 autocomplete（含 'off' / 'new-password' / 'current-password' / 'username'）。
+2. 必须绑定到原生 input 元素，而不是外层容器；与 type 同时生效，互不覆盖。
+3. 不传 autocomplete 时不输出该属性（与现行为一致，不强制写 'off'）。
+4. 文档补字段表与登录/改密两个示例。
 
 [验收标准]
-- 渲染后的 DOM input 上可断言 type 与 autocomplete 与 schema 一致。
-- 四种以上 type 各有单测；不传 type 时与 1.8.0 行为完全一致。
-- 口令框不依赖任何后置脚本改写 DOM 即可掩码。
-- 现有表单值收集、校验与提交链路不回归。
+- 渲染后的 DOM input 上可断言 autocomplete 与 schema 一致。
+- 登录表单 current-password、改密表单 new-password 两种场景各有断言。
+- 不传 autocomplete 时 DOM 无该属性，现有表单行为不回归。
+- type 透传与既有值收集/校验/提交链路不回归。
 
 [明确不做]
-- 不做密码强度、显示/隐藏切换、文件/日期/时间等其它类型。
+- 不做密码强度、显示/隐藏切换、记住密码等业务逻辑。
 - 不改表单校验与提交实现。
 
 [约束]
@@ -561,7 +560,7 @@
 
 ## 依赖与建议顺序
 
-1. **T6 先做**：改动面最小（表单属性透传），收益立竿见影（登录/口令类页面不再依赖 DOM 桥接），且无依赖。
+1. **T6 先做**：改动面最小（一个属性透传），直接决定浏览器密码管理器能否正确识别登录与改密表单，且无依赖。
 2. **T15、T8 与 T16 可并行**：都是小改动，不阻塞其它任务；**T8 与 T16 同属图标构建链，建议合并为一次产物发布**（版本化 + 增补字形一起做，避免连续两次动图标字体）。
 3. **T10 与 T9 是列表能力的地基**：T10 解决「数据怎么继续取」，T9 解决「何时取」；两者完成后，文件浏览与日志页才具备完整交互。
 4. **T11 依赖 T10 的选择语义**：跨页选择与游标分页要一起验证，避免「追加后选择错位」。
@@ -574,7 +573,6 @@
 
 | 条目 | 临时做法 | 代价 |
 |---|---|---|
-| T6 | 启动脚本在渲染后改 DOM `type=password`（`budding-login.js` 的 `maskPassword` / `watchPasswordMask`） | 首帧明文窗口；组件重建 input 需 MutationObserver 兜底 |
 | T10 | 只取首屏 + 隐藏分页，提示「翻页待接入」 | 文件/作业列表无法浏览第二页 |
 | T9 | 跟随靠整表重挂载；无「上滚暂停」 | 滚动位置跳变，日志不可用 |
 | T12 | 单请求上传 + 整体进度 | 大文件超时只能整文件重传 |
@@ -588,7 +586,7 @@
 
 **产物实测（1.8.0）**
 
-- `input-text` 33 字段，无 `type` / `autocomplete`；`select` 无 `multiple`；`checkbox` 无 `items`。
+- `input-text` 已透传 `type`，`autocomplete` 仍被忽略；`select` 无 `multiple`；`checkbox` 无 `items`。
 - `table` 无 `cursorPath` / `loadMore` / `selectStrategy` / `openOn` / `iconMap`，`selectable` 仅控制多选列；动作清单无 `download`。
 - `virtual-list` 6 指令 / 2 触点，无 `scroll` / `reachBottom`，无按 key 定位。
 - `file` 40 字段，无分片 / 续传 / 暂停 / 多文件独立进度。
