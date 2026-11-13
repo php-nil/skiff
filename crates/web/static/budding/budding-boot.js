@@ -557,6 +557,7 @@
   var BUILTIN_PAGES = {
     overview: { path: '', schema: 'skiff:overview' },
     'core/sites/list': { path: '/sites', schema: 'skiff:sites' },
+    'core/sites/web': { path: '/sites/web', schema: 'skiff:web' },
     'core/sites/env': { path: '/runtimes', schema: 'skiff:runtimes' },
     'core/docker/containers': { path: '/containers', schema: 'skiff:containers' },
     'core/docker/images': { path: '/images', schema: 'skiff:images' },
@@ -847,6 +848,9 @@
         skiffRuntimePecl: runtimePecl,
         skiffRuntimeClone: runtimeClone,
         skiffRuntimeUnbind: runtimeUnbind,
+        skiffWebConfig: webConfigWrite,
+        skiffWebParams: webParamsWrite,
+        skiffWebLogs: webLogsLoad,
         skiffPasswordChange: passwordChange,
         skiffTotpSetup: totpSetup,
         skiffTotpEnable: totpEnable,
@@ -3601,6 +3605,290 @@
       .catch(runtimeFail);
   }
 
+  /// Web 服务（OpenResty）：状态、安装进度、主配置/性能参数、日志与模块。
+  function webNum(v) {
+    return v === null || v === undefined ? '—' : String(v);
+  }
+
+  function webSchema(data, query, logs) {
+    var status = data.status || {};
+    var body = [];
+    if (!status.available) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          title: 'Web 服务不可用',
+          text:
+            status.reason ||
+            status.stub_reason ||
+            'OpenResty 容器未运行；配置可以保存，但需要先启动容器才能生效。'
+        }
+      });
+    }
+    body.push({
+      type: 'card',
+      props: { title: '运行状态' },
+      content: {
+        body: [
+          detailLines('概览', [
+            '容器：' + (status.container_state || '—') + '；版本：' + (status.version || '—'),
+            '运行时长：' + (status.uptime || '—') + '；最近 reload：' + (status.last_reload || '—'),
+            '配置检查：' + (status.config_test || '—'),
+            'active ' + webNum(status.active) +
+              ' / accepts ' + webNum(status.accepts) +
+              ' / handled ' + webNum(status.handled) +
+              ' / requests ' + webNum(status.requests),
+            'reading ' + webNum(status.reading) +
+              ' / writing ' + webNum(status.writing) +
+              ' / waiting ' + webNum(status.waiting),
+            '探测地址：' + (status.probe_url || '—') +
+              (status.probe_error ? '（' + status.probe_error + '）' : ''),
+            '主配置：' + (status.conf_path || '—') +
+              (status.conf_has_stub ? '（含 stub_status）' : '（未含 stub_status）')
+          ])
+        ]
+      }
+    });
+
+    var install = data.install || {};
+    if (install.running || install.error || (install.steps || []).length) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: install.error ? 'danger' : install.running ? 'info' : 'success',
+          title: install.running ? '正在安装 Web 服务' : install.error ? '安装失败' : '安装已完成',
+          text:
+            (install.error || '') +
+            (install.steps || [])
+              .map(function (s) {
+                return s.name + '：' + s.state + (s.detail ? '（' + s.detail + '）' : '');
+              })
+              .join('；')
+        }
+      });
+    }
+
+    var config = data.config || {};
+    var params = config.params || {};
+    var mainForm = writeForm(
+      apiBase + '/web/config',
+      { type: 'skiffWebConfig' },
+      [
+        {
+          type: 'textarea',
+          props: { name: 'content', label: '主配置 ' + (config.main_path || 'nginx.conf'), rows: 20 }
+        }
+      ],
+      '校验并重载'
+    );
+    mainForm.props.initialValues = { content: config.main_content || '' };
+    body.push(
+      writeCard('主配置', '保存前执行 nginx -t；失败会拒绝写入并保留当前配置。', mainForm)
+    );
+
+    var paramsForm = writeForm(
+      apiBase + '/web/params',
+      { type: 'skiffWebParams' },
+      [
+        { type: 'input-text', props: { name: 'worker_processes', label: 'worker_processes' } },
+        { type: 'input-text', props: { name: 'worker_connections', label: 'worker_connections（64–65535）' } },
+        { type: 'input-text', props: { name: 'keepalive_timeout', label: 'keepalive_timeout（0–3600 秒）' } },
+        { type: 'input-text', props: { name: 'client_max_body_size', label: 'client_max_body_size' } },
+        { type: 'checkbox', props: { name: 'gzip', label: '启用 gzip' } },
+        { type: 'input-text', props: { name: 'gzip_types', label: 'gzip_types（空格分隔）' } }
+      ],
+      '保存性能参数'
+    );
+    paramsForm.props.initialValues = {
+      worker_processes: params.worker_processes || '',
+      worker_connections: String(params.worker_connections || ''),
+      keepalive_timeout: String(params.keepalive_timeout || ''),
+      client_max_body_size: params.client_max_body_size || '',
+      gzip: !!params.gzip,
+      gzip_types: params.gzip_types || ''
+    };
+    body.push(
+      writeCard('性能参数', '数字字段非法会被拒绝，不会静默存成默认值。', paramsForm)
+    );
+    body.push({
+      type: 'card',
+      props: { title: '包含配置与站点配置' },
+      content: {
+        body: [
+          detailLines('include：' + (config.include_path || '—'), [config.include_content || '（空）'])
+        ].concat(
+          (config.sites || []).map(function (s) {
+            return detailLines(s.domain + ' · ' + s.path, [s.content || '（空）']);
+          })
+        )
+      }
+    });
+
+    var logForm = writeForm(
+      apiBase + '/web/logs',
+      { type: 'skiffWebLogs' },
+      [
+        {
+          type: 'select',
+          props: {
+            name: 'type',
+            label: '日志',
+            items: [
+              { title: '访问日志', value: 'access' },
+              { title: '错误日志', value: 'error' }
+            ]
+          }
+        },
+        {
+          type: 'select',
+          props: {
+            name: 'lines',
+            label: '范围',
+            items: [
+              { title: '50 行', value: '50' },
+              { title: '200 行', value: '200' },
+              { title: '500 行', value: '500' }
+            ]
+          }
+        },
+        {
+          type: 'select',
+          props: {
+            name: 'level',
+            label: '级别（错误日志）',
+            items: [
+              { title: '全部', value: 'all' },
+              { title: 'error', value: 'error' },
+              { title: 'warn', value: 'warn' },
+              { title: 'info', value: 'info' }
+            ]
+          }
+        },
+        { type: 'input-text', props: { name: 'status', label: '状态码（如 404 / 4xx）' } },
+        { type: 'input-text', props: { name: 'q', label: '关键字' } }
+      ],
+      '加载日志'
+    );
+    logForm.props.initialValues = {
+      type: query.get('type') || 'access',
+      lines: query.get('lines') || '200',
+      level: query.get('level') || 'all',
+      status: query.get('status') || '',
+      q: query.get('q') || ''
+    };
+    var logBody = [logForm];
+    if (logs) {
+      logBody.push(
+        detailLines('读取范围', [
+          '文件：' + (logs.path || '—'),
+          '本次加载 ' + logs.rows.length + ' 行；已扫描 ' + logs.scanned_text +
+            '（' + logs.scanned_lines + ' 行），文件共 ' + logs.file_text,
+          logs.truncated ? '已截断：只读取文件尾部 2 MiB' : '未截断',
+          logs.reason || ''
+        ])
+      );
+      if ((logs.status_counts || []).length) {
+        logBody.push(
+          detailLines('状态码分布', logs.status_counts.map(function (c) {
+            return c.label + '：' + c.count;
+          }))
+        );
+      }
+      var logRows = logs.rows.map(function (line, i) {
+        return { idx: String(i + 1), line: line };
+      });
+      logBody.push(
+        statusTable(
+          [
+            { key: 'idx', label: '#' },
+            { key: 'line', label: '日志' }
+          ],
+          logRows,
+          'idx'
+        )
+      );
+    } else {
+      logBody.push(noticeCard('默认不读取日志：选择日志与范围后点「加载日志」。'));
+    }
+    body.push({ type: 'card', props: { title: '日志' }, content: { body: logBody } });
+
+    var modules = data.modules || {};
+    body.push({
+      type: 'card',
+      props: { title: '模块' },
+      content: {
+        body: [
+          detailLines('nginx -V', [
+            '版本：' + (modules.version || '—'),
+            modules.available ? '' : '不可用：' + (modules.reason || ''),
+            '编译参数：' + (modules.configure_args || []).join(' '),
+            '模块列表：' + (modules.modules || []).join(' ')
+          ])
+        ]
+      }
+    });
+    return {
+      type: 'page',
+      props: { title: 'Web 服务 · Skiff', subtitle: 'OpenResty 状态、配置、日志与模块' },
+      body: body
+    };
+  }
+
+  /// 主配置保存：复用 `/ui/v1/web/config`（nginx -t + reload + 审计）。
+  function webConfigWrite(args, ctx) {
+    var values = formValues(ctx);
+    return submitJson('/web/config', { content: formText(values.content) })
+      .then(function (data) {
+        window.alert((data && data.message) || '主配置已保存');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  /// 性能参数保存：复用 `/ui/v1/web/params`。
+  function webParamsWrite(args, ctx) {
+    var values = formValues(ctx);
+    var connections = runtimeNum(values.worker_connections);
+    var keepalive = runtimeNum(values.keepalive_timeout);
+    if (connections === null || keepalive === null) {
+      window.alert('worker_connections 与 keepalive_timeout 必须是整数');
+      return Promise.resolve();
+    }
+    var gzip = formText(values.gzip);
+    return submitJson('/web/params', {
+      worker_processes: formText(values.worker_processes).trim(),
+      worker_connections: connections,
+      keepalive_timeout: keepalive,
+      client_max_body_size: formText(values.client_max_body_size).trim(),
+      gzip: gzip === 'true' || gzip === 'on' || values.gzip === true,
+      gzip_types: formText(values.gzip_types).trim()
+    })
+      .then(function (data) {
+        window.alert((data && data.message) || '性能参数已保存');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  /// 日志按需加载：把筛选条件带回 URL，页面再走 `/ui/v1/web/logs`（不自动读文件）。
+  function webLogsLoad(args, ctx) {
+    var values = formValues(ctx);
+    var qs = new URLSearchParams();
+    qs.set('logs', '1');
+    qs.set('type', formText(values.type).trim() || 'access');
+    qs.set('lines', formText(values.lines).trim() || '200');
+    qs.set('level', formText(values.level).trim() || 'all');
+    if (formText(values.status).trim()) qs.set('status', formText(values.status).trim());
+    if (formText(values.q).trim()) qs.set('q', formText(values.q).trim());
+    location.href = prefix + '/sites/web?' + qs.toString();
+    return Promise.resolve();
+  }
+
   // 面板设置保存：复用旧表单校验/落盘/审计，只把传输层换成 JSON。
   function settingsSave(args, ctx) {
     var values = null;
@@ -5932,6 +6220,27 @@
         });
       }
       return Promise.resolve(storeConfirmSchema(pendingConfirm));
+    }
+    if (kind === 'web') {
+      var webQuery = new URLSearchParams(location.search);
+      var base = fetchData('/web');
+      if (webQuery.get('logs') === '1') {
+        var logParams = new URLSearchParams();
+        logParams.set('load', '1');
+        logParams.set('kind', webQuery.get('type') || 'access');
+        logParams.set('lines', webQuery.get('lines') || '200');
+        logParams.set('level', webQuery.get('level') || 'all');
+        if (webQuery.get('status')) logParams.set('status', webQuery.get('status'));
+        if (webQuery.get('q')) logParams.set('q', webQuery.get('q'));
+        return Promise.all([base, fetchData('/web/logs?' + logParams.toString())]).then(
+          function (res) {
+            return webSchema(res[0], webQuery, res[1]);
+          }
+        );
+      }
+      return base.then(function (data) {
+        return webSchema(data, webQuery, null);
+      });
     }
     if (kind === 'settings') {
       return fetchData('/settings').then(settingsSchema);

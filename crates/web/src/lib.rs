@@ -333,6 +333,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/ui/v1/runtimes/{id}/sites/{domain}/unbind",
             post(handlers::ui_api::runtime_unbind_site),
         )
+        .route("/ui/v1/web", get(handlers::ui_api::web))
+        .route("/ui/v1/web/logs", get(handlers::ui_api::web_logs))
+        .route("/ui/v1/web/config", post(handlers::ui_api::web_config_save))
+        .route("/ui/v1/web/params", post(handlers::ui_api::web_params_save))
         .route(
             "/ui/v1/settings/menu",
             get(handlers::ui_api::settings_menu).post(handlers::ui_api::settings_menu_update),
@@ -651,7 +655,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::sites::runtime_unbind_site),
         )
         // ---- 内核「网站 → Web 服务」：状态 / 配置 / 日志 / 模块 ----
-        .route(&format!("/{p}/sites/web"), get(handlers::nginx::index))
+        .route(&format!("/{p}/sites/web"), get(handlers::nginx::shell))
         .route(
             &format!("/{p}/sites/web/config/main"),
             post(handlers::nginx::save_main),

@@ -5370,7 +5370,7 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
             && !include_str!("../static/skiff.js").contains("data-web-action"),
         "Web 服务不得再出现在运行环境页: {html}"
     );
-    let (status, web) = get_page(&h.app, "/p/sites/web", &admin).await;
+    let (status, web) = get_page(&h.app, "/p/m/core/sites/web", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         web.contains("Web 服务（OpenResty）")
@@ -5812,6 +5812,79 @@ async fn runtime_sites_show_unknown_instead_of_running_when_docker_unavailable()
     );
 }
 
+/// Web 服务 `/ui/v1` 读写：读聚合 Admin-only，写缺 CSRF 403、viewer 403；
+/// 管理员过门禁后走真实 nginx -t 语义（无 Docker 时失败，不伪装成功）。
+#[tokio::test]
+async fn ui_web_requires_csrf_and_admin() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "auth.unauthenticated");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["status"].is_object(), "{body}");
+    assert!(v["data"]["config"]["main_content"].is_string(), "{body}");
+    assert!(
+        v["data"]["config"]["params"]["worker_connections"].is_number(),
+        "{body}"
+    );
+    assert!(v["data"]["modules"].is_object(), "{body}");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web/logs", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["loaded"], false, "{body}");
+
+    let cases = [
+        ("/ui/v1/web/config", json!({ "content": "events {}" })),
+        (
+            "/ui/v1/web/params",
+            json!({
+                "worker_processes": "auto",
+                "worker_connections": 2048,
+                "keepalive_timeout": 65,
+                "client_max_body_size": "16m",
+                "gzip": true,
+                "gzip_types": "text/css"
+            }),
+        ),
+    ];
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 缺 CSRF: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+    }
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+    }
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, Some(&csrf), body).await;
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let code = v["error"]["code"].as_str().unwrap_or("");
+        assert!(
+            code != "403" && code != "auth.forbidden",
+            "{uri} 管理员不应被权限拒绝: {text}"
+        );
+        // 无 Docker：nginx -t 不可执行，保存必须失败而不是返回 200 假成功。
+        assert_ne!(status, StatusCode::OK, "{uri} 无 Docker 不能假成功: {text}");
+    }
+}
+
 /// 「网站 → Web 服务」：四区块常驻渲染；管理员 + CSRF，viewer 403。
 #[tokio::test]
 async fn nginx_page_renders_four_sections_and_is_admin_only() {
@@ -5821,16 +5894,21 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
 
     for uri in [
         "/p/sites/web",
-        "/p/sites/web?tab=config",
-        "/p/sites/web?tab=logs",
-        "/p/sites/web?tab=modules",
         "/p/m/core/sites/web",
+        "/p/m/core/sites/web?tab=config",
+        "/p/m/core/sites/web?tab=logs",
+        "/p/m/core/sites/web?tab=modules",
     ] {
         let (status, _) = get_page(&h.app, uri, &viewer).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
     }
 
-    let (status, html) = get_page(&h.app, "/p/sites/web", &admin).await;
+    // 规范入口交 budding 壳页；admin 200 且带挂载点。
+    let (status, shell) = get_page(&h.app, "/p/sites/web?tab=config", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(shell.contains(r#"id="skiff-root""#), "{shell}");
+
+    let (status, html) = get_page(&h.app, "/p/m/core/sites/web", &admin).await;
     assert_eq!(status, StatusCode::OK);
     for panel in ["status", "config", "logs", "modules"] {
         assert!(
@@ -5862,7 +5940,7 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
         "非当前标签必须 hidden，避免四块堆一页: {html}"
     );
 
-    let (status, config_tab) = get_page(&h.app, "/p/sites/web?tab=config", &admin).await;
+    let (status, config_tab) = get_page(&h.app, "/p/m/core/sites/web?tab=config", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         config_tab.contains(r#"data-nginx-panel="config""#)
@@ -5904,7 +5982,7 @@ async fn nginx_page_renders_four_sections_and_is_admin_only() {
     );
     let (_, loaded) = get_page(
         &h.app,
-        "/p/sites/web?tab=logs&load=1&type=access&lines=200",
+        "/p/m/core/sites/web?tab=logs&load=1&type=access&lines=200",
         &admin,
     )
     .await;

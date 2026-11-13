@@ -1237,7 +1237,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "Web 服务",
                     "globe",
                     25,
-                    href("m/core/sites/web"),
+                    href("sites/web"),
                 ),
             ],
         },

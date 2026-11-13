@@ -809,6 +809,13 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 扩展表行内「安装 / 卸载」调用 `POST /ui/v1/runtimes/{id}/extensions/{key}/{op}`；批量端点 `POST .../extensions/batch` 已登记，当前页面按单项操作。
 - 详情聚合仍是 Admin-only（与旧页 `require_admin` 一致）；viewer 直接请求 403，菜单不可见。
 
+**Web 服务页（第二十四批）**
+
+- `GET /{p}/sites/web` 改交付 budding 壳页（`require_admin`，viewer 403）；旧 SSR 保留在 `GET /{p}/m/core/sites/web`，菜单 href 已改指规范路径。
+- `GET /ui/v1/web` → `{status, install, config{main_path,main_content,include_path,include_content,sites[],params}, modules, can_admin}`，与旧页同一数据源（`nginx_status`、`site_install_progress`、`nginx_config_view`、`nginx_modules`）。
+- `GET /ui/v1/web/logs?load=&kind=&lines=&level=&status=&q=&offset=`：未 `load` 时不触碰文件，返回读取范围、状态码分布、截断标记与行数据；前端用「加载日志」把筛选条件带回 URL（`?logs=1&...`）再读取。
+- 写操作：`POST /ui/v1/web/config`（主配置，`nginx -t` + reload）与 `POST /ui/v1/web/params`（性能参数）；SSR 表单与 JSON 共用 `nginx::apply_main` / `apply_params`，审计事件 `nginx.config.save` / `nginx.params.save` 不变。失败返回 400 并保留错误文本，不伪装成功。
+
 ### 5.15 商店（第八批）
 
 - `GET /{p}/store` 交付 budding 壳页；旧 SSR（目录状态、四类条目、升级包下载、表单确认页）保留在 `GET /{p}/m/core/plugins/store`。

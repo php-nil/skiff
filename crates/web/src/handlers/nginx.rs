@@ -125,6 +125,106 @@ pub async fn index(
     page(state, user, &q, String::new(), String::new(), None).await
 }
 
+/// `GET /{p}/sites/web` 规范入口：交付 budding 壳页（管理专属）。
+///
+/// 旧 SSR 保留在 `GET /{p}/m/core/sites/web`，作为菜单深链与无 JS 兜底。
+pub async fn shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, AppError> {
+    require_admin(&user)?;
+    Ok(crate::handlers::spa::shell_page(&state))
+}
+
+/// 主配置保存：SSR 表单与 `/ui/v1/web/config` 共用的唯一业务入口。
+///
+/// 校验（`nginx -t`）、原子写与 `nginx.config.save` 审计都在这里；调用方只决定
+/// 「PRG 跳转 / 保留编辑内容回显」还是「JSON 信封」。
+pub(crate) async fn apply_main(
+    state: &AppState,
+    user: &crate::state::CurrentUser,
+    ip: &str,
+    content: &str,
+) -> Result<String, String> {
+    match state.save_nginx_main(content).await {
+        Ok(warnings) => {
+            let detail = warnings.join("；");
+            state.audit_or_log(
+                &user.user.username,
+                ip,
+                "nginx.config.save",
+                "nginx.conf",
+                "ok",
+                &detail,
+            );
+            Ok(if warnings.is_empty() {
+                "主配置已通过 nginx -t 并重载".to_string()
+            } else {
+                format!(
+                    "主配置已保存并重载；nginx -t 有 {} 条告警：{}",
+                    warnings.len(),
+                    detail
+                )
+            })
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            state.audit_or_log(
+                &user.user.username,
+                ip,
+                "nginx.config.save",
+                "nginx.conf",
+                "failed",
+                &msg,
+            );
+            Err(msg)
+        }
+    }
+}
+
+/// 性能参数保存：SSR 表单与 `/ui/v1/web/params` 共用的唯一业务入口。
+pub(crate) async fn apply_params(
+    state: &AppState,
+    user: &crate::state::CurrentUser,
+    ip: &str,
+    params: &NginxParams,
+) -> Result<String, String> {
+    match state.save_nginx_params(params).await {
+        Ok(warnings) => {
+            let detail = warnings.join("；");
+            state.audit_or_log(
+                &user.user.username,
+                ip,
+                "nginx.params.save",
+                "nginx.conf",
+                "ok",
+                &detail,
+            );
+            Ok(if warnings.is_empty() {
+                "性能参数已保存并通过 nginx -t，随后重载".to_string()
+            } else {
+                format!(
+                    "性能参数已保存并重载；nginx -t 有 {} 条告警：{}",
+                    warnings.len(),
+                    detail
+                )
+            })
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            state.audit_or_log(
+                &user.user.username,
+                ip,
+                "nginx.params.save",
+                "nginx.conf",
+                "failed",
+                &msg,
+            );
+            Err(msg)
+        }
+    }
+}
+
 pub async fn save_main(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -137,44 +237,15 @@ pub async fn save_main(
     let content = form_first(&form, "content");
     let ip = handlers::client_ip(&state, &parts);
     let prefix = state.cfg.entry_prefix.clone();
-    match state.save_nginx_main(&content).await {
-        Ok(warnings) => {
-            let detail = warnings.join("；");
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "nginx.config.save",
-                "nginx.conf",
-                "ok",
-                &detail,
-            );
-            let notice = if warnings.is_empty() {
-                "主配置已通过 nginx -t 并重载".to_string()
-            } else {
-                format!(
-                    "主配置已保存并重载；nginx -t 有 {} 条告警：{}",
-                    warnings.len(),
-                    detail
-                )
-            };
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Notice,
-                notice,
-                format!("/{prefix}/sites/web?tab=config"),
-            ))
-        }
-        Err(e) => {
-            let msg = format!("{e}");
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "nginx.config.save",
-                "nginx.conf",
-                "failed",
-                &msg,
-            );
+    match apply_main(&state, &user, &ip, &content).await {
+        Ok(notice) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            notice,
+            format!("/{prefix}/sites/web?tab=config"),
+        )),
+        Err(msg) => {
             // 校验失败直接回显配置页，保留用户本次提交的内容；跳转会重新从磁盘读取，冲掉编辑。
             let mut q = HashMap::new();
             q.insert("tab".to_string(), "config".to_string());
@@ -216,52 +287,21 @@ pub async fn save_params(
             ));
         }
     };
-    match state.save_nginx_params(&params).await {
-        Ok(warnings) => {
-            let detail = warnings.join("；");
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "nginx.params.save",
-                "nginx.conf",
-                "ok",
-                &detail,
-            );
-            let notice = if warnings.is_empty() {
-                "性能参数已保存并通过 nginx -t，随后重载".to_string()
-            } else {
-                format!(
-                    "性能参数已保存并重载；nginx -t 有 {} 条告警：{}",
-                    warnings.len(),
-                    detail
-                )
-            };
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Notice,
-                notice,
-                format!("/{prefix}/sites/web?tab=config"),
-            ))
-        }
-        Err(e) => {
-            let msg = format!("{e}");
-            state.audit_or_log(
-                &user.user.username,
-                &ip,
-                "nginx.params.save",
-                "nginx.conf",
-                "failed",
-                &msg,
-            );
-            Ok(handlers::flash_redirect(
-                &state,
-                &user,
-                skiff_app::FlashKind::Error,
-                msg,
-                format!("/{prefix}/sites/web?tab=config"),
-            ))
-        }
+    match apply_params(&state, &user, &ip, &params).await {
+        Ok(notice) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            notice,
+            format!("/{prefix}/sites/web?tab=config"),
+        )),
+        Err(msg) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            msg,
+            format!("/{prefix}/sites/web?tab=config"),
+        )),
     }
 }
 
