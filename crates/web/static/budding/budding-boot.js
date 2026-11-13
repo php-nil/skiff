@@ -603,9 +603,23 @@
 
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
-  /// 1.8.0 的图标字体只是组件自用子集，没有完整的菜单图标；这里只映射确有的几个，
-  /// 其余不传 icon（宁可不画，也不能让缺失字形回退成 "mdi-xxx" 文本）。
+  /// 1.8.0-r3 的子集已含全部业务语义字形（17 名），映射表按内核 / 插件声明的
+  /// 不透明语义名给出 mdi 名；未列出的名字不传 icon（避免缺失字形回退成 "mdi-xxx" 文本）。
   var MENU_ICONS = {
+    overview: 'mdi-view-dashboard',
+    globe: 'mdi-web',
+    docker: 'mdi-docker',
+    plug: 'mdi-puzzle',
+    tools: 'mdi-wrench',
+    settings: 'mdi-cog',
+    container: 'mdi-cube-outline',
+    shield: 'mdi-shield-outline',
+    lock: 'mdi-lock-outline',
+    network: 'mdi-lan',
+    user: 'mdi-account-outline',
+    activity: 'mdi-pulse',
+    list: 'mdi-format-list-bulleted',
+    archive: 'mdi-archive-outline',
     clock: 'mdi-clock-outline',
     file: 'mdi-file-document',
     dot: 'mdi-circle'
@@ -992,16 +1006,16 @@
   }
 
 
-  /// 独立 Pack：code-viewer 的语法高亮由 @budding/highlight 提供。
+  /// 独立 Pack：code-viewer 的语法高亮由 @budding/code 提供。
   /// 未注册或加载失败时组件按纯文本工作，不影响只读查看。
   function registerPacks() {
     if (!buddingVersion || !window.BuddingSDK) return;
     if (typeof window.BuddingSDK.registerPack !== 'function') return;
     try {
       window.BuddingSDK.registerPack(
-        'highlight',
+        'code',
         prefix +
-          '/static/budding/budding-highlight-' +
+          '/static/budding/budding-code-' +
           buddingVersion +
           '.min.js?v=' +
           buddingVersion
@@ -1039,11 +1053,6 @@
       });
   }
 
-  function listQuery(extra) {
-    var query = '?limit=50';
-    return extra ? query + '&' + extra : query;
-  }
-
   function noticeCard(notice) {
     return {
       type: 'alert',
@@ -1065,21 +1074,22 @@
     };
   }
 
+  function listTable(columns, path, rowKey, params) {
+    var table = statusTable(columns, [], rowKey);
+    table.source = { url: apiBase + path, params: params || {} };
+    table.props.paging = 'cursor';
+    table.props.cursorParam = 'cursor';
+    table.props.itemsPath = 'data.items';
+    table.props.totalPath = 'data.total';
+    table.props.cursorPath = 'data.next_cursor';
+    table.props.loadMoreText = '加载更多';
+    return table;
+  }
+
   // 站点列表：列取接口字段，行点击进入 budding 详情。
   function sitesSchema(data) {
     var body = [];
-    if (data.next_cursor) {
-      body.push(
-        noticeCard(
-          '共 ' +
-            data.total +
-            ' 个站点，当前显示前 ' +
-            data.items.length +
-            ' 条；翻页交互待后续批次接入。'
-        )
-      );
-    }
-    var table = statusTable(
+    var table = listTable(
       [
         { key: 'domain', label: '域名' },
         { key: 'type_label', label: '类型' },
@@ -1089,7 +1099,7 @@
         { key: 'runtime_name', label: '运行环境' },
         { key: 'created_at', label: '创建时间', width: 180 }
       ],
-      data.items,
+      '/sites',
       'domain'
     );
     table.onEvent = {
@@ -1506,19 +1516,9 @@
     };
   }
 
-  function runtimesSchema(data, images, catalog) {    var body = [];
-    if (data.next_cursor) {
-      body.push(
-        noticeCard(
-          '共 ' +
-            data.total +
-            ' 个运行环境，当前显示前 ' +
-            data.items.length +
-            ' 条；翻页交互待后续批次接入。'
-        )
-      );
-    }
-    var table = statusTable(
+  function runtimesSchema(images, catalog) {
+    var body = [];
+    var table = listTable(
       [
         { key: 'kind', label: '类型', text: '${kind.label}' },
         { key: 'name', label: '实例' },
@@ -1528,7 +1528,7 @@
         { key: 'site_count', label: '站点数', type: 'number' },
         { key: 'endpoint_short', label: '接入' }
       ],
-      data.items,
+      '/runtimes',
       'id'
     );
     table.onEvent = {
@@ -1974,7 +1974,7 @@
     };
   }
 
-  function containersSchema(data) {
+  function containersSchema(data, filter) {
     var body = [];
     if (!data.docker_available) {
       body.push({
@@ -1988,18 +1988,7 @@
         }
       });
     }
-    if (data.next_cursor) {
-      body.push(
-        noticeCard(
-          '共 ' +
-            data.total +
-            ' 个容器，当前显示前 ' +
-            data.items.length +
-            ' 条；翻页交互待后续批次接入。'
-        )
-      );
-    }
-    var table = statusTable(
+    var table = listTable(
       [
         { key: 'name', label: '名称' },
         { key: 'short_id', label: 'ID' },
@@ -2008,8 +1997,9 @@
         { key: 'status', label: '状态描述' },
         { key: 'project', label: 'Compose 项目' }
       ],
-      data.items,
-      'id'
+      '/containers',
+      'id',
+      filter === 'error' ? { filter: 'error' } : null
     );
     table.onEvent = {
       rowClick: {
@@ -2304,7 +2294,9 @@
     };
   }
 
-  function resourceSchema(title, subtitle, columns, data, extra) {
+  /// 资源页（镜像 / 网络 / 卷）：游标列表 + 可选行内删除，Docker 不可用时置顶告警。
+  function resourceSchema(title, subtitle, columns, data, path, options) {
+    options = options || {};
     var body = [];
     if (!data.docker_available) {
       body.push({
@@ -2316,61 +2308,37 @@
         }
       });
     }
-    if (data.next_cursor) {
-      body.push(
-        noticeCard(
-          '共 ' +
-            data.total +
-            ' 条，当前显示前 ' +
-            data.items.length +
-            ' 条；翻页交互待后续批次接入。'
-        )
-      );
-    }
-    body.push(statusTable(columns, data.items, 'id'));
-    if (extra && extra.length > 0) body = body.concat(extra);
+    var table = listTable(columns, path, 'id');
+    if (options.rowActions) table.props.rowActions = options.rowActions;
+    body.push(table);
+    if (options.extra && options.extra.length > 0) body = body.concat(options.extra);
     return { type: 'page', props: { title: title, subtitle: subtitle }, body: body };
   }
 
-  /// 逐项删除卡片：每行一个按钮，动作走同一个 `skiffDockerWrite`。
-  function deleteCard(kind, items, title) {
-    return {
-      type: 'card',
-      props: { title: title },
-      content: {
-        body: items.map(function (item) {
-          var display = item.name || item.id;
-          return {
-            type: 'flex',
-            props: { gap: 8 },
-            content: {
-              body: [
-                textLine(display),
-                {
-                  type: 'button',
-                  props: { text: '删除', variant: 'text', color: 'danger' },
-                  onEvent: {
-                    click: {
-                      actions: [
-                        {
-                          type: 'skiffDockerWrite',
-                          props: {
-                            kind: kind,
-                            op: 'remove',
-                            id: item.id,
-                            name: display
-                          }
-                        }
-                      ]
-                    }
-                  }
-                }
-              ]
+  /// 行内删除：镜像 / 网络 / 卷共用一个 `skiffDockerWrite`（确认与刷新由动作统一处理）。
+  /// `visible` 为可选条件表达式（如网络的 `${can_remove}`），缺省每行都显示。
+  function removeRowAction(kind, visible) {
+    var node = {
+      type: 'button',
+      props: { text: '删除', variant: 'text', color: 'danger' },
+      onEvent: {
+        click: {
+          actions: [
+            {
+              type: 'skiffDockerWrite',
+              props: {
+                kind: kind,
+                op: 'remove',
+                id: '${id}',
+                name: '${name}'
+              }
             }
-          };
-        })
+          ]
+        }
       }
     };
+    if (visible) node.visibleOn = visible;
+    return node;
   }
 
   function imagesSchema(data) {
@@ -2398,7 +2366,6 @@
           )
         )
       );
-      if (data.items.length > 0) extra.push(deleteCard('image', data.items, '删除镜像'));
     }
     return resourceSchema(
       '镜像 · Skiff',
@@ -2409,7 +2376,8 @@
         { key: 'warn', label: '提示' }
       ],
       data,
-      extra
+      '/images',
+      { rowActions: data.can_admin ? [removeRowAction('image')] : null, extra: extra }
     );
   }
 
@@ -2428,10 +2396,6 @@
           )
         )
       );
-      var removable = data.items.filter(function (item) {
-        return item.can_remove;
-      });
-      if (removable.length > 0) extra.push(deleteCard('network', removable, '删除网络'));
     }
     return resourceSchema(
       '网络 · Skiff',
@@ -2446,7 +2410,11 @@
         { key: 'internal', label: '内部/外部' }
       ],
       data,
-      extra
+      '/networks',
+      {
+        rowActions: data.can_admin ? [removeRowAction('network', '${can_remove}')] : null,
+        extra: extra
+      }
     );
   }
 
@@ -2465,7 +2433,6 @@
           )
         )
       );
-      if (data.items.length > 0) extra.push(deleteCard('volume', data.items, '删除卷'));
     }
     return resourceSchema(
       '卷 · Skiff',
@@ -2476,7 +2443,8 @@
         { key: 'warn', label: '提示' }
       ],
       data,
-      extra
+      '/volumes',
+      { rowActions: data.can_admin ? [removeRowAction('volume')] : null, extra: extra }
     );
   }
 
@@ -2698,14 +2666,7 @@
 
   function tasksSchema(data) {
     var body = [];
-    if (data.next_cursor) {
-      body.push(
-        noticeCard(
-          '共 ' + data.total + ' 个任务，当前显示前 ' + data.items.length + ' 条；翻页待接入。'
-        )
-      );
-    }
-    var table = statusTable(
+    var table = listTable(
       [
         { key: 'name', label: '任务' },
         { key: 'method', label: '方式' },
@@ -2715,7 +2676,7 @@
         { key: 'state_label', label: '状态' },
         { key: 'last_text', label: '最近结果' }
       ],
-      data.items,
+      '/tasks',
       'id'
     );
     table.onEvent = {
@@ -2843,9 +2804,9 @@
     };
   }
 
-  function jobsSchema(data) {
+  function jobsSchema() {
     var body = [];
-    var table = statusTable(
+    var table = listTable(
       [
         { key: 'id', label: '作业' },
         { key: 'title', label: '标题' },
@@ -2856,7 +2817,7 @@
         { key: 'created_by', label: '提交人' },
         { key: 'created_at', label: '创建时间' }
       ],
-      data.items,
+      '/jobs',
       'id'
     );
     table.onEvent = {
@@ -4900,7 +4861,7 @@
           '大小 ' +
           humanSize(data.size) +
           (data.truncated ? '（已截断）' : '') +
-          ' · 只读 · 高亮由 @budding/highlight Pack 在前端完成',
+          ' · 只读 · 高亮由 @budding/code Pack 在前端完成',
         size: 'small'
       }
     });
@@ -5207,7 +5168,7 @@
       type: 'page',
       props: {
         title: (data.name || containerId) + ' · 容器日志',
-        subtitle: '尾部快照；需要跟随时请用旧版详情页'
+        subtitle: '尾部快照；点「刷新」取最新，暂不建实时跟随'
       },
       body: body
     };
@@ -6407,7 +6368,8 @@
       });
     }
     if (kind === 'sites') {
-      return fetchData('/sites' + listQuery()).then(sitesSchema);
+      // 列表本身由表格 `source` 游标取数；这里只读 `can_admin` 等页面级元数据。
+      return fetchData('/sites?limit=1').then(sitesSchema);
     }
     if (kind === 'site-new') {
       return fetchData('/runtimes?limit=200')
@@ -6423,15 +6385,10 @@
     }
     if (kind === 'runtimes') {
       return Promise.all([
-        fetchData('/runtimes' + listQuery()),
         fetchRawJson(apiBase + '/runtimes/images'),
         fetchRawJson(apiBase + '/runtimes/catalog')
       ]).then(function (res) {
-        return runtimesSchema(
-          res[0],
-          (res[1] && res[1].data) || {},
-          (res[2] && res[2].data) || {}
-        );
+        return runtimesSchema((res[0] && res[0].data) || {}, (res[1] && res[1].data) || {});
       });
     }
     if (kind === 'runtime-detail') {
@@ -6447,8 +6404,10 @@
     }
     if (kind === 'containers') {
       var containerFilter =
-        new URLSearchParams(location.search).get('filter') === 'error' ? 'filter=error' : '';
-      return fetchData('/containers' + listQuery(containerFilter)).then(containersSchema);
+        new URLSearchParams(location.search).get('filter') === 'error' ? 'error' : '';
+      return fetchData('/containers?limit=1').then(function (data) {
+        return containersSchema(data, containerFilter);
+      });
     }
     if (kind === 'container-new') {
       return Promise.resolve(containerNewSchema());
@@ -6457,25 +6416,25 @@
       return fetchData('/containers/' + encodeURIComponent(parts[1])).then(containerDetailSchema);
     }
     if (kind === 'images') {
-      return fetchData('/images' + listQuery()).then(imagesSchema);
+      return fetchData('/images?limit=1').then(imagesSchema);
     }
     if (kind === 'networks') {
-      return fetchData('/networks' + listQuery()).then(networksSchema);
+      return fetchData('/networks?limit=1').then(networksSchema);
     }
     if (kind === 'volumes') {
-      return fetchData('/volumes' + listQuery()).then(volumesSchema);
+      return fetchData('/volumes?limit=1').then(volumesSchema);
     }
     if (kind === 'compose') {
       return fetchData('/compose').then(composeSchema);
     }
     if (kind === 'tasks') {
-      return fetchData('/tasks' + listQuery()).then(tasksSchema);
+      return fetchData('/tasks?limit=1').then(tasksSchema);
     }
     if (kind === 'task-detail') {
       return fetchData('/tasks/' + encodeURIComponent(parts[1])).then(taskDetailSchema);
     }
     if (kind === 'jobs') {
-      return fetchData('/jobs' + listQuery()).then(jobsSchema);
+      return Promise.resolve(jobsSchema());
     }
     if (kind === 'job-detail') {
       return fetchData('/jobs/' + encodeURIComponent(parts[1])).then(jobDetailSchema);

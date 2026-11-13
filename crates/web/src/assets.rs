@@ -21,18 +21,18 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-13 的重打包未改 semver（manifest 仍是 `1.8.0`，builtAt
-/// 2026-11-13T04:13:45Z），但字节已变（JS 1,261,442 B / CSS 657,324 B）。
+/// 上游 2026-11-13 再次重打包，semver 仍为 `1.8.0`（builtAt
+/// 2026-11-13T12:42:39Z），字节已变（JS 1,259,883 B / CSS 653,947 B）。
 /// 版本化文件名带 `immutable`，同一 URL 换字节会让老缓存继续命中旧包，
-/// 因此本地用 `-r2` 后缀区分重打包基线；上游下次提升 semver 时改回纯版本号。
-pub const BUDDING_VERSION: &str = "1.8.0-r2";
+/// 因此本地用 `-r3` 后缀区分重打包基线；上游下次提升 semver 时改回纯版本号。
+pub const BUDDING_VERSION: &str = "1.8.0-r3";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
 ///
-/// budding 官方包自带 `Budding Icons` 子集字体（CSS 3,626 B + woff2 2,612 B），
-/// 宿主不再另存完整 @mdi/font；子集只覆盖组件内部用到的图标，壳页不据此声明自定义菜单图标。
+/// budding 官方包自带 `Budding Icons` 子集字体（CSS 4,319 B + woff2 3,704 B，
+/// 75 个字形，含 17 个业务菜单语义图标），宿主不再另存完整 @mdi/font。
 /// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r2";
+pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r3";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

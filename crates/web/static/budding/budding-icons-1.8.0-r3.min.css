@@ -1,7 +1,7 @@
 /* Budding 内建图标子集：由 scripts/build-embed-icons.mjs 生成，勿手改。 */
 @font-face {
   font-family: "Budding Icons";
-  src: url("budding-icons-1.8.0-r2.woff2") format("woff2");
+  src: url("./budding-icons-1.8.0-r3.woff2") format("woff2");
   font-weight: normal;
   font-style: normal;
   font-display: block;
@@ -16,6 +16,10 @@
   line-height: inherit;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.mdi-account-outline::before {
+  content: "\F0013";
 }
 
 .mdi-alert::before {
@@ -40,6 +44,10 @@
 
 .mdi-apple-keyboard-shift::before {
   content: "\F0636";
+}
+
+.mdi-archive-outline::before {
+  content: "\F120E";
 }
 
 .mdi-arrow-down::before {
@@ -122,6 +130,18 @@
   content: "\F0167";
 }
 
+.mdi-cog::before {
+  content: "\F0493";
+}
+
+.mdi-cube-outline::before {
+  content: "\F01A7";
+}
+
+.mdi-docker::before {
+  content: "\F0868";
+}
+
 .mdi-dots-horizontal::before {
   content: "\F01D8";
 }
@@ -142,6 +162,10 @@
   content: "\F0219";
 }
 
+.mdi-format-list-bulleted::before {
+  content: "\F0279";
+}
+
 .mdi-fullscreen::before {
   content: "\F0293";
 }
@@ -160,6 +184,14 @@
 
 .mdi-keyboard-space::before {
   content: "\F1050";
+}
+
+.mdi-lan::before {
+  content: "\F0317";
+}
+
+.mdi-lock-outline::before {
+  content: "\F0341";
 }
 
 .mdi-magnify::before {
@@ -222,12 +254,24 @@
   content: "\F0415";
 }
 
+.mdi-pulse::before {
+  content: "\F0430";
+}
+
+.mdi-puzzle::before {
+  content: "\F0431";
+}
+
 .mdi-radiobox-blank::before {
   content: "\F043D";
 }
 
 .mdi-radiobox-marked::before {
   content: "\F043E";
+}
+
+.mdi-shield-outline::before {
+  content: "\F0499";
 }
 
 .mdi-star::before {
@@ -246,6 +290,10 @@
   content: "\F054F";
 }
 
+.mdi-view-dashboard::before {
+  content: "\F056E";
+}
+
 .mdi-volume-high::before {
   content: "\F057E";
 }
@@ -260,4 +308,12 @@
 
 .mdi-volume-variant-off::before {
   content: "\F0E08";
+}
+
+.mdi-web::before {
+  content: "\F059F";
+}
+
+.mdi-wrench::before {
+  content: "\F05B7";
 }

@@ -125,7 +125,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
 - **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
-- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；子集只覆盖组件内部图标，菜单不声明自定义图标。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；1.8.0-r3 子集已含 17 个业务菜单语义字形，菜单按语义名映射到 mdi 名。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -142,8 +142,8 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - 现有 `.min.` 的 `max-age=86400` 策略已按文件名与查询串区分（`assets.rs`，2026-11-12 落地）：版本化文件名或带非空 `?v=` 的请求返回 `immutable`，稳定别名 `no-cache`，其余维持原值。
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
-- 独立 Pack（`budding-highlight-<ver>.min.js`）同样按版本化文件名入库，启动脚本带 `?v=<ver>` 引用，命中 immutable；升级时与主包一起替换。
-- **图标资产随包版本化**：`budding-icons-1.8.0-r2.min.css`（3,626 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r2.woff2`（2,612 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r2` 时返回 `immutable`。它是 `Budding Icons` 子集（仅组件内部用到的字形），不承担自定义菜单图标；宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+- 独立 Pack（`budding-code-<ver>.min.js` / `budding-terminal-<ver>.min.js`）同样按版本化文件名入库，启动脚本带 `?v=<ver>` 引用，命中 immutable；升级时与主包一起替换。
+- **图标资产随包版本化**：`budding-icons-1.8.0-r3.min.css`（4,319 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r3.woff2`（3,704 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r3` 时返回 `immutable`。`Budding Icons` 子集共 75 个字形（CSS `::before` 75 条），已包含侧栏 17 个业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
 
@@ -543,11 +543,11 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 **渲染映射**
 
-- 站点列表：`table`（本地 `items`、`pagination:false`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{domain}`；`can_admin` 时提供「新建站点」与批量启停卡片。
+- 站点列表：`table`（`source` 游标分页、`paging: 'cursor'`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{domain}`；`can_admin` 时提供「新建站点」与批量启停卡片。
 - 站点详情：运行环境不可用时顶部 warning `alert`；「站点信息」+「站点操作」（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用 `prompt` 要求输入域名，服务端同样校验 `confirm`；配置 textarea 预填当前内容，保存失败直接展示字段错误。
 - 新建站点：`/{p}/sites/new` 隐藏路由 + 原生表单；运行环境下拉来自 `GET /ui/v1/runtimes`，无就绪实例时保持空选项并由后端拒绝。
 - 运行环境列表：`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；安装与配置仍链回旧版页面。
-- **D10 翻页限制**：budding `table` 的远程分页发送 `page/perPage`，与内核 keyset 游标不一致；本批只取首页 50 条并在 `next_cursor` 非空时显示提示。翻页组件接入前不做假装分页，记录为待办。
+- **D10 翻页**：1.8.0 的 `table` 支持游标分页（`paging: 'cursor'` + `cursorPath` + `loadMore`），与内核 `{items, next_cursor}` 直接对齐；本页与运行环境、容器、镜像/网络/卷、任务、作业列表统一改为 `source` 取数 + 底部「加载更多」，页面级只额外读一次 `?limit=1` 的元数据（`can_admin` / `docker_available`）。
 
 ### 5.9 容器（第二批）
 
@@ -603,10 +603,10 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 **渲染映射**
 
-- 列表：`table`（本地 `items`、`pagination:false`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/containers/{id}`。`filter=error` 由 URL 查询参数传入接口。
+- 列表：`table`（`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/containers/{id}`。`filter=error` 由 URL 查询参数并入 `source.params`。
 - 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
 - 新建容器：`/{p}/containers/new` 隐藏路由 + 原生 `form`，字段与旧表单同名；创建成功后跳转 `/{p}/containers/{id}`，失败展示统一错误信封文案。
-- **D10 翻页限制**同 5.8：本批只取首页 50 条，`next_cursor` 非空时提示，翻页组件待接入。
+- **D10 翻页**同 5.8：列表由表格 `source` 按 `next_cursor` 追加，底部「加载更多」。
 
 ### 5.10 镜像 / 网络 / 卷（第三批，读写）
 
@@ -654,9 +654,9 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 **渲染映射**
 
-- 三个页面共用 `table`（本地 `items`、`pagination:false`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
-- Docker 不可用时顶部 warning `alert`；`next_cursor` 非空时提示翻页待接入。
-- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与逐项删除按钮（网络只列 `can_remove` 的项）；删除前 `window.confirm`，成功后刷新当前页。viewer 保持只读并提示需要管理员权限。
+- 三个页面共用 `table`（`source` 游标分页、`paging: 'cursor'`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
+- Docker 不可用时顶部 warning `alert`；列表底部按 `next_cursor` 显示「加载更多」。
+- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与行内「删除」（网络行按钮按 `can_remove` 显隐）；删除前 `window.confirm`，成功后刷新当前页。viewer 保持只读并提示需要管理员权限。
 
 ### 5.11 编排 Compose（第四批）
 
@@ -896,7 +896,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 ### 5.18 代码查看器与日志查看器（第十三批）
 
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code-viewer`（只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
-- 高亮 Pack：入库 `budding-highlight-1.8.0-r2.min.js`（54,270 B，取自 `dist/packs/highlight.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('highlight', …?v=<ver>)` 注册；未注册或加载失败时 `code-viewer` 退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
+- 代码 Pack：入库 `budding-code-1.8.0-r3.min.js`（84,813 B，取自 `dist/packs/code.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；未注册或加载失败时 `code-viewer` 退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
 - 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code-viewer` 定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
 - 作业日志：`GET /{p}/jobs/{id}/logs` 新增 budding 隐藏路由，直接消费既有 `GET /{p}/jobs/{id}/logs?after=`（同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code-viewer`，并保留旧详情入口用于取消 / 重试。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
@@ -909,7 +909,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
   - `GET /{p}/containers/{id}/exec?ticket=` 升级 WS，`Origin` 严格校验；
   - WS 的 start / fail / end 继续写 `Verb::Exec` 审计。
 - 前端：页面先取票再渲染 `terminal` 组件；`wsUrl` 由 `location.protocol` 推出 `ws://` / `wss://`，`resizeFormat: 'none'`（内核 exec 只透传 stdin，不解析 resize JSON），`reconnect: false` + 手动「重新连接（重新取票）」。
-- Pack：入库 `budding-terminal-1.8.0-r2.min.js`（390,680 B，取自 `dist/packs/terminal.mjs`，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
+- Pack：入库 `budding-terminal-1.8.0-r3.min.js`（392,211 B，取自 `dist/packs/terminal.mjs`，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
 - **验证边界**：本机（Windows、无 Docker）只验证了路由、壳页与取票失败时的错误页；WS 真连与容器内 `/bin/sh` 交互必须在 Linux 测试机验收，未验前不得记为已完成。
 
 ### 5.20 日志入口收口（第十六批）
@@ -936,7 +936,7 @@ D6 定案后，原先「可绕」的缺口升级为阻塞项。以下全部属�
 | F1 | 分片上传与续传 | 大文件、弱网、上传中断后不重传；内核现有上传是 `offset` 分片协议 | `file` 组件本身仍是单次 FormData POST；**1.8.0 起宿主可实现 `PlatformAdapter.upload`**，由宿主切片后逐片调用既有分片接口（第十一批已落地，续传待人机交互另定） | 组件内建 `chunkSize` / 断点续传（可选，非阻塞） | 已绕 |
 | F2 | 上传进度与取消 | 大文件需要可见进度并可取消，否则用户只能等待超时 | 1.8.0 上传增强：`uploadProgressTarget` 写回 `{status,loaded,total,percent,attempt}`，`cancelUpload` / `retryUpload` 指令；宿主 `PlatformAdapter.upload` 按字节上报 | 无（已具备） | 已解决 |
 | F3 | 目录树 | 文件管理的主导航是目录树 + 懒加载 + 面包屑联动 | 无独立 `tree` / `tree-select`；basic 16 / layout 11 / data 8 中无树组件 | 产品口径改为**平铺 + 面包屑**，负责人明确禁止树形（第十一批） | 已降级关闭 |
-| F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | **已解决**：1.8.0 提供 `code-viewer`（行号、折行、复制、固定高度）+ `@budding/highlight` Pack；代码查看器与站点/作业日志查看器已落地，纯前端高亮不引 WASM | 编辑模式（当前只读） | 已关闭（只读口径） |
+| F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | **已解决**：1.8.0 提供 `code-viewer`（行号、折行、复制、固定高度）+ `@budding/code` Pack（1.8.0-r3 起，含 `scrollToLine` 与语言/主题清单）；代码查看器与站点/作业日志查看器已落地，纯前端高亮不引 WASM | 编辑模式（当前只读） | 已关闭（只读口径） |
 | F5 | 只读详情（descriptions） | 文件属性、权限、大小、时间等只读信息面板 | 无 descriptions，需用 basic 组件逐个拼 | `descriptions` 组件 | B3 |
 
 F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失目录全貌，是否接受由负责人确认；F4 的降级说明：小文件可用基础排版，万行级日志不可用。
@@ -1126,3 +1126,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | 第二十批任务与作业写操作原生化：`/ui/v1` 新增 `POST /tasks/{id}/toggle|run|delete` 与 `POST /jobs/{id}/cancel|retry`，复用 `TASK_*` / `JOB_*` 动作、CSRF 头、审计与既有命令层；任务列表行内与详情补启停/运行/删除，作业详情补取消/重试；作业列表新增 `can_admin`（只增不改）。补 `main_flow` 用例（CSRF / viewer 403 / 无调度器 503 / 作业取消与不可重试 400）。**任务运行与作业取消的真实执行仍需测试机验收**。 |
 | 2026-11-13 | 插件功能页原生化（第六批 files）+ 概览健康卡片：`com.skiff.files` 升 `api = "1.3"`，`/{p}/plugins/com.skiff.files/main` 默认入口改由壳页加载 `main.json`（已授权站点目录的平铺浏览 + 文本编辑/保存，保存走 `write` RPC）；旧完整工作台只保留显式 `?legacy=1`，菜单与列表不再链出。全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」，不复制第二套语义。`GET /ui/v1/overview` 新增 `health_plugin`（已启用且声明 `overview.health` 槽位的插件 id），壳页对其调 `snapshot` 后用卡片渲染 CPU/内存/负载/运行时长，失败降级为 info `alert`；不新增槽位渲染器、不改上游。文件正文经 `text_safe`（`${` → `${'${'}`）规避模板求值，登记上游 T18。 |
 | 2026-11-13 | 测试机四问题修复：`KERNEL_API` 升 `1.3`，任务门与商店安装共用 `skiff_pkgfmt::manifest::api_compatible`（修复 1.3 插件的内置任务被误判 `api_mismatch`）；概览新增 `health_reason`，`health_plugin` 为空或取数失败均渲染「系统状态」原因卡片；`POST /plugins/{id}/rpc` 失败改为 JSON 错误信封，壳页展示可读 `error.message`；`GET /ui/v1/menu` 插件项 `href` 改指原生 `/{p}/plugins/{id}/{view}`。 |
+| 2026-11-13 | budding 重打包基线 `1.8.0-r3`：上游 manifest 仍为 1.8.0（builtAt 2026-11-13T12:42:39Z）但字节已变（JS 1,259,883 B / CSS 653,947 B，上游 manifest gzip 399,921 / 79,233），本地用 `-r3` 后缀区分；图标同步为 `budding-icons-1.8.0-r3.min.css`（4,319 B）+ `.woff2`（3,704 B，75 字形）。高亮包升级为 `@budding/code`：入库 `budding-code-1.8.0-r3.min.js`（84,813 B），启动脚本改注册 `code`；terminal 包更新为 392,211 B。上游本版闭环 T6/T8/T9/T10/T14/T15/T16，宿主侧删除对应绕过：侧栏补全 17 个语义图标映射；站点/运行环境/容器/镜像/网络/卷/任务/作业列表改 `source` 游标分页（删「翻页待接入」提示与 `limit=50` 首屏截断）；镜像/网络/卷删除改为行内 `rowActions`（网络按 `can_remove` 显隐）；容器日志去掉「旧版详情页」指向。 |

@@ -76,7 +76,7 @@
 1. **插件在新壳里已经不可达**（代码确认）：`budding-boot.js` 的 `menuRoute()` 对 `plugin/` 前缀直接 `return null`，注释写明「插件自带 HTML/iframe 的入口一律不进路由」；直达 `/{p}/plugins/:id/:view` 命中 `skiff:plugin-view` 占位，文案是「插件功能页正在切换为原生渲染」。
 2. **新壳没有 L3 标签栏**（代码确认）：boot 中 `tabs` / `page-tabs` / `nav-menu` 命中 0；上游 admin Pack（D4）未交付。多视图插件今天只能「一个视图一条路由」，或在页内自绘链接行。
 3. **新壳没有下拉/弹窗/多行文本/复选组件被使用过**（代码确认，boot 中 `dialog`/`modal`/`select`/`checkbox`/`textarea` 命中均为 0）：枚举字段用 `input-text` 承载（设置页 `tls_mode` 就是让用户手输 `auto/on/off`）。这直接影响 cron/ftp/firewall 的表单保真度。
-4. **表格能力有限**（代码确认）：内核页面的表格统一 `pagination: false`，只做「前 N 条 + 提示翻页待接入」；排序写在表头 `onEvent` 里靠自绘。monitor 的进程/网络页需要服务端排序 + 分页，schema 化要接受降级或自建。
+4. **表格能力**（代码确认，2026-11-13 更新）：1.8.0 起 `table` 支持 `paging: 'cursor'` 与 `loadMore`，内核列表已改为 `source` 游标分页；服务端排序仍写在表头 `onEvent` 里靠自绘。monitor 的进程/网络页需要服务端排序，schema 化时仍要接受降级或自建。
 5. **权限口径已经不自洽**（代码确认）：功能页路由只要 `AuthUser`（任意登录用户），但 RPC 要 `PluginManagerUser`；插件菜单 `roles` 默认全角色。也就是说 viewer 打开页面后所有取数都会 403 —— 今天事实上就是 admin-only，schema 化时必须显式定口径，而不是沿用现状。
 6. **`config_schema` 已是现成的声明式配置**（代码确认）：`pkgfmt::ConfigField` 支持 `string/text/number/bool/password/url`，有类型取值校验（CLI 与 UI 可共用），但**没有任何 UI**（仅 `skiff plugin config` 命令）。schema 化可顺带零成本获得设置表单，属于新功能而非保真迁移。
 7. **签名链可复用**：schema 文件放进包内即随 `.wbpkg` 验签，信任模型不变；运行时由插件 RPC 返回 schema 则脱离「安装期可审计」的静态事实。

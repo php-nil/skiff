@@ -9672,6 +9672,51 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
     );
 }
 
+/// 1.8.0-r3 已闭环 T10 / T16 / code Pack：宿主不得再保留旧能力缺失时的绕过。
+#[test]
+fn budding_boot_drops_pre_r3_workarounds() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    // T16：17 个业务语义图标全部有映射，不再只映射 clock/file/dot。
+    for name in [
+        "overview: 'mdi-view-dashboard'",
+        "globe: 'mdi-web'",
+        "docker: 'mdi-docker'",
+        "plug: 'mdi-puzzle'",
+        "tools: 'mdi-wrench'",
+        "settings: 'mdi-cog'",
+        "container: 'mdi-cube-outline'",
+        "shield: 'mdi-shield-outline'",
+        "lock: 'mdi-lock-outline'",
+        "network: 'mdi-lan'",
+        "user: 'mdi-account-outline'",
+        "activity: 'mdi-pulse'",
+        "list: 'mdi-format-list-bulleted'",
+        "archive: 'mdi-archive-outline'",
+    ] {
+        assert!(js.contains(name), "菜单图标映射缺失：{name}");
+    }
+    // T13：高亮包已改名 @budding/code，旧 highlight 注册与产物不得残留。
+    assert!(
+        js.contains("registerPack(\n        'code'"),
+        "应注册 code Pack"
+    );
+    assert!(js.contains("budding-code-"), "code Pack 应走版本化文件名");
+    assert!(
+        !js.contains("budding-highlight-"),
+        "不得再引用旧 highlight 产物"
+    );
+    assert!(!js.contains("@budding/highlight"), "文案不得再指向旧 Pack");
+    // T10：列表走 source 游标分页，不再提示「翻页待接入」。
+    assert!(js.contains("paging = 'cursor'"), "列表应使用游标分页");
+    assert!(js.contains("'/sites'"), "站点列表应有 source 路径");
+    assert!(
+        !js.contains("翻页交互待后续批次接入"),
+        "翻页待接入提示应删除"
+    );
+    assert!(!js.contains("翻页待接入"), "翻页待接入提示应删除");
+    assert!(!js.contains("旧版详情页"), "容器日志不得再指向旧详情页");
+}
+
 /// 商店安装与确认：CSRF、PluginManage 权限和确认令牌校验都复用旧链路。
 #[tokio::test]
 async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {
