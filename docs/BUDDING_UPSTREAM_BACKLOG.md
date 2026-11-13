@@ -2,6 +2,7 @@
 
 > **核对日期**：2026-11-13
 > **对应 budding 版本**：**1.8.0**（`dist/package/budding-1.8.0.manifest.json`，`builtAt 2026-11-13T01:25Z`；`dist/docs/catalog.json` 为 1.8.0 / 57 条目；`dist/embed` 四个文件与 `dist/packs` 六个 Pack 变体）
+> **追加**：2026-11-13 同日追加 T16（业务菜单图标子集），核对基线仍为 1.8.0。
 > **上游答复**：[BUDDING_UPSTREAM_BACKLOG-UP.md](BUDDING_UPSTREAM_BACKLOG-UP.md)（逐条核对对象，保留备查）
 > **用途**：直接转给 budding 团队执行的缺口清单。本文只描述「新版本下具体还差什么」，已解决项不再重复提需求。
 > **读者**：budding 团队及其 AI 执行者；每条未闭环任务都是一段可直接粘贴的提示词。
@@ -17,8 +18,8 @@
 |---|---|---|
 | 已闭环（或方案已采纳并落地主体） | 8 | P1、P2、T0、T1、T2（阶段 1）、T3、T4、T5 |
 | 未闭环（重写） | 2 | T6、T7 |
-| 未闭环（本轮新增） | 8 | T8、T9、T10、T11、T12、T13、T14、T15 |
-| **合计未闭环** | **10** | 见 §0.3 |
+| 未闭环（本轮新增） | 9 | T8、T9、T10、T11、T12、T13、T14、T15、T16 |
+| **合计未闭环** | **11** | 见 §0.3 |
 
 关键变化：**1.8.0 补齐了后台壳（`admin` / `nav-menu` / `page-tabs` / `outlet`）、表单族（`select` / `textarea` / `checkbox` / 日期时间 / 数字）、表格服务端分页排序与多选、`virtual-list` 程序化滚动、`code-viewer` + 纯 JS 高亮、`terminal` 按需 Pack、图标字体随包**。原清单里「缺组件」类需求大部分已消失，剩余问题集中在**列表的数据分页语义、滚动生命周期、上传大文件、终端通道契约、schema 安全策略**，以及一个始终未做的表单属性透传。
 
@@ -38,7 +39,7 @@
 | 下拉 / 多行文本 / 复选 / 弹窗 | `select`（单选）、`textarea`、`checkbox`（布尔）、`dialog` / `drawer` / `confirm` 动作 | ✅ 基本够用；❌ 多选下拉与复选组（T15） |
 | 表格分页 / 排序 / 多选 | `paramNames.page/perPage/orderBy/orderDir/keywords`、`selectable` 多选列、列级 `sortable` | ✅ 页式够用；❌ 游标式（T10） |
 | 插件页以 Schema 交付 | 路由 `schema: "/pages/x.json"` + `platform.loadJson`；`service.schemaApi` 可运行时取 schema；`custom` + `registerAction` | ✅ 加载够用；❌ 动作白名单 / 禁外链（T7） |
-| 图标字体随包 | `budding-icons.css` 3.5KB + `.woff2` 2.4KB，59 个 mdi 子集，`manifest.icons.optional = true` | ✅ 可用；❌ 版本化与缓存约定（T8） |
+| 图标字体随包 | `budding-icons.css` 3.5KB + `.woff2` 2.4KB，**59 条 `::before` 规则**（组件自用子集），`manifest.icons.optional = true` | ✅ 组件图标可用；❌ 业务菜单字形缺失（T16）、版本化与缓存约定（T8） |
 | 后台壳与页签 | `admin` 22 字段 / 7 区域、`nav-menu`、`page-tabs`、`outlet`（catalog 实测） | ✅ 已闭环（原 D4 消失） |
 
 ### 0.3 未闭环任务总览
@@ -55,6 +56,7 @@
 | T13 | `code-viewer` 分段加载、`scrollToLine`、语言/主题清单 | 框架能力补齐 + 发布 | T4 | 大文件查看、跳到指定行、nginx/ini 配置 | S–M |
 | T14 | 终端 WS 通道契约（票据、关闭码、心跳、审计钩子） | 文档 + 小幅代码 | T5 | Docker 容器终端 | S–M |
 | T15 | `select` 多选与 `checkbox` 组 | 框架能力补齐 | 无 | 多状态筛选、批量卸载选项 | S |
+| T16 | 业务菜单图标纳入随包子集 | 构建产物 + 文档 | 无（与 T8 同批） | 侧栏菜单图标，替代纯文字降级 | S |
 
 ### 0.4 统一约束（所有任务适用）
 
@@ -547,10 +549,77 @@
 
 ---
 
-## 3. 依赖与建议顺序
+### T16 业务菜单图标纳入随包子集
+
+- **产出形态**：构建产物 + 文档
+- **依赖**：无（与 T8 同批实施最省事）
+- **现状（产物实测）**：1.8.0 的 `Budding Icons` 是**组件自用子集**：`budding-icons.css` 共 59 条 `::before` 规则（上游口径约 57 个字形），覆盖 chevron / check / star / volume / fullscreen / palette 等组件内部动作；**业务语义图标基本不在其中**。Skiff 侧栏在 1.8.0 下只能映射 `clock` / `file` / `dot` 三个，其余菜单项不传图标。
+- **我们实际用到的菜单图标（代码确认，17 个名字）**：
+
+| 图标名 | 用途 | 建议 mdi 字形 | 1.8.0 子集 |
+|---|---|---|---|
+| `overview` | 概览 | `mdi-view-dashboard` | 缺 |
+| `globe` | 网站 | `mdi-web` | 缺 |
+| `docker` | 容器 | `mdi-docker` | 缺 |
+| `plug` | 插件 | `mdi-puzzle` | 缺 |
+| `tools` | 工具 | `mdi-wrench` | 缺 |
+| `settings` | 设置 | `mdi-cog` | 缺 |
+| `container` | 容器明细 | `mdi-cube-outline` | 缺 |
+| `shield` | 防护 / 防火墙 | `mdi-shield-outline` | 缺 |
+| `lock` | 安全 / 证书 | `mdi-lock-outline` | 缺 |
+| `network` | 网络 / FTP | `mdi-lan` | 缺 |
+| `user` | 账号 | `mdi-account-outline` | 缺 |
+| `activity` | 监控 / 事件 | `mdi-pulse` | 缺 |
+| `list` | 列表 / 历史 | `mdi-format-list-bulleted` | 缺 |
+| `archive` | 归档 / 卷 | `mdi-archive-outline` | 缺 |
+| `clock` | 计划任务 | `mdi-clock-outline` | 已有 |
+| `file` | 文件 | `mdi-file-document` | 已有 |
+| `dot` | 兜底 | `mdi-circle` | 已有 |
+
+- **缺口表现**：新壳侧栏只能显示纯文字，分组与页面失去视觉锚点；若强行声明 `mdi-*`，缺失字形会回退成 `mdi-xxx` 这样的文本（Skiff 启动脚本已显式避免该回退，代价是整列没有图标）。
+- **Skiff 侧过渡做法（子集补齐前）**：侧栏**不声明图标、只显示文字**；宿主**不额外挂完整 `@mdi/font`**（完整字体 woff2 约 403KB，且与包内 `Budding Icons` 的 `.mdi` 规则会互相覆盖），也不自造第二套图标字体。T16 交付后直接切回声明图标，无需改页面结构。
+
+```text
+[任务]
+把宿主业务菜单需要的一批通用语义图标纳入 budding 随包的图标子集，保持单 woff2，并给出体积增量与宿主声明约定。
+
+[背景事实]
+1. 1.8.0 的 Budding Icons 是组件自用子集：59 条 ::before 规则，约 57 个字形，几乎不含业务语义图标。
+2. 宿主侧栏由路由表的 icon 派生，图标缺失时只能不声明，否则渲染出 "mdi-xxx" 文本。
+3. 宿主不希望额外加载完整 @mdi/font（woff2 约 403KB），也不希望维护第二套图标字体。
+
+[要产出]
+1. 在下表 17 个语义名中，增补缺失的 14 个字形（已有 3 个不动）：
+   overview / globe / docker / plug / tools / settings / container / shield / lock / network / user / activity / list / archive / clock / file / dot
+   建议对应的 mdi 字形：view-dashboard / web / docker / puzzle / wrench / cog / cube-outline / shield-outline / lock-outline / lan / account-outline / pulse / format-list-bulleted / archive-outline。
+2. 必须仍是**单个 woff2**（不得拆成多字体或按需分片），CSS 仍为单个 budding-icons.css。
+3. 给出体积增量：woff2 与 CSS 的 bytes、gzip bytes 前后对比；目标增量控制在 +2KB（未压缩）以内，若超出需说明原因。
+4. 声明约定（二选一并写进文档）：
+   - 方案 A：路由/菜单直接写 mdi 名（`mdi-view-dashboard`），子集保证这些字形存在；
+   - 方案 B：保留不透明语义名（`overview` / `shield`），由宿主映射表转 mdi 名，budding 只保证 mdi 字形。
+   无论哪种，都要给出「宿主如何知道哪些字形可用」的机读清单。
+5. 与 T8 合并产出 budding-icons.json：{ version, fontFamily, icons: [{ name, mdi, unicode }] }，数量与 CSS 规则一一对应。
+
+[验收标准]
+- 17 个语义名在宿主侧均可渲染出字形，控制台与 DOM 中不出现 "mdi-xxx" 文本回退。
+- 产物仍是单个 .woff2 + 单个 .css；manifest.icons 的 sha256 与实际文件一致。
+- budding-icons.json 的条目数与 CSS ::before 规则数一致。
+- 未声明图标的节点行为与 1.8.0 完全一致（不产生空 <i>）。
+
+[明确不做]
+- 不打包完整 @mdi/font，不引入远程图标或图标 CDN。
+- 不新增第二套图标字体，不按使用方拆多个子集。
+- 不重命名已有的 59 个组件自用字形。
+
+[约束]
+- 字形集合只增不改；图标名一旦发布即视为稳定 API。
+- 离线可用；构建门禁需校验「清单 ↔ CSS ↔ woff2」三者一致。
+```
+
+---
 
 1. **T6 先做**：改动面最小（表单属性透传），收益立竿见影（登录/口令类页面不再依赖 DOM 桥接），且无依赖。
-2. **T15、T8 可并行**：都是小改动，不阻塞其它任务；T8 只动构建与文档。
+2. **T15、T8 与 T16 可并行**：都是小改动，不阻塞其它任务；**T8 与 T16 同属图标构建链，建议合并为一次产物发布**（版本化 + 增补字形一起做，避免连续两次动图标字体）。
 3. **T10 与 T9 是列表能力的地基**：T10 解决「数据怎么继续取」，T9 解决「何时取」；两者完成后，文件浏览与日志页才具备完整交互。
 4. **T11 依赖 T10 的选择语义**：跨页选择与游标分页要一起验证，避免「追加后选择错位」。
 5. **T12 与 T13 互不依赖**：上传与代码查看各自独立；T12 需要先与宿主确认分片协议字段命名。
@@ -568,6 +637,7 @@
 | T12 | 单请求上传 + 整体进度 | 大文件超时只能整文件重传 |
 | T14 | 未建终端入口（内核暂无 `/terminal` 路由） | 终端功能待通道契约定案后另立 |
 | T7 | 插件功能页保留旧 SSR，新壳只给占位 | 插件功能在新前端不可达 |
+| T16 | 侧栏菜单项不声明图标、只显示文字；不额外挂完整 `@mdi/font`，不自造图标字体 | 导航缺少视觉锚点，分组辨识度下降 |
 
 ---
 
@@ -579,7 +649,8 @@
 - `dist/embed/budding.js`：`cursorPath` / `scrollToLine` / `new Function` / `WebAssembly` 均 0 命中；`autocomplete` 命中仅来自 Vuetify 内部；`loadMore` 命中来自 Vuetify infinite-scroll 文案。
 - `dist/packs/highlight.mjs`：`prism` 26 次、`wasm` 0 次；语言标识可检出约 12 类。
 - `dist/packs/terminal.external.mjs`：导出 `registerTerminalTransport` / `createWebSocketTransport` / `resizePayload` 等；关闭码只透传，不含策略。
-- `dist/embed/budding-icons.css` + `.woff2`：59 条 `::before` 规则，相对路径引用，无版本号。
+- `dist/embed/budding-icons.css` + `.woff2`：59 条 `::before` 规则，相对路径引用，无版本号；规则覆盖的是组件内部动作图标，业务语义图标（dashboard / web / docker / puzzle / cog / folder / shield / terminal 等）不在其中。
+- Skiff 菜单图标名（代码确认）：内核内置 `overview` / `globe` / `docker` / `plug` / `tools` / `settings` / `container` / `dot`，官方插件 `clock` / `file` / `shield` / `lock` / `network` / `user` / `activity` / `list`，测试夹具另有 `archive`；合计 17 个，其中仅 `clock` / `file` / `dot` 三个在 1.8.0 子集中。
 - `dist/package/budding-1.8.0.manifest.json`：`packages` 只含 kernel / ui-vuetify / echarts / terminal；`icons.optional = true`。
 
 ### 4.2 读文档确认
@@ -596,6 +667,7 @@
 - 具名主题（github / monokai 等）可能通过 `registerTheme` 由宿主注入，产物内未检出；需上游给准确清单。
 - 未知 `type` 是否在所有路径都导致整页错误态，未逐场景验证；按「需要单节点降级」提需求。
 - 各任务规模（S/M/L）为按字段数、触点与测试面的经验估算，无试点数据。
+- T16 的体积增量按当前 woff2「2456 B ÷ 59 字形 ≈ 41.6 B/字形」折算：新增 14 个字形约 +0.6KB，CSS 约 +0.5KB，合计约 +1–1.5KB；**该数字为推算，以 T16 交付时的实测为准**。
 
 ---
 
@@ -605,3 +677,4 @@
 |---|---|
 | 2026-11-12 | 首版：P1–P2 + T0–T7，基于 budding 1.6.0 产物盘点。 |
 | 2026-11-13 | 对照 budding 1.8.0 与上游答复重写：P1/P2/T0/T1/T2 阶段 1/T3/T4/T5 标为已闭环并删除过时描述；T6、T7 按新版重写；新增 T8–T15（图标版本化、滚动触点、游标分页、选择与下载、上传阶段 2、代码分段、终端通道契约、多选表单）。未闭环 10 条。 |
+| 2026-11-13 | 追加 T16：随包图标子集不含业务菜单字形，列出 Skiff 实际使用的 17 个图标名，要求单 woff2 增补并给出声明约定；标注过渡做法（侧栏纯文字、不挂完整 MDI 字体）。未闭环 11 条。 |
