@@ -60,7 +60,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 | 站点 / 运行环境 / Docker | 3 | 表单字段多，先冻结字段码与错误回填 |
 | 设置 / 菜单 | 4 | 依赖菜单壳与 admin Pack（D4） |
 | 文件管理 | 5 | 依赖 §6.1 的框架阻塞项全部解除（D6） |
-| 插件功能页 | 不迁移 | 维持 iframe 契约（§4.4），不属于本次切换范围 |
+| 插件功能页 | 不迁移 | 旧 SSR 保留但不再作为新入口；插件 UI 需以 Schema 交付（§4.4、backlog T7） |
 
 ---
 
@@ -98,7 +98,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 
 - 页面仍走 `/{p}/...`：`GET /{p}` 与各资源页返回同一个 budding 壳，登录态由前端调用 `/ui/v1/session` 判定，401 时渲染登录视图。
 - 数据走 `/ui/v1/...`（D2），位于入口前缀之外，与 `/api/v1` 并列。
-- 插件功能页仍走 `/{p}/plugins/{id}/{view}`，iframe 契约不变（§4.4）。
+- 插件功能页旧路由 `/{p}/plugins/{id}/{view}` 仍由内核 SSR 承载 iframe，但**不再作为新产品入口**；浏览器地址栏直达（`Sec-Fetch-Dest: document`）改交壳页渲染占位，旧 SSR 工作台只保留给嵌入/兼容请求。新一代前端不承载 iframe，插件 UI 需以 Schema 交付（§4.4、backlog T7）。
 
 两种承载方式：
 
@@ -111,6 +111,21 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - 壳页不得内联脚本（保持全局 CSP 的 `script-src 'self'`）。
 - `/{p}/login` 的壳不含任何用户数据；登录所需的 `csrf` 与配置由公开引导端点下发（§5.1）。
 - 页面 schema 是前端产物的一部分，写在 JS 内；内核只提供数据与动作（§3）。
+
+### 2.3.1 后台外壳（admin）与菜单
+
+壳页挂载的是一个 `admin` Schema，而不是单页卡片：
+
+```text
+{ type: 'admin', props: { title, brandTitle }, content: { actions: [...], body: [{ type: 'outlet' }] } }
+```
+
+- **菜单来源唯一**：`GET /ui/v1/menu` 直接投影 `skiff_app::menu::build` 的菜单树（L1/L2 归属、顺序、角色与能力门、用户隐藏偏好与 SSR 导航同源），前端只做「稳定键 → 已迁移路由」的映射，不另造第二套菜单语义。
+- **路由表**：菜单树在前端组装成 budding `routes`；分组节点用入口前缀下的保留段（`/{p}/__menu/<key>`）承载层级，子项使用绝对路径 `/{p}/...`。插件自带 HTML/iframe 的菜单项直接丢弃，不生成 `href` 跳转。
+- **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
+- **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；未适配页面返回统一占位。
+- **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）无 iframe 渲染能力，先不渲染。
+- **图标**：budding bundle CSS 不含 MDI 字体，壳页额外 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -127,6 +142,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - 现有 `.min.` 的 `max-age=86400` 策略已按文件名与查询串区分（`assets.rs`，2026-11-12 落地）：版本化文件名或带非空 `?v=` 的请求返回 `immutable`，稳定别名 `no-cache`，其余维持原值。
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
+- **图标资产单独版本化**：`budding-icons-7.4.47.min.css`（323,052 字节）与 `budding-icons-7.4.47.woff2`（403,216 字节）由壳页 `<link>` 引入，带 `?v=7.4.47` 时返回 `immutable`。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
 
@@ -302,12 +318,15 @@ Skiff 侧对应约束：
 - budding 默认包**不含** `admin` 组（`admin` / `nav-menu` / `page-tabs`），`chart` 也不在默认包；清单与上游文档存在漂移（§7.1）。菜单壳由上游 admin Pack 提供（§6.3 R-1）。
 - 菜单偏好（顺序/隐藏/固定/布局）继续存内核，不迁到 `localStorage` 作为唯一来源。
 
-### 4.4 插件 UI 契约（继续有效，不改）
+### 4.4 插件 UI 契约（方向变更：新一代前端不承载 iframe）
 
-- 插件功能页继续 `iframe`，沙箱属性保持 `allow-scripts allow-modals allow-forms`，**不加** `allow-same-origin`。
-- 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、RPC 逐次审计、`PLUGIN_UI_CSP` 全部不变。
-- 内核壳页从 askama 换成 budding 后，iframe 仍是内核 DOM 的一部分，postMessage 桥接代码需要在新壳里等价实现（**待实测**）。
-- 插件自身页面不进入 budding schema；是否让插件改出 SDUI JSON 见 **D14**。
+- 旧 SSR 插件页仍以 `iframe` 承载，沙箱属性保持 `allow-scripts allow-modals allow-forms`，**不加** `allow-same-origin`；该页仅作兼容保留，**不再作为新产品入口**，菜单与路由不再下发插件功能页链接。
+- 新一代前端（budding 壳）不提供 iframe 渲染能力，也不自造近似实现：插件功能页统一显示占位（文案「插件功能页正在切换为原生渲染」），插件只保留已原生渲染的列表、详情、启停与卸载（`/ui/v1/plugins*`）。
+- 插件 UI 的交付方向改为 **Schema（budding 渲染器可消费的结构）**，不再以「插件自带 HTML + 内核 iframe 槽位」为产品形态；该需求登记在 `docs/BUDDING_UPSTREAM_BACKLOG.md` T7。
+- 插件包二进制格式（`[[ui]]` 仍指向包内 HTML）本次**不变**；内核插件加载逻辑不变。切换到 Schema 交付涉及包格式时另行提案，不在本批实施。
+- 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、RPC 逐次审计、`PLUGIN_UI_CSP` 全部不变（只作用于旧 SSR 页）。
+- 旧 SSR 页的 postMessage 桥接仍留在旧页；budding 壳不承载 iframe，因此不需要在新壳里等价实现。
+- 插件自身 HTML 不再进入 budding；D14 的方向调整为插件以 Schema 交付（backlog T7），包格式暂不变。
 
 ### 4.5 需要补的条款（新增）
 
@@ -410,7 +429,8 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 **页面与数据**
 
 - `GET /{p}` 交付 budding 壳（未认证 303 到登录页，已登录渲染概览）；SSR 概览仍保留在 `GET /{p}/m/overview` 菜单深链，直到插件概览槽位迁入 budding。
-- 壳启动脚本先取 `GET /ui/v1/session`，路径为入口根时再取 `GET /ui/v1/overview`；其余白名单深链仍渲染「该功能正在适配中」占位。
+- 壳启动脚本先取 `GET /ui/v1/session` 与 `GET /ui/v1/menu`，按菜单生成路由表后渲染 admin 外壳；地址栏路径命中路由时加载对应页面，未适配页面渲染统一占位（§2.3.1）。
+- 概览的 `[[mount]]` 固定页插件槽位暂时不渲染（无 iframe 渲染能力，见 §4.4）。
 - 数据只复用 `dashboard::load_overview` 的既有查询（Docker 容器列表 + 插件/站点/运行环境/审计），**没有新增聚合 SQL**；本批不返回列表、不做写操作、不做图表、不做实时刷新。
 - 图表位按 D14–D16 未定，页面用 `alert` 明确占位（「D14–D16 尚未定案」），不引入任何图表库。
 
@@ -762,10 +782,11 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 
 ### 5.16 插件（第九批）
 
-- `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表保留在 `/{p}/m/core/plugins/{installed|discover|updates}`，信息页新增深链 `/{p}/m/core/plugins/info/{id}`。
-- iframe 槽位按现状：`/{p}/plugins/{id}/{view}`、`/{p}/plugins/{id}/ui/{path}` 不动，信息页的 `entry_href` 直接指向内核既有视图路由，不自定形态。
+- `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表保留在 `/{p}/m/core/plugins/{installed|discover|updates}`，但不再从新页面链出。
+- **插件功能页不再作为新入口**：菜单与路由不下发 `plugin/*` 项；`/{p}/plugins/{id}/{view}` 直达时渲染统一占位（「插件功能页正在切换为原生渲染」），不复用旧 iframe 页。旧 SSR iframe 路由仍存在以兼容，但不承载新产品入口（§4.4、backlog T7）。
+- 插件详情页把声明的功能页以纯文本列出（不生成链接），并说明功能将以 Schema 形式交付后原生渲染。
 - 启停 / 卸载分别复用 `plugins::apply_toggle`、`plugins::apply_remove`（停进程、审计、任务回收、菜单偏好清理语义不变）。
-- 上传安装包（发现页）与 RPC 桥仍走旧链路，不在本批迁移。
+- 上传安装包（发现页）与 RPC 桥仍未原生渲染，也不从新页面跳旧页；商店安装已原生可用。
 
 **字段表（冻结，只增不改）**
 
@@ -979,3 +1000,4 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-12 | 产物入库与壳页启动（第二批）：`budding-1.6.0.min.js` / `budding-1.6.0.min.css` 入库到 `crates/web/static/budding/`（字节与上游 embed 一致），稳定别名改为 `assets.rs` 映射而非第二份文件；新增同源 `budding-boot.js`（普通 script，无内联）：先取 `/ui/v1/session`，成功 `embed()` 极小 schema（page + 「该功能正在适配中」卡片），失败渲染错误；壳页引用版本化 JS `?v=`，CSS 以 `data-budding-css` 显式传参，`routerMode=history`、`routerBase=/{p}`，不传 packs、不引 loader。真实浏览器验证：登录后深链渲染卡片、`/ui/v1/session` 200、控制台无报错。 |
 | 2026-11-12 | 登录页 budding 化（第三批）：`GET /{p}/login` 改为 budding 登录壳（未认证 200，不落入匿名 303；已登录仍回 `/{p}`）；新增 `GET /ui/v1/auth/login`（公开读，签发与表单同一签名 CSRF + `skiff_login` 兼容 Cookie、`no-store`）与 `POST /ui/v1/auth/login`（JSON `{username,password,otp,csrf,next}`，复用 `AppState::login`、`session_cookie` 与登录 CSRF/来源判定）；失败文案沿用现有中文并按既有 `code` 返回，错误经 `sessionStorage` 回显后清除；新增同源 `budding-login.js`。budding 1.6.0 缺口令输入类型，脚本渲染后将口令框 DOM `type` 置为 `password` 作为临时桥接（已标注待上游组件）。旧登录模板与 `POST /{p}/login` 表单路径保留为无 JS 兜底。补 7 条 `main_flow` 用例（壳页未认证 200、配置 200、成功/深链回跳、错口令/空提交、CSRF/跨站、TOTP 分支）。 |
 | 2026-11-12 | 概览页 budding 化（第四批，只读）：`GET /{p}` 改交付壳页，启动脚本在入口根取 `GET /ui/v1/overview` 渲染四张计数卡片（容器/网站/插件/运行环境）与 Docker 状态提示；图表位用 `alert` 明确占位（D14–D16 未定），不引图表库、不做写操作/实时刷新。新增 `dashboard::load_overview` 供 SSR 与 JSON 共用同一批查询（无新增聚合 SQL）；`overview` DTO 字段冻结（`collected_at` RFC3339 UTC、`docker.status {code,label}`）。SSR 概览暂留 `GET /{p}/m/overview`，插件概览槽位仍有落点，待迁入 budding 后删除。同步 URL 契约 §9、SDUI §5.7 与上游 T6（`input-text` type/autocomplete）。 |
+| 2026-11-13 | 后台外壳接入：壳页改为 `admin` Schema + `outlet`，新增 `GET /ui/v1/menu`（投影 `skiff_app::menu::build`，DTO 只含 key/label/icon/href/plugin/empty），前端按菜单键映射已迁移路由并保留 `/{p}/...` history 形态（path 带前缀、不设 `routerBase`）；新增 `skiff:<kind>` 路由 Schema 经 `platform.loadJson` 按地址栏取数，详情页与商店安装确认改走路由。MDI 图标字体（CSS 323,052 B + woff2 403,216 B）版本化入库并由壳页 `<link>` 引入，`build.rs` 跳过已压缩格式的 `.gz`。插件功能页不再作为入口：菜单丢弃 `plugin/*`，直达 `/plugins/{id}/{view}` 显示「插件功能页正在切换为原生渲染」占位（§4.4、backlog T7）。 |

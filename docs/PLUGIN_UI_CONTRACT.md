@@ -4,6 +4,12 @@
 > 菜单树、深链键格式、用户偏好与布局不在本文重复定义，统一见 [`docs/MENU_CONTRACT.md`](MENU_CONTRACT.md)。
 >
 > 一句话结论：`/{p}/plugins/{id}` 是内核渲染的插件信息与管理页；插件只负责 `/{p}/plugins/{id}/<view>` 里的功能内容。
+>
+> **2026-11-13 方向变更**：budding 新前端不承载 iframe，`/{p}/plugins/{id}/<view>`
+> 不再作为新产品入口（菜单与路由不下发），直达时渲染「插件功能页正在切换为原生渲染」占位。
+> 本文的 iframe 沙箱、CSP、nonce 与 postMessage 桥接仅对旧 SSR 页继续有效；
+> 插件 UI 需以 Schema 形式交付（见 [`BUDDING_UPSTREAM_BACKLOG.md`](BUDDING_UPSTREAM_BACKLOG.md) T7），
+> 插件包二进制格式（`[[ui]]` 仍指向包内 HTML）本次不变。
 
 ## 1. 路由分工
 

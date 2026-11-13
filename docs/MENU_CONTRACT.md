@@ -4,6 +4,11 @@
 > 适用：内核 Web UI、插件 manifest、插件中心、菜单设置、固定页槽位。
 > 基线：`crates/pkgfmt/src/manifest.rs`、`crates/web/src/handlers/mod.rs`、`crates/web/templates/base.html`、`plugins/*/manifest.toml`。
 > 契约版本：v1 · 2026-11-03（P1 同日落地，P2 同日补记）。
+>
+> **2026-11-13 方向变更**：budding 后台外壳（admin + outlet）不承载 iframe，
+> 菜单与前端路由不再下发插件功能页（`plugin/*`）入口；本文的三级归属与
+> 固定 L1 仍然有效，但「内核渲染 L3 标签栏 + 插件内容 iframe」只对旧 SSR 页有效。
+> 插件 UI 的交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](BUDDING_UPSTREAM_BACKLOG.md) T7）。
 
 ## 0. 四个结论
 
