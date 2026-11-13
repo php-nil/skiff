@@ -777,6 +777,15 @@ pub async fn api_extract(
 
 // ---- 回收站 -------------------------------------------------------------
 
+/// 回收站规范入口：交付 budding 壳页，`FILE_TRASH_READ` 门禁不变。
+pub async fn trash_shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, AppError> {
+    crate::authz::authorize(&user, act::FILE_TRASH_READ)?;
+    Ok(crate::handlers::spa::shell_page(&state))
+}
+
 pub async fn trash_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -895,6 +904,15 @@ pub async fn api_trash_clear(
 }
 
 // ---- 配额 ---------------------------------------------------------------
+
+/// 配额规范入口：交付 budding 壳页，`FILE_QUOTA_READ` 门禁不变。
+pub async fn quotas_shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+) -> Result<Response, AppError> {
+    crate::authz::authorize(&user, act::FILE_QUOTA_READ)?;
+    Ok(crate::handlers::spa::shell_page(&state))
+}
 
 pub async fn quotas_page(
     State(state): State<Arc<AppState>>,

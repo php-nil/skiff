@@ -248,6 +248,130 @@
       });
   }
 
+  /// 回收站写操作：复用 `/{p}/files/trash/*`（CSRF 与动作权限由既有接口统一执行）。
+  function trashWrite(args) {
+    var op = args.op;
+    if (op === 'refresh') {
+      location.reload();
+      return Promise.resolve();
+    }
+    var base = prefix + '/files/trash/';
+    if (op === 'clear') {
+      if (!window.confirm('确认清空回收站？将永久删除全部条目，且不会进入任何备份。')) {
+        return Promise.resolve();
+      }
+      return postPrefixJson(base + 'clear', {})
+        .then(function (data) {
+          var failed = (data.result && data.result.failed) || [];
+          window.alert(
+            failed.length
+              ? '已清理部分条目，' + failed.length + ' 项失败：' + failed.join('；')
+              : '已清空回收站。'
+          );
+          location.reload();
+        })
+        .catch(function (error) {
+          window.alert('清空失败：' + (error && error.message ? error.message : String(error)));
+        });
+    }
+    if (op === 'purge') {
+      if (!window.confirm('确认彻底删除 ' + (args.path || '该条目') + '？不可恢复。')) {
+        return Promise.resolve();
+      }
+      return postPrefixJson(base + 'purge', { id: args.id })
+        .then(function () {
+          location.reload();
+        })
+        .catch(function (error) {
+          window.alert('彻底删除失败：' + (error && error.message ? error.message : String(error)));
+        });
+    }
+    if (op === 'restore') {
+      return postPrefixJson(base + 'restore', { id: args.id, overwrite: false })
+        .then(function () {
+          location.reload();
+        })
+        .catch(function (error) {
+          var message = error && error.message ? error.message : String(error);
+          if (!window.confirm('恢复失败：' + message + '\n\n是否覆盖现有对象后重试？')) {
+            window.alert('恢复已取消。');
+            return;
+          }
+          return postPrefixJson(base + 'restore', { id: args.id, overwrite: true })
+            .then(function () {
+              location.reload();
+            })
+            .catch(function (retryError) {
+              window.alert(
+                '恢复失败：' +
+                  (retryError && retryError.message ? retryError.message : String(retryError))
+              );
+            });
+        });
+    }
+    window.alert('未知的回收站操作：' + op);
+    return Promise.resolve();
+  }
+
+  /// 配额写操作：设置 / 重新统计 / 取消，复用既有 files JSON 接口。
+  function quotaWrite(args, ctx) {
+    var op = args.op;
+    var values = formValues(ctx);
+    var path = op === 'set' ? formText(values.path).trim() : args.path;
+    var base = prefix + '/files/quotas/';
+    if (op === 'set') {
+      var bytes = formText(values.max_bytes).trim();
+      var files = formText(values.max_files).trim();
+      if (!path) {
+        window.alert('请填写目录树的绝对路径。');
+        return Promise.resolve();
+      }
+      if (!bytes && !files) {
+        window.alert('容量上限与文件数上限至少设置一项；如需取消请用行内「取消配额」。');
+        return Promise.resolve();
+      }
+      return postPrefixJson(base + 'set', {
+        path: path,
+        max_bytes: bytes ? Number(bytes) : null,
+        max_files: files ? Number(files) : null
+      })
+        .then(function () {
+          window.alert('已保存配额：' + path);
+          location.reload();
+        })
+        .catch(function (error) {
+          window.alert('保存配额失败：' + (error && error.message ? error.message : String(error)));
+        });
+    }
+    if (op === 'scan') {
+      if (!window.confirm('重新统计会递归扫描整棵目录树，可能耗时较久。\n\n' + path)) {
+        return Promise.resolve();
+      }
+      return postPrefixJson(base + 'scan', { path: path })
+        .then(function () {
+          window.alert('统计完成：' + path);
+          location.reload();
+        })
+        .catch(function (error) {
+          window.alert('重新统计失败：' + (error && error.message ? error.message : String(error)));
+        });
+    }
+    if (op === 'cancel') {
+      if (!window.confirm('确认取消该目录的配额？\n\n' + path)) {
+        return Promise.resolve();
+      }
+      return postPrefixJson(base + 'cancel', { path: path })
+        .then(function () {
+          location.reload();
+        })
+        .catch(function (error) {
+          window.alert('取消配额失败：' + (error && error.message ? error.message : String(error)));
+        });
+    }
+    window.alert('未知的配额操作：' + op);
+    return Promise.resolve();
+  }
+
   function formText(value) {
     return String(value === undefined || value === null ? '' : value);
   }
@@ -593,6 +717,20 @@
       meta: { activeMenu: prefix + '/files' }
     });
     routes.push({
+      path: prefix + '/files/trash',
+      title: '回收站',
+      hidden: true,
+      schema: 'skiff:files-trash',
+      meta: { activeMenu: prefix + '/files' }
+    });
+    routes.push({
+      path: prefix + '/files/quotas',
+      title: '配额管理',
+      hidden: true,
+      schema: 'skiff:files-quotas',
+      meta: { activeMenu: prefix + '/files' }
+    });
+    routes.push({
       path: prefix + '/sites/:domain/logs',
       title: '站点日志',
       hidden: true,
@@ -674,6 +812,8 @@
         skiffSiteWrite: siteWrite,
         skiffTaskWrite: taskWrite,
         skiffJobWrite: jobWrite,
+        skiffTrashWrite: trashWrite,
+        skiffQuotaWrite: quotaWrite,
         skiffComposeAction: composeAction,
         skiffComposeEdit: composeEdit,
         skiffSettingsSave: settingsSave,
@@ -3901,6 +4041,24 @@
       props: { title: '位置' },
       content: { body: [breadcrumbFlex(data.path), rootsLine(data)] }
     });
+    if (data.can_admin) {
+      body.push({
+        type: 'flex',
+        props: { gap: 12, wrap: true },
+        content: {
+          body: [
+            {
+              type: 'link',
+              props: { text: '回收站', href: prefix + '/files/trash' }
+            },
+            {
+              type: 'link',
+              props: { text: '配额管理', href: prefix + '/files/quotas' }
+            }
+          ]
+        }
+      });
+    }
     body.push({
       type: 'card',
       props: { title: '新建与上传' },
@@ -3968,13 +4126,178 @@
     body.push({
       type: 'text',
       props: {
-        text: '共 ' + items.length + ' 项；目录在前、按名称排序。删除进回收站，可在旧版回收站页恢复。',
+        text: '共 ' + items.length + ' 项；目录在前、按名称排序。删除进回收站，可在回收站恢复。',
         size: 'small'
       }
     });
     return {
       type: 'page',
       props: { title: '文件管理 · Skiff', subtitle: '平铺目录 + 面包屑（不使用树形）' },
+      body: body
+    };
+  }
+
+  function formatEpoch(ts) {
+    if (!ts) return '—';
+    var d = new Date(Number(ts) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    var pad = function (v) {
+      return String(v).padStart(2, '0');
+    };
+    return (
+      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+    );
+  }
+
+  function filesTrashSchema(data) {
+    var retention = data.retention_days || 0;
+    var items = (data.items || []).map(function (item) {
+      var copy = {};
+      Object.keys(item).forEach(function (k) {
+        copy[k] = item[k];
+      });
+      copy.path_label = item.original_path;
+      copy.kind_label = item.kind === 'dir' ? '目录' : item.kind === 'symlink' ? '链接' : '文件';
+      copy.size_label = humanSize(item.size);
+      copy.files_label = String(item.files || 0);
+      copy.deleted_label = formatEpoch(item.deleted_at);
+      copy.actor_label = (item.actor_type || '') + ':' + (item.actor_id || '');
+      copy.expires_label = formatEpoch(item.expires_at);
+      return copy;
+    });
+    var body = [
+      {
+        type: 'alert',
+        props: {
+          type: 'info',
+          text:
+            '删除的文件先移入回收站，默认保留 ' +
+            retention +
+            ' 天，到期由内置任务 trash-prune 彻底删除。数据根、plugins/、官方目录与 skiff.db 在删除和恢复路径上都会被硬拒。'
+        }
+      },
+      {
+        type: 'flex',
+        props: { gap: 8, wrap: true },
+        content: {
+          body: [
+            trashBtn('刷新', { op: 'refresh' }, 'secondary'),
+            trashBtn('清空回收站', { op: 'clear' }, 'danger')
+          ]
+        }
+      }
+    ];
+    if (items.length === 0) {
+      body.push(noticeCard('回收站为空。'));
+    } else {
+      var table = statusTable(
+        [
+          { key: 'path_label', label: '原路径' },
+          { key: 'kind_label', label: '类型' },
+          { key: 'size_label', label: '大小' },
+          { key: 'files_label', label: '文件数' },
+          { key: 'deleted_label', label: '删除时间' },
+          { key: 'actor_label', label: '操作者' },
+          { key: 'expires_label', label: '到期时间' }
+        ],
+        items,
+        'id'
+      );
+      table.props = Object.assign({}, table.props, {
+        rowActions: [
+          trashBtn('恢复', { op: 'restore', id: '${id}', path: '${original_path}' }),
+          trashBtn('彻底删除', { op: 'purge', id: '${id}', path: '${original_path}' }, 'danger')
+        ]
+      });
+      body.push(table);
+    }
+    return {
+      type: 'page',
+      props: { title: '回收站 · Skiff', subtitle: '恢复与彻底删除复用既有 files JSON 接口' },
+      body: body
+    };
+  }
+
+  function trashBtn(text, props, color) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'text', color: color || 'primary' },
+      onEvent: { click: { actions: [{ type: 'skiffTrashWrite', props: props }] } }
+    };
+  }
+
+  function filesQuotasSchema(data) {
+    var quotas = (data.quotas || []).map(function (q) {
+      var copy = {};
+      Object.keys(q).forEach(function (k) {
+        copy[k] = q[k];
+      });
+      copy.bytes_label =
+        humanSize(q.used_bytes) + ' / ' + (q.max_bytes == null ? '不限' : humanSize(q.max_bytes));
+      copy.files_label =
+        String(q.used_files || 0) + ' / ' + (q.max_files == null ? '不限' : String(q.max_files));
+      copy.updated_label = formatEpoch(q.updated_at);
+      copy.truncated_label = q.truncated ? '不完整（仅下界）' : '';
+      return copy;
+    });
+    var body = [
+      {
+        type: 'alert',
+        props: {
+          type: 'info',
+          text:
+            '已用量是缓存计数：每次成功操作后增量修正，外部改动可能造成偏差；「重新统计」会递归扫描整棵目录树，成本为 O(条目数)。'
+        }
+      },
+      writeCard(
+        '设置配额',
+        '容量上限与文件数上限至少填一项；留空表示不限。重复保存同一路径会覆盖原配额。',
+        writeForm(
+          prefix + '/files/quotas/set',
+          { type: 'skiffQuotaWrite', props: { op: 'set' } },
+          [
+            {
+              type: 'input-text',
+              props: {
+                name: 'path',
+                label: '目录树（绝对路径）',
+                required: true,
+                rules: { required: true, messages: { required: '请输入绝对路径' } }
+              }
+            },
+            { type: 'input-text', props: { name: 'max_bytes', label: '容量上限（字节，留空不限）' } },
+            { type: 'input-text', props: { name: 'max_files', label: '文件数上限（留空不限）' } }
+          ],
+          '保存配额'
+        )
+      )
+    ];
+    if (quotas.length === 0) {
+      body.push(noticeCard('尚未设置目录配额。'));
+    } else {
+      var table = statusTable(
+        [
+          { key: 'root', label: '目录树' },
+          { key: 'bytes_label', label: '已用容量 / 上限' },
+          { key: 'files_label', label: '已用文件数 / 上限' },
+          { key: 'truncated_label', label: '统计' },
+          { key: 'updated_label', label: '最近统计' }
+        ],
+        quotas,
+        'root'
+      );
+      table.props = Object.assign({}, table.props, {
+        rowActions: [
+          trashBtn('重新统计', { op: 'scan', path: '${root}' }),
+          trashBtn('取消配额', { op: 'cancel', path: '${root}' }, 'danger')
+        ]
+      });
+      body.push(table);
+    }
+    return {
+      type: 'page',
+      props: { title: '配额管理 · Skiff', subtitle: '设置、重扫与取消均复用既有 files JSON 接口' },
       body: body
     };
   }
@@ -4588,6 +4911,16 @@
     }
     if (kind === 'job-detail') {
       return fetchData('/jobs/' + encodeURIComponent(parts[1])).then(jobDetailSchema);
+    }
+    if (kind === 'files-trash') {
+      return fetchRawJson(prefix + '/files/api/trash/list').then(function (data) {
+        return filesTrashSchema(data || {});
+      });
+    }
+    if (kind === 'files-quotas') {
+      return fetchRawJson(prefix + '/files/api/quotas/list').then(function (data) {
+        return filesQuotasSchema(data || {});
+      });
     }
     if (kind === 'files') {
       var filePath = new URLSearchParams(location.search).get('path') || '';

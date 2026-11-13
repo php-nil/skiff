@@ -6794,8 +6794,8 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
     let (status, trash) = get_page(&h.app, "/p/files/trash", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        trash.contains(r#"aria-current="page">回收站"#),
-        "回收站标签应为当前态: {trash}"
+        trash.contains(r#"id="skiff-root""#),
+        "回收站规范入口应交付 budding 壳页: {trash}"
     );
 
     // 旧深链（现在是 L3 深链）仍可解析，不因菜单结构变化 404。
@@ -9435,7 +9435,8 @@ async fn ui_plugin_toggle_and_delete_keep_csrf_and_permission_semantics() {
     assert_eq!(v["error"]["code"], "auth.forbidden");
 }
 
-/// 文件管理规范页交付 budding 壳页（原生平铺目录）；旧 SSR（浏览/回收站/配额）仍在 `/m/core/files`。
+/// 文件管理规范页交付 budding 壳页（原生平铺目录）；回收站/配额同为壳页，
+/// 旧 SSR 仍在 `/m/core/files`。
 #[tokio::test]
 async fn files_canonical_path_serves_shell() {
     let h = harness();
@@ -9446,12 +9447,81 @@ async fn files_canonical_path_serves_shell() {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
+    for uri in ["/p/files/trash", "/p/files/quotas"] {
+        let (status, html) = get_page(&h.app, uri, &admin).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
+        let (status, _) = get_page(&h.app, uri, &viewer).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer 必须 403");
+    }
     // 旧 SSR 仍按 FILE_BROWSE 授权：admin 可进，viewer 403。
     let (status, ssr) = get_page(&h.app, "/p/m/core/files", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(ssr.contains(r#"class="workbench-tabs""#), "{ssr}");
     let (status, _) = get_page(&h.app, "/p/m/core/files", &viewer).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// 文件回收站/配额写接口：CSRF 先行、viewer 被权限矩阵拒绝；管理员过门禁后
+/// 走真实 fs 语义（不存在的回收站条目 → 404，不伪装成功）。
+#[tokio::test]
+async fn files_trash_and_quota_writes_require_csrf_and_permission() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+    let root = h.data_dir.join("www");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("/p/files/trash/restore", json!({ "id": "t-missing" })),
+        ("/p/files/trash/purge", json!({ "id": "t-missing" })),
+        ("/p/files/trash/clear", json!({})),
+        (
+            "/p/files/quotas/set",
+            json!({ "path": root.display().to_string(), "max_bytes": 1024 }),
+        ),
+        (
+            "/p/files/quotas/cancel",
+            json!({ "path": root.display().to_string() }),
+        ),
+        (
+            "/p/files/quotas/scan",
+            json!({ "path": root.display().to_string() }),
+        ),
+    ];
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} 缺 CSRF 必须 403: {text}"
+        );
+    }
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{uri} viewer 必须 403: {text}"
+        );
+    }
+
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, Some(&csrf), body).await;
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let code = v["error"]["code"].as_str().unwrap_or("");
+        assert!(
+            code != "403" && code != "auth.forbidden",
+            "{uri} 管理员不应被权限拒绝: {text}"
+        );
+        if uri.ends_with("/restore") || uri.ends_with("/purge") {
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {text}");
+        }
+    }
 }
 
 /// 任务/作业只读接口：未认证 401；列表返回冻结字段；不存在的详情 404。

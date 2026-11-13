@@ -118,11 +118,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         // ---- 回收站与配额（内核文件管理第二步）----
         .route(
             &format!("/{p}/files/trash"),
-            get(handlers::files::trash_page),
+            get(handlers::files::trash_shell),
         )
         .route(
             &format!("/{p}/files/quotas"),
-            get(handlers::files::quotas_page),
+            get(handlers::files::quotas_shell),
         )
         .route(
             &format!("/{p}/files/trash/list"),

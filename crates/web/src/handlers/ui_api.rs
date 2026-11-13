@@ -4075,6 +4075,8 @@ pub struct FilesData {
     pub max_edit_bytes: usize,
     /// 分片上传单片字节数，前端上传适配器按它切片。
     pub upload_chunk_bytes: usize,
+    /// 是否具备 Admin（回收站/配额入口显隐；页面本身仍各自鉴权）。
+    pub can_admin: bool,
 }
 
 /// `skiff-fs` 稳定错误码 → `/ui/v1` 信封：状态由 `FsError::http_status` 决定。
@@ -4151,6 +4153,7 @@ pub async fn files(
         truncated: listing.truncated,
         max_edit_bytes: skiff_app::admin_fs::MAX_EDIT_BYTES,
         upload_chunk_bytes: handlers::files::CHUNK_BYTES,
+        can_admin: user.can(skiff_model::Permission::Admin),
     };
     Ok(Json(json!({ "data": data })))
 }

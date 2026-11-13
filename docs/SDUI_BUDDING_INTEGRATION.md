@@ -854,7 +854,9 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 - 列表用 `virtual-list`（`itemHeight: 52`、`height: 560`）虚拟滚动；条目操作是 budding 按钮：打开 / 下载 / 重命名 / 删除。下载仍走既有 `GET /{p}/files/download`。
 - 上传走宿主 `PlatformAdapter.upload`：前端按服务端下发的 `upload_chunk_bytes`（256 KiB）切片，逐片 POST 既有 `/{p}/files/upload?path=&offset=`（同一授权、同一审计），按字节上报进度，组件负责进度、取消与重试。**宿主必须同时注入 `platform.request`**：上游 `createPlatformAdapter` 只在提供 `request` 时保留 `upload`。
 - 终端不在本批：仍待 WS 契约与 terminal Pack（待第 4 组）。
-- 旧 SSR（浏览 / 回收站 / 配额）保留但不再是入口；回收站与配额页仍走旧页。
+- 旧 SSR（浏览 / 回收站 / 配额）保留在 `GET /{p}/m/core/files[/trash|/quotas]`，但不再是入口。
+- 回收站与配额已原生化（第二十一批）：`GET /{p}/files/trash`、`/{p}/files/quotas` 交付壳页，入口门禁仍是 `FILE_TRASH_READ` / `FILE_QUOTA_READ`；数据与写操作**直接复用**既有 `GET /files/trash/list`、`POST /files/trash/{restore,purge,clear}`、`GET /files/quotas/list`、`POST /files/quotas/{set,cancel,scan}`（`x-csrf-token`、审计、`commands::file` 不变），未新增 `/ui/v1` 写入口。
+- 回收站表（路径 / 大小 / 删除时间 / 剩余天数）行内「恢复 / 彻底删除」，顶部「清空回收站 / 刷新」；恢复冲突（目标已存在）二次确认 `overwrite`。配额页顶部「设置配额」表单（路径 + 容量/文件数上限，至少一项），配额表（路径 / 已用 / 上限 / 统计）行内「重新统计 / 取消配额」。`GET /ui/v1/files` 只新增 `can_admin`（只增不改），`can_admin` 时才显示两个入口。
 
 ### 5.18 代码查看器与日志查看器（第十三批）
 
