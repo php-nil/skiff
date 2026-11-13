@@ -463,8 +463,14 @@ mod tests {
 
     #[test]
     fn every_static_asset_has_gzip_variant() {
+        // 与 build.rs 的跳过列表保持一致：已压缩格式不再生成 `.gz`（再压只会增加字节）。
+        const ALREADY_COMPRESSED: &[&str] = &["woff2", "woff", "png", "jpg", "jpeg", "webp", "zip"];
         for name in Assets::iter() {
             if name.ends_with(".gz") {
+                continue;
+            }
+            let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            if ALREADY_COMPRESSED.contains(&ext.as_str()) {
                 continue;
             }
             assert!(
