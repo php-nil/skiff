@@ -8375,6 +8375,106 @@ async fn ui_compose_validate_and_up_require_csrf_and_permission() {
     assert_eq!(v["error"]["code"], "dependency.unavailable");
 }
 
+/// 任务与作业写操作：CSRF 先行、viewer 403；无调度器时任务写 503；
+/// 作业取消返回真实结果，无执行器的重试仍拒绝。
+#[tokio::test]
+async fn ui_task_and_job_writes_require_csrf_and_permission() {
+    use skiff_app::jobs::JobSubmit;
+
+    let h = harness_lifecycle();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    let task_cases: Vec<(&str, serde_json::Value)> = vec![
+        (
+            "/ui/v1/tasks/builtin:db-vacuum/toggle",
+            json!({ "enabled": false }),
+        ),
+        ("/ui/v1/tasks/builtin:db-vacuum/run", json!({})),
+        ("/ui/v1/tasks/builtin:db-vacuum/delete", json!({})),
+    ];
+    for (uri, body) in &task_cases {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+
+        let (status, text) = post_ui_json(&h.app, uri, &admin, Some(&csrf), body).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "dependency.unavailable", "{uri}");
+    }
+
+    for uri in ["/ui/v1/jobs/missing/cancel", "/ui/v1/jobs/missing/retry"] {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, &json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+
+        let (status, text) =
+            post_ui_json(&h.app, uri, &viewer, Some(&viewer_csrf), &json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+
+        let (status, text) = post_ui_json(&h.app, uri, &admin, Some(&csrf), &json!({})).await;
+        assert_ne!(status, StatusCode::OK, "{uri} 不存在的作业不得成功: {text}");
+        assert_ne!(status, StatusCode::FORBIDDEN, "{uri}");
+    }
+
+    let job = h
+        .state
+        .jobs()
+        .submit(JobSubmit {
+            kind: "site.create".into(),
+            target_type: "site".into(),
+            target_id: "ui.cancel.example.com".into(),
+            title: "创建站点 ui.cancel.example.com".into(),
+            params: json!({ "name": "ui.cancel.example.com" }),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: true,
+        })
+        .unwrap();
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        &format!("/ui/v1/jobs/{}/cancel", job.id),
+        &admin,
+        Some(&csrf),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["data"]["outcome"].is_string(),
+        "取消结果必须回传 outcome: {text}"
+    );
+
+    let (status, text) = post_ui_json(
+        &h.app,
+        &format!("/ui/v1/jobs/{}/retry", job.id),
+        &admin,
+        Some(&csrf),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "无执行器类型不得重试: {text}"
+    );
+}
+
 /// 审计规范页交 budding 壳；旧 SSR 仍按 `AuditRead` 拒绝 viewer。
 #[tokio::test]
 async fn audit_canonical_path_serves_native_shell() {

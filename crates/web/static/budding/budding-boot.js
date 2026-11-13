@@ -196,6 +196,58 @@
       });
   }
 
+  /// 任务行内按钮（rowActions 元素是完整节点，不是描述对象）。
+  function taskRowButton(text, props, color) {
+    return {
+      type: 'button',
+      props: { text: text, variant: 'text', color: color || 'primary' },
+      onEvent: {
+        click: { actions: [{ type: 'skiffTaskWrite', props: props }] }
+      }
+    };
+  }
+
+  /// 定时任务写操作：切换启停、立即运行、删除（内置任务由后端拒绝删除）。
+  function taskWrite(args) {
+    var op = args.op;
+    if (op === 'delete' && !window.confirm('确认删除任务 ' + (args.name || args.id) + '？')) {
+      return Promise.resolve();
+    }
+    var payload = {};
+    var path = '/tasks/' + encodeURIComponent(args.id) + '/' + op;
+    if (op === 'toggle') {
+      var current = args.enabled === true || args.enabled === 'true';
+      payload = { enabled: !current };
+    }
+    return submitJson(path, payload)
+      .then(function () {
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  /// 作业写操作：请求取消、重试；重试成功后跳到新作业详情。
+  function jobWrite(args) {
+    var op = args.op;
+    if (op === 'cancel' && !window.confirm('确认请求取消该作业？')) {
+      return Promise.resolve();
+    }
+    return submitJson('/jobs/' + encodeURIComponent(args.id) + '/' + op, {})
+      .then(function (data) {
+        if (op === 'retry' && data.id) {
+          location.href = prefix + '/jobs/' + encodeURIComponent(data.id);
+          return;
+        }
+        if (data.message) window.alert(data.message);
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
   function formText(value) {
     return String(value === undefined || value === null ? '' : value);
   }
@@ -620,6 +672,8 @@
         skiffContainerAction: containerAction,
         skiffDockerWrite: dockerWrite,
         skiffSiteWrite: siteWrite,
+        skiffTaskWrite: taskWrite,
+        skiffJobWrite: jobWrite,
         skiffComposeAction: composeAction,
         skiffComposeEdit: composeEdit,
         skiffSettingsSave: settingsSave,
@@ -1972,21 +2026,28 @@
         actions: [{ type: 'navigate', props: { url: prefix + '/tasks/${id}' } }]
       }
     };
+    if (data.can_admin) {
+      table.props = Object.assign({}, table.props, {
+        rowActions: [
+          taskRowButton('切换启停', {
+            op: 'toggle',
+            id: '${id}',
+            enabled: '${enabled}'
+          }),
+          taskRowButton('立即运行', { op: 'run', id: '${id}' })
+        ]
+      });
+    }
     body.push(table);
-    body.push({
-      type: 'alert',
-      props: {
-        type: 'info',
-        text: '启停、立即运行与删除仍在旧版任务页，待写操作批次迁移。'
-      }
-    });
-    body.push({
-      type: 'link',
-      props: { text: '打开旧版任务页', href: prefix + '/m/core/tasks' }
-    });
+    if (!data.can_admin) {
+      body.push({
+        type: 'alert',
+        props: { type: 'info', text: '启停、运行与删除需要管理员权限。' }
+      });
+    }
     return {
       type: 'page',
-      props: { title: '定时任务 · Skiff', subtitle: '只读列表' },
+      props: { title: '定时任务 · Skiff', subtitle: '启停与运行结果均回写既有任务审计' },
       body: body
     };
   }
@@ -2025,16 +2086,62 @@
         ]
       }
     });
-    body.push({
-      type: 'link',
-      props: {
-        text: '打开旧版任务详情（启停 / 立即运行 / 删除）',
-        href: prefix + '/m/core/tasks/' + encodeURIComponent(t.id)
+    if (data.can_admin) {
+      var actions = [
+        {
+          type: 'button',
+          props: { text: t.enabled ? '停用任务' : '启用任务', color: 'secondary' },
+          onEvent: {
+            click: {
+              actions: [
+                {
+                  type: 'skiffTaskWrite',
+                  props: { op: 'toggle', id: t.id, enabled: !t.enabled }
+                }
+              ]
+            }
+          }
+        },
+        {
+          type: 'button',
+          props: { text: '立即运行', color: 'primary' },
+          onEvent: {
+            click: {
+              actions: [{ type: 'skiffTaskWrite', props: { op: 'run', id: t.id } }]
+            }
+          }
+        }
+      ];
+      if (!t.builtin) {
+        actions.push({
+          type: 'button',
+          props: { text: '删除任务', color: 'danger', variant: 'text' },
+          onEvent: {
+            click: {
+              actions: [
+                {
+                  type: 'skiffTaskWrite',
+                  props: { op: 'delete', id: t.id, name: t.name }
+                }
+              ]
+            }
+          }
+        });
       }
-    });
+      body.push({
+        type: 'card',
+        props: { title: '任务操作' },
+        content: { body: [{ type: 'flex', props: { gap: 8, wrap: true }, content: { body: actions } }] }
+      });
+    } else {
+      body.push({
+        type: 'alert',
+        props: { type: 'info', text: '写操作需要管理员权限；当前为只读视图。' }
+      });
+    }
     return {
       type: 'page',
-      props: { title: t.name + ' · 定时任务', subtitle: '只读详情' },
+      props: { title: t.name + ' · 定时任务', subtitle: '启停、运行与删除均走 /ui/v1' },
       body: body
     };
   }
@@ -2063,7 +2170,7 @@
     body.push(table);
     return {
       type: 'page',
-      props: { title: '作业中心 · Skiff', subtitle: '只读列表（最近 200 条）' },
+      props: { title: '作业中心 · Skiff', subtitle: '列表只读；取消与重试在作业详情页' },
       body: body
     };
   }
@@ -2124,17 +2231,47 @@
               text: '查看完整日志（按需加载）',
               href: prefix + '/jobs/' + encodeURIComponent(data.id) + '/logs'
             }
-          },
-          {
-            type: 'link',
-            props: {
-              text: '旧版作业详情（取消 / 重试）',
-              href: prefix + '/m/core/jobs/' + encodeURIComponent(data.id)
-            }
           }
         ]
       }
     });
+    if (data.can_admin && (data.can_cancel || data.can_retry)) {
+      var jobActions = [];
+      if (data.can_cancel) {
+        jobActions.push({
+          type: 'button',
+          props: { text: data.cancel_requested ? '已请求取消' : '请求取消', color: 'warning' },
+          onEvent: {
+            click: {
+              actions: [{ type: 'skiffJobWrite', props: { op: 'cancel', id: data.id } }]
+            }
+          }
+        });
+      }
+      if (data.can_retry) {
+        jobActions.push({
+          type: 'button',
+          props: { text: '重试作业', color: 'primary' },
+          onEvent: {
+            click: {
+              actions: [{ type: 'skiffJobWrite', props: { op: 'retry', id: data.id } }]
+            }
+          }
+        });
+      }
+      body.push({
+        type: 'card',
+        props: { title: '作业操作' },
+        content: { body: [{ type: 'flex', props: { gap: 8, wrap: true }, content: { body: jobActions } }] }
+      });
+    } else if (data.can_admin) {
+      body.push(textLine('当前状态下没有可用的取消或重试操作。'));
+    } else {
+      body.push({
+        type: 'alert',
+        props: { type: 'info', text: '取消与重试需要管理员权限。' }
+      });
+    }
     return {
       type: 'page',
       props: { title: data.title + ' · 作业', subtitle: '只读详情' },

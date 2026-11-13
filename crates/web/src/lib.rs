@@ -246,6 +246,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/ui/v1/tasks", get(handlers::ui_api::tasks))
         .route("/ui/v1/tasks/{id}", get(handlers::ui_api::task_detail))
+        .route(
+            "/ui/v1/tasks/{id}/toggle",
+            post(handlers::ui_api::task_toggle),
+        )
+        .route("/ui/v1/tasks/{id}/run", post(handlers::ui_api::task_run))
+        .route(
+            "/ui/v1/tasks/{id}/delete",
+            post(handlers::ui_api::task_delete),
+        )
+        .route(
+            "/ui/v1/jobs/{id}/cancel",
+            post(handlers::ui_api::job_cancel),
+        )
+        .route("/ui/v1/jobs/{id}/retry", post(handlers::ui_api::job_retry))
         .route("/ui/v1/jobs", get(handlers::ui_api::jobs))
         .route("/ui/v1/jobs/{id}", get(handlers::ui_api::job_detail))
         .route("/ui/v1/settings", get(handlers::ui_api::settings))

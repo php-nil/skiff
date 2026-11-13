@@ -23,7 +23,7 @@ use crate::templates::{TaskDetailPage, TaskRow, TaskRunRow, TasksPage};
 use crate::util::{form_first, parse_form};
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
+pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
     Actor {
         username: user.user.username.clone(),
         ip: handlers::client_ip(state, parts),
