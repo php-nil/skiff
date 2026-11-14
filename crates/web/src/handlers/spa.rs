@@ -164,6 +164,7 @@ pub fn shell_html(prefix: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skiff</title>
+<link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
 </head>
 <body>
@@ -219,6 +220,12 @@ mod tests {
         assert!(html.contains(&format!(
             r#"<link rel="stylesheet" href="/p/static/budding/budding-icons-{icons}.min.css?v={icons}">"#
         )));
+        assert!(
+            html.contains(
+                r#"<link rel="icon" type="image/svg+xml" href="/p/static/favicon.svg?v=1">"#
+            ),
+            "壳页必须显式声明 favicon，避免浏览器回落探测 404"
+        );
         // 壳页不引用稳定别名（D11），也不许出现内联脚本或外部加载器。
         assert!(!html.contains("budding.min.js"));
         assert!(!html.contains("<script>"));

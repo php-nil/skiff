@@ -31,8 +31,8 @@ use axum::Router;
 use std::sync::Arc;
 use tower_http::catch_panic::CatchPanicLayer;
 
-/// 组装路由。`/healthz` 与静态资源不受安全入口前缀约束（探针与首屏需要），
-/// 但页面与 API 一律要求前缀命中，否则 404（§6.3）。
+/// 组装路由。`/healthz` 与 `/favicon.ico` 不受安全入口前缀约束（探针与浏览器默认探测），
+/// 其余页面、API 与静态资源一律要求前缀命中，否则 404（§6.3）。
 pub fn router(state: Arc<AppState>) -> Router {
     // 错误页在没有 AppState 的路径上也要能给出「返回首页」，前缀在这里注入一次
     templates::set_entry_prefix(&state.cfg.entry_prefix);
@@ -648,6 +648,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     // handler panic 若不拦，会直接吞掉请求——无 500、无审计。这里统一转错误页 + 审计。
     Router::new()
         .route("/healthz", get(handlers::meta::healthz))
+        // 浏览器默认会探测根路径 favicon；显式返回图标，避免全站 404。
+        .route("/favicon.ico", get(assets::favicon))
         .merge(ui)
         .merge(legacy)
         .layer(axum::middleware::from_fn_with_state(

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Skiff">
+  <rect width="32" height="32" rx="8" fill="#1867c0"/>
+  <path d="M8 18.5h16l-3.2 5H11.2z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M15.2 16V8.5l5.8 7.5" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+</svg>

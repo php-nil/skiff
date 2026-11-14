@@ -43,6 +43,22 @@ fn resolve_alias(rel: &str) -> String {
     }
 }
 
+/// `/favicon.ico`：浏览器默认探测路径（不带安全入口前缀）。
+///
+/// 内容复用入库的 `favicon.svg`（矢量，16/32 均清晰），页面同时用
+/// `<link rel="icon" type="image/svg+xml">` 指向带版本查询的静态路径。
+pub async fn favicon() -> Result<Response, AppError> {
+    let file = Assets::get("favicon.svg").ok_or_else(|| AppError::NotFound("图标不存在".into()))?;
+    let mut resp = Response::new(axum::body::Body::from(file.data.into_owned()));
+    let h = resp.headers_mut();
+    h.insert(CONTENT_TYPE, HeaderValue::from_static("image/svg+xml"));
+    h.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400"),
+    );
+    Ok(resp)
+}
+
 /// 静态资源（打进二进制，§2.2）。文件名带内容版本前缀由模板控制。
 ///
 /// 预压缩变体（`.gz`，`build.rs` 生成）按 `Accept-Encoding` 协商返回，
@@ -218,6 +234,13 @@ mod tests {
         assert!(!accepts_gzip_header("gzip;q=0"));
         assert!(!accepts_gzip_header("gzip;q=0.0"));
         assert!(accepts_gzip_header("gzip;q=0.5"));
+    }
+
+    /// 图标必须随二进制入库；否则 `/favicon.ico` 会静默 404。
+    #[test]
+    fn favicon_asset_is_embedded() {
+        let asset = Assets::get("favicon.svg").expect("static/favicon.svg 必须入库");
+        assert!(String::from_utf8_lossy(&asset.data).contains("<svg"));
     }
 
     /// D11：版本化产物可长缓存，稳定别名必须回源校验，其余资源策略不变。

@@ -2351,8 +2351,66 @@ async fn bare_root_is_hidden_404_and_prefix_redirects_to_login() {
     assert!(loc.contains("/p/login"), "跳转目标应是登录页: {loc}");
 }
 
-/// 静态资源只认带安全入口前缀的 `/{p}/static/…`；根路径不再兜底。
-/// 这样收紧入口路由后，资源不会因为旧地址留下一条旁路。
+/// 浏览器默认探测 `/favicon.ico`：必须 200，且缓存策略可被浏览器复用一天。
+/// 页面同时用 `<link rel="icon">` 指向带版本查询的静态 SVG。
+#[tokio::test]
+async fn favicon_is_served_with_reasonable_cache() {
+    let h = harness();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/favicon.ico")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let cc = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = body_text(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("image/svg+xml"));
+    assert!(
+        cc.unwrap_or_default().contains("max-age=86400"),
+        "favicon 应允许缓存一天"
+    );
+    assert!(
+        body.contains(r#"viewBox="0 0 32 32""#) && body.contains("<svg"),
+        "favicon 必须是可缩放矢量图标"
+    );
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/static/favicon.svg?v=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("public, max-age=31536000, immutable"),
+        "带版本查询的静态图标应走 immutable"
+    );
+}
+
 #[tokio::test]
 async fn prefixed_static_assets_are_served() {
     let h = harness();

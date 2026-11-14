@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Skiff{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/{{ ctx.prefix }}/static/favicon.svg?v=1">
   {# 主题在样式表之前同步落地：先按 localStorage 设 data-theme，避免暗色用户刷新时先闪白。 #}
   <script src="/{{ ctx.prefix }}/static/theme-init.js"></script>
   <link rel="stylesheet" href="/{{ ctx.prefix }}/static/skiff.css">

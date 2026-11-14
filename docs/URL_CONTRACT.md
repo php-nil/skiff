@@ -20,6 +20,7 @@
 | 前端 JSON 接口 | `/ui/v1/...` | 无入口前缀；会话 Cookie + CSRF；未认证返回 401；仅 `handlers::ui`（按资源拆分）；只返 JSON |
 | 机器 API | `/api/v1/...` | 无入口前缀、Token/会话鉴权，版本号固定；仅 `handlers::api` |
 | 探针 | `/healthz` | 无前缀、无鉴权，只回健康状态 |
+| 图标 | `/favicon.ico` | 无前缀、无鉴权，返回品牌矢量图标（`image/svg+xml`，`public, max-age=86400`）；页面另用 `<link rel="icon">` 指向 `/{p}/static/favicon.svg?v=<版本>` |
 | 菜单深链 | `/{p}/m/{...}` | 由 `handlers::menu::dispatch` 内部转发到同一 handler，不是第二套页面 |
 
 - 代码中一律用 `state.cfg.entry_prefix` 或模板 `ctx.prefix` 拼接，禁止硬编码 `/p`。
@@ -46,7 +47,7 @@
 
 - 白名单之外仍返回 404（HTML 或 JSON 由 `Accept` 决定），不得回落壳页。
 - `POST` 等写请求**永不回落**，即使 `Accept: text/html`。
-- `/{p}/static/*`、`/{p}/m/*`、`/ui/v1/*`、`/api/v1/*`、`/healthz` 不在白名单内。
+- `/{p}/static/*`、`/{p}/m/*`、`/ui/v1/*`、`/api/v1/*`、`/healthz`、`/favicon.ico` 不在白名单内。
 - 命中白名单但前端路由不认识时，由前端渲染 404 视图；内核不回退到 `error.html`。
 - 白名单变更必须同步本表、`docs/SDUI_BUDDING_INTEGRATION.md` 与 `main_flow` 测试。
 
@@ -196,6 +197,7 @@
 | 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/menu`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`POST /ui/v1/sites`、`POST /ui/v1/sites/batch`、`POST /ui/v1/sites/{domain}/{action}`、`POST /ui/v1/sites/{domain}/default`、`POST /ui/v1/sites/{domain}/domains`、`POST /ui/v1/sites/{domain}/config`、`POST /ui/v1/sites/{domain}/ssl`、`POST /ui/v1/sites/{domain}/backup`、`POST /ui/v1/sites/{domain}/delete`、`GET /ui/v1/runtimes`、`GET /ui/v1/runtimes/{id}`、`GET /ui/v1/runtimes/catalog`、`GET /ui/v1/runtimes/images`、`POST /ui/v1/runtimes/images`、`POST /ui/v1/runtimes`、`POST /ui/v1/runtimes/{id}/action/{action}`、`POST /ui/v1/runtimes/{id}/config`、`POST /ui/v1/runtimes/{id}/node-config`、`POST /ui/v1/runtimes/{id}/port`、`POST /ui/v1/runtimes/{id}/clone`、`POST /ui/v1/runtimes/{id}/extensions`、`POST /ui/v1/runtimes/{id}/extensions/batch`、`POST /ui/v1/runtimes/{id}/extensions/{key}/{op}`、`POST /ui/v1/runtimes/{id}/pecl`、`POST /ui/v1/runtimes/{id}/config-file`、`POST /ui/v1/runtimes/{id}/probe`、`POST /ui/v1/runtimes/{id}/sites/{domain}/unbind`、`GET /ui/v1/web`、`GET /ui/v1/web/logs`、`POST /ui/v1/web/config`、`POST /ui/v1/web/params`、`POST /ui/v1/compose/validate`、`POST /ui/v1/compose/up`、`POST /ui/v1/tasks/{id}/toggle`、`POST /ui/v1/tasks/{id}/run`、`POST /ui/v1/tasks/{id}/delete`、`POST /ui/v1/jobs/{id}/cancel`、`POST /ui/v1/jobs/{id}/retry`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers`、`POST /ui/v1/containers/{id}/limits`、`POST /ui/v1/containers/{id}/{action}`、`GET /ui/v1/containers/{id}/logs`、`GET /ui/v1/runtimes/{id}/logs`、`GET /ui/v1/images`、`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`GET /ui/v1/networks`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`GET /ui/v1/volumes`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`、`GET /ui/v1/compose`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}`、`GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`、`GET /ui/v1/settings`、`GET /ui/v1/settings/menu`、`POST /ui/v1/settings/menu`、`GET /ui/v1/settings/docker`、`POST /ui/v1/settings/docker`、`GET /ui/v1/settings/ui`、`POST /ui/v1/settings/ui`、`POST /ui/v1/settings/panel`、`POST /ui/v1/settings/password`、`POST /ui/v1/settings/totp/setup`、`POST /ui/v1/settings/totp/enable`、`POST /ui/v1/settings/keys`、`POST /ui/v1/settings/keys/{id}`、`GET /ui/v1/audit`、`GET /ui/v1/files`、`GET /ui/v1/files/read`、`POST /ui/v1/files/mkdir`、`POST /ui/v1/files/rename`、`POST /ui/v1/files/remove`、`GET /ui/v1/sites/{domain}/logs`、`GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`、`POST /ui/v1/plugins/confirm`、`GET /ui/v1/plugins`、`GET /ui/v1/plugins/{id}`、`POST /ui/v1/plugins/{id}/toggle`、`POST /ui/v1/plugins/{id}/delete`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
 | 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） |
 | 静态资源 | `GET /{p}/static/{path}` |
+| 图标 | `GET /favicon.ico`（无前缀、无鉴权；内容复用入库的 `static/favicon.svg`，返回 `image/svg+xml` 与 `public, max-age=86400`） |
 | API v1 | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart`（执行与审计统一走 `commands::docker::container_action`：成功审计 target=`name (short_id)`、detail=动词 `http_path`；失败 target=`name`、detail=错误串） |
 
 ## 10. 变更流程
@@ -243,4 +245,5 @@
 | 2026-11-13 | 插件功能页原生化（第六批 files）+ 概览健康数据：`/{p}/plugins/com.skiff.files/main` 默认改由壳页加载 `main.json`（站点目录浏览 + 文本编辑/保存），旧完整工作台只接受显式 `?legacy=1`，菜单与列表不再链出；`list` / `read_text` / `write` 仍是既有 RPC 方法，不新增路由。`GET /ui/v1/overview` 新增 `health_plugin`（已启用且声明 `overview.health` 槽位的插件 id，可为 `null`），前端据此调该插件 `snapshot` RPC 渲染健康卡片，不再依赖 mount 槽位渲染 API。 |
 | 2026-11-13 | 测试机四问题修复：`GET /ui/v1/menu` 插件项 `href` 改指原生 `/{p}/plugins/{id}/{view}`（不再下发 `/{p}/m/plugin/...`）；`GET /ui/v1/overview` 新增 `health_reason`（无可用提供者时的可读原因）；`POST /{p}/plugins/{id}/rpc` 失败改为统一 JSON 错误信封（成功仍 `{ result }`），路径、权限、CSRF 与审计不变；插件 API 兼容判定共用 `skiff_pkgfmt::manifest::api_compatible`，内核 API 版本升为 `1.3`。 |
 | 2026-11-14 | 设置区调整：新增 `GET /{p}/settings/ui`（界面设置，budding 壳页，无旧 SSR）与 `GET|POST /ui/v1/settings/ui`（主色读取对登录用户开放，写入仅 Admin + `x-csrf-token`，审计 `settings.ui.update`；空串恢复缺省 `#1867c0`）；`GET /ui/v1/session` 新增 `theme.primary`（只增不改）。菜单设置移除「布局」「内容宽度」两项及其 DTO/偏好字段，`POST /settings/menu` 与 `/ui/v1/settings/menu` 只接受 `action` / `key`。Web 服务页操作入口补齐（安装/启动/停止/重启/重新安装/删除）复用既有 `POST /ui/v1/runtimes/web/action/{action}`，未新增接口。 |
+| 2026-11-14 | 全站补图标：新增入库资源 `static/favicon.svg` 与无前缀路由 `GET /favicon.ico`（`image/svg+xml`、`public, max-age=86400`，豁免安全入口前缀），壳页/登录页/SSR 模板统一用 `<link rel="icon">` 指向 `/{p}/static/favicon.svg?v=<版本>`；浏览器默认探测不再 404。 |
 | 2026-11-14 | 写入口守卫顺序统一为「先权限、后 CSRF」：SSR 与 `/ui/v1` 的所有写端点先判角色/动作权限，再校验令牌；无权限 + 缺令牌由 `auth.csrf_invalid` 变为 `auth.forbidden`（HTTP 仍 403）。Docker 对象级 `protected` 判定依赖容器解析，保留在 CSRF 之后。 |

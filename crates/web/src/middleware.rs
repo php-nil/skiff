@@ -32,10 +32,12 @@ fn csp_header() -> &'static HeaderValue {
     CSP_VALUE.get_or_init(|| HeaderValue::from_static(CSP))
 }
 
-/// 只有健康检查不需要安全入口前缀；静态资源与插件 UI 都走 `/{前缀}/...`，
-/// 由下面的前缀判断放行，不再保留根路径旁路。
+/// 不需要安全入口前缀的路径：健康检查与浏览器默认探测的根级图标。
+///
+/// `/favicon.ico` 是浏览器固定向站点根发起的探测，无法携带前缀；内容只是品牌矢量图，
+/// 不泄露任何资源信息。其余静态资源与插件 UI 仍走 `/{前缀}/...`，不保留根路径旁路。
 fn is_exempt(path: &str) -> bool {
-    path == "/healthz"
+    matches!(path, "/healthz" | "/favicon.ico")
 }
 
 /// 非流式请求的处理时长上限。等待对象是 Docker Engine 之类的下游——它们不该
