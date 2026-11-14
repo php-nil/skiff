@@ -103,8 +103,8 @@ pub async fn plugin_toggle(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     guard::permission(&user, skiff_model::Permission::PluginManage)?;
+    guard::csrf(&state, &user, &parts)?;
     let ip = handlers::client_ip(&state, &parts);
     let enabled = handlers::plugins::apply_toggle(&state, &user, &id, &ip)
         .await
@@ -123,8 +123,8 @@ pub async fn plugin_delete(
     parts: Parts,
     Json(body): Json<PluginDeleteBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     guard::permission(&user, skiff_model::Permission::PluginManage)?;
+    guard::csrf(&state, &user, &parts)?;
     let ip = handlers::client_ip(&state, &parts);
     handlers::plugins::apply_remove(&state, &user, &id, body.delete_data, &ip)
         .await
@@ -150,8 +150,8 @@ pub async fn plugin_confirm(
     parts: Parts,
     Json(body): Json<PluginConfirmBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     guard::permission(&user, skiff_model::Permission::PluginManage)?;
+    guard::csrf(&state, &user, &parts)?;
     let token = body.token.trim();
     if token.len() != 24 || !token.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err(ApiError(AppError::BadRequest("确认令牌非法".into())));

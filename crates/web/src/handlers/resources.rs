@@ -70,7 +70,6 @@ pub async fn pull_image(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     // 授权先于参数校验：未授权者不该拿到参数层面的反馈。
     // 判定走 `policy.check`（内部查 `Permission` 矩阵），不再另设 `require_admin`。
     state
@@ -78,6 +77,7 @@ pub async fn pull_image(
         .policy
         .check(&handlers::actor(&user), Verb::ImagePull, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let image = form_first(&form, "image").trim().to_string();
     if image.is_empty() {
         return Err(AppError::BadRequest("镜像名不能为空".into()));
@@ -126,12 +126,12 @@ pub async fn remove_image(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::ImageRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     docker_cmd::image_remove(
         &state,
         NamedResource {
@@ -266,12 +266,12 @@ pub async fn create_network(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::NetworkCreate, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let name = form_first(&form, "name").trim().to_string();
     validate_name("网络", &name)?;
     let result = docker_cmd::network_create(
@@ -294,12 +294,12 @@ pub async fn remove_network(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::NetworkRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     docker_cmd::network_remove(
         &state,
         NamedResource {
@@ -346,12 +346,12 @@ pub async fn create_volume(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::VolumeCreate, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let name = form_first(&form, "name").trim().to_string();
     validate_name("卷", &name)?;
     let result = docker_cmd::volume_create(
@@ -374,12 +374,12 @@ pub async fn remove_volume(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::VolumeRemove, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     docker_cmd::volume_remove(
         &state,
         NamedResource {

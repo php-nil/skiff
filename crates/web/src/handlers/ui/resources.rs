@@ -154,12 +154,12 @@ pub async fn image_pull(
     parts: Parts,
     Json(body): Json<ImagePullBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), skiff_docker::Verb::ImagePull, None)
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     let image = body.image.trim().to_string();
     if image.is_empty() {
         return Err(ApiError(AppError::BadRequest("镜像名不能为空".into())));
@@ -183,7 +183,6 @@ pub async fn image_remove(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -193,6 +192,7 @@ pub async fn image_remove(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     if id.trim().is_empty() {
         return Err(ApiError(AppError::BadRequest("镜像 id 不能为空".into())));
     }
@@ -215,7 +215,6 @@ pub async fn network_create(
     parts: Parts,
     Json(body): Json<NameBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -225,6 +224,7 @@ pub async fn network_create(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     let name = body.name.trim().to_string();
     handlers::resources::validate_name("网络", &name).map_err(ApiError)?;
     skiff_app::commands::docker::network_create(
@@ -246,7 +246,6 @@ pub async fn network_remove(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -256,6 +255,7 @@ pub async fn network_remove(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     skiff_app::commands::docker::network_remove(
         &state,
         skiff_app::commands::docker::NamedResource {
@@ -275,7 +275,6 @@ pub async fn volume_create(
     parts: Parts,
     Json(body): Json<NameBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -285,6 +284,7 @@ pub async fn volume_create(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     let name = body.name.trim().to_string();
     handlers::resources::validate_name("卷", &name).map_err(ApiError)?;
     skiff_app::commands::docker::volume_create(
@@ -306,7 +306,6 @@ pub async fn volume_remove(
     Path(name): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -316,6 +315,7 @@ pub async fn volume_remove(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     skiff_app::commands::docker::volume_remove(
         &state,
         skiff_app::commands::docker::NamedResource {

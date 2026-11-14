@@ -100,14 +100,14 @@ pub async fn store_install(
     parts: Parts,
     Json(body): Json<StoreInstallBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
-    if !state.cfg.catalog.enabled {
-        return Err(ApiError(AppError::NotFound("商店目录未启用".into())));
-    }
     let ip = handlers::client_ip(&state, &parts);
     if let Err(e) = handlers::require_permission(&user, skiff_model::Permission::PluginManage) {
         handlers::store::audit(&state, &user, &ip, &id, "deny", "reason=permission");
         return Err(ApiError(e));
+    }
+    guard::csrf(&state, &user, &parts)?;
+    if !state.cfg.catalog.enabled {
+        return Err(ApiError(AppError::NotFound("商店目录未启用".into())));
     }
     if state.cfg.catalog.public_key_hex().is_none() {
         handlers::store::audit(&state, &user, &ip, &id, "deny", "reason=no_key");
@@ -194,6 +194,7 @@ pub async fn store_upgrade_download(
     Path(version): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
+    handlers::require_permission(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     guard::csrf(&state, &user, &parts)?;
     let ip = handlers::client_ip(&state, &parts);
     let outcome = handlers::store::apply_upgrade_download(&state, &user, &ip, &version)

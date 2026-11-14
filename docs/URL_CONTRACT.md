@@ -129,6 +129,7 @@
 - 失败回执：写操作 303 回页面，错误用 flash（`?` 不携带结果消息），不在 URL 里表达成败。
 - `/ui/v1/*` 的写操作一律 POST + CSRF；未认证引导与登录为 `GET /ui/v1/auth/login` 与 `POST /ui/v1/auth/login`（登录用签名 CSRF token + 来源判定，CSRF 放 JSON 体 `csrf` 字段）；`POST /ui/v1/session/logout`、`session/password`、`session/totp`、`session/totp/enable` 为认证类例外，语义与 `/{p}/logout`、`/{p}/password`、`/{p}/totp`、`/{p}/totp/enable` 一一对应。
 - `/ui/v1/*` 未认证返回 401 JSON，不做 303；已认证但权限不足返回 403 JSON。
+- 写入口的守卫顺序固定为**先权限、后 CSRF**：无权限主体得到 `auth.forbidden`（SSR 为 403 页），不会先看到 `auth.csrf_invalid`。Docker 对象级授权（`protected` 对象）需要先解析容器，保留在 CSRF 之后，但角色门（`policy.check(actor, verb, None)`）仍在 CSRF 前。Compose 是唯一例外：Basic 档不提供 `ComposeUp/Down` 动词，`harness()` 档位下「管理员 + 缺令牌」会先命中档位拒绝；该组入口暂保留「先 CSRF、后权限」，待档位/测试口径确认后再统一。
 
 ## 7. 兼容与下线
 
@@ -237,3 +238,4 @@
 | 2026-11-13 | 插件功能页原生化（第五批 cron）：`/{p}/plugins/com.skiff.cron/list` 改由壳页加载 schema；列表行「编辑」用 `?id=<task-id>` 预填同一表单，不新增路由；执行/启停/删除/创建/更新仍只经 `POST /{id}/rpc`；旧 SSR 与 `?legacy=1` 预设编辑器保留。 |
 | 2026-11-13 | 插件功能页原生化（第六批 files）+ 概览健康数据：`/{p}/plugins/com.skiff.files/main` 默认改由壳页加载 `main.json`（站点目录浏览 + 文本编辑/保存），旧完整工作台只接受显式 `?legacy=1`，菜单与列表不再链出；`list` / `read_text` / `write` 仍是既有 RPC 方法，不新增路由。`GET /ui/v1/overview` 新增 `health_plugin`（已启用且声明 `overview.health` 槽位的插件 id，可为 `null`），前端据此调该插件 `snapshot` RPC 渲染健康卡片，不再依赖 mount 槽位渲染 API。 |
 | 2026-11-13 | 测试机四问题修复：`GET /ui/v1/menu` 插件项 `href` 改指原生 `/{p}/plugins/{id}/{view}`（不再下发 `/{p}/m/plugin/...`）；`GET /ui/v1/overview` 新增 `health_reason`（无可用提供者时的可读原因）；`POST /{p}/plugins/{id}/rpc` 失败改为统一 JSON 错误信封（成功仍 `{ result }`），路径、权限、CSRF 与审计不变；插件 API 兼容判定共用 `skiff_pkgfmt::manifest::api_compatible`，内核 API 版本升为 `1.3`。 |
+| 2026-11-14 | 写入口守卫顺序统一为「先权限、后 CSRF」：SSR 与 `/ui/v1` 的所有写端点先判角色/动作权限，再校验令牌；无权限 + 缺令牌由 `auth.csrf_invalid` 变为 `auth.forbidden`（HTTP 仍 403）。Docker 对象级 `protected` 判定依赖容器解析，保留在 CSRF 之后。 |

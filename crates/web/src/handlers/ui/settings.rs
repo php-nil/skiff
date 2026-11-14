@@ -108,8 +108,8 @@ pub async fn settings_panel_update(
     parts: Parts,
     Json(body): Json<SettingsPanelBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     guard::permission(&user, skiff_model::Permission::Admin)?;
+    guard::csrf(&state, &user, &parts)?;
     let mut form: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for (key, value) in [
         ("listen_addr", body.listen_addr),
@@ -225,8 +225,8 @@ pub async fn settings_docker_update(
     parts: Parts,
     Json(body): Json<DockerSettingsBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     guard::permission(&user, skiff_model::Permission::Admin)?;
+    guard::csrf(&state, &user, &parts)?;
     let mut form: HashMap<String, Vec<String>> = HashMap::new();
     form.insert("registry_mirror".into(), vec![body.registry_mirror]);
     form.insert("image_prefix".into(), vec![body.image_prefix]);

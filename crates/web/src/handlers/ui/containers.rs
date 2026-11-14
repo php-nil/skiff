@@ -308,8 +308,14 @@ pub async fn container_action(
     Path((id, action)): Path<(String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     let verb = handlers::containers::action_verb(&action).map_err(ApiError)?;
+    // 角色门先于 CSRF；对象级 protected 判定要等容器解析后做。
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), verb, None)
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     let row = handlers::resolve_container(&state, &id)
         .await
         .map_err(ApiError)?;
@@ -366,7 +372,6 @@ pub async fn container_create(
     parts: Parts,
     Json(body): Json<ContainerCreateBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -376,6 +381,7 @@ pub async fn container_create(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
+    guard::csrf(&state, &user, &parts)?;
     let spec = handlers::containers::spec_from_fields(handlers::containers::SpecFields {
         image: body.image.clone(),
         name: body.name.clone(),
@@ -421,6 +427,15 @@ pub async fn container_limits_update(
     parts: Parts,
     Json(body): Json<ContainerLimitsBody>,
 ) -> Result<Response, ApiError> {
+    state
+        .cfg
+        .policy
+        .check(
+            &handlers::actor(&user),
+            skiff_docker::Verb::ContainerUpdate,
+            None,
+        )
+        .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
     guard::csrf(&state, &user, &parts)?;
     let row = handlers::resolve_container(&state, &id)
         .await

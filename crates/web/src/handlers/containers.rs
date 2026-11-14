@@ -363,12 +363,12 @@ pub async fn create(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     state
         .cfg
         .policy
         .check(&handlers::actor(&user), Verb::ContainerCreate, None)
         .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
 
     let spec = match spec_from_form(&form) {
         Ok(spec) => spec,
@@ -408,6 +408,12 @@ pub async fn update_limits(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
+    // 角色门先于 CSRF；对象级 protected 判定要等容器解析后做。
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), Verb::ContainerUpdate, None)
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
 
     let row = handlers::resolve_container(&state, &id).await?;
@@ -712,9 +718,14 @@ pub async fn action(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-
     let verb = action_verb(&action)?;
+    // 角色门先于 CSRF；对象级 protected 判定要等容器解析后做。
+    state
+        .cfg
+        .policy
+        .check(&handlers::actor(&user), verb, None)
+        .map_err(|e| AppError::Forbidden(e.to_string()))?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
 
     let row = handlers::resolve_container(&state, &id).await?;
     let obj = handlers::object_ref(&row);

@@ -1,9 +1,9 @@
-//! `/ui/v1` 写入口的统一门禁：CSRF 与动作权限。
+//! `/ui/v1` 写入口的统一门禁：动作权限与 CSRF。
 //!
-//! 绝大多数写路径是「先 CSRF、后权限」；这里把两段固定下来，避免各 handler
-//! 重复拼 `check_csrf_header` + `authorize`。极少数需要「权限先行」的端点
-//! （如公钥导入/撤销）继续分别调用 [`permission`] / [`action`]，不在这里强行
-//! 重排，保证错误返回顺序与拆分前一致。
+//! 顺序固定为「先权限、后 CSRF」：无权限的主体立即得到 `auth.forbidden`，
+//! 不会因为令牌缺失/失效先看到 `auth.csrf_invalid`。需要读取对象才能判定的
+//! 对象级授权（Docker protected 对象）仍放在 CSRF 之后，先用
+//! `policy.check(actor, verb, None)` 做角色门，再解析对象做完整判定。
 
 use axum::http::request::Parts;
 use skiff_app::actions::Action;
@@ -31,13 +31,13 @@ pub(super) fn permission(
     crate::handlers::require_permission(user, permission).map_err(ApiError)
 }
 
-/// 常见写入口：CSRF → 动作权限。
+/// 常见写入口：动作权限 → CSRF。
 pub(super) fn write(
     state: &AppState,
     user: &CurrentUser,
     parts: &Parts,
     action: Action,
 ) -> Result<(), ApiError> {
-    csrf(state, user, parts)?;
-    self::action(user, action)
+    self::action(user, action)?;
+    csrf(state, user, parts)
 }

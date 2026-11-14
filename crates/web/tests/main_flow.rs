@@ -8533,6 +8533,15 @@ async fn ui_docker_writes_require_csrf_and_permission() {
         assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
     }
 
+    // 守卫顺序固定为「先权限、后 CSRF」：viewer 即使不带令牌也先得到权限拒绝，
+    // 而不是 `auth.csrf_invalid`（后者会让客户端误以为刷新令牌即可）。
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, None, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer 无令牌: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+    }
+
     for (uri, body) in &cases {
         let (status, text) = post_ui_json(&h.app, uri, &admin, Some(&csrf), body).await;
         assert_ne!(status, StatusCode::OK, "{uri} 无 Docker 时不得成功: {text}");
@@ -8618,6 +8627,14 @@ async fn ui_site_writes_require_csrf_and_permission() {
             StatusCode::FORBIDDEN,
             "{uri} viewer 必须 403: {text}"
         );
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
+    }
+
+    // 「先权限、后 CSRF」：viewer 不带令牌也先得到权限拒绝。
+    for (uri, body) in &cases {
+        let (status, text) = post_ui_json(&h.app, uri, &viewer, None, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer 无令牌: {text}");
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
     }

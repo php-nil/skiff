@@ -631,7 +631,16 @@ pub async fn runtime_extension_change(
     Path((id, key, op)): Path<(String, String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
+    let action = match op.as_str() {
+        "install" => act::RUNTIME_INSTALL_EXTENSION,
+        "uninstall" => act::RUNTIME_UNINSTALL_EXTENSION,
+        _ => {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "未知扩展操作：{op}（应为 install / uninstall）"
+            ))))
+        }
+    };
+    guard::write(&state, &user, &parts, action)?;
     let change = runtime_cmd::ExtensionChange {
         id: id.clone(),
         key: key.clone(),
@@ -640,24 +649,19 @@ pub async fn runtime_extension_change(
     };
     match op.as_str() {
         "install" => {
-            guard::action(&user, act::RUNTIME_INSTALL_EXTENSION)?;
             runtime_cmd::install_extension(&state, change)
                 .await
                 .map_err(handlers::sites::map_err)
                 .map_err(ApiError)?;
             write_done(json!({ "message": format!("扩展 {key} 安装任务已提交") }))
         }
-        "uninstall" => {
-            guard::action(&user, act::RUNTIME_UNINSTALL_EXTENSION)?;
+        _ => {
             runtime_cmd::uninstall_extension(&state, change)
                 .await
                 .map_err(handlers::sites::map_err)
                 .map_err(ApiError)?;
             write_done(json!({ "message": format!("扩展 {key} 卸载任务已提交") }))
         }
-        _ => Err(ApiError(AppError::BadRequest(format!(
-            "未知扩展操作：{op}（应为 install / uninstall）"
-        )))),
     }
 }
 

@@ -237,14 +237,14 @@ pub async fn install(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    if !state.cfg.catalog.enabled {
-        return Err(AppError::NotFound("商店目录未启用".into()));
-    }
     let ip = handlers::client_ip(&state, &parts);
     if let Err(e) = handlers::require_permission(&user, Permission::PluginManage) {
         audit(&state, &user, &ip, &id, "deny", "reason=permission");
         return Err(e);
+    }
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    if !state.cfg.catalog.enabled {
+        return Err(AppError::NotFound("商店目录未启用".into()));
     }
     if state.cfg.catalog.public_key_hex().is_none() {
         audit(&state, &user, &ip, &id, "deny", "reason=no_key");
