@@ -22,3 +22,9 @@
 - **为什么卡**：Docker → 镜像、工具 → 配额管理两个二级菜单没有图标，与同级项不齐；无字形时宿主只能留空，不能回退成 `mdi-xxx` 文本。
 - **期望的上游改动**：allowlist 增加上述字形，重新生成版本化 woff2 与 CSS，并在 manifest 记录版本。
 - **当前临时做法**：`folder` / `disk` 用 `mdi-file-document` / `mdi-archive-outline` 就近兜底；`image` / `hard-drive` 映射为 `null`，不下发 `icon`。
+
+## 删除说明（编号留空不复用）
+
+- **T11**：原生页没有表格多选/批量操作需求；文件页用 `virtual-list` + 单行操作，站点/容器/任务/作业列表的 `rowClick` 只做单条跳转。
+- **T12**：`file` 组件已在原生文件页使用；宿主 `PlatformAdapter.upload` 按 256 KiB 分片顺序上传，当前 `multiple: false`，暂停/续传/多文件独立进度暂不需要。
+- **T13**：`code` 组件仍在 7 处使用（vhost 配置、文件查看、站点/任务/运行环境日志，容器详情与容器日志页各一处）；文件查看受 256 KiB 上限约束，日志均为尾部窗口读取，单次内容规模可控；nginx / toml / dockerfile 走通用高亮回退，可读性够用。
