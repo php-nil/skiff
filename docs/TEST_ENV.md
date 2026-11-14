@@ -59,7 +59,30 @@
 
 ## 5. 当前部署
 
-> **2026-11-14 08:28 就地升级到 `16cbe9a`（作业日志路径按 `Accept` 分流；当前生效）**
+> **2026-11-14 19:25 全新安装 `56e5790`（壳主题改 CSS 变量 + 菜单设置精简 + Web 服务安装/运维原生页；当前生效）**
+> - 背景：`e38be99` 首次引入壳主题时把 `theme` 写进 schema 根，触发 budding 1.8.0-r4 CompileError、全站白屏；`56e5790` 改为文档级 CSS 变量（`--v-theme-primary` / `--bud-admin-primary`）后复验。两次均为清空 `/www/skiff`、`/etc/skiff` 与旧二进制的全新安装。
+> - 出包：`release.yml` dispatch run `43589383679`（ref=main、head `56e5790`，publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,895,137 B** `71ee99c8de3a4fc011c60cd8e05f6ae88e7ed97084d38f190065874fe14877fd`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：`install.sh --datadir /www/skiff --listen 127.0.0.1:18080`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 TEST_ENV 设置、初始口令文件已删；7 个官方插件全部装成；`skiff-http-fwd` 重建并 active。
+> - 新二进制：`/usr/local/bin/skiff` **19,272,976 B** `468cafa518dd972b4b2b2265d418a161813c3be092e4c94db95ec475d58fe7cc`。
+> - 库：`user_version=19`、`integrity_check=ok`；`skiff` / `skiff-http-fwd` active，`/healthz` 18080 与 18081 均 **200**。Web 服务安装后新增容器 `skiff-web-nginx`（`openresty/openresty:alpine`，openresty/1.31.8.1）。
+
+> **2026-11-14 16:06 全新安装 `10deadf`（查询态页内跳转重渲染 + 列表场景空态；已被 2026-11-14 19:25 全新安装取代，保留作过程记录）**
+> - 背景：延续同日方案 1，再次全新安装（清 `/www/skiff`、`/etc/skiff`、旧二进制后重装），无旧库/旧二进制备份；空库重迁到 **v19**。
+> - 出包：`release.yml` dispatch run `43572862985`（ref=main、head `10deadf`，publish=false、skip_plugins=false）两架构 + Docker 镜像全绿（GitHub Release skipped 属预期）；artifact `release-amd64` 主包 **11,892,429 B** `9c8ef5f86da5f6c0e87ccfe41a0051881f5ec716fe6cb6c9bb74f0d904ef26ed`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：`install.sh --datadir /www/skiff --listen 127.0.0.1:18080`，Docker 复用 29.7.2；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 TEST_ENV 设置、初始口令文件已删；7 个官方插件全部装成；`skiff-http-fwd` 重建并 active。
+> - 新二进制：`/usr/local/bin/skiff` **19,272,976 B** `2d80e03e358fd8de1f6d86d1c99346a0d1cc87f05a46bdcaf199a062943e3ed0`。
+> - 库：`user_version=19`、`integrity_check=ok`；`skiff` / `skiff-http-fwd` active，`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-14 14:36 全新安装 `008ecff`（budding 1.8.0-r4 + 概览/容器列表精修；已被 2026-11-14 16:06 全新安装取代，保留作过程记录）**
+> - 背景：测试机旧安装与旧库已不存在（`/usr/local/bin/skiff`、`skiff.service`、`/www/skiff` 均缺失，`/root/iter` 被清空），按测试开发阶段约定走全新安装，**无旧二进制与旧库快照可备份**。
+> - 出包：`release.yml` dispatch run `43565620459`（ref=main、head `008ecff`，publish=false、skip_plugins=false）两架构 + Docker 镜像全绿（GitHub Release skipped 属预期）；artifact `release-amd64` 主包 **11,890,000 B** `a92255d44dea7b0becd4c9d35800d9d693a75805933cc953f96d30ebf33fc6ce`（开发机 `Get-FileHash`、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：包内 `sh install.sh --datadir /www/skiff --listen 127.0.0.1:18080`，Docker 复用现网 29.7.2；`/etc/skiff/config.toml` 显式开启 `allow_reduced_sandbox = true`（插件安装前置），其余保持安装默认（`allow_insecure_http = true`、`tls_enabled = false`）。
+> - 初始化：入口前缀改为 `34h8y9da`，管理员口令改为 TEST_ENV 记录值，`initial-admin.txt` 已由改密流程删除；7 个官方插件用 `skiff plugin install --yes` 全部安装并启用。
+> - 新二进制：`/usr/local/bin/skiff` **19,264,784 B** `fbbe40180e700932f97008e9d42582157e88209be99e612a53513c2f0ffc81b4`。
+> - 库：全新空库，`user_version=19`、`integrity_check=ok`；`skiff` / `skiff-http-fwd` active，`/healthz` 18080 与 18081 均 **200**。
+> - 转发层：`/root/iter/skiff-http-fwd.py` 与 `/etc/systemd/system/skiff-http-fwd.service` 按 [DEPLOY_TEST.md](DEPLOY_TEST.md) §2.4.3 重建（`0.0.0.0:18081 → 127.0.0.1:18080`，建连 10 s 超时、建连后 `settimeout(None)`，`Restart=always`）。
+
+> **2026-11-14 08:28 就地升级到 `16cbe9a`（作业日志路径按 `Accept` 分流；已被 2026-11-14 14:36 全新安装取代，保留作过程记录）**
 > - 出包：CI run `43531925907`（head `16cbe9a`）success；`release.yml` dispatch run `43533335180`（ref=main、head `16cbe9a`，publish=false、skip_plugins=false）两架构 + Docker 镜像 job 全绿（发布到 GitHub Release skipped 属预期）；artifact `release-amd64` 主包 **11,882,335 B** `fdb9090f0a203f4028c57b5652b4449565ca8c1555b157ba2116a57b5cb33491`（开发机 `Get-FileHash`、随包 `.sha256` 与测试机 `sha256sum -c` 一致）。
 > - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-11c8f94dd50227f8802724a28d6128ebe3f4d561ccdffb8cea65fd5a97e5a1da`（19,244,304 B）；库快照 `/root/iter/backup/skiff-058abe7c92430fa4c594717ba69020e4a4e67af67a1064beb757f2eae48ab34c.db`（2,527,232 B）；`official/*.wbpkg` 未覆盖（插件内容未变）。
 > - 新二进制：`/usr/local/bin/skiff` **19,244,304 B** `f54a6fe9b12f1c7c4109d18068c0cd06a7d2eb00d1524fc9c6c92723a668932c`。
@@ -252,6 +275,10 @@
 | 2026-11-13 21:37 | **就地升级**（budding 1.8.0-r3：游标分页、图标、代码查看器、行内删除） | 出包 run `43433228776`（head `150357f`，代码同 `91813f1`）；主包 11,881,370 B `38ff0c18…29ff` 三方一致；新二进制 19,244,304 B `06d86211…58bd`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；容器/镜像/网络/卷分页 2 页且 0 重复；**审计页每页仅渲染 10/50 条**；图标 17 组字形齐全、4 个条目无图标；**代码查看器报「组件未发布：code-viewer」**；行内删除与 viewer 隐藏通过 |
 | 2026-11-14 07:45 | **就地升级**（budding 1.8.0-r3 三处缺陷修复复验：审计全量行、代码查看器、菜单图标） | 出包 run `43528413516`（head `c535343`）；主包 11,883,795 B `aafadc47…a160b` 三方一致；新二进制 19,244,304 B `11c8f94d…a1da`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；审计 3 页各 50 条、id 13210→13061 连续；文件/站点/容器代码高亮正常；**任务日志页仍返回裸 JSON**；图标 31/33 有字形，镜像/配额管理留空；抽查 4 页 200 / iframe 0 / 控制台 0 错误 |
 | 2026-11-14 08:28 | **就地升级**（作业日志路径按 `Accept` 分流复验） | 出包 run `43533335180`（head `16cbe9a`）；主包 11,882,335 B `fdb9090f…3491` 三方一致；新二进制 19,244,304 B `f54a6fe9…932c`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；`/jobs/{id}/logs` 浏览器导航得壳页（`text/html`、bud-code、日志正文、无「组件未发布」），同 URL `Accept: application/json` 仍返回 7 条增量 JSON；审计 2 页 id 13658→13559 连续；文件/站点代码高亮正常；概览与插件页 200 / iframe 0 / 控制台 0 错误 |
+| 2026-11-14 14:36 | **全新安装**（r4 资产与概览/容器列表精修；旧安装与旧库已不存在，无备份可做） | 出包 run `43565620459`（head `008ecff`）；主包 11,890,000 B `a92255d4…f6ce` 三方一致；新二进制 19,264,784 B `fbbe4018…81b4`；`install.sh --datadir /www/skiff --listen 127.0.0.1:18080` | 空库 **v19**、`integrity_check=ok`；前缀 `34h8y9da`、管理员口令按 TEST_ENV 设置、7 个官方插件装成；`skiff-http-fwd` 重建（18081→18080）active；`/healthz` 均 200；五项验收 **4 通过 / 1 失败**：容器列表空态文案被 `statusTable` 丢弃（两种场景均「暂无数据」），「全部/仅异常」按钮点击不导航（直访 URL 正常） |
+| 2026-11-14 16:06 | **全新安装**（查询态页内跳转重渲染 + 列表场景空态补齐） | 出包 run `43572862985`（head `10deadf`）；主包 11,892,429 B `9c8ef5f8…26ed` 三方一致；新二进制 19,272,976 B `2d80e03e…3ed0`；清空旧安装后 `install.sh` 重装 | 空库 **v19**、`integrity_check=ok`；前缀/口令/7 插件/转发层同前；`/healthz` 均 200；五项验收 **全部通过**：容器「全部/仅异常」URL/高亮/计数/空态同步且前进后退正确、四轮连点无重复渲染；容器/站点/镜像/网络/卷/compose 场景空态正确（Docker 停后恢复）；菜单跳转单次渲染；r4 资产、概览、图标与六页回归通过 |
+| 2026-11-14 18:49 | **全新安装**（壳主题误写 schema 根属性，全站 CompileError，未进入验收） | 出包 run `43586098454`（head `e38be99`）；主包 11,895,302 B `14262ba8…e6d3` 三方一致；新二进制 19,268,880 B `73bea0e5…8fa3`；清空旧安装后 `install.sh` 重装 | 空库 **v19**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；但 `/`、`/sites`、`/settings/menu`、`/settings/ui`、`/sites/web` 全部报「节点 / 包含未注册的顶层属性 \"theme\"」，三项验收与 Web 安装均阻塞 |
+| 2026-11-14 19:25 | **全新安装**（`56e5790` 主题 CSS 变量修复 + 菜单精简 + Web 服务原生运维） | 出包 run `43589383679`（head `56e5790`）；主包 11,895,137 B `71ee99c8…77fd` 三方一致；新二进制 19,272,976 B `468cafa5…7cc`；清空旧安装后 `install.sh` 重装 | 空库 **v19**、`integrity_check=ok`；前缀/口令/7 插件/转发层同前；`/healthz` 均 200；四项验收 **全部通过**：五页首屏正常、菜单隐藏/固定持久化、主色 `#c62828` 全站生效且非法值 400/清空回默认、viewer 只读；Web 服务经原生「安装」按钮装成（6 步全 ok，容器 `skiff-web-nginx` running、version openresty/1.31.8.1），启动/停止/重启可用，重装与删除均弹二次确认 |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -269,6 +296,42 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-14 19:26–19:55 `56e5790`（主题 CSS 变量 + 菜单精简 + Web 服务安装/运维）验收**
+
+前置：全新安装（见 §5），空库 v19、前缀 `34h8y9da`、7 个官方插件、Docker 29.7.2、`skiff-http-fwd` active；Chromium 1440×1000 与 900×900；临时 viewer `r9viewer`、临时运行环境 `r12-php` 验后删除，仅保留产品自身的 `skiff-web-nginx` 容器。
+
+- **首屏（通过）**：`/`、`/sites`、`/settings/menu`、`/settings/ui`、`/sites/web` 均正常渲染，无「未注册的顶层属性 theme」；控制台除既有 `/favicon.ico` 404 外 0 错误。对比：`e38be99` 同一套五页全部 CompileError，`56e5790` 改为 `applyShellTheme` 注入 `--v-theme-primary` / `--bud-admin-primary` 后恢复。
+- **菜单设置（通过）**：页面无「布局」「内容宽度」；对 `网站列表` 点「显隐」→ 状态「已隐藏」、侧栏链接消失，刷新后仍隐藏；再点恢复「—」、链接回归；「固定」→「已固定」，刷新保留，再点取消。壳层：侧栏 `.bud-admin__aside` 220×798、内容卡 x=261 w=1138（1440 视口），内容区铺满余下宽度；900 窄屏 `scrollWidth=900` 无横向溢出，抽屉覆盖不挤压内容。
+- **设置 → 界面（通过）**：默认 `#1867c0`（`--v-theme-primary: 24, 103, 192`）；保存 `#c62828` 后变量变 `198, 40, 40`、导航选中与主按钮 `rgb(198, 40, 40)`，刷新与跳转概览仍保持；`#12g` 保存返回 **400**、提示「主色必须是 #RRGGBB 格式」，会话/库仍为 `#c62828`；清空后恢复 `#1867c0` 并持久；viewer 打开同页仅显示「只有管理员可以修改主题」，无输入框与保存按钮。
+- **Web 服务（通过）**：未安装时仅「安装 Web 服务」；点击后 6 步进度全部 ok（Docker/80 端口、目录与主配置、拉取 openresty 镜像、重建 vhost、启动 host 网络容器、写默认站点与兜底配置），约 20 秒转可用。机器实测容器 `skiff-web-nginx` running，`openresty -v` = openresty/1.31.8.1；页面显示「容器：running；版本：openresty/1.31.8.1；配置校验通过」，`/ui/v1/web` `available=true`、probe `http://127.0.0.1:8081/nginx_status` 200；面板 `/healthz` 18080/18081 仍 200（nginx 侧 `:80/healthz` 无该 location，返回 404 属默认站点行为）。操作列出现停止/重启/重新安装/删除容器：停止后 `container_state=exited`，启动/重启后 running；重装弹「确认重新安装 Web 服务？…」、删除弹「确认删除 Web 服务容器？…」，取消后容器保持运行。
+- **回归（通过）**：容器列表 1 行 7 列定宽、无横向溢出，「全部/仅异常」URL 与高亮同步、空态「没有异常容器」；站点/卷空态仍为各自文案；资产全部 `1.8.0-r4` 版本化名，稳定别名 `budding.min.js` / `budding.css` 200；概览 2×2 指标卡 + 三列系统状态、无趋势卡；镜像 `mdi-image-outline`、配额 `mdi-harddisk`，可见图标无空白、无 `mdi-xxx` 文本；站点、容器详情、插件功能页、文件管理、审计、作业日志六页 200 / iframe 0 / 控制台 0 错误，作业日志壳页与 JSON 分流正常。
+- 截图与证据：`skiff-run/plugin-acceptance/plugin-shots/r16-*.png`；`menu16b-report.json`、`theme16-report.json`、`web15-report.json`、`web16b-report.json`、`final16.out.txt`、`extra16.out.txt`、`job16.out.txt`。
+
+**2026-11-14 16:09–16:18 `10deadf`（查询态页内跳转重渲染 + 列表场景空态）验收**
+
+前置：再次全新安装（见 §5），空库 v19、前缀 `34h8y9da`、7 个官方插件、Docker 29.7.2、`skiff-http-fwd` active；Chromium 1440×1000；临时容器 `r14-tmp`、临时运行环境 `r12-php` 验后删除，Docker 恢复 0 容器 / 2 镜像，站点 0。
+
+- **容器筛选（通过）**：点「仅异常」后 URL 变 `?filter=error`，「仅异常」呈 tonal+primary 高亮、计数「异常容器 0 个」、空态「没有异常容器」；点「全部」回 `/containers`、「全部」高亮、计数「共 0 个」、空态「还没有容器，可在下方新建」。连续 4 轮来回点击每步均 `#skiff-root`×1、`.bud-table`×1、侧栏×1，无重复渲染或状态丢失；浏览器后退两次回到「全部」、前进两次回到「仅异常」，每步 URL/高亮/计数/空态一致。
+- **列表空态（通过）**：`/sites` 显示「还没有站点，…」、`/volumes` 显示「还没有命名卷，…」、容器页「还没有容器，可在下方新建」。停 Docker 后：容器「Docker 不可用，容器列表为空」+「共 0 个（Docker 不可用）」、镜像「Docker 不可用，镜像列表为空」、网络「Docker 不可用，网络列表为空」、卷「Docker 不可用，卷列表为空」、compose「Docker 不可用，compose 项目列表为空」；`systemctl start docker` 后服务恢复 active。
+- **导航渲染（通过）**：侧栏「镜像」「网络」与「概览」真实点击后 URL 正确切换，页面均 `#skiff-root`×1、`.bud-table`×1、侧栏×1，无重复 DOM；容器行内「详情」跳转 200、iframe 0、控制台 0 错误。
+- **回归（通过）**：资产仍全部 `1.8.0-r4` 版本化名，`budding.min.js` / `budding.css` 稳定别名 200，除 `/favicon.ico` 外无 404、控制台 0 错误；概览 2×2 指标卡 + 三列系统状态、无「趋势图表」占位卡；`镜像=mdi-image-outline`、`配额管理=mdi-harddisk` 字形正常、可见图标无空白无 `mdi-xxx` 文本；站点、容器详情、插件功能页、文件管理、审计、作业日志六页 200 / iframe 0 / 控制台 0 错误，作业日志壳页 `div.bud-code` 正常且 `Accept: application/json` 仍返回增量 JSON。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/r14-*.png`；`final14.out.txt`、`history14.out.txt`、`toggle14.out.txt`、`dockerdown14.out.txt`、`extra14.out.txt`、`job14.out.txt`。
+
+**2026-11-14 14:39–14:47 `008ecff`（budding 1.8.0-r4 + 概览/容器列表精修）验收**
+
+前置：测试机旧安装与旧库已不存在，按方案 1 全新安装（见 §5）；空库 v19、前缀 `34h8y9da`、7 个官方插件、Docker 29.7.2；Chromium 1440×1000；临时容器 `r12-tmp`（长镜像 tag）、临时运行环境 `r12-php`、临时拉取的 `busybox:1.36` 已于验后清理，Docker 恢复 0 容器 / 2 镜像，站点 0。
+
+- **资产（通过）**：壳页引用全部为 `budding-1.8.0-r4.min.{js,css}`、`budding-icons-1.8.0-r4.min.css`、`budding-code-1.8.0-r4.min.js` 等版本化名；稳定别名 `/{p}/static/budding/budding.min.js`（1,261,422 B）与 `budding.css`（654,398 B）均 200；除全站既有 `/favicon.ico` 404 外无静态 404、控制台 0 错误。
+- **概览（通过）**：四张指标卡在 2 列网格（2×2 大数值卡）；「系统状态」为 3 列（CPU/内存/负载）；**无「趋势图表」占位卡**，副标题一句「只读计数；趋势图表待定（D14–D16），当前不展示」；异常计数为 0 时按现状文案与主色展示，代码中 `>0` 才挂 `warning` 警示色。
+- **容器列表（失败：2 个独立缺陷；其余子项通过）**：
+  - 列宽与长名：六列声明 `200/110/260/100/220/160`，有 1 条长镜像名容器时实际渲染 `195/123/259/99/215/158`（表宽 1138 = 容器宽，无横向溢出），镜像名省略号截断，未挤压其他列。
+  - 计数与详情：`共 1 个` / `共 0 个` 正常；行内「详情」存在且详情页 200、iframe 0、控制台 0 错误。
+  - **空态文案失败**：无容器与 Docker 不可用两种场景，表格内均只显示「暂无数据」。预期分别为「还没有容器，可在下方新建」「Docker 不可用，容器列表为空」。根因为 `budding-boot.js` 的 `statusTable` 只消费 `options.height`，**未把 `options.emptyText` 合入表格 props**（容器页 2090–2100 行传入的文案被丢弃，表格沿用默认值）。Docker 不可用时顶部告警与「共 0 个（Docker 不可用）」本身正常。
+  - **切换失败**：点击「仅异常」后 URL、高亮、计数均不变；直接访问 `?filter=error` 可正确高亮并进入过滤态。DOM 中两个切换控件渲染为无 `href` 的 `<button>`，schema 给的是 `to`，疑为按钮组件不消费 `to`/缺少显式导航动作。
+- **菜单图标（通过）**：`镜像 = mdi-image-outline`、`配额管理 = mdi-harddisk` 均有字形；侧栏 25 个可见图标 `blankIcons=0`，页面文本无 `mdi-xxx`。
+- **回归（通过）**：站点、容器详情、插件功能页（`com.skiff.guard`）、文件管理、审计、作业日志均 200、iframe 0、控制台 0 错误（作业页仅既有 favicon 404）。作业日志页为 `text/html` 壳页，`div.bud-code` 渲染 4 条安装日志，无「组件未发布」；同 URL `Accept: application/json` 返回 `entries=4` 的 JSON。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/r12-*.png`；`accept12-report.json`、`containers12-row-report.json`、`containers12-report.json`、`dockerdown12-report.json`、`job12b-report.json`、`quotaicon12-report.json`、`toggle12b.out.txt`。
 
 **2026-11-14 08:30–08:33 `16cbe9a`（作业日志路径按 `Accept` 分流）验收**
 
