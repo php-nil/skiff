@@ -9875,6 +9875,43 @@ async fn ui_store_upgrade_download_requires_csrf_and_admin() {
     assert!(text.contains("公钥"), "{text}");
 }
 
+/// 列表空态是场景语义，必须由调用方经 `statusTable` 的 `options.emptyText`
+/// 原样落到表格 props；不得再被共享层丢弃成组件默认的「暂无数据」。
+#[test]
+fn budding_boot_status_table_honors_caller_empty_text() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("emptyText: options.emptyText || '暂无数据'"),
+        "statusTable 必须把调用方空态文案传给表格组件"
+    );
+    // 容器页的三种场景文案属于产品口径，不能被共享层覆盖。
+    for text in [
+        "'Docker 不可用，容器列表为空'",
+        "'没有异常容器'",
+        "'还没有容器，可在下方新建'",
+    ] {
+        assert!(js.contains(text), "容器页空态文案缺失：{text}");
+    }
+}
+
+/// budding 的 `button` 只渲染 `<button type="button">`，不消费 `to`；
+/// 页面切换必须用显式的 `navigate` 动作，否则点击没有 href、也不会导航。
+#[test]
+fn budding_boot_buttons_navigate_explicitly() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        !js.contains("to: prefix +"),
+        "button.props.to 不会触发导航，必须改用 click → navigate 动作"
+    );
+    for url in ["'/containers'", "'/containers?filter=error'"] {
+        let needle = format!("url: prefix + {url}");
+        assert!(
+            js.contains(&needle),
+            "容器过滤按钮缺少 navigate 动作：{needle}"
+        );
+    }
+}
+
 /// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
 /// 不得再退回旧 SSR（旧路由与模板按约定保留，只是产品前端不再链接）。
 #[test]

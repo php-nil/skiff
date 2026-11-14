@@ -1101,6 +1101,9 @@
     };
   }
 
+  /// 列表统一走表格节点；`options` 目前只承载 `height`（定高滚动）与
+  /// `emptyText`（按场景的空态文案）。新增字段必须在这里显式落到 props，
+  /// 否则调用方传了也会被丢弃。
   function statusTable(columns, items, rowKey, options) {
     options = options || {};
     var props = {
@@ -1112,7 +1115,9 @@
       // -1 表示「全部渲染」，游标分页的下一页游标才会与本页实际展示的最后一行对齐。
       perPage: -1,
       density: 'compact',
-      emptyText: '暂无数据'
+      // 空态文案属于场景语义（Docker 不可用 / 仅异常 / 首次使用），
+      // 由调用方下发；未提供时才回落到通用文案。
+      emptyText: options.emptyText || '暂无数据'
     };
     if (options.height) {
       // 定高 + 内部滚动：避免长列表把整页撑开，同时保证本页所有行都可达。
@@ -2039,13 +2044,19 @@
         }
       });
     }
+    // budding 的 button 只渲染 <button type="button">，不消费 `to`（没有 href、
+    // 也不会触发路由）；页面切换必须走显式 `navigate` 动作。
     var allButton = {
       type: 'button',
       props: {
         text: '全部',
         size: 'small',
-        variant: filter === 'error' ? 'text' : 'tonal',
-        to: prefix + '/containers'
+        variant: filter === 'error' ? 'text' : 'tonal'
+      },
+      onEvent: {
+        click: {
+          actions: [{ type: 'navigate', props: { url: prefix + '/containers' } }]
+        }
       }
     };
     if (filter !== 'error') allButton.props.color = 'primary';
@@ -2054,8 +2065,17 @@
       props: {
         text: '仅异常',
         size: 'small',
-        variant: filter === 'error' ? 'tonal' : 'text',
-        to: prefix + '/containers?filter=error'
+        variant: filter === 'error' ? 'tonal' : 'text'
+      },
+      onEvent: {
+        click: {
+          actions: [
+            {
+              type: 'navigate',
+              props: { url: prefix + '/containers?filter=error' }
+            }
+          ]
+        }
       }
     };
     if (filter === 'error') errorButton.props.color = 'primary';
