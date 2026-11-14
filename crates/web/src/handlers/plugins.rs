@@ -526,16 +526,15 @@ pub(crate) fn verify_for_confirm(
     path: &FsPath,
 ) -> Result<skiff_plugin::TrustDecision, AppError> {
     // 判定逻辑与 CLI 完全同一份；这里只把「未导入公钥」翻成页面里的话术。
-    let trust =
-        skiff_plugin::resolve_trust(path, state.db(), state.cfg.allow_unsigned).map_err(|e| {
-            match e {
-                skiff_plugin::TrustError::UnverifiedKey { key_id } => AppError::BadRequest(format!(
-                    "未导入该包的公钥（指纹 {key_id}）。请先在「设置 → 信任公钥」导入，再安装；\
+    let trust = skiff_plugin::resolve_trust(path, state.db(), state.cfg.allow_unsigned).map_err(
+        |e| match e {
+            skiff_plugin::TrustError::UnverifiedKey { key_id } => AppError::BadRequest(format!(
+                "未导入该包的公钥（指纹 {key_id}）。请先在「设置 → 信任公钥」导入，再安装；\
                      未签名包默认拒装。"
-                )),
-                other => AppError::BadRequest(other.to_string()),
-            }
-        })?;
+            )),
+            other => AppError::BadRequest(other.to_string()),
+        },
+    )?;
     // 直传安装与商店安装共用同一兼容判定；不兼容的包在确认页之前就拒绝，
     // 避免用户走完授权页才看到失败。
     let api = &trust.meta.manifest.api;
@@ -1052,7 +1051,9 @@ mod tests {
         // 否则会出现「400 请求非法 + 正文说 503」的自相矛盾。
         let unavailable = rpc_failure(Some(503), "fail2ban 未安装");
         match rpc_error(&unavailable) {
-            AppError::Unavailable(m) => assert_eq!(m, unavailable.to_string(), "503 文案必须原样保留"),
+            AppError::Unavailable(m) => {
+                assert_eq!(m, unavailable.to_string(), "503 文案必须原样保留")
+            }
             other => panic!("内核 503 应映射 HTTP 503，实际 {other:?}"),
         }
 

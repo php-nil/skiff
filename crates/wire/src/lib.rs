@@ -123,7 +123,10 @@ impl RpcFailure {
 pub fn upstream_status_of(message: &str) -> Option<u16> {
     let (_, tail) = message.split_once("内核返回 HTTP ")?;
     let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse::<u16>().ok().filter(|s| (100..=599).contains(s))
+    digits
+        .parse::<u16>()
+        .ok()
+        .filter(|s| (100..=599).contains(s))
 }
 
 #[derive(Debug, thiserror::Error)]
