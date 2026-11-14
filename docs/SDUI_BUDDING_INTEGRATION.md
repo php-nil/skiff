@@ -351,7 +351,7 @@ Skiff 侧对应约束：
 
 以下条款已写入 [URL_CONTRACT.md](URL_CONTRACT.md) §2、§2.1、§6、§9；本节只保留结论摘要，不再作为待办。
 
-- **§2 例外表**：`/ui/v1/...` 无入口前缀，会话 Cookie + CSRF，未认证 401，仅 `handlers::ui_api`，只返 JSON。
+- **§2 例外表**：`/ui/v1/...` 无入口前缀，会话 Cookie + CSRF，未认证 401，仅 `handlers::ui`（按资源拆分），只返 JSON。
 - **§2 列表**：`/ui/v1/` 与 `/api/v1/` 并列；`/ui/` 下其它形态一律 404，不得作为静态资源或页面旁路。
 - **§2.1（新增）SPA 壳页回落白名单**：仅 `GET` + `Accept: text/html` + 路径命中已登记页面前缀时返回壳页；白名单之外仍 404；`POST` 等写请求永不回落；白名单变更必须同步契约与测试。
 - **§6 方法与副作用**：`/ui/v1/*` 写操作一律 POST + CSRF；`GET /ui/v1/bootstrap` 与 `POST /ui/v1/session` 为未认证端点（登录用签名 CSRF token + 来源判定）；`session/logout`、`session/password`、`session/totp`、`session/totp/enable` 为认证类例外，与现有页面路由一一对应。

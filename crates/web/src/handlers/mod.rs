@@ -19,7 +19,7 @@ pub mod sites;
 pub mod spa;
 pub mod store;
 pub mod tasks;
-pub mod ui_api;
+pub mod ui;
 
 use std::collections::HashMap;
 
