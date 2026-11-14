@@ -285,16 +285,16 @@ fn ago_text(ts: u64) -> String {
     }
 }
 
-/// 原生编辑器的只读文本：只取第一页（256KiB），二进制/非 UTF-8 直接拒绝。
+/// 原生编辑器的字面量文本：只取第一页（256KiB），二进制/非 UTF-8 直接拒绝。
 ///
-/// `text_safe` 把每个 `${` 改写成 `${'${'}`：budding 会把 props 字符串里的 `${...}`
-/// 当模板求值，而站点里的 shell/JS 文件经常含 `${VAR}`。改写后渲染结果与原文一致，
-/// 保存时 textarea 的值就是原文，不需要反向解码。
+/// `text_literal` 按 budding 1.8.0 的 `\${` 转义规则改写：`${` 前紧邻的反斜杠数
+/// 调整为 `2n+1`，渲染后仍是原文。站点里的 shell/JS 文件经常含 `${VAR}`，
+/// 不转义会被当模板求值；保存时 textarea 的值就是原文，不需要反向解码。
 fn read_text(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let path = common::param_str(params, "path");
     if path.trim().is_empty() {
         return Ok(json!({
-            "ok": true, "path": "", "text": "", "text_safe": "",
+            "ok": true, "path": "", "text": "", "text_literal": "",
             "read_only": true, "can_save": false, "error": "", "empty": true, "open": false,
         }));
     }
@@ -309,7 +309,7 @@ fn read_text(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
             "ok": false,
             "path": path,
             "text": "",
-            "text_safe": "",
+            "text_literal": "",
             "size": size,
             "size_text": size_text(size),
             "read_only": true,
@@ -329,7 +329,7 @@ fn read_text(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
         "ok": true,
         "path": path,
         "text": text,
-        "text_safe": escape_template(&text),
+        "text_literal": literal_text(&text),
         "size": size,
         "size_text": size_text(size),
         "read_only": truncated,
@@ -340,9 +340,34 @@ fn read_text(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
     }))
 }
 
-/// 只改写 `${`，不碰其它字符；渲染后与原文一致。
-fn escape_template(text: &str) -> String {
-    text.replace("${", "${'${'}")
+/// 把 `${` 前紧邻的 n 个反斜杠调整为 2n+1，交给 budding 的字面量转义。
+fn literal_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut backslashes = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                out.push('\\');
+                backslashes += 1;
+            }
+            '$' if chars.peek() == Some(&'{') => {
+                // 已有 n 个反斜杠，再补 n+1 个，总数 2n+1 → 渲染为字面量 `${`。
+                for _ in 0..=backslashes {
+                    out.push('\\');
+                }
+                out.push('$');
+                out.push('{');
+                chars.next();
+                backslashes = 0;
+            }
+            _ => {
+                out.push(ch);
+                backslashes = 0;
+            }
+        }
+    }
+    out
 }
 
 /// 宿主返回标准 base64；这里只做解码，不校验多余填充位。
@@ -517,11 +542,13 @@ mod tests {
 
     #[test]
     fn template_escape_only_touches_dollar_brace() {
-        assert_eq!(escape_template("plain"), "plain");
-        assert_eq!(escape_template("echo ${HOME}"), "echo ${'${'}HOME}");
-        assert_eq!(escape_template("a${b}c${d}"), "a${'${'}b}c${'${'}d}");
-        // 已存在的转义串也按同一规则改写，渲染后仍是原文。
-        assert_eq!(escape_template("${'${'}"), "${'${'}'${'${'}'}");
+        assert_eq!(literal_text("plain"), "plain");
+        assert_eq!(literal_text(r"echo ${HOME}"), r"echo \${HOME}");
+        assert_eq!(literal_text("a${b}c${d}"), r"a\${b}c\${d}");
+        // 已有的反斜杠按 2n+1 调整，不碰 `${` 之外的路径。
+        assert_eq!(literal_text(r"C:\logs"), r"C:\logs");
+        assert_eq!(literal_text(r"\${x}"), r"\\\${x}");
+        assert_eq!(literal_text(r"\\${x}"), r"\\\\\${x}");
     }
 
     #[test]

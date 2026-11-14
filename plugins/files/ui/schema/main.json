@@ -229,7 +229,8 @@
                     "name": "text",
                     "label": "内容",
                     "rows": 20,
-                    "defaultValue": "{{data.file.text_safe}}"
+                    "readonly": "{{data.file.read_only}}",
+                    "defaultValue": "{{data.file.text_literal}}"
                   }
                 },
                 {

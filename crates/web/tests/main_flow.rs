@@ -9970,16 +9970,19 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
     // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
     assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
     assert!(js.contains("{ height: 420 }"), "审计列表应定高并内部滚动");
-    // 四个缺失图标：能就近映射的两个已映射，确实缺字形的两个显式留空。
+    // 四个菜单图标使用 1.8.0-r4 子集的原生字形，不再近似兜底或留空。
     assert!(
-        js.contains("folder: 'mdi-file-document'"),
-        "文件管理应就近映射"
+        js.contains("folder: 'mdi-folder-outline'"),
+        "文件管理应使用原生字形"
     );
-    assert!(js.contains("disk: 'mdi-archive-outline'"), "卷应就近映射");
-    assert!(js.contains("image: null"), "镜像缺字形应显式留空");
+    assert!(js.contains("disk: 'mdi-harddisk'"), "卷应使用原生字形");
     assert!(
-        js.contains("'hard-drive': null"),
-        "配额管理缺字形应显式留空"
+        js.contains("image: 'mdi-image-outline'"),
+        "镜像应使用原生字形"
+    );
+    assert!(
+        js.contains("'hard-drive': 'mdi-harddisk'"),
+        "配额管理应使用原生字形"
     );
 }
 
@@ -10958,7 +10961,13 @@ async fn ui_v1_key_response_shapes_are_frozen() {
             is_default: false,
         })
         .unwrap();
-    seed_plugin(h.state.db().as_ref(), "com.example.freeze", "Freeze", "Freeze", true);
+    seed_plugin(
+        h.state.db().as_ref(),
+        "com.example.freeze",
+        "Freeze",
+        "Freeze",
+        true,
+    );
     h.state
         .db()
         .audit(
@@ -10998,7 +11007,11 @@ async fn ui_v1_key_response_shapes_are_frozen() {
         ],
         "GET /ui/v1/overview",
     );
-    assert_key_set(&v["data"]["docker"], &["status", "reason"], "overview.docker");
+    assert_key_set(
+        &v["data"]["docker"],
+        &["status", "reason"],
+        "overview.docker",
+    );
     assert_key_set(
         &v["data"]["docker"]["status"],
         &["code", "label"],
@@ -11257,7 +11270,9 @@ async fn ui_v1_key_response_shapes_are_frozen() {
         .expect("应有一条审计记录");
     assert_key_set(
         row,
-        &["id", "ts", "actor", "ip", "action", "target", "result", "detail"],
+        &[
+            "id", "ts", "actor", "ip", "action", "target", "result", "detail",
+        ],
         "audit item",
     );
 

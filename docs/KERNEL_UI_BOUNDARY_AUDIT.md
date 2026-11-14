@@ -246,7 +246,7 @@
 **现象**
 - `assets.rs` 只声明主包与图标版本（[assets.rs](file:///c:/dev/skiff/crates/web/src/assets.rs#L28-L44)）。
 - 启动脚本用 `data-budding-version` 拼 `budding-code-<ver>.min.js` / `budding-terminal-<ver>.min.js`（[budding-boot.js](file:///c:/dev/skiff/crates/web/static/budding/budding-boot.js#L1036-L1052)）。
-- 没有测试断言这些 pack 文件随当前 `BUDDING_VERSION` 存在；`shell_html` 测试只覆盖主包/图标（[spa.rs](file:///c:/dev/skiff/crates/web/src/handlers/spa.rs#L206-L226)）。
+- 没有测试断言这些 pack 文件随当前 `BUDDING_VERSION` 存在；`shell_html` 测试只覆盖主包/图标（[spa.rs](file:///c:/dev/skiff/crates/web/src/handlers/spa.rs#L206-L226)）。**2026-11-13 已补 `assets::tests::budding_packs_match_declared_version`，本项闭环。**
 
 **影响**：升级主包但漏更新 pack 文件名时，浏览器只会在运行时 404（是否静默降级为纯文本 → **未实测**）。
 

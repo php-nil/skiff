@@ -86,11 +86,14 @@
     return { type: 'text', props: { text: text } };
   }
 
-  function countCard(title, lines) {
+  // 概览指标卡：大号数值 + 一行补充说明，比多行纯文本更容易扫读。
+  function metricCard(title, value, suffix, caption, color) {
+    var stat = { value: value, label: caption, suffix: suffix };
+    if (color) stat.color = color;
     return {
       type: 'card',
-      props: { title: title },
-      content: { body: lines.map(textLine) }
+      props: { title: title, variant: 'outlined' },
+      content: { body: [{ type: 'statistic', props: stat }] }
     };
   }
 
@@ -109,25 +112,35 @@
     }
     body.push({
       type: 'grid',
-      props: { columns: 3, gap: 16 },
+      props: { columns: 2, gap: 16 },
       content: {
         body: [
-          countCard('容器', [
-            '运行中 ' + data.containers.running,
-            '共 ' + data.containers.total + ' 个'
-          ]),
-          countCard('网站', [
-            '共 ' + data.sites.total + ' 个站点',
-            data.sites.abnormal > 0 ? data.sites.abnormal + ' 个异常' : '全部正常'
-          ]),
-          countCard('插件', [
-            '共 ' + data.plugins.total + ' 个',
-            '已启用 ' + data.plugins.enabled + ' / 停用 ' + data.plugins.disabled
-          ]),
-          countCard('运行环境', [
-            '共 ' + data.runtimes.total + ' 个',
-            '异常 ' + data.runtimes.abnormal + ' / 未安装 ' + data.runtimes.uninstalled
-          ])
+          metricCard(
+            '容器',
+            data.containers.running,
+            ' 个',
+            '运行中 · 共 ' + data.containers.total + ' 个'
+          ),
+          metricCard(
+            '网站',
+            data.sites.total,
+            ' 个',
+            data.sites.abnormal > 0 ? data.sites.abnormal + ' 个异常' : '全部正常',
+            data.sites.abnormal > 0 ? 'warning' : 'success'
+          ),
+          metricCard(
+            '插件',
+            data.plugins.total,
+            ' 个',
+            '已启用 ' + data.plugins.enabled + ' · 停用 ' + data.plugins.disabled
+          ),
+          metricCard(
+            '运行环境',
+            data.runtimes.total,
+            ' 个',
+            '异常 ' + data.runtimes.abnormal + ' · 未安装 ' + data.runtimes.uninstalled,
+            data.runtimes.abnormal > 0 ? 'warning' : null
+          )
         ]
       }
     });
@@ -170,49 +183,56 @@
           content: {
             body: [
               {
-                type: 'text',
-                props: {
-                  text: 'CPU ' + data.health.cpu_text + ' · 内存 ' + data.health.mem_text
+                type: 'grid',
+                props: { columns: 3, gap: 12 },
+                content: {
+                  body: [
+                    {
+                      type: 'statistic',
+                      props: {
+                        value: data.health.cpu_text,
+                        label: 'CPU',
+                        color: data.health.cpu_high ? 'warning' : null
+                      }
+                    },
+                    {
+                      type: 'statistic',
+                      props: {
+                        value: data.health.mem_text,
+                        label: '内存',
+                        color: data.health.mem_high ? 'warning' : null
+                      }
+                    },
+                    {
+                      type: 'statistic',
+                      props: { value: data.health.load_text, label: '负载' }
+                    }
+                  ]
                 }
               },
               {
                 type: 'text',
                 props: {
                   text:
-                    '负载 ' +
-                    data.health.load_text +
-                    ' · 运行时长 ' +
-                    data.health.uptime_text
+                    '运行时长 ' +
+                    data.health.uptime_text +
+                    ' · 采集时间 ' +
+                    data.health.t_text +
+                    '（UTC）'
                 }
-              },
-              {
-                type: 'text',
-                props: { text: '采集时间 ' + data.health.t_text + '（UTC）' }
               }
             ]
           }
         });
       }
     }
-    body.push({
-      type: 'card',
-      props: { title: '趋势图表' },
-      content: {
-        body: [
-          {
-            type: 'alert',
-            props: {
-              type: 'info',
-              text: '图表位暂缺：D14–D16 尚未定案，待选定图表组件后补充。'
-            }
-          }
-        ]
-      }
-    });
     body.push(textLine('采集时间 ' + data.collected_at));
     return {
       type: 'page',
-      props: { title: '概览 · Skiff', subtitle: '只读计数，不做实时刷新' },
+      props: {
+        title: '概览 · Skiff',
+        subtitle: '只读计数，不做实时刷新；趋势图表待定（D14–D16），当前不展示'
+      },
       body: body
     };
   }
@@ -603,9 +623,8 @@
 
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
-  /// 1.8.0-r3 的子集已含 17 个通用业务字形；`image` / `hard-drive` 在子集里没有
-  /// 对应字形，显式映射为 null（菜单不渲染图标，避免空白悬空项），并登记到上游清单。
-  /// `folder` / `disk` 用语义最近的 `mdi-file-document` / `mdi-archive-outline` 兜底。
+  /// 1.8.0-r4 的子集含镜像、磁盘、文件夹等业务字形，全部语义名直接映射，
+  /// 不再做近似兜底或留空。
   var MENU_ICONS = {
     overview: 'mdi-view-dashboard',
     globe: 'mdi-web',
@@ -624,17 +643,17 @@
     clock: 'mdi-clock-outline',
     file: 'mdi-file-document',
     dot: 'mdi-circle',
-    folder: 'mdi-file-document',
-    disk: 'mdi-archive-outline',
-    image: null,
-    'hard-drive': null
+    folder: 'mdi-folder-outline',
+    disk: 'mdi-harddisk',
+    image: 'mdi-image-outline',
+    'hard-drive': 'mdi-harddisk'
   };
 
   function iconFor(name) {
     return MENU_ICONS[name] || null;
   }
 
-  /// 没有字形时直接省略 icon 字段：避免导航渲染出空白图标占位。
+  /// 未登记的语义名直接省略 icon 字段，避免导航渲染出空白图标占位。
   function withIcon(route, name) {
     var icon = iconFor(name);
     if (icon) route.icon = icon;
@@ -1106,8 +1125,8 @@
     };
   }
 
-  function listTable(columns, path, rowKey, params) {
-    var table = statusTable(columns, [], rowKey);
+  function listTable(columns, path, rowKey, params, options) {
+    var table = statusTable(columns, [], rowKey, options);
     table.source = { url: apiBase + path, params: params || {} };
     table.props.paging = 'cursor';
     table.props.cursorParam = 'cursor';
@@ -2020,19 +2039,83 @@
         }
       });
     }
+    var allButton = {
+      type: 'button',
+      props: {
+        text: '全部',
+        size: 'small',
+        variant: filter === 'error' ? 'text' : 'tonal',
+        to: prefix + '/containers'
+      }
+    };
+    if (filter !== 'error') allButton.props.color = 'primary';
+    var errorButton = {
+      type: 'button',
+      props: {
+        text: '仅异常',
+        size: 'small',
+        variant: filter === 'error' ? 'tonal' : 'text',
+        to: prefix + '/containers?filter=error'
+      }
+    };
+    if (filter === 'error') errorButton.props.color = 'primary';
+    body.push({
+      type: 'flex',
+      props: { gap: 8 },
+      content: {
+        body: [
+          allButton,
+          errorButton,
+          {
+            type: 'text',
+            props: {
+              text:
+                '共 ' +
+                data.total +
+                ' 个' +
+                (data.docker_available ? '' : '（Docker 不可用）')
+            }
+          }
+        ]
+      }
+    });
     var table = listTable(
       [
-        { key: 'name', label: '名称' },
-        { key: 'short_id', label: 'ID' },
-        { key: 'image', label: '镜像' },
-        { key: 'state', label: '状态', text: '${state.label}' },
-        { key: 'status', label: '状态描述' },
-        { key: 'project', label: 'Compose 项目' }
+        { key: 'name', label: '名称', width: 200 },
+        { key: 'short_id', label: 'ID', width: 110 },
+        { key: 'image', label: '镜像', width: 260 },
+        { key: 'state', label: '状态', text: '${state.label}', width: 100, align: 'center' },
+        { key: 'status', label: '状态描述', width: 220 },
+        { key: 'project', label: 'Compose 项目', width: 160 }
       ],
       '/containers',
       'id',
-      filter === 'error' ? { filter: 'error' } : null
+      filter === 'error' ? { filter: 'error' } : null,
+      {
+        emptyText: !data.docker_available
+          ? 'Docker 不可用，容器列表为空'
+          : filter === 'error'
+            ? '没有异常容器'
+            : '还没有容器，可在下方新建'
+      }
     );
+    table.props.actionsLabel = '操作';
+    table.props.rowActions = [
+      {
+        type: 'button',
+        props: { text: '详情', variant: 'text', color: 'primary', size: 'small' },
+        onEvent: {
+          click: {
+            actions: [
+              {
+                type: 'navigate',
+                props: { url: prefix + '/containers/${id}' }
+              }
+            ]
+          }
+        }
+      }
+    ];
     table.onEvent = {
       rowClick: {
         actions: [
