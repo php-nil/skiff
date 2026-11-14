@@ -358,8 +358,8 @@ pub async fn container_action(
 
 /// `POST /ui/v1/containers`：新建容器。
 ///
-/// 参数解析、`ContainerCreate` 策略判定与 `validate_spec` 全部复用旧表单路径
-/// （`containers::spec_from_form`），执行仍走 `docker_cmd::container_create`。
+/// 直接构造命令层的 `SpecFields`，与旧表单路径共用同一套解析与 `validate_spec`，
+/// 但不再先把 JSON 降级成 `HashMap` 表单。
 pub async fn container_create(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
@@ -376,8 +376,23 @@ pub async fn container_create(
             None,
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
-    let form = create_form(&body);
-    let spec = handlers::containers::spec_from_form(&form).map_err(ApiError)?;
+    let spec = handlers::containers::spec_from_fields(handlers::containers::SpecFields {
+        image: body.image.clone(),
+        name: body.name.clone(),
+        restart: body.restart.clone(),
+        binds: body.binds.clone(),
+        volumes: body.volumes.clone(),
+        env: body.env.clone(),
+        ports: body.ports.clone(),
+        networks: body.networks.clone(),
+        memory_limit_mb: body.memory_limit_mb.clone(),
+        pids_limit: body.pids_limit.clone(),
+        cpu_shares: body.cpu_shares.clone(),
+        cpu_period: body.cpu_period.clone(),
+        cpu_quota: body.cpu_quota.clone(),
+        memory_swap_mb: body.memory_swap_mb.clone(),
+    })
+    .map_err(ApiError)?;
     state
         .cfg
         .policy
@@ -420,8 +435,15 @@ pub async fn container_limits_update(
             Some(&obj),
         )
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
-    let form = limits_form(&body);
-    let limits = handlers::containers::limits_from_form(&form).map_err(ApiError)?;
+    let limits = handlers::containers::limits_from_fields(handlers::containers::LimitFields {
+        cpu_shares: body.cpu_shares.clone(),
+        cpu_period: body.cpu_period.clone(),
+        cpu_quota: body.cpu_quota.clone(),
+        memory_limit_mb: body.memory_limit_mb.clone(),
+        memory_swap_mb: body.memory_swap_mb.clone(),
+        pids_limit: body.pids_limit.clone(),
+    })
+    .map_err(ApiError)?;
     state
         .cfg
         .policy

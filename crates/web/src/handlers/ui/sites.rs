@@ -250,16 +250,17 @@ pub async fn site_create(
 ) -> Result<Response, ApiError> {
     handlers::check_csrf_header(&state, &user, &parts)?;
     crate::authz::authorize(&user, act::SITE_CREATE).map_err(ApiError)?;
-    let form = site_create_form(&body);
-    let values = handlers::sites::new_form(&form);
+    // 请求体字段与旧新建表单同名，但这里直接构造命令输入，不再经表单 map 解析。
+    let mut aliases = body.aliases.clone();
+    aliases.push(body.aliases_bulk.clone());
     let cmd = skiff_app::commands::site::CreateSite {
-        domain: values.domain.clone(),
-        root_dir: values.root_dir.clone(),
-        site_type: values.site_type.clone(),
-        runtime_id: Some(values.runtime_id.clone()),
-        proxy_target: values.proxy_target.clone(),
-        proxy_websocket: values.proxy_websocket,
-        aliases: handlers::sites::collect_aliases(&form),
+        domain: body.domain.trim().to_string(),
+        root_dir: body.root_dir.trim().to_string(),
+        site_type: body.site_type.trim().to_string(),
+        runtime_id: Some(body.runtime_id.trim().to_string()),
+        proxy_target: body.proxy_target.trim().to_string(),
+        proxy_websocket: body.proxy_websocket,
+        aliases,
         actor: handlers::sites::actor(&state, &user, &parts),
     };
     let result = skiff_app::commands::site::create(&state, cmd)

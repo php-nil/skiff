@@ -446,18 +446,6 @@ fn parse_number(raw: &str, field: &str) -> Result<i64, AppError> {
         .map_err(|_| AppError::BadRequest(format!("{field} 需要整数：{raw}")))
 }
 
-fn optional_number(
-    form: &HashMap<String, Vec<String>>,
-    key: &str,
-    field: &str,
-) -> Result<Option<i64>, AppError> {
-    let raw = form_first(form, key);
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    parse_number(&raw, field).map(Some)
-}
-
 fn parse_ports(text: &str) -> Result<Vec<PortMapping>, AppError> {
     let mut out = Vec::new();
     for raw in text.split(['\n', ',']) {
@@ -562,45 +550,87 @@ fn parse_mounts(text: &str, volume: bool) -> Result<Vec<Mount>, AppError> {
 pub(crate) fn spec_from_form(
     form: &HashMap<String, Vec<String>>,
 ) -> Result<ContainerSpec, AppError> {
-    let image = form_first(form, "image");
-    if image.trim().is_empty() {
+    spec_from_fields(SpecFields {
+        image: form_first(form, "image"),
+        name: form_first(form, "name"),
+        restart: form_first(form, "restart"),
+        binds: form_first(form, "binds"),
+        volumes: form_first(form, "volumes"),
+        env: form_first(form, "env"),
+        ports: form_first(form, "ports"),
+        networks: form.get("networks").cloned().unwrap_or_default(),
+        memory_limit_mb: form_first(form, "memory_limit_mb"),
+        pids_limit: form_first(form, "pids_limit"),
+        cpu_shares: form_first(form, "cpu_shares"),
+        cpu_period: form_first(form, "cpu_period"),
+        cpu_quota: form_first(form, "cpu_quota"),
+        memory_swap_mb: form_first(form, "memory_swap_mb"),
+    })
+}
+
+/// 容器创建字段：SSR 表单与 `/ui/v1` JSON 共用同一套解析与校验。
+///
+/// 两端字段名与语义一致；JSON 路径直接构造本结构，不再先降级成表单 map。
+pub(crate) struct SpecFields {
+    pub image: String,
+    pub name: String,
+    pub restart: String,
+    pub binds: String,
+    pub volumes: String,
+    pub env: String,
+    pub ports: String,
+    pub networks: Vec<String>,
+    pub memory_limit_mb: String,
+    pub pids_limit: String,
+    pub cpu_shares: String,
+    pub cpu_period: String,
+    pub cpu_quota: String,
+    pub memory_swap_mb: String,
+}
+
+fn optional_number_value(raw: &str, field: &str) -> Result<Option<i64>, AppError> {
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_number(raw, field).map(Some)
+}
+
+pub(crate) fn spec_from_fields(f: SpecFields) -> Result<ContainerSpec, AppError> {
+    if f.image.trim().is_empty() {
         return Err(AppError::BadRequest("镜像不能为空".into()));
     }
-    let name = form_first(form, "name");
-    let restart = form_first(form, "restart");
-    let mut mounts = parse_mounts(&form_first(form, "binds"), false)?;
-    mounts.extend(parse_mounts(&form_first(form, "volumes"), true)?);
-
+    let mut mounts = parse_mounts(&f.binds, false)?;
+    mounts.extend(parse_mounts(&f.volumes, true)?);
     Ok(ContainerSpec {
-        image: image.trim().to_string(),
-        name: if name.trim().is_empty() {
+        image: f.image.trim().to_string(),
+        name: if f.name.trim().is_empty() {
             None
         } else {
-            Some(name.trim().to_string())
+            Some(f.name.trim().to_string())
         },
         command: None,
         entrypoint: None,
-        env: parse_env(&form_first(form, "env"))?.into_iter().collect(),
+        env: parse_env(&f.env)?.into_iter().collect(),
         labels: BTreeMap::new(),
-        ports: parse_ports(&form_first(form, "ports"))?,
-        restart: if restart.trim().is_empty() {
+        ports: parse_ports(&f.ports)?,
+        restart: if f.restart.trim().is_empty() {
             None
         } else {
-            Some(restart.trim().to_string())
+            Some(f.restart.trim().to_string())
         },
         healthcheck: None,
-        networks: form.get("networks").cloned().unwrap_or_default(),
+        networks: f.networks,
         network_mode: None,
         mounts,
         log_driver: None,
         log_max_size: None,
-        memory_limit_mb: optional_number(form, "memory_limit_mb", "内存上限")?,
+        memory_limit_mb: optional_number_value(&f.memory_limit_mb, "内存上限")?,
         nano_cpus: None,
-        pids_limit: optional_number(form, "pids_limit", "PIDs 上限")?,
-        cpu_shares: optional_number(form, "cpu_shares", "CPU 份额")?,
-        cpu_period: optional_number(form, "cpu_period", "CPU 周期")?,
-        cpu_quota: optional_number(form, "cpu_quota", "CPU 配额")?,
-        memory_swap_mb: optional_number(form, "memory_swap_mb", "内存交换")?,
+        pids_limit: optional_number_value(&f.pids_limit, "PIDs 上限")?,
+        cpu_shares: optional_number_value(&f.cpu_shares, "CPU 份额")?,
+        cpu_period: optional_number_value(&f.cpu_period, "CPU 周期")?,
+        cpu_quota: optional_number_value(&f.cpu_quota, "CPU 配额")?,
+        memory_swap_mb: optional_number_value(&f.memory_swap_mb, "内存交换")?,
     })
 }
 
@@ -608,20 +638,40 @@ pub(crate) fn spec_from_form(
 pub(crate) fn limits_from_form(
     form: &HashMap<String, Vec<String>>,
 ) -> Result<ResourceLimits, AppError> {
-    let field = |key: &str, label: &str| -> Result<Option<i64>, AppError> {
-        let raw = form_first(form, key);
+    limits_from_fields(LimitFields {
+        cpu_shares: form_first(form, "cpu_shares"),
+        cpu_period: form_first(form, "cpu_period"),
+        cpu_quota: form_first(form, "cpu_quota"),
+        memory_limit_mb: form_first(form, "memory_limit_mb"),
+        memory_swap_mb: form_first(form, "memory_swap_mb"),
+        pids_limit: form_first(form, "pids_limit"),
+    })
+}
+
+/// 资源限制字段：与 SSR 表单同一语义（空串 = 0）。
+pub(crate) struct LimitFields {
+    pub cpu_shares: String,
+    pub cpu_period: String,
+    pub cpu_quota: String,
+    pub memory_limit_mb: String,
+    pub memory_swap_mb: String,
+    pub pids_limit: String,
+}
+
+pub(crate) fn limits_from_fields(f: LimitFields) -> Result<ResourceLimits, AppError> {
+    let field = |raw: &str, label: &str| -> Result<Option<i64>, AppError> {
         if raw.trim().is_empty() {
             return Ok(Some(0));
         }
-        parse_number(&raw, label).map(Some)
+        parse_number(raw, label).map(Some)
     };
     Ok(ResourceLimits {
-        cpu_shares: field("cpu_shares", "CPU 份额")?,
-        cpu_period: field("cpu_period", "CPU 周期")?,
-        cpu_quota: field("cpu_quota", "CPU 配额")?,
-        memory_limit_mb: field("memory_limit_mb", "内存上限")?,
-        memory_swap_mb: field("memory_swap_mb", "内存交换")?,
-        pids_limit: field("pids_limit", "PIDs 上限")?,
+        cpu_shares: field(&f.cpu_shares, "CPU 份额")?,
+        cpu_period: field(&f.cpu_period, "CPU 周期")?,
+        cpu_quota: field(&f.cpu_quota, "CPU 配额")?,
+        memory_limit_mb: field(&f.memory_limit_mb, "内存上限")?,
+        memory_swap_mb: field(&f.memory_swap_mb, "内存交换")?,
+        pids_limit: field(&f.pids_limit, "PIDs 上限")?,
     })
 }
 

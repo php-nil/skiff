@@ -9,7 +9,6 @@
 
 #![allow(unused_imports)]
 
-use std::collections::HashMap;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
@@ -168,28 +167,6 @@ fn site_write_err(e: crate::state::sites::SiteError) -> AppError {
     }
 }
 
-fn site_create_form(body: &SiteCreateBody) -> HashMap<String, Vec<String>> {
-    let mut form = HashMap::new();
-    for (key, value) in [
-        ("site_type", &body.site_type),
-        ("domain", &body.domain),
-        ("aliases_bulk", &body.aliases_bulk),
-        ("root_dir", &body.root_dir),
-        ("runtime_id", &body.runtime_id),
-        ("proxy_target", &body.proxy_target),
-    ] {
-        form.insert(key.to_string(), vec![value.to_string()]);
-    }
-    form.insert(
-        "proxy_websocket".to_string(),
-        vec![if body.proxy_websocket { "1" } else { "" }.to_string()],
-    );
-    if !body.aliases.is_empty() {
-        form.insert("aliases".to_string(), body.aliases.clone());
-    }
-    form
-}
-
 /// 容器状态中文文案；与旧页面 CSS 的 `.state.<code>` 语义一致。
 fn container_state_label(state: &str) -> &'static str {
     match state {
@@ -220,46 +197,6 @@ fn container_item(c: &skiff_docker::client::ContainerRow) -> ContainerItem {
         protected: v.protected,
         unprotected_kernel: v.unprotected_kernel,
     }
-}
-
-fn create_form(body: &ContainerCreateBody) -> HashMap<String, Vec<String>> {
-    let mut form = HashMap::new();
-    for (key, value) in [
-        ("image", &body.image),
-        ("name", &body.name),
-        ("ports", &body.ports),
-        ("env", &body.env),
-        ("binds", &body.binds),
-        ("volumes", &body.volumes),
-        ("restart", &body.restart),
-        ("cpu_shares", &body.cpu_shares),
-        ("cpu_period", &body.cpu_period),
-        ("cpu_quota", &body.cpu_quota),
-        ("memory_limit_mb", &body.memory_limit_mb),
-        ("memory_swap_mb", &body.memory_swap_mb),
-        ("pids_limit", &body.pids_limit),
-    ] {
-        form.insert(key.to_string(), vec![value.to_string()]);
-    }
-    if !body.networks.is_empty() {
-        form.insert("networks".to_string(), body.networks.clone());
-    }
-    form
-}
-
-fn limits_form(body: &ContainerLimitsBody) -> HashMap<String, Vec<String>> {
-    let mut form = HashMap::new();
-    for (key, value) in [
-        ("cpu_shares", &body.cpu_shares),
-        ("cpu_period", &body.cpu_period),
-        ("cpu_quota", &body.cpu_quota),
-        ("memory_limit_mb", &body.memory_limit_mb),
-        ("memory_swap_mb", &body.memory_swap_mb),
-        ("pids_limit", &body.pids_limit),
-    ] {
-        form.insert(key.to_string(), vec![value.to_string()]);
-    }
-    form
 }
 
 fn network_item(v: crate::templates::NetworkRowView) -> NetworkItem {

@@ -28,11 +28,11 @@ mod runtime;
 pub(crate) use runtime::extension_options;
 mod tls;
 
+pub(crate) use crud::save_config_notice;
 pub use crud::{
     action, batch, create, delete, delete_confirm, detail, domains, list, new_page_get, new_shell,
     save_config, set_default,
 };
-pub(crate) use crud::{collect_aliases, new_form, save_config_notice};
 pub use logs::logs;
 pub use runtime::{
     env_add, env_images_save, env_page, legacy_env_detail, legacy_env_page, runtime_action,
