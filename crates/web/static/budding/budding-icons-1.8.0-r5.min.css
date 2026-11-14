@@ -1,7 +1,7 @@
 /* Budding 内建图标子集：由 scripts/build-embed-icons.mjs 生成，勿手改。 */
 @font-face {
   font-family: "Budding Icons";
-  src: url("./budding-icons-1.8.0-r4.woff2") format("woff2");
+  src: url("./budding-icons-1.8.0-r5.woff2") format("woff2");
   font-weight: normal;
   font-style: normal;
   font-display: block;
@@ -92,6 +92,14 @@
 
 .mdi-checkbox-marked::before {
   content: "\F0132";
+}
+
+.mdi-chevron-double-left::before {
+  content: "\F013D";
+}
+
+.mdi-chevron-double-right::before {
+  content: "\F013E";
 }
 
 .mdi-chevron-down::before {

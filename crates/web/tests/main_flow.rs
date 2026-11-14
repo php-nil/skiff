@@ -10107,7 +10107,7 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
     );
     assert!(
         !js.contains("schema.theme"),
-        "budding 1.8.0-r4 根节点未注册 theme，禁止写进 schema 树"
+        "budding 1.8.0-r5 根节点未注册 theme，禁止写进 schema 树"
     );
     assert!(
         js.contains("skiffUiThemeWrite: uiThemeWrite,"),
@@ -10213,7 +10213,7 @@ fn web_install_progress_has_single_persisted_source() {
 
 /// 静态防回归：禁止 boot 向 schema 根写入未注册的顶层属性。
 ///
-/// 白名单来自随包 budding 1.8.0-r4 的编译期属性集合：
+/// 白名单来自随包 budding 1.8.0-r5 的编译期属性集合：
 /// `type` / `id` / `definitions` / `props` 为特殊键，其余为全局基础属性
 /// （该版本未注册任何 `nodeAttributes`，所以 `theme` 之类一律不合法）。
 /// 这类错误会让整棵 schema 编译失败、全站白屏，静态断言必须走在装机前面。
@@ -10255,7 +10255,7 @@ fn budding_boot_only_writes_registered_schema_root_keys() {
         {
             assert!(
                 allowed.contains(&key),
-                "schema.{key} 未在 budding 1.8.0-r4 注册，编译会整棵树失败"
+                "schema.{key} 未在 budding 1.8.0-r5 注册，编译会整棵树失败"
             );
         }
         rest = tail;
@@ -10333,7 +10333,7 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         js.contains("{ height: 420, emptyText: '暂无审计记录' }"),
         "审计列表应定高并内部滚动，且带场景空态文案"
     );
-    // 四个菜单图标使用 1.8.0-r4 子集的原生字形，不再近似兜底或留空。
+    // 四个菜单图标使用 1.8.0-r5 子集的原生字形，不再近似兜底或留空。
     assert!(
         js.contains("folder: 'mdi-folder-outline'"),
         "文件管理应使用原生字形"

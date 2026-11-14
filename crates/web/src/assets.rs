@@ -21,18 +21,18 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-14 重新打包（builtAt 2026-11-14T05:02:58Z），semver 仍为 `1.8.0`，
-/// 但字节已变（JS 1,273,760 B / CSS 654,398 B）。版本化文件名带 `immutable`，
-/// 同一 URL 换字节会让老缓存继续命中旧包，因此本地用 `-r4` 后缀区分重打包基线；
-/// 上游下次提升 semver 时改回纯版本号。
-pub const BUDDING_VERSION: &str = "1.8.0-r4";
+/// 上游 2026-11-14 再次打包（builtAt 2026-11-14T21:54:37Z），semver 仍为 `1.8.0`、
+/// `catalogVersion=1.8.0`（内容哈希未变），但字节已变（JS 1,274,576 B / CSS 656,899 B，
+/// terminal Pack 394,972 B）。版本化文件名带 `immutable`，同一 URL 换字节会让老缓存
+/// 继续命中旧包，因此本地用 `-r5` 后缀区分重打包基线；上游下次提升 semver 时改回纯版本号。
+pub const BUDDING_VERSION: &str = "1.8.0-r5";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
 ///
-/// budding 官方包自带 `Budding Icons` 子集字体（CSS 4,477 B + woff2 3,896 B，
+/// budding 官方包自带 `Budding Icons` 子集字体（CSS 4,593 B + woff2 3,984 B，
 /// 78 个字形，含镜像 / 磁盘 / 文件夹等业务菜单语义图标），宿主不再另存完整 @mdi/font。
 /// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r4";
+pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r5";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
@@ -177,7 +177,8 @@ fn budding_versioned(rel: &str) -> bool {
     };
     let version = rest
         .strip_suffix(".min.js")
-        .or_else(|| rest.strip_suffix(".css"));
+        .or_else(|| rest.strip_suffix(".css"))
+        .or_else(|| rest.strip_suffix(".woff2"));
     version.map(|v| !v.is_empty()).unwrap_or(false)
 }
 
@@ -252,6 +253,14 @@ mod tests {
         );
         assert_eq!(
             cache_control_for("budding/budding-0.1.0.css", false),
+            CACHE_IMMUTABLE
+        );
+        assert_eq!(
+            cache_control_for("budding/budding-icons-1.8.0-r5.woff2", false),
+            CACHE_IMMUTABLE
+        );
+        assert_eq!(
+            cache_control_for("budding/budding-icons-1.8.0-r5.min.css", false),
             CACHE_IMMUTABLE
         );
         assert_eq!(

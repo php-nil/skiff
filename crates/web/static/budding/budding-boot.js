@@ -623,7 +623,7 @@
 
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
-  /// 1.8.0-r4 的子集含镜像、磁盘、文件夹等业务字形，全部语义名直接映射，
+  /// 1.8.0-r5 的子集含镜像、磁盘、文件夹等业务字形，全部语义名直接映射，
   /// 不再做近似兜底或留空。
   var MENU_ICONS = {
     overview: 'mdi-view-dashboard',
@@ -946,7 +946,7 @@
 
   /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
   ///
-  /// 注意：budding 1.8.0-r4 的 schema 根没有注册 `theme` 顶层属性，写进树里会
+  /// 注意：budding 1.8.0-r5 的 schema 根没有注册 `theme` 顶层属性，写进树里会
   /// 触发 CompileError（整棵树拒绝编译）。主题改为文档级 CSS 变量注入，
   /// 见 `applyShellTheme`。
   function shellSchema(session) {
