@@ -19,7 +19,7 @@
 | `/{p}/plugins` | GET | 内核 | 插件中心（已安装 / 发现 / 可更新） |
 | `/{p}/plugins/{id}` | GET | 内核 | **插件信息与管理页**：身份、版本、密钥指纹、签名、沙箱、授权、菜单、运行状态、日志/事件入口、管理动作 |
 | `/{p}/plugins/{id}/{view}` | GET | 壳页（schema） | **插件功能页**：声明了 schema 的视图由壳页原生渲染；未声明的旧视图回落旧 SSR 工作台（`?legacy=1` 显式兼容） |
-| `/{p}/plugins/{id}/schema/{view}` | GET | 内核 | 返回该视图的随包 schema JSON（`application/json`，`no-store`）；要求 `PluginManage`，与 RPC 同权限 |
+| `/{p}/plugins/{id}/schema/{view}` | GET | 内核 | 返回该视图的随包 schema JSON（`application/json`，`no-store`）；要求 `PluginManage`，与 RPC 同权限；运行期解析失败返回 400（`shape.plugin_schema`） |
 | `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越；legacy iframe 使用；要求 `PluginManage`（与 schema/RPC 同口径） |
 | `/{p}/plugins/{id}/rpc` | POST | 内核代发 | 父页面代发插件 RPC，需要 CSRF 头与管理员权限，逐次审计；成功 `{ result }`，失败统一 JSON 错误信封 |
 | `/{p}/plugins/{id}/toggle` | POST | 内核 | 启用 / 停用；`next` 只接受本站插件前缀 |

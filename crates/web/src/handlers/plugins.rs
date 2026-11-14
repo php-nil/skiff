@@ -931,7 +931,7 @@ pub async fn schema(
     let data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;
     // 安装期已校验；这里再跑一次，防止运行期文件被替换成未校验内容。
     skiff_pkgfmt::PluginSchema::parse(&data)
-        .map_err(|e| AppError::Internal(format!("schema 校验失败: {e}")))?;
+        .map_err(|e| AppError::PluginSchema(format!("schema 校验失败: {e}")))?;
     let mut resp = Response::new(axum::body::Body::from(data));
     resp.headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

@@ -14,6 +14,9 @@ pub enum AppError {
     /// 但错误码独立为 `auth.csrf_invalid`，JSON 路径可提示「刷新后重试」而非「无权限」。
     Csrf(String),
     BadRequest(String),
+    /// 随包 schema 运行期校验失败：客户端输入（插件包）不成立，按 400 处理，
+    /// 错误码独立为 `shape.plugin_schema`，不再与内核 500 混在一起。
+    PluginSchema(String),
     /// 形状成立但字段值不合法；`field` 用于让客户端定位到具体控件。
     InvalidField {
         field: String,
@@ -37,7 +40,9 @@ impl AppError {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden(_) | AppError::Csrf(_) => StatusCode::FORBIDDEN,
-            AppError::BadRequest(_) | AppError::InvalidField { .. } => StatusCode::BAD_REQUEST,
+            AppError::BadRequest(_)
+            | AppError::PluginSchema(_)
+            | AppError::InvalidField { .. } => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::NoSpace(_) => StatusCode::INSUFFICIENT_STORAGE,
             AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -57,6 +62,7 @@ impl AppError {
             AppError::Forbidden(_) => ErrorCode::Forbidden,
             AppError::Csrf(_) => ErrorCode::CsrfInvalid,
             AppError::BadRequest(_) => ErrorCode::InvalidShape,
+            AppError::PluginSchema(_) => ErrorCode::PluginSchemaInvalid,
             AppError::InvalidField { .. } => ErrorCode::InvalidField,
             AppError::Conflict(_) => ErrorCode::Conflict,
             AppError::NoSpace(_) => ErrorCode::NoSpace,
@@ -95,6 +101,7 @@ impl AppError {
             | AppError::Forbidden(m)
             | AppError::Csrf(m)
             | AppError::BadRequest(m)
+            | AppError::PluginSchema(m)
             | AppError::Conflict(m)
             | AppError::NoSpace(m)
             | AppError::Unavailable(m)
@@ -252,6 +259,11 @@ mod tests {
             (
                 AppError::BadRequest("x".into()),
                 ErrorCode::InvalidShape,
+                400,
+            ),
+            (
+                AppError::PluginSchema("schema 校验失败".into()),
+                ErrorCode::PluginSchemaInvalid,
                 400,
             ),
             (

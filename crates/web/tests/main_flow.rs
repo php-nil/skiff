@@ -3566,6 +3566,27 @@ view = "list"
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
+    // 运行期校验失败：schema 内容不合法是「输入包不成立」，按 400 返回
+    // （`shape.plugin_schema`），不得归因成内核 500。
+    std::fs::write(
+        schema_dir.join("list.json"),
+        r#"{"version":1,"page":{"type":""}}"#,
+    )
+    .unwrap();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.schema/schema/list")
+                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
     // viewer：功能页与 schema 都应 403（和 RPC 同权限口径）。
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     for uri in [

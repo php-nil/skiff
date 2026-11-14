@@ -57,6 +57,11 @@ pub enum ErrorCode {
     InvalidShape,
     /// 形状成立但某个字段的值不合法；配合 `field` 定位。
     InvalidField,
+    /// 随包 schema 运行期校验失败（JSON 不合法或不符合组件语法）。
+    ///
+    /// 归入 `shape`：这是「输入包/文件内容不成立」，用 400 让前端提示重新打包或
+    /// 升级插件，而不是按内核 500 归因。
+    PluginSchemaInvalid,
     /// 未认证：缺少或失效的会话/令牌。
     Unauthenticated,
     /// 已认证但无权限。
@@ -91,6 +96,7 @@ impl ErrorCode {
         &[
             InvalidShape,
             InvalidField,
+            PluginSchemaInvalid,
             Unauthenticated,
             Forbidden,
             ScopeMissing,
@@ -108,7 +114,7 @@ impl ErrorCode {
     pub fn category(self) -> ErrorCategory {
         use ErrorCode::*;
         match self {
-            InvalidShape | InvalidField => ErrorCategory::Shape,
+            InvalidShape | InvalidField | PluginSchemaInvalid => ErrorCategory::Shape,
             Unauthenticated | Forbidden | ScopeMissing | CsrfInvalid => ErrorCategory::Unauthorized,
             Conflict | InvalidState => ErrorCategory::Conflict,
             NotFound => ErrorCategory::NotFound,
@@ -123,6 +129,7 @@ impl ErrorCode {
         match self {
             InvalidShape => "shape.invalid",
             InvalidField => "shape.field",
+            PluginSchemaInvalid => "shape.plugin_schema",
             Unauthenticated => "auth.unauthenticated",
             Forbidden => "auth.forbidden",
             ScopeMissing => "auth.scope_missing",
@@ -141,7 +148,7 @@ impl ErrorCode {
     pub fn status(self) -> u16 {
         use ErrorCode::*;
         match self {
-            InvalidShape | InvalidField => 400,
+            InvalidShape | InvalidField | PluginSchemaInvalid => 400,
             Unauthenticated => 401,
             Forbidden | ScopeMissing | CsrfInvalid => 403,
             NotFound => 404,
@@ -203,6 +210,16 @@ mod tests {
                 "{code} 的 HTTP 状态 {status} 不在错误区间"
             );
         }
+    }
+
+    #[test]
+    fn plugin_schema_failure_is_a_client_shape_error() {
+        assert_eq!(ErrorCode::PluginSchemaInvalid.status(), 400);
+        assert_eq!(
+            ErrorCode::PluginSchemaInvalid.as_str(),
+            "shape.plugin_schema"
+        );
+        assert!(!ErrorCode::PluginSchemaInvalid.retryable());
     }
 
     #[test]
