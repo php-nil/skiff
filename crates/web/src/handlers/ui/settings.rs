@@ -15,9 +15,7 @@ pub async fn settings(
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
     let can_admin = user.can(skiff_model::Permission::Admin);
-    let user_row = state
-        .db()
-        .user_by_id(user.user.id)
+    let security = skiff_app::views::settings::account_security(&state, user.user.id)
         .map_err(|e| ApiError(AppError::from(e)))?
         .ok_or_else(|| ApiError(AppError::NotFound("用户不存在".into())))?;
     let keys = if can_admin {
@@ -51,13 +49,7 @@ pub async fn settings(
         },
         None => (String::new(), String::new()),
     };
-    let (pending_secret, pending_uri) = match user_row.totp_secret.as_deref() {
-        Some(secret) if !user_row.totp_enabled => (
-            secret.to_string(),
-            skiff_identity::otpauth_uri("Skiff", &user.user.username, secret),
-        ),
-        _ => (String::new(), String::new()),
-    };
+    let (pending_secret, pending_uri) = (security.pending_secret, security.pending_uri);
     let data = SettingsData {
         panel: SettingsPanelItem {
             listen_addr: state.cfg.listen.ip().to_string(),
@@ -83,7 +75,7 @@ pub async fn settings(
             initial_admin_pending: state.cfg.data_dir.join("initial-admin.txt").exists(),
         },
         account: SettingsAccountItem {
-            totp_enabled: user_row.totp_enabled,
+            totp_enabled: security.totp_enabled,
             must_change_password: user.must_change_password(),
             totp_pending_secret: pending_secret.clone(),
             totp_pending_uri: pending_uri,

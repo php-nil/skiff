@@ -131,7 +131,7 @@ pub async fn env_page(
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
     let env = state.site_env_status().await;
-    let views = state.runtime_views().await.unwrap_or_default();
+    let views = skiff_app::views::runtimes::list(&state).await;
     // Web 服务在「Web 服务」页单独管理；种子行只在已安装或被站点引用时出现。
     let runtimes: Vec<RuntimeRow> = views
         .iter()
@@ -320,18 +320,16 @@ pub async fn runtime_detail(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
-    let view = state.runtime_view(&id).await.map_err(map_err)?;
+    let read = skiff_app::views::runtimes::detail(&state, &id)
+        .await
+        .map_err(map_err)?;
+    let view = read.view;
     let prefix = &state.cfg.entry_prefix;
     let config = PhpConfigView::from(&skiff_app::sites::PhpRuntimeConfig::from_json(
         &view.runtime.config_json,
     ));
-    let bound_site_rows: Vec<Site> = state
-        .db()
-        .list_sites()?
-        .into_iter()
-        .filter(|s| s.runtime_id.as_deref() == Some(id.as_str()))
-        .collect();
-    let bound_sites = bound_site_rows
+    let bound_sites = read
+        .bound_sites
         .iter()
         .map(|s| BoundSiteView {
             href: format!("/{prefix}/sites/{}", encode_uri_component(&s.domain)),
@@ -377,32 +375,30 @@ pub async fn runtime_detail(
         NodeConfigView::default()
     };
     let mut page_error = String::new();
-    let mut php_files = Vec::new();
+    let php_files = read
+        .php_files
+        .into_iter()
+        .map(|f| {
+            let selected = q.get("file").map(String::as_str) == Some(f.key.as_str());
+            PhpFileView {
+                label: f.label,
+                host_path: f.host_path,
+                container_path: f.container_path,
+                exists: f.exists,
+                selected,
+                edit_href: format!(
+                    "/{prefix}/runtimes/{}?tab=config&file={}",
+                    encode_uri_component(&id),
+                    encode_uri_component(&f.key)
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
     let mut php_editor = None;
     let mut php_values = Vec::new();
     let mut php_values_loaded = false;
     let mut php_values_error = String::new();
     if is_php {
-        php_files = state
-            .php_config_files(&id)
-            .map_err(map_err)?
-            .into_iter()
-            .map(|f| {
-                let selected = q.get("file").map(String::as_str) == Some(f.key.as_str());
-                PhpFileView {
-                    label: f.label,
-                    host_path: f.host_path,
-                    container_path: f.container_path,
-                    exists: f.exists,
-                    selected,
-                    edit_href: format!(
-                        "/{prefix}/runtimes/{}?tab=config&file={}",
-                        encode_uri_component(&id),
-                        encode_uri_component(&f.key)
-                    ),
-                }
-            })
-            .collect::<Vec<_>>();
         if let Some(key) = q.get("file").filter(|v| !v.is_empty()) {
             match state.read_php_config_file(&id, key, &user.user.username) {
                 Ok(v) => {
@@ -452,20 +448,10 @@ pub async fn runtime_detail(
     let pending_port = q.get("port").cloned().unwrap_or_default();
     // 安装时未挂载 php/php.ini 与 conf.d 的存量容器：编辑能保存但不生效，
     // 详情页给出重建入口，别让用户对着界面猜。
-    let config_mounts_stale = if is_php && view.container_exists {
-        !state.php_config_mounts_current(&id).map_err(map_err)?
-    } else {
-        false
-    };
-    // 进程型环境（Node.js / Rust）：端口可改、应用健康可探测、同配置可克隆。
-    let port_editable = matches!(
-        view.runtime.kind.as_str(),
-        skiff_store::KIND_NODE | skiff_store::KIND_RUST
-    );
+    let config_mounts_stale = read.config_mounts_stale;
+    let port_editable = read.port_editable;
     let port_value = view.runtime.port.map(|p| p.to_string()).unwrap_or_default();
-    let port_range_label = skiff_app::runtime_catalog::port_range(&view.runtime.kind)
-        .map(|r| format!("{}–{}", r.start(), r.end()))
-        .unwrap_or_default();
+    let port_range_label = read.port_range;
     handlers::render(RuntimeDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
         runtime: runtime_row(&state, &view),

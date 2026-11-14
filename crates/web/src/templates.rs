@@ -221,8 +221,6 @@ pub struct SiteView {
     pub proxy_target: String,
     /// 仅 proxy：是否升级 WebSocket。
     pub proxy_websocket: bool,
-    /// 列表里的「类型详情」列：PHP 版本 / 上游 / 静态目录。
-    pub endpoint: String,
     /// running / stopped / error
     pub status: String,
     pub status_label: String,

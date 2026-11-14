@@ -16,7 +16,7 @@ pub async fn runtimes(
     Query(q): Query<ListQuery>,
 ) -> Result<Response, ApiError> {
     handlers::sites::require_admin(&user).map_err(ApiError)?;
-    let views = state.runtime_views().await.unwrap_or_default();
+    let views = skiff_app::views::runtimes::list(&state).await;
     let needle = q.q.as_deref().unwrap_or("").trim().to_lowercase();
     let rows: Vec<(String, RuntimeItem)> = views
         .iter()
@@ -144,22 +144,19 @@ pub async fn runtime_detail(
     Query(q): Query<RuntimeFileQuery>,
 ) -> Result<Response, ApiError> {
     handlers::sites::require_admin(&user).map_err(ApiError)?;
-    let view = state
-        .runtime_view(&id)
+    let read = skiff_app::views::runtimes::detail(&state, &id)
         .await
         .map_err(handlers::sites::map_err)
         .map_err(ApiError)?;
+    let view = read.view;
     let row = handlers::sites::runtime_row(&state, &view);
     let is_php = view.runtime.kind == skiff_store::KIND_PHP;
     let is_node = view.runtime.kind == skiff_store::KIND_NODE;
     let php = skiff_app::sites::PhpRuntimeConfig::from_json(&view.runtime.config_json);
     let node = skiff_app::sites::NodeRuntimeConfig::from_json(&view.runtime.config_json);
-    let sites: Vec<serde_json::Value> = state
-        .db()
-        .list_sites()
-        .map_err(|e| ApiError(AppError::from(e)))?
-        .into_iter()
-        .filter(|s| s.runtime_id.as_deref() == Some(id.as_str()))
+    let sites: Vec<serde_json::Value> = read
+        .bound_sites
+        .iter()
         .map(|s| {
             json!({
                 "domain": s.domain,
@@ -195,24 +192,18 @@ pub async fn runtime_detail(
     } else {
         Vec::new()
     };
-    let files: Vec<serde_json::Value> = if is_php {
-        state
-            .php_config_files(&id)
-            .map_err(handlers::sites::map_err)
-            .map_err(ApiError)?
-            .into_iter()
-            .map(|f| {
-                json!({
-                    "key": f.key,
-                    "label": f.label,
-                    "container_path": f.container_path,
-                    "exists": f.exists,
-                })
+    let files: Vec<serde_json::Value> = read
+        .php_files
+        .iter()
+        .map(|f| {
+            json!({
+                "key": f.key,
+                "label": f.label,
+                "container_path": f.container_path,
+                "exists": f.exists,
             })
-            .collect()
-    } else {
-        Vec::new()
-    };
+        })
+        .collect();
     let editor = if is_php && !q.file.is_empty() {
         match state.read_php_config_file(&id, &q.file, &user.user.username) {
             Ok(v) => json!({
@@ -227,21 +218,9 @@ pub async fn runtime_detail(
     } else {
         serde_json::Value::Null
     };
-    let port_editable = matches!(
-        view.runtime.kind.as_str(),
-        skiff_store::KIND_NODE | skiff_store::KIND_RUST
-    );
-    let port_range = skiff_app::runtime_catalog::port_range(&view.runtime.kind)
-        .map(|r| format!("{}–{}", r.start(), r.end()))
-        .unwrap_or_default();
-    let config_mounts_stale = if is_php && view.container_exists {
-        !state
-            .php_config_mounts_current(&id)
-            .map_err(handlers::sites::map_err)
-            .map_err(ApiError)?
-    } else {
-        false
-    };
+    let port_editable = read.port_editable;
+    let port_range = read.port_range;
+    let config_mounts_stale = read.config_mounts_stale;
     write_done(json!({
         "runtime": {
             "id": row.id,

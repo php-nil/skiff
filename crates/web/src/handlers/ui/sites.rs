@@ -15,34 +15,13 @@ pub async fn sites(
     UiAuthUser(user): UiAuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, ApiError> {
-    let sites = state
-        .db()
-        .list_sites()
+    let read = skiff_app::views::sites::list(&state, q.q.as_deref().unwrap_or(""))
+        .await
         .map_err(|e| ApiError(AppError::from(e)))?;
-    let runtimes = state
-        .db()
-        .list_runtimes()
-        .map_err(|e| ApiError(AppError::from(e)))?;
-    let views = state.runtime_views().await.unwrap_or_default();
-    let cert_settings = state.site_settings();
-    let needle = q.q.as_deref().unwrap_or("").trim().to_lowercase();
-    let mut rows: Vec<(i64, i64, SiteItem)> = sites
+    let mut rows: Vec<(i64, i64, SiteItem)> = read
+        .sites
         .iter()
-        .map(|s| {
-            let cert_ready = cert_settings.cert_ready(FsPath::new(&s.root_dir));
-            (
-                s.created_at,
-                s.id,
-                site_item(&state, s, &runtimes, &views, cert_ready),
-            )
-        })
-        .filter(|(_, _, item)| {
-            needle.is_empty()
-                || item.domain.to_lowercase().contains(&needle)
-                || item.root_dir.to_lowercase().contains(&needle)
-                || item.endpoint.to_lowercase().contains(&needle)
-                || item.aliases.join("、").to_lowercase().contains(&needle)
-        })
+        .map(|s| (s.created_at_epoch, s.db_id, site_item(s)))
         .collect();
     let total = rows.len();
     let start = match q.cursor.as_deref().and_then(parse_site_cursor) {
@@ -187,10 +166,15 @@ pub async fn site_detail(
             .site_settings()
             .cert_ready(FsPath::new(&site.root_dir))
     };
-    let runtime_records: Vec<skiff_store::Runtime> = runtime.clone().into_iter().collect();
-    let runtime_views: Vec<skiff_app::sites::RuntimeView> =
-        runtime_view.clone().into_iter().collect();
-    let item = site_item(&state, &site, &runtime_records, &runtime_views, cert_ready);
+    let summary = skiff_app::views::sites::summary(
+        &state,
+        &site,
+        cert_ready,
+        runtime.as_ref(),
+        runtime_view.as_ref().map(|v| v.effective_state.as_str()),
+        runtime_view.as_ref().map(|v| v.site_count).unwrap_or(0),
+    );
+    let item = site_item(&summary);
     let runtime_ref = runtime_view.as_ref().map(|v| SiteRuntimeRef {
         id: v.runtime.id.clone(),
         name: v.runtime.name.clone(),

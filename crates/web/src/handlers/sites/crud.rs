@@ -1,7 +1,6 @@
 //! 站点 CRUD：列表与新建、启停与默认站、域名、配置保存、批量操作、详情与删除。
 
 use std::collections::HashMap;
-use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -55,15 +54,10 @@ async fn render_sites(
 ) -> Result<Response, AppError> {
     let mut form = form;
     let env = state.site_env_status().await;
-    let sites = state.db().list_sites()?;
     let keyword = q.get("q").cloned().unwrap_or_default();
-    let needle = keyword.trim().to_lowercase();
-    // 证书列与详情 SSL 标签同源：直接看站点证书目录下的 cert.pem/key.pem 是否存在。
-    let cert_settings = state.site_settings();
     // DB 读失败不能当成「没有运行环境」：列表会伪装成空态，用户以为实例被删了。
-    let runtimes = state.db().list_runtimes()?;
-    // 站点列表的运行态以 Docker 实时容器状态为准；DB last_status 只是缓存，不能直接展示。
-    let runtime_views = state.runtime_views().await.unwrap_or_default();
+    let read = skiff_app::views::sites::list(state, &keyword).await?;
+    let runtime_views = read.runtime_views;
     let runtime_opts = runtime_options(&runtime_views);
     // 默认选中第一个已就绪实例；没有就绪实例时留空，由模板给出引导。
     if runtime_opts.is_empty() || !runtime_opts.iter().any(|o| o.id == form.runtime_id) {
@@ -72,42 +66,7 @@ async fn render_sites(
             .map(|o| o.id.clone())
             .unwrap_or_default();
     }
-    let views: Vec<SiteView> = sites
-        .iter()
-        .map(|s| {
-            let ready = cert_settings.cert_ready(FsPath::new(&s.root_dir));
-            let runtime = s
-                .runtime_id
-                .as_deref()
-                .and_then(|id| runtimes.iter().find(|r| r.id == id));
-            let runtime_state = s
-                .runtime_id
-                .as_deref()
-                .and_then(|id| runtime_views.iter().find(|v| v.runtime.id == id))
-                .map(|v| v.effective_state.as_str());
-            let runtime_site_count = s
-                .runtime_id
-                .as_deref()
-                .and_then(|id| runtime_views.iter().find(|v| v.runtime.id == id))
-                .map(|v| v.site_count)
-                .unwrap_or(0);
-            site_view(
-                s,
-                state.site_aliases(&s.domain),
-                ready,
-                runtime,
-                runtime_state,
-                runtime_site_count,
-            )
-        })
-        .filter(|v| {
-            needle.is_empty()
-                || v.domain.to_lowercase().contains(&needle)
-                || v.root_dir.to_lowercase().contains(&needle)
-                || v.endpoint.to_lowercase().contains(&needle)
-                || v.aliases_text.to_lowercase().contains(&needle)
-        })
-        .collect();
+    let views: Vec<SiteView> = read.sites.iter().map(site_view).collect();
     let settings = state.site_settings();
     let form_error_field = error_field(form_error_code, &form.site_type).to_string();
     handlers::render(SitesPage {
@@ -637,16 +596,17 @@ async fn render_detail(
     let runtime_state = runtime_view.as_ref().map(|v| v.effective_state.as_str());
     let runtime_site_count = runtime_view.as_ref().map(|v| v.site_count).unwrap_or(0);
     let backup = backup_view(&state, &domain).await;
+    let site_summary = skiff_app::views::sites::summary(
+        &state,
+        &site,
+        cert_ready,
+        runtime.as_ref(),
+        runtime_state,
+        runtime_site_count,
+    );
     handlers::render(SiteDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
-        site: site_view(
-            &site,
-            state.site_aliases(&domain),
-            cert_ready,
-            runtime.as_ref(),
-            runtime_state,
-            runtime_site_count,
-        ),
+        site: site_view(&site_summary),
         env: env_view(&env),
         can_admin: user.can(skiff_model::Permission::Admin),
         tab,

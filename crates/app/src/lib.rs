@@ -23,6 +23,7 @@ pub mod sites;
 pub mod sites_vhost;
 pub mod tasks;
 pub mod time_fmt;
+pub mod views;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

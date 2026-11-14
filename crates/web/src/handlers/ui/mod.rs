@@ -99,55 +99,33 @@ fn rfc3339(epoch: i64) -> String {
     skiff_app::time_fmt::epoch_to_rfc3339_utc(epoch).unwrap_or_default()
 }
 
-fn site_item(
-    state: &AppState,
-    s: &skiff_store::Site,
-    runtimes: &[skiff_store::Runtime],
-    views: &[skiff_app::sites::RuntimeView],
-    cert_ready: bool,
-) -> SiteItem {
-    let runtime = s
-        .runtime_id
-        .as_deref()
-        .and_then(|id| runtimes.iter().find(|r| r.id == id));
-    let view = s
-        .runtime_id
-        .as_deref()
-        .and_then(|id| views.iter().find(|v| v.runtime.id == id));
-    let v = handlers::sites::site_view(
-        s,
-        state.site_aliases(&s.domain),
-        cert_ready,
-        runtime,
-        view.map(|v| v.effective_state.as_str()),
-        view.map(|v| v.site_count).unwrap_or(0),
-    );
+fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
     SiteItem {
-        domain: v.domain,
-        root_dir: v.root_dir,
-        index_dir: v.index_dir,
-        site_type: v.site_type,
-        type_label: v.type_label,
-        runtime_id: v.runtime_id,
-        runtime_label: v.runtime_label,
-        runtime_name: v.runtime_name,
-        runtime_shared_hint: v.runtime_shared_hint,
-        proxy_target: v.proxy_target,
-        proxy_websocket: v.proxy_websocket,
-        endpoint: v.endpoint,
+        domain: s.domain.clone(),
+        root_dir: s.root_dir.clone(),
+        index_dir: s.index_dir.clone(),
+        site_type: s.site_type.clone(),
+        type_label: s.type_label.clone(),
+        runtime_id: s.runtime_id.clone(),
+        runtime_label: s.runtime_label.clone(),
+        runtime_name: s.runtime_name.clone(),
+        runtime_shared_hint: s.runtime_shared_hint.clone(),
+        proxy_target: s.proxy_target.clone(),
+        proxy_websocket: s.proxy_websocket,
+        endpoint: s.endpoint.clone(),
         status: StatusDto {
-            code: v.status,
-            label: v.status_label,
+            code: s.status.clone(),
+            label: s.status_label.clone(),
         },
         https: SiteHttps {
-            enabled: v.https,
-            force_https: v.force_https,
-            label: v.https_label,
-            class: v.https_class,
+            enabled: s.https,
+            force_https: s.force_https,
+            label: s.https_label.clone(),
+            class: s.https_class.clone(),
         },
-        is_default: v.is_default,
-        aliases: v.aliases,
-        created_at: rfc3339(s.created_at),
+        is_default: s.is_default,
+        aliases: s.aliases.clone(),
+        created_at: rfc3339(s.created_at_epoch),
     }
 }
 

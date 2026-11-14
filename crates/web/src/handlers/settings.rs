@@ -33,9 +33,7 @@ pub async fn render_settings(
         })
         .collect();
 
-    let user_row = state
-        .db()
-        .user_by_id(user.user.id)?
+    let security = skiff_app::views::settings::account_security(state, user.user.id)?
         .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
 
     let page = SettingsPage {
@@ -72,7 +70,7 @@ pub async fn render_settings(
         plaintext_behind_proxy: !state.cfg.dev_http
             && !state.cfg.tls_enabled
             && !state.cfg.trusted_proxies.is_empty(),
-        totp_enabled: user_row.totp_enabled,
+        totp_enabled: security.totp_enabled,
         totp_secret: totp.as_ref().map(|(s, _)| s.clone()).unwrap_or_default(),
         totp_uri: totp.as_ref().map(|(_, u)| u.clone()).unwrap_or_default(),
         backup_codes,
