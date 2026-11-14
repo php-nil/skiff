@@ -10444,6 +10444,10 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         "budding 1.8.0-r5 根节点未注册 theme，禁止写进 schema 树"
     );
     assert!(
+        js.contains("markShellChrome();") && js.contains("classList.add('bud-admin--chrome')"),
+        "外壳换底色必须补 bud-admin--chrome 类（schema.theme 被编译期拒绝）"
+    );
+    assert!(
         js.contains("skiffUiThemeWrite: uiThemeWrite,"),
         "界面设置写动作必须注册"
     );
@@ -10505,6 +10509,81 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         compact
             .contains("if (op === 'install' || op === 'rebuild') { location.reload(); return; }"),
         "安装/重建提交后应立即进入当前作业视图"
+    );
+}
+
+/// 「设置 → 界面」配色扩展：预设 + 主色 / 菜单底色 / 页面底色。
+///
+/// budding 1.8.0-r5 没有颜色选择器节点，前端只提交 `#rrggbb` 文本；服务端仍是
+/// 唯一裁决（非法 400 不落库），配色经文档级 CSS 变量全站生效。
+#[test]
+fn budding_boot_ui_theme_presets_and_color_fields() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for name in ["'品牌蓝'", "'翡翠绿'", "'深灰'", "'暖橙'"] {
+        assert!(js.contains(name), "预设方案缺少年份/名称：{name}");
+    }
+    assert!(
+        js.contains("skiffUiPreset: uiPresetApply,"),
+        "预设方案必须注册独立动作"
+    );
+    for needle in [
+        "name: 'primary'",
+        "name: 'menu'",
+        "name: 'page'",
+        "name: 'menu_custom'",
+        "function uiColorRules(requiredMessage)",
+        "pattern: '^#[0-9a-fA-F]{6}$'",
+        "function dialogFormButton(text, options)",
+        "--bud-admin-chrome-bg:rgb(",
+        "--v-theme-background:",
+    ] {
+        assert!(js.contains(needle), "配色扩展缺失：{needle}");
+    }
+    assert!(
+        !js.contains("color-picker") && !js.contains("input-color"),
+        "1.8.0-r5 没有颜色选择器节点，禁止引用"
+    );
+    // 关闭自定义时必须留空，避免旧值在下次开启时复活。
+    assert!(
+        js.contains("menu: menuCustom ? menu : ''"),
+        "自定义关闭时不得提交菜单底色"
+    );
+    assert!(
+        js.contains("formError(args, invalid + '必须是 #rrggbb 格式"),
+        "颜色本地校验不通过时必须在弹窗/页面显示原因"
+    );
+}
+
+/// 站点 / 运行环境列表的新建改为弹窗；独立深链页必须保持可用。
+#[test]
+fn budding_boot_create_dialogs_keep_deep_links() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        "dialogFormButton('新建站点'",
+        "dialogFormButton('新建运行环境'",
+        "fields: siteCreateFields(runtimes)",
+        "initialValues: siteCreateDefaults('')",
+        "fields: runtimeCreateFields(catalog)",
+        "initialValues: runtimeCreateDefaults(catalog)",
+        "fetchData('/runtimes?limit=200')",
+        // 深链页路由与独立表单都保留。
+        "path: prefix + '/sites/new'",
+        "function siteNewSchema(runtimes)",
+        "siteCreateFields(runtimes),\n          '创建站点',\n          siteCreateDefaults(typeQuery)",
+        // 弹窗提交成功回列表刷新；独立页仍进入详情。
+        "op === 'create' && data.domain && !args.dialog",
+        "if (args.dialog) closeTopLayer();",
+        "formError(\n          args,\n          '操作失败：'",
+    ] {
+        assert!(js.contains(needle), "新建弹窗改造缺失：{needle}");
+    }
+    assert!(
+        !js.contains("'安装运行环境'"),
+        "运行环境列表不应再保留独立安装卡片"
+    );
+    assert!(
+        !js.contains("type: 'navigate', props: { url: prefix + '/sites/new' }"),
+        "列表新建不得再跳独立页面"
     );
 }
 
@@ -11155,6 +11234,89 @@ async fn ui_theme_requires_admin_validates_and_persists() {
     assert!(body.contains("#1867c0"), "{body}");
 }
 
+/// 配色扩展：菜单底色随页面自动推导、自定义菜单、主色对比度校正，
+/// 以及任一颜色非法时 400 且不落库。
+#[tokio::test]
+async fn ui_theme_menu_page_and_contrast() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+
+    // 浅色页面 + 自动菜单：白底黑字。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/ui",
+        &admin,
+        Some(&csrf),
+        &json!({ "primary": "#2f6feb", "page": "#F5F5F5", "menu": "", "menu_custom": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["menu"], "#ffffff", "{text}");
+    assert_eq!(v["data"]["menu_text"], "#000000", "{text}");
+    assert_eq!(v["data"]["page_text"], "#000000", "{text}");
+    assert_eq!(v["data"]["adjusted"], false, "{text}");
+
+    // 深色页面 + 自动菜单：近黑菜单、白字；主色按对比度校正。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/ui",
+        &admin,
+        Some(&csrf),
+        &json!({ "primary": "#2f6feb", "page": "#101418", "menu": "", "menu_custom": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["menu"], "#121212", "{text}");
+    assert_eq!(v["data"]["menu_text"], "#ffffff", "{text}");
+    assert_eq!(v["data"]["page_text"], "#ffffff", "{text}");
+    assert_eq!(v["data"]["adjusted"], true, "{text}");
+    let primary = v["data"]["primary"].as_str().unwrap();
+    assert!(
+        skiff_app::theme::contrast(primary, "#121212") >= skiff_app::theme::MIN_CONTRAST,
+        "校正后主色对比度不足：{primary}"
+    );
+
+    // 自定义菜单底色：会话与设置页读到的都是自定义值。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/ui",
+        &admin,
+        Some(&csrf),
+        &json!({
+            "primary": "#1867c0",
+            "page": "#fff7ed",
+            "menu": "#1f2933",
+            "menu_custom": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["data"]["menu"], "#1f2933", "{text}");
+    assert_eq!(v["data"]["menu_custom"], true, "{text}");
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&admin), None).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["theme"]["menu"], "#1f2933", "{body}");
+    assert_eq!(v["data"]["theme"]["menu_custom"], true, "{body}");
+    assert_eq!(v["data"]["theme"]["page"], "#fff7ed", "{body}");
+
+    // 任一颜色非法都要 400，且不改动已保存的整组配色。
+    for payload in [
+        json!({ "primary": "#1867c0", "page": "orange" }),
+        json!({ "primary": "#1867c0", "page": "#fff7ed", "menu": "#12345" }),
+    ] {
+        let (status, text) =
+            post_ui_json(&h.app, "/ui/v1/settings/ui", &admin, Some(&csrf), &payload).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}: {text}");
+    }
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
+    assert!(body.contains(r##""menu":"#1f2933""##), "{body}");
+    assert!(body.contains(r##""page":"#fff7ed""##), "{body}");
+}
+
 /// 运行环境配置/安装/扩展写接口：未认证 401、viewer 403、缺 CSRF 403；
 /// 详情聚合查询复用旧页同一数据源（只验证形状与门禁，真实安装需 Docker）。
 #[tokio::test]
@@ -11692,7 +11854,16 @@ async fn ui_v1_envelope_and_bootstrap_key_sets_are_frozen() {
     );
     assert_key_set(
         &v["data"]["theme"],
-        &["primary"],
+        &[
+            "primary",
+            "menu",
+            "page",
+            "menu_custom",
+            "menu_text",
+            "page_text",
+            "on_primary",
+            "adjusted",
+        ],
         "GET /ui/v1/session theme",
     );
 }
@@ -12214,7 +12385,17 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_key_set(
         &v["data"],
-        &["primary", "can_admin"],
+        &[
+            "primary",
+            "menu",
+            "page",
+            "menu_custom",
+            "menu_text",
+            "page_text",
+            "on_primary",
+            "adjusted",
+            "can_admin",
+        ],
         "GET /ui/v1/settings/ui",
     );
 

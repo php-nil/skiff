@@ -293,6 +293,22 @@ Skiff 侧对应约束：
 - **不引入新依赖**：快照只依赖 `serde_json::Value` 的键集，不引入 insta/黄金文件框架；嵌套资源行只冻结"行对象"这一层，避免把动态变量（时间、计数、路径）写进断言。
 - **失败处理**：该用例失败说明 wire 形状发生变化。先判断是"有意的字段新增"（更新清单即可）还是"非预期删除/改名"（回退改动），不得直接放宽断言或删用例。
 
+#### 3.7.2 壳主题字段与着色路径
+
+`settings.ui.*`（沿用既有键，不新增设置存储）在 `primary` 之外扩充：
+
+| 键 | 语义 |
+| --- | --- |
+| `primary` | 主色；作用于菜单、页签、按钮与图标激活态 |
+| `menu` | 菜单底色（侧栏 / 顶栏 / 页签条共用）；空值表示随页面底色自动推导 |
+| `page` | 页面底色；浅色自动深字、深色自动白字 |
+| `menu_custom` | `1` / `0`：是否使用自定义菜单底色 |
+
+- **服务端裁决**：`/ui/v1/settings/ui` 只接受 `#rrggbb`；任一颜色非法返回 400 且整组不落库。主色与菜单底色的对比度低于 4.5:1 时自动混色校正（`crates/app/src/theme.rs`）。
+- **下发形状**：`GET /ui/v1/session` 的 `theme` 与 `GET /ui/v1/settings/ui` 均返回 `primary` / `menu` / `page` / `menu_custom` / `menu_text` / `page_text` / `on_primary` / `adjusted`（设置页额外带 `can_admin`），字段集已纳入 §3.7.1 冻结。
+- **前端着色**：`applyShellTheme` 把颜色写进文档级 CSS 变量（`:root`、`.v-theme--light/.v-theme--dark`、`.bud-admin`），并给外壳补 `bud-admin--chrome` 类。r5 的 schema 根仍拒绝 `theme` 属性（CompileError），所以不走 `admin` 节点的 theme；补类逻辑常驻 MutationObserver，防止 Vue 重渲染抹掉手工类。
+- **交互**：预设方案（品牌蓝 / 翡翠绿 / 深灰 / 暖橙）点击即整体提交；自定义表单使用色块 `chip` + `#rrggbb` 文本输入，不依赖颜色选择器节点（r5 未提供）。
+
 ---
 
 ## 4. 与现有契约的关系
@@ -956,7 +972,7 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | G4 | 无 SSE / WS | 作业日志、容器日志、终端 | 用 `progress` + `source.autoRefresh` 轮询 | SSE / WS 通道 | 需上游改动（如需页内实时日志） |
 | G6 | 无通知中心 | 概览待办、审计提醒 | `alert` + `toast` + 菜单 `badge` | 通知中心 | 我方适配 |
 | G7 | 组件默认文案为 `.vue` 内中文字面量；Vuetify `createVuetify()` 无参 → 内部英文 | 全站中文 | 逐节点覆盖 `props`；内核词典 `registerMessages()` 只覆盖 15 个键 | 完整 i18n 注入 + Vuetify locale | 需负责人决策（D8） |
-| G8 | 主题不切 Vuetify 暗色、不设 `--v-theme-primary` | 现有深色主题、品牌色 | 我方 CSS 覆盖层；或 budding 页暂不做暗色 | 主题适配 Vuetify token | 需负责人决策（D15） |
+| G8 | 主题不切 Vuetify 暗色、不设 `--v-theme-primary` | 现有深色主题、品牌色 | **已解决**：文档级 CSS 变量注入 `--v-theme-*` / `--bud-admin-chrome-*`，并在挂载后补 `bud-admin--chrome` 类（r5 编译期仍拒绝 schema 根 `theme`） | 上游支持 `theme` 根属性后可删除补类逻辑 | 已关闭（D15，见 §3.7.2） |
 | G9 | 默认包不含 `admin` / `nav-menu` / `page-tabs` | 三级菜单壳、页签栏 | 应急：basic + layout 自建（仅为临时验证，不作为方案） | 发行包随附 admin Pack | **外部阻塞（D4）** |
 | G10 | 默认包不含 `chart` | 概览暂无图表 | 暂不需要 | 随包提供 chart | 暂不处理（D16） |
 | G11 | 句柄无实例方法 | 切路由/切语言/切主题 | 重新 `embed`（成本待实测）；或用自定义动作驱动 | 实例方法 | 我方适配 + 需实测 |

@@ -842,16 +842,24 @@
     function run() {
       return submitJson(path, payload)
         .then(function (data) {
-          if (op === 'create' && data.domain) {
+          // 独立页 `/sites/new` 仍保留「创建后进入详情」；列表弹窗则关闭并刷新列表。
+          if (op === 'create' && data.domain && !args.dialog) {
             location.href = prefix + '/sites/' + encodeURIComponent(data.domain);
             return;
           }
-          closeTopLayer();
-          toast((data && data.message) || '操作已完成', 'success');
+          if (args.dialog) closeTopLayer();
+          toast(
+            (data && data.message) || (op === 'create' ? '站点已创建' : '操作已完成'),
+            'success'
+          );
           location.reload();
         })
         .catch(function (error) {
-          toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
+          formError(
+            args,
+            '操作失败：' + (error && error.message ? error.message : String(error)),
+            values
+          );
         });
     }
     // 破坏性动作统一二次确认；危险语义直接体现在确认框按钮上。
@@ -1261,8 +1269,8 @@
   /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
   ///
   /// 注意：budding 1.8.0-r5 的 schema 根没有注册 `theme` 顶层属性，写进树里会
-  /// 触发 CompileError（整棵树拒绝编译）。主题改为文档级 CSS 变量注入，
-  /// 见 `applyShellTheme`。
+  /// 触发 CompileError（整棵树拒绝编译）。主题改为文档级 CSS 变量注入，并给
+  /// 外壳补 `bud-admin--chrome` 类，见 `applyShellTheme` / `markShellChrome`。
   function shellSchema(session) {
     var schema = {
       type: 'admin',
@@ -1287,24 +1295,59 @@
 
   /// 把全局主色写成文档级 CSS 变量（不进入 schema 树）。
   ///
-  /// 变量口径与 SDK 自身主题实现一致：`--v-theme-primary` / `--bud-admin-primary`
-  /// 存 `r, g, b` 三元组，`on-primary` 按亮度取黑/白。Vuetify 会在
-  /// `.v-theme--light/.v-theme--dark` 上重复声明主色，所以这里用 `!important`
-  /// 覆盖，保证全站（含弹层）都读到同一主色。
+  /// 壳主题：主色 + 菜单底色 + 页面底色，全部落到文档级 CSS 变量。
+  ///
+  /// 变量口径与 SDK 自身主题实现一致：`--v-theme-*` 存 `r, g, b` 三元组，
+  /// `--bud-admin-chrome-*` 控制侧栏/顶栏/页签条。Vuetify 会在
+  /// `.v-theme--light/.v-theme--dark` 上重复声明，所以用 `!important` 覆盖，
+  /// 保证全站（含弹层）与深浅模式读到同一套配色。
   function applyShellTheme(theme) {
-    var hex = theme && theme.primary;
-    if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) return;
-    var r = parseInt(hex.slice(1, 3), 16);
-    var g = parseInt(hex.slice(3, 5), 16);
-    var b = parseInt(hex.slice(5, 7), 16);
+    theme = theme || {};
+    function hex(value) {
+      return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : null;
+    }
+    function triple(value) {
+      return (
+        parseInt(value.slice(1, 3), 16) +
+        ', ' +
+        parseInt(value.slice(3, 5), 16) +
+        ', ' +
+        parseInt(value.slice(5, 7), 16)
+      );
+    }
     function channel(value) {
       value /= 255;
       return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
     }
-    var luminance =
-      0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
-    var rgb = r + ', ' + g + ', ' + b;
-    var on = luminance > 0.5 ? '0, 0, 0' : '255, 255, 255';
+    function luminance(value) {
+      var r = parseInt(value.slice(1, 3), 16);
+      var g = parseInt(value.slice(3, 5), 16);
+      var b = parseInt(value.slice(5, 7), 16);
+      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    }
+    function bestOn(value) {
+      var l = luminance(value);
+      var black = (l + 0.05) / 0.05;
+      var white = 1.05 / (l + 0.05);
+      return black >= white ? '0, 0, 0' : '255, 255, 255';
+    }
+    var primary = hex(theme.primary);
+    if (!primary) return;
+    var page = hex(theme.page);
+    var menu = hex(theme.menu);
+    if (!page) page = luminance(primary) > 0.5 ? '#f5f5f5' : '#ffffff';
+    if (!menu) menu = luminance(page) > 0.5 ? '#ffffff' : '#121212';
+    var onPrimary = bestOn(primary);
+    var menuText = bestOn(menu);
+    var pageText = bestOn(page);
+    var rgb = triple(primary);
+    var menuRgb = triple(menu);
+    // `bestOn` 已经返回 `r, g, b` 三元组，不能再走 `triple()`（它只接受 #rrggbb）。
+    var menuTextRgb = menuText;
+    var pageRgb = triple(page);
+    function rgba(tripleValue, alpha) {
+      return 'rgba(' + tripleValue + ', ' + alpha + ')';
+    }
     var style = document.getElementById('skiff-shell-theme');
     if (!style) {
       style = document.createElement('style');
@@ -1312,20 +1355,67 @@
       (document.head || document.documentElement).appendChild(style);
     }
     style.textContent =
-      ':root{--v-theme-primary:' +
-      rgb +
-      ' !important;--v-theme-on-primary:' +
-      on +
-      ' !important;--bud-admin-primary:' +
-      rgb +
-      ';--bud-admin-on-primary:' +
-      on +
+      ':root{' +
+      '--v-theme-primary:' + rgb + ' !important;' +
+      '--v-theme-on-primary:' + onPrimary + ' !important;' +
+      '--v-theme-background:' + pageRgb + ' !important;' +
+      '--v-theme-on-background:' + pageText + ' !important;' +
       '}' +
-      '.v-theme--light,.v-theme--dark{--v-theme-primary:' +
-      rgb +
-      ' !important;--v-theme-on-primary:' +
-      on +
-      ' !important}';
+      // `.bud-admin` 自己用 `--v-theme-surface` 声明了一套 chrome 默认值（类选择器
+      // 优先级高于 :root），必须在外壳元素上覆盖，否则侧栏/顶栏仍是默认深色。
+      '.bud-admin{' +
+      '--bud-admin-primary:' + rgb + ' !important;' +
+      '--bud-admin-on-primary:' + onPrimary + ' !important;' +
+      '--bud-admin-chrome-bg:rgb(' + menuRgb + ') !important;' +
+      '--bud-admin-chrome-bg-rgb:' + menuRgb + ' !important;' +
+      '--bud-admin-chrome-on:rgb(' + menuTextRgb + ') !important;' +
+      '--bud-admin-chrome-on-rgb:' + menuTextRgb + ' !important;' +
+      '--bud-admin-chrome-text:' + rgba(menuTextRgb, '0.82') + ' !important;' +
+      '--bud-admin-chrome-title:' + rgba(menuTextRgb, '0.92') + ' !important;' +
+      '--bud-admin-chrome-secondary:' + rgba(menuTextRgb, '0.68') + ' !important;' +
+      '--bud-admin-chrome-muted:' + rgba(menuTextRgb, '0.55') + ' !important;' +
+      '--bud-admin-chrome-hover:' + rgba(menuTextRgb, '0.08') + ' !important;' +
+      '--bud-admin-chrome-active:' + rgba(rgb, '0.20') + ' !important;' +
+      '--bud-admin-chrome-active-hover:' + rgba(rgb, '0.28') + ' !important;' +
+      '--bud-admin-chrome-line:' + rgba(menuTextRgb, '0.16') + ' !important;' +
+      '--bud-admin-chrome-focus:' + rgba(rgb, '0.55') + ' !important;' +
+      '--bud-admin-chrome-accent:rgb(' + rgb + ') !important;' +
+      '--bud-admin-chrome-accent-rgb:' + rgb + ' !important;' +
+      '--bud-admin-chrome-accent-on:rgb(' + onPrimary + ') !important;' +
+      '--bud-admin-aside-bg:rgb(' + menuRgb + ') !important;' +
+      '--bud-admin-drawer-bg:rgb(' + menuRgb + ') !important;' +
+      '}' +
+      '.v-theme--light,.v-theme--dark{' +
+      '--v-theme-primary:' + rgb + ' !important;' +
+      '--v-theme-on-primary:' + onPrimary + ' !important;' +
+      '--v-theme-background:' + pageRgb + ' !important;' +
+      '--v-theme-on-background:' + pageText + ' !important;' +
+      '}' +
+      '.v-application{background:rgb(' + pageRgb + ') !important}';
+  }
+
+  /// 给外壳补 `bud-admin--chrome` 类。
+  ///
+  /// r5 的编译期校验拒绝在 schema 根写 `theme`，但外壳的侧栏 / 顶栏 / 页签条
+  /// 换底色依赖 `bud-admin--chrome`。这里在挂载后补类，颜色仍由文档级变量提供。
+  /// 外壳的 class 由 Vue 绑定，路由切换重渲染会把手工类抹掉，所以观察器常驻。
+  var chromeObserver = null;
+
+  function markShellChrome() {
+    function mark() {
+      var shell = document.querySelector('.bud-admin');
+      if (!shell || shell.classList.contains('bud-admin--chrome')) return;
+      shell.classList.add('bud-admin--chrome');
+    }
+    mark();
+    if (chromeObserver || typeof MutationObserver === 'undefined') return;
+    chromeObserver = new MutationObserver(mark);
+    chromeObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class']
+    });
   }
 
   /// 登出：复用 `/ui/v1/session/logout` 与页面写操作同一个 CSRF 头。
@@ -1373,6 +1463,7 @@
         skiffSettingsSave: settingsSave,
         skiffMenuWrite: menuWrite,
         skiffUiThemeWrite: uiThemeWrite,
+        skiffUiPreset: uiPresetApply,
         // 与资源动作 `skiffDockerWrite` 必须保持不同名字：同名会按对象字面量
         // 后者覆盖前者，镜像/卷/网络/容器写操作会被静默劫持到设置保存。
         skiffDockerSettingsWrite: dockerSettingsWrite,
@@ -1540,7 +1631,7 @@
   }
 
   // 站点列表：列取接口字段，行点击进入 budding 详情。
-  function sitesSchema(data) {
+  function sitesSchema(data, runtimes) {
     var body = [];
     var table = listTable(
       [
@@ -1615,17 +1706,18 @@
         props: { gap: 8, wrap: true },
         content: {
           body: [
-            {
-              type: 'button',
-              props: { text: '新建站点', color: 'primary' },
-              onEvent: {
-                click: {
-                  actions: [
-                    { type: 'navigate', props: { url: prefix + '/sites/new' } }
-                  ]
-                }
-              }
-            }
+            dialogFormButton('新建站点', {
+              title: '新建站点',
+              width: 640,
+              url: apiBase + '/sites',
+              action: { type: 'skiffSiteWrite', props: { op: 'create' } },
+              fields: siteCreateFields(runtimes),
+              initialValues: siteCreateDefaults(''),
+              submitText: '创建站点',
+              variant: 'flat',
+              notice:
+                '运行环境站点需选择已运行的实例；静态站点只需目录；反向代理需填目标地址。别名每行一个。'
+            })
           ]
         }
       });
@@ -1993,14 +2085,8 @@
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  /// 新建站点（原生化）：类型/域名/目录/运行环境/反代/别名与旧表单同名。
-  function siteNewSchema(runtimes) {
-    var typeQuery = '';
-    try {
-      typeQuery = new URLSearchParams(location.search).get('type') || '';
-    } catch (e) {
-      typeQuery = '';
-    }
+  /// 新建站点字段：列表弹窗与 `/sites/new` 深链页共用同一份定义。
+  function siteCreateFields(runtimes) {
     var items = (runtimes || []).map(function (r) {
       return {
         title:
@@ -2009,6 +2095,70 @@
         value: r.id
       };
     });
+    return [
+      {
+        type: 'select',
+        props: {
+          name: 'site_type',
+          label: '站点类型',
+          items: [
+            { title: '运行环境（PHP / Node）', value: 'runtime' },
+            { title: '静态站点', value: 'static' },
+            { title: '反向代理', value: 'proxy' }
+          ]
+        }
+      },
+      {
+        type: 'input-text',
+        props: {
+          name: 'domain',
+          label: '域名（必填）',
+          required: true,
+          rules: { required: true, messages: { required: '请输入域名' } }
+        }
+      },
+      {
+        type: 'input-text',
+        props: { name: 'root_dir', label: '站点目录（可留空，由系统生成）' }
+      },
+      {
+        type: 'select',
+        props: {
+          name: 'runtime_id',
+          label: '运行环境（runtime 类型必选）',
+          items: items
+        }
+      },
+      {
+        type: 'input-text',
+        props: { name: 'proxy_target', label: '反代目标（proxy 类型必填，如 http://127.0.0.1:3000）' }
+      },
+      {
+        type: 'checkbox',
+        props: { name: 'proxy_websocket', label: '反代启用 WebSocket' }
+      },
+      {
+        type: 'textarea',
+        props: { name: 'aliases', label: '附加域名（每行一个）', rows: 3 }
+      }
+    ];
+  }
+
+  /// 站点类型默认值：`defaultValue` 只影响展示，不进入表单值，必须走 initialValues。
+  function siteCreateDefaults(typeQuery) {
+    return {
+      site_type: typeQuery === 'runtime' || typeQuery === 'proxy' ? typeQuery : 'static'
+    };
+  }
+
+  /// 新建站点（原生化）：类型/域名/目录/运行环境/反代/别名与旧表单同名。
+  function siteNewSchema(runtimes) {
+    var typeQuery = '';
+    try {
+      typeQuery = new URLSearchParams(location.search).get('type') || '';
+    } catch (e) {
+      typeQuery = '';
+    }
     return {
       type: 'page',
       props: { title: '新建站点 · Skiff', subtitle: '提交后进入站点详情页' },
@@ -2023,58 +2173,44 @@
         writeForm(
           apiBase + '/sites',
           { type: 'skiffSiteWrite', props: { op: 'create' } },
-          [
-            {
-              type: 'select',
-              props: {
-                name: 'site_type',
-                label: '站点类型',
-                defaultValue: typeQuery === 'runtime' || typeQuery === 'proxy' ? typeQuery : 'static',
-                items: [
-                  { title: '运行环境（PHP / Node）', value: 'runtime' },
-                  { title: '静态站点', value: 'static' },
-                  { title: '反向代理', value: 'proxy' }
-                ]
-              }
-            },
-            {
-              type: 'input-text',
-              props: {
-                name: 'domain',
-                label: '域名（必填）',
-                required: true,
-                rules: { required: true, messages: { required: '请输入域名' } }
-              }
-            },
-            {
-              type: 'input-text',
-              props: { name: 'root_dir', label: '站点目录（可留空，由系统生成）' }
-            },
-            {
-              type: 'select',
-              props: {
-                name: 'runtime_id',
-                label: '运行环境（runtime 类型必选）',
-                items: items
-              }
-            },
-            {
-              type: 'input-text',
-              props: { name: 'proxy_target', label: '反代目标（proxy 类型必填，如 http://127.0.0.1:3000）' }
-            },
-            {
-              type: 'checkbox',
-              props: { name: 'proxy_websocket', label: '反代启用 WebSocket' }
-            },
-            {
-              type: 'textarea',
-              props: { name: 'aliases', label: '附加域名（每行一个）', rows: 3 }
-            }
-          ],
-          '创建站点'
+          siteCreateFields(runtimes),
+          '创建站点',
+          siteCreateDefaults(typeQuery)
         )
       ]
     };
+  }
+
+  /// 新建运行环境字段：列表弹窗与页面表单同源。
+  function runtimeCreateFields(catalog) {
+    var kinds = ((catalog && catalog.kinds) || []).map(function (k) {
+      return { title: k.label, value: k.key };
+    });
+    return [
+      {
+        type: 'select',
+        props: { name: 'kind', label: '类型', items: kinds }
+      },
+      {
+        type: 'input-text',
+        props: {
+          name: 'version',
+          label: '版本',
+          hint: '留空使用该类型默认版本；PHP 默认 ' +
+            ((catalog && catalog.default_php_version) || '8.5')
+        }
+      },
+      {
+        type: 'input-text',
+        props: { name: 'name', label: '实例名（可选，默认按类型自动生成）' }
+      }
+    ];
+  }
+
+  /// 运行环境默认类型：同样必须进入表单值，而不是只靠 `defaultValue` 展示。
+  function runtimeCreateDefaults(catalog) {
+    var kinds = (catalog && catalog.kinds) || [];
+    return kinds.length ? { kind: kinds[0].key } : {};
   }
 
   function runtimesSchema(images, catalog) {
@@ -2102,39 +2238,26 @@
       }
     };
     body.push(table);
-    var kinds = ((catalog && catalog.kinds) || []).map(function (k) {
-      return { title: k.label, value: k.key };
+    body.push({
+      type: 'flex',
+      props: { gap: 8, wrap: true },
+      content: {
+        body: [
+          dialogFormButton('新建运行环境', {
+            title: '新建运行环境',
+            width: 640,
+            url: apiBase + '/runtimes',
+            action: { type: 'skiffRuntimeCreate' },
+            fields: runtimeCreateFields(catalog),
+            initialValues: runtimeCreateDefaults(catalog),
+            submitText: '创建并安装',
+            variant: 'flat',
+            notice:
+              'PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中显示。'
+          })
+        ]
+      }
     });
-    body.push(
-      writeCard(
-        '安装运行环境',
-        'PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中实时显示。',
-        writeForm(
-          apiBase + '/runtimes',
-          { type: 'skiffRuntimeCreate' },
-          [
-            {
-              type: 'select',
-              props: { name: 'kind', label: '类型', items: kinds }
-            },
-            {
-              type: 'input-text',
-              props: {
-                name: 'version',
-                label: '版本',
-                hint: '留空使用该类型默认版本；PHP 默认 ' +
-                  ((catalog && catalog.default_php_version) || '8.5')
-              }
-            },
-            {
-              type: 'input-text',
-              props: { name: 'name', label: '实例名（可选，默认按类型自动生成）' }
-            }
-          ],
-          '创建并安装'
-        )
-      )
-    );
     var imagesForm = writeForm(
       apiBase + '/runtimes/images',
       { type: 'skiffRuntimeImages' },
@@ -4144,30 +4267,122 @@
     };
   }
 
-  /// 界面设置（壳主题）：当前最小集合只有主色，按全站生效。
+  /// 壳主题预设：按钮底色即色点，点击整体套用并保存。
+  /// budding 1.8.0-r5 没有颜色选择器节点，预设与自定义都只提交 `#rrggbb` 文本。
+  var UI_THEME_PRESETS = [
+    { name: '品牌蓝', primary: '#1867c0', page: '#f5f5f5', menu: '', menu_custom: false },
+    { name: '翡翠绿', primary: '#0f7b5c', page: '#f2faf7', menu: '', menu_custom: false },
+    { name: '深灰', primary: '#607d8b', page: '#eceff1', menu: '#1f2933', menu_custom: true },
+    { name: '暖橙', primary: '#b45309', page: '#fff7ed', menu: '#fff7ed', menu_custom: true }
+  ];
+
+  /// 色块 + 名称 + 取值：`chip` 的 `color` 直接吃 `#rrggbb`。
+  function uiSwatch(label, value, extra) {
+    var body = [
+      { type: 'chip', props: { text: ' ', color: value, variant: 'flat', size: 'small' } },
+      { type: 'text', props: { text: label, weight: 'medium' } },
+      { type: 'text', props: { text: value, size: 'small' } }
+    ];
+    if (extra) body.push({ type: 'text', props: { text: extra, size: 'small' } });
+    return {
+      type: 'flex',
+      props: { gap: 8, align: 'center', wrap: true },
+      content: { body: body }
+    };
+  }
+
+  function uiPresetButton(preset) {
+    return {
+      type: 'button',
+      props: { text: preset.name, color: preset.primary, variant: 'flat', size: 'small' },
+      action: {
+        type: 'skiffUiPreset',
+        props: {
+          primary: preset.primary,
+          page: preset.page,
+          menu: preset.menu,
+          menu_custom: preset.menu_custom
+        }
+      }
+    };
+  }
+
+  /// 颜色字段的同步校验；服务端仍会再校验一次并做对比度校正。
+  function uiColorRules(requiredMessage) {
+    return {
+      required: true,
+      pattern: '^#[0-9a-fA-F]{6}$',
+      messages: {
+        required: requiredMessage,
+        pattern: '请输入 #rrggbb，例如 #1867c0'
+      }
+    };
+  }
+
+  /// 界面设置（壳主题）：预设 + 主色 / 菜单底色 / 页面底色，全站生效。
   function uiSettingsSchema(data) {
+    if (!data.can_admin) {
+      return {
+        type: 'page',
+        props: { title: '界面设置 · Skiff', subtitle: '只读；写操作需要管理员权限' },
+        body: [
+          detailLines('当前主题', [
+            '主色：' + (data.primary || '未设置'),
+            '菜单底色：' + (data.menu || '—') + (data.menu_custom ? '（自定义）' : '（随页面底色自动）'),
+            '页面底色：' + (data.page || '—'),
+            '文字色：菜单 ' + data.menu_text + ' · 页面 ' + data.page_text + ' · 主色按钮 ' + data.on_primary,
+            '只有管理员可以修改主题。'
+          ])
+        ]
+      };
+    }
     var body = [
       {
         type: 'alert',
         props: {
           type: 'info',
-          text: '主色作用于整个管理外壳（导航、按钮、选中态），按全站生效；保存后当前页自动刷新，其他已登录会话在下次加载页面时使用新主色。'
+          text: '主色作用于菜单、页签、按钮与图标激活态；菜单底色由侧栏、顶栏与页签条共用，文字自动反色；页面底色决定整页明暗。主色与菜单底色对比度不足 4.5:1 时自动校正。'
         }
       }
     ];
-    if (!data.can_admin) {
-      body.push(
-        detailLines('当前主题', [
-          '主色：' + (data.primary || '未设置'),
-          '只有管理员可以修改主题。'
-        ])
-      );
-      return {
-        type: 'page',
-        props: { title: '界面设置 · Skiff', subtitle: '只读；写操作需要管理员权限' },
-        body: body
-      };
+    if (data.adjusted) {
+      body.push({
+        type: 'alert',
+        props: {
+          type: 'warning',
+          text: '当前主色已按菜单底色校正为 ' + data.primary + '，以保证激活态可读。'
+        }
+      });
     }
+    body.push({
+      type: 'card',
+      props: { title: '预设方案' },
+      content: {
+        body: [
+          textLine('点击即整体套用并保存；套用后可在下方逐项微调。'),
+          {
+            type: 'flex',
+            props: { gap: 8, wrap: true },
+            content: { body: UI_THEME_PRESETS.map(uiPresetButton) }
+          }
+        ]
+      }
+    });
+    body.push({
+      type: 'card',
+      props: { title: '当前生效' },
+      content: {
+        body: [
+          uiSwatch('主色', data.primary, '按钮文字 ' + data.on_primary),
+          uiSwatch(
+            '菜单底色',
+            data.menu,
+            '菜单文字 ' + data.menu_text + (data.menu_custom ? ' · 自定义' : ' · 自动')
+          ),
+          uiSwatch('页面底色', data.page, '页面文字 ' + data.page_text)
+        ]
+      }
+    });
     var form = writeForm(
       apiBase + '/settings/ui',
       { type: 'skiffUiThemeWrite' },
@@ -4176,24 +4391,57 @@
           type: 'input-text',
           props: {
             name: 'primary',
-            label: '主色',
-            hint: '#RRGGBB，例如 #2f6feb；留空恢复缺省主色 #1867c0'
+            label: '主色（#rrggbb）',
+            required: true,
+            rules: uiColorRules('请输入主色')
+          }
+        },
+        {
+          type: 'input-text',
+          props: {
+            name: 'menu',
+            label: '菜单底色（#rrggbb）',
+            required: true,
+            hint: '侧栏、顶栏、页签条共用；关闭「自定义」时按页面底色自动取深/浅。',
+            rules: uiColorRules('请输入菜单底色')
+          }
+        },
+        {
+          type: 'switch',
+          props: {
+            name: 'menu_custom',
+            label: '自定义菜单底色',
+            hint: '关闭时自动推导；开启后使用上面的颜色。'
+          }
+        },
+        {
+          type: 'input-text',
+          props: {
+            name: 'page',
+            label: '页面底色（#rrggbb）',
+            required: true,
+            rules: uiColorRules('请输入页面底色')
           }
         }
       ],
-      '保存主题'
+      '保存配色'
     );
-    form.props.initialValues = { primary: data.primary };
+    form.props.initialValues = {
+      primary: data.primary,
+      menu: data.menu,
+      page: data.page,
+      menu_custom: data.menu_custom
+    };
     body.push(
       writeCard(
-        '壳主题',
-        '当前主色 ' + data.primary + '；保存后刷新页面即可看到新配色。',
+        '自定义配色',
+        '保存后当前页自动刷新；其他已登录会话在下次加载页面时使用新配色。',
         form
       )
     );
     return {
       type: 'page',
-      props: { title: '界面设置 · Skiff', subtitle: '壳主题主色（全局生效）' },
+      props: { title: '界面设置 · Skiff', subtitle: '壳主题：预设 + 主色 / 菜单底色 / 页面底色' },
       body: body
     };
   }
@@ -4245,15 +4493,56 @@
   /// 界面设置写操作：复用 `/ui/v1/settings/ui`（同一校验与审计）。
   function uiThemeWrite(args, ctx) {
     var values = formValues(ctx);
+    var primary = formText(values.primary).trim();
+    var menu = formText(values.menu).trim();
+    var page = formText(values.page).trim();
+    var menuCustom = !!values.menu_custom;
+    var hex = /^#[0-9a-fA-F]{6}$/;
+    var invalid = '';
+    if (!hex.test(primary)) invalid = '主色';
+    else if (!hex.test(page)) invalid = '页面底色';
+    else if (menuCustom && !hex.test(menu)) invalid = '菜单底色';
+    if (invalid) {
+      formError(args, invalid + '必须是 #rrggbb 格式，例如 #1867c0', values);
+      return Promise.resolve();
+    }
     return submitJson('/settings/ui', {
-      primary: formText(values.primary).trim()
+      primary: primary,
+      // 关闭自定义时留空，服务端按页面底色自动推导，避免旧值在下次开启时意外复活。
+      menu: menuCustom ? menu : '',
+      page: page,
+      menu_custom: menuCustom
     })
       .then(function (data) {
-        toast((data && data.message) || '已保存主题', 'success');
+        toast((data && data.message) || '已保存配色', 'success');
         location.reload();
       })
       .catch(function (error) {
-        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '保存失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
+      });
+  }
+
+  /// 预设方案：一次提交整套颜色；服务端仍做严格校验与对比度校正。
+  function uiPresetApply(args) {
+    return submitJson('/settings/ui', {
+      primary: formText(args.primary).trim(),
+      menu: formText(args.menu).trim(),
+      page: formText(args.page).trim(),
+      menu_custom: !!args.menu_custom
+    })
+      .then(function (data) {
+        toast((data && data.message) || '已应用预设配色', 'success');
+        location.reload();
+      })
+      .catch(function (error) {
+        toast(
+          '应用预设失败：' + (error && error.message ? error.message : String(error)),
+          'error'
+        );
       });
   }
 
@@ -4282,9 +4571,16 @@
       name: formText(v.name).trim()
     })
       .then(function (data) {
+        if (args && args.dialog) closeTopLayer();
         runtimeDone(data, '安装任务已提交');
       })
-      .catch(runtimeFail);
+      .catch(function (error) {
+        formError(
+          args,
+          '操作失败：' + (error && error.message ? error.message : String(error)),
+          v
+        );
+      });
   }
 
   function runtimeImagesWrite(args, ctx) {
@@ -5971,13 +6267,11 @@
     };
   }
 
-  /// 行内弹窗表单按钮：统一「打开 dialog → 组件表单 → 自定义动作提交」。
+  /// 通用弹窗表单按钮：打开宿主 dialog，表单提交交给调用方的自定义动作。
   ///
-  /// 路径上下文用 `${item.*}` 传进动作 props，弹窗不另造数据域；
-  /// 表单校验（必填/八进制/数字）交给组件，服务端错误用 `dialogError`
-  /// 在弹窗顶部显示摘要并回填刚才的输入（U3 字段级回填未支持）。
-  function fileDialogButton(text, options) {
-    var url = apiBase + '/files/' + (options.op || 'write');
+  /// 注册表只保存「重开同一张表单」所需的最小信息，服务端错误由 `formError`
+  /// 在弹窗顶部显示并回填刚才的输入（U3 字段级回填未支持）。
+  function dialogFormButton(text, options) {
     var key = newDialogKey();
     var action = {
       type: options.action.type,
@@ -5986,7 +6280,7 @@
     dialogRegistry[key] = {
       title: options.title,
       width: options.width || 520,
-      url: url,
+      url: options.url,
       action: action,
       fields: options.fields,
       submitText: options.submitText,
@@ -6000,10 +6294,16 @@
         props: { type: options.noticeType || 'info', text: options.notice }
       });
     }
-    body.push(writeForm(url, action, options.fields, options.submitText));
+    body.push(
+      writeForm(options.url, action, options.fields, options.submitText, options.initialValues)
+    );
     return {
       type: 'button',
-      props: { text: text, variant: 'text', color: options.color || 'primary' },
+      props: {
+        text: text,
+        variant: options.variant || 'text',
+        color: options.color || 'primary'
+      },
       action: {
         type: 'dialog',
         props: {
@@ -6020,6 +6320,25 @@
         }
       }
     };
+  }
+
+  /// 行内弹窗表单按钮：统一「打开 dialog → 组件表单 → 自定义动作提交」。
+  ///
+  /// 路径上下文用 `${item.*}` 传进动作 props，弹窗不另造数据域；
+  /// 表单校验（必填/八进制/数字）交给组件，服务端错误用 `dialogError`
+  /// 在弹窗顶部显示摘要并回填刚才的输入（U3 字段级回填未支持）。
+  function fileDialogButton(text, options) {
+    return dialogFormButton(text, {
+      title: options.title,
+      width: options.width,
+      url: apiBase + '/files/' + (options.op || 'write'),
+      action: options.action,
+      fields: options.fields,
+      submitText: options.submitText,
+      notice: options.notice,
+      noticeType: options.noticeType,
+      color: options.color
+    });
   }
 
   /// 弹窗表单注册表：提交失败或本地校验不通过时，按 key 还原同一张表单。
@@ -7985,7 +8304,15 @@
     }
     if (kind === 'sites') {
       // 列表本身由表格 `source` 游标取数；这里只读 `can_admin` 等页面级元数据。
-      return fetchData('/sites?limit=1').then(sitesSchema);
+      // 新建弹窗需要运行环境下拉，取不到时降级为空列表，不阻塞列表本身。
+      return Promise.all([
+        fetchData('/sites?limit=1'),
+        fetchData('/runtimes?limit=200').catch(function () {
+          return { items: [] };
+        })
+      ]).then(function (res) {
+        return sitesSchema(res[0], res[1].items || []);
+      });
     }
     if (kind === 'site-new') {
       return fetchData('/runtimes?limit=200')
@@ -8341,6 +8668,7 @@
         applyShellTheme(sessionState.theme);
         return fetchData('/menu').then(function (menu) {
           embed(shellSchema(sessionState), buildRoutes(menu));
+          markShellChrome();
         });
       })
       .catch(function (error) {

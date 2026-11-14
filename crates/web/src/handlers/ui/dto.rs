@@ -20,7 +20,15 @@ pub struct SessionData {
 
 #[derive(Debug, Serialize)]
 pub struct SessionTheme {
+    /// 校正后的主色（与菜单底色的对比度不低于 4.5:1）。
     pub primary: String,
+    pub menu: String,
+    pub page: String,
+    pub menu_custom: bool,
+    pub menu_text: String,
+    pub page_text: String,
+    pub on_primary: String,
+    pub adjusted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -995,6 +1003,13 @@ pub struct DockerSettingsData {
 #[derive(Debug, Serialize)]
 pub struct UiThemeData {
     pub primary: String,
+    pub menu: String,
+    pub page: String,
+    pub menu_custom: bool,
+    pub menu_text: String,
+    pub page_text: String,
+    pub on_primary: String,
+    pub adjusted: bool,
     pub can_admin: bool,
 }
 
@@ -1003,6 +1018,12 @@ pub struct UiThemeData {
 pub struct UiThemeUpdateBody {
     #[serde(default)]
     pub primary: String,
+    #[serde(default)]
+    pub menu: String,
+    #[serde(default)]
+    pub page: String,
+    #[serde(default)]
+    pub menu_custom: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -171,13 +171,21 @@ pub async fn settings_menu_update(
     Ok(resp)
 }
 
-/// `GET /ui/v1/settings/ui`：壳主题主色（全局生效，读对登录用户开放）。
+/// `GET /ui/v1/settings/ui`：壳主题快照（全局生效，读对登录用户开放）。
 pub async fn settings_ui(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
+    let theme = skiff_app::theme::current(&state);
     let data = UiThemeData {
-        primary: skiff_app::theme::primary(&state),
+        primary: theme.primary,
+        menu: theme.menu,
+        page: theme.page,
+        menu_custom: theme.menu_custom,
+        menu_text: theme.menu_text,
+        page_text: theme.page_text,
+        on_primary: theme.on_primary,
+        adjusted: theme.adjusted,
         can_admin: user.can(skiff_model::Permission::Admin),
     };
     let mut resp = Json(json!({ "data": data })).into_response();
@@ -186,9 +194,10 @@ pub async fn settings_ui(
     Ok(resp)
 }
 
-/// `POST /ui/v1/settings/ui`：保存壳主题主色。
+/// `POST /ui/v1/settings/ui`：保存壳主题配色。
 ///
 /// 主题按全站生效，写操作仅管理员；CSRF 头与其它设置写入口同源。
+/// 三个颜色字段都要求 `#rrggbb`，任一非法即 400 且不落库。
 pub async fn settings_ui_update(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
@@ -199,19 +208,47 @@ pub async fn settings_ui_update(
         return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
     }
     guard::csrf(&state, &user, &parts)?;
-    let saved = skiff_app::theme::save_primary(&state, &body.primary)
-        .map_err(|m| ApiError(AppError::BadRequest(m)))?;
+    let saved = skiff_app::theme::save(
+        &state,
+        &skiff_app::theme::ThemeInput {
+            primary: body.primary,
+            menu: body.menu,
+            page: body.page,
+            menu_custom: body.menu_custom,
+        },
+    )
+    .map_err(|m| ApiError(AppError::BadRequest(m)))?;
+    let detail = format!(
+        "primary={}, menu={}, page={}, menu_custom={}",
+        saved.primary, saved.menu, saved.page, saved.menu_custom
+    );
     let ip = handlers::client_ip(&state, &parts);
     state.audit_or_log(
         &user.user.username,
         &ip,
         "settings.ui.update",
-        "primary",
+        &detail,
         "ok",
-        &saved,
+        &detail,
     );
-    let mut resp =
-        Json(json!({ "data": { "message": format!("已保存主题主色 {saved}") } })).into_response();
+    let mut resp = Json(json!({
+        "data": {
+            "message": if saved.adjusted {
+                format!("已保存配色；主色与菜单底色的对比度不足，已校正为 {}", saved.primary)
+            } else {
+                format!("已保存配色：主色 {} · 菜单 {} · 页面 {}", saved.primary, saved.menu, saved.page)
+            },
+            "primary": saved.primary,
+            "menu": saved.menu,
+            "page": saved.page,
+            "menu_custom": saved.menu_custom,
+            "menu_text": saved.menu_text,
+            "page_text": saved.page_text,
+            "on_primary": saved.on_primary,
+            "adjusted": saved.adjusted
+        }
+    }))
+    .into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

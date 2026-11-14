@@ -97,8 +97,18 @@ pub async fn session(
         csrf_token: state.csrf_token(&user.session_token),
         entry_prefix: state.cfg.entry_prefix.clone(),
         api_version: API_VERSION,
-        theme: SessionTheme {
-            primary: skiff_app::theme::primary(&state),
+        theme: {
+            let theme = skiff_app::theme::current(&state);
+            SessionTheme {
+                primary: theme.primary,
+                menu: theme.menu,
+                page: theme.page,
+                menu_custom: theme.menu_custom,
+                menu_text: theme.menu_text,
+                page_text: theme.page_text,
+                on_primary: theme.on_primary,
+                adjusted: theme.adjusted,
+            }
         },
         features: SessionFeatures {
             shell_fallback: true,
