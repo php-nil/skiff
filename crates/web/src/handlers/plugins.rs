@@ -525,13 +525,29 @@ pub(crate) fn verify_for_confirm(
     path: &FsPath,
 ) -> Result<skiff_plugin::TrustDecision, AppError> {
     // 判定逻辑与 CLI 完全同一份；这里只把「未导入公钥」翻成页面里的话术。
-    skiff_plugin::resolve_trust(path, state.db(), state.cfg.allow_unsigned).map_err(|e| match e {
-        skiff_plugin::TrustError::UnverifiedKey { key_id } => AppError::BadRequest(format!(
-            "未导入该包的公钥（指纹 {key_id}）。请先在「设置 → 信任公钥」导入，再安装；\
-             未签名包默认拒装。"
-        )),
-        other => AppError::BadRequest(other.to_string()),
-    })
+    let trust =
+        skiff_plugin::resolve_trust(path, state.db(), state.cfg.allow_unsigned).map_err(|e| {
+            match e {
+                skiff_plugin::TrustError::UnverifiedKey { key_id } => AppError::BadRequest(format!(
+                    "未导入该包的公钥（指纹 {key_id}）。请先在「设置 → 信任公钥」导入，再安装；\
+                     未签名包默认拒装。"
+                )),
+                other => AppError::BadRequest(other.to_string()),
+            }
+        })?;
+    // 直传安装与商店安装共用同一兼容判定；不兼容的包在确认页之前就拒绝，
+    // 避免用户走完授权页才看到失败。
+    let api = &trust.meta.manifest.api;
+    let kernel = skiff_app::tasks::KERNEL_API;
+    if !skiff_pkgfmt::manifest::api_compatible(api, kernel) {
+        return Err(AppError::PluginApi(format!(
+            "插件 {id} {version} 要求内核 API {api}，当前内核为 {kernel}；\
+             请升级 Skiff 或改用兼容版本",
+            id = trust.meta.manifest.id,
+            version = trust.meta.manifest.version,
+        )));
+    }
+    Ok(trust)
 }
 
 /// 安装包并统一留痕：成功/失败都写 `plugin.install` 审计，并清理 `.incoming` 暂存。

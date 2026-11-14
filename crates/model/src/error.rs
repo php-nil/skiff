@@ -57,6 +57,8 @@ pub enum ErrorCode {
     InvalidShape,
     /// 形状成立但某个字段的值不合法；配合 `field` 定位。
     InvalidField,
+    /// 插件包声明的内核 API 与当前内核不兼容（`api_compatible` 判定失败）。
+    PluginApiIncompatible,
     /// 随包 schema 运行期校验失败（JSON 不合法或不符合组件语法）。
     ///
     /// 归入 `shape`：这是「输入包/文件内容不成立」，用 400 让前端提示重新打包或
@@ -96,6 +98,7 @@ impl ErrorCode {
         &[
             InvalidShape,
             InvalidField,
+            PluginApiIncompatible,
             PluginSchemaInvalid,
             Unauthenticated,
             Forbidden,
@@ -114,7 +117,9 @@ impl ErrorCode {
     pub fn category(self) -> ErrorCategory {
         use ErrorCode::*;
         match self {
-            InvalidShape | InvalidField | PluginSchemaInvalid => ErrorCategory::Shape,
+            InvalidShape | InvalidField | PluginApiIncompatible | PluginSchemaInvalid => {
+                ErrorCategory::Shape
+            }
             Unauthenticated | Forbidden | ScopeMissing | CsrfInvalid => ErrorCategory::Unauthorized,
             Conflict | InvalidState => ErrorCategory::Conflict,
             NotFound => ErrorCategory::NotFound,
@@ -129,6 +134,7 @@ impl ErrorCode {
         match self {
             InvalidShape => "shape.invalid",
             InvalidField => "shape.field",
+            PluginApiIncompatible => "shape.plugin_api",
             PluginSchemaInvalid => "shape.plugin_schema",
             Unauthenticated => "auth.unauthenticated",
             Forbidden => "auth.forbidden",
@@ -148,7 +154,7 @@ impl ErrorCode {
     pub fn status(self) -> u16 {
         use ErrorCode::*;
         match self {
-            InvalidShape | InvalidField | PluginSchemaInvalid => 400,
+            InvalidShape | InvalidField | PluginApiIncompatible | PluginSchemaInvalid => 400,
             Unauthenticated => 401,
             Forbidden | ScopeMissing | CsrfInvalid => 403,
             NotFound => 404,
@@ -220,6 +226,12 @@ mod tests {
             "shape.plugin_schema"
         );
         assert!(!ErrorCode::PluginSchemaInvalid.retryable());
+        assert_eq!(ErrorCode::PluginApiIncompatible.status(), 400);
+        assert_eq!(
+            ErrorCode::PluginApiIncompatible.as_str(),
+            "shape.plugin_api"
+        );
+        assert!(!ErrorCode::PluginApiIncompatible.retryable());
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub enum AppError {
     /// 随包 schema 运行期校验失败：客户端输入（插件包）不成立，按 400 处理，
     /// 错误码独立为 `shape.plugin_schema`，不再与内核 500 混在一起。
     PluginSchema(String),
+    /// 插件包声明的内核 API 与当前内核不兼容，错误码 `shape.plugin_api`。
+    PluginApi(String),
     /// 形状成立但字段值不合法；`field` 用于让客户端定位到具体控件。
     InvalidField {
         field: String,
@@ -42,6 +44,7 @@ impl AppError {
             AppError::Forbidden(_) | AppError::Csrf(_) => StatusCode::FORBIDDEN,
             AppError::BadRequest(_)
             | AppError::PluginSchema(_)
+            | AppError::PluginApi(_)
             | AppError::InvalidField { .. } => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::NoSpace(_) => StatusCode::INSUFFICIENT_STORAGE,
@@ -63,6 +66,7 @@ impl AppError {
             AppError::Csrf(_) => ErrorCode::CsrfInvalid,
             AppError::BadRequest(_) => ErrorCode::InvalidShape,
             AppError::PluginSchema(_) => ErrorCode::PluginSchemaInvalid,
+            AppError::PluginApi(_) => ErrorCode::PluginApiIncompatible,
             AppError::InvalidField { .. } => ErrorCode::InvalidField,
             AppError::Conflict(_) => ErrorCode::Conflict,
             AppError::NoSpace(_) => ErrorCode::NoSpace,
@@ -102,6 +106,7 @@ impl AppError {
             | AppError::Csrf(m)
             | AppError::BadRequest(m)
             | AppError::PluginSchema(m)
+            | AppError::PluginApi(m)
             | AppError::Conflict(m)
             | AppError::NoSpace(m)
             | AppError::Unavailable(m)
@@ -264,6 +269,11 @@ mod tests {
             (
                 AppError::PluginSchema("schema 校验失败".into()),
                 ErrorCode::PluginSchemaInvalid,
+                400,
+            ),
+            (
+                AppError::PluginApi("插件要求内核 API 1.4".into()),
+                ErrorCode::PluginApiIncompatible,
                 400,
             ),
             (

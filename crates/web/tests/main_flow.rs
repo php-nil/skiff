@@ -321,6 +321,20 @@ fn build_package_with(
     requires: &str,
     cap: &str,
 ) -> (PathBuf, String, String) {
+    build_package_full(root, requires, cap, "1.0")
+}
+
+/// 指定 manifest `api` 的签名包（兼容门测试用）。
+fn build_package_api(root: &std::path::Path, api: &str) -> (PathBuf, String, String) {
+    build_package_full(root, "docker", "docker", api)
+}
+
+fn build_package_full(
+    root: &std::path::Path,
+    requires: &str,
+    cap: &str,
+    api: &str,
+) -> (PathBuf, String, String) {
     use skiff_pkgfmt::SigningKey;
     let key = SigningKey::generate();
     let src = root.join("pkg-src");
@@ -332,7 +346,7 @@ fn build_package_with(
 name = "Demo"
 version = "0.1.0"
 key_id = "{}"
-api = "1.0"
+api = "{api}"
 requires_full_sandbox = false
 requires = ["{}"]
 [[permissions]]
@@ -1745,6 +1759,24 @@ async fn plugin_install_rejects_unknown_key() {
     assert!(
         text.contains("未导入"),
         "未导入公钥的签名包必须拒装并提示导入: {text}"
+    );
+}
+
+/// 直传安装同样走内核 API 兼容门：不兼容包在确认页之前就返回 400，
+/// 并给出「要求 / 当前」两端的明确文案（稳定错误码 `shape.plugin_api`）。
+#[tokio::test]
+async fn plugin_upload_rejects_incompatible_kernel_api() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (pkg, pubkey, kid) = build_package_api(&h.data_dir, "1.4");
+    h.state.db().trust_key(&kid, &pubkey, "测试作者").unwrap();
+
+    let resp = upload_pkg(&h.app, &token, &pkg).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let text = body_text(resp).await;
+    assert!(
+        text.contains("要求内核 API 1.4") && text.contains("当前内核为 1.3"),
+        "不兼容包必须说明两端 API 版本: {text}"
     );
 }
 
