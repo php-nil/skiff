@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::header::ACCEPT;
 use axum::http::request::Parts;
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 
 use crate::error::AppError;
@@ -57,9 +57,8 @@ pub fn is_shell_path(prefix: &str, path: &str) -> bool {
 }
 
 /// `Accept` 是否接受 HTML（浏览器地址栏导航的标准请求头）。
-fn accepts_html(parts: &Parts) -> bool {
-    parts
-        .headers
+pub(crate) fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
         .get_all(ACCEPT)
         .iter()
         .filter_map(|v| v.to_str().ok())
@@ -77,7 +76,7 @@ pub async fn fallback(State(state): State<Arc<AppState>>, parts: Parts) -> Respo
     if parts.extensions.get::<CurrentUser>().is_none() {
         return login_redirect(&state, &parts);
     }
-    if !accepts_html(&parts) {
+    if !accepts_html(&parts.headers) {
         return AppError::NotFound("404 Not Found".into()).into_response();
     }
     shell_page(&state)
@@ -93,7 +92,7 @@ pub async fn method_not_allowed(State(state): State<Arc<AppState>>, parts: Parts
         if parts.extensions.get::<CurrentUser>().is_none() {
             return login_redirect(&state, &parts);
         }
-        if accepts_html(&parts) {
+        if accepts_html(&parts.headers) {
             return shell_page(&state);
         }
     }

@@ -305,14 +305,20 @@ pub async fn retry(
     ))
 }
 
-/// 增量日志（JSON）：无 EventSource 的场景与集成测试使用。
+/// 增量日志：浏览器地址栏导航交 budding 壳页；脚本 / 集成测试仍拿 JSON。
 pub async fn logs_json(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     crate::authz::authorize(&user, act::JOB_LOGS)?;
+    // 与站点 / 容器 / 运行环境日志一致：同一个路径按 `Accept` 分流，
+    // 导航请求给壳页，页内脚本再以非 HTML 请求取 JSON，不新增第二套路由。
+    if crate::handlers::spa::accepts_html(&headers) {
+        return Ok(crate::handlers::spa::shell_page(&state));
+    }
     let job = load_job(&state, &id)?;
     let after = q
         .get("after")

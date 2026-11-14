@@ -9425,6 +9425,58 @@ async fn container_logs_page_and_json_keep_read_only_semantics() {
     assert_eq!(v["error"]["code"], "dependency.unavailable");
 }
 
+/// 作业日志：浏览器导航（Accept: text/html）交 budding 壳页，脚本请求仍拿 JSON。
+#[tokio::test]
+async fn job_logs_serve_shell_for_html_and_json_for_scripts() {
+    use skiff_app::jobs::JobSubmit;
+
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let job = h
+        .state
+        .jobs()
+        .submit(JobSubmit {
+            kind: "site.create".into(),
+            target_type: "site".into(),
+            target_id: "logs.example.com".into(),
+            title: "创建站点 logs.example.com".into(),
+            params: serde_json::json!({ "name": "logs.example.com" }),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: true,
+        })
+        .unwrap();
+    h.state
+        .jobs()
+        .log_lines(&job.id, "out", &["作业日志第一行".to_string()]);
+    let uri = format!("/p/jobs/{}/logs", job.id);
+
+    let (status, html) = get_html(&h.app, &uri, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(
+        html.contains(r#"id="skiff-root""#),
+        "导航应返回壳页: {html}"
+    );
+    assert!(
+        html.contains("budding-boot.js"),
+        "壳页应加载 budding 运行时（日志用 code 组件）: {html}"
+    );
+
+    let (status, body) = get_page(&h.app, &uri, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["job"]["id"], job.id, "{body}");
+    assert!(
+        v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["line"] == "作业日志第一行"),
+        "脚本请求应拿到增量日志 JSON: {body}"
+    );
+}
+
 /// 运行环境日志：页面交壳，JSON 仅 Admin（viewer 403），实例不存在 400。
 #[tokio::test]
 async fn runtime_logs_page_and_json_are_admin_only() {
