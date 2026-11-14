@@ -9803,6 +9803,119 @@ async fn ui_files_mkdir_rename_remove_roundtrip() {
     assert!(!other.exists(), "CSRF 失败不得产生副作用");
 }
 
+/// 文件写能力面补齐：write → copy → archive → extract；权限位解析在触达 fs 前拒绝。
+#[tokio::test]
+async fn ui_files_write_copy_archive_extract_roundtrip() {
+    let h = harness();
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_path_buf();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+
+    let file = root.join("note.txt");
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/write",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({
+            "path": file.display().to_string(),
+            "content": "hello p0"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello p0");
+
+    let copy = root.join("copy.txt");
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/copy",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({
+            "from": file.display().to_string(),
+            "to": copy.display().to_string(),
+            "overwrite": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "hello p0");
+
+    let archive = root.join("bundle.tar.gz");
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/archive",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({
+            "sources": [copy.display().to_string()],
+            "dest": archive.display().to_string(),
+            "format": "tar.gz",
+            "overwrite": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(archive.is_file(), "压缩包必须落盘");
+
+    let extract_dir = root.join("extracted");
+    std::fs::create_dir(&extract_dir).unwrap();
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/extract",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({
+            "archive": archive.display().to_string(),
+            "dest": extract_dir.display().to_string(),
+            "overwrite": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        std::fs::read_to_string(extract_dir.join("copy.txt")).unwrap(),
+        "hello p0"
+    );
+
+    // 非法八进制在服务端解析阶段就拒绝，不依赖平台是否支持 chmod。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/chmod",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({
+            "path": file.display().to_string(),
+            "mode": "99x"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("八进制"), "错误文案应指出八进制: {text}");
+
+    // 空源数组与默认 uid/gid 缺失都必须拒绝，不能退化成 0:0。
+    let (status, _) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/archive",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({ "sources": [], "dest": "", "format": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = post_ui_json(
+        &h.app,
+        "/ui/v1/files/chown",
+        &admin,
+        Some(&csrf),
+        &serde_json::json!({ "path": file.display().to_string() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 /// 商店规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/plugins/store`（目录启用时 200）。
 #[tokio::test]
 async fn store_canonical_path_serves_shell() {
@@ -10027,6 +10140,43 @@ fn budding_boot_buttons_navigate_explicitly() {
     assert!(
         js.contains("(containerFilter ? '&filter=error' : '')"),
         "容器计数必须与列表用同一 filter 口径，切换后计数才同步变化"
+    );
+}
+
+/// 宿主桥与文件写入口的静态守门：平台注入 confirm、确认框走运行时图层、
+/// 文件能力面动作与弹窗表单入口都在，且不再依赖原生 prompt。
+#[test]
+fn budding_boot_host_bridge_and_file_entries_present() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        // K2：不注入 confirm 时 SDK 会退化回 window.confirm。
+        "confirm: hostConfirm",
+        "skiffConfirmAnswer: skiffConfirmAnswer",
+        "buddingRuntime()",
+        "runtime.openLayer(",
+        "consumeFlashToast();",
+        // 文件能力面入口（后端 /ui/v1/files/* 已补齐）。
+        "skiffFileWrite: fileWrite,",
+        "skiffFileCopy: fileCopy,",
+        "skiffFileChmod: fileChmod,",
+        "skiffFileChown: fileChown,",
+        "skiffFileArchive: fileArchive,",
+        "skiffFileExtract: fileExtract,",
+        // 站点删除改为弹窗内输入域名，组件内校验。
+        "skiffSiteDelete: siteDelete,",
+        "pattern: '^' + escapeRegExp(data.domain) + '$'",
+        // 解压入口按文件类型显隐。
+        "visibleOn: '${item.can_extract}'",
+    ] {
+        assert!(js.contains(needle), "宿主桥/文件入口缺失：{needle}");
+    }
+    assert!(
+        !js.contains("window.prompt("),
+        "不再允许 window.prompt；输入型确认必须用 dialog + form"
+    );
+    assert!(
+        !js.contains("window.confirm('确认删除 ' + display"),
+        "Docker 资源删除确认必须走宿主图层"
     );
 }
 

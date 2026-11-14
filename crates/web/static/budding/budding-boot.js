@@ -245,6 +245,161 @@
       : '服务返回状态 ' + res.status;
   }
 
+  // ---- 宿主桥：运行时实例、确认框与轻提示 --------------------------------
+  // 为什么需要这一层：SDK 在 `platform.confirm` 缺省时退化为浏览器原生
+  // `window.confirm`；而 `embed()` 只回 `{manifest, unmount}`，拿不到实例。
+  // 实例在 `install()` 时同时写进 Vue app 的 `globalProperties.$budding` 与
+  // provides，这里从挂载节点反查，再用实例自己的图层（和 `dialog` 动作同一渲染
+  // 栈）呈现确认框——不手写遮罩、不复制弹窗实现。
+  var runtimeRef = null;
+
+  function buddingRuntime() {
+    if (runtimeRef) return runtimeRef;
+    var app = mount.__vue_app__;
+    if (!app) return null;
+    var props = app.config && app.config.globalProperties;
+    if (props && props.$budding) {
+      runtimeRef = props.$budding;
+      return runtimeRef;
+    }
+    var provides = app._context && app._context.provides;
+    if (provides && typeof Reflect !== 'undefined' && Reflect.ownKeys) {
+      // provides 的键可能是 Symbol，`Object.keys` 枚举不到。
+      var keys = Reflect.ownKeys(provides);
+      for (var i = 0; i < keys.length; i++) {
+        var value = provides[keys[i]];
+        if (value && typeof value.openLayer === 'function' && typeof value.toast === 'function') {
+          runtimeRef = value;
+          return runtimeRef;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 轻提示：运行时不可用（embed 尚未完成）时只写控制台，不阻塞页面。
+  ///
+  /// 写操作普遍是「toast 后整页刷新」，刷新会立刻销毁提示节点，所以成功/失败
+  /// 类提示同时写入 sessionStorage，由新页面消费一次（`consumeFlashToast`）。
+  function toast(message, level) {
+    var text = String(message === undefined || message === null ? '' : message);
+    if (!text) return;
+    var lv = level || 'info';
+    var runtime = buddingRuntime();
+    if (runtime && typeof runtime.toast === 'function') {
+      runtime.toast(text, lv);
+    } else if (window.console && console.warn) {
+      console.warn('[skiff] ' + text);
+    }
+    if (lv === 'success' || lv === 'warning' || lv === 'error') {
+      try {
+        sessionStorage.setItem('skiff.flash', JSON.stringify({ message: text, level: lv, t: Date.now() }));
+      } catch (e) {
+        /* 隐私模式禁用 storage 时只损失跨刷新的提示 */
+      }
+    }
+  }
+
+  /// 新页面消费一次跨刷新的提示；超过 10 秒视为过期，避免翻旧账。
+  function consumeFlashToast() {
+    var raw = null;
+    try {
+      raw = sessionStorage.getItem('skiff.flash');
+      sessionStorage.removeItem('skiff.flash');
+    } catch (e) {
+      return;
+    }
+    if (!raw) return;
+    try {
+      var flash = JSON.parse(raw);
+      if (!flash || !flash.message || Date.now() - Number(flash.t || 0) > 10000) return;
+      var runtime = buddingRuntime();
+      if (runtime && typeof runtime.toast === 'function') {
+        runtime.toast(String(flash.message), flash.level || 'info');
+      }
+    } catch (e) {
+      /* 损坏的缓存直接丢弃 */
+    }
+  }
+
+  var pendingConfirms = {};
+  var confirmSeq = 0;
+
+  /// 二次确认：返回 Promise<boolean>，与内置 `confirm` 动作语义一致。
+  ///
+  /// 只有运行时还没挂载时才会退回原生 `window.confirm`；正常运行路径下
+  /// 一定走运行时图层。Esc 视为取消（图层本身关掉了 Esc 关闭，避免出现
+  /// 「图层已关但动作链悬着」的中间态）。
+  function hostConfirm(args) {
+    var title = (args && args.title) || '确认操作';
+    var content =
+      args && args.content !== undefined && args.content !== null ? String(args.content) : '';
+    var runtime = buddingRuntime();
+    if (
+      !runtime ||
+      typeof runtime.openLayer !== 'function' ||
+      typeof runtime.deriveScope !== 'function' ||
+      typeof runtime.closeLayer !== 'function'
+    ) {
+      return Promise.resolve(window.confirm(content ? title + '\n\n' + content : title));
+    }
+    return new Promise(function (resolve) {
+      var token = 'skiff-confirm-' + ++confirmSeq;
+      var entry = { layerId: '', done: false };
+      function finish(answer) {
+        if (entry.done) return;
+        entry.done = true;
+        delete pendingConfirms[token];
+        document.removeEventListener('keydown', onKey, true);
+        if (entry.layerId) runtime.closeLayer(entry.layerId);
+        resolve(answer === true);
+      }
+      function onKey(event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finish(false);
+        }
+      }
+      function button(text, answer, color, variant) {
+        var props = { text: text };
+        if (variant) props.variant = variant;
+        if (color) props.color = color;
+        return {
+          type: 'button',
+          props: props,
+          onEvent: {
+            click: { actions: [{ type: 'skiffConfirmAnswer', props: { token: token, answer: answer } }] }
+          }
+        };
+      }
+      pendingConfirms[token] = { finish: finish };
+      entry.layerId = runtime.openLayer(
+        {
+          title: title,
+          preset: 'xs',
+          closeOnMask: false,
+          closeOnEsc: false,
+          showCloseButton: false,
+          body: content ? [{ type: 'text', props: { text: content } }] : [],
+          footer: [
+            button('取消', false, null, 'outlined'),
+            button('确定', true, args && args.danger ? 'danger' : 'primary', null)
+          ]
+        },
+        // openLayer 的第二参是动作上下文（内部读 `ctx.scope.derive`），不是裸 scope。
+        { scope: runtime.deriveScope({}, null) }
+      );
+      document.addEventListener('keydown', onKey, true);
+    });
+  }
+
+  /// 确认框按钮的自定义动作：关闭当前图层并把选择结果交回 `hostConfirm`。
+  function skiffConfirmAnswer(args) {
+    var pending = pendingConfirms[String((args && args.token) || '')];
+    if (!pending) return;
+    pending.finish(args && (args.answer === true || args.answer === 'true'));
+  }
+
   // 容器启停/重启/删除：走 /ui/v1 同策略、同审计的 JSON 端点。
   function containerAction(args) {
     var id = args.id;
@@ -340,59 +495,81 @@
     }
     var base = prefix + '/files/trash/';
     if (op === 'clear') {
-      if (!window.confirm('确认清空回收站？将永久删除全部条目，且不会进入任何备份。')) {
-        return Promise.resolve();
-      }
-      return postPrefixJson(base + 'clear', {})
-        .then(function (data) {
-          var failed = (data.result && data.result.failed) || [];
-          window.alert(
-            failed.length
-              ? '已清理部分条目，' + failed.length + ' 项失败：' + failed.join('；')
-              : '已清空回收站。'
-          );
-          location.reload();
-        })
-        .catch(function (error) {
-          window.alert('清空失败：' + (error && error.message ? error.message : String(error)));
-        });
+      return hostConfirm({
+        title: '清空回收站',
+        content: '将永久删除全部条目，且不会进入任何备份。确认清空？',
+        danger: true
+      }).then(function (ok) {
+        if (!ok) return;
+        return postPrefixJson(base + 'clear', {})
+          .then(function (data) {
+            var failed = (data.result && data.result.failed) || [];
+            toast(
+              failed.length
+                ? '已清理部分条目，' + failed.length + ' 项失败：' + failed.join('；')
+                : '已清空回收站',
+              failed.length ? 'warning' : 'success'
+            );
+            location.reload();
+          })
+          .catch(function (error) {
+            toast('清空失败：' + (error && error.message ? error.message : String(error)), 'error');
+          });
+      });
     }
     if (op === 'purge') {
-      if (!window.confirm('确认彻底删除 ' + (args.path || '该条目') + '？不可恢复。')) {
-        return Promise.resolve();
-      }
-      return postPrefixJson(base + 'purge', { id: args.id })
-        .then(function () {
-          location.reload();
-        })
-        .catch(function (error) {
-          window.alert('彻底删除失败：' + (error && error.message ? error.message : String(error)));
-        });
+      return hostConfirm({
+        title: '彻底删除',
+        content: '确认彻底删除 ' + (args.path || '该条目') + '？不可恢复。',
+        danger: true
+      }).then(function (ok) {
+        if (!ok) return;
+        return postPrefixJson(base + 'purge', { id: args.id })
+          .then(function () {
+            toast('已彻底删除', 'success');
+            location.reload();
+          })
+          .catch(function (error) {
+            toast(
+              '彻底删除失败：' + (error && error.message ? error.message : String(error)),
+              'error'
+            );
+          });
+      });
     }
     if (op === 'restore') {
       return postPrefixJson(base + 'restore', { id: args.id, overwrite: false })
         .then(function () {
+          toast('已恢复', 'success');
           location.reload();
         })
         .catch(function (error) {
           var message = error && error.message ? error.message : String(error);
-          if (!window.confirm('恢复失败：' + message + '\n\n是否覆盖现有对象后重试？')) {
-            window.alert('恢复已取消。');
-            return;
-          }
-          return postPrefixJson(base + 'restore', { id: args.id, overwrite: true })
-            .then(function () {
-              location.reload();
-            })
-            .catch(function (retryError) {
-              window.alert(
-                '恢复失败：' +
-                  (retryError && retryError.message ? retryError.message : String(retryError))
-              );
-            });
+          return hostConfirm({
+            title: '覆盖后重试',
+            content: '恢复失败：' + message + '\n\n是否覆盖现有对象后重试？',
+            danger: true
+          }).then(function (ok) {
+            if (!ok) {
+              toast('已取消恢复', 'info');
+              return;
+            }
+            return postPrefixJson(base + 'restore', { id: args.id, overwrite: true })
+              .then(function () {
+                toast('已覆盖恢复', 'success');
+                location.reload();
+              })
+              .catch(function (retryError) {
+                toast(
+                  '恢复失败：' +
+                    (retryError && retryError.message ? retryError.message : String(retryError)),
+                  'error'
+                );
+              });
+          });
         });
     }
-    window.alert('未知的回收站操作：' + op);
+    toast('未知的回收站操作：' + op, 'error');
     return Promise.resolve();
   }
 
@@ -405,12 +582,12 @@
     if (op === 'set') {
       var bytes = formText(values.max_bytes).trim();
       var files = formText(values.max_files).trim();
-      if (!path) {
-        window.alert('请填写目录树的绝对路径。');
+      if (!path || path.charAt(0) !== '/') {
+        toast('请填写目录树的绝对路径。', 'warning');
         return Promise.resolve();
       }
       if (!bytes && !files) {
-        window.alert('容量上限与文件数上限至少设置一项；如需取消请用行内「取消配额」。');
+        toast('容量上限与文件数上限至少设置一项；如需取消请用行内「取消配额」。', 'warning');
         return Promise.resolve();
       }
       return postPrefixJson(base + 'set', {
@@ -419,39 +596,50 @@
         max_files: files ? Number(files) : null
       })
         .then(function () {
-          window.alert('已保存配额：' + path);
+          toast('已保存配额：' + path, 'success');
           location.reload();
         })
         .catch(function (error) {
-          window.alert('保存配额失败：' + (error && error.message ? error.message : String(error)));
+          toast('保存配额失败：' + (error && error.message ? error.message : String(error)), 'error');
         });
     }
     if (op === 'scan') {
-      if (!window.confirm('重新统计会递归扫描整棵目录树，可能耗时较久。\n\n' + path)) {
-        return Promise.resolve();
-      }
-      return postPrefixJson(base + 'scan', { path: path })
-        .then(function () {
-          window.alert('统计完成：' + path);
-          location.reload();
-        })
-        .catch(function (error) {
-          window.alert('重新统计失败：' + (error && error.message ? error.message : String(error)));
-        });
+      return hostConfirm({
+        title: '重新统计',
+        content: '重新统计会递归扫描整棵目录树，可能耗时较久。\n\n' + path
+      }).then(function (ok) {
+        if (!ok) return;
+        return postPrefixJson(base + 'scan', { path: path })
+          .then(function () {
+            toast('统计完成：' + path, 'success');
+            location.reload();
+          })
+          .catch(function (error) {
+            toast(
+              '重新统计失败：' + (error && error.message ? error.message : String(error)),
+              'error'
+            );
+          });
+      });
     }
     if (op === 'cancel') {
-      if (!window.confirm('确认取消该目录的配额？\n\n' + path)) {
-        return Promise.resolve();
-      }
-      return postPrefixJson(base + 'cancel', { path: path })
-        .then(function () {
-          location.reload();
-        })
-        .catch(function (error) {
-          window.alert('取消配额失败：' + (error && error.message ? error.message : String(error)));
-        });
+      return hostConfirm({
+        title: '取消配额',
+        content: '确认取消该目录的配额？\n\n' + path,
+        danger: true
+      }).then(function (ok) {
+        if (!ok) return;
+        return postPrefixJson(base + 'cancel', { path: path })
+          .then(function () {
+            toast('已取消配额', 'success');
+            location.reload();
+          })
+          .catch(function (error) {
+            toast('取消配额失败：' + (error && error.message ? error.message : String(error)), 'error');
+          });
+      });
     }
-    window.alert('未知的配额操作：' + op);
+    toast('未知的配额操作：' + op, 'error');
     return Promise.resolve();
   }
 
@@ -476,12 +664,6 @@
     var values = formValues(ctx);
     var kind = args.kind;
     var op = args.op;
-    if (op === 'remove') {
-      var display = args.name || args.id;
-      if (!window.confirm('确认删除 ' + display + '？此操作不可撤销。')) {
-        return Promise.resolve();
-      }
-    }
     var path = '';
     var payload = {};
     if (kind === 'container' && op === 'create') {
@@ -528,20 +710,40 @@
     } else if (kind === 'volume' && op === 'remove') {
       path = '/volumes/' + encodeURIComponent(args.id) + '/remove';
     } else {
-      window.alert('未知的 Docker 操作：' + kind + '/' + op);
+      toast('未知的 Docker 操作：' + kind + '/' + op, 'error');
       return Promise.resolve();
     }
-    return submitJson(path, payload)
-      .then(function (data) {
-        if (kind === 'container' && op === 'create' && data.id) {
-          location.href = prefix + '/containers/' + encodeURIComponent(data.id);
-          return;
-        }
-        location.reload();
-      })
-      .catch(function (error) {
-        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+    function run() {
+      return submitJson(path, payload)
+        .then(function (data) {
+          if (kind === 'container' && op === 'create' && data.id) {
+            location.href = prefix + '/containers/' + encodeURIComponent(data.id);
+            return;
+          }
+          closeTopLayer();
+          toast(
+            op === 'remove' ? '已删除 ' + (args.name || args.id || '') : '操作已完成',
+            'success'
+          );
+          location.reload();
+        })
+        .catch(function (error) {
+          toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
+        });
+    }
+    if (op === 'remove') {
+      var display = args.name || args.id;
+      var label =
+        kind === 'image' ? '镜像' : kind === 'network' ? '网络' : kind === 'volume' ? '卷' : '对象';
+      return hostConfirm({
+        title: '删除' + label,
+        content: '确认删除 ' + display + '？此操作不可撤销。',
+        danger: true
+      }).then(function (ok) {
+        if (ok) return run();
       });
+    }
+    return run();
   }
 
   /// 站点写操作统一入口：建站、启停、默认、域名、配置、证书、备份、删除、批量。
@@ -576,9 +778,6 @@
       path = '/sites/' + encodeURIComponent(domain) + '/config';
       payload = { content: formText(values.content) };
     } else if (op === 'ssl') {
-      if (args.action === 'delete_cert' && !window.confirm('确认删除站点证书？')) {
-        return Promise.resolve();
-      }
       path = '/sites/' + encodeURIComponent(domain) + '/ssl';
       payload = {
         action: args.action,
@@ -589,11 +788,6 @@
     } else if (op === 'backup') {
       path = '/sites/' + encodeURIComponent(domain) + '/backup';
       payload = { enabled: !!args.enabled };
-    } else if (op === 'delete') {
-      var typed = window.prompt('删除站点不可恢复。请输入域名 ' + domain + ' 以确认：');
-      if (typed === null) return Promise.resolve();
-      path = '/sites/' + encodeURIComponent(domain) + '/delete';
-      payload = { confirm: typed.trim() };
     } else if (op === 'batch') {
       path = '/sites/batch';
       payload = {
@@ -601,23 +795,53 @@
         domains: formLines(values.domains)
       };
     } else {
-      window.alert('未知的站点操作：' + op);
+      toast('未知的站点操作：' + op, 'error');
       return Promise.resolve();
     }
-    return submitJson(path, payload)
-      .then(function (data) {
-        if (op === 'create' && data.domain) {
-          location.href = prefix + '/sites/' + encodeURIComponent(data.domain);
-          return;
-        }
-        if (op === 'delete') {
-          location.href = prefix + '/sites';
-          return;
-        }
-        location.reload();
+    function run() {
+      return submitJson(path, payload)
+        .then(function (data) {
+          if (op === 'create' && data.domain) {
+            location.href = prefix + '/sites/' + encodeURIComponent(data.domain);
+            return;
+          }
+          closeTopLayer();
+          toast((data && data.message) || '操作已完成', 'success');
+          location.reload();
+        })
+        .catch(function (error) {
+          toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
+        });
+    }
+    if (op === 'ssl' && args.action === 'delete_cert') {
+      return hostConfirm({
+        title: '删除站点证书',
+        content: '删除后该站点的 HTTPS 将不可用，确认删除？',
+        danger: true
+      }).then(function (ok) {
+        if (ok) return run();
+      });
+    }
+    return run();
+  }
+
+  /// 删除站点：弹窗表单已做域名一致性校验，这里只负责提交与跳转。
+  function siteDelete(args, ctx) {
+    var values = formValues(ctx);
+    var domain = String(args.domain || '');
+    var typed = String(values.confirm || '').trim();
+    if (typed !== domain) {
+      toast('输入的域名与站点域名不一致', 'warning');
+      return Promise.resolve();
+    }
+    return submitJson('/sites/' + encodeURIComponent(domain) + '/delete', { confirm: typed })
+      .then(function () {
+        closeTopLayer();
+        toast('站点已删除', 'success');
+        location.href = prefix + '/sites';
       })
       .catch(function (error) {
-        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+        toast('删除失败：' + (error && error.message ? error.message : String(error)), 'error');
       });
   }
 
@@ -1034,12 +1258,20 @@
       routerMode: 'history',
       routes: routes,
       documentTitle: 'Skiff · {title}',
-      platform: { loadJson: loadJson, request: apiRequest, upload: uploadFile },
+      platform: {
+        loadJson: loadJson,
+        request: apiRequest,
+        upload: uploadFile,
+        // 不注入时 SDK 会退回原生 `window.confirm`；这里统一接到宿主图层。
+        confirm: hostConfirm
+      },
       actions: {
+        skiffConfirmAnswer: skiffConfirmAnswer,
         skiffContainerAction: containerAction,
         skiffDockerWrite: dockerWrite,
         skiffQueryNav: queryNav,
         skiffSiteWrite: siteWrite,
+        skiffSiteDelete: siteDelete,
         skiffTaskWrite: taskWrite,
         skiffJobWrite: jobWrite,
         skiffTrashWrite: trashWrite,
@@ -1073,9 +1305,15 @@
         skiffKeyRemove: keyRemove,
         skiffFileOpen: fileOpen,
         skiffFileDownload: fileDownload,
+        skiffFileWrite: fileWrite,
         skiffFileMkdir: fileMkdir,
         skiffFileRename: fileRename,
         skiffFileRemove: fileRemove,
+        skiffFileCopy: fileCopy,
+        skiffFileChmod: fileChmod,
+        skiffFileChown: fileChown,
+        skiffFileArchive: fileArchive,
+        skiffFileExtract: fileExtract,
         skiffLogSwitch: logSwitch,
         skiffLogFilter: logFilter,
         skiffLogReload: logReload,
@@ -1100,9 +1338,15 @@
     };
     if (cssHref) options.css = cssHref;
     registerPacks();
-    window.BuddingSDK.embed(mount, schema, options).catch(function (error) {
-      showError('初始化失败：' + (error && error.message ? error.message : String(error)));
-    });
+    window.BuddingSDK.embed(mount, schema, options)
+      .then(function () {
+        // 预先解析一次，避免第一次确认时才扫 provides（结果会被缓存）。
+        buddingRuntime();
+        consumeFlashToast();
+      })
+      .catch(function (error) {
+        showError('初始化失败：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
 
@@ -1349,9 +1593,57 @@
           'secondary'
         )
       );
-      actions.push(
-        siteBtn('删除站点', { op: 'delete', domain: data.domain }, 'danger', 'text')
-      );
+      // 删除站点：输入域名才能提交，组件内校验（U1 未支持通用输入型 confirm）。
+      actions.push({
+        type: 'button',
+        props: { text: '删除站点', color: 'danger', variant: 'text' },
+        action: {
+          type: 'dialog',
+          props: {
+            title: '删除站点',
+            width: 520,
+            body: [
+              {
+                type: 'alert',
+                props: {
+                  type: 'warning',
+                  text: '删除后不可恢复：站点目录、配置与证书会一并移除。'
+                }
+              },
+              writeForm(
+                apiBase + '/sites/' + encodeURIComponent(data.domain) + '/delete',
+                { type: 'skiffSiteDelete', props: { domain: data.domain } },
+                [
+                  {
+                    type: 'input-text',
+                    props: {
+                      name: 'confirm',
+                      label: '输入域名 ' + data.domain + ' 以确认',
+                      required: true,
+                      rules: {
+                        required: true,
+                        pattern: '^' + escapeRegExp(data.domain) + '$',
+                        messages: {
+                          required: '请输入站点域名',
+                          pattern: '输入的域名与站点域名不一致'
+                        }
+                      }
+                    }
+                  }
+                ],
+                '确认删除'
+              )
+            ],
+            footer: [
+              {
+                type: 'button',
+                props: { text: '取消', variant: 'outlined' },
+                action: { type: 'close' }
+              }
+            ]
+          }
+        }
+      });
       body.push({
         type: 'card',
         props: { title: '站点操作' },
@@ -1549,6 +1841,11 @@
         }
       }
     };
+  }
+
+  /// 正则字面量转义：域名里的 `.` 等不能让用户少输一部分也能通过。
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   /// 新建站点（原生化）：类型/域名/目录/运行环境/反代/别名与旧表单同名。
@@ -4841,7 +5138,7 @@
         });
     }
     return nextChunk().then(function (result) {
-      window.alert(result.data.message);
+      toast(result.data.message, 'success');
       window.location.reload();
       return result;
     });
@@ -4857,66 +5154,235 @@
 
   function fileDownload(args) {
     if (args.dir === true || args.dir === 'true') {
-      window.alert('目录不能下载，请先进入目录选择文件。');
+      toast('目录不能下载，请先进入目录选择文件。', 'warning');
       return;
     }
     window.location.href =
       prefix + '/files/download?path=' + encodeURIComponent(String(args.path || ''));
   }
 
+  /// 关闭最上层弹层（确认框之外的业务弹窗用它收尾）。
+  function closeTopLayer() {
+    var runtime = buddingRuntime();
+    if (runtime && typeof runtime.closeLayer === 'function') runtime.closeLayer();
+  }
+
+  /// 单段文件名校验：不允许分隔符，避免「名字」变成跨目录移动。
+  function validEntryName(name) {
+    return !!name && name !== '.' && name !== '..' && !/[\\/]/.test(name);
+  }
+
   function fileMkdir(args, ctx) {
     var values = formValues(ctx);
     var name = String(values.name || '').trim();
-    if (!name) {
-      window.alert('请输入目录名');
+    if (!validEntryName(name)) {
+      toast('目录名不能为空，也不能包含 / 或 \\', 'warning');
       return Promise.resolve();
     }
     var base = String(args.dir || '').replace(/\/+$/, '');
     return submitJson('/files/mkdir', { path: base + '/' + name })
       .then(function (data) {
-        window.alert(data.message || '目录已创建');
+        toast(data.message || '目录已创建', 'success');
         window.location.reload();
       })
       .catch(function (error) {
-        window.alert('新建目录失败：' + (error && error.message ? error.message : String(error)));
+        toast('新建目录失败：' + (error && error.message ? error.message : String(error)), 'error');
       });
   }
 
-  function fileRename(args) {
-    var current = String(args.path || '');
-    var name = String(args.name || '');
-    var next = window.prompt('新的名称', name);
-    if (next === null) return Promise.resolve();
-    next = next.trim();
-    if (!next || next === name) return Promise.resolve();
-    var parent = current.replace(/\/[^/]*$/, '');
-    return submitJson('/files/rename', { from: current, to: parent + '/' + next })
-      .then(function (data) {
-        window.alert(data.message || '已重命名');
+  /// `POST /ui/v1/files/write`：带 `path` 时覆盖保存，否则按 `dir` + 文件名新建。
+  function fileWrite(args, ctx) {
+    var values = formValues(ctx);
+    var target = String(args.path || '').trim();
+    if (!target) {
+      var name = String(values.name || '').trim();
+      if (!validEntryName(name)) {
+        toast('文件名不能为空，也不能包含 / 或 \\', 'warning');
+        return Promise.resolve();
+      }
+      var base = String(args.dir || '').replace(/\/+$/, '');
+      target = base + '/' + name;
+    }
+    return submitJson('/files/write', { path: target, content: String(values.content || '') })
+      .then(function () {
+        closeTopLayer();
+        toast('已保存', 'success');
         window.location.reload();
       })
       .catch(function (error) {
-        window.alert('重命名失败：' + (error && error.message ? error.message : String(error)));
+        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
+  }
+
+  function fileRename(args, ctx) {
+    var values = formValues(ctx);
+    var current = String(args.path || '');
+    var name = String(args.name || '');
+    var next = String(values.name || '').trim();
+    if (!validEntryName(next)) {
+      toast('新名称不能为空，也不能包含 / 或 \\', 'warning');
+      return Promise.resolve();
+    }
+    if (next === name) {
+      closeTopLayer();
+      return Promise.resolve();
+    }
+    var parent = current.replace(/[\\/][^\\/]*$/, '');
+    return submitJson('/files/rename', { from: current, to: parent + '/' + next })
+      .then(function (data) {
+        closeTopLayer();
+        toast(data.message || '已重命名', 'success');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        toast('重命名失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
+  }
+
+  function fileCopy(args, ctx) {
+    var values = formValues(ctx);
+    var from = String(args.path || '').trim();
+    var to = String(values.to || '').trim();
+    if (!from || !to) {
+      toast('请填写目标路径', 'warning');
+      return Promise.resolve();
+    }
+    if (to.charAt(0) !== '/') {
+      toast('目标路径必须是绝对路径（以 / 开头）', 'warning');
+      return Promise.resolve();
+    }
+    return submitJson('/files/copy', { from: from, to: to, overwrite: !!values.overwrite })
+      .then(function (data) {
+        closeTopLayer();
+        toast((data.message || '已复制') + '：' + (data.to || to), 'success');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        toast('复制失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
+  }
+
+  function fileChmod(args, ctx) {
+    var values = formValues(ctx);
+    var path = String(args.path || '');
+    var mode = String(values.mode || '').trim();
+    if (!mode) {
+      toast('请填写八进制权限（如 755）', 'warning');
+      return Promise.resolve();
+    }
+    return submitJson('/files/chmod', { path: path, mode: mode })
+      .then(function (data) {
+        closeTopLayer();
+        toast('权限已修改为 ' + (data.mode !== undefined ? data.mode.toString(8) : mode), 'success');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        toast('修改权限失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
+  }
+
+  function fileChown(args, ctx) {
+    var values = formValues(ctx);
+    var path = String(args.path || '');
+    var uid = String(values.uid || '').trim();
+    var gid = String(values.gid || '').trim();
+    if (!uid || !gid) {
+      toast('请同时填写 uid 与 gid', 'warning');
+      return Promise.resolve();
+    }
+    return submitJson('/files/chown', { path: path, uid: uid, gid: gid })
+      .then(function (data) {
+        closeTopLayer();
+        toast(data.message || '属主已修改', data.root_owned ? 'warning' : 'success');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        toast('修改属主失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
+  }
+
+  function fileArchive(args, ctx) {
+    var values = formValues(ctx);
+    var source = String(args.path || '').trim();
+    var dest = String(values.dest || '').trim();
+    var format = String(values.format || 'tar.gz').trim();
+    if (!dest) {
+      toast('请填写压缩包路径', 'warning');
+      return Promise.resolve();
+    }
+    if (dest.charAt(0) !== '/') {
+      toast('压缩包路径必须是绝对路径（以 / 开头）', 'warning');
+      return Promise.resolve();
+    }
+    return submitJson('/files/archive', {
+      sources: [source],
+      dest: dest,
+      format: format,
+      overwrite: !!values.overwrite
+    })
+      .then(function (data) {
+        closeTopLayer();
+        toast('已创建压缩包 ' + (data.path || dest), 'success');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        toast('压缩失败：' + (error && error.message ? error.message : String(error)), 'error');
+      });
+  }
+
+  function fileExtract(args, ctx) {
+    var values = formValues(ctx);
+    var archive = String(args.path || '').trim();
+    var dest = String(values.dest || '').trim();
+    if (!dest) {
+      toast('请填写解压目标目录', 'warning');
+      return Promise.resolve();
+    }
+    if (dest.charAt(0) !== '/') {
+      toast('目标目录必须是绝对路径（以 / 开头）', 'warning');
+      return Promise.resolve();
+    }
+    return submitJson('/files/extract', {
+      archive: archive,
+      dest: dest,
+      overwrite: !!values.overwrite
+    })
+      .then(function (data) {
+        closeTopLayer();
+        var skipped = (data.skipped_symlinks || 0) + (data.skipped_special || 0);
+        toast(
+          '已解压 ' + (data.files || 0) + ' 个文件' + (skipped > 0 ? '，跳过 ' + skipped + ' 个特殊条目' : ''),
+          skipped > 0 ? 'warning' : 'success'
+        );
+        window.location.reload();
+      })
+      .catch(function (error) {
+        toast('解压失败：' + (error && error.message ? error.message : String(error)), 'error');
       });
   }
 
   function fileRemove(args) {
     var name = String(args.name || '');
     var path = String(args.path || '');
-    if (!window.confirm('确认删除 ' + name + '？删除后进入回收站，可在回收站恢复。')) {
-      return Promise.resolve();
-    }
-    return submitJson('/files/remove', { path: path })
-      .then(function (data) {
-        window.alert(
-          (data.message || '已移入回收站') +
-            (data.trash_id ? '（回收站编号 ' + data.trash_id + '）' : '')
-        );
-        window.location.reload();
-      })
-      .catch(function (error) {
-        window.alert('删除失败：' + (error && error.message ? error.message : String(error)));
-      });
+    return hostConfirm({
+      title: '删除文件',
+      content: '确认删除 ' + name + '？删除后进入回收站，可在回收站恢复。',
+      danger: true
+    }).then(function (ok) {
+      if (!ok) return;
+      return submitJson('/files/remove', { path: path })
+        .then(function (data) {
+          toast(
+            (data.message || '已移入回收站') +
+              (data.trash_id ? '（回收站编号 ' + data.trash_id + '）' : ''),
+            'success'
+          );
+          window.location.reload();
+        })
+        .catch(function (error) {
+          toast('删除失败：' + (error && error.message ? error.message : String(error)), 'error');
+        });
+    });
   }
 
   function logPageUrl(part, domain, tail, keyword) {
@@ -5198,10 +5664,58 @@
     };
   }
 
+  /// 行内弹窗表单按钮：统一「打开 dialog → 组件表单 → 自定义动作提交」。
+  ///
+  /// 路径上下文用 `${item.*}` 传进动作 props，弹窗不另造数据域；
+  /// 表单校验（必填/八进制/数字）交给组件，服务端错误由 toast 兜住（U3 未支持）。
+  function fileDialogButton(text, options) {
+    var body = [];
+    if (options.notice) {
+      body.push({
+        type: 'alert',
+        props: { type: options.noticeType || 'info', text: options.notice }
+      });
+    }
+    body.push(
+      writeForm(
+        apiBase + '/files/' + (options.op || 'write'),
+        options.action,
+        options.fields,
+        options.submitText
+      )
+    );
+    return {
+      type: 'button',
+      props: { text: text, variant: 'text', color: options.color || 'primary' },
+      action: {
+        type: 'dialog',
+        props: {
+          title: options.title,
+          width: options.width || 520,
+          body: body,
+          footer: [
+            {
+              type: 'button',
+              props: { text: '取消', variant: 'outlined' },
+              action: { type: 'close' }
+            }
+          ]
+        }
+      }
+    };
+  }
+
+  var MODE_RULE = { pattern: '^0?[0-7]{3,4}$', messages: { pattern: '请输入八进制权限，如 755' } };
+  var NUMBER_RULE = { pattern: '^[0-9]+$', messages: { pattern: '请输入非负整数' } };
+  var ABS_RULE = {
+    pattern: '^/.+',
+    messages: { pattern: '请输入以 / 开头的绝对路径' }
+  };
+
   function fileRowSchema() {
     return {
       type: 'flex',
-      props: { gap: 12, align: 'center' },
+      props: { gap: 10, align: 'center' },
       content: {
         body: [
           {
@@ -5231,15 +5745,149 @@
               }
             }
           },
+          fileDialogButton('重命名', {
+            title: '重命名',
+            notice: '当前路径：${item.path}',
+            op: 'rename',
+            submitText: '保存名称',
+            action: { type: 'skiffFileRename', props: { path: '${item.path}', name: '${item.name}' } },
+            fields: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'name',
+                  label: '新的名称',
+                  defaultValue: '${item.name}',
+                  required: true,
+                  rules: { required: true, messages: { required: '请输入新名称' } }
+                }
+              }
+            ]
+          }),
+          fileDialogButton('复制', {
+            title: '复制到',
+            notice: '源路径：${item.path}',
+            op: 'copy',
+            submitText: '开始复制',
+            action: { type: 'skiffFileCopy', props: { path: '${item.path}' } },
+            fields: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'to',
+                  label: '目标路径（绝对路径）',
+                  required: true,
+                  rules: Object.assign({ required: true }, ABS_RULE)
+                }
+              },
+              { type: 'checkbox', props: { name: 'overwrite', label: '目标已存在时覆盖' } }
+            ]
+          }),
+          fileDialogButton('权限', {
+            title: '修改权限',
+            notice: '路径：${item.path} · 当前 ${item.mode_label}',
+            op: 'chmod',
+            submitText: '保存权限',
+            action: { type: 'skiffFileChmod', props: { path: '${item.path}' } },
+            fields: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'mode',
+                  label: '权限位（八进制，如 755 / 0644）',
+                  required: true,
+                  rules: Object.assign({ required: true }, MODE_RULE)
+                }
+              }
+            ]
+          }),
+          fileDialogButton('属主', {
+            title: '修改属主',
+            notice: '路径：${item.path} · 当前 ${item.owner_label}',
+            op: 'chown',
+            submitText: '保存属主',
+            action: { type: 'skiffFileChown', props: { path: '${item.path}' } },
+            fields: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'uid',
+                  label: 'uid',
+                  required: true,
+                  rules: Object.assign({ required: true }, NUMBER_RULE)
+                }
+              },
+              {
+                type: 'input-text',
+                props: {
+                  name: 'gid',
+                  label: 'gid',
+                  required: true,
+                  rules: Object.assign({ required: true }, NUMBER_RULE)
+                }
+              }
+            ]
+          }),
+          fileDialogButton('压缩', {
+            title: '压缩',
+            notice: '源路径：${item.path}',
+            op: 'archive',
+            submitText: '创建压缩包',
+            action: { type: 'skiffFileArchive', props: { path: '${item.path}' } },
+            fields: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'dest',
+                  label: '压缩包路径（绝对路径，如 /srv/www/site.tar.gz）',
+                  required: true,
+                  rules: Object.assign({ required: true }, ABS_RULE)
+                }
+              },
+              {
+                type: 'select',
+                props: {
+                  name: 'format',
+                  label: '格式',
+                  defaultValue: 'tar.gz',
+                  items: [
+                    { title: 'tar.gz', value: 'tar.gz' },
+                    { title: 'zip', value: 'zip' }
+                  ]
+                }
+              },
+              { type: 'checkbox', props: { name: 'overwrite', label: '压缩包已存在时覆盖' } }
+            ]
+          }),
           {
             type: 'button',
-            props: { text: '重命名', variant: 'text' },
-            onEvent: {
-              click: {
-                actions: [
+            props: { text: '解压', variant: 'text' },
+            visibleOn: '${item.can_extract}',
+            action: {
+              type: 'dialog',
+              props: {
+                title: '解压',
+                width: 520,
+                body: [
+                  { type: 'text', props: { text: '压缩包：${item.path}' } },
+                  writeForm(apiBase + '/files/extract', { type: 'skiffFileExtract', props: { path: '${item.path}' } }, [
+                    {
+                      type: 'input-text',
+                      props: {
+                        name: 'dest',
+                        label: '解压到目录（绝对路径，目录必须已存在）',
+                        required: true,
+                        rules: Object.assign({ required: true }, ABS_RULE)
+                      }
+                    },
+                    { type: 'checkbox', props: { name: 'overwrite', label: '目标已存在时覆盖' } }
+                  ], '开始解压')
+                ],
+                footer: [
                   {
-                    type: 'skiffFileRename',
-                    props: { path: '${item.path}', name: '${item.name}' }
+                    type: 'button',
+                    props: { text: '取消', variant: 'outlined' },
+                    action: { type: 'close' }
                   }
                 ]
               }
@@ -5369,6 +6017,33 @@
         ariaLabel: name
       }
     });
+    // 编辑入口：二进制与截断文件不提供（避免把截断内容写回覆盖原文件）。
+    if (!binary && !data.truncated) {
+      body.push(
+        writeCard(
+          '编辑内容',
+          '保存会覆盖原文件；权限与路径约束仍在服务端执行。',
+          writeForm(
+            apiBase + '/files/write',
+            { type: 'skiffFileWrite', props: { path: data.path } },
+            [
+              {
+                type: 'textarea',
+                props: {
+                  name: 'content',
+                  label: '文件内容',
+                  rows: 18,
+                  defaultValue: text,
+                  required: true,
+                  rules: { required: true, messages: { required: '内容不能为空' } }
+                }
+              }
+            ],
+            '保存文件'
+          )
+        )
+      );
+    }
     body.push({
       type: 'text',
       props: {
@@ -5767,6 +6442,9 @@
       copy.name_label = e.dir ? e.name + '/' : e.name;
       copy.size_label = e.dir ? '—' : humanSize(e.size);
       copy.mtime_label = formatTime(e.mtime);
+      copy.mode_label = e.mode ? '0' + Number(e.mode).toString(8) : '—';
+      copy.owner_label = e.owner || '—';
+      copy.can_extract = !e.dir && /\.(zip|tar\.gz|tgz)$/i.test(String(e.name || ''));
       return copy;
     });
     body.push({
@@ -5839,6 +6517,44 @@
                 url: apiBase + '/files/upload?dir=' + encodeURIComponent(data.path)
               },
               uploadProgressTarget: 'uploadProgress'
+            }
+          },
+          {
+            type: 'form',
+            onEvent: {
+              submit: [{ type: 'skiffFileWrite', props: { dir: data.path } }]
+            },
+            props: {
+              api: { method: 'POST', url: apiBase + '/files/write', sendOn: false },
+              actionsAlign: 'end'
+            },
+            body: [
+              {
+                type: 'input-text',
+                props: {
+                  name: 'name',
+                  label: '新文件名（在当前目录创建或覆盖）',
+                  required: true,
+                  rules: {
+                    required: true,
+                    pattern: '^[^/\\\\]+$',
+                    messages: { required: '请输入文件名', pattern: '文件名不能包含 / 或 \\' }
+                  }
+                }
+              },
+              {
+                type: 'textarea',
+                props: { name: 'content', label: '文件内容', rows: 6 }
+              }
+            ],
+            content: {
+              actions: [
+                {
+                  type: 'button',
+                  props: { text: '保存文件', variant: 'tonal' },
+                  action: { type: 'submit' }
+                }
+              ]
             }
           }
         ]

@@ -88,7 +88,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 - 用户取消时抛 `ActionCancelled`：**中止整条动作链**，不跑 `onError`，静默。
 - `confirm` 是异步动作，后续步骤一定等用户选择后才执行。
 - 复杂内容用 `dialog`，不要堆在确认框正文里。
-- 宿主未注入 `platform.confirm` 时退化为浏览器原生 `window.confirm`；当前 Skiff 的 `platform` 只注入了 `loadJson` / `request` / `upload`，所以直接改用 `confirm` 动作仍会看到原生确认框。
+- 宿主未注入 `platform.confirm` 时会退化为浏览器原生 `window.confirm`。Skiff 已按 K2 注入 `hostConfirm`（`budding-boot.js`）：实例经 `__vue_app__.config.globalProperties.$budding` 取得，确认框用实例 `openLayer(schema, { scope })` 渲染，按钮由自定义动作 `skiffConfirmAnswer` 回传结果，Esc 视为取消。
 
 删除的标准组合（确认 → 请求 → 刷新表格）：
 
@@ -289,7 +289,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 
 > 目的：同一个交互只保留一种写法；与 backlog 的 U1–U3、K2 配套。
 
-1. **确认框**：Schema 一律用 `confirm` 动作；宿主先接管 `platform.confirm`（K2）。需要输入指定文本才能继续的，用 `dialog` + `form`；不新增 `window.confirm` / `window.prompt`。
+1. **确认框**：Schema 一律用 `confirm` 动作；宿主已接管 `platform.confirm`（K2，落到实例 `openLayer`）。需要输入指定文本才能继续的，用 `dialog` + `form`；不新增 `window.confirm` / `window.prompt`。
 2. **反馈**：操作结果统一用 `toast`（成功 / 失败 / 警告），常驻说明用 `alert`，表单错误用 `errorMessage`；不新增 `window.alert`。
 3. **弹窗内表单**：字段校验交给 `form` / 字段组件的 `required` / `rules` / `validateApi`，不在按钮动作里手写；提交按钮写在表单 `content.actions`，成功后 `close`。
 4. **写操作后刷新**：表格 / `crud` / 虚拟列表的删除或编辑成功后，显式 `invoke` 对应组件的 `reload`；组件必须声明稳定 `id`，不依赖自动刷新。

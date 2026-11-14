@@ -1088,6 +1088,67 @@ pub struct FileRenameBody {
     pub to: String,
 }
 
+/// `POST /ui/v1/files/write`：文本写入（内容可以为空，用于新建空文件）。
+#[derive(Debug, Deserialize)]
+pub struct FileWriteBody {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileCopyBody {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileChmodBody {
+    #[serde(default)]
+    pub path: String,
+    /// 八进制字符串（`0755` / `0o2775`）或数字；两种都要接受。
+    #[serde(default)]
+    pub mode: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileChownBody {
+    #[serde(default)]
+    pub path: String,
+    /// 缺失与 `null` 都必须拒绝，避免默认成 0（root）。
+    #[serde(default)]
+    pub uid: Option<u32>,
+    #[serde(default)]
+    pub gid: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileArchiveBody {
+    #[serde(default)]
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub dest: String,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileExtractBody {
+    #[serde(default)]
+    pub archive: String,
+    #[serde(default)]
+    pub dest: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 /// `GET /ui/v1/menu` 的响应数据：内核菜单树的 JSON 投影（契约 §1.1 的三级归属不变）。
 ///
 /// 只做 wire 形状转换，不另造菜单语义：L1/L2 的可见性、顺序、角色与能力门、
