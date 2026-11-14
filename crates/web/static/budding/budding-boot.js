@@ -982,6 +982,7 @@
       actions: {
         skiffContainerAction: containerAction,
         skiffDockerWrite: dockerWrite,
+        skiffQueryNav: queryNav,
         skiffSiteWrite: siteWrite,
         skiffTaskWrite: taskWrite,
         skiffJobWrite: jobWrite,
@@ -1156,7 +1157,11 @@
         { key: 'created_at', label: '创建时间', width: 180 }
       ],
       '/sites',
-      'domain'
+      'domain',
+      null,
+      {
+        emptyText: '还没有站点，创建后会生成整站目录、nginx vhost 与 PHP 探针'
+      }
     );
     table.onEvent = {
       rowClick: {
@@ -1585,7 +1590,11 @@
         { key: 'endpoint_short', label: '接入' }
       ],
       '/runtimes',
-      'id'
+      'id',
+      null,
+      {
+        emptyText: '还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点'
+      }
     );
     table.onEvent = {
       rowClick: {
@@ -1793,7 +1802,8 @@
           { key: 'state', label: '状态' }
         ],
         fileRows,
-        'key'
+        'key',
+        { emptyText: '没有可编辑的配置文件' }
       );
       fileTable.props = Object.assign({}, fileTable.props, {
         rowActions: [
@@ -1866,7 +1876,8 @@
           { key: 'note', label: '说明' }
         ],
         extRows,
-        'key'
+        'key',
+        { emptyText: '还没有可用扩展' }
       );
       extTable.props = Object.assign({}, extTable.props, {
         rowActions: [
@@ -2045,7 +2056,9 @@
       });
     }
     // budding 的 button 只渲染 <button type="button">，不消费 `to`（没有 href、
-    // 也不会触发路由）；页面切换必须走显式 `navigate` 动作。
+    // 也不会触发路由）。「全部 / 仅异常」是同 path 只换 query 的页内跳转，
+    // 必须走 `skiffQueryNav`：SDK 的页面加载键是 `path#name`，query 变化不会
+    // 触发重载，需要动作里显式 `refreshPage`。
     var allButton = {
       type: 'button',
       props: {
@@ -2055,7 +2068,12 @@
       },
       onEvent: {
         click: {
-          actions: [{ type: 'navigate', props: { url: prefix + '/containers' } }]
+          actions: [
+            {
+              type: 'skiffQueryNav',
+              props: { path: prefix + '/containers', query: {} }
+            }
+          ]
         }
       }
     };
@@ -2071,8 +2089,8 @@
         click: {
           actions: [
             {
-              type: 'navigate',
-              props: { url: prefix + '/containers?filter=error' }
+              type: 'skiffQueryNav',
+              props: { path: prefix + '/containers', query: { filter: 'error' } }
             }
           ]
         }
@@ -2090,7 +2108,7 @@
             type: 'text',
             props: {
               text:
-                '共 ' +
+                (filter === 'error' ? '异常容器 ' : '共 ') +
                 data.total +
                 ' 个' +
                 (data.docker_available ? '' : '（Docker 不可用）')
@@ -2443,7 +2461,9 @@
         }
       });
     }
-    var table = listTable(columns, path, 'id');
+    var table = listTable(columns, path, 'id', null, {
+      emptyText: options.emptyText
+    });
     if (options.rowActions) table.props.rowActions = options.rowActions;
     body.push(table);
     if (options.extra && options.extra.length > 0) body = body.concat(options.extra);
@@ -2512,7 +2532,13 @@
       ],
       data,
       '/images',
-      { rowActions: data.can_admin ? [removeRowAction('image')] : null, extra: extra }
+      {
+        rowActions: data.can_admin ? [removeRowAction('image')] : null,
+        extra: extra,
+        emptyText: data.docker_available
+          ? '还没有拉取镜像，拉取后新建容器或运行环境可直接使用'
+          : 'Docker 不可用，镜像列表为空'
+      }
     );
   }
 
@@ -2548,7 +2574,10 @@
       '/networks',
       {
         rowActions: data.can_admin ? [removeRowAction('network', '${can_remove}')] : null,
-        extra: extra
+        extra: extra,
+        emptyText: data.docker_available
+          ? '还没有自定义网络，需要隔离或固定子网时创建'
+          : 'Docker 不可用，网络列表为空'
       }
     );
   }
@@ -2579,7 +2608,13 @@
       ],
       data,
       '/volumes',
-      { rowActions: data.can_admin ? [removeRowAction('volume')] : null, extra: extra }
+      {
+        rowActions: data.can_admin ? [removeRowAction('volume')] : null,
+        extra: extra,
+        emptyText: data.docker_available
+          ? '还没有命名卷，创建后可在新建容器时挂载'
+          : 'Docker 不可用，卷列表为空'
+      }
     );
   }
 
@@ -2697,7 +2732,12 @@
         { key: 'running', label: '运行中', type: 'number' }
       ],
       data.projects,
-      'name'
+      'name',
+      {
+        emptyText: data.docker_available
+          ? '还没有 compose 项目，可在下方编辑并部署'
+          : 'Docker 不可用，compose 项目列表为空'
+      }
     );
     table.props.rowActions = [
       composeButton('启动', 'start'),
@@ -2812,7 +2852,11 @@
         { key: 'last_text', label: '最近结果' }
       ],
       '/tasks',
-      'id'
+      'id',
+      null,
+      {
+        emptyText: '还没有计划任务，站点详情页可开启每日备份'
+      }
     );
     table.onEvent = {
       rowClick: {
@@ -2874,7 +2918,8 @@
               { key: 'detail', label: '说明' }
             ],
             data.runs,
-            'started_text'
+            'started_text',
+            { emptyText: '还没有运行记录' }
           )
         ]
       }
@@ -2953,7 +2998,11 @@
         { key: 'created_at', label: '创建时间' }
       ],
       '/jobs',
-      'id'
+      'id',
+      null,
+      {
+        emptyText: '还没有长耗时任务，安装运行环境等操作会在这里显示进度'
+      }
     );
     table.onEvent = {
       rowClick: {
@@ -4005,7 +4054,8 @@
             { key: 'line', label: '日志' }
           ],
           logRows,
-          'idx'
+          'idx',
+          { emptyText: '本次查询没有日志行' }
         )
       );
     } else {
@@ -4659,7 +4709,7 @@
         ],
         items,
         'key',
-        { height: 420 }
+        { height: 420, emptyText: '暂无审计记录' }
       )
     ];
     if (data.has_more && data.next_cursor) {
@@ -6541,7 +6591,9 @@
     if (kind === 'containers') {
       var containerFilter =
         new URLSearchParams(location.search).get('filter') === 'error' ? 'error' : '';
-      return fetchData('/containers?limit=1').then(function (data) {
+      // 计数与列表必须同一筛选口径（接口的 total 已按 filter 计算）。
+      var containerQuery = '/containers?limit=1' + (containerFilter ? '&filter=error' : '');
+      return fetchData(containerQuery).then(function (data) {
         return containersSchema(data, containerFilter);
       });
     }
@@ -6777,6 +6829,53 @@
     );
   }
 
+  /// 同 path 仅 query 变化的页内跳转：SDK 的页面加载键是 `path#name` + `pageVersion`，
+  /// 只换 query 不会重新拉取页面 schema。这里走宿主路由（history push 同步生效）
+  /// 后显式 refreshPage，触发且只触发一次内容重载。
+  function queryNav(args, ctx, runtime) {
+    var path = (args && args.path) || '';
+    var query = (args && args.query) || {};
+    if (!path) return Promise.resolve();
+    var search = new URLSearchParams(query).toString();
+    var target = path + (search ? '?' + search : '');
+    if (!runtime || typeof runtime.navigateTo !== 'function') {
+      window.location.assign(target);
+      return Promise.resolve();
+    }
+    // 已在目标地址时不再 push，避免重复历史项；内容仍刷新一次。
+    if (window.location.pathname + window.location.search !== target) {
+      runtime.navigateTo({ path: path, query: query });
+    }
+    if (typeof runtime.refreshPage === 'function') {
+      runtime.refreshPage();
+    } else {
+      window.location.reload();
+    }
+    return Promise.resolve();
+  }
+
+  /// 浏览器前进/后退回到「同 path、仅 query 不同」的地址时，SDK 不会重载页面内容，
+  /// 这里整页刷新兜底；跨页前进/后退仍交给宿主路由，避免双次渲染与状态丢失。
+  function watchQueryOnlyHistory() {
+    var renderedPath = window.location.pathname;
+    ['pushState', 'replaceState'].forEach(function (name) {
+      var original = window.history[name];
+      if (typeof original !== 'function') return;
+      window.history[name] = function () {
+        var out = original.apply(this, arguments);
+        renderedPath = window.location.pathname;
+        return out;
+      };
+    });
+    window.addEventListener('popstate', function () {
+      if (window.location.pathname === renderedPath) {
+        window.location.reload();
+      } else {
+        renderedPath = window.location.pathname;
+      }
+    });
+  }
+
   function boot() {
     fetch(apiBase + '/session', {
       method: 'GET',
@@ -6815,6 +6914,7 @@
       });
   }
 
+  watchQueryOnlyHistory();
   boot();
 })();
 

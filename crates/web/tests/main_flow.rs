@@ -9877,6 +9877,8 @@ async fn ui_store_upgrade_download_requires_csrf_and_admin() {
 
 /// 列表空态是场景语义，必须由调用方经 `statusTable` 的 `options.emptyText`
 /// 原样落到表格 props；不得再被共享层丢弃成组件默认的「暂无数据」。
+/// 各列表页的文案按 docs/UI_CONTRACT.md §7 的口径（真空列表 / 筛选无结果 /
+/// 依赖未就绪）分别给出，这里逐条防回归。
 #[test]
 fn budding_boot_status_table_honors_caller_empty_text() {
     let js = include_str!("../static/budding/budding-boot.js");
@@ -9884,32 +9886,87 @@ fn budding_boot_status_table_honors_caller_empty_text() {
         js.contains("emptyText: options.emptyText || '暂无数据'"),
         "statusTable 必须把调用方空态文案传给表格组件"
     );
-    // 容器页的三种场景文案属于产品口径，不能被共享层覆盖。
+    // 资源页由 `resourceSchema` 统一渲染，options.emptyText 必须继续下传。
+    assert!(
+        js.contains("emptyText: options.emptyText"),
+        "resourceSchema 必须把 emptyText 透传给 listTable"
+    );
     for text in [
+        // 容器：按 Docker 可用性与筛选状态分三种。
         "'Docker 不可用，容器列表为空'",
         "'没有异常容器'",
         "'还没有容器，可在下方新建'",
+        // 站点 / 运行环境：真空列表引导创建。
+        "'还没有站点，创建后会生成整站目录、nginx vhost 与 PHP 探针'",
+        "'还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点'",
+        // 镜像 / 网络 / 卷：真空列表与依赖未就绪两种。
+        "'还没有拉取镜像，拉取后新建容器或运行环境可直接使用'",
+        "'Docker 不可用，镜像列表为空'",
+        "'还没有自定义网络，需要隔离或固定子网时创建'",
+        "'Docker 不可用，网络列表为空'",
+        "'还没有命名卷，创建后可在新建容器时挂载'",
+        "'Docker 不可用，卷列表为空'",
+        // compose / 计划任务 / 作业 / 任务运行记录。
+        "'还没有 compose 项目，可在下方编辑并部署'",
+        "'Docker 不可用，compose 项目列表为空'",
+        "'还没有计划任务，站点详情页可开启每日备份'",
+        "'还没有长耗时任务，安装运行环境等操作会在这里显示进度'",
+        "'还没有运行记录'",
+        // 审计 / Web 日志 / 运行环境配置与扩展。
+        "'暂无审计记录'",
+        "'本次查询没有日志行'",
+        "'没有可编辑的配置文件'",
+        "'还没有可用扩展'",
     ] {
-        assert!(js.contains(text), "容器页空态文案缺失：{text}");
+        assert!(js.contains(text), "列表空态文案缺失：{text}");
     }
 }
 
 /// budding 的 `button` 只渲染 `<button type="button">`，不消费 `to`；
-/// 页面切换必须用显式的 `navigate` 动作，否则点击没有 href、也不会导航。
+/// 页面切换必须用显式动作。同 path 只换 query 的页内跳转（容器「仅异常」）
+/// 还要解决 SDK 页面加载键不含 query 的问题：走 `skiffQueryNav` 导航后显式
+/// `refreshPage`，并对浏览器前进/后退的同 path 情况做整页刷新兜底。
 #[test]
 fn budding_boot_buttons_navigate_explicitly() {
     let js = include_str!("../static/budding/budding-boot.js");
     assert!(
         !js.contains("to: prefix +"),
-        "button.props.to 不会触发导航，必须改用 click → navigate 动作"
+        "button.props.to 不会触发导航，必须改用 click → 导航动作"
     );
-    for url in ["'/containers'", "'/containers?filter=error'"] {
-        let needle = format!("url: prefix + {url}");
+    // query 变化不会改变 SDK 的页面加载键，必须注册并下发 skiffQueryNav。
+    assert!(
+        js.contains("skiffQueryNav: queryNav,"),
+        "skiffQueryNav 必须注册到自定义动作表"
+    );
+    assert!(
+        js.contains("runtime.navigateTo({ path: path, query: query });"),
+        "skiffQueryNav 必须经宿主路由更新地址栏（含 query）"
+    );
+    assert!(
+        js.contains("runtime.refreshPage();"),
+        "skiffQueryNav 必须在导航后显式刷新页面内容"
+    );
+    assert!(
+        js.contains("window.addEventListener('popstate'"),
+        "浏览器前进/后退的同 path query 变化必须有 popstate 兜底"
+    );
+    for needle in [
+        "props: { path: prefix + '/containers', query: {} }",
+        "props: { path: prefix + '/containers', query: { filter: 'error' } }",
+    ] {
         assert!(
-            js.contains(&needle),
-            "容器过滤按钮缺少 navigate 动作：{needle}"
+            js.contains(needle),
+            "容器过滤按钮缺少 skiffQueryNav 动作：{needle}"
         );
     }
+    assert!(
+        !js.contains("url: prefix + '/containers?filter=error'"),
+        "只换 query 的跳转不能再用 navigate（只会 pushState，不会重载内容）"
+    );
+    assert!(
+        js.contains("(containerFilter ? '&filter=error' : '')"),
+        "容器计数必须与列表用同一 filter 口径，切换后计数才同步变化"
+    );
 }
 
 /// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
@@ -10006,7 +10063,10 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
     );
     // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
     assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
-    assert!(js.contains("{ height: 420 }"), "审计列表应定高并内部滚动");
+    assert!(
+        js.contains("{ height: 420, emptyText: '暂无审计记录' }"),
+        "审计列表应定高并内部滚动，且带场景空态文案"
+    );
     // 四个菜单图标使用 1.8.0-r4 子集的原生字形，不再近似兜底或留空。
     assert!(
         js.contains("folder: 'mdi-folder-outline'"),
