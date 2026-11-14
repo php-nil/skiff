@@ -10774,3 +10774,721 @@ async fn shell_html_asset_references_resolve() {
         assert_eq!(resp.status(), StatusCode::OK, "壳页引用必须可取: {uri}");
     }
 }
+
+// ---- /ui/v1 DTO 冻结：关键响应 key-set 快照（SDUI 集成 §3.7）----
+//
+// 规则：`/ui/v1` 的响应字段只增不改。新增可选字段不算破坏，但必须同步更新这里的
+// 冻结清单；删除字段、改名或改变语义必须升 `api_version`，并写进 SDUI 集成文档。
+// 这里断言 key-set 而不是 golden JSON：时间、计数、路径随环境变化，字段集才是契约。
+
+/// 取 JSON 对象的键（非对象直接失败）。
+fn object_keys(v: &serde_json::Value) -> Vec<String> {
+    v.as_object()
+        .unwrap_or_else(|| panic!("期望 JSON 对象，实际: {v}"))
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// 断言对象键集与冻结清单完全一致（顺序无关）。
+fn assert_key_set(v: &serde_json::Value, expected: &[&str], ctx: &str) {
+    let mut actual = object_keys(v);
+    actual.sort();
+    let mut expected: Vec<String> = expected.iter().map(|s| (*s).to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "{ctx} 字段集漂移：新增可选字段请更新冻结清单；删除/改名/改语义必须升 api_version 并写进 SDUI 集成文档"
+    );
+}
+
+/// 错误信封、登录引导与会话端点是壳页启动的硬依赖，字段集先冻结。
+#[tokio::test]
+async fn ui_v1_envelope_and_bootstrap_key_sets_are_frozen() {
+    let h = harness();
+
+    // 未认证：信封与错误码是前端分支依据（`field` 允许为 null，但键必须存在）。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/session", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(&v, &["error"], "错误信封顶层");
+    assert_key_set(
+        &v["error"],
+        &["code", "status", "message", "field", "retryable"],
+        "错误信封 error",
+    );
+
+    // 登录引导是公开端点：字段与 session 的 `api_version` 同源。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/auth/login", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["csrf_token", "entry_prefix", "api_version"],
+        "GET /ui/v1/auth/login",
+    );
+
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "username",
+            "role",
+            "csrf_token",
+            "entry_prefix",
+            "api_version",
+            "features",
+        ],
+        "GET /ui/v1/session",
+    );
+    assert_key_set(
+        &v["data"]["features"],
+        &["shell_fallback", "placeholders", "plugin_iframe"],
+        "GET /ui/v1/session features",
+    );
+}
+
+/// 关键读接口的 `data` 字段集与资源行字段集冻结；新增字段必须显式更新本用例。
+#[tokio::test]
+async fn ui_v1_key_response_shapes_are_frozen() {
+    /// 站点列表项（`SiteItem`）：列表与详情共用，字段只增不改。
+    const SITE_ITEM_KEYS: &[&str] = &[
+        "domain",
+        "root_dir",
+        "index_dir",
+        "site_type",
+        "type_label",
+        "runtime_id",
+        "runtime_label",
+        "runtime_name",
+        "runtime_shared_hint",
+        "proxy_target",
+        "proxy_websocket",
+        "endpoint",
+        "status",
+        "https",
+        "is_default",
+        "aliases",
+        "created_at",
+    ];
+
+    // 商店接口在目录未启用时返回 404，这里用启用目录的 harness 覆盖 200 形状。
+    let h = harness_full_with_catalog(
+        Form::Native,
+        Tier::Basic,
+        skiff_app::catalog::CatalogSettings {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    h.state.init_tasks().expect("任务服务应能初始化");
+    let root = h.data_dir.join("www/sites/a.local");
+    std::fs::create_dir_all(&root).unwrap();
+    h.state
+        .db()
+        .create_site(&php_site("a.local", &root.display().to_string()))
+        .unwrap();
+    h.state
+        .db()
+        .create_runtime(&skiff_store::NewRuntime {
+            id: "rust-1.83".into(),
+            kind: "rust".into(),
+            name: "rust-1.83".into(),
+            version: "1.83".into(),
+            image: "rust:1.83-slim".into(),
+            image_digest: String::new(),
+            socket_path: None,
+            port: None,
+            is_default: false,
+        })
+        .unwrap();
+    seed_plugin(h.state.db().as_ref(), "com.example.freeze", "Freeze", "Freeze", true);
+    h.state
+        .db()
+        .audit(
+            "admin",
+            "10.0.0.1",
+            "site.update",
+            "freeze.example",
+            "ok",
+            "freeze",
+        )
+        .unwrap();
+    // harness 的 data_dir 是受保护路径，文件管理改看独立临时目录。
+    let scratch = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(scratch.path().join("sites")).unwrap();
+    std::fs::write(scratch.path().join("note.txt"), b"hello").unwrap();
+    let files_uri = format!(
+        "/ui/v1/files?path={}",
+        scratch.path().to_string_lossy().replace('\\', "/")
+    );
+
+    let token = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "collected_at",
+            "docker",
+            "containers",
+            "sites",
+            "plugins",
+            "runtimes",
+            "health_plugin",
+            "health_reason",
+        ],
+        "GET /ui/v1/overview",
+    );
+    assert_key_set(&v["data"]["docker"], &["status", "reason"], "overview.docker");
+    assert_key_set(
+        &v["data"]["docker"]["status"],
+        &["code", "label"],
+        "overview.docker.status",
+    );
+    assert_key_set(
+        &v["data"]["containers"],
+        &["running", "total"],
+        "overview.containers",
+    );
+    assert_key_set(
+        &v["data"]["sites"],
+        &["total", "abnormal"],
+        "overview.sites",
+    );
+    assert_key_set(
+        &v["data"]["plugins"],
+        &["total", "enabled", "disabled"],
+        "overview.plugins",
+    );
+    assert_key_set(
+        &v["data"]["runtimes"],
+        &["total", "abnormal", "uninstalled"],
+        "overview.runtimes",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(&v["data"], &["groups"], "GET /ui/v1/menu");
+    let groups = v["data"]["groups"].as_array().expect("menu.groups");
+    assert!(!groups.is_empty(), "菜单至少应有一个分组: {body}");
+    assert_key_set(
+        &groups[0],
+        &["key", "label", "icon", "href", "items", "empty"],
+        "menu.group",
+    );
+    if let Some(item) = groups
+        .iter()
+        .flat_map(|g| g["items"].as_array().into_iter().flatten())
+        .next()
+    {
+        assert_key_set(
+            item,
+            &[
+                "key",
+                "label",
+                "icon",
+                "href",
+                "plugin",
+                "plugin_id",
+                "default_view",
+                "views",
+            ],
+            "menu.item",
+        );
+        if let Some(view) = item["views"].as_array().and_then(|a| a.first()) {
+            assert_key_set(view, &["view", "label"], "menu.item.views[]");
+        }
+    }
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["items", "total", "next_cursor", "can_admin"],
+        "GET /ui/v1/sites",
+    );
+    let site = v["data"]["items"]
+        .as_array()
+        .and_then(|a| a.first())
+        .expect("应有一条站点");
+    assert_key_set(site, SITE_ITEM_KEYS, "site item");
+    assert_key_set(&site["status"], &["code", "label"], "site item status");
+    assert_key_set(
+        &site["https"],
+        &["enabled", "force_https", "label", "class"],
+        "site item https",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites/a.local", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let detail = &v["data"];
+    let mut detail_keys: Vec<String> = SITE_ITEM_KEYS.iter().map(|s| (*s).to_string()).collect();
+    for extra in [
+        "ssl",
+        "runtime",
+        "runtime_down",
+        "runtime_alert",
+        "config",
+        "backup",
+        "can_manage",
+    ] {
+        detail_keys.push(extra.to_string());
+    }
+    let mut actual: Vec<String> = detail_keys;
+    actual.sort();
+    let mut got = object_keys(detail);
+    got.sort();
+    assert_eq!(got, actual, "site detail 字段集漂移");
+    assert_key_set(
+        &detail["ssl"],
+        &[
+            "enabled",
+            "force_https",
+            "cert_exists",
+            "cert_path",
+            "key_path",
+            "subject",
+            "issuer",
+            "expires",
+        ],
+        "site detail ssl",
+    );
+    assert_key_set(
+        &detail["config"],
+        &["path", "content", "active", "error"],
+        "site detail config",
+    );
+    assert_key_set(
+        &detail["backup"],
+        &["available", "enabled", "task_id", "last_text", "next_text"],
+        "site detail backup",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["items", "total", "next_cursor"],
+        "GET /ui/v1/runtimes",
+    );
+    let runtime = v["data"]["items"]
+        .as_array()
+        .and_then(|a| a.first())
+        .expect("应有一条运行环境");
+    assert_key_set(
+        runtime,
+        &[
+            "id",
+            "kind",
+            "name",
+            "container_name",
+            "version",
+            "version_display",
+            "version_note",
+            "image",
+            "state",
+            "state_class",
+            "drift",
+            "site_count",
+            "container_state",
+            "endpoint_short",
+            "endpoint_full",
+            "implemented",
+            "is_default",
+            "created_at",
+            "updated_at",
+            "job",
+        ],
+        "runtime item",
+    );
+    assert_key_set(&runtime["kind"], &["code", "label"], "runtime item kind");
+    assert_key_set(&runtime["state"], &["code", "label"], "runtime item state");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/containers", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "items",
+            "total",
+            "next_cursor",
+            "filter",
+            "docker_available",
+            "docker_reason",
+            "can_operate",
+            "can_delete",
+            "can_admin",
+        ],
+        "GET /ui/v1/containers",
+    );
+
+    for uri in ["/ui/v1/images", "/ui/v1/networks", "/ui/v1/volumes"] {
+        let (status, _, body) = get_ui(&h.app, uri, Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_key_set(
+            &v["data"],
+            &[
+                "items",
+                "total",
+                "next_cursor",
+                "docker_available",
+                "docker_reason",
+                "can_admin",
+            ],
+            uri,
+        );
+    }
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/tasks", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["items", "total", "next_cursor", "can_admin"],
+        "GET /ui/v1/tasks",
+    );
+    if let Some(task) = v["data"]["items"].as_array().and_then(|a| a.first()) {
+        assert_key_set(
+            task,
+            &[
+                "id",
+                "name",
+                "expr",
+                "next_text",
+                "source",
+                "target",
+                "method",
+                "enabled",
+                "state_label",
+                "state_class",
+                "last_text",
+                "last_class",
+                "builtin",
+            ],
+            "task item",
+        );
+    }
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/jobs", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["items", "total", "next_cursor", "can_admin"],
+        "GET /ui/v1/jobs",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/audit", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["items", "keyword", "has_more", "next_cursor"],
+        "GET /ui/v1/audit",
+    );
+    let row = v["data"]["items"]
+        .as_array()
+        .and_then(|a| a.first())
+        .expect("应有一条审计记录");
+    assert_key_set(
+        row,
+        &["id", "ts", "actor", "ip", "action", "target", "result", "detail"],
+        "audit item",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "plugins",
+            "enabled_count",
+            "disabled_count",
+            "can_admin",
+            "allow_unsigned",
+            "reduced_allowed",
+        ],
+        "GET /ui/v1/plugins",
+    );
+    let plugin = v["data"]["plugins"]
+        .as_array()
+        .and_then(|a| a.first())
+        .expect("应有一条插件");
+    assert_key_set(
+        plugin,
+        &[
+            "id",
+            "name",
+            "version",
+            "api",
+            "status",
+            "enabled",
+            "key_id",
+            "signed",
+            "reduced",
+            "running",
+            "requires",
+            "permissions",
+            "grants",
+            "ui_path",
+            "takedown_note",
+        ],
+        "plugin item",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/store", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "state",
+            "message",
+            "channel",
+            "seq",
+            "fetched_at",
+            "source",
+            "allow_unsigned",
+            "key_configured",
+            "can_install",
+            "total",
+            "sections",
+            "upgrade",
+        ],
+        "GET /ui/v1/store",
+    );
+    assert_key_set(&v["data"]["state"], &["code", "label"], "store.state");
+    assert_key_set(
+        &v["data"]["upgrade"],
+        &[
+            "current",
+            "arch",
+            "available",
+            "channel",
+            "min_from",
+            "changelog_url",
+            "note",
+            "can_download",
+        ],
+        "store.upgrade",
+    );
+    if let Some(section) = v["data"]["sections"].as_array().and_then(|a| a.first()) {
+        assert_key_set(
+            section,
+            &["title", "hint", "installable", "items"],
+            "store.section",
+        );
+        if let Some(item) = section["items"].as_array().and_then(|a| a.first()) {
+            assert_key_set(
+                item,
+                &[
+                    "name",
+                    "version",
+                    "source",
+                    "updated_at",
+                    "compatibility",
+                    "note",
+                    "warn",
+                    "installable",
+                    "action",
+                    "install_note",
+                ],
+                "store.item",
+            );
+        }
+    }
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["panel", "account", "keys", "can_admin", "flash"],
+        "GET /ui/v1/settings",
+    );
+    assert_key_set(
+        &v["data"]["panel"],
+        &[
+            "listen_addr",
+            "listen_port",
+            "entry_prefix",
+            "tls_mode",
+            "tls_cert",
+            "tls_key",
+            "config_path",
+            "plaintext_behind_proxy",
+            "initial_admin_pending",
+        ],
+        "settings.panel",
+    );
+    assert_key_set(
+        &v["data"]["account"],
+        &[
+            "totp_enabled",
+            "must_change_password",
+            "totp_pending_secret",
+            "totp_pending_uri",
+        ],
+        "settings.account",
+    );
+    assert_key_set(&v["data"]["flash"], &["notice", "error"], "settings.flash");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["layout", "width", "max_width", "groups"],
+        "GET /ui/v1/settings/menu",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/docker", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["registry_mirror", "image_prefix", "can_admin"],
+        "GET /ui/v1/settings/docker",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "projects",
+            "services",
+            "selected_project",
+            "docker_available",
+            "docker_reason",
+            "can_admin",
+        ],
+        "GET /ui/v1/compose",
+    );
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &["status", "install", "config", "modules", "can_admin"],
+        "GET /ui/v1/web",
+    );
+    assert_key_set(
+        &v["data"]["status"],
+        &[
+            "available",
+            "reason",
+            "container_state",
+            "version",
+            "config_test",
+            "uptime",
+            "last_reload",
+            "probe_url",
+            "probe_error",
+            "conf_path",
+            "conf_has_stub",
+            "active",
+            "accepts",
+            "handled",
+            "requests",
+            "reading",
+            "writing",
+            "waiting",
+            "stub_reason",
+        ],
+        "web.status",
+    );
+    assert_key_set(
+        &v["data"]["install"],
+        &["running", "done", "error", "steps"],
+        "web.install",
+    );
+    assert_key_set(
+        &v["data"]["config"],
+        &[
+            "main_path",
+            "main_content",
+            "include_path",
+            "include_content",
+            "sites",
+            "params",
+        ],
+        "web.config",
+    );
+    assert_key_set(
+        &v["data"]["config"]["params"],
+        &[
+            "worker_processes",
+            "worker_connections",
+            "keepalive_timeout",
+            "client_max_body_size",
+            "gzip",
+            "gzip_types",
+        ],
+        "web.config.params",
+    );
+    assert_key_set(
+        &v["data"]["modules"],
+        &[
+            "available",
+            "reason",
+            "version",
+            "configure_args",
+            "modules",
+        ],
+        "web.modules",
+    );
+
+    let (status, _, body) = get_ui(&h.app, &files_uri, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(
+        &v["data"],
+        &[
+            "path",
+            "parent",
+            "roots",
+            "entries",
+            "truncated",
+            "max_edit_bytes",
+            "upload_chunk_bytes",
+            "can_admin",
+        ],
+        "GET /ui/v1/files",
+    );
+    let entry = v["data"]["entries"]
+        .as_array()
+        .and_then(|a| a.first())
+        .expect("应有一个目录项");
+    assert_key_set(
+        entry,
+        &[
+            "name",
+            "path",
+            "dir",
+            "symlink",
+            "size",
+            "mtime",
+            "mode",
+            "owner",
+            "nlink",
+            "link_target",
+        ],
+        "files.entry",
+    );
+}
