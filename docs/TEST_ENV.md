@@ -59,7 +59,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-14 07:45 就地升级到 `c535343`（budding 1.8.0-r3 三处界面缺陷修复；当前生效）**
+> **2026-11-14 08:28 就地升级到 `16cbe9a`（作业日志路径按 `Accept` 分流；当前生效）**
+> - 出包：CI run `43531925907`（head `16cbe9a`）success；`release.yml` dispatch run `43533335180`（ref=main、head `16cbe9a`，publish=false、skip_plugins=false）两架构 + Docker 镜像 job 全绿（发布到 GitHub Release skipped 属预期）；artifact `release-amd64` 主包 **11,882,335 B** `fdb9090f0a203f4028c57b5652b4449565ca8c1555b157ba2116a57b5cb33491`（开发机 `Get-FileHash`、随包 `.sha256` 与测试机 `sha256sum -c` 一致）。
+> - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-11c8f94dd50227f8802724a28d6128ebe3f4d561ccdffb8cea65fd5a97e5a1da`（19,244,304 B）；库快照 `/root/iter/backup/skiff-058abe7c92430fa4c594717ba69020e4a4e67af67a1064beb757f2eae48ab34c.db`（2,527,232 B）；`official/*.wbpkg` 未覆盖（插件内容未变）。
+> - 新二进制：`/usr/local/bin/skiff` **19,244,304 B** `f54a6fe9b12f1c7c4109d18068c0cd06a7d2eb00d1524fc9c6c92723a668932c`。
+> - 库：`user_version=19` 未变、`integrity_check=ok`；前缀仍 `34h8y9da`；配置未改写（`listen=127.0.0.1:18080`、`allow_insecure_http=true`、`allow_reduced_sandbox=true`）。
+> - 服务：`skiff` / `skiff-http-fwd` active；`/healthz` 18080 与 18081 均 **200**。
+
+> **2026-11-14 07:45 就地升级到 `c535343`（budding 1.8.0-r3 三处界面缺陷修复；已被 2026-11-14 08:28 升级取代，保留作过程记录）**
 > - 出包：CI run `43526990850`（head `c535343`）11 项全绿（`编译（x86_64 musl 静态）` skipped 属预期）；`release.yml` dispatch run `43528413516`（ref=main、head `c535343`，publish=false、skip_plugins=false）两架构全绿；artifact `release-amd64` 主包 **11,883,795 B** `aafadc471ed194e5265b97dc5e39e9c7e0380d8e8a76877f6939e2d0cd7a160b`（开发机、随包 `.sha256` 与测试机一致）。
 > - 升级方式：`/root/iter/upgrade.sh` 就地覆盖二进制；旧二进制备份 `/root/iter/backup/skiff-06d86211943f639653ed8e0f4eab79899038822f18d005de936b94d41dec58bd`（19,244,304 B）；库快照 `/root/iter/backup/skiff-600cbc963681ee3f1479fbd696516fce83f715cb2a0b0631bc8abf9ee14b477f.db`（2,453,504 B）；`official/*.wbpkg` 已按发布包覆盖，包内容未变（日志无「官方插件内容已随发布包更新」，未触发重装）。
 > - 新二进制：`/usr/local/bin/skiff` **19,244,304 B** `11c8f94dd50227f8802724a28d6128ebe3f4d561ccdffb8cea65fd5a97e5a1da`。
@@ -244,6 +251,7 @@
 | 2026-11-13 20:55 | **就地升级**（验内置任务解锁、健康卡片三态、菜单链接与三页抽查） | 出包 run `43427115488`（head `1abcf4d`）；主包 11,861,899 B `b76aff6d…1a6f` 双端一致；新二进制 19,207,440 B `77a9a4c2…3d9b`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；guard reconcile 与 monitor sample 不再 `api_mismatch`，按 tick 产生成功记录；健康卡片启用/停用/撤授权三态齐全；菜单 href 改为原生路径；概览/插件/任务页 iframe 0 |
 | 2026-11-13 21:37 | **就地升级**（budding 1.8.0-r3：游标分页、图标、代码查看器、行内删除） | 出包 run `43433228776`（head `150357f`，代码同 `91813f1`）；主包 11,881,370 B `38ff0c18…29ff` 三方一致；新二进制 19,244,304 B `06d86211…58bd`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；容器/镜像/网络/卷分页 2 页且 0 重复；**审计页每页仅渲染 10/50 条**；图标 17 组字形齐全、4 个条目无图标；**代码查看器报「组件未发布：code-viewer」**；行内删除与 viewer 隐藏通过 |
 | 2026-11-14 07:45 | **就地升级**（budding 1.8.0-r3 三处缺陷修复复验：审计全量行、代码查看器、菜单图标） | 出包 run `43528413516`（head `c535343`）；主包 11,883,795 B `aafadc47…a160b` 三方一致；新二进制 19,244,304 B `11c8f94d…a1da`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；审计 3 页各 50 条、id 13210→13061 连续；文件/站点/容器代码高亮正常；**任务日志页仍返回裸 JSON**；图标 31/33 有字形，镜像/配额管理留空；抽查 4 页 200 / iframe 0 / 控制台 0 错误 |
+| 2026-11-14 08:28 | **就地升级**（作业日志路径按 `Accept` 分流复验） | 出包 run `43533335180`（head `16cbe9a`）；主包 11,882,335 B `fdb9090f…3491` 三方一致；新二进制 19,244,304 B `f54a6fe9…932c`；旧件与库快照在 `/root/iter/backup/` | 库保持 **v19**、`integrity_check=ok`、前缀 `34h8y9da`、`/healthz` 均 200；`/jobs/{id}/logs` 浏览器导航得壳页（`text/html`、bud-code、日志正文、无「组件未发布」），同 URL `Accept: application/json` 仍返回 7 条增量 JSON；审计 2 页 id 13658→13559 连续；文件/站点代码高亮正常；概览与插件页 200 / iframe 0 / 控制台 0 错误 |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -261,6 +269,18 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-14 08:30–08:33 `16cbe9a`（作业日志路径按 `Accept` 分流）验收**
+
+前置：就地升级到 `16cbe9a`（见 §5），库 v19、前缀 `34h8y9da`、7 个官方插件；Chromium 1440×1000；临时站点 `r11.local`（`/www/sites/r11.local/index`、`log/access.log`、`log/error.log`）与 `/tmp/skiff-code-demo11.conf`，验完删除（sites 0、Docker 0 容器 / 3 镜像）。作业复用库内既有 `job-1794566955-2cb4ef220`（`runtime.install`，7 条日志）。
+
+- **作业日志页（通过）**：浏览器导航 `/{p}/jobs/job-1794566955-2cb4ef220/logs` 返回 **200 / `text/html; charset=utf-8`**，进入 `#skiff-root` 壳页；`div.bud-code` + `code.bud-code__code`，**145 个 span / 136 个带色**，正文渲染 7 条日志（`任务已创建，等待执行`、`检查 Docker 可用性` 等），无「组件未发布」，iframe 0、无静态 404；`budding-boot.js` 与 `budding-code-1.8.0-r3.min.js` 均 200。同 URL 以 `Accept: application/json` 请求返回 **200 / `application/json`**，`job` 存在、`entries=7`、首条 `任务已创建，等待执行`。控制台仅一条全站既有 `/favicon.ico` 404。
+- **回归（通过）**：
+  - 文件查看 `/{p}/files/view?path=/tmp/skiff-code-demo11.conf`：200，`bud-code`，150 span / 141 带色，无「组件未发布」，iframe 0、控制台 0 错误。
+  - 站点日志 `/{p}/sites/r11.local/logs`：200，`bud-code`，134 span / 116 带色，两行访问日志与「共 2 行」正常，iframe 0、控制台 0 错误。
+  - 审计：`/ui/v1/audit` 连续 2 页各 50 条，id `13658→13609`、`13608→13559`，100 条去重 100 条且连续；UI 两页页脚均「本页 50 条」，下一页边界由 `next_cursor` 衔接（id 13609→13608），iframe 0、控制台 0 错误。
+  - 概览、插件功能页（`com.skiff.guard`）：200、iframe 0、控制台 0 错误。
+- 截图与 JSON：`skiff-run/plugin-acceptance/plugin-shots/r11-{job-logs,file-view,site-logs,audit-1,audit-2,spot-overview,spot-plugin-guard}.png`；`joblogs11-report.json`、`code-dom11.out.txt`。
 
 **2026-11-14 07:46–07:51 `c535343`（budding 1.8.0-r3 三处缺陷修复）验收**
 
