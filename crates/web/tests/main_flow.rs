@@ -10130,6 +10130,7 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         "未安装与已安装必须区分，避免出现无意义按钮"
     );
     for needle in [
+        "function webInstallNode(install)",
         "className: 'skiff-web-install'",
         "text: webInstallText(install)",
         "startWebInstallPolling(install)",
@@ -10146,6 +10147,30 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
     ] {
         assert!(js.contains(needle), "安装进度轮询/展示缺失：{needle}");
     }
+    // 锚点必须是节点顶层 decorate 属性；放进 props 不会落到 DOM（装机实测 0 个元素）。
+    let node_fn = js
+        .split("function webInstallNode(install)")
+        .nth(1)
+        .and_then(|s| s.split("function webInstallText").next())
+        .expect("webInstallNode 必须存在");
+    let class_at = node_fn
+        .find("className: 'skiff-web-install'")
+        .expect("className 锚点缺失");
+    let props_at = node_fn.find("props:").expect("props 缺失");
+    assert!(
+        class_at < props_at,
+        "className 必须位于节点顶层，不能放进 props"
+    );
+    // 安装/重建点击后不得先弹阻塞提示再刷新，否则旧作业结果会继续可见。
+    let action = js
+        .split("function webEnvAction(args)")
+        .nth(1)
+        .expect("webEnvAction 必须存在");
+    assert!(
+        action.contains("if (op === 'install' || op === 'rebuild')")
+            && action.contains("location.reload();\n          return;"),
+        "安装/重建提交后应立即进入当前作业视图"
+    );
 }
 
 /// 安装进度只允许一个事实源：任务中心 `web.install` 作业。

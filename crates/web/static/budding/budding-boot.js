@@ -3960,6 +3960,35 @@
     return isNaN(d.getTime()) ? String(value) : d.toLocaleString();
   }
 
+  /// 安装进度告警节点。
+  ///
+  /// `className` 必须放在节点顶层（SDK 的 decorate 属性），不能塞进 `props`：
+  /// 后者只是组件 props，alert 组件不会把它写到 DOM，轮询就找不到锚点。
+  function webInstallNode(install) {
+    if (!(install.running || install.error || (install.steps || []).length)) return null;
+    return {
+      type: 'alert',
+      className: 'skiff-web-install',
+      props: {
+        type: install.running
+          ? 'info'
+          : install.interrupted
+            ? 'warning'
+            : install.error
+              ? 'danger'
+              : 'success',
+        title: install.running
+          ? '正在安装 Web 服务'
+          : install.interrupted
+            ? '安装已中断'
+            : install.error
+              ? '安装失败'
+              : '安装已完成',
+        text: webInstallText(install)
+      }
+    };
+  }
+
   /// 安装进度块的文本：状态、失败原因、发起人/时间/耗时、逐步进度。
   /// 页面轮询与首屏渲染共用，避免两套展示口径。
   function webInstallText(install) {
@@ -4099,28 +4128,9 @@
     });
 
     var install = data.install || {};
-    if (install.running || install.error || (install.steps || []).length) {
-      body.push({
-        type: 'alert',
-        props: {
-          type: install.running
-            ? 'info'
-            : install.interrupted
-              ? 'warning'
-              : install.error
-                ? 'danger'
-                : 'success',
-          title: install.running
-            ? '正在安装 Web 服务'
-            : install.interrupted
-              ? '安装已中断'
-              : install.error
-                ? '安装失败'
-                : '安装已完成',
-          className: 'skiff-web-install',
-          text: webInstallText(install)
-        }
-      });
+    var installAlert = webInstallNode(install);
+    if (installAlert) {
+      body.push(installAlert);
       if (install.job_id) {
         body.push({
           type: 'button',
@@ -4390,6 +4400,12 @@
     }
     return submitJson('/runtimes/web/action/' + encodeURIComponent(op), { confirm: true })
       .then(function (data) {
+        // 安装/重建：提交成功即刷新进入当前作业，不弹阻塞提示，
+        // 避免旧页面的完成记录在提示期间继续可见。
+        if (op === 'install' || op === 'rebuild') {
+          location.reload();
+          return;
+        }
         window.alert((data && data.message) || '操作已完成');
         location.reload();
       })
