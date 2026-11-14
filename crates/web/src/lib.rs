@@ -6,6 +6,7 @@
 //! CSRF、RBAC（`policy.check`）与审计**在 handler 内**逐请求调用：它们需要资源对象
 //! 与表单字段，放不进 layer。登录限流同理，只在 `handlers/auth` 路径生效。
 
+mod asset_rules;
 pub mod assets;
 pub mod authz;
 pub mod error;

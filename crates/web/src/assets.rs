@@ -469,19 +469,31 @@ mod tests {
 
     #[test]
     fn every_static_asset_has_gzip_variant() {
-        // 与 build.rs 的跳过列表保持一致：已压缩格式不再生成 `.gz`（再压只会增加字节）。
-        const ALREADY_COMPRESSED: &[&str] = &["woff2", "woff", "png", "jpg", "jpeg", "webp", "zip"];
+        // 与 build.rs 共用同一份跳过列表：已压缩格式不再生成 `.gz`（再压只会增加字节）。
         for name in Assets::iter() {
             if name.ends_with(".gz") {
                 continue;
             }
             let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            if ALREADY_COMPRESSED.contains(&ext.as_str()) {
+            if crate::asset_rules::ALREADY_COMPRESSED.contains(&ext.as_str()) {
                 continue;
             }
             assert!(
                 Assets::get(&format!("{name}.gz")).is_some(),
                 "缺少预压缩变体: {name}"
+            );
+        }
+    }
+
+    /// budding 的分包文件名由 `budding-boot.js` 按 `data-budding-version` 拼接；
+    /// 主包升级但漏带分包时只会在浏览器运行时 404，这里提前锁死。
+    #[test]
+    fn budding_packs_match_declared_version() {
+        for pack in ["code", "terminal"] {
+            let name = format!("budding/budding-{pack}-{BUDDING_VERSION}.min.js");
+            assert!(
+                Assets::get(&name).is_some(),
+                "缺少 budding 分包: {name}（检查 static/budding 与 BUDDING_VERSION）"
             );
         }
     }

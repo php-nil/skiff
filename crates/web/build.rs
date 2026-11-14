@@ -8,11 +8,14 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+include!("src/asset_rules.rs");
+
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let static_dir = manifest_dir.join("static");
     let static_dir = static_dir.canonicalize().unwrap_or(static_dir);
     println!("cargo:rerun-if-changed={}", static_dir.display());
+    println!("cargo:rerun-if-changed=src/asset_rules.rs");
 
     for entry in walk(&static_dir) {
         // 预压缩变体不再压缩；缺跳过非文件
@@ -23,12 +26,7 @@ fn main() {
         if entry
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| {
-                matches!(
-                    e.to_ascii_lowercase().as_str(),
-                    "woff2" | "woff" | "png" | "jpg" | "jpeg" | "webp" | "zip" | "gz"
-                )
-            })
+            .map(|e| ALREADY_COMPRESSED.contains(&e.to_ascii_lowercase().as_str()))
             .unwrap_or(false)
         {
             continue;
