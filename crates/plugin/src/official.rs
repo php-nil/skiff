@@ -18,7 +18,9 @@ use skiff_pkgfmt::package::{PackageMeta, FILES_NAME};
 use skiff_store::Db;
 use tracing::{info, warn};
 
-use crate::install::{install_options, install_package, plugin_root, version_gt, InstallOptions};
+use crate::install::{
+    install_options, install_package, plugin_version_dir, version_gt, InstallOptions,
+};
 
 /// 一次同步的结果（调用方主要用于日志汇总与回归断言）。
 #[derive(Debug, Default)]
@@ -193,9 +195,7 @@ fn sync_one(
 ///
 /// 包内 `files.sha256` / `sig` 是元数据，不落版本目录，比较时排除。
 fn installed_version_matches(data_dir: &Path, meta: &PackageMeta) -> bool {
-    let dir = plugin_root(data_dir, &meta.manifest.id)
-        .join("versions")
-        .join(&meta.manifest.version);
+    let dir = plugin_version_dir(data_dir, &meta.manifest.id, &meta.manifest.version);
     if !dir.is_dir() {
         return false;
     }
@@ -267,6 +267,7 @@ fn file_hash_matches(root: &Path, rel: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::plugin_root;
     use skiff_model::{Form, Grant};
     use skiff_pkgfmt::SigningKey;
     use std::sync::atomic::{AtomicUsize, Ordering};

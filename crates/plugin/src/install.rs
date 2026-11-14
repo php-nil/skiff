@@ -93,6 +93,18 @@ pub fn plugin_root(data_dir: &Path, id: &str) -> PathBuf {
     data_dir.join("plugins").join(id)
 }
 
+/// 某个已安装版本的代码目录：`<plugin_root>/versions/<version>`。
+///
+/// 版本目录布局只在这里维护，启动、校验、UI/schema 托管统一走本函数。
+pub fn plugin_version_dir(data_dir: &Path, id: &str, version: &str) -> PathBuf {
+    plugin_root(data_dir, id).join("versions").join(version)
+}
+
+/// 某个已安装版本的 UI 资产目录：`<version_dir>/ui`。
+pub fn plugin_ui_dir(data_dir: &Path, id: &str, version: &str) -> PathBuf {
+    plugin_version_dir(data_dir, id, version).join("ui")
+}
+
 /// 按插件 id 稳定分配 UID/GID（200000–200999，不进 docker 组）。
 pub fn plugin_uid(id: &str) -> u32 {
     use sha2::{Digest, Sha256};
@@ -327,7 +339,7 @@ pub fn install_package(
     for sub in ["versions", "data", "cache", "run"] {
         fs::create_dir_all(root.join(sub))?;
     }
-    let version_dir = root.join("versions").join(&meta.manifest.version);
+    let version_dir = plugin_version_dir(data_dir, &meta.manifest.id, &meta.manifest.version);
     if version_dir.exists() {
         remove_tree(&version_dir)?;
     }

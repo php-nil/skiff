@@ -293,7 +293,7 @@ mod output {
 
 use crate::install::manifest_of;
 #[cfg(unix)]
-use crate::install::{plugin_root, plugin_uid};
+use crate::install::{plugin_uid, plugin_version_dir};
 use crate::ipc;
 
 #[derive(Debug, Clone)]
@@ -691,10 +691,7 @@ impl Supervisor {
             ));
         }
 
-        let root = plugin_root(&self.cfg.data_root, &rec.id);
-        let bin = root
-            .join("versions")
-            .join(&rec.active_version)
+        let bin = plugin_version_dir(&self.cfg.data_root, &rec.id, &rec.active_version)
             .join("bin")
             .join(skiff_pkgfmt::host_arch())
             .join("plugin");

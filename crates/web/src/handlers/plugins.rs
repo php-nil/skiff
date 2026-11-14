@@ -851,14 +851,8 @@ pub async fn plugin_ui(
     if !rec.enabled {
         return Err(AppError::NotFound("插件已停用".into()));
     }
-    let root = state
-        .cfg
-        .data_dir
-        .join("plugins")
-        .join(&rec.id)
-        .join("versions")
-        .join(&rec.active_version)
-        .join("ui");
+    let root =
+        skiff_plugin::install::plugin_ui_dir(&state.cfg.data_dir, &rec.id, &rec.active_version);
     let rel = path.replace('\\', "/");
     if skiff_model::has_parent_segment(&rel) {
         return Err(AppError::Forbidden("路径非法".into()));
@@ -919,15 +913,9 @@ pub async fn schema(
             "视图 {view_name} 仍为旧 HTML 界面，没有随包 schema"
         )));
     };
-    let root = state
-        .cfg
-        .data_dir
-        .join("plugins")
-        .join(&rec.id)
-        .join("versions")
-        .join(&rec.active_version)
-        .join("ui")
-        .join("schema");
+    let root =
+        skiff_plugin::install::plugin_ui_dir(&state.cfg.data_dir, &rec.id, &rec.active_version)
+            .join("schema");
     let target = root.join(&name);
     let canon_root = std::fs::canonicalize(&root)
         .map_err(|_| AppError::NotFound("该插件没有 schema 目录".into()))?;
