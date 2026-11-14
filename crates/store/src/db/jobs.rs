@@ -63,6 +63,8 @@ pub struct JobRow {
     pub retry_of: Option<String>,
     /// 决定该作业成败的那条命令的退出码；无单条命令语义时为 `None`（页面显示 `-`）。
     pub exit_code: Option<i64>,
+    /// 分步进度快照（JSON 数组）；无分步模型的作业为 `[]`。
+    pub steps_json: String,
 }
 
 /// 一行作业日志（`job_logs`）。
@@ -95,7 +97,8 @@ pub struct JobLogBatch {
 const JOB_COLUMNS: &str = "id, kind, target_type, target_id, title, params_json, phase,
     phase_label, progress, status, cancellable, cancel_requested, created_by,
     created_by_role, requester_ip, created_at, started_at, finished_at, duration_ms,
-    error_class, error_detail, result_json, log_bytes, log_seq, retry_of, exit_code";
+    error_class, error_detail, result_json, log_bytes, log_seq, retry_of, exit_code,
+    steps_json";
 
 fn row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
     Ok(JobRow {
@@ -125,6 +128,7 @@ fn row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         log_seq: r.get(23)?,
         retry_of: r.get(24)?,
         exit_code: r.get(25)?,
+        steps_json: r.get(26)?,
     })
 }
 
@@ -145,9 +149,9 @@ impl Db {
                               phase_label, progress, status, cancellable, cancel_requested,
                               created_by, created_by_role, requester_ip, created_at,
                               started_at, finished_at, duration_ms, error_class, error_detail,
-                              result_json, log_bytes, log_seq, retry_of, exit_code)
+                              result_json, log_bytes, log_seq, retry_of, exit_code, steps_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                    ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 j.id,
                 j.kind,
@@ -175,6 +179,7 @@ impl Db {
                 j.log_seq,
                 j.retry_of,
                 j.exit_code,
+                j.steps_json,
             ],
         );
         let unique = matches!(&res, Err(err) if is_unique_violation(err));
@@ -224,6 +229,51 @@ impl Db {
         conn.execute(
             "UPDATE jobs SET exit_code = ?2 WHERE id = ?1",
             params![id, code],
+        )?;
+        Ok(())
+    }
+
+    /// 更新分步进度快照（调用方负责序列化，store 不解释步骤语义）。
+    pub fn set_job_steps(&self, id: &str, steps_json: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE jobs SET steps_json = ?2 WHERE id = ?1",
+            params![id, steps_json],
+        )?;
+        Ok(())
+    }
+
+    /// 启动恢复用：仍在 `queued/running` 的作业（进程重启后不可能还在执行）。
+    pub fn interrupted_jobs(&self) -> Result<Vec<JobRow>> {
+        let conn = self.conn();
+        let sql = format!(
+            "SELECT {JOB_COLUMNS} FROM jobs
+              WHERE status IN ('queued','running')
+              ORDER BY created_at"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], row_from)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 把遗留活跃作业结算为「中断失败」；只命中活跃状态，重复调用无副作用。
+    pub fn fail_job_interrupted(
+        &self,
+        id: &str,
+        steps_json: &str,
+        error_detail: &str,
+        now: i64,
+        duration_ms: i64,
+    ) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE jobs
+                SET status = 'failed', phase = 'interrupted', phase_label = '中断',
+                    error_class = 'interrupted', error_detail = ?2,
+                    finished_at = ?3, duration_ms = ?4, cancellable = 0,
+                    steps_json = ?5
+              WHERE id = ?1 AND status IN ('queued','running')",
+            params![id, error_detail, now, duration_ms, steps_json],
         )?;
         Ok(())
     }
@@ -552,6 +602,7 @@ mod tests {
             log_seq: 0,
             retry_of: None,
             exit_code: None,
+            steps_json: "[]".into(),
         }
     }
 
@@ -624,5 +675,59 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM job_logs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn steps_json_round_trips() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_job(&sample("j1", "rt-1", STATUS_RUNNING))
+            .unwrap();
+        let steps = r#"[{"key":"check","state":"running"}]"#;
+        db.set_job_steps("j1", steps).unwrap();
+        assert_eq!(db.job("j1").unwrap().unwrap().steps_json, steps);
+    }
+
+    #[test]
+    fn interrupted_sweep_only_touches_active_jobs() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_job(&sample("live", "rt-1", STATUS_RUNNING))
+            .unwrap();
+        db.insert_job(&sample("queued", "rt-2", STATUS_QUEUED))
+            .unwrap();
+        db.insert_job(&sample("done", "rt-3", STATUS_SUCCEEDED))
+            .unwrap();
+
+        let mut ids: Vec<String> = db
+            .interrupted_jobs()
+            .unwrap()
+            .into_iter()
+            .map(|j| j.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["live".to_string(), "queued".to_string()]);
+
+        db.fail_job_interrupted(
+            "live",
+            r#"[{"key":"check","state":"failed"}]"#,
+            "服务重启，任务中断",
+            2_000,
+            1_000,
+        )
+        .unwrap();
+        let live = db.job("live").unwrap().unwrap();
+        assert_eq!(live.status, STATUS_FAILED);
+        assert_eq!(live.phase, "interrupted");
+        assert_eq!(live.error_class.as_deref(), Some("interrupted"));
+        assert_eq!(live.finished_at, Some(2_000));
+        assert!(live.steps_json.contains("\"failed\""));
+        // 已终态的行不受影响
+        assert_eq!(db.job("done").unwrap().unwrap().status, STATUS_SUCCEEDED);
+        // 幂等：再次调用失败收尾不会改写已结算行
+        db.fail_job_interrupted("live", "[]", "again", 3_000, 2_000)
+            .unwrap();
+        assert_eq!(
+            db.job("live").unwrap().unwrap().error_detail.as_deref(),
+            Some("服务重启，任务中断")
+        );
     }
 }

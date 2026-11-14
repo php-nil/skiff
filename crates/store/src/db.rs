@@ -36,7 +36,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 20;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -123,7 +123,7 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        let steps: [(i64, &str); 19] = [
+        let steps: [(i64, &str); 20] = [
             (1, SCHEMA_V1),
             (2, SCHEMA_V2),
             (3, SCHEMA_V3),
@@ -143,6 +143,7 @@ impl Db {
             (17, SCHEMA_V17),
             (18, SCHEMA_V18),
             (19, SCHEMA_V19),
+            (20, SCHEMA_V20),
         ];
         for (to, schema) in steps {
             if version >= to {
@@ -772,6 +773,15 @@ CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC, id DESC);
 
 DROP INDEX IF EXISTS idx_jobs_status;
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at DESC, id DESC);
+"#;
+
+/// v20：安装类作业的分步进度快照。
+///
+/// `steps_json` 是步骤数组（`key/name/state/detail/started_at/finished_at`），
+/// 与 `phase/progress` 同源同生命周期；默认 `[]` 表示该作业没有分步模型。
+/// 放同一行而不是另建表，避免与 `jobs` 的清理、取消、重试、活跃唯一性分叉。
+const SCHEMA_V20: &str = r#"
+ALTER TABLE jobs ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]';
 "#;
 
 #[cfg(test)]

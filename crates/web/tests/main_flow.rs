@@ -6103,6 +6103,95 @@ async fn ui_web_requires_csrf_and_admin() {
     }
 }
 
+/// `/ui/v1/web/install`：轻量轮询接口，与 `/ui/v1/web` 的 install 块同源，
+/// 数据来自任务中心 `web.install` 作业（重启后仍可查）。
+#[tokio::test]
+async fn ui_web_install_reports_persisted_job_and_same_shape() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web/install", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web/install", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web/install", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let idle: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(idle["data"]["status"], "idle", "{body}");
+    assert_eq!(idle["data"]["running"], false, "{body}");
+    assert_eq!(idle["data"]["steps"], json!([]), "{body}");
+
+    let job = h
+        .state
+        .jobs()
+        .submit(skiff_app::jobs::JobSubmit {
+            kind: skiff_app::jobs::KIND_WEB_INSTALL.into(),
+            target_type: skiff_app::jobs::TARGET_WEB_ENV.into(),
+            target_id: skiff_app::jobs::WEB_ENV_ID.into(),
+            title: "安装 Web 服务".into(),
+            params: json!({ "action": "install" }),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: false,
+        })
+        .unwrap();
+    h.state
+        .jobs()
+        .set_phase(&job.id, "pull_image", "拉取 OpenResty 镜像", 33, false);
+    h.state.jobs().set_steps(
+        &job.id,
+        &json!([
+            { "key": "check", "name": "检查 Docker 与 80 端口", "state": "ok", "detail": "Docker socket 可用", "started_at": 1, "finished_at": 2 },
+            { "key": "pull_image", "name": "拉取 OpenResty 镜像", "state": "running", "detail": "", "started_at": 3, "finished_at": null }
+        ]),
+    );
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ui/v1/web/install")
+                .header(
+                    header::COOKIE,
+                    format!("{}={admin}", skiff_identity::session_cookie_name(true)),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "轮询接口必须禁缓存"
+    );
+    let body = body_text(resp).await;
+    let live: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(live["data"]["job_id"], job.id, "{body}");
+    assert_eq!(live["data"]["status"], "running", "{body}");
+    assert_eq!(live["data"]["running"], true, "{body}");
+    assert_eq!(live["data"]["progress"], 33, "{body}");
+    assert_eq!(live["data"]["created_by"], "admin", "{body}");
+    assert_eq!(live["data"]["requester_ip"], "127.0.0.1", "{body}");
+    assert!(live["data"]["created_at"].is_string(), "{body}");
+    assert!(live["data"]["started_at"].is_string(), "{body}");
+    assert!(live["data"]["duration"].is_string(), "{body}");
+    assert_eq!(live["data"]["steps"][0]["state"], "ok", "{body}");
+    assert_eq!(live["data"]["steps"][1]["state"], "running", "{body}");
+
+    // 同一构建函数：`/ui/v1/web` 的 install 块必须与轻量接口完全一致。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/web", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let snapshot: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(snapshot["data"]["install"], live["data"], "{body}");
+}
+
 /// 「网站 → Web 服务」：四区块常驻渲染；管理员 + CSRF，viewer 403。
 #[tokio::test]
 async fn nginx_page_renders_four_sections_and_is_admin_only() {
@@ -7329,6 +7418,7 @@ async fn job_detail_empty_logs_show_placeholder() {
             log_seq: 0,
             retry_of: None,
             exit_code: None,
+            steps_json: "[]".into(),
         })
         .unwrap();
 
@@ -10039,6 +10129,61 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         js.contains("var installed = state !== '' && state !== 'missing';"),
         "未安装与已安装必须区分，避免出现无意义按钮"
     );
+    for needle in [
+        "className: 'skiff-web-install'",
+        "text: webInstallText(install)",
+        "startWebInstallPolling(install)",
+        "fetchRawJson(apiBase + '/web/install')",
+        "document.querySelector('.skiff-web-install')",
+        "if (location.pathname !== target)",
+        "if (document.hidden)",
+        "schedule(2000)",
+        "schedule(5000)",
+        "if (last.running)",
+        "if (last.done) location.reload();",
+        "function webStepState(state)",
+        "'查看任务详情'",
+    ] {
+        assert!(js.contains(needle), "安装进度轮询/展示缺失：{needle}");
+    }
+}
+
+/// 安装进度只允许一个事实源：任务中心 `web.install` 作业。
+///
+/// 内存版 `site_install_progress` 必须彻底消失，否则页面会出现两套口径。
+#[test]
+fn web_install_progress_has_single_persisted_source() {
+    let sources = [
+        ("web handler", include_str!("../src/handlers/ui/web.rs")),
+        ("nginx handler", include_str!("../src/handlers/nginx.rs")),
+        ("app state", include_str!("../../app/src/lib.rs")),
+        ("sites crud", include_str!("../../app/src/sites/crud.rs")),
+        (
+            "sites runtime",
+            include_str!("../../app/src/sites/runtime.rs"),
+        ),
+    ];
+    for (name, src) in sources {
+        assert!(
+            !src.contains("site_install_progress") && !src.contains("site_env.lock"),
+            "{name} 不应再出现内存安装进度"
+        );
+    }
+    let state = include_str!("../../app/src/lib.rs");
+    assert!(
+        state.contains("pub fn web_install_progress") && state.contains("TARGET_WEB_ENV"),
+        "安装进度必须从任务中心最新 web.install 作业构建"
+    );
+    let crud = include_str!("../../app/src/sites/crud.rs");
+    assert!(
+        crud.contains("KIND_WEB_INSTALL") && crud.contains("set_steps"),
+        "安装步骤必须写入作业快照"
+    );
+    let store = include_str!("../../store/src/db/jobs.rs");
+    assert!(
+        store.contains("set_job_steps") && store.contains("fail_job_interrupted"),
+        "store 必须提供步骤持久化与重启中断收尾"
+    );
 }
 
 /// 静态防回归：禁止 boot 向 schema 根写入未注册的顶层属性。
@@ -11773,7 +11918,26 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     );
     assert_key_set(
         &v["data"]["install"],
-        &["running", "done", "error", "steps"],
+        &[
+            "job_id",
+            "status",
+            "running",
+            "done",
+            "interrupted",
+            "phase",
+            "phase_label",
+            "progress",
+            "error",
+            "created_by",
+            "created_by_role",
+            "requester_ip",
+            "created_at",
+            "started_at",
+            "finished_at",
+            "duration_ms",
+            "duration",
+            "steps",
+        ],
         "web.install",
     );
     assert_key_set(

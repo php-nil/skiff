@@ -394,7 +394,14 @@ pub async fn action(
                 "Web 服务不支持操作：{action}"
             )));
         }
-        let result = state.web_env_action(action).await;
+        let result = state
+            .web_env_action(
+                action,
+                &cmd.actor.username,
+                cmd.role.as_str(),
+                &cmd.actor.ip,
+            )
+            .await;
         match &result {
             Ok(()) => state.audit_or_log(
                 &cmd.actor.username,

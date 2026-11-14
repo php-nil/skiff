@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use skiff_docker::{ContainerSpec, DockerParams, Mount, Verb};
 use skiff_store::{NewSite as StoreNewSite, Runtime};
 
@@ -327,12 +328,13 @@ impl LogKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum StepState {
     Pending,
     Running,
     Ok,
-    Fail,
+    Failed,
 }
 
 impl StepState {
@@ -341,24 +343,103 @@ impl StepState {
             StepState::Pending => "pending",
             StepState::Running => "running",
             StepState::Ok => "ok",
-            StepState::Fail => "fail",
+            StepState::Failed => "failed",
         }
     }
 }
 
-#[derive(Debug, Clone)]
+/// 一步安装进度。`state` 对外只用 `pending/running/ok/failed`；
+/// 时间戳为 Unix 秒，`detail` 成功时是结果摘要、失败时是错误原因。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallStep {
+    pub key: String,
     pub name: String,
     pub state: StepState,
+    #[serde(default)]
     pub detail: String,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
 }
 
+/// Web 服务安装的唯一进度视图：页面、`/ui/v1/web`、`/ui/v1/web/install`
+/// 与旧 SSR 都从同一份作业快照构建，不存在第二套口径。
 #[derive(Debug, Clone, Default)]
 pub struct InstallProgress {
+    pub job_id: Option<String>,
+    pub status: String,
     pub running: bool,
     pub done: bool,
+    pub interrupted: bool,
+    pub phase: String,
+    pub phase_label: String,
+    pub progress: i64,
     pub error: String,
+    pub created_by: String,
+    pub created_by_role: String,
+    pub requester_ip: String,
+    pub created_at: Option<i64>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub duration_ms: i64,
     pub steps: Vec<InstallStep>,
+}
+
+impl InstallProgress {
+    /// 从任务中心最新一条 `web.install` 作业构建视图；没有历史时返回 `idle`。
+    pub fn from_job(job: Option<&app_jobs::Job>) -> Self {
+        let Some(job) = job else {
+            return Self {
+                status: "idle".into(),
+                ..Self::default()
+            };
+        };
+        let steps: Vec<InstallStep> = serde_json::from_value(job.steps.clone()).unwrap_or_default();
+        let error = job
+            .error_detail
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                steps
+                    .iter()
+                    .rev()
+                    .find(|s| s.state == StepState::Failed)
+                    .map(|s| s.detail.clone())
+            })
+            .unwrap_or_default();
+        Self {
+            job_id: Some(job.id.clone()),
+            status: job.status.as_str().to_string(),
+            running: job.active(),
+            done: job.status.terminal(),
+            interrupted: job.error_class.as_deref() == Some("interrupted"),
+            phase: job.phase.clone(),
+            phase_label: job.phase_label.clone(),
+            progress: job.progress,
+            error,
+            created_by: job.created_by.clone(),
+            created_by_role: job.created_by_role.clone(),
+            requester_ip: job.requester_ip.clone(),
+            created_at: Some(job.created_at),
+            started_at: job.started_at,
+            finished_at: job.finished_at,
+            duration_ms: if job.active() {
+                let started = job.started_at.unwrap_or(job.created_at);
+                (unix_now() - started).max(0) * 1000
+            } else {
+                job.duration_ms
+            },
+            steps,
+        }
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// 运行环境安装互斥表：键为 `kind:name`。
@@ -551,6 +632,7 @@ pub struct SiteDirListing {
 /// 重试任务的执行计划：在插入新行之前算好，避免留下没有执行器的 queued 僵尸。
 enum RetryPlan {
     Install,
+    WebInstall,
     Single {
         token: String,
         add: bool,

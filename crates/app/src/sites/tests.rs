@@ -762,12 +762,109 @@ async fn container_busy_reason_matches_kernel_jobs() {
         "无关容器不受运行环境任务影响"
     );
     assert!(state.container_busy_reason(NGINX_CONTAINER).await.is_none());
-    state.site_env.lock().await.running = true;
+    state
+        .jobs()
+        .submit(app_jobs::JobSubmit {
+            kind: app_jobs::KIND_WEB_INSTALL.into(),
+            target_type: app_jobs::TARGET_WEB_ENV.into(),
+            target_id: app_jobs::WEB_ENV_ID.into(),
+            title: "安装 Web 服务".into(),
+            params: serde_json::json!({}),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: String::new(),
+            cancellable: false,
+        })
+        .unwrap();
     assert!(state
         .container_busy_reason(NGINX_CONTAINER)
         .await
         .unwrap()
         .contains("Web 服务"));
+}
+
+#[tokio::test]
+async fn web_install_progress_reads_latest_job_and_survives_restart() {
+    let db = Arc::new(skiff_store::Db::open_in_memory().unwrap());
+    let jobs = app_jobs::JobService::new(db.clone());
+    let job = jobs
+        .submit(app_jobs::JobSubmit {
+            kind: app_jobs::KIND_WEB_INSTALL.into(),
+            target_type: app_jobs::TARGET_WEB_ENV.into(),
+            target_id: app_jobs::WEB_ENV_ID.into(),
+            title: "安装 Web 服务".into(),
+            params: serde_json::json!({ "action": "install" }),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: "127.0.0.1".into(),
+            cancellable: false,
+        })
+        .unwrap();
+    jobs.set_phase(&job.id, "pull_image", "拉取 OpenResty 镜像", 33, false);
+    jobs.set_steps(
+        &job.id,
+        &serde_json::json!([
+            { "key": "check", "name": "检查 Docker 与 80 端口", "state": "ok", "detail": "ok", "started_at": 1, "finished_at": 2 },
+            { "key": "pull_image", "name": "拉取 OpenResty 镜像", "state": "running", "detail": "", "started_at": 3, "finished_at": null }
+        ]),
+    );
+    let view = InstallProgress::from_job(
+        jobs.latest_for_target(app_jobs::TARGET_WEB_ENV, app_jobs::WEB_ENV_ID)
+            .as_ref(),
+    );
+    assert!(view.running);
+    assert_eq!(view.status, "running");
+    assert_eq!(view.progress, 33);
+    assert_eq!(view.phase_label, "拉取 OpenResty 镜像");
+    assert_eq!(view.created_by, "admin");
+    assert_eq!(view.requester_ip, "127.0.0.1");
+    assert_eq!(view.steps.len(), 2);
+    assert_eq!(view.steps[0].state, StepState::Ok);
+
+    drop(jobs);
+    // 模拟进程重启：同一数据库上重新构造 JobService，启动收尾把活跃作业标记为中断。
+    let restarted = app_jobs::JobService::new(db);
+    let view = InstallProgress::from_job(
+        restarted
+            .latest_for_target(app_jobs::TARGET_WEB_ENV, app_jobs::WEB_ENV_ID)
+            .as_ref(),
+    );
+    assert!(!view.running);
+    assert!(view.done);
+    assert!(view.interrupted);
+    assert!(view.error.contains("服务重启"));
+    assert_eq!(view.steps[1].state, StepState::Failed);
+    assert!(view.steps[1].detail.contains("服务重启中断"));
+}
+
+#[tokio::test]
+async fn web_install_view_keeps_failed_step_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = app_state_at(dir.path());
+    let job = state
+        .jobs()
+        .submit(app_jobs::JobSubmit {
+            kind: app_jobs::KIND_WEB_INSTALL.into(),
+            target_type: app_jobs::TARGET_WEB_ENV.into(),
+            target_id: app_jobs::WEB_ENV_ID.into(),
+            title: "安装 Web 服务".into(),
+            params: serde_json::json!({}),
+            created_by: "admin".into(),
+            created_by_role: "admin".into(),
+            requester_ip: String::new(),
+            cancellable: false,
+        })
+        .unwrap();
+    state.jobs().finish_err(
+        &job.id,
+        "web.install.failed",
+        "第 3 步「拉取 OpenResty 镜像」失败：timeout",
+    );
+    let view = state.web_install_progress();
+    assert!(view.done);
+    assert!(!view.running);
+    assert!(!view.interrupted);
+    assert!(view.error.contains("拉取 OpenResty 镜像"));
 }
 
 #[test]

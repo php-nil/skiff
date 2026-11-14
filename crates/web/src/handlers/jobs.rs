@@ -71,6 +71,7 @@ fn kind_label(kind: &str) -> &'static str {
         "compose.up" => "Compose 启动",
         "compose.down" => "Compose 停止",
         "site.create" => "站点创建",
+        "web.install" => "Web 服务安装",
         _ => "异步任务",
     }
 }
@@ -95,6 +96,7 @@ fn target_label(job: &Job) -> String {
         ("image", _) => format!("镜像 · {name}"),
         ("compose", _) => format!("Compose · {name}"),
         ("site", _) => format!("站点 · {name}"),
+        ("web_env", _) => "Web 服务".to_string(),
         _ => name,
     }
 }

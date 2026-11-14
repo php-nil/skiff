@@ -109,8 +109,6 @@ pub struct AppState {
     /// 会无限递归）。这里用「进入/离开」标记，而不是调用栈深度计数——目标插件
     /// 并发处理两个请求时，任一请求尝试再调用都应当被拒。
     interop_busy: Mutex<HashSet<String>>,
-    /// 「网站 → 运行环境」后台安装进度（内存态：重启后清空即可，安装动作幂等）。
-    site_env: Mutex<sites::InstallProgress>,
     /// 按 `(kind,name)` 的运行环境安装互斥；第二个并发安装直接返回「正在安装」。
     runtime_installs: sites::InstallLocks,
     /// 任务中心：一次性异步作业（安装/拉镜像/Compose 等），事实源在 `jobs` 表。
@@ -325,7 +323,6 @@ impl AppState {
             login_semaphore: Semaphore::new(permits),
             exec_tickets: Mutex::new(HashMap::new()),
             interop_busy: Mutex::new(HashSet::new()),
-            site_env: Mutex::new(sites::InstallProgress::default()),
             runtime_installs: sites::InstallLocks::default(),
             jobs,
             image_versions: Mutex::new(HashMap::new()),
@@ -439,6 +436,17 @@ impl AppState {
     /// 任务中心句柄：提交、推进、日志、取消与重试都走它。
     pub fn jobs(&self) -> &jobs::JobService {
         &self.jobs
+    }
+
+    /// Web 服务安装进度：唯一事实源是任务中心最新一条 `web.install` 作业。
+    ///
+    /// 页面、JSON 接口与旧 SSR 共用这一份快照；进程重启后由
+    /// `JobService::new` 的中断收尾把遗留活跃作业结算为失败。
+    pub fn web_install_progress(&self) -> sites::InstallProgress {
+        let job = self
+            .jobs
+            .latest_for_target(jobs::TARGET_WEB_ENV, jobs::WEB_ENV_ID);
+        sites::InstallProgress::from_job(job.as_ref())
     }
 
     /// Docker 服务句柄（只读访问）。

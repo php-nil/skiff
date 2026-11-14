@@ -77,8 +77,11 @@ pub async fn job_detail(
             "error_detail": view.error_detail,
             "result": job.result.clone(),
             "params": job.params.clone(),
+            "steps": job.steps.clone(),
             "retry_of": view.retry_of,
-            "can_cancel": view.can_cancel,
+            // Web 安装包含拉镜像/重建容器，步骤不可中断；任务中心不展示取消入口。
+            "can_cancel": view.can_cancel
+                && job.kind != skiff_app::jobs::KIND_WEB_INSTALL,
             "can_retry": view.can_retry,
             "lookback": cursor,
             "logs": view.log_text,

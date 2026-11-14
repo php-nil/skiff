@@ -3092,6 +3092,21 @@
       ])
     );
     body.push(detailLines('参数', ['params = ' + JSON.stringify(data.params)]));
+    var jobSteps = data.steps || [];
+    if (jobSteps.length) {
+      body.push(
+        detailLines(
+          '步骤',
+          jobSteps.map(function (s) {
+            return (
+              '· ' + s.name + '：' + webStepState(s.state) +
+              (s.detail ? '（' + s.detail + '）' : '') +
+              (s.finished_at ? ' · 结束 ' + webTimeText(s.finished_at) : '')
+            );
+          })
+        )
+      );
+    }
     body.push(detailLines('结果', ['result = ' + JSON.stringify(data.result)]));
     var logLines = (data.logs || '').split('\n').filter(function (line) {
       return line !== '';
@@ -3931,6 +3946,117 @@
     return v === null || v === undefined ? '—' : String(v);
   }
 
+  /// 安装步骤状态的中文展示（接口只回 pending/running/ok/failed）。
+  function webStepState(state) {
+    if (state === 'ok') return '完成';
+    if (state === 'running') return '进行中';
+    if (state === 'failed') return '失败';
+    return '待执行';
+  }
+
+  function webTimeText(value) {
+    if (!value) return '—';
+    var d = new Date(value);
+    return isNaN(d.getTime()) ? String(value) : d.toLocaleString();
+  }
+
+  /// 安装进度块的文本：状态、失败原因、发起人/时间/耗时、逐步进度。
+  /// 页面轮询与首屏渲染共用，避免两套展示口径。
+  function webInstallText(install) {
+    var lines = [];
+    if (install.running) {
+      lines.push(
+        '状态：' + (install.phase_label || '准备中') + '（' + (install.progress || 0) + '%）'
+      );
+    } else if (install.interrupted) {
+      lines.push('状态：已中断');
+    } else if (install.error) {
+      lines.push('状态：失败');
+    } else if (install.done) {
+      lines.push('状态：已完成');
+    } else {
+      lines.push('状态：待安装');
+    }
+    if (install.error) lines.push('失败原因：' + install.error);
+    lines.push(
+      '发起人：' + (install.created_by || '—') +
+        '（' + (install.created_by_role || '—') + '）' +
+        ' · 来源 IP：' + (install.requester_ip || '—')
+    );
+    lines.push(
+      '开始：' + webTimeText(install.started_at) +
+        ' · 结束：' + webTimeText(install.finished_at) +
+        ' · 耗时：' + (install.duration || '—')
+    );
+    (install.steps || []).forEach(function (s) {
+      lines.push(
+        '· ' + s.name + '：' + webStepState(s.state) +
+          (s.detail ? '（' + s.detail + '）' : '') +
+          (s.started_at ? ' [' + webTimeText(s.started_at) + ']' : '')
+      );
+    });
+    return lines.join('\n');
+  }
+
+  /// 安装进度轮询：只更新 `.skiff-web-install` 文本，整页不刷新。
+  ///
+  /// - 2 秒一次，递归 setTimeout，上一请求结束才排下一次；
+  /// - 离开 `/sites/web`、页面隐藏、终态都会停止/暂停；
+  /// - 终态后整页刷新一次，让「安装」与「启停/重启」按钮切换到正确状态；
+  /// - 网络失败保留旧进度并退避到 5 秒，不误报成功。
+  var webInstallPoll = { timer: null, token: 0 };
+
+  function stopWebInstallPolling() {
+    webInstallPoll.token += 1;
+    if (webInstallPoll.timer) clearTimeout(webInstallPoll.timer);
+    webInstallPoll.timer = null;
+  }
+
+  function startWebInstallPolling(initial) {
+    stopWebInstallPolling();
+    var token = webInstallPoll.token;
+    var target = prefix + '/sites/web';
+    var last = initial || {};
+
+    function schedule(ms) {
+      if (token !== webInstallPoll.token) return;
+      webInstallPoll.timer = setTimeout(tick, ms);
+    }
+
+    function tick() {
+      if (token !== webInstallPoll.token) return;
+      if (location.pathname !== target) {
+        stopWebInstallPolling();
+        return;
+      }
+      if (document.hidden) {
+        schedule(2000);
+        return;
+      }
+      fetchRawJson(apiBase + '/web/install')
+        .then(function (res) {
+          if (token !== webInstallPoll.token) return;
+          last = (res && res.data) || {};
+          var el = document.querySelector('.skiff-web-install');
+          if (el) el.textContent = webInstallText(last);
+          if (last.running) {
+            schedule(2000);
+            return;
+          }
+          stopWebInstallPolling();
+          // 终态：刷新一次，让运维按钮反映最新容器状态。
+          if (last.done) location.reload();
+        })
+        .catch(function () {
+          if (token !== webInstallPoll.token) return;
+          // 保留旧进度，只退避重试；页面隐藏时也不抢前台资源。
+          schedule(5000);
+        });
+    }
+
+    schedule(0);
+  }
+
   function webSchema(data, query, logs) {
     var status = data.status || {};
     var body = [];
@@ -3977,17 +4103,41 @@
       body.push({
         type: 'alert',
         props: {
-          type: install.error ? 'danger' : install.running ? 'info' : 'success',
-          title: install.running ? '正在安装 Web 服务' : install.error ? '安装失败' : '安装已完成',
-          text:
-            (install.error || '') +
-            (install.steps || [])
-              .map(function (s) {
-                return s.name + '：' + s.state + (s.detail ? '（' + s.detail + '）' : '');
-              })
-              .join('；')
+          type: install.running
+            ? 'info'
+            : install.interrupted
+              ? 'warning'
+              : install.error
+                ? 'danger'
+                : 'success',
+          title: install.running
+            ? '正在安装 Web 服务'
+            : install.interrupted
+              ? '安装已中断'
+              : install.error
+                ? '安装失败'
+                : '安装已完成',
+          className: 'skiff-web-install',
+          text: webInstallText(install)
         }
       });
+      if (install.job_id) {
+        body.push({
+          type: 'button',
+          props: { text: '查看任务详情', variant: 'text' },
+          onEvent: {
+            click: {
+              actions: [
+                {
+                  type: 'skiffQueryNav',
+                  props: { path: prefix + '/jobs/' + install.job_id, query: {} }
+                }
+              ]
+            }
+          }
+        });
+      }
+      if (install.running) startWebInstallPolling(install);
     }
 
     // 容器运维：动作沿用 `POST /ui/v1/runtimes/web/action/{op}`（与旧页同一命令层

@@ -19,6 +19,43 @@ pub(crate) enum NginxActivation {
     Restarted,
 }
 
+/// Web 服务安装的固定步骤（key 用于历史稳定比对，name 用于展示）。
+const WEB_INSTALL_STEPS: [(&str, &str); 6] = [
+    ("check", "检查 Docker 与 80 端口"),
+    ("prepare", "准备目录与 nginx 主配置"),
+    ("pull_image", "拉取 OpenResty 镜像"),
+    ("vhost", "重建站点 vhost"),
+    ("container", "创建并启动 nginx（host 网络）"),
+    ("default_site", "写入默认站点与兜底配置"),
+];
+
+fn initial_web_install_steps() -> Vec<InstallStep> {
+    WEB_INSTALL_STEPS
+        .iter()
+        .map(|(key, name)| InstallStep {
+            key: (*key).to_string(),
+            name: (*name).to_string(),
+            state: StepState::Pending,
+            detail: String::new(),
+            started_at: None,
+            finished_at: None,
+        })
+        .collect()
+}
+
+/// 当前步骤对应的进度：只有 `ok` 计入完成数，`running/failed/pending` 停在本步之前。
+fn step_progress(idx: usize, state: StepState) -> i64 {
+    let done = if state == StepState::Ok { idx + 1 } else { idx };
+    (done as i64 * 100 / WEB_INSTALL_STEPS.len() as i64).min(100)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// nginx 激活动作的抽象：生产走 Docker；单测注入内存实现复现并发重启窗口。
 #[allow(async_fn_in_trait)]
 pub(crate) trait NginxControl {
@@ -526,100 +563,169 @@ impl AppState {
         }
     }
 
-    pub async fn site_install_progress(&self) -> InstallProgress {
-        self.site_env.lock().await.clone()
-    }
-
-    /// 后台安装运行环境：拉镜像 → 建网络 → 建/启容器 → 写默认 vhost。
+    /// 后台安装/重建 Web 服务（OpenResty）。
     ///
-    /// 拉取可能超过 HTTP handler 的 30s 超时，所以这里只负责启动任务并立即返回；
-    /// 页面用 meta refresh 轮询 `site_install_progress()`。
-    pub fn start_web_env_install(self: &Arc<Self>) {
+    /// 提交一条 `web.install` 作业后立即返回；步骤推进写入 `jobs.steps_json`，
+    /// 页面轮询 `/ui/v1/web/install`。同一目标已有活跃作业时由唯一索引拒绝。
+    pub fn start_web_env_install(
+        self: &Arc<Self>,
+        actor: &str,
+        role: &str,
+        ip: &str,
+        action: &str,
+    ) -> Result<(), SiteError> {
+        let steps = initial_web_install_steps();
+        let job = self
+            .jobs()
+            .submit(app_jobs::JobSubmit {
+                kind: app_jobs::KIND_WEB_INSTALL.into(),
+                target_type: app_jobs::TARGET_WEB_ENV.into(),
+                target_id: app_jobs::WEB_ENV_ID.into(),
+                title: if action == "rebuild" {
+                    "重新安装 Web 服务".into()
+                } else {
+                    "安装 Web 服务".into()
+                },
+                params: serde_json::json!({ "action": action }),
+                created_by: actor.to_string(),
+                created_by_role: role.to_string(),
+                requester_ip: ip.to_string(),
+                // 安装步骤包含拉镜像/重建容器，无法安全中断；失败或重启后用「重新安装」重试。
+                cancellable: false,
+            })
+            .map_err(site_error_from_job)?;
+        let value = serde_json::to_value(&steps).unwrap_or_else(|_| serde_json::json!([]));
+        self.jobs().set_steps(&job.id, &value);
         let state = self.clone();
+        let job_id = job.id;
         tokio::spawn(async move {
-            {
-                let mut p = state.site_env.lock().await;
-                if p.running {
-                    return;
-                }
-                p.running = true;
-                p.done = false;
-                p.error.clear();
-                p.steps = [
-                    "检查 Docker 与 80 端口",
-                    "准备目录与 nginx 主配置",
-                    "拉取 OpenResty 镜像",
-                    "重建站点 vhost",
-                    "创建并启动 nginx（host 网络）",
-                    "写入默认站点与兜底配置",
-                ]
-                .iter()
-                .map(|n| InstallStep {
-                    name: n.to_string(),
-                    state: StepState::Pending,
-                    detail: String::new(),
-                })
-                .collect();
-            }
-            let result = state.run_web_env_install().await;
-            let mut p = state.site_env.lock().await;
-            p.running = false;
-            p.done = true;
-            if let Err(e) = result {
-                p.error = e;
-            }
+            state.run_web_env_install_job(&job_id).await;
         });
+        Ok(())
     }
 
-    async fn mark_step(&self, idx: usize, state: StepState, detail: impl Into<String>) {
-        let mut p = self.site_env.lock().await;
-        if let Some(step) = p.steps.get_mut(idx) {
-            step.state = state;
-            step.detail = detail.into();
+    pub(crate) async fn run_web_env_install_job(self: &Arc<Self>, job_id: &str) {
+        match self.run_web_env_install(job_id).await {
+            Ok(()) => {
+                self.jobs()
+                    .finish_ok(job_id, "安装完成，Web 服务已就绪", serde_json::json!({}))
+            }
+            Err(e) => self.jobs().finish_err(job_id, "web.install.failed", &e),
         }
     }
 
+    /// 推进单步：同步写 `steps_json`、作业阶段与过程日志。
+    ///
+    /// 进度只在真实步骤落库；`pending` 不伪造时间，`ok/failed` 才补结束时间。
+    fn mark_step(
+        &self,
+        job_id: &str,
+        steps: &mut [InstallStep],
+        idx: usize,
+        state: StepState,
+        detail: impl Into<String>,
+    ) {
+        let now = unix_now();
+        if let Some(step) = steps.get_mut(idx) {
+            if state == StepState::Running && step.started_at.is_none() {
+                step.started_at = Some(now);
+            }
+            if matches!(state, StepState::Ok | StepState::Failed) {
+                step.finished_at = Some(now);
+            }
+            step.state = state;
+            step.detail = detail.into();
+        }
+        let value = serde_json::to_value(&*steps).unwrap_or_else(|_| serde_json::json!([]));
+        self.jobs().set_steps(job_id, &value);
+        if let Some(step) = steps.get(idx) {
+            self.jobs().set_phase(
+                job_id,
+                &step.key,
+                &step.name,
+                step_progress(idx, state),
+                false,
+            );
+            let line = format!(
+                "{}：{}",
+                step.name,
+                match state {
+                    StepState::Pending => "待执行",
+                    StepState::Running => "进行中",
+                    StepState::Ok => "完成",
+                    StepState::Failed => "失败",
+                }
+            );
+            self.jobs().note(job_id, &line);
+        }
+    }
+
+    /// 标记失败并返回带步骤上下文的错误串（作业 `error_detail` 与页面共用）。
+    fn fail_step(
+        &self,
+        job_id: &str,
+        steps: &mut [InstallStep],
+        idx: usize,
+        msg: String,
+    ) -> String {
+        let name = steps
+            .get(idx)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| format!("步骤 {}", idx + 1));
+        self.mark_step(job_id, steps, idx, StepState::Failed, msg.clone());
+        format!("第 {} 步「{}」失败：{}", idx + 1, name, msg)
+    }
+
     /// 只安装/重建 OpenResty（Web 服务）。PHP、Node、Go、Rust 各自独立安装，互不连带。
-    async fn run_web_env_install(&self) -> Result<(), String> {
+    async fn run_web_env_install(&self, job_id: &str) -> Result<(), String> {
         let s = self.site_settings();
         let registry = registry_of(&s.nginx_image);
-        let fail = |idx: usize, msg: String| async move {
-            self.mark_step(idx, StepState::Fail, msg.clone()).await;
-            Err(msg)
-        };
+        let mut steps = initial_web_install_steps();
 
-        self.mark_step(0, StepState::Running, "").await;
+        self.mark_step(job_id, &mut steps, 0, StepState::Running, "");
         if !self.docker().available() {
-            return fail(
+            return Err(self.fail_step(
+                job_id,
+                &mut steps,
                 0,
                 format!("Docker 不可用：{}", self.docker_unavailable_reason()),
-            )
-            .await;
+            ));
         }
         let existing = match self.docker().list_containers().await {
             Ok(rows) => rows,
             Err(e) => {
-                return fail(0, format!("读取容器列表失败：{e}")).await;
+                return Err(self.fail_step(
+                    job_id,
+                    &mut steps,
+                    0,
+                    format!("读取容器列表失败：{e}"),
+                ));
             }
         };
         // host 网络下 nginx 直接占宿主 80。只有「自家 nginx 正在运行」才跳过探测；
         // 容器停着/已退出（例如上次端口冲突）仍要探测，避免重建后起不来却报成功。
         if nginx_container_running(&existing) {
             self.mark_step(
+                job_id,
+                &mut steps,
                 0,
                 StepState::Ok,
                 format!("宿主 {} 端口由现有 nginx 容器监听", s.port),
-            )
-            .await;
+            );
         } else {
             if let Err(e) = check_port_free(s.port) {
-                return fail(0, e).await;
+                return Err(self.fail_step(job_id, &mut steps, 0, e));
             }
         }
-        self.mark_step(0, StepState::Ok, "Docker socket 可用").await;
+        self.mark_step(job_id, &mut steps, 0, StepState::Ok, "Docker socket 可用");
 
-        self.mark_step(1, StepState::Running, "只准备 Web 服务目录，不拉起 PHP")
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            1,
+            StepState::Running,
+            "只准备 Web 服务目录，不拉起 PHP",
+        );
         // 绑定挂载的源目录必须先存在，否则 Docker 直接 400；权限 0755 让容器内
         // 非 root 的 nginx 进程可读。PHP 实例的目录/池配置由各自的安装任务负责。
         // 只建公共目录；站点级 index/log/ssl/conf 由建站时创建。
@@ -632,20 +738,40 @@ impl AppState {
         ];
         for dir in dirs {
             if let Err(e) = std::fs::create_dir_all(dir) {
-                return fail(1, format!("创建 {} 失败：{e}", dir.display())).await;
+                return Err(self.fail_step(
+                    job_id,
+                    &mut steps,
+                    1,
+                    format!("创建 {} 失败：{e}", dir.display()),
+                ));
             }
         }
         if let Err(e) = crate::nginx::ensure_nginx_main_conf(&s, self.db()) {
-            return fail(1, format!("写入 nginx 主配置失败：{e}")).await;
+            return Err(self.fail_step(
+                job_id,
+                &mut steps,
+                1,
+                format!("写入 nginx 主配置失败：{e}"),
+            ));
         }
         if let Err(e) = self.write_default_vhost(&s) {
-            return fail(1, format!("写入默认配置失败：{e}")).await;
+            return Err(self.fail_step(job_id, &mut steps, 1, format!("写入默认配置失败：{e}")));
         }
-        self.mark_step(1, StepState::Ok, s.conf_dir.display().to_string())
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            1,
+            StepState::Ok,
+            s.conf_dir.display().to_string(),
+        );
 
-        self.mark_step(2, StepState::Running, format!("registry: {registry}"))
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            2,
+            StepState::Running,
+            format!("registry: {registry}"),
+        );
         if let Err(e) = self
             .kernel_execute(
                 Verb::ImagePull,
@@ -654,43 +780,83 @@ impl AppState {
             )
             .await
         {
-            return fail(
+            return Err(self.fail_step(
+                job_id,
+                &mut steps,
                 2,
                 format!("拉取 {} 失败（registry: {registry}）：{e}", s.nginx_image),
-            )
-            .await;
+            ));
         }
-        self.mark_step(2, StepState::Ok, format!("{} 已就绪", s.nginx_image))
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            2,
+            StepState::Ok,
+            format!("{} 已就绪", s.nginx_image),
+        );
 
-        self.mark_step(3, StepState::Running, "").await;
+        self.mark_step(job_id, &mut steps, 3, StepState::Running, "");
         // 按当前 `web_root` 布局重建 vhost；顺序放在启动 nginx 之前，nginx 起来时
         // 即可直接加载。
         let rebuilt = match self.rewrite_site_vhosts(&s) {
             Ok(n) => n,
-            Err(e) => return fail(3, format!("重建站点配置失败：{e}")).await,
+            Err(e) => {
+                return Err(self.fail_step(
+                    job_id,
+                    &mut steps,
+                    3,
+                    format!("重建站点配置失败：{e}"),
+                ));
+            }
         };
-        self.mark_step(3, StepState::Ok, format!("重建 {rebuilt} 个 vhost"))
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            3,
+            StepState::Ok,
+            format!("重建 {rebuilt} 个 vhost"),
+        );
 
         // 容器：已存在则按当前配置重建（网络/挂载/镜像可能变了）；不存在则新建。
-        self.mark_step(4, StepState::Running, "host 网络，监听宿主 80")
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            4,
+            StepState::Running,
+            "host 网络，监听宿主 80",
+        );
         if let Some(c) = existing.iter().find(|c| c.name == NGINX_CONTAINER) {
-            self.remove_existing_container(c).await?;
+            if let Err(e) = self.remove_existing_container(c).await {
+                return Err(self.fail_step(job_id, &mut steps, 4, format!("移除旧容器失败：{e}")));
+            }
         }
         if let Err(e) = self.ensure_container(&self.nginx_spec(&s)).await {
-            return fail(4, format!("创建/启动 nginx 失败：{e}")).await;
+            return Err(self.fail_step(
+                job_id,
+                &mut steps,
+                4,
+                format!("创建/启动 nginx 失败：{e}"),
+            ));
         }
-        self.mark_step(4, StepState::Ok, NGINX_CONTAINER.to_string())
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            4,
+            StepState::Ok,
+            NGINX_CONTAINER.to_string(),
+        );
 
-        self.mark_step(5, StepState::Running, "").await;
+        self.mark_step(job_id, &mut steps, 5, StepState::Running, "");
         if let Err(e) = self.write_default_vhost(&s) {
-            return fail(5, format!("写入默认配置失败：{e}")).await;
+            return Err(self.fail_step(job_id, &mut steps, 5, format!("写入默认配置失败：{e}")));
         }
-        self.mark_step(5, StepState::Ok, s.conf_dir.display().to_string())
-            .await;
+        self.mark_step(
+            job_id,
+            &mut steps,
+            5,
+            StepState::Ok,
+            s.conf_dir.display().to_string(),
+        );
         Ok(())
     }
 

@@ -30,6 +30,11 @@ pub const TARGET_IMAGE: &str = "image";
 pub const TARGET_COMPOSE: &str = "compose";
 pub const TARGET_SITE: &str = "site";
 pub const TARGET_SYSTEM: &str = "system";
+/// Web 服务（OpenResty）安装/重建作业的目标类型与固定目标 id。
+pub const TARGET_WEB_ENV: &str = "web_env";
+pub const WEB_ENV_ID: &str = "web";
+/// Web 服务安装作业的类型标识（任务中心按此显示「Web 服务安装」）。
+pub const KIND_WEB_INSTALL: &str = "web.install";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {
@@ -126,6 +131,8 @@ pub struct Job {
     pub retry_of: Option<String>,
     /// 决定该作业成败的命令退出码；无单条命令语义时为 `None`。
     pub exit_code: Option<i64>,
+    /// 分步进度快照（无分步模型时为 `[]`）。
+    pub steps: Value,
 }
 
 impl Job {
@@ -193,6 +200,7 @@ impl Job {
             log_seq: r.log_seq,
             retry_of: r.retry_of,
             exit_code: r.exit_code,
+            steps: serde_json::from_str(&r.steps_json).unwrap_or_else(|_| json!([])),
         }
     }
 }
@@ -224,18 +232,52 @@ pub enum CancelOutcome {
 
 /// 作业服务句柄（`AppState` 持有）。内部只缓存「目标 → 活跃作业 id」的路由，
 /// 事实源始终是数据库；重启后缓存为空会自动回落查询。
+///
+/// 构造时做一次中断收尾：进程重启后不可能还有作业在执行，遗留的
+/// `queued/running` 行必须结算为失败，避免页面永久显示「进行中」。
 pub struct JobService {
     db: Arc<Db>,
     route: Mutex<HashMap<(String, String), String>>,
     seq: AtomicU64,
 }
 
+/// 重启中断的统一失败原因（作业详情与安装进度共用）。
+pub const INTERRUPTED_DETAIL: &str = "服务重启，任务中断；请检查实际状态后重新执行";
+
 impl JobService {
     pub fn new(db: Arc<Db>) -> Self {
-        Self {
+        let svc = Self {
             db,
             route: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(0),
+        };
+        svc.recover_interrupted();
+        svc
+    }
+
+    /// 启动收尾：把遗留活跃作业与其中 `running` 的步骤标记为中断失败。
+    fn recover_interrupted(&self) {
+        let rows = match self.db.interrupted_jobs() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, "读取遗留活跃作业失败，跳过中断收尾");
+                return;
+            }
+        };
+        let now = Self::now();
+        for row in rows {
+            let steps = mark_steps_interrupted(&row.steps_json, now);
+            let started = row.started_at.unwrap_or(row.created_at);
+            let duration = (now - started).max(0) * 1000;
+            if let Err(e) = self.db.fail_job_interrupted(
+                &row.id,
+                &steps.to_string(),
+                INTERRUPTED_DETAIL,
+                now,
+                duration,
+            ) {
+                tracing::warn!(job = %row.id, error = %e, "中断作业结算失败");
+            }
         }
     }
 
@@ -290,6 +332,7 @@ impl JobService {
             log_seq: 0,
             retry_of: None,
             exit_code: None,
+            steps_json: "[]".into(),
         };
         self.db.insert_job(&row)?;
         self.cache_route(&s.target_type, &s.target_id, &id);
@@ -351,6 +394,7 @@ impl JobService {
             log_seq: 0,
             retry_of: Some(old.id.clone()),
             exit_code: None,
+            steps_json: "[]".into(),
         };
         self.db.insert_job(&row)?;
         self.cache_route(&old.target_type, &old.target_id, &new_id);
@@ -590,6 +634,13 @@ impl JobService {
         }
     }
 
+    /// 更新分步进度快照（安装类作业在每次步骤推进时调用）。
+    pub fn set_steps(&self, id: &str, steps: &Value) {
+        if let Err(e) = self.db.set_job_steps(id, &steps.to_string()) {
+            tracing::warn!(job = id, error = %e, "作业步骤快照写入失败");
+        }
+    }
+
     fn duration_ms(&self, id: &str, now: i64) -> i64 {
         let started = self
             .db
@@ -619,6 +670,34 @@ impl JobService {
         let mut route = self.route.lock().unwrap_or_else(|e| e.into_inner());
         route.retain(|_, v| v != job_id);
     }
+}
+
+/// 重启收尾：把步骤数组里仍为 `running` 的步骤改成 `failed`，并补结束时间。
+///
+/// `pending` 保持原样（从未开始），`ok` 不动；坏 JSON 按空数组处理，
+/// 保证收尾本身不会因为一条脏数据而失败。
+fn mark_steps_interrupted(raw: &str, now: i64) -> Value {
+    let mut steps: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!([]));
+    if let Some(arr) = steps.as_array_mut() {
+        for step in arr {
+            if step.get("state").and_then(Value::as_str) != Some("running") {
+                continue;
+            }
+            step["state"] = json!("failed");
+            let detail = step
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            step["detail"] = json!(if detail.is_empty() {
+                "服务重启中断".to_string()
+            } else {
+                format!("{detail}（服务重启中断）")
+            });
+            step["finished_at"] = json!(now);
+        }
+    }
+    steps
 }
 
 #[cfg(test)]
@@ -744,5 +823,44 @@ mod tests {
         assert_eq!(one.entries.len(), 1);
         assert_eq!(one.entries[0].seq, last);
         assert!(s.logs_since(&job.id, last, 100).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn restart_marks_active_jobs_and_running_steps_interrupted() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let s = JobService::new(db.clone());
+        let job = submit(&s, "rt-1");
+        s.set_phase(&job.id, "pull", "拉取镜像", 30, false);
+        s.set_steps(
+            &job.id,
+            &json!([
+                { "key": "check", "state": "ok", "detail": "ok", "started_at": 1, "finished_at": 2 },
+                { "key": "pull", "state": "running", "detail": "30%", "started_at": 3, "finished_at": null },
+                { "key": "start", "state": "pending", "detail": "", "started_at": null, "finished_at": null }
+            ]),
+        );
+        drop(s);
+
+        // 新进程构造 JobService 时执行中断收尾。
+        let s2 = JobService::new(db);
+        let recovered = s2.get(&job.id).unwrap();
+        assert_eq!(recovered.status, JobStatus::Failed);
+        assert_eq!(recovered.error_class.as_deref(), Some("interrupted"));
+        assert_eq!(recovered.error_detail.as_deref(), Some(INTERRUPTED_DETAIL));
+        assert_eq!(recovered.phase, "interrupted");
+        assert_eq!(recovered.steps[0]["state"], "ok");
+        assert_eq!(recovered.steps[1]["state"], "failed");
+        assert!(recovered.steps[1]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("服务重启中断"));
+        assert!(recovered.steps[1]["finished_at"].as_i64().is_some());
+        // 未开始的步骤保持 pending，不伪造结果。
+        assert_eq!(recovered.steps[2]["state"], "pending");
+        // 已结算作业不会被再次改写。
+        assert!(!s2
+            .latest_for_target(TARGET_RUNTIME, "rt-1")
+            .unwrap()
+            .active());
     }
 }

@@ -1064,7 +1064,7 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .step .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); flex: none; }
 .step.running .dot { background: var(--warn); }
 .step.ok .dot { background: var(--accent); }
-.step.fail .dot { background: var(--danger); }
+.step.failed .dot { background: var(--danger); }
 .step .detail { font-size: var(--fs-xs); overflow-wrap: anywhere; }
 
 pre.log, pre.logs {

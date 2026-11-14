@@ -194,10 +194,16 @@ impl AppState {
 
     /// 独立 Web 服务（OpenResty）操作。与任何 PHP/Node/Go/Rust 行完全解耦：
     /// 安装只拉 nginx 镜像、只建 nginx 容器，不触碰语言运行环境。
-    pub async fn web_env_action(self: &Arc<Self>, action: &str) -> Result<(), SiteError> {
+    pub async fn web_env_action(
+        self: &Arc<Self>,
+        action: &str,
+        actor: &str,
+        role: &str,
+        ip: &str,
+    ) -> Result<(), SiteError> {
         match action {
             "install" | "rebuild" => {
-                self.start_web_env_install();
+                self.start_web_env_install(actor, role, ip, action)?;
                 Ok(())
             }
             "start" | "stop" | "restart" => {
@@ -404,7 +410,7 @@ impl AppState {
     /// 与 `delete_site_runtime` 同一口径：运行环境有安装/扩展任务、Web 服务
     /// 正在安装或重建时，都不允许从 Docker 页直接删除对应容器。
     pub async fn container_busy_reason(&self, container: &str) -> Option<String> {
-        if container == NGINX_CONTAINER && self.site_install_progress().await.running {
+        if container == NGINX_CONTAINER && self.web_install_progress().running {
             return Some("Web 服务正在安装或重建中，暂不能删除容器".into());
         }
         let runtimes = self.db().list_runtimes().unwrap_or_default();
@@ -1691,6 +1697,7 @@ impl AppState {
         // 先算好执行计划：未知类型或运行环境已不存在时不插入重试行。
         let plan = match old.kind.as_str() {
             "runtime.install" => RetryPlan::Install,
+            "web.install" => RetryPlan::WebInstall,
             "runtime.ext.apply" => RetryPlan::Apply(ext_keys),
             "runtime.ext.install" | "runtime.ext.uninstall" => {
                 if self
@@ -1769,6 +1776,11 @@ impl AppState {
                 }
                 tokio::spawn(async move {
                     state.run_runtime_install_job(&runtime_id, &job_id).await;
+                });
+            }
+            RetryPlan::WebInstall => {
+                tokio::spawn(async move {
+                    state.run_web_env_install_job(&job_id).await;
                 });
             }
             RetryPlan::Single { token, add } => {

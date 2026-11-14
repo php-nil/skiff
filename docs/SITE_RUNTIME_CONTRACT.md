@@ -3,7 +3,7 @@
 > 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）；Node.js 接入见 §4.3（2026-11-09）**。
 > 2026-11-09：Node.js 已在内核接入（运行环境目录、安装/启停/重建、站点绑定与反代）；
 > Go 仍未实现，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除，不再提供登记入口。
-> 基线：`crates/store/src/db.rs`（schema v19）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
+> 基线：`crates/store/src/db.rs`（schema v20）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
 > 与 Node.js / Rust 进程运行环境）、`crates/app/src/runtime_catalog.rs`、
 > `crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
@@ -785,6 +785,13 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 - **Web 服务页**：容器名 `skiff-web-nginx`，状态与运维入口（安装/启停/重启/重建/删除）在
   `/$P/sites/web?tab=status`；`install`/`rebuild` 只拉取 OpenResty、重建 vhost、启动 nginx，
   不触碰任何 PHP/Node.js/Rust 容器。运行环境页不再有合成 `web` 行与行内 Web 动作。
+- **安装进度（2026-11-14）**：`install`/`rebuild` 提交任务中心 `web.install` 作业（目标
+  `web_env/web`，`cancellable=false`），步骤固定为检查环境 → 准备目录/主配置 → 拉镜像 →
+  重建 vhost → 创建并启动容器 → 写默认站点；每一步同步写 `jobs.steps_json`（`pending/running/ok/failed`
+  + 时间戳 + 错误摘要）。没有历史时进度为 `idle`；失败/中断记录保留到任务中心清理窗口。
+  进程重启时 `JobService::new` 把所有遗留 `queued/running` 作业结算为 `failed/interrupted`，
+  其中 `running` 步骤改 `failed`，页面不会再永久显示「安装中」。重试通过任务详情或
+  「重新安装」创建新作业，不在原作业上续跑。
 - **删除的耦合**：`add_runtime` 弹窗内的「安装基础环境（OpenResty + 默认 PHP 8.5）」次要表单、
   `/sites/env/install` 路由、`base_install_href` 上下文、`run_site_env_install` 里的 PHP 池配置 /
   PHP 镜像拉取 / PHP 容器创建与 socket 收紧，全部移除。
