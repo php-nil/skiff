@@ -449,6 +449,16 @@
     });
   }
 
+  /// 列表行内启停：状态来自当前行，停止/启动共用同一容器动作通道。
+  function containerToggle(args) {
+    var running = String(args.status || '') === 'running';
+    return containerAction({
+      id: args.id,
+      name: args.name,
+      action: running ? 'stop' : 'start'
+    });
+  }
+
   /// 任务行内按钮（rowActions 元素是完整节点，不是描述对象）。
   function taskRowButton(text, props, color) {
     return {
@@ -888,6 +898,16 @@
     return guard.then(function (ok) {
       if (!ok) return;
       return run();
+    });
+  }
+
+  /// 列表行内启停：状态来自当前行，停止仍走 `siteWrite` 的危险确认。
+  function siteToggle(args) {
+    var running = String(args.status || '') === 'running';
+    return siteWrite({
+      op: 'power',
+      action: running ? 'stop' : 'start',
+      domain: args.domain
     });
   }
 
@@ -1334,9 +1354,11 @@
       actions: {
         skiffConfirmAnswer: skiffConfirmAnswer,
         skiffContainerAction: containerAction,
+        skiffContainerToggle: containerToggle,
         skiffDockerWrite: dockerWrite,
         skiffQueryNav: queryNav,
         skiffSiteWrite: siteWrite,
+        skiffSiteToggle: siteToggle,
         skiffSiteDelete: siteDelete,
         skiffTaskWrite: taskWrite,
         skiffJobWrite: jobWrite,
@@ -1541,6 +1563,45 @@
         ]
       }
     };
+    if (data.can_admin) {
+      table.props.actionsLabel = '操作';
+      table.props.rowActions = [
+        {
+          type: 'button',
+          props: { text: '详情', variant: 'text', color: 'primary', size: 'small' },
+          onEvent: {
+            click: {
+              actions: [{ type: 'navigate', props: { url: prefix + '/sites/${domain}' } }]
+            }
+          }
+        },
+        {
+          type: 'button',
+          props: { text: '日志', variant: 'text', size: 'small' },
+          onEvent: {
+            click: {
+              actions: [
+                { type: 'navigate', props: { url: prefix + '/sites/${domain}/logs' } }
+              ]
+            }
+          }
+        },
+        {
+          type: 'button',
+          props: { text: '启动/停止', variant: 'text', size: 'small' },
+          onEvent: {
+            click: {
+              actions: [
+                {
+                  type: 'skiffSiteToggle',
+                  props: { domain: '${domain}', status: '${status.code}' }
+                }
+              ]
+            }
+          }
+        }
+      ];
+    }
     body.push(table);
     if (data.can_admin) {
       body.push({
@@ -2573,6 +2634,48 @@
               {
                 type: 'navigate',
                 props: { url: prefix + '/containers/${id}' }
+              }
+            ]
+          }
+        }
+      },
+      {
+        type: 'button',
+        props: { text: '启停', variant: 'text', size: 'small' },
+        onEvent: {
+          click: {
+            actions: [
+              {
+                type: 'skiffContainerToggle',
+                props: { id: '${id}', name: '${name}', status: '${state.code}' }
+              }
+            ]
+          }
+        }
+      },
+      {
+        type: 'button',
+        props: { text: '重启', variant: 'text', size: 'small' },
+        onEvent: {
+          click: {
+            actions: [
+              {
+                type: 'skiffContainerAction',
+                props: { id: '${id}', name: '${name}', action: 'restart' }
+              }
+            ]
+          }
+        }
+      },
+      {
+        type: 'button',
+        props: { text: '删除', variant: 'text', color: 'danger', size: 'small' },
+        onEvent: {
+          click: {
+            actions: [
+              {
+                type: 'skiffContainerAction',
+                props: { id: '${id}', name: '${name}', action: 'delete' }
               }
             ]
           }

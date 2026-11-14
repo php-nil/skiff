@@ -10213,6 +10213,22 @@ fn budding_boot_p1_confirms_and_kill_entry_present() {
     }
 }
 
+/// P2 列表行内入口：站点列表不再只有详情入口，容器列表补齐启停/重启/删除。
+#[test]
+fn budding_boot_p2_row_actions_present() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        "skiffSiteToggle: siteToggle",
+        "skiffContainerToggle: containerToggle",
+        "text: '启动/停止'",
+        "text: '启停'",
+        "props: { domain: '${domain}', status: '${status.code}' }",
+        "props: { id: '${id}', name: '${name}', status: '${state.code}' }",
+    ] {
+        assert!(js.contains(needle), "P2 行内入口缺失：{needle}");
+    }
+}
+
 /// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
 /// 不得再退回旧 SSR（旧路由与模板按约定保留，只是产品前端不再链接）。
 #[test]
@@ -10351,7 +10367,8 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         .expect("webEnvAction 必须存在");
     let compact = action.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        compact.contains("if (op === 'install' || op === 'rebuild') { location.reload(); return; }"),
+        compact
+            .contains("if (op === 'install' || op === 'rebuild') { location.reload(); return; }"),
         "安装/重建提交后应立即进入当前作业视图"
     );
 }
