@@ -348,6 +348,14 @@ pub async fn menu_shell(
     Ok(crate::handlers::spa::shell_page(&state))
 }
 
+/// `GET /{p}/settings/ui` 规范入口：交付 budding 壳页（界面/主题设置）。
+pub async fn ui_theme_shell(
+    State(state): State<Arc<AppState>>,
+    AuthUser(_user): AuthUser,
+) -> Result<Response, AppError> {
+    Ok(crate::handlers::spa::shell_page(&state))
+}
+
 pub async fn menu_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -355,9 +363,6 @@ pub async fn menu_page(
     handlers::render(MenuSettingsPage {
         ctx: handlers::page_ctx(&state, &user, "menu-settings"),
         groups: menu::settings_view(&state, &user),
-        layout: menu::current_layout(&state, &user),
-        width: menu::current_width(&state, &user),
-        max_width: menu::current_max_width(&state, &user),
         notice: String::new(),
     })
 }
@@ -370,11 +375,8 @@ pub(crate) fn apply_menu_update(
     user: &CurrentUser,
     action: &str,
     key: &str,
-    layout: Option<&str>,
-    width: Option<&str>,
-    max: Option<&str>,
 ) -> Result<(), AppError> {
-    menu::apply_action(state, user, action, key, layout, width, max)?;
+    menu::apply_action(state, user, action, key)?;
     state.audit_or_log(
         &user.user.username,
         "local",
@@ -395,18 +397,7 @@ pub async fn menu_update(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let action = form_first(&form, "action");
     let key = form_first(&form, "key");
-    let layout = form_first(&form, "layout");
-    let width = form_first(&form, "width");
-    let max = form_first(&form, "max");
-    apply_menu_update(
-        &state,
-        &user,
-        &action,
-        &key,
-        (!layout.is_empty()).then_some(layout.as_str()),
-        (!width.is_empty()).then_some(width.as_str()),
-        (!max.is_empty()).then_some(max.as_str()),
-    )?;
+    apply_menu_update(&state, &user, &action, &key)?;
     Ok(handlers::flash_redirect(
         &state,
         &user,

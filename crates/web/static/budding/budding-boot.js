@@ -681,6 +681,7 @@
     'core/files': { path: '/files', schema: 'skiff:files' },
     'core/settings/security': { path: '/settings', schema: 'skiff:settings' },
     'core/settings/menu': { path: '/settings/menu', schema: 'skiff:menu-settings' },
+    'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' },
     'core/docker/settings': { path: '/settings/docker', schema: 'skiff:docker-settings' },
     'core/settings/audit': { path: '/audit', schema: 'skiff:audit' }
   };
@@ -893,6 +894,13 @@
       meta: { activeMenu: prefix + '/settings' }
     });
     routes.push({
+      path: prefix + '/settings/ui',
+      title: '界面设置',
+      hidden: true,
+      schema: 'skiff:ui-settings',
+      meta: { activeMenu: prefix + '/settings' }
+    });
+    routes.push({
       path: prefix + '/sites/:domain/logs',
       title: '站点日志',
       hidden: true,
@@ -938,7 +946,7 @@
 
   /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
   function shellSchema(session) {
-    return {
+    var schema = {
       type: 'admin',
       props: { title: 'Skiff', brandTitle: 'Skiff' },
       content: {
@@ -956,6 +964,12 @@
         body: [{ type: 'outlet' }]
       }
     };
+    // 壳主题由 `/ui/v1/session` 一并下发：`admin` 外壳读取 schema.theme，
+    // 把主色写到 `--v-theme-primary` / `--bud-admin-primary`，全站页面共用。
+    if (session.theme && session.theme.primary) {
+      schema.theme = { primary: session.theme.primary };
+    }
+    return schema;
   }
 
   /// 登出：复用 `/ui/v1/session/logout` 与页面写操作同一个 CSRF 头。
@@ -992,6 +1006,7 @@
         skiffComposeEdit: composeEdit,
         skiffSettingsSave: settingsSave,
         skiffMenuWrite: menuWrite,
+        skiffUiThemeWrite: uiThemeWrite,
         skiffDockerWrite: dockerSettingsWrite,
         skiffRuntimeCreate: runtimeCreate,
         skiffRuntimeImages: runtimeImagesWrite,
@@ -1006,6 +1021,7 @@
         skiffRuntimeClone: runtimeClone,
         skiffRuntimeUnbind: runtimeUnbind,
         skiffWebConfig: webConfigWrite,
+        skiffWebEnv: webEnvAction,
         skiffWebParams: webParamsWrite,
         skiffWebLogs: webLogsLoad,
         skiffPasswordChange: passwordChange,
@@ -3447,7 +3463,7 @@
     };
   }
 
-  /// 菜单设置：布局/内容宽度 + 每个菜单项的上移下移、显隐与固定。
+  /// 菜单设置：每个菜单项的上移下移、显隐与固定。
   function menuSettingsSchema(data) {
     var body = [
       {
@@ -3456,55 +3472,8 @@
           type: 'info',
           text: '顺序、隐藏与固定只影响当前账号；换账号或换设备不共享。插件升级新增的菜单会自动插到相邻位置。'
         }
-      },
-      writeCard(
-        '布局',
-        '默认「左右（侧栏）」；只改变呈现方式，菜单结构与顺序不变。',
-        {
-          type: 'flex',
-          props: { gap: 8, wrap: true },
-          content: {
-            body: [
-              menuBtn('上下（顶栏）', { action: 'layout', layout: 'top' }, data.layout === 'top'),
-              menuBtn('左右（侧栏）', { action: 'layout', layout: 'left' }, data.layout === 'left')
-            ]
-          }
-        }
-      )
+      }
     ];
-    var widthForm = writeForm(
-      apiBase + '/settings/menu',
-      { type: 'skiffMenuWrite', props: { action: 'width' } },
-      [
-        {
-          type: 'select',
-          props: {
-            name: 'width',
-            label: '内容宽度',
-            items: [
-              { title: '自适应（铺满）', value: 'auto' },
-              { title: '固定', value: 'fixed' }
-            ]
-          }
-        },
-        {
-          type: 'input-text',
-          props: { name: 'max', label: '固定时最大宽度（px，960–4096）' }
-        }
-      ],
-      '保存内容宽度'
-    );
-    widthForm.props.initialValues = {
-      width: data.width,
-      max: String(data.max_width)
-    };
-    body.push(
-      writeCard(
-        '内容宽度',
-        '默认「自适应」：侧栏之外的可用宽度全部给内容；固定时正文最多展开到设定上限（默认 1440px）。',
-        widthForm
-      )
-    );
 
     (data.groups || []).forEach(function (group) {
       var rows = (group.items || []).map(function (item) {
@@ -3552,7 +3521,7 @@
       }
     });
     body.push(
-      noticeCard('恢复默认会清除本账号的顺序、隐藏与固定偏好；布局回到管理员默认值。')
+      noticeCard('恢复默认会清除本账号的顺序、隐藏与固定偏好。')
     );
     return {
       type: 'page',
@@ -3622,24 +3591,70 @@
     };
   }
 
+  /// 界面设置（壳主题）：当前最小集合只有主色，按全站生效。
+  function uiSettingsSchema(data) {
+    var body = [
+      {
+        type: 'alert',
+        props: {
+          type: 'info',
+          text: '主色作用于整个管理外壳（导航、按钮、选中态），按全站生效；保存后当前页自动刷新，其他已登录会话在下次加载页面时使用新主色。'
+        }
+      }
+    ];
+    if (!data.can_admin) {
+      body.push(
+        detailLines('当前主题', [
+          '主色：' + (data.primary || '未设置'),
+          '只有管理员可以修改主题。'
+        ])
+      );
+      return {
+        type: 'page',
+        props: { title: '界面设置 · Skiff', subtitle: '只读；写操作需要管理员权限' },
+        body: body
+      };
+    }
+    var form = writeForm(
+      apiBase + '/settings/ui',
+      { type: 'skiffUiThemeWrite' },
+      [
+        {
+          type: 'input-text',
+          props: {
+            name: 'primary',
+            label: '主色',
+            hint: '#RRGGBB，例如 #2f6feb；留空恢复缺省主色 #1867c0'
+          }
+        }
+      ],
+      '保存主题'
+    );
+    form.props.initialValues = { primary: data.primary };
+    body.push(
+      writeCard(
+        '壳主题',
+        '当前主色 ' + data.primary + '；保存后刷新页面即可看到新配色。',
+        form
+      )
+    );
+    return {
+      type: 'page',
+      props: { title: '界面设置 · Skiff', subtitle: '壳主题主色（全局生效）' },
+      body: body
+    };
+  }
+
   /// 菜单偏好写操作：复用 `/ui/v1/settings/menu`（同一校验与审计）。
-  function menuWrite(args, ctx) {
+  function menuWrite(args) {
     var action = args.action || '';
     if (action === 'reset' && !window.confirm('确认恢复默认菜单偏好？本账号的顺序、隐藏与固定将被清除。')) {
       return Promise.resolve();
     }
     var payload = {
       action: action,
-      key: args.key || '',
-      layout: args.layout || '',
-      width: args.width || '',
-      max: args.max || ''
+      key: args.key || ''
     };
-    if (action === 'width') {
-      var values = formValues(ctx);
-      payload.width = formText(values.width).trim();
-      payload.max = formText(values.max).trim();
-    }
     return submitJson('/settings/menu', payload)
       .then(function (data) {
         window.alert((data && data.message) || '已保存菜单偏好');
@@ -3659,6 +3674,21 @@
     })
       .then(function (data) {
         window.alert((data && data.message) || '已保存');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('保存失败：' + (error && error.message ? error.message : String(error)));
+      });
+  }
+
+  /// 界面设置写操作：复用 `/ui/v1/settings/ui`（同一校验与审计）。
+  function uiThemeWrite(args, ctx) {
+    var values = formValues(ctx);
+    return submitJson('/settings/ui', {
+      primary: formText(values.primary).trim()
+    })
+      .then(function (data) {
+        window.alert((data && data.message) || '已保存主题');
         location.reload();
       })
       .catch(function (error) {
@@ -3918,6 +3948,61 @@
       });
     }
 
+    // 容器运维：动作沿用 `POST /ui/v1/runtimes/web/action/{op}`（与旧页同一命令层
+    // 与审计）。未安装只给「安装」；已安装（running / exited 等）给启停、重启、
+    // 重新安装与删除，危险操作先确认。
+    if (data.can_admin) {
+      var state = status.container_state || '';
+      var installed = state !== '' && state !== 'missing';
+      var ops = [];
+      if (!installed) {
+        if (!install.running) {
+          ops.push(webEnvButton('安装 Web 服务', 'install', 'primary'));
+        }
+      } else {
+        ops.push(
+          webEnvButton(state === 'running' ? '停止' : '启动', state === 'running' ? 'stop' : 'start')
+        );
+        ops.push(webEnvButton('重启', 'restart'));
+        ops.push(webEnvButton('重新安装', 'rebuild'));
+        ops.push(webEnvButton('删除容器', 'delete', 'danger'));
+      }
+      if (install.running) {
+        ops.push({
+          type: 'button',
+          props: { text: '刷新安装进度', variant: 'tonal' },
+          onEvent: {
+            click: {
+              actions: [
+                { type: 'skiffQueryNav', props: { path: prefix + '/sites/web', query: {} } }
+              ]
+            }
+          }
+        });
+      }
+      body.push({
+        type: 'card',
+        props: { title: '容器运维' },
+        content: {
+          body: [
+            {
+              type: 'text',
+              props: {
+                text:
+                  'Web 服务（OpenResty）是站点依赖的基础容器；停止或删除会立即影响所有站点。' +
+                  '语言运行环境在「运行环境」页单独管理。'
+              }
+            },
+            {
+              type: 'flex',
+              props: { gap: 8, wrap: true },
+              content: { body: ops }
+            }
+          ]
+        }
+      });
+    }
+
     var config = data.config || {};
     var params = config.params || {};
     var mainForm = writeForm(
@@ -4083,6 +4168,42 @@
       props: { title: 'Web 服务 · Skiff', subtitle: 'OpenResty 状态、配置、日志与模块' },
       body: body
     };
+  }
+
+  /// Web 服务容器运维按钮：`color` 只用于危险/主操作强调。
+  function webEnvButton(text, op, color) {
+    var props = { text: text, variant: op === 'install' ? 'flat' : 'tonal' };
+    if (color) props.color = color;
+    return {
+      type: 'button',
+      props: props,
+      onEvent: { click: { actions: [{ type: 'skiffWebEnv', props: { op: op } }] } }
+    };
+  }
+
+  /// Web 服务容器动作：复用 `POST /ui/v1/runtimes/web/action/{op}`（同一命令层与审计）。
+  function webEnvAction(args) {
+    var op = args.op;
+    if (
+      op === 'rebuild' &&
+      !window.confirm('确认重新安装 Web 服务？将重建 OpenResty 容器，期间所有站点不可访问。')
+    ) {
+      return Promise.resolve();
+    }
+    if (
+      op === 'delete' &&
+      !window.confirm('确认删除 Web 服务容器？删除后所有站点立即不可访问，配置与站点目录保留。')
+    ) {
+      return Promise.resolve();
+    }
+    return submitJson('/runtimes/web/action/' + encodeURIComponent(op), { confirm: true })
+      .then(function (data) {
+        window.alert((data && data.message) || '操作已完成');
+        location.reload();
+      })
+      .catch(function (error) {
+        window.alert('操作失败：' + (error && error.message ? error.message : String(error)));
+      });
   }
 
   /// 主配置保存：复用 `/ui/v1/web/config`（nginx -t + reload + 审计）。
@@ -6813,6 +6934,9 @@
     }
     if (kind === 'docker-settings') {
       return fetchData('/settings/docker').then(dockerSettingsSchema);
+    }
+    if (kind === 'ui-settings') {
+      return fetchData('/settings/ui').then(uiSettingsSchema);
     }
     if (kind === 'audit') {
       var auditParams = new URLSearchParams(location.search);

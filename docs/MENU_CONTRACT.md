@@ -16,7 +16,7 @@
 1. **三级归属**：一级 6 项由内核封闭固定（概览 / 网站 / Docker / 插件 / 工具 / 设置），插件不能新增或改名一级；插件只能在固定一级下声明二级，并只为自己的二级声明三级。
 2. **L3 渲染方式**：三级由**内核渲染成工作台内的标签栏**，插件只提供被选中的内容页（iframe），不自行绘制导航 chrome。这样标签样式、当前态、权限、深链和窄屏行为都由内核统一控制。
 3. **声明入口**：插件在 `manifest.toml` 用 `[[menu]]` + `[[menu.items]]` 声明 L2/L3，用 `[[mount]]` 声明固定页槽位；仅 `[[ui]]` 的老包走明确的降级映射，不要求重打包。
-4. **设置作用域**：顺序、隐藏/显示、固定（pin）与上下/左右布局按**用户**保存；实例默认布局存全局设置；插件只能改声明默认值，不能读写任何用户偏好，也不能改布局实现。
+4. **设置作用域**：顺序、隐藏/显示、固定（pin）按**用户**保存；壳布局固定为侧栏（左右），不再作为可配置项；插件只能改声明默认值，不能读写任何用户偏好，也不能改布局实现。
 
 ---
 
@@ -383,13 +383,10 @@ L3 标签栏（在工作台页面内，不在 iframe 内）：
 | L1/L2/L3 顺序 | 按用户 | 内置注册表 + manifest `order` | 用户自己；插件只能改声明默认值 |
 | 显示/隐藏 | 按用户 | `default_visible` + gates + roles | 用户自己 |
 | 固定（pin） | 按用户 | `pinnable` | 用户自己；插件不能强制 |
-| 上下/左右布局 | 按用户 | 全局 `menu.layout.default`，缺省 `left` | 用户自己；插件不能改 |
-| 内容宽度（自适应/固定） | 按用户 | 缺省 `auto`（铺满）；固定上限缺省 1440px | 用户自己；插件不能改 |
-| 实例默认布局 | 全局 | `settings.menu.layout.default` | 管理员 |
 | 菜单集合、内置 L1/L2、URL 规则 | 内核 | 代码 | 任何人都不能由插件改 |
 
-- 「全局 vs 按用户」结论：**顺序/隐藏/pin/布局/内容宽度一律按用户**；全局只保留实例默认布局。
-- 管理员不能看到其他用户的私有排序；P1 不做“强制模板/锁定布局”。若以后需要，再加全局策略层。
+- 「全局 vs 按用户」结论：**顺序/隐藏/pin 一律按用户**；布局固定为侧栏，内容宽度固定铺满，均不再持久化。
+- 管理员不能看到其他用户的私有排序；不做“强制模板/锁定布局”。若以后需要，再加全局策略层。
 
 ### 4.2 存放位置
 
@@ -410,9 +407,6 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   ```json
   {
     "v": 1,
-    "layout": "left",
-    "content_width": "auto",
-    "content_max": 1440,
     "order": {
       "sites": ["core/sites/list", "core/sites/env", "core/sites/web"],
       "docker": ["core/docker/overview", "core/docker/containers"]
@@ -421,7 +415,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     "pinned": ["core/docker/containers"]
   }
   ```
-- 全局实例默认布局存现有 `settings` 表：`settings.menu.layout.default = "top" | "left"`，未设置时按 `left`。
+- 全局实例默认布局与内容宽度字段已删除，不再读取 `settings.menu.layout.default`。
 - 为什么不用 config：需要按用户、事务写入、立即生效、随用户删除级联；config 是启动期文件，不适合高频个人偏好。
 - 菜单设置页只写当前用户 `user_prefs`；插件无法通过 manifest/API 写这些键。
 - 每次保存写审计 `menu.prefs.update`（不记录完整 JSON，只记录变更键数）。
@@ -454,27 +448,32 @@ overview(0) → sites(100) → docker(200) → plugins(300) → tools(400) → s
 - 插件删除条目：用户偏好里的该键移除；不影响其他项。
 - 隐藏项被插件升级删除后，偏好自动清理，不保留“隐藏一个不存在项”。
 
-### 4.5 布局切换
+### 4.5 布局（固定）
 
-- 值：`top`（上下） / `left`（左右）；缺省读全局默认，最后兜底 `left`。
-- 存 `user_prefs.menu.prefs.layout`；切换即时生效。
-- 结构不变保证：菜单注册表、菜单键、URL、L2/L3 顺序完全一致，只改根节点 `data-layout` 与 CSS；禁止为 left 另生成一份导航数据。
+- 壳固定使用侧栏（左右）布局：`body[data-layout="left"]`，不再保存布局偏好。
+- 结构不变保证：菜单注册表、菜单键、URL、L2/L3 顺序完全一致；禁止为其它布局另生成一份导航数据。
 - 布局是内核功能：插件 manifest 没有 layout 字段，插件也不能通过 CSS 影响宿主布局。
-- 内容宽度与布局独立：`body[data-content-width="auto"]` 铺满可用宽度；`"fixed"` 时用 `--content-max`（默认 1440px）约束 `main` / `.foot`。左右布局的固定宽度在侧栏之外的剩余空间居中。
-- 窄屏 ≤860px 时两种布局都走 §3.6 折叠规则，`data-layout` 仍保留但视觉统一，内容区取消侧栏留白。
+- 内容区固定铺满侧栏之外的可用宽度，不提供「自适应 / 固定」切换。
+- 窄屏 ≤860px 时仍走 §3.6 折叠规则，`data-layout` 仍保留但视觉统一，内容区取消侧栏留白。
 
 ### 4.6 菜单设置页
 
 - 入口：`设置 → 菜单设置`，稳定键 `core/settings/menu`，URL `/{p}/settings/menu`。
 - 内容：
-  - 布局：上下 / 左右（单选，缺省左右）。
-  - 内容宽度：自适应（铺满）/ 固定（可填 960–4096px 的最大宽度，缺省 1440px）。
   - L1 列表：显示/隐藏、上移/下移、恢复默认。
   - 每个 L1 展开后的 L2/L3：显示/隐藏、上移/下移、固定/取消固定。
   - 锁定项：`概览`、`设置`、`菜单设置`自身不可隐藏（防止把自己锁在门外）；其余可隐藏。
   - 「恢复默认」只清当前用户的 `menu.prefs`，不触碰插件声明。
 - 保存：POST + CSRF；失败保持原值并显示原因；成功审计。
 - 预览：设置页提供同结构的静态预览，不改变真实导航直到保存。
+
+### 4.7 界面设置页
+
+- 入口：`设置 → 界面`，稳定键 `core/settings/ui`，URL `/{p}/settings/ui`。
+- 最小集合只有「主色」一项，按**全站**生效（全局设置，非按用户）：写入仅管理员，读取对所有登录用户开放。
+- 主色存 `settings` 表 `ui.theme.primary`，`#rrggbb` 小写；空值恢复缺省 `#1867c0`。
+- 下发路径：`GET /ui/v1/session → theme.primary`，壳页启动时写入 `admin.theme`（`--v-theme-primary` / `--bud-admin-primary`）；保存后当前页刷新，其他会话下次加载页面生效。
+- 校验失败 400 且不落库；成功审计 `settings.ui.update`。
 
 ---
 
@@ -617,6 +616,7 @@ roles = ["admin", "operator", "viewer"]
 | `/{p}/plugins/{id}` / `plugin:<id>` | `plugin/<id>/<declared-l2>`；旧包 `plugin/<id>/legacy` | 由声明决定 | 不再有统一「应用」 |
 | `/{p}/settings` / `settings` | `core/settings/security` | `/{p}/m/core/settings/security` | |
 | `/{p}/settings/menu`（新增） | `core/settings/menu` | `/{p}/m/core/settings/menu` | 菜单设置 |
+| `/{p}/settings/ui`（新增） | `core/settings/ui` | `/{p}/settings/ui` | 界面设置（主题主色，无旧 SSR） |
 | `/{p}/audit` / `audit` | `core/settings/audit` | `/{p}/m/core/settings/audit` | |
 | 旧「应用」菜单 | 解散 | — | 网站已内核化；cron/monitor/guard → `工具`，files → `网站`（站点文件） |
 | `/{p}/compose`（规划） | `core/docker/compose` | `/{p}/m/core/docker/compose` | 无后端前 `route_available` 不渲染 |
@@ -858,7 +858,7 @@ roles = ["admin", "operator", "viewer"]
 | `docker` | Docker | 分组 | 概览 / 容器 / 镜像 / 网络 / 卷 / 编排 / 设置（概览、编排、设置 P3，`route_available=false` 前不渲染） |
 | `plugins` | 插件 | 分组 | 已安装 / 发现 / 可更新 |
 | `tools` | 工具 | 分组 | 插件声明；无提供者显示空态 |
-| `settings` | 设置 | 分组 | 安全设置 / 菜单设置 / 审计日志 |
+| `settings` | 设置 | 分组 | 安全设置 / 菜单设置 / 界面 / 审计日志 |
 
 内置图标集（v1）：`dot`、`overview`、`globe`、`docker`、`plug`、`tools`、`settings`、`file`、`clock`、`activity`、`shield`、`container`、`image`、`network`、`disk`、`archive`、`list`、`user`、`lock`。
 

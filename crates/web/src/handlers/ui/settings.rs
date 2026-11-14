@@ -148,12 +148,7 @@ pub async fn settings_menu(
                 .collect(),
         })
         .collect();
-    let data = MenuSettingsData {
-        layout: crate::menu::current_layout(&state, &user),
-        width: crate::menu::current_width(&state, &user),
-        max_width: crate::menu::current_max_width(&state, &user),
-        groups,
-    };
+    let data = MenuSettingsData { groups };
     let mut resp = Json(json!({ "data": data })).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -168,17 +163,55 @@ pub async fn settings_menu_update(
     Json(body): Json<MenuUpdateBody>,
 ) -> Result<Response, ApiError> {
     guard::csrf(&state, &user, &parts)?;
-    handlers::settings::apply_menu_update(
-        &state,
-        &user,
-        &body.action,
-        &body.key,
-        (!body.layout.is_empty()).then_some(body.layout.as_str()),
-        (!body.width.is_empty()).then_some(body.width.as_str()),
-        (!body.max.is_empty()).then_some(body.max.as_str()),
-    )
-    .map_err(ApiError)?;
+    handlers::settings::apply_menu_update(&state, &user, &body.action, &body.key)
+        .map_err(ApiError)?;
     let mut resp = Json(json!({ "data": { "message": "已保存菜单偏好" } })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `GET /ui/v1/settings/ui`：壳主题主色（全局生效，读对登录用户开放）。
+pub async fn settings_ui(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+) -> Result<Response, ApiError> {
+    let data = UiThemeData {
+        primary: skiff_app::theme::primary(&state),
+        can_admin: user.can(skiff_model::Permission::Admin),
+    };
+    let mut resp = Json(json!({ "data": data })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `POST /ui/v1/settings/ui`：保存壳主题主色。
+///
+/// 主题按全站生效，写操作仅管理员；CSRF 头与其它设置写入口同源。
+pub async fn settings_ui_update(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    parts: Parts,
+    Json(body): Json<UiThemeUpdateBody>,
+) -> Result<Response, ApiError> {
+    if !user.can(skiff_model::Permission::Admin) {
+        return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
+    }
+    guard::csrf(&state, &user, &parts)?;
+    let saved = skiff_app::theme::save_primary(&state, &body.primary)
+        .map_err(|m| ApiError(AppError::BadRequest(m)))?;
+    let ip = handlers::client_ip(&state, &parts);
+    state.audit_or_log(
+        &user.user.username,
+        &ip,
+        "settings.ui.update",
+        "primary",
+        "ok",
+        &saved,
+    );
+    let mut resp =
+        Json(json!({ "data": { "message": format!("已保存主题主色 {saved}") } })).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -438,6 +471,10 @@ pub(super) fn router() -> Router<Arc<AppState>> {
         .route(
             "/ui/v1/settings/docker",
             get(settings_docker).post(settings_docker_update),
+        )
+        .route(
+            "/ui/v1/settings/ui",
+            get(settings_ui).post(settings_ui_update),
         )
         .route("/ui/v1/settings/password", post(settings_password_update))
         .route("/ui/v1/settings/totp/setup", post(settings_totp_setup))

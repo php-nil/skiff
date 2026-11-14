@@ -325,6 +325,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/menu"),
             get(handlers::settings::menu_shell).post(handlers::settings::menu_update),
         )
+        .route(
+            &format!("/{p}/settings/ui"),
+            get(handlers::settings::ui_theme_shell),
+        )
         // 设置页已进入 budding 适配：规范页回落到壳页，旧 SSR（口令 / TOTP / 公钥 /
         // 完整面板表单）保留在 `/{p}/m/core/settings/security`；写操作仍走旧表单。
         // ---- 内核定时任务：viewer 只读，写操作 Admin + CSRF ----

@@ -12,8 +12,15 @@ pub struct SessionData {
     pub csrf_token: String,
     pub entry_prefix: String,
     pub api_version: &'static str,
+    /// 壳主题（全局）：壳页启动时直接落到 `admin.theme`，刷新后保持。
+    pub theme: SessionTheme,
     /// 壳页启动时需要知道的能力开关（字段只增不改）。
     pub features: SessionFeatures,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionTheme {
+    pub primary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -966,9 +973,6 @@ pub struct MenuSettingsGroup {
 
 #[derive(Debug, Serialize)]
 pub struct MenuSettingsData {
-    pub layout: String,
-    pub width: String,
-    pub max_width: u32,
     pub groups: Vec<MenuSettingsGroup>,
 }
 
@@ -978,12 +982,6 @@ pub struct MenuUpdateBody {
     pub action: String,
     #[serde(default)]
     pub key: String,
-    #[serde(default)]
-    pub layout: String,
-    #[serde(default)]
-    pub width: String,
-    #[serde(default)]
-    pub max: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -991,6 +989,20 @@ pub struct DockerSettingsData {
     pub registry_mirror: String,
     pub image_prefix: String,
     pub can_admin: bool,
+}
+
+/// `GET /ui/v1/settings/ui`：壳主题快照（全局生效）。
+#[derive(Debug, Serialize)]
+pub struct UiThemeData {
+    pub primary: String,
+    pub can_admin: bool,
+}
+
+/// `POST /ui/v1/settings/ui` 的请求体。
+#[derive(Debug, Deserialize)]
+pub struct UiThemeUpdateBody {
+    #[serde(default)]
+    pub primary: String,
 }
 
 #[derive(Debug, Deserialize)]

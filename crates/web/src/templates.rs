@@ -31,11 +31,6 @@ pub struct PageCtx {
 pub struct MenuSettingsPage {
     pub ctx: PageCtx,
     pub groups: Vec<crate::menu::SettingsGroup>,
-    pub layout: String,
-    /// 内容宽度：`auto` / `fixed`。
-    pub width: String,
-    /// 「固定」时的最大宽度（px）。
-    pub max_width: u32,
     pub notice: String,
 }
 

@@ -960,13 +960,14 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
             && html.contains(r#"href="/p/m/core/plugins/updates""#),
         "插件一级必须是已安装/发现/可更新: {html}"
     );
-    // 设置：安全设置 / 菜单设置 / 审计日志
+    // 设置：安全设置 / 菜单设置 / 界面 / 审计日志
     assert!(
         html.contains(r#"aria-controls="nav-menu-settings""#)
             && html.contains(r#"href="/p/m/core/settings/security""#)
             && html.contains(r#"href="/p/settings/menu""#)
+            && html.contains(r#"href="/p/settings/ui""#)
             && html.contains(r#"href="/p/m/core/settings/audit""#),
-        "设置二级必须是安全设置 / 菜单设置 / 审计日志: {html}"
+        "设置二级必须是安全设置 / 菜单设置 / 界面 / 审计日志: {html}"
     );
     assert!(
         !html.contains("官方源") && !html.contains("/p/compose"),
@@ -2805,7 +2806,7 @@ path = "index.html"
 }
 
 #[tokio::test]
-async fn menu_settings_hide_layout_order_reset_and_user_scope() {
+async fn menu_settings_hide_order_reset_and_user_scope() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
 
@@ -2828,16 +2829,14 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
         page_html.contains("data-menu-key") && page_html.contains("恢复默认"),
         "菜单设置页必须列出可操作项: {page_html}"
     );
+    // 布局与内容宽度已从设置区移除：页面不得再出现这两项。
     assert!(
-        page_html.contains("内容宽度")
-            && page_html.contains(r#"value="auto""#)
-            && page_html.contains(r#"name="max""#),
-        "菜单设置页必须提供内容宽度选项（自适应/固定 + 最大宽度）: {page_html}"
+        !page_html.contains("内容宽度") && !page_html.contains("name=\"layout\""),
+        "菜单设置页不得再提供布局 / 内容宽度: {page_html}"
     );
     assert!(
-        page_html.contains(r#"data-layout="left""#)
-            && page_html.contains(r#"data-content-width="auto""#),
-        "缺省布局应为左右、内容宽度应为自适应（铺满）: {page_html}"
+        page_html.contains(r#"data-layout="left""#),
+        "壳固定使用侧栏布局: {page_html}"
     );
 
     // 隐藏 Docker→镜像
@@ -2901,86 +2900,7 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
         "viewer 的默认菜单不应受 admin 的隐藏影响: {viewer_html}"
     );
 
-    // 切换布局：只变 data-layout，结构不变
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/settings/menu")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("action", "layout"),
-                    ("layout", "left"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let left = body_text(
-        h.app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/p/m/overview")
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        left.contains(r#"data-layout="left""#) && left.contains(r#"id="skiff-main-nav""#),
-        "布局切换后同一菜单 DOM 必须保留: {left}"
-    );
-
-    // 内容宽度：固定上限写进 body，刷新后保持
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/settings/menu")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("action", "width"),
-                    ("width", "fixed"),
-                    ("max", "1600"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let fixed = body_text(
-        h.app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/p/m/overview")
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        fixed.contains(r#"data-content-width="fixed""#) && fixed.contains("--content-max: 1600px"),
-        "固定宽度必须落库并写进页面: {fixed}"
-    );
-
-    // 恢复默认：隐藏、布局与内容宽度一起回到缺省值（左右 + 自适应）
+    // 恢复默认：隐藏项回到初始可见
     let resp = h
         .app
         .clone()
@@ -3011,10 +2931,8 @@ async fn menu_settings_hide_layout_order_reset_and_user_scope() {
     )
     .await;
     assert!(
-        reset.contains(r#"data-layout="left""#)
-            && reset.contains(r#"data-content-width="auto""#)
-            && reset.contains(r#"href="/p/m/core/docker/images""#),
-        "恢复默认必须同时复原布局、内容宽度与隐藏项: {reset}"
+        reset.contains(r#"href="/p/m/core/docker/images""#),
+        "恢复默认必须复原隐藏项: {reset}"
     );
 }
 
@@ -4770,9 +4688,9 @@ fn d3_plugin_ui_adapts_to_theme_message() {
     }
 }
 
-/// D3b：L3 横栏位于页面标题区下方并吸顶；内容宽度默认铺满；插件上报高度后 iframe 跟随。
+/// D3b：L3 横栏位于页面标题区下方并吸顶；插件上报高度后 iframe 跟随。
 #[test]
-fn d3b_workbench_topbar_width_and_iframe_height() {
+fn d3b_workbench_topbar_and_iframe_height() {
     let tpl = include_str!("../templates/plugin_view.html");
     let base = include_str!("../templates/base.html");
     let css = include_str!("../static/skiff.css");
@@ -4819,23 +4737,18 @@ fn d3b_workbench_topbar_width_and_iframe_height() {
         "顶栏高度变化（二级通栏展开、窄屏换行）必须自动重算"
     );
 
-    // 内容宽度：默认铺满；固定时才限宽，侧栏布局在剩余空间居中。
+    // 内容区默认铺满：不再提供内容宽度偏好，也不得留固定上限。
     assert!(
-        base.contains(r#"data-content-width="{{ ctx.menu.width }}""#)
-            && base.contains("--content-max: {{ ctx.menu.max_width }}px"),
-        "内容宽度偏好必须落到 body 属性与 CSS 变量"
-    );
-    assert!(
-        css.contains(r#"body[data-content-width="fixed"] main"#),
-        "只有「固定」模式才给内容区设上限"
+        !base.contains("data-content-width") && !base.contains("--content-max"),
+        "内容宽度偏好已移除，页面不得再引用"
     );
     assert!(
         !css.contains("max-width: 1240px"),
         "默认不得再给内容区固定 1240px 上限"
     );
     assert!(
-        css.contains(r#"body[data-layout="left"][data-content-width="fixed"] main"#),
-        "侧栏布局的固定宽度必须在侧栏之外的剩余空间居中"
+        !css.contains(r#"body[data-content-width="fixed"] main"#),
+        "固定内容宽度规则必须随设置项一起删除"
     );
 
     // iframe 高度桥：只接受工作台 iframe，切 UI 时回落到默认高度。
@@ -9996,6 +9909,72 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
     );
 }
 
+/// 布局 / 内容宽度已从菜单设置彻底移除：budding schema、SSR 模板与壳页都不得再引用，
+/// 防止只隐藏界面而把字段留在读写链路上。
+#[test]
+fn menu_settings_drops_layout_and_content_width() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    let tpl = include_str!("../templates/menu_settings.html");
+    let base = include_str!("../templates/base.html");
+    for needle in [
+        "layout: args.layout",
+        "width: args.width",
+        "'内容宽度'",
+        "'布局'",
+        "menu-layout-pick",
+        "menu-width-pick",
+    ] {
+        assert!(!js.contains(needle), "budding 菜单设置仍残留：{needle}");
+    }
+    for needle in [
+        "name=\"layout\"",
+        "name=\"width\"",
+        "内容宽度",
+        "上下（顶栏）",
+    ] {
+        assert!(!tpl.contains(needle), "SSR 菜单设置仍残留：{needle}");
+    }
+    assert!(
+        !base.contains("data-content-width") && !base.contains("ctx.menu.layout"),
+        "壳页不得再引用布局/内容宽度偏好"
+    );
+}
+
+/// 新增的界面设置与 Web 服务运维入口必须落在既有契约上：
+/// 主色经 session 下发到 admin.theme；Web 动作复用 `/ui/v1/runtimes/web/action/{op}`。
+#[test]
+fn budding_boot_has_ui_theme_and_web_env_entries() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' }"),
+        "界面设置必须映射到规范路径与 schema"
+    );
+    assert!(
+        js.contains("schema.theme = { primary: session.theme.primary };"),
+        "壳主题必须由 session 下发到 admin.theme"
+    );
+    assert!(
+        js.contains("skiffUiThemeWrite: uiThemeWrite,"),
+        "界面设置写动作必须注册"
+    );
+    for needle in [
+        "webEnvButton('安装 Web 服务', 'install', 'primary')",
+        "webEnvButton('重启', 'restart')",
+        "webEnvButton('重新安装', 'rebuild')",
+        "webEnvButton('删除容器', 'delete', 'danger')",
+        "state === 'running' ? '停止' : '启动'",
+        "state === 'running' ? 'stop' : 'start'",
+        "'/runtimes/web/action/' + encodeURIComponent(op)",
+        "skiffWebEnv: webEnvAction,",
+    ] {
+        assert!(js.contains(needle), "Web 服务操作入口缺失：{needle}");
+    }
+    assert!(
+        js.contains("var installed = state !== '' && state !== 'missing';"),
+        "未安装与已安装必须区分，避免出现无意义按钮"
+    );
+}
+
 /// 1.8.0-r3 已闭环 T10 / T16 / code Pack：宿主不得再保留旧能力缺失时的绕过。
 #[test]
 fn budding_boot_drops_pre_r3_workarounds() {
@@ -10369,7 +10348,11 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
     let csrf = h.state.csrf_token(&admin);
     let viewer_csrf = h.state.csrf_token(&viewer);
 
-    for uri in ["/ui/v1/settings/menu", "/ui/v1/settings/docker"] {
+    for uri in [
+        "/ui/v1/settings/menu",
+        "/ui/v1/settings/docker",
+        "/ui/v1/settings/ui",
+    ] {
         let (status, _, body) = get_ui(&h.app, uri, None, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -10377,19 +10360,19 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
     }
 
     for token in [&admin, &viewer] {
-        for uri in ["/p/settings/menu", "/p/settings/docker"] {
+        for uri in ["/p/settings/menu", "/p/settings/docker", "/p/settings/ui"] {
             let (status, html) = get_html(&h.app, uri, token).await;
             assert_eq!(status, StatusCode::OK, "{uri}");
             assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
         }
     }
 
-    // 菜单读对登录用户开放；Docker 读对 viewer 也开放但 can_admin=false。
+    // 菜单读对登录用户开放；Docker / 界面读对 viewer 也开放但 can_admin=false。
     let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&viewer), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v["data"]["groups"].is_array(), "{body}");
-    assert!(v["data"]["layout"].is_string(), "{body}");
+    assert_eq!(v["data"]["layout"], serde_json::Value::Null, "{body}");
 
     let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/docker", Some(&viewer), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -10400,12 +10383,13 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
     for (uri, body) in [
         (
             "/ui/v1/settings/menu",
-            json!({ "action": "layout", "layout": "left" }),
+            json!({ "action": "hide", "key": "core/docker/images" }),
         ),
         (
             "/ui/v1/settings/docker",
             json!({ "registry_mirror": "", "image_prefix": "" }),
         ),
+        ("/ui/v1/settings/ui", json!({ "primary": "#2f6feb" })),
     ] {
         let (status, text) = post_ui_json(&h.app, uri, &admin, None, &body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
@@ -10443,20 +10427,11 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
         "/ui/v1/settings/menu",
         &viewer,
         Some(&viewer_csrf),
-        &json!({ "action": "layout", "layout": "top" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{text}");
-    let (status, text) = post_ui_json(
-        &h.app,
-        "/ui/v1/settings/menu",
-        &admin,
-        Some(&csrf),
         &json!({ "action": "hide", "key": "core/docker/images" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{text}");
-    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&admin), None).await;
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&viewer), None).await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let images = v["data"]["groups"]
         .as_array()
@@ -10466,6 +10441,96 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
         .find(|i| i["key"] == "core/docker/images")
         .expect("菜单快照必须包含 Docker→镜像");
     assert_eq!(images["hidden"], true, "{body}");
+}
+
+/// 界面设置（壳主题）：读对所有登录用户开放；写仅管理员；主色校验、规范化、
+/// 持久化并经 `/ui/v1/session` 下发，刷新后仍生效。
+#[tokio::test]
+async fn ui_theme_requires_admin_validates_and_persists() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&admin);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+
+    // 缺省主色随会话下发，壳页首屏即按全站主题渲染。
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&viewer), None).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["theme"]["primary"], "#1867c0", "{body}");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["primary"], "#1867c0", "{body}");
+    assert_eq!(v["data"]["can_admin"], false, "{body}");
+
+    // viewer 即使带 CSRF 也不能改全局主题。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/ui",
+        &viewer,
+        Some(&viewer_csrf),
+        &json!({ "primary": "#2f6feb" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["error"]["code"], "auth.forbidden", "{text}");
+
+    // 非法格式 400，且不落库。
+    for bad in ["blue", "#12345", "#1234567"] {
+        let (status, text) = post_ui_json(
+            &h.app,
+            "/ui/v1/settings/ui",
+            &admin,
+            Some(&csrf),
+            &json!({ "primary": bad }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {text}");
+    }
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
+    assert!(body.contains("#1867c0"), "{body}");
+
+    // 合法写入规范化为小写并持久化；session 立即下发新主色。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/ui",
+        &admin,
+        Some(&csrf),
+        &json!({ "primary": "#2F6FEB" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
+    assert!(body.contains(r##""primary":"#2f6feb""##), "{body}");
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/session", Some(&viewer), None).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["theme"]["primary"], "#2f6feb", "{body}");
+    assert!(
+        h.state
+            .db()
+            .recent_audit(10)
+            .unwrap()
+            .iter()
+            .any(|e| e.action == "settings.ui.update"
+                && e.result == "ok"
+                && e.detail.contains("#2f6feb")),
+        "主题写入必须留审计"
+    );
+
+    // 空串恢复缺省主色。
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/ui",
+        &admin,
+        Some(&csrf),
+        &json!({ "primary": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
+    assert!(body.contains("#1867c0"), "{body}");
 }
 
 /// 运行环境配置/安装/扩展写接口：未认证 401、viewer 403、缺 CSRF 403；
@@ -10993,6 +11058,7 @@ async fn ui_v1_envelope_and_bootstrap_key_sets_are_frozen() {
             "csrf_token",
             "entry_prefix",
             "api_version",
+            "theme",
             "features",
         ],
         "GET /ui/v1/session",
@@ -11001,6 +11067,11 @@ async fn ui_v1_envelope_and_bootstrap_key_sets_are_frozen() {
         &v["data"]["features"],
         &["shell_fallback", "placeholders", "plugin_iframe"],
         "GET /ui/v1/session features",
+    );
+    assert_key_set(
+        &v["data"]["theme"],
+        &["primary"],
+        "GET /ui/v1/session theme",
     );
 }
 
@@ -11514,10 +11585,15 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_key_set(&v["data"], &["groups"], "GET /ui/v1/settings/menu");
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_key_set(
         &v["data"],
-        &["layout", "width", "max_width", "groups"],
-        "GET /ui/v1/settings/menu",
+        &["primary", "can_admin"],
+        "GET /ui/v1/settings/ui",
     );
 
     let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/docker", Some(&token), None).await;

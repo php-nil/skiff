@@ -730,23 +730,13 @@ body[data-layout="left"] .foot { margin-left: var(--sidebar-w); }
    页面骨架 / 提示条
    -------------------------------------------------------------------------- */
 
-/* 内容宽度：默认自适应，铺满侧栏之外的可用宽度；「固定」时才引入 --content-max 上限。 */
+/* 内容区默认铺满侧栏之外的可用宽度。 */
 main { margin: 0 auto; padding: var(--sp-5); }
 .foot {
   margin: 0 auto;
   padding: var(--sp-4) var(--sp-5) var(--sp-8);
   color: var(--muted);
   font-size: var(--fs-xs);
-}
-body[data-content-width="fixed"] main,
-body[data-content-width="fixed"] .foot {
-  max-width: var(--content-max, 1440px);
-}
-/* 侧栏布局「固定」时居中于剩余空间：左侧至少让出 248px，避免顶到侧栏。 */
-body[data-layout="left"][data-content-width="fixed"] main,
-body[data-layout="left"][data-content-width="fixed"] .foot {
-  margin-left: calc(var(--sidebar-w) + max(0px, (100% - var(--sidebar-w) - var(--content-max, 1440px)) / 2));
-  margin-right: auto;
 }
 
 .banner {
@@ -1500,14 +1490,6 @@ body.error-page .card {
 body.error-page h1 { margin: 0; font-size: var(--fs-2xl); color: var(--accent); }
 body.error-page pre { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.menu-layout-pick { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: var(--sp-4) 0 var(--sp-5); }
-.menu-layout-pick h3 { margin: 0 var(--sp-3) 0 0; font-size: var(--fs-md); }
-.menu-layout-pick .hint { flex-basis: 100%; margin: 0; }
-.menu-width-pick { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: 0 0 var(--sp-5); }
-.menu-width-pick h3 { margin: 0 var(--sp-3) 0 0; font-size: var(--fs-md); }
-.menu-width-pick .hint { flex-basis: 100%; margin: 0; }
-.menu-width-pick .width-max { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-sm); }
-.menu-width-pick .width-max input { width: 96px; }
 .menu-pref-group { border-top: 1px solid var(--line); padding-top: var(--sp-3); margin-top: var(--sp-3); }
 .menu-pref-group h3 { margin: 0 0 var(--sp-2); color: var(--muted); font-size: var(--fs-sm); }
 .menu-pref-row {
@@ -1720,9 +1702,7 @@ body[data-layout="top"] .workbench-tabs { top: var(--shell-h, var(--topbar-h)); 
     border-bottom: 0;
     box-shadow: none;
   }
-  body[data-layout="left"] main, body[data-layout="left"] .foot,
-  body[data-layout="left"][data-content-width="fixed"] main,
-  body[data-layout="left"][data-content-width="fixed"] .foot { margin-left: 0; }
+  body[data-layout="left"] main, body[data-layout="left"] .foot { margin-left: 0; }
   body[data-layout="left"] .topbar .nav {
     flex: 1 1 100%;
     width: 100%;

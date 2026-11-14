@@ -534,9 +534,6 @@ mod tests {
             must_change: false,
             active: "core/plugins/store".into(),
             menu: PageMenu {
-                layout: "auto".into(),
-                width: "auto".into(),
-                max_width: 0,
                 groups: Vec::new(),
                 pinned: Vec::new(),
             },

@@ -11,8 +11,7 @@
   <script src="/{{ ctx.prefix }}/static/htmx.min.js" defer></script>
   <script src="/{{ ctx.prefix }}/static/skiff.js" defer></script>
 </head>
-<body data-prefix="{{ ctx.prefix }}" data-layout="{{ ctx.menu.layout }}"
-      data-content-width="{{ ctx.menu.width }}" style="--content-max: {{ ctx.menu.max_width }}px">
+<body data-prefix="{{ ctx.prefix }}" data-layout="left">
 {# 内联 SVG 图标精灵：零外链、零图标库。菜单与插件标签统一用 <use href="#i-名称"> 引用。 #}
 <svg class="icon-sprite" aria-hidden="true" width="0" height="0" focusable="false">
   <symbol id="i-overview" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></g></symbol>
@@ -46,7 +45,7 @@
   <button type="button" class="menu-toggle" data-menu-toggle aria-expanded="false" aria-controls="skiff-main-nav">
     菜单
   </button>
-  <nav class="nav" id="skiff-main-nav" aria-label="主导航" data-layout="{{ ctx.menu.layout }}">
+  <nav class="nav" id="skiff-main-nav" aria-label="主导航" data-layout="left">
     {% if !ctx.menu.pinned.is_empty() %}
     <div class="nav-pinned" aria-label="固定菜单">
       <span class="nav-pin-caption" aria-hidden="true">固定</span>
