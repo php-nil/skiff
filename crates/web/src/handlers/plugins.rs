@@ -840,8 +840,13 @@ fn inject_title_guard(html: &[u8]) -> Vec<u8> {
 }
 
 /// 托管插件 UI：`/plugins/{id}/ui/*`，沙箱 iframe 加载（CSP 收紧，§4.2）。
+///
+/// 权限口径与 schema / RPC 一致（`PluginManagerUser`）：插件 UI 只由已登录的
+/// 面板页面以 iframe 加载，同源子资源请求自带会话 Cookie；插件 SDK 只经父页面
+/// postMessage 调 RPC，没有任何匿名加载依赖。
 pub async fn plugin_ui(
     State(state): State<Arc<AppState>>,
+    PluginManagerUser(_user): PluginManagerUser,
     Path((id, path)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
     let rec = state

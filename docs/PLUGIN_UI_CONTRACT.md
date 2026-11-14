@@ -20,7 +20,7 @@
 | `/{p}/plugins/{id}` | GET | 内核 | **插件信息与管理页**：身份、版本、密钥指纹、签名、沙箱、授权、菜单、运行状态、日志/事件入口、管理动作 |
 | `/{p}/plugins/{id}/{view}` | GET | 壳页（schema） | **插件功能页**：声明了 schema 的视图由壳页原生渲染；未声明的旧视图回落旧 SSR 工作台（`?legacy=1` 显式兼容） |
 | `/{p}/plugins/{id}/schema/{view}` | GET | 内核 | 返回该视图的随包 schema JSON（`application/json`，`no-store`）；要求 `PluginManage`，与 RPC 同权限 |
-| `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越；legacy iframe 使用 |
+| `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越；legacy iframe 使用；要求 `PluginManage`（与 schema/RPC 同口径） |
 | `/{p}/plugins/{id}/rpc` | POST | 内核代发 | 父页面代发插件 RPC，需要 CSRF 头与管理员权限，逐次审计；成功 `{ result }`，失败统一 JSON 错误信封 |
 | `/{p}/plugins/{id}/toggle` | POST | 内核 | 启用 / 停用；`next` 只接受本站插件前缀 |
 | `/{p}/plugins/{id}/delete` | POST | 内核 | 卸载；可选 `delete_data=on`。旧 `/{p}/plugins/{id}/remove` 保留为别名（[`URL_CONTRACT.md`](URL_CONTRACT.md) §7） |
@@ -32,7 +32,7 @@
 
 - `/{p}/plugins/{id}` **不再承载 iframe**，也不再接受 `?menu=` 选择视图。
 - 功能页的规范入口是 `/{p}/plugins/{id}/{view}`；菜单深链 `/{p}/m/...` 是同一视图的另一种寻址方式，二者渲染结果一致。
-- **权限口径**：功能页、schema 端点、旧 SSR 深链与 `POST /rpc` 一致，均要求 `PluginManage`；不允许「页面只要登录、取数才 403」。
+- **权限口径**：功能页、schema 端点、旧 SSR 深链、`ui/{path}` 静态资源与 `POST /rpc` 一致，均要求 `PluginManage`；不允许「页面只要登录、取数才 403」。
 - 静态段 `ui` / `rpc` / `schema` / `toggle` / `delete` / `remove` 优先于 `{view}`，因此视图名不得使用这些保留字（安装期校验）。
 - `{view}` 只允许 `[a-z0-9][a-z0-9-]{0,31}`。
 
@@ -313,3 +313,4 @@ object-src 'none'; frame-ancestors 'self'
 | 2026-11-13 | 插件功能页原生化（第五批 cron）：任务列表 + 新建/编辑共用一个 schema；`?id=` 走 `detail` 预填，`params_json` 文本域由插件解析为对象，`target_plugin` 在插件侧改名 `target`；执行/启停/删除/创建/更新经统一 RPC；预设编辑器保留旧界面，表单联动显隐登记为上游 T17 |
 | 2026-11-13 | 插件功能页原生化（第六批 files）：`com.skiff.files` 升 `api = "1.3"`，`main` 视图默认由壳页加载 `main.json`；只原生化「已授权站点目录浏览 + 文本编辑/保存」，全盘管理 / 回收站 / 配额 / 上传仍只在内核「工具 → 文件管理」；旧完整工作台只保留显式 `?legacy=1`，菜单与列表不再链出；文件正文以 `text_safe` 转义 `${` 后绑定，登记上游 T18 |
 | 2026-11-13 | 测试机四问题修复：`POST /rpc` 失败改为统一 JSON 错误信封（壳页直接展示 `error.message`）；`GET /ui/v1/menu` 插件项 `href` 改指原生功能页；插件 API 兼容判定收口为 `skiff_pkgfmt::manifest::api_compatible`（内核 `1.3`），任务门与商店安装同口径 |
+| 2026-11-14 | `GET /{p}/plugins/{id}/ui/{path}` 补 `PluginManage` 认证门：插件 UI 只由已登录面板页以 iframe 加载，静态资源请求自带会话 Cookie；插件 SDK 仅经父页面 postMessage 调 RPC，无匿名加载依赖 |

@@ -3656,6 +3656,50 @@ view = "plain"
         html.contains("<h2>区块小标题</h2>"),
         "注入不得误伤区块小标题: {html}"
     );
+
+    // 插件 UI 静态资源与 schema / RPC 同权限：viewer 403，未登录 401。
+    let viewer = login(&h.app, "viewer", "pw-test-123").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.title/ui/plain.html")
+                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "viewer 读取插件 UI 必须 403（与 schema/RPC 同口径）"
+    );
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/p/plugins/com.example.title/ui/plain.html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "未登录读取插件 UI 必须 303 到登录页，不得匿名下发静态资源"
+    );
+    assert!(
+        resp.headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.starts_with("/p/login?next="))
+            .unwrap_or(false),
+        "未登录必须带登录回跳地址"
+    );
 }
 
 /// 旧包兼容：只有 `[[ui]]` 的老包，默认视图 `main` 指向原有 `ui/index.html`；
