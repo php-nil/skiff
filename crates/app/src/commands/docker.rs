@@ -183,6 +183,26 @@ pub struct ContainerAction {
     pub actor: Actor,
 }
 
+/// 动作审计的 `(target, outcome, detail)` 形状：
+/// 成功 `name (short_id)` + 动词 HTTP 路径，失败 `name` + 错误串。
+///
+/// 独立成纯函数是为了让 `/api/v1` 与页面的审计格式收敛到同一处，
+/// 并且可以用单测锁定，不依赖真实 Docker。
+fn action_audit(
+    target: &ContainerTarget,
+    verb: Verb,
+    error: Option<String>,
+) -> (String, &'static str, String) {
+    match error {
+        None => (
+            format!("{} ({})", target.name, target.short_id),
+            "ok",
+            verb.http_path().to_string(),
+        ),
+        Some(e) => (target.name.clone(), "fail", e),
+    }
+}
+
 pub async fn container_action(
     state: &Arc<AppState>,
     cmd: ContainerAction,
@@ -211,28 +231,19 @@ pub async fn container_action(
         .execute(cmd.verb, Some(&cmd.target.object), params)
         .await
         .map(|_| ());
-    match &result {
-        Ok(()) => {
-            state.audit_or_log(
-                &cmd.actor.username,
-                &cmd.actor.ip,
-                &cmd.verb.audit_action(),
-                &format!("{} ({})", cmd.target.name, cmd.target.short_id),
-                "ok",
-                cmd.verb.http_path(),
-            );
-        }
-        Err(e) => {
-            state.audit_or_log(
-                &cmd.actor.username,
-                &cmd.actor.ip,
-                &cmd.verb.audit_action(),
-                &cmd.target.name,
-                "fail",
-                &e.to_string(),
-            );
-        }
-    }
+    let (target, outcome, detail) = action_audit(
+        &cmd.target,
+        cmd.verb,
+        result.as_ref().err().map(|e| e.to_string()),
+    );
+    state.audit_or_log(
+        &cmd.actor.username,
+        &cmd.actor.ip,
+        &cmd.verb.audit_action(),
+        &target,
+        outcome,
+        &detail,
+    );
     result.map_err(|e| DockerCommandError::Unavailable(e.to_string()))
 }
 
@@ -541,6 +552,22 @@ mod tests {
                 labels: BTreeMap::new(),
             },
         )
+    }
+
+    /// 审计形状锁定：成功带 `name (short_id)` 与动词 HTTP 路径，失败带错误串。
+    #[test]
+    fn action_audit_shape_is_stable() {
+        let t = target("web");
+        let (target_name, outcome, detail) = action_audit(&t, Verb::Restart, None);
+        assert_eq!(target_name, "web (0123456789ab)");
+        assert_eq!(outcome, "ok");
+        assert_eq!(detail, Verb::Restart.http_path());
+
+        let (target_name, outcome, detail) =
+            action_audit(&t, Verb::Restart, Some("engine down".into()));
+        assert_eq!(target_name, "web");
+        assert_eq!(outcome, "fail");
+        assert_eq!(detail, "engine down");
     }
 
     #[tokio::test]

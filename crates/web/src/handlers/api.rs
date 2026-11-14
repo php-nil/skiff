@@ -123,25 +123,22 @@ pub async fn restart_container(
         .policy
         .check(&handlers::actor(&user), Verb::Restart, Some(&obj))
         .map_err(|e| ApiError(AppError::Forbidden(e.to_string())))?;
-    let result = state
-        .docker()
-        .execute(Verb::Restart, Some(&obj), skiff_docker::DockerParams::None)
-        .await
-        .map(|_| ());
-    let ip = handlers::client_ip(&state, &parts);
-    state.audit_or_log(
-        &user.user.username,
-        &ip,
-        &Verb::Restart.audit_action(),
-        &row.name,
-        if result.is_ok() { "ok" } else { "fail" },
-        &result
-            .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default(),
-    );
-    result.map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?;
+    // 执行与审计统一交给命令层：成功审计 detail 为 `GET/POST ...` 的 http_path，
+    // target 为 `name (short_id)`；失败审计 target 为 name、detail 为错误串。
+    skiff_app::commands::docker::container_action(
+        &state,
+        skiff_app::commands::docker::ContainerAction {
+            target: skiff_app::commands::docker::ContainerTarget::new(
+                row.name.clone(),
+                row.short_id(),
+                obj,
+            ),
+            verb: Verb::Restart,
+            actor: handlers::containers::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?;
     Ok(Json(json!({ "status": "accepted", "id": row.id })))
 }
 

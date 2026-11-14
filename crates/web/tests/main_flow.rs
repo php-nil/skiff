@@ -2224,6 +2224,53 @@ async fn api_token_scopes_are_enforced() {
     assert_eq!(resp.status(), StatusCode::OK, "会话认证不应被 scope 收窄");
 }
 
+/// `/api/v1/docker/containers/{id}/restart`：执行与审计改走
+/// `commands::docker::container_action` 后，响应仍保持原契约。
+///
+/// 无 Docker 时解析容器即失败，因此这里锁定的是「解析失败 → 503
+/// dependency.unavailable」；审计 target/detail 的形状由命令层单测
+/// `action_audit_shape_is_stable` 覆盖。
+#[tokio::test]
+async fn api_container_restart_keeps_response_contract() {
+    let h = harness();
+    let admin_id = h
+        .state
+        .db()
+        .user_by_name("admin")
+        .unwrap()
+        .expect("harness 应建好 admin")
+        .id;
+    let token = "tok-docker-write";
+    h.state
+        .db()
+        .create_api_token(
+            "t-docker-write",
+            admin_id,
+            "docker-write",
+            &skiff_identity::sha256_hex(token),
+            "docker:write",
+        )
+        .unwrap();
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/docker/containers/abc/restart")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_text(resp).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["error"]["code"], "dependency.unavailable", "{body}");
+}
+
 /// 契约（§6.3）：裸 `/` 必须 404 而不是跳登录——302 会把随机安全入口前缀
 /// 直接递给扫描器，隐蔽入口当场作废。前缀路径未登录才跳登录页。
 ///
