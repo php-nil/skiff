@@ -2,7 +2,7 @@
 
 > 本文是 `docs/` 的**唯一全量索引**：先看「一、30 秒路由」判断该读哪篇，再用「二、分类索引」查全文与状态。
 > 分类只用于导航与筛选，**不代表物理目录调整**；现有文件名保持不变，避免断链。
-> 最近核对：2026-11-13。新增文档必须在本文件登记，并在对应分类表补一行。
+> 最近核对：2026-11-14。新增文档必须在本文件登记，并在对应分类表补一行。
 
 ## 一、30 秒路由：我要做什么 → 先读哪篇
 
@@ -67,6 +67,7 @@
 | --- | --- | --- | --- |
 | [KERNEL_FS_IMPL_NOTES.md](KERNEL_FS_IMPL_NOTES.md) | 改 `skiff-fs`，或契约与代码不一致 | 重复实现路径解析或授权 | 现行（2026-11-13） |
 | [KERNEL_SCHEDULER_IMPL_NOTES.md](KERNEL_SCHEDULER_IMPL_NOTES.md) | 改 `skiff-sched`，或接 SQLite/Web | tick 语义与回执边界出错 | 现行（2026-11-13） |
+| [KERNEL_UI_BOUNDARY_AUDIT.md](KERNEL_UI_BOUNDARY_AUDIT.md) | 改 SSR/`/ui/v1` handler、拆 `ui_api.rs`、判断能否复用命令层 | 重复实现、JSON 与 SSR 分叉、权限/审计口径不一致 | 现行（审计稿；2026-11-14） |
 
 ### D. 交付与验证（怎么出包、怎么装、怎么验、现在什么状态）
 
