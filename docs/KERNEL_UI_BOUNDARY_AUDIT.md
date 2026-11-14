@@ -1,6 +1,7 @@
 # 内核业务层 ↔ UI 层边界审计（SSR + `/ui/v1`）
 
 > 状态：**现行审计稿**（2026-11-14，只读审计，未改任何代码）。
+> 执行状态：**批次 0 已落地**（`ui_api.rs` 已拆为 `handlers/ui/*`，0.2–0.8 见 docs/changes/2026-11-14.md 与提交记录）；本文中的 `ui_api.rs` 行号对应**拆分前**代码，用于追溯问题来源。
 > 范围：`crates/web`（SSR handler + `/ui/v1` JSON handler）、`crates/app` 命令层、`crates/plugin`/`crates/pkgfmt` 的插件 UI 边界、`crates/web/static` 的壳页与静态资源。
 > 结论口径：每条问题都给「现象（文件:行号）→ 为什么是问题 → 影响面」；未确认的写「未验证」，不当作事实。
 > 相关契约：[DESIGN.md](DESIGN.md)（分层与依赖方向）、[URL_CONTRACT.md](URL_CONTRACT.md) §2/§6/§9、[SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) §3/§4.4/§5、[PLUGIN_UI_CONTRACT.md](PLUGIN_UI_CONTRACT.md)、[MENU_CONTRACT.md](MENU_CONTRACT.md)、[DEV_ENV.md](DEV_ENV.md) §4。
