@@ -388,13 +388,23 @@ fn visible_menu<'a>(
         .filter(|d| roles_allow(d.roles.as_deref(), role))
         .filter(|d| gates_allow(&d.gates, docker_ok))
         .collect();
-    out.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+    sort_decls(&mut out);
     out
+}
+
+/// 菜单声明排序：`(order, label, id)`。SSR 导航与 `/ui/v1` 菜单共用同一顺序。
+pub fn sort_decls(items: &mut [&skiff_pkgfmt::ManifestMenu]) {
+    items.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+}
+
+/// L3 视图项排序：`(order, label, id)`。SSR 导航与 `/ui/v1` 菜单共用同一顺序。
+pub fn sort_items(items: &mut [&skiff_pkgfmt::MenuItem]) {
+    items.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
 }
 
 fn sorted_items(decl: &skiff_pkgfmt::ManifestMenu) -> Vec<&skiff_pkgfmt::MenuItem> {
     let mut ordered: Vec<&skiff_pkgfmt::MenuItem> = decl.items.iter().collect();
-    ordered.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+    sort_items(&mut ordered);
     ordered
 }
 

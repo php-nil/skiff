@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
+use skiff_app::commands::file as file_cmd;
 
 #[allow(unused_imports)]
 use super::*;
@@ -22,10 +23,9 @@ pub async fn files(
         .unwrap_or_else(|| state.cfg.web_root.display().to_string());
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let requested = path.clone();
     let (roots, listing) = handlers::blocking_fs(move || {
         let roots = fs.roots();
-        let listing = fs.list(&owner, &requested)?;
+        let listing = file_cmd::list(&fs, file_cmd::ListDir { user: owner, path })?;
         Ok((roots, listing))
     })
     .await
@@ -85,10 +85,12 @@ pub async fn files_mkdir(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let created = handlers::blocking_fs(move || fs.mkdir(&owner, &path))
-        .await
-        .map_err(ApiError)?
-        .map_err(fs_api_error)?;
+    let created = handlers::blocking_fs(move || {
+        file_cmd::mkdir(&fs, file_cmd::MakeDir { user: owner, path })
+    })
+    .await
+    .map_err(ApiError)?
+    .map_err(fs_api_error)?;
     Ok(Json(
         json!({ "data": { "path": created, "message": "目录已创建" } }),
     ))
@@ -112,10 +114,19 @@ pub async fn files_rename(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    handlers::blocking_fs(move || fs.rename(&owner, &from, &to))
-        .await
-        .map_err(ApiError)?
-        .map_err(fs_api_error)?;
+    handlers::blocking_fs(move || {
+        file_cmd::rename(
+            &fs,
+            file_cmd::RenameEntry {
+                user: owner,
+                from,
+                to,
+            },
+        )
+    })
+    .await
+    .map_err(ApiError)?
+    .map_err(fs_api_error)?;
     Ok(Json(json!({ "data": { "message": "已重命名" } })))
 }
 
@@ -134,10 +145,12 @@ pub async fn files_remove(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let removed = handlers::blocking_fs(move || fs.remove(&owner, &path))
-        .await
-        .map_err(ApiError)?
-        .map_err(fs_api_error)?;
+    let removed = handlers::blocking_fs(move || {
+        file_cmd::remove(&fs, file_cmd::RemoveEntry { user: owner, path })
+    })
+    .await
+    .map_err(ApiError)?
+    .map_err(fs_api_error)?;
     Ok(Json(json!({
         "data": {
             "path": removed.path,
@@ -161,10 +174,12 @@ pub async fn files_read(
         .ok_or_else(|| ApiError(AppError::BadRequest("缺少 path 参数或不是绝对路径".into())))?;
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
-    let file = handlers::blocking_fs(move || fs.read(&owner, &path))
-        .await
-        .map_err(ApiError)?
-        .map_err(fs_api_error)?;
+    let file = handlers::blocking_fs(move || {
+        file_cmd::read(&fs, file_cmd::ReadFile { user: owner, path })
+    })
+    .await
+    .map_err(ApiError)?
+    .map_err(fs_api_error)?;
     Ok(Json(json!({
         "data": {
             "path": file.path,

@@ -436,7 +436,7 @@ fn plugin_menu_views(state: &AppState, key: &str) -> (String, String, Vec<MenuVi
         }]
     } else {
         let mut items: Vec<&skiff_pkgfmt::MenuItem> = decl.items.iter().collect();
-        items.sort_by(|a, b| (a.order, &a.label, &a.id).cmp(&(b.order, &b.label, &b.id)));
+        skiff_app::menu::sort_items(&mut items);
         items
             .into_iter()
             .map(|it| MenuViewData {
