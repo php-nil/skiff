@@ -11,6 +11,8 @@ use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 
 use skiff_pkgfmt::Manifest;
+use skiff_plugin::ipc::IpcError;
+use skiff_plugin::supervisor::SupervisorError;
 use skiff_store::PluginRecord;
 
 use crate::error::{ApiError, AppError};
@@ -736,18 +738,10 @@ pub async fn remove(
     )))
 }
 
-/// 从插件错误链里提取内核能力面返回的 HTTP 状态码。
-///
-/// 插件 SDK 把内核非 200 响应折叠成 `协议错误: 内核返回 HTTP <code>: <detail>`，
-/// 再经 JSON-RPC `-32603` 与 Supervisor 包装后只剩字符串。这里只认这一固定片段，
-/// 避免把插件业务文案里出现的数字误判成状态码。
-fn kernel_http_status(message: &str) -> Option<u16> {
-    let (_, tail) = message.split_once("内核返回 HTTP ")?;
-    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
-}
-
 /// RPC 错误→HTTP 状态：内核面已有的状态语义原样透传，未知状态才归 400。
+///
+/// 上游状态由 `skiff_wire::RpcFailure` 在协议层解析一次，这里只读结构化字段，
+/// 不再对错误文案做字符串匹配。
 ///
 /// 逐个语义对齐而不是「只挑几个特例」：`fail2ban` 缺失等依赖类失败在内核面是
 /// 503，代理层若压成 400，用户会看到「400 请求非法 + 正文说是 503」的自相矛盾。
@@ -755,8 +749,13 @@ fn kernel_http_status(message: &str) -> Option<u16> {
 ///
 /// 文案保持内核 detail 原样，不在代理层追加授权提示——是否补提示由插件按
 /// 具体错误语义决定，避免「内置任务保护」被误报成权限不足。
-fn rpc_error(message: String) -> AppError {
-    match kernel_http_status(&message) {
+fn rpc_error(e: &SupervisorError) -> AppError {
+    let message = e.to_string();
+    let upstream = match e {
+        SupervisorError::Ipc(IpcError::Rpc(failure)) => failure.upstream_status,
+        _ => None,
+    };
+    match upstream {
         Some(401) => AppError::Unauthorized(message),
         Some(403) => AppError::Forbidden(message),
         Some(404) => AppError::NotFound(message),
@@ -813,7 +812,7 @@ pub async fn rpc(
     );
     match result {
         Ok(v) => Ok(axum::Json(serde_json::json!({ "result": v })).into_response()),
-        Err(e) => Err(ApiError(rpc_error(e.to_string()))),
+        Err(e) => Err(ApiError(rpc_error(&e))),
     }
 }
 
@@ -992,77 +991,80 @@ mod tests {
         assert!(text.ends_with("<body><h1 data-plugin-title>x</h1></body>"));
     }
 
+    /// 构造与 Supervisor 包装后同形的结构化 RPC 错误。
+    fn rpc_failure(upstream: Option<u16>, detail: &str) -> SupervisorError {
+        let message = match upstream {
+            Some(status) => format!("协议错误: 内核返回 HTTP {status}: {detail}"),
+            None => detail.to_string(),
+        };
+        SupervisorError::Ipc(IpcError::Rpc(skiff_plugin::ipc::RpcFailure {
+            code: -32603,
+            message,
+            upstream_status: upstream,
+        }))
+    }
+
     /// RPC 代理透传内核状态码；文案保持内核 detail 原样，不追加授权提示。
     #[test]
     fn rpc_error_passes_kernel_status_through() {
-        let forbidden =
-            "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 403: 内置任务不可删除（只能停用）";
-        match rpc_error(forbidden.to_string()) {
-            AppError::Forbidden(m) => assert_eq!(m, forbidden, "403 文案必须原样保留"),
+        let forbidden = rpc_failure(Some(403), "内置任务不可删除（只能停用）");
+        match rpc_error(&forbidden) {
+            AppError::Forbidden(m) => assert_eq!(m, forbidden.to_string(), "403 文案必须原样保留"),
             other => panic!("内核 403 应映射 HTTP 403，实际 {other:?}"),
         }
 
-        let not_found = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 404: 任务不存在";
-        match rpc_error(not_found.to_string()) {
-            AppError::NotFound(m) => assert_eq!(m, not_found),
+        let not_found = rpc_failure(Some(404), "任务不存在");
+        match rpc_error(&not_found) {
+            AppError::NotFound(m) => assert_eq!(m, not_found.to_string()),
             other => panic!("内核 404 应映射 HTTP 404，实际 {other:?}"),
         }
 
-        let conflict = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 409: 任务已在运行";
-        match rpc_error(conflict.to_string()) {
-            AppError::Conflict(m) => assert_eq!(m, conflict),
+        let conflict = rpc_failure(Some(409), "任务已在运行");
+        match rpc_error(&conflict) {
+            AppError::Conflict(m) => assert_eq!(m, conflict.to_string()),
             other => panic!("内核 409 应映射 HTTP 409，实际 {other:?}"),
         }
 
-        let no_space = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 507: 文件系统配额已用尽";
-        match rpc_error(no_space.to_string()) {
-            AppError::NoSpace(m) => assert_eq!(m, no_space, "507 文案必须原样保留"),
+        let no_space = rpc_failure(Some(507), "文件系统配额已用尽");
+        match rpc_error(&no_space) {
+            AppError::NoSpace(m) => assert_eq!(m, no_space.to_string(), "507 文案必须原样保留"),
             other => panic!("内核 507 应映射 HTTP 507，实际 {other:?}"),
         }
 
         // 依赖类失败（如 fail2ban 未安装）内核面是 503，代理层必须同口径，
         // 否则会出现「400 请求非法 + 正文说 503」的自相矛盾。
-        let unavailable = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 503: fail2ban 未安装";
-        match rpc_error(unavailable.to_string()) {
-            AppError::Unavailable(m) => assert_eq!(m, unavailable, "503 文案必须原样保留"),
+        let unavailable = rpc_failure(Some(503), "fail2ban 未安装");
+        match rpc_error(&unavailable) {
+            AppError::Unavailable(m) => assert_eq!(m, unavailable.to_string(), "503 文案必须原样保留"),
             other => panic!("内核 503 应映射 HTTP 503，实际 {other:?}"),
         }
 
-        let internal = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 500: 内核内部错误";
-        match rpc_error(internal.to_string()) {
-            AppError::Internal(m) => assert_eq!(m, internal, "500 文案必须原样保留"),
+        let internal = rpc_failure(Some(500), "内核内部错误");
+        match rpc_error(&internal) {
+            AppError::Internal(m) => assert_eq!(m, internal.to_string(), "500 文案必须原样保留"),
             other => panic!("内核 500 应映射 HTTP 500，实际 {other:?}"),
         }
 
-        let unauthorized = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 401: 未认证";
-        match rpc_error(unauthorized.to_string()) {
-            AppError::Unauthorized(m) => assert_eq!(m, unauthorized),
+        let unauthorized = rpc_failure(Some(401), "未认证");
+        match rpc_error(&unauthorized) {
+            AppError::Unauthorized(m) => assert_eq!(m, unauthorized.to_string()),
             other => panic!("内核 401 应映射 HTTP 401，实际 {other:?}"),
         }
 
-        let timeout = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 504: 等待特权命令超时";
-        match rpc_error(timeout.to_string()) {
-            AppError::Timeout(m) => assert_eq!(m, timeout),
+        let timeout = rpc_failure(Some(504), "等待特权命令超时");
+        match rpc_error(&timeout) {
+            AppError::Timeout(m) => assert_eq!(m, timeout.to_string()),
             other => panic!("内核 504 应映射 HTTP 504，实际 {other:?}"),
         }
 
         // 未识别的状态与普通插件业务错误仍归 400，并保留原文。
-        let unknown = "IPC: 插件返回错误 -32603: 协议错误: 内核返回 HTTP 418: 未知语义";
-        assert!(matches!(rpc_error(unknown.to_string()), AppError::BadRequest(m) if m == unknown));
-        let business = "IPC: 插件返回错误 -32603: 任务名不能为空";
+        let unknown = rpc_failure(Some(418), "未知语义");
+        assert!(matches!(rpc_error(&unknown), AppError::BadRequest(m) if m == unknown.to_string()));
+        let business = rpc_failure(None, "任务名不能为空");
         assert!(
-            matches!(rpc_error(business.to_string()), AppError::BadRequest(m) if m == business),
+            matches!(rpc_error(&business), AppError::BadRequest(m) if m == business.to_string()),
             "普通业务错误应保持 400 且文案不变"
         );
-    }
-
-    /// 只认 `内核返回 HTTP <code>` 这一段，业务文案里的数字不算状态码。
-    #[test]
-    fn kernel_status_is_parsed_conservatively() {
-        assert_eq!(kernel_http_status("内核返回 HTTP 403: x"), Some(403));
-        assert_eq!(kernel_http_status("HTTP 403 与业务错误"), None);
-        assert_eq!(kernel_http_status("内核返回 HTTP abc: x"), None);
-        assert_eq!(kernel_http_status("端口 8080 被占用"), None);
     }
 
     /// 插件 UI 只能加载随包同源资源：脚本/图片/连接都不能出现外链与通配。

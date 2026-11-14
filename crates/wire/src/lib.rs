@@ -67,6 +67,65 @@ pub mod routes {
     pub const PLUGIN_RPC: &str = "/rpc";
 }
 
+/// JSON-RPC 错误的结构化形态：机器码、文案与上游 HTTP 状态。
+///
+/// 插件 SDK 会把内核非 200 响应折叠成 `协议错误: 内核返回 HTTP <code>: <detail>`
+/// 文本；上游状态在这里解析一次，`web` 等调用方只读 `upstream_status`，不再
+/// 各自按字符串片段猜测状态码。插件若在 `error.data` 里显式给出 `status` /
+/// `upstream_status`，优先采信结构化字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcFailure {
+    pub code: i64,
+    pub message: String,
+    pub upstream_status: Option<u16>,
+}
+
+impl RpcFailure {
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let upstream_status = upstream_status_of(&message);
+        Self {
+            code,
+            message,
+            upstream_status,
+        }
+    }
+
+    /// 从 JSON-RPC `error` 对象构造；`data.status` 优先于文案解析。
+    pub fn from_json(err: &Value) -> Self {
+        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-32000);
+        let message = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let structured = err
+            .get("data")
+            .and_then(|d| {
+                d.get("status")
+                    .or_else(|| d.get("upstream_status"))
+                    .and_then(|s| s.as_u64())
+            })
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|s| (100..=599).contains(s));
+        let upstream_status = structured.or_else(|| upstream_status_of(&message));
+        Self {
+            code,
+            message,
+            upstream_status,
+        }
+    }
+}
+
+/// 从 SDK 固定文案里提取「内核返回 HTTP <code>」。
+///
+/// 只认这一固定片段，并校验 100..=599，避免把业务文案里的端口/计数误判成状态码。
+pub fn upstream_status_of(message: &str) -> Option<u16> {
+    let (_, tail) = message.split_once("内核返回 HTTP ")?;
+    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u16>().ok().filter(|s| (100..=599).contains(s))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
     #[error("请求头未结束")]
@@ -81,8 +140,8 @@ pub enum WireError {
     FrameTooLarge(usize),
     #[error("响应不是合法 JSON: {0}")]
     Json(String),
-    #[error("对端返回错误 {code}: {message}")]
-    Rpc { code: i64, message: String },
+    #[error("对端返回错误 {}: {}", .0.code, .0.message)]
+    Rpc(RpcFailure),
     #[error("协议版本不匹配（本端 {expected}，对端 {got}）")]
     ProtocolMismatch { expected: u32, got: u32 },
     #[error("对端未声明协议版本")]
@@ -275,13 +334,7 @@ pub fn rpc_request_body(method: &str, params: &Value) -> Result<Vec<u8>, WireErr
 pub fn rpc_result(payload: &[u8]) -> Result<Value, WireError> {
     let v: Value = serde_json::from_slice(payload).map_err(|e| WireError::Json(e.to_string()))?;
     if let Some(err) = v.get("error") {
-        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-32000);
-        let message = err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        return Err(WireError::Rpc { code, message });
+        return Err(WireError::Rpc(RpcFailure::from_json(err)));
     }
     Ok(v.get("result").cloned().unwrap_or(Value::Null))
 }
@@ -371,13 +424,49 @@ mod tests {
         let e = rpc_result(br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}"#)
             .unwrap_err();
         match e {
-            WireError::Rpc { code, message } => {
-                assert_eq!(code, -32601);
-                assert_eq!(message, "nope");
+            WireError::Rpc(failure) => {
+                assert_eq!(failure.code, -32601);
+                assert_eq!(failure.message, "nope");
+                assert_eq!(failure.upstream_status, None);
             }
             other => panic!("{other:?}"),
         }
         assert_eq!(rpc_result(br#"{"id":1,"result":42}"#).unwrap(), 42);
+    }
+
+    /// 上游状态在协议层解析一次：固定文案与结构化 `data` 都覆盖。
+    #[test]
+    fn rpc_error_extracts_upstream_status() {
+        let text = rpc_result(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"协议错误: 内核返回 HTTP 403: 无权限"}}"#
+                .as_bytes(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            text,
+            WireError::Rpc(RpcFailure {
+                upstream_status: Some(403),
+                ..
+            })
+        ));
+
+        let data = rpc_result(
+            br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"denied","data":{"status":503}}}"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            data,
+            WireError::Rpc(RpcFailure {
+                upstream_status: Some(503),
+                ..
+            })
+        ));
+
+        assert_eq!(upstream_status_of("内核返回 HTTP 403: x"), Some(403));
+        assert_eq!(upstream_status_of("HTTP 403 与业务错误"), None);
+        assert_eq!(upstream_status_of("内核返回 HTTP abc: x"), None);
+        assert_eq!(upstream_status_of("端口 8080 被占用"), None);
+        assert_eq!(upstream_status_of("内核返回 HTTP 999: x"), None);
     }
 
     /// 路由表是两端唯一的真相来源：任何端点被改名，这个测试都是最后一道提醒。

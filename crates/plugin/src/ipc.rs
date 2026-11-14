@@ -17,6 +17,8 @@ use skiff_wire::{routes, WireError};
 pub const MAX_FRAME: usize = skiff_wire::MAX_FRAME;
 pub const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub use skiff_wire::{HttpResponse, RpcFailure};
+
 #[derive(Debug, thiserror::Error)]
 pub enum IpcError {
     #[error("平台不支持 UDS: {0}")]
@@ -27,20 +29,18 @@ pub enum IpcError {
     Protocol(String),
     #[error("超时")]
     Timeout,
-    #[error("插件返回错误 {code}: {message}")]
-    Rpc { code: i64, message: String },
+    #[error("插件返回错误 {}: {}", .0.code, .0.message)]
+    Rpc(RpcFailure),
 }
 
 impl From<WireError> for IpcError {
     fn from(e: WireError) -> Self {
         match e {
-            WireError::Rpc { code, message } => IpcError::Rpc { code, message },
+            WireError::Rpc(failure) => IpcError::Rpc(failure),
             other => IpcError::Protocol(other.to_string()),
         }
     }
 }
-
-pub use skiff_wire::HttpResponse;
 
 #[cfg(unix)]
 pub async fn request(
@@ -149,12 +149,8 @@ mod tests {
 
     #[test]
     fn wire_errors_map_to_ipc_errors() {
-        let e: IpcError = WireError::Rpc {
-            code: -32601,
-            message: "nope".into(),
-        }
-        .into();
-        assert!(matches!(e, IpcError::Rpc { code: -32601, .. }));
+        let e: IpcError = WireError::Rpc(RpcFailure::new(-32601, "nope")).into();
+        assert!(matches!(e, IpcError::Rpc(f) if f.code == -32601));
         let e: IpcError = WireError::BadStatusLine.into();
         assert!(matches!(e, IpcError::Protocol(_)));
     }
