@@ -10175,9 +10175,42 @@ fn budding_boot_host_bridge_and_file_entries_present() {
         "不再允许 window.prompt；输入型确认必须用 dialog + form"
     );
     assert!(
+        !js.contains("window.alert("),
+        "不允许用阻塞 alert 反馈结果；成功/失败统一走 toast"
+    );
+    assert_eq!(
+        js.matches("window.confirm(").count(),
+        1,
+        "window.confirm 只允许保留在 hostConfirm 的运行时未就绪兜底分支"
+    );
+    assert!(
         !js.contains("window.confirm('确认删除 ' + display"),
         "Docker 资源删除确认必须走宿主图层"
     );
+}
+
+#[test]
+fn budding_boot_p1_confirms_and_kill_entry_present() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        // 容器强制终止入口（后端 action_verb 白名单已支持 kill）。
+        "buttonNode('强制终止', 'kill', c)",
+        "title: '强制终止容器'",
+        // 站点破坏性动作确认。
+        "title: '停止站点'",
+        "title: '关闭 HTTPS'",
+        "title: '移除附加域名'",
+        "title: '批量停止站点'",
+        // 设置与插件侧确认。
+        "title: '撤销公钥'",
+        "title: '卸载插件'",
+        "title: '恢复默认菜单'",
+        // 表单就地数值校验。
+        "pattern: '^[0-9]{1,5}$'",
+        "pattern: '^[0-9]+$'",
+    ] {
+        assert!(js.contains(needle), "P1 确认/入口缺失：{needle}");
+    }
 }
 
 /// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
@@ -10316,9 +10349,9 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         .split("function webEnvAction(args)")
         .nth(1)
         .expect("webEnvAction 必须存在");
+    let compact = action.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        action.contains("if (op === 'install' || op === 'rebuild')")
-            && action.contains("location.reload();\n          return;"),
+        compact.contains("if (op === 'install' || op === 'rebuild') { location.reload(); return; }"),
         "安装/重建提交后应立即进入当前作业视图"
     );
 }
