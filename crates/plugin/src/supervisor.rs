@@ -293,7 +293,7 @@ mod output {
 
 use crate::install::manifest_of;
 #[cfg(unix)]
-use crate::install::{plugin_uid, plugin_version_dir};
+use crate::install::{plugin_root, plugin_uid, plugin_version_dir};
 use crate::ipc;
 
 #[derive(Debug, Clone)]
@@ -724,6 +724,9 @@ impl Supervisor {
         let _ = std::fs::remove_file(&socket);
 
         let token = hex::random_token();
+        // data/cache/run 与安装、卸载共用 `plugin_root` 这一处布局推导：
+        // `<data_root>/plugins/<id>/{data,cache,run}`，不在各平台分支各拼一次。
+        let root = plugin_root(&self.cfg.data_root, &rec.id);
         let data_dir = root.join("data");
         let cache_dir = root.join("cache");
         std::fs::create_dir_all(&cache_dir).ok();
