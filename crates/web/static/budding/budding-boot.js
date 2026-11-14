@@ -1369,7 +1369,9 @@
         skiffSettingsSave: settingsSave,
         skiffMenuWrite: menuWrite,
         skiffUiThemeWrite: uiThemeWrite,
-        skiffDockerWrite: dockerSettingsWrite,
+        // 与资源动作 `skiffDockerWrite` 必须保持不同名字：同名会按对象字面量
+        // 后者覆盖前者，镜像/卷/网络/容器写操作会被静默劫持到设置保存。
+        skiffDockerSettingsWrite: dockerSettingsWrite,
         skiffRuntimeCreate: runtimeCreate,
         skiffRuntimeImages: runtimeImagesWrite,
         skiffRuntimeAction: runtimeAction,
@@ -4091,7 +4093,7 @@
     }
     var form = writeForm(
       apiBase + '/settings/docker',
-      { type: 'skiffDockerWrite' },
+      { type: 'skiffDockerSettingsWrite' },
       [
         {
           type: 'input-text',

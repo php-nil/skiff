@@ -10229,6 +10229,90 @@ fn budding_boot_p2_row_actions_present() {
     }
 }
 
+/// 动作注册表键去重：`skiffDockerWrite` 曾与设置保存动作共用同名键，
+/// 后注册的实现静默覆盖前一个，导致镜像/卷删除被劫持到 `/settings/docker`。
+#[test]
+fn budding_boot_action_registry_has_no_duplicate_keys() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    let marker = "      actions: {";
+    let start = js.find(marker).expect("actions 注册表缺失") + marker.len();
+    let bytes = js.as_bytes();
+    let mut depth = 1usize;
+    let mut end = start;
+    for (offset, byte) in bytes[start..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(depth == 0, "actions 注册表未闭合");
+    let block = &js[start..end];
+
+    let mut keys = Vec::new();
+    for line in block.lines() {
+        let trimmed = line.trim();
+        let Some((key, _)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        {
+            keys.push(key.to_string());
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut dup = Vec::new();
+    for key in &keys {
+        if !seen.insert(key.clone()) {
+            dup.push(key.clone());
+        }
+    }
+    assert!(dup.is_empty(), "动作注册表存在重复键：{dup:?}");
+    assert_eq!(
+        keys.iter()
+            .filter(|k| k.as_str() == "skiffDockerWrite")
+            .count(),
+        1,
+        "资源动作 skiffDockerWrite 必须唯一注册"
+    );
+    assert_eq!(
+        keys.iter()
+            .filter(|k| k.as_str() == "skiffDockerSettingsWrite")
+            .count(),
+        1,
+        "Docker 设置保存动作必须独立命名"
+    );
+}
+
+/// 资源动作必须映射到资源接口；设置保存只能用于 `/settings/docker` 表单。
+#[test]
+fn budding_boot_docker_actions_map_to_resource_endpoints() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        "'/images/' + encodeURIComponent(args.id) + '/remove'",
+        "'/volumes/' + encodeURIComponent(args.id) + '/remove'",
+        "'/networks/' + encodeURIComponent(args.id) + '/remove'",
+        "path = '/networks';",
+        "path = '/volumes';",
+        "path = '/containers';",
+        "{ type: 'skiffDockerWrite', props: { kind: 'image', op: 'pull' } }",
+        "{ type: 'skiffDockerWrite', props: { kind: 'container', op: 'create' } }",
+        "{ type: 'skiffDockerSettingsWrite' }",
+    ] {
+        assert!(js.contains(needle), "Docker 动作映射缺失：{needle}");
+    }
+}
+
 /// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
 /// 不得再退回旧 SSR（旧路由与模板按约定保留，只是产品前端不再链接）。
 #[test]
