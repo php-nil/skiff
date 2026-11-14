@@ -8776,6 +8776,23 @@ async fn ui_compose_validate_and_up_require_csrf_and_permission() {
         assert_eq!(v["error"]["code"], "auth.forbidden");
     }
 
+    // down 与项目级动作同样在 Lifecycle 档具备 ComposeUp/Down：缺令牌必须是 CSRF 拒绝。
+    for (uri, body) in [
+        (
+            "/ui/v1/compose/down",
+            json!({ "project": "demo", "remove_volumes": false }),
+        ),
+        (
+            "/ui/v1/compose/demo/start",
+            json!({ "project": "demo", "remove_volumes": false }),
+        ),
+    ] {
+        let (status, text) = post_ui_json(&h.app, uri, &admin, None, &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {text}");
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+    }
+
     let (status, text) = post_ui_json(
         &h.app,
         "/ui/v1/compose/validate",
@@ -10528,7 +10545,9 @@ async fn ui_compose_keeps_auth_csrf_and_docker_unavailable_semantics() {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{uri}");
         let body = body_text(resp).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["error"]["code"], "auth.csrf_invalid", "{uri}");
+        // Basic 档不提供 ComposeUp/Down 动词：这里测的是「无该能力」的档位拒绝，
+        // 不是 CSRF 失败。CSRF 覆盖见 `ui_compose_validate_and_up_require_csrf_and_permission`。
+        assert_eq!(v["error"]["code"], "auth.forbidden", "{uri}");
     }
 }
 

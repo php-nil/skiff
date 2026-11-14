@@ -77,8 +77,8 @@ pub async fn validate(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     require_compose_admin(&state, &user)?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let mut input = PageInput::from_form(&form);
 
     let project = match planned_project(&input.compose_text, &input.project_input) {
@@ -127,8 +127,8 @@ pub async fn up(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     require_compose_admin(&state, &user)?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let mut input = PageInput::from_form(&form);
 
     let project = match planned_project(&input.compose_text, &input.project_input) {
@@ -187,8 +187,8 @@ pub async fn down(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     require_compose_admin(&state, &user)?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let raw_project = form_first(&form, "project");
     let remove_volumes = matches!(
         form_first(&form, "remove_volumes").as_str(),
@@ -268,8 +268,8 @@ pub async fn project_action(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     require_compose_admin(&state, &user)?;
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let verb = match action.as_str() {
         "start" => Verb::Start,
         "stop" => Verb::Stop,

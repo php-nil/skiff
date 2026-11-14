@@ -129,7 +129,7 @@
 - 失败回执：写操作 303 回页面，错误用 flash（`?` 不携带结果消息），不在 URL 里表达成败。
 - `/ui/v1/*` 的写操作一律 POST + CSRF；未认证引导与登录为 `GET /ui/v1/auth/login` 与 `POST /ui/v1/auth/login`（登录用签名 CSRF token + 来源判定，CSRF 放 JSON 体 `csrf` 字段）；`POST /ui/v1/session/logout`、`session/password`、`session/totp`、`session/totp/enable` 为认证类例外，语义与 `/{p}/logout`、`/{p}/password`、`/{p}/totp`、`/{p}/totp/enable` 一一对应。
 - `/ui/v1/*` 未认证返回 401 JSON，不做 303；已认证但权限不足返回 403 JSON。
-- 写入口的守卫顺序固定为**先权限、后 CSRF**：无权限主体得到 `auth.forbidden`（SSR 为 403 页），不会先看到 `auth.csrf_invalid`。Docker 对象级授权（`protected` 对象）需要先解析容器，保留在 CSRF 之后，但角色门（`policy.check(actor, verb, None)`）仍在 CSRF 前。Compose 是唯一例外：Basic 档不提供 `ComposeUp/Down` 动词，`harness()` 档位下「管理员 + 缺令牌」会先命中档位拒绝；该组入口暂保留「先 CSRF、后权限」，待档位/测试口径确认后再统一。
+- 写入口的守卫顺序固定为**先权限、后 CSRF**：无权限主体得到 `auth.forbidden`（SSR 为 403 页），不会先看到 `auth.csrf_invalid`。Docker 对象级授权（`protected` 对象）需要先解析容器，保留在 CSRF 之后，但角色门（`policy.check(actor, verb, None)`）仍在 CSRF 前。Compose 组同此顺序：Basic 档不提供 `ComposeUp/Down`，管理员在该档得到档位拒绝（`auth.forbidden`），CSRF 语义由 Lifecycle 档用例单独覆盖。
 
 ## 7. 兼容与下线
 

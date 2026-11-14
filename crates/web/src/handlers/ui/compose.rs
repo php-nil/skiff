@@ -64,8 +64,8 @@ pub async fn compose_down(
     parts: Parts,
     Json(body): Json<ComposeDownBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    guard::csrf(&state, &user, &parts)?;
     let project = skiff_app::commands::docker::prepare_project(&body.project)
         .map_err(|e| ApiError(handlers::compose::map_err(e)))?;
     let value = skiff_app::commands::docker::compose_down(
@@ -98,8 +98,8 @@ pub async fn compose_validate(
     parts: Parts,
     Json(body): Json<ComposeSourceBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    guard::csrf(&state, &user, &parts)?;
     let project = planned_compose(&state, &user, &body)?;
     let services: Vec<String> = project.services.iter().map(|s| s.service.clone()).collect();
     write_done(json!({
@@ -118,8 +118,8 @@ pub async fn compose_up(
     parts: Parts,
     Json(body): Json<ComposeSourceBody>,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    guard::csrf(&state, &user, &parts)?;
     let project = planned_compose(&state, &user, &body)?;
     let name = project.name.clone();
     let value = skiff_app::commands::docker::compose_up(
@@ -151,8 +151,8 @@ pub async fn compose_project_action(
     Path((project, action)): Path<(String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    guard::csrf(&state, &user, &parts)?;
     handlers::compose::require_compose_admin(&state, &user).map_err(ApiError)?;
+    guard::csrf(&state, &user, &parts)?;
     let verb = match action.as_str() {
         "start" => skiff_docker::Verb::Start,
         "stop" => skiff_docker::Verb::Stop,
