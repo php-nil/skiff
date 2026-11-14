@@ -917,7 +917,7 @@
     var domain = String(args.domain || '');
     var typed = String(values.confirm || '').trim();
     if (typed !== domain) {
-      toast('输入的域名与站点域名不一致', 'warning');
+      formError(args, '输入的域名与站点域名不一致', values);
       return Promise.resolve();
     }
     return submitJson('/sites/' + encodeURIComponent(domain) + '/delete', { confirm: typed })
@@ -927,7 +927,11 @@
         location.href = prefix + '/sites';
       })
       .catch(function (error) {
-        toast('删除失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '删除失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -1723,6 +1727,40 @@
         )
       );
       // 删除站点：输入域名才能提交，组件内校验（U1 未支持通用输入型 confirm）。
+      var siteDeleteUrl = apiBase + '/sites/' + encodeURIComponent(data.domain) + '/delete';
+      var siteDeleteKey = newDialogKey();
+      var siteDeleteFields = [
+        {
+          type: 'input-text',
+          props: {
+            name: 'confirm',
+            label: '输入域名 ' + data.domain + ' 以确认',
+            required: true,
+            rules: {
+              required: true,
+              pattern: '^' + escapeRegExp(data.domain) + '$',
+              messages: {
+                required: '请输入站点域名',
+                pattern: '输入的域名与站点域名不一致'
+              }
+            }
+          }
+        }
+      ];
+      var siteDeleteAction = {
+        type: 'skiffSiteDelete',
+        props: { domain: data.domain, dialog: siteDeleteKey }
+      };
+      dialogRegistry[siteDeleteKey] = {
+        title: '删除站点',
+        width: 520,
+        url: siteDeleteUrl,
+        action: siteDeleteAction,
+        fields: siteDeleteFields,
+        submitText: '确认删除',
+        notice: '删除后不可恢复：站点目录、配置与证书会一并移除。',
+        noticeType: 'warning'
+      };
       actions.push({
         type: 'button',
         props: { text: '删除站点', color: 'danger', variant: 'text' },
@@ -1739,29 +1777,7 @@
                   text: '删除后不可恢复：站点目录、配置与证书会一并移除。'
                 }
               },
-              writeForm(
-                apiBase + '/sites/' + encodeURIComponent(data.domain) + '/delete',
-                { type: 'skiffSiteDelete', props: { domain: data.domain } },
-                [
-                  {
-                    type: 'input-text',
-                    props: {
-                      name: 'confirm',
-                      label: '输入域名 ' + data.domain + ' 以确认',
-                      required: true,
-                      rules: {
-                        required: true,
-                        pattern: '^' + escapeRegExp(data.domain) + '$',
-                        messages: {
-                          required: '请输入站点域名',
-                          pattern: '输入的域名与站点域名不一致'
-                        }
-                      }
-                    }
-                  }
-                ],
-                '确认删除'
-              )
+              writeForm(siteDeleteUrl, siteDeleteAction, siteDeleteFields, '确认删除')
             ],
             footer: [
               {
@@ -3162,13 +3178,15 @@
     };
   }
 
-  function writeForm(url, submitAction, fields, submitText) {
+  function writeForm(url, submitAction, fields, submitText, initialValues) {
+    var props = {
+      api: { method: 'POST', url: url, sendOn: false },
+      actionsAlign: 'end'
+    };
+    if (initialValues) props.initialValues = initialValues;
     return {
       type: 'form',
-      props: {
-        api: { method: 'POST', url: url, sendOn: false },
-        actionsAlign: 'end'
-      },
+      props: props,
       onEvent: { submit: [submitAction] },
       body: fields,
       content: {
@@ -5443,7 +5461,7 @@
     if (!target) {
       var name = String(values.name || '').trim();
       if (!validEntryName(name)) {
-        toast('文件名不能为空，也不能包含 / 或 \\', 'warning');
+        formError(args, '文件名不能为空，也不能包含 / 或 \\', values);
         return Promise.resolve();
       }
       var base = String(args.dir || '').replace(/\/+$/, '');
@@ -5456,7 +5474,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('保存失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '保存失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -5466,7 +5488,7 @@
     var name = String(args.name || '');
     var next = String(values.name || '').trim();
     if (!validEntryName(next)) {
-      toast('新名称不能为空，也不能包含 / 或 \\', 'warning');
+      formError(args, '新名称不能为空，也不能包含 / 或 \\', values);
       return Promise.resolve();
     }
     if (next === name) {
@@ -5481,7 +5503,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('重命名失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '重命名失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -5490,11 +5516,11 @@
     var from = String(args.path || '').trim();
     var to = String(values.to || '').trim();
     if (!from || !to) {
-      toast('请填写目标路径', 'warning');
+      formError(args, '请填写目标路径', values);
       return Promise.resolve();
     }
     if (to.charAt(0) !== '/') {
-      toast('目标路径必须是绝对路径（以 / 开头）', 'warning');
+      formError(args, '目标路径必须是绝对路径（以 / 开头）', values);
       return Promise.resolve();
     }
     return submitJson('/files/copy', { from: from, to: to, overwrite: !!values.overwrite })
@@ -5504,7 +5530,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('复制失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '复制失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -5513,7 +5543,11 @@
     var path = String(args.path || '');
     var mode = String(values.mode || '').trim();
     if (!mode) {
-      toast('请填写八进制权限（如 755）', 'warning');
+      formError(args, '请填写八进制权限（如 755）', values);
+      return Promise.resolve();
+    }
+    if (!MODE_RULE.pattern || !new RegExp(MODE_RULE.pattern).test(mode)) {
+      formError(args, '权限必须是八进制（如 755 或 0755）', values);
       return Promise.resolve();
     }
     return submitJson('/files/chmod', { path: path, mode: mode })
@@ -5523,19 +5557,34 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('修改权限失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '修改权限失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
   function fileChown(args, ctx) {
     var values = formValues(ctx);
     var path = String(args.path || '');
-    var uid = String(values.uid || '').trim();
-    var gid = String(values.gid || '').trim();
-    if (!uid || !gid) {
-      toast('请同时填写 uid 与 gid', 'warning');
+    var uidRaw = String(values.uid === undefined || values.uid === null ? '' : values.uid).trim();
+    var gidRaw = String(values.gid === undefined || values.gid === null ? '' : values.gid).trim();
+    if (!uidRaw || !gidRaw) {
+      formError(args, '请同时填写 uid 与 gid', values);
       return Promise.resolve();
     }
+    if (!/^[0-9]+$/.test(uidRaw) || !/^[0-9]+$/.test(gidRaw)) {
+      formError(args, 'uid 与 gid 必须是非负整数', values);
+      return Promise.resolve();
+    }
+    var uid = Number(uidRaw);
+    var gid = Number(gidRaw);
+    if (uid > 4294967295 || gid > 4294967295) {
+      formError(args, 'uid 与 gid 不能超过 4294967295', values);
+      return Promise.resolve();
+    }
+    // 后端 DTO 是 u32；这里必须发数字，字符串会 422。
     return submitJson('/files/chown', { path: path, uid: uid, gid: gid })
       .then(function (data) {
         closeTopLayer();
@@ -5543,7 +5592,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('修改属主失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '修改属主失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -5553,11 +5606,11 @@
     var dest = String(values.dest || '').trim();
     var format = String(values.format || 'tar.gz').trim();
     if (!dest) {
-      toast('请填写压缩包路径', 'warning');
+      formError(args, '请填写压缩包路径', values);
       return Promise.resolve();
     }
     if (dest.charAt(0) !== '/') {
-      toast('压缩包路径必须是绝对路径（以 / 开头）', 'warning');
+      formError(args, '压缩包路径必须是绝对路径（以 / 开头）', values);
       return Promise.resolve();
     }
     return submitJson('/files/archive', {
@@ -5572,7 +5625,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('压缩失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '压缩失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -5581,11 +5638,11 @@
     var archive = String(args.path || '').trim();
     var dest = String(values.dest || '').trim();
     if (!dest) {
-      toast('请填写解压目标目录', 'warning');
+      formError(args, '请填写解压目标目录', values);
       return Promise.resolve();
     }
     if (dest.charAt(0) !== '/') {
-      toast('目标目录必须是绝对路径（以 / 开头）', 'warning');
+      formError(args, '目标目录必须是绝对路径（以 / 开头）', values);
       return Promise.resolve();
     }
     return submitJson('/files/extract', {
@@ -5603,7 +5660,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('解压失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '解压失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -5913,8 +5974,25 @@
   /// 行内弹窗表单按钮：统一「打开 dialog → 组件表单 → 自定义动作提交」。
   ///
   /// 路径上下文用 `${item.*}` 传进动作 props，弹窗不另造数据域；
-  /// 表单校验（必填/八进制/数字）交给组件，服务端错误由 toast 兜住（U3 未支持）。
+  /// 表单校验（必填/八进制/数字）交给组件，服务端错误用 `dialogError`
+  /// 在弹窗顶部显示摘要并回填刚才的输入（U3 字段级回填未支持）。
   function fileDialogButton(text, options) {
+    var url = apiBase + '/files/' + (options.op || 'write');
+    var key = newDialogKey();
+    var action = {
+      type: options.action.type,
+      props: Object.assign({}, options.action.props || {}, { dialog: key })
+    };
+    dialogRegistry[key] = {
+      title: options.title,
+      width: options.width || 520,
+      url: url,
+      action: action,
+      fields: options.fields,
+      submitText: options.submitText,
+      notice: options.notice,
+      noticeType: options.noticeType
+    };
     var body = [];
     if (options.notice) {
       body.push({
@@ -5922,14 +6000,7 @@
         props: { type: options.noticeType || 'info', text: options.notice }
       });
     }
-    body.push(
-      writeForm(
-        apiBase + '/files/' + (options.op || 'write'),
-        options.action,
-        options.fields,
-        options.submitText
-      )
-    );
+    body.push(writeForm(url, action, options.fields, options.submitText));
     return {
       type: 'button',
       props: { text: text, variant: 'text', color: options.color || 'primary' },
@@ -5949,6 +6020,70 @@
         }
       }
     };
+  }
+
+  /// 弹窗表单注册表：提交失败或本地校验不通过时，按 key 还原同一张表单。
+  var dialogRegistry = {};
+  var dialogSeq = 0;
+
+  function newDialogKey() {
+    dialogSeq += 1;
+    return 'skiff-dialog-' + dialogSeq;
+  }
+
+  /// 弹窗内联错误：关掉当前图层后重开一张「错误摘要 + 同样字段」的弹窗。
+  ///
+  /// 为什么不用 toast：toast 一闪而过且关掉后用户看不到原因。这里保留用户
+  /// 已填的值（`initialValues`），只在顶部追加 `alert`，字段级错误回填仍等 U3。
+  function dialogError(key, message, values) {
+    var text = String(message === undefined || message === null ? '' : message);
+    var def = key ? dialogRegistry[key] : null;
+    var runtime = buddingRuntime();
+    if (
+      !def ||
+      !runtime ||
+      typeof runtime.openLayer !== 'function' ||
+      typeof runtime.closeLayer !== 'function' ||
+      typeof runtime.deriveScope !== 'function'
+    ) {
+      toast('操作失败：' + text, 'error');
+      return;
+    }
+    var body = [
+      {
+        type: 'alert',
+        props: { type: 'error', title: '提交未完成', text: text }
+      }
+    ];
+    // 原弹窗的 notice 可能含 `${item.*}` 行作用域占位符，重开图层时已无该作用域；
+    // 这里只保留错误摘要与用户输入，不复制会退化成字面量的提示。
+    var action = {
+      type: def.action.type,
+      props: Object.assign({}, def.action.props || {}, { dialog: key })
+    };
+    body.push(writeForm(def.url, action, def.fields, def.submitText, values || {}));
+    runtime.closeLayer();
+    runtime.openLayer(
+      {
+        title: def.title,
+        width: def.width,
+        body: body,
+        footer: [
+          {
+            type: 'button',
+            props: { text: '取消', variant: 'outlined' },
+            action: { type: 'close' }
+          }
+        ]
+      },
+      { scope: runtime.deriveScope({}, null) }
+    );
+  }
+
+  /// 弹窗内错误优先就地展示；页面级表单没有 `dialog` 上下文时退回 toast。
+  function formError(args, message, values) {
+    if (args && args.dialog) dialogError(args.dialog, message, values);
+    else toast(message, 'error');
   }
 
   var MODE_RULE = { pattern: '^0?[0-7]{3,4}$', messages: { pattern: '请输入八进制权限，如 755' } };

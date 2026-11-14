@@ -10313,6 +10313,57 @@ fn budding_boot_docker_actions_map_to_resource_endpoints() {
     }
 }
 
+/// 文件弹窗表单：数值字段必须发数字，弹窗必须能展示服务端错误摘要。
+#[test]
+fn budding_boot_file_forms_send_typed_values_and_show_errors() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    let chown = js
+        .split("submitJson('/files/chown'")
+        .nth(1)
+        .expect("fileChown 必须提交 /files/chown");
+    let body = &chown[..chown.find("})").unwrap_or(chown.len())];
+    assert!(body.contains("uid: uid"), "chown 的 uid 必须发数字变量");
+    assert!(body.contains("gid: gid"), "chown 的 gid 必须发数字变量");
+    assert!(
+        !body.contains("uid: uidRaw"),
+        "不得把原始字符串直接发给 u32 字段"
+    );
+    assert!(js.contains("var uid = Number(uidRaw);"));
+    assert!(js.contains("var gid = Number(gidRaw);"));
+    assert!(js.contains("'uid 与 gid 必须是非负整数'"));
+
+    assert!(js.contains("function dialogError("), "弹窗错误摘要函数缺失");
+    assert!(
+        js.contains("props: { type: 'error', title: '提交未完成', text: text }"),
+        "弹窗顶部必须渲染 error alert"
+    );
+    assert!(js.contains("function formError("), "formError 分发函数缺失");
+
+    for name in [
+        "fileWrite",
+        "fileRename",
+        "fileCopy",
+        "fileChmod",
+        "fileChown",
+        "fileArchive",
+        "fileExtract",
+        "siteDelete",
+    ] {
+        let start = js
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("{name} 不存在"));
+        let rest = &js[start..];
+        let end = rest[1..]
+            .find("\n  function ")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        assert!(
+            rest[..end].contains("formError("),
+            "{name} 的错误分支必须走 formError（弹窗内可见）"
+        );
+    }
+}
+
 /// 插件菜单的「发现 / 可更新」与商店升级包下载必须留在原生壳页，
 /// 不得再退回旧 SSR（旧路由与模板按约定保留，只是产品前端不再链接）。
 #[test]
