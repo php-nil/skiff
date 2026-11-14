@@ -59,7 +59,28 @@
 
 ## 5. 当前部署
 
-> **2026-11-14 19:25 全新安装 `56e5790`（壳主题改 CSS 变量 + 菜单设置精简 + Web 服务安装/运维原生页；当前生效）**
+> **2026-11-15 01:58 全新安装 `7eeb0fd`（文件管理「改属主」请求体类型修复；当前生效）**
+> - 背景：`194d6a1` 上改属主 422（`uid: invalid type: string "0", expected u32`）；`7eeb0fd` 修正 `fileChown` 请求体类型。本轮 1–5 项全部通过，详见 §8。
+> - 出包：CI run `43621954301`（head `7eeb0fd`）success；`release.yml` dispatch run `43623068700`（publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,971,806 B** `bd6ee32f49c6b1715cf631ac5d837e021a16998e2581a6311c0f4f5aba89e9ff`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：`install.sh --datadir /www/skiff --listen 127.0.0.1:18080`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 §3；7 个官方插件全部装成；`skiff-http-fwd` 重建并 active。
+> - 新二进制：`/usr/local/bin/skiff` **19,465,616 B** `596d6ffbebbba696e240537c9d4a75a8f0386ffa76ac75816c36fae72e9ca607`。
+> - 库：全新空库，`user_version=20`；`skiff` / `skiff-http-fwd` active，`/healthz` 18080 与 18081 均 **200**；`skiff-web-nginx` 容器 running。
+
+> **2026-11-15 01:20 全新安装 `194d6a1`（Docker 资源动作与设置保存键分离；已被 2026-11-15 01:58 全新安装 `7eeb0fd` 取代，保留作过程记录）**
+> - 背景：`53b06bf` 上镜像/卷删除无弹窗且误写 `docker.settings.save`，`194d6a1` 将资源动作键与 Docker 设置保存键分开；本轮验收在第 3 项「改属主」停手，详见 §8。
+> - 出包：CI run `43618467103`（head `194d6a1`）success；`release.yml` dispatch run `43619453651`（publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,970,255 B** `4d972e72880ebb65c8ee511f574a32d1e97f2f147552b710503ed830b44b64e5`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：`install.sh --datadir /www/skiff --listen 127.0.0.1:18080`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 §3；7 个官方插件全部装成；`skiff-http-fwd` 重建并 active。
+> - 新二进制：`/usr/local/bin/skiff` **19,457,424 B** `276264a4852005b9f11fbdffb7d952fd03bfde1a522e349efd1e74e411adf620`。
+> - 库：全新空库，`user_version=20`、`integrity_check=ok`；`skiff` / `skiff-http-fwd` active，`/healthz` 18080 与 18081 均 **200**；产品自身的 `skiff-web-nginx` 容器沿用。
+
+> **2026-11-15 00:39 全新安装 `53b06bf`（交互改造 P0/P1/P2 + budding 1.8.0-r5 + Web 安装进度持久化；已被 2026-11-15 01:20 全新安装 `194d6a1` 取代，保留作过程记录）**
+> - 背景：本轮为三批交互改造与 r5 资产升级合集；验收在第 2 项「镜像删除 / 卷删除」停手，详见 §8。
+> - 出包：CI run `43614238123`（head `53b06bf`）success；`release.yml` dispatch run `43615207414`（publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,970,271 B** `11909649dc777789232d3ce4c686add9ee4ae2c658af9caf24dc97808c09af8d`。
+> - 安装：`install.sh --datadir /www/skiff --listen 127.0.0.1:18080`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 TEST_ENV 设置；7 个官方插件全部装成；`skiff-http-fwd` 重建并 active。
+> - 新二进制：`/usr/local/bin/skiff` **19,457,424 B** `1f6c83b61553b3d821e3a0b78316c7e32bbbf13a14b3dcb4abd54900699935df`。
+> - 库：`user_version=20`、`integrity_check=ok`；`skiff` / `skiff-http-fwd` active，`/healthz` 18080 与 18081 均 **200**。产品自身的 `skiff-web-nginx` 容器沿用。
+
+> **2026-11-14 19:25 全新安装 `56e5790`（壳主题改 CSS 变量 + 菜单设置精简 + Web 服务安装/运维原生页；已被 2026-11-15 00:39 全新安装取代，保留作过程记录）**
 > - 背景：`e38be99` 首次引入壳主题时把 `theme` 写进 schema 根，触发 budding 1.8.0-r4 CompileError、全站白屏；`56e5790` 改为文档级 CSS 变量（`--v-theme-primary` / `--bud-admin-primary`）后复验。两次均为清空 `/www/skiff`、`/etc/skiff` 与旧二进制的全新安装。
 > - 出包：`release.yml` dispatch run `43589383679`（ref=main、head `56e5790`，publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,895,137 B** `71ee99c8de3a4fc011c60cd8e05f6ae88e7ed97084d38f190065874fe14877fd`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
 > - 安装：`install.sh --datadir /www/skiff --listen 127.0.0.1:18080`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 TEST_ENV 设置、初始口令文件已删；7 个官方插件全部装成；`skiff-http-fwd` 重建并 active。
@@ -279,6 +300,9 @@
 | 2026-11-14 16:06 | **全新安装**（查询态页内跳转重渲染 + 列表场景空态补齐） | 出包 run `43572862985`（head `10deadf`）；主包 11,892,429 B `9c8ef5f8…26ed` 三方一致；新二进制 19,272,976 B `2d80e03e…3ed0`；清空旧安装后 `install.sh` 重装 | 空库 **v19**、`integrity_check=ok`；前缀/口令/7 插件/转发层同前；`/healthz` 均 200；五项验收 **全部通过**：容器「全部/仅异常」URL/高亮/计数/空态同步且前进后退正确、四轮连点无重复渲染；容器/站点/镜像/网络/卷/compose 场景空态正确（Docker 停后恢复）；菜单跳转单次渲染；r4 资产、概览、图标与六页回归通过 |
 | 2026-11-14 18:49 | **全新安装**（壳主题误写 schema 根属性，全站 CompileError，未进入验收） | 出包 run `43586098454`（head `e38be99`）；主包 11,895,302 B `14262ba8…e6d3` 三方一致；新二进制 19,268,880 B `73bea0e5…8fa3`；清空旧安装后 `install.sh` 重装 | 空库 **v19**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；但 `/`、`/sites`、`/settings/menu`、`/settings/ui`、`/sites/web` 全部报「节点 / 包含未注册的顶层属性 \"theme\"」，三项验收与 Web 安装均阻塞 |
 | 2026-11-14 19:25 | **全新安装**（`56e5790` 主题 CSS 变量修复 + 菜单精简 + Web 服务原生运维） | 出包 run `43589383679`（head `56e5790`）；主包 11,895,137 B `71ee99c8…77fd` 三方一致；新二进制 19,272,976 B `468cafa5…7cc`；清空旧安装后 `install.sh` 重装 | 空库 **v19**、`integrity_check=ok`；前缀/口令/7 插件/转发层同前；`/healthz` 均 200；四项验收 **全部通过**：五页首屏正常、菜单隐藏/固定持久化、主色 `#c62828` 全站生效且非法值 400/清空回默认、viewer 只读；Web 服务经原生「安装」按钮装成（6 步全 ok，容器 `skiff-web-nginx` running、version openresty/1.31.8.1），启动/停止/重启可用，重装与删除均弹二次确认 |
+| 2026-11-15 00:39 | **全新安装**（`53b06bf` 交互改造 P0/P1/P2 + budding r5 + Web 安装进度持久化） | CI run `43614238123` success；出包 run `43615207414`（head `53b06bf`）；主包 11,970,271 B `11909649…af8d`；新二进制 19,457,424 B `1f6c83b6…935df`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；六项验收 **第 1 项通过、第 2 项失败停手**：r5 六资产 200 immutable、稳定别名 no-cache、favicon 200、九页 0 错误；站点停止/关 HTTPS/移除附加域名/删除站点（错域名就地报错）、公钥撤销、插件卸载六类弹窗通过；**镜像删除 / 卷删除未弹确认框，实际 POST `/ui/v1/settings/docker`（误存 Docker 设置），镜像与卷均未删除**；根因见 §8 |
+| 2026-11-15 01:20 | **全新安装**（`194d6a1` Docker 资源动作与设置保存键分离） | CI run `43618467103` success；出包 run `43619453651`（head `194d6a1`）；主包 11,970,255 B `4d972e72…b64e5`；新二进制 19,457,424 B `276264a4…f620`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；六项验收 **第 1、2 项通过，第 3 项「改属主」失败停手**：Docker 资源五动作全部组件弹窗且真实生效、审计为资源动作、`settingsSavePosts=[]`；六类既有弹窗复核通过；文件新建/编辑/重命名/复制/chmod/压缩/正常解压通过；**改属主提交 422 `uid: invalid type: string "0", expected u32`**，属主未变、无 `fs.chown` 审计；根因见 §8 |
+| 2026-11-15 01:58 | **全新安装**（`7eeb0fd` 文件管理「改属主」请求体类型修复） | CI run `43621954301` success；出包 run `43623068700`（head `7eeb0fd`）；主包 11,971,806 B `bd6ee32f…89e9ff`；新二进制 19,465,616 B `596d6ffb…ca607`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；五项验收 **全部通过**：改属主 `2:2` 成功并落 `fs.chown` 审计、负数/非数字就地报错零请求、服务端 404 时报错原因与输入保留；含 `../` 的 tar.gz 解压 403 拒绝且目标目录外无写入；容器强杀文案明确不等待优雅退出、`Exited (137)`；Web 安装进度 2.03 s 轮询、重启后「中断」、占 80 失败态刷新/重启后仍在；Docker 链路/六类弹窗/r5 资产与别名/favicon/主题/菜单/容器筛选与空态/作业日志/插件页/九页控制台全部回归通过 |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -296,6 +320,37 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-15 01:58–02:18 `7eeb0fd`（文件管理「改属主」请求体类型修复）验收：五项全部通过**
+
+- **部署与首屏（通过）**：全新安装（清空 `/www/skiff`、`/etc/skiff`、旧二进制），空库 v20、7 插件、`/healthz` 18080/18081 200、登录 200；装机形态（静态资源随二进制内嵌）。CI run `43621954301` success，出包 run `43623068700`。
+- **第 1 项 改属主（通过）**：① `uid=2`、`gid=2` 提交成功，宿主 `stat` 为 `2:2`，审计 `fs.chown`（`owner=2:2, previous=0:0`）；② `uid=-5` → 字段就地提示「请输入非负整数」、`uid=abc` 同样就地提示，两次 `POST /files/chown` 计数均为 **0**、属主仍 `2:2`；③ 弹窗内填 `3/3` 后由另一会话删除目标文件再提交，服务端 **404** `lookup.not_found`「/srv/r19files/copy.txt 不存在」，弹层顶部出现「提交未完成 / 修改属主失败：…不存在」，`uid/gid` 输入保留 `3/3`、弹层不关闭。
+- **第 2 项 解压路径穿越（通过）**：`evil.tar.gz` 内含 `../escape.txt` 条目，解压到 `/srv/r19files/out2` 返回 **403**「压缩包条目含 .. 穿越，拒绝解出: ../escape.txt」；页面底部错误 toast 显示同一文案；`/srv/escape.txt` 不存在、`out2` 为空。
+- **第 3 项 容器强制终止（通过）**：`alpine` 临时容器 `r19-sleep`（`sleep 600`）详情页「强制终止」可用，确认弹窗文案「会直接终止 r19-sleep 内的进程，不等待优雅退出，未落盘的数据可能丢失」；确认后 `POST /ui/v1/containers/<id>/kill`，容器状态 `Exited (137)`、`FinishedAt` 距启动约 12 秒内，页面同步显示「已退出 · Exited (137)」，原生 dialog 0。
+- **第 4 项 Web 安装进度（通过）**：从「未安装」点击安装后，进度块每 **2.03 s**（8 个采样间隔 2026–2042 ms）自动更新，含步骤/百分比/发起人（`admin`）/来源 IP/开始与耗时；进度到 100% 显示「安装已完成 · 16 秒」并装配 `skiff-web-nginx`。中途 `systemctl restart skiff` 后页面显示「安装已中断 / 状态：已中断 / 失败原因：服务重启，任务中断；请检查实际状态后重新执行」，任务中心同一条作业 `status=failed`、`error_class=interrupted`、`phase_label=中断`。占住宿主 80（`python3 -m http.server 80`，pid 30917）后安装，页面显示「安装失败 / 第 1 步『检查 Docker 与 80 端口』失败：宿主端口 80 已被占用（pid 30917 python3）…」，手动刷新与再次 `systemctl restart skiff` 后失败步骤名与摘要仍在、作业 `status=failed`。
+  - **说明（非失败）**：点击「安装 Web 服务」后 **97 ms** 有一次自动整页刷新（提交成功即重载进入运行态），随后整个安装期间无任何刷新，终态（+16.7 s）再自动刷新一次；用户无需手动刷新。解压被拒提示为页面底部错误 toast（该行内动作未绑定弹层 `dialog`），不阻断操作。
+- **第 5 项 回归（通过）**：Docker 资源链路（镜像/卷删除、网络创建+删除、容器新建+删除）均组件弹窗、真实生效、审计为 `docker.*` 资源动作、`POST /ui/v1/settings/docker` 计数 0；站点停止/关 HTTPS/删附加域名/删站点（错域名就地报错）/公钥撤销/插件卸载六类弹窗复核通过、取消无写请求；r5 六个版本化资源 200 + `immutable`、稳定别名 `budding.min.js|css` 200 + `no-cache`、`/favicon.ico` 200；九页 200、iframe 0、控制台 0 错误；主题 `#c62828` 生效并跨刷新保持、清空恢复默认；菜单对「网站列表」隐藏/恢复、固定/取消固定均持久化（一级「概览」为锁定项，显隐按设计不生效）；容器「仅异常」筛选在无异常容器时显示「没有异常容器」空态；作业日志壳页与 JSON 分流正常；12 个插件功能页 iframe 0、控制台 0 错误、RPC 200。
+- **清理**：临时站点 `r19.local`（含别名与自签证书）、公钥 `r19-acceptance`、`/srv/r19files` 与穿越样本、`/srv/escape.txt` 已删除；Docker 夹具 `r19/probe`、`r19vol`、`r19net`、`r19-c1`、`r19-sleep`、`alpine:latest` 及 `/tmp/r19img*` 已删除；宿主 80 端口无临时进程；仅保留 `skiff-web-nginx`；未改代码、未提交。
+
+**2026-11-15 01:20–01:35 `194d6a1`（Docker 资源动作与设置保存键分离）验收：第 3 项失败停手**
+
+- **部署与首屏（通过）**：全新安装（清空 `/www/skiff`、`/etc/skiff`、旧二进制与库），空库 v20、`integrity_check=ok`、7 插件、`/healthz` 18080/18081 200；本轮为装机形态（静态资源随二进制内嵌）。CI run `43618467103` success，出包 run `43619453651`。
+- **第 1 项 Docker 资源链路（通过）**：镜像删除、卷删除、网络创建/删除、容器新建/删除均先出现 `.bud-layer-card` 组件确认框（`role=dialog`，取消/确定齐备），确认后目标在 `/ui/v1` 列表与 Docker 中真实变化；审计新增 `docker.images.remove`、`docker.volumes.remove`、`docker.networks.create`、`docker.networks.remove`、`docker.containers.create`、`docker.containers.remove`（`result=ok`）；全程 `POST /ui/v1/settings/docker` 计数为 **0**（`settingsSavePosts=[]`），原生 dialog 0、控制台错误 0。
+- **第 2 项弹窗复核（通过）**：站点停止、关闭 HTTPS、删除附加域名、删除站点、公钥撤销、插件卸载六类均为组件弹窗；取消后无写请求，站点状态/HTTPS/别名、公钥列表、插件列表均未变；删除站点输入 `wrong.local` 就地显示「输入的域名与站点域名不一致」；`nativeDialogs=[]`。
+- **第 3 项文件管理（部分通过，改属主失败）**：新建文本文件、编辑保存（两次内容一致）、重命名、复制、chmod `0640`（审计 `mode=0o0644->0o0640`）、压缩 `pack.tar.gz`、正常解压 `out/copy.txt` 全部真实落盘；非法权限 `999` 由表单规则就地报错且无请求。
+- **失败项：改属主**。属主弹窗填 `uid=0`、`gid=0` 提交返回 **422**，响应 `Failed to deserialize the JSON body into the target type: uid: invalid type: string "0", expected u32 at line 1 column 42`；属主仍为 `0:988`（`root:skiff-plugins`），审计无 `fs.chown`，弹窗保持打开且无错误文案，仅控制台出现 422 资源错误。
+- **根因（代码级）**：`crates/web/static/budding/budding-boot.js` 的 `fileChown` 用 `String(values.uid|gid)` 组装 JSON；后端 `FileChownBody.uid/gid` 为 `u32`，serde 拒绝字符串。`chmod` 因后端 mode 按字符串解析未受影响。
+- **未执行**：属主成功路径、含 `../` 压缩包解压拒绝；第 4 项容器强杀、第 5 项 Web 安装进度、第 6 项回归按「失败即停手」未执行，未改代码、未提交。
+- **清理**：临时站点 `r19.local`（含别名与自签证书）、公钥 `r19-acceptance`、`/srv/r19files` 与穿越样本已删除；Docker 夹具 `r19/probe:1`、`r19vol`、`r19net`、`r19-c1` 在用例内删除；仅保留 `skiff-web-nginx`；宿主 80 端口无临时进程。
+
+**2026-11-15 00:39–00:50 `53b06bf`（P0/P1/P2 交互改造 + budding r5 + Web 安装进度持久化）验收：第 2 项失败停手**
+
+- **部署与首屏（通过）**：全新安装、空库 v20、7 插件、`/healthz` 18080/18081 200。r5 六个版本化资源（`budding-1.8.0-r5.min.js` / `.css`、code/terminal Pack、icons CSS/woff2）均 200 + `Cache-Control: public, max-age=31536000, immutable`；稳定别名 `/{p}/static/budding/budding.min.js|css` 200 + `no-cache`；`/favicon.ico` 200；`/`、`/sites`、`/containers`、`/settings/menu`、`/settings/ui`、`/sites/web`、`/audit`、`/jobs`、`/files` 九页 200、iframe 0、控制台 0 错误（无 favicon 404）。
+- **弹窗与确认（部分通过）**：页面无原生 `dialog` 事件（`nativeDialogs=[]`）。通过：站点停止、关闭 HTTPS、移除附加域名、删除站点、公钥撤销、插件卸载均渲染 `.bud-layer-card`（`role=dialog`，取消/确定齐备），取消后状态均未变；站点删除输入 `wrong.local` 时就地显示「输入的域名与站点域名不一致」，未发出 `POST /sites/.../delete`。
+- **失败项：镜像删除 / 卷删除**。点击镜像 `r18/probe:1` 与卷 `r18vol` 行内「删除」后**没有出现任何确认框**，实际发出 `POST /ui/v1/settings/docker`（body 为空镜像加速源/前缀），审计新增两条 `docker.settings.save`（id 104/105，`2026-11-14T16:45:13Z` / `16:45:17Z`），镜像与卷均未被删除。
+- **根因（代码级）**：`crates/web/static/budding/budding-boot.js` 的动作注册表里 `skiffDockerWrite` **重复注册**——L1358 为 `dockerWrite`（镜像/网络/卷/容器资源动作），L1372 为 `dockerSettingsWrite`（Docker 设置保存）；对象字面量后者覆盖前者，导致所有以 `skiffDockerWrite` 派发的操作（镜像拉取/删除、网络创建/删除、卷创建/删除、容器新建/资源限制）全部误走 `/ui/v1/settings/docker`。`removeRowAction` 因此既无 `hostConfirm`，也无删除调用。
+- **影响面与未执行项**：第 3 项文件管理、第 4 项容器（行内启停/重启/删除走 `skiffContainerAction`，但「新建容器」表单同样走 `skiffDockerWrite`）、第 5 项 Web 安装进度、第 6 项回归均未执行；按约定失败即停手，未改代码、未提交。
+- **清理**：测试站点 `r18.local`（含别名与自签证书）、测试公钥 `r18-acceptance`、镜像 `r18/probe:1`、卷 `r18vol`、容器 `r18-sleep` 已全部删除；保留产品自身 `skiff-web-nginx` 与 `official` 信任公钥。
 
 **2026-11-14 19:26–19:55 `56e5790`（主题 CSS 变量 + 菜单精简 + Web 服务安装/运维）验收**
 
