@@ -308,7 +308,7 @@ pub async fn container_action(
     Path((id, action)): Path<(String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let verb = handlers::containers::action_verb(&action).map_err(ApiError)?;
     let row = handlers::resolve_container(&state, &id)
         .await
@@ -366,7 +366,7 @@ pub async fn container_create(
     parts: Parts,
     Json(body): Json<ContainerCreateBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -421,7 +421,7 @@ pub async fn container_limits_update(
     parts: Parts,
     Json(body): Json<ContainerLimitsBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let row = handlers::resolve_container(&state, &id)
         .await
         .map_err(ApiError)?;

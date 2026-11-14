@@ -100,7 +100,7 @@ pub async fn store_install(
     parts: Parts,
     Json(body): Json<StoreInstallBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     if !state.cfg.catalog.enabled {
         return Err(ApiError(AppError::NotFound("商店目录未启用".into())));
     }
@@ -194,7 +194,7 @@ pub async fn store_upgrade_download(
     Path(version): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let ip = handlers::client_ip(&state, &parts);
     let outcome = handlers::store::apply_upgrade_download(&state, &user, &ip, &version)
         .await

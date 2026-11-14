@@ -96,8 +96,7 @@ pub async fn task_toggle(
     parts: Parts,
     Json(body): Json<EnabledBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::TASK_TOGGLE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::TASK_TOGGLE)?;
     skiff_app::commands::task::toggle(
         &state,
         skiff_app::commands::task::ToggleTask {
@@ -119,8 +118,7 @@ pub async fn task_run(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::TASK_RUN).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::TASK_RUN)?;
     skiff_app::commands::task::run(
         &state,
         skiff_app::commands::task::RunTask {
@@ -141,8 +139,7 @@ pub async fn task_delete(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::TASK_DELETE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::TASK_DELETE)?;
     skiff_app::commands::task::delete(
         &state,
         skiff_app::commands::task::DeleteTask {

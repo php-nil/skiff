@@ -248,8 +248,7 @@ pub async fn site_create(
     parts: Parts,
     Json(body): Json<SiteCreateBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_CREATE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_CREATE)?;
     // 请求体字段与旧新建表单同名，但这里直接构造命令输入，不再经表单 map 解析。
     let mut aliases = body.aliases.clone();
     aliases.push(body.aliases_bulk.clone());
@@ -277,8 +276,7 @@ pub async fn site_power(
     Path((domain, action)): Path<(String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_ACTION).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_ACTION)?;
     let running = match action.as_str() {
         "start" => true,
         "stop" => false,
@@ -309,8 +307,7 @@ pub async fn site_set_default(
     parts: Parts,
     Json(body): Json<EnabledBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_SET_DEFAULT).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_SET_DEFAULT)?;
     skiff_app::commands::site::set_default(
         &state,
         skiff_app::commands::site::SetDefaultSite {
@@ -332,8 +329,7 @@ pub async fn site_domains(
     parts: Parts,
     Json(body): Json<SiteDomainBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_UPDATE_DOMAINS).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_UPDATE_DOMAINS)?;
     let op = match body.action.as_str() {
         "add" => skiff_app::commands::site::AliasOp::Add,
         "remove" => skiff_app::commands::site::AliasOp::Remove,
@@ -366,8 +362,7 @@ pub async fn site_save_config(
     parts: Parts,
     Json(body): Json<SiteConfigBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_SAVE_CONFIG).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_SAVE_CONFIG)?;
     let outcome = skiff_app::commands::site::save_config(
         &state,
         skiff_app::commands::site::SaveSiteConfig {
@@ -393,8 +388,7 @@ pub async fn site_ssl(
     parts: Parts,
     Json(body): Json<SiteSslBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_SSL).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_SSL)?;
     let op = match body.action.as_str() {
         "generate" => skiff_app::commands::site::SslOp::Generate,
         "upload" => skiff_app::commands::site::SslOp::Upload {
@@ -435,8 +429,7 @@ pub async fn site_backup(
     parts: Parts,
     Json(body): Json<EnabledBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_SET_BACKUP).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_SET_BACKUP)?;
     let svc = state
         .tasks()
         .ok_or_else(|| ApiError(AppError::Unavailable("内核任务服务未初始化".into())))?;
@@ -462,8 +455,7 @@ pub async fn site_delete(
     parts: Parts,
     Json(body): Json<SiteDeleteBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_DELETE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_DELETE)?;
     if body.confirm.trim() != domain {
         return Err(ApiError(AppError::BadRequest(format!(
             "请输入站点域名 {domain} 以确认删除"
@@ -488,8 +480,7 @@ pub async fn site_batch(
     parts: Parts,
     Json(body): Json<SiteBatchBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::SITE_BATCH_CREATE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::SITE_BATCH_CREATE)?;
     let domains: Vec<String> = body
         .domains
         .into_iter()

@@ -115,7 +115,7 @@ pub async fn logout(
     UiAuthUser(user): UiAuthUser,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let ip = handlers::client_ip(&state, &parts);
     state
         .logout(&user.user.username, &user.session_id, &ip)

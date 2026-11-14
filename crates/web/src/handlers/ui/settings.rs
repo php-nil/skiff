@@ -108,8 +108,8 @@ pub async fn settings_panel_update(
     parts: Parts,
     Json(body): Json<SettingsPanelBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    handlers::require_permission(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    guard::csrf(&state, &user, &parts)?;
+    guard::permission(&user, skiff_model::Permission::Admin)?;
     let mut form: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for (key, value) in [
         ("listen_addr", body.listen_addr),
@@ -175,7 +175,7 @@ pub async fn settings_menu_update(
     parts: Parts,
     Json(body): Json<MenuUpdateBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     handlers::settings::apply_menu_update(
         &state,
         &user,
@@ -225,8 +225,8 @@ pub async fn settings_docker_update(
     parts: Parts,
     Json(body): Json<DockerSettingsBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    handlers::require_permission(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    guard::csrf(&state, &user, &parts)?;
+    guard::permission(&user, skiff_model::Permission::Admin)?;
     let mut form: HashMap<String, Vec<String>> = HashMap::new();
     form.insert("registry_mirror".into(), vec![body.registry_mirror]);
     form.insert("image_prefix".into(), vec![body.image_prefix]);
@@ -250,7 +250,7 @@ pub async fn settings_password_update(
     parts: Parts,
     Json(body): Json<PasswordBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     if body.new_password != body.confirm_password {
         return Err(ApiError(AppError::BadRequest(
             "两次输入的新口令不一致".into(),
@@ -319,7 +319,7 @@ pub async fn settings_totp_setup(
     UiAuthUser(user): UiAuthUser,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let secret = skiff_identity::generate_totp_secret();
     state
         .save_totp_secret(user.user.id, &secret, false)
@@ -341,7 +341,7 @@ pub async fn settings_totp_enable(
     parts: Parts,
     Json(body): Json<TotpEnableBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let secret = user.user.totp_secret.clone().unwrap_or_default();
     let now = chrono::Utc::now().timestamp().try_into().unwrap_or(0);
     if !skiff_identity::verify_totp(&secret, body.code.trim(), now, 1) {
@@ -383,7 +383,7 @@ pub async fn settings_key_import(
     if !user.can(skiff_model::Permission::Admin) {
         return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
     }
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let public_hex = body.public_key.trim().to_lowercase();
     let label = body.label.trim().to_string();
     let vk = skiff_pkgfmt::decode_public_key(&public_hex)
@@ -417,7 +417,7 @@ pub async fn settings_key_remove(
     if !user.can(skiff_model::Permission::Admin) {
         return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
     }
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .db()
         .remove_trusted_key(&key_id)

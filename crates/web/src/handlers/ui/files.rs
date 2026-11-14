@@ -14,7 +14,7 @@ pub async fn files(
     UiAuthUser(user): UiAuthUser,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize(&user, act::FILE_BROWSE).map_err(ApiError)?;
+    guard::action(&user, act::FILE_BROWSE)?;
     let path = q
         .get("path")
         .map(|p| p.trim().to_string())
@@ -77,8 +77,8 @@ pub async fn files_mkdir(
     parts: Parts,
     Json(body): Json<FilePathBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize(&user, act::FILE_WRITE).map_err(ApiError)?;
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::action(&user, act::FILE_WRITE)?;
+    guard::csrf(&state, &user, &parts)?;
     let path = body.path.trim().to_string();
     if path.is_empty() {
         return Err(ApiError(AppError::BadRequest("目录路径不能为空".into())));
@@ -101,8 +101,8 @@ pub async fn files_rename(
     parts: Parts,
     Json(body): Json<FileRenameBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize(&user, act::FILE_WRITE).map_err(ApiError)?;
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::action(&user, act::FILE_WRITE)?;
+    guard::csrf(&state, &user, &parts)?;
     let from = body.from.trim().to_string();
     let to = body.to.trim().to_string();
     if from.is_empty() || to.is_empty() {
@@ -126,8 +126,8 @@ pub async fn files_remove(
     parts: Parts,
     Json(body): Json<FilePathBody>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize(&user, act::FILE_REMOVE).map_err(ApiError)?;
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::action(&user, act::FILE_REMOVE)?;
+    guard::csrf(&state, &user, &parts)?;
     let path = body.path.trim().to_string();
     if path.is_empty() {
         return Err(ApiError(AppError::BadRequest("路径不能为空".into())));
@@ -153,7 +153,7 @@ pub async fn files_read(
     UiAuthUser(user): UiAuthUser,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize(&user, act::FILE_READ).map_err(ApiError)?;
+    guard::action(&user, act::FILE_READ)?;
     let path = q
         .get("path")
         .map(|p| p.trim().to_string())

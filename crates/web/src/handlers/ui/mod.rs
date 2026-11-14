@@ -39,6 +39,7 @@ mod compose;
 mod containers;
 mod dto;
 mod files;
+mod guard;
 mod jobs;
 mod menu;
 mod overview;

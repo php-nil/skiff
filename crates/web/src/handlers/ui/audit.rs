@@ -15,7 +15,7 @@ pub async fn audit(
     UiAuthUser(user): UiAuthUser,
     Query(q): Query<AuditQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize_for(&user, skiff_model::Permission::AuditRead).map_err(ApiError)?;
+    guard::permission(&user, skiff_model::Permission::AuditRead)?;
     let keyword = q.q.as_deref().unwrap_or("").trim().to_string();
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     // 复用持久化的 CSRF 派生密钥：签名域由 `AuditScope`（`cursor:audit:`）隔离。

@@ -138,8 +138,7 @@ pub async fn web_config_save(
     parts: Parts,
     Json(body): Json<WebConfigBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::WEB_CONFIG_MAIN_SAVE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::WEB_CONFIG_MAIN_SAVE)?;
     let ip = handlers::client_ip(&state, &parts);
     match handlers::nginx::apply_main(&state, &user, &ip, &body.content).await {
         Ok(message) => write_done(json!({ "message": message })),
@@ -154,8 +153,7 @@ pub async fn web_params_save(
     parts: Parts,
     Json(body): Json<WebParamsBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::WEB_CONFIG_PARAMS_SAVE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::WEB_CONFIG_PARAMS_SAVE)?;
     let ip = handlers::client_ip(&state, &parts);
     let params = skiff_app::nginx::NginxParams {
         worker_processes: body.worker_processes.trim().to_string(),

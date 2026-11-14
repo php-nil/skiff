@@ -98,8 +98,7 @@ pub async fn job_cancel(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::JOB_CANCEL).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::JOB_CANCEL)?;
     let outcome = skiff_app::commands::job::cancel(
         &state,
         skiff_app::commands::job::CancelJob {
@@ -126,8 +125,7 @@ pub async fn job_retry(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::JOB_RETRY).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::JOB_RETRY)?;
     let job = skiff_app::commands::job::retry(
         &state,
         skiff_app::commands::job::RetryJob {

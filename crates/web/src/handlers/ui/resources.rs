@@ -154,7 +154,7 @@ pub async fn image_pull(
     parts: Parts,
     Json(body): Json<ImagePullBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -183,7 +183,7 @@ pub async fn image_remove(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -215,7 +215,7 @@ pub async fn network_create(
     parts: Parts,
     Json(body): Json<NameBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -246,7 +246,7 @@ pub async fn network_remove(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -275,7 +275,7 @@ pub async fn volume_create(
     parts: Parts,
     Json(body): Json<NameBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy
@@ -306,7 +306,7 @@ pub async fn volume_remove(
     Path(name): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     state
         .cfg
         .policy

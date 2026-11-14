@@ -114,7 +114,7 @@ pub async fn runtime_logs(
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    guard::permission(&user, skiff_model::Permission::Admin)?;
     let tail = q
         .get("tail")
         .and_then(|v| v.parse::<usize>().ok())
@@ -327,8 +327,7 @@ pub async fn runtime_create(
     parts: Parts,
     Json(body): Json<RuntimeCreateBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_CREATE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_CREATE)?;
     let extensions = body
         .extensions
         .unwrap_or_else(skiff_app::runtime_catalog::default_extensions);
@@ -376,8 +375,7 @@ pub async fn runtime_action(
     parts: Parts,
     Json(body): Json<RuntimeActionBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_ACTION).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_ACTION)?;
     let op = match action.as_str() {
         "start" => runtime_cmd::RuntimeOp::Start,
         "stop" => runtime_cmd::RuntimeOp::Stop,
@@ -453,8 +451,7 @@ pub async fn runtime_config_save(
     parts: Parts,
     Json(body): Json<PhpConfigBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_SAVE_CONFIG).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_CONFIG)?;
     let default = skiff_app::sites::PhpRuntimeConfig::default();
     let config = skiff_app::sites::PhpRuntimeConfig {
         memory_limit: if body.memory_limit.trim().is_empty() {
@@ -508,8 +505,7 @@ pub async fn runtime_node_config_save(
     parts: Parts,
     Json(body): Json<NodeConfigBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_SAVE_NODE_CONFIG).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_NODE_CONFIG)?;
     let outcome = runtime_cmd::save_node_config(
         &state,
         runtime_cmd::SaveNodeConfig {
@@ -543,8 +539,7 @@ pub async fn runtime_port_save(
     parts: Parts,
     Json(body): Json<RuntimePortBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_SAVE_PORT).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_PORT)?;
     let domains = state
         .db()
         .runtime_site_domains(&id)
@@ -581,8 +576,7 @@ pub async fn runtime_clone(
     parts: Parts,
     Json(body): Json<RuntimeCloneBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_CLONE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_CLONE)?;
     let rt = runtime_cmd::clone(
         &state,
         runtime_cmd::CloneRuntime {
@@ -611,8 +605,7 @@ pub async fn runtime_extensions_save(
     parts: Parts,
     Json(body): Json<RuntimeExtensionsBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_SAVE_EXTENSIONS).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_EXTENSIONS)?;
     let changed = runtime_cmd::save_extensions(
         &state,
         runtime_cmd::SaveExtensions {
@@ -638,7 +631,7 @@ pub async fn runtime_extension_change(
     Path((id, key, op)): Path<(String, String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    guard::csrf(&state, &user, &parts)?;
     let change = runtime_cmd::ExtensionChange {
         id: id.clone(),
         key: key.clone(),
@@ -647,7 +640,7 @@ pub async fn runtime_extension_change(
     };
     match op.as_str() {
         "install" => {
-            crate::authz::authorize(&user, act::RUNTIME_INSTALL_EXTENSION).map_err(ApiError)?;
+            guard::action(&user, act::RUNTIME_INSTALL_EXTENSION)?;
             runtime_cmd::install_extension(&state, change)
                 .await
                 .map_err(handlers::sites::map_err)
@@ -655,7 +648,7 @@ pub async fn runtime_extension_change(
             write_done(json!({ "message": format!("扩展 {key} 安装任务已提交") }))
         }
         "uninstall" => {
-            crate::authz::authorize(&user, act::RUNTIME_UNINSTALL_EXTENSION).map_err(ApiError)?;
+            guard::action(&user, act::RUNTIME_UNINSTALL_EXTENSION)?;
             runtime_cmd::uninstall_extension(&state, change)
                 .await
                 .map_err(handlers::sites::map_err)
@@ -676,8 +669,7 @@ pub async fn runtime_extensions_batch(
     parts: Parts,
     Json(body): Json<ExtensionBatchBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_BATCH_EXTENSIONS).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_BATCH_EXTENSIONS)?;
     let install = match body.op.as_str() {
         "install" => true,
         "uninstall" => false,
@@ -725,8 +717,7 @@ pub async fn runtime_pecl_install(
     parts: Parts,
     Json(body): Json<PeclBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_INSTALL_PECL).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_INSTALL_PECL)?;
     let name = body.name.trim().to_string();
     runtime_cmd::install_pecl(
         &state,
@@ -752,8 +743,7 @@ pub async fn runtime_config_file_save(
     parts: Parts,
     Json(body): Json<ConfigFileBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_SAVE_CONFIG_FILE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_CONFIG_FILE)?;
     let file = runtime_cmd::save_config_file(
         &state,
         runtime_cmd::SaveConfigFile {
@@ -785,8 +775,7 @@ pub async fn runtime_probe(
     Path(id): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_PROBE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_PROBE)?;
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -812,8 +801,7 @@ pub async fn runtime_unbind_site(
     Path((id, domain)): Path<(String, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_UNBIND_SITE).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_UNBIND_SITE)?;
     runtime_cmd::unbind_site(
         &state,
         runtime_cmd::UnbindSite {
@@ -849,8 +837,7 @@ pub async fn runtime_images_save(
     parts: Parts,
     Json(body): Json<RuntimeImagesBody>,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
-    crate::authz::authorize(&user, act::RUNTIME_SAVE_IMAGES).map_err(ApiError)?;
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_IMAGES)?;
     runtime_cmd::save_images(
         &state,
         runtime_cmd::SaveImages {
