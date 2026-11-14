@@ -945,6 +945,10 @@
   }
 
   /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
+  ///
+  /// 注意：budding 1.8.0-r4 的 schema 根没有注册 `theme` 顶层属性，写进树里会
+  /// 触发 CompileError（整棵树拒绝编译）。主题改为文档级 CSS 变量注入，
+  /// 见 `applyShellTheme`。
   function shellSchema(session) {
     var schema = {
       type: 'admin',
@@ -964,12 +968,50 @@
         body: [{ type: 'outlet' }]
       }
     };
-    // 壳主题由 `/ui/v1/session` 一并下发：`admin` 外壳读取 schema.theme，
-    // 把主色写到 `--v-theme-primary` / `--bud-admin-primary`，全站页面共用。
-    if (session.theme && session.theme.primary) {
-      schema.theme = { primary: session.theme.primary };
-    }
     return schema;
+  }
+
+  /// 把全局主色写成文档级 CSS 变量（不进入 schema 树）。
+  ///
+  /// 变量口径与 SDK 自身主题实现一致：`--v-theme-primary` / `--bud-admin-primary`
+  /// 存 `r, g, b` 三元组，`on-primary` 按亮度取黑/白。Vuetify 会在
+  /// `.v-theme--light/.v-theme--dark` 上重复声明主色，所以这里用 `!important`
+  /// 覆盖，保证全站（含弹层）都读到同一主色。
+  function applyShellTheme(theme) {
+    var hex = theme && theme.primary;
+    if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+    var r = parseInt(hex.slice(1, 3), 16);
+    var g = parseInt(hex.slice(3, 5), 16);
+    var b = parseInt(hex.slice(5, 7), 16);
+    function channel(value) {
+      value /= 255;
+      return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    }
+    var luminance =
+      0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    var rgb = r + ', ' + g + ', ' + b;
+    var on = luminance > 0.5 ? '0, 0, 0' : '255, 255, 255';
+    var style = document.getElementById('skiff-shell-theme');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'skiff-shell-theme';
+      (document.head || document.documentElement).appendChild(style);
+    }
+    style.textContent =
+      ':root{--v-theme-primary:' +
+      rgb +
+      ' !important;--v-theme-on-primary:' +
+      on +
+      ' !important;--bud-admin-primary:' +
+      rgb +
+      ';--bud-admin-on-primary:' +
+      on +
+      '}' +
+      '.v-theme--light,.v-theme--dark{--v-theme-primary:' +
+      rgb +
+      ' !important;--v-theme-on-primary:' +
+      on +
+      ' !important}';
   }
 
   /// 登出：复用 `/ui/v1/session/logout` 与页面写操作同一个 CSRF 头。
@@ -7029,6 +7071,7 @@
           return;
         }
         sessionState = res.body.data;
+        applyShellTheme(sessionState.theme);
         return fetchData('/menu').then(function (menu) {
           embed(shellSchema(sessionState), buildRoutes(menu));
         });

@@ -9950,8 +9950,16 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         "界面设置必须映射到规范路径与 schema"
     );
     assert!(
-        js.contains("schema.theme = { primary: session.theme.primary };"),
-        "壳主题必须由 session 下发到 admin.theme"
+        js.contains("applyShellTheme(sessionState.theme);"),
+        "壳主题必须由 session 下发后注入文档级 CSS 变量"
+    );
+    assert!(
+        js.contains("skiff-shell-theme") && js.contains("--v-theme-primary"),
+        "壳主题必须写 --v-theme-primary 等 CSS 变量"
+    );
+    assert!(
+        !js.contains("schema.theme"),
+        "budding 1.8.0-r4 根节点未注册 theme，禁止写进 schema 树"
     );
     assert!(
         js.contains("skiffUiThemeWrite: uiThemeWrite,"),
@@ -9973,6 +9981,57 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         js.contains("var installed = state !== '' && state !== 'missing';"),
         "未安装与已安装必须区分，避免出现无意义按钮"
     );
+}
+
+/// 静态防回归：禁止 boot 向 schema 根写入未注册的顶层属性。
+///
+/// 白名单来自随包 budding 1.8.0-r4 的编译期属性集合：
+/// `type` / `id` / `definitions` / `props` 为特殊键，其余为全局基础属性
+/// （该版本未注册任何 `nodeAttributes`，所以 `theme` 之类一律不合法）。
+/// 这类错误会让整棵 schema 编译失败、全站白屏，静态断言必须走在装机前面。
+#[test]
+fn budding_boot_only_writes_registered_schema_root_keys() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    let allowed = [
+        "type",
+        "id",
+        "definitions",
+        "props",
+        "data",
+        "visibleOn",
+        "hiddenOn",
+        "permission",
+        "permissions",
+        "onEvent",
+        "action",
+        "to",
+        "class",
+        "className",
+        "style",
+        "content",
+        "source",
+    ];
+    let mut rest = js;
+    while let Some(pos) = rest.find("schema.") {
+        let tail = &rest[pos + "schema.".len()..];
+        let key_len = tail
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .count();
+        let key = &tail[..key_len];
+        let after = tail[key_len..].trim_start();
+        if !key.is_empty()
+            && after.starts_with('=')
+            && !after.starts_with("==")
+            && !after.starts_with("=>")
+        {
+            assert!(
+                allowed.contains(&key),
+                "schema.{key} 未在 budding 1.8.0-r4 注册，编译会整棵树失败"
+            );
+        }
+        rest = tail;
+    }
 }
 
 /// 1.8.0-r3 已闭环 T10 / T16 / code Pack：宿主不得再保留旧能力缺失时的绕过。

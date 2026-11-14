@@ -472,7 +472,7 @@ overview(0) → sites(100) → docker(200) → plugins(300) → tools(400) → s
 - 入口：`设置 → 界面`，稳定键 `core/settings/ui`，URL `/{p}/settings/ui`。
 - 最小集合只有「主色」一项，按**全站**生效（全局设置，非按用户）：写入仅管理员，读取对所有登录用户开放。
 - 主色存 `settings` 表 `ui.theme.primary`，`#rrggbb` 小写；空值恢复缺省 `#1867c0`。
-- 下发路径：`GET /ui/v1/session → theme.primary`，壳页启动时写入 `admin.theme`（`--v-theme-primary` / `--bud-admin-primary`）；保存后当前页刷新，其他会话下次加载页面生效。
+- 下发路径：`GET /ui/v1/session → theme.primary`；壳启动时**不写入 schema 树**（budding 1.8.0-r4 未注册根级 `theme`，写入会 `CompileError` 白屏），改为向文档注入 `--v-theme-primary` / `--v-theme-on-primary` / `--bud-admin-primary` 等 CSS 变量（对 `.v-theme--light/.v-theme--dark` 用 `!important` 覆盖 Vuetify 缺省主色）；保存后当前页刷新，其他会话下次加载页面生效。
 - 校验失败 400 且不落库；成功审计 `settings.ui.update`。
 
 ---
