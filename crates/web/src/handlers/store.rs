@@ -210,7 +210,7 @@ pub async fn page(
 }
 
 /// 旧 GET 安装入口已下线：安装会写盘并落审计，必须是带 CSRF 的 POST。
-/// 保留该路由只为不让旧书签落到 404/405，直接回商店页。
+/// 保留该路由只为不让旧书签落到 404/405，直接回商店页；兼容保留，不设删除时间。
 pub async fn install_legacy_get(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,

@@ -19,6 +19,8 @@ use crate::templates::DockerSettingsPage;
 use crate::util::{form_first, parse_form};
 
 /// 旧路径 `/{p}/docker/settings` → `/{p}/settings/docker`（308 保留方法与请求体）。
+///
+/// 兼容保留，不设删除时间；规范路径为 `/{p}/settings/docker`。
 pub async fn legacy_path(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
     let prefix = &state.cfg.entry_prefix;
     let mut target = format!("/{prefix}/settings/docker");

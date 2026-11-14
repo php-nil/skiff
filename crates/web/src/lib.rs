@@ -594,7 +594,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         // 审计页已原生渲染（第十五批）：数据走 `/ui/v1/audit`（关键字 + 签名 keyset 游标），
         // 旧 SSR 仅保留在 `/{p}/m/core/settings/audit`（最近 200 条）。
-        // 契约里的规范深链：旧路由继续可用，这里只是内部转发到同一 handler。
+        // 契约里的规范深链：旧 SSR 深链（`/{p}/m/core/...`）兼容保留，不设删除时间；
+        // 新功能只进 budding 规范路径，不再往这里加页面。
         .route(&format!("/{p}/m/{{*rest}}"), get(handlers::menu::dispatch))
         // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。
         .route(&format!("/{p}/static/{{*path}}"), get(assets::static_file))

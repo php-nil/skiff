@@ -39,7 +39,7 @@ type ApiResult = Result<Json<Value>, JsonErr>;
 
 /// 旧页面内 JSON 前缀 `/{p}/files/api/*` 的兼容跳转：308 保留方法与请求体。
 ///
-/// 规范路径见 [docs/URL_CONTRACT.md](../../../../docs/URL_CONTRACT.md) §4：
+/// 兼容保留，不设删除时间；规范路径见 [docs/URL_CONTRACT.md](../../../../docs/URL_CONTRACT.md) §4：
 /// 页面内 JSON 接口与页面同构，不再额外插 `api` 段。
 pub async fn legacy_api_redirect(
     State(state): State<Arc<AppState>>,
@@ -117,6 +117,9 @@ pub async fn page(
     crate::handlers::spa::shell_page(&state)
 }
 
+/// 旧 SSR 文件页 `/{p}/m/core/files`：**兼容保留，不设删除时间**。
+///
+/// 新前端使用 `/{p}/files` 原生页；这里只维持旧深链可达，不再加新能力。
 pub async fn legacy_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,

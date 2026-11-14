@@ -11,6 +11,10 @@ use crate::handlers;
 use crate::middleware::{AuthUser, PluginManagerUser};
 use crate::state::AppState;
 
+/// 旧 SSR 菜单深链（`/{p}/m/core/...`）的内部转发。
+///
+/// **兼容保留，不设删除时间**：这里只维持既有页面可达，不再新增页面或功能；
+/// 新前端入口一律走 budding 规范路径（`/{p}/...` 壳页 + `/ui/v1/*` 数据）。
 pub async fn dispatch(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,

@@ -25,7 +25,7 @@ use super::*;
 
 /// 旧的运行环境页面入口：`/{p}/sites/env` → `/{p}/runtimes`（301，规范化 URL）。
 ///
-/// 运行环境是独立资源，不属于站点；`sites/env` 只作为兼容别名保留，
+/// 运行环境是独立资源，不属于站点；`sites/env` 只作为兼容别名保留（不设删除时间），
 /// 旧 POST 动作路由仍指向同一 handler，避免已打开页面提交失败。
 pub async fn legacy_env_page(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
     let mut target = format!("/{}/runtimes", state.cfg.entry_prefix);
