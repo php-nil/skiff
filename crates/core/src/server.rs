@@ -156,6 +156,19 @@ pub fn spawn_docker_health(state: Arc<skiff_app::AppState>) {
     });
 }
 
+/// 站点守护巡检：每 3 秒评估运行中站点的运行环境，发现不可用即把 vhost 切到
+/// 503 维护态，恢复后自动切回。发现窗口不依赖用户打开页面。
+pub fn spawn_site_guard(state: Arc<skiff_app::AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(skiff_app::sites::SITE_GUARD_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            state.site_guard_tick().await;
+        }
+    });
+}
+
 pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));

@@ -19,8 +19,13 @@
 //!
 //! nginx 容器整目录挂载 `/www`，PHP 容器同样挂载 `/www`（每版本一个容器、
 //! 一个池配置与一个 socket）。nginx 使用 host 网络直接监听宿主 80；PHP-FPM
-//! 只走 unix socket，不暴露 9000。容器内路径一律由
-//! [`SiteSettings::container_path`] 从宿主路径换算，禁止手拼。
+//! 只走 unix socket，不暴露 9000。
+//!
+//! Node.js / Rust 容器接入专用 bridge [`SITE_NETWORK`] 并持有内核静态分配的
+//! 地址（`site_runtimes.container_ip`），**不使用 host 网络、不发布宿主端口**；
+//! 站点 vhost 只反代 `http://<container_ip>:<port>`。对外发布是显式可选项
+//! （`publish_port`）。容器内路径一律由 [`SiteSettings::container_path`] 从
+//! 宿主路径换算，禁止手拼；vhost 中也禁止出现 `127.0.0.1:<端口>` 形态的上游。
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -34,17 +39,21 @@ use crate::runtime_catalog;
 use crate::AppState;
 
 mod crud;
+mod guard;
 mod health;
 mod install;
 mod layout;
 mod logs;
+mod network;
 mod runtime;
 mod spec;
 mod vhost;
+pub use guard::*;
 pub use health::*;
 pub use install::{InstallLock, InstallLocks, InstallProgress, InstallStep, SiteEnvStatus};
 pub use layout::*;
 pub use logs::*;
+pub use network::*;
 pub use runtime::NODE_HEALTH_BUDGET;
 pub use spec::*;
 pub use vhost::*;

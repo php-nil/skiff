@@ -141,6 +141,7 @@ action_table! {
     RUNTIME_SAVE_NODE_CONFIG = "runtime.save_node_config": Runtime, Some(Permission::Admin), "commands::runtime::save_node_config", false;
     RUNTIME_SAVE_CONFIG_FILE = "runtime.save_config_file": Runtime, Some(Permission::Admin), "commands::runtime::save_config_file", false;
     RUNTIME_SAVE_PORT = "runtime.save_port": Runtime, Some(Permission::Admin), "commands::runtime::save_port", false;
+    RUNTIME_SAVE_PUBLISH = "runtime.save_publish": Runtime, Some(Permission::Admin), "commands::runtime::save_publish", false;
     RUNTIME_CLONE = "runtime.clone": Runtime, Some(Permission::Admin), "commands::runtime::clone", false;
     RUNTIME_ACTION = "runtime.action": Runtime, Some(Permission::Admin), "commands::runtime::action", false;
     RUNTIME_SAVE_EXTENSIONS = "runtime.save_extensions": Runtime, Some(Permission::Admin), "commands::runtime::save_extensions", false;

@@ -1,19 +1,16 @@
-//! 站点/运行环境的健康检查：宿主端口占用探测与容器就绪判定。
+//! 站点/运行环境的健康检查：容器状态与容器地址可达性。
 //!
-//! 这里的函数只看「端口与进程」，不碰站点目录与容器编排；调用方负责在探测
-//! 失败后决定阻塞还是降级。
+//! 运行环境容器接入专用 bridge，宿主上不存在它们的端口；站点 vhost 只允许指向
+//! 内核静态分配的容器地址。因此就绪判定只需要三件事——容器在跑、容器实际地址
+//! 与登记地址一致、从宿主访问 `<地址>:<端口>` 能得到正常响应。
 //!
-//! 运行环境（Node/Rust）容器使用 host 网络，「端口能连上」并不等于「响应方
-//! 是本容器」：宿主上任何进程占住同一端口，探针都会拿到陌生进程的响应。因此
-//! 就绪判定必须同时看三件事——容器状态（running / restarting / RestartCount）、
-//! 监听套接字的归属（按 `/proc/<pid>/cgroup` 判断是否属于本容器）、以及 HTTP
-//! 响应。三者缺一都可能把「端口被占、容器 crash-loop」误判成「操作已完成」。
+//! 这里不再读取 `/proc` 判断端口归属：端口归属不再是安全边界，地址本身就是边界。
 
 use std::time::Duration;
 
 use skiff_docker::{ContainerRow, DockerService};
 
-use super::NGINX_CONTAINER;
+use super::{NGINX_CONTAINER, SITE_NETWORK};
 
 /// 只有自家 nginx 容器处于 running 才认为 80 由自己持有。
 /// 停止/退出/正在重启的容器不构成「端口已占」，必须重新探测。
@@ -23,6 +20,8 @@ pub(crate) fn nginx_container_running(rows: &[ContainerRow]) -> bool {
 }
 
 /// 探测宿主端口：绑定失败即视为被占用，并尽力给出占用进程。
+///
+/// 只用于 nginx 的 80/443 与安装前的宿主端口检查；运行环境端口已不再落到宿主。
 pub fn check_port_free(port: u16) -> Result<(), String> {
     match std::net::TcpListener::bind(("0.0.0.0", port)) {
         Ok(l) => {
@@ -30,7 +29,7 @@ pub fn check_port_free(port: u16) -> Result<(), String> {
             Ok(())
         }
         Err(e) => Err(format!(
-            "宿主端口 {port} 已被占用（{}），请先停掉占用进程再安装/建站：{e}",
+            "宿主端口 {port} 已被占用（{}），请先停掉占用进程再继续：{e}",
             port_owner(port)
         )),
     }
@@ -114,32 +113,16 @@ pub(crate) struct ContainerFacts {
     pub exit_code: i64,
     /// 最近一次启动时间（RFC3339）。等待期间变化即说明容器重启过。
     pub started_at: String,
-}
-
-/// 端口监听者的归属。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ListenerOwner {
-    /// 端口上没有监听者。
-    None,
-    /// 监听套接字属于目标容器。
-    Container { pid: u32, comm: String },
-    /// 监听套接字属于宿主上的其它进程，不是本站点进程。
-    Foreign { pid: u32, comm: String },
-    /// 无法判定（缺 root、/proc 不可读、容器 id 缺失）。
-    Unknown(String),
+    /// 容器在站点专用网络上的实际地址。
+    pub ip: String,
 }
 
 /// 一次就绪判定的结论。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Readiness {
     Ready,
-    /// 还没起来（端口未监听 / HTTP 未就绪），值得继续等。
+    /// 还没起来（容器刚创建 / 地址未分配 / 端口未响应），值得继续等。
     Pending,
-    /// 容器在跑，但端口被别的进程占着。
-    WrongOwner {
-        pid: u32,
-        comm: String,
-    },
     /// 容器反复重启，不可能自愈。
     CrashLoop {
         restarts: i64,
@@ -148,80 +131,31 @@ pub(crate) enum Readiness {
     Exited {
         exit_code: i64,
     },
+    /// 容器实际地址与登记地址不一致：绝不按实际地址改写站点，避免指到别的容器。
+    AddressChanged {
+        expected: String,
+        actual: String,
+    },
 }
 
 /// 就绪等待失败的完整上下文（供调用方拼错误文案）。
 #[derive(Debug, Clone)]
 pub(crate) struct ReadinessFailure {
     pub verdict: Readiness,
-    pub owner: ListenerOwner,
+    /// 最后一次探测的补充说明（超时、连接失败等）。
     pub note: Option<String>,
 }
 
-/// 端口监听者归属：读取 `/proc/net/tcp*` 拿到监听 socket，再按 cgroup 判断
-/// 持有者是否属于目标容器。
-pub(crate) fn listener_owner(port: u16, container_id: &str) -> ListenerOwner {
-    let inodes = listening_inodes(port);
-    if inodes.is_empty() {
-        return ListenerOwner::None;
-    }
-    let targets: Vec<String> = inodes.iter().map(|i| format!("socket:[{i}]")).collect();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return ListenerOwner::Unknown("无法读取 /proc，不能确认端口归属".into());
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
-            continue;
-        };
-        for fd in fds.flatten() {
-            let Ok(target) = std::fs::read_link(fd.path()) else {
-                continue;
-            };
-            if !targets
-                .iter()
-                .any(|t| t.as_str() == target.to_string_lossy().as_ref())
-            {
-                continue;
-            }
-            let pid = name.parse().unwrap_or(0);
-            let comm = std::fs::read_to_string(entry.path().join("comm"))
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "未知进程".into());
-            return match pid_belongs_to_container(pid, container_id) {
-                Some(true) => ListenerOwner::Container { pid, comm },
-                Some(false) => ListenerOwner::Foreign { pid, comm },
-                None => ListenerOwner::Unknown(format!("监听进程 pid {pid} {comm} 的归属无法判定")),
-            };
-        }
-    }
-    ListenerOwner::Unknown("未能解析监听进程（需要 root 读 /proc）".into())
-}
-
-/// 进程是否属于指定容器：容器的 cgroup 路径里带完整 id（或前 12 位短 id）。
-fn pid_belongs_to_container(pid: u32, container_id: &str) -> Option<bool> {
-    if container_id.is_empty() {
-        return None;
-    }
-    let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    let short: String = container_id.chars().take(12).collect();
-    Some(text.contains(container_id) || (!short.is_empty() && text.contains(&short)))
-}
-
-/// 纯判定：把「容器状态 + 端口归属 + HTTP 结果」翻译成结论。
+/// 纯判定：把「容器状态 + 地址归属 + 可达性」翻译成结论。
 ///
 /// `baseline_started`：等待开始后第一次观测到的 `StartedAt`；变化即代表容器重启过。
 /// `observed_restarts`：等待窗口内已观察到的重启次数（用于错误文案）。
-/// `http_ok`：`None` 表示只做 TCP/端口判定（Rust 等无健康路径的环境）。
 fn classify(
     facts: &ContainerFacts,
     baseline_started: &str,
     observed_restarts: i64,
-    owner: &ListenerOwner,
-    http_ok: Option<bool>,
+    expected_ip: &str,
+    reachable: bool,
 ) -> Readiness {
     let restarted = !baseline_started.is_empty() && facts.started_at != baseline_started;
     if facts.restarting || restarted {
@@ -230,60 +164,112 @@ fn classify(
         };
     }
     if !facts.running {
+        // 刚创建、尚未启动的容器没有 StartedAt：给它一个轮询窗口，别当成已退出。
+        if facts.started_at.is_empty() {
+            return Readiness::Pending;
+        }
         return Readiness::Exited {
             exit_code: facts.exit_code,
         };
     }
-    match owner {
-        ListenerOwner::None => Readiness::Pending,
-        ListenerOwner::Foreign { pid, comm } => Readiness::WrongOwner {
-            pid: *pid,
-            comm: comm.clone(),
-        },
-        // 归属无法确认时退化为「容器在跑 + HTTP 可响应」，并由调用方保留 note。
-        ListenerOwner::Unknown(_) => match http_ok {
-            Some(true) => Readiness::Ready,
-            _ => Readiness::Pending,
-        },
-        ListenerOwner::Container { .. } => match http_ok {
-            Some(false) => Readiness::Pending,
-            _ => Readiness::Ready,
-        },
+    if facts.ip.is_empty() {
+        return Readiness::Pending;
+    }
+    if !expected_ip.is_empty() && facts.ip != expected_ip {
+        return Readiness::AddressChanged {
+            expected: expected_ip.to_string(),
+            actual: facts.ip.clone(),
+        };
+    }
+    if reachable {
+        Readiness::Ready
+    } else {
+        Readiness::Pending
     }
 }
 
 async fn container_facts(
     docker: &DockerService,
     container: &str,
-) -> Result<(ContainerFacts, String), String> {
+) -> Result<ContainerFacts, String> {
     let info = docker
         .inspect_container(container)
         .await
         .map_err(|e| format!("读取容器 {container} 状态失败：{e}"))?;
-    let id = info.id.unwrap_or_default();
-    let facts = match info.state {
-        Some(state) => ContainerFacts {
-            running: state.running.unwrap_or(false),
-            restarting: state.restarting.unwrap_or(false),
-            exit_code: state.exit_code.unwrap_or(0),
-            started_at: state.started_at.unwrap_or_default(),
-        },
-        None => ContainerFacts::default(),
+    let state = info.state.unwrap_or_default();
+    let ip = info
+        .network_settings
+        .and_then(|n| n.networks)
+        .and_then(|mut nets| nets.remove(SITE_NETWORK))
+        .map(|e| e.ip_address.unwrap_or_default())
+        .unwrap_or_default();
+    Ok(ContainerFacts {
+        running: state.running.unwrap_or(false),
+        restarting: state.restarting.unwrap_or(false),
+        exit_code: state.exit_code.unwrap_or(0),
+        started_at: state.started_at.unwrap_or_default(),
+        ip,
+    })
+}
+
+/// 从宿主向容器地址发起 HTTP 探测：2xx/3xx 视为正常响应。
+pub(crate) async fn http_probe_ok(ip: &str, port: u16, path: &str) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let connect = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::net::TcpStream::connect((ip, port)),
+    )
+    .await;
+    let Ok(Ok(mut stream)) = connect else {
+        return false;
     };
-    Ok((facts, id))
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n");
+    if tokio::time::timeout(Duration::from_secs(2), stream.write_all(req.as_bytes()))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf)).await
+    else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&buf[..n]);
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok());
+    matches!(status, Some(200..=399))
+}
+
+/// TCP 可达性（Rust 等没有健康路径的环境）。
+async fn tcp_probe_ok(ip: &str, port: u16) -> bool {
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::net::TcpStream::connect((ip, port)),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok())
+}
+
+async fn reachable(ip: &str, port: u16, http_path: Option<&str>) -> bool {
+    match http_path {
+        Some(path) => http_probe_ok(ip, port, path).await,
+        None => tcp_probe_ok(ip, port).await,
+    }
 }
 
 /// 轮询等待运行环境就绪。
 ///
-/// - `http_path = Some(p)`：Node 等 Web 应用，要求容器自身的监听端口对 `p`
-///   返回 2xx/3xx；`None`：只要求端口由容器自己监听（Rust 等）。
-/// - `restart_count` 以**本函数第一次观测到的值**为基准：手动 start/restart
-///   可能重置计数，用调用前的旧值当基准会漏判。
-/// - 「端口属于别的进程 / crash-loop / 已退出」是终态，连续两次确认后立即返回，
-///   避免重启瞬间的瞬时 EADDRINUSE 造成误判。
+/// - `ip`：内核登记的静态容器地址；实际地址不一致直接终态失败。
+/// - `http_path = Some(p)`：Node 等 Web 应用要求返回 2xx/3xx；`None`：只要求 TCP 可达。
+/// - 「crash-loop / 已退出 / 地址变化」是终态，连续两次确认后立即返回，避免重启
+///   瞬间的瞬时失败造成误判。
 pub(crate) async fn wait_runtime_ready(
     docker: &DockerService,
     container: &str,
+    ip: &str,
     port: u16,
     http_path: Option<&str>,
     timeout: Duration,
@@ -293,13 +279,11 @@ pub(crate) async fn wait_runtime_ready(
     let mut prev_started: Option<String> = None;
     let mut observed_restarts = 0i64;
     let mut hits = 0u32;
-    let mut last = Readiness::Pending;
-    let mut last_owner = ListenerOwner::None;
-    let mut note: Option<String> = None;
+    let mut last: Option<Readiness> = None;
 
     loop {
         match container_facts(docker, container).await {
-            Ok((facts, id)) => {
+            Ok(facts) => {
                 let base = baseline_started
                     .get_or_insert_with(|| facts.started_at.clone())
                     .clone();
@@ -309,308 +293,194 @@ pub(crate) async fn wait_runtime_ready(
                     }
                 }
                 prev_started = Some(facts.started_at.clone());
-                let owner = listener_owner(port, &id);
-                let http_ok = match http_path {
-                    Some(path)
-                        if matches!(
-                            owner,
-                            ListenerOwner::Container { .. } | ListenerOwner::Unknown(_)
-                        ) =>
-                    {
-                        Some(http_probe_ok(port, path).await)
-                    }
-                    Some(_) => Some(false),
-                    None => None,
-                };
-                let verdict = classify(&facts, &base, observed_restarts, &owner, http_ok);
+                let ok = facts.running
+                    && !facts.restarting
+                    && facts.ip == ip
+                    && reachable(ip, port, http_path).await;
+                let verdict = classify(&facts, &base, observed_restarts, ip, ok);
                 if verdict == Readiness::Ready {
                     return Ok(());
                 }
-                let terminal = matches!(
+                if matches!(
                     verdict,
                     Readiness::CrashLoop { .. }
-                        | Readiness::WrongOwner { .. }
                         | Readiness::Exited { .. }
-                );
-                hits = if terminal { hits + 1 } else { 0 };
-                if let ListenerOwner::Unknown(msg) = &owner {
-                    note = Some(msg.clone());
+                        | Readiness::AddressChanged { .. }
+                ) {
+                    hits += 1;
+                    if hits >= 2 {
+                        return Err(ReadinessFailure {
+                            verdict,
+                            note: None,
+                        });
+                    }
+                } else {
+                    hits = 0;
                 }
-                last = verdict;
-                last_owner = owner;
-                if hits >= 2 {
+                last = Some(verdict);
+            }
+            Err(note) => {
+                if tokio::time::Instant::now() >= deadline {
                     return Err(ReadinessFailure {
-                        verdict: last,
-                        owner: last_owner,
-                        note,
+                        verdict: Readiness::Pending,
+                        note: Some(note),
                     });
                 }
-            }
-            Err(e) => {
-                hits = 0;
-                note = Some(e);
             }
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(ReadinessFailure {
-                verdict: last,
-                owner: last_owner,
-                note,
+                verdict: last.unwrap_or(Readiness::Pending),
+                note: Some("等待超时".into()),
             });
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
-/// 一次性就绪检查（页面「检测」按钮）：不等待，直接给出当前结论。
+/// 一次性就绪检查（页面「检测」按钮）。
 pub(crate) async fn check_runtime_ready(
     docker: &DockerService,
     container: &str,
+    ip: &str,
     port: u16,
     http_path: Option<&str>,
 ) -> Result<(), ReadinessFailure> {
-    let (facts, id) = container_facts(docker, container)
+    let facts = container_facts(docker, container)
         .await
-        .map_err(|e| ReadinessFailure {
+        .map_err(|note| ReadinessFailure {
             verdict: Readiness::Pending,
-            owner: ListenerOwner::Unknown(e.clone()),
-            note: Some(e),
+            note: Some(note),
         })?;
-    let owner = listener_owner(port, &id);
-    let http_ok = match http_path {
-        Some(path)
-            if matches!(
-                owner,
-                ListenerOwner::Container { .. } | ListenerOwner::Unknown(_)
-            ) =>
-        {
-            Some(http_probe_ok(port, path).await)
-        }
-        Some(_) => Some(false),
-        None => None,
-    };
-    let verdict = classify(&facts, &facts.started_at, 0, &owner, http_ok);
-    if verdict == Readiness::Ready {
-        Ok(())
-    } else {
-        Err(ReadinessFailure {
+    let ok = facts.running
+        && !facts.restarting
+        && !facts.ip.is_empty()
+        && facts.ip == ip
+        && reachable(ip, port, http_path).await;
+    match classify(&facts, "", 0, ip, ok) {
+        Readiness::Ready => Ok(()),
+        verdict => Err(ReadinessFailure {
             verdict,
-            owner,
             note: None,
-        })
+        }),
     }
 }
 
-/// 把就绪失败翻译成给管理员看的一句话：谁占了端口、容器处于什么状态。
+/// 把判定结论翻译成面向用户的错误文案。
 pub(crate) fn readiness_message(
     subject: &str,
+    ip: &str,
     port: u16,
     http_path: Option<&str>,
     failure: &ReadinessFailure,
 ) -> String {
-    let what = match http_path {
-        Some(p) => format!("HTTP {p} 无 2xx/3xx 响应"),
-        None => format!("端口 {port} 未监听"),
+    let target = if http_path.is_some() {
+        format!("http://{ip}:{port}{}", http_path.unwrap_or(""))
+    } else {
+        format!("{ip}:{port}")
     };
     match &failure.verdict {
-        Readiness::WrongOwner { pid, comm } => format!(
-            "宿主端口 {port} 已被占用，占用方不是本站点进程（pid {pid} {comm}）；{subject} 无法监听该端口，请先停止该进程或更换端口"
+        Readiness::Ready => format!("{subject} 已就绪"),
+        Readiness::CrashLoop { restarts } => format!(
+            "{subject} 容器反复重启（已观察到 {restarts} 次），未通过健康检查；请查看容器日志（EADDRINUSE 等启动错误会在这里暴露）"
         ),
-        Readiness::CrashLoop { restarts } => {
-            let state_text = if *restarts > 0 {
-                format!("容器反复重启（本轮观察到 {restarts} 次重启）")
-            } else {
-                "容器处于重启状态（crash-loop）".to_string()
-            };
-            match &failure.owner {
-                ListenerOwner::Foreign { pid, comm } => format!(
-                    "{subject} {state_text}：宿主端口 {port} 已被非本站点进程占用（pid {pid} {comm}），容器无法监听；请先停止该进程后重试"
-                ),
-                _ => format!("{subject} {state_text}，启动失败；请查看容器日志（docker logs）"),
-            }
+        Readiness::Exited { exit_code } => {
+            format!("{subject} 容器已退出（exit code {exit_code}），站点不会转发到任何其它进程")
         }
-        Readiness::Exited { exit_code } => match &failure.owner {
-            ListenerOwner::Foreign { pid, comm } => format!(
-                "{subject} 容器已退出（exit {exit_code}）：宿主端口 {port} 已被非本站点进程占用（pid {pid} {comm}）；请先停止该进程后重试"
-            ),
-            _ => format!("{subject} 容器已退出（exit {exit_code}），未通过就绪检查；请查看容器日志"),
-        },
+        Readiness::AddressChanged { expected, actual } => format!(
+            "{subject} 容器实际地址 {actual} 与登记地址 {expected} 不一致；站点不会改指其它地址，请在运行环境页重建后再启用站点"
+        ),
         Readiness::Pending => match &failure.note {
-            Some(note) => format!("{subject} 未通过就绪检查（{what}）：{note}"),
-            None => format!("{subject} 未通过就绪检查（{what}），请查看运行环境日志"),
+            Some(note) => format!(
+                "{subject} 容器在跑，但 {target} 未返回正常响应（{note}）；已自动进入维护态，恢复后自动回到正常服务"
+            ),
+            None => format!(
+                "{subject} 容器在跑，但 {target} 未返回正常响应；已自动进入维护态，恢复后自动回到正常服务"
+            ),
         },
-        Readiness::Ready => format!("{subject} 应用就绪"),
     }
-}
-
-/// 以 HTTP 探测就绪：Node 进程可能已监听端口但仍在初始化路由，因此比 TCP 更贴近真实可用。
-///
-/// 只在确认监听套接字属于目标容器之后调用，不能单独当作健康结论。
-pub(crate) async fn http_probe_ok(port: u16, path: &str) -> bool {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let path = if path.trim().is_empty() {
-        "/"
-    } else {
-        path.trim()
-    };
-    let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
-        return false;
-    };
-    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    if stream.write_all(req.as_bytes()).await.is_err() {
-        return false;
-    }
-    let mut buf = [0u8; 64];
-    let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await;
-    let Ok(Ok(n)) = read else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..n]);
-    let mut parts = head.split_whitespace();
-    let (Some(version), Some(code)) = (parts.next(), parts.next()) else {
-        return false;
-    };
-    version.starts_with("HTTP/") && (code.starts_with('2') || code.starts_with('3'))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn facts(running: bool, restarting: bool, started_at: &str, exit_code: i64) -> ContainerFacts {
+    fn facts(running: bool, restarting: bool, ip: &str) -> ContainerFacts {
         ContainerFacts {
             running,
             restarting,
-            exit_code,
-            started_at: started_at.to_string(),
+            exit_code: 0,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            ip: ip.into(),
         }
     }
 
-    /// 端口被宿主其它进程占用：即使端口能返回 200，也必须判失败并指出占用者。
     #[test]
-    fn foreign_listener_is_not_ready_even_if_http_answers() {
-        let owner = ListenerOwner::Foreign {
-            pid: 4242,
-            comm: "python3".into(),
-        };
-        let verdict = classify(&facts(true, false, "t0", 0), "t0", 0, &owner, Some(true));
+    fn classify_crash_loop_wins() {
+        let f = facts(true, true, "172.18.16.2");
+        assert!(matches!(
+            classify(&f, "", 0, "172.18.16.2", true),
+            Readiness::CrashLoop { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_exited() {
+        let mut f = facts(false, false, "");
+        f.exit_code = 1;
+        assert!(matches!(
+            classify(&f, "", 0, "172.18.16.2", false),
+            Readiness::Exited { exit_code: 1 }
+        ));
+    }
+
+    #[test]
+    fn classify_not_started_yet_is_pending() {
+        let mut f = facts(false, false, "");
+        f.started_at.clear();
         assert_eq!(
-            verdict,
-            Readiness::WrongOwner {
-                pid: 4242,
-                comm: "python3".into()
+            classify(&f, "", 0, "172.18.16.2", false),
+            Readiness::Pending
+        );
+    }
+
+    #[test]
+    fn classify_address_change_is_terminal() {
+        let f = facts(true, false, "172.18.16.9");
+        assert_eq!(
+            classify(&f, "", 0, "172.18.16.2", true),
+            Readiness::AddressChanged {
+                expected: "172.18.16.2".into(),
+                actual: "172.18.16.9".into(),
             }
         );
-        let msg = readiness_message(
-            "Node.js",
-            9200,
-            Some("/"),
-            &ReadinessFailure {
-                verdict,
-                owner,
-                note: None,
-            },
-        );
-        assert!(msg.contains("不是本站点进程"), "文案未指出占用方：{msg}");
-        assert!(msg.contains("pid 4242"), "文案缺少占用进程：{msg}");
     }
 
-    /// crash-loop：容器在重启（或等待期间 StartedAt 变化），不能报「操作已完成」。
     #[test]
-    fn crash_loop_is_not_ready() {
-        let owner = ListenerOwner::Foreign {
-            pid: 4242,
-            comm: "python3".into(),
-        };
-        let verdict = classify(&facts(false, true, "t0", 1), "t0", 3, &owner, Some(true));
-        assert_eq!(verdict, Readiness::CrashLoop { restarts: 3 });
-
-        // 等待窗口内 StartedAt 变化 = 容器重启过，同样判 crash-loop。
-        let verdict = classify(
-            &facts(true, false, "t1", 0),
-            "t0",
-            1,
-            &ListenerOwner::None,
-            None,
-        );
-        assert_eq!(verdict, Readiness::CrashLoop { restarts: 1 });
-    }
-
-    /// 正常：容器在跑且监听套接字属于它自己，HTTP 2xx/3xx 才算就绪。
-    #[test]
-    fn container_owned_listener_is_ready_only_when_http_ok() {
-        let owner = ListenerOwner::Container {
-            pid: 777,
-            comm: "node".into(),
-        };
+    fn classify_pending_until_probe_ok() {
+        let f = facts(true, false, "172.18.16.2");
         assert_eq!(
-            classify(&facts(true, false, "t0", 0), "t0", 0, &owner, Some(true)),
-            Readiness::Ready
-        );
-        assert_eq!(
-            classify(&facts(true, false, "t0", 0), "t0", 0, &owner, Some(false)),
+            classify(&f, "", 0, "172.18.16.2", false),
             Readiness::Pending
         );
-        // Rust 等只做端口判定的环境。
+        assert_eq!(classify(&f, "", 0, "172.18.16.2", true), Readiness::Ready);
+    }
+
+    #[test]
+    fn allocate_ip_skips_used_addresses() {
+        let used = vec!["172.18.16.1".to_string(), "172.18.16.2".to_string()];
         assert_eq!(
-            classify(&facts(true, false, "t0", 0), "t0", 0, &owner, None),
-            Readiness::Ready
+            super::super::allocate_container_ip(&used).as_deref(),
+            Some("172.18.16.3")
         );
     }
 
-    /// 端口尚无监听者时继续等待，不误判成失败。
     #[test]
-    fn no_listener_is_pending() {
-        assert_eq!(
-            classify(
-                &facts(true, false, "t0", 0),
-                "t0",
-                0,
-                &ListenerOwner::None,
-                Some(false)
-            ),
-            Readiness::Pending
-        );
-        assert_eq!(
-            classify(
-                &facts(false, false, "t0", 0),
-                "t0",
-                0,
-                &ListenerOwner::None,
-                None
-            ),
-            Readiness::Exited { exit_code: 0 }
-        );
-    }
-
-    /// 归属无法解析时退回「容器在跑 + HTTP 可响应」，但不把 TCP 可达当成就绪。
-    #[test]
-    fn unknown_owner_needs_http_signal() {
-        let owner = ListenerOwner::Unknown("无法读取 /proc".into());
-        assert_eq!(
-            classify(&facts(true, false, "t0", 0), "t0", 0, &owner, Some(true)),
-            Readiness::Ready
-        );
-        assert_eq!(
-            classify(&facts(true, false, "t0", 0), "t0", 0, &owner, None),
-            Readiness::Pending
-        );
-    }
-
-    /// 实际监听套接字的归属解析：测试进程自己的监听端口不能被认作容器端口。
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn listener_owner_does_not_claim_test_process_as_container() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("绑定临时端口");
-        let port = listener.local_addr().expect("读取端口").port();
-        let owner = listener_owner(
-            port,
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        );
-        assert!(
-            !matches!(owner, ListenerOwner::Container { .. }),
-            "测试进程不应被判定为容器内进程，实际 {owner:?}"
-        );
-        drop(listener);
+    fn static_pool_bounds() {
+        assert!(super::super::is_static_pool_ip("172.18.16.1"));
+        assert!(super::super::is_static_pool_ip("172.18.31.254"));
+        assert!(!super::super::is_static_pool_ip("172.18.0.5"));
+        assert!(!super::super::is_static_pool_ip("172.18.16.0"));
+        assert!(!super::super::is_static_pool_ip("10.0.0.1"));
     }
 }

@@ -659,6 +659,7 @@ impl AppState {
             restart: Some("unless-stopped".into()),
             healthcheck: None,
             networks: vec![],
+            network_ip: None,
             network_mode: Some("host".into()),
             mounts: vec![
                 Mount::Bind {
@@ -695,6 +696,7 @@ impl AppState {
         kind: &str,
         name: &str,
         image: &str,
+        ip: &str,
     ) -> ContainerSpec {
         let mut env = BTreeMap::new();
         // 让 PHP 同时扫描镜像自带 conf.d 与 Skiff 托管目录：后者放用户可编辑的扩展 ini。
@@ -710,12 +712,13 @@ impl AppState {
             entrypoint: None,
             env,
             labels: skiff_labels("php"),
-            // 只走 unix socket，不暴露 9000；host 网络避免额外 bridge。
+            // 只走 unix socket，不暴露 9000；接入站点专用 bridge，地址由内核固定。
             ports: vec![],
             restart: Some("unless-stopped".into()),
             healthcheck: None,
-            networks: vec![],
-            network_mode: Some("host".into()),
+            networks: vec![SITE_NETWORK.to_string()],
+            network_ip: Some(ip.to_string()),
+            network_mode: None,
             mounts: vec![
                 Mount::Bind {
                     source: s.web_root.display().to_string(),
@@ -766,6 +769,8 @@ impl AppState {
         name: &str,
         image: &str,
         port: u16,
+        ip: &str,
+        publish_port: Option<u16>,
     ) -> ContainerSpec {
         let entry = format!(
             "{CONTAINER_RUNTIME_ROOT}/{}/{name}/entry.sh",
@@ -786,16 +791,25 @@ impl AppState {
         ContainerSpec {
             image: image.to_string(),
             name: Some(runtime_container_name(skiff_store::KIND_RUST, name)),
-            // 独立进程 + host 网络端口；容器重启后由 restart=unless-stopped 拉起。
+            // 独立进程 + 专用 bridge 静态地址；只有显式 publish_port 才映射到宿主。
             command: Some(rust_run_command(&entry, &log)),
             entrypoint: None,
             env,
             labels: skiff_labels("runtime"),
-            ports: vec![],
+            ports: publish_port
+                .map(|host| {
+                    vec![skiff_docker::PortMapping {
+                        host,
+                        container: port,
+                        protocol: Some("tcp".into()),
+                    }]
+                })
+                .unwrap_or_default(),
             restart: Some("unless-stopped".into()),
             healthcheck: None,
-            networks: vec![],
-            network_mode: Some("host".into()),
+            networks: vec![SITE_NETWORK.to_string()],
+            network_ip: Some(ip.to_string()),
+            network_mode: None,
             mounts: vec![Mount::Bind {
                 source: s.web_root.display().to_string(),
                 target: CONTAINER_WEB_ROOT.to_string(),
@@ -813,17 +827,19 @@ impl AppState {
         }
     }
 
-    /// Node.js 容器：host 网络 + 固定端口，单进程常驻，启动命令来自专属配置。
+    /// Node.js 容器：专用 bridge + 静态地址，单进程常驻，启动命令来自专属配置。
     ///
-    /// 不发布端口、不建 bridge：与 Rust 环境保持同一套网络模型，nginx 以
-    /// `127.0.0.1:<port>` 反代；`HOST` 默认 `127.0.0.1`，应用读取它即可避免
-    /// 意外监听全部网卡（应用若硬编码 0.0.0.0，需在宿主防火墙侧限制）。
+    /// 应用必须监听容器内 `0.0.0.0:<port>`（`HOST` 默认 `0.0.0.0`），nginx 才能
+    /// 按容器地址访问；不向宿主发布端口，除非显式设置 `publish_port`。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn node_spec_for(
         &self,
         s: &SiteSettings,
         name: &str,
         image: &str,
         port: u16,
+        ip: &str,
+        publish_port: Option<u16>,
         cfg: &NodeRuntimeConfig,
     ) -> ContainerSpec {
         let entry = format!(
@@ -836,7 +852,7 @@ impl AppState {
         );
         let mut env = BTreeMap::new();
         env.insert("PORT".to_string(), port.to_string());
-        env.insert("HOST".to_string(), "127.0.0.1".to_string());
+        env.insert("HOST".to_string(), "0.0.0.0".to_string());
         env.insert("NODE_ENV".to_string(), cfg.node_env.clone());
         for (key, value) in &cfg.env {
             env.insert(key.clone(), value.clone());
@@ -853,11 +869,20 @@ impl AppState {
             entrypoint: None,
             env,
             labels: skiff_labels("runtime"),
-            ports: vec![],
+            ports: publish_port
+                .map(|host| {
+                    vec![skiff_docker::PortMapping {
+                        host,
+                        container: port,
+                        protocol: Some("tcp".into()),
+                    }]
+                })
+                .unwrap_or_default(),
             restart: Some("unless-stopped".into()),
             healthcheck: None,
-            networks: vec![],
-            network_mode: Some("host".into()),
+            networks: vec![SITE_NETWORK.to_string()],
+            network_ip: Some(ip.to_string()),
+            network_mode: None,
             mounts: vec![Mount::Bind {
                 source: s.web_root.display().to_string(),
                 target: CONTAINER_WEB_ROOT.to_string(),

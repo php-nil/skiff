@@ -205,6 +205,7 @@ fn serve(
         server::spawn_supervisor_reaper(state.clone());
         server::spawn_task_loop(state.clone());
         server::spawn_docker_health(state.clone());
+        server::spawn_site_guard(state.clone());
         kernel::spawn(state.clone(), cfg.run_dir.clone());
 
         let result = server::serve(&cfg, router).await;

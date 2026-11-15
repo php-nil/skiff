@@ -27,6 +27,8 @@ pub struct SiteSummary {
     pub status: String,
     /// 运行环境站点的有效状态（`running` / `stopped` / `unknown` …）；非运行环境站点为空。
     pub runtime_state: Option<String>,
+    /// 巡检判定为不可用时的原因；空串表示正常。
+    pub maintenance_reason: String,
     pub https: bool,
     pub force_https: bool,
     /// 证书文件是否就绪：决定 HTTPS 展示文案（由 web 侧映射）。
@@ -134,6 +136,17 @@ pub fn summary(
         String::new()
     };
     let aliases = state.site_aliases(&s.domain);
+    // 巡检判定不可用时只展示原因；恢复后自动回到正常状态，无需人工清除。
+    let maintenance_reason = if s.site_type == TYPE_RUNTIME {
+        s.runtime_id
+            .as_deref()
+            .and_then(|id| state.runtime_guard(id))
+            .filter(|g| !g.available)
+            .map(|g| g.reason)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     SiteSummary {
         domain: s.domain.clone(),
         // 站点目录本身（整站备份单元）与文档根都展示出来，避免把 `index/` 说成整站。
@@ -155,6 +168,7 @@ pub fn summary(
         } else {
             None
         },
+        maintenance_reason,
         https: s.https,
         force_https: s.force_https,
         cert_ready,

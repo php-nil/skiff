@@ -1,4 +1,4 @@
-//! 运行环境领域命令（对应 `actions::Resource::Runtime` 的 15 个动作）。
+//! 运行环境领域命令（对应 `actions::Resource::Runtime` 的 16 个动作）。
 //!
 //! 与站点组同一口径：DTO 只带业务输入与调用主体，审计随命令产生；表单解析、
 //! 文案、跳转与 HTTP 状态由 `handler` 负责。
@@ -22,6 +22,7 @@ pub const NAMES: &[&str] = &[
     "save_node_config",
     "save_config_file",
     "save_port",
+    "save_publish",
     "clone",
     "action",
     "save_extensions",
@@ -286,6 +287,43 @@ pub async fn save_port(state: &Arc<AppState>, cmd: SavePort) -> Result<(), SiteE
             &cmd.actor.username,
             &cmd.actor.ip,
             "runtimes.port",
+            &cmd.id,
+            "failed",
+            &e.to_string(),
+        ),
+    }
+    result
+}
+
+#[derive(Debug, Clone)]
+pub struct SavePublish {
+    pub id: String,
+    pub port: Option<u16>,
+    pub actor: Actor,
+    pub role: Role,
+}
+
+pub async fn save_publish(state: &Arc<AppState>, cmd: SavePublish) -> Result<(), SiteError> {
+    let result = state
+        .change_runtime_publish(&cmd.id, cmd.port, &cmd.actor.username, cmd.role.as_str())
+        .await;
+    let detail = match cmd.port {
+        Some(p) => format!("publish_port={p}"),
+        None => "publish_port=none".to_string(),
+    };
+    match &result {
+        Ok(()) => state.audit_or_log(
+            &cmd.actor.username,
+            &cmd.actor.ip,
+            "runtimes.publish",
+            &cmd.id,
+            "ok",
+            &detail,
+        ),
+        Err(e) => state.audit_or_log(
+            &cmd.actor.username,
+            &cmd.actor.ip,
+            "runtimes.publish",
             &cmd.id,
             "failed",
             &e.to_string(),

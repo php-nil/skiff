@@ -130,6 +130,10 @@ pub struct AppState {
     /// 写操作完成后重定向到无参数地址，由下一次渲染从会话取走消息，
     /// 避免把操作结果塞进 `?notice=` / `?error=`（刷新重放、链接带脏数据）。
     flash: std::sync::Mutex<HashMap<String, (FlashMessage, Instant)>>,
+    /// 站点守护巡检缓存的运行环境可用性：runtime_id → 最近一次判定。
+    /// 页面据此显示维护原因；vhost 生成也读它，保证「已判定失联的站点」不再
+    /// 生成指向容器地址的可用配置。用 std 锁：读写在同步渲染路径上，不跨 await。
+    site_guard: std::sync::Mutex<HashMap<String, sites::RuntimeGuard>>,
 }
 
 /// flash 提示级别：只区分成功提示与失败原因，样式由页面统一渲染。
@@ -330,6 +334,7 @@ impl AppState {
             admin_fs,
             catalog,
             flash: std::sync::Mutex::new(HashMap::new()),
+            site_guard: std::sync::Mutex::new(HashMap::new()),
         })
     }
 

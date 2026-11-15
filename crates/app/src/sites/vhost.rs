@@ -196,15 +196,21 @@ pub struct VhostTls {
     pub force_https: bool,
 }
 
-/// vhost 的三种业务形态；容器内路径由调用方换算，生成函数不再硬编码 socket。
+/// vhost 的业务形态；容器内路径由调用方换算，生成函数不再硬编码 socket。
 #[derive(Debug, Clone)]
 pub enum VhostKind<'a> {
     /// 静态站：只读文档根，不接 PHP。
     Static { root: &'a str },
     /// 运行环境站（PHP）：fastcgi 指向运行环境登记的 socket。
     Php { root: &'a str, socket: &'a str },
-    /// 运行环境站（Node.js / Rust）：独立进程监听固定端口，vhost 反代过去。
-    Process { root: &'a str, port: u16 },
+    /// 运行环境站（Node.js / Rust）：反代到容器在专用网络上的静态地址。
+    Process {
+        root: &'a str,
+        address: &'a str,
+        port: u16,
+    },
+    /// 维护态：运行环境不可用，直接 503，绝不转发到任何进程。
+    Maintenance { reason: &'a str },
     /// 反向代理：不落文档根，只转发到上游。
     Proxy { target: &'a str, websocket: bool },
 }
@@ -246,6 +252,30 @@ pub fn render_site_vhost(
     out
 }
 
+fn push_maintenance_location(out: &mut String) {
+    out.push_str("    location @skiff_maintenance {\n");
+    out.push_str("        default_type text/plain;\n");
+    out.push_str("        add_header Retry-After 5 always;\n");
+    out.push_str(
+        "        return 503 \"站点运行环境暂不可用，已自动进入维护态；恢复后自动回到正常服务。\";\n",
+    );
+    out.push_str("    }\n");
+}
+
+/// nginx 双引号字符串转义：只允许单行，避免把非法字符写进配置。
+fn escape_nginx_quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars().take(300) {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' | '\r' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, error_log: &str) {
     out.push_str(&format!("    access_log {access_log};\n"));
     out.push_str(&format!("    error_log {error_log};\n"));
@@ -266,12 +296,21 @@ fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, erro
             ));
             out.push_str(&format!("        fastcgi_pass unix:{socket};\n"));
             out.push_str("        fastcgi_index index.php;\n    }\n");
+            out.push_str("    fastcgi_intercept_errors on;\n");
+            out.push_str("    error_page 502 503 504 = @skiff_maintenance;\n");
+            push_maintenance_location(out);
         }
-        VhostKind::Process { root, port } => {
-            // Rust 进程自带内容与路由：文档根只作兜底静态资源，主路径反代到端口。
+        VhostKind::Process {
+            root,
+            address,
+            port,
+        } => {
+            // Rust/Node 进程自带内容与路由：文档根只作兜底静态资源，主路径反代到容器地址。
             out.push_str(&format!("    root {root};\n"));
+            out.push_str("    proxy_intercept_errors on;\n");
+            out.push_str("    error_page 502 503 504 = @skiff_maintenance;\n");
             out.push_str("    location / {\n");
-            out.push_str(&format!("        proxy_pass http://127.0.0.1:{port};\n"));
+            out.push_str(&format!("        proxy_pass http://{address}:{port};\n"));
             out.push_str("        proxy_http_version 1.1;\n");
             out.push_str("        proxy_set_header Host $host;\n");
             out.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
@@ -280,6 +319,15 @@ fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, erro
             out.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
             out.push_str("        proxy_set_header Connection \"upgrade\";\n");
             out.push_str("        proxy_read_timeout 3600s;\n    }\n");
+            push_maintenance_location(out);
+        }
+        VhostKind::Maintenance { reason } => {
+            out.push_str("    default_type text/plain;\n");
+            out.push_str("    add_header Retry-After 5 always;\n");
+            out.push_str(&format!(
+                "    return 503 \"{}\";\n",
+                escape_nginx_quote(reason)
+            ));
         }
         VhostKind::Proxy { target, websocket } => {
             out.push_str("    location / {\n");
@@ -470,9 +518,59 @@ mod tests {
             "        fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock;\n",
             "        fastcgi_index index.php;\n",
             "    }\n",
+            "    fastcgi_intercept_errors on;\n",
+            "    error_page 502 503 504 = @skiff_maintenance;\n",
+            "    location @skiff_maintenance {\n",
+            "        default_type text/plain;\n",
+            "        add_header Retry-After 5 always;\n",
+            "        return 503 \"站点运行环境暂不可用，已自动进入维护态；恢复后自动回到正常服务。\";\n",
+            "    }\n",
             "}\n",
         );
         assert_eq!(v, expected);
+    }
+
+    /// 进程型站点：上游只允许容器静态地址，且不得出现宿主回环端口。
+    #[test]
+    fn process_vhost_uses_container_address() {
+        let v = render_site_vhost(
+            "app.example.com",
+            &[],
+            VhostKind::Process {
+                root: "/www/sites/app.example.com/index",
+                address: "172.18.16.5",
+                port: 9200,
+            },
+            "/www/sites/app.example.com/log/access.log",
+            "/www/sites/app.example.com/log/error.log",
+            None,
+        );
+        assert!(v.contains("proxy_pass http://172.18.16.5:9200;"), "{v}");
+        assert!(!v.contains("127.0.0.1"), "{v}");
+        assert!(v.contains("proxy_intercept_errors on;"), "{v}");
+        assert!(
+            v.contains("error_page 502 503 504 = @skiff_maintenance;"),
+            "{v}"
+        );
+    }
+
+    /// 维护态：只返回 503，不出现任何上游转发指令。
+    #[test]
+    fn maintenance_vhost_has_no_upstream() {
+        let v = render_site_vhost(
+            "app.example.com",
+            &[],
+            VhostKind::Maintenance {
+                reason: "容器未运行",
+            },
+            "/www/sites/app.example.com/log/access.log",
+            "/www/sites/app.example.com/log/error.log",
+            None,
+        );
+        assert!(v.contains("return 503 \"容器未运行\";"), "{v}");
+        assert!(v.contains("Retry-After"), "{v}");
+        assert!(!v.contains("proxy_pass"), "{v}");
+        assert!(!v.contains("fastcgi_pass"), "{v}");
     }
 
     /// golden：FPM 池配置全文（默认值 + 指定 socket）。

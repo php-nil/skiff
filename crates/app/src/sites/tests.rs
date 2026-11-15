@@ -55,7 +55,7 @@ fn php_ini_scan_dir_lists_each_directory_once() {
     let dir = tempfile::tempdir().unwrap();
     let state = app_state_at(dir.path());
     let s = settings_at(dir.path());
-    let php = state.php_spec_for(&s, "php", "scan1", "php:8.5-fpm-alpine");
+    let php = state.php_spec_for(&s, "php", "scan1", "php:8.5-fpm-alpine", "172.18.16.2");
     assert_eq!(
         php.env.get("PHP_INI_SCAN_DIR").map(String::as_str),
         Some(PHP_INI_SCAN_DIR_VALUE)
@@ -690,8 +690,8 @@ fn kernel_container_specs_carry_protected_label() {
     let state = app_state_at(dir.path());
     let s = settings_at(dir.path());
     let nginx = state.nginx_spec(&s);
-    let php = state.php_spec_for(&s, "php", "batch1", "php:8.5-fpm-alpine");
-    let rust = state.rust_spec_for(&s, "rust-1.83", "rust:1.83", 18090);
+    let php = state.php_spec_for(&s, "php", "batch1", "php:8.5-fpm-alpine", "172.18.16.2");
+    let rust = state.rust_spec_for(&s, "rust-1.83", "rust:1.83", 18090, "172.18.16.3", None);
     assert_eq!(nginx.name.as_deref(), Some(NGINX_CONTAINER));
     assert_eq!(php.name.as_deref(), Some("skiff-php-batch1"));
     assert_eq!(rust.name.as_deref(), Some("skiff-rust-rust-1.83"));
@@ -711,6 +711,43 @@ fn kernel_container_specs_carry_protected_label() {
             Some("sites")
         );
     }
+}
+
+/// 运行环境容器只接入站点专用网络并静态分配地址；宿主端口仅在显式发布时映射。
+#[test]
+fn runtime_specs_use_site_network_and_publish_is_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = app_state_at(dir.path());
+    let s = settings_at(dir.path());
+
+    let php = state.php_spec_for(&s, "php", "net1", "php:8.5-fpm-alpine", "172.18.16.2");
+    assert!(php.ports.is_empty(), "PHP 不得发布宿主端口");
+    assert!(php.network_mode.is_none(), "PHP 不得使用 host 网络");
+    assert_eq!(php.networks, vec![SITE_NETWORK.to_string()]);
+    assert_eq!(php.network_ip.as_deref(), Some("172.18.16.2"));
+
+    let rust = state.rust_spec_for(&s, "rust-1.83", "rust:1.83", 9100, "172.18.16.3", None);
+    assert!(rust.ports.is_empty(), "默认不对外发布");
+    assert!(rust.network_mode.is_none());
+    assert_eq!(rust.networks, vec![SITE_NETWORK.to_string()]);
+    assert_eq!(rust.network_ip.as_deref(), Some("172.18.16.3"));
+
+    let published = state.rust_spec_for(
+        &s,
+        "rust-1.83",
+        "rust:1.83",
+        9100,
+        "172.18.16.3",
+        Some(8081),
+    );
+    assert_eq!(published.ports.len(), 1);
+    assert_eq!(published.ports[0].host, 8081);
+    assert_eq!(published.ports[0].container, 9100);
+
+    // nginx 仍是 host 网络：只有它能直接监听宿主 80/443。
+    let nginx = state.nginx_spec(&s);
+    assert_eq!(nginx.network_mode.as_deref(), Some("host"));
+    assert!(nginx.ports.is_empty());
 }
 
 /// 删除容器前的 BusyGuard：运行环境有任务、Web 服务安装/重建中都应拒绝，
@@ -982,6 +1019,8 @@ fn runtime_site_start_guard_only_treats_php_as_socket_based() {
         config_json: "{}".into(),
         extensions: String::new(),
         origin: "instance".into(),
+        container_ip: None,
+        publish_port: None,
         created_at: 0,
         updated_at: 0,
     };

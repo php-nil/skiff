@@ -366,8 +366,9 @@ impl AppState {
     /// Node 进程启动后的健康闸门：PHP / Rust 不需要（PHP 有 socket 探活，Rust 安装期
     /// 已等端口），只有 Node 需要在「手动启动/重启」时确认应用真的能响应。
     ///
-    /// 判定必须同时满足：容器没有 crash-loop、端口监听套接字属于本容器、`health_path`
-    /// 返回 2xx/3xx。只看端口可达会把「宿主进程占着同一端口」误判成启动成功。
+    /// 判定必须同时满足：容器没有 crash-loop、容器实际地址与登记地址一致、从宿主
+    /// 访问 `<地址>:<端口>` 的 `health_path` 返回 2xx/3xx。只看端口可达会把「容器
+    /// 未起来但别的进程占了同号端口」误判成启动成功。
     async fn node_health_gate(&self, rt: &Runtime) -> Result<(), SiteError> {
         if rt.kind != skiff_store::KIND_NODE {
             return Ok(());
@@ -375,11 +376,13 @@ impl AppState {
         let port = rt
             .port
             .ok_or_else(|| SiteError::Unavailable("Node.js 环境缺少端口，请重建".into()))?;
+        let ip = self.ensure_runtime_ip(rt).await?;
         let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
         let container = runtime_container_name(&rt.kind, &rt.name);
         match wait_runtime_ready(
             self.docker(),
             &container,
+            &ip,
             port,
             Some(&cfg.health_path),
             NODE_HEALTH_BUDGET,
@@ -389,6 +392,7 @@ impl AppState {
             Ok(()) => Ok(()),
             Err(failure) => Err(SiteError::Unavailable(readiness_message(
                 "Node.js",
+                &ip,
                 port,
                 Some(&cfg.health_path),
                 &failure,
@@ -625,6 +629,69 @@ impl AppState {
         Ok(())
     }
 
+    /// 设置/取消「对外发布」宿主端口。
+    ///
+    /// 默认不公开：站点流量由 nginx 直接转发到容器地址，不经过宿主端口。只有显式
+    /// 指定宿主端口时才把 `<宿主端口> → <容器地址>:<容器端口>` 映射出去。
+    /// 映射属于容器创建参数，落库后必须重建容器才会生效。
+    pub async fn change_runtime_publish(
+        self: &Arc<Self>,
+        id: &str,
+        publish_port: Option<u16>,
+        actor: &str,
+        role: &str,
+    ) -> Result<(), SiteError> {
+        let rt = self
+            .db()
+            .runtime_by_id(id)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("运行环境不存在：{id}")))?;
+        if !matches!(
+            rt.kind.as_str(),
+            skiff_store::KIND_NODE | skiff_store::KIND_RUST
+        ) {
+            return Err(SiteError::BadRequest(format!(
+                "{} 运行环境不占用宿主端口，无需对外发布",
+                runtime_catalog::kind_label(&rt.kind)
+            )));
+        }
+        if rt.publish_port == publish_port {
+            return Ok(());
+        }
+        if let Some(port) = publish_port {
+            if port < 1024 {
+                return Err(SiteError::BadRequest(format!(
+                    "对外发布端口必须不小于 1024，{port} 属于特权端口"
+                )));
+            }
+            let used: Vec<u16> = self
+                .db()
+                .list_runtimes()
+                .map_err(|e| SiteError::Internal(e.to_string()))?
+                .into_iter()
+                .filter(|r| r.id != rt.id)
+                .filter_map(|r| r.publish_port)
+                .collect();
+            if used.contains(&port) {
+                return Err(SiteError::BadRequest(format!(
+                    "宿主端口 {port} 已被其它运行环境对外发布"
+                )));
+            }
+            check_port_free(port).map_err(SiteError::BadRequest)?;
+        }
+        if self.runtime_job(id).await.is_some_and(|j| j.active()) {
+            return Err(SiteError::Conflict(
+                "该运行环境有进行中的任务，请等待任务结束后再修改对外发布".into(),
+            ));
+        }
+        self.db()
+            .set_runtime_publish_port(id, publish_port)
+            .map_err(|e| SiteError::Internal(e.to_string()))?;
+        // 端口映射在建容器时固定，必须重建容器；站点 vhost 不含宿主端口，无需改动。
+        self.start_runtime_install(id, actor, role).await?;
+        Ok(())
+    }
+
     /// 克隆进程型环境：同版本/镜像、独立代码目录、自动分配新端口，用于并跑第二个应用。
     ///
     /// PHP 是共享 FPM 池，克隆没有「第二个进程」语义，暂不支持。
@@ -750,7 +817,8 @@ impl AppState {
                 "容器不存在，请先安装运行环境".into(),
             ));
         }
-        // 容器状态与端口归属交给同一条就绪判定，避免这里与启动闸门口径不一致。
+        // 容器状态与地址可达性交给同一条就绪判定，避免这里与启动闸门口径不一致。
+        let ip = self.ensure_runtime_ip(&rt).await?;
         let (http_path, subject) = if rt.kind == skiff_store::KIND_NODE {
             (
                 Some(NodeRuntimeConfig::from_json(&rt.config_json).health_path),
@@ -759,13 +827,15 @@ impl AppState {
         } else {
             (None, "Rust")
         };
-        match check_runtime_ready(self.docker(), &container, port, http_path.as_deref()).await {
+        match check_runtime_ready(self.docker(), &container, &ip, port, http_path.as_deref()).await
+        {
             Ok(()) => Ok(match http_path.as_deref() {
-                Some(p) => format!("应用就绪：容器自身监听端口 {port}，HTTP {p} 返回 2xx/3xx"),
-                None => format!("应用就绪：容器自身监听端口 {port}"),
+                Some(p) => format!("应用就绪：容器地址 {ip}:{port}，HTTP {p} 返回 2xx/3xx"),
+                None => format!("应用就绪：容器地址 {ip}:{port} 可连接"),
             }),
             Err(failure) => Err(SiteError::Unavailable(readiness_message(
                 subject,
+                &ip,
                 port,
                 http_path.as_deref(),
                 &failure,
@@ -782,6 +852,8 @@ impl AppState {
                         .finish_cancelled(job_id, "已取消，运行环境可能处于中间状态，可重试安装");
                 } else {
                     self.job_finish_ok(job_id, "安装完成，运行环境已就绪").await;
+                    // 刚验证过就绪：清掉上轮巡检留下的不可用结论，站点立即按正常配置渲染。
+                    self.set_runtime_guard(runtime_id, RuntimeGuard::ok());
                 }
                 if let Err(e) = self
                     .db()
@@ -901,7 +973,14 @@ impl AppState {
                     .map_err(|e| format!("移除旧容器失败：{e}"))?;
             }
         }
-        self.ensure_container(&self.php_spec_for(&s, &rt.kind, &rt.name, &pinned))
+        self.ensure_site_network()
+            .await
+            .map_err(|e| format!("准备站点网络失败：{e}"))?;
+        let ip = self
+            .ensure_runtime_ip(&rt)
+            .await
+            .map_err(|e| format!("分配容器地址失败：{e}"))?;
+        self.ensure_container(&self.php_spec_for(&s, &rt.kind, &rt.name, &pinned, &ip))
             .await
             .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
 
@@ -998,11 +1077,18 @@ impl AppState {
             .await?;
 
         let container = runtime_container_name(&rt.kind, &rt.name);
+        self.ensure_site_network()
+            .await
+            .map_err(|e| format!("准备站点网络失败：{e}"))?;
+        let ip = self
+            .ensure_runtime_ip(rt)
+            .await
+            .map_err(|e| format!("分配容器地址失败：{e}"))?;
         self.job_advance(
             job_id,
             "创建容器",
             50,
-            &format!("创建容器 {container}（host 网络，端口 {port}）"),
+            &format!("创建容器 {container}（专用网络，地址 {ip}，端口 {port}）"),
         )
         .await;
         if let Ok(rows) = self.docker().list_containers().await {
@@ -1017,6 +1103,8 @@ impl AppState {
             &rt.name,
             &pinned_image_ref(&image, &image_digest),
             port,
+            &ip,
+            rt.publish_port,
         ))
         .await
         .map_err(|e| format!("创建/启动 {container} 失败：{e}"))?;
@@ -1025,12 +1113,13 @@ impl AppState {
             job_id,
             "构建并启动进程",
             70,
-            &format!("cargo run --release（监听 127.0.0.1:{port}），首次编译需等待"),
+            &format!("cargo run --release（监听容器内 0.0.0.0:{port}），首次编译需等待"),
         )
         .await;
         if let Err(failure) = wait_runtime_ready(
             self.docker(),
             &container,
+            &ip,
             port,
             None,
             std::time::Duration::from_secs(240),
@@ -1050,12 +1139,13 @@ impl AppState {
                 .collect();
             return Err(format!(
                 "{}；\n{}",
-                readiness_message("Rust", port, None, &failure),
+                readiness_message("Rust", &ip, port, None, &failure),
                 tail.join("\n")
             ));
         }
         self.job_note(job_id, &format!("端口 {port} 已就绪，Rust 进程返回内容"))
             .await;
+        self.set_runtime_guard(&rt.id, RuntimeGuard::ok());
         self.db()
             .ensure_runtime(&NewRuntime {
                 id: rt.id.clone(),
@@ -1119,11 +1209,18 @@ impl AppState {
             .await?;
 
         let container = runtime_container_name(&rt.kind, &rt.name);
+        self.ensure_site_network()
+            .await
+            .map_err(|e| format!("准备站点网络失败：{e}"))?;
+        let ip = self
+            .ensure_runtime_ip(rt)
+            .await
+            .map_err(|e| format!("分配容器地址失败：{e}"))?;
         self.job_advance(
             job_id,
             "创建容器",
             55,
-            &format!("创建容器 {container}（host 网络，端口 {port}）"),
+            &format!("创建容器 {container}（专用网络，地址 {ip}，端口 {port}）"),
         )
         .await;
         if let Ok(rows) = self.docker().list_containers().await {
@@ -1138,6 +1235,8 @@ impl AppState {
             &rt.name,
             &pinned_image_ref(&image, &image_digest),
             port,
+            &ip,
+            rt.publish_port,
             &cfg,
         ))
         .await
@@ -1148,7 +1247,7 @@ impl AppState {
             "启动 Node 进程",
             78,
             &format!(
-                "{}（监听 127.0.0.1:{port}，健康检查 {}）",
+                "{}（监听容器内 0.0.0.0:{port}，健康检查 {}）",
                 cfg.command, cfg.health_path
             ),
         )
@@ -1156,6 +1255,7 @@ impl AppState {
         if let Err(failure) = wait_runtime_ready(
             self.docker(),
             &container,
+            &ip,
             port,
             Some(&cfg.health_path),
             std::time::Duration::from_secs(180),
@@ -1175,7 +1275,7 @@ impl AppState {
                 .collect();
             return Err(format!(
                 "{}；\n{}",
-                readiness_message("Node.js", port, Some(&cfg.health_path), &failure),
+                readiness_message("Node.js", &ip, port, Some(&cfg.health_path), &failure),
                 tail.join("\n")
             ));
         }
@@ -1184,6 +1284,7 @@ impl AppState {
             &format!("端口 {port} 已就绪，Node 进程通过健康检查"),
         )
         .await;
+        self.set_runtime_guard(&rt.id, RuntimeGuard::ok());
         self.db()
             .ensure_runtime(&NewRuntime {
                 id: rt.id.clone(),

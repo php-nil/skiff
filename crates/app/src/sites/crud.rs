@@ -983,34 +983,69 @@ impl AppState {
         } else {
             None
         };
-        let kind = match site.site_type.as_str() {
-            TYPE_STATIC => VhostKind::Static { root: &root },
-            TYPE_PROXY => VhostKind::Proxy {
-                target: site.proxy_target.as_deref().unwrap_or(""),
-                websocket: site.proxy_websocket,
-            },
-            _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
-                Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
-                    VhostKind::Process {
-                        root: &root,
-                        port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
+        // 巡检已判定失联的运行环境：不生成指向容器地址的可用配置，直接维护态。
+        let maintenance = runtime
+            .as_ref()
+            .and_then(|rt| self.runtime_guard(&rt.id))
+            .filter(|g| !g.available)
+            .map(|g| g.reason);
+        // 进程型站点的容器地址先算好：vhost 只持有它的引用，不能指向临时值；
+        // 维护态下不计算，避免「已失联」时因地址缺失而渲染失败。
+        let process_address = if maintenance.is_none() {
+            match runtime.as_ref() {
+                Some(rt)
+                    if matches!(
+                        rt.kind.as_str(),
+                        skiff_store::KIND_RUST | skiff_store::KIND_NODE
+                    ) =>
+                {
+                    Some(self.runtime_site_address(s, rt)?)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let kind = if let Some(reason) = maintenance.as_deref() {
+            VhostKind::Maintenance { reason }
+        } else {
+            match site.site_type.as_str() {
+                TYPE_STATIC => VhostKind::Static { root: &root },
+                TYPE_PROXY => VhostKind::Proxy {
+                    target: site.proxy_target.as_deref().unwrap_or(""),
+                    websocket: site.proxy_websocket,
+                },
+                _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
+                    Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
+                        let rt = runtime.as_ref().expect("runtime 已判定存在");
+                        let address = process_address.as_deref().ok_or_else(|| {
                             SiteError::Unavailable(format!(
-                                "{} 运行环境缺少端口，请重新安装",
+                                "{} 运行环境尚未分配容器地址，请重建运行环境后再启用站点",
                                 runtime_catalog::kind_label(kind)
                             ))
-                        })?,
+                        })?;
+                        VhostKind::Process {
+                            root: &root,
+                            address,
+                            port: rt.port.ok_or_else(|| {
+                                SiteError::Unavailable(format!(
+                                    "{} 运行环境缺少端口，请重新安装",
+                                    runtime_catalog::kind_label(kind)
+                                ))
+                            })?,
+                        }
                     }
-                }
-                Some(skiff_store::KIND_GO) => {
-                    return Err(SiteError::Unavailable(
-                        "Go 运行环境尚未接入，当前不能生成 vhost".into(),
-                    ))
-                }
-                _ => VhostKind::Php {
-                    root: &root,
-                    socket: socket.as_deref().unwrap_or(""),
+                    Some(skiff_store::KIND_GO) => {
+                        return Err(SiteError::Unavailable(
+                            "Go 运行环境尚未接入，当前不能生成 vhost".into(),
+                        ))
+                    }
+                    _ => VhostKind::Php {
+                        root: &root,
+                        socket: socket.as_deref().unwrap_or(""),
+                    },
                 },
-            },
+            }
         };
         Ok(render_site_vhost(
             &site.domain,
@@ -1046,34 +1081,69 @@ impl AppState {
         } else {
             None
         };
-        let kind = match site.site_type.as_str() {
-            TYPE_STATIC => VhostKind::Static { root: &root },
-            TYPE_PROXY => VhostKind::Proxy {
-                target: site.proxy_target.as_deref().unwrap_or(""),
-                websocket: site.proxy_websocket,
-            },
-            _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
-                Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
-                    VhostKind::Process {
-                        root: &root,
-                        port: runtime.as_ref().and_then(|r| r.port).ok_or_else(|| {
+        // 巡检已判定失联的运行环境：不生成指向容器地址的可用配置，直接维护态。
+        let maintenance = runtime
+            .as_ref()
+            .and_then(|rt| self.runtime_guard(&rt.id))
+            .filter(|g| !g.available)
+            .map(|g| g.reason);
+        // 进程型站点的容器地址先算好：vhost 只持有它的引用，不能指向临时值；
+        // 维护态下不计算，避免「已失联」时因地址缺失而渲染失败。
+        let process_address = if maintenance.is_none() {
+            match runtime.as_ref() {
+                Some(rt)
+                    if matches!(
+                        rt.kind.as_str(),
+                        skiff_store::KIND_RUST | skiff_store::KIND_NODE
+                    ) =>
+                {
+                    Some(self.runtime_site_address(s, rt)?)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let kind = if let Some(reason) = maintenance.as_deref() {
+            VhostKind::Maintenance { reason }
+        } else {
+            match site.site_type.as_str() {
+                TYPE_STATIC => VhostKind::Static { root: &root },
+                TYPE_PROXY => VhostKind::Proxy {
+                    target: site.proxy_target.as_deref().unwrap_or(""),
+                    websocket: site.proxy_websocket,
+                },
+                _ => match runtime.as_ref().map(|r| r.kind.as_str()) {
+                    Some(kind @ (skiff_store::KIND_RUST | skiff_store::KIND_NODE)) => {
+                        let rt = runtime.as_ref().expect("runtime 已判定存在");
+                        let address = process_address.as_deref().ok_or_else(|| {
                             SiteError::Unavailable(format!(
-                                "{} 运行环境缺少端口，请重新安装",
+                                "{} 运行环境尚未分配容器地址，请重建运行环境后再启用站点",
                                 runtime_catalog::kind_label(kind)
                             ))
-                        })?,
+                        })?;
+                        VhostKind::Process {
+                            root: &root,
+                            address,
+                            port: rt.port.ok_or_else(|| {
+                                SiteError::Unavailable(format!(
+                                    "{} 运行环境缺少端口，请重新安装",
+                                    runtime_catalog::kind_label(kind)
+                                ))
+                            })?,
+                        }
                     }
-                }
-                Some(skiff_store::KIND_GO) => {
-                    return Err(SiteError::Unavailable(
-                        "Go 运行环境尚未接入，当前不能生成 vhost".into(),
-                    ))
-                }
-                _ => VhostKind::Php {
-                    root: &root,
-                    socket: socket.as_deref().unwrap_or(""),
+                    Some(skiff_store::KIND_GO) => {
+                        return Err(SiteError::Unavailable(
+                            "Go 运行环境尚未接入，当前不能生成 vhost".into(),
+                        ))
+                    }
+                    _ => VhostKind::Php {
+                        root: &root,
+                        socket: socket.as_deref().unwrap_or(""),
+                    },
                 },
-            },
+            }
         };
         Ok(render_default_vhost(
             &site.domain,
@@ -1108,7 +1178,7 @@ impl AppState {
     /// 让 nginx 按当前配置生效（reload 优先，必要时回退重启）。
     ///
     /// 持锁执行：并发的保存/证书操作不会在同一个重启窗口里互相踩踏。
-    async fn activate_nginx_locked(&self) -> Result<NginxActivation, String> {
+    pub(crate) async fn activate_nginx_locked(&self) -> Result<NginxActivation, String> {
         activate_with(&DockerNginx { state: self }).await
     }
 
@@ -1168,7 +1238,7 @@ impl AppState {
     ///
     /// `nginx -t` 带 [`crate::nginx::NGINX_TEST_TIMEOUT`] 上限：本函数在建站/证书
     /// 等请求路径上被调用，校验卡住时必须先返回错误让调用方回滚文件。
-    async fn validate_nginx_locked(&self) -> Result<(), SiteError> {
+    pub(crate) async fn validate_nginx_locked(&self) -> Result<(), SiteError> {
         let rows = self
             .docker()
             .list_containers()
