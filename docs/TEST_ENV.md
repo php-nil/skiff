@@ -60,7 +60,17 @@
 
 ## 5. 当前部署
 
-> **2026-11-15 23:04 全新安装 `v0.1.0` Release 资产（用户指定 amd64 包；全量回归与八项复跑，当前生效，结论见 §8）**
+> **2026-11-16 07:53 原地重装 budding `1.8.0-r7` 包（弹窗内下拉复验，当前生效，结论见 §8）**
+> - 背景：上游 `a707369` 以「浮层归属图层根」（`data-bud-layer-root`）关闭 U5，仓内产物升到 `1.8.0-r7` 并在 `d87f148` 合入；本轮出包后原地重装，复验弹窗内下拉与 PHP / Node 建站，保留可点验现场。
+> - CI：`release.yml` dispatch run `43776594789`（head `d87f148`）success。
+> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,071,308 B** `e01bf0a988e2daa4b8af8c0f8fc75abadf8a65c11dfc090320f78c87c1535159`。测试机下载 `github.com` 资产端点超时，沿用 GitHub API 资产端点（`Accept: application/octet-stream`）直取，`sha256sum -c` 一致。
+> - 安装：`sh install.sh` 原地重装（保留 `/www/skiff` 数据与站点），`skiff` / `skiff-http-fwd` / `docker` 全部 active，`skiff-web-nginx` 随安装重建（openresty/1.31.8.1）；入口前缀仍为 `cuyf5neg`，管理员 `admin` / `SkiffPass2026x`（`/root/iter/admin-pw.txt`）。
+> - 新二进制：`/usr/local/bin/skiff` **19,687,056 B** `2bb6ebd8aaa1cc8359bbd67c582679c9cabb4a7454ac92f81e1d5b14e58611a6`；二进制内嵌 `budding-1.8.0-r7` 且含 `data-bud-layer-root`（3 处），确认装的是带上游浮层契约的包。
+> - 验收：浏览器（CDP + Chromium）实测弹窗内「站点类型」「运行环境」下拉——菜单节点 `closest('[data-bud-layer-root]')` 为真，`elementsFromPoint` 在选项矩形内命中 `DIV.v-list-item`（r6 时命中弹窗输入框），三/两项选项全部可见可点；经弹窗新建 `php-demo.example.com`（PHP 8.5）与 `node-demo.example.com`（Node.js 24）均 toast「站点已创建」、列表状态「运行中」；vhost 上游分别为 `fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock` 与 `proxy_pass http://172.19.16.2:9200`（与容器 IP 一致），`nginx -t` 通过，`Host` 头访问均 **200**（PHP 页 `PHP Version 8.5.12`、Node 页 `Skiff Node.js runtime ready`）。
+> - 保留现场（**不清**）：站点 `php-demo.example.com` / `node-demo.example.com` / `static-demo.example.com`；容器 `skiff-web-nginx`、`skiff-php-php-8.5`、`skiff-node-node-demo`（`172.19.16.2`）；运行环境 `php-8.5`（种子）与 `node-demo`。
+> - 清理：`/root/skiff-pkg`、`/root/skiff-0.1.0-*.tar.gz(.sha256)`、`/root/t*.sh` 等测试脚本、`/tmp/rel.json` 已删；`/tmp` 仍留早期批次的 JSON 临时文件（非本轮，未动）。
+
+> **2026-11-15 23:04 全新安装 `v0.1.0` Release 资产（用户指定 amd64 包；全量回归与八项复跑；已被 2026-11-16 07:53 原地重装取代，保留作过程记录）**
 > - 背景：机器还原后按用户指定的 GitHub Release `v0.1.0` amd64 资产重装，作为本轮全量验收基线；安装前后均核对 sha256，未使用本地 Windows 编译产物。
 > - 探测（安装前）：`/usr/local/bin/skiff`、`/etc/skiff` 均不存在；18080 / 18081 无监听；`systemctl list-units 'skiff*'` 为空；Docker `29.7.2` 可用、无 `skiff-*` 容器；确认已还原后开始安装。
 > - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,070,181 B** `114a83205ebf39d55fda618479c93b702157e25b092f2c8529bf0580f8635f67`（开发机经内网代理 `http://10.66.10.22:1010` 下载，随包 `.sha256`、测试机 `sha256sum -c` 一致）。
