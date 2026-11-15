@@ -76,7 +76,7 @@ pub async fn site_detail(
         None
     };
 
-    let (runtime_down, runtime_alert) = if site.site_type == skiff_store::TYPE_RUNTIME {
+    let (mut runtime_down, mut runtime_alert) = if site.site_type == skiff_store::TYPE_RUNTIME {
         match runtime_view.as_ref() {
             Some(v) => {
                 let mut down = v.effective_state != "running";
@@ -175,6 +175,13 @@ pub async fn site_detail(
         runtime_view.as_ref().map(|v| v.site_count).unwrap_or(0),
     );
     let item = site_item(&summary);
+    if site.status == "running" && !summary.maintenance_reason.is_empty() {
+        runtime_down = true;
+        runtime_alert = format!(
+            "站点已进入维护状态（访问返回 503）：{}。系统会在运行环境恢复后自动解除维护，无需手工改配置。",
+            summary.maintenance_reason
+        );
+    }
     let runtime_ref = runtime_view.as_ref().map(|v| SiteRuntimeRef {
         id: v.runtime.id.clone(),
         name: v.runtime.name.clone(),

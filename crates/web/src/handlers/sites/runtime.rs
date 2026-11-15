@@ -653,6 +653,61 @@ pub async fn runtime_port_save(
     }
 }
 
+/// 设置/取消进程型环境的「对外发布」宿主端口。留空表示不公开（默认）：
+/// 站点仍由 nginx 按容器地址转发，宿主不监听该应用端口。
+pub async fn runtime_publish_save(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    body: String,
+) -> Result<Response, AppError> {
+    crate::authz::authorize(&user, act::RUNTIME_SAVE_PUBLISH)?;
+    let form = parse_form(&body);
+    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
+    let prefix = &state.cfg.entry_prefix;
+    let back = format!("/{prefix}/runtimes/{id}");
+    let raw = form_first(&form, "publish_port");
+    let raw = raw.trim();
+    let port = if raw.is_empty() {
+        None
+    } else {
+        Some(
+            raw.parse::<u16>()
+                .map_err(|_| AppError::BadRequest(format!("对外发布端口不合法：{raw}")))?,
+        )
+    };
+    match runtime_cmd::save_publish(
+        &state,
+        runtime_cmd::SavePublish {
+            id: id.clone(),
+            port,
+            actor: actor(&state, &user, &parts),
+            role: user.user.role,
+        },
+    )
+    .await
+    {
+        Ok(()) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            match port {
+                Some(p) => format!("已开启对外发布：宿主 {p} → 容器内端口，正在重建运行环境"),
+                None => "已取消对外发布，正在重建运行环境".to_string(),
+            },
+            back,
+        )),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            format!("{e}"),
+            back,
+        )),
+    }
+}
+
 /// 克隆进程型环境：新名称可留空（默认 `<原名>-copy`），端口由内核重新分配。
 pub async fn runtime_clone(
     State(state): State<Arc<AppState>>,

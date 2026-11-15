@@ -480,7 +480,7 @@ async fn render_detail(
     } else {
         None
     };
-    let (runtime_down, runtime_alert, runtime_env_href) = if site.site_type
+    let (mut runtime_down, mut runtime_alert, runtime_env_href) = if site.site_type
         == skiff_store::TYPE_RUNTIME
     {
         let rid = site.runtime_id.clone().unwrap_or_default();
@@ -604,6 +604,15 @@ async fn render_detail(
         runtime_state,
         runtime_site_count,
     );
+    // 巡检已把 vhost 切到维护页时，以巡检原因作为权威提示：它比「容器状态」更贴近
+    // 用户实际看到的 503，且恢复由巡检自动完成。
+    if site.status == "running" && !site_summary.maintenance_reason.is_empty() {
+        runtime_down = true;
+        runtime_alert = format!(
+            "站点已进入维护状态（访问返回 503）：{}。系统会在运行环境恢复后自动解除维护，无需手工改配置。",
+            site_summary.maintenance_reason
+        );
+    }
     handlers::render(SiteDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/list"),
         site: site_view(&site_summary),

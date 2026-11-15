@@ -387,10 +387,11 @@
   {% else if runtime.kind_key == "node" %}
   <div class="panel-head"><h2>Node.js 运行模型</h2></div>
   <div class="kv">
-    <div><span class="muted">监听端口</span><span class="mono">{% if node.port.is_empty() %}未分配{% else %}127.0.0.1:{{ node.port }}{% endif %}</span></div>
-    <div><span class="muted">端口分配</span><span class="muted">每环境固定端口（<code>9200-9299</code> 内分配），创建时校验冲突；站点 vhost 用 <code>proxy_pass</code> 反代到该端口。</span></div>
+    <div><span class="muted">监听端口</span><span class="mono">{% if node.port.is_empty() %}未分配{% else %}容器内 0.0.0.0:{{ node.port }}{% endif %}</span></div>
+    <div><span class="muted">容器地址</span><span class="mono">{% if runtime.container_address.is_empty() %}未分配（需重建环境）{% else %}{{ runtime.container_address }}{% endif %}</span></div>
+    <div><span class="muted">端口分配</span><span class="muted">每环境固定容器内端口（<code>9200-9299</code> 内分配）；容器使用专用网络与静态地址，站点 vhost 直接反代到容器地址，不经过宿主端口。</span></div>
     <div><span class="muted">工作目录</span><span class="mono">{{ node.workdir }}</span></div>
-    <div><span class="muted">进程模型</span><span class="muted">单进程常驻，不走 FastCGI；容器 <code>restart: unless-stopped</code>、宿主网络，<code>PORT</code> / <code>NODE_ENV</code> / <code>HOST</code> 由内核注入。</span></div>
+    <div><span class="muted">进程模型</span><span class="muted">单进程常驻，不走 FastCGI；容器 <code>restart: unless-stopped</code>、专用网络，<code>PORT</code> / <code>NODE_ENV</code> / <code>HOST</code>（<code>0.0.0.0</code>）由内核注入。</span></div>
     <div><span class="muted">运行日志</span><span class="mono">{% if runtime_log_path.is_empty() %}未登记{% else %}{{ runtime_log_path }}{% endif %}</span></div>
   </div>
   {% if can_admin %}
@@ -403,7 +404,7 @@
       </label>
       <label>健康检查路径
         <input name="health_path" value="{{ node.health_path }}" class="mono" autocomplete="off" required>
-        <p class="hint">启动后轮询 <code>http://127.0.0.1:端口</code> + 该路径，非 2xx/3xx 视为失败</p>
+        <p class="hint">启动后轮询 <code>http://容器地址:端口</code> + 该路径，非 2xx/3xx 视为失败</p>
       </label>
       <label>NODE_ENV
         <select name="node_env">
@@ -432,9 +433,10 @@
   {% else if runtime.kind_key == "rust" %}
   <div class="panel-head"><h2>Rust 运行模型</h2></div>
   <div class="kv">
-    <div><span class="muted">监听端口</span><span class="mono">{% if runtime.port.is_empty() %}未分配{% else %}127.0.0.1:{{ runtime.port }}{% endif %}</span></div>
-    <div><span class="muted">端口分配</span><span class="muted">每环境固定端口（<code>9100-9199</code> 内分配），创建时校验冲突；站点 vhost 用 <code>proxy_pass</code> 反代到该端口。</span></div>
-    <div><span class="muted">进程守护</span><span class="mono">容器内 <code>cargo run --release</code>，容器 <code>restart: unless-stopped</code>，宿主网络。</span></div>
+    <div><span class="muted">监听端口</span><span class="mono">{% if runtime.port.is_empty() %}未分配{% else %}容器内 0.0.0.0:{{ runtime.port }}{% endif %}</span></div>
+    <div><span class="muted">容器地址</span><span class="mono">{% if runtime.container_address.is_empty() %}未分配（需重建环境）{% else %}{{ runtime.container_address }}{% endif %}</span></div>
+    <div><span class="muted">端口分配</span><span class="muted">每环境固定容器内端口（<code>9100-9199</code> 内分配）；容器使用专用网络与静态地址，站点 vhost 直接反代到容器地址，不经过宿主端口。</span></div>
+    <div><span class="muted">进程守护</span><span class="mono">容器内 <code>cargo run --release</code>，容器 <code>restart: unless-stopped</code>，专用网络。</span></div>
     <div><span class="muted">目录结构</span><span class="mono">/www/runtime/rust/{{ runtime.name }}/（app 源码 + log/）</span></div>
     <div><span class="muted">运行日志</span><span class="mono">{% if runtime_log_path.is_empty() %}未登记{% else %}{{ runtime_log_path }}{% endif %}</span></div>
   </div>
@@ -446,7 +448,7 @@
   {% if port_editable %}
   <div class="panel-head runtime-subhead"><h2>端口与共享</h2></div>
   <div class="kv">
-    <div><span class="muted">固定端口</span><span class="mono">{{ port_value }}</span></div>
+    <div><span class="muted">容器内端口</span><span class="mono">{{ port_value }}</span></div>
     <div><span class="muted">可用区间</span><span class="mono">{{ port_range_label }}</span></div>
     <div><span class="muted">绑定站点</span><span class="muted">{% if runtime.site_count == 0 %}暂无{% else %}{{ runtime.site_count }} 个 · 重启/重建/改端口会影响全部{% endif %}</span></div>
     <div><span class="muted">代码目录</span><span class="muted">固定为环境 <code>app/</code>，不随站点绑定变化；站点只做域名反代。</span></div>
@@ -461,6 +463,24 @@
       </label>
     </div>
     <div class="wizard-nav"><button class="btn" type="submit">保存端口</button></div>
+  </form>
+  {% endif %}
+  <div class="panel-head runtime-subhead"><h2>对外发布</h2></div>
+  <div class="kv">
+    <div><span class="muted">容器地址</span><span class="mono">{% if runtime.container_address.is_empty() %}未分配（需重建环境）{% else %}{{ runtime.container_address }}{% endif %}</span></div>
+    <div><span class="muted">宿主端口</span><span class="mono">{% if runtime.publish_port.is_empty() %}未发布（默认）{% else %}{{ runtime.publish_port }} → {{ runtime.container_address }}{% endif %}</span></div>
+    <div><span class="muted">说明</span><span class="muted">默认只在容器网络内由 nginx 按域名转发，宿主不监听该应用端口；只有显式填写宿主端口才对外发布。</span></div>
+  </div>
+  {% if can_admin %}
+  <form method="post" action="/{{ ctx.prefix }}/runtimes/{{ runtime.id }}/publish">
+    <input type="hidden" name="csrf" value="{{ ctx.csrf }}">
+    <div class="form-grid">
+      <label>对外发布宿主端口
+        <input name="publish_port" value="{{ runtime.publish_port }}" class="mono" inputmode="numeric" pattern="[0-9]*" placeholder="留空表示不公开">
+        <p class="hint">仅接受 1024–65535 且未被其它运行环境发布的端口；保存后重建容器生效，留空即取消对外发布。</p>
+      </label>
+    </div>
+    <div class="wizard-nav"><button class="btn" type="submit">保存发布设置</button></div>
   </form>
   {% endif %}
   <div class="wizard-nav">

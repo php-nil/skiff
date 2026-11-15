@@ -119,6 +119,7 @@ fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
             code: s.status.clone(),
             label: status_label.to_string(),
         },
+        maintenance_reason: s.maintenance_reason.clone(),
         https: SiteHttps {
             enabled: s.https,
             force_https: s.force_https,

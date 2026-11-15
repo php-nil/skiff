@@ -221,6 +221,8 @@ pub struct SiteView {
     pub status_label: String,
     /// 状态徽标配色（ok / danger / 空），列表与详情共用同一套徽标样式。
     pub status_class: String,
+    /// 巡检判定不可用的原因；空串表示正常。非空时状态列为「维护中」。
+    pub maintenance_reason: String,
     /// 证书/HTTPS 徽标文案与配色，与运行状态同形呈现。
     pub https_label: String,
     pub https_class: String,
@@ -406,6 +408,10 @@ pub struct RuntimeRow {
     pub endpoint_full: String,
     /// Rust 固定端口；其他类型为空。
     pub port: String,
+    /// 容器地址（`ip:port`）；未分配时为空。
+    pub container_address: String,
+    /// 对外发布宿主端口；空表示默认不公开。
+    pub publish_port: String,
     pub implemented: bool,
     pub is_default: bool,
     pub detail_href: String,

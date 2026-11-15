@@ -165,6 +165,8 @@ pub struct SiteItem {
     pub proxy_websocket: bool,
     pub endpoint: String,
     pub status: StatusDto,
+    /// 巡检判定不可用的原因；空串表示正常（状态标签此时为「维护中」）。
+    pub maintenance_reason: String,
     pub https: SiteHttps,
     pub is_default: bool,
     pub aliases: Vec<String>,
@@ -490,6 +492,13 @@ pub struct RuntimePortBody {
     pub port: u16,
     #[serde(default)]
     pub confirm: bool,
+}
+
+/// `POST /ui/v1/runtimes/{id}/publish`：对外发布宿主端口；缺省或 `null` 表示取消。
+#[derive(Debug, Deserialize)]
+pub struct RuntimePublishBody {
+    #[serde(default)]
+    pub publish_port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]

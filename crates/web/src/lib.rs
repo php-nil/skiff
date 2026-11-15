@@ -496,6 +496,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::sites::runtime_port_save),
         )
         .route(
+            &format!("/{p}/runtimes/{{id}}/publish"),
+            post(handlers::sites::runtime_publish_save),
+        )
+        .route(
             &format!("/{p}/runtimes/{{id}}/clone"),
             post(handlers::sites::runtime_clone),
         )

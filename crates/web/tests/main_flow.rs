@@ -11886,6 +11886,7 @@ async fn ui_v1_key_response_shapes_are_frozen() {
         "proxy_websocket",
         "endpoint",
         "status",
+        "maintenance_reason",
         "https",
         "is_default",
         "aliases",

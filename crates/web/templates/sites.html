@@ -90,7 +90,7 @@
             {% endif %}
           </td>
           <td class="cell-status">
-            <span class="badge{% if !s.status_class.is_empty() %} {{ s.status_class }}{% endif %}">
+            <span class="badge{% if !s.status_class.is_empty() %} {{ s.status_class }}{% endif %}"{% if !s.maintenance_reason.is_empty() %} title="{{ s.maintenance_reason }}"{% endif %}>
               <span class="status-dot{% if !s.status_class.is_empty() %} {{ s.status_class }}{% endif %}"></span>{{ s.status_label }}
             </span>
             <span class="badge{% if !s.https_class.is_empty() %} {{ s.https_class }}{% endif %}">

@@ -260,6 +260,12 @@ pub async fn runtime_detail(
             "editable": port_editable,
             "range": port_range,
         },
+        "publish": {
+            "port": view.runtime.publish_port,
+            "container_ip": view.runtime.container_ip,
+            "container_address": row.container_address,
+            "editable": port_editable,
+        },
         "extensions": extensions,
         "categories": [
             skiff_app::runtime_catalog::CATEGORY_DB,
@@ -545,6 +551,34 @@ pub async fn runtime_port_save(
     write_done(json!({
         "message": format!("端口已改为 {}，正在重建运行环境", body.port)
     }))
+}
+
+/// `POST /ui/v1/runtimes/{id}/publish`：设置/取消对外发布宿主端口（默认不公开）。
+pub async fn runtime_publish_save(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    parts: Parts,
+    Json(body): Json<RuntimePublishBody>,
+) -> Result<Response, ApiError> {
+    guard::write(&state, &user, &parts, act::RUNTIME_SAVE_PUBLISH)?;
+    runtime_cmd::save_publish(
+        &state,
+        runtime_cmd::SavePublish {
+            id,
+            port: body.publish_port,
+            actor: handlers::sites::actor(&state, &user, &parts),
+            role: user.user.role,
+        },
+    )
+    .await
+    .map_err(handlers::sites::map_err)
+    .map_err(ApiError)?;
+    let message = match body.publish_port {
+        Some(p) => format!("已开启对外发布：宿主 {p} → 容器内端口，正在重建运行环境"),
+        None => "已取消对外发布，正在重建运行环境".to_string(),
+    };
+    write_done(json!({ "message": message }))
 }
 
 /// `POST /ui/v1/runtimes/{id}/clone`：同配置克隆（端口由内核重新分配）。
@@ -851,6 +885,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
             post(runtime_node_config_save),
         )
         .route("/ui/v1/runtimes/{id}/port", post(runtime_port_save))
+        .route("/ui/v1/runtimes/{id}/publish", post(runtime_publish_save))
         .route("/ui/v1/runtimes/{id}/clone", post(runtime_clone))
         .route(
             "/ui/v1/runtimes/{id}/extensions",

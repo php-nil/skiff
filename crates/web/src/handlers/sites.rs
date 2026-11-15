@@ -39,7 +39,7 @@ pub use runtime::{
     runtime_extension_install, runtime_extension_uninstall, runtime_extensions_batch,
     runtime_extensions_save, runtime_health, runtime_job, runtime_jobs, runtime_logs,
     runtime_node_config_save, runtime_pecl_install, runtime_port_save, runtime_probe,
-    runtime_unbind_site,
+    runtime_publish_save, runtime_unbind_site,
 };
 pub use tls::{set_backup, ssl_action};
 
@@ -129,6 +129,10 @@ fn runtime_site_status(
 pub(crate) fn site_status(
     summary: &skiff_app::views::sites::SiteSummary,
 ) -> (&'static str, &'static str) {
+    // 已启用且巡检已把 vhost 切到维护页：状态优先于容器运行态，避免「运行中」与实际 503 矛盾。
+    if summary.status == "running" && !summary.maintenance_reason.is_empty() {
+        return ("维护中", "warn");
+    }
     if summary.site_type == TYPE_RUNTIME {
         runtime_site_status(&summary.status, summary.runtime_state.as_deref())
     } else {
@@ -182,10 +186,24 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
             }
         }
         skiff_store::KIND_RUST | skiff_store::KIND_NODE => match v.runtime.port {
-            Some(port) => format!("http://127.0.0.1:{port}"),
+            Some(port) => match v.runtime.container_ip.as_deref() {
+                Some(ip) => {
+                    let mut text = format!("容器 http://{ip}:{port}");
+                    match v.runtime.publish_port {
+                        Some(host) => text.push_str(&format!("；对外已发布 :{host}")),
+                        None => text.push_str("；未对外发布"),
+                    }
+                    text
+                }
+                None => "容器地址未分配（需重建环境）".to_string(),
+            },
             None => "端口未分配".to_string(),
         },
         _ => "尚未接入".to_string(),
+    };
+    let container_address = match (v.runtime.container_ip.as_deref(), v.runtime.port) {
+        (Some(ip), Some(port)) => format!("{ip}:{port}"),
+        _ => String::new(),
     };
     let endpoint_short = match v.runtime.kind.as_str() {
         skiff_store::KIND_PHP => "sock".to_string(),
@@ -251,6 +269,12 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
         container_state: v.container_state.clone(),
         endpoint_short,
         endpoint_full,
+        container_address,
+        publish_port: v
+            .runtime
+            .publish_port
+            .map(|p| p.to_string())
+            .unwrap_or_default(),
         port: v.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
         implemented: v.implemented,
         is_default: v.runtime.is_default,
@@ -316,6 +340,7 @@ pub(crate) fn site_view(s: &skiff_app::views::sites::SiteSummary) -> SiteView {
         status: s.status.clone(),
         status_label: status_label.to_string(),
         status_class: status_class.to_string(),
+        maintenance_reason: s.maintenance_reason.clone(),
         https_label: https_label.to_string(),
         https_class: https_class.to_string(),
         created: s.created.clone(),
