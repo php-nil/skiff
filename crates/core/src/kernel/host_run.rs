@@ -90,18 +90,53 @@ pub(super) async fn run_host(
             drop(pipe);
         }
     }
-    let out = tokio::time::timeout(
+    let waited = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs.max(1)),
         child.wait_with_output(),
     )
-    .await
-    .map_err(|_| format!("{cmd} 执行超时（{timeout_secs}s）"))?
-    .map_err(|e| format!("等待 {cmd} 失败：{e}"))?;
+    .await;
+    let out = match waited {
+        Ok(waited) => waited.map_err(|e| format!("等待 {cmd} 失败：{e}"))?,
+        Err(_) => {
+            // `kill_on_drop` 只能终止本地 `systemd-run` 客户端，瞬态单元仍在执行；
+            // 必须显式 stop，否则调用方按「失败」重试时真实副作用还在继续。
+            stop_unit(&unit).await;
+            return Err(format!(
+                "{cmd} 执行超时（{timeout_secs}s），已尝试终止单元 {unit}"
+            ));
+        }
+    };
     Ok(HostOutput {
         success: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
+}
+
+/// 超时后清理瞬态单元。
+///
+/// 清理自身也有 5 秒上限：stop 失败、systemctl 不存在或 systemd 无响应都只记
+/// 日志，不改变「超时」这个主结论，也不会让调用方多等。
+#[cfg(target_os = "linux")]
+async fn stop_unit(unit: &str) {
+    let stop = tokio::process::Command::new("/usr/bin/systemctl")
+        .args(["stop", unit])
+        .kill_on_drop(true)
+        .status();
+    match tokio::time::timeout(std::time::Duration::from_secs(5), stop).await {
+        Ok(Ok(status)) if status.success() => {
+            tracing::debug!(unit, "已终止超时的瞬态单元");
+        }
+        Ok(Ok(status)) => {
+            tracing::warn!(unit, code = ?status.code(), "终止超时单元失败");
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(unit, error = %e, "执行 systemctl stop 失败");
+        }
+        Err(_) => {
+            tracing::warn!(unit, "systemctl stop 超过 5 秒未返回");
+        }
+    }
 }
 
 #[cfg(test)]
