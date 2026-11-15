@@ -2135,7 +2135,6 @@ dependencies = [
  "skiff-model",
  "skiff-pkgfmt",
  "skiff-plugin",
- "skiff-sched",
  "skiff-store",
  "tempfile",
  "tokio",
