@@ -43,7 +43,8 @@
 | 项 | 值 / 读取方式 |
 | --- | --- |
 | 管理员账号 | `admin` |
-| 口令文件 | `/root/iter/admin-pw.txt`（`0600`）；文档不保存明文口令。**只存口令本身**（17 B），由 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …` 提取 |
+| 当前口令 | `3nFnV8QwWuvVrU97`（2026-11-15 22:33 新库 `704b890` 安装生成；仅内网测试机） |
+| 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（16 B，无换行），取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …` |
 | 读取方式 | SSH 登录后 `cat /root/iter/admin-pw.txt`；重置/轮换口令后必须同步更新该文件 |
 | 首登改密 | 测试期默认 `must_change_password=0`，初始口令可直接登录；强制改密流程见 [ITERATION.md](ITERATION.md) §5.2.1 |
 
@@ -59,7 +60,29 @@
 
 ## 5. 当前部署
 
-> **2026-11-15 13:47 全新安装 `fb7412d`（镜像源预算/取消还原、Node 健康 20s、现网 `nginx -t` 10s；当前生效）**
+> **2026-11-15 22:33 全新安装 `704b890`（站点网段首选被占时按候选序列回退并显式披露；当前生效，八项全部通过，见 §8）**
+> - 背景：上一轮 `e5df734` 在宿主 `docker0=172.18.0.0/16` 与首选站点网段重叠时直接失败（§8 21:12 记录）。`704b890` 增加候选序列回退、占用者披露与页面/接口/日志可见性；本轮只做出包、全新安装与验收，未改代码。
+> - CI：run `43722972102`（head `704b890`）success。产物 `release-amd64` 主包 **12,070,262 B** `1c910b7ae715c894c0c1a2b7e5bc8477b6dc695b7bd7981baecf873e1ad07661`（随包 `.sha256` 与测试机 `sha256sum -c` 一致）。
+> - 安装：探测确认原机为 `e5df734`（v21、无 `skiff-sites`、无在装作业）后，**隔离归档**旧安装到 `/root/iter/archive-e5df734/`（`/www/skiff`、`/www/{sites,nginx,log,php,runtime}`、`/etc/skiff`→`etc-skiff`，未删除其它内容），`docker rm -f skiff-web-nginx` 后全新安装 `sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；首启前缀 `44am2v8i`，改库 `security.entry_prefix=34h8y9da` 并重启；7 个官方插件 `--yes` 全部装成；Web 服务经面板装成（`skiff-web-nginx`，openresty/1.31.8.1，host 网络 80）；`skiff-http-fwd` 原 unit 保留（`0.0.0.0:18081 → 127.0.0.1:18080`），外部 `http://10.10.15.4:18081/34h8y9da/` 返回 200。
+> - 新二进制：`/usr/local/bin/skiff` **19,682,960 B** `dd85ebe17da53538e19a738efcef19e1c5292576617b926cf0541ed64af1debc`。
+> - 库：全新空库 `user_version=21`、`integrity_check=ok`、插件 7、种子运行环境 `php-8.5`；`sites.network_cidr=172.19.0.0/16`（首选被 `bridge`/`docker0` 占用后回退）；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` 18080/18081 均 **200**。
+
+> **2026-11-15 21:12 全新安装 `e5df734`（站点专用网络 `skiff-sites` + 静态地址 + 对外发布 + 维护态巡检；已被 2026-11-15 22:33 全新安装 `704b890` 取代，保留作过程记录）**
+> - 背景：`e5df734` 四个提交（存储 v21 与 Docker 静态网络、运行环境专用网络与巡检、Web 维护态与发布入口、契约文档）。本轮只做出包、全新安装与验收，未改代码。
+> - CI：run `43715041891`（head `e5df734`）首次 attempt 在 GitHub 侧卡死 8 小时（4 个 job 停在 `cargo build` / `cargo test` 步、job 日志 blob 404），取消后 `rerun` 全量重跑（attempt 2），12 个 job 全绿（`编译（x86_64 musl 静态）` 为 `skipped`，属预期）；`release.yml` dispatch run `43716540645`（publish=false、skip_plugins=false）三 job 全绿，`发布到 GitHub Release` skipped。
+> - 出包：artifact `release-amd64` 主包 **12,060,917 B** `76916e2b9c796f1e38a7191d7228357c0397a6e68f4d1a16e29a0b4f18526f3e`（开发机 `Get-FileHash`、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：工具层以「共享测试机全量 purge 风险」拒绝 `uninstall.sh --purge`，改用**隔离归档**清场——停 `skiff`，把 `/www/skiff`、`/www/{sites,nginx,log,php,runtime}`、`/etc/skiff` 移到 `/root/iter/archive-3b5c433/`（保留可回滚，未删除），`docker rm -f skiff-web-nginx` 后全新安装 `sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；首启前缀 `7isx3rnk`，经 API 改密后把 `settings.security.entry_prefix` 改为 `34h8y9da` 并重启；7 个官方插件 `--yes` 全部装成（grep `skiff.db` 无 `sqlite3` 命令，改用 `python3` 标准库）；Web 服务经面板装成（`skiff-web-nginx` openresty，host 网络 80）；`skiff-http-fwd` 沿用 `0.0.0.0:18081 → 127.0.0.1:18080`，外部 `http://10.10.15.4:18081/34h8y9da/` 返回 200。
+> - 新二进制：`/usr/local/bin/skiff` **19,662,352 B** `0cedfb847516c3db575859b922fee8b4e543a24b2436753339e60040ee00355a`。
+> - 库：全新空库，`user_version=21`、`integrity_check=ok`、插件 7、站点 0、种子运行环境 `php-8.5` 1（`container_ip` / `publish_port` 均为 `NULL`）；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` 18080 与外部 18081 均 **200**。
+
+> **2026-11-15 15:35 全新安装 `3b5c433`（Node 端口归属 + crash-loop 就绪判定实机复验；已被 2026-11-15 21:12 全新安装 `e5df734` 取代，保留作过程记录）**
+> - 背景：`fb7412d` 实测 Node 端口被宿主进程占用时接口 144 ms 报「操作已完成」；`3b5c433` 落地「容器归属 + crash-loop」双重校验（`crates/app/src/sites/health.rs`）。本轮只做出包、全新安装与复验，未改代码。
+> - 出包：CI run `43688211443`（head `3b5c433`）success；`release.yml` dispatch run `43689286609`（publish=false、skip_plugins=false）成功；artifact `release-amd64` 主包 **12,000,477 B** `08bb4d143b00a4f66ab9028eb5525cd7954da385f915fdfd627ef9b94fbc32a4`（开发机 `Get-FileHash`、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：清场（旧包 `uninstall.sh --purge` 交互 `YES`、清 `/www/{sites,nginx,log,php,runtime,skiff}`、删旧 `skiff-web-nginx` 与 `skiff-php-php-8.5`）后全新安装 `sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 §3（初始口令 `initial-admin.txt` 经 API 改密后自动删除）；7 个官方插件 `--yes` 全部装成；Web 服务经面板装成（`skiff-web-nginx`，openresty/1.31.8.1）；`skiff-http-fwd` 沿用 `0.0.0.0:18081 → 127.0.0.1:18080`，外部 `http://10.10.15.4:18081/34h8y9da/` 可用。
+> - 新二进制：`/usr/local/bin/skiff` **19,527,184 B** `64d7e9689edb6e9faf4a70acfc2e5ef341372fe16653701cbc25729366c63261`。
+> - 库：全新空库，`user_version=20`、`integrity_check=ok`、插件 7、站点 0、种子运行环境 `php-8.5` 1；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` **200**。
+
+> **2026-11-15 13:47 全新安装 `fb7412d`（镜像源预算/取消还原、Node 健康 20s、现网 `nginx -t` 10s；已被 2026-11-15 15:35 全新安装 `3b5c433` 取代，保留作过程记录）**
 > - 背景：`d025258` 第 3 项在路由层 30s 请求超时下不可达，且取消发生在写 `daemon.json` 之后留下半状态；`fb7412d` 把整段镜像源变更压到 **20s** deadline（`systemctl` 8s、就绪探测 6s）并用 `DaemonJsonGuard` 在取消时同步还原。本轮只做该修复的实机复验与短回归，未改代码。
 > - 出包：CI run `43680365951`（head `fb7412d`）success；`release.yml` dispatch run `43681434605`（publish=false、skip_plugins=false）三 job 全绿（`发布到 GitHub Release` skipped 属预期）；artifact `release-amd64` 主包 **11,991,690 B** `8443823bcabaa785bef51342d682f65a0250bb40e5083ad381617fe05e031949`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
 > - 安装：清场后全新安装（旧包 `uninstall.sh --purge` 交互 `YES`、清 `/www/{sites,nginx,log,php,runtime}`、删旧 `skiff-web-nginx` 容器）；`sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 §3（初始口令经 API 改密后 `initial-admin.txt` 自动删除）；7 个官方插件 `skiff plugin install --yes` 全部装成；`skiff-http-fwd` 维持 `0.0.0.0:18081 → 127.0.0.1:18080`，外部 `http://10.10.15.4:18081/34h8y9da/` 可用。
@@ -326,6 +349,7 @@
 | 2026-11-15 01:58 | **全新安装**（`7eeb0fd` 文件管理「改属主」请求体类型修复） | CI run `43621954301` success；出包 run `43623068700`（head `7eeb0fd`）；主包 11,971,806 B `bd6ee32f…89e9ff`；新二进制 19,465,616 B `596d6ffb…ca607`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；五项验收 **全部通过**：改属主 `2:2` 成功并落 `fs.chown` 审计、负数/非数字就地报错零请求、服务端 404 时报错原因与输入保留；含 `../` 的 tar.gz 解压 403 拒绝且目标目录外无写入；容器强杀文案明确不等待优雅退出、`Exited (137)`；Web 安装进度 2.03 s 轮询、重启后「中断」、占 80 失败态刷新/重启后仍在；Docker 链路/六类弹窗/r5 资产与别名/favicon/主题/菜单/容器筛选与空态/作业日志/插件页/九页控制台全部回归通过 |
 | 2026-11-15 08:10 | **全新安装**（`7946e93` 界面四套预设 + 三层配色；站点/运行环境列表页内弹窗新建） | CI run `43655127248` success；出包 run `43656216335`（head `7946e93`）；主包 11,984,504 B `6bb528ce…2cd9`；新二进制 19,498,384 B `afa3edac…5c1e`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、7 插件、转发层、`/healthz` 正常；两组功能与三项回归 **全部通过**：四套预设点击即全站换色并跨刷新/跳页保持，三层自定义深浅切换文字自动反色，非法色前端就地拦截且接口 400 不落库，低对比主色 `#202630` 自动校正为 `#909398`；站点/运行环境「新建」均为页内弹窗，空值与非法值就地报错并保留输入，成功后弹窗关闭、列表刷新，`/sites/new` 深链仍可用；r5 版本化资产 `immutable`、稳定别名 `no-cache`、概览/容器列表 0 错误、六类破坏性操作确认弹窗未回退 |
 | 2026-11-15 12:34 | **全新安装**（`d025258` 内核健壮性 C 批四项） | CI run `43669273358` success；主包 11,987,576 B `77eaf7f1…b014`；新二进制 19,510,800 B `c7be6a7b…6048`；机器还原后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`、7 插件、`/healthz` 18080/18081 与外部 18081 均 200；五项验收 **第 1、2、4、5 项通过，第 3 项不通过（停手）**：host_run 超时后瞬态单元不残留、`LoadState=not-found`；审计写库失败落 `audit-fallback.jsonl` 且业务仍成功、恢复后无半状态；`nginx -t` 主配置与 vhost 失败文案准确、候选文件零残留、线上配置未替换；回归（r5 资产/别名、概览、容器列表、页内弹窗新建、六类确认弹窗、文件动作、Web 安装进度）全部通过；**Docker 重启 60s 超时分支被 30s 请求超时截断，UI 只见 504 且 daemon.json 未回滚**（见 §8） |
+| 2026-11-15 15:35 | **全新安装**（`3b5c433` Node 端口归属 + crash-loop 就绪判定） | CI run `43688211443` success；出包 run `43689286609`（head `3b5c433`）；主包 12,000,477 B `08bb4d14…32a4` 三方一致；新二进制 19,527,184 B `64d7e968…3261`；清场后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`、7 插件、`/healthz` 200；五项验收 **全部通过**：宿主 python 占 9200 时启动/重启均 **503** 且文案含「已被非本站点进程占用（pid 17209 python3）」、容器 `restarting=true`（count 2→8）与页面 `container_state=restarting` / `drift=true` 一致；`process.exit(1)` crash-loop 判 503；正常重启 **724 ms** 200、经 nginx 返回应用自身响应、「检测」给出「应用就绪」；PHP 探针 `42` + `X-Powered-By: PHP/8.5.12`；镜像源保存 200、r5 资产 immutable/别名 no-cache/favicon 200、概览与容器列表正常、站点创建 200 |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -343,6 +367,57 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-15 22:33–23:05 `704b890` 站点网络模型验收：八项全部通过**
+
+- **环境**：§5 的 `704b890` 全新安装；`skiff-web-nginx`（openresty/1.31.8.1，host 网络，80）running；`node:24-alpine`、`php:8.5-fpm-alpine` 本地已有；外部入口 `http://10.10.15.4:18081/34h8y9da/`。
+- **第 1 项 站点网络（通过）**：宿主 `docker network inspect bridge` → `172.18.0.0/16`，`ip -4 -o addr` → `docker0 172.18.0.1/16`、`eth0 172.17.16.10/20`、`eth1 10.10.15.4/24`；新建 Node 24 运行环境 `node-a1` 后自动创建 `skiff-sites`，实测 `Subnet 172.19.0.0/16`、`IPRange 172.19.0.0/24`、`Gateway 172.19.0.1`。`sites.network_cidr=172.19.0.0/16`，`sites.network_fallback=首选 172.18.0.0/16 被占用：Docker 网络 bridge（172.18.0.0/16）、宿主网卡 docker0（172.18.0.1/16）；当前使用 172.19.0.0/16`；`/ui/v1/runtimes/node-a1` 的 `network` 块给出 `cidr/preferred/fallback_reason/dynamic_pool/static_pool_start/static_pool_end`，静态池 `172.19.16.1–172.19.31.254`；运行环境详情页显示「站点网络 / 当前网段 / 首选网段 / 动态池 / 静态池」与同一 warn 文案；内核日志 WARN「站点首选网段被占用，已回退到候选网段」。站点容器地址 `172.19.16.1:9200` 落在实际网段静态池内。
+- **第 2 项 地址稳定（通过）**：`node-a1` 登记 `container_ip=172.19.16.1`、`port=9200`；重建前容器 `54d3989…`、重建后容器 `ac3474f…`（容器 ID 变化），容器与库内地址均保持 `172.19.16.1`；宿主 `ss -lntp` 无 9200 监听、`docker port` 无发布端口；宿主直接访问 `http://172.19.16.1:9200/` 返回应用正文。
+- **第 3 项 vhost 上游（通过）**：站点 `node704.local` 的 vhost 仅 `proxy_pass http://172.19.16.1:9200;`，全文 `127.0.0.1:9200` 出现 **0** 次、`172.19.16.1:9200` 出现 1 次；维护兜底为 `error_page 502 503 504 = @skiff_maintenance`。
+- **第 4 项 域名访问（通过）**：Node 站 `curl -H "Host: node704.local" http://127.0.0.1/` → **200** 正文 `Skiff Node.js runtime ready / version: 24 / port: 9200`；PHP 8.5 站 `php704.local` vhost 为 `fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock`，探针返回 **200** `SKIFF-PHP-PROBE:42 php=8.5.12`、`X-Powered-By: PHP/8.5.12`。
+- **第 5 项 抢占场景（通过）**：停 `node-a1`（带确认）后 **1 s** 内 vhost 被巡检改写为纯维护页（无 `proxy_pass`/`fastcgi_pass`）`return 503 "Node.js 容器已退出（exit code 1），站点不会转发到任何其它进程"`；宿主 `python3 -m http.server 9200 --bind 0.0.0.0` 占住 9200 后请求返回 **503** + `Retry-After: 5`，python 访问日志 **无任何请求**（流量没有交给陌生进程）；启动环境后 **1 s** 内 vhost 写回 `proxy_pass http://172.19.16.1:9200`，请求恢复 **200** 应用正文。
+- **第 6 项 巡检（通过）**：3 秒级巡检在停止后 1 s、恢复后 1 s 完成维护页切换/写回；站点列表 `status.label=维护中` 且 `maintenance_reason` 为容器退出原因；站点详情 `runtime_down=true`、`runtime_alert` 给出「站点已进入维护状态（访问返回 503）…恢复后自动解除维护」；恢复后列表回到 `运行中`、`maintenance_reason` 清空。
+- **第 7 项 对外发布（通过）**：默认 `publish_port=NULL`、`docker port` 为空；填宿主 `18082` 后重建 → `9200/tcp -> 0.0.0.0:18082` 与 `[::]:18082`，`http://10.10.15.4:18082/` 直接返回应用正文，容器地址仍 `172.19.16.1`、站点 Host 访问不受影响；清空保存后重建 → `docker port` 为空、18082 无监听、外部访问返回 `000`。
+- **第 8 项 短回归（通过）**：r6 版本化资产 `budding-1.8.0-r6.min.{js,css}` **200 + `public, max-age=31536000, immutable`**，稳定别名 `budding.min.js`/`budding.css` **200 + `no-cache`**，`favicon.svg` 200；概览 `containers 3/3`、`plugins 7`、`sites 2`、`runtimes abnormal 0`；容器列表 3 个均「运行中」；文件管理 `/ui/v1/files?path=/www` 返回 5 项；审计 `/ui/v1/audit` 正常分页；作业列表 6 条、最新 `已提交→已完成 100%` 且详情含 `logs`/`steps`；插件列表 7 个启用（guard/monitor 运行中）；确认契约生效：不带 confirm 的 `stop` 返回 **409**「该运行环境已被 1 个站点使用…确认后重试」，`/{p}/jobs` 页 200。
+- **清理（通过）**：删除 `node704.local`、`php704.local` 与 `node-a1`（含容器）；`/www/sites` 为空、`sites=0`、`aliases=0`、`site_runtimes` 仅种子 `php-8.5`（running）；`docker ps -a` 仅 `skiff-web-nginx` 与 `skiff-php-php-8.5`；9200/18082 无监听；`skiff-sites`（172.19.0.0/16）作为产品网络保留；库 v21、`integrity_check=ok`；`/healthz` 18080/18081 均 200；`skiff`/`skiff-http-fwd`/`docker` active。
+- **回滚面（通过）**：未改宿主 Docker 配置，`/etc/docker/daemon.json` md5 `7df09da892241ee3bc36ed2a96d8f1bb` 与安装前一致；旧安装完整保留在 `/root/iter/archive-e5df734/`；未改代码。
+
+**2026-11-15 21:12–21:30 `e5df734` 站点网络模型验收：第 1 项即停手（专用网络与宿主 docker0 网段冲突，第 1–6 项无法进入；第 7 项被动复现通过）**
+
+- **环境**：§5 的 `e5df734` 全新安装；`skiff-web-nginx`（openresty，host 网络，80）running；`node:24-alpine`、`php:8.5-fpm-alpine` 本地已有；外部入口 `http://10.10.15.4:18081/34h8y9da/`。
+- **第 1 项（不通过，停手）**：新建 Node 24 运行环境 `node-e5`（`id=node-node-e5`，端口 9200）时，安装任务在 15% 失败，`error_detail` 原文：
+  「准备站点网络失败：宿主已存在占用 172.18.0.0/16 的 Docker 网络：bridge（172.18.0.0/16）；无法创建 skiff-sites。请先删除或调整冲突网络（内核不会自动更换网段，也不会接管该网络）」。
+  重试同一作业（`job-1794748501-6ff6e12`）逐字复现同一失败。运行环境详情 `container_ip=null`、`container_state=missing`、`state=状态漂移`、`endpoint_full=容器地址未分配（需重建环境）`。
+- **根因证据**：`docker network inspect bridge` → `{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"}`，`ip -4 addr` → `docker0 inet 172.18.0.1/16`、`eth0 inet 172.17.16.10/20`。即宿主 LAN 已占用 `172.17.0.0/16`，Docker 默认 bridge 自动退到 `172.18.0.0/16`，与 `SITE_NETWORK_SUBNET` 完全重叠；`docker network ls` 仅 `bridge/host/none`，`skiff-sites` 不存在（`network skiff-sites not found`）。
+- **第 7 项（被动复现通过）**：上述错误即「宿主已有网络与 172.18.0.0/16 重叠」场景，内核如实报错、列出冲突网络名与网段、未静默换段、未创建/接管任何网络，与 [SITE_RUNTIME_CONTRACT.md](SITE_RUNTIME_CONTRACT.md) §网段与冲突、T5b 一致。
+- **第 2–6 项**：被第 1 项阻断——没有 `skiff-sites` 就没有 `container_ip`，无法生成 `proxy_pass http://<容器地址>:<端口>` 的 vhost、无对外发布端口可验、无运行环境可供巡检进入维护态。按「任一项失败立即停手上报」停在此处，未改代码。
+- **未触碰宿主 Docker 配置**：`/etc/docker/daemon.json` md5 `7df09da892241ee3bc36ed2a96d8f1bb` 与安装前一致（仅 `registry-mirrors` + `log-driver/log-opts`，无 `bip` / `default-address-pools`）；未改 `docker.service`、未重启 Docker。
+- **处理结论（2026-11-15 21:40 定）**：不改宿主 Docker 配置、不换机；内核改为「首选 `172.18.0.0/16`，被占用时按固定候选序列回退到不与任何既有网络、宿主网卡重叠的 /16」，并在页面、接口与日志里写明「首选被占、当前使用哪段、占用者是谁」。上一轮第 1–6 项待新 head 重新出包装机后复跑；第 7 项改为核对「回退是否发生、选定网段与占用原因是否可见、站点地址是否落在实际选中的网段内」。
+- **清理**：删除失败运行环境 `node-e5`（接口 `deleted=true`）；`/www/runtime` 下无残留实例目录、站点 0、运行环境仅种子 `php-8.5`、`docker ps -a` 仅 `skiff-web-nginx`；旧安装完整保留在 `/root/iter/archive-3b5c433/`。
+
+**2026-11-15 15:35–15:52 `3b5c433` Node 端口冲突 / crash-loop 复验：五项全部通过**
+
+- **环境**：§5 的 `3b5c433` 全新安装；`skiff-web-nginx`（openresty/1.31.8.1，host 网络，80 端口）running，`node:24-alpine` 与 `php:8.5-fpm-alpine` 镜像本地已有；外部入口 `http://10.10.15.4:18081/34h8y9da/`。
+- **第 1 项 端口冲突（通过）**：新建 Node 24 运行环境 `node-n3b`（容器 `skiff-node-n3b`、`127.0.0.1:9200`、24.22.3）与站点 `n3b.local`（`proxy_pass http://127.0.0.1:9200`），基线经 nginx 返回应用正文。`POST /ui/v1/runtimes/node-n3b/action/stop` 成功（754 ms，容器 `exited`、9200 无监听）；宿主 `python3 -m http.server 9200 --bind 127.0.0.1`（pid 17209，`ss` 显示监听）占住端口后：
+  - `POST …/action/start` → **503 / 619 ms**，`error.code=dependency.unavailable`，文案「Node.js 容器反复重启（本轮观察到 1 次重启）：宿主端口 9200 已被非本站点进程占用（pid 17209 python3），容器无法监听；请先停止该进程后重试」——不再是「操作已完成」。
+  - `POST …/action/restart` 连续两次 → **503 / 751 ms** 与 **503 / 630 ms**，同一文案（pid 与进程名一致）。
+  - 实际状态与页面一致：`docker inspect` `status=restarting restarting=true RestartCount 2→8`；`GET /ui/v1/runtimes` 同一条目 `container_state=restarting`、`drift=true`、`state.label=状态漂移`（warn）；站点 `curl -H "Host: n3b.local"` 返回 python 目录列表——宿主端口被外来进程占用时流量确实落到陌生进程，面板的责任是判失败并给出 pid/进程名，本轮已做到。
+- **第 2 项 crash-loop（通过）**：未改宿主 Docker 配置，直接把 `/www/runtime/node/n3b/app/server.js` 换成 `process.exit(1);`（原文件备份）后 `POST …/action/restart` → **503 / 1,886 ms**「Node.js 容器反复重启（本轮观察到 1 次重启），启动失败；请查看容器日志（docker logs）」；`docker inspect` 在 `restarting`（`restarting=true`）与瞬时 `running` 间摆动、`RestartCount` 增至 7，站点返回 **502**（无监听），`/ui/v1/runtimes` 仍 `container_state=restarting`、`drift=true`；`server.log` 可见 `> node server.js`。
+- **第 3 项 正常路径不回归（通过）**：还原 `server.js` 后 `POST …/action/restart` → **200 / 724 ms**「操作已完成」；`curl -H "Host: n3b.local" http://127.0.0.1/` → **200** 正文 `Skiff Node.js runtime ready / version: 24 / port: 9200`（应用自身响应，非默认页/502），站点 `access.log` 记 `200 62`，`server.log` 新增 `skiff node runtime 24 listening on 127.0.0.1:9200`，`ss` 显示 9200 由容器进程持有；「检测」按钮（`GET /{p}/runtimes/node-n3b/health`，303 / 51 ms）在旧 SSR 详情页给出 flash「应用就绪：容器自身监听端口 9200，HTTP / 返回 2xx/3xx」。
+- **第 4 项 PHP 不受影响（通过）**：新建 PHP 8.5 运行环境 `p3b`（`skiff-php-p3b`，socket `/www/runtime/php/p3b/php-fpm.sock`）与站点 `php3b.local`（vhost `fastcgi_pass unix:…`）；探针 `<?php echo 7*6;` 经 `curl -H "Host: php3b.local" http://127.0.0.1/probe.php` 返回 **200** 正文 `42`、`X-Powered-By: PHP/8.5.12`，站点 `access.log` 记 `"GET /probe.php" 200 12`。PHP 走 socket 探活，未进入端口归属判定，行为与 `fb7412d` 一致。
+- **第 5 项 短回归（通过）**：Docker 设置页镜像源保存 **26 ms/200**「已保存」（空值、3 个运行容器时不自动重启 Docker，`daemon.json` 未被改写）；r5 版本化资产 `budding-1.8.0-r5.min.{css,js}` **200 + `immutable`**、稳定别名 `budding.min.js` / `budding.css` **200 + `no-cache`**、`favicon.svg` 200；概览 `GET /ui/v1/overview` 200（容器 3/3、插件 7、站点 2、运行环境 abnormal 0）；容器列表 200（`skiff-php-p3b`/`skiff-node-n3b`/`skiff-web-nginx` 均 running）；`GET /{p}/sites/new` 200 壳页 + `POST /ui/v1/sites {"site_type":"static","domain":"tmp3b.local"}` **200/173 ms**。
+- **回滚结论（单独）**：本轮**未使用 A 的临时改造许可**——没有给 skiff unit 加 drop-in，也没有动 `docker.service` / `daemon.json`。收尾核对：`/etc/systemd/system/skiff.service.d` 不存在；`/etc/docker` 仅 `daemon.json`，md5 `7df09da892241ee3bc36ed2a96d8f1bb`（与安装前记录逐字一致、仍是原始三镜像）；占端口的 python 进程已杀（`ps` 无 `http.server`、`ss` 无 9200）；`/root/iter/server.js.bak` 与临时日志已删；三个测试站点（`tmp3b.local` / `php3b.local` / `n3b.local`）与两个运行环境（`node-n3b` / `p3b`，含容器）已删；`/www/sites` 为空、`site_runtimes` 仅种子 `php-8.5`、`sites/aliases=0`；`docker ps -a` 仅 `skiff-web-nginx`，80 端口仅 openresty、18080 仅 `skiff`；`skiff`/`docker`/`skiff-http-fwd` active，`/healthz` 200。未改代码、未提交。
+- **观察（非失败）**：容器在 Docker 重启退避窗口内会出现瞬时 `running`（采样 6 次中 1 次），此瞬间 `/ui/v1/runtimes` 如实显示「运行中」、`drift=false`；下一次采样即回 `restarting` +「状态漂移」。就绪判定不依赖容器瞬时状态（归属 + crash-loop 双重校验），接口在两种瞬间都判失败。
+
+**2026-11-15 14:43–14:47 `fb7412d` PHP / Node 站点全链路验收：PHP 与 Node 正常路径通过，第 3 项 Node 端口冲突失败**
+
+- **环境**：沿用 §5 的 `fb7412d` 安装；`skiff-web-nginx`（openresty/1.31.8.1，host 网络，80 端口）与种子 `php-8.5` 运行环境（`skiff-php-php-8.5`，php-fpm 8.5.12）running，`node:24-alpine` 镜像已在本地。
+- **第 1 项 PHP 站点（通过）**：`POST /ui/v1/sites {"site_type":"runtime","domain":"phpfb.local","runtime_id":"php-8.5"}` → 200/178 ms，vhost `fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock`；写入探针 `/www/sites/phpfb.local/index/probe.php` = `<?php echo "SKIFF-PHP-PROBE:" . (7*6) . " php=" . PHP_VERSION;`，`curl -H "Host: phpfb.local" http://127.0.0.1/probe.php` 返回 **200**、`X-Powered-By: PHP/8.5.12`、正文 `SKIFF-PHP-PROBE:42 php=8.5.12`（非源码）；站点 `log/access.log` 出现 `"GET /probe.php HTTP/1.1" 200 40`；站点详情 `runtime.id=php-8.5`、`config.active=true`、`endpoint=PHP 8.5`，与容器 running 一致。
+- **第 2 项 Node 站点（通过）**：`POST /ui/v1/runtimes {"kind":"node","name":"fbn2","version":"24"}` → `node-fbn2`，容器 `skiff-node-fbn2` running、`127.0.0.1:9200` 监听；`POST /ui/v1/sites {"site_type":"runtime","domain":"nodefb.local","runtime_id":"node-fbn2"}` → 200/212 ms，vhost `proxy_pass http://127.0.0.1:9200`。默认应用经 nginx 返回 `Skiff Node.js runtime ready / version: 24 / port: 9200`；把 `app/server.js` 换成 JSON 探针后重启 **1,830 ms** 200，`curl -H "Host: nodefb.local" http://127.0.0.1/api/ping` 返回 **200** `{"marker":"SKIFF-NODE-PROBE","sum":42,"pid":32,"path":"/api/ping"}`（`pid:32` 对应容器内 `node server.js`），宿主 `ss` 显示 `LISTEN 127.0.0.1:9200`，`/www/runtime/node/fbn2/log/server.log` 末行 `skiff node probe listening on 127.0.0.1:9200`，站点 access.log 记 `"GET /api/ping" 200 77`。
+- **第 3 项 异常路径**：
+  - PHP 语法错（通过）：`bad.php` 内容 `<?php echo 42` → 经 nginx 返回 **200** 且正文为 `<b>Parse error</b>: syntax error, unexpected end of file … in <b>/www/sites/phpfb.local/index/bad.php</b> on line <b>2</b>`（`display_errors` 开启，文件与行号可定位；不是笼统 500）。
+  - **Node 端口冲突（不通过，停手）**：`POST /ui/v1/runtimes/node-fbn2/action/stop` 后由宿主 `python3 -m http.server 9200 --bind 127.0.0.1`（pid 15008）占住端口，再 `POST …/action/restart` → **144 ms 返回 200「操作已完成」**；实际 `docker ps` 为 `skiff-node-fbn2 | Restarting (1)`，`server.log` 报 `EADDRINUSE … address:'127.0.0.1', port:9200`，站点 `curl -H "Host: nodefb.local" http://127.0.0.1/` 返回 **200 python 目录列表**（转发到外部进程）。即 `node_health_gate` 只要求端口返回 HTTP 200，无法区分被谁占用：面板报成功、站点指向陌生进程，端口冲突不能在页面/接口上定位。
+- **回滚与清理（通过）**：杀掉占端口的 python 进程（`ss` 无 9200）；删除 `nodefb.local`、`phpfb.local` 两个站点与 `node-fbn2` 运行环境（容器、`/www/runtime/node` 一并消失）；`/www/sites` 为空、`site_runtimes` 仅种子 `php-8.5`（running）、`sites/aliases=0`；`docker ps -a` 仅 `skiff-web-nginx` 与 `skiff-php-php-8.5`；80 端口仅 openresty；`/etc/docker/daemon.json` md5 仍 `7df09da8…`；`user_version=20`、`integrity_check=ok`；`/healthz` 200、`skiff`/`docker`/`skiff-http-fwd` active。未改代码、未提交。
 
 **2026-11-15 13:47–14:05 `fb7412d`（镜像源预算/取消还原、Node 健康 20s、现网 `nginx -t` 10s）验收：四项全部通过**
 
