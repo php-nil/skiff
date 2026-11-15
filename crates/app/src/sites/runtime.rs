@@ -14,6 +14,13 @@ use crate::jobs as app_jobs;
 use crate::runtime_catalog;
 use crate::AppState;
 
+/// Node.js 启停后等待应用可响应的上限。
+///
+/// 「启动/重启」在 UI 请求路径上同步执行，等待必须短于 web 层 30 秒请求超时，
+/// 否则用户只会看到 504，而拿不到「未通过健康检查」这个真实结论。web 侧有单测
+/// 锁定这个大小关系。
+pub const NODE_HEALTH_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl AppState {
     /// 运行环境列表：库是事实源，容器状态只作实时探测（漂移徽章的依据）。
     pub async fn runtime_views(&self) -> Result<Vec<RuntimeView>, SiteError> {
@@ -366,7 +373,7 @@ impl AppState {
             .port
             .ok_or_else(|| SiteError::Unavailable("Node.js 环境缺少端口，请重建".into()))?;
         let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
-        if wait_http_ready(port, &cfg.health_path, std::time::Duration::from_secs(60)).await {
+        if wait_http_ready(port, &cfg.health_path, NODE_HEALTH_BUDGET).await {
             Ok(())
         } else {
             Err(SiteError::Unavailable(format!(

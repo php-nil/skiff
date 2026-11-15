@@ -45,6 +45,29 @@ fn is_exempt(path: &str) -> bool {
 /// 套超时等于每隔几十秒踢一次用户。
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(test)]
+mod budget_tests {
+    /// 下游外部变更的总预算必须严格小于请求超时，否则「等待超时」分支永远不可达，
+    /// 用户只会看到笼统的 504。改动任一侧都要同步另一侧。
+    #[test]
+    fn mirror_apply_budget_is_below_request_timeout() {
+        assert!(
+            super::REQUEST_TIMEOUT > skiff_app::docker_daemon::MIRROR_APPLY_BUDGET,
+            "MIRROR_APPLY_BUDGET 必须小于 REQUEST_TIMEOUT"
+        );
+    }
+
+    /// 运行环境「启动/重启」在 UI 请求路径上同步等 Node 健康检查，
+    /// 同一约束：等待必须先在请求预算内失败，才能把真实原因返回给用户。
+    #[test]
+    fn node_health_budget_is_below_request_timeout() {
+        assert!(
+            super::REQUEST_TIMEOUT > skiff_app::sites::NODE_HEALTH_BUDGET,
+            "NODE_HEALTH_BUDGET 必须小于 REQUEST_TIMEOUT"
+        );
+    }
+}
+
 pub(crate) async fn timeout_after(dur: Duration, req: Request, next: Next) -> Response {
     match tokio::time::timeout(dur, next.run(req)).await {
         Ok(resp) => resp,
