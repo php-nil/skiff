@@ -37,7 +37,7 @@ skiff.service                  # systemd unit：Type=simple, Restart=always
 - 唯一数据根 `/www/skiff`：`skiff.db`、`plugins/`、`initial-admin.txt`、`backup/`。站点寄宿根单独为 `/www`（`sites/`、`nginx/conf.d`、`php/`），由 `web_root` 配置项决定，默认 `/www`。配置文件唯一规范路径是 `/etc/skiff/config.toml`，不在数据根重复维护；可选 Docker 形态以环境变量为主。
 - **站点树一站一目录**：`/www/sites/<域名>/{index,log,ssl,conf}` 承载该站全部产物（文档根、access/error 日志、证书、vhost），备份单个站点目录即整站可恢复；内核公共配置（默认站、兜底 404、`10-skiff-sites.conf`）仍在 `/www/nginx/conf.d`，vhost 由公共配置里的 `include /www/sites/*/conf/*.conf;` 载入（`.conf.disabled` 不被匹配）。旧布局（根目录直接放站点文件、日志在 `/www/logs/nginx/`、证书在 `/www/certs/<域名>/`、conf 在 `/www/nginx/conf.d/`）启动时一次性幂等迁移，内容与权限保留；旧目录清空后删除，若仍有其他文件则保留不误删。
 - 权限：`/www/skiff` 与 `plugins/` 0711（可穿越不可列）、`backup/` 0700、库与口令文件 0600；`/www/{sites,nginx,php}` 0755，供容器内非 root 进程读取。站点根只到 `index/`，`log/` 与 `ssl/` 不通过站点目录浏览与 files 能力面暴露。
-- 网站运行环境：**只有 nginx/OpenResty 用 host 网络**直接监听宿主 80（未来 443），PHP-FPM 只监听 `/www/php/php-fpm.sock`；Node.js / Rust 容器接入专用 bridge `skiff-sites` 并使用内核静态地址（`172.18.16.1–172.18.31.254`），**不占宿主端口**，站点 vhost 直接反代到容器地址；对外发布是显式可选开关。容器日志驱动 `local` + `max-size=10m`，站点 access/error 落各站 `log/` 目录并由内核按站轮转。
+- 网站运行环境：**只有 nginx/OpenResty 用 host 网络**直接监听宿主 80（未来 443），PHP-FPM 只监听 `/www/php/php-fpm.sock`；Node.js / Rust 容器接入专用 bridge `skiff-sites` 并使用内核静态地址（首选 `172.18.16.1–172.18.31.254`），**不占宿主端口**，站点 vhost 直接反代到容器地址；对外发布是显式可选开关。首选网段 `172.18.0.0/16` 与宿主既有 Docker 网络或网卡地址重叠时，按固定候选序列 `172.19`–`172.31`（`/16`）回退到第一个不重叠段并持久化，页面与日志明示占用者；候选全占则显式报错，不改宿主 Docker 配置、不接管他人网络。容器日志驱动 `local` + `max-size=10m`，站点 access/error 落各站 `log/` 目录并由内核按站轮转。
 
 **插件存储分层**（`/www/skiff/plugins/{id}/`；`versions/` 仅 root 写入、插件只读，`data/`/`cache/`/`run/` 插件可写；landlock 按层授权属设计目标，当前未实现）：
 

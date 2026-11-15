@@ -221,6 +221,8 @@ pub async fn runtime_detail(
     let port_editable = read.port_editable;
     let port_range = read.port_range;
     let config_mounts_stale = read.config_mounts_stale;
+    // 站点网络的实际选择：网段/池划分与首选被占用的原因（页面同源，只读）。
+    let net = state.site_network_info();
     write_done(json!({
         "runtime": {
             "id": row.id,
@@ -265,6 +267,14 @@ pub async fn runtime_detail(
             "container_ip": view.runtime.container_ip,
             "container_address": row.container_address,
             "editable": port_editable,
+        },
+        "network": {
+            "cidr": net.cidr,
+            "preferred": net.preferred,
+            "fallback_reason": net.fallback_reason,
+            "dynamic_pool": net.dynamic_pool,
+            "static_pool_start": net.static_pool_start,
+            "static_pool_end": net.static_pool_end,
         },
         "extensions": extensions,
         "categories": [

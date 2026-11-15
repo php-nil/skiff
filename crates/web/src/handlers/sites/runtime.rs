@@ -18,6 +18,7 @@ use crate::state::AppState;
 use crate::templates::{
     BoundSiteView, ExtensionOptionView, NodeConfigView, PhpConfigView, PhpEditorView, PhpFileView,
     PhpIniValueView, RuntimeDetailPage, RuntimeJobView, RuntimeKindView, RuntimeRow, SiteEnvPage,
+    SiteNetworkView,
 };
 use crate::util::{encode_uri_component, form_first, parse_form};
 
@@ -452,6 +453,22 @@ pub async fn runtime_detail(
     let port_editable = read.port_editable;
     let port_value = view.runtime.port.map(|p| p.to_string()).unwrap_or_default();
     let port_range_label = read.port_range;
+    let net = state.site_network_info();
+    let network = SiteNetworkView {
+        cidr: if net.cidr.is_empty() {
+            "未初始化（安装运行环境时创建）".to_string()
+        } else {
+            net.cidr.clone()
+        },
+        preferred: net.preferred,
+        fallback_reason: net.fallback_reason,
+        dynamic_pool: net.dynamic_pool,
+        static_pool: if net.static_pool_start.is_empty() {
+            String::new()
+        } else {
+            format!("{}–{}", net.static_pool_start, net.static_pool_end)
+        },
+    };
     handlers::render(RuntimeDetailPage {
         ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
         runtime: runtime_row(&state, &view),
@@ -464,6 +481,7 @@ pub async fn runtime_detail(
         port_editable,
         port_value,
         port_range_label,
+        network,
         health_url: format!("/{prefix}/runtimes/{id}/health"),
         clone_url: format!("/{prefix}/runtimes/{id}/clone"),
         socket_host: view.socket_host.clone(),

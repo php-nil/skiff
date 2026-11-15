@@ -465,6 +465,16 @@
     <div class="wizard-nav"><button class="btn" type="submit">保存端口</button></div>
   </form>
   {% endif %}
+  <div class="panel-head runtime-subhead"><h2>站点网络</h2></div>
+  <div class="kv">
+    <div><span class="muted">当前网段</span><span class="mono">{{ network.cidr }}</span></div>
+    <div><span class="muted">首选网段</span><span class="mono">{{ network.preferred }}</span></div>
+    <div><span class="muted">动态池</span><span class="mono">{% if network.dynamic_pool.is_empty() %}—{% else %}{{ network.dynamic_pool }}{% endif %}</span></div>
+    <div><span class="muted">静态池</span><span class="mono">{% if network.static_pool.is_empty() %}—{% else %}{{ network.static_pool }}{% endif %}</span></div>
+  </div>
+  {% if !network.fallback_reason.is_empty() %}
+  <div class="alert warn">{{ network.fallback_reason }}</div>
+  {% endif %}
   <div class="panel-head runtime-subhead"><h2>对外发布</h2></div>
   <div class="kv">
     <div><span class="muted">容器地址</span><span class="mono">{% if runtime.container_address.is_empty() %}未分配（需重建环境）{% else %}{{ runtime.container_address }}{% endif %}</span></div>

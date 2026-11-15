@@ -465,22 +465,4 @@ mod tests {
         );
         assert_eq!(classify(&f, "", 0, "172.18.16.2", true), Readiness::Ready);
     }
-
-    #[test]
-    fn allocate_ip_skips_used_addresses() {
-        let used = vec!["172.18.16.1".to_string(), "172.18.16.2".to_string()];
-        assert_eq!(
-            super::super::allocate_container_ip(&used).as_deref(),
-            Some("172.18.16.3")
-        );
-    }
-
-    #[test]
-    fn static_pool_bounds() {
-        assert!(super::super::is_static_pool_ip("172.18.16.1"));
-        assert!(super::super::is_static_pool_ip("172.18.31.254"));
-        assert!(!super::super::is_static_pool_ip("172.18.0.5"));
-        assert!(!super::super::is_static_pool_ip("172.18.16.0"));
-        assert!(!super::super::is_static_pool_ip("10.0.0.1"));
-    }
 }

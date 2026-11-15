@@ -554,6 +554,18 @@ pub struct PhpIniValueView {
     pub source: String,
 }
 
+/// 站点专用网络的当前选择：首选被占用时展示回退原因，避免用户误以为仍是首选段。
+#[derive(Debug, Clone, Default)]
+pub struct SiteNetworkView {
+    /// 实际网段；空串表示尚未创建。
+    pub cidr: String,
+    pub preferred: String,
+    /// 空串 = 使用首选；非空 = 首选被占用（含占用来源）。
+    pub fallback_reason: String,
+    pub dynamic_pool: String,
+    pub static_pool: String,
+}
+
 #[derive(Template)]
 #[template(path = "runtime_detail.html")]
 pub struct RuntimeDetailPage {
@@ -573,6 +585,8 @@ pub struct RuntimeDetailPage {
     pub port_editable: bool,
     pub port_value: String,
     pub port_range_label: String,
+    /// 站点专用网络（实际网段与回退原因）。
+    pub network: SiteNetworkView,
     /// 按需健康检查与克隆入口（进程型环境）。
     pub health_url: String,
     pub clone_url: String,
