@@ -368,8 +368,8 @@
 
 | # | 内容 | 阻塞点 |
 | --- | --- | --- |
-| C1 | 审计写入改投递（问题 12） | 需决定「审计是否必须在响应前落库」 |
-| C2 | `systemd-run` 超时清理单元（问题 11） | 需 Linux 测试机验证 |
+| C1 | 审计写入投递方式（问题 12） | 已完成：同步写库 + 失败落盘兜底（异步方案已否决，理由见 §6） |
+| C2 | `systemd-run` 超时后清理瞬态单元（问题 11） | 已完成，并在测试机验证据不残留 |
 | C3 | `systemctl restart docker` 超时语义（问题 10） | 已完成：60s 超时 + 30s 探测总预算（未上机实测） |
 | C4 | `nginx -t` 校验合并（问题 14） | 部分完成：执行通道已统一，候选生命周期各自保留 |
 | C5 | `plugin → axum` 解耦（§3 陈述，未单列问题） | 需要先定义能力面的传输无关返回类型；改动面大，建议随「能力面协议演进」一起做 |
@@ -379,7 +379,7 @@
 
 ## 5. 未验证项
 
-1. **问题 11 的 unit 残留**：`systemd-run --wait` 被 kill 后瞬态单元是否继续运行，本文按 systemd 语义推断，**未在测试机实测**。
+1. **问题 11 的 unit 残留**：已在测试机 `10.10.15.4` 实测——kill 客户端后单元仍 `active`，`systemctl stop` 后 `not-found`；但**新代码尚未部署到该机**，验证的是同一语义与同一单元命名规则（证据见 §6 C2）。
 2. **问题 10 的最坏耗时**：已由代码上限约束（systemctl 60s + 探测 30s），但「docker.sock 存在而守护进程无响应」时的真实表现**未在 Docker 宿主机实测**。
 3. **问题 12 的实际阻塞概率**：`Db` 的 50ms 等待告警是否在真实负载下触发，**未采集日志**。
 4. **问题 14 的合并后行为**：`nginx_test_candidate` 只改「怎么执行」，SSR 保存主配置与 vhost 的既有用例全过；**未上机验证真实 OpenResty 容器内的错误行解析**（沿用原逻辑，无变化）。
@@ -399,30 +399,45 @@
 | B4 | B 阶段新发现：`unix_now` 三份合并到 `time_fmt::unix_now`；`type_label` 两份合并到 `web::handlers::sites::type_label`（零契约） | 已完成 | 见本轮提交 |
 | C3 | `systemctl restart docker` 加 60s 超时（超时文案明确「结果未知」）；`docker_ready` 改为 30s 总预算、单次探测受剩余预算约束（问题 10） | 已完成（未上机实测） | 见本轮提交 |
 | C4 | `nginx -t` 执行通道统一为 `AppState::nginx_test_candidate`（问题 14 的「怎么跑」部分） | 已完成（生命周期未合并，见下） | 见本轮提交 |
+| C1 | 审计写入改为「同步写库 + 失败落盘兜底」，异步投递否决（问题 12） | 已完成 | 见本轮提交 |
+| C2 | `systemd-run` 超时后 `systemctl stop` 清理单元（问题 11） | 已完成，测试机实机验证无残留 | 见本轮提交 |
 | C7 | `fs` 是否支持 `fs:*` 通配 | **已关闭：不支持**，理由写入 [KERNEL_FS_CONTRACT.md](KERNEL_FS_CONTRACT.md) §2.1 | 本轮文档提交 |
 
 **C4 的收敛边界**：只统一「容器内怎么执行 `nginx -t`」（命令数组、错误映射）。主配置与 vhost 的**候选生命周期没有合并**——前者成功后要 `rename` 上线并重载，后者校验完即删除，且 vhost 需要一层包含候选文件的临时主配置。强行合并会把两条路径的状态机揉在一起，收益小于风险；问题 14 因此降级为「执行通道已统一，生命周期保持各自实现」。
 
-**C3 的残余风险**：超时后 `systemctl` 客户端被杀，但 systemd 作业可能仍在执行，调用方拿到的是「结果未知」。这与问题 11 同源，最终处置需要上机实测（见 §5）。
+**C3 的残余风险**：`systemctl restart docker` 超时后客户端被杀，systemd 作业可能仍在执行，调用方拿到的是「结果未知」。C2 的清理只覆盖 `systemd-run` 瞬态单元；Docker 重启作业本身需要在测试机上单独验证，本轮未做。
 
-**B1 的语义边界**：本轮只把「如何命中授权项」收口为一个函数，**没有**改变任何能力面的通配策略——`permits_wildcard` 目前只有 ftp / firewall 调用，`fs` / `docker` / `scheduler` 仍是逐条精确授权（与原实现逐字节一致）。「是否让 `fs` 也支持 `fs:*`」属于安全语义扩张，未决策，已列入批次 C。
+**B1 的语义边界**：本轮只把「如何命中授权项」收口为一个函数，**没有**改变任何能力面的通配策略——`permits_wildcard` 目前只有 ftp / firewall 调用，`fs` / `docker` / `scheduler` 仍是逐条精确授权（与原实现逐字节一致）。`fs` 不做通配已作为产品决定写入契约（原 C7，已关闭）。
 
 **B 阶段新发现（已在本轮收口）**：
 
 - `unix_now()` 原有三份（`app/src/auth.rs`、`app/src/sites/install.rs`、`app/src/sites/crud.rs`），已合并到 [time_fmt.rs](file:///c:/dev/skiff/crates/app/src/time_fmt.rs) 的 `unix_now`，三处改为调用。
 - `type_label` 原有两份（app 读模型与 web 详情页），已只保留 `web/src/handlers/sites.rs::type_label`；`SiteSummary` 不再携带 `type_label`，SSR 与 `/ui/v1` 各自从 `site_type` 映射，字段值不变。
 
-**批次 C 待决策项**：原 C7「`fs` 是否支持 `fs:*` 通配」已按产品决定**关闭：不支持**，契约已写明「`fs:*` 不匹配任何方法」及三条理由；判定入口仍是 `Grant::permits_wildcard`，只是 fs 侧不调用。
+**C7 已关闭**：按产品决定，`fs` 能力面**不支持** `fs:*` 通配（`fs:*` 不匹配任何方法，必须逐条授权），理由已写入 [KERNEL_FS_CONTRACT.md](KERNEL_FS_CONTRACT.md) §2.1。
 
-**仍只出方案、本轮未实现的两项**：
+**C1 审计写入：决定走同步可靠路径（已实现）**
 
-| 项 | 可选路径 | 代价 |
-| --- | --- | --- |
-| C1 审计写入投递（问题 12） | A：`audit_or_log` 改 `async fn` + `db_async` 投递，调用点全部加 `.await` | 改动面大（几乎每个 handler 末尾），语义最干净；需要确认「审计必须在响应前落库」是否保留 |
-| | B：保留同步函数，内部 `block_in_place` | 改动 1 处；但会临时扩容 worker，与「显式 2 线程控内存」目标冲突，需在 §7 记录例外 |
-| C2 `systemd-run` 超时后瞬态单元处置（问题 11） | A：超时分支先 `systemctl stop <unit>` 再返回 | 需 Linux 测试机验证 unit 名可解析、stop 不会误杀后续命令 |
-| | B：给 `systemd-run` 增加 `--property=RuntimeMaxSec=`，由 systemd 自身兜底 | 依赖 systemd 版本；超时语义与本地 `tokio::time::timeout` 可能不一致，需要统一 |
-| | C：保持现状，只在错误文案与审计里标注「结果未知」 | 零风险、零收益，状态一致性仍靠人工核对 |
+- 主路径仍是**同一次请求内同步写 SQLite**：`AppState::audit_or_log` 与 `CapabilityHost::audit` 都先 `db.audit(...)`，返回前记录已在库里。
+- 写库失败时不再只打日志：同一条记录追加到 `<数据根>/audit-fallback.jsonl` 并 `fsync`（[audit.rs](file:///c:/dev/skiff/crates/app/src/audit.rs)），记录不会因为一次存储抖动而消失；只有「库与兜底文件同时写失败」（磁盘不可用）才会在日志里明确写「记录丢失」。
+- **明确放弃异步投递**：有界队列满即丢、进程被 kill 丢尾部、重启丢尾部三种窗口都与「审计不丢」冲突；审计量级是每个写操作一条，同步插入的延迟远小于这些风险。代价是请求路径多一次同步插入（已是现状），以及兜底文件需要人工/后续工具回灌——回灌不在本轮范围，文件名与格式已固定，可按行导入。
+- 没有选择「审计失败让接口报错」：审计失败几乎只发生在存储层不可写时，此时业务写多半也已失败；在副作用已完成后把成功改成失败，会诱导调用方重试并制造重复副作用。
+
+**C2 `systemd-run` 超时后清理瞬态单元：已实现并在测试机验证**
+
+- 实现：`kernel::host_run::run_host` 超时后调用 `stop_unit`，用 `systemctl stop <unit>` 清理，清理自身包 5 秒超时；清理失败只 `warn`，不改变「超时」主结论（[host_run.rs](file:///c:/dev/skiff/crates/core/src/kernel/host_run.rs)）。
+- 实机证据（测试机 `10.10.15.4`，2026-11-15）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `systemd-run --unit=skiff-selftest-<pid> --wait --pipe --collect /bin/sleep 120` 起单元 | `ActiveState=active` |
+| 杀死本地 `systemd-run` 客户端（等价于 `kill_on_drop`） | `ActiveState=active` —— 证实「只杀客户端不会停单元」 |
+| `systemctl stop <unit>` | `LoadState=not-found`、`ActiveState=inactive`，`list-units` 无残留 |
+| 对不存在的单元执行 `systemctl stop` | `rc=5`、提示 not loaded —— 清理逻辑按 warn 处理即可，不会误报 |
+
+- 代码路径未在测试机部署（该机运行的是旧构建）；验证的是同一条 `systemctl stop` 语义与单元命名规则（`skiff-ftp-<pid>-<n>` / `skiff-firewall-<pid>-<n>`，与探针的 `skiff-selftest-<pid>` 同形）。
+
+**C5 / C6 保持不动**：C5（`plugin→axum` 解耦）需要先定义传输无关的能力面返回类型；C6（`store/db.rs` 拆文件）是纯组织收益且是 schema 变更冲突热点。
 
 ---
 
