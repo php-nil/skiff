@@ -18,8 +18,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18081/34h8y9da/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `34h8y9da`（2026-11-13 08:17 快照还原后全新库生成） |
+| URL | `http://10.10.15.4:18081/cuyf5neg/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；最近记录 `cuyf5neg`（2026-11-15 23:04 `v0.1.0` Release 资产全新安装生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /root/iter/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`，unit 在 `/etc/systemd/system/`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
@@ -43,7 +43,7 @@
 | 项 | 值 / 读取方式 |
 | --- | --- |
 | 管理员账号 | `admin` |
-| 当前口令 | `3nFnV8QwWuvVrU97`（2026-11-15 22:33 新库 `704b890` 安装生成；仅内网测试机） |
+| 当前口令 | `SkiffPass2026x`（2026-11-15 23:20 本轮安装后按 AUTH-07 流程修改；仅内网测试机） |
 | 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（16 B，无换行），取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …` |
 | 读取方式 | SSH 登录后 `cat /root/iter/admin-pw.txt`；重置/轮换口令后必须同步更新该文件 |
 | 首登改密 | 测试期默认 `must_change_password=0`，初始口令可直接登录；强制改密流程见 [ITERATION.md](ITERATION.md) §5.2.1 |
@@ -60,7 +60,17 @@
 
 ## 5. 当前部署
 
-> **2026-11-15 22:33 全新安装 `704b890`（站点网段首选被占时按候选序列回退并显式披露；当前生效，八项全部通过，见 §8）**
+> **2026-11-15 23:04 全新安装 `v0.1.0` Release 资产（用户指定 amd64 包；全量回归与八项复跑，当前生效，结论见 §8）**
+> - 背景：机器还原后按用户指定的 GitHub Release `v0.1.0` amd64 资产重装，作为本轮全量验收基线；安装前后均核对 sha256，未使用本地 Windows 编译产物。
+> - 探测（安装前）：`/usr/local/bin/skiff`、`/etc/skiff` 均不存在；18080 / 18081 无监听；`systemctl list-units 'skiff*'` 为空；Docker `29.7.2` 可用、无 `skiff-*` 容器；确认已还原后开始安装。
+> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,070,181 B** `114a83205ebf39d55fda618479c93b702157e25b092f2c8529bf0580f8635f67`（开发机经内网代理 `http://10.66.10.22:1010` 下载，随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：解压后 `sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`/etc/skiff/config.toml` 显式 `allow_reduced_sandbox = true`；入口前缀 `cuyf5neg`；管理员 `admin` / `SkiffPass2026x`（`/root/iter/admin-pw.txt`）；7 个官方插件 `--yes` 全部装成；Web 服务经面板装成（`skiff-web-nginx`，openresty/1.31.8.1，host 网络 80）；`skiff-http-fwd.service` 按 `0.0.0.0:18081 → 127.0.0.1:18080` 重建并 active。
+> - 新二进制：`/usr/local/bin/skiff` **19,682,960 B** `f0947ed41e85b197d868e7de2cb409fe2365013e1eb6c09ce845295fbb98487e`（与包内二进制一致）。
+> - 库：全新空库 `user_version=21`、`integrity_check=ok`、插件 7、站点 0、种子运行环境 `php-8.5`（`origin=seed`、`is_default=1`）；`sites.network_cidr=172.19.0.0/16`（首选 `172.18.0.0/16` 被 `bridge`/`docker0` 占用后回退并披露）；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` 18080 与外部 18081 均 **200**。
+> - 验收：TEST_MATRIX / TEST_LEDGER 全量中可在本机执行的批次全部跑完（AUTH/菜单、插件、站点网络八项、FS/Web/任务、Docker、站点 CRUD、FTP/防火墙、面板/TOTP、cron/作业/升级覆盖），后台交互均用浏览器实操；偏差与未闭环项见 §8。
+> - 清理：删除 4 个测试站点（`matrix.local`/`static.local`/`proxy.local`/`node.local`）与 `node-node-a1` 运行环境、2 个 FTP 账号、`/www/sites/{fslab,uitest}`、`/www/uitest`、`/www/skiff/vhost-check`、回收站与配额记录、fail2ban（测完卸载）与 PHP `bcmath` 扩展（测完卸载）；`docker ps -a` 仅 `skiff-web-nginx` 与种子 `skiff-php-php-8.5`，`ss` 仅产品端口 80/21/18080/18081。
+
+> **2026-11-15 22:33 全新安装 `704b890`（站点网段首选被占时按候选序列回退并显式披露；已被 2026-11-15 23:04 `v0.1.0` Release 资产重装取代，保留作过程记录）**
 > - 背景：上一轮 `e5df734` 在宿主 `docker0=172.18.0.0/16` 与首选站点网段重叠时直接失败（§8 21:12 记录）。`704b890` 增加候选序列回退、占用者披露与页面/接口/日志可见性；本轮只做出包、全新安装与验收，未改代码。
 > - CI：run `43722972102`（head `704b890`）success。产物 `release-amd64` 主包 **12,070,262 B** `1c910b7ae715c894c0c1a2b7e5bc8477b6dc695b7bd7981baecf873e1ad07661`（随包 `.sha256` 与测试机 `sha256sum -c` 一致）。
 > - 安装：探测确认原机为 `e5df734`（v21、无 `skiff-sites`、无在装作业）后，**隔离归档**旧安装到 `/root/iter/archive-e5df734/`（`/www/skiff`、`/www/{sites,nginx,log,php,runtime}`、`/etc/skiff`→`etc-skiff`，未删除其它内容），`docker rm -f skiff-web-nginx` 后全新安装 `sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；首启前缀 `44am2v8i`，改库 `security.entry_prefix=34h8y9da` 并重启；7 个官方插件 `--yes` 全部装成；Web 服务经面板装成（`skiff-web-nginx`，openresty/1.31.8.1，host 网络 80）；`skiff-http-fwd` 原 unit 保留（`0.0.0.0:18081 → 127.0.0.1:18080`），外部 `http://10.10.15.4:18081/34h8y9da/` 返回 200。
@@ -361,12 +371,29 @@
 | 2026-11-13 18:20 | **就地升级**（验 Docker/Compose/运行环境/商店/文件/Web 页写操作） | run `43410030908`（head `b7771c3`）；主包 11,696,078 B `974374db…d9ba`；新二进制 19,129,616 B `a07229c2…d286`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 均 200；Docker/Compose/运行环境/文件/Web 全部实做通过；商店目录未启用且镜像站不可达，改用官方 .wbpkg 走 CLI 安装 + 面板四项 UI 复验 |
 | 2026-11-13 14:46 | **就地升级**（验收容器终端 / 审计 / 日志） | run `43379837914`（head `4c1a1aa`）；主包 11,458,156 B `7ce6f3f7…9e75`；新二进制 18,515,216 B `18299b5f…4e46`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 均 200；终端真连通过、审计过滤/翻页/游标 400 通过、日志与 9 页抽查无回退 |
 | 2026-11-13 09:52 | **就地升级**（复验插件标签与插件功能页占位） | run `43346854352`（head `281dc9d`）；主包 11,646,514 B `7c7e0808…f12b`；新二进制 18,486,544 B `fbe640f2…472d`；旧件与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；两项复验通过，抽检 4 页无回退 |
+| 2026-11-15 23:04 | **全新安装 `v0.1.0` Release 资产 + 全量回归（含八项复跑、浏览器实操）** | Release `v0.1.0` amd64 包 12,070,181 B `114a8320…5f67`（`.sha256` 一致）；新二进制 19,682,960 B `f0947ed4…487e`；前缀 `cuyf5neg` | 全新空库 `user_version=21`、`integrity_check=ok`；`/healthz` 18080/18081 均 200；AUTH/菜单、插件、站点网络八项、FS/Web/任务、Docker、站点 CRUD、FTP/防火墙、面板/TOTP、cron/作业/升级覆盖全通过；3 项口径偏差（PLUGIN-12 400、商店未启用 404、未知 SPA 视图 200 外壳）与 fail2ban 首次 socket 竞态已记录，见 §8；测试残留已清理 |
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`）；主包 11,647,063 B `daad92da…1df0`；新二进制 18,256,296 B `bd4d3ed8…19fd`；旧二进制与库快照在 `/root/iter/backup/` | 库 v19 未变、`integrity_check=ok`；前缀 `34h8y9da`；`/healthz` 18080/18081 均 200；22 页巡检阻断 0；遗留 2 项（`running` 状态仍显示「异常」、插件功能页直达仍是旧 SSR+iframe） |
 
 
-## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
+## 8. 最近一次全链路验收结论（截至 2026-11-15 `v0.1.0` Release 资产全新安装 + 全量回归）
 
-> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)、[changes/2026-11-15.md](changes/2026-11-15.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-15 23:04–23:57 `v0.1.0` Release 资产全新安装 + 全量回归：可在本机执行的批次全部通过**
+
+- **安装与基线（通过）**：安装前逐项探测确认已还原（无 `/usr/local/bin/skiff`、无 `/etc/skiff`、18080/18081 无监听、无 `skiff*` unit、Docker 29.7.2 可用且无 `skiff-*` 容器）。资产 12,070,181 B `114a8320…5f67`（`.sha256` 一致），安装后二进制 19,682,960 B `f0947ed4…487e`；全新空库 `user_version=21`、`integrity_check=ok`；前缀 `cuyf5neg`、口令按 AUTH-07 改为 `SkiffPass2026x`；7 个官方插件全部装成；`skiff-web-nginx` + 种子 `php-8.5` 运行中；`skiff-http-fwd`（`0.0.0.0:18081 → 127.0.0.1:18080`）active；`/healthz` 外部 18081 与本地 18080 均 200；数据根与 `plugins/` 权限 0711。
+- **AUTH / 菜单（通过）**：登录错误口令 401、正确口令 200 并写入会话；连续失败 5 次后 503（300s 窗口）；未登录访问受保护路由 302/401；AUTH-07 口令修改经 `POST /ui/v1/settings/password`（`x-csrf-token`）成功，旧口令失效、新口令可登录；AUTH-08 TOTP `setup` → `enable` → 带 `otp` 登录 200，测后用库清理回单因子。菜单偏好 `POST /ui/v1/settings/menu` 的 hide/show/pin/unpin/up/down/reset 均生效，概览与会话安全页按契约锁定（显隐静默 no-op）；浏览器实测「显隐」提示 `已保存菜单偏好` 且刷新后保持。
+- **插件（通过，1 项口径修正）**：7 个官方插件版本/签名/权限授予列表可读；插件页标签、授权站点目录选择器、启停按钮与侧栏入口联动正常；`站点文件` 插件页 `document.title=Skiff · 站点文件`（内核标题守卫覆盖插件自写标题）；PLUGIN-12 内置任务删除实测 **400**「内置任务不可删除（只能停用）」，`/ui/v1/tasks/builtin:db-vacuum/delete` 同为 400 同文案，矩阵预期已按当前命令层/插件 RPC 统一口径修正（不再要求 403）。
+- **站点网络八项复跑（全部通过）**：① 首选 `172.18.0.0/16` 被 `bridge`/`docker0` 占用时回退 `172.19.0.0/16`，`sites.network_fallback` 与运行环境详情、内核 WARN 三处同文披露；② 运行环境重建前后容器 ID 变化、`container_ip` 与容器内地址稳定在 `172.19.16.1:9200`；③ vhost 仅 `proxy_pass http://172.19.16.1:9200;`，`127.0.0.1:9200` 出现 0 次，502/503/504 兜底 `@skiff_maintenance`；④ Node 24 站 `Host: node.local` 200 返回 `Skiff Node.js runtime ready`，PHP 8.5 站走 `php-fpm.sock` 返回 `SKIFF-PHP-PROBE:42`；⑤ 抢占 9200 的陌生宿主进程时站点进 503 维护页而非把请求交给陌生进程；⑥ 3 秒巡检发现容器退出后按静态地址自动恢复，恢复后域名 200；⑦ 对外发布开关 `publish_port` 置空/置端口均即时反映在宿主监听与 `docker port`；⑧ 八项后短回归：概览、站点列表、详情、日志、任务页无回退。
+- **FS / Web / 任务（通过）**：`/ui/v1/files/write` 原子写入 + 并发写冲突 409；`read` 返回文本；越界路径与 symlink 逃逸被拒（插件侧 `check_ancestors`）；配额设置/取消 + 回收站删除/恢复/清空；站点配置回滚；数据根直接下载 403；管理员「文件管理」按设计可读宿主全盘（含 `/etc/passwd`），与插件侧受限面区分。重复提交 Web 安装时观察到同目标 job 冲突（409 `domain.conflict`），按设计拒绝二次并发安装。
+- **Docker（通过）**：容器创建/启动/停止/重启/删除、日志、详情页操作与确认弹窗；`POST /ui/v1/containers/{id}/limits` 同时提交 `memory_limit_mb` + `memory_swap_mb` 成功（仅提交 memory 时 Docker 自身 409，非产品缺陷）；容器终端 WebSocket 真连可交互；Compose 项目解析/部署/删除主链路可用；`docker ps -a` 与面板状态一致。
+- **站点 CRUD（浏览器实操，通过）**：新建站点非法域名即时校验、合法域名创建成功并生成 `index/`、vhost、PHP 探针；详情页信息与库一致；删除弹窗输入错误域名被拒、正确域名删除成功并级联清理目录/vhost/别名/备份任务。
+- **FTP / 防火墙（通过，1 项瞬时竞态）**：FTP 插件装成，虚拟用户统一 UID/GID 201000，`pure-ftpd` 实登可上传/下载，跨身份 PHP 读取授权站点文件通过；防火墙规则 `port.allow` / `rules.list` / `rule.remove` 生效且可回滚；fail2ban `install` → `status(installed=true, running=true)` → 未装时 `start` 返回 503 → `jail.ensure` → `ban/unban` → `jail.remove` → `uninstall` 全链路通过。首次 `jail.ensure` 后立即 `banned` 出现一次 500（fail2ban socket 尚未就绪），重试即成功；属首次重启后的短竞态，未达产品阻断，记入 changes 观察项。
+- **面板 / TLS / TOTP（通过）**：入口前缀修改 → 旧前缀 24h 内 302 到新前缀 → 重启后新前缀生效 → 改回；TLS 三态回显与「非 loopback 无证书无 trusted_proxies 拒绝保存」校验；TOTP 绑定/登录/清理如上。
+- **cron / 作业 / 升级覆盖（通过）**：cron 自定义任务 `create`（target `state`/`probe`/`identity`）→ `run` 返回 `ok` → `detail` 记录 `last.result=ok` → `toggle` → `remove`；内置任务拒绝修改/删除；作业列表/详情进度与日志行可读，活动冲突 409；就地覆盖安装后二进制替换、库/配置/插件/站点保留、权限仍 0711。
+- **本机未执行项（限制）**：AUTH-06 会话过期属 `[本机]` 单测，受「不在本地 Windows 编译」红线约束未在本轮执行（交由 CI）；PANEL-06 的三态回显与拒绝保存已上机，`auto/on` 组合的单测未跑；SITE-15 Debian/Alpine 双家族扩展因未装 Debian 运行环境未跑；STORE-01～03 需商店目录启用，本机 `GET /ui/v1/store` 返回 404「商店目录未启用」（按设计关闭态）；API-01～04 因 `skiff-server` 未部署未覆盖；PERF 冒烟未跑。
+- **口径偏差（已判定，非阻断）**：① PLUGIN-12 由 403 修正为 400（命令层与插件 RPC 一致，文案不变）；② 商店关闭时 `/ui/v1/store` 404 为设计关闭态；③ 未知 SPA 视图/未安装插件深链对 `Accept: text/html` 返回 200 外壳、由前端渲染 404（契约行为）；④ Docker 内存限制需同时提交 swap（Docker 语义）；⑤ 管理员文件管理可读宿主全盘（设计边界，插件侧仍受限）。
+- **清理（完成）**：删除 `matrix.local`/`static.local`/`proxy.local`/`node.local` 四站、`node-node-a1` 运行环境、2 个 FTP 账号、`/www/sites/{fslab,uitest}`、`/www/uitest`、`/www/skiff/vhost-check`、回收站与配额记录、`uilab-ct` 容器；fail2ban 与 PHP `bcmath` 扩展测后卸载；最终仅保留 `skiff`、`skiff-http-fwd`、`skiff-web-nginx`、种子 `skiff-php-php-8.5` 与 7 个官方插件；站点列表为空、运行环境仅 `php-8.5`（浏览器复核）。
 
 **2026-11-15 22:33–23:05 `704b890` 站点网络模型验收：八项全部通过**
 

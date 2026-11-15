@@ -111,7 +111,7 @@ curl -ks -b "$J" "$B/$P/" | grep -o 'data-layout="[^"]*"' | head -1
 | PLUGIN-09 | RPC 成功、业务错误与授权拒绝 | `[上机]` 已装 testkit | 调 `/$P/plugins/com.skiff.testkit/rpc` 的 `ping`、`fail`、`fs_read` 越界路径与无授权方法 | `ping` 200；`fail` 400 且含 `-32602`；`fs_read /etc/passwd` 403；无授权方法 400 且审计 result=fail | □通过 / □失败 | `crates/plugin/src/rpc.rs`、`capability.rs`、`plugins/testkit`、`crates/web/src/handlers/plugins.rs`（内核 403/404/409 透传，其余 400） |
 | PLUGIN-10 | 卸载清理菜单/路由但保留 data、清空授权 | `[上机]` 已装 files 且有数据文件与授权 | 卸载 files；看 `/www/skiff/plugins/com.skiff.files/data`；重装 | 菜单与 `/$P/plugins/<id>` 消失；data 文件原样保留；授权清空，重装需重新确认 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`crates/app`、`plugins/README.md` |
 | PLUGIN-11 | 重装/升级保留既有授权，新增声明不自动授予 | `[上机]` 已装 files，装时只勾选部分权限并手授路径 | 记下详情页授权项；上传同版本包覆盖重装；再上传更高版本；查看授权与确认页 | 重装/升级均直接安装、不再弹确认页；授权项与原来一致；manifest 新增声明不被自动授予 | □通过 / □失败 | `crates/plugin/src/install.rs`、`crates/web/src/handlers/plugins.rs`、`crates/core/src/commands.rs` |
-| PLUGIN-12 | 内置任务删除的 RPC 状态与文案 | `[上机]` 已装 cron | 调 `cron/rpc`，`{"method":"remove","params":{"id":"builtin:db-vacuum"}}` | HTTP 403；正文保留「内置任务不可删除（只能停用）」；不得出现「请确认计划任务持有 scheduler 权限」 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`plugins/cron/src/main.rs` |
+| PLUGIN-12 | 内置任务删除的 RPC 状态与文案 | `[上机]` 已装 cron | 调 `cron/rpc`，`{"method":"remove","params":{"id":"builtin:db-vacuum"}}` | HTTP 400（命令层与插件 RPC 统一按业务/参数错误返回）；正文保留「内置任务不可删除（只能停用）」；不得出现「请确认计划任务持有 scheduler 权限」 | □通过 / □失败 | `crates/web/src/handlers/plugins.rs`、`plugins/cron/src/main.rs` |
 
 最小回归命令：
 
@@ -138,7 +138,7 @@ curl -ks -b "$J" -o /dev/null -w 'unknown_view=%{http_code}\n' "$B/$P/plugins/co
 | PLUGIN-08 | ☑通过 | 启用出 `overview.health` 槽位与固定标题；停用回落 `health-grid`；与 PLUGIN-04 同轮复验 |
 | PLUGIN-09 | ☑通过 | `ping` 200；`fail` 400 含 `-32602`；越界 `fs_read` 400；无授权方法 400 且审计 `result=fail` |
 | PLUGIN-10 | ☑通过 | 卸载后菜单、信息页、路由消失；`/www/skiff/plugins/com.skiff.files/data` 原样保留；重装后数据仍在 |
-| PLUGIN-12 | ☑关闭（2026-11-07 追补） | RPC 403 透传已实测（`remove builtin:db-vacuum` → 403，审计 `scheduler.deny`，正文「内置任务不可删除（只能停用）」）；「未装官方包不被自动安装」由 `crates/plugin/src/official.rs` 单测覆盖（本轮未做上机卸载样本，按已定论关闭） |
+| PLUGIN-12 | ☑关闭（2026-11-15 复验，状态口径修正为 400） | `remove builtin:db-vacuum` 经插件 RPC 返回 **400** `shape.invalid`「内置任务不可删除（只能停用）」；同一动作走 `POST /ui/v1/tasks/builtin:db-vacuum/delete` 也是 **400** 与同一正文——命令层把 `BuiltinProtected` 归为业务错误（`TaskCommandError::Failed → BadRequest`），插件 RPC 层同一口径，**不再是 403**；正文未追加 scheduler 授权提示。`scheduler` 能力面路由自身的 403 仅用于「执行期回调 / 缺授权」，不经过这两个入口。「未装官方包不被自动安装」由 `crates/plugin/src/official.rs` 单测覆盖 |
 
 ## D. 网站与运行环境
 
