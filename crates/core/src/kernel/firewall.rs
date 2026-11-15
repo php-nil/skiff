@@ -48,9 +48,9 @@ pub(super) async fn firewall_call(
         Ok(Some(p)) => p.grants,
         _ => Vec::new(),
     };
-    let allowed = grants.iter().any(|g| {
-        g.kind == "perm" && (g.value == "firewall:*" || g.value == format!("firewall:{method}"))
-    });
+    let allowed = grants
+        .iter()
+        .any(|g| g.permits_wildcard(&format!("firewall:{method}")));
     if !allowed {
         audit(
             &state,

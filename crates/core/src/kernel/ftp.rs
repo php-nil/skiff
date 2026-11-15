@@ -117,7 +117,7 @@ pub(super) async fn ftp_call(State(state): State<Arc<AppState>>, req: Request<Bo
     };
     let allowed = grants
         .iter()
-        .any(|g| g.kind == "perm" && (g.value == "ftp:*" || g.value == format!("ftp:{method}")));
+        .any(|g| g.permits_wildcard(&format!("ftp:{method}")));
     if !allowed {
         if let Err(e) = state.db().audit(
             &format!("plugin:{id}"),

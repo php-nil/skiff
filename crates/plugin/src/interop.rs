@@ -66,7 +66,7 @@ impl InteropDeny {
 }
 
 pub fn has_perm(grants: &[Grant], perm: &str) -> bool {
-    grants.iter().any(|g| g.kind == "perm" && g.value == perm)
+    grants.iter().any(|g| g.permits(perm))
 }
 
 /// 是否持有目标插件（或全插件）的对象授权。

@@ -70,9 +70,7 @@ pub fn grants_of<H: CapabilityHost>(host: &H, id: &str) -> Vec<Grant> {
 }
 
 pub fn has_perm<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> bool {
-    host.plugin_grants(id)
-        .iter()
-        .any(|g| g.kind == "perm" && g.value == perm)
+    host.plugin_grants(id).iter().any(|g| g.permits(perm))
 }
 
 pub fn deny<H: CapabilityHost>(host: &H, id: &str, perm: &str) -> Response {

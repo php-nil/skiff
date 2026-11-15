@@ -1046,11 +1046,7 @@ impl TaskService {
             .plugin(plugin)
             .ok()
             .flatten()
-            .map(|p: PluginRecord| {
-                p.grants
-                    .iter()
-                    .any(|g: &Grant| g.kind == "perm" && g.value == perm)
-            })
+            .map(|p: PluginRecord| p.grants.iter().any(|g: &Grant| g.permits(perm)))
             .unwrap_or(false)
     }
 }

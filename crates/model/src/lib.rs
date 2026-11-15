@@ -91,6 +91,26 @@ impl Grant {
             value: value.into(),
         }
     }
+
+    /// 精确命中授权项：`kind = "perm"` 且 `value` 与请求完全一致。
+    pub fn permits(&self, perm: &str) -> bool {
+        self.kind == "perm" && self.value == perm
+    }
+
+    /// 精确命中，或命中能力面级通配授权 `<cap>:*`。
+    ///
+    /// 通配目前**只**供宿主变更类能力面（ftp / firewall）使用：它们的动作集合是
+    /// 固定的小集合，安装确认时允许一次授予整面。其余能力面（fs / docker /
+    /// scheduler 等）必须逐条授权——这是现行规范，不是匹配漏项；扩面须先改契约。
+    pub fn permits_wildcard(&self, perm: &str) -> bool {
+        if self.permits(perm) {
+            return true;
+        }
+        let Some((cap, _)) = perm.split_once(':') else {
+            return false;
+        };
+        self.kind == "perm" && self.value == format!("{cap}:*")
+    }
 }
 
 /// 部署形态（§5.1）。决定可用能力面与是否允许宿主绑定挂载。
@@ -140,6 +160,20 @@ mod tests {
     fn grant_kinds_are_stable() {
         assert_eq!(Grant::perm("docker:list").kind, "perm");
         assert_eq!(Grant::object("container:abc").value, "container:abc");
+    }
+
+    #[test]
+    fn grant_permits_matches_exact_and_wildcard_only_for_same_capability() {
+        assert!(Grant::perm("ftp:account.list").permits("ftp:account.list"));
+        assert!(!Grant::perm("ftp:account.list").permits("ftp:account.add"));
+        assert!(!Grant::perm("ftp:*").permits("firewall:list"));
+
+        assert!(Grant::perm("ftp:*").permits_wildcard("ftp:account.add"));
+        assert!(Grant::perm("ftp:account.add").permits_wildcard("ftp:account.add"));
+        assert!(!Grant::perm("ftp:*").permits_wildcard("firewall:list"));
+        assert!(!Grant::perm("firewall:*").permits_wildcard("ftp:account.add"));
+        // 非 perm 授权项（对象授权）不参与权限判定。
+        assert!(!Grant::object("ftp:*").permits_wildcard("ftp:account.add"));
     }
 
     #[test]

@@ -268,7 +268,7 @@ pub fn install_package(
                 None => Vec::new(),
             };
             for p in newly_declared {
-                if kept.iter().any(|g| g.kind == "perm" && g.value == *p) {
+                if kept.iter().any(|g| g.permits(p)) {
                     continue;
                 }
                 grant_upgrade.push(p.clone());

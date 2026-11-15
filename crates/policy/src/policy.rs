@@ -132,7 +132,7 @@ impl Policy {
             }
             Actor::Plugin { id, grants } => {
                 let perm = format!("docker:{}", verb.as_str());
-                if !grants.iter().any(|g| g.kind == "perm" && g.value == perm) {
+                if !grants.iter().any(|g| g.permits(&perm)) {
                     return Err(PolicyError::PluginDenied {
                         plugin: id.clone(),
                         need: perm,
