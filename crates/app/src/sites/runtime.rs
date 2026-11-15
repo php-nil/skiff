@@ -365,6 +365,9 @@ impl AppState {
 
     /// Node 进程启动后的健康闸门：PHP / Rust 不需要（PHP 有 socket 探活，Rust 安装期
     /// 已等端口），只有 Node 需要在「手动启动/重启」时确认应用真的能响应。
+    ///
+    /// 判定必须同时满足：容器没有 crash-loop、端口监听套接字属于本容器、`health_path`
+    /// 返回 2xx/3xx。只看端口可达会把「宿主进程占着同一端口」误判成启动成功。
     async fn node_health_gate(&self, rt: &Runtime) -> Result<(), SiteError> {
         if rt.kind != skiff_store::KIND_NODE {
             return Ok(());
@@ -373,13 +376,23 @@ impl AppState {
             .port
             .ok_or_else(|| SiteError::Unavailable("Node.js 环境缺少端口，请重建".into()))?;
         let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
-        if wait_http_ready(port, &cfg.health_path, NODE_HEALTH_BUDGET).await {
-            Ok(())
-        } else {
-            Err(SiteError::Unavailable(format!(
-                "Node.js 进程未通过健康检查（{}），请查看运行环境日志",
-                cfg.health_path
-            )))
+        let container = runtime_container_name(&rt.kind, &rt.name);
+        match wait_runtime_ready(
+            self.docker(),
+            &container,
+            port,
+            Some(&cfg.health_path),
+            NODE_HEALTH_BUDGET,
+        )
+        .await
+        {
+            Ok(()) => Ok(()),
+            Err(failure) => Err(SiteError::Unavailable(readiness_message(
+                "Node.js",
+                port,
+                Some(&cfg.health_path),
+                &failure,
+            ))),
         }
     }
 
@@ -732,39 +745,31 @@ impl AppState {
             .list_containers()
             .await
             .map_err(|e| SiteError::Unavailable(format!("Docker 不可达：{e}")))?;
-        match rows.iter().find(|c| c.name == container) {
-            None => {
-                return Err(SiteError::Unavailable(
-                    "容器不存在，请先安装运行环境".into(),
-                ))
-            }
-            Some(c) if c.state != "running" => {
-                return Err(SiteError::Unavailable(format!(
-                    "容器未运行（{}），应用不可用",
-                    c.state
-                )))
-            }
-            Some(_) => {}
+        if rows.iter().all(|c| c.name != container) {
+            return Err(SiteError::Unavailable(
+                "容器不存在，请先安装运行环境".into(),
+            ));
         }
-        if rt.kind == skiff_store::KIND_NODE {
-            let cfg = NodeRuntimeConfig::from_json(&rt.config_json);
-            if http_probe_ok(port, &cfg.health_path).await {
-                Ok(format!("应用就绪：HTTP {} 返回 2xx/3xx", cfg.health_path))
-            } else {
-                Err(SiteError::Unavailable(format!(
-                    "容器在运行，但应用未就绪：HTTP {} 无 2xx/3xx 响应（端口 {port}）",
-                    cfg.health_path
-                )))
-            }
-        } else if tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_ok()
-        {
-            Ok(format!("应用就绪：端口 {port} 已监听"))
+        // 容器状态与端口归属交给同一条就绪判定，避免这里与启动闸门口径不一致。
+        let (http_path, subject) = if rt.kind == skiff_store::KIND_NODE {
+            (
+                Some(NodeRuntimeConfig::from_json(&rt.config_json).health_path),
+                "Node.js",
+            )
         } else {
-            Err(SiteError::Unavailable(format!(
-                "容器在运行，但端口 {port} 未监听"
-            )))
+            (None, "Rust")
+        };
+        match check_runtime_ready(self.docker(), &container, port, http_path.as_deref()).await {
+            Ok(()) => Ok(match http_path.as_deref() {
+                Some(p) => format!("应用就绪：容器自身监听端口 {port}，HTTP {p} 返回 2xx/3xx"),
+                None => format!("应用就绪：容器自身监听端口 {port}"),
+            }),
+            Err(failure) => Err(SiteError::Unavailable(readiness_message(
+                subject,
+                port,
+                http_path.as_deref(),
+                &failure,
+            ))),
         }
     }
 
@@ -1023,7 +1028,15 @@ impl AppState {
             &format!("cargo run --release（监听 127.0.0.1:{port}），首次编译需等待"),
         )
         .await;
-        if !wait_tcp_port(port, std::time::Duration::from_secs(240)).await {
+        if let Err(failure) = wait_runtime_ready(
+            self.docker(),
+            &container,
+            port,
+            None,
+            std::time::Duration::from_secs(240),
+        )
+        .await
+        {
             let log =
                 std::fs::read_to_string(s.runtime_log_dir(&rt.kind, &rt.name).join("server.log"))
                     .unwrap_or_default();
@@ -1036,7 +1049,8 @@ impl AppState {
                 .rev()
                 .collect();
             return Err(format!(
-                "端口 {port} 在 240 秒内未监听，构建或启动失败：\n{}",
+                "{}；\n{}",
+                readiness_message("Rust", port, None, &failure),
                 tail.join("\n")
             ));
         }
@@ -1139,7 +1153,15 @@ impl AppState {
             ),
         )
         .await;
-        if !wait_http_ready(port, &cfg.health_path, std::time::Duration::from_secs(180)).await {
+        if let Err(failure) = wait_runtime_ready(
+            self.docker(),
+            &container,
+            port,
+            Some(&cfg.health_path),
+            std::time::Duration::from_secs(180),
+        )
+        .await
+        {
             let log =
                 std::fs::read_to_string(s.runtime_log_dir(&rt.kind, &rt.name).join("server.log"))
                     .unwrap_or_default();
@@ -1152,8 +1174,8 @@ impl AppState {
                 .rev()
                 .collect();
             return Err(format!(
-                "端口 {port} 在 180 秒内未通过健康检查（{}），启动失败：\n{}",
-                cfg.health_path,
+                "{}；\n{}",
+                readiness_message("Node.js", port, Some(&cfg.health_path), &failure),
                 tail.join("\n")
             ));
         }
