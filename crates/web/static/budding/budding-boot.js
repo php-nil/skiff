@@ -22,6 +22,51 @@
   var cssHref = mount.getAttribute('data-budding-css') || '';
   var buddingVersion = mount.getAttribute('data-budding-version') || '';
 
+  // 宿主弹窗 `.bud-layer-root` 的 z-index 是 2400，而 Vuetify 把下拉菜单挂到
+  // `.v-overlay-container` 下、默认 z-index 2000：DOM 里选项齐全，整层却被弹窗压住，
+  // 用户只看到当前值（站点类型只剩「静态站点」就是这个症状）。壳页不加载内核
+  // `skiff.css`，所以这条层叠规则必须随 boot 注入。同时把「已激活」菜单的
+  // opacity / pointer-events 兜底为可见可点——进入动画在渲染被节流的标签页里会停在
+  // opacity:0; pointer-events:none，可用性不能绑在动画完成回调上。
+  (function installOverlayLayer() {
+    var style = document.createElement('style');
+    style.setAttribute('data-skiff-overlay-layer', '');
+    style.textContent =
+      '.v-overlay-container > .v-overlay.v-overlay--active.v-menu { z-index: 2500 !important; }\n' +
+      '.v-overlay-container > .v-overlay.v-overlay--active.v-menu > .v-overlay__content ' +
+      '{ opacity: 1 !important; pointer-events: auto !important; }\n' +
+      '.v-overlay-container:has(> .v-overlay.v-overlay--active.v-menu) { z-index: 2600 !important; }\n';
+    (document.head || document.documentElement).appendChild(style);
+  })();
+
+  /// 把宿主弹窗里打开的下拉菜单挂到 body。
+  ///
+  /// `.v-overlay-container` 带 `contain: layout`，其内部菜单即使 z-index 高于
+  /// `.bud-layer-root`（2400）也仍被弹窗整层盖住——浏览器实测：容器提到 2600/99999
+  /// 都无效，菜单一旦 append 到 body 就立即可见可点。菜单内容本身是 `position: fixed`
+  /// 且坐标由 Vuetify 按视口算好，移动父节点不改变位置；关闭/卸载仍由 Vuetify 负责。
+  function liftActiveMenus() {
+    var container = document.querySelector('.v-overlay-container');
+    if (!container) return;
+    var menus = container.querySelectorAll(':scope > .v-overlay.v-menu.v-overlay--active');
+    Array.prototype.forEach.call(menus, function (menu) {
+      if (menu.parentElement !== container) return;
+      document.body.appendChild(menu);
+    });
+  }
+
+  (function watchMenus() {
+    liftActiveMenus();
+    if (typeof MutationObserver !== 'function') return;
+    var observer = new MutationObserver(liftActiveMenus);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class']
+    });
+  })();
+
   function showError(message) {
     mount.textContent = '';
     var box = document.createElement('main');

@@ -2184,17 +2184,3 @@ body[data-layout="top"] .runtime-detail .workbench-tabs { top: 0; }
 @media (min-width: 1400px) {
   .page-runtimes dialog.drawer { width: 840px; max-width: 840px; }
 }
-
-/* 弹层内的下拉菜单必须盖过弹层本身：
-   宿主弹窗 `.bud-layer-root` 的 z-index 是 2400，而 budding/Vuetify 的菜单 overlay
-   默认 2000，菜单会被整层压住——DOM 里 option 齐全但用户只看到当前值，点不到其它项。
-   同时把「已激活」菜单的 opacity / pointer-events 兜底为可见可点：
-   进入动画在渲染被节流的标签页里会停在 opacity:0; pointer-events:none，
-   不能把下拉的可用性绑在动画完成回调上。关闭时父层失去 `--active`，动画仍可退出。 */
-.v-overlay-container > .v-overlay.v-overlay--active.v-menu {
-  z-index: 2500 !important;
-}
-.v-overlay-container > .v-overlay.v-overlay--active.v-menu > .v-overlay__content {
-  opacity: 1 !important;
-  pointer-events: auto !important;
-}

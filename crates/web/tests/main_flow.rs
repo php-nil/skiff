@@ -5618,19 +5618,26 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
 /// `.bud-layer-root` 整层压住；用户只看到当前值，选不到 PHP/Node 等其它选项。
 #[test]
 fn dialog_menu_overlay_stays_above_bud_layer() {
-    let css = include_str!("../static/skiff.css");
+    // 规则必须随 boot 注入：壳页只加载 budding 的 CSS，不加载内核 skiff.css。
+    let js = include_str!("../static/budding/budding-boot.js");
     assert!(
-        css.contains(
-            ".v-overlay-container > .v-overlay.v-overlay--active.v-menu {\n  z-index: 2500 !important;\n}"
-        ),
-        "必须为激活菜单的 overlay 提权，避免被 2400 的宿主弹窗盖住"
+        js.contains("installOverlayLayer")
+            && js.contains(
+                ".v-overlay-container > .v-overlay.v-overlay--active.v-menu { z-index: 2500 !important; }"
+            ),
+        "壳页必须自己注入菜单提权规则，避免被 2400 的宿主弹窗盖住"
     );
     assert!(
-        css.contains(
-            ".v-overlay-container > .v-overlay.v-overlay--active.v-menu > .v-overlay__content {"
-        ) && css.contains("opacity: 1 !important")
-            && css.contains("pointer-events: auto !important"),
+        js.contains("opacity: 1 !important; pointer-events: auto !important;"),
         "激活菜单不能停在进入动画的 opacity:0/pointer-events:none"
+    );
+    // `.v-overlay-container` 的 contain: layout 让容器内 z-index 提权失效（实测
+    // 容器到 2600/99999 仍被 2400 的弹窗盖住），只有把菜单挂到 body 才恢复可点。
+    assert!(
+        js.contains("function liftActiveMenus()")
+            && js.contains("document.body.appendChild(menu)")
+            && js.contains("new MutationObserver(liftActiveMenus)"),
+        "激活菜单必须从 .v-overlay-container 挂到 body"
     );
 }
 
