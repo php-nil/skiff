@@ -387,6 +387,26 @@
 
 ---
 
+## 6. 批次执行记录
+
+| 批次 | 内容 | 状态 | 提交 |
+| --- | --- | --- | --- |
+| A | 删 `web` 死依赖、`kernel::host_run` 收口、证书校验移入阻塞池、`write_if_changed` 复用、依赖表与能力面分布表 | 已完成 | `c843cc8`、`b7b4a49`、`00ead89`、`c58cf4c`、`cf19780` |
+| B1 | 权限匹配单一实现：`Grant::permits` / `Grant::permits_wildcard`（问题 6） | 已完成 | 见本轮提交 |
+| B2 | 站点域模块收口：`sites/install.rs` 拆出安装进度/互斥/环境探测；`sites_vhost.rs` 并入 `sites/vhost.rs`（问题 7 第 3 步、问题 8） | 已完成 | 见本轮提交 |
+| B3 | 展示映射上移：`SiteSummary` 只带领域事实（`runtime_state`/`cert_ready`），中文文案与 CSS class 由 `skiff-web` 映射（问题 9） | 已完成 | 见本轮提交 |
+
+**B1 的语义边界**：本轮只把「如何命中授权项」收口为一个函数，**没有**改变任何能力面的通配策略——`permits_wildcard` 目前只有 ftp / firewall 调用，`fs` / `docker` / `scheduler` 仍是逐条精确授权（与原实现逐字节一致）。「是否让 `fs` 也支持 `fs:*`」属于安全语义扩张，未决策，已列入批次 C。
+
+**B 阶段新发现（未单列问题，记录待评估）**：
+
+- `unix_now()` 在 `app/src/auth.rs`、`app/src/sites.rs`（随迁移到 `sites/install.rs`）、`app/src/sites/crud.rs` 各有一份实现，语义相同。合并需要选一个公共位置（`time_fmt` 或 `util`），收益小、冲突面广，暂不动。
+- `type_label` 在 `app/src/views/sites.rs` 与 `web/src/handlers/sites.rs` 各有一份（前者进读模型，后者用于详情页动作）。与本轮「展示映射上移」方向一致，可在 B3 的后续收尾里合并，本轮未动以避免扩大 diff。
+
+**批次 C 新增待决策项**：C7「`fs` 是否支持 `fs:*` 通配授权」——若支持，属于扩大既有插件授权范围，需要同步 `KERNEL_FS_CONTRACT.md` 与安装确认文案；若永久不支持，应在 `Grant::permits_wildcard` 的文档与契约里明确写死。
+
+---
+
 ## 附录 A：crate 体量与实测依赖（2026-11-15）
 
 | crate | 文件 | 行数 | 直接依赖（实测） |
