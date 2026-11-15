@@ -370,8 +370,8 @@
 | --- | --- | --- |
 | C1 | 审计写入改投递（问题 12） | 需决定「审计是否必须在响应前落库」 |
 | C2 | `systemd-run` 超时清理单元（问题 11） | 需 Linux 测试机验证 |
-| C3 | `systemctl restart docker` 超时语义（问题 10） | 需 Docker 宿主机验证 |
-| C4 | `nginx -t` 校验合并（问题 14） | 站点核心路径，需回归用例先行 |
+| C3 | `systemctl restart docker` 超时语义（问题 10） | 已完成：60s 超时 + 30s 探测总预算（未上机实测） |
+| C4 | `nginx -t` 校验合并（问题 14） | 部分完成：执行通道已统一，候选生命周期各自保留 |
 | C5 | `plugin → axum` 解耦（§3 陈述，未单列问题） | 需要先定义能力面的传输无关返回类型；改动面大，建议随「能力面协议演进」一起做 |
 | C6 | `store/db.rs` 迁移拆文件（问题 18） | 与下次 schema 变更合批，避免冲突 |
 
@@ -380,8 +380,9 @@
 ## 5. 未验证项
 
 1. **问题 11 的 unit 残留**：`systemd-run --wait` 被 kill 后瞬态单元是否继续运行，本文按 systemd 语义推断，**未在测试机实测**。
-2. **问题 10 的最坏耗时**：`docker_ready` 中 `list_containers` 在 socket 存在但守护进程无响应时是否真的吃满 30 秒，**未实测**（bollard 超时参数语义按文档）。
+2. **问题 10 的最坏耗时**：已由代码上限约束（systemctl 60s + 探测 30s），但「docker.sock 存在而守护进程无响应」时的真实表现**未在 Docker 宿主机实测**。
 3. **问题 12 的实际阻塞概率**：`Db` 的 50ms 等待告警是否在真实负载下触发，**未采集日志**。
+4. **问题 14 的合并后行为**：`nginx_test_candidate` 只改「怎么执行」，SSR 保存主配置与 vhost 的既有用例全过；**未上机验证真实 OpenResty 容器内的错误行解析**（沿用原逻辑，无变化）。
 4. **问题 7 的站点域行数占比**：按文件归属统计（6 个文件 10.5k 行），未做函数级归属；`runtime_catalog` 是否应算「站点域」还是「运行环境目录」，取决于后续是否独立命名。
 5. **`web` 之外是否还有死依赖**：本次只核到 `skiff-sched`；`cargo-machete` 类工具未跑，其余依赖按人工抽样判断。
 
@@ -394,16 +395,34 @@
 | A | 删 `web` 死依赖、`kernel::host_run` 收口、证书校验移入阻塞池、`write_if_changed` 复用、依赖表与能力面分布表 | 已完成 | `c843cc8`、`b7b4a49`、`00ead89`、`c58cf4c`、`cf19780` |
 | B1 | 权限匹配单一实现：`Grant::permits` / `Grant::permits_wildcard`（问题 6） | 已完成 | 见本轮提交 |
 | B2 | 站点域模块收口：`sites/install.rs` 拆出安装进度/互斥/环境探测；`sites_vhost.rs` 并入 `sites/vhost.rs`（问题 7 第 3 步、问题 8） | 已完成 | 见本轮提交 |
-| B3 | 展示映射上移：`SiteSummary` 只带领域事实（`runtime_state`/`cert_ready`），中文文案与 CSS class 由 `skiff-web` 映射（问题 9） | 已完成 | 见本轮提交 |
+| B3 | 展示映射上移：`SiteSummary` 只带领域事实（`runtime_state`/`cert_ready`），中文文案与 CSS class 由 `skiff-web` 映射（问题 9） | 已完成 | 见批次 B 提交 |
+| B4 | B 阶段新发现：`unix_now` 三份合并到 `time_fmt::unix_now`；`type_label` 两份合并到 `web::handlers::sites::type_label`（零契约） | 已完成 | 见本轮提交 |
+| C3 | `systemctl restart docker` 加 60s 超时（超时文案明确「结果未知」）；`docker_ready` 改为 30s 总预算、单次探测受剩余预算约束（问题 10） | 已完成（未上机实测） | 见本轮提交 |
+| C4 | `nginx -t` 执行通道统一为 `AppState::nginx_test_candidate`（问题 14 的「怎么跑」部分） | 已完成（生命周期未合并，见下） | 见本轮提交 |
+| C7 | `fs` 是否支持 `fs:*` 通配 | **已关闭：不支持**，理由写入 [KERNEL_FS_CONTRACT.md](KERNEL_FS_CONTRACT.md) §2.1 | 本轮文档提交 |
+
+**C4 的收敛边界**：只统一「容器内怎么执行 `nginx -t`」（命令数组、错误映射）。主配置与 vhost 的**候选生命周期没有合并**——前者成功后要 `rename` 上线并重载，后者校验完即删除，且 vhost 需要一层包含候选文件的临时主配置。强行合并会把两条路径的状态机揉在一起，收益小于风险；问题 14 因此降级为「执行通道已统一，生命周期保持各自实现」。
+
+**C3 的残余风险**：超时后 `systemctl` 客户端被杀，但 systemd 作业可能仍在执行，调用方拿到的是「结果未知」。这与问题 11 同源，最终处置需要上机实测（见 §5）。
 
 **B1 的语义边界**：本轮只把「如何命中授权项」收口为一个函数，**没有**改变任何能力面的通配策略——`permits_wildcard` 目前只有 ftp / firewall 调用，`fs` / `docker` / `scheduler` 仍是逐条精确授权（与原实现逐字节一致）。「是否让 `fs` 也支持 `fs:*`」属于安全语义扩张，未决策，已列入批次 C。
 
-**B 阶段新发现（未单列问题，记录待评估）**：
+**B 阶段新发现（已在本轮收口）**：
 
-- `unix_now()` 在 `app/src/auth.rs`、`app/src/sites.rs`（随迁移到 `sites/install.rs`）、`app/src/sites/crud.rs` 各有一份实现，语义相同。合并需要选一个公共位置（`time_fmt` 或 `util`），收益小、冲突面广，暂不动。
-- `type_label` 在 `app/src/views/sites.rs` 与 `web/src/handlers/sites.rs` 各有一份（前者进读模型，后者用于详情页动作）。与本轮「展示映射上移」方向一致，可在 B3 的后续收尾里合并，本轮未动以避免扩大 diff。
+- `unix_now()` 原有三份（`app/src/auth.rs`、`app/src/sites/install.rs`、`app/src/sites/crud.rs`），已合并到 [time_fmt.rs](file:///c:/dev/skiff/crates/app/src/time_fmt.rs) 的 `unix_now`，三处改为调用。
+- `type_label` 原有两份（app 读模型与 web 详情页），已只保留 `web/src/handlers/sites.rs::type_label`；`SiteSummary` 不再携带 `type_label`，SSR 与 `/ui/v1` 各自从 `site_type` 映射，字段值不变。
 
-**批次 C 新增待决策项**：C7「`fs` 是否支持 `fs:*` 通配授权」——若支持，属于扩大既有插件授权范围，需要同步 `KERNEL_FS_CONTRACT.md` 与安装确认文案；若永久不支持，应在 `Grant::permits_wildcard` 的文档与契约里明确写死。
+**批次 C 待决策项**：原 C7「`fs` 是否支持 `fs:*` 通配」已按产品决定**关闭：不支持**，契约已写明「`fs:*` 不匹配任何方法」及三条理由；判定入口仍是 `Grant::permits_wildcard`，只是 fs 侧不调用。
+
+**仍只出方案、本轮未实现的两项**：
+
+| 项 | 可选路径 | 代价 |
+| --- | --- | --- |
+| C1 审计写入投递（问题 12） | A：`audit_or_log` 改 `async fn` + `db_async` 投递，调用点全部加 `.await` | 改动面大（几乎每个 handler 末尾），语义最干净；需要确认「审计必须在响应前落库」是否保留 |
+| | B：保留同步函数，内部 `block_in_place` | 改动 1 处；但会临时扩容 worker，与「显式 2 线程控内存」目标冲突，需在 §7 记录例外 |
+| C2 `systemd-run` 超时后瞬态单元处置（问题 11） | A：超时分支先 `systemctl stop <unit>` 再返回 | 需 Linux 测试机验证 unit 名可解析、stop 不会误杀后续命令 |
+| | B：给 `systemd-run` 增加 `--property=RuntimeMaxSec=`，由 systemd 自身兜底 | 依赖 systemd 版本；超时语义与本地 `tokio::time::timeout` 可能不一致，需要统一 |
+| | C：保持现状，只在错误文案与审计里标注「结果未知」 | 零风险、零收益，状态一致性仍靠人工核对 |
 
 ---
 
