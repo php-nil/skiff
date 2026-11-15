@@ -370,7 +370,7 @@
 | --- | --- | --- |
 | C1 | 审计写入投递方式（问题 12） | 已完成：同步写库 + 失败落盘兜底（异步方案已否决，理由见 §6） |
 | C2 | `systemd-run` 超时后清理瞬态单元（问题 11） | 已完成，并在测试机验证据不残留 |
-| C3 | `systemctl restart docker` 超时语义（问题 10） | 已完成：60s 超时 + 30s 探测总预算（未上机实测） |
+| C3 | `systemctl restart docker` 超时语义（问题 10） | 已完成：整段变更 20s 总预算（< 30s 请求超时）、`daemon.json` 写入带取消还原守卫（`d025258` 测试机反馈后修订） |
 | C4 | `nginx -t` 校验合并（问题 14） | 部分完成：执行通道已统一，候选生命周期各自保留 |
 | C5 | `plugin → axum` 解耦（§3 陈述，未单列问题） | 需要先定义能力面的传输无关返回类型；改动面大，建议随「能力面协议演进」一起做 |
 | C6 | `store/db.rs` 迁移拆文件（问题 18） | 与下次 schema 变更合批，避免冲突 |
@@ -380,7 +380,7 @@
 ## 5. 未验证项
 
 1. **问题 11 的 unit 残留**：已在测试机 `10.10.15.4` 实测——kill 客户端后单元仍 `active`，`systemctl stop` 后 `not-found`；但**新代码尚未部署到该机**，验证的是同一语义与同一单元命名规则（证据见 §6 C2）。
-2. **问题 10 的最坏耗时**：已由代码上限约束（systemctl 60s + 探测 30s），但「docker.sock 存在而守护进程无响应」时的真实表现**未在 Docker 宿主机实测**。
+2. **问题 10 的最坏耗时**：代码上整段镜像源变更 ≤ 20s（`systemctl restart` 单次 ≤ 8s、就绪探测 ≤ 6s，均受总 deadline 约束），严格小于 30s 请求超时；但「docker.sock 存在而守护进程无响应」时的真实表现**未在 Docker 宿主机实测**（测试机验证已另派）。
 3. **问题 12 的实际阻塞概率**：`Db` 的 50ms 等待告警是否在真实负载下触发，**未采集日志**。
 4. **问题 14 的合并后行为**：`nginx_test_candidate` 只改「怎么执行」，SSR 保存主配置与 vhost 的既有用例全过；**未上机验证真实 OpenResty 容器内的错误行解析**（沿用原逻辑，无变化）。
 4. **问题 7 的站点域行数占比**：按文件归属统计（6 个文件 10.5k 行），未做函数级归属；`runtime_catalog` 是否应算「站点域」还是「运行环境目录」，取决于后续是否独立命名。
@@ -397,7 +397,8 @@
 | B2 | 站点域模块收口：`sites/install.rs` 拆出安装进度/互斥/环境探测；`sites_vhost.rs` 并入 `sites/vhost.rs`（问题 7 第 3 步、问题 8） | 已完成 | 见本轮提交 |
 | B3 | 展示映射上移：`SiteSummary` 只带领域事实（`runtime_state`/`cert_ready`），中文文案与 CSS class 由 `skiff-web` 映射（问题 9） | 已完成 | 见批次 B 提交 |
 | B4 | B 阶段新发现：`unix_now` 三份合并到 `time_fmt::unix_now`；`type_label` 两份合并到 `web::handlers::sites::type_label`（零契约） | 已完成 | 见本轮提交 |
-| C3 | `systemctl restart docker` 加 60s 超时（超时文案明确「结果未知」）；`docker_ready` 改为 30s 总预算、单次探测受剩余预算约束（问题 10） | 已完成（未上机实测） | 见本轮提交 |
+| C3 | `systemctl restart docker` 加超时（超时文案明确「结果未知」）；`docker_ready` 改为总预算、单次探测受剩余预算约束（问题 10） | 已完成（未上机实测） | 见本轮提交 |
+| C3 修订 | 按 `d025258` 测试机实测反馈重做预算与回滚：整段 20s（< 30s 请求超时）、`daemon.json` 取消即还原的 Drop 守卫、去掉 `.bak`；`docker_ready` 6s 且不越过 deadline | 已完成，本地 `skiff-app` 331 / `skiff-web` 199 通过 | 见本轮提交 |
 | C4 | `nginx -t` 执行通道统一为 `AppState::nginx_test_candidate`（问题 14 的「怎么跑」部分） | 已完成（生命周期未合并，见下） | 见本轮提交 |
 | C1 | 审计写入改为「同步写库 + 失败落盘兜底」，异步投递否决（问题 12） | 已完成 | 见本轮提交 |
 | C2 | `systemd-run` 超时后 `systemctl stop` 清理单元（问题 11） | 已完成，测试机实机验证无残留 | 见本轮提交 |
@@ -406,6 +407,27 @@
 **C4 的收敛边界**：只统一「容器内怎么执行 `nginx -t`」（命令数组、错误映射）。主配置与 vhost 的**候选生命周期没有合并**——前者成功后要 `rename` 上线并重载，后者校验完即删除，且 vhost 需要一层包含候选文件的临时主配置。强行合并会把两条路径的状态机揉在一起，收益小于风险；问题 14 因此降级为「执行通道已统一，生命周期保持各自实现」。
 
 **C3 的残余风险**：`systemctl restart docker` 超时后客户端被杀，systemd 作业可能仍在执行，调用方拿到的是「结果未知」。C2 的清理只覆盖 `systemd-run` 瞬态单元；Docker 重启作业本身需要在测试机上单独验证，本轮未做。
+
+**C3 修订（`d025258` 测试机第 3 项不通过）**
+
+根因是两条预算倒挂：`SYSTEMCTL_TIMEOUT=60s` 与 `docker_ready` 的 30s 都 ≥ 路由层 `REQUEST_TIMEOUT=30s`，所以「等待超时 / 结果未知」分支在 UI 路径上永远不可达，用户只会拿到笼统 504；同时 `daemon.json` 的写入与回滚之间没有取消保护，实测留下「文件新值、DB 空值、Docker 未重启」的半状态。
+
+- 预算：`docker_daemon::MIRROR_APPLY_BUDGET = 20s` 为整段外部变更 deadline；`SYSTEMCTL_TIMEOUT = 8s`（回滚重启复用同一 deadline）；`DOCKER_READY_BUDGET = 6s`；容器列表探测 3s。任一等待都取「自身上限」与「剩余预算」的较小值，因此超时分支必然先于 504 触发。`skiff-web` 有单测锁定 `REQUEST_TIMEOUT > MIRROR_APPLY_BUDGET`。
+- 回滚：`DaemonJsonGuard` 在写入前记住原内容（文件原本不存在记为 `None`），失败路径显式 `restore()`，future 被取消时由 `Drop` 同步写回/删除；成功后 `disarm`。不再生成 `.bak` 临时文件，`write_atomic` 的唯一临时名 + rename 保证并发写不互踩。
+- 结果未知时不再谎称回滚完成：`systemctl restart docker` 超时返回「结果未知，Docker 可能仍在重启」，回滚重启也受 deadline 约束，预算耗尽时提示「请在维护窗口执行 systemctl restart docker」。
+
+**「下游等待 > 请求预算」同类扫描结论**（只改真实存在的，未泛改）：
+
+| 位置 | 原等待 | 结论 |
+| --- | --- | --- |
+| `docker_daemon::apply_registry_mirror` | `systemctl` 60s、就绪探测 30s | **真实存在，已改**：20s 总预算 + 8s/6s 子预算 |
+| `sites::runtime::node_health_gate`（`POST /ui/v1/runtimes/{id}/action/start|restart`） | Node 健康检查 60s | **真实存在，已改**：`NODE_HEALTH_BUDGET = 20s`，`skiff-web` 有预算断言 |
+| `sites::crud::validate_nginx_locked`（建站/证书路径） | `nginx -t` 无上限 | **真实存在，已改**：复用 `NGINX_TEST_TIMEOUT = 10s` |
+| `app::catalog` 抓取 | `FETCH_BUDGET = 10s` | 无问题（< 30s） |
+| 运行环境安装/重建、Web 安装、`wait_tcp_port` 240s / `wait_http_ready` 180s | 长等待 | 无问题：全部由作业驱动，不经请求路径 |
+| 容器/镜像/网络列表、`nginx -v/-V`、`resty`/`wget` 探活、`nginx -s reload` | bollard 默认 30s 或无上限 | **只读或单步操作，未改**：最坏是页面 504，不产生「文件/DB/运行时」不一致；要收紧应统一在 `skiff-docker` 客户端层做，不属本批 |
+
+**未覆盖的同类风险（只记录）**：站点 vhost / 证书写入的失败路径已有显式 `restore(&snapshot)`，但**取消**（请求超时）时没有等价守卫；相比 `daemon.json`，它留下的状态是「DB 与文件都是新值、nginx 未重载」，可由下次 reload 收敛，不构成 DB 与磁盘互相矛盾。要彻底消除需给站点写入也加 Drop 守卫，改动面较大，留待单独批次。
 
 **B1 的语义边界**：本轮只把「如何命中授权项」收口为一个函数，**没有**改变任何能力面的通配策略——`permits_wildcard` 目前只有 ftp / firewall 调用，`fs` / `docker` / `scheduler` 仍是逐条精确授权（与原实现逐字节一致）。`fs` 不做通配已作为产品决定写入契约（原 C7，已关闭）。
 
