@@ -20,7 +20,6 @@ pub mod nginx;
 pub mod panel_settings;
 pub mod runtime_catalog;
 pub mod sites;
-pub mod sites_vhost;
 pub mod tasks;
 pub mod theme;
 pub mod time_fmt;

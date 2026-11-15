@@ -1,16 +1,16 @@
 //! 站点 vhost 与域名/别名判定（无状态纯函数）。
 //!
-//! 这是 `sites.rs` 拆分的第一步：本模块不持有 `AppState`、不碰数据库与 Docker，
-//! 只做「输入 → 文本 / 规范化结果」的纯变换，因此可以脱开装配层直接单测。
+//! 本模块不持有 `AppState`、不碰数据库与 Docker，只做「输入 → 文本 / 规范化
+//! 结果」的纯变换，因此可以脱开装配层直接单测。
 //!
-//! 对外路径保持不变：`sites.rs` 用 `pub use crate::sites_vhost::{...}` 再导出，
-//! 上层仍按 `skiff_app::sites::validate_domain` 之类的旧路径调用，handler 不用改。
+//! 归属：`sites` 的子模块，与 `crud` / `runtime` / `layout` 同级；上层仍经
+//! `skiff_app::sites::*` 调用（`sites.rs` 顶部统一再导出），不出现反向引用。
 
 use std::path::{Path, PathBuf};
 
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
-use crate::sites::{
+use super::{
     default_php_name, runtime_container_socket, PhpRuntimeConfig, SiteError,
     CONTAINER_FASTCGI_PARAMS,
 };
