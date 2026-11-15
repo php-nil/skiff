@@ -144,6 +144,8 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 - `submit` / `reset` 只在 form 内有效；字段值实时同步，动作里可用 `${字段名}` 读取。
 - 校验错误只取第一条；需要多条规则时用 `rules.pattern` 数组，每条可带独立 `message`。
 - `input-text` 的 `type`（含 `password`）与 `autocomplete` 都已原生透传，登录口令框不再需要 DOM 桥接。
+- 条件表达式异常语义（budding 1.8.0）：`visibleOn` / `hiddenOn` 求值抛错时**隐藏节点**（fail-closed），`disabledOn` 抛错时保持可用；dev 下三类条件走同一诊断入口，同一节点实例按 `path + 属性 + 表达式` 只报一次，payload 含 `id` / `path` / `type` / `region` / `attribute` / `expression` / `cause`。不提供 fail-open，也不提供运行时开关。
+- 字面量 `${`：写 `\${`。只识别紧邻 `${` 的反斜杠，连续 `n` 个输出 `floor(n/2)` 个反斜杠、`n` 为奇数时按字面 `${` 处理；`C:\logs` 这类路径不受影响。JSON 中写 `"\\${amount}"`，YAML 单引号可直接写 `'\${amount}'`；只作用于模板/值字段，条件字段不做字面量转义。
 
 ## 4. 列表与分页
 
