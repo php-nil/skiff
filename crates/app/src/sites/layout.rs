@@ -260,19 +260,10 @@ pub(crate) fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<(
     }
     let unchanged = std::fs::read(path).map(|old| old == bytes).unwrap_or(false);
     if !unchanged {
-        // 临时名必须唯一：同一路径可能被请求与巡检并发写入，共用 `x.tmp`
-        // 会让后写者的截断覆盖掉先写者已写完的内容。
-        let tmp = crate::atomic::sibling_temp(path);
-        std::fs::write(&tmp, bytes).map_err(|e| format!("写入 {} 失败：{e}", tmp.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
-                .map_err(|e| format!("设置 {} 权限失败：{e}", tmp.display()))?;
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        std::fs::rename(&tmp, path).map_err(|e| format!("替换 {} 失败：{e}", path.display()))?;
+        // 临时名唯一、chmod、rename 统一走 `crate::atomic`：并发写同一路径不会
+        // 互相截断，也不会两份实现各自演化。
+        crate::atomic::write_atomic(path, bytes, mode)
+            .map_err(|e| format!("替换 {} 失败：{e}", path.display()))?;
     }
     Ok(())
 }
