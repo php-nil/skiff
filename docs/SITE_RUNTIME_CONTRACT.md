@@ -3,10 +3,13 @@
 > 状态：**设计契约 v1（2026-11-05）；P1 实现补充见 §11（2026-11-06）；Node.js 接入见 §4.3（2026-11-09）**。
 > 2026-11-09：Node.js 已在内核接入（运行环境目录、安装/启停/重建、站点绑定与反代）；
 > Go 仍未实现，已从 `runtime_catalog::RUNTIME_KINDS` 与新建弹窗摘除，不再提供登记入口。
-> 基线：`crates/store/src/db.rs`（schema v20）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
-> 与 Node.js / Rust 进程运行环境）、`crates/app/src/runtime_catalog.rs`、
+> 基线：`crates/store/src/db.rs`（schema v21）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
+> 与 Node.js / Rust 进程运行环境）、`crates/app/src/sites/network.rs`（站点专用网络与静态地址）、
+> `crates/app/src/runtime_catalog.rs`、
 > `crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
 > `docs/MENU_CONTRACT.md`（菜单与深链）。
+> 2026-11-15：运行环境改为**专用 bridge + 内核静态容器地址**，宿主不再出现运行环境端口；
+> 站点 vhost 只反代到容器地址；对外发布是显式开关（`site_runtimes.publish_port`，默认关闭）。
 > 可点预览：[`docs/ui/site-runtime-preview.html`](./ui/site-runtime-preview.html)。
 
 ## 0. 五条结论
@@ -14,8 +17,10 @@
 1. **站点分三类，先选类型再建站**：`runtime`（绑定运行环境）、`static`（只托管文件）、`proxy`
    （只转发上游）。`runtime` 站点必须绑定一个已就绪的 `RuntimeEnv`；`static` / `proxy` 不绑定运行环境。
 2. **运行环境是“版本基线 + 运行实例”的业务对象**，不是 Docker 容器的别名。PHP 环境以**共享 FPM
-   池 + 共享 socket** 承载多个站点；Node.js / Rust 环境以**单进程常驻 + 固定端口 + 反代**承载站点，
-   环境本身提供版本、镜像、启动命令与端口。Node.js / Go 的「每站点独立进程」拆分作为后续演进，不在本轮。
+   池 + 共享 socket** 承载多个站点；Node.js / Rust 环境以**单进程常驻 + 容器内固定端口 + 反代**承载站点，
+   环境本身提供版本、镜像、启动命令与端口。运行环境容器统一接入专用 bridge（`skiff-sites`），
+   **不占宿主端口**；站点按域名由 nginx 直接反代到容器静态地址。Node.js / Go 的「每站点独立进程」
+   拆分作为后续演进，不在本轮。
 3. **单一事实源**：`site_runtimes` 表是运行环境的唯一记录，站点通过 `runtime_id` 引用；站点类型、
    kind、端口、上游、WebSocket 等字段落在 `sites` 表。旧的 `php_version` 字段在 schema v7 被
    `runtime_id` 取代，不再保留两份版本信息。
@@ -50,7 +55,9 @@ Site (static / proxy)  不持有 RuntimeEnv
 | | `desired_state` | `running` / `stopped`，用户意图 |
 | | `last_status` | `installing` / `running` / `stopped` / `error`，最近一次探测结果（缓存，不是事实源） |
 | | `socket_path` | 仅 PHP：FPM socket 绝对路径；vhost 只读该字段，禁止硬编码 |
-| | `port` | 仅 Node.js / Rust：环境固定监听端口（Node `9200–9299`、Rust `9100–9199`）；vhost 反代只读该字段 |
+| | `port` | 仅 Node.js / Rust：**容器内**固定监听端口（Node `9200–9299`、Rust `9100–9199`）；vhost 反代只读该字段，与宿主端口无关 |
+| | `container_ip` | 仅 Node.js / Rust：容器在专用网络上的静态地址（`172.18.16.1`–`172.18.31.254`）；vhost 只允许指向它 |
+| | `publish_port` | 显式对外发布宿主端口；`NULL` = 不发布（默认）。非空时 Docker 映射 `宿主端口 → container_ip:port` |
 | | `is_default` | 同一 kind 内最多一个默认版本；建站向导默认选中 |
 | | `config_json` | PHP ini / FPM 与 Node 启动命令 / `NODE_ENV` / 健康检查 / 额外环境变量的规范化快照 |
 | `Site` | `domain` | 主域名，唯一；别名仍存 `site_aliases` |
@@ -75,10 +82,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 3. `site_type = proxy` ⇒ `runtime_id` 为空，`proxy_target` 非空合法。
 4. 绑定前必须检查运行环境 `last_status = running` 且 `desired_state = running`：
    - PHP：`socket_path` 存在且可连接（stat 到 socket 文件，权限 `0660`）；
-   - Node.js / Rust：`port` 已分配，且**端口监听套接字属于本环境容器**，Node 还要求
-     `http://127.0.0.1:<port><health_path>` 返回 2xx/3xx。容器处于 `restarting` / `StartedAt`
-     在等待窗口内变化（crash-loop）一律判未就绪；监听者属于宿主其它进程时判失败并给出
-     `pid + 进程名`。只做端口连通判定会把「陌生进程占着同一端口」误判成就绪（`2026-11-15` 实机缺陷）；
+   - Node.js / Rust：`container_ip` 与 `port` 已登记，容器在专用网络上 running，且容器实际地址
+     等于登记地址；Node 还要求 `http://<container_ip>:<port><health_path>` 返回 2xx/3xx，Rust
+     要求 TCP 可达。容器处于 `restarting` / `StartedAt` 在等待窗口内变化（crash-loop）一律判
+     未就绪；容器实际地址与登记地址不一致时终态失败并提示重建，**绝不按实际地址改写站点**；
    - Go：未实现，禁止创建绑定站点。
 5. 运行环境停止 / 异常时**禁止新建绑定站点**；已有站点保留记录，但列表显示“环境停止/环境异常”，
    不把站点状态误报为 running。
@@ -91,8 +98,9 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 - 运行环境页每次打开**实时读** Docker / socket 探测结果，写回 `last_status` 仅用于概览与审计，
   不作为页面事实源。
-- 站点有效状态 = 站点自身期望状态 ∩ 运行环境实际状态：
+- 站点有效状态 = 站点自身期望状态 ∩ 运行环境实际状态 ∩ 巡检结论：
   - 站点 `stopped` → `已停止`；
+  - 巡检判定环境不可用（容器未运行 / 地址不一致 / 探测失败）→ `维护中`，站点详情给出原因与恢复路径；
   - 站点 `running` 但环境 `stopped` / `error` → `环境停止` / `环境异常`（可点击跳到环境详情）；
   - 站点 `running` 且环境 `running` → `运行中`。
 - Docker 页对运行环境容器做停止/删除等操作后，不修改 `site_runtimes.desired_state`；运行环境页检测到
@@ -159,7 +167,7 @@ Site (static / proxy)  不持有 RuntimeEnv
   容器进入 `/www/runtime/<kind>/<name>/app` 执行启动命令（Node 默认 `npm start`，Rust
   `cargo run --release`），`node_modules/` / `target/` 也在该目录；新建环境时若 `app/` 缺失
   才写最小脚手架（已存在则原样保留，重建/克隆不覆盖用户代码）。
-  绑定站点只在 vhost 里 `proxy_pass http://127.0.0.1:<环境端口>`，**不改工作目录、不写站点
+  绑定站点只在 vhost 里 `proxy_pass http://<container_ip>:<环境端口>`，**不改工作目录、不写站点
   `index/`**；多个站点绑同一环境即多个域名反代到同一进程。
 - 删除站点：删除该站整目录 + 站点记录 + 别名 + 证书；**不删除运行环境与其代码目录**。
   删除确认页展示目录大小、文件数、关联定时任务数与绑定的运行环境（删除后仅解除该站点绑定）；
@@ -178,17 +186,45 @@ Site (static / proxy)  不持有 RuntimeEnv
 | PHP 默认实例 | 建站向导默认选中；删除默认环境前必须先切换默认，存在绑定站点时直接拒绝 |
 | PHP socket | 每个 PHP 实例独立 socket `/www/runtime/<kind>/<name>/php-fpm.sock`；vhost 按站点 `runtime_id` 取该实例 socket，不按版本号推导 |
 | PHP 共享池 | 同一实例所有 PHP 站点共享一个 FPM master / socket / 池；P1 不做站点级池，站点级 php.ini 覆盖留 P2 |
-| Node.js 端口 | 每个 Node.js 环境一个固定宿主 loopback 端口，范围 `9200–9299`；端口属于环境，不属于站点 |
+| Node.js 端口 | 每个 Node.js 环境一个**容器内**固定端口，范围 `9200–9299`；端口属于环境，不属于站点 |
 | 端口分配 | 建环境时取区间内最小未占用端口（DB 已用即跳过），区间耗尽拒绝创建；不在站点创建时分配 |
 | 端口变更 | 环境详情可改端口：必须在 kind 区间内且未被其它环境占用；有站点绑定时先列出受影响站点并要求二次确认，确认后重写全部相关 vhost 并重建容器 |
 | 端口与站点 | 站点的反代端口**只从环境读取**（`site_runtimes.port`），站点表不含端口字段，不接受用户自定义端口 |
-| 端口暴露 | Node.js / Rust 容器使用 host 网络；应用默认读 `HOST=127.0.0.1`，nginx 反代 `127.0.0.1:<port>`；应用若硬编码 `0.0.0.0`，需在宿主防火墙侧限制 |
-| 端口释放 | 环境删除后释放；删除失败不提前释放 |
-| 保留端口 | `80` / `443`（nginx）以及两段运行区间之外不分配；PHP 不占宿主端口，只走 socket |
-| 健康检查 | Node.js 安装/启动/重建后轮询 `http://127.0.0.1:<port><health_path>`（默认 `/`），1 秒间隔、最多 180 秒；非 2xx/3xx 置 `error` 并保留 `log/server.log`，不无限重试 |
+| 运行环境网络 | 统一接入专用 bridge `skiff-sites`（`172.18.0.0/16`，动态池 `172.18.0.0/24`）；不发布端口、不使用 host 网络，宿主上不存在运行环境端口；网段与他人网络重叠时显式报错，不自动换段 |
+| 容器地址 | 静态地址池 `172.18.16.1`–`172.18.31.254`，分配结果落 `site_runtimes.container_ip`；重建复用同一地址 |
+| 端口暴露 | 默认不公开：站点由 nginx 反代 `http://<container_ip>:<port>`；仅当 `publish_port` 非空时 Docker 映射 `宿主端口 → 容器端口`（显式对外发布） |
+| 端口释放 | 环境删除后释放（含 `publish_port`）；删除失败不提前释放 |
+| 保留端口 | `80` / `443` 归 nginx；对外发布端口必须 ≥1024 且未被其它环境发布；PHP 不占宿主端口，只走 socket |
+| 健康检查 | 容器 running + 容器实际地址 == 登记地址 + 可达性（Node 轮询 `http://<container_ip>:<port><health_path>`，Rust 只要求 TCP）；安装 180 秒、启动 20 秒上限；crash-loop / 已退出 / 地址变化为终态，2 次确认后失败 |
+| 维护态 | 巡检每 3 秒评估被运行中站点引用的环境；不可用时把站点 vhost 改成 503 维护页（`Retry-After: 5`），恢复后自动写回，不需人工改配置 |
 
 > `proxy` 的 `proxy_target` 不参与端口分配；允许指向本机其他端口，但保存时检测“目标等于本站域名/80/443”
 > 形成回环的情况并拒绝。
+
+#### 2.3.1 容器网络模型与对外发布
+
+与负责人给定的容器模型一致：
+
+1. 每个运行环境容器有专用网络上的一个地址（如 `<container_ip>`），应用只在容器内监听自己的端口；
+2. 只服务内网的环境（如数据库类）无需任何宿主动作，直接对接 `<container_ip>:<port>`；
+3. 与 nginx 对接的站点（Node.js / Rust 运行环境站）由 nginx 把域名 TCP 转发到 `<container_ip>:<port>`；
+4. 直接对外服务是**显式可选项**：在运行环境详情「对外发布」填写宿主端口，才映射 `8081 → <container_ip>:8080`。
+
+- **网段与冲突**：网段与 1Panel 对齐，母网段 `172.18.0.0/16`（网关 `172.18.0.1`），Docker 动态池
+  `172.18.0.0/24`，站点静态池 `172.18.16.1–172.18.31.254`。`ensure_site_network` 创建前检查：
+  同名网络 `skiff-sites` 已存在但网段不是 `172.18.0.0/16`、或宿主已有其它 Docker 网络与
+  `172.18.0.0/16` 重叠（含嵌套），一律**直接报错并列出冲突网络名与网段**；不静默换网段、
+  不删除或接管他人网络。
+- **稳定分配**：静态池由内核独占（Docker 动态池限制在 `172.18.0.0/24`），`ensure_runtime_ip` 复用已登记地址，
+  分配时把其它环境的登记地址一律视为已占用；池耗尽时拒绝创建并报错。
+- **重建后的地址变化**：重建先复用原地址；地址变化（外部改动/冲突）在健康判定中是**终态失败**，
+  站点进入维护态并提示重建，绝不把站点改指实际地址（避免流量落到别的容器）。
+- **上游形态**：vhost 只出现 `proxy_pass http://<container_ip>:<port>`；PHP 保持 `fastcgi_pass unix:<socket>`，
+  两者都不出现 `127.0.0.1:<端口>`。
+- **对外发布开关**：`site_runtimes.publish_port`，`NULL` 为默认不公开；UI 入口在运行环境详情「对外发布」
+  （`POST /{prefix}/runtimes/{id}/publish`，留空即取消），保存后重建容器生效。
+- **迁移**：旧实例（host 网络、`container_ip` 为空）不自动接管；站点在巡检中进入维护态，
+  在运行环境页「重建」后获得容器地址即可恢复。测试阶段不做数据迁移脚本。
 
 ---
 
@@ -199,8 +235,8 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 类型 | 第一步 | 第二步字段 | 创建副作用 | 就绪条件 |
 | --- | --- | --- | --- | --- |
 | 运行环境 · PHP | 选“运行环境” → 选 PHP → 选 PHP 环境 | 主域名、别名、站点目录 | 生成 vhost（fastcgi_pass 指向 `socket_path`）、`index/log/ssl/conf` | PHP 环境 running + socket 可连接 |
-| 运行环境 · Node.js | 选“运行环境” → 选 Node.js → 选 Node 环境 | 主域名、别名、站点目录 | 生成反代 vhost（`proxy_pass 127.0.0.1:<环境端口>`）、`index/log/ssl/conf`；站点目录不写代码，环境已有应用则直接可用 | Node 环境 running + 端口通过 HTTP 健康检查 |
-| 运行环境 · Rust | 选“运行环境” → 选 Rust → 选 Rust 环境 | 主域名、别名、站点目录 | 生成反代 vhost（`proxy_pass 127.0.0.1:<环境端口>`）、`index/log/ssl/conf`；代码固定在环境 `app/` | 环境 running + 端口可访问 |
+| 运行环境 · Node.js | 选“运行环境” → 选 Node.js → 选 Node 环境 | 主域名、别名、站点目录 | 生成反代 vhost（`proxy_pass http://<container_ip>:<环境端口>`）、`index/log/ssl/conf`；站点目录不写代码，环境已有应用则直接可用 | Node 环境 running + 容器地址一致 + HTTP 健康检查通过 |
+| 运行环境 · Rust | 选“运行环境” → 选 Rust → 选 Rust 环境 | 主域名、别名、站点目录 | 生成反代 vhost（`proxy_pass http://<container_ip>:<环境端口>`）、`index/log/ssl/conf`；代码固定在环境 `app/` | 环境 running + 容器地址可达 |
 | 运行环境 · Go | **未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除**，向导不出现该类型 | — | — | — |
 | 静态网站 | 选“静态网站”，不选运行时 | 主域名、别名、站点目录 | 生成静态 vhost、`index/log/ssl/conf` | 无运行时依赖；目录可创建 |
 | 反向代理 | 选“反向代理”，不选运行时 | 主域名、别名、上游 URL、WebSocket 开关 | 生成 proxy vhost、`log/ssl/conf`（不建 `index/`） | 上游 URL 合法；不要求上游当下可达，但保存时给出探测提示 |
@@ -224,10 +260,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 - 类型卡显示“是否需要运行环境”和“创建后产出什么”，选中后立即显示对应的绑定提示：
   - PHP：`共享 PHP-FPM 池与 socket，一个环境可承载多个站点；修改环境配置会影响全部绑定站点。`
-  - Node.js：`单进程常驻 + 固定端口 + 反代；启动命令、环境变量与代码目录都属于环境，站点只是域名入口。`
+  - Node.js：`单进程常驻 + 容器内端口 + 域名反代；启动命令、环境变量与代码目录都属于环境，站点只是域名入口。`
   - 静态：`不绑定运行环境，只创建文档根与 vhost。`
   - 反代：`不创建文档根，只生成转发配置；WebSocket 可选。`
-- 运行环境卡显示：版本、状态、占用站点数、socket 或端口范围、默认标记。未运行环境不可选。
+- 运行环境卡显示：版本、状态、占用站点数、socket 或容器内端口范围、默认标记。未运行环境不可选。
 - 下一步按钮在前置条件不满足时禁用，并给出**原因**，不是点击后才报错。
 - 确认页必须复述：类型、绑定环境、目录、端口/上游、WebSocket、HTTPS 是否后续配置。
 
@@ -246,10 +282,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 | 版本 | 镜像/上游版本号，来自版本目录（见 4.5） |
 | 状态 | 运行中 / 已停止 / 异常 / 安装中（排队、拉镜像、创建容器、启动、失败）+ 进度 |
 | 占用站点 | 绑定站点数 |
-| 接入方式 | 只显示短标识：PHP `sock`、Node.js / Rust `:端口`；完整 socket/端口路径放 `title` 悬浮提示与抽屉里，不再单列长路径 |
+| 接入方式 | 只显示短标识：PHP `sock`、Node.js / Rust `:容器端口`；完整容器地址（`<ip>:<port>`，含是否对外发布）放 `title` 悬浮提示与详情页，不再单列长路径 |
 | 操作 | 只保留一个「详情」入口；整行或按钮都打开右侧抽屉，不再并列「更多」 |
 
-- 表格按内容自适应列宽并铺满容器，不固定撑宽某一列；接入方式列宽度只够放 `sock` / `:8080`。
+- 表格按内容自适应列宽并铺满容器，不固定撑宽某一列；接入方式列宽度只够放 `sock` / `:8080`（完整容器地址在悬浮提示里）。
 - 空态：没有任何真实实例时显示「还没有运行环境」+「新建运行环境」主操作；迁移种入的 PHP 模板（8.5/8.4/8.3）只在新建弹窗里出现，不在列表占位。
 - 顶部固定边界提示：`本页管理语言运行环境与绑定关系；Web 服务在「Web 服务」页单独管理，原始容器操作请到 Docker → 容器。`
 - 主操作统一放右上角 `page-head .actions`（「新建运行环境」），不再下沉到列表头部。
@@ -266,7 +302,7 @@ Site (static / proxy)  不持有 RuntimeEnv
 | ini | `memory_limit`、`upload_max_filesize`、`post_max_size`、`max_execution_time` | P1 可改，保存后平滑 reload |
 | FPM 进程池 | `pm`（dynamic/static）、`max_children`、`start_servers`、`min_spare_servers`、`max_spare_servers`、`max_requests` | P1 可改 |
 | socket | 路径（只读）、权限 `0660`、属组 `65534`；不允许世界可写 | 只读 |
-| 关联站点 | 域名、类型、状态、端口/socket；点击进站点详情 | 可读 |
+| 关联站点 | 域名、类型、状态、容器端口/socket；点击进站点详情 | 可读 |
 | 日志 | `fpm-error.log`、运行环境操作日志、重建日志 | 可读、可筛选 |
 
 - 配置保存流程：校验数值范围 → 写 `conf/` 临时文件 → `nginx -t` 与 FPM 配置检查 → 平滑 reload；
@@ -278,25 +314,28 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 ### 4.3 Node.js 环境详情（2026-11-09 已接入）
 
-- **运行模型**：一个环境 = 一个常驻 Node 进程 = 一个固定端口 = 一个固定代码目录
+- **运行模型**：一个环境 = 一个常驻 Node 进程 = 一个容器内固定端口 = 一个固定代码目录
   `/www/runtime/node/<name>/app`；不走 FastCGI，不共享 socket，**不随站点绑定切换目录**。
-  多个站点绑同一环境时，只是多个域名反代到同一进程（环境详情与站点详情都提示影响面）。
-- 基础信息：版本、镜像与 digest、监听端口、工作目录、关联站点数、按需“检测应用健康”。
+  容器接入专用 bridge 并持有静态地址，应用监听 `0.0.0.0`；宿主不发布端口。
+  多个站点绑同一环境时，只是多个域名反代到同一容器地址（环境详情与站点详情都提示影响面）。
+- 基础信息：版本、镜像与 digest、容器地址、工作目录、对外发布状态、关联站点数、按需“检测应用健康”。
 - 专属配置（`基础信息 / 专属配置 / 日志 / 关联站点` 页内标签）：
   - 启动命令（默认 `npm start`，按空白切分为 argv，拒绝 `;`、`|`、`$`、反引号等 shell 元字符）；
   - 健康检查路径（默认 `/`，必须 `/` 开头）；
   - `NODE_ENV`（`production` / `development` / `test`）；
   - 额外环境变量（每行 `KEY=VALUE`，大写键名；`PORT` / `NODE_ENV` / `HOST` 由内核注入，不可覆盖）；
   - 端口（可改，必须在 `9200–9299` 且未被其它环境占用；有站点绑定时先确认影响面）、
-    工作目录（固定只读，不存在“跟随站点”的切换）。
+    工作目录（固定只读，不存在“跟随站点”的切换）；
+  - 对外发布（**默认关闭**）：填写宿主端口（≥1024）后重建容器，宿主端口转发到容器内端口；
+    留空即取消。发布与站点绑定无关，站点始终走容器地址。
 - **共享保护**：有站点绑定时，停止/重启/重建/改端口都先列出受影响域名并要求二次确认；
   删除环境直接拒绝，必须先改绑或删除站点。「克隆环境」复制配置与代码目录（跳过
   `node_modules` / `target`）、自动分配新端口，用于并跑第二个应用。
 - **保存流程**：校验 → 写 `config_json` → 若配置有变化，触发一次重建任务（命令与环境变量在容器
   `command`/`Env` 里，只有重建才生效）。保存成功但重建未启动时必须如实提示，不假装已生效。
-- 安装/启动/重建流程：写 `entry.sh` 与兜底 `app/` → 拉取固定 digest 镜像 → 创建/启动容器 →
-  轮询健康检查（最多 180 秒）→ 成功后才写 `last_status = running`；失败保留 `log/server.log`
-  尾部作为原因，不无限重试。
+- 安装/启动/重建流程：写 `entry.sh` 与兜底 `app/` → 拉取固定 digest 镜像 → 确保专用网络与静态地址 →
+  创建/启动容器 → 轮询「容器状态 + 地址一致 + HTTP 健康检查」（最多 180 秒）→ 成功后才写
+  `last_status = running`；失败保留 `log/server.log` 尾部作为原因，不无限重试。
 - 日志：`log/server.log`（应用 stdout/stderr）、运行环境操作日志与重建日志；不另建每站点 `app.log`。
 - 依赖安装：入口脚本在 `node_modules/` 不存在时执行 `npm ci`（有 lockfile）或
   `npm install --omit=dev`；失败原因直接进 `server.log`。
@@ -305,12 +344,12 @@ Site (static / proxy)  不持有 RuntimeEnv
 
 | 动作 | 规则 |
 | --- | --- |
-| 启动 | 检查镜像 digest 与端口/ socket 可用；PHP 还需 socket 可连接 |
+| 启动 | 检查镜像 digest 与端口/socket 可用（PHP socket 可连接；进程型环境容器地址已登记） |
 | 停止 | 运行环境 `desired_state = stopped`；绑定站点有效状态变为“环境停止”，不删站点 |
 | 重建 | 同一 `id`、同一版本；生成新容器后原子切换；失败回滚旧容器/旧配置 |
 | 删除 | **存在绑定站点时禁止**；列表给出域名与“先改绑或删除站点”的动作；删除默认版本前先切换默认 |
 | 改版本 | 运行环境不可原地改版本；新建同 kind 新版本，站点逐个改绑（P2 提供批量改绑） |
-| 改绑站点 | 目标环境必须同 kind 且 running；PHP 站点换环境后重新生成 vhost 的 socket；Node.js / Rust 换环境后重建 vhost 端口并按新环境重启进程 |
+| 改绑站点 | 目标环境必须同 kind 且 running；PHP 站点换环境后重新生成 vhost 的 socket；Node.js / Rust 换环境后重建 vhost 的容器地址并按新环境重启进程 |
 
 ### 4.5 新建运行环境与异步安装
 
@@ -481,7 +520,9 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 | T2 | kind 一致性 | PHP 站点绑 Node 环境拒绝；Node 站点绑 PHP 环境拒绝 | 单测 | P1 |
 | T3 | 运行环境未就绪 | 停止/异常环境不能新建绑定站点；错误含环境状态 | 单测/集成 | P1 |
 | T4 | 共享 PHP socket | 两个 PHP 站点使用同一 `socket_path`；vhost 不硬编码路径 | 集成 | P1 |
-| T5 | 进程型端口归属 | Node `9200–9299`、Rust `9100–9199` 不重叠；端口唯一、区间耗尽拒绝、删除后释放；改端口越界/占用拒绝 | 单测 | P1 |
+| T5 | 进程型端口与地址归属 | Node `9200–9299`、Rust `9100–9199` 容器内端口不重叠；端口唯一、区间耗尽拒绝、删除后释放；改端口越界/占用拒绝；默认不发布宿主端口，`publish_port` ≥1024、唯一且显式开启 | 单测 | P1 |
+| T5a | 站点维护态 | 巡检判定不可用 → vhost 变成 503 维护页且不出现 `proxy_pass`/`fastcgi_pass`；恢复后写回容器地址；地址与登记值不一致按终态失败、不改指实际地址 | 单测 + 集成 | P1 |
+| T5b | 站点网段冲突 | 宿主已有网络与 `172.18.0.0/16` 重叠（含嵌套）或同名网络网段不符 → 创建失败并报出冲突网络名与网段；不自动换网段、不删他人网络 | 单测（CIDR 判定）+ 上机 | P1 |
 | T6 | 反向代理校验 | 非 http(s)、带 userinfo、缺 host、回环到自身均拒绝；WebSocket 头生成 | 单测/集成 | P1 |
 | T7 | 静态站无运行时依赖 | 无任何运行环境也可创建、启停、访问 200 | 集成 | P1 |
 | T8 | 删除被引用运行环境 | 有绑定站点时拒绝；错误列出域名；无绑定时删除成功且不删站点 | 单测/集成 | P1 |
@@ -695,7 +736,7 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
   - **镜像可拉取性待实测**：本轮开发机无 Docker 且不能直连 Docker Hub，`docker pull rust:1.99-slim`
     需并入上机清单验证；若某 tag 实际不可拉，回退到下一个白名单版本并同步改测试。
 - 运行模型（独立进程 + 固定端口）：
-  - 端口区间 **9100–9199**，创建时取区间内最小未占用端口并落 `site_runtimes.port`；冲突直接拒绝；
+  - 端口区间 **9100–9199**（容器内监听），创建时取区间内最小未占用端口并落 `site_runtimes.port`；冲突直接拒绝；
   - 容器 `skiff-rust-<name>`，`network_mode=host`，挂载 `/www`；
   - 容器入口固定为 `sh /www/runtime/rust/<name>/entry.sh`，日志重定向到
     `/www/runtime/rust/<name>/log/server.log`；`entry.sh` 始终在固定目录运行：
@@ -706,7 +747,7 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
   - 目录结构：`/www/runtime/rust/<name>/{entry.sh,app/{Cargo.toml,src/main.rs},log/server.log,target/}`。
     `app/` 是唯一代码目录；站点目录不写脚手架，绑定站点不改变工作目录。
   - 脚手架只在文件缺失时写入，已存在的用户代码在重建/克隆时原样保留。
-- 站点绑定：站点类型 `runtime`，vhost 生成 `proxy_pass http://127.0.0.1:<port>`（不是 `fastcgi_pass`）；
+- 站点绑定：站点类型 `runtime`，vhost 生成 `proxy_pass http://<container_ip>:<port>`（不是 `fastcgi_pass`）；
   解绑入口在抽屉「站点」页签，删除环境仍受「存在绑定站点即拒绝」约束。
 - Node.js 已接入，见 §11.6；Go 仍未接入，保持不出现目录项与安装入口。
 
@@ -759,7 +800,8 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
 - **目录与镜像**：`RUNTIME_KINDS` 新增 `node`，版本白名单 `24 / 22 / 20`，镜像 `node:<ver>-alpine`；
   `default_name` 为 `node-<ver>`；`NODE_VERSION` 作为镜像真实版本来源。
 - **与 PHP 的差异**：不建 FPM 池、不生成 socket、不走 `fastcgi_pass`；一个环境一个常驻进程、
-  一个固定端口（`9200–9299`），站点 vhost 用 `proxy_pass http://127.0.0.1:<port>`。
+  一个容器内固定端口（`9200–9299`），站点 vhost 用 `proxy_pass http://<container_ip>:<port>`，
+  容器在专用 bridge 上持有静态地址，宿主不发布端口。
 - **目录**：`/www/runtime/node/<name>/{entry.sh,app/{package.json,server.js},log/server.log}`；
   `app/` 是唯一代码目录，**不随站点绑定切换**，也没有 `site` 标记。
 - **专属配置**（`config_json`）：`command`（默认 `npm start`，argv 切分）、`health_path`（默认 `/`）、
