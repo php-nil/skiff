@@ -48,6 +48,8 @@ mod firewall;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod ftp;
 #[cfg_attr(not(unix), allow(dead_code))]
+mod host_run;
+#[cfg_attr(not(unix), allow(dead_code))]
 mod interop;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod routes;

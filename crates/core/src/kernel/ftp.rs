@@ -244,80 +244,22 @@ impl FtpHost for KernelHost {
         stdin: Option<&'a str>,
         timeout_secs: u64,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, String>> + Send + 'a>> {
-        Box::pin(async move { run_host(cmd, args, stdin, timeout_secs).await })
-    }
-}
-
-/// 用 `systemd-run` 起一个不继承主服务沙箱的瞬态单元执行；命令仍是固定
-/// 二进制 + 参数数组，不经 shell，密码等敏感内容只走 stdin。
-/// 所有 ftp 命令统一走这条通道（含只读探测），主服务的 `ProtectSystem=full`
-/// 不影响宿主机动作。
-#[cfg(target_os = "linux")]
-async fn run_host(
-    cmd: &str,
-    args: &[String],
-    stdin: Option<&str>,
-    timeout_secs: u64,
-) -> Result<CommandOutput, String> {
-    use std::process::Stdio;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use tokio::io::AsyncWriteExt;
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let unit = format!("skiff-ftp-{}-{n}", std::process::id());
-    let mut full: Vec<String> = [
-        "--unit",
-        unit.as_str(),
-        "--wait",
-        "--pipe",
-        "--collect",
-        "--quiet",
-        "--description",
-        "skiff ftp host mutation",
-        "--",
-        cmd,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    full.extend(args.iter().cloned());
-    let argv: Vec<&str> = full.iter().map(String::as_str).collect();
-
-    let mut command = tokio::process::Command::new("/usr/bin/systemd-run");
-    command
-        .args(&argv)
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .kill_on_drop(true)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
+        Box::pin(async move {
+            // 特权执行通道唯一实现在 `kernel::host_run`（firewall 共用）。
+            let out = super::host_run::run_host(
+                "skiff-ftp",
+                "skiff ftp host mutation",
+                cmd,
+                args,
+                stdin,
+                timeout_secs,
+            )
+            .await?;
+            Ok(CommandOutput {
+                success: out.success,
+                stdout: out.stdout,
+                stderr: out.stderr,
+            })
         })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("执行 {cmd} 失败：{e}"))?;
-    if let Some(input) = stdin {
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(input.as_bytes())
-                .await
-                .map_err(|e| format!("写入 {cmd} stdin 失败：{e}"))?;
-            // 必须显式关闭写端，`tee` 等命令要读到 EOF 才会退出。
-            drop(pipe);
-        }
     }
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs.max(1)),
-        child.wait_with_output(),
-    )
-    .await
-    .map_err(|_| format!("{cmd} 执行超时（{timeout_secs}s）"))?
-    .map_err(|e| format!("等待 {cmd} 失败：{e}"))?;
-    Ok(CommandOutput {
-        success: out.status.success(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-    })
 }
