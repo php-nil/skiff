@@ -1,24 +1,11 @@
 # budding 上游缺口清单
 
-> 复核：2026-11-16。上游答复（1.9.0）确认 U1–U4 全部实现且向后兼容；仓内产物已升级到 `1.8.0-r6`（功能集 1.9.0）。当前**有一条未关闭的上游需求（U5：弹窗内的 overlay 层叠）**，宿主侧不再自行打补丁。
+> 复核：2026-11-16。上游答复（1.9.0）确认 U1–U4 全部实现且向后兼容；U5（弹窗内浮层被压住）已由上游 `a707369` 以「浮层归属图层根」实现，仓内产物随之升级到 `1.8.0-r7`。当前**无未关闭的上游需求**，只保留宿主侧待办。
 > 能力用法见 [BUDDING_INTERACTION_CAPABILITIES.md](BUDDING_INTERACTION_CAPABILITIES.md)；接入边界与 JSON 契约见 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)。
 
 ## 一、上游需求
 
-### U5 宿主弹窗内的下拉菜单被弹窗整层压住（未关闭，2026-11-16）
-
-- **现象**：在宿主弹窗（`.bud-layer-root`，`z-index: 2400`）里点开任何 `select` 字段，Vuetify 的菜单 `.v-overlay.v-menu`（默认 `z-index: 2000`）不显示；用户只看到当前值。站点「新建站点」弹窗因此只能选到默认的「静态站点」，PHP / Node 类型选不到。
-- **实测证据**（测试机 10.10.15.4，Chrome，2026-11-16）：
-  - DOM 里三个选项齐全（`运行环境（PHP / Node）` / `静态站点` / `反向代理`），菜单节点已激活、坐标正确（`position: fixed`，`left=176, top≈245`），`opacity=1`、`pointer-events=auto`；
-  - 截图：菜单不可见；临时把 `.bud-layer-root` 设为 `visibility: hidden` 后，菜单完整显示在原坐标；
-  - `document.elementsFromPoint()` 在选项矩形内命中的是弹窗里的 `INPUT.v-field__input`，不是菜单项；
-  - 菜单挂在 `.v-overlay-container` 内，该容器带 `contain: layout`。**把容器 `z-index` 提到 2600、99999，或把 `.bud-layer-root` 降到 1900/1800，菜单仍被弹窗压住**；只有把菜单节点 append 到 `document.body` 后才立即可见可点。
-- **影响面**：所有宿主弹窗内的下拉，包括站点类型、运行环境选择（runtime 实例）、计划任务的目标插件/方法、任务编辑器等；凡是弹窗里的 `select` 都用不了，不只是站点类型。
-- **建议上游方向**（任一）：
-  1. 弹窗上下文内的 overlay 层叠策略：弹窗打开时把 `.v-overlay-container`（或其内的菜单）提升到弹窗层之上，或把菜单渲染进弹窗自身的 stacking context；
-  2. 为 `select` / 表单字段或 `LayerInput` 提供 portal / `zIndex` / `attach` / `host` 配置项，由宿主按容器指定挂载点；
-  3. 弹窗若继续自定义 `.bud-layer-root`，请同步给出与 Vuetify overlay 的层级约定（例如菜单基准高于弹窗，或容器不使用 `contain: layout`）。
-- **宿主侧现状**：2026-11-16 曾尝试在 `budding-boot.js` 注入层叠规则并监听 DOM 把激活菜单挂到 `body`，按产品口径**已整体撤销**（不保留宿主补丁）；相关建站用例标记为「等上游版本」，不放宽断言。
+当前没有未关闭项。U5 的实现结论与宿主约束见 §四。
 
 ## 二、宿主侧待补契约（不是上游缺口）
 
@@ -57,6 +44,7 @@
 | U2 | 1.9.0 已实现 | 只读详情组件 | 组件名定为 `property`（`descriptions` 从未发布，废弃）；`columns` / `labelWidth` / `density` / `bordered` / `emptyText`，条目 `content` 可放字符串模板或嵌套 Schema，`copyable` 只对字符串生效 |
 | U3 | 1.9.0 已实现 | 字段级错误回填 | 表单 `invoke setErrors`：`args.errors` 按字段 `name` 写入、`__form__` 落表单级；值变更或提交启动先到先清；`focus` 可聚焦首个错误；不再做字段 `error` 入参 |
 | U4 | 1.9.0 已实现 | Vuetify 内部文案本地化 | `createUi(options)` 接受 `locale` / `theme` / `defaults` / `messages`，`setLocale` / `registerTheme` 运行时切换；embed 句柄增加 `instance`，`BundledEmbedOptions.uiDefaults` 可透传 |
+| U5 | `a707369` 已实现（产物 `1.8.0-r7`） | 宿主弹窗内的下拉被弹窗整层压住（`.v-overlay.v-menu` `z-index: 2000` < `.bud-layer-root` `2400`，且容器被 `isolateBackground` 置 `inert`），站点类型 / 运行环境 / 任务目标等所有弹窗内 `select` 选不到 | 改为**浮层归属图层根**：图层根带 `data-bud-layer-root`，官方 UI 底座给 `VMenu` / `VSelect` / `VAutocomplete` / `VCombobox` / `VTooltip` 注入 `defaults.attach = '[data-bud-layer-root]'`，宿主显式同名键优先；z-index 与 `inert` 两处故障同时消失。上游以 `verify:layers` 守住；宿主不得再注入层叠补丁，若自定义 `uiDefaults` 须自行保留 `attach`（契约见 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) §2.4.1） |
 | A5 | 随 U4 消解 | 主题主色手写 CSS | 改用 `createUi({ theme })` 或 `registerTheme`，见 §三 A5 的宿主迁移 |
 
 T11–T13、T17–T19、R-1、R-2、G4、G8–G10、G16 已由 1.8.0 能力覆盖或按产品口径关闭；F5 重编号为 U2、G13 为 U3、G7 的 Vuetify locale 部分为 U4，均已随 1.9.0 关闭。管理后台 Pack、图表、终端、代码、上传分片/进度/取消、`input-text` 的 `type` / `autocomplete`、`visibleOn` 系列条件能力均不再跟踪。

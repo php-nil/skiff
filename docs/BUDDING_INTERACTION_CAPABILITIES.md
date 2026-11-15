@@ -1,6 +1,6 @@
 # budding 交互能力速查
 
-> 来源：2026-11-14 通过 budding 官方 MCP（`@budding/mcp-server` 0.2.0）实拉，`catalogVersion=1.8.0`、`contentHash=sha256:00fcc757…c700b5b`，共 57 个组件、20 个动作、300 条示例、44 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.0-r6`，功能集 1.9.0）。
+> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.0-r7`，功能集 1.9.0）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
 > 校验：文中 dialog+form、confirm+ajax+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
 
@@ -73,6 +73,12 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 ```
 
 > 「查看」用 `property` 键值栅格（1.9.0），条目 `content` 可放字符串模板或嵌套 Schema，`copyable` 只对字符串生效；不再用 `card` + `flex` + `text` 手工拼两列。
+
+### 1.1 弹窗内的下拉 / 菜单 / tooltip（`1.8.0-r7` 起开箱可用）
+
+- 官方 UI 底座已给 `VMenu` / `VSelect` / `VAutocomplete` / `VCombobox` / `VTooltip` 注入默认 `attach: '[data-bud-layer-root]'`：浮层落在图层根内，不再被弹窗（`z-index: 2400`）压住，也不会被背景隔离标 `inert` 而「看得见、点不动」。
+- 宿主**不需要**也不得再写 z-index / append-to-body / `visibility` 之类补丁；自定义 `uiDefaults` 时同名键会覆盖官方默认值，需自己保留 `attach`。
+- 因此 `select` / `autocomplete` / 列菜单可以直接写在 `dialog` 的 `body` 里，无需把字段挪出弹窗。
 
 ## 2. 二次确认
 
@@ -289,6 +295,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 5. 表单字段错误用 `invoke setErrors` 回填；`submitErrorFocus` 只负责提交失败后的焦点/滚动定位。
 6. 只读详情用 `property` 组件，不再手工拼 `card` + `flex` + `text`。
 7. 页面 Schema 交付前跑一次 MCP `validateSchema`；`strict: true` 可把未声明字段升级为错误。
+8. 弹窗内浮层（`select` / `autocomplete` / 列菜单 / `tooltip`）靠官方默认 `attach: '[data-bud-layer-root]'` 落到图层根；自己传 `uiDefaults` 覆盖同名键会重新引入「被弹窗压住、点不动」。
 
 ## 10. 本项目的采用约定
 

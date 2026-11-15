@@ -74,7 +74,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 | 构建 | `pnpm build:package`；要求 Node ≥ 24 |
 | 产物 | `budding-<ver>.min.js`（IIFE）+ `budding-<ver>.min.css`，**无内容 hash** |
 | 稳定别名 | `budding.min.js` / `budding.css`，**由 `assets.rs` 路由映射，不复制第二份字节** |
-| 体积 | 入库 `1.8.0-r6` 实测：JS 1,292,472 B；CSS 661,321 B（功能集 1.9.0，产物自报版本仍为 1.8.0） |
+| 体积 | 入库 `1.8.0-r7` 实测：JS 1,292,889 B；CSS 661,321 B（功能集 1.9.0，产物自报版本仍为 1.8.0） |
 | 消费方式 | `<script src>` + 挂载点 + `BuddingSDK.embed(target, schema, opts)`；加载后不自动渲染。`opts` 支持扁平 `locale` / `theme` / `messages` / `uiDefaults`（1.9.0） |
 | CSS 加载 | 运行时按 `document.currentScript` 推导目录并插入 `<link>`，**同目录即可** |
 | 路由 | 默认 hash；history 模式需 `routerBase` |
@@ -90,7 +90,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 - `RustEmbed` 在编译期把目录打进二进制，对外路径 `/{p}/static/budding/<file>`。
 - `crates/web/build.rs` 会为每个文件生成 `.gz` 变体，`assets.rs` 按 `Accept-Encoding` 协商；新增产物自动获得 gzip 能力，**不需要改部署脚本**。
 - 现有测试 `every_static_asset_has_gzip_variant` 会覆盖新文件，构建期自动校验。
-- 体积影响（`1.8.0-r6` 实测）：budding 三件（JS/CSS/启动脚本）raw 2,249,831 B；gzip 变体由 `build.rs` 生成（本机 gzip 估算：JS 约 414,543 B、CSS 约 80,304 B、启动脚本约 69,458 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
+- 体积影响（`1.8.0-r7` 实测）：budding 三件（JS/CSS/启动脚本）raw 2,247,511 B；gzip 变体由 `build.rs` 生成（本机 `gzip -9` 实测：JS 410,042 B、CSS 79,165 B、启动脚本 67,773 B，合计 556,980 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
 
 ### 2.3 壳页形态
 
@@ -125,7 +125,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
 - **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
-- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.0-r6` 子集 78 字形，菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.0-r7` 子集仍为 78 字形（重打包未改字形），菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -143,7 +143,16 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
 - 独立 Pack（`budding-code-<ver>.min.js` / `budding-terminal-<ver>.min.js`）同样按版本化文件名入库，启动脚本带 `?v=<ver>` 引用，命中 immutable；升级时与主包一起替换。
-- **图标资产随包版本化**：`budding-icons-1.8.0-r6.min.css`（4,648 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r6.woff2`（3,992 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r6` 时返回 `immutable`（woff2 也按版本化文件名命中 `immutable`，`assets.rs` 已识别 `.woff2` 后缀）。`Budding Icons` 子集共 78 个字形（CSS `::before` 78 条），含镜像 / 磁盘 / 文件夹等业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+- **图标资产随包版本化**：`budding-icons-1.8.0-r7.min.css`（4,648 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r7.woff2`（3,992 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r7` 时返回 `immutable`（woff2 也按版本化文件名命中 `immutable`，`assets.rs` 已识别 `.woff2` 后缀）。`Budding Icons` 子集共 78 个字形（CSS `::before` 78 条），含镜像 / 磁盘 / 文件夹等业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+
+### 2.4.1 浮层层级归属（`1.8.0-r7` 起的结构契约）
+
+上游在 `docs/plan-layer-stacking.md` 定案：浮层不再靠「猜一个更大的 z-index」，而是按 **DOM 归属**表达它属于哪一层。
+
+- 图层根节点（`.bud-layer-root`，`z-index: 2400`）同时带 `data-bud-layer-root` 属性，这个属性是**浮层的 teleport 挂载点**，属于结构契约；样式 class 可被宿主覆盖，属性不可。
+- 官方 UI 底座给 `VMenu` / `VSelect` / `VAutocomplete` / `VCombobox` / `VTooltip` 注入默认 `defaults: { attach: '[data-bud-layer-root]' }`。宿主显式传入的同名键优先，其余键原样保留。
+- 由此两处故障同时消失：浮层不再落在 `2400` 之下被压住，也不再被 `isolateBackground` 标记 `inert` 导致「看得见、点不动」。
+- **宿主约束**：不得再为弹窗内下拉注入 z-index / `visibility` / append-to-body 之类的补丁（2026-11-16 的宿主补丁已撤销，见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md) §4 U5）；壳若自定义 `uiDefaults`，同名键会覆盖官方默认值，需自行保证 `attach` 仍指向图层根。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
 
@@ -920,7 +929,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 ### 5.18 代码查看器与日志查看器（第十三批）
 
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
-- 代码 Pack：入库 `budding-code-1.8.0-r6.min.js`（89,944 B，取自 `dist/packs/code.mjs`，自包含 ESM；字节与 r5 相同），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
+- 代码 Pack：入库 `budding-code-1.8.0-r7.min.js`（89,944 B，取自 `dist/packs/code.mjs`，自包含 ESM；字节自 r5 起未变），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
 - 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
 - 作业日志：`GET /{p}/jobs/{id}/logs` 同路径按 `Accept` 分流——浏览器导航（含 `text/html`）交 budding 日志页，脚本请求（无 `text/html`）仍返回既有 JSON（`?after=` 游标、同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code` 组件，并保留旧详情入口用于取消 / 重试。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
@@ -933,7 +942,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
   - `GET /{p}/containers/{id}/exec?ticket=` 升级 WS，`Origin` 严格校验；
   - WS 的 start / fail / end 继续写 `Verb::Exec` 审计。
 - 前端：页面先取票再渲染 `terminal` 组件；`wsUrl` 由 `location.protocol` 推出 `ws://` / `wss://`，`resizeFormat: 'none'`（内核 exec 只透传 stdin，不解析 resize JSON），`reconnect: false` + 手动「重新连接（重新取票）」。
-- Pack：入库 `budding-terminal-1.8.0-r6.min.js`（394,972 B，取自 `dist/packs/terminal.mjs`，字节与 r5 相同，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
+- Pack：入库 `budding-terminal-1.8.0-r7.min.js`（394,972 B，取自 `dist/packs/terminal.mjs`，字节自 r5 起未变，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
 - **验证边界**：本机（Windows、无 Docker）只验证了路由、壳页与取票失败时的错误页；WS 真连与容器内 `/bin/sh` 交互必须在 Linux 测试机验收，未验前不得记为已完成。
 
 ### 5.20 日志入口收口（第十六批）
@@ -1154,4 +1163,5 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-14 | budding 重打包基线 `1.8.0-r4`：上游 manifest 仍为 1.8.0（builtAt 2026-11-14T05:02:58Z）但字节已变（JS 1,273,760 B / CSS 654,398 B，本机 gzip 407,720 / 79,400），本地用 `-r4` 后缀区分；图标同步为 `budding-icons-1.8.0-r4.min.css`（4,477 B）+ `.woff2`（3,896 B，78 字形）；code / terminal Pack 升为 89,944 B / 393,316 B（gzip 30,172 / 83,578）。删除 r3 主包、图标与两个 Pack。上游本版闭环 T17 / T18 / T19，宿主删除图标近似兜底，files 插件改用 `\${` 字面量转义 + `textarea.readonly`。 |
 | 2026-11-14 | budding 重打包基线 `1.8.0-r5`：上游再次打包（builtAt 2026-11-14T21:54:37Z），semver 与 `catalogVersion` 仍为 1.8.0 但字节已变（JS 1,274,576 B / CSS 656,899 B，本机 gzip 403,113 / 78,534），本地用 `-r5` 区分；图标同步为 `budding-icons-1.8.0-r5.min.css`（4,596 B）+ `.woff2`（3,984 B，78 字形）；code / terminal Pack 升为 89,944 B / 394,972 B（gzip 29,554 / 82,871）。删除 r4 主包、图标与两个 Pack 及其 `.gz`。`assets.rs::budding_versioned` 增认 `.woff2`，图标字体按版本化文件名命中 `immutable`。验证：`cargo test -p skiff-web --lib assets::` 14/14；本地 18082 起服务后 Puppeteer 逐页真实渲染 22 页，概览 / 站点 / 容器 / 任务 / 设置 / 审计 / Web 服务均 `console=0 bad=0`（容器详情 503 与 `/terminal` 404 为无 Docker 与既有路由边界），r5 主包 / CSS / Pack / 图标 CSS / woff2 均 200 + `immutable`，稳定别名 `no-cache`。 |
 | 2026-11-15 | budding 重打包基线 `1.8.0-r6`（功能集 1.9.0）：上游 2026-11-15T17:30Z 打包，产物自报版本与 `budding-icons.json` 仍为 1.8.0，但字节已变（JS 1,292,472 B / CSS 661,321 B，本机 gzip 约 414,543 / 80,304），按同一 semver 新字节规则用 `-r6` 区分；图标同步为 `budding-icons-1.8.0-r6.min.css`（4,648 B）+ `.woff2`（3,992 B，78 字形）；code / terminal Pack 字节与 r5 相同，仅按版本常量重命名。删除 r5 主包、图标与两个 Pack 及其 `.gz`。本版上游实现 U1–U4：`LayerInput.confirm`（`level` / `confirmText` / `cancelText` / `requireText` + `onClose` / `closeLayer` 结果）、`property` 只读详情、表单 `setErrors`、`createUi(options)` / `setLocale` / `registerTheme`（embed 句柄带 `instance`，扁平 `locale` / `theme` / `uiDefaults`）。宿主迁移见 `BUDDING_UPSTREAM_BACKLOG.md` 的 A1–A5。 |
+| 2026-11-16 | budding 重打包基线 `1.8.0-r7`：上游 `a707369`（2026-11-16T07:15+08:00）打包，semver 与 `catalogVersion` 仍为 1.8.0，字节已变（JS 1,292,889 B / CSS 661,321 B，本机 gzip 410,042 / 79,165），按同一 semver 新字节规则用 `-r7` 区分；图标 CSS/woff2 字节未变，仅随版本常量重命名（4,648 B / 3,992 B，78 字形）；code / terminal Pack 字节未变（89,944 / 394,972 B）。删除 r6 主包、图标与两个 Pack 及其 `.gz`。本版上游实现 U5（浮层层级归属，§2.4.1）：图层根新增 `data-bud-layer-root`，官方 UI 底座把 `VMenu` / `VSelect` / `VAutocomplete` / `VCombobox` / `VTooltip` 默认 `attach` 到图层根，弹窗内下拉不再被 `2400` 压住、也不再被背景隔离置 `inert`；宿主侧 2026-11-16 的临时补丁此前已撤销，无需回收。 |
 

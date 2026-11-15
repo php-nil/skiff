@@ -10492,7 +10492,7 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
     );
     assert!(
         !js.contains("schema.theme"),
-        "budding 1.8.0-r6 根节点未注册 theme，禁止写进 schema 树"
+        "budding 1.8.0-r7 根节点未注册 theme，禁止写进 schema 树"
     );
     assert!(
         js.contains("markShellChrome();") && js.contains("classList.add('bud-admin--chrome')"),
@@ -10565,7 +10565,7 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
 
 /// 「设置 → 界面」配色扩展：预设 + 主色 / 菜单底色 / 页面底色。
 ///
-/// budding 1.8.0-r6 没有颜色选择器节点，前端只提交 `#rrggbb` 文本；服务端仍是
+/// budding 1.8.0-r7 没有颜色选择器节点，前端只提交 `#rrggbb` 文本；服务端仍是
 /// 唯一裁决（非法 400 不落库），配色经文档级 CSS 变量全站生效。
 #[test]
 fn budding_boot_ui_theme_presets_and_color_fields() {
@@ -10592,7 +10592,7 @@ fn budding_boot_ui_theme_presets_and_color_fields() {
     }
     assert!(
         !js.contains("color-picker") && !js.contains("input-color"),
-        "1.8.0-r6 没有颜色选择器节点，禁止引用"
+        "1.8.0-r7 没有颜色选择器节点，禁止引用"
     );
     // 关闭自定义时必须留空，避免旧值在下次开启时复活。
     assert!(
@@ -10678,7 +10678,7 @@ fn web_install_progress_has_single_persisted_source() {
 
 /// 静态防回归：禁止 boot 向 schema 根写入未注册的顶层属性。
 ///
-/// 白名单来自随包 budding 1.8.0-r6 的编译期属性集合：
+/// 白名单来自随包 budding 1.8.0-r7 的编译期属性集合：
 /// `type` / `id` / `definitions` / `props` 为特殊键，其余为全局基础属性
 /// （该版本未注册任何 `nodeAttributes`，所以 `theme` 之类一律不合法）。
 /// 这类错误会让整棵 schema 编译失败、全站白屏，静态断言必须走在装机前面。
@@ -10720,7 +10720,7 @@ fn budding_boot_only_writes_registered_schema_root_keys() {
         {
             assert!(
                 allowed.contains(&key),
-                "schema.{key} 未在 budding 1.8.0-r6 注册，编译会整棵树失败"
+                "schema.{key} 未在 budding 1.8.0-r7 注册，编译会整棵树失败"
             );
         }
         rest = tail;
@@ -10798,7 +10798,7 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         js.contains("{ height: 420, emptyText: '暂无审计记录' }"),
         "审计列表应定高并内部滚动，且带场景空态文案"
     );
-    // 四个菜单图标使用 1.8.0-r6 子集的原生字形，不再近似兜底或留空。
+    // 四个菜单图标使用 1.8.0-r7 子集的原生字形，不再近似兜底或留空。
     assert!(
         js.contains("folder: 'mdi-folder-outline'"),
         "文件管理应使用原生字形"
@@ -10812,6 +10812,49 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         js.contains("'hard-drive': 'mdi-harddisk'"),
         "配额管理应使用原生字形"
     );
+}
+
+/// 1.8.0-r7 起浮层归属图层根（上游 `docs/plan-layer-stacking.md`）：入库主包必须带
+/// `data-bud-layer-root` 与浮层 `attach` 选择器，宿主 boot 则不得再注入层叠补丁。
+/// 这条断言的作用是「换包时别把层级契约换丢」——升级到没有该契约的旧包会当场失败。
+#[test]
+fn budding_bundle_carries_layer_root_attach_contract() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/budding");
+    let mut bundles: Vec<String> = std::fs::read_dir(&dir)
+        .expect("static/budding 必须存在")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            name.starts_with("budding-")
+                && name.ends_with(".min.js")
+                && !name.starts_with("budding-code-")
+                && !name.starts_with("budding-terminal-")
+        })
+        .collect();
+    bundles.sort();
+    assert_eq!(
+        bundles.len(),
+        1,
+        "目录里应只有一份主包（升级时删除旧产物，避免 immutable 命中旧缓存）：{bundles:?}"
+    );
+    let js = std::fs::read_to_string(dir.join(&bundles[0])).expect("主包应可读");
+    assert!(
+        js.contains("data-bud-layer-root"),
+        "主包应声明图层根标识（浮层 attach 目标）：{}",
+        bundles[0]
+    );
+    assert!(
+        js.contains("[data-bud-layer-root]"),
+        "主包应把浮层 attach 到图层根选择器：{}",
+        bundles[0]
+    );
+    let boot = include_str!("../static/budding/budding-boot.js");
+    for banned in ["v-overlay-container", "data-bud-layer-root"] {
+        assert!(
+            !boot.contains(banned),
+            "宿主不得再为弹窗内浮层打补丁（出现 {banned}），层级归上游契约负责"
+        );
+    }
 }
 
 /// 商店安装与确认：CSRF、PluginManage 权限和确认令牌校验都复用旧链路。
