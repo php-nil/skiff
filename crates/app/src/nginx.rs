@@ -32,6 +32,24 @@ const MAIN_CONF_MARKER: &str = "# 由 Skiff 内核生成";
 /// web 层 30 秒请求超时，否则调用方来不及清理候选文件/回滚就只剩 504。
 pub(crate) const NGINX_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 候选配置文件的清理守卫。
+///
+/// 校验失败、`nginx -t` 超时、请求被取消（future drop）都会在离开作用域时删掉
+/// 候选文件；成功路径 `rename` 后文件已不存在，`NotFound` 静默忽略。
+struct CandidateFile(PathBuf);
+
+impl Drop for CandidateFile {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::debug!(path = %self.0.display(), error = %e, "清理 nginx 候选配置失败")
+            }
+        }
+    }
+}
+
 /// nginx 性能参数（主配置里由内核渲染，不手改文本）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NginxParams {
@@ -712,14 +730,13 @@ impl AppState {
         let candidate = s.nginx_main_conf().with_extension("conf.candidate");
         std::fs::write(&candidate, content)
             .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
+        // 校验超时或请求取消时也会清理候选文件，不必依赖各分支手写 remove_file。
+        let _candidate = CandidateFile(candidate.clone());
         let container_candidate = s.container_path(&candidate);
         let (code, out) = self.nginx_test_candidate(&container_candidate).await?;
         if code != 0 {
             let original = std::fs::read_to_string(s.nginx_main_conf()).unwrap_or_default();
             let diff = diff_summary(&original, content, 6);
-            if let Err(e) = std::fs::remove_file(&candidate) {
-                tracing::debug!(path = %candidate.display(), error = %e, "清理 nginx 候选配置失败");
-            }
             return Err(SiteError::Conflict(format!(
                 "nginx -t 未通过（{}）：{}；已回滚未替换；差异：{}",
                 container_candidate,
@@ -1277,6 +1294,30 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("worker_connections exceed"));
         assert!(test_warnings("nginx: configuration file ... test is successful").is_empty());
+    }
+
+    #[test]
+    fn candidate_guard_removes_leftover_on_drop() {
+        let dir = std::env::temp_dir().join(format!(
+            "skiff-nginx-candidate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let path = dir.join("nginx.conf.candidate");
+        std::fs::write(&path, "worker_processes auto;").expect("写候选配置");
+        {
+            let _guard = CandidateFile(path.clone());
+        }
+        assert!(!path.exists(), "离开作用域后候选文件应被删除");
+
+        // 成功路径 rename 后文件已不存在：drop 不得 panic。
+        let _guard = CandidateFile(path.clone());
+        drop(_guard);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
