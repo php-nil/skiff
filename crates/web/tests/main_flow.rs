@@ -5619,17 +5619,18 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
 #[test]
 fn dialog_menu_overlay_stays_above_bud_layer() {
     let css = include_str!("../static/skiff.css");
-    let rule = css
-        .split(".v-overlay-container > .v-overlay.v-overlay--active.v-menu")
-        .nth(1)
-        .expect("必须为激活菜单的 overlay 提权，避免被 2400 的宿主弹窗盖住");
     assert!(
-        rule.contains("z-index: 2500 !important"),
-        "菜单 overlay 的 z-index 必须高于宿主弹窗(2400): {rule}"
+        css.contains(
+            ".v-overlay-container > .v-overlay.v-overlay--active.v-menu {\n  z-index: 2500 !important;\n}"
+        ),
+        "必须为激活菜单的 overlay 提权，避免被 2400 的宿主弹窗盖住"
     );
     assert!(
-        rule.contains("opacity: 1 !important") && rule.contains("pointer-events: auto !important"),
-        "激活菜单不能停在进入动画的 opacity:0/pointer-events:none: {rule}"
+        css.contains(
+            ".v-overlay-container > .v-overlay.v-overlay--active.v-menu > .v-overlay__content {"
+        ) && css.contains("opacity: 1 !important")
+            && css.contains("pointer-events: auto !important"),
+        "激活菜单不能停在进入动画的 opacity:0/pointer-events:none"
     );
 }
 
@@ -5642,6 +5643,46 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
             && js.contains("location.replace(legacyUrl.pathname + legacyUrl.search)"),
         "schema 404 时必须自动回落旧 SSR 工作台"
     );
+}
+
+/// 旧 SSR 计划任务页的筛选必须留在旧路由上。
+///
+/// 回归：表单 action 仍写 `/{p}/tasks`，而该路径已由 budding 壳页接管（壳页读地址栏
+/// 关键字、不认 SSR 表单提交），点「筛选」后列表原样返回全部任务，筛选被静默丢弃。
+#[test]
+fn legacy_tasks_filter_stays_on_legacy_route() {
+    let html = include_str!("../templates/tasks.html");
+    assert!(
+        html.contains(r#"action="/{{ ctx.prefix }}/m/core/tasks""#),
+        "筛选表单必须提交到旧 SSR 路由"
+    );
+    assert!(
+        !html.contains(r#"action="/{{ ctx.prefix }}/tasks""#),
+        "不得把 SSR 表单提交给壳页路径"
+    );
+    assert!(
+        html.matches("/{{ ctx.prefix }}/m/core/tasks").count() >= 4,
+        "刷新 / 清除筛选 / 清除按钮都要留在旧路由"
+    );
+    assert!(
+        !html.contains("{{ t.target }}.{{ t.method }}"),
+        "内置任务缺目标时不能拼出「-.-」"
+    );
+}
+
+/// budding 计划任务页必须把关键字传给 `/ui/v1/tasks?q=`，否则迁移后丢失筛选能力。
+#[test]
+fn budding_tasks_page_keeps_keyword_filter() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("skiffTasksSearch: tasksSearch"),
+        "任务页筛选动作必须注册到动作表"
+    );
+    assert!(
+        js.contains("{ q: keyword }"),
+        "列表请求必须带上关键字，交给服务端过滤"
+    );
+    assert!(js.contains("tasksPageUrl('')"), "必须有清除筛选入口");
 }
 
 /// 站点级设置页已移除：镜像加速源/前缀归 Docker 设置，镜像标签归运行环境页。

@@ -1504,6 +1504,7 @@
         skiffLogReload: logReload,
         skiffAuditSearch: auditSearch,
         skiffAuditNext: auditNext,
+        skiffTasksSearch: tasksSearch,
         skiffTerminalReconnect: function () {
           window.location.reload();
         },
@@ -3516,8 +3517,58 @@
       });
   }
 
+  /// 计划任务筛选：关键字走地址栏，交给 `/ui/v1/tasks?q=` 在服务端过滤。
+  function tasksPageUrl(keyword) {
+    return prefix + '/tasks' + (keyword ? '?q=' + encodeURIComponent(keyword) : '');
+  }
+
+  function tasksSearch(args, ctx) {
+    var values = formValues(ctx);
+    window.location.href = tasksPageUrl(String(values.q || '').trim());
+  }
+
   function tasksSchema(data) {
     var body = [];
+    var keyword = new URLSearchParams(location.search).get('q') || '';
+    body.push({
+      type: 'form',
+      onEvent: { submit: [{ type: 'skiffTasksSearch' }] },
+      props: {
+        api: { method: 'POST', url: apiBase + '/tasks', sendOn: false },
+        actionsAlign: 'end'
+      },
+      body: [
+        {
+          type: 'input-text',
+          props: {
+            name: 'q',
+            label: '关键字（任务 / id / 目标 / 来源）',
+            defaultValue: keyword
+          }
+        }
+      ],
+      content: {
+        actions: [
+          {
+            type: 'button',
+            props: { text: '筛选', variant: 'tonal' },
+            action: { type: 'submit' }
+          }
+        ]
+      }
+    });
+    if (keyword) {
+      body.push({
+        type: 'flex',
+        props: { gap: 12, wrap: true, align: 'center' },
+        content: {
+          body: [
+            { type: 'link', props: { text: '清除筛选', href: tasksPageUrl('') } },
+            { type: 'text', props: { text: '筛选条件：' + keyword, size: 'small' } }
+          ]
+        }
+      });
+    }
     var table = listTable(
       [
         { key: 'name', label: '任务' },
@@ -3530,9 +3581,11 @@
       ],
       '/tasks',
       'id',
-      null,
+      { q: keyword },
       {
-        emptyText: '还没有计划任务，站点详情页可开启每日备份'
+        emptyText: keyword
+          ? '没有匹配「' + keyword + '」的任务'
+          : '还没有计划任务，站点详情页可开启每日备份'
       }
     );
     table.onEvent = {
