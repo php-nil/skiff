@@ -144,22 +144,50 @@ pub async fn apply_registry_mirror(
     })
 }
 
+/// `systemctl` 的最长等待：超过就按「结果未知」返回，避免一次保存挂住数分钟。
+const SYSTEMCTL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Docker 恢复探测的总预算（含重试间隔），不再是「8 次 × 单次超时」的乘积。
+const DOCKER_READY_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn docker_ready(docker: &DockerService) -> bool {
-    for _ in 0..8 {
-        if docker.list_containers().await.is_ok() {
+    let deadline = tokio::time::Instant::now() + DOCKER_READY_BUDGET;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        // 单次探测也受总预算约束：Docker 客户端自身有 30s 超时，这里取更小者。
+        let attempt = remaining.min(std::time::Duration::from_secs(10));
+        if matches!(
+            tokio::time::timeout(attempt, docker.list_containers()).await,
+            Ok(Ok(_))
+        ) {
             return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    false
 }
 
 async fn restart_docker() -> Result<(), String> {
-    let status = tokio::process::Command::new("systemctl")
+    let mut child = tokio::process::Command::new("systemctl")
         .args(["restart", "docker"])
-        .status()
-        .await
+        // 超时后只能终止本地客户端；systemd 作业可能仍在执行，错误文案必须让
+        // 调用方知道「结果未知」，不能当成「没重启」。
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| format!("无法执行 systemctl restart docker：{e}"))?;
+    let status = tokio::time::timeout(SYSTEMCTL_TIMEOUT, child.wait())
+        .await
+        .map_err(|_| {
+            format!(
+                "systemctl restart docker 超过 {} 秒未返回（结果未知，Docker 可能仍在重启）",
+                SYSTEMCTL_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("等待 systemctl restart docker 失败：{e}"))?;
     if !status.success() {
         return Err(format!(
             "systemctl restart docker 退出码 {:?}",
