@@ -88,6 +88,7 @@
 | --- | --- | --- | --- |
 | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 增删官方插件、查开箱即用交付线（官方插件 6 个 + testkit = 7 个签名包） | 插件清单与发布包口径不一致 | 现行（2026-11-13） |
 | [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md) | 需要向 budding 团队提能力缺口 | 重复提需求或误以为已实现 | 现行（对照 budding 1.8.0；2026-11-13） |
+| [BUDDING_INTERACTION_CAPABILITIES.md](BUDDING_INTERACTION_CAPABILITIES.md) | 写插件 Schema / 原生页交互，查 budding 组件用法与宿主采用约定 | 自造弹窗/确认/反馈，或误用条件表达式与字面量转义 | 现行（2026-11-13） |
 | [PLUGIN_UI_SCHEMA_ASSESSMENT.md](PLUGIN_UI_SCHEMA_ASSESSMENT.md) | 评估插件功能页去 iframe、改 Schema 原生渲染的可行性与工作量 | 误判插件页现状或重复评估 | 评估稿（2026-11-13） |
 | [plugins/README.md](../plugins/README.md) | 改官方插件、第二 workspace、打包 | 根三关漏跑插件 workspace | 现行（2026-11-13） |
 
@@ -139,3 +140,18 @@
 | 每次测试机部署 | [TEST_ENV.md](TEST_ENV.md) §5–§7（地址 + 账号必须在汇报中交代） |
 | 修复缺陷或改判定逻辑 | 对应测试用例 + [TEST_MATRIX.md](TEST_MATRIX.md)；未闭环写 [TEST_LEDGER.md](TEST_LEDGER.md) |
 | 任何结构性变更 | `changes/YYYY-MM-DD.md`；[DESIGN.md](DESIGN.md) 只记结构性/结论性变化 |
+
+## 五、文档整理待办（未执行项）
+
+> 来源：2026-11-13 文档体系整理方案。已执行 P0 索引、P1 `AGENTS.md` 精简、P2 去重、P3 事实订正；以下三项与两处一致性核对按保守口径保留原状。
+
+| 编号 | 待办 | 暂不做的原因 | 重启条件 |
+| --- | --- | --- | --- |
+| C3 | `TEST_ENV.md` §7/§8 改滚动窗口（只留最近 1–2 轮，历史归 `changes/`） | §8 是「测试机上发生了什么」的唯一来源，搬移会切断证据链，且需先统计全部入链 | 需要压缩 `TEST_ENV.md` 体量时，按「最近一轮与当前坐标留正文、历史轮次移 `changes/`」执行 |
+| C5 | `DEPLOY_TEST.md` 拆分：正文只留装机/配置/验收，§9 实测与变更记录归档 | 历史实测仍有装机现场价值，物理拆分要同步多处入链 | 装机步骤再次大改时一并拆分 |
+| C6 | `docs/ui/` 物理搬到 `docs/archive/ui/` | 索引已标「历史存档」，搬移只改相对链接、无内容收益 | 新增归档目录约定或 `docs/` 顶层再整理时执行 |
+
+**一致性待办**（2026-11-13 盘点时因并行会话未落盘而保留，现状仍未改）：
+
+- `TEST_ENV.md` §6 标题停在「`v0.1.0 = d44966f`，2026-11-11」，正文与 §5 已覆盖到当前部署；下次部署时把标题改为滚动记录。
+- `SDUI_BUDDING_INTEGRATION.md` 顶部仍写「P0 已定案，未实施」，与正文已完成的 10 组页面迁移不符；由该文维护方改为「已实施（滚动）」。
