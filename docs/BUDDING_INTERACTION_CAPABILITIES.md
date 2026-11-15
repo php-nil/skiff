@@ -1,6 +1,6 @@
 # budding 交互能力速查
 
-> 来源：2026-11-14 通过 budding 官方 MCP（`@budding/mcp-server` 0.2.0）实拉，`catalogVersion=1.8.0`、`contentHash=sha256:00fcc757…c700b5b`，共 57 个组件、20 个动作、300 条示例、44 篇指南。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准。
+> 来源：2026-11-14 通过 budding 官方 MCP（`@budding/mcp-server` 0.2.0）实拉，`catalogVersion=1.8.0`、`contentHash=sha256:00fcc757…c700b5b`，共 57 个组件、20 个动作、300 条示例、44 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.0-r6`，功能集 1.9.0）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
 > 校验：文中 dialog+form、confirm+ajax+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
 
@@ -72,23 +72,26 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 }
 ```
 
-> 「查看」也可用 `dialog` + `card` / `text` 拼装；budding 目前没有 `descriptions` 只读详情组件，见 backlog 的 U2。
+> 「查看」用 `property` 键值栅格（1.9.0），条目 `content` 可放字符串模板或嵌套 Schema，`copyable` 只对字符串生效；不再用 `card` + `flex` + `text` 手工拼两列。
 
 ## 2. 二次确认
 
-**confirm** 是动作，只有两个参数：
+**confirm** 是动作（1.9.0 起为图层形态），参数：
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `title` | string | 标题 |
 | `content` | string | 正文，支持 `${}` |
+| `level` | string | 语义级别，危险操作用 `error` / `warning` |
+| `confirmText` / `cancelText` | string | 按钮文案 |
+| `requireText` | string | 要求输入指定文本才能确认（删除高危资源） |
 
 关键语义：
 
 - 用户取消时抛 `ActionCancelled`：**中止整条动作链**，不跑 `onError`，静默。
-- `confirm` 是异步动作，后续步骤一定等用户选择后才执行。
+- `confirm` 是异步动作，后续步骤一定等用户选择后才执行；结果经 `onClose` / `closeLayer` 返回 `{ reason, value? }`，等待中的动作链不会悬挂。
 - 复杂内容用 `dialog`，不要堆在确认框正文里。
-- 宿主未注入 `platform.confirm` 时会退化为浏览器原生 `window.confirm`。Skiff 已按 K2 注入 `hostConfirm`（`budding-boot.js`）：实例经 `__vue_app__.config.globalProperties.$budding` 取得，确认框用实例 `openLayer(schema, { scope })` 渲染，按钮由自定义动作 `skiffConfirmAnswer` 回传结果，Esc 视为取消。
+- 宿主未注入 `platform.confirm` 时走 budding 内建确认层；纯内核装配（无 UI 入口）才回退浏览器原生 `window.confirm`。Skiff 已按 K2 注入 `hostConfirm`（`budding-boot.js`）：实例经 `__vue_app__.config.globalProperties.$budding` 取得，确认框用实例 `openLayer(schema, { scope })` 渲染，按钮由自定义动作 `skiffConfirmAnswer` 回传结果，Esc 视为取消。
 
 删除的标准组合（确认 → 请求 → 刷新表格）：
 
@@ -121,7 +124,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 ```
 
 > 表格不会因 `ajax` 自动刷新；需要 `invoke` 组件的 `reload`，组件必须在 Schema 上声明 `id`。
-> 需要「输入指定文本才能删除」时，当前只能用 `dialog` + `form` + 服务端校验自拼，见 backlog 的 U1。
+> 需要「输入指定文本才能删除」时，直接给 `confirm` 传 `requireText`（如 `requireText: "${record.domain}"`），不需要 `dialog` + `form` 自拼。
 
 ## 3. 表单与校验
 
@@ -140,7 +143,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 
 要点：
 
-- 服务端字段错误**不会自动回填到控件**；目前只有表单级错误提示与 `submitErrorFocus`，字段级回填需宿主自定义动作写 `ctx.extras.form.errors`，见 backlog 的 U3。
+- 服务端字段错误用表单指令 `invoke setErrors` 回填：`args.errors` 按字段 `name` 写入，`__form__` 落表单级；值变更或提交启动时先到先清，`focus` 可聚焦首个错误。不要给字段加 `error` 入参。
 - `submit` / `reset` 只在 form 内有效；字段值实时同步，动作里可用 `${字段名}` 读取。
 - 校验错误只取第一条；需要多条规则时用 `rules.pattern` 数组，每条可带独立 `message`。
 - `input-text` 的 `type`（含 `password`）与 `autocomplete` 都已原生透传，登录口令框不再需要 DOM 桥接。
@@ -282,21 +285,21 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 1. `dialog` / `drawer` 不阻塞动作链；只有 `confirm` 会等待并在取消时中止后续。
 2. 弹窗里的表单提交按钮必须在表单 `content.actions`，放在 `footer` 拿不到表单上下文。
 3. 表格 / 虚拟列表的删除、编辑成功后不会自动刷新，需要 `invoke` 对应组件的 `reload`。
-4. `confirm` 只有 `title` / `content`；按钮文案、危险色、输入型确认都不在契约内（backlog U1）。
-5. 表单字段错误不能由服务端响应自动落到控件；只有表单级错误与焦点定位（backlog U3）。
-6. 没有 `descriptions` 只读详情组件；详情页仍需 `card` + `flex` + `text` 组合（backlog U2）。
+4. `confirm` 的 `requireText` 用于输入型确认；按钮文案、危险语义由 `confirmText` / `cancelText` / `level` 控制。
+5. 表单字段错误用 `invoke setErrors` 回填；`submitErrorFocus` 只负责提交失败后的焦点/滚动定位。
+6. 只读详情用 `property` 组件，不再手工拼 `card` + `flex` + `text`。
 7. 页面 Schema 交付前跑一次 MCP `validateSchema`；`strict: true` 可把未声明字段升级为错误。
 
 ## 10. 本项目的采用约定
 
-> 目的：同一个交互只保留一种写法；与 backlog 的 U1–U3、K2 配套。
+> 目的：同一个交互只保留一种写法；与 backlog 的 K1、K2 和 A1–A5 配套。
 
-1. **确认框**：Schema 一律用 `confirm` 动作；宿主已接管 `platform.confirm`（K2，落到实例 `openLayer`）。需要输入指定文本才能继续的，用 `dialog` + `form`；不新增 `window.confirm` / `window.prompt`。
+1. **确认框**：Schema 一律用 `confirm` 动作；宿主已接管 `platform.confirm`（K2，落到实例 `openLayer`）。需要输入指定文本才能继续的，用 `requireText`；不新增 `window.confirm` / `window.prompt`。
 2. **反馈**：操作结果统一用 `toast`（成功 / 失败 / 警告），常驻说明用 `alert`，表单错误用 `errorMessage`；不新增 `window.alert`。
 3. **弹窗内表单**：字段校验交给 `form` / 字段组件的 `required` / `rules` / `validateApi`，不在按钮动作里手写；提交按钮写在表单 `content.actions`，成功后 `close`。
 4. **写操作后刷新**：表格 / `crud` / 虚拟列表的删除或编辑成功后，显式 `invoke` 对应组件的 `reload`；组件必须声明稳定 `id`，不依赖自动刷新。
-5. **查看详情**：优先 `dialog` + 现有布局；`descriptions`（U2）到位后统一替换手工 `card + text`。
-6. **Vuetify 内部文案**：当前 `embed` 的 `locale` 不能改 Vuetify 自身的 locale（K3），不要据此承诺全中文；需要时按 K3 的上游方案推进。
+5. **查看详情**：统一用 `property` 键值栅格；旧的 `card` + `text` 组合只作为迁移期遗留，不再新增。
+6. **Vuetify 内部文案**：`embed` 接受扁平 `locale` / `theme` / `uiDefaults`，宿主可据此把 Vuetify locale 设为中文；当前壳仍保留自带主题 CSS，迁移到 `createUi({ theme })` 属宿主改造（backlog A5）。
 7. **交付前**：新 Schema 跑一次 MCP `validateSchema`；`strict: true` 作为终检。
 
 ## 11. 与现有文档的关系

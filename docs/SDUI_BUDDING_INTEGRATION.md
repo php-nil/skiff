@@ -15,8 +15,8 @@
 | 定案状态 | P0 七条（D1–D7）与 D8–D13 已于 2026-11-12 定案（§8.1）：产物直接入库、不引入 Node、JSON 走 `/ui/v1`、登录页也用 budding、要求上游随发行包提供 admin Pack、按 MIT、文件管理页用 budding 重做、一次性切换；文案 key+中文兜底、时间 RFC3339 UTC、审计/作业/文件 keyset 分页、静态产物版本化、CSP 保持严格 |
 | 仓库关系 | **禁止修改 budding 仓库**；产物由上游发版打包后复制进本仓库；缺能力只提建议，由项目负责人决策 |
 | 接入前提 | 产物入库 + 单二进制嵌入（`RustEmbed`）；**本项目不引入 Node 工具链**；测试机无公网，部署期不得依赖 npm 或 CDN |
-| 最大外部阻塞 | 上游 admin Pack（`admin` / `nav-menu` / `page-tabs`）与文件管理所需能力（§6.1）均未随发行包提供（D4、D6） |
-| 最大硬缺口 | 终端 UI 已完成（复用既有 exec 票据 + WS，`terminal` Pack 入库，§5.19）；WS 真连与容器内交互待 Linux 测试机验收；`input-text` 仍未透传 `autocomplete` |
+| 最大外部阻塞 | 无未关闭的上游能力项：`admin` / `nav-menu` / `page-tabs` 已随包，文件管理所需能力（§6.1）已关闭；外部事项只剩 LICENSE（D5）与终端 WS 真连验收 |
+| 最大硬缺口 | 终端 UI 已完成（复用既有 exec 票据 + WS，`terminal` Pack 入库，§5.19）；WS 真连与容器内交互待 Linux 测试机验收。1.9.0 的确认框 / `property` / `setErrors` / `autocomplete` / UI 配置已可用，但宿主仍是旧写法（backlog A1–A5） |
 | 最大分发风险 | 上游无 LICENSE 文件；「按 MIT」目前只是我方口径，需上游补 LICENSE 或书面确认（D5、§7.1） |
 | 回滚 | 一次性切换，无运行时开关；回滚只能靠 git 版本回退并重新部署（D7） |
 
@@ -74,11 +74,11 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 | 构建 | `pnpm build:package`；要求 Node ≥ 24 |
 | 产物 | `budding-<ver>.min.js`（IIFE）+ `budding-<ver>.min.css`，**无内容 hash** |
 | 稳定别名 | `budding.min.js` / `budding.css`，**由 `assets.rs` 路由映射，不复制第二份字节** |
-| 体积 | 入库 `1.8.0-r5` 实测：JS 1,274,576 B（gzip 403,113）；CSS 656,899 B（gzip 78,534） |
-| 消费方式 | `<script src>` + 挂载点 + `BuddingSDK.embed(target, schema, opts)`；加载后不自动渲染 |
+| 体积 | 入库 `1.8.0-r6` 实测：JS 1,292,472 B；CSS 661,321 B（功能集 1.9.0，产物自报版本仍为 1.8.0） |
+| 消费方式 | `<script src>` + 挂载点 + `BuddingSDK.embed(target, schema, opts)`；加载后不自动渲染。`opts` 支持扁平 `locale` / `theme` / `messages` / `uiDefaults`（1.9.0） |
 | CSS 加载 | 运行时按 `document.currentScript` 推导目录并插入 `<link>`，**同目录即可** |
 | 路由 | 默认 hash；history 模式需 `routerBase` |
-| 句柄 | 仅 `{ manifest, unmount }`，**无实例方法**；切路由/切语言/切主题需自定义动作或重新 `embed` |
+| 句柄 | `{ manifest, unmount, instance }`（1.9.0 起带实例）；实例提供 `setLocale` / `registerTheme` 等运行时切换能力，不必重新 `embed` |
 | 来源 | 上游发版打包后的 JS/CSS 直接复制进本仓库；**本项目不执行打包命令，也不引入 Node 工具链**（D1） |
 
 ### 2.2 放置与嵌入
@@ -90,7 +90,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 - `RustEmbed` 在编译期把目录打进二进制，对外路径 `/{p}/static/budding/<file>`。
 - `crates/web/build.rs` 会为每个文件生成 `.gz` 变体，`assets.rs` 按 `Accept-Encoding` 协商；新增产物自动获得 gzip 能力，**不需要改部署脚本**。
 - 现有测试 `every_static_asset_has_gzip_variant` 会覆盖新文件，构建期自动校验。
-- 体积影响（`1.8.0-r5` 实测）：budding 三件（JS/CSS/启动脚本）raw 2,175,930 B / gzip 537,064 B；与设计目标「单二进制 ≤ 14MB」的张力见 §7。
+- 体积影响（`1.8.0-r6` 实测）：budding 三件（JS/CSS/启动脚本）raw 2,249,831 B；gzip 变体由 `build.rs` 生成（本机 gzip 估算：JS 约 414,543 B、CSS 约 80,304 B、启动脚本约 69,458 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
 
 ### 2.3 壳页形态
 
@@ -125,7 +125,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
 - **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
-- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；1.8.0-r5 子集 78 字形，菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.0-r6` 子集 78 字形，菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -143,7 +143,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
 - 独立 Pack（`budding-code-<ver>.min.js` / `budding-terminal-<ver>.min.js`）同样按版本化文件名入库，启动脚本带 `?v=<ver>` 引用，命中 immutable；升级时与主包一起替换。
-- **图标资产随包版本化**：`budding-icons-1.8.0-r5.min.css`（4,596 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r5.woff2`（3,984 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r5` 时返回 `immutable`（woff2 也按版本化文件名命中 `immutable`，`assets.rs` 已识别 `.woff2` 后缀）。`Budding Icons` 子集共 78 个字形（CSS `::before` 78 条），含镜像 / 磁盘 / 文件夹等业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+- **图标资产随包版本化**：`budding-icons-1.8.0-r6.min.css`（4,648 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r6.woff2`（3,992 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r6` 时返回 `immutable`（woff2 也按版本化文件名命中 `immutable`，`assets.rs` 已识别 `.woff2` 后缀）。`Budding Icons` 子集共 78 个字形（CSS `::before` 78 条），含镜像 / 磁盘 / 文件夹等业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.5 CSP 影响（D12 定案：保持现状，不预防性放宽）
 
@@ -406,7 +406,7 @@ D13 结论：地址栏保持 `/{p}/sites/xxx` 形态，history 路由 + 白名�
 
 - 早期设计稿的 `GET /ui/v1/bootstrap`、`POST /ui/v1/session`、`x-csrf-token` 头与 `auth.csrf_expired` / `auth.cross_site` / `auth.rate_limited` / `auth.totp_*` 细分码**未采用**：当前实现复用既有 `auth.csrf_invalid` / `auth.unauthenticated` / `dependency.unavailable` 与现有中文文案，避免在登录链路上新造第二套错误码。后续如确需机器可判别 TOTP 缺省/错误，再单独提案。
 - 登录成功响应暂不返回 `permissions/acl`（当前 `/{p}/login` 成功后由服务端页面加载，壳页会话接口 `GET /ui/v1/session` 提供角色与 CSRF）；接入第一张真实业务页时再按 §5.3 补 ACL 快照。
-- **口令输入（已原生）**：budding 1.8.0 重打包起 `input-text` 透传原生 `type`（含 `password`）；登录页与设置页直接声明 `type: 'password'`，首帧即掩码，不再有渲染后改 DOM 的临时桥接。`autocomplete` 尚未被上游透传（schema 已声明，DOM 属性为空），待补。
+- **口令输入（已原生）**：budding 1.8.0 重打包起 `input-text` 透传原生 `type`（含 `password`），1.9.0 起 `autocomplete` 也同名透传（未配置时不输出属性）；登录页与设置页直接声明 `type: 'password'` / `autocomplete`，首帧即掩码，不再有渲染后改 DOM 的临时桥接。
 - 旧 askama 登录模板与 `POST /{p}/login` 表单 handler 暂保留：新页通过测试前不删，且它仍是「前端产物加载失败」时唯一可用的兜底提交路径（无 JS 客户端可直达）。
 
 ### 5.2 401 / 403
@@ -920,7 +920,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 ### 5.18 代码查看器与日志查看器（第十三批）
 
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
-- 代码 Pack：入库 `budding-code-1.8.0-r5.min.js`（89,944 B，取自 `dist/packs/code.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
+- 代码 Pack：入库 `budding-code-1.8.0-r6.min.js`（89,944 B，取自 `dist/packs/code.mjs`，自包含 ESM；字节与 r5 相同），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
 - 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
 - 作业日志：`GET /{p}/jobs/{id}/logs` 同路径按 `Accept` 分流——浏览器导航（含 `text/html`）交 budding 日志页，脚本请求（无 `text/html`）仍返回既有 JSON（`?after=` 游标、同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code` 组件，并保留旧详情入口用于取消 / 重试。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
@@ -933,7 +933,7 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
   - `GET /{p}/containers/{id}/exec?ticket=` 升级 WS，`Origin` 严格校验；
   - WS 的 start / fail / end 继续写 `Verb::Exec` 审计。
 - 前端：页面先取票再渲染 `terminal` 组件；`wsUrl` 由 `location.protocol` 推出 `ws://` / `wss://`，`resizeFormat: 'none'`（内核 exec 只透传 stdin，不解析 resize JSON），`reconnect: false` + 手动「重新连接（重新取票）」。
-- Pack：入库 `budding-terminal-1.8.0-r5.min.js`（394,972 B，取自 `dist/packs/terminal.mjs`，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
+- Pack：入库 `budding-terminal-1.8.0-r6.min.js`（394,972 B，取自 `dist/packs/terminal.mjs`，字节与 r5 相同，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
 - **验证边界**：本机（Windows、无 Docker）只验证了路由、壳页与取票失败时的错误页；WS 真连与容器内 `/bin/sh` 交互必须在 Linux 测试机验收，未验前不得记为已完成。
 
 ### 5.20 日志入口收口（第十六批）
@@ -961,7 +961,7 @@ D6 定案后，原先「可绕」的缺口升级为阻塞项。以下全部属�
 | F2 | 上传进度与取消 | 大文件需要可见进度并可取消，否则用户只能等待超时 | 1.8.0 上传增强：`uploadProgressTarget` 写回 `{status,loaded,total,percent,attempt}`，`cancelUpload` / `retryUpload` 指令；宿主 `PlatformAdapter.upload` 按字节上报 | 无（已具备） | 已解决 |
 | F3 | 目录树 | 文件管理的主导航是目录树 + 懒加载 + 面包屑联动 | 无独立 `tree` / `tree-select`；basic 16 / layout 11 / data 8 中无树组件 | 产品口径改为**平铺 + 面包屑**，负责人明确禁止树形（第十一批） | 已降级关闭 |
 | F4 | 日志 / 代码查看器 | 文本编辑需要行号与语法基础；站点、Nginx、作业日志需要大文件查看 | **已解决**：1.8.0 提供 `code` 组件（旧名 `code-viewer`，行号、折行、复制、固定高度）+ `@budding/code` Pack（1.8.0-r3 起，含 `scrollToLine` 与语言/主题清单）；代码查看器与站点/作业日志查看器已落地，纯前端高亮不引 WASM | 编辑模式（当前只读） | 已关闭（只读口径） |
-| F5 | 只读详情（descriptions） | 文件属性、权限、大小、时间等只读信息面板 | 无 descriptions，需用 basic 组件逐个拼 | `descriptions` 组件 | B3 |
+| F5 | 只读详情（原 `descriptions`） | 文件属性、权限、大小、时间等只读信息面板 | **1.9.0 已解决**：组件名定为 `property`（`descriptions` 从未发布，废弃）；`columns` / `labelWidth` / `density` / `bordered` / `emptyText`，条目 `content` 可放字符串模板或嵌套 Schema，`copyable` 只对字符串生效 | 无（已具备） | 已关闭 |
 
 F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失目录全貌，是否接受由负责人确认；F4 的降级说明：小文件可用基础排版，万行级日志不可用。
 
@@ -971,16 +971,16 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 |---|---|---|---|---|---|
 | G4 | 无 SSE / WS | 作业日志、容器日志、终端 | 用 `progress` + `source.autoRefresh` 轮询 | SSE / WS 通道 | 需上游改动（如需页内实时日志） |
 | G6 | 无通知中心 | 概览待办、审计提醒 | `alert` + `toast` + 菜单 `badge` | 通知中心 | 我方适配 |
-| G7 | 组件默认文案为 `.vue` 内中文字面量；Vuetify `createVuetify()` 无参 → 内部英文 | 全站中文 | 逐节点覆盖 `props`；内核词典 `registerMessages()` 只覆盖 15 个键 | 完整 i18n 注入 + Vuetify locale | 需负责人决策（D8） |
-| G8 | 主题不切 Vuetify 暗色、不设 `--v-theme-primary` | 现有深色主题、品牌色 | **已解决**：文档级 CSS 变量注入 `--v-theme-*` / `--bud-admin-chrome-*`，并在挂载后补 `bud-admin--chrome` 类（r5 编译期仍拒绝 schema 根 `theme`） | 上游支持 `theme` 根属性后可删除补类逻辑 | 已关闭（D15，见 §3.7.2） |
-| G9 | 默认包不含 `admin` / `nav-menu` / `page-tabs` | 三级菜单壳、页签栏 | 应急：basic + layout 自建（仅为临时验证，不作为方案） | 发行包随附 admin Pack | **外部阻塞（D4）** |
+| G7 | 组件默认文案为 `.vue` 内中文字面量；Vuetify `createVuetify()` 内部英文 | 全站中文 | 1.9.0 起 `embed` 接受扁平 `locale` / `uiDefaults`，`setLocale` 可运行时切换；宿主尚未传参 | 无（宿主迁移待做，backlog A5 相关） | 已关闭（上游能力到位） |
+| G8 | 主题不切 Vuetify 暗色、不设 `--v-theme-primary` | 现有深色主题、品牌色 | 当前仍是文档级 CSS 变量注入 `--v-theme-*` / `--bud-admin-chrome-*` + `bud-admin--chrome` 类（r6 编译期仍拒绝 schema 根 `theme`） | 无（1.9.0 提供 `createUi({ theme })` / `registerTheme`；宿主迁移见 backlog A5） | 已关闭（宿主迁移待做，见 §3.7.2） |
+| G9 | `admin` / `nav-menu` / `page-tabs` 是否随包 | 三级菜单壳、页签栏 | **已解决**：发行包 `groups.admin` 已含三个组件，壳页直接使用 | 无（已具备） | 已关闭 |
 | G10 | 默认包不含 `chart` | 概览暂无图表 | 暂不需要 | 随包提供 chart | 暂不处理（D16） |
-| G11 | 句柄无实例方法 | 切路由/切语言/切主题 | 重新 `embed`（成本待实测）；或用自定义动作驱动 | 实例方法 | 我方适配 + 需实测 |
+| G11 | 句柄能力 | 切路由/切语言/切主题 | 1.9.0 起句柄带 `instance`，可直接 `setLocale` / `registerTheme`；路由仍按既有导航动作 | 无（已具备） | 已关闭 |
 | G12 | 无 401 全局拦截；注入 `platform.request` 后 `apiAllowlist` 失效 | 会话过期处理 | 适配器内自建同源白名单 + 401 跳转 | 内置 401 钩子 | 我方适配 |
-| G13 | 表单字段错误不自动回填 | 站点/运行环境表单 | 自定义动作写 `ctx.extras.form.errors` | 内置 `error.field` 回填 | 我方适配 |
+| G13 | 表单字段错误不自动回填 | 站点/运行环境表单 | 1.9.0 起表单指令 `invoke setErrors`：`args.errors` 按字段 `name` 写入、`__form__` 落表单级，值变更/提交启动先到先清 | 无（已具备；宿主接入待做） | 已关闭（上游能力到位） |
 | G14 | JSON 无 schema 版本字段 | 契约演进 | 用 `apiVersion` + 路径版本；字段只增不改 | schema 版本字段 | 我方适配 |
 | G15 | 产物无内容 hash | 升级缓存 | 版本化文件名 + `?v=` | 产物 hash 命名 | 我方适配（D11） |
-| G16 | `input-text` 不支持 `type` / `autocomplete` | 登录口令框必须掩码 | **type 已解决**：1.8.0 重打包起 `input-text` 透传 `type`（含 `password`），登录页与设置页已用原生声明，DOM 桥接与 MutationObserver 全部删除；`autocomplete` 仍被忽略（DOM 属性为空） | `input-text` 透传 `autocomplete` | type 已关闭；autocomplete 待上游 |
+| G16 | `input-text` 的 `type` / `autocomplete` | 登录口令框必须掩码 | **均已解决**：1.8.0 重打包起透传 `type`（含 `password`），1.9.0 起 `autocomplete` 同名透传且未配置时不输出属性；登录页与设置页已用原生声明，DOM 桥接与 MutationObserver 全部删除 | 无（已具备） | 已关闭 |
 
 ### 6.3 对外需求条目（提交给上游，不由本仓库实现）
 
@@ -994,7 +994,7 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | 用途 | 三级菜单壳（L1 六项 + L2 分组）、工作台标签栏（L3）、当前项高亮与 badge |
 | 验收 | 随默认发行包或官方 Pack 交付；组件名与 props 稳定；不依赖外部资源；CSP `script-src 'self'` 下可用；与同一版本号发布 |
 | chart | **本次不要求**：Skiff 当前无图表页；若上游同包交付不反对，但不作为验收条件 |
-| 状态 | **外部阻塞**：未交付前菜单壳不能进入正式实现 |
+| 状态 | **已解决**：发行包 `groups.admin` 已随包提供；壳页已按该组件实现 |
 | 应急 | 用 basic + layout 自建临时壳，仅用于验证数据契约，不进入交付；Pack 到位后删除 |
 
 #### R-2 文件管理所需能力（D6）
@@ -1005,8 +1005,8 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | 上传进度 + 取消 | 进度事件与取消入口 |
 | 目录树 | 懒加载、面包屑联动、多选 |
 | 日志 / 代码查看器 | 行号、搜索、虚拟滚动；大文件可用 |
-| descriptions | 只读详情面板 |
-| 状态 | B1/B2 阻塞项；不补齐则文件管理页无法按 D6 交付 |
+| 只读详情 | `property` 键值栅格（1.9.0；替代未发布的 `descriptions`） |
+| 状态 | **已关闭**：1.8.0 / 1.9.0 已覆盖上传、进度、代码/日志查看与 `property` 只读详情；目录树按产品口径不做 |
 | 约束 | **需上游决策，本仓库不得修改 budding** |
 
 ---
@@ -1067,9 +1067,9 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | D3 | 登录页也只用 budding | 保留签名 CSRF token、来源判定、限流、TOTP、`HttpOnly; SameSite=Lax` 与 `Secure` 判定；新增公开引导端点 | 不再有 SSR 登录页；`/{p}/login` 返回壳；失败用稳定错误码 |
 | D4 | 要求上游随发行包提供 admin Pack | 需要 `admin` / `nav-menu` / `page-tabs`；外部阻塞，不由本仓库解决 | 未交付前菜单壳与页签栏无法进入正式实现；应急自建壳不进入交付 |
 | D5 | 按 MIT | 需上游补 LICENSE 或书面确认；需核对 Vuetify 等依赖许可证 | 未补齐前只作内部预览，不对外承诺 MIT |
-| D6 | 文件管理页也只用 budding 重做 | 分片上传/进度、目录树、日志查看器、descriptions 由上游补齐（§6.1） | 文件页交付取决于上游；不允许用「保留旧页」兜底 |
+| D6 | 文件管理页也只用 budding 重做 | 分片上传/进度、目录树、日志查看器、只读详情由上游补齐（§6.1）；1.9.0 起细节统一用 `property` | 文件页交付取决于上游；不允许用「保留旧页」兜底 |
 | D7 | 一次性切换，不留双栈 | 所有内核页同批交付；无运行时开关；旧 askama 页面统一删除 | 回滚只能 git 回退 + 重新部署；切换前必须完成 §8.3 验收清单 |
-| D8 | 文案 key + 中文兜底，范围收窄到状态、错误码、提示、空态原因；结构文案归前端 schema | 后端出 `{code,label}` / `{code,message}`；DTO 不承载页面标题、按钮、字段标签、帮助文字；Vuetify locale 依赖上游 | 中英混排只剩 Vuetify 内部控件；标注上游依赖，不阻塞内部推进 |
+| D8 | 文案 key + 中文兜底，范围收窄到状态、错误码、提示、空态原因；结构文案归前端 schema | 后端出 `{code,label}` / `{code,message}`；DTO 不承载页面标题、按钮、字段标签、帮助文字；Vuetify locale 由 `embed` 的 `locale` / `setLocale` 控制（1.9.0） | 中英混排只剩未迁移的宿主文案 |
 | D9 | 所有 `*_at` 单一 RFC3339 UTC；时长出秒数；不出双字段 | 数据库 epoch 秒不变，只在 `/ui/v1` 出口转换；前端用 `Intl.DateTimeFormat` 本地化 | 旧页的 `%Y-%m-%d %H:%M` 随一次性切换删除 |
 | D10 | 审计 `(ts,id)`、作业 `(created_at,id)`、文件 `(is_dir,name)` keyset；任务/站点/插件/运行环境全量上限 500 | `limit` 默认 50、上限 200；游标携带排序键与筛选指纹；非法游标 400；需补复合索引 | 列表改为「加载更多」；索引需迁移 |
 | D11 | 产物按 `budding-<ver>.min.js` / `budding-<ver>.css` 版本化入库，引用加 `?v=`；版本化请求 immutable，稳定别名 no-cache | 升级删除旧产物；CSS 必须用版本化真实文件名；`.gz` 由现有 `build.rs` 生成 | 需改 `assets.rs` 缓存策略；CSS 查询串行为待实测 |
@@ -1118,7 +1118,7 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | D12 CSP 回归 | 响应头断言与逐页控制台巡检 | 回归测试已加（2026-11-12，见 §2.5）；逐页控制台巡检待切换前 |
 | D13 深链 | `URL_CONTRACT.md` §2.1 白名单 + `Router::fallback` 回落（`crates/web/src/handlers/spa.rs`） | 契约已同步（2026-11-12）；壳页回落、`/ui/v1/session` 与 401 语义已落地（2026-11-12）；前端未匹配路由渲染 404 |
 
-补充：D8 中「消除 Vuetify 内部英文」属上游 `createVuetify()` 注入 locale，本仓库不落地、不阻塞。
+补充：D8 中「消除 Vuetify 内部英文」在 1.9.0 已具备上游能力（`embed` 扁平 `locale` / `uiDefaults`、`setLocale`）；宿主传参与文案迁移仍需按 backlog 排期，不阻塞内部推进。
 
 ---
 
@@ -1153,3 +1153,5 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | 2026-11-13 | budding 重打包基线 `1.8.0-r3`：上游 manifest 仍为 1.8.0（builtAt 2026-11-13T12:42:39Z）但字节已变（JS 1,259,883 B / CSS 653,947 B，上游 manifest gzip 399,921 / 79,233），本地用 `-r3` 后缀区分；图标同步为 `budding-icons-1.8.0-r3.min.css`（4,319 B）+ `.woff2`（3,704 B，75 字形）。高亮包升级为 `@budding/code`：入库 `budding-code-1.8.0-r3.min.js`（84,813 B），启动脚本改注册 `code`；terminal 包更新为 392,211 B。上游本版闭环 T6/T8/T9/T10/T14/T15/T16，宿主侧删除对应绕过：侧栏补全 17 个语义图标映射；站点/运行环境/容器/镜像/网络/卷/任务/作业列表改 `source` 游标分页（删「翻页待接入」提示与 `limit=50` 首屏截断）；镜像/网络/卷删除改为行内 `rowActions`（网络按 `can_remove` 显隐）；容器日志去掉「旧版详情页」指向。 |
 | 2026-11-14 | budding 重打包基线 `1.8.0-r4`：上游 manifest 仍为 1.8.0（builtAt 2026-11-14T05:02:58Z）但字节已变（JS 1,273,760 B / CSS 654,398 B，本机 gzip 407,720 / 79,400），本地用 `-r4` 后缀区分；图标同步为 `budding-icons-1.8.0-r4.min.css`（4,477 B）+ `.woff2`（3,896 B，78 字形）；code / terminal Pack 升为 89,944 B / 393,316 B（gzip 30,172 / 83,578）。删除 r3 主包、图标与两个 Pack。上游本版闭环 T17 / T18 / T19，宿主删除图标近似兜底，files 插件改用 `\${` 字面量转义 + `textarea.readonly`。 |
 | 2026-11-14 | budding 重打包基线 `1.8.0-r5`：上游再次打包（builtAt 2026-11-14T21:54:37Z），semver 与 `catalogVersion` 仍为 1.8.0 但字节已变（JS 1,274,576 B / CSS 656,899 B，本机 gzip 403,113 / 78,534），本地用 `-r5` 区分；图标同步为 `budding-icons-1.8.0-r5.min.css`（4,596 B）+ `.woff2`（3,984 B，78 字形）；code / terminal Pack 升为 89,944 B / 394,972 B（gzip 29,554 / 82,871）。删除 r4 主包、图标与两个 Pack 及其 `.gz`。`assets.rs::budding_versioned` 增认 `.woff2`，图标字体按版本化文件名命中 `immutable`。验证：`cargo test -p skiff-web --lib assets::` 14/14；本地 18082 起服务后 Puppeteer 逐页真实渲染 22 页，概览 / 站点 / 容器 / 任务 / 设置 / 审计 / Web 服务均 `console=0 bad=0`（容器详情 503 与 `/terminal` 404 为无 Docker 与既有路由边界），r5 主包 / CSS / Pack / 图标 CSS / woff2 均 200 + `immutable`，稳定别名 `no-cache`。 |
+| 2026-11-15 | budding 重打包基线 `1.8.0-r6`（功能集 1.9.0）：上游 2026-11-15T17:30Z 打包，产物自报版本与 `budding-icons.json` 仍为 1.8.0，但字节已变（JS 1,292,472 B / CSS 661,321 B，本机 gzip 约 414,543 / 80,304），按同一 semver 新字节规则用 `-r6` 区分；图标同步为 `budding-icons-1.8.0-r6.min.css`（4,648 B）+ `.woff2`（3,992 B，78 字形）；code / terminal Pack 字节与 r5 相同，仅按版本常量重命名。删除 r5 主包、图标与两个 Pack 及其 `.gz`。本版上游实现 U1–U4：`LayerInput.confirm`（`level` / `confirmText` / `cancelText` / `requireText` + `onClose` / `closeLayer` 结果）、`property` 只读详情、表单 `setErrors`、`createUi(options)` / `setLocale` / `registerTheme`（embed 句柄带 `instance`，扁平 `locale` / `theme` / `uiDefaults`）。宿主迁移见 `BUDDING_UPSTREAM_BACKLOG.md` 的 A1–A5。 |
+

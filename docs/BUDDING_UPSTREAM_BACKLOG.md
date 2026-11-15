@@ -1,6 +1,6 @@
 # budding 上游缺口清单
 
-> 复核：2026-11-15。上游答复（1.9.0）确认 U1–U4 全部实现且向后兼容；当前**无未关闭的上游需求**，只保留宿主侧待办。
+> 复核：2026-11-15。上游答复（1.9.0）确认 U1–U4 全部实现且向后兼容；仓内产物已升级到 `1.8.0-r6`（功能集 1.9.0）。当前**无未关闭的上游需求**，只保留宿主侧待办。
 > 能力用法见 [BUDDING_INTERACTION_CAPABILITIES.md](BUDDING_INTERACTION_CAPABILITIES.md)；接入边界与 JSON 契约见 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)。
 
 ## 一、上游需求

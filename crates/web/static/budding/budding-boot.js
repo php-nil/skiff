@@ -945,7 +945,7 @@
 
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
   ///
-  /// 1.8.0-r5 的子集含镜像、磁盘、文件夹等业务字形，全部语义名直接映射，
+  /// 1.8.0-r6 的子集含镜像、磁盘、文件夹等业务字形，全部语义名直接映射，
   /// 不再做近似兜底或留空。
   var MENU_ICONS = {
     overview: 'mdi-view-dashboard',
@@ -1268,7 +1268,7 @@
 
   /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
   ///
-  /// 注意：budding 1.8.0-r5 的 schema 根没有注册 `theme` 顶层属性，写进树里会
+  /// 注意：budding 1.8.0-r6 的 schema 根没有注册 `theme` 顶层属性，写进树里会
   /// 触发 CompileError（整棵树拒绝编译）。主题改为文档级 CSS 变量注入，并给
   /// 外壳补 `bud-admin--chrome` 类，见 `applyShellTheme` / `markShellChrome`。
   function shellSchema(session) {
@@ -4268,7 +4268,7 @@
   }
 
   /// 壳主题预设：按钮底色即色点，点击整体套用并保存。
-  /// budding 1.8.0-r5 没有颜色选择器节点，预设与自定义都只提交 `#rrggbb` 文本。
+  /// budding 1.8.0-r6 没有颜色选择器节点，预设与自定义都只提交 `#rrggbb` 文本。
   var UI_THEME_PRESETS = [
     { name: '品牌蓝', primary: '#1867c0', page: '#f5f5f5', menu: '', menu_custom: false },
     { name: '翡翠绿', primary: '#0f7b5c', page: '#f2faf7', menu: '', menu_custom: false },
