@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::StepState;
 use crate::jobs as app_jobs;
+use crate::time_fmt::unix_now;
 
 /// 一步安装进度。`state` 对外只用 `pending/running/ok/failed`；
 /// 时间戳为 Unix 秒，`detail` 成功时是结果摘要、失败时是错误原因。
@@ -93,13 +94,6 @@ impl InstallProgress {
             steps,
         }
     }
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// 运行环境安装互斥表：键为 `kind:name`。

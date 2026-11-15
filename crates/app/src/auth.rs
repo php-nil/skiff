@@ -8,6 +8,7 @@
 
 use skiff_store::Role;
 
+use crate::time_fmt::unix_now;
 use crate::AppState;
 
 /// 登录凭据（UI 表单与 JSON API 共用同一形状）。
@@ -44,14 +45,6 @@ pub struct LoginSuccess {
     pub expires_at: i64,
     /// 首启账号必须改密：调用方据此跳转到改密页。
     pub must_change_password: bool,
-}
-
-/// 当前 unix 时间（秒）。系统时钟早于 epoch 时按 0 处理。
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 impl AppState {

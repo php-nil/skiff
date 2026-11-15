@@ -646,6 +646,28 @@ fn nginx_level_label(level: &str) -> &'static str {
 }
 
 impl AppState {
+    /// 在 nginx 容器内对**候选主配置**执行 `nginx -t`，返回 (退出码, 合并输出)。
+    ///
+    /// 只统一「怎么跑」：主配置与站点 vhost 的候选生命周期不同（前者成功后 rename
+    /// 上线，后者校验完即清理），因此临时文件的创建/清理仍留在各自调用点。
+    pub(crate) async fn nginx_test_candidate(
+        &self,
+        container_main: &str,
+    ) -> Result<(i64, String), SiteError> {
+        self.docker()
+            .exec_capture(
+                NGINX_CONTAINER,
+                vec![
+                    "nginx".into(),
+                    "-t".into(),
+                    "-c".into(),
+                    container_main.to_string(),
+                ],
+            )
+            .await
+            .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))
+    }
+
     async fn nginx_container(&self) -> Result<(String, String, String), SiteError> {
         if !self.docker().available() {
             return Err(SiteError::Unavailable(format!(
@@ -675,19 +697,7 @@ impl AppState {
         std::fs::write(&candidate, content)
             .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
         let container_candidate = s.container_path(&candidate);
-        let (code, out) = self
-            .docker()
-            .exec_capture(
-                NGINX_CONTAINER,
-                vec![
-                    "nginx".into(),
-                    "-t".into(),
-                    "-c".into(),
-                    container_candidate.clone(),
-                ],
-            )
-            .await
-            .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
+        let (code, out) = self.nginx_test_candidate(&container_candidate).await?;
         if code != 0 {
             let original = std::fs::read_to_string(s.nginx_main_conf()).unwrap_or_default();
             let diff = diff_summary(&original, content, 6);

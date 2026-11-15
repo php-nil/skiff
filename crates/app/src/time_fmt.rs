@@ -17,6 +17,17 @@ pub fn epoch_to_rfc3339_utc(epoch_secs: i64) -> Option<String> {
     DateTime::from_timestamp(epoch_secs, 0).map(|d| d.to_rfc3339_opts(SecondsFormat::Secs, true))
 }
 
+/// 当前 Unix 秒。系统时间早于 1970 时返回 0（与各处历史实现一致）。
+///
+/// 全仓唯一的「取当前 epoch 秒」入口：登录、站点安装进度、站点 CRUD 都从这里取，
+/// 避免各自复制一份 `SystemTime::now()` 换算。
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

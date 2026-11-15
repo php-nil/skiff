@@ -10,6 +10,7 @@ use skiff_model::{is_absolute, normalize_dir, within, within_root};
 use skiff_store::{Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use super::*;
+use crate::time_fmt::unix_now;
 use crate::AppState;
 
 /// nginx 激活结果：平滑 reload（已自证 worker 换代）或回退到容器重启。
@@ -47,13 +48,6 @@ fn initial_web_install_steps() -> Vec<InstallStep> {
 fn step_progress(idx: usize, state: StepState) -> i64 {
     let done = if state == StepState::Ok { idx + 1 } else { idx };
     (done as i64 * 100 / WEB_INSTALL_STEPS.len() as i64).min(100)
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// nginx 激活动作的抽象：生产走 Docker；单测注入内存实现复现并发重启窗口。
@@ -2353,26 +2347,14 @@ impl AppState {
             .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
         std::fs::write(&main, vhost_check_main(&container_candidate))
             .map_err(|e| SiteError::Internal(format!("写入校验主配置失败：{e}")))?;
-        let result = self
-            .docker()
-            .exec_capture(
-                NGINX_CONTAINER,
-                vec![
-                    "nginx".into(),
-                    "-t".into(),
-                    "-c".into(),
-                    container_main.clone(),
-                ],
-            )
-            .await;
+        let result = self.nginx_test_candidate(&container_main).await;
         if let Err(ce) = std::fs::remove_file(&candidate) {
             tracing::debug!(path = %candidate.display(), error = %ce, "清理 nginx -t 候选配置失败");
         }
         if let Err(me) = std::fs::remove_file(&main) {
             tracing::debug!(path = %main.display(), error = %me, "清理 nginx -t 临时主配置失败");
         }
-        let (code, out) =
-            result.map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
+        let (code, out) = result?;
         if code == 0 {
             Ok(())
         } else {
