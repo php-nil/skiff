@@ -100,6 +100,8 @@ fn rfc3339(epoch: i64) -> String {
 }
 
 fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
+    let (status_label, _status_class) = super::sites::site_status(s);
+    let (https_label, https_class) = super::sites::https_status(s.https, s.cert_ready);
     SiteItem {
         domain: s.domain.clone(),
         root_dir: s.root_dir.clone(),
@@ -115,13 +117,13 @@ fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
         endpoint: s.endpoint.clone(),
         status: StatusDto {
             code: s.status.clone(),
-            label: s.status_label.clone(),
+            label: status_label.to_string(),
         },
         https: SiteHttps {
             enabled: s.https,
             force_https: s.force_https,
-            label: s.https_label.clone(),
-            class: s.https_class.clone(),
+            label: https_label.to_string(),
+            class: https_class.to_string(),
         },
         is_default: s.is_default,
         aliases: s.aliases.clone(),

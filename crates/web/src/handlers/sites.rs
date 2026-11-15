@@ -10,7 +10,8 @@
 
 use axum::http::request::Parts;
 use skiff_app::commands::Actor;
-use skiff_store::{TYPE_PROXY, TYPE_STATIC};
+use skiff_app::sites::{site_runtime_status, SiteRuntimeStatus};
+use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::error::AppError;
 use crate::handlers;
@@ -104,13 +105,49 @@ fn state_class(state: &str) -> &'static str {
     }
 }
 
-/// 运行环境站点的对外状态：领域分类在 `skiff_app::sites`，文案与配色映射在 app 读模型，
-/// 这里只保留同路径的委托，避免 SSR 与 `/ui/v1` 各写一份。
+/// 运行环境站点的对外状态：领域分类在 `skiff_app::sites`，文案与配色只在这里映射
+/// （SSR 与 `/ui/v1` 共用），不再下沉到 app 读模型。
 fn runtime_site_status(
     site_status: &str,
     runtime_state: Option<&str>,
 ) -> (&'static str, &'static str) {
-    skiff_app::views::sites::runtime_site_status(site_status, runtime_state)
+    use SiteRuntimeStatus as Status;
+    match site_runtime_status(site_status, runtime_state) {
+        Status::SiteStopped => ("已停止", ""),
+        Status::Running => ("运行中", "ok"),
+        Status::Installing => ("环境安装中", "warn"),
+        Status::Error => ("环境异常", "danger"),
+        Status::Missing => ("未运行（环境未安装）", "warn"),
+        Status::DockerUnavailable => ("状态未知（Docker 不可用）", "muted"),
+        Status::Unimplemented => ("运行环境尚未接入", "warn"),
+        Status::EnvironmentStopped => ("未运行（环境已停止）", "warn"),
+        Status::RecordMissing => ("未运行（环境记录缺失）", "warn"),
+    }
+}
+
+/// 站点状态列：运行环境站点看有效运行态，静态/反代站点看自身启停状态。
+pub(crate) fn site_status(
+    summary: &skiff_app::views::sites::SiteSummary,
+) -> (&'static str, &'static str) {
+    if summary.site_type == TYPE_RUNTIME {
+        runtime_site_status(&summary.status, summary.runtime_state.as_deref())
+    } else {
+        match summary.status.as_str() {
+            "running" => ("运行中", "ok"),
+            "stopped" => ("已停止", ""),
+            _ => ("异常", "danger"),
+        }
+    }
+}
+
+/// HTTPS 列：是否启用 + 证书是否就绪。
+pub(crate) fn https_status(enabled: bool, cert_ready: bool) -> (&'static str, &'static str) {
+    match (enabled, cert_ready) {
+        (true, true) => ("已启用 HTTPS", "ok"),
+        (true, false) => ("证书缺失", "danger"),
+        (false, true) => ("证书已上传", "info"),
+        (false, false) => ("未配置 HTTPS", ""),
+    }
 }
 
 /// 列表版本列：版本来源由内核分类，文案与镜像副行在这里格式化。
@@ -262,6 +299,8 @@ fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
 }
 
 pub(crate) fn site_view(s: &skiff_app::views::sites::SiteSummary) -> SiteView {
+    let (status_label, status_class) = site_status(s);
+    let (https_label, https_class) = https_status(s.https, s.cert_ready);
     SiteView {
         domain: s.domain.clone(),
         index_dir: s.index_dir.clone(),
@@ -275,10 +314,10 @@ pub(crate) fn site_view(s: &skiff_app::views::sites::SiteSummary) -> SiteView {
         proxy_target: s.proxy_target.clone(),
         proxy_websocket: s.proxy_websocket,
         status: s.status.clone(),
-        status_label: s.status_label.clone(),
-        status_class: s.status_class.clone(),
-        https_label: s.https_label.clone(),
-        https_class: s.https_class.clone(),
+        status_label: status_label.to_string(),
+        status_class: status_class.to_string(),
+        https_label: https_label.to_string(),
+        https_class: https_class.to_string(),
         created: s.created.clone(),
         is_default: s.is_default,
         aliases_text: s.aliases_text.clone(),

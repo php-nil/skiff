@@ -1,4 +1,7 @@
 //! 站点列表读模型：取数、运行态派生与关键字过滤都在这里，SSR 与 `/ui/v1` 共用。
+//!
+//! 读模型只携带领域事实（状态码、是否启用 HTTPS、证书是否就绪等）；中文文案与
+//! CSS class 属于展示映射，统一在 `skiff-web` 侧生成，避免 JSON 字段依赖样式词表。
 
 use std::path::Path as FsPath;
 
@@ -6,25 +9,6 @@ use skiff_store::{Runtime, Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::sites::{site_index_dir, RuntimeView};
 use crate::AppState;
-
-/// 运行环境站点的对外状态：领域分类在 `crate::sites`，这里只映射文案与配色。
-pub fn runtime_site_status(
-    site_status: &str,
-    runtime_state: Option<&str>,
-) -> (&'static str, &'static str) {
-    use crate::sites::SiteRuntimeStatus as Status;
-    match crate::sites::site_runtime_status(site_status, runtime_state) {
-        Status::SiteStopped => ("已停止", ""),
-        Status::Running => ("运行中", "ok"),
-        Status::Installing => ("环境安装中", "warn"),
-        Status::Error => ("环境异常", "danger"),
-        Status::Missing => ("未运行（环境未安装）", "warn"),
-        Status::DockerUnavailable => ("状态未知（Docker 不可用）", "muted"),
-        Status::Unimplemented => ("运行环境尚未接入", "warn"),
-        Status::EnvironmentStopped => ("未运行（环境已停止）", "warn"),
-        Status::RecordMissing => ("未运行（环境记录缺失）", "warn"),
-    }
-}
 
 /// 站点列表项：一对一映射到 web 的 `SiteView` 与 `/ui/v1` 的 `SiteItem`。
 #[derive(Debug, Clone)]
@@ -42,10 +26,12 @@ pub struct SiteSummary {
     pub proxy_websocket: bool,
     pub endpoint: String,
     pub status: String,
-    pub status_label: String,
-    pub status_class: String,
-    pub https_label: String,
-    pub https_class: String,
+    /// 运行环境站点的有效状态（`running` / `stopped` / `unknown` …）；非运行环境站点为空。
+    pub runtime_state: Option<String>,
+    pub https: bool,
+    pub force_https: bool,
+    /// 证书文件是否就绪：决定 HTTPS 展示文案（由 web 侧映射）。
+    pub cert_ready: bool,
     /// SSR 展示用时间（`%Y-%m-%d %H:%M`）。
     pub created: String,
     /// UI 转 RFC3339 与游标用。
@@ -57,8 +43,6 @@ pub struct SiteSummary {
     pub aliases_text: String,
     pub alias_preview: String,
     pub alias_more: usize,
-    pub https: bool,
-    pub force_https: bool,
 }
 
 /// 站点列表读模型：已按关键字过滤的站点 + 构造下拉框所需的运行环境数据。
@@ -168,40 +152,14 @@ pub fn summary(
         proxy_websocket: s.proxy_websocket,
         endpoint,
         status: s.status.clone(),
-        status_label: if s.site_type == TYPE_RUNTIME {
-            runtime_site_status(&s.status, runtime_state).0
+        runtime_state: if s.site_type == TYPE_RUNTIME {
+            runtime_state.map(str::to_string)
         } else {
-            match s.status.as_str() {
-                "running" => "运行中",
-                "stopped" => "已停止",
-                _ => "异常",
-            }
-        }
-        .into(),
-        status_class: if s.site_type == TYPE_RUNTIME {
-            runtime_site_status(&s.status, runtime_state).1
-        } else {
-            match s.status.as_str() {
-                "running" => "ok",
-                "stopped" => "",
-                _ => "danger",
-            }
-        }
-        .into(),
-        https_label: match (s.https, cert_ready) {
-            (true, true) => "已启用 HTTPS",
-            (true, false) => "证书缺失",
-            (false, true) => "证书已上传",
-            (false, false) => "未配置 HTTPS",
-        }
-        .into(),
-        https_class: match (s.https, cert_ready) {
-            (true, true) => "ok",
-            (true, false) => "danger",
-            (false, true) => "info",
-            (false, false) => "",
-        }
-        .into(),
+            None
+        },
+        https: s.https,
+        force_https: s.force_https,
+        cert_ready,
         created: chrono::DateTime::from_timestamp(s.created_at, 0)
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default(),
@@ -217,8 +175,6 @@ pub fn summary(
             .join("、"),
         alias_more: aliases.len().saturating_sub(2),
         aliases,
-        https: s.https,
-        force_https: s.force_https,
     }
 }
 
