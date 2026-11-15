@@ -1329,21 +1329,30 @@ impl AppState {
         // 唯一临时名：同名并发上传各写各的，不会互相截断或抢先 rename。
         let tmp_cert = crate::atomic::sibling_temp(&cert);
         let tmp_key = crate::atomic::sibling_temp(&key);
-        std::fs::write(&tmp_cert, cert_pem)
-            .map_err(|e| SiteError::Internal(format!("写入证书失败：{e}")))?;
-        std::fs::write(&tmp_key, key_pem)
-            .map_err(|e| SiteError::Internal(format!("写入私钥失败：{e}")))?;
-        restrict_mode(&tmp_cert, 0o644);
-        restrict_mode(&tmp_key, 0o600);
-        if let Err(e) = verify_cert_pair(&tmp_cert, &tmp_key) {
-            if let Err(ce) = std::fs::remove_file(&tmp_cert) {
-                tracing::debug!(path = %tmp_cert.display(), error = %ce, "清理临时证书失败");
+        // 写盘与 `openssl` 校验（连续 fork 4 次）不能占 async worker：与
+        // `generate_self_signed` 一致投递到阻塞池；失败时在同一闭包内清理临时文件。
+        let (cert_text, key_text) = (cert_pem.to_string(), key_pem.to_string());
+        let (write_cert, write_key) = (tmp_cert.clone(), tmp_key.clone());
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&write_cert, cert_text)
+                .map_err(|e| SiteError::Internal(format!("写入证书失败：{e}")))?;
+            std::fs::write(&write_key, key_text)
+                .map_err(|e| SiteError::Internal(format!("写入私钥失败：{e}")))?;
+            restrict_mode(&write_cert, 0o644);
+            restrict_mode(&write_key, 0o600);
+            if let Err(e) = verify_cert_pair(&write_cert, &write_key) {
+                if let Err(ce) = std::fs::remove_file(&write_cert) {
+                    tracing::debug!(path = %write_cert.display(), error = %ce, "清理临时证书失败");
+                }
+                if let Err(ke) = std::fs::remove_file(&write_key) {
+                    tracing::debug!(path = %write_key.display(), error = %ke, "清理临时私钥失败");
+                }
+                return Err(SiteError::BadRequest(e));
             }
-            if let Err(ke) = std::fs::remove_file(&tmp_key) {
-                tracing::debug!(path = %tmp_key.display(), error = %ke, "清理临时私钥失败");
-            }
-            return Err(SiteError::BadRequest(e));
-        }
+            Ok(())
+        })
+        .await
+        .map_err(|e| SiteError::Internal(format!("证书校验任务失败：{e}")))??;
         // 成对替换与 reload 必须在一把锁内完成：中间态对 nginx 不可见。
         let _guard = super::nginx_write_lock().lock().await;
         if let Err(failure) = replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key) {
