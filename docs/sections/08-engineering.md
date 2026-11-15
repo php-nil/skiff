@@ -27,7 +27,8 @@ skiff/
 │   ├── wire/       # 支撑：插件↔内核 UDS 协议帧编解码 + 路由常量 + 协议版本闸（纯函数，无运行时）
 │   ├── model/      # 支撑：跨 crate 共享词汇（Role/Grant/Form/Permission/Cidr/Verb/ContainerSpec/Actor）
 │   │               #   + 路径代数（within/normalize/..段判定），零 I/O（纯值类型，不碰文件系统）
-│   ├── app/        # 支撑：应用上下文（AppState/WebConfig）与用例层（登录流程），core 与 web 共同依赖
+│   ├── app/        # 支撑：应用上下文（AppState/WebConfig）+ 用例层；按域分 sites / nginx / tasks /
+│   │               #   catalog / files-admin / menu / theme，不含路由与模板，core 与 web 共同依赖
 │   └── core/       # 支撑：单二进制入口与装配、kernel.sock 能力面服务端（core/src/kernel/）、配置优先级
 ├── deploy/
 │   ├── systemd/skiff.service + install.sh + uninstall.sh   # 主交付：宿主直装
@@ -61,9 +62,9 @@ skiff/
 | `cron` | chrono | `store`、`docker`、`web` |
 | `wire` | serde_json | `store`、`docker`、`web` |
 | `docker` | `policy`、`compose`、`model`、bollard | `web`、`core` |
-| `plugin` | `pkgfmt`、`wire`、`store`、`model` | `docker`、`web`、`core`、`app` |
+| `plugin` | `pkgfmt`、`wire`、`store`、`model`（+ `axum`/`http-body-util`：仅能力面 handler 的 HTTP 形状） | `docker`、`web`、`core`、`app` |
 | `sdk` | `pkgfmt`、`wire` | `store`、`docker`、`web` |
-| `app` | `model`、`store`、`identity`、`docker`、`plugin` | `web`、`core` |
+| `app` | `model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt`、`sched`、`fs`（+ `ureq`/`rustls-pemfile`/`ed25519-dalek`：商店目录客户端，本仓唯一出网组件） | `web`、`core` |
 | `web` | `app`、`model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt` | `core` |
 | `core`(bin) | 以上全部 | — |
 
@@ -76,8 +77,20 @@ skiff/
 解析器，因此这类值类型一律走 `model`。
 
 `app` 是装配层（`AppState`/`WebConfig` + 用例层），不含路由与模板：`web` 与 `core` 都依赖它，
-它不依赖 `web`。插件能力面住在 `plugin`（能力面的正确归属地），但 `plugin` 不得反向依赖
-`app`——宿主上下文经 `plugin::CapabilityHost` 这个 trait 注入（依赖倒置）。
+它不依赖 `web`。插件能力面的**权限判定与命令编排**住在 `plugin`，但 `plugin` 不得反向依赖
+`app`——宿主上下文经 `plugin::CapabilityHost` 这个 trait 注入（依赖倒置）。`app` 的准入规则：
+用例编排、领域服务、读模型可以进；路由、模板、HTTP 形状不进；跨域共享词汇进 `model`。
+当前 `app` 内按域划分为 sites / nginx / tasks / catalog / files-admin / menu / theme。
+
+**能力面 × 实现位置**（能力面的判定与编排只在 `plugin`；HTTP 形状与宿主特权执行属内核装配）：
+
+| 能力面 | 判定与编排 | HTTP 形状 / 特权执行 |
+|---|---|---|
+| fs / interop | `crates/plugin`（`fsops` / `fsgrant` / `interop`） | `crates/core/src/kernel/capability.rs` |
+| ftp | `crates/plugin/src/ftp.rs` | `crates/core/src/kernel/ftp.rs`（`systemd-run` 通道见 `kernel/host_run.rs`） |
+| firewall | `crates/plugin/src/firewall.rs` | `crates/core/src/kernel/firewall.rs`（同上） |
+| scheduler | `crates/app/src/tasks.rs`（`sched` 为纯逻辑，不能反向依赖 `app`） | `crates/core/src/kernel/capability.rs` |
+| docker / identity / config | 判定复用 `policy` / `store` | `crates/core/src/kernel/capability.rs` |
 
 与 §3.3 的关系：内核原子能力是 `docker`/`identity`/`fs`/`net`/`interop` 五项（运行时能力面，`interop` 是插件间调用的转发面）；上面三块是**产品形态面**——Docker 管理 = 内置主业（白名单/路径安全/Compose 全在 `crates/docker`），Web 管理服务 = 管理面（承载 `identity` 与 api/ui），插件体系 = 开放能力面（宿主上的第三方扩展）。`crates/docker` 独立成包正因为它是主业，不是普通适配器。
 

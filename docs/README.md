@@ -68,6 +68,7 @@
 | [KERNEL_FS_IMPL_NOTES.md](KERNEL_FS_IMPL_NOTES.md) | 改 `skiff-fs`，或契约与代码不一致 | 重复实现路径解析或授权 | 现行（2026-11-13） |
 | [KERNEL_SCHEDULER_IMPL_NOTES.md](KERNEL_SCHEDULER_IMPL_NOTES.md) | 改 `skiff-sched`，或接 SQLite/Web | tick 语义与回执边界出错 | 现行（2026-11-13） |
 | [KERNEL_UI_BOUNDARY_AUDIT.md](KERNEL_UI_BOUNDARY_AUDIT.md) | 改 SSR/`/ui/v1` handler、拆 `ui_api.rs`、判断能否复用命令层 | 重复实现、JSON 与 SSR 分叉、权限/审计口径不一致 | 现行（审计稿；2026-11-14） |
+| [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) | 改 crate 划分/依赖方向/能力面落位、做架构评审 | 重复讨论已判定项、批次边界失焦 | 现行（审计稿；2026-11-15） |
 
 ### D. 交付与验证（怎么出包、怎么装、怎么验、现在什么状态）
 

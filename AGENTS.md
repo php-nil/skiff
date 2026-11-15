@@ -24,7 +24,7 @@ Skiff（轻舟）—— Rust 极简 Linux 服务器管理面板，只做三核�
 ## 三、硬性红线（违反即返工）
 
 - **分层禁令**：`policy` / `pkgfmt` / `wire` 不得依赖 `store` / `docker`；`app` 不含路由与模板；`impl` 必须与类型同 crate。
-- **单一来源**：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 [KERNEL_FS_IMPL_NOTES.md](docs/KERNEL_FS_IMPL_NOTES.md) §2.2.1）；插件能力面实现只在 `crates/plugin`。
+- **单一来源**：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 [KERNEL_FS_IMPL_NOTES.md](docs/KERNEL_FS_IMPL_NOTES.md) §2.2.1）；插件能力面的**权限判定与命令编排**只在 `crates/plugin`（HTTP 形状与宿主特权执行属内核装配 `core`/`app`，分布见 [sections/08-engineering.md](docs/sections/08-engineering.md)）。
 - **数字纪律**：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
 - **权限口径**：数据根与 `plugins/` 保持 0711（可穿越不可列），勿改回 0700，否则降权插件全线 EACCES（见 [DEPLOY_TEST.md](docs/DEPLOY_TEST.md) §1.1）。
 - **编译与测试串行（红线）**：同一时间只允许一路 `cargo`（含 `fmt` / `clippy` / `test` / `build` 及任意子命令），必须经包装入口 `tools\bin\cargo.cmd`；根 workspace 与 `plugins/` 共用同一把全局令牌，拿不到立即以退出码 2 拒绝、不排队；全量 `--workspace` / `--all-targets` 本地须显式 `-AllowFull`；禁止自定义 `CARGO_TARGET_DIR`。闸门链路、退出码、内存准入、`PATH` 自检与故障处置见 [DEV_ENV.md](docs/DEV_ENV.md) §4。
