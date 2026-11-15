@@ -59,6 +59,20 @@
 
 ## 5. 当前部署
 
+> **2026-11-15 13:47 全新安装 `fb7412d`（镜像源预算/取消还原、Node 健康 20s、现网 `nginx -t` 10s；当前生效）**
+> - 背景：`d025258` 第 3 项在路由层 30s 请求超时下不可达，且取消发生在写 `daemon.json` 之后留下半状态；`fb7412d` 把整段镜像源变更压到 **20s** deadline（`systemctl` 8s、就绪探测 6s）并用 `DaemonJsonGuard` 在取消时同步还原。本轮只做该修复的实机复验与短回归，未改代码。
+> - 出包：CI run `43680365951`（head `fb7412d`）success；`release.yml` dispatch run `43681434605`（publish=false、skip_plugins=false）三 job 全绿（`发布到 GitHub Release` skipped 属预期）；artifact `release-amd64` 主包 **11,991,690 B** `8443823bcabaa785bef51342d682f65a0250bb40e5083ad381617fe05e031949`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：清场后全新安装（旧包 `uninstall.sh --purge` 交互 `YES`、清 `/www/{sites,nginx,log,php,runtime}`、删旧 `skiff-web-nginx` 容器）；`sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 §3（初始口令经 API 改密后 `initial-admin.txt` 自动删除）；7 个官方插件 `skiff plugin install --yes` 全部装成；`skiff-http-fwd` 维持 `0.0.0.0:18081 → 127.0.0.1:18080`，外部 `http://10.10.15.4:18081/34h8y9da/` 可用。
+> - 新二进制：`/usr/local/bin/skiff` **19,510,800 B** `fc6111582033c9c14b92eb054206c834e155388d554930fc8c698d4c4835ffe9`。
+> - 库：全新空库，`user_version=20`、`integrity_check=ok`、插件 7、站点 0、种子运行环境 `php-8.5` 1；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` 18080、18081 与外部均 **200**；Web 服务经面板安装，`skiff-web-nginx` running（openresty/1.31.8.1）。
+
+> **2026-11-15 12:34 全新安装 `d025258`（内核健壮性 C 批：host_run 超时清理 / 审计兜底 / Docker 重启超时与就绪预算 / `nginx -t` 统一通道；已被 2026-11-15 13:47 全新安装 `fb7412d` 取代，保留作过程记录）**
+> - 背景：机器被还原后按全新安装处理；`d025258` 落地 [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) §6 四项（超时后清理瞬态单元、SQLite 写失败落 `audit-fallback.jsonl`、Docker 重启 60s 超时与 `docker_ready` 30s 总预算、`nginx -t` 统一通道）。第 3 项实机不通过，见 §8。
+> - 出包：CI run `43669273358`（head `d025258`）success 后才出包；`release.yml` dispatch（publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,987,576 B** `77eaf7f1abd89f509e864eaf3b23186d398d23909e4d6e5294be44664395b014`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
+> - 安装：机器还原后全新安装，`sh install.sh --datadir /www/skiff --webroot /www --listen 127.0.0.1:18080 --no-docker`；`allow_reduced_sandbox = true`；入口前缀 `34h8y9da`、管理员口令按 §3（初始口令建库后经 API 改密并改前缀）；7 个官方插件全部装成；`skiff-http-fwd.service` 重建并绑 `0.0.0.0:18081 → 127.0.0.1:18080`，外部 `http://10.10.15.4:18081/34h8y9da/` 可用；Web 服务（OpenResty）按需安装，容器 `skiff-web-nginx` running。
+> - 新二进制：`/usr/local/bin/skiff` **19,510,800 B** `c7be6a7b34fb9ed596c357a45cc3db45fe5e0ae5cf95636f0f773b48a62f6048`。
+> - 库：全新空库，`user_version=20`、`integrity_check=ok`、插件 7、站点 0、用户 1；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` 18080 与 18081 均 **200**。
+
 > **2026-11-15 08:10 全新安装 `7946e93`（界面四套预设 + 三层配色；站点/运行环境列表页内弹窗新建；当前生效）**
 > - 背景：`7eeb0fd` 上主题仅支持单主色、站点/运行环境「新建」跳独立页；`7946e93` 增加四套预设、主色/菜单底色/页面底色三项自定义与自动反色/对比度校正，并把两处新建改为页内弹窗（深链 `/sites/new` 保留）。本轮两组功能与三项回归全部通过，详见 §8。
 > - 出包：CI run `43655127248`（head `7946e93`）success；`release.yml` dispatch run `43656216335`（publish=false、skip_plugins=false）；artifact `release-amd64` 主包 **11,984,504 B** `6bb528ce0197cb0946ab27d880e8b385d6bacd9e3269094c2a6945d2222d2cd9`（开发机、随包 `.sha256`、测试机 `sha256sum -c` 一致）。
@@ -311,6 +325,7 @@
 | 2026-11-15 01:20 | **全新安装**（`194d6a1` Docker 资源动作与设置保存键分离） | CI run `43618467103` success；出包 run `43619453651`（head `194d6a1`）；主包 11,970,255 B `4d972e72…b64e5`；新二进制 19,457,424 B `276264a4…f620`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；六项验收 **第 1、2 项通过，第 3 项「改属主」失败停手**：Docker 资源五动作全部组件弹窗且真实生效、审计为资源动作、`settingsSavePosts=[]`；六类既有弹窗复核通过；文件新建/编辑/重命名/复制/chmod/压缩/正常解压通过；**改属主提交 422 `uid: invalid type: string "0", expected u32`**，属主未变、无 `fs.chown` 审计；根因见 §8 |
 | 2026-11-15 01:58 | **全新安装**（`7eeb0fd` 文件管理「改属主」请求体类型修复） | CI run `43621954301` success；出包 run `43623068700`（head `7eeb0fd`）；主包 11,971,806 B `bd6ee32f…89e9ff`；新二进制 19,465,616 B `596d6ffb…ca607`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`；前缀/口令/7 插件/转发层/`/healthz` 正常；五项验收 **全部通过**：改属主 `2:2` 成功并落 `fs.chown` 审计、负数/非数字就地报错零请求、服务端 404 时报错原因与输入保留；含 `../` 的 tar.gz 解压 403 拒绝且目标目录外无写入；容器强杀文案明确不等待优雅退出、`Exited (137)`；Web 安装进度 2.03 s 轮询、重启后「中断」、占 80 失败态刷新/重启后仍在；Docker 链路/六类弹窗/r5 资产与别名/favicon/主题/菜单/容器筛选与空态/作业日志/插件页/九页控制台全部回归通过 |
 | 2026-11-15 08:10 | **全新安装**（`7946e93` 界面四套预设 + 三层配色；站点/运行环境列表页内弹窗新建） | CI run `43655127248` success；出包 run `43656216335`（head `7946e93`）；主包 11,984,504 B `6bb528ce…2cd9`；新二进制 19,498,384 B `afa3edac…5c1e`；清空旧安装后 `install.sh` 重装 | 空库 **v20**、7 插件、转发层、`/healthz` 正常；两组功能与三项回归 **全部通过**：四套预设点击即全站换色并跨刷新/跳页保持，三层自定义深浅切换文字自动反色，非法色前端就地拦截且接口 400 不落库，低对比主色 `#202630` 自动校正为 `#909398`；站点/运行环境「新建」均为页内弹窗，空值与非法值就地报错并保留输入，成功后弹窗关闭、列表刷新，`/sites/new` 深链仍可用；r5 版本化资产 `immutable`、稳定别名 `no-cache`、概览/容器列表 0 错误、六类破坏性操作确认弹窗未回退 |
+| 2026-11-15 12:34 | **全新安装**（`d025258` 内核健壮性 C 批四项） | CI run `43669273358` success；主包 11,987,576 B `77eaf7f1…b014`；新二进制 19,510,800 B `c7be6a7b…6048`；机器还原后 `install.sh` 重装 | 空库 **v20**、`integrity_check=ok`、7 插件、`/healthz` 18080/18081 与外部 18081 均 200；五项验收 **第 1、2、4、5 项通过，第 3 项不通过（停手）**：host_run 超时后瞬态单元不残留、`LoadState=not-found`；审计写库失败落 `audit-fallback.jsonl` 且业务仍成功、恢复后无半状态；`nginx -t` 主配置与 vhost 失败文案准确、候选文件零残留、线上配置未替换；回归（r5 资产/别名、概览、容器列表、页内弹窗新建、六类确认弹窗、文件动作、Web 安装进度）全部通过；**Docker 重启 60s 超时分支被 30s 请求超时截断，UI 只见 504 且 daemon.json 未回滚**（见 §8） |
 
 
 | 2026-11-13 08:15–08:20 | 快照还原后**全新安装**（形态三，budding 迁移 UI 验收前置） | run `43331444780`（`ref=main` head `51914a6`，代码同 `0d33a86`）；x86_64 主包 11,134,704 B `62a89b88…ce71`，测试机 `sha256sum` 一致 | 空库直建 **v19**、`integrity_check=ok`；前缀 `34h8y9da`；7 个官方插件装成；`/healthz` 18080/18081 均 200；登录 303 换 `skiff_dev_session`；`NRestarts=0` |
@@ -328,6 +343,39 @@
 ## 8. 最近一次全链路验收结论（截至 2026-11-12 `v0.1.0` / `7e322a3`，商店抓取静默丢包超时修复）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](changes/2026-11-10.md)、[changes/2026-11-09.md](changes/2026-11-09.md)，用例编号与预期结果见 [TEST_MATRIX.md](TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](TEST_LEDGER.md)。
+
+**2026-11-15 13:47–14:05 `fb7412d`（镜像源预算/取消还原、Node 健康 20s、现网 `nginx -t` 10s）验收：四项全部通过**
+
+- **部署与首屏（通过）**：清场后全新安装，空库 v20、`integrity_check=ok`、7 插件、站点 0；`skiff` / `skiff-http-fwd` / `docker` active；外部 `http://10.10.15.4:18081/34h8y9da/` 307（未登录跳登录）、`/healthz` 内外网 200；新二进制 19,510,800 B `fc611158…ffe9`。CI run `43680365951` success 后才出包，出包 run `43681434605` success。
+- **第 1 项 镜像源预算与失败语义（通过）**：沿用经授权的临时 drop-in + PATH shim（只拦 `restart docker`，不碰 `docker.service` / `docker.sock`），停掉 `skiff-web-nginx` 使运行容器为 0：
+  - 慢路径（shim 延迟 10s 后 exit 0，两跳）：请求 **16,036 ms** 返回 **400**（非 504），文案「systemctl restart docker 超过 8 秒未返回（结果未知，Docker 可能仍在重启）；已还原原 daemon.json；回滚重启未完成：systemctl restart docker 超过 8 秒未返回（结果未知，Docker 可能仍在重启）；请在维护窗口执行 systemctl restart docker」，shim 日志两次调用间隔 8 s。
+  - 一致性：请求结束后 `/etc/docker/daemon.json` md5 `7df09da892241ee3bc36ed2a96d8f1bb`（与提交前逐字一致）、DB `sites.registry_mirror` 仍为空，`/etc/docker` 仅 `daemon.json`（无 `.bak`）；Docker 未重启、容器状态不变。
+  - 快失败（shim 立即 `exit 1`）：**61 ms** 返回 400「systemctl restart docker 退出码 Some(1)；已还原原 daemon.json；回滚重启未完成：…；请在维护窗口执行 systemctl restart docker」，文件逐字还原。
+  - 就绪预算：shim 在 `restart docker` 时 `kill -STOP` dockerd 并 exit 0，`docker_ready` 于 **6,000 ms** 判定不可用，请求 **6,047 ms** 返回 400「docker 重启后不可用；已还原原 daemon.json；Docker 已按原配置重启」；整段耗时远小于 20 s 预算与 30 s 请求超时。事后 `kill -CONT` 恢复，`/proc/<pid>/status` 由 `T` 回 `S`。
+- **第 2 项 Node 健康检查预算（通过）**：`NODE_HEALTH_BUDGET = 20s`（[runtime.rs](../crates/app/src/sites/runtime.rs) 22 行），`skiff-web` 单测 `budget_tests::node_health_budget_is_below_request_timeout` 锁定 `REQUEST_TIMEOUT(30s) > 20s`（2 通过）；正常路径不受影响：新建 Node 24 运行环境 `node-fbn` 后重启 **1,783 ms** 返回 200「操作已完成」，容器 running、`http://127.0.0.1:9200` 正常。
+- **第 3 项 现网配置 `nginx -t` 10s 上限（通过）**：容器内临时把 `nginx` 换成「`-t` 时 `sleep 60`」的 shim（原二进制备份 `nginx.real`，验后恢复）：
+  - 现网校验（站点加别名触发 `validate_nginx_locked`）：**10,050 ms** 返回 **503**「nginx -t 超过 10 秒未返回，配置未生效（容器内校验进程可能仍在运行）」；别名未落库、vhost md5 仍 `7d49f45efaf1061aad8a33383626d016`，无半状态。
+  - 候选主配置（`POST /ui/v1/web/config`）：**10,033 ms** 返回 **400**「nginx -t 超过 10 秒未返回（容器内校验进程可能仍在运行）」；`/www/nginx/nginx.conf` md5 仍 `75ab5057396ba39ac7e7b95787698694`，未替换。
+  - 正常路径：原样保存主配置 **575 ms** 200「主配置已通过 nginx -t 并重载」，恢复后再次保存 513 ms 200；站点创建 **207 ms** 200；`nginx -t`/`nginx -s reload` 均正常。
+  - 观察（非失败）：候选校验**超时**分支不删除 `nginx.conf.candidate`（下次成功保存消费；`code != 0` 分支会删），本轮清理时手动移除。
+- **第 4 项 短回归（通过）**：镜像源正常保存 **33 ms/66 ms** 200「镜像源已写入 /etc/docker/daemon.json；检测到 2 个运行中容器，未自动重启 Docker，请在维护窗口执行 systemctl restart docker」，文件与 DB 一致，两次调用后已还原为原始三镜像；Web 服务配置保存 200；站点创建 `fbtest.local` 200；r5 资产 `budding-1.8.0-r5.min.js?v=1` 200 + `immutable`、稳定别名 `budding-boot.js` 200 + `no-cache`、`/favicon.ico` 与 `/static/favicon.svg` 均 200。
+- **回滚结论（单独）**：删除 skiff unit 的 `zz-path-shim.conf` drop-in 与 `/root/iter/shim`、`systemctl daemon-reload` 并重启 skiff——`systemctl show skiff -p Environment` 为空、`/etc/systemd/system/skiff.service.d` 与 `/root/iter/shim` 均不存在（本次单元无残留、无 PATH 覆盖）；dockerd 已恢复 `S (sleeping)`、`docker` active、`skiff-web-nginx` running；`daemon.json` 为原始三镜像且 md5 `7df09da8…`（`/etc/docker` 仅此一文件）；DB `sites.registry_mirror` 无行；`/healthz` 18080/18081/外部均 200；容器内临时 `nginx` shim 已还原为原二进制（与备份 md5 一致后删除 `nginx.real`）、无 `sleep` 残留、FIFO/lua 夹具已删，`nginx -t` 与 `-s reload` 复核正常。
+- **清理与证据**：测试站点 `fbtest.local`、Node 运行环境 `node-fbn`（含容器与 `/www/runtime/node`）、临时站点别名均已删除；`/www/nginx/conf.d` 与 `/www/nginx` 无候选/夹具；站点 0、别名 0、运行环境仅种子 `php-8.5`；未改代码、未提交。
+
+**2026-11-15 12:34–13:10 `d025258`（内核健壮性 C 批：临时单元超时清理 / 审计兜底 / Docker 重启超时与就绪预算 / `nginx -t` 统一通道）验收：第 1、2、4、5 项通过，第 3 项不通过**
+
+- **部署与首屏（通过）**：机器还原后全新安装（空库 v20、`integrity_check=ok`、7 插件、1 用户）；`skiff` / `skiff-http-fwd` / `docker` active；`/healthz` 18080、18081 与外部 `http://10.10.15.4:18081/healthz` 均 200；新二进制 19,510,800 B `c7be6a7b…6048`。CI run `43669273358`（head `d025258`）success 后才出包。
+- **第 1 项 临时单元超时清理（通过）**：把 `/etc/fail2ban/jail.d/skiff-skiffz.conf` 做成 FIFO 让 `tee` 阻塞，经插件 RPC `fail2ban.jail.ensure` 触发 `host_run` 30s 超时：请求 **30.0 s** 返回；轮询期间瞬态单元 `skiff-firewall-1604-2.service` 全程可见，响应后 `systemctl list-units 'skiff-firewall-*'` 为空、该单元 `LoadState=not-found` / `ActiveState=inactive`，再次 `systemctl stop` 返回 **rc=5**（not loaded，按 warn 处理）；主流程仍以「超时」结论返回（`IPC: 超时` / 504「请求处理超过 30 秒仍未完成」）。用户可见文案取决于先到期的 `request_timeout`，非 `host_run` 原文；清理失败分支仅记日志（代码 + rc=5 语义）。
+- **第 2 项 审计兜底（通过）**：SQLite 加 `audit_block` 触发器让审计插入 `raise(abort)` 后建站 `r21.local` 仍 **200**；`<数据根>/audit-fallback.jsonl` 增 1 行 `{"actor":"admin","ip":"127.0.0.1","action":"sites.create","target":"r21.local","result":"ok","detail":"/www/sites/r21.local"}` 并落盘；删触发器后删站 **200**，SQLite 审计出现 `sites.delete / r21.local / ok`（id 94），fallback 仍 1 行（不重复写）；`integrity_check=ok`、站点归 0，无半状态。
+- **第 3 项 Docker 重启超时与就绪探测（不通过，停手）**：经用户授权，用 skiff 自身 unit 的临时 drop-in 注入 PATH shim（只对 `restart docker` 延迟，不碰 `docker.service` / `docker.sock`），停掉 `skiff-web-nginx` 使运行容器数为 0 后提交镜像源：
+  - 请求 **30.03 s 返回 504**「请求处理超过 30 秒仍未完成，已中止（下游可能无响应）」；`SYSTEMCTL_TIMEOUT=60s` 分支与「结果未知」文案在 UI 路径**不可能出现**——路由层 `REQUEST_TIMEOUT=30s` 先取消整个 handler（[middleware.rs](../crates/web/src/middleware.rs) 46 行 vs [docker_daemon.rs](../crates/app/src/docker_daemon.rs) 148 行）。
+  - 取消发生在写 `daemon.json` 之后、回滚之前：请求结束后 `/etc/docker/daemon.json` 已含新镜像源且**未回滚**，Docker 实际未重启，DB 的 `sites.registry_mirror` 仍为空 → 留下半状态；shim 进程被杀，`sleep 70` 成孤儿并在 1 分钟后自行退出（未触发重启）。
+  - 快失败路径可达且正确：让 `restart` 立即 `exit 1`，**55 ms** 返回 400「systemctl restart docker 退出码 Some(1)；已恢复原 daemon.json」，`daemon.json` 逐字回到调用前内容、Docker 与容器未受影响；两次 `restart docker` 调用均有 shim 日志。
+  - `docker_ready` 的 30s 总预算只能静态确认（deadline 只算一次、单次探测 ≤10s、总时长 ≤30s），同样因 30s 请求超时无法在 UI 路径跑完，无实机计时。
+- **第 4 项 `nginx -t` 统一通道（通过）**：主配置写入 `worker_processes ;` 后 `POST /ui/v1/web/config` 返回 **400**「nginx -t 未通过（/www/nginx/nginx.conf.candidate）：… invalid number of arguments in "worker_processes" directive …；已回滚未替换；差异：第 2 行 - worker_processes auto; + worker_processes ;」，`/www/nginx` 无 `*.candidate`、`nginx.conf` md5 未变（`75ab5057…`）、容器 running；原样回写返回 200「主配置已通过 nginx -t 并重载」。站点 vhost 写入 `broken_directive_d025` 后 `POST /ui/v1/sites/{domain}/config` 返回 **409**「站点配置校验未通过：… unknown directive "broken_directive_d025" …；差异：…」，`/www/skiff/vhost-check` 为空、vhost 文件 md5 未变；原样回写 200「配置已保存、校验通过并已重载 nginx」、`reloaded=true`。
+- **第 5 项 回归（通过）**：r5 资产 `/{p}/static/budding/budding-boot.js` 200（291,170 B、`no-cache`）、根路径 `/static/budding/*` 404（按 URL 契约不保留前缀旁路）、`/favicon.ico` 200；九页（概览、站点、容器、菜单设置、界面、Web 服务、审计、任务、文件）200、iframe 0、控制台 0；容器列表 1 行、点「仅异常」显示「没有异常容器」且计数 0、作业日志壳页 200 + 同 URL `Accept: application/json` 14 条；站点与运行环境「新建」均为页内弹窗（URL 不变），空域名就地「请输入域名」0 请求、非法域名/版本 400 就地报错并保留输入、成功创建 `r25.local` 且深链 `/sites/new` 提交跳转 `/sites/r25b.local`；六类破坏性操作（站点停止、关 HTTPS、删附加域名、删站点错域名就地报错、公钥撤销、插件卸载）全部 `.bud-layer-card` 组件弹窗、取消零请求且状态不变、原生对话框 0；文件管理新建/编辑/重命名/复制/非法权限就地报错/chmod 0640/chown 0:0/压缩/正常解压全部落盘，含 `../../pwn.txt` 的 tar.gz 解压 **403**「压缩包条目含 .. 穿越，拒绝解出: ../../pwn.txt」，`out2` 为空、`/srv/pwn.txt` 等均不存在；Web 安装进度：删除容器后点安装，进度块按 **2042 ms** 间隔轮询并显示 6 步、完成态「安装已完成 · 2 秒」，`skiff-web-nginx` 重建 running、stub 200。
+- **回滚与清理（通过）**：删除 skiff unit 的 drop-in 与 `/root/iter/shim`、`daemon-reload` 并重启 skiff，`Environment=` 回空、`/etc/systemd/system/skiff.service.d` 与 `/root/iter/shim` 均不存在；恢复 `daemon.json` 原始内容并删除两份 `.bak`；真实 `systemctl restart docker` 后 Docker active、`skiff-web-nginx` 回到 running、外部 `/healthz` 200。测试站点 `r19.local`/`r25.local`/`r25b.local`/`d025t1.local`、公钥 `r19-acceptance`、`/srv/r19files`（含穿越样本）已删除；`/etc/fail2ban/jail.d` 无残留、`/www/nginx` 无候选、`/www/skiff/vhost-check` 为空、`/etc/docker` 仅 `daemon.json`；站点 0、公钥仅 `official`、容器仅 `skiff-web-nginx`；`audit-fallback.jsonl` 作为产品数据保留。未改代码、未提交。
+- **证据**：`skiff-run/plugin-acceptance/{hostrunD025,auditD025,docker_to_D025c,docker_to_D025d,nginx_d025,sites_d025,files19,traversal_d025,web19-progress,assets18,dialogs19,regress19,overview_d025,cleanup_d025}*-report.json` 与 `plugin-shots/r25-*.png`。
 
 **2026-11-15 08:10–08:35 `7946e93`（界面预设/三层配色 + 列表页内弹窗新建）验收：全部通过**
 
