@@ -26,6 +26,12 @@ pub const STUB_URL: &str = "http://127.0.0.1:8081/nginx_status";
 /// 主配置里内核生成标记；有标记才允许内核追加 stub 段。
 const MAIN_CONF_MARKER: &str = "# 由 Skiff 内核生成";
 
+/// 容器内 `nginx -t` 的执行上限。
+///
+/// 所有 `nginx -t` 调用点（候选配置、现网配置）都在请求路径上，必须明显短于
+/// web 层 30 秒请求超时，否则调用方来不及清理候选文件/回滚就只剩 504。
+pub(crate) const NGINX_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// nginx 性能参数（主配置里由内核渲染，不手改文本）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NginxParams {
@@ -648,14 +654,15 @@ fn nginx_level_label(level: &str) -> &'static str {
 impl AppState {
     /// 在 nginx 容器内对**候选主配置**执行 `nginx -t`，返回 (退出码, 合并输出)。
     ///
-    /// 只统一「怎么跑」：主配置与站点 vhost 的候选生命周期不同（前者成功后 rename
-    /// 上线，后者校验完即清理），因此临时文件的创建/清理仍留在各自调用点。
+    /// 执行上限见 [`NGINX_TEST_TIMEOUT`]：校验属于请求路径（保存主配置/站点 vhost），
+    /// 必须明显短于 web 层 30 秒请求超时，超时后才能走到候选文件清理与回滚分支。
     pub(crate) async fn nginx_test_candidate(
         &self,
         container_main: &str,
     ) -> Result<(i64, String), SiteError> {
-        self.docker()
-            .exec_capture(
+        let (code, out, timed_out) = self
+            .docker()
+            .exec_capture_timeout(
                 NGINX_CONTAINER,
                 vec![
                     "nginx".into(),
@@ -663,9 +670,18 @@ impl AppState {
                     "-c".into(),
                     container_main.to_string(),
                 ],
+                NGINX_TEST_TIMEOUT,
             )
             .await
-            .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))
+            .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
+        if timed_out {
+            // Docker 没有 kill exec 的接口：只能停止等待，容器内进程可能仍在跑。
+            return Err(SiteError::Unavailable(format!(
+                "nginx -t 超过 {} 秒未返回（容器内校验进程可能仍在运行）",
+                NGINX_TEST_TIMEOUT.as_secs()
+            )));
+        }
+        Ok((code, out))
     }
 
     async fn nginx_container(&self) -> Result<(String, String, String), SiteError> {

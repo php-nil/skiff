@@ -1165,6 +1165,9 @@ impl AppState {
 
     /// 同上。**调用方必须已持有 [`super::nginx_write_lock`]**，否则可能在证书
     /// 两次 rename 之间读到不配对的文件。
+    ///
+    /// `nginx -t` 带 [`crate::nginx::NGINX_TEST_TIMEOUT`] 上限：本函数在建站/证书
+    /// 等请求路径上被调用，校验卡住时必须先返回错误让调用方回滚文件。
     async fn validate_nginx_locked(&self) -> Result<(), SiteError> {
         let rows = self
             .docker()
@@ -1176,11 +1179,21 @@ impl AppState {
                 "nginx 运行环境未启动，无法校验配置".into(),
             ));
         }
-        let (code, out) = self
+        let (code, out, timed_out) = self
             .docker()
-            .exec_capture(NGINX_CONTAINER, vec!["nginx".into(), "-t".into()])
+            .exec_capture_timeout(
+                NGINX_CONTAINER,
+                vec!["nginx".into(), "-t".into()],
+                crate::nginx::NGINX_TEST_TIMEOUT,
+            )
             .await
             .map_err(|e| SiteError::Unavailable(format!("执行 nginx -t 失败：{e}")))?;
+        if timed_out {
+            return Err(SiteError::Unavailable(format!(
+                "nginx -t 超过 {} 秒未返回，配置未生效（容器内校验进程可能仍在运行）",
+                crate::nginx::NGINX_TEST_TIMEOUT.as_secs()
+            )));
+        }
         if code == 0 {
             Ok(())
         } else {
