@@ -8,6 +8,7 @@ pub mod actions;
 pub mod admin_fs;
 mod atomic;
 pub mod attention;
+mod audit;
 pub mod auth;
 pub mod catalog;
 pub mod commands;
@@ -409,9 +410,11 @@ impl AppState {
         &self.db
     }
 
-    /// 审计写入的统一出口：写失败必须留痕，不允许静默丢弃。
+    /// 审计写入的统一出口：同步写库；写失败时落盘兜底，绝不静默丢弃。
     ///
     /// 参数顺序与 `Db::audit` 完全一致，调用方只替换方法名，审计内容不变。
+    /// 刻意保持同步：审计必须与业务操作同一次请求内落库，异步投递会引入
+    /// 「队列满丢弃 / 崩溃丢尾部」，与审计不丢的目标冲突（见 `audit.rs` 模块注释）。
     pub fn audit_or_log(
         &self,
         actor: &str,
@@ -422,13 +425,42 @@ impl AppState {
         detail: &str,
     ) {
         if let Err(e) = self.db.audit(actor, ip, action, target, result, detail) {
-            tracing::error!(
-                error = %e,
+            let entry = crate::audit::FallbackEntry {
+                ts: crate::time_fmt::unix_now(),
                 actor,
+                ip,
                 action,
                 target,
-                "审计写入失败（操作已按原结果继续）"
-            );
+                result,
+                detail,
+            };
+            self.audit_fallback(&entry, &e);
+        }
+    }
+
+    /// 写库失败后的同步兜底：追加到 `<数据根>/audit-fallback.jsonl` 并 fsync。
+    fn audit_fallback(
+        &self,
+        entry: &crate::audit::FallbackEntry<'_>,
+        db_error: &dyn std::fmt::Display,
+    ) {
+        match crate::audit::append_fallback(&self.cfg.data_dir, entry) {
+            Ok(path) => tracing::error!(
+                error = %db_error,
+                path = %path.display(),
+                actor = entry.actor,
+                action = entry.action,
+                target = entry.target,
+                "审计写库失败，已追加到兜底文件"
+            ),
+            Err(e) => tracing::error!(
+                error = %db_error,
+                fallback_error = %e,
+                actor = entry.actor,
+                action = entry.action,
+                target = entry.target,
+                "审计写库与兜底落盘均失败，记录丢失"
+            ),
         }
     }
 
@@ -598,12 +630,22 @@ impl skiff_plugin::capability::CapabilityHost for AppState {
         result: &str,
         detail: &str,
     ) {
-        // 审计写失败不阻断能力调用：调用结果已由 handler 决定，审计只是流水。
+        // 审计写失败不阻断能力调用，但必须落盘兜底：调用方已按能力结果返回，
+        // 不能因为存储抖动让同一次操作既成功又无记录。
         if let Err(e) = self
             .db
             .audit(actor, channel, action, target, result, detail)
         {
-            tracing::error!(error = %e, action, "能力面审计写入失败");
+            let entry = crate::audit::FallbackEntry {
+                ts: crate::time_fmt::unix_now(),
+                actor,
+                ip: channel,
+                action,
+                target,
+                result,
+                detail,
+            };
+            self.audit_fallback(&entry, &e);
         }
     }
 }
