@@ -5612,6 +5612,38 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
     );
 }
 
+/// 宿主弹窗内的下拉菜单必须盖过 `.bud-layer-root`，且可用性不依赖进入动画完成。
+///
+/// 回归：站点/运行环境/任务弹窗里的 select 菜单默认 z-index 2000，被 2400 的
+/// `.bud-layer-root` 整层压住；用户只看到当前值，选不到 PHP/Node 等其它选项。
+#[test]
+fn dialog_menu_overlay_stays_above_bud_layer() {
+    let css = include_str!("../static/skiff.css");
+    let rule = css
+        .split(".v-overlay-container > .v-overlay.v-overlay--active.v-menu")
+        .nth(1)
+        .expect("必须为激活菜单的 overlay 提权，避免被 2400 的宿主弹窗盖住");
+    assert!(
+        rule.contains("z-index: 2500 !important"),
+        "菜单 overlay 的 z-index 必须高于宿主弹窗(2400): {rule}"
+    );
+    assert!(
+        rule.contains("opacity: 1 !important") && rule.contains("pointer-events: auto !important"),
+        "激活菜单不能停在进入动画的 opacity:0/pointer-events:none: {rule}"
+    );
+}
+
+/// 没有随包 schema 的旧 HTML 插件视图自动回落到 `?legacy=1`，而不是渲染失败页。
+#[test]
+fn plugin_view_falls_back_to_legacy_when_schema_missing() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("legacyUrl.searchParams.set('legacy', '1')")
+            && js.contains("location.replace(legacyUrl.pathname + legacyUrl.search)"),
+        "schema 404 时必须自动回落旧 SSR 工作台"
+    );
+}
+
 /// 站点级设置页已移除：镜像加速源/前缀归 Docker 设置，镜像标签归运行环境页。
 #[tokio::test]
 async fn site_settings_removed_and_docker_settings_hosts_mirror() {

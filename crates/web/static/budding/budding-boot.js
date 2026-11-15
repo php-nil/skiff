@@ -8169,7 +8169,17 @@
       .then(function (res) {
         if (res.status !== 200) {
           if (res.status === 403) throw new Error('当前角色无权访问该插件功能页');
-          if (res.status === 404) throw new Error('该视图没有随包 schema（可能仍是旧 HTML 界面）');
+          if (res.status === 404) {
+            // 旧 HTML 视图没有随包 schema：自动回落到旧 SSR 工作台（iframe），
+            // 而不是给用户一张“加载失败”。未知视图回落后仍由服务端 404。
+            var legacyUrl = new URL(location.href);
+            if (legacyUrl.searchParams.get('legacy') !== '1') {
+              legacyUrl.searchParams.set('legacy', '1');
+              location.replace(legacyUrl.pathname + legacyUrl.search);
+              return new Promise(function () {});
+            }
+            throw new Error('该视图没有随包 schema（可能仍是旧 HTML 界面）');
+          }
           throw new Error(errorMessage(res));
         }
         var doc = res.body;
