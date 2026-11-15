@@ -46,6 +46,10 @@ pub struct ContainerSpec {
     pub healthcheck: Option<Healthcheck>,
     #[serde(default)]
     pub networks: Vec<String>,
+    /// 静态 IPv4 地址（只对第一个 `networks` 生效）。内核站点用它把运行环境
+    /// 固定在专用 bridge 上，容器重建时复用同一地址；插件禁止设置。
+    #[serde(default)]
+    pub network_ip: Option<String>,
     /// Docker 网络模式。当前只允许 `host`（宿主机直装形态由内核自用；插件禁止）。
     #[serde(default)]
     pub network_mode: Option<String>,

@@ -75,8 +75,8 @@ pub struct Runtime {
     pub last_status: String,
     /// 仅 PHP：FPM socket 的宿主绝对路径；vhost 由它换算容器路径，禁止硬编码。
     pub socket_path: Option<String>,
-    /// 仅进程型环境（Rust / Node.js）：环境固定监听端口（host 网络）；站点 vhost 反代到它。
-    /// PHP 走 socket，此列为空。
+    /// 仅进程型环境（Rust / Node.js）：容器内固定监听端口（专用网络，不占宿主端口）；
+    /// 站点 vhost 直接反代到 `container_ip:port`。PHP 走 socket，此列为空。
     pub port: Option<u16>,
     /// 同一 kind 内最多一个默认版本。
     pub is_default: bool,
@@ -86,6 +86,11 @@ pub struct Runtime {
     pub extensions: String,
     /// `instance`：用户创建的真实实例；`seed`：迁移种入、未安装的占位行（只作模板，不进列表）。
     pub origin: String,
+    /// 容器在专用 bridge 上的静态地址；为空表示尚未分配（旧实例或未重建）。
+    /// 站点 vhost 只允许指向这个地址，不允许指向宿主 `127.0.0.1`。
+    pub container_ip: Option<String>,
+    /// 显式对外发布端口（宿主 → 容器内部端口）。`None` = 不发布（默认）。
+    pub publish_port: Option<u16>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -120,14 +125,16 @@ fn row_to_runtime(r: &Row<'_>) -> rusqlite::Result<Runtime> {
         config_json: r.get(11)?,
         extensions: r.get(12)?,
         origin: r.get(13)?,
-        created_at: r.get(14)?,
-        updated_at: r.get(15)?,
+        container_ip: r.get(14)?,
+        publish_port: r.get(15)?,
+        created_at: r.get(16)?,
+        updated_at: r.get(17)?,
     })
 }
 
 const RUNTIME_COLS: &str = "id, kind, name, version, image, image_digest, desired_state, \
                             last_status, socket_path, port, is_default, config_json, \
-                            extensions, origin, created_at, updated_at";
+                            extensions, origin, container_ip, publish_port, created_at, updated_at";
 
 impl Db {
     pub fn create_runtime(&self, r: &NewRuntime) -> Result<Runtime> {
@@ -308,6 +315,32 @@ impl Db {
         Ok(())
     }
 
+    /// 写入容器在专用 bridge 上的静态地址（重建时复用同一地址）。
+    pub fn set_runtime_container_ip(&self, id: &str, ip: &str) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE site_runtimes SET container_ip = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, ip, now()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 设置或清除显式对外发布端口。`None` 表示不向宿主发布。
+    pub fn set_runtime_publish_port(&self, id: &str, port: Option<u16>) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE site_runtimes SET publish_port = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, port.map(i64::from), now()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
     /// 切换同 kind 的默认版本；部分唯一索引逐行校验，先清旧默认再置新。
     pub fn set_runtime_default(&self, id: &str) -> Result<()> {
         // 先查 kind 再拿连接，避免持锁期间再次 conn() 造成自锁。
@@ -409,6 +442,25 @@ mod tests {
         assert_eq!(second.name, "php-8.5-a");
         assert_eq!(second.version, "8.5");
         assert_eq!(db.list_runtimes().unwrap().len(), 3);
+    }
+
+    /// v21 新增的两列：默认不公开、地址未分配；写入后按行原样读回。
+    #[test]
+    fn container_ip_and_publish_port_round_trip() {
+        let db = Db::open_in_memory().unwrap();
+        let rt = db.create_runtime(&php("php-8.4", "8.4", false)).unwrap();
+        assert_eq!(rt.container_ip, None);
+        assert_eq!(rt.publish_port, None);
+        db.set_runtime_container_ip(&rt.id, "172.18.16.7").unwrap();
+        db.set_runtime_publish_port(&rt.id, Some(8081)).unwrap();
+        let got = db.runtime_by_id(&rt.id).unwrap().unwrap();
+        assert_eq!(got.container_ip.as_deref(), Some("172.18.16.7"));
+        assert_eq!(got.publish_port, Some(8081));
+        db.set_runtime_publish_port(&rt.id, None).unwrap();
+        assert_eq!(
+            db.runtime_by_id(&rt.id).unwrap().unwrap().publish_port,
+            None
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 20;
+pub const CURRENT_SCHEMA_VERSION: i64 = 21;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -123,7 +123,7 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        let steps: [(i64, &str); 20] = [
+        let steps: [(i64, &str); 21] = [
             (1, SCHEMA_V1),
             (2, SCHEMA_V2),
             (3, SCHEMA_V3),
@@ -144,6 +144,7 @@ impl Db {
             (18, SCHEMA_V18),
             (19, SCHEMA_V19),
             (20, SCHEMA_V20),
+            (21, SCHEMA_V21),
         ];
         for (to, schema) in steps {
             if version >= to {
@@ -782,6 +783,16 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at DESC, id D
 /// 放同一行而不是另建表，避免与 `jobs` 的清理、取消、重试、活跃唯一性分叉。
 const SCHEMA_V20: &str = r#"
 ALTER TABLE jobs ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]';
+"#;
+
+/// v21：运行环境容器地址与显式对外发布端口。
+///
+/// `container_ip` 是内核在专用 bridge 上为该容器静态保留的地址，站点 vhost
+/// 只允许指向它；`publish_port` 为空表示不向宿主发布（默认），非空表示用户
+/// 显式要求把宿主端口转发到容器内部端口。旧实例两列为空，重建运行环境时补齐。
+const SCHEMA_V21: &str = r#"
+ALTER TABLE site_runtimes ADD COLUMN container_ip TEXT;
+ALTER TABLE site_runtimes ADD COLUMN publish_port INTEGER;
 "#;
 
 #[cfg(test)]

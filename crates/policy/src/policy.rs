@@ -256,6 +256,11 @@ impl Policy {
         for net in &spec.networks {
             validate_object_name(net)?;
         }
+        if spec.network_ip.is_some() {
+            return Err(PolicyError::BadRequest(
+                "插件不允许指定静态容器地址（只允许内核站点网络使用）".into(),
+            ));
+        }
         // host 网络只由内核「网站」能力使用（宿主 80/443 直通）；插件一律拒绝。
         if spec.network_mode.is_some() {
             return Err(PolicyError::BadRequest(
@@ -447,6 +452,7 @@ mod tests {
             healthcheck: None,
             networks: vec![],
             network_mode: None,
+            network_ip: None,
             mounts: vec![],
             log_driver: None,
             log_max_size: None,

@@ -759,10 +759,38 @@ impl DockerService {
 
     /// MVP 只允许默认 `bridge` 网络（§6.4.3）。
     pub async fn create_network(&self, name: &str) -> Result<NetworkCreateResponse, DockerError> {
+        self.create_network_with_ipam(name, None, None).await
+    }
+
+    /// 创建 bridge 网络，可指定子网与动态分配段。
+    ///
+    /// `ip_range` 用于把 Docker 的动态分配限制在一段内，给内核的静态地址
+    /// 留出其余地址；`subnet` 为空时交给 Docker 自动选择。
+    pub async fn create_network_with_ipam(
+        &self,
+        name: &str,
+        subnet: Option<&str>,
+        ip_range: Option<&str>,
+    ) -> Result<NetworkCreateResponse, DockerError> {
+        let ipam = if subnet.is_some() || ip_range.is_some() {
+            Some(bollard::models::Ipam {
+                driver: Some("default".to_string()),
+                config: Some(vec![bollard::models::IpamConfig {
+                    subnet: subnet.map(str::to_string),
+                    ip_range: ip_range.map(str::to_string),
+                    gateway: None,
+                    auxiliary_addresses: None,
+                }]),
+                options: None,
+            })
+        } else {
+            None
+        };
         self.client()?
             .create_network(NetworkCreateRequest {
                 name: name.to_string(),
                 driver: Some("bridge".to_string()),
+                ipam,
                 ..Default::default()
             })
             .await
@@ -1269,8 +1297,17 @@ fn build_config(spec: &ContainerSpec) -> ContainerCreateBody {
         None
     } else {
         let mut endpoints = HashMap::new();
-        for net in &spec.networks {
-            endpoints.insert(net.clone(), bollard::models::EndpointSettings::default());
+        for (idx, net) in spec.networks.iter().enumerate() {
+            let mut endpoint = bollard::models::EndpointSettings::default();
+            if idx == 0 {
+                if let Some(ip) = spec.network_ip.as_ref().filter(|ip| !ip.is_empty()) {
+                    endpoint.ipam_config = Some(bollard::models::EndpointIpamConfig {
+                        ipv4_address: Some(ip.clone()),
+                        ..Default::default()
+                    });
+                }
+            }
+            endpoints.insert(net.clone(), endpoint);
         }
         Some(NetworkingConfig {
             endpoints_config: Some(endpoints),
@@ -1493,6 +1530,7 @@ mod tests {
             healthcheck: None,
             networks: vec![],
             network_mode: None,
+            network_ip: None,
             mounts: vec![Mount::Volume {
                 source: "html".into(),
                 target: "/usr/share/nginx/html".into(),

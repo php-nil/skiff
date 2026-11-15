@@ -225,6 +225,7 @@ pub fn parse(text: &str, project: &str) -> Result<ComposeProject, ComposeError> 
             healthcheck,
             networks,
             network_mode: None,
+            network_ip: None,
             mounts,
             log_driver: None,
             log_max_size: None,

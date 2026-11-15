@@ -627,6 +627,7 @@ pub(crate) fn spec_from_fields(f: SpecFields) -> Result<ContainerSpec, AppError>
         healthcheck: None,
         networks: f.networks,
         network_mode: None,
+        network_ip: None,
         mounts,
         log_driver: None,
         log_max_size: None,
