@@ -87,7 +87,7 @@
 | 文档 | 什么时候读 | 不读的后果 | 状态 |
 | --- | --- | --- | --- |
 | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 增删官方插件、查开箱即用交付线（官方插件 6 个 + testkit = 7 个签名包） | 插件清单与发布包口径不一致 | 现行（2026-11-13） |
-| [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md) | 需要向 budding 团队提能力缺口 | 重复提需求或误以为已实现 | 现行（对照 budding 1.8.0；2026-11-13） |
+| [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md) | 需要向 budding 团队提能力缺口 | 重复提需求或误以为已实现 | 现行（U5 未关闭；2026-11-16） |
 | [BUDDING_INTERACTION_CAPABILITIES.md](BUDDING_INTERACTION_CAPABILITIES.md) | 写插件 Schema / 原生页交互，查 budding 组件用法与宿主采用约定 | 自造弹窗/确认/反馈，或误用条件表达式与字面量转义 | 现行（2026-11-13） |
 | [PLUGIN_UI_SCHEMA_ASSESSMENT.md](PLUGIN_UI_SCHEMA_ASSESSMENT.md) | 评估插件功能页去 iframe、改 Schema 原生渲染的可行性与工作量 | 误判插件页现状或重复评估 | 评估稿（2026-11-13） |
 | [plugins/README.md](../plugins/README.md) | 改官方插件、第二 workspace、打包 | 根三关漏跑插件 workspace | 现行（2026-11-13） |

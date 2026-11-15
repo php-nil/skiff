@@ -5612,35 +5612,6 @@ async fn site_env_page_drops_install_progress_and_uses_drawer() {
     );
 }
 
-/// 宿主弹窗内的下拉菜单必须盖过 `.bud-layer-root`，且可用性不依赖进入动画完成。
-///
-/// 回归：站点/运行环境/任务弹窗里的 select 菜单默认 z-index 2000，被 2400 的
-/// `.bud-layer-root` 整层压住；用户只看到当前值，选不到 PHP/Node 等其它选项。
-#[test]
-fn dialog_menu_overlay_stays_above_bud_layer() {
-    // 规则必须随 boot 注入：壳页只加载 budding 的 CSS，不加载内核 skiff.css。
-    let js = include_str!("../static/budding/budding-boot.js");
-    assert!(
-        js.contains("installOverlayLayer")
-            && js.contains(
-                ".v-overlay-container > .v-overlay.v-overlay--active.v-menu { z-index: 2500 !important; }"
-            ),
-        "壳页必须自己注入菜单提权规则，避免被 2400 的宿主弹窗盖住"
-    );
-    assert!(
-        js.contains("opacity: 1 !important; pointer-events: auto !important;"),
-        "激活菜单不能停在进入动画的 opacity:0/pointer-events:none"
-    );
-    // `.v-overlay-container` 的 contain: layout 让容器内 z-index 提权失效（实测
-    // 容器到 2600/99999 仍被 2400 的弹窗盖住），只有把菜单挂到 body 才恢复可点。
-    assert!(
-        js.contains("function liftActiveMenus()")
-            && js.contains("document.body.appendChild(menu)")
-            && js.contains("new MutationObserver(liftActiveMenus)"),
-        "激活菜单必须从 .v-overlay-container 挂到 body"
-    );
-}
-
 /// 没有随包 schema 的旧 HTML 插件视图自动回落到 `?legacy=1`，而不是渲染失败页。
 #[test]
 fn plugin_view_falls_back_to_legacy_when_schema_missing() {

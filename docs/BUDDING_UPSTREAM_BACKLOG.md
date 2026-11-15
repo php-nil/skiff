@@ -1,11 +1,24 @@
 # budding 上游缺口清单
 
-> 复核：2026-11-15。上游答复（1.9.0）确认 U1–U4 全部实现且向后兼容；仓内产物已升级到 `1.8.0-r6`（功能集 1.9.0）。当前**无未关闭的上游需求**，只保留宿主侧待办。
+> 复核：2026-11-16。上游答复（1.9.0）确认 U1–U4 全部实现且向后兼容；仓内产物已升级到 `1.8.0-r6`（功能集 1.9.0）。当前**有一条未关闭的上游需求（U5：弹窗内的 overlay 层叠）**，宿主侧不再自行打补丁。
 > 能力用法见 [BUDDING_INTERACTION_CAPABILITIES.md](BUDDING_INTERACTION_CAPABILITIES.md)；接入边界与 JSON 契约见 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)。
 
 ## 一、上游需求
 
-无。U1–U4 的关闭结论与替代做法见 §四。
+### U5 宿主弹窗内的下拉菜单被弹窗整层压住（未关闭，2026-11-16）
+
+- **现象**：在宿主弹窗（`.bud-layer-root`，`z-index: 2400`）里点开任何 `select` 字段，Vuetify 的菜单 `.v-overlay.v-menu`（默认 `z-index: 2000`）不显示；用户只看到当前值。站点「新建站点」弹窗因此只能选到默认的「静态站点」，PHP / Node 类型选不到。
+- **实测证据**（测试机 10.10.15.4，Chrome，2026-11-16）：
+  - DOM 里三个选项齐全（`运行环境（PHP / Node）` / `静态站点` / `反向代理`），菜单节点已激活、坐标正确（`position: fixed`，`left=176, top≈245`），`opacity=1`、`pointer-events=auto`；
+  - 截图：菜单不可见；临时把 `.bud-layer-root` 设为 `visibility: hidden` 后，菜单完整显示在原坐标；
+  - `document.elementsFromPoint()` 在选项矩形内命中的是弹窗里的 `INPUT.v-field__input`，不是菜单项；
+  - 菜单挂在 `.v-overlay-container` 内，该容器带 `contain: layout`。**把容器 `z-index` 提到 2600、99999，或把 `.bud-layer-root` 降到 1900/1800，菜单仍被弹窗压住**；只有把菜单节点 append 到 `document.body` 后才立即可见可点。
+- **影响面**：所有宿主弹窗内的下拉，包括站点类型、运行环境选择（runtime 实例）、计划任务的目标插件/方法、任务编辑器等；凡是弹窗里的 `select` 都用不了，不只是站点类型。
+- **建议上游方向**（任一）：
+  1. 弹窗上下文内的 overlay 层叠策略：弹窗打开时把 `.v-overlay-container`（或其内的菜单）提升到弹窗层之上，或把菜单渲染进弹窗自身的 stacking context；
+  2. 为 `select` / 表单字段或 `LayerInput` 提供 portal / `zIndex` / `attach` / `host` 配置项，由宿主按容器指定挂载点；
+  3. 弹窗若继续自定义 `.bud-layer-root`，请同步给出与 Vuetify overlay 的层级约定（例如菜单基准高于弹窗，或容器不使用 `contain: layout`）。
+- **宿主侧现状**：2026-11-16 曾尝试在 `budding-boot.js` 注入层叠规则并监听 DOM 把激活菜单挂到 `body`，按产品口径**已整体撤销**（不保留宿主补丁）；相关建站用例标记为「等上游版本」，不放宽断言。
 
 ## 二、宿主侧待补契约（不是上游缺口）
 
