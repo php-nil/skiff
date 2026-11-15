@@ -107,7 +107,7 @@ fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
         root_dir: s.root_dir.clone(),
         index_dir: s.index_dir.clone(),
         site_type: s.site_type.clone(),
-        type_label: s.type_label.clone(),
+        type_label: super::sites::type_label(&s.site_type).to_string(),
         runtime_id: s.runtime_id.clone(),
         runtime_label: s.runtime_label.clone(),
         runtime_name: s.runtime_name.clone(),

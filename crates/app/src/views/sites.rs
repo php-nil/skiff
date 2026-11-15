@@ -17,7 +17,6 @@ pub struct SiteSummary {
     pub root_dir: String,
     pub index_dir: String,
     pub site_type: String,
-    pub type_label: String,
     pub runtime_id: String,
     pub runtime_label: String,
     pub runtime_name: String,
@@ -143,7 +142,6 @@ pub fn summary(
             .to_string(),
         root_dir: s.root_dir.clone(),
         site_type: s.site_type.clone(),
-        type_label: type_label(&s.site_type).to_string(),
         runtime_id: s.runtime_id.clone().unwrap_or_default(),
         runtime_label,
         runtime_name,
@@ -175,13 +173,5 @@ pub fn summary(
             .join("、"),
         alias_more: aliases.len().saturating_sub(2),
         aliases,
-    }
-}
-
-fn type_label(t: &str) -> &'static str {
-    match t {
-        TYPE_STATIC => "静态网站",
-        TYPE_PROXY => "反向代理",
-        _ => "运行环境",
     }
 }

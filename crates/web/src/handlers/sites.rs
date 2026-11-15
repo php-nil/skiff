@@ -56,7 +56,7 @@ fn env_view(env: &SiteEnvStatus) -> SiteEnvView {
     }
 }
 
-fn type_label(t: &str) -> &'static str {
+pub(crate) fn type_label(t: &str) -> &'static str {
     match t {
         TYPE_STATIC => "静态网站",
         TYPE_PROXY => "反向代理",
@@ -306,7 +306,7 @@ pub(crate) fn site_view(s: &skiff_app::views::sites::SiteSummary) -> SiteView {
         index_dir: s.index_dir.clone(),
         root_dir: s.root_dir.clone(),
         site_type: s.site_type.clone(),
-        type_label: s.type_label.clone(),
+        type_label: type_label(&s.site_type).to_string(),
         runtime_id: s.runtime_id.clone(),
         runtime_label: s.runtime_label.clone(),
         runtime_name: s.runtime_name.clone(),
