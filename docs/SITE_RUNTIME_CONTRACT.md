@@ -75,7 +75,10 @@ Site (static / proxy)  不持有 RuntimeEnv
 3. `site_type = proxy` ⇒ `runtime_id` 为空，`proxy_target` 非空合法。
 4. 绑定前必须检查运行环境 `last_status = running` 且 `desired_state = running`：
    - PHP：`socket_path` 存在且可连接（stat 到 socket 文件，权限 `0660`）；
-   - Node.js / Rust：`port` 已分配，且 `http://127.0.0.1:<port><health_path>`（Node）或端口可连接（Rust）；
+   - Node.js / Rust：`port` 已分配，且**端口监听套接字属于本环境容器**，Node 还要求
+     `http://127.0.0.1:<port><health_path>` 返回 2xx/3xx。容器处于 `restarting` / `StartedAt`
+     在等待窗口内变化（crash-loop）一律判未就绪；监听者属于宿主其它进程时判失败并给出
+     `pid + 进程名`。只做端口连通判定会把「陌生进程占着同一端口」误判成就绪（`2026-11-15` 实机缺陷）；
    - Go：未实现，禁止创建绑定站点。
 5. 运行环境停止 / 异常时**禁止新建绑定站点**；已有站点保留记录，但列表显示“环境停止/环境异常”，
    不把站点状态误报为 running。
