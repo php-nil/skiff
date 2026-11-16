@@ -2137,9 +2137,13 @@ requires = ["fs"]
     ///
     /// 打包不再由内核在进程内完成（那是绕过通道的文件 IO），而是提交一条 `host.exec`
     /// 作业跑 `tar`：任务运行记录与作业记录成对出现，过程日志在任务中心。
-    /// 开发机上既没有 `tar` 也没有执行通道，因此「有作业 / 没作业」两条分支都要断言：
-    /// 有作业就必须已结算且来源是 `sched`；没作业只能是提交前的拒绝（缺 `tar`），
-    /// 不能留下一条永远在跑的作业。
+    ///
+    /// 这条用例断言的是**记录与产物必须一致**，而不是「一定成功」：特权通道要求
+    /// root + systemd，测试机满足，Windows 开发机与以普通用户跑的 CI 不满足
+    /// （`systemd-run` 会以退出码 1 拒绝）。所以：
+    /// - 成功 → 必须真有 1 个归档，且作业 `result.success` 为真；
+    /// - 失败 → 任务如实失败、作业带错误类并已结算，不能停在运行中或假装成功；
+    /// - 连 `tar` 都没有 → 提交前就拒，不留空作业。
     #[tokio::test]
     async fn site_backup_runs_through_an_exec_job() {
         let dir = tempfile::tempdir().unwrap();
@@ -2161,20 +2165,23 @@ requires = ["fs"]
                 assert_eq!(job.kind, crate::jobs::KIND_HOST_EXEC);
                 assert!(job.status.terminal(), "作业必须结算，不能停在运行中");
                 assert!(job.params["origin"] == "sched", "{}", job.params);
-                if cfg!(target_os = "linux") {
-                    assert_eq!(record["result"], "ok", "{record}");
-                    let archived = dir
-                        .path()
-                        .join("backups/sites/example.com")
-                        .read_dir()
-                        .unwrap()
-                        .count();
-                    assert_eq!(archived, 1);
-                } else {
-                    // 通道只在 Linux 可用：作业被提交并结算为失败，任务如实失败。
-                    assert_eq!(record["result"], "fail", "{record}");
-                    let detail = record["error_detail"].as_str().unwrap_or_default();
-                    assert!(detail.contains(BUILTIN_SITE_BACKUP), "{detail}");
+                match record["result"].as_str() {
+                    Some("ok") => {
+                        let archived = dir
+                            .path()
+                            .join("backups/sites/example.com")
+                            .read_dir()
+                            .unwrap()
+                            .count();
+                        assert_eq!(archived, 1, "成功必须有归档：{record}");
+                        assert_eq!(job.result["success"], true, "{}", job.result);
+                    }
+                    Some("fail") => {
+                        assert!(job.error_class.is_some(), "失败必须带错误类：{record}");
+                        let detail = record["error_detail"].as_str().unwrap_or_default();
+                        assert!(detail.contains(BUILTIN_SITE_BACKUP), "{detail}");
+                    }
+                    other => panic!("未预期的任务结果：{other:?} / {record}"),
                 }
             }
             None => {

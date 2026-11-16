@@ -96,6 +96,18 @@ pub fn canonical_bins(grants: &[Grant]) -> Vec<PathBuf> {
 
 /// 把插件给的二进制路径解析成可执行的真实路径（判定顺序见模块文档）。
 pub fn resolve(data_dir: &Path, grants: &[Grant], requested: &str) -> Result<PathBuf, ExecError> {
+    let canon = resolve_candidate(data_dir, requested)?;
+    check_owner(&canon)?;
+    authorize(&canon, grants)?;
+    Ok(canon)
+}
+
+/// 形式 + 存在 + 本体类型 + 包装器 + 数据根：只看「这个路径指向什么」。
+///
+/// 与「属主可信」拆开，是因为那一步能否验证取决于跑测试的是谁：它要求文件属主
+/// 是 root，普通用户（CI runner）造不出来。拆开后授权命中与本体可信各自可断言，
+/// 不必让一条用例同时依赖特权。
+fn resolve_candidate(data_dir: &Path, requested: &str) -> Result<PathBuf, ExecError> {
     if requested.is_empty() {
         return Err(ExecError::Illegal("二进制路径不能为空"));
     }
@@ -119,10 +131,13 @@ pub fn resolve(data_dir: &Path, grants: &[Grant], requested: &str) -> Result<Pat
     if crate::fsgrant::is_protected(data_dir, &canon) {
         return Err(ExecError::Protected);
     }
-    check_owner(&canon)?;
+    Ok(canon)
+}
 
-    if canonical_bins(grants).iter().any(|b| b == &canon) {
-        Ok(canon)
+/// 授权命中：canonical 路径必须**精确等于**某条 `bin:` 授权的 canonical 路径。
+fn authorize(canon: &Path, grants: &[Grant]) -> Result<(), ExecError> {
+    if canonical_bins(grants).iter().any(|b| b == canon) {
+        Ok(())
     } else {
         Err(ExecError::NotGranted)
     }
@@ -215,33 +230,50 @@ mod tests {
         );
     }
 
+    /// 授权只看「canonical 路径是否精确命中某条 `bin:`」。
+    ///
+    /// 单独断言这一步而不是整条 [`resolve`]：整条要过「属主是 root」，普通用户
+    /// （CI runner）造不出 root 属主的文件，那样这条用例就变成「只有 root 过得去」。
     #[test]
-    fn granted_binary_resolves_and_unauthorized_does_not() {
+    fn authorize_requires_an_exact_grant() {
+        let (_bin_dir, _data_dir, bin) = fixture("tool");
+        let path = bin.display().to_string();
+        // 比较一律用 canonical：Windows 上的前缀只出现在 canonicalize 结果里
+        let canon = std::fs::canonicalize(&bin).unwrap();
+        assert_eq!(authorize(&canon, &[grant(&format!("bin:{path}"))]), Ok(()));
+
+        // 同一个二进制，没有授给它
+        assert_eq!(
+            authorize(&canon, &[grant("bin:/usr/bin/other")]),
+            Err(ExecError::NotGranted)
+        );
+    }
+
+    /// 整条判定：属主可信时命中授权；不可信时**先**在信任闸拒。
+    ///
+    /// 两种结果都是正确行为，断言按实际属主分流——不为了让用例变绿去放宽信任闸。
+    #[test]
+    fn resolve_hits_the_grant_only_for_a_trusted_binary() {
         let (_bin_dir, data_dir, bin) = fixture("tool");
         let path = bin.display().to_string();
         let grants = vec![grant(&format!("bin:{path}"))];
-        // 拿 canonical 路径比：Windows 上 `\\?\` 前缀只出现在 canonicalize 结果里
         let canon = std::fs::canonicalize(&bin).unwrap();
-        assert_eq!(resolve(data_dir.path(), &grants, &path).unwrap(), canon);
 
-        // 同一个二进制，没有授给它
-        let other = vec![grant("bin:/usr/bin/other")];
-        assert_eq!(
-            resolve(data_dir.path(), &other, &path),
-            Err(ExecError::NotGranted)
-        );
+        match resolve(data_dir.path(), &grants, &path) {
+            Ok(got) => assert_eq!(got, canon),
+            Err(ExecError::NotTrusted("属主不是 root")) => {}
+            other => panic!("未预期的判定结果：{other:?}"),
+        }
     }
 
     /// 授权目录等于授权整台机器：`bin:` 只对文件生效，目录一律不收。
     #[test]
     fn directory_grant_does_not_authorize_children() {
-        let (bin_dir, data_dir, bin) = fixture("tool");
+        let (bin_dir, _data_dir, bin) = fixture("tool");
         let grants = vec![grant(&format!("bin:{}", bin_dir.path().display()))];
         assert!(canonical_bins(&grants).is_empty());
-        assert_eq!(
-            resolve(data_dir.path(), &grants, &bin.display().to_string()),
-            Err(ExecError::NotGranted)
-        );
+        let canon = std::fs::canonicalize(&bin).unwrap();
+        assert_eq!(authorize(&canon, &grants), Err(ExecError::NotGranted));
     }
 
     #[test]
