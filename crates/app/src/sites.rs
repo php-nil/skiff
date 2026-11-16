@@ -231,23 +231,31 @@ fn file_stamp(path: &Path) -> FileStamp {
 }
 
 /// 解析证书文本字段。失败（openssl 缺失/输出异常）时返回空字段，不影响页面。
-fn parse_cert_text(cert: &Path) -> TlsCertText {
+///
+/// 走统一执行通道（`skiff_host`）：它是**唯一**的宿主机进程入口，这里没有例外。
+/// `direct` 模式（不经 systemd-run）——只读解析不要 root，也不值得为它建一个单元。
+async fn parse_cert_text(cert: &Path) -> TlsCertText {
     let mut text = TlsCertText::default();
-    let Ok(out) = std::process::Command::new("openssl")
-        .args([
-            "x509",
-            "-in",
-            &cert.display().to_string(),
-            "-noout",
-            "-subject",
-            "-issuer",
-            "-enddate",
-        ])
-        .output()
+    let args: Vec<String> = vec![
+        "x509".into(),
+        "-in".into(),
+        cert.display().to_string(),
+        "-noout".into(),
+        "-subject".into(),
+        "-issuer".into(),
+        "-enddate".into(),
+    ];
+    let Ok(out) = crate::host::run_host_msg(
+        skiff_host::HostSpec::direct("openssl", &args)
+            .prefix("skiff-cert")
+            .description("skiff 证书文本解析")
+            .timeout(10),
+    )
+    .await
     else {
         return text;
     };
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    for line in out.stdout.lines() {
         if let Some(v) = line.strip_prefix("subject=") {
             text.subject = Some(v.trim().to_string());
         } else if let Some(v) = line.strip_prefix("issuer=") {
@@ -262,8 +270,8 @@ fn parse_cert_text(cert: &Path) -> TlsCertText {
 /// 命中缓存直接返回，否则跑一次 openssl 再写回。
 ///
 /// 锁只保护 map 读写，**不跨 openssl 调用持有**：并发未命中时最多重复解析一次，
-/// 也不会把等锁的线程（含 async worker）堵在 fork 上。
-fn cached_cert_text(cert: &Path, key: &Path) -> TlsCertText {
+/// 也不会把等锁的任务堵在 fork 上。
+async fn cached_cert_text(cert: &Path, key: &Path) -> TlsCertText {
     let cert_stamp = file_stamp(cert);
     let key_stamp = file_stamp(key);
     {
@@ -274,7 +282,7 @@ fn cached_cert_text(cert: &Path, key: &Path) -> TlsCertText {
             }
         }
     }
-    let text = parse_cert_text(cert);
+    let text = parse_cert_text(cert).await;
     let mut map = tls_info_cache().lock().unwrap_or_else(|e| e.into_inner());
     if map.len() >= TLS_INFO_CACHE_MAX {
         map.retain(|path, _| path.exists());
@@ -291,25 +299,38 @@ fn cached_cert_text(cert: &Path, key: &Path) -> TlsCertText {
 }
 
 /// 校验证书与私钥：能解析、且公钥一致。返回中文错误供表单展示。
-fn verify_cert_pair(cert: &Path, key: &Path) -> Result<(), String> {
-    let out = |args: &[&str]| -> Result<String, String> {
-        let o = std::process::Command::new("openssl")
-            .args(args)
-            .output()
-            .map_err(|e| format!("无法执行 openssl（请安装 openssl）：{e}"))?;
-        if !o.status.success() {
-            return Err(String::from_utf8_lossy(&o.stderr).trim().to_string());
+///
+/// 四次调用都走统一执行通道；`direct` 模式直起子进程，与解析同一套超时与错误文案。
+async fn verify_cert_pair(cert: &Path, key: &Path) -> Result<(), String> {
+    async fn out(args: Vec<String>) -> Result<String, String> {
+        let o = crate::host::run_host_msg(
+            skiff_host::HostSpec::direct("openssl", &args)
+                .prefix("skiff-cert")
+                .description("skiff 证书校验")
+                .timeout(10),
+        )
+        .await
+        .map_err(|e| format!("无法执行 openssl（请安装 openssl）：{e}"))?;
+        if !o.success {
+            return Err(o.stderr.trim().to_string());
         }
-        Ok(String::from_utf8_lossy(&o.stdout).to_string())
-    };
+        Ok(o.stdout)
+    }
     let cert_s = cert.to_string_lossy().to_string();
     let key_s = key.to_string_lossy().to_string();
-    out(&["x509", "-in", &cert_s, "-noout"]).map_err(|e| format!("证书无法解析：{e}"))?;
-    out(&["pkey", "-in", &key_s, "-noout"]).map_err(|e| format!("私钥无法解析：{e}"))?;
-    let cert_pub = out(&["x509", "-in", &cert_s, "-noout", "-pubkey"])
+    let arg = |parts: &[&str]| -> Vec<String> { parts.iter().map(|s| s.to_string()).collect() };
+    out(arg(&["x509", "-in", &cert_s, "-noout"]))
+        .await
+        .map_err(|e| format!("证书无法解析：{e}"))?;
+    out(arg(&["pkey", "-in", &key_s, "-noout"]))
+        .await
+        .map_err(|e| format!("私钥无法解析：{e}"))?;
+    let cert_pub = out(arg(&["x509", "-in", &cert_s, "-noout", "-pubkey"]))
+        .await
         .map_err(|e| format!("读取证书公钥失败：{e}"))?;
-    let key_pub =
-        out(&["pkey", "-in", &key_s, "-pubout"]).map_err(|e| format!("读取私钥公钥失败：{e}"))?;
+    let key_pub = out(arg(&["pkey", "-in", &key_s, "-pubout"]))
+        .await
+        .map_err(|e| format!("读取私钥公钥失败：{e}"))?;
     if cert_pub.trim() != key_pub.trim() {
         return Err("证书与私钥不匹配".into());
     }

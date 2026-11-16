@@ -408,6 +408,13 @@ impl AuditSink for DbAuditSink {
     }
 }
 
+/// 内核自身操作的审计主体。
+///
+/// 与登录用户、插件区分开：审计页一眼能看出「这是内核自己做的」，不是谁点的
+/// 按钮。内核不需要授权根（它是授出方），但**每次写都要留一条记录**——这正是
+/// 「用记录代替复杂权限配置」的落点。
+pub const KERNEL_ACTOR: &str = "system";
+
 pub struct AdminFs {
     fs: Fs,
     db: Arc<Db>,
@@ -1117,6 +1124,78 @@ impl AdminFs {
 
 fn is_root(p: &Path) -> bool {
     p.parent().is_none() || p.components().count() <= 1
+}
+
+impl AdminFs {
+    /// 内核自身写文件（含 `/etc` 下的系统配置）：**唯一入口**，每次写一条 `fs.write` 审计。
+    ///
+    /// 与 Web 文件管理器共用同一个 `Fs` 实例：同一套临时文件 + rename 原子替换、
+    /// 同一张 `audit` 表、同一份路径代数。差别只在主体——`system` 不走授权根，
+    /// 但受保护路径的额外开关必须显式打开（内核要写自己的 `data/`）。
+    pub fn write_kernel(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        let ctx = OpContext::new(self.kernel_request_id("write"));
+        let principal = Principal::admin(KERNEL_ACTOR).with_protected_write(true);
+        let req = WriteRequest {
+            path: path.to_string_lossy().to_string(),
+            data: bytes.to_vec(),
+            mode: WriteMode::Replace,
+        };
+        self.fs
+            .write(&principal, &ctx, &req)
+            .map(|_| ())
+            .map_err(|e| format!("{}：{}", path.display(), e.message()))
+    }
+
+    /// 内核自身删文件。
+    ///
+    /// `permanent = true`：系统文件不进回收站——把 `daemon.json`、vhost 这类
+    /// 配置留在 trash 里既没用，又会让「删了但还在」误导排障。
+    pub fn remove_kernel(&self, path: &Path) -> Result<(), String> {
+        let ctx = OpContext::new(self.kernel_request_id("remove"));
+        let principal = Principal::admin(KERNEL_ACTOR).with_protected_write(true);
+        self.fs
+            .remove(&principal, &ctx, &path.to_string_lossy(), true)
+            .map(|_| ())
+            .map_err(|e| format!("{}：{}", path.display(), e.message()))
+    }
+
+    /// 内核自身建目录（含 `/etc` 下的系统目录）：逐级补齐已缺失的部分。
+    ///
+    /// 存在的目录不算错——调用方要的是「这个目录在」，不是「刚创建成功」。
+    /// 每一级真正新建的目录各留一条 `fs.mkdir` 审计，因此这里不能用
+    /// `create_dir_all` 一把梭（那样审计里只剩一行、也拿不到路径代数）。
+    pub fn ensure_dir_kernel(&self, path: &Path) -> Result<(), String> {
+        let mut missing: Vec<PathBuf> = Vec::new();
+        let mut cur = Some(path);
+        while let Some(p) = cur {
+            if p.exists() {
+                break;
+            }
+            missing.push(p.to_path_buf());
+            cur = p.parent();
+        }
+        let principal = Principal::admin(KERNEL_ACTOR).with_protected_write(true);
+        for dir in missing.iter().rev() {
+            let ctx = OpContext::new(self.kernel_request_id("mkdir"));
+            match self.fs.mkdir(&principal, &ctx, &dir.to_string_lossy()) {
+                Ok(_) => {}
+                // 并发建同名目录：目标已存在即可继续，其余错误如实上抛。
+                Err(e) if dir.exists() => {
+                    tracing::debug!(path = %dir.display(), error = %e, "目录已由并发路径创建");
+                }
+                Err(e) => {
+                    return Err(format!("{}：{}", dir.display(), e.message()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 请求 id 只是审计里的关联字段；`seq` 保证同一秒内多次写不撞。
+    fn kernel_request_id(&self, op: &str) -> String {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed);
+        format!("system-{op}-{}-{n}", std::process::id())
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 # 内核自身架构体检（七维 · 已收口）
 
 > 状态：**已收口**——批次 A/B/C 全部落地，C1–C4 已实机验证，C5/C6 主动搁置（重启条件见 §4）。本文件只保留结论、非问题清单、未闭环问题、搁置项与未验证项；已处理的问题清单与批次执行记录已删（过程见 `docs/changes/2026-11-13.md` ～ `2026-11-15.md`）。
-> 范围：**只从内核自身角度**看 `crates/` 与 `xtask/`（16 个 crate + 1 个工具），不含前端/模板/静态资源实现细节，不逐个点评官方插件；插件**体系**（manifest、签名、Supervisor、能力面划分）在范围内。
+> 范围：**只从内核自身角度**看 `crates/` 与 `xtask/`（17 个 crate + 1 个工具），不含前端/模板/静态资源实现细节，不逐个点评官方插件；插件**体系**（manifest、签名、Supervisor、能力面划分）在范围内。
 > 与既有文档的关系：[ARCH_REVIEW.md](../archive/ARCH_REVIEW.md) 是历史六轮审查（只读存档）；[KERNEL_UI_BOUNDARY_AUDIT.md](KERNEL_UI_BOUNDARY_AUDIT.md) 是内核↔UI 边界专项。行号易腐化，只作结论参考。
 > 方法：逐 crate 读 `Cargo.toml` 与模块树、按关键词定位，关键结论核对源码；未运行任何 cargo 命令，行为相关结论均标注验证方式。
 
@@ -16,7 +16,7 @@
 | 1 模块划分 | **基本合理，两个过热文件** | `app/src/sites.rs` 类型/布局/安装锁/进度混放；`store/src/db.rs` 连接+迁移+备份同文件（拆分搁置，见 §4 C6） |
 | 2 职责边界 | **主线清楚，边界靠注释维持** | `app` 自述「不含表现层」，但 `views/sites.rs` 曾输出中文文案与 CSS class（已上移到 `web`） |
 | 3 依赖关系 | **无环、无 feature 分叉** | 依赖表与能力面分布表已随批次 A5 更新（`docs/sections/08-engineering.md`、AGENTS.md） |
-| 4 复用性 | **三类真实重复已收口** | `run_host` 合并为 `kernel::host_run`；权限通配匹配收口 `Grant::permits(_wildcard)`；`nginx -t` 执行通道统一 |
+| 4 复用性 | **三类真实重复已收口** | `run_host` 收口为 `skiff_host`（`crates/host`，内核与插件共用一份）；权限通配匹配收口 `Grant::permits(_wildcard)`；`nginx -t` 执行通道统一 |
 | 5 过度设计 | **轻微** | `web/src/menu.rs` 仍是纯 `pub use` 兼容层（§3 问题 2）；其余单实现 trait 均有测试替身或依赖倒置理由 |
 | 6 与 UI 解耦 | **读模型已下沉，展示属性已上移** | `app/src/views/*` 是 SSR/JSON 共用读模型；JSON 侧仍残留展示模型依赖（§3 问题 1） |
 | 7 健壮性 | **整体强** | 审计改同步写库 + 失败落盘兜底；`systemd-run` 超时清单元；`systemctl restart docker` 20s 总预算；`nginx -t` 10s 上限 + Drop 守卫 |

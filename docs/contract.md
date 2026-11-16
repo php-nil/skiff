@@ -7,7 +7,7 @@
 
 - **契约与实现分账**：契约写「应该怎样」，代码实际行为与契约的差异只记 [`impl/`](impl/) 的 `*_IMPL_NOTES.md`，不写回契约。
 - **菜单键稳定、URL 规范、菜单键 ≠ URL**：改 URL 不改菜单键，改菜单键不改 URL 契约；插件页面与 iframe 分工另见 [PLUGIN_UI_CONTRACT.md](contract/PLUGIN_UI_CONTRACT.md)。
-- **内核四件套**（fs / scheduler / ftp / firewall）契约各自独立成篇；授权判定、路径代数、动词分发等唯一来源见 AGENTS.md §4.1。
+- **内核五件套**（fs / scheduler / ftp / firewall / exec）契约各自独立成篇；授权判定、路径代数、动词分发等唯一来源见 AGENTS.md §4.1。`ftp` / `firewall` 已冻结为 legacy，新增宿主机功能走 `exec`。
 - 每篇契约头部带「状态」（设计口径 / 已落地 / 契约版本）；契约自身的修订流水不入正文，见 `docs/changes/`。
 
 ## 子文档
@@ -23,3 +23,4 @@
 | [KERNEL_SCHEDULER_CONTRACT.md](contract/KERNEL_SCHEDULER_CONTRACT.md) | 任务模型、调度、回执与插件唤醒（分 3 册） | 改计划任务 |
 | [KERNEL_FTP_CONTRACT.md](contract/KERNEL_FTP_CONTRACT.md) | ftp 能力面、账号、uid/gid | 改 FTP |
 | [KERNEL_FIREWALL_CONTRACT.md](contract/KERNEL_FIREWALL_CONTRACT.md) | firewall 能力面、作用域与审计 | 改防火墙 |
+| [KERNEL_EXEC_CONTRACT.md](contract/KERNEL_EXEC_CONTRACT.md) | exec 能力面：`bin:` 授权、提交/查询/取消协议、三道判定、`host.exec` 运行记录、审计与错误码 | 新增宿主特权功能 / 改命令执行 |

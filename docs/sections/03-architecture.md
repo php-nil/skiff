@@ -12,15 +12,46 @@
 skiff-core (单进程 · systemd · 宿主机)
   中间件(axum layer，由内到外): 请求超时(非流式路由) → 可信代理解析 → 会话 → 安全入口 → CatchPanic
   handler 内: CSRF → RBAC(policy) → 审计；登录限流(同 IP 5 次/5 分钟)
-  应用上下文: AppState/WebConfig（db · docker · supervisor · policy · 限流表 · exec 票据）
+  应用上下文: AppState/WebConfig（db · docker · supervisor · policy · 限流表 · jobs · tasks）
                                               ← 装配层（crates/app）
   api::v1 │ ui(SSR) │ static(embed)             ← 核心① Web 管理服务（crates/web）
-  Capability Broker (鉴权/审计/配额；能力面 docker/identity/fs/net) ← 服务端在 core/src/kernel/，能力面实现在 crates/plugin
+  Capability Broker (鉴权/审计/配额)              ← 服务端在 core/src/kernel/，能力面实现在 crates/plugin
   Plugin Supervisor (签名/拉起/退避/熔断/回收/降权/沙箱) ← 核心③ 插件体系（crates/plugin）
   docker (bollard/三层策略/路径校验/Compose/exec/日志) ← 核心② Docker 管理（crates/docker）
         │ Unix Socket /run/skiff/ + JSON-RPC 2.0
 插件进程 (宿主机原生, 语言受支持矩阵约束, 按需启动, 空闲 300s 回收)  ← 核心③ 第三方侧（crates/sdk 出包）
 ```
+
+**内核能力与记录（唯一路径）**：调用方有三类，落点只有两个原语，记录只有两处。
+没有任何一条路径可以「自己做」。
+
+```
+ 调用方                          原语（唯一入口）              记录                    执行/落盘
+┌──────────────────┐        ┌────────────────────────┐   ┌──────────────────┐   ┌────────────────────┐
+│ 插件（UDS 能力面）│──授权──▶│ exec  跑外部程序        │──▶│ audit  exec.run   │   │ skiff_host         │
+│  · exec:run      │  execgrant│  · bin:<abs> 精确命中   │   │  (90 天, 逐次)    │──▶│  · privileged:     │
+│  · bin:<abs>     │  三道闸  │  · 提交 host.exec 作业  │   ├──────────────────┤   │    systemd-run 瞬态 │
+├──────────────────┤          ├────────────────────────┤   │ jobs + job_logs  │   │    单元 (root)     │
+│ 内核动作          │──免授权─▶│ fs    读写宿主文件       │──▶│  (任务中心,       │   │  · direct: 子进程  │
+│  · 安装 / 站点    │  (内核是 │  · path:<abs> 授权根    │   │   过程日志/退出码) │   │  · 超时·取消·清理  │
+│  · Docker / FTP   │   授出方)│  · 原子替换 + 回收站    │   │                  │   └────────────────────┘
+│  · 防火墙         │          ├────────────────────────┤   │ audit  fs.write   │            │
+├──────────────────┤          │ scheduler 排期与单飞     │   │  fs.remove …      │            ▼
+│ 内核计划任务      │──同一条─▶│  · 命令动作 → exec 作业 │──▶│  (90 天, 逐次)    │   ┌────────────────────┐
+│  · 站点备份       │   通道   │  · 库内动作 (VACUUM /   │   └──────────────────┘   │ 文件系统 / 进程     │
+│  · db-vacuum     │          │    SQL 清理) → 原语自身 │                          │ / systemd 单元      │
+└──────────────────┘          └────────────────────────┘                          └────────────────────┘
+```
+
+三条口径：
+
+- **授权与执行正交**：`execgrant` 只决定「这个二进制能不能跑」，`skiff_host` 只决定「怎么跑」。
+  插件走「先授权再进通道」，内核动作与计划任务「直接进通道但仍逐次审计」——区别是主体与是否授权，
+  不是执行方式。
+- **记录分流**：文件读写进 `audit`（安全追溯，90 天）；任务执行进 `jobs` / `job_logs`
+  （过程复查，7 天 / 200 条）。两者不可互替。
+- **机械闸门**：`xtask check` 的第三项——`crates/app`、`crates/core` 非测试代码出现
+  `Command::new` 即失败；内核文件写计数只减不增（2026-11-16 基线 140 处 / 9 个文件）。
 
 > 图中能力为**接口清单**，不代表均已落地：`net` 尚未实现，调用一律返回 501，落地状态以 §3.3 为准。
 
@@ -34,10 +65,16 @@ skiff-core (单进程 · systemd · 宿主机)
 |---|---|
 | `docker` | 容器/镜像/网络/卷/Compose/日志流/exec 终端（白名单见 §6） |
 | `identity` | 用户/会话/TOTP/API Token/RBAC |
-| `fs` | 路径白名单内文件读/写/列表/建目录/删除/重命名（白名单 = 插件自身目录 + 用户授权目录，Broker 逐次校验；无独立 `stat` 动词） |
+| `fs` | 路径白名单内文件读/写/列表/建目录/删除/重命名（白名单 = 插件自身目录 + 用户授权目录，Broker 逐次校验；无独立 `stat` 动词）。内核自身写入走同一 `Fs` 实例（`write_kernel` / `remove_kernel` / `ensure_dir_kernel`），主体 `system` |
+| `exec` | 宿主命令执行：`exec:run` + 逐条 `bin:<绝对路径>` 授权，三道闸（授权 / 文件本体 / 非包装器）后原样执行 argv，**提交为 `host.exec` 作业**（过程日志、退出码、取消）。内核安装动作与计划任务的命令动作走同一执行体，只是不查授权、逐次审计（[契约](../contract/KERNEL_EXEC_CONTRACT.md)） |
+| `scheduler` | 内核定时任务：cron/interval、单飞、错过补偿、采样缓冲、运行历史。命令型内置任务（站点备份）提交 `host.exec` 作业，库内任务（VACUUM / SQL 清理）走原语自身（[契约](../contract/KERNEL_SCHEDULER_CONTRACT.md)） |
 | `net` | 主机防火墙端口规则（放行/拒绝；nftables 适配，探测 firewalld/ufw；按 UID owner-match 收口插件出网）——**尚未实现**：`net.apply` 一律返回 501，属 M4 门槛 |
 
-> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器。官方 5 个插件已落地：`guard` 走 `docker`，`files` / `monitor` 走 `fs`，`cron` 走 `interop`，`ftp` 走新增的 `ftp` 能力面（见 [PLUGIN_CATALOG.md](../plugin/PLUGIN_CATALOG.md)）。
+> **`fs` 与 `exec` 是两条唯一路径**：所有宿主文件读写、所有外部程序执行都必须经过它们，不许
+> 「内核自己直接 syscall / spawn」——这样行为天然有记录（文件写进 `audit`、执行进 `jobs`），
+> 不必为每个功能逐条设计权限。`firewall` / `ftp` 两条专用能力面保留但冻结，新功能一律走 `exec`。
+>
+> **内核之外一律插件**（唯一例外是已内核化的「网站」）。文件管理器/防火墙管理/主机监控等是**插件层产物**（宿主能力面 `docker`/`identity`/`fs`/`exec` 已开放，`net` 待 M4，均按 `requires` 点单），内核不内置。网站（站点列表 / 运行环境 / 设置）已于 2026-11-04 从 `com.skiff.nginx` 插件迁入内核，内核直接编排 nginx + PHP-FPM 容器；站点备份由内核 `scheduler` 内置任务驱动。官方 5 个插件已落地：`guard` 走 `docker`，`files` / `monitor` 走 `fs`，`cron` 走 `interop`，`ftp` 走新增的 `ftp` 能力面（见 [PLUGIN_CATALOG.md](../plugin/PLUGIN_CATALOG.md)）。
 
 ## 3.4 Web UI 导航结构与信息架构（最终版）
 

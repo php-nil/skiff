@@ -166,16 +166,16 @@ impl FirewallHost for KernelHost {
         timeout_secs: u64,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, String>> + Send + 'a>> {
         Box::pin(async move {
-            // 特权执行通道唯一实现在 `kernel::host_run`（ftp 共用）。
-            let out = super::host_run::run_host(
-                "skiff-firewall",
-                "skiff firewall host mutation",
-                cmd,
-                args,
-                stdin,
-                timeout_secs,
+            // 特权执行通道唯一实现是 `skiff_host`（ftp 与 `exec` 共用）。
+            let out = skiff_host::run(
+                skiff_host::HostSpec::privileged(cmd, args)
+                    .prefix("skiff-firewall")
+                    .description("skiff firewall host mutation")
+                    .stdin(stdin)
+                    .timeout(timeout_secs),
             )
-            .await?;
+            .await
+            .map_err(|e| e.message(cmd))?;
             Ok(CommandOutput {
                 success: out.success,
                 stdout: out.stdout,

@@ -72,6 +72,7 @@ fn kind_label(kind: &str) -> &'static str {
         "compose.down" => "Compose 停止",
         "site.create" => "站点创建",
         "web.install" => "Web 服务安装",
+        skiff_app::jobs::KIND_HOST_EXEC => "宿主命令执行",
         _ => "异步任务",
     }
 }
@@ -97,6 +98,13 @@ fn target_label(job: &Job) -> String {
         ("compose", _) => format!("Compose · {name}"),
         ("site", _) => format!("站点 · {name}"),
         ("web_env", _) => "Web 服务".to_string(),
+        // 命令执行的 target_id 由发起方决定：插件提交时是插件 id，内核计划任务是
+        // 任务 id（`params.origin=sched`）。两者必须分开显示——否则一次「站点备份」
+        // 会被念成「插件 · builtin:site-backup:example.com」，排障时先认错对象。
+        ("host", _) => match job.params.get("origin").and_then(Value::as_str) {
+            Some("sched") => format!("计划任务 · {name}"),
+            _ => format!("插件 · {name}"),
+        },
         _ => name,
     }
 }
@@ -177,7 +185,10 @@ pub(crate) fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDeta
         params_json: serde_json::to_string_pretty(&job.params).unwrap_or_default(),
         retry_of: job.retry_of.clone().unwrap_or_default(),
         can_cancel: job.can_cancel(),
-        can_retry: job.can_retry(),
+        // 命令执行不提供「重试」：它由插件在授权有效期内提交，重放一条特权命令
+        // 必须重新走插件的授权判定（插件可能已被卸载、`bin:` 授权可能已收回），
+        // 页面不显示这个按钮，`retry_job` 也会以「无执行器」拒绝。
+        can_retry: job.can_retry() && job.kind != skiff_app::jobs::KIND_HOST_EXEC,
         log_cursor,
         log_text,
     }

@@ -245,16 +245,16 @@ impl FtpHost for KernelHost {
         timeout_secs: u64,
     ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, String>> + Send + 'a>> {
         Box::pin(async move {
-            // 特权执行通道唯一实现在 `kernel::host_run`（firewall 共用）。
-            let out = super::host_run::run_host(
-                "skiff-ftp",
-                "skiff ftp host mutation",
-                cmd,
-                args,
-                stdin,
-                timeout_secs,
+            // 特权执行通道唯一实现是 `skiff_host`（firewall 与 `exec` 共用）。
+            let out = skiff_host::run(
+                skiff_host::HostSpec::privileged(cmd, args)
+                    .prefix("skiff-ftp")
+                    .description("skiff ftp host mutation")
+                    .stdin(stdin)
+                    .timeout(timeout_secs),
             )
-            .await?;
+            .await
+            .map_err(|e| e.message(cmd))?;
             Ok(CommandOutput {
                 success: out.success,
                 stdout: out.stdout,

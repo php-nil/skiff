@@ -15,6 +15,7 @@ pub mod commands;
 pub mod cursor;
 pub mod db_async;
 pub mod docker_daemon;
+pub mod host;
 pub mod jobs;
 pub mod menu;
 pub mod nginx;
@@ -112,7 +113,10 @@ pub struct AppState {
     /// 按 `(kind,name)` 的运行环境安装互斥；第二个并发安装直接返回「正在安装」。
     runtime_installs: sites::InstallLocks,
     /// 任务中心：一次性异步作业（安装/拉镜像/Compose 等），事实源在 `jobs` 表。
-    jobs: jobs::JobService,
+    ///
+    /// `Arc` 而不是独占：内核计划任务的执行体（`TaskService`）要用同一个服务提交
+    /// `host.exec` 作业——作业路由缓存与中断收尾必须只有一份，不能各建一个。
+    jobs: Arc<jobs::JobService>,
     /// 镜像版本元数据缓存：image_id → (读到的版本/None, 负缓存起点)。
     ///
     /// image_id 不可变：命中即 0 次 Docker API。inspect 失败做 60 秒负缓存，
@@ -309,7 +313,7 @@ impl AppState {
     ) -> Arc<Self> {
         let permits = cfg.login_concurrency.max(1);
         let admin_fs = Arc::new(admin_fs::AdminFs::new(&cfg, Arc::clone(&db)));
-        let jobs = jobs::JobService::new(Arc::clone(&db));
+        let jobs = Arc::new(jobs::JobService::new(Arc::clone(&db)));
         jobs.prune_quietly();
         // 商店目录只读客户端：未启用时它一次网络调用都不会发生。
         let catalog = catalog::CatalogService::new(cfg.catalog.clone(), &cfg.data_dir);
@@ -342,6 +346,7 @@ impl AppState {
     pub fn init_tasks(&self) -> Result<(), String> {
         let svc = tasks::TaskService::open(
             Arc::clone(&self.db),
+            Arc::clone(&self.jobs),
             Arc::clone(&self.supervisor),
             self.cfg.web_root.clone(),
             self.cfg.data_dir.clone(),

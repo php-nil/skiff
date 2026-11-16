@@ -329,3 +329,33 @@ cargo test   --manifest-path plugins/Cargo.toml --locked            # 21 passed;
   monitor `snapshot`、guard `status` 返回 `scheduler.driver = "kernel"` 与 `task_id`。
 - **未做**：`task_pinned`（60s 采样小于 300s 回收阈值，当前不影响常驻）；guard 的 docker events
   实时主链路（P2，无 events 能力面）。
+
+### 8.7 内置任务的命令动作走 exec 作业（2026-11-16）
+
+- **为什么**：站点备份原来用 `tar` crate 在进程内打包——内核自己在做文件 IO，既没有作业、
+  没有过程日志，超时也只能「放弃等待、进程继续跑」。这与「`exec` / `fs` 是唯一入口，
+  所有操作都要经过、都有记录」的约定冲突：计划任务是内核的动作，不是例外。
+- **分工**：**有外部命令**的内置任务（`site-backup` → `tar`）提交 `host.exec` 作业，
+  命令经 `skiff_host` 跑；**没有命令可跑**的内置任务留在进程内——
+  `db-vacuum`（SQLite `backup_to`）、`audit-prune`（SQL 删除）是库内事务，
+  `trash-prune` 走内核 `AdminFs`（fs 原语，已有 `fs.remove` 审计）。判据是
+  「这件事有没有一个可执行文件」，不是「任务是不是内置的」。
+- **代码**：执行体 `run_exec_job` / `handle_channel_failure` / `truncate` 从
+  `crates/core/src/kernel/exec.rs` 迁到 `crates/app/src/host.rs`，成为
+  `drive_exec_job` / `clip_text`——插件 `exec` 路由与计划任务共用同一份；
+  新增 `KernelExec::run(&Db, &JobService)`（提交 + 审计 + 执行 + 读回终态）与
+  `AppState::exec_kernel`。`TaskService` 改为持有 `Arc<JobService>`（`AppState.jobs`
+  同步改 `Arc`），不再各自 new 一份——作业路由缓存与重启收尾必须只有一份。
+- **作业口径**：`target_type=host`、`target_id=<任务 id>`（同任务串行、跨任务不阻塞）、
+  `created_by=system`、`params.origin="sched"`；审计 `actor=system` / `source=sched` /
+  `action=exec.run`，detail 带 `bin`、`risk`、`job`、`argv`、`timeout`、`origin`、`target`。
+- **语义变化**：任务规格 `timeout_secs` 现在是作业与通道的超时——超时即
+  `systemctl stop` 瞬态单元，不再只是「内核不等了」；站点备份默认上限由 30s 提到
+  600s（`SITE_BACKUP_TIMEOUT_SECS`），否则真实站点必然超时。
+- **目录侧**：备份目录改走 `AdminFs::ensure_dir_kernel`（逐级建、每级留 `fs.mkdir` 审计），
+  `crates/app` 不再依赖 `tar` crate；`xtask check` 的内核文件写基线 141 → 140。
+- **验证**：`cargo fmt --all --check`、`clippy -D warnings`（app/core/web）通过；
+  `skiff-app` 353、`skiff-web` 87 + 203、`skiff --bins` 53、`skiff-host` 6、`skiff-model` 44。
+  **未上机验收**：`tar` 的真实打包与单元清理只在 Linux 跑得到；开发机上验证的是
+  「作业成对出现 / 缺 `tar` 时提交前就拒」两条分支。
+

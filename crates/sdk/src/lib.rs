@@ -288,6 +288,17 @@ impl Plugin {
             .collect())
     }
 
+    /// 已授予的 `bin:` 可执行体（原始字符串，未 canonicalize）。
+    ///
+    /// 插件前置快筛用：真正能不能跑由内核 `execgrant` canonicalize 后判定。
+    pub fn bin_grants(&self) -> Result<Vec<String>> {
+        Ok(self
+            .objects()?
+            .into_iter()
+            .filter_map(|o| o.strip_prefix("bin:").map(str::to_string))
+            .collect())
+    }
+
     /// 整文件读字节（内部按 [`HOST_IO_MAX`] 分页，超过 [`HOST_WHOLE_MAX`] 报错）。
     pub fn fs_host_read_bytes(&self, path: &str) -> Result<Vec<u8>> {
         use base64::Engine as _;
@@ -403,6 +414,106 @@ impl Plugin {
         self.call_kernel(
             skiff_wire::routes::CAP_FIREWALL_CALL,
             json!({ "method": method, "params": params }),
+        )
+    }
+
+    /// 宿主机命令执行（manifest 需 `requires` 含 `exec`、`permissions` 里写
+    /// `exec:run`、`resource_hints` 里声明对应的 `bin:<绝对路径>`）。
+    ///
+    /// 跑了未授权的二进制会被内核 403，所以插件应当先用 [`Self::bin_grants`]
+    /// 判断本机有没有这条授权，再决定 UI 显不显示这个功能。
+    /// `argv` 按数组原样传给宿主，**不经 shell**；密码/私钥用
+    /// [`Self::host_exec_with_stdin`]，不要放进 argv——argv 全文会进审计。
+    pub fn host_exec(&self, binary: &str, argv: &[&str]) -> Result<Value> {
+        self.host_exec_full(binary, argv, None, None)
+    }
+
+    /// 带 stdin 的执行：`stdin` 用于投递敏感内容（只记字节数，不进审计、不落库）。
+    pub fn host_exec_with_stdin(
+        &self,
+        binary: &str,
+        argv: &[&str],
+        stdin: &str,
+        timeout_sec: u64,
+    ) -> Result<Value> {
+        self.host_exec_full(binary, argv, Some(stdin), Some(timeout_sec))
+    }
+
+    /// 执行并返回 `{success, code, stdout, stderr, truncated, job_id}`。
+    ///
+    /// 非零退出**不是**错误：`success = false` 但 `stdout`/`stderr` 有内容，
+    /// 编排（装完配、配完重启）要靠 stderr 判断下一步。只有被拒（403）、
+    /// 同插件已有命令在跑（409）与通道/超时失败才返回 `Err`。
+    ///
+    /// 内核侧是**提交作业**语义（长任务要能看过程、能取消），这里封装成
+    /// 「提交 + 等到结束」：给需要「一步拿到结果」的编排用。要边跑边看进度，
+    /// 用 [`Self::host_exec_submit`] 拿 `job_id` 后轮询 [`Self::host_exec_status`]。
+    pub fn host_exec_full(
+        &self,
+        binary: &str,
+        argv: &[&str],
+        stdin: Option<&str>,
+        timeout_sec: Option<u64>,
+    ) -> Result<Value> {
+        // 前台等待上限由内核夹到 120s；更长的任务由下面的轮询接手。
+        let timeout = timeout_sec.unwrap_or(600);
+        let wait = timeout.min(120);
+        let mut submitted = self.host_exec_submit(binary, argv, stdin, Some((timeout, wait)))?;
+        let job_id = submitted
+            .get("job_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| SdkError::Protocol("exec 响应缺少 job_id".into()))?
+            .to_string();
+
+        let budget = std::time::Duration::from_secs(timeout + 15);
+        let started = std::time::Instant::now();
+        while submitted.get("active").and_then(Value::as_bool) == Some(true) {
+            if started.elapsed() > budget {
+                return Err(SdkError::Protocol(format!(
+                    "命令执行超过 {budget:?} 未结束，作业 {job_id} 可能仍在运行（可用 host_exec_status 复查或 host_exec_cancel 取消）"
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            submitted = self.host_exec_status(&job_id, 0, 0)?;
+        }
+        Ok(finalize_exec_result(submitted, &job_id))
+    }
+
+    /// 只提交、不等结果：返回 `{job_id, status, active}` 等提交快照。
+    ///
+    /// `timeout_sec` 与 `wait_sec` 分开给：`timeout_sec` 是命令本身的运行上限，
+    /// `wait_sec` 是「这次请求愿意等多久」（内核上限 120s，0 = 纯异步）。
+    pub fn host_exec_submit(
+        &self,
+        binary: &str,
+        argv: &[&str],
+        stdin: Option<&str>,
+        limits: Option<(u64, u64)>,
+    ) -> Result<Value> {
+        let mut body = json!({ "binary": binary, "argv": argv });
+        if let Some(s) = stdin {
+            body["stdin"] = json!(s);
+        }
+        if let Some((timeout, wait)) = limits {
+            body["timeout_sec"] = json!(timeout);
+            body["wait_sec"] = json!(wait);
+        }
+        self.call_kernel(skiff_wire::routes::CAP_EXEC_RUN, body)
+    }
+
+    /// 查询状态 + 结果 + 增量日志（`after` 为已读到的最大 `seq`，`limit=0` 不带日志）。
+    pub fn host_exec_status(&self, job_id: &str, after: i64, limit: i64) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_EXEC_STATUS,
+            json!({ "job_id": job_id, "after": after, "limit": limit }),
+        )
+    }
+
+    /// 取消：返回 `{outcome: cancelled|requested|terminal}`。
+    pub fn host_exec_cancel(&self, job_id: &str) -> Result<Value> {
+        self.call_kernel(
+            skiff_wire::routes::CAP_EXEC_CANCEL,
+            json!({ "job_id": job_id }),
         )
     }
 
@@ -615,6 +726,35 @@ pub fn uds_http(
     Err(SdkError::Unsupported(
         "插件只支持在 Linux/unix 宿主运行".into(),
     ))
+}
+
+/// 把 exec 作业快照转成「一次执行的结果」，与旧版同步响应同形。
+///
+/// 保持 `{success, code, stdout, stderr, truncated}` 这个形状是有意的：编排代码
+/// （装完配、配完重启）只关心「成没成、退出码、报了什么错」，不该因为内核把执行
+/// 记录化就被迫改写。`job_id` / `status` / `error_detail` 是新增的可选字段。
+fn finalize_exec_result(snapshot: Value, job_id: &str) -> Value {
+    let status = snapshot
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("failed");
+    let mut out = snapshot
+        .get("result")
+        .cloned()
+        .filter(|v| v.is_object() && v.as_object().is_some_and(|o| !o.is_empty()))
+        .unwrap_or_else(|| json!({}));
+    if out.get("success").is_none() {
+        out["success"] = json!(status == "succeeded");
+    }
+    out["job_id"] = json!(job_id);
+    out["status"] = json!(status);
+    if let Some(v) = snapshot.get("exit_code") {
+        out["exit_code"] = v.clone();
+    }
+    if let Some(v) = snapshot.get("error_detail").filter(|v| !v.is_null()) {
+        out["error_detail"] = v.clone();
+    }
+    out
 }
 
 #[cfg(test)]

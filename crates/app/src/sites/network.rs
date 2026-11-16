@@ -278,14 +278,21 @@ fn parse_ip_addr_output(output: &str) -> Vec<NetworkOccupant> {
 
 async fn host_network_occupants() -> Vec<NetworkOccupant> {
     // 只读枚举宿主 IPv4 地址；`ip` 不可用时退化为仅检查 Docker 网络。
-    tokio::task::spawn_blocking(|| {
-        std::process::Command::new("ip")
-            .args(["-4", "-o", "addr", "show"])
-            .output()
-            .map(|o| parse_ip_addr_output(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_default()
-    })
+    //
+    // 走统一执行通道（`skiff_host`）：原来在阻塞池里裸跑没有超时，`ip` 卡住就
+    // 会一直占着一个阻塞线程。这里给它 8 秒上限，失败按「没有宿主地址」处理。
+    let args: Vec<String> = ["-4", "-o", "addr", "show"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    crate::host::run_host_msg(
+        skiff_host::HostSpec::direct("ip", &args)
+            .prefix("skiff-net")
+            .description("skiff 宿主地址探测")
+            .timeout(8),
+    )
     .await
+    .map(|o| parse_ip_addr_output(&o.stdout))
     .unwrap_or_default()
 }
 

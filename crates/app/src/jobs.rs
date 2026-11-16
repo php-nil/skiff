@@ -30,11 +30,19 @@ pub const TARGET_IMAGE: &str = "image";
 pub const TARGET_COMPOSE: &str = "compose";
 pub const TARGET_SITE: &str = "site";
 pub const TARGET_SYSTEM: &str = "system";
+/// 宿主命令作业的目标类型：目标 id 由发起方决定（计划任务用任务 id，
+/// 这样同一任务天然串行、不同任务互不阻塞）。
+pub const TARGET_HOST: &str = "host";
 /// Web 服务（OpenResty）安装/重建作业的目标类型与固定目标 id。
 pub const TARGET_WEB_ENV: &str = "web_env";
 pub const WEB_ENV_ID: &str = "web";
 /// Web 服务安装作业的类型标识（任务中心按此显示「Web 服务安装」）。
 pub const KIND_WEB_INSTALL: &str = "web.install";
+/// 宿主机命令执行作业（`exec` 能力面提交，执行体在 `crates/core/src/kernel/exec.rs`）。
+///
+/// 与环境安装共用 `jobs` / `job_logs`：进度、过程日志、取消、SSE 都是同一套，
+/// 差别只在「一次安装 = 多步骤快照」而「一次命令 = 一条流」。
+pub const KIND_HOST_EXEC: &str = "host.exec";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobError {
@@ -499,6 +507,26 @@ impl JobService {
             Some(class),
             Some(detail),
             "{}",
+            now,
+            duration,
+        ) {
+            tracing::warn!(job = id, error = %e, "作业失败收尾写入失败");
+        }
+        self.forget_route(id);
+    }
+
+    /// 失败收尾但保留结果体。命令执行类专用：非零退出时 `exit_code` 与
+    /// `stdout`/`stderr` 恰恰是复查与编排要用的东西，用 `finish_err` 会丢成 `{}`。
+    pub fn finish_err_result(&self, id: &str, class: &str, detail: &str, result: Value) {
+        self.note(id, &format!("失败：{detail}"));
+        let now = Self::now();
+        let duration = self.duration_ms(id, now);
+        if let Err(e) = self.db.finish_job(
+            id,
+            STATUS_FAILED,
+            Some(class),
+            Some(detail),
+            &result.to_string(),
             now,
             duration,
         ) {

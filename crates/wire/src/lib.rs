@@ -61,6 +61,21 @@ pub mod routes {
     /// 仅 Native 形态可用：`{method, params}` → 内核 `firewall` handler，
     /// 判定与命令编排在 `skiff_plugin::firewall`，这里是唯一的 UDS 协议入口。
     pub const CAP_FIREWALL_CALL: &str = "/api/v1/capability/firewall/call";
+    /// 宿主机命令执行能力面（粗授权 + 全审计 + 运行记录）。
+    ///
+    /// 权限串 `exec:run` + 对象授权 `bin:<绝对路径>`（判定唯一实现在
+    /// `skiff_plugin::execgrant`）：插件自己决定跑哪个已授权的二进制与参数，
+    /// 内核只校验「二进制身份」并按原样执行 + 逐次审计。**没有命令模板**，
+    /// 新增一个宿主功能只需插件包声明新的 `bin:` 与编排代码，不动内核。
+    ///
+    /// 请求是**提交作业**而不是等结果：命令耗时由命令自己决定，长任务的过程
+    /// 输出、退出码、取消都落在任务中心（与运行环境安装同一套记录）。
+    /// 响应带 `job_id`；要过程日志/后续状态走 [`CAP_EXEC_STATUS`]。
+    pub const CAP_EXEC_RUN: &str = "/api/v1/capability/exec/run";
+    /// 查询本插件提交的 exec 作业：状态、结果、增量日志（`after` 游标）。
+    pub const CAP_EXEC_STATUS: &str = "/api/v1/capability/exec/status";
+    /// 取消本插件提交的 exec 作业（协作式：执行体在通道 tick 上停止单元）。
+    pub const CAP_EXEC_CANCEL: &str = "/api/v1/capability/exec/cancel";
 
     // ---- 插件提供、内核调用（plugin.sock）----
     pub const PLUGIN_HEALTHZ: &str = "/healthz";
@@ -492,5 +507,9 @@ mod tests {
         assert_eq!(routes::CAP_FS_MKDIR, "/api/v1/capability/fs/mkdir");
         assert_eq!(routes::CAP_FS_REMOVE, "/api/v1/capability/fs/remove");
         assert_eq!(routes::CAP_FS_RENAME, "/api/v1/capability/fs/rename");
+        // 执行类能力面固定一条路由：授权粒度在 `bin:` 对象授权上，不在路由上
+        assert_eq!(routes::CAP_EXEC_RUN, "/api/v1/capability/exec/run");
+        assert_eq!(routes::CAP_EXEC_STATUS, "/api/v1/capability/exec/status");
+        assert_eq!(routes::CAP_EXEC_CANCEL, "/api/v1/capability/exec/cancel");
     }
 }

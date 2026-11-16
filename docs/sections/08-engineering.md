@@ -24,6 +24,10 @@ skiff/
 │   ├── store/      # 支撑：SQLite 迁移与仓储
 │   ├── pkgfmt/     # 支撑：.wbpkg 包格式/manifest/签名编解码（内核与 SDK 共用，禁止各写一份）
 │   ├── cron/       # 支撑：5 段 cron 表达式解析/匹配/下次触发（装包校验、内核调度、计划任务插件共用）
+│   ├── sched/      # 支撑：调度纯逻辑（cron 匹配、单飞、错过补偿）；不能反向依赖 app
+│   ├── fs/         # 支撑：文件操作原语（路径代数 + 临时文件/rename 原子替换 + 回收站），内核与插件共用
+│   ├── host/       # 支撑：宿主命令执行通道（systemd-run 瞬态单元 / 普通子进程）——**唯一实现**，
+│   │               #   插件能力面与内核动作共用；授权判定不在这里
 │   ├── wire/       # 支撑：插件↔内核 UDS 协议帧编解码 + 路由常量 + 协议版本闸（纯函数，无运行时）
 │   ├── model/      # 支撑：跨 crate 共享词汇（Role/Grant/Form/Permission/Cidr/Verb/ContainerSpec/Actor）
 │   │               #   + 路径代数（within/normalize/..段判定），零 I/O（纯值类型，不碰文件系统）
@@ -38,7 +42,7 @@ skiff/
 ├── docs/           # DESIGN.md（索引+一页结论）+ sections/（§1–§12 正文）
 │                   # + ARCH_REVIEW.md（架构审查）/ CI.md（流水线）/ DEPLOY_TEST.md（装机与验收）
 │                   # + PLUGIN_CATALOG.md（官方插件集）/ changes/（按日期变更记录）
-└── xtask/          # 工程校验：check（1Panel 变量 + Compose 子集）、verify-pkg（.wbpkg 结构/摘要/签名）
+└── xtask/          # 工程校验：check（1Panel 变量 + Compose 子集 + 宿主通道）、verify-pkg（.wbpkg 结构/摘要/签名）
 ```
 
 **核心 ↔ 代码对照**：
@@ -64,7 +68,8 @@ skiff/
 | `docker` | `policy`、`compose`、`model`、bollard | `web`、`core` |
 | `plugin` | `pkgfmt`、`wire`、`store`、`model`（+ `axum`/`http-body-util`：仅能力面 handler 的 HTTP 形状） | `docker`、`web`、`core`、`app` |
 | `sdk` | `pkgfmt`、`wire` | `store`、`docker`、`web` |
-| `app` | `model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt`、`sched`、`fs`（+ `ureq`/`rustls-pemfile`/`ed25519-dalek`：商店目录客户端，本仓唯一出网组件） | `web`、`core` |
+| `host` | tokio（+ tracing） | `store`、`docker`、`web`、`app`、`plugin` |
+| `app` | `model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt`、`sched`、`fs`、`host`（+ `ureq`/`rustls-pemfile`/`ed25519-dalek`：商店目录客户端，本仓唯一出网组件） | `web`、`core` |
 | `web` | `app`、`model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt` | `core` |
 | `core`(bin) | 以上全部 | — |
 
@@ -86,8 +91,9 @@ skiff/
 
 | 能力面 | 判定与编排 | HTTP 形状 / 特权执行 |
 |---|---|---|
-| fs / interop | `crates/plugin`（`fsops` / `fsgrant` / `interop`） | `crates/core/src/kernel/capability.rs` |
-| ftp | `crates/plugin/src/ftp.rs` | `crates/core/src/kernel/ftp.rs`（`systemd-run` 通道见 `kernel/host_run.rs`） |
+| fs / interop | `crates/plugin`（`fsops` / `fsgrant` / `interop`） | `crates/core/src/kernel/capability.rs`；内核自身写入走 `crates/app/src/admin_fs.rs`（`write_kernel` / `remove_kernel`） |
+| exec | `crates/plugin/src/execgrant.rs`（`bin:` 三道闸）+ `crates/core/src/kernel/exec.rs`（提交/状态/取消） | 执行通道 `crates/host`（`skiff_host`），作业执行体 `crates/app/src/host.rs`（`drive_exec_job`）——插件与内核计划任务共用 |
+| ftp | `crates/plugin/src/ftp.rs` | `crates/core/src/kernel/ftp.rs`（特权执行经 `skiff_host::run`） |
 | firewall | `crates/plugin/src/firewall.rs` | `crates/core/src/kernel/firewall.rs`（同上） |
 | scheduler | `crates/app/src/tasks.rs`（`sched` 为纯逻辑，不能反向依赖 `app`） | `crates/core/src/kernel/capability.rs` |
 | docker / identity / config | 判定复用 `policy` / `store` | `crates/core/src/kernel/capability.rs` |
@@ -96,4 +102,4 @@ skiff/
 
 **最小可用版本 = 三块核心跑通**：能登录、能管容器、能装插件且崩不了内核。支撑层跟着三块成形，不单独立项。
 
-`xtask check` 固化两类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。
+`xtask check` 固化三类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）；第三项是**宿主通道闸**：`app`/`core` 非测试代码出现 `Command::new` 即失败，内核文件写计数只减不增（2026-11-16 基线 140 处）。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。

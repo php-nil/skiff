@@ -1,10 +1,15 @@
 # Skiff 官方插件集
 
 这里是官方插件的**第二 workspace**（与根 `crates/` 分开构建），主程序发布包会随包携带
-本目录产出的 `.wbpkg`。插件原则上只做「能力面的组合」，不新增内核接口；两个例外是
+本目录产出的 `.wbpkg`。插件只做「能力面的组合」，不新增内核接口；两个历史例外是
 `com.skiff.ftp` 与 `com.skiff.firewall`——它们需要宿主软件包与特权通道，分别新增了内核
 `ftp` 与 `firewall` 能力面，契约见 [`docs/contract/KERNEL_FTP_CONTRACT.md`](../docs/contract/KERNEL_FTP_CONTRACT.md)
 与 [`docs/contract/KERNEL_FIREWALL_CONTRACT.md`](../docs/contract/KERNEL_FIREWALL_CONTRACT.md)。
+**这两条面已冻结**：新的宿主特权功能（装包、改配置、重启服务）一律走 `exec` 能力面
+（授权 `exec:run` + `bin:<绝对路径>`，内核校验二进制身份），命令执行作为 `host.exec` 作业
+进任务中心——过程日志、退出码、取消与环境安装同一套；请求阶段另记一条审计。不再新增专用面——
+设计见 [`docs/plugin/HOST_EXEC_DESIGN.md`](../docs/plugin/HOST_EXEC_DESIGN.md)，契约见
+[`docs/contract/KERNEL_EXEC_CONTRACT.md`](../docs/contract/KERNEL_EXEC_CONTRACT.md)。
 
 | 插件 | id | 能力 | 用途 |
 | --- | --- | --- | --- |

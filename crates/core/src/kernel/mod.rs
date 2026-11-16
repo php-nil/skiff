@@ -21,13 +21,20 @@
 //! - `ftp`：宿主机 pure-ftpd 安装、服务配置与站点账号（仅 Native）。判定与命令
 //!   编排在 `skiff_plugin::ftp`；这里只负责 grants 校验、审计，以及经 `systemd-run`
 //!   瞬态单元执行特权命令（站点快照由这里注入，插件不查库）。
+//! - `exec`：宿主机命令执行（仅 Native）。**粗授权 + 全审计 + 运行记录**：权限串
+//!   `exec:run` 加对象授权 `bin:<abs>`，插件自己决定跑什么，内核只校验二进制身份
+//!   （`skiff_plugin::execgrant`）；执行过程是一条 `host.exec` 作业（`skiff_app::jobs`），
+//!   过程输出、退出码、取消都在任务中心，与环境安装同一套。新增宿主功能零内核改动，
+//!   见 `docs/plugin/HOST_EXEC_DESIGN.md`。
 //!
 //! 文件分工（一个职责一个文件，避免单文件既管 socket 又管判定）：
 //! - `server`（仅 unix）：socket 建立、属组/权限、accept 循环；
 //! - `routes`：能力面路由表与中间件顺序；
 //! - `auth`：协议版本闸 + 双重鉴权（peer uid ↔ 插件 id + Bearer token）；
 //! - `capability`：identity / config / docker / net 四条能力面；
-//! - `interop`：插件间调用与接口目录。
+//! - `interop`：插件间调用与接口目录；
+//! - 执行通道不在本目录：唯一实现是 `skiff_host`（`crates/host`），ftp / firewall /
+//!   `exec` 与内核自身的作业执行体共用；这里只做「判定 + 授权 + 审计 + 作业结算」。
 //!
 //! 除 `server` 外全部与平台无关：判定与响应组装能在 Windows 开发机上直接编译与单测，
 //! 只有真正依赖 unix socket 的那层留在 `#[cfg(unix)]` 里。
@@ -44,11 +51,11 @@ mod auth;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod capability;
 #[cfg_attr(not(unix), allow(dead_code))]
+mod exec;
+#[cfg_attr(not(unix), allow(dead_code))]
 mod firewall;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod ftp;
-#[cfg_attr(not(unix), allow(dead_code))]
-mod host_run;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod interop;
 #[cfg_attr(not(unix), allow(dead_code))]

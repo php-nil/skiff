@@ -8,8 +8,11 @@
 //! 「结果未知」返回，用户既拿不到准确结论，也等不到回滚。
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use skiff_docker::DockerService;
+
+use crate::admin_fs::AdminFs;
 
 pub const DAEMON_JSON: &str = "/etc/docker/daemon.json";
 
@@ -40,11 +43,13 @@ pub struct MirrorApply {
 struct DaemonJsonGuard {
     path: PathBuf,
     original: Option<String>,
+    /// 内核写通道：还原也是一次文件写，同样要走 `fs` 并留审计。
+    kfs: Arc<AdminFs>,
     armed: bool,
 }
 
 impl DaemonJsonGuard {
-    fn new(path: &Path, original: &str) -> Self {
+    fn new(path: &Path, original: &str, kfs: Arc<AdminFs>) -> Self {
         Self {
             path: path.to_path_buf(),
             original: if original.is_empty() {
@@ -52,6 +57,7 @@ impl DaemonJsonGuard {
             } else {
                 Some(original.to_string())
             },
+            kfs,
             armed: true,
         }
     }
@@ -63,13 +69,16 @@ impl DaemonJsonGuard {
     fn restore(&mut self) -> Result<(), String> {
         self.armed = false;
         match &self.original {
-            Some(text) => crate::atomic::write_atomic(&self.path, text.as_bytes(), 0o644)
+            Some(text) => self
+                .kfs
+                .write_kernel(&self.path, text.as_bytes())
                 .map_err(|e| format!("还原 daemon.json 失败：{e}")),
-            None => match std::fs::remove_file(&self.path) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(format!("删除新建的 daemon.json 失败：{e}")),
-            },
+            // 原本不存在：删掉刚写的那份。文件已不在（并发删除）按成功处理。
+            None if !self.path.exists() => Ok(()),
+            None => self
+                .kfs
+                .remove_kernel(&self.path)
+                .map_err(|e| format!("删除新建的 daemon.json 失败：{e}")),
         }
     }
 }
@@ -134,6 +143,7 @@ pub async fn apply_registry_mirror(
     docker: &DockerService,
     path: &Path,
     raw: &str,
+    kfs: &Arc<AdminFs>,
 ) -> Result<MirrorApply, String> {
     let mirrors = parse_mirrors(raw)?;
     // 只有「文件确实不存在」才按空配置合并；读取失败（EACCES/EIO）时若继续，
@@ -155,12 +165,12 @@ pub async fn apply_registry_mirror(
         std::fs::create_dir_all(dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
     }
     let deadline = tokio::time::Instant::now() + MIRROR_APPLY_BUDGET;
-    // 唯一临时名 + rename：并发写 daemon.json 时互不踩临时文件。
-    crate::atomic::write_atomic(path, merged.as_bytes(), 0o644)
+    // 走内核文件通道（`fs`）：原子替换 + 一条 `fs.write` 审计（actor=system）。
+    kfs.write_kernel(path, merged.as_bytes())
         .map_err(|e| format!("写入 daemon.json 失败：{e}"))?;
     // 从这里开始进入「外部状态已变」区间：任何提前返回或 future 被取消，
     // 守卫都会把原内容同步写回，不需要 `.bak` 文件。
-    let mut guard = DaemonJsonGuard::new(path, &existing);
+    let mut guard = DaemonJsonGuard::new(path, &existing, Arc::clone(kfs));
 
     let rows = match tokio::time::timeout(CONTAINER_LIST_BUDGET, docker.list_containers()).await {
         Ok(Ok(rows)) => rows,
@@ -244,27 +254,27 @@ async fn restart_docker(deadline: tokio::time::Instant) -> Result<(), String> {
         ));
     }
     let limit = remaining.min(SYSTEMCTL_TIMEOUT);
-    let mut child = tokio::process::Command::new("systemctl")
-        .args(["restart", "docker"])
-        // 超时后只能终止本地客户端；systemd 作业可能仍在执行，错误文案必须让
-        // 调用方知道「结果未知」，不能当成「没重启」。
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("无法执行 systemctl restart docker：{e}"))?;
-    let status = tokio::time::timeout(limit, child.wait())
-        .await
-        .map_err(|_| {
-            format!(
+    // 统一执行通道（`skiff_host`）：跑在 systemd-run 瞬态单元里，超时后通道会
+    // `systemctl stop` 单元——比只杀本地客户端干净。文案仍要区分「结果未知」：
+    // 单元被停掉不代表 Docker 没重启过。
+    let args: Vec<String> = ["restart", "docker"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let spec = skiff_host::HostSpec::privileged("systemctl", &args)
+        .prefix("skiff-docker")
+        .description("skiff docker restart")
+        .timeout(limit.as_secs().max(1));
+    match crate::host::run_host(spec).await {
+        Ok(out) if out.success => {}
+        Ok(out) => return Err(format!("systemctl restart docker 退出码 {:?}", out.code)),
+        Err(skiff_host::HostRunError::Timeout { .. }) => {
+            return Err(format!(
                 "systemctl restart docker 超过 {} 秒未返回（结果未知，Docker 可能仍在重启）",
                 limit.as_secs()
-            )
-        })?
-        .map_err(|e| format!("等待 systemctl restart docker 失败：{e}"))?;
-    if !status.success() {
-        return Err(format!(
-            "systemctl restart docker 退出码 {:?}",
-            status.code()
-        ));
+            ))
+        }
+        Err(e) => return Err(e.message("systemctl restart docker")),
     }
     // 等 socket 重新可用，但不得越过总预算。
     loop {
@@ -318,6 +328,23 @@ mod tests {
         assert!(merge_daemon_json("[]", &["https://a.example".into()]).is_err());
     }
 
+    /// 测试用的内核文件通道：内存库 + 临时数据根，审计不落盘但走完整路径。
+    fn kfs_with_db(dir: &Path) -> (Arc<AdminFs>, Arc<skiff_store::Db>) {
+        let db = Arc::new(skiff_store::Db::open_in_memory().unwrap());
+        let fs = Arc::new(AdminFs::with_protected(
+            dir.to_path_buf(),
+            dir.join("www"),
+            Arc::clone(&db),
+            30,
+            Vec::new(),
+        ));
+        (fs, db)
+    }
+
+    fn kfs(dir: &Path) -> Arc<AdminFs> {
+        kfs_with_db(dir).0
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "skiff-daemon-{tag}-{}-{}",
@@ -339,12 +366,12 @@ mod tests {
         let path = dir.join("daemon.json");
         let original = r#"{"log-driver":"local"}"#;
         std::fs::write(&path, original).expect("写原文件");
+        let fs = kfs(&dir);
         {
-            let mut guard = DaemonJsonGuard::new(&path, original);
-            crate::atomic::write_atomic(
+            let mut guard = DaemonJsonGuard::new(&path, original, Arc::clone(&fs));
+            fs.write_kernel(
                 &path,
                 br#"{"log-driver":"local","registry-mirrors":["https://new.example"]}"#,
-                0o644,
             )
             .expect("写新值");
             // 未 disarm，直接离开作用域 = 请求被取消。
@@ -366,8 +393,9 @@ mod tests {
         let dir = temp_dir("commit");
         let path = dir.join("daemon.json");
         std::fs::write(&path, r#"{"a":1}"#).expect("写原文件");
-        let mut guard = DaemonJsonGuard::new(&path, r#"{"a":1}"#);
-        crate::atomic::write_atomic(&path, br#"{"a":2}"#, 0o644).expect("写新值");
+        let fs = kfs(&dir);
+        let mut guard = DaemonJsonGuard::new(&path, r#"{"a":1}"#, Arc::clone(&fs));
+        fs.write_kernel(&path, br#"{"a":2}"#).expect("写新值");
         guard.disarm();
         drop(guard);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"a":2}"#);
@@ -378,10 +406,32 @@ mod tests {
     fn guard_removes_file_that_did_not_exist_before() {
         let dir = temp_dir("create");
         let path = dir.join("daemon.json");
-        let guard = DaemonJsonGuard::new(&path, "");
-        crate::atomic::write_atomic(&path, br#"{"registry-mirrors":[]}"#, 0o644).expect("写新值");
+        let fs = kfs(&dir);
+        let guard = DaemonJsonGuard::new(&path, "", Arc::clone(&fs));
+        fs.write_kernel(&path, br#"{"registry-mirrors":[]}"#)
+            .expect("写新值");
         drop(guard);
         assert!(!path.exists(), "原先不存在的文件应被删除");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 内核写系统配置必须留下审计：`actor=system` + `fs.write` + 目标路径。
+    /// 这条是「用记录代替权限配置」的最小断言——写发生了，就查得到。
+    #[test]
+    fn kernel_write_leaves_audit_trace() {
+        let dir = temp_dir("audit");
+        let (fs, db) = kfs_with_db(&dir);
+        let path = dir.join("daemon.json");
+        fs.write_kernel(&path, br#"{"registry-mirrors":[]}"#)
+            .expect("写入");
+
+        let rows = db.recent_audit(20).expect("读审计");
+        let hit = rows
+            .iter()
+            .find(|r| r.action == "fs.write" && r.target.ends_with("daemon.json"))
+            .expect("应当有一条 fs.write 审计");
+        assert_eq!(hit.actor, "system");
+        assert_eq!(hit.result, "ok");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

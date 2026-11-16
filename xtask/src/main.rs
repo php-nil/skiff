@@ -22,6 +22,8 @@ xtask — Skiff 发布与上架校验
 
 用法:
   xtask check                       依次跑 check-1panel 与 check-compose（CI 用这个）
+  xtask check-channel               宿主通道闸：进程执行只能经 skiff_host、
+                                    内核文件写只能经内核文件通道（CI 用这个）
   xtask check-1panel [--dir <apps/skiff>]
                                     商店包 compose ↔ data.yml 变量对齐
   xtask check-compose <file.yml...>   Compose MVP 字段子集校验（含未支持字段报错）
@@ -44,6 +46,7 @@ fn main() -> ExitCode {
             true
         }
         "check" => check_all(rest),
+        "check-channel" => check_channel(),
         "check-1panel" => check_1panel(rest),
         "check-compose" => check_compose(rest),
         "verify-pkg" => verify_pkg(rest),
@@ -83,13 +86,137 @@ fn positional(args: &[String]) -> Vec<String> {
     out
 }
 
+/// 宿主通道闸。
+///
+/// 两条硬规则（「不能有例外」的机械落点）：
+/// 1. `crates/app` 与 `crates/core` 的非测试代码**不得出现 `Command::new`**：
+///    宿主机进程的唯一入口是 `skiff_host`（超时 / 取消 / 清理只有一份）。
+/// 2. 内核自身的文件写**只能经内核文件通道**（`AdminFs::write_kernel` 等）。
+///    这条暂时是「只减不增」的计数闸：基线固定，迁移一处就下调一处。
+///
+/// 插件进程的 `Command::new` 不在此列（`crates/plugin/src/supervisor.rs` 拉起
+/// 插件是进程生命周期管理，不是宿主命令执行）。
+fn check_channel() -> bool {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace 根")
+        .to_path_buf();
+    let mut ok = true;
+
+    // 规则 1：进程执行唯一入口
+    for dir in ["crates/app/src", "crates/core/src"] {
+        for (file, text) in rust_files(&root.join(dir)) {
+            if before_tests(&text).contains("Command::new") {
+                println!(
+                    "✗ {}: 出现 Command::new —— 宿主机进程只能经 skiff_host",
+                    rel(&root, &file)
+                );
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("✓ 进程执行通道：app/core 无非测试的直接 Command::new");
+    }
+
+    // 规则 2：内核文件写入口（只减不增）
+    let mut writes = 0usize;
+    let mut files = 0usize;
+    for (file, text) in rust_files(&root.join("crates/app/src")) {
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        // 底层原语自身与审计兜底不算绕过：它们**就是**通道的实现。
+        if matches!(name, "atomic.rs" | "audit.rs") {
+            continue;
+        }
+        let hits = count_fs_writes(&before_tests(&text));
+        if hits > 0 {
+            files += 1;
+            writes += hits;
+        }
+    }
+    match FS_WRITE_BASELINE {
+        Some(baseline) if writes > baseline => {
+            println!(
+                "✗ 内核文件写：{files} 个文件共 {writes} 处，超过基线 {baseline} —— 新写入必须经 write_kernel"
+            );
+            ok = false;
+        }
+        Some(baseline) => {
+            println!("✓ 内核文件写：{files} 个文件共 {writes} 处（基线 {baseline}，只减不增）");
+        }
+        None => println!("内核文件写：{files} 个文件共 {writes} 处（未设基线）"),
+    }
+    ok
+}
+
+/// 内核文件写的基线。**只能下调**：每迁一处到 `write_kernel` 就减一处。
+///
+/// 2026-11-16 基线 141 → 140 处（9 个文件）：站点备份改走 exec 作业后，
+/// `File::create` 不再由内核自己做。迁移一处就减一处；**不得上调**。
+const FS_WRITE_BASELINE: Option<usize> = Some(140);
+
+/// 递归收集 `.rs` 文件。
+fn rust_files(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(rust_files(&path));
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                out.push((path, text));
+            }
+        }
+    }
+    out
+}
+
+/// 只保留 `#[cfg(test)]` 之前的代码：单测里的临时文件操作不是产品路径。
+fn before_tests(text: &str) -> String {
+    match text.find("#[cfg(test)]") {
+        Some(i) => text[..i].to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// 统计直接文件写（写 / 建目录 / 删 / 改名 / 复制）。
+fn count_fs_writes(body: &str) -> usize {
+    [
+        "std::fs::write",
+        "std::fs::create_dir_all",
+        "std::fs::remove_file",
+        "std::fs::remove_dir_all",
+        "std::fs::rename",
+        "std::fs::copy",
+    ]
+    .iter()
+    .map(|needle| body.matches(needle).count())
+    .sum()
+}
+
+fn rel(root: &Path, file: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .display()
+        .to_string()
+}
+
 fn check_all(args: &[String]) -> bool {
     let mut ok = true;
-    println!("== 1/2 商店包变量对齐 ==");
+    println!("== 1/3 商店包变量对齐 ==");
     ok &= check_1panel(args);
     println!();
-    println!("== 2/2 仓库内 Compose 样例字段子集 ==");
+    println!("== 2/3 仓库内 Compose 样例字段子集 ==");
     ok &= check_compose(&[]);
+    println!();
+    println!("== 3/3 宿主通道（进程执行 / 内核文件写）==");
+    ok &= check_channel();
     println!();
     if ok {
         println!("全部通过 ✅");

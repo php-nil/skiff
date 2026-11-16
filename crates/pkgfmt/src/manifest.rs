@@ -39,6 +39,13 @@ pub enum Capability {
     /// 宿主网络命名空间与 systemd，故只对 Native 形态提供。契约见
     /// `docs/contract/KERNEL_FIREWALL_CONTRACT.md`。
     Firewall,
+    /// 宿主机命令执行能力面（`/capability/exec/run`）。
+    ///
+    /// 权限串固定 `exec:run`，真正决定「能跑什么」的是 `resource_hints` 里的
+    /// `bin:<绝对路径>` 对象授权（安装时逐条确认）。这是**宿主特权**原语：
+    /// 授权一个二进制即授权它作为 root 能做的一切，粒度就是这么粗——换来的是
+    /// 新宿主功能零内核改动。详见 `docs/plugin/HOST_EXEC_DESIGN.md`。
+    Exec,
 }
 
 impl Capability {
@@ -52,6 +59,7 @@ impl Capability {
             Capability::Scheduler => "scheduler",
             Capability::Ftp => "ftp",
             Capability::Firewall => "firewall",
+            Capability::Exec => "exec",
         }
     }
 
@@ -66,6 +74,7 @@ impl Capability {
             Capability::Scheduler,
             Capability::Ftp,
             Capability::Firewall,
+            Capability::Exec,
         ]
     }
 
@@ -86,8 +95,8 @@ impl Capability {
                 Capability::Interop,
                 Capability::Scheduler,
             ],
-            // 注意：`Ftp` / `Firewall` 只在 Native 形态出现。它们要落宿主
-            // apt/systemd、pure-pw 用户库与 nftables/iptables，受限形态没有
+            // 注意：`Ftp` / `Firewall` / `Exec` 只在 Native 形态出现。它们要落宿主
+            // apt/systemd、pure-pw 用户库、nftables 与特权命令，受限形态没有
             // 这些能力面，不能假装可用。
         }
     }
@@ -719,6 +728,8 @@ impl Manifest {
             validate_resource(h)?;
             let needs = if h.starts_with("path:") {
                 Capability::Fs
+            } else if h.starts_with("bin:") {
+                Capability::Exec
             } else if h.starts_with("plugin:") {
                 Capability::Interop
             } else {
@@ -1308,7 +1319,7 @@ pub fn validate_resource(value: &str) -> Result<()> {
         return bad("长度或字符非法");
     }
     let Some((kind, rest)) = value.split_once(':') else {
-        return bad("缺类型前缀（path: / container: / project:）");
+        return bad("缺类型前缀（path: / bin: / container: / project: / plugin:）");
     };
     match kind {
         "path" => {
@@ -1346,6 +1357,24 @@ pub fn validate_resource(value: &str) -> Result<()> {
                 return bad("插件 id 非法（通配只能整条写成 plugin:*）");
             }
             validate_id(rest)
+        }
+        "bin" => {
+            // 与 `path:` 同口径的形式校验，外加两条只对可执行体成立的：
+            // 不得声明包装器（`bash` / `python` / `systemd-run` …，见
+            // `skiff_model::exec`），不得以 `/` 结尾（那是目录，不是可执行体）。
+            if skiff_model::has_parent_segment(rest) {
+                return bad("路径不得含 ..");
+            }
+            if !skiff_model::is_absolute(rest) {
+                return bad("必须是绝对路径");
+            }
+            if rest.ends_with('/') {
+                return bad("必须是可执行文件，不能是目录");
+            }
+            if skiff_model::is_wrapper_bin(rest) {
+                return bad("该二进制是包装器/解释器（可把参数变成任意执行），不可授权");
+            }
+            Ok(())
         }
         other => bad(&format!("未知类型 {other}")),
     }
@@ -1598,6 +1627,14 @@ secret = true
         assert!(validate_resource("project:app").is_ok());
         assert!(validate_resource("plugin:com.skiff.cron").is_ok());
         assert!(validate_resource("plugin:*").is_ok());
+        // `bin:` 只收可执行文件：绝对路径、非目录、非包装器
+        assert!(validate_resource("bin:/usr/bin/fail2ban-client").is_ok());
+        assert!(validate_resource("bin:/bin/bash").is_err());
+        assert!(validate_resource("bin:/usr/bin/python3.11").is_err());
+        assert!(validate_resource("bin:/usr/bin/systemd-run").is_err());
+        assert!(validate_resource("bin:/usr/bin/").is_err());
+        assert!(validate_resource("bin:relative/x").is_err());
+        assert!(validate_resource("bin:/usr/../bin/x").is_err());
         // 相对路径、保留 `..`、根目录、空对象名、未知类型一律拒
         assert!(validate_resource("path:relative/conf").is_err());
         assert!(validate_resource("path:/etc/../passwd").is_err());

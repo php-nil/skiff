@@ -421,6 +421,7 @@ impl AppState {
             self.docker(),
             std::path::Path::new(crate::docker_daemon::DAEMON_JSON),
             raw,
+            &self.admin_fs_arc(),
         )
         .await
     }
@@ -1275,7 +1276,9 @@ impl AppState {
     }
 
     /// 站点证书信息（供 SSL 标签展示）。
-    pub fn site_tls_info(&self, domain: &str) -> Result<SiteTlsInfo, SiteError> {
+    ///
+    /// 异步：证书解析经统一执行通道（`skiff_host`）跑 `openssl`，不再同步 fork。
+    pub async fn site_tls_info(&self, domain: &str) -> Result<SiteTlsInfo, SiteError> {
         let s = self.site_settings();
         let site = self
             .db()
@@ -1296,7 +1299,7 @@ impl AppState {
             expires: None,
         };
         if info.cert_exists {
-            let text = cached_cert_text(&cert, &key);
+            let text = cached_cert_text(&cert, &key).await;
             info.subject = text.subject;
             info.issuer = text.issuer;
             info.expires = text.expires;
@@ -1333,40 +1336,40 @@ impl AppState {
         for a in &aliases {
             san.push_str(&format!(",DNS:{a}"));
         }
-        let (cert2, key2) = (tmp_cert.clone(), tmp_key.clone());
-        let domain2 = site.domain.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("openssl")
-                .args([
-                    "req",
-                    "-x509",
-                    "-newkey",
-                    "rsa:2048",
-                    "-sha256",
-                    "-days",
-                    "825",
-                    "-nodes",
-                    "-keyout",
-                    key2.to_str().unwrap_or_default(),
-                    "-out",
-                    cert2.to_str().unwrap_or_default(),
-                    "-subj",
-                    &format!("/CN={domain2}"),
-                    "-addext",
-                    &format!("subjectAltName={san}"),
-                ])
-                .output()
-        })
+        // 走统一执行通道（`skiff_host`）：超时、读流、错误文案只有一份。
+        // 直接起子进程即可——openssl 不要 root，也不必为它 fork 一个 systemd 单元。
+        let args: Vec<String> = vec![
+            "req".into(),
+            "-x509".into(),
+            "-newkey".into(),
+            "rsa:2048".into(),
+            "-sha256".into(),
+            "-days".into(),
+            "825".into(),
+            "-nodes".into(),
+            "-keyout".into(),
+            tmp_key.display().to_string(),
+            "-out".into(),
+            tmp_cert.display().to_string(),
+            "-subj".into(),
+            format!("/CN={}", site.domain),
+            "-addext".into(),
+            format!("subjectAltName={san}"),
+        ];
+        let out = crate::host::run_host_msg(
+            skiff_host::HostSpec::direct("openssl", &args)
+                .prefix("skiff-cert")
+                .description("skiff 自签证书生成")
+                .timeout(30),
+        )
         .await
-        .map_err(|e| SiteError::Internal(format!("执行 openssl 失败：{e}")))?;
-        let out = status
-            .map_err(|e| SiteError::Internal(format!("无法执行 openssl（请安装 openssl）：{e}")))?;
-        if !out.status.success() {
+        .map_err(|e| SiteError::Internal(format!("生成自签证书失败：{e}")))?;
+        if !out.success {
             let _ = std::fs::remove_file(&tmp_cert);
             let _ = std::fs::remove_file(&tmp_key);
             return Err(SiteError::Internal(format!(
                 "生成自签证书失败：{}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                out.stderr.trim()
             )));
         }
         let _guard = super::nginx_write_lock().lock().await;
@@ -1410,6 +1413,7 @@ impl AppState {
         // `generate_self_signed` 一致投递到阻塞池；失败时在同一闭包内清理临时文件。
         let (cert_text, key_text) = (cert_pem.to_string(), key_pem.to_string());
         let (write_cert, write_key) = (tmp_cert.clone(), tmp_key.clone());
+        // 写盘留在阻塞池（纯 IO）；`openssl` 校验走统一执行通道，不再在阻塞池里 fork。
         tokio::task::spawn_blocking(move || {
             std::fs::write(&write_cert, cert_text)
                 .map_err(|e| SiteError::Internal(format!("写入证书失败：{e}")))?;
@@ -1417,19 +1421,19 @@ impl AppState {
                 .map_err(|e| SiteError::Internal(format!("写入私钥失败：{e}")))?;
             restrict_mode(&write_cert, 0o644);
             restrict_mode(&write_key, 0o600);
-            if let Err(e) = verify_cert_pair(&write_cert, &write_key) {
-                if let Err(ce) = std::fs::remove_file(&write_cert) {
-                    tracing::debug!(path = %write_cert.display(), error = %ce, "清理临时证书失败");
-                }
-                if let Err(ke) = std::fs::remove_file(&write_key) {
-                    tracing::debug!(path = %write_key.display(), error = %ke, "清理临时私钥失败");
-                }
-                return Err(SiteError::BadRequest(e));
-            }
-            Ok(())
+            Ok::<(), SiteError>(())
         })
         .await
-        .map_err(|e| SiteError::Internal(format!("证书校验任务失败：{e}")))??;
+        .map_err(|e| SiteError::Internal(format!("证书写入任务失败：{e}")))??;
+        if let Err(e) = verify_cert_pair(&tmp_cert, &tmp_key).await {
+            if let Err(ce) = std::fs::remove_file(&tmp_cert) {
+                tracing::debug!(path = %tmp_cert.display(), error = %ce, "清理临时证书失败");
+            }
+            if let Err(ke) = std::fs::remove_file(&tmp_key) {
+                tracing::debug!(path = %tmp_key.display(), error = %ke, "清理临时私钥失败");
+            }
+            return Err(SiteError::BadRequest(e));
+        }
         // 成对替换与 reload 必须在一把锁内完成：中间态对 nginx 不可见。
         let _guard = super::nginx_write_lock().lock().await;
         if let Err(failure) = replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key) {

@@ -1890,6 +1890,7 @@ dependencies = [
  "serde_json",
  "skiff-app",
  "skiff-docker",
+ "skiff-host",
  "skiff-identity",
  "skiff-model",
  "skiff-pkgfmt",
@@ -1920,6 +1921,7 @@ dependencies = [
  "sha2 0.10.9",
  "skiff-docker",
  "skiff-fs",
+ "skiff-host",
  "skiff-identity",
  "skiff-model",
  "skiff-pkgfmt",
@@ -1927,7 +1929,6 @@ dependencies = [
  "skiff-sched",
  "skiff-server",
  "skiff-store",
- "tar",
  "tempfile",
  "tokio",
  "toml",
@@ -1979,6 +1980,14 @@ dependencies = [
  "tar",
  "tempfile",
  "zip",
+]
+
+[[package]]
+name = "skiff-host"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

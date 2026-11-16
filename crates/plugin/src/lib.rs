@@ -10,6 +10,8 @@
 //!   这三项是 M4 的硬门槛，见 §9.1 与 docs/test/DEPLOY_TEST.md「未验证项」。
 
 pub mod capability;
+/// 宿主命令执行授权（内核 `exec` handler 调用的 `bin:` 判定，见 `execgrant` 模块文档）。
+pub mod execgrant;
 /// 宿主机防火墙/fail2ban 能力面（内核 `firewall` handler 调用的判定与命令编排）。
 pub mod firewall;
 pub mod fsgrant;

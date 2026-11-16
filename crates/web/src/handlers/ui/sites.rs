@@ -137,12 +137,10 @@ pub async fn site_detail(
         },
     };
 
-    // `openssl x509` 是同步 fork，与详情页一样丢进阻塞线程池；读取失败只降级证书信息。
+    // 证书解析走内核执行通道（`skiff_host`），异步等待；读取失败只降级证书信息。
     let ssl = {
-        let tls_state = state.clone();
-        let tls_domain = domain.clone();
-        match crate::handlers::blocking_fs(move || tls_state.site_tls_info(&tls_domain)).await {
-            Ok(Ok(info)) => SiteSsl {
+        match state.site_tls_info(&domain).await {
+            Ok(info) => SiteSsl {
                 enabled: info.enabled,
                 force_https: info.force_https,
                 cert_exists: info.cert_exists,

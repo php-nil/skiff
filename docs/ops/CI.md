@@ -40,7 +40,7 @@
 | `test` | `cargo test --workspace --locked --no-fail-fast` | 全量单测 + 文档测试；**unix-only 用例第一次真正执行**（见 §3） |
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
-| `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
+| `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / **宿主通道闸**（`app`·`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增，基线 140）；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
 | `server` | `cargo run --locked -p skiff-server -- check` | Skiff-server 静态产物自检：schema 合规、摘要一致、索引引用完整、`seq` 不回退（见 [SKIFF_SERVER/04-ROLLOUT.md](../plugin/SKIFF_SERVER/04-ROLLOUT.md) §10）；只在内存生成，不产出发布物 |
 | `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 7 个官方插件包（6 个插件 + testkit）真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
 | `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |

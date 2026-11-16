@@ -12,7 +12,7 @@
 
 | 路径 | 类型 | 说明 |
 | --- | --- | --- |
-| `crates/` | 子项目 | 根 workspace 的 16 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`） |
+| `crates/` | 子项目 | 根 workspace 的 17 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`） |
 | `plugins/` | 子项目 | 第二 workspace（`exclude = ["plugins"]`）：`common`、6 个官方插件、testkit 与 `pack.sh` |
 | `xtask/` | 工具 | `check`（1Panel 变量、Compose 字段子集）与 `verify-pkg` |
 | `tools/` | 工具 | `bin/`（`cargo.cmd` / `git.cmd` 闸门）、`gate.ps1`、`linux-check.sh`、`iter.sh`、`perf/`、`skiff-server/` |
@@ -41,6 +41,7 @@
 - **边界防御**：引入跨模块调用、新增公共方法或改变数据流向，必须先理清上下游依赖并遵循既定设计。**单一来源**：插件↔内核协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 `docs/impl/KERNEL_FS_IMPL_NOTES.md` §2.2.1）。
 - **重构与修复并重**：既有技术债导致 Bug 频发时，在合理范围内内聚修复，或标记并列入「待决策问题」。
 - **数字纪律**：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
+- **通道唯一（无例外）**：宿主机进程执行只能经 `skiff_host`（`crates/host`），内核自身的文件写只能经 `AdminFs::write_kernel` / `remove_kernel`（`crates/app/src/admin_fs.rs`）。`crates/app` / `crates/core` 的非测试代码**不得出现 `Command::new`**；新增直接 `std::fs::write`/`remove_file`/`rename` 会让 `cargo run -p xtask -- check-channel` 失败（基线只减不增）。理由不是授权而是**记录**：`exec` 进运行记录、`fs` 进审计，绕过通道的行为事后查不到——这正是用「全量记录」替代「逐功能权限设计」的前提。
 
 ### 4.2 工作流与决策机制
 

@@ -31,6 +31,9 @@ use skiff_sched::{
 use skiff_store::{Db, Grant, PluginRecord};
 use tokio::sync::Mutex;
 
+use crate::host::KernelExec;
+use crate::jobs::JobService;
+
 /// 内核插件 API 版本（manifest `api` 不兼容即视为不可用）。
 ///
 /// 1.3 起支持随包 schema（`ui/schema/<view>.json`）；兼容判定统一用
@@ -52,6 +55,9 @@ pub const BUILTIN_AUDIT_PRUNE: &str = "audit-prune";
 pub const AUDIT_PRUNE_TASK_ID: &str = "builtin:audit-prune";
 /// 审计保留天数：只读审计不采样、保留完整追溯，靠时间窗裁剪。
 pub const AUDIT_RETENTION_DAYS: i64 = 90;
+/// 站点备份的运行上限（秒）。打包走 `tar` 作业，上限同时是作业的通道超时；
+/// 站点体量差异大，30 秒的默认值只够小站。
+pub const SITE_BACKUP_TIMEOUT_SECS: u64 = 600;
 
 /// 保留截止时间：`now - 90 天`（秒）。删除条件是严格 `ts < cutoff`，
 /// 即恰好 90 天前的记录仍在窗口内。
@@ -122,6 +128,8 @@ pub struct TaskService {
     reentry_block: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// `buffer.push` 的每任务限速窗口：`(秒序号, 该秒已收点数)`。
     push_window: std::sync::Mutex<std::collections::HashMap<String, (i64, u32)>>,
+    /// 任务中心服务：内置任务的命令动作提交成 `host.exec` 作业（与插件、安装共用）。
+    jobs: Arc<JobService>,
     web_root: PathBuf,
     data_dir: PathBuf,
     trash_retention_days: u32,
@@ -162,6 +170,7 @@ impl TaskService {
     /// 补最后一次 `buffer.lost_on_restart`，并种下内置任务。
     pub fn open(
         db: Arc<Db>,
+        jobs: Arc<JobService>,
         supervisor: Arc<Supervisor>,
         web_root: PathBuf,
         data_dir: PathBuf,
@@ -192,6 +201,7 @@ impl TaskService {
             executing: std::sync::Mutex::new(std::collections::HashSet::new()),
             reentry_block: std::sync::Mutex::new(std::collections::HashMap::new()),
             push_window: std::sync::Mutex::new(std::collections::HashMap::new()),
+            jobs,
             web_root,
             data_dir,
             trash_retention_days,
@@ -381,7 +391,7 @@ impl TaskService {
 
         if !is_plugin {
             // 内置任务：沿用「超时即丢执行体」的语义（spawn_blocking 也无法强杀）。
-            match tokio::time::timeout(dur, self.execute_ticket(&ticket)).await {
+            match tokio::time::timeout(dur, self.execute_ticket(&ticket, timeout_secs)).await {
                 Ok(result) => self.settle_run(&run_id, result).await,
                 Err(_) => self.settle_run_timeout(&run_id).await,
             }
@@ -394,7 +404,7 @@ impl TaskService {
         let exec = {
             let me = Arc::clone(&self);
             tokio::spawn(async move {
-                let _ = tx.send(me.execute_ticket(&ticket).await);
+                let _ = tx.send(me.execute_ticket(&ticket, timeout_secs).await);
             })
         };
         match tokio::time::timeout(dur, rx).await {
@@ -439,11 +449,22 @@ impl TaskService {
         }
     }
 
-    async fn execute_ticket(&self, ticket: &RunTicket) -> Result<ExecOutput, ExecError> {
+    /// 跑一张票的执行体。`timeout_secs` 是任务规格里的运行上限：内置任务的命令
+    /// 动作把它交给 exec 通道（超时即停瞬态单元），因此两处用的是同一个值。
+    async fn execute_ticket(
+        &self,
+        ticket: &RunTicket,
+        timeout_secs: u64,
+    ) -> Result<ExecOutput, ExecError> {
         match &ticket.context.kind {
             TaskKind::Builtin { name } => {
                 let ctx = BuiltinCtx::from(&ticket.context);
                 let name = name.clone();
+                // 有外部命令的内置任务走 exec 通道（作业 + 审计 + 可取消）；没有
+                // 命令可跑的（VACUUM、SQL 清理）留在进程内，那不是 exec 能表达的动作。
+                if name == BUILTIN_SITE_BACKUP {
+                    return self.site_backup(&ctx, timeout_secs).await;
+                }
                 let db = Arc::clone(&self.db);
                 let web_root = self.web_root.clone();
                 let data_dir = self.data_dir.clone();
@@ -543,7 +564,7 @@ impl TaskService {
         let dur = Duration::from_secs(timeout_secs.max(1));
         let mut late_receipt = None;
         let outcome: Option<Result<ExecOutput, ExecError>> = if !is_plugin {
-            tokio::time::timeout(dur, self.execute_ticket(&ticket))
+            tokio::time::timeout(dur, self.execute_ticket(&ticket, timeout_secs))
                 .await
                 .ok()
         } else {
@@ -551,7 +572,7 @@ impl TaskService {
             let exec = {
                 let me = Arc::clone(self);
                 tokio::spawn(async move {
-                    let _ = tx.send(me.execute_ticket(&ticket).await);
+                    let _ = tx.send(me.execute_ticket(&ticket, timeout_secs).await);
                 })
             };
             match tokio::time::timeout(dur, rx).await {
@@ -663,6 +684,8 @@ impl TaskService {
                 )
                 .map_err(|e| e.to_string())?;
                 spec.payload = json!({ "domain": domain });
+                // 打包走 exec 作业，任务上限即作业超时；默认 30s 容不下真实站点。
+                spec.timeout_secs = SITE_BACKUP_TIMEOUT_SECS;
                 spec.created_by = format!("admin:{admin}");
                 spec.created_at = now;
                 spec.updated_at = now;
@@ -1346,7 +1369,13 @@ fn run_builtin(
         "执行内置任务"
     );
     match name {
-        BUILTIN_SITE_BACKUP => site_backup(ctx, db, web_root, data_dir),
+        // 站点备份有外部命令，走 exec 作业（见 `TaskService::site_backup`）；
+        // 落到这里说明分发出了问题，宁可报错也不要绕过通道。
+        BUILTIN_SITE_BACKUP => Err(ExecError::new(
+            ErrorClass::ExecutorFailed,
+            ErrorPhase::Ensure,
+            format!("{BUILTIN_SITE_BACKUP}：该任务必须经 exec 通道执行"),
+        )),
         BUILTIN_DB_VACUUM => db_vacuum(ctx, db, data_dir),
         BUILTIN_TRASH_PRUNE => trash_prune(ctx, db, web_root, data_dir, trash_retention_days),
         BUILTIN_AUDIT_PRUNE => audit_prune(db),
@@ -1395,26 +1424,49 @@ fn io_builtin_error(task: &str, action: &str, target: &Path, e: &std::io::Error)
     builtin_error(task, action, Some(target), Some(io_hint(e)), e)
 }
 
-fn site_backup(
-    ctx: &BuiltinCtx,
-    db: &Db,
-    web_root: &Path,
-    data_dir: &Path,
-) -> Result<ExecOutput, ExecError> {
-    let started = Instant::now();
-    let domain = ctx
-        .payload
-        .get("domain")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ExecError::new(
-                ErrorClass::InvalidParams,
-                ErrorPhase::Call,
-                format!("{BUILTIN_SITE_BACKUP}：payload 缺少 domain"),
-            )
-        })?;
-    let site = db
-        .site_by_domain(domain)
+/// 打包用的 `tar`：只认绝对路径，不做 PATH 查找。
+///
+/// 备份曾经由 `tar` crate 在进程内打包——那是内核自己在做文件 IO，既绕开了 exec
+/// 通道（没有作业、没有过程日志、超时杀不掉），也不受「通道唯一」约束。现在改成
+/// 跑 `tar` 二进制：命令怎么跑只有一份实现，过程与退出码都进任务中心。
+fn tar_binary() -> Option<&'static str> {
+    ["/usr/bin/tar", "/bin/tar"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+}
+
+impl TaskService {
+    /// 站点备份：内核只负责「准备目录 + 提交作业」，打包交给 `tar`。
+    ///
+    /// 与安装包同一逻辑：内核动作没有授权问题（内核是授出方），但**必须经过同一条
+    /// 通道、留下同两类记录**——`audit` 记请求（谁让哪个二进制做什么），
+    /// `jobs` / `job_logs` 记过程（打了多久、输出什么、退出码多少）。
+    async fn site_backup(
+        &self,
+        ctx: &BuiltinCtx,
+        timeout_secs: u64,
+    ) -> Result<ExecOutput, ExecError> {
+        let started = Instant::now();
+        let domain = ctx
+            .payload
+            .get("domain")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ExecError::new(
+                    ErrorClass::InvalidParams,
+                    ErrorPhase::Call,
+                    format!("{BUILTIN_SITE_BACKUP}：payload 缺少 domain"),
+                )
+            })?
+            .to_string();
+
+        // 站点记录是同步 SQLite 读，投到有界阻塞车道，别占 tokio worker。
+        let db = Arc::clone(&self.db);
+        let key = domain.clone();
+        let root_dir = crate::db_async::run(move || {
+            db.site_by_domain(&key).ok().flatten().map(|s| s.root_dir)
+        })
+        .await
         .map_err(|e| builtin_error(BUILTIN_SITE_BACKUP, "读取站点记录", None, None, e))?
         .ok_or_else(|| {
             ExecError::new(
@@ -1423,48 +1475,122 @@ fn site_backup(
                 format!("{BUILTIN_SITE_BACKUP}：站点 {domain} 不存在"),
             )
         })?;
-    let root = PathBuf::from(&site.root_dir);
-    let root = if root.is_absolute() {
-        root
-    } else {
-        web_root.join(root)
-    };
-    if !root.is_dir() {
-        return Err(ExecError::new(
-            ErrorClass::InvalidParams,
-            ErrorPhase::Call,
-            format!("{BUILTIN_SITE_BACKUP}：站点目录不存在: {}", root.display()),
-        ));
-    }
 
-    let dir = data_dir.join("backups").join("sites").join(domain);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| io_builtin_error(BUILTIN_SITE_BACKUP, "创建站点备份目录", &dir, &e))?;
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let path = dir.join(format!("{ts}.tar"));
-    let file = std::fs::File::create(&path)
-        .map_err(|e| io_builtin_error(BUILTIN_SITE_BACKUP, "创建备份归档文件", &path, &e))?;
-    let mut builder = tar::Builder::new(file);
-    builder
-        .append_dir_all(".", &root)
-        .and_then(|_| builder.into_inner().map(|_| ()))
-        .map_err(|e| io_builtin_error(BUILTIN_SITE_BACKUP, "打包站点目录", &root, &e))?;
-    let bytes = std::fs::metadata(&path)
-        .map(|m| m.len() as usize)
-        .unwrap_or(0);
-    tracing::info!(
-        lane = "maintenance",
-        op = "site_backup",
-        duration_ms = started.elapsed().as_millis() as u64,
-        bytes,
-        domain,
-        "维护任务完成"
-    );
-    Ok(ExecOutput {
-        verdict: None,
-        detail: Some(path.display().to_string()),
-        output_bytes: bytes,
-    })
+        let root = PathBuf::from(&root_dir);
+        let root = if root.is_absolute() {
+            root
+        } else {
+            self.web_root.join(root)
+        };
+        if !root.is_dir() {
+            return Err(ExecError::new(
+                ErrorClass::InvalidParams,
+                ErrorPhase::Call,
+                format!("{BUILTIN_SITE_BACKUP}：站点目录不存在: {}", root.display()),
+            ));
+        }
+
+        // 备份目录走内核 fs 原语：与文件管理器同一套路径代数，每次建目录留 `fs.mkdir` 审计。
+        let dir = self.data_dir.join("backups").join("sites").join(&domain);
+        crate::admin_fs::AdminFs::with_options(
+            self.data_dir.clone(),
+            self.web_root.clone(),
+            Arc::clone(&self.db),
+            self.trash_retention_days,
+        )
+        .ensure_dir_kernel(&dir)
+        .map_err(|e| {
+            builtin_error(
+                BUILTIN_SITE_BACKUP,
+                "创建站点备份目录",
+                Some(&dir),
+                Some("检查数据目录空间、属主与挂载状态后重试"),
+                e,
+            )
+        })?;
+
+        let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let path = dir.join(format!("{ts}.tar"));
+        let archive = path.to_string_lossy().to_string();
+        let tar = tar_binary().ok_or_else(|| {
+            ExecError::new(
+                ErrorClass::Unavailable,
+                ErrorPhase::Ensure,
+                format!("{BUILTIN_SITE_BACKUP}：找不到 tar（已查 /usr/bin/tar、/bin/tar）"),
+            )
+        })?;
+
+        let outcome = KernelExec {
+            title: format!("站点备份 {domain}"),
+            target_id: ctx.task_id.clone(),
+            origin: "sched",
+            binary: tar,
+            argv: vec![
+                "-cf".to_string(),
+                archive.clone(),
+                "-C".to_string(),
+                root.to_string_lossy().to_string(),
+                ".".to_string(),
+            ],
+            timeout_secs,
+        }
+        .run(&self.db, &self.jobs)
+        .await
+        .map_err(|e| {
+            ExecError::new(
+                ErrorClass::Unavailable,
+                ErrorPhase::Ensure,
+                format!("{BUILTIN_SITE_BACKUP}：提交备份作业失败（{domain}）：{e}"),
+            )
+        })?;
+
+        if !outcome.success {
+            // 错误类跟着作业走：超时不是「打包失败」，取消也不是；三者用户要做的事不同。
+            let class = match outcome.error_class.as_deref() {
+                Some("timeout") => ErrorClass::Timeout,
+                Some("channel") => ErrorClass::Spawn,
+                Some("cancelled") => ErrorClass::Cancelled,
+                _ => ErrorClass::ExecutorFailed,
+            };
+            let reason = outcome
+                .error_detail
+                .clone()
+                .filter(|d| !d.is_empty())
+                .or_else(|| outcome.stderr.lines().last().map(str::to_string))
+                .unwrap_or_else(|| format!("退出码 {}", outcome.code.unwrap_or(-1)));
+            return Err(ExecError::new(
+                class,
+                ErrorPhase::Call,
+                format!(
+                    "{BUILTIN_SITE_BACKUP}：打包站点目录失败：{}（作业 {}，状态 {}）：{reason}",
+                    root.display(),
+                    outcome.job_id,
+                    outcome.status
+                ),
+            ));
+        }
+
+        let bytes = std::fs::metadata(&path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        tracing::info!(
+            lane = "maintenance",
+            op = "site_backup",
+            duration_ms = started.elapsed().as_millis() as u64,
+            bytes,
+            domain,
+            job = %outcome.job_id,
+            "维护任务完成"
+        );
+        Ok(ExecOutput {
+            verdict: None,
+            detail: Some(format!(
+                "archive={archive} size={bytes} job={}",
+                outcome.job_id
+            )),
+            output_bytes: bytes,
+        })
+    }
 }
 
 fn db_vacuum(ctx: &BuiltinCtx, db: &Db, data_dir: &Path) -> Result<ExecOutput, ExecError> {
@@ -1763,8 +1889,10 @@ mod tests {
             skiff_plugin::SupervisorConfig::new(dir.path().to_path_buf(), dir.path().to_path_buf()),
             db.clone(),
         ));
+        let jobs = Arc::new(crate::jobs::JobService::new(Arc::clone(&db)));
         TaskService::open(
             db,
+            jobs,
             supervisor,
             dir.path().join("www"),
             dir.path().to_path_buf(),
@@ -1950,8 +2078,10 @@ requires = ["fs"]
         let db = Arc::clone(svc.db_handle());
         drop(svc);
 
+        let jobs = Arc::new(crate::jobs::JobService::new(Arc::clone(&db)));
         let reloaded = TaskService::open(
             db,
+            jobs,
             Arc::new(skiff_plugin::Supervisor::new(
                 skiff_plugin::SupervisorConfig::new(
                     dir.path().to_path_buf(),
@@ -2003,28 +2133,57 @@ requires = ["fs"]
         assert!(unknown.is_err());
     }
 
+    /// 站点备份走 exec 作业：**先看记录，再看产物**。
+    ///
+    /// 打包不再由内核在进程内完成（那是绕过通道的文件 IO），而是提交一条 `host.exec`
+    /// 作业跑 `tar`：任务运行记录与作业记录成对出现，过程日志在任务中心。
+    /// 开发机上既没有 `tar` 也没有执行通道，因此「有作业 / 没作业」两条分支都要断言：
+    /// 有作业就必须已结算且来源是 `sched`；没作业只能是提交前的拒绝（缺 `tar`），
+    /// 不能留下一条永远在跑的作业。
     #[tokio::test]
-    async fn site_backup_task_writes_an_archive() {
+    async fn site_backup_runs_through_an_exec_job() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(&dir);
         svc.set_site_backup("example.com", true, "admin")
             .await
             .unwrap();
+        let task_id = site_backup_task_id("example.com");
         let record = svc
-            .run_task_now(
-                &site_backup_task_id("example.com"),
-                AuditActor::Admin("admin".into()),
-            )
+            .run_task_now(&task_id, AuditActor::Admin("admin".into()))
             .await
             .unwrap();
-        assert_eq!(record["result"], "ok");
-        let archived = dir
-            .path()
-            .join("backups/sites/example.com")
-            .read_dir()
-            .unwrap()
-            .count();
-        assert_eq!(archived, 1);
+
+        match svc
+            .jobs
+            .latest_for_target(crate::jobs::TARGET_HOST, &task_id)
+        {
+            Some(job) => {
+                assert_eq!(job.kind, crate::jobs::KIND_HOST_EXEC);
+                assert!(job.status.terminal(), "作业必须结算，不能停在运行中");
+                assert!(job.params["origin"] == "sched", "{}", job.params);
+                if cfg!(target_os = "linux") {
+                    assert_eq!(record["result"], "ok", "{record}");
+                    let archived = dir
+                        .path()
+                        .join("backups/sites/example.com")
+                        .read_dir()
+                        .unwrap()
+                        .count();
+                    assert_eq!(archived, 1);
+                } else {
+                    // 通道只在 Linux 可用：作业被提交并结算为失败，任务如实失败。
+                    assert_eq!(record["result"], "fail", "{record}");
+                    let detail = record["error_detail"].as_str().unwrap_or_default();
+                    assert!(detail.contains(BUILTIN_SITE_BACKUP), "{detail}");
+                }
+            }
+            None => {
+                // 一台机器连 tar 都没有：提交之前就该拒，不留空作业。
+                let detail = record["error_detail"].as_str().unwrap_or_default();
+                assert_eq!(record["result"], "fail", "{record}");
+                assert!(detail.contains("找不到 tar"), "{detail}");
+            }
+        }
     }
 
     /// 真失败路径：备份目录被同名普通文件占住（上机回归复现的正是这个）。

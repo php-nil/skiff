@@ -18,9 +18,9 @@
 | 目录 | 顶层 `plugins/`，作为**第二个 cargo workspace**，与 `crates/` 平级（已完成） |
 | 能力前置 | `fs` 宿主授权已补齐（`path:` 对象 grant + 分块读写 + 六动词）；`docker` 已支持 `containers.exec`，仍缺 create/remove/pull/compose；`net` 一律 501 |
 | 开箱即用 | 官方 `.wbpkg` 随发布包携带到 `/www/skiff/official/` + 公钥文件（**不自动安装、权限确认不跳过**）；内置官方公钥仍未做 |
-| 能力面扩张 | 新增两个内核原语：`ftp`（FTP 管理）与 `firewall`（防火墙 / fail2ban），均涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](../../contract/KERNEL_FTP_CONTRACT.md) 与 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md) |
+| 能力面扩张 | 新增两个内核原语：`ftp`（FTP 管理）与 `firewall`（防火墙 / fail2ban），均涉及 `wire`/`pkgfmt`/SDK/插件 manifest 同步；契约见 [KERNEL_FTP_CONTRACT.md](../../contract/KERNEL_FTP_CONTRACT.md) 与 [KERNEL_FIREWALL_CONTRACT.md](../../contract/KERNEL_FIREWALL_CONTRACT.md)。2026-11-16 追加通用 `exec` 面（`bin:` 授权 + 全审计），此后新宿主功能不再新增专用面 |
 
-**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 6 个官方插件（连同 testkit 共 7 个签名包）已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务走「调度**插件接口**」而非宿主 shell，因此不需要新增宿主命令执行能力面。
+**主结论**：竞品用户预期的是文件、网站、监控、防火墙、计划任务/备份、应用部署、数据库七个入口，而 Skiff 把这些全部放在插件层——所以「内核不内置」不能变成「用户装完只有容器页」。当前 6 个官方插件（连同 testkit 共 7 个签名包）已与内核能力补齐一起交付；目录上按独立发布物组织，不混进内核 workspace。计划任务仍走「调度**插件接口**」而非宿主 shell；`exec` 能力面是另一件事——它解决的是「新宿主功能不再需要内核发版」，不是给计划任务提供执行通道。
 
 
 ## 1. 能力现状核对（选型的硬约束）
@@ -34,6 +34,7 @@
 | `identity` | `capability/identity/self` 返回 `id/version/api/granted/permissions/objects`（插件拿到的权限与 `path:`/`container:` 授权根就在这里） | `crates/core/src/kernel/capability.rs` 的 `identity_self` | 插件可自检授权，不必把根目录写死在代码里 |
 | `ftp` | **新增能力面**（api 1.2）：`status/install/service.configure/uninstall/sites.list/accounts.list/account.create/account.password/account.delete/account.set_enabled/service.restart`；`status` 回传真实监听/连接数/fail2ban 细节，配置持久化到 `/etc/skiff/ftp-service.json`；仅 Native 形态，Linux-only；插件按 `perm:ftp:<verb>` 或 `ftp:*` 取授权 | `crates/plugin/src/ftp.rs`（判定与编排）、`crates/core/src/kernel/ftp.rs`（grants/审计/`systemd-run` 通道）、`crates/wire`（`CAP_FTP_CALL`）、`crates/pkgfmt`（`Capability::Ftp`）、`crates/sdk`（`ftp_call`） | FTP 管理插件只做 UI 与编排；能力面的特权动作（apt/systemd/pure-pw/chown）由插件编排、经内核的特权通道执行 |
 | `interop` | 两个路由：`capability/interop/call`（跨插件接口调用，四道闸 + 15s 超时 + busy 防环）、`capability/interop/catalog`（只列**调得通**的接口）；转发时注入 `params._interop.caller` | `crates/core/src/kernel/{routes.rs,interop.rs}`、manifest `[interop]`（`crates/pkgfmt/src/manifest.rs`）、`crates/plugin/src/interop.rs` | 计划任务（调度插件接口）、站点页「一键新增备份任务」这类**插件间协作**可做；不需要给插件宿主 shell |
+| `exec` | **新增能力面**（2026-11-16，内核底层已落地）：三条路由 `exec/run`（提交）/`exec/status`/`exec/cancel`、一个权限串 `exec:run`，动作集合由安装时确认的 `bin:<绝对路径>` 对象授权决定；内核做三道判定（授权命中 / 文件本体可信 / 非包装器）后原样执行 argv，**执行过程进任务中心的运行记录**（`host.exec` 作业，与环境安装同一套进度/日志/取消），请求阶段记审计全文；仅 Native 形态，Linux-only | `crates/plugin/src/execgrant.rs`（判定）、`crates/model/src/exec.rs`（词汇与包装器名单）、`crates/core/src/kernel/exec.rs`（handler 与作业执行体）、`crates/host`（执行通道，内核与插件共用）、`crates/wire`（`CAP_EXEC_*`）、`crates/app/src/jobs.rs`（`KIND_HOST_EXEC`）、`crates/pkgfmt`（`Capability::Exec`）、`crates/sdk`（`host_exec*`） | **新宿主特权功能从此零内核改动**：装包、改配置、重启服务由插件编排，只声明 `bin:` 授权；`ftp`/`firewall` 两条专用面冻结为 legacy |
 | 插件 UI | 默认由壳页加载随包 schema 原生渲染（`api = 1.3`）；旧沙箱 iframe 工作台（无 same-origin + postMessage 桥，单帧上限 1MiB）只在显式 `?legacy=1` 时使用 | `crates/web/src/handlers/plugins.rs`、`crates/web/static/budding/budding-boot.js`、`crates/pkgfmt/src/schema.rs` | 插件 UI 不能直连内核，所有数据与写操作走 `POST /{p}/plugins/{id}/rpc`（CSRF + 权限 + 审计）；**大文件上传下载仍受帧上限限制**，文件管理器需新增传输契约 |
 | 信任 | DB 信任库 + TOFU 三段式；**没有内置官方公钥**（§4.3 承诺「内置官方公钥」尚未落地） | `crates/plugin/src/trust.rs` 的 `resolve` / `decide` | 官方插件「开箱即用」的第一道门未开：现在仍要手动导入公钥 |
 | 分发 | 渠道未决策（§1.4），安装全程离线可用 | [§4.4](../../sections/04-plugin-publish.md) | 开箱即用只能靠「随包携带 + 本地官方源」，不能依赖在线商店 |
@@ -84,6 +85,6 @@
 
 **明确不做 / 暂缓**：
 
-- **不做宿主 root 命令执行能力**（不给插件 shell 面）：计划任务改为「调度**插件接口**」（`interop.call` + 四道闸），要跑命令的插件自己声明 `provides`；给插件 root 等于绕开整套权限模型。真要执行容器内命令仍走 §6 的容器 exec 白名单。
+- **不给插件「任意 shell」**：这是 `exec` 面的边界而不是它解决的问题——`exec` 只跑**安装时逐条确认过的 `bin:` 二进制**，包装器/解释器打包期与运行期都拒，所以拿到 `exec:run` 不等于拿到 shell。计划任务仍走「调度**插件接口**」（`interop.call` + 四道闸），要跑命令的插件自己声明 `provides`；容器内命令仍走 §6 的容器 exec 白名单。
 - **不在本期做在线商店**：渠道未决策（§1.4），官方包先随发布物离线分发。
 - **不把终端/日志流做成插件**：内核已有容器 exec 终端与日志 SSE，流式场景按 §4.2 不进插件。

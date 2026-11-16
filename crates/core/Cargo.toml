@@ -19,6 +19,7 @@ skiff-plugin = { workspace = true }
 skiff-pkgfmt = { workspace = true }
 skiff-wire = { workspace = true }
 skiff-app = { workspace = true }
+skiff-host = { workspace = true }
 skiff-web = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }

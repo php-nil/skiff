@@ -1300,6 +1300,9 @@ requires = {requires}
             "fs:write",
             "fs:delete",
             "interop:call",
+            // `exec:run` 必须留在敏感档：升级时新增的这一条至少要落审计，
+            // 否则「插件被信任一次后静默扩大 root 动作」连痕迹都没有。
+            "exec:run",
         ] {
             assert!(is_sensitive_perm(p), "{p} 应判为敏感");
         }

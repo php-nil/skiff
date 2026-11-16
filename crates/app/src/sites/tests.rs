@@ -74,8 +74,8 @@ fn timeout_message_never_renders_zero_minutes() {
 
 /// 证书解析缓存只按 `(mtime, size)` 命中：文件改写后必须重新解析，
 /// 否则换证后 SSL 标签会一直显示旧主体/旧到期时间。
-#[test]
-fn tls_cert_text_cache_invalidates_on_file_change() {
+#[tokio::test]
+async fn tls_cert_text_cache_invalidates_on_file_change() {
     let dir = std::env::temp_dir().join(format!("skiff-tls-cache-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("创建临时目录");
     let cert = dir.join("cert.pem");
@@ -102,14 +102,14 @@ fn tls_cert_text_cache_invalidates_on_file_change() {
 
     // 文件未变：命中缓存，不跑 openssl。
     assert_eq!(
-        cached_cert_text(&cert, &key).subject.as_deref(),
+        cached_cert_text(&cert, &key).await.subject.as_deref(),
         Some("CN=old")
     );
 
     // 证书被改写（大小变化）：指纹失效，必须重新解析。
     std::fs::write(&cert, b"second-certificate").expect("覆写证书");
     assert_ne!(
-        cached_cert_text(&cert, &key).subject.as_deref(),
+        cached_cert_text(&cert, &key).await.subject.as_deref(),
         Some("CN=old"),
         "文件变化后不得继续返回旧解析结果"
     );
