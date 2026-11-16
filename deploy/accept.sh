@@ -307,18 +307,37 @@ group_b() {
     PW=$(sed -n 's/^口令: *//p' "$DATA_DIR/initial-admin.txt" | head -1 | tr -d '\r')
     JAR="$TMP/jar"; rm -f "$JAR"
 
-    code=$(curl -s -o "$TMP/login.html" -D "$TMP/login.hdr" -c "$JAR" -w '%{http_code}' "$BASE/$P/login")
+    code=$(curl -s -o "$TMP/login.html" -c "$JAR" -w '%{http_code}' "$BASE/$P/login")
     assert_eq B1 "GET 登录页" "$code" "200"
-    csrf=$(sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' "$TMP/login.html" | head -1)
-    if [ -z "$csrf" ]; then fail B1a "登录页含 csrf 隐藏域" "没抓到 csrf"; return; fi
-    pass B1a "登录页含 csrf 隐藏域" "len=${#csrf}"
+
+    # B1a：登录页已是 budding 原生页（壳 + JS），CSRF 由 `/ui/v1/auth/login` 下发，
+    # 页面里不再有 SSR 表单的 `<input name="csrf">`。断言从「抓隐藏域」改为
+    # 「配置端点给出签名 token」，后续所有写请求都带这个 token。
+    code=$(curl -s -o "$TMP/authcfg.json" -b "$JAR" -c "$JAR" -w '%{http_code}' "$BASE/ui/v1/auth/login")
+    assert_eq B1a "GET /ui/v1/auth/login" "$code" "200"
+    csrf=$(sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p' "$TMP/authcfg.json" | head -1)
+    if [ -z "$csrf" ]; then fail B1a "登录配置含 csrf_token" "没抓到 csrf"; return; fi
+    pass B1a "登录配置含 csrf_token" "len=${#csrf}"
+
+    # B2b：错误口令必须 401 且文案可辨（先跑负例；随后的成功登录会把限流计数清零）
+    code=$(curl -s -o "$TMP/b2bad.json" -b "$JAR" -w '%{http_code}' \
+        -H 'content-type: application/json' \
+        -d "{\"csrf\":\"$csrf\",\"username\":\"admin\",\"password\":\"skiff-wrong-pw\"}" \
+        "$BASE/ui/v1/auth/login")
+    assert_eq B2b "错误口令被拒" "$code" "401"
+    if grep -q '用户名或口令不正确' "$TMP/b2bad.json"; then
+        pass B2b1 "错误口令文案" "用户名或口令不正确"
+    else
+        fail B2b1 "错误口令文案" "$(head -c 160 "$TMP/b2bad.json")"
+    fi
 
     # B2：默认不强制改密（直接进概览）；仅显式开启 require_initial_password_change 时跳改密页。
-    code=$(curl -s -o "$TMP/b2.html" -D "$TMP/b2.hdr" -b "$JAR" -c "$JAR" \
-        -d "csrf=$csrf" -d "username=admin" --data-urlencode "password=$PW" \
-        -w '%{http_code}' "$BASE/$P/login")
-    assert_eq B2 "初始口令登录" "$code" "303"
-    loc=$(sed -n 's/^[Ll]ocation: *//p' "$TMP/b2.hdr" | tr -d '\r')
+    code=$(curl -s -o "$TMP/b2.json" -D "$TMP/b2.hdr" -b "$JAR" -c "$JAR" -w '%{http_code}' \
+        -H 'content-type: application/json' \
+        -d "{\"csrf\":\"$csrf\",\"username\":\"admin\",\"password\":\"$PW\"}" \
+        "$BASE/ui/v1/auth/login")
+    assert_eq B2 "初始口令登录" "$code" "200"
+    loc=$(sed -n 's/.*"redirect_to":"\([^"]*\)".*/\1/p' "$TMP/b2.json" | head -1)
     forced=0
     [ -f "$CONF" ] && grep -Eq '^[[:space:]]*require_initial_password_change[[:space:]]*=[[:space:]]*true' "$CONF" && forced=1
     if [ "$forced" = "1" ]; then
@@ -335,22 +354,24 @@ group_b() {
     cp "$JAR" "$TMP/jar.old"
 
     # B5：缺 CSRF 必须拒（放在改密之前，避免误改状态）
-    code=$(curl -s -o "$TMP/b5.html" -b "$JAR" -w '%{http_code}' \
-        -d "csrf=bogus" -d "old_password=$PW" --data-urlencode "new_password=whatever-123" \
-        --data-urlencode "confirm_password=whatever-123" "$BASE/$P/password")
+    code=$(curl -s -o /dev/null -b "$JAR" -w '%{http_code}' \
+        -H 'content-type: application/json' -H 'x-csrf-token: bogus' \
+        -d "{\"old_password\":\"$PW\",\"new_password\":\"whatever-123\",\"confirm_password\":\"whatever-123\"}" \
+        "$BASE/ui/v1/settings/password")
     assert_eq B5 "改密缺/错 CSRF 被拒" "$code" "403"
 
-    code=$(curl -s -o "$TMP/settings.html" -b "$JAR" -c "$JAR" -w '%{http_code}' "$BASE/$P/settings?force=1")
-    assert_eq B3a "GET 设置页（改密入口）" "$code" "200"
-    csrf2=$(sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' "$TMP/settings.html" | head -1)
-    [ -n "$csrf2" ] || { fail B3b "设置页含 csrf" "没抓到"; return; }
+    code=$(curl -s -o "$TMP/settings.json" -b "$JAR" -c "$JAR" -w '%{http_code}' "$BASE/ui/v1/settings")
+    assert_eq B3a "GET 设置数据" "$code" "200"
+    csrf2=$(curl -s -b "$JAR" "$BASE/ui/v1/session" \
+        | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$csrf2" ] || { fail B3b "会话页含 csrf_token" "没抓到"; return; }
 
     NEW="skiff-accept-$(date +%s)"
-    code=$(curl -s -o "$TMP/b3.html" -D "$TMP/b3.hdr" -b "$JAR" -c "$JAR" \
-        -d "csrf=$csrf2" --data-urlencode "old_password=$PW" \
-        --data-urlencode "new_password=$NEW" --data-urlencode "confirm_password=$NEW" \
-        -w '%{http_code}' "$BASE/$P/password")
-    assert_eq B3c "改密成功" "$code" "303"
+    code=$(curl -s -o "$TMP/b3.json" -b "$JAR" -c "$JAR" \
+        -H 'content-type: application/json' -H "x-csrf-token: $csrf2" \
+        -d "{\"old_password\":\"$PW\",\"new_password\":\"$NEW\",\"confirm_password\":\"$NEW\"}" \
+        -w '%{http_code}' "$BASE/ui/v1/settings/password")
+    assert_eq B3c "改密成功" "$code" "200"
     if [ -f "$DATA_DIR/initial-admin.txt" ]; then
         fail B3d "改密后 initial-admin.txt 删除" "文件仍在"
     else
@@ -371,16 +392,17 @@ group_b() {
 
     if [ "$WITH_RATE_LIMIT" -eq 1 ]; then
         rm -f "$TMP/jar2"
-        csrf3=$(curl -s -c "$TMP/jar2" "$BASE/$P/login" \
-            | sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' | head -1)
+        csrf3=$(curl -s -c "$TMP/jar2" "$BASE/ui/v1/auth/login" \
+            | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p' | head -1)
         last_code=""; last_body=""
         i=1
         while [ "$i" -le 6 ]; do
-            last_code=$(curl -s -o "$TMP/b4.html" -b "$TMP/jar2" -c "$TMP/jar2" -w '%{http_code}' \
-                -d "csrf=$csrf3" -d "username=admin" -d "password=wrong-$i" "$BASE/$P/login")
-            # 整页保留：错误页把文案渲染在 <p class="muted"> 里，截断到 300 字节会切在
-            # <title> 之后、正文之前，把要断言的文案自己丢掉（2026-11-03 首次跑就踩了）
-            last_body=$(tr -d '\n' < "$TMP/b4.html")
+            last_code=$(curl -s -o "$TMP/b4.json" -b "$TMP/jar2" -c "$TMP/jar2" -w '%{http_code}' \
+                -H 'content-type: application/json' \
+                -d "{\"csrf\":\"$csrf3\",\"username\":\"admin\",\"password\":\"wrong-$i\"}" \
+                "$BASE/ui/v1/auth/login")
+            # JSON 信封是单行，整体保留即可；不走 HTML 页，也就没有「截断切在标签中间」的坑。
+            last_body=$(tr -d '\n' < "$TMP/b4.json")
             i=$((i + 1))
         done
         assert_eq B4 "第 6 次错误口令被限流" "$last_code" "503"

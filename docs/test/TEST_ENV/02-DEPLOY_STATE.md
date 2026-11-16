@@ -6,15 +6,16 @@
 
 ## 5. 当前部署
 
-> **2026-11-16 07:53 原地重装 budding `1.8.0-r7` 包（弹窗内下拉复验，当前生效；复验结论见本条「验收」项）**
-> - 背景：上游 `a707369` 以「浮层归属图层根」（`data-bud-layer-root`）关闭 U5，仓内产物升到 `1.8.0-r7` 并在 `d87f148` 合入；本轮出包后原地重装，复验弹窗内下拉与 PHP / Node 建站，保留可点验现场。
-> - CI：`release.yml` dispatch run `43776594789`（head `d87f148`）success。
-> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,071,308 B** `e01bf0a988e2daa4b8af8c0f8fc75abadf8a65c11dfc090320f78c87c1535159`。测试机下载 `github.com` 资产端点超时，沿用 GitHub API 资产端点（`Accept: application/octet-stream`）直取，`sha256sum -c` 一致。
-> - 安装：`sh install.sh` 原地重装（保留 `/www/skiff` 数据与站点），`skiff` / `skiff-http-fwd` / `docker` 全部 active，`skiff-web-nginx` 随安装重建（openresty/1.31.8.1）；入口前缀仍为 `cuyf5neg`，管理员 `admin` / `SkiffPass2026x`（`/root/iter/admin-pw.txt`）。
-> - 新二进制：`/usr/local/bin/skiff` **19,687,056 B** `2bb6ebd8aaa1cc8359bbd67c582679c9cabb4a7454ac92f81e1d5b14e58611a6`；二进制内嵌 `budding-1.8.0-r7` 且含 `data-bud-layer-root`（3 处），确认装的是带上游浮层契约的包。
-> - 验收：浏览器（CDP + Chromium）实测弹窗内「站点类型」「运行环境」下拉——菜单节点 `closest('[data-bud-layer-root]')` 为真，`elementsFromPoint` 在选项矩形内命中 `DIV.v-list-item`（r6 时命中弹窗输入框），三/两项选项全部可见可点；经弹窗新建 `php-demo.example.com`（PHP 8.5）与 `node-demo.example.com`（Node.js 24）均 toast「站点已创建」、列表状态「运行中」；vhost 上游分别为 `fastcgi_pass unix:/www/runtime/php/php-8.5/php-fpm.sock` 与 `proxy_pass http://172.19.16.2:9200`（与容器 IP 一致），`nginx -t` 通过，`Host` 头访问均 **200**（PHP 页 `PHP Version 8.5.12`、Node 页 `Skiff Node.js runtime ready`）。
-> - 保留现场（**不清**）：站点 `php-demo.example.com` / `node-demo.example.com` / `static-demo.example.com`；容器 `skiff-web-nginx`、`skiff-php-php-8.5`、`skiff-node-node-demo`（`172.19.16.2`）；运行环境 `php-8.5`（种子）与 `node-demo`。
-> - 清理：`/root/skiff-pkg`、`/root/skiff-0.1.0-*.tar.gz(.sha256)`、`/root/t*.sh` 等测试脚本、`/tmp/rel.json` 已删；`/tmp` 仍留早期批次的 JSON 临时文件（非本轮，未动）。
+> **2026-11-16 23:22 全新安装 `280345e` Release 资产（本机还原后空盘装机；当前生效）**
+> - 背景：`refactor(web): 收口 actor/map_err 重复实现，require_admin 统一走 authz`（`280345e`）出包。本机 Windows 无 C 编译器（`skiff-store` 及下游不可编），编译与全量单测由 CI `43890419557` 承担，12 个 job 全绿（musl 静态编译按设计仅手动）。
+> - CI：`release.yml` dispatch run `43892800693`（head `280345e`）四 job 全绿，资产覆盖 `v0.1.0`；tag 未移动。
+> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,130,214 B** `7dc33e92c99d0b86b41153e16cb9697ae359e8a473ac0cef929fb32d1934f051`。开发机走 GitHub API 资产端点（`Accept: application/octet-stream`）分两次续传取回，与 `checksums.txt` 一致；`scp` 到 `/root/iter/rel-280345e/` 后 `sha256sum -c` OK。
+> - 安装：`sh install.sh --no-docker --tls off --listen 127.0.0.1:18080`，exit 0；空库 `user_version=21`、`integrity_check=ok`；数据根 `0711`、`plugins/` `0711`、`skiff.db` `600`、`kernel.sock` `660`。
+> - 新二进制：`/usr/local/bin/skiff` **19,822,352 B** `0d82bc95c52e132b9d0dda4df4e6a1b346b83c7ff3b05a6a6275cc7d9d89581b`。
+> - 配置（形态三，与 §2 一致）：`listen=127.0.0.1:18080`、`allow_insecure_http = true`、`tls_enabled = false`；另开 `allow_reduced_sandbox = true`（本机 landlock/cgroups 未实现，装插件必须降级授权）。`skiff-http-fwd.service`（`/root/iter/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`）active。
+> - 面板：入口前缀 `cb5mgdk7`，管理员 `admin` / `SkiffPass2026x`（`/root/iter/admin-pw.txt`，0600；accept.sh 会轮换口令，本轮跑完后已按坐标口径改回）。
+> - 插件：7 个官方插件全部 `installed + enabled`（`沙箱降级：仅独立 UID + 文件权限` 为已知口径）。
+> - 现场：未建站点，故无 `skiff-web-nginx` 容器，`docker ps -a` 为空；`skiff-sites`（172.19.0.0/16）为产品网络已存在。`/healthz` 18080 与 18081 均 200。
 
 ## 6. Release 资产台账（`v0.1.0` = `d44966f`，2026-11-11；当前生效资产见 §5）
 

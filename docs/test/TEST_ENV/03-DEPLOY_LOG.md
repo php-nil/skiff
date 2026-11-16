@@ -95,3 +95,4 @@
 | 2026-11-13 09:52 | **就地升级**（复验插件标签与插件功能页占位） | run `43346854352`（head `281dc9d`） | 库 v19 未变、`integrity_check=ok` |
 | 2026-11-15 23:04 | **全新安装 `v0.1.0` Release 资产 + 全量回归（含八项复跑、浏览器实操）** | Release `v0.1.0` amd64 包 12,070,181 B `114a8320…5f67`（`.sh… | 全新空库 `user_version=21`、`integrity_check=ok` |
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`） | 库 v19 未变、`integrity_check=ok` |
+| 2026-11-16 23:22 | **全新安装**（`280345e` 架构收口：actor/map_err 合一份、`require_admin` 走 authz；定向回归授权/审计/认证） | run `43892800693`（head `280345e`）四 job 全绿；包 12,130,214 B `7dc33e92…f051` | 空库 **v21**、`integrity_check=ok`、7 插件、`/healthz` 18080/18081 均 200 |

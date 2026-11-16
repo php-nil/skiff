@@ -10,6 +10,18 @@
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](../../changes/2026-11-10.md)、[changes/2026-11-09.md](../../changes/2026-11-09.md)、[changes/2026-11-15.md](../../changes/2026-11-15.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
 
+**2026-11-16 23:22–23:55 `280345e` 资产全新安装 + 定向回归：安装 / 认证 / 授权 / 审计全通过，0 FAIL**
+
+- **安装（通过）**：还原后空盘探测（无 `/usr/local/bin/skiff`、无 `/etc/skiff`、无 `/www/skiff`、18080/18081 无监听、无 `skiff*` unit）→ 资产 12,130,214 B `7dc33e92…f051`（`.sha256` / `checksums.txt` / 测试机 `sha256sum -c` 三方一致）→ `sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；空库 v21、`integrity_check=ok`；权限 711（`/www/skiff`、`plugins`、`/run/skiff`）、`skiff.db` 600、`kernel.sock` 660。二进制 19,822,352 B `0d82bc95…581b`。
+- **accept.sh preflight + A（通过）**：**32 PASS / 0 FAIL / 3 SKIP**。含 A4a `/healthz` 20 s 内 200、A5b/c 未登录 303 跳登录、A5d 裸 `/` 404、A6a–h 八项权限位、A9a/b 重启自恢复且前缀不变、A10a `kill -9` 后 systemd 2 s 拉起、A11 `--help`/`version` 不落文件。SKIP 三项：PF4（装后阶段不适用）、D0b（可 `--pkg-dir` 补跑）、B0（已由重跑解决）。
+- **认证（通过，脚本修正后）**：`sh accept.sh --group b` → **13 PASS / 0 FAIL / 1 SKIP**（B4 未开 `--with-rate-limit`）。首跑 `B1a` 判 FAIL（脚本仍按 SSR 表单抓 csrf），判定为**测试资产脱节**而非产品缺陷，已按 budding 原生链路重写 B 组并复跑全绿；根因与改法见 [changes/2026-11-16.md](../../changes/2026-11-16.md)。
+- **本轮改动定向回归（通过）**：
+  - **授权**：admin 访问 `/{p}/sites/new`、`/{p}/sites/web`、`/{p}/m/core/sites/web`、`/ui/v1/runtimes`、`/ui/v1/web` 均 **200**；把库内角色临时改 `viewer` 后同样 5 处全部 **403 + `auth.forbidden`「角色 viewer 无权执行 admin」**，`/ui/v1/sites`、`/ui/v1/session` 仍 200；改回 admin 后恢复 200（`require_admin` → `authz::authorize_for` 的等价性证明）。
+  - **审计**：`auth.login` 记 `actor=admin, ip=127.0.0.1`；插件侧 `actor=plugin:com.skiff.*, ip=uds`；调度 `actor=system, ip=sched`（`audit_actor` 单一实现生效）。
+  - **冒烟**：`/ui/v1/{sites,runtimes,web,containers,plugins,tasks,jobs,audit,menu,files}` 与壳页 `/{p}/{sites,settings,plugins}`（`Accept: text/html`）均 200；未知视图 404；`/ui/v1/networks` 重名创建为幂等返回（未产生重名网络，`docker network ls` 仅 4 项）。
+- **未覆盖（限制）**：`map_docker_cmd` 的 Conflict 分支（409）未在真机触发——网络创建是幂等接口、compose 校验在 DTO 层即 400；该映射由三份逐字相同的 `match` 合并为一处，逻辑零变化，由 CI 单测覆盖。B4 限流、TOTP、建站/删站、FTP/防火墙、文件配额与回收站沿用 2026-11-15 的结论，本轮未复跑。
+- **清理**：库内角色已改回 `admin`；`audit-probe` 站点未创建成功（无残留）；`/root/iter/` 保留安装包、`accept.sh` 与 `skiff-http-fwd.py`。
+
 **2026-11-15 23:04–23:57 `v0.1.0` Release 资产全新安装 + 全量回归：可在本机执行的批次全部通过**
 
 - **安装与基线（通过）**：安装前逐项探测确认已还原（无 `/usr/local/bin/skiff`、无 `/etc/skiff`、18080/18081 无监听、无 `skiff*` unit、Docker 29.7.2 可用且无 `skiff-*` 容器）。资产 12,070,181 B `114a8320…5f67`（`.sha256` 一致），安装后二进制 19,682,960 B `f0947ed4…487e`；全新空库 `user_version=21`、`integrity_check=ok`；前缀 `cuyf5neg`、口令按 AUTH-07 改为 `SkiffPass2026x`；7 个官方插件全部装成；`skiff-web-nginx` + 种子 `php-8.5` 运行中；`skiff-http-fwd`（`0.0.0.0:18081 → 127.0.0.1:18080`）active；`/healthz` 外部 18081 与本地 18080 均 200；数据根与 `plugins/` 权限 0711。
