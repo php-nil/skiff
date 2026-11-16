@@ -15,7 +15,7 @@ pub async fn runtimes(
     UiAuthUser(user): UiAuthUser,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let views = skiff_app::views::runtimes::list(&state).await;
     let needle = q.q.as_deref().unwrap_or("").trim().to_lowercase();
     let rows: Vec<(String, RuntimeItem)> = views
@@ -143,7 +143,7 @@ pub async fn runtime_detail(
     Path(id): Path<String>,
     Query(q): Query<RuntimeFileQuery>,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let read = skiff_app::views::runtimes::detail(&state, &id)
         .await
         .map_err(handlers::sites::map_err)
@@ -297,7 +297,7 @@ pub async fn runtime_catalog(
     State(_state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let kinds: Vec<serde_json::Value> = skiff_app::runtime_catalog::RUNTIME_KINDS
         .iter()
         .map(|k| {
@@ -848,7 +848,7 @@ pub async fn runtime_images(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     // 读取与旧页面同源：`site_env_status` 已包含落库后的镜像标签。
     let env = state.site_env_status().await;
     write_done(json!({

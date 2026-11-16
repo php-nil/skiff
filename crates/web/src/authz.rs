@@ -1,6 +1,8 @@
 //! 授权唯一入口：**动作注册表 → 权限 → 判定**。
 //!
-//! 写路径只调用 [`authorize`]，不再各自写 `require_admin` / 角色比较；
+//! 写路径只调用 [`authorize`]，读页门禁调用 [`authorize_for`]；全仓库已无
+//! `require_admin` 这类本地角色封装（2026-11-16 收口，含 `sites::runtime`、
+//! `ui::runtimes`、`ui::web`、`sites::crud`、`nginx` 的 13 处调用）。
 //! `user.can` 仅保留给模板做按钮显隐（展示），不承担拦截。
 //!
 //! 判定本体仍是 [`handlers::require_permission`]，它读 `skiff_model::Permission`

@@ -181,7 +181,7 @@ pub async fn new_page_get(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let prefix = &state.cfg.entry_prefix;
     let mut url = format!("/{prefix}/sites?new=1");
     if let Some(t) = q.get("type") {
@@ -763,7 +763,7 @@ pub async fn delete_confirm(
     AuthUser(user): AuthUser,
     Path(domain): Path<String>,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let site = state
         .db()
         .site_by_domain(&domain)?

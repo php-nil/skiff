@@ -11,7 +11,7 @@ use crate::error::AppError;
 use crate::handlers;
 use skiff_app::actions as act;
 
-use crate::handlers::sites::require_admin;
+use crate::authz::authorize_for;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::NginxPage;
@@ -121,7 +121,7 @@ pub async fn index(
     AuthUser(user): AuthUser,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    authorize_for(&user, skiff_model::Permission::Admin)?;
     page(state, user, &q, String::new(), String::new(), None).await
 }
 
@@ -132,7 +132,7 @@ pub async fn shell(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    authorize_for(&user, skiff_model::Permission::Admin)?;
     Ok(crate::handlers::spa::shell_page(&state))
 }
 

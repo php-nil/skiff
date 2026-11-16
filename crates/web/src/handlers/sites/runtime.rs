@@ -130,7 +130,7 @@ pub async fn env_page(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let env = state.site_env_status().await;
     let views = skiff_app::views::runtimes::list(&state).await;
     // Web 服务在「Web 服务」页单独管理；种子行只在已安装或被站点引用时出现。
@@ -320,7 +320,7 @@ pub async fn runtime_detail(
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let read = skiff_app::views::runtimes::detail(&state, &id)
         .await
         .map_err(map_err)?;
@@ -777,7 +777,7 @@ pub async fn runtime_health(
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let prefix = &state.cfg.entry_prefix;
     let back = format!("/{prefix}/runtimes/{id}");
     match state.probe_runtime_health(&id).await {
@@ -922,7 +922,7 @@ pub async fn runtime_job(
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     match state.runtime_job(&id).await {
         Some(job) => Ok(axum::Json(job_json(&job))),
         None => Ok(axum::Json(serde_json::json!({
@@ -945,7 +945,7 @@ pub async fn runtime_jobs(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let jobs = state.runtime_jobs_snapshot().await;
     Ok(axum::Json(serde_json::json!({
         "jobs": jobs.iter().map(job_json).collect::<Vec<_>>(),
@@ -1201,7 +1201,7 @@ pub async fn runtime_logs(
     Path(id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
-    require_admin(&user)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
     let tail = q
         .get("tail")
         .and_then(|v| v.parse::<usize>().ok())

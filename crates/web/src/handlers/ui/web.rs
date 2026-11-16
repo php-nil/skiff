@@ -55,7 +55,7 @@ pub async fn web(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let status = state.nginx_status().await;
     let install = state.web_install_progress();
     let config = state
@@ -124,7 +124,7 @@ pub async fn web_install(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     write_done(install_json(&state.web_install_progress()))
 }
 
@@ -134,7 +134,7 @@ pub async fn web_logs(
     UiAuthUser(user): UiAuthUser,
     Query(q): Query<WebLogsQuery>,
 ) -> Result<Response, ApiError> {
-    handlers::sites::require_admin(&user).map_err(ApiError)?;
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let logs = state.nginx_logs(&skiff_app::nginx::NginxLogQuery {
         loaded: q.load == "1" || q.load == "true",
         kind: if q.kind == "error" {

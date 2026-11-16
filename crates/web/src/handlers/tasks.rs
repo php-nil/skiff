@@ -13,7 +13,7 @@ use axum::response::Response;
 use serde_json::Value;
 
 use skiff_app::actions as act;
-use skiff_app::commands::{task as task_cmd, Actor};
+use skiff_app::commands::task as task_cmd;
 
 use crate::error::AppError;
 use crate::handlers;
@@ -23,12 +23,9 @@ use crate::templates::{TaskDetailPage, TaskRow, TaskRunRow, TasksPage};
 use crate::util::{form_first, parse_form};
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
-    Actor {
-        username: user.user.username.clone(),
-        ip: handlers::client_ip(state, parts),
-    }
-}
+/// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
+/// 保住模块内 `actor(...)` 调用点与 `handlers::tasks::actor` 跨模块路径。
+pub(crate) use crate::handlers::audit_actor as actor;
 
 /// 只读页面取任务服务；写路径统一走命令层。
 pub(crate) fn service(state: &AppState) -> Result<&Arc<skiff_app::tasks::TaskService>, AppError> {

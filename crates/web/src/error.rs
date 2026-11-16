@@ -247,6 +247,26 @@ impl From<skiff_plugin::PluginError> for AppError {
     }
 }
 
+/// Docker 领域命令错误 → HTTP 语义：客户端输入类 400、状态冲突 409、引擎不可用 503。
+///
+/// 这是**唯一实现**：`handlers::{compose,containers,resources}` 原先各写了一份完全
+/// 相同的 `map_err`，现在统一再导出这里的函数（`pub(crate) use ... as map_err`），
+/// 既保住既有调用点与 `handlers::compose::map_err` 之类的跨模块路径，也不再有漂移点。
+pub fn map_docker_cmd(e: skiff_app::commands::docker::DockerCommandError) -> AppError {
+    use skiff_app::commands::docker::DockerCommandError as Cmd;
+    match e {
+        Cmd::BadRequest(m) => AppError::BadRequest(m),
+        Cmd::Conflict(m) => AppError::Conflict(m),
+        Cmd::Unavailable(m) => AppError::Unavailable(m),
+    }
+}
+
+impl From<skiff_app::commands::docker::DockerCommandError> for AppError {
+    fn from(e: skiff_app::commands::docker::DockerCommandError) -> Self {
+        map_docker_cmd(e)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

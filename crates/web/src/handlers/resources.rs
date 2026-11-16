@@ -3,8 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::request::Parts;
 use axum::response::Response;
-use skiff_app::commands::docker::{self as docker_cmd, DockerCommandError, NamedResource};
-use skiff_app::commands::Actor;
+use skiff_app::commands::docker::{self as docker_cmd, NamedResource};
 use skiff_docker::Verb;
 
 use crate::error::AppError;
@@ -393,20 +392,12 @@ pub async fn remove_volume(
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
-    Actor {
-        username: user.user.username.clone(),
-        ip: handlers::client_ip(state, parts),
-    }
-}
+/// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
+/// 保住模块内 `actor(...)` 调用点与 `handlers::resources::actor` 跨模块路径。
+pub(crate) use crate::handlers::audit_actor as actor;
 
-pub(crate) fn map_err(e: DockerCommandError) -> AppError {
-    match e {
-        DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
-        DockerCommandError::Conflict(m) => AppError::Conflict(m),
-        DockerCommandError::Unavailable(m) => AppError::Unavailable(m),
-    }
-}
+/// Docker 命令错误映射：唯一实现在 [`crate::error::map_docker_cmd`]。
+pub(crate) use crate::error::map_docker_cmd as map_err;
 
 #[cfg(test)]
 mod tests {

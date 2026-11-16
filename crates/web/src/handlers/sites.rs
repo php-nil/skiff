@@ -8,13 +8,10 @@
 //! - `tls`：证书与备份；
 //! - `logs`：站点日志。
 
-use axum::http::request::Parts;
-use skiff_app::commands::Actor;
 use skiff_app::sites::{site_runtime_status, SiteRuntimeStatus};
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::error::AppError;
-use crate::handlers;
 use crate::state::sites::{SiteEnvStatus, SiteError, SiteField};
 use crate::state::AppState;
 use crate::templates::{RuntimeJobView, RuntimeRow, SiteEnvView, SiteTlsView, SiteView};
@@ -380,12 +377,9 @@ pub(crate) fn map_err(e: SiteError) -> AppError {
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-pub(crate) fn actor(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Actor {
-    Actor {
-        username: user.user.username.clone(),
-        ip: handlers::client_ip(state, parts),
-    }
-}
+/// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
+/// 保住 `sites::crud`/`sites::runtime` 经 `use super::*` 得到的 `actor(...)`。
+pub(crate) use crate::handlers::audit_actor as actor;
 
 /// 可回填到弹窗的用户侧错误文案；内部错误返回 `None`，交给错误页。
 fn site_error_text(e: &SiteError) -> Option<String> {
@@ -396,10 +390,6 @@ fn site_error_text(e: &SiteError) -> Option<String> {
         SiteError::Internal(_) => None,
         SiteError::Field(_, inner) => site_error_text(inner),
     }
-}
-
-pub(crate) fn require_admin(user: &crate::state::CurrentUser) -> Result<(), AppError> {
-    handlers::require_permission(user, skiff_model::Permission::Admin)
 }
 
 #[cfg(test)]

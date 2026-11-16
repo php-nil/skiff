@@ -12,9 +12,8 @@ use axum::http::request::Parts;
 use axum::response::Response;
 use serde_json::Value;
 use skiff_app::commands::docker::{
-    self as docker_cmd, ComposeDown, ComposeUp, ContainerTarget, DockerCommandError, ProjectAction,
+    self as docker_cmd, ComposeDown, ComposeUp, ContainerTarget, ProjectAction,
 };
-use skiff_app::commands::Actor;
 use skiff_docker::compose::{parse, ComposeProject};
 use skiff_docker::{project_of, service_of, ObjectRef, Verb};
 use skiff_model::Permission;
@@ -501,20 +500,12 @@ fn report_rows(
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
-pub(crate) fn actor(state: &AppState, user: &CurrentUser, parts: &Parts) -> Actor {
-    Actor {
-        username: user.user.username.clone(),
-        ip: handlers::client_ip(state, parts),
-    }
-}
+/// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
+/// 保住模块内 `actor(...)` 调用点与 `handlers::compose::actor` 跨模块路径。
+pub(crate) use crate::handlers::audit_actor as actor;
 
-pub(crate) fn map_err(e: DockerCommandError) -> AppError {
-    match e {
-        DockerCommandError::BadRequest(m) => AppError::BadRequest(m),
-        DockerCommandError::Conflict(m) => AppError::Conflict(m),
-        DockerCommandError::Unavailable(m) => AppError::Unavailable(m),
-    }
-}
+/// Docker 命令错误映射：唯一实现在 [`crate::error::map_docker_cmd`]。
+pub(crate) use crate::error::map_docker_cmd as map_err;
 
 #[cfg(test)]
 fn urlencode(raw: &str) -> String {

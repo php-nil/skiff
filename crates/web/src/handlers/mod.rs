@@ -386,10 +386,29 @@ pub fn require_permission(
     }
 }
 
+/// Docker 策略判定的执行主体（`policy.check` / `validate_spec` 用）。
+///
+/// 与 [`audit_actor`] 区分：这个只回答「角色是什么」，不含来源 IP。
 pub fn actor(user: &CurrentUser) -> skiff_docker::Actor {
     skiff_docker::Actor::User {
         username: user.user.username.clone(),
         role: user.role(),
+    }
+}
+
+/// 领域命令的审计主体：谁、从哪个 IP 发起的请求。
+///
+/// 全仓库只有这一份实现；各 handler 用 `pub(crate) use ... as actor` 再导出，
+/// 保持既有 `actor(&state, &user, &parts)` 调用点与跨模块路径
+/// （如 `handlers::containers::actor`）不变。
+pub fn audit_actor(
+    state: &AppState,
+    user: &CurrentUser,
+    parts: &Parts,
+) -> skiff_app::commands::Actor {
+    skiff_app::commands::Actor {
+        username: user.user.username.clone(),
+        ip: client_ip(state, parts),
     }
 }
 
