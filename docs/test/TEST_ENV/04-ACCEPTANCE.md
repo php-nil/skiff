@@ -4,11 +4,25 @@
 
 ---
 
-## 8. 最近一次全链路验收结论（截至 2026-11-15 `v0.1.0` Release 资产全新安装 + 全量回归）
+## 8. 最近一次全链路验收结论（截至 2026-11-17 `2847580` Release 资产就地覆盖安装 + 全组验收）
 
 > 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](../../changes/2026-11-10.md)、[changes/2026-11-09.md](../../changes/2026-11-09.md)、[changes/2026-11-15.md](../../changes/2026-11-15.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-17 00:06–00:35 `2847580` 资产就地覆盖安装 + 全组验收：Docker 409 语义修正已上机确认，0 FAIL**
+
+- **安装（通过，升级路径）**：安装前基线 `0d82bc95…581b` / `0.1.0` / `config.toml` 备份到 `/root/iter/config-before-2847580.toml` → 资产 12,130,261 B `f90676b4…6894`（本地 sha256 / 侧车 / `checksums.txt` / API digest 四方一致，测试机 `sha256sum -c` OK）→ `sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**。新二进制 19,822,352 B `5e4aa297…f2b5`；配置与备份 **`diff` 无差异**；库 `user_version=21`、`integrity_check=ok`；权限 `711/711/600/711/660` 全部保持；前缀 `cb5mgdk7` **未变**；7 个官方插件仍全部 `installed + enabled`；`/healthz` 18080 与 18081 均 200。
+- **accept.sh preflight + A（通过）**：**29 PASS / 0 FAIL / 3 SKIP**（`--install-exit 0 --pkg-dir …`）。含 A4a `/healthz` 200、A5b/c 未登录 303 跳登录、A5d 裸 `/` 404、A6a–g 权限位、A9a/b 重启自恢复且前缀不变、A10a `kill -9` 后 systemd 2 s 拉起、A11 `--help`/`version` 不落文件、A8a/b `doctor` 无 ERROR。SKIP：PF3（未传 `--now`）、PF4（装后阶段不适用）、A6h（`initial-admin.txt` 已按设计删除）。
+- **认证（通过，脚本补 `--password` 后）**：首跑整组 `SKIP B0`——覆盖安装后 `initial-admin.txt` 已被产品删除且口令链只认该文件；给 `accept.sh` 加 `--password` 后复跑 **14 PASS / 0 FAIL / 1 SKIP**（B4 未开 `--with-rate-limit`）：B1/B1a 登录页与 `csrf_token`(len=119)、B2b/B2b1 错误口令 401「用户名或口令不正确」、B2/B2a 登录 200 且 `redirect_to=/cb5mgdk7`、B5 错 CSRF 403、B3a 设置数据 200、B3c 改密 200、B3d `initial-admin.txt` 已删、B3e 旧会话 303 失效、B3f 新会话 200。改法见 [changes/2026-11-16.md](../../changes/2026-11-16.md)。
+- **D0（通过）**：`--group d0 --pkg-dir …` → **4 PASS / 0 FAIL / 0 SKIP**：`docker 29.7.2` 可用、`docker-bootstrap.sh --check-only` 退出 0 且 `daemon.json` 摘要前后一致（`8a26aea5…`）、已装不重装。
+- **本轮改动定向回归（重点：Docker 409）**：
+  - **409 语义（通过，本轮核心）**：`POST /ui/v1/networks {"name":"regress409-net"}` 首次 **200** `{"created":true}`；同名第二次 **409** `{"error":{"code":"domain.conflict","status":409,"message":"network with name regress409-net already exists",…}}`——状态码、错误码、文案三者一致，`retryable=false`，不再出现「文案说已存在、错误码说 `shape.invalid`」的混合态。测后删除该网络，`docker network ls` 仅 `bridge/host/none/skiff-sites`。
+  - **卷重名**：`POST /ui/v1/volumes` 同名二次为 **200**（命令层先查后建、幂等），不是 409 分支——两处语义差异属设计，不另报缺陷；测后删除，`docker volume ls` 为空。
+  - **读面冒烟（通过）**：`/ui/v1/{sites,runtimes,web,containers,plugins,tasks,jobs,audit,menu,files,networks,images,volumes,settings,session}` 全 **200**；壳页 `/{p}/{sites,settings,plugins,containers,tasks}`（`Accept: text/html`）全 **200**，`/{p}/` 带尾斜杠 307 归一到 `/{p}`（axum 常规行为）。
+- **口令处置**：B3c 把 admin 口令轮换为未知值后，按「停服 → 清 `sessions`/`users` → 启服由 bootstrap 重建 admin 并写 `initial-admin.txt` → AUTH-07 改回」恢复为 `SkiffPass2026x`，并重写 `/root/iter/admin-pw.txt`（14 B / 0600）；改密成功后产品自动删除 `initial-admin.txt`（已确认）。重建后的 admin 仍 `role=admin`、`user_version=21` 不变。
+- **未覆盖（限制）**：插件能力面（`skiff_docker` 经 kernel socket 回 409 给插件）与容器名冲突分支未单独构造——两者与网络创建共用 `cmd_err` / `api_err`，由 `skiff-docker` 与 `skiff-app` 单测覆盖（`cmd_err_routes_409_to_conflict_and_rest_to_bad_request` 等）；B4 限流、TOTP、建站/删站、FTP/防火墙、文件配额与回收站沿用 2026-11-15 结论，本轮未复跑。
+- **清理**：`regress409-net` 网络、`regress409-vol` 卷已删；`/root/iter/` 保留 `rel-2847580/`、`accept.sh`、`regress409.sh`、`admin-pw.txt`、`skiff-http-fwd.py`、`config-before-2847580.toml`。
 
 **2026-11-16 23:22–23:55 `280345e` 资产全新安装 + 定向回归：安装 / 认证 / 授权 / 审计全通过，0 FAIL**
 
@@ -18,8 +32,8 @@
 - **本轮改动定向回归（通过）**：
   - **授权**：admin 访问 `/{p}/sites/new`、`/{p}/sites/web`、`/{p}/m/core/sites/web`、`/ui/v1/runtimes`、`/ui/v1/web` 均 **200**；把库内角色临时改 `viewer` 后同样 5 处全部 **403 + `auth.forbidden`「角色 viewer 无权执行 admin」**，`/ui/v1/sites`、`/ui/v1/session` 仍 200；改回 admin 后恢复 200（`require_admin` → `authz::authorize_for` 的等价性证明）。
   - **审计**：`auth.login` 记 `actor=admin, ip=127.0.0.1`；插件侧 `actor=plugin:com.skiff.*, ip=uds`；调度 `actor=system, ip=sched`（`audit_actor` 单一实现生效）。
-  - **冒烟**：`/ui/v1/{sites,runtimes,web,containers,plugins,tasks,jobs,audit,menu,files}` 与壳页 `/{p}/{sites,settings,plugins}`（`Accept: text/html`）均 200；未知视图 404；`/ui/v1/networks` 重名创建为幂等返回（未产生重名网络，`docker network ls` 仅 4 项）。
-- **未覆盖（限制）**：`map_docker_cmd` 的 Conflict 分支（409）未在真机触发——网络创建是幂等接口、compose 校验在 DTO 层即 400；该映射由三份逐字相同的 `match` 合并为一处，逻辑零变化，由 CI 单测覆盖。B4 限流、TOTP、建站/删站、FTP/防火墙、文件配额与回收站沿用 2026-11-15 的结论，本轮未复跑。
+  - **冒烟**：`/ui/v1/{sites,runtimes,web,containers,plugins,tasks,jobs,audit,menu,files}` 与壳页 `/{p}/{sites,settings,plugins}`（`Accept: text/html`）均 200；未知视图 404。
+- **未覆盖（限制）**：`map_docker_cmd` 的 Conflict 分支（409）本轮未在真机触发（同轮重名创建实测回的是 400 `shape.invalid`——后被判定为**产品缺陷**，次日由 `fb280ea`/`2847580` 修好并上机复验，见上一条）；B4 限流、TOTP、建站/删站、FTP/防火墙、文件配额与回收站沿用 2026-11-15 的结论，本轮未复跑。
 - **清理**：库内角色已改回 `admin`；`audit-probe` 站点未创建成功（无残留）；`/root/iter/` 保留安装包、`accept.sh` 与 `skiff-http-fwd.py`。
 
 **2026-11-15 23:04–23:57 `v0.1.0` Release 资产全新安装 + 全量回归：可在本机执行的批次全部通过**

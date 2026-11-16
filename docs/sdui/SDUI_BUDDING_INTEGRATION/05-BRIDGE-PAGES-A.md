@@ -186,6 +186,7 @@
 - 复用 `list_images` / `list_networks` / `list_volumes` 与旧页面的 `ResourceRow` / `NetworkRowView` 展示模型，不新增 SQL。
 - 写操作已原生化：`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`；逐项复用 `ImagePull` / `ImageRemove` / `NetworkCreate` / `NetworkRemove` / `VolumeCreate` / `VolumeRemove` 策略与 `docker_cmd` 审计。
 - 网络名/卷名的字符集判定抽到 `resources::validate_name`，旧表单与 `/ui/v1` 共用一份。
+- 写操作的错误信封（与容器/编排一致，按状态码分流、不做文案匹配）：重名对象——Docker 回 **409**——→ **409 `domain.conflict`**，`message` 用 Docker 原文（如 `network with name x already exists`）；入参形状不合法 → 400 `shape.invalid`；Docker 不可达 → 503 `dependency.unavailable`。`DockerError` 只为 304 与 409 保留结构化变体（`NotModified` / `Conflict`），其余状态码仍按 `Api(String)` 透出。
 
 **字段表（冻结，只增不改）**
 

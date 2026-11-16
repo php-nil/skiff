@@ -16,6 +16,8 @@
 #     --pre-install          preflight 时检查"端口空闲"（装之前跑）
 #     --with-rate-limit      跑 B4 登录限流断言（会把 admin 锁 5 分钟，首装轮才建议开）
 #     --pkg-dir <目录>       解包后的发布目录（D0 用它找 docker-bootstrap.sh）
+#     --password <口令>      B 组用的 admin 口令；不传则读 initial-admin.txt（首登链路）。
+#                            已改过密的机器传它才能复跑 B 组，否则 B0 直接 SKIP 整组。
 #
 # 退出码: 0 全 PASS（SKIP 不算通过，但不算失败）｜1 有 FAIL｜2 前置不满足
 #
@@ -34,6 +36,7 @@ NOW_EPOCH=""
 PRE_INSTALL=0
 WITH_RATE_LIMIT=0
 PKG_DIR=""
+PW_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,6 +56,8 @@ while [ $# -gt 0 ]; do
         --with-rate-limit) WITH_RATE_LIMIT=1; shift ;;
         --pkg-dir) PKG_DIR="${2:?--pkg-dir 需要参数}"; shift 2 ;;
         --pkg-dir=*) PKG_DIR="${1#*=}"; shift ;;
+        --password) PW_OVERRIDE="${2:?--password 需要参数}"; shift 2 ;;
+        --password=*) PW_OVERRIDE="${1#*=}"; shift ;;
         -h|--help) sed -n '2,/^set -u$/p' "$0" | sed '$d'; exit 0 ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
@@ -302,9 +307,20 @@ group_b() {
     fi
     P=$(entry_prefix)
     if [ -z "$P" ]; then skip B0 "入口前缀" "取不到，整组无法执行"; return; fi
-    [ -f "$DATA_DIR/initial-admin.txt" ] || { skip B0 "initial-admin.txt 尚在" "已改过密，首登链路无法重复验证"; return; }
-
-    PW=$(sed -n 's/^口令: *//p' "$DATA_DIR/initial-admin.txt" | head -1 | tr -d '\r')
+    # 口令来源：显式 --password 优先，其次首登留下的 initial-admin.txt。
+    # 改过密的机器两者都没有（install.sh 在改密成功后删文件），B 组只能靠 --password 复跑；
+    # 早先这里只认 initial-admin.txt，导致「已改密机器」整组 SKIP，认证回归事实上跑不到。
+    if [ -n "$PW_OVERRIDE" ]; then
+        PW="$PW_OVERRIDE"
+        pass B0 "口令来源" "--password 显式传入（已改密机器可复跑）"
+    elif [ -f "$DATA_DIR/initial-admin.txt" ]; then
+        PW=$(sed -n 's/^口令: *//p' "$DATA_DIR/initial-admin.txt" | head -1 | tr -d '\r')
+        pass B0 "口令来源" "initial-admin.txt（首登链路）"
+    else
+        skip B0 "口令来源" "无 initial-admin.txt 且未传 --password（已改密机器请加 --password）"
+        return
+    fi
+    if [ -z "$PW" ]; then skip B0 "口令非空" "取到空口令，整组无法执行"; return; fi
     JAR="$TMP/jar"; rm -f "$JAR"
 
     code=$(curl -s -o "$TMP/login.html" -c "$JAR" -w '%{http_code}' "$BASE/$P/login")
