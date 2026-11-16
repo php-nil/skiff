@@ -23,7 +23,7 @@ const CACHE_NO_CACHE: &str = "no-cache";
 ///
 /// 上游 2026-11-16 打包（commit `a707369`，构建于 HEAD），浮层层级归属已落地
 /// （`docs/plan-layer-stacking.md`：图层的浮层挂进 `data-bud-layer-root`，弹窗内下拉
-/// 不再被 `z-index: 2400` 压住，见 `docs/BUDDING_UPSTREAM_BACKLOG.md` §4「已关闭」）。
+/// 不再被 `z-index: 2400` 压住，见 `docs/sdui/BUDDING_UPSTREAM_BACKLOG.md` §4「已关闭」）。
 /// 产物自报版本与 `budding-icons.json` 仍写 `1.8.0`（JS 1,292,889 B / CSS 661,321 B，
 /// 图标与 code / terminal Pack 字节未变）。版本化文件名带 `immutable`，同一 URL 换字节会让
 /// 老缓存继续命中旧包，因此按同一 semver 新字节的规则用 `-r7` 后缀；

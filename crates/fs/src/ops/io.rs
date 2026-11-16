@@ -1,7 +1,7 @@
 //! 低层文件原语：不跟随符号链接的打开、原子写、目录 fsync、对象删除与元数据。
 //!
 //! Unix 上用 `O_NOFOLLOW` 收口最后一段；Windows 没有等价 flag，退回
-//! `symlink_metadata` 二次校验（残留竞态窗口见 `docs/KERNEL_FS_IMPL_NOTES.md`）。
+//! `symlink_metadata` 二次校验（残留竞态窗口见 `docs/impl/KERNEL_FS_IMPL_NOTES.md`）。
 
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

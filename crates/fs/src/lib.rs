@@ -1,6 +1,6 @@
 //! Skiff（轻舟）内核文件系统原语库。
 //!
-//! 依据 `docs/KERNEL_FS_CONTRACT.md` 实现的**底层能力**，刻意不接入现有插件
+//! 依据 `docs/contract/KERNEL_FS_CONTRACT.md` 实现的**底层能力**，刻意不接入现有插件
 //! 能力面：不依赖 `skiff-store` / `skiff-web` / `skiff-docker` / `skiff-plugin` /
 //! `skiff-wire`，审计与回收站存储用 trait 抽象，本轮只提供内存实现。
 //!

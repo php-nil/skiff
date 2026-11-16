@@ -155,7 +155,7 @@ fn publish(args: &[String]) -> Result<()> {
         out.display(),
         signer.public_key_hex().unwrap_or_default()
     );
-    println!("下一步：按 docs/SKIFF_SERVER.md §14 上传到目录托管；镜像用 `sync` 同步。");
+    println!("下一步：按 docs/plugin/SKIFF_SERVER.md §14 上传到目录托管；镜像用 `sync` 同步。");
     Ok(())
 }
 

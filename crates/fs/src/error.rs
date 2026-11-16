@@ -1,4 +1,4 @@
-//! 结构化错误码：与 `docs/KERNEL_FS_CONTRACT.md` §7.3 对齐。
+//! 结构化错误码：与 `docs/contract/KERNEL_FS_CONTRACT.md` §7.3 对齐。
 //!
 //! 这里是**唯一**的错误码来源：能力面（UDS）、HTTP 管理面和审计都从这里取
 //! `code()`，避免同一种失败在不同层被译成不同字符串。

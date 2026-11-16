@@ -51,7 +51,7 @@ impl FsError {
     /// HTTP 框架；映射成 `StatusCode` 由调用方（能力面适配层）负责。
     ///
     /// 与内核侧 `skiff-fs::FsError` 的语义保持一致，对照表见
-    /// `docs/KERNEL_FS_CONTRACT.md` §7.3：宿主拒绝类不落 500，只有未归类 I/O 才是 500。
+    /// `docs/contract/KERNEL_FS_CONTRACT.md` §7.3：宿主拒绝类不落 500，只有未归类 I/O 才是 500。
     pub fn status(&self) -> u16 {
         match self {
             FsError::Forbidden(_) | FsError::ReadOnly(_) => 403,

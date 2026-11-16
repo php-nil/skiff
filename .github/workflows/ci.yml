@@ -205,7 +205,7 @@ jobs:
         with:
           shared-key: ci
       # 不带 --dist：内存里生成再自检，CI 不产出发布物。
-      # 未签名占位只告警；发布门禁是 `check --require-signature`（见 docs/SKIFF_SERVER.md §10）
+      # 未签名占位只告警；发布门禁是 `check --require-signature`（见 docs/plugin/SKIFF_SERVER.md §10）
       - run: cargo run --locked -p skiff-server -- check
 
   # ── 插件包全链路：这一步只有真签真验才算过 ──────────────────────

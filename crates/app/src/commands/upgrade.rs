@@ -3,7 +3,7 @@
 //! **不执行升级**：不停服、不替换包、不跑迁移。本模块只把已验证渠道索引里声明的
 //! 升级包下载到 `<data_dir>/upgrade/incoming/` 并核对 `size` + `sha256`；签名锚点是
 //! 渠道 manifest（索引摘要由固定公钥验签），升级包本身不再单独签名
-//! （`docs/SKIFF_SERVER.md` §9 决策 4）。
+//! （`docs/plugin/SKIFF_SERVER.md` §9 决策 4）。
 //!
 //! 拒绝原因与商店安装共用一套 `reason=<code>` 口径，由 Web 层落 `upgrade.download`
 //! 审计。任何失败都清理 `.part` 与目标文件，不留下半包。

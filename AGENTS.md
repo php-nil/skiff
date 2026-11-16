@@ -1,55 +1,107 @@
 # 仓库总览与开发约定
 
-> 本文档为仓库全局规范，同一信息仅在一处维护，其他位置保留相对路径引用；子项目规范不得与本文件冲突。
-> **执行约定：任何任务动手前先读本文件，再按「五、先读哪一篇」选读专项文档。** 全量索引、分类与状态见 [docs/README.md](docs/README.md)。
+> 本文档为仓库全局通用规范（L1 根文档）。执行任务前**必须**优先读取并严格遵循以下约定。
 
-## 一、项目定位
+## 一、项目概述
 
-Skiff（轻舟）—— Rust 极简 Linux 服务器管理面板，只做三核心：**Web 管理服务 / Docker 管理 / 插件体系**。内核持有 fs 能力面的**管理员客户端**（「工具 → 文件管理」，IO 全部经 `skiff-fs`），但不把宿主文件业务塞回内核业务层；防火墙、主机监控等其余宿主功能由插件层在宿主能力面（docker/identity/fs/net/ftp/firewall）实现。主交付形态为宿主机 systemd 直装；1Panel 商店 Docker 包是可选受限形态（能力面收缩为 docker/identity）。细节见 [DESIGN.md](docs/DESIGN.md) §0。
+- **项目名称**：Skiff（轻舟）
+- **核心定位**：Rust 极简 Linux 服务器管理面板，只做三核心：**Web 管理服务 / Docker 管理 / 插件体系**。内核持 fs 能力面的管理员客户端（「工具 → 文件管理」，IO 全经 `skiff-fs`）；防火墙、主机监控等宿主功能由插件在能力面（docker/identity/fs/net/ftp/firewall）实现。
+- **技术栈**：Rust（根 workspace + 第二 workspace `plugins/`）、SQLite、Docker、UDS 插件协议；交付以宿主机 systemd 直装为主，1Panel 商店 Docker 包为受限形态（能力面收缩为 docker/identity）。
 
-## 二、仓库地图
+## 二、仓库结构
 
-| 路径 | 说明 | 文档入口 |
+| 路径 | 类型 | 说明 |
 | --- | --- | --- |
-| `crates/` | 根 workspace 的 16 个 crate；分层、职责与依赖方向 | [sections/08-engineering.md](docs/sections/08-engineering.md) |
-| `plugins/` | 第二个 workspace（`exclude = ["plugins"]`）：`common`、6 个官方插件、testkit 与 `pack.sh` | [plugins/README.md](plugins/README.md) |
-| `xtask/` | `check`（1Panel 变量、Compose 字段子集）与 `verify-pkg` | [sections/08-engineering.md](docs/sections/08-engineering.md) |
-| `tools/` | `linux-check.sh`、`iter.sh`、`perf/`、`skiff-server/`（根 workspace 成员） | [ITERATION.md](docs/ITERATION.md)、[SKIFF_SERVER.md](docs/SKIFF_SERVER.md) |
-| `deploy/` | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包 | [DEPLOY_TEST.md](docs/DEPLOY_TEST.md) |
-| `docs/` | 全仓库专项文档 | [docs/README.md](docs/README.md) |
-| `.github/workflows/` | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml` | [CI.md](docs/CI.md) |
+| `crates/` | 子项目 | 根 workspace 的 16 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`） |
+| `plugins/` | 子项目 | 第二 workspace（`exclude = ["plugins"]`）：`common`、6 个官方插件、testkit 与 `pack.sh` |
+| `xtask/` | 工具 | `check`（1Panel 变量、Compose 字段子集）与 `verify-pkg` |
+| `tools/` | 工具 | `bin/`（`cargo.cmd` / `git.cmd` 闸门）、`gate.ps1`、`linux-check.sh`、`iter.sh`、`perf/`、`skiff-server/` |
+| `deploy/` | 交付 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包 |
+| `tests/` | 测试目录 | 全局及跨模块测试与测试产物（按需建立） |
+| `docs/` | 全局文档 | 主题式组织：`<topic>.md` 为入口、同名 `<topic>/` 存细节（contract / impl / test / ops / plugin / sdui / archive / sections / changes） |
+| `.github/workflows/` | CI | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml` |
 
-> 顶层目录变动须同步本表；新增 `crates/<name>/AGENTS.md` 或 crate 内 `docs/` 须在上表登记入口。`target/`、`skiff-run/`、`.workbuddy/` 是本地产物/工作数据，已 gitignore，不得入库。
+> **维护规则**：新增、删除或重命名顶层目录时，**必须**同步更新上表。`target/`、`skiff-run/`、`.workbuddy/` 是本地产物/工作数据，已 gitignore，不得入库。
 
-## 三、硬性红线（违反即返工）
+## 三、常用命令
 
-- **分层禁令**：`policy` / `pkgfmt` / `wire` 不得依赖 `store` / `docker`；`app` 不含路由与模板；`impl` 必须与类型同 crate。
-- **单一来源**：插件↔内核 UDS 协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 [KERNEL_FS_IMPL_NOTES.md](docs/KERNEL_FS_IMPL_NOTES.md) §2.2.1）；插件能力面的**权限判定与命令编排**只在 `crates/plugin`（HTTP 形状与宿主特权执行属内核装配 `core`/`app`，分布见 [sections/08-engineering.md](docs/sections/08-engineering.md)）。
+> 一律经 `tools\bin\cargo.cmd` / `tools\bin\git.cmd`（全局串行令牌，拿不到即以退出码 2 拒绝，不排队）；命令与判定口径的唯一来源是 `docs/ops/CI.md` §2、§6，此处只作速查。
+
+- **安装依赖**：`cargo fetch`；插件 workspace：`cargo fetch --manifest-path plugins/Cargo.toml`（`plugins/Cargo.lock` 必须入库）。
+- **运行测试**：`cargo test --workspace --locked --no-fail-fast`；插件：`cargo test --manifest-path plugins/Cargo.toml --locked`。
+- **构建/启动**：`cargo build --workspace`；本地起服务 `cargo run -p skiff --bin skiff -- --dev serve`（`/healthz` 探活）。
+- **本地三关**：`cargo fmt --all --check` → `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → `cargo test`。`plugins/` 是第二 workspace，根三关不覆盖，须用 `--manifest-path plugins/Cargo.toml` 另跑一遍。
+- **其他校验**：`cargo run -p xtask -- check`（1Panel / Compose）、`cargo run -p skiff-server -- check`（商店清单）、`shellcheck -S error deploy/*.sh plugins/*.sh`。
+
+## 四、开发与交付约定
+
+### 4.1 架构优先与变更原则
+
+- **全局视野，拒绝临时凑合**：修 Bug 或做小功能也**严禁**绕过既有架构、硬编码或破坏模块分层。**分层禁令**：`policy` / `pkgfmt` / `wire` 不得依赖 `store` / `docker`；`app` 不含路由与模板；`impl` 必须与类型同 crate。
+- **边界防御**：引入跨模块调用、新增公共方法或改变数据流向，必须先理清上下游依赖并遵循既定设计。**单一来源**：插件↔内核协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 `docs/impl/KERNEL_FS_IMPL_NOTES.md` §2.2.1）。
+- **重构与修复并重**：既有技术债导致 Bug 频发时，在合理范围内内聚修复，或标记并列入「待决策问题」。
 - **数字纪律**：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
-- **权限口径**：数据根与 `plugins/` 保持 0711（可穿越不可列），勿改回 0700，否则降权插件全线 EACCES（见 [DEPLOY_TEST.md](docs/DEPLOY_TEST.md) §1.1）。
-- **编译与测试串行（红线）**：同一时间只允许一路 `cargo`（含 `fmt` / `clippy` / `test` / `build` 及任意子命令），必须经包装入口 `tools\bin\cargo.cmd`；根 workspace 与 `plugins/` 共用同一把全局令牌，拿不到立即以退出码 2 拒绝、不排队；全量 `--workspace` / `--all-targets` 本地须显式 `-AllowFull`；禁止自定义 `CARGO_TARGET_DIR`。闸门链路、退出码、内存准入、`PATH` 自检与故障处置见 [DEV_ENV.md](docs/DEV_ENV.md) §4。
-- **git 写操作串行（红线）**：与编译共用同一把令牌，写命令必须经 `tools\bin\git.cmd`，只读命令不占令牌；提交与推送只由唯一负责会话执行，其它会话只读。细节见 [DEV_ENV.md](docs/DEV_ENV.md) §4.4。
 
-## 四、交付与测试纪律
+### 4.2 工作流与决策机制
 
-- **同步更新**：代码、逻辑变动必须与测试用例、相关文档同步更新。
-- **迁移兼容**：当前为测试开发阶段，没有正式环境，不需要兼容旧版本支持迁移。旧版失效文档也无需保留，一切放在当前已有功能上。
-- **交付门槛**：命令与判定口径只在 [CI.md](docs/CI.md) §2、§6 维护；本文件不重复。动 `plugins/` 时，根三关**不覆盖它**（第二 workspace），须另跑插件 workspace 三关。
-- **测试机部署留痕**：任何一次向测试机部署后，必须更新 [TEST_ENV.md](docs/TEST_ENV.md) 的部署记录与验收结论，并在汇报中交代「地址 + 账号」；缺这步视为部署未完成。
-- **测试要求**：单元测试随模块（`#[cfg(test)]`），集成测试放 `crates/<name>/tests/`，全局/跨模块测试放根 `tests/`；中间产物、日志与临时文件不得污染源码目录；核心逻辑变更或 Bug 修复必须补充用例；判定逻辑改动先跑 `cargo test -p skiff-policy`（零 Docker、零 SQLite 依赖）。
+- **同步更新（强约束）**：任何代码或核心逻辑变更，**必须**在同一次任务中同步更新对应的**测试用例**与**相关文档**，禁止只改代码。
+- **延迟汇总决策**：常规/低风险问题（命名、局部实现、常规边界处理）按最佳实践直接处理，并在汇报中简述；高风险/阻塞性决策（架构变动、破坏性接口修改、跨模块依赖调整、需求歧义）**暂缓该分支**，先完成无阻塞部分，任务结束时集中列出「待决策问题」。
+- **待决策问题**：必须给出方案、优劣对比与建议，不带问号交付。
+- **迁移兼容**：当前为测试开发阶段，无正式环境，不做旧版本兼容迁移；旧版失效文档也无需保留。
+- **部署留痕**：任何一次向测试机部署后，必须更新 `docs/test/TEST_ENV/` 下的 `02-DEPLOY_STATE.md`（当前部署）、`03-DEPLOY_LOG.md`（流水）与 `04-ACCEPTANCE.md`（验收结论），并在汇报中交代「地址 + 账号」；缺这步视为部署未完成。
 
-## 五、先读哪一篇
+### 4.3 测试规范
 
-| 我要做什么 | 先读 | 读到什么程度 |
+- **目录隔离**：单元测试随模块（`#[cfg(test)]`）；集成测试放 `crates/<name>/tests/`；全局/跨模块测试放根 `tests/`。
+- **零污染原则**：中间产物、日志与临时文件不得生成在源码目录（已生成须在任务结束前清理）。
+- **回归必补**：新增功能、核心逻辑变更或 Bug 修复，**必须**补充对应用例并确保全部通过后再交付；改判定逻辑先跑 `cargo test -p skiff-policy`（零 Docker、零 SQLite）。
+- **全量交 CI**：本地只跑受影响 crate 的快速回归。本机（Windows）无 C 编译器，`skiff-store` / `skiff-pkgfmt` / `xtask` 及其下游与 `plugins/` 编不了，交 CI 的 `test-win` / `test` / `plugins` job（`docs/ops/DEV_ENV.md` §3）。
+
+### 4.4 其他约定
+
+- **编译与 git 写操作串行**：同一时间只允许一路 `cargo`（含 `fmt` / `clippy` / `test` / `build` 及任意子命令），根 workspace 与 `plugins/` 共用一把全局令牌，不排队；git 写命令与编译共用同一把令牌，提交与推送只由唯一负责会话执行。退出码 `2` 占用 / `3` 内存拒绝 / `4` 需 `-AllowFull`；禁止自定义 `CARGO_TARGET_DIR`；重启后先 `where.exe cargo` 确认首行为 `tools\bin\cargo.cmd`。细节见 `docs/ops/DEV_ENV.md` §4。
+- **权限口径**：数据根与 `plugins/` 保持 **0711**（可穿越不可列），勿改回 0700，否则降权插件全线 EACCES（见 `docs/test/DEPLOY_TEST/01-PREGATE.md` §1.1）。
+
+## 五、三级文档体系与管理规范
+
+### 5.1 层级定义
+
+| 层级 | 路径 | 职责范围 |
 | --- | --- | --- |
-| 改 URL / handler / 表单动作 | [URL_CONTRACT.md](docs/URL_CONTRACT.md) | 路径、动词、方法与副作用 |
-| 改菜单 / 插件页 / iframe | [MENU_CONTRACT.md](docs/MENU_CONTRACT.md) → [PLUGIN_UI_CONTRACT.md](docs/PLUGIN_UI_CONTRACT.md) | 归属、声明、`view`、CSP |
-| 改内核页面或文案 | [UI_CONTRACT.md](docs/UI_CONTRACT.md) | 标题、提示、工具栏、空态、危险确认 |
-| 改站点 / 运行环境 | [SITE_RUNTIME_CONTRACT.md](docs/SITE_RUNTIME_CONTRACT.md) | 站点模型、建站类型、PHP/Node |
-| 改 fs / 调度 / FTP / 防火墙 | `docs/KERNEL_*_CONTRACT.md` → `docs/KERNEL_*_IMPL_NOTES.md` | 契约先读，实现差异后读 |
-| 出包 / CI 红 / 发版 | [CI.md](docs/CI.md) | §2 门槛、§4 发布、§6 本地复现 |
-| 上测试机 / 验收 / 回滚 | [DEPLOY_TEST.md](docs/DEPLOY_TEST.md) → [ITERATION.md](docs/ITERATION.md) → [TEST_ENV.md](docs/TEST_ENV.md) → [TEST_MATRIX.md](docs/TEST_MATRIX.md) → [TEST_LEDGER.md](docs/TEST_LEDGER.md) | 步骤 → 编排 → 坐标 → 用例 → 未闭环 |
-| 改商店 / 分发 / `skiff-server` | [SKIFF_SERVER.md](docs/SKIFF_SERVER.md) → [PLUGIN_CATALOG.md](docs/PLUGIN_CATALOG.md) | 清单、签名、`serve` / `api` 契约 |
-| 接 budding / SDUI | [SDUI_BUDDING_INTEGRATION.md](docs/SDUI_BUDDING_INTEGRATION.md) → [SDUI_HANDBOOK.md](docs/SDUI_HANDBOOK.md) | 接入边界、迁移方法 |
+| **L1 根文档** | `AGENTS.md` | 仓库全局规则、工作流约束与文档索引；不记录子项目细节。 |
+| **L2 专项文档** | `docs/<topic>.md` + `docs/<topic>/` | 跨模块设计、契约、实现说明、交付验证；父文档是该主题的导航索引。 |
+| **L3 子项目文档** | `crates/<name>/AGENTS.md`、crate 内 `docs/` | 模块专属约定（当前均未建）；局部优先，但不得与 L1 冲突。 |
 
-> 详细变更写入 `docs/changes/YYYY-MM-DD.md`（一事一条，按日期归档）；[DESIGN.md](docs/DESIGN.md) 的「变更记录」只承载设计正文的结构性/结论性变化，同一事实只在一处维护，另一处留日期引用。
+### 5.2 编写与拆分硬性限制
+
+- **命名规范**：主题入口用小写短名（`docs/test.md`），目录同其名；细节文档沿用现有口径——契约/实现类大写下划线（`*_CONTRACT.md`、`*_IMPL_NOTES.md`），章节文档 `NN-<topic>.md`，变更记录 `changes/YYYY-MM-DD.md`。
+- **同题合一**：讲同一件事的多份文档归一个主题——一个入口文档 + 同名目录存细节，`docs/` 顶层不为同一主题散放多份文件。
+- **精简原则**：保持内容高密度、可执行；发现过期或冗余信息时**主动清理**。
+- **体积红线（触发即拆分）**：单份 Markdown **不得超过 30KB 且总行数不得超过 500 行**。
+- **拆分方式**：单份文档触及红线时，建立同名目录存放子文档，原文件降级为目录索引。
+  - *示例*：`docs/pro-abc.md` 超限 → 新建 `docs/pro-abc/` 存放细节文档，并将 `docs/pro-abc.md` 改写为子文档导航索引。
+- **索引唯一**：全局索引只有本文「六、文档索引」，只登记到主题入口；`docs/<topic>.md` 是主题内的**局部导航**，不得充当全局索引。
+
+## 六、文档索引
+
+| 文档名称 | 相对路径 | 说明 |
+| --- | --- | --- |
+| 总体设计 | `docs/DESIGN.md` | 定位、范围边界、设计正文地图（改设计先读） |
+| 设计正文 | `docs/sections/` | 13 个文件覆盖 §1–§12（§4 分两册）：01 需求 … 12 待实测清单 |
+| 契约 | `docs/contract.md` | 9 篇契约入口：URL / 菜单 / 插件页 / UI / 站点运行环境 + 内核 fs·调度·FTP·防火墙（改行为先读） |
+| 实现说明与审计 | `docs/impl.md` | 实际怎么做、与契约差在哪（两篇 IMPL_NOTES + 两篇审计稿） |
+| 交付与验证 | `docs/test.md` | 装机 → 迭代 → 坐标 → 用例 → 未闭环（上测试机按此顺序读） |
+| 工程环境与流水线 | `docs/ops.md` | CI workflow 与门槛命令、开发机闸门与退出码（出包 / CI 红 / 编译异常） |
+| 插件与分发 | `docs/plugin.md` | 官方插件集、商店清单与签名、`serve`/`api` 发布面 |
+| SDUI / budding | `docs/sdui.md` | 设计稿：资源 / 动作 / 迁移阶段、接入边界、上游能力台账 |
+| 历史存档 | `docs/archive.md` | 架构审查、UI 设计过程与已收口评估稿（只读，不参与路由） |
+| 插件工程 | `plugins/README.md` | 第二 workspace、插件开发 / 签名 / 打包 |
+| 变更记录目录 | `docs/changes/` | 每日详细变更记录存放目录（只查历史，不作规范） |
+
+> **维护规则**：新增、删除或移动**文档**（含主题入口与目录）时，**必须**同步本表；主题内部的子文档增减只改该主题的入口文档，不必回到本表。
+
+## 七、变更记录规范
+
+- 完成实质性代码修改、重构或配置变更后，**必须**将详细变更写入 `docs/changes/YYYY-MM-DD.md`（一事一条，按日期归档；当天已存在则追加，勿覆盖历史）。
+- 涉及跨模块行为、契约或交付流程的改动，同一条记录写清「改了什么 / 为什么 / 验证方式」。
+- `docs/DESIGN.md` 只放设计正文与索引，**不设「变更记录」章节**；设计正文的结构性/结论性变化写入 `docs/changes/YYYY-MM-DD.md`，同一事实只在一处维护。

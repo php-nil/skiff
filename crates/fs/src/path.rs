@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::error::{io_error, FsError};
 use crate::subject::Principal;
 
-/// 站点根默认值（见 `docs/SITE_RUNTIME_CONTRACT.md`）。
+/// 站点根默认值（见 `docs/contract/SITE_RUNTIME_CONTRACT.md`）。
 pub const DEFAULT_SITE_ROOT: &str = "/www/sites";
 
 /// 受保护子目录：插件默认只读，写入需 `fs:write-protected` 单独勾选。
@@ -115,7 +115,7 @@ pub fn normalize_absolute(raw: &str) -> Result<PathBuf, FsError> {
 ///
 /// 注意：本函数只做**预检**；实际打开/写入在 `ops` 里用 `O_NOFOLLOW`（Unix）
 /// 或 `symlink_metadata` 再校验（Windows）收口。残留 TOCTOU 窗口与根治方案
-/// 见 `docs/KERNEL_FS_IMPL_NOTES.md`。
+/// 见 `docs/impl/KERNEL_FS_IMPL_NOTES.md`。
 pub fn resolve(
     principal: &Principal,
     raw: &str,

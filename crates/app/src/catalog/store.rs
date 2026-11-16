@@ -1,6 +1,6 @@
 //! 目录缓存：`<data_dir>/catalog/` 下的原子读写。
 //!
-//! 布局与 `docs/SKIFF_SERVER.md` 的服务端产物同构，只是多一层渠道目录与
+//! 布局与 `docs/plugin/SKIFF_SERVER.md` 的服务端产物同构，只是多一层渠道目录与
 //! `meta.json`（条件请求头 + 已见 seq）：
 //!
 //! ```text

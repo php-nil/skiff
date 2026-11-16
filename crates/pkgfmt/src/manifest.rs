@@ -37,7 +37,7 @@ pub enum Capability {
     ///
     /// 需要 root 才能改 nftables/iptables 与 `/etc/fail2ban`；受限形态没有
     /// 宿主网络命名空间与 systemd，故只对 Native 形态提供。契约见
-    /// `docs/KERNEL_FIREWALL_CONTRACT.md`。
+    /// `docs/contract/KERNEL_FIREWALL_CONTRACT.md`。
     Firewall,
 }
 
@@ -217,7 +217,7 @@ pub struct MenuItem {
     pub order: i32,
     #[serde(default)]
     pub icon: Option<String>,
-    /// 视图名；缺省等于 `id`。内核按 `ui/<view>.html` 托管（`docs/PLUGIN_UI_CONTRACT.md`）。
+    /// 视图名；缺省等于 `id`。内核按 `ui/<view>.html` 托管（`docs/contract/PLUGIN_UI_CONTRACT.md`）。
     #[serde(default)]
     pub view: Option<String>,
     /// 随包 schema 文件名（相对 `ui/schema/`）。声明后该视图由壳页原生渲染。
@@ -356,7 +356,7 @@ pub struct Manifest {
     pub network_egress: Vec<String>,
     #[serde(default)]
     pub ui: Vec<UiEntry>,
-    /// 菜单声明：插件只能在固定一级下声明 L2/L3（见 `docs/MENU_CONTRACT.md`）。
+    /// 菜单声明：插件只能在固定一级下声明 L2/L3（见 `docs/contract/MENU_CONTRACT.md`）。
     #[serde(default)]
     pub menu: Vec<ManifestMenu>,
     /// 固定页槽位声明（概览健康块等）；P1 只做解析与校验。
@@ -380,7 +380,7 @@ pub struct Manifest {
     #[serde(default)]
     pub config_schema: BTreeMap<String, ConfigField>,
     /// 内核调度器任务声明：安装/启动时由内核种入 `scheduled_tasks`，
-    /// 插件只提供被调用的采集/执行方法（见 `docs/KERNEL_SCHEDULER_CONTRACT.md` §9）。
+    /// 插件只提供被调用的采集/执行方法（见 `docs/contract/KERNEL_SCHEDULER_CONTRACT.md` §9）。
     #[serde(default)]
     pub task: Vec<ManifestTask>,
     /// 旧版周期任务字段：仅保留解析兼容，内核不再读取（迁移见契约 §12）。
@@ -752,7 +752,7 @@ impl Manifest {
         Ok(())
     }
 
-    /// 菜单声明校验（`docs/MENU_CONTRACT.md` §2.3）。
+    /// 菜单声明校验（`docs/contract/MENU_CONTRACT.md` §2.3）。
     fn validate_menu(&self) -> Result<()> {
         if self.menu.is_empty() {
             return Ok(());

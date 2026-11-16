@@ -3,7 +3,7 @@
 # 本插件不再声明 `cron = [...]`（已弃用）：内核 1s tick 由调度器自己驱动，
 # 插件只通过 `scheduler` 能力面做列表/详情/历史/手动触发/启停/新建/删除。
 # 旧 `cron` 字段的读取兼容仍保留在 guard/monitor 等未迁移插件上，见
-# docs/KERNEL_SCHEDULER_IMPL_NOTES.md。
+# docs/impl/KERNEL_SCHEDULER_IMPL_NOTES.md。
 #
 # 任务身份：内核按 `plugin:com.skiff.cron:<key>` 生成 id，source 记为插件 id，
 # 因此本 UI 只能改自己创建的任务；内核另有内置任务（db-vacuum / site-backup）

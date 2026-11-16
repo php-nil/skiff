@@ -2,7 +2,7 @@
 
 > 版本：**v1.0（MVP 实施稿）** ｜ 产品名：**Skiff（轻舟）** ｜ 交付形态：**宿主机 systemd 直装（主）**；1Panel 商店 Docker 包为可选受限形态
 > 本方案 = **MVP 方案**，只覆盖三核心：**Web 管理服务 / Docker 管理 / 插件体系**。文件管理由内核持有管理员客户端（「工具 → 文件管理」，IO 全部经 `skiff-fs`）；防火墙、主机监控等其余宿主功能由插件层在宿主能力面（docker/identity/fs/net/ftp）实现（§1.4、§3.3）。
-> 状态：**MVP 代码已落地**（M0–M4 主体完成；`landlock` / `cgroups` / `nftables` 与 `net` 收口尚未实现）。结构为 **16 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）。架构审查 P0–P2 与第六轮复审结论见 [ARCH_REVIEW.md](ARCH_REVIEW.md)（该轮基线为 14 crate；当前 16）；本地三关命令与 CI 口径见 [CI.md](CI.md)，测试用例与实测数字见 [TEST_MATRIX.md](TEST_MATRIX.md)，测试机部署与验收结论见 [TEST_ENV.md](TEST_ENV.md)。**Linux 专属能力中，setuid 降权 / Unix socket 已在 Linux CI 跑过单测，docker.sock 与 systemd 安装已在测试机验证；landlock / cgroups / nftables 尚未实现。** 目标读者：决策者。
+> 状态：**MVP 代码已落地**（M0–M4 主体完成；`landlock` / `cgroups` / `nftables` 与 `net` 收口尚未实现）。结构为 **16 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）。架构审查 P0–P2 与第六轮复审结论见 [ARCH_REVIEW.md](archive/ARCH_REVIEW.md)（该轮基线为 14 crate；当前 16）；本地三关命令与 CI 口径见 [CI.md](ops/CI.md)，测试用例与实测数字见 [TEST_MATRIX.md](test/TEST_MATRIX.md)，测试机部署与验收结论见 [TEST_ENV.md](test/TEST_ENV.md)。**Linux 专属能力中，setuid 降权 / Unix socket 已在 Linux CI 跑过单测，docker.sock 与 systemd 安装已在测试机验证；landlock / cgroups / nftables 尚未实现。** 目标读者：决策者。
 > **文档结构**：本文件是索引与一页结论；正文按章节拆在 `docs/sections/` 下（13 个文件覆盖 §1–§12，§4 分两册）。**文件名前缀 = 章号**，章节号 `§x.y` 全局唯一、拆分不重编号，跨文件引用直接按编号跳转（见下方文档地图）。
 
 ---
@@ -44,13 +44,7 @@
 | §10 风险 | [sections/10-risks.md](sections/10-risks.md) | 21 条风险（带 架构/契约/实现/运营 层级）、10.1 架构支柱级 6 条原型、10.2 契约级 5 条 |
 | §11 已拍板决策 | [sections/11-decisions.md](sections/11-decisions.md) | 10 条默认值（可推翻），不留阻塞实施的开放问题 |
 | §12 待实测清单 | [sections/12-pending-tests.md](sections/12-pending-tests.md) | 17 条实测项 + 12.1 架构层缺口 5 条，逐项挂里程碑 |
-| 部署与测试（非章节） | [DEPLOY_TEST.md](DEPLOY_TEST.md) | 两种部署形态的装机步骤、配置矩阵、7 组验收用例（A–G）、未实现清单、实测记录与排查表 |
-| 持续集成（非章节） | [CI.md](CI.md) | 三个工作流的门槛口径、工具链锁定与 MSRV 依据、发布产物流向、实测结果与已知风险 |
-| 架构审查（非章节） | [ARCH_REVIEW.md](ARCH_REVIEW.md) | 模块划分 / 职责边界 / 依赖关系 / 复用性四维审查；重复实现清单、已致缺陷、目标结构与 P0–P2 行动清单 |
-| 官方插件集（非章节） | [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md) | 竞品对照、官方插件清单 6 个（guard/monitor/files/cron/ftp/firewall，已落地；原 nginx 已内核化为「网站」；连同 testkit 共 7 个签名包）、`plugins/` 第二 workspace、发布包携带 `official/` 与开箱即用交付线 |
-| Skiff-server 分发（非章节） | [SKIFF_SERVER.md](SKIFF_SERVER.md) | 中心化静态分发：清单模型、Ed25519 签名与 `seq` 防回滚、镜像同步、客户端接入 P0–P4、静态服务契约（§16）、发布面 `/api/**`（§17，R0–R2a–R2e 已实施、默认关闭） |
-| budding 接入（非章节） | [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) | 具体框架 budding 作为前端渲染层的接入规则：产物与离线分发、JSON 信封与动作元数据、既有契约沿用与补条款、登录/权限/审计桥接、能力缺口与待决策项；规则稿，不代表已实施 |
-| 其余专项文档（非章节） | [docs/README.md](README.md) | 测试环境/台账/矩阵、迭代验证回路、菜单与插件 UI 契约、UI 交互基准、网站运行环境、内核调度/文件系统/FTP/防火墙契约与实现说明；完整索引、分类与状态只在 docs/README.md 维护，本文不重复 |
+| 非章节专项文档 | [AGENTS.md](../AGENTS.md)「六、文档索引」 | 七个主题，每个是「入口文档 + 同名目录」：[contract.md](contract.md) 契约、[impl.md](impl.md) 实现说明与审计、[test.md](test.md) 交付与验证、[ops.md](ops.md) 工程环境、[plugin.md](plugin.md) 插件与分发、[sdui.md](sdui.md) SDUI、[archive.md](archive.md) 存档；**入口与状态只在根文件的文档索引维护**，本文只保留设计正文（§1–§12），不复述 |
 
 ### 按角色选读
 
@@ -71,26 +65,3 @@
 - **代码 span 不跨行**：一行内闭合，跨行写法在多数渲染器里会退化成普通文本。
 - **数字纪律**：未实测的数字与能力声明一律标注「设计目标 / 待实测」，M5 统一回填（§7、§12）。
 - **单一事实来源**：同一约束只在一处下结论，其余处引用编号；发现冲突以编号靠前、且标注「拍板」的条目为准。
-
----
-
-## 变更记录
-
-| 日期 | 变更 |
-|---|---|
-| 2026-10-30 | 设计正文按章节拆分为 `docs/sections/` 13 个文件（覆盖 §1–§12，§4 分两册）；章节文件编号对齐章号，主文档只保留一页结论与索引。 |
-| 2026-10-30 | §10 增加层级标注与「架构支柱级/契约级待核实」，§9 增加「架构核实门」，§12 增加「架构层缺口」；具体条目见正文。 |
-| 2026-10-30～31 | MVP 代码落地、发布链路、GitHub CI/Release、P0/P1 收敛、两轮架构复审、上机就绪（0711 权限口径、TOCTOU 表述修正）等实现流水：详 [changes/2026-10-31.md](changes/2026-10-31.md)；审查结论见 [ARCH_REVIEW.md](ARCH_REVIEW.md)。 |
-| 2026-11-01 | §11 决策 11（crate 拆分粒度维持现状）、决策 12（发布物去签名）；新增 [PLUGIN_CATALOG.md](PLUGIN_CATALOG.md)；官方插件集首批 4 个落地（`plugins/` 第二 workspace；ftp 于 2026-11-07 补入，现为 5 个）。详 [changes/2026-11-01.md](changes/2026-11-01.md)。 |
-| 2026-11-02 | 架构审查第六轮结论：分层与判定层已稳，剩余缺陷同源于「授权 → 执行 → 留痕」没有唯一入口；文档校正官方插件 4 → 5。详 [changes/2026-11-02.md](changes/2026-11-02.md)。 |
-| 2026-11-04 | **「网站」由插件内核化**：移除官方插件 `com.skiff.nginx`（`plugins/` 第二 workspace 成员、CI/打包清单、`docs/PLUGIN_CATALOG.md` / `MENU_CONTRACT.md` / `plugins/README.md` 描述同步），内核新增一级「网站」（网站列表 / 运行环境 / 设置）与 `sites` 表（schema v3）；`Docker::execute` 扩展 `images.pull` / `containers.create` / `containers.remove`，运行环境以容器形态跑 `nginx:alpine` + `php:8.5-fpm-alpine`，站点经 vhost 指向 PHP-FPM。详 `docs/changes/2026-11-04.md`。 |
-| 2026-11-04 | **站点寄宿布局改为 `/www` + host 网络 + unix socket**：数据根迁 `/www/skiff`，站点 `/www/sites`、vhost `/www/nginx/conf.d`、日志 `/www/logs/nginx`、证书 `/www/certs`、PHP socket `/www/php`；nginx 换 OpenResty 固定 digest 并直接用宿主 80（去掉 8080 映射），PHP-FPM 只走 `unix:/www/php/php-fpm.sock`；站点日志落宿主并由内核轮转，容器日志 `local`+`max-size`。安装前探测 80/443 占用并拒绝半装。WAF 仅预留规则目录与模式字段（待定）。详 `docs/changes/2026-11-04.md`。 |
-| 2026-11-05 | **站点树改「一站一目录」**：`/www/sites/<域名>/{index,log,ssl,conf}` 承载文档根、access/error 日志、证书与 vhost，备份单目录即备份整站；vhost 由公共 `10-skiff-sites.conf` 的 `include /www/sites/*/conf/*.conf;` 载入，默认站与兜底站仍在 `/www/nginx/conf.d`；**不做旧布局迁移**（启动不搬移/清理旧路径，测试期无正式库），站点目录浏览与 files 能力面根限定 `index/`。详 [changes/2026-11-05.md](changes/2026-11-05.md)。 |
-| 2026-11-06 | 内核调度器契约与实现落地（任务模型、内存缓冲与四种回执、插件唤醒链路、内置任务）；站点停止态/运行态非法配置保存改为候选 `nginx -t` 校验。详 [changes/2026-11-06.md](changes/2026-11-06.md)。 |
-| 2026-11-07 | 内核文件管理页第一步（`AdminFs` 接 `skiff-fs`，菜单退役与旧深链 301）；FTP 能力面与 `com.skiff.ftp` 上线（`MinUID=82`，schema v11）；内置任务删除在调度器/能力面/服务层硬拦截；PHP 池显式 `access.log = /dev/null`；站点高风险动作移入「管理」页签。详 [changes/2026-11-07.md](changes/2026-11-07.md)。 |
-| 2026-11-07 | 文档体系收敛：新增 [TEST_ENV.md](TEST_ENV.md) 作为测试机访问信息唯一来源；门槛命令、测试台账、契约与实现说明去重。详 [changes/2026-11-07.md](changes/2026-11-07.md)。 |
-| 2026-11-09 | 收尾清理：Node.js / Go 未实现，已从 `RUNTIME_KINDS` 与新建弹窗摘除；WAF 未实现，已移出范围，`sites.waf_mode` 与 `waf_rules_dir` 死配置及目录预留已删除。详 [changes/2026-11-09.md](changes/2026-11-09.md)。 |
-| 2026-11-09 | §3 增补架构三目标：§3.5 稳定（失败隔离、幂等、有界、超时语义、降级边界）、§3.6 占用低（单二进制取舍、惰性、每请求成本、上限策略）、§3.7 高度扩展（主体与能力面、契约演进、新增能力面动作）；资源数字仍只在 §7 维护。 |
-| 2026-11-11 | 新增 [SKIFF_SERVER.md](SKIFF_SERVER.md) §17 发布面 `/api/**`：身份即公钥（作者钥签包、审核钥签请求、发布钥只在受控环境）、提交与幂等、审核状态机与 `seq` 只增、产物仍由 `publish` 生成、**客户端不依赖 API**、R0/R1/R2 最小集与不做项；同步对齐 §0「形态」与 §1.2/§1.4。**R0 已实施**于 `tools/skiff-server`（`api` 六端点 + `release` 发布 job），**R1 已实施**（yank、密钥吊销、审计查询；索引仍为 v1，撤包打 `yanked`/`revoked` 标记并递增 `seq`，不升 schema），R2 待做。 |
-| 2026-11-12 | 新增 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md)：budding 作为前端渲染层的接入规则（产物与离线分发、JSON 信封与动作元数据、既有契约沿用与补条款、桥接、能力缺口与待决策项）；本文档地图登记入口。**仅规则稿，未切换前端、未改业务代码。** |
-| 2026-11-15 | **站点/运行环境网络改为专用 bridge + 内核静态容器地址**：Node.js / Rust / PHP 容器不再使用 host 网络、不发布宿主端口，统一接入 `skiff-sites`（首选 `172.18.0.0/16`，静态池 `172.18.16.1–172.18.31.254`）；地址落 `site_runtimes.container_ip`，vhost 只反代 `<container_ip>:<port>`；对外发布改为显式可选项 `publish_port`（默认关闭）；健康判定改为容器状态 + 地址一致 + 地址可达，站点守护每 3 秒巡检并把不可用站点切到 503 维护页。**网段回退**：首选与宿主既有 Docker 网络或网卡地址重叠时，按固定候选序列 `172.19`–`172.31`（`/16`）取第一个不重叠段并持久化（`sites.network_cidr` / `sites.network_fallback`），页面/接口/日志明示「首选被占用、当前段、占用者」；候选全占则显式报错，不改宿主网络、不接管他人网络。详 [SITE_RUNTIME_CONTRACT.md](SITE_RUNTIME_CONTRACT.md) §2.3.1。 |

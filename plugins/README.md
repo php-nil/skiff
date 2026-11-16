@@ -3,8 +3,8 @@
 这里是官方插件的**第二 workspace**（与根 `crates/` 分开构建），主程序发布包会随包携带
 本目录产出的 `.wbpkg`。插件原则上只做「能力面的组合」，不新增内核接口；两个例外是
 `com.skiff.ftp` 与 `com.skiff.firewall`——它们需要宿主软件包与特权通道，分别新增了内核
-`ftp` 与 `firewall` 能力面，契约见 [`docs/KERNEL_FTP_CONTRACT.md`](../docs/KERNEL_FTP_CONTRACT.md)
-与 [`docs/KERNEL_FIREWALL_CONTRACT.md`](../docs/KERNEL_FIREWALL_CONTRACT.md)。
+`ftp` 与 `firewall` 能力面，契约见 [`docs/contract/KERNEL_FTP_CONTRACT.md`](../docs/contract/KERNEL_FTP_CONTRACT.md)
+与 [`docs/contract/KERNEL_FIREWALL_CONTRACT.md`](../docs/contract/KERNEL_FIREWALL_CONTRACT.md)。
 
 | 插件 | id | 能力 | 用途 |
 | --- | --- | --- | --- |
@@ -20,7 +20,7 @@
 
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/<arch>/plugin` 收）。
 - id 用 `com.skiff.<x>`；声明菜单/槽位用 `api = "1.2"`，未迁移的老包保持 `"1.0"` / `"1.1"` 并走 `[[ui]]` 降级。版本独立 semver。
-- 功能页文件按视图命名：`view = "main"` → `ui/main.html`，其余 `view = "<x>"` → `ui/<x>.html`；同一插件内视图名唯一。路由分工见 `docs/PLUGIN_UI_CONTRACT.md`。
+- 功能页文件按视图命名：`view = "main"` → `ui/main.html`，其余 `view = "<x>"` → `ui/<x>.html`；同一插件内视图名唯一。路由分工见 `docs/contract/PLUGIN_UI_CONTRACT.md`。
 - `manifest.toml` 的 `key_id` 在源码里是 **64 个 0 的占位**：发布私钥只在打包机/CI secret，
   打包时 `skiff-plugin stamp` 在临时目录回填指纹（仓库里不含任何密钥指纹）。
 - 权限遵循最小化：guard 只要 `containers.list/inspect/restart`，
@@ -60,7 +60,7 @@
 ## 菜单与槽位声明（P2）
 
 一级固定六项，插件只能挂到固定一级下；二级/三级都由内核渲染，插件只负责 `ui/` 内容。
-完整规则见 `docs/MENU_CONTRACT.md`。
+完整规则见 `docs/contract/MENU_CONTRACT.md`。
 
 | 插件 | 二级归属 | 三级标签 | 固定页槽位 |
 | --- | --- | --- | --- |
@@ -170,7 +170,7 @@ cargo test   --manifest-path plugins/Cargo.toml --locked
 ```
 
 > `plugins/` 是独立 workspace（根 `Cargo.toml` 已 `exclude`），根三关不会编译这里；
-> 闸门入口与串行约束见 [AGENTS.md](../AGENTS.md) §3.1，CI job 与命令清单见 [CI.md](../docs/CI.md) §2、§6。
+> 闸门入口与串行约束见 [AGENTS.md](../AGENTS.md) §3、§4.1，CI job 与命令清单见 [CI.md](../docs/ops/CI.md) §2、§6。
 
 ## 打包（发布物携带）
 

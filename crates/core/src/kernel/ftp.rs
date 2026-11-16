@@ -3,7 +3,7 @@
 //! 判定与编排在 `skiff_plugin::ftp`（能力面实现单一来源）；这里只做三件内核侧
 //! 的事：查授权、审计、用 `systemd-run` 提供一条不继承主服务沙箱的特权执行通道。
 //! 站点快照由内核从 DB 读出后注入（`FtpContext`），插件不查库。
-//! 方法清单与动词见 `docs/KERNEL_FTP_CONTRACT.md`。
+//! 方法清单与动词见 `docs/contract/KERNEL_FTP_CONTRACT.md`。
 
 #[cfg(target_os = "linux")]
 use std::future::Future;

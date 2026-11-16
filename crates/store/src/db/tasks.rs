@@ -1,4 +1,4 @@
-//! 内核定时任务的持久化（`docs/KERNEL_SCHEDULER_CONTRACT.md` §7）。
+//! 内核定时任务的持久化（`docs/contract/KERNEL_SCHEDULER_CONTRACT.md` §7）。
 //!
 //! 这里只存「任务定义 + 运行历史」，**不认识调度语义**：`schedule/payload/retry/buffer`
 //! 一律按 JSON 文本原样保存，枚举到字符串的映射由 `skiff-app::tasks` 适配器负责。

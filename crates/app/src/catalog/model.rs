@@ -1,4 +1,4 @@
-//! 客户端侧的 Skiff-server 清单模型（`docs/SKIFF_SERVER.md` P1）。
+//! 客户端侧的 Skiff-server 清单模型（`docs/plugin/SKIFF_SERVER.md` P1）。
 //!
 //! 只声明商店页要展示与校验的字段：服务端新增的字段被忽略（同一 schema 版本内
 //! 向前兼容），但摘要/URL/大小这类**安全字段**一个都不能缺——缺了就无法做内容

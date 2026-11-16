@@ -219,7 +219,7 @@ fi
 #
 # 示例配置里 allow_insecure_http 是**注释态**（默认 false），而 listen 默认 loopback：
 # 这个组合会被 Config::validate 直接 bail，服务装完就是 crash loop。2026-11-03 上机
-# 实测确认（docs/ITERATION.md §6.1，restart counter 一路涨到 9）。
+# 实测确认（docs/test/ITERATION.md §6.1，restart counter 一路涨到 9）。
 #
 # 只在「loopback + 未配 TLS」这一种明确安全的前提下补上，并告警；非 loopback 明文
 # 仍保持拒绝启动（§6.2 裸奔防护不许被安装脚本绕过）。
@@ -459,7 +459,7 @@ if [ "$DO_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null 2>&1 && [ -f "$SRC
         if [ "$(systemctl is-active skiff 2>/dev/null)" != "active" ]; then
             printf '[install] 错误: skiff.service 20 秒内没有进入 active\n' >&2
             journalctl -u skiff -n 20 --no-pager 2>/dev/null >&2 || true
-            printf '[install] 修好 %s 后执行 systemctl restart skiff；排障见 docs/DEPLOY_TEST.md §7\n' "$CONF_DIR/config.toml" >&2
+            printf '[install] 修好 %s 后执行 systemctl restart skiff；排障见 docs/test/DEPLOY_TEST.md §7\n' "$CONF_DIR/config.toml" >&2
             exit 1
         fi
         log "已启动 skiff.service（active）"

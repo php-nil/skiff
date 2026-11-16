@@ -1,4 +1,4 @@
-//! 内核定时任务调度的**纯逻辑层**（`docs/KERNEL_SCHEDULER_CONTRACT.md`）。
+//! 内核定时任务调度的**纯逻辑层**（`docs/contract/KERNEL_SCHEDULER_CONTRACT.md`）。
 //!
 //! 这份 crate 只回答四件事：任务长什么样、缓冲怎么收/怎么放、什么时候该跑、跑完怎么结算。
 //! 不碰 SQLite、不碰 Docker、不碰 UDS、不碰 HTTP——这些都由上层接线：

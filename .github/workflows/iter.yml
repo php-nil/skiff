@@ -1,6 +1,6 @@
 # Skiff（轻舟）· 迭代包流水线
 #
-# 与 release.yml 的分工（docs/ITERATION.md §8）：
+# 与 release.yml 的分工（docs/test/ITERATION.md §8）：
 #   - iter.yml：每轮迭代手动 dispatch，只编 musl x86_64 裸包（不带 official/），
 #     产物留 3 天，`cancel-in-progress: true`——新 dispatch 直接顶掉旧构建。
 #   - release.yml：里程碑才跑，带 5 个已签名官方插件，`cancel-in-progress: false`。
@@ -8,7 +8,7 @@
 # 「发出半个包」的，每轮 dispatch 会累积排队并污染发布 run 历史。
 #
 # 产物：dist/skiff-<ver>-linux-amd64.tar.gz(+.sha256)，布局与 pack-release.sh 一致，
-# 因此 install.sh / docs/DEPLOY_TEST.md §2 的装机步骤不需要任何改动。
+# 因此 install.sh / docs/test/DEPLOY_TEST.md §2 的装机步骤不需要任何改动。
 name: Iter
 
 on:

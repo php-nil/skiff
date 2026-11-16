@@ -1,4 +1,4 @@
-//! 三级菜单模型、声明合并与用户偏好（`docs/MENU_CONTRACT.md` P1）。
+//! 三级菜单模型、声明合并与用户偏好（`docs/contract/MENU_CONTRACT.md` P1）。
 //!
 //! 这里是**唯一**的菜单合成入口：固定六一级 + 内置二级 + 已启用插件声明，
 //! 再套上当前用户的顺序/隐藏/固定/布局偏好。模板只消费 `PageMenu`，
@@ -243,7 +243,7 @@ fn gates_allow(gates: &[String], docker_ok: bool) -> bool {
     })
 }
 
-/// 视图名 → 包内 `ui/` 相对文件（`docs/PLUGIN_UI_CONTRACT.md`）。
+/// 视图名 → 包内 `ui/` 相对文件（`docs/contract/PLUGIN_UI_CONTRACT.md`）。
 fn view_file(view: &str) -> String {
     format!("{view}.html")
 }

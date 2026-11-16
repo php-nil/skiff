@@ -2,7 +2,7 @@
 //!
 //! **如实标注的缺口**：
 //! - 「建容器」主干不在本文件：需要 Docker 引擎（Windows 开发机 / CI 无守护进程），
-//!   该路径只能在 Linux 真机验证（见 docs/DEPLOY_TEST.md 未验证项）。
+//!   该路径只能在 Linux 真机验证（见 docs/test/DEPLOY_TEST.md 未验证项）。
 //! - kernel.sock / Supervisor 拉起插件进程是 unix-only，不在 Windows 测试面内。
 
 use std::path::PathBuf;
@@ -2715,7 +2715,7 @@ async fn restricted_form_hides_and_rejects_files_management() {
 /// 2. `data-plugins` 白名单只含「已启用且有 UI 入口」的插件——iframe 的
 ///    `skiff.open` 只能往这些目标跳，跳转本身不授予任何能力。
 ///
-/// 信息页与功能页的拆分见 `docs/PLUGIN_UI_CONTRACT.md`：`/plugins/{id}` 只由
+/// 信息页与功能页的拆分见 `docs/contract/PLUGIN_UI_CONTRACT.md`：`/plugins/{id}` 只由
 /// 内核渲染信息与管理，功能界面固定落在 `/plugins/{id}/<view>`。
 #[tokio::test]
 async fn plugin_info_and_view_split_passes_open_hint_and_whitelists_enabled_plugins() {
@@ -3351,7 +3351,7 @@ roles = ["admin"]
 }
 
 /// 内核信息页：身份字段、已授权资源、插件间接口、关联菜单与管理动作
-/// 全部由内核渲染（`docs/PLUGIN_UI_CONTRACT.md` §2）。
+/// 全部由内核渲染（`docs/contract/PLUGIN_UI_CONTRACT.md` §2）。
 #[tokio::test]
 async fn plugin_info_page_renders_grants_interop_and_management() {
     let h = harness();
@@ -10102,7 +10102,7 @@ async fn ui_store_upgrade_download_requires_csrf_and_admin() {
 
 /// 列表空态是场景语义，必须由调用方经 `statusTable` 的 `options.emptyText`
 /// 原样落到表格 props；不得再被共享层丢弃成组件默认的「暂无数据」。
-/// 各列表页的文案按 docs/UI_CONTRACT.md §7 的口径（真空列表 / 筛选无结果 /
+/// 各列表页的文案按 docs/contract/UI_CONTRACT.md §7 的口径（真空列表 / 筛选无结果 /
 /// 依赖未就绪）分别给出，这里逐条防回归。
 #[test]
 fn budding_boot_status_table_honors_caller_empty_text() {

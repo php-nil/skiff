@@ -22,7 +22,7 @@ use crate::state::{AppState, CurrentUser};
 use crate::util::escape_html;
 
 /// 可回落到壳页的页面前缀（不含入口根，根单独精确匹配）。
-/// 与 `docs/URL_CONTRACT.md` §2.1 的表一一对应，增删必须同步契约与测试。
+/// 与 `docs/contract/URL_CONTRACT.md` §2.1 的表一一对应，增删必须同步契约与测试。
 const SHELL_PAGES: &[&str] = &[
     "sites",
     "containers",

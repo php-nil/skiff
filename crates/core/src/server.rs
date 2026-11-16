@@ -114,7 +114,7 @@ pub fn probe(addr: SocketAddr) -> Result<String> {
 }
 
 /// 内核调度器 tick 循环：1s 一轮只做「出票」，执行体在 tick 之外的任务里跑，
-/// 因此单个任务耗时不阻塞下一轮（`docs/KERNEL_SCHEDULER_CONTRACT.md` §5）。
+/// 因此单个任务耗时不阻塞下一轮（`docs/contract/KERNEL_SCHEDULER_CONTRACT.md` §5）。
 pub fn spawn_task_loop(state: Arc<skiff_app::AppState>) {
     let Some(tasks) = state.tasks().cloned() else {
         warn!("任务服务未初始化，调度器 tick 循环未启动");

@@ -2,7 +2,7 @@
 //!
 //! `Db` 是 `std::sync::Mutex<rusqlite::Connection>`，同步调用如果直接跑在 tokio worker 上，
 //! 一次慢查询（WAL checkpoint、大表清理）就会把 worker 占住；本机只有 2 个 worker，两个
-//! 请求同时命中就会让 HTTP 与 `kernel.sock` 一起停摆（见 `docs/ARCH_REVIEW.md` §15）。
+//! 请求同时命中就会让 HTTP 与 `kernel.sock` 一起停摆（见 `docs/archive/ARCH_REVIEW.md` §15）。
 //!
 //! 这里把「一段自包含的同步 DB 操作」投递到 `spawn_blocking`，并用全局信号量限制同时占用
 //! 的阻塞线程数：SQLite 是单写者单连接，并发再高也只会在 `Db` 的互斥上排队，所以上限取
@@ -20,7 +20,7 @@
 //! 显式调用 [`run`] 的位置。它**不覆盖维护车道**（`crate::db` 的 `maintenance` 模块：备份、
 //! 审计裁剪），那些操作由调度内置任务自己的 `spawn_blocking` 执行，真正的串行点是 `Db` 的
 //! 连接互斥。因此**加大 [`MAX_CONCURRENT`] 或给维护操作单独 permit 都不会缩短维护窗口内的
-//! 等待**；归因与剩余风险见 `docs/ARCH_REVIEW.md` §15.5（唯一口径，其它文档引用不复述）。
+//! 等待**；归因与剩余风险见 `docs/archive/ARCH_REVIEW.md` §15.5（唯一口径，其它文档引用不复述）。
 
 use std::cell::Cell;
 use std::fmt;

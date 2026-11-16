@@ -972,7 +972,7 @@ pub struct PluginConfirmPage {
 /// 插件信息与管理页（内核渲染，`/{p}/plugins/{id}`）。
 ///
 /// 只放「插件是什么、授权了什么、能做什么管理动作、关联哪些菜单」，
-/// 不嵌 iframe——功能界面在 `/{p}/plugins/{id}/<view>`（`docs/PLUGIN_UI_CONTRACT.md`）。
+/// 不嵌 iframe——功能界面在 `/{p}/plugins/{id}/<view>`（`docs/contract/PLUGIN_UI_CONTRACT.md`）。
 #[derive(Template)]
 #[template(path = "plugin_info.html")]
 pub struct PluginInfoPage {

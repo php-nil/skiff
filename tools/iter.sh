@@ -17,7 +17,7 @@
 # 已知环境限制：本机与测试机都只通 api.github.com，github.com:443 被拦
 # （schannel 握手失败 / OpenSSL unexpected eof），所以 `git push` 走不通 ——
 # 本脚本**不含** dispatch 子命令：包是从已有 run 的 artifact 取的。
-# 恢复推送能力后，iter.yml 可直接 workflow_dispatch（见 docs/CI.md）。
+# 恢复推送能力后，iter.yml 可直接 workflow_dispatch（见 docs/ops/CI.md）。
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

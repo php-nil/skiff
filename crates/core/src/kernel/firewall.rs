@@ -2,7 +2,7 @@
 //!
 //! 判定与命令编排在 `skiff_plugin::firewall`（能力面实现单一来源）；这里只做
 //! 三件内核侧的事：查授权、审计、用 `systemd-run` 提供一条不继承主服务沙箱的
-//! 特权执行通道。方法清单与动词见 `docs/KERNEL_FIREWALL_CONTRACT.md`。
+//! 特权执行通道。方法清单与动词见 `docs/contract/KERNEL_FIREWALL_CONTRACT.md`。
 
 #[cfg(target_os = "linux")]
 use std::future::Future;

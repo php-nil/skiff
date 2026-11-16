@@ -5,7 +5,7 @@
 //! `DbAuditSink`（写 `audit` 表，`ip` 列记来源 `web`）。
 //!
 //! 铁律：`AuditEvent` **没有内容字段**，也不允许把文件正文塞进 `detail`；
-//! `sha256` 只用于完整性核对（见 `docs/KERNEL_FS_IMPL_NOTES.md` 接线说明）。
+//! `sha256` 只用于完整性核对（见 `docs/impl/KERNEL_FS_IMPL_NOTES.md` 接线说明）。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

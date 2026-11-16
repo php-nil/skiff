@@ -1,7 +1,7 @@
 # 防火墙：nftables/iptables 规则与 fail2ban 管理。
 #
 # 本插件不直接碰宿主 root：规则与 jail 全部经内核 `firewall` 能力面执行，
-# 插件进程保持降权。详见 docs/KERNEL_FIREWALL_CONTRACT.md。
+# 插件进程保持降权。详见 docs/contract/KERNEL_FIREWALL_CONTRACT.md。
 id = "com.skiff.firewall"
 name = "防火墙"
 version = "0.1.0"

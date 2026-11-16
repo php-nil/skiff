@@ -1,5 +1,5 @@
 #!/bin/sh
-# Skiff（轻舟）验收脚本 —— docs/ITERATION.md §5 的可执行版
+# Skiff（轻舟）验收脚本 —— docs/test/ITERATION.md §5 的可执行版
 #
 # 在**目标机**上跑，root 身份，只读断言 + 少量必要的有状态操作（改密、重启）。
 # 每轮回归的命令入口；`tools/iter.sh` 负责编排，本脚本只负责"判"。

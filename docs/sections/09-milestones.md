@@ -2,7 +2,7 @@
 
 > 主文档：[DESIGN.md](../DESIGN.md) ｜ 本文件：§9 ｜ 上一章：[§8 工程结构](08-engineering.md) ｜ 下一章：[§10 风险](10-risks.md)
 
-**当前进度**：M0–M4 的**主体代码面**已完成（三核心落地，`cargo test --workspace` 215 项；Linux CI 应全过，Windows 本机因 3 项既存文件锁用例为 212 通过），但 M4 的 landlock / cgroups / nftables 隔离与出网收口**尚未实现**，M1/M2/M4 的**架构原型与 Linux 真机验收也尚未执行**——下表「通过标准」多数仍是待验状态，不代表已达成。M5 未开始。
+**当前进度（截至 2026-11-16）**：M0–M4 的**主体代码面**已完成（三核心落地；测试与验收现状以 [TEST_ENV/04-ACCEPTANCE.md](../test/TEST_ENV/04-ACCEPTANCE.md) 与 CI 为准），但 M4 的 landlock / cgroups / nftables 隔离与出网收口**尚未实现**，M1/M2/M4 的**架构原型与 Linux 真机验收也尚未执行**——下表「通过标准」多数仍是待验状态，不代表已达成。M5 未开始。
 
 | 阶段 | 交付 | 通过标准 |
 |---|---|---|

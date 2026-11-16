@@ -147,7 +147,7 @@ pub fn validate_artifact_with(
             if require_signature {
                 bail!("渠道 {channel} 未签名：P0 占位产物不得发布，客户端必须拒绝");
             }
-            eprintln!("注意：渠道 {channel} 为未签名占位，不得发布；发布请走 publish（见 docs/SKIFF_SERVER.md §14）");
+            eprintln!("注意：渠道 {channel} 为未签名占位，不得发布；发布请走 publish（见 docs/plugin/SKIFF_SERVER.md §14）");
         }
 
         if let Some(public_key_hex) = public_key {
