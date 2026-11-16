@@ -177,12 +177,27 @@ fn rust_files(dir: &Path) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// 只保留 `#[cfg(test)]` 之前的代码：单测里的临时文件操作不是产品路径。
+/// 只保留测试模块之前的代码：单测里的临时文件操作不是产品路径。
+///
+/// 不能见到 `#[cfg(test)]` 就截断——它也可能是文件**中间**的 test-only 辅助模块
+/// （例如 `crates/app/src/commands/mod.rs` 的 `test_support`），在那里截断会让闸门
+/// 漏掉后半段的真实代码。判据收紧为「属性之后第一个非空、非注释行是 `mod tests`」，
+/// 也就是本仓约定的「测试模块放文件末尾」。
 fn before_tests(text: &str) -> String {
-    match text.find("#[cfg(test)]") {
-        Some(i) => text[..i].to_string(),
-        None => text.to_string(),
+    let mut cut = text.len();
+    for (i, _) in text.match_indices("#[cfg(test)]") {
+        let is_tests_mod = text[i..]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with("//"))
+            .is_some_and(|l| l.starts_with("mod tests") || l.starts_with("mod tls_tests"));
+        if is_tests_mod {
+            cut = i;
+            break;
+        }
     }
+    text[..cut].to_string()
 }
 
 /// 统计直接文件写（写 / 建目录 / 删 / 改名 / 复制）。
