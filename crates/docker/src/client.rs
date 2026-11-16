@@ -1391,29 +1391,6 @@ mod tests {
     use crate::policy::{ContainerSpec, Mount, PortMapping};
     use std::collections::BTreeMap;
 
-    /// 409 必须结构化保留：上层据此回 409 `domain.conflict`，而不是 400 `shape.invalid`。
-    #[test]
-    fn api_err_keeps_409_as_conflict() {
-        let e = bollard::errors::Error::DockerResponseServerError {
-            status_code: 409,
-            message: "network with name skiff-sites already exists".into(),
-        };
-        match api_err(e) {
-            DockerError::Conflict(m) => assert!(m.contains("already exists"), "文案透出: {m}"),
-            other => panic!("409 应映射为 Conflict，实际 {other:?}"),
-        }
-    }
-
-    /// 304 的既有口径不能被 409 分支带偏。
-    #[test]
-    fn api_err_keeps_304_as_not_modified() {
-        let e = bollard::errors::Error::DockerResponseServerError {
-            status_code: 304,
-            message: String::new(),
-        };
-        assert!(matches!(api_err(e), DockerError::NotModified));
-    }
-
     /// 其余状态码仍走 Api（按文案透出），不误判成冲突。
     #[test]
     fn api_err_leaves_other_status_codes_as_api() {
@@ -1448,10 +1425,13 @@ mod tests {
         assert_eq!(out.len(), len);
     }
 
-    /// 304 必须结构化成 `NotModified`，调用方不再靠 Display 文案里的
-    /// `contains("304")` / `contains("not running")` 判定。
+    /// 304 必须结构化成 `NotModified`，409 必须结构化成 `Conflict`：调用方不再靠
+    /// Display 文案里的 `contains("304")` / `contains("409")` 判定。
+    ///
+    /// 409 原口径是「归到 `Api`」，导致上层只能一律报 400 `shape.invalid`（文案说「已存在」、
+    /// 错误码说「形状不对」，前端无从区分该改输入还是该刷新）；2026-11-16 起结构化保留。
     #[test]
-    fn not_modified_is_detected_structurally() {
+    fn not_modified_and_conflict_are_detected_structurally() {
         let e = bollard::errors::Error::DockerResponseServerError {
             status_code: 304,
             message: "container is already stopped".into(),
@@ -1462,7 +1442,10 @@ mod tests {
             status_code: 409,
             message: "conflict".into(),
         };
-        assert!(matches!(api_err(err), DockerError::Api(_)));
+        match api_err(err) {
+            DockerError::Conflict(m) => assert_eq!(m, "conflict"),
+            other => panic!("409 应映射为 Conflict，实际 {other:?}"),
+        }
     }
 
     #[test]
