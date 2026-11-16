@@ -43,6 +43,12 @@ pub enum DockerError {
     /// 单独一个变体是为了让调用方做结构化判定，而不是在 Display 文案里
     /// `contains("304")` / `contains("not running")`——那种判定随 Docker 文案变化即失效。
     NotModified,
+    /// Engine 返回 409：对象已存在或被占用（重名网络/卷/容器、删除在用网络等）。
+    ///
+    /// 与 [`DockerError::NotModified`] 同理，结构化保留是为了让上层把它映射成
+    /// `409 domain.conflict` 而不是 `400 shape.invalid`——「请求形状不对」与
+    /// 「状态已冲突」是两种处置，前端据此决定是改输入还是刷新重试。
+    Conflict(String),
 }
 
 impl std::fmt::Display for DockerError {
@@ -52,6 +58,7 @@ impl std::fmt::Display for DockerError {
             DockerError::Api(m) => write!(f, "Docker API 错误: {m}"),
             DockerError::Unsupported(m) => write!(f, "不支持的 Docker 操作: {m}"),
             DockerError::NotModified => write!(f, "Docker 对象已处于目标状态"),
+            DockerError::Conflict(m) => write!(f, "Docker 对象冲突: {m}"),
         }
     }
 }
@@ -65,11 +72,16 @@ impl From<bollard::errors::Error> for DockerError {
 }
 
 fn api_err(e: bollard::errors::Error) -> DockerError {
-    // 304 是「已处于目标状态」，结构化保留；其余错误仍按原文文案透出。
+    // 304 / 409 是「状态类」结果，结构化保留；其余错误仍按原文文案透出。
+    // 409 不结构化的后果是上层只能一律按 400 报，语义从「已冲突」变成「形状不对」。
     match e {
         bollard::errors::Error::DockerResponseServerError {
             status_code: 304, ..
         } => DockerError::NotModified,
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 409,
+            message,
+        } => DockerError::Conflict(message),
         other => DockerError::Api(other.to_string()),
     }
 }
@@ -1378,6 +1390,44 @@ mod tests {
     use super::*;
     use crate::policy::{ContainerSpec, Mount, PortMapping};
     use std::collections::BTreeMap;
+
+    /// 409 必须结构化保留：上层据此回 409 `domain.conflict`，而不是 400 `shape.invalid`。
+    #[test]
+    fn api_err_keeps_409_as_conflict() {
+        let e = bollard::errors::Error::DockerResponseServerError {
+            status_code: 409,
+            message: "network with name skiff-sites already exists".into(),
+        };
+        match api_err(e) {
+            DockerError::Conflict(m) => assert!(m.contains("already exists"), "文案透出: {m}"),
+            other => panic!("409 应映射为 Conflict，实际 {other:?}"),
+        }
+    }
+
+    /// 304 的既有口径不能被 409 分支带偏。
+    #[test]
+    fn api_err_keeps_304_as_not_modified() {
+        let e = bollard::errors::Error::DockerResponseServerError {
+            status_code: 304,
+            message: String::new(),
+        };
+        assert!(matches!(api_err(e), DockerError::NotModified));
+    }
+
+    /// 其余状态码仍走 Api（按文案透出），不误判成冲突。
+    #[test]
+    fn api_err_leaves_other_status_codes_as_api() {
+        for code in [400u16, 404, 500] {
+            let e = bollard::errors::Error::DockerResponseServerError {
+                status_code: code,
+                message: format!("probe {code}"),
+            };
+            match api_err(e) {
+                DockerError::Api(m) => assert!(m.contains(&code.to_string()), "{code} → {m}"),
+                other => panic!("{code} 应映射为 Api，实际 {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn exec_output_is_capped_and_marks_truncation() {

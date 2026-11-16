@@ -349,9 +349,11 @@ pub(super) async fn docker_call(
             Json(json!({ "result": v })).into_response()
         }
         Err(e) => {
-            // 「动词需要专用参数」不是引擎故障，如实回 501 而不是 502
+            // 「动词需要专用参数」不是引擎故障，如实回 501 而不是 502；
+            // 409（重名/被占用）同理该如实回给插件，而不是笼统的 502。
             let status = match e {
                 skiff_docker::DockerError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
+                skiff_docker::DockerError::Conflict(_) => StatusCode::CONFLICT,
                 _ => StatusCode::BAD_GATEWAY,
             };
             if let Err(w) = state.db().audit(

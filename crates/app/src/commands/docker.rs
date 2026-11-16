@@ -49,6 +49,19 @@ impl std::fmt::Display for DockerCommandError {
     }
 }
 
+/// Docker 客户端错误 → 命令错误。
+///
+/// 409（重名/被占用/删除在用对象）走 `Conflict`，由传输层映射成
+/// `409 domain.conflict`；其余按输入错误（400）处理。判定依据是
+/// [`DockerError::Conflict`] 这个结构化变体，不做文案匹配——Docker 改措辞
+/// 不会让分流悄悄失效（与 `NotModified` 同一口径）。
+fn cmd_err(e: DockerError) -> DockerCommandError {
+    match e {
+        DockerError::Conflict(m) => DockerCommandError::Conflict(m),
+        other => DockerCommandError::BadRequest(other.to_string()),
+    }
+}
+
 /// 已解析的容器目标：名称/短 ID 用于审计与提示，`object` 用于 Docker 调用。
 #[derive(Debug, Clone)]
 pub struct ContainerTarget {
@@ -267,7 +280,7 @@ pub async fn image_pull(
         result.as_ref().map(|_| ()),
         "",
     );
-    result.map_err(|e| DockerCommandError::BadRequest(e.to_string()))
+    result.map_err(cmd_err)
 }
 
 pub async fn image_remove(
@@ -283,7 +296,7 @@ pub async fn image_remove(
         result.as_ref().map(|_| ()),
         "",
     );
-    result.map_err(|e| DockerCommandError::BadRequest(e.to_string()))
+    result.map_err(cmd_err)
 }
 
 pub async fn network_create(
@@ -299,9 +312,7 @@ pub async fn network_create(
         result.as_ref().map(|_| ()),
         "",
     );
-    result
-        .map(|_| ())
-        .map_err(|e| DockerCommandError::BadRequest(e.to_string()))
+    result.map(|_| ()).map_err(cmd_err)
 }
 
 pub async fn network_remove(
@@ -339,7 +350,7 @@ pub async fn network_remove(
         result.as_ref().map(|_| ()),
         "",
     );
-    result.map_err(|e| DockerCommandError::BadRequest(e.to_string()))
+    result.map_err(cmd_err)
 }
 
 pub async fn volume_create(
@@ -355,7 +366,7 @@ pub async fn volume_create(
         result.as_ref().map(|_| ()),
         "",
     );
-    result.map_err(|e| DockerCommandError::BadRequest(e.to_string()))
+    result.map_err(cmd_err)
 }
 
 pub async fn volume_remove(
@@ -371,7 +382,7 @@ pub async fn volume_remove(
         result.as_ref().map(|_| ()),
         "",
     );
-    result.map_err(|e| DockerCommandError::BadRequest(e.to_string()))
+    result.map_err(cmd_err)
 }
 
 #[derive(Debug, Clone)]
@@ -529,6 +540,23 @@ mod tests {
     use super::*;
     use crate::commands::test_support::state_at;
     use crate::jobs::{JobSubmit, TARGET_RUNTIME};
+
+    /// 409 走 Conflict（→ HTTP 409），其余仍按输入错误（→ HTTP 400）。
+    #[test]
+    fn cmd_err_routes_409_to_conflict_and_rest_to_bad_request() {
+        match cmd_err(DockerError::Conflict("already exists".into())) {
+            DockerCommandError::Conflict(m) => assert_eq!(m, "already exists"),
+            other => panic!("409 应为 Conflict，实际 {other:?}"),
+        }
+        match cmd_err(DockerError::Api("boom".into())) {
+            DockerCommandError::BadRequest(m) => assert!(m.contains("boom")),
+            other => panic!("非 409 应为 BadRequest，实际 {other:?}"),
+        }
+        match cmd_err(DockerError::Unavailable("no socket".into())) {
+            DockerCommandError::BadRequest(m) => assert!(m.contains("no socket")),
+            other => panic!("Unavailable 按输入错误兜底，实际 {other:?}"),
+        }
+    }
 
     fn actor() -> Actor {
         Actor {
