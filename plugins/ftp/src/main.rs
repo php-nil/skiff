@@ -312,13 +312,7 @@ fn write_passwd_atomic(p: &Plugin, body: &str) -> Result<(), RpcError> {
 /// 用 pure-pw 重建 PureDB。
 fn mkdb(p: &Plugin) -> Result<(), RpcError> {
     let pw = pure_pw_path(p)?;
-    exec_ok(
-        p,
-        pw,
-        &["mkdb", PDB_FILE, "-f", PASSWD_FILE],
-        None,
-        900,
-    )?;
+    exec_ok(p, pw, &["mkdb", PDB_FILE, "-f", PASSWD_FILE], None, 900)?;
     Ok(())
 }
 
@@ -326,13 +320,7 @@ fn mkdb(p: &Plugin) -> Result<(), RpcError> {
 fn restart_and_wait(p: &Plugin) -> Result<(), RpcError> {
     exec_ok(p, "/usr/bin/systemctl", &["restart", SERVICE], None, 300)?;
     for _ in 0..30 {
-        let out = exec_any(
-            p,
-            "/usr/bin/systemctl",
-            &["is-active", SERVICE],
-            None,
-            10,
-        )?;
+        let out = exec_any(p, "/usr/bin/systemctl", &["is-active", SERVICE], None, 10)?;
         if out.trim() == "active" {
             return Ok(());
         }
@@ -345,13 +333,7 @@ fn restart_and_wait(p: &Plugin) -> Result<(), RpcError> {
 
 /// 探测 pure-ftpd 是否已安装（exec dpkg-query）。
 fn ftp_installed(p: &Plugin) -> bool {
-    match exec_any(
-        p,
-        "/usr/bin/dpkg-query",
-        &["-s", "pure-ftpd"],
-        None,
-        30,
-    ) {
+    match exec_any(p, "/usr/bin/dpkg-query", &["-s", "pure-ftpd"], None, 30) {
         Ok(out) => out.contains("Status: install ok installed"),
         Err(_) => false,
     }
@@ -377,8 +359,20 @@ fn align_tree(p: &Plugin, home: &str, uid: u32, gid: u32) -> Result<(), RpcError
     let ug = format!("{uid}:{gid}");
     exec_ok(p, "/usr/bin/chown", &["-R", &ug, home], None, 900)?;
     // 目录 2775（setgid 继承），文件 0664
-    exec_ok(p, "/usr/bin/find", &[home, "-type", "d", "-exec", "chmod", "2775", "{}", "+"], None, 900)?;
-    exec_ok(p, "/usr/bin/find", &[home, "-type", "f", "-exec", "chmod", "0664", "{}", "+"], None, 900)?;
+    exec_ok(
+        p,
+        "/usr/bin/find",
+        &[home, "-type", "d", "-exec", "chmod", "2775", "{}", "+"],
+        None,
+        900,
+    )?;
+    exec_ok(
+        p,
+        "/usr/bin/find",
+        &[home, "-type", "f", "-exec", "chmod", "0664", "{}", "+"],
+        None,
+        900,
+    )?;
     Ok(())
 }
 
@@ -441,9 +435,7 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         return Err(RpcError::invalid_params("监听端口需在 1-65535 之间"));
     }
     if passive_port_start >= passive_port_end {
-        return Err(RpcError::invalid_params(
-            "被动端口范围 start 必须小于 end",
-        ));
+        return Err(RpcError::invalid_params("被动端口范围 start 必须小于 end"));
     }
     if passive_port_end - passive_port_start > 5000 {
         return Err(RpcError::invalid_params("被动端口范围不能超过 5000"));
@@ -473,13 +465,7 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
     let installed = ftp_installed(plugin);
     if !installed {
         // 未装 pure-ftpd：只持久化配置，应用阶段跳过
-        let _ = exec_ok(
-            plugin,
-            "/usr/bin/mkdir",
-            &["-p", "/etc/skiff"],
-            None,
-            900,
-        );
+        let _ = exec_ok(plugin, "/usr/bin/mkdir", &["-p", "/etc/skiff"], None, 900);
         let _ = exec_ok(
             plugin,
             "/usr/bin/tee",
@@ -498,12 +484,34 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
     // ── 已装 pure-ftpd：应用配置 ──
 
     // 1. 确保 auth 链（mkdir + rm stale + ln PureDB）
-    let _ = exec_any(plugin, "/usr/bin/rm", &["-f", "/etc/pure-ftpd/auth/65unix", "/etc/pure-ftpd/auth/70pam"], None, 300);
+    let _ = exec_any(
+        plugin,
+        "/usr/bin/rm",
+        &[
+            "-f",
+            "/etc/pure-ftpd/auth/65unix",
+            "/etc/pure-ftpd/auth/70pam",
+        ],
+        None,
+        300,
+    );
     exec_ok(plugin, "/usr/bin/mkdir", &["-p", AUTH_DIR], None, 900)?;
-    exec_ok(plugin, "/usr/bin/ln", &["-sfn", AUTH_DB_LINK, &format!("{AUTH_DIR}/50pure")], None, 900)?;
+    exec_ok(
+        plugin,
+        "/usr/bin/ln",
+        &["-sfn", AUTH_DB_LINK, &format!("{AUTH_DIR}/50pure")],
+        None,
+        900,
+    )?;
 
     // 2. 确保 PureDB 文件存在
-    let _ = exec_ok(plugin, "/usr/bin/install", &["-m", "0600", "-D", "/dev/null", PDB_FILE], None, 900);
+    let _ = exec_ok(
+        plugin,
+        "/usr/bin/install",
+        &["-m", "0600", "-D", "/dev/null", PDB_FILE],
+        None,
+        900,
+    );
 
     // 3. 写 conf 文件
     let tls_value = match tls_mode {
@@ -523,7 +531,10 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         ("UnixAuthentication", "no"),
         ("PureDB", PDB_FILE),
         ("Bind", bind_line.as_str()),
-        ("PassivePortRange", format!("{passive_port_start} {passive_port_end}").as_str()),
+        (
+            "PassivePortRange",
+            format!("{passive_port_start} {passive_port_end}").as_str(),
+        ),
         ("Umask", UMASK),
         ("MaxClientsNumber", max_clients.to_string().as_str()),
         ("MaxClientsPerIP", max_per_ip.to_string().as_str()),
@@ -531,7 +542,13 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         ("TLS", tls_value),
     ] {
         let path = format!("{CONF_DIR}/{name}");
-        exec_ok(plugin, "/usr/bin/tee", &[&path], Some(&format!("{value}\n")), 900)?;
+        exec_ok(
+            plugin,
+            "/usr/bin/tee",
+            &[&path],
+            Some(&format!("{value}\n")),
+            900,
+        )?;
     }
 
     // 4. 持久化配置
@@ -546,8 +563,20 @@ fn save_config(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
 
     // 5. systemd restart + 等待 active
     exec_ok(plugin, "/usr/bin/systemctl", &["daemon-reload"], None, 300)?;
-    exec_ok(plugin, "/usr/bin/systemctl", &["enable", SERVICE], None, 900)?;
-    exec_ok(plugin, "/usr/bin/systemctl", &["restart", SERVICE], None, 300)?;
+    exec_ok(
+        plugin,
+        "/usr/bin/systemctl",
+        &["enable", SERVICE],
+        None,
+        900,
+    )?;
+    exec_ok(
+        plugin,
+        "/usr/bin/systemctl",
+        &["restart", SERVICE],
+        None,
+        300,
+    )?;
     restart_and_wait(plugin)?;
 
     // 6. 返回最新状态
@@ -695,9 +724,7 @@ fn install(plugin: &Plugin) -> Result<Value, RpcError> {
     if need_update {
         exec_ok(plugin, "/usr/bin/apt-get", &["update"], None, 900)?;
         exec_ok(plugin, "/usr/bin/apt-get", &argv, None, 900)?;
-    } else if first.trim().is_empty()
-        || first.contains("is already the newest version")
-    {
+    } else if first.trim().is_empty() || first.contains("is already the newest version") {
         // 要么装好了要么已经是最新，继续
     } else {
         // 非零退出但不是"找不到包"——exec_any 只在通道/403/409/超时等硬错误时返回 Err，
@@ -718,7 +745,11 @@ fn install(plugin: &Plugin) -> Result<Value, RpcError> {
     exec_any(
         plugin,
         "/usr/bin/rm",
-        &["-f", "/etc/pure-ftpd/auth/65unix", "/etc/pure-ftpd/auth/70pam"],
+        &[
+            "-f",
+            "/etc/pure-ftpd/auth/65unix",
+            "/etc/pure-ftpd/auth/70pam",
+        ],
         None,
         300,
     )?;
@@ -814,8 +845,20 @@ fn install(plugin: &Plugin) -> Result<Value, RpcError> {
 
     // ── Step 7: enable + start pure-ftpd ──
     exec_ok(plugin, "/usr/bin/systemctl", &["daemon-reload"], None, 300)?;
-    exec_ok(plugin, "/usr/bin/systemctl", &["enable", SERVICE], None, 900)?;
-    exec_ok(plugin, "/usr/bin/systemctl", &["restart", SERVICE], None, 300)?;
+    exec_ok(
+        plugin,
+        "/usr/bin/systemctl",
+        &["enable", SERVICE],
+        None,
+        900,
+    )?;
+    exec_ok(
+        plugin,
+        "/usr/bin/systemctl",
+        &["restart", SERVICE],
+        None,
+        300,
+    )?;
 
     // ── Step 8: 等待 active（轮询 systemctl is-active，最多 15s） ──
     let mut active = false;
@@ -870,7 +913,7 @@ fn uninstall(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
             match account_line_state(line) {
                 Some((_login, _)) => {
                     count += 1; // skiff_ 前缀的都算被移除
-                    // 不保留
+                                // 不保留
                 }
                 None => {
                     out.push_str(line);
@@ -889,7 +932,13 @@ fn uninstall(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
 
     // stop + disable service
     let _ = exec_any(plugin, "/usr/bin/systemctl", &["stop", SERVICE], None, 900)?;
-    let _ = exec_any(plugin, "/usr/bin/systemctl", &["disable", SERVICE], None, 900)?;
+    let _ = exec_any(
+        plugin,
+        "/usr/bin/systemctl",
+        &["disable", SERVICE],
+        None,
+        900,
+    )?;
     // 回收 auth 目录
     let _ = exec_any(plugin, "/usr/bin/rm", &["-rf", AUTH_DIR], None, 900)?;
 
@@ -1060,7 +1109,9 @@ fn create(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         ));
     }
     if !valid_password(password) {
-        return Err(RpcError::invalid_params("密码需 8–128 字节且不能包含控制字符"));
+        return Err(RpcError::invalid_params(
+            "密码需 8–128 字节且不能包含控制字符",
+        ));
     }
     if !ftp_installed(plugin) {
         return Err(RpcError::invalid_params(
@@ -1132,7 +1183,9 @@ fn password(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         return Err(RpcError::internal("只能修改本插件创建的 FTP 账号"));
     }
     if !valid_password(password) {
-        return Err(RpcError::invalid_params("密码需 8–128 字节且不能包含控制字符"));
+        return Err(RpcError::invalid_params(
+            "密码需 8–128 字节且不能包含控制字符",
+        ));
     }
     let accounts = read_accounts(plugin)?;
     let account = accounts

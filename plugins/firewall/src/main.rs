@@ -24,35 +24,82 @@ const JAIL_PREFIX: &str = "skiff-";
 const F2B_SERVICE: &str = "fail2ban";
 
 #[derive(Copy, Clone, Debug)]
-enum Backend { Nft, Iptables }
+enum Backend {
+    Nft,
+    Iptables,
+}
 
 // ── exec 辅助 ──
-fn exec_ok(p: &Plugin, binary: &str, argv: &[&str], stdin: Option<&str>, t: u64) -> Result<String, RpcError> {
-    let out = p.host_exec_full(binary, argv, stdin, Some(t)).map_err(common::rpc_err)?;
+fn exec_ok(
+    p: &Plugin,
+    binary: &str,
+    argv: &[&str],
+    stdin: Option<&str>,
+    t: u64,
+) -> Result<String, RpcError> {
+    let out = p
+        .host_exec_full(binary, argv, stdin, Some(t))
+        .map_err(common::rpc_err)?;
     if out.get("success").and_then(Value::as_bool) != Some(true) {
         let code = out.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
-        let detail = out.get("stderr").and_then(Value::as_str).or_else(|| out.get("stdout").and_then(Value::as_str)).unwrap_or("未知").trim().to_string();
-        return Err(RpcError::internal(format!("{binary} 退出码 {code}：{detail}")));
+        let detail = out
+            .get("stderr")
+            .and_then(Value::as_str)
+            .or_else(|| out.get("stdout").and_then(Value::as_str))
+            .unwrap_or("未知")
+            .trim()
+            .to_string();
+        return Err(RpcError::internal(format!(
+            "{binary} 退出码 {code}：{detail}"
+        )));
     }
-    Ok(out.get("stdout").and_then(Value::as_str).or_else(|| out.get("stderr").and_then(Value::as_str)).unwrap_or("").to_string())
+    Ok(out
+        .get("stdout")
+        .and_then(Value::as_str)
+        .or_else(|| out.get("stderr").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string())
 }
-fn exec_any(p: &Plugin, binary: &str, argv: &[&str], stdin: Option<&str>, t: u64) -> Result<String, RpcError> {
-    let out = p.host_exec_full(binary, argv, stdin, Some(t)).map_err(common::rpc_err)?;
-    Ok(out.get("stdout").and_then(Value::as_str).or_else(|| out.get("stderr").and_then(Value::as_str)).unwrap_or("").to_string())
+fn exec_any(
+    p: &Plugin,
+    binary: &str,
+    argv: &[&str],
+    stdin: Option<&str>,
+    t: u64,
+) -> Result<String, RpcError> {
+    let out = p
+        .host_exec_full(binary, argv, stdin, Some(t))
+        .map_err(common::rpc_err)?;
+    Ok(out
+        .get("stdout")
+        .and_then(Value::as_str)
+        .or_else(|| out.get("stderr").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string())
 }
 fn command_works(p: &Plugin, binary: &str, argv: &[&str]) -> bool {
-    p.host_exec_full(binary, argv, None, Some(30)).map(|o| o.get("success").and_then(Value::as_bool) == Some(true)).unwrap_or(false)
+    p.host_exec_full(binary, argv, None, Some(30))
+        .map(|o| o.get("success").and_then(Value::as_bool) == Some(true))
+        .unwrap_or(false)
 }
 fn detect_backend(p: &Plugin) -> Option<Backend> {
-    if command_works(p, NFT, &["--version"]) { return Some(Backend::Nft); }
-    if command_works(p, IPTABLES, &["--version"]) { return Some(Backend::Iptables); }
+    if command_works(p, NFT, &["--version"]) {
+        return Some(Backend::Nft);
+    }
+    if command_works(p, IPTABLES, &["--version"]) {
+        return Some(Backend::Iptables);
+    }
     None
 }
 fn fail2ban_installed(p: &Plugin) -> bool {
-    command_works(p, DPKG_QUERY, &["-s", "fail2ban"]) || command_works(p, FAIL2BAN_CLIENT, &["--version"])
+    command_works(p, DPKG_QUERY, &["-s", "fail2ban"])
+        || command_works(p, FAIL2BAN_CLIENT, &["--version"])
 }
 fn fail2ban_running(p: &Plugin) -> bool {
-    exec_any(p, SYSTEMCTL, &["is-active", F2B_SERVICE], None, 10).unwrap_or_default().trim() == "active"
+    exec_any(p, SYSTEMCTL, &["is-active", F2B_SERVICE], None, 10)
+        .unwrap_or_default()
+        .trim()
+        == "active"
 }
 fn write_managed_file(p: &Plugin, path: &str, content: &str) -> Result<(), RpcError> {
     exec_ok(p, TEE, &[path], Some(content), 30).map(|_| ())
@@ -67,14 +114,27 @@ fn enabled_jails(text: &str) -> Vec<String> {
     let mut cur: Option<String> = None;
     for line in text.lines() {
         let t = line.trim();
-        if t.is_empty() || t.starts_with('#') || t.starts_with(';') { continue; }
-        if t.starts_with('[') && t.ends_with(']') { cur = Some(t[1..t.len()-1].to_string()); continue; }
+        if t.is_empty() || t.starts_with('#') || t.starts_with(';') {
+            continue;
+        }
+        if t.starts_with('[') && t.ends_with(']') {
+            cur = Some(t[1..t.len() - 1].to_string());
+            continue;
+        }
         if let Some(sec) = cur.as_ref() {
             let mut kv = t.splitn(2, '=');
-            let Some(k) = kv.next().map(str::trim) else { continue };
-            let Some(v) = kv.next().map(str::trim) else { continue };
-            if k.eq_ignore_ascii_case("enabled") && matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "1" | "on")
-                && !out.contains(sec) { out.push(sec.clone()); }
+            let Some(k) = kv.next().map(str::trim) else {
+                continue;
+            };
+            let Some(v) = kv.next().map(str::trim) else {
+                continue;
+            };
+            if k.eq_ignore_ascii_case("enabled")
+                && matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "1" | "on")
+                && !out.contains(sec)
+            {
+                out.push(sec.clone());
+            }
         }
     }
     out
@@ -84,12 +144,28 @@ fn enabled_jails(text: &str) -> Vec<String> {
 fn h_status(p: &Plugin) -> Result<Value, RpcError> {
     let nft = command_works(p, NFT, &["--version"]);
     let iptables = command_works(p, IPTABLES, &["--version"]);
-    let backend = if nft { Some("nftables") } else if iptables { Some("iptables") } else { None };
+    let backend = if nft {
+        Some("nftables")
+    } else if iptables {
+        Some("iptables")
+    } else {
+        None
+    };
     let rules = match detect_backend(p) {
-        Some(Backend::Nft) => exec_ok(p, NFT, &["-a", "list", "chain", "inet", "skiff", "input"], None, 30)
-            .ok().map(|t| parse_nft_rules(&t)).unwrap_or_default(),
+        Some(Backend::Nft) => exec_ok(
+            p,
+            NFT,
+            &["-a", "list", "chain", "inet", "skiff", "input"],
+            None,
+            30,
+        )
+        .ok()
+        .map(|t| parse_nft_rules(&t))
+        .unwrap_or_default(),
         Some(Backend::Iptables) => exec_ok(p, IPTABLES, &["-S", IPT_CHAIN], None, 30)
-            .ok().map(|t| parse_iptables_rules(&t)).unwrap_or_default(),
+            .ok()
+            .map(|t| parse_iptables_rules(&t))
+            .unwrap_or_default(),
         None => Vec::new(),
     };
     Ok(json!({
@@ -100,23 +176,37 @@ fn h_status(p: &Plugin) -> Result<Value, RpcError> {
     }))
 }
 fn parse_nft_rules(text: &str) -> Vec<Value> {
-    text.lines().filter_map(|l| {
-        let t = l.trim();
-        if t.is_empty() || t.starts_with("table") || t.starts_with("chain") { return None; }
-        Some(json!({ "source": "nftables", "raw": t }))
-    }).collect()
+    text.lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            if t.is_empty() || t.starts_with("table") || t.starts_with("chain") {
+                return None;
+            }
+            Some(json!({ "source": "nftables", "raw": t }))
+        })
+        .collect()
 }
 fn parse_iptables_rules(text: &str) -> Vec<Value> {
-    text.lines().filter_map(|l| {
-        let t = l.trim();
-        if t.is_empty() || t.starts_with('-') { return None; }
-        Some(json!({ "source": "iptables", "raw": t }))
-    }).collect()
+    text.lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            if t.is_empty() || t.starts_with('-') {
+                return None;
+            }
+            Some(json!({ "source": "iptables", "raw": t }))
+        })
+        .collect()
 }
 fn h_rules_list(p: &Plugin) -> Result<Value, RpcError> {
     match detect_backend(p) {
         Some(Backend::Nft) => {
-            let out = exec_ok(p, NFT, &["-a", "list", "chain", "inet", "skiff", "input"], None, 30)?;
+            let out = exec_ok(
+                p,
+                NFT,
+                &["-a", "list", "chain", "inet", "skiff", "input"],
+                None,
+                30,
+            )?;
             Ok(json!({ "backend": "nftables", "items": parse_nft_rules(&out) }))
         }
         Some(Backend::Iptables) => {
@@ -131,67 +221,160 @@ fn h_rule_add(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
-    let proto = params.get("protocol").and_then(Value::as_str).unwrap_or("tcp");
-    let action = params.get("action").and_then(Value::as_str).unwrap_or("accept");
+    let proto = params
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("tcp");
+    let action = params
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("accept");
     let source = params.get("source").and_then(Value::as_str);
-    let act = if matches!(action, "drop" | "reject") { action } else { "accept" };
+    let act = if matches!(action, "drop" | "reject") {
+        action
+    } else {
+        "accept"
+    };
     let port_str = port.to_string();
     let act_upper = act.to_uppercase();
     match backend {
         Backend::Nft => {
-            exec_ok(p, NFT, &["add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, act], None, 30)?;
+            exec_ok(
+                p,
+                NFT,
+                &[
+                    "add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, act,
+                ],
+                None,
+                30,
+            )?;
         }
         Backend::Iptables => {
-            let mut args: Vec<&str> = vec!["-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", &act_upper];
-            if let Some(src) = source { if !src.is_empty() { args.push("-s"); args.push(src); } }
+            let mut args: Vec<&str> = vec![
+                "-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", &act_upper,
+            ];
+            if let Some(src) = source {
+                if !src.is_empty() {
+                    args.push("-s");
+                    args.push(src);
+                }
+            }
             exec_ok(p, IPTABLES, &args, None, 30)?;
         }
     }
     Ok(json!({ "added": true }))
 }
 fn h_rule_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let Some(backend) = detect_backend(p) else { return Err(RpcError::internal("未找到 nft 或 iptables")); };
+    let Some(backend) = detect_backend(p) else {
+        return Err(RpcError::internal("未找到 nft 或 iptables"));
+    };
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
-    let proto = params.get("protocol").and_then(Value::as_str).unwrap_or("tcp");
+    let proto = params
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("tcp");
     let port_str = port.to_string();
     match backend {
-        Backend::Nft => exec_ok(p, NFT, &["flush", "chain", "inet", "skiff", "input"], None, 30)?,
-        Backend::Iptables => exec_ok(p, IPTABLES, &["-D", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT"], None, 30)?,
+        Backend::Nft => exec_ok(
+            p,
+            NFT,
+            &["flush", "chain", "inet", "skiff", "input"],
+            None,
+            30,
+        )?,
+        Backend::Iptables => exec_ok(
+            p,
+            IPTABLES,
+            &[
+                "-D", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT",
+            ],
+            None,
+            30,
+        )?,
     };
     Ok(json!({ "removed": true }))
 }
 fn h_port_allow(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let Some(backend) = detect_backend(p) else { return Err(RpcError::internal("未找到 nft 或 iptables")); };
+    let Some(backend) = detect_backend(p) else {
+        return Err(RpcError::internal("未找到 nft 或 iptables"));
+    };
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
-    let proto = params.get("protocol").and_then(Value::as_str).unwrap_or("tcp");
+    let proto = params
+        .get("protocol")
+        .and_then(Value::as_str)
+        .unwrap_or("tcp");
     let port_str = port.to_string();
     match backend {
-        Backend::Nft => exec_ok(p, NFT, &["add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, "accept"], None, 30)?,
-        Backend::Iptables => exec_ok(p, IPTABLES, &["-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT"], None, 30)?,
+        Backend::Nft => exec_ok(
+            p,
+            NFT,
+            &[
+                "add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, "accept",
+            ],
+            None,
+            30,
+        )?,
+        Backend::Iptables => exec_ok(
+            p,
+            IPTABLES,
+            &[
+                "-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT",
+            ],
+            None,
+            30,
+        )?,
     };
     Ok(json!({ "port": port, "protocol": proto, "allowed": true }))
 }
 fn h_f2b_status(p: &Plugin) -> Result<Value, RpcError> {
     let installed = fail2ban_installed(p);
-    let running = if installed { fail2ban_running(p) } else { false };
+    let running = if installed {
+        fail2ban_running(p)
+    } else {
+        false
+    };
     let jails = if installed {
         let listing = exec_any(p, LS, &["-1", JAIL_DIR], None, 30).unwrap_or_default();
         let mut out = Vec::new();
         for name in listing.lines().map(str::trim) {
-            if !name.starts_with(JAIL_PREFIX) || !name.ends_with(".conf") { continue; }
-            let text = exec_any(p, CAT, &[&format!("{JAIL_DIR}/{name}")], None, 30).unwrap_or_default();
-            for j in enabled_jails(&text) { if !out.contains(&j) { out.push(j); } }
+            if !name.starts_with(JAIL_PREFIX) || !name.ends_with(".conf") {
+                continue;
+            }
+            let text =
+                exec_any(p, CAT, &[&format!("{JAIL_DIR}/{name}")], None, 30).unwrap_or_default();
+            for j in enabled_jails(&text) {
+                if !out.contains(&j) {
+                    out.push(j);
+                }
+            }
         }
-        out.sort(); out
-    } else { Vec::new() };
+        out.sort();
+        out
+    } else {
+        Vec::new()
+    };
     Ok(json!({ "installed": installed, "running": running, "jails": jails }))
 }
 fn h_f2b_install(p: &Plugin) -> Result<Value, RpcError> {
-    if fail2ban_installed(p) { return Ok(json!({ "installed": true, "already": true })); }
-    let out = exec_any(p, APT_GET, &["install", "-y", "--no-install-recommends", "fail2ban"], None, 900)?;
+    if fail2ban_installed(p) {
+        return Ok(json!({ "installed": true, "already": true }));
+    }
+    let out = exec_any(
+        p,
+        APT_GET,
+        &["install", "-y", "--no-install-recommends", "fail2ban"],
+        None,
+        900,
+    )?;
     if out.contains("Unable to locate package") {
         exec_ok(p, APT_GET, &["update"], None, 900)?;
-        exec_ok(p, APT_GET, &["install", "-y", "--no-install-recommends", "fail2ban"], None, 900)?;
+        exec_ok(
+            p,
+            APT_GET,
+            &["install", "-y", "--no-install-recommends", "fail2ban"],
+            None,
+            900,
+        )?;
     }
     let _ = exec_ok(p, "/usr/bin/mkdir", &["-p", JAIL_DIR], None, 900);
     exec_ok(p, SYSTEMCTL, &["enable", F2B_SERVICE], None, 300)?;
@@ -212,14 +395,36 @@ fn h_f2b_uninstall(p: &Plugin) -> Result<Value, RpcError> {
     Ok(json!({ "removed": true }))
 }
 fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let jail = params.get("jail").and_then(Value::as_str).unwrap_or("").to_string();
-    let backend = params.get("backend").and_then(Value::as_str).unwrap_or("auto").to_string();
-    let port = params.get("port").and_then(Value::as_str).unwrap_or("ftp").to_string();
+    let jail = params
+        .get("jail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let backend = params
+        .get("backend")
+        .and_then(Value::as_str)
+        .unwrap_or("auto")
+        .to_string();
+    let port = params
+        .get("port")
+        .and_then(Value::as_str)
+        .unwrap_or("ftp")
+        .to_string();
     let maxretry = params.get("maxretry").and_then(Value::as_u64).unwrap_or(5);
-    let findtime = params.get("findtime").and_then(Value::as_u64).unwrap_or(600);
-    let bantime = params.get("bantime").and_then(Value::as_u64).unwrap_or(3600);
-    if jail.is_empty() { return Err(RpcError::invalid_params("缺少 jail 名称")); }
-    if !fail2ban_installed(p) { return Err(RpcError::internal("fail2ban 尚未安装")); }
+    let findtime = params
+        .get("findtime")
+        .and_then(Value::as_u64)
+        .unwrap_or(600);
+    let bantime = params
+        .get("bantime")
+        .and_then(Value::as_u64)
+        .unwrap_or(3600);
+    if jail.is_empty() {
+        return Err(RpcError::invalid_params("缺少 jail 名称"));
+    }
+    if !fail2ban_installed(p) {
+        return Err(RpcError::internal("fail2ban 尚未安装"));
+    }
     let content = format!("[{jail}]\nenabled = true\nport = {port}\nbackend = {backend}\nmaxretry = {maxretry}\nfindtime = {findtime}\nbantime = {bantime}\n");
     let _ = exec_ok(p, "/usr/bin/mkdir", &["-p", JAIL_DIR], None, 900);
     let path = format!("{JAIL_DIR}/{JAIL_PREFIX}{jail}.conf");
@@ -228,47 +433,98 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     Ok(json!({ "ensured": true, "jail": jail, "path": path }))
 }
 fn h_f2b_jail_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let jail = params.get("jail").and_then(Value::as_str).unwrap_or("").to_string();
-    if jail.is_empty() { return Err(RpcError::invalid_params("缺少 jail 名称")); }
+    let jail = params
+        .get("jail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if jail.is_empty() {
+        return Err(RpcError::invalid_params("缺少 jail 名称"));
+    }
     let path = format!("{JAIL_DIR}/{JAIL_PREFIX}{jail}.conf");
     let _ = exec_any(p, RM, &["-f", &path], None, 900);
-    if fail2ban_installed(p) { restart_fail2ban(p)?; }
+    if fail2ban_installed(p) {
+        restart_fail2ban(p)?;
+    }
     Ok(json!({ "removed": true, "jail": jail }))
 }
 fn h_f2b_banned(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let jail = params.get("jail").and_then(Value::as_str).unwrap_or("").to_string();
-    if jail.is_empty() { return Err(RpcError::invalid_params("缺少 jail 名称")); }
-    if !fail2ban_installed(p) { return Ok(json!({ "banned": [], "available": false })); }
+    let jail = params
+        .get("jail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if jail.is_empty() {
+        return Err(RpcError::invalid_params("缺少 jail 名称"));
+    }
+    if !fail2ban_installed(p) {
+        return Ok(json!({ "banned": [], "available": false }));
+    }
     let out = exec_any(p, FAIL2BAN_CLIENT, &["get", &jail, "banned"], None, 30)?;
     let mut ips = Vec::new();
     for line in out.lines() {
         for tok in line.split([' ', ',', '\t']) {
-            if tok.chars().filter(|c| *c == '.').count() == 3 { ips.push(tok.to_string()); }
+            if tok.chars().filter(|c| *c == '.').count() == 3 {
+                ips.push(tok.to_string());
+            }
         }
     }
     Ok(json!({ "jail": jail, "banned": ips }))
 }
 fn h_f2b_ban(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let jail = params.get("jail").and_then(Value::as_str).unwrap_or("").to_string();
-    let ip = params.get("ip").and_then(Value::as_str).unwrap_or("").to_string();
-    if jail.is_empty() || ip.is_empty() { return Err(RpcError::invalid_params("jail 和 ip 都不能为空")); }
-    if !fail2ban_installed(p) { return Err(RpcError::internal("fail2ban 尚未安装")); }
+    let jail = params
+        .get("jail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let ip = params
+        .get("ip")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if jail.is_empty() || ip.is_empty() {
+        return Err(RpcError::invalid_params("jail 和 ip 都不能为空"));
+    }
+    if !fail2ban_installed(p) {
+        return Err(RpcError::internal("fail2ban 尚未安装"));
+    }
     exec_ok(p, FAIL2BAN_CLIENT, &["set", &jail, "banip", &ip], None, 30)?;
     Ok(json!({ "banned": true, "jail": jail, "ip": ip }))
 }
 fn h_f2b_unban(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let jail = params.get("jail").and_then(Value::as_str).unwrap_or("").to_string();
-    let ip = params.get("ip").and_then(Value::as_str).unwrap_or("").to_string();
-    if jail.is_empty() || ip.is_empty() { return Err(RpcError::invalid_params("jail 和 ip 都不能为空")); }
-    if !fail2ban_installed(p) { return Err(RpcError::internal("fail2ban 尚未安装")); }
-    exec_ok(p, FAIL2BAN_CLIENT, &["set", &jail, "unbanip", &ip], None, 30)?;
+    let jail = params
+        .get("jail")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let ip = params
+        .get("ip")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if jail.is_empty() || ip.is_empty() {
+        return Err(RpcError::invalid_params("jail 和 ip 都不能为空"));
+    }
+    if !fail2ban_installed(p) {
+        return Err(RpcError::internal("fail2ban 尚未安装"));
+    }
+    exec_ok(
+        p,
+        FAIL2BAN_CLIENT,
+        &["set", &jail, "unbanip", &ip],
+        None,
+        30,
+    )?;
     Ok(json!({ "unbanned": true, "jail": jail, "ip": ip }))
 }
 
 fn main() {
     let plugin = match Plugin::from_env() {
         Ok(p) => p,
-        Err(e) => { eprintln!("启动失败: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("启动失败: {e}");
+            std::process::exit(1);
+        }
     };
     let handler_plugin = plugin.clone();
     if let Err(e) = plugin.serve(move |method, params| {
@@ -291,7 +547,10 @@ fn main() {
             "fail2ban.unban" => h_f2b_unban(p, &params),
             "banned" => Ok(json!({"available": false, "banned": []})),
             "config" => Ok(Value::Object(
-                common::load_config(p).into_iter().map(|(k, v)| (k, Value::from(v))).collect(),
+                common::load_config(p)
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::from(v)))
+                    .collect(),
             )),
             other => Err(RpcError::method_not_found(other)),
         }
@@ -303,7 +562,9 @@ fn main() {
 
 #[allow(dead_code)]
 fn _normalize_params(_method: &str, params: Value) -> Value {
-    let Some(mut obj) = params.as_object().cloned() else { return params };
+    let Some(mut obj) = params.as_object().cloned() else {
+        return params;
+    };
     obj.retain(|_, v| !v.as_str().is_some_and(|s| s.trim().is_empty()));
     obj.into()
 }
