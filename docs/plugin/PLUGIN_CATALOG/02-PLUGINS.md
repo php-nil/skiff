@@ -101,7 +101,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 | `com.skiff.files` | 网站 → 站点文件 | 无（单视图 `main`） | — |
 | `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务（`list` / `new`） | — |
 | `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件（`containers` / `events`） | — |
-| `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`）+ 单视图对照 | `overview.actions` |
+| `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`，三个随包 schema）+ 单视图对照（`single`，不出三级菜单） | `overview.actions` |
 | `com.skiff.firewall` | 工具 → 防火墙 | 防火墙规则 / fail2ban（`rules` / `fail2ban`） | — |
 | `com.skiff.ftp` | 工具 → FTP 管理 | 站点账号 / 服务状态（`accounts` / `runtime`） | — |
 

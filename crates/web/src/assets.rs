@@ -38,6 +38,13 @@ pub const BUDDING_VERSION: &str = "1.8.0-r7";
 /// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
 pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r7";
 
+/// 壳页自有资产（`skiff-shell.css` / `budding-boot.js`）的缓存版本。
+///
+/// 这两个文件由本仓库维护、文件名不带版本，但同样按 `?v=` 命中 `immutable`：
+/// 不升版本就改内容，浏览器会拿着一年的旧包继续跑（旧壳 + 新服务端 = 最难查的
+/// 一类缺陷）。**改任一个文件都必须同时升这里**，壳页测试会钉住字面量。
+pub const SHELL_VERSION: &str = "3";
+
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
     match rel {

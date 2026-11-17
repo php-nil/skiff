@@ -8459,10 +8459,67 @@
     })
       .then(function (res) {
         if (res.status !== 200) {
-          throw new Error(errorMessage(res));
+          // 原始响应挂在错误上：`inspect` 结果图要显示 HTTP 状态与错误码，
+          // 只有 message 的话「哪个分支被拒、拒在哪一层」看不出区别。
+          var error = new Error(errorMessage(res));
+          error.rpc = res;
+          throw error;
         }
         return res.body ? res.body.result : null;
       });
+  }
+
+  /// 把一次 RPC 的请求与原始响应摊开给人看（插件探针工具用）。
+  /// 失败分支同样渲染——「预期失败」是插件契约里的一等公民，不是异常弹窗。
+  function showRpcResult(id, method, params, outcome) {
+    // 请求写成两行小字而不是 code 块：这个图层的主角是响应体，请求只是「发去哪、
+    // 带了什么」，用 code 会把弹窗撑高一屏，反而把 JSON 挤到折叠线以下。
+    var request = [
+      { type: 'text', props: { text: 'POST ' + pluginBase(id) + '/rpc', size: 'small' } },
+      {
+        type: 'text',
+        props: {
+          text: 'method = ' + method + ' · params = ' + JSON.stringify(params || {}),
+          size: 'small'
+        }
+      }
+    ];    var raw = outcome.raw || {};
+    var status = outcome.ok ? 200 : raw.status || '—';
+    var payload = outcome.ok
+      ? outcome.result
+      : raw.body || { error: { message: String(outcome.error || '') } };
+    var text = '';
+    try {
+      text = JSON.stringify(payload, null, 2);
+    } catch (e) {
+      text = String(payload);
+    }
+    var layer = request.concat([
+      {
+        type: 'alert',
+        props: {
+          type: outcome.ok ? 'success' : 'error',
+          title: 'HTTP ' + status + (outcome.ok ? ' · 成功分支' : ' · 失败分支'),
+          text: outcome.ok
+            ? '结果由插件原样返回，壳页未做任何改写。'
+            : '错误由内核/插件原样透传；预期失败即通过。'
+        }
+      },
+      { type: 'code', props: { modelValue: text, language: 'json' } }
+    ]);
+    var runtime = buddingRuntime();
+    if (!runtime || typeof runtime.openLayer !== 'function') {
+      toast('RPC ' + method + ' → ' + (outcome.ok ? '成功' : '失败：' + error2text(outcome.error)), outcome.ok ? 'success' : 'error');
+      return;
+    }
+    runtime.openLayer(
+      { title: 'RPC · ' + method, preset: 'sm', body: layer },
+      { scope: runtime.deriveScope({}, null) }
+    );
+  }
+
+  function error2text(error) {
+    return error && error.message ? error.message : String(error);
   }
 
   function pluginQuery() {
@@ -8666,7 +8723,12 @@
         params[k] = args.params[k];
       });
     }
-    var reserved = { method: 1, params: 1, confirm: 1, reload: 1 };
+    // `inspect: true` 是给探针类插件（testkit）用的：只调用、不刷新、不弹 toast，
+    // 把请求与原始响应摊在图层里。写操作仍走同一条 RPC 通道，只是呈现方式不同。
+    var inspect = args.inspect === true || args.inspect === 'true';
+    // `reload` / `view` / `label` / `inspect` 是壳层自己消费的开关，不能顺手
+    // 混进 params 发给插件（插件会收到莫名其妙的多余参数）。
+    var reserved = { method: 1, params: 1, confirm: 1, reload: 1, inspect: 1, view: 1, label: 1 };
     Object.keys(args).forEach(function (key) {
       if (!reserved[key]) params[key] = args[key];
     });
@@ -8679,13 +8741,23 @@
     return guard
       .then(function (ok) {
         if (!ok) return;
+        if (inspect) {
+          return pluginRpcCall(id, method, params).then(
+            function (result) {
+              showRpcResult(id, method, params, { ok: true, result: result });
+            },
+            function (error) {
+              showRpcResult(id, method, params, { ok: false, error: error, raw: error.rpc });
+            }
+          );
+        }
         return pluginRpcCall(id, method, params).then(function () {
           toast('操作已提交', 'success');
           location.reload();
         });
       })
       .catch(function (error) {
-        toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
+        toast('操作失败：' + error2text(error), 'error');
       });
   }
 

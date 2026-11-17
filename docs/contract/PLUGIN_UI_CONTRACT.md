@@ -206,7 +206,7 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 - **信任等级**：schema 与内核页面不同级。安装验包期由 `skiff-pkgfmt` 静态校验，运行期 `GET /schema/{view}` 再校验一次；未通过不进入渲染。
 - **节点白名单**：`page`/`card`/`alert`/`text`/`flex`/`grid`/`table`/`form`/`input-text`/`select`/`textarea`/`checkbox`/`button`；未知类型拒装。
 - **禁外链**：任何字符串命中 `http(s)://`、协议相对 `//`、`data:`、`javascript:`、`vbscript:`、`file:`、`mailto:` 即拒；禁止 `api`/`url`/`href`/`src`/`html`/`raw`/`target` 字段。
-- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换，可带标量 `query`）与表单 `submit`。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。表单内按钮的 `skiffPluginRpc` 会合并当前表单值（空值视为未填写）；插件侧负责把数值字段从字符串归一化，内核参数校验不放宽。
+- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换，可带标量 `query`）与表单 `submit`。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。`skiffPluginRpc` 另接受 `inspect: true`：只调用、不刷新、不弹 toast，壳页把请求与原始响应（含 HTTP 状态与错误信封）摊在图层里——只改呈现，不放宽任何权限，探针类插件靠它验证失败分支。表单内按钮的 `skiffPluginRpc` 会合并当前表单值（空值视为未填写）；插件侧负责把数值字段从字符串归一化，内核参数校验不放宽。
 - **限额**：单文件 128 KiB、节点 512、嵌套 16 层、字符串 8 KiB、数据源 8 个。
 - 组件缺失时不自造渲染，记入上游清单并给占位。
 
@@ -264,7 +264,7 @@ object-src 'none'; frame-ancestors 'self'
 **何时废弃 `ui/index.html`**
 
 1. 当前阶段（`api <= 1.1` 的包）继续支持 `ui/index.html`，内核按 `main` 回落。
-2. 官方 4 插件 + testkit 已全部迁移到 `ui/<view>.html`，新包不得再以 `index.html` 作为默认视图。
+2. 官方 6 插件 + testkit（7 个包）已全部迁移到 `ui/schema/<view>.json`（`api = "1.3"`）；同名 `ui/<view>.html` 仅保留给 legacy SSR（`?legacy=1`）继续验证 iframe 沙箱与 postMessage 桥，不再作为面板内入口。新包不得再以 `index.html` 作为默认视图。
 3. 当内核声明不再兼容 API 1.x（`SUPPORTED_API_MAJOR` 移除 1）时，同步删除 legacy `[[ui]]` 合成与 `main → index.html` 回落；届时安装期直接拒绝旧包。
 
 ## 6. 与菜单契约的衔接
@@ -297,7 +297,8 @@ object-src 'none'; frame-ancestors 'self'
 | U8 | 角色不可见视图 | 404 | 集成 |
 | U9 | 旧包回落 | 只有 `[[ui]].path=index.html` 时 `/main` 加载 `ui/index.html`，无标签栏 | 集成 |
 | U10 | `view` 声明校验 | 非法/重复/文件缺失在安装期失败 | 单测 |
-| U11 | 槽位 | testkit `overview.actions` 渲染，`data-slot` / nonce 正确 | 集成 |
+| U11 | 槽位 | 旧 SSR 概览的 `overview.actions` 渲染，`data-slot` / nonce 正确；新壳目前只原生渲染 `overview.health`（走插件 RPC），`actions` / `side` 未接 | 集成 |
+| U18 | 测试台 schema | testkit 三个视图 `/main` `/check` `/group` 由壳页原生渲染（无 iframe），三级菜单来自 `menu.items`；`/single` 无三级菜单；`inspect` 动作能把成功与失败分支的原始响应摊开 | 集成/人工 |
 | U12 | 主题与 CSP | 插件 HTML/JS 含主题监听；CSP 无 `connect-src` 放行、无外链、无内联 script | 静态扫描 |
 | U13 | 停用/卸载同步 | 菜单、槽位、功能入口消失；信息页仍可访问以恢复/卸载 | 集成 |
 | U14 | 页面级标题 | 官方/测试插件 `ui/*.html` 无 `<h1>`；托管 HTML 注入 `data-kernel-title-guard`，区块小标题不受影响 | 集成/静态 |

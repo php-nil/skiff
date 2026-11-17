@@ -1,0 +1,219 @@
+{
+  "version": 1,
+  "data": {
+    "state": { "method": "state" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "插件架构测试台 · 能力面自检",
+      "subtitle": "逐项真实调用内核能力面；「预期失败」返回 4xx 才算通过"
+    },
+    "body": [
+      {
+        "type": "alert",
+        "props": {
+          "type": "info",
+          "title": "判定口径",
+          "text": "预期成功项返回 200 即通过；预期失败项必须返回 4xx 且带内核错误信封。把失败当异常、或把失败伪装成成功，都是缺陷。"
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "自检清单" },
+        "content": {
+          "body": [
+            {
+              "type": "table",
+              "props": {
+                "rowKey": "check",
+                "pagination": false,
+                "density": "compact",
+                "items": [
+                  {
+                    "check": "ping",
+                    "expect": "成功",
+                    "why": "RPC 请求能到达插件进程"
+                  },
+                  {
+                    "check": "fail",
+                    "expect": "失败 -32602",
+                    "why": "错误码与 message 原样透传，不被壳页改写"
+                  },
+                  {
+                    "check": "identity",
+                    "expect": "成功",
+                    "why": "identity:self 只返回调用者自身，越权对象不可见"
+                  },
+                  {
+                    "check": "fs_read（授权根内）",
+                    "expect": "成功",
+                    "why": "安装时授予的 path: 根之内可读"
+                  },
+                  {
+                    "check": "fs_read（/etc/passwd）",
+                    "expect": "失败",
+                    "why": "越界在授权代数处被拒绝，插件侧无白名单"
+                  },
+                  {
+                    "check": "interop_catalog",
+                    "expect": "成功",
+                    "why": "目录反映已安装且可互操作的目标"
+                  },
+                  {
+                    "check": "interop_cron",
+                    "expect": "视安装",
+                    "why": "目标已装且授予 plugin: 才成功，否则是预期失败"
+                  }
+                ],
+                "columns": [
+                  { "key": "check", "label": "检查项" },
+                  { "key": "expect", "label": "预期" },
+                  { "key": "why", "label": "验证的是什么" }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "逐项执行" },
+        "content": {
+          "body": [
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "ping", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "ping", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "fail（预期失败）", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "fail", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "identity", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "identity", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "fs 授权根内", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fs_read",
+                              "inspect": true,
+                              "params": { "path": "/proc/uptime" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "fs 越界（预期失败）", "variant": "outlined" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fs_read",
+                              "inspect": true,
+                              "params": { "path": "/etc/passwd" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "interop 目录", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "interop_catalog", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "interop cron", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "interop_cron", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "授权面（内核落库的 grants）" },
+        "content": {
+          "body": [
+            { "type": "text", "props": { "text": "已授权：{{data.state.granted}}" } },
+            {
+              "type": "text",
+              "props": {
+                "text": "越界读取能通过，说明授权面被放宽了；这里列出的内容由安装确认写入，面板不能临时提权。",
+                "size": "small"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

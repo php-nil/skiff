@@ -3790,7 +3790,9 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     let m = skiff_pkgfmt::Manifest::parse(&manifest).expect("testkit manifest 必须可解析");
     assert_eq!(m.id, "com.skiff.testkit");
     assert_eq!(m.version, "0.1.0");
-    assert_eq!(m.api, "1.2");
+    // 功能页走随包 schema 需要 api 1.3：测试台必须跟新壳一起演进，否则它验证的是
+    // 一套面板里已经看不到的旧界面（HTML/iframe 只留给 `?legacy=1`）。
+    assert_eq!(m.api, "1.3");
     assert_eq!(m.menu.len(), 2, "必须同时覆盖多视图与单视图两种 L2");
     assert_eq!(
         m.menu[0].effective_views(),
@@ -3800,6 +3802,20 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     assert!(
         m.menu[1].items.is_empty() && m.menu[1].view == "single",
         "对照 L2 必须是无 L3 的单视图"
+    );
+    // 四个视图都要有自己的 schema：缺一个就会在壳内回落到旧 SSR 工作台。
+    for view in ["main", "check", "group", "single"] {
+        let expect = format!("{view}.json");
+        assert_eq!(
+            m.schema_for_view(view),
+            Some(expect.as_str()),
+            "{view} 视图必须声明随包 schema"
+        );
+    }
+    assert_eq!(
+        m.schema_files().len(),
+        4,
+        "四个 schema 文件（去重后）都要被 manifest 引用"
     );
     assert!(
         m.mount.iter().any(|x| x.slot == "overview.actions"),
@@ -8287,8 +8303,9 @@ async fn overview_root_serves_budding_shell_for_authenticated() {
     let (status, html) = get_page(&h.app, "/p", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    // 启动脚本与壳层样式一样按 `?v=` 引用（命中 immutable），升级后必然换 URL。
     assert!(
-        html.contains(r#"src="/p/static/budding/budding-boot.js""#),
+        html.contains(r#"src="/p/static/budding/budding-boot.js?v="#),
         "{html}"
     );
     assert!(

@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "data": {
+    "state": { "method": "state" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "插件架构测试台 · 单视图",
+      "subtitle": "该二级只声明 L2：按契约不应渲染三级菜单"
+    },
+    "body": [
+      {
+        "type": "alert",
+        "props": {
+          "type": "info",
+          "title": "没有三级菜单是正确结果",
+          "text": "菜单项「测试台 · 单视图」没有 menu.items，内核只给一个隐式视图，所以页面上不应出现任何标签栏。直接访问 /plugins/com.skiff.testkit/single 也应落到本页。"
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "进程状态（state）" },
+        "content": {
+          "body": [
+            { "type": "text", "props": { "text": "标识：{{data.state.id}}" } },
+            { "type": "text", "props": { "text": "API：{{data.state.api}}" } },
+            { "type": "text", "props": { "text": "进程 PID：{{data.state.pid}}" } },
+            {
+              "type": "text",
+              "props": { "text": "已授权：{{data.state.granted}}", "size": "small" }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "现场调用" },
+        "content": {
+          "body": [
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "重新读取 state", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "state", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "打开多视图 L2", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "type": "skiffPluginView", "props": { "view": "main" } }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

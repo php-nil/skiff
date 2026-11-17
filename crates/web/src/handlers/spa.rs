@@ -157,6 +157,7 @@ pub fn shell_html(prefix: &str) -> String {
     let prefix = escape_html(prefix);
     let ver = crate::assets::BUDDING_VERSION;
     let icons = crate::assets::BUDDING_ICONS_VERSION;
+    let shell = crate::assets::SHELL_VERSION;
     format!(
         r#"<!doctype html>
 <html lang="zh-CN">
@@ -166,7 +167,7 @@ pub fn shell_html(prefix: &str) -> String {
 <title>Skiff</title>
 <link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
-<link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v=2">
+<link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v={shell}">
 </head>
 <body>
 <div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-version="{ver}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
@@ -176,7 +177,7 @@ pub fn shell_html(prefix: &str) -> String {
   </main>
 </div>
 <script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
-<script src="/{prefix}/static/budding/budding-boot.js"></script>
+<script src="/{prefix}/static/budding/budding-boot.js?v={shell}"></script>
 </body>
 </html>
 "#
@@ -216,11 +217,18 @@ mod tests {
         assert!(html.contains(&format!(
             r#"data-budding-css="/p/static/budding/budding-{ver}.min.css?v={ver}""#
         )));
-        assert!(html.contains(r#"<script src="/p/static/budding/budding-boot.js"></script>"#));
+        // 壳页自有的两个文件（样式 + 启动脚本）都按 `?v=` 引用：命中 immutable，
+        // 因此改内容必须同时升 `SHELL_VERSION`，否则升级后仍跑旧包。
+        let shell = crate::assets::SHELL_VERSION;
+        assert!(html.contains(&format!(
+            r#"<script src="/p/static/budding/budding-boot.js?v={shell}"></script>"#
+        )));
         // 壳层样式带非空 `?v=`：命中 immutable，改样式必须同时改这个版本号，
         // 否则升级后浏览器会继续用旧 CSS（三级菜单会退回旧样式）。
         assert!(
-            html.contains(r#"<link rel="stylesheet" href="/p/static/skiff-shell.css?v=2">"#),
+            html.contains(&format!(
+                r#"<link rel="stylesheet" href="/p/static/skiff-shell.css?v={shell}">"#
+            )),
             "壳层样式必须按版本号引用"
         );
         let icons = crate::assets::BUDDING_ICONS_VERSION;

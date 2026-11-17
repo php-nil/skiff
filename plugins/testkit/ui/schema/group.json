@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "插件架构测试台 · 菜单与槽位",
+      "subtitle": "这一页本身就在验证：多视图 L2 的三级菜单、单视图对照与固定槽位"
+    },
+    "body": [
+      {
+        "type": "alert",
+        "props": {
+          "type": "info",
+          "title": "你现在看到的三级菜单就是被测对象",
+          "text": "「总览与 RPC / 能力面自检 / 菜单与槽位」由内核按 manifest 的 menu.items 渲染，插件自己不出标签栏。切走再回来，地址栏应停在 /plugins/com.skiff.testkit/<view>。"
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "菜单声明" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": { "text": "多视图 L2：main / check / group 三个视图，各有独立 schema。" }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "单视图对照：菜单项「测试台 · 单视图」只声明 L2，按契约不应渲染三级菜单，直接访问 /plugins/com.skiff.testkit/single 也不应出现标签栏。"
+              }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "深链等价：/m/plugin/testkit/group 与 /plugins/com.skiff.testkit/group 必须落到同一视图。",
+                "size": "small"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "槽位与生命周期" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": {
+                "text": "概览槽位：manifest 声明 overview.actions。新壳目前只原生渲染 overview.health（该槽位已改走插件 RPC），actions / side 仍是 legacy SSR 的 iframe 槽位——在概览页看不到挂载卡片是这条未闭环，不是插件坏了。"
+              }
+            },
+            {
+              "type": "text",
+              "props": {
+                "text": "停用或卸载后：菜单项、三级菜单、槽位、信息页的功能入口与深链应同时失效——只失效一处就是缺陷。"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "跳到对照页" },
+        "content": {
+          "body": [
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "回到总览与 RPC", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "type": "skiffPluginView", "props": { "view": "main" } }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "打开单视图对照（应无三级菜单）", "variant": "outlined" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "type": "skiffPluginView", "props": { "view": "single" } }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

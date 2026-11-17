@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "data": {
+    "state": { "method": "state" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "插件架构测试台",
+      "subtitle": "所有按钮都真实走内核 RPC：失败分支不是缺陷，而是被验证的对象"
+    },
+    "body": [
+      {
+        "type": "alert",
+        "props": {
+          "type": "info",
+          "title": "结果怎么看",
+          "text": "点按钮会打开结果图：左侧是发出去的请求，下面是 HTTP 状态与插件原样返回的 JSON。标注「预期失败」的按钮，返回 4xx 且带内核错误信封才算通过。"
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "进程与授权（state）" },
+        "content": {
+          "body": [
+            { "type": "text", "props": { "text": "标识：{{data.state.id}}" } },
+            { "type": "text", "props": { "text": "API：{{data.state.api}}" } },
+            { "type": "text", "props": { "text": "进程 PID：{{data.state.pid}}" } },
+            { "type": "text", "props": { "text": "数据目录：{{data.state.data_dir}}" } },
+            {
+              "type": "text",
+              "props": { "text": "已授权：{{data.state.granted}}", "size": "small" }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "RPC 通路" },
+        "content": {
+          "body": [
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "ping（预期成功）", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "ping", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "fail（预期失败）", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "fail", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "state", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "state", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "identity:self", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "identity", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "interop 目录", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "interop_catalog", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "调用 cron:jobs.list", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "interop_cron", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "fs 读取（授权根内）" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": {
+                "text": "路径由调用方给出，越界与否只由内核的 path: 授权根判定，插件侧不做任何白名单。",
+                "size": "small"
+              }
+            },
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "path",
+                    "label": "读取路径",
+                    "defaultValue": "/proc/uptime",
+                    "placeholder": "/proc/uptime"
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "读取（预期成功）", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fs_read",
+                              "inspect": true,
+                              "params": { "path": "${path}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "越界对照：/etc/passwd（预期失败）", "variant": "outlined" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "fs_read",
+                              "inspect": true,
+                              "params": { "path": "/etc/passwd" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "键盘与焦点" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": {
+                "text": "Tab 应能把焦点移到下面的按钮上，Enter / Space 应触发同一次调用（结果图正常打开即可）。",
+                "size": "small"
+              }
+            },
+            {
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "键盘触发（ping）", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "ping", "inspect": true }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

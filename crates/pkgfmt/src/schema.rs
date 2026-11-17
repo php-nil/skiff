@@ -362,7 +362,7 @@ fn validate_action(action: &Value, node_type: &str) -> Result<()> {
         for key in props.keys() {
             if !matches!(
                 key.as_str(),
-                "method" | "params" | "confirm" | "reload" | "view" | "label"
+                "method" | "params" | "confirm" | "reload" | "view" | "label" | "inspect"
             ) {
                 return Err(invalid(format!("skiffPluginRpc 不允许字段 {key:?}")));
             }
@@ -588,6 +588,35 @@ mod tests {
         }));
         let e = validate_schema(&bad).unwrap_err().to_string();
         assert!(e.contains("标量"), "{e}");
+    }
+
+    #[test]
+    fn skiff_plugin_rpc_accepts_inspect() {
+        // `inspect` 只改呈现（壳页把请求与响应摊在图层里），不额外赋予网络能力，
+        // 探针类插件（testkit）靠它验证失败分支，因此与 method/confirm 同级放行。
+        let mut v = sample();
+        v["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "ping" },
+            "onEvent": { "click": { "actions": [ {
+                "type": "skiffPluginRpc",
+                "props": { "method": "ping", "inspect": true }
+            } ] } }
+        }));
+        validate_schema(&v).unwrap();
+
+        // 放行的是这一个开关，不是「任意字段」。
+        let mut bad = sample();
+        bad["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "ping" },
+            "onEvent": { "click": { "actions": [ {
+                "type": "skiffPluginRpc",
+                "props": { "method": "ping", "download": true }
+            } ] } }
+        }));
+        let e = validate_schema(&bad).unwrap_err().to_string();
+        assert!(e.contains("download"), "{e}");
     }
 
     #[test]

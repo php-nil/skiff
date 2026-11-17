@@ -1,5 +1,9 @@
 # 插件架构测试台：验证菜单多视图、概览槽位、RPC、能力面、主题与沙箱。
 #
+# 功能页自 2026-11-17 起全部走随包 schema（`ui/schema/*.json`），由壳页原生渲染——
+# 测试台必须和新壳一起演进，否则它验证的是一套已经不在面板里出现的旧界面。
+# 同名 HTML 保留给 legacy SSR（`?legacy=1`），继续用来验证 iframe 沙箱与 postMessage 桥。
+#
 # 这是官方出包清单里的「体检插件」：不连接任何业务系统，所有调用都真实走内核能力面，
 # 越界读取与失败分支在测试台里是一等公民，不允许本地伪造放行结果。
 id = "com.skiff.testkit"
@@ -7,7 +11,7 @@ name = "插件架构测试台"
 version = "0.1.0"
 # 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
 key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.2"
+api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
@@ -52,7 +56,8 @@ timeout_secs = 10
 label = "插件架构测试台"
 path = "main.html"
 
-# 多视图 L2：main / check / group（PLUGIN_UI_CONTRACT §3.2）。
+# 多视图 L2：main / check / group（PLUGIN_UI_CONTRACT §2.1）。
+# 每个视图一个 schema：壳页按 menu.items 渲染三级菜单，插件自己不出标签栏。
 [[menu]]
 id = "testkit"
 parent = "tools"
@@ -67,6 +72,7 @@ view = "main"
   order = 10
   icon = "overview"
   view = "main"
+  schema = "main.json"
 
   [[menu.items]]
   id = "check"
@@ -74,6 +80,7 @@ view = "main"
   order = 20
   icon = "activity"
   view = "check"
+  schema = "check.json"
 
   [[menu.items]]
   id = "group"
@@ -81,8 +88,9 @@ view = "main"
   order = 30
   icon = "tools"
   view = "group"
+  schema = "group.json"
 
-# 单视图 L2 对照组：不声明 L3，内核不渲染三级标签栏。
+# 单视图 L2 对照组：不声明 L3，内核不渲染三级菜单。
 [[menu]]
 id = "testkit-single"
 parent = "tools"
@@ -90,6 +98,7 @@ label = "测试台 · 单视图"
 order = 60
 icon = "dot"
 view = "single"
+schema = "single.json"
 
 # 固定页槽位：与 monitor 的 overview.health 不冲突。
 [[mount]]
