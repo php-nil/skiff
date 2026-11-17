@@ -75,15 +75,16 @@
 - `port`：单端口或 `起始-结束`，范围 1–65535 且起始 ≤ 结束；
 - `source`：IPv4/IPv6 或 CIDR，`valid_cidr` 校验；
 - `backend`：仅接受 fail2ban 支持的 `auto|systemd|polling|gamin|pyinotify`；
-- `id`：nft 为十进制 handle，iptables 为十进制序号；
+- `id`：nft 为十进制 handle；iptables 为 `-A SKIFF` 之后的参数串（`-p tcp --dport 80 -j ACCEPT`），
+  比 `-S` 行号稳定——删除一条后其余行号会顺移，参数串不会；
 - `ip`：非空、长度受限、仅十六进制字符与 `.`/`:`，拒绝空白与 shell 元字符。
 
 ## 4. 作用域与安全边界
 
 - **nftables**：只操作 `inet skiff` 表的 `input` 链；表/链不存在时按需创建，默认策略 accept。
   新规则带 `comment "skiff-<nanos>"` 标识；删除按 handle，先 `list` 再删，避免误删同名规则。
-- **iptables**：只操作 `SKIFF` 链；链不存在时创建并挂到 `INPUT`。删除按 `-S` 列出的序号，
-  只删 `SKIFF` 链内的行。
+- **iptables**：只操作 `SKIFF` 链；链不存在时创建并挂到 `INPUT`。删除按 id（`-A SKIFF` 后的
+  参数串）拼成 `-D SKIFF <参数>`，只删 `SKIFF` 链内的行；不做 `-F` 整链清空。
 - **fail2ban**：只写 `/etc/fail2ban/jail.d/skiff-*.conf`；不改系统级 `jail.conf`、不改其它 jail。
   `fail2ban.install` 新装时写 `skiff-defaults.conf` 关闭 `sshd`，避免新装 fail2ban 把宿主 SSH 登录封掉；
   已有 fail2ban 的机器不改其既有 sshd jail。显式管理面提供 `start` / `stop` / `uninstall`：

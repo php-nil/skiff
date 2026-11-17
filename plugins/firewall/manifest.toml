@@ -38,6 +38,7 @@ resource_hints = [
   "bin:/usr/bin/dpkg-query",
   "bin:/usr/bin/tee",
   "bin:/usr/bin/rm",
+  "bin:/usr/bin/mkdir",
   "bin:/bin/cat",
   "bin:/bin/ls",
 ]

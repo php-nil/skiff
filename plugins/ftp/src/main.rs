@@ -354,22 +354,18 @@ fn resolve_identity(_site: &Value) -> Result<(u32, u32), RpcError> {
 }
 
 /// align_tree 等价：把站点文档根及子目录 chown 成 uid:gid、归一权限。
-/// 这里简化：直接 chown -R + chmod -R 目录（shell 原生 exec 快）。
+///
+/// 不能用 `find -exec chmod`：`find` 属「包装器/解释器」，内核拒绝授予 bin 授权
+/// （可把参数变成任意执行）。这里改用 `chmod -R` 的 `X` 语义——目录与已有执行位
+/// 保留 7，普通文件落到 6，得到目录 0775 / 文件 0664；组身份由上面的 chown 与
+/// pure-ftpd 以站点用户登录保证，不再依赖 setgid。
 fn align_tree(p: &Plugin, home: &str, uid: u32, gid: u32) -> Result<(), RpcError> {
     let ug = format!("{uid}:{gid}");
     exec_ok(p, "/usr/bin/chown", &["-R", &ug, home], None, 900)?;
-    // 目录 2775（setgid 继承），文件 0664
     exec_ok(
         p,
-        "/usr/bin/find",
-        &[home, "-type", "d", "-exec", "chmod", "2775", "{}", "+"],
-        None,
-        900,
-    )?;
-    exec_ok(
-        p,
-        "/usr/bin/find",
-        &[home, "-type", "f", "-exec", "chmod", "0664", "{}", "+"],
+        "/usr/bin/chmod",
+        &["-R", "u=rwX,g=rwX,o=rX", home],
         None,
         900,
     )?;

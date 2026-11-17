@@ -242,25 +242,85 @@ fn h_status(p: &Plugin) -> Result<Value, RpcError> {
         "warnings": if backend.is_none() { json!(["宿主机未找到 nft 或 iptables"]) } else { json!([]) },
     }))
 }
+/// nft 规则解析：只保留真正的规则行（带 `# handle <n>`），跳过表/链声明与右花括号。
+///
+/// UI 的列按 `action_text / protocol_text / port_text / source_text / id` 取值，
+/// `id` 用 handle 号，删除时按 handle 精确定位，不再 flush 整条链。
 fn parse_nft_rules(text: &str) -> Vec<Value> {
     text.lines()
-        .filter_map(|l| {
-            let t = l.trim();
-            if t.is_empty() || t.starts_with("table") || t.starts_with("chain") {
+        .filter_map(|line| {
+            let raw = line.trim();
+            let (_, handle) = raw.rsplit_once("# handle ")?;
+            let id = handle.trim().to_string();
+            if id.is_empty() {
                 return None;
             }
-            Some(json!({ "source": "nftables", "raw": t }))
+            let mut protocol_text = String::new();
+            let mut port_text = String::new();
+            let mut source_text = String::new();
+            let mut action_text = String::from("放行");
+            let tokens: Vec<&str> = raw.split_whitespace().collect();
+            for (i, tok) in tokens.iter().enumerate() {
+                match *tok {
+                    "tcp" | "udp" | "icmp" | "icmpv6" => protocol_text = (*tok).to_string(),
+                    "dport" => port_text = tokens.get(i + 1).copied().unwrap_or("").to_string(),
+                    "saddr" => source_text = tokens.get(i + 1).copied().unwrap_or("").to_string(),
+                    "accept" => action_text = "放行".to_string(),
+                    "drop" => action_text = "丢弃".to_string(),
+                    "reject" => action_text = "拒绝".to_string(),
+                    _ => {}
+                }
+            }
+            Some(json!({
+                "id": id,
+                "source": "nftables",
+                "raw": raw,
+                "action_text": action_text,
+                "protocol_text": protocol_text,
+                "port_text": port_text,
+                "source_text": source_text
+            }))
         })
         .collect()
 }
+
+/// iptables `-S` 解析：跳过 `-N/-P` 等结构行，只保留 `-A SKIFF ...` 规则；
+/// `id` 用去掉 `-A SKIFF ` 前缀的规则描述，删除时原样拼回 `-D`。
 fn parse_iptables_rules(text: &str) -> Vec<Value> {
+    let prefix = format!("-A {IPT_CHAIN} ");
     text.lines()
-        .filter_map(|l| {
-            let t = l.trim();
-            if t.is_empty() || t.starts_with('-') {
-                return None;
+        .filter_map(|line| {
+            let raw = line.trim();
+            let spec = raw.strip_prefix(prefix.as_str())?;
+            let tokens: Vec<&str> = spec.split_whitespace().collect();
+            let mut protocol_text = String::new();
+            let mut port_text = String::new();
+            let mut source_text = String::new();
+            let mut action_text = String::new();
+            for (i, tok) in tokens.iter().enumerate() {
+                match *tok {
+                    "-p" => protocol_text = tokens.get(i + 1).copied().unwrap_or("").to_string(),
+                    "--dport" => port_text = tokens.get(i + 1).copied().unwrap_or("").to_string(),
+                    "-s" => source_text = tokens.get(i + 1).copied().unwrap_or("").to_string(),
+                    "-j" => {
+                        action_text = match tokens.get(i + 1).copied().unwrap_or("ACCEPT") {
+                            "DROP" => "丢弃".to_string(),
+                            "REJECT" => "拒绝".to_string(),
+                            _ => "放行".to_string(),
+                        }
+                    }
+                    _ => {}
+                }
             }
-            Some(json!({ "source": "iptables", "raw": t }))
+            Some(json!({
+                "id": spec,
+                "source": "iptables",
+                "raw": raw,
+                "action_text": action_text,
+                "protocol_text": protocol_text,
+                "port_text": port_text,
+                "source_text": source_text
+            }))
         })
         .collect()
 }
@@ -291,6 +351,9 @@ fn h_rule_add(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     };
     ensure_managed_chain(p, backend)?;
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
+    if !(1..=65535).contains(&port) {
+        return Err(RpcError::internal("端口需在 1..65535"));
+    }
     let proto = params
         .get("protocol")
         .and_then(Value::as_str)
@@ -299,7 +362,11 @@ fn h_rule_add(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("accept");
-    let source = params.get("source").and_then(Value::as_str);
+    let source = params
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let act = if matches!(action, "drop" | "reject") {
         action
     } else {
@@ -307,29 +374,32 @@ fn h_rule_add(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     };
     let port_str = port.to_string();
     let act_upper = act.to_uppercase();
-    match backend {
-        Backend::Nft => {
-            exec_ok(
-                p,
-                NFT,
-                &[
-                    "add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, act,
-                ],
-                None,
-                30,
-            )?;
-        }
-        Backend::Iptables => {
-            let mut args: Vec<&str> = vec![
-                "-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", &act_upper,
-            ];
-            if let Some(src) = source {
-                if !src.is_empty() {
+    // 表单的「全部」= TCP + UDP，逐协议下发；nft 不接受 `all dport`。
+    let protos: Vec<&str> = if proto == "all" {
+        vec!["tcp", "udp"]
+    } else {
+        vec![proto]
+    };
+    for proto in &protos {
+        match backend {
+            Backend::Nft => {
+                let mut args: Vec<&str> = vec!["add", "rule", "inet", "skiff", "input"];
+                if let Some(src) = source {
+                    args.extend(["ip", "saddr", src]);
+                }
+                args.extend([proto, "dport", &port_str, act]);
+                exec_ok(p, NFT, &args, None, 30)?;
+            }
+            Backend::Iptables => {
+                let mut args: Vec<&str> = vec![
+                    "-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", &act_upper,
+                ];
+                if let Some(src) = source {
                     args.push("-s");
                     args.push(src);
                 }
+                exec_ok(p, IPTABLES, &args, None, 30)?;
             }
-            exec_ok(p, IPTABLES, &args, None, 30)?;
         }
     }
     Ok(json!({ "added": true }))
@@ -339,6 +409,12 @@ fn h_rule_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
     ensure_managed_chain(p, backend)?;
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
     let proto = params
         .get("protocol")
@@ -346,56 +422,117 @@ fn h_rule_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .unwrap_or("tcp");
     let port_str = port.to_string();
     match backend {
-        Backend::Nft => exec_ok(
-            p,
-            NFT,
-            &["flush", "chain", "inet", "skiff", "input"],
-            None,
-            30,
-        )?,
-        Backend::Iptables => exec_ok(
-            p,
-            IPTABLES,
-            &[
-                "-D", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT",
-            ],
-            None,
-            30,
-        )?,
+        // 按 handle 精确删一条；旧接口只带 port 时退化为删除该端口的第一条规则
+        // （仍不 flush 整链，避免误删其它规则）。
+        Backend::Nft => {
+            if id.is_empty() {
+                if port == 0 {
+                    return Err(RpcError::internal("删除规则缺少 id 或 port"));
+                }
+                return h_rule_remove_nft_by_port(p, proto, &port_str);
+            }
+            exec_ok(
+                p,
+                NFT,
+                &["delete", "rule", "inet", "skiff", "input", "handle", &id],
+                None,
+                30,
+            )?;
+        }
+        Backend::Iptables => {
+            if id.is_empty() {
+                if port == 0 {
+                    return Err(RpcError::internal("删除规则缺少 id 或 port"));
+                }
+                exec_ok(
+                    p,
+                    IPTABLES,
+                    &[
+                        "-D", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT",
+                    ],
+                    None,
+                    30,
+                )?;
+            } else {
+                let mut args: Vec<&str> = vec!["-D", IPT_CHAIN];
+                args.extend(id.split_whitespace());
+                exec_ok(p, IPTABLES, &args, None, 30)?;
+            }
+        }
     };
     Ok(json!({ "removed": true }))
 }
+
+/// 无 id 时的 nft 退化删除：先读 handle 列表，删掉该端口的第一条。
+fn h_rule_remove_nft_by_port(p: &Plugin, proto: &str, port_str: &str) -> Result<Value, RpcError> {
+    let out = exec_ok(
+        p,
+        NFT,
+        &["-a", "list", "chain", "inet", "skiff", "input"],
+        None,
+        30,
+    )?;
+    let needle = format!("{proto} dport {port_str}");
+    let handle = out
+        .lines()
+        .find(|l| l.contains(needle.as_str()) && l.contains("# handle "))
+        .and_then(|l| l.rsplit_once("# handle "))
+        .map(|(_, h)| h.trim().to_string())
+        .ok_or_else(|| RpcError::internal("未找到对应的 nft 规则"))?;
+    exec_ok(
+        p,
+        NFT,
+        &[
+            "delete", "rule", "inet", "skiff", "input", "handle", &handle,
+        ],
+        None,
+        30,
+    )?;
+    Ok(json!({ "removed": true }))
+}
+
 fn h_port_allow(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let Some(backend) = detect_backend(p) else {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
     ensure_managed_chain(p, backend)?;
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
+    if !(1..=65535).contains(&port) {
+        return Err(RpcError::internal("端口需在 1..65535"));
+    }
     let proto = params
         .get("protocol")
         .and_then(Value::as_str)
         .unwrap_or("tcp");
-    let port_str = port.to_string();
-    match backend {
-        Backend::Nft => exec_ok(
-            p,
-            NFT,
-            &[
-                "add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, "accept",
-            ],
-            None,
-            30,
-        )?,
-        Backend::Iptables => exec_ok(
-            p,
-            IPTABLES,
-            &[
-                "-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT",
-            ],
-            None,
-            30,
-        )?,
+    // 表单提供「TCP + UDP」合并项，逐协议各加一条，不能把 both 当协议名传给 nft。
+    let protos: Vec<&str> = if proto == "both" {
+        vec!["tcp", "udp"]
+    } else {
+        vec![proto]
     };
+    let port_str = port.to_string();
+    for proto in &protos {
+        match backend {
+            Backend::Nft => exec_ok(
+                p,
+                NFT,
+                &[
+                    "add", "rule", "inet", "skiff", "input", proto, "dport", &port_str, "accept",
+                ],
+                None,
+                30,
+            )?,
+            Backend::Iptables => exec_ok(
+                p,
+                IPTABLES,
+                &[
+                    "-A", IPT_CHAIN, "-p", proto, "--dport", &port_str, "-j", "ACCEPT",
+                ],
+                None,
+                30,
+            )?,
+        };
+    }
     Ok(json!({ "port": port, "protocol": proto, "allowed": true }))
 }
 fn h_f2b_status(p: &Plugin) -> Result<Value, RpcError> {
@@ -639,4 +776,35 @@ fn _normalize_params(_method: &str, params: Value) -> Value {
     };
     obj.retain(|_, v| !v.as_str().is_some_and(|s| s.trim().is_empty()));
     obj.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nft_rules_skip_structure_and_expose_columns() {
+        let text = "table inet skiff {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\ttcp dport 18081 accept # handle 2\n\t\tip saddr 10.0.0.0/8 tcp dport 22 drop # handle 7\n\t}\n}";
+        let items = parse_nft_rules(text);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], "2");
+        assert_eq!(items[0]["action_text"], "放行");
+        assert_eq!(items[0]["protocol_text"], "tcp");
+        assert_eq!(items[0]["port_text"], "18081");
+        assert_eq!(items[1]["id"], "7");
+        assert_eq!(items[1]["action_text"], "丢弃");
+        assert_eq!(items[1]["source_text"], "10.0.0.0/8");
+    }
+
+    #[test]
+    fn iptables_rules_keep_only_append_lines() {
+        let text = "-N SKIFF\n-P SKIFF ACCEPT\n-A SKIFF -p tcp --dport 8080 -j ACCEPT\n-A SKIFF -p udp --dport 53 -j DROP\n";
+        let items = parse_iptables_rules(text);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], "-p tcp --dport 8080 -j ACCEPT");
+        assert_eq!(items[0]["protocol_text"], "tcp");
+        assert_eq!(items[0]["port_text"], "8080");
+        assert_eq!(items[0]["action_text"], "放行");
+        assert_eq!(items[1]["action_text"], "丢弃");
+    }
 }

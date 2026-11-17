@@ -49,6 +49,9 @@ resource_hints = [
   "bin:/usr/bin/ln",
   "bin:/usr/bin/rm",
   "bin:/usr/bin/cat",
+  "bin:/usr/bin/mv",
+  "bin:/usr/bin/chown",
+  "bin:/usr/bin/chmod",
   # ── TLS 证书 ──
   "bin:/usr/bin/openssl",
   # ── 库缓存 ──
