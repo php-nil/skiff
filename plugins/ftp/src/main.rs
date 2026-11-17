@@ -1633,4 +1633,35 @@ mod tests {
         assert_eq!(banned["items"][0]["ip"], json!("1.2.3.4"));
         assert_eq!(banned["empty"], json!(false));
     }
+
+    #[test]
+    fn account_names_are_strict() {
+        assert!(valid_account_name("deploy"));
+        assert!(valid_account_name("ci-1_x"));
+        assert!(!valid_account_name(""));
+        assert!(!valid_account_name("-bad"));
+        assert!(!valid_account_name("has space"));
+        assert!(!valid_account_name("a/b"));
+        assert!(!valid_account_name(&"x".repeat(33)));
+    }
+
+    #[test]
+    fn passwords_reject_control_chars() {
+        assert!(valid_password("12345678"));
+        assert!(valid_password("correct horse battery staple"));
+        assert!(!valid_password("short"));
+        assert!(!valid_password("bad\npass"));
+        assert!(!valid_password("bad\0pass"));
+        assert!(!valid_password(&"x".repeat(129)));
+    }
+
+    #[test]
+    fn login_names_are_stable_and_collision_aware() {
+        let l1 = ftp_login("a.b", "deploy");
+        assert_eq!(l1, ftp_login("a.b", "deploy"));
+        assert!(l1.starts_with("skiff_a-b_"));
+        assert!(l1.ends_with("_deploy"));
+        assert_ne!(l1, ftp_login("a-b", "deploy"));
+        assert!(ftp_login("very-long-domain-name.example.com", "deploy").len() <= 64);
+    }
 }

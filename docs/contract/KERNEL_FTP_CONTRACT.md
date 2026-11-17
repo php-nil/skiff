@@ -2,7 +2,7 @@
 
 > 状态：已上线（2026-11-07，随 `v0.1.0` 发布；上线时 DB schema v11，当前基线 v15）。
 > 本文件是 `ftp` 能力面的**契约**：主体、授权、账号与权限口径、审计、错误码与测试矩阵。
-> 实现细节见 `crates/plugin/src/ftp.rs`（判定与编排）与 `crates/core/src/kernel/ftp.rs`（grants/审计/特权通道）；插件实现约定见 `plugins/README.md`；
+> 实现细节见 `crates/plugin/src/ftp.rs`（只读查询）与 `crates/core/src/kernel/ftp.rs`（grants/审计/探测通道）；写操作编排见 `plugins/ftp/src/main.rs`，插件实现约定见 `plugins/README.md`；
 > 与内核能力面的关系见本文件 §1.2 与 §8。
 
 ## 0. 一页结论
@@ -19,6 +19,13 @@
 > FTP 插件安装/保存配置时显式传 `login_guard=false`，登录防护改为可选项并经 interop 调用
 > `fail2ban.*`；内核 `ftp.rs` 内的 fail2ban 分支暂未删除（受「不动内核业务层」约束），
 > 待后续独立提交移除。本文以下涉及 fail2ban 的描述保留为历史口径。
+
+> **2026-11-17 变更**：`ftp` 能力面只保留只读查询 `status` / `sites.list` / `accounts.list`；
+> 写操作（`install` / `uninstall` / `account.*` / `service.configure` / `service.restart`）
+> 已迁到 `plugins/ftp` 经内核 `exec` 能力面编排（命令清单与三道闸见
+> [KERNEL_EXEC_CONTRACT.md](KERNEL_EXEC_CONTRACT.md)）。`crates/plugin/src/ftp.rs` 的写实现
+> 已删除，写方法进入 `dispatch` 返回 403 并提示更新调用方。§2.3 方法表与 §3/§4/§5 的命令
+> 编排描述保留为**迁移前的行为口径**，现行实现以插件侧 `plugins/ftp/src/main.rs` 为准。
 
 ## 1. 背景与现状
 

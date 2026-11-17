@@ -3903,8 +3903,8 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
 
 /// 官方包「装完即可用」回归。
 ///
-/// 规则：**每个**官方包要么声明至少一条可用的默认授权建议（`path:` / `container:`
-/// / `project:` / `plugin:`），要么在下表里**显式列名并写明原因**；新包既没默认授权、
+/// 规则：**每个**官方包要么声明至少一条可用的默认授权建议（`bin:` / `path:` /
+/// `container:` / `project:` / `plugin:`），要么在下表里**显式列名并写明原因**；新包既没默认授权、
 /// 又没登记时会直接红。站点文件是唯一「预置 `path:` 反而有害」的例外：站点域名打包时
 /// 未知，预置只能写成 `/www/sites` 这类跨站点根，因此只允许它为空且必须有可读提示。
 /// cron 还必须声明 scheduler 能力（否则全新安装后列表 400）。
@@ -3916,10 +3916,6 @@ async fn official_packages_declare_usable_install_defaults() {
             "守护对象由管理员逐条勾选 container:/project:",
         ),
         ("com.skiff.cron", "只调度插件接口，无宿主资源"),
-        (
-            "com.skiff.firewall",
-            "能力面自带受控作用域（inet skiff / SKIFF 链），无需 path: 授权",
-        ),
     ];
     const OFFICIAL: &[(&str, &str)] = &[
         (
@@ -3949,8 +3945,11 @@ async fn official_packages_declare_usable_install_defaults() {
     for (name, src) in OFFICIAL {
         let m = skiff_pkgfmt::Manifest::parse(src)
             .unwrap_or_else(|e| panic!("{name} manifest 必须可解析: {e}"));
+        // `bin:<绝对路径>` 是 exec 能力面的默认授权（见 KERNEL_EXEC_CONTRACT §1），
+        // 与 path:/container:/project:/plugin: 一样可直接落到安装确认页。
         let usable = |h: &String| {
-            h.starts_with("path:/")
+            h.starts_with("bin:/")
+                || h.starts_with("path:/")
                 || h.starts_with("container:")
                 || h.starts_with("project:")
                 || h.starts_with("plugin:")
@@ -3958,7 +3957,7 @@ async fn official_packages_declare_usable_install_defaults() {
         for h in &m.resource_hints {
             assert!(
                 usable(h),
-                "{name} 的默认授权建议不可用（{h}），只接受 path:/ container:/ project:/ plugin: 前缀"
+                "{name} 的默认授权建议不可用（{h}），只接受 bin:/ path:/ container:/ project:/ plugin: 前缀"
             );
         }
         if m.id == "com.skiff.files" {
