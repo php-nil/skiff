@@ -2095,12 +2095,8 @@
     var view = tab || 'overview';
     var sections = { overview: [], domains: [], config: [], ssl: [], backup: [] };
     var body = sections.overview;
+    // 类型 / 状态 / HTTPS / 运行环境已在顶部指标条呈现，明细里不重复。
     var rows = [
-      ['类型', data.type_label],
-      ['状态', data.status.label],
-      ['HTTPS', data.https.label],
-      ['接入方式', data.endpoint || '—'],
-      ['运行环境', data.runtime_label || '—'],
       ['站点目录', data.root_dir],
       ['文档根', data.index_dir],
       ['附加域名', data.aliases && data.aliases.length ? data.aliases.join('、') : '—'],

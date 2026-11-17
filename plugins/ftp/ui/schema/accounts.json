@@ -224,11 +224,11 @@
                   "home_text": "text"
                 },
                 "columns": [
-                  { "key": "site", "label": "站点" },
-                  { "key": "login", "label": "登录名" },
-                  { "key": "cred_text", "label": "uid:gid" },
-                  { "key": "home_text", "label": "根目录" },
-                  { "key": "status_text", "label": "状态" },
+                  { "key": "site", "label": "站点", "width": 110 },
+                  { "key": "login", "label": "登录名", "width": 220 },
+                  { "key": "cred_text", "label": "uid:gid", "width": 100 },
+                  { "key": "home_text", "label": "根目录", "width": 260 },
+                  { "key": "status_text", "label": "状态", "width": 80 },
                   { "key": "last_text", "label": "最后登录 / 备注" }
                 ],
                 "rowActions": [
