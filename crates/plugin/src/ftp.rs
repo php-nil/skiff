@@ -34,16 +34,16 @@ use serde_json::Value;
 #[cfg(target_os = "linux")]
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
-const PASSWD_FILE: &str = "/etc/pure-ftpd/pureftpd.passwd";
-const PDB_FILE: &str = "/etc/pure-ftpd/pureftpd.pdb";
-const CONF_DIR: &str = "/etc/pure-ftpd/conf";
-const DEFAULT_FILE: &str = "/etc/default/pure-ftpd-common";
-const TLS_PEM: &str = "/etc/ssl/private/pure-ftpd.pem";
-const JAIL_FILE: &str = "/etc/fail2ban/jail.d/skiff-pureftpd.conf";
-const SERVICE: &str = "pure-ftpd";
-const LOGIN_PREFIX: &str = "skiff_";
-const DEFAULT_PORT_START: u16 = 30000;
-const DEFAULT_PORT_END: u16 = 30100;
+pub const PASSWD_FILE: &str = "/etc/pure-ftpd/pureftpd.passwd";
+pub const PDB_FILE: &str = "/etc/pure-ftpd/pureftpd.pdb";
+pub const CONF_DIR: &str = "/etc/pure-ftpd/conf";
+pub const DEFAULT_FILE: &str = "/etc/default/pure-ftpd-common";
+pub const TLS_PEM: &str = "/etc/ssl/private/pure-ftpd.pem";
+pub const JAIL_FILE: &str = "/etc/fail2ban/jail.d/skiff-pureftpd.conf";
+pub const SERVICE: &str = "pure-ftpd";
+pub const LOGIN_PREFIX: &str = "skiff_";
+pub const DEFAULT_PORT_START: u16 = 30000;
+pub const DEFAULT_PORT_END: u16 = 30100;
 /// `/etc/pure-ftpd/conf/Umask` 的格式是「两个三位八进制数、空白分隔」
 /// （wrapper 的正则硬要求），由 wrapper 拼成 `-U <files>:<dirs>`。
 ///
@@ -52,28 +52,28 @@ const DEFAULT_PORT_END: u16 = 30100;
 /// 的 `0664` 不一致。文件掩码取 `113` → `0777 & !0113 = 0664`；目录仍是 `002`
 /// → `0775`，再加上父目录继承的 setgid 即 `2775`，与 align 结果同形，
 /// 新建文件无需等归一。
-const UMASK: &str = "113 002";
+pub const UMASK: &str = "113 002";
 /// `pure-pw` 在 Debian/Ubuntu 落在 `/usr/bin`，部分发行版在 `/usr/sbin`。
-const PURE_PW_CANDIDATES: [&str; 2] = ["/usr/bin/pure-pw", "/usr/sbin/pure-pw"];
+pub const PURE_PW_CANDIDATES: [&str; 2] = ["/usr/bin/pure-pw", "/usr/sbin/pure-pw"];
 /// Debian 的认证链由 `/etc/pure-ftpd/auth` 下的符号链接决定（conf 值只是开关）。
-const AUTH_DIR: &str = "/etc/pure-ftpd/auth";
+pub const AUTH_DIR: &str = "/etc/pure-ftpd/auth";
 /// 指向 PureDB 的链接必须用相对路径，与包自带链接保持同一约定。
-const AUTH_DB_LINK: &str = "../conf/PureDB";
+pub const AUTH_DB_LINK: &str = "../conf/PureDB";
 /// 包自带的 Unix/PAM 认证链接：虚拟账号不应走 PAM。
-const AUTH_STALE: [&str; 2] = ["65unix", "70pam"];
+pub const AUTH_STALE: [&str; 2] = ["65unix", "70pam"];
 /// 内核持久化的 FTP 服务配置；`/etc/skiff` 在 systemd unit 的 `ReadWritePaths` 内。
-const SERVICE_CONFIG_FILE: &str = "/etc/skiff/ftp-service.json";
+pub const SERVICE_CONFIG_FILE: &str = "/etc/skiff/ftp-service.json";
 /// 特权命令的临时目录（`0700`，root 独占）。
 ///
 /// `tee` / `openssl` 都经 `systemd-run` 以 root 执行；若把输出落在 `/tmp`，
 /// 本地用户可预置同名符号链接，把 root 的写入重定向到任意文件。
 #[cfg(target_os = "linux")]
-const SCRATCH_DIR: &str = "/run/skiff-ftp";
+pub const SCRATCH_DIR: &str = "/run/skiff-ftp";
 /// 允许作为 TLS 源文件的最大尺寸，避免把大文件读进内存。
-const MAX_TLS_SOURCE_BYTES: u64 = 1024 * 1024;
-const DEFAULT_LISTEN_PORT: u16 = 21;
-const DEFAULT_MAX_CLIENTS: u32 = 30;
-const DEFAULT_MAX_PER_IP: u32 = 3;
+pub const MAX_TLS_SOURCE_BYTES: u64 = 1024 * 1024;
+pub const DEFAULT_LISTEN_PORT: u16 = 21;
+pub const DEFAULT_MAX_CLIENTS: u32 = 30;
+pub const DEFAULT_MAX_PER_IP: u32 = 3;
 
 /// 宿主命令输出（非零退出也算成功执行，由调用方判断 `success`）。
 #[derive(Debug, Clone)]
@@ -215,18 +215,15 @@ async fn dispatch_host<H: FtpHost>(
     params: &Value,
 ) -> Result<Value, FtpError> {
     match method {
+        // ── 只读查询：留内核 ftp 能力面（站点快照、账号库、运行状态） ──
         "status" => status(host).await,
-        "install" => install(host, params).await,
-        "uninstall" => uninstall(host, params).await,
         "sites.list" => sites_list(ctx),
         "accounts.list" => accounts_list(ctx),
-        "account.create" => account_create(host, ctx, params).await,
-        "account.password" => account_password(host, params).await,
-        "account.delete" => account_delete(host, params).await,
-        "account.set_enabled" => account_set_enabled(host, params).await,
-        "service.configure" => service_configure(host, params).await,
-        "service.restart" => service_restart(host).await,
-        other => Err(FtpError::deny(format!("未知 ftp 方法：{other}"))),
+        // ── 写操作：已迁移到插件侧 exec 能力面编排 ──
+        // 内核 ftp 能力面不再执行宿主命令，插件须经 exec 能力面提交。
+        other => Err(FtpError::deny(format!(
+            "方法 `ftp.{other}` 已迁移到插件侧 exec 能力面编排，请更新调用方"
+        ))),
     }
 }
 
@@ -839,8 +836,12 @@ async fn apply_service_config<H: FtpHost>(
     )
     .await
     .map_err(|e| FtpError::internal(format!("启动 pure-ftpd 失败：{}", e.message)))?;
-    if !systemctl_active(host, SERVICE).await {
-        return Err(FtpError::internal("pure-ftpd 启动后未进入 active"));
+    // restart 返回零退出码后服务进入 active 有竞态窗口（wrapper 读 conf、
+    // post-install 收尾），短轮询容忍启动延迟。
+    if !wait_until_active(host, SERVICE, 15).await {
+        return Err(FtpError::internal(
+            "pure-ftpd 重启后 15s 内未进入 active，请检查 systemctl status pure-ftpd",
+        ));
     }
     Ok(json!({
         "saved": true,
@@ -928,7 +929,7 @@ async fn service_restart<H: FtpHost>(host: &H) -> Result<Value, FtpError> {
     )
     .await
     .map_err(|e| FtpError::internal(format!("重启 pure-ftpd 失败：{}", e.message)))?;
-    let active = systemctl_active(host, SERVICE).await;
+    let active = wait_until_active(host, SERVICE, 15).await;
     Ok(json!({ "running": active }))
 }
 
@@ -1325,6 +1326,14 @@ async fn restart_service<H: FtpHost>(host: &H) -> Result<(), FtpError> {
     )
     .await
     .map_err(|e| FtpError::internal(format!("重启 pure-ftpd 失败：{}", e.message)))?;
+    // 账号操作走这个重启：改了 pureftpd.passwd + 重建 PureDB，
+    // 如果服务没起来用户下次登录会 530。短等待容忍重启延迟，
+    // 超时即明确报错，免得用户看到「操作成功但实际登不上」。
+    if !wait_until_active(host, SERVICE, 10).await {
+        return Err(FtpError::internal(
+            "pure-ftpd 重启后 10s 内未进入 active，请检查配置与 systemctl status",
+        ));
+    }
     Ok(())
 }
 
@@ -1622,6 +1631,24 @@ async fn systemctl_active_opt<H: FtpHost>(host: &H, service: &str) -> Option<boo
 #[cfg(target_os = "linux")]
 async fn systemctl_active<H: FtpHost>(host: &H, service: &str) -> bool {
     systemctl_active_opt(host, service).await.unwrap_or(false)
+}
+
+/// `systemctl restart/start` 返回零退出码后到服务真正进入 `active` 的竞态窗口
+/// （启动脚本 post-install 收尾、wrapper 读 conf、网络绑定都要时间）。
+/// 最多等 `max_wait_secs`，每 `tick_ms` 查一次 `is-active`；超时即按未进入处理，
+/// 但不会让真正已经起来的服务被误判——调用方在重试窗口内看到的 `inactive`
+/// 通常只是 systemd 还没完成状态收敛。
+#[cfg(target_os = "linux")]
+async fn wait_until_active<H: FtpHost>(host: &H, service: &str, max_wait_secs: u64) -> bool {
+    let ticks = (max_wait_secs * 2).max(2); // 每 500ms 一次，至少两次机会
+    for _ in 0..ticks {
+        if systemctl_active(host, service).await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    // 最终再查一次，给启动慢的机器多半秒。
+    systemctl_active(host, service).await
 }
 
 #[cfg(target_os = "linux")]

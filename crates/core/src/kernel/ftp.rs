@@ -132,6 +132,9 @@ pub(super) async fn ftp_call(State(state): State<Arc<AppState>>, req: Request<Bo
         return (StatusCode::FORBIDDEN, "缺少 ftp 能力授权").into_response();
     }
 
+    // ftp 能力面只保留只读查询（status/sites.list/accounts.list）。
+    // 写操作已全部迁到插件侧 exec 能力面编排，进入内核 dispatch 会被拒绝。
+
     match dispatch(&state, &method, &params).await {
         Ok(v) => {
             if let Err(e) = state.db().audit(

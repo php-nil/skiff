@@ -1,7 +1,12 @@
 # 防火墙：nftables/iptables 规则与 fail2ban 管理。
 #
-# 本插件不直接碰宿主 root：规则与 jail 全部经内核 `firewall` 能力面执行，
-# 插件进程保持降权。详见 docs/contract/KERNEL_FIREWALL_CONTRACT.md。
+# 纯插件实现（零内核 firewall 宿主命令编排）：所有规则增删、后端探测、
+# fail2ban 全套（install/start/stop/jail/banned/ban/unban）经内核 exec
+# 能力面提交，任务中心自动有运行记录。
+#
+# 内核 firewall 能力面**不再执行任何宿主命令**——所有 15 条方法已迁到插件侧。
+# 对外接口（fail2ban.*）经 interop 提供，FTP 等插件直接 interop_call 调用，
+# 不经过内核 firewall 能力面。
 id = "com.skiff.firewall"
 name = "防火墙"
 version = "0.1.0"
@@ -11,32 +16,38 @@ api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
-# `[interop]` 只做提供方（provides），但仍必须声明 interop 能力面。
-requires = ["firewall", "interop"]
+# exec = 宿主命令执行能力面（三道闸判定 + systemd-run 通道 + jobs 运行记录）
+# interop = 对外提供 fail2ban.* 接口，供 FTP 等插件按需调用
+# （firewall capability 已全部迁 exec，不再声明）
+requires = ["exec", "interop"]
 network_egress = []
-resource_hints = []
 
-# 动词与 `skiff_plugin::firewall::dispatch` 的方法一一对应；内核按
-# `firewall:<method>` 逐条校验，未列出的方法一律 403。
-[[permissions]]
-capability = "firewall"
-verbs = [
-  "status",
-  "rules.list",
-  "rule.add",
-  "rule.remove",
-  "port.allow",
-  "fail2ban.status",
-  "fail2ban.install",
-  "fail2ban.start",
-  "fail2ban.stop",
-  "fail2ban.uninstall",
-  "fail2ban.jail.ensure",
-  "fail2ban.jail.remove",
-  "fail2ban.banned",
-  "fail2ban.ban",
-  "fail2ban.unban",
+# ── exec 能力面：宿主命令执行 ──
+#
+# - nft / iptables：防火墙规则后端（自动探测，优先 nftables）
+# - systemctl：fail2ban 服务启停
+# - fail2ban-client：jail 管理、封禁/解封
+# - apt-get / dpkg-query：装/卸 fail2ban
+# - tee / rm / cat / ls：配置文件读写（/etc/fail2ban/jail.d/skiff-*.conf）
+resource_hints = [
+  "bin:/usr/sbin/nft",
+  "bin:/usr/sbin/iptables",
+  "bin:/usr/bin/systemctl",
+  "bin:/usr/bin/fail2ban-client",
+  "bin:/usr/bin/apt-get",
+  "bin:/usr/bin/dpkg-query",
+  "bin:/usr/bin/tee",
+  "bin:/usr/bin/rm",
+  "bin:/bin/cat",
+  "bin:/bin/ls",
 ]
+
+# ── exec 能力面 ──
+[[permissions]]
+capability = "exec"
+verbs = ["run"]
+
+# firewall 能力面已迁移：15 条方法全部走 exec 能力面编排，不再声明。
 
 [[ui]]
 label = "防火墙规则"

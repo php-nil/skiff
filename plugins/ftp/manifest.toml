@@ -1,8 +1,10 @@
 # FTP 管理：按站点创建 pure-ftpd 虚拟账号。
 #
-# 插件只负责站点选择、账号表单与运行状态展示；安装 pure-ftpd、写 pure-pw
-# 用户库、对齐站点 index 的 uid/gid、持久化服务配置全部走内核 `ftp` 能力面
-# （/api/v1/capability/ftp/call）。该能力面仅 Native 形态可用。
+# 纯插件实现：所有宿主特权动作经内核 exec 能力面（/api/v1/capability/exec/run）
+# 提交，零内核改动。任务中心自动有运行记录，取消与过程日志由 exec 能力面提供。
+#
+# 内核 ftp 能力面只保留**只读查询**（站点快照、账号库读取、运行状态）；
+# 写操作（install / 账号增删改 / service.configure）全部迁到插件侧 exec 编排。
 id = "com.skiff.ftp"
 name = "FTP 管理"
 version = "0.1.0"
@@ -12,28 +14,66 @@ api = "1.3"
 run = "on-demand"
 idle_timeout_sec = 300
 max_restarts = 3
-requires = ["ftp", "interop"]
+# exec = 宿主命令执行能力面（粗授权 + 全审计 + 运行记录）
+# ftp  = 内核 ftp 能力面（只读查询：站点快照、账号库、运行状态）
+# interop = 可选项：调防火墙插件的 fail2ban 接口
+requires = ["exec", "ftp", "interop"]
 network_egress = []
-# fail2ban 防护是可选项：装了防火墙插件才可用，未装时 FTP 本身照常工作。
-resource_hints = ["plugin:com.skiff.firewall"]
 
+# ── exec 能力面：宿主命令执行（三道闸判定 + systemd-run 通道 + jobs 运行记录）
+#
+# 纯 FTP 服务所需的全部宿主二进制：
+# - apt-get / dpkg-query：装/卸 pure-ftpd 包
+# - systemctl：启停/查服务状态
+# - pure-pw：管理虚拟账号（两个候选路径）
+# - openssl：TLS 自签证书
+# - tee / install / mkdir / ln / rm / cat：文件与目录操作（root-equiv，
+#   审计与确认页标注，但 exec 能力面不拦截）
+# - ldconfig：刷新库缓存（安装后）
+#
+# fail2ban-client 是可选依赖：只在用户选择启用登录防护时才由防火墙插件安装；
+# FTP 插件自身不安装 fail2ban，也不依赖它存在。
+resource_hints = [
+  # ── 包管理 ──
+  "bin:/usr/bin/apt-get",
+  "bin:/usr/bin/dpkg-query",
+  # ── 服务管理 ──
+  "bin:/usr/bin/systemctl",
+  # ── pure-ftpd 虚拟账号 ──
+  "bin:/usr/bin/pure-pw",
+  "bin:/usr/sbin/pure-pw",
+  # ── 文件与目录操作 ──
+  "bin:/usr/bin/tee",
+  "bin:/usr/bin/install",
+  "bin:/usr/bin/mkdir",
+  "bin:/usr/bin/ln",
+  "bin:/usr/bin/rm",
+  "bin:/usr/bin/cat",
+  # ── TLS 证书 ──
+  "bin:/usr/bin/openssl",
+  # ── 库缓存 ──
+  "bin:/usr/sbin/ldconfig",
+  # ── 可选：fail2ban（登录防护由防火墙插件安装并管理） ──
+  "plugin:com.skiff.firewall",
+]
+
+# ── exec 能力面：宿主命令执行（所有写操作经此能力面提交）
+[[permissions]]
+capability = "exec"
+verbs = ["run"]
+
+# ── ftp 能力面：只读查询（站点快照、账号库读取、运行状态探测）
+#
+# 写操作已全部迁到 exec 能力面（install / uninstall / account.* / service.*）。
 [[permissions]]
 capability = "ftp"
 verbs = [
   "status",
-  "install",
-  "service.configure",
-  "uninstall",
   "sites.list",
   "accounts.list",
-  "account.create",
-  "account.password",
-  "account.delete",
-  "account.set_enabled",
-  "service.restart",
 ]
 
-# 只用于调用防火墙插件的 fail2ban 面；不再是 FTP 自己安装/配置 fail2ban。
+# ── interop：调防火墙插件的 fail2ban 接口（可选登录防护）
 [[permissions]]
 capability = "interop"
 verbs = ["call"]
