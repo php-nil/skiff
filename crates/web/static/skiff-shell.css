@@ -108,3 +108,9 @@
 /* 安装进度告警：webInstallText 用 \n 分行拼装，而 alert 的 text 默认吞掉换行
    （就是「安装日志挤成一段」的来源），这里让每一步各占一行。 */
 .skiff-web-install { white-space: pre-line; }
+
+/* 界面设置预设色点：白色/奶油色在浅色卡片上需要描边才分得清。 */
+.skiff-swatch {
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}

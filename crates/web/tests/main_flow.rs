@@ -10586,9 +10586,17 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
 #[test]
 fn budding_boot_ui_theme_presets_and_color_fields() {
     let js = include_str!("../static/budding/budding-boot.js");
-    for name in ["'品牌蓝'", "'翡翠绿'", "'深灰'", "'暖橙'"] {
+    for name in ["'星蓝'", "'翡翠'", "'石墨'", "'暖岩'", "'玫瑰'"] {
         assert!(js.contains(name), "预设方案缺少年份/名称：{name}");
     }
+    assert!(
+        js.contains("function uiPresetCard(preset)"),
+        "预设方案应渲染为色卡而不是纯文字按钮"
+    );
+    assert!(
+        js.contains("className: 'skiff-swatch'"),
+        "预设色点应有描边类名（浅色在白底上可见）"
+    );
     assert!(
         js.contains("skiffUiPreset: uiPresetApply,"),
         "预设方案必须注册独立动作"
@@ -10736,7 +10744,7 @@ fn budding_boot_only_writes_registered_schema_root_keys() {
         {
             assert!(
                 allowed.contains(&key),
-                "schema.{key} 未在 budding 1.8.0-r7 注册，编译会整棵树失败"
+                "schema.{key} 未在 budding 1.8.1 注册，编译会整棵树失败"
             );
         }
         rest = tail;
@@ -10814,7 +10822,7 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         js.contains("{ height: 420, emptyText: '暂无审计记录' }"),
         "审计列表应定高并内部滚动，且带场景空态文案"
     );
-    // 四个菜单图标使用 1.8.0-r7 子集的原生字形，不再近似兜底或留空。
+    // 四个菜单图标使用 1.8.1 子集的原生字形，不再近似兜底或留空。
     assert!(
         js.contains("folder: 'mdi-folder-outline'"),
         "文件管理应使用原生字形"
@@ -10827,6 +10835,31 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
     assert!(
         js.contains("'hard-drive': 'mdi-harddisk'"),
         "配额管理应使用原生字形"
+    );
+}
+
+/// 登录态失效走 budding `redirect` 组件（1.8.1 新增）：401 不再只抛一行错误，
+/// 宿主整页重挂一个 `redirect` 页面，并把各 JSON 通道的 401 都接到同一出口。
+#[test]
+fn budding_boot_session_expiry_uses_redirect_component() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("function showSessionExpired()"),
+        "401 必须有统一的登录失效出口"
+    );
+    assert!(js.contains("type: 'redirect'"), "应使用 redirect 组件");
+    assert!(js.contains("delay: 2000"), "应带自动跳转延迟");
+    assert!(js.contains("buttonText: '立即登录'"), "应提供手动入口");
+    assert!(js.contains("/login?next="), "跳转目标应回带 next");
+    // 页面骨架 + 七条 JSON 通道（读写/上传/RPC/终端）都接上，而不是只弹 toast。
+    let calls = js.matches("showSessionExpired()").count();
+    assert!(
+        calls >= 9,
+        "401 出口覆盖不足：showSessionExpired 出现 {calls} 次"
+    );
+    assert!(
+        !js.contains("会话已过期，请刷新页面后重新登录。"),
+        "旧的一行错误文案应被 redirect 页面替代"
     );
 }
 

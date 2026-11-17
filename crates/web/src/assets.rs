@@ -21,29 +21,26 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-16 打包（commit `a707369`，构建于 HEAD），浮层层级归属已落地
-/// （`docs/plan-layer-stacking.md`：图层的浮层挂进 `data-bud-layer-root`，弹窗内下拉
-/// 不再被 `z-index: 2400` 压住，见 `docs/sdui/BUDDING_UPSTREAM_BACKLOG.md` §4「已关闭」）。
-/// 产物自报版本与 `budding-icons.json` 仍写 `1.8.0`（JS 1,292,889 B / CSS 661,321 B，
-/// 图标与 code / terminal Pack 字节未变）。版本化文件名带 `immutable`，同一 URL 换字节会让
-/// 老缓存继续命中旧包，因此按同一 semver 新字节的规则用 `-r7` 后缀；
-/// 上游下次提升产物 semver 时改回纯版本号。
-pub const BUDDING_VERSION: &str = "1.8.0-r7";
+/// 上游 2026-11-17 打包（commit `39d9e1d`，版本唯一定义改到根 `package.json`，产物自报
+/// `1.8.1`）。本版新增通用跳转组件 `redirect`（登录态失效、无权限、旧地址迁移的
+/// 「提示后跳走」），并包含渲染性能优化与导航 URL 控制字符收紧。主包 1,294,980 B /
+/// CSS 661,286 B，code Pack 89,982 B、terminal Pack 395,014 B，图标 78 字形字节不变。
+pub const BUDDING_VERSION: &str = "1.8.1";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
 ///
-/// budding 官方包自带 `Budding Icons` 子集字体（CSS 4,648 B + woff2 3,992 B，
+/// budding 官方包自带 `Budding Icons` 子集字体（CSS 4,645 B + woff2 3,992 B，
 /// 78 个字形，含镜像 / 磁盘 / 文件夹等业务菜单语义图标），宿主不再另存完整 @mdi/font。
-/// 2026-11-16 的重打包未改动字形与 woff2 字节，只随版本号重命名文件。
+/// 1.8.1 未改动字形与 woff2 字节，只随版本号重命名文件。
 /// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.0-r7";
+pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
 
 /// 壳页自有资产（`skiff-shell.css` / `budding-boot.js`）的缓存版本。
 ///
 /// 这两个文件由本仓库维护、文件名不带版本，但同样按 `?v=` 命中 `immutable`：
 /// 不升版本就改内容，浏览器会拿着一年的旧包继续跑（旧壳 + 新服务端 = 最难查的
 /// 一类缺陷）。**改任一个文件都必须同时升这里**，壳页测试会钉住字面量。
-pub const SHELL_VERSION: &str = "3";
+pub const SHELL_VERSION: &str = "4";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

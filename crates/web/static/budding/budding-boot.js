@@ -7,7 +7,8 @@
  *
  * 链路：GET /ui/v1/session → 入口根再取 GET /ui/v1/overview 渲染只读概览；
  * 其余页面仍 embed 占位卡片。失败显示错误而不是白屏。
- * 未认证由服务端 303 到登录页（页面请求既有行为），这里不做跳转。
+ * 未认证由服务端 303 到登录页（页面请求既有行为）；运行期 401（会话过期）改用
+ * budding `redirect` 组件提示后跳登录页，见 `showSessionExpired`。
  */
 (function () {
   'use strict';
@@ -1787,6 +1788,57 @@
       .catch(function (error) {
         showError('初始化失败：' + (error && error.message ? error.message : String(error)));
       });
+  }
+
+  /// 登录态失效：交给 budding 的通用 `redirect` 组件整页提示后跳登录页。
+  ///
+  /// 不再只抛一行错误文案：`/ui/v1/*` 的 401 与页面骨架的 401 都会走到这里。
+  /// 换一个干净的挂载点重新 embed，避免旧页面已挂载的组件、定时器继续运行
+  /// （`redirect` 自己管倒计时与跳转，宿主只负责给出目标和文案）。
+  var sessionExpiredShown = false;
+
+  function loginUrl() {
+    var next = window.location.pathname + window.location.search;
+    return prefix + '/login?next=' + encodeURIComponent(next);
+  }
+
+  function showSessionExpired() {
+    if (sessionExpiredShown) return;
+    sessionExpiredShown = true;
+    var target = loginUrl();
+    if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
+      window.location.assign(target);
+      return;
+    }
+    var fresh = document.createElement('div');
+    fresh.id = 'skiff-root';
+    fresh.setAttribute('data-prefix', prefix);
+    fresh.setAttribute('data-api-base', apiBase);
+    fresh.setAttribute('data-budding-version', buddingVersion);
+    fresh.setAttribute('data-budding-css', cssHref);
+    mount.parentNode.replaceChild(fresh, mount);
+    mount = fresh;
+    runtimeRef = null;
+    embed(
+      {
+        type: 'page',
+        props: { title: '登录已失效 · Skiff' },
+        body: [
+          {
+            type: 'redirect',
+            to: target,
+            props: {
+              title: '登录状态已失效',
+              text: '当前会话已过期，需要重新登录后才能继续操作。',
+              type: 'warning',
+              delay: 2000,
+              buttonText: '立即登录'
+            }
+          }
+        ]
+      },
+      []
+    );
   }
 
 
@@ -4663,13 +4715,50 @@
     };
   }
 
-  /// 壳主题预设：按钮底色即色点，点击整体套用并保存。
-  /// budding 1.8.0-r7 没有颜色选择器节点，预设与自定义都只提交 `#rrggbb` 文本。
+  /// 壳主题预设：整套配色（主色 / 页面底色 / 菜单底色）一次套用。
+  /// 选色口径：主色与所在菜单底色对比度 ≥ 4.5（服务端仍会校正），页面底色只做
+  /// 极轻的色相偏移，避免整页发黄/发灰；深色菜单只给需要的两套，其余走自动白。
   var UI_THEME_PRESETS = [
-    { name: '品牌蓝', primary: '#1867c0', page: '#f5f5f5', menu: '', menu_custom: false },
-    { name: '翡翠绿', primary: '#0f7b5c', page: '#f2faf7', menu: '', menu_custom: false },
-    { name: '深灰', primary: '#607d8b', page: '#eceff1', menu: '#1f2933', menu_custom: true },
-    { name: '暖橙', primary: '#b45309', page: '#fff7ed', menu: '#fff7ed', menu_custom: true }
+    {
+      name: '星蓝',
+      desc: '清爽白底 + 明亮蓝',
+      primary: '#2563eb',
+      page: '#f6f8fb',
+      menu: '',
+      menu_custom: false
+    },
+    {
+      name: '翡翠',
+      desc: '墨绿侧栏 + 薄荷底',
+      primary: '#10b981',
+      page: '#f4faf7',
+      menu: '#0f2e26',
+      menu_custom: true
+    },
+    {
+      name: '石墨',
+      desc: '深灰侧栏 + 靛蓝主色',
+      primary: '#818cf8',
+      page: '#f4f5f7',
+      menu: '#1e2330',
+      menu_custom: true
+    },
+    {
+      name: '暖岩',
+      desc: '奶油底 + 焦糖主色',
+      primary: '#b45309',
+      page: '#fbf7f0',
+      menu: '#fffaf2',
+      menu_custom: true
+    },
+    {
+      name: '玫瑰',
+      desc: '浅粉底 + 酒红主色',
+      primary: '#be123c',
+      page: '#fdf4f6',
+      menu: '',
+      menu_custom: false
+    }
   ];
 
   /// 色块 + 名称 + 取值：`chip` 的 `color` 直接吃 `#rrggbb`。
@@ -4687,18 +4776,55 @@
     };
   }
 
-  function uiPresetButton(preset) {
-    return {
-      type: 'button',
-      props: { text: preset.name, color: preset.primary, variant: 'flat', size: 'small' },
-      action: {
-        type: 'skiffUiPreset',
+  function uiPresetCard(preset) {
+    var hasMenu = preset.menu_custom && preset.menu;
+    var dots = [
+      { type: 'chip', className: 'skiff-swatch', props: { text: ' ', color: preset.primary, variant: 'flat', size: 'small' } },
+      { type: 'chip', className: 'skiff-swatch', props: { text: ' ', color: preset.page, variant: 'flat', size: 'small' } },
+      {
+        type: 'chip',
+        className: 'skiff-swatch',
         props: {
-          primary: preset.primary,
-          page: preset.page,
-          menu: preset.menu,
-          menu_custom: preset.menu_custom
+          text: ' ',
+          color: hasMenu ? preset.menu : '#ffffff',
+          variant: 'flat',
+          size: 'small'
         }
+      },
+      {
+        type: 'text',
+        props: {
+          text: '主色 ' + preset.primary + ' · 菜单 ' + (hasMenu ? preset.menu : '自动'),
+          size: 'small'
+        }
+      }
+    ];
+    return {
+      type: 'card',
+      props: { title: preset.name, variant: 'outlined' },
+      content: {
+        body: [
+          { type: 'text', props: { text: preset.desc, size: 'small' } },
+          { type: 'flex', props: { gap: 6, align: 'center', wrap: true }, content: { body: dots } },
+          {
+            type: 'button',
+            props: {
+              text: '套用「' + preset.name + '」',
+              color: preset.primary,
+              variant: 'flat',
+              size: 'small'
+            },
+            action: {
+              type: 'skiffUiPreset',
+              props: {
+                primary: preset.primary,
+                page: preset.page,
+                menu: preset.menu,
+                menu_custom: preset.menu_custom
+              }
+            }
+          }
+        ]
       }
     };
   }
@@ -4755,11 +4881,11 @@
       props: { title: '预设方案' },
       content: {
         body: [
-          textLine('点击即整体套用并保存；套用后可在下方逐项微调。'),
+          textLine('每套预设包含主色、页面底色与菜单底色，点「套用」一次保存；套用后可在下方逐项微调。'),
           {
-            type: 'flex',
-            props: { gap: 8, wrap: true },
-            content: { body: UI_THEME_PRESETS.map(uiPresetButton) }
+            type: 'grid',
+            props: { columns: 2, gap: 12 },
+            content: { body: UI_THEME_PRESETS.map(uiPresetCard) }
           }
         ]
       }
@@ -5820,6 +5946,10 @@
         });
       })
       .then(function (res) {
+        if (res.status === 401) {
+          showSessionExpired();
+          throw new Error('登录状态已失效，正在跳转到登录页。');
+        }
         if (res.status !== 200) throw new Error(errorMessage(res));
         return res.body.data || {};
       });
@@ -5838,6 +5968,10 @@
       body: JSON.stringify(payload || {})
     }).then(function (resp) {
       return readJson(resp).then(function (body) {
+        if (resp.status === 401) {
+          showSessionExpired();
+          throw new Error('登录状态已失效，正在跳转到登录页。');
+        }
         if (resp.status !== 200) {
           throw new Error(
             body && body.error && body.error.message
@@ -6051,6 +6185,7 @@
     }
     return fetch(url, opts).then(function (resp) {
       return readJson(resp).then(function (body) {
+        if (resp.status === 401) showSessionExpired();
         if (!resp.ok) {
           var message =
             body && body.error && body.error.message
@@ -6111,6 +6246,10 @@
           });
         })
         .then(function (res) {
+          if (res.status === 401) {
+            showSessionExpired();
+            throw new Error('登录状态已失效，正在跳转到登录页。');
+          }
           if (res.status !== 200) throw new Error(errorMessage(res));
           offset = end;
           if (typeof req.onProgress === 'function') {
@@ -8379,7 +8518,10 @@
         });
       })
       .then(function (res) {
-        if (res.status === 401) throw new Error('会话已过期，请刷新页面后重新登录。');
+        if (res.status === 401) {
+          showSessionExpired();
+          throw new Error('登录状态已失效，正在跳转到登录页。');
+        }
         if (res.status !== 200 || !res.body || !res.body.data) {
           throw new Error(
             res.body && res.body.error && res.body.error.message
@@ -8399,7 +8541,10 @@
       headers: { Accept: 'application/json' }
     }).then(function (resp) {
       return readJson(resp).then(function (body) {
-        if (resp.status === 401) throw new Error('会话已过期，请刷新页面后重新登录。');
+        if (resp.status === 401) {
+          showSessionExpired();
+          throw new Error('登录状态已失效，正在跳转到登录页。');
+        }
         if (resp.status !== 200) {
           throw new Error(
             body && body.error && body.error.message
@@ -8458,6 +8603,7 @@
       });
     })
       .then(function (res) {
+        if (res.status === 401) showSessionExpired();
         if (res.status !== 200) {
           // 原始响应挂在错误上：`inspect` 结果图要显示 HTTP 状态与错误码，
           // 只有 message 的话「哪个分支被拒、拒在哪一层」看不出区别。
@@ -9150,7 +9296,7 @@
       })
       .then(function (res) {
         if (res.status === 401) {
-          showError('会话已过期，请刷新页面后重新登录。');
+          showSessionExpired();
           return;
         }
         if (res.status !== 200 || !res.body || !res.body.data) {
