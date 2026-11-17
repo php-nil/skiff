@@ -1128,8 +1128,11 @@ fn create(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
         return Err(RpcError::internal(format!("FTP 账号已存在：{login}")));
     }
 
+    // sites.list 返回 index_dir（文件身份目录）；旧版字段名是 index_path，
+    // 两者都认，避免退回到 /var/www/<域名> 这种不存在的路径。
     let home = site
         .get("index_path")
+        .or_else(|| site.get("index_dir"))
         .and_then(Value::as_str)
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("/var/www/{domain}"));

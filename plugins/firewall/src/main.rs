@@ -270,6 +270,11 @@ fn parse_nft_rules(text: &str) -> Vec<Value> {
     text.lines()
         .filter_map(|line| {
             let raw = line.trim();
+            // nft 会给链本身也打 handle（`chain input { # handle 1`），
+            // 它不是规则，混进列表会出现一行全空的可删项。
+            if raw.starts_with('}') || raw.contains("chain ") {
+                return None;
+            }
             let (_, handle) = raw.rsplit_once("# handle ")?;
             let id = handle.trim().to_string();
             if id.is_empty() {
@@ -804,9 +809,9 @@ mod tests {
 
     #[test]
     fn nft_rules_skip_structure_and_expose_columns() {
-        let text = "table inet skiff {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\ttcp dport 18081 accept # handle 2\n\t\tip saddr 10.0.0.0/8 tcp dport 22 drop # handle 7\n\t}\n}";
+        let text = "table inet skiff {\n\tchain input { # handle 1\n\t\ttype filter hook input priority filter; policy accept;\n\t\ttcp dport 18081 accept # handle 2\n\t\tip saddr 10.0.0.0/8 tcp dport 22 drop # handle 7\n\t}\n}";
         let items = parse_nft_rules(text);
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 2, "链自身的 handle 不能当规则");
         assert_eq!(items[0]["id"], "2");
         assert_eq!(items[0]["action_text"], "放行");
         assert_eq!(items[0]["protocol_text"], "tcp");
