@@ -4,11 +4,24 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-17 19:51 `0816073` Release 资产就地覆盖安装 + testkit 新壳验收）
+## 8. 最近一次验收结论（截至 2026-11-18 06:10 `36840f2` Release 资产就地覆盖安装 + 八项任务全量回归）
 
 > 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
 
-> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](../../changes/2026-11-10.md)、[changes/2026-11-09.md](../../changes/2026-11-09.md)、[changes/2026-11-15.md](../../changes/2026-11-15.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-18.md](../../changes/2026-11-18.md)、[changes/2026-11-17.md](../../changes/2026-11-17.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-17 23:17–2026-11-18 06:20 机器还原后全新安装 + 五轮覆盖安装，八项任务回归 0 FAIL**
+
+- **安装（通过，全新 + 升级路径）**：全新安装 `a9a0b59` → 覆盖 `cb81325` → `8004dc1` → `286a5b7` → `36840f2`（末次资产 12,121,107 B `7ac7f9ce…321e`，API `digest` / 本地 / 测试机三方一致）。末次：`sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**；二进制 19,646,224 B `2aede7a7…877a`；库 `user_version=21`、`integrity_check=ok`；配置 sha `fad99a3d…` 未变；权限 `711/711`；前缀 `kyuyjr44`；`/healthz` 18080/18081 均 200。
+- **站点（通过）**：`php.local` / `node.local` / `rust.local` 均 200，字节数 83,105 / 51 / 50；运行环境 PHP 8.5.14、Node 22（9200）、Rust 1.98（9100）全部 running；Web 服务 OpenResty 已安装。
+- **budding 1.8.1 + redirect（通过）**：壳页资产为 `budding-1.8.1.min.{js,css}`；强制 401 实测显示「登录状态已失效」+「2 秒后自动跳转」+「立即登录」，随后跳 `login?next=…`；壳脚本 9 处 401 分支统一接入。
+- **旧版页面切换（通过，菜单口径）**：浏览器逐一点击侧栏 27 个条目，全部落在新壳路由（`/sites`、`/runtimes`、`/containers`、`/tasks`、`/jobs`、`/files`、`/audit`、`/settings*`、`/plugins/<id>/<view>`），无 `id="skiff-app"` 旧页。`/{p}/m/core/...` 仍按契约作为旧 SSR 兼容深链保留，不是菜单入口。
+- **界面与设置（通过）**：界面设置 5 套预设（星蓝/翡翠/石墨/暖岩/玫瑰）、15 个色卡；设置/菜单设置/审计/站点详情（4 指标条，明细不重复）/Web 服务（指标化，无卡片套卡片）/文件插件（目录与文件拆表、编辑区等宽）逐页截图无重叠、无 console error。
+- **防火墙（通过，含本轮修复）**：后端 nftables、fail2ban 已安装运行中；`port.allow {port:"59991",protocol:"both"}` → 列表出现 `tcp/udp` 两条（handle 10/11）→ 按 id 逐条删除 → 链清空。此前 UI 表单端口为字符串会报 `端口需在 1..65535`，已由 `36840f2` 修复（`u64_param`）。
+- **FTP（通过）**：pure-ftpd active；账号 `skiff_php-local_866107650_ftp-php`（home `/www/sites/php.local/index`，uid/gid 1000）登录、上传/下载通过；`accounts` 返回 1 条、`sites` 返回 3 条。
+- **文件能力（通过）**：`files.list` 读取 `/www/sites/php.local/index` 成功，`read_text` 可读（72 B）；内核文件页 5 个条目正常渲染。
+- **未覆盖（限制）**：FTP 账号仅支持 PHP 站点（node/rust 站点由内核标记 `supported=false`：「该运行环境不是 PHP，v1 未验证其文件身份」）；aarch64 资产未实机验证；`accept.sh` 全组未复跑，沿用 2026-11-17 00:06 轮全组结论（29+14+4 PASS）。
+- **现场**：`/root/iter/rel-36840f2/`、`admin-pw.txt`、`skiff-http-fwd.py`；防火墙验收规则已清理，`inet skiff` 链为空。
 
 **2026-11-17 19:51–19:56 `0816073` 资产就地覆盖安装 + testkit 新壳验收：四个视图壳内原生渲染、RPC 结果图正确，0 FAIL**
 
