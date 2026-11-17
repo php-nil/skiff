@@ -248,8 +248,8 @@
                     "props": { "text": "{{data.file.path}}", "size": "small", "weight": "medium" }
                   },
                   {
-                    "type": "chip",
-                    "props": { "text": "{{data.file.size_text}}", "size": "small", "variant": "tonal" }
+                    "type": "text",
+                    "props": { "text": "{{data.file.size_text}}", "size": "small" }
                   }
                 ]
               }
