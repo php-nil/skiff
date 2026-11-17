@@ -4,11 +4,24 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-17 13:00 `ab70234` Release 资产就地覆盖安装 + 三级菜单验收）
+## 8. 最近一次验收结论（截至 2026-11-17 19:51 `0816073` Release 资产就地覆盖安装 + testkit 新壳验收）
 
 > 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-10.md](../../changes/2026-11-10.md)、[changes/2026-11-09.md](../../changes/2026-11-09.md)、[changes/2026-11-15.md](../../changes/2026-11-15.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-17 19:51–19:56 `0816073` 资产就地覆盖安装 + testkit 新壳验收：四个视图壳内原生渲染、RPC 结果图正确，0 FAIL**
+
+- **安装（通过，升级路径）**：资产 12,153,912 B `5f6bcbc7…1ee38`（本地 sha256 / 侧车 / `checksums.txt` 三方一致，测试机 `sha256sum -c` OK）→ `sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**。新二进制 19,855,120 B `07564549…`；库 `user_version=21`、`integrity_check=ok` 未变；配置 sha `5bfb00d9…16af8` 未变；权限 `711/711` 保持；前缀 `cb5mgdk7` 未变；`/healthz` 18080 与 18081 均 200。
+- **插件自动升级（通过）**：覆盖安装后启动日志为 `插件安装完成 plugin=com.skiff.testkit version=0.1.0` + `官方插件内容已随发布包更新（同版本重装）`；库内该插件 `api=1.3`（原 1.2），`/www/skiff/official/com.skiff.testkit-0.1.0.wbpkg` 329,175 B；7 个官方插件全在。
+- **testkit 四视图（通过，1440×900，除预期 400/403 外无 console error）**：
+  - `/plugins/com.skiff.testkit/main`：三级菜单 `总览与 RPC / 能力面自检 / 菜单与槽位`，当前项「总览与 RPC」，**无 iframe**；进程与授权卡片显示 `API：1.3`、`PID`、`data_dir` 与六项 grants。
+  - `/check`、`/group`：当前项各自正确，无 iframe；表格（检查项 / 预期 / 验证什么）与按钮组正常渲染。
+  - `/single`：**不出现三级菜单**，侧栏高亮落在「测试台 · 单视图」，`API：1.3`。
+- **RPC 结果图（通过，本轮新增能力）**：`ping` → `HTTP 200 · 成功分支` + 插件原样 JSON（`pong=true`）；`fail` → `HTTP 400 · 失败分支` + `shape.invalid` / `-32602` 原样 message；`fs 越界` → `HTTP 403` + `auth.forbidden`。请求行回显 `POST /cb5mgdk7/plugins/com.skiff.testkit/rpc` 与 `method`/`params`，失败不再被 toast 吞掉。
+- **壳层资产版本（通过）**：壳页对 `budding-boot.js` 与 `skiff-shell.css` 均带 `?v=3`（`assets::SHELL_VERSION`），实测新壳脚本已生效（`inspect` 行为可见）。
+- **未覆盖（限制）**：accept.sh 全组未复跑——本轮服务端接口无变更（改动集中在 testkit 包、壳页 JS、`spa.rs` 壳页引用、`pkgfmt` 白名单），沿用 2026-11-17 00:06 轮全组结论。`overview.actions` / `overview.side` 槽位在新壳仍未接（只原生渲染 `overview.health`），概览页看不到 testkit 的挂载卡片。
+- **现场**：站点 `a.com`（php-8.5 运行中）、`skiff-web-nginx` running；`/root/iter/` 新增 `rel-0816073/`。
 
 **2026-11-17 13:00–13:05 `ab70234` 资产就地覆盖安装 + 三级菜单验收：横向菜单与站点/运行环境子视图已上机生效，0 FAIL**
 
@@ -37,25 +50,12 @@
 - **未覆盖（限制）**：accept.sh 全组本轮未复跑——服务端接口无变更（本轮改动集中在 `budding-boot.js` / `skiff-shell.css` / `spa.rs` 静态资产与 files 插件 schema），沿用 2026-11-17 00:06 轮全组结论（29+14+4 PASS，0 FAIL）；B4 限流、TOTP、FTP/防火墙等同沿用历史结论。观察项 1 个：files 页左侧菜单「网站 › 站点文件」与「插件 › 已安装」双高亮（menuTrail 匹配问题，非本轮引入，见 changes 记录）。
 - **现场**：站点 `a.com`（php-8.5 运行中，上轮 UI 迭代验收所建）、`skiff-web-nginx` running（openresty/1.31.8.1，安装完成 05:55:03）；`/root/iter/` 保留 `rel-fd782a0/`、`accept.sh`、`admin-pw.txt`、`skiff-http-fwd.py`。
 
-**2026-11-17 00:06–00:35 `2847580` 资产就地覆盖安装 + 全组验收：Docker 409 语义修正已上机确认，0 FAIL**
-
-- **安装（通过，升级路径）**：安装前基线 `0d82bc95…581b` / `0.1.0` / `config.toml` 备份到 `/root/iter/config-before-2847580.toml` → 资产 12,130,261 B `f90676b4…6894`（本地 sha256 / 侧车 / `checksums.txt` / API digest 四方一致，测试机 `sha256sum -c` OK）→ `sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**。新二进制 19,822,352 B `5e4aa297…f2b5`；配置与备份 **`diff` 无差异**；库 `user_version=21`、`integrity_check=ok`；权限 `711/711/600/711/660` 全部保持；前缀 `cb5mgdk7` **未变**；7 个官方插件仍全部 `installed + enabled`；`/healthz` 18080 与 18081 均 200。
-- **accept.sh preflight + A（通过）**：**29 PASS / 0 FAIL / 3 SKIP**（`--install-exit 0 --pkg-dir …`）。含 A4a `/healthz` 200、A5b/c 未登录 303 跳登录、A5d 裸 `/` 404、A6a–g 权限位、A9a/b 重启自恢复且前缀不变、A10a `kill -9` 后 systemd 2 s 拉起、A11 `--help`/`version` 不落文件、A8a/b `doctor` 无 ERROR。SKIP：PF3（未传 `--now`）、PF4（装后阶段不适用）、A6h（`initial-admin.txt` 已按设计删除）。
-- **认证（通过，脚本补 `--password` 后）**：首跑整组 `SKIP B0`——覆盖安装后 `initial-admin.txt` 已被产品删除且口令链只认该文件；给 `accept.sh` 加 `--password` 后复跑 **14 PASS / 0 FAIL / 1 SKIP**（B4 未开 `--with-rate-limit`）：B1/B1a 登录页与 `csrf_token`(len=119)、B2b/B2b1 错误口令 401「用户名或口令不正确」、B2/B2a 登录 200 且 `redirect_to=/cb5mgdk7`、B5 错 CSRF 403、B3a 设置数据 200、B3c 改密 200、B3d `initial-admin.txt` 已删、B3e 旧会话 303 失效、B3f 新会话 200。改法见 [changes/2026-11-16.md](../../changes/2026-11-16.md)。
-- **D0（通过）**：`--group d0 --pkg-dir …` → **4 PASS / 0 FAIL / 0 SKIP**：`docker 29.7.2` 可用、`docker-bootstrap.sh --check-only` 退出 0 且 `daemon.json` 摘要前后一致（`8a26aea5…`）、已装不重装。
-- **本轮改动定向回归（重点：Docker 409）**：
-  - **409 语义（通过，本轮核心）**：`POST /ui/v1/networks {"name":"regress409-net"}` 首次 **200** `{"created":true}`；同名第二次 **409** `{"error":{"code":"domain.conflict","status":409,"message":"network with name regress409-net already exists",…}}`——状态码、错误码、文案三者一致，`retryable=false`，不再出现「文案说已存在、错误码说 `shape.invalid`」的混合态。测后删除该网络，`docker network ls` 仅 `bridge/host/none/skiff-sites`。
-  - **卷重名**：`POST /ui/v1/volumes` 同名二次为 **200**（命令层先查后建、幂等），不是 409 分支——两处语义差异属设计，不另报缺陷；测后删除，`docker volume ls` 为空。
-  - **读面冒烟（通过）**：`/ui/v1/{sites,runtimes,web,containers,plugins,tasks,jobs,audit,menu,files,networks,images,volumes,settings,session}` 全 **200**；壳页 `/{p}/{sites,settings,plugins,containers,tasks}`（`Accept: text/html`）全 **200**，`/{p}/` 带尾斜杠 307 归一到 `/{p}`（axum 常规行为）。
-- **口令处置**：B3c 把 admin 口令轮换为未知值后，按「停服 → 清 `sessions`/`users` → 启服由 bootstrap 重建 admin 并写 `initial-admin.txt` → AUTH-07 改回」恢复为 `SkiffPass2026x`，并重写 `/root/iter/admin-pw.txt`（14 B / 0600）；改密成功后产品自动删除 `initial-admin.txt`（已确认）。重建后的 admin 仍 `role=admin`、`user_version=21` 不变。
-- **未覆盖（限制）**：插件能力面（`skiff_docker` 经 kernel socket 回 409 给插件）与容器名冲突分支未单独构造——两者与网络创建共用 `cmd_err` / `api_err`，由 `skiff-docker` 与 `skiff-app` 单测覆盖（`cmd_err_routes_409_to_conflict_and_rest_to_bad_request` 等）；B4 限流、TOTP、建站/删站、FTP/防火墙、文件配额与回收站沿用 2026-11-15 结论，本轮未复跑。
-- **清理**：`regress409-net` 网络、`regress409-vol` 卷已删；`/root/iter/` 保留 `rel-2847580/`、`accept.sh`、`regress409.sh`、`admin-pw.txt`、`skiff-http-fwd.py`、`config-before-2847580.toml`。
-
 ## 历史轮次台账（2026-11-16 精简）
 
 > 下表只留「日期 + 版本 + 轮次标题」，每轮完整的逐项断言与实测数字已随本轮整理删除；需要复盘时看当轮 `docs/changes/YYYY-MM-DD.md`、对应提交与 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标。
 > 现行口径：只保留最近三轮完整结论（上文），旧轮次不再作为判定依据。
 
+- 2026-11-17 00:06–00:35 `2847580` 资产就地覆盖安装 + 全组验收：Docker 409 语义修正上机确认，0 FAIL（preflight+A 29 PASS、认证 14 PASS、D0 4 PASS）
 - 2026-11-16 23:22–23:55 `280345e` 全新安装 + 定向回归：安装/认证/授权/审计通过，0 FAIL（accept.sh preflight+A 32 PASS、B 组 13 PASS）
 - 2026-11-15 23:04–23:57 `v0.1.0` 全新安装 + 全量回归：本机可执行批次全部通过
 - 2026-11-15 22:33–23:05 `704b890` 站点网络模型验收：八项全部通过
