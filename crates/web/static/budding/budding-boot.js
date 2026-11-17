@@ -985,18 +985,7 @@
   /// 已迁移到 budding 的菜单项：稳定键 → 路由路径（相对入口前缀）。
   /// 未列出的键保留内核深链 `href`（插件功能页仍是内核 SSR + iframe）。
   ///
-  /// 三级视图：某些二级页面内部有互斥子视图（Web 服务 = 状态/配置/日志/模块），
-  /// 这些子视图不再堆在一屏里靠滚动，而是作为路径条的第三级呈现与切换。
-  /// 第一项必须与二级路径一致——它就是二级页的默认视图。
-  var SUBVIEWS = {
-    'core/sites/web': [
-      { title: '状态', path: '/sites/web' },
-      { title: '配置', path: '/sites/web/config' },
-      { title: '日志', path: '/sites/web/logs' },
-      { title: '模块', path: '/sites/web/modules' }
-    ]
-  };
-
+  /// 页内互斥子视图（L3）不在这里登记，统一见 `SUBVIEW_TABS`。
   var BUILTIN_PAGES = {
     overview: { path: '', schema: 'skiff:overview' },
     'core/sites/list': { path: '/sites', schema: 'skiff:sites' },
@@ -1024,6 +1013,17 @@
   /// 插件菜单键 → `/ui/v1/menu` 下发的视图元数据（id / 默认视图 / 视图列表）。
   var pluginMeta = {};
 
+  /// 插件默认视图的地址：菜单项自身路径，也是侧栏高亮的落点。
+  function pluginViewHref(meta) {
+    return (
+      prefix +
+      '/plugins/' +
+      encodeURIComponent(meta.plugin_id) +
+      '/' +
+      encodeURIComponent(meta.default_view)
+    );
+  }
+
   /// 一个菜单项 → 一条路由记录。命中已迁移页面时给出 budding 路径与 Schema；
   /// 插件功能页走 `/plugins/<id>/<view>`，由壳页加载随包 schema 原生渲染。
   function menuRoute(key, label, icon, href) {
@@ -1040,7 +1040,9 @@
             encodeURIComponent(meta.default_view),
           title: label,
           schema: 'skiff:plugin-view',
-          meta: { activeMenu: prefix + '/plugins' }
+          // 侧栏高亮必须落在「这个插件自己那一项」上：`/plugins` 是所有插件页的
+          // 公共前缀，指到那里会让「插件 → 已安装」跟着一起高亮。
+          meta: { activeMenu: pluginViewHref(meta) }
         },
         icon
       );
@@ -1092,24 +1094,6 @@
       group.items.forEach(function (item) {
         var child = menuRoute(item.key, item.label, item.icon, item.href);
         if (!child) return;
-        // 三级视图：登记为隐藏路由（不进侧栏），并把同级列表挂到 `meta.subs`，
-        // 路径条据此渲染第三级与它的切换菜单。
-        var subs = SUBVIEWS[item.key];
-        if (subs && subs.length) {
-          child.meta = child.meta || {};
-          child.meta.subs = subs.map(function (sub) {
-            return { title: sub.title, path: prefix + sub.path };
-          });
-          subs.slice(1).forEach(function (sub) {
-            routes.push({
-              path: prefix + sub.path,
-              title: item.label + ' · ' + sub.title,
-              hidden: true,
-              schema: child.schema,
-              meta: { activeMenu: child.path }
-            });
-          });
-        }
         children.push(child);
       });
       // 工具空态：保留内核空态文案，指向已原生渲染的插件中心。
@@ -1133,6 +1117,20 @@
           group.icon
         )
       );
+    });
+    // 三级子视图：默认视图就是 L2 自身，其余各登记一条隐藏路由（不进侧栏）。
+    // 参数段（`:domain` / `:id`）原样留在路由模式里，由内核路由按实际地址匹配。
+    SUBVIEW_TABS.forEach(function (sub) {
+      var base = sub.pattern.join('/');
+      sub.tabs.slice(1).forEach(function (tab) {
+        routes.push({
+          path: prefix + '/' + base + '/' + tab.segs.join('/'),
+          title: sub.title + ' · ' + tab.title,
+          hidden: true,
+          schema: tab.schema || sub.schema,
+          meta: { activeMenu: prefix + sub.menu }
+        });
+      });
     });
     // 详情页：菜单不出现，但地址栏直达与列表行内跳转都走同一路由。
     routes.push({
@@ -1199,13 +1197,6 @@
       meta: { activeMenu: prefix + '/containers' }
     });
     routes.push({
-      path: prefix + '/runtimes/:id/logs',
-      title: '运行环境日志',
-      hidden: true,
-      schema: 'skiff:runtime-logs',
-      meta: { activeMenu: prefix + '/runtimes' }
-    });
-    routes.push({
       path: prefix + '/jobs/:id/logs',
       title: '作业日志',
       hidden: true,
@@ -1255,13 +1246,6 @@
       meta: { activeMenu: prefix + '/settings' }
     });
     routes.push({
-      path: prefix + '/sites/:domain/logs',
-      title: '站点日志',
-      hidden: true,
-      schema: 'skiff:site-logs',
-      meta: { activeMenu: prefix + '/sites' }
-    });
-    routes.push({
       path: prefix + '/plugins/:id',
       title: '插件详情',
       hidden: true,
@@ -1291,7 +1275,7 @@
           title: meta.label + ' · ' + v.label,
           hidden: true,
           schema: 'skiff:plugin-view',
-          meta: { activeMenu: prefix + '/plugins' }
+          meta: { activeMenu: pluginViewHref(meta) }
         });
       });
     });
@@ -1307,12 +1291,12 @@
     var schema = {
       type: 'admin',
       // `bar: false` 关掉内容区顶部那条通栏（品牌 / 页面标题 / 账号 / 退出登录）：
-      // 位置与同级切换改由内核路径条承担（见 `mountPathNav`），账号与退出登录
+      // 页内子视图切换改由内核三级菜单承担（见 `mountSubNav`），账号与退出登录
       // 已搬进「设置」页（见 `settingsSchema`）。`actions` 槽在 bar 关闭时不渲染，
       // 因此这里不再放任何节点，避免出现「看不见但仍在 Tab 序里」的控件。
       props: { title: 'Skiff', brandTitle: 'Skiff', bar: false, tabsMode: 'single' },
       content: {
-        // 原生面包屑会与三级路径条重复，给空数组把这个区域彻底关掉，不再占一行。
+        // 原生面包屑与三级菜单重复：那是「路径」，这里是「菜单」，只用后者。
         breadcrumbs: [],
         body: [{ type: 'outlet' }]
       }
@@ -1438,8 +1422,8 @@
     if (chromeObserver || typeof MutationObserver === 'undefined') return;
     chromeObserver = new MutationObserver(function () {
       mark();
-      // 路由切换会让外壳重渲染，路径条节点可能被一起替换掉，这里顺手补回。
-      mountPathNav();
+      // 路由切换会让外壳重渲染，三级菜单节点可能被一起替换掉，这里顺手补回。
+      mountSubNav();
     });
     chromeObserver.observe(document.body, {
       childList: true,
@@ -1449,120 +1433,139 @@
     });
   }
 
-  // ---- 内容区顶部三级路径条 -------------------------------------------------
-  // 一级（分组）› 二级（菜单页）› 三级（子视图 / 详情页）。点任一级展开的是
-  // 「同级列表」：一级列全部分组、二级列当前分组下的页面、三级列当前页的子视图。
+  // ---- 内容区三级菜单（L3） -------------------------------------------------
+  // L3 是「同一页面内的互斥子视图」，形态对齐旧版 `<nav class="tabs">`：横向平铺、
+  // 当前项高亮、没有子视图就整条不出现；不用面包屑表达位置——位置已由左侧菜单的
+  // 当前项承担，再来一条「一级 › 二级 › 三级」只会和侧栏重复。
   //
-  // 为什么内核自己渲染：`bar: false` 之后外壳不再提供位置信息，而 budding 的
-  // `actions` / `breadcrumbs` 槽只接受 Schema 组件（无下拉），做不出「点开同级切换」。
-  // 节点挂在 `.bud-admin__main` 首子节点，样式在 `static/skiff-shell.css`。
+  // 为什么内核自己渲染：`bar: false` 之后外壳不提供 L3 入口，budding 1.8.0 也没有
+  // page-tabs 组件。节点挂在页面容器 `.bud-page` 内（标题之下、正文之上），底色跟随
+  // 内容区而不是侧栏 chrome，样式在 `static/skiff-shell.css`。
 
-  var navModel = null;
-  var pathNavBound = false;
+  /// 三级菜单登记表（核心页）。
+  ///
+  /// - `pattern`：路径段模式，`:name` 捕获一段（站点域名、运行环境 id）并回填到每个 tab；
+  /// - `tabs[0]`：默认视图，附加段为空，就是 L2 自身；
+  /// - `schema`：该子视图的页面构造器名，单个 tab 可覆盖（日志走独立构造器）；
+  /// - `menu`：子视图隐藏路由的 `activeMenu`，让侧栏高亮停在 L2；
+  /// - `blocked`：同前缀下不参与匹配的字面段（`/sites/new` 不是站点详情）。
+  ///
+  /// 插件多视图不在这里登记：视图列表随 `/ui/v1/menu` 的 `views` 下发。
+  var SUBVIEW_TABS = [
+    {
+      pattern: ['sites', 'web'],
+      schema: 'skiff:web',
+      menu: '/sites',
+      title: 'Web 服务',
+      tabs: [
+        { title: '状态', segs: [] },
+        { title: '配置', segs: ['config'] },
+        { title: '日志', segs: ['logs'] },
+        { title: '模块', segs: ['modules'] }
+      ]
+    },
+    {
+      pattern: ['sites', ':domain'],
+      schema: 'skiff:site-detail',
+      menu: '/sites',
+      title: '站点详情',
+      blocked: ['new'],
+      tabs: [
+        { title: '概览', segs: [] },
+        { title: '域名', segs: ['domains'] },
+        { title: '配置', segs: ['config'] },
+        { title: '证书', segs: ['ssl'] },
+        { title: '备份', segs: ['backup'] },
+        { title: '日志', segs: ['logs'], schema: 'skiff:site-logs' }
+      ]
+    },
+    {
+      pattern: ['runtimes', ':id'],
+      schema: 'skiff:runtime-detail',
+      menu: '/runtimes',
+      title: '运行环境详情',
+      tabs: [
+        { title: '基础信息', segs: [] },
+        { title: '配置', segs: ['config'] },
+        { title: '扩展', segs: ['extensions'] },
+        { title: '站点', segs: ['sites'] },
+        { title: '管理', segs: ['manage'] },
+        { title: '日志', segs: ['logs'], schema: 'skiff:runtime-logs' }
+      ]
+    }
+  ];
 
-  var PATH_CARET_SVG =
-    '<svg class="skiff-path__caret" viewBox="0 0 24 24" aria-hidden="true">' +
-    '<path d="m7 10 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" ' +
-    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
-  /// 从路由树推路径条模型：分组 → 页面 → 子视图，并记下详情页的模式表。
-  function buildNavModel(routes) {
-    var groups = [];
-    var index = {};
-    var patterns = [];
-    routes.forEach(function (route) {
-      if (route.hidden) {
-        if (!route.meta || !route.meta.activeMenu) return;
-        patterns.push({
-          segs: String(route.path).split('/').filter(Boolean),
-          title: route.title,
-          parent: route.meta.activeMenu
-        });
-        return;
-      }
-      var children = route.children || [];
-      if (!children.length) {
-        var leafGroup = { title: route.title, path: route.path, items: [] };
-        groups.push(leafGroup);
-        index[route.path] = { group: leafGroup, item: null, sub: null };
-        return;
-      }
-      // 分组自身的地址就是首个页面：点一级等于回该分组的入口页。
-      var group = { title: route.title, path: children[0].path, items: [] };
-      children.forEach(function (child) {
-        var subs = (child.meta && child.meta.subs) || [];
-        var item = { title: child.title, path: child.path, subs: subs };
-        group.items.push(item);
-        index[child.path] = { group: group, item: item, sub: null };
-        subs.forEach(function (sub) {
-          index[sub.path] = { group: group, item: item, sub: sub };
-        });
-      });
-      groups.push(group);
+  /// tab 的绝对路径：模式里的 `:name` 用捕获值替换，其余段原样拼接。
+  function subviewPath(pattern, params, segs) {
+    var out = pattern.map(function (seg) {
+      return seg.charAt(0) === ':' ? encodeURIComponent(params[seg] || '') : seg;
     });
-    return { groups: groups, index: index, patterns: patterns };
+    return prefix + '/' + out.concat(segs).join('/');
   }
 
-  /// 当前地址 → `{ group, item, sub }`。
+  /// 当前路径段 → 命中的三级菜单；没有 L3 返回 `null`。
   ///
-  /// 先精确命中菜单页/子视图；详情页（`/sites/:domain` 这类）按段数 + 字面段匹配
-  /// 隐藏路由，再用 `meta.activeMenu` 找回二级归属，第三级就是该路由标题。
-  function navTrail(pathname) {
-    if (!navModel) return null;
-    var hit = navModel.index[pathname];
-    if (hit) return hit;
-    var segs = pathname.split('/').filter(Boolean);
-    for (var i = 0; i < navModel.patterns.length; i++) {
-      var p = navModel.patterns[i];
-      if (p.segs.length !== segs.length) continue;
+  /// 命中要求「剩余段完全等于某个 tab 的附加段」，因此 `/sites/web` 这种字面模式
+  /// 排在参数模式之前，`/sites/a.com/unknown` 也不会误判成站点详情。
+  function matchSubviews(segs) {
+    for (var i = 0; i < SUBVIEW_TABS.length; i++) {
+      var group = SUBVIEW_TABS[i];
+      if (segs.length < group.pattern.length) continue;
+      var params = {};
       var ok = true;
-      for (var k = 0; k < segs.length; k++) {
-        if (p.segs[k].charAt(0) !== ':' && p.segs[k] !== segs[k]) {
+      for (var k = 0; k < group.pattern.length; k++) {
+        var pat = group.pattern[k];
+        if (pat.charAt(0) === ':') params[pat] = segs[k];
+        else if (pat !== segs[k]) {
           ok = false;
           break;
         }
       }
       if (!ok) continue;
-      var parent = navModel.index[p.parent];
-      if (!parent) continue;
-      return {
-        group: parent.group,
-        item: parent.item,
-        sub: { title: p.title, path: pathname }
-      };
+      var blocked = group.blocked || [];
+      Object.keys(params).forEach(function (name) {
+        if (blocked.indexOf(params[name]) >= 0) ok = false;
+      });
+      if (!ok) continue;
+      var rest = segs.slice(group.pattern.length);
+      var tabs = group.tabs.map(function (tab) {
+        return { title: tab.title, path: subviewPath(group.pattern, params, tab.segs) };
+      });
+      var active = null;
+      group.tabs.forEach(function (tab, idx) {
+        if (tab.segs.length !== rest.length) return;
+        var same = true;
+        tab.segs.forEach(function (seg, n) {
+          if (seg !== rest[n]) same = false;
+        });
+        if (same) active = tabs[idx].path;
+      });
+      if (!active) continue;
+      return { tabs: tabs, active: active };
     }
-    // 兜底：最长前缀命中（插件页内的未知视图等），保证路径条不断裂。
-    var best = null;
-    Object.keys(navModel.index).forEach(function (key) {
-      if (pathname.indexOf(key + '/') === 0 && (!best || key.length > best.length)) {
-        best = key;
-      }
-    });
-    if (!best) return null;
-    var fallback = navModel.index[best];
-    return { group: fallback.group, item: fallback.item, sub: null };
+    return null;
   }
 
-  function closePathMenu() {
-    var open = document.querySelectorAll('.skiff-path__crumb--open');
-    Array.prototype.forEach.call(open, function (wrap) {
-      wrap.classList.remove('skiff-path__crumb--open');
-      var menu = wrap.querySelector('.skiff-path__menu');
-      if (menu) menu.hidden = true;
-      var btn = wrap.querySelector('.skiff-path__btn');
-      if (btn) btn.setAttribute('aria-expanded', 'false');
-    });
-  }
-
-  function togglePathMenu(wrap) {
-    var wasOpen = wrap.classList.contains('skiff-path__crumb--open');
-    closePathMenu();
-    if (wasOpen) return;
-    wrap.classList.add('skiff-path__crumb--open');
-    var menu = wrap.querySelector('.skiff-path__menu');
-    if (menu) menu.hidden = false;
-    var btn = wrap.querySelector('.skiff-path__btn');
-    if (btn) btn.setAttribute('aria-expanded', 'true');
+  /// 插件多视图：视图清单来自 `/ui/v1/menu` 的 `views`，单视图插件不出三级菜单。
+  /// 插件信息页 `/plugins/<id>`（两段）没有子视图，同样不出。
+  function pluginSubviews(segs) {
+    if (segs[0] !== 'plugins' || !segs[1] || segs.length < 3) return null;
+    var meta = pluginMetaById(segs[1]);
+    if (!meta || !meta.views || meta.views.length < 2) return null;
+    var current = segs[2];
+    var hit = meta.views.filter(function (v) {
+      return v.view === current;
+    })[0];
+    if (!hit) return null;
+    return {
+      tabs: meta.views.map(function (v) {
+        return {
+          title: v.label,
+          path: pluginBase(meta.plugin_id) + '/' + encodeURIComponent(v.view)
+        };
+      }),
+      active: pluginBase(meta.plugin_id) + '/' + encodeURIComponent(hit.view)
+    };
   }
 
   function pathNavigate(path) {
@@ -1575,161 +1578,98 @@
     }
   }
 
-  /// 一级路径节点：标题 + （可选）同级下拉。
-  function pathCrumb(level) {
-    var wrap = document.createElement('div');
-    wrap.className = 'skiff-path__crumb' + (level.current ? ' skiff-path__crumb--current' : '');
-
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'skiff-path__btn';
-    var label = document.createElement('span');
-    label.className = 'skiff-path__label';
-    label.textContent = level.title;
-    btn.appendChild(label);
-
-    var options = level.options || [];
-    var hasMenu = options.length > 1;
-    if (hasMenu) {
-      btn.setAttribute('aria-haspopup', 'true');
-      btn.setAttribute('aria-expanded', 'false');
-      var caret = document.createElement('span');
-      caret.setAttribute('aria-hidden', 'true');
-      caret.innerHTML = PATH_CARET_SVG;
-      btn.appendChild(caret);
-    }
-
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (hasMenu) {
-        togglePathMenu(wrap);
-        return;
-      }
-      if (!level.current) pathNavigate(level.path);
-    });
-    wrap.appendChild(btn);
-
-    if (hasMenu) {
-      var menu = document.createElement('div');
-      menu.className = 'skiff-path__menu';
-      menu.setAttribute('role', 'menu');
-      menu.hidden = true;
-      options.forEach(function (opt) {
-        var a = document.createElement('a');
-        a.className = 'skiff-path__item' + (opt.on ? ' skiff-path__item--on' : '');
-        a.href = opt.path;
-        a.setAttribute('role', 'menuitem');
-        if (opt.on) a.setAttribute('aria-current', 'page');
-        var text = document.createElement('span');
-        text.className = 'skiff-path__item-text';
-        text.textContent = opt.title;
-        a.appendChild(text);
-        menu.appendChild(a);
-      });
-      menu.addEventListener('click', function (e) {
-        var target = e.target;
-        if (!(target instanceof Element)) return;
-        var link = target.closest('a.skiff-path__item');
-        if (!link) return;
-        e.preventDefault();
-        closePathMenu();
-        pathNavigate(link.getAttribute('href'));
-      });
-      wrap.appendChild(menu);
-    }
-    return wrap;
+  /// 三级菜单的挂载点：页面容器优先（与正文同内边距），退化为内容区。
+  function subNavHost() {
+    return (
+      document.querySelector('.bud-admin__body .bud-page') ||
+      document.querySelector('.bud-admin__main')
+    );
   }
 
-  function renderPathNav() {
-    if (!navModel) return;
-    var main = document.querySelector('.bud-admin__main');
-    if (!main) return;
-    var trail = navTrail(location.pathname);
-    if (!trail) return;
-
-    var nav = document.getElementById('skiff-path');
+  function renderSubNav() {
+    var host = subNavHost();
+    if (!host) return;
+    var segs = routeParts();
+    var found = matchSubviews(segs) || pluginSubviews(segs);
+    var nav = document.getElementById('skiff-subnav');
+    // 没有子视图（或只有一个）就整条不出现：不占位、不留空壳。
+    if (!found || found.tabs.length < 2) {
+      if (nav) nav.remove();
+      return;
+    }
     if (!nav) {
       nav = document.createElement('nav');
-      nav.id = 'skiff-path';
-      nav.className = 'skiff-path';
-      nav.setAttribute('aria-label', '当前位置');
-    }
-    if (main.firstElementChild !== nav) main.insertBefore(nav, main.firstChild);
-
-    // 只有「路径变了」或节点被外壳重渲染丢掉时才重建：重建会改 DOM，而外壳的
-    // 观察器盯的就是 DOM 变化，不做这个闸门会自己触发自己（死循环）。
-    if (nav.getAttribute('data-path') === location.pathname) return;
-    nav.setAttribute('data-path', location.pathname);
-
-    // 每次重建，避免残留上一页的下拉与状态。
-    closePathMenu();
-    nav.textContent = '';
-
-    var levels = [
-      {
-        title: trail.group.title,
-        path: trail.group.path,
-        current: !trail.item,
-        options: navModel.groups.map(function (g) {
-          return { title: g.title, path: g.path, on: g === trail.group };
-        })
-      }
-    ];
-    if (trail.item) {
-      levels.push({
-        title: trail.item.title,
-        path: trail.item.path,
-        current: !trail.sub,
-        options: trail.group.items.map(function (item) {
-          return { title: item.title, path: item.path, on: item === trail.item };
-        })
-      });
-    }
-    if (trail.sub) {
-      var subs =
-        trail.item && trail.item.subs && trail.item.subs.length
-          ? trail.item.subs
-          : [{ title: trail.sub.title, path: trail.sub.path }];
-      levels.push({
-        title: trail.sub.title,
-        path: trail.sub.path,
-        current: true,
-        options: subs.map(function (sub) {
-          return { title: sub.title, path: sub.path, on: sub.path === trail.sub.path };
-        })
-      });
-    }
-
-    levels.forEach(function (level, idx) {
-      if (idx > 0) {
-        var sep = document.createElement('span');
-        sep.className = 'skiff-path__sep';
-        sep.setAttribute('aria-hidden', 'true');
-        sep.textContent = '›';
-        nav.appendChild(sep);
-      }
-      nav.appendChild(pathCrumb(level));
-    });
-  }
-
-  /// 全局事件只绑一次；每次调用只做（必要的）重建。
-  function mountPathNav() {
-    if (!pathNavBound) {
-      pathNavBound = true;
-      document.addEventListener('click', function (e) {
+      nav.id = 'skiff-subnav';
+      nav.className = 'skiff-subnav';
+      nav.setAttribute('aria-label', '子菜单');
+      nav.addEventListener('click', function (e) {
         var target = e.target;
         if (!(target instanceof Element)) return;
-        if (target.closest('.skiff-path__crumb--open')) return;
-        closePathMenu();
-      });
-      document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') closePathMenu();
-      });
-      window.addEventListener('resize', function () {
-        closePathMenu();
+        var link = target.closest('a.skiff-subnav__item');
+        if (!link) return;
+        e.preventDefault();
+        pathNavigate(link.getAttribute('href'));
       });
     }
-    renderPathNav();
+    // 标题之下、正文之上；页面没有标题时作为首个内容块。
+    var after =
+      host.querySelector('.bud-page-subtitle') || host.querySelector('.bud-page-title');
+    if (after) {
+      if (after.nextElementSibling !== nav) host.insertBefore(nav, after.nextElementSibling);
+    } else if (host.firstElementChild !== nav) {
+      host.insertBefore(nav, host.firstChild);
+    }
+    // 重建闸门：只有「落在别的 tab」或「视图清单变了」才改 DOM，
+    // 否则外壳的重渲染观察器会被自己的写入反复触发。
+    var sig =
+      found.active +
+      '|' +
+      found.tabs
+        .map(function (tab) {
+          return tab.title;
+        })
+        .join(',');
+    if (nav.getAttribute('data-sig') === sig) return;
+    nav.setAttribute('data-sig', sig);
+    nav.textContent = '';
+    // 轨道层单独承担横向滚动：菜单自身要留 overflow: visible，
+    // 否则吸顶遮罩（::before）会被裁掉。
+    var track = document.createElement('div');
+    track.className = 'skiff-subnav__track';
+    found.tabs.forEach(function (tab) {
+      var on = tab.path === found.active;
+      var a = document.createElement('a');
+      a.className = 'skiff-subnav__item' + (on ? ' skiff-subnav__item--on' : '');
+      a.href = tab.path;
+      a.textContent = tab.title;
+      if (on) a.setAttribute('aria-current', 'page');
+      track.appendChild(a);
+    });
+    nav.appendChild(track);
+  }
+
+  /// 吸顶判定：菜单贴住内容区顶部时补 `is-stuck`，由它撑开 24px 遮罩，
+  /// 否则菜单上方那条页内边距会漏出下方滚动内容。CSS 无法自查吸顶，只能标记。
+  function markSubNavStuck() {
+    var nav = document.getElementById('skiff-subnav');
+    var scroller = document.querySelector('.bud-admin__body');
+    if (!nav || !scroller) return;
+    var pad = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+    var delta = nav.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    nav.classList.toggle('is-stuck', delta <= pad + 0.5);
+  }
+
+  var subNavScrollBound = false;
+
+  /// 外壳重渲染会连页面容器一起替换，因此每次观察都补挂一次（有闸门，成本很低）。
+  function mountSubNav() {
+    renderSubNav();
+    markSubNavStuck();
+    if (subNavScrollBound) return;
+    var scroller = document.querySelector('.bud-admin__body');
+    if (!scroller) return;
+    subNavScrollBound = true;
+    scroller.addEventListener('scroll', markSubNavStuck, { passive: true });
   }
 
   /// 登出：复用 `/ui/v1/session/logout` 与页面写操作同一个 CSRF 头。
@@ -2084,12 +2024,18 @@
     body.push(table);
     return {
       type: 'page',
-      props: { title: '' },
+      props: { title: '网站', subtitle: '站点列表；启停、删除与新建都在本页完成' },
       body: body
     };
   }
 
-  function siteDetailSchema(data) {
+  /// 站点详情：按 L3 子视图（概览 / 域名 / 配置 / 证书 / 备份）分发。
+  /// 数据仍由一次 `GET /ui/v1/sites/<domain>` 取齐，切 tab 只换渲染块，
+  /// 不新增接口、不重复请求。
+  function siteDetailSchema(data, tab) {
+    var view = tab || 'overview';
+    var sections = { overview: [], domains: [], config: [], ssl: [], backup: [] };
+    var body = sections.overview;
     var rows = [
       ['类型', data.type_label],
       ['状态', data.status.label],
@@ -2102,7 +2048,6 @@
       ['创建时间', data.created_at]
     ];
     if (data.runtime_shared_hint) rows.push(['共享提示', data.runtime_shared_hint]);
-    var body = [];
     if (data.runtime_down && data.runtime_alert) {
       body.push({
         type: 'alert',
@@ -2215,30 +2160,16 @@
       });
     }
 
-    body.push({
-      type: 'flex',
-      props: { gap: 12, wrap: true },
-      content: {
-        body: [
-          {
-            type: 'link',
-            props: {
-              text: '查看访问 / 错误日志',
-              href: prefix + '/sites/' + encodeURIComponent(data.domain) + '/logs'
-            }
-          }
-        ]
-      }
-    });
+    // 访问 / 错误日志是三级菜单里的「日志」，这里不再重复给入口。
 
     // 配置：错误时只展示提示；正常时给可编辑 textarea，保存仍走 SITE_SAVE_CONFIG。
     if (data.config.error) {
-      body.push({
+      sections.config.push({
         type: 'alert',
         props: { type: 'warning', title: '配置读取失败', text: data.config.error }
       });
     } else if (data.can_manage) {
-      body.push(
+      sections.config.push(
         writeCard(
           'vhost 配置',
           (data.config.path || '—') + (data.config.active ? ' · 已启用' : ' · 未启用'),
@@ -2263,7 +2194,7 @@
         )
       );
     } else {
-      body.push(
+      sections.config.push(
         writeCard(
           'vhost 配置',
           (data.config.path || '—') + '（只读）',
@@ -2311,7 +2242,7 @@
         )
       );
     }
-    body.push({ type: 'card', props: { title: '附加域名' }, content: { body: domainBody } });
+    sections.domains.push({ type: 'card', props: { title: '附加域名' }, content: { body: domainBody } });
 
     // 证书：生成/强制/关闭/删除 + PEM 上传。
     var sslBody = [
@@ -2355,7 +2286,7 @@
         )
       );
     }
-    body.push({ type: 'card', props: { title: '证书 / HTTPS' }, content: { body: sslBody } });
+    sections.ssl.push({ type: 'card', props: { title: '证书 / HTTPS' }, content: { body: sslBody } });
 
     // 备份开关。
     var backupBody = [];
@@ -2378,15 +2309,22 @@
         );
       }
     }
-    body.push({ type: 'card', props: { title: '站点备份' }, content: { body: backupBody } });
+    sections.backup.push({ type: 'card', props: { title: '站点备份' }, content: { body: backupBody } });
 
+    var subtitles = {
+      overview: data.can_manage ? '站点概览；写操作复用既有权限、CSRF 与审计' : '只读概览',
+      domains: '附加域名增删；新域名需自行解析到本机',
+      config: 'vhost 配置；保存前做语法校验，失败拒绝写入',
+      ssl: '证书状态、强制 HTTPS 与 PEM 上传',
+      backup: '每日 03:00 全站备份，产物在站点目录旁'
+    };
     return {
       type: 'page',
       props: {
-        title: data.domain + ' · 网站',
-        subtitle: data.can_manage ? '写操作复用既有权限、CSRF 与审计' : '只读概览'
+        title: data.domain,
+        subtitle: subtitles[view] || subtitles.overview
       },
-      body: body
+      body: sections[view] || sections.overview
     };
   }
 
@@ -2643,7 +2581,7 @@
     body.push(writeCard('镜像参数', '镜像前缀与加速源在 Docker 设置中维护。', imagesForm));
     return {
       type: 'page',
-      props: { title: '' },
+      props: { title: '运行环境', subtitle: '镜像、实例与安装入口；未安装镜像会先拉取' },
       body: body
     };
   }
@@ -2674,7 +2612,11 @@
     };
   }
 
-  function runtimeDetailSchema(data, runtimeId) {
+  /// 运行环境详情：按 L3 子视图（基础信息 / 配置 / 扩展 / 站点 / 管理）分发。
+  /// 数据一次取齐（`GET /ui/v1/runtimes/<id>`），切 tab 只换渲染块；
+  /// 日志是独立子视图（`/runtimes/<id>/logs`），走自己的构造器。
+  function runtimeDetailSchema(data, runtimeId, tab) {
+    var view = tab || 'overview';
     var rt = data.runtime || {};
     var body = [
       {
@@ -2706,16 +2648,7 @@
               type: 'flex',
               props: { gap: 8, wrap: true },
               content: {
-                body: [
-                  runtimeBtn('实测版本', 'skiffRuntimeProbe', { id: runtimeId }),
-                  {
-                    type: 'link',
-                    props: {
-                      text: '查看运行日志',
-                      href: prefix + '/runtimes/' + encodeURIComponent(runtimeId) + '/logs'
-                    }
-                  }
-                ]
+                body: [runtimeBtn('实测版本', 'skiffRuntimeProbe', { id: runtimeId })]
               }
             }
           ]
@@ -2723,8 +2656,11 @@
       }
     ];
 
+    // 这里起按子视图分块：概览就是上面那张基础卡片，其余各自成块。
+    var sections = { overview: body, config: [], extensions: [], sites: [], manage: [] };
+
     if (data.config_mounts_stale) {
-      body.push({
+      sections.config.push({
         type: 'alert',
         props: {
           type: 'warning',
@@ -2765,7 +2701,9 @@
         max_spare_servers: String(cfg.max_spare_servers || ''),
         max_requests: String(cfg.max_requests || '')
       };
-      body.push(writeCard('PHP 运行参数', '保存后自动重载 FPM；非法值会被拒绝并保留原配置。', configForm));
+      sections.config.push(
+        writeCard('PHP 运行参数', '保存后自动重载 FPM；非法值会被拒绝并保留原配置。', configForm)
+      );
 
       var fileRows = (data.files || []).map(function (f) {
         return {
@@ -2798,7 +2736,7 @@
                         prefix +
                         '/runtimes/' +
                         encodeURIComponent(runtimeId) +
-                        '?file=${key}'
+                        '/config?file=${key}'
                     }
                   }
                 ]
@@ -2807,7 +2745,7 @@
           }
         ]
       });
-      body.push({
+      sections.config.push({
         type: 'card',
         props: { title: '配置文件' },
         content: { body: [fileTable] }
@@ -2832,7 +2770,9 @@
           '保存配置文件'
         );
         editorForm.props.initialValues = { content: data.editor.content || '' };
-        body.push(writeCard('编辑：' + data.editor.label, data.editor.note || '保存前会在容器内做语法校验。', editorForm));
+        sections.config.push(
+          writeCard('编辑：' + data.editor.label, data.editor.note || '保存前会在容器内做语法校验。', editorForm)
+        );
       }
 
       var extRows = (data.extensions || []).map(function (e) {
@@ -2889,12 +2829,12 @@
           }
         ]
       });
-      body.push({
+      sections.extensions.push({
         type: 'card',
         props: { title: 'PHP 扩展' },
         content: { body: [extTable] }
       });
-      body.push(
+      sections.extensions.push(
         writeCard(
           '按名字安装 PECL 扩展',
           '用于目录里没有的扩展；安装任务会编译并重启一次容器。',
@@ -2931,7 +2871,9 @@
         node_env: node.node_env || '',
         env: node.env || ''
       };
-      body.push(writeCard('Node.js 配置', '配置变化会触发一次重建；未变化不重启。', nodeForm));
+      sections.config.push(
+        writeCard('Node.js 配置', '配置变化会触发一次重建；未变化不重启。', nodeForm)
+      );
       if (port.editable) {
         var portForm = writeForm(
           apiBase + '/runtimes/' + encodeURIComponent(runtimeId) + '/port',
@@ -2952,7 +2894,7 @@
           '保存端口'
         );
         portForm.props.initialValues = { port: String(port.value || '') };
-        body.push(
+        sections.config.push(
           writeCard(
             '端口',
             (rt.site_count ? '当前有 ' + rt.site_count + ' 个站点绑定，改端口会重写全部站点反代并重建容器。' : '端口由内核分配，修改后会重建容器。'),
@@ -2993,14 +2935,14 @@
           }
         ]
       });
-      body.push({
+      sections.sites.push({
         type: 'card',
         props: { title: '绑定站点' },
         content: { body: [siteTable] }
       });
     }
 
-    body.push(
+    sections.manage.push(
       writeCard(
         '克隆',
         '复制当前配置与新实例；端口由内核重新分配，名称可留空（默认追加 -copy）。',
@@ -3012,14 +2954,24 @@
         )
       )
     );
-    body.push(noticeCard('安装、扩展与配置文件编辑都在后台任务中执行；失败原因会写审计并显示在日志页。'));
+    sections.manage.push(
+      noticeCard('安装、扩展与配置文件编辑都在后台任务中执行；失败原因会写审计并显示在日志页。')
+    );
+
+    var subtitles = {
+      overview: '实例状态与运维动作；写操作需要管理员权限',
+      config: '运行参数与配置文件；保存前在容器内做语法校验',
+      extensions: '已装扩展与 PECL 安装；装完会重启一次容器',
+      sites: '绑定到该环境的站点；解绑后站点需重新指定运行环境',
+      manage: '克隆新实例；端口由内核重新分配'
+    };
     return {
       type: 'page',
       props: {
-        title: '',
-        subtitle: (rt.kind && rt.kind.label) + ' / ' + rt.name
+        title: rt.name || runtimeId,
+        subtitle: subtitles[view] || subtitles.overview
       },
-      body: body
+      body: sections[view] || sections.overview
     };
   }
 
@@ -5664,11 +5616,11 @@
     });
     } // view === 'modules'
 
-    // 标题不重复路径条（状态/配置/日志/模块已在路径条第三级），只留一行说明。
+    // 标题是页面身份（三级菜单只表达「哪个子视图」，不表达「哪个页面」）。
     return {
       type: 'page',
       props: {
-        title: '',
+        title: 'Web 服务',
         subtitle:
           view === 'config'
             ? '主配置、性能参数与站点配置；保存前执行 nginx -t，失败拒绝写入'
@@ -8586,27 +8538,6 @@
     return null;
   }
 
-  /// 页内视图切换：budding 1.8.0 没有 page-tabs，先用按钮行承担 L3 入口。
-  function pluginTabs(page, id, view) {
-    var meta = pluginMetaById(id);
-    if (!meta || !meta.views || meta.views.length < 2) return page;
-    var tabs = meta.views.map(function (v) {
-      var props = { text: v.label, variant: 'text' };
-      if (v.view === view) props.color = 'primary';
-      return {
-        type: 'button',
-        props: props,
-        onEvent: {
-          click: { actions: [{ type: 'skiffPluginView', props: { view: v.view } }] }
-        }
-      };
-    });
-    page.body = [
-      { type: 'flex', props: { gap: 8, wrap: true }, content: { body: tabs } }
-    ].concat(page.body || []);
-    return page;
-  }
-
   function pluginErrorPage(id, view, error) {
     var detail = error && error.message ? error.message : String(error);
     return {
@@ -8669,7 +8600,8 @@
           pairs.forEach(function (pair) {
             ctx.data[pair[0]] = pair[1];
           });
-          return pluginTabs(pluginResolve(doc.page, ctx), id, view);
+          // 多视图切换由内核三级菜单承担（`pluginSubviews`），页面本身不再插按钮行。
+          return pluginResolve(doc.page, ctx);
         });
       })
       .catch(function (error) {
@@ -8805,7 +8737,11 @@
         });
     }
     if (kind === 'site-detail') {
-      return fetchData('/sites/' + encodeURIComponent(parts[1])).then(siteDetailSchema);
+      // 第三段是 L3 子视图（空 = 概览）；数据一次取齐，视图只决定渲染哪块。
+      var siteTab = String(parts[2] || '').toLowerCase();
+      return fetchData('/sites/' + encodeURIComponent(parts[1])).then(function (data) {
+        return siteDetailSchema(data, siteTab);
+      });
     }
     if (kind === 'runtimes') {
       return Promise.all([
@@ -8822,13 +8758,15 @@
     }
     if (kind === 'runtime-detail') {
       var runtimeId = parts[1] || '';
+      // 第三段是 L3 子视图（空 = 基础信息）；`?file=` 只在配置视图里有意义。
+      var runtimeTab = String(parts[2] || '').toLowerCase();
       var fileKey = new URLSearchParams(location.search).get('file') || '';
       var detailUrl =
         '/runtimes/' +
         encodeURIComponent(runtimeId) +
         (fileKey ? '?file=' + encodeURIComponent(fileKey) : '');
       return fetchData(detailUrl).then(function (data) {
-        return runtimeDetailSchema(data || {}, runtimeId);
+        return runtimeDetailSchema(data || {}, runtimeId, runtimeTab);
       });
     }
     if (kind === 'containers') {
@@ -9112,13 +9050,13 @@
       window.history[name] = function () {
         var out = original.apply(this, arguments);
         renderedPath = window.location.pathname;
-        // 地址变了就重画路径条：SPA 跳转不触发 popstate，只能在这里跟。
-        renderPathNav();
+        // 地址变了就重画三级菜单：SPA 跳转不触发 popstate，只能在这里跟。
+        renderSubNav();
         return out;
       };
     });
     window.addEventListener('popstate', function () {
-      renderPathNav();
+      renderSubNav();
       if (window.location.pathname === renderedPath) {
         window.location.reload();
       } else {
@@ -9159,10 +9097,9 @@
         applyShellTheme(sessionState.theme);
         return fetchData('/menu').then(function (menu) {
           var routes = buildRoutes(menu);
-          navModel = buildNavModel(routes);
           embed(shellSchema(), routes);
           markShellChrome();
-          mountPathNav();
+          mountSubNav();
         });
       })
       .catch(function (error) {

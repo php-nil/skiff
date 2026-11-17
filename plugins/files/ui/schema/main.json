@@ -14,7 +14,7 @@
   "page": {
     "type": "page",
     "props": {
-      "title": "",
+      "title": "站点文件",
       "subtitle": "只读写已授权站点目录（/www/sites/<域名>/index）；全盘管理、回收站、配额与上传请用「工具 → 文件管理」"
     },
     "body": [

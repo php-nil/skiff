@@ -1,161 +1,102 @@
 /* --------------------------------------------------------------------------
-   壳层：内容区顶部三级路径条
+   内容区三级菜单（L3）
 
-   背景：`bar: false` 关掉 budding 默认顶栏（品牌 / 页面标题 / 账号 / 退出登录），
-   位置与切换入口统一由这条路径条承担：一级 › 二级 › 三级，每级可展开同级列表。
-   账号与退出登录已搬到「设置」页（见 budding-boot.js 的 settingsSchema）。
+   L3 是「同一页面内的互斥子视图」，形态对齐旧版 `<nav class="tabs">`：
+   横向平铺全部子视图，当前项用一条 2px 底部强调轨，不做下拉、不做面包屑——
+   「我在哪」由左侧菜单的当前项承担，再叠一条路径条只会和侧栏重复。
 
-   配色全部沿用外壳的 chrome 变量，跟随侧栏底色与深浅主题，不写死任何色值；
-   变量缺失时给出中性回退，保证纯 SSR 场景下也不塌。
+   底色取内容区表面色（`--v-theme-surface`），**不用**侧栏 chrome 的底色——
+   那样会和左侧菜单连成一整块；
+   全部色值走主题变量，深浅主题自动跟随。
    -------------------------------------------------------------------------- */
 
-/* budding 自带的面包屑区与路径条重复：路径条已承担一级/二级/三级与切换，
-   这里把那一行彻底收掉（空 Schema 槽位在 1.8.0-r7 里仍会回落到默认面包屑）。 */
+/* budding 自带面包屑槽：`bar: false` 后仍会回落默认面包屑，与三级菜单重复。 */
 .bud-admin__crumbs { display: none !important; }
 
-.skiff-path {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+.skiff-subnav {
+  position: sticky;
+  top: 0;
+  z-index: 6;
   flex: none;
-  min-height: 46px;
-  padding: 0 16px 0 24px;
-  background: var(--bud-admin-chrome-bg, transparent);
-  color: var(--bud-admin-chrome-text, inherit);
-  border-bottom: 1px solid var(--bud-admin-chrome-line, rgba(0, 0, 0, .08));
-  overflow-x: auto;
-  overflow-y: visible;
-  scrollbar-width: none;
-  white-space: nowrap;
+  margin: 0 0 16px;
+  padding: 0;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface, 33, 33, 33), .12);
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
 }
 
-.skiff-path::-webkit-scrollbar { display: none; }
+/* 吸顶时盖住内容区顶部的内边距，否则滚动内容会从菜单上方透出来。
+   只在 `is-stuck` 时出现：常驻会把菜单上方的页面标题一起盖掉。 */
+.skiff-subnav::before {
+  content: "";
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 24px;
+  background: inherit;
+}
 
-.skiff-path__crumb {
+.skiff-subnav.is-stuck::before { display: block; }
+
+.skiff-subnav__track {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.skiff-subnav__track::-webkit-scrollbar { display: none; }
+
+.skiff-subnav__item {
   position: relative;
   display: inline-flex;
-  flex: none;
-}
-
-.skiff-path__btn {
-  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 30px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--bud-admin-chrome-text, inherit);
+  flex: none;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 8px 8px 0 0;
+  color: rgba(var(--v-theme-on-surface, 33, 33, 33), .62);
   font: 500 13px/1.2 Roboto, "Segoe UI", system-ui, sans-serif;
-  cursor: pointer;
-  max-width: 220px;
-  transition: background .14s ease, color .14s ease;
-}
-
-.skiff-path__btn:hover,
-.skiff-path__crumb--open .skiff-path__btn {
-  background: var(--bud-admin-chrome-hover, rgba(0, 0, 0, .06));
-  color: var(--bud-admin-chrome-title, inherit);
-}
-
-.skiff-path__btn:focus-visible {
-  outline: 2px solid var(--bud-admin-chrome-focus, #4c8dff);
-  outline-offset: 1px;
-}
-
-.skiff-path__label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 当前页：加粗 + 强调色，且不可再展开（点它没有意义）。 */
-.skiff-path__crumb--current .skiff-path__btn {
-  color: var(--bud-admin-chrome-accent, inherit);
-  font-weight: 600;
-  cursor: default;
-}
-
-.skiff-path__caret {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  opacity: .7;
-  transition: transform .16s ease;
-}
-
-.skiff-path__crumb--open .skiff-path__caret { transform: rotate(180deg); }
-
-.skiff-path__sep {
-  flex: none;
-  padding: 0 1px;
-  color: var(--bud-admin-chrome-muted, rgba(0, 0, 0, .4));
-  font-size: 12px;
-  user-select: none;
-}
-
-.skiff-path__menu {
-  position: absolute;
-  top: 34px;
-  left: 0;
-  z-index: 40;
-  min-width: 168px;
-  max-width: 280px;
-  max-height: min(60vh, 420px);
-  overflow-y: auto;
-  padding: 4px;
-  border-radius: 10px;
-  border: 1px solid var(--bud-admin-chrome-line, rgba(0, 0, 0, .1));
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
-  box-shadow: 0 10px 28px rgba(16, 24, 40, .18);
-}
-
-.skiff-path__menu[hidden] { display: none; }
-
-.skiff-path__item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: rgb(var(--v-theme-on-surface, 33, 33, 33));
-  font: 500 13px/1.3 Roboto, "Segoe UI", system-ui, sans-serif;
-  text-align: left;
   text-decoration: none;
-  cursor: pointer;
   white-space: nowrap;
+  transition: color .14s ease, background .14s ease;
 }
 
-.skiff-path__item:hover { background: rgba(0, 0, 0, .06); text-decoration: none; }
-html[data-theme="dark"] .skiff-path__item:hover { background: rgba(255, 255, 255, .1); }
+.skiff-subnav__item:hover {
+  background: rgba(var(--v-theme-on-surface, 33, 33, 33), .06);
+  color: rgb(var(--v-theme-on-surface, 33, 33, 33));
+  text-decoration: none;
+}
 
-.skiff-path__item--on {
-  color: var(--bud-admin-chrome-accent, #1976d2);
+.skiff-subnav__item:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary, 24, 103, 192));
+  outline-offset: -2px;
+}
+
+.skiff-subnav__item--on {
+  color: rgb(var(--v-theme-primary, 24, 103, 192));
   font-weight: 600;
 }
 
-.skiff-path__item-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.skiff-subnav__item--on::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: rgb(var(--v-theme-primary, 24, 103, 192));
 }
 
-.skiff-path__tick {
-  width: 14px;
-  height: 14px;
-  margin-left: auto;
-  flex: none;
-  opacity: .85;
-}
+.skiff-subnav__item--on:hover { background: transparent; }
 
-/* 窄屏：路径条跟随内容滚动，去掉左侧大内边距，避免第一段被挤掉。 */
 @media (max-width: 900px) {
-  .skiff-path { padding: 0 8px; min-height: 42px; }
-  .skiff-path__btn { max-width: 140px; }
+  .skiff-subnav { margin-bottom: 12px; }
+  .skiff-subnav__item { height: 36px; padding: 0 10px; }
 }
 
 /* --------------------------------------------------------------------------

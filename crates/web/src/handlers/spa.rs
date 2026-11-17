@@ -166,7 +166,7 @@ pub fn shell_html(prefix: &str) -> String {
 <title>Skiff</title>
 <link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
-<link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v=1">
+<link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v=2">
 </head>
 <body>
 <div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-version="{ver}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
@@ -217,6 +217,12 @@ mod tests {
             r#"data-budding-css="/p/static/budding/budding-{ver}.min.css?v={ver}""#
         )));
         assert!(html.contains(r#"<script src="/p/static/budding/budding-boot.js"></script>"#));
+        // 壳层样式带非空 `?v=`：命中 immutable，改样式必须同时改这个版本号，
+        // 否则升级后浏览器会继续用旧 CSS（三级菜单会退回旧样式）。
+        assert!(
+            html.contains(r#"<link rel="stylesheet" href="/p/static/skiff-shell.css?v=2">"#),
+            "壳层样式必须按版本号引用"
+        );
         let icons = crate::assets::BUDDING_ICONS_VERSION;
         assert!(html.contains(&format!(
             r#"<link rel="stylesheet" href="/p/static/budding/budding-icons-{icons}.min.css?v={icons}">"#
