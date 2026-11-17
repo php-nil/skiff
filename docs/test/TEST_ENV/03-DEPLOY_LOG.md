@@ -97,3 +97,4 @@
 | 2026-11-13 09:18 | **就地升级**（保留库/配置/插件，只换二进制；budding admin 外壳 + 插件标签修复验收） | run `43342855257`（head `d06bdab`） | 库 v19 未变、`integrity_check=ok` |
 | 2026-11-16 23:22 | **全新安装**（`280345e` 架构收口：actor/map_err 合一份、`require_admin` 走 authz；定向回归授权/审计/认证） | run `43892800693`（head `280345e`）四 job 全绿；包 12,130,214 B `7dc33e92…f051` | 空库 **v21**、`integrity_check=ok`、7 插件、`/healthz` 18080/18081 均 200 |
 | 2026-11-17 00:06 | **就地覆盖安装**（`2847580` Docker 409 结构化 + accept.sh B 组 `--password`；同时验升级路径） | run `43902115907`（head `2847580`）四 job 全绿；包 12,130,261 B `f90676b4…6894` | 库保持 **v21**、`integrity_check=ok`、配置逐字节未变、前缀 `cb5mgdk7` 未变、7 插件全在；重复建网络回 **409 `domain.conflict`** |
+| 2026-11-17 08:14 | **就地覆盖安装**（`fc43f3c` UI 壳层 chrome D17：顶栏隐藏 + 三级路径条 + 账号入设置页；网站下四页精修 + Web 服务拆三级子视图 + files schema） | Release run `43984373863`（head `fc43f3c`）success；包 12,143,038 B `fd782a0…cd7f` | 库保持 **v21**、`integrity_check=ok`、配置 sha `5bfb00d9…` 未变、前缀 `cb5mgdk7` 未变、7 插件全在；八页浏览器截图验收全过 |
