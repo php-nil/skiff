@@ -231,7 +231,7 @@
     return {
       type: 'page',
       props: {
-        title: '概览 · Skiff',
+        title: '概览',
         subtitle: '只读计数，不做实时刷新；趋势图表待定（D14–D16），当前不展示'
       },
       body: body
@@ -1004,6 +1004,8 @@
     'core/tasks': { path: '/tasks', schema: 'skiff:tasks' },
     'core/jobs': { path: '/jobs', schema: 'skiff:jobs' },
     'core/files': { path: '/files', schema: 'skiff:files' },
+    'core/files/trash': { path: '/files/trash', schema: 'skiff:files-trash' },
+    'core/files/quotas': { path: '/files/quotas', schema: 'skiff:files-quotas' },
     'core/settings/security': { path: '/settings', schema: 'skiff:settings' },
     'core/settings/menu': { path: '/settings/menu', schema: 'skiff:menu-settings' },
     'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' },
@@ -1822,7 +1824,7 @@
     embed(
       {
         type: 'page',
-        props: { title: '登录已失效 · Skiff' },
+        props: { title: '登录已失效' },
         body: [
           {
             type: 'redirect',
@@ -1918,6 +1920,11 @@
       // 定高 + 内部滚动：避免长列表把整页撑开，同时保证本页所有行都可达。
       props.virtual = true;
       props.height = options.height;
+    }
+    if (options.expand) {
+      // 展开行：审计详情的原始 JSON 这类「不影响扫读、需要时再看」的内容，
+      // 放单元格会把列宽挤坏，挂在展开行里。
+      props.expand = options.expand;
     }
     return {
       type: 'table',
@@ -2106,6 +2113,25 @@
         props: { type: 'warning', title: '运行环境不可用', text: data.runtime_alert }
       });
     }
+    // 顶部指标条：状态 / 类型 / HTTPS / 运行环境一眼可扫，明细与操作往下放。
+    body.push({
+      type: 'grid',
+      props: { columns: 4, gap: 12 },
+      content: {
+        body: [
+          metricCard(
+            '状态',
+            data.status.label,
+            '',
+            '站点状态',
+            data.status.code === 'running' ? 'success' : null
+          ),
+          metricCard('类型', data.type_label, '', '站点类型'),
+          metricCard('HTTPS', data.https.label, '', '证书'),
+          metricCard('运行环境', data.runtime_label || '静态', '', '接入方式')
+        ]
+      }
+    });
     body.push({
       type: 'card',
       props: { title: '站点信息' },
@@ -2473,7 +2499,7 @@
     }
     return {
       type: 'page',
-      props: { title: '新建站点 · Skiff', subtitle: '提交后进入站点详情页' },
+      props: { title: '新建站点', subtitle: '提交后进入站点详情页' },
       body: [
         {
           type: 'alert',
@@ -3220,7 +3246,7 @@
     return {
       type: 'page',
       props: {
-        title: '容器 · Skiff',
+        title: '容器',
         subtitle: '启停/重启/删除在详情页操作，资源限制可在详情页编辑'
       },
       body: body
@@ -3426,7 +3452,7 @@
     }
     return {
       type: 'page',
-      props: { title: '新建容器 · Skiff', subtitle: '提交后进入容器详情页' },
+      props: { title: '新建容器', subtitle: '提交后进入容器详情页' },
       body: [
         {
           type: 'alert',
@@ -3553,7 +3579,7 @@
       );
     }
     return resourceSchema(
-      '镜像 · Skiff',
+      '镜像',
       data.can_admin ? '拉取与删除走 /ui/v1' : '只读列表；写操作需要管理员权限',
       [
         { key: 'name', label: '镜像' },
@@ -3589,7 +3615,7 @@
       );
     }
     return resourceSchema(
-      '网络 · Skiff',
+      '网络',
       data.can_admin ? '创建与删除走 /ui/v1' : '只读列表；写操作需要管理员权限',
       [
         { key: 'name', label: '名称' },
@@ -3629,7 +3655,7 @@
       );
     }
     return resourceSchema(
-      '卷 · Skiff',
+      '卷',
       data.can_admin ? '创建与删除走 /ui/v1' : '只读列表；写操作需要管理员权限',
       [
         { key: 'name', label: '名称' },
@@ -3837,7 +3863,7 @@
     }
     return {
       type: 'page',
-      props: { title: '编排 · Skiff', subtitle: '项目列表、启停、校验与部署均在原生页面完成' },
+      props: { title: '编排', subtitle: '项目列表、启停、校验与部署均在原生页面完成' },
       body: body
     };
   }
@@ -3972,7 +3998,7 @@
     }
     return {
       type: 'page',
-      props: { title: '定时任务 · Skiff', subtitle: '启停与运行结果均回写既有任务审计' },
+      props: { title: '定时任务', subtitle: '启停与运行结果均回写既有任务审计' },
       body: body
     };
   }
@@ -4100,7 +4126,7 @@
     body.push(table);
     return {
       type: 'page',
-      props: { title: '作业中心 · Skiff', subtitle: '列表只读；取消与重试在作业详情页' },
+      props: { title: '作业中心', subtitle: '列表只读；取消与重试在作业详情页' },
       body: body
     };
   }
@@ -4311,13 +4337,13 @@
       });
     }
     var accountLines = [
-      '两步验证（TOTP）：' + (data.account.totp_enabled ? '已启用' : '未启用')
+      '两步验证（TOTP）：' + (data.account.totp_enabled ? '已启用' : '未启用'),
+      '修改口令成功后当前会话会轮换，无需重新登录。'
     ];
     if (data.account.must_change_password) {
       accountLines.push('当前账号仍在使用首启口令，请尽快修改。');
     }
     body.push(detailLines('账户安全', accountLines));
-    body.push(detailLines('修改口令', ['修改成功后当前会话会轮换，无需重新登录。']));
     body.push({
       type: 'form',
       onEvent: { submit: [{ type: 'skiffPasswordChange' }] },
@@ -4373,7 +4399,7 @@
     });
 
     if (data.account.totp_enabled) {
-      body.push(detailLines('两步验证（TOTP）', ['已启用：登录时需要输入动态码。']));
+      // 状态已并入上面的「账户安全」卡片，不再单独渲染只有一行字的卡片。
     } else if (data.account.totp_pending_secret) {
       body.push(
         detailLines('两步验证（TOTP）', [
@@ -4573,7 +4599,7 @@
     }
     return {
       type: 'page',
-      props: { title: '设置 · Skiff', subtitle: '口令、安全入口与面板偏好' },
+      props: { title: '设置', subtitle: '口令、两步验证与面板访问' },
       body: body
     };
   }
@@ -4649,7 +4675,7 @@
     );
     return {
       type: 'page',
-      props: { title: '菜单设置 · Skiff', subtitle: '偏好按账号保存，写操作复用 settings/menu 业务入口' },
+      props: { title: '菜单设置', subtitle: '按账号保存显隐、顺序与固定' },
       body: body
     };
   }
@@ -4676,7 +4702,7 @@
       );
       return {
         type: 'page',
-        props: { title: 'Docker 设置 · Skiff', subtitle: '只读；写操作需要管理员权限' },
+        props: { title: 'Docker 设置', subtitle: '镜像加速与拉取参数（管理员可改）' },
         body: body
       };
     }
@@ -4710,7 +4736,7 @@
     body.push(writeCard('镜像拉取参数', '只写宿主配置，不改动已有容器。', form));
     return {
       type: 'page',
-      props: { title: 'Docker 设置 · Skiff', subtitle: '镜像拉取参数' },
+      props: { title: 'Docker 设置', subtitle: '镜像拉取参数' },
       body: body
     };
   }
@@ -4846,7 +4872,7 @@
     if (!data.can_admin) {
       return {
         type: 'page',
-        props: { title: '界面设置 · Skiff', subtitle: '只读；写操作需要管理员权限' },
+        props: { title: '界面设置', subtitle: '壳主题与菜单配色（管理员可改）' },
         body: [
           detailLines('当前主题', [
             '主色：' + (data.primary || '未设置'),
@@ -4963,7 +4989,7 @@
     );
     return {
       type: 'page',
-      props: { title: '界面设置 · Skiff', subtitle: '壳主题：预设 + 主色 / 菜单底色 / 页面底色' },
+      props: { title: '界面设置', subtitle: '壳主题：预设 + 主色 / 菜单底色 / 页面底色' },
       body: body
     };
   }
@@ -6617,6 +6643,15 @@
       });
       copy.key = String(a.id);
       copy.ts_label = formatTime(a.ts);
+      // 详情统一成可展开的代码块内容：对象/数组转 JSON，空值给占位符，
+      // 避免直接把原始 JSON 塞进单元格把表格撑变形。
+      var detail = a.detail;
+      copy.detail_text =
+        detail === null || detail === undefined || detail === ''
+          ? '—'
+          : typeof detail === 'string'
+            ? detail
+            : JSON.stringify(detail, null, 2);
       return copy;
     });
     var body = [
@@ -6640,6 +6675,10 @@
         content: {
           actions: [
             {
+              type: 'link',
+              props: { text: '重置', href: prefix + '/audit' }
+            },
+            {
               type: 'button',
               props: { text: '查询', variant: 'tonal' },
               action: { type: 'submit' }
@@ -6647,29 +6686,32 @@
           ]
         }
       },
-      {
-        type: 'flex',
-        props: { gap: 12, wrap: true, align: 'center' },
-        content: {
-          body: [
-            { type: 'link', props: { text: '重置', href: prefix + '/audit' } },
-            { type: 'text', props: { text: '按时间倒序；只读，权限沿用 AuditRead。', size: 'small' } }
-          ]
-        }
-      },
       statusTable(
         [
-          { key: 'ts_label', label: '时间', width: 170 },
-          { key: 'actor', label: '操作者' },
-          { key: 'ip', label: 'IP' },
-          { key: 'action', label: '动作' },
-          { key: 'target', label: '对象' },
-          { key: 'result', label: '结果' },
-          { key: 'detail', label: '详情' }
+          { key: 'ts_label', label: '时间', width: 160 },
+          { key: 'actor', label: '操作者', width: 100 },
+          { key: 'ip', label: 'IP', width: 130 },
+          { key: 'action', label: '动作', width: 190 },
+          { key: 'target', label: '对象', width: 170 },
+          { key: 'result', label: '结果', width: 80, align: 'center' },
+          { key: 'detail_text', label: '详情', width: 240 }
         ],
         items,
         'key',
-        { height: 420, emptyText: '暂无审计记录' }
+        {
+          height: 420,
+          emptyText: '暂无审计记录',
+          expand: {
+            type: 'code',
+            props: {
+              modelValue: '${detail_text}',
+              language: 'json',
+              readonly: true,
+              lineNumbers: true,
+              maxHeight: 220
+            }
+          }
+        }
       )
     ];
     if (data.has_more && data.next_cursor) {
@@ -6700,8 +6742,8 @@
     return {
       type: 'page',
       props: {
-        title: '审计日志 · Skiff',
-        subtitle: '关键字过滤 + 签名游标（只读）'
+        title: '审计日志',
+        subtitle: '按时间倒序检索，本页只读'
       },
       body: body
     };
@@ -7843,7 +7885,7 @@
     });
     return {
       type: 'page',
-      props: { title: '文件管理 · Skiff', subtitle: '平铺目录 + 面包屑（不使用树形）' },
+      props: { title: '文件管理', subtitle: '平铺目录 + 面包屑（不使用树形）' },
       body: body
     };
   }
@@ -7925,7 +7967,7 @@
     }
     return {
       type: 'page',
-      props: { title: '回收站 · Skiff', subtitle: '恢复与彻底删除复用既有 files JSON 接口' },
+      props: { title: '回收站', subtitle: '恢复与彻底删除复用既有 files JSON 接口' },
       body: body
     };
   }
@@ -8008,7 +8050,7 @@
     }
     return {
       type: 'page',
-      props: { title: '配额管理 · Skiff', subtitle: '设置、重扫与取消均复用既有 files JSON 接口' },
+      props: { title: '配额管理', subtitle: '设置、重扫与取消均复用既有 files JSON 接口' },
       body: body
     };
   }
@@ -8049,7 +8091,7 @@
       });
       return {
         type: 'page',
-        props: { title: '插件中心 · Skiff', subtitle: '发现' },
+        props: { title: '插件中心', subtitle: '发现' },
         body: body
       };
     }
@@ -8070,7 +8112,7 @@
       });
       return {
         type: 'page',
-        props: { title: '插件中心 · Skiff', subtitle: '可更新' },
+        props: { title: '插件中心', subtitle: '可更新' },
         body: body
       };
     }
@@ -8083,7 +8125,7 @@
     }
     return {
       type: 'page',
-      props: { title: '插件中心 · Skiff', subtitle: '安装、授权、启停与更新' },
+      props: { title: '插件中心', subtitle: '安装、授权、启停与更新' },
       body: body
     };
   }
@@ -8324,7 +8366,7 @@
     }
     return {
       type: 'page',
-      props: { title: '商店 · Skiff', subtitle: '目录快照与插件安装' },
+      props: { title: '商店', subtitle: '目录快照与插件安装' },
       body: body
     };
   }

@@ -10819,7 +10819,7 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
     // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
     assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
     assert!(
-        js.contains("{ height: 420, emptyText: '暂无审计记录' }"),
+        js.contains("height: 420,") && js.contains("emptyText: '暂无审计记录'"),
         "审计列表应定高并内部滚动，且带场景空态文案"
     );
     // 四个菜单图标使用 1.8.1 子集的原生字形，不再近似兜底或留空。

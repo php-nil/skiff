@@ -15,73 +15,12 @@
     "type": "page",
     "props": {
       "title": "站点文件",
-      "subtitle": "只读写已授权站点目录（/www/sites/<域名>/index）；全盘管理、回收站、配额与上传请用「工具 → 文件管理」"
+      "subtitle": "只读写已授权站点目录；全盘管理、回收站、配额与上传请用「工具 → 文件管理」"
     },
     "body": [
       {
-        "type": "flex",
-        "props": { "gap": 12, "wrap": true, "align": "center", "justify": "space-between" },
-        "content": {
-          "body": [
-            {
-              "type": "text",
-              "props": { "text": "当前目录：{{data.list.path}}", "size": "small" },
-              "when": "{{data.list.path}}"
-            },
-            {
-              "type": "flex",
-              "props": { "gap": 8, "wrap": true, "justify": "end" },
-              "content": {
-                "body": [
-                  {
-                    "type": "button",
-                    "props": { "text": "返回上级", "variant": "tonal" },
-                    "when": "{{data.list.parent}}",
-                    "onEvent": {
-                      "click": {
-                        "actions": [
-                          {
-                            "type": "skiffPluginView",
-                            "props": {
-                              "view": "main",
-                              "query": { "path": "{{data.list.parent}}" }
-                            }
-                          }
-                        ]
-                      }
-                    }
-                  },
-                  {
-                    "type": "button",
-                    "props": { "text": "刷新", "variant": "tonal" },
-                    "onEvent": {
-                      "click": {
-                        "actions": [
-                          {
-                            "type": "skiffPluginView",
-                            "props": {
-                              "view": "main",
-                              "query": { "path": "{{data.list.path}}" }
-                            }
-                          }
-                        ]
-                      }
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        }
-      },
-      {
-        "type": "alert",
-        "props": { "type": "warning", "text": "{{data.list.error}}" },
-        "when": "{{data.list.error}}"
-      },
-      {
         "type": "card",
-        "props": { "title": "站点根目录" },
+        "props": { "title": "浏览" },
         "content": {
           "body": [
             {
@@ -92,7 +31,7 @@
                   "type": "select",
                   "props": {
                     "name": "root",
-                    "label": "已授权站点",
+                    "label": "站点根目录",
                     "defaultValue": "{{data.config.start_dir}}",
                     "items": "{{data.config.root_options}}"
                   }
@@ -100,7 +39,8 @@
                 {
                   "type": "text",
                   "props": {
-                    "text": "授权根只能在安装确认页或由 admin 追加；本页不接受站点目录之外的路径。"
+                    "text": "授权根由安装确认页或 admin 追加，本页不接受站点目录之外的路径。",
+                    "size": "small"
                   }
                 }
               ],
@@ -108,7 +48,7 @@
                 "actions": [
                   {
                     "type": "button",
-                    "props": { "text": "打开", "color": "primary" },
+                    "props": { "text": "打开", "color": "primary", "variant": "flat" },
                     "onEvent": {
                       "click": {
                         "actions": [
@@ -125,15 +65,95 @@
                   }
                 ]
               }
+            },
+            {
+              "type": "flex",
+              "props": { "gap": 12, "wrap": true, "align": "center", "justify": "space-between" },
+              "content": {
+                "body": [
+                  {
+                    "type": "flex",
+                    "props": { "direction": "column", "gap": 2 },
+                    "content": {
+                      "body": [
+                        {
+                          "type": "text",
+                          "props": { "text": "当前目录", "size": "small" }
+                        },
+                        {
+                          "type": "text",
+                          "props": {
+                            "text": "{{data.list.path}}",
+                            "size": "small",
+                            "weight": "medium"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "flex",
+                    "props": { "gap": 8, "wrap": true, "justify": "end" },
+                    "content": {
+                      "body": [
+                        {
+                          "type": "button",
+                          "props": { "text": "返回上级", "variant": "tonal", "size": "small" },
+                          "when": "{{data.list.parent}}",
+                          "onEvent": {
+                            "click": {
+                              "actions": [
+                                {
+                                  "type": "skiffPluginView",
+                                  "props": {
+                                    "view": "main",
+                                    "query": { "path": "{{data.list.parent}}" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "type": "button",
+                          "props": { "text": "刷新", "variant": "text", "size": "small" },
+                          "onEvent": {
+                            "click": {
+                              "actions": [
+                                {
+                                  "type": "skiffPluginView",
+                                  "props": {
+                                    "view": "main",
+                                    "query": { "path": "{{data.list.path}}" }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
             }
           ]
         }
       },
       {
+        "type": "alert",
+        "props": { "type": "warning", "text": "{{data.list.error}}" },
+        "when": "{{data.list.error}}"
+      },
+      {
         "type": "card",
-        "props": { "title": "子目录" },
+        "props": { "title": "目录与文件" },
         "content": {
           "body": [
+            {
+              "type": "text",
+              "props": { "text": "目录", "size": "small", "weight": "medium" }
+            },
             {
               "type": "table",
               "props": {
@@ -142,10 +162,10 @@
                 "pagination": true,
                 "perPage": 50,
                 "density": "compact",
-                "emptyText": "没有子目录",
+                "emptyText": "当前目录没有子目录",
                 "columns": [
                   { "key": "name", "label": "名称" },
-                  { "key": "mtime_text", "label": "修改时间" }
+                  { "key": "mtime_text", "label": "修改时间", "width": 180 }
                 ],
                 "rowActions": [
                   {
@@ -167,15 +187,11 @@
                   }
                 ]
               }
-            }
-          ]
-        }
-      },
-      {
-        "type": "card",
-        "props": { "title": "文件" },
-        "content": {
-          "body": [
+            },
+            {
+              "type": "text",
+              "props": { "text": "文件", "size": "small", "weight": "medium" }
+            },
             {
               "type": "table",
               "props": {
@@ -184,11 +200,11 @@
                 "pagination": true,
                 "perPage": 50,
                 "density": "compact",
-                "emptyText": "没有文件",
+                "emptyText": "当前目录没有文件",
                 "columns": [
                   { "key": "name", "label": "名称" },
-                  { "key": "size_text", "label": "大小" },
-                  { "key": "mtime_text", "label": "修改时间" }
+                  { "key": "size_text", "label": "大小", "width": 120 },
+                  { "key": "mtime_text", "label": "修改时间", "width": 180 }
                 ],
                 "rowActions": [
                   {
@@ -223,8 +239,20 @@
         "content": {
           "body": [
             {
-              "type": "text",
-              "props": { "text": "文件：{{data.file.path}}（{{data.file.size_text}}）" }
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true, "align": "center" },
+              "content": {
+                "body": [
+                  {
+                    "type": "text",
+                    "props": { "text": "{{data.file.path}}", "size": "small", "weight": "medium" }
+                  },
+                  {
+                    "type": "chip",
+                    "props": { "text": "{{data.file.size_text}}", "size": "small", "variant": "tonal" }
+                  }
+                ]
+              }
             },
             {
               "type": "alert",
@@ -240,15 +268,17 @@
                   "props": {
                     "name": "text",
                     "label": "内容",
-                    "rows": 20,
+                    "rows": 22,
                     "readonly": "{{data.file.read_only}}",
-                    "defaultValue": "{{data.file.text_literal}}"
+                    "defaultValue": "{{data.file.text_literal}}",
+                    "className": "skiff-file-editor"
                   }
                 },
                 {
                   "type": "text",
                   "props": {
-                    "text": "保存会整文件覆盖；语法高亮只在旧界面（地址加 ?legacy=1）。上传、新建、重命名、删除、回收站与配额请用内核「工具 → 文件管理」。"
+                    "text": "保存会整文件覆盖；上传、新建、重命名、删除、回收站与配额请用内核「工具 → 文件管理」。",
+                    "size": "small"
                   }
                 }
               ],

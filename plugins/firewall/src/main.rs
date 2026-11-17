@@ -95,6 +95,73 @@ fn fail2ban_installed(p: &Plugin) -> bool {
     command_works(p, DPKG_QUERY, &["-s", "fail2ban"])
         || command_works(p, FAIL2BAN_CLIENT, &["--version"])
 }
+/// 受管链读取：成功返回原始输出，失败（常见是全新机器上表/链还不存在）返回 None。
+fn nft_chain_dump(p: &Plugin) -> Option<String> {
+    p.host_exec_full(
+        NFT,
+        &["-a", "list", "chain", "inet", "skiff", "input"],
+        None,
+        Some(30),
+    )
+    .ok()
+    .filter(|o| o.get("success").and_then(Value::as_bool) == Some(true))
+    .and_then(|o| o.get("stdout").and_then(Value::as_str).map(str::to_string))
+}
+
+/// 按需建受管表/链（契约 §4：表/链不存在时创建，默认策略 accept）。
+///
+/// 先探测再创建，避免每次列表都跑两条必然失败的 `add`；nft 的 `add table` /
+/// `add chain` 在已存在时报「File exists」，这里只在探测不到时才执行，创建后再复核一次。
+fn ensure_nft(p: &Plugin) -> Result<(), RpcError> {
+    if nft_chain_dump(p).is_some() {
+        return Ok(());
+    }
+    let _ = p.host_exec_full(NFT, &["add", "table", "inet", "skiff"], None, Some(30));
+    // 带 hook 的基链才会真正按规则过滤入站流量；参数逐个传，不拼 shell。
+    let _ = p.host_exec_full(
+        NFT,
+        &[
+            "add", "chain", "inet", "skiff", "input", "{", "type", "filter", "hook", "input",
+            "priority", "0", ";", "}",
+        ],
+        None,
+        Some(30),
+    );
+    if nft_chain_dump(p).is_none() {
+        return Err(RpcError::internal(
+            "创建 nftables 受管表 inet skiff / 链 input 失败",
+        ));
+    }
+    Ok(())
+}
+
+/// iptables 受管链按需创建并挂到 INPUT（幂等；已有跳转时不重复插入）。
+fn ensure_iptables(p: &Plugin) -> Result<(), RpcError> {
+    // `-N` 在链已存在时退出码非 0，属预期，这里不当作失败。
+    let _ = p.host_exec_full(IPTABLES, &["-N", IPT_CHAIN], None, Some(30));
+    let jumped = p
+        .host_exec_full(IPTABLES, &["-C", "INPUT", "-j", IPT_CHAIN], None, Some(30))
+        .ok()
+        .and_then(|o| o.get("success").and_then(Value::as_bool))
+        .unwrap_or(false);
+    if !jumped {
+        exec_ok(
+            p,
+            IPTABLES,
+            &["-I", "INPUT", "1", "-j", IPT_CHAIN],
+            None,
+            30,
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_managed_chain(p: &Plugin, backend: Backend) -> Result<(), RpcError> {
+    match backend {
+        Backend::Nft => ensure_nft(p),
+        Backend::Iptables => ensure_iptables(p),
+    }
+}
 fn fail2ban_running(p: &Plugin) -> bool {
     exec_any(p, SYSTEMCTL, &["is-active", F2B_SERVICE], None, 10)
         .unwrap_or_default()
@@ -200,6 +267,7 @@ fn parse_iptables_rules(text: &str) -> Vec<Value> {
 fn h_rules_list(p: &Plugin) -> Result<Value, RpcError> {
     match detect_backend(p) {
         Some(Backend::Nft) => {
+            ensure_nft(p)?;
             let out = exec_ok(
                 p,
                 NFT,
@@ -210,6 +278,7 @@ fn h_rules_list(p: &Plugin) -> Result<Value, RpcError> {
             Ok(json!({ "backend": "nftables", "items": parse_nft_rules(&out) }))
         }
         Some(Backend::Iptables) => {
+            ensure_iptables(p)?;
             let out = exec_ok(p, IPTABLES, &["-S", IPT_CHAIN], None, 30)?;
             Ok(json!({ "backend": "iptables", "items": parse_iptables_rules(&out) }))
         }
@@ -220,6 +289,7 @@ fn h_rule_add(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let Some(backend) = detect_backend(p) else {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
+    ensure_managed_chain(p, backend)?;
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
     let proto = params
         .get("protocol")
@@ -268,6 +338,7 @@ fn h_rule_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let Some(backend) = detect_backend(p) else {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
+    ensure_managed_chain(p, backend)?;
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
     let proto = params
         .get("protocol")
@@ -298,6 +369,7 @@ fn h_port_allow(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let Some(backend) = detect_backend(p) else {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
+    ensure_managed_chain(p, backend)?;
     let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
     let proto = params
         .get("protocol")

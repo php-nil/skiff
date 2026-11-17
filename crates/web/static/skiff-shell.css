@@ -114,3 +114,10 @@
   border: 1px solid rgba(0, 0, 0, 0.16);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
 }
+/* 插件页文本编辑器：等宽字体，避免 PHP/nginx 配置在比例字体下难对齐。 */
+.skiff-file-editor textarea,
+.skiff-file-editor .v-field__input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
