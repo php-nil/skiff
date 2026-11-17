@@ -129,7 +129,8 @@
 
 - `GET /{p}/sites/web` 改交付 budding 壳页（Admin 权限，viewer 403）；旧 SSR 保留在 `GET /{p}/m/core/sites/web`，菜单 href 已改指规范路径。
 - `GET /ui/v1/web` → `{status, install, config{main_path,main_content,include_path,include_content,sites[],params}, modules, can_admin}`，与旧页同一数据源（`nginx_status`、`site_install_progress`、`nginx_config_view`、`nginx_modules`）。
-- `GET /ui/v1/web/logs?load=&kind=&lines=&level=&status=&q=&offset=`：未 `load` 时不触碰文件，返回读取范围、状态码分布、截断标记与行数据；前端用「加载日志」把筛选条件带回 URL（`?logs=1&...`）再读取。
+- `GET /ui/v1/web/logs?load=&kind=&lines=&level=&status=&q=&offset=`：未 `load` 时不触碰文件，返回读取范围、状态码分布、截断标记与行数据。
+- 页面拆三级子视图（2026-11-17）：`/{p}/sites/web` 状态、`/config` 配置、`/logs` 日志、`/modules` 模块，每次只渲染当前视图（详见 `01-SCOPE.md` §2.3.1「三级子视图登记」）；日志视图进入即按查询参数取数（默认访问日志 200 行），「加载日志」把筛选条件带回 `?type=&lines=&level=&status=&q=`（不再用 `?logs=1`）。
 - 写操作：`POST /ui/v1/web/config`（主配置，`nginx -t` + reload）与 `POST /ui/v1/web/params`（性能参数）；SSR 表单与 JSON 共用 `nginx::apply_main` / `apply_params`，审计事件 `nginx.config.save` / `nginx.params.save` 不变。失败返回 400 并保留错误文本，不伪装成功。
 
 ### 5.15 商店（第八批）

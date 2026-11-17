@@ -984,6 +984,19 @@
 
   /// 已迁移到 budding 的菜单项：稳定键 → 路由路径（相对入口前缀）。
   /// 未列出的键保留内核深链 `href`（插件功能页仍是内核 SSR + iframe）。
+  ///
+  /// 三级视图：某些二级页面内部有互斥子视图（Web 服务 = 状态/配置/日志/模块），
+  /// 这些子视图不再堆在一屏里靠滚动，而是作为路径条的第三级呈现与切换。
+  /// 第一项必须与二级路径一致——它就是二级页的默认视图。
+  var SUBVIEWS = {
+    'core/sites/web': [
+      { title: '状态', path: '/sites/web' },
+      { title: '配置', path: '/sites/web/config' },
+      { title: '日志', path: '/sites/web/logs' },
+      { title: '模块', path: '/sites/web/modules' }
+    ]
+  };
+
   var BUILTIN_PAGES = {
     overview: { path: '', schema: 'skiff:overview' },
     'core/sites/list': { path: '/sites', schema: 'skiff:sites' },
@@ -1078,7 +1091,26 @@
       var children = [];
       group.items.forEach(function (item) {
         var child = menuRoute(item.key, item.label, item.icon, item.href);
-        if (child) children.push(child);
+        if (!child) return;
+        // 三级视图：登记为隐藏路由（不进侧栏），并把同级列表挂到 `meta.subs`，
+        // 路径条据此渲染第三级与它的切换菜单。
+        var subs = SUBVIEWS[item.key];
+        if (subs && subs.length) {
+          child.meta = child.meta || {};
+          child.meta.subs = subs.map(function (sub) {
+            return { title: sub.title, path: prefix + sub.path };
+          });
+          subs.slice(1).forEach(function (sub) {
+            routes.push({
+              path: prefix + sub.path,
+              title: item.label + ' · ' + sub.title,
+              hidden: true,
+              schema: child.schema,
+              meta: { activeMenu: child.path }
+            });
+          });
+        }
+        children.push(child);
       });
       // 工具空态：保留内核空态文案，指向已原生渲染的插件中心。
       if (children.length === 0 && group.empty) {
@@ -1271,22 +1303,17 @@
   /// 注意：budding 1.8.0-r7 的 schema 根没有注册 `theme` 顶层属性，写进树里会
   /// 触发 CompileError（整棵树拒绝编译）。主题改为文档级 CSS 变量注入，并给
   /// 外壳补 `bud-admin--chrome` 类，见 `applyShellTheme` / `markShellChrome`。
-  function shellSchema(session) {
+  function shellSchema() {
     var schema = {
       type: 'admin',
-      props: { title: 'Skiff', brandTitle: 'Skiff' },
+      // `bar: false` 关掉内容区顶部那条通栏（品牌 / 页面标题 / 账号 / 退出登录）：
+      // 位置与同级切换改由内核路径条承担（见 `mountPathNav`），账号与退出登录
+      // 已搬进「设置」页（见 `settingsSchema`）。`actions` 槽在 bar 关闭时不渲染，
+      // 因此这里不再放任何节点，避免出现「看不见但仍在 Tab 序里」的控件。
+      props: { title: 'Skiff', brandTitle: 'Skiff', bar: false, tabsMode: 'single' },
       content: {
-        actions: [
-          {
-            type: 'text',
-            props: { text: session.username + '（' + session.role + '）', size: 'small' }
-          },
-          {
-            type: 'button',
-            props: { text: '退出登录', variant: 'text' },
-            onEvent: { click: { actions: [{ type: 'skiffLogout' }] } }
-          }
-        ],
+        // 原生面包屑会与三级路径条重复，给空数组把这个区域彻底关掉，不再占一行。
+        breadcrumbs: [],
         body: [{ type: 'outlet' }]
       }
     };
@@ -1409,13 +1436,300 @@
     }
     mark();
     if (chromeObserver || typeof MutationObserver === 'undefined') return;
-    chromeObserver = new MutationObserver(mark);
+    chromeObserver = new MutationObserver(function () {
+      mark();
+      // 路由切换会让外壳重渲染，路径条节点可能被一起替换掉，这里顺手补回。
+      mountPathNav();
+    });
     chromeObserver.observe(document.body, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ['class']
     });
+  }
+
+  // ---- 内容区顶部三级路径条 -------------------------------------------------
+  // 一级（分组）› 二级（菜单页）› 三级（子视图 / 详情页）。点任一级展开的是
+  // 「同级列表」：一级列全部分组、二级列当前分组下的页面、三级列当前页的子视图。
+  //
+  // 为什么内核自己渲染：`bar: false` 之后外壳不再提供位置信息，而 budding 的
+  // `actions` / `breadcrumbs` 槽只接受 Schema 组件（无下拉），做不出「点开同级切换」。
+  // 节点挂在 `.bud-admin__main` 首子节点，样式在 `static/skiff-shell.css`。
+
+  var navModel = null;
+  var pathNavBound = false;
+
+  var PATH_CARET_SVG =
+    '<svg class="skiff-path__caret" viewBox="0 0 24 24" aria-hidden="true">' +
+    '<path d="m7 10 5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  /// 从路由树推路径条模型：分组 → 页面 → 子视图，并记下详情页的模式表。
+  function buildNavModel(routes) {
+    var groups = [];
+    var index = {};
+    var patterns = [];
+    routes.forEach(function (route) {
+      if (route.hidden) {
+        if (!route.meta || !route.meta.activeMenu) return;
+        patterns.push({
+          segs: String(route.path).split('/').filter(Boolean),
+          title: route.title,
+          parent: route.meta.activeMenu
+        });
+        return;
+      }
+      var children = route.children || [];
+      if (!children.length) {
+        var leafGroup = { title: route.title, path: route.path, items: [] };
+        groups.push(leafGroup);
+        index[route.path] = { group: leafGroup, item: null, sub: null };
+        return;
+      }
+      // 分组自身的地址就是首个页面：点一级等于回该分组的入口页。
+      var group = { title: route.title, path: children[0].path, items: [] };
+      children.forEach(function (child) {
+        var subs = (child.meta && child.meta.subs) || [];
+        var item = { title: child.title, path: child.path, subs: subs };
+        group.items.push(item);
+        index[child.path] = { group: group, item: item, sub: null };
+        subs.forEach(function (sub) {
+          index[sub.path] = { group: group, item: item, sub: sub };
+        });
+      });
+      groups.push(group);
+    });
+    return { groups: groups, index: index, patterns: patterns };
+  }
+
+  /// 当前地址 → `{ group, item, sub }`。
+  ///
+  /// 先精确命中菜单页/子视图；详情页（`/sites/:domain` 这类）按段数 + 字面段匹配
+  /// 隐藏路由，再用 `meta.activeMenu` 找回二级归属，第三级就是该路由标题。
+  function navTrail(pathname) {
+    if (!navModel) return null;
+    var hit = navModel.index[pathname];
+    if (hit) return hit;
+    var segs = pathname.split('/').filter(Boolean);
+    for (var i = 0; i < navModel.patterns.length; i++) {
+      var p = navModel.patterns[i];
+      if (p.segs.length !== segs.length) continue;
+      var ok = true;
+      for (var k = 0; k < segs.length; k++) {
+        if (p.segs[k].charAt(0) !== ':' && p.segs[k] !== segs[k]) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      var parent = navModel.index[p.parent];
+      if (!parent) continue;
+      return {
+        group: parent.group,
+        item: parent.item,
+        sub: { title: p.title, path: pathname }
+      };
+    }
+    // 兜底：最长前缀命中（插件页内的未知视图等），保证路径条不断裂。
+    var best = null;
+    Object.keys(navModel.index).forEach(function (key) {
+      if (pathname.indexOf(key + '/') === 0 && (!best || key.length > best.length)) {
+        best = key;
+      }
+    });
+    if (!best) return null;
+    var fallback = navModel.index[best];
+    return { group: fallback.group, item: fallback.item, sub: null };
+  }
+
+  function closePathMenu() {
+    var open = document.querySelectorAll('.skiff-path__crumb--open');
+    Array.prototype.forEach.call(open, function (wrap) {
+      wrap.classList.remove('skiff-path__crumb--open');
+      var menu = wrap.querySelector('.skiff-path__menu');
+      if (menu) menu.hidden = true;
+      var btn = wrap.querySelector('.skiff-path__btn');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  function togglePathMenu(wrap) {
+    var wasOpen = wrap.classList.contains('skiff-path__crumb--open');
+    closePathMenu();
+    if (wasOpen) return;
+    wrap.classList.add('skiff-path__crumb--open');
+    var menu = wrap.querySelector('.skiff-path__menu');
+    if (menu) menu.hidden = false;
+    var btn = wrap.querySelector('.skiff-path__btn');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+  }
+
+  function pathNavigate(path) {
+    if (!path) return;
+    var runtime = buddingRuntime();
+    if (runtime && typeof runtime.navigateTo === 'function') {
+      runtime.navigateTo({ path: path });
+    } else {
+      window.location.assign(path);
+    }
+  }
+
+  /// 一级路径节点：标题 + （可选）同级下拉。
+  function pathCrumb(level) {
+    var wrap = document.createElement('div');
+    wrap.className = 'skiff-path__crumb' + (level.current ? ' skiff-path__crumb--current' : '');
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'skiff-path__btn';
+    var label = document.createElement('span');
+    label.className = 'skiff-path__label';
+    label.textContent = level.title;
+    btn.appendChild(label);
+
+    var options = level.options || [];
+    var hasMenu = options.length > 1;
+    if (hasMenu) {
+      btn.setAttribute('aria-haspopup', 'true');
+      btn.setAttribute('aria-expanded', 'false');
+      var caret = document.createElement('span');
+      caret.setAttribute('aria-hidden', 'true');
+      caret.innerHTML = PATH_CARET_SVG;
+      btn.appendChild(caret);
+    }
+
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (hasMenu) {
+        togglePathMenu(wrap);
+        return;
+      }
+      if (!level.current) pathNavigate(level.path);
+    });
+    wrap.appendChild(btn);
+
+    if (hasMenu) {
+      var menu = document.createElement('div');
+      menu.className = 'skiff-path__menu';
+      menu.setAttribute('role', 'menu');
+      menu.hidden = true;
+      options.forEach(function (opt) {
+        var a = document.createElement('a');
+        a.className = 'skiff-path__item' + (opt.on ? ' skiff-path__item--on' : '');
+        a.href = opt.path;
+        a.setAttribute('role', 'menuitem');
+        if (opt.on) a.setAttribute('aria-current', 'page');
+        var text = document.createElement('span');
+        text.className = 'skiff-path__item-text';
+        text.textContent = opt.title;
+        a.appendChild(text);
+        menu.appendChild(a);
+      });
+      menu.addEventListener('click', function (e) {
+        var target = e.target;
+        if (!(target instanceof Element)) return;
+        var link = target.closest('a.skiff-path__item');
+        if (!link) return;
+        e.preventDefault();
+        closePathMenu();
+        pathNavigate(link.getAttribute('href'));
+      });
+      wrap.appendChild(menu);
+    }
+    return wrap;
+  }
+
+  function renderPathNav() {
+    if (!navModel) return;
+    var main = document.querySelector('.bud-admin__main');
+    if (!main) return;
+    var trail = navTrail(location.pathname);
+    if (!trail) return;
+
+    var nav = document.getElementById('skiff-path');
+    if (!nav) {
+      nav = document.createElement('nav');
+      nav.id = 'skiff-path';
+      nav.className = 'skiff-path';
+      nav.setAttribute('aria-label', '当前位置');
+    }
+    if (main.firstElementChild !== nav) main.insertBefore(nav, main.firstChild);
+
+    // 只有「路径变了」或节点被外壳重渲染丢掉时才重建：重建会改 DOM，而外壳的
+    // 观察器盯的就是 DOM 变化，不做这个闸门会自己触发自己（死循环）。
+    if (nav.getAttribute('data-path') === location.pathname) return;
+    nav.setAttribute('data-path', location.pathname);
+
+    // 每次重建，避免残留上一页的下拉与状态。
+    closePathMenu();
+    nav.textContent = '';
+
+    var levels = [
+      {
+        title: trail.group.title,
+        path: trail.group.path,
+        current: !trail.item,
+        options: navModel.groups.map(function (g) {
+          return { title: g.title, path: g.path, on: g === trail.group };
+        })
+      }
+    ];
+    if (trail.item) {
+      levels.push({
+        title: trail.item.title,
+        path: trail.item.path,
+        current: !trail.sub,
+        options: trail.group.items.map(function (item) {
+          return { title: item.title, path: item.path, on: item === trail.item };
+        })
+      });
+    }
+    if (trail.sub) {
+      var subs =
+        trail.item && trail.item.subs && trail.item.subs.length
+          ? trail.item.subs
+          : [{ title: trail.sub.title, path: trail.sub.path }];
+      levels.push({
+        title: trail.sub.title,
+        path: trail.sub.path,
+        current: true,
+        options: subs.map(function (sub) {
+          return { title: sub.title, path: sub.path, on: sub.path === trail.sub.path };
+        })
+      });
+    }
+
+    levels.forEach(function (level, idx) {
+      if (idx > 0) {
+        var sep = document.createElement('span');
+        sep.className = 'skiff-path__sep';
+        sep.setAttribute('aria-hidden', 'true');
+        sep.textContent = '›';
+        nav.appendChild(sep);
+      }
+      nav.appendChild(pathCrumb(level));
+    });
+  }
+
+  /// 全局事件只绑一次；每次调用只做（必要的）重建。
+  function mountPathNav() {
+    if (!pathNavBound) {
+      pathNavBound = true;
+      document.addEventListener('click', function (e) {
+        var target = e.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest('.skiff-path__crumb--open')) return;
+        closePathMenu();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closePathMenu();
+      });
+      window.addEventListener('resize', function () {
+        closePathMenu();
+      });
+    }
+    renderPathNav();
   }
 
   /// 登出：复用 `/ui/v1/session/logout` 与页面写操作同一个 CSRF 头。
@@ -1631,18 +1945,22 @@
     return table;
   }
 
-  // 站点列表：列取接口字段，行点击进入 budding 详情。
+  // 站点列表：顶部工具条（计数 + 动作）+ 表格。
+  //
+  // 页面标题不再写「网站 · Skiff」——位置由顶部路径条表达，标题重复只会挤占首屏。
+  // 列只留互不重复的信息：`runtime_name`（php-8.5）与 `endpoint`（PHP 8.5）是同一件事，
+  // 保留前者；时间列交给表格按 `type: 'date'` 格式化，不再直接吐 RFC3339。
   function sitesSchema(data, runtimes) {
     var body = [];
+    var total = typeof data.total === 'number' ? data.total : 0;
     var table = listTable(
       [
         { key: 'domain', label: '域名' },
-        { key: 'type_label', label: '类型' },
-        { key: 'endpoint', label: '接入' },
-        { key: 'status', label: '状态', text: '${status.label}' },
-        { key: 'https', label: 'HTTPS', text: '${https.label}' },
-        { key: 'runtime_name', label: '运行环境' },
-        { key: 'created_at', label: '创建时间', width: 180 }
+        { key: 'type_label', label: '类型', width: 110 },
+        { key: 'status', label: '状态', width: 110, text: '${status.label}' },
+        { key: 'https', label: 'HTTPS', width: 140, text: '${https.label}' },
+        { key: 'runtime_name', label: '运行环境', width: 130 },
+        { key: 'created_at', label: '创建时间', width: 120, type: 'date' }
       ],
       '/sites',
       'domain',
@@ -1675,17 +1993,6 @@
         },
         {
           type: 'button',
-          props: { text: '日志', variant: 'text', size: 'small' },
-          onEvent: {
-            click: {
-              actions: [
-                { type: 'navigate', props: { url: prefix + '/sites/${domain}/logs' } }
-              ]
-            }
-          }
-        },
-        {
-          type: 'button',
           props: { text: '启动/停止', variant: 'text', size: 'small' },
           onEvent: {
             click: {
@@ -1700,70 +2007,84 @@
         }
       ];
     }
-    body.push(table);
+
+    // 工具条：左侧计数，右侧动作。批量启停从常驻大表单收进弹窗，列表回到首屏。
+    var tools = [];
     if (data.can_admin) {
-      body.push({
-        type: 'flex',
-        props: { gap: 8, wrap: true },
-        content: {
-          body: [
-            dialogFormButton('新建站点', {
-              title: '新建站点',
-              width: 640,
-              url: apiBase + '/sites',
-              action: { type: 'skiffSiteWrite', props: { op: 'create' } },
-              fields: siteCreateFields(runtimes),
-              initialValues: siteCreateDefaults(''),
-              submitText: '创建站点',
-              variant: 'flat',
-              notice:
-                '运行环境站点需选择已运行的实例；静态站点只需目录；反向代理需填目标地址。别名每行一个。'
-            })
-          ]
-        }
-      });
-      body.push(
-        writeCard(
-          '批量启停',
-          '每行一个域名；批量删除仍走站点详情的删除确认。',
-          writeForm(
-            apiBase + '/sites/batch',
-            { type: 'skiffSiteWrite', props: { op: 'batch' } },
-            [
-              {
-                type: 'select',
-                props: {
-                  name: 'action',
-                  label: '操作',
-                  defaultValue: 'start',
-                  items: [
-                    { title: '启动', value: 'start' },
-                    { title: '停止', value: 'stop' }
-                  ]
-                }
-              },
-              {
-                type: 'textarea',
-                props: {
-                  name: 'domains',
-                  label: '域名（每行一个）',
-                  rows: 3,
-                  required: true,
-                  rules: { required: true, messages: { required: '请填写域名' } }
-                }
+      tools.push(
+        dialogFormButton('批量启停', {
+          title: '批量启停站点',
+          width: 520,
+          url: apiBase + '/sites/batch',
+          action: { type: 'skiffSiteWrite', props: { op: 'batch' } },
+          fields: [
+            {
+              type: 'select',
+              props: {
+                name: 'action',
+                label: '操作',
+                defaultValue: 'start',
+                items: [
+                  { title: '启动', value: 'start' },
+                  { title: '停止', value: 'stop' }
+                ]
               }
-            ],
-            '执行批量操作'
-          )
-        )
+            },
+            {
+              type: 'textarea',
+              props: {
+                name: 'domains',
+                label: '域名（每行一个）',
+                rows: 5,
+                required: true,
+                rules: { required: true, messages: { required: '请填写域名' } }
+              }
+            }
+          ],
+          submitText: '执行批量操作',
+          notice: '每行一个域名，只对已存在的站点生效；删除仍在站点详情的删除确认里。'
+        })
+      );
+      tools.push(
+        dialogFormButton('新建站点', {
+          title: '新建站点',
+          width: 640,
+          url: apiBase + '/sites',
+          action: { type: 'skiffSiteWrite', props: { op: 'create' } },
+          fields: siteCreateFields(runtimes),
+          initialValues: siteCreateDefaults(''),
+          submitText: '创建站点',
+          variant: 'flat',
+          notice:
+            '运行环境站点需选择已运行的实例；静态站点只需目录；反向代理需填目标地址。别名每行一个。'
+        })
       );
     }
+    body.push({
+      type: 'flex',
+      props: { gap: 12, wrap: true, align: 'center', justify: 'space-between' },
+      content: {
+        body: [
+          {
+            type: 'text',
+            props: {
+              text:
+                '共 ' + total + ' 个站点' + (data.can_admin ? '' : '（只读，写操作需管理员）'),
+              size: 'small'
+            }
+          },
+          {
+            type: 'flex',
+            props: { gap: 8, wrap: true, justify: 'end' },
+            content: { body: tools }
+          }
+        ]
+      }
+    });
+    body.push(table);
     return {
       type: 'page',
-      props: {
-        title: '网站 · Skiff',
-        subtitle: data.can_admin ? '建站、启停、配置与删除均在原生页面完成' : '只读列表；写操作需要管理员权限'
-      },
+      props: { title: '' },
       body: body
     };
   }
@@ -2214,7 +2535,8 @@
     return kinds.length ? { kind: kinds[0].key } : {};
   }
 
-  function runtimesSchema(images, catalog) {
+  function runtimesSchema(images, catalog, total) {
+    total = typeof total === 'number' ? total : 0;
     var body = [];
     var table = listTable(
       [
@@ -2238,27 +2560,59 @@
         actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}' } }]
       }
     };
-    body.push(table);
+    // 行内入口：详情与日志直达（与网站列表同款）；整行点击仍是快捷方式。
+    table.props.actionsLabel = '操作';
+    table.props.rowActions = [
+      {
+        type: 'button',
+        props: { text: '详情', variant: 'text', color: 'primary', size: 'small' },
+        onEvent: {
+          click: {
+            actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}' } }]
+          }
+        }
+      },
+      {
+        type: 'button',
+        props: { text: '日志', variant: 'text', size: 'small' },
+        onEvent: {
+          click: {
+            actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}/logs' } }]
+          }
+        }
+      }
+    ];
+
+    // 工具条：左侧计数，右侧动作（与网站列表同布局），列表回到首屏。
+    var tools = [
+      dialogFormButton('新建运行环境', {
+        title: '新建运行环境',
+        width: 640,
+        url: apiBase + '/runtimes',
+        action: { type: 'skiffRuntimeCreate' },
+        fields: runtimeCreateFields(catalog),
+        initialValues: runtimeCreateDefaults(catalog),
+        submitText: '创建并安装',
+        variant: 'flat',
+        notice:
+          'PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中显示。'
+      })
+    ];
     body.push({
       type: 'flex',
-      props: { gap: 8, wrap: true },
+      props: { gap: 12, wrap: true, align: 'center', justify: 'space-between' },
       content: {
         body: [
-          dialogFormButton('新建运行环境', {
-            title: '新建运行环境',
-            width: 640,
-            url: apiBase + '/runtimes',
-            action: { type: 'skiffRuntimeCreate' },
-            fields: runtimeCreateFields(catalog),
-            initialValues: runtimeCreateDefaults(catalog),
-            submitText: '创建并安装',
-            variant: 'flat',
-            notice:
-              'PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中显示。'
-          })
+          { type: 'text', props: { text: '共 ' + total + ' 个运行环境', size: 'small' } },
+          {
+            type: 'flex',
+            props: { gap: 8, wrap: true, justify: 'end' },
+            content: { body: tools }
+          }
         ]
       }
     });
+    body.push(table);
     var imagesForm = writeForm(
       apiBase + '/runtimes/images',
       { type: 'skiffRuntimeImages' },
@@ -2289,7 +2643,7 @@
     body.push(writeCard('镜像参数', '镜像前缀与加速源在 Docker 设置中维护。', imagesForm));
     return {
       type: 'page',
-      props: { title: '运行环境 · Skiff', subtitle: '安装、配置与扩展走同一业务入口' },
+      props: { title: '' },
       body: body
     };
   }
@@ -2662,7 +3016,7 @@
     return {
       type: 'page',
       props: {
-        title: '运行环境详情 · Skiff',
+        title: '',
         subtitle: (rt.kind && rt.kind.label) + ' / ' + rt.name
       },
       body: body
@@ -3870,6 +4224,43 @@
   function settingsSchema(data) {
     var body = [];
     var panel = data.panel;
+    // 顶栏不再显示账号与退出登录，这两件事落在这里：先给身份，再给退出入口。
+    var session = sessionState || {};
+    body.push({
+      type: 'card',
+      props: { title: '当前账号' },
+      content: {
+        body: [
+          {
+            type: 'flex',
+            props: { gap: 12, wrap: true, align: 'center' },
+            content: {
+              body: [
+                {
+                  type: 'text',
+                  props: {
+                    text: (session.username || '—') + '（' + (session.role || '—') + '）',
+                    weight: 'medium'
+                  }
+                },
+                {
+                  type: 'button',
+                  props: { text: '退出登录', variant: 'outlined' },
+                  onEvent: { click: { actions: [{ type: 'skiffLogout' }] } }
+                }
+              ]
+            }
+          },
+          {
+            type: 'text',
+            props: {
+              text: '退出后需要重新输入口令；启用两步验证时还要动态码。',
+              size: 'small'
+            }
+          }
+        ]
+      }
+    });
     if (data.flash && data.flash.error) {
       body.push({ type: 'alert', props: { type: 'error', text: data.flash.error } });
     }
@@ -4960,6 +5351,10 @@
 
   function webSchema(data, query, logs) {
     var status = data.status || {};
+    // 三级子视图：/sites/web/{,config,logs,modules} → 状态 / 配置 / 日志 / 模块。
+    // 每次只渲染当前视图，不再把四块内容堆成一页。
+    var view = String(routeParts()[2] || '').toLowerCase();
+    if (view !== 'config' && view !== 'logs' && view !== 'modules') view = 'status';
     var body = [];
     if (!status.available) {
       body.push({
@@ -4974,6 +5369,7 @@
         }
       });
     }
+    if (view === 'status') {
     body.push({
       type: 'card',
       props: { title: '运行状态' },
@@ -5077,6 +5473,9 @@
       });
     }
 
+    } // view === 'status'
+
+    if (view === 'config') {
     var config = data.config || {};
     var params = config.params || {};
     var mainForm = writeForm(
@@ -5153,6 +5552,9 @@
       }
     });
 
+    } // view === 'config'
+
+    if (view === 'logs') {
     var logForm = writeForm(
       apiBase + '/web/logs',
       { type: 'skiffWebLogs' },
@@ -5242,6 +5644,9 @@
     }
     body.push({ type: 'card', props: { title: '日志' }, content: { body: logBody } });
 
+    } // view === 'logs'
+
+    if (view === 'modules') {
     var modules = data.modules || {};
     body.push({
       type: 'card',
@@ -5257,9 +5662,22 @@
         ]
       }
     });
+    } // view === 'modules'
+
+    // 标题不重复路径条（状态/配置/日志/模块已在路径条第三级），只留一行说明。
     return {
       type: 'page',
-      props: { title: 'Web 服务 · Skiff', subtitle: 'OpenResty 状态、配置、日志与模块' },
+      props: {
+        title: '',
+        subtitle:
+          view === 'config'
+            ? '主配置、性能参数与站点配置；保存前执行 nginx -t，失败拒绝写入'
+            : view === 'logs'
+              ? '按需读取访问/错误日志尾部；默认参数为访问日志 200 行'
+              : view === 'modules'
+                ? 'nginx -V 编译参数与模块清单'
+                : 'OpenResty 运行状态、安装进度与容器运维'
+      },
       body: body
     };
   }
@@ -5364,13 +5782,13 @@
   function webLogsLoad(args, ctx) {
     var values = formValues(ctx);
     var qs = new URLSearchParams();
-    qs.set('logs', '1');
     qs.set('type', formText(values.type).trim() || 'access');
     qs.set('lines', formText(values.lines).trim() || '200');
     qs.set('level', formText(values.level).trim() || 'all');
     if (formText(values.status).trim()) qs.set('status', formText(values.status).trim());
     if (formText(values.q).trim()) qs.set('q', formText(values.q).trim());
-    location.href = prefix + '/sites/web?' + qs.toString();
+    // 日志已是三级子视图：查询条件走 URL query，路径固定 /sites/web/logs。
+    location.href = prefix + '/sites/web/logs?' + qs.toString();
     return Promise.resolve();
   }
 
@@ -8392,9 +8810,14 @@
     if (kind === 'runtimes') {
       return Promise.all([
         fetchRawJson(apiBase + '/runtimes/images'),
-        fetchRawJson(apiBase + '/runtimes/catalog')
+        fetchRawJson(apiBase + '/runtimes/catalog'),
+        fetchData('/runtimes?limit=1')
       ]).then(function (res) {
-        return runtimesSchema((res[0] && res[0].data) || {}, (res[1] && res[1].data) || {});
+        return runtimesSchema(
+          (res[0] && res[0].data) || {},
+          (res[1] && res[1].data) || {},
+          (res[2] && res[2].total) || 0
+        );
       });
     }
     if (kind === 'runtime-detail') {
@@ -8606,8 +9029,10 @@
     }
     if (kind === 'web') {
       var webQuery = new URLSearchParams(location.search);
+      var webSub = String(routeParts()[2] || '').toLowerCase();
       var base = fetchData('/web');
-      if (webQuery.get('logs') === '1') {
+      // 日志是三级子视图 /sites/web/logs：进入即按查询参数取数（默认访问日志 200 行）。
+      if (webSub === 'logs') {
         var logParams = new URLSearchParams();
         logParams.set('load', '1');
         logParams.set('kind', webQuery.get('type') || 'access');
@@ -8687,10 +9112,13 @@
       window.history[name] = function () {
         var out = original.apply(this, arguments);
         renderedPath = window.location.pathname;
+        // 地址变了就重画路径条：SPA 跳转不触发 popstate，只能在这里跟。
+        renderPathNav();
         return out;
       };
     });
     window.addEventListener('popstate', function () {
+      renderPathNav();
       if (window.location.pathname === renderedPath) {
         window.location.reload();
       } else {
@@ -8730,8 +9158,11 @@
         sessionState = res.body.data;
         applyShellTheme(sessionState.theme);
         return fetchData('/menu').then(function (menu) {
-          embed(shellSchema(sessionState), buildRoutes(menu));
+          var routes = buildRoutes(menu);
+          navModel = buildNavModel(routes);
+          embed(shellSchema(), routes);
           markShellChrome();
+          mountPathNav();
         });
       })
       .catch(function (error) {

@@ -121,14 +121,15 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 壳页挂载的是一个 `admin` Schema，而不是单页卡片：
 
 ```text
-{ type: 'admin', props: { title, brandTitle }, content: { actions: [...], body: [{ type: 'outlet' }] } }
+{ type: 'admin', props: { title, brandTitle, bar: false }, content: { body: [{ type: 'outlet' }] } }
 ```
 
 - **菜单来源唯一**：`GET /ui/v1/menu` 直接投影 `skiff_app::menu::build` 的菜单树（L1/L2 归属、顺序、角色与能力门、用户隐藏偏好与 SSR 导航同源），前端只做「稳定键 → 已迁移路由」的映射，不另造第二套菜单语义。
 - **路由表**：菜单树在前端组装成 budding `routes`；分组节点用入口前缀下的保留段（`/{p}/__menu/<key>`）承载层级，子项使用绝对路径 `/{p}/...`。插件菜单项按 `/ui/v1/menu` 下发的 `plugin_id` / `views` 生成 `/plugins/<id>/<view>` 路由；没有 schema 的旧插件仍回落到内核深链。
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
-- **顶栏**：当前用户名/角色 + 退出登录（复用 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
+- **壳层 chrome（2026-11-17 起）**：`bar: false` 关掉 budding 默认顶栏（品牌 / 页面标题 / 账号 / 退出登录），原生面包屑槽同步隐藏（`.bud-admin__crumbs`）；位置与同级切换由内核渲染的**三级路径条**承担（`.skiff-path`，节点挂 `.bud-admin__main` 首子节点，样式 `static/skiff-shell.css`）：一级（分组）› 二级（页面）› 三级（子视图），每级下拉切同级，重建闸门防 MutationObserver 死循环。账号与退出登录移入「设置」页「当前账号」区块（仍走 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
+- **三级子视图登记**：核心页 L3 在 `budding-boot.js` 的 `SUBVIEWS` 登记（当前 `core/sites/web` → 状态 / 配置 / 日志 / 模块，路由 `/{p}/sites/web/{,config,logs,modules}`，隐藏路由不进侧栏、路径条 `meta.subs` 可切）；插件多视图仍由 `pluginTabs` 页内按钮行承担。
 - **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.0-r7` 子集仍为 78 字形（重打包未改字形），菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）

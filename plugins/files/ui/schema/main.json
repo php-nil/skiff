@@ -14,48 +14,61 @@
   "page": {
     "type": "page",
     "props": {
-      "title": "站点文件",
+      "title": "",
       "subtitle": "只读写已授权站点目录（/www/sites/<域名>/index）；全盘管理、回收站、配额与上传请用「工具 → 文件管理」"
     },
     "body": [
       {
         "type": "flex",
-        "props": { "gap": 8, "wrap": true },
+        "props": { "gap": 12, "wrap": true, "align": "center", "justify": "space-between" },
         "content": {
           "body": [
             {
-              "type": "button",
-              "props": { "text": "刷新", "variant": "text" },
-              "onEvent": {
-                "click": {
-                  "actions": [
-                    {
-                      "type": "skiffPluginView",
-                      "props": {
-                        "view": "main",
-                        "query": { "path": "{{data.list.path}}" }
-                      }
-                    }
-                  ]
-                }
-              }
+              "type": "text",
+              "props": { "text": "当前目录：{{data.list.path}}", "size": "small" },
+              "when": "{{data.list.path}}"
             },
             {
-              "type": "button",
-              "props": { "text": "返回上级", "variant": "text" },
-              "when": "{{data.list.parent}}",
-              "onEvent": {
-                "click": {
-                  "actions": [
-                    {
-                      "type": "skiffPluginView",
-                      "props": {
-                        "view": "main",
-                        "query": { "path": "{{data.list.parent}}" }
+              "type": "flex",
+              "props": { "gap": 8, "wrap": true, "justify": "end" },
+              "content": {
+                "body": [
+                  {
+                    "type": "button",
+                    "props": { "text": "返回上级", "variant": "tonal" },
+                    "when": "{{data.list.parent}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "{{data.list.parent}}" }
+                            }
+                          }
+                        ]
                       }
                     }
-                  ]
-                }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "刷新", "variant": "tonal" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "{{data.list.path}}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
               }
             }
           ]
@@ -118,14 +131,9 @@
       },
       {
         "type": "card",
-        "props": { "title": "当前目录" },
+        "props": { "title": "子目录" },
         "content": {
           "body": [
-            { "type": "text", "props": { "text": "{{data.list.path}}" } },
-            {
-              "type": "text",
-              "props": { "text": "目录" }
-            },
             {
               "type": "table",
               "props": {
@@ -159,11 +167,15 @@
                   }
                 ]
               }
-            },
-            {
-              "type": "text",
-              "props": { "text": "文件" }
-            },
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "文件" },
+        "content": {
+          "body": [
             {
               "type": "table",
               "props": {

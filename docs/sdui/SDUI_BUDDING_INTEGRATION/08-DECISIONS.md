@@ -28,6 +28,12 @@
 
 备查：D1 原选项为产物入库/新 crate/构建期 Node 生成；D2 为新命名空间/复用 `/api/v1`/同构内容协商；D3 为保留 SSR/重建/双轨；D4 为 basic 自建/自建 Pack/上游提供；D5 为书面授权/私库/暂不分发；D6 为保留旧页/重做/分阶段；D7 为逐页开关/一次性/长期双栈。
 
+### 8.1.1 追加定案（2026-11-17）：壳层 chrome 与三级路径条
+
+| ID | 定案结论 | 硬约束 | 生效后果 |
+|---|---|---|---|
+| D17 | 顶栏整体隐藏（admin schema `bar: false`），位置与同级切换由内核渲染的三级路径条承担；账号与退出登录并入「设置」页「当前账号」区块 | 面包屑槽一并隐藏（`.bud-admin__crumbs`）；路径条与壳层样式只走外壳 chrome 变量（`static/skiff-shell.css`），不写死色值；退出仍走 `POST /ui/v1/session/logout` 同一 CSRF 头；路径条重建带闸门防 MutationObserver 死循环 | 顶栏不复存在；核心页 L3 子视图进路由（`SUBVIEWS`，`meta.subs` 进路径条），插件多视图仍页内按钮行；页面大标题与路径条重复的一律置空（`title: ''`） |
+
 ### 8.2 仍待定
 
 P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
@@ -67,6 +73,7 @@ P1（切换前）已清空：D13 已于 2026-11-12 定案，见 §8.1。
 | D11 缓存头 | `assets.rs` 缓存策略 + 壳页版本化引用 | 已落地（2026-11-12）：版本化文件名或非空 `?v=` → `immutable`，稳定别名 → `no-cache`；回归 `cache_control_follows_versioning` |
 | D12 CSP 回归 | 响应头断言与逐页控制台巡检 | 回归测试已加（2026-11-12，见 §2.5）；逐页控制台巡检待切换前 |
 | D13 深链 | `URL_CONTRACT.md` §2.1 白名单 + `Router::fallback` 回落（`crates/web/src/handlers/spa.rs`） | 契约已同步（2026-11-12）；壳页回落、`/ui/v1/session` 与 401 语义已落地（2026-11-12）；前端未匹配路由渲染 404 |
+| D17 壳层 chrome | `crates/web/static/budding/budding-boot.js`（`shellSchema` / 三级路径条 / `SUBVIEWS` / `settingsSchema`）、`crates/web/static/skiff-shell.css`、`spa.rs` 壳页 `<link>` | 代码已落地（2026-11-17）；待出包部署到测试机后生效 |
 
 补充：D8 中「消除 Vuetify 内部英文」在 1.9.0 已具备上游能力（`embed` 扁平 `locale` / `uiDefaults`、`setLocale`）；宿主传参与文案迁移仍需按 backlog 排期，不阻塞内部推进。
 

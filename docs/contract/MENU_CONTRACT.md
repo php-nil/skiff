@@ -5,7 +5,7 @@
 > 基线：`crates/pkgfmt/src/manifest.rs`、`crates/web/src/handlers/mod.rs`、`crates/web/templates/base.html`、`plugins/*/manifest.toml`。
 > 契约版本：v1 · 2026-11-03（P1 同日落地，P2 同日补记）。
 >
-> **2026-11-13 原生化**：budding 后台外壳（admin + outlet）不再用 iframe 承载插件功能页；已声明 `schema`（`api = "1.3"`）的视图由壳页原生渲染，未声明的旧视图仍走旧 SSR 工作台。菜单继续下发 `plugin/*` 入口，三级归属与固定 L1 仍然有效——「内核渲染 L3 标签栏 + 插件内容 iframe」只对旧 SSR 页有效，新壳用页内按钮行承担 L3 入口。插件 UI 交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](../sdui/BUDDING_UPSTREAM_BACKLOG.md) T7）。
+> **2026-11-13 原生化**：budding 后台外壳（admin + outlet）不再用 iframe 承载插件功能页；已声明 `schema`（`api = "1.3"`）的视图由壳页原生渲染，未声明的旧视图仍走旧 SSR 工作台。菜单继续下发 `plugin/*` 入口，三级归属与固定 L1 仍然有效——「内核渲染 L3 标签栏 + 插件内容 iframe」只对旧 SSR 页有效；新壳（2026-11-17 起）由三级路径条承担核心页 L3（`budding-boot.js` 的 `SUBVIEWS` 登记，不进侧栏），插件多视图仍用页内按钮行承担 L3 入口。插件 UI 交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](../sdui/BUDDING_UPSTREAM_BACKLOG.md) T7）。
 > **本文件是索引**：正文按 §编号拆在 [`MENU_CONTRACT/`](MENU_CONTRACT/)，编号沿用拆分前原文。
 
 ## 四个结论（摘要）

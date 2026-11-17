@@ -166,6 +166,7 @@ pub fn shell_html(prefix: &str) -> String {
 <title>Skiff</title>
 <link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
+<link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v=1">
 </head>
 <body>
 <div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-version="{ver}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
