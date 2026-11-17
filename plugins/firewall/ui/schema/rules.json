@@ -12,25 +12,6 @@
     },
     "body": [
       {
-        "type": "flex",
-        "props": { "gap": 8, "wrap": true },
-        "content": {
-          "body": [
-            {
-              "type": "button",
-              "props": { "text": "刷新", "variant": "text" },
-              "onEvent": {
-                "click": {
-                  "actions": [
-                    { "type": "skiffPluginView", "props": { "view": "rules" } }
-                  ]
-                }
-              }
-            }
-          ]
-        }
-      },
-      {
         "type": "card",
         "props": { "title": "运行状态" },
         "content": {

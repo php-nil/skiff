@@ -235,11 +235,31 @@ fn h_status(p: &Plugin) -> Result<Value, RpcError> {
             .unwrap_or_default(),
         None => Vec::new(),
     };
+    let f2b_installed = fail2ban_installed(p);
+    let f2b_running = fail2ban_running(p);
+    let warnings: Vec<&str> = if backend.is_none() {
+        vec!["宿主机未找到 nft 或 iptables"]
+    } else {
+        Vec::new()
+    };
     Ok(json!({
-        "backend": backend, "nftables": nft, "iptables": iptables,
+        "backend": backend,
+        // 面板按 *_text 直接展示；保留原始键给需要判断的调用方。
+        "backend_text": backend.unwrap_or("未检测到（需要 nft 或 iptables）"),
+        "nftables": nft,
+        "nftables_text": if nft { "已安装" } else { "未安装" },
+        "iptables": iptables,
+        "iptables_text": if iptables { "已安装" } else { "未安装" },
         "managed_rules": rules.len(),
-        "fail2ban": json!({ "installed": fail2ban_installed(p), "running": fail2ban_running(p) }),
-        "warnings": if backend.is_none() { json!(["宿主机未找到 nft 或 iptables"]) } else { json!([]) },
+        "fail2ban": json!({ "installed": f2b_installed, "running": f2b_running }),
+        "fail2ban_text": match (f2b_installed, f2b_running) {
+            (true, true) => "已安装 · 运行中",
+            (true, false) => "已安装 · 未运行",
+            _ => "未安装",
+        },
+        "warnings": warnings,
+        "warnings_any": !warnings.is_empty(),
+        "warnings_text": warnings.join("；"),
     }))
 }
 /// nft 规则解析：只保留真正的规则行（带 `# handle <n>`），跳过表/链声明与右花括号。

@@ -4441,9 +4441,17 @@
         noticeCard('生成密钥后，用验证器 App 录入密钥或 otpauth URI，再输入动态码完成启用。')
       );
       body.push({
-        type: 'button',
-        props: { text: '生成 TOTP 密钥', variant: 'tonal' },
-        onEvent: { click: { actions: [{ type: 'skiffTotpSetup' }] } }
+        type: 'flex',
+        props: { gap: 8, wrap: true },
+        content: {
+          body: [
+            {
+              type: 'button',
+              props: { text: '生成 TOTP 密钥', variant: 'tonal' },
+              onEvent: { click: { actions: [{ type: 'skiffTotpSetup' }] } }
+            }
+          ]
+        }
       });
     }
     var backupCodes = takeBackupCodes();
@@ -6701,13 +6709,12 @@
       },
       statusTable(
         [
-          { key: 'ts_label', label: '时间', width: 160 },
+          { key: 'ts_label', label: '时间', width: 180 },
           { key: 'actor', label: '操作者', width: 100 },
           { key: 'ip', label: 'IP', width: 130 },
           { key: 'action', label: '动作', width: 190 },
           { key: 'target', label: '对象', width: 170 },
-          { key: 'result', label: '结果', width: 80, align: 'center' },
-          { key: 'detail_text', label: '详情', width: 240 }
+          { key: 'result', label: '结果', width: 100, align: 'center' }
         ],
         items,
         'key',
@@ -7787,6 +7794,27 @@
         }
       });
     }
+    // 目录内容优先：列表紧跟位置卡，新建/上传/写文件放到列表下方，
+    // 避免表单把首屏占满、真正的文件列表被推到折叠线以下。
+    body.push({
+      type: 'virtual-list',
+      props: {
+        items: items,
+        itemKey: 'path',
+        itemHeight: 52,
+        height: 560,
+        emptyText: '目录为空',
+        ariaLabel: '目录条目'
+      },
+      content: { body: fileRowSchema() }
+    });
+    body.push({
+      type: 'text',
+      props: {
+        text: '共 ' + items.length + ' 项；目录在前、按名称排序。删除进回收站，可在回收站恢复。',
+        size: 'small'
+      }
+    });
     body.push({
       type: 'card',
       props: { title: '新建与上传' },
@@ -7875,25 +7903,6 @@
             }
           }
         ]
-      }
-    });
-    body.push({
-      type: 'virtual-list',
-      props: {
-        items: items,
-        itemKey: 'path',
-        itemHeight: 52,
-        height: 560,
-        emptyText: '目录为空',
-        ariaLabel: '目录条目'
-      },
-      content: { body: fileRowSchema() }
-    });
-    body.push({
-      type: 'text',
-      props: {
-        text: '共 ' + items.length + ' 项；目录在前、按名称排序。删除进回收站，可在回收站恢复。',
-        size: 'small'
       }
     });
     return {

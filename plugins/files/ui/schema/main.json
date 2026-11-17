@@ -35,17 +35,45 @@
                     "defaultValue": "{{data.config.start_dir}}",
                     "items": "{{data.config.root_options}}"
                   }
-                },
-                {
-                  "type": "text",
-                  "props": {
-                    "text": "授权根由安装确认页或 admin 追加，本页不接受站点目录之外的路径。",
-                    "size": "small"
-                  }
                 }
               ],
               "content": {
                 "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "返回上级", "variant": "tonal" },
+                    "when": "{{data.list.parent}}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "{{data.list.parent}}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "刷新", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginView",
+                            "props": {
+                              "view": "main",
+                              "query": { "path": "{{data.list.path}}" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
                   {
                     "type": "button",
                     "props": { "text": "打开", "color": "primary", "variant": "flat" },
@@ -67,74 +95,11 @@
               }
             },
             {
-              "type": "flex",
-              "props": { "gap": 12, "wrap": true, "align": "center", "justify": "space-between" },
-              "content": {
-                "body": [
-                  {
-                    "type": "flex",
-                    "props": { "direction": "column", "gap": 2 },
-                    "content": {
-                      "body": [
-                        {
-                          "type": "text",
-                          "props": { "text": "当前目录", "size": "small" }
-                        },
-                        {
-                          "type": "text",
-                          "props": {
-                            "text": "{{data.list.path}}",
-                            "size": "small",
-                            "weight": "medium"
-                          }
-                        }
-                      ]
-                    }
-                  },
-                  {
-                    "type": "flex",
-                    "props": { "gap": 8, "wrap": true, "justify": "end" },
-                    "content": {
-                      "body": [
-                        {
-                          "type": "button",
-                          "props": { "text": "返回上级", "variant": "tonal", "size": "small" },
-                          "when": "{{data.list.parent}}",
-                          "onEvent": {
-                            "click": {
-                              "actions": [
-                                {
-                                  "type": "skiffPluginView",
-                                  "props": {
-                                    "view": "main",
-                                    "query": { "path": "{{data.list.parent}}" }
-                                  }
-                                }
-                              ]
-                            }
-                          }
-                        },
-                        {
-                          "type": "button",
-                          "props": { "text": "刷新", "variant": "text", "size": "small" },
-                          "onEvent": {
-                            "click": {
-                              "actions": [
-                                {
-                                  "type": "skiffPluginView",
-                                  "props": {
-                                    "view": "main",
-                                    "query": { "path": "{{data.list.path}}" }
-                                  }
-                                }
-                              ]
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                ]
+              "type": "text",
+              "props": {
+                "text": "当前目录：{{data.list.path}}",
+                "size": "small",
+                "weight": "medium"
               }
             }
           ]
