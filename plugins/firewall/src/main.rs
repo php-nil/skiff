@@ -370,12 +370,27 @@ fn h_rules_list(p: &Plugin) -> Result<Value, RpcError> {
         None => Ok(json!({ "backend": Value::Null, "items": [] })),
     }
 }
+/// 数值参数既可能来自 JSON 数字，也可能来自 schema 表单的字符串
+/// （`input-text` / `number` 的 `${field}` 都可能是字符串）。
+fn u64_param(params: &Value, key: &str, default: u64) -> u64 {
+    match params.get(key) {
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(default),
+        Some(Value::String(s)) => s.trim().parse::<u64>().unwrap_or(default),
+        _ => default,
+    }
+}
+
+/// 端口：非法或缺省按 0 处理，由调用方统一报「端口需在 1..65535」。
+fn port_param(params: &Value) -> u64 {
+    u64_param(params, "port", 0)
+}
+
 fn h_rule_add(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
     let Some(backend) = detect_backend(p) else {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
     ensure_managed_chain(p, backend)?;
-    let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
+    let port = port_param(params);
     if !(1..=65535).contains(&port) {
         return Err(RpcError::internal("端口需在 1..65535"));
     }
@@ -440,7 +455,7 @@ fn h_rule_remove(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .unwrap_or("")
         .trim()
         .to_string();
-    let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
+    let port = port_param(params);
     let proto = params
         .get("protocol")
         .and_then(Value::as_str)
@@ -521,7 +536,7 @@ fn h_port_allow(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         return Err(RpcError::internal("未找到 nft 或 iptables"));
     };
     ensure_managed_chain(p, backend)?;
-    let port = params.get("port").and_then(Value::as_u64).unwrap_or(0);
+    let port = port_param(params);
     if !(1..=65535).contains(&port) {
         return Err(RpcError::internal("端口需在 1..65535"));
     }
@@ -644,15 +659,9 @@ fn h_f2b_jail_ensure(p: &Plugin, params: &Value) -> Result<Value, RpcError> {
         .and_then(Value::as_str)
         .unwrap_or("ftp")
         .to_string();
-    let maxretry = params.get("maxretry").and_then(Value::as_u64).unwrap_or(5);
-    let findtime = params
-        .get("findtime")
-        .and_then(Value::as_u64)
-        .unwrap_or(600);
-    let bantime = params
-        .get("bantime")
-        .and_then(Value::as_u64)
-        .unwrap_or(3600);
+    let maxretry = u64_param(params, "maxretry", 5);
+    let findtime = u64_param(params, "findtime", 600);
+    let bantime = u64_param(params, "bantime", 3600);
     if jail.is_empty() {
         return Err(RpcError::invalid_params("缺少 jail 名称"));
     }
@@ -819,6 +828,15 @@ mod tests {
         assert_eq!(items[1]["id"], "7");
         assert_eq!(items[1]["action_text"], "丢弃");
         assert_eq!(items[1]["source_text"], "10.0.0.0/8");
+    }
+
+    #[test]
+    fn port_param_accepts_number_and_form_string() {
+        assert_eq!(port_param(&json!({ "port": 8080 })), 8080);
+        assert_eq!(port_param(&json!({ "port": " 8080 " })), 8080);
+        assert_eq!(port_param(&json!({ "port": "" })), 0);
+        assert_eq!(port_param(&json!({})), 0);
+        assert_eq!(u64_param(&json!({ "maxretry": "7" }), "maxretry", 5), 7);
     }
 
     #[test]
