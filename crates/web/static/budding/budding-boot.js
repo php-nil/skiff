@@ -5474,30 +5474,43 @@
       });
     }
     if (view === 'status') {
+    // 关键指标提到顶部，明细另起一张卡片；不再「卡片套卡片」。
     body.push({
-      type: 'card',
-      props: { title: '运行状态' },
+      type: 'grid',
+      props: { columns: 4, gap: 12 },
       content: {
         body: [
-          detailLines('概览', [
-            '容器：' + (status.container_state || '—') + '；版本：' + (status.version || '—'),
-            '运行时长：' + (status.uptime || '—') + '；最近 reload：' + (status.last_reload || '—'),
-            '配置检查：' + (status.config_test || '—'),
-            'active ' + webNum(status.active) +
-              ' / accepts ' + webNum(status.accepts) +
-              ' / handled ' + webNum(status.handled) +
-              ' / requests ' + webNum(status.requests),
-            'reading ' + webNum(status.reading) +
-              ' / writing ' + webNum(status.writing) +
-              ' / waiting ' + webNum(status.waiting),
-            '探测地址：' + (status.probe_url || '—') +
-              (status.probe_error ? '（' + status.probe_error + '）' : ''),
-            '主配置：' + (status.conf_path || '—') +
-              (status.conf_has_stub ? '（含 stub_status）' : '（未含 stub_status）')
-          ])
+          metricCard(
+            '容器',
+            status.container_state || '未运行',
+            '',
+            'OpenResty',
+            status.container_state === 'running' ? 'success' : null
+          ),
+          metricCard('版本', status.version || '—', '', '镜像版本'),
+          metricCard(
+            '运行时长',
+            status.uptime || '—',
+            '',
+            '最近 reload：' + (status.last_reload || '—')
+          ),
+          metricCard('累计请求', webNum(status.requests), '', 'active ' + webNum(status.active))
         ]
       }
     });
+    body.push(detailLines('Nginx 运行指标', [
+      '配置检查：' + (status.config_test || '—'),
+      'accepts ' + webNum(status.accepts) +
+        ' / handled ' + webNum(status.handled) +
+        ' / requests ' + webNum(status.requests),
+      'reading ' + webNum(status.reading) +
+        ' / writing ' + webNum(status.writing) +
+        ' / waiting ' + webNum(status.waiting),
+      '探测地址：' + (status.probe_url || '—') +
+        (status.probe_error ? '（' + status.probe_error + '）' : ''),
+      '主配置：' + (status.conf_path || '—') +
+        (status.conf_has_stub ? '（含 stub_status）' : '（未含 stub_status）')
+    ]));
 
     var install = data.install || {};
     var installAlert = webInstallNode(install);

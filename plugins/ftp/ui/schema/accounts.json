@@ -14,31 +14,9 @@
     "body": [
       {
         "type": "flex",
-        "props": { "gap": 8, "wrap": true },
+        "props": { "gap": 8, "wrap": true, "justify": "end" },
         "content": {
           "body": [
-            {
-              "type": "button",
-              "props": { "text": "刷新", "variant": "text" },
-              "onEvent": {
-                "click": {
-                  "actions": [
-                    { "type": "skiffPluginView", "props": { "view": "accounts" } }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "button",
-              "props": { "text": "运行状态", "variant": "text" },
-              "onEvent": {
-                "click": {
-                  "actions": [
-                    { "type": "skiffPluginView", "props": { "view": "runtime" } }
-                  ]
-                }
-              }
-            },
             {
               "type": "button",
               "props": { "text": "安装并启用", "color": "primary" },
