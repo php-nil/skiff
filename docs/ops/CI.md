@@ -42,7 +42,7 @@
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / **宿主通道闸**（`app`·`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增，基线 140）；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
 | `server` | `cargo run --locked -p skiff-server -- check` | Skiff-server 静态产物自检：schema 合规、摘要一致、索引引用完整、`seq` 不回退（见 [SKIFF_SERVER/04-ROLLOUT.md](../plugin/SKIFF_SERVER/04-ROLLOUT.md) §10）；只在内存生成，不产出发布物 |
-| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 7 个官方插件包（6 个插件 + testkit）真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
+| `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 8 个官方插件包（7 个插件 + testkit）真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
 | `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |
 | `scripts` | `shellcheck -S error`、`git ls-files` 查 CRLF、Dockerfile COPY 源存在性 | 部署脚本在 Linux 上跑得起来；Dockerfile 引用的上下文源真实存在（资源挪位不再漏到发版才炸） |
 | `smoke` | 起 `skiff --dev serve`，探 `/healthz`、`/<入口>` 跳登录、裸 `/` 与未知路径 404 | 服务真能起来，且入口前缀/错误页没退化 |
@@ -106,7 +106,7 @@ GitHub → Actions → Release → Run workflow
   version:      0.1.0                      # 沿用现有版本
   publish:      true                       # 上传/覆盖 Release 资产
   release_tag:  v0.1.0                     # 目标 Release 标签（留空则用 v<version>）
-  skip_plugins: false                      # 正式安装包必须带 7 个官方插件包（6 个插件 + testkit）
+  skip_plugins: false                      # 正式安装包必须带 8 个官方插件包（7 个插件 + testkit）
 ```
 
 `publish` job 的行为是**只覆盖资产、绝不建 tag**：

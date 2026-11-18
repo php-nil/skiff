@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>软件源</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ui-bg: #0b0d11;
+    --ui-text: #d7dee8;
+    --ui-muted: #8a97a8;
+    --ui-surface: #121722;
+    --ui-btn: #1b2230;
+    --ui-btn-hover: #232c3c;
+    --ui-line: #2a3444;
+    --ui-ok: #7ee787;
+    --ui-warn: #f0b429;
+    --ui-bad: #ff7b72;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --ui-bg: #f4f5f7;
+    --ui-text: #101828;
+    --ui-muted: #667085;
+    --ui-surface: #ffffff;
+    --ui-btn: #ffffff;
+    --ui-btn-hover: #f0f2f5;
+    --ui-line: #cfd5dd;
+    --ui-ok: #15803d;
+    --ui-warn: #b54708;
+    --ui-bad: #b42318;
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--ui-bg); color: var(--ui-text); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  .sub, .hint { color: var(--ui-muted); font-size: 12px; margin: 0 0 12px; }
+  section { background: var(--ui-surface); border: 1px solid var(--ui-line); border-radius: 10px;
+            padding: 14px; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--ui-line); vertical-align: middle; }
+  th { color: var(--ui-muted); font-weight: 500; font-size: 12px; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .addr { color: var(--ui-muted); font-size: 12px; word-break: break-all; }
+  .muted { color: var(--ui-muted); }
+  .ok { color: var(--ui-ok); }
+  .bad { color: var(--ui-bad); }
+  .warn { color: var(--ui-warn); }
+  button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+           background: var(--ui-btn); color: var(--ui-text); border: 1px solid var(--ui-line); }
+  button:hover { background: var(--ui-btn-hover); }
+  button.primary { border-color: transparent; background: #2f6feb; color: #fff; }
+  button.primary:hover { background: #3b7bf5; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  input[type="text"], input[type="search"] { font: inherit; padding: 5px 8px; border-radius: 6px;
+           background: var(--ui-bg); color: var(--ui-text); border: 1px solid var(--ui-line); }
+  input.wide { flex: 1; min-width: 240px; }
+  #msg { min-height: 20px; font-size: 13px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h1>软件源</h1>
+<p class="sub">
+  测速只代表<strong>这台机器此刻</strong>的线路——换机器、换时间都可能完全不同，所以这里不会替你自动切换，
+  只把数字摆出来由你选。
+</p>
+
+<section>
+  <h2>软件包源（apk）</h2>
+  <p class="sub" id="apk-current">当前：读取中…</p>
+  <table>
+    <thead><tr><th>名称</th><th>地址</th><th>实测</th><th style="width:150px">操作</th></tr></thead>
+    <tbody id="apk-rows"></tbody>
+  </table>
+  <div class="bar">
+    <button id="apk-probe" class="primary">测速全部</button>
+    <input type="text" id="apk-custom" class="wide" placeholder="自定义源，如 https://mirror.corp/alpine">
+    <button id="apk-add">加入并测速</button>
+  </div>
+  <p class="hint" id="apk-note">
+    选择后写入安装器的源缓存，<strong>新建</strong>运行环境时生效；已存在的环境需重建。
+    选错源会让装扩展直接失败（不只是慢）。
+  </p>
+</section>
+
+<section>
+  <h2>容器镜像源（Docker）</h2>
+  <p class="sub" id="reg-current">当前：读取中…</p>
+  <table>
+    <thead><tr><th>名称</th><th>地址</th><th>实测</th><th style="width:150px">操作</th></tr></thead>
+    <tbody id="reg-rows"></tbody>
+  </table>
+  <div class="bar">
+    <button id="reg-probe" class="primary">测速全部</button>
+    <input type="text" id="reg-custom" class="wide" placeholder="自定义镜像源，如 https://docker.corp.local">
+    <button id="reg-add">加入并测速</button>
+  </div>
+  <div class="bar">
+    <input type="text" id="reg-apply" class="wide" placeholder="要应用的镜像源，按优先级逗号分隔">
+    <button id="reg-save">应用</button>
+  </div>
+  <p class="hint">
+    只影响 <code>docker.io</code>（Docker Hub）的拉取，对 <code>ghcr.io</code>、私有 registry 无效；
+    mirror 不可用时 Docker 会自动回退官方 Hub，所以配错是「变慢」而不是「拉不到」。
+    保存后热重载生效，运行中的容器不受影响。
+  </p>
+</section>
+
+<div id="msg" class="muted"></div>
+<script src="app.js"></script>
+</body>
+</html>

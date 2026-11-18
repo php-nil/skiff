@@ -1,0 +1,16 @@
+[package]
+name = "skiff-plugin-sources"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "plugin"
+path = "src/main.rs"
+
+[dependencies]
+skiff-sdk = { path = "../../crates/sdk" }
+skiff-plugin-common = { path = "../common" }
+serde_json = "1"
+# 测速必须真的下数据：不用 shell 调 curl，避免把「宿主有没有 curl」变成插件的失败面。
+ureq = { version = "2.12", default-features = false, features = ["tls"] }

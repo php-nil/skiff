@@ -67,18 +67,23 @@ pub(crate) async fn apply_settings(
                     state
                         .save_registry_mirror(raw)
                         .map_err(AppError::Internal)?;
-                    if r.restarted {
-                        notice =
-                            "镜像源已写入 /etc/docker/daemon.json，Docker 已重启并通过可用性检查"
-                                .into();
-                    } else if r.written {
-                        notice = format!(
-                            "镜像源已写入 /etc/docker/daemon.json；检测到 {} 个运行中容器，未自动重启 Docker，请在维护窗口执行 systemctl restart docker",
-                            r.running_containers
-                        );
-                    } else {
-                        notice = "镜像源未变化，无需写入".into();
-                    }
+                    notice = match r.mode {
+                        skiff_app::docker_daemon::MirrorApplyMode::Reloaded => {
+                            "镜像源已生效（Docker 热重载，运行中的容器未受影响）".to_string()
+                        }
+                        skiff_app::docker_daemon::MirrorApplyMode::NeedsRestart => {
+                            match r.running_containers {
+                                Some(n) if n > 0 => format!(
+                                    "镜像源已写入，但本机 Docker 单元不支持热重载；{} 个运行中的容器未动，重启 Docker 后生效",
+                                    n
+                                ),
+                                _ => "镜像源已写入，重启 Docker 后生效".to_string(),
+                            }
+                        }
+                        skiff_app::docker_daemon::MirrorApplyMode::Unchanged => {
+                            "镜像源未变化，无需写入".to_string()
+                        }
+                    };
                 }
                 Err(e) => {
                     state.audit_or_log(

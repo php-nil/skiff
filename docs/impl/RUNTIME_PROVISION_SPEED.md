@@ -36,7 +36,7 @@
 
 ## 3. 已落地：L1 源自适应
 
-实现位置：`crates/app/src/runtime_catalog.rs::installer_prelude()`。
+实现位置：`crates/app/src/runtime_catalog.rs::installer_prelude()`。用户可覆盖性（锁定源、自填内网源、镜像源）见 [SOURCE_MIRRORS.md](SOURCE_MIRRORS.md)——本节的自动探测只是 `auto` 策略下的默认值来源。
 
 - **候选**：`dl-cdn` / 清华 / 阿里 / 中科大。不写死任何一个——实测阿里比默认源还慢，单源切换会把另一批用户做坏。
 - **判据**：对 `<base>/alpine/v<rel>/releases/<arch>/alpine-virt-<完整版本>-<arch>.iso` 发 **3 MB range 请求**，取 `%{speed_download}`。`<rel>`/完整版本取自 `/etc/alpine-release`、`<arch>` 取自 `apk --print-arch`，跟随镜像实际版本。

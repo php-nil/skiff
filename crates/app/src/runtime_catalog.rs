@@ -356,8 +356,10 @@ pub const PHP_EXTENSION_INSTALLER: &str =
 /// 全部排除时保持镜像默认源，绝不靠小文件估值去猜。
 ///
 /// 选中结果写 `/var/cache/apk/.skiff-mirror`（该目录挂宿主 `<runtime>/cache/apk`，
-/// 跨容器复用），24 小时内直接复用，避免每次装扩展都重测 4 个源。全候选不可达
-/// （典型是纯内网）时不动 `/etc/apk/repositories`，保持镜像默认源，不阻断安装。
+/// 跨容器复用），24 小时内直接复用，避免每次装扩展都重测 4 个源。**用户显式选源**
+/// （`com.skiff.sources` 插件写入的文件带 `# skiff-fixed` 首行）不受这 24 小时限制，
+/// 否则「我选了 A 源」会在一天后悄悄被自动探测改掉。全候选不可达（典型是纯内网）
+/// 时不动 `/etc/apk/repositories`，保持镜像默认源，不阻断安装。
 fn installer_prelude() -> String {
     format!(
         "set -e\n\
@@ -368,8 +370,37 @@ fn installer_prelude() -> String {
          \t\tprintf 'cache-packages yes\\n' >> /etc/apk/config\n\
          \tfi\n\
          \tSKIFF_MIRROR_CACHE=/var/cache/apk/.skiff-mirror\n\
-         \tif [ -s \"$SKIFF_MIRROR_CACHE\" ] && [ -z \"$(find \"$SKIFF_MIRROR_CACHE\" -mtime +1 2>/dev/null)\" ]; then\n\
+         \tSKIFF_MIRROR_STALE=1\n\
+         \tSKIFF_BASE_FIXED=''\n\
+         \tif [ -s \"$SKIFF_MIRROR_CACHE\" ]; then\n\
+         \t\tif grep -q '^# skiff-fixed' \"$SKIFF_MIRROR_CACHE\" 2>/dev/null; then\n\
+         \t\t\tSKIFF_BASE_FIXED=\"$(grep -v '^[[:space:]]*#' \"$SKIFF_MIRROR_CACHE\" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1)\"\n\
+         \t\telif [ -z \"$(find \"$SKIFF_MIRROR_CACHE\" -mtime +1 2>/dev/null)\" ]; then\n\
+         \t\t\tSKIFF_MIRROR_STALE=0\n\
+         \t\tfi\n\
+         \tfi\n\
+         \tif [ -n \"$SKIFF_BASE_FIXED\" ]; then\n\
+         \t\tSKIFF_FULL=\"$(cat /etc/alpine-release 2>/dev/null || true)\"\n\
+         \t\tSKIFF_REL=\"v$(printf '%s' \"$SKIFF_FULL\" | cut -d. -f1,2)\"\n\
+         \t\tSKIFF_BASE=\"$SKIFF_BASE_FIXED\"\n\
+         \t\twhile [ \"${{SKIFF_BASE%/}}\" != \"$SKIFF_BASE\" ]; do SKIFF_BASE=\"${{SKIFF_BASE%/}}\"; done\n\
+         \t\tSKIFF_TAIL=\"${{SKIFF_BASE##*/}}\"\n\
+         \t\tcase \"$SKIFF_TAIL\" in\n\
+         \t\t\tmain|community) SKIFF_BASE=\"${{SKIFF_BASE%/*}}\" ;;\n\
+         \t\tesac\n\
+         \t\tSKIFF_TAIL=\"${{SKIFF_BASE##*/}}\"\n\
+         \t\tcase \"$SKIFF_TAIL\" in\n\
+         \t\t\tv[0-9]*.[0-9]*) SKIFF_REL=\"$SKIFF_TAIL\"; SKIFF_BASE=\"${{SKIFF_BASE%/*}}\" ;;\n\
+         \t\tesac\n\
+         \t\tif [ -n \"$SKIFF_REL\" ] && [ \"$SKIFF_REL\" != 'v' ]; then\n\
+         \t\t\tprintf '%s/%s/main\\n%s/%s/community\\n' \"$SKIFF_BASE\" \"$SKIFF_REL\" \"$SKIFF_BASE\" \"$SKIFF_REL\" > /etc/apk/repositories\n\
+         \t\t\techo \"[skiff] apk 源：$SKIFF_BASE（用户固定，分支 $SKIFF_REL）\"\n\
+         \t\telse\n\
+         \t\t\techo \"[skiff] 读不到容器版本（/etc/alpine-release），保持镜像默认源\" >&2\n\
+         \t\tfi\n\
+         \telif [ \"$SKIFF_MIRROR_STALE\" = 0 ]; then\n\
          \t\tcat \"$SKIFF_MIRROR_CACHE\" > /etc/apk/repositories\n\
+         \t\techo \"[skiff] apk 源：沿用 $SKIFF_MIRROR_CACHE 记录的自动探测结果\"\n\
          \telse\n\
          \t\t(\n\
          \t\tSKIFF_FULL=\"$(cat /etc/alpine-release 2>/dev/null)\"\n\

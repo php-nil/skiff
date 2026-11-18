@@ -14,7 +14,7 @@
 # 发布物**不做 detached 签名**（§11 决策 12）：只用 SHA-256 摘要防传输损坏，
 # 签名链路（--key / .sig / verify-file）已于 2026-11-01 整体移除。
 #
-# 官方插件包 7 个（6 个插件 guard/monitor/files/cron/ftp/firewall + testkit）随包携带：
+# 官方插件包 8 个（7 个插件 guard/monitor/files/cron/ftp/firewall/sources + testkit）随包携带：
 # 调用 plugins/pack.sh 产出已签名
 # `.wbpkg`，放进发布包的 official/；install.sh 再复制到 /www/skiff/official/
 # （不自动安装，权限确认不能跳过）。插件签名私钥按当前决定**非强制**：

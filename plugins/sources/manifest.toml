@@ -1,0 +1,50 @@
+# 软件源：给用户自己选 apk 源与容器镜像源，并当场测速。
+#
+# 为什么测速放在插件里：源快不快取决于**这台机器的这条线路**，跨机器不可迁移，
+# 所以只能在本机、用户点的时候测。插件算出的数字只用于同一页横向比较，不落库、
+# 不参与任何自动决策（设计见 docs/impl/SOURCE_MIRRORS.md）。
+id = "com.skiff.sources"
+name = "软件源"
+version = "0.1.0"
+# 占位：打包时由 `skiff-plugin stamp --key <发布私钥>` 回填。
+key_id = "0000000000000000000000000000000000000000000000000000000000000000"
+api = "1.3"
+run = "on-demand"
+idle_timeout_sec = 300
+max_restarts = 3
+requires = ["fs", "exec"]
+# 测速要访问用户自填的任意镜像域名，无法预列 IP/CIDR。这一条会在安装确认页
+# 原样展示：装本插件等于允许它主动连接任意地址。
+network_egress = ["unrestricted"]
+resource_hints = [
+  "path:/www/runtime/cache/apk",
+  "path:/etc/docker",
+  "bin:/usr/bin/systemctl",
+  # 应用镜像源后要读 `docker info` 确认内存态真的切了：`systemctl reload` 的退出码
+  # 不能证明 dockerd 接受了这份配置（SIGHUP 由 systemd 的 kill 发，配置非法也是 0）。
+  "bin:/usr/bin/docker",
+]
+
+[[permissions]]
+capability = "fs"
+verbs = ["read", "write"]
+
+[[permissions]]
+capability = "exec"
+verbs = ["run"]
+
+[[ui]]
+label = "软件源"
+path = "main.html"
+
+[[menu]]
+id = "sources"
+parent = "tools"
+label = "软件源"
+order = 30
+icon = "network"
+view = "main"
+
+[interop]
+consumes = []
+provides = []

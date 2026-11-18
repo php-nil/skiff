@@ -1,8 +1,17 @@
 //! 把面板里的镜像源真正落到 `/etc/docker/daemon.json`。
 //!
 //! 流程：读旧文件 → 合并 `registry-mirrors`（保留其它键）→ JSON 校验 →
-//! 原子写入（原内容留在内存，不落 `.bak`）→ （无运行中容器时）`systemctl restart docker`
-//! → 可用性探测 → 提交；任何失败或**请求被取消**都由守卫还原原文件。
+//! 原子写入（原内容留在内存，不落 `.bak`）→ `systemctl reload docker`（SIGHUP）
+//! → `docker info` 校验内存态已切换 → 提交；任何失败或**请求被取消**都由守卫还原原文件。
+//!
+//! **为什么是 reload 不是 restart**：`registry-mirrors` 属于 dockerd 支持 SIGHUP
+//! 热重载的键（同 `insecure-registries` / `debug` / `labels` / `runtimes`），重载
+//! **不重建也不重启任何运行中的容器**；需要 restart 的只有 `data-root` /
+//! `storage-driver` / `log-driver` / `iptables` 这类。早前按「有运行中容器就不动」
+//! 降级，结果是配置写完**根本不生效**、还要用户自己去维护窗口手工 restart。
+//!
+//! unit 没有 `ExecReload`（`CanReload=no`）时才必须 restart：此时如实报告
+//! 「已写入，重启 Docker 后生效」，不在有容器运行时替用户重启。
 //!
 //! 预算：整段外部变更必须严格短于 web 层请求超时（30 秒），否则 504 会先于
 //! 「结果未知」返回，用户既拿不到准确结论，也等不到回滚。
@@ -21,21 +30,30 @@ pub const DAEMON_JSON: &str = "/etc/docker/daemon.json";
 /// 必须小于 `skiff_web::middleware::REQUEST_TIMEOUT`（30 秒），留出文件 IO、
 /// 设置落库与响应组装的时间。web 侧有单测锁定这个大小关系。
 pub const MIRROR_APPLY_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
-/// 单次 `systemctl restart docker` 的上限；一次失败回滚还会再重启一次。
+/// 单次 `systemctl` 调用的上限。
 const SYSTEMCTL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
-/// Docker 恢复探测的预算（含重试间隔）。
-const DOCKER_READY_BUDGET: std::time::Duration = std::time::Duration::from_secs(6);
-/// 探测运行中容器列表的上限：bollard 默认 30 秒会吃满整个请求预算。
+/// SIGHUP 是异步的：reload 返回后 dockerd 才读新配置，给它一点时间再判定生效。
+const RELOAD_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+/// 统计运行中容器数的上限：bollard 默认 30 秒会吃满整个请求预算。
 const CONTAINER_LIST_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub struct MirrorApply {
     /// 是否实际写入（内容没变化时为 false）。
     pub written: bool,
-    /// 是否重启了 docker。
-    pub restarted: bool,
-    /// 重启前检测到的运行中容器数（>0 时不重启）。
-    pub running_containers: usize,
+    pub mode: MirrorApplyMode,
+    /// 变更前的运行中容器数；仅 `NeedsRestart` 时用于提示影响面（读不到为 `None`）。
+    pub running_containers: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorApplyMode {
+    /// 内容与原文件一致，未写入。
+    Unchanged,
+    /// 已写入并经 SIGHUP 生效，运行中的容器未受影响。
+    Reloaded,
+    /// 已写入，但该 unit 不支持 reload——重启 Docker 后才生效，容器未动。
+    NeedsRestart,
 }
 
 /// 写 `daemon.json` 的还原守卫：未提交前无论正常返回、错误返回还是 future 被
@@ -157,8 +175,8 @@ pub async fn apply_registry_mirror(
     if merged.trim() == existing.trim() {
         return Ok(MirrorApply {
             written: false,
-            restarted: false,
-            running_containers: 0,
+            mode: MirrorApplyMode::Unchanged,
+            running_containers: None,
         });
     }
     if let Some(dir) = path.parent() {
@@ -171,120 +189,187 @@ pub async fn apply_registry_mirror(
     // 从这里开始进入「外部状态已变」区间：任何提前返回或 future 被取消，
     // 守卫都会把原内容同步写回，不需要 `.bak` 文件。
     let mut guard = DaemonJsonGuard::new(path, &existing, Arc::clone(kfs));
+    // 只用于 `NeedsRestart` 时告知影响面，不参与决策；读不到就只说「需重启」。
+    let running = running_containers(docker).await;
 
-    let rows = match tokio::time::timeout(CONTAINER_LIST_BUDGET, docker.list_containers()).await {
-        Ok(Ok(rows)) => rows,
-        Ok(Err(e)) => {
-            return Err(format!("写入后读取容器列表失败：{e}；daemon.json 已还原"));
-        }
-        Err(_) => {
-            return Err(format!(
-                "写入后读取容器列表超过 {} 秒；daemon.json 已还原",
-                CONTAINER_LIST_BUDGET.as_secs()
-            ));
-        }
-    };
-    let running = rows.iter().filter(|r| r.state == "running").count();
-    if running > 0 {
+    let reloaded = reload_docker(deadline).await;
+    if reloaded.is_ok() && mirrors_settled(docker, &mirrors, deadline).await {
         guard.disarm();
         return Ok(MirrorApply {
             written: true,
-            restarted: false,
+            mode: MirrorApplyMode::Reloaded,
             running_containers: running,
         });
     }
-
-    let restarted = restart_docker(deadline).await;
-    // dockerd 重启会打断面板已持有的连接池：第一次探测常因旧连接失效而报错，
-    // 重试几次再判定，避免把「已恢复但首个请求失败」误判成重启失败而回滚。
-    let healthy = restarted.is_ok() && docker_ready(docker, deadline).await;
-    if !healthy {
-        let reason = restarted
-            .err()
-            .unwrap_or_else(|| "docker 重启后不可用".to_string());
-        let restore_note = match guard.restore() {
-            Ok(()) => "已还原原 daemon.json".to_string(),
-            Err(e) => format!("还原 daemon.json 失败（{e}），请人工核对"),
-        };
-        // 回滚后的重启同样受总预算约束；预算耗尽就如实说明「Docker 仍在使用新配置」。
-        let rollback = restart_docker(deadline).await;
-        let rollback_note = match rollback {
-            Ok(()) => "Docker 已按原配置重启".to_string(),
-            Err(e) => format!("回滚重启未完成：{e}；请在维护窗口执行 systemctl restart docker"),
-        };
-        return Err(format!("{reason}；{restore_note}；{rollback_note}"));
+    // reload 不可用（unit 没有 `ExecReload`）：配置本身没问题，只是要重启才生效。
+    // 保留文件——用户要的就是这份配置；有容器在跑时不替用户重启。
+    if !can_reload(deadline).await {
+        guard.disarm();
+        return Ok(MirrorApply {
+            written: true,
+            mode: MirrorApplyMode::NeedsRestart,
+            running_containers: running,
+        });
     }
-    guard.disarm();
-    Ok(MirrorApply {
-        written: true,
-        restarted: true,
-        running_containers: 0,
-    })
+    // reload 可用却没切过去：dockerd 拒了这份配置，或 systemctl 本身失败——回滚。
+    let reason = reloaded.err().unwrap_or_else(|| {
+        format!(
+            "reload 后 {} 秒内镜像源未切换",
+            RELOAD_SETTLE_BUDGET.as_secs()
+        )
+    });
+    let restore_note = match guard.restore() {
+        Ok(()) => "已还原原 daemon.json".to_string(),
+        Err(e) => format!("还原 daemon.json 失败（{e}），请人工核对"),
+    };
+    // 把旧配置重新装回 dockerd 内存；SIGHUP 幂等，失败也不改变「已回滚」这个结论。
+    if let Err(e) = reload_docker(deadline).await {
+        tracing::warn!(error = %e, "回滚后重新 reload docker 失败");
+    }
+    Err(format!("{reason}；{restore_note}"))
 }
 
-async fn docker_ready(docker: &DockerService, deadline: tokio::time::Instant) -> bool {
-    // 探测预算既不超过自身上限，也不越过整段变更的 deadline。
-    let until = (tokio::time::Instant::now() + DOCKER_READY_BUDGET).min(deadline);
-    loop {
-        let remaining = until.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return false;
+/// 统计运行中容器数；失败或超时返回 `None`（不阻塞、不影响镜像源变更本身）。
+async fn running_containers(docker: &DockerService) -> Option<usize> {
+    match tokio::time::timeout(CONTAINER_LIST_BUDGET, docker.list_containers()).await {
+        Ok(Ok(rows)) => Some(rows.iter().filter(|r| r.state == "running").count()),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "读取容器列表失败，跳过影响面统计");
+            None
         }
-        // 单次探测也受剩余预算约束：Docker 客户端自身有 30s 超时，这里取更小者。
-        let attempt = remaining.min(std::time::Duration::from_secs(2));
-        if matches!(
-            tokio::time::timeout(attempt, docker.list_containers()).await,
-            Ok(Ok(_))
-        ) {
-            return true;
+        Err(_) => {
+            tracing::warn!("读取容器列表超时，跳过影响面统计");
+            None
+        }
+    }
+}
+
+/// 等 dockerd 把新配置装进内存态：轮询 `docker info` 里的 mirrors。
+///
+/// SIGHUP 是异步的，`systemctl reload` 返回只代表信号已送达。判定依据是
+/// **daemon 内存态**而不是文件内容——文件写得对但不生效（配置被 dockerd 拒绝）
+/// 正是需要回滚的那种失败。
+async fn mirrors_settled(
+    docker: &DockerService,
+    want: &[String],
+    deadline: tokio::time::Instant,
+) -> bool {
+    let until = (tokio::time::Instant::now() + RELOAD_SETTLE_BUDGET).min(deadline);
+    loop {
+        if let Ok(Ok(info)) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), docker.info()).await
+        {
+            if same_mirrors(&mirrors_of(&info), want) {
+                return true;
+            }
         }
         if tokio::time::Instant::now() >= until {
             return false;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 }
 
-async fn restart_docker(deadline: tokio::time::Instant) -> Result<(), String> {
+/// 从 `docker info` 的 JSON 里取生效中的镜像源。
+///
+/// 不绑定字段路径：bollard 的 `SystemInfo` 与 `docker info --format` 的键名并不
+/// 完全一致，直接按 `registry_config.mirrors` 取会在版本变化时静默变空——那会
+/// 让「未生效」被误判成「已生效」。这里深度优先找名为 `mirrors` 的字符串数组。
+fn mirrors_of(info: &serde_json::Value) -> Vec<String> {
+    fn find(v: &serde_json::Value) -> Option<Vec<String>> {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, val) in map {
+                    if k.eq_ignore_ascii_case("mirrors") {
+                        if let Some(arr) = val.as_array() {
+                            return Some(
+                                arr.iter()
+                                    .filter_map(|x| x.as_str())
+                                    .map(str::to_string)
+                                    .collect(),
+                            );
+                        }
+                    }
+                }
+                map.values().find_map(find)
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(info).unwrap_or_default()
+}
+
+/// 比较期望与实际：dockerd 会给地址补尾部 `/`，比较前统一去掉。
+fn same_mirrors(actual: &[String], want: &[String]) -> bool {
+    fn norm(s: &str) -> String {
+        s.trim().trim_end_matches('/').to_ascii_lowercase()
+    }
+    actual.len() == want.len() && actual.iter().zip(want).all(|(a, b)| norm(a) == norm(b))
+}
+
+/// 让 dockerd 重读配置（SIGHUP）；不重启进程，运行中的容器不受影响。
+async fn reload_docker(deadline: tokio::time::Instant) -> Result<(), String> {
+    systemctl(deadline, "reload", "systemctl reload docker").await
+}
+
+/// 该 unit 是否支持 reload（是否有 `ExecReload`）。不支持时只能 restart 才生效。
+async fn can_reload(deadline: tokio::time::Instant) -> bool {
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     if remaining.is_zero() {
-        return Err(format!(
-            "请求预算（{} 秒）已用完，未执行 systemctl restart docker",
-            MIRROR_APPLY_BUDGET.as_secs()
-        ));
+        return false;
     }
-    let limit = remaining.min(SYSTEMCTL_TIMEOUT);
-    // 统一执行通道（`skiff_host`）：跑在 systemd-run 瞬态单元里，超时后通道会
-    // `systemctl stop` 单元——比只杀本地客户端干净。文案仍要区分「结果未知」：
-    // 单元被停掉不代表 Docker 没重启过。
-    let args: Vec<String> = ["restart", "docker"]
+    let limit = remaining.min(std::time::Duration::from_secs(3));
+    let args: Vec<String> = ["show", "docker", "-p", "CanReload"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let spec = skiff_host::HostSpec::privileged("systemctl", &args)
         .prefix("skiff-docker")
-        .description("skiff docker restart")
+        .description("skiff docker can-reload")
         .timeout(limit.as_secs().max(1));
     match crate::host::run_host(spec).await {
-        Ok(out) if out.success => {}
-        Ok(out) => return Err(format!("systemctl restart docker 退出码 {:?}", out.code)),
-        Err(skiff_host::HostRunError::Timeout { .. }) => {
-            return Err(format!(
-                "systemctl restart docker 超过 {} 秒未返回（结果未知，Docker 可能仍在重启）",
-                limit.as_secs()
-            ))
+        Ok(out) if out.success => out.stdout.trim().eq_ignore_ascii_case("yes"),
+        Ok(out) => {
+            tracing::warn!(code = ?out.code, stderr = %out.stderr, "systemctl show CanReload 失败");
+            false
         }
-        Err(e) => return Err(e.message("systemctl restart docker")),
+        Err(e) => {
+            tracing::warn!(error = %e.message("systemctl show"), "查询 Reload 能力失败");
+            false
+        }
     }
-    // 等 socket 重新可用，但不得越过总预算。
-    loop {
-        if std::path::Path::new("/var/run/docker.sock").exists() {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err("等待 docker.sock 恢复超时（请求预算已用完）".into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+}
+
+async fn systemctl(
+    deadline: tokio::time::Instant,
+    action: &str,
+    label: &str,
+) -> Result<(), String> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(format!(
+            "请求预算（{} 秒）已用完，未执行 {label}",
+            MIRROR_APPLY_BUDGET.as_secs()
+        ));
+    }
+    let limit = remaining.min(SYSTEMCTL_TIMEOUT);
+    // 统一执行通道（`skiff_host`）：跑在 systemd-run 瞬态单元里，超时后通道会
+    // `systemctl stop` 单元——比只杀本地客户端干净。文案仍要区分「结果未知」。
+    let args: Vec<String> = [action, "docker"].iter().map(|s| s.to_string()).collect();
+    let description = format!("skiff docker {action}");
+    let spec = skiff_host::HostSpec::privileged("systemctl", &args)
+        .prefix("skiff-docker")
+        .description(&description)
+        .timeout(limit.as_secs().max(1));
+    match crate::host::run_host(spec).await {
+        Ok(out) if out.success => Ok(()),
+        Ok(out) => Err(format!("{label} 退出码 {:?}", out.code)),
+        Err(skiff_host::HostRunError::Timeout { .. }) => Err(format!(
+            "{label} 超过 {} 秒未返回（结果未知）",
+            limit.as_secs()
+        )),
+        Err(e) => Err(e.message(label)),
     }
 }
 
@@ -303,6 +388,30 @@ mod tests {
         );
         assert!(parse_mirrors("a.example").is_err());
         assert!(parse_mirrors("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn mirrors_are_read_from_docker_info_without_binding_path() {
+        // `docker info` 的实际形态：registry_config 下 mirrors，地址带尾斜杠。
+        let info = serde_json::json!({
+            "ID": "abc",
+            "RegistryConfig": { "Mirrors": ["https://a.example/", "https://b.example/"] }
+        });
+        assert_eq!(
+            mirrors_of(&info),
+            vec!["https://a.example/", "https://b.example/"]
+        );
+        // 用户清空镜像源时 daemon 不返回该键：按空列表处理，不能 panic，
+        // 否则「清空镜像源」会被判成「未生效」而误回滚。
+        assert!(mirrors_of(&serde_json::json!({ "ID": "abc" })).is_empty());
+    }
+
+    #[test]
+    fn mirror_comparison_ignores_trailing_slash_and_case() {
+        let want = vec!["https://A.example".to_string()];
+        assert!(same_mirrors(&["https://a.example/".to_string()], &want));
+        assert!(!same_mirrors(&[], &want));
+        assert!(!same_mirrors(&["https://b.example".to_string()], &want));
     }
 
     #[test]

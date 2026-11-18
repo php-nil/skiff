@@ -18,6 +18,7 @@ pub mod docker_daemon;
 pub mod host;
 pub mod jobs;
 pub mod menu;
+pub mod mirror_probe;
 pub mod nginx;
 pub mod panel_settings;
 pub mod runtime_catalog;

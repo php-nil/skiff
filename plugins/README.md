@@ -19,6 +19,7 @@
 | `cron/` | `com.skiff.cron` | identity + interop + scheduler | 计划任务管理 UI：新建/编辑统一在弹窗内完成（基本信息 / 调度 / 高级分组），按调度预设（每 N 分钟/小时、每天/每周/每月/工作日）选择并预览，落库仍是标准 5 段表达式；亦支持自定义表达式。调度与执行全在内核，插件只经 `scheduler` 能力面增删改查（不执行宿主 shell）；内置任务只可启停，越界任务在插件 RPC 层硬拦截 |
 | `firewall/` | `com.skiff.firewall` | **firewall（新增能力面）** + interop | 防火墙与 fail2ban：nftables（`inet skiff`）/iptables（`SKIFF` 链）规则查看、增删与端口放行；fail2ban 安装、jail 启停、封禁列表与解封。对外经 interop 提供 `com.skiff.firewall:fail2ban.*`，FTP 等插件按需调用；仅 Native 形态 |
 | `ftp/` | `com.skiff.ftp` | **ftp（新增能力面）** + interop | FTP 管理：站点账号增删改与启停、服务安装/配置/回收/重启；服务配置面板可改监听端口、被动端口范围、连接上限、TLS 模式与证书/私钥路径（保存后立即重载或安装后沿用）；服务配置以内核 `/etc/skiff/ftp-service.json` 为唯一真相；宿主 pure-ftpd，账号 uid/gid 与站点 PHP 容器对齐；**不再安装或维护 fail2ban**，「启用 fail2ban 防护」是可选开关，经 interop 调 `com.skiff.firewall`；仅 Native 形态 |
+| `sources/` | `com.skiff.sources` | fs + exec + `unrestricted` 出网 | 软件源：apk 源与容器镜像源**在同一台机器上当场测速**并由用户选择。判据是真实数据量吞吐（apk 下 3 MB ISO range，镜像走 token → manifest → 3 MB 层 blob），不是响应快；结果带采样字节数，只用于同页比较，不落库、不自动改配置。apk 源写安装器缓存 `<runtime>/cache/apk/.skiff-mirror`，镜像源合并 `/etc/docker/daemon.json` 后 `systemctl reload docker`（SIGHUP，不动容器），失败即回滚 |
 | `testkit/` | `com.skiff.testkit` | fs + identity + interop | 插件架构测试台：多视图/单视图、概览槽位、RPC 成功与失败、能力面授权与越界、主题与 CSP，不执行任何宿主写操作 |
 
 ## 约定
@@ -75,6 +76,7 @@
 | cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
 | firewall | 工具 → 防火墙 | 防火墙规则 / fail2ban | — |
 | ftp | 工具 → FTP 管理 | 账号 / 运行状态 | — |
+| sources | 工具 → 软件源 | 无（单视图 `main`） | — |
 | testkit | 工具 → 架构测试台 | 主视图 / 检查 / 分组 + 单视图对照 | `overview.actions` |
 
 cron（完整 L2 + L3；`view` 决定 `ui/<view>.html`）：
@@ -221,6 +223,7 @@ skiff plugin install /www/skiff/official/com.skiff.files-0.1.3.wbpkg \
 - `guard`：逐个勾要守护的 `container:<name|id>` 或 `project:<p>`；未授权容器只展示不重启。
 - `files`：只勾站点内容目录 `path:/www/sites/<域名>/index`；插件会拒绝其它形态的授权根，
   站点之外的路径一律 403。回收站/配额/上传下载请用内核「工具 → 文件管理」页。
+- `sources`：授权面比其他插件重，装前必须逐条看清——`path:/www/runtime/cache/apk`（写安装器源缓存）、`path:/etc/docker`（读写 `daemon.json`）、`bin:/usr/bin/systemctl`（reload）、`bin:/usr/bin/docker`（校验生效）、出网 `unrestricted`（测速要连用户自填的任意镜像域名，无法预列 IP）。不勾 `bin:` 时测速照常、应用会 403；不勾 `path:/etc/docker` 时镜像源只能看不能改。
 - `testkit`：勾 `path:/proc`（验证授权读与越界拒绝）；要验证 `interop:call` 时再勾
   `plugin:com.skiff.cron`。注意 cron 当前 `[interop].provides` 为空（调度已收归内核），
   `com.skiff.cron:jobs.list` 会被四道闸拒绝，只能验拒绝路径；成功路径需另装声明 provides 的插件。
