@@ -121,6 +121,86 @@ fn registry_candidates() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
+/// 上一次实测结果，按源地址存。**只存在进程内存里**：插件空闲 300 秒会被回收，
+/// 回收后页面显示「未测」——这正是想要的语义（数字只代表测的那一刻）。
+fn last_results() -> &'static std::sync::Mutex<std::collections::HashMap<String, Value>> {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Value>>> =
+        std::sync::OnceLock::new();
+    LAST.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn remember(result: &Value) {
+    let (Some(base), true) = (
+        result.get("base").and_then(Value::as_str),
+        result.get("ok").and_then(Value::as_bool).unwrap_or(false),
+    ) else {
+        // 失败的也记：否则用户点完「测速」，失败的源会静默变回「未测」。
+        if let Some(base) = result.get("base").and_then(Value::as_str) {
+            if let Ok(mut map) = last_results().lock() {
+                map.insert(base.to_string(), result.clone());
+            }
+        }
+        return;
+    };
+    if let Ok(mut map) = last_results().lock() {
+        map.insert(base.to_string(), result.clone());
+    }
+}
+
+/// 一行实测的文字：速率 + 采样字节数 + 耗时 + 样本类型。三者必须一起出现，
+/// 否则「3 MB / 4 ms」这种缓存命中会被当成带宽。
+fn speed_text(r: Option<&Value>) -> String {
+    let Some(r) = r else {
+        return "未测".to_string();
+    };
+    if r.get("ok").and_then(Value::as_bool) != Some(true) {
+        return r
+            .get("error")
+            .and_then(Value::as_str)
+            .map(|e| format!("不可用：{e}"))
+            .unwrap_or_else(|| "不可用".to_string());
+    }
+    let bps = r
+        .get("bytes_per_sec")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let bytes = r.get("bytes").and_then(Value::as_f64).unwrap_or(0.0);
+    let ms = r.get("elapsed_ms").and_then(Value::as_f64).unwrap_or(0.0);
+    let rate = if bps >= 1048576.0 {
+        format!("{:.1} MB/s", bps / 1048576.0)
+    } else {
+        format!("{:.0} KB/s", bps / 1024.0)
+    };
+    let sample = match r.get("sample").and_then(Value::as_str) {
+        Some("apkindex") => "索引样本",
+        Some("blob") => "镜像层",
+        _ => "ISO",
+    };
+    format!(
+        "{rate} · {:.2} MB / {:.1} s · {sample}",
+        bytes / 1048576.0,
+        ms / 1000.0
+    )
+}
+
+fn rows(cands: &[(&'static str, &'static str, &'static str)], kind_mark: &str) -> Vec<Value> {
+    let last = last_results().lock().ok();
+    cands
+        .iter()
+        .map(|(id, name, base)| {
+            let r = last.as_ref().and_then(|m| m.get(*base));
+            json!({
+                "id": id,
+                "name": name,
+                "base": base,
+                "speed_text": speed_text(r),
+                "ok": r.map(|v| v.get("ok").and_then(Value::as_bool).unwrap_or(false)).unwrap_or(false),
+                "kind": kind_mark,
+            })
+        })
+        .collect()
+}
+
 fn status(plugin: &Plugin) -> Value {
     let mut out = json!({
         "apk": apk_candidates().iter().map(|(id, name, base)| json!({
@@ -148,6 +228,40 @@ fn status(plugin: &Plugin) -> Value {
         Ok(text) => json!(parse_mirrors_of(&text)),
         Err(_) => Value::Null,
     };
+    out["apk_rows"] = json!(rows(&apk_candidates(), "apk"));
+    out["reg_rows"] = json!(rows(&registry_candidates(), "registry"));
+    out["apk_current_text"] = json!(match out["apk_current"].as_str() {
+        Some(cur) if !cur.is_empty() => {
+            if out["apk_fixed"].as_bool() == Some(true) {
+                format!("{cur}（已固定，不会被自动探测覆盖）")
+            } else {
+                format!("{cur}（自动探测结果，24 小时后重测）")
+            }
+        }
+        _ => "跟随镜像默认源（安装器探测后自选）".to_string(),
+    });
+    out["reg_current_text"] = json!(match out["registry_current"].as_array() {
+        Some(list) if !list.is_empty() => list
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("  ·  "),
+        _ => "未配置（直连 Docker Hub）".to_string(),
+    });
+    out["reg_param_text"] = json!(out["registry_current"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default());
+    out["last_hint"] = json!(if last_results().lock().map(|m| m.is_empty()).unwrap_or(true) {
+        "还没有实测数据：点「测速全部」，数字只代表这台机器此刻这条线路。"
+    } else {
+        "数字只代表这台机器此刻这条线路；换机器、换时间都可能完全不同。"
+    });
     out
 }
 
@@ -173,11 +287,13 @@ fn probe(params: &Value) -> Value {
     if base.trim().is_empty() {
         return probe_error(&base, "缺少源地址");
     }
-    if kind == "registry" {
+    let out = if kind == "registry" {
         probe_registry(&base)
     } else {
         probe_apk(&base)
-    }
+    };
+    remember(&out);
+    out
 }
 
 /// 并行测所有候选：一个死源不该把整页拖满 8 秒。
@@ -233,6 +349,9 @@ fn probe_all(params: &Value) -> Value {
                 .collect()
         });
         results.extend(part);
+    }
+    for r in &results {
+        remember(r);
     }
     json!(results)
 }

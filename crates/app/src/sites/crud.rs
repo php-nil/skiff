@@ -396,6 +396,48 @@ impl AppState {
         Ok(())
     }
 
+    /// 当前生效的 apk 软件源：`(是否用户固定, 源根地址)`；地址为空表示自动探测。
+    ///
+    /// 事实来源是宿主 `cache/apk/.skiff-mirror`（该目录挂进每个 Alpine 容器的
+    /// `/var/cache/apk`），不另存一份到库里：容器内 prelude、`com.skiff.sources`
+    /// 插件与页面读写的是同一个文件，避免出现「库与文件不一致」的第二处真相。
+    pub fn apk_mirror_current(&self) -> (bool, String) {
+        let path = self
+            .site_settings()
+            .system_pkg_cache_dir()
+            .join(".skiff-mirror");
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        crate::runtime_catalog::parse_apk_mirror_file(&text)
+    }
+
+    /// 设置 apk 软件源（安装 PHP 环境时可选）。
+    ///
+    /// 空串/`auto` → 删除固定态文件，回到 prelude 的实测择快；具体地址 → 写
+    /// `# skiff-fixed` 固定态，prelude 认标记后不再自动改写。返回归一后的地址。
+    pub fn save_apk_mirror(&self, raw: &str, actor: &str) -> Result<String, String> {
+        let base = crate::runtime_catalog::normalize_apk_mirror(raw)?;
+        let dir = self.site_settings().system_pkg_cache_dir();
+        // 目录与标记文件都是系统缓存资产（prelude/插件共用），走内核文件通道留痕：
+        // 建目录/删标记是辅助动作，正文写入仍按用户主体进审计。
+        self.admin_fs().ensure_dir_kernel(&dir)?;
+        let path = dir.join(".skiff-mirror");
+        match crate::runtime_catalog::apk_mirror_fixed_body(&base) {
+            Some(body) => {
+                self.admin_fs()
+                    .write(actor, &path.display().to_string(), &body)
+                    .map_err(|e| format!("写入软件源配置失败：{e}"))?;
+            }
+            None => {
+                if path.exists() {
+                    self.admin_fs()
+                        .remove_kernel(&path)
+                        .map_err(|e| format!("清除软件源配置失败：{e}"))?;
+                }
+            }
+        }
+        Ok(base)
+    }
+
     /// Docker 设置页的镜像前缀（写入前去掉尾部 `/`，与读取侧口径一致）。
     pub fn save_image_prefix(&self, raw: &str) -> Result<String, String> {
         let value = raw.trim().trim_end_matches('/').to_string();
@@ -732,7 +774,7 @@ impl AppState {
             &s.global_log_dir(),
         ];
         for dir in dirs {
-            if let Err(e) = std::fs::create_dir_all(dir) {
+            if let Err(e) = self.admin_fs().ensure_dir_kernel(dir) {
                 return Err(self.fail_step(
                     job_id,
                     &mut steps,
@@ -911,10 +953,17 @@ impl AppState {
     }
 
     fn write_default_vhost(&self, s: &SiteSettings) -> std::io::Result<()> {
-        std::fs::create_dir_all(&s.conf_dir)?;
+        let fs = self.admin_fs();
+        fs.ensure_dir_kernel(&s.conf_dir)
+            .map_err(std::io::Error::other)?;
         // 兜底文件与站点 include 入口始终存在；默认站点的投影以库里 `is_default` 为准。
-        std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)?;
-        std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())?;
+        fs.write_kernel(&s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST.as_bytes())
+            .map_err(std::io::Error::other)?;
+        fs.write_kernel(
+            &s.conf_dir.join(SITES_INCLUDE_CONF),
+            s.sites_include_conf().as_bytes(),
+        )
+        .map_err(std::io::Error::other)?;
         self.sync_default_conf(s)
     }
 
@@ -1164,11 +1213,18 @@ impl AppState {
                 let content = self
                     .render_default_vhost_for(s, &site, tls.as_ref())
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
-                write_if_changed(&conf, content.as_bytes(), 0o644).map_err(std::io::Error::other)
+                if std::fs::read(&conf).ok().as_deref() != Some(content.as_bytes()) {
+                    self.admin_fs()
+                        .write_kernel(&conf, content.as_bytes())
+                        .map_err(std::io::Error::other)?;
+                }
+                Ok(())
             }
             Ok(None) => {
                 if conf.exists() {
-                    std::fs::remove_file(&conf)?;
+                    self.admin_fs()
+                        .remove_kernel(&conf)
+                        .map_err(std::io::Error::other)?;
                 }
                 Ok(())
             }
@@ -1638,7 +1694,8 @@ impl AppState {
             .map_err(|e| SiteError::Internal(e.to_string()))?
             .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
         let site_dir = PathBuf::from(&site.root_dir);
-        std::fs::create_dir_all(site_conf_dir(&site_dir))
+        let fs = self.admin_fs();
+        fs.ensure_dir_kernel(&site_conf_dir(&site_dir))
             .map_err(|e| SiteError::Internal(format!("创建站点配置目录失败：{e}")))?;
         let aliases = self.site_aliases(&site.domain);
         let tls = self.site_tls(s, &site);
@@ -1646,15 +1703,15 @@ impl AppState {
         let conf = s.vhost_file(&site_dir, &site.domain);
         let disabled = s.vhost_disabled(&site_dir, &site.domain);
         if site.status == "running" {
-            std::fs::write(&conf, vhost)
+            fs.write_kernel(&conf, vhost.as_bytes())
                 .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
-            if let Err(e) = std::fs::remove_file(&disabled) {
+            if let Err(e) = fs.remove_kernel(&disabled) {
                 tracing::debug!(path = %disabled.display(), error = %e, "清理已禁用的站点配置失败");
             }
         } else {
-            std::fs::write(&disabled, vhost)
+            fs.write_kernel(&disabled, vhost.as_bytes())
                 .map_err(|e| SiteError::Internal(format!("写入站点配置失败：{e}")))?;
-            if let Err(e) = std::fs::remove_file(&conf) {
+            if let Err(e) = fs.remove_kernel(&conf) {
                 tracing::debug!(path = %conf.display(), error = %e, "清理生效中的站点配置失败");
             }
         }
@@ -1668,11 +1725,18 @@ impl AppState {
             .db()
             .list_sites()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        std::fs::create_dir_all(&s.conf_dir)?;
-        std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())?;
+        let fs = self.admin_fs();
+        fs.ensure_dir_kernel(&s.conf_dir)
+            .map_err(std::io::Error::other)?;
+        fs.write_kernel(
+            &s.conf_dir.join(SITES_INCLUDE_CONF),
+            s.sites_include_conf().as_bytes(),
+        )
+        .map_err(std::io::Error::other)?;
         for site in &sites {
             let site_dir = PathBuf::from(&site.root_dir);
-            std::fs::create_dir_all(site_conf_dir(&site_dir))?;
+            fs.ensure_dir_kernel(&site_conf_dir(&site_dir))
+                .map_err(std::io::Error::other)?;
             let aliases = self.site_aliases(&site.domain);
             let tls = self.site_tls(s, site);
             let vhost = self
@@ -1681,13 +1745,15 @@ impl AppState {
             let conf = s.vhost_file(&site_dir, &site.domain);
             let disabled = s.vhost_disabled(&site_dir, &site.domain);
             if site.status == "running" {
-                std::fs::write(&conf, vhost)?;
-                if let Err(e) = std::fs::remove_file(&disabled) {
+                fs.write_kernel(&conf, vhost.as_bytes())
+                    .map_err(std::io::Error::other)?;
+                if let Err(e) = fs.remove_kernel(&disabled) {
                     tracing::debug!(path = %disabled.display(), error = %e, "清理已禁用的站点配置失败");
                 }
             } else {
-                std::fs::write(&disabled, vhost)?;
-                if let Err(e) = std::fs::remove_file(&conf) {
+                fs.write_kernel(&disabled, vhost.as_bytes())
+                    .map_err(std::io::Error::other)?;
+                if let Err(e) = fs.remove_kernel(&conf) {
                     tracing::debug!(path = %conf.display(), error = %e, "清理生效中的站点配置失败");
                 }
             }

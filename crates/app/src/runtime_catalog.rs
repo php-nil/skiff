@@ -90,6 +90,171 @@ pub fn default_php_image() -> &'static str {
     DEFAULT_PHP_IMAGE
 }
 
+// ---------------------------------------------------------------------------
+// 软件源（apk）：安装 PHP 环境时可选
+// ---------------------------------------------------------------------------
+//
+// 为什么要有这一层：首次安装 PHP 环境要拉约 90 MB 构建工具链，官方镜像默认指向
+// `dl-cdn.alpinelinux.org`，国内链路实测只有 535 KB/s，而同一台机器到清华源是
+// 29.5 MB/s——几十倍差距直接决定「几十秒」还是「三十分钟超时」。反过来海外链路上
+// 国内源又比 `dl-cdn` 慢，所以**不能写死任何一个源**。
+//
+// 默认「自动」由容器内 prelude 实测吞吐后择快（见 `installer_prelude`）；用户在
+// 新建环境时显式选源，则把选择写成固定态文件（`# skiff-fixed`），prelude 直接采用、
+// 不再自动改写——否则「我选了 A 源」会在一天后悄悄被探测结果覆盖。
+//
+// 候选表是单一来源：UI 下拉、后端校验、详情页展示文案都从这里取。
+
+/// 一个 apk 软件源候选。
+#[derive(Debug, Clone, Copy)]
+pub struct ApkMirrorDef {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// 源根地址（不含分支/架构）；空串表示「自动探测」。
+    pub base: &'static str,
+    pub note: &'static str,
+}
+
+pub const APK_MIRRORS: &[ApkMirrorDef] = &[
+    ApkMirrorDef {
+        key: "auto",
+        label: "自动（实测本机最快）",
+        base: "",
+        note: "安装时在容器内实测各源吞吐后择快使用，24 小时内复用",
+    },
+    ApkMirrorDef {
+        key: "tuna",
+        label: "清华 TUNA",
+        base: "https://mirrors.tuna.tsinghua.edu.cn/alpine",
+        note: "国内链路实测 20–30 MB/s",
+    },
+    ApkMirrorDef {
+        key: "ustc",
+        label: "中科大 USTC",
+        base: "https://mirrors.ustc.edu.cn/alpine",
+        note: "国内链路实测 10–15 MB/s",
+    },
+    ApkMirrorDef {
+        key: "tencent",
+        label: "腾讯云",
+        base: "https://mirrors.cloud.tencent.com/alpine",
+        note: "国内链路，云主机内通常最快",
+    },
+    ApkMirrorDef {
+        key: "aliyun",
+        label: "阿里云",
+        base: "https://mirrors.aliyun.com/alpine",
+        note: "国内链路，ISO 下载不稳定，索引可用",
+    },
+    ApkMirrorDef {
+        key: "official",
+        label: "Alpine 官方 CDN",
+        base: "https://dl-cdn.alpinelinux.org/alpine",
+        note: "海外链路通常最快；国内实测约 500 KB/s",
+    },
+];
+
+pub fn apk_mirror_def(key: &str) -> Option<&'static ApkMirrorDef> {
+    APK_MIRRORS.iter().find(|d| d.key.eq_ignore_ascii_case(key))
+}
+
+/// 归一化用户提交的软件源。
+///
+/// 接受三种写法并统一成**源根地址**：候选 key（`tuna`）、`auto` / 空串（自动）、
+/// 任意镜像站地址（`https://mirrors.example.com/alpine`，尾部 `/`、`/vX.Y/main`
+/// 一并去掉——prelude 会按容器版本重新拼分支，多带反而拼错）。
+pub fn normalize_apk_mirror(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("auto") {
+        return Ok(String::new());
+    }
+    if let Some(def) = apk_mirror_def(raw) {
+        return Ok(def.base.to_string());
+    }
+    let base = apk_base_of(raw);
+    let invalid = || {
+        format!("软件源地址无效：{raw}（需要 http(s):// 开头的镜像站根地址，例如 https://mirrors.tuna.tsinghua.edu.cn/alpine）")
+    };
+    let (scheme, rest) = base.split_once("://").ok_or_else(invalid)?;
+    if !matches!(scheme, "http" | "https") {
+        return Err(invalid());
+    }
+    let host = rest.split('/').next().unwrap_or("");
+    if host.is_empty()
+        || !host.contains('.')
+        || base.len() > 200
+        || base.chars().any(|c| c.is_whitespace() || c.is_control())
+        || base
+            .chars()
+            .any(|c| matches!(c, '"' | '\'' | '`' | '$' | '\\'))
+    {
+        return Err(invalid());
+    }
+    Ok(base)
+}
+
+/// 仓库地址 → 源根地址：去掉尾部 `/`、`/main`|`/community` 与 `/vX.Y` 分支段。
+///
+/// 输入可能是 `https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/main`（这是
+/// `/etc/apk/repositories` 的一行，也是自动探测写入缓存的内容），也可能是裸的
+/// 源根地址；都能收敛到同一个值，UI 才能把「当前源」对回下拉选中项。
+pub fn apk_base_of(raw: &str) -> String {
+    let mut s = raw.trim().trim_end_matches('/').to_string();
+    for suffix in ["/main", "/community"] {
+        if let Some(stripped) = s.strip_suffix(suffix) {
+            s = stripped.to_string();
+        }
+    }
+    if let Some(idx) = s.rfind("/v") {
+        let tail = &s[idx + 1..];
+        let body = tail.strip_prefix('v').unwrap_or(tail);
+        let looks_branch = body.contains('.')
+            && body
+                .split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+        if looks_branch {
+            s.truncate(idx);
+        }
+    }
+    s
+}
+
+/// 源根地址 → 展示名（命中共用候选时用候选 label，自定义地址原样展示）。
+pub fn apk_mirror_label(base: &str) -> String {
+    if base.trim().is_empty() {
+        return APK_MIRRORS[0].label.to_string();
+    }
+    match APK_MIRRORS.iter().find(|d| d.base == base) {
+        Some(def) => def.label.to_string(),
+        None => base.to_string(),
+    }
+}
+
+/// 固定态缓存文件内容：`# skiff-fixed` 首行 = 「别覆盖我」。
+///
+/// `installer_prelude` 认这个标记后跳过 24 小时重测，直接按首条非注释行拼分支。
+pub fn apk_mirror_fixed_body(base: &str) -> Option<String> {
+    let base = base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("# skiff-fixed\n{base}\n"))
+}
+
+/// 解析缓存文件：`(是否用户固定, 源根地址)`。
+///
+/// 自动探测写入的是 `/etc/apk/repositories` 原文（两行 `main` + `community`），
+/// 这里取首条非注释行并归一到根地址，避免 UI 把「自动探测结果」误显示成自定义源。
+pub fn parse_apk_mirror_file(text: &str) -> (bool, String) {
+    let fixed = text.lines().any(|l| l.trim() == "# skiff-fixed");
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or("");
+    (fixed, apk_base_of(first))
+}
+
 /// Rust 运行环境固定端口的可分配区间（host 网络，避开 80/443/面板端口）。
 pub const RUST_PORT_RANGE: std::ops::RangeInclusive<u16> = 9100..=9199;
 
@@ -1335,6 +1500,41 @@ mod tests {
             out.status.success(),
             "前置脚本语法错误：{}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// 新建 PHP 环境的软件源选择：候选 key 与完整仓库地址都归一到源根，
+    /// 固定态文件与读取侧往返一致（否则 UI 会把「固定」显示成「自动」）。
+    #[test]
+    fn apk_mirror_normalization_and_round_trip() {
+        assert_eq!(normalize_apk_mirror("").unwrap(), "");
+        assert_eq!(normalize_apk_mirror(" AUTO ").unwrap(), "");
+        let tuna = apk_mirror_def("tuna").unwrap().base;
+        assert_eq!(normalize_apk_mirror("TUNA").unwrap(), tuna);
+        assert_eq!(
+            normalize_apk_mirror("https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/main/")
+                .unwrap(),
+            tuna
+        );
+        assert_eq!(
+            normalize_apk_mirror("https://mirror.corp/alpine/").unwrap(),
+            "https://mirror.corp/alpine"
+        );
+        assert!(normalize_apk_mirror("ftp://mirror.corp/alpine").is_err());
+
+        let body = apk_mirror_fixed_body(tuna).unwrap();
+        assert_eq!(body, format!("# skiff-fixed\n{tuna}\n"));
+        assert_eq!(parse_apk_mirror_file(&body), (true, tuna.to_string()));
+        // 自动探测写入的是整行仓库地址：读取侧按「未固定 + 源根」返回。
+        assert_eq!(
+            parse_apk_mirror_file(&format!("{tuna}/v3.24/main\n")),
+            (false, tuna.to_string())
+        );
+        assert!(apk_mirror_fixed_body("  ").is_none());
+        assert_eq!(apk_mirror_label(tuna), "清华 TUNA");
+        assert_eq!(
+            apk_mirror_label("https://mirror.corp/alpine"),
+            "https://mirror.corp/alpine"
         );
     }
 

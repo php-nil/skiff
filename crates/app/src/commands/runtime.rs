@@ -41,6 +41,9 @@ pub struct CreateRuntime {
     pub name: String,
     pub version: String,
     pub extensions: Vec<String>,
+    /// 软件源（apk）：`None` = 不改动；`Some("")`/`Some("auto")` = 恢复自动探测；
+    /// `Some(地址或候选 key)` = 固定为该源。安装作业开始前落盘，prelude 立即读到。
+    pub apk_mirror: Option<String>,
     pub actor: Actor,
     pub role: Role,
 }
@@ -61,6 +64,28 @@ pub async fn create(
     } else {
         cmd.kind.trim()
     };
+    // 软件源必须在安装作业之前落盘：prelude 在容器内读 `cache/apk/.skiff-mirror`，
+    // 晚了就整轮都用旧源下载（首次安装 90 MB 工具链，差的不是一点）。
+    if let Some(raw) = cmd.apk_mirror.as_deref() {
+        let base =
+            crate::runtime_catalog::normalize_apk_mirror(raw).map_err(SiteError::BadRequest)?;
+        state
+            .save_apk_mirror(&base, &cmd.actor.username)
+            .map_err(SiteError::Internal)?;
+        let target = if base.is_empty() {
+            "auto"
+        } else {
+            base.as_str()
+        };
+        state.audit_or_log(
+            &cmd.actor.username,
+            &cmd.actor.ip,
+            "sites.env.mirror",
+            target,
+            "ok",
+            "",
+        );
+    }
     let result = state
         .add_runtime(
             kind,
@@ -793,6 +818,7 @@ mod tests {
             name: "test".into(),
             version: version.into(),
             extensions: Vec::new(),
+            apk_mirror: None,
             actor: actor(),
             role: Role::Admin,
         }

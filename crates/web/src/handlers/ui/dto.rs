@@ -443,6 +443,10 @@ pub struct RuntimeCreateBody {
     /// 缺省 `None` 表示沿用目录默认扩展（与旧表单 `ext_form` 缺省语义一致）。
     #[serde(default)]
     pub extensions: Option<Vec<String>>,
+    /// 软件源（apk）：缺省/`null` = 不改动；`""`/`auto` = 恢复自动探测；
+    /// 候选 key 或源根地址 = 固定为该源。仅对 PHP 等 Alpine 镜像生效。
+    #[serde(default)]
+    pub apk_mirror: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

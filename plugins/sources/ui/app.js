@@ -221,8 +221,9 @@
   function applyApk(base) {
     say("正在写入安装器源缓存…");
     rpc("apply.apk", { base: base }).then(function (r) {
-      var lines = String((r && r.repositories) || "").split("\n");
-      state.apkCurrent = lines[1] || base;
+      // 后端返回归一后的源根（`base`）；早期版本这里读不存在的 `repositories`
+      // 字段，会把「当前源」显示成 undefined。
+      state.apkCurrent = (r && r.base) || base;
       state.apkFixed = true;
       render("apk");
       renderCurrent();

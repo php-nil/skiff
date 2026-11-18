@@ -30,7 +30,7 @@ pub async fn runtimes(
                     .contains(&needle)
         })
         .map(|v| {
-            let row = handlers::sites::runtime_row(&state, v);
+            let row = skiff_app::views::runtimes::row(v);
             let job = v.job.as_ref().map(|j| RuntimeJobItem {
                 state: j.state.as_str().to_string(),
                 label: crate::labels::runtime_job_state(j.state).to_string(),
@@ -47,7 +47,7 @@ pub async fn runtimes(
                 RuntimeItem {
                     id: row.id,
                     kind: StatusDto {
-                        code: row.kind_key,
+                        code: row.kind,
                         label: row.kind_label,
                     },
                     name: row.name,
@@ -58,9 +58,9 @@ pub async fn runtimes(
                     image: row.image,
                     state: StatusDto {
                         code: v.effective_state.clone(),
-                        label: row.state_label,
+                        label: handlers::sites::runtime_state_text(v),
                     },
-                    state_class: row.state_class,
+                    state_class: handlers::sites::runtime_state_class(v),
                     drift: row.drift,
                     site_count: row.site_count,
                     container_state: row.container_state,
@@ -293,8 +293,11 @@ pub async fn runtime_detail(
 }
 
 /// `GET /ui/v1/runtimes/catalog`：可安装类型与版本（与旧新建弹窗同一目录来源）。
+///
+/// 同时返回 apk 软件源候选与**当前生效值**：新建弹窗把「当前源」预选上，避免
+/// 用户只是新建环境却无意把已固定的源改回自动（空值在命令层等于恢复自动）。
 pub async fn runtime_catalog(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
     crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
@@ -309,9 +312,28 @@ pub async fn runtime_catalog(
             })
         })
         .collect();
+    let mirrors: Vec<serde_json::Value> = skiff_app::runtime_catalog::APK_MIRRORS
+        .iter()
+        .filter(|m| !m.base.is_empty())
+        .map(|m| {
+            json!({
+                "key": m.key,
+                "label": m.label,
+                "base": m.base,
+                "note": m.note,
+            })
+        })
+        .collect();
+    let (fixed, base) = state.apk_mirror_current();
     write_done(json!({
         "kinds": kinds,
         "default_php_version": skiff_app::sites::DEFAULT_PHP_VERSION,
+        "apk_mirrors": mirrors,
+        "apk_mirror_current": {
+            "fixed": fixed,
+            "base": base,
+            "label": skiff_app::runtime_catalog::apk_mirror_label(&base),
+        },
     }))
 }
 
@@ -333,6 +355,7 @@ pub async fn runtime_create(
             name: body.name,
             version: body.version,
             extensions,
+            apk_mirror: body.apk_mirror,
             actor: handlers::sites::actor(&state, &user, &parts),
             role: user.user.role,
         },

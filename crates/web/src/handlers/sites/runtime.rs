@@ -100,6 +100,10 @@ pub async fn env_add(
     } else {
         skiff_app::runtime_catalog::default_extensions()
     };
+    // 无该字段（旧表单 / 无 JS）时 `None` = 不改动已固定或自动探测的源。
+    let apk_mirror = form
+        .contains_key("apk_mirror")
+        .then(|| form_first(&form, "apk_mirror"));
     let prefix = &state.cfg.entry_prefix;
     let created = runtime_cmd::create(
         &state,
@@ -108,6 +112,7 @@ pub async fn env_add(
             name,
             version,
             extensions: selected,
+            apk_mirror,
             actor: actor(&state, &user, &parts),
             role: user.user.role,
         },

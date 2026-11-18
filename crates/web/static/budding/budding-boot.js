@@ -2549,6 +2549,19 @@
     var kinds = ((catalog && catalog.kinds) || []).map(function (k) {
       return { title: k.label, value: k.key };
     });
+    // 软件源只作用于 PHP（Alpine 镜像内 apk）。候选来自后端单一来源；
+    // 若当前已固定为候选之外的自定义源，把它补进列表，避免用户一提交就
+    // 把自定义源悄悄改回自动。
+    var mirrors = [{ title: '自动（安装时实测本机最快）', value: 'auto' }];
+    ((catalog && catalog.apk_mirrors) || []).forEach(function (m) {
+      // value 用源根地址：与「当前已固定源」直接可比，提交时后端也会归一化。
+      mirrors.push({ title: m.label, value: m.base });
+    });
+    var current = catalog && catalog.apk_mirror_current;
+    if (current && current.fixed && current.base) {
+      var known = mirrors.some(function (it) { return it.value === current.base; });
+      if (!known) mirrors.push({ title: current.base + '（自定义，当前固定）', value: current.base });
+    }
     return [
       {
         type: 'select',
@@ -2566,6 +2579,15 @@
       {
         type: 'input-text',
         props: { name: 'name', label: '实例名（可选，默认按类型自动生成）' }
+      },
+      {
+        type: 'select',
+        props: {
+          name: 'apk_mirror',
+          label: '软件包源（仅 PHP 生效）',
+          hint: '自动 = 安装时在容器内实测各源吞吐后择快；选错源会让装扩展直接失败（不只是慢）。',
+          items: mirrors
+        }
       }
     ];
   }
@@ -2573,7 +2595,10 @@
   /// 运行环境默认类型：同样必须进入表单值，而不是只靠 `defaultValue` 展示。
   function runtimeCreateDefaults(catalog) {
     var kinds = (catalog && catalog.kinds) || [];
-    return kinds.length ? { kind: kinds[0].key } : {};
+    var defaults = kinds.length ? { kind: kinds[0].key } : {};
+    var current = catalog && catalog.apk_mirror_current;
+    defaults.apk_mirror = current && current.fixed && current.base ? current.base : 'auto';
+    return defaults;
   }
 
   function runtimesSchema(images, catalog, total) {
@@ -5165,10 +5190,14 @@
 
   function runtimeCreate(args, ctx) {
     var v = formValues(ctx);
+    var kind = formText(v.kind).trim();
     return submitJson('/runtimes', {
-      kind: formText(v.kind).trim(),
+      kind: kind,
       version: formText(v.version).trim(),
-      name: formText(v.name).trim()
+      name: formText(v.name).trim(),
+      // 非 PHP 不发该字段（null = 不改动），否则会用一个与安装无关的选择
+      // 去改写全局 apk 源。
+      apk_mirror: kind === 'php' ? formText(v.apk_mirror).trim() : null
     })
       .then(function (data) {
         if (args && args.dialog) closeTopLayer();

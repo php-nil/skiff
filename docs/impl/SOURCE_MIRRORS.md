@@ -64,6 +64,8 @@
 ### 4.1 apk 源（容器内，低风险）
 
 - 落宿主 `<runtime>/cache/apk/.skiff-mirror`（就是安装器已经在读的那个缓存），内容为 `# skiff-fixed` + 一行**源根**（如 `https://mirrors.ustc.edu.cn/alpine`）。
+- 内核启动时创建 `<web_root>/runtime/cache/apk`：它是 PHP 安装器的挂载源，也是插件 `path:` 授权的根——**根不存在时授权会被丢弃**，插件在首装运行环境前就无法写源缓存。
+- **新建 PHP 环境的弹窗也能直接选源**（`GET /ui/v1/runtimes/catalog` 给候选与当前固定态，`POST /ui/v1/runtimes` 的 `apk_mirror` 字段）。命令层在安装作业入队前落盘，prelude 立即读到；非 PHP 类型不携带该字段，避免一次与安装无关的提交改写全局源。
 - **不写分支、不写 arch**：分支由容器按自己的 `/etc/alpine-release` 拼成 `.../vX.Y/main` + `.../vX.Y/community`（**不带 arch**，否则拼成 `.../main/x86_64/x86_64` 全盘失败）。用户在输入框里粘了带分支或带 `/main` 的完整地址时，prelude 会先归一化再拼。
 - 首行的 `# skiff-fixed` 是「别覆盖我」的标记：没有它，安装器 24 小时后会重新探测并把用户的选择改掉。
 - 因此**应用这一步不联网、不需要版本发现**：内网镜像即使测不出速，也照样能选、能用。代价是「落地前先跑 `apk update`」这条校验做不到——真正的校验发生在下次装环境时（`apk update` 失败会在日志里直接暴露）。

@@ -134,6 +134,12 @@
   → 实例名（默认跟随类型与版本，如 `php-8.5` / `node-24`，可改；同 kind 内唯一，目标目录已存在直接拒绝）。
   不允许手填版本；Go **未实现**，已从 `RUNTIME_KINDS` 与弹窗摘除，提交 `kind=go` 由后端按
   「未知运行环境类型」拒绝。
+- **软件源（apk，仅 PHP 生效）**：弹窗提供源下拉（默认「自动」= 容器内实测后择快；其余为
+  `runtime_catalog::APK_MIRRORS` 候选）。目录接口
+  `GET /ui/v1/runtimes/catalog` 同时返回候选与**当前生效值**（`apk_mirror_current.fixed/base`），
+  弹窗据此预选已固定的源，避免用户只是新建环境却把源改回自动。提交字段 `apk_mirror`：
+  缺省/`null` = 不改动；`""`/`auto` = 恢复自动探测；候选 key 或源根地址 = 固定为该源。
+  命令层在安装作业入队**之前**落盘，容器内 prelude 立即读到；非 PHP 类型不应携带该字段。
 - **版本目录单一来源**：`crates/app/src/runtime_catalog.rs` 的 `RUNTIME_KINDS` 同时驱动弹窗下拉、
   安装镜像选择与后端校验；新增版本只改这一处，模板不再硬编码版本列表。
 - **扩展清单单一来源**：同一模块的 `PHP_EXTENSIONS` 同时驱动安装弹窗勾选、抽屉开关、

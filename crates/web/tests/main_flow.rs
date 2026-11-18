@@ -2890,7 +2890,7 @@ async fn uninstall_cleanup_removes_plugin_keys_from_user_prefs() {
             r#"{"v":1,"initialized":true,"hidden":["plugin/com.skiff.nginx/legacy"],"pinned":["plugin/com.skiff.nginx/legacy"],"order":{"sites":["plugin/com.skiff.nginx/legacy"]}}"#,
         )
         .unwrap();
-    skiff_web::menu::cleanup_plugin_prefs(h.state.db().as_ref(), "com.skiff.nginx");
+    skiff_app::menu::cleanup_plugin_prefs(h.state.db().as_ref(), "com.skiff.nginx");
     let raw = h
         .state
         .db()
@@ -6691,6 +6691,58 @@ async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
         let created = item["created_at"].as_str().unwrap();
         assert!(created.ends_with('Z'), "{created}");
     }
+}
+
+/// 新建运行环境弹窗的目录接口：给出 apk 源候选与**当前生效值**，
+/// 弹窗才能预选「已固定的源」，避免用户只新建环境却把源改回自动。
+#[tokio::test]
+async fn ui_runtime_catalog_exposes_apk_mirrors_and_current_choice() {
+    let h = harness();
+    let admin = login(&h.app, "admin", "pw-test-123").await;
+
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/catalog", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    let mirrors = data["apk_mirrors"].as_array().unwrap();
+    assert!(mirrors.iter().any(|m| m["key"] == "tuna"), "{v}");
+    assert!(
+        mirrors
+            .iter()
+            .all(|m| !m["base"].as_str().unwrap_or_default().is_empty()),
+        "候选表不能混入「自动」占位（它由前端单独的 auto 项表达）"
+    );
+    assert_eq!(data["apk_mirror_current"]["fixed"], false);
+
+    // 用户此前固定过源：目录接口必须原样回传。
+    let dir = h.data_dir.join("www/runtime/cache/apk");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(".skiff-mirror"),
+        "# skiff-fixed\nhttps://mirrors.ustc.edu.cn/alpine\n",
+    )
+    .unwrap();
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/catalog", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["apk_mirror_current"]["fixed"], true);
+    assert_eq!(
+        v["data"]["apk_mirror_current"]["base"],
+        "https://mirrors.ustc.edu.cn/alpine"
+    );
+    assert_eq!(v["data"]["apk_mirror_current"]["label"], "中科大 USTC");
+
+    // 非法源在命令层就被拒，不登记运行环境。
+    let csrf = h.state.csrf_token(&admin);
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/runtimes",
+        &admin,
+        Some(&csrf),
+        &json!({ "kind": "php", "version": "8.5", "apk_mirror": "ftp://bad.example/alpine" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
 }
 
 /// 容器只读接口在无 Docker 环境下的口径：列表 200 + 空态原因，详情 503，

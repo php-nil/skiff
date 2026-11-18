@@ -220,6 +220,10 @@ fn prepare_dirs(data_dir: &Path, web_root: &Path, run_dir: &Path) -> Result<()> 
         web_root.join("sites"),
         web_root.join("nginx").join("conf.d"),
         web_root.join("php"),
+        // 运行环境 apk 包缓存：PHP 安装器会挂载它，`com.skiff.sources` 的
+        // `path:/<web_root>/runtime/cache/apk` 授权根也必须先存在才能 canonicalize
+        // （授权根不存在时会被丢弃，插件在首装运行环境前无法写源缓存）。
+        web_root.join("runtime").join("cache").join("apk"),
         run_dir.to_path_buf(),
         run_dir.join("plugins"),
     ] {
