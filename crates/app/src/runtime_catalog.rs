@@ -348,8 +348,12 @@ pub const PHP_EXTENSION_INSTALLER: &str =
 ///
 /// 探测放在**容器内**而不是宿主：安装脚本本来就要 `curl` 下载安装器，能力现成；
 /// 宿主侧没有 HTTP 客户端，硬加一条探测链路既多一处失败面，还要额外落盘与挂载。
-/// 判据是 `curl -w '%{speed_download}'` 的真实吞吐（不是 TTFB，也不是「能不能连通」），
-/// 因此 535 KB/s 与 29.5 MB/s 能区分开。
+/// **判据必须是「下载足量真实数据」的吞吐。** 最初用 `APKINDEX.tar.gz`（约 500 KB）
+/// 测 `%{speed_download}`，实测会被首包延迟与镜像边缘缓存带偏到离谱：阿里源测得
+/// 4.2 MB/s，而同一时刻它下一个 3 MB 文件只有 **1.5 KB/s**（虚高 2800 倍），按这个
+/// 排序会把用户切到最慢的源——线上第一次生效时就选错了。改为对 ISO 做 3 MB range
+/// 请求，测真实吞吐；拿不到 512 KB 说明该源没有这个文件（404 页面），按不可用排除，
+/// 全部排除时保持镜像默认源，绝不靠小文件估值去猜。
 ///
 /// 选中结果写 `/var/cache/apk/.skiff-mirror`（该目录挂宿主 `<runtime>/cache/apk`，
 /// 跨容器复用），24 小时内直接复用，避免每次装扩展都重测 4 个源。全候选不可达
@@ -368,18 +372,23 @@ fn installer_prelude() -> String {
          \t\tcat \"$SKIFF_MIRROR_CACHE\" > /etc/apk/repositories\n\
          \telse\n\
          \t\t(\n\
-         \t\tSKIFF_REL=\"v$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null)\"\n\
+         \t\tSKIFF_FULL=\"$(cat /etc/alpine-release 2>/dev/null)\"\n\
+         \t\tSKIFF_REL=\"v$(printf '%s' \"$SKIFF_FULL\" | cut -d. -f1,2)\"\n\
          \t\tSKIFF_ARCH=\"$(apk --print-arch 2>/dev/null)\"\n\
          \t\tSKIFF_BASE_BEST=''\n\
          \t\tSKIFF_SPD_BEST=0\n\
          \t\tSKIFF_PROBED=0\n\
-         \t\tif [ -n \"$SKIFF_ARCH\" ] && command -v curl >/dev/null 2>&1; then\n\
+         \t\tif [ -n \"$SKIFF_FULL\" ] && [ -n \"$SKIFF_ARCH\" ] && command -v curl >/dev/null 2>&1; then\n\
          \t\t\tfor SKIFF_BASE in https://dl-cdn.alpinelinux.org/alpine https://mirrors.tuna.tsinghua.edu.cn/alpine https://mirrors.aliyun.com/alpine https://mirrors.ustc.edu.cn/alpine; do\n\
          \t\t\t\tSKIFF_PROBED=$((SKIFF_PROBED + 1))\n\
-         \t\t\t\tSKIFF_SPD=\"$(curl -s -o /dev/null -m 6 -w '%{{speed_download}}' \"$SKIFF_BASE/$SKIFF_REL/main/$SKIFF_ARCH/APKINDEX.tar.gz\" 2>/dev/null)\"\n\
+         \t\t\t\tSKIFF_M=\"$(curl -s -o /dev/null -m 5 -r 0-2999999 -w '%{{speed_download}} %{{size_download}}' \"$SKIFF_BASE/$SKIFF_REL/releases/$SKIFF_ARCH/alpine-virt-$SKIFF_FULL-$SKIFF_ARCH.iso\" 2>/dev/null)\"\n\
+         \t\t\t\tSKIFF_SPD=\"${{SKIFF_M%% *}}\"\n\
+         \t\t\t\tSKIFF_BYTES=\"${{SKIFF_M##* }}\"\n\
          \t\t\t\tSKIFF_SPD=\"${{SKIFF_SPD%%.*}}\"\n\
+         \t\t\t\tSKIFF_BYTES=\"${{SKIFF_BYTES%%.*}}\"\n\
          \t\t\t\tif [ -z \"$SKIFF_SPD\" ]; then SKIFF_SPD=0; fi\n\
-         \t\t\t\tif [ \"$SKIFF_SPD\" -gt \"$((SKIFF_SPD_BEST * 3 / 2))\" ]; then\n\
+         \t\t\t\tif [ -z \"$SKIFF_BYTES\" ]; then SKIFF_BYTES=0; fi\n\
+         \t\t\t\tif [ \"$SKIFF_BYTES\" -ge 512000 ] && [ \"$SKIFF_SPD\" -gt \"$((SKIFF_SPD_BEST * 3 / 2))\" ]; then\n\
          \t\t\t\t\tSKIFF_SPD_BEST=\"$SKIFF_SPD\"\n\
          \t\t\t\t\tSKIFF_BASE_BEST=\"$SKIFF_BASE\"\n\
          \t\t\t\tfi\n\
@@ -390,7 +399,7 @@ fn installer_prelude() -> String {
          \t\t\tcp /etc/apk/repositories \"$SKIFF_MIRROR_CACHE\" 2>/dev/null || true\n\
          \t\t\techo \"[skiff] apk 源：$SKIFF_BASE_BEST（实测 $((SKIFF_SPD_BEST / 1024)) KB/s，探测 $SKIFF_PROBED 个候选）\"\n\
          \t\telse\n\
-         \t\t\techo \"[skiff] apk 源探测未选中（$SKIFF_PROBED 个候选均不可达），保持镜像默认源\" >&2\n\
+         \t\t\techo \"[skiff] apk 源探测未选中（$SKIFF_PROBED 个候选），保持镜像默认源\" >&2\n\
          \t\tfi\n\
          \t\t) || true\n\
          \tfi\n\
