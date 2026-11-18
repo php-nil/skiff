@@ -6,18 +6,17 @@
 
 ## 5. 当前部署
 
-> **2026-11-18 06:10 就地覆盖安装 `36840f2` Release 资产（当前生效；库/配置/插件/站点全保留）**
-> - 背景：`fix(firewall): 端口与 fail2ban 数值参数兼容表单字符串`（`36840f2`）。schema 表单提交的端口是字符串，原实现只认 JSON 数字，UI 点「放行 / 添加规则」会报 `端口需在 1..65535`。Windows 开发机不跑测试，编译级校验在本地（`fmt` + `clippy --all-targets`），全量单测由 CI 承担（`AGENTS.md` §4.3）。
-> - CI / Release：`release.yml` dispatch run `44185563501`（head `36840f2`）**success**；资产覆盖 `v0.1.0`，tag 未移动。
-> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,121,107 B** `7ac7f9cea1fe1fca4d23ced07deb24a609b5f286fb204aea072bdc9c297a321e`（API `digest` / 本地 sha256 / 测试机 `sha256sum` 三方一致）。
-> - 安装：解包后 `sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**（覆盖安装）；`skiff.service` 与 `skiff-http-fwd.service` 均 active。
-> - 新二进制：`/usr/local/bin/skiff` **19,646,224 B** `2aede7a7f13e65737b18207e0895dd1f3b73825aa8a40650e776d2d13552877a`（上一件 `63641009…`）。
-> - 库：`user_version=21`、`integrity_check=ok`；users 1 / plugins 7 / sites 3 / site_runtimes 3 / plugin_grants 66 / fs_quotas 0；配置 `sha256=fad99a3dbcfa13eda538671cb2965919c96ee0a80c3386e940ac5a80499ed958` 未变；权限 `711 /www/skiff`、`711 plugins/` 保持。
-> - 面板：入口前缀 **`kyuyjr44`**（本次机器还原后全新安装生成）；管理员 `admin` / `SkiffPass2026x`（`/root/iter/admin-pw.txt`，0600）。`/healthz` 18080 与 18081 均 **200**，登录页 **200**。
-> - 插件：7 个官方插件全在；启动日志 `官方插件内容已随发布包更新（同版本重装） plugin=com.skiff.firewall`（防火墙端口修复随包生效）。`com.skiff.files` 授权保留 3 个 `path:` 站点根（php/node/rust）；`com.skiff.ftp` 授权含 `mv/chown/chmod`、无 `find`。
-> - 站点与运行环境：`php.local` / `node.local` / `rust.local` 均 `running`；运行环境 `php-8.5`（PHP 8.5.14）、`node-22`（端口 9200）、`rust-1.98`（端口 9100）；三站点经 Host 头直连 OpenResty 均 **200**。Web 服务（OpenResty）已安装。
-> - 防火墙 / FTP：nftables 为当前后端，受管表 `inet skiff` 存在（验收后链为空）；fail2ban 已安装 · 运行中；pure-ftpd active，账号 `skiff_php-local_866107650_ftp-php`（home `/www/sites/php.local/index`）。
-> - 浏览器实测（1440×900，0 console error）：概览、网站列表、站点详情、Web 服务、文件管理、站点文件、设置、界面设置（5 套预设 / 15 个色卡）、菜单设置、审计、防火墙、FTP 共 12 页全部为新壳；侧栏 27 个条目逐一点击均落在新 UI 路由。
+> **2026-11-18 19:50 机器还原后全新安装 `12d8ea2`，再就地覆盖 `bcdfd22`（当前生效；库/配置/插件/站点全保留）**
+> - 背景：旧 SSR 残留清理收尾 + 上游 budding 同步（仓内 `1.8.1-r2`）。两轮 Release：run `44293570337`（head `12d8ea2`）与 `44296920567`（head `bcdfd22`），CI 同提交均 **success**（`44293542985` / `44296904029`）。
+> - 机器状态：还原后为干净系统——无旧二进制/配置/库、18080/18081 空闲、Docker 29.7.2 在位、`/etc/skiff-baseline` 不存在；按 T1 口径（Docker 已装）安装。
+> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **11,953,417 B** `523a352e720909293b15eea3922337b599325374d07e4ff2d8708318d339e970`（API `digest` / 本地 sha256 / 测试机 `sha256sum` 三方一致）。
+> - 安装：首装 `install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**；第二轮同命令覆盖安装 **exit 0**。`skiff.service` 与 `skiff-http-fwd.service`（`0.0.0.0:18081 → 127.0.0.1:18080`，脚本 `/root/iter/skiff-http-fwd.py`）均 active。
+> - 二进制：`/usr/local/bin/skiff` **19,142,416 B** `d928468021b280cd78987201fb0e856f6b15f6c38a2bb575d56278bea8566f23`。
+> - 库：`user_version=21`、`integrity_check=ok`；users 1 / plugins 7 / sites 1 / site_runtimes 1 / plugin_grants 63 / fs_quotas 1。配置 `sha256=5bfb00d9552e988993816e9298b8714fcc495dfecdea000293e32aea44e16af8` 升级前后逐字节未变；权限 `711 /www/skiff`、`711 plugins/`、`600 skiff.db`、`711 /run/skiff` 保持。
+> - 面板：入口前缀 **`2u3uiv85`**；管理员 `admin` / `skiff-accept-1795001381`（`/root/iter/admin-pw.txt`，0600；accept.sh B3 改密后按审计 `ts` 取回）。`/healthz` 18080 与 18081 均 **200**，登录页 **200**。
+> - 插件：首装不自动装官方插件，需 `skiff plugin install /www/skiff/official/*.wbpkg --yes`（先 `allow_reduced_sandbox=true`，否则全部被「要求完整沙箱」拒装）；7 个全部装成，升级后随包同版本重装。
+> - 站点与 Web：Web 服务经 `POST /ui/v1/runtimes/web/action/install` 装成（`skiff-web-nginx` running）；站点 `uiaccept.local`（静态，根 `/www/sites/uiaccept.local`）+ 别名 `www.uiaccept.local`，Host 直连 80 端口 **200**，停站 **404**、启站 **200**。
+> - 浏览器实测（1440×900，真实资产无拦截）：25 页（概览/网站/运行环境/Web/容器/镜像/网络/卷/Compose/插件三页/任务/作业/文件三页/设置三页/审计/五个插件页）**0 console error、0 4xx**；只加载 `budding-1.8.1-r2.min.{js,css}`、`budding-{code,terminal}-1.8.1-r2.min.js`、`budding-icons-1.8.1.*`、`budding-boot.js?v=5`；`.bud-admin` 计算样式 `border:0 / radius:0`；24 条站内链接全部 200；`/m/core/*` 全 404。
 
 ## 6. Release 资产台账（当前资产；历史坐标见 03-DEPLOY_LOG.md）
 

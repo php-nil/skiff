@@ -10,6 +10,15 @@
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-18.md](../../changes/2026-11-18.md)、[changes/2026-11-17.md](../../changes/2026-11-17.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
 
+**2026-11-18 19:27–19:55 机器还原后全新安装 `12d8ea2` + 覆盖 `bcdfd22`：accept.sh 49 PASS / 0 FAIL，25 页 0 console error**
+
+- **安装（通过，全新 + 升级）**：全新安装 `12d8ea2`（包 11,951,970 B `2445983b…6e21`）→ 覆盖 `bcdfd22`（包 11,953,417 B `523a352e…e970`），两次 `install.sh --no-docker --tls off --listen 127.0.0.1:18080` 均 exit 0；二进制 19,142,416 B `d9284680…6f23`；库 v21 / `integrity_check=ok`；前缀 `2u3uiv85`；配置 sha `5bfb00d9…16af8` 升级前后未变。
+- **accept.sh（通过）**：首装轮 preflight+A+B+D0 = **49 PASS / 0 FAIL / 2 SKIP**（B4 限流未开、E 组未实现）；覆盖升级轮 A+D0 = **34 PASS / 0 FAIL / 2 SKIP**。
+- **旧 UI 清理（通过）**：22 条规范路径全 200 壳页；`/m/overview` 仍 SSR；`/m/core/{docker/containers,sites/list,files,settings/security,store}` 全 404；`GET /ui/v1/menu` 34 条目无 `m/core`；壳页 DOM 内无 `/m/core` 链接；站内 24 条链接全部 200。
+- **budding 1.8.1-r2（通过）**：只加载 `budding-1.8.1-r2.min.{js,css}` / `budding-{code,terminal}-1.8.1-r2.min.js` / `budding-icons-1.8.1.*`，`budding-boot.js?v=5`；`.bud-admin` 计算样式 `border:0 / radius:0`（上游去外框生效）；会话失效走 `redirect` 组件（「登录已失效 / 2 秒后自动跳转 / 立即登录」→ `login?next=…`）。
+- **交互（通过）**：计划任务回车筛选（`/tasks?q=audit` 6 → 1）、审计筛选、站点详情六页签切换、新建站点弹窗非法域名内联报错、文件管理进入 `/www/sites`、插件列表 7 个、菜单隐藏/重置、任务启停与立即运行、插件停用/启用、站点停站 404 / 启站 200、文件 mkdir/write/read/rename/remove 闭环、Web 服务安装（`skiff-web-nginx` running）、别名添加与 Host 200。
+- **未覆盖（限制）**：无普通用户账号，`plugin/*` 的 403 分支未上机（单测覆盖）；B4 登录限流未跑；Docker 容器创建（无镜像）、FTP、防火墙、TLS、aarch64 未复跑（本轮未触及）；`/m/plugin/{id}` SSR 工作台仍 200，`/m/plugin/{id}/main` 404（工作台只认 `?view=`，非缺陷）。
+
 **2026-11-17 23:17–2026-11-18 06:20 机器还原后全新安装 + 五轮覆盖安装，八项任务回归 0 FAIL**
 
 - **安装（通过，全新 + 升级路径）**：全新安装 `a9a0b59` → 覆盖 `cb81325` → `8004dc1` → `286a5b7` → `36840f2`（末次资产 12,121,107 B `7ac7f9ce…321e`，API `digest` / 本地 / 测试机三方一致）。末次：`sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**；二进制 19,646,224 B `2aede7a7…877a`；库 `user_version=21`、`integrity_check=ok`；配置 sha `fad99a3d…` 未变；权限 `711/711`；前缀 `kyuyjr44`；`/healthz` 18080/18081 均 200。
