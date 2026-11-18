@@ -28,9 +28,9 @@
 > 一律经 `tools\bin\cargo.cmd` / `tools\bin\git.cmd`（全局串行令牌，拿不到即以退出码 2 拒绝，不排队）；命令与判定口径的唯一来源是 `docs/ops/CI.md` §2、§6，此处只作速查。
 
 - **安装依赖**：`cargo fetch`；插件 workspace：`cargo fetch --manifest-path plugins/Cargo.toml`（`plugins/Cargo.lock` 必须入库）。
-- **运行测试**：`cargo test --workspace --locked --no-fail-fast`；插件：`cargo test --manifest-path plugins/Cargo.toml --locked`。
+- **运行测试**：`cargo test --workspace --locked --no-fail-fast`；插件：`cargo test --manifest-path plugins/Cargo.toml --locked`。**只在 CI 或 Linux 测试机执行**，Windows 开发机不跑（§4.3）。
 - **构建/启动**：`cargo build --workspace`；本地起服务 `cargo run -p skiff --bin skiff -- --dev serve`（`/healthz` 探活）。
-- **本地三关**：`cargo fmt --all --check` → `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → `cargo test`。`plugins/` 是第二 workspace，根三关不覆盖，须用 `--manifest-path plugins/Cargo.toml` 另跑一遍。
+- **本地门禁（只到编译级）**：`cargo fmt --all --check` → `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`。`--all-targets` 已把测试目标纳入编译，能查出类型错误、失效引用与死代码，**不再追加 `cargo test`**。`plugins/` 是第二 workspace，根门禁不覆盖，须用 `--manifest-path plugins/Cargo.toml` 另跑一遍。
 - **其他校验**：`cargo run -p xtask -- check`（1Panel / Compose）、`cargo run -p skiff-server -- check`（商店清单）、`shellcheck -S error deploy/*.sh plugins/*.sh`。
 
 ## 四、开发与交付约定
@@ -55,8 +55,9 @@
 
 - **目录隔离**：单元测试随模块（`#[cfg(test)]`）；集成测试放 `crates/<name>/tests/`；全局/跨模块测试放根 `tests/`。
 - **零污染原则**：中间产物、日志与临时文件不得生成在源码目录（已生成须在任务结束前清理）。
-- **回归必补**：新增功能、核心逻辑变更或 Bug 修复，**必须**补充对应用例并确保全部通过后再交付；改判定逻辑先跑 `cargo test -p skiff-policy`（零 Docker、零 SQLite）。
-- **全量交 CI**：本地只跑受影响 crate 的快速回归。本机（Windows）无 C 编译器，`skiff-store` / `skiff-pkgfmt` / `xtask` 及其下游与 `plugins/` 编不了，交 CI 的 `test-win` / `test` / `plugins` job（`docs/ops/DEV_ENV.md` §3）。
+- **用例照写，不在本机跑**：新增功能、核心逻辑变更或 Bug 修复**必须**同批补用例；本地只保证它们编得过（`clippy --all-targets`），**用例结果一律以 CI 为准**（`test` / `test-win` / `plugins` job，`docs/ops/DEV_ENV.md` §3）。改判定逻辑需同步 `skiff-policy` 用例——那组零 Docker、零 SQLite，在 CI 上跑。
+- **Windows 开发机禁止跑 `cargo test`**：Windows 不是交付形态——进程模型、权限位（0711/0660）、Unix socket、Docker 语义都与部署形态不同，本机跑绿不代表可用；本机能否编译还取决于外部 C 工具链探测（`docs/ops/DEV_ENV.md` §3），跑红也常是环境问题而非代码问题。用例结果一律看 CI 的 `test` / `test-win` / `plugins` job。
+- **汇报口径**：只有 CI 跑过的用例才能说「已验证 / 全绿」；本地只做了编译级校验时，必须写明「fmt + clippy 通过，用例交 CI」，不得暗示已回归。
 
 ### 4.4 其他约定
 

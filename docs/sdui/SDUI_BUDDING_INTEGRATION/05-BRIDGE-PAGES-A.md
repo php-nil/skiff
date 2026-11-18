@@ -52,7 +52,7 @@
 
 **页面与数据**
 
-- `GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/sites/new`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/sites/list[/{domain}]`、`GET /{p}/m/core/sites/env[/{id}]`。站点写操作已原生化，运行环境的安装/配置/扩展仍待后续批次。
+- `GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/sites/new`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18，直达 404）。站点写操作已原生化，运行环境的安装/配置/扩展仍待后续批次。
 - 列表复用 `list_sites` / `list_runtimes` / `runtime_views` 与页面 `site_view` / `runtime_row` 展示模型，**没有新增 SQL**；`q` 关键字过滤与旧列表页同源（域名 / 目录 / 接入方式 / 别名）。
 - `GET /ui/v1/runtimes` 与旧运行环境页同权限：Admin（`authz::authorize_for`），viewer 返回 403（`auth.forbidden`）。
 - 站点写操作：`POST /ui/v1/sites`、`/{domain}/{action}`（start/stop）、`/{domain}/default`、`/{domain}/domains`、`/{domain}/config`、`/{domain}/ssl`、`/{domain}/backup`、`/{domain}/delete`、`/sites/batch`；全部复用 `SITE_*` 动作与 `skiff_app::commands::site`，CSRF 走 `x-csrf-token`，不新增权限来源。
@@ -125,7 +125,7 @@
 
 **页面与数据**
 
-- `GET /{p}/containers`、`/{p}/containers/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/containers[/{id}]`（菜单深链新增详情段）。
+- `GET /{p}/containers`、`/{p}/containers/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表复用 `Docker::list_containers` 与 `handlers::container_view`，`filter=error` 与旧页面同一判定（`container_abnormal`），不新增 SQL。
 - 详情复用 `resolve_container` + `inspect_container`；读权限仍是 `policy.check(ContainerInspect)`，不新增权限规则。
 - 启停/重启/删除：`POST /ui/v1/containers/{id}/{action}`，CSRF 走 `x-csrf-token` 头；策略判定、deny 审计与 `docker_cmd::container_action` 与旧 htmx 路径完全同源。
@@ -182,7 +182,7 @@
 
 ### 5.10 镜像 / 网络 / 卷（第三批，读写）
 
-- `GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/{images|networks|volumes}`。
+- `GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 复用 `list_images` / `list_networks` / `list_volumes` 与旧页面的 `ResourceRow` / `NetworkRowView` 展示模型，不新增 SQL。
 - 写操作已原生化：`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`；逐项复用 `ImagePull` / `ImageRemove` / `NetworkCreate` / `NetworkRemove` / `VolumeCreate` / `VolumeRemove` 策略与 `docker_cmd` 审计。
 - 网络名/卷名的字符集判定抽到 `resources::validate_name`，旧表单与 `/ui/v1` 共用一份。
@@ -233,7 +233,7 @@
 
 ### 5.11 编排 Compose（第四批）
 
-- `GET /{p}/compose` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/docker/compose`。
+- `GET /{p}/compose` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表复用 `compose::status_of`（容器标签归组，不持久化 compose 源文件），不新增 SQL；项目按名称排序。
 - 项目级启停/重启与 down 已提供 JSON 动作，复用现有 `compose_project_action` / `compose_down` 与逐容器权限判定、审计。
 - 编辑/校验/部署已原生化：`POST /ui/v1/compose/validate` 只解析与 `validate_specs`，不触达 Docker；`POST /ui/v1/compose/up` 校验后走 `compose_up`。源文本不持久化。

@@ -21,11 +21,22 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-17 打包（commit `39d9e1d`，版本唯一定义改到根 `package.json`，产物自报
-/// `1.8.1`）。本版新增通用跳转组件 `redirect`（登录态失效、无权限、旧地址迁移的
-/// 「提示后跳走」），并包含渲染性能优化与导航 URL 控制字符收紧。主包 1,294,980 B /
-/// CSS 661,286 B，code Pack 89,982 B、terminal Pack 395,014 B，图标 78 字形字节不变。
-pub const BUDDING_VERSION: &str = "1.8.1";
+/// 上游 2026-11-18 打包（commit `69e3a72`）：功能集相对 11-17 的 `39d9e1d` 有增量，
+/// **但上游未升版本号**（根 `package.json` 仍是 `1.8.1`）。版本化文件名的缓存策略是
+/// 一年 `immutable`，沿用 `1.8.1` 会让浏览器继续吃旧包，因此按仓内既有约定追加
+/// `-rN`：`1.8.1-r2`（`r1` = 11-17 的初始 1.8.1）。上游升版后回归纯语义版本。
+///
+/// 本版变化（宿主可感知）：
+/// - `admin` 壳不再自带 `border` / `border-radius` / `box-shadow`，满屏宿主无需反向覆盖；
+/// - `data` 组九处硬编码浅色改为 `--v-theme-*`，暗色主题不再需要宿主补丁；
+/// - `page` 暴露 `init` / `refresh` 触点，`link` / `image` 支持 `click`（`link` 配了
+///   `onEvent.click` 时不再走默认导航——仓内核页无此用法，已逐条核对）；
+/// - 新增 `instance.diagnose()` 与 `loadSchema()` 收编装载流程，`bundleStrict`
+///   缺省三态修复。
+///
+/// 主包 1,311,542 B / CSS 661,899 B；code Pack 89,982 B、terminal Pack 395,014 B
+/// 字节未变（仅随版本号改名），图标 78 字形字节不变。
+pub const BUDDING_VERSION: &str = "1.8.1-r2";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
 ///
@@ -457,54 +468,6 @@ mod tests {
         let resp = fetch(CSS, headers).await;
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert!(body_of(resp).await.is_empty());
-    }
-
-    /// 收集静态文件里字面量形式的 API 调用路径，供「拼接分隔符」回归使用。
-    fn quoted_api_paths(text: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        for marker in ["request(\"", "api(\"", "post(\"", "apiUrl(\""] {
-            let mut rest = text;
-            while let Some(pos) = rest.find(marker) {
-                rest = &rest[pos + marker.len()..];
-                match rest.find('"') {
-                    Some(end) => out.push(rest[..end].to_string()),
-                    None => break,
-                }
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn file_api_js_builds_absolute_and_slash_joined_urls() {
-        // 回归 1：`prefix` 不带前导斜杠，apiUrl 必须补 `/`，否则在
-        // `/{p}/m/core/files` 页面上会被解析成 `/{p}/m/core/{p}/files/api/...` → 404。
-        // 回归 2：调用方可能传 `"quotas"` 这类无前导 `/` 的路径，apiUrl 必须在拼接处
-        // 补分隔符，否则拼成 `/{p}/filesquotas` → 整页 404。
-        // 回归 3：所有字面量调用点都带前导 `/`，两种写法叠加也不会出现双斜杠以外的偏差。
-        // 基址为 `/{p}/files`：页面内 JSON 与页面路径同构，不再插 `api` 段（URL 契约 §4）。
-        for name in ["files.js", "fs_quotas.js", "fs_trash.js"] {
-            let js = Assets::get(name).unwrap_or_else(|| panic!("{name} 应已嵌入"));
-            let text = String::from_utf8_lossy(&js.data);
-            assert!(
-                text.contains(r#"return "/" + prefix + "/files" + suffix;"#),
-                "{name} 的 apiUrl 必须返回以 `/` 开头的绝对路径"
-            );
-            assert!(
-                text.contains(r#"var suffix = path.charAt(0) === "/" ? path : "/" + path;"#),
-                "{name} 的 apiUrl 必须为无前导 `/` 的 path 补分隔符"
-            );
-            let mut paths = quoted_api_paths(&text);
-            assert!(!paths.is_empty(), "{name} 应有字面量 API 调用点");
-            paths.sort();
-            paths.dedup();
-            for p in paths {
-                assert!(
-                    p.starts_with('/'),
-                    "{name} 的 API 调用路径缺少前导 `/`，会拼出 /files{p}：{p}"
-                );
-            }
-        }
     }
 
     #[test]

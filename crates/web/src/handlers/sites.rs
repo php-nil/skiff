@@ -14,7 +14,7 @@ use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 use crate::error::AppError;
 use crate::state::sites::{SiteEnvStatus, SiteError, SiteField};
 use crate::state::AppState;
-use crate::templates::{RuntimeJobView, RuntimeRow, SiteEnvView, SiteTlsView, SiteView};
+use crate::templates::{RuntimeRow, SiteEnvView, SiteTlsView, SiteView};
 use crate::util::encode_uri_component;
 
 mod crud;
@@ -26,13 +26,12 @@ mod tls;
 
 pub(crate) use crud::save_config_notice;
 pub use crud::{
-    action, batch, create, delete, delete_confirm, detail, domains, list, new_page_get, new_shell,
-    save_config, set_default,
+    action, batch, create, delete, delete_confirm, domains, new_shell, save_config, set_default,
 };
 pub use logs::logs;
 pub use runtime::{
     env_add, env_images_save, runtime_action, runtime_clone, runtime_config_file_save,
-    runtime_config_save, runtime_detail, runtime_extension_install, runtime_extension_uninstall,
+    runtime_config_save, runtime_extension_install, runtime_extension_uninstall,
     runtime_extensions_batch, runtime_extensions_save, runtime_health, runtime_job, runtime_jobs,
     runtime_logs, runtime_node_config_save, runtime_pecl_install, runtime_port_save, runtime_probe,
     runtime_publish_save, runtime_unbind_site,
@@ -282,21 +281,6 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
         job_progress: job.as_ref().map(|j| j.progress).unwrap_or(0),
         job_error: job.as_ref().map(|j| j.error.clone()).unwrap_or_default(),
         job_active,
-    }
-}
-
-fn job_view(job: &skiff_app::sites::RuntimeJob) -> RuntimeJobView {
-    RuntimeJobView {
-        state: job.state.as_str().to_string(),
-        state_label: crate::labels::runtime_job_state(job.state).to_string(),
-        step: job.step.clone(),
-        progress: job.progress,
-        error: job.error.clone(),
-        log: job.log_text(),
-        active: job.active(),
-        failed: job.state == skiff_app::sites::RuntimeJobState::Failed,
-        kind: job.kind.clone(),
-        ext_keys: job.ext_keys.clone(),
     }
 }
 

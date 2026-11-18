@@ -174,8 +174,8 @@
   站点只做域名反代，不额外创建每站点容器。
 - Docker 页**不隐藏**这些容器：显示徽章“运行环境/站点”，操作前提示影响面；删除/停止等破坏性动作
   必须二次确认并说明“将影响 N 个站点，业务页可能出现状态漂移”。
-- 运行环境页提供“在 Docker 中查看”深链：`/{p}/m/core/docker/containers?filter=<container>`；
-  Docker 行提供“返回运行环境”深链：`/{p}/m/core/sites/env/<id>`。
+- 运行环境页提供“在 Docker 中查看”深链：`/{p}/containers?filter=<container>`；
+  Docker 行提供“返回运行环境”深链：`/{p}/runtimes/<id>`。
 - 两页共享同一套实际状态读取；Docker 页不写 `site_runtimes`，运行环境页不直接编辑原始容器参数。
 
 ### 5.2 禁止事项

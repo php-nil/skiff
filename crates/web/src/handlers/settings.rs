@@ -10,7 +10,7 @@ use crate::handlers;
 use crate::menu;
 use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::templates::{AuditPage, AuditRow, KeyRow, SettingsPage};
+use crate::templates::{KeyRow, SettingsPage};
 use crate::util::{form_first, parse_form};
 
 pub async fn render_settings(
@@ -328,9 +328,7 @@ pub async fn remove_key(
 }
 
 /// 设置 → 菜单设置（按用户，scope = 当前账号）。
-/// `GET /{p}/settings/menu` 规范入口：交付 budding 壳页。
-///
-/// 旧 SSR 保留在 `GET /{p}/m/core/settings/menu`（菜单深链），供无 JS 兜底。
+/// `GET /{p}/settings/menu` 规范入口：交付 budding 壳页（唯一入口）。
 pub async fn menu_shell(
     State(state): State<Arc<AppState>>,
     AuthUser(_user): AuthUser,
@@ -384,34 +382,4 @@ pub async fn menu_update(
         "已保存菜单偏好",
         format!("/{}/settings/menu", state.cfg.entry_prefix),
     ))
-}
-
-pub async fn audit(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    // 审计读取对应 `Permission::AuditRead`（operator/admin），viewer 不可见。
-    // 此前只用 `AuthUser`，等于把矩阵里的这一行架空了。
-    handlers::require_permission(&user, skiff_model::Permission::AuditRead)?;
-    let rows = state
-        .db()
-        .recent_audit(200)?
-        .into_iter()
-        .map(|a| AuditRow {
-            ts: chrono::DateTime::from_timestamp(a.ts, 0)
-                .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
-                .unwrap_or_default(),
-            actor: a.actor,
-            ip: a.ip,
-            action: a.action,
-            target: a.target,
-            result: a.result,
-            detail: crate::util::truncate(&a.detail, 120),
-        })
-        .collect();
-    handlers::render(AuditPage {
-        ctx: handlers::page_ctx(&state, &user, "audit"),
-        rows,
-        error: String::new(),
-    })
 }

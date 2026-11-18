@@ -78,7 +78,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 | 构建 | `pnpm build:package`；要求 Node ≥ 24 |
 | 产物 | `budding-<ver>.min.js`（IIFE）+ `budding-<ver>.min.css`，**无内容 hash** |
 | 稳定别名 | `budding.min.js` / `budding.css`，**由 `assets.rs` 路由映射，不复制第二份字节** |
-| 体积 | 入库 `1.8.0-r7` 实测：JS 1,292,889 B；CSS 661,321 B（功能集 1.9.0，产物自报版本仍为 1.8.0） |
+| 体积 | 入库 `1.8.1-r2` 实测：JS 1,311,542 B；CSS 661,899 B（上游 `69e3a72` 打包，产物自报 `1.8.1`） |
 | 消费方式 | `<script src>` + 挂载点 + `BuddingSDK.embed(target, schema, opts)`；加载后不自动渲染。`opts` 支持扁平 `locale` / `theme` / `messages` / `uiDefaults`（1.9.0） |
 | CSS 加载 | 运行时按 `document.currentScript` 推导目录并插入 `<link>`，**同目录即可** |
 | 路由 | 默认 hash；history 模式需 `routerBase` |
@@ -94,7 +94,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 - `RustEmbed` 在编译期把目录打进二进制，对外路径 `/{p}/static/budding/<file>`。
 - `crates/web/build.rs` 会为每个文件生成 `.gz` 变体，`assets.rs` 按 `Accept-Encoding` 协商；新增产物自动获得 gzip 能力，**不需要改部署脚本**。
 - 现有测试 `every_static_asset_has_gzip_variant` 会覆盖新文件，构建期自动校验。
-- 体积影响（`1.8.0-r7` 实测）：budding 三件（JS/CSS/启动脚本）raw 2,247,511 B；gzip 变体由 `build.rs` 生成（本机 `gzip -9` 实测：JS 410,042 B、CSS 79,165 B、启动脚本 67,773 B，合计 556,980 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
+- 体积影响（`1.8.1-r2` 实测）：budding 三件（JS/CSS/启动脚本）raw 2,296,248 B；gzip 变体由 `build.rs` 以 `Compression::best()` 生成（实测：JS 416,861 B、CSS 79,132 B、启动脚本 77,113 B，合计 573,106 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
 
 ### 2.3 壳页形态
 
@@ -130,7 +130,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
 - **壳层 chrome（2026-11-17 起）**：`bar: false` 关掉 budding 默认顶栏（品牌 / 页面标题 / 账号 / 退出登录），原生面包屑槽同步隐藏（`.bud-admin__crumbs`）；页内子视图切换由内核渲染的**横向三级菜单**承担（`nav.skiff-subnav`，节点挂页面容器 `.bud-page` 内、标题之下，样式 `static/skiff-shell.css`）。它与面包屑是两件事：**是菜单就全量平铺**——当前页有子视图才出现，没有就整条不渲染，当前项用 2px 底部强调轨，不做下拉也不做路径回溯（「我在哪」由左侧菜单当前项承担）。底色取内容区表面色 `--v-theme-surface`，不跟随侧栏 chrome；吸顶时补 `is-stuck` 遮罩；重建带闸门防 MutationObserver 死循环。账号与退出登录移入「设置」页「当前账号」区块（仍走 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
 - **三级子视图登记**：核心页 L3 在 `budding-boot.js` 的 `SUBVIEW_TABS` 登记，模式支持参数段（`:domain` / `:id`），隐藏路由由登记表统一生成、不进侧栏：Web 服务 → 状态 / 配置 / 日志 / 模块（`/{p}/sites/web/{,config,logs,modules}`）；站点详情 → 概览 / 域名 / 配置 / 证书 / 备份 / 日志（`/{p}/sites/<域名>/{,domains,config,ssl,backup,logs}`）；运行环境详情 → 基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志（`/{p}/runtimes/<id>/{,config,extensions,sites,manage,logs}`）。数据仍由一次父接口取齐，切子视图只换渲染块。插件多视图由 `/ui/v1/menu` 下发的 `views` 驱动（`/plugins/<id>/<view>`），页内按钮行已删除；随包 schema 缺失的旧插件视图仍回落到旧 SSR 工作台。
-- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.0-r7` 子集仍为 78 字形（重打包未改字形），菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.1` 子集仍为 78 字形（重打包未改字形），菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）
 
@@ -148,7 +148,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **CSS 必须用版本化真实文件名**：budding 按 `document.currentScript` 推导目录加载 CSS，若其实现丢弃查询串，仅靠脚本上的 `?v=` 会让 CSS 继续命中旧缓存。该行为**待实测**。
 - 稳定别名只作兼容入口，壳页不得引用它。
 - 独立 Pack（`budding-code-<ver>.min.js` / `budding-terminal-<ver>.min.js`）同样按版本化文件名入库，启动脚本带 `?v=<ver>` 引用，命中 immutable；升级时与主包一起替换。
-- **图标资产随包版本化**：`budding-icons-1.8.0-r7.min.css`（4,648 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.0-r7.woff2`（3,992 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.0-r7` 时返回 `immutable`（woff2 也按版本化文件名命中 `immutable`，`assets.rs` 已识别 `.woff2` 后缀）。`Budding Icons` 子集共 78 个字形（CSS `::before` 78 条），含镜像 / 磁盘 / 文件夹等业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
+- **图标资产随包版本化**：`budding-icons-1.8.1.min.css`（4,645 字节，仅把 `@font-face` 的字体名改成版本化文件名）与 `budding-icons-1.8.1.woff2`（3,992 字节）取自官方包，由壳页 `<link>` 引入，带 `?v=1.8.1` 时返回 `immutable`（woff2 也按版本化文件名命中 `immutable`，`assets.rs` 已识别 `.woff2` 后缀）。`Budding Icons` 子集共 78 个字形（CSS `::before` 78 条），含镜像 / 磁盘 / 文件夹等业务语义图标，宿主不再另存完整 @mdi/font。woff2 本身已压缩，`build.rs` 跳过它的 `.gz` 生成（再压只会增加字节）；体积按原始字节计，不存在「gzip 后很小」的收益。
 
 ### 2.4.1 浮层层级归属（`1.8.0-r7` 起的结构契约）
 

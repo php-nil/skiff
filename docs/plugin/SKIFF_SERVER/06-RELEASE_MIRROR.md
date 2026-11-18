@@ -69,7 +69,7 @@ P3 只做「提示 + 下载 + 摘要校验」，**不执行升级**：不停服�
 - `crates/core/src/bootstrap.rs`：启动时清理 `<data_dir>/upgrade/incoming`。
 - `crates/web/src/handlers/store.rs`：商店页「内核升级」面板、下载处理器与
   `upgrade.download` 审计。
-- `crates/web/templates/store.html`：升级提示与下载入口；无数据时只渲染空态文案。
+- `crates/web/src/handlers/ui/store.rs`：升级提示与下载入口（壳页渲染）；无数据时只给空态文案。
 
 ### 13.5 已覆盖测试
 

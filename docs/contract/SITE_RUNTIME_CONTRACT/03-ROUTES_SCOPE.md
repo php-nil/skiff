@@ -12,20 +12,22 @@ L2 保持 `docs/contract/MENU_CONTRACT.md` 的内置项：网站列表 / 运行�
 子页面，不新增 L3（L3 只属于插件）。站点级设置页已移除：镜像加速源/前缀归 Docker 设置，
 nginx/PHP 镜像标签归运行环境页的「镜像参数」。
 
-| 页面 | 规范 URL | 旧路由别名 |
-| --- | --- | --- |
-| 网站列表 | `/{p}/m/core/sites/list` | `/{p}/sites` |
-| 新建网站 | `/{p}/m/core/sites/new`（可带 `?type=runtime|static|proxy`） | `/{p}/sites/new` |
-| 站点详情 | `/{p}/m/core/sites/list/<域名>` | `/{p}/sites/<域名>` |
-| 运行环境列表 | `/{p}/m/core/sites/env` | `/{p}/runtimes`（`/{p}/sites/env` 301 兼容） |
-| 运行环境详情 | `/{p}/m/core/sites/env/<runtime-id>` | `/{p}/runtimes/<runtime-id>`（`/{p}/sites/env/<runtime-id>` 301 兼容） |
-| 运行环境标签页 | `/{p}/m/core/sites/env/<runtime-id>?tab=config|logs|sites` | 同上 |
+| 页面 | 规范 URL |
+| --- | --- |
+| 网站列表 | `/{p}/sites` |
+| 新建网站 | `/{p}/sites/new`（可带 `?type=runtime|static|proxy`；壳页原生表单） |
+| 站点详情 | `/{p}/sites/<域名>` |
+| 运行环境列表 | `/{p}/runtimes` |
+| 运行环境详情 | `/{p}/runtimes/<runtime-id>` |
+| 运行环境标签页 | 壳页内标签：`?tab=config|logs|sites` |
+
+- 旧深链 `/{p}/m/core/sites/*`、`/{p}/sites/env*` 已于 2026-11-18 删除，访问 404（见 `docs/contract/URL_CONTRACT/01-RULES.md` §7）。
 
 - 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/settings/docker`），
   `nginx_image` / `php_image` 归运行环境页的「镜像参数」。URL 规则统一见 [`URL_CONTRACT.md`](../URL_CONTRACT.md)。
 
 - `runtime-id` 只用 `[a-z0-9.-]`（如 `php-8.5`），不把镜像 tag、路径拼进 URL。
-- 深链无 JS 可打开；切换标签只改 query 或服务端渲染，不依赖前端路由。
+- 深链必须能直接打开（交付 budding 壳页）；标签切换只改 query，不减损可分享性。
 - 未知 runtime-id：404（不泄露存在性）；已删除运行环境的历史深链返回 404 并在列表页给出说明。
 
 ### 6.2 权限矩阵
@@ -85,7 +87,7 @@ P1 沿用现有站点权限，避免语义漂移；运行环境写操作同样�
    vhost 按站点 `runtime_id` 路由；停止实例时绑定站点明确 502/503 且可回环境页，不静默换实例。
 6. **状态与边界**：运行环境停止导致绑定站点显示“环境停止”；删除被引用环境被拒绝；Docker 页徽章与双向深链。
 7. **路由/权限/审计**：规范 URL 与旧路由别名；admin 写、viewer 读；`sites.runtime.*` 事件。
-8. **测试**：§8 中 P1 项全绿；根 workspace 三关全绿；不部署测试机。
+8. **测试**：§8 中 P1 项全绿；根 workspace 门禁全绿（本地 `fmt` + `clippy`，用例以 CI 结果为准）；不部署测试机。
 
 ### P2（扩展，不阻塞 P1）
 

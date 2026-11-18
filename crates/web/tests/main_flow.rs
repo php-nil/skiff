@@ -43,17 +43,6 @@ fn static_site(domain: &str, root: &str) -> skiff_store::NewSite {
     }
 }
 
-fn proxy_site(domain: &str, root: &str, target: &str, websocket: bool) -> skiff_store::NewSite {
-    skiff_store::NewSite {
-        domain: domain.into(),
-        root_dir: root.into(),
-        site_type: skiff_store::TYPE_PROXY.into(),
-        runtime_id: None,
-        proxy_target: Some(target.into()),
-        proxy_websocket: websocket,
-    }
-}
-
 struct Harness {
     app: Router,
     state: Arc<AppState>,
@@ -211,16 +200,6 @@ fn set_cookie_header(resp: &axum::response::Response, name: &str) -> Option<Stri
                 .is_some()
         })
         .map(str::to_string)
-}
-
-fn csrf_from(html: &str) -> String {
-    let marker = "name=\"csrf\" value=\"";
-    let start = html.find(marker).expect("页面应有 CSRF 隐藏字段") + marker.len();
-    html[start..]
-        .split('"')
-        .next()
-        .unwrap_or_default()
-        .to_string()
 }
 
 fn form_body(pairs: &[(&str, &str)]) -> Body {
@@ -600,31 +579,23 @@ async fn change_password_failure_redirects_back_to_settings() {
         .unwrap()
         .to_string();
     assert_eq!(
-        loc, "/p/m/core/settings/security",
-        "回跳旧版设置页不得携带消息参数"
+        loc, "/p/settings",
+        "回跳 budding 壳页设置页，且不得携带消息参数"
     );
 
-    let fetch = |cookie: String| {
-        h.app.clone().oneshot(
-            Request::builder()
-                .uri("/p/m/core/settings/security")
-                .header(header::COOKIE, cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-    };
-    let first = fetch(format!("skiff_dev_session={token}")).await.unwrap();
-    assert_eq!(first.status(), StatusCode::OK);
-    let html = body_text(first).await;
-    assert!(
-        html.contains("当前口令不正确"),
-        "首次渲染应显示错误: {html}"
+    // 壳页从 `GET /ui/v1/settings` 的 `flash` 读错误：首次带回、再取不重放。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["data"]["flash"]["error"], "当前口令不正确",
+        "首次读取应带回错误: {body}"
     );
-    let second = fetch(format!("skiff_dev_session={token}")).await.unwrap();
-    let html = body_text(second).await;
-    assert!(
-        !html.contains("当前口令不正确"),
-        "flash 只能消费一次，刷新不应重放: {html}"
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&token), None).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["data"]["flash"]["error"], "",
+        "flash 只能消费一次，刷新不应重放: {body}"
     );
 }
 
@@ -717,7 +688,7 @@ async fn session_cookie_in_second_cookie_header_is_recognized() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/m/core/settings/security")
+                .uri("/p/m/overview")
                 .header(header::COOKIE, "skiff_login=stale")
                 .header(
                     header::COOKIE,
@@ -917,7 +888,7 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/m/core/docker/containers")
+                .uri("/p/m/overview")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -927,7 +898,7 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "容器页应 200（无 Docker 时为空态）"
+        "概览是保留的 SSR 入口（插件槽位迁完前）"
     );
     let html = body_text(resp).await;
 
@@ -942,44 +913,42 @@ async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
         "网站/工具为空时仍保留一级并给空态: {html}"
     );
     assert!(
-        html.contains(r#"href="/p/m/core/sites/list""#)
-            && html.contains(r#"href="/p/m/core/sites/env""#)
-            && !html.contains(r#"href="/p/m/core/sites/settings""#),
+        html.contains(r#"href="/p/sites""#)
+            && html.contains(r#"href="/p/runtimes""#)
+            && !html.contains(r#"sites/settings"#),
         "网站一级保留列表/运行环境；站点级设置入口已移除: {html}"
     );
     assert!(
-        html.contains(r#"href="/p/settings/docker""#)
-            && html.contains(r#"href="/p/m/core/docker/compose""#),
+        html.contains(r#"href="/p/settings/docker""#) && html.contains(r#"href="/p/compose""#),
         "Docker 一级必须提供设置与 Compose 入口（镜像加速源/前缀）: {html}"
     );
     // 插件一级拆成已安装 / 发现 / 可更新三个真实页面
     assert!(
         html.contains(r#"aria-controls="nav-menu-plugins""#)
-            && html.contains(r#"href="/p/m/core/plugins/installed""#)
-            && html.contains(r#"href="/p/m/core/plugins/discover""#)
-            && html.contains(r#"href="/p/m/core/plugins/updates""#),
+            && html.contains(r#"href="/p/plugins""#)
+            && html.contains(r#"href="/p/plugins/discover""#)
+            && html.contains(r#"href="/p/plugins/updates""#),
         "插件一级必须是已安装/发现/可更新: {html}"
     );
     // 设置：安全设置 / 菜单设置 / 界面 / 审计日志
     assert!(
         html.contains(r#"aria-controls="nav-menu-settings""#)
-            && html.contains(r#"href="/p/m/core/settings/security""#)
+            && html.contains(r#"href="/p/settings""#)
             && html.contains(r#"href="/p/settings/menu""#)
             && html.contains(r#"href="/p/settings/ui""#)
-            && html.contains(r#"href="/p/m/core/settings/audit""#),
+            && html.contains(r#"href="/p/audit""#),
         "设置二级必须是安全设置 / 菜单设置 / 界面 / 审计日志: {html}"
     );
+    // 旧 SSR 深链已删除：任何菜单项都不得再指向 `/m/core/*`，否则点了就 404。
     assert!(
-        !html.contains("官方源") && !html.contains("/p/compose"),
-        "导航不得挂不存在的页面: {html}"
+        !html.contains("/m/core"),
+        "菜单不得挂已删除的旧深链: {html}"
     );
 
-    // 当前页在 Docker 的「容器」二级项上高亮
+    // 当前页（概览）必须标成当前项
     assert!(
-        html.contains(r#"class="nav-group current" data-nav-group"#)
-            && html.contains(r#"class="nav-sub on""#)
-            && html.contains(r#"href="/p/m/core/docker/containers""#),
-        "当前页所属一级与二级都必须高亮: {html}"
+        html.contains(r#"href="/p/m/overview""#) && html.contains(r#"aria-current="page""#),
+        "当前页必须高亮: {html}"
     );
     assert!(
         html.contains(r#"<button type="button" class="nav-link nav-label" data-nav-label>"#)
@@ -1054,7 +1023,7 @@ view = "main"
     );
     // 内核「工具 → 文件管理」是独立入口；未启用的站点文件插件不得出现在菜单里。
     assert!(
-        html.contains(r#"href="/p/m/core/files""#),
+        html.contains(r#"href="/p/files""#),
         "内核「工具 → 文件管理」入口必须存在: {html}"
     );
     assert!(
@@ -1062,33 +1031,18 @@ view = "main"
         "未启用的站点文件插件不得出现在菜单: {html}"
     );
 
-    // 插件中心卡片仍能看见未启用插件，并给出启用动作而不是打开入口
-    let center = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/plugins/installed")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(center.status(), StatusCode::OK);
-    let center_html = body_text(center).await;
-    assert!(
-        center_html.contains("已安装 · 未启用") && center_html.contains(">启用<"),
-        "插件中心必须显示未启用状态与启用动作: {center_html}"
-    );
-    assert!(
-        center_html.contains(r#"href="/p/plugins/com.skiff.files">详情"#),
-        "未启用插件仍应提供信息与管理入口: {center_html}"
-    );
-    assert!(
-        !center_html.contains(r#"href="/p/plugins/com.skiff.files/main""#),
-        "未启用插件不得渲染功能页面死入口: {center_html}"
-    );
+    // 插件中心仍能看见未启用插件（状态文案 + enabled 标记），入口走壳页详情。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let item = v["data"]["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "com.skiff.files")
+        .expect("未启用插件仍要出现在插件中心");
+    assert_eq!(item["status"]["label"], "已安装 · 未启用");
+    assert_eq!(item["enabled"], false);
 }
 
 /// 站点文件插件启用后挂「网站」一级，与「工具 → 文件管理」并存、不抢位。
@@ -1144,111 +1098,17 @@ view = "main"
     );
     assert!(sites.contains("站点文件"), "菜单文案应为站点文件: {sites}");
     assert!(
-        !sites.contains(r#"href="/p/m/core/files""#),
+        !sites.contains(r#"href="/p/files""#),
         "站点文件不得与内核文件管理同组: {sites}"
     );
     assert!(
-        html.contains(r#"href="/p/m/core/files""#),
+        html.contains(r#"href="/p/files""#),
         "内核「工具 → 文件管理」入口必须保留: {html}"
     );
 }
 
 #[tokio::test]
-async fn plugin_center_tabs_use_honest_empty_states() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    for (uri, expected) in [
-        ("/p/m/core/plugins/discover", "没有接入在线官方源"),
-        ("/p/m/core/plugins/updates", "尚未接入更新检查源"),
-    ] {
-        let resp = h
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "{uri} 应 200");
-        let html = body_text(resp).await;
-        assert!(html.contains(expected), "{uri} 缺少空态文案「{expected}」");
-        assert!(
-            !html.contains("可更新版本："),
-            "{uri} 不得写死假的更新数字: {html}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn current_state_highlights_plugin_center_and_settings_items() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-
-    let center = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/plugins/installed")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let center_html = body_text(center).await;
-    assert!(
-        center_html.contains(r#"class="nav-sub on""#)
-            && center_html.contains(r#"href="/p/m/core/plugins/installed""#),
-        "插件当前页必须高亮「已安装」: {center_html}"
-    );
-
-    let settings = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/settings/security")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let settings_html = body_text(settings).await;
-    assert!(
-        settings_html.contains(r#"class="nav-group current" data-nav-group"#)
-            && settings_html.contains(r#"class="nav-sub on""#)
-            && settings_html.contains(r#"href="/p/m/core/settings/security""#),
-        "设置页必须高亮「设置 → 安全设置」: {settings_html}"
-    );
-
-    let audit = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/settings/audit")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let audit_html = body_text(audit).await;
-    assert!(
-        audit_html.contains(r#"class="nav-sub on""#)
-            && audit_html.contains(r#"href="/p/m/core/settings/audit""#),
-        "审计页必须高亮「设置 → 审计日志」: {audit_html}"
-    );
-}
-
-#[tokio::test]
-async fn overview_and_container_filter_render_explicit_empty_states() {
+async fn overview_renders_explicit_empty_states() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
 
@@ -1280,62 +1140,6 @@ async fn overview_and_container_filter_render_explicit_empty_states() {
         dash_html.contains("个未安装"),
         "运行环境只有登记、没有容器时，概览不能笼统宣称「全部运行中」: {dash_html}"
     );
-
-    let filtered = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/docker/containers?filter=error")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(filtered.status(), StatusCode::OK);
-    let filtered_html = body_text(filtered).await;
-    assert!(
-        filtered_html.contains("仅显示异常")
-            && filtered_html.contains("清除筛选")
-            && filtered_html.contains("Docker 不可用")
-            && filtered_html.contains("前往 Docker 设置")
-            && filtered_html.contains("docker/settings"),
-        "异常筛选深链必须可解释且可恢复: {filtered_html}"
-    );
-    // Docker 不可达时，镜像/网络/卷入口都要给出同一个恢复出口，而不是裸错误。
-    for path in [
-        "/p/m/core/docker/images",
-        "/p/m/core/docker/networks",
-        "/p/m/core/docker/volumes",
-    ] {
-        let resp = h
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "{path} 必须渲染 gate 而非 503"
-        );
-        let html = body_text(resp).await;
-        assert!(
-            html.contains("前往 Docker 设置") && html.contains("docker/settings"),
-            "{path} 的 gate 必须带「前往 Docker 设置」出口: {html}"
-        );
-        assert!(
-            !html.contains("hyper client error"),
-            "{path} 不得把裸连接错误直接甩给用户: {html}"
-        );
-    }
 }
 
 #[tokio::test]
@@ -2669,27 +2473,18 @@ async fn restricted_form_hides_and_rejects_files_management() {
 
     let (status, html) = get_page(&h.app, "/p/m/overview", &token).await;
     assert_eq!(status, StatusCode::OK);
-    for key in ["core/files", "core/files/trash", "core/files/quotas"] {
+    for uri in ["/p/files", "/p/files/trash", "/p/files/quotas"] {
         assert!(
-            !html.contains(&format!(r#"href="/p/m/{key}""#)),
-            "受限形态不得渲染 `{key}` 入口: {html}"
+            !html.contains(&format!(r#"href="{uri}""#)),
+            "受限形态不得渲染 `{uri}` 入口: {html}"
         );
     }
     assert!(
-        html.contains(r#"href="/p/m/core/tasks""#) && html.contains(r#"href="/p/m/core/jobs""#),
+        html.contains(r#"href="/p/tasks""#) && html.contains(r#"href="/p/jobs""#),
         "工具分组里不依赖 fs 的入口应保留: {html}"
     );
-    // 菜单 href 必须真能落地（历史缺陷：`core/jobs` 有入口但 dispatch 漏了分支 → 404）。
-    // 计划任务页在无调度器快照的测试环境可能 503，这里只验证不是 404。
-    let (status, _) = get_page(&h.app, "/p/m/core/jobs", &token).await;
-    assert_eq!(status, StatusCode::OK, "任务中心深链必须可解析");
-    let (status, _) = get_page(&h.app, "/p/m/core/tasks", &token).await;
-    assert_ne!(status, StatusCode::NOT_FOUND, "计划任务深链必须可解析");
 
     for uri in [
-        "/p/m/core/files",
-        "/p/m/core/files/trash",
-        "/p/m/core/files/quotas",
         "/p/files",
         "/p/files/trash",
         "/p/files/quotas",
@@ -2706,8 +2501,9 @@ async fn restricted_form_hides_and_rejects_files_management() {
     }
 
     // 受限形态保留 docker 能力面：容器管理页照常可用。
-    let (status, _) = get_page(&h.app, "/p/m/core/docker/containers", &token).await;
+    let (status, html) = get_html(&h.app, "/p/containers", &token).await;
     assert_eq!(status, StatusCode::OK, "受限形态的容器管理必须保持可用");
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
 }
 
 /// 插件功能页的两条 UI 约定（跨插件跳转 + 顶栏插件菜单）：
@@ -2765,42 +2561,22 @@ path = "index.html"
         .upsert_plugin(&seed("com.example.off", "已停用界面", false))
         .unwrap();
 
-    // 信息页：由内核渲染身份、授权与管理动作，不嵌 iframe。
-    let (status, info_html) =
-        get_page(&h.app, "/p/m/core/plugins/info/com.example.ui", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    for marker in [
-        "标识",
-        "发布者 / 密钥指纹",
-        "签名状态",
-        "沙箱模式",
-        "声明能力面",
-        "关联菜单",
-        "日志与事件",
-        "管理操作",
-    ] {
-        assert!(
-            info_html.contains(marker),
-            "信息页缺少 {marker}: {info_html}"
-        );
-    }
+    // 信息与管理数据由 `/ui/v1/plugins/{id}` 承载（壳页渲染，旧 SSR 信息页已删除）：
+    // 身份 / 授权 / 管理动作与功能页入口都在同一份快照里，工作台不嵌信息页。
+    let (status, _, body) =
+        get_ui(&h.app, "/ui/v1/plugins/com.example.ui", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = &v["data"];
+    assert_eq!(data["can_admin"], true);
+    assert!(data["grants"].is_array(), "{body}");
+    assert_eq!(data["entry_href"], "/p/plugins/com.example.ui/main");
     assert!(
-        info_html.contains(r#"action="/p/plugins/com.example.ui/toggle""#)
-            && info_html.contains(r#"action="/p/plugins/com.example.ui/delete""#),
-        "信息页必须承载启用/停用与卸载动作: {info_html}"
+        body.contains("/p/m/plugin/com.example.ui/legacy"),
+        "关联菜单深链必须给出: {body}"
     );
-    assert!(
-        info_html.contains(r#"href="/p/m/plugin/com.example.ui/legacy""#),
-        "信息页必须列出关联菜单深链: {info_html}"
-    );
-    assert!(
-        info_html.contains(r#"href="/p/plugins/com.example.ui/main""#),
-        "已启用插件的信息页必须给出功能页入口: {info_html}"
-    );
-    assert!(
-        !info_html.contains("data-workbench-frame"),
-        "信息页不得嵌 iframe 工作台: {info_html}"
-    );
+    let (status, _) = get_page(&h.app, "/p/m/core/plugins/info/com.example.ui", &token).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "旧信息页已删除");
 
     let (status, html) = get_page(
         &h.app,
@@ -2867,56 +2643,32 @@ path = "index.html"
 async fn menu_settings_hide_order_reset_and_user_scope() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
 
-    let page = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/settings/menu")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(page.status(), StatusCode::OK, "菜单设置页应 200");
-    let page_html = body_text(page).await;
-    let csrf = csrf_from(&page_html);
-    assert!(
-        page_html.contains("data-menu-key") && page_html.contains("恢复默认"),
-        "菜单设置页必须列出可操作项: {page_html}"
-    );
-    // 布局与内容宽度已从设置区移除：页面不得再出现这两项。
-    assert!(
-        !page_html.contains("内容宽度") && !page_html.contains("name=\"layout\""),
-        "菜单设置页不得再提供布局 / 内容宽度: {page_html}"
-    );
-    assert!(
-        page_html.contains(r#"data-layout="left""#),
-        "壳固定使用侧栏布局: {page_html}"
-    );
+    // 只读快照：当前账号能看到可操作项，镜像项的 href 已是规范路径。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let groups = v["data"]["groups"].as_array().unwrap();
+    assert!(!groups.is_empty(), "菜单设置必须列出分组: {body}");
+    let images = groups
+        .iter()
+        .flat_map(|g| g["items"].as_array().unwrap().iter())
+        .find(|i| i["key"] == "core/docker/images")
+        .expect("菜单设置必须含 Docker→镜像");
+    assert_eq!(images["href"], "/p/images");
+    assert_eq!(images["hidden"], false);
 
-    // 隐藏 Docker→镜像
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/settings/menu")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("action", "hide"),
-                    ("key", "core/docker/images"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    // 隐藏 Docker→镜像（壳页走 JSON 接口，与原表单共用同一校验与审计）。
+    let (status, body) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/menu",
+        &token,
+        Some(&csrf),
+        &serde_json::json!({ "action": "hide", "key": "core/docker/images" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let dash = body_text(
         h.app
@@ -2933,7 +2685,7 @@ async fn menu_settings_hide_order_reset_and_user_scope() {
     )
     .await;
     assert!(
-        !dash.contains(r#"href="/p/m/core/docker/images""#),
+        !dash.contains(r#"href="/p/images""#),
         "隐藏后导航不得再出现镜像: {dash}"
     );
 
@@ -2954,26 +2706,20 @@ async fn menu_settings_hide_order_reset_and_user_scope() {
     )
     .await;
     assert!(
-        viewer_html.contains(r#"href="/p/m/core/docker/images""#),
+        viewer_html.contains(r#"href="/p/images""#),
         "viewer 的默认菜单不应受 admin 的隐藏影响: {viewer_html}"
     );
 
     // 恢复默认：隐藏项回到初始可见
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/settings/menu")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[("csrf", &csrf), ("action", "reset")]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let (status, body) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/menu",
+        &token,
+        Some(&csrf),
+        &serde_json::json!({ "action": "reset" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let reset = body_text(
         h.app
             .clone()
@@ -2989,11 +2735,10 @@ async fn menu_settings_hide_order_reset_and_user_scope() {
     )
     .await;
     assert!(
-        reset.contains(r#"href="/p/m/core/docker/images""#),
+        reset.contains(r#"href="/p/images""#),
         "恢复默认必须复原隐藏项: {reset}"
     );
 }
-
 #[tokio::test]
 async fn deep_links_legacy_routes_and_role_filtered_menu() {
     let h = harness();
@@ -3007,15 +2752,23 @@ async fn deep_links_legacy_routes_and_role_filtered_menu() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
 
+    // 菜单项落到规范路径：每个目标都必须真能打开（浏览器导航带 Accept 走壳页）。
     for uri in [
-        "/p/m/overview",
-        "/p/m/core/docker/containers",
-        "/p/m/core/plugins/discover",
-        "/p/m/core/settings/security",
-        "/p/m/core/settings/menu",
-        "/p/m/plugin/com.skiff.nginx",
+        "/p",
         "/p/containers",
+        "/p/images",
         "/p/plugins",
+        "/p/plugins/discover",
+        "/p/sites",
+        "/p/runtimes",
+        "/p/settings",
+        "/p/settings/menu",
+        "/p/audit",
+        "/p/tasks",
+        "/p/jobs",
+        "/p/files",
+        "/p/m/overview",
+        "/p/m/plugin/com.skiff.nginx",
     ] {
         let resp = h
             .app
@@ -3024,18 +2777,38 @@ async fn deep_links_legacy_routes_and_role_filtered_menu() {
                 Request::builder()
                     .uri(uri)
                     .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                    // 规范页已迁 budding 壳页：浏览器导航带 Accept，旧 SSR 走 /m 深链。
                     .header(header::ACCEPT, "text/html")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "{uri} 应 200（旧路由也必须可用）"
-        );
+        assert_eq!(resp.status(), StatusCode::OK, "{uri} 应 200");
+    }
+
+    // 旧 SSR 深链已删除：`/m/core/*` 一律 404，不得再承载页面。
+    for uri in [
+        "/p/m/core/docker/containers",
+        "/p/m/core/plugins/discover",
+        "/p/m/core/settings/security",
+        "/p/m/core/settings/menu",
+        "/p/m/core/sites/list",
+        "/p/m/core/files",
+        "/p/m/core/tasks",
+    ] {
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 
     let detail = body_text(
@@ -3088,7 +2861,7 @@ async fn deep_links_legacy_routes_and_role_filtered_menu() {
                 .unwrap(),
         )
         .await;
-        let has_audit = html.contains(r#"href="/p/m/core/settings/audit""#);
+        let has_audit = html.contains(r#"data-menu-key="core/settings/audit""#);
         assert_eq!(
             has_audit,
             token == &admin,
@@ -3332,7 +3105,7 @@ roles = ["admin"]
         "失败降级块必须随卡片一起渲染"
     );
     assert!(
-        html.contains(r#"href="/p/m/core/sites/list""#),
+        html.contains(r#"href="/p/sites""#),
         "网站健康块由内核自带，不随插件槽位消失"
     );
 
@@ -3348,123 +3121,6 @@ roles = ["admin"]
     assert_eq!(status, StatusCode::OK);
     assert!(!html.contains(r#"data-slot="overview.health""#));
     assert!(html.contains(r#"class="health-grid""#));
-}
-
-/// 内核信息页：身份字段、已授权资源、插件间接口、关联菜单与管理动作
-/// 全部由内核渲染（`docs/contract/PLUGIN_UI_CONTRACT.md` §2）。
-#[tokio::test]
-async fn plugin_info_page_renders_grants_interop_and_management() {
-    let h = harness();
-    let manifest = r#"id = "com.example.info"
-name = "Info Demo"
-version = "0.1.0"
-key_id = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-api = "1.2"
-requires = ["fs", "interop"]
-[[permissions]]
-capability = "fs"
-verbs = ["read"]
-[[permissions]]
-capability = "interop"
-verbs = ["call"]
-[[ui]]
-label = "信息演示"
-path = "main.html"
-[[menu]]
-id = "panel"
-parent = "tools"
-label = "信息面板"
-order = 10
-icon = "tools"
-view = "main"
-[interop]
-consumes = ["com.skiff.cron:jobs.list"]
-provides = [{ method = "probe", label = "探针" }]
-"#
-    .to_string();
-    let parsed = skiff_pkgfmt::Manifest::parse(&manifest).unwrap();
-    h.state
-        .db()
-        .upsert_plugin(&PluginRecord {
-            id: parsed.id.clone(),
-            name: parsed.name.clone(),
-            version: parsed.version.clone(),
-            api: parsed.api.clone(),
-            key_id: "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd".into(),
-            manifest,
-            enabled: true,
-            status: "enabled".into(),
-            status_detail: String::new(),
-            active_version: parsed.version.clone(),
-            installed_at: 0,
-            grants: vec![
-                skiff_store::Grant {
-                    kind: "path".into(),
-                    value: "/proc".into(),
-                },
-                skiff_store::Grant {
-                    kind: "plugin".into(),
-                    value: "com.skiff.cron".into(),
-                },
-            ],
-        })
-        .unwrap();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-
-    let (status, html) = get_page(&h.app, "/p/m/core/plugins/info/com.example.info", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    for marker in [
-        "com.example.info",
-        "abcdefabcdef",
-        "签名状态",
-        "未验签",
-        "完整沙箱",
-        "fs:read",
-        "path:/proc",
-        "plugin:com.skiff.cron",
-        "com.skiff.cron:jobs.list",
-        "probe · 探针",
-        r#"href="/p/m/plugin/com.example.info/panel""#,
-        r#"href="/p/plugins/com.example.info/main""#,
-    ] {
-        assert!(html.contains(marker), "信息页缺少 {marker}: {html}");
-    }
-    // 信息页内的启停动作必须回信息页（`next` 只允许本站插件前缀）。
-    assert!(
-        html.contains(r#"name="next" value="/p/plugins/com.example.info""#),
-        "信息页启停表单必须带回跳地址: {html}"
-    );
-
-    // 单视图 L2：规范视图路由可直达，且不渲染标签栏。
-    let (status, view_html) =
-        get_page(&h.app, "/p/plugins/com.example.info/main?legacy=1", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        view_html.contains("/p/plugins/com.example.info/ui/main.html?nonce="),
-        "{view_html}"
-    );
-    assert!(
-        !view_html.contains(r#"class="workbench-tabs""#),
-        "{view_html}"
-    );
-    let (status, _) = get_page(&h.app, "/p/plugins/com.example.info/nope?legacy=1", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    // 停用后信息页仍可见（用于恢复/卸载），但不再提供功能页入口。
-    h.state
-        .db()
-        .set_plugin_enabled_state("com.example.info", false)
-        .unwrap();
-    let (status, html) = get_page(&h.app, "/p/m/core/plugins/info/com.example.info", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("已停用") && html.contains("启用插件"),
-        "{html}"
-    );
-    assert!(
-        !html.contains(r#"href="/p/plugins/com.example.info/main""#),
-        "停用插件不得给出打开入口: {html}"
-    );
 }
 
 /// 任何直接导航到插件功能页都只能拿到原生占位页，DOM 里不得出现 iframe；
@@ -3768,17 +3424,23 @@ async fn legacy_ui_only_package_maps_main_to_index_html() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // 信息页也必须存在，并给出 main 入口与旧包菜单深链。
-    let (status, html) =
-        get_page(&h.app, "/p/m/core/plugins/info/com.example.legacy", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"href="/p/plugins/com.example.legacy/main""#),
-        "{html}"
+    // 信息与管理数据走 `/ui/v1/plugins/{id}`（壳页渲染）：必须给出 main 入口与旧包菜单深链。
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/plugins/com.example.legacy",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["data"]["entry_href"],
+        "/p/plugins/com.example.legacy/main"
     );
     assert!(
-        html.contains(r#"href="/p/m/plugin/com.example.legacy/legacy""#),
-        "{html}"
+        body.contains("/p/m/plugin/com.example.legacy/legacy"),
+        "旧包菜单深链必须出现在关联菜单里: {body}"
     );
 }
 
@@ -3841,17 +3503,18 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
     seed_declared_plugin(h.state.db().as_ref(), manifest, true);
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p/m/core/plugins/info/com.skiff.testkit", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("插件架构测试台"), "{html}");
-    assert!(
-        !html.contains("插件架构测试台 插件架构测试台"),
-        "L2 label 与插件名同名时标题不得重复渲染: {html}"
-    );
-    assert!(
-        html.contains(r#"href="/p/plugins/com.skiff.testkit/main""#),
-        "{html}"
-    );
+    // 信息与管理数据走 `/ui/v1/plugins/{id}`（旧 SSR 信息页已删除）。
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/plugins/com.skiff.testkit",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["plugin"]["name"], "插件架构测试台");
+    assert_eq!(v["data"]["entry_href"], "/p/plugins/com.skiff.testkit/main");
 
     let (status, html) = get_page(
         &h.app,
@@ -4042,123 +3705,6 @@ fn cron_new_task_is_a_list_button_not_a_separate_view() {
     );
 }
 
-/// 网站列表：默认站点只在列表做标记，切换入口下沉到详情页。
-#[tokio::test]
-async fn sites_list_shows_default_badge_and_toggle() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    h.state
-        .db()
-        .create_site(&php_site(
-            "demo.local",
-            &h.data_dir
-                .join("www/sites/demo.local")
-                .display()
-                .to_string(),
-        ))
-        .unwrap();
-    h.state.db().set_site_default("demo.local", true).unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("demo.local"), "{html}");
-    assert!(html.contains("默认</span>"), "默认标记必须出现");
-    assert!(
-        !html.contains("/p/sites/demo.local/default"),
-        "默认站点操作必须从列表移出: {html}"
-    );
-    assert!(
-        !html.contains("设为默认") && !html.contains("取消默认"),
-        "列表不得再有默认切换按钮: {html}"
-    );
-
-    let (status, detail) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        detail.contains("/p/sites/demo.local/default"),
-        "详情页必须提供默认站点切换入口: {detail}"
-    );
-    assert!(
-        detail.contains("取消默认站点"),
-        "已是默认时详情页按钮文案应为取消默认站点: {detail}"
-    );
-}
-
-/// 列表收敛：类型与运行环境合成一列（runtime 显示实例名），别名只在有值时出现，
-/// 行操作只保留「详情」，不再有「⋯ 更多」菜单。
-#[tokio::test]
-async fn sites_list_merges_type_column_and_hides_empty_alias() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let php_root = h.data_dir.join("www/sites/php.local");
-    h.state
-        .db()
-        .create_site(&php_site("php.local", &php_root.display().to_string()))
-        .unwrap();
-    h.state
-        .db()
-        .add_site_aliases("php.local", &["www.php.local".to_string()])
-        .unwrap();
-    h.state
-        .db()
-        .create_site(&static_site(
-            "plain.local",
-            &h.data_dir
-                .join("www/sites/plain.local")
-                .display()
-                .to_string(),
-        ))
-        .unwrap();
-    h.state
-        .db()
-        .create_site(&proxy_site(
-            "proxy.local",
-            &h.data_dir
-                .join("www/sites/proxy.local")
-                .display()
-                .to_string(),
-            "http://127.0.0.1:3000",
-            false,
-        ))
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("类型 / 运行环境"),
-        "类型与运行环境必须合成一列: {html}"
-    );
-    assert!(
-        html.contains(r#"<span class="mono">php-8.5</span>"#),
-        "运行环境列必须显示实例名 php-8.5: {html}"
-    );
-    assert!(
-        html.contains(r#"<span class="mono">http://127.0.0.1:3000</span>"#),
-        "反向代理列必须显示上游地址: {html}"
-    );
-    assert!(
-        html.contains(r#"<span class="muted">静态</span>"#),
-        "静态站点必须显示「静态」: {html}"
-    );
-    assert!(
-        html.contains(r#"class="alias""#),
-        "有别名时必须展示别名预览: {html}"
-    );
-    assert!(
-        !html.contains("无别名") && !html.contains("别名 0 个"),
-        "没有别名时不得渲染空别名行: {html}"
-    );
-    assert!(
-        !html.contains("row-menu") && !html.contains("更多操作"),
-        "行内「⋯ 更多」菜单必须移除: {html}"
-    );
-    let (_, detail) = get_page(&h.app, "/p/m/core/sites/list/plain.local", &admin).await;
-    assert!(
-        detail.contains("设为默认站点") || detail.contains("取消默认站点"),
-        "默认站点切换必须落到详情页: {detail}"
-    );
-}
-
 /// 默认站点只能有一个：切换后旧默认必须取消，详情页入口与库状态同源。
 #[tokio::test]
 async fn sites_default_switch_keeps_single_default() {
@@ -4200,45 +3746,6 @@ async fn sites_default_switch_keeps_single_default() {
         h.state.db().default_site().unwrap().unwrap().domain,
         "b.local",
         "任何时刻只能存在一个默认站点"
-    );
-}
-
-/// 网站列表的证书列必须与详情 SSL 标签同源：证书文件存在即显示已配置，
-/// 不能只读 `https` 开关或写死「未配置」。
-#[tokio::test]
-async fn sites_list_cert_column_matches_ssl_files() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-    let s = h.state.site_settings();
-    std::fs::create_dir_all(root.join("ssl")).unwrap();
-    std::fs::write(s.cert_file(&root), "-----BEGIN CERTIFICATE-----\n").unwrap();
-    std::fs::write(s.key_file(&root), "-----BEGIN PRIVATE KEY-----\n").unwrap();
-    h.state
-        .db()
-        .set_site_tls("demo.local", true, false)
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("已启用 HTTPS"),
-        "已签发证书且启用 HTTPS 的站点必须显示证书已配置: {html}"
-    );
-
-    // 只上传证书、未启用 HTTPS 时，列表也不得回落成「未配置」。
-    h.state
-        .db()
-        .set_site_tls("demo.local", false, false)
-        .unwrap();
-    let (_, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    assert!(
-        html.contains("证书已上传"),
-        "证书文件存在但未启用时应显示已上传: {html}"
     );
 }
 
@@ -5049,171 +4556,12 @@ fn d7_theme_toggle_shows_target_theme() {
     );
 }
 
-/// 新建网站改为单页弹窗：无三步向导、无二次确认；字段默认值、别名列表与
-/// 目录前缀自动带上都在这里固化。
-#[tokio::test]
-async fn sites_new_dialog_defaults_and_validation() {
-    let tpl = include_str!("../templates/site_new_dialog.html");
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-
-    // 单屏结构：主域名与目录双列、类型面板占同一槽位、每个字段都有错误位。
-    assert!(
-        tpl.contains(r#"class="field-grid""#) && tpl.contains(r#"class="field-block type-panel""#),
-        "主域名/目录应双列排布，类型专属字段共用面板槽位"
-    );
-    for name in [
-        "domain",
-        "aliases",
-        "root_dir",
-        "runtime_id",
-        "proxy_target",
-    ] {
-        assert!(
-            tpl.contains(&format!(r#"data-error-for="{name}""#)),
-            "{name} 必须有字段级错误位"
-        );
-    }
-    assert!(tpl.contains("data-row-error"), "别名行必须有逐行错误位");
-    assert!(
-        tpl.contains(r#"class="req""#),
-        "必填字段必须有可见的必填标识"
-    );
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("data-site-dialog"),
-        "必须用弹窗承载新建: {html}"
-    );
-    assert!(
-        html.contains(r#"data-site-dialog open"#),
-        "?new=1 应直接展开弹窗: {html}"
-    );
-    assert!(!html.contains("data-wizard"), "不得再三步向导");
-    assert!(!html.contains("确认创建"), "不得有二次确认步骤");
-    assert!(
-        html.contains(r#"name="site_type""#)
-            && html.contains("value=\"runtime\"")
-            && html.contains("value=\"static\"")
-            && html.contains("value=\"proxy\""),
-        "三类选择必须在弹窗内: {html}"
-    );
-    assert!(
-        html.contains("data-domain-list")
-            && html.contains("data-alias-add")
-            && html.contains("data-alias-bulk")
-            && html.contains(r#"name="domain""#)
-            && html.contains(r#"name="aliases_bulk""#),
-        "主域名/别名必须是同一个列表，且支持新增与批量粘贴: {html}"
-    );
-    // 默认只有主域名一行；别名行由「新增/批量粘贴」产生。
-    assert!(
-        !html.contains("data-alias-row"),
-        "别名列表默认不应带空行: {html}"
-    );
-    // 弹窗默认值：运行环境类型预选；无就绪实例时给引导，不渲染空下拉。
-    let runtime_pos = html.find(r#"value="runtime""#).unwrap();
-    let runtime_tag: String = html[runtime_pos..].chars().take(80).collect();
-    assert!(runtime_tag.contains("checked"), "默认应选中运行环境类型");
-    assert!(
-        html.contains("没有已就绪的运行环境") && html.contains("前往运行环境"),
-        "无就绪运行环境时必须给出引导而不是空下拉: {html}"
-    );
-    assert!(
-        html.contains("data-domain-main") && html.contains("data-root-slug"),
-        "主域名与目录输入必须带前端钩子: {html}"
-    );
-    assert!(
-        html.contains("/www/sites/") && html.contains("默认与主域名同名"),
-        "目录前缀必须自动带上，默认跟随主域名: {html}"
-    );
-    assert!(
-        !html.contains("必须以 /www/sites/"),
-        "前端不得暴露前缀校验文案: {html}"
-    );
-    assert!(
-        !html.contains("data-disabled"),
-        "未就绪的运行环境必须整项不出现，而不是禁用占位: {html}"
-    );
-    assert!(
-        !html.contains("name=\"database\"") && !html.contains("name=\"ssl\""),
-        "不得用可点击的假开关冒充数据库/SSL"
-    );
-
-    let js = include_str!("../static/skiff.js");
-    assert!(
-        js.contains("function attachSiteDialog")
-            && js.contains("function syncRoot")
-            && js.contains("slugTouched"),
-        "前端必须有目录自动填主域名的逻辑"
-    );
-    assert!(
-        js.contains("data-alias-import") && js.contains("splitNames"),
-        "批量粘贴必须在前端解析成别名行"
-    );
-    let csrf = csrf_from(&html);
-
-    // 非法域名：服务端就地报错，弹窗保持展开并回填。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/create")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("site_type", "runtime"),
-                    ("runtime_id", "php-8.5"),
-                    ("domain", "bad_domain"),
-                    ("root_dir", "bad"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "校验失败应留在列表页");
-    let html = body_text(resp).await;
-    assert!(
-        html.contains("域名只能包含") && html.contains("data-site-dialog"),
-        "非法域名必须就地报错并保留弹窗: {html}"
-    );
-    // 服务端错误要落到字段旁：错误位可见 + 输入框高亮，而不是只在顶部飘一条。
-    assert!(
-        html.contains(r#"data-error-for="domain" data-has-error"#),
-        "域名错误必须显示在字段旁: {html}"
-    );
-    assert!(
-        html.contains(r#"data-has-error aria-invalid="true""#),
-        "出错字段必须高亮并标记 aria-invalid: {html}"
-    );
-    assert!(!html.contains("确认创建"), "错误回填也不得引入二次确认");
-
-    let js = include_str!("../static/skiff.js");
-    assert!(
-        js.contains("function rowError") && js.contains("data-row-error"),
-        "别名必须支持逐行错误，批量重复要逐条指出"
-    );
-    assert!(
-        js.contains("已存在，未导入") && js.contains("域名重复："),
-        "批量粘贴必须逐条列出被跳过的域名"
-    );
-    assert!(
-        js.contains("创建中…") && js.contains("submitBtn.disabled = true"),
-        "提交必须进入禁用态，避免连点重复创建"
-    );
-}
-
 /// 别名批量解析：逗号/空格/换行混合提交能被拆分，重复域名明确拒绝。
 #[tokio::test]
 async fn sites_create_rejects_duplicate_aliases() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (_, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
-    let csrf = csrf_from(&html);
+    let csrf = h.state.csrf_token(&admin);
 
     let resp = h
         .app
@@ -5243,8 +4591,7 @@ async fn sites_create_rejects_duplicate_aliases() {
     );
 
     // 别名等于主域名同样拒绝。
-    let (_, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
-    let csrf = csrf_from(&html);
+    let csrf = h.state.csrf_token(&admin);
     let resp = h
         .app
         .clone()
@@ -5287,18 +4634,21 @@ async fn site_domains_tab_manages_aliases() {
         .add_site_aliases("dom.local", &["www.dom.local".to_string()])
         .unwrap();
 
-    let (status, html) =
-        get_page(&h.app, "/p/m/core/sites/list/dom.local?tab=domains", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("主域名"), "{html}");
-    assert!(html.contains("www.dom.local"), "{html}");
+    let csrf = h.state.csrf_token(&admin);
+
+    // 只读快照里能看见主域名与别名（壳页「域名」标签消费同一份数据）。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites/dom.local", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["domain"], "dom.local");
     assert!(
-        html.contains("/p/sites/dom.local/domains")
-            && html.contains(r#"name="action" value="remove""#)
-            && html.contains(r#"name="action" value="add""#),
-        "域名标签必须能增删别名: {html}"
+        v["data"]["aliases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "www.dom.local"),
+        "别名必须出现在站点详情里: {body}"
     );
-    let csrf = csrf_from(&html);
 
     // 主域名不能作为别名删除。
     let resp = h
@@ -5339,291 +4689,13 @@ async fn site_domains_tab_manages_aliases() {
     let (status, shell) = get_html(&h.app, &loc, &admin).await;
     assert_eq!(status, StatusCode::OK, "跟随重定向应落在规范页");
     assert!(shell.contains(r#"id="skiff-root""#), "{shell}");
-    // 写操作迁移前，提示文案仍由旧 SSR 回退落点呈现，确认没有丢失。
-    let m_loc = loc.replace("/p/sites/", "/p/m/core/sites/list/");
-    let (_, page) = get_page(&h.app, &m_loc, &admin).await;
-    assert!(page.contains("主域名不能作为别名删除"), "{page}");
-}
-
-/// 运行环境页是业务视角：列表/详情/深链可访问，viewer 一律 403。
-#[tokio::test]
-async fn runtime_pages_are_admin_only_and_render_business_view() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-
-    for uri in ["/p/m/core/sites/env", "/p/m/core/sites/env/php-8.5"] {
-        let (status, html) = get_page(&h.app, uri, &admin).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(html.contains("PHP"), "{uri} 必须展示运行环境类型: {html}");
-    }
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("PHP 配置"), "{html}");
-    assert!(html.contains("socket"), "{html}");
-    assert!(html.contains("关联站点"), "{html}");
-    assert!(
-        html.contains("/p/containers/"),
-        "运行环境详情必须提供 Docker 页深链: {html}"
-    );
-
-    // 菜单契约深链同源。
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("PHP 配置"), "{html}");
-
-    // 规范页已迁 budding 壳页：viewer 能打开壳页，但 JSON 列表接口与写操作必须 403。
-    for uri in ["/p/runtimes", "/p/runtimes/php-8.5"] {
-        let (status, _) = get_html(&h.app, uri, &viewer).await;
-        assert_eq!(status, StatusCode::OK, "{uri} 壳页对登录用户可见");
-    }
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/ui/v1/runtimes")
-                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    // 主域名没有被当成别名删掉：别名集合保持原样，主域名仍可解析。
+    let (_, _, body) = get_ui(&h.app, "/ui/v1/sites/dom.local", Some(&admin), None).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "viewer 不得读取运行环境列表"
-    );
-
-    // viewer 的写操作同样 403，且不产生副作用。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/runtimes/php-8.5/action/start")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
-                .body(form_body(&[("csrf", "x")]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-}
-
-/// 非 PHP 实例（Rust/Node/Go）的详情页不得出现任何 PHP 专属区块：
-/// 扩展页签、扩展面板、PHP 配置文件编辑；直达 env 页与规范入口都要判 kind。
-#[tokio::test]
-async fn runtime_detail_hides_php_blocks_for_non_php_instances() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    h.state
-        .db()
-        .create_runtime(&skiff_store::NewRuntime {
-            id: "rust-1.83".into(),
-            kind: "rust".into(),
-            name: "rust-1.83".into(),
-            version: "1.83".into(),
-            image: "rust:1.83-slim".into(),
-            image_digest: String::new(),
-            socket_path: None,
-            port: None,
-            is_default: false,
-        })
-        .unwrap();
-
-    for uri in ["/p/m/core/sites/env/rust-1.83"] {
-        let (status, html) = get_page(&h.app, uri, &admin).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(
-            !html.contains(r#"data-runtime-tab="extensions""#)
-                && !html.contains(r#"data-runtime-tab-panel="extensions""#),
-            "{uri} 不得渲染扩展页签/面板: {html}"
-        );
-        assert!(
-            !html.contains("扩展管理") && !html.contains("php.ini") && !html.contains("PECL"),
-            "{uri} 不得出现 PHP 专属配置: {html}"
-        );
-        assert!(
-            html.contains("Rust") && html.contains("rust-1.83"),
-            "{uri} 仍应展示实例自身信息: {html}"
-        );
-    }
-
-    // 同一页面在 PHP 实例上仍完整保留扩展与 PHP 配置。
-    let (_, php_html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
-    assert!(
-        php_html.contains(r#"data-runtime-tab="extensions""#) && php_html.contains("php.ini"),
-        "PHP 实例必须保留扩展页签与 php.ini 查看入口: {php_html}"
-    );
-}
-
-/// 运行环境页：去安装进度/镜像源，列表 + 新建实例 + 详情抽屉（Esc/遮罩关闭）。
-#[tokio::test]
-async fn site_env_page_drops_install_progress_and_uses_drawer() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    // 一个真实实例（未安装也算已存在的实例，应进列表）。
-    h.state
-        .db()
-        .create_runtime(&skiff_store::NewRuntime {
-            id: "php-8.5-a".into(),
-            kind: "php".into(),
-            name: "php-8.5-a".into(),
-            version: "8.5".into(),
-            image: "php:8.5-fpm-alpine".into(),
-            image_digest: String::new(),
-            socket_path: Some("/www/runtime/php/php-8.5-a/php-fpm.sock".into()),
-            port: None,
-            is_default: false,
-        })
-        .unwrap();
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-
-    for gone in [
-        "安装进度",
-        "镜像源",
-        "下载速度",
-        "registry_mirror",
-        "image_prefix",
-    ] {
-        assert!(!html.contains(gone), "运行环境页不得常驻 {gone}: {html}");
-    }
-    for keep in [
-        "类型",
-        "版本",
-        "占用站点",
-        "接入方式",
-        "详情",
-        "新建运行环境",
-        "创建并后台安装",
-    ] {
-        assert!(html.contains(keep), "列表/弹窗必须展示 {keep}: {html}");
-    }
-    // 「详情」和「更多」合并成一个入口：每行只留一个按钮，整行也可点开抽屉。
-    assert!(
-        !html.contains(">更多<"),
-        "详情与更多必须合并成单一入口: {html}"
-    );
-    // 接入方式只显示短标识，完整路径在 title 悬浮提示里（宿主路径在不同平台上不同）。
-    assert!(
-        html.contains("runtime-endpoint")
-            && html.contains(r#"title="socket "#)
-            && html.contains(">sock<"),
-        "接入方式列必须显示 sock 且完整路径进悬浮提示: {html}"
-    );
-    assert!(html.contains("共 1 个实例"), "列表计数只算真实实例: {html}");
-    assert!(
-        !html.contains(r#"data-runtime-open="/p/runtimes/php-8.3""#)
-            && !html.contains(r#"data-runtime-open="/p/runtimes/php-8.4""#)
-            && !html.contains(r#"data-runtime-open="/p/runtimes/php-8.5""#),
-        "迁移种子行不得在列表占位（模板只在新建流程出现）: {html}"
-    );
-    assert!(
-        html.contains(r#"data-runtime-drawer"#)
-            && html.contains(r#"data-runtime-open="/p/runtimes/php-8.5-a""#)
-            && html.contains("data-drawer-content"),
-        "详情必须是右侧抽屉而不是跳页: {html}"
-    );
-    assert!(
-        html.contains(r#"name="kind""#)
-            && html.contains(r#"name="name""#)
-            && html.contains(r#"name="version""#)
-            && html.contains("data-runtime-version")
-            && html.contains("目录已存在会被拒绝"),
-        "新建弹窗必须暴露 kind/name/version 并提示目录拒绝规则: {html}"
-    );
-    // 版本下拉来自 catalog（PHP 8.5/8.4/8.3），不允许手填。
-    assert!(
-        html.contains(r#"<option value="8.5""#)
-            && html.contains(r#"<option value="8.4""#)
-            && html.contains(r#"<option value="8.3""#)
-            && html.contains("data-runtime-catalog"),
-        "版本必须是目录驱动的下拉: {html}"
-    );
-    // 扩展清单单一来源渲染：安装弹窗与抽屉共用同一批 key。
-    for key in ["opcache", "redis", "pdo_mysql", "gd", "intl"] {
-        assert!(
-            html.contains(&format!(r#"value="{key}""#)),
-            "安装弹窗必须列出扩展 {key}: {html}"
-        );
-    }
-    // 版本切换必须按该版本重算扩展可用性：8.4 起 imap/pspell 不再出现（不灰显）。
-    let raw = html
-        .split(r#"data-runtime-catalog>"#)
-        .nth(1)
-        .and_then(|s| s.split("</script>").next())
-        .expect("运行环境目录 JSON");
-    let catalog: serde_json::Value = serde_json::from_str(raw.trim()).expect("目录 JSON 可解析");
-    let php = catalog
-        .as_array()
-        .and_then(|a| a.iter().find(|k| k["key"] == "php"))
-        .expect("目录必须含 php");
-    let by_ver = php["exts_by_version"].as_object().expect("php 扩展矩阵");
-    for (ver, expect_present) in [("8.5", false), ("8.4", false), ("8.3", true)] {
-        let list = by_ver[ver].as_array().expect("版本扩展列表");
-        for key in ["imap", "pspell"] {
-            let found = list.iter().any(|e| e["key"] == key);
-            assert_eq!(
-                found, expect_present,
-                "{ver} 的 {key} 是否出现在可用清单必须为 {expect_present}"
-            );
-        }
-    }
-    assert!(
-        include_str!("../static/skiff.js").contains("function rebuildExts"),
-        "新建弹窗切换版本时必须重建扩展勾选项"
-    );
-    assert!(
-        html.contains(r#"class="runtime-extensions exts-box""#),
-        "弹窗必须有扩展勾选块: {html}"
-    );
-    // 「基础环境」概念已取消：入口、文案、次要表单全部不出现。
-    assert!(
-        !html.contains("基础环境") && !html.contains("runtime-base-install"),
-        "运行环境页不得再出现基础环境概念: {html}"
-    );
-    let head_block = html
-        .split(r#"<div class="page-head">"#)
-        .nth(1)
-        .and_then(|s| s.split("</div>").next())
-        .unwrap_or("");
-    assert!(
-        !head_block.contains("/sites/env/install"),
-        "标题栏不得再放基础环境按钮: {head_block}"
-    );
-    // Web 服务不再是运行环境行：运维入口移到 Web 服务页。
-    assert!(
-        !html.contains("data-web-action")
-            && !html.contains("/sites/env/web/action")
-            && !include_str!("../static/skiff.js").contains("data-web-action"),
-        "Web 服务不得再出现在运行环境页: {html}"
-    );
-    let (status, web) = get_page(&h.app, "/p/m/core/sites/web", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        web.contains("Web 服务（OpenResty）")
-            && web.contains("data-web-env-ops")
-            && web.contains("/p/runtimes/web/action/"),
-        "Web 服务运维入口必须落在 Web 服务页: {web}"
-    );
-
-    // 抽屉交互由原生 <dialog> 承担：showModal 自动焦点锁 + Esc，遮罩点击关闭。
-    let js = include_str!("../static/skiff.js");
-    assert!(js.contains("dlg.showModal()"), "抽屉必须用 showModal: {js}");
-    assert!(
-        js.contains("e.target === dlg") && js.contains("dlg.close()"),
-        "点遮罩必须关闭抽屉: {js}"
-    );
-    let css = include_str!("../static/skiff.css");
-    assert!(css.contains("dialog.drawer") && css.contains("dialog.drawer::backdrop"));
-    assert!(
-        css.contains("@media (max-width: 720px)") && css.contains("dialog.drawer"),
-        "窄屏必须退化为全屏抽屉"
+        v["data"]["aliases"].as_array().unwrap().len(),
+        1,
+        "主域名不得被当作别名删除: {body}"
     );
 }
 
@@ -5638,15 +4710,8 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
     );
 }
 
-/// 旧 SSR 计划任务页的筛选必须留在旧路由上。
-///
-/// 回归：表单 action 仍写 `/{p}/tasks`，而该路径已由 budding 壳页接管（壳页读地址栏
-/// 关键字、不认 SSR 表单提交），点「筛选」后列表原样返回全部任务，筛选被静默丢弃。
-///
-/// 旧 SSR 模板（tasks.html）已随 sites/env 与 m/core/* 路由一并删除，
-/// 回归风险由下一条 budding 页筛选断言兜住。
-
 /// budding 计划任务页必须把关键字传给 `/ui/v1/tasks?q=`，否则迁移后丢失筛选能力。
+/// 旧 SSR 计划任务页（`tasks.html`）已随 `/m/core/*` 深链删除，筛选只剩这一条路径。
 #[test]
 fn budding_tasks_page_keeps_keyword_filter() {
     let js = include_str!("../static/budding/budding-boot.js");
@@ -5675,52 +4740,40 @@ async fn site_settings_removed_and_docker_settings_hosts_mirror() {
         "站点设置页必须已移除，不得借壳页回退: {html}"
     );
 
-    // 新 Docker 设置页：规范入口交 budding 壳页，旧菜单深链保留完整表单。
+    // 新 Docker 设置页：规范入口交 budding 壳页，字段由 `/ui/v1/settings/docker` 提供。
     let (status, html) = get_html(&h.app, "/p/settings/docker", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, html) = get_page(&h.app, "/p/m/core/docker/settings", &admin).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/docker", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["data"]["registry_mirror"].is_string(), "{body}");
+    assert!(v["data"]["image_prefix"].is_string(), "{body}");
+    assert_eq!(v["data"]["can_admin"], true, "{body}");
+    // 旧 SSR 深链已删除，不再有第二套表单。
+    let (status, _) = get_page(&h.app, "/p/m/core/docker/settings", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 运行环境镜像标签走独立接口（加速源/前缀不再混在运行环境页）。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/images", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
-        html.contains("镜像加速源")
-            && html.contains(r#"name="registry_mirror""#)
-            && html.contains(r#"name="image_prefix""#),
-        "旧 SSR 深链必须承载镜像加速源与镜像前缀: {html}"
+        body.contains("nginx_image") && body.contains("php_image"),
+        "运行环境镜像标签必须可读: {body}"
     );
 
-    // 运行环境页接管镜像标签，不再出现加速源/前缀字段。
-    let (status, env_html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        env_html.contains(r#"name="nginx_image""#)
-            && env_html.contains(r#"name="php_image""#)
-            && env_html.contains("/p/runtimes/images"),
-        "运行环境页必须提供镜像标签保存入口: {env_html}"
-    );
-
-    // viewer 打开旧页只读，保存仍被拒绝。
+    // viewer 只读，保存仍被拒绝。
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/m/core/docker/settings", &viewer).await;
-    assert_eq!(status, StatusCode::OK);
-    let csrf = csrf_from(&html);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/settings/docker")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("registry_mirror", "https://mirror.example.com"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let viewer_csrf = h.state.csrf_token(&viewer);
+    let (status, _) = post_ui_json(
+        &h.app,
+        "/ui/v1/settings/docker",
+        &viewer,
+        Some(&viewer_csrf),
+        &serde_json::json!({ "registry_mirror": "https://mirror.example.com" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 /// Docker 三个入口的页面骨架：创建容器（admin-only）、Compose 页（viewer 只读）。
@@ -5746,26 +4799,25 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
     let (status, _) = get_page(&h.app, "/p/containers/new", &viewer).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "viewer 不得进入创建页");
 
-    let (status, html) = get_page(&h.app, "/p/m/core/docker/compose", &admin).await;
+    // Compose 页交 budding 壳页：可写性由 `/ui/v1/compose` 的 can_admin 决定。
+    let (status, html) = get_html(&h.app, "/p/compose", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"name="compose""#)
-            && html.contains(r#"name="project""#)
-            && html.contains("/p/compose/validate")
-            && html.contains("/p/compose/up"),
-        "Compose 页必须提供项目名、文件内容、校验与部署动作: {html}"
-    );
-    assert!(
-        html.contains("com.docker.compose") || html.contains("容器标签"),
-        "Compose 页必须说明项目归属来自容器标签: {html}"
-    );
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["can_admin"], true, "{body}");
 
-    // viewer 只读：页面可看，但不得出现部署/删除按钮。
-    let (status, viewer_html) = get_page(&h.app, "/p/m/core/docker/compose", &viewer).await;
+    // viewer 只读：页面可看，但数据接口不给写权限。
+    let (status, viewer_html) = get_html(&h.app, "/p/compose", &viewer).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        !viewer_html.contains("/p/compose/up") && !viewer_html.contains("/p/compose/down"),
-        "viewer 不得看到 Compose 写操作: {viewer_html}"
+    assert!(viewer_html.contains(r#"id="skiff-root""#), "{viewer_html}");
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["data"]["can_admin"], false,
+        "viewer 不得拿到 Compose 写权限: {body}"
     );
 }
 
@@ -5774,8 +4826,7 @@ async fn docker_create_and_compose_entries_follow_the_ui_contract() {
 async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (_, html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
-    let csrf = csrf_from(&html);
+    let csrf = h.state.csrf_token(&admin);
 
     for (name, version) in [("PHP-8.5", "8.5"), ("-php", "8.5"), ("php-8.5-a", "")] {
         let resp = h
@@ -5865,8 +4916,16 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .unwrap()
         .to_string();
     assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    let (_, page) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
-    assert!(page.contains("已存在"), "重名原因应经 flash 回显: {page}");
+    // 重名必须被拒绝且不落第二行（原因进会话 flash，页面由壳页呈现）。
+    let same: Vec<_> = h
+        .state
+        .db()
+        .list_runtimes()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.name == "php-8.5")
+        .collect();
+    assert_eq!(same.len(), 1, "重名不得落第二行");
 
     // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
     std::fs::create_dir_all(h.data_dir.join("www/runtime/php/php-8.4-a")).unwrap();
@@ -5897,11 +4956,6 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
         .unwrap()
         .to_string();
     assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    let (_, page) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
-    assert!(
-        page.contains("已存在"),
-        "目录冲突原因应经 flash 回显: {page}"
-    );
     assert!(
         h.state
             .db()
@@ -5909,173 +4963,6 @@ async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
             .unwrap()
             .is_none(),
         "目录冲突时不得落库"
-    );
-}
-
-/// 抽屉扩展管理 + 列表轮询端点：两处扩展清单同源，JSON 端点不被 `{id}` 路由吞掉。
-#[tokio::test]
-async fn runtime_drawer_shares_extension_catalog_and_exposes_jobs_json() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/env/php-8.5", &admin).await;
-    assert_eq!(status, StatusCode::OK, "抽屉内容页应 200");
-    assert!(
-        html.contains("data-runtime-tabs") && html.contains(r#"data-runtime-tab="extensions""#),
-        "抽屉必须有页签并包含扩展页签: {html}"
-    );
-    assert!(
-        html.contains(r#"data-ext-search"#) && html.contains(r#"data-ext-cat"#),
-        "扩展页签必须有搜索与分类过滤: {html}"
-    );
-    // 无任务时抽屉不渲染任务面板（有任务时才有 data-runtime-job / data-job-log）。
-    assert!(
-        html.contains("data-runtime-panel") && !html.contains("data-job-url"),
-        "空闲运行环境不应显示安装任务面板: {html}"
-    );
-    for key in [
-        "redis",
-        "pdo_mysql",
-        "mysqli",
-        "gd",
-        "zip",
-        "bcmath",
-        "intl",
-    ] {
-        assert!(
-            html.contains(&format!(r#"data-search="{key} "#))
-                && html.contains(&format!(r#"value="{key}""#)),
-            "抽屉扩展清单缺少 {key} 的勾选项（必须与安装弹窗同源）: {html}"
-        );
-    }
-    // 多选安装/卸载：一份表单 + 二次确认，后端接收批量 `op` + 多个 `ext`。
-    assert!(
-        html.contains(r#"data-ext-batch-form"#)
-            && html.contains(r#"action="/p/runtimes/php-8.5/extensions-batch""#)
-            && html.contains(r#"name="ext""#)
-            && html.contains(r#"data-ext-submit="install""#)
-            && html.contains(r#"data-ext-submit="uninstall""#)
-            && html.contains(r#"data-ext-confirm"#)
-            && html.contains("确认提交"),
-        "扩展页签必须是多选 + 二次确认: {html}"
-    );
-    // 镜像内置项（opcache / curl / mbstring / sodium / sqlite3 / pdo_sqlite）直接显示已安装，
-    // 不提供安装/编译入口，避免重复编译与重复启用。
-    for key in [
-        "opcache",
-        "curl",
-        "mbstring",
-        "sodium",
-        "sqlite3",
-        "pdo_sqlite",
-    ] {
-        assert!(
-            html.contains(&format!(r#"data-search="{key} "#))
-                && html.contains(&format!(r#"value="{key}""#))
-                && !html.contains(&format!(r#"/extensions/{key}/install"#)),
-            "{key} 为镜像内置，不应出现单独安装入口: {html}"
-        );
-    }
-    assert!(
-        html.contains(r#"data-ext-builtin="true""#),
-        "内置扩展必须带 data-ext-builtin=true 供确认弹窗过滤: {html}"
-    );
-    assert!(
-        html.contains(r#"/pecl""#) && html.contains(r#"name="name""#),
-        "扩展页签必须提供 PECL 按名字安装入口: {html}"
-    );
-    // 8.4 起 imap 移出核心：8.5 环境里直接不显示（不灰显、不占位、无原因文案）。
-    assert!(
-        !html.contains(r#"data-search="imap "#)
-            && !html.contains(r#"value="imap""#)
-            && !html.contains("当前不可用")
-            && !html.contains("已从核心移除"),
-        "imap 在 PHP 8.5 应完全不显示且不出现灰显/原因文案: {html}"
-    );
-
-    // 列表轮询端点：空任务也必须返回合法 JSON，且路由优先于 `/sites/env/{id}`。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/runtimes/jobs")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .header("x-requested-with", "fetch")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "任务端点应 200");
-    let body = body_text(resp).await;
-    assert!(
-        body.contains("\"jobs\""),
-        "任务端点必须返回结构化 JSON: {body}"
-    );
-}
-
-/// 绑定运行环境停止时：站点详情明确 502/503 并给出回环境页的入口，不静默换版本。
-#[tokio::test]
-async fn site_detail_warns_when_bound_runtime_stopped() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-    h.state
-        .db()
-        .set_runtime_status("php-8.5", "running", "stopped")
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("data-runtime-down"), "{html}");
-    assert!(
-        html.contains("502/503") && html.contains("不会静默切换"),
-        "必须说明停止版本的后果: {html}"
-    );
-    assert!(
-        html.contains(r#"href="/p/runtimes/php-8.5""#),
-        "必须提供回运行环境页的入口: {html}"
-    );
-}
-
-/// Docker 不可达时，运行环境站点不能谎称「运行中」：列表、详情、环境列表都要显示未知。
-#[tokio::test]
-async fn runtime_sites_show_unknown_instead_of_running_when_docker_unavailable() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-
-    let (status, list_html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        list_html.contains("状态未知（Docker 不可用）"),
-        "站点列表必须把 Docker 不可达标成未知，而不是运行中: {list_html}"
-    );
-
-    let (status, detail_html) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        detail_html.contains("状态未知（Docker 不可用）"),
-        "站点详情必须与列表一致: {detail_html}"
-    );
-    assert!(
-        detail_html.contains("data-runtime-down"),
-        "Docker 未知时也要给出不可用告警: {detail_html}"
-    );
-
-    let (status, env_html) = get_page(&h.app, "/p/m/core/sites/env", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        env_html.contains("状态未知"),
-        "运行环境列表必须区分「未知」与「未安装」: {env_html}"
     );
 }
 
@@ -6241,250 +5128,6 @@ async fn ui_web_install_reports_persisted_job_and_same_shape() {
     assert_eq!(snapshot["data"]["install"], live["data"], "{body}");
 }
 
-/// 「网站 → Web 服务」：四区块常驻渲染；管理员 + CSRF，viewer 403。
-#[tokio::test]
-async fn nginx_page_renders_four_sections_and_is_admin_only() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-
-    for uri in [
-        "/p/sites/web",
-        "/p/m/core/sites/web",
-        "/p/m/core/sites/web?tab=config",
-        "/p/m/core/sites/web?tab=logs",
-        "/p/m/core/sites/web?tab=modules",
-    ] {
-        let (status, _) = get_page(&h.app, uri, &viewer).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} 必须拒绝 viewer");
-    }
-
-    // 规范入口交 budding 壳页；admin 200 且带挂载点。
-    let (status, shell) = get_page(&h.app, "/p/sites/web?tab=config", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(shell.contains(r#"id="skiff-root""#), "{shell}");
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/web", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    for panel in ["status", "config", "logs", "modules"] {
-        assert!(
-            html.contains(&format!(r#"data-nginx-panel="{panel}""#)),
-            "缺少 Web 服务 {panel} 区块: {html}"
-        );
-    }
-    // 复用插件工作台横栏标记；四个标签走页内切换（hash 定位）。
-    assert!(
-        html.contains(r#"class="workbench-tabs""#)
-            && html.contains("data-nginx-tabs")
-            && html.contains(r#"data-nginx-tab="status""#)
-            && html.contains(r#"data-nginx-tab="config""#)
-            && html.contains(r#"data-nginx-tab="log""#)
-            && html.contains(r#"data-nginx-tab="modules""#),
-        "必须复用 workbench-tabs 标记并给出四个标签: {html}"
-    );
-    for hash in ["#status", "#config", "#log", "#modules"] {
-        assert!(
-            html.contains(&format!(r#"href="{hash}""#)),
-            "标签必须同步到 URL hash {hash}: {html}"
-        );
-    }
-    // 默认只显示 status，其余区块 hidden；切标签由 JS + hash 控制。
-    assert!(
-        html.contains(r#"data-nginx-panel="config" hidden"#)
-            && html.contains(r#"data-nginx-panel="logs" hidden"#)
-            && html.contains(r#"data-nginx-panel="modules" hidden"#),
-        "非当前标签必须 hidden，避免四块堆一页: {html}"
-    );
-
-    let (status, config_tab) = get_page(&h.app, "/p/m/core/sites/web?tab=config", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        config_tab.contains(r#"data-nginx-panel="config""#)
-            && !config_tab.contains(r#"data-nginx-panel="config" hidden"#),
-        "?tab=config 必须直接停在配置区块（无 hash 时的服务端兜底）"
-    );
-
-    assert!(
-        html.contains("active connections")
-            && html.contains("accepts")
-            && html.contains("waiting")
-            && html.contains("运行时长")
-            && html.contains("最近 reload"),
-        "状态必须展示 stub_status 四项 + 版本/时长/reload: {html}"
-    );
-    assert!(
-        html.contains("探测地址")
-            && html.contains("http://127.0.0.1:8081/nginx_status")
-            && html.contains("主配置含 stub_status"),
-        "状态不可得时必须给出探测地址与主配置诊断: {html}"
-    );
-    assert!(
-        html.contains("性能参数")
-            && html.contains("worker_connections")
-            && html.contains("client_max_body_size"),
-        "配置区块必须提供性能参数: {html}"
-    );
-    // 日志默认不加载：先给「选择日志 → 选择范围」空态，筛选条件齐全但不读文件。
-    assert!(
-        html.contains("data-log-empty")
-            && html.contains("选择日志 → 选择范围")
-            && html.contains(r#"name="type""#)
-            && html.contains(r#"name="lines""#)
-            && html.contains(r#"name="status""#)
-            && html.contains(r#"name="level""#)
-            && html.contains(r#"name="load""#)
-            && !html.contains("data-log-result"),
-        "日志区块必须先给空态、不自动读取，并保留类型/范围/关键字/级别筛选: {html}"
-    );
-    let (_, loaded) = get_page(
-        &h.app,
-        "/p/m/core/sites/web?tab=logs&load=1&type=access&lines=200",
-        &admin,
-    )
-    .await;
-    assert!(
-        loaded.contains("data-log-result")
-            && loaded.contains("本次加载")
-            && loaded.contains("已扫描尾部")
-            && !loaded.contains("data-log-empty"),
-        "点「加载」后只按条件取尾部并标注读取范围: {loaded}"
-    );
-    assert!(
-        html.contains("编译参数") && html.contains("模块列表"),
-        "模块区块必须展示 nginx -V 解析结果: {html}"
-    );
-    assert!(
-        html.contains("校验并重载"),
-        "主配置保存必须走 nginx -t + reload: {html}"
-    );
-
-    // JS：标签页内切换 + hash 同步 + 刷新后停在原标签；CSS 只加页面私有命名空间。
-    let js = include_str!("../static/skiff.js");
-    assert!(
-        js.contains("attachNginxTabs")
-            && js.contains("location.hash")
-            && js.contains("history.replaceState")
-            && js.contains("data-nginx-panel"),
-        "缺少 Web 服务标签切换/hash 同步逻辑: {js}"
-    );
-    let css = include_str!("../static/skiff.css");
-    assert!(
-        css.contains(".page-nginx .log-empty") && css.contains(".page-nginx .log-card"),
-        "日志空态与结果卡必须落在页面私有命名空间"
-    );
-
-    // 视图级权限：viewer 不能打开，管理员缺 CSRF 也不能保存。
-    let csrf = csrf_from(&html);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/web/config/main")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", "bad-token"),
-                    ("content", "events {}"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-
-    // 合法 CSRF 时进入回滚路径（无 Docker → 保存失败），必须带回错误并保留本次编辑内容。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/web/config/main")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[("csrf", &csrf), ("content", "events {}")]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "失败应原地回显配置页，不再跳转"
-    );
-    let html = body_text(resp).await;
-    assert!(
-        html.contains("events {}"),
-        "校验失败必须保留用户正在编辑的内容: {html}"
-    );
-    assert!(
-        h.state
-            .db()
-            .recent_audit(10)
-            .unwrap()
-            .iter()
-            .any(|a| a.action == "nginx.config.save"),
-        "保存动作必须写审计"
-    );
-}
-
-/// 三类站点在列表/详情中的类型与端点展示不混淆。
-#[tokio::test]
-async fn three_site_types_are_rendered_in_list() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let php_root = h.data_dir.join("www/sites/php.local");
-    let static_root = h.data_dir.join("www/sites/static.local");
-    let proxy_root = h.data_dir.join("www/sites/proxy.local");
-    h.state
-        .db()
-        .create_site(&php_site("php.local", &php_root.display().to_string()))
-        .unwrap();
-    h.state
-        .db()
-        .create_site(&static_site(
-            "static.local",
-            &static_root.display().to_string(),
-        ))
-        .unwrap();
-    h.state
-        .db()
-        .create_site(&proxy_site(
-            "proxy.local",
-            &proxy_root.display().to_string(),
-            "http://127.0.0.1:8080",
-            true,
-        ))
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("类型 / 运行环境"),
-        "类型与运行环境合并成一列: {html}"
-    );
-    assert!(
-        html.contains(r#"<span class="mono">php-8.5</span>"#),
-        "运行环境站必须显示实例名 php-8.5: {html}"
-    );
-    assert!(
-        html.contains(r#"<span class="muted">静态</span>"#),
-        "静态站必须显示「静态」: {html}"
-    );
-    assert!(
-        html.contains(r#"<span class="mono">http://127.0.0.1:8080</span>"#)
-            && html.contains(">WS</span>"),
-        "反代必须展示上游与 WS 标记: {html}"
-    );
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list/proxy.local", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("上游地址"), "{html}");
-    assert!(!html.contains("?tab=dir"), "反代详情不应有目录标签: {html}");
-}
-
 /// 删除仍有站点绑定的运行环境：必须拒绝并列出域名，不做隐式解绑。
 #[tokio::test]
 async fn deleting_bound_runtime_lists_domains_and_is_rejected() {
@@ -6564,8 +5207,7 @@ async fn stopped_site_config_save_validation_failure_does_not_persist() {
     let original = "server { listen 80; server_name demo.local; }";
     std::fs::write(&disabled, original).unwrap();
 
-    let (_, sites_html) = get_page(&h.app, "/p/m/core/sites/list", &admin).await;
-    let csrf = csrf_from(&sites_html);
+    let csrf = h.state.csrf_token(&admin);
     let resp = h
         .app
         .clone()
@@ -6617,42 +5259,6 @@ async fn stopped_site_config_save_validation_failure_does_not_persist() {
     );
 }
 
-/// 新建站点弹窗的运行环境下拉只列就绪实例：未安装/未运行/未实现的类型不出现。
-#[tokio::test]
-async fn site_new_dialog_excludes_unready_runtimes() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    h.state
-        .db()
-        .create_runtime(&skiff_store::NewRuntime {
-            id: "rust-1.83".into(),
-            kind: "rust".into(),
-            name: "rust-1.83".into(),
-            version: "1.83".into(),
-            image: "rust:1.83-slim".into(),
-            image_digest: String::new(),
-            socket_path: None,
-            port: None,
-            is_default: false,
-        })
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/sites/list?new=1", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        !html.contains("Rust 1.83") && !html.contains("PHP 8.5"),
-        "未安装或未运行的运行环境不得出现在下拉: {html}"
-    );
-    assert!(
-        html.contains("没有已就绪的运行环境"),
-        "完全没有就绪实例时必须给明确引导: {html}"
-    );
-    assert!(
-        !html.contains(r#"name="runtime_id"#),
-        "无就绪实例时不得渲染空下拉: {html}"
-    );
-}
-
 /// 插件 UI 小回归：内置任务不渲染删除按钮；累计流量按字节自适应进位。
 #[test]
 fn plugin_ui_hides_builtin_delete_and_formats_traffic_bytes() {
@@ -6684,120 +5290,6 @@ fn plugin_ui_hides_builtin_delete_and_formats_traffic_bytes() {
         !monitor.contains("gb(s.net_tx * 1024)"),
         "不得再把字节当 KiB 换算后拼 GiB"
     );
-}
-
-/// 站点详情六个标签可访问，配置文件/目录/SSL 页有明确内容。
-#[tokio::test]
-async fn site_detail_tabs_are_reachable() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    std::fs::create_dir_all(skiff_app::sites::site_index_dir(&root)).unwrap();
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-    h.state
-        .db()
-        .add_site_aliases("demo.local", &["www.demo.local".into()])
-        .unwrap();
-    std::fs::create_dir_all(skiff_app::sites::site_conf_dir(&root)).unwrap();
-    let conf = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf");
-    std::fs::write(
-        &conf,
-        "server { listen 80; server_name demo.local www.demo.local; }",
-    )
-    .unwrap();
-
-    for (uri, marker) in [
-        ("/p/m/core/sites/list/demo.local", "站点概览"),
-        ("/p/m/core/sites/list/demo.local?tab=domains", "别名"),
-        (
-            "/p/m/core/sites/list/demo.local?tab=config",
-            "保存并重载 nginx",
-        ),
-        ("/p/m/core/sites/list/demo.local?tab=dir", "文档根"),
-        (
-            "/p/m/core/sites/list/demo.local?tab=ssl",
-            "生成自签证书并启用",
-        ),
-    ] {
-        let (status, html) = get_page(&h.app, uri, &admin).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(html.contains(marker), "{uri} 缺少 {marker}: {html}");
-    }
-}
-
-/// 站点详情的停止/删除属于高风险动作：顶部操作区不直出，只在「管理」页签内提供。
-#[tokio::test]
-async fn site_detail_risk_actions_only_in_manage_tab() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    std::fs::create_dir_all(skiff_app::sites::site_index_dir(&root)).unwrap();
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-
-    let (status, overview) = get_page(&h.app, "/p/m/core/sites/list/demo.local", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    // 顶部操作区 = page-head 内 actions 容器内的内容。
-    let head = overview
-        .split("class=\"page-head\"")
-        .nth(1)
-        .expect("详情页必须有顶部操作区");
-    let head = head
-        .split("class=\"actions\"")
-        .nth(1)
-        .expect("详情页必须有顶部操作区");
-    let head = head.split("</div>").next().unwrap();
-    assert!(!head.contains("停止"), "顶部操作区不得直出停止：{head}");
-    assert!(
-        !head.contains("删除站点"),
-        "顶部操作区不得直出删除站点：{head}"
-    );
-    assert!(
-        head.contains("日志") && head.contains("访问"),
-        "日志/访问仍应留在顶部：{head}"
-    );
-
-    let (status, manage) =
-        get_page(&h.app, "/p/m/core/sites/list/demo.local?tab=manage", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        manage.contains("/sites/demo.local/stop"),
-        "管理页签内应有停止表单：{manage}"
-    );
-    assert!(
-        manage.contains("删除站点"),
-        "管理页签内应有删除入口：{manage}"
-    );
-}
-
-/// 目录浏览只开放 `index/`：越界（../log、../ssl）必须是 400，而不是页面内提示。
-#[tokio::test]
-async fn site_dir_traversal_returns_bad_request() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    for dir in [
-        skiff_app::sites::site_index_dir(&root),
-        skiff_app::sites::site_log_dir(&root),
-        skiff_app::sites::site_ssl_dir(&root),
-    ] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-
-    for path in ["../log", "../ssl", "../log/access.log"] {
-        let uri = format!("/p/m/core/sites/list/demo.local?tab=dir&path={path}");
-        let (status, _) = get_page(&h.app, &uri, &admin).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{path} 必须 400");
-    }
 }
 
 /// 文件管理插件 UI：CSP 只能自同源静态资源，页面必须提供现代文件管理器
@@ -6937,92 +5429,6 @@ fn files_ui_is_self_contained_and_exposes_modern_interactions() {
     );
 }
 
-#[tokio::test]
-async fn tasks_page_is_read_only_for_viewer_and_requires_csrf_for_admin() {
-    let h = harness();
-    h.state.init_tasks().expect("任务服务应能初始化");
-
-    // viewer：能看到列表与历史入口，但没有任何写操作表单。
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let (status, html) = get_page(&h.app, "/p/m/core/tasks", &viewer).await;
-    assert_eq!(status, StatusCode::OK, "viewer 应能读任务页");
-    assert!(html.contains("计划任务"), "任务页标题缺失: {html}");
-    assert!(
-        html.contains("builtin:db-vacuum"),
-        "内置 db-vacuum 应出现在列表: {html}"
-    );
-    assert!(
-        !html.contains("/tasks/builtin:db-vacuum/run"),
-        "viewer 页面不得渲染写操作: {html}"
-    );
-    assert!(html.contains("只读"), "viewer 应看到只读提示: {html}");
-
-    // viewer 直接 POST：403（角色判定先于 CSRF）。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/tasks/builtin:db-vacuum/toggle")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
-                .body(form_body(&[("enabled", "0"), ("csrf", "bogus")]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "viewer 不得启停任务");
-
-    // admin：没有 CSRF 的 POST 必须被拒。
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/tasks/builtin:db-vacuum/toggle")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[("enabled", "0")]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        resp.status().is_client_error(),
-        "缺少 CSRF 的写操作必须失败: {}",
-        resp.status()
-    );
-
-    // admin + 正确 CSRF：启停生效并回到详情页。
-    let csrf = h.state.csrf_token(&admin);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/tasks/builtin:db-vacuum/toggle")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[("enabled", "0"), ("csrf", &csrf)]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "启停应 303 回详情");
-    let view = h
-        .state
-        .tasks()
-        .unwrap()
-        .detail_view("builtin:db-vacuum", 5)
-        .await
-        .expect("任务应仍在");
-    assert_eq!(view["task"]["enabled"], false, "停用应落库");
-}
-
 /// UI 语义兜底回归：`hidden` 与未打开的 dialog 必须不可见，
 /// 避免页面里的 display 规则把空进度条、空告警、幽灵弹窗顶出来。
 #[test]
@@ -7038,155 +5444,6 @@ fn ui_hidden_and_dialog_guards_hold() {
     );
 }
 
-fn attr_value(html: &str, name: &str) -> Option<String> {
-    let needle = format!(r#"{name}=""#);
-    let start = html.find(&needle)? + needle.len();
-    let rest = &html[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-/// 极简 query 转义：把 Windows 反斜杠、空格与非 ASCII 都编码掉，
-/// 避免 `http::Uri` 解析直接拒绝。
-fn encode_query(value: &str) -> String {
-    let mut out = String::new();
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-/// 第一步验收：页面可打开、目录可浏览、文本可读可写、旧深链 301。
-#[tokio::test]
-async fn files_page_browses_edits_and_falls_back_plugin_link() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let cookie = format!("skiff_dev_session={token}");
-
-    let page = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/core/files")
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(page.status(), StatusCode::OK);
-    let html = body_text(page).await;
-    assert!(
-        html.contains(r#"class="files-page""#),
-        "缺少文件管理页: {html}"
-    );
-    assert!(
-        html.contains("/p/static/files.css") && html.contains("/p/static/files.js"),
-        "页面必须加载独立的 files.css / files.js: {html}"
-    );
-    let csrf = attr_value(&html, "data-csrf").expect("页面必须带 CSRF 令牌");
-
-    // 用独立临时目录作为浏览目标：harness 的 data_dir 本身是受保护根。
-    let work = tempfile::tempdir().unwrap();
-    let file = work.path().join("hello.txt");
-    std::fs::write(&file, "旧内容").unwrap();
-    let dir = work.path().to_str().unwrap();
-    let file_path = file.to_str().unwrap();
-
-    let list = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/p/files/list?path={}", encode_query(dir)))
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(list.status(), StatusCode::OK);
-    let list_body = body_text(list).await;
-    assert!(
-        list_body.contains("hello.txt"),
-        "列表必须包含文件: {list_body}"
-    );
-
-    let read = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/p/files/read?path={}", encode_query(file_path)))
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(read.status(), StatusCode::OK);
-    assert!(body_text(read).await.contains("旧内容"));
-
-    let write = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/files/write")
-                .header(header::COOKIE, &cookie)
-                .header("x-csrf-token", &csrf)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    serde_json::json!({ "path": file_path, "content": "新内容" }).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(write.status(), StatusCode::OK);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "新内容");
-
-    // 数据根硬拒：管理员也不能从页面读写 skiff.db / plugins。
-    let denied = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/p/files/list?path={}",
-                    encode_query(&h.data_dir.join("plugins").display().to_string())
-                ))
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-
-    let legacy = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/plugins/com.skiff.files/main")
-                .header(header::COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(legacy.status(), StatusCode::FOUND);
-    assert_eq!(legacy.headers().get(header::LOCATION).unwrap(), "/p/files");
-}
-
 /// 回收站是「工具 → 文件管理」的 L3 视图（菜单契约 §1.1），不再是独立二级菜单：
 /// 导航里没有独立入口，两个页面共用同一标签栏，旧页面路由与深链保持可用。
 #[tokio::test]
@@ -7197,104 +5454,24 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
     let (status, nav) = get_page(&h.app, "/p/m/overview", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        nav.contains(r#"href="/p/m/core/files""#),
+        nav.contains(r#"href="/p/files""#),
         "文件管理二级入口必须保留: {nav}"
     );
     assert!(
-        !nav.contains(r#"href="/p/m/core/files/trash""#),
+        !nav.contains(r#"href="/p/files/trash""#),
         "回收站不得再作为独立二级菜单项渲染: {nav}"
     );
     assert!(
-        nav.contains(r#"href="/p/m/core/files/quotas""#),
+        nav.contains(r#"href="/p/files/quotas""#),
         "配额管理仍是独立二级入口: {nav}"
     );
 
-    let (status, files) = get_page(&h.app, "/p/m/core/files", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        files.contains(r#"class="workbench-tabs""#),
-        "文件管理页必须渲染共用标签栏: {files}"
-    );
-    assert!(
-        files.contains(r#"data-menu-key="core/files/trash""#)
-            && files.contains(r#"aria-current="page">浏览"#),
-        "浏览标签应为当前态且回收站作为同级标签存在: {files}"
-    );
-
-    let (status, trash) = get_page(&h.app, "/p/files/trash", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        trash.contains(r#"id="skiff-root""#),
-        "回收站规范入口应交付 budding 壳页: {trash}"
-    );
-
-    // 旧深链（现在是 L3 深链）仍可解析，不因菜单结构变化 404。
-    let (status, _) = get_page(&h.app, "/p/m/core/files/trash", &token).await;
-    assert_eq!(status, StatusCode::OK);
-}
-
-/// 任务中心详情的数据链路：`jobs` / `job_logs` 表里的日志必须真的渲染到页面，
-/// 空日志显示「暂无日志」而不是空白块；退出码、耗时、触发来源都要有实际取值落点。
-#[tokio::test]
-async fn job_detail_renders_persisted_logs_and_metadata() {
-    use skiff_app::jobs::JobSubmit;
-
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-
-    let job = h
-        .state
-        .jobs()
-        .submit(JobSubmit {
-            kind: "site.create".into(),
-            target_type: "site".into(),
-            target_id: "detail.example.com".into(),
-            title: "创建站点 detail.example.com".into(),
-            params: serde_json::json!({ "name": "detail.example.com" }),
-            created_by: "admin".into(),
-            created_by_role: "admin".into(),
-            requester_ip: "127.0.0.1".into(),
-            cancellable: true,
-        })
-        .unwrap();
-    h.state
-        .jobs()
-        .log_lines(&job.id, "out", &["安装脚本输出第一行".to_string()]);
-    h.state.jobs().set_exit_code(&job.id, 127);
-
-    let (status, html) = get_page(&h.app, &format!("/p/m/core/jobs/{}", job.id), &token).await;
-    assert_eq!(status, StatusCode::OK, "详情页必须 200: {html}");
-    assert!(
-        html.contains("任务已创建，等待执行") && html.contains("安装脚本输出第一行"),
-        "详情页必须渲染已落库的执行日志: {html}"
-    );
-    assert!(
-        html.contains("退出码") && html.contains(">127<"),
-        "详情必须渲染退出码的真实取值: {html}"
-    );
-    assert!(
-        html.contains("触发来源") && html.contains("手动提交 · admin"),
-        "详情必须渲染触发来源: {html}"
-    );
-    assert!(
-        html.contains(r#"data-job-log-empty hidden"#),
-        "有日志时空态占位必须隐藏而非移除（供 SSE 追加时切换）: {html}"
-    );
-    // 弹窗的数据源就是同一张详情页：列表侧必须是按钮 + 对话框，且日志容器可被 JS 接管。
-    assert!(
-        html.contains(r#"data-job-log"#),
-        "日志容器缺少 JS 接管标记: {html}"
-    );
-
-    let (_, list) = get_page(&h.app, "/p/m/core/jobs", &token).await;
-    assert!(
-        list.contains(&format!(r#"data-job-open="{}""#, job.id)),
-        "任务中心「查看详情」必须打开弹窗: {list}"
-    );
-    assert!(
-        list.contains("data-job-dialog") && list.contains("data-job-dialog-body"),
-        "任务中心必须渲染详情弹窗容器: {list}"
-    );
+    // 浏览 / 回收站 / 配额三个 L3 都是 budding 壳页（旧 SSR 已删除）。
+    for uri in ["/p/files", "/p/files/trash", "/p/files/quotas"] {
+        let (status, html) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
+    }
 }
 
 /// 重试必须复用正常提交的执行器：历史任务重试后会离开 queued 并被结算；
@@ -7425,60 +5602,6 @@ async fn job_retry_reuses_executor_and_rejects_unsupported_kind() {
     h.state.jobs().cancel(&blocker.id).unwrap();
 }
 
-/// 没有任何日志的作业：详情页与弹窗接口都要明确显示「暂无日志」。
-#[tokio::test]
-async fn job_detail_empty_logs_show_placeholder() {
-    use skiff_store::jobs::{JobRow, STATUS_SUCCEEDED};
-
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-
-    h.state
-        .db()
-        .insert_job(&JobRow {
-            id: "job-empty-log".into(),
-            kind: "compose.up".into(),
-            target_type: "compose".into(),
-            target_id: "empty-log".into(),
-            title: "Compose 启动 empty-log".into(),
-            params_json: "{}".into(),
-            phase: "done".into(),
-            phase_label: "完成".into(),
-            progress: 100,
-            status: STATUS_SUCCEEDED.into(),
-            cancellable: false,
-            cancel_requested: false,
-            created_by: "admin".into(),
-            created_by_role: "admin".into(),
-            requester_ip: "127.0.0.1".into(),
-            created_at: 1_700_000_000,
-            started_at: Some(1_700_000_001),
-            finished_at: Some(1_700_000_004),
-            duration_ms: 3_000,
-            error_class: None,
-            error_detail: None,
-            result_json: "{}".into(),
-            log_bytes: 0,
-            log_seq: 0,
-            retry_of: None,
-            exit_code: None,
-            steps_json: "[]".into(),
-        })
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/m/core/jobs/job-empty-log", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("暂无日志"),
-        "空日志必须显示「暂无日志」而不是空白区块: {html}"
-    );
-    assert!(html.contains("3 秒"), "耗时必须真实渲染: {html}");
-    assert!(
-        html.contains(r#"data-job-exit>-<"#),
-        "无退出码语义时必须显示 `-`，不能用 0 冒充: {html}"
-    );
-}
-
 /// URL 契约 §7：旧路径必须 301/308 到规范路径，保留方法与查询串，不留死链。
 #[tokio::test]
 async fn legacy_paths_redirect_to_canonical_urls() {
@@ -7573,7 +5696,7 @@ async fn concurrent_page_requests_all_succeed() {
 /// 镜像源被静默丢包（TCP 能连上、但永不回包）时：
 /// 页面必须正常 200 并展示降级提示，且 5 分钟冷却内不再发起第二次抓取。
 #[tokio::test]
-async fn store_page_returns_200_when_mirror_silently_drops_packets() {
+async fn store_api_returns_200_when_mirror_silently_drops_packets() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
@@ -7607,7 +5730,7 @@ async fn store_page_returns_200_when_mirror_silently_drops_packets() {
     let get_store = |app: Router, token: String| async move {
         app.oneshot(
             Request::builder()
-                .uri("/p/m/core/plugins/store")
+                .uri("/ui/v1/store")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -9083,7 +7206,7 @@ async fn ui_task_and_job_writes_require_csrf_and_permission() {
     );
 }
 
-/// 审计规范页交 budding 壳；旧 SSR 仍按 `AuditRead` 拒绝 viewer。
+/// 审计规范页交 budding 壳；数据接口对无 `AuditRead` 的角色仍是 403。
 #[tokio::test]
 async fn audit_canonical_path_serves_native_shell() {
     let h = harness();
@@ -9094,15 +7217,15 @@ async fn audit_canonical_path_serves_native_shell() {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
-    let (status, _) = get_page(&h.app, "/p/m/core/settings/audit", &viewer).await;
+    let (status, _, text) = get_ui(&h.app, "/ui/v1/audit", Some(&viewer), None).await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
-        "旧审计页对 viewer 应维持 AuditRead 拒绝（403），不得泄露数据"
+        "viewer 无 AuditRead，不得读到审计数据: {text}"
     );
-    let (status, ssr) = get_page(&h.app, "/p/m/core/settings/audit", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
+    // 旧 SSR 深链随旧页一并删除，直达 404（不再泄露数据也不再有第二套页面）。
+    let (status, _) = get_page(&h.app, "/p/m/core/settings/audit", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// 审计查询：关键字命中 + 签名 keyset 游标；换关键字沿用旧游标被拒，篡改被拒。
@@ -9222,7 +7345,7 @@ async fn post_ui_json(
     (status, body_text(resp).await)
 }
 
-/// 设置规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/settings/security`。
+/// 设置规范页交付 budding 壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn settings_canonical_path_serves_shell() {
     let h = harness();
@@ -9233,11 +7356,8 @@ async fn settings_canonical_path_serves_shell() {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
-    for token in [&admin, &viewer] {
-        let (status, ssr) = get_page(&h.app, "/p/m/core/settings/security", token).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
-    }
+    let (status, _) = get_page(&h.app, "/p/m/core/settings/security", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "旧设置 SSR 已删除");
 }
 
 /// 设置只读快照：未认证 401；字段冻结；信任公钥只对管理员返回。
@@ -9955,7 +8075,7 @@ async fn ui_files_write_copy_archive_extract_roundtrip() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// 商店规范页交付 budding 壳页；旧 SSR 仍在 `/m/core/plugins/store`（目录启用时 200）。
+/// 商店规范页交付 budding 壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn store_canonical_path_serves_shell() {
     let h = harness_full_with_catalog(
@@ -9970,8 +8090,8 @@ async fn store_canonical_path_serves_shell() {
     let (status, html) = get_html(&h.app, "/p/store", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, ssr) = get_page(&h.app, "/p/m/core/plugins/store", &token).await;
-    assert_eq!(status, StatusCode::OK, "{ssr}");
+    let (status, _) = get_page(&h.app, "/p/m/core/plugins/store", &token).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "旧商店 SSR 已删除");
 }
 
 /// 商店只读接口：未认证 401；目录未启用 404；启用后返回冻结字段与四个分区。
@@ -10772,12 +8892,28 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         !js.contains("props: { code:"),
         "code 组件的文本字段是 modelValue，不是 code"
     );
-    let code_nodes = js.matches("type: 'code'").count();
+    // `code` 组件有两种用法，两者都必须显式绑定，不能「裸挂」：
+    // - 只读查看器（日志 / 配置预览）：`modelValue` 传文本；
+    // - 可编辑表单字段（配置编辑器）：`name` 声明字段名，初值走表单 `initialValues`。
+    let mut viewers = 0;
+    let mut fields = 0;
+    for (pos, _) in js.match_indices("type: 'code'") {
+        let rest = &js[pos + "type: 'code'".len()..];
+        let end = rest.find("type: '").unwrap_or(rest.len());
+        let seg = &rest[..end];
+        if seg.contains("modelValue:") {
+            viewers += 1;
+        } else if seg.contains("name: '") {
+            fields += 1;
+        } else {
+            panic!("code 节点既没有 modelValue 也没有 name：{seg}");
+        }
+    }
+    let code_nodes = viewers + fields;
     assert!(code_nodes >= 7, "代码/日志查看器节点不应减少：{code_nodes}");
-    assert_eq!(
-        js.matches("modelValue:").count(),
-        code_nodes,
-        "每个 code 节点都必须以 modelValue 传文本"
+    assert!(
+        viewers > 0 && fields > 0,
+        "只读查看器与可编辑字段都必须存在（viewers={viewers}, fields={fields}）"
     );
     // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
     assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
@@ -10925,7 +9061,7 @@ async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {
     assert_eq!(v["error"]["code"], "shape.invalid");
 }
 
-/// 插件中心与信息页规范路径交付壳页；旧 SSR 仍在 `/m/core/plugins/*`。
+/// 插件中心与信息页规范路径交付壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn plugins_canonical_paths_serve_shell() {
     let h = harness();
@@ -10940,9 +9076,8 @@ async fn plugins_canonical_paths_serve_shell() {
         "/p/m/core/plugins/installed",
         "/p/m/core/plugins/info/com.example.ui",
     ] {
-        let (status, ssr) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(ssr.contains(r#"id="skiff-main-nav""#), "{uri}: {ssr}");
+        let (status, _) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 }
 
@@ -11057,7 +9192,7 @@ async fn ui_plugin_toggle_and_delete_keep_csrf_and_permission_semantics() {
 }
 
 /// 文件管理规范页交付 budding 壳页（原生平铺目录）；回收站/配额同为壳页，
-/// 旧 SSR 仍在 `/m/core/files`。
+/// 旧 SSR（`/m/core/files`）已删除，不再有第二套入口。
 #[tokio::test]
 async fn files_canonical_path_serves_shell() {
     let h = harness();
@@ -11075,12 +9210,10 @@ async fn files_canonical_path_serves_shell() {
         let (status, _) = get_page(&h.app, uri, &viewer).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer 必须 403");
     }
-    // 旧 SSR 仍按 FILE_BROWSE 授权：admin 可进，viewer 403。
-    let (status, ssr) = get_page(&h.app, "/p/m/core/files", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(ssr.contains(r#"class="workbench-tabs""#), "{ssr}");
-    let (status, _) = get_page(&h.app, "/p/m/core/files", &viewer).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // 旧 SSR（浏览 / 回收站 / 配额）已随 `/m/core/files` 深链删除：直达 404，
+    // 文件能力改由壳页 + `/files/*` JSON 接口承载（权限仍按 FILE_BROWSE）。
+    let (status, _) = get_page(&h.app, "/p/m/core/files", &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// 文件回收站/配额写接口：CSRF 先行、viewer 被权限矩阵拒绝；管理员过门禁后
@@ -11466,7 +9599,7 @@ async fn ui_runtime_writes_require_csrf_and_permission() {
     assert!(v["data"]["extensions"].is_array(), "{body}");
     assert!(v["data"]["files"].is_array(), "{body}");
 
-    // 规范详情页交 budding 壳页（旧 SSR 留在 /m/core/sites/env/{id}）。
+    // 规范详情页交 budding 壳页（旧 SSR /m/core/sites/env/{id} 已删除）。
     let (status, html) = get_html(&h.app, "/p/runtimes/php-8.5-test", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
@@ -11581,7 +9714,7 @@ async fn ui_tasks_and_jobs_keep_auth_and_read_only_shapes() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// 任务/作业规范页交付壳页；旧 SSR 仍在 `/m/core/tasks|jobs`。
+/// 任务/作业规范页交付壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn tasks_and_jobs_canonical_paths_serve_shell() {
     let h = harness();
@@ -11599,17 +9732,10 @@ async fn tasks_and_jobs_canonical_paths_serve_shell() {
             "{uri} 应为壳页: {html}"
         );
     }
-    for uri in ["/p/m/core/jobs"] {
-        let (status, html) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(
-            html.contains(r#"id="skiff-main-nav""#),
-            "{uri} 旧 SSR 必须保留: {html}"
-        );
+    for uri in ["/p/m/core/jobs", "/p/m/core/tasks"] {
+        let (status, _) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
-    // 测试装配未启动调度器，任务旧 SSR 与 JSON 接口同为 503。
-    let (status, _) = get_page(&h.app, "/p/m/core/tasks", &token).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 /// compose 只读接口与写操作：未认证 401；无 Docker 时项目为空；
@@ -11659,7 +9785,7 @@ async fn ui_compose_keeps_auth_csrf_and_docker_unavailable_semantics() {
     }
 }
 
-/// compose 规范页交付壳页；旧 SSR 仍在 `/m/core/docker/compose`。
+/// compose 规范页交付壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn compose_canonical_path_serves_shell() {
     let h = harness();
@@ -11667,12 +9793,11 @@ async fn compose_canonical_path_serves_shell() {
     let (status, html) = get_html(&h.app, "/p/compose", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, ssr) = get_page(&h.app, "/p/m/core/docker/compose", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(ssr.contains(r#"id="skiff-main-nav""#), "{ssr}");
+    let (status, _) = get_page(&h.app, "/p/m/core/docker/compose", &token).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "旧编排 SSR 已删除");
 }
 
-/// 镜像/网络/卷规范页交付壳页；旧 SSR 仍在 `/m/core/docker/*`。
+/// 镜像/网络/卷规范页交付壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn resource_canonical_paths_serve_shell() {
     let h = harness();
@@ -11690,16 +9815,12 @@ async fn resource_canonical_paths_serve_shell() {
         "/p/m/core/docker/networks",
         "/p/m/core/docker/volumes",
     ] {
-        let (status, html) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(
-            html.contains(r#"id="skiff-main-nav""#),
-            "{uri} 旧 SSR 必须保留: {html}"
-        );
+        let (status, _) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 }
 
-/// 容器规范页交付壳页；旧 SSR 仍在 `/m/core/docker/containers`。
+/// 容器规范页交付壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn containers_canonical_paths_serve_shell() {
     let h = harness();
@@ -11712,15 +9833,11 @@ async fn containers_canonical_paths_serve_shell() {
             "{uri} 应为壳页: {html}"
         );
     }
-    let (status, html) = get_page(&h.app, "/p/m/core/docker/containers", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"id="skiff-main-nav""#),
-        "旧容器列表必须保留在 /m 深链: {html}"
-    );
+    let (status, _) = get_page(&h.app, "/p/m/core/docker/containers", &token).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "旧容器 SSR 已删除");
 }
 
-/// 站点/运行环境规范页交付壳页；旧 SSR 仍在 `/{p}/m/core/sites/*` 菜单深链。
+/// 站点/运行环境规范页交付壳页；旧 SSR 深链已删除（404）。
 #[tokio::test]
 async fn sites_and_runtimes_canonical_paths_serve_shell() {
     let h = harness();
@@ -11739,12 +9856,8 @@ async fn sites_and_runtimes_canonical_paths_serve_shell() {
         );
     }
     for uri in ["/p/m/core/sites/list", "/p/m/core/sites/env"] {
-        let (status, html) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::OK, "{uri}");
-        assert!(
-            html.contains(r#"id="skiff-main-nav""#),
-            "{uri} 应保留 SSR: {html}"
-        );
+        let (status, _) = get_page(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 }
 

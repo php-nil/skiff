@@ -17,13 +17,14 @@
 - **原因**：闸门按「持有进程」发放 `Global\SkiffBuild`，挂起的 push 不退出就一直持有；包装器不排队，后来者直接拒绝。
 - **做法**：先看 [gate.log](../../.workbuddy/locks/gate.log) 末尾是否有 `ACQUIRED task=git` 而没有对应的 `RELEASED`，再看是否残留 `git` / `git-remote-https` / `git-credential-manager` 进程或 GCM 窗口；确认是本次 push 卡住后再终止该进程树，不要连带杀掉正在编译的进程。
 
-## 3. 本机没有 C 编译器：一部分 crate 本机编不了
+## 3. 本机工具链不稳定：别把「本机编不了」或「本机能跑」当结论
 
-- **现象**：`cargo check/test` 停在 `libsqlite3-sys` / `zstd-sys` / `ring` 的构建脚本，报找不到 `cl.exe`。
-- **原因**：`rusqlite` 用 `bundled`（自带 SQLite 源码编译）、`zstd` 走 `zstd-sys`、`rustls` 启用 `ring`，三者都需要 C 编译器，本机未装 MSVC C++ 生成工具。
-- **做法**：本机只跑编得动的子集——`skiff-model` / `skiff-policy` / `skiff-cron` / `skiff-sched` / `skiff-compose` / `skiff-docker` / `skiff-wire` / `skiff-fs`；`skiff-store` / `skiff-pkgfmt` / `xtask` 以及传递依赖它们的 `skiff-identity` / `skiff-app` / `skiff-web` / `skiff`（`crates/core`）/ `skiff-plugin`（`crates/plugin`）/ `skiff-sdk` 本机编不了，只能交 CI 的 `test-win` 与 `test` job。
-- **插件侧同理**：`plugins/` 经 path 依赖到 `skiff-sdk`，本机也编不了，改动交 CI 的 `plugins` job。
-- **分工**：本机只做编得动的快速回归，Linux 产物一律由 workflow 编译发布，本机不出发布物。
+- **现象**：`cargo check/test` 有时停在 `libsqlite3-sys` / `zstd-sys` / `ring` 的构建脚本，报找不到 `cl.exe`。
+- **原因**：`rusqlite` 用 `bundled`（自带 SQLite 源码编译）、`zstd` 走 `zstd-sys`、`rustls` 启用 `ring`，三者都需要 C 编译器；`cc-rs` 会去探测 Visual Studio 安装，探测结果随机器状态变化——`where cc/gcc/cl` 查不到也不等于没有。
+- **2026-11-18 实测（结论已过期，以此为准）**：同一台机器 `cargo check -p skiff-store` 与 `clippy -p skiff-web -p skiff-app --all-targets` 均通过（`libsqlite3-sys` 正常 `Compiling`）。所以「本机编不了某些 crate」是条件成立的历史结论，不是常驻事实；**判断某 crate 能不能在本机跑，先跑一次 `check`，别引用本文档的清单**。
+- **不受影响的口径**：无论编不编得过，Windows 开发机都**不跑 `cargo test`**，本地只做编译级校验（`AGENTS.md` §4.3）；用例结果以 CI 的 `test` / `test-win` / `plugins` job 为准。
+- **插件侧**：`plugins/` 是第二 workspace，根门禁不覆盖，改动交 CI 的 `plugins` job；本机哪怕编得过也不作为验证依据。
+- **分工**：本机只做编译级校验与手工试跑，Linux 产物一律由 workflow 编译发布，本机不出发布物。
 
 ## 4. 编译与 git 写操作闸门
 

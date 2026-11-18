@@ -174,7 +174,7 @@ cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D war
 cargo test   --manifest-path plugins/Cargo.toml --locked
 ```
 
-> `plugins/` 是独立 workspace（根 `Cargo.toml` 已 `exclude`），根三关不会编译这里；
+> `plugins/` 是独立 workspace（根 `Cargo.toml` 已 `exclude`），根门禁不会覆盖这里；
 > 闸门入口与串行约束见 [AGENTS.md](../AGENTS.md) §3、§4.1，CI job 与命令清单见 [CI.md](../docs/ops/CI.md) §2、§6。
 
 ## 打包（发布物携带）

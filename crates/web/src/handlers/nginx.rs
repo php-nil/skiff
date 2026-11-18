@@ -116,9 +116,7 @@ async fn page(
     })
 }
 
-/// `GET /{p}/sites/web` 规范入口：交付 budding 壳页（管理专属）。
-///
-/// 旧 SSR 保留在 `GET /{p}/m/core/sites/web`，作为菜单深链与无 JS 兜底。
+/// `GET /{p}/sites/web` 规范入口：交付 budding 壳页（管理专属，唯一入口）。
 pub async fn shell(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,

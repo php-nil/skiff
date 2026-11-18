@@ -26,6 +26,11 @@ pub async fn dispatch(
     match rest {
         "overview" => handlers::dashboard::index(State(state), AuthUser(user)).await,
         other if other.starts_with("plugin/") => {
+            // 功能页与 RPC 同权限：只有插件管理角色能进工作台 / schema 页。
+            // 权限不足必须 403（不能靠视图解析失败伪装成 404）。
+            if !user.can(skiff_model::Permission::PluginManage) {
+                return Err(AppError::Forbidden("需要插件管理权限".into()));
+            }
             plugin_workbench(
                 State(state),
                 PluginManagerUser(user),

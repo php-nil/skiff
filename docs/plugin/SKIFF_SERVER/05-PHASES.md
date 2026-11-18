@@ -92,7 +92,7 @@ sha256(公钥)`），启动或载入缓存时与当前配置不一致即丢弃�
 | `crates/app/src/catalog/verify.rs` | Ed25519 验签、公钥解析与 `key_id` |
 | `crates/app/src/catalog/store.rs` | 缓存原子读写与 `meta.json` |
 | `crates/app/src/catalog/mod.rs` | `CatalogService`：按镜像回退、条件请求、状态机 |
-| `crates/web/src/handlers/store.rs` + `templates/store.html` | 只读商店页（登录即可访问） |
+| `crates/web/src/handlers/store.rs` + `crates/web/src/handlers/ui/store.rs` | 只读商店数据（`/ui/v1/store`，登录即可访问），页面由 budding 壳渲染 |
 | `crates/web/src/menu.rs` | 仅 `enabled` 时追加「插件 → 商店」菜单项 |
 
 ### 11.5 已覆盖测试
@@ -180,7 +180,7 @@ P2 只补「插件」这一类：已验证目录条目可在商店页直接进�
 | `crates/app/src/catalog/fetch.rs` | `Transport::get_blob`（二进制放宽到 128MiB，目录 JSON 仍 8MiB） |
 | `crates/app/src/commands/store.rs` | `prepare`：兼容性预检、下载、验签、暂存；`StoreInstallError` 原因码 |
 | `crates/web/src/handlers/store.rs` | 插件分区的安装入口、权限判定与 `store.install` 审计、确认页渲染 |
-| `crates/web/templates/store.html` | 「操作」列（仅插件分区；撤回/告警条目不显示安装） |
+| `crates/web/src/handlers/store.rs`（`load_view`） | 可安装性投影（仅插件分区；撤回/告警条目不显示安装），壳页按 `installable` 渲染按钮 |
 
 ### 12.5 已覆盖测试
 

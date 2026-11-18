@@ -150,11 +150,11 @@ pub fn flash_redirect(
 /// 设置页的表单错误统一回跳（PRG）：保留页面上下文与已填字段，
 /// 不再把用户留在裸 400 错误页；错误进会话 flash，URL 不带消息。
 ///
-/// 口令 / TOTP 表单仍在旧版设置页（`/{p}/m/core/settings/security`），
-/// 因此错误回跳到该落点，保证用户回到仍有表单的页面。
+/// 回跳落点是 budding 壳页 `/{p}/settings`：口令 / TOTP 表单已随旧 SSR 设置页
+/// 删除，错误由壳页读 `GET /ui/v1/settings` 的 `flash.error` 呈现。
 pub fn settings_error_redirect(state: &AppState, user: &CurrentUser, message: &str) -> String {
     state.push_flash(&user.session_id, skiff_app::FlashKind::Error, message);
-    format!("/{}/m/core/settings/security", state.cfg.entry_prefix)
+    format!("/{}/settings", state.cfg.entry_prefix)
 }
 
 /// 解析表单体。大小上限由 axum 默认 body 限制（2MB）兜底——表单只承载 CSRF 与少量字段，

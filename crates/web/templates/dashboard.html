@@ -31,12 +31,12 @@
     <span class="v">{{ running }}<small>/{{ total }}</small></span>
     <span class="d muted">{% if abnormal_total > 0 %}{{ abnormal_total }} 个异常{% else %}全部运行中{% endif %}</span>
   </a>
-  <a class="health{% if site_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/list">
+  <a class="health{% if site_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/sites">
     <span class="k">网站</span>
     <span class="v">{{ site_total }}<small> 个</small></span>
     <span class="d muted">{% if site_abnormal > 0 %}{{ site_abnormal }} 个异常/已停止{% else if site_total == 0 %}尚未创建站点{% else %}全部运行中{% endif %}</span>
   </a>
-  <a class="health{% if runtime_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/env">
+  <a class="health{% if runtime_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/runtimes">
     <span class="k">运行环境</span>
     <span class="v">{{ runtime_total }}<small> 个</small></span>
     <span class="d muted">{% if runtime_abnormal > 0 %}{{ runtime_abnormal }} 个未运行/异常{% else if runtime_total == 0 %}尚未登记{% else if runtime_uninstalled > 0 %}{{ runtime_uninstalled }} 个未安装{% else %}全部运行中{% endif %}</span>
@@ -49,12 +49,12 @@
 </section>
 {% else %}
 <section class="health-grid">
-  <a class="health{% if site_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/list">
+  <a class="health{% if site_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/sites">
     <span class="k">网站</span>
     <span class="v">{{ site_total }}<small> 个</small></span>
     <span class="d muted">{% if site_abnormal > 0 %}{{ site_abnormal }} 个异常/已停止{% else if site_total == 0 %}尚未创建站点{% else %}全部运行中{% endif %}</span>
   </a>
-  <a class="health{% if runtime_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/m/core/sites/env">
+  <a class="health{% if runtime_abnormal > 0 %} bad{% endif %}" href="/{{ ctx.prefix }}/runtimes">
     <span class="k">运行环境</span>
     <span class="v">{{ runtime_total }}<small> 个</small></span>
     <span class="d muted">{% if runtime_abnormal > 0 %}{{ runtime_abnormal }} 个未运行/异常{% else if runtime_total == 0 %}尚未登记{% else if runtime_uninstalled > 0 %}{{ runtime_uninstalled }} 个未安装{% else %}全部运行中{% endif %}</span>

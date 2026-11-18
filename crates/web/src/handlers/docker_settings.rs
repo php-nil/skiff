@@ -30,9 +30,7 @@ pub async fn legacy_path(State(state): State<Arc<AppState>>, uri: Uri) -> Respon
     (StatusCode::PERMANENT_REDIRECT, [(LOCATION, target)]).into_response()
 }
 
-/// `GET /{p}/settings/docker` 规范入口：交付 budding 壳页。
-///
-/// 旧 SSR 保留在 `GET /{p}/m/core/docker/settings`（菜单深链），供无 JS 兜底。
+/// `GET /{p}/settings/docker` 规范入口：交付 budding 壳页（唯一入口）。
 pub async fn shell(
     State(state): State<Arc<AppState>>,
     AuthUser(_user): AuthUser,

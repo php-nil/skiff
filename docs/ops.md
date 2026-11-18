@@ -4,7 +4,7 @@
 
 ## 门槛架构（共性）
 
-- 链路：**本地三关**（`fmt` → `clippy` → `test`）→ CI 全量（`ci.yml`）→ 发布物（`release.yml`）；`plugins/` 是第二 workspace，三关单独跑（`--manifest-path plugins/Cargo.toml`）。
+- 链路：**本地门禁**（`fmt` → `clippy`，只到编译级）→ CI 全量（`ci.yml`，`test` 只在这里跑）→ 发布物（`release.yml`）；Windows 开发机不跑 `cargo test`（`AGENTS.md` §4.3）。`plugins/` 是第二 workspace，门禁单独跑（`--manifest-path plugins/Cargo.toml`）。
 - **命令与判定口径的唯一来源是 [CI.md](ops/CI.md) §2、§6**；根 `AGENTS.md` 的「常用命令」只是速查，不另立标准。
 - 编译与 git 写操作共用全局串行令牌（拿不到即以退出码 2 拒绝，不排队）；退出码 2/3/4 语义、内存准入与本机编译限制见 [DEV_ENV.md](ops/DEV_ENV.md)。
 

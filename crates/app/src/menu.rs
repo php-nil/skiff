@@ -1140,7 +1140,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "网站列表",
                     "globe",
                     10,
-                    href("m/core/sites/list"),
+                    href("sites"),
                 ),
                 builtin(
                     "core/sites/env",
@@ -1148,7 +1148,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "运行环境",
                     "container",
                     20,
-                    href("m/core/sites/env"),
+                    href("runtimes"),
                 ),
                 builtin(
                     "core/sites/web",
@@ -1178,7 +1178,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "容器",
                     "container",
                     10,
-                    href("m/core/docker/containers"),
+                    href("containers"),
                 ),
                 builtin(
                     "core/docker/images",
@@ -1186,7 +1186,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "镜像",
                     "image",
                     20,
-                    href("m/core/docker/images"),
+                    href("images"),
                 ),
                 builtin(
                     "core/docker/networks",
@@ -1194,7 +1194,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "网络",
                     "network",
                     30,
-                    href("m/core/docker/networks"),
+                    href("networks"),
                 ),
                 builtin(
                     "core/docker/volumes",
@@ -1202,7 +1202,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "卷",
                     "disk",
                     40,
-                    href("m/core/docker/volumes"),
+                    href("volumes"),
                 ),
                 builtin(
                     "core/docker/compose",
@@ -1210,7 +1210,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "Compose",
                     "list",
                     45,
-                    href("m/core/docker/compose"),
+                    href("compose"),
                 ),
                 builtin(
                     "core/docker/settings",
@@ -1241,7 +1241,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "已安装",
                         "list",
                         10,
-                        href("m/core/plugins/installed"),
+                        href("plugins"),
                     ),
                     builtin(
                         "core/plugins/discover",
@@ -1249,7 +1249,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "发现",
                         "activity",
                         20,
-                        href("m/core/plugins/discover"),
+                        href("plugins/discover"),
                     ),
                     builtin(
                         "core/plugins/updates",
@@ -1257,7 +1257,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "可更新",
                         "archive",
                         30,
-                        href("m/core/plugins/updates"),
+                        href("plugins/updates"),
                     ),
                 ];
                 // 商店默认关闭：只有显式启用目录接入后才出现入口。
@@ -1268,7 +1268,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "商店",
                         "archive",
                         40,
-                        href("m/core/plugins/store"),
+                        href("store"),
                     ));
                 }
                 items
@@ -1293,7 +1293,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "计划任务",
                         "clock",
                         10,
-                        href("m/core/tasks"),
+                        href("tasks"),
                     ),
                     builtin(
                         "core/jobs",
@@ -1301,7 +1301,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "任务中心",
                         "activity",
                         15,
-                        href("m/core/jobs"),
+                        href("jobs"),
                     ),
                 ];
                 // 文件管理只对管理员开放：viewer 看不到入口，直接访问也会 403。
@@ -1309,14 +1309,14 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                 // 入口同样隐藏，直达由 `middleware::check_fs_capability` 拒绝。
                 if user.role().as_str() == "admin" && state.cfg.form != Form::DockerRestricted {
                     // 回收站是「文件管理」的 L3 视图，不再作为独立二级菜单项。
-                    // 页面路由 `/{p}/files/trash` 与深链 `/{p}/m/core/files/trash` 不变。
+                    // 回收站与配额都是壳页的 L3：`/{p}/files/trash`、`/{p}/files/quotas`。
                     let files = builtin(
                         "core/files",
                         L1_TOOLS,
                         "文件管理",
                         "folder",
                         20,
-                        href("m/core/files"),
+                        href("files"),
                     );
                     items.push(Decl {
                         children: vec![builtin(
@@ -1325,7 +1325,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                             "回收站",
                             "archive",
                             10,
-                            href("m/core/files/trash"),
+                            href("files/trash"),
                         )],
                         ..files
                     });
@@ -1335,7 +1335,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "配额管理",
                         "hard-drive",
                         22,
-                        href("m/core/files/quotas"),
+                        href("files/quotas"),
                     ));
                 }
                 items
@@ -1359,7 +1359,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "安全设置",
                     "lock",
                     10,
-                    href("m/core/settings/security"),
+                    href("settings"),
                 ),
                 builtin(
                     "core/settings/menu",
@@ -1383,7 +1383,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "审计日志",
                     "shield",
                     30,
-                    href("m/core/settings/audit"),
+                    href("audit"),
                     &["operator", "admin"],
                 ),
             ],
@@ -1736,9 +1736,14 @@ fn empty_state(state: &AppState, l1: &str) -> Option<MenuEmpty> {
     } else {
         (text, "discover", action)
     };
+    let href = if tab == "installed" {
+        format!("/{}/plugins", state.cfg.entry_prefix)
+    } else {
+        format!("/{}/plugins/{tab}", state.cfg.entry_prefix)
+    };
     Some(MenuEmpty {
         text: text.into(),
-        href: format!("/{}/m/core/plugins/{tab}", state.cfg.entry_prefix),
+        href,
         action: action.into(),
     })
 }
@@ -1921,7 +1926,7 @@ view = "jobs"
                 label: "容器".into(),
                 icon: "container".into(),
                 order: 10,
-                href: "/m/core/docker/containers".into(),
+                href: "/containers".into(),
                 plugin: false,
                 pinnable: true,
                 default_visible: true,

@@ -6,7 +6,7 @@
 
 ### 5.12 任务与作业（第五批，只读）
 
-- `GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/tasks[/{id}]`、`/{p}/m/core/jobs[/{id}]`。
+- `GET /{p}/tasks`、`/{p}/tasks/{id}`、`/{p}/jobs`、`/{p}/jobs/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表/详情复用 `TaskService::list_views` / `detail_view` 与 `Jobs::list` / `tail` / `detail_of`，不新增 SQL。
 - 写操作已原生化：`POST /ui/v1/tasks/{id}/toggle|run|delete`、`POST /ui/v1/jobs/{id}/cancel|retry`；分别复用 `TASK_TOGGLE|RUN|DELETE`、`JOB_CANCEL|RETRY` 与既有命令层审计。SSE 实时日志仍待上游通道。
 
@@ -54,7 +54,7 @@
 
 ### 5.13 审计（第六批占位 → 第十五批落地）
 
-- `GET /{p}/audit` 交付 budding 壳页，页面为原生只读审计列表；旧 SSR 保留在 `GET /{p}/m/core/settings/audit`（最近 200 条）作无 JS 兜底。
+- `GET /{p}/audit` 交付 budding 壳页，页面为原生只读审计列表；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；权限口径不变（viewer 403）。
 - 权限两处同源：页面与 `GET /ui/v1/audit` 都按 `Permission::AuditRead` 判定（viewer 403，菜单不可见），不新增权限来源。
 - 查询：`GET /ui/v1/audit?q=&limit=&cursor=`，落 `{ items, keyword, has_more, next_cursor }`。
   - 关键字非空时对 actor / ip / action / target / detail 做 ASCII 不区分大小写的子串匹配（`instr(lower(...))`，`%`/`_` 按字面量处理）。
@@ -67,7 +67,7 @@
 
 ### 5.14 设置（第七批 + 第十一批补齐）
 
-- `GET /{p}/settings` 交付 budding 壳页；旧 SSR 保留在 `GET /{p}/m/core/settings/security`，但不再是产品入口。
+- `GET /{p}/settings` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；口令 / TOTP 写接口保留，壳页经 `/ui/v1` 调用。
 - 写操作全部迁到 `/ui/v1`，复用旧链路的校验、落盘、审计与错误文案，CSRF 走 `x-csrf-token`：
   - 面板配置 `POST /ui/v1/settings/panel` → `settings::apply_panel_update`（端口 / 安全入口 / TLS）。
   - 口令 `POST /ui/v1/settings/password` → argon2 校验旧口令、写新散列、`rotate_password_session` 轮换会话（响应回传新 `csrf_token` 并重设会话 Cookie）、删除首启 `initial-admin.txt`。错误文案沿用旧页：旧口令错「当前口令不正确」、两次不一致「两次输入的新口令不一致」。
@@ -112,7 +112,7 @@
 
 **菜单设置与 Docker 设置（第二十二批）**
 
-- `GET /{p}/settings/menu`、`GET /{p}/settings/docker` 交付 budding 壳页；旧 SSR 分别保留在 `GET /{p}/m/core/settings/menu`、`GET /{p}/m/core/docker/settings`（菜单深链，无 JS 兜底）。
+- `GET /{p}/settings/menu`、`GET /{p}/settings/docker` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/settings/docker`，不再以 `/m/core/...` 作为产品入口；`/{p}/docker/settings` 的 308 兼容不变。
 - `GET /ui/v1/settings/menu` → `{layout, width, max_width, groups[{key,label,items[{key,label,href,hidden,pinned,pinnable,plugin,icon}]}]}`；读对登录用户开放（偏好按账号隔离）。页面用「布局按钮 + 内容宽度表单 + 分组表格」，行内「↑ / ↓ / 显隐 / 固定」，底部「恢复默认」（确认后 `action=reset`）。
 - `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
@@ -127,7 +127,7 @@
 
 **Web 服务页（第二十四批）**
 
-- `GET /{p}/sites/web` 改交付 budding 壳页（Admin 权限，viewer 403）；旧 SSR 保留在 `GET /{p}/m/core/sites/web`，菜单 href 已改指规范路径。
+- `GET /{p}/sites/web` 改交付 budding 壳页（Admin 权限，viewer 403）；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - `GET /ui/v1/web` → `{status, install, config{main_path,main_content,include_path,include_content,sites[],params}, modules, can_admin}`，与旧页同一数据源（`nginx_status`、`site_install_progress`、`nginx_config_view`、`nginx_modules`）。
 - `GET /ui/v1/web/logs?load=&kind=&lines=&level=&status=&q=&offset=`：未 `load` 时不触碰文件，返回读取范围、状态码分布、截断标记与行数据。
 - 页面拆三级子视图（2026-11-17）：`/{p}/sites/web` 状态、`/config` 配置、`/logs` 日志、`/modules` 模块，每次只渲染当前视图（详见 `01-SCOPE.md` §2.3.1「三级子视图登记」）；日志视图进入即按查询参数取数（默认访问日志 200 行），「加载日志」把筛选条件带回 `?type=&lines=&level=&status=&q=`（不再用 `?logs=1`）。
@@ -135,7 +135,7 @@
 
 ### 5.15 商店（第八批）
 
-- `GET /{p}/store` 交付 budding 壳页；旧 SSR（目录状态、四类条目、升级包下载、表单确认页）保留在 `GET /{p}/m/core/plugins/store`，仅作无 JS 兜底，产品页面不再链接它。
+- `GET /{p}/store` 交付 budding 壳页；旧 SSR 商店页已删除（2026-11-18）；目录状态、四类条目与升级包入口由 `/{p}/store` 壳页读 `/ui/v1/store` 渲染。
 - `GET /ui/v1/store?refresh=1` 与旧页面共用 `store::load_view`：同一目录快照、同一可安装版本判定与升级提示。
 - 安装分两步，均复用旧链路与审计：
   1. `POST /ui/v1/store/plugins/{id}/install` → 调用 `store::prepare`（下载、摘要/大小、验签、版本与降级校验），返回权限确认数据；审计动作与旧表单一致（`store.install`）。
@@ -167,7 +167,7 @@
 
 ### 5.16 插件（第九批）
 
-- `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表保留在 `/{p}/m/core/plugins/{installed|discover|updates}`，但不再从新页面链出。
+- `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表与信息页已随 `/{p}/m/core/*` 删除（2026-11-18）；数据走 `/ui/v1/plugins`。
 - 菜单键 `core/plugins/discover`、`core/plugins/updates` 映射为原生路由 `/{p}/plugins/discover`、`/{p}/plugins/updates`，页内以「发现 / 可更新」标签呈现；页内标签链接同路径，旧 `?tab=` 继续兼容（第二十五批）。
 - **插件功能页原生化**：`api = "1.3"` 起视图可声明随包 schema（`ui/schema/<name>.json`，安装期静态校验）；`/{p}/plugins/{id}/{view}` 由壳页加载 `GET /{p}/plugins/{id}/schema/{view}` 后原生渲染，数据与写操作经 `skiffPluginRpc` 走既有 `POST /rpc`（CSRF + 权限 + 审计）。未声明 schema 的旧视图仍走旧 SSR 工作台（显式 `?legacy=1`）。功能页、schema 与 RPC 权限统一为 `PluginManage`（§4.4）。
 - 插件详情页把声明的功能页以纯文本列出，并说明原生 schema 渲染与旧 SSR 兼容关系。
@@ -196,14 +196,14 @@
 - 列表用 `virtual-list`（`itemHeight: 52`、`height: 560`）虚拟滚动；条目操作是 budding 按钮：打开 / 下载 / 重命名 / 删除。下载仍走既有 `GET /{p}/files/download`。
 - 上传走宿主 `PlatformAdapter.upload`：前端按服务端下发的 `upload_chunk_bytes`（256 KiB）切片，逐片 POST 既有 `/{p}/files/upload?path=&offset=`（同一授权、同一审计），按字节上报进度，组件负责进度、取消与重试。**宿主必须同时注入 `platform.request`**：上游 `createPlatformAdapter` 只在提供 `request` 时保留 `upload`。
 - 终端不在本批：仍待 WS 契约与 terminal Pack（待第 4 组）。
-- 旧 SSR（浏览 / 回收站 / 配额）保留在 `GET /{p}/m/core/files[/trash|/quotas]`，但不再是入口。
+- 旧 SSR（浏览 / 回收站 / 配额）已删除（2026-11-18）；三个 L3 均为壳页，数据走 `/files/*` 与 `/ui/v1/files*`。
 - 回收站与配额已原生化（第二十一批）：`GET /{p}/files/trash`、`/{p}/files/quotas` 交付壳页，入口门禁仍是 `FILE_TRASH_READ` / `FILE_QUOTA_READ`；数据与写操作**直接复用**既有 `GET /files/trash/list`、`POST /files/trash/{restore,purge,clear}`、`GET /files/quotas/list`、`POST /files/quotas/{set,cancel,scan}`（`x-csrf-token`、审计、`commands::file` 不变），未新增 `/ui/v1` 写入口。
 - 回收站表（路径 / 大小 / 删除时间 / 剩余天数）行内「恢复 / 彻底删除」，顶部「清空回收站 / 刷新」；恢复冲突（目标已存在）二次确认 `overwrite`。配额页顶部「设置配额」表单（路径 + 容量/文件数上限，至少一项），配额表（路径 / 已用 / 上限 / 统计）行内「重新统计 / 取消配额」。`GET /ui/v1/files` 只新增 `can_admin`（只增不改），`can_admin` 时才显示两个入口。
 
 ### 5.18 代码查看器与日志查看器（第十三批）
 
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
-- 代码 Pack：入库 `budding-code-1.8.0-r7.min.js`（89,944 B，取自 `dist/packs/code.mjs`，自包含 ESM；字节自 r5 起未变），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
+- 代码 Pack：入库 `budding-code-1.8.1-r2.min.js`（89,982 B，取自 `dist/packs/code.mjs`，自包含 ESM；字节自 1.8.1 起未变），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
 - 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
 - 作业日志：`GET /{p}/jobs/{id}/logs` 同路径按 `Accept` 分流——浏览器导航（含 `text/html`）交 budding 日志页，脚本请求（无 `text/html`）仍返回既有 JSON（`?after=` 游标、同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code` 组件，并保留旧详情入口用于取消 / 重试。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
@@ -216,7 +216,7 @@
   - `GET /{p}/containers/{id}/exec?ticket=` 升级 WS，`Origin` 严格校验；
   - WS 的 start / fail / end 继续写 `Verb::Exec` 审计。
 - 前端：页面先取票再渲染 `terminal` 组件；`wsUrl` 由 `location.protocol` 推出 `ws://` / `wss://`，`resizeFormat: 'none'`（内核 exec 只透传 stdin，不解析 resize JSON），`reconnect: false` + 手动「重新连接（重新取票）」。
-- Pack：入库 `budding-terminal-1.8.0-r7.min.js`（394,972 B，取自 `dist/packs/terminal.mjs`，字节自 r5 起未变，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
+- Pack：入库 `budding-terminal-1.8.1-r2.min.js`（395,014 B，取自 `dist/packs/terminal.mjs`，字节自 1.8.1 起未变，自带 xterm 与样式注入，无裸依赖），`BuddingSDK.registerPack('terminal', …?v=<ver>)`。
 - **验证边界**：本机（Windows、无 Docker）只验证了路由、壳页与取票失败时的错误页；WS 真连与容器内 `/bin/sh` 交互必须在 Linux 测试机验收，未验前不得记为已完成。
 
 ### 5.20 日志入口收口（第十六批）

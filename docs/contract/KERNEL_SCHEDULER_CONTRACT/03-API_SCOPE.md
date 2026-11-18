@@ -54,7 +54,7 @@ trait Scheduler {
 | `/{p}/tasks/{id}` | POST | Admin + CSRF | 修改 schedule/payload/开关 |
 | `/{p}/tasks/{id}/delete` | POST | Admin + CSRF | 删除 |
 
-- 深链：`/{p}/m/core/tasks`、`/{p}/m/core/tasks/{id}`；超管菜单新增「任务」一级入口（内核页，不占插件槽位）。
+- 深链：`/{p}/tasks`、`/{p}/tasks/{id}`；超管菜单新增「任务」一级入口（内核页，不占插件槽位）。
 - 插件 UI 深链保持 `/{p}/m/plugin/com.skiff.cron/jobs`，由 cron 插件渲染，数据来自 scheduler API。
 - 所有写操作带 CSRF、审计；错误内联返回，不吞异常。
 

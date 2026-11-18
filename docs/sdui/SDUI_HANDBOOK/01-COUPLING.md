@@ -40,7 +40,7 @@
 | 授权判定 | 17 处 `policy.check`、12 处 `require_permission`、25 处 `user.can`、2 个中间件提取器 | 写路径已统一到 `web::authz`；其余分别用于对象级、读页与按钮显隐 |
 | 查询参数 | 24 处 `Query<HashMap<String, String>>` | 每页自取，无统一分页/筛选契约 |
 | 内联脚本 | 12 个 `<script>` 块（分布在 9 个模板） | 另有 5 个独立前端脚本与 xterm |
-| 静态资产 | `skiff.css` 82,641B、`skiff.js` 81,800B、`htmx` 50,917B、`xterm` 289,441B、`files.js` 66,308B | 由 `rust-embed` 打包 |
+| 静态资产 | `skiff.css` 82,641B、`skiff.js` 81,800B、`htmx` 50,917B、`xterm` 289,441B、`files.js` 66,308B（2026-11-18 随旧 SSR 文件页删除，现为壳页 `budding/budding-boot.js`） | 由 `rust-embed` 打包 |
 | 菜单模块 | `app/menu.rs` 66,018B；`web/menu.rs` 310B 仅再导出 | 声明解析、排序、偏好写库与渲染模型仍混在一起 |
 
 ### 1.2 三类归类

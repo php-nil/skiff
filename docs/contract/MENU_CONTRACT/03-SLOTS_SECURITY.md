@@ -127,32 +127,40 @@ roles = ["admin", "operator", "viewer"]
 - 当前 active 值：`dashboard`、`containers`、`images`、`networks`、`volumes`、`plugins`、`settings`、`audit`、`plugin:<id>`。
 - 当前设置只有单页 `/settings` + `/audit`，没有菜单设置页。
 
-### 7.2 旧路由 → 新菜单键
+### 7.2 菜单键 → 规范 URL
 
-| 旧路由/active | 新菜单键 | 新 URL | 备注 |
-|---|---|---|---|
-| `/{p}` / `dashboard` | `overview` | `/{p}/m/overview` | L1 直达 |
-| `/{p}/containers` / `containers` | `core/docker/containers` | `/{p}/m/core/docker/containers` | 保留 `?filter=error` |
-| `/{p}/containers/{id}` | `core/docker/containers` | 同上 | 详情页仍走旧路由，当前态归容器 |
-| `/{p}/images` / `images` | `core/docker/images` | `/{p}/m/core/docker/images` | |
-| `/{p}/networks` / `networks` | `core/docker/networks` | `/{p}/m/core/docker/networks` | |
-| `/{p}/volumes` / `volumes` | `core/docker/volumes` | `/{p}/m/core/docker/volumes` | |
-| `/{p}/plugins` / `plugins` | `core/plugins/installed` | `/{p}/plugins`（旧深链 `/{p}/m/core/plugins/installed` 保留） | 页内 tab 走原生路径 |
-| `/{p}/plugins?tab=discover` | `core/plugins/discover` | `/{p}/plugins/discover`（旧深链 `/{p}/m/core/plugins/discover` 保留） | L2 直达；壳页内呈现「发现」标签，旧 `?tab=discover` 兼容 |
-| `/{p}/plugins?tab=updates` | `core/plugins/updates` | `/{p}/plugins/updates`（旧深链 `/{p}/m/core/plugins/updates` 保留） | L2 直达；壳页内呈现「可更新」标签，旧 `?tab=updates` 兼容 |
-| `/{p}/plugins/{id}` / `plugin:<id>` | `plugin/<id>/<declared-l2>`；旧包 `plugin/<id>/legacy` | 由声明决定 | 不再有统一「应用」 |
-| `/{p}/settings` / `settings` | `core/settings/security` | `/{p}/m/core/settings/security` | |
-| `/{p}/settings/menu`（新增） | `core/settings/menu` | `/{p}/m/core/settings/menu` | 菜单设置 |
-| `/{p}/settings/ui`（新增） | `core/settings/ui` | `/{p}/settings/ui` | 界面设置（主题主色，无旧 SSR） |
-| `/{p}/audit` / `audit` | `core/settings/audit` | `/{p}/m/core/settings/audit` | |
-| 旧「应用」菜单 | 解散 | — | 网站已内核化；cron/monitor/guard → `工具`，files → `网站`（站点文件） |
-| `/{p}/compose`（规划） | `core/docker/compose` | `/{p}/m/core/docker/compose` | 无后端前 `route_available` 不渲染 |
-| `/{p}/docker`（规划） | `core/docker/overview` | `/{p}/m/core/docker/overview` | P3 |
-| `/{p}/settings/docker`（原 `/{p}/docker/settings`，旧路径 308） | `core/docker/settings` | `/{p}/m/core/docker/settings` | 页面 URL 归「设置」资源，菜单键仍是 Docker 设置；URL 规则见 [`URL_CONTRACT.md`](../URL_CONTRACT.md) |
+菜单 `href` 一律是 budding 壳页规范路径（`/{p}/m/core/*` 已删除，直达 404）。
+
+| 菜单键 | 规范 URL | 备注 |
+|---|---|---|
+| `overview` | `/{p}`（`/{p}/m/overview` 为保留的概览 SSR） | L1 直达 |
+| `core/sites/list` | `/{p}/sites` | |
+| `core/sites/env` | `/{p}/runtimes` | |
+| `core/sites/web` | `/{p}/sites/web` | 管理专属 |
+| `core/docker/containers` | `/{p}/containers` | 保留 `?filter=error`；详情 `/{p}/containers/{id}` |
+| `core/docker/images` | `/{p}/images` | |
+| `core/docker/networks` | `/{p}/networks` | |
+| `core/docker/volumes` | `/{p}/volumes` | |
+| `core/docker/compose` | `/{p}/compose` | |
+| `core/docker/settings` | `/{p}/settings/docker` | 页面 URL 归「设置」资源，菜单键仍是 Docker 设置 |
+| `core/plugins/installed` | `/{p}/plugins` | |
+| `core/plugins/discover` | `/{p}/plugins/discover` | |
+| `core/plugins/updates` | `/{p}/plugins/updates` | |
+| `core/plugins/store` | `/{p}/store` | 目录启用时才出现 |
+| `core/tasks` | `/{p}/tasks` | |
+| `core/jobs` | `/{p}/jobs` | |
+| `core/files` | `/{p}/files` | 回收站 / 配额是其 L3：`/{p}/files/trash`、`/{p}/files/quotas` |
+| `core/settings/security` | `/{p}/settings` | |
+| `core/settings/menu` | `/{p}/settings/menu` | |
+| `core/settings/ui` | `/{p}/settings/ui` | |
+| `core/settings/audit` | `/{p}/audit` | 仅 operator / admin |
+| `plugin/<id>/<l2>[/<l3>]` | `/{p}/m/plugin/<id>/<l2>[/<l3>]` | 插件工作台，与 RPC 同权限（非管理者 403） |
+| 旧「应用」菜单 | 解散 | cron/monitor/guard → `工具`，files → `网站`（站点文件）；插件信息页由壳页 `/{p}/plugins/{id}` 承载 |
 
 兼容策略：
 
-- 旧路由继续可用，**不 301**，直接内部解析到新菜单键；避免用户书签断裂。
+- 旧 SSR 深链（`/{p}/m/core/*`）随旧页删除，直达 404；书签失效按规范路径重建入口。
+- `/{p}/m/overview` 与 `/{p}/m/plugin/*` 保留（概览 SSR、插件工作台）。
 - 当前 `active` 字符串迁移为 `route → menu-key` 映射表，迁移完成后删除 `APP_ORDER` 与 `nav()` 旧硬编码。
 - 旧「应用」菜单不再出现；`工具` 按 §1.4 渲染；`网站` 由内核固定的三个 L2 渲染。
 

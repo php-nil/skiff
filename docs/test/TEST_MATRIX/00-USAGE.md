@@ -12,8 +12,8 @@
 
 - `$B`：测试机基址（当前地址、端口与 TLS 见 [TEST_ENV/01-ACCESS.md](../TEST_ENV/01-ACCESS.md) §2，例如 `http://10.10.15.4:18081`）；`$P`：安全入口前缀，从 `journalctl -u skiff | grep 安全入口`、首次安装输出或 TEST_ENV/01-ACCESS.md §2 取当前值。
 - `$J`：已登录管理员的 curl CookieJar；除 AUTH 章外，默认已登录。
-- `[本机]`：开发机即可执行（`cargo test`、`xtask`、模板/路由单测）。
-- `[本机+上机]`：先跑单测，再到测试机补一条手工断言（通常用于路径/权限类）。
+- `[本机]`：由 crate 单测、`xtask` 或模板/路由断言覆盖的项。**开发机只编译不跑**（`cargo check` / `clippy --all-targets`），用例结果看 CI（`AGENTS.md` §4.3）。
+- `[本机+上机]`：先由 CI 的对应 crate 用例兜底，再到测试机补一条手工断言（通常用于路径/权限类）。
 - `[上机]`：必须有 Linux 测试机、systemd 或 Docker 才能执行。
 - 判定栏统一记 `□通过 / □失败`；失败时把实际状态码/响应片段补在备注。
 - 测试数据用 `matrix.local`、`matrix-static.local`、`matrix-proxy.local` 等专用域名，避免污染已有站点。
@@ -27,6 +27,8 @@ curl -ks -b "$J" -c "$J" -d "csrf=$C&username=admin&password=<password>" -o /dev
 ```
 
 ## 总览
+
+> 表中「本机可验」= 有 crate 级自动化用例覆盖（命令见最后一列）：**开发机只做编译级校验，这些命令在 CI 上执行**（`AGENTS.md` §4.3）。
 
 | 域 | 项数 | 自动化判断 | 主要执行位置 |
 | --- | --- | --- | --- |

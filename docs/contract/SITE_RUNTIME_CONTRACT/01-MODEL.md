@@ -10,7 +10,7 @@
 > 基线：`crates/store/src/db.rs`（schema v21）、`crates/app/src/sites.rs`（OpenResty + 多实例 PHP-FPM
 > 与 Node.js / Rust 进程运行环境）、`crates/app/src/sites/network.rs`（站点专用网络与静态地址）、
 > `crates/app/src/runtime_catalog.rs`、
-> `crates/web/src/handlers/sites.rs`、`crates/web/templates/site_env.html`、
+> `crates/web/src/handlers/sites.rs`（运行环境写接口）、`crates/web/src/handlers/ui/runtimes.rs`（壳页读模型）、
 > `docs/contract/MENU_CONTRACT.md`（菜单与深链）。
 > 2026-11-15：运行环境改为**专用 bridge + 内核静态容器地址**，宿主不再出现运行环境端口；
 > 站点 vhost 只反代到容器地址；对外发布是显式开关（`site_runtimes.publish_port`，默认关闭）。

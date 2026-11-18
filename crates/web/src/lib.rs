@@ -189,7 +189,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/totp/enable"),
             post(handlers::auth::enable_totp),
         )
-        // 容器列表与详情已迁 budding（壳页回落，旧 SSR 在 `/{p}/m/core/docker/containers*`）。
+        // 容器列表与详情由 budding 壳页承载；旧 SSR 页已随 `/m/core/*` 深链删除。
         .route(
             &format!("/{p}/containers/rows"),
             get(handlers::containers::rows),
@@ -215,7 +215,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/containers/{{id}}/exec/ticket"),
             post(handlers::containers::exec_ticket),
         )
-        // 镜像/网络/卷列表已迁 budding（旧 SSR 在 `/{p}/m/core/docker/*`）。
+        // 镜像/网络/卷列表由 budding 壳页承载；旧 SSR 页已删除。
         .route(
             &format!("/{p}/images/pull"),
             post(handlers::resources::pull_image),
@@ -252,7 +252,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/volumes/{{name}}/remove"),
             post(handlers::resources::remove_volume),
         )
-        // 编排页已迁 budding（旧 SSR 在 `/{p}/m/core/docker/compose`）。
+        // 编排页由 budding 壳页承载；旧 SSR 页已删除。
         .route(
             &format!("/{p}/compose/validate"),
             post(handlers::compose::validate),
@@ -272,9 +272,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/docker/settings"),
             axum::routing::any(handlers::docker_settings::legacy_path),
         )
-        // 插件中心与信息页已进入 budding 适配：`GET /{p}/plugins`、`/{p}/plugins/{id}`
-        // 回落到壳页；旧 SSR 保留在 `/{p}/m/core/plugins/{installed|discover|updates}`
-        // 与 `/{p}/m/core/plugins/info/{id}`。功能页 `/{p}/plugins/{id}/{view}` 不变。
+        // 插件中心与信息页由 budding 壳页承载（旧 SSR 列表与信息页已删除）；
+        // 功能页 `/{p}/plugins/{id}/{view}` 与显式 `?legacy=1` 工作台不变。
         .route(
             &format!("/{p}/store/plugins/{{id}}/install"),
             post(handlers::store::install).get(handlers::store::install_legacy_get),
@@ -329,10 +328,9 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/ui"),
             get(handlers::settings::ui_theme_shell),
         )
-        // 设置页已进入 budding 适配：规范页回落到壳页，旧 SSR（口令 / TOTP / 公钥 /
-        // 完整面板表单）保留在 `/{p}/m/core/settings/security`；写操作仍走旧表单。
+        // 设置页由 budding 壳页承载；口令 / TOTP / 公钥写接口保留（壳页经 `/ui/v1` 调用）。
         // ---- 内核定时任务：viewer 只读，写操作 Admin + CSRF ----
-        // 任务与作业列表/详情已迁 budding（旧 SSR 在 `/{p}/m/core/{tasks|jobs}*`）。
+        // 任务与作业列表/详情由 budding 壳页承载；旧 SSR 页已删除。
         .route(
             &format!("/{p}/tasks/{{id}}/toggle"),
             post(handlers::tasks::toggle),
@@ -360,8 +358,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         // ---- 内核「文件管理」路由在 `files` 分组统一登记并挂形态门禁 ----
         // ---- 内核「网站」：站点列表 / 运行环境 / 设置 ----
-        // 列表与详情已迁 budding（壳页回落，旧 SSR 留在 `/{p}/m/core/sites/*`）；
-        // 写操作路由本批保持原样，等前端表单覆盖后再逐步切换。
+        // 列表与详情由 budding 壳页承载（旧 SSR 页已删除）；写操作路由保持原样。
         .route(&format!("/{p}/sites/new"), get(handlers::sites::new_shell))
         .route(&format!("/{p}/sites/batch"), post(handlers::sites::batch))
         .route(&format!("/{p}/sites/create"), post(handlers::sites::create))
@@ -520,10 +517,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/settings/keys/{{id}}/remove"),
             post(handlers::settings::remove_key),
         )
-        // 审计页已原生渲染（第十五批）：数据走 `/ui/v1/audit`（关键字 + 签名 keyset 游标），
-        // 旧 SSR 仅保留在 `/{p}/m/core/settings/audit`（最近 200 条）。
-        // 契约里的规范深链：旧 SSR 深链（`/{p}/m/core/...`）兼容保留，不设删除时间；
-        // 新功能只进 budding 规范路径，不再往这里加页面。
+        // `/{p}/m/*` 只剩两条：`overview` 概览 SSR（插件槽位迁完即删）与 `plugin/*`
+        // 插件工作台；`core/*` 旧 SSR 深链已删除并返回 404。
         .route(&format!("/{p}/m/{{*rest}}"), get(handlers::menu::dispatch))
         // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。
         .route(&format!("/{p}/static/{{*path}}"), get(assets::static_file))

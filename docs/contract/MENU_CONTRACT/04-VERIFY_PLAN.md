@@ -41,7 +41,7 @@
 - 浏览器：桌面上下/左右、窄屏、键盘、hover 不展开、Escape、焦点归还、L3 切换后 iframe URL。
 - 安全：恶意 label（HTML）、外部 icon、`target.ui` 越界、伪造 `core` 键、重复键、越权角色。
 
-三关口径沿用仓库规则：`cargo fmt --all`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --locked`。
+口径沿用仓库规则：本地只跑 `cargo fmt --all` 与 `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`（编译级），用例结果以 CI 的 `cargo test --workspace --locked` 为准（`AGENTS.md` §4.3）。
 
 ---
 

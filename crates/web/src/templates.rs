@@ -26,26 +26,6 @@ pub struct PageCtx {
     pub flash_error: String,
 }
 
-/// 商店（Skiff-server P1/P2）：四类目录条目展示；插件分区按已验证目录提供安装入口。
-#[derive(Debug, Clone, Template)]
-#[template(path = "store.html")]
-pub struct StorePage {
-    pub ctx: PageCtx,
-    pub state_label: String,
-    /// 状态提示条样式：`ok` / `warn` / 空串（错误）。
-    pub tone: String,
-    pub message: String,
-    pub channel: String,
-    pub seq: String,
-    pub fetched_at: String,
-    pub source: String,
-    pub allow_unsigned: bool,
-    pub key_configured: bool,
-    pub sections: Vec<StoreSection>,
-    pub upgrade: UpgradeHint,
-    pub total: usize,
-}
-
 /// 内核升级只读段（P3）：当前版本 vs 渠道可用版本，手动下载入口。
 #[derive(Debug, Clone, Default)]
 pub struct UpgradeHint {
@@ -60,16 +40,6 @@ pub struct UpgradeHint {
     pub note: String,
     /// 是否显示下载按钮（有可用版本、公钥已配置且目录未被拒）。
     pub can_download: bool,
-}
-
-/// 商店页的一个分区（插件 / 应用模板 / 运行环境 / 升级通道）。
-#[derive(Debug, Clone)]
-pub struct StoreSection {
-    pub title: String,
-    pub hint: String,
-    /// 该分区条目是否提供安装入口（本轮只有插件分区、且公钥已配置时开启）。
-    pub installable: bool,
-    pub items: Vec<skiff_app::catalog::CatalogItem>,
 }
 
 /// 顶栏里的一条插件菜单项。
@@ -134,11 +104,9 @@ pub struct DashboardTodo {
 pub struct AuditRow {
     pub ts: String,
     pub actor: String,
-    pub ip: String,
     pub action: String,
     pub target: String,
     pub result: String,
-    pub detail: String,
 }
 
 #[derive(Debug, Clone)]
@@ -403,60 +371,6 @@ pub struct RuntimeRow {
     pub job_active: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct BoundSiteView {
-    pub domain: String,
-    pub type_label: String,
-    pub status_label: String,
-    pub href: String,
-}
-
-impl From<&skiff_app::sites::PhpRuntimeConfig> for PhpConfigView {
-    fn from(c: &skiff_app::sites::PhpRuntimeConfig) -> Self {
-        Self {
-            memory_limit: c.memory_limit.clone(),
-            upload_max_filesize: c.upload_max_filesize.clone(),
-            post_max_size: c.post_max_size.clone(),
-            max_execution_time: c.max_execution_time,
-            pm: c.pm.clone(),
-            max_children: c.max_children,
-            start_servers: c.start_servers,
-            min_spare_servers: c.min_spare_servers,
-            max_spare_servers: c.max_spare_servers,
-            max_requests: c.max_requests,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PhpConfigView {
-    pub memory_limit: String,
-    pub upload_max_filesize: String,
-    pub post_max_size: String,
-    pub max_execution_time: u64,
-    pub pm: String,
-    pub max_children: u32,
-    pub start_servers: u32,
-    pub min_spare_servers: u32,
-    pub max_spare_servers: u32,
-    pub max_requests: u32,
-}
-
-/// Node.js 专属配置视图（非 Node 时各字段为空）。
-#[derive(Debug, Clone, Default)]
-pub struct NodeConfigView {
-    pub command: String,
-    pub health_path: String,
-    pub node_env: String,
-    pub env_text: String,
-    /// 容器内工作目录：固定为环境自带 `app/`，与站点绑定无关。
-    pub workdir: String,
-    pub port: String,
-    /// 保存地址：`/{prefix}/runtimes/{id}/node-config`。
-    pub config_url: String,
-}
-
-/// 新建运行环境弹窗的类型选项（版本来自 `runtime_catalog` 单一来源）。
 /// 抽屉里可勾选/取消的扩展项。
 #[derive(Debug, Clone)]
 pub struct ExtensionOptionView {
@@ -478,123 +392,6 @@ pub struct ExtensionOptionView {
     pub estimated_time: String,
     /// 依赖提示（「将临时安装 X/Y」）；不可用项不进入清单。
     pub support_note: String,
-}
-
-/// 运行环境异步任务的展示快照（列表/抽屉轮询）。
-#[derive(Debug, Clone, Default)]
-pub struct RuntimeJobView {
-    /// queued / running / done / failed
-    pub state: String,
-    pub state_label: String,
-    /// 当前阶段（拉镜像/创建容器/启动/安装扩展…）。
-    pub step: String,
-    pub progress: u8,
-    pub error: String,
-    pub log: String,
-    pub active: bool,
-    pub failed: bool,
-    pub kind: String,
-    /// 本批任务的目标 token（批量时多个）；安装任务为空。
-    pub ext_keys: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PhpFileView {
-    pub label: String,
-    pub host_path: String,
-    pub container_path: String,
-    pub exists: bool,
-    pub selected: bool,
-    pub edit_href: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PhpEditorView {
-    pub key: String,
-    pub label: String,
-    pub content: String,
-    pub container_path: String,
-    pub note: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PhpIniValueView {
-    pub key: String,
-    pub file_value: String,
-    pub effective: String,
-    pub source: String,
-}
-
-/// 站点专用网络的当前选择：首选被占用时展示回退原因，避免用户误以为仍是首选段。
-#[derive(Debug, Clone, Default)]
-pub struct SiteNetworkView {
-    /// 实际网段；空串表示尚未创建。
-    pub cidr: String,
-    pub preferred: String,
-    /// 空串 = 使用首选；非空 = 首选被占用（含占用来源）。
-    pub fallback_reason: String,
-    pub dynamic_pool: String,
-    pub static_pool: String,
-}
-
-#[derive(Template)]
-#[template(path = "runtime_detail.html")]
-pub struct RuntimeDetailPage {
-    pub ctx: PageCtx,
-    pub runtime: RuntimeRow,
-    pub config: PhpConfigView,
-    /// Node.js 专属配置（启动命令 / 健康检查 / 环境变量）。
-    pub node: NodeConfigView,
-    pub bound_sites: Vec<BoundSiteView>,
-    /// 待二次确认的动作（stop/restart/rebuild/install/port）；空串表示无。
-    /// 共享环境（有站点绑定）先列出影响面，确认后才真正执行。
-    pub pending_confirm: String,
-    pub pending_confirm_label: String,
-    /// 改端口二次确认时要执行的新端口（其余动作为空）。
-    pub pending_port: String,
-    /// 进程型环境（Node.js / Rust）的端口编辑：端口属于环境，站点不可自定义。
-    pub port_editable: bool,
-    pub port_value: String,
-    pub port_range_label: String,
-    /// 站点专用网络（实际网段与回退原因）。
-    pub network: SiteNetworkView,
-    /// 按需健康检查与克隆入口（进程型环境）。
-    pub health_url: String,
-    pub clone_url: String,
-    pub socket_host: String,
-    pub socket_container: String,
-    pub socket_exists: bool,
-    pub socket_mode: String,
-    /// 扩展清单（单一来源渲染）：勾选状态来自库。
-    pub extensions: Vec<ExtensionOptionView>,
-    /// 分类顺序（来自 runtime_catalog，模板不做硬编码）。
-    pub ext_categories: Vec<String>,
-    /// 最近一次安装/扩展任务；`has_job` 为 false 时 `job` 是空占位。
-    pub has_job: bool,
-    pub job: RuntimeJobView,
-    pub job_url: String,
-    /// 抽屉内日志页签的刷新地址（`?tail=300`）。
-    pub logs_url: String,
-    /// 扩展操作基址：`/{prefix}/runtimes/{id}`。
-    pub env_href: String,
-    /// Rust / Node.js 运行日志的宿主路径（其他类型为空）。
-    pub runtime_log_path: String,
-    /// 安装日志（任务快照）与运行日志分开展示。
-    pub logs: String,
-    pub logs_error: String,
-    /// PHP 配置文件列表（非 PHP 为空）。
-    pub php_files: Vec<PhpFileView>,
-    /// 当前打开的配置文件编辑器（`?file=php.ini` 等）。
-    pub php_editor: Option<PhpEditorView>,
-    /// `php -i` 实际生效值（仅在 `?ini=1` 时读取，避免渲染路径执行容器命令）。
-    pub php_values: Vec<PhpIniValueView>,
-    pub php_values_loaded: bool,
-    pub php_values_error: String,
-    /// 容器创建于「配置文件挂载」之前：编辑能保存但不生效，需重建实例。
-    pub config_mounts_stale: bool,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
 }
 
 #[derive(Template)]
@@ -894,44 +691,6 @@ pub struct TabView {
 }
 
 #[derive(Template)]
-#[template(path = "files.html")]
-pub struct FilesPage {
-    pub ctx: PageCtx,
-    /// 当前 L3 视图：`browse`（本页）/ `trash`（回收站）。
-    pub fs_tab: String,
-    /// 首屏目录（来自 `?path=`，缺省为内核站点根 `/www`）。
-    pub start_path: String,
-    /// 左栏目录树根入口（服务端已按存在性与保护规则过滤）。
-    pub roots: Vec<FilesRootView>,
-    /// 单文件文本编辑上限（字节），超限只读。
-    pub max_edit_bytes: usize,
-    /// 上传分片大小上限（字节），前端按此切块。
-    pub upload_chunk_bytes: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct FilesRootView {
-    pub label: String,
-    pub path: String,
-}
-
-#[derive(Template)]
-#[template(path = "fs_trash.html")]
-pub struct FsTrashPage {
-    pub ctx: PageCtx,
-    /// 当前 L3 视图：`browse` / `trash`（本页）。
-    pub fs_tab: String,
-    /// 默认保留天数，页面用于提示「到期自动清理」。
-    pub retention_days: u32,
-}
-
-#[derive(Template)]
-#[template(path = "fs_quotas.html")]
-pub struct FsQuotasPage {
-    pub ctx: PageCtx,
-}
-
-#[derive(Template)]
 #[template(path = "settings.html")]
 pub struct SettingsPage {
     pub ctx: PageCtx,
@@ -958,14 +717,6 @@ pub struct SettingsPage {
     pub force_change: bool,
     /// 初始口令文件仍在：给一条**非阻塞**的修改建议，不做任何跳转。
     pub initial_admin_pending: bool,
-}
-
-#[derive(Template)]
-#[template(path = "audit.html")]
-pub struct AuditPage {
-    pub ctx: PageCtx,
-    pub rows: Vec<AuditRow>,
-    pub error: String,
 }
 
 #[derive(Debug, Clone, Default)]

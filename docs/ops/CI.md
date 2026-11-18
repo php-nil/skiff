@@ -38,7 +38,7 @@
 | `fmt` | `cargo fmt --all --check` | 零格式漂移 |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 零告警（“release 零警告”是验收项，所以这里 `-D warnings`） |
 | `test` | `cargo test --workspace --locked --no-fail-fast` | 全量单测 + 文档测试；**unix-only 用例第一次真正执行**（见 §3） |
-| `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；「Windows 本地三关」交付口径在 CI 有复核（平台盲区见 §5） |
+| `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；Windows 平台行为只在此 job 复核（开发机不跑测试，见 §6） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
 | `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / **宿主通道闸**（`app`·`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增，基线 140）；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
 | `server` | `cargo run --locked -p skiff-server -- check` | Skiff-server 静态产物自检：schema 合规、摘要一致、索引引用完整、`seq` 不回退（见 [SKIFF_SERVER/04-ROLLOUT.md](../plugin/SKIFF_SERVER/04-ROLLOUT.md) §10）；只在内存生成，不产出发布物 |
@@ -52,7 +52,7 @@
 直到有一天有人把私钥打进包才发现。反例断言的是**必须失败**。
 
 **官方插件是第二个 workspace，根 `--workspace` 管不到它。** 根 `Cargo.toml` 里有
-`exclude = ["plugins"]`，所以 `cargo fmt/clippy/test --workspace` 的三关对 `plugins/`
+`exclude = ["plugins"]`，所以根 `--workspace` 的门禁（`fmt` / `clippy` / `test`）对 `plugins/`
 **完全没有覆盖**——漏了 `plugins` 这个 job，插件代码就是没人复核的盲区。
 插件 crate 的 `--locked` 依赖 `plugins/Cargo.lock`（必须入库）。
 注意 `cargo fmt --manifest-path plugins/Cargo.toml --all` 会顺着 path 依赖格式化到根
@@ -205,21 +205,21 @@ Release 级 `checksums.txt`，安装包与 `skiff-server-*` 都在覆盖范围�
 
 ## 6. 本地复现 CI
 
-本地执行一律经闸门入口，串行约束、退出码（`2` 锁被占用 / `3` 内存拒绝 / `4` 需要 `-AllowFull`）与 `-AllowFull` 适用条件见 [AGENTS.md](../../AGENTS.md) §4.1，本文不重复。全量测试优先交 CI。
+本地执行一律经闸门入口，串行约束、退出码（`2` 锁被占用 / `3` 内存拒绝 / `4` 需要 `-AllowFull`）与 `-AllowFull` 适用条件见 [AGENTS.md](../../AGENTS.md) §4.1，本文不重复。全量测试优先交 CI：**Windows 开发机只跑 `fmt` / `clippy` 两条**，带 `cargo test` 的命令放在 Linux 测试机或 CI runner 上（[AGENTS.md](../../AGENTS.md) §4.3）。
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test  --workspace --locked
+cargo test  --workspace --locked                    # CI / Linux；Windows 开发机不跑
 cargo check --workspace --all-targets --locked     # 想验 MSRV 就加 `+1.89.0`
 cargo run --locked -p xtask -- check
 cargo run --locked -p skiff-server -- check            # 商店清单：schema/摘要/引用/seq
 shellcheck -S error deploy/*.sh plugins/*.sh
 
-# 官方插件（第二 workspace）：根三关不覆盖，必须单独跑
+# 官方插件（第二 workspace）：根门禁不覆盖，必须单独跑
 cargo fmt    --manifest-path plugins/Cargo.toml --all --check
 cargo clippy --manifest-path plugins/Cargo.toml --all-targets --locked -- -D warnings
-cargo test   --manifest-path plugins/Cargo.toml --locked
+cargo test   --manifest-path plugins/Cargo.toml --locked   # CI / Linux；Windows 开发机不跑
 ```
 
 以上带 `--workspace` / `--all-targets` 的命令属全量，本地执行须经闸门显式 `-AllowFull` 放行；CI 不受此限。CLI flag 有变（如某天要 `--all-features` 之外的新组合），以 CI 的命令为准——本文件只是索引。

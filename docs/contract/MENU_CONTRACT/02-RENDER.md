@@ -61,15 +61,16 @@ L3 标签栏（在工作台页面内，不在 iframe 内）：
 
 | 页面 | 规范 URL | 说明 |
 |---|---|---|
-| L1 直达（概览） | `/{p}/m/overview` | 也接受旧 `/{p}` |
-| 内置 L2 | `/{p}/m/core/<l1>/<l2>` | 如 `/{p}/m/core/docker/containers` |
+| L1 直达（概览） | `/{p}` | budding 壳页；`/{p}/m/overview` 是保留的概览 SSR 入口 |
+| 内置 L2 | `/{p}/<l2-path>` | 如 `/{p}/containers`、`/{p}/runtimes`、`/{p}/plugins/discover` |
 | 插件 L2 | `/{p}/m/plugin/<plugin-id>/<l2-id>` | 如上例 |
 | 插件 L3 | `/{p}/m/plugin/<plugin-id>/<l2-id>/<l3-id>` | 选中对应标签 |
-| 插件信息与管理 | `/{p}/plugins/<id>` | 内核渲染，非插件页面 |
+| 插件信息与管理 | `/{p}/plugins/<id>` | 壳页渲染，非插件页面 |
 | 插件规范功能页 | `/{p}/plugins/<id>/<view>` | 等价于默认/指定视图的深链 |
 | 插件 iframe 内容 | `/{p}/plugins/<id>/ui/<path>?nonce=...&menu=<l2-key>&tab=<l3-view>` | 内核托管，非用户主入口 |
 
-- 规范 URL 是菜单身份的唯一外部表现；旧路由保留为别名（§7.2），由内核解析到同一菜单键。
+- 规范 URL 是菜单身份的唯一外部表现；菜单 `href` 必须落在规范 URL 上，不得指向已删除的旧深链。
+- `/{p}/m/*` 只有两条：`overview`（概览 SSR，插件槽位迁完即删）与 `plugin/*`（插件工作台）；`/{p}/m/core/*` 已删除并返回 404。
 - 深链必须能在无 JS 下打开；JS 只做同页增强（更新 iframe / pushState），不能成为唯一入口。
 - URL 中 `plugin-id` 含 `.`，不再二次编码；`l2/l3` 只用 `[a-z0-9-]`。
 - 不允许把 label、`ui` 文件路径直接拼进菜单 URL。

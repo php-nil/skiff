@@ -138,11 +138,9 @@ pub async fn index(
                 .map(|d| d.format("%m-%d %H:%M:%S").to_string())
                 .unwrap_or_default(),
             actor: a.actor,
-            ip: a.ip,
             action: a.action,
             target: a.target,
             result: a.result,
-            detail: crate::util::truncate(&a.detail, 80),
         })
         .collect();
 
@@ -256,7 +254,7 @@ fn todo_view(
             "danger",
             format!("{} 个站点已停止或异常", item.count),
             "站点配置未启用或 nginx 重载失败；进「网站列表」可启动站点并查看日志。".into(),
-            link("m/core/sites/list"),
+            link("sites"),
             "查看站点",
         ),
         AttentionCode::DisabledPlugins => todo(
@@ -356,7 +354,7 @@ mod tests {
                 "/p/settings?force=1",
                 "/p/containers",
                 "/p/containers?filter=error",
-                "/p/m/core/sites/list",
+                "/p/sites",
                 "/p/plugins",
                 "/p/settings#totp",
             ]

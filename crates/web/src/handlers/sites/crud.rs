@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::request::Parts;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use skiff_app::actions as act;
 use skiff_app::commands::site as site_cmd;
-use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
+use skiff_store::{TYPE_PROXY, TYPE_RUNTIME};
 
 use crate::error::AppError;
 use crate::handlers;
@@ -22,24 +22,6 @@ use crate::util::{encode_uri_component, form_first, human_size, parse_form};
 
 use super::tls::backup_view;
 use super::*;
-
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let open = q.contains_key("new") || q.contains_key("type");
-    render_sites(
-        &state,
-        &user,
-        &q,
-        default_new_form(&q),
-        String::new(),
-        None,
-        open,
-    )
-    .await
-}
 
 /// 列表页与新建弹窗共用一次渲染：校验失败时把表单值与错误一并带回，
 /// 弹窗保持展开，避免「错误页 + 重新填写」的往返。
@@ -84,20 +66,6 @@ async fn render_sites(
         form_error_field,
         sites_prefix: format!("{}/", settings.container_sites_dir()),
     })
-}
-
-/// 弹窗默认值：类型默认运行环境，PHP 版本预选已安装项；目录留空由服务端按主域名补全。
-fn default_new_form(q: &HashMap<String, String>) -> SiteNewForm {
-    let requested = q.get("type").map(String::as_str).unwrap_or_default();
-    let site_type = match requested {
-        TYPE_STATIC | TYPE_PROXY => requested.to_string(),
-        _ => TYPE_RUNTIME.to_string(),
-    };
-    SiteNewForm {
-        site_type,
-        runtime_id: String::new(),
-        ..Default::default()
-    }
 }
 
 /// 服务端错误落到具体字段：只查领域错误携带的 `SiteField`，不做中文文案匹配。
@@ -173,23 +141,6 @@ fn runtime_options(views: &[skiff_app::sites::RuntimeView]) -> Vec<RuntimeOption
             }
         })
         .collect()
-}
-
-/// 新建入口不再单独成页：跳到列表并直接展开弹窗（带类型时预选）。
-pub async fn new_page_get(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
-    let prefix = &state.cfg.entry_prefix;
-    let mut url = format!("/{prefix}/sites?new=1");
-    if let Some(t) = q.get("type") {
-        if matches!(t.as_str(), TYPE_RUNTIME | TYPE_STATIC | TYPE_PROXY) {
-            url.push_str(&format!("&type={t}"));
-        }
-    }
-    Ok(handlers::redirect(url))
 }
 
 /// 规范入口 `/{p}/sites/new`：交付 budding 壳页原生表单（`SITE_CREATE` 门禁不变）。
@@ -432,36 +383,6 @@ fn dir_view(listing: skiff_app::sites::SiteDirListing) -> DirListingView {
             })
             .collect(),
     }
-}
-
-pub async fn detail(
-    State(state): State<Arc<AppState>>,
-    AuthUser(_user): AuthUser,
-    Path(domain): Path<String>,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    // 站点详情已迁移到壳页（budding SPA），SSR 深链统一 301 重定向。
-    // 保留 query 参数（tab / path 等），壳页路由表会正确处理子视图。
-    let mut target = format!(
-        "/{}/sites/{}",
-        state.cfg.entry_prefix,
-        crate::util::encode_uri_component(&domain)
-    );
-    if !q.is_empty() {
-        let params: Vec<String> = q
-            .iter()
-            .map(|(k, v)| {
-                format!(
-                    "{}={}",
-                    crate::util::encode_uri_component(k),
-                    crate::util::encode_uri_component(v)
-                )
-            })
-            .collect();
-        target.push('?');
-        target.push_str(&params.join("&"));
-    }
-    Ok(axum::response::Redirect::permanent(&target).into_response())
 }
 
 /// 详情页渲染。`submitted_config` 非空时用用户刚提交的配置替代磁盘内容，

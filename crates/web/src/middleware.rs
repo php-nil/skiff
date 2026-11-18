@@ -85,7 +85,7 @@ pub async fn request_timeout(req: Request, next: Next) -> Response {
 }
 
 /// 文件能力面门禁（§5.1/§5.4）：`SKIFF_FORM=docker` 的能力面只有 docker/identity，
-/// 内核不提供 fs。路由层（`/{p}/files*`）与菜单深链（`/{p}/m/core/files*`）共用这处判定——
+/// 内核不提供 fs。路由层（`/{p}/files*` 页面与 JSON 接口）统一挂这处判定——
 /// 受限形态下既不能渲染入口，也不能让直达 URL 借道列出容器内 `/`、`/www`。
 pub fn check_fs_capability(state: &AppState) -> Result<(), AppError> {
     if state.cfg.form == Form::DockerRestricted {
@@ -294,9 +294,8 @@ pub async fn load_session(
                         || path == format!("/{prefix}/login")
                         || path == format!("/{prefix}/password")
                         || path == format!("/{prefix}/logout")
-                        || path == format!("/{prefix}/settings")
-                        // 旧版设置页承载口令 / TOTP 表单，强改密期间必须可达。
-                        || path.starts_with(&format!("/{prefix}/m/core/settings/"));
+                        // 壳页设置页承载强改密表单（`?force=1`），必须可达。
+                        || path == format!("/{prefix}/settings");
                     if !allowed {
                         return AppError::Redirect(format!("/{prefix}/settings?force=1"))
                             .into_response();

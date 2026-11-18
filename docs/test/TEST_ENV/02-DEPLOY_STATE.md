@@ -7,7 +7,7 @@
 ## 5. 当前部署
 
 > **2026-11-18 06:10 就地覆盖安装 `36840f2` Release 资产（当前生效；库/配置/插件/站点全保留）**
-> - 背景：`fix(firewall): 端口与 fail2ban 数值参数兼容表单字符串`（`36840f2`）。schema 表单提交的端口是字符串，原实现只认 JSON 数字，UI 点「放行 / 添加规则」会报 `端口需在 1..65535`。本机 Windows 无 C 编译器，编译与全量单测由 CI 承担。
+> - 背景：`fix(firewall): 端口与 fail2ban 数值参数兼容表单字符串`（`36840f2`）。schema 表单提交的端口是字符串，原实现只认 JSON 数字，UI 点「放行 / 添加规则」会报 `端口需在 1..65535`。Windows 开发机不跑测试，编译级校验在本地（`fmt` + `clippy --all-targets`），全量单测由 CI 承担（`AGENTS.md` §4.3）。
 > - CI / Release：`release.yml` dispatch run `44185563501`（head `36840f2`）**success**；资产覆盖 `v0.1.0`，tag 未移动。
 > - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,121,107 B** `7ac7f9cea1fe1fca4d23ced07deb24a609b5f286fb204aea072bdc9c297a321e`（API `digest` / 本地 sha256 / 测试机 `sha256sum` 三方一致）。
 > - 安装：解包后 `sh install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**（覆盖安装）；`skiff.service` 与 `skiff-http-fwd.service` 均 active。
