@@ -97,7 +97,11 @@
     // 采样字节数与耗时必须一起显示：否则「3 MB / 4 ms」这种缓存命中会被当成带宽。
     var detail = (r.bytes / 1048576).toFixed(2) + " MB / " +
                  (r.elapsed_ms / 1000).toFixed(1) + " s";
-    return '<span class="ok">' + main + '</span><div class="addr">' + detail + "</div>";
+    // 测的是哪个文件也要显示：ISO（3 MB）与包索引（0.5 MB）不能直接比大小。
+    var tag = "";
+    if (r.sample === "apkindex") tag = "索引样本（镜像不提供 ISO）· ";
+    else if (r.sample === "blob") tag = "镜像层 · ";
+    return '<span class="ok">' + main + '</span><div class="addr">' + tag + detail + "</div>";
   }
 
   function rowHtml(kind, item) {

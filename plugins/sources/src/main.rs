@@ -220,10 +220,20 @@ fn probe_all(params: &Value) -> Value {
     json!(results)
 }
 
+/// 一次采样。`kind` 说明测的是哪个文件，UI 必须显示——3 MB 的 ISO 与 0.5 MB 的
+/// 包索引不能直接比大小，用户得知道这个数字是怎么来的。
+struct Sample {
+    kind: &'static str,
+    bytes: u64,
+    elapsed: Duration,
+    via_token: bool,
+}
+
 fn probe_error(base: &str, message: &str) -> Value {
     json!({
         "base": base,
         "ok": false,
+        "sample": Value::Null,
         "bytes": 0,
         "elapsed_ms": 0,
         "bytes_per_sec": 0,
@@ -232,15 +242,16 @@ fn probe_error(base: &str, message: &str) -> Value {
     })
 }
 
-fn sample_done(base: &str, bytes: u64, elapsed: Duration, via_token: bool) -> Value {
-    let secs = elapsed.as_secs_f64().max(0.001);
+fn sample_done(base: &str, sample: &Sample) -> Value {
+    let secs = sample.elapsed.as_secs_f64().max(0.001);
     json!({
         "base": base,
         "ok": true,
-        "bytes": bytes,
-        "elapsed_ms": elapsed.as_millis() as u64,
-        "bytes_per_sec": (bytes as f64 / secs) as u64,
-        "via_token": via_token,
+        "sample": sample.kind,
+        "bytes": sample.bytes,
+        "elapsed_ms": sample.elapsed.as_millis() as u64,
+        "bytes_per_sec": (sample.bytes as f64 / secs) as u64,
+        "via_token": sample.via_token,
         "error": Value::Null,
     })
 }
@@ -289,12 +300,57 @@ fn iso_url(agent: &ureq::Agent, base: &str, arch: &str) -> Result<String, String
     }
     let mut last_err = String::from("找不到可测速的 ISO");
     for dir in dirs {
+        // **先看目录里真实存在哪个文件**：镜像的 `latest-releases.yaml` 会先于文件更新
+        // （阿里实测：清单写 3.24.4，目录里只有 3.24.0），照清单拼地址就是 404 / 拒连。
+        match iso_from_index(agent, &dir, arch) {
+            Ok(url) => return Ok(url),
+            Err(e) => last_err = e,
+        }
         match virt_iso_in(agent, &dir, arch) {
             Ok(url) => return Ok(url),
-            Err(e) => last_err = format!("{dir}：{e}"),
+            Err(e) => last_err = format!("{last_err}；清单：{e}"),
         }
     }
     Err(last_err)
+}
+
+/// 目录索引里版本最高的 `alpine-virt*-<arch>.iso`。
+fn iso_from_index(agent: &ureq::Agent, dir: &str, arch: &str) -> Result<String, String> {
+    let resp = agent
+        .get(&format!("{dir}/"))
+        .timeout(PROBE_TIMEOUT)
+        .call()
+        .map_err(|e| format!("目录不可读（{}）", transport_text(e)))?;
+    let mut body = String::new();
+    let _ = resp
+        .into_reader()
+        .take(256 * 1024)
+        .read_to_string(&mut body);
+    let suffix = format!("-{arch}.iso");
+    let mut best: Option<(Vec<u32>, String)> = None;
+    for quoted in body.split("href=\"").skip(1) {
+        let name = match quoted.split('"').next() {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.starts_with("alpine-virt") || !name.ends_with(&suffix) {
+            continue;
+        }
+        let ver: Vec<u32> = name
+            .trim_start_matches("alpine-virt-")
+            .trim_end_matches(&suffix)
+            .split('.')
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        if ver.is_empty() {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(b, _)| ver > *b) {
+            best = Some((ver, name.to_string()));
+        }
+    }
+    best.map(|(_, name)| format!("{dir}/{name}"))
+        .ok_or_else(|| format!("{dir} 目录里没有 alpine-virt ISO"))
 }
 
 /// 从 `latest-releases.yaml` 里取 virt ISO 的文件名。只认 `alpine-virt*.iso` 且
@@ -361,15 +417,57 @@ fn latest_branch(agent: &ureq::Agent, base: &str) -> Option<String> {
 fn probe_apk(base: &str) -> Value {
     let base = base.trim().trim_end_matches('/').to_string();
     match apk_sample(&base) {
-        Ok((bytes, elapsed)) => sample_done(&base, bytes, elapsed, false),
+        Ok(sample) => sample_done(&base, &sample),
         Err(e) => probe_error(&base, &e),
     }
 }
 
-fn apk_sample(base: &str) -> Result<(u64, Duration), String> {
+fn apk_sample(base: &str) -> Result<Sample, String> {
     let agent = agent();
-    let url = iso_url(&agent, base, std::env::consts::ARCH)?;
-    read_range(&agent, &url, None)
+    let arch = std::env::consts::ARCH;
+    let iso_err = match iso_url(&agent, base, arch) {
+        Ok(url) => match read_range(&agent, &url, None) {
+            Ok((bytes, elapsed)) => {
+                return Ok(Sample {
+                    kind: "iso",
+                    bytes,
+                    elapsed,
+                    via_token: false,
+                })
+            }
+            Err(e) => e,
+        },
+        Err(e) => e,
+    };
+    // ISO 不是每个镜像都真能下：阿里的 ISO 会 302 到 `iso-osm.mirrors.aliyuncs.com`，
+    // 那个主机在普通网络里不可达。此时退到 `APKINDEX.tar.gz`——apk 装包时**第一个**
+    // 要拉的就是它，任何可用镜像都必然有。样本约 0.5 MB，界面上会标明「索引」。
+    index_sample(&agent, base, arch)
+        .map_err(|e| format!("ISO 不可用（{iso_err}）；包索引也不可用（{e}）"))
+}
+
+/// 分支的包索引：`<base>/vX.Y/main/<arch>/APKINDEX.tar.gz`。实测约 0.5 MB。
+fn index_sample(agent: &ureq::Agent, base: &str, arch: &str) -> Result<Sample, String> {
+    let mut urls = Vec::new();
+    if let Some(branch) = latest_branch(agent, base) {
+        urls.push(format!("{base}/{branch}/main/{arch}/APKINDEX.tar.gz"));
+    }
+    urls.push(format!("{base}/latest-stable/main/{arch}/APKINDEX.tar.gz"));
+    let mut last = String::from("没有可读的包索引");
+    for url in urls {
+        match read_range(agent, &url, None) {
+            Ok((bytes, elapsed)) => {
+                return Ok(Sample {
+                    kind: "apkindex",
+                    bytes,
+                    elapsed,
+                    via_token: false,
+                })
+            }
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 /// 「应用」只写源根（不写分支、不联网）：分支由容器用**自己的** `/etc/alpine-release`
@@ -404,12 +502,12 @@ fn apply_apk(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
 fn probe_registry(base: &str) -> Value {
     let base = base.trim().trim_end_matches('/').to_string();
     match registry_sample(&base) {
-        Ok((bytes, elapsed, via_token)) => sample_done(&base, bytes, elapsed, via_token),
+        Ok(sample) => sample_done(&base, &sample),
         Err(e) => probe_error(&base, &e),
     }
 }
 
-fn registry_sample(base: &str) -> Result<(u64, Duration, bool), String> {
+fn registry_sample(base: &str) -> Result<Sample, String> {
     let agent = agent();
     let manifest_url = format!("{base}/v2/{PROBE_REPO}/manifests/{PROBE_TAG}");
 
@@ -441,7 +539,12 @@ fn registry_sample(base: &str) -> Result<(u64, Duration, bool), String> {
     };
     let blob_url = format!("{base}/v2/{PROBE_REPO}/blobs/{digest}");
     let (bytes, elapsed) = read_range(&agent, &blob_url, token.as_deref())?;
-    Ok((bytes, elapsed, via_token))
+    Ok(Sample {
+        kind: "blob",
+        bytes,
+        elapsed,
+        via_token,
+    })
 }
 
 fn apply_registry(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
