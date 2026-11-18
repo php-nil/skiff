@@ -18,7 +18,9 @@
 - **容器生命周期与错误分类（通过，本轮修复）**：`nginx:alpine` 建容器 200 → 列表/详情 → 启动（`docker inspect Running=true`）→ 日志 200 → 停止（`Running=false`）→ 删除（无残留）= 12 项全过；重名 → **409 `domain.conflict`**、镜像不存在 → **400 `shape.invalid`**（修复前两者都是 503 `dependency.unavailable`）。
 - **PHP 站点回归（通过）**：SITE-02 / 09 / 11 / 14 / 15 共 **17 项断言**全过（删站带 `confirm` 后重建、`PHP Version 8.5.12`、socket `0:65534 660`、`pdo_mysql` 生效、`conf.d` 与 `conf.d-skiff` 各一次、无 `already loaded`）。
 - **B4 登录限流（通过，首次上机）**：同 IP 连续 5 次错误口令（均 401）后，第 6 次用**正确口令**仍 **503 `dependency.unavailable`**「登录失败次数过多，请 299 秒后重试」；封禁 300 s，重启进程即清。
-- **未覆盖（限制）**：viewer 账号不存在，`plugin/*` 403 分支仍只有单测；TLS 形态一/二、FTP、防火墙、aarch64 本轮未复跑；SITE-15 Debian 家族与 SITE-12 站点 SSL 未跑。
+- **SITE-12 站点 SSL（通过，本轮首次上机）**：`action=generate` 生成自签（`CN=matrix.local`，`expires Feb 20 2029`）→ 详情 `https.enabled=true` / `ssl.cert_exists=true` → `curl -k https://…` **200**；`action=force enabled=true` → HTTP **301** 跳转、HTTPS 仍 200；`force=false` → HTTP 200；`action=disable` → HTTPS 不再响应（`000`）、HTTP 仍 200，证书文件保留（`cert_exists` 仍 true）。共 **13 项断言全过**。
+- **未覆盖（限制）**：viewer 账号不存在，`plugin/*` 403 分支仍只有单测；TLS 形态一/二、FTP、防火墙、aarch64 本轮未复跑；SITE-15 Debian 家族未跑。
+- **收尾状态**：`matrix.local` 的 HTTPS 已按验收脚本末尾关闭（HTTP 200 可用），证书留在 `/www/sites/matrix.local/ssl/`。
 
 **2026-11-18 20:27–20:50 PHP 运行环境与站点验收（沿用 `bcdfd22` 安装）：SITE-02 / 09 / 11 / 14 / 15 共 17 项断言全过**
 
