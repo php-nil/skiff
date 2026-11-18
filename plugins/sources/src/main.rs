@@ -29,12 +29,20 @@ const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const DOCKER: &str = "/usr/bin/docker";
 
 const SAMPLE_BYTES: u64 = 3 * 1024 * 1024;
-/// 低于这个字节数就判「这个地址不是真文件」——镜像回 200 + HTML 错误页时常见。
+/// 兜底下限：低于这个量级连「读到了点什么」都算不上（空响应、被对端截断）。
 ///
-/// 曾用过 512 KB，结果把**慢但可用**的源判成不可用：dl-cdn 从某条线路 8 秒只读到
-/// 417 KB（约 52 KB/s），这个数完全有效，用户需要看到它才知道为什么慢。错误页的
-/// 量级是几 KB，64 KB 足够区分。
-const MIN_USABLE_BYTES: u64 = 64 * 1024;
+/// 判「不是文件」的首选判据是 [`looks_like_html`]，不是大小——慢源 8 秒读到 53 KB
+/// 同样有效。这里只挡真正的空壳。
+const MIN_USABLE_BYTES: u64 = 16 * 1024;
+
+/// 首字节像 HTML 就判「这不是文件」。镜像对不存在的仓库回 200 + HTML 错误页，
+/// 或者回一个跳转提示页，字节数不大不小，只有看内容分得清。
+fn looks_like_html(head: &[u8]) -> bool {
+    head.iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .map(|b| *b == b'<')
+        .unwrap_or(false)
+}
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 const PROBE_REPO: &str = "library/alpine";
@@ -706,14 +714,28 @@ fn read_range(
     let mut reader = resp.into_reader().take(SAMPLE_BYTES);
     let mut buf = vec![0u8; 64 * 1024];
     let mut total = 0u64;
+    let mut head = Vec::new();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => total += n as u64,
+            Ok(n) => {
+                if head.len() < 512 {
+                    head.extend_from_slice(&buf[..n.min(512 - head.len())]);
+                }
+                total += n as u64;
+            }
             Err(_) => break,
         }
     }
     let elapsed = started.elapsed();
+    // 判「不是文件」要看**内容**，不能只看大小：慢源 8 秒只读到 53 KB 是有效观测
+    // （约 6.6 KB/s），按大小判会把它说成故障；而镜像回 200 + HTML 错误页只有几 KB，
+    // 按大小判又可能漏。所以直接看首字节是不是 HTML。
+    if looks_like_html(&head) {
+        return Err(format!(
+            "该地址返回 HTML 而不是文件（{total} 字节），可能未代理该仓库"
+        ));
+    }
     if total < MIN_USABLE_BYTES {
         return Err(format!(
             "只读到 {total} 字节（需 ≥{MIN_USABLE_BYTES}），判为不可用"
@@ -819,6 +841,16 @@ fn child_for_amd64(index: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_pages_are_not_samples() {
+        assert!(looks_like_html(b"  \n<!DOCTYPE html>"));
+        assert!(looks_like_html(b"<html><body>404</body></html>"));
+        // gzip（APKINDEX 与镜像层）、ISO 9660 都不是 HTML
+        assert!(!looks_like_html(&[0x1f, 0x8b, 0x08, 0x00]));
+        assert!(!looks_like_html(b"\x00\x00CD001"));
+        assert!(!looks_like_html(b""));
+    }
 
     #[test]
     fn fixed_cache_body_has_marker_and_bare_base() {
