@@ -4,11 +4,21 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-18 20:50 `bcdfd22` 覆盖安装 + 旧 UI 清理回归 + PHP 运行环境/站点）
+## 8. 最近一次验收结论（截至 2026-11-18 21:40 `d0c8cc4` 覆盖安装：登录页回车 + 容器错误分类 + PHP 站点回归）
 
 > 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-18.md](../../changes/2026-11-18.md)、[changes/2026-11-17.md](../../changes/2026-11-17.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-18 21:15–21:40 就地覆盖 `d0c8cc4`（三项修复）：accept.sh A+D0 26 PASS / 0 FAIL，25 页 0 console error**
+
+- **安装（通过）**：Release run `44310262459`（head `d0c8cc4`）success；包 **11,951,277 B** `fc2269cb…69b2`（API `digest` / 本地 / 测试机三方一致）；`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；二进制 **19,146,512 B** `d7a49eaa…1f53`；库 **v21**、`integrity_check=ok`；前缀 `2u3uiv85` 未变；7 插件 / 2 站点（`uiaccept.local`、`matrix.local`）/ `php-8.5` running 全保留。
+- **accept.sh（通过）**：A + D0 = **26 PASS / 0 FAIL / 2 SKIP**（A6h `initial-admin.txt` 已不在、B4 未在本轮开启——B4 已于 20:58 单独实测通过）。A 组含重启自恢复（health 200）、前缀不变、`kill -9` 后 systemd 2 s 拉起、`doctor` 无 ERROR。
+- **登录页回车（通过，本轮修复）**：登录页脚本链为 `theme-init.js` + `budding-{ver}.min.js` + **`form-enter-submit.js?v=6`** + `budding-login.js`；浏览器只按回车（不点按钮）→ `POST /ui/v1/auth/login` **200** → 落到 `/{p}`，0 console error。壳页脚本链为 `budding-1.8.1-r2.min.js` + `form-enter-submit.js?v=6` + `budding-boot.js?v=6`，全部 200。
+- **容器生命周期与错误分类（通过，本轮修复）**：`nginx:alpine` 建容器 200 → 列表/详情 → 启动（`docker inspect Running=true`）→ 日志 200 → 停止（`Running=false`）→ 删除（无残留）= 12 项全过；重名 → **409 `domain.conflict`**、镜像不存在 → **400 `shape.invalid`**（修复前两者都是 503 `dependency.unavailable`）。
+- **PHP 站点回归（通过）**：SITE-02 / 09 / 11 / 14 / 15 共 **17 项断言**全过（删站带 `confirm` 后重建、`PHP Version 8.5.12`、socket `0:65534 660`、`pdo_mysql` 生效、`conf.d` 与 `conf.d-skiff` 各一次、无 `already loaded`）。
+- **B4 登录限流（通过，首次上机）**：同 IP 连续 5 次错误口令（均 401）后，第 6 次用**正确口令**仍 **503 `dependency.unavailable`**「登录失败次数过多，请 299 秒后重试」；封禁 300 s，重启进程即清。
+- **未覆盖（限制）**：viewer 账号不存在，`plugin/*` 403 分支仍只有单测；TLS 形态一/二、FTP、防火墙、aarch64 本轮未复跑；SITE-15 Debian 家族与 SITE-12 站点 SSL 未跑。
 
 **2026-11-18 20:27–20:50 PHP 运行环境与站点验收（沿用 `bcdfd22` 安装）：SITE-02 / 09 / 11 / 14 / 15 共 17 项断言全过**
 

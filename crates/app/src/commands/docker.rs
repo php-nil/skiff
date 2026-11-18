@@ -709,8 +709,10 @@ mod tests {
         assert!(!rows[0].detail.is_empty());
     }
 
+    /// Docker 不可达（socket 不存在 / 权限不足）是「依赖不可用」，落 503；
+    /// 只有 Engine 回包 4xx（镜像不存在、参数不接受）才是 400。
     #[tokio::test]
-    async fn named_resources_map_engine_errors_to_bad_request() {
+    async fn named_resources_map_unreachable_engine_to_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         let state = state_at(dir.path());
 
@@ -727,8 +729,8 @@ mod tests {
             volume_remove(&state, cmd()).await.err(),
         ] {
             assert!(
-                matches!(result, Some(DockerCommandError::BadRequest(_))),
-                "Docker 不可达应映射为 BadRequest：{result:?}"
+                matches!(result, Some(DockerCommandError::Unavailable(_))),
+                "Docker 不可达应映射为 Unavailable（503）：{result:?}"
             );
         }
         let rows = state.db().recent_audit(6).unwrap();
