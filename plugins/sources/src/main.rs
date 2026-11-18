@@ -204,9 +204,10 @@ fn probe_all(params: &Value) -> Value {
         };
     }
     let registry = kind == "registry";
-    // 同时只测 2 个：4 路并行时实测有源挂在 `tls connection init failed:
-    // Resource temporarily unavailable`，单独重测却正常——并发制造的假故障比慢更坏
-    // （用户会以为源坏了）。2 路在测试机上稳定，4 个候选最坏 2 轮 × 8 秒。
+    // 同时只测 2 个：4 路并行时各源互相挤占带宽，慢源的 TLS 握手被 8 秒上限掐断
+    // （ureq 把它报成 `tls connection init failed: Resource temporarily unavailable`），
+    // 用户看到的就成了「源坏了」而不是「这台机器带宽不够分」。2 路在测试机上稳定，
+    // 4 个候选最坏 2 轮 × 8 秒。
     const PARALLEL: usize = 2;
     let mut results: Vec<Value> = Vec::with_capacity(bases.len());
     for chunk in bases.chunks(PARALLEL) {
@@ -696,8 +697,22 @@ fn agent() -> ureq::Agent {
 fn transport_text(e: ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, _) => format!("HTTP {code}"),
-        ureq::Error::Transport(t) => t.to_string(),
+        ureq::Error::Transport(t) => friendly(&t.to_string()),
     }
+}
+
+/// ureq 会把「非阻塞 socket 在超时内没等到数据」原样抛成 `EAGAIN`，也就是
+/// `Resource temporarily unavailable`。慢源握不上手就会这样，而这个字符串对用户
+/// 毫无意义——它看起来像程序出错，实际是「这个源从这台机器太慢」。
+fn friendly(raw: &str) -> String {
+    let low = raw.to_ascii_lowercase();
+    if low.contains("resource temporarily unavailable") || low.contains("timed out") {
+        return format!(
+            "超时（{} 秒内没读完，该源从本机很慢或不可达）",
+            PROBE_TIMEOUT.as_secs()
+        );
+    }
+    raw.to_string()
 }
 
 /// 读满 [`SAMPLE_BYTES`] 或读尽；中途超时按已读字节结算——慢源也要给出数字。
@@ -716,7 +731,7 @@ fn read_range(
     let resp = match req.call() {
         Ok(r) => r,
         Err(ureq::Error::Status(code, _)) => return Err(format!("下载请求 HTTP {code}")),
-        Err(ureq::Error::Transport(e)) => return Err(e.to_string()),
+        Err(ureq::Error::Transport(e)) => return Err(friendly(&e.to_string())),
     };
     let started = Instant::now();
     let mut reader = resp.into_reader().take(SAMPLE_BYTES);
@@ -779,7 +794,7 @@ fn get_json(agent: &ureq::Agent, url: &str, token: Option<&str>) -> Result<Value
             ))
         }
         Err(ureq::Error::Status(code, _)) => return Err(ProbeError::Other(format!("HTTP {code}"))),
-        Err(ureq::Error::Transport(e)) => return Err(ProbeError::Other(e.to_string())),
+        Err(ureq::Error::Transport(e)) => return Err(ProbeError::Other(friendly(&e.to_string()))),
     };
     let mut body = Vec::new();
     // manifest 正常几 KB；上限防 mirror 回 HTML 错误页把内存吃满。
