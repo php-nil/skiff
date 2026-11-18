@@ -204,27 +204,35 @@ fn probe_all(params: &Value) -> Value {
         };
     }
     let registry = kind == "registry";
-    let results: Vec<Value> = std::thread::scope(|scope| {
-        let handles: Vec<_> = bases
-            .iter()
-            .map(|base| {
-                scope.spawn(move || {
-                    if registry {
-                        probe_registry(base)
-                    } else {
-                        probe_apk(base)
-                    }
+    // 同时只测 2 个：4 路并行时实测有源挂在 `tls connection init failed:
+    // Resource temporarily unavailable`，单独重测却正常——并发制造的假故障比慢更坏
+    // （用户会以为源坏了）。2 路在测试机上稳定，4 个候选最坏 2 轮 × 8 秒。
+    const PARALLEL: usize = 2;
+    let mut results: Vec<Value> = Vec::with_capacity(bases.len());
+    for chunk in bases.chunks(PARALLEL) {
+        let part: Vec<Value> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|base| {
+                    scope.spawn(move || {
+                        if registry {
+                            probe_registry(base)
+                        } else {
+                            probe_apk(base)
+                        }
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| {
-                h.join()
-                    .unwrap_or_else(|_| probe_error("", "探测线程异常退出"))
-            })
-            .collect()
-    });
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| probe_error("", "探测线程异常退出"))
+                })
+                .collect()
+        });
+        results.extend(part);
+    }
     json!(results)
 }
 

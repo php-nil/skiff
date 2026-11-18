@@ -174,7 +174,7 @@
     if (state.busy) return;
     state.busy = true;
     markProbing(kind);
-    say("正在测速（每个源最多 8 秒，并行进行）…");
+    say("正在测速（每个源最多 8 秒，同时测 2 个）…");
     var bases = state[kind].map(function (it) { return it.base; });
     rpc("probe.all", { kind: kind, bases: bases }).then(function (list) {
       (list || []).forEach(function (r) { state.results[r.base] = r; });
