@@ -1480,8 +1480,8 @@ mod tests {
     fn installer_prelude_is_shell_syntax_clean() {
         let script = installer_prelude();
         assert!(
-            script.contains("'%{speed_download}'"),
-            "curl 速率占位符被 format! 吃掉"
+            script.contains("'%{speed_download} %{size_download}'"),
+            "curl 速率/字节占位符被 format! 吃掉"
         );
         assert!(
             script.contains(r#""${SKIFF_SPD%%.*}""#),
