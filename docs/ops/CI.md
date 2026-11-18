@@ -144,7 +144,8 @@ GitHub → Actions → Release → Run workflow
 | Secret 缺失 | **不失败**：`pack-release.sh` 生成临时签名身份并打 `::warning::`，包仍可装可验，但签名人不稳定，**仅供测试**；正式发行前必须配置正式私钥 |
 | `skip_plugins=true` | 出「裸包」，`::warning::` 明确标注不能作为正式发布物 |
 
-`build` 自检会数 `official/` 下是否 **7** 个 `.wbpkg`（guard/monitor/files/cron/ftp/firewall + testkit），读取
+`build` 自检会按 `plugins/pack.sh` 的 `PLUGINS` 清单数 `official/` 下的 `.wbpkg` 个数（当前 8 个：
+guard/monitor/files/cron/ftp/firewall/sources + testkit），不写死计数；读取
 `official/public-key.txt`（64 位 hex）逐个 `skiff-plugin verify --arch <矩阵架构>`——
 既验签名，也复核「载荷架构没错位」。插件构建一律从仓库根用
 `--manifest-path plugins/Cargo.toml` 调（`cross` 按 cwd 判定挂载哪个 workspace，
@@ -182,7 +183,7 @@ Release 级 `checksums.txt`，安装包与 `skiff-server-*` 都在覆盖范围�
 | `skiff` / `skiff-plugin` | musl 静态主程序（`ldd` 应为 `not a dynamic executable`）与插件工具 |
 | `install.sh` / `uninstall.sh` / `docker-bootstrap.sh` | 安装/卸载/前置引导（不依赖仓库 `deploy/` 路径） |
 | `skiff.service` / `config.toml.example` | systemd unit 与配置样例 |
-| `official/*.wbpkg` | 官方插件包 7 个（guard/monitor/files/cron/ftp/firewall + testkit），已签名；只复制到 `/www/skiff/official/`，**不自动安装** |
+| `official/*.wbpkg` | 官方插件包 8 个（guard/monitor/files/cron/ftp/firewall/sources + testkit），已签名；只复制到 `/www/skiff/official/`，**不自动安装** |
 | `official/public-key.txt` | 上面那批包的签名公钥，首启自动信任（TOFU） |
 | `checksums.txt` | **包内**所有文件的 SHA-256（不含自身），解压后可 `sha256sum -c` 复核 |
 | `README.txt` | 简短安装说明（含 Docker 选项与 official 用法） |

@@ -93,7 +93,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-6 个官方插件与 testkit（共 7 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。完整契约见 `docs/contract/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/contract/MENU_CONTRACT.md`。
+7 个官方插件与 testkit（共 8 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。完整契约见 `docs/contract/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/contract/MENU_CONTRACT.md`。
 
 | 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
 | --- | --- | --- | --- |
@@ -104,6 +104,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 | `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`，三个随包 schema）+ 单视图对照（`single`，不出三级菜单） | `overview.actions` |
 | `com.skiff.firewall` | 工具 → 防火墙 | 防火墙规则 / fail2ban（`rules` / `fail2ban`） | — |
 | `com.skiff.ftp` | 工具 → FTP 管理 | 站点账号 / 服务状态（`accounts` / `runtime`） | — |
+| `com.skiff.sources` | 工具 → 软件源 | 无（单视图 `main`） | — |
 
 - `/{p}/plugins/<id>` 是内核信息与管理页，功能页固定 `/{p}/plugins/<id>/<view>`；老包（无 `[[menu]]`）`main` 回落 `ui/index.html`。
 - 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。

@@ -17,7 +17,7 @@
   已安装的官方插件由内核在启动早期做版本/内容比对后自动补齐（见 §2.5），
   `data/`、既有授权与停用状态都不变。
 - 信任库为空时安装会被 TOFU 拒绝。**2026-11-04 起**，`official/public-key.txt` 会在首启时自动写入信任库；仅当公钥文件缺失或指纹不符时，才需要执行 `skiff trust import <公钥文件> --label official`（或面板「设置 → 信任公钥」）。CLI 报错会区分「包自带公钥但未信任」与「包里没带公钥」，并打印带真实路径的一步命令。
-- `allow_reduced_sandbox = false` 时，官方 7 个包的 manifest 没有显式关闭 `requires_full_sandbox`
+- `allow_reduced_sandbox = false` 时，官方 8 个包的 manifest 没有显式关闭 `requires_full_sandbox`
   （默认 true），安装会全部被拒；本机配置 `allow_reduced_sandbox = true` 才可装。
 - 停机快照 `/var/backups/skiff/datadir-initial-state.tgz` 内的库是 **0 插件 / 0 公钥**，且不含 `official/`；
   回到该快照就是回到「未装插件」状态。

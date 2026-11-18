@@ -257,11 +257,13 @@ fn status(plugin: &Plugin) -> Value {
                 .join(",")
         })
         .unwrap_or_default());
-    out["last_hint"] = json!(if last_results().lock().map(|m| m.is_empty()).unwrap_or(true) {
-        "还没有实测数据：点「测速全部」，数字只代表这台机器此刻这条线路。"
-    } else {
-        "数字只代表这台机器此刻这条线路；换机器、换时间都可能完全不同。"
-    });
+    out["last_hint"] = json!(
+        if last_results().lock().map(|m| m.is_empty()).unwrap_or(true) {
+            "还没有实测数据：点「测速全部」，数字只代表这台机器此刻这条线路。"
+        } else {
+            "数字只代表这台机器此刻这条线路；换机器、换时间都可能完全不同。"
+        }
+    );
     out
 }
 

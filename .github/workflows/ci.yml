@@ -254,9 +254,9 @@ jobs:
           # （pack_excludes_build_dir_and_signing_key，在 test job 里跑）
 
       # 发布包里的 official/ 是这条脚本产出的，它坏了要到发版才暴露：
-      # 这里用临时密钥把 7 个官方插件包（6 个插件 + testkit）真打一遍，并逐个验签。
+      # 这里用临时密钥把官方插件包（清单见 plugins/pack.sh 的 PLUGINS）真打一遍，并逐个验签。
       # --out 指到临时目录，不污染工作树（plugins/official 也在 .gitignore 里）。
-      - name: 官方插件真打包（plugins/pack.sh → 7 个 .wbpkg）
+      - name: 官方插件真打包（plugins/pack.sh → 官方插件全量 .wbpkg）
         run: |
           set -eu
           WORK=$(mktemp -d)
@@ -269,7 +269,9 @@ jobs:
           sh plugins/pack.sh --key "$WORK/release.key" --out "$WORK/official"
 
           n=$(ls -1 "$WORK/official"/*.wbpkg | wc -l)
-          [ "$n" = 7 ] || { echo "::error::官方插件应产出 7 个包（guard/monitor/files/cron/ftp/firewall + testkit），实得 $n"; exit 1; }
+          # 期望个数从打包清单推导，不写死：新增插件时只改 plugins/pack.sh。
+          want=$(sed -n 's/^PLUGINS="\(.*\)"$/\1/p' plugins/pack.sh | wc -w)
+          [ "$n" = "$want" ] || { echo "::error::官方插件应产出 $want 个包（见 plugins/pack.sh 的 PLUGINS），实得 $n"; exit 1; }
           for p in "$WORK/official"/*.wbpkg; do
             "$TOOL" verify "$p" --pubkey "$PUB" >/dev/null
             echo "验签通过：$(basename "$p")"

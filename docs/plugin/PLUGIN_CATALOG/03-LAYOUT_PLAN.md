@@ -50,7 +50,7 @@ plugins/
 - 根 `Cargo.toml` 增加 `exclude = ["plugins"]`，显式声明第二 workspace（已完成）。
 - 每个插件 crate 直接 `skiff-sdk = { path = "../../crates/sdk" }`；不设 `workspace.dependencies`（各有依赖，收敛收益不大）。
 - `plugins/pack.sh`：`build`（`CARGO`/`--target` 交叉）→ 复制 `manifest.toml` + `ui/` + `migrations/` + `bin/<arch>/plugin` 到临时目录 → `stamp` 回填指纹 → `pack --arch` → `verify --arch` 自检 → 输出 `com.skiff.<name>-<version>.wbpkg` 与 `public-key.txt`。
-- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥打 7 个包并逐个验签）。
+- CI 只加**一个** job `plugins`（fmt / clippy `-D warnings` / test，只跑插件 workspace）；真打包冒烟放在 `pkg-chain`（临时密钥按 `pack.sh` 的 `PLUGINS` 清单打全量包并逐个验签）。
 - 发布：`deploy/pack-release.sh --plugin-key <私钥>` 调 `pack.sh`，产物塞进发布包 `official/`；不给私钥且未 `--skip-plugins` 时**拒绝出包**（详见 [`docs/ops/CI.md`](../../ops/CI.md) §4）。
 - 交叉打包需要 `skiff-plugin pack/verify --arch`（否则按打包机架构找载荷，arm64 包在 amd64 机上会被误判缺载荷）。
 - 多架构是发布者责任：缺哪个架构，该架构上就拒装（§4.4）。
@@ -73,7 +73,7 @@ plugins/
 | 3 分发 | 官方源目录 + 随包携带 | ✅ 随包携带（`official/` + `public-key.txt`）；❌ 面板内官方插件列表 |
 | 4 第二批 | 备份与恢复、应用模板、数据库 | 未开始 |
 
-> 6 个官方插件与 testkit（共 7 个包）的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](../../test/TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验；防火墙与 monitor 进程/网络本轮未上机。
+> 官方插件（清单见 `plugins/pack.sh` 的 `PLUGINS`，含 testkit）的**真机验收**（安装、权限确认、启用、UI、RPC、越权、插件间调用、卸载）见 [TEST_LEDGER.md](../../test/TEST_LEDGER.md) 未闭环项；FTP 主链路已上机通过，卸载回收仍待复验；防火墙与 monitor 进程/网络本轮未上机。
 
 > 能力补齐与插件开发并行时，先冻结 manifest 字段与协议契约再写插件，否则三份插件要返工。
 
