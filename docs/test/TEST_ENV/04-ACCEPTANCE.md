@@ -4,11 +4,21 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-18 06:10 `36840f2` Release 资产就地覆盖安装 + 八项任务全量回归）
+## 8. 最近一次验收结论（截至 2026-11-18 20:50 `bcdfd22` 覆盖安装 + 旧 UI 清理回归 + PHP 运行环境/站点）
 
 > 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-18.md](../../changes/2026-11-18.md)、[changes/2026-11-17.md](../../changes/2026-11-17.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-18 20:27–20:50 PHP 运行环境与站点验收（沿用 `bcdfd22` 安装）：SITE-02 / 09 / 11 / 14 / 15 共 17 项断言全过**
+
+- **运行环境安装（通过，含缺陷修复前后对比）**：`php-8.5`（`php:8.5-fpm-alpine`，扩展 `pdo_mysql`）首装第 1 次在「安装扩展」**30 分钟被判超时**（`job-1795003035-274fc34d8`，`error_class=timeout`），重建后第 2 次 **559 s 成功**（`job-1795004860-27d8f8389`，`php -m` 见 `pdo_mysql`）。取证见 [changes/2026-11-18.md](../../changes/2026-11-18.md)「PHP 运行环境首次安装超时」。
+- **SITE-02 运行环境建站（通过）**：`POST /ui/v1/sites`（`site_type=runtime`、`runtime_id=php-8.5`）→ 200 `created:true`；`/www/sites/matrix.local` 下 `index` / `log` / `ssl` / `conf` 四目录齐全，`index.php` 探针生成；`Host: matrix.local` → **200** 且页面含 **`PHP Version 8.5.12`**；重复建站 409 `domain.conflict`、删除需 `confirm` 等于域名（删除保护生效）。
+- **SITE-11 socket / 端口 / 网络（通过）**：`/www/runtime/php/php-8.5/php-fpm.sock` = `socket 0:65534 660`；`skiff-web-nginx` `NetworkMode=host` 且 `ss -ltnp` 见 `:80`；PHP 容器 `/www:/www:true` 读写挂载，`www.conf` / `php.ini` / `conf.d` / `skiff-php-init.sh` 均只读挂载。
+- **SITE-14 nobody 组（通过，Alpine）**：容器内 `getent group nobody` = `65534`；`docker logs` 无 `cannot get gid for group 'nobody'`。注：Debian 家族 65534 的组名是 `nogroup`、Alpine 是 `nobody`，断言按 **gid** 而非组名。
+- **SITE-15 / SITE-09 扩展（通过）**：`php --ini` 同时扫到 `conf.d` 与 `conf.d-skiff`，无 `Module already loaded`；`pdo_mysql` 生效。`redis`（PECL，需编译）安装任务 succeeded → `php -m` 出现、`extension_loaded('redis')=yes`、站点 200 → 重建（`action/rebuild`）后仍加载 → 卸载任务 succeeded → `php -m` 消失、`site_runtimes.extensions` 回到 `pdo_mysql,openssl,opcache,mbstring,curl`、站点仍 200。
+- **确认保护（通过）**：`action/rebuild` 不带 `confirm` → 409「该运行环境已被 1 个站点使用（matrix.local），rebuild会影响全部站点；确认后重试」；带 `{"confirm":true}` → 200 提交后台任务。
+- **未覆盖（限制）**：SITE-15 的 Debian 家族（`php:8.5-fpm`）未跑，本轮只有 Alpine 实例；站点 SSL（SITE-12）与 PHP 会话/上传类用例未跑。
 
 **2026-11-18 19:27–19:55 机器还原后全新安装 `12d8ea2` + 覆盖 `bcdfd22`：accept.sh 49 PASS / 0 FAIL，25 页 0 console error**
 
