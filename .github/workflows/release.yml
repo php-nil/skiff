@@ -211,7 +211,9 @@ jobs:
             exit 0
           fi
           n=$(ls -1 "$root"/official/*.wbpkg | wc -l)
-          [ "$n" = 7 ] || { echo "::error::发布包应带 7 个官方插件包（guard/monitor/files/cron/ftp/firewall + testkit），实得 $n"; exit 1; }
+          # 期望个数从打包清单推导，不写死：写死过 7，新增 sources 后整条流水线红在自检上。
+          want=$(sed -n 's/^PLUGINS="\(.*\)"$/\1/p' plugins/pack.sh | wc -w)
+          [ "$n" = "$want" ] || { echo "::error::发布包应带 $want 个官方插件包（见 plugins/pack.sh 的 PLUGINS），实得 $n"; exit 1; }
           [ -f "$root/official/public-key.txt" ] || { echo "::error::发布包缺少 official/public-key.txt"; exit 1; }
           PUB=$(tr -d '[:space:]' < "$root/official/public-key.txt")
           [ "${#PUB}" = 64 ] || { echo "::error::official/public-key.txt 不是 64 位 hex 公钥"; exit 1; }
