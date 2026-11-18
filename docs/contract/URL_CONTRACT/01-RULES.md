@@ -144,23 +144,20 @@
 | --- | --- | --- |
 | `/{p}/files/api/{*rest}` | 308 | `/{p}/files/{rest}`，保留方法与请求体 |
 | `/{p}/docker/settings` | 308 | `/{p}/settings/docker` |
-| `/{p}/sites/env` | 301 | `/{p}/runtimes`（保留查询串） |
-| `/{p}/sites/env/{id}` | 301 | `/{p}/runtimes/{id}`（保留查询串） |
-| `/{p}/sites/env/{id}/...` 的各 POST 动作 | 别名 | 与 `/{p}/runtimes/{id}/...` 同一 handler |
-| `/{p}/sites/env/add`、`/{p}/runtimes/add` | 别名 | `POST /{p}/runtimes/create` |
 | `/{p}/store/plugins/{id}/install` 的 GET | 303 | 回 `/{p}/store` 并提示「安装必须用页面按钮」；安装仅接受 POST |
 | `/{p}/images/{id}/remove`、`/{p}/networks/{id}/remove`、`/{p}/volumes/{name}/remove`、`/{p}/plugins/{id}/remove`、`/{p}/settings/keys/{id}/remove` | 别名 | 对应 `/delete` |
 | `/{p}/settings/keys`（集合 POST） | 别名 | `POST /{p}/settings/keys/create` |
-| `/{p}/m/{*rest}` | 内部转发 | 菜单深链，不重定向 |
+| `/{p}/m/plugin/{*rest}` | 内部转发 | 插件工作台，内核渲染功能页与 schema |
+| `/{p}/m/overview` | SSR 页面 | 概览页暂保留 SSR（直到插件槽位迁完） |
 
 - 301 只用于 **GET 页面**；带方法的请求一律 308 或同 handler 别名，禁止让表单 POST 落到 301。
 - 别名清单只减不增。删除某条别名前，先在 `docs/changes/` 记一次「已下线」并确认仓库内无引用。
 - 测试守门：`crates/web/tests/main_flow.rs::legacy_paths_redirect_to_canonical_urls` 覆盖跳转目标；
   新增兼容项必须加进该测试。
-- **旧 SSR 路由兼容保留、不设删除时间**：`/{p}/m/{*rest}`（含 `/{p}/m/core/...` 各页面）、
-  插件 `?legacy=1` 工作台与 `/{p}/plugins/{id}/ui/{path}`、`/{p}/sites/env[/{id}]` 及其 POST 别名、
-  `/{p}/files/api/*`、`/{p}/docker/settings`。这些路由只维持既有页面可达，不再新增功能，
-  也不设删除时间；新功能只进 budding 规范路径（壳页 + `/ui/v1/*`）。
+- **旧路由下线记录（2026-11-18）**：budding 壳页已全部覆盖资源面板，旧路由注册直接删除、访问返回 404，不做 301/308 重定向。
+  下线清单：`/{p}/sites/env[/{*rest}]`（运行环境旧路径 20+ 条路由）、`/{p}/m/core/{*rest}`（SSR 深链 dispatch 分支）。
+  仍维持兼容的路径见上表：`/{p}/files/api/*`、`/{p}/docker/settings`、`/{p}/store/plugins/{id}/install` GET、`remove`→`delete` 别名、
+  `settings/keys` POST 别名、`/{p}/m/plugin/*` 插件工作台。
 
 ## 8. 查询参数
 

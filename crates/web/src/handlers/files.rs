@@ -21,14 +21,13 @@ use futures_util::stream;
 use serde_json::{json, Value};
 
 use skiff_app::actions as act;
-use skiff_app::admin_fs::{FsErr, FsPathKind, MAX_EDIT_BYTES};
+use skiff_app::admin_fs::{FsErr, FsPathKind};
 use skiff_app::commands::file as file_cmd;
 
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::AuthUser;
 use crate::state::AppState;
-use crate::templates::{FilesPage, FilesRootView, FsQuotasPage, FsTrashPage};
 
 /// 上传/下载的单片字节数（与 `skiff-fs` 的单次读写上限一致）。
 /// `pub(crate)`：`/ui/v1/files` 要把同一数值告诉前端上传适配器，避免前端硬编码。
@@ -115,39 +114,6 @@ pub async fn page(
     Query(_q): Query<HashMap<String, String>>,
 ) -> Response {
     crate::handlers::spa::shell_page(&state)
-}
-
-/// 旧 SSR 文件页 `/{p}/m/core/files`：**兼容保留，不设删除时间**。
-///
-/// 新前端使用 `/{p}/files` 原生页；这里只维持旧深链可达，不再加新能力。
-pub async fn legacy_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::FILE_BROWSE)?;
-    let start_path = q
-        .get("path")
-        .filter(|p| p.starts_with('/'))
-        .cloned()
-        .unwrap_or_else(|| state.cfg.web_root.display().to_string());
-    let fs = state.admin_fs_arc();
-    let roots = handlers::blocking_fs(move || fs.roots()).await?;
-    let page = FilesPage {
-        ctx: handlers::page_ctx(&state, &user, "core/files"),
-        fs_tab: "browse".into(),
-        start_path,
-        roots: roots
-            .into_iter()
-            .map(|r| FilesRootView {
-                label: r.label,
-                path: r.path,
-            })
-            .collect(),
-        max_edit_bytes: MAX_EDIT_BYTES,
-        upload_chunk_bytes: CHUNK_BYTES,
-    };
-    handlers::render(page)
 }
 
 /// 目录树懒展开：只返回子目录名，前端拼成绝对路径。
@@ -789,19 +755,6 @@ pub async fn trash_shell(
     Ok(crate::handlers::spa::shell_page(&state))
 }
 
-pub async fn trash_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::FILE_TRASH_READ)?;
-    let page = FsTrashPage {
-        ctx: handlers::page_ctx(&state, &user, "core/files/trash"),
-        fs_tab: "trash".into(),
-        retention_days: state.cfg.trash_retention_days,
-    };
-    handlers::render(page)
-}
-
 pub async fn api_trash_list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
@@ -915,17 +868,6 @@ pub async fn quotas_shell(
 ) -> Result<Response, AppError> {
     crate::authz::authorize(&user, act::FILE_QUOTA_READ)?;
     Ok(crate::handlers::spa::shell_page(&state))
-}
-
-pub async fn quotas_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::FILE_QUOTA_READ)?;
-    let page = FsQuotasPage {
-        ctx: handlers::page_ctx(&state, &user, "core/files/quotas"),
-    };
-    handlers::render(page)
 }
 
 pub async fn api_quota_list(

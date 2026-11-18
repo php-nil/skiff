@@ -10,57 +10,7 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
-use crate::templates::{ResourceRow, ResourcesPage};
-use crate::util::{form_first, human_size, parse_form};
-
-fn page(
-    state: &Arc<AppState>,
-    user: &crate::state::CurrentUser,
-    section: &str,
-    title: &str,
-    rows: Vec<ResourceRow>,
-    notice: &str,
-    error: &str,
-) -> Result<Response, AppError> {
-    handlers::render(ResourcesPage {
-        ctx: handlers::page_ctx(state, user, section),
-        section: section.to_string(),
-        title: title.to_string(),
-        rows,
-        can_admin: user.can(skiff_model::Permission::DockerLifecycle),
-        docker_reason: state.docker_unavailable_reason().to_string(),
-        error: error.to_string(),
-        notice: notice.to_string(),
-    })
-}
-
-pub async fn images(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    if !state.docker().available() {
-        return page(&state, &user, "images", "镜像", Vec::new(), "", "");
-    }
-    let rows = match state.docker().list_images().await {
-        Ok(items) => items
-            .into_iter()
-            .map(|i| ResourceRow {
-                id: i.id.clone(),
-                name: if i.tags.is_empty() {
-                    format!("<none> ({})", i.short_id())
-                } else {
-                    i.tags.join(", ")
-                },
-                meta: human_size(i.size),
-                warn: String::new(),
-            })
-            .collect(),
-        Err(e) => {
-            return page(&state, &user, "images", "镜像", vec![], "", &e.to_string());
-        }
-    };
-    page(&state, &user, "images", "镜像", rows, "", "")
-}
+use crate::util::{form_first, parse_form};
 
 pub async fn pull_image(
     State(state): State<Arc<AppState>>,
@@ -69,8 +19,6 @@ pub async fn pull_image(
     body: String,
 ) -> Result<Response, AppError> {
     let form = parse_form(&body);
-    // 授权先于参数校验：未授权者不该拿到参数层面的反馈。
-    // 判定走 `policy.check`（内部查 `Permission` 矩阵），不再另设 `require_admin`。
     state
         .cfg
         .policy
@@ -82,39 +30,31 @@ pub async fn pull_image(
         return Err(AppError::BadRequest("镜像名不能为空".into()));
     }
 
-    let result = docker_cmd::image_pull(
+    let prefix = &state.cfg.entry_prefix;
+    match docker_cmd::image_pull(
         &state,
         NamedResource {
             name: image.clone(),
             actor: actor(&state, &user, &parts),
         },
     )
-    .await;
-
-    let rows = state
-        .docker()
-        .list_images()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|i| ResourceRow {
-            id: i.id.clone(),
-            name: if i.tags.is_empty() {
-                i.id.clone()
-            } else {
-                i.tags.join(", ")
-            },
-            meta: human_size(i.size),
-            warn: String::new(),
-        })
-        .collect();
-    let notice = if result.is_ok() {
-        format!("已拉取 {image}")
-    } else {
-        String::new()
-    };
-    let err = result.err().map(|e| e.to_string()).unwrap_or_default();
-    page(&state, &user, "images", "镜像", rows, &notice, &err)
+    .await
+    {
+        Ok(_) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Notice,
+            format!("已拉取 {image}"),
+            format!("/{prefix}/settings/docker"),
+        )),
+        Err(e) => Ok(handlers::flash_redirect(
+            &state,
+            &user,
+            skiff_app::FlashKind::Error,
+            e.to_string(),
+            format!("/{prefix}/settings/docker"),
+        )),
+    }
 }
 
 pub async fn remove_image(
@@ -140,24 +80,10 @@ pub async fn remove_image(
     )
     .await
     .map_err(map_err)?;
-    images(State(state), AuthUser(user)).await
-}
-
-fn network_page(
-    state: &Arc<AppState>,
-    user: &crate::state::CurrentUser,
-    rows: Vec<crate::templates::NetworkRowView>,
-    notice: &str,
-    error: &str,
-) -> Result<Response, AppError> {
-    handlers::render(crate::templates::NetworksPage {
-        ctx: handlers::page_ctx(state, user, "networks"),
-        rows,
-        can_admin: user.can(skiff_model::Permission::DockerLifecycle),
-        docker_reason: state.docker_unavailable_reason().to_string(),
-        error: error.to_string(),
-        notice: notice.to_string(),
-    })
+    Ok(handlers::redirect(format!(
+        "/{}/settings/docker",
+        state.cfg.entry_prefix
+    )))
 }
 
 pub(crate) fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView {
@@ -225,25 +151,6 @@ pub(crate) fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::Net
     }
 }
 
-pub async fn networks(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    if !state.docker().available() {
-        return network_page(&state, &user, Vec::new(), "", "");
-    }
-    match state.docker().list_networks().await {
-        Ok(items) => network_page(
-            &state,
-            &user,
-            items.into_iter().map(network_view).collect(),
-            "",
-            "",
-        ),
-        Err(e) => network_page(&state, &user, Vec::new(), "", &e.to_string()),
-    }
-}
-
 /// 网络/卷名：只允许字母数字与 `_-.`（旧页面与 `/ui/v1` 共用同一判定）。
 pub(crate) fn validate_name(kind: &str, name: &str) -> Result<(), AppError> {
     if name.is_empty()
@@ -273,16 +180,19 @@ pub async fn create_network(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let name = form_first(&form, "name").trim().to_string();
     validate_name("网络", &name)?;
-    let result = docker_cmd::network_create(
+    docker_cmd::network_create(
         &state,
         NamedResource {
-            name: name.clone(),
+            name,
             actor: actor(&state, &user, &parts),
         },
     )
-    .await;
-    result.map_err(map_err)?;
-    networks(State(state), AuthUser(user)).await
+    .await
+    .map_err(map_err)?;
+    Ok(handlers::redirect(format!(
+        "/{}/settings/docker",
+        state.cfg.entry_prefix
+    )))
 }
 
 pub async fn remove_network(
@@ -308,34 +218,10 @@ pub async fn remove_network(
     )
     .await
     .map_err(map_err)?;
-    networks(State(state), AuthUser(user)).await
-}
-
-pub async fn volumes(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    if !state.docker().available() {
-        return page(&state, &user, "volumes", "卷", Vec::new(), "", "");
-    }
-    let rows = state
-        .docker()
-        .list_volumes()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|v| ResourceRow {
-            id: v.name.clone(),
-            name: v.name,
-            meta: format!("{} → {}", v.driver, v.mountpoint),
-            warn: if v.host_binding {
-                "宿主绑定语义".to_string()
-            } else {
-                String::new()
-            },
-        })
-        .collect();
-    page(&state, &user, "volumes", "卷", rows, "", "")
+    Ok(handlers::redirect(format!(
+        "/{}/settings/docker",
+        state.cfg.entry_prefix
+    )))
 }
 
 pub async fn create_volume(
@@ -353,16 +239,19 @@ pub async fn create_volume(
     check_csrf(&state, &user, &form_first(&form, "csrf"))?;
     let name = form_first(&form, "name").trim().to_string();
     validate_name("卷", &name)?;
-    let result = docker_cmd::volume_create(
+    docker_cmd::volume_create(
         &state,
         NamedResource {
-            name: name.clone(),
+            name,
             actor: actor(&state, &user, &parts),
         },
     )
-    .await;
-    result.map_err(map_err)?;
-    volumes(State(state), AuthUser(user)).await
+    .await
+    .map_err(map_err)?;
+    Ok(handlers::redirect(format!(
+        "/{}/settings/docker",
+        state.cfg.entry_prefix
+    )))
 }
 
 pub async fn remove_volume(
@@ -388,7 +277,10 @@ pub async fn remove_volume(
     )
     .await
     .map_err(map_err)?;
-    volumes(State(state), AuthUser(user)).await
+    Ok(handlers::redirect(format!(
+        "/{}/settings/docker",
+        state.cfg.entry_prefix
+    )))
 }
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。

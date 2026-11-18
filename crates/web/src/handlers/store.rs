@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::request::Parts;
 use axum::response::Response;
 
@@ -19,7 +19,7 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::templates::{PermissionRow, PluginConfirmPage, StorePage, StoreSection, UpgradeHint};
+use crate::templates::{PermissionRow, PluginConfirmPage, UpgradeHint};
 use crate::util::{form_first, parse_form};
 
 /// 商店安装的统一审计动作：成功暂存、各类拒绝都落这一条。
@@ -34,7 +34,6 @@ pub(crate) struct StoreView {
     pub plugins: Vec<skiff_app::catalog::CatalogItem>,
     pub upgrade: UpgradeHint,
     pub can_install: bool,
-    pub tone: String,
 }
 
 /// 拉取目录快照并装配页面视图（含插件行的可安装状态与升级提示）。
@@ -54,11 +53,6 @@ pub(crate) async fn load_view(state: &Arc<AppState>, force: bool) -> Result<Stor
     })
     .await?;
 
-    let tone = match snap.state {
-        CatalogState::Fresh => "ok",
-        CatalogState::Cached | CatalogState::Offline | CatalogState::Disabled => "warn",
-        CatalogState::Rejected => "",
-    };
     // 只有公钥已配置且目录没有被拒时才给安装入口：未配置公钥的目录无法完成包验签。
     let can_install = snap.key_configured
         && !matches!(snap.state, CatalogState::Rejected | CatalogState::Disabled);
@@ -143,69 +137,6 @@ pub(crate) async fn load_view(state: &Arc<AppState>, force: bool) -> Result<Stor
         plugins,
         upgrade,
         can_install,
-        tone: tone.to_string(),
-    })
-}
-
-pub async fn page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let force = matches!(q.get("refresh").map(String::as_str), Some("1"));
-    let view = load_view(&state, force).await?;
-    let snap = view.snapshot;
-    let total = snap.entries.total();
-    handlers::render(StorePage {
-        ctx: handlers::page_ctx(&state, &user, "core/plugins/store"),
-        state_label: crate::labels::catalog_state(snap.state).to_string(),
-        tone: view.tone,
-        message: snap.message.clone(),
-        channel: snap.channel.clone(),
-        seq: snap
-            .seq
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "—".into()),
-        fetched_at: if snap.fetched_at.is_empty() {
-            "—".into()
-        } else {
-            snap.fetched_at.clone()
-        },
-        source: if snap.source.is_empty() {
-            "—".into()
-        } else {
-            snap.source.clone()
-        },
-        allow_unsigned: snap.allow_unsigned,
-        key_configured: snap.key_configured,
-        sections: vec![
-            StoreSection {
-                title: "插件".into(),
-                hint: "已验证目录条目可直接安装：下载 → 摘要/大小 → 验签 → 权限确认。".into(),
-                installable: view.can_install,
-                items: view.plugins,
-            },
-            StoreSection {
-                title: "应用模板".into(),
-                hint: "Docker 应用模板（Compose）；本页只展示清单。".into(),
-                installable: false,
-                items: snap.entries.apps,
-            },
-            StoreSection {
-                title: "运行环境".into(),
-                hint: "网站运行环境版本（PHP/Node/Rust 镜像）；本页只展示清单。".into(),
-                installable: false,
-                items: snap.entries.runtimes,
-            },
-            StoreSection {
-                title: "升级通道".into(),
-                hint: "内核升级包通道；升级操作不在本页发起。".into(),
-                installable: false,
-                items: snap.entries.upgrades,
-            },
-        ],
-        upgrade: view.upgrade,
-        total,
     })
 }
 

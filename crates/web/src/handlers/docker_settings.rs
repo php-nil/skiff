@@ -15,7 +15,6 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::templates::DockerSettingsPage;
 use crate::util::{form_first, parse_form};
 
 /// 旧路径 `/{p}/docker/settings` → `/{p}/settings/docker`（308 保留方法与请求体）。
@@ -39,26 +38,6 @@ pub async fn shell(
     AuthUser(_user): AuthUser,
 ) -> Result<Response, AppError> {
     Ok(crate::handlers::spa::shell_page(&state))
-}
-
-pub async fn page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    handlers::render(DockerSettingsPage {
-        ctx: handlers::page_ctx(&state, &user, "core/docker/settings"),
-        registry_mirror: state
-            .db()
-            .get_setting("sites.registry_mirror")?
-            .unwrap_or_default(),
-        image_prefix: state
-            .db()
-            .get_setting("sites.image_prefix")?
-            .unwrap_or_default(),
-        can_admin: user.can(skiff_model::Permission::Admin),
-        error: String::new(),
-        notice: String::new(),
-    })
 }
 
 /// Docker 设置写操作：SSR 表单与 `/ui/v1/settings/docker` 共用的唯一业务入口。

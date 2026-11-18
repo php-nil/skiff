@@ -2252,13 +2252,17 @@
             { type: 'skiffSiteWrite', props: { op: 'config', domain: data.domain } },
             [
               {
-                type: 'textarea',
+                type: 'code',
                 props: {
                   name: 'content',
-                  label: '配置内容',
-                  rows: 16,
-                  defaultValue: data.config.content,
-                  required: true,
+                  language: 'nginx',
+                  readonly: false,
+                  modelValue: data.config.content,
+                  height: 420,
+                  lineNumbers: true,
+                  wrap: false,
+                  copyable: true,
+                  ariaLabel: 'vhost 配置内容',
                   rules: { required: true, messages: { required: '配置内容不能为空' } }
                 }
               }
@@ -2327,6 +2331,18 @@
       textLine('到期：' + (data.ssl.expires || '—'))
     ];
     if (data.can_manage) {
+      var sslUploadUrl = apiBase + '/sites/' + encodeURIComponent(data.domain) + '/ssl';
+      var sslUploadAction = { type: 'skiffSiteWrite', props: { op: 'ssl', action: 'upload', domain: data.domain } };
+      var sslUploadFields = [
+        {
+          type: 'textarea',
+          props: { name: 'cert_pem', label: '证书 PEM', rows: 8, placeholder: '-----BEGIN CERTIFICATE-----' }
+        },
+        {
+          type: 'textarea',
+          props: { name: 'key_pem', label: '私钥 PEM（保存为 0600）', rows: 8, placeholder: '-----BEGIN PRIVATE KEY-----' }
+        }
+      ];
       sslBody.push({
         type: 'flex',
         props: { gap: 8, wrap: true },
@@ -2344,21 +2360,34 @@
               { op: 'ssl', action: 'delete_cert', domain: data.domain },
               'danger',
               'text'
-            )
+            ),
+            {
+              type: 'button',
+              props: { text: '上传已有证书（PEM）', variant: 'tonal' },
+              action: {
+                type: 'dialog',
+                props: {
+                  title: '上传已有证书（PEM）',
+                  width: 620,
+                  body: [
+                    {
+                      type: 'alert',
+                      props: {
+                        type: 'info',
+                        text: '上传后将替换现有证书并自动启用 HTTPS；格式错误的 PEM 会被拒绝。'
+                      }
+                    },
+                    writeForm(sslUploadUrl, sslUploadAction, sslUploadFields, '上传并启用')
+                  ],
+                  footer: [
+                    { type: 'button', props: { text: '取消', variant: 'outlined' }, action: { type: 'close' } }
+                  ]
+                }
+              }
+            }
           ]
         }
       });
-      sslBody.push(
-        writeForm(
-          apiBase + '/sites/' + encodeURIComponent(data.domain) + '/ssl',
-          { type: 'skiffSiteWrite', props: { op: 'ssl', action: 'upload', domain: data.domain } },
-          [
-            { type: 'textarea', props: { name: 'cert_pem', label: '证书 PEM', rows: 6 } },
-            { type: 'textarea', props: { name: 'key_pem', label: '私钥 PEM', rows: 6 } }
-          ],
-          '上传证书'
-        )
-      );
     }
     sections.ssl.push({ type: 'card', props: { title: '证书 / HTTPS' }, content: { body: sslBody } });
 
@@ -2833,11 +2862,15 @@
           { type: 'skiffRuntimeFile', props: { id: runtimeId, key: data.editor.key } },
           [
             {
-              type: 'textarea',
+              type: 'code',
               props: {
                 name: 'content',
                 label: data.editor.label + '（' + data.editor.container_path + '）',
-                rows: 18
+                language: 'ini',
+                readonly: false,
+                height: 360,
+                lineNumbers: true,
+                wrap: false
               }
             }
           ],
@@ -2935,7 +2968,18 @@
           { type: 'input-text', props: { name: 'command', label: '启动命令', hint: '如 npm start；留空使用镜像默认' } },
           { type: 'input-text', props: { name: 'health_path', label: '健康检查路径（如 /healthz）' } },
           { type: 'input-text', props: { name: 'node_env', label: 'NODE_ENV' } },
-          { type: 'textarea', props: { name: 'env', label: '额外环境变量（每行 KEY=VALUE）', rows: 4 } }
+          {
+            type: 'code',
+            props: {
+              name: 'env',
+              label: '额外环境变量（每行 KEY=VALUE）',
+              language: 'dotenv',
+              readonly: false,
+              height: 160,
+              lineNumbers: true,
+              wrap: false
+            }
+          }
         ],
         '保存 Node.js 配置'
       );
@@ -3825,11 +3869,15 @@
                 }
               },
               {
-                type: 'textarea',
+                type: 'code',
                 props: {
                   name: 'compose',
                   label: 'docker-compose.yml',
-                  rows: 14,
+                  language: 'yaml',
+                  readonly: false,
+                  height: 420,
+                  lineNumbers: true,
+                  wrap: false,
                   required: true,
                   rules: { required: true, messages: { required: '请粘贴 compose 内容' } }
                 }
@@ -5604,13 +5652,22 @@
       { type: 'skiffWebConfig' },
       [
         {
-          type: 'textarea',
-          props: { name: 'content', label: '主配置 ' + (config.main_path || 'nginx.conf'), rows: 20 }
+          type: 'code',
+          props: {
+            name: 'content',
+            language: 'nginx',
+            readonly: false,
+            modelValue: config.main_content || '',
+            height: 420,
+            lineNumbers: true,
+            wrap: false,
+            copyable: true,
+            ariaLabel: '主配置 ' + (config.main_path || 'nginx.conf')
+          }
         }
       ],
       '校验并重载'
     );
-    mainForm.props.initialValues = { content: config.main_content || '' };
     body.push(
       writeCard('主配置', '保存前执行 nginx -t；失败会拒绝写入并保留当前配置。', mainForm)
     );
@@ -5664,10 +5721,49 @@
       props: { title: '包含配置与站点配置' },
       content: {
         body: [
-          detailLines('include：' + (config.include_path || '—'), [config.include_content || '（空）'])
+          {
+            type: 'flex',
+            props: { gap: 8, align: 'center' },
+            content: { body: [textLine('include：' + (config.include_path || '—'))] }
+          },
+          config.include_content
+            ? {
+                type: 'code',
+                props: {
+                  modelValue: config.include_content,
+                  language: 'nginx',
+                  readonly: true,
+                  height: 260,
+                  lineNumbers: true,
+                  wrap: false,
+                  copyable: true
+                }
+              }
+            : textLine('（空）')
         ].concat(
           (config.sites || []).map(function (s) {
-            return detailLines(s.domain + ' · ' + s.path, [s.content || '（空）']);
+            return {
+              type: 'card',
+              props: { title: s.domain + ' · ' + s.path },
+              content: {
+                body: s.content
+                  ? [
+                      {
+                        type: 'code',
+                        props: {
+                          modelValue: s.content,
+                          language: 'nginx',
+                          readonly: true,
+                          height: 260,
+                          lineNumbers: true,
+                          wrap: false,
+                          copyable: true
+                        }
+                      }
+                    ]
+                  : [textLine('（空）')]
+              }
+            };
           })
         )
       }
@@ -5746,20 +5842,23 @@
           }))
         );
       }
-      var logRows = logs.rows.map(function (line, i) {
-        return { idx: String(i + 1), line: line };
-      });
-      logBody.push(
-        statusTable(
-          [
-            { key: 'idx', label: '#' },
-            { key: 'line', label: '日志' }
-          ],
-          logRows,
-          'idx',
-          { emptyText: '本次查询没有日志行' }
-        )
-      );
+      if (logs.rows.length === 0) {
+        logBody.push({ type: 'alert', props: { type: 'info', text: '本次查询没有日志行' } });
+      } else {
+        logBody.push({
+          type: 'code',
+          props: {
+            modelValue: logs.rows.join('\n'),
+            language: 'plaintext',
+            readonly: true,
+            height: 480,
+            lineNumbers: true,
+            wrap: false,
+            copyable: true,
+            ariaLabel: 'Web 服务 ' + (query.get('type') === 'error' ? '错误日志' : '访问日志')
+          }
+        });
+      }
     } else {
       logBody.push(noticeCard('默认不读取日志：选择日志与范围后点「加载日志」。'));
     }
@@ -7239,16 +7338,22 @@
     mjs: 'javascript',
     cjs: 'javascript',
     ts: 'typescript',
+    jsx: 'jsx',
+    tsx: 'tsx',
     json: 'json',
+    jsonc: 'json',
     css: 'css',
     scss: 'scss',
     less: 'less',
     html: 'markup',
     htm: 'markup',
     xml: 'markup',
+    svg: 'markup',
     md: 'markdown',
+    markdown: 'markdown',
     rs: 'rust',
     py: 'python',
+    rb: 'ruby',
     sh: 'bash',
     bash: 'bash',
     zsh: 'bash',
@@ -7258,13 +7363,22 @@
     sql: 'sql',
     go: 'go',
     java: 'java',
+    kt: 'kotlin',
     php: 'php',
     c: 'c',
     h: 'c',
     cpp: 'cpp',
     hpp: 'cpp',
+    cs: 'csharp',
     ini: 'ini',
-    conf: 'ini'
+    conf: 'ini',
+    cfg: 'ini',
+    env: 'dotenv',
+    nginx: 'nginx',
+    proto: 'protobuf',
+    vue: 'markup',
+    txt: 'plaintext',
+    log: 'plaintext'
   };
 
   function languageOf(name) {
@@ -7348,11 +7462,15 @@
             { type: 'skiffFileWrite', props: { path: data.path } },
             [
               {
-                type: 'textarea',
+                type: 'code',
                 props: {
                   name: 'content',
                   label: '文件内容',
-                  rows: 18,
+                  language: languageOf(name),
+                  readonly: false,
+                  height: 480,
+                  lineNumbers: true,
+                  wrap: false,
                   defaultValue: text,
                   required: true,
                   rules: { required: true, messages: { required: '内容不能为空' } }
@@ -7884,8 +8002,16 @@
                 }
               },
               {
-                type: 'textarea',
-                props: { name: 'content', label: '文件内容', rows: 6 }
+                type: 'code',
+                props: {
+                  name: 'content',
+                  label: '文件内容',
+                  language: 'plaintext',
+                  readonly: false,
+                  height: 200,
+                  lineNumbers: true,
+                  wrap: false
+                }
               }
             ],
             content: {

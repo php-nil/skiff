@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::request::Parts;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use skiff_app::actions as act;
 use skiff_app::commands::site as site_cmd;
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
@@ -436,21 +436,32 @@ fn dir_view(listing: skiff_app::sites::SiteDirListing) -> DirListingView {
 
 pub async fn detail(
     State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
+    AuthUser(_user): AuthUser,
     Path(domain): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    render_detail(
-        state,
-        user,
-        domain,
-        q.get("tab").cloned().unwrap_or_else(|| "overview".into()),
-        String::new(),
-        String::new(),
-        q.get("path").cloned(),
-        None,
-    )
-    .await
+    // 站点详情已迁移到壳页（budding SPA），SSR 深链统一 301 重定向。
+    // 保留 query 参数（tab / path 等），壳页路由表会正确处理子视图。
+    let mut target = format!(
+        "/{}/sites/{}",
+        state.cfg.entry_prefix,
+        crate::util::encode_uri_component(&domain)
+    );
+    if !q.is_empty() {
+        let params: Vec<String> = q
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{}={}",
+                    crate::util::encode_uri_component(k),
+                    crate::util::encode_uri_component(v)
+                )
+            })
+            .collect();
+        target.push('?');
+        target.push_str(&params.join("&"));
+    }
+    Ok(axum::response::Redirect::permanent(&target).into_response())
 }
 
 /// 详情页渲染。`submitted_config` 非空时用用户刚提交的配置替代磁盘内容，

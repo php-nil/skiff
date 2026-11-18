@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::request::Parts;
 use axum::response::Response;
 
@@ -114,15 +114,6 @@ async fn page(
         error,
         notice,
     })
-}
-
-pub async fn index(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    authorize_for(&user, skiff_model::Permission::Admin)?;
-    page(state, user, &q, String::new(), String::new(), None).await
 }
 
 /// `GET /{p}/sites/web` 规范入口：交付 budding 壳页（管理专属）。

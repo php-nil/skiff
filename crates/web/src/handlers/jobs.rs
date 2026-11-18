@@ -26,7 +26,7 @@ use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::sites::SiteError;
 use crate::state::AppState;
-use crate::templates::{JobDetailPage, JobDetailView, JobRowView, JobsPage};
+use crate::templates::{JobDetailView, JobRowView};
 use crate::util::{form_first, parse_form};
 
 /// SSE 每次从库里取的增量上限。
@@ -194,48 +194,11 @@ pub(crate) fn detail_of(job: &Job, log_cursor: i64, log_text: String) -> JobDeta
     }
 }
 
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    let jobs = state.jobs().list(200);
-    let rows: Vec<JobRowView> = jobs.iter().map(row_of).collect();
-    let has_active = rows.iter().any(|r| r.active);
-    handlers::render(JobsPage {
-        ctx: handlers::page_ctx(&state, &user, "core/jobs"),
-        rows,
-        has_active,
-        error: String::new(),
-        notice: String::new(),
-    })
-}
-
 pub(crate) fn load_job(state: &AppState, id: &str) -> Result<Job, AppError> {
     state
         .jobs()
         .get(id)
         .ok_or_else(|| AppError::NotFound(format!("任务不存在：{id}")))
-}
-
-pub async fn detail(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let job = load_job(&state, &id)?;
-    // 首屏先渲染日志尾巴，之后只靠 SSE 增量追加；游标取尾巴最后一条的 seq。
-    let tail = state.jobs().tail(&job.id, 200);
-    let cursor = tail.last().map(|r| r.seq).unwrap_or(0);
-    let log_text = tail
-        .iter()
-        .map(|r| format!("[{}] {}", fmt_log_time(r.at), r.line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    handlers::render(JobDetailPage {
-        ctx: handlers::page_ctx(&state, &user, "core/jobs"),
-        job: detail_of(&job, cursor, log_text),
-        can_admin: user.can(skiff_model::Permission::Admin),
-    })
 }
 
 fn job_back(state: &AppState, id: &str) -> String {

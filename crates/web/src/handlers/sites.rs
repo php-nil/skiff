@@ -31,11 +31,10 @@ pub use crud::{
 };
 pub use logs::logs;
 pub use runtime::{
-    env_add, env_images_save, env_page, legacy_env_detail, legacy_env_page, runtime_action,
-    runtime_clone, runtime_config_file_save, runtime_config_save, runtime_detail,
-    runtime_extension_install, runtime_extension_uninstall, runtime_extensions_batch,
-    runtime_extensions_save, runtime_health, runtime_job, runtime_jobs, runtime_logs,
-    runtime_node_config_save, runtime_pecl_install, runtime_port_save, runtime_probe,
+    env_add, env_images_save, runtime_action, runtime_clone, runtime_config_file_save,
+    runtime_config_save, runtime_detail, runtime_extension_install, runtime_extension_uninstall,
+    runtime_extensions_batch, runtime_extensions_save, runtime_health, runtime_job, runtime_jobs,
+    runtime_logs, runtime_node_config_save, runtime_pecl_install, runtime_port_save, runtime_probe,
     runtime_publish_save, runtime_unbind_site,
 };
 pub use tls::{set_backup, ssl_action};

@@ -24,7 +24,7 @@ use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::AppState;
 use crate::templates::{
     ContainerDetailPage, ContainerFormView, ContainerNewPage, ContainerRowView, ContainerRows,
-    ContainersPage, MountView, PortView, ResourceLimitsForm,
+    MountView, PortView, ResourceLimitsForm,
 };
 use crate::util::{form_first, parse_form};
 
@@ -47,35 +47,6 @@ fn rows_for(
         .collect()
 }
 
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let docker_ok = state.docker().available();
-    let containers = if docker_ok {
-        state
-            .docker()
-            .list_containers()
-            .await
-            .map_err(|e| AppError::Unavailable(e.to_string()))?
-    } else {
-        Vec::new()
-    };
-    let filter = filter_of(&q);
-    let can_operate = user.can(skiff_model::Permission::DockerOperate);
-    let page = ContainersPage {
-        ctx: handlers::page_ctx(&state, &user, "containers"),
-        can_operate,
-        can_delete: user.can(skiff_model::Permission::DockerLifecycle),
-        containers: rows_for(containers, &filter),
-        docker_reason: state.docker_unavailable_reason().to_string(),
-        filter,
-        error: String::new(),
-    };
-    handlers::render(page)
-}
-
 /// htmx 局部刷新：只回表格行；保留当前筛选。
 pub async fn rows(
     State(state): State<Arc<AppState>>,
@@ -96,27 +67,6 @@ pub async fn rows(
         filter,
     };
     handlers::render(page)
-}
-
-pub async fn detail(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let row = handlers::resolve_container(&state, &id).await?;
-
-    // 策略：读详情同样过三层策略（viewer 可读，插件需 grant）
-    state
-        .cfg
-        .policy
-        .check(
-            &handlers::actor(&user),
-            Verb::ContainerInspect,
-            Some(&handlers::object_ref(&row)),
-        )
-        .map_err(|e| AppError::Forbidden(e.to_string()))?;
-
-    render_detail(&state, &user, &row, String::new()).await
 }
 
 /// 详情页渲染：GET 与「资源限制」提交失败共用，失败时保留错误提示。

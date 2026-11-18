@@ -4,10 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::header::LOCATION;
 use axum::http::request::Parts;
-use axum::http::{StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use skiff_app::actions as act;
 use skiff_app::commands::runtime as runtime_cmd;
 
@@ -17,51 +15,11 @@ use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::{
     BoundSiteView, ExtensionOptionView, NodeConfigView, PhpConfigView, PhpEditorView, PhpFileView,
-    PhpIniValueView, RuntimeDetailPage, RuntimeJobView, RuntimeKindView, RuntimeRow, SiteEnvPage,
-    SiteNetworkView,
+    PhpIniValueView, RuntimeDetailPage, RuntimeJobView, SiteNetworkView,
 };
 use crate::util::{encode_uri_component, form_first, parse_form};
 
 use super::*;
-
-/// 旧的运行环境页面入口：`/{p}/sites/env` → `/{p}/runtimes`（301，规范化 URL）。
-///
-/// 运行环境是独立资源，不属于站点；`sites/env` 只作为兼容别名保留（不设删除时间），
-/// 旧 POST 动作路由仍指向同一 handler，避免已打开页面提交失败。
-pub async fn legacy_env_page(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
-    let mut target = format!("/{}/runtimes", state.cfg.entry_prefix);
-    if let Some(q) = uri.query() {
-        target.push('?');
-        target.push_str(q);
-    }
-    (StatusCode::MOVED_PERMANENTLY, [(LOCATION, target)]).into_response()
-}
-
-/// 旧运行环境详情入口：`/{p}/sites/env/{id}` → `/{p}/runtimes/{id}`（301）。
-pub async fn legacy_env_detail(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    uri: Uri,
-) -> Response {
-    let mut target = format!("/{}/runtimes/{}", state.cfg.entry_prefix, id);
-    if let Some(q) = uri.query() {
-        target.push('?');
-        target.push_str(q);
-    }
-    (StatusCode::MOVED_PERMANENTLY, [(LOCATION, target)]).into_response()
-}
-
-fn runtime_kind_views() -> Vec<RuntimeKindView> {
-    skiff_app::runtime_catalog::RUNTIME_KINDS
-        .iter()
-        .map(|k| RuntimeKindView {
-            key: k.kind.to_string(),
-            label: k.label.to_string(),
-            versions: k.versions.iter().map(|v| v.to_string()).collect(),
-            implemented: skiff_app::runtime_catalog::is_implemented(k.kind),
-        })
-        .collect()
-}
 
 pub(crate) fn extension_options(
     enabled: &[String],
@@ -124,90 +82,6 @@ pub(crate) fn extension_options(
         }
     }
     out
-}
-
-pub async fn env_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    crate::authz::authorize_for(&user, skiff_model::Permission::Admin)?;
-    let env = state.site_env_status().await;
-    let views = skiff_app::views::runtimes::list(&state).await;
-    // Web 服务在「Web 服务」页单独管理；种子行只在已安装或被站点引用时出现。
-    let runtimes: Vec<RuntimeRow> = views
-        .iter()
-        .filter(|v| v.is_listed())
-        .map(|v| runtime_row(&state, v))
-        .collect();
-    let prefix = &state.cfg.entry_prefix;
-    let kinds = runtime_kind_views();
-    // 新建弹窗切换 PHP 版本时，扩展勾选项要按该版本重算可用性；
-    // 数据与抽屉共用 `extension_options`（`runtime_catalog` 单一来源）。
-    let mut exts_by_version = serde_json::Map::new();
-    if let Some(def) = skiff_app::runtime_catalog::RUNTIME_KINDS
-        .iter()
-        .find(|k| k.kind == "php")
-    {
-        for ver in def.versions {
-            let opts = extension_options(
-                &skiff_app::runtime_catalog::default_extensions(),
-                ver,
-                &env.php_image,
-            );
-            let arr: Vec<serde_json::Value> = opts
-                .iter()
-                .map(|e| {
-                    serde_json::json!({
-                        "key": e.key,
-                        "label": e.label,
-                        "builtin": e.builtin,
-                        "default_on": e.default_on,
-                        "heavy": e.heavy,
-                        "estimated_time": e.estimated_time,
-                        "note": e.support_note,
-                    })
-                })
-                .collect();
-            exts_by_version.insert(ver.to_string(), serde_json::Value::Array(arr));
-        }
-    }
-    let exts_json = serde_json::Value::Object(exts_by_version);
-    let catalog_json = serde_json::to_string(
-        &kinds
-            .iter()
-            .map(|k| {
-                let mut v = serde_json::json!({
-                    "key": k.key,
-                    "label": k.label,
-                    "versions": k.versions,
-                    "implemented": k.implemented,
-                });
-                if k.key == "php" {
-                    v["exts_by_version"] = exts_json.clone();
-                }
-                v
-            })
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|_| "[]".into());
-    handlers::render(SiteEnvPage {
-        ctx: handlers::page_ctx(&state, &user, "core/sites/env"),
-        env: env_view(&env),
-        runtimes,
-        can_admin: user.can(skiff_model::Permission::Admin),
-        kinds,
-        catalog_json,
-        extensions: extension_options(
-            &skiff_app::runtime_catalog::default_extensions(),
-            skiff_app::sites::DEFAULT_PHP_VERSION,
-            &env.php_image,
-        ),
-        jobs_href: format!("/{prefix}/runtimes/jobs"),
-        add_href: format!("/{prefix}/runtimes/create"),
-        images_href: format!("/{prefix}/runtimes/images"),
-        error: String::new(),
-        notice: String::new(),
-    })
 }
 
 pub async fn env_add(

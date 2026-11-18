@@ -5642,26 +5642,9 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
 ///
 /// 回归：表单 action 仍写 `/{p}/tasks`，而该路径已由 budding 壳页接管（壳页读地址栏
 /// 关键字、不认 SSR 表单提交），点「筛选」后列表原样返回全部任务，筛选被静默丢弃。
-#[test]
-fn legacy_tasks_filter_stays_on_legacy_route() {
-    let html = include_str!("../templates/tasks.html");
-    assert!(
-        html.contains(r#"action="/{{ ctx.prefix }}/m/core/tasks""#),
-        "筛选表单必须提交到旧 SSR 路由"
-    );
-    assert!(
-        !html.contains(r#"action="/{{ ctx.prefix }}/tasks""#),
-        "不得把 SSR 表单提交给壳页路径"
-    );
-    assert!(
-        html.matches("/{{ ctx.prefix }}/m/core/tasks").count() >= 4,
-        "刷新 / 清除筛选 / 清除按钮都要留在旧路由"
-    );
-    assert!(
-        !html.contains("{{ t.target }}.{{ t.method }}"),
-        "内置任务缺目标时不能拼出「-.-」"
-    );
-}
+///
+/// 旧 SSR 模板（tasks.html）已随 sites/env 与 m/core/* 路由一并删除，
+/// 回归风险由下一条 budding 页筛选断言兜住。
 
 /// budding 计划任务页必须把关键字传给 `/ui/v1/tasks?q=`，否则迁移后丢失筛选能力。
 #[test]
@@ -7053,11 +7036,6 @@ fn ui_hidden_and_dialog_guards_hold() {
         css.contains("dialog:not([open]) { display: none !important; }"),
         "缺少 dialog:not([open]) 兜底，关闭的弹窗会被 display:flex 顶出来"
     );
-    let tpl = include_str!("../templates/site_env.html");
-    assert!(
-        !tpl.contains("data-web-action"),
-        "Web 服务不再出现在运行环境页，运维入口归 Web 服务页: {tpl}"
-    );
 }
 
 fn attr_value(html: &str, name: &str) -> Option<String> {
@@ -7517,12 +7495,6 @@ async fn legacy_paths_redirect_to_canonical_urls() {
             "/p/docker/settings",
             StatusCode::PERMANENT_REDIRECT,
             "/p/settings/docker",
-        ),
-        ("/p/sites/env", StatusCode::MOVED_PERMANENTLY, "/p/runtimes"),
-        (
-            "/p/sites/env/php-8.5",
-            StatusCode::MOVED_PERMANENTLY,
-            "/p/runtimes/php-8.5",
         ),
     ] {
         let resp = h
@@ -10458,12 +10430,11 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
     );
 }
 
-/// 布局 / 内容宽度已从菜单设置彻底移除：budding schema、SSR 模板与壳页都不得再引用，
+/// 布局 / 内容宽度已从菜单设置彻底移除：budding schema 与壳页都不得再引用，
 /// 防止只隐藏界面而把字段留在读写链路上。
 #[test]
 fn menu_settings_drops_layout_and_content_width() {
     let js = include_str!("../static/budding/budding-boot.js");
-    let tpl = include_str!("../templates/menu_settings.html");
     let base = include_str!("../templates/base.html");
     for needle in [
         "layout: args.layout",
@@ -10474,14 +10445,6 @@ fn menu_settings_drops_layout_and_content_width() {
         "menu-width-pick",
     ] {
         assert!(!js.contains(needle), "budding 菜单设置仍残留：{needle}");
-    }
-    for needle in [
-        "name=\"layout\"",
-        "name=\"width\"",
-        "内容宽度",
-        "上下（顶栏）",
-    ] {
-        assert!(!tpl.contains(needle), "SSR 菜单设置仍残留：{needle}");
     }
     assert!(
         !base.contains("data-content-width") && !base.contains("ctx.menu.layout"),

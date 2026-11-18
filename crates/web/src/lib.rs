@@ -365,59 +365,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(&format!("/{p}/sites/new"), get(handlers::sites::new_shell))
         .route(&format!("/{p}/sites/batch"), post(handlers::sites::batch))
         .route(&format!("/{p}/sites/create"), post(handlers::sites::create))
-        .route(
-            &format!("/{p}/sites/env"),
-            get(handlers::sites::legacy_env_page),
-        )
-        .route(
-            &format!("/{p}/sites/env/add"),
-            post(handlers::sites::env_add),
-        )
-        .route(
-            &format!("/{p}/sites/env/images"),
-            post(handlers::sites::env_images_save),
-        )
-        // 轮询端点必须早于 `{id}` 动态段注册，避免把 `jobs` 当成运行环境 id。
-        .route(
-            &format!("/{p}/sites/env/jobs"),
-            get(handlers::sites::runtime_jobs),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/job"),
-            get(handlers::sites::runtime_job),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/extensions"),
-            post(handlers::sites::runtime_extensions_save),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/extensions-batch"),
-            post(handlers::sites::runtime_extensions_batch),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/extensions/{{key}}/install"),
-            post(handlers::sites::runtime_extension_install),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/extensions/{{key}}/uninstall"),
-            post(handlers::sites::runtime_extension_uninstall),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/pecl"),
-            post(handlers::sites::runtime_pecl_install),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/logs"),
-            get(handlers::sites::runtime_logs),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/probe"),
-            post(handlers::sites::runtime_probe),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/sites/{{domain}}/unbind"),
-            post(handlers::sites::runtime_unbind_site),
-        )
         // ---- 内核「网站 → Web 服务」：状态 / 配置 / 日志 / 模块 ----
         .route(&format!("/{p}/sites/web"), get(handlers::nginx::shell))
         .route(
@@ -428,42 +375,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             &format!("/{p}/sites/web/config/params"),
             post(handlers::nginx::save_params),
         )
-        // 运行环境详情与操作；同时提供 `/{p}/runtimes/...` 规范入口。
-        .route(
-            &format!("/{p}/sites/env/{{id}}"),
-            get(handlers::sites::legacy_env_detail),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/config"),
-            post(handlers::sites::runtime_config_save),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/node-config"),
-            post(handlers::sites::runtime_node_config_save),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/port"),
-            post(handlers::sites::runtime_port_save),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/clone"),
-            post(handlers::sites::runtime_clone),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/health"),
-            get(handlers::sites::runtime_health),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/config-file"),
-            post(handlers::sites::runtime_config_file_save),
-        )
+        // runtimes 规范路径（config-file）。
         .route(
             &format!("/{p}/runtimes/{{id}}/config-file"),
             post(handlers::sites::runtime_config_file_save),
-        )
-        .route(
-            &format!("/{p}/sites/env/{{id}}/action/{{action}}"),
-            post(handlers::sites::runtime_action),
         )
         // 静态段必须早于 `{id}` 动态段注册，避免把 `create` / `images` / `jobs` 当成运行环境 id。
         .route(
@@ -543,6 +458,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             &format!("/{p}/runtimes/{{id}}/extensions"),
             post(handlers::sites::runtime_extensions_save),
+        )
+        // 运行环境扩展批量安装/卸载（规范路径，契约 §5.2 动词表）。
+        .route(
+            &format!("/{p}/runtimes/{{id}}/extensions/batch"),
+            post(handlers::sites::runtime_extensions_batch),
         )
         .route(
             &format!("/{p}/sites/{{domain}}/logs"),

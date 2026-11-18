@@ -26,14 +26,6 @@ pub struct PageCtx {
     pub flash_error: String,
 }
 
-#[derive(Debug, Clone, Template)]
-#[template(path = "menu_settings.html")]
-pub struct MenuSettingsPage {
-    pub ctx: PageCtx,
-    pub groups: Vec<crate::menu::SettingsGroup>,
-    pub notice: String,
-}
-
 /// 商店（Skiff-server P1/P2）：四类目录条目展示；插件分区按已验证目录提供安装入口。
 #[derive(Debug, Clone, Template)]
 #[template(path = "store.html")]
@@ -127,12 +119,6 @@ pub struct PluginView {
     pub takedown_note: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct GrantRow {
-    pub kind: String,
-    pub value: String,
-}
-
 /// 概览「需要处理」的一条待办：按影响排序后渲染，链接直达已筛选的目标页。
 #[derive(Debug, Clone)]
 pub struct DashboardTodo {
@@ -160,14 +146,6 @@ pub struct KeyRow {
     pub key_id: String,
     pub label: String,
     pub fingerprint_short: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResourceRow {
-    pub id: String,
-    pub name: String,
-    pub meta: String,
-    pub warn: String,
 }
 
 #[derive(Debug, Clone)]
@@ -334,6 +312,7 @@ pub struct SiteBackupView {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SiteEnvView {
     pub docker_available: bool,
     pub docker_reason: String,
@@ -369,6 +348,7 @@ pub struct SitesPage {
 
 /// 运行环境列表/详情行（业务视角；容器状态只作为漂移提示）。
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RuntimeRow {
     pub id: String,
     /// php / node / go / rust，模板按类型分支。
@@ -477,15 +457,6 @@ pub struct NodeConfigView {
 }
 
 /// 新建运行环境弹窗的类型选项（版本来自 `runtime_catalog` 单一来源）。
-#[derive(Debug, Clone)]
-pub struct RuntimeKindView {
-    pub key: String,
-    pub label: String,
-    pub versions: Vec<String>,
-    /// P2 预留类型：可选择登记，但不安装容器。
-    pub implemented: bool,
-}
-
 /// 抽屉里可勾选/取消的扩展项。
 #[derive(Debug, Clone)]
 pub struct ExtensionOptionView {
@@ -627,28 +598,6 @@ pub struct RuntimeDetailPage {
 }
 
 #[derive(Template)]
-#[template(path = "site_env.html")]
-pub struct SiteEnvPage {
-    pub ctx: PageCtx,
-    pub env: SiteEnvView,
-    pub runtimes: Vec<RuntimeRow>,
-    pub can_admin: bool,
-    /// 新建弹窗：类型/版本目录（来自 `runtime_catalog`）。
-    pub kinds: Vec<RuntimeKindView>,
-    /// 同一目录的 JSON 版本，供弹窗按类型重建版本下拉。
-    pub catalog_json: String,
-    /// 新建弹窗：可选扩展与默认勾选。
-    pub extensions: Vec<ExtensionOptionView>,
-    /// 列表轮询地址。
-    pub jobs_href: String,
-    pub add_href: String,
-    /// 镜像参数保存入口。
-    pub images_href: String,
-    pub error: String,
-    pub notice: String,
-}
-
-#[derive(Template)]
 #[template(path = "nginx.html")]
 pub struct NginxPage {
     pub ctx: PageCtx,
@@ -660,19 +609,6 @@ pub struct NginxPage {
     pub install: skiff_app::sites::InstallProgress,
     /// status / config / logs / modules
     pub tab: String,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
-}
-
-#[derive(Template)]
-#[template(path = "docker_settings.html")]
-pub struct DockerSettingsPage {
-    pub ctx: PageCtx,
-    /// 宿主 `/etc/docker/daemon.json` 的 registry-mirrors。
-    pub registry_mirror: String,
-    /// 拉取站点运行环境镜像时拼接的前缀。
-    pub image_prefix: String,
     pub can_admin: bool,
     pub error: String,
     pub notice: String,
@@ -734,20 +670,6 @@ pub struct DashboardPage {
     /// `overview.actions` / `overview.side` 槽位挂载。
     pub mounts_actions: Vec<crate::menu::MountView>,
     pub mounts_side: Vec<crate::menu::MountView>,
-    pub error: String,
-}
-
-#[derive(Template)]
-#[template(path = "containers.html")]
-pub struct ContainersPage {
-    pub ctx: PageCtx,
-    pub can_operate: bool,
-    /// 删除容器属生命周期动词（admin 专属）。
-    pub can_delete: bool,
-    pub containers: Vec<ContainerRowView>,
-    pub docker_reason: String,
-    /// 空串表示不筛选；`error` 表示只看异常容器（概览深链用）。
-    pub filter: String,
     pub error: String,
 }
 
@@ -870,31 +792,6 @@ pub struct ComposePage {
     pub services: Vec<ComposeServiceView>,
 }
 
-#[derive(Template)]
-#[template(path = "resources.html")]
-pub struct ResourcesPage {
-    pub ctx: PageCtx,
-    pub section: String,
-    pub title: String,
-    pub rows: Vec<ResourceRow>,
-    pub can_admin: bool,
-    pub docker_reason: String,
-    pub error: String,
-    pub notice: String,
-}
-
-/// Docker 网络页：比通用资源表多列出子网/网关/IPAM/内外网/容器挂载。
-#[derive(Template)]
-#[template(path = "networks.html")]
-pub struct NetworksPage {
-    pub ctx: PageCtx,
-    pub rows: Vec<NetworkRowView>,
-    pub can_admin: bool,
-    pub docker_reason: String,
-    pub error: String,
-    pub notice: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct NetworkRowView {
     pub id: String,
@@ -920,22 +817,6 @@ pub struct NetworkContainerView {
     pub ipv4: String,
     pub ipv6: String,
     pub mac: String,
-}
-
-#[derive(Template)]
-#[template(path = "plugins.html")]
-pub struct PluginsPage {
-    pub ctx: PageCtx,
-    pub plugins: Vec<PluginView>,
-    pub enabled_count: usize,
-    pub disabled_count: usize,
-    /// `installed` / `discover` / `updates`（页内 tab，服务端渲染，无内联脚本）。
-    pub tab: String,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
-    pub allow_unsigned: bool,
-    pub reduced_allowed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -967,27 +848,6 @@ pub struct PluginConfirmPage {
     pub requires: String,
     pub egress: String,
     pub error: String,
-}
-
-/// 插件信息与管理页（内核渲染，`/{p}/plugins/{id}`）。
-///
-/// 只放「插件是什么、授权了什么、能做什么管理动作、关联哪些菜单」，
-/// 不嵌 iframe——功能界面在 `/{p}/plugins/{id}/<view>`（`docs/contract/PLUGIN_UI_CONTRACT.md`）。
-#[derive(Template)]
-#[template(path = "plugin_info.html")]
-pub struct PluginInfoPage {
-    pub ctx: PageCtx,
-    pub plugin: PluginView,
-    pub grants: Vec<GrantRow>,
-    pub interop_provides: Vec<String>,
-    pub interop_consumes: Vec<String>,
-    /// 与导航同源的关联菜单；链接指向 `/{p}/m/plugin/<id>/...` 深链。
-    pub menus: Vec<crate::menu::InfoMenuGroup>,
-    /// 默认功能页入口（`/{p}/plugins/{id}/<view>`）；无 UI 时为空。
-    pub entry_href: String,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
 }
 
 #[derive(Template)]
@@ -1108,18 +968,6 @@ pub struct AuditPage {
     pub error: String,
 }
 
-#[derive(Template)]
-#[template(path = "tasks.html")]
-pub struct TasksPage {
-    pub ctx: PageCtx,
-    pub tasks: Vec<TaskRow>,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
-    /// 当前筛选关键字（回填搜索框，并区分「无数据」与「筛选无结果」）。
-    pub keyword: String,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct TaskRow {
     pub id: String,
@@ -1137,18 +985,6 @@ pub struct TaskRow {
     pub builtin: bool,
 }
 
-#[derive(Template)]
-#[template(path = "task_detail.html")]
-pub struct TaskDetailPage {
-    pub ctx: PageCtx,
-    pub task: TaskRow,
-    pub payload: String,
-    pub runs: Vec<TaskRunRow>,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct TaskRunRow {
     pub trigger: String,
@@ -1160,18 +996,9 @@ pub struct TaskRunRow {
     pub missed: i64,
 }
 
-#[derive(Template)]
-#[template(path = "jobs.html")]
-pub struct JobsPage {
-    pub ctx: PageCtx,
-    pub rows: Vec<JobRowView>,
-    pub has_active: bool,
-    pub error: String,
-    pub notice: String,
-}
-
 /// 任务中心列表行。
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct JobRowView {
     pub id: String,
     pub title: String,
@@ -1188,16 +1015,9 @@ pub struct JobRowView {
     pub active: bool,
 }
 
-#[derive(Template)]
-#[template(path = "job_detail.html")]
-pub struct JobDetailPage {
-    pub ctx: PageCtx,
-    pub job: JobDetailView,
-    pub can_admin: bool,
-}
-
 /// 任务详情（含取消/重试的可行动状态）。
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct JobDetailView {
     pub id: String,
     pub title: String,

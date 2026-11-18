@@ -1,7 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
@@ -10,7 +10,7 @@ use crate::handlers;
 use crate::menu;
 use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::templates::{AuditPage, AuditRow, KeyRow, MenuSettingsPage, SettingsPage};
+use crate::templates::{AuditPage, AuditRow, KeyRow, SettingsPage};
 use crate::util::{form_first, parse_form};
 
 pub async fn render_settings(
@@ -83,16 +83,6 @@ pub async fn render_settings(
         initial_admin_pending: state.cfg.data_dir.join("initial-admin.txt").exists(),
     };
     handlers::render(page)
-}
-
-pub async fn page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let force = q.get("force").map(|v| v == "1").unwrap_or(false);
-    // 错误提示走会话 flash（见 `settings_error_redirect`），URL 只保留页面上下文。
-    render_settings(&state, &user, "", "", None, Vec::new(), force).await
 }
 
 /// 设置 → 监听端口 / 安全入口前缀 / TLS 开关。
@@ -354,17 +344,6 @@ pub async fn ui_theme_shell(
     AuthUser(_user): AuthUser,
 ) -> Result<Response, AppError> {
     Ok(crate::handlers::spa::shell_page(&state))
-}
-
-pub async fn menu_page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError> {
-    handlers::render(MenuSettingsPage {
-        ctx: handlers::page_ctx(&state, &user, "menu-settings"),
-        groups: menu::settings_view(&state, &user),
-        notice: String::new(),
-    })
 }
 
 /// 菜单设置写操作：SSR 表单与 `/ui/v1/settings/menu` 共用的唯一业务入口。

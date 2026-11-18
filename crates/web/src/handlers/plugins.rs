@@ -17,12 +17,9 @@ use skiff_store::PluginRecord;
 
 use crate::error::{ApiError, AppError};
 use crate::handlers;
-use crate::middleware::{check_csrf, AuthUser, PluginManagerUser};
+use crate::middleware::{check_csrf, PluginManagerUser};
 use crate::state::AppState;
-use crate::templates::{
-    GrantRow, PermissionRow, PluginConfirmPage, PluginInfoPage, PluginView, PluginViewPage,
-    PluginsPage, TabView,
-};
+use crate::templates::{PermissionRow, PluginConfirmPage, PluginView, PluginViewPage, TabView};
 use crate::util::{form_first, parse_form};
 
 /// `?open=` 定位串的字符上限：够放一条深层路径，又不至于把 URL 撑爆。
@@ -111,82 +108,6 @@ pub(crate) fn interop_rows(manifest: &Manifest) -> (Vec<String>, Vec<String>) {
         })
         .collect();
     (provides, manifest.interop.consumes.to_vec())
-}
-
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    // 运行态从 Supervisor 查询（异步，单独收集）
-    let mut plugins = plugin_views(&state)?;
-    for p in plugins.iter_mut() {
-        p.running = state.supervisor().is_running(&p.id).await;
-    }
-    let enabled_count = plugins.iter().filter(|p| p.enabled).count();
-    let disabled_count = plugins.len().saturating_sub(enabled_count);
-    let tab = match q.get("tab").map(String::as_str) {
-        Some("discover") => "discover",
-        Some("updates") => "updates",
-        _ => "installed",
-    }
-    .to_string();
-    let page = PluginsPage {
-        ctx: handlers::page_ctx(&state, &user, &format!("core/plugins/{tab}")),
-        plugins,
-        enabled_count,
-        disabled_count,
-        tab,
-        can_admin: user.can(skiff_model::Permission::PluginManage),
-        error: String::new(),
-        notice: String::new(),
-        allow_unsigned: state.cfg.allow_unsigned,
-        reduced_allowed: state.cfg.allow_reduced_sandbox,
-    };
-    handlers::render(page)
-}
-
-/// 插件信息与管理页（`/{p}/plugins/{id}`）：内核渲染插件身份、授权、
-/// 菜单关联与管理动作，不嵌 iframe（功能界面见 `/{p}/plugins/{id}/<view>`）。
-pub async fn info(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let rec = state
-        .db()
-        .plugin(&id)?
-        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
-    let mut plugin = plugin_view(&state, &rec)?;
-    plugin.running = state.supervisor().is_running(&plugin.id).await;
-    let manifest = Manifest::parse(&rec.manifest).ok();
-    let (menus, entry_href) = manifest
-        .as_ref()
-        .map(|m| crate::menu::plugin_info_menu(&state, &user, &id, m))
-        .unwrap_or_default();
-    let (interop_provides, interop_consumes) =
-        manifest.as_ref().map(interop_rows).unwrap_or_default();
-    let grants = rec
-        .grants
-        .iter()
-        .map(|g| GrantRow {
-            kind: g.kind.clone(),
-            value: g.value.clone(),
-        })
-        .collect();
-    let page = PluginInfoPage {
-        ctx: handlers::page_ctx(&state, &user, "core/plugins/installed"),
-        plugin,
-        grants,
-        interop_provides,
-        interop_consumes,
-        menus,
-        entry_href,
-        can_admin: user.can(skiff_model::Permission::PluginManage),
-        error: String::new(),
-        notice: String::new(),
-    };
-    handlers::render(page)
 }
 
 /// 规范功能页（`/{p}/plugins/{id}/<view>`）：视图名 → 所属 L2/L3，

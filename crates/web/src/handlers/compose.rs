@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::request::Parts;
 use axum::response::Response;
 use serde_json::Value;
@@ -49,24 +49,6 @@ impl PageInput {
     fn failed(self, error: String) -> Self {
         Self { error, ..self }
     }
-}
-
-pub async fn page(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    render(
-        &state,
-        &user,
-        PageInput {
-            selected_project: q.get("project").cloned().unwrap_or_default(),
-            notice: String::new(),
-            error: String::new(),
-            ..Default::default()
-        },
-    )
-    .await
 }
 
 /// 仅解析校验：返回服务拓扑顺序、网络与卷清单，不触碰 Engine。

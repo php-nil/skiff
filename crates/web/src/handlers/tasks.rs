@@ -4,10 +4,9 @@
 //! 只读用户（viewer）可以看列表/详情/历史，写操作一律 Admin + CSRF。
 //! 任务来源只影响展示，不作为访问控制维度——权限由角色判定。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::request::Parts;
 use axum::response::Response;
 use serde_json::Value;
@@ -19,7 +18,7 @@ use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
-use crate::templates::{TaskDetailPage, TaskRow, TaskRunRow, TasksPage};
+use crate::templates::{TaskRow, TaskRunRow};
 use crate::util::{form_first, parse_form};
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
@@ -119,64 +118,6 @@ pub(crate) fn run_row(v: &Value) -> TaskRunRow {
         detail,
         missed: v["missed_count"].as_i64().unwrap_or(0),
     }
-}
-
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let svc = service(&state)?;
-    let tasks = svc.list_views().await;
-    let keyword = q.get("q").cloned().unwrap_or_default();
-    let needle = keyword.trim().to_lowercase();
-    let rows: Vec<TaskRow> = tasks
-        .iter()
-        .map(row_of)
-        .filter(|t| {
-            needle.is_empty()
-                || t.name.to_lowercase().contains(&needle)
-                || t.id.to_lowercase().contains(&needle)
-                || t.target.to_lowercase().contains(&needle)
-                || t.source.to_lowercase().contains(&needle)
-        })
-        .collect();
-    handlers::render(TasksPage {
-        ctx: handlers::page_ctx(&state, &user, "core/tasks"),
-        tasks: rows,
-        can_admin: user.can(skiff_model::Permission::Admin),
-        error: String::new(),
-        notice: String::new(),
-        keyword,
-    })
-}
-
-pub async fn detail(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let svc = service(&state)?;
-    let view = svc
-        .detail_view(&id, 50)
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("任务不存在：{id}")))?;
-    let task = row_of(&view["task"]);
-    let payload =
-        serde_json::to_string_pretty(&view["task"]["payload"]).unwrap_or_else(|_| "{}".into());
-    let runs = view["runs"]
-        .as_array()
-        .map(|a| a.iter().map(run_row).collect())
-        .unwrap_or_default();
-    handlers::render(TaskDetailPage {
-        ctx: handlers::page_ctx(&state, &user, &format!("core/tasks/{id}")),
-        task,
-        payload,
-        runs,
-        can_admin: user.can(skiff_model::Permission::Admin),
-        error: String::new(),
-        notice: String::new(),
-    })
 }
 
 fn back(id: &str) -> String {
