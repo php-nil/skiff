@@ -76,10 +76,10 @@ pub struct WebConfig {
     pub session: SessionLimits,
     /// 登录并发上限（argon2 单次 ~70MB，默认 2）
     pub login_concurrency: usize,
-    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（默认 15 分钟）。
+    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（默认 30 分钟）。
     /// 配置项 `ext_exec_timeout_secs` 或环境变量 `SKIFF_EXT_EXEC_TIMEOUT_SECS` 可覆盖。
     pub ext_exec_timeout: Duration,
-    /// 批量扩展脚本（可触发多次编译）的硬超时（默认 30 分钟）。
+    /// 批量扩展脚本（可触发多次编译）的硬超时（默认 60 分钟）。
     /// 配置项 `ext_batch_timeout_secs` 或环境变量 `SKIFF_EXT_BATCH_TIMEOUT_SECS` 可覆盖。
     pub ext_batch_timeout: Duration,
     /// 商店目录（Skiff-server P1 只读接入）。默认关闭。

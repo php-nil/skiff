@@ -74,7 +74,7 @@ pub const NGINX_CONTAINER: &str = "skiff-web-nginx";
 /// 每个 PHP 实例一个独立容器：`skiff-php-<name>`。
 pub const PHP_CONTAINER_PREFIX: &str = "skiff-php";
 
-// 扩展 exec 的硬超时默认值在 `WebConfig`（单扩展 15 分钟、批量 30 分钟），
+// 扩展 exec 的硬超时默认值在 `WebConfig`（单扩展 30 分钟、批量 60 分钟），
 // 可用 `ext_exec_timeout_secs` / `ext_batch_timeout_secs` 或环境变量覆盖。
 // 超时只停止等待（Docker 无 kill exec 接口），按失败结算并保留已采集输出尾巴。
 /// 超时错误标记：`job_finish_err` 依据它把 `error_class` 记为 `timeout`。

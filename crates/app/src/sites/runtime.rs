@@ -1365,7 +1365,8 @@ impl AppState {
             if timed_out {
                 return Err(format!(
                     "{TIMEOUT_MARK}批量安装扩展超过 {} 未结束，已按超时失败结算；\
-                     Docker 无法中断 exec，容器内脚本可能仍在运行，建议重建运行环境。",
+                     Docker 无法中断 exec，容器内脚本可能仍在运行，重建运行环境后重试即可：\
+                     已下载的系统包缓存在宿主 `cache/apk`，重试会跳过已完成部分（通常几分钟内装完）。",
                     fmt_timeout(self.cfg.ext_batch_timeout)
                 ));
             }
@@ -2109,7 +2110,8 @@ impl AppState {
         if timed_out {
             return Err(format!(
                 "{TIMEOUT_MARK}扩展 {label} 执行超过 {} 未结束，已按超时失败结算；\
-                 Docker 无法中断 exec，容器内脚本可能仍在运行，建议重载或重建运行环境。\
+                 Docker 无法中断 exec，容器内脚本可能仍在运行，重载或重建运行环境后重试即可——\
+                 冷缓存要先拉整套构建工具链，慢链路上十几分钟属正常，重试会复用已下载的系统包。\
                  已采集输出尾部见任务日志。",
                 fmt_timeout(self.cfg.ext_exec_timeout)
             ));

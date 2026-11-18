@@ -306,8 +306,8 @@ mod tests {
             policy: Policy::new(Tier::Basic, Form::Native, vec![]).unwrap(),
             session: SessionLimits::default(),
             login_concurrency: 1,
-            ext_exec_timeout: std::time::Duration::from_secs(15 * 60),
-            ext_batch_timeout: std::time::Duration::from_secs(30 * 60),
+            ext_exec_timeout: std::time::Duration::from_secs(30 * 60),
+            ext_batch_timeout: std::time::Duration::from_secs(60 * 60),
             catalog: Default::default(),
         };
         (

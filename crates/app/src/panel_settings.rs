@@ -46,9 +46,12 @@ pub struct FileConfig {
     pub trash_retention_days: Option<u32>,
     /// 首启管理员是否强制首次登录改密。默认 false（初始口令可直接使用）。
     pub require_initial_password_change: Option<bool>,
-    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（秒，默认 900）。
+    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（秒，默认 1800）。
+    ///
+    /// 冷缓存下装一个需编译的扩展要先拉全套构建工具链（Alpine 约 90 MB），
+    /// 慢链路上十几分钟属正常，不能按「快网络」定档。
     pub ext_exec_timeout_secs: Option<u64>,
-    /// 批量扩展脚本的硬超时（秒，默认 1800）。
+    /// 批量扩展脚本的硬超时（秒，默认 3600）。
     pub ext_batch_timeout_secs: Option<u64>,
     /// 商店目录（Skiff-server）只读接入；缺省整段关闭。
     pub catalog: Option<CatalogFile>,
@@ -511,8 +514,8 @@ mod tests {
             "login_concurrency" => "2".into(),
             "trash_retention_days" => "30".into(),
             "require_initial_password_change" => "false".into(),
-            "ext_exec_timeout_secs" => "900".into(),
-            "ext_batch_timeout_secs" => "1800".into(),
+            "ext_exec_timeout_secs" => "1800".into(),
+            "ext_batch_timeout_secs" => "3600".into(),
             "catalog.enabled" => "false".into(),
             "catalog.channel" => toml_string("stable"),
             "catalog.mirrors" => "[\"https://cdn.example/skiff\"]".into(),

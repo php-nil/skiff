@@ -39,9 +39,9 @@ pub struct Config {
     /// 首启管理员是否强制首次登录改密。默认 false，可用配置/环境变量/CLI 显式开启。
     /// 只影响**新建**管理员；已有账号一律不动。
     pub require_initial_password_change: bool,
-    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（默认 15 分钟）。
+    /// 单个 PHP 扩展安装/卸载一次 `docker exec` 的硬超时（默认 30 分钟）。
     pub ext_exec_timeout: std::time::Duration,
-    /// 批量扩展脚本的硬超时（默认 30 分钟）。
+    /// 批量扩展脚本的硬超时（默认 60 分钟）。
     pub ext_batch_timeout: std::time::Duration,
     /// 商店目录只读接入（默认关闭）。
     pub catalog: skiff_app::catalog::CatalogSettings,
