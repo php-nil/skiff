@@ -145,9 +145,9 @@ pub async fn index(
         .collect();
 
     // 固定页槽位（P2）：插件停用/未授权时返回空表，模板自动回落内核默认内容。
-    let mounts_health = crate::menu::mount_views(&state, &user, "overview.health");
-    let mounts_actions = crate::menu::mount_views(&state, &user, "overview.actions");
-    let mounts_side = crate::menu::mount_views(&state, &user, "overview.side");
+    let mounts_health = skiff_app::menu::mount_views(&state, &user, "overview.health");
+    let mounts_actions = skiff_app::menu::mount_views(&state, &user, "overview.actions");
+    let mounts_side = skiff_app::menu::mount_views(&state, &user, "overview.side");
 
     let page = DashboardPage {
         ctx: handlers::page_ctx(&state, &user, "dashboard"),

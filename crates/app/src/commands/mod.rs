@@ -10,6 +10,7 @@
 pub mod docker;
 pub mod file;
 pub mod job;
+pub mod plugin;
 pub mod runtime;
 pub mod site;
 pub mod store;

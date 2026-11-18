@@ -36,6 +36,8 @@ impl std::fmt::Display for ComposeError {
     }
 }
 
+impl std::error::Error for ComposeError {}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeFile {

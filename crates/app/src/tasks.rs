@@ -287,17 +287,21 @@ impl TaskService {
     }
 
     /// 卸载插件后回收其名下全部任务（含 cron 等 UI 代建的同 source 任务）。
-    pub async fn drop_plugin_tasks(&self, plugin_id: &str) {
+    pub async fn drop_plugin_tasks(&self, plugin_id: &str) -> usize {
         let mut sched = self.scheduler.lock().await;
         let now = self.clock.now();
+        let mut dropped = 0usize;
         for task in sched.list(&TaskFilter::default()) {
             if task.spec.plugin_id() != Some(plugin_id) {
                 continue;
             }
             if let Err(e) = sched.delete(task.spec.id.as_str(), now) {
                 tracing::warn!(task = %task.spec.id, error = %e, "卸载插件时回收任务失败");
+            } else {
+                dropped += 1;
             }
         }
+        dropped
     }
 
     /// 1s tick：拿票 → 执行体独立 task → 结算。**不在锁内执行任何 RPC**。

@@ -25,12 +25,9 @@ pub const SITE_INDEX_DIR: &str = "index";
 ///
 /// 只做词法判断（不访问文件系统），供面板写入与插件 `fs` 写宿主路径后归还属主使用。
 pub fn is_site_index_path(path: &std::path::Path) -> bool {
-    // 带 `..` 的路径不做归属判定：调用方给的多半是未规范化的用户输入，
-    // 按字面匹配会把 `index/../log` 误判成文档根。
-    if path
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
+    // 带 `..` 段的路径不做归属判定：调用方给的多半是未规范化的用户输入，
+    // 按字面匹配会把 `index/../log` 误判成文档根。（组件级判定复用 `has_parent_segment`。）
+    if crate::path::has_parent_segment(&path.to_string_lossy()) {
         return false;
     }
     let comps: Vec<_> = path.components().map(|c| c.as_os_str()).collect();

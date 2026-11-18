@@ -279,7 +279,7 @@ pub(crate) fn simplify_windows(mut p: PathBuf) -> PathBuf {
 pub fn protected_hit<'a>(protected: &'a [PathBuf], target: &Path) -> Option<&'a PathBuf> {
     protected
         .iter()
-        .find(|root| target == root.as_path() || target.starts_with(root.as_path()))
+        .find(|root| skiff_model::within_root(root, target))
 }
 
 #[cfg(test)]

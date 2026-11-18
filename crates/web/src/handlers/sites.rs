@@ -149,137 +149,76 @@ pub(crate) fn https_status(enabled: bool, cert_ready: bool) -> (&'static str, &'
     }
 }
 
-/// 列表版本列：版本来源由内核分类，文案与镜像副行在这里格式化。
-pub(crate) fn version_display(
-    actual: Option<&str>,
-    target: &str,
-    image: &str,
-    container_exists: bool,
-) -> (String, String) {
-    match skiff_app::sites::runtime_version_state(actual, container_exists) {
-        skiff_app::sites::RuntimeVersionState::Actual(v) => {
-            (v.to_string(), format!("目标 {target} · {image}"))
-        }
-        skiff_app::sites::RuntimeVersionState::NotInstalled => {
-            (target.to_string(), "未安装".into())
-        }
-        skiff_app::sites::RuntimeVersionState::Unreadable => {
-            (target.to_string(), "版本未读取".into())
-        }
+/// 运行环境状态文案（SSR 与 JSON 共用）：安装中优先显示任务阶段，
+/// 避免「未安装」与正在拉镜像互相矛盾。
+pub(crate) fn runtime_state_text(v: &skiff_app::sites::RuntimeView) -> String {
+    let job = v.job.as_ref();
+    let job_failed = job.is_some_and(|j| j.state == skiff_app::sites::RuntimeJobState::Failed);
+    if let Some(j) = job.filter(|j| j.active()) {
+        format!("{}：{}", crate::labels::runtime_job_state(j.state), j.step)
+    } else if v.drift {
+        "状态漂移".to_string()
+    } else if job_failed && v.container_state != "running" {
+        "安装失败".to_string()
+    } else {
+        state_label(&v.effective_state).to_string()
     }
 }
 
-pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRow {
-    let prefix = &state.cfg.entry_prefix;
-    let kind_label = skiff_app::runtime_catalog::kind_label(&v.runtime.kind);
-    let endpoint_full = match v.runtime.kind.as_str() {
-        skiff_store::KIND_PHP => {
-            if v.socket_host.is_empty() {
-                "socket 未登记".to_string()
-            } else {
-                format!("socket {}", v.socket_host)
-            }
-        }
-        skiff_store::KIND_RUST | skiff_store::KIND_NODE => match v.runtime.port {
-            Some(port) => match v.runtime.container_ip.as_deref() {
-                Some(ip) => {
-                    let mut text = format!("容器 http://{ip}:{port}");
-                    match v.runtime.publish_port {
-                        Some(host) => text.push_str(&format!("；对外已发布 :{host}")),
-                        None => text.push_str("；未对外发布"),
-                    }
-                    text
-                }
-                None => "容器地址未分配（需重建环境）".to_string(),
-            },
-            None => "端口未分配".to_string(),
-        },
-        _ => "尚未接入".to_string(),
-    };
-    let container_address = match (v.runtime.container_ip.as_deref(), v.runtime.port) {
-        (Some(ip), Some(port)) => format!("{ip}:{port}"),
-        _ => String::new(),
-    };
-    let endpoint_short = match v.runtime.kind.as_str() {
-        skiff_store::KIND_PHP => "sock".to_string(),
-        skiff_store::KIND_RUST | skiff_store::KIND_NODE => v
-            .runtime
-            .port
-            .map(|p| format!(":{p}"))
-            .unwrap_or_else(|| "端口".into()),
-        _ => "—".to_string(),
-    };
-    // 已知真实版本（镜像元数据）优先；容器缺失/未安装 → 目标 + 未安装；
-    // 容器在但元数据读不到 → 目标 + 版本未读取。停止的容器仍展示真实版本。
-    let target_version = v.runtime.version.clone();
-    let (version_display, version_note) = version_display(
-        v.actual_version.as_deref(),
-        &target_version,
-        &v.runtime.image,
-        v.container_exists,
-    );
-    let image_short = |id: &str| -> String {
-        let raw = id.strip_prefix("sha256:").unwrap_or(id);
-        raw.chars().take(12).collect()
-    };
-    let job = v.job.clone();
-    let job_active = job.as_ref().is_some_and(|j| j.active());
-    let job_failed = job
+/// 运行环境状态色彩（模板用）。
+pub(crate) fn runtime_state_class(v: &skiff_app::sites::RuntimeView) -> String {
+    let job_failed = v
+        .job
         .as_ref()
         .is_some_and(|j| j.state == skiff_app::sites::RuntimeJobState::Failed);
+    if v.job.as_ref().is_some_and(|j| j.active()) || v.drift || job_failed {
+        "warn".to_string()
+    } else {
+        state_class(&v.effective_state).to_string()
+    }
+}
+
+/// 列表行：从 app 读模型映射到 SSR 模板（文案色彩与 URL 只在这一侧补齐）。
+pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -> RuntimeRow {
+    let prefix = &state.cfg.entry_prefix;
+    let r = skiff_app::views::runtimes::row(v);
+    let job_active = r.job_active();
     RuntimeRow {
-        id: v.runtime.id.clone(),
-        kind_key: v.runtime.kind.clone(),
-        kind_label,
-        name: v.runtime.name.clone(),
-        container_name: v.container_name.clone(),
-        version: v.runtime.version.clone(),
-        version_display,
-        version_note,
-        actual_version: v.actual_version.clone().unwrap_or_default(),
-        container_exists: v.container_exists,
-        image: v.runtime.image.clone(),
-        image_id: image_short(&v.image_id),
+        id: r.id.clone(),
+        kind_key: r.kind,
+        kind_label: r.kind_label,
+        name: r.name,
+        container_name: r.container_name,
+        version: r.version,
+        version_display: r.version_display,
+        version_note: r.version_note,
+        actual_version: r.actual_version,
+        container_exists: r.container_exists,
+        image: r.image,
+        image_id: r.image_id,
         image_id_full: v.image_id.clone(),
-        image_digest: image_short(&v.image_digest),
+        image_digest: r.image_digest,
         image_digest_full: v.image_digest.clone(),
-        image_mismatch: v.image_mismatch,
-        state_label: if let Some(j) = job.as_ref().filter(|j| j.active()) {
-            // 安装中优先显示任务阶段，避免「未安装」与正在拉镜像互相矛盾。
-            format!("{}：{}", crate::labels::runtime_job_state(j.state), j.step)
-        } else if v.drift {
-            "状态漂移".to_string()
-        } else if job_failed && v.container_state != "running" {
-            "安装失败".to_string()
-        } else {
-            state_label(&v.effective_state).to_string()
-        },
-        state_class: if job_active || v.drift || job_failed {
-            "warn".to_string()
-        } else {
-            state_class(&v.effective_state).to_string()
-        },
-        drift: v.drift,
-        site_count: v.site_count,
-        container_state: v.container_state.clone(),
-        endpoint_short,
-        endpoint_full,
-        container_address,
-        publish_port: v
-            .runtime
-            .publish_port
-            .map(|p| p.to_string())
-            .unwrap_or_default(),
-        port: v.runtime.port.map(|p| p.to_string()).unwrap_or_default(),
-        implemented: v.implemented,
-        is_default: v.runtime.is_default,
+        image_mismatch: r.image_mismatch,
+        state_label: runtime_state_text(v),
+        state_class: runtime_state_class(v),
+        drift: r.drift,
+        site_count: r.site_count,
+        container_state: r.container_state,
+        endpoint_short: r.endpoint_short,
+        endpoint_full: r.endpoint_full,
+        container_address: r.container_address,
+        publish_port: r.publish_port.map(|p| p.to_string()).unwrap_or_default(),
+        port: r.port.map(|p| p.to_string()).unwrap_or_default(),
+        implemented: r.implemented,
+        is_default: r.is_default,
         detail_href: format!("/{prefix}/runtimes/{}", encode_uri_component(&v.runtime.id)),
         docker_href: format!(
             "/{prefix}/containers/{}",
             encode_uri_component(&v.container_name)
         ),
-        job_progress: job.as_ref().map(|j| j.progress).unwrap_or(0),
-        job_error: job.as_ref().map(|j| j.error.clone()).unwrap_or_default(),
+        job_progress: r.job.as_ref().map(|j| j.progress).unwrap_or(0),
+        job_error: r.job.as_ref().map(|j| j.error.clone()).unwrap_or_default(),
         job_active,
     }
 }
@@ -378,9 +317,7 @@ fn site_error_text(e: &SiteError) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::crud::{error_field, save_config_notice};
-    use super::{
-        map_err, runtime_site_status, site_error_text, state_class, state_label, version_display,
-    };
+    use super::{map_err, runtime_site_status, site_error_text, state_class, state_label};
     use crate::state::sites::SiteError;
     use skiff_model::ErrorCode;
 
@@ -488,28 +425,5 @@ mod tests {
         // 没有字段码（含环境级错误）一律回顶部，不再按文案猜。
         assert_eq!(error_field(None, "runtime"), "");
         assert_eq!(error_field(None, "static"), "");
-    }
-
-    #[test]
-    fn version_column_shows_actual_then_falls_back_with_marker() {
-        // 已知真实版本：主显补丁号，副行给出目标与镜像。
-        let (display, note) = version_display(Some("8.5.12"), "8.5", "php:8.5-fpm-alpine", true);
-        assert_eq!(display, "8.5.12");
-        assert_eq!(note, "目标 8.5 · php:8.5-fpm-alpine");
-
-        // 容器缺失（未安装）：目标 + 未安装。
-        let (display, note) = version_display(None, "8.5", "php:8.5-fpm-alpine", false);
-        assert_eq!(display, "8.5");
-        assert_eq!(note, "未安装");
-
-        // 容器存在但镜像元数据读不到：目标 + 版本未读取，不伪造真实版本。
-        let (display, note) = version_display(None, "8.5", "php:8.5-fpm-alpine", true);
-        assert_eq!(display, "8.5");
-        assert_eq!(note, "版本未读取");
-
-        // 停止但容器仍存在 → 上层仍传入镜像元数据版本，照常显示真实版本。
-        let (display, note) = version_display(Some("8.5.12"), "8.5", "php:8.5-fpm-alpine", true);
-        assert_eq!(display, "8.5.12");
-        assert_eq!(note, "目标 8.5 · php:8.5-fpm-alpine");
     }
 }

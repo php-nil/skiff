@@ -8,7 +8,7 @@
 //! 站点引用的运行环境，只在「可用 ↔ 维护」发生翻转时重写 vhost 并 reload nginx。
 
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use skiff_store::{Runtime, KIND_NODE, KIND_PHP, KIND_RUST, TYPE_RUNTIME};
 
@@ -48,10 +48,7 @@ impl RuntimeGuard {
 }
 
 fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crate::time_fmt::unix_now()
 }
 
 impl AppState {

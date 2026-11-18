@@ -69,7 +69,9 @@ skiff/
 | `plugin` | `pkgfmt`、`wire`、`store`、`model`（+ `axum`/`http-body-util`：仅能力面 handler 的 HTTP 形状） | `docker`、`web`、`core`、`app` |
 | `sdk` | `pkgfmt`、`wire` | `store`、`docker`、`web` |
 | `host` | tokio（+ tracing） | `store`、`docker`、`web`、`app`、`plugin` |
-| `app` | `model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt`、`sched`、`fs`、`host`（+ `ureq`/`rustls-pemfile`/`ed25519-dalek`：商店目录客户端，本仓唯一出网组件） | `web`、`core` |
+| `fs` | `model`（+ serde / sha2 / 系统调用封装） | `store`、`docker`、`web`、`app` |
+| `sign` | ed25519-dalek、sha2、hex（零 I/O） | `store`、`docker`、`web`、`app` |
+| `app` | `model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt`、`sched`、`fs`、`host`、`sign`（+ `ureq`/`rustls-pemfile`/`ed25519-dalek`：商店目录客户端，本仓唯一出网组件） | `web`、`core` |
 | `web` | `app`、`model`、`store`、`identity`、`docker`、`plugin`、`pkgfmt` | `core` |
 | `core`(bin) | 以上全部 | — |
 
@@ -85,7 +87,7 @@ skiff/
 它不依赖 `web`。插件能力面的**权限判定与命令编排**住在 `plugin`，但 `plugin` 不得反向依赖
 `app`——宿主上下文经 `plugin::CapabilityHost` 这个 trait 注入（依赖倒置）。`app` 的准入规则：
 用例编排、领域服务、读模型可以进；路由、模板、HTTP 形状不进；跨域共享词汇进 `model`。
-当前 `app` 内按域划分为 sites / nginx / tasks / catalog / files-admin / menu / theme。
+当前 `app` 内按域划分为 sites / nginx / tasks / catalog / files-admin / menu / theme；`views/` 存与模板无关的读模型（SSR 与 `/ui/v1` 共用），`commands/` 存用例编排（含 `plugin.rs` 插件生命周期）。
 
 **能力面 × 实现位置**（能力面的判定与编排只在 `plugin`；HTTP 形状与宿主特权执行属内核装配）：
 

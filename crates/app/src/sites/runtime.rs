@@ -1048,27 +1048,26 @@ impl AppState {
             .ok_or_else(|| "Rust 环境缺少固定端口，请删除后重新创建".to_string())?;
         let dir = s.runtime_home(&rt.kind, &rt.name);
         let app_dir = dir.join("app");
-        std::fs::create_dir_all(app_dir.join("src"))
+        let fs = self.admin_fs();
+        fs.ensure_dir_kernel(&app_dir.join("src"))
             .map_err(|e| format!("创建 Rust 工程目录失败：{e}"))?;
-        std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
+        fs.ensure_dir_kernel(&s.runtime_log_dir(&rt.kind, &rt.name))
             .map_err(|e| format!("创建 Rust 日志目录失败：{e}"))?;
         self.job_advance(job_id, "准备工程", 15, "写入最小 HTTP 工程（无第三方依赖）")
             .await;
         // 只在缺失时生成脚手架：`app/` 可能已经是用户自己的工程，重建不能覆盖。
-        seed_file(
-            &app_dir.join("Cargo.toml"),
-            rust_cargo_manifest().as_bytes(),
-            0o644,
-        )
-        .map_err(|e| format!("写入 Cargo.toml 失败：{e}"))?;
-        seed_file(
-            &app_dir.join("src/main.rs"),
-            rust_main_source(&rt.version, port).as_bytes(),
-            0o644,
-        )
-        .map_err(|e| format!("写入 main.rs 失败：{e}"))?;
+        let cargo = app_dir.join("Cargo.toml");
+        if !cargo.exists() {
+            fs.write_kernel(&cargo, rust_cargo_manifest().as_bytes())
+                .map_err(|e| format!("写入 Cargo.toml 失败：{e}"))?;
+        }
+        let main_rs = app_dir.join("src/main.rs");
+        if !main_rs.exists() {
+            fs.write_kernel(&main_rs, rust_main_source(&rt.version, port).as_bytes())
+                .map_err(|e| format!("写入 main.rs 失败：{e}"))?;
+        }
         // 入口脚本是内核资产，每次安装/重建都刷新。
-        std::fs::write(dir.join("entry.sh"), rust_entry_script())
+        fs.write_kernel(&dir.join("entry.sh"), rust_entry_script().as_bytes())
             .map_err(|e| format!("写入入口脚本失败：{e}"))?;
 
         let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);
@@ -1187,20 +1186,19 @@ impl AppState {
         self.job_advance(job_id, "准备工程", 15, "写入最小 HTTP 工程（npm start）")
             .await;
         // 只在缺失时生成脚手架：`app/` 可能已经是用户自己的代码，重建不能覆盖。
-        seed_file(
-            &app_dir.join("package.json"),
-            node_package_manifest().as_bytes(),
-            0o644,
-        )
-        .map_err(|e| format!("写入 package.json 失败：{e}"))?;
-        seed_file(
-            &app_dir.join("server.js"),
-            node_server_source(&rt.version, port).as_bytes(),
-            0o644,
-        )
-        .map_err(|e| format!("写入 server.js 失败：{e}"))?;
+        let fs = self.admin_fs();
+        let package_json = app_dir.join("package.json");
+        if !package_json.exists() {
+            fs.write_kernel(&package_json, node_package_manifest().as_bytes())
+                .map_err(|e| format!("写入 package.json 失败：{e}"))?;
+        }
+        let server_js = app_dir.join("server.js");
+        if !server_js.exists() {
+            fs.write_kernel(&server_js, node_server_source(&rt.version, port).as_bytes())
+                .map_err(|e| format!("写入 server.js 失败：{e}"))?;
+        }
         // 入口脚本是内核资产，每次安装/重建都刷新。
-        write_if_changed(&dir.join("entry.sh"), node_entry_script().as_bytes(), 0o755)
+        fs.write_kernel(&dir.join("entry.sh"), node_entry_script().as_bytes())
             .map_err(|e| format!("写入入口脚本失败：{e}"))?;
 
         let image = runtime_catalog::image_for(&rt.kind, &rt.version, &s.php_image);

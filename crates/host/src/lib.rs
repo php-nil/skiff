@@ -127,6 +127,27 @@ impl HostRunError {
     }
 }
 
+/// 无上下文（不知道具体 `cmd`）时的默认文案：跨层 `?` / anyhow 桥接只需要
+/// 一句可读说明，带命令名的详细版本走 [`HostRunError::message`]。
+impl std::fmt::Display for HostRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(e) => write!(f, "宿主进程启动失败：{e}"),
+            Self::Io(e) => write!(f, "宿主进程等待失败：{e}"),
+            Self::Timeout { secs, unit } => {
+                if unit.is_empty() {
+                    write!(f, "宿主进程执行超时（{secs}s），已尝试终止")
+                } else {
+                    write!(f, "宿主进程执行超时（{secs}s），已尝试终止单元 {unit}")
+                }
+            }
+            Self::Cancelled => write!(f, "宿主进程执行已取消"),
+        }
+    }
+}
+
+impl std::error::Error for HostRunError {}
+
 /// `systemd-run` 的完整 argv（不含可执行文件本身）。
 ///
 /// 纯函数：单测在非 Linux 上也能验证「`--` 之后才是目标命令」与参数原样透传。

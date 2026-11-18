@@ -1,0 +1,143 @@
+//! 插件生命周期命令：安装、卸载、启停的唯一业务实现。
+//!
+//! 过去 Web（上传 → 确认页）与 CLI（`skiff plugin ...`）各写一份，已出现可观测漂移：
+//! CLI 卸载不清菜单偏好、任务回收两条路径、审计 detail 格式两份。这里把「装完/卸完
+//! 到底要做什么」收成一处；调用方只保留参数解析、权限判定与话术。
+//!
+//! CLI 是独立进程，没有 `AppState`/Supervisor/任务服务，因此这些函数只依赖
+//! `&Db` + 数据根，任务服务作为可选协作者传入。
+
+use std::path::Path;
+use std::sync::Arc;
+
+use skiff_plugin::{InstallOptions, InstalledInfo};
+use skiff_store::Db;
+
+use crate::tasks::TaskService;
+
+#[derive(Debug)]
+pub enum PluginCommandError {
+    NotFound(String),
+    Rejected(String),
+}
+
+impl std::fmt::Display for PluginCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(m) | Self::Rejected(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for PluginCommandError {}
+
+/// 安装审计 detail：Web 与 CLI 共用同一格式，便于事后按字段检索。
+pub fn install_detail(info: &InstalledInfo) -> String {
+    format!(
+        "version={} key_id={} grants={}",
+        info.version,
+        info.key_id,
+        info.grants.len()
+    )
+}
+
+/// 卸载审计 detail。
+pub fn uninstall_detail(delete_data: bool) -> String {
+    format!("delete_data={delete_data}")
+}
+
+/// 安装包并清理 `.incoming` 暂存。同步版本供 CLI 使用（无任务服务）。
+///
+/// 审计不在这里写：Web 走 `state.audit_or_log`、CLI 直写库，但 detail 用上面的
+/// 同一个函数生成。
+pub fn install(
+    db: &Db,
+    data_dir: &Path,
+    package: &Path,
+    opts: &InstallOptions,
+) -> Result<InstalledInfo, PluginCommandError> {
+    let result = skiff_plugin::install_package(db, data_dir, package, opts)
+        .map_err(|e| PluginCommandError::Rejected(e.to_string()));
+    let _ = std::fs::remove_file(package);
+    result
+}
+
+/// Web 安装：在同步安装之后种入 manifest 声明的内核任务（不要求重启）。
+pub async fn install_with_tasks(
+    db: &Db,
+    data_dir: &Path,
+    package: &Path,
+    opts: &InstallOptions,
+    tasks: Option<&Arc<TaskService>>,
+) -> Result<InstalledInfo, PluginCommandError> {
+    let info = install(db, data_dir, package, opts)?;
+    if let Some(tasks) = tasks {
+        tasks.sync_manifest_tasks().await;
+    }
+    Ok(info)
+}
+
+/// 卸载收尾（不含停进程）：删包/数据 → 回收任务 → 清菜单偏好。
+///
+/// 返回回收的任务条数。同步版本供 CLI 使用，按库内 `source=plugin:<id>` 直删。
+pub fn remove(
+    db: &Db,
+    data_dir: &Path,
+    id: &str,
+    delete_data: bool,
+) -> Result<usize, PluginCommandError> {
+    skiff_plugin::uninstall_package(db, data_dir, id, delete_data)
+        .map_err(|e| PluginCommandError::Rejected(e.to_string()))?;
+    let dropped = drop_plugin_tasks_db(db, id)?;
+    // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
+    crate::menu::cleanup_plugin_prefs(db, id);
+    Ok(dropped)
+}
+
+/// Web 卸载：有任务服务时走调度器（内存态一并更新），否则回退库内直删。
+pub async fn remove_with_tasks(
+    db: &Db,
+    data_dir: &Path,
+    id: &str,
+    delete_data: bool,
+    tasks: Option<&Arc<TaskService>>,
+) -> Result<usize, PluginCommandError> {
+    let Some(tasks) = tasks else {
+        return remove(db, data_dir, id, delete_data);
+    };
+    skiff_plugin::uninstall_package(db, data_dir, id, delete_data)
+        .map_err(|e| PluginCommandError::Rejected(e.to_string()))?;
+    let dropped = tasks.drop_plugin_tasks(id).await;
+    crate::menu::cleanup_plugin_prefs(db, id);
+    Ok(dropped)
+}
+
+/// 启用/停用（停进程由调用方在停用前完成）。
+pub fn set_enabled(db: &Db, id: &str, enabled: bool) -> Result<(), PluginCommandError> {
+    if db
+        .plugin(id)
+        .map_err(|e| PluginCommandError::Rejected(e.to_string()))?
+        .is_none()
+    {
+        return Err(PluginCommandError::NotFound(format!("插件不存在: {id}")));
+    }
+    db.set_plugin_enabled_state(id, enabled)
+        .map_err(|e| PluginCommandError::Rejected(e.to_string()))
+}
+
+/// 无任务服务时的库内回收：`source = plugin:<id>`。
+fn drop_plugin_tasks_db(db: &Db, id: &str) -> Result<usize, PluginCommandError> {
+    let source = format!("plugin:{id}");
+    let mut dropped = 0usize;
+    for task in db
+        .scheduled_tasks()
+        .map_err(|e| PluginCommandError::Rejected(e.to_string()))?
+    {
+        if task.source == source {
+            db.delete_scheduled_task(&task.id)
+                .map_err(|e| PluginCommandError::Rejected(e.to_string()))?;
+            dropped += 1;
+        }
+    }
+    Ok(dropped)
+}

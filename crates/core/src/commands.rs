@@ -253,7 +253,7 @@ pub fn plugin_install(
         cfg.allow_reduced_sandbox,
         "cli",
     );
-    let info = match skiff_plugin::install_package(&db, &cfg.data_dir, package, &opts) {
+    let info = match skiff_app::commands::plugin::install(&db, &cfg.data_dir, package, &opts) {
         Ok(info) => info,
         Err(e) => {
             if let Err(ae) = db.audit(
@@ -277,12 +277,7 @@ pub fn plugin_install(
         "plugin.install",
         &info.id,
         "ok",
-        &format!(
-            "version={} key_id={} grants={}",
-            info.version,
-            info.key_id,
-            info.grants.len()
-        ),
+        &skiff_app::commands::plugin::install_detail(&info),
     ) {
         tracing::error!(error = %e, "插件安装审计写入失败");
     }
@@ -301,28 +296,17 @@ pub fn plugin_install(
 
 pub fn plugin_remove(cfg: &Config, id: &str, delete_data: bool) -> Result<()> {
     let db = open_db(cfg)?;
-    skiff_plugin::uninstall_package(&db, &cfg.data_dir, id, delete_data)?;
-    // 卸载即回收该插件名下的内核任务（manifest 种子任务 + cron 等代建的同 source 任务）；
-    // Web 卸载走 `TaskService::drop_plugin_tasks`，CLI 直连库时在这里清掉，避免残留行
-    // 让「重装后任务仍在跑」或「升级后 spec 仍是旧的」。
-    let source = format!("plugin:{id}");
-    let mut dropped = 0usize;
-    for task in db.scheduled_tasks()? {
-        if task.source == source {
-            db.delete_scheduled_task(&task.id)?;
-            dropped += 1;
-        }
-    }
+    // 卸载收尾（删包/回收任务/清菜单偏好）与 Web 同一份实现。
+    let dropped = skiff_app::commands::plugin::remove(&db, &cfg.data_dir, id, delete_data)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     println!("已卸载 {id}（delete_data={delete_data}，回收任务 {dropped} 条）");
     Ok(())
 }
 
 pub fn plugin_set_enabled(cfg: &Config, id: &str, enabled: bool) -> Result<()> {
     let db = open_db(cfg)?;
-    if db.plugin(id)?.is_none() {
-        bail!("插件不存在: {id}");
-    }
-    db.set_plugin_enabled_state(id, enabled)?;
+    skiff_app::commands::plugin::set_enabled(&db, id, enabled)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     println!("{id} enabled={enabled}");
     Ok(())
 }

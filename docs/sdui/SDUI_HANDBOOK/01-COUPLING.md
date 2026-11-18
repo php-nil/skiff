@@ -41,7 +41,7 @@
 | 查询参数 | 24 处 `Query<HashMap<String, String>>` | 每页自取，无统一分页/筛选契约 |
 | 内联脚本 | 12 个 `<script>` 块（分布在 9 个模板） | 另有 5 个独立前端脚本与 xterm |
 | 静态资产 | `skiff.css` 82,641B、`skiff.js` 81,800B、`htmx` 50,917B、`xterm` 289,441B、`files.js` 66,308B（2026-11-18 随旧 SSR 文件页删除，现为壳页 `budding/budding-boot.js`） | 由 `rust-embed` 打包 |
-| 菜单模块 | `app/menu.rs` 66,018B；`web/menu.rs` 310B 仅再导出 | 声明解析、排序、偏好写库与渲染模型仍混在一起 |
+| 菜单模块 | `app/menu.rs` 66,018B（2026-11-19 删除 `web/menu.rs` 兼容层，web 直接消费 `skiff_app::menu`） | 声明解析、排序、偏好写库与渲染模型仍混在一起 |
 
 ### 1.2 三类归类
 
@@ -58,7 +58,7 @@
 | 模板、片段与局部刷新 | askama 模板、`/containers/rows`、`hx-request` 分支 | 展示逻辑 | SDUI |
 | 表单控件、字段级错误高亮 | `site_error_text` 把错误映射到字段名 | 展示逻辑 | SDUI（内核只给 `field`） |
 | 重定向、PRG、flash 提示 | `flash_redirect`、`FlashKind`（位于 `skiff-app`） | 展示逻辑 | SDUI（内核改为直接返回结果） |
-| 导航与菜单渲染、偏好排布 | `app/menu.rs` 的 `build`/`settings_view`/`apply_action`（`web/menu.rs` 仅再导出） | 展示逻辑（含少量授权） | 声明与授权留内核，渲染归 SDUI |
+| 导航与菜单渲染、偏好排布 | `app/menu.rs` 的 `build`/`settings_view`/`apply_action` | 展示逻辑（含少量授权） | 声明与授权留内核，渲染归 SDUI |
 | CSS、主题、静态资产、xterm 集成 | `static/`、`base.html` 内联脚本 | 展示逻辑 | SDUI |
 | 入口前缀、404、状态码语义 | `router`、`entry_guard`、`AppError` | 传输契约 | 内核 |
 | 会话 Cookie、Bearer、CSRF | `middleware`、`check_csrf`、`x-csrf-token` | 传输契约 | 内核 |

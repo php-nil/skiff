@@ -5,10 +5,9 @@
 //! 前缀域固定。未注入密钥时发布命令直接失败，不产出「看起来正常但不可验签」的清单。
 
 use anyhow::{bail, Context, Result};
-use ed25519_dalek::{Signer as _, SigningKey, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
+use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 
-pub const DOMAIN: &[u8] = b"SKIFF-SERVER-MANIFEST-v1\0";
+pub use skiff_sign::SIGNING_DOMAIN as DOMAIN;
 
 /// 发布私钥（32 字节 Ed25519 种子）的环境变量名。
 pub const ENV_SIGNING_KEY: &str = "SKIFF_SIGNING_KEY";
@@ -83,39 +82,24 @@ impl Signer {
 }
 
 pub fn manifest_signing_input(manifest_bytes: &[u8]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(DOMAIN.len() + manifest_bytes.len());
-    input.extend_from_slice(DOMAIN);
-    input.extend_from_slice(manifest_bytes);
-    input
+    skiff_sign::signing_input(manifest_bytes)
 }
 
 pub fn key_id_of(key: &VerifyingKey) -> String {
-    hex::encode(Sha256::digest(key.to_bytes()))
+    skiff_sign::key_id_of(&key.to_bytes())
 }
 
 /// 公钥十六进制 → `key_id`（sha256(公钥字节)），供固定公钥校验使用。
 pub fn key_id_of_hex(public_key_hex: &str) -> Result<String> {
-    let public = hex::decode(public_key_hex).context("公钥必须是十六进制")?;
-    let public: [u8; 32] = public
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("公钥必须是 32 字节"))?;
-    let key = VerifyingKey::from_bytes(&public).context("公钥不是合法 Ed25519 点")?;
-    Ok(key_id_of(&key))
+    let public = skiff_sign::parse_public_key(public_key_hex).map_err(|e| anyhow::anyhow!(e))?;
+    Ok(skiff_sign::key_id_of(&public))
 }
 
 /// 供测试与发布门禁复核签名使用。
 pub fn verify_detached(public_key_hex: &str, message: &[u8], signature: &[u8]) -> Result<()> {
-    let public = hex::decode(public_key_hex).context("公钥必须是十六进制")?;
-    let public: [u8; 32] = public
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("公钥必须是 32 字节"))?;
-    let key = VerifyingKey::from_bytes(&public).context("公钥不是合法 Ed25519 点")?;
-    let signature = ed25519_dalek::Signature::from_slice(signature)
-        .map_err(|_| anyhow::anyhow!("签名必须是 64 字节"))?;
-    key.verify(message, &signature)
-        .map_err(|_| anyhow::anyhow!("Ed25519 验签失败"))
+    let public = skiff_sign::parse_public_key(public_key_hex).map_err(|e| anyhow::anyhow!(e))?;
+    skiff_sign::verify_manifest_signature(&public, message, signature)
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 pub fn is_placeholder_key(key_id: &str) -> bool {

@@ -1928,6 +1928,7 @@ dependencies = [
  "skiff-plugin",
  "skiff-sched",
  "skiff-server",
+ "skiff-sign",
  "skiff-store",
  "tempfile",
  "tokio",
@@ -1977,6 +1978,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "skiff-model",
  "tar",
  "tempfile",
  "zip",
@@ -2108,8 +2110,18 @@ dependencies = [
  "sha2 0.10.9",
  "skiff-compose",
  "skiff-pkgfmt",
+ "skiff-sign",
  "tempfile",
  "ureq",
+]
+
+[[package]]
+name = "skiff-sign"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
 ]
 
 [[package]]

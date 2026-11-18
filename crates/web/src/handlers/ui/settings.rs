@@ -127,7 +127,7 @@ pub async fn settings_menu(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
-    let groups = crate::menu::settings_view(&state, &user)
+    let groups = skiff_app::menu::settings_view(&state, &user)
         .into_iter()
         .map(|g| MenuSettingsGroup {
             key: g.key,

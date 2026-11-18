@@ -177,7 +177,7 @@ fn resolve_data(data_dir: &Path, id: &str, raw: &str, create: bool) -> Result<Pa
             .ok_or_else(|| FsError::Forbidden("路径无父目录".into()))?;
         fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
         let canon_parent = fs::canonicalize(parent).map_err(|e| io_err(parent, e))?;
-        if !canon_parent.starts_with(&canon_root) {
+        if !skiff_model::within_root(&canon_root, &canon_parent) {
             return Err(FsError::Forbidden("越权路径".into()));
         }
         let mut resolved = canon_parent.join(
@@ -188,14 +188,14 @@ fn resolve_data(data_dir: &Path, id: &str, raw: &str, create: bool) -> Result<Pa
         // 目标已存在（软链）时按真实路径再判一次，避免借既有软链写到 data/ 之外。
         if resolved.exists() {
             resolved = fs::canonicalize(&resolved).map_err(|e| io_err(&resolved, e))?;
-            if !resolved.starts_with(&canon_root) {
+            if !skiff_model::within_root(&canon_root, &resolved) {
                 return Err(FsError::Forbidden("越权路径".into()));
             }
         }
         Ok(resolved)
     } else {
         let canon = fs::canonicalize(&target).map_err(|e| io_err(&target, e))?;
-        if !canon.starts_with(&canon_root) {
+        if !skiff_model::within_root(&canon_root, &canon) {
             return Err(FsError::Forbidden("越权路径".into()));
         }
         Ok(canon)

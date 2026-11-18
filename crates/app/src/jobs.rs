@@ -272,7 +272,7 @@ impl JobService {
                 return;
             }
         };
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         for row in rows {
             let steps = mark_steps_interrupted(&row.steps_json, now);
             let started = row.started_at.unwrap_or(row.created_at);
@@ -289,15 +289,8 @@ impl JobService {
         }
     }
 
-    fn now() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
-    }
-
     fn new_id(&self) -> String {
-        let ts = Self::now();
+        let ts = crate::time_fmt::unix_now();
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -312,7 +305,7 @@ impl JobService {
     pub fn submit(&self, s: JobSubmit) -> Result<Job, JobError> {
         self.prune_quietly();
         let id = self.new_id();
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         let row = JobRow {
             id: id.clone(),
             kind: s.kind,
@@ -374,7 +367,7 @@ impl JobService {
         }
         self.prune_quietly();
         let new_id = self.new_id();
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         let row = JobRow {
             id: new_id.clone(),
             kind: old.kind,
@@ -421,7 +414,7 @@ impl JobService {
             label,
             progress.clamp(-1, 100),
             cancellable,
-            Self::now(),
+            crate::time_fmt::unix_now(),
         ) {
             tracing::warn!(job = id, error = %e, "作业阶段写入失败");
         }
@@ -437,7 +430,7 @@ impl JobService {
                 &job.phase_label,
                 job.progress,
                 cancellable,
-                Self::now(),
+                crate::time_fmt::unix_now(),
             ) {
                 tracing::warn!(job = id, error = %e, "作业可中断标记写入失败");
             }
@@ -446,10 +439,11 @@ impl JobService {
 
     /// 追加一行日志。
     pub fn log(&self, id: &str, stream: &str, line: &str) {
-        if let Err(e) =
-            self.db
-                .append_job_logs(id, Self::now(), &[(stream.to_string(), line.to_string())])
-        {
+        if let Err(e) = self.db.append_job_logs(
+            id,
+            crate::time_fmt::unix_now(),
+            &[(stream.to_string(), line.to_string())],
+        ) {
             tracing::warn!(job = id, error = %e, "作业日志写入失败");
         }
     }
@@ -474,14 +468,17 @@ impl JobService {
             .iter()
             .map(|l| (stream.to_string(), l.clone()))
             .collect();
-        if let Err(e) = self.db.append_job_logs(id, Self::now(), &entries) {
+        if let Err(e) = self
+            .db
+            .append_job_logs(id, crate::time_fmt::unix_now(), &entries)
+        {
             tracing::warn!(job = id, error = %e, "作业日志批量写入失败");
         }
     }
 
     pub fn finish_ok(&self, id: &str, line: &str, result: Value) {
         self.note(id, line);
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         let duration = self.duration_ms(id, now);
         if let Err(e) = self.db.finish_job(
             id,
@@ -499,7 +496,7 @@ impl JobService {
 
     pub fn finish_err(&self, id: &str, class: &str, detail: &str) {
         self.note(id, &format!("失败：{detail}"));
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         let duration = self.duration_ms(id, now);
         if let Err(e) = self.db.finish_job(
             id,
@@ -519,7 +516,7 @@ impl JobService {
     /// `stdout`/`stderr` 恰恰是复查与编排要用的东西，用 `finish_err` 会丢成 `{}`。
     pub fn finish_err_result(&self, id: &str, class: &str, detail: &str, result: Value) {
         self.note(id, &format!("失败：{detail}"));
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         let duration = self.duration_ms(id, now);
         if let Err(e) = self.db.finish_job(
             id,
@@ -537,7 +534,7 @@ impl JobService {
 
     pub fn finish_cancelled(&self, id: &str, detail: &str) {
         self.note(id, detail);
-        let now = Self::now();
+        let now = crate::time_fmt::unix_now();
         let duration = self.duration_ms(id, now);
         if let Err(e) = self.db.finish_job(
             id,
@@ -656,7 +653,7 @@ impl JobService {
 
     /// 清理终态作业（提交时与启动时各一次），失败静默。
     pub fn prune_quietly(&self) {
-        let cutoff = Self::now() - JOB_RETENTION_DAYS * 86_400;
+        let cutoff = crate::time_fmt::unix_now() - JOB_RETENTION_DAYS * 86_400;
         if let Err(e) = self.db.prune_jobs(cutoff, JOB_KEEP_MAX) {
             tracing::debug!(error = %e, "清理过期作业失败");
         }

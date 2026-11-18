@@ -44,9 +44,13 @@ pub fn is_posix_absolute(raw: &str) -> bool {
 /// `/etc/a/../b` 含父目录段；`/etc/a..b` 只是一个名字里带两个点的普通文件。
 /// 子串判定会把后者一并拒掉，那是误杀。
 pub fn has_parent_segment(raw: &str) -> bool {
-    Path::new(raw)
-        .components()
-        .any(|c| matches!(c, Component::ParentDir))
+    has_parent_component(Path::new(raw))
+}
+
+/// 与 [`has_parent_segment`] 同一判定，供已持有 `Path` 的调用方直接复用
+/// （避免转成字符串后丢失非 UTF-8 信息）。
+pub fn has_parent_component(path: &Path) -> bool {
+    path.components().any(|c| matches!(c, Component::ParentDir))
 }
 
 /// 目录尾斜杠归一（`/` 自身保留），避免拼出 `//`。

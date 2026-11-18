@@ -590,7 +590,7 @@ impl AdminFs {
         if raw.is_empty() {
             return Err(FsError::Denied("路径不能为空".into()));
         }
-        if raw.contains('\0') || raw.contains("..") {
+        if raw.contains('\0') || skiff_model::has_parent_segment(raw) {
             return Err(FsError::Denied("路径含非法片段".into()));
         }
         let p = Path::new(raw);

@@ -12,13 +12,16 @@
 
 > 每条只留结论与影响；现象级证据见 git 历史（2026-11-14 审计原稿）。
 
-1. **（S1）JSON DTO 直接依赖 SSR 展示模型**：`/ui/v1` 以 `templates::RuntimeRow` 等展示结构为输入，删/改模板字段会同时改 API 输出。→ 批次 1.2（与 [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) §3 问题 1 同一动作）。
+1. **（S1，行装配已处理 2026-11-19）JSON DTO 直接依赖 SSR 展示模型**：`/ui/v1` 曾以 `templates::RuntimeRow` 等展示结构为输入；现已改为消费 `app/src/views/*` 读模型，模板与 DTO 各自映射。读路径编排仍见条目 2。
 2. **（S1）读路径两套编排**：站点列表、运行环境详情 SSR 与 `/ui/v1` 各写一遍查询/聚合；写路径已复用命令层。→ 批次 1.2。
 3. **（S2）审计口径缺口**：TOTP 启用 JSON 写审计、SSR 不写；公钥操作未记录真实来源 ip。→ 批次 2.3。
 4. **（S2）RPC 错误靠字符串猜内核状态码**：`PluginError` 仅 `Rejected` 映射 400、其余 500，与 RPC 路径字符串解析出的 503 语义不对称。→ 批次 1.3。
 5. **（S2）DTO 冻结没有编译期/测试期约束**：字段冻结靠用例与文档约定。→ 批次 1.1。
 6. **（S3）同一日志查询在 SSR 与 JSON 的参数名不同**（`part`/`tail`/`q` vs 表单名）。→ 收尾时统一或在契约里写明映射。
 7. **（S3）schema 运行期校验失败返回 500**：应为 400/409 + 稳定错误码。→ 批次 2.1。
+8. **（S2，2026-11-19）`SiteError → AppError` 映射 4 份且口径不一**：`handlers/sites.rs::map_err`（`Field(_,inner)`→Internal）、`ui/mod.rs::site_write_err`（→BadRequest）、`ui/mod.rs::site_api_error`（递归 inner）、`jobs.rs::retry` 内联（→Internal）——同一领域错误三条 HTTP 结论。→ 批次 2.4（先定 `Field` 错误的正确语义，再在 `error.rs` 收一个 `From`）。
+9. **（S3，2026-11-19）web 内小重复**：插件确认页装配两份（`plugins.rs` vs `store.rs`）、公钥导入两份（`settings.rs` vs `ui/settings.rs`）、运行环境健康计数两份（`dashboard.rs` vs `ui/overview.rs`）、`ui/containers.rs` 手写与 `ui/mod.rs::paginate` 逐行相同的 keyset 算法、`LoginBody` 两份、运行环境安装文案两份。→ 批次 2.4 顺带。
+10. **（S3，2026-11-19）视图层残留判定**：`store.rs::load_view` 内联「已装版本高于目录可装版本则拒绝降级」（后端同判两处）→ 移 `skiff_app::catalog` 读模型；`labels.rs` 自述「唯一映射」但状态中文散在 `ui/mod.rs`/`sites.rs`/`jobs.rs`（补收或改自述）。
 
 ## 3. 待决策批次（需要先定契约）
 
@@ -30,6 +33,7 @@
 | 2.1 | 错误码细分：schema 校验失败改 400/409 并给稳定码 | 与商店安装侧统一 |
 | 2.2 | 旧 SSR 实现退役时间表 | 双实现长期共存还是逐页删除（删除前确认无排序耦合，见未验证 4） |
 | 2.3 | 审计来源补全（TOTP、公钥操作真实 ip） | 审计内容变化需在 TEST_MATRIX 补断言 |
+| 2.4 | 错误映射与小重复收敛（未闭环 8/9/10）：`error.rs` 收 `From<SiteError>`、确认页/公钥导入/健康计数合单 | `Field` 错误的 HTTP 语义（400 vs 500）；合单后文案归属 |
 
 ## 4. 未验证项
 

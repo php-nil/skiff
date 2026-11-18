@@ -1,39 +1,16 @@
 //! 清单验签：签名对象是 `manifest.json` 的**原始字节**，前缀域固定，
-//! `key_id = sha256(公钥)` 小写十六进制。判定规则与服务端
-//! `tools/skiff-server/src/sign.rs` 一致，任何不一致都按验签失败处理。
+//! `key_id = sha256(公钥)` 小写十六进制。域前缀、key_id 与签名输入由
+//! `skiff-sign` 唯一实现，发布工具与内核共用同一份协议。
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
 
 use super::model::{Manifest, SignatureFile};
 
-pub const SIGNING_DOMAIN: &[u8] = b"SKIFF-SERVER-MANIFEST-v1\0";
+pub use skiff_sign::{key_id_of, parse_public_key, signing_input, SIGNING_DOMAIN};
 
 /// 内置公钥。仓库**不放真实私钥**，因此这里默认没有可用的内置公钥：
 /// 未配置 `catalog.public_key` 时只能接受未签名渠道（且需开发模式显式允许）。
 pub const BUILTIN_PUBLIC_KEY: Option<&str> = None;
-
-pub fn parse_public_key(raw: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(raw.trim()).map_err(|_| "公钥必须是十六进制".to_string())?;
-    let bytes: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| "公钥必须是 32 字节（64 位十六进制）".to_string())?;
-    // 提前拒绝非法曲线点，避免配置写错直到拉取时才报错。
-    VerifyingKey::from_bytes(&bytes).map_err(|_| "公钥不是合法 Ed25519 点".to_string())?;
-    Ok(bytes)
-}
-
-pub fn key_id_of(public_key: &[u8; 32]) -> String {
-    hex::encode(Sha256::digest(public_key))
-}
-
-pub fn signing_input(manifest_bytes: &[u8]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(SIGNING_DOMAIN.len() + manifest_bytes.len());
-    input.extend_from_slice(SIGNING_DOMAIN);
-    input.extend_from_slice(manifest_bytes);
-    input
-}
 
 /// 校验清单签名。任何一步不符都返回可读原因，调用方必须拒绝使用该清单。
 pub fn verify_manifest(

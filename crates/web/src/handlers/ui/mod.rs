@@ -181,7 +181,7 @@ fn container_item(c: &skiff_docker::client::ContainerRow) -> ContainerItem {
     }
 }
 
-fn network_item(v: crate::templates::NetworkRowView) -> NetworkItem {
+fn network_item(v: skiff_app::views::resources::NetworkRow) -> NetworkItem {
     NetworkItem {
         id: v.id,
         name: v.name,
@@ -313,7 +313,7 @@ fn plugin_status_label(status: &str, enabled: bool, running: bool) -> &'static s
     }
 }
 
-fn plugin_item(view: crate::templates::PluginView) -> PluginItem {
+fn plugin_item(view: skiff_app::views::plugins::PluginRow) -> PluginItem {
     PluginItem {
         status: StatusDto {
             code: view.status.clone(),

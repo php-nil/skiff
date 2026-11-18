@@ -3,6 +3,8 @@
 //! 这里只做「取数 + 领域派生」，不含路由、模板与 JSON 形状；web 层负责把结果
 //! 映射成 `SiteView` / DTO，避免同一页面与 UI 接口各写一套过滤与派生逻辑。
 
+pub mod plugins;
+pub mod resources;
 pub mod runtimes;
 pub mod settings;
 pub mod sites;

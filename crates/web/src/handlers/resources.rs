@@ -86,71 +86,6 @@ pub async fn remove_image(
     )))
 }
 
-pub(crate) fn network_view(n: skiff_docker::NetworkRow) -> crate::templates::NetworkRowView {
-    use crate::templates::{NetworkContainerView, NetworkRowView};
-
-    let builtin = n.builtin();
-    let can_remove = n.can_remove();
-    // 未知（Docker 未返回）必须显式显示「未知」，不能显示 0 或留空。
-    let ipam_driver = match n.ipam_driver.as_deref() {
-        Some(d) if !d.is_empty() => d.to_string(),
-        Some(_) => "未知".to_string(),
-        None => "未知".to_string(),
-    };
-    let subnet = match n.subnets.as_ref() {
-        Some(v) if v.is_empty() => "—（无子网）".to_string(),
-        Some(v) => v.join("，"),
-        None => "未知".to_string(),
-    };
-    let gateway = match n.gateways.as_ref() {
-        Some(v) if v.is_empty() => "—（无网关）".to_string(),
-        Some(v) => v.join("，"),
-        None => "未知".to_string(),
-    };
-    let internal = match n.internal {
-        Some(true) => "内部".to_string(),
-        Some(false) => "外部".to_string(),
-        None => "未知".to_string(),
-    };
-    let attachable = match n.attachable {
-        Some(true) => "可附加".to_string(),
-        Some(false) => "不可附加".to_string(),
-        None => "未知".to_string(),
-    };
-    let containers_known = n.containers.is_some();
-    let container_count = match n.containers.as_ref() {
-        Some(v) => format!("{} 个", v.len()),
-        None => "未知".to_string(),
-    };
-    let containers = n
-        .containers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| NetworkContainerView {
-            name: c.container,
-            ipv4: c.ipv4.unwrap_or_else(|| "—".into()),
-            ipv6: c.ipv6.unwrap_or_else(|| "—".into()),
-            mac: c.mac.unwrap_or_else(|| "—".into()),
-        })
-        .collect();
-    NetworkRowView {
-        id: n.id,
-        name: n.name,
-        driver: n.driver,
-        scope: n.scope,
-        ipam_driver,
-        subnet,
-        gateway,
-        internal,
-        attachable,
-        container_count,
-        containers_known,
-        containers,
-        builtin,
-        can_remove,
-    }
-}
-
 /// 网络/卷名：只允许字母数字与 `_-.`（旧页面与 `/ui/v1` 共用同一判定）。
 pub(crate) fn validate_name(kind: &str, name: &str) -> Result<(), AppError> {
     if name.is_empty()
@@ -293,8 +228,6 @@ pub(crate) use crate::error::map_docker_cmd as map_err;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     fn row(name: &str, id: &str) -> skiff_docker::NetworkRow {
         skiff_docker::NetworkRow {
             id: id.into(),
@@ -311,9 +244,9 @@ mod tests {
     }
 
     #[test]
-    fn builtin_networks_cannot_be_removed_from_view() {
-        // 判定在 `NetworkRow`，视图只消费 can_remove。
-        assert!(!network_view(row("bridge", "abc")).can_remove);
-        assert!(network_view(row("app-net", "def")).can_remove);
+    fn builtin_networks_cannot_be_removed() {
+        // 判定在 `NetworkRow`；视图层只消费 can_remove。
+        assert!(!skiff_app::views::resources::network_row(row("bridge", "abc")).can_remove);
+        assert!(skiff_app::views::resources::network_row(row("app-net", "def")).can_remove);
     }
 }

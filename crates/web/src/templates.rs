@@ -15,7 +15,7 @@ pub struct PageCtx {
     pub must_change: bool,
     pub active: String,
     /// 合并后的三级菜单（固定一级 + 内置二级 + 插件声明 + 用户偏好）。
-    pub menu: crate::menu::PageMenu,
+    pub menu: skiff_app::menu::PageMenu,
     /// 是否管理员（「设置 → 信任公钥」只对管理员出现）。
     pub is_admin: bool,
     /// 顶栏「插件菜单」：已启用且有 UI 入口的插件（manifest `[[ui]].label` 当菜单名）。
@@ -69,24 +69,7 @@ pub struct ContainerRowView {
 pub struct PluginView {
     pub id: String,
     pub name: String,
-    pub version: String,
-    pub api: String,
-    pub status: String,
-    pub enabled: bool,
-    /// 完整公钥指纹（信息页展示；空串 = 未签名包）。
-    pub key_id_full: String,
-    pub grants: String,
-    /// manifest `requires`（宿主能力面，如 docker/identity）。
-    pub requires: String,
-    /// manifest `permissions`（动作面，如 fs:read）。
-    pub permissions: String,
-    pub signed: bool,
-    pub reduced: bool,
     pub running: bool,
-    /// manifest `[[ui]]` 的第一个入口（相对 `ui/` 的路径）；空串表示无 UI。
-    pub ui_path: String,
-    /// 已安装版本被服务端撤包/吊销时的提示（来自本地签名索引快照，不触网）。
-    pub takedown_note: String,
 }
 
 /// 概览「需要处理」的一条待办：按影响排序后渲染，链接直达已筛选的目标页。
@@ -463,10 +446,10 @@ pub struct DashboardPage {
     pub todos: Vec<DashboardTodo>,
     pub audit: Vec<AuditRow>,
     /// `overview.health` 槽位挂载；非空时替换内核默认健康块。
-    pub mounts_health: Vec<crate::menu::MountView>,
+    pub mounts_health: Vec<skiff_app::menu::MountView>,
     /// `overview.actions` / `overview.side` 槽位挂载。
-    pub mounts_actions: Vec<crate::menu::MountView>,
-    pub mounts_side: Vec<crate::menu::MountView>,
+    pub mounts_actions: Vec<skiff_app::menu::MountView>,
+    pub mounts_side: Vec<skiff_app::menu::MountView>,
     pub error: String,
 }
 
@@ -587,33 +570,6 @@ pub struct ComposePage {
     pub projects: Vec<ComposeProjectView>,
     pub selected_project: String,
     pub services: Vec<ComposeServiceView>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NetworkRowView {
-    pub id: String,
-    pub name: String,
-    pub driver: String,
-    pub scope: String,
-    pub ipam_driver: String,
-    pub subnet: String,
-    pub gateway: String,
-    pub internal: String,
-    pub attachable: String,
-    pub container_count: String,
-    pub containers_known: bool,
-    pub containers: Vec<NetworkContainerView>,
-    /// Docker 预定义网络（bridge/host/none）；删除按钮只看 `can_remove`。
-    pub builtin: bool,
-    pub can_remove: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct NetworkContainerView {
-    pub name: String,
-    pub ipv4: String,
-    pub ipv6: String,
-    pub mac: String,
 }
 
 #[derive(Debug, Clone)]

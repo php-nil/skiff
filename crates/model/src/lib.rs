@@ -21,6 +21,7 @@ mod path;
 mod rbac;
 mod scope;
 mod site;
+pub mod url;
 mod verb;
 pub use cidr::Cidr;
 pub use container::{
@@ -30,8 +31,8 @@ pub use container::{
 pub use error::{ErrorCategory, ErrorCode};
 pub use exec::{bin_name, bin_risk, is_root_equivalent, is_wrapper_bin, BinRisk, BIN_PREFIX};
 pub use path::{
-    any_root_contains, has_parent_segment, hits_a_root_itself, is_absolute, is_posix_absolute,
-    is_root_path, normalize_dir, parent_within, within, within_any, within_root,
+    any_root_contains, has_parent_component, has_parent_segment, hits_a_root_itself, is_absolute,
+    is_posix_absolute, is_root_path, normalize_dir, parent_within, within, within_any, within_root,
 };
 pub use rbac::{Permission, RoleExt};
 pub use scope::{Scope, ScopeSet};

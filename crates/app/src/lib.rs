@@ -18,7 +18,6 @@ pub mod docker_daemon;
 pub mod host;
 pub mod jobs;
 pub mod menu;
-pub mod mirror_probe;
 pub mod nginx;
 pub mod panel_settings;
 pub mod runtime_catalog;
@@ -678,7 +677,7 @@ impl CurrentUser {
         self.user.role
     }
     pub fn is_admin(&self) -> bool {
-        self.user.role == Role::Admin
+        self.role().is_admin()
     }
     /// 角色→权限判定：查 `skiff_model::Permission` 这张唯一的矩阵。
     ///

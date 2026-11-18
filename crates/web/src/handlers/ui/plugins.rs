@@ -11,7 +11,8 @@ pub async fn plugins(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
-    let mut views = handlers::plugins::plugin_views(&state).map_err(ApiError)?;
+    let mut views =
+        skiff_app::views::plugins::plugin_rows(&state).map_err(|e| ApiError(AppError::from(e)))?;
     for v in views.iter_mut() {
         v.running = state.supervisor().is_running(&v.id).await;
     }
@@ -43,12 +44,13 @@ pub async fn plugin_info(
         .plugin(&id)
         .map_err(|e| ApiError(AppError::from(e)))?
         .ok_or_else(|| ApiError(AppError::NotFound(format!("插件不存在: {id}"))))?;
-    let mut view = handlers::plugins::plugin_view(&state, &rec).map_err(ApiError)?;
+    let mut view = skiff_app::views::plugins::plugin_row(&state, &rec)
+        .map_err(|e| ApiError(AppError::from(e)))?;
     view.running = state.supervisor().is_running(&view.id).await;
     let manifest = skiff_pkgfmt::Manifest::parse(&rec.manifest).ok();
     let (menus, entry_href) = manifest
         .as_ref()
-        .map(|m| crate::menu::plugin_info_menu(&state, &user, &id, m))
+        .map(|m| skiff_app::menu::plugin_info_menu(&state, &user, &id, m))
         .unwrap_or_default();
     let (interop_provides, interop_consumes) = manifest
         .as_ref()

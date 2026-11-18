@@ -12,7 +12,7 @@
 
 | 路径 | 类型 | 说明 |
 | --- | --- | --- |
-| `crates/` | 子项目 | 根 workspace 的 17 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`） |
+| `crates/` | 子项目 | 根 workspace 的 18 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`） |
 | `plugins/` | 子项目 | 第二 workspace（`exclude = ["plugins"]`）：`common`、6 个官方插件、testkit 与 `pack.sh` |
 | `xtask/` | 工具 | `check`（1Panel 变量、Compose 字段子集）与 `verify-pkg` |
 | `tools/` | 工具 | `bin/`（`cargo.cmd` / `git.cmd` 闸门）、`gate.ps1`、`linux-check.sh`、`iter.sh`、`perf/`、`skiff-server/` |

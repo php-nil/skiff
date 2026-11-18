@@ -268,14 +268,6 @@ pub(crate) fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<(
     Ok(())
 }
 
-/// 只在文件缺失时写入：环境 `app/` 是用户的真实代码目录，重建/克隆不得覆盖已有文件。
-pub(crate) fn seed_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    if path.exists() {
-        return Ok(());
-    }
-    write_if_changed(path, bytes, mode)
-}
-
 /// Windows 上杀软/索引服务短暂占用刚写入的文件时 `remove_dir_all` 会返回
 /// `Directory not empty`（os error 145）；用有界退避重试，最终仍失败才报错。
 pub(crate) fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {

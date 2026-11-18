@@ -24,14 +24,14 @@ pub mod ui;
 use std::collections::HashMap;
 
 use askama::Template;
-use axum::http::header::{CONTENT_TYPE, COOKIE, HOST};
+use axum::http::header::{CONTENT_TYPE, HOST};
 use axum::http::request::Parts;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 
 use crate::error::AppError;
 use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::templates::PageCtx;
-use crate::util::{form_first, parse_form};
+use crate::util::form_first;
 
 /// 在 tokio 阻塞线程池执行同步文件操作。
 ///
@@ -92,7 +92,7 @@ pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
         docker_ok: state.docker().available(),
         must_change: user.must_change_password(),
         active: active.to_string(),
-        menu: crate::menu::build(state, user, active),
+        menu: skiff_app::menu::build(state, user, active),
         is_admin,
         nav_plugins,
         flash_notice,
@@ -155,12 +155,6 @@ pub fn flash_redirect(
 pub fn settings_error_redirect(state: &AppState, user: &CurrentUser, message: &str) -> String {
     state.push_flash(&user.session_id, skiff_app::FlashKind::Error, message);
     format!("/{}/settings", state.cfg.entry_prefix)
-}
-
-/// 解析表单体。大小上限由 axum 默认 body 限制（2MB）兜底——表单只承载 CSRF 与少量字段，
-/// 远超所需；插件包上传走独立路由并显式抬升上限（见 `router()` 里的 `DefaultBodyLimit`）。
-pub async fn read_form(body: String) -> HashMap<String, Vec<String>> {
-    parse_form(&body)
 }
 
 pub fn field(form: &HashMap<String, Vec<String>>, key: &str) -> String {
@@ -341,10 +335,6 @@ fn origin_is_panel(origin: &str, host: &str, dev_http: bool, external_url: Optio
     }
     !host.is_empty()
         && (origin == format!("https://{host}") || (dev_http && origin == format!("http://{host}")))
-}
-
-pub fn cookie_header(name: &str, value: &str) -> (axum::http::HeaderName, String) {
-    (COOKIE, format!("{name}={value}"))
 }
 
 pub fn host_header(parts: &Parts) -> String {

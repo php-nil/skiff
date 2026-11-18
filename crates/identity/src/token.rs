@@ -17,6 +17,17 @@ pub enum SignedTokenError {
     Expired,
 }
 
+impl std::fmt::Display for SignedTokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid => write!(f, "签名令牌无效"),
+            Self::Expired => write!(f, "签名令牌已过期"),
+        }
+    }
+}
+
+impl std::error::Error for SignedTokenError {}
+
 /// 生成 `<nonce>.<unix_ts>.<hmac>` 形式的签名 token。
 ///
 /// 签名密钥由调用方提供（登录 CSRF 用持久化的 `security.csrf_secret`），

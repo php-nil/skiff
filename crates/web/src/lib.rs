@@ -12,7 +12,6 @@ pub mod authz;
 pub mod error;
 pub mod handlers;
 pub mod labels;
-pub mod menu;
 pub mod middleware;
 mod templates;
 pub mod util;
@@ -68,7 +67,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     // ---- 内核「文件管理」：管理员侧 fs 服务 + 页面（第一步浏览/编辑）----
     // 单独成组挂形态门禁：受限形态（`SKIFF_FORM=docker`）能力面只有 docker/identity，
-    // 没有 fs，页面与 API 直达一律 403（入口由 `menu::declarations` 按形态隐藏）。
+    // 没有 fs，页面与 API 直达一律 403（入口由 `skiff_app::menu::declarations` 按形态隐藏）。
     let files = Router::new()
         .route(&format!("/{p}/files"), get(handlers::files::page))
         // 页面内 JSON 接口与页面路径同构，不额外插 `api` 段（URL 契约 §4）。
@@ -519,7 +518,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         // `/{p}/m/*` 只剩两条：`overview` 概览 SSR（插件槽位迁完即删）与 `plugin/*`
         // 插件工作台；`core/*` 旧 SSR 深链已删除并返回 404。
-        .route(&format!("/{p}/m/{{*rest}}"), get(handlers::menu::dispatch))
+        .route(skiff_model::url::MENU_ROUTE, get(handlers::menu::dispatch))
         // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。
         .route(&format!("/{p}/static/{{*path}}"), get(assets::static_file))
         .route(

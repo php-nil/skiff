@@ -25,6 +25,7 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 toml = { workspace = true }
 # 商店目录（P1 只读接入）：验签与内容寻址
+skiff-sign = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

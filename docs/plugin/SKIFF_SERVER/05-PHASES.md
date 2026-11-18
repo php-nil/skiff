@@ -93,7 +93,7 @@ sha256(公钥)`），启动或载入缓存时与当前配置不一致即丢弃�
 | `crates/app/src/catalog/store.rs` | 缓存原子读写与 `meta.json` |
 | `crates/app/src/catalog/mod.rs` | `CatalogService`：按镜像回退、条件请求、状态机 |
 | `crates/web/src/handlers/store.rs` + `crates/web/src/handlers/ui/store.rs` | 只读商店数据（`/ui/v1/store`，登录即可访问），页面由 budding 壳渲染 |
-| `crates/web/src/menu.rs` | 仅 `enabled` 时追加「插件 → 商店」菜单项 |
+| `crates/app/src/menu.rs` | 仅 `enabled` 时追加「插件 → 商店」菜单项 |
 
 ### 11.5 已覆盖测试
 

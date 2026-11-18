@@ -72,7 +72,7 @@ pub async fn networks(
             .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?
             .into_iter()
             .map(|n| {
-                let item = network_item(handlers::resources::network_view(n));
+                let item = network_item(skiff_app::views::resources::network_row(n));
                 (item.id.clone(), item)
             })
             .collect()

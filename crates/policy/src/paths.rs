@@ -11,7 +11,7 @@
 //! （≥5.6）后配合巡检。对外不得声称已消除 TOCTOU。
 
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use skiff_model::within_root;
 
@@ -43,6 +43,8 @@ impl std::fmt::Display for PathError {
         }
     }
 }
+
+impl std::error::Error for PathError {}
 
 #[derive(Debug, Clone, Default)]
 pub struct PathGuard {
@@ -164,16 +166,8 @@ impl PathGuard {
 }
 
 fn reject_parent_components(p: &Path) -> Result<(), PathError> {
-    for c in p.components() {
-        match c {
-            Component::ParentDir => {
-                return Err(PathError::ParentTraversal(p.display().to_string()))
-            }
-            Component::Prefix(_)
-            | Component::RootDir
-            | Component::CurDir
-            | Component::Normal(_) => {}
-        }
+    if skiff_model::has_parent_component(p) {
+        return Err(PathError::ParentTraversal(p.display().to_string()));
     }
     Ok(())
 }
@@ -233,7 +227,7 @@ pub fn open_dir_nofollow(root: &Path, rel: &Path) -> Result<std::fs::File, PathE
         )));
     }
     for comp in rel.components() {
-        let Component::Normal(name) = comp else {
+        let std::path::Component::Normal(name) = comp else {
             unsafe { libc::close(fd) };
             return Err(PathError::ParentTraversal(rel.display().to_string()));
         };

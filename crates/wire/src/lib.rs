@@ -135,7 +135,7 @@ impl RpcFailure {
 /// 从 SDK 固定文案里提取「内核返回 HTTP <code>」。
 ///
 /// 只认这一固定片段，并校验 100..=599，避免把业务文案里的端口/计数误判成状态码。
-pub fn upstream_status_of(message: &str) -> Option<u16> {
+pub(crate) fn upstream_status_of(message: &str) -> Option<u16> {
     let (_, tail) = message.split_once("内核返回 HTTP ")?;
     let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits

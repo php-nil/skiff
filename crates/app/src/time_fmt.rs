@@ -19,8 +19,8 @@ pub fn epoch_to_rfc3339_utc(epoch_secs: i64) -> Option<String> {
 
 /// 当前 Unix 秒。系统时间早于 1970 时返回 0（与各处历史实现一致）。
 ///
-/// 全仓唯一的「取当前 epoch 秒」入口：登录、站点安装进度、站点 CRUD 都从这里取，
-/// 避免各自复制一份 `SystemTime::now()` 换算。
+/// `skiff-app` 内「取当前 epoch 秒」的统一入口：登录、作业、站点安装进度、站点 CRUD、
+/// 运行环境巡检都从这里取，避免各自复制一份 `SystemTime::now()` 换算。
 pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

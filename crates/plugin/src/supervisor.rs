@@ -918,7 +918,7 @@ mod hex {
         hex_encode(&buf)
     }
     fn hex_encode(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
+        ::hex::encode(b)
     }
 }
 

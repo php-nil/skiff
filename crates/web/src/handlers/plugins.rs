@@ -32,68 +32,14 @@ const PLUGIN_UI_CSP: &str =
      img-src 'self' data:; connect-src 'none'; form-action 'none'; base-uri 'none'; \
      object-src 'none'; frame-ancestors 'self'";
 
-/// 一条插件记录 → 列表/详情通用的视图。
+/// 一条插件记录 → 工作台需要的少量视图字段（其余管理信息走 `/ui/v1` 的 app 读模型）。
 pub(crate) fn plugin_view(state: &AppState, p: &PluginRecord) -> Result<PluginView, AppError> {
-    let signed = !p.key_id.is_empty() && state.db().trusted_key(&p.key_id)?.is_some();
-    let manifest = Manifest::parse(&p.manifest).ok();
-    let reduced = manifest
-        .as_ref()
-        .map(|m| !m.requires_full_sandbox)
-        .unwrap_or(true);
-    let ui = manifest.as_ref().and_then(|m| m.ui.first());
+    let r = skiff_app::views::plugins::plugin_row(state, p)?;
     Ok(PluginView {
-        id: p.id.clone(),
-        name: p.name.clone(),
-        version: p.version.clone(),
-        api: p.api.clone(),
-        status: p.status.clone(),
-        enabled: p.enabled,
-        key_id_full: p.key_id.clone(),
-        grants: p
-            .grants
-            .iter()
-            .map(|g| format!("{}:{}", g.kind, g.value))
-            .collect::<Vec<_>>()
-            .join(", "),
-        requires: manifest
-            .as_ref()
-            .map(|m| m.requires_str().join(", "))
-            .unwrap_or_default(),
-        permissions: manifest
-            .as_ref()
-            .map(|m| m.permission_strings().join(", "))
-            .unwrap_or_default(),
-        signed,
-        reduced,
-        running: false,
-        ui_path: ui.map(|u| u.path.clone()).unwrap_or_default(),
-        takedown_note: {
-            // 已装版本被撤包时给出明确升级指向：有可安装新版本就报版本号，
-            // 没有就说明当前无可装版本（不把用户留到点「安装」才被拒）。
-            let mut note = state
-                .catalog()
-                .cached_takedown(&p.id, &p.version)
-                .unwrap_or_default();
-            if !note.is_empty() {
-                match state.catalog().cached_installable_version(&p.id) {
-                    Some(v) if skiff_plugin::install::version_gt(&v, &p.version) => {
-                        note.push_str(&format!("；请升级到 {v}"))
-                    }
-                    _ => note.push_str("；当前没有可安装的新版本"),
-                }
-            }
-            note
-        },
+        id: r.id,
+        name: r.name,
+        running: r.running,
     })
-}
-
-pub(crate) fn plugin_views(state: &AppState) -> Result<Vec<PluginView>, AppError> {
-    state
-        .db()
-        .list_plugins()?
-        .iter()
-        .map(|p| plugin_view(state, p))
-        .collect()
 }
 
 /// manifest 里的插件间接口：`(对外提供的 method · label, 允许调用的目标列表)`。
@@ -154,11 +100,12 @@ pub async fn view(
         .db()
         .plugin(&id)?
         .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
-    let wb = crate::menu::resolve_plugin_view(&state, &user, &id, &view_name).ok_or_else(|| {
-        AppError::NotFound(format!(
-            "插件 {id} 不存在视图 {view_name}，或该视图对当前角色不可见"
-        ))
-    })?;
+    let wb =
+        skiff_app::menu::resolve_plugin_view(&state, &user, &id, &view_name).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "插件 {id} 不存在视图 {view_name}，或该视图对当前角色不可见"
+            ))
+        })?;
     render_workbench(&state, &user, &rec, wb, q.get("open").map(String::as_str)).await
 }
 
@@ -177,16 +124,23 @@ pub async fn menu_view(
         .plugin(&id)?
         .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
     let wb = match l2_raw.as_deref() {
-        None => crate::menu::default_plugin_view(&state, &user, &id),
+        None => skiff_app::menu::default_plugin_view(&state, &user, &id),
         Some(raw) => {
-            let resolved = crate::menu::workbench_tabs(&state, &user, &id, raw, l3_raw.as_deref());
+            let resolved =
+                skiff_app::menu::workbench_tabs(&state, &user, &id, raw, l3_raw.as_deref());
             if resolved.is_some() {
                 resolved
-            } else if crate::menu::menu_local(&id, raw).as_deref() == Some("legacy") {
+            } else if skiff_app::menu::menu_local(&id, raw).as_deref() == Some("legacy") {
                 // 老深链降级：按 manifest 顺序尝试首个可解析的可见 L2。
                 Manifest::parse(&rec.manifest).ok().and_then(|m| {
                     m.menu.iter().find_map(|d| {
-                        crate::menu::workbench_tabs(&state, &user, &id, &d.id, l3_raw.as_deref())
+                        skiff_app::menu::workbench_tabs(
+                            &state,
+                            &user,
+                            &id,
+                            &d.id,
+                            l3_raw.as_deref(),
+                        )
                     })
                 })
             } else {
@@ -210,7 +164,7 @@ async fn render_workbench(
     state: &AppState,
     user: &crate::state::CurrentUser,
     rec: &PluginRecord,
-    wb: crate::menu::WorkbenchTabs,
+    wb: skiff_app::menu::WorkbenchTabs,
     open_raw: Option<&str>,
 ) -> Result<Response, AppError> {
     let mut plugin = plugin_view(state, rec)?;
@@ -483,14 +437,15 @@ pub(crate) async fn commit_install(
     opts: &skiff_plugin::InstallOptions,
     fail_id: &str,
 ) -> Result<(), AppError> {
-    let result = skiff_plugin::install_package(state.db(), &state.cfg.data_dir, path, opts);
-    let _ = std::fs::remove_file(path);
-    if result.is_ok() {
-        // manifest `[[task]]` 声明的内核任务随安装即时种入，不要求重启。
-        if let Some(tasks) = state.tasks() {
-            tasks.sync_manifest_tasks().await;
-        }
-    }
+    let tasks = state.tasks().cloned();
+    let result = skiff_app::commands::plugin::install_with_tasks(
+        state.db(),
+        &state.cfg.data_dir,
+        path,
+        opts,
+        tasks.as_ref(),
+    )
+    .await;
     match &result {
         Ok(info) => {
             state.audit_or_log(
@@ -499,12 +454,7 @@ pub(crate) async fn commit_install(
                 "plugin.install",
                 &info.id,
                 "ok",
-                &format!(
-                    "version={} key_id={} grants={}",
-                    info.version,
-                    info.key_id,
-                    info.grants.len()
-                ),
+                &skiff_app::commands::plugin::install_detail(info),
             );
         }
         Err(e) => {
@@ -601,8 +551,7 @@ pub(crate) async fn apply_toggle(
         .map_err(AppError::Internal)?;
     Ok(enable)
 }
-
-/// 卸载插件的共用实现：停进程 → 删包/数据 → 回收任务与菜单偏好 → 审计。
+/// 卸载插件的共用实现：停进程 → 命令层收尾（删包/回收任务/菜单偏好）→ 审计。
 pub(crate) async fn apply_remove(
     state: &Arc<AppState>,
     user: &crate::state::CurrentUser,
@@ -611,21 +560,23 @@ pub(crate) async fn apply_remove(
     ip: &str,
 ) -> Result<(), AppError> {
     state.supervisor().stop(id).await;
-    skiff_plugin::uninstall_package(state.db(), &state.cfg.data_dir, id, delete_data)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    // 卸载即回收该插件名下的内核任务；否则 source=plugin:<id> 的任务会指向不存在的插件。
-    if let Some(tasks) = state.tasks() {
-        tasks.drop_plugin_tasks(id).await;
-    }
-    // 契约 §2.6：卸载后清掉所有用户偏好里该插件的顺序/隐藏/固定残留。
-    crate::menu::cleanup_plugin_prefs(state.db(), id);
+    let tasks = state.tasks().cloned();
+    skiff_app::commands::plugin::remove_with_tasks(
+        state.db(),
+        &state.cfg.data_dir,
+        id,
+        delete_data,
+        tasks.as_ref(),
+    )
+    .await
+    .map_err(|e| AppError::BadRequest(e.to_string()))?;
     state.audit_or_log(
         &user.user.username,
         ip,
         "plugin.uninstall",
         id,
         "ok",
-        &format!("delete_data={delete_data}"),
+        &skiff_app::commands::plugin::uninstall_detail(delete_data),
     );
     Ok(())
 }
@@ -650,7 +601,7 @@ pub async fn toggle(
 
 fn safe_plugin_next(state: &AppState, raw: String) -> Option<String> {
     let expected = format!("/{}/plugins/", state.cfg.entry_prefix);
-    if raw.starts_with(&expected) && !raw.contains("..") && !raw.contains("//") {
+    if raw.starts_with(&expected) && !skiff_model::has_parent_segment(&raw) && !raw.contains("//") {
         Some(raw)
     } else {
         None
@@ -803,7 +754,7 @@ pub async fn plugin_ui(
         std::fs::canonicalize(&root).map_err(|_| AppError::NotFound("无 UI 资源".into()))?;
     let canon =
         std::fs::canonicalize(&target).map_err(|_| AppError::NotFound("资源不存在".into()))?;
-    if !canon.starts_with(&canon_root) || !canon.is_file() {
+    if !skiff_model::within_root(&canon_root, &canon) || !canon.is_file() {
         return Err(AppError::NotFound("资源不存在".into()));
     }
     let mut data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -842,7 +793,7 @@ pub async fn schema(
         return Err(AppError::NotFound("插件已停用".into()));
     }
     // 视图必须属于该插件且对当前角色可见（与菜单/工作台同源判定）。
-    crate::menu::resolve_plugin_view(&state, &user, &id, &view_name).ok_or_else(|| {
+    skiff_app::menu::resolve_plugin_view(&state, &user, &id, &view_name).ok_or_else(|| {
         AppError::NotFound(format!(
             "插件 {id} 不存在视图 {view_name}，或该视图对当前角色不可见"
         ))
@@ -862,7 +813,7 @@ pub async fn schema(
         .map_err(|_| AppError::NotFound("该插件没有 schema 目录".into()))?;
     let canon = std::fs::canonicalize(&target)
         .map_err(|_| AppError::NotFound(format!("schema 不存在: {name}")))?;
-    if !canon.starts_with(&canon_root) || !canon.is_file() {
+    if !skiff_model::within_root(&canon_root, &canon) || !canon.is_file() {
         return Err(AppError::NotFound(format!("schema 不存在: {name}")));
     }
     let data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;

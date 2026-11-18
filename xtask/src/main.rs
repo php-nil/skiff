@@ -131,6 +131,10 @@ fn check_channel() -> bool {
         if matches!(name, "atomic.rs" | "audit.rs") {
             continue;
         }
+        // 独立测试文件整份跳过：其中的临时文件操作不是产品路径。
+        if name == "tests.rs" {
+            continue;
+        }
         let hits = count_fs_writes(&before_tests(&text));
         if hits > 0 {
             files += 1;
@@ -154,9 +158,11 @@ fn check_channel() -> bool {
 
 /// 内核文件写的基线。**只能下调**：每迁一处到 `write_kernel` 就减一处。
 ///
-/// 2026-11-16 基线 141 → 140 处（9 个文件）：站点备份改走 exec 作业后，
-/// `File::create` 不再由内核自己做。迁移一处就减一处；**不得上调**。
-const FS_WRITE_BASELINE: Option<usize> = Some(140);
+/// 2026-11-19 重定 95 处（14 个文件）：计数口径补齐 `fs::write` 别名、
+/// `File::create`、`OpenOptions` 与 `write_atomic` 调用方，并整份跳过
+/// `tests.rs`；同日站点 vhost / 默认站点 / 环境脚手架已迁到 `write_kernel`。
+/// 迁移一处就减一处；**不得上调**。
+const FS_WRITE_BASELINE: Option<usize> = Some(95);
 
 /// 递归收集 `.rs` 文件。
 fn rust_files(dir: &Path) -> Vec<(PathBuf, String)> {
@@ -200,15 +206,22 @@ fn before_tests(text: &str) -> String {
     text[..cut].to_string()
 }
 
-/// 统计直接文件写（写 / 建目录 / 删 / 改名 / 复制）。
+/// 统计直接文件写（写 / 建目录 / 删 / 改名 / 复制）与底层写入口。
+///
+/// 口径（2026-11-19 重定）：除 `std::fs::*` 的别名写法（`use std::fs;` 后
+/// `fs::write(...)`）外，还计入 `File::create` / `OpenOptions` 与
+/// `write_atomic` 调用方——它们是同一件事的不同写法，漏计等于闸门失明。
 fn count_fs_writes(body: &str) -> usize {
     [
-        "std::fs::write",
-        "std::fs::create_dir_all",
-        "std::fs::remove_file",
-        "std::fs::remove_dir_all",
-        "std::fs::rename",
-        "std::fs::copy",
+        "fs::write",
+        "fs::create_dir_all",
+        "fs::remove_file",
+        "fs::remove_dir_all",
+        "fs::rename",
+        "fs::copy",
+        "File::create",
+        "OpenOptions",
+        "write_atomic",
     ]
     .iter()
     .map(|needle| body.matches(needle).count())

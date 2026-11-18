@@ -390,9 +390,9 @@ fn validate_mount_target(m: &Mount) -> Result<(), PolicyError> {
 
 /// 校验从 Docker 读到的 named volume 是否带宿主绑定语义（§6.4.3）。
 /// `o=bind` / `type=none` / `device=<host-path>` 一律按绑定挂载处理。
-pub fn volume_has_host_binding<S: std::hash::BuildHasher>(
+pub fn volume_has_host_binding(
     driver: &str,
-    opts: &std::collections::HashMap<String, String, S>,
+    opts: &std::collections::HashMap<String, String>,
 ) -> bool {
     if driver != "local" {
         return true;

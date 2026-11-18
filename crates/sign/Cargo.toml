@@ -1,0 +1,12 @@
+[package]
+name = "skiff-sign"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skiff（轻舟）· 商店清单签名协议：域前缀、key_id 与签名输入的唯一实现（Ed25519，零 I/O）"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

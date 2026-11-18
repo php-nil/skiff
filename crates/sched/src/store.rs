@@ -1,6 +1,7 @@
 //! 持久化边界的 trait 与内存实现。
 //!
-//! SQLite 接线时在 `skiff-store` 里实现同一个 trait 即可，调度器不需要知道表结构。
+//! SQLite 接线在 `skiff-app` 的 `tasks::store` 里实现同一个 trait（不在 `skiff-store`，
+//! 避免 store 反向依赖 sched），调度器不需要知道表结构。
 //! 运行历史与审计都由 store 负责保留策略（契约：运行历史 7 天、审计长期保留）。
 
 use std::collections::{BTreeMap, HashMap};

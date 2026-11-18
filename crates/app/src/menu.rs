@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use skiff_model::url::{entry_href, menu_href};
 use skiff_model::Form;
 
 use crate::{AppState, CurrentUser};
@@ -282,7 +283,7 @@ fn legacy_workbench(
                 } else {
                     u.label.clone()
                 },
-                href: format!("/{prefix}/m/{key}/{view}"),
+                href: menu_href(prefix, &format!("{key}/{view}")),
                 icon: icon_or_dot(u.icon.as_deref()),
                 tab: view.clone(),
                 ui: u.path.clone(),
@@ -334,7 +335,7 @@ fn declared_tabs(
                 key: format!("{key}/{}", it.id),
                 local: it.id.clone(),
                 label: it.label.clone(),
-                href: format!("/{prefix}/m/{key}/{}", it.id),
+                href: menu_href(prefix, &format!("{key}/{}", it.id)),
                 icon: icon_or_dot(it.icon.as_deref()),
                 tab: view.to_string(),
                 ui: view_file(view),
@@ -555,7 +556,7 @@ pub fn plugin_info_menu(
             } else {
                 first.label.clone()
             },
-            href: format!("/{prefix}/m/{key}"),
+            href: menu_href(prefix, &key),
             icon: icon_or_dot(first.icon.as_deref()),
             children: manifest
                 .ui
@@ -568,7 +569,7 @@ pub fn plugin_info_menu(
                     } else {
                         u.label.clone()
                     },
-                    href: format!("/{prefix}/m/{key}/{}", slug(&u.path, i)),
+                    href: menu_href(prefix, &format!("{key}/{}", slug(&u.path, i))),
                     icon: icon_or_dot(u.icon.as_deref()),
                 })
                 .collect(),
@@ -591,13 +592,13 @@ pub fn plugin_info_menu(
         }
         groups.push(InfoMenuGroup {
             label: decl.label.clone(),
-            href: format!("/{prefix}/m/{key}"),
+            href: menu_href(prefix, &key),
             icon: icon_or_dot(decl.icon.as_deref()),
             children: ordered
                 .iter()
                 .map(|it| InfoMenuLink {
                     label: it.label.clone(),
-                    href: format!("/{prefix}/m/{key}/{}", it.id),
+                    href: menu_href(prefix, &format!("{key}/{}", it.id)),
                     icon: icon_or_dot(it.icon.as_deref()),
                 })
                 .collect(),
@@ -1105,7 +1106,7 @@ fn save_prefs(state: &AppState, user: &CurrentUser, prefs: &MenuPrefs) -> Result
 /// 角色/能力门过滤。
 fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
     let prefix = &state.cfg.entry_prefix;
-    let href = |path: &str| format!("/{prefix}/{path}");
+    let href = |path: &str| entry_href(prefix, path);
     let role = user.role().as_str();
 
     let mut root: Vec<Decl> = vec![
@@ -1115,7 +1116,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
             label: "概览".into(),
             icon: "overview".into(),
             order: 10,
-            href: href("m/overview"),
+            href: menu_href(prefix, "overview"),
             plugin: false,
             pinnable: false,
             default_visible: true,
@@ -1499,7 +1500,7 @@ fn plugin_menu_decls(
                     },
                     icon: icon_or_dot(u.icon.as_deref()),
                     order: 1000 + i as i32 * 10,
-                    href: format!("/{prefix}/m/{key}/{}", slug(&u.path, i)),
+                    href: menu_href(prefix, &format!("{key}/{}", slug(&u.path, i))),
                     plugin: true,
                     pinnable: true,
                     default_visible: true,
@@ -1514,7 +1515,7 @@ fn plugin_menu_decls(
             label,
             icon: icon_or_dot(ui.icon.as_deref()),
             order: legacy_order(plugin_id),
-            href: format!("/{prefix}/m/plugin/{plugin_id}/legacy"),
+            href: menu_href(prefix, &format!("plugin/{plugin_id}/legacy")),
             plugin: true,
             pinnable: true,
             default_visible: true,
@@ -1544,7 +1545,7 @@ fn plugin_menu_decls(
                     label: it.label.clone(),
                     icon: icon_or_dot(it.icon.as_deref()),
                     order: it.order,
-                    href: format!("/{prefix}/m/{key}/{local}"),
+                    href: menu_href(prefix, &format!("{key}/{local}")),
                     plugin: true,
                     pinnable: true,
                     default_visible: true,
@@ -1560,7 +1561,7 @@ fn plugin_menu_decls(
             label: d.label.clone(),
             icon: icon_or_dot(d.icon.as_deref()),
             order: d.order,
-            href: format!("/{prefix}/m/plugin/{plugin_id}/{}", d.id),
+            href: menu_href(prefix, &format!("plugin/{plugin_id}/{}", d.id)),
             plugin: true,
             pinnable: d.pinnable,
             default_visible: d.default_visible,

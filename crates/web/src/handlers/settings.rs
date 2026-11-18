@@ -7,11 +7,11 @@ use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::menu;
 use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::{AppState, CurrentUser};
 use crate::templates::{KeyRow, SettingsPage};
 use crate::util::{form_first, parse_form};
+use skiff_app::menu;
 
 pub async fn render_settings(
     state: &Arc<AppState>,

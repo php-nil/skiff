@@ -264,7 +264,7 @@ fs_quotas(quota_root TEXT PK, used_bytes INTEGER, updated_at)
 | 管理客户端 | `crates/app/src/admin_fs.rs` | 管理员主体调用原语；数据根硬拒；审计落 `audit` 表；256 KiB 编辑上限 |
 | Web 页面/API | `crates/web/src/handlers/files.rs` | `/{p}/files` 与 `/files/{list,read,write,mkdir,rename,remove}`（旧 `/files/api/*` 308 兼容）；Admin + CSRF |
 | 页面外壳 | `crates/web/static/budding/budding-boot.js`（`files` 页） | 平铺目录 + 面包屑，数据走 `/files/*` 与 `/ui/v1/files*`；无独立样式表 |
-| 菜单/权限 | `menu.rs`、`handlers/files.rs` | 内置 `core/files`（L3：回收站 / 配额）；站点文件插件 `com.skiff.files` 挂在「网站」下（站点级授权根） |
+| 菜单/权限 | `app/menu.rs`、`handlers/files.rs` | 内置 `core/files`（L3：回收站 / 配额）；站点文件插件 `com.skiff.files` 挂在「网站」下（站点级授权根） |
 
 ### 8.2 语义与边界
 

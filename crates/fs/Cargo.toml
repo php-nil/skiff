@@ -7,6 +7,7 @@ license.workspace = true
 description = "Skiff（轻舟）· 内核文件系统原语：主体授权、路径规范化、路径锁、原子写、回收站、配额与审计结构（不依赖 store/docker/plugin/web）"
 
 [dependencies]
+skiff-model = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 tar = { workspace = true }
