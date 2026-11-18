@@ -463,10 +463,16 @@ impl DockerService {
     }
 
     pub async fn start_container(&self, id: &str) -> Result<(), DockerError> {
-        self.client()?
+        let result = self
+            .client()?
             .start_container(id, None::<qp::StartContainerOptions>)
             .await
-            .map_err(api_err)
+            .map_err(api_err);
+        match result {
+            // 容器本来就在跑：Docker 返回 304，与 `stop_container` 同一口径按幂等成功处理。
+            Err(DockerError::NotModified) => Ok(()),
+            other => other,
+        }
     }
 
     pub async fn stop_container(&self, id: &str) -> Result<(), DockerError> {

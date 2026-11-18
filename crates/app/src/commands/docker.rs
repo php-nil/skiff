@@ -51,13 +51,19 @@ impl std::fmt::Display for DockerCommandError {
 
 /// Docker 客户端错误 → 命令错误。
 ///
-/// 409（重名/被占用/删除在用对象）走 `Conflict`，由传输层映射成
-/// `409 domain.conflict`；其余按输入错误（400）处理。判定依据是
-/// [`DockerError::Conflict`] 这个结构化变体，不做文案匹配——Docker 改措辞
-/// 不会让分流悄悄失效（与 `NotModified` 同一口径）。
+/// - 409（重名/被占用/删除在用对象）→ `Conflict`，传输层落 `409 domain.conflict`；
+/// - 引擎/传输不可用（socket 不存在、权限不足）→ `Unavailable`，落 `503`——
+///   这是「依赖挂了、可重试」，不能当成用户输入错误；
+/// - 其余（Engine 回包 4xx：镜像不存在、参数不接受）→ `BadRequest`，落 `400`。
+///
+/// 判定只看结构化变体，不做文案匹配——Docker 改措辞不会让分流悄悄失效
+/// （与 `NotModified` 同一口径）。早先这里把 `Unavailable` 也归进 `BadRequest`，
+/// 结果是「Docker 掉了」被报成 400、「容器重名」在命令层被一刀切成 503，
+/// 两端都指向错误的处置动作（改输入 vs 重试）。
 fn cmd_err(e: DockerError) -> DockerCommandError {
     match e {
         DockerError::Conflict(m) => DockerCommandError::Conflict(m),
+        DockerError::Unavailable(m) => DockerCommandError::Unavailable(m),
         other => DockerCommandError::BadRequest(other.to_string()),
     }
 }
@@ -149,7 +155,7 @@ pub async fn container_create(
         result.as_ref().map(|_| ()),
         Verb::ContainerCreate.http_path(),
     );
-    let value = result.map_err(|e| DockerCommandError::Unavailable(e.to_string()))?;
+    let value = result.map_err(cmd_err)?;
     value
         .get("id")
         .and_then(|v| v.as_str())
@@ -184,9 +190,7 @@ pub async fn container_update(
         result.as_ref().map(|_| ()),
         Verb::ContainerUpdate.http_path(),
     );
-    result
-        .map(|_| ())
-        .map_err(|e| DockerCommandError::Unavailable(e.to_string()))
+    result.map(|_| ()).map_err(cmd_err)
 }
 
 #[derive(Debug, Clone)]
@@ -257,7 +261,7 @@ pub async fn container_action(
         outcome,
         &detail,
     );
-    result.map_err(|e| DockerCommandError::Unavailable(e.to_string()))
+    result.map_err(cmd_err)
 }
 
 /// 镜像/网络/卷这类「按名字直接操作」的资源。
@@ -541,20 +545,20 @@ mod tests {
     use crate::commands::test_support::state_at;
     use crate::jobs::{JobSubmit, TARGET_RUNTIME};
 
-    /// 409 走 Conflict（→ HTTP 409），其余仍按输入错误（→ HTTP 400）。
+    /// 三分法：409 冲突 → 409；引擎不可用 → 503；其余 Engine 4xx → 400。
     #[test]
-    fn cmd_err_routes_409_to_conflict_and_rest_to_bad_request() {
+    fn cmd_err_routes_conflict_unavailable_and_bad_request() {
         match cmd_err(DockerError::Conflict("already exists".into())) {
             DockerCommandError::Conflict(m) => assert_eq!(m, "already exists"),
             other => panic!("409 应为 Conflict，实际 {other:?}"),
         }
-        match cmd_err(DockerError::Api("boom".into())) {
-            DockerCommandError::BadRequest(m) => assert!(m.contains("boom")),
-            other => panic!("非 409 应为 BadRequest，实际 {other:?}"),
+        match cmd_err(DockerError::Api("No such image".into())) {
+            DockerCommandError::BadRequest(m) => assert!(m.contains("No such image")),
+            other => panic!("Engine 4xx 应为 BadRequest，实际 {other:?}"),
         }
         match cmd_err(DockerError::Unavailable("no socket".into())) {
-            DockerCommandError::BadRequest(m) => assert!(m.contains("no socket")),
-            other => panic!("Unavailable 按输入错误兜底，实际 {other:?}"),
+            DockerCommandError::Unavailable(m) => assert!(m.contains("no socket")),
+            other => panic!("引擎不可用应为 Unavailable（503），实际 {other:?}"),
         }
     }
 
