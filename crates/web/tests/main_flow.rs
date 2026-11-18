@@ -6214,6 +6214,15 @@ async fn login_page_renders_budding_shell_without_session() {
         html.contains(r#"src="/p/static/budding/budding-login.js""#),
         "登录页应加载启动脚本"
     );
+    // 登录页不加载 `budding-boot.js`（那是壳页启动脚本），回车补丁必须单独引入，
+    // 否则登录框按回车没有任何反应。
+    let shell = skiff_web::assets::SHELL_VERSION;
+    assert!(
+        html.contains(&format!(
+            r#"src="/p/static/form-enter-submit.js?v={shell}""#
+        )),
+        "登录页应加载回车提交补丁：{html}"
+    );
     assert!(!html.contains("<script>"), "CSP 禁止内联脚本");
 }
 

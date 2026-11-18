@@ -95,6 +95,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
     let username = escape_html(username);
     let next = escape_html(next);
     let ver = crate::assets::BUDDING_VERSION;
+    let shell = crate::assets::SHELL_VERSION;
     format!(
         r#"<!doctype html>
 <html lang="zh-CN">
@@ -108,6 +109,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 <body>
 <div id="skiff-login" data-prefix="/{prefix}" data-api-base="/ui/v1" data-username="{username}" data-next="{next}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}"></div>
 <script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
+<script src="/{prefix}/static/form-enter-submit.js?v={shell}"></script>
 <script src="/{prefix}/static/budding/budding-login.js"></script>
 </body>
 </html>

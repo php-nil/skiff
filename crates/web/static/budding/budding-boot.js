@@ -9444,41 +9444,6 @@
     return Promise.resolve();
   }
 
-  /// 表单内回车即提交。
-  ///
-  /// budding 的 `form` 把动作按钮渲染成普通 `button`，没有原生 submit 语义，
-  /// 于是键盘用户在筛选框 / 新建弹窗里按回车没有任何反应（只能挪到鼠标）。
-  /// 这里做一次委托：回车落在单行 `input` 上且处于 `.bud-form` 内时，点主按钮。
-  ///
-  /// 三条边界：`textarea` 保留换行；多选 / 文件 / 复选类输入不触发（回车另有语义）；
-  /// 已被上游或组件 `preventDefault` 的事件不再接管，避免双提交。
-  function installEnterSubmit() {
-    document.addEventListener('keydown', function (event) {
-      if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing) return;
-      var el = event.target;
-      if (!el || el.tagName !== 'INPUT') return;
-      var type = (el.getAttribute('type') || 'text').toLowerCase();
-      if (
-        type !== 'text' &&
-        type !== 'search' &&
-        type !== 'password' &&
-        type !== 'email' &&
-        type !== 'number' &&
-        type !== 'tel' &&
-        type !== 'url'
-      ) {
-        return;
-      }
-      var form = el.closest('.bud-form');
-      if (!form) return;
-      var btn = form.querySelector('.bud-form-actions__primary button');
-      if (!btn) btn = form.querySelector('.bud-form-actions button');
-      if (!btn || btn.disabled) return;
-      event.preventDefault();
-      btn.click();
-    });
-  }
-
   /// 浏览器前进/后退回到「同 path、仅 query 不同」的地址时，SDK 不会重载页面内容，
   /// 这里整页刷新兜底；跨页前进/后退仍交给宿主路由，避免双次渲染与状态丢失。
   function watchQueryOnlyHistory() {
@@ -9547,7 +9512,6 @@
   }
 
   watchQueryOnlyHistory();
-  installEnterSubmit();
   boot();
 })();
 

@@ -177,6 +177,7 @@ pub fn shell_html(prefix: &str) -> String {
   </main>
 </div>
 <script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
+<script src="/{prefix}/static/form-enter-submit.js?v={shell}"></script>
 <script src="/{prefix}/static/budding/budding-boot.js?v={shell}"></script>
 </body>
 </html>
@@ -222,6 +223,10 @@ mod tests {
         let shell = crate::assets::SHELL_VERSION;
         assert!(html.contains(&format!(
             r#"<script src="/p/static/budding/budding-boot.js?v={shell}"></script>"#
+        )));
+        // 回车提交补丁是壳页与登录页共用的独立文件，两处都必须引用。
+        assert!(html.contains(&format!(
+            r#"<script src="/p/static/form-enter-submit.js?v={shell}"></script>"#
         )));
         // 壳层样式带非空 `?v=`：命中 immutable，改样式必须同时改这个版本号，
         // 否则升级后浏览器会继续用旧 CSS（三级菜单会退回旧样式）。
