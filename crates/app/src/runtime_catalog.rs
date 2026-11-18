@@ -339,6 +339,21 @@ pub const PHP_EXTENSION_INSTALLER: &str =
 /// 这段只对 Alpine 成立：Debian 镜像没有 `/etc/apk`，无条件写会让脚本在 `set -e`
 /// 下第 5 行就退出（`cannot create /etc/apk/config`）。因此先 `command -v apk`
 /// 判家族，再决定是否写。
+///
+/// **apk 源按实测吞吐自适应。** 官方镜像默认指向 `dl-cdn.alpinelinux.org`，
+/// 国内链路上实测只有 535 KB/s，而同一台机器到清华源是 29.5 MB/s；冷缓存首装
+/// 要拉约 90 MB 构建工具链，几十倍差距直接决定「几十秒」还是「三十分钟超时」。
+/// 但反过来，海外链路上国内源又比 `dl-cdn` 慢，阿里源实测只有 271 KB/s——
+/// **写死任何一个源都会把另一半用户做坏**，所以这里探测后取最快。
+///
+/// 探测放在**容器内**而不是宿主：安装脚本本来就要 `curl` 下载安装器，能力现成；
+/// 宿主侧没有 HTTP 客户端，硬加一条探测链路既多一处失败面，还要额外落盘与挂载。
+/// 判据是 `curl -w '%{speed_download}'` 的真实吞吐（不是 TTFB，也不是「能不能连通」），
+/// 因此 535 KB/s 与 29.5 MB/s 能区分开。
+///
+/// 选中结果写 `/var/cache/apk/.skiff-mirror`（该目录挂宿主 `<runtime>/cache/apk`，
+/// 跨容器复用），24 小时内直接复用，避免每次装扩展都重测 4 个源。全候选不可达
+/// （典型是纯内网）时不动 `/etc/apk/repositories`，保持镜像默认源，不阻断安装。
 fn installer_prelude() -> String {
     format!(
         "set -e\n\
@@ -347,6 +362,37 @@ fn installer_prelude() -> String {
          if command -v apk >/dev/null 2>&1; then\n\
          \tif [ ! -f /etc/apk/config ] || ! grep -q '^cache-packages' /etc/apk/config; then\n\
          \t\tprintf 'cache-packages yes\\n' >> /etc/apk/config\n\
+         \tfi\n\
+         \tSKIFF_MIRROR_CACHE=/var/cache/apk/.skiff-mirror\n\
+         \tif [ -s \"$SKIFF_MIRROR_CACHE\" ] && [ -z \"$(find \"$SKIFF_MIRROR_CACHE\" -mtime +1 2>/dev/null)\" ]; then\n\
+         \t\tcat \"$SKIFF_MIRROR_CACHE\" > /etc/apk/repositories\n\
+         \telse\n\
+         \t\t(\n\
+         \t\tSKIFF_REL=\"v$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null)\"\n\
+         \t\tSKIFF_ARCH=\"$(apk --print-arch 2>/dev/null)\"\n\
+         \t\tSKIFF_BASE_BEST=''\n\
+         \t\tSKIFF_SPD_BEST=0\n\
+         \t\tSKIFF_PROBED=0\n\
+         \t\tif [ -n \"$SKIFF_ARCH\" ] && command -v curl >/dev/null 2>&1; then\n\
+         \t\t\tfor SKIFF_BASE in https://dl-cdn.alpinelinux.org/alpine https://mirrors.tuna.tsinghua.edu.cn/alpine https://mirrors.aliyun.com/alpine https://mirrors.ustc.edu.cn/alpine; do\n\
+         \t\t\t\tSKIFF_PROBED=$((SKIFF_PROBED + 1))\n\
+         \t\t\t\tSKIFF_SPD=\"$(curl -s -o /dev/null -m 6 -w '%{{speed_download}}' \"$SKIFF_BASE/$SKIFF_REL/main/$SKIFF_ARCH/APKINDEX.tar.gz\" 2>/dev/null)\"\n\
+         \t\t\t\tSKIFF_SPD=\"${{SKIFF_SPD%%.*}}\"\n\
+         \t\t\t\tif [ -z \"$SKIFF_SPD\" ]; then SKIFF_SPD=0; fi\n\
+         \t\t\t\tif [ \"$SKIFF_SPD\" -gt \"$((SKIFF_SPD_BEST * 3 / 2))\" ]; then\n\
+         \t\t\t\t\tSKIFF_SPD_BEST=\"$SKIFF_SPD\"\n\
+         \t\t\t\t\tSKIFF_BASE_BEST=\"$SKIFF_BASE\"\n\
+         \t\t\t\tfi\n\
+         \t\t\tdone\n\
+         \t\tfi\n\
+         \t\tif [ -n \"$SKIFF_BASE_BEST\" ] && [ \"$SKIFF_SPD_BEST\" -gt 0 ]; then\n\
+         \t\t\tprintf '%s/%s/main\\n%s/%s/community\\n' \"$SKIFF_BASE_BEST\" \"$SKIFF_REL\" \"$SKIFF_BASE_BEST\" \"$SKIFF_REL\" > /etc/apk/repositories\n\
+         \t\t\tcp /etc/apk/repositories \"$SKIFF_MIRROR_CACHE\" 2>/dev/null || true\n\
+         \t\t\techo \"[skiff] apk 源：$SKIFF_BASE_BEST（实测 $((SKIFF_SPD_BEST / 1024)) KB/s，探测 $SKIFF_PROBED 个候选）\"\n\
+         \t\telse\n\
+         \t\t\techo \"[skiff] apk 源探测未选中（$SKIFF_PROBED 个候选均不可达），保持镜像默认源\" >&2\n\
+         \t\tfi\n\
+         \t\t) || true\n\
          \tfi\n\
          fi\n\
          SKIFF_LOCAL_IPE='{local}'\n\
@@ -1220,6 +1266,37 @@ pub fn disable_script(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 前置脚本由 `format!` 拼装，转义写错（`${{…}}` 漏转义、`%{{speed_download}}`
+    /// 写成 `%{speed_download}`）编译期完全看不出来，只会在容器里炸成「apk 装不上」
+    /// 这类离奇故障。用 `sh -n` 做纯语法检查，把这类错误挡在 CI。
+    #[test]
+    #[cfg(unix)]
+    fn installer_prelude_is_shell_syntax_clean() {
+        let script = installer_prelude();
+        assert!(
+            script.contains("'%{speed_download}'"),
+            "curl 速率占位符被 format! 吃掉"
+        );
+        assert!(
+            script.contains(r#""${SKIFF_SPD%%.*}""#),
+            "参数展开被 format! 吃掉"
+        );
+        assert!(script.contains("/var/cache/apk/.skiff-mirror"));
+        assert!(!script.contains("{{"), "format! 转义有残留");
+
+        let out = std::process::Command::new("sh")
+            .arg("-n")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("需要 sh 做语法检查");
+        assert!(
+            out.status.success(),
+            "前置脚本语法错误：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     #[test]
     fn version_catalog_is_dropdown_only() {
