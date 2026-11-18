@@ -1877,8 +1877,15 @@ mod tests {
         let script = php_extension("redis").expect("redis").install_script();
         assert!(script.contains("install-php-extensions"), "{script}");
         assert!(script.contains("install-php-extensions redis"), "{script}");
-        // 失败要能回传真实报错：不能把 stderr 丢掉。
-        assert!(!script.contains("2>/dev/null"), "{script}");
+        // 失败要能回传真实报错：**安装器执行**那行不能把 stderr 丢掉。
+        // 探测与缓存类命令的 `2>/dev/null` 是预期内的（失败即回落，不该污染日志），
+        // 所以只钉安装器调用行，不做「全脚本禁止重定向」的一刀切。
+        for line in script.lines() {
+            assert!(
+                !(line.contains("install-php-extensions") && line.contains("2>/dev/null")),
+                "安装器执行不得丢弃 stderr：{line}"
+            );
+        }
     }
 
     #[test]
