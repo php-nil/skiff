@@ -54,7 +54,9 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
 /// v5：`budding-boot.js` 补表单回车提交（budding 的 `form` 按钮没有原生 submit 语义）。
 /// v6：回车补丁移出 `budding-boot.js`，独立为壳页与登录页共用的
 /// `form-enter-submit.js`——登录页不加载启动脚本，v5 的补丁覆盖不到登录表单。
-pub const SHELL_VERSION: &str = "6";
+/// v7：`budding-boot.js` 内核文件管理页 schema 重写——新建目录 / 上传 / 新建文件
+/// 三个内联表单改为按钮触发 dialog 弹窗，避免列表被表单挤爆首屏。
+pub const SHELL_VERSION: &str = "7";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
