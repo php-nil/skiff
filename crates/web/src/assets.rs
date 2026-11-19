@@ -5,6 +5,9 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::Response;
 use rust_embed::RustEmbed;
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::PathBuf;
 
 use crate::error::AppError;
 
@@ -101,6 +104,41 @@ pub async fn static_file(
     }
     // 稳定别名映射到同名的版本化产物：字节只有一份，缓存策略仍按别名本身判定。
     let asset = resolve_alias(rel);
+
+    // 磁盘覆盖路径：测试/快速迭代时，设置 SKIFF_EXTRA_STATIC_DIR 可让指定目录下的文件
+    // 覆盖 rust-embed 编译入库的同名静态资源——改完 JS/CSS SCP 上去即可生效，无需重编二进制。
+    // 命中磁盘分支时跳过 gzip 协商（简化复杂度），ETag 用文件内容 sha256 与入库版保持一致。
+    if let Some(extra_dir) = std::env::var_os("SKIFF_EXTRA_STATIC_DIR") {
+        let disk_path = PathBuf::from(&extra_dir).join(&asset);
+        if let Ok(data) = fs::read(&disk_path) {
+            let mime = mime_guess::from_path(&asset).first_or_octet_stream();
+            let hash = sha256_bytes(&data);
+            let etag = format!("\"{}\"", hex::encode(hash));
+            let mut resp = if if_none_match_matches(headers.get(IF_NONE_MATCH), &etag) {
+                let mut r = Response::new(axum::body::Body::empty());
+                *r.status_mut() = StatusCode::NOT_MODIFIED;
+                r
+            } else {
+                Response::new(axum::body::Body::from(data))
+            };
+            let h = resp.headers_mut();
+            h.insert(
+                CONTENT_TYPE,
+                HeaderValue::from_str(mime.as_ref())
+                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+            );
+            h.insert(
+                CACHE_CONTROL,
+                HeaderValue::from_static(cache_control_for(rel, has_version_query(uri.query()))),
+            );
+            h.insert(
+                ETAG,
+                HeaderValue::from_str(&etag).unwrap_or_else(|_| HeaderValue::from_static("\"\"")),
+            );
+            return Ok(resp);
+        }
+    }
+
     let file = Assets::get(&asset).ok_or_else(|| AppError::NotFound("静态资源不存在".into()))?;
     let mime = mime_guess::from_path(&asset).first_or_octet_stream();
 
@@ -224,6 +262,11 @@ fn has_version_query(query: Option<&str>) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// 运行时对任意字节切片计算 SHA-256（磁盘覆盖路径的 ETag 与 rust-embed 编译时 hash 对齐）。
+fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
 }
 
 /// `Accept-Encoding` 是否接受 gzip（`q=0` 视为明确拒绝）。
