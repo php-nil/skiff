@@ -2616,7 +2616,7 @@
     return defaults;
   }
 
-  function runtimesSchema(images, catalog, total) {
+  function runtimesSchema(catalog, total) {
     total = typeof total === 'number' ? total : 0;
     var body = [];
     var table = listTable(
@@ -2694,34 +2694,6 @@
       }
     });
     body.push(table);
-    var imagesForm = writeForm(
-      apiBase + '/runtimes/images',
-      { type: 'skiffRuntimeImages' },
-      [
-        {
-          type: 'input-text',
-          props: {
-            name: 'nginx_image',
-            label: 'Web 服务镜像标签',
-            hint: 'OpenResty 基础镜像；留空使用内置默认值'
-          }
-        },
-        {
-          type: 'input-text',
-          props: {
-            name: 'php_image',
-            label: 'PHP 基础镜像标签',
-            hint: '仅影响之后新建或重建的 PHP 实例'
-          }
-        }
-      ],
-      '保存镜像参数'
-    );
-    imagesForm.props.initialValues = {
-      nginx_image: (images && images.nginx_image) || '',
-      php_image: (images && images.php_image) || ''
-    };
-    body.push(writeCard('镜像参数', '镜像前缀与加速源在 Docker 设置中维护。', imagesForm));
     return {
       type: 'page',
       props: { title: '运行环境', subtitle: '镜像、实例与安装入口；未安装镜像会先拉取' },
@@ -4773,7 +4745,8 @@
   }
 
   /// Docker 设置：镜像加速源与镜像前缀；只有管理员可编辑。
-  function dockerSettingsSchema(data) {
+  function dockerSettingsSchema(data, images) {
+    images = images || {};
     var body = [
       {
         type: 'alert',
@@ -4789,6 +4762,8 @@
         detailLines('镜像拉取参数', [
           '镜像加速源：' + (data.registry_mirror || '未设置'),
           '镜像前缀：' + (data.image_prefix || '未设置'),
+          'Web 服务镜像标签：' + (images.nginx_image || '默认'),
+          'PHP 基础镜像标签：' + (images.php_image || '默认'),
           '只有管理员可以修改 Docker 设置。'
         ])
       );
@@ -4826,6 +4801,34 @@
       image_prefix: data.image_prefix
     };
     body.push(writeCard('镜像拉取参数', '只写宿主配置，不改动已有容器。', form));
+    var imagesForm = writeForm(
+      apiBase + '/runtimes/images',
+      { type: 'skiffRuntimeImages' },
+      [
+        {
+          type: 'input-text',
+          props: {
+            name: 'nginx_image',
+            label: 'Web 服务镜像标签',
+            hint: 'OpenResty 基础镜像；留空使用内置默认值。完整镜像 = 镜像前缀 + 此 tag'
+          }
+        },
+        {
+          type: 'input-text',
+          props: {
+            name: 'php_image',
+            label: 'PHP 基础镜像标签',
+            hint: '仅影响之后新建或重建的 PHP 实例；完整镜像 = 镜像前缀 + 此 tag'
+          }
+        }
+      ],
+      '保存镜像参数'
+    );
+    imagesForm.props.initialValues = {
+      nginx_image: (images && images.nginx_image) || '',
+      php_image: (images && images.php_image) || ''
+    };
+    body.push(writeCard('运行环境镜像标签', '与上方「镜像前缀」共同决定拉取的完整镜像名；留空使用内置默认值。', imagesForm));
     return {
       type: 'page',
       props: { title: 'Docker 设置', subtitle: '镜像拉取参数' },
@@ -9247,14 +9250,12 @@
     }
     if (kind === 'runtimes') {
       return Promise.all([
-        fetchRawJson(apiBase + '/runtimes/images'),
         fetchRawJson(apiBase + '/runtimes/catalog'),
         fetchData('/runtimes?limit=1')
       ]).then(function (res) {
         return runtimesSchema(
           (res[0] && res[0].data) || {},
-          (res[1] && res[1].data) || {},
-          (res[2] && res[2].total) || 0
+          (res[1] && res[1].total) || 0
         );
       });
     }
@@ -9497,7 +9498,12 @@
       return fetchData('/settings/menu').then(menuSettingsSchema);
     }
     if (kind === 'docker-settings') {
-      return fetchData('/settings/docker').then(dockerSettingsSchema);
+      return Promise.all([
+        fetchData('/settings/docker'),
+        fetchRawJson(apiBase + '/runtimes/images')
+      ]).then(function (res) {
+        return dockerSettingsSchema(res[0], (res[1] && res[1].data) || {});
+      });
     }
     if (kind === 'ui-settings') {
       return fetchData('/settings/ui').then(uiSettingsSchema);
