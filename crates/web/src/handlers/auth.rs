@@ -105,12 +105,46 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 <title>登录 · Skiff</title>
 <link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <script src="/{prefix}/static/theme-init.js"></script>
+<link rel="stylesheet" href="/{prefix}/static/skiff.css">
 </head>
-<body>
-<div id="skiff-login" data-prefix="/{prefix}" data-api-base="/ui/v1" data-username="{username}" data-next="{next}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}"></div>
+<body class="skiff-login-shell">
+<div class="login-layout">
+  <aside class="login-brand-col">
+    <div class="brand-logo" aria-hidden="true">
+      <svg viewBox="0 0 28 28"><rect x="1.2" y="1.2" width="25.6" height="25.6" rx="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 16.5h14l-2.8 4.5H9.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M13.4 14V7l5.2 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+    </div>
+    <h1 class="brand-title">Skiff · 轻舟</h1>
+    <p class="brand-subtitle">极简 Linux 服务器管理面板，Web / Docker / 插件三位一体，一条命令装好。</p>
+    <ul class="brand-features">
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 12 2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>单二进制，零依赖部署</li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3.5" y="9" width="5" height="5" rx="1"/><rect x="9.5" y="9" width="5" height="5" rx="1"/><rect x="9.5" y="3.8" width="5" height="5" rx="1"/><rect x="15.5" y="9" width="5" height="5" rx="1"/></svg>Docker 容器与编排一体化</li>
+      <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 3v4.5M15 3v4.5M7 7.5h10v3.2a5 5 0 0 1-5 5 5 5 0 0 1-5-5zM12 15.7V21"/></svg>插件体系按需扩展能力</li>
+    </ul>
+  </aside>
+  <section class="login-form-col">
+    <div id="skiff-login" data-prefix="/{prefix}" data-api-base="/ui/v1" data-username="{username}" data-next="{next}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}"></div>
+  </section>
+</div>
+<button type="button" class="login-theme-toggle" data-theme-toggle aria-pressed="false" aria-label="切换主题">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  <span class="theme-when-light">深色</span><span class="theme-when-dark">浅色</span>
+</button>
 <script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
 <script src="/{prefix}/static/form-enter-submit.js?v={shell}"></script>
 <script src="/{prefix}/static/budding/budding-login.js"></script>
+<script>
+(function(){{
+  var btn = document.querySelector('[data-theme-toggle]');
+  if (!btn) return;
+  btn.addEventListener('click', function(){{
+    var cur = document.documentElement.getAttribute('data-theme') || 'light';
+    var next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try {{ localStorage.setItem('skiff.theme', next); }} catch (e) {{}}
+  }});
+  btn.setAttribute('aria-pressed', document.documentElement.getAttribute('data-theme') === 'dark' ? 'true' : 'false');
+}})();
+</script>
 </body>
 </html>
 "#

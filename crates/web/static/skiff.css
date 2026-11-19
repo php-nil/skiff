@@ -1459,24 +1459,265 @@ iframe.plugin-frame {
 /* 插件上报内容高度后由 skiff.js 写内联 height；类名只作为无脚本时的回退。 */
 iframe.plugin-frame.auto-height { height: auto; }
 
-body.login-body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: var(--sp-5); }
+/* ==========================================================================
+   登录页 —— 分栏布局 + 背景装饰
+
+   桌面端：左侧品牌区 + 右侧表单卡片；移动端：品牌/表单单栏堆叠。
+   背景由三层叠加：渐变底色 + 网格纹理 + 两个柔光圆形。
+   深浅主题分别给出不同的渐变与纹理透明度，保证对比度不丢失。
+   ========================================================================== */
+
+body.login-body,
+body.skiff-login-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--sp-5);
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--login-bg);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 背景装饰层 */
+body.login-body::before,
+body.skiff-login-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--login-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--login-grid-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  pointer-events: none;
+  z-index: 0;
+}
+body.login-body::after,
+body.skiff-login-shell::after {
+  content: "";
+  position: absolute;
+  width: 520px;
+  height: 520px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--login-glow) 0%, transparent 70%);
+  top: -180px;
+  right: -120px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 主题变量 */
+:root {
+  --login-bg:
+    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(15, 118, 110, .08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 90% 85%, rgba(15, 118, 110, .06) 0%, transparent 60%),
+    linear-gradient(135deg, #f4f5f7 0%, #eef1f4 100%);
+  --login-grid-line: rgba(15, 118, 110, .06);
+  --login-glow: rgba(15, 118, 110, .12);
+}
+html[data-theme="dark"] {
+  --login-bg:
+    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(95, 212, 181, .10) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 90% 85%, rgba(95, 212, 181, .06) 0%, transparent 60%),
+    linear-gradient(135deg, #0e1116 0%, #151a21 100%);
+  --login-grid-line: rgba(95, 212, 181, .07);
+  --login-glow: rgba(95, 212, 181, .15);
+}
+
+/* 主体容器：分栏布局 */
+.login-layout {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: var(--sp-8);
+  max-width: 880px;
+  width: 100%;
+  align-items: stretch;
+}
+
+/* 左：品牌区 */
+.login-brand-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding-right: var(--sp-6);
+}
+.login-brand-col .brand-logo {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(15, 118, 110, .35);
+}
+html[data-theme="dark"] .login-brand-col .brand-logo {
+  background: var(--accent);
+  box-shadow: 0 4px 20px rgba(95, 212, 181, .25);
+}
+.login-brand-col .brand-logo svg { width: 28px; height: 28px; }
+.login-brand-col .brand-title {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+  line-height: var(--lh-tight);
+}
+.login-brand-col .brand-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-md);
+  line-height: var(--lh);
+}
+.login-brand-col .brand-features {
+  list-style: none;
+  padding: 0;
+  margin: var(--sp-2) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.login-brand-col .brand-features li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.login-brand-col .brand-features li svg {
+  width: 16px;
+  height: 16px;
+  stroke: var(--accent);
+  flex-shrink: 0;
+}
+
+/* 右：表单卡片 */
+.login-form-col {
+  flex: 0 0 400px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow-pop);
+  padding: var(--sp-8) var(--sp-6);
+}
+
+/* old skiff.css login-card 兼容（模板登录失败回落路径） */
 .login-card {
-  width: min(380px, 100%);
+  width: min(400px, 100%);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  padding: var(--sp-6);
+  padding: var(--sp-8) var(--sp-6);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
+  border-radius: 16px;
+  box-shadow: var(--shadow-pop);
 }
-.login-brand { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xl); font-weight: 700; }
-.login-brand .logo { color: var(--accent); }
-.login-card .sub { margin: 0 0 var(--sp-2); color: var(--muted); font-size: var(--fs-sm); }
+.login-card .login-brand {
+  display: none;
+}
+.login-card .sub { margin: 0 0 var(--sp-4); color: var(--muted); font-size: var(--fs-sm); }
 .login-card form { display: flex; flex-direction: column; gap: var(--sp-3); }
-.login-card button { margin-top: var(--sp-1); }
-.login-card .hint { font-size: var(--fs-xs); }
+.login-card button { margin-top: var(--sp-2); }
+.login-card .hint { font-size: var(--fs-xs); color: var(--muted); line-height: var(--lh); }
+.login-card .alert {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-line);
+  color: var(--danger);
+  border-radius: var(--radius);
+  font-size: var(--fs-sm);
+}
+
+/* budding card 融入：覆盖内层 padding，配合外层卡片 */
+.login-form-col .bud-card,
+.login-form-col .bud-admin__card {
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.login-form-col .bud-card__head,
+.login-form-col .bud-admin__card-head {
+  display: none !important;
+}
+.login-form-col .bud-page,
+.login-form-col .bud-admin__page {
+  max-width: none !important;
+  padding: 0 !important;
+}
+.login-form-col .bud-admin__main,
+.login-form-col .bud-card__body {
+  padding: 0 !important;
+}
+
+/* 主题切换小按钮（登录页放右下角，不打扰主流程） */
+.login-theme-toggle {
+  position: absolute;
+  bottom: var(--sp-5);
+  right: var(--sp-5);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: color .15s, border-color .15s;
+}
+.login-theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.login-theme-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 移动端：单栏堆叠 */
+@media (max-width: 680px) {
+  body.login-body,
+  body.skiff-login-shell {
+    padding: var(--sp-4);
+    align-items: flex-start;
+  }
+  .login-layout {
+    flex-direction: column;
+    gap: var(--sp-5);
+  }
+  .login-brand-col {
+    padding-right: 0;
+    text-align: center;
+    align-items: center;
+  }
+  .login-brand-col .brand-features { display: none; }
+  .login-form-col {
+    flex: none;
+    width: 100%;
+    padding: var(--sp-6) var(--sp-5);
+  }
+  body.login-body::after,
+  body.skiff-login-shell::after {
+    width: 320px;
+    height: 320px;
+    top: -100px;
+    right: -80px;
+  }
+}
 
 body.error-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: var(--sp-5); }
 body.error-page .card {

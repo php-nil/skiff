@@ -55,6 +55,21 @@
     );
   }
 
+  // 安全 escape：把裸 "/" 替换成全角斜杠 ／ (U+FF0F)。
+  // 根因：budding 表达式引擎在解析 modelValue 字符串时，遇到裸 "/" 会误认为
+  // 正则字面量起始符，若后续没有闭合 "/" 即抛 "Unterminated regular expression"
+  // 并导致整个 code 组件渲染崩溃（SKIFF_BASE%/ 这类 bash 参数展开片段就是触发器）。
+  // 替换规则：被非 "/" 字符夹住的 "/" → 全角；连续 "//"（如 http://）保留。
+  // 已知副作用：全角斜杠视觉近似但不可作为 shell/path 使用；code 组件 copy 按钮
+  // 返回的也是 escape 后的文本，后续可按需在 copyable handler 里反替换。
+  function buddySafeString(text) {
+    if (text == null) return text;
+    if (typeof text !== 'string') return text;
+    return text
+      .replace(/([^\/])\/([^\/])/g, '$1／$2')
+      .replace(/^\/|\/$/gm, '／');
+  }
+
   function placeholderSchema(session) {
     return {
       type: 'page',
@@ -2257,7 +2272,7 @@
                   name: 'content',
                   language: 'nginx',
                   readonly: false,
-                  modelValue: data.config.content,
+                  modelValue: buddySafeString(data.config.content),
                   height: 420,
                   lineNumbers: true,
                   wrap: false,
@@ -2276,7 +2291,7 @@
         writeCard(
           'vhost 配置',
           (data.config.path || '—') + '（只读）',
-          { type: 'code', props: { modelValue: data.config.content, language: 'nginx' } }
+          { type: 'code', props: { modelValue: buddySafeString(data.config.content), language: 'nginx' } }
         )
       );
     }
@@ -4247,7 +4262,7 @@
                 {
                   type: 'code',
                   props: {
-                    modelValue: logLines.join('\n'),
+                    modelValue: buddySafeString(logLines.join('\n')),
                     language: 'plaintext',
                     readonly: true,
                     height: 320,
@@ -5686,7 +5701,7 @@
             name: 'content',
             language: 'nginx',
             readonly: false,
-            modelValue: config.main_content || '',
+            modelValue: buddySafeString(config.main_content || ''),
             height: 420,
             lineNumbers: true,
             wrap: false,
@@ -5759,7 +5774,7 @@
             ? {
                 type: 'code',
                 props: {
-                  modelValue: config.include_content,
+                  modelValue: buddySafeString(config.include_content),
                   language: 'nginx',
                   readonly: true,
                   height: 260,
@@ -5780,7 +5795,7 @@
                       {
                         type: 'code',
                         props: {
-                          modelValue: s.content,
+                          modelValue: buddySafeString(s.content),
                           language: 'nginx',
                           readonly: true,
                           height: 260,
@@ -5877,7 +5892,7 @@
         logBody.push({
           type: 'code',
           props: {
-            modelValue: logs.rows.join('\n'),
+            modelValue: buddySafeString(logs.rows.join('\n')),
             language: 'plaintext',
             readonly: true,
             height: 480,
@@ -7470,7 +7485,7 @@
     body.push({
       type: 'code',
       props: {
-        modelValue: binary ? '' : text,
+        modelValue: binary ? '' : buddySafeString(text),
         language: languageOf(name),
         readonly: true,
         height: 560,
@@ -7613,7 +7628,7 @@
       body.push({
         type: 'code',
         props: {
-          modelValue: lines.join('\n'),
+          modelValue: buddySafeString(lines.join('\n')),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -7710,7 +7725,7 @@
       body.push({
         type: 'code',
         props: {
-          modelValue: lines.join('\n'),
+          modelValue: buddySafeString(lines.join('\n')),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -7797,7 +7812,7 @@
       body.push({
         type: 'code',
         props: {
-          modelValue: lines.join('\n'),
+          modelValue: buddySafeString(lines.join('\n')),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -7865,7 +7880,7 @@
       body.push({
         type: 'code',
         props: {
-          modelValue: lines.join('\n'),
+          modelValue: buddySafeString(lines.join('\n')),
           language: 'plaintext',
           readonly: true,
           height: 560,
@@ -7958,97 +7973,151 @@
         size: 'small'
       }
     });
+    // 工具栏：三个按钮分别触发弹窗，避免内联表单挤爆首屏。
     body.push({
       type: 'card',
-      props: { title: '新建与上传' },
+      props: { title: '操作' },
       content: {
         body: [
           {
-            type: 'form',
-            onEvent: {
-              submit: [{ type: 'skiffFileMkdir', props: { dir: data.path } }]
-            },
-            props: {
-              api: { method: 'POST', url: apiBase + '/files/mkdir', sendOn: false },
-              actionsAlign: 'end'
-            },
-            body: [
-              {
-                type: 'input-text',
-                props: {
-                  name: 'name',
-                  label: '新目录名',
-                  required: true,
-                  rules: { required: true, messages: { required: '请输入目录名' } }
-                }
-              }
-            ],
+            type: 'flex',
+            props: { gap: 12, wrap: true },
             content: {
-              actions: [
+              body: [
                 {
                   type: 'button',
                   props: { text: '新建目录', variant: 'tonal' },
-                  action: { type: 'submit' }
-                }
-              ]
-            }
-          },
-          {
-            type: 'file',
-            props: {
-              name: 'file',
-              label: '选择文件后立即上传（单文件，分片 256 KiB）',
-              multiple: false,
-              uploadField: 'file',
-              uploadApi: {
-                method: 'POST',
-                url: apiBase + '/files/upload?dir=' + encodeURIComponent(data.path)
-              },
-              uploadProgressTarget: 'uploadProgress'
-            }
-          },
-          {
-            type: 'form',
-            onEvent: {
-              submit: [{ type: 'skiffFileWrite', props: { dir: data.path } }]
-            },
-            props: {
-              api: { method: 'POST', url: apiBase + '/files/write', sendOn: false },
-              actionsAlign: 'end'
-            },
-            body: [
-              {
-                type: 'input-text',
-                props: {
-                  name: 'name',
-                  label: '新文件名（在当前目录创建或覆盖）',
-                  required: true,
-                  rules: {
-                    required: true,
-                    pattern: '^[^/\\\\]+$',
-                    messages: { required: '请输入文件名', pattern: '文件名不能包含 / 或 \\' }
+                  action: {
+                    type: 'dialog',
+                    props: {
+                      title: '新建目录',
+                      width: 480,
+                      body: [
+                        {
+                          type: 'form',
+                          onEvent: {
+                            submit: [{ type: 'skiffFileMkdir', props: { dir: data.path } }]
+                          },
+                          props: {
+                            api: { method: 'POST', url: apiBase + '/files/mkdir', sendOn: false }
+                          },
+                          body: [
+                            {
+                              type: 'input-text',
+                              props: {
+                                name: 'name',
+                                label: '目录名（将创建在当前目录下）',
+                                required: true,
+                                rules: {
+                                  required: true,
+                                  pattern: '^[^/\\\\]+$',
+                                  messages: { required: '请输入目录名', pattern: '目录名不能包含 / 或 \\' }
+                                }
+                              }
+                            }
+                          ],
+                          content: {
+                            actions: [
+                              { type: 'button', props: { text: '取消', variant: 'outlined' }, action: { type: 'close' } },
+                              { type: 'button', props: { text: '创建', color: 'primary' }, action: { type: 'submit' } }
+                            ]
+                          }
+                        }
+                      ]
+                    }
                   }
-                }
-              },
-              {
-                type: 'code',
-                props: {
-                  name: 'content',
-                  label: '文件内容',
-                  language: 'plaintext',
-                  readonly: false,
-                  height: 200,
-                  lineNumbers: true,
-                  wrap: false
-                }
-              }
-            ],
-            content: {
-              actions: [
+                },
                 {
                   type: 'button',
-                  props: { text: '保存文件', variant: 'tonal' },
-                  action: { type: 'submit' }
+                  props: { text: '上传文件', variant: 'tonal' },
+                  action: {
+                    type: 'dialog',
+                    props: {
+                      title: '上传文件',
+                      width: 560,
+                      body: [
+                        {
+                          type: 'alert',
+                          props: {
+                            type: 'info',
+                            text: '将上传到当前目录 ' + data.path + '；大文件自动分片 256 KiB。'
+                          }
+                        },
+                        {
+                          type: 'file',
+                          props: {
+                            name: 'file',
+                            label: '选择文件',
+                            multiple: false,
+                            uploadField: 'file',
+                            uploadApi: {
+                              method: 'POST',
+                              url: apiBase + '/files/upload?dir=' + encodeURIComponent(data.path)
+                            },
+                            uploadProgressTarget: 'uploadProgress'
+                          }
+                        }
+                      ],
+                      footer: [
+                        { type: 'button', props: { text: '关闭', variant: 'outlined' }, action: { type: 'close' } }
+                      ]
+                    }
+                  }
+                },
+                {
+                  type: 'button',
+                  props: { text: '新建文件', variant: 'tonal' },
+                  action: {
+                    type: 'dialog',
+                    props: {
+                      title: '新建文件',
+                      width: 640,
+                      body: [
+                        {
+                          type: 'form',
+                          onEvent: {
+                            submit: [{ type: 'skiffFileWrite', props: { dir: data.path } }]
+                          },
+                          props: {
+                            api: { method: 'POST', url: apiBase + '/files/write', sendOn: false }
+                          },
+                          body: [
+                            {
+                              type: 'input-text',
+                              props: {
+                                name: 'name',
+                                label: '文件名（在当前目录创建或覆盖）',
+                                required: true,
+                                rules: {
+                                  required: true,
+                                  pattern: '^[^/\\\\]+$',
+                                  messages: { required: '请输入文件名', pattern: '文件名不能包含 / 或 \\' }
+                                }
+                              }
+                            },
+                            {
+                              type: 'code',
+                              props: {
+                                name: 'content',
+                                label: '文件内容',
+                                language: 'plaintext',
+                                readonly: false,
+                                height: 200,
+                                lineNumbers: true,
+                                wrap: false
+                              }
+                            }
+                          ],
+                          content: {
+                            actions: [
+                              { type: 'button', props: { text: '取消', variant: 'outlined' }, action: { type: 'close' } },
+                              { type: 'button', props: { text: '保存', color: 'primary' }, action: { type: 'submit' } }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
                 }
               ]
             }
@@ -8866,7 +8935,7 @@
             : '错误由内核/插件原样透传；预期失败即通过。'
         }
       },
-      { type: 'code', props: { modelValue: text, language: 'json' } }
+      { type: 'code', props: { modelValue: buddySafeString(text), language: 'json' } }
     ]);
     var runtime = buddingRuntime();
     if (!runtime || typeof runtime.openLayer !== 'function') {
