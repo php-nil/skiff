@@ -22,7 +22,17 @@ pub(crate) fn sibling_temp(path: &Path) -> PathBuf {
 }
 
 /// 写临时文件后 rename 覆盖目标；`mode` 在 Unix 上设置到临时文件。
+///
+/// Unix 上会先 stat 原文件保存 owner/group，rename 后用 `lchown` 恢复——
+/// daemon 以 `root:skiff-plugins` 运行，直接 rename 会把 config.toml 的 group
+/// 从 `root` 污染成 `skiff-plugins`，导致 accept.sh A6e 判定失败。
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let saved = std::fs::metadata(path).ok().map(|m| {
+        use std::os::unix::fs::MetadataExt;
+        (m.uid(), m.gid())
+    });
+
     let tmp = sibling_temp(path);
     std::fs::write(&tmp, bytes)?;
     #[cfg(unix)]
@@ -35,6 +45,16 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Res
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
+    }
+
+    #[cfg(unix)]
+    if let Some((uid, gid)) = saved {
+        let path_c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
+        unsafe {
+            // lchown：不跟随 symlink（目标 config.toml 通常是 regular file，
+            // 但用 lchown 更安全，避免万一有人 symlink 到敏感位置）。
+            libc::lchown(path_c.as_ptr(), uid, gid);
+        }
     }
     Ok(())
 }

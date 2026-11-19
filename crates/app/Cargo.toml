@@ -33,6 +33,10 @@ ureq = { workspace = true }
 webpki-roots = { workspace = true }
 rustls-pemfile = { workspace = true }
 
+# Unix syscall：write_atomic rename 后恢复原 owner/group（daemon 进程 group=skiff-plugins 会污染 config.toml 的 group）
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 # 撤包原因端到端：用真实的 skiff-server 构建产物喂给客户端解析与视图
