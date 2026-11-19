@@ -6,6 +6,28 @@
 
 ## 5. 当前部署
 
+> **2026-11-19 23:38 就地覆盖升级 + 官方插件安装（当前生效；HEAD `44f5c9b` 前一 Release `1e456cf`）**
+> - 资产：Release run `44551456436`（head `1e456cf`，资产 id `768167669`，12,817,174 B）。本轮 HEAD `44f5c9b` 只改文档（部署记录），二进制不变。
+> - **8 个官方插件已安装并启用**（`skiff plugin install --yes` 逐个装，签名验签 OK，沙箱降级 `landlock/cgroups` 未实现）：
+>   | 插件 | 版本 | 能力 | grants |
+>   |---|---|---|---|
+>   | com.skiff.cron | 0.1.0 | identity, interop, scheduler | 6 |
+>   | com.skiff.files | 0.1.3 | fs, identity | 6 |
+>   | com.skiff.firewall | 0.1.0 | exec, interop | 12（含 object:bin + perm:exec:run） |
+>   | com.skiff.ftp | 0.1.0 | exec, ftp, interop | 22（含 interop → firewall） |
+>   | com.skiff.guard | 0.1.0 | docker, identity, fs | 6 |
+>   | com.skiff.monitor | 0.1.0 | fs | 4 |
+>   | com.skiff.sources | 0.1.0 | fs, exec | 7 |
+>   | com.skiff.testkit | 0.1.0 | fs, identity, interop, scheduler | 7 |
+> - 插件页（`/{p}/plugins`）展示 8 个已装插件，每个显示签名/沙箱/能力/权限；`/{p}/plugins/discover` 为 placeholder（商店目录未启用，`catalog.enabled = false`）。
+> - IPC 链路：ftp 插件 grant 中含 `object:plugin:com.skiff.firewall`（interop 调用），firewall 含 `perm:exec:run`（exec 能力面）；无沙箱降级报错，全部 `installed + enabled + 未运行`（无进程常驻——supervisor 按需拉起）。
+> - accept.sh 同前 PASS 32 / SKIP 3；Docker 无容器（干净系统）。
+> - 浏览器验收全部页面渲染：概览/容器/镜像/网络/卷/Compose/Docker 设置/插件(已安装)/文件管理/设置/任务中心。**零 console error**。
+> - Git commits（本轮迭代）：
+>   - `3167770` up（插件 IPC 重构 HEAD）
+>   - `b6a3e35` refactor: delete legacy SSR UI（测试机首装用）
+>   - `2024b81` + `1e456cf` + `44f5c9b` 白名单误修复回滚 + 部署记录
+
 > **2026-11-19 23:18 就地覆盖安装 `1e456cf`（当前生效；SSR 全删 + 插件 IPC 优化 + 壳页白名单回滚）**
 > - 背景：测试机从干净系统（Docker 29.7.2，skiff 完全不存在）重新首装（Release run `44544002520`，head `b6a3e35`）→ 就地覆盖 `2024b81`（误加 docker-settings 壳页白名单）→ 就地覆盖 `1e456cf`（回滚白名单，恢复正确状态）。GitHub Release 资产经 `api.github.com` + `Accept: application/octet-stream` 直连下载（测试机 curl GitHub download 路径遇 SSL 重置）。
 > - 资产：Release run `44551456436`（dispatch `ref=main`，head `1e456cf`，`publish=true`、`release_tag=v0.1.0`），success。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,817,174 B** 资产 id `768167669`，sidecar sha id `768167660`。测试机 `sha256sum -c` OK。
