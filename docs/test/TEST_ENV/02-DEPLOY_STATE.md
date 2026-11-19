@@ -6,6 +6,22 @@
 
 ## 5. 当前部署
 
+> **2026-11-19 15:10 就地覆盖编译部署 `b1234f8`（当前生效；登录页优化 + 文件管理弹窗 + 磁盘覆盖路径）**
+> - 背景：两批改动——① 登录页视觉重写（分栏布局 / 渐变网格背景 / 品牌区 / 主题切换按钮）；② 文件管理「新建与上传」三个内联表单改为按钮触发 dialog（新建目录 / 上传文件 / 新建文件）；③ `SKIFF_EXTRA_STATIC_DIR` env var 磁盘覆盖 rust-embed 静态资源（测试机上装 Rust 工具链构建，绕开 CI Release token 问题）。CI Release workflow 需 `workflow_dispatch` 手动触发，开发机无 GitHub token，本次在测试机上用 rustup + musl-tools + 源码 tar 编译（4m25s 增量）。
+> - 编译：测试机 `rustup 1.100.0` + `x86_64-linux-musl-gcc`，源码 tar 从开发机 SCP 到 `/root/skiff-src`，`cargo build --release --target x86_64-unknown-linux-musl`，exit 0（仅 `xtask` 有 unused `anyhow` warning）。
+> - 部署：`systemctl stop skiff` → 备份旧二进制 → 新二进制 19MB 覆盖 `/usr/local/bin/skiff` → `systemctl start skiff` → healthz OK。
+> - 热更新 drop-in：`/etc/systemd/system/skiff.service.d/extra-static.conf` 加 `Environment=SKIFF_EXTRA_STATIC_DIR=/www/skiff/static-override`（`ProtectSystem=full` + `ReadWritePaths=/www` 允许访问）。以后前端改 JS/CSS 直接 SCP 到 `/www/skiff/static-override/` 对应路径即可热更新，无需重编 Rust 二进制。
+> - 浏览器验收（localhost → 代理 18081）：
+>   - 登录页：分栏布局生效——左侧品牌区（Logo / Skiff·轻舟 / slogan / 三条卖点）、右侧表单卡片；背景多层渐变 + 网格纹理 + 柔光圆形装饰；右下角主题切换按钮；深浅主题切换正常。
+>   - 文件管理：「操作」卡三按钮（新建目录 / 上传文件 / 新建文件）替换原「新建与上传」三内联表单，列表首屏不再被挤爆。
+>   - 三 dialog 全弹：新建目录 dialog（width 480，输入框 + 取消/创建）、上传文件 dialog（width 560，文件选择器 + 关闭）、新建文件 dialog（width 640，文件名 + code 编辑器 + 取消/保存）。
+>   - 磁盘覆盖：`curl -sI /static/skiff.css` 200 OK，ETag `"474d9fcf..."` 正确；curl header 安全响应头（nosniff / referrer-policy / frame-options / CSP）全部就位。
+> - Git commit（`8fcca6b..b1234f8`，三个 commit）：
+>   - `ab914db` 登录页 + 文件管理弹窗主改动（5 files, +517/-117）
+>   - `8fcca6b` SHELL_VERSION bump 6→7（budding-boot.js / skiff.css 缓存键）
+>   - `b1234f8` SKIFF_EXTRA_STATIC_DIR 磁盘覆盖路径（4 files, +55）
+> - 测试机工具链：`rustup 1.100.0` / `cargo 1.100.0` / `rustc 1.100.0`，`rustup target add x86_64-unknown-linux-musl`，musl cross toolchain `/usr/bin/x86_64-linux-musl-gcc`（apt 装的 musl-tools）。crates.io 走 rsproxy-sparse 镜像，GitHub 不通。
+
 > **2026-11-19 09:31 就地覆盖安装 `8f78221`（当前生效；库/配置/插件/运行环境全保留）**
 > - 背景：本轮三项——新建 PHP 环境可选 apk 镜像源、软件源插件复查修复（编译错误 / `r.base` / 原生 schema）、测试机还原后重新部署。Release run `44435964314`（head `8f78221`）success（同提交 CI `44434687589` 全绿）；前一次首装为 Release run `44428042366`（head `f5267ec`），见 03-DEPLOY_LOG。
 > - 机器状态：还原后为干净系统——无旧二进制/配置/库、18080/18081 空闲、Docker 29.7.2 在位、`/etc/skiff-baseline` 不存在；按 T1 口径（Docker 已装）首装后在同机覆盖升级。
