@@ -35,7 +35,6 @@ const SHELL_PAGES: &[&str] = &[
     "plugins",
     "store",
     "settings",
-    "docker-settings",
     "audit",
     "tasks",
     "jobs",
