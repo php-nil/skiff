@@ -4,11 +4,21 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-18 21:40 `d0c8cc4` 覆盖安装：登录页回车 + 容器错误分类 + PHP 站点回归）
+## 8. 最近一次验收结论（截至 2026-11-19 09:40 `8f78221` 覆盖安装：PHP 建环境可选 apk 源 + 软件源插件原生页 + 架构收口回归）
 
 > 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
 
-> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-18.md](../../changes/2026-11-18.md)、[changes/2026-11-17.md](../../changes/2026-11-17.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-19.md](../../changes/2026-11-19.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-19 08:31–09:40 还原后全新安装 `f5267ec` + 覆盖 `8f78221`：accept.sh 27 PASS / 0 FAIL，三项需求浏览器实测通过**
+
+- **安装（通过，全新 + 升级）**：全新 `44428042366`（head `f5267ec`）→ 覆盖 `44435964314`（head `8f78221`），两次 `install.sh --no-docker --tls off --listen 127.0.0.1:18080` 均 exit 0；末次包 **13,272,804 B** `f04eafe8…dba7`（API `digest` / 本地 / 测试机三方一致）；二进制 19,179,408 B `e4284515…bfc4`；库 **v21**、`integrity_check=ok`；前缀 **`zgvvx5xz`**；配置加 `allow_reduced_sandbox=true` 后官方 8 插件全装。
+- **accept.sh（通过）**：A + D0 = **27 PASS / 0 FAIL / 2 SKIP**；B 组因安装配置为 TLS/prod 档（`tls_enabled=false` 显式关闭）整体 SKIP，`initial-admin.txt` 保留、未改密；preflight 全过（landlock、Docker 29.7.2、18080/18081 空闲）。
+- **新建 PHP 环境可选 apk 源（通过，本轮新增）**：`GET /ui/v1/runtimes/catalog` 返回 5 个候选 + 当前态；插件页固定 TUNA 后目录接口 `apk_mirror_current={fixed:true,base:…tuna…,label:"清华 TUNA"}`；新建弹窗浏览器实测出现「软件包源（仅 PHP 生效）」且**预选清华 TUNA**（类型 PHP），0 console error；`POST /ui/v1/runtimes` 带 `apk_mirror` 创建 `php-8.5`，任务 **10 s** 完成（此前默认源 30 分钟超时），容器内 `/etc/apk/repositories` 为 tuna `v3.24/{main,community}`，`php -v` = **8.5.12**；非法源 `ftp://…` 返回 **400**。
+- **软件源插件复查（通过，本轮修复 3 处）**：`status` 的 `json!` 赋值修复后插件 workspace 恢复可编译；`applyApk` 改读 `r.base`；补 `ui/schema/main.json` 后入口不再退回 `?legacy=1`（原先 legacy 桥无 nonce，`rpc("status")` 永不返回、页面停在「读取中…」）。浏览器实测：apk 表 5 行、当前态「清华 TUNA（已固定…）」、`测速全部` 出真实速率（官方 2.5 MB/s、TUNA 10.8 MB/s、USTC 10.0 MB/s、阿里云 286 KB/s、腾讯云 28.8 MB/s），0 console error。apk 「恢复自动探测」写空缓存文件（`-s` 判空 = 未固定）。
+- **架构收口回归修复（通过，由 CI 用例暴露）**：`MENU_ROUTE` 常量被 axum 当两段参数导致所有 SSR 页 500（改 `menu_route(prefix)`）；`verify_detached` 二次拼域前缀导致发布自检验签全失败（改直接验签）；`parse_public_key` 补 `is_weak()`。同批 CI 从 **52 失败** 收敛到 **全绿**（`44434687589`）。
+- **未覆盖（限制）**：B 组（改密/限流）本轮按配置跳过；FTP、防火墙、站点 SSL、TLS 形态一/二、aarch64 未复跑；站点本轮未建（`sites=0`），PHP 只验了运行环境与容器内源，未复跑建站链路；E 组未实现。
+- **收尾状态**：`php-8.5` running、apk 源固定为 TUNA；测试机现场 `/root/iter2/pkg/`、`/root/iter/accept.sh`、`/root/iter/skiff-http-fwd.py`；`skiff` 与 `skiff-http-fwd` 均 active。
 
 **2026-11-18 21:15–21:40 就地覆盖 `d0c8cc4`（三项修复）：accept.sh A+D0 26 PASS / 0 FAIL，25 页 0 console error**
 
