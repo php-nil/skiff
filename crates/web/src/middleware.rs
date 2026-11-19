@@ -20,7 +20,9 @@ use crate::error::AppError;
 use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::util::parse_cookies;
 use skiff_app::db_async;
+use skiff_model::Role;
 use skiff_model::{Form, Permission, ScopeSet};
+use skiff_store::User;
 
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; \
@@ -536,6 +538,33 @@ impl FromRequestParts<Arc<AppState>> for PluginManagerUser {
         parts: &mut axum::http::request::Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
+        // Loopback bypass：daemon 监听 loopback 时外部根本打不进来，
+        // 本机进程 = 可信面。CLI 自调 plugin.rpc 走这条通道，
+        // 避免 CLI 和 daemon 各自拉起一份插件、各自发独立 token、kernel.sock 验不上。
+        let ip = crate::handlers::client_ip(state, parts);
+        if ip == "127.0.0.1" || ip == "::1" {
+            let username = parts
+                .headers
+                .get("x-skiff-internal-actor")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("cli")
+                .to_string();
+            return Ok(PluginManagerUser(CurrentUser {
+                user: User {
+                    id: 0,
+                    username,
+                    password_hash: String::new(),
+                    role: Role::Admin,
+                    totp_secret: None,
+                    totp_enabled: false,
+                    must_change_password: false,
+                    created_at: 0,
+                },
+                session_id: String::new(),
+                session_token: String::new(),
+                scopes: None,
+            }));
+        }
         Ok(PluginManagerUser(
             require_permission_extractor(parts, state, Permission::PluginManage).await?,
         ))

@@ -391,7 +391,12 @@ pub async fn rpc(
     parts: Parts,
     body: String,
 ) -> Result<Response, ApiError> {
-    handlers::check_csrf_header(&state, &user, &parts)?;
+    // CSRF 对 loopback CLI 请求也 bypass——loopback 自身已经是可信面。
+    let ip = handlers::client_ip(&state, &parts);
+    let is_loopback = ip == "127.0.0.1" || ip == "::1";
+    if !is_loopback {
+        handlers::check_csrf_header(&state, &user, &parts)?;
+    }
     let req: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| AppError::BadRequest(format!("请求体不是 JSON: {e}")))?;
     let method = req

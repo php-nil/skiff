@@ -371,50 +371,79 @@ pub fn plugin_config_set(cfg: &Config, id: &str, key: &str, value: &str) -> Resu
     Ok(())
 }
 
-/// `skiff plugin rpc <id> <method> [params-json]`：启动一个临时 tokio runtime + Supervisor，
-/// 直接调插件 RPC（走 UDS IPC）。daemon 正在跑不影响——Supervisor 各自独立，
-/// 临时实例在 RPC 结束后自动 drop，进程留在 supervisor 池里复用。
-///
-/// 这是 CLI 里唯一一个需要 runtime 的命令；其余命令都是 DB 直操作。
+/// `skiff plugin rpc <id> <method> [params-json]`：走 HTTP POST 到正在运行的 daemon
+/// （`/plugins/{id}/rpc`），daemon 的 supervisor 负责拉起插件、分配 token、走 UDS IPC。
+/// CLI 自己不建 Supervisor——daemon 是所有能力调用的唯一真源，避免「CLI 和 daemon
+/// 各自拉起一份同插件进程、各自发独立 token、kernel.sock 验不上」的分裂。
 pub fn plugin_rpc(cfg: &Config, id: &str, method: &str, params: Option<&str>) -> Result<()> {
-    let db = open_db(cfg)?;
-    let rec = db
-        .plugin(id)?
-        .ok_or_else(|| anyhow::anyhow!("插件未安装: {id}"))?;
-    if !rec.enabled {
-        bail!("插件已停用: {id}（先 skiff plugin enable {id}）");
-    }
-    let params: serde_json::Value = match params {
+    let params_json: serde_json::Value = match params {
         Some(p) if !p.is_empty() => {
             serde_json::from_str(p).with_context(|| format!("params 不是合法 JSON: {p}"))?
         }
         _ => serde_json::json!({}),
     };
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
-
-    let result = rt.block_on(async move {
-        let sup_cfg = skiff_plugin::supervisor::SupervisorConfig {
-            data_root: cfg.data_dir.clone(),
-            run_root: cfg.run_dir.clone(),
-            kernel_socket: cfg.run_dir.join("kernel.sock"),
-            health_timeout: std::time::Duration::from_secs(5),
-            allow_reduced_sandbox: cfg.allow_reduced_sandbox,
-        };
-        let sup = skiff_plugin::supervisor::Supervisor::new(sup_cfg, db);
-        sup.call(&rec, method, params).await
+    let body = serde_json::json!({
+        "method": method,
+        "params": params_json,
     });
+    let body_str = body.to_string();
 
-    match result {
-        Ok(v) => {
-            println!("{}", serde_json::to_string_pretty(&v)?);
-            Ok(())
-        }
-        Err(e) => bail!("RPC 失败: {e:#}"),
+    let entry = cfg.entry_prefix.as_deref().unwrap_or("");
+    let path = format!("/{entry}/plugins/{}/rpc", id);
+    let addr = cfg.listen.to_string(); // 127.0.0.1:18080
+    let host_header = addr.clone();
+
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let mut stream = TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .with_context(|| format!("监听地址非法: {addr}"))?,
+        std::time::Duration::from_secs(5),
+    )
+    .with_context(|| {
+        format!(
+            "daemon 不在线（{addr}）：请先 `systemctl start skiff`，\
+             CLI 走 daemon 的 supervisor 通道"
+        )
+    })?;
+
+    let req = format!(
+        "POST {path} HTTP/1.1\r\n\
+         Host: {host_header}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {len}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body_str}",
+        path = path,
+        host_header = host_header,
+        len = body_str.len(),
+        body_str = body_str,
+    );
+    stream.write_all(req.as_bytes())?;
+
+    let mut buf = Vec::with_capacity(8192);
+    stream.read_to_end(&mut buf)?;
+    let resp = String::from_utf8_lossy(&buf).to_string();
+
+    let mut lines = resp.split("\r\n");
+    let status_line = lines.next().unwrap_or("");
+    let is_ok = status_line.contains("200");
+    let body_start = resp.find("\r\n\r\n").map(|p| p + 4).unwrap_or(resp.len());
+    let resp_body = &resp[body_start..];
+
+    if !is_ok {
+        bail!("RPC 失败 {status_line}: {resp_body}");
     }
+    let envelope: serde_json::Value = serde_json::from_str(resp_body)
+        .with_context(|| format!("daemon 返回格式异常: {resp_body}"))?;
+    let result = envelope
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
 }
 
 /// `load_config_view` 的返回类型：连接句柄 + 声明 schema + 已存值。
