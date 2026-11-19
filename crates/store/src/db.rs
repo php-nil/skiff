@@ -9,6 +9,7 @@
 //! - **持锁禁止再进 `self.xxx()`**：`std::sync::Mutex` 不可重入，会永久卡死。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -41,6 +42,9 @@ pub const CURRENT_SCHEMA_VERSION: i64 = 21;
 pub struct Db {
     conn: Mutex<Connection>,
     path: PathBuf,
+    /// 插件记录（含 grants / enabled）的写版本号。任何会改变插件鉴权输入的写入
+    /// 都会自增，进程内授权快照据此失效；这样失效点不依赖调用方是否记得清缓存。
+    plugin_rev: AtomicU64,
 }
 
 fn now() -> i64 {
@@ -58,6 +62,7 @@ impl Db {
         let db = Db {
             conn: Mutex::new(conn),
             path,
+            plugin_rev: AtomicU64::new(0),
         };
         db.migrate()?;
         Ok(db)
@@ -69,6 +74,7 @@ impl Db {
         let db = Db {
             conn: Mutex::new(conn),
             path: PathBuf::from(":memory:"),
+            plugin_rev: AtomicU64::new(0),
         };
         db.migrate()?;
         Ok(db)
@@ -87,6 +93,18 @@ impl Db {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// 插件鉴权相关写入的版本号（进程内单调递增，不落库）。
+    ///
+    /// 授权快照把它当作缓存键：读到的 rev 与快照里的一致才复用。
+    pub fn plugin_rev(&self) -> u64 {
+        self.plugin_rev.load(Ordering::Acquire)
+    }
+
+    /// 插件记录/授权发生写入后调用。私有：只有本模块与子模块 `plugins` 会改这些表。
+    fn bump_plugin_rev(&self) {
+        self.plugin_rev.fetch_add(1, Ordering::AcqRel);
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {

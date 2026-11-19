@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -343,6 +344,10 @@ struct Running {
     socket: PathBuf,
     token: String,
     last_used: Instant,
+    /// 正在处理中的 RPC 数。`last_used` 只在请求**开始前**刷新，长 RPC 期间
+    /// 它不会前进；空闲回收必须同时看这里，否则超过 `idle_timeout_sec` 的
+    /// 长作业（如 `apt-get install`）会在轮询途中被 SIGTERM 杀掉。
+    inflight: Arc<AtomicUsize>,
     /// 本次运行的输出采集状态（stderr 尾巴 + 计数）。
     output: Arc<PluginOutput>,
     /// stdout/stderr 的读取任务；进程退出后应尽快收尾。
@@ -364,9 +369,26 @@ impl Running {
             socket,
             token,
             last_used: Instant::now(),
+            inflight: Arc::new(AtomicUsize::new(0)),
             output,
             pumps,
         }
+    }
+}
+
+/// 在途 RPC 计数守卫：进入 `Supervisor::call` 时 +1，返回/panic/取消时 -1。
+struct InflightGuard(Arc<AtomicUsize>);
+
+impl InflightGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -618,9 +640,17 @@ impl Supervisor {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SupervisorError> {
         let socket = self.ensure(rec).await?;
-        if let Some(r) = self.running.lock().await.get_mut(&rec.id) {
-            r.last_used = Instant::now();
-        }
+        // 在途保护必须在 `ensure` 之后立刻生效：`ensure` 已刷新 `last_used`，
+        // 但真正耗时的是接下来的 RPC，期间不能只靠 `last_used` 判空闲。
+        let inflight = match self.running.lock().await.get_mut(&rec.id) {
+            Some(r) => {
+                r.last_used = Instant::now();
+                Arc::clone(&r.inflight)
+            }
+            // 极窄窗口内被外部停掉：不带计数继续调用，让本次 RPC 自然失败。
+            None => Arc::new(AtomicUsize::new(0)),
+        };
+        let _guard = InflightGuard::new(inflight);
         Ok(ipc::rpc_call(&socket, method, params).await?)
     }
 
@@ -649,8 +679,23 @@ impl Supervisor {
 
     /// 空闲回收（默认 300s，`resident` 除外）。由后台 tick 调用。
     pub async fn reap_idle(&self) {
+        self.reap_idle_with(|_| false).await;
+    }
+
+    /// 带「外部忙碌」判定的空闲回收。
+    ///
+    /// `inflight` 只覆盖「内核还在等这条 RPC」的窗口；内核的 RPC 上限是 30s，
+    /// 而 `host_exec_full` 之类的长作业会在内核放弃等待后继续在插件里轮询。
+    /// 调用方（内核 tick）因此再传入一个忙碌判定——例如「该插件还有活跃的
+    /// `host.exec` 作业」——这段时间同样不允许回收。
+    pub async fn reap_idle_with<F>(&self, is_busy: F)
+    where
+        F: Fn(&str) -> bool,
+    {
         let now = Instant::now();
-        let mut to_stop = Vec::new();
+        // 先只在锁内收集「确实空闲」的候选，外部忙碌判定放到锁外：
+        // 它会查库（活跃作业），不应在持有进程表锁时执行，也只为候选付代价。
+        let mut candidates = Vec::new();
         {
             let running = self.running.lock().await;
             for (id, r) in running.iter() {
@@ -663,12 +708,17 @@ impl Supervisor {
                 if manifest.run == skiff_pkgfmt::manifest::RunMode::Resident {
                     continue;
                 }
+                // `last_used` 只在 RPC 开始前刷新；执行中的请求必须靠 inflight 挡住回收。
+                if r.inflight.load(Ordering::Acquire) > 0 {
+                    continue;
+                }
                 let idle = Duration::from_secs(manifest.idle_timeout_sec);
                 if now.duration_since(r.last_used) >= idle {
-                    to_stop.push(id.clone());
+                    candidates.push(id.clone());
                 }
             }
         }
+        let to_stop: Vec<String> = candidates.into_iter().filter(|id| !is_busy(id)).collect();
         for id in to_stop {
             self.stop(&id).await;
             let _ = self
@@ -1148,6 +1198,61 @@ mod tests {
                 .spawn()
                 .expect("测试替身 timeout 拉起失败"),
         ))
+    }
+
+    /// 回归：长 RPC 期间 `last_used` 不再前进，必须靠 inflight 计数挡住空闲回收。
+    ///
+    /// 历史问题：`apt-get install` 这类超过 `idle_timeout_sec` 的作业在插件侧轮询
+    /// 结果时，内核 tick 会按「已空闲」把插件进程 SIGTERM 掉。
+    #[tokio::test]
+    async fn reap_idle_skips_inflight_rpc() {
+        let dir = tempfile::tempdir().unwrap();
+        let sup = supervisor(dir.path());
+        let r = slow_rec("com.skiff.slow");
+        sup.db.upsert_plugin(&r).unwrap();
+
+        let mut running = Running::new(
+            live_child(),
+            sup.socket_path(&r.id),
+            "t".into(),
+            Arc::new(PluginOutput::default()),
+            Vec::new(),
+        );
+        running.last_used = Instant::now() - Duration::from_secs(3600);
+        let inflight = Arc::clone(&running.inflight);
+        sup.running.lock().await.insert(r.id.clone(), running);
+
+        let guard = InflightGuard::new(Arc::clone(&inflight));
+        sup.reap_idle().await;
+        assert!(
+            sup.is_running(&r.id).await,
+            "在途 RPC 期间插件不得被空闲回收"
+        );
+
+        drop(guard);
+        // 内核已放弃等待但插件仍在跑长作业：外部忙碌判定同样要挡住回收。
+        sup.reap_idle_with(|_| true).await;
+        assert!(
+            sup.is_running(&r.id).await,
+            "有活跃长作业时插件不得被空闲回收"
+        );
+
+        sup.reap_idle().await;
+        assert!(
+            !sup.is_running(&r.id).await,
+            "在途结束且空闲超时后应照常回收"
+        );
+    }
+
+    /// 带可解析 manifest 的记录（`reap_idle` 需要读 `idle_timeout_sec` / `run`）。
+    fn slow_rec(id: &str) -> PluginRecord {
+        let mut r = rec(id);
+        r.manifest = format!(
+            "id = \"{id}\"\nname = \"Slow\"\nversion = \"1.0.0\"\nkey_id = \"{}\"\n\
+             api = \"1.0\"\nrequires_full_sandbox = false\nidle_timeout_sec = 30\n",
+            "0".repeat(64)
+        );
+        r
     }
 
     /// 没有归属的子进程：`Running` 被直接丢弃时必须被回收，而不是继续在后台跑。

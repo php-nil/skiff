@@ -29,6 +29,8 @@ pub enum SdkError {
     MissingEnv(&'static str),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("超时: {0}")]
+    Timeout(String),
     #[error("协议错误: {0}")]
     Protocol(String),
     #[error("平台不支持: {0}")]
@@ -455,10 +457,11 @@ impl Plugin {
         stdin: Option<&str>,
         timeout_sec: Option<u64>,
     ) -> Result<Value> {
-        // 前台等待上限由内核夹到 120s；更长的任务由下面的轮询接手。
+        // 纯异步提交（`wait_sec = 0`）：把等待交给下面的长轮询。
+        // 旧写法让 `exec/run` 这一次请求最多挂 120s，既占住插件线程，也逼近
+        // 内核 RPC 上限；长作业本就应该「提交 + 长轮询」。
         let timeout = timeout_sec.unwrap_or(600);
-        let wait = timeout.min(120);
-        let mut submitted = self.host_exec_submit(binary, argv, stdin, Some((timeout, wait)))?;
+        let mut submitted = self.host_exec_submit(binary, argv, stdin, Some((timeout, 0)))?;
         let job_id = submitted
             .get("job_id")
             .and_then(Value::as_str)
@@ -467,14 +470,18 @@ impl Plugin {
 
         let budget = std::time::Duration::from_secs(timeout + 15);
         let started = std::time::Instant::now();
+        // 长轮询：每次最多让内核挂起 5s，状态变化立即返回，比固定 200ms 轮询少两个数量级的请求。
+        const POLL_WAIT_MS: u64 = 5_000;
         while submitted.get("active").and_then(Value::as_bool) == Some(true) {
-            if started.elapsed() > budget {
+            let elapsed = started.elapsed();
+            if elapsed > budget {
                 return Err(SdkError::Protocol(format!(
                     "命令执行超过 {budget:?} 未结束，作业 {job_id} 可能仍在运行（可用 host_exec_status 复查或 host_exec_cancel 取消）"
                 )));
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            submitted = self.host_exec_status(&job_id, 0, 0)?;
+            let remaining_ms = (budget - elapsed).as_millis() as u64;
+            submitted =
+                self.host_exec_status_wait(&job_id, 0, 0, remaining_ms.min(POLL_WAIT_MS))?;
         }
         Ok(finalize_exec_result(submitted, &job_id))
     }
@@ -503,10 +510,23 @@ impl Plugin {
 
     /// 查询状态 + 结果 + 增量日志（`after` 为已读到的最大 `seq`，`limit=0` 不带日志）。
     pub fn host_exec_status(&self, job_id: &str, after: i64, limit: i64) -> Result<Value> {
-        self.call_kernel(
-            skiff_wire::routes::CAP_EXEC_STATUS,
-            json!({ "job_id": job_id, "after": after, "limit": limit }),
-        )
+        self.host_exec_status_wait(job_id, after, limit, 0)
+    }
+
+    /// 长轮询版本：`wait_ms > 0` 时内核会挂起到「作业进入终态」或超时（内核上限 30s）
+    /// 再返回，响应形状不变。轮询进度时用它替代固定间隔的短轮询。
+    pub fn host_exec_status_wait(
+        &self,
+        job_id: &str,
+        after: i64,
+        limit: i64,
+        wait_ms: u64,
+    ) -> Result<Value> {
+        let mut body = json!({ "job_id": job_id, "after": after, "limit": limit });
+        if wait_ms > 0 {
+            body["wait_ms"] = json!(wait_ms);
+        }
+        self.call_kernel(skiff_wire::routes::CAP_EXEC_STATUS, body)
     }
 
     /// 取消：返回 `{outcome: cancelled|requested|terminal}`。
@@ -517,16 +537,34 @@ impl Plugin {
         )
     }
 
+    /// 轻量执行：短命令 / 只读探测，一次 HTTP 返回 `{success, code, stdout, stderr,
+    /// truncated}`。
+    ///
+    /// 授权判定与 [`Self::host_exec`] 完全一致（`exec:run` + `bin:` 三道闸），
+    /// 差别只在**不提交作业、不写任务中心、不抢同插件唯一活跃槽位**，因此适合
+    /// 并发探测（`nft --version` / `dpkg-query` / `systemctl is-active`）。
+    /// `timeout_sec` 缺省 10s、内核上限 30s（超出夹取）——跑更久的命令应该走
+    /// [`Self::host_exec`]，那样才有过程日志与取消。
+    ///
+    /// 非零退出**不是** `Err`：`success = false` 且 `stderr` 有内容；被拒（403）、
+    /// 二进制不可用（409）、并发满（429）、形态不支持（503）、超时（504）才是 `Err`。
+    pub fn host_exec_light(
+        &self,
+        binary: &str,
+        argv: &[&str],
+        timeout_sec: Option<u64>,
+    ) -> Result<Value> {
+        let mut body = json!({ "binary": binary, "argv": argv });
+        if let Some(t) = timeout_sec {
+            body["timeout_sec"] = json!(t);
+        }
+        self.call_kernel(skiff_wire::routes::CAP_EXEC_RUN_LIGHT, body)
+    }
+
     /// 回调内核能力面（`/api/v1/capability/*`），带进程级 Bearer token。
     pub fn call_kernel(&self, path: &str, body: Value) -> Result<Value> {
         let payload = serde_json::to_vec(&body).map_err(|e| SdkError::Protocol(e.to_string()))?;
-        let resp = uds_http(
-            &self.kernel_socket,
-            "POST",
-            path,
-            Some(&payload),
-            Some(&self.token),
-        )?;
+        let resp = kernel_http(&self.kernel_socket, path, &payload, &self.token)?;
         if resp.status != 200 {
             return Err(SdkError::Protocol(format!(
                 "内核返回 HTTP {}: {}",
@@ -688,6 +726,12 @@ fn write_response(
 }
 
 /// 最小 UDS HTTP 客户端（回调内核用）。帧编解码来自 `skiff-wire`。
+///
+/// **连接复用**：每线程对同一个 socket 只保留一条连接（`Connection: keep-alive`），
+/// 失败即丢弃；只有幂等只读路由才在失败后重连重试一次（`exec/run` 这类写操作
+/// 重发可能重复提交，不重试）。
+///
+/// **超时**：读/写都有上限，内核卡死时不会再让插件线程永久挂起。
 #[cfg(unix)]
 pub fn uds_http(
     socket: &std::path::Path,
@@ -696,23 +740,189 @@ pub fn uds_http(
     body: Option<&[u8]>,
     token: Option<&str>,
 ) -> Result<skiff_wire::HttpResponse> {
-    use std::os::unix::net::UnixStream;
+    uds_http_timeout(
+        socket,
+        method,
+        path,
+        body,
+        token,
+        KERNEL_READ_TIMEOUT,
+        false,
+    )
+}
 
-    let mut stream = UnixStream::connect(socket)?;
+/// 读超时：`exec/status` 长轮询最长挂起 30s，这里多留 10s 余量。
+#[cfg(unix)]
+const KERNEL_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+/// `exec/run` 的前台等待上限是 120s（内核 `WAIT_MAX_SEC`），读超时必须比它长，
+/// 否则插件显式 `wait_sec = 120` 的提交会被客户端自己掐断。
+#[cfg(unix)]
+const KERNEL_EXEC_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(135);
+/// 写超时：单帧上限 1MiB，本地 UDS 正常远低于 1s。
+#[cfg(unix)]
+const KERNEL_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 按路由选读超时：长等待只发生在 `exec/run`，其余保持 40s。
+#[cfg(unix)]
+fn read_timeout_for(path: &str) -> std::time::Duration {
+    if path == skiff_wire::routes::CAP_EXEC_RUN {
+        KERNEL_EXEC_READ_TIMEOUT
+    } else {
+        KERNEL_READ_TIMEOUT
+    }
+}
+
+#[cfg(unix)]
+struct KernelConn {
+    stream: std::os::unix::net::UnixStream,
+    /// 已读但尚未组成完整响应的字节（连接复用时保留，避免丢帧前缀）。
+    buf: Vec<u8>,
+}
+
+#[cfg(unix)]
+thread_local! {
+    /// 每线程到 kernel.sock 的复用连接。插件 RPC 处理线程通常连续回调内核。
+    static KERNEL_CONNS: std::cell::RefCell<
+        std::collections::HashMap<PathBuf, KernelConn>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(unix)]
+fn uds_http_timeout(
+    socket: &std::path::Path,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    token: Option<&str>,
+    read_timeout: std::time::Duration,
+    fresh: bool,
+) -> Result<skiff_wire::HttpResponse> {
+    if fresh {
+        drop_kernel_conn(socket);
+    }
+    let mut conn = match take_kernel_conn(socket) {
+        Some(c) => c,
+        None => connect_kernel(socket, read_timeout)?,
+    };
+    match exchange(&mut conn, method, path, body, token, read_timeout) {
+        Ok(resp) => {
+            put_kernel_conn(socket, conn);
+            Ok(resp)
+        }
+        Err(e) => {
+            // 连接级失败：旧连接已不可信，直接丢弃。
+            if !fresh && is_idempotent(path) {
+                uds_http_timeout(socket, method, path, body, token, read_timeout, true)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn connect_kernel(
+    socket: &std::path::Path,
+    read_timeout: std::time::Duration,
+) -> Result<KernelConn> {
+    let stream = std::os::unix::net::UnixStream::connect(socket)?;
+    // 设置失败（不支持的平台）不致命：退化为阻塞读写。
+    let _ = stream.set_read_timeout(Some(read_timeout));
+    let _ = stream.set_write_timeout(Some(KERNEL_WRITE_TIMEOUT));
+    Ok(KernelConn {
+        stream,
+        buf: Vec::new(),
+    })
+}
+
+#[cfg(unix)]
+fn take_kernel_conn(socket: &std::path::Path) -> Option<KernelConn> {
+    KERNEL_CONNS.with(|pool| pool.borrow_mut().remove(socket))
+}
+
+#[cfg(unix)]
+fn put_kernel_conn(socket: &std::path::Path, conn: KernelConn) {
+    KERNEL_CONNS.with(|pool| {
+        pool.borrow_mut().insert(socket.to_path_buf(), conn);
+    });
+}
+
+#[cfg(unix)]
+fn drop_kernel_conn(socket: &std::path::Path) {
+    KERNEL_CONNS.with(|pool| {
+        pool.borrow_mut().remove(socket);
+    });
+}
+
+/// 幂等只读路由：连接层失败后可以安全地重连重发。
+#[cfg(unix)]
+fn is_idempotent(path: &str) -> bool {
+    use skiff_wire::routes as r;
+    matches!(
+        path,
+        r::CAP_IDENTITY_SELF
+            | r::CAP_CONFIG
+            | r::CAP_FS_READ
+            | r::CAP_FS_LIST
+            | r::CAP_EXEC_STATUS
+            | r::CAP_INTEROP_CATALOG
+    )
+}
+
+#[cfg(unix)]
+fn exchange(
+    conn: &mut KernelConn,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    token: Option<&str>,
+    read_timeout: std::time::Duration,
+) -> Result<skiff_wire::HttpResponse> {
     let payload = body.unwrap_or(&[]);
     if payload.len() > skiff_wire::MAX_FRAME {
         return Err(SdkError::Protocol("请求体超过单帧上限".into()));
     }
-    let head = skiff_wire::build_request(method, path, payload.len(), token);
-    stream.write_all(head.as_bytes())?;
-    stream.write_all(payload)?;
-    stream.flush()?;
+    // 连接是复用的，超时随路由变化（`exec/run` 更长），每次调用重设。
+    conn.stream
+        .set_read_timeout(Some(read_timeout))
+        .map_err(map_io_error)?;
+    let head = skiff_wire::build_request_keep_alive(method, path, payload.len(), token);
+    conn.stream
+        .write_all(head.as_bytes())
+        .map_err(map_io_error)?;
+    conn.stream.write_all(payload).map_err(map_io_error)?;
+    conn.stream.flush().map_err(map_io_error)?;
 
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf)?;
-    skiff_wire::parse_response(&buf)
-        .map_err(|e| SdkError::Protocol(e.to_string()))?
-        .ok_or_else(|| SdkError::Protocol("响应不完整".into()))
+    let mut chunk = [0u8; 8192];
+    loop {
+        if let Some((resp, used)) = skiff_wire::parse_response_at(&conn.buf)
+            .map_err(|e| SdkError::Protocol(e.to_string()))?
+        {
+            conn.buf.drain(..used);
+            return Ok(resp);
+        }
+        let n = conn.stream.read(&mut chunk).map_err(map_io_error)?;
+        if n == 0 {
+            return Err(SdkError::Protocol(
+                "内核关闭连接（响应不完整，结果未知）".into(),
+            ));
+        }
+        conn.buf.extend_from_slice(&chunk[..n]);
+        if conn.buf.len() > skiff_wire::MAX_FRAME * 2 {
+            return Err(SdkError::Protocol("响应超过帧上限".into()));
+        }
+    }
+}
+
+/// 读写超时统一映射成 `Timeout`：文案必须写明「结果未知」，调用方不能当成「没执行」。
+#[cfg(unix)]
+fn map_io_error(e: std::io::Error) -> SdkError {
+    match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => SdkError::Timeout(
+            "读写 kernel.sock 超时，结果未知（可能仍在处理，或连接已卡死）".into(),
+        ),
+        _ => SdkError::Io(e),
+    }
 }
 
 #[cfg(not(unix))]
@@ -722,6 +932,37 @@ pub fn uds_http(
     _path: &str,
     _body: Option<&[u8]>,
     _token: Option<&str>,
+) -> Result<skiff_wire::HttpResponse> {
+    Err(SdkError::Unsupported(
+        "插件只支持在 Linux/unix 宿主运行".into(),
+    ))
+}
+
+/// SDK 内部回调内核的入口：按路由选读超时（`exec/run` 用更长的等待）。
+#[cfg(unix)]
+fn kernel_http(
+    socket: &std::path::Path,
+    path: &str,
+    payload: &[u8],
+    token: &str,
+) -> Result<skiff_wire::HttpResponse> {
+    uds_http_timeout(
+        socket,
+        "POST",
+        path,
+        Some(payload),
+        Some(token),
+        read_timeout_for(path),
+        false,
+    )
+}
+
+#[cfg(not(unix))]
+fn kernel_http(
+    _socket: &std::path::Path,
+    _path: &str,
+    _payload: &[u8],
+    _token: &str,
 ) -> Result<skiff_wire::HttpResponse> {
     Err(SdkError::Unsupported(
         "插件只支持在 Linux/unix 宿主运行".into(),
@@ -760,6 +1001,199 @@ fn finalize_exec_result(snapshot: Value, job_id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 内核卡死时不得永久占用插件线程：读超时必须返回 `Timeout`（结果未知）。
+    #[cfg(unix)]
+    #[test]
+    fn read_timeout_surfaces_as_timeout() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("kernel.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            if let Ok((_stream, _)) = listener.accept() {
+                // 收下连接但永不响应，模拟内核侧卡死
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
+
+        let err = uds_http_timeout(
+            &sock,
+            "POST",
+            skiff_wire::routes::CAP_CONFIG,
+            Some(b"{}"),
+            None,
+            std::time::Duration::from_millis(100),
+            false,
+        )
+        .expect_err("无响应的内核必须触发读超时");
+        assert!(matches!(err, SdkError::Timeout(_)), "{err:?}");
+    }
+
+    /// `exec/run` 的内核前台等待上限是 120s，客户端读超时必须比它长；
+    /// 普通路由仍保持 40s，避免内核卡死时长期占用插件线程。
+    #[cfg(unix)]
+    #[test]
+    fn exec_run_gets_a_longer_read_timeout() {
+        use skiff_wire::routes as r;
+        assert_eq!(read_timeout_for(r::CAP_CONFIG), KERNEL_READ_TIMEOUT);
+        assert!(read_timeout_for(r::CAP_EXEC_RUN) > std::time::Duration::from_secs(120));
+    }
+
+    /// 连接复用：同一线程的两次调用应落在同一条 UDS 连接上（服务端只 accept 一次）。
+    #[cfg(unix)]
+    #[test]
+    fn reuses_one_connection_per_thread() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("kernel.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let acc = Arc::clone(&accepts);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                acc.fetch_add(1, Ordering::SeqCst);
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let parsed = match skiff_wire::parse_request_head(&buf) {
+                        Ok(Some(v)) => v,
+                        Ok(None) => {
+                            let n = stream.read(&mut chunk).unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            continue;
+                        }
+                        Err(_) => break,
+                    };
+                    let (head, end) = parsed;
+                    if buf.len() < end + head.content_length {
+                        let n = stream.read(&mut chunk).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        continue;
+                    }
+                    buf.drain(..end + head.content_length);
+                    let body = br#"{"ok":1}"#;
+                    let head = skiff_wire::build_response_head(200, body.len());
+                    if stream.write_all(head.as_bytes()).is_err()
+                        || stream.write_all(body).is_err()
+                        || stream.flush().is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let first = uds_http(
+            &sock,
+            "POST",
+            skiff_wire::routes::CAP_CONFIG,
+            Some(b"{}"),
+            None,
+        )
+        .unwrap();
+        let second = uds_http(
+            &sock,
+            "POST",
+            skiff_wire::routes::CAP_CONFIG,
+            Some(b"{}"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.json().unwrap()["ok"], 1);
+        assert_eq!(second.json().unwrap()["ok"], 1);
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "两次调用应复用同一条连接"
+        );
+    }
+
+    /// 轻量通道：SDK 走 `exec/run_light`，body 只有 binary/argv/timeout_sec，
+    /// 响应原样返回（非零退出不是 Err）。
+    #[cfg(unix)]
+    #[test]
+    fn host_exec_light_posts_to_light_route() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("kernel.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match skiff_wire::parse_request_head(&buf) {
+                    Ok(Some((head, end))) => {
+                        while buf.len() < end + head.content_length {
+                            let n = stream.read(&mut chunk).unwrap_or(0);
+                            if n == 0 {
+                                return;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        let body = String::from_utf8_lossy(&buf[end..end + head.content_length])
+                            .to_string();
+                        tx.send((head.path.clone(), body)).ok();
+                        let payload = br#"{"success":false,"code":3,"stdout":"","stderr":"x","truncated":{"stdout":false,"stderr":false}}"#;
+                        let h = skiff_wire::build_response_head(200, payload.len());
+                        let _ = stream.write_all(h.as_bytes());
+                        let _ = stream.write_all(payload);
+                        let _ = stream.flush();
+                        return;
+                    }
+                    _ => {
+                        let n = stream.read(&mut chunk).unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
+                }
+            }
+        });
+
+        let p = Plugin {
+            id: "com.example.demo".into(),
+            api: "1.0".into(),
+            socket: PathBuf::from("/tmp/x"),
+            data_dir: PathBuf::from("/tmp/d"),
+            cache_dir: PathBuf::from("/tmp/c"),
+            run_dir: PathBuf::from("/tmp/r"),
+            kernel_socket: sock,
+            granted: vec!["exec:run".into()],
+            token: "t".into(),
+        };
+        let out = p
+            .host_exec_light("/usr/sbin/nft", &["--version"], Some(5))
+            .unwrap();
+        let (path, body) = rx.recv().unwrap();
+        assert_eq!(path, skiff_wire::routes::CAP_EXEC_RUN_LIGHT);
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["binary"], "/usr/sbin/nft");
+        assert_eq!(v["argv"][0], "--version");
+        assert_eq!(v["timeout_sec"], 5);
+        // 非零退出不是 Err：结果按原样交给调用方判断。
+        assert_eq!(out["success"], false);
+        assert_eq!(out["code"], 3);
+    }
 
     #[test]
     fn rpc_error_codes_follow_jsonrpc() {

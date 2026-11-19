@@ -3,6 +3,8 @@
 //! **纯插件实现**（零内核 firewall 宿主命令编排）：所有 nftables/iptables 规则、
 //! fail2ban 全套经内核 exec 能力面提交，任务中心自动有运行记录。
 
+use std::sync::OnceLock;
+
 use serde_json::{json, Value};
 use skiff_plugin_common as common;
 use skiff_sdk::{Plugin, RpcError};
@@ -29,7 +31,106 @@ enum Backend {
     Iptables,
 }
 
+/// 进程级缓存：防火墙后端探测结果。
+///
+/// on-demand 模式下插件进程长驻，这些值在单次进程生命周期内不会变
+/// （装/卸 nftables、fail2ban 都是管理员显式操作，且装好后插件需要重启才生效），
+/// 所以用 `OnceLock` 缓存，首次探测后直接复用。
+///
+/// 前端每次打开页面会并发调 `status` + `rules.list`，不缓存的话单次刷新 ≈ 10+ 条
+/// exec 进作业中心，而 `exec` 能力面对同一插件只允许一条活跃作业（target_id 唯一），
+/// 并发的会被 409 拒——这正是「作业中心一堆失败」和「页面慢」的共同根因。
+#[derive(Copy, Clone)]
+struct BackendProbe {
+    nftables: bool,
+    iptables: bool,
+    selected: Option<Backend>,
+}
+fn backend_probe(p: &Plugin) -> BackendProbe {
+    static CACHE: OnceLock<BackendProbe> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let nft = command_works(p, NFT, &["--version"]);
+        let ipt = command_works(p, IPTABLES, &["--version"]);
+        let selected = if nft {
+            Some(Backend::Nft)
+        } else if ipt {
+            Some(Backend::Iptables)
+        } else {
+            None
+        };
+        BackendProbe {
+            nftables: nft,
+            iptables: ipt,
+            selected,
+        }
+    })
+}
+#[derive(Clone, Copy)]
+struct F2bProbe {
+    installed: bool,
+}
+fn f2b_probe(p: &Plugin) -> F2bProbe {
+    static CACHE: OnceLock<F2bProbe> = OnceLock::new();
+    *CACHE.get_or_init(|| F2bProbe {
+        installed: command_works(p, DPKG_QUERY, &["-s", "fail2ban"])
+            || command_works(p, FAIL2BAN_CLIENT, &["--version"]),
+    })
+}
+
 // ── exec 辅助 ──
+//
+// 两条通道分工（`docs/contract/KERNEL_EXEC_CONTRACT.md` §2）：
+// - **轻量**（`host_exec_light`）：只读探测 / 版本查询。不建作业、不抢同插件唯一
+//   活跃槽位，一页十几条探测可以并发跑；
+// - **作业化**（`host_exec_full`）：有副作用、可能耗时（改规则、装包、重启服务），
+//   过程输出与取消都在任务中心。
+
+/// 只读探测：结果只看 `success`，不抛错（探测失败=不可用）。
+fn light_probe(p: &Plugin, binary: &str, argv: &[&str]) -> bool {
+    p.host_exec_light(binary, argv, Some(10))
+        .map(|o| o.get("success").and_then(Value::as_bool) == Some(true))
+        .unwrap_or(false)
+}
+
+/// 只读查询：成功返回 stdout，非零退出转成 `RpcError`（与 `exec_ok` 同口径）。
+fn light_ok(p: &Plugin, binary: &str, argv: &[&str], t: u64) -> Result<String, RpcError> {
+    let out = p
+        .host_exec_light(binary, argv, Some(t))
+        .map_err(common::rpc_err)?;
+    if out.get("success").and_then(Value::as_bool) != Some(true) {
+        let code = out.get("code").and_then(Value::as_i64).unwrap_or(-1);
+        let detail = out
+            .get("stderr")
+            .and_then(Value::as_str)
+            .or_else(|| out.get("stdout").and_then(Value::as_str))
+            .unwrap_or("未知")
+            .trim()
+            .to_string();
+        return Err(RpcError::internal(format!(
+            "{binary} 退出码 {code}：{detail}"
+        )));
+    }
+    Ok(out
+        .get("stdout")
+        .and_then(Value::as_str)
+        .or_else(|| out.get("stderr").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string())
+}
+
+/// 只读查询（不判成败）：`systemctl is-active` 这类「非零退出也是有效答案」的用。
+fn light_any(p: &Plugin, binary: &str, argv: &[&str], t: u64) -> Result<String, RpcError> {
+    let out = p
+        .host_exec_light(binary, argv, Some(t))
+        .map_err(common::rpc_err)?;
+    Ok(out
+        .get("stdout")
+        .and_then(Value::as_str)
+        .or_else(|| out.get("stderr").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string())
+}
+
 fn exec_ok(
     p: &Plugin,
     binary: &str,
@@ -78,34 +179,23 @@ fn exec_any(
         .to_string())
 }
 fn command_works(p: &Plugin, binary: &str, argv: &[&str]) -> bool {
-    p.host_exec_full(binary, argv, None, Some(30))
-        .map(|o| o.get("success").and_then(Value::as_bool) == Some(true))
-        .unwrap_or(false)
+    light_probe(p, binary, argv)
 }
 fn detect_backend(p: &Plugin) -> Option<Backend> {
-    if command_works(p, NFT, &["--version"]) {
-        return Some(Backend::Nft);
-    }
-    if command_works(p, IPTABLES, &["--version"]) {
-        return Some(Backend::Iptables);
-    }
-    None
+    backend_probe(p).selected
 }
 fn fail2ban_installed(p: &Plugin) -> bool {
-    command_works(p, DPKG_QUERY, &["-s", "fail2ban"])
-        || command_works(p, FAIL2BAN_CLIENT, &["--version"])
+    f2b_probe(p).installed
 }
 /// 受管链读取：成功返回原始输出，失败（常见是全新机器上表/链还不存在）返回 None。
 fn nft_chain_dump(p: &Plugin) -> Option<String> {
-    p.host_exec_full(
+    light_ok(
+        p,
         NFT,
         &["-a", "list", "chain", "inet", "skiff", "input"],
-        None,
-        Some(30),
+        10,
     )
     .ok()
-    .filter(|o| o.get("success").and_then(Value::as_bool) == Some(true))
-    .and_then(|o| o.get("stdout").and_then(Value::as_str).map(str::to_string))
 }
 
 /// 按需建受管表/链（契约 §4：表/链不存在时创建，默认策略 accept）。
@@ -139,11 +229,7 @@ fn ensure_nft(p: &Plugin) -> Result<(), RpcError> {
 fn ensure_iptables(p: &Plugin) -> Result<(), RpcError> {
     // `-N` 在链已存在时退出码非 0，属预期，这里不当作失败。
     let _ = p.host_exec_full(IPTABLES, &["-N", IPT_CHAIN], None, Some(30));
-    let jumped = p
-        .host_exec_full(IPTABLES, &["-C", "INPUT", "-j", IPT_CHAIN], None, Some(30))
-        .ok()
-        .and_then(|o| o.get("success").and_then(Value::as_bool))
-        .unwrap_or(false);
+    let jumped = light_probe(p, IPTABLES, &["-C", "INPUT", "-j", IPT_CHAIN]);
     if !jumped {
         exec_ok(
             p,
@@ -163,7 +249,7 @@ fn ensure_managed_chain(p: &Plugin, backend: Backend) -> Result<(), RpcError> {
     }
 }
 fn fail2ban_running(p: &Plugin) -> bool {
-    exec_any(p, SYSTEMCTL, &["is-active", F2B_SERVICE], None, 10)
+    light_any(p, SYSTEMCTL, &["is-active", F2B_SERVICE], 10)
         .unwrap_or_default()
         .trim()
         == "active"
@@ -209,27 +295,21 @@ fn enabled_jails(text: &str) -> Vec<String> {
 
 // ── 15 条 handler（独立函数，match 只调） ──
 fn h_status(p: &Plugin) -> Result<Value, RpcError> {
-    let nft = command_works(p, NFT, &["--version"]);
-    let iptables = command_works(p, IPTABLES, &["--version"]);
-    let backend = if nft {
-        Some("nftables")
-    } else if iptables {
-        Some("iptables")
-    } else {
-        None
-    };
-    let rules = match detect_backend(p) {
-        Some(Backend::Nft) => exec_ok(
+    // backend_probe 一次性拿到 nftables/iptables 的可用性与选中的后端，
+    // 且结果缓存进程内复用——避免每次 status 都跑 4 条 exec 探测。
+    let probe = backend_probe(p);
+    let backend = probe.selected;
+    let rules = match backend {
+        Some(Backend::Nft) => light_ok(
             p,
             NFT,
             &["-a", "list", "chain", "inet", "skiff", "input"],
-            None,
-            30,
+            10,
         )
         .ok()
         .map(|t| parse_nft_rules(&t))
         .unwrap_or_default(),
-        Some(Backend::Iptables) => exec_ok(p, IPTABLES, &["-S", IPT_CHAIN], None, 30)
+        Some(Backend::Iptables) => light_ok(p, IPTABLES, &["-S", IPT_CHAIN], 10)
             .ok()
             .map(|t| parse_iptables_rules(&t))
             .unwrap_or_default(),
@@ -243,13 +323,12 @@ fn h_status(p: &Plugin) -> Result<Value, RpcError> {
         Vec::new()
     };
     Ok(json!({
-        "backend": backend,
-        // 面板按 *_text 直接展示；保留原始键给需要判断的调用方。
-        "backend_text": backend.unwrap_or("未检测到（需要 nft 或 iptables）"),
-        "nftables": nft,
-        "nftables_text": if nft { "已安装" } else { "未安装" },
-        "iptables": iptables,
-        "iptables_text": if iptables { "已安装" } else { "未安装" },
+        "backend": backend.map(|b| match b { Backend::Nft => "nftables", Backend::Iptables => "iptables" }),
+        "backend_text": backend.map(|b| match b { Backend::Nft => "nftables", Backend::Iptables => "iptables" }).unwrap_or("未检测到（需要 nft 或 iptables）"),
+        "nftables": probe.nftables,
+        "nftables_text": if probe.nftables { "已安装" } else { "未安装" },
+        "iptables": probe.iptables,
+        "iptables_text": if probe.iptables { "已安装" } else { "未安装" },
         "managed_rules": rules.len(),
         "fail2ban": json!({ "installed": f2b_installed, "running": f2b_running }),
         "fail2ban_text": match (f2b_installed, f2b_running) {
@@ -353,18 +432,17 @@ fn h_rules_list(p: &Plugin) -> Result<Value, RpcError> {
     match detect_backend(p) {
         Some(Backend::Nft) => {
             ensure_nft(p)?;
-            let out = exec_ok(
+            let out = light_ok(
                 p,
                 NFT,
                 &["-a", "list", "chain", "inet", "skiff", "input"],
-                None,
-                30,
+                10,
             )?;
             Ok(json!({ "backend": "nftables", "items": parse_nft_rules(&out) }))
         }
         Some(Backend::Iptables) => {
             ensure_iptables(p)?;
-            let out = exec_ok(p, IPTABLES, &["-S", IPT_CHAIN], None, 30)?;
+            let out = light_ok(p, IPTABLES, &["-S", IPT_CHAIN], 10)?;
             Ok(json!({ "backend": "iptables", "items": parse_iptables_rules(&out) }))
         }
         None => Ok(json!({ "backend": Value::Null, "items": [] })),

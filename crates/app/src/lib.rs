@@ -138,6 +138,53 @@ pub struct AppState {
     /// 页面据此显示维护原因；vhost 生成也读它，保证「已判定失联的站点」不再
     /// 生成指向容器地址的可用配置。用 std 锁：读写在同步渲染路径上，不跨 await。
     site_guard: std::sync::Mutex<HashMap<String, sites::RuntimeGuard>>,
+    /// 插件鉴权快照（uid → 插件 id、id → grants）。
+    ///
+    /// 能力面每个请求都要「uid → 插件」与「插件 → 授权」两次查库，原先一次
+    /// `fs/read` 会重复查 grants 三次。快照以 `Db::plugin_rev()` 为缓存键：
+    /// 安装/升级/卸载/启停/授权变更都会推进版本号，因此不存在「忘了清缓存」
+    /// 导致的旧授权长期生效；命中时只是一次读锁 + `Arc` 克隆。
+    plugin_auth: std::sync::RwLock<PluginAuthSnapshot>,
+}
+
+/// 进程内只读的插件鉴权快照。
+///
+/// `rev = None` 表示尚未成功构建（下次访问重试）。`built_at` 是兜底 TTL：
+/// `plugin_rev` 只覆盖**本进程**的写入；`skiff plugin install` 这类 CLI 命令是
+/// 另一个进程直接写库，本进程看不到版本号变化，靠 TTL 最迟 5s 后重建。
+#[derive(Default)]
+struct PluginAuthSnapshot {
+    rev: Option<u64>,
+    by_id: HashMap<String, Arc<[skiff_store::Grant]>>,
+    by_uid: HashMap<u32, String>,
+    built_at: Option<std::time::Instant>,
+}
+
+/// 跨进程写入的兜底刷新间隔。本进程内授权变更仍然按 rev 立即失效。
+const AUTH_SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl PluginAuthSnapshot {
+    fn build(db: &Db, rev: u64) -> Option<Self> {
+        // 构建失败时返回 None：调用方清空快照并置 `rev=None`，下个请求重试；
+        // 期间能力面按「无授权」处理（fail closed），不会误放行。
+        let list = db.list_plugins().ok()?;
+        let mut by_id = HashMap::with_capacity(list.len());
+        let mut by_uid = HashMap::with_capacity(list.len());
+        for p in list {
+            // 与旧的 `list_plugins().find(uid)` 保持同一口径：按 id 顺序先到先得。
+            // （uid 是 200000..201000 的哈希槽位，理论上可能撞；此处不改变既有语义。）
+            by_uid
+                .entry(skiff_plugin::install::plugin_uid(&p.id))
+                .or_insert_with(|| p.id.clone());
+            by_id.insert(p.id, Arc::from(p.grants.into_boxed_slice()));
+        }
+        Some(Self {
+            rev: Some(rev),
+            by_id,
+            by_uid,
+            built_at: Some(std::time::Instant::now()),
+        })
+    }
 }
 
 /// flash 提示级别：只区分成功提示与失败原因，样式由页面统一渲染。
@@ -339,6 +386,7 @@ impl AppState {
             catalog,
             flash: std::sync::Mutex::new(HashMap::new()),
             site_guard: std::sync::Mutex::new(HashMap::new()),
+            plugin_auth: std::sync::RwLock::new(PluginAuthSnapshot::default()),
         })
     }
 
@@ -617,18 +665,59 @@ impl AppState {
 /// 能力面（`skiff-plugin::capability`）住在插件 crate，但插件 crate 不能反向依赖
 /// `skiff-app`（否则成环）。这里实现 trait，把「数据根在哪」「授了哪些权限」
 /// 「审计往哪写」三件事交出去，能力面因此不碰数据库与状态装配。
+impl AppState {
+    /// 插件 id → 已授予权限。`None` = 插件不存在（或快照暂时构建失败）。
+    pub fn plugin_auth_of(&self, plugin_id: &str) -> Option<Arc<[skiff_store::Grant]>> {
+        let snap = self.auth_snapshot();
+        snap.by_id.get(plugin_id).cloned()
+    }
+
+    /// peer uid → 插件 id + 已授予权限（能力面双重鉴权的第一道）。
+    pub fn plugin_auth_by_uid(&self, uid: u32) -> Option<(String, Arc<[skiff_store::Grant]>)> {
+        let snap = self.auth_snapshot();
+        let id = snap.by_uid.get(&uid)?.clone();
+        let grants = snap.by_id.get(&id).cloned().unwrap_or_default();
+        Some((id, grants))
+    }
+
+    /// 取当前有效的鉴权快照；版本号变化时重建。
+    ///
+    /// 重建失败（读库失败）时清空快照：宁可本请求按「无授权」拒绝，也不能拿
+    /// 旧授权继续放行；`rev = None` 让下一个请求重试。
+    fn auth_snapshot(&self) -> std::sync::RwLockReadGuard<'_, PluginAuthSnapshot> {
+        let rev = self.db.plugin_rev();
+        let stale = |snap: &PluginAuthSnapshot| {
+            // 版本不同（本进程写入）或超过 TTL（跨进程写入）都要重建。
+            snap.rev != Some(rev)
+                || snap
+                    .built_at
+                    .is_none_or(|t| t.elapsed() >= AUTH_SNAPSHOT_TTL)
+        };
+        let needs_build = {
+            let snap = self.plugin_auth.read().unwrap_or_else(|e| e.into_inner());
+            stale(&snap)
+        };
+        if needs_build {
+            let mut snap = self.plugin_auth.write().unwrap_or_else(|e| e.into_inner());
+            // 双重检查：并发请求里可能已有线程完成重建。
+            if stale(&snap) {
+                match PluginAuthSnapshot::build(&self.db, rev) {
+                    Some(built) => *snap = built,
+                    None => *snap = PluginAuthSnapshot::default(),
+                }
+            }
+        }
+        self.plugin_auth.read().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 impl skiff_plugin::capability::CapabilityHost for AppState {
     fn data_dir(&self) -> &std::path::Path {
         &self.cfg.data_dir
     }
 
-    fn plugin_grants(&self, plugin_id: &str) -> Vec<skiff_store::Grant> {
-        self.db
-            .plugin(plugin_id)
-            .ok()
-            .flatten()
-            .map(|p| p.grants)
-            .unwrap_or_default()
+    fn plugin_grants(&self, plugin_id: &str) -> Arc<[skiff_store::Grant]> {
+        self.plugin_auth_of(plugin_id).unwrap_or_default()
     }
 
     fn audit(
@@ -722,6 +811,37 @@ mod tests {
 
     fn map() -> HashMap<String, LoginAttempt> {
         HashMap::new()
+    }
+
+    /// 鉴权快照以 `plugin_rev` 为键：授权变化后重建必须拿到新集合。
+    #[test]
+    fn auth_snapshot_rebuilds_after_grant_change() {
+        let db = Db::open_in_memory().unwrap();
+        let mut p = skiff_store::PluginRecord {
+            id: "com.example.auth".into(),
+            name: "Auth".into(),
+            version: "0.1.0".into(),
+            api: "1.0".into(),
+            key_id: String::new(),
+            manifest: "{}".into(),
+            enabled: true,
+            status: "installed".into(),
+            status_detail: String::new(),
+            active_version: "0.1.0".into(),
+            installed_at: 0,
+            grants: vec![skiff_store::Grant::perm("fs:read")],
+        };
+        db.upsert_plugin(&p).unwrap();
+        let rev = db.plugin_rev();
+        let snap = PluginAuthSnapshot::build(&db, rev).unwrap();
+        assert_eq!(snap.by_id[&p.id].len(), 1);
+        assert_eq!(snap.by_uid[&skiff_plugin::install::plugin_uid(&p.id)], p.id);
+
+        p.grants.clear();
+        db.upsert_plugin(&p).unwrap();
+        assert_ne!(db.plugin_rev(), rev, "授权写入必须推进版本号");
+        let snap = PluginAuthSnapshot::build(&db, db.plugin_rev()).unwrap();
+        assert!(snap.by_id[&p.id].is_empty(), "撤销后的快照不得残留旧授权");
     }
 
     #[test]

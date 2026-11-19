@@ -40,9 +40,10 @@ pub(super) async fn plugin_auth(
     let Some(uid) = pid else {
         return (StatusCode::FORBIDDEN, "缺少 peer 凭据").into_response();
     };
-    // UID → 插件 id
-    let plugin_id = match uid_to_plugin(&state, uid).await {
-        Some(id) => id,
+    // UID → 插件 id：走进程内鉴权快照（按 `Db::plugin_rev()` 失效），
+    // 不再每请求 `list_plugins()` 全表扫 + 逐插件查 grants。
+    let plugin_id = match state.plugin_auth_by_uid(uid) {
+        Some((id, _grants)) => id,
         None => {
             let db = Arc::clone(state.db());
             let actor = format!("uid:{uid}");
@@ -103,13 +104,4 @@ pub(super) async fn plugin_auth(
     req.extensions_mut()
         .insert(skiff_plugin::capability::PluginId(plugin_id));
     next.run(req).await
-}
-
-async fn uid_to_plugin(state: &AppState, uid: u32) -> Option<String> {
-    let db = Arc::clone(state.db());
-    let plugins = db_async::run(move || db.list_plugins()).await.ok()?.ok()?;
-    plugins
-        .into_iter()
-        .find(|p| skiff_plugin::install::plugin_uid(&p.id) == uid)
-        .map(|p| p.id)
 }

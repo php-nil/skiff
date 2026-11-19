@@ -15,7 +15,6 @@ use serde_json::{json, Value};
 use skiff_app::db_async;
 use skiff_app::AppState;
 use skiff_docker::{Actor, Verb};
-use skiff_store::Grant;
 
 use skiff_plugin::capability as cap;
 
@@ -258,44 +257,24 @@ pub(super) async fn docker_call(
         None
     };
 
-    let grants: Vec<Grant> = match state.db().plugin(&id) {
-        Ok(Some(p)) => p.grants,
-        Ok(None) => {
-            // 鉴权中间件已确认插件存在；走到这里说明库与 UDS 会话不一致（刚被卸载）。
-            if let Err(w) = state.db().audit(
-                &format!("plugin:{id}"),
-                "uds",
-                &verb.audit_action(),
-                "",
-                "deny",
-                "插件记录不存在（可能已被卸载）",
-            ) {
-                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
-            }
-            return (StatusCode::FORBIDDEN, "插件记录不存在").into_response();
+    let Some(grants) = state.plugin_auth_of(&id) else {
+        // 鉴权中间件已确认插件存在；走到这里说明库与 UDS 会话不一致（刚被卸载），
+        // 或鉴权快照暂时读不到库（fail closed）。
+        if let Err(w) = state.db().audit(
+            &format!("plugin:{id}"),
+            "uds",
+            &verb.audit_action(),
+            "",
+            "deny",
+            "插件记录不存在（可能已被卸载）",
+        ) {
+            tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
         }
-        // 查库失败不是越权：按依赖不可用回 503，不能伪装成 deny。
-        Err(e) => {
-            if let Err(w) = state.db().audit(
-                &format!("plugin:{id}"),
-                "uds",
-                &verb.audit_action(),
-                "",
-                "fail",
-                &format!("读取插件授权失败: {e}"),
-            ) {
-                tracing::warn!(plugin = %id, error = %w, "写入能力面审计失败");
-            }
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "读取插件授权失败，请稍后重试",
-            )
-                .into_response();
-        }
+        return (StatusCode::FORBIDDEN, "插件记录不存在").into_response();
     };
     let actor = Actor::Plugin {
         id: id.clone(),
-        grants,
+        grants: grants.to_vec(),
     };
     if let Err(e) = state.cfg.policy.check(&actor, verb, target.as_ref()) {
         if let Err(w) = state.db().audit(

@@ -176,7 +176,12 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
         // 会话清理与站点日志轮转，不再有第二套 cron 执行路径。
         loop {
             tick.tick().await;
-            state.supervisor().reap_idle().await;
+            // 除了在途 RPC，还要保护「内核已放弃等待、插件仍在轮询」的长作业：
+            // 该插件还有活跃 `host.exec` 作业时不回收（否则编排会中途被 SIGTERM）。
+            state
+                .supervisor()
+                .reap_idle_with(|id| state.jobs().active_job_id("host", id).is_some())
+                .await;
             if let Err(e) = state.db().purge_expired_sessions() {
                 tracing::warn!(error = %e, "清理过期会话失败");
             }

@@ -22,9 +22,15 @@
 //!
 //! 请求进来时先做完全部同步前置判定（权限 / 形态 / 二进制身份），失败立即
 //! 4xx——**能跑什么在提交那一刻就定了**，不会出现「作业建好了但授权不足」。
+//!
+//! **两条通道、一套判定**：作业化 `exec/run`（提交 → 轮询 → 终态，写 `jobs`）
+//! 与轻量 `exec/run_light`（一次 HTTP 返回，不写作业）。授权、形态、二进制身份、
+//! argv/stdin 上限全部复用；区别只在「要不要作业记录与取消」。短命令 / 只读探测
+//! 走轻量（不抢同插件唯一活跃槽位），长任务 / 有副作用走作业化。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::State;
@@ -32,10 +38,13 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
+use skiff_app::host::OUTPUT_CAP;
 use skiff_app::AppState;
+use skiff_host::HostSpec;
 use skiff_model::Form;
 use skiff_plugin::capability as cap;
 use skiff_plugin::execgrant::{self, ExecError};
+use tokio::sync::Semaphore;
 
 /// 能力面权限串：只有一个动词，动作集合由 `bin:` 授权决定。
 const PERM: &str = "exec:run";
@@ -54,9 +63,31 @@ const TARGET_TYPE: &str = "host";
 const TIMEOUT_DEFAULT_SEC: u64 = 600;
 const TIMEOUT_MAX_SEC: u64 = 3600;
 
+/// 轻量通道的超时默认 / 上限（秒）。跑超过 30s 的命令本身就是长任务，
+/// 应该走作业化通道（有过程日志与取消）；夹取而不是拒绝，理由同上。
+const LIGHT_TIMEOUT_DEFAULT_SEC: u64 = 10;
+const LIGHT_TIMEOUT_MAX_SEC: u64 = 30;
+
+/// 每插件轻量通道并发上限。一页探测约 10 条，8 足够覆盖正常并发；
+/// 拿不到槽位立即 429（探测可以稍后重试，排队会拖住调用方线程）。
+/// 跨插件不设全局上限（`docs/plugin/HOST_EXEC_DESIGN.md` §6.3）。
+const LIGHT_CONCURRENCY: usize = 8;
+
 /// 前台等待上限（秒）。`wait_sec = 0` 表示纯异步提交；给值表示「愿意在本次
 /// 请求里等这么久」，等不到就带着 `running` 返回 job_id，插件后续查状态。
 const WAIT_MAX_SEC: u64 = 120;
+
+/// `exec/status` 长轮询上限（毫秒）与同时挂起数上限。
+///
+/// 挂起只占一个 tokio 任务（不占线程），但无上限会让插件用海量挂起请求堆内存；
+/// 拿不到槽位时立刻返回当前快照——长轮询是省请求的优化，不是正确性依赖。
+const STATUS_WAIT_MAX_MS: u64 = 30_000;
+const STATUS_WAIT_CONCURRENCY: usize = 64;
+
+fn status_wait_permits() -> &'static Semaphore {
+    static PERMITS: OnceLock<Semaphore> = OnceLock::new();
+    PERMITS.get_or_init(|| Semaphore::new(STATUS_WAIT_CONCURRENCY))
+}
 
 /// argv 形状上限：docker/firewall 级命令远到不了这个量级，超了基本是误用或攻击。
 const ARGV_MAX_ITEMS: usize = 64;
@@ -80,6 +111,12 @@ struct ExecRequest {
 
 impl ExecRequest {
     fn parse(body: &Value) -> Result<Self, String> {
+        Self::parse_with(body, TIMEOUT_DEFAULT_SEC, TIMEOUT_MAX_SEC)
+    }
+
+    /// 两条通道共用同一份字段解析：只有 `timeout_sec` 的默认值与上限不同，
+    /// 其它限制（argv / stdin 形状）必须完全一致，不能各写一份。
+    fn parse_with(body: &Value, timeout_default: u64, timeout_max: u64) -> Result<Self, String> {
         let binary = body
             .get("binary")
             .and_then(Value::as_str)
@@ -136,8 +173,8 @@ impl ExecRequest {
         let timeout_sec = body
             .get("timeout_sec")
             .and_then(Value::as_u64)
-            .unwrap_or(TIMEOUT_DEFAULT_SEC)
-            .clamp(1, TIMEOUT_MAX_SEC);
+            .unwrap_or(timeout_default)
+            .clamp(1, timeout_max);
 
         let wait_sec = body
             .get("wait_sec")
@@ -211,10 +248,7 @@ pub(super) async fn exec_run(State(state): State<Arc<AppState>>, req: Request<Bo
         }
     };
 
-    let grants = match state.db().plugin(&id) {
-        Ok(Some(p)) => p.grants,
-        _ => Vec::new(),
-    };
+    let grants = state.plugin_auth_of(&id).unwrap_or_default();
     // 精确命中而不是 `exec:*` 通配：本能力面只有一个动词，留通配只会在将来
     // 加动词时悄悄放宽权限。
     if !grants.iter().any(|g| g.permits(PERM)) {
@@ -344,6 +378,158 @@ pub(super) async fn exec_run(State(state): State<Arc<AppState>>, req: Request<Bo
 }
 
 // ---------------------------------------------------------------------------
+// 轻量通道
+// ---------------------------------------------------------------------------
+
+/// 插件 id → 轻量通道信号量（进程内，懒建）。
+///
+/// 判定的东西与作业化通道完全相同，这里只限流：探测是「随时可以重试」的动作，
+/// 拿不到槽位立刻 429 比排队更诚实（排队会把调用方线程一起拖住）。
+fn light_permits(plugin: &str) -> Arc<Semaphore> {
+    static PERMITS: OnceLock<Mutex<HashMap<String, Arc<Semaphore>>>> = OnceLock::new();
+    let map = PERMITS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    Arc::clone(
+        guard
+            .entry(plugin.to_string())
+            .or_insert_with(|| Arc::new(Semaphore::new(LIGHT_CONCURRENCY))),
+    )
+}
+
+/// 轻量通道：同授权、并行跑、不写作业、一次 HTTP 返回（契约 §2.2）。
+///
+/// 与 [`exec_run`] 的差别只有「去掉作业管理层」：不 submit、不占同插件唯一活跃槽位、
+/// 不写 jobs/job_logs、不可取消。前置判定一步不少——授权、形态、二进制身份、
+/// argv/stdin 上限全部复用，`timeout_sec` 单独夹到 `[1, 30]`。
+pub(super) async fn exec_run_light(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+) -> Response {
+    let id = req
+        .extensions()
+        .get::<cap::PluginId>()
+        .map(|p| p.0.clone())
+        .unwrap_or_default();
+    let body = cap::read_json(req).await;
+
+    let parsed =
+        match ExecRequest::parse_with(&body, LIGHT_TIMEOUT_DEFAULT_SEC, LIGHT_TIMEOUT_MAX_SEC) {
+            Ok(p) => p,
+            Err(msg) => {
+                audit(
+                    &state,
+                    &id,
+                    "exec.run_light",
+                    "deny",
+                    &format!("请求非法: {msg}"),
+                );
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
+        };
+
+    let grants = state.plugin_auth_of(&id).unwrap_or_default();
+    if !grants.iter().any(|g| g.permits(PERM)) {
+        audit(&state, &id, "exec.run_light", "deny", "缺少 exec:run 授权");
+        return (StatusCode::FORBIDDEN, "缺少 exec:run 授权").into_response();
+    }
+
+    if state.cfg.form != Form::Native || !cfg!(target_os = "linux") {
+        audit(
+            &state,
+            &id,
+            "exec.run_light",
+            "deny",
+            "当前部署形态不支持宿主机命令执行",
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "当前部署形态不支持宿主机命令执行（需要 Native + Linux）",
+        )
+            .into_response();
+    }
+
+    let data_dir = state.cfg.data_dir.clone();
+    let bin = match execgrant::resolve(&data_dir, &grants, &parsed.binary) {
+        Ok(p) => p,
+        Err(e) => {
+            audit(
+                &state,
+                &id,
+                "exec.run_light",
+                e.audit_result(),
+                &format!("binary={} 拒绝：{e}", parsed.binary),
+            );
+            return (status_of(&e), e.to_string()).into_response();
+        }
+    };
+    let bin_display = bin.display().to_string();
+    let risk = skiff_model::bin_risk(&bin_display);
+
+    // 槽位在审计之前拿：拿不到就是「没跑」，不能先记一条 ok。
+    let permits = light_permits(&id);
+    let Ok(_permit) = permits.try_acquire_owned() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("轻量执行并发已满（每插件上限 {LIGHT_CONCURRENCY}），请稍后重试"),
+        )
+            .into_response();
+    };
+
+    audit(
+        &state,
+        &id,
+        "exec.run_light",
+        "ok",
+        &light_detail(&bin_display, risk, &parsed.argv),
+    );
+
+    let out = skiff_app::host::run_host(
+        HostSpec::privileged(&bin_display, &parsed.argv)
+            .prefix("skiff-exec-light")
+            .description("skiff host exec (light)")
+            .stdin(parsed.stdin.as_deref())
+            .timeout(parsed.timeout_sec),
+    )
+    .await;
+
+    match out {
+        Ok(out) => {
+            let (stdout, out_cut) = skiff_app::host::clip_text(out.stdout, OUTPUT_CAP);
+            let (stderr, err_cut) = skiff_app::host::clip_text(out.stderr, OUTPUT_CAP);
+            Json(json!({
+                "success": out.success,
+                "code": out.code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "truncated": { "stdout": out_cut, "stderr": err_cut },
+            }))
+            .into_response()
+        }
+        // 超时是「结果未知」：单元可能仍在跑，调用方需要按可重试的探测处理。
+        Err(e @ skiff_host::HostRunError::Timeout { .. }) => {
+            (StatusCode::GATEWAY_TIMEOUT, e.message(&bin_display)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message(&bin_display)).into_response(),
+    }
+}
+
+/// 轻量通道审计 detail：二进制 + 风险档 + argv 截断。
+///
+/// **不写 job_id**（没有作业）、**不写 exit_code**（属运行日志范畴）、**不写 stdin**
+/// （只在内存里交给通道）。action 与作业化通道分开，90 天追溯里可分别 filter。
+fn light_detail(bin: &str, risk: skiff_model::BinRisk, argv: &[String]) -> String {
+    let mut detail = format!("bin={bin} risk={}", risk.as_str());
+    if !argv.is_empty() {
+        let (shown, cut) = skiff_app::host::clip_text(argv.join(" "), AUDIT_ARGV_CAP);
+        detail.push_str(&format!(" argv={shown}"));
+        if cut {
+            detail.push_str("…(截断)");
+        }
+    }
+    detail
+}
+
+// ---------------------------------------------------------------------------
 // 状态 / 取消
 // ---------------------------------------------------------------------------
 
@@ -371,6 +557,9 @@ pub(super) async fn exec_status(
         l if l <= 0 => 0,
         l => l.min(500),
     };
+    // 长轮询：作业未结束时最多挂起这么久，状态变化或超时后返回（仍是单请求单响应）。
+    // 与 `after` / `limit` 正交，不影响日志游标语义。
+    let wait_ms = parse_wait_ms(&body);
 
     // 先判「有没有这个作业」再判归属：不存在的作业回 404，别人的作业回 403，
     // 两种情形对调用方要做的事不同（改 job_id / 别乱查）。
@@ -380,7 +569,12 @@ pub(super) async fn exec_status(
     if !owned_by(&job, &id) {
         return (StatusCode::FORBIDDEN, "只能查询本插件提交的作业").into_response();
     }
-    match status_snapshot(&state, &job_id, after, limit) {
+    let snapshot = if wait_ms > 0 {
+        wait_for_status(&state, &job_id, wait_ms, after, limit).await
+    } else {
+        status_snapshot(&state, &job_id, after, limit)
+    };
+    match snapshot {
         Some(v) => Json(v).into_response(),
         None => (StatusCode::NOT_FOUND, format!("作业不存在：{job_id}")).into_response(),
     }
@@ -424,6 +618,14 @@ pub(super) async fn exec_cancel(
 /// 作业归属：提交时的 `params.plugin` 是唯一判据（内核写入，不接受调用方传参）。
 fn owned_by(job: &skiff_app::jobs::Job, plugin: &str) -> bool {
     job.params.get("plugin").and_then(Value::as_str) == Some(plugin)
+}
+
+/// `wait_ms` 夹到上限而不是拒绝：插件想「一直等」正是要拦住的意图，但不值得 400 重试。
+fn parse_wait_ms(body: &Value) -> u64 {
+    body.get("wait_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(STATUS_WAIT_MAX_MS)
 }
 
 /// 作业视图：状态 + 结果 + 日志增量。同步等待与后续查询共用同一份结构。
@@ -487,6 +689,30 @@ async fn wait_for(state: &AppState, job_id: &str, wait_sec: u64) -> Option<Value
     }
 }
 
+/// `exec/status` 长轮询：作业进入终态或到点后返回快照。
+///
+/// 只改变「什么时候回」，不改变响应形状；日志游标 `after` / `limit` 原样透传。
+async fn wait_for_status(
+    state: &AppState,
+    job_id: &str,
+    wait_ms: u64,
+    after: i64,
+    limit: i64,
+) -> Option<Value> {
+    let deadline = Instant::now() + Duration::from_millis(wait_ms);
+    let Ok(_permit) = status_wait_permits().try_acquire() else {
+        // 槽位不足：立刻返回当前快照，插件下一轮继续问即可。
+        return status_snapshot(state, job_id, after, limit);
+    };
+    loop {
+        let job = state.jobs().get(job_id)?;
+        if !job.active() || Instant::now() >= deadline {
+            return status_snapshot(state, job_id, after, limit);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// 授权类错误回 4xx，环境类回 409：插件据此能区分「要不要管理员改授权」
 /// 与「这台机器现在跑不了」。
 fn status_of(e: &ExecError) -> StatusCode {
@@ -498,12 +724,8 @@ fn status_of(e: &ExecError) -> StatusCode {
 }
 
 fn audit(state: &AppState, id: &str, action: &str, verdict: &str, detail: &str) {
-    if let Err(e) = state
-        .db()
-        .audit(&format!("plugin:{id}"), "uds", action, "", verdict, detail)
-    {
-        tracing::error!(error = %e, "exec 审计写入失败");
-    }
+    // 统一出口：写库失败落盘兜底，不静默丢弃（与作业化通道同一份）。
+    state.audit_or_log(&format!("plugin:{id}"), "uds", action, "", verdict, detail);
 }
 
 /// 审计 detail：二进制 + 风险档 + argv 全文（截断）+ stdin 字节数 + 作业 id。
@@ -585,6 +807,19 @@ mod tests {
         assert!(ExecRequest::parse(&json!({ "binary": "/bin/x", "stdin": 1 })).is_err());
     }
 
+    /// `wait_ms` 缺省为 0（纯快照），超上限夹到 30s 而不是报错。
+    #[test]
+    fn status_wait_ms_defaults_and_clamps() {
+        assert_eq!(parse_wait_ms(&json!({})), 0);
+        assert_eq!(parse_wait_ms(&json!({ "wait_ms": 1500 })), 1500);
+        assert_eq!(
+            parse_wait_ms(&json!({ "wait_ms": 999_999 })),
+            STATUS_WAIT_MAX_MS
+        );
+        // 非数字：按缺省处理，不影响状态查询本身。
+        assert_eq!(parse_wait_ms(&json!({ "wait_ms": "5s" })), 0);
+    }
+
     /// 两个时间参数都被夹到上限而不是拒绝：写了 99999 秒说明想「一直等」，
     /// 那正是要拦住的意图，但不值得让它 400 重试。
     #[test]
@@ -658,5 +893,61 @@ mod tests {
         put_stdin("job-x", "hunter2\n");
         assert_eq!(take_stdin("job-x").as_deref(), Some("hunter2\n"));
         assert!(take_stdin("job-x").is_none());
+    }
+
+    /// 轻量通道的 timeout 默认 10s、上限 30s：超过 30s 的命令本身就是长任务，
+    /// 应当走作业化通道；夹取而不是拒绝，与作业化通道同一取舍。
+    #[test]
+    fn light_timeout_defaults_to_ten_and_caps_at_thirty() {
+        let parse = |body: Value| {
+            ExecRequest::parse_with(&body, LIGHT_TIMEOUT_DEFAULT_SEC, LIGHT_TIMEOUT_MAX_SEC)
+                .unwrap()
+                .timeout_sec
+        };
+        assert_eq!(parse(json!({ "binary": "/usr/sbin/nft" })), 10);
+        assert_eq!(
+            parse(json!({ "binary": "/usr/sbin/nft", "timeout_sec": 0 })),
+            1
+        );
+        assert_eq!(
+            parse(json!({ "binary": "/usr/sbin/nft", "timeout_sec": 999 })),
+            30
+        );
+    }
+
+    /// 轻量通道审计只有「对哪个二进制做什么」：没有作业 id、没有 exit_code、
+    /// 不出现 stdin 内容（敏感内容只在内存里交给通道）。
+    #[test]
+    fn light_audit_detail_has_no_job_id_or_stdin() {
+        let req = ExecRequest {
+            binary: "/usr/sbin/nft".into(),
+            argv: vec!["--version".into()],
+            stdin: Some("secret\n".into()),
+            timeout_sec: 10,
+            wait_sec: 0,
+            title: None,
+        };
+        let d = light_detail(&req.binary, skiff_model::BinRisk::Scoped, &req.argv);
+        assert_eq!(d, "bin=/usr/sbin/nft risk=scoped argv=--version");
+        assert!(!d.contains("job="));
+        assert!(!d.contains("secret"));
+    }
+
+    /// 信号量按插件隔离且上限固定：同一插件拿到同一个实例，跨插件互不影响，
+    /// 槽位耗尽时立即拒绝（429 的依据）。
+    #[test]
+    fn light_permits_are_per_plugin_and_bounded() {
+        let a = light_permits("com.example.perm.a");
+        let same = light_permits("com.example.perm.a");
+        let other = light_permits("com.example.perm.b");
+        assert!(Arc::ptr_eq(&a, &same));
+        assert!(!Arc::ptr_eq(&a, &other));
+
+        let held: Vec<_> = (0..LIGHT_CONCURRENCY)
+            .map(|_| a.clone().try_acquire_owned().expect("槽位应可获取"))
+            .collect();
+        assert!(a.clone().try_acquire_owned().is_err(), "超出上限必须被拒");
+        drop(held);
+        assert!(a.clone().try_acquire_owned().is_ok(), "释放后应恢复");
     }
 }

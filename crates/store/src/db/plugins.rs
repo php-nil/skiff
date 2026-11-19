@@ -46,6 +46,7 @@ impl Db {
             )?;
         }
         tx.commit()?;
+        self.bump_plugin_rev();
         Ok(())
     }
 
@@ -125,6 +126,7 @@ impl Db {
                 now()
             ],
         )?;
+        self.bump_plugin_rev();
         Ok(())
     }
 
@@ -139,6 +141,7 @@ impl Db {
             "DELETE FROM plugin_config WHERE plugin_id = ?1",
             params![id],
         )?;
+        self.bump_plugin_rev();
         Ok(())
     }
 
@@ -163,6 +166,7 @@ impl Db {
              VALUES(?1, ?2, ?3, ?4)",
             params![plugin_id, grant.kind, grant.value, now()],
         )?;
+        self.bump_plugin_rev();
         Ok(())
     }
 
@@ -172,6 +176,7 @@ impl Db {
             "DELETE FROM plugin_grants WHERE plugin_id = ?1 AND kind = ?2 AND value = ?3",
             params![plugin_id, grant.kind, grant.value],
         )?;
+        self.bump_plugin_rev();
         Ok(())
     }
 
@@ -239,6 +244,46 @@ mod tests {
             db.plugin("com.example.demo").unwrap().unwrap().version,
             "0.1.0"
         );
+    }
+
+    /// 授权快照靠版本号失效：任何改变鉴权输入的写入都必须让它前进。
+    #[test]
+    fn plugin_rev_advances_on_auth_inputs() {
+        let db = Db::open_in_memory().unwrap();
+        let start = db.plugin_rev();
+        let mut p = record("com.example.rev");
+        db.upsert_plugin(&p).unwrap();
+        let after_upsert = db.plugin_rev();
+        assert!(after_upsert > start);
+
+        db.set_plugin_enabled_state(&p.id, false).unwrap();
+        let after_toggle = db.plugin_rev();
+        assert!(after_toggle > after_upsert);
+
+        p.grants = vec![Grant::perm("fs:read")];
+        db.add_grant(&p.id, &Grant::perm("fs:read")).unwrap();
+        let after_grant = db.plugin_rev();
+        assert!(after_grant > after_toggle);
+
+        db.remove_grant(&p.id, &Grant::perm("fs:read")).unwrap();
+        let after_remove = db.plugin_rev();
+        assert!(after_remove > after_grant);
+
+        db.delete_plugin(&p.id).unwrap();
+        assert!(db.plugin_rev() > after_remove);
+    }
+
+    /// 纯读不推进版本号：否则每次能力调用都会重建快照。
+    #[test]
+    fn plugin_reads_keep_rev_stable() {
+        let db = Db::open_in_memory().unwrap();
+        let p = record("com.example.read");
+        db.upsert_plugin(&p).unwrap();
+        let rev = db.plugin_rev();
+        db.plugin(&p.id).unwrap();
+        db.grants(&p.id).unwrap();
+        db.list_plugins().unwrap();
+        assert_eq!(db.plugin_rev(), rev);
     }
 
     #[test]

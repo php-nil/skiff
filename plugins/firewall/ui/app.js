@@ -89,6 +89,26 @@
     el.textContent = text;
     el.className = "badge" + (kind ? " " + kind : "");
   }
+  // ---- 前端缓存（localStorage，5 分钟 TTL）----
+  var CACHE_TTL_MS = 5 * 60 * 1000;
+  function tryReadCache(key) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return null;
+      var obj = JSON.parse(raw);
+      if (!obj || !obj.at) return null;
+      if (Date.now() - obj.at > CACHE_TTL_MS) return null;
+      return obj.data;
+    } catch (e) { return null; }
+  }
+  function writeCache(key, data) {
+    try {
+      localStorage.setItem(key, JSON.stringify({ at: Date.now(), data: data }));
+    } catch (e) {}
+  }
+  function invalidateCache(key) {
+    try { localStorage.removeItem(key); } catch (e) {}
+  }
   function openModal(id) {
     var m = $(id);
     if (m) m.classList.add("open");
@@ -149,13 +169,23 @@
       scheduleHeight();
     }
 
+    var CACHE_KEY = "skiff.firewall.rules";
+
     function refresh() {
       say("");
+      // 先尝试本地缓存——首屏零等待
+      var cached = tryReadCache(CACHE_KEY);
+      if (cached && cached.status) {
+        renderStatus(cached.status);
+        renderRules(cached.rules);
+      }
       return Promise.all([rpc("status"), rpc("rules.list")]).then(function (out) {
         renderStatus(out[0] || {});
         renderRules(out[1] || {});
+        writeCache(CACHE_KEY, { status: out[0] || {}, rules: out[1] || {} });
       }).catch(function (e) {
-        say(e.message || String(e), "err");
+        // 如果已经有缓存内容了（上屏了），刷新失败就静默；否则才报错
+        if (!cached) say(e.message || String(e), "err");
       });
     }
 
@@ -167,6 +197,7 @@
       if (!confirm("删除规则 " + id + "？")) return;
       busy(t, true);
       rpc("rule.remove", { id: id }).then(function () {
+        invalidateCache(CACHE_KEY);
         say("已删除 " + id, "ok");
         return refresh();
       }).catch(function (e) {
@@ -185,6 +216,7 @@
       var btn = $("allow-go");
       busy(btn, true);
       rpc("port.allow", { port: port, protocol: $("allow-proto").value }).then(function () {
+        invalidateCache(CACHE_KEY);
         closeModal("allow-mask");
         say("已放行端口 " + port, "ok");
         return refresh();
@@ -206,6 +238,7 @@
       var btn = $("rule-go");
       busy(btn, true);
       rpc("rule.add", params).then(function () {
+        invalidateCache(CACHE_KEY);
         closeModal("rule-mask");
         say("规则已添加", "ok");
         return refresh();
@@ -220,6 +253,7 @@
   // ═════════════════════════ fail2ban 页 ═════════════════════════
   function initFail2ban() {
     var jails = [];
+    var F2B_CACHE = "skiff.firewall.f2b";
 
     function renderStatus(st) {
       var state = st.state || (st.running ? "running" : (st.installed ? "stopped" : "missing"));
@@ -237,6 +271,7 @@
           if (confirmText && !confirm(confirmText)) return;
           busy(b, true);
           rpc(method).then(function (r) {
+            invalidateCache(F2B_CACHE);
             say(okText, "ok");
             renderStatus(r || {});
             return loadJails();
@@ -244,6 +279,7 @@
             say(e.message || String(e), "err");
             busy(b, false);
             // 失败后重拉状态：服务可能已被外部改动，按钮不能停在旧状态。
+            invalidateCache(F2B_CACHE);
             loadJails();
           });
         });
@@ -288,12 +324,20 @@
     }
 
     function loadJails() {
+      // 先尝试本地缓存——首屏零等待
+      var cached = tryReadCache(F2B_CACHE);
+      if (cached && cached.status) {
+        renderStatus(cached.status);
+        jails = cached.status.jails || [];
+        renderJails();
+      }
       return rpc("fail2ban.status").then(function (st) {
         renderStatus(st || {});
         jails = (st && st.jails) || [];
         renderJails();
+        writeCache(F2B_CACHE, { status: st || {} });
       }).catch(function (e) {
-        say(e.message || String(e), "err");
+        if (!cached) say(e.message || String(e), "err");
       });
     }
 
@@ -331,6 +375,7 @@
         if (!confirm("解封 " + ip + "？")) return;
         busy(t, true);
         rpc("fail2ban.unban", { jail: unban, ip: ip }).then(function () {
+          invalidateCache(F2B_CACHE);
           say("已解封 " + ip, "ok");
           var row = t.closest("tr");
           var cell = row ? row.querySelector("[data-banned]") : null;
@@ -346,6 +391,7 @@
         if (!confirm("移除 jail " + remove + " 的 skiff 配置文件？")) return;
         busy(t, true);
         rpc("fail2ban.jail.remove", { jail: remove }).then(function () {
+          invalidateCache(F2B_CACHE);
           say("已移除 " + remove, "ok");
           return loadJails();
         }).catch(function (e) {
@@ -373,6 +419,7 @@
       var btn = $("jail-save");
       busy(btn, true);
       rpc("fail2ban.jail.ensure", params).then(function () {
+        invalidateCache(F2B_CACHE);
         say("jail 已保存并重启 fail2ban", "ok");
         return loadJails();
       }).catch(function (e) {
@@ -387,6 +434,7 @@
       var btn = $("jail-remove");
       busy(btn, true);
       rpc("fail2ban.jail.remove", { jail: jail }).then(function () {
+        invalidateCache(F2B_CACHE);
         say("已移除 " + jail, "ok");
         return loadJails();
       }).catch(function (e) {

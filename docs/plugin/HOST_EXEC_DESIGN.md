@@ -1,7 +1,7 @@
 # exec：宿主机命令执行能力面（粗授权 + 全审计 + 运行记录）
 
-> 状态：**内核底层已落地（2026-11-16）**；确认页风险标注、升级强制复核、试点三项未落地（§6）
-> 一句话：命令执行照 `fs` 那套做——内核只提供一条执行接口，授权粒度是「哪个二进制」（`bin:` 对象授权）；**文件读写进审计、任务执行进运行记录**；执行通道 `skiff_host` 是唯一实现，插件与内核自身的动作共用，区别只在要不要授权。**没有命令模板 DSL。**
+> 状态：**作业化通道已落地（2026-11-16）；轻量通道 `exec/run_light` 已落地（2026-11-19）**；确认页风险标注、升级强制复核、试点与上机验收未落地（§6.2）
+> 一句话：命令执行照 `fs` 那套做——内核只提供两条执行接口（作业化 + 轻量），授权粒度都是「哪个二进制」（`bin:` 对象授权）；**文件读写进审计、任务执行进运行记录、只读探测进精简审计**；执行通道 `skiff_host` 是唯一实现，插件与内核自身的动作共用，区别只在要不要授权、要不要作业。**没有命令模板 DSL。**
 > 相关：[DESIGN.md](../DESIGN.md) §11 决策 #10 / #13 ｜ [KERNEL_EXEC_CONTRACT.md](../contract/KERNEL_EXEC_CONTRACT.md) ｜ [KERNEL_FIREWALL_CONTRACT.md](../contract/KERNEL_FIREWALL_CONTRACT.md) / [KERNEL_FTP_CONTRACT.md](../contract/KERNEL_FTP_CONTRACT.md)（legacy，冻结） ｜ [plugins/README.md](../../plugins/README.md)
 
 ---
@@ -20,7 +20,7 @@
 
 | 理由 | 说明 |
 | --- | --- |
-| 表面积为目标的三倍 | 模板结构 + 槽类型系统 + 渲染器 + 校验器 + 逐条确认页 + 4000 行迁移，而项目定位是轻量面板 |
+| 表面积约为目标的三倍 | 模板结构 + 槽类型系统 + 渲染器 + 校验器 + 逐条确认页 + 4000 行迁移，而项目定位是轻量面板 |
 | 「零内核改动」打折 | 二进制白名单与槽类型表仍是内核侧封闭集合：加 `nginx`、加一个新的值类型照样发内核版 |
 | 迁移是纯成本 | firewall/ftp 已有契约与测试、改动频率低；把 4000 行搬进插件包提升不了任何用户可见能力 |
 | 类型系统防错了对象 | 丰富槽类型防的是「命令跑坏」（可靠性），不是「提权」（安全）。安全不变量只有几条且与领域无关，见 §3 |
@@ -113,13 +113,16 @@ POST /api/v1/capability/exec/run          # wire::routes::CAP_EXEC_RUN
 
 ```
 POST /api/v1/capability/exec/status       # CAP_EXEC_STATUS
-{ "job_id": "job-…", "after": 0, "limit": 200 }   # after = 已读到的最大 seq；limit=0 不要日志
+{ "job_id": "job-…", "after": 0, "limit": 200, "wait_ms": 0 }
+# after = 已读到的最大 seq；limit=0 不要日志；wait_ms>0 为长轮询（0–30s）
 
 POST /api/v1/capability/exec/cancel       # CAP_EXEC_CANCEL
 { "job_id": "job-…" }
 ```
 
 `status` 返回作业状态 + 结果 + 增量日志（`seq` 单调、轮转后不重编号，与任务中心 SSE 同一份数据）。**只允许查询/取消本插件提交的作业**：归属写在提交时的 `params.plugin`，由内核写入、不接受调用方传参——否则一个插件能读到别人命令的输出（里面可能有密码）。
+
+`wait_ms` 是长轮询：作业未结束时内核最多挂起这么久再返回，响应形状不变；SDK 的 `host_exec_status_wait` 与 `host_exec_full` 用它替代固定 200ms 短轮询（见 [IPC_OPTIMIZATION.md](IPC_OPTIMIZATION.md) §三 P0-4）。
 
 ### 2.3 manifest
 
@@ -154,15 +157,138 @@ resource_hints = [
 | 取消 | 阶段边界检查 `cancel_requested` | 250ms tick 检查，命中即 `systemctl stop` 单元 |
 | 重试 | 有执行器，可重试 | **不提供**：重放一条特权命令必须重新走插件授权（插件可能已卸载、`bin:` 可能已收回） |
 
-安装类作业的实现手段是 Docker API 与文件操作，不需要 `bin:` 授权——但**凡是落到宿主进程的动作（装包、重启服务、生成证书、探测地址）都走 `skiff_host` 同一条通道**，日志写进同一个作业。所以「同一个逻辑」有两层：记录与生命周期统一，执行通道也统一；不统一的是授权——插件要授权，内核自己不要。
+安装类作业的实现手段是 Docker API 与文件操作，不需要 `bin:` 授权——但**凡是落到宿主进程的动作（装包、重启服务、生成证书、探测地址）都走 `skiff_host` 同一条通道**，日志写进同一个作业。统一的是记录、生命周期与执行通道；不统一的是授权——插件要授权，内核自己不要。
 
-`app` 侧的唯一入口是 `AppState::run_host_in_job`（作业内：过程行写 `job_logs`、取消接 `cancel_requested`、错误翻中文）与 `host::run_host_msg`（作业外的只读探测）。**没有例外**：`sites.rs` 的证书解析与配对校验也已改走通道（`direct` 模式、10s 上限），为此 `site_tls_info` 变成 async。`crates/app` / `crates/core` 的非测试代码里 `Command::new` 为 0，由 `xtask check-channel` 守着。
+`app` 侧的入口只有三个：`AppState::run_host_in_job`（作业内：过程行写 `job_logs`、取消接 `cancel_requested`、错误翻中文）、`host::run_host`（作业外、需要区分「超时」与「起不来」）与 `host::run_host_msg`（作业外、失败即整段放弃的只读探测）。**没有例外**：`sites.rs` 的证书解析与配对校验也已改走通道（`direct` 模式、10s 上限），为此 `site_tls_info` 变成 async。`crates/app` / `crates/core` 的非测试代码里 `Command::new` 为 0，由 `xtask check-channel` 守着。
+
+### 2.5 轻量通道（`exec/run_light`）
+
+作业化通道对长任务是必须的（`apt-get install` 几分钟、失败后要能取消），但短命令 / 只读探测走作业化是浪费：多一次 INSERT + 轮询使 **RTT 翻倍**；同目标唯一活跃锁让并发探测互相抢槽 → **409 + 作业中心被探测记录污染**；防火墙插件一页 ≈ 10 条探测，首次打开可能 **5~10 秒**。
+
+轻量通道解决这个——**同授权、并行跑、不进作业中心、单次返回**。
+
+#### 2.5.1 两条通道的边界
+
+| | `exec/run`（作业化） | `exec/run_light`（轻量） |
+|---|---|---|
+| 语义 | 提交作业 → 轮询 → 等终态 | 起进程 → 等结果（一次 HTTP 返回） |
+| 作业中心 | 写 jobs + job_logs、可取消 | ❌ 不写 |
+| 审计 | `exec.run`（job_id + argv 全文 + timeout） | `exec.run_light`（binary + risk + argv 截断） |
+| 并发控制 | 同插件只 1 条活跃（部分索引锁） | 无作业锁；每插件信号量限流（建议 8） |
+| timeout 上限 | 默认 600s、上限 3600s | 默认 10s、上限 **30s** |
+| HTTP 往返 | 提交 1 次 + 轮询 N 次 | **1 次** |
+| 适用命令 | 长耗时（>2s）、有副作用、需要取消/过程日志 | 短命令（<5s）/ 只读探测（`nft --version` / `dpkg-query` / `systemctl is-active`） |
+| SDK 方法 | `host_exec` / `host_exec_full` / `host_exec_submit` / `host_exec_status` / `host_exec_cancel` | `host_exec_light(binary, argv, timeout_sec)` |
+| stdin | 支持 | 内核侧支持（与作业化共用 ExecRequest 结构），SDK 故意不暴露 |
+
+两条通道都用 `HostSpec::privileged`：探测必须看到「变更时会看到的同一状态」，不能因为「只读」改走 `direct`（`direct` 继承主服务沙箱，可能得出与作业化不同的结论）。代价是每条探测多一次瞬态单元创建，实测量级待上机确认（§6.2 #5）。
+
+#### 2.5.2 权限管控
+
+**与 `exec/run` 完全同口径，复用所有判定**：
+
+```
+请求进来 → exec:run → Native+Linux → execgrant::resolve → argv/stdin 上限
+         → 起进程 + 精简审计 + 单次返回（每一步与 exec/run 相同）
+```
+
+差异只有一处：**去掉长任务专用的作业管理层**（不排队、不写 jobs、不跟取消）——不绕过授权，也不引入新的判定维度。链路上的四步都是 `exec/run` 的既有步骤，其中 `execgrant::resolve` 内部再走契约 §3 的六步；「三道闸」是按判定性质分组，不是执行顺序。
+
+#### 2.5.3 执行流程
+
+```rust
+// 伪代码，位置：crates/core/src/kernel/exec.rs
+pub(super) async fn exec_run_light(...) -> Response {
+    // 1~4：与 exec_run 相同的前置判定（exec:run / 形态 / execgrant::resolve / argv 上限），
+    //       timeout 单独夹到 [1, 30]（默认 10）
+    // 5. 审计只记「请求已放行」：写失败落盘兜底；执行结果不写审计，只进响应
+    state.audit_or_log(&format!("plugin:{id}"), "uds", "exec.run_light", "", "ok", &detail);
+
+    // 6. 起进程、等结果 —— 与作业化同一条通道，只是不带 cancel / 作业日志
+    let result = skiff_app::host::run_host(
+        HostSpec::privileged(&bin, &argv)
+            .prefix("skiff-exec-light")
+            .timeout(timeout_sec)
+            .stdin(stdin.as_deref()),
+    ).await;
+
+    // 7. 单次 HTTP 返回 {success, code, stdout, stderr, truncated}
+    //    两路各自 clip_text 到 64KiB；Timeout → 504（结果未知），Spawn/Io → 500
+}
+```
+
+关键设计点：
+- **不 submit 作业，因此没有排队与活跃锁** → 并发请求各跑各的；上限见 §2.5.6
+- **timeout 上限硬夹 30s** → 跑超过 30s 的命令不应该走轻量通道，它本身就是长任务
+- **审计只写请求侧**：binary + risk + argv 截断，不写 exit_code（那是运行日志）；成败只在 HTTP 响应里
+
+#### 2.5.4 审计记录对比
+
+同一条 `nft --version`：
+
+```
+exec.run        detail=bin=/usr/sbin/nft risk=scoped job=job_x83k2 argv=--version timeout=600s
+exec.run_light  detail=bin=/usr/sbin/nft risk=scoped argv=--version
+```
+
+轻量通道审计**不写 job_id**（没作业）、**不写 exit_code**（属运行日志范畴）；action 不同（`exec.run` vs `exec.run_light`），90 天追溯里可 filter 分开。
+
+#### 2.5.5 改动清单
+
+| 模块 | 改动 |
+|---|---|
+| `crates/wire/src/lib.rs` | 新增 `CAP_EXEC_RUN_LIGHT = "/api/v1/capability/exec/run_light"` |
+| `crates/core/src/kernel/exec.rs` | 新增 `exec_run_light` handler（复用 execgrant::resolve、grant 检查、audit、run_host_msg）；顺带把审计入口从 `db().audit` 收口到 `AppState::audit_or_log`（补齐写失败落盘兜底） |
+| `crates/core/src/kernel/routes.rs` | 注册新路由 |
+| `crates/sdk/src/lib.rs` | 新增 `Plugin::host_exec_light(binary, argv, timeout_sec)` |
+| `docs/contract/KERNEL_EXEC_CONTRACT.md` | §2 补轻量路由与状态码，§5 补 `exec.run_light` 审计行，§8 补用例 |
+| `plugins/firewall` | `h_status` / `h_rules_list` 的探测改走 `host_exec_light`（有副作用的命令保持作业化） |
+
+**不需要改**：execgrant（判定复用）、skiff_host（通道已存在）、store（无新表）、manifest（`exec:run` 同时覆盖两条通道）。
+
+#### 2.5.6 安全不变量
+
+| 不变量 | 如何保证 |
+|---|---|
+| 不能绕过授权 | 复用 execgrant::resolve + `exec:run` 检查 |
+| 包装器类（shell/python/systemd-run）不能通过 | execgrant 内 `bin_risk`：Wrapper 档直接拒 |
+| 不能长时间占用进程池 | timeout 硬夹 30s，到点 kill |
+| 并发有界 | 每插件信号量（上限建议 8，超出 429）；作业化通道仍只允许 1 条活跃 |
+| 审计不丢 | 同步写 `AppState::audit_or_log`，写失败落盘兜底（与作业化同一出口） |
+| 轻量通道 stdin 不进审计 | stdin 只在内存里传给 HostSpec，不进 detail、不落库 |
+| 两条通道审计可区分 | action 分别是 `exec.run` vs `exec.run_light` |
+
+**已知缺口**：单元未带 `RuntimeMaxSec`，内核侧放弃等待（UDS 断开）后可能继续跑，见 §6.3。
+
+#### 2.5.7 防火墙插件迁移示例（预期收益）
+
+```rust
+// 迁移前：每条探测走 host_exec_full → 抢作业槽 → 409 → 页面慢
+// 迁移后：探测走 host_exec_light → 不建作业、不抢锁 → 只受 30s 上限约束
+
+fn h_status(p: &Plugin) -> Result<Value, RpcError> {
+    // 同一 handler 内仍是同步串行；并行来自 status / rules.list 各占一个插件线程
+    let nft_ok = p.host_exec_light(NFT, &["--version"], Some(5))
+        .map(|v| v.get("success").and_then(Value::as_bool).unwrap_or(false))
+        .unwrap_or(false);
+    let ipt_ok = p.host_exec_light(IPTABLES, &["--version"], Some(5)).unwrap_or_default();
+    let f2b_installed = p.host_exec_light(DPKG_QUERY, &["-s", "fail2ban"], Some(5)).unwrap_or_default();
+    let f2b_running = p.host_exec_light(SYSTEMCTL, &["is-active", "fail2ban"], Some(5)).unwrap_or_default();
+
+    // 真正有副作用的命令 → 仍然走 host_exec_full（不变）
+    // p.host_exec(NFT, &["add", "rule", ...])
+
+    Ok(json!({ ... }))
+}
+```
+
+迁移后 OnceLock 缓存仍值得保留（省进程启动与审计行）；「首屏几百 ms」需上机实测。**作业中心彻底干净**——只剩有副作用的操作，探测只留审计精简行。
 
 ---
 
 ## 三、判定：三道闸，缺一不可
 
-判定唯一实现在 `skiff_plugin::execgrant`；纯词汇（前缀、风险档、包装器名单）在 `skiff_model::exec`，打包校验与运行期共用一份，不会出现「打包放行、运行拒绝」。三道闸全部在**提交那一刻**跑完，失败直接 4xx，不会留下一个「建好了但跑不动」的作业。
+判定唯一实现在 `skiff_plugin::execgrant`；纯词汇（前缀、风险档、包装器名单）在 `skiff_model::exec`，打包校验与运行期共用一份，不会出现「打包放行、运行拒绝」。三道闸全部在**提交那一刻**跑完，失败直接 4xx，不会留下一个「建好了但跑不动」的作业。下表按**判定性质**分组，不是执行顺序；实际顺序是形式 → 存在 → 本体/数据根 → 包装器 → 授权，以 [KERNEL_EXEC_CONTRACT.md](../contract/KERNEL_EXEC_CONTRACT.md) §3 为唯一口径。
 
 | 闸 | 内容 | 拒绝理由 |
 | --- | --- | --- |
@@ -177,17 +303,19 @@ resource_hints = [
 
 ### 3.1 防护栏（不是授权，是防炸）
 
-| 项 | 上限 | 越界行为 |
-| --- | --- | --- |
-| argv 条数 / 单条 / 总长 | 64 / 4 KiB / 16 KiB | 拒绝（截断后执行一个和请求不一样的命令更糟） |
-| `stdin` | 64 KiB | 拒绝 |
-| `timeout_sec` | 默认 600，上限 3600 | 夹到上限（写 99999 秒说明想一直等，那正是要拦的意图，但不值得 400 重试） |
-| `wait_sec` | 上限 120 | 夹到上限 |
-| 状态响应里的单路输出 | 64 KiB | 按字符边界截断 + `truncated` 标记 |
-| 单作业过程日志行数 | 2000 行 | 停止写入并留一行说明（作业表另有 4000 行 / 2 MiB 轮转上限） |
-| 同一插件的并发命令 | 1 条 | 409，消息带在跑的那条 `job_id` 与阶段 |
+**作业化通道 / 轻量通道各自的防护栏**（重叠的项两条通道共享）：
 
-**同一插件同时只跑一条**：用插件 id 作作业目标，与「同目标唯一活跃作业」的部分索引一致。插件需要并发时自己排队——它比内核更清楚哪两条命令能并行。
+| 项 | `exec/run`（作业化） | `exec/run_light`（轻量） | 越界行为 |
+| --- | --- | --- | --- |
+| argv 条数 / 单条 / 总长 | 64 / 4 KiB / 16 KiB | 同作业化 | 拒绝（截断后执行一个和请求不一样的命令更糟） |
+| `stdin` | 64 KiB | 同作业化 | 拒绝 |
+| `timeout_sec` | 默认 600，上限 3600 | 默认 10，上限 **30** | 夹到上限 |
+| `wait_sec` | 上限 120 | —（一次 HTTP 返回，无等待） | 夹到上限 |
+| 单路输出上限 | 64 KiB | 同作业化 | 按字符边界截断 + `truncated` 标记 |
+| 单作业过程日志行数 | 2000 行 | —（不写作业日志） | 停止写入并留一行说明 |
+| 同插件并发 | **1 条活跃**（部分索引锁 → 409） | 每插件信号量（建议 8，超出 429） | 作业化被拒、轻量照跑 |
+
+**同一插件同时只跑一条作业化命令**：用插件 id 作作业目标，与「同目标唯一活跃作业」的部分索引一致。插件需要并发时自己排队——它比内核更清楚哪两条命令能并行。**轻量通道不走这套**（无作业、无锁），但前提是命令本身就是短探测。
 
 ### 3.2 风险标注
 
@@ -222,29 +350,38 @@ resource_hints = [
 | --- | --- |
 | `crates/wire` | `CAP_EXEC_RUN` / `CAP_EXEC_STATUS` / `CAP_EXEC_CANCEL` + 稳定性测试 |
 | `crates/model/src/exec.rs` | `bin:` 前缀、包装器/root-equiv 名单、`bin_risk`（6 个单测） |
-| `crates/plugin/src/execgrant.rs` | 三道闸判定 + `ExecError`（8 个单测） |
+| `crates/plugin/src/execgrant.rs` | 三道闸判定 + `ExecError`（9 个单测） |
 | `crates/core/src/kernel/exec.rs` | 提交/查询/取消三个 handler + 审计（7 个单测）；执行体不在这里 |
 | `crates/host`（`skiff-host`） | **执行通道唯一实现**：`run` / `run_stream`，特权（`systemd-run`）与普通（直起子进程）两种模式，共用读流 / 250ms 取消检查 / 超时后清理（6 个单测） |
-| `crates/app/src/host.rs` | 内核侧唯一执行体 `drive_exec_job`（过程行进 `job_logs`、取消接作业、错误翻中文，2000 行上限）——**插件 `exec` 路由与内核计划任务共用**；`KernelExec::run` / `AppState::exec_kernel`（提交+审计+执行+读回终态）、`AppState::run_host_in_job`、`run_host` / `run_host_msg`（作业外探测） |
+| `crates/app/src/host.rs` | 唯一执行体 `drive_exec_job`（过程行进 `job_logs`、取消接作业、错误翻中文，2000 行上限），插件路由与内核计划任务共用；`KernelExec::run` / `exec_kernel`、`run_host_in_job`、`run_host` / `run_host_msg` |
 | 内核计划任务 | `site-backup` 改为提交 `host.exec` 作业跑 `tar`（原为进程内 `tar` crate）：任务运行记录与作业成对出现，任务 `timeout_secs` 即通道超时 |
 | 已收口的调用点 | `docker_daemon`（`systemctl restart docker`，特权）、`sites/network`（`ip` 只读探测，8s 上限）、`sites/crud`（`openssl` 自签生成，30s 上限）、`kernel/{ftp,firewall,exec}` |
 | `crates/app/src/jobs.rs` | `KIND_HOST_EXEC`；`finish_err_result`（失败仍保留 stdout/stderr） |
 | `crates/pkgfmt/src/manifest.rs` | `Capability::Exec`、`bin:` 资源校验（拒绝包装器/目录）、hints→能力映射 |
 | `crates/sdk/src/lib.rs` | `host_exec`（提交+等到结束）/ `host_exec_submit` / `host_exec_status` / `host_exec_cancel` / `bin_grants` |
 | `crates/web/src/handlers/jobs.rs` | 任务中心识别 `host.exec`：类型/目标文案（插件提交与计划任务分开显示），隐藏重试 |
-| `xtask check` | 通道闸：`app`/`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增（基线 140 处 / 9 个文件） |
+| `xtask check` | 通道闸：`app`/`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增（基线 95 处 / 14 个文件，2026-11-19 重定口径） |
+| `crates/wire`（2026-11-19） | `CAP_EXEC_RUN_LIGHT` + 路由稳定性测试 |
+| `crates/core/src/kernel/exec.rs`（2026-11-19） | `exec_run_light` handler：复用 execgrant/授权/形态判定，timeout 夹到 `[1, 30]`，每插件信号量 8（超出 429），审计 `exec.run_light`（无 job_id / exit_code / stdin）；审计入口统一收口到 `AppState::audit_or_log` |
+| `crates/sdk/src/lib.rs`（2026-11-19） | `host_exec_light(binary, argv, timeout_sec)`：一次 HTTP 返回 `{success, code, stdout, stderr, truncated}` |
+| `plugins/firewall`（2026-11-19） | `h_status` / `h_rules_list` 的探测（含后端探测、fail2ban 状态、链 dump）改走轻量通道；有副作用的规则增删、装包、重启仍走作业化 |
 
 ### 6.2 未落地（按优先级）
 
-1. **升级强制复核**（安全硬前提）：`install.rs` 现行规则是「相对旧 manifest 新增的对象授权自动补授 + 写审计」，`web/handlers/plugins.rs` 升级不弹确认页。这意味着插件被信任一次之后，作者发新版本即可静默扩大 `bin:`（同理 `path:`）授权面。**这是既有缺陷，不是 exec 引入的**；修一次 `path:` 与 `bin:` 同受益。口径建议：新增对象授权一律重新确认。
+1. **升级强制复核**（安全硬前提）：`install.rs` 现行规则是「相对旧 manifest 新增的对象授权
+   自动补授 + 写审计」，`web/handlers/plugins.rs` 升级不弹确认页。这意味着插件被信任一次之后，作者发新版本即可静默扩大
+   `bin:`（同理 `path:`）授权面。**这是既有缺陷，不是 exec 引入的**；修一次 `path:` 与 `bin:` 同受益。口径建议：新增对象授权一律重新确认。
 2. **确认页风险标注**：`bin:` 行按 `bin_risk` 标 `root-equiv` 并默认不勾；现有确认页把 `resource_hints` 原样列出即可用，但没有风险提示。
 3. **试点**：`net.apply` 至今是 501 空壳，用它跑通「manifest → 确认页 → exec → 运行记录 → 审计」全链路。**不要选「改 SSH 端口」**（重启失败即锁死机器），选幂等可恢复的动作（时区、swap、装并 enable 一个无害服务）。
-4. **上机验收**：`systemd-run` 那条真实执行路径只在 Linux 跑得到，Windows 开发机上只验证了类型、判定与作业生命周期。
+4. **上机验收**：`systemd-run` 那条真实执行路径只在 Linux 跑得到，Windows 开发机上只验证了类型、判定与作业生命周期；轻量通道的 429/504 行为同样待上机确认。
 
 ### 6.3 待决策
 
 - `bin:` 是否需要「二进制 + 子命令前缀」的细粒度（如 `bin:/usr/bin/systemctl restart`）。M1 不做：那是一层新的表达式，等真出现误授权再补，语法上仍是单个字符串。
 - 同一瞬间多个插件跑 apt 会撞 dpkg lock：现在只保证「同一插件不同时跑两条」，跨插件仍需全局串行锁。当前不做，交给插件重试与报错。
+- 轻量通道并发上限：建议 8（按一页 ≈ 10 条探测估算），需上机实测；跨插件不设全局上限。
+- UDS 断开后的 root 单元：`systemd-run` 未带 `RuntimeMaxSec`，内核侧被 drop 只杀本地客户端，单元可能继续跑；是否补该属性待上机验证（§2.5.6 已标未保证）。
+- 轻量通道审计量：探测按 90 天保留堆积，是否需要给 `exec.run_light` 单独保留期或采样，取决于实测调用量。
 
 ---
 

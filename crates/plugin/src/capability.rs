@@ -21,6 +21,7 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
 use std::path::Path;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -41,7 +42,10 @@ pub trait CapabilityHost {
     /// 内核数据根（生产 `/www/skiff`；插件私有数据在其下 `plugins/<id>/data`）。
     fn data_dir(&self) -> &Path;
     /// 该插件已授予的权限（安装时逐条确认的结果）。
-    fn plugin_grants(&self, plugin_id: &str) -> Vec<Grant>;
+    ///
+    /// 返回 `Arc` 而不是 `Vec`：宿主实现通常持有进程内快照，热路径上不应每次
+    /// 复制整组 grants；一次能力调用会问多次（权限判定、路径判定、审计范围）。
+    fn plugin_grants(&self, plugin_id: &str) -> Arc<[Grant]>;
     /// 审计落库。
     fn audit(
         &self,
@@ -65,7 +69,7 @@ pub fn plugin_of(req: &Request<Body>) -> String {
         .unwrap_or_default()
 }
 
-pub fn grants_of<H: CapabilityHost>(host: &H, id: &str) -> Vec<Grant> {
+pub fn grants_of<H: CapabilityHost>(host: &H, id: &str) -> Arc<[Grant]> {
     host.plugin_grants(id)
 }
 

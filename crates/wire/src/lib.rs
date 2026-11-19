@@ -6,8 +6,9 @@
 //! 已经漂移过一次——SDK 调 `/api/v1/capability/config` 而内核没有这条路由，
 //! 插件读配置必然 404。路由字符串现在只有这里一份。
 //!
-//! 帧格式固定为 `Content-Length` + `Connection: close`：单请求单响应，
-//! 不做 chunked、不做 keep-alive，解析器因此可以保持在几十行内。
+//! 帧格式固定为 `Content-Length`：默认单请求单响应（`Connection: close`），
+//! 不做 chunked；插件→内核方向可选 `Connection: keep-alive` 复用连接
+//! （[`build_request_keep_alive`]），两端都必须按 `Content-Length` 精确分帧。
 
 use serde_json::Value;
 
@@ -76,6 +77,12 @@ pub mod routes {
     pub const CAP_EXEC_STATUS: &str = "/api/v1/capability/exec/status";
     /// 取消本插件提交的 exec 作业（协作式：执行体在通道 tick 上停止单元）。
     pub const CAP_EXEC_CANCEL: &str = "/api/v1/capability/exec/cancel";
+    /// 轻量执行通道：同授权、并行跑、不写作业、一次 HTTP 返回结果。
+    ///
+    /// 与 [`CAP_EXEC_RUN`] 的判定链完全一致（`exec:run` → `bin:` 三道闸），
+    /// 差别只在「不提交作业、不抢活跃槽位、timeout 上限 30s」。
+    /// 适用于短命令与只读探测；长任务、有副作用、需要取消/过程日志的命令仍走作业化通道。
+    pub const CAP_EXEC_RUN_LIGHT: &str = "/api/v1/capability/exec/run_light";
 
     // ---- 插件提供、内核调用（plugin.sock）----
     pub const PLUGIN_HEALTHZ: &str = "/healthz";
@@ -233,9 +240,34 @@ fn content_length_of(head: &[u8]) -> usize {
 /// 构造请求头（不含请求体）。`content-length` 取自 `body_len`。
 ///
 /// 总是带上协议版本头：内核据此在握手处拒绝版本不符的插件。
+///
+/// 默认 `Connection: close`（单请求单连接）。需要连接复用的调用方用
+/// [`build_request_keep_alive`]，两端都必须按 `Content-Length` 精确分帧，
+/// 不能再用「读到 EOF 为止」。
 pub fn build_request(method: &str, path: &str, body_len: usize, token: Option<&str>) -> String {
+    build_request_with(method, path, body_len, token, false)
+}
+
+/// 同 [`build_request`]，但声明 `Connection: keep-alive`（调用方负责连接复用）。
+pub fn build_request_keep_alive(
+    method: &str,
+    path: &str,
+    body_len: usize,
+    token: Option<&str>,
+) -> String {
+    build_request_with(method, path, body_len, token, true)
+}
+
+fn build_request_with(
+    method: &str,
+    path: &str,
+    body_len: usize,
+    token: Option<&str>,
+    keep_alive: bool,
+) -> String {
+    let connection = if keep_alive { "keep-alive" } else { "close" };
     let mut head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: skiff\r\nConnection: close\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: skiff\r\nConnection: {connection}\r\n\
          Content-Type: application/json\r\n{PROTOCOL_HEADER}: {PROTOCOL_VERSION}\r\n\
          Content-Length: {body_len}\r\n"
     );
@@ -298,6 +330,11 @@ pub fn parse_request_head(buf: &[u8]) -> Result<Option<(RequestHead, usize)>, Wi
 /// 无 `Content-Length` 时按 `Connection: close` 语义处理：缓冲区里现有的就是全部。
 /// 这一点必须与内核/插件两侧的实际写法一致，否则会出现「偶发截断」。
 pub fn parse_response(buf: &[u8]) -> Result<Option<HttpResponse>, WireError> {
+    Ok(parse_response_at(buf)?.map(|(resp, _)| resp))
+}
+
+/// 同 [`parse_response`]，额外返回本帧消费的字节数（连接复用时据此切掉已读前缀）。
+pub fn parse_response_at(buf: &[u8]) -> Result<Option<(HttpResponse, usize)>, WireError> {
     let Some(end) = find_headers_end(buf) else {
         if buf.len() > MAX_HEAD {
             return Err(WireError::HeadTooLarge);
@@ -321,15 +358,21 @@ pub fn parse_response(buf: &[u8]) -> Result<Option<HttpResponse>, WireError> {
             if body.len() < len {
                 return Ok(None);
             }
-            Ok(Some(HttpResponse {
-                status,
-                body: body[..len].to_vec(),
-            }))
+            Ok(Some((
+                HttpResponse {
+                    status,
+                    body: body[..len].to_vec(),
+                },
+                end + len,
+            )))
         }
-        None => Ok(Some(HttpResponse {
-            status,
-            body: body.to_vec(),
-        })),
+        None => Ok(Some((
+            HttpResponse {
+                status,
+                body: body.to_vec(),
+            },
+            buf.len(),
+        ))),
     }
 }
 
@@ -401,6 +444,19 @@ mod tests {
         let parsed = parse_request_head(raw).unwrap().unwrap();
         assert_eq!(parsed.0.protocol, None);
         assert!(check_protocol(parsed.0.protocol).is_err());
+    }
+
+    /// 连接复用：请求头必须声明 keep-alive，且响应解析能报出本帧消费的字节数。
+    #[test]
+    fn keep_alive_request_and_consumed_length() {
+        let head = build_request_keep_alive("POST", routes::CAP_EXEC_STATUS, 0, Some("t"));
+        assert!(head.contains("Connection: keep-alive\r\n"));
+        assert!(!head.contains("Connection: close"));
+
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}NEXT";
+        let (resp, used) = parse_response_at(raw).unwrap().unwrap();
+        assert_eq!(resp.body, b"{}");
+        assert_eq!(used, raw.len() - 4, "只应消费本帧，后续字节留给下一次读取");
     }
 
     #[test]
@@ -511,5 +567,10 @@ mod tests {
         assert_eq!(routes::CAP_EXEC_RUN, "/api/v1/capability/exec/run");
         assert_eq!(routes::CAP_EXEC_STATUS, "/api/v1/capability/exec/status");
         assert_eq!(routes::CAP_EXEC_CANCEL, "/api/v1/capability/exec/cancel");
+        // 轻量通道是同一能力面的第二条通道，不是新授权粒度。
+        assert_eq!(
+            routes::CAP_EXEC_RUN_LIGHT,
+            "/api/v1/capability/exec/run_light"
+        );
     }
 }

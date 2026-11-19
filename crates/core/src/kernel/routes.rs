@@ -35,6 +35,7 @@ pub(super) fn build(state: Arc<AppState>) -> Router {
         .route(wire::CAP_FTP_CALL, post(ftp::ftp_call))
         .route(wire::CAP_FIREWALL_CALL, post(firewall::firewall_call))
         .route(wire::CAP_EXEC_RUN, post(exec::exec_run))
+        .route(wire::CAP_EXEC_RUN_LIGHT, post(exec::exec_run_light))
         .route(wire::CAP_EXEC_STATUS, post(exec::exec_status))
         .route(wire::CAP_EXEC_CANCEL, post(exec::exec_cancel))
         .route(wire::CAP_NET_APPLY, post(capability::net_unimplemented))
