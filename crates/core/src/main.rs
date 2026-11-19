@@ -108,6 +108,11 @@ fn run() -> Result<ExitCode> {
             commands::plugin_config_set(&cfg, &id, &key, &value)?;
             Ok(ExitCode::SUCCESS)
         }
+        cli::Command::PluginRpc { id, method, params } => {
+            let cfg = config::Config::load(config_path, dev)?;
+            commands::plugin_rpc(&cfg, &id, &method, params.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         cli::Command::TokenCreate { name, scopes } => {
             let cfg = config::Config::load(config_path, dev)?;
             commands::token_create(&cfg, &name, &scopes)?;

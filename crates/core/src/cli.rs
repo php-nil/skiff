@@ -48,6 +48,12 @@ pub enum Command {
         key: String,
         value: String,
     },
+    /// 调用插件 RPC（自动拉起进程，走 UDS IPC）
+    PluginRpc {
+        id: String,
+        method: String,
+        params: Option<String>,
+    },
     TokenCreate {
         name: String,
         /// 逗号分隔的 scope；空 = 默认 `docker:read`（最小可用权限）
@@ -83,6 +89,9 @@ Skiff（轻舟）· 极简 Linux 服务器管理面板
   plugin config <id>        列出 config_schema 声明项与当前值（secret 打码）
   plugin config <id> <key> <value>
                             写入一项配置（secret 与否由 manifest 决定）
+  plugin rpc <id> <method> [params-json]
+                            调用插件 RPC（自动拉起进程，走 UDS IPC）。
+                            params 缺省传 `{}`；返回 JSON 结果
   trust import <公钥文件> [--label <标签>]
                             把公钥写入信任库（发布包自带的
                             official/public-key.txt 已由首启自动信任）
@@ -224,6 +233,13 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
                         ))
                     }
                 }
+            }
+            // `rpc <id> <method> [params-json]`：空 params 传 `{}`
+            Some("rpc") => {
+                let id = positional.get(2).ok_or("plugin rpc 需要插件 id")?.clone();
+                let method = positional.get(3).ok_or("plugin rpc 需要 method")?.clone();
+                let params = positional.get(4).cloned();
+                Command::PluginRpc { id, method, params }
             }
             other => return Err(format!("未知 plugin 子命令: {other:?}\n\n{HELP}")),
         },

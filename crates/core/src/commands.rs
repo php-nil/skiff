@@ -371,6 +371,52 @@ pub fn plugin_config_set(cfg: &Config, id: &str, key: &str, value: &str) -> Resu
     Ok(())
 }
 
+/// `skiff plugin rpc <id> <method> [params-json]`：启动一个临时 tokio runtime + Supervisor，
+/// 直接调插件 RPC（走 UDS IPC）。daemon 正在跑不影响——Supervisor 各自独立，
+/// 临时实例在 RPC 结束后自动 drop，进程留在 supervisor 池里复用。
+///
+/// 这是 CLI 里唯一一个需要 runtime 的命令；其余命令都是 DB 直操作。
+pub fn plugin_rpc(cfg: &Config, id: &str, method: &str, params: Option<&str>) -> Result<()> {
+    let db = open_db(cfg)?;
+    let rec = db
+        .plugin(id)?
+        .ok_or_else(|| anyhow::anyhow!("插件未安装: {id}"))?;
+    if !rec.enabled {
+        bail!("插件已停用: {id}（先 skiff plugin enable {id}）");
+    }
+    let params: serde_json::Value = match params {
+        Some(p) if !p.is_empty() => {
+            serde_json::from_str(p).with_context(|| format!("params 不是合法 JSON: {p}"))?
+        }
+        _ => serde_json::json!({}),
+    };
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+
+    let result = rt.block_on(async move {
+        let sup_cfg = skiff_plugin::supervisor::SupervisorConfig {
+            data_root: cfg.data_dir.clone(),
+            run_root: cfg.run_dir.clone(),
+            kernel_socket: cfg.run_dir.join("kernel.sock"),
+            health_timeout: std::time::Duration::from_secs(5),
+            allow_reduced_sandbox: cfg.allow_reduced_sandbox,
+        };
+        let sup = skiff_plugin::supervisor::Supervisor::new(sup_cfg, db);
+        sup.call(&rec, method, params).await
+    });
+
+    match result {
+        Ok(v) => {
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        Err(e) => bail!("RPC 失败: {e:#}"),
+    }
+}
+
 /// `load_config_view` 的返回类型：连接句柄 + 声明 schema + 已存值。
 type ConfigView = (
     Arc<Db>,
