@@ -162,7 +162,17 @@ impl Config {
             Some(v) => Some(parse_bool_word("SKIFF_TLS_ENABLED", &v)?),
             None => file.tls_enabled,
         };
-        let entry_prefix = env_str("SKIFF_ENTRY_PREFIX").or(file.entry_prefix.clone());
+        let entry_prefix = env_str("SKIFF_ENTRY_PREFIX")
+            .or(file.entry_prefix.clone())
+            .or_else(|| {
+                // CLI 和 daemon 共用 DB 里持久化的 prefix（bootstrap 会 get_or_init）。
+                // config.toml 可能注释掉 entry_prefix（部署时的常见状态），
+                // 这里 fallback 读 DB 让 CLI plugin rpc 能拼对 URL。
+                let db_path = data_dir.join("skiff.db");
+                skiff_store::Db::open(&db_path)
+                    .ok()
+                    .and_then(|db| db.get_setting("entry_prefix").ok().flatten())
+            });
 
         let external_url = env_str("SKIFF_EXTERNAL_URL").or(file.external_url.clone());
         let login_concurrency = file.login_concurrency.unwrap_or(2).max(1);
