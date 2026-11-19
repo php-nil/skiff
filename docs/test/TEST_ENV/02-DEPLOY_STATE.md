@@ -6,6 +6,26 @@
 
 ## 5. 当前部署
 
+> **2026-11-19 23:18 就地覆盖安装 `1e456cf`（当前生效；SSR 全删 + 插件 IPC 优化 + 壳页白名单回滚）**
+> - 背景：测试机从干净系统（Docker 29.7.2，skiff 完全不存在）重新首装（Release run `44544002520`，head `b6a3e35`）→ 就地覆盖 `2024b81`（误加 docker-settings 壳页白名单）→ 就地覆盖 `1e456cf`（回滚白名单，恢复正确状态）。GitHub Release 资产经 `api.github.com` + `Accept: application/octet-stream` 直连下载（测试机 curl GitHub download 路径遇 SSL 重置）。
+> - 资产：Release run `44551456436`（dispatch `ref=main`，head `1e456cf`，`publish=true`、`release_tag=v0.1.0`），success。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,817,174 B** 资产 id `768167669`，sidecar sha id `768167660`。测试机 `sha256sum -c` OK。
+> - 壳页白名单：`SHELL_PAGES`（`spa.rs`）15 条——sites / containers / images / networks / volumes / compose / runtimes / files / plugins / store / settings / audit / tasks / jobs。Docker 设置菜单的 href 是 `settings/docker`（settings 子路径，settings 已在白名单），独立的 `docker-settings` 路径前端不认（budding 路由无此项）。本轮误加后立即回滚。
+> - 部署：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；`allow_reduced_sandbox = true`（无 landlock/cgroups）加于 `config.toml`；`skiff.service` + `skiff-http-fwd.service`（Python 行 pipe，`0.0.0.0:18081 → 127.0.0.1:18080`）均 active。
+> - 入口：前缀 **`trpdbfmr`**（升级保留）；管理员 `admin` / `aSHKhyWPx6yPQ78k`；登录 URL `http://10.10.15.4:18081/trpdbfmr/login`。
+> - accept.sh：`--group preflight,a,b,d0` → **PASS 32 / FAIL 0 / SKIP 3**（SKIP：PF4 装后端口占用、B0 明文 dev Cookie 无回传、D0b `--pkg-dir`）。
+> - 浏览器验收（真实 budding 前端，无 console error）：
+>   - 登录页 / Dashboard（概览统计、侧边栏 6 分组全展开）
+>   - 容器页（空态表格 + 全部/仅异常 筛选 + 新建容器 按钮）
+>   - 镜像页 / 网络页 / 卷页 / Compose 页
+>   - Docker 设置（`/settings/docker`，从 Docker 菜单 → 设置 子项进入，H2 "Docker 设置" ✅）
+>   - 插件（已安装 0 / 发现 / 可更新 三 tab）
+>   - 设置 / 任务中心
+> - 本轮文档禁令：AGENTS.md §4.3 增"测试机禁止 Rust 编译"硬禁令（本轮曾误向测试机 `rustup`，已立即 `rustup self uninstall -y && rm -rf ~/.cargo ~/.rustup`）。测试机只做安装验收，编译链路统一走 GitHub Release musl 静态资产。
+> - Git commits（`b6a3e35 → 1e456cf`，三轮）：
+>   - `b6a3e35` refactor: delete legacy SSR UI — routes / templates / menu deep links / htmx & xterm residuals
+>   - `2024b81` fix(web): add docker-settings to SPA shell whitelist（误修复，立即回滚）
+>   - `1e456cf` revert: docker-settings shell whitelist was unnecessary（菜单 href 走 settings/docker）
+
 > **2026-11-19 15:10 就地覆盖编译部署 `b1234f8`（当前生效；登录页优化 + 文件管理弹窗 + 磁盘覆盖路径）**
 > - 背景：两批改动——① 登录页视觉重写（分栏布局 / 渐变网格背景 / 品牌区 / 主题切换按钮）；② 文件管理「新建与上传」三个内联表单改为按钮触发 dialog（新建目录 / 上传文件 / 新建文件）；③ `SKIFF_EXTRA_STATIC_DIR` env var 磁盘覆盖 rust-embed 静态资源（测试机上装 Rust 工具链构建，绕开 CI Release token 问题）。CI Release workflow 需 `workflow_dispatch` 手动触发，开发机无 GitHub token，本次在测试机上用 rustup + musl-tools + 源码 tar 编译（4m25s 增量）。
 > - 编译：测试机 `rustup 1.100.0` + `x86_64-linux-musl-gcc`，源码 tar 从开发机 SCP 到 `/root/skiff-src`，`cargo build --release --target x86_64-unknown-linux-musl`，exit 0（仅 `xtask` 有 unused `anyhow` warning）。
