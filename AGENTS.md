@@ -57,6 +57,7 @@
 - **零污染原则**：中间产物、日志与临时文件不得生成在源码目录（已生成须在任务结束前清理）。
 - **用例照写，不在本机跑**：新增功能、核心逻辑变更或 Bug 修复**必须**同批补用例；本地只保证它们编得过（`clippy --all-targets`），**用例结果一律以 CI 为准**（`test` / `test-win` / `plugins` job，`docs/ops/DEV_ENV.md` §3）。改判定逻辑需同步 `skiff-policy` 用例——那组零 Docker、零 SQLite，在 CI 上跑。
 - **Windows 开发机禁止跑 `cargo test`**：Windows 不是交付形态——进程模型、权限位（0711/0660）、Unix socket、Docker 语义都与部署形态不同，本机跑绿不代表可用；本机能否编译还取决于外部 C 工具链探测（`docs/ops/DEV_ENV.md` §3），跑红也常是环境问题而非代码问题。用例结果一律看 CI 的 `test` / `test-win` / `plugins` job。
+- **测试机禁止 Rust 编译**：测试机是干净 Linux 部署目标，**只做安装验收**（`install.sh` → `systemd` → `accept.sh` → 浏览器）。不得在测试机上装 `rustup`、`cargo`、musl 工具链或任何构建依赖；不得 `git clone` 源码到测试机编译。编译链路统一走 **GitHub Release musl 静态资产**（`release.yml`，`publish=true`），开发机 `tools/iter.sh` 负责触发 dispatch + 下载 + 校验 + 下发。源码自编译只允许在**开发调试极端应急**场景下、且事后必须撤销（`rustup self uninstall -y && rm -rf ~/.cargo ~/.rustup`），不得作为常态。
 - **汇报口径**：只有 CI 跑过的用例才能说「已验证 / 全绿」；本地只做了编译级校验时，必须写明「fmt + clippy 通过，用例交 CI」，不得暗示已回归。
 
 ### 4.4 其他约定
