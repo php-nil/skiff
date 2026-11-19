@@ -15,8 +15,8 @@ use skiff_plugin::{Supervisor, SupervisorConfig};
 use crate::config::Config;
 
 pub use skiff_app::panel_settings::{
-    ENTRY_PREFIX_GRACE_SECS, KEY_ENTRY_PREFIX, KEY_ENTRY_PREFIX_PREVIOUS,
-    KEY_ENTRY_PREFIX_PREVIOUS_UNTIL,
+    toml_string, write_config_updates, ENTRY_PREFIX_GRACE_SECS, KEY_ENTRY_PREFIX,
+    KEY_ENTRY_PREFIX_PREVIOUS, KEY_ENTRY_PREFIX_PREVIOUS_UNTIL,
 };
 pub const KEY_CSRF_SECRET: &str = "security.csrf_secret";
 pub const KEY_INSTANCE_ID: &str = "instance.id";
@@ -83,6 +83,22 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
             None => db.get_or_init_setting(KEY_ENTRY_PREFIX, || random_prefix(8))?,
         },
     };
+
+    // 持久化到 config.toml：daemon 是 prefix 的单一来源（DB），
+    // 必须把运行时生效的值写回文件，否则 CLI 读 config 拿不到 prefix。
+    // 仅当 config 里没显式设置时才写（避免覆盖用户显式值）。
+    if cfg.entry_prefix.is_none() {
+        if let Err(e) = write_config_updates(
+            &cfg.config_path,
+            &[("entry_prefix", Some(toml_string(&entry_prefix)))],
+        ) {
+            warn!(
+                "bootstrap: 写回 entry_prefix 到 {} 失败: {e}",
+                cfg.config_path.display()
+            );
+        }
+    }
+
     // 旧前缀只在有效窗口内作为 GET 重定向别名；窗口外忽略，避免永久旁路。
     let entry_prefix_previous = db
         .get_setting(KEY_ENTRY_PREFIX_PREVIOUS)?
