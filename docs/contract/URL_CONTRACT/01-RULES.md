@@ -38,7 +38,7 @@
 | --- | --- |
 | `/{p}` | 概览根（仅精确匹配） |
 | `/{p}/sites` | 站点 |
-| `/{p}/containers`、`/{p}/images`、`/{p}/networks`、`/{p}/volumes`、`/{p}/compose` | Docker |
+| `/{p}/containers`、`/{p}/images`、`/{p}/networks`、`/{p}/volumes`、`/{p}/compose`、`/{p}/docker-settings` | Docker |
 | `/{p}/runtimes` | 运行环境 |
 | `/{p}/files` | 文件管理 |
 | `/{p}/plugins` | 插件（功能页由壳页按随包 schema 原生渲染；旧 iframe 仅 `?legacy=1` 兼容） |
