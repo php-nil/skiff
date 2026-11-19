@@ -9,8 +9,8 @@ use super::*;
 /// `GET /ui/v1/menu`：budding 壳的菜单数据（需登录，401 口径同 `/ui/v1/session`）。
 ///
 /// 菜单数据是路由表的来源：前端据 `key` 映射到已迁移的 budding 页面。
-/// 插件项下发的 `href` 直接指向原生 `/{p}/plugins/{id}/{view}`，不再落到
-/// `/{p}/m/plugin/...` 旧工作台；旧路径只保留给显式 `?legacy=1` 兼容请求。
+/// 插件项下发的 `href` 指向原生 `/{p}/plugins/{id}/{view}`；没有 schema 的视图
+/// 由壳页带 `?legacy=1` 回落到 iframe 工作台。
 pub async fn menu(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,

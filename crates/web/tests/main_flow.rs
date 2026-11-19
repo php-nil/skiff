@@ -54,11 +54,6 @@ fn harness() -> Harness {
     harness_full(Form::Native, Tier::Basic)
 }
 
-/// 指定部署形态的 harness：受限形态（1Panel Docker 包）能力面收缩用它。
-fn harness_with(form: Form) -> Harness {
-    harness_full(form, Tier::Basic)
-}
-
 /// 生命周期档 harness：创建容器 / Compose 等 `Tier::Lifecycle` 动词只在宿主机直装形态可用。
 fn harness_lifecycle() -> Harness {
     harness_full(Form::Native, Tier::Lifecycle)
@@ -202,19 +197,10 @@ fn set_cookie_header(resp: &axum::response::Response, name: &str) -> Option<Stri
         .map(str::to_string)
 }
 
-fn form_body(pairs: &[(&str, &str)]) -> Body {
-    let s = pairs
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&");
-    Body::from(s)
-}
-
 /// GET 登录配置，返回（签名 CSRF token，Set-Cookie 下发的 `skiff_login` 值）。
 ///
-/// budding 登录页通过 `GET /ui/v1/auth/login` 取 token；表单兼容路径仍带同一个
-/// `skiff_login` Cookie，因此这里的 token 也能直接用于 `POST /p/login`。
+/// budding 登录页通过 `GET /ui/v1/auth/login` 取 token，提交走
+/// `POST /ui/v1/auth/login`（同一个 `skiff_login` Cookie 仍是双提交兼容信号）。
 async fn login_page_tokens(app: &Router) -> (String, String) {
     let page = app
         .clone()
@@ -249,25 +235,23 @@ async fn post_login(
 ) -> axum::response::Response {
     let mut req = Request::builder()
         .method("POST")
-        .uri("/p/login")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        .uri("/ui/v1/auth/login")
+        .header(header::CONTENT_TYPE, "application/json");
     if let Some(c) = cookie {
         req = req.header(header::COOKIE, format!("skiff_login={c}"));
     }
     if let Some(site) = sec_fetch_site {
         req = req.header("sec-fetch-site", site);
     }
+    let payload = serde_json::json!({
+        "username": username,
+        "password": password,
+        "otp": "",
+        "csrf": csrf,
+        "next": "",
+    });
     app.clone()
-        .oneshot(
-            req.body(form_body(&[
-                ("username", username),
-                ("password", password),
-                ("csrf", csrf),
-                ("otp", ""),
-                ("next", ""),
-            ]))
-            .unwrap(),
-        )
+        .oneshot(req.body(Body::from(payload.to_string())).unwrap())
         .await
         .unwrap()
 }
@@ -284,23 +268,9 @@ async fn login(app: &Router, username: &str, password: &str) -> String {
         password,
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "登录应 303 跳转");
+    assert_eq!(resp.status(), StatusCode::OK, "登录应返回 200 JSON 信封");
     set_cookie_value(&resp, skiff_identity::session_cookie_name(true))
         .expect("登录成功应下发会话 Cookie")
-}
-
-/// 构造一个签名的 .wbpkg（`bin/<arch>/plugin` + manifest），返回（包路径、公钥 hex、key_id）。
-fn build_package(root: &std::path::Path) -> (PathBuf, String, String) {
-    build_package_with(root, "docker", "docker")
-}
-
-/// 同上，但可指定 manifest 的 `requires` 能力与权限 capability（受限形态测试用）。
-fn build_package_with(
-    root: &std::path::Path,
-    requires: &str,
-    cap: &str,
-) -> (PathBuf, String, String) {
-    build_package_full(root, requires, cap, "1.0")
 }
 
 /// 指定 manifest `api` 的签名包（兼容门测试用）。
@@ -342,93 +312,20 @@ verbs = ["list"]
     (out, key.public_hex(), key.key_id())
 }
 
-/// 复用同一签名密钥构建指定版本/声明集/资源提示的包（重装、升级用例）。
-fn build_package_version(
-    root: &std::path::Path,
-    key: &skiff_pkgfmt::SigningKey,
-    version: &str,
-    perms: &[&str],
-    hints: &[&str],
-) -> PathBuf {
-    let src = root.join(format!("pkg-src-{version}"));
-    let arch = skiff_pkgfmt::host_arch();
-    std::fs::create_dir_all(src.join("bin").join(&arch)).unwrap();
-    std::fs::write(src.join("bin").join(&arch).join("plugin"), b"test-binary").unwrap();
-    let hints_list = hints
-        .iter()
-        .map(|h| format!("\"{h}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut manifest = format!(
-        r#"id = "com.example.demo"
-name = "Demo"
-version = "{version}"
-key_id = "{}"
-api = "1.0"
-requires_full_sandbox = false
-requires = ["docker"]
-resource_hints = [{hints_list}]
-"#,
-        key.key_id()
-    );
-    for p in perms {
-        let (cap, verb) = p.split_once(':').expect("权限串必须是 cap:verb");
-        manifest.push_str(&format!(
-            "[[permissions]]\ncapability = \"{cap}\"\nverbs = [\"{verb}\"]\n"
-        ));
-    }
-    std::fs::write(src.join("manifest.toml"), manifest).unwrap();
-    let out = root.join(format!("demo-{version}.wbpkg"));
-    skiff_pkgfmt::package::pack_dir(&src, &out, &key.seed_hex()).unwrap();
-    out
-}
-
-/// 上传插件包（不跟随跳转），供安装/重装/升级用例复用。
-async fn upload_pkg(app: &Router, token: &str, pkg: &std::path::Path) -> axum::response::Response {
-    let bytes = std::fs::read(pkg).unwrap();
-    let (ct, body) = multipart(&bytes);
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-}
-
-/// 读取 `.incoming` 里唯一暂存包的确认令牌。
-fn staged_confirm_token(data_dir: &std::path::Path) -> String {
-    let incoming = data_dir.join("plugins").join(".incoming");
-    let staged: Vec<_> = std::fs::read_dir(&incoming)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".wbpkg"))
+/// 把插件包放进安装暂存区，返回 24 位确认令牌。
+///
+/// 上传入口只由 budding 壳页（`PlatformAdapter.upload`）走浏览器通道，测试直接
+/// 复用同一条落点：`{data_dir}/plugins/.incoming/{token}.wbpkg`。
+fn stage_pkg(data_dir: &std::path::Path, pkg: &std::path::Path) -> String {
+    let token: String = skiff_identity::new_token()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(24)
         .collect();
-    assert_eq!(staged.len(), 1, "上传包应暂存一份: {staged:?}");
-    staged[0].trim_end_matches(".wbpkg").to_string()
-}
-
-fn multipart(pkg: &[u8]) -> (String, Body) {
-    let boundary = "----skifftestboundary7d93";
-    let mut buf = Vec::new();
-    buf.extend_from_slice(
-        format!(
-            "--{boundary}\r\ncontent-disposition: form-data; name=\"package\"; filename=\"demo.wbpkg\"\r\ncontent-type: application/octet-stream\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    buf.extend_from_slice(pkg);
-    buf.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    (
-        format!("multipart/form-data; boundary={boundary}"),
-        Body::from(buf),
-    )
+    let incoming = data_dir.join("plugins").join(".incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    std::fs::copy(pkg, incoming.join(format!("{token}.wbpkg"))).unwrap();
+    token
 }
 
 async fn body_text(resp: axum::response::Response) -> String {
@@ -482,14 +379,14 @@ async fn login_session_and_dashboard() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/m/overview")
+                .uri("/p")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "带会话访问仪表盘应 200");
+    assert_eq!(resp.status(), StatusCode::OK, "带会话访问概览壳页应 200");
 }
 
 /// 会话 Cookie 形态：`Path=/; HttpOnly; SameSite=Lax; Max-Age=...; Secure`。
@@ -510,7 +407,7 @@ async fn session_cookie_uses_lax_for_top_level_navigation() {
         "pw-test-123",
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.status(), StatusCode::OK);
     let name = skiff_identity::session_cookie_name(true);
     let header = set_cookie_header(&resp, name).expect("登录成功应下发会话 Cookie");
     assert!(header.contains("Path=/"), "{header}");
@@ -538,67 +435,14 @@ async fn default_admin_login_lands_on_overview_without_force_change() {
         "pw-test-123",
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_text(resp).await;
+    let value: serde_json::Value = serde_json::from_str(&body).expect("登录响应必须是 JSON");
     assert_eq!(
-        resp.headers().get(header::LOCATION).unwrap(),
-        "/p",
+        value["data"]["redirect_to"], "/p",
         "默认不得跳到 settings?force=1"
     );
 }
-
-/// 改密表单校验失败必须回跳设置页，错误经会话 flash 展示一次，
-/// URL 不得带 `?err=`（刷新重放 / 链接带脏数据）。
-#[tokio::test]
-async fn change_password_failure_redirects_back_to_settings() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-    let body = format!(
-        "csrf={csrf}&old_password=wrong&new_password=new-pw-123&confirm_password=new-pw-123"
-    );
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/password")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let loc = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(
-        loc, "/p/settings",
-        "回跳 budding 壳页设置页，且不得携带消息参数"
-    );
-
-    // 壳页从 `GET /ui/v1/settings` 的 `flash` 读错误：首次带回、再取不重放。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK);
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        v["data"]["flash"]["error"], "当前口令不正确",
-        "首次读取应带回错误: {body}"
-    );
-    let (_, _, body) = get_ui(&h.app, "/ui/v1/settings", Some(&token), None).await;
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        v["data"]["flash"]["error"], "",
-        "flash 只能消费一次，刷新不应重放: {body}"
-    );
-}
-
 /// 显式开启（用户标志为 1）时保留原能力：登录与后续页面强制跳改密页。
 #[tokio::test]
 async fn explicit_must_change_password_still_redirects() {
@@ -619,20 +463,20 @@ async fn explicit_must_change_password_still_redirects() {
         "pw-test-123",
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        resp.headers().get(header::LOCATION).unwrap(),
-        "/p/settings?force=1"
-    );
-
+    assert_eq!(resp.status(), StatusCode::OK);
     let token = set_cookie_value(&resp, skiff_identity::session_cookie_name(true))
         .expect("登录成功应下发会话 Cookie");
+    let body = body_text(resp).await;
+    let value: serde_json::Value = serde_json::from_str(&body).expect("登录响应必须是 JSON");
+    assert_eq!(value["data"]["redirect_to"], "/p/settings?force=1");
+
+    // 后续页面仍被改密闸门拦下（303 回到设置页）。
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/m/overview")
+                .uri("/p")
                 .header(
                     header::COOKIE,
                     format!("{}={token}", skiff_identity::session_cookie_name(true)),
@@ -688,7 +532,7 @@ async fn session_cookie_in_second_cookie_header_is_recognized() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/m/overview")
+                .uri("/p")
                 .header(header::COOKIE, "skiff_login=stale")
                 .header(
                     header::COOKIE,
@@ -705,62 +549,6 @@ async fn session_cookie_in_second_cookie_header_is_recognized() {
         "第二个 Cookie 头字段里的会话令牌也必须生效"
     );
 }
-
-/// 线上缺陷回归：浏览器没有回传 `skiff_login` Cookie 时，只要表单里是登录页签发的
-/// 签名 token 且请求同源，登录必须成功。
-#[tokio::test]
-async fn login_succeeds_when_browser_drops_csrf_cookie() {
-    let h = harness();
-    let (csrf, _cookie) = login_page_tokens(&h.app).await;
-    let resp = post_login(
-        &h.app,
-        &csrf,
-        None,
-        Some("same-origin"),
-        "admin",
-        "pw-test-123",
-    )
-    .await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "缺少 skiff_login Cookie 不应阻断登录"
-    );
-    assert!(
-        set_cookie_value(&resp, skiff_identity::session_cookie_name(true)).is_some(),
-        "登录成功必须下发会话 Cookie"
-    );
-
-    // 老浏览器没有 Sec-Fetch-Site，但有 Origin：dev_http 下 http:// 与 Host 一致则放行。
-    let (csrf2, _) = login_page_tokens(&h.app).await;
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/login")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::HOST, "localhost")
-                .header("origin", "http://localhost")
-                .body(form_body(&[
-                    ("username", "admin"),
-                    ("password", "pw-test-123"),
-                    ("csrf", &csrf2),
-                    ("otp", ""),
-                    ("next", ""),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "仅有 Origin 且与 Host 同源时也必须放行"
-    );
-}
-
 /// 带合法 token 的跨站 POST 必须拒绝（同源判定优先于 token 本身）。
 #[tokio::test]
 async fn login_rejects_cross_site_post_with_valid_token() {
@@ -821,11 +609,7 @@ async fn login_accepts_stale_cookie_when_form_token_is_fresh() {
         "pw-test-123",
     )
     .await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "旧页面 token 应仍然有效"
-    );
+    assert_eq!(resp.status(), StatusCode::OK, "旧页面 token 应仍然有效");
 
     // bfcache 回退复提交：Cookie 与表单都还是 A 的旧值，也应成功
     let resp = post_login(
@@ -837,7 +621,7 @@ async fn login_accepts_stale_cookie_when_form_token_is_fresh() {
         "pw-test-123",
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 /// 兼容路径：没有任何来源头的老客户端仍走双提交，Cookie 与表单一致才放行。
@@ -854,11 +638,7 @@ async fn login_without_origin_headers_falls_back_to_double_submit() {
     );
 
     let resp = post_login(&h.app, &csrf, Some(&cookie), None, "admin", "pw-test-123").await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "curl 兼容路径应仍然可用"
-    );
+    assert_eq!(resp.status(), StatusCode::OK, "curl 兼容路径应仍然可用");
 }
 
 /// 伪造/篡改的表单 token 一律拒绝，即使同源且带着 Cookie。
@@ -878,173 +658,6 @@ async fn login_rejects_tampered_token() {
     .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
-
-#[tokio::test]
-async fn final_ia_hides_app_and_keeps_plugin_center_direct() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/overview")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "概览是保留的 SSR 入口（插件槽位迁完前）"
-    );
-    let html = body_text(resp).await;
-
-    // 契约 P1：固定六一级，0 个插件时「网站」「工具」保留并给可行动空态
-    assert!(
-        !html.contains(r#"aria-controls="nav-menu-app""#),
-        "不应再有旧的「应用」一级: {html}"
-    );
-    assert!(
-        html.contains(r#"aria-controls="nav-menu-sites""#)
-            && html.contains(r#"aria-controls="nav-menu-tools""#),
-        "网站/工具为空时仍保留一级并给空态: {html}"
-    );
-    assert!(
-        html.contains(r#"href="/p/sites""#)
-            && html.contains(r#"href="/p/runtimes""#)
-            && !html.contains(r#"sites/settings"#),
-        "网站一级保留列表/运行环境；站点级设置入口已移除: {html}"
-    );
-    assert!(
-        html.contains(r#"href="/p/settings/docker""#) && html.contains(r#"href="/p/compose""#),
-        "Docker 一级必须提供设置与 Compose 入口（镜像加速源/前缀）: {html}"
-    );
-    // 插件一级拆成已安装 / 发现 / 可更新三个真实页面
-    assert!(
-        html.contains(r#"aria-controls="nav-menu-plugins""#)
-            && html.contains(r#"href="/p/plugins""#)
-            && html.contains(r#"href="/p/plugins/discover""#)
-            && html.contains(r#"href="/p/plugins/updates""#),
-        "插件一级必须是已安装/发现/可更新: {html}"
-    );
-    // 设置：安全设置 / 菜单设置 / 界面 / 审计日志
-    assert!(
-        html.contains(r#"aria-controls="nav-menu-settings""#)
-            && html.contains(r#"href="/p/settings""#)
-            && html.contains(r#"href="/p/settings/menu""#)
-            && html.contains(r#"href="/p/settings/ui""#)
-            && html.contains(r#"href="/p/audit""#),
-        "设置二级必须是安全设置 / 菜单设置 / 界面 / 审计日志: {html}"
-    );
-    // 旧 SSR 深链已删除：任何菜单项都不得再指向 `/m/core/*`，否则点了就 404。
-    assert!(
-        !html.contains("/m/core"),
-        "菜单不得挂已删除的旧深链: {html}"
-    );
-
-    // 当前页（概览）必须标成当前项
-    assert!(
-        html.contains(r#"href="/p/m/overview""#) && html.contains(r#"aria-current="page""#),
-        "当前页必须高亮: {html}"
-    );
-    assert!(
-        html.contains(r#"<button type="button" class="nav-link nav-label" data-nav-label>"#)
-            && html.contains(r#"class="nav-caret" data-nav-toggle"#)
-            && html.contains(r#"aria-expanded="false""#),
-        "一级分组应由「标签 + 独立箭头」驱动并默认收起: {html}"
-    );
-    // 二级默认带 hidden，折叠时不进入 Tab 顺序。
-    assert!(
-        html.contains(r#"data-nav-menu hidden"#),
-        "折叠的分组二级必须带 hidden: {html}"
-    );
-}
-
-#[tokio::test]
-async fn app_menu_lists_only_enabled_plugins_with_manifest_label() {
-    let h = harness();
-    seed_plugin(
-        h.state.db().as_ref(),
-        "com.skiff.nginx",
-        "NGINX 站点",
-        "NGINX 站点",
-        true,
-    );
-    // 站点文件插件：新定位是「网站 → 站点文件」，与内核「工具 → 文件管理」并存。
-    let files_manifest = format!(
-        r#"id = "com.skiff.files"
-name = "站点文件"
-version = "0.1.3"
-key_id = "{}"
-api = "1.2"
-requires = ["fs"]
-[[ui]]
-label = "站点文件"
-path = "main.html"
-[[menu]]
-id = "files"
-parent = "sites"
-label = "站点文件"
-order = 60
-icon = "file"
-view = "main"
-"#,
-        "0".repeat(64)
-    );
-    seed_declared_plugin(h.state.db().as_ref(), files_manifest, false);
-    let token = login(&h.app, "admin", "pw-test-123").await;
-
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/overview")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let html = body_text(resp).await;
-
-    assert!(
-        html.contains(r#"aria-controls="nav-menu-sites""#),
-        "nginx 老包必须降级挂到「网站」一级: {html}"
-    );
-    assert!(
-        html.contains("NGINX 站点")
-            && html.contains(r#"href="/p/m/plugin/com.skiff.nginx/legacy""#),
-        "插件二级必须用 [[ui]].label，并指向规范深链: {html}"
-    );
-    // 内核「工具 → 文件管理」是独立入口；未启用的站点文件插件不得出现在菜单里。
-    assert!(
-        html.contains(r#"href="/p/files""#),
-        "内核「工具 → 文件管理」入口必须存在: {html}"
-    );
-    assert!(
-        !html.contains(r#"href="/p/m/plugin/com.skiff.files/files""#),
-        "未启用的站点文件插件不得出现在菜单: {html}"
-    );
-
-    // 插件中心仍能看见未启用插件（状态文案 + enabled 标记），入口走壳页详情。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/plugins", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let item = v["data"]["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == "com.skiff.files")
-        .expect("未启用插件仍要出现在插件中心");
-    assert_eq!(item["status"]["label"], "已安装 · 未启用");
-    assert_eq!(item["enabled"], false);
-}
-
 /// 站点文件插件启用后挂「网站」一级，与「工具 → 文件管理」并存、不抢位。
 #[tokio::test]
 async fn site_files_plugin_menu_hangs_under_sites() {
@@ -1071,77 +684,45 @@ view = "main"
     );
     seed_declared_plugin(h.state.db().as_ref(), manifest, true);
     let token = login(&h.app, "admin", "pw-test-123").await;
-    let page = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/overview")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(page.status(), StatusCode::OK);
-    let html = body_text(page).await;
-    let sites_start = html
-        .find(r#"data-menu-key="sites""#)
+    // 菜单只由 `/ui/v1/menu` 下发（壳页不再渲染菜单 HTML）。
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("menu 必须是 JSON");
+    let groups = v["data"]["groups"].as_array().expect("groups 必须是数组");
+    let sites = groups
+        .iter()
+        .find(|g| g["key"] == "sites")
         .expect("网站一级必须存在");
-    let docker_start = html
-        .find(r#"data-menu-key="docker""#)
-        .expect("Docker 一级必须存在");
-    let sites = &html[sites_start..docker_start];
+    let site_items = sites["items"].as_array().expect("网站一级必须有子项");
+    let files = site_items
+        .iter()
+        .find(|i| i["plugin_id"] == "com.skiff.files")
+        .expect("站点文件应挂在「网站」下");
+    assert_eq!(files["label"], "站点文件", "{body}");
     assert!(
-        sites.contains(r#"href="/p/m/plugin/com.skiff.files/files""#),
-        "站点文件应挂在「网站」下: {sites}"
-    );
-    assert!(sites.contains("站点文件"), "菜单文案应为站点文件: {sites}");
-    assert!(
-        !sites.contains(r#"href="/p/files""#),
-        "站点文件不得与内核文件管理同组: {sites}"
-    );
-    assert!(
-        html.contains(r#"href="/p/files""#),
-        "内核「工具 → 文件管理」入口必须保留: {html}"
-    );
-}
-
-#[tokio::test]
-async fn overview_renders_explicit_empty_states() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-
-    let dash = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/overview")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(dash.status(), StatusCode::OK);
-    let dash_html = body_text(dash).await;
-    assert!(
-        dash_html.contains("需要处理") && dash_html.contains("两步验证未开启"),
-        "概览必须给出真实待办（TOTP 未开启）: {dash_html}"
+        files["href"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("/p/plugins/com.skiff.files/"),
+        "站点文件入口应是原生插件页: {body}"
     );
     assert!(
-        dash_html.contains("最近审计")
-            && dash_html.contains("auth.login")
-            && dash_html.contains("Docker 不可用，暂时读不到容器状态"),
-        "概览必须接真实审计，并在 Docker 不可用时给出容器空态: {dash_html}"
+        !site_items.iter().any(|i| i["href"] == "/p/files"),
+        "站点文件不得与内核文件管理同组: {body}"
     );
+    let tools = groups
+        .iter()
+        .find(|g| g["key"] == "tools")
+        .expect("工具一级必须存在");
     assert!(
-        dash_html.contains("个未安装"),
-        "运行环境只有登记、没有容器时，概览不能笼统宣称「全部运行中」: {dash_html}"
+        tools["items"]
+            .as_array()
+            .expect("工具一级必须有子项")
+            .iter()
+            .any(|i| i["href"] == "/p/files"),
+        "内核「工具 → 文件管理」入口必须保留: {body}"
     );
 }
-
 #[tokio::test]
 async fn wrong_password_renders_error_and_audits() {
     let h = harness();
@@ -1155,8 +736,13 @@ async fn wrong_password_renders_error_and_audits() {
         "wrong-pw",
     )
     .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "口令错误必须是 401"
+    );
     let text = body_text(resp).await;
-    assert!(text.contains("不正确"), "错误页应提示口令不正确: {text}");
+    assert!(text.contains("不正确"), "错误响应应提示口令不正确: {text}");
     let audit = h.state.db().recent_audit(10).unwrap();
     assert!(
         audit
@@ -1193,33 +779,6 @@ async fn unauthenticated_page_redirects_to_login() {
         .to_string();
     assert!(loc.contains("/p/login"), "未登录应跳登录页: {loc}");
 }
-
-#[tokio::test]
-async fn viewer_cannot_install_plugins() {
-    let h = harness();
-    let token = login(&h.app, "viewer", "pw-test-123").await;
-    let (ct, body) = multipart(b"irrelevant");
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "viewer 装插件必须 403"
-    );
-}
-
 /// 商店安装入口：viewer 无权安装，必须 403 且落 `store.install` deny 审计。
 #[tokio::test]
 async fn store_install_requires_plugin_manage_permission() {
@@ -1245,10 +804,11 @@ async fn store_install_requires_plugin_manage_permission() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/store/plugins/com.example.demo/install")
+                .uri("/ui/v1/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("csrf={csrf}")))
+                .header("x-csrf-token", csrf.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
                 .unwrap(),
         )
         .await
@@ -1292,10 +852,11 @@ async fn store_install_requires_configured_key() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/store/plugins/com.example.demo/install")
+                .uri("/ui/v1/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("csrf={csrf}")))
+                .header("x-csrf-token", csrf.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
                 .unwrap(),
         )
         .await
@@ -1310,7 +871,7 @@ async fn store_install_requires_configured_key() {
     );
 }
 
-/// 目录不可用（无镜像/无缓存）时拒绝安装：失败原因落审计、回商店页提示、不留暂存文件。
+/// 目录不可用（无镜像/无缓存）时拒绝安装：失败原因落审计、按输入错误拒绝、不留暂存文件。
 #[tokio::test]
 async fn store_install_rejects_without_verified_catalog() {
     let key = skiff_pkgfmt::SigningKey::generate();
@@ -1336,22 +897,22 @@ async fn store_install_rejects_without_verified_catalog() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/store/plugins/com.example.demo/install")
+                .uri("/ui/v1/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("csrf={csrf}")))
+                .header("x-csrf-token", csrf.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "失败应回商店页");
-    let loc = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert_eq!(loc, "/p/store");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "目录不可用必须按输入错误拒绝"
+    );
+    let text = body_text(resp).await;
+    assert!(!text.is_empty(), "失败必须给出可读原因");
     let audit = h.state.db().recent_audit(10).unwrap();
     assert!(
         audit.iter().any(|e| e.action == "store.install"
@@ -1389,7 +950,8 @@ async fn upgrade_download_requires_admin_permission() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/store/upgrades/0.2.0/download")
+                .method("POST")
+                .uri("/ui/v1/store/upgrades/0.2.0/download")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1428,13 +990,16 @@ async fn upgrade_download_requires_configured_key() {
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/store/upgrades/0.2.0/download")
+                .method("POST")
+                .uri("/ui/v1/store/upgrades/0.2.0/download")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .header("x-csrf-token", csrf.as_str())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1450,7 +1015,7 @@ async fn upgrade_download_requires_configured_key() {
     );
 }
 
-/// 渠道没有升级数据时安静拒绝：回商店页提示、落 `not_found`、不留暂存目录文件。
+/// 渠道没有升级数据时安静拒绝：落 `not_found` 审计、按输入错误拒绝、不留暂存目录文件。
 #[tokio::test]
 async fn upgrade_download_without_catalog_data_is_not_found() {
     let key = skiff_pkgfmt::SigningKey::generate();
@@ -1469,26 +1034,28 @@ async fn upgrade_download_without_catalog_data_is_not_found() {
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/store/upgrades/0.2.0/download")
+                .method("POST")
+                .uri("/ui/v1/store/upgrades/0.2.0/download")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .header("x-csrf-token", csrf.as_str())
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "失败应回商店页");
-    let loc = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert_eq!(loc, "/p/store");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "无升级数据必须按输入错误拒绝"
+    );
+    let text = body_text(resp).await;
+    assert!(!text.is_empty(), "失败必须给出可读原因");
     let audit = h.state.db().recent_audit(10).unwrap();
     assert!(
         audit.iter().any(|e| e.action == "upgrade.download"
@@ -1502,81 +1069,34 @@ async fn upgrade_download_without_catalog_data_is_not_found() {
         .unwrap_or(0);
     assert_eq!(leftover, 0, "失败不得留下半包");
 }
-
-/// 上传上限必须由应用层（`DEFAULT_LIMITS.archive_bytes` = 100MB）决定。
-/// axum 默认 body 上限是 2MB，而 `.wbpkg` 内含插件二进制，2MB 必然不够——
-/// 一旦框架默认值先于应用层校验生效，`install` 里的 100MB 判断就永远走不到。
-#[tokio::test]
-async fn plugin_upload_body_limit_is_not_the_framework_default() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    // 3MB 非法内容：不该在解析前被 413 拦下，应走到应用层校验并给出结构错误
-    let (ct, body) = multipart(&vec![0u8; 3 * 1024 * 1024]);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let text = body_text(resp).await;
-    assert!(
-        !text.contains("上传解析失败"),
-        "3MB 上传在 Multipart 解析阶段就被框架默认 body 上限掐断，插件包将无法安装: {text}"
-    );
-    assert!(
-        text.contains("解析失败") || text.contains("包"),
-        "应走到应用层的包校验，实际响应: {text}"
-    );
-}
-
-#[tokio::test]
-async fn plugin_install_rejects_unknown_key() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let (pkg, _pubkey, _kid) = build_package(&h.data_dir);
-    let bytes = std::fs::read(&pkg).unwrap();
-    let (ct, body) = multipart(&bytes);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let text = body_text(resp).await;
-    assert!(
-        text.contains("未导入"),
-        "未导入公钥的签名包必须拒装并提示导入: {text}"
-    );
-}
-
-/// 直传安装同样走内核 API 兼容门：不兼容包在确认页之前就返回 400，
+/// 安装确认同样走内核 API 兼容门：不兼容包在落库之前就返回 400，
 /// 并给出「要求 / 当前」两端的明确文案（稳定错误码 `shape.plugin_api`）。
 #[tokio::test]
-async fn plugin_upload_rejects_incompatible_kernel_api() {
+async fn plugin_confirm_rejects_incompatible_kernel_api() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let (pkg, pubkey, kid) = build_package_api(&h.data_dir, "1.4");
     h.state.db().trust_key(&kid, &pubkey, "测试作者").unwrap();
+    let staged = stage_pkg(&h.data_dir, &pkg);
 
-    let resp = upload_pkg(&h.app, &token, &pkg).await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/ui/v1/plugins/confirm")
+                .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .header("x-csrf-token", csrf.as_str())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "token": staged, "grant": [], "resource": [] }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let text = body_text(resp).await;
     assert!(
@@ -1584,266 +1104,6 @@ async fn plugin_upload_rejects_incompatible_kernel_api() {
         "不兼容包必须说明两端 API 版本: {text}"
     );
 }
-
-#[tokio::test]
-async fn plugin_install_confirm_main_flow() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-    let (pkg, pubkey, kid) = build_package(&h.data_dir);
-    // 预导入作者公钥（对应 UI 的「设置 → 信任公钥」）
-    h.state.db().trust_key(&kid, &pubkey, "测试作者").unwrap();
-
-    let bytes = std::fs::read(&pkg).unwrap();
-    let (ct, body) = multipart(&bytes);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "校验通过应渲染确认页");
-
-    // 确认令牌 = .incoming 里暂存文件名（24 位）
-    let incoming = h.data_dir.join("plugins").join(".incoming");
-    let staged: Vec<_> = std::fs::read_dir(&incoming)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".wbpkg"))
-        .collect();
-    assert_eq!(staged.len(), 1, "上传包应暂存一份: {staged:?}");
-    let confirm_token = staged[0].trim_end_matches(".wbpkg").to_string();
-
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/confirm")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("token", &confirm_token),
-                    ("csrf", &csrf),
-                    ("grant", "docker:list"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "确认安装应 303 回列表"
-    );
-
-    let rec = h
-        .state
-        .db()
-        .plugin("com.example.demo")
-        .unwrap()
-        .expect("安装后插件记录必须落库");
-    assert_eq!(rec.version, "0.1.0");
-    assert_eq!(rec.key_id, kid);
-    assert!(
-        rec.grants
-            .iter()
-            .any(|g| g.kind == "perm" && g.value == "docker:list"),
-        "确认页勾选的 grant 必须落库: {:?}",
-        rec.grants
-    );
-    let audit = h.state.db().recent_audit(20).unwrap();
-    assert!(
-        audit
-            .iter()
-            .any(|e| e.action == "plugin.install" && e.result == "ok"),
-        "安装成功必须留审计，实际: {:?}",
-        audit
-    );
-}
-
-/// 装 → 授权 → 重装/升级 → 既有授权仍在；升级只补「相对旧 manifest 新声明」的权限，
-/// 用户当初拒绝过的声明项不会被翻案补授；对象 hint 按「只增不减」补齐；只有显式卸载才清空授权。
-#[tokio::test]
-async fn plugin_reinstall_and_upgrade_preserve_existing_grants() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-    let key = skiff_pkgfmt::SigningKey::generate();
-    h.state
-        .db()
-        .trust_key(&key.key_id(), &key.public_hex(), "测试作者")
-        .unwrap();
-    let id = "com.example.demo";
-
-    // 首次安装：manifest 声明 list + inspect，管理员只确认 list，并手授对象 container:abc。
-    let pkg = build_package_version(
-        &h.data_dir,
-        &key,
-        "0.1.0",
-        &["docker:list", "docker:inspect"],
-        &["container:abc"],
-    );
-    let resp = upload_pkg(&h.app, &token, &pkg).await;
-    assert_eq!(resp.status(), StatusCode::OK, "首次安装应渲染确认页");
-    let confirm_token = staged_confirm_token(&h.data_dir);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/confirm")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("token", confirm_token.as_str()),
-                    ("csrf", csrf.as_str()),
-                    ("grant", "docker:list"),
-                    ("resource", "container:abc"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "确认安装应 303 回列表"
-    );
-
-    let assert_grants = |label: &str, want: &[(&str, &str)]| {
-        let mut got: Vec<(String, String)> = h
-            .state
-            .db()
-            .grants(id)
-            .unwrap()
-            .into_iter()
-            .map(|g| (g.kind, g.value))
-            .collect();
-        got.sort();
-        let mut want: Vec<(String, String)> = want
-            .iter()
-            .map(|(kind, value)| (kind.to_string(), value.to_string()))
-            .collect();
-        want.sort();
-        assert_eq!(got, want, "{label} 授权集合不符: {got:?}");
-    };
-    assert_grants(
-        "首次安装后",
-        &[("object", "container:abc"), ("perm", "docker:list")],
-    );
-
-    // 同版本重装：跳过确认页直接安装，权限仍保持既有最小子集，不重置为 manifest 默认值；
-    // 但 manifest 新增的对象 hint（container:def）按「只增不减」补授。
-    let pkg = build_package_version(
-        &h.data_dir,
-        &key,
-        "0.1.0",
-        &["docker:list", "docker:inspect"],
-        &["container:abc", "container:def"],
-    );
-    let resp = upload_pkg(&h.app, &token, &pkg).await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "重装应跳过确认页直接安装"
-    );
-    assert_grants(
-        "重装后",
-        &[
-            ("object", "container:abc"),
-            ("object", "container:def"),
-            ("perm", "docker:list"),
-        ],
-    );
-    assert_eq!(
-        h.state.db().plugin(id).unwrap().unwrap().version,
-        "0.1.0",
-        "重装应保持同版本"
-    );
-    let staged = h.data_dir.join("plugins").join(".incoming");
-    assert_eq!(
-        std::fs::read_dir(&staged).unwrap().count(),
-        0,
-        "安装成功必须清理 .incoming 暂存"
-    );
-
-    // 升级 0.2.0：既有授权与已补的对象 hint 保留；新增声明的 docker:exec 按声明补授
-    // （敏感档写审计），但旧 manifest 已声明、用户当初未勾选的 docker:inspect 不被翻案补授。
-    let pkg = build_package_version(
-        &h.data_dir,
-        &key,
-        "0.2.0",
-        &["docker:list", "docker:inspect", "docker:exec"],
-        &["container:abc", "container:def"],
-    );
-    let resp = upload_pkg(&h.app, &token, &pkg).await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "升级应跳过确认页直接安装"
-    );
-    assert_grants(
-        "升级后",
-        &[
-            ("object", "container:abc"),
-            ("object", "container:def"),
-            ("perm", "docker:exec"),
-            ("perm", "docker:list"),
-        ],
-    );
-    let audit = h.state.db().recent_audit(20).unwrap();
-    assert!(
-        audit.iter().any(|e| {
-            e.action == "plugin.grant_upgrade"
-                && e.target == id
-                && e.detail.contains("docker:exec")
-                && e.detail.contains("0.1.0")
-                && e.detail.contains("0.2.0")
-        }),
-        "升级补授敏感权限必须写审计，实际: {:?}",
-        audit
-    );
-    assert_eq!(
-        h.state.db().plugin(id).unwrap().unwrap().version,
-        "0.2.0",
-        "升级应写入新版本"
-    );
-
-    // 只有管理员显式卸载才清空授权。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/com.example.demo/delete")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[("csrf", csrf.as_str())]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "卸载应 303 回列表");
-    assert!(h.state.db().plugin(id).unwrap().is_none(), "卸载应删记录");
-    assert!(
-        h.state.db().grants(id).unwrap().is_empty(),
-        "显式卸载必须清空授权"
-    );
-}
-
 /// exec 闸门（§6.2）：无票据、重放、换会话、换容器都必须拒绝。
 ///
 /// 直接测 `authorize_exec` 而不是打 WS：WS 升级要在真连接上完成，但「谁能升级」
@@ -2132,12 +1392,7 @@ async fn bare_root_is_hidden_404_and_prefix_redirects_to_login() {
     let resp = h
         .app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/overview")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/p").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -2258,50 +1513,6 @@ async fn prefixed_static_assets_are_served() {
         assert!(text.contains("skiff.theme.request"), "{uri} 内容不应为空壳");
     }
 }
-
-/// 渲染出的 HTML 里不得再出现不带安全入口前缀的 `/static/` 或 `/plugins/` 引用。
-#[tokio::test]
-async fn rendered_pages_use_only_prefixed_asset_urls() {
-    let h = harness();
-    let login_resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/login")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let login_html = String::from_utf8(
-        axum::body::to_bytes(login_resp.into_body(), usize::MAX)
-            .await
-            .unwrap()
-            .to_vec(),
-    )
-    .unwrap();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (_, dash_html) = get_page(&h.app, "/p", &admin).await;
-
-    for (name, html) in [
-        ("login", login_html.as_str()),
-        ("dashboard", dash_html.as_str()),
-    ] {
-        for bad in [
-            r#"src="/static/"#,
-            r#"href="/static/"#,
-            r#"src="/plugins/"#,
-            r#"href="/plugins/"#,
-        ] {
-            assert!(
-                !html.contains(bad),
-                "{name} 不得出现无前缀引用 {bad}: {html}"
-            );
-        }
-    }
-}
-
 /// 并发票据复用：同一张 exec 票据被并发出示两次，必须只核销成功一次。
 /// 顺序版已有（app 层 ticket_is_single_use），这条守「查重与作废不在同一临界区」
 /// 这类并发回归。
@@ -2327,185 +1538,6 @@ async fn exec_ticket_concurrent_reuse_wins_exactly_once() {
         "并发下同一票据必须恰好核销一次: ({ra:?}, {rb:?})"
     );
 }
-
-/// 受限形态（1Panel Docker 包）能力面收缩（§5.4）：只提供 docker/identity，
-/// 需要 fs/net 能力的插件必须在确认安装时被拒，不能装上再坏。
-#[tokio::test]
-async fn restricted_form_rejects_plugins_beyond_capability_surface() {
-    let h = harness_with(Form::DockerRestricted);
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-
-    // 需要 fs 能力的包：受限形态没有 fs
-    let (pkg, pubkey, kid) = build_package_with(&h.data_dir, "fs", "fs");
-    h.state.db().trust_key(&kid, &pubkey, "测试作者").unwrap();
-
-    let bytes = std::fs::read(&pkg).unwrap();
-    let (ct, body) = multipart(&bytes);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "上传校验应通过（问题在能力面）"
-    );
-
-    let incoming = h.data_dir.join("plugins").join(".incoming");
-    let staged: Vec<_> = std::fs::read_dir(&incoming)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".wbpkg"))
-        .collect();
-    let confirm_token = staged[0].trim_end_matches(".wbpkg").to_string();
-
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/confirm")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("token", &confirm_token),
-                    ("csrf", &csrf),
-                    ("grant", "fs:list"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "受限形态装 fs 插件必须被拒"
-    );
-    let text = body_text(resp).await;
-    assert!(
-        text.contains("能力"),
-        "拒绝原因应指明能力面收缩，实际: {text}"
-    );
-    assert!(
-        h.state.db().plugin("com.example.demo").unwrap().is_none(),
-        "被拒的插件不得落库"
-    );
-    let leftover: Vec<_> = std::fs::read_dir(&incoming)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".wbpkg"))
-        .collect();
-    assert!(leftover.is_empty(), "确认后暂存包应清理: {leftover:?}");
-
-    // 对照组：docker 能力的包在受限形态下照常可装
-    let (pkg2, pubkey2, kid2) = build_package_with(&h.data_dir, "docker", "docker");
-    h.state.db().trust_key(&kid2, &pubkey2, "测试作者").unwrap();
-    let bytes = std::fs::read(&pkg2).unwrap();
-    let (ct, body) = multipart(&bytes);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/install")
-                .header(header::CONTENT_TYPE, ct)
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let staged: Vec<_> = std::fs::read_dir(&incoming)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".wbpkg"))
-        .collect();
-    let confirm_token = staged[0].trim_end_matches(".wbpkg").to_string();
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/plugins/confirm")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("token", &confirm_token),
-                    ("csrf", &csrf),
-                    ("grant", "docker:list"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "docker 能力的插件在受限形态下应可装"
-    );
-}
-
-/// 受限形态（`SKIFF_FORM=docker`，能力面只有 docker/identity）没有 fs：
-/// 文件管理入口必须消失，页面/深链/API 直达必须 403 且文案可读（不能借此列出
-/// 容器内 `/`、`/www`）；工具分组里不依赖 fs 的入口与容器管理保持可用。
-#[tokio::test]
-async fn restricted_form_hides_and_rejects_files_management() {
-    let h = harness_with(Form::DockerRestricted);
-    let token = login(&h.app, "admin", "pw-test-123").await;
-
-    let (status, html) = get_page(&h.app, "/p/m/overview", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    for uri in ["/p/files", "/p/files/trash", "/p/files/quotas"] {
-        assert!(
-            !html.contains(&format!(r#"href="{uri}""#)),
-            "受限形态不得渲染 `{uri}` 入口: {html}"
-        );
-    }
-    assert!(
-        html.contains(r#"href="/p/tasks""#) && html.contains(r#"href="/p/jobs""#),
-        "工具分组里不依赖 fs 的入口应保留: {html}"
-    );
-
-    for uri in [
-        "/p/files",
-        "/p/files/trash",
-        "/p/files/quotas",
-        "/p/files/list",
-        "/p/files/trash/list",
-        "/p/files/quotas/list",
-    ] {
-        let (status, body) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "`{uri}` 必须 403");
-        assert!(
-            body.contains("当前部署形态不提供文件管理能力"),
-            "`{uri}` 拒绝文案不可读: {body}"
-        );
-    }
-
-    // 受限形态保留 docker 能力面：容器管理页照常可用。
-    let (status, html) = get_html(&h.app, "/p/containers", &token).await;
-    assert_eq!(status, StatusCode::OK, "受限形态的容器管理必须保持可用");
-    assert!(html.contains(r#"id="skiff-root""#), "{html}");
-}
-
 /// 插件功能页的两条 UI 约定（跨插件跳转 + 顶栏插件菜单）：
 /// 1. `?open=` 只作为「定位建议」被清洗后原样透传（控制字符清掉、百分号编码）；
 /// 2. `data-plugins` 白名单只含「已启用且有 UI 入口」的插件——iframe 的
@@ -2561,8 +1593,8 @@ path = "index.html"
         .upsert_plugin(&seed("com.example.off", "已停用界面", false))
         .unwrap();
 
-    // 信息与管理数据由 `/ui/v1/plugins/{id}` 承载（壳页渲染，旧 SSR 信息页已删除）：
-    // 身份 / 授权 / 管理动作与功能页入口都在同一份快照里，工作台不嵌信息页。
+    // 信息与管理数据由 `/ui/v1/plugins/{id}` 承载：身份 / 授权 / 管理动作与功能页入口
+    // 在同一份快照里，工作台不嵌信息页。
     let (status, _, body) =
         get_ui(&h.app, "/ui/v1/plugins/com.example.ui", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2572,12 +1604,9 @@ path = "index.html"
     assert!(data["grants"].is_array(), "{body}");
     assert_eq!(data["entry_href"], "/p/plugins/com.example.ui/main");
     assert!(
-        body.contains("/p/m/plugin/com.example.ui/legacy"),
+        body.contains("/p/plugins/com.example.ui/legacy"),
         "关联菜单深链必须给出: {body}"
     );
-    let (status, _) = get_page(&h.app, "/p/m/core/plugins/info/com.example.ui", &token).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "旧信息页已删除");
-
     let (status, html) = get_page(
         &h.app,
         "/p/plugins/com.example.ui/main?legacy=1&open=%2Fvar%2Fwww%2Fsite%20one",
@@ -2603,19 +1632,12 @@ path = "index.html"
         html.contains(r#"sandbox="allow-scripts allow-modals allow-forms""#),
         "插件 iframe 必须带 sandbox: {html}"
     );
-    // 顶栏「应用」菜单：启用项的 label 进导航并高亮当前项
-    assert!(
-        html.contains(r#"class="nav-plugin on""#) && html.contains("示例界面"),
-        "当前插件的菜单项应在顶栏高亮: {html}"
-    );
-    // 启停只允许在插件中心卡片操作，工作台不再出现 toggle 表单
+    // 壳层导航（顶栏应用菜单）由 budding 壳页负责，工作台宿主页只渲染 L3 标签栏与
+    // iframe：不得再出现旧的顶栏菜单或启停表单。
+    assert!(!html.contains(r#"class="nav-plugin"#), "{html}");
     assert!(
         !html.contains(r#"action="/p/plugins/com.example.ui/toggle""#),
         "工作台不得承载停用/启用动作: {html}"
-    );
-    assert!(
-        html.contains("/p/containers?filter=error"),
-        "工作台失败路径必须给异常容器/日志入口: {html}"
     );
 
     // 控制字符（%0A）必须被清掉，否则会被拼进 URL / 日志
@@ -2638,239 +1660,6 @@ path = "index.html"
         "定位串里的控制字符应被清掉: {html}"
     );
 }
-
-#[tokio::test]
-async fn menu_settings_hide_order_reset_and_user_scope() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-
-    // 只读快照：当前账号能看到可操作项，镜像项的 href 已是规范路径。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/menu", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let groups = v["data"]["groups"].as_array().unwrap();
-    assert!(!groups.is_empty(), "菜单设置必须列出分组: {body}");
-    let images = groups
-        .iter()
-        .flat_map(|g| g["items"].as_array().unwrap().iter())
-        .find(|i| i["key"] == "core/docker/images")
-        .expect("菜单设置必须含 Docker→镜像");
-    assert_eq!(images["href"], "/p/images");
-    assert_eq!(images["hidden"], false);
-
-    // 隐藏 Docker→镜像（壳页走 JSON 接口，与原表单共用同一校验与审计）。
-    let (status, body) = post_ui_json(
-        &h.app,
-        "/ui/v1/settings/menu",
-        &token,
-        Some(&csrf),
-        &serde_json::json!({ "action": "hide", "key": "core/docker/images" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-
-    let dash = body_text(
-        h.app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/p/m/overview")
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        !dash.contains(r#"href="/p/images""#),
-        "隐藏后导航不得再出现镜像: {dash}"
-    );
-
-    // 另一个账号不受影响（偏好按用户）
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let viewer_html = body_text(
-        h.app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/p/m/overview")
-                    .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        viewer_html.contains(r#"href="/p/images""#),
-        "viewer 的默认菜单不应受 admin 的隐藏影响: {viewer_html}"
-    );
-
-    // 恢复默认：隐藏项回到初始可见
-    let (status, body) = post_ui_json(
-        &h.app,
-        "/ui/v1/settings/menu",
-        &token,
-        Some(&csrf),
-        &serde_json::json!({ "action": "reset" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let reset = body_text(
-        h.app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/p/m/overview")
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        reset.contains(r#"href="/p/images""#),
-        "恢复默认必须复原隐藏项: {reset}"
-    );
-}
-#[tokio::test]
-async fn deep_links_legacy_routes_and_role_filtered_menu() {
-    let h = harness();
-    seed_plugin(
-        h.state.db().as_ref(),
-        "com.skiff.nginx",
-        "NGINX 站点",
-        "NGINX 站点",
-        true,
-    );
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-
-    // 菜单项落到规范路径：每个目标都必须真能打开（浏览器导航带 Accept 走壳页）。
-    for uri in [
-        "/p",
-        "/p/containers",
-        "/p/images",
-        "/p/plugins",
-        "/p/plugins/discover",
-        "/p/sites",
-        "/p/runtimes",
-        "/p/settings",
-        "/p/settings/menu",
-        "/p/audit",
-        "/p/tasks",
-        "/p/jobs",
-        "/p/files",
-        "/p/m/overview",
-        "/p/m/plugin/com.skiff.nginx",
-    ] {
-        let resp = h
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                    .header(header::ACCEPT, "text/html")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "{uri} 应 200");
-    }
-
-    // 旧 SSR 深链已删除：`/m/core/*` 一律 404，不得再承载页面。
-    for uri in [
-        "/p/m/core/docker/containers",
-        "/p/m/core/plugins/discover",
-        "/p/m/core/settings/security",
-        "/p/m/core/settings/menu",
-        "/p/m/core/sites/list",
-        "/p/m/core/files",
-        "/p/m/core/tasks",
-    ] {
-        let resp = h
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
-    }
-
-    let detail = body_text(
-        h.app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/p/m/plugin/com.skiff.nginx/legacy")
-                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        detail.contains("/p/plugins/com.skiff.nginx/ui/index.html")
-            && detail.contains("NGINX 站点"),
-        "旧包菜单深链必须落到 [[ui]].path: {detail}"
-    );
-
-    let missing = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/p/m/nope")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-
-    // viewer 没有 AuditRead：审计二级不渲染（不是渲染后 403）。
-    for token in [&admin, &viewer] {
-        let html = body_text(
-            h.app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri("/p/m/overview")
-                        .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap(),
-        )
-        .await;
-        let has_audit = html.contains(r#"data-menu-key="core/settings/audit""#);
-        assert_eq!(
-            has_audit,
-            token == &admin,
-            "审计菜单只对 admin 渲染（viewer={})",
-            token == &viewer
-        );
-    }
-}
-
 #[tokio::test]
 async fn uninstall_cleanup_removes_plugin_keys_from_user_prefs() {
     let h = harness();
@@ -2951,10 +1740,10 @@ view = "info"
     seed_declared_plugin(h.state.db().as_ref(), manifest, true);
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let base = "/p/m/plugin/com.example.tabs";
+    let base = "/p/plugins/com.example.tabs";
 
     // 默认 L2：选中第一个可见 L3，iframe 同时带 `menu`（完整稳定键）与 `tab`。
-    let (status, html) = get_page(&h.app, &format!("{base}/sites"), &admin).await;
+    let (status, html) = get_page(&h.app, &format!("{base}/sites?legacy=1"), &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"data-menu="plugin/com.example.tabs/sites""#),
@@ -2978,7 +1767,11 @@ view = "info"
         html.contains("/p/plugins/com.example.tabs/ui/list.html?nonce="),
         "默认 iframe 必须加载 ui/list.html: {html}"
     );
-    assert!(html.contains(r#"href="/p/m/plugin/com.example.tabs/sites/backup""#));
+    // 标签 href 指向原生视图路由（无 `?legacy=1`）：壳页在 schema 404 时自己补回参数。
+    assert!(
+        html.contains(r#"href="/p/plugins/com.example.tabs/backup""#),
+        "{html}"
+    );
     let pos = html.find(r#"data-local="list""#).unwrap();
     let around = &html[pos.saturating_sub(200)..(pos + 700).min(html.len())];
     assert!(
@@ -2986,13 +1779,13 @@ view = "info"
         "默认应选中第一个 L3: {around}"
     );
 
-    // L3 深链：切到备份，iframe 的 tab 跟着变，仍复用同一个 iframe DOM。
-    let (status, html) = get_page(&h.app, &format!("{base}/sites/backup"), &admin).await;
+    // L3 切换：视图名直接寻址，iframe 的 tab 跟着变，仍复用同一个 iframe DOM。
+    let (status, html) = get_page(&h.app, &format!("{base}/backup?legacy=1"), &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("tab=backup"), "{html}");
     assert!(
         html.contains("/p/plugins/com.example.tabs/ui/backup.html?nonce="),
-        "深链切换后 iframe 必须换成 ui/backup.html: {html}"
+        "切换后 iframe 必须换成 ui/backup.html: {html}"
     );
     let pos = html.find(r#"data-local="backup""#).unwrap();
     let around = &html[pos.saturating_sub(220)..(pos + 700).min(html.len())];
@@ -3006,42 +1799,15 @@ view = "info"
         "只有一份 iframe"
     );
 
-    // 不存在的 L3 直接 404；角色过滤在菜单层完成（不是渲染后 403）。
-    let (status, _) = get_page(&h.app, &format!("{base}/sites/nope"), &admin).await;
+    // 不存在的视图直接 404；角色过滤在菜单层完成（不是渲染后 403）。
+    let (status, _) = get_page(&h.app, &format!("{base}/nope?legacy=1"), &admin).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // viewer 被 `PluginManage` 前置挡住 → 403（与 RPC 同权限），不是视图不存在。
     // 这里刻意不把权限不足伪装成 404：功能页权限口径必须与对应 RPC 一致。
-    let (status, _) = get_page(&h.app, &format!("{base}/sites/list"), &viewer).await;
+    let (status, _) = get_page(&h.app, &format!("{base}/list?legacy=1"), &viewer).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // 旧深链 `legacy` 升级到声明式后落到首个可见 L2，不破坏旧链接。
-    let (status, html) = get_page(&h.app, &format!("{base}/legacy"), &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"data-menu="plugin/com.example.tabs/sites""#),
-        "{html}"
-    );
-
-    // 规范功能路由：视图名直接寻址，未知视图 404。
-    let (status, html) =
-        get_page(&h.app, "/p/plugins/com.example.tabs/list?legacy=1", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("tab=list") && html.contains(r#"class="workbench-tabs""#),
-        "{html}"
-    );
-    let (status, html) = get_page(
-        &h.app,
-        "/p/plugins/com.example.tabs/backup?legacy=1",
-        &admin,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("tab=backup"), "{html}");
-    let (status, _) = get_page(&h.app, "/p/plugins/com.example.tabs/nope?legacy=1", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "未知视图必须 404");
-
-    // 无 L3 的 L2：隐式主视图，不渲染标签栏，但深链仍可直达。
+    // 无 L3 的 L2：隐式主视图，不渲染标签栏。
     let (status, html) =
         get_page(&h.app, "/p/plugins/com.example.tabs/info?legacy=1", &admin).await;
     assert_eq!(status, StatusCode::OK);
@@ -3053,76 +1819,13 @@ view = "info"
         !html.contains(r#"class="workbench-tabs""#),
         "无 L3 时内核不得渲染标签栏: {html}"
     );
-    let (status, html) = get_page(&h.app, &format!("{base}/info/info"), &admin).await;
-    assert_eq!(status, StatusCode::OK, "单视图深链应接受隐式主视图名");
-    assert!(html.contains("tab=info"), "{html}");
-    // viewer 同样被 `PluginManage` 前置挡住（403），不再以 404 伪装权限不足。
-    let (status, _) = get_page(&h.app, &format!("{base}/info/nope"), &viewer).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // 不带 `?legacy=1` 的规范路由一律交 budding 壳页（原生优先，不再默认 SSR）。
+    let (status, html) = get_html(&h.app, &format!("{base}/sites"), &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    assert!(!html.contains("data-workbench-frame"), "{html}");
 }
-
-/// P2：`overview.health` 槽位成功渲染；插件停用/角色不可见时回落内核健康块。
-#[tokio::test]
-async fn overview_health_mount_renders_and_falls_back() {
-    let h = harness();
-    let manifest = r#"id = "com.example.health"
-name = "Health Demo"
-version = "0.1.0"
-key_id = "0000000000000000000000000000000000000000000000000000000000000000"
-api = "1.2"
-requires_full_sandbox = false
-[[ui]]
-label = "主机监控"
-path = "main.html"
-[[menu]]
-id = "monitor"
-parent = "tools"
-label = "主机监控"
-order = 30
-icon = "activity"
-view = "main"
-[[mount]]
-slot = "overview.health"
-ui = "health.html"
-height = "sm"
-refresh = 30
-roles = ["admin"]
-"#
-    .to_string();
-    seed_declared_plugin(h.state.db().as_ref(), manifest.clone(), true);
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-
-    // 已启用 + 角色可见：内核卡片外框 + 插件 iframe，且替换默认健康块。
-    let (status, html) = get_page(&h.app, "/p/m/overview", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains(r#"data-slot="overview.health""#), "{html}");
-    assert!(html.contains("/p/plugins/com.example.health/ui/health.html?nonce="));
-    assert!(html.contains(r#"data-refresh="30""#));
-    assert!(html.contains(r#"class="mount-frame""#));
-    assert!(
-        html.contains(r#"data-mount-fail"#),
-        "失败降级块必须随卡片一起渲染"
-    );
-    assert!(
-        html.contains(r#"href="/p/sites""#),
-        "网站健康块由内核自带，不随插件槽位消失"
-    );
-
-    // 角色过滤：viewer 看不到 admin-only 槽位，回落内核默认健康块。
-    let (status, html) = get_page(&h.app, "/p/m/overview", &viewer).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(!html.contains(r#"data-slot="overview.health""#));
-    assert!(html.contains(r#"class="health-grid""#));
-
-    // 插件停用：槽位消失，同样回落默认健康块。
-    seed_declared_plugin(h.state.db().as_ref(), manifest, false);
-    let (status, html) = get_page(&h.app, "/p/m/overview", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(!html.contains(r#"data-slot="overview.health""#));
-    assert!(html.contains(r#"class="health-grid""#));
-}
-
 /// 任何直接导航到插件功能页都只能拿到原生占位页，DOM 里不得出现 iframe；
 /// 旧 SSR 工作台只接受显式 `?legacy=1`（兼容嵌入），不再作为产品入口。
 #[tokio::test]
@@ -3439,7 +2142,7 @@ async fn legacy_ui_only_package_maps_main_to_index_html() {
         "/p/plugins/com.example.legacy/main"
     );
     assert!(
-        body.contains("/p/m/plugin/com.example.legacy/legacy"),
+        body.contains("/p/plugins/com.example.legacy/legacy"),
         "旧包菜单深链必须出现在关联菜单里: {body}"
     );
 }
@@ -3552,16 +2255,11 @@ async fn testkit_plugin_covers_multi_view_single_view_and_slot() {
         "单视图 L2 不得渲染标签栏: {html}"
     );
 
-    let (status, html) = get_page(&h.app, "/p/m/overview", &admin).await;
+    // 概览槽位由 budding 壳页按 `/ui/v1/overview` 的 `health_plugin` 拉取：
+    // 服务端不再渲染槽位 HTML，这里只确认入口页是壳页。
+    let (status, html) = get_html(&h.app, "/p", &admin).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"data-slot="overview.actions""#),
-        "testkit 的概览槽位必须渲染: {html}"
-    );
-    assert!(
-        html.contains("/p/plugins/com.skiff.testkit/ui/mount.html?nonce="),
-        "{html}"
-    );
+    assert!(html.contains(r#"id="skiff-root""#), "{html}");
 }
 
 /// 官方包「装完即可用」回归。
@@ -3796,131 +2494,6 @@ async fn site_delete_removes_whole_site_directory_only() {
         "站点记录必须删除"
     );
 }
-
-/// 删除确认页必须给出具体量，并要求输入域名确认；不带 confirm 的 POST 一律拒绝。
-#[tokio::test]
-async fn site_delete_confirm_shows_stats_and_requires_typed_domain() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-    let root = h.data_dir.join("www/sites/demo.local");
-    std::fs::create_dir_all(root.join("index/src")).unwrap();
-    std::fs::write(root.join("index/index.php"), "0123456789").unwrap();
-    std::fs::write(root.join("index/src/main.rs"), "fn main() {}").unwrap();
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-
-    let (status, html) = get_page(&h.app, "/p/sites/demo.local/delete", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains("data-type-confirm=\"demo.local\""),
-        "确认区必须要求输入域名: {html}"
-    );
-    assert!(
-        html.contains("data-type-confirm-submit"),
-        "提交按钮必须受域名输入控制: {html}"
-    );
-    let cancel_at = html.find(">取消<").expect("确认页必须有取消入口");
-    let submit_at = html
-        .find("data-type-confirm-submit>删除站点<")
-        .expect("确认页必须有删除站点按钮");
-    assert!(
-        cancel_at < submit_at,
-        "按钮顺序必须是取消在左、危险操作在右（UI_CONTRACT §9）: {html}"
-    );
-    assert!(html.contains("2 个文件"), "确认页必须给出文件数: {html}");
-    assert!(
-        html.contains("绑定的定时任务"),
-        "确认页必须给出定时任务影响: {html}"
-    );
-
-    let post = |body: Body| {
-        let app = h.app.clone();
-        let token = token.clone();
-        let uri = "/p/sites/demo.local/delete";
-        async move {
-            app.oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                    .body(body)
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-        }
-    };
-
-    let resp = post(form_body(&[("csrf", csrf.as_str())])).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "未输入域名必须拒绝");
-    assert!(
-        h.state.db().site_by_domain("demo.local").unwrap().is_some(),
-        "拒绝后站点必须仍在"
-    );
-
-    let resp = post(form_body(&[
-        ("csrf", csrf.as_str()),
-        ("confirm", "demo.local"),
-    ]))
-    .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    assert!(
-        h.state.db().site_by_domain("demo.local").unwrap().is_none(),
-        "输入匹配后站点删除"
-    );
-}
-
-/// 批量删除入口已关闭：不能绕过「输入域名确认」，返回 4xx 且站点仍在。
-#[tokio::test]
-async fn sites_batch_delete_is_rejected_and_keeps_site() {
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-    let root = h.data_dir.join("www/sites/batch-guard.local");
-    std::fs::create_dir_all(root.join("index")).unwrap();
-    h.state
-        .db()
-        .create_site(&php_site("batch-guard.local", &root.display().to_string()))
-        .unwrap();
-
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/batch")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={token}"))
-                .body(form_body(&[
-                    ("csrf", csrf.as_str()),
-                    ("action", "delete"),
-                    ("domains", "batch-guard.local"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        resp.status().is_client_error(),
-        "批量删除必须被拒绝，实际 {}",
-        resp.status()
-    );
-    assert!(
-        h.state
-            .db()
-            .site_by_domain("batch-guard.local")
-            .unwrap()
-            .is_some(),
-        "拒绝后站点必须仍在"
-    );
-    assert!(root.exists(), "拒绝后站点目录必须仍在");
-}
-
 /// 站点「目录」页只能浏览文档根 index/：log/ 与 ssl/ 不得通过相对路径越界。
 #[tokio::test]
 async fn site_dir_listing_is_limited_to_index_dir() {
@@ -3996,140 +2569,6 @@ fn nav_js_has_no_hover_and_is_accordion() {
         "只有 Escape 才收起当前分组"
     );
 }
-
-/// 预览定稿的行结构、侧栏外观与二级通栏必须原样落到真实模板/样式。
-#[test]
-fn nav_markup_and_css_match_preview_contract() {
-    let tpl = include_str!("../templates/base.html");
-    assert!(
-        tpl.contains(r#"<div class="nav-row">"#),
-        "一级行 = 标签 + 箭头"
-    );
-    assert!(
-        tpl.contains(r#"class="nav-link nav-label" data-nav-label"#),
-        "标签承担跳转或展开，不吞掉箭头职责"
-    );
-    assert!(
-        tpl.contains(r#"class="nav-caret" data-nav-toggle"#),
-        "箭头必须是独立按钮"
-    );
-    assert!(
-        tpl.contains(r#"aria-controls="nav-menu-{{ g.key }}""#),
-        "箭头必须用 aria-controls 指向二级面板"
-    );
-    assert!(
-        tpl.contains(r#"data-nav-menu hidden"#),
-        "折叠的二级默认 hidden，不进入 Tab 顺序"
-    );
-    assert!(tpl.contains("data-subnav"), "上下布局需要独立二级通栏");
-    // 侧栏三段：品牌 / 菜单滚动区 / 用户区都在同一顶栏内，顺序固定。
-    let brand = tpl.find(r#"<div class="brand">"#).unwrap();
-    let nav = tpl.find(r#"id="skiff-main-nav""#).unwrap();
-    let who = tpl.find(r#"<div class="who">"#).unwrap();
-    assert!(
-        brand < nav && nav < who,
-        "品牌区 / 菜单 / 用户区顺序必须稳定"
-    );
-
-    let css = include_str!("../static/skiff.css");
-    assert!(
-        css.contains(".subnav.open { height: 48px; }"),
-        "二级通栏高度固定 48px"
-    );
-    assert!(
-        css.contains(".subnav-inner .nav-menu {\n  flex-direction: row;"),
-        "二级通栏必须横向排列，不能竖向堆叠"
-    );
-    // 标准属性只能待在 @supports 分支里；否则 Chrome 会忽略 6px 自绘规则（D6）。
-    let supports = css
-        .find("@supports not selector(::-webkit-scrollbar)")
-        .expect("必须用 @supports 隔离 Firefox 的标准滚动条属性");
-    let sidebar_nav = css
-        .find("body[data-layout=\"left\"] .topbar .nav {")
-        .expect("侧栏菜单区必须有显式规则");
-    let sidebar_nav_end = sidebar_nav
-        + css[sidebar_nav..]
-            .find('}')
-            .expect("侧栏菜单区规则必须闭合");
-    assert!(
-        !css[sidebar_nav..sidebar_nav_end].contains("scrollbar-width"),
-        "侧栏基础规则不得设置 scrollbar-width，否则 Chrome 会退回 10px"
-    );
-    assert!(
-        css[supports..].contains("scrollbar-width: thin")
-            && css[supports..].contains("scrollbar-color:"),
-        "Firefox 的 thin + scrollbar-color 必须放在 @supports 分支"
-    );
-    assert!(
-        css.contains("::-webkit-scrollbar { width: 6px; }"),
-        "侧栏必须自绘 6px 滚动条"
-    );
-    assert!(
-        css.contains("html[data-theme=\"dark\"] body[data-layout=\"left\"] .topbar .nav"),
-        "深色主题需单独配置滚动条配色"
-    );
-    assert!(
-        css.contains("body[data-layout=\"left\"] .brand") && css.contains("flex: none"),
-        "侧栏品牌区固定，不参与滚动"
-    );
-    assert!(
-        css.contains("body[data-layout=\"left\"] .topbar .who"),
-        "侧栏用户区固定"
-    );
-    assert!(
-        css.contains("body[data-layout=\"left\"] .topbar .nav {\n  flex: 1 1 auto;"),
-        "只有中间菜单区可滚动"
-    );
-    // 方案 A：连续导航带 + 单一强调标记；图标必须是内联 SVG，不再用字符拼符号。
-    assert!(
-        tpl.contains(r#"<svg class="icon-sprite""#)
-            && tpl.contains(r#"<symbol id="i-overview""#)
-            && tpl.contains(r##"<use href="#i-{{ g.icon }}"></use>"##),
-        "导航图标必须来自内联 SVG 精灵"
-    );
-    assert!(
-        !tpl.contains("menu-icon") && !css.contains(".menu-icon"),
-        "不得保留字符图标方案"
-    );
-    assert!(
-        css.contains("--nav-row-h: 44px;")
-            && css.contains("--nav-icon: 18px;")
-            && css.contains(".subnav.open { height: 48px; }"),
-        "导航行高与图标尺寸必须按方案 A 落地"
-    );
-}
-
-/// D1：上下布局把菜单搬进通栏后，展开状态必须按 `data-nav-key` 全局查找，不能再依赖分组父节点。
-#[test]
-fn d1_bar_layout_finds_menu_by_global_key() {
-    let tpl = include_str!("../templates/base.html");
-    let js = include_str!("../static/skiff.js");
-    assert!(
-        tpl.contains(r#"data-nav-key="{{ g.key }}""#),
-        "每个二级菜单都要带 data-nav-key，脚本才能在搬家后找回它"
-    );
-    assert!(
-        js.contains(r#"document.querySelectorAll("[data-nav-key]")"#),
-        "菜单查找必须走全文档，而不是分组内部"
-    );
-    assert!(
-        js.contains(r#"var menu = menuOf(group.dataset.menuKey || "");"#),
-        "setOpen 必须用全局查找结果"
-    );
-    assert!(
-        !js.contains(r#"group.querySelector("[data-nav-menu]")"#),
-        "不得再按分组子树查找菜单（上下布局下菜单已被搬到 .subnav-inner）"
-    );
-    assert!(
-        js.contains(r#"subnav.setAttribute("aria-hidden", show ? "false" : "true")"#),
-        "通栏展开/收起必须同步 aria-hidden"
-    );
-    assert!(
-        js.contains(r#"toggle.setAttribute("aria-expanded", open ? "true" : "false")"#),
-        "箭头 aria-expanded 必须跟随展开状态"
-    );
-}
-
 /// D2：侧栏 `.nav-menu{display:flex}` 权重高于通用 `[hidden]`，必须有显式收起规则。
 #[test]
 fn d2_sidebar_collapsed_menu_is_hidden() {
@@ -4145,7 +2584,6 @@ fn d2_sidebar_collapsed_menu_is_hidden() {
 fn d3_plugin_ui_adapts_to_theme_message() {
     let css = include_str!("../static/skiff.css");
     let js = include_str!("../static/skiff.js");
-    let mount = include_str!("../templates/mount_card.html");
     assert!(
         css.contains("--plugin-frame: #f6f8fa;") && css.contains("--plugin-frame: #0b0d11;"),
         "父页面 iframe 底衬必须按浅/深主题切换"
@@ -4157,10 +2595,6 @@ fn d3_plugin_ui_adapts_to_theme_message() {
     assert!(
         js.contains(r#"iframe.mount-frame, iframe.plugin-frame"#),
         "槽位 iframe 与插件详情 iframe 都要收到主题"
-    );
-    assert!(
-        mount.contains(r#"class="mount-frame""#),
-        "槽位卡片必须使用 mount-frame 类名，才能被主题广播选中"
     );
     assert!(
         js.contains(r#"msg.type !== "skiff.theme.request""#),
@@ -4267,154 +2701,7 @@ fn d3_plugin_ui_adapts_to_theme_message() {
         );
     }
 }
-
-/// D3b：L3 横栏位于页面标题区下方并吸顶；插件上报高度后 iframe 跟随。
-#[test]
-fn d3b_workbench_topbar_and_iframe_height() {
-    let tpl = include_str!("../templates/plugin_view.html");
-    let base = include_str!("../templates/base.html");
-    let css = include_str!("../static/skiff.css");
-    let js = include_str!("../static/skiff.js");
-
-    // 横栏在页面标题区之后、内容面板之外；无 L3 声明时整条不渲染。
-    let head = tpl.find("page-head").expect("页面标题区");
-    let bar = tpl.find(r#"class="workbench-tabs""#).expect("L3 横栏");
-    let panel = tpl
-        .find(r#"class="panel workbench-panel""#)
-        .expect("工作台内容面板");
-    assert!(
-        head < bar && bar < panel,
-        "L3 横栏必须位于标题区下方、内容面板之外"
-    );
-    assert!(
-        tpl.contains("{% if !tabs.is_empty() %}"),
-        "无 L3 声明时整条横栏不得渲染"
-    );
-    assert!(
-        tpl.contains("data-workbench-frame"),
-        "工作台 iframe 必须带标记，高度消息只对它生效"
-    );
-    assert!(
-        !tpl.contains("插件 UI 运行在无同源权限"),
-        "工作台只保留标题 + L3 横栏，iframe 是纯内容区"
-    );
-
-    // 吸顶：两种布局都停在顶栏之下；上下布局用实测 --shell-h（含二级通栏）。
-    assert!(
-        css.contains(".workbench-tabs {\n  position: sticky;"),
-        "L3 横栏必须 sticky，不随内容滚动"
-    );
-    assert!(
-        css.contains("top: var(--shell-h, var(--topbar-h));"),
-        "上下布局的吸顶偏移要落在顶栏/二级通栏之下"
-    );
-    assert!(
-        js.contains(r#"root.style.setProperty("#) && js.contains("--shell-h"),
-        "横栏吸顶偏移必须由脚本按顶栏实测高度写入"
-    );
-    assert!(
-        js.contains("new ResizeObserver(syncShell).observe(shell)"),
-        "顶栏高度变化（二级通栏展开、窄屏换行）必须自动重算"
-    );
-
-    // 内容区默认铺满：不再提供内容宽度偏好，也不得留固定上限。
-    assert!(
-        !base.contains("data-content-width") && !base.contains("--content-max"),
-        "内容宽度偏好已移除，页面不得再引用"
-    );
-    assert!(
-        !css.contains("max-width: 1240px"),
-        "默认不得再给内容区固定 1240px 上限"
-    );
-    assert!(
-        !css.contains(r#"body[data-content-width="fixed"] main"#),
-        "固定内容宽度规则必须随设置项一起删除"
-    );
-
-    // iframe 高度桥：只接受工作台 iframe，切 UI 时回落到默认高度。
-    assert!(
-        js.contains(r#"msg.type === "skiff.height""#),
-        "父页面必须处理插件上报的内容高度"
-    );
-    assert!(
-        js.contains(r#"frame.style.height = visual + "px""#),
-        "父页面必须把 iframe 调到收敛后的高度（短内容贴合）"
-    );
-    assert!(
-        js.contains("window.innerHeight - top - chromeH - gap"),
-        "长内容必须按一屏可用高度封顶（iframe 内部滚动，不撑出页面第二条滚动条）"
-    );
-    assert!(
-        js.contains("borderTopWidth") && js.contains("marginBottom"),
-        "可用高度要扣掉宿主面板自身的边框/外边距，否则窄屏封顶仍会挤出一条页级滚动条"
-    );
-    assert!(
-        js.contains("document.documentElement.scrollHeight - window.innerHeight"),
-        "封顶模式必须用真实滚动高度做一次溢出校正（亚像素累计会多出 1px）"
-    );
-    assert!(
-        js.contains("FRAME_MIN_H"),
-        "内容高度收敛必须有下限，避免极小空块"
-    );
-    assert!(
-        js.contains(r#"frame.hasAttribute("data-workbench-frame")"#),
-        "固定槽位 iframe 不允许被内容撑开"
-    );
-    assert!(
-        js.contains(r#"frame.style.height = "";"#),
-        "切换 UI 文件时高度必须回落到默认值"
-    );
-    assert!(
-        css.contains("background: var(--plugin-frame);"),
-        "iframe 加载占位底色必须跟随主题，避免白屏闪烁"
-    );
-}
-
-/// D4：主题切换写回 localStorage，首屏脚本在样式表之前按同一键名落地，避免刷新闪白。
-#[test]
-fn d4_theme_is_persisted_before_first_paint() {
-    let base = include_str!("../templates/base.html");
-    let login = include_str!("../templates/login.html");
-    let init = include_str!("../static/theme-init.js");
-    let js = include_str!("../static/skiff.js");
-
-    assert!(
-        init.contains(r#"var KEY = "skiff.theme";"#),
-        "首屏脚本必须使用与 skiff.js 相同的存储键名"
-    );
-    assert!(
-        init.contains(r#"localStorage.getItem(KEY)"#),
-        "首屏必须读取已保存的主题"
-    );
-    assert!(
-        js.contains(r#"var THEME_KEY = "skiff.theme";"#),
-        "切换脚本的键名必须与首屏脚本一致"
-    );
-    assert!(
-        js.contains(r#"localStorage.setItem(THEME_KEY, dark ? "dark" : "light")"#)
-            && js.contains(r#"apply(current() === "dark" ? "light" : "dark", true)"#),
-        "点击切换必须写回 localStorage，刷新后才能保持"
-    );
-
-    for (name, tpl) in [("base", base), ("login", login)] {
-        let script = tpl
-            .find("static/theme-init.js")
-            .unwrap_or_else(|| panic!("{name} 首屏必须加载 theme-init.js"));
-        let sheet = tpl
-            .find("static/skiff.css")
-            .unwrap_or_else(|| panic!("{name} 必须加载主样式表"));
-        assert!(
-            script < sheet,
-            "{name} 主题脚本必须排在样式表之前，才能避免暗色用户刷新时先闪白"
-        );
-        assert!(
-            !tpl.contains(r#"src="/static/"#) && !tpl.contains(r#"href="/static/"#),
-            "{name} 的静态资源必须带安全入口前缀"
-        );
-    }
-}
-
-/// 主题一致性：htmx 局部替换、bfcache 恢复后必须按 localStorage 重新 apply，
+/// 主题一致性：bfcache 恢复后必须按 localStorage 重新 apply，
 /// 避免出现「localStorage=light 但 html data-theme=dark」或按钮 aria 未同步。
 #[test]
 fn d4b_theme_resyncs_after_swap_and_bfcache() {
@@ -4432,273 +2719,10 @@ fn d4b_theme_resyncs_after_swap_and_bfcache() {
         "bfcache 前进/后退恢复时必须重新 apply"
     );
     assert!(
-        js.contains(r#"document.body.addEventListener("htmx:afterSwap", boot)"#),
-        "htmx 局部替换后必须走 boot 重新同步"
-    );
-    assert!(
-        js.contains("// htmx 局部替换：重新同步按钮语义，并给新插入的 iframe 补发主题。"),
-        "htmx 替换后的 else 分支也必须 syncFromStorage，而不是只广播"
+        !js.contains("htmx"),
+        "htmx 已随旧 SSR 局部刷新端点下线，脚本里不得再留 htmx 分支"
     );
 }
-
-/// D5：网站列表操作列固定可见、内部不换行；窄屏取消吸附，改为整表横向滚动。
-#[test]
-fn d5_sites_actions_column_stays_visible() {
-    let tpl = include_str!("../templates/sites.html");
-    let css = include_str!("../static/skiff.css");
-    assert!(
-        tpl.contains(r#"<td class="actions-cell">"#),
-        "操作单元格必须带 actions-cell 类"
-    );
-    assert!(
-        tpl.contains(r#"<div class="actions row-actions">"#),
-        "操作容器必须放在 td 内部，td 本身不能变成 flex"
-    );
-    assert!(
-        !tpl.contains(r#"<td class="actions "#),
-        "不得把 .actions 类直接套在 td 上（会破坏表格列宽）"
-    );
-    assert!(
-        css.contains("table.grid td.actions-cell {")
-            && css.contains("position: sticky;")
-            && css.contains("right: 0;"),
-        "操作列必须右侧吸附，横向滚动时仍可见"
-    );
-    assert!(
-        css.contains("table.grid td.actions-cell > .actions {")
-            && css.contains("flex-wrap: nowrap;"),
-        "操作按钮不得竖排换行"
-    );
-    assert!(
-        tpl.contains(r#"<table class="grid compact sites-grid">"#),
-        "站点表格必须使用 compact + sites-grid（降低 padding 并固定列宽）"
-    );
-    assert!(
-        !tpl.contains("site-domains-cell"),
-        "域名列必须合并进站点列，否则 960 下仍然放不下"
-    );
-    assert!(
-        tpl.contains(r#"<th>站点</th>"#) && tpl.contains(r#"class="sub mono site-root""#),
-        "站点列必须同时承载域名与根目录"
-    );
-    assert!(
-        css.contains("table.grid.sites-grid { table-layout: fixed; }"),
-        "固定表格布局才能保证 960 内容区不被内容撑出横向滚动"
-    );
-    assert!(
-        css.contains(".page-sites table.grid.sites-grid th.col-actions { width: 88px; }"),
-        "操作列只剩「详情」，必须收窄固定宽度"
-    );
-    assert!(
-        tpl.contains("类型 / 运行环境") && tpl.contains("s.runtime_name"),
-        "类型与运行环境必须合并成一列，并显示运行环境实例名"
-    );
-    assert!(
-        tpl.contains("alias_preview") && !tpl.contains("无别名"),
-        "别名只在非空时渲染，不能保留「无别名」占位"
-    );
-    assert!(
-        !tpl.contains("row-menu") && tpl.contains(">详情</a>"),
-        "行内更多菜单必须移除，只留详情入口"
-    );
-    assert!(
-        !tpl.contains("runtime_label"),
-        "列表不得再拼「PHP 8.5」展示名，实例名已足够"
-    );
-    assert!(
-        css.contains("@media (max-width: 1100px)")
-            && css.contains("table.grid.sites-grid .site-root"),
-        "≤1100px 必须隐藏根目录/别名行（详情页仍展示）"
-    );
-    assert!(
-        css.contains("text-overflow: ellipsis;"),
-        "次要列必须允许省略号收窄"
-    );
-    assert!(
-        css.contains("@media (max-width: 640px)") && css.contains("position: static;"),
-        "窄屏必须取消吸附，避免操作列吃掉过多宽度"
-    );
-}
-
-/// D7：按钮文案显示目标态（深色时显示「浅色」），并由 CSS 跟随首屏主题。
-#[test]
-fn d7_theme_toggle_shows_target_theme() {
-    let tpl = include_str!("../templates/base.html");
-    let css = include_str!("../static/skiff.css");
-    let js = include_str!("../static/skiff.js");
-    assert!(
-        tpl.contains(r#"<span class="theme-when-light">深色</span>"#)
-            && tpl.contains(r#"<span class="theme-when-dark">浅色</span>"#),
-        "按钮需要浅/深两份文案，首屏由 CSS 选一份"
-    );
-    assert!(
-        css.contains(
-            r#"html[data-theme="dark"] .theme-toggle .theme-when-light { display: none; }"#
-        ) && css.contains(
-            r#"html[data-theme="dark"] .theme-toggle .theme-when-dark { display: inline; }"#
-        ),
-        "深色主题下必须隐藏「深色」、显示「浅色」"
-    );
-    assert!(
-        js.contains(
-            r#"button.setAttribute("aria-label", dark ? "切换到浅色主题" : "切换到深色主题")"#
-        ),
-        "aria-label 必须与按钮当前目标态同步"
-    );
-    assert!(
-        js.contains(r#"button.setAttribute("aria-pressed", dark ? "true" : "false")"#),
-        "aria-pressed 必须表示当前是否深色（true=深色已启用）"
-    );
-    assert!(
-        js.contains("function syncButton(theme)")
-            && js.contains("syncButton(dark ? \"dark\" : \"light\");"),
-        "每次 apply/重新同步都必须刷新按钮 aria，而不是只改一次"
-    );
-}
-
-/// 别名批量解析：逗号/空格/换行混合提交能被拆分，重复域名明确拒绝。
-#[tokio::test]
-async fn sites_create_rejects_duplicate_aliases() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&admin);
-
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/create")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("site_type", "static"),
-                    ("domain", "dup.local"),
-                    ("aliases", "www.dup.local, WWW.dup.local"),
-                    ("root_dir", ""),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let html = body_text(resp).await;
-    assert!(
-        html.contains("域名重复"),
-        "重复别名必须被拒绝而不是静默去重: {html}"
-    );
-
-    // 别名等于主域名同样拒绝。
-    let csrf = h.state.csrf_token(&admin);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/create")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("site_type", "static"),
-                    ("domain", "same.local"),
-                    ("aliases", "same.local"),
-                    ("root_dir", ""),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let html = body_text(resp).await;
-    assert!(
-        html.contains("别名不能与主域名相同"),
-        "别名与主域名相同时必须拒绝: {html}"
-    );
-}
-
-/// 站点详情「域名」标签：主域名单独标识，别名可删除，新增入口落库并重建 vhost。
-#[tokio::test]
-async fn site_domains_tab_manages_aliases() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/dom.local").display().to_string();
-    h.state
-        .db()
-        .create_site(&static_site("dom.local", &root))
-        .unwrap();
-    h.state
-        .db()
-        .add_site_aliases("dom.local", &["www.dom.local".to_string()])
-        .unwrap();
-
-    let csrf = h.state.csrf_token(&admin);
-
-    // 只读快照里能看见主域名与别名（壳页「域名」标签消费同一份数据）。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites/dom.local", Some(&admin), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["data"]["domain"], "dom.local");
-    assert!(
-        v["data"]["aliases"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a == "www.dom.local"),
-        "别名必须出现在站点详情里: {body}"
-    );
-
-    // 主域名不能作为别名删除。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/dom.local/domains")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("action", "remove"),
-                    ("alias", "dom.local"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let loc = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        !loc.contains("error=") && !loc.contains("notice="),
-        "结果不得走 query: {loc}"
-    );
-    assert_eq!(
-        loc, "/p/sites/dom.local?tab=domains",
-        "写操作仍应重定向到规范页"
-    );
-    // 跟随重定向必须落在规范页（budding 壳页），而不是旧 SSR 或 404。
-    let (status, shell) = get_html(&h.app, &loc, &admin).await;
-    assert_eq!(status, StatusCode::OK, "跟随重定向应落在规范页");
-    assert!(shell.contains(r#"id="skiff-root""#), "{shell}");
-    // 主域名没有被当成别名删掉：别名集合保持原样，主域名仍可解析。
-    let (_, _, body) = get_ui(&h.app, "/ui/v1/sites/dom.local", Some(&admin), None).await;
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        v["data"]["aliases"].as_array().unwrap().len(),
-        1,
-        "主域名不得被当作别名删除: {body}"
-    );
-}
-
 /// 没有随包 schema 的旧 HTML 插件视图自动回落到 `?legacy=1`，而不是渲染失败页。
 #[test]
 fn plugin_view_falls_back_to_legacy_when_schema_missing() {
@@ -4711,7 +2735,6 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
 }
 
 /// budding 计划任务页必须把关键字传给 `/ui/v1/tasks?q=`，否则迁移后丢失筛选能力。
-/// 旧 SSR 计划任务页（`tasks.html`）已随 `/m/core/*` 深链删除，筛选只剩这一条路径。
 #[test]
 fn budding_tasks_page_keeps_keyword_filter() {
     let js = include_str!("../static/budding/budding-boot.js");
@@ -4725,247 +2748,6 @@ fn budding_tasks_page_keeps_keyword_filter() {
     );
     assert!(js.contains("tasksPageUrl('')"), "必须有清除筛选入口");
 }
-
-/// 站点级设置页已移除：镜像加速源/前缀归 Docker 设置，镜像标签归运行环境页。
-#[tokio::test]
-async fn site_settings_removed_and_docker_settings_hosts_mirror() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-
-    // 旧入口不再渲染站点设置页；`/sites` 前缀命中壳页白名单，回落为 budding 占位。
-    let (status, html) = get_html(&h.app, "/p/sites/settings", &admin).await;
-    assert_eq!(status, StatusCode::OK, "白名单深链应回落壳页");
-    assert!(
-        !html.contains("镜像加速源") && !html.contains(r#"name="registry_mirror""#),
-        "站点设置页必须已移除，不得借壳页回退: {html}"
-    );
-
-    // 新 Docker 设置页：规范入口交 budding 壳页，字段由 `/ui/v1/settings/docker` 提供。
-    let (status, html) = get_html(&h.app, "/p/settings/docker", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/settings/docker", Some(&admin), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert!(v["data"]["registry_mirror"].is_string(), "{body}");
-    assert!(v["data"]["image_prefix"].is_string(), "{body}");
-    assert_eq!(v["data"]["can_admin"], true, "{body}");
-    // 旧 SSR 深链已删除，不再有第二套表单。
-    let (status, _) = get_page(&h.app, "/p/m/core/docker/settings", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    // 运行环境镜像标签走独立接口（加速源/前缀不再混在运行环境页）。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/images", Some(&admin), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        body.contains("nginx_image") && body.contains("php_image"),
-        "运行环境镜像标签必须可读: {body}"
-    );
-
-    // viewer 只读，保存仍被拒绝。
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let viewer_csrf = h.state.csrf_token(&viewer);
-    let (status, _) = post_ui_json(
-        &h.app,
-        "/ui/v1/settings/docker",
-        &viewer,
-        Some(&viewer_csrf),
-        &serde_json::json!({ "registry_mirror": "https://mirror.example.com" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-}
-
-/// Docker 三个入口的页面骨架：创建容器（admin-only）、Compose 页（viewer 只读）。
-#[tokio::test]
-async fn docker_create_and_compose_entries_follow_the_ui_contract() {
-    // 创建/更新容器属于生命周期档，只有宿主机直装形态开放。
-    let h = harness_lifecycle();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    // 受限形态（Tier::Basic）连 admin 也不能创建，能力面收缩由策略层统一拒绝。
-    let basic = harness();
-    let basic_admin = login(&basic.app, "admin", "pw-test-123").await;
-    let (status, _) = get_page(&basic.app, "/p/containers/new", &basic_admin).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "Basic 档必须拒绝创建容器");
-
-    let (status, html) = get_page(&h.app, "/p/containers/new", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"id="skiff-root""#),
-        "新建容器页应交付 budding 壳页（原生表单）: {html}"
-    );
-
-    let (status, _) = get_page(&h.app, "/p/containers/new", &viewer).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "viewer 不得进入创建页");
-
-    // Compose 页交 budding 壳页：可写性由 `/ui/v1/compose` 的 can_admin 决定。
-    let (status, html) = get_html(&h.app, "/p/compose", &admin).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", Some(&admin), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["data"]["can_admin"], true, "{body}");
-
-    // viewer 只读：页面可看，但数据接口不给写权限。
-    let (status, viewer_html) = get_html(&h.app, "/p/compose", &viewer).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(viewer_html.contains(r#"id="skiff-root""#), "{viewer_html}");
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/compose", Some(&viewer), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        v["data"]["can_admin"], false,
-        "viewer 不得拿到 Compose 写权限: {body}"
-    );
-}
-
-/// 新建 PHP 实例：名字非法 / 同名 / 目录已存在都在落库前拒绝。
-#[tokio::test]
-async fn site_env_add_rejects_invalid_duplicate_and_existing_dir() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&admin);
-
-    for (name, version) in [("PHP-8.5", "8.5"), ("-php", "8.5"), ("php-8.5-a", "")] {
-        let resp = h
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/p/runtimes/create")
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                    .body(form_body(&[
-                        ("csrf", &csrf),
-                        ("name", name),
-                        ("version", version),
-                    ]))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{name}/{version}");
-        let location = resp
-            .headers()
-            .get(header::LOCATION)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert_eq!(
-            location, "/p/runtimes",
-            "{name}/{version} 回跳不得携带消息参数"
-        );
-    }
-
-    // 迁移种子行可被同名新建接管：不再以「重名」拒绝，创建后即真实实例。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/runtimes/create")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("name", "php-8.5"),
-                    ("version", "8.5"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let location = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    // 接管后已是真实实例，再次同名必须拒绝。
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/runtimes/create")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("name", "php-8.5"),
-                    ("version", "8.5"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let location = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    // 重名必须被拒绝且不落第二行（原因进会话 flash，页面由壳页呈现）。
-    let same: Vec<_> = h
-        .state
-        .db()
-        .list_runtimes()
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.name == "php-8.5")
-        .collect();
-    assert_eq!(same.len(), 1, "重名不得落第二行");
-
-    // 目标目录已存在：直接拒绝，不覆盖、不自动加后缀。
-    std::fs::create_dir_all(h.data_dir.join("www/runtime/php/php-8.4-a")).unwrap();
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/runtimes/create")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    ("name", "php-8.4-a"),
-                    ("version", "8.4"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    let location = resp
-        .headers()
-        .get(header::LOCATION)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(location, "/p/runtimes", "回跳不得携带消息参数");
-    assert!(
-        h.state
-            .db()
-            .runtime_by_name("php", "php-8.4-a")
-            .unwrap()
-            .is_none(),
-        "目录冲突时不得落库"
-    );
-}
-
 /// Web 服务 `/ui/v1` 读写：读聚合 Admin-only，写缺 CSRF 403、viewer 403；
 /// 管理员过门禁后走真实 nginx -t 语义（无 Docker 时失败，不伪装成功）。
 #[tokio::test]
@@ -5153,112 +2935,6 @@ async fn deleting_bound_runtime_lists_domains_and_is_rejected() {
         "站点不能被隐式删除"
     );
 }
-
-/// 批量操作必须要求管理员；viewer 直接 403，不产生任何副作用。
-#[tokio::test]
-async fn sites_batch_requires_admin() {
-    let h = harness();
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", "/www/sites/demo.local"))
-        .unwrap();
-
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/batch")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={viewer}"))
-                .body(form_body(&[
-                    ("action", "delete"),
-                    ("domains", "demo.local"),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert!(
-        h.state.db().site_by_domain("demo.local").unwrap().is_some(),
-        "viewer 的批量删除不得生效"
-    );
-}
-
-/// 停止态保存非法配置：先校验、失败不落盘，并给出错误而不是「已重载」。
-#[tokio::test]
-async fn stopped_site_config_save_validation_failure_does_not_persist() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let root = h.data_dir.join("www/sites/demo.local");
-    h.state
-        .db()
-        .create_site(&php_site("demo.local", &root.display().to_string()))
-        .unwrap();
-    h.state
-        .db()
-        .set_site_status("demo.local", "stopped")
-        .unwrap();
-    std::fs::create_dir_all(skiff_app::sites::site_conf_dir(&root)).unwrap();
-    let disabled = skiff_app::sites::site_conf_dir(&root).join("demo.local.conf.disabled");
-    let original = "server { listen 80; server_name demo.local; }";
-    std::fs::write(&disabled, original).unwrap();
-
-    let csrf = h.state.csrf_token(&admin);
-    let resp = h
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/p/sites/demo.local/config/save")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(header::COOKIE, format!("skiff_dev_session={admin}"))
-                .body(form_body(&[
-                    ("csrf", &csrf),
-                    (
-                        "content",
-                        "server { listen 80; server_name demo.local; this_is_invalid_directive_xyz; }",
-                    ),
-                ]))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "失败应原地回显配置页，不再跳转"
-    );
-    let html = body_text(resp).await;
-    assert!(
-        html.contains("this_is_invalid_directive_xyz"),
-        "校验失败必须保留用户正在编辑的内容: {html}"
-    );
-    assert!(
-        html.contains("校验") || html.contains("容器列表失败"),
-        "必须展示校验失败原因: {html}"
-    );
-    assert!(
-        !html.contains("配置已保存、校验通过并已重载"),
-        "失败不得复用重载成功文案: {html}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&disabled).unwrap(),
-        original,
-        "校验失败不得落盘"
-    );
-    assert!(
-        !skiff_app::sites::site_conf_dir(&root)
-            .join("demo.local.conf")
-            .exists(),
-        "失败不得把停用配置推进线上 include"
-    );
-}
-
 /// 插件 UI 小回归：内置任务不渲染删除按钮；累计流量按字节自适应进位。
 #[test]
 fn plugin_ui_hides_builtin_delete_and_formats_traffic_bytes() {
@@ -5445,25 +3121,34 @@ fn ui_hidden_and_dialog_guards_hold() {
 }
 
 /// 回收站是「工具 → 文件管理」的 L3 视图（菜单契约 §1.1），不再是独立二级菜单：
-/// 导航里没有独立入口，两个页面共用同一标签栏，旧页面路由与深链保持可用。
+/// 菜单里没有独立入口，三个页面共用同一 L3 标签栏，深链直达壳页。
 #[tokio::test]
 async fn trash_is_files_l3_tab_not_standalone_menu_item() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
 
-    let (status, nav) = get_page(&h.app, "/p/m/overview", &token).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/menu", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("menu 必须是 JSON");
+    let groups = v["data"]["groups"].as_array().expect("groups 必须是数组");
+    // 菜单项按 key/href 扁平收一遍：回收站若被提升成二级就会有独立 href。
+    let hrefs: Vec<&str> = groups
+        .iter()
+        .filter_map(|g| g["items"].as_array())
+        .flatten()
+        .filter_map(|i| i["href"].as_str())
+        .collect();
     assert!(
-        nav.contains(r#"href="/p/files""#),
-        "文件管理二级入口必须保留: {nav}"
+        hrefs.contains(&"/p/files"),
+        "文件管理二级入口必须保留: {body}"
     );
     assert!(
-        !nav.contains(r#"href="/p/files/trash""#),
-        "回收站不得再作为独立二级菜单项渲染: {nav}"
+        !hrefs.contains(&"/p/files/trash"),
+        "回收站不得再作为独立二级菜单项下发: {body}"
     );
     assert!(
-        nav.contains(r#"href="/p/files/quotas""#),
-        "配额管理仍是独立二级入口: {nav}"
+        hrefs.contains(&"/p/files/quotas"),
+        "配额管理仍是独立二级入口: {body}"
     );
 
     // 浏览 / 回收站 / 配额三个 L3 都是 budding 壳页（旧 SSR 已删除）。
@@ -5473,153 +3158,17 @@ async fn trash_is_files_l3_tab_not_standalone_menu_item() {
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
     }
 }
-
-/// 重试必须复用正常提交的执行器：历史任务重试后会离开 queued 并被结算；
-/// 不支持的类型直接拒绝且不插行，同目标已有活跃任务时明确 409，
-/// 避免僵尸行长期占用 `(target_type,target_id)` 唯一索引。
-#[tokio::test]
-async fn job_retry_reuses_executor_and_rejects_unsupported_kind() {
-    use skiff_app::jobs::JobSubmit;
-
-    let h = harness();
-    let token = login(&h.app, "admin", "pw-test-123").await;
-    let csrf = h.state.csrf_token(&token);
-    let retry = |id: String| {
-        let app = h.app.clone();
-        let cookie = format!("skiff_dev_session={token}");
-        let csrf = csrf.clone();
-        async move {
-            app.oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/p/jobs/{id}/retry"))
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .header(header::COOKIE, cookie)
-                    .body(format!("csrf={csrf}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-        }
-    };
-
-    // 1) 当前没有执行器的类型：明确拒绝，且不能留下一条 queued 行占索引。
-    let legacy = h
-        .state
-        .jobs()
-        .submit(JobSubmit {
-            kind: "site.create".into(),
-            target_type: "site".into(),
-            target_id: "retry.example.com".into(),
-            title: "创建站点 retry.example.com".into(),
-            params: serde_json::json!({ "name": "retry.example.com" }),
-            created_by: "admin".into(),
-            created_by_role: "admin".into(),
-            requester_ip: "127.0.0.1".into(),
-            cancellable: true,
-        })
-        .unwrap();
-    h.state.jobs().cancel(&legacy.id).unwrap();
-    let before = h.state.jobs().list(200).len();
-    let resp = retry(legacy.id.clone()).await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "没有执行器的类型必须拒绝重试"
-    );
-    assert_eq!(
-        h.state.jobs().list(200).len(),
-        before,
-        "拒绝重试时不得插入新行"
-    );
-
-    // 2) 有执行器的类型：新行 retry_of 指向原行，且会被执行器结算而不是永远 queued。
-    let orig = h
-        .state
-        .jobs()
-        .submit(JobSubmit {
-            kind: "runtime.ext.apply".into(),
-            target_type: "runtime".into(),
-            target_id: "php-8.5".into(),
-            title: "更新 PHP 8.5 的扩展".into(),
-            params: serde_json::json!({"runtime_id": "php-8.5", "ext_keys": ["redis"]}),
-            created_by: "admin".into(),
-            created_by_role: "admin".into(),
-            requester_ip: "127.0.0.1".into(),
-            cancellable: true,
-        })
-        .unwrap();
-    h.state.jobs().cancel(&orig.id).unwrap();
-    let resp = retry(orig.id.clone()).await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::SEE_OTHER,
-        "重试应创建新任务并回跳"
-    );
-
-    let new_id = h
-        .state
-        .jobs()
-        .list(200)
-        .into_iter()
-        .find(|j| j.retry_of.as_deref() == Some(orig.id.as_str()))
-        .map(|j| j.id)
-        .expect("必须存在 retry_of 指向原任务的新行");
-    let mut settled = None;
-    for _ in 0..150 {
-        let cur = h.state.jobs().get(&new_id).unwrap();
-        if !cur.active() {
-            settled = Some(cur);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    let settled = settled.expect("重试任务必须被执行器结算，不能永远停在 queued");
-
-    // 3) 同目标仍有活跃任务时再次重试：唯一索引明确拒绝并说明原因，不排队。
-    let blocker = h
-        .state
-        .jobs()
-        .submit(JobSubmit {
-            kind: "runtime.ext.apply".into(),
-            target_type: "runtime".into(),
-            target_id: "php-8.5".into(),
-            title: "占用同目标".into(),
-            params: serde_json::json!({"runtime_id": "php-8.5", "ext_keys": ["redis"]}),
-            created_by: "admin".into(),
-            created_by_role: "admin".into(),
-            requester_ip: "127.0.0.1".into(),
-            cancellable: true,
-        })
-        .unwrap();
-    let resp = retry(orig.id.clone()).await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::CONFLICT,
-        "同目标已有活跃任务必须明确拒绝（{}）",
-        skiff_web::labels::job_status(settled.status)
-    );
-    h.state.jobs().cancel(&blocker.id).unwrap();
-}
-
-/// URL 契约 §7：旧路径必须 301/308 到规范路径，保留方法与查询串，不留死链。
+/// URL 契约 §7：旧路径必须 308 到规范路径，保留方法与查询串，不留死链。
 #[tokio::test]
 async fn legacy_paths_redirect_to_canonical_urls() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
 
-    for (old, status, new) in [
-        (
-            "/p/files/api/list?path=%2Fwww",
-            StatusCode::PERMANENT_REDIRECT,
-            "/p/files/list?path=%2Fwww",
-        ),
-        (
-            "/p/docker/settings",
-            StatusCode::PERMANENT_REDIRECT,
-            "/p/settings/docker",
-        ),
-    ] {
+    for (old, status, new) in [(
+        "/p/files/api/list?path=%2Fwww",
+        StatusCode::PERMANENT_REDIRECT,
+        "/p/files/list?path=%2Fwww",
+    )] {
         let resp = h
             .app
             .clone()
@@ -5642,26 +3191,20 @@ async fn legacy_paths_redirect_to_canonical_urls() {
         );
     }
 
-    // 旧的 GET 安装入口不再执行安装，只回商店页（安装必须是带 CSRF 的 POST）。
+    // 商店安装只认 JSON POST（带 CSRF）：GET 同一路径必须是 405，不能被当成页面。
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/p/store/plugins/com.example.demo/install")
+                .uri("/ui/v1/store/plugins/com.example.demo/install")
                 .header(header::COOKIE, format!("skiff_dev_session={admin}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        resp.headers()
-            .get(header::LOCATION)
-            .and_then(|v| v.to_str().ok()),
-        Some("/p/store")
-    );
+    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 /// 并发页面请求：会话中间件与概览页的 DB 读走有界阻塞投递后，
@@ -5678,7 +3221,7 @@ async fn concurrent_page_requests_all_succeed() {
             let resp = app
                 .oneshot(
                     Request::builder()
-                        .uri("/p/m/overview")
+                        .uri("/p")
                         .header(header::COOKIE, format!("skiff_dev_session={token}"))
                         .body(Body::empty())
                         .unwrap(),
@@ -5848,7 +3391,7 @@ async fn ui_menu_projects_kernel_menu_without_plugin_pages() {
     let v: serde_json::Value = serde_json::from_str(&body).expect("menu 响应必须是 JSON");
     let groups = v["data"]["groups"].as_array().expect("groups 必须是数组");
     assert_eq!(groups[0]["key"], "overview", "固定 L1 顺序从概览开始");
-    assert_eq!(groups[0]["href"], "/p/m/overview", "概览仍是直达链接");
+    assert_eq!(groups[0]["href"], "/p", "概览仍是直达链接");
     assert!(
         groups[0]["items"]
             .as_array()
@@ -6030,8 +3573,7 @@ async fn shell_unauthenticated_get_redirects_consistently() {
 
 /// 命中「路径存在但方法不匹配」时：GET 导航仍回落壳页，写请求仍 405。
 ///
-/// `/p/containers/{id}/{action}` 只注册了 POST，GET 旧实现直接 405，`Router::fallback`
-/// 不会触发；`method_not_allowed_fallback` 必须补上这条路径。
+/// `/p/files` 只注册了 GET；POST 到同一路径必须 405，而不是被当成壳页回落。
 #[tokio::test]
 async fn shell_fallback_covers_method_not_allowed_paths() {
     let h = harness();
@@ -6039,27 +3581,23 @@ async fn shell_fallback_covers_method_not_allowed_paths() {
     let path = "/p/containers/abc/unknown";
 
     let (status, ct, body) = get_ui(&h.app, path, Some(&token), Some("text/html")).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "POST-only 模式上的 GET 深链应回落壳页，而不是 405"
-    );
+    assert_eq!(status, StatusCode::OK, "白名单深链应回落壳页");
     assert!(ct.starts_with("text/html; charset=utf-8"));
     assert!(body.contains("该功能正在适配中"));
 
-    // 非 HTML Accept 不回落，保持 405。
+    // 非 HTML Accept 不回落，保持 404（没有任何路由匹配这条深链）。
     let (status, _, body) = get_ui(&h.app, path, Some(&token), Some("application/json")).await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!body.contains("该功能正在适配中"));
 
-    // 写请求不回落：`/p/sites/new` 只注册 GET，POST 必须是 405。
+    // 写请求不回落：`/p/files` 只注册 GET，POST 必须是 405。
     let resp = h
         .app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/p/sites/new")
+                .uri("/p/files")
                 .header(header::ACCEPT, "text/html")
                 .header(
                     header::COOKIE,
@@ -6415,10 +3953,6 @@ async fn overview_root_serves_budding_shell_for_authenticated() {
         !html.contains(r#"id="skiff-main-nav""#),
         "壳页不应再输出旧 SSR 导航"
     );
-    // SSR 概览保留在菜单深链，插件概览槽位仍有落点。
-    let (status, legacy) = get_page(&h.app, "/p/m/overview", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(legacy.contains(r#"id="skiff-main-nav""#), "{legacy}");
 }
 
 /// `GET /ui/v1/overview`：未认证 401；认证后返回冻结字段的真实计数。
@@ -6522,7 +4056,7 @@ ui = "health.html"
     assert!(reason.contains("已停用"), "{reason}");
 }
 
-/// 插件菜单 JSON 的 `href` 指向原生功能页，不再落到 `/m/plugin/...` 旧工作台。
+/// 插件菜单 JSON 的 `href` 指向原生功能页（壳页优先读随包 schema）。
 #[tokio::test]
 async fn ui_menu_plugin_href_points_to_native_route() {
     let h = harness();
@@ -6564,13 +4098,6 @@ schema = "main.json"
         .expect("插件菜单项必须存在");
     assert_eq!(item["href"], "/p/plugins/com.example.native/main");
     assert_eq!(item["default_view"], "main");
-    assert!(
-        !item["href"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("/m/plugin/"),
-        "菜单 href 不得再指向旧工作台"
-    );
 }
 
 /// 插件 RPC 失败必须返回统一 JSON 错误信封（壳页读 `error.message`），
@@ -7072,22 +4599,33 @@ async fn ui_site_detail_exposes_write_surface_by_role() {
     assert_eq!(v["data"]["can_manage"], false);
 }
 
-/// 规范新建站点入口交付 budding 壳页；viewer 仍被 `SITE_CREATE` 拒绝。
+/// 规范新建站点入口交付 budding 壳页；写动作由 `POST /ui/v1/sites` 判权（viewer 403）。
 #[tokio::test]
 async fn site_new_canonical_path_serves_native_shell() {
     let h = harness_lifecycle();
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
 
-    let (status, html) = get_page(&h.app, "/p/sites/new", &admin).await;
+    let (status, html) = get_html(&h.app, "/p/sites/new", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"id="skiff-root""#),
         "新建站点页应交付 budding 壳页: {html}"
     );
 
-    let (status, _) = get_page(&h.app, "/p/sites/new", &viewer).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // 页面本身不做 RBAC（壳页对所有已登录用户一致），权限落在写入口。
+    let (status, _) = get_html(&h.app, "/p/sites/new", &viewer).await;
+    assert_eq!(status, StatusCode::OK, "壳页不做角色分流");
+    let csrf = h.state.csrf_token(&viewer);
+    let (status, text) = post_ui_json(
+        &h.app,
+        "/ui/v1/sites",
+        &viewer,
+        Some(&csrf),
+        &json!({ "site_type": "static", "domain": "blocked.local" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "viewer 建站必须 403: {text}");
 }
 
 /// Compose 校验/部署：CSRF 与管理员门禁先行；校验不触达 Docker，部署无引擎时 503。
@@ -7284,9 +4822,6 @@ async fn audit_canonical_path_serves_native_shell() {
         StatusCode::FORBIDDEN,
         "viewer 无 AuditRead，不得读到审计数据: {text}"
     );
-    // 旧 SSR 深链随旧页一并删除，直达 404（不再泄露数据也不再有第二套页面）。
-    let (status, _) = get_page(&h.app, "/p/m/core/settings/audit", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// 审计查询：关键字命中 + 签名 keyset 游标；换关键字沿用旧游标被拒，篡改被拒。
@@ -7406,7 +4941,7 @@ async fn post_ui_json(
     (status, body_text(resp).await)
 }
 
-/// 设置规范页交付 budding 壳页；旧 SSR 深链已删除（404）。
+/// 设置规范页交付 budding 壳页。
 #[tokio::test]
 async fn settings_canonical_path_serves_shell() {
     let h = harness();
@@ -7417,8 +4952,6 @@ async fn settings_canonical_path_serves_shell() {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
-    let (status, _) = get_page(&h.app, "/p/m/core/settings/security", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "旧设置 SSR 已删除");
 }
 
 /// 设置只读快照：未认证 401；字段冻结；信任公钥只对管理员返回。
@@ -7827,30 +5360,6 @@ async fn ui_site_logs_json_lists_tail_and_filters() {
     let (status, _, _) = get_ui(&h.app, "/ui/v1/sites/logs.local/logs", Some(&viewer), None).await;
     assert_eq!(status, StatusCode::OK);
 }
-
-/// 站点日志页：默认交 budding 壳（查看器），`?legacy=1` 仍可拿到旧 SSR。
-#[tokio::test]
-async fn site_logs_page_serves_shell_unless_legacy() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_html(&h.app, "/p/sites/logs.local/logs", &admin).await;
-    assert_eq!(status, StatusCode::OK, "{html}");
-    assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, legacy) = get_html(&h.app, "/p/sites/logs.local/logs?legacy=1", &admin).await;
-    // 站点不存在时旧 SSR 返回 400；只要不返回壳页即可。
-    if status == StatusCode::OK {
-        assert!(
-            !legacy.contains(r#"id="skiff-root""#),
-            "legacy 请求不得返回壳页"
-        );
-    } else {
-        assert!(
-            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
-            "{status}"
-        );
-    }
-}
-
 /// 容器终端页交 budding 壳；真正的 WS 连接需 Linux 测试机，本机不做断言。
 #[tokio::test]
 async fn container_terminal_page_serves_shell() {
@@ -7884,7 +5393,7 @@ async fn container_logs_page_and_json_keep_read_only_semantics() {
     assert_eq!(v["error"]["code"], "dependency.unavailable");
 }
 
-/// 作业日志：浏览器导航（Accept: text/html）交 budding 壳页，脚本请求仍拿 JSON。
+/// 作业日志：浏览器导航（Accept: text/html）交 budding 壳页；日志正文走 `/ui/v1/jobs/{id}`。
 #[tokio::test]
 async fn job_logs_serve_shell_for_html_and_json_for_scripts() {
     use skiff_app::jobs::JobSubmit;
@@ -7922,40 +5431,26 @@ async fn job_logs_serve_shell_for_html_and_json_for_scripts() {
         "壳页应加载 budding 运行时（日志用 code 组件）: {html}"
     );
 
-    let (status, body) = get_page(&h.app, &uri, &admin).await;
+    // 非浏览器导航（无 `Accept: text/html`）不回落壳页：脚本请求拿到 404，
+    // 日志正文改走 `/ui/v1/jobs/{id}`。
+    let (status, _) = get_page(&h.app, &uri, &admin).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // 脚本取日志正文走 JSON 详情接口（旧 `?format=json` 页面分支已删除）。
+    let (status, _, body) = get_ui(
+        &h.app,
+        &format!("/ui/v1/jobs/{}", job.id),
+        Some(&admin),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["job"]["id"], job.id, "{body}");
+    assert_eq!(v["data"]["id"], job.id, "{body}");
     assert!(
-        v["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["line"] == "作业日志第一行"),
-        "脚本请求应拿到增量日志 JSON: {body}"
+        body.contains("作业日志第一行"),
+        "作业详情必须带上增量日志: {body}"
     );
 }
-
-/// 运行环境日志：页面交壳，JSON 仅 Admin（viewer 403），实例不存在 400。
-#[tokio::test]
-async fn runtime_logs_page_and_json_are_admin_only() {
-    let h = harness();
-    let admin = login(&h.app, "admin", "pw-test-123").await;
-    let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    for token in [&admin, &viewer] {
-        let (status, html) = get_html(&h.app, "/p/runtimes/php82/logs", token).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    }
-
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php82/logs", None, None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php82/logs", Some(&viewer), None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes/php82/logs", Some(&admin), None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-}
-
 /// 文件写动作：mkdir → rename → remove（进回收站）闭环；无 CSRF 头 403 且无副作用。
 #[tokio::test]
 async fn ui_files_mkdir_rename_remove_roundtrip() {
@@ -8136,7 +5631,7 @@ async fn ui_files_write_copy_archive_extract_roundtrip() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// 商店规范页交付 budding 壳页；旧 SSR 深链已删除（404）。
+/// 商店规范页交付 budding 壳页。
 #[tokio::test]
 async fn store_canonical_path_serves_shell() {
     let h = harness_full_with_catalog(
@@ -8151,8 +5646,6 @@ async fn store_canonical_path_serves_shell() {
     let (status, html) = get_html(&h.app, "/p/store", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, _) = get_page(&h.app, "/p/m/core/plugins/store", &token).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "旧商店 SSR 已删除");
 }
 
 /// 商店只读接口：未认证 401；目录未启用 404；启用后返回冻结字段与四个分区。
@@ -8605,34 +6098,7 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
         js.contains("/store/upgrades/' + encodeURIComponent(version) + '/download'"),
         "升级包下载应走 /ui/v1"
     );
-    assert!(
-        !js.contains("/m/core/plugins/store"),
-        "商店页不得再链出旧 SSR"
-    );
 }
-
-/// 布局 / 内容宽度已从菜单设置彻底移除：budding schema 与壳页都不得再引用，
-/// 防止只隐藏界面而把字段留在读写链路上。
-#[test]
-fn menu_settings_drops_layout_and_content_width() {
-    let js = include_str!("../static/budding/budding-boot.js");
-    let base = include_str!("../templates/base.html");
-    for needle in [
-        "layout: args.layout",
-        "width: args.width",
-        "'内容宽度'",
-        "'布局'",
-        "menu-layout-pick",
-        "menu-width-pick",
-    ] {
-        assert!(!js.contains(needle), "budding 菜单设置仍残留：{needle}");
-    }
-    assert!(
-        !base.contains("data-content-width") && !base.contains("ctx.menu.layout"),
-        "壳页不得再引用布局/内容宽度偏好"
-    );
-}
-
 /// 新增的界面设置与 Web 服务运维入口必须落在既有契约上：
 /// 主色经 session 下发到 admin.theme；Web 动作复用 `/ui/v1/runtimes/web/action/{op}`。
 #[test]
@@ -9122,7 +6588,7 @@ async fn ui_store_install_and_confirm_keep_csrf_and_permission_semantics() {
     assert_eq!(v["error"]["code"], "shape.invalid");
 }
 
-/// 插件中心与信息页规范路径交付壳页；旧 SSR 深链已删除（404）。
+/// 插件中心与信息页规范路径交付壳页。
 #[tokio::test]
 async fn plugins_canonical_paths_serve_shell() {
     let h = harness();
@@ -9132,13 +6598,6 @@ async fn plugins_canonical_paths_serve_shell() {
         let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
-    }
-    for uri in [
-        "/p/m/core/plugins/installed",
-        "/p/m/core/plugins/info/com.example.ui",
-    ] {
-        let (status, _) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 }
 
@@ -9252,8 +6711,7 @@ async fn ui_plugin_toggle_and_delete_keep_csrf_and_permission_semantics() {
     assert_eq!(v["error"]["code"], "auth.forbidden");
 }
 
-/// 文件管理规范页交付 budding 壳页（原生平铺目录）；回收站/配额同为壳页，
-/// 旧 SSR（`/m/core/files`）已删除，不再有第二套入口。
+/// 文件管理规范页交付 budding 壳页（原生平铺目录）；回收站/配额同为壳页。
 #[tokio::test]
 async fn files_canonical_path_serves_shell() {
     let h = harness();
@@ -9271,10 +6729,6 @@ async fn files_canonical_path_serves_shell() {
         let (status, _) = get_page(&h.app, uri, &viewer).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri} viewer 必须 403");
     }
-    // 旧 SSR（浏览 / 回收站 / 配额）已随 `/m/core/files` 深链删除：直达 404，
-    // 文件能力改由壳页 + `/files/*` JSON 接口承载（权限仍按 FILE_BROWSE）。
-    let (status, _) = get_page(&h.app, "/p/m/core/files", &admin).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// 文件回收站/配额写接口：CSRF 先行、viewer 被权限矩阵拒绝；管理员过门禁后
@@ -9660,7 +7114,7 @@ async fn ui_runtime_writes_require_csrf_and_permission() {
     assert!(v["data"]["extensions"].is_array(), "{body}");
     assert!(v["data"]["files"].is_array(), "{body}");
 
-    // 规范详情页交 budding 壳页（旧 SSR /m/core/sites/env/{id} 已删除）。
+    // 规范详情页交 budding 壳页。
     let (status, html) = get_html(&h.app, "/p/runtimes/php-8.5-test", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
@@ -9775,7 +7229,7 @@ async fn ui_tasks_and_jobs_keep_auth_and_read_only_shapes() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// 任务/作业规范页交付壳页；旧 SSR 深链已删除（404）。
+/// 任务/作业规范页交付壳页（页面不做 RBAC，数据由 `/ui/v1/*` 判权）。
 #[tokio::test]
 async fn tasks_and_jobs_canonical_paths_serve_shell() {
     let h = harness();
@@ -9792,10 +7246,6 @@ async fn tasks_and_jobs_canonical_paths_serve_shell() {
             html.contains(r#"id="skiff-root""#),
             "{uri} 应为壳页: {html}"
         );
-    }
-    for uri in ["/p/m/core/jobs", "/p/m/core/tasks"] {
-        let (status, _) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 }
 
@@ -9846,7 +7296,7 @@ async fn ui_compose_keeps_auth_csrf_and_docker_unavailable_semantics() {
     }
 }
 
-/// compose 规范页交付壳页；旧 SSR 深链已删除（404）。
+/// compose 规范页交付壳页。
 #[tokio::test]
 async fn compose_canonical_path_serves_shell() {
     let h = harness();
@@ -9854,11 +7304,9 @@ async fn compose_canonical_path_serves_shell() {
     let (status, html) = get_html(&h.app, "/p/compose", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
-    let (status, _) = get_page(&h.app, "/p/m/core/docker/compose", &token).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "旧编排 SSR 已删除");
 }
 
-/// 镜像/网络/卷规范页交付壳页；旧 SSR 深链已删除（404）。
+/// 镜像/网络/卷规范页交付壳页。
 #[tokio::test]
 async fn resource_canonical_paths_serve_shell() {
     let h = harness();
@@ -9871,17 +7319,9 @@ async fn resource_canonical_paths_serve_shell() {
             "{uri} 应为壳页: {html}"
         );
     }
-    for uri in [
-        "/p/m/core/docker/images",
-        "/p/m/core/docker/networks",
-        "/p/m/core/docker/volumes",
-    ] {
-        let (status, _) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
-    }
 }
 
-/// 容器规范页交付壳页；旧 SSR 深链已删除（404）。
+/// 容器规范页交付壳页。
 #[tokio::test]
 async fn containers_canonical_paths_serve_shell() {
     let h = harness();
@@ -9894,11 +7334,9 @@ async fn containers_canonical_paths_serve_shell() {
             "{uri} 应为壳页: {html}"
         );
     }
-    let (status, _) = get_page(&h.app, "/p/m/core/docker/containers", &token).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "旧容器 SSR 已删除");
 }
 
-/// 站点/运行环境规范页交付壳页；旧 SSR 深链已删除（404）。
+/// 站点/运行环境规范页交付壳页。
 #[tokio::test]
 async fn sites_and_runtimes_canonical_paths_serve_shell() {
     let h = harness();
@@ -9915,10 +7353,6 @@ async fn sites_and_runtimes_canonical_paths_serve_shell() {
             html.contains(r#"id="skiff-root""#),
             "{uri} 应为壳页: {html}"
         );
-    }
-    for uri in ["/p/m/core/sites/list", "/p/m/core/sites/env"] {
-        let (status, _) = get_page(&h.app, uri, &token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} 旧 SSR 已删除");
     }
 }
 

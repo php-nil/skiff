@@ -1,6 +1,6 @@
-//! 任务中心：进行中与历史作业的列表、详情、日志流与取消/重试。
+//! 任务中心的读模型与日志流：`/ui/v1/jobs` 的列表/详情行与 SSE 尾随。
 //!
-//! 权限口径（与 `docs/contract/UI_CONTRACT.md`、运行环境页一致）：
+//! 权限口径（与 `docs/contract/UI_CONTRACT.md` 一致）：
 //! - 列表/详情元数据：登录即可见（viewer 只读，便于判断「为什么某个对象被占用」）；
 //! - 日志正文、取消、重试：仅 Admin（日志里会出现宿主路径与安装器输出）。
 
@@ -10,24 +10,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
-use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::{json, Value};
 
 use skiff_app::actions as act;
-use skiff_app::commands::job as job_cmd;
-use skiff_app::jobs::{CancelOutcome, Job, JobStatus};
+use skiff_app::jobs::{Job, JobStatus};
 
 use crate::error::AppError;
-use crate::handlers;
-use crate::middleware::{check_csrf, AuthUser};
-use crate::state::sites::SiteError;
+use crate::middleware::AuthUser;
 use crate::state::AppState;
 use crate::templates::{JobDetailView, JobRowView};
-use crate::util::{form_first, parse_form};
 
 /// SSE 每次从库里取的增量上限。
 const LOG_PAGE: i64 = 500;
@@ -200,145 +193,10 @@ pub(crate) fn load_job(state: &AppState, id: &str) -> Result<Job, AppError> {
         .get(id)
         .ok_or_else(|| AppError::NotFound(format!("任务不存在：{id}")))
 }
-
-fn job_back(state: &AppState, id: &str) -> String {
-    format!("/{}/jobs/{id}", state.cfg.entry_prefix)
-}
-
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
 /// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
 /// 保住模块内 `actor(...)` 调用点与 `handlers::jobs::actor` 跨模块路径。
 pub(crate) use crate::handlers::audit_actor as actor;
-
-pub async fn cancel(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::JOB_CANCEL)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let outcome = job_cmd::cancel(
-        &state,
-        job_cmd::CancelJob {
-            id: id.clone(),
-            actor: actor(&state, &user, &parts),
-        },
-    )
-    .await
-    .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let msg = match outcome {
-        CancelOutcome::CancelledNow => "已取消（任务尚未开始）",
-        CancelOutcome::Requested => "已请求取消，将在当前步骤结束后停止",
-        CancelOutcome::Terminal => "任务已结束，无需取消",
-    };
-    Ok(handlers::flash_redirect(
-        &state,
-        &user,
-        skiff_app::FlashKind::Notice,
-        msg,
-        job_back(&state, &id),
-    ))
-}
-
-pub async fn retry(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::JOB_RETRY)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let job = job_cmd::retry(
-        &state,
-        job_cmd::RetryJob {
-            id: id.clone(),
-            role: user.user.role.as_str().to_string(),
-            actor: actor(&state, &user, &parts),
-        },
-    )
-    .await
-    .map_err(|e| match e.unfield() {
-        SiteError::BadRequest(m) => AppError::BadRequest(m),
-        SiteError::Conflict(m) => AppError::Conflict(m),
-        SiteError::Unavailable(m) => AppError::Unavailable(m),
-        SiteError::Internal(m) => AppError::Internal(m),
-        SiteError::Field(_, inner) => AppError::Internal(inner.to_string()),
-    })?;
-    Ok(handlers::flash_redirect(
-        &state,
-        &user,
-        skiff_app::FlashKind::Notice,
-        format!("已新建重试任务 {}", job.id),
-        format!("/{}/jobs/{}", state.cfg.entry_prefix, job.id),
-    ))
-}
-
-/// 增量日志：浏览器地址栏导航交 budding 壳页；脚本 / 集成测试仍拿 JSON。
-pub async fn logs_json(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-    Query(q): Query<HashMap<String, String>>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::JOB_LOGS)?;
-    // 与站点 / 容器 / 运行环境日志一致：同一个路径按 `Accept` 分流，
-    // 导航请求给壳页，页内脚本再以非 HTML 请求取 JSON，不新增第二套路由。
-    if crate::handlers::spa::accepts_html(&headers) {
-        return Ok(crate::handlers::spa::shell_page(&state));
-    }
-    let job = load_job(&state, &id)?;
-    let after = q
-        .get("after")
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0);
-    let batch = state
-        .jobs()
-        .logs_since(&id, after, LOG_PAGE)
-        .ok_or_else(|| AppError::NotFound(format!("任务不存在：{id}")))?;
-    let entries: Vec<Value> = batch
-        .entries
-        .iter()
-        .map(|e| {
-            json!({
-                "seq": e.seq,
-                "at": e.at,
-                "stream": e.stream,
-                "line": e.line,
-            })
-        })
-        .collect();
-    let truncated_before = match batch.min_seq {
-        Some(min) if after + 1 < min => json!(min),
-        _ => Value::Null,
-    };
-    Ok(Json(json!({
-        "job": {
-            "id": job.id,
-            "status": job.status.as_str(),
-            "status_label": crate::labels::job_status(job.status),
-            "phase": job.phase,
-            "phase_label": job.phase_label,
-            "progress": job.progress,
-            "active": job.active(),
-            "cancellable": job.cancellable,
-            "cancel_requested": job.cancel_requested,
-            "exit_code": job.exit_code,
-            "duration_ms": job.duration_ms,
-        },
-        "min_seq": batch.min_seq,
-        "max_seq": batch.max_seq,
-        "truncated_before": truncated_before,
-        "entries": entries,
-    }))
-    .into_response())
-}
-
 fn log_event(seq: i64, at: i64, stream_name: &str, line: &str) -> Event {
     Event::default()
         .event("log")

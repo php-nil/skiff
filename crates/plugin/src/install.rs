@@ -275,24 +275,34 @@ pub fn install_package(
                 kept.push(Grant::perm(p.clone()));
             }
 
-            // 对象授权（`resource_hints` + 由 `[interop].consumes` 派生的 `plugin:`）同样
-            // 只补「相对旧 manifest 新增」的项：只增不减，已有授权不动；manifest 移除 hint
-            // 不自动回收——回收只走显式卸载。形式校验放在落盘前，失败即整体拒绝，
-            // 不会留下「文件已换、授权没补」的半完成状态。
-            // 旧 manifest 不可解析时无法判断新增，保守不补（与权限动词同口径）。
-            if let Some(old_hints) = &prev_hints {
+            // 对象授权（`resource_hints` + 由 `[interop].consumes` 派生的 `plugin:`）：
+            // - 旧 manifest 已声明、且用户当初勾了的 → 保留不动；
+            // - 旧 manifest 已声明、但用户当初没勾的 → 仍然不翻案（只在旧 manifest 未声明时才算新增）；
+            // - **新 manifest 新增的 hint → 只在用户确认页显式勾选（出现在 opts.object_grants）时才补授**；
+            //   不自动扩权——升级不弹确认页不代表可以静默扩大授权面。
+            // 形式校验放在落盘前，失败即整体拒绝；manifest 移除 hint 不自动回收——回收只走显式卸载。
+            // 旧 manifest 不可解析时无法判断新增，保守地只认 opts 里的值（与权限动词同口径）。
+            {
                 let mut hints = meta.manifest.resource_hints.clone();
                 hints.extend(meta.manifest.interop_resource_hints());
+                // 用户确认页显式勾选的对象授权（可能含额外手填），升级时新增 hint 只从这里取。
+                let user_granted_objects: std::collections::BTreeSet<String> =
+                    opts.object_grants.iter().cloned().collect();
                 for h in hints {
                     skiff_pkgfmt::manifest::validate_resource(&h)
                         .map_err(|e| PluginError::Rejected(format!("对象 grant {h} 非法: {e}")))?;
-                    if old_hints.contains(&h) {
-                        continue;
-                    }
+                    // 已有授权不动（首次或旧版时已勾）。
                     if kept.iter().any(|g| g.kind == "object" && g.value == h) {
                         continue;
                     }
-                    object_upgrade.push(h.clone());
+                    let is_new = !prev_hints.as_ref().map(|s| s.contains(&h)).unwrap_or(true); // 旧 manifest 不可解析 → 全部视为新增
+                    if is_new {
+                        // 新增 hint：只有用户显式勾了才补，否则静默跳过。
+                        if !user_granted_objects.contains(&h) {
+                            continue;
+                        }
+                        object_upgrade.push(h.clone());
+                    }
                     kept.push(Grant::object(h));
                 }
             }
@@ -1081,8 +1091,9 @@ requires = {requires}
 
     /// 旧 grants 里没有任何对象授权 → 升级按新 manifest 的 `resource_hints` 补授，
     /// 审计写清执行者、来源与具体 hint。
+    /// 升级新增的 object hint 只在用户确认页显式勾选时补授（升级不再静默扩权）。
     #[test]
-    fn upgrade_grants_new_resource_hint_and_audits() {
+    fn upgrade_grants_new_resource_hint_when_user_confirms() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path();
         let db = Db::open_in_memory().unwrap();
@@ -1097,11 +1108,14 @@ requires = {requires}
         .unwrap();
         grants_are(&db, id, &[("perm", "docker:list")]);
 
+        // 0.2.0 新增 container:def：用户确认页显式勾选 → 补授 + 审计。
+        let mut new_opts = opts();
+        new_opts.object_grants = vec!["container:def".into()];
         install_package(
             &db,
             data_dir,
             &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &["container:def"]),
-            &opts(),
+            &new_opts,
         )
         .unwrap();
         grants_are(
@@ -1114,13 +1128,47 @@ requires = {requires}
         let row = rows
             .iter()
             .find(|r| r.action == "plugin.grant_upgrade")
-            .expect("对象 hint 补授必须留审计");
+            .expect("用户勾了新 hint 必须留审计");
         assert_eq!(row.target, id);
         assert_eq!(row.actor, "test");
         assert!(row.detail.contains("container:def"), "{}", row.detail);
         assert!(row.detail.contains("resource_hints"), "{}", row.detail);
         assert!(row.detail.contains("0.1.0"), "{}", row.detail);
         assert!(row.detail.contains("0.2.0"), "{}", row.detail);
+    }
+
+    /// 升级新增的 object hint 未被用户勾选 → 不自动补授，也不产生审计噪声。
+    #[test]
+    fn upgrade_skips_new_resource_hint_when_user_declines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let db = Db::open_in_memory().unwrap();
+        let id = "com.example.demo";
+
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.1.0", &["docker:list"], &[]),
+            &opts(),
+        )
+        .unwrap();
+        grants_are(&db, id, &[("perm", "docker:list")]);
+
+        // 0.2.0 新增 container:def：用户没勾 → 不补。
+        install_package(
+            &db,
+            data_dir,
+            &build_pkg_with(data_dir, id, "0.2.0", &["docker:list"], &["container:def"]),
+            &opts(), // object_grants 为空
+        )
+        .unwrap();
+        grants_are(&db, id, &[("perm", "docker:list")]);
+
+        let rows = db.recent_audit(20).unwrap();
+        assert!(
+            rows.iter().all(|r| r.action != "plugin.grant_upgrade"),
+            "未勾的新 hint 不应产生补授审计: {rows:?}"
+        );
     }
 
     /// 已有 hint 不重复授予，也不产生额外审计噪声。
@@ -1235,9 +1283,9 @@ requires = {requires}
     }
 
     /// `[interop].consumes` 派生的 `plugin:<id>` 同属 hint：老版本没声明、升级补上后
-    /// 跨插件调用不再 403（对应「先装 ftp、后装 firewall」的升级场景）。
+    /// 跨插件调用不再 403——但只在用户确认页显式勾选时补授（不静默扩权）。
     #[test]
-    fn upgrade_grants_interop_hint_for_new_dependency() {
+    fn upgrade_grants_interop_hint_when_user_confirms() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path();
         let db = Db::open_in_memory().unwrap();
@@ -1252,7 +1300,9 @@ requires = {requires}
         .unwrap();
         grants_are(&db, id, &[("perm", "docker:list")]);
 
-        // 0.2.0 首次声明 `[interop]`：`interop:call` 与 `plugin:<id>` 都属新增。
+        // 0.2.0 首次声明 `[interop]`：用户确认页显式勾了派生的 plugin: hint。
+        let mut new_opts = opts();
+        new_opts.object_grants = vec!["plugin:com.skiff.firewall".into()];
         install_package(
             &db,
             data_dir,
@@ -1264,7 +1314,7 @@ requires = {requires}
                 &[],
                 &["com.skiff.firewall:protect"],
             ),
-            &opts(),
+            &new_opts,
         )
         .unwrap();
         grants_are(
@@ -1281,7 +1331,7 @@ requires = {requires}
         let row = rows
             .iter()
             .find(|r| r.action == "plugin.grant_upgrade")
-            .expect("跨插件 hint 补授必须留审计");
+            .expect("用户勾了跨插件 hint 必须留审计");
         assert!(
             row.detail.contains("plugin:com.skiff.firewall"),
             "{}",

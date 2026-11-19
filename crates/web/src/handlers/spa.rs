@@ -84,9 +84,8 @@ pub async fn fallback(State(state): State<Arc<AppState>>, parts: Parts) -> Respo
 
 /// 「路径存在但方法不匹配」兜底（axum 默认直接 405，`Router::fallback` 不会触发）。
 ///
-/// 白名单页面上的 GET 导航也可能撞到只注册了 POST 的路由模式，例如
-/// `/p/containers/{id}/{action}`；这类深链同样应拿到壳页。写请求与非 HTML
-/// `Accept` 仍保持 405，不回落。
+/// 白名单页面上的 GET 导航也可能撞到只注册了 POST 的路由模式（插件 RPC、
+/// 文件写接口等）；这类深链同样应拿到壳页。写请求与非 HTML `Accept` 仍保持 405。
 pub async fn method_not_allowed(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
     if parts.method == Method::GET && is_shell_path(&state.cfg.entry_prefix, parts.uri.path()) {
         if parts.extensions.get::<CurrentUser>().is_none() {
@@ -99,8 +98,7 @@ pub async fn method_not_allowed(State(state): State<Arc<AppState>>, parts: Parts
     (StatusCode::METHOD_NOT_ALLOWED, "405 Method Not Allowed").into_response()
 }
 
-/// 入口根 `/`（概览）同样交付壳页：已登录渲染 budding 概览，未登录 303 到登录页。
-/// 概览的 SSR 版本仍由 `/{p}/m/overview` 菜单深链提供，直到插件槽位迁完。
+/// 入口根 `/`（概览）交付壳页：已登录渲染 budding 概览，未登录 303 到登录页。
 pub async fn root_shell(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
     shell_for(&state, &parts)
 }

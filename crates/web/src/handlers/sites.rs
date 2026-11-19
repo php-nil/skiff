@@ -1,55 +1,28 @@
-//! 内核「网站」页面：站点列表、运行环境、环境设置、日志与操作。
+//! 内核「网站」的跨模块共享辅助：状态文案、view model 组装、领域错误映射。
 //!
-//! 按主题拆成子模块，本文件只保留跨模块共享的展示辅助（状态文案、view model
-//! 组装、领域错误映射），并以 `pub use` 维持原有 `handlers::sites::*` 路径不变：
+//! 站点页面与服务端表单已全部迁到 budding 壳（`/ui/v1/sites/*`、`/ui/v1/runtimes/*`），
+//! 这里只留 JSON 通道仍在复用的纯函数：
 //!
-//! - `crud`：站点列表/新建/启停/域名/配置/批量/详情/删除；
-//! - `runtime`：运行环境页与全部 `runtime_*` 动作；
-//! - `tls`：证书与备份；
-//! - `logs`：站点日志。
+//! - `crud`：配置保存文案；
+//! - `runtime`：运行环境扩展清单；
+//! - `tls`：站点备份视图。
 
 use skiff_app::sites::{site_runtime_status, SiteRuntimeStatus};
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::error::AppError;
-use crate::state::sites::{SiteEnvStatus, SiteError, SiteField};
+use crate::state::sites::SiteError;
 use crate::state::AppState;
-use crate::templates::{RuntimeRow, SiteEnvView, SiteTlsView, SiteView};
+use crate::templates::RuntimeRow;
 use crate::util::encode_uri_component;
 
 mod crud;
-mod logs;
 mod runtime;
-
-pub(crate) use runtime::extension_options;
 mod tls;
 
 pub(crate) use crud::save_config_notice;
-pub use crud::{
-    action, batch, create, delete, delete_confirm, domains, new_shell, save_config, set_default,
-};
-pub use logs::logs;
-pub use runtime::{
-    env_add, env_images_save, runtime_action, runtime_clone, runtime_config_file_save,
-    runtime_config_save, runtime_extension_install, runtime_extension_uninstall,
-    runtime_extensions_batch, runtime_extensions_save, runtime_health, runtime_job, runtime_jobs,
-    runtime_logs, runtime_node_config_save, runtime_pecl_install, runtime_port_save, runtime_probe,
-    runtime_publish_save, runtime_unbind_site,
-};
-pub use tls::{set_backup, ssl_action};
-
-fn env_view(env: &SiteEnvStatus) -> SiteEnvView {
-    SiteEnvView {
-        docker_available: env.docker_available,
-        docker_reason: env.docker_reason.clone(),
-        nginx_state: env.nginx_state.clone(),
-        installed: env.installed,
-        ready: env.ready(),
-        port: env.port,
-        nginx_image: env.nginx_image.clone(),
-        php_image: env.php_image.clone(),
-    }
-}
+pub(crate) use runtime::extension_options;
+pub(crate) use tls::backup_view;
 
 pub(crate) fn type_label(t: &str) -> &'static str {
     match t {
@@ -58,19 +31,6 @@ pub(crate) fn type_label(t: &str) -> &'static str {
         _ => "运行环境",
     }
 }
-
-/// 运行环境动作的中文名：共享环境二次确认页据此说明「将要执行什么」。
-fn action_label(action: &str) -> &'static str {
-    match action {
-        "stop" => "停止",
-        "restart" => "重启",
-        "rebuild" => "重建",
-        "install" => "安装",
-        "port" => "修改端口",
-        _ => "操作",
-    }
-}
-
 pub(crate) fn state_label(state: &str) -> &'static str {
     match state {
         "running" => "运行中",
@@ -222,72 +182,6 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
         job_active,
     }
 }
-
-fn job_json(job: &skiff_app::sites::RuntimeJob) -> serde_json::Value {
-    serde_json::json!({
-        "id": job.runtime_id,
-        "state": job.state.as_str(),
-        "state_label": crate::labels::runtime_job_state(job.state),
-        "step": job.step,
-        "progress": job.progress,
-        "error": job.error,
-        "log": job.log_text(),
-        "active": job.active(),
-        "failed": job.state == skiff_app::sites::RuntimeJobState::Failed,
-        "kind": job.kind,
-        "ext_keys": job.ext_keys,
-        "started_at": job.started_at,
-        "updated_at": job.updated_at,
-    })
-}
-
-pub(crate) fn site_view(s: &skiff_app::views::sites::SiteSummary) -> SiteView {
-    let (status_label, status_class) = site_status(s);
-    let (https_label, https_class) = https_status(s.https, s.cert_ready);
-    SiteView {
-        domain: s.domain.clone(),
-        index_dir: s.index_dir.clone(),
-        root_dir: s.root_dir.clone(),
-        site_type: s.site_type.clone(),
-        type_label: type_label(&s.site_type).to_string(),
-        runtime_id: s.runtime_id.clone(),
-        runtime_label: s.runtime_label.clone(),
-        runtime_name: s.runtime_name.clone(),
-        runtime_shared_hint: s.runtime_shared_hint.clone(),
-        proxy_target: s.proxy_target.clone(),
-        proxy_websocket: s.proxy_websocket,
-        status: s.status.clone(),
-        status_label: status_label.to_string(),
-        status_class: status_class.to_string(),
-        maintenance_reason: s.maintenance_reason.clone(),
-        https_label: https_label.to_string(),
-        https_class: https_class.to_string(),
-        created: s.created.clone(),
-        is_default: s.is_default,
-        aliases_text: s.aliases_text.clone(),
-        alias_preview: s.alias_preview.clone(),
-        alias_more: s.alias_more,
-        aliases: s.aliases.clone(),
-        https: s.https,
-        force_https: s.force_https,
-    }
-}
-
-fn tls_view(info: skiff_app::sites::SiteTlsInfo) -> SiteTlsView {
-    SiteTlsView {
-        enabled: info.enabled,
-        force_https: info.force_https,
-        cert_path: info.cert_path,
-        key_path: info.key_path,
-        cert_exists: info.cert_exists,
-        subject: info.subject.unwrap_or_default(),
-        issuer: info.issuer.unwrap_or_default(),
-        expires: info.expires.unwrap_or_default(),
-    }
-}
-
-pub(crate) use tls::backup_view;
-
 pub(crate) fn map_err(e: SiteError) -> AppError {
     match e.unfield() {
         SiteError::BadRequest(m) => AppError::BadRequest(m),
@@ -303,21 +197,10 @@ pub(crate) fn map_err(e: SiteError) -> AppError {
 /// 保住 `sites::crud`/`sites::runtime` 经 `use super::*` 得到的 `actor(...)`。
 pub(crate) use crate::handlers::audit_actor as actor;
 
-/// 可回填到弹窗的用户侧错误文案；内部错误返回 `None`，交给错误页。
-fn site_error_text(e: &SiteError) -> Option<String> {
-    match e {
-        SiteError::BadRequest(m) | SiteError::Conflict(m) | SiteError::Unavailable(m) => {
-            Some(m.clone())
-        }
-        SiteError::Internal(_) => None,
-        SiteError::Field(_, inner) => site_error_text(inner),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::crud::{error_field, save_config_notice};
-    use super::{map_err, runtime_site_status, site_error_text, state_class, state_label};
+    use super::crud::save_config_notice;
+    use super::{map_err, runtime_site_status, state_class, state_label};
     use crate::state::sites::SiteError;
     use skiff_model::ErrorCode;
 
@@ -345,19 +228,6 @@ mod tests {
             assert_eq!(mapped.error_code(), code);
             assert_eq!(mapped.message(), "x");
         }
-    }
-
-    #[test]
-    fn only_internal_domain_errors_break_out_of_the_page() {
-        // 业务错误由页面就地提示（返回 Some），内部错误才升级成错误页（None）。
-        for err in [
-            SiteError::BadRequest("x".into()),
-            SiteError::Conflict("x".into()),
-            SiteError::Unavailable("x".into()),
-        ] {
-            assert_eq!(site_error_text(&err).as_deref(), Some("x"));
-        }
-        assert_eq!(site_error_text(&SiteError::Internal("x".into())), None);
     }
 
     #[test]
@@ -408,22 +278,5 @@ mod tests {
         assert!(save_config_notice(true).contains("校验通过"));
         assert!(!save_config_notice(false).contains("已重载"));
         assert!(save_config_notice(false).contains("站点未运行，未重载"));
-    }
-
-    #[test]
-    fn server_error_maps_to_visible_field_only() {
-        use crate::state::sites::SiteField as F;
-        // 每个码映射到唯一字段。
-        assert_eq!(error_field(Some(F::Domain), "static"), "domain");
-        assert_eq!(error_field(Some(F::Aliases), "runtime"), "aliases");
-        assert_eq!(error_field(Some(F::RootDir), "runtime"), "root_dir");
-        // 类型专属错误只在对应类型下落到字段，否则回顶部提示。
-        assert_eq!(error_field(Some(F::ProxyTarget), "proxy"), "proxy_target");
-        assert_eq!(error_field(Some(F::ProxyTarget), "static"), "");
-        assert_eq!(error_field(Some(F::RuntimeId), "runtime"), "runtime_id");
-        assert_eq!(error_field(Some(F::RuntimeId), "static"), "");
-        // 没有字段码（含环境级错误）一律回顶部，不再按文案猜。
-        assert_eq!(error_field(None, "runtime"), "");
-        assert_eq!(error_field(None, "static"), "");
     }
 }

@@ -8,9 +8,10 @@
 skiff/
 ├── crates/
 │   ├── web/        # ★核心① Web 管理服务：axum 路由、四个全局中间件（由内到外：可信代理→会话→安全入口→CatchPanic）
-│   │               #   + 非流式路由组的 request_timeout；SSR、WS/SSE（终端/日志流）、静态托管、反代 X-Forwarded-* 处理；
+│   │               #   + 非流式路由组的 request_timeout；budding 壳页回落、/ui/v1 JSON、WS/SSE（终端/日志流）、
+│   │               #   静态托管、反代 X-Forwarded-* 处理；
 │   │               #   CSRF/RBAC/审计在 handler 内，限流只在登录路径；
-│   │               #   static/ + templates/ 前端资源（无 node，rust-embed / askama，build.rs 做 gzip 预压缩）
+│   │               #   static/ + templates/ 前端资源（无 node，rust-embed；askama 只剩错误页与插件工作台）
 │   ├── docker/     # ★核心② Docker 管理：bollard 封装、动词白名单 + 对象 grant + 参数字段策略、
 │   │               #   路径校验(§5.5)、Compose 生命周期、容器 exec 终端(hijack)、日志流
 │   ├── plugin/     # ★核心③ 插件体系（内核侧）：manifest / ed25519 签名校验、Supervisor
@@ -87,7 +88,7 @@ skiff/
 它不依赖 `web`。插件能力面的**权限判定与命令编排**住在 `plugin`，但 `plugin` 不得反向依赖
 `app`——宿主上下文经 `plugin::CapabilityHost` 这个 trait 注入（依赖倒置）。`app` 的准入规则：
 用例编排、领域服务、读模型可以进；路由、模板、HTTP 形状不进；跨域共享词汇进 `model`。
-当前 `app` 内按域划分为 sites / nginx / tasks / catalog / files-admin / menu / theme；`views/` 存与模板无关的读模型（SSR 与 `/ui/v1` 共用），`commands/` 存用例编排（含 `plugin.rs` 插件生命周期）。
+当前 `app` 内按域划分为 sites / nginx / tasks / catalog / files-admin / menu / theme；`views/` 存与模板无关的读模型（`/ui/v1` 与插件工作台共用），`commands/` 存用例编排（含 `plugin.rs` 插件生命周期）。
 
 **能力面 × 实现位置**（能力面的判定与编排只在 `plugin`；HTTP 形状与宿主特权执行属内核装配）：
 

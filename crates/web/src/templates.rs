@@ -1,8 +1,12 @@
 //! askama 模板上下文。模板文件在 `crates/web/templates/`（见 `askama.toml`）。
+//!
+//! 壳页已全部迁到 budding 运行时，内核只剩两类 askama 页面：
+//! 错误页（`error.html`）与插件 iframe 工作台（`plugin_view.html`，页面自带
+//! L3 标签栏，没有 schema 的旧插件视图走它）。
 
 use askama::Template;
 
-/// 所有页面共用的头部上下文。
+/// 插件工作台页面共用的头部上下文。
 #[derive(Debug, Clone)]
 pub struct PageCtx {
     pub prefix: String,
@@ -16,17 +20,17 @@ pub struct PageCtx {
     pub active: String,
     /// 合并后的三级菜单（固定一级 + 内置二级 + 插件声明 + 用户偏好）。
     pub menu: skiff_app::menu::PageMenu,
-    /// 是否管理员（「设置 → 信任公钥」只对管理员出现）。
+    /// 是否管理员。
     pub is_admin: bool,
     /// 顶栏「插件菜单」：已启用且有 UI 入口的插件（manifest `[[ui]].label` 当菜单名）。
-    /// 既用于「插件」二级菜单，也被插件详情页当 `skiff.open` 白名单。
+    /// 同时被插件页当 `skiff.open` 白名单。
     pub nav_plugins: Vec<PluginNav>,
     /// 服务端一次性提示：本次渲染消费，用于写操作后的反馈。
     pub flash_notice: String,
     pub flash_error: String,
 }
 
-/// 内核升级只读段（P3）：当前版本 vs 渠道可用版本，手动下载入口。
+/// 内核升级只读段：当前版本 vs 渠道可用版本，手动下载入口。
 #[derive(Debug, Clone, Default)]
 pub struct UpgradeHint {
     pub current: String,
@@ -72,187 +76,6 @@ pub struct PluginView {
     pub running: bool,
 }
 
-/// 概览「需要处理」的一条待办：按影响排序后渲染，链接直达已筛选的目标页。
-#[derive(Debug, Clone)]
-pub struct DashboardTodo {
-    /// `danger` / `warn` / `info`，同时决定排序与左侧色条。
-    pub level: String,
-    pub title: String,
-    pub detail: String,
-    pub href: String,
-    pub action: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct AuditRow {
-    pub ts: String,
-    pub actor: String,
-    pub action: String,
-    pub target: String,
-    pub result: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct KeyRow {
-    pub key_id: String,
-    pub label: String,
-    pub fingerprint_short: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct MountView {
-    pub kind: String,
-    pub source: String,
-    pub target: String,
-    pub read_only: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct PortView {
-    pub host: String,
-    pub container: String,
-    pub protocol: String,
-}
-
-#[derive(Template)]
-#[template(path = "login.html")]
-pub struct LoginPage {
-    pub prefix: String,
-    pub error: String,
-    pub csrf: String,
-    pub username: String,
-    pub next: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SiteView {
-    pub domain: String,
-    /// 站点目录（`/www/sites/<域名>`，整站备份单元）。
-    pub root_dir: String,
-    /// 文档根（`/www/sites/<域名>/index`），目录页与文件能力的授权根。
-    pub index_dir: String,
-    /// runtime / static / proxy
-    pub site_type: String,
-    pub type_label: String,
-    /// 仅 runtime：绑定的运行环境与展示名。
-    pub runtime_id: String,
-    pub runtime_label: String,
-    /// 列表合并列用的运行环境实例名（如 `php-8.5`）；运行环境记录缺失时为空。
-    pub runtime_name: String,
-    /// 共享环境提示：绑定站点数 > 0 时说明重启/升级/改端口影响全部。
-    pub runtime_shared_hint: String,
-    /// 仅 proxy：上游地址。
-    pub proxy_target: String,
-    /// 仅 proxy：是否升级 WebSocket。
-    pub proxy_websocket: bool,
-    /// running / stopped / error
-    pub status: String,
-    pub status_label: String,
-    /// 状态徽标配色（ok / danger / 空），列表与详情共用同一套徽标样式。
-    pub status_class: String,
-    /// 巡检判定不可用的原因；空串表示正常。非空时状态列为「维护中」。
-    pub maintenance_reason: String,
-    /// 证书/HTTPS 徽标文案与配色，与运行状态同形呈现。
-    pub https_label: String,
-    pub https_class: String,
-    pub created: String,
-    pub is_default: bool,
-    /// 附加域名（vhost 的 `server_name` 扩展）。
-    pub aliases: Vec<String>,
-    /// 展示用逗号串；无别名时为空。
-    pub aliases_text: String,
-    /// 列表页别名预览（最多两个）；无别名时为空，模板据此整行不渲染。
-    pub alias_preview: String,
-    /// 预览之外的别名数量，用于 `+N` 提示。
-    pub alias_more: usize,
-    /// 是否启用 443。
-    pub https: bool,
-    /// 是否 80 强制跳转 443。
-    pub force_https: bool,
-}
-
-/// SSL 标签：证书路径、主体、到期与开关状态。
-#[derive(Debug, Clone, Default)]
-pub struct SiteTlsView {
-    pub enabled: bool,
-    pub force_https: bool,
-    pub cert_path: String,
-    pub key_path: String,
-    pub cert_exists: bool,
-    pub subject: String,
-    pub issuer: String,
-    pub expires: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SiteNewForm {
-    /// runtime / static / proxy
-    pub site_type: String,
-    pub domain: String,
-    /// 逐行填写的别名（前端可「新增一行」）。
-    pub aliases: Vec<String>,
-    /// 批量粘贴的别名原文（换行/逗号/空格混合），提交时与 `aliases` 合并。
-    pub aliases_bulk: String,
-    /// 站点目录名（只填目录名，`/www/sites/` 前缀由内核自动补全）。
-    pub root_dir: String,
-    /// 仅 runtime：运行环境 id。
-    pub runtime_id: String,
-    /// 仅 proxy：上游地址。
-    pub proxy_target: String,
-    /// 仅 proxy：是否升级 WebSocket。
-    pub proxy_websocket: bool,
-}
-
-/// 向导第二步可选的一个运行环境（只含已就绪实例）。
-#[derive(Debug, Clone)]
-pub struct RuntimeOptionView {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct DirEntryView {
-    pub name: String,
-    /// 已做 URI 编码的 `path` 查询值。
-    pub url: String,
-    pub is_dir: bool,
-    pub size: String,
-    pub modified: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DirListingView {
-    pub rel: String,
-    /// 已做 URI 编码的上级目录查询值。
-    pub parent_url: String,
-    pub at_root: bool,
-    pub entries: Vec<DirEntryView>,
-}
-
-#[derive(Template)]
-#[template(path = "site_detail.html")]
-pub struct SiteDetailPage {
-    pub ctx: PageCtx,
-    pub site: SiteView,
-    pub env: SiteEnvView,
-    pub can_admin: bool,
-    /// overview / domains / config / dir / ssl
-    pub tab: String,
-    pub config_path: String,
-    pub config_content: String,
-    pub config_active: bool,
-    pub dir: DirListingView,
-    pub ssl: SiteTlsView,
-    /// PHP 站点绑定的运行环境未运行：访问会 502/503，页面给出回环境页入口。
-    pub runtime_down: bool,
-    pub runtime_alert: String,
-    pub runtime_env_href: String,
-    /// 站点备份开关（内核 `site-backup` 任务在该站点的投影）。
-    pub backup: SiteBackupView,
-    pub error: String,
-    pub notice: String,
-}
-
 /// 站点详情页的备份区块。`task_id` 为空表示尚未建立任务（关闭态）。
 #[derive(Debug, Clone, Default)]
 pub struct SiteBackupView {
@@ -260,41 +83,6 @@ pub struct SiteBackupView {
     pub task_id: String,
     pub last_text: String,
     pub next_text: String,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct SiteEnvView {
-    pub docker_available: bool,
-    pub docker_reason: String,
-    pub nginx_state: String,
-    pub installed: bool,
-    pub ready: bool,
-    pub port: u16,
-    pub nginx_image: String,
-    pub php_image: String,
-}
-
-#[derive(Template)]
-#[template(path = "sites.html")]
-pub struct SitesPage {
-    pub ctx: PageCtx,
-    pub sites: Vec<SiteView>,
-    pub env: SiteEnvView,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
-    pub keyword: String,
-    /// 新建站点弹窗的表单（与服务端校验失败时的回填同源）。
-    pub form: SiteNewForm,
-    pub runtimes: Vec<RuntimeOptionView>,
-    /// 弹窗是否直接展开（服务端校验失败时保持打开）。
-    pub form_open: bool,
-    pub form_error: String,
-    /// 服务端字段级错误：`domain` / `aliases` / `root_dir` / `runtime_id` / `proxy_target`。
-    pub form_error_field: String,
-    /// 展示用站点根前缀（如 `/www/sites/`），前端只填目录名。
-    pub sites_prefix: String,
 }
 
 /// 运行环境列表/详情行（业务视角；容器状态只作为漂移提示）。
@@ -377,154 +165,6 @@ pub struct ExtensionOptionView {
     pub support_note: String,
 }
 
-#[derive(Template)]
-#[template(path = "nginx.html")]
-pub struct NginxPage {
-    pub ctx: PageCtx,
-    pub status: skiff_app::nginx::NginxStatusView,
-    pub config: skiff_app::nginx::NginxConfigView,
-    pub logs: skiff_app::nginx::NginxLogView,
-    pub modules: skiff_app::nginx::NginxModuleView,
-    /// Web 服务容器安装进度（安装/重建时的分步状态）。
-    pub install: skiff_app::sites::InstallProgress,
-    /// status / config / logs / modules
-    pub tab: String,
-    pub can_admin: bool,
-    pub error: String,
-    pub notice: String,
-}
-
-#[derive(Template)]
-#[template(path = "site_logs.html")]
-pub struct SiteLogsPage {
-    pub ctx: PageCtx,
-    pub domain: String,
-    /// 当前站点的日志目录（`/www/sites/<域名>/log`）。
-    pub log_dir: String,
-    pub access_log: String,
-    pub error_log: String,
-    pub keyword: String,
-    pub notice: String,
-}
-
-#[derive(Template)]
-#[template(path = "site_delete.html")]
-pub struct SiteDeletePage {
-    pub ctx: PageCtx,
-    pub domain: String,
-    pub root_dir: String,
-    /// 目录体积（人类可读）。
-    pub dir_size: String,
-    pub file_count: u64,
-    pub task_count: usize,
-    /// 绑定的运行环境（kind + name）；无绑定为空串。
-    pub runtime_label: String,
-}
-
-#[derive(Template)]
-#[template(path = "dashboard.html")]
-pub struct DashboardPage {
-    pub ctx: PageCtx,
-    pub running: usize,
-    pub total: usize,
-    pub image_count: String,
-    pub plugin_total: usize,
-    pub plugin_enabled: usize,
-    /// 内核「网站」健康块：站点总数 / 非运行站点数（不依赖插件）。
-    pub site_total: usize,
-    pub site_abnormal: usize,
-    /// 运行环境健康：总数 / 异常（未运行、漂移、容器缺失）。
-    pub runtime_total: usize,
-    pub runtime_abnormal: usize,
-    /// 尚未安装（没有容器）的运行环境数量；不计入异常，但也不能说成「全部运行中」。
-    pub runtime_uninstalled: usize,
-    pub abnormal_total: usize,
-    /// 最多展示若干条异常容器；完整列表走 `containers?filter=error`。
-    pub abnormal: Vec<ContainerRowView>,
-    pub uptime: String,
-    pub docker_reason: String,
-    pub todos: Vec<DashboardTodo>,
-    pub audit: Vec<AuditRow>,
-    /// `overview.health` 槽位挂载；非空时替换内核默认健康块。
-    pub mounts_health: Vec<skiff_app::menu::MountView>,
-    /// `overview.actions` / `overview.side` 槽位挂载。
-    pub mounts_actions: Vec<skiff_app::menu::MountView>,
-    pub mounts_side: Vec<skiff_app::menu::MountView>,
-    pub error: String,
-}
-
-#[derive(Template)]
-#[template(path = "containers_rows.html")]
-pub struct ContainerRows {
-    pub ctx: PageCtx,
-    pub can_operate: bool,
-    pub can_delete: bool,
-    pub containers: Vec<ContainerRowView>,
-    pub filter: String,
-}
-
-#[derive(Template)]
-#[template(path = "container_detail.html")]
-pub struct ContainerDetailPage {
-    pub ctx: PageCtx,
-    pub container: ContainerRowView,
-    pub image: String,
-    pub cmd: String,
-    pub created: String,
-    pub ports: Vec<PortView>,
-    pub mounts: Vec<MountView>,
-    pub networks: Vec<String>,
-    pub labels: Vec<(String, String)>,
-    pub health: String,
-    pub can_exec: bool,
-    pub can_operate: bool,
-    pub can_delete: bool,
-    pub docker_reason: String,
-    pub error: String,
-    pub limits: ResourceLimitsForm,
-    pub limits_effective: Vec<(String, String)>,
-}
-
-/// 资源限制表单的原始输入值（空串 = Engine 默认 / 不限制，由页面文案解释）。
-#[derive(Debug, Clone, Default)]
-pub struct ResourceLimitsForm {
-    pub cpu_shares: String,
-    pub cpu_period: String,
-    pub cpu_quota: String,
-    pub memory_limit_mb: String,
-    pub memory_swap_mb: String,
-    pub pids_limit: String,
-}
-
-/// 新建容器表单；出错时保留用户原始输入。
-#[derive(Debug, Clone, Default)]
-pub struct ContainerFormView {
-    pub image: String,
-    pub name: String,
-    pub ports: String,
-    pub env: String,
-    pub binds: String,
-    pub volumes: String,
-    pub restart: String,
-    pub cpu_shares: String,
-    pub cpu_period: String,
-    pub cpu_quota: String,
-    pub memory_limit_mb: String,
-    pub memory_swap_mb: String,
-    pub pids_limit: String,
-    pub networks: Vec<String>,
-}
-
-#[derive(Template)]
-#[template(path = "container_new.html")]
-pub struct ContainerNewPage {
-    pub ctx: PageCtx,
-    pub form: ContainerFormView,
-    pub network_options: Vec<(String, bool)>,
-    pub docker_reason: String,
-    pub error: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct ComposeServiceView {
     pub service: String,
@@ -545,65 +185,7 @@ pub struct ComposeProjectView {
     pub running: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct ComposeReportRow {
-    pub kind: String,
-    pub name: String,
-    pub status: String,
-    pub error: String,
-}
-
-#[derive(Template)]
-#[template(path = "compose.html")]
-pub struct ComposePage {
-    pub ctx: PageCtx,
-    /// 部署 / 起停 / 删除属生命周期动词（admin 专属）。
-    pub can_admin: bool,
-    pub docker_reason: String,
-    pub error: String,
-    pub notice: String,
-    pub compose_text: String,
-    pub project_input: String,
-    pub validation: Vec<String>,
-    pub report_title: String,
-    pub report: Vec<ComposeReportRow>,
-    pub projects: Vec<ComposeProjectView>,
-    pub selected_project: String,
-    pub services: Vec<ComposeServiceView>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PermissionRow {
-    pub value: String,
-    pub capability: String,
-    pub verb: String,
-}
-
-#[derive(Template)]
-#[template(path = "plugin_confirm.html")]
-pub struct PluginConfirmPage {
-    pub ctx: PageCtx,
-    pub token: String,
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub api: String,
-    pub key_id: String,
-    pub signed: bool,
-    pub permissions: Vec<PermissionRow>,
-    /// manifest `resource_hints` + 由 `[interop].consumes` 派生的 `plugin:` 授权：
-    /// 安装时逐条确认的对象授权（`path:` / `container:` / `project:` / `plugin:`）
-    pub resources: Vec<String>,
-    /// 已声明（可被其他插件调用）的接口，每项 `method · label`。
-    pub interop_provides: Vec<String>,
-    /// 已声明允许调用的目标接口，每项 `<plugin-id>:<method>`。
-    pub interop_consumes: Vec<String>,
-    pub requires: String,
-    pub egress: String,
-    pub error: String,
-}
-
-#[derive(Template)]
+#[derive(Template, Debug, Clone)]
 #[template(path = "plugin_view.html")]
 pub struct PluginViewPage {
     pub ctx: PageCtx,
@@ -638,41 +220,11 @@ pub struct TabView {
     pub local: String,
     pub label: String,
     pub href: String,
-    pub icon: String,
     pub tab: String,
     pub ui: String,
     /// 该标签对应的 iframe URL（已带 nonce/menu/tab）。
     pub src: String,
     pub active: bool,
-}
-
-#[derive(Template)]
-#[template(path = "settings.html")]
-pub struct SettingsPage {
-    pub ctx: PageCtx,
-    pub entry_prefix: String,
-    /// 当前监听的 IP 与端口（拆分展示，便于端口占用校验）。
-    pub listen_addr: String,
-    pub listen_port: u16,
-    /// TLS 三态：`auto` / `on` / `off`（与 `config.toml` 的 `tls_enabled` 对应）。
-    pub tls_mode: String,
-    pub tls_cert: String,
-    pub tls_key: String,
-    /// 配置文件落盘路径（设置页展示 + 提示）。
-    pub config_path: String,
-    /// 明文反代形态：TLS 由 trusted_proxies 中的反代终止。
-    pub plaintext_behind_proxy: bool,
-    pub totp_enabled: bool,
-    pub totp_secret: String,
-    pub totp_uri: String,
-    pub backup_codes: Vec<String>,
-    pub keys: Vec<KeyRow>,
-    pub is_admin: bool,
-    pub error: String,
-    pub notice: String,
-    pub force_change: bool,
-    /// 初始口令文件仍在：给一条**非阻塞**的修改建议，不做任何跳转。
-    pub initial_admin_pending: bool,
 }
 
 #[derive(Debug, Clone, Default)]

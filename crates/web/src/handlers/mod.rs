@@ -1,5 +1,5 @@
-//! 请求处理器：各页面的 SSR 与 JSON API，以及跨 handler 的共享工具
-//! （页面上下文与渲染、表单/Cookie/请求头解析、`actor` 与 `resolve_container`）。
+//! 请求处理器：budding 壳页、插件宿主页与 `/ui/v1` JSON API，
+//! 以及跨 handler 的共享工具（页面上下文与渲染、表单/Cookie/请求头解析、`actor`）。
 
 pub mod api;
 pub mod auth;
@@ -9,7 +9,6 @@ pub mod dashboard;
 pub mod docker_settings;
 pub mod files;
 pub mod jobs;
-pub mod menu;
 pub mod meta;
 pub mod nginx;
 pub mod plugins;
@@ -100,11 +99,10 @@ pub fn page_ctx(state: &AppState, user: &CurrentUser, active: &str) -> PageCtx {
     }
 }
 
-/// 顶栏「应用」菜单的数据源：把 manifest `[[ui]].label` 直接挂到导航栏，
-/// 省得每次切换都经「插件中心」中转。
+/// 插件页的 `skiff.open` 白名单：**已启用且有 UI 入口**的插件。
 ///
-/// 只列**已启用且有 UI 入口**的插件。DB 读失败或某个 manifest 解析失败时跳过该项
-/// （导航少几项不影响页面本身渲染，坏包也不该拖垮整站导航）。
+/// DB 读失败或某个 manifest 解析失败时跳过该项（少一条白名单不影响页面渲染，
+/// 坏包也不该拖垮整页）。
 pub fn nav_plugins(state: &AppState, active: &str) -> Vec<crate::templates::PluginNav> {
     skiff_app::menu::enabled_ui_plugins(state)
         .into_iter()
@@ -133,30 +131,6 @@ pub fn redirect(to: impl Into<String>) -> Response {
     Redirect::to(&to.into()).into_response()
 }
 
-/// 写操作的标准收尾：把结果写进会话 flash，再 303 到无参数地址。
-///
-/// 提示由下一次页面渲染消费一次，刷新不会重放，URL 里也不会留下错误信息。
-pub fn flash_redirect(
-    state: &AppState,
-    user: &CurrentUser,
-    kind: skiff_app::FlashKind,
-    text: impl Into<String>,
-    to: impl Into<String>,
-) -> Response {
-    state.push_flash(&user.session_id, kind, text);
-    redirect(to)
-}
-
-/// 设置页的表单错误统一回跳（PRG）：保留页面上下文与已填字段，
-/// 不再把用户留在裸 400 错误页；错误进会话 flash，URL 不带消息。
-///
-/// 回跳落点是 budding 壳页 `/{p}/settings`：口令 / TOTP 表单已随旧 SSR 设置页
-/// 删除，错误由壳页读 `GET /ui/v1/settings` 的 `flash.error` 呈现。
-pub fn settings_error_redirect(state: &AppState, user: &CurrentUser, message: &str) -> String {
-    state.push_flash(&user.session_id, skiff_app::FlashKind::Error, message);
-    format!("/{}/settings", state.cfg.entry_prefix)
-}
-
 pub fn field(form: &HashMap<String, Vec<String>>, key: &str) -> String {
     form_first(form, key)
 }
@@ -168,15 +142,6 @@ pub fn client_ip(state: &AppState, parts: &Parts) -> String {
         .get::<ClientInfo>()
         .map(|c| c.ip.clone())
         .unwrap_or_else(|| "unknown".into())
-}
-
-pub fn htmx_request(parts: &Parts) -> bool {
-    parts
-        .headers
-        .get("hx-request")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v == "true")
-        .unwrap_or(false)
 }
 
 /// API scope 闸门（§6.1）：token 权限 = 角色权限 ∩ scope。

@@ -30,7 +30,6 @@
 | --- | --- | --- | --- | --- |
 | A1 | 二次确认使用浏览器原生框 | 22 处 `window.confirm`、2 处 `window.prompt`（含站点删除输入域名）、6 处 `confirm_text` 自定义动作参数 | `confirm` 图层；输入型确认用 `requireText`，不再自拼 `dialog + form` | 原生框不受主题控制，移动端与键盘体验不一致；无法复用焦点陷阱与关闭策略 |
 | A2 | 结果反馈使用阻塞式弹窗 | 89 处 `window.alert` | `toast` / `alert` / 表单 `errorMessage` | 成功提示也打断操作；错误信息与页面内表单错误脱节 |
-| A3 | 旧 SSR 页面手写确认/表单弹窗 | 7 个模板共 16 个 `<dialog>`：`base.html`、`files.html`（9）、`jobs.html`、`networks.html`、`resources.html`、`site_env.html`（2）、`site_new_dialog.html` | `dialog` / `drawer` 动作 + `form`；确认场景用 `confirm` 图层 | 重复实现遮罩、Esc、焦点回落、滚动锁定；与 native 页面两套交互 |
 | A4 | 详情信息手工拼两列 | 文件属性、容器/站点/运行环境详情等页面用 `card` + `flex` + `text` | `property` 键值栅格（`items[].content` 支持字符串模板或嵌套 Schema） | 布局重复，窄屏与复制行为需逐页维护 |
 
 **没有发现重复实现的项**：表格、分页、虚拟列表、表单字段与校验、代码查看、终端均已使用 budding 组件；文件上传使用 `PlatformAdapter.upload` 分片，不再自建上传进度。

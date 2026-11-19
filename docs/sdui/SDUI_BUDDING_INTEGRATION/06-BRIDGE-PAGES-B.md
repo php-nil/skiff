@@ -73,7 +73,7 @@
   - 口令 `POST /ui/v1/settings/password` → argon2 校验旧口令、写新散列、`rotate_password_session` 轮换会话（响应回传新 `csrf_token` 并重设会话 Cookie）、删除首启 `initial-admin.txt`。错误文案沿用旧页：旧口令错「当前口令不正确」、两次不一致「两次输入的新口令不一致」。
   - TOTP 两步：`POST /ui/v1/settings/totp/setup` 生成并暂存密钥（未启用态），`POST /ui/v1/settings/totp/enable` 校验动态码后启用并一次性返回 10 条备份码。错误文案沿用旧页：「动态码不正确，请确认设备时间后重试」。
   - 公钥 `POST /ui/v1/settings/keys`（导入）与 `POST /ui/v1/settings/keys/{id}`（撤销）→ `decode_public_key` + `trust_key` / `remove_trusted_key`，审计事件 `settings.key.import` / `settings.key.remove`，仅 Admin。
-- 强改密期间的中间件放行只服务旧 SSR，不改动；新前端失败一律按 JSON 信封回显，不 PRG。
+- 强改密期间中间件只放行入口页 `/login`、`/settings` 与 `/static/`、`/ui/`、`/api/`；新前端失败一律按 JSON 信封回显，不 PRG。
 - 口令框直接声明原生 `type: 'password'`（`autocomplete`：当前口令 `current-password`，新口令 `new-password`）。
 - `GET /ui/v1/settings` 返回 `panel` / `account` / `keys` / `can_admin` / `flash`；公钥仅对管理员返回，非管理员为空数组。
 
@@ -113,7 +113,7 @@
 **菜单设置与 Docker 设置（第二十二批）**
 
 - `GET /{p}/settings/menu`、`GET /{p}/settings/docker` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
-- 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/settings/docker`，不再以 `/m/core/...` 作为产品入口；`/{p}/docker/settings` 的 308 兼容不变。
+- 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/settings/docker`，不再以 `/m/core/...` 作为产品入口；`/{p}/docker/settings` 别名随旧 SSR 于 2026-11-19 删除（现直接 404）。
 - `GET /ui/v1/settings/menu` → `{layout, width, max_width, groups[{key,label,items[{key,label,href,hidden,pinned,pinnable,plugin,icon}]}]}`；读对登录用户开放（偏好按账号隔离）。页面用「布局按钮 + 内容宽度表单 + 分组表格」，行内「↑ / ↓ / 显隐 / 固定」，底部「恢复默认」（确认后 `action=reset`）。
 - `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
 
@@ -127,11 +127,11 @@
 
 **Web 服务页（第二十四批）**
 
-- `GET /{p}/sites/web` 改交付 budding 壳页（Admin 权限，viewer 403）；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
+- `GET /{p}/sites/web` 交付 budding 壳页；壳页不做角色分流，数据接口仍是 Admin-only（viewer 请求 403）。
 - `GET /ui/v1/web` → `{status, install, config{main_path,main_content,include_path,include_content,sites[],params}, modules, can_admin}`，与旧页同一数据源（`nginx_status`、`site_install_progress`、`nginx_config_view`、`nginx_modules`）。
 - `GET /ui/v1/web/logs?load=&kind=&lines=&level=&status=&q=&offset=`：未 `load` 时不触碰文件，返回读取范围、状态码分布、截断标记与行数据。
 - 页面拆三级子视图（2026-11-17）：`/{p}/sites/web` 状态、`/config` 配置、`/logs` 日志、`/modules` 模块，每次只渲染当前视图（详见 `01-SCOPE.md` §2.3.1「三级子视图登记」）；日志视图进入即按查询参数取数（默认访问日志 200 行），「加载日志」把筛选条件带回 `?type=&lines=&level=&status=&q=`（不再用 `?logs=1`）。
-- 写操作：`POST /ui/v1/web/config`（主配置，`nginx -t` + reload）与 `POST /ui/v1/web/params`（性能参数）；SSR 表单与 JSON 共用 `nginx::apply_main` / `apply_params`，审计事件 `nginx.config.save` / `nginx.params.save` 不变。失败返回 400 并保留错误文本，不伪装成功。
+- 写操作：`POST /ui/v1/web/config`（主配置，`nginx -t` + reload）与 `POST /ui/v1/web/params`（性能参数）；HTML 表单路径已删除，写入统一经 `nginx::apply_main` / `apply_params`，审计事件 `nginx.config.save` / `nginx.params.save` 不变。失败返回 400 并保留错误文本，不伪装成功。
 
 ### 5.15 商店（第八批）
 
@@ -139,9 +139,9 @@
 - `GET /ui/v1/store?refresh=1` 与旧页面共用 `store::load_view`：同一目录快照、同一可安装版本判定与升级提示。
 - 安装分两步，均复用旧链路与审计：
   1. `POST /ui/v1/store/plugins/{id}/install` → 调用 `store::prepare`（下载、摘要/大小、验签、版本与降级校验），返回权限确认数据；审计动作与旧表单一致（`store.install`）。
-  2. `POST /ui/v1/plugins/confirm` → 调用 `plugins::verify_for_confirm` + `commit_install`（同一信任判定、授权落库、暂存包清理），与旧确认页同一条收尾路径。
+  2. `POST /ui/v1/plugins/confirm` → 调用 `plugins::verify_for_confirm` + `commit_install`（同一信任判定、授权落库、暂存包清理），是安装的唯一收尾入口。
 - 进度：下载验签是单次同步请求，前端只给「正在下载并验签」占位提示，不引入 SSE/轮询。
-- 升级包下载（第二十五批）：`POST /ui/v1/store/upgrades/{version}/download`（Admin + `x-csrf-token`）与旧表单 GET 共用 `store::apply_upgrade_download`——同一目录启用/公钥判定、同一暂存与 sha256 校验、同一 `upgrade.download` 审计；成功返回 `{version,arch,channel,source,sha256,size,path,reused}`。商店页在 `upgrade.can_download` 时给出原生下载按钮，不再跳旧页。
+- 升级包下载（第二十五批）：`POST /ui/v1/store/upgrades/{version}/download`（Admin + `x-csrf-token`）走 `store::apply_upgrade_download`——同一目录启用/公钥判定、同一暂存与 sha256 校验、同一 `upgrade.download` 审计；成功返回 `{version,arch,channel,source,sha256,size,path,reused}`。商店页在 `upgrade.can_download` 时给出原生下载按钮，不再跳旧页。
 
 **字段表（冻结，只增不改）**
 
@@ -204,8 +204,8 @@
 
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
 - 代码 Pack：入库 `budding-code-1.8.1-r2.min.js`（89,982 B，取自 `dist/packs/code.mjs`，自包含 ESM；字节自 1.8.1 起未变），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
-- 站点日志：`GET /{p}/sites/{domain}/logs` 默认交壳页；旧 SSR 仅接受 `?legacy=1`。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
-- 作业日志：`GET /{p}/jobs/{id}/logs` 同路径按 `Accept` 分流——浏览器导航（含 `text/html`）交 budding 日志页，脚本请求（无 `text/html`）仍返回既有 JSON（`?after=` 游标、同权限、同审计），按 `after` 游标最多取 10 页后停止，页面按需加载、不建 SSE；作业详情页首屏日志也改为 `code` 组件，并保留旧详情入口用于取消 / 重试。
+- 站点日志：`GET /{p}/sites/{domain}/logs` 交壳页（服务端已无 SSR 日志页）。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
+- 作业日志：`GET /{p}/jobs/{id}/logs` 交 budding 日志页；脚本取正文走 `GET /ui/v1/jobs/{id}`（`logs` 字段带首屏尾巴）与 `/{p}/jobs/{id}/logs/stream`（SSE 尾随，同权限、同审计）。页面按需加载，作业详情页首屏日志用 `code` 组件，取消 / 重试走 `/ui/v1/jobs/{id}/cancel|retry`。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
 
 ### 5.19 容器终端（第十四批）

@@ -10,7 +10,7 @@
 
 ## 1. 总原则
 
-1. **一个资源一套路径**：页面、页面内 JSON、表单提交共用同一资源前缀，不额外插 `api` 中缀。
+1. **一个资源一套路径**：壳页深链、页面内 JSON 与长连接按资源归位，不额外插 `api` 中缀（文件分组的页面与接口共用 `/{p}/files`，其余资源的 JSON 统一在 `/ui/v1/{资源}`）。
 2. **层级只表达归属**：`/{前缀}/{资源}/{标识}/{子资源}`，最多四段（不含前缀与动作）。
 3. **动作只出现在末段**：写操作末段必须是动词或明确的动作名，不用 `?do=`、不把动作放中间。
 4. **GET 只读，POST 写入**：GET 不产生副作用；所有写入都是 POST 且带 CSRF；下载类 GET 例外见 §6。
@@ -20,12 +20,11 @@
 
 | 范围 | 形状 | 说明 |
 | --- | --- | --- |
-| 页面 / 页面内接口 / 表单 | `/{p}/...` | `p` 为安全入口前缀（`config.toml` 的 `entry_prefix`），默认 `p`，运行时可变 |
+| 页面（壳页回落） | `/{p}/...` | `p` 为安全入口前缀（`config.toml` 的 `entry_prefix`），默认 `p`，运行时可变；只命中白名单前缀（§2.1） |
 | 前端 JSON 接口 | `/ui/v1/...` | 无入口前缀；会话 Cookie + CSRF；未认证返回 401；仅 `handlers::ui`（按资源拆分）；只返 JSON |
 | 机器 API | `/api/v1/...` | 无入口前缀、Token/会话鉴权，版本号固定；仅 `handlers::api` |
 | 探针 | `/healthz` | 无前缀、无鉴权，只回健康状态 |
 | 图标 | `/favicon.ico` | 无前缀、无鉴权，返回品牌矢量图标（`image/svg+xml`，`public, max-age=86400`）；页面另用 `<link rel="icon">` 指向 `/{p}/static/favicon.svg?v=<版本>` |
-| 菜单深链 | `/{p}/m/{...}` | 由 `handlers::menu::dispatch` 内部转发到同一 handler，不是第二套页面 |
 
 - 代码中一律用 `state.cfg.entry_prefix` 或模板 `ctx.prefix` 拼接，禁止硬编码 `/p`。
 - 根路径 `/static`、`/plugins/...`、`/files/...` 一律 404，不能绕过入口前缀。
@@ -51,7 +50,7 @@
 
 - 白名单之外仍返回 404（HTML 或 JSON 由 `Accept` 决定），不得回落壳页。
 - `POST` 等写请求**永不回落**，即使 `Accept: text/html`。
-- `/{p}/static/*`、`/{p}/m/*`、`/ui/v1/*`、`/api/v1/*`、`/healthz`、`/favicon.ico` 不在白名单内。
+- `/{p}/static/*`、`/ui/v1/*`、`/api/v1/*`、`/healthz`、`/favicon.ico` 不在白名单内。
 - 命中白名单但前端路由不认识时，由前端渲染 404 视图；内核不回退到 `error.html`。
 - 白名单变更必须同步本表、`docs/sdui/SDUI_BUDDING_INTEGRATION.md` 与 `main_flow` 测试。
 
@@ -63,61 +62,76 @@
 - 子资源下的集合仍用复数：`/{p}/runtimes/{id}/extensions`。
 - 标识含 `/`、空格等字符时由路由层编码，不把多段拼进一个参数；插件 id 的 `.` 不二次编码。
 
-## 4. 页面与页面内 JSON 同构
+## 4. 页面与页面内 JSON 的归属
 
-页面 `/{p}/files` 与其接口 `/{p}/files/list`、`/{p}/files/write` 同前缀；
-**不再有** `/{p}/files/api/list` 这类中缀。理由：前端 `apiUrl()` 只需拼 `/{p}/files`，
-页面与接口的归属关系一眼可见，也避免「页面在 A、接口在 B」的授权口径分叉。
+页面只有**一个**入口：`GET /{p}[/{白名单前缀}[/{rest}]]` 交同一个 budding 壳页（§2.1），
+**没有逐资源的页面路由**（`/{p}/sites/new`、`/{p}/containers/{id}/terminal` 之类都不是独立路由，
+只是壳页回落的深链，前端路由自己认）。页面内的数据与动作统一走 `/ui/v1/{资源}`：
 
-同一资源的页面、片段（`rows`）、轮询（`jobs`、`job`）、SSE 都放在该资源下：
+| 页面（壳页回落） | 页面内 JSON（`/ui/v1`） |
+| --- | --- |
+| `/{p}/containers` | `GET /ui/v1/containers`、`POST /ui/v1/containers` |
+| `/{p}/sites` | `GET /ui/v1/sites`、`POST /ui/v1/sites` |
+| `/{p}/settings` | `GET /ui/v1/settings`、`POST /ui/v1/settings/panel` |
+
+**唯一例外是文件分组**：它由内核注册真实路由（形态门禁 `fs_capability`），页面与接口共用
+`/{p}/files` 前缀，接口为 `/{p}/files/list`、`/{p}/files/write`…，**没有** `/{p}/files/api/list`
+这类中缀（旧前缀 `/{p}/files/api/*` 只 308 兼容，见 §7）；回收站与配额同属该分组
+（`/{p}/files/trash/*`、`/{p}/files/quotas/*`），前端直接复用这些 JSON 接口，未另建 `/ui/v1` 写入口。
+
+同构的理由只有一个：前端拼 URL 时归属一眼可见，页面与接口不在两个前缀下分叉授权口径。
+
+长连接与轮询落在资源段下，不带 `/ui/v1`（它们要走会话 Cookie 与入口前缀）：
 
 | 形态 | 形状 | 示例 |
 | --- | --- | --- |
-| 列表页 | `GET /{p}/{资源}` | `/{p}/containers` |
-| 局部片段 | `GET /{p}/{资源}/rows` | `/{p}/containers/rows` |
-| 新建表单页 | `GET /{p}/{资源}/new` | `/{p}/sites/new`、`/{p}/containers/new` |
-| 详情页 | `GET /{p}/{资源}/{id}` | `/{p}/sites/{domain}` |
-| 轮询/长连接 | `GET /{p}/{资源}[/{id}]/jobs`、`/logs`、`/logs/stream` | `/{p}/runtimes/jobs`、`/{p}/jobs/{id}/logs/stream` |
+| 列表 / 详情 | `GET /ui/v1/{资源}[/{id}]` | `/ui/v1/containers`、`/ui/v1/jobs/{id}` |
+| 日志尾随（SSE） | `GET /{p}/{资源}/{id}/logs/stream` | `/{p}/jobs/{id}/logs/stream` |
+| 终端（WS） | `POST /{p}/containers/{id}/exec/ticket` 换一次性票据，再 `GET /{p}/containers/{id}/exec?ticket=` | §6.2 |
 
 ## 5. 动作命名
 
 ### 5.1 规则
 
-- 资源**集合**：`GET` 列表；`POST` 创建（`/create` 或集合 POST，二者等价，新路由优先显式动词）。
-- 资源**单体**：`GET` 查看；`POST` 更新（路径不加 `update`，如 `POST /{p}/settings/docker`）。
-- **动作型操作**：末段显式动词，参数放表单或查询串，不放进路径（除通配动作，见 §5.3）。
-- `delete` 与 `remove` 分工：
-  - `delete`：删除资源本体（镜像、网络、卷、插件、密钥、任务）。
-  - `remove`：文件系统语义的「移入回收站」，与 `skiff-fs` 动词 `remove` 一一对应，不表示资源删除。
+- 资源**集合**：`GET /ui/v1/{资源}` 列表；`POST /ui/v1/{资源}` 创建（**不写** `/create`，集合 POST 即创建）。
+- 资源**单体**：`GET /ui/v1/{资源}/{id}` 查看；`POST /ui/v1/{资源}/{id}` 更新（路径不加 `update`；
+  子资源字段各自的写入口优先，如 `POST /ui/v1/sites/{domain}/config`）。
+- **动作型操作**：末段显式动词，参数放 JSON body 或查询串，不放进路径（通配动作见 §5.3）。
+- `delete` 与 `remove` 分工（**按资源归属**，不按语义强弱）：
+  - `delete`：内核自有实体（站点、定时任务、插件）——生命周期由 Skiff 管理。
+  - `remove`：Docker 资源（镜像、网络、卷，对齐引擎 `rm`）与文件「移入回收站」
+    （与 `skiff-fs` 动词 `remove` 一一对应，不表示资源本体删除）。
 
 ### 5.2 动词表（新路由只许用这些）
 
 | 动词 | 语义 | 示例 |
 | --- | --- | --- |
-| `create` | 新建资源 | `POST /{p}/sites/create`、`/{p}/runtimes/create`、`/{p}/networks/create` |
-| `save` | 保存配置（资源已存在） | `POST /{p}/sites/{domain}/config/save`、`/{p}/sites/web/config/main` |
-| `delete` | 删除资源本体 | `POST /{p}/images/{id}/delete`、`/{p}/plugins/{id}/delete` |
-| `toggle` | 启用/停用、开关 | `POST /{p}/plugins/{id}/toggle`、`/{p}/tasks/{id}/toggle` |
-| `run` | 立即执行一次 | `POST /{p}/tasks/{id}/run` |
-| `cancel` | 取消进行中的作业/配额 | `POST /{p}/jobs/{id}/cancel`、`/{p}/files/quotas/cancel` |
-| `retry` | 重试失败作业 | `POST /{p}/jobs/{id}/retry` |
-| `install` / `uninstall` | 安装/卸载扩展或包 | `POST /{p}/runtimes/{id}/extensions/{key}/install` |
-| `restore` / `purge` / `clear` | 回收站恢复/彻底删除/清空 | `/{p}/files/trash/restore|purge|clear` |
-| `pull` | 拉取镜像 | `POST /{p}/images/pull` |
-| `validate` / `up` / `down` | Compose 校验/启动/停止 | `/{p}/compose/validate|up|down` |
-| `probe` / `clone` / `unbind` | 探测/克隆/解绑 | `/{p}/runtimes/{id}/probe|clone`、`.../sites/{domain}/unbind` |
-| `batch` | 批量操作（参数在表单） | `POST /{p}/sites/batch` |
-| `scan` / `set` | 用量扫描/设置上限（fs 配额专用） | `/{p}/files/quotas/scan|set` |
-| `download` | 下载产物/升级包（GET，只读） | `GET /{p}/store/upgrades/{version}/download` |
+| `（集合 POST）` | 新建资源 | `POST /ui/v1/sites`、`/ui/v1/runtimes`、`/ui/v1/containers`、`/ui/v1/networks`、`/ui/v1/volumes` |
+| `config` / `params` | 保存配置（资源已存在） | `POST /ui/v1/sites/{domain}/config`、`/ui/v1/web/params`、`/ui/v1/settings/panel` |
+| `delete` | 删除内核自有实体 | `POST /ui/v1/sites/{domain}/delete`、`/ui/v1/tasks/{id}/delete`、`/ui/v1/plugins/{id}/delete` |
+| `remove` | 删除 Docker 资源 / 文件入回收站 | `POST /ui/v1/images/{id}/remove`、`/ui/v1/networks/{id}/remove`、`/ui/v1/volumes/{name}/remove`、`POST /{p}/files/remove` |
+| `toggle` | 启用/停用、开关 | `POST /ui/v1/plugins/{id}/toggle`、`/ui/v1/tasks/{id}/toggle` |
+| `run` | 立即执行一次 | `POST /ui/v1/tasks/{id}/run` |
+| `cancel` | 取消进行中的作业/配额 | `POST /ui/v1/jobs/{id}/cancel`、`/{p}/files/quotas/cancel` |
+| `retry` | 重试失败作业 | `POST /ui/v1/jobs/{id}/retry` |
+| `install` | 安装扩展、组件或包 | `POST /ui/v1/store/plugins/{id}/install`（返回确认数据）、`/ui/v1/web/install`、`/ui/v1/runtimes/{id}/extensions` |
+| `confirm` | 落实上一步的暂存结果 | `POST /ui/v1/plugins/confirm`（凭 24 位令牌提交） |
+| `restore` / `purge` / `clear` | 回收站恢复/彻底删除/清空 | `POST /{p}/files/trash/restore\|purge\|clear` |
+| `pull` | 拉取镜像 | `POST /ui/v1/images/pull` |
+| `validate` / `up` / `down` | Compose 校验/启动/停止 | `POST /ui/v1/compose/validate\|up\|down` |
+| `probe` / `clone` / `publish` / `unbind` | 探测/克隆/发布端口/解绑站点 | `POST /ui/v1/runtimes/{id}/probe\|clone\|publish`、`/ui/v1/runtimes/{id}/sites/{domain}/unbind` |
+| `batch` | 批量操作（参数在 body） | `POST /ui/v1/sites/batch` |
+| `scan` / `set` | 用量扫描/设置上限（fs 配额专用） | `POST /{p}/files/quotas/scan\|set` |
+| `download` | 下载产物到暂存 | 只读落盘走 GET：`GET /{p}/files/download`；升级包落暂存并记审计，故为 `POST /ui/v1/store/upgrades/{version}/download` |
 
 ### 5.3 通配动作（仅允许已有白名单）
 
-以下三段通配由 handler 内白名单校验，新增动作必须同时改白名单与本文：
+以下四段通配由 handler 内白名单校验，新增动作必须同时改白名单与本文：
 
-- `POST /{p}/containers/{id}/{action}`（start/stop/restart/kill/…）
-- `POST /{p}/sites/{domain}/{action}`（start/stop/restart/rebuild/…）
-- `POST /{p}/runtimes/{id}/action/{action}`
-- `POST /{p}/compose/{project}/{action}`
+- `POST /ui/v1/containers/{id}/{action}`（start/stop/restart/kill/…）
+- `POST /ui/v1/sites/{domain}/{action}`（start/stop/restart/rebuild/…）
+- `POST /ui/v1/runtimes/{id}/action/{action}`
+- `POST /ui/v1/compose/{project}/{action}`
 
 通配段必须注册在静态动作之后（如 `backup` 早于 `{action}`），避免被吞。
 
@@ -126,15 +140,15 @@
 | 方法 | 用途 | 约束 |
 | --- | --- | --- |
 | GET | 页面、列表、详情、下载、SSE/WS 握手 | 不产生业务副作用；`download` 只落暂存并校验摘要 |
-| POST | 全部写入、动作、表单提交 | 必须带 `csrf` 表单字段或头；Admin 权限按资源判定 |
+| POST | 全部写入、动作、登出 | `/ui/v1/*` 与 `/{p}/files/*` 的写操作必须带 `x-csrf-token` 头；权限按资源判定 |
 | DELETE / PUT / PATCH | **不使用** | 统一 POST + 末段动词，避免代理与表单兼容问题 |
 
-- 删除确认页（`GET /{p}/sites/{domain}/delete`）与执行（`POST` 同一路径）同路径，靠方法区分。
-- 长连接：`GET /{p}/containers/{id}/logs/stream`（SSE，仅旧 SSR 详情页跟随）、`/{p}/containers/{id}/exec`（WS，需先 `POST .../exec/ticket` 换票）；`GET /{p}/containers/{id}/logs` 已是 budding 页面（尾部快照）。
-- 失败回执：写操作 303 回页面，错误用 flash（`?` 不携带结果消息），不在 URL 里表达成败。
-- `/ui/v1/*` 的写操作一律 POST + CSRF；未认证引导与登录为 `GET /ui/v1/auth/login` 与 `POST /ui/v1/auth/login`（登录用签名 CSRF token + 来源判定，CSRF 放 JSON 体 `csrf` 字段）；`POST /ui/v1/session/logout`、`session/password`、`session/totp`、`session/totp/enable` 为认证类例外，语义与 `/{p}/logout`、`/{p}/password`、`/{p}/totp`、`/{p}/totp/enable` 一一对应。
+- 写操作一律 POST 到 `/ui/v1/*` 的动词端点（如 `POST /ui/v1/sites/{domain}/delete`），没有页面级表单提交。
+- 长连接：`GET /{p}/containers/{id}/logs/stream`（SSE）、`GET /{p}/jobs/{id}/logs/stream`（SSE）、`GET /{p}/containers/{id}/exec`（WS，需先 `POST /{p}/containers/{id}/exec/ticket` 换一次性票据）。
+- 失败回执：`/ui/v1/*` 一律 JSON 信封（`{"error":{code,message}}`），不在 URL 里表达成败，也不做 PRG 跳转。
+- `/ui/v1/*` 的写操作一律 POST + CSRF；未认证引导与登录为 `GET /ui/v1/auth/login` 与 `POST /ui/v1/auth/login`（登录用签名 CSRF token + 来源判定，CSRF 放 JSON 体 `csrf` 字段）；`POST /ui/v1/session/logout`、`settings/password`、`settings/totp/setup`、`settings/totp/enable` 为认证类入口（登录态自服务，仍校验 `x-csrf-token` 与本人会话）。
 - `/ui/v1/*` 未认证返回 401 JSON，不做 303；已认证但权限不足返回 403 JSON。
-- 写入口的守卫顺序固定为**先权限、后 CSRF**：无权限主体得到 `auth.forbidden`（SSR 为 403 页），不会先看到 `auth.csrf_invalid`。Docker 对象级授权（`protected` 对象）需要先解析容器，保留在 CSRF 之后，但角色门（`policy.check(actor, verb, None)`）仍在 CSRF 前。Compose 组同此顺序：Basic 档不提供 `ComposeUp/Down`，管理员在该档得到档位拒绝（`auth.forbidden`），CSRF 语义由 Lifecycle 档用例单独覆盖。
+- 写入口的守卫顺序固定为**先权限、后 CSRF**：无权限主体得到 `auth.forbidden`（403 JSON），不会先看到 `auth.csrf_invalid`。Docker 对象级授权（`protected` 对象）需要先解析容器，保留在 CSRF 之后，但角色门（`policy.check(actor, verb, None)`）仍在 CSRF 前。Compose 组同此顺序：Basic 档不提供 `ComposeUp/Down`，管理员在该档得到档位拒绝（`auth.forbidden`），CSRF 语义由 Lifecycle 档用例单独覆盖。
 
 ## 7. 兼容与下线
 
@@ -143,21 +157,18 @@
 | 旧路径 | 方式 | 目标 / 行为 |
 | --- | --- | --- |
 | `/{p}/files/api/{*rest}` | 308 | `/{p}/files/{rest}`，保留方法与请求体 |
-| `/{p}/docker/settings` | 308 | `/{p}/settings/docker` |
-| `/{p}/store/plugins/{id}/install` 的 GET | 303 | 回 `/{p}/store` 并提示「安装必须用页面按钮」；安装仅接受 POST |
-| `/{p}/images/{id}/remove`、`/{p}/networks/{id}/remove`、`/{p}/volumes/{name}/remove`、`/{p}/plugins/{id}/remove`、`/{p}/settings/keys/{id}/remove` | 别名 | 对应 `/delete` |
-| `/{p}/settings/keys`（集合 POST） | 别名 | `POST /{p}/settings/keys/create` |
-| `/{p}/m/plugin/{*rest}` | 内部转发 | 插件工作台，内核渲染功能页与 schema |
-| `/{p}/m/overview` | SSR 页面 | 概览页暂保留 SSR（直到插件槽位迁完） |
 
-- 301 只用于 **GET 页面**；带方法的请求一律 308 或同 handler 别名，禁止让表单 POST 落到 301。
-- 别名清单只减不增。删除某条别名前，先在 `docs/changes/` 记一次「已下线」并确认仓库内无引用。
-- 测试守门：`crates/web/tests/main_flow.rs::legacy_paths_redirect_to_canonical_urls` 覆盖跳转目标；
-  新增兼容项必须加进该测试。
-- **旧路由下线记录（2026-11-18）**：budding 壳页已全部覆盖资源面板，旧路由注册直接删除、访问返回 404，不做 301/308 重定向。
-  下线清单：`/{p}/sites/env[/{*rest}]`（运行环境旧路径 20+ 条路由）、`/{p}/m/core/{*rest}`（SSR 深链 dispatch 分支）。
-  仍维持兼容的路径见上表：`/{p}/files/api/*`、`/{p}/docker/settings`、`/{p}/store/plugins/{id}/install` GET、`remove`→`delete` 别名、
-  `settings/keys` POST 别名、`/{p}/m/plugin/*` 插件工作台。
+- 301 只用于 **GET 页面**；带方法的请求一律 308，禁止让写请求落到 301。
+- 兼容清单只减不增。删除某条兼容前，先在 `docs/changes/` 记一次「已下线」并确认仓库内无引用。
+- 测试守门：`crates/web/tests/main_flow.rs::legacy_paths_redirect_to_canonical_urls` 覆盖跳转目标。
+- **不在上表的一律 404**：页面与页面内表单已全部由 budding 壳页 + `/ui/v1/*` 承载，旧 SSR 路由删掉即删，
+  不做 301/308。销毁清单（每次下线追加一行，便于回溯）：
+  - 2026-11-18：`/{p}/sites/env[/{*rest}]`（运行环境旧路径 20+ 条）、`/{p}/m/core/{*rest}`。
+  - 2026-11-19：`GET /{p}/containers/rows`（htmx 局部片段）。
+  - 2026-11-19：`/{p}/m/{*rest}` 全量删除；页面级写路由（containers / sites / runtimes / images / networks / volumes /
+    compose / tasks / jobs / store / plugins / settings / audit / docker-settings）、`/{p}/logout`、`/{p}/password`、
+    `/{p}/totp*`、`POST /{p}/plugins/install`（multipart 上传）一并删除。
+
 
 ## 8. 查询参数
 
@@ -167,5 +178,6 @@
   `page`（分页）、`after`（SSE 游标）、`refresh` / `force`（强制刷新）、`project`（Compose 项目）、
   `file` / `ini` / `port`（运行环境详情定位）、`open`（插件页打开项）。
 - 认证类例外：`next`（登录后跳转）、`u`（用户名预填，兼容 `username`）。
-- 写操作的参数放**请求体**（表单字段），不放查询串；唯一例外是 SSE 游标 `after`。
+- 写操作的参数放**请求体**：`/ui/v1/*` 用 JSON body，`/{p}/files/*` 用 JSON 或 `multipart/form-data`（上传），
+  不放查询串；唯一例外是 SSE 游标 `after`。
 - 新增参数必须先在本节登记；同义参数合并为一个，不新增别名。

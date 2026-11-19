@@ -97,8 +97,7 @@
 | --- | --- |
 | `crates/store/src/db.rs` / `db/sites.rs` | v7 迁移、`site_runtimes` CRUD、`sites` 字段重建 |
 | `crates/app/src/sites.rs` | 按类型生成 vhost、环境端口分配、PHP socket 取 `runtime_id`、Node.js / Rust 进程模型与健康检查 |
-| `crates/web/src/handlers/sites.rs` | 向导三步、运行环境详情、校验、权限、审计改名 |
-| `crates/web/templates/site_new.html` / `site_env.html` / `sites.html` / `site_detail.html` | 三类分支、环境列表与详情、站点类型列 |
+| `crates/web/src/handlers/{sites.rs,ui/sites.rs,ui/runtimes.rs}` | 三类分支、运行环境详情、校验、权限、审计 |
 | `crates/app/src/menu.rs` | 仅确认 `core/sites/*` 稳定键，不新增 L2 |
 | `docs/test/DEPLOY_TEST.md` / `docs/test/TEST_LEDGER.md` | 目录、socket、端口、验收用例同步 |
 | `docs/archive/ui/site-runtime-preview.html` | 本契约的可点预览，不参与产品构建 |

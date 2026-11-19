@@ -549,7 +549,7 @@
 
   // ---- 主题：默认浅色；暗色为完整可选项，选择持久化到 localStorage ----
   // 首屏由 `/static/theme-init.js` 在样式表之前落地 `data-theme`；这里负责切换、
-  // 按钮可访问性、向插件 iframe 广播，并在 htmx 局部替换 / 前进后退缓存恢复后
+  // 按钮可访问性、向插件 iframe 广播，并在前进后退缓存恢复后
   // 按 localStorage 重新落地。键名与 theme-init.js 必须一致。
   var THEME_KEY = "skiff.theme";
   function attachTheme() {
@@ -602,7 +602,7 @@
       return null;
     }
 
-    // 以 localStorage 为准重新落地：刷新、htmx 局部替换、bfcache 恢复都走这里。
+    // 以 localStorage 为准重新落地：刷新、bfcache 恢复都走这里。
     // 存储值缺失时才保留首屏已经落地的属性，避免无谓地把暗色刷成浅色。
     function syncFromStorage() {
       var theme = storedTheme() || current();
@@ -617,7 +617,7 @@
     if (root.dataset.themeReady !== "1") {
       root.dataset.themeReady = "1";
 
-      // 用文档级委托，htmx 替换掉按钮节点后仍然有效。
+      // 用文档级委托，按钮节点被整体替换后仍然有效。
       document.addEventListener("click", function (ev) {
         var button = ev.target && ev.target.closest ? ev.target.closest("[data-theme-toggle]") : null;
         if (!button) return;
@@ -656,7 +656,7 @@
 
       syncFromStorage();
     } else {
-      // htmx 局部替换：重新同步按钮语义，并给新插入的 iframe 补发主题。
+      // 重复执行（脚本二次运行）：重新同步按钮语义，并给新插入的 iframe 补发主题。
       syncFromStorage();
     }
   }
@@ -690,7 +690,7 @@
       dialog.showModal();
     }
 
-    // capture 阶段拦截：htmx 表单在 form 自身的 submit 监听里就发请求，
+    // capture 阶段拦截：表单自身的 submit 处理器会先发请求，
     // 冒泡到 document 时已经晚了；必须比它先拿到事件才能弹出确认。
     document.addEventListener("submit", function (e) {
       var form = e.target;
@@ -1956,5 +1956,4 @@
   }
 
   document.addEventListener("DOMContentLoaded", boot);
-  document.body.addEventListener("htmx:afterSwap", boot);
 })();

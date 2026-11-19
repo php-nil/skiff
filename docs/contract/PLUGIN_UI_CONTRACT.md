@@ -5,10 +5,9 @@
 >
 > 一句话结论：`/{p}/plugins/{id}` 是内核渲染的插件信息与管理页；插件只负责 `/{p}/plugins/{id}/<view>` 里的功能内容。
 >
-> **2026-11-13 原生化**：budding 新前端的插件功能页改为**随包 Schema 原生渲染**
-> （`api = "1.3"` 起，`ui/schema/<name>.json`，安装期静态校验）。旧 iframe / SSR
-> 工作台保留为 legacy（`/{p}/m/plugin/...` 与 `?legacy=1`），不再作为面板内入口。
-> iframe 沙箱、CSP、nonce 与 postMessage 桥接仅对旧 SSR 页继续有效；新壳的安全边界见 §4.0。
+> **原生化**：插件功能页由**随包 Schema 原生渲染**（`api = "1.3"` 起，`ui/schema/<name>.json`，
+> 安装期静态校验）。没有 schema 的旧视图回落到内核 iframe 工作台，入口是显式 `?legacy=1`；
+> iframe 沙箱、CSP、nonce 与 postMessage 桥接只对这条兼容路径有效，新壳的安全边界见 §4.0。
 
 ## 1. 路由分工
 
@@ -17,23 +16,18 @@
 | 路由 | 方法 | 渲染方 | 说明 |
 |---|---|---|---|
 | `/{p}/plugins` | GET | 内核 | 插件中心（已安装 / 发现 / 可更新） |
-| `/{p}/plugins/{id}` | GET | 内核 | **插件信息与管理页**：身份、版本、密钥指纹、签名、沙箱、授权、菜单、运行状态、日志/事件入口、管理动作 |
-| `/{p}/plugins/{id}/{view}` | GET | 壳页（schema） | **插件功能页**：声明了 schema 的视图由壳页原生渲染；未声明的旧视图回落旧 SSR 工作台（`?legacy=1` 显式兼容） |
+| `/{p}/plugins/{id}` | GET | 壳页 | **插件信息与管理页**：数据来自 `GET /ui/v1/plugins/{id}` |
+| `/{p}/plugins/{id}/{view}` | GET | 壳页 / 内核 | **插件功能页**：默认交壳页（有 schema 原生渲染）；`?legacy=1` 才是内核 iframe 工作台 |
 | `/{p}/plugins/{id}/schema/{view}` | GET | 内核 | 返回该视图的随包 schema JSON（`application/json`，`no-store`）；要求 `PluginManage`，与 RPC 同权限；运行期解析失败返回 400（`shape.plugin_schema`） |
 | `/{p}/plugins/{id}/ui/{path}` | GET | 插件 | 托管静态资源（HTML/CSS/JS/图片），带 CSP，不允许目录穿越；legacy iframe 使用；要求 `PluginManage`（与 schema/RPC 同口径） |
 | `/{p}/plugins/{id}/rpc` | POST | 内核代发 | 父页面代发插件 RPC，需要 CSRF 头与管理员权限，逐次审计；成功 `{ result }`，失败统一 JSON 错误信封 |
-| `/{p}/plugins/{id}/toggle` | POST | 内核 | 启用 / 停用；`next` 只接受本站插件前缀 |
-| `/{p}/plugins/{id}/delete` | POST | 内核 | 卸载；可选 `delete_data=on`。旧 `/{p}/plugins/{id}/remove` 保留为别名（[`URL_CONTRACT.md`](URL_CONTRACT.md) §7） |
-| `/{p}/m/plugin/{id}` | GET | 内核 | 菜单默认视图 |
-| `/{p}/m/plugin/{id}/{l2}` | GET | 内核 | 该 L2 的默认视图 |
-| `/{p}/m/plugin/{id}/{l2}/{l3}` | GET | 内核 | 该 L3 的视图 |
 
 约定：
 
 - `/{p}/plugins/{id}` **不再承载 iframe**，也不再接受 `?menu=` 选择视图。
-- 功能页的规范入口是 `/{p}/plugins/{id}/{view}`；菜单深链 `/{p}/m/...` 是同一视图的另一种寻址方式，二者渲染结果一致。
-- **权限口径**：功能页、schema 端点、旧 SSR 深链、`ui/{path}` 静态资源与 `POST /rpc` 一致，均要求 `PluginManage`；不允许「页面只要登录、取数才 403」。
-- 静态段 `ui` / `rpc` / `schema` / `toggle` / `delete` / `remove` 优先于 `{view}`，因此视图名不得使用这些保留字（安装期校验）。
+- 功能页的唯一入口是 `/{p}/plugins/{id}/{view}`：默认壳页，`?legacy=1` 是 iframe 工作台。
+- **权限口径**：功能页、schema 端点、`ui/{path}` 静态资源与 `POST /rpc` 一致，均要求 `PluginManage`；不允许「页面只要登录、取数才 403」。
+- 静态段 `ui` / `rpc` / `schema` 优先于 `{view}`；`toggle` / `delete` / `remove` 已改由 `/ui/v1` 承担，仍作为保留字禁止用作视图名（安装期校验）。
 - `{view}` 只允许 `[a-z0-9][a-z0-9-]{0,31}`。
 
 ## 2. manifest 声明模型
@@ -169,7 +163,7 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 | 权限 | 声明权限（`fs:read` 等） | manifest `permissions` |
 | 授权 | 已授权资源（`path:/proc`、`plugin:<id>`、`container:<id>` 等） | 安装时落库的 grants |
 | 互操作 | 对外开放方法、允许调用的 `插件:方法` | manifest `[interop]` |
-| 关联菜单 | L2/L3 标签与深链 `/{p}/m/plugin/...` | 实际可见菜单（已按角色过滤） |
+| 关联菜单 | L2/L3 标签与深链 `/{p}/plugins/<id>/<view>` | 实际可见菜单（已按角色过滤） |
 | 运行 | 运行中 / 未运行 | Supervisor |
 | 日志与事件 | 审计日志入口（`plugin.*`）、异常容器与日志入口 | 内核固定链接 |
 | 功能入口 | 「打开功能界面」→ 默认视图 | 第一个可见 L2 的首个视图；旧包为 `main` |
@@ -212,9 +206,9 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 
 - **托管静态资源要求登录**：`GET /{p}/plugins/{id}/ui/{path}` 与 schema / RPC 同口径要 `PluginManage`；插件 UI 只由已登录面板页以 iframe 加载，同源子资源请求自带会话 Cookie，插件 SDK 无匿名加载依赖。
 
-### 4.1 旧 SSR iframe 沙箱与 CSP（legacy）
+### 4.1 iframe 工作台沙箱与 CSP（legacy，仅 `?legacy=1`）
 
-旧 SSR 工作台仍由内核渲染外框，插件内容在 iframe 中：
+内核仍为该工作台渲染外框（`plugin_view.html`），插件内容在 iframe 中：
 
 ```html
 <iframe sandbox="allow-scripts allow-modals allow-forms"
@@ -256,10 +250,10 @@ object-src 'none'; frame-ancestors 'self'
 |---|---|
 | 只有 `[[ui]]`，无 `[[menu]]` | 合成 L2 `legacy`；默认视图 `main` 指向第一条 `[[ui]].path`（老包通常是 `ui/index.html`） |
 | 多条 `[[ui]]` | 第一条 → `main`；其余 → `legacy-2`、`legacy-3`… 作为 L3，各自 `path` |
-| 旧深链 `/{p}/m/plugin/{id}/legacy` | 升级为声明式后落到首个可见 L2，不 404 |
+| 旧深链视图名 `legacy`（`/{p}/plugins/{id}/legacy?legacy=1`） | 升级为声明式后落到首个可见 L2，不 404 |
 | 新包声明 `[[menu]]` | `[[ui]]` 不再参与视图解析；`[[ui]].path` 仅用于插件中心元数据 |
-| `api = "1.3"` 且视图声明 `schema` | 壳页原生渲染 schema；同名 HTML 可以保留（旧 SSR 仍可用），但不再是新壳入口 |
-| `api <= "1.2"` | 行为完全不变：继续 HTML + iframe，仅旧 SSR 可达 |
+| `api = "1.3"` 且视图声明 `schema` | 壳页原生渲染 schema；同名 HTML 仍可经 `?legacy=1` 打开，但不是面板入口 |
+| `api <= "1.2"` | 继续 HTML + iframe：功能页只能在显式 `?legacy=1` 下打开（壳页 schema 404 时自动回跳） |
 
 **何时废弃 `ui/index.html`**
 

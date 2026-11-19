@@ -21,7 +21,7 @@ nginx/PHP 镜像标签归运行环境页的「镜像参数」。
 | 运行环境详情 | `/{p}/runtimes/<runtime-id>` |
 | 运行环境标签页 | 壳页内标签：`?tab=config|logs|sites` |
 
-- 旧深链 `/{p}/m/core/sites/*`、`/{p}/sites/env*` 已于 2026-11-18 删除，访问 404（见 `docs/contract/URL_CONTRACT/01-RULES.md` §7）。
+- 页面只有壳页：`/{p}/sites*` 与 `/{p}/runtimes*` 均为 budding 页，数据走 `/ui/v1/*`；旧深链已删除（见 `docs/contract/URL_CONTRACT/01-RULES.md` §7）。
 
 - 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/settings/docker`），
   `nginx_image` / `php_image` 归运行环境页的「镜像参数」。URL 规则统一见 [`URL_CONTRACT.md`](../URL_CONTRACT.md)。

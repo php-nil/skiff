@@ -31,7 +31,7 @@ impl std::error::Error for SignedTokenError {}
 /// 生成 `<nonce>.<unix_ts>.<hmac>` 形式的签名 token。
 ///
 /// 签名密钥由调用方提供（登录 CSRF 用持久化的 `security.csrf_secret`），
-/// 因此服务重启后旧页面仍可校验；时效在 `verify_signed_token` 的 `ttl_secs` 判定。
+/// 因此服务重启后既有表单仍可校验；时效在 `verify_signed_token` 的 `ttl_secs` 判定。
 pub fn signed_token(secret: &str, purpose: &str, now: i64) -> String {
     let nonce = new_token();
     let payload = format!("{nonce}.{now}");

@@ -1,8 +1,8 @@
 //! 商店安装命令（Skiff-server P2）：目录条目 → 下载 → 摘要/大小 → 验签 → 权限确认。
 //!
-//! 只做「把已验证目录里的插件包安全地落到 `.incoming`，并给出确认页所需事实」；
-//! 最终安装仍复用 `web` 确认页与 `skiff_plugin::install_package`（同一套安装、
-//! 授权与审计口径）。本模块不写库、不做权限判定，也不改变现有信任判定。
+//! 只做「把已验证目录里的插件包安全地落到 `.incoming`，并给出确认步骤所需事实」；
+//! 最终安装由 `POST /ui/v1/plugins/confirm` 调 `skiff_plugin::install_package` 完成
+//! （同一套安装、授权与审计口径）。本模块不写库、不做权限判定，也不改变现有信任判定。
 //!
 //! 拒绝语义按原因分开（下载 / 摘要 / 验签 / 兼容性 / 吊销 / 未启用 / 缺公钥），
 //! 由调用方落审计并给出页面提示；任何一步失败都清理暂存文件，不留半装状态。
@@ -82,7 +82,7 @@ fn cleanup_stale_incoming_at(dir: &Path, now: SystemTime, ttl: Duration) -> usiz
 pub struct StoreInstallRequest {
     pub plugin_id: String,
     /// 商店页选择器显示的版本；与 `CatalogService::installable_package` 交叉校验。
-    /// 旧页面不带该字段时按当前可安装版本处理。
+    /// 调用方不带该字段时按当前可安装版本处理。
     pub version: Option<String>,
     /// 当前部署形态（能力面收缩口径随之变化）。
     pub form: skiff_model::Form,
@@ -95,7 +95,7 @@ pub struct StoreInstallRequest {
 /// 已暂存、等待权限确认的安装。
 #[derive(Debug)]
 pub struct PreparedInstall {
-    /// 确认页隐藏字段；对应 `.incoming/<token>.wbpkg`。
+    /// 确认步骤的一次性令牌；对应 `.incoming/<token>.wbpkg`。
     pub token: String,
     pub path: PathBuf,
     pub trust: TrustDecision,
@@ -171,7 +171,7 @@ impl std::fmt::Display for StoreInstallError {
 
 impl std::error::Error for StoreInstallError {}
 
-/// 目录条目 → 暂存包 → 验签，返回确认页所需事实。
+/// 目录条目 → 暂存包 → 验签，返回确认步骤所需事实。
 ///
 /// 任一步失败都保证 `.incoming` 下没有残留：下载失败由 `download_blob` 清理，
 /// 验签失败在这里清理。做阻塞 I/O，调用方必须放进 `spawn_blocking`。
@@ -180,7 +180,7 @@ pub fn prepare(
     db: &Db,
     req: &StoreInstallRequest,
 ) -> Result<PreparedInstall, StoreInstallError> {
-    // 放弃确认页会遗留暂存包：每次准备安装前先扫一次过期文件。
+    // 放弃确认会遗留暂存包：每次准备安装前先扫一次过期文件。
     cleanup_stale_incoming(&req.data_dir, INCOMING_TTL);
 
     if !catalog.enabled() {
@@ -242,7 +242,7 @@ pub fn prepare(
     let trust = match skiff_plugin::resolve_trust(&path, db, req.allow_unsigned) {
         Ok(trust) => trust,
         Err(e) => {
-            // 验签失败即删暂存：确认页不会再出现，文件也不能留在磁盘上。
+            // 验签失败即删暂存：确认步骤不会再出现，文件也不能留在磁盘上。
             let _ = fs::remove_file(&path);
             return Err(match e {
                 skiff_plugin::TrustError::UnverifiedKey { key_id } => StoreInstallError::Signature(
@@ -320,7 +320,7 @@ fn check_compatibility(
 }
 
 /// 确认令牌：24 位字母数字，与上传安装的 `.incoming/<token>.wbpkg` 同一格式，
-/// 确认页 POST 到 `/plugins/confirm` 时由同一段校验接受。
+/// 安装确认 `POST /ui/v1/plugins/confirm` 时由同一段校验接受。
 fn new_token() -> String {
     skiff_identity::new_token()
         .replace(['-', '_'], "")

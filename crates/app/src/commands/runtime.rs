@@ -34,7 +34,7 @@ pub const NAMES: &[&str] = &[
     "unbind_site",
 ];
 
-/// 新建运行环境。`kind` 为空时落 `php`（旧表单的默认值），由命令兜底。
+/// 新建运行环境。`kind` 为空时落 `php`（默认类型），由命令兜底。
 #[derive(Debug, Clone)]
 pub struct CreateRuntime {
     pub kind: String,

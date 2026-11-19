@@ -300,8 +300,8 @@ pub async fn container_logs(
 
 /// `POST /ui/v1/containers/{id}/{action}`：启动/停止/重启/删除。
 ///
-/// 与旧 htmx 路径同一策略判定、同一审计与同一命令；CSRF 用 `/ui/v1` 统一的
-/// `x-csrf-token` 头（与登出同源），仅传输层改为 JSON。
+/// 策略判定、审计与命令都复用 `skiff_app::commands`；CSRF 用 `/ui/v1` 统一的
+/// `x-csrf-token` 头（与登出同源）。
 pub async fn container_action(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,

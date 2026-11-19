@@ -150,8 +150,19 @@ impl std::error::Error for HostRunError {}
 
 /// `systemd-run` 的完整 argv（不含可执行文件本身）。
 ///
-/// 纯函数：单测在非 Linux 上也能验证「`--` 之后才是目标命令」与参数原样透传。
-pub fn systemd_run_argv(unit: &str, description: &str, cmd: &str, args: &[String]) -> Vec<String> {
+/// `timeout_secs` 用于给瞬态单元补 `RuntimeMaxSec` 兜底：Rust 侧的 tokio deadline 先到、
+/// 正常 `stop_unit` 收敛；但如果 Rust 进程崩了，systemd 也会在 `timeout_secs + 10` 后强杀单元，
+/// 避免孤儿 root 进程。`+ 10` 是 Rust 侧的清理窗口。
+///
+/// 纯函数：单测在非 Linux 上也能验证「`--` 之后才是目标命令」、`RuntimeMaxSec` 注入与参数原样透传。
+pub fn systemd_run_argv(
+    unit: &str,
+    description: &str,
+    timeout_secs: u64,
+    cmd: &str,
+    args: &[String],
+) -> Vec<String> {
+    let runtime_max = timeout_secs.saturating_add(10);
     let mut full: Vec<String> = [
         "--unit",
         unit,
@@ -159,6 +170,8 @@ pub fn systemd_run_argv(unit: &str, description: &str, cmd: &str, args: &[String
         "--pipe",
         "--collect",
         "--quiet",
+        "--property",
+        &format!("RuntimeMaxSec={runtime_max}"),
         "--description",
         description,
         "--",
@@ -283,7 +296,13 @@ async fn spawn(
         } else {
             spec.description
         };
-        let argv = systemd_run_argv(&unit, description, spec.cmd, spec.args);
+        let argv = systemd_run_argv(
+            &unit,
+            description,
+            spec.timeout_secs.max(1),
+            spec.cmd,
+            spec.args,
+        );
         let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         let mut c = tokio::process::Command::new("/usr/bin/systemd-run");
         // 装包时若弹出交互提示，作业会一直挂着等 stdin。
@@ -437,23 +456,27 @@ mod tests {
     #[test]
     fn argv_puts_command_after_separator_and_passes_args_verbatim() {
         let args = vec!["--flag".to_string(), "a b".to_string()];
-        let argv = systemd_run_argv("skiff-ftp-1-2", "desc", "/usr/bin/true", &args);
+        let argv = systemd_run_argv("skiff-ftp-1-2", "desc", 30, "/usr/bin/true", &args);
         let sep = argv.iter().position(|a| a == "--").expect("必须有 -- 分隔");
         assert_eq!(argv[sep + 1], "/usr/bin/true");
         assert_eq!(&argv[sep + 2..], ["--flag", "a b"]);
         assert!(argv.iter().any(|a| a == "--wait"));
         assert!(argv.iter().any(|a| a == "--collect"));
+        // RuntimeMaxSec 兜底：Rust 侧 30s deadline → systemd 40s 强杀兜底
+        assert!(argv.iter().any(|a| a == "--property"));
+        assert!(argv.iter().any(|a| a == "RuntimeMaxSec=40"));
     }
 
     #[test]
     fn unit_and_description_are_forwarded() {
-        let argv = systemd_run_argv("skiff-firewall-9-0", "fw mutation", "cmd", &[]);
+        let argv = systemd_run_argv("skiff-firewall-9-0", "fw mutation", 120, "cmd", &[]);
         assert!(argv
             .windows(2)
             .any(|w| w[0] == "--unit" && w[1] == "skiff-firewall-9-0"));
         assert!(argv
             .windows(2)
             .any(|w| w[0] == "--description" && w[1] == "fw mutation"));
+        assert!(argv.iter().any(|a| a == "RuntimeMaxSec=130"));
     }
 
     /// `direct` 只翻 `privileged`，其余默认值（超时、前缀）与特权模式一致：

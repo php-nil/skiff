@@ -6,105 +6,9 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
-use crate::handlers;
-use crate::middleware::{check_csrf, AdminUser, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::templates::{KeyRow, SettingsPage};
-use crate::util::{form_first, parse_form};
+use crate::util::form_first;
 use skiff_app::menu;
-
-pub async fn render_settings(
-    state: &Arc<AppState>,
-    user: &CurrentUser,
-    error: &str,
-    notice: &str,
-    totp: Option<(String, String)>,
-    backup_codes: Vec<String>,
-    force: bool,
-) -> Result<Response, AppError> {
-    let keys = state
-        .db()
-        .list_trusted_keys()?
-        .into_iter()
-        .map(|(key_id, _pk, label)| KeyRow {
-            fingerprint_short: key_id.chars().take(16).collect(),
-            key_id,
-            label,
-        })
-        .collect();
-
-    let security = skiff_app::views::settings::account_security(state, user.user.id)?
-        .ok_or_else(|| AppError::NotFound("用户不存在".into()))?;
-
-    let page = SettingsPage {
-        ctx: handlers::page_ctx(state, user, "settings"),
-        entry_prefix: state.cfg.entry_prefix.clone(),
-        listen_addr: state.cfg.listen.ip().to_string(),
-        listen_port: state.cfg.listen.port(),
-        tls_cert: state
-            .cfg
-            .tls_cert
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        tls_key: state
-            .cfg
-            .tls_key
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-        config_path: state.cfg.config_path.display().to_string(),
-        // 三态回显：真 TLS → on；明文但非 loopback 只能是显式关闭 → off；
-        // 反代形态与 loopback 调试保持 auto（保存时不会把配置误写成显式 off）。
-        tls_mode: if state.cfg.tls_enabled {
-            "on"
-        } else if !state.cfg.dev_http {
-            "auto"
-        } else if !state.cfg.listen.ip().is_loopback() {
-            "off"
-        } else {
-            "auto"
-        }
-        .to_string(),
-        // 反代形态：本进程不终止 TLS、浏览器侧仍是 HTTPS，且配置了可信反代。
-        plaintext_behind_proxy: !state.cfg.dev_http
-            && !state.cfg.tls_enabled
-            && !state.cfg.trusted_proxies.is_empty(),
-        totp_enabled: security.totp_enabled,
-        totp_secret: totp.as_ref().map(|(s, _)| s.clone()).unwrap_or_default(),
-        totp_uri: totp.as_ref().map(|(_, u)| u.clone()).unwrap_or_default(),
-        backup_codes,
-        keys,
-        is_admin: user.can(skiff_model::Permission::Admin),
-        error: error.to_string(),
-        notice: notice.to_string(),
-        force_change: force || user.must_change_password(),
-        // 文件仍存在说明初始口令尚未被修改；只提示，不拦截。
-        initial_admin_pending: state.cfg.data_dir.join("initial-admin.txt").exists(),
-    };
-    handlers::render(page)
-}
-
-/// 设置 → 监听端口 / 安全入口前缀 / TLS 开关。
-///
-/// 落盘到 `config.toml`，但**不热改**当前进程：路由前缀与监听 socket 都在启动时固定，
-/// 统一要求重启。为防改前缀把自己锁在外面，保存时把旧前缀记为 24 小时兼容别名，
-/// 重启后由路由层 302 到新入口。
-pub async fn panel_update(
-    State(state): State<Arc<AppState>>,
-    AdminUser(user): AdminUser,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-
-    let updated = match apply_panel_update(&state, &user, &form).await {
-        Ok(msg) => msg,
-        Err(msg) => return render_settings(&state, &user, &msg, "", None, Vec::new(), false).await,
-    };
-    render_settings(&state, &user, "", &updated, None, Vec::new(), false).await
-}
-
 pub(crate) async fn apply_panel_update(
     state: &Arc<AppState>,
     user: &CurrentUser,
@@ -273,77 +177,6 @@ pub async fn legacy_prefix_redirect(
         rest.trim_start_matches('/')
     ))
 }
-
-pub async fn import_key(
-    State(state): State<Arc<AppState>>,
-    AdminUser(user): AdminUser,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let public_hex = form_first(&form, "public_key").trim().to_lowercase();
-    let label = form_first(&form, "label").trim().to_string();
-    let vk = skiff_pkgfmt::decode_public_key(&public_hex)
-        .map_err(|e| AppError::BadRequest(format!("公钥非法: {e}")))?;
-    let key_id = skiff_pkgfmt::key_id_of(&vk.to_bytes());
-    state.db().trust_key(&key_id, &public_hex, &label)?;
-    state.audit_or_log(
-        &user.user.username,
-        "local",
-        "settings.key.import",
-        &key_id,
-        "ok",
-        &label,
-    );
-    render_settings(
-        &state,
-        &user,
-        "",
-        &format!("已导入公钥，指纹 {key_id}（请与发布者公布值逐位核对）"),
-        None,
-        Vec::new(),
-        false,
-    )
-    .await
-}
-
-pub async fn remove_key(
-    State(state): State<Arc<AppState>>,
-    AdminUser(user): AdminUser,
-    Path(key_id): Path<String>,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    state.db().remove_trusted_key(&key_id)?;
-    state.audit_or_log(
-        &user.user.username,
-        "local",
-        "settings.key.remove",
-        &key_id,
-        "ok",
-        "撤销后该公钥签名的包将无法安装/升级",
-    );
-    render_settings(&state, &user, "", "已撤销该公钥", None, Vec::new(), false).await
-}
-
-/// 设置 → 菜单设置（按用户，scope = 当前账号）。
-/// `GET /{p}/settings/menu` 规范入口：交付 budding 壳页（唯一入口）。
-pub async fn menu_shell(
-    State(state): State<Arc<AppState>>,
-    AuthUser(_user): AuthUser,
-) -> Result<Response, AppError> {
-    Ok(crate::handlers::spa::shell_page(&state))
-}
-
-/// `GET /{p}/settings/ui` 规范入口：交付 budding 壳页（界面/主题设置）。
-pub async fn ui_theme_shell(
-    State(state): State<Arc<AppState>>,
-    AuthUser(_user): AuthUser,
-) -> Result<Response, AppError> {
-    Ok(crate::handlers::spa::shell_page(&state))
-}
-
 /// 菜单设置写操作：SSR 表单与 `/ui/v1/settings/menu` 共用的唯一业务入口。
 ///
 /// 偏好校验/落盘仍在 `skiff_app::menu::apply_action`，这里只补同一条审计。
@@ -363,23 +196,4 @@ pub(crate) fn apply_menu_update(
         key,
     );
     Ok(())
-}
-
-pub async fn menu_update(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let action = form_first(&form, "action");
-    let key = form_first(&form, "key");
-    apply_menu_update(&state, &user, &action, &key)?;
-    Ok(handlers::flash_redirect(
-        &state,
-        &user,
-        skiff_app::FlashKind::Notice,
-        "已保存菜单偏好",
-        format!("/{}/settings/menu", state.cfg.entry_prefix),
-    ))
 }

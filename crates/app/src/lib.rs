@@ -529,7 +529,7 @@ impl AppState {
 
     /// Web 服务安装进度：唯一事实源是任务中心最新一条 `web.install` 作业。
     ///
-    /// 页面、JSON 接口与旧 SSR 共用这一份快照；进程重启后由
+    /// 壳页与 `/ui/v1` 共用这一份快照；进程重启后由
     /// `JobService::new` 的中断收尾把遗留活跃作业结算为失败。
     pub fn web_install_progress(&self) -> sites::InstallProgress {
         let job = self

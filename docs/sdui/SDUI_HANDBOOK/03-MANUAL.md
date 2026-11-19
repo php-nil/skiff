@@ -168,7 +168,6 @@
 
 | 文档 | 负责内容 | 本文如何引用 |
 |---|---|---|
-| [UI_CONTRACT.md](../../contract/UI_CONTRACT.md) | 页面视觉与交互基准 | 迁移后的视觉一致性仍以其为准，本文不复制 |
 | [PLUGIN_UI_CONTRACT.md](../../contract/PLUGIN_UI_CONTRACT.md) | 插件路由、视图模型、iframe 沙箱 | 插件 UI 短期维持原契约 |
 | [MENU_CONTRACT.md](../../contract/MENU_CONTRACT.md) | 菜单声明、归属与持久化 | 菜单声明留内核，渲染归表现层 |
 | [TEST_MATRIX.md](../../test/TEST_MATRIX.md) | 回归清单与判定 | 本文只补 SDUI 契约测试项 |

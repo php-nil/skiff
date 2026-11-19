@@ -229,7 +229,68 @@ fn take_stdin(job_id: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// 提交
+// 共享前置判定（两条通道共用）
+// ---------------------------------------------------------------------------
+
+/// 两条通道共用的前置判定链：请求体解析 → `exec:run` 权限 → Native+Linux 形态闸 →
+/// `execgrant::resolve` 三道闸。只有 `timeout_sec` 的默认值与上限两条通道不同。
+///
+/// 成功时返回 `(ExecRequest, binary_display, risk)`；失败时返回
+/// `(StatusCode, error_message)` —— 审计已在内部按需写入，调用方只负责返回。
+fn pre_check_exec(
+    body: &Value,
+    id: &str,
+    state: &Arc<AppState>,
+    action: &str,
+    timeout_default: u64,
+    timeout_max: u64,
+) -> Result<(ExecRequest, String, skiff_model::BinRisk), (StatusCode, String)> {
+    let parsed = ExecRequest::parse_with(body, timeout_default, timeout_max).map_err(|msg| {
+        audit(state, id, action, "deny", &format!("请求非法: {msg}"));
+        (StatusCode::BAD_REQUEST, msg)
+    })?;
+
+    let grants = state.plugin_auth_of(id).unwrap_or_default();
+    // 精确命中而不是 `exec:*` 通配：本能力面只有一个动词，留通配只会在将来
+    // 加动词时悄悄放宽权限。
+    if !grants.iter().any(|g| g.permits(PERM)) {
+        audit(state, id, action, "deny", "缺少 exec:run 授权");
+        return Err((StatusCode::FORBIDDEN, "缺少 exec:run 授权".into()));
+    }
+
+    if state.cfg.form != Form::Native || !cfg!(target_os = "linux") {
+        audit(
+            state,
+            id,
+            action,
+            "deny",
+            "当前部署形态不支持宿主机命令执行",
+        );
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "当前部署形态不支持宿主机命令执行（需要 Native + Linux）".into(),
+        ));
+    }
+
+    let data_dir = state.cfg.data_dir.clone();
+    let bin = execgrant::resolve(&data_dir, &grants, &parsed.binary).map_err(|e| {
+        audit(
+            state,
+            id,
+            action,
+            e.audit_result(),
+            &format!("binary={} 拒绝：{e}", parsed.binary),
+        );
+        (status_of(&e), e.to_string())
+    })?;
+
+    let bin_display = bin.display().to_string();
+    let risk = skiff_model::bin_risk(&bin_display);
+    Ok((parsed, bin_display, risk))
+}
+
+// ---------------------------------------------------------------------------
+// 提交（作业化通道）
 // ---------------------------------------------------------------------------
 
 pub(super) async fn exec_run(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
@@ -240,53 +301,17 @@ pub(super) async fn exec_run(State(state): State<Arc<AppState>>, req: Request<Bo
         .unwrap_or_default();
     let body = cap::read_json(req).await;
 
-    let parsed = match ExecRequest::parse(&body) {
-        Ok(p) => p,
-        Err(msg) => {
-            audit(&state, &id, "exec.run", "deny", &format!("请求非法: {msg}"));
-            return (StatusCode::BAD_REQUEST, msg).into_response();
-        }
+    let (parsed, bin_display, risk) = match pre_check_exec(
+        &body,
+        &id,
+        &state,
+        "exec.run",
+        TIMEOUT_DEFAULT_SEC,
+        TIMEOUT_MAX_SEC,
+    ) {
+        Ok(v) => v,
+        Err((code, msg)) => return (code, msg).into_response(),
     };
-
-    let grants = state.plugin_auth_of(&id).unwrap_or_default();
-    // 精确命中而不是 `exec:*` 通配：本能力面只有一个动词，留通配只会在将来
-    // 加动词时悄悄放宽权限。
-    if !grants.iter().any(|g| g.permits(PERM)) {
-        audit(&state, &id, "exec.run", "deny", "缺少 exec:run 授权");
-        return (StatusCode::FORBIDDEN, "缺少 exec:run 授权").into_response();
-    }
-
-    if state.cfg.form != Form::Native || !cfg!(target_os = "linux") {
-        audit(
-            &state,
-            &id,
-            "exec.run",
-            "deny",
-            "当前部署形态不支持宿主机命令执行",
-        );
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "当前部署形态不支持宿主机命令执行（需要 Native + Linux）",
-        )
-            .into_response();
-    }
-
-    let data_dir = state.cfg.data_dir.clone();
-    let bin = match execgrant::resolve(&data_dir, &grants, &parsed.binary) {
-        Ok(p) => p,
-        Err(e) => {
-            audit(
-                &state,
-                &id,
-                "exec.run",
-                e.audit_result(),
-                &format!("binary={} 拒绝：{e}", parsed.binary),
-            );
-            return (status_of(&e), e.to_string()).into_response();
-        }
-    };
-    let bin_display = bin.display().to_string();
-    let risk = skiff_model::bin_risk(&bin_display);
 
     // 作业参数只放「非敏感、可复查」的内容：argv 是要复查的，stdin 不是。
     let job = match state.jobs().submit(skiff_app::jobs::JobSubmit {
@@ -399,8 +424,7 @@ fn light_permits(plugin: &str) -> Arc<Semaphore> {
 /// 轻量通道：同授权、并行跑、不写作业、一次 HTTP 返回（契约 §2.2）。
 ///
 /// 与 [`exec_run`] 的差别只有「去掉作业管理层」：不 submit、不占同插件唯一活跃槽位、
-/// 不写 jobs/job_logs、不可取消。前置判定一步不少——授权、形态、二进制身份、
-/// argv/stdin 上限全部复用，`timeout_sec` 单独夹到 `[1, 30]`。
+/// 不写 jobs/job_logs、不可取消。前置判定一步不少——复用共享的 [`pre_check_exec`]。
 pub(super) async fn exec_run_light(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -412,58 +436,17 @@ pub(super) async fn exec_run_light(
         .unwrap_or_default();
     let body = cap::read_json(req).await;
 
-    let parsed =
-        match ExecRequest::parse_with(&body, LIGHT_TIMEOUT_DEFAULT_SEC, LIGHT_TIMEOUT_MAX_SEC) {
-            Ok(p) => p,
-            Err(msg) => {
-                audit(
-                    &state,
-                    &id,
-                    "exec.run_light",
-                    "deny",
-                    &format!("请求非法: {msg}"),
-                );
-                return (StatusCode::BAD_REQUEST, msg).into_response();
-            }
-        };
-
-    let grants = state.plugin_auth_of(&id).unwrap_or_default();
-    if !grants.iter().any(|g| g.permits(PERM)) {
-        audit(&state, &id, "exec.run_light", "deny", "缺少 exec:run 授权");
-        return (StatusCode::FORBIDDEN, "缺少 exec:run 授权").into_response();
-    }
-
-    if state.cfg.form != Form::Native || !cfg!(target_os = "linux") {
-        audit(
-            &state,
-            &id,
-            "exec.run_light",
-            "deny",
-            "当前部署形态不支持宿主机命令执行",
-        );
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "当前部署形态不支持宿主机命令执行（需要 Native + Linux）",
-        )
-            .into_response();
-    }
-
-    let data_dir = state.cfg.data_dir.clone();
-    let bin = match execgrant::resolve(&data_dir, &grants, &parsed.binary) {
-        Ok(p) => p,
-        Err(e) => {
-            audit(
-                &state,
-                &id,
-                "exec.run_light",
-                e.audit_result(),
-                &format!("binary={} 拒绝：{e}", parsed.binary),
-            );
-            return (status_of(&e), e.to_string()).into_response();
-        }
+    let (parsed, bin_display, risk) = match pre_check_exec(
+        &body,
+        &id,
+        &state,
+        "exec.run_light",
+        LIGHT_TIMEOUT_DEFAULT_SEC,
+        LIGHT_TIMEOUT_MAX_SEC,
+    ) {
+        Ok(v) => v,
+        Err((code, msg)) => return (code, msg).into_response(),
     };
-    let bin_display = bin.display().to_string();
-    let risk = skiff_model::bin_risk(&bin_display);
 
     // 槽位在审计之前拿：拿不到就是「没跑」，不能先记一条 ok。
     let permits = light_permits(&id);

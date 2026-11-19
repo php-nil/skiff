@@ -1,25 +1,14 @@
-//! 内核定时任务的 Web 管理面（`/{prefix}/tasks`）。
+//! 内核定时任务的读模型：`/ui/v1/tasks` 的列表行与执行历史行。
 //!
-//! 与 cron 插件的区别：这里**不依赖插件**，任务服务未初始化时直接 503；
-//! 只读用户（viewer）可以看列表/详情/历史，写操作一律 Admin + CSRF。
-//! 任务来源只影响展示，不作为访问控制维度——权限由角色判定。
+//! 任务服务未初始化时直接 503；任务来源只影响展示，不作为访问控制维度。
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::http::request::Parts;
-use axum::response::Response;
 use serde_json::Value;
 
-use skiff_app::actions as act;
-use skiff_app::commands::task as task_cmd;
-
 use crate::error::AppError;
-use crate::handlers;
-use crate::middleware::{check_csrf, AuthUser};
 use crate::state::AppState;
 use crate::templates::{TaskRow, TaskRunRow};
-use crate::util::{form_first, parse_form};
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
 /// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
@@ -117,108 +106,5 @@ pub(crate) fn run_row(v: &Value) -> TaskRunRow {
         result_class: class.to_string(),
         detail,
         missed: v["missed_count"].as_i64().unwrap_or(0),
-    }
-}
-
-fn back(id: &str) -> String {
-    format!(
-        "/{}/tasks/{}",
-        crate::templates::entry_prefix(),
-        crate::util::encode_uri_component(id)
-    )
-}
-
-pub async fn toggle(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::TASK_TOGGLE)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let enabled = matches!(
-        form_first(&form, "enabled").trim(),
-        "1" | "on" | "true" | "yes"
-    );
-    let cmd = task_cmd::ToggleTask {
-        id: id.clone(),
-        enabled,
-        actor: actor(&state, &user, &parts),
-    };
-    match task_cmd::toggle(&state, cmd).await {
-        Ok(_) => Ok(handlers::redirect(back(&id))),
-        Err(task_cmd::TaskCommandError::Unavailable(m)) => Err(AppError::Unavailable(m)),
-        Err(e) => Ok(handlers::flash_redirect(
-            &state,
-            &user,
-            skiff_app::FlashKind::Error,
-            e.to_string(),
-            back(&id),
-        )),
-    }
-}
-
-pub async fn run(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::TASK_RUN)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let cmd = task_cmd::RunTask {
-        id: id.clone(),
-        actor: actor(&state, &user, &parts),
-    };
-    match task_cmd::run(&state, cmd).await {
-        Ok(_) => Ok(handlers::flash_redirect(
-            &state,
-            &user,
-            skiff_app::FlashKind::Notice,
-            "任务已执行",
-            back(&id),
-        )),
-        Err(task_cmd::TaskCommandError::Unavailable(m)) => Err(AppError::Unavailable(m)),
-        Err(e) => Ok(handlers::flash_redirect(
-            &state,
-            &user,
-            skiff_app::FlashKind::Error,
-            e.to_string(),
-            back(&id),
-        )),
-    }
-}
-
-pub async fn delete(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    crate::authz::authorize(&user, act::TASK_DELETE)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let cmd = task_cmd::DeleteTask {
-        id: id.clone(),
-        actor: actor(&state, &user, &parts),
-    };
-    match task_cmd::delete(&state, cmd).await {
-        Ok(()) => Ok(handlers::redirect(format!(
-            "/{}/tasks",
-            crate::templates::entry_prefix()
-        ))),
-        Err(task_cmd::TaskCommandError::Unavailable(m)) => Err(AppError::Unavailable(m)),
-        Err(e) => Ok(handlers::flash_redirect(
-            &state,
-            &user,
-            skiff_app::FlashKind::Error,
-            e.to_string(),
-            back(&id),
-        )),
     }
 }

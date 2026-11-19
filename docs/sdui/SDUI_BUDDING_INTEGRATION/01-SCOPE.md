@@ -6,7 +6,7 @@
 
 > 状态：**P0 已定案（2026-11-12），未实施**。本文定义「budding 作为前端渲染层」的接入边界、契约与缺口，不切换现有页面、不改业务代码。
 > 上游事实来源：budding 仓库只读盘点（2026-11-12）；内核现状来源：`crates/web`、`crates/plugin` 与本仓库现有契约文档。
-> 相关文档：[SDUI_HANDBOOK.md](../SDUI_HANDBOOK.md)（框架无关的适配手册）、[URL_CONTRACT.md](../../contract/URL_CONTRACT.md)、[UI_CONTRACT.md](../../contract/UI_CONTRACT.md)、[MENU_CONTRACT.md](../../contract/MENU_CONTRACT.md)、[PLUGIN_UI_CONTRACT.md](../../contract/PLUGIN_UI_CONTRACT.md)。
+> 相关文档：[SDUI_HANDBOOK.md](../SDUI_HANDBOOK.md)（框架无关的适配手册）、[URL_CONTRACT.md](../../contract/URL_CONTRACT.md)、[MENU_CONTRACT.md](../../contract/MENU_CONTRACT.md)、[PLUGIN_UI_CONTRACT.md](../../contract/PLUGIN_UI_CONTRACT.md)。
 > 分工：本文只维护 budding 相关的具体事实、契约形状与缺口；框架无关的分层与迁移阶段只在 SDUI_HANDBOOK 维护，本文引用不复述。
 
 ---
@@ -64,7 +64,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 | 站点 / 运行环境 / Docker | 3 | 表单字段多，先冻结字段码与错误回填 |
 | 设置 / 菜单 | 4 | 依赖菜单壳与 admin Pack（D4） |
 | 文件管理 | 5 | 依赖 §6.1 的框架阻塞项全部解除（D6） |
-| 插件功能页 | 6 | 随包 schema（`ui/schema/<view>.json`）原生渲染；旧 SSR/iframe 仅作兼容保留，不再作为新入口（§4.4） |
+| 插件功能页 | 6 | 随包 schema（`ui/schema/<view>.json`）原生渲染；没有 schema 的旧包回落 `?legacy=1` iframe 工作台（§4.4） |
 
 ---
 
@@ -106,8 +106,8 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 
 两种承载方式：
 
-- **壳 A（过渡）**：内核保留极薄壳页，askama 只输出挂载点与 script/link 标签，不含业务内容；深链回落由该路由处理。
-- **壳 B（纯静态）**：壳页作为静态文件放 `static/budding/index.html`；仍需一个内核路由承接前端深链，否则直接访问深链会 404。
+- **壳 A（已采用）**：内核保留极薄壳页，`handlers::spa` 用字符串拼装 HTML（不经模板引擎，只剩挂载点与 script/link 标签），不含业务内容；深链回落由该路由处理。
+- **壳 B（未采用）**：壳页作为静态文件放 `static/budding/index.html`；仍需一个内核路由承接前端深链，否则直接访问深链会 404。
 
 共同约束：
 
@@ -124,12 +124,12 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 { type: 'admin', props: { title, brandTitle, bar: false }, content: { body: [{ type: 'outlet' }] } }
 ```
 
-- **菜单来源唯一**：`GET /ui/v1/menu` 直接投影 `skiff_app::menu::build` 的菜单树（L1/L2 归属、顺序、角色与能力门、用户隐藏偏好与 SSR 导航同源），前端只做「稳定键 → 已迁移路由」的映射，不另造第二套菜单语义。
+- **菜单来源唯一**：`GET /ui/v1/menu` 直接投影 `skiff_app::menu::build` 的菜单树（L1/L2 归属、顺序、角色与能力门、用户隐藏偏好都在内核判定），前端只做「稳定键 → 已迁移路由」的映射，不另造第二套菜单语义。
 - **路由表**：菜单树在前端组装成 budding `routes`；分组节点用入口前缀下的保留段（`/{p}/__menu/<key>`）承载层级，子项使用绝对路径 `/{p}/...`。插件菜单项按 `/ui/v1/menu` 下发的 `plugin_id` / `views` 生成 `/plugins/<id>/<view>` 路由；没有 schema 的旧插件仍回落到内核深链。
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
 - **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
 - **壳层 chrome（2026-11-17 起）**：`bar: false` 关掉 budding 默认顶栏（品牌 / 页面标题 / 账号 / 退出登录），原生面包屑槽同步隐藏（`.bud-admin__crumbs`）；页内子视图切换由内核渲染的**横向三级菜单**承担（`nav.skiff-subnav`，节点挂页面容器 `.bud-page` 内、标题之下，样式 `static/skiff-shell.css`）。它与面包屑是两件事：**是菜单就全量平铺**——当前页有子视图才出现，没有就整条不渲染，当前项用 2px 底部强调轨，不做下拉也不做路径回溯（「我在哪」由左侧菜单当前项承担）。底色取内容区表面色 `--v-theme-surface`，不跟随侧栏 chrome；吸顶时补 `is-stuck` 遮罩；重建带闸门防 MutationObserver 死循环。账号与退出登录移入「设置」页「当前账号」区块（仍走 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
-- **三级子视图登记**：核心页 L3 在 `budding-boot.js` 的 `SUBVIEW_TABS` 登记，模式支持参数段（`:domain` / `:id`），隐藏路由由登记表统一生成、不进侧栏：Web 服务 → 状态 / 配置 / 日志 / 模块（`/{p}/sites/web/{,config,logs,modules}`）；站点详情 → 概览 / 域名 / 配置 / 证书 / 备份 / 日志（`/{p}/sites/<域名>/{,domains,config,ssl,backup,logs}`）；运行环境详情 → 基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志（`/{p}/runtimes/<id>/{,config,extensions,sites,manage,logs}`）。数据仍由一次父接口取齐，切子视图只换渲染块。插件多视图由 `/ui/v1/menu` 下发的 `views` 驱动（`/plugins/<id>/<view>`），页内按钮行已删除；随包 schema 缺失的旧插件视图仍回落到旧 SSR 工作台。
+- **三级子视图登记**：核心页 L3 在 `budding-boot.js` 的 `SUBVIEW_TABS` 登记，模式支持参数段（`:domain` / `:id`），隐藏路由由登记表统一生成、不进侧栏：Web 服务 → 状态 / 配置 / 日志 / 模块（`/{p}/sites/web/{,config,logs,modules}`）；站点详情 → 概览 / 域名 / 配置 / 证书 / 备份 / 日志（`/{p}/sites/<域名>/{,domains,config,ssl,backup,logs}`）；运行环境详情 → 基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志（`/{p}/runtimes/<id>/{,config,extensions,sites,manage,logs}`）。数据仍由一次父接口取齐，切子视图只换渲染块。插件多视图由 `/ui/v1/menu` 下发的 `views` 驱动（`/plugins/<id>/<view>`），页内按钮行已删除；随包 schema 缺失的旧插件视图回落到 `/{p}/plugins/{id}/{view}?legacy=1` 的 iframe 工作台。
 - **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.1` 子集仍为 78 字形（重打包未改字形），菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）

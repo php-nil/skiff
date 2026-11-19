@@ -14,7 +14,7 @@
 | **MVP 范围** | **三核心：Web 管理服务 + Docker 管理 + 插件体系** | 能登录、能管容器、能装插件且崩不了内核即 MVP；主机能力在插件层（§1.4） |
 | 语言/运行时 | Rust 2021 + tokio（**显式** `worker_threads=2`） | 无 GC，单二进制；tokio 默认值是 CPU 数，不配就不是 2 |
 | HTTP | `axum` + `tower` | 生态稳、体积可控 |
-| 前端 | `askama` SSR + `htmx` + 懒加载 ESM（xterm.js） | 免 Node 构建链，首屏 < 100KB gzip |
+| 前端 | budding 渲染运行时（上游产物入库、`RustEmbed` 嵌入）+ 内核只出 `/ui/v1` JSON；`askama` 只剩错误页与插件 iframe 工作台 | 不引入 Node 构建链（D1）；页面级 SSR 与 htmx 已删除 |
 | 存储 | `rusqlite`(bundled) + TOML | 单文件、可外部审计 |
 | 扩展 | **进程外插件（宿主机原生）+ Unix Socket JSON-RPC**，ed25519 签名、权限逐条确认、UI 沙箱 iframe、降权；landlock/cgroups 属设计目标（未实现） | 崩溃隔离，越权收敛到 Broker；插件体系 = 开放能力面（§4） |
 | 部署 | **主形态：systemd 直装宿主机**；可选：1Panel 商店 Docker 包（受限，能力面收缩为 docker/identity） | 插件必须落宿主才撑得起第二核心；容器内 fork 不出宿主进程 |

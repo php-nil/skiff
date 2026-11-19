@@ -1,6 +1,7 @@
 # 内核命令执行原语契约（Exec Contract）
 
-> 状态：**内核底层与轻量通道 `run_light` 已落地，上机验收未做（2026-11-19）**。
+> 状态：**内核底层与轻量通道 `run_light` 已落地；RuntimeMaxSec 兜底、确认页风险标注、升级强制复核已补（2026-11-19）**。
+> 上机验收未做（Windows 开发机 `systemd-run` 路径跑不到，轻量通道 429/504 同样待 Linux 实测）。
 > 本文件是 `exec` 能力面的契约：授权、协议、判定顺序、审计、运行记录、错误码与边界。设计取舍见
 > [`docs/plugin/HOST_EXEC_DESIGN.md`](../plugin/HOST_EXEC_DESIGN.md)。
 > 判定实现 `crates/plugin/src/execgrant.rs` + 词汇 `crates/model/src/exec.rs`；
@@ -45,7 +46,7 @@
 | manifest `resource_hints` | 每个要跑的可执行文件一条 `bin:<绝对路径>`；安装确认页逐条勾选后落库为 `object` grant |
 | 判定顺序 | 先 `exec:run`（缺→403），再 `bin:` 命中（不中→403），两者缺一不可 |
 
-`bin:` 与 `path:` 同一套确认与落库机制；升级时新增对象授权的处理见 §8（**未落地**）。
+`bin:` 与 `path:` 同一套确认与落库机制；升级时新增对象授权只在确认页显式勾选时补授（见 §8.1 第 2 条，已修）。
 
 **授权自动失效**：`execgrant::canonical_bins()` 会自动过滤掉 canonicalize 失败（二进制被卸载/路径变了）或不是文件（目标变成了目录）的授权值。这意味着插件被卸载一个二进制后，下次请求自动被拒，不会因为库里存了旧字符串而继续放行——与 `fsgrant::canonical_roots` 同一取舍。
 
@@ -331,24 +332,29 @@ stdin 用于投递密码 / 私钥 / `.pgpass` 等敏感内容——**进内存�
 
 ## 8. 未落地与待决策
 
-### 8.1 未落地（跟本契约直接相关的硬前提）
+### 8.1 已补（2026-11-19）
 
-1. **升级强制复核**（安全硬前提）：`install.rs` 现行规则是「相对旧 manifest 新增的对象授权
-   自动补授 + 写审计」，升级不弹确认页。这意味着插件被信任一次后，作者发新版即可静默扩大
-   `bin:`（同理 `path:`）授权面。**这是既有缺陷**，修一次两条授权类型同受益；口径建议：
-   新增对象授权一律重新确认。在修复前，本契约的「安装期确认即人类闸门」只对首装成立。
-2. **确认页风险标注**：`bin:` 行按 `bin_risk` 标 `root-equiv` 并默认不勾；现有确认页把
-   `resource_hints` 原样列出即可用，但没有风险提示。
-3. **试点**：选 `net.apply` 或其他幂等可恢复动作跑通全链路（不要选「改 SSH 端口」——
-   重启失败即锁死机器）。
-4. **上机验收**：`systemd-run` 那条真实执行路径只在 Linux 跑得到，Windows 开发机上只验证了
-   类型、判定与作业生命周期；轻量通道的 429/504 行为同样待上机确认。
+1. **RuntimeMaxSec 兜底**：`systemd_run_argv` 现已传 `--property=RuntimeMaxSec={timeout_secs + 10}`。
+   Rust 进程如果崩了/重启了，systemd 也会在 +10s 后强杀瞬态单元，避免孤儿 root 进程。
+   +10 是 Rust 侧 tokio deadline 的清理窗口。
+2. **升级强制复核**（安全硬前提，已修）：`install.rs` 升级分支不再静默补授新增的 `object grant`
+   （`resource_hints` + `[interop].consumes` 派生项）——只有用户在确认页显式勾选的才补。
+   permission 级别的自动补授保持不变（能力扩大但不直接给 root）。
+   修一次 `path:` 与 `bin:` 同受益。详见 `crates/plugin/src/install.rs`。
+3. **确认页风险标注**：`PluginConfirmPage.resources` 从 `Vec<String>` 改为
+   `Vec<ResourceRow { value, risk }>`，`bin:` 前缀自动注入 `root-equiv` / `scoped` / `wrapper`。
+   模板里 `root-equiv` 标红色警示 + **默认不勾选**，强制用户注意。
 
-### 8.2 待决策
+### 8.2 未落地
+
+1. **试点**：`net.apply` 仍是 501 空壳，建议找幂等可恢复的动作（时区、swap、装并 enable 无害服务）
+   跑通「manifest → 确认页 → exec → 运行记录 → 审计」全链路。
+2. **上机验收**：`systemd-run` 真实执行路径只在 Linux 跑得到；轻量通道 429/504 行为同样待实测。
+
+### 8.3 待决策
 
 | 决策 | 当前口径 | 备选 | 理由 |
 | --- | --- | --- | --- |
-| 轻量通道超时后的瞬态单元 | 超时即 504（结果未知），**未带 `RuntimeMaxSec`** | 补 `RuntimeMaxSec=timeout` 到 systemd-run | 当前内核侧被 drop 只杀本地客户端，UDS 断开后单元可能继续跑；需上机验证是否补该属性 |
 | 轻量通道并发上限 | 每插件 8（已实现，常量 `LIGHT_CONCURRENCY`） | 上机实测后调整 | 跨插件不设全局上限 |
 | 轻量通道审计保留期 | 同 `exec.run`（90 天） | 单独保留期或采样 | 探测按 90 天保留堆积，取决于实测调用量 |
 | `bin:` 细粒度 | 不做子命令前缀 | 未来可能需要 | M1 不做：那是一层新的表达式，等真出现误授权再补 |

@@ -2,10 +2,10 @@
 
 > 状态：**契约 v1 · P1/P2/P3 已落地**。§11–13 的落地记录已收敛为现行差异摘要（`05-ROLLOUT.md`）；正文其余部分仍为设计口径。
 > 适用：内核 Web UI、插件 manifest、插件中心、菜单设置、固定页槽位。
-> 基线：`crates/pkgfmt/src/manifest.rs`、`crates/web/src/handlers/mod.rs`、`crates/web/templates/base.html`、`plugins/*/manifest.toml`。
+> 基线：`crates/pkgfmt/src/manifest.rs`、`crates/app/src/menu.rs`、`crates/web/src/handlers/ui/menu.rs`、`plugins/*/manifest.toml`。
 > 契约版本：v1 · 2026-11-03（P1 同日落地，P2 同日补记）。
 >
-> **2026-11-13 原生化**：budding 后台外壳（admin + outlet）不再用 iframe 承载插件功能页；已声明 `schema`（`api = "1.3"`）的视图由壳页原生渲染，未声明的旧视图仍走旧 SSR 工作台。菜单继续下发 `plugin/*` 入口，三级归属与固定 L1 仍然有效——「内核渲染 L3 标签栏 + 插件内容 iframe」只对旧 SSR 页有效；新壳（2026-11-17 起）由**横向三级菜单**承担 L3（`budding-boot.js` 的 `SUBVIEW_TABS` 登记核心页、`/ui/v1/menu` 的 `views` 驱动插件页；当前页有子视图才出现，没有就整条不渲染），形态与旧版 `workbench-tabs` 一致：全量平铺 + 当前项下划线，不做面包屑、不做下拉。插件 UI 交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](../sdui/BUDDING_UPSTREAM_BACKLOG.md) T7）。
+> **现役形态**：budding 后台外壳（admin + outlet）渲染菜单 DOM；已声明 `schema`（`api = "1.3"`）的插件视图由壳页原生渲染，未声明的旧视图走 `?legacy=1` 的 iframe 工作台。菜单数据由 `GET /ui/v1/menu` 下发（字段与顺序见 [`MENU_CONTRACT/02-RENDER.md`](MENU_CONTRACT/02-RENDER.md) §3），内核不再输出菜单 HTML；L3 由壳页的横向三级菜单承担（`budding-boot.js` 的 `SUBVIEW_TABS` 登记核心页，插件页由 `views` 驱动，当前页有子视图才出现）。插件 UI 交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](../sdui/BUDDING_UPSTREAM_BACKLOG.md) T7）。
 > **本文件是索引**：正文按 §编号拆在 [`MENU_CONTRACT/`](MENU_CONTRACT/)，编号沿用拆分前原文。
 
 ## 四个结论（摘要）

@@ -1,52 +1,63 @@
-{% extends "base.html" %}
-{% block title %}{{ plugin.name }} · {{ workbench_title }} · Skiff{% endblock %}
-{% block content %}
-<div class="page-head">
-  {# 标题只出现一次：L2 label 与插件名同名的插件（如 testkit）不再重复渲染。 #}
-  <h1>{{ workbench_title }}{% if workbench_title != plugin.name %} <span class="muted">{{ plugin.name }}</span>{% endif %}</h1>
-  <div class="actions">
-    <a class="btn ghost" href="/{{ ctx.prefix }}/containers?filter=error">异常容器与日志</a>
-    <a class="btn ghost" href="{{ info_href }}">插件信息</a>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ plugin.name }} · {{ workbench_title }} · Skiff</title>
+  <link rel="icon" type="image/svg+xml" href="/{{ ctx.prefix }}/static/favicon.svg?v=1">
+  {# 主题在样式表之前同步落地：先按 localStorage 设 data-theme，避免暗色用户刷新时先闪白。 #}
+  <script src="/{{ ctx.prefix }}/static/theme-init.js"></script>
+  <link rel="stylesheet" href="/{{ ctx.prefix }}/static/skiff.css">
+  <script src="/{{ ctx.prefix }}/static/skiff.js" defer></script>
+</head>
+{# 插件 iframe 宿主页：只承载 L3 标签栏与沙箱 iframe，导航与账号由 budding 壳页负责。 #}
+<body class="plugin-host-page" data-prefix="{{ ctx.prefix }}">
+<main class="plugin-host">
+  <div class="page-head">
+    {# 标题只出现一次：L2 label 与插件名同名的插件（如 testkit）不再重复渲染。 #}
+    <h1>{{ workbench_title }}{% if workbench_title != plugin.name %} <span class="muted">{{ plugin.name }}</span>{% endif %}</h1>
+    <div class="actions">
+      <a class="btn ghost" href="{{ info_href }}">插件信息</a>
+      <a class="btn ghost" href="/{{ ctx.prefix }}/plugins">插件中心</a>
+    </div>
   </div>
-</div>
-{% include "page_banner.html" %}
-{% if !ctx.docker_ok %}<div class="alert warn">Docker 不可用：依赖容器的插件功能会失败；异常容器入口仍保留，但容器页同样处于 gate 状态。<a href="/{{ ctx.prefix }}/settings/docker">前往 Docker 设置</a></div>{% endif %}
-{% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if !ctx.docker_ok %}<div class="alert warn">Docker 不可用：依赖容器的插件功能会失败。</div>{% endif %}
+  {% if !error.is_empty() %}<div class="alert">{{ error }}</div>{% endif %}
 
-{# 页面标题区下方一条通栏 L3 标签栏：与内容区同宽、吸顶不随内容滚动。
-   无 L3 声明（单视图 L2 / 老包）时整条不渲染。 #}
-{% if !tabs.is_empty() %}
-<nav class="workbench-tabs" data-workbench aria-label="{{ workbench_title }}工作台标签">
-  {% for t in tabs %}
-    <a class="workbench-tab{% if t.active %} on{% endif %}"
-       data-workbench-tab
-       data-key="{{ t.key }}"
-       data-local="{{ t.local }}"
-       data-ui="{{ t.ui }}"
-       data-tab="{{ t.tab }}"
-       data-src="{{ t.src }}"
-       href="{{ t.href }}"
-       {% if t.active %}aria-current="page"{% endif %}>
-      <svg class="menu-ico" viewBox="0 0 24 24" data-icon="{{ t.icon }}" aria-hidden="true"><use href="#i-{{ t.icon }}"></use></svg>{{ t.label }}
-    </a>
-  {% endfor %}
-</nav>
-{% endif %}
+  {# 页面标题区下方一条通栏 L3 标签栏：与内容区同宽、吸顶不随内容滚动。
+     无 L3 声明（单视图 L2 / 老包）时整条不渲染。 #}
+  {% if !tabs.is_empty() %}
+  <nav class="workbench-tabs" data-workbench aria-label="{{ workbench_title }}工作台标签">
+    {% for t in tabs %}
+      <a class="workbench-tab{% if t.active %} on{% endif %}"
+         data-workbench-tab
+         data-key="{{ t.key }}"
+         data-local="{{ t.local }}"
+         data-ui="{{ t.ui }}"
+         data-tab="{{ t.tab }}"
+         data-src="{{ t.src }}"
+         href="{{ t.href }}"
+         {% if t.active %}aria-current="page"{% endif %}>{{ t.label }}</a>
+    {% endfor %}
+  </nav>
+  {% endif %}
 
-<section class="panel workbench-panel">
-  <iframe class="plugin-frame"
-          src="{{ iframe_src }}"
-          sandbox="allow-scripts allow-modals allow-forms"
-          data-plugin="{{ plugin.id }}"
-          data-nonce="{{ nonce }}"
-          data-rpc="{{ rpc_url }}"
-          data-csrf="{{ ctx.csrf }}"
-          data-plugins="{{ nav_plugins }}"
-          data-workbench-frame
-          data-menu="{{ menu_key }}"
-          data-tab="{{ active_tab }}"
-          data-l3="{{ active_l3 }}"
-          data-ui="{{ active_ui }}"
-          referrerpolicy="no-referrer"></iframe>
-</section>
-{% endblock %}
+  <section class="panel workbench-panel">
+    <iframe class="plugin-frame"
+            src="{{ iframe_src }}"
+            sandbox="allow-scripts allow-modals allow-forms"
+            data-plugin="{{ plugin.id }}"
+            data-nonce="{{ nonce }}"
+            data-rpc="{{ rpc_url }}"
+            data-csrf="{{ ctx.csrf }}"
+            data-plugins="{{ nav_plugins }}"
+            data-workbench-frame
+            data-menu="{{ menu_key }}"
+            data-tab="{{ active_tab }}"
+            data-l3="{{ active_l3 }}"
+            data-ui="{{ active_ui }}"
+            referrerpolicy="no-referrer"></iframe>
+  </section>
+</main>
+</body>
+</html>

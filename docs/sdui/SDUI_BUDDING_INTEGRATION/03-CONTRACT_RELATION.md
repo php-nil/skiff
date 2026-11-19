@@ -41,9 +41,9 @@
 - 校验边界（宿主侧自担，不依赖上游）：节点类型白名单、禁止外链资源与外部 URL、禁止 `api`/`url`/`html` 等绕过字段、动作白名单（`skiffPluginRpc` / `skiffPluginView` / 表单 `submit`）、节点数/深度/字节数上限。schema 本身没有网络能力。安装期静态校验之外，`GET /{p}/plugins/{id}/schema/{view}` 运行期仍会重新解析；失败按 **400 `shape.plugin_schema`** 返回（输入包内容不成立），不再归因成内核 500。
 - 数据与写操作：壳页按 schema 的 `data.<name>.method` 调 `POST /{p}/plugins/{id}/rpc`；写操作只能经 `skiffPluginRpc`，沿用 CSRF 头、权限矩阵与逐次 `plugin.rpc` 审计。schema 不允许直接写 URL。RPC 成功返回 `{ result }`，失败返回统一 JSON 错误信封（`{ error: { code, message } }`），壳页直接展示 `error.message`；旧 iframe 桥先按其 JSON 解析、再回退 HTML 文本，行为不变。
 - 绑定语法：`{{data.<path>}}` 取已取回的 RPC 数据，`{{query.<key>}}` 取地址栏参数，`when` 支持 `{{data.x}}` / `!{{data.x}}`；budding 自己的 `${row.field}` 行内插值保持原样。
-- 权限口径：`GET /{p}/plugins/{id}/{view}`、`GET /{p}/plugins/{id}/schema/{view}` 与 RPC 一致，均要求 `PluginManage`；旧 SSR 工作台（`/{p}/m/plugin/...`）同权限。**权限不足返回 403，不伪装成 404**（不隐藏资源存在性），因此 viewer 从旧用例的 404 变为 403，这是口径修正而非路由消失。
-- 旧 SSR/iframe 不删除：`/plugins/{id}/ui/{path}`、工作台模板与 `?legacy=1` 分支继续可用，但面板内不再有入口。
-- 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、`PLUGIN_UI_CSP` 只作用于旧 SSR 页，保持不变。
+- 权限口径：`GET /{p}/plugins/{id}/{view}`、`GET /{p}/plugins/{id}/schema/{view}` 与 RPC 一致，均要求 `PluginManage`。**权限不足返回 403，不伪装成 404**（不隐藏资源存在性），因此 viewer 从旧用例的 404 变为 403，这是口径修正而非路由消失。
+- iframe 工作台只保留显式 `?legacy=1` 一条通路（`/{p}/plugins/{id}/{view}?legacy=1`）与包内静态托管 `GET /{p}/plugins/{id}/ui/{path}`；页面级 SSR 已全部删除，面板内无任何入口指向它。
+- 一次性 nonce、`skiff.rpc` / `skiff.theme` / `skiff.height` / `skiff.open`、`PLUGIN_UI_CSP` 只作用于该 iframe 工作台，与壳页 schema 渲染互不影响。
 - 槽位（`[[mount]]`）已支持 `schema` 声明与安装期校验；新壳仍没有通用槽位渲染 API。`overview.health` 由内核改为「取数 + 原生渲染」：`GET /ui/v1/overview` 返回启用插件的 `health_plugin`，壳页对其调 `snapshot` RPC 后用卡片渲染 CPU / 内存 / 负载 / 运行时长，失败降级为说明性 `alert`；不是 iframe，也不是通用槽位渲染器。
 - 组件缺失时不自造渲染：例如文件管理需要的树/编辑器组件仍缺。站点文件插件（`com.skiff.files`）只原生化「站点目录浏览 + 文本编辑/保存」，全盘管理、回收站、配额、上传仍只在内核「工具 → 文件管理」，不做第二套文件管理器。
 - 已原生化的只读批次：guard（containers / events）、monitor（overview / history / process / network）。monitor 的进程与网络页把当前快照一次取回（RPC `all: true`，进程仍受 512 PID、连接仍受 5000 条上限），排序 / 表头筛选 / 分页交给 budding 表格本地完成；展示文案由插件派生，schema 只做绑定。两页都没有写入口。
@@ -70,7 +70,7 @@
 - **§2 例外表**：`/ui/v1/...` 无入口前缀，会话 Cookie + CSRF，未认证 401，仅 `handlers::ui`（按资源拆分），只返 JSON。
 - **§2 列表**：`/ui/v1/` 与 `/api/v1/` 并列；`/ui/` 下其它形态一律 404，不得作为静态资源或页面旁路。
 - **§2.1（新增）SPA 壳页回落白名单**：仅 `GET` + `Accept: text/html` + 路径命中已登记页面前缀时返回壳页；白名单之外仍 404；`POST` 等写请求永不回落；白名单变更必须同步契约与测试。
-- **§6 方法与副作用**：`/ui/v1/*` 写操作一律 POST + CSRF；`GET /ui/v1/bootstrap` 与 `POST /ui/v1/session` 为未认证端点（登录用签名 CSRF token + 来源判定）；`session/logout`、`session/password`、`session/totp`、`session/totp/enable` 为认证类例外，与现有页面路由一一对应。
+- **§6 方法与副作用**：`/ui/v1/*` 写操作一律 POST + CSRF；`GET /ui/v1/bootstrap` 与 `POST /ui/v1/session` 为未认证端点（登录用签名 CSRF token + 来源判定）；`session/logout`、`settings/password`、`settings/totp/setup`、`settings/totp/enable` 为登录态自服务入口（仍校验 `x-csrf-token`），页面侧不再有对应的 HTML 表单路由。
 - **§9 路由清单**：登记 `/ui/v1` 与壳页回落两类。
 
 D13 结论：地址栏保持 `/{p}/sites/xxx` 形态，history 路由 + 白名单前缀回落，不使用 hash；白名单内容以 `URL_CONTRACT.md` §2.1 为唯一来源。

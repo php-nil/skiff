@@ -24,8 +24,8 @@ pub struct InstallStep {
     pub finished_at: Option<i64>,
 }
 
-/// Web 服务安装的唯一进度视图：页面、`/ui/v1/web`、`/ui/v1/web/install`
-/// 与旧 SSR 都从同一份作业快照构建，不存在第二套口径。
+/// Web 服务安装的唯一进度视图：壳页、`/ui/v1/web` 与 `/ui/v1/web/install`
+/// 都从同一份作业快照构建，不存在第二套口径。
 #[derive(Debug, Clone, Default)]
 pub struct InstallProgress {
     pub job_id: Option<String>,

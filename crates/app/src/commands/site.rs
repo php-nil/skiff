@@ -191,7 +191,7 @@ pub async fn update_domains(state: &AppState, cmd: UpdateDomains) -> Result<Stri
     result
 }
 
-/// SSL 子动作。`as_str` 只用于审计动作名，与旧表单字段取值一致。
+/// SSL 子动作。`as_str` 只用于审计动作名，取值与 JSON 端点的动作字段一致。
 #[derive(Debug, Clone)]
 pub enum SslOp {
     Generate,

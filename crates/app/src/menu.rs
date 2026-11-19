@@ -1914,7 +1914,7 @@ view = "jobs"
                 label: "概览".into(),
                 icon: "overview".into(),
                 order: 10,
-                href: "/m/overview".into(),
+                href: "/".into(),
                 plugin: false,
                 pinnable: false,
                 default_visible: true,

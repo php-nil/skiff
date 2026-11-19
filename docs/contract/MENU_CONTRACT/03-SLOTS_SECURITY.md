@@ -121,19 +121,18 @@ roles = ["admin", "operator", "viewer"]
 ### 7.1 当前实现基线
 
 - `Manifest` 目前只有 `[[ui]]`（`UiEntry { label, path, icon }`）与 `deny_unknown_fields`，没有 `menu` / `mount`。
-- 导航目前由 `crates/web/src/handlers/mod.rs::nav()` 生成 `Vec<NavGroup>`；`base.html` 渲染 `.nav-group`、`.nav-toggle`、`.nav-menu`。
-- 当前一级为 概览 / 应用 / Docker / 插件中心 / 设置；「应用」来自 `nav_plugins()`（已启用 + 有 UI）。
-- 当前插件页只有 `/plugins/{id}` 一个详情页，iframe 指向 `/plugins/{id}/ui/{path}?nonce=...`；没有 L3。
-- 当前 active 值：`dashboard`、`containers`、`images`、`networks`、`volumes`、`plugins`、`settings`、`audit`、`plugin:<id>`。
-- 当前设置只有单页 `/settings` + `/audit`，没有菜单设置页。
+- 导航数据由 `crates/app/src/menu.rs::build` 产出、`crates/web/src/handlers/ui/menu.rs` 以 JSON 下发（`GET /ui/v1/menu`）；菜单 DOM 由 budding 运行时渲染，内核不再出模板。
+- 一级固定为 概览 / 网站 / Docker / 工具 / 设置（见 `docs/impl/MENU_*`）与 `/ui/v1/menu` 的实际下发顺序。
+- 插件页：详情 `/{p}/plugins/{id}` 交壳页；功能页 `/{p}/plugins/{id}/{view}` 有 schema 原生渲染，否则 `?legacy=1` 走 iframe。
+- 设置拆为 `/{p}/settings`（安全 / 菜单 / 界面 / Docker）与 `/{p}/audit`。
 
 ### 7.2 菜单键 → 规范 URL
 
-菜单 `href` 一律是 budding 壳页规范路径（`/{p}/m/core/*` 已删除，直达 404）。
+菜单 `href` 一律是 budding 壳页规范路径（由 `/ui/v1/menu` 下发）。
 
 | 菜单键 | 规范 URL | 备注 |
 |---|---|---|
-| `overview` | `/{p}`（`/{p}/m/overview` 为保留的概览 SSR） | L1 直达 |
+| `overview` | `/{p}` | L1 直达 |
 | `core/sites/list` | `/{p}/sites` | |
 | `core/sites/env` | `/{p}/runtimes` | |
 | `core/sites/web` | `/{p}/sites/web` | 管理专属 |
@@ -154,14 +153,13 @@ roles = ["admin", "operator", "viewer"]
 | `core/settings/menu` | `/{p}/settings/menu` | |
 | `core/settings/ui` | `/{p}/settings/ui` | |
 | `core/settings/audit` | `/{p}/audit` | 仅 operator / admin |
-| `plugin/<id>/<l2>[/<l3>]` | `/{p}/m/plugin/<id>/<l2>[/<l3>]` | 插件工作台，与 RPC 同权限（非管理者 403） |
+| `plugin/<id>/<l2>[/<l3>]` | `/{p}/plugins/<id>/<view>` | 有 schema 由壳页原生渲染；`?legacy=1` 才是 iframe 工作台，与 RPC 同权限（非管理者 403） |
 | 旧「应用」菜单 | 解散 | cron/monitor/guard → `工具`，files → `网站`（站点文件）；插件信息页由壳页 `/{p}/plugins/{id}` 承载 |
 
 兼容策略：
 
-- 旧 SSR 深链（`/{p}/m/core/*`）随旧页删除，直达 404；书签失效按规范路径重建入口。
-- `/{p}/m/overview` 与 `/{p}/m/plugin/*` 保留（概览 SSR、插件工作台）。
-- 当前 `active` 字符串迁移为 `route → menu-key` 映射表，迁移完成后删除 `APP_ORDER` 与 `nav()` 旧硬编码。
+- 内核不再有第二套页面路由：所有页面都是壳页，数据走 `/ui/v1/*`；书签一律落在上表的规范 URL。
+- 插件 iframe 工作台只由显式 `?legacy=1` 打开（无随包 schema 的旧视图），正常入口始终是壳页。
 - 旧「应用」菜单不再出现；`工具` 按 §1.4 渲染；`网站` 由内核固定的三个 L2 渲染。
 
 ### 7.3 6 个官方插件应声明什么

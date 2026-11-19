@@ -51,7 +51,7 @@
 
 - 扩展 `skiff-pkgfmt::Manifest`：`[[menu]]` / `[[menu.items]]` / `[[mount]]` 结构 + 校验 + 错误码。
 - 内核新增内置菜单注册表（六 L1、Docker/插件/设置内置 L2；规划项标 `route_available=false`）。
-- 用注册表替换 `handlers::nav()` 的硬编码；保留旧 `active` → 新键映射；旧 `[[ui]]` 降级。
+- 用注册表替换原 `handlers::nav()` 的硬编码（已落地：现由 `skiff_app::menu` 产出、`GET /ui/v1/menu` 下发）；保留旧 `active` → 新键映射；旧 `[[ui]]` 降级。
 - 产出：现有页面仍可打开；导航结构变为六 L1；工具空态可验收；网站内核固定 L2 可验收；所有契约单测通过。
 - 风险：`deny_unknown_fields` 导致旧内核不识别新包（预期）；当前「应用」入口消失需同步测试与文档；旧 active 映射漏项会丢当前态。
 

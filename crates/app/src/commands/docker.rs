@@ -397,7 +397,7 @@ pub struct ComposeUp {
 
 /// 归一化并校验 compose 项目名：空值与内核保留名（`sites` / `skiff`）在命令层拒绝。
 ///
-/// 所有 compose 写命令都必须经过它，避免只有旧页面做校验、JSON 端点或直接调用绕过。
+/// 所有 compose 写命令都必须经过它，避免某个写端点单独做校验、其它入口直接绕过。
 pub fn prepare_project(raw: &str) -> Result<String, DockerCommandError> {
     if raw.trim().is_empty() {
         return Err(DockerCommandError::BadRequest("请填写项目名".into()));

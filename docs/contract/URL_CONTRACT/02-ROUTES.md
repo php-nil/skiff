@@ -1,43 +1,45 @@
 # 现有路由清单与变更流程（§9–10）
 
-> 上级索引：[URL_CONTRACT.md](../URL_CONTRACT.md) ｜ 拆自 `docs/contract/URL_CONTRACT.md` 原 §9–10（2026-11-16 整理，正文未改）。
+> 上级索引：[URL_CONTRACT.md](../URL_CONTRACT.md) ｜ 拆自 `docs/contract/URL_CONTRACT.md` 原 §9–10（2026-11-16 整理）。
 
 ---
 
 ## 9. 现有路由清单（按资源）
 
 > 只列规范路径；别名见 §7。`{p}` 为入口前缀。
+> 「页面」列的路径**不是独立路由**——它们全部由壳页回落（§2.1）交付同一个 budding 壳页，
+> 深链由前端路由自己解析；真正注册在 axum 上的只有「接口 / 长连接」列。
 
-| 资源 | 路径 |
-| --- | --- |
-| 概览 | `GET /{p}`、`GET /{p}/`（尾斜杠 302 到根） |
-| 会话 | `GET|POST /{p}/login`、`POST /{p}/logout`、`POST /{p}/password`、`POST /{p}/totp`、`POST /{p}/totp/enable` |
-| 容器 | `GET /{p}/containers`、`/{p}/containers/{id}` 已交付 budding 壳页；`GET /{p}/containers/{id}/terminal` 为 budding 终端页（复用既有 exec 票据 + WS）；`GET /{p}/containers/{id}/logs` 为 budding 日志页（尾部快照，JSON 等价 `GET /ui/v1/containers/{id}/logs?tail=`）；`GET /containers/{id}/logs/stream`（SSE）；`GET /containers/rows`、`/containers/new`（壳页原生表单）；`POST /containers/create`、`/{id}/limits`、`/{id}/{action}`、`/{id}/exec/ticket`；`GET /{id}/exec`；JSON 等价 `POST /ui/v1/containers`、`/containers/{id}/limits`、`/containers/{id}/{action}` |
-| 镜像 | `GET /{p}/images` 已交付 budding 壳页；`POST /images/pull`、`/images/{id}/delete`；JSON 等价 `POST /ui/v1/images/pull`、`/images/{id}/remove` |
-| 网络 | `GET /{p}/networks` 已交付 budding 壳页；`POST /networks/create`、`/networks/{id}/delete`；JSON 等价 `POST /ui/v1/networks`、`/networks/{id}/remove` |
-| 卷 | `GET /{p}/volumes` 已交付 budding 壳页；`POST /volumes/create`、`/volumes/{name}/delete`；JSON 等价 `POST /ui/v1/volumes`、`/volumes/{name}/remove` |
-| Compose | `GET /{p}/compose` 已交付 budding 壳页；`POST /compose/validate`、`/up`、`/down`、`/{project}/{action}`；JSON 等价 `POST /ui/v1/compose/validate`、`/ui/v1/compose/up`、`/ui/v1/compose/down`、`/ui/v1/compose/{project}/{action}` |
-| 站点 | `GET /{p}/sites`、`/sites/{domain}`、`/sites/new` 已交付 budding 壳页；`GET /sites/{domain}/logs` 默认交壳页日志查看器；`GET /sites/web` 已交付 budding 壳页；`POST /sites/create`、`/batch`、`/{domain}/config/save`、`/{domain}/domains`、`/{domain}/ssl`、`/{domain}/default`、`/{domain}/backup`、`/{domain}/{action}`、`/{domain}/delete`、`/web/config/main`、`/web/config/params`；JSON 等价 `POST /ui/v1/sites`、`/sites/batch`、`/sites/{domain}/{action}`、`/sites/{domain}/default`、`/sites/{domain}/domains`、`/sites/{domain}/config`、`/sites/{domain}/ssl`、`/sites/{domain}/backup`、`/sites/{domain}/delete`、`/web/config`、`/web/params`、`GET /ui/v1/sites/{domain}/logs?part=&tail=&q=`、`GET /ui/v1/web`、`GET /ui/v1/web/install`、`GET /ui/v1/web/logs` |
-| 运行环境 | `GET /{p}/runtimes`、`/runtimes/{id}`、`/runtimes/{id}/logs` 已交付 budding 壳页；`/runtimes/{id}/logs` 为原生日志页（JSON 等价 `GET /ui/v1/runtimes/{id}/logs?tail=`）；`GET /runtimes/jobs`、`/{id}/health`、`/{id}/job`；写操作 JSON 等价 `POST /ui/v1/runtimes`、`/runtimes/images`、`/runtimes/{id}/config`、`/node-config`、`/port`、`/clone`、`/config-file`、`/action/{action}`、`/extensions`、`/extensions/batch`、`/extensions/{key}/install|uninstall`、`/pecl`、`/probe`、`/sites/{domain}/unbind`；详情聚合 `GET /ui/v1/runtimes/{id}[/?file=key]`、目录 `GET /ui/v1/runtimes/catalog`、镜像参数 `GET /ui/v1/runtimes/images` |
-| 文件 | `GET /{p}/files` 已交付 budding 原生页（平铺目录 + 面包屑，不做树形）；`GET /files/view?path=` 为 budding 代码查看器；`/files/list`、`/files/read`、`/files/tree`、`/files/download`；`POST /files/write`、`/mkdir`、`/rename`、`/remove`、`/upload`、`/copy`、`/chmod`、`/chown`、`/archive`、`/extract`；JSON 等价接口 `GET /ui/v1/files`、`GET /ui/v1/files/read`、`POST /ui/v1/files/mkdir`、`/rename`、`/remove` |
-| 回收站 | `GET /{p}/files/trash` 已交付 budding 壳页（`FILE_TRASH_READ`）；`GET /files/trash/list`；`POST /files/trash/restore`、`/purge`、`/clear`（前端直接复用这些 JSON 接口，CSRF 头与审计不变，未另建 `/ui/v1` 写入口） |
-| 配额 | `GET /{p}/files/quotas` 已交付 budding 壳页（`FILE_QUOTA_READ`）；`GET /files/quotas/list`；`POST /files/quotas/set`、`/cancel`、`/scan`（同上，直接复用既有 JSON 接口） |
-| 插件 | `GET /{p}/plugins`、`/plugins/{id}` 已交付 budding 壳页；`GET /{p}/plugins/{id}/{view}` 由壳页渲染随包 schema，`GET /{p}/plugins/{id}/schema/{view}` 返回该视图的 schema JSON（`PluginManage`，与 RPC 同权限）；`/plugins/{id}/ui/{path}` 与显式 `?legacy=1` 工作台保留兼容；旧表单 `POST /plugins/install`、`/confirm`、`/{id}/toggle`、`/{id}/delete`、`/{id}/rpc` 保留，JSON 等价 `GET /ui/v1/plugins`、`GET /ui/v1/plugins/{id}`、`POST /ui/v1/plugins/{id}/toggle`、`POST /ui/v1/plugins/{id}/delete` |
-| 商店 | `GET /{p}/store` 已交付 budding 壳页；旧表单入口 `POST /store/plugins/{id}/install`、`GET /store/upgrades/{version}/download` 保留；JSON 等价接口 `GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`、`POST /ui/v1/store/upgrades/{version}/download`、`POST /ui/v1/plugins/confirm` |
-| 设置 | `GET /{p}/settings`、`/{p}/settings/menu`、`/{p}/settings/docker`、`/{p}/settings/ui` 已交付 budding 壳页；`POST /settings/menu`、`/settings/docker`、`/settings/keys/create`、`/settings/keys/{id}/delete`、`/settings/panel`（JSON 等价接口 `POST /ui/v1/settings/panel`、`/settings/password`、`/settings/totp/setup`、`/settings/totp/enable`、`/settings/keys`、`/settings/keys/{id}`、`/settings/menu`、`/settings/docker`、`/settings/ui`） |
-| 审计 | `GET /{p}/audit` 已交付 budding 原生只读列表（关键字 + 签名 keyset 游标）；JSON 等价接口 `GET /ui/v1/audit?q=&limit=&cursor=`；`AuditRead` 权限不变，viewer 直接访问 403、菜单不可见 |
-| 定时任务 | `GET /{p}/tasks`、`/tasks/{id}` 已交付 budding 壳页；`POST /tasks/{id}/toggle`、`/run`、`/delete`；JSON 等价 `POST /ui/v1/tasks/{id}/toggle`、`/run`、`/delete` |
-| 任务中心 | `GET /{p}/jobs`、`/jobs/{id}` 已交付 budding 壳页；`GET /jobs/{id}/logs` 同路径按 `Accept` 分流：浏览器导航交 budding 日志查看器，脚本请求仍取既有增量 JSON（不建 SSE）；`GET /jobs/{id}/logs/stream`；`POST /jobs/{id}/cancel`、`/retry`；JSON 等价 `POST /ui/v1/jobs/{id}/cancel`、`/retry` |
-| 菜单深链 | `/{p}/m/{*rest}`：`overview` 概览 SSR 暂保留；`plugin/*` 插件工作台内核渲染；`core/*` 旧 SSR 深链已删除返回 404；其余返回 404 |
-| 前端 JSON（UI） | `GET /ui/v1/auth/login`、`POST /ui/v1/auth/login`（未认证）、`GET /ui/v1/session`、`GET /ui/v1/menu`、`GET /ui/v1/overview`、`GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`POST /ui/v1/sites`、`POST /ui/v1/sites/batch`、`POST /ui/v1/sites/{domain}/{action}`、`POST /ui/v1/sites/{domain}/default`、`POST /ui/v1/sites/{domain}/domains`、`POST /ui/v1/sites/{domain}/config`、`POST /ui/v1/sites/{domain}/ssl`、`POST /ui/v1/sites/{domain}/backup`、`POST /ui/v1/sites/{domain}/delete`、`GET /ui/v1/runtimes`、`GET /ui/v1/runtimes/{id}`、`GET /ui/v1/runtimes/catalog`、`GET /ui/v1/runtimes/images`、`POST /ui/v1/runtimes/images`、`POST /ui/v1/runtimes`、`POST /ui/v1/runtimes/{id}/action/{action}`、`POST /ui/v1/runtimes/{id}/config`、`POST /ui/v1/runtimes/{id}/node-config`、`POST /ui/v1/runtimes/{id}/port`、`POST /ui/v1/runtimes/{id}/clone`、`POST /ui/v1/runtimes/{id}/extensions`、`POST /ui/v1/runtimes/{id}/extensions/batch`、`POST /ui/v1/runtimes/{id}/extensions/{key}/{op}`、`POST /ui/v1/runtimes/{id}/pecl`、`POST /ui/v1/runtimes/{id}/config-file`、`POST /ui/v1/runtimes/{id}/probe`、`POST /ui/v1/runtimes/{id}/sites/{domain}/unbind`、`GET /ui/v1/web`、`GET /ui/v1/web/install`、`GET /ui/v1/web/logs`、`POST /ui/v1/web/config`、`POST /ui/v1/web/params`、`POST /ui/v1/compose/validate`、`POST /ui/v1/compose/up`、`POST /ui/v1/tasks/{id}/toggle`、`POST /ui/v1/tasks/{id}/run`、`POST /ui/v1/tasks/{id}/delete`、`POST /ui/v1/jobs/{id}/cancel`、`POST /ui/v1/jobs/{id}/retry`、`GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`POST /ui/v1/containers`、`POST /ui/v1/containers/{id}/limits`、`POST /ui/v1/containers/{id}/{action}`、`GET /ui/v1/containers/{id}/logs`、`GET /ui/v1/runtimes/{id}/logs`、`GET /ui/v1/images`、`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`GET /ui/v1/networks`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`GET /ui/v1/volumes`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`、`GET /ui/v1/compose`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}`、`GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`、`GET /ui/v1/settings`、`GET /ui/v1/settings/menu`、`POST /ui/v1/settings/menu`、`GET /ui/v1/settings/docker`、`POST /ui/v1/settings/docker`、`GET /ui/v1/settings/ui`、`POST /ui/v1/settings/ui`、`POST /ui/v1/settings/panel`、`POST /ui/v1/settings/password`、`POST /ui/v1/settings/totp/setup`、`POST /ui/v1/settings/totp/enable`、`POST /ui/v1/settings/keys`、`POST /ui/v1/settings/keys/{id}`、`GET /ui/v1/audit`、`GET /ui/v1/files`、`GET /ui/v1/files/read`、`POST /ui/v1/files/mkdir`、`POST /ui/v1/files/rename`、`POST /ui/v1/files/remove`、`GET /ui/v1/sites/{domain}/logs`、`GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`、`POST /ui/v1/plugins/confirm`、`GET /ui/v1/plugins`、`GET /ui/v1/plugins/{id}`、`POST /ui/v1/plugins/{id}/toggle`、`POST /ui/v1/plugins/{id}/delete`、`POST /ui/v1/session/logout`（其余资源按实现前逐条登记：认证、站点、运行时、Docker、文件、任务、作业、插件、设置、审计） |
-| 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） |
-| 静态资源 | `GET /{p}/static/{path}` |
-| 图标 | `GET /favicon.ico`（无前缀、无鉴权；内容复用入库的 `static/favicon.svg`，返回 `image/svg+xml` 与 `public, max-age=86400`） |
-| API v1 | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart`（执行与审计统一走 `commands::docker::container_action`：成功审计 target=`name (short_id)`、detail=动词 `http_path`；失败 target=`name`、detail=错误串） |
+| 资源 | 页面（壳页回落深链） | 接口 / 长连接 |
+| --- | --- | --- |
+| 概览 | `/{p}`、`/{p}/`（302 到根） | `GET /ui/v1/overview`、`GET /ui/v1/menu` |
+| 会话 | `/{p}/login`（公开，交付登录壳） | `GET`/`POST` `/ui/v1/auth/login`（未认证，签名 CSRF + 来源判定）、`GET /ui/v1/session`、`POST /ui/v1/session/logout` |
+| 容器 | `/{p}/containers`、`/{p}/containers/{id}`、`/{p}/containers/new`、`/{p}/containers/{id}/terminal`、`/{p}/containers/{id}/logs` | `GET /ui/v1/containers`、`GET /ui/v1/containers/{id}`、`GET /ui/v1/containers/{id}/logs?tail=`、`POST /ui/v1/containers`、`POST /ui/v1/containers/{id}/limits`、`POST /ui/v1/containers/{id}/{action}`；票据 `POST /{p}/containers/{id}/exec/ticket`；`GET /{p}/containers/{id}/exec`（WS）、`GET /{p}/containers/{id}/logs/stream`（SSE） |
+| 镜像 | `/{p}/images` | `GET /ui/v1/images`、`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove` |
+| 网络 | `/{p}/networks` | `GET /ui/v1/networks`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove` |
+| 卷 | `/{p}/volumes` | `GET /ui/v1/volumes`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove` |
+| Compose | `/{p}/compose` | `GET /ui/v1/compose`、`POST /ui/v1/compose/validate`、`POST /ui/v1/compose/up`、`POST /ui/v1/compose/down`、`POST /ui/v1/compose/{project}/{action}` |
+| 站点 | `/{p}/sites`、`/{p}/sites/new`、`/{p}/sites/{domain}`、`/{p}/sites/web`、`/{p}/sites/web/logs` | `GET /ui/v1/sites`、`GET /ui/v1/sites/{domain}`、`GET /ui/v1/sites/{domain}/logs?part=&tail=&q=`；`POST /ui/v1/sites`、`POST /ui/v1/sites/batch`、`POST /ui/v1/sites/{domain}/default`、`/domains`、`/config`、`/ssl`、`/backup`、`/delete`、`/ui/v1/sites/{domain}/{action}` |
+| Web 服务 | 无独立页（站点页内承载） | `GET /ui/v1/web`、`GET /ui/v1/web/install`、`GET /ui/v1/web/logs`、`POST /ui/v1/web/config`、`POST /ui/v1/web/params` |
+| 运行环境 | `/{p}/runtimes`、`/{p}/runtimes/{id}`、`/{p}/runtimes/{id}/logs` | 读：`GET /ui/v1/runtimes`、`/runtimes/catalog`、`/runtimes/images`、`/runtimes/{id}`、`/runtimes/{id}/logs?tail=`；写：`POST /ui/v1/runtimes`、`/runtimes/images`、`/runtimes/{id}/config`、`/config-file`、`/node-config`、`/port`、`/publish`、`/clone`、`/pecl`、`/probe`、`/extensions`、`/extensions/batch`、`/extensions/{key}/{op}`、`/action/{action}`、`/sites/{domain}/unbind` |
+| 文件 | `/{p}/files`（内核注册路由，形态门禁 `fs_capability`，交壳页） | JSON：`GET /ui/v1/files?path=`、`GET /ui/v1/files/read`、`POST /ui/v1/files/{write,mkdir,rename,remove,copy,chmod,chown,archive,extract}`；内核 fs 分组另有 `GET /{p}/files/{list,read,tree,download}` 与 `POST /{p}/files/{write,mkdir,rename,remove,upload,copy,chmod,chown,archive,extract}`（旧前缀 `/{p}/files/api/*` 308 到此处） |
+| 回收站 | `/{p}/files/trash`（壳页，`FILE_TRASH_READ`） | `GET /{p}/files/trash/list`、`POST /{p}/files/trash/restore`、`/purge`、`/clear`（前端直接用这组 JSON，未另建 `/ui/v1` 写入口） |
+| 配额 | `/{p}/files/quotas`（壳页，`FILE_QUOTA_READ`） | `GET /{p}/files/quotas/list`、`POST /{p}/files/quotas/set`、`/cancel`、`/scan`（同上，直接复用） |
+| 插件 | `/{p}/plugins`、`/{p}/plugins/{id}`、`/{p}/plugins/{id}/{view}` | `GET /{p}/plugins/{id}/schema/{view}`（视图 schema JSON，`PluginManage` 权限）、`GET /{p}/plugins/{id}/ui/{path}`（包内资源）、`POST /{p}/plugins/{id}/rpc`；`{view}` 默认交壳页原生渲染，显式 `?legacy=1` 才是内核 iframe 工作台；JSON `GET /ui/v1/plugins`、`GET /ui/v1/plugins/{id}`、`POST /ui/v1/plugins/{id}/toggle`、`POST /ui/v1/plugins/{id}/delete`、`POST /ui/v1/plugins/confirm` |
+| 商店 | `/{p}/store` | `GET /ui/v1/store`、`POST /ui/v1/store/plugins/{id}/install`（返回确认数据）、`POST /ui/v1/store/upgrades/{version}/download`（落暂存）、`POST /ui/v1/plugins/confirm`（凭令牌最终安装） |
+| 设置 | `/{p}/settings`、`/{p}/settings/menu`、`/{p}/settings/docker`、`/{p}/settings/ui` | 读 `GET /ui/v1/settings`、`/settings/menu`、`/settings/docker`、`/settings/ui`；写 `POST /ui/v1/settings/menu`、`/settings/docker`、`/settings/ui`、`/settings/panel`、`/settings/password`、`/settings/totp/setup`、`/settings/totp/enable`、`/settings/keys`、`/settings/keys/{id}` |
+| 审计 | `/{p}/audit`（budding 原生只读列表） | `GET /ui/v1/audit?q=&limit=&cursor=`（签名 keyset 游标）；`AuditRead` 权限不变，viewer 403 且菜单不可见 |
+| 定时任务 | `/{p}/tasks`、`/{p}/tasks/{id}` | `GET /ui/v1/tasks`、`GET /ui/v1/tasks/{id}`、`POST /ui/v1/tasks/{id}/toggle`、`/run`、`/delete` |
+| 任务中心 | `/{p}/jobs`、`/{p}/jobs/{id}`、`/{p}/jobs/{id}/logs` | `GET /ui/v1/jobs`、`GET /ui/v1/jobs/{id}`（含 `logs`）、`POST /ui/v1/jobs/{id}/cancel`、`/retry`；`GET /{p}/jobs/{id}/logs/stream`（SSE 尾随） |
+| 壳页回落 | `GET /{p}` 与 `GET /{p}/{白名单前缀}[/{rest}]`（仅 `Accept: text/html`；白名单见 §2.1） | — |
+| 静态资源 | — | `GET /{p}/static/{path}` |
+| 图标 | — | `GET /favicon.ico`（无前缀、无鉴权；复用 `static/favicon.svg`，`image/svg+xml` + `public, max-age=86400`） |
+| API v1 | — | `POST /api/v1/session`；`GET /api/v1/docker/containers`、`/docker/containers/{id}`、`/plugins`、`/plugins/ui`；`POST /api/v1/docker/containers/{id}/restart`（执行与审计统一走 `commands::docker::container_action`：成功 target=`name (short_id)`、detail=动词 `http_path`；失败 target=`name`、detail=错误串） |
 
 ## 10. 变更流程
 
 1. 新路由先在本表登记资源、方法与动作，再写代码；不允许「先实现后补文档」。
-2. 改已有路径必须同时提供兼容（§7）或明确下线记录，并更新引用它的模板、静态资源与测试。
-3. 代码侧守门：`crates/web/src/assets.rs` 校验静态资源 API 基址；`main_flow.rs` 校验旧路径跳转。
-4. 文档侧引用：`MENU_CONTRACT.md` 的旧路由映射表只描述**菜单键 → URL**，URL 形状以本文为准。
+2. 改已有路径必须同时提供兼容（§7）或明确下线记录，并更新前端路由表、静态资源与测试。
+3. 代码侧守门：`crates/web/src/lib.rs` 的路由注册是唯一真相；`assets.rs` 校验静态资源 API 基址；
+   `main_flow.rs` 校验旧路径跳转与壳页回落边界。
+4. 文档侧引用：`MENU_CONTRACT` 只描述**菜单键 → URL**，URL 形状以本文为准。

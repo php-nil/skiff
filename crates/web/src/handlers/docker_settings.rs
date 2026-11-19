@@ -3,45 +3,14 @@
 //! 原挂在「网站设置」下，但两项都只影响镜像拉取，与站点业务无关，因此迁到 Docker 一级。
 
 use std::collections::HashMap;
-use std::sync::Arc;
-
-use axum::extract::State;
-use axum::http::header::LOCATION;
-use axum::http::request::Parts;
-use axum::http::{StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
-use crate::handlers;
-use crate::middleware::{check_csrf, AuthUser};
 use crate::state::{AppState, CurrentUser};
-use crate::util::{form_first, parse_form};
-
-/// 旧路径 `/{p}/docker/settings` → `/{p}/settings/docker`（308 保留方法与请求体）。
+use crate::util::form_first;
+/// `/ui/v1/settings/docker` 的唯一写入入口。
 ///
-/// 兼容保留，不设删除时间；规范路径为 `/{p}/settings/docker`。
-pub async fn legacy_path(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
-    let prefix = &state.cfg.entry_prefix;
-    let mut target = format!("/{prefix}/settings/docker");
-    if let Some(q) = uri.query() {
-        target.push('?');
-        target.push_str(q);
-    }
-    (StatusCode::PERMANENT_REDIRECT, [(LOCATION, target)]).into_response()
-}
-
-/// `GET /{p}/settings/docker` 规范入口：交付 budding 壳页（唯一入口）。
-pub async fn shell(
-    State(state): State<Arc<AppState>>,
-    AuthUser(_user): AuthUser,
-) -> Result<Response, AppError> {
-    Ok(crate::handlers::spa::shell_page(&state))
-}
-
-/// Docker 设置写操作：SSR 表单与 `/ui/v1/settings/docker` 共用的唯一业务入口。
-///
-/// 镜像前缀落库、镜像源写入宿主 `daemon.json`、失败审计与成功审计都在这里，
-/// 调用方只决定「表单跳转」还是「JSON 信封」。
+/// 镜像前缀落库、镜像源写入宿主 `daemon.json`、失败审计与成功审计都在这里；
+/// 调用方只负责把结果包成 JSON 信封。
 pub(crate) async fn apply_settings(
     state: &AppState,
     user: &CurrentUser,
@@ -109,34 +78,4 @@ pub(crate) async fn apply_settings(
         "",
     );
     Ok(notice)
-}
-
-pub async fn save(
-    State(state): State<Arc<AppState>>,
-    AuthUser(user): AuthUser,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    handlers::require_permission(&user, skiff_model::Permission::Admin)?;
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let prefix = &state.cfg.entry_prefix;
-    let ip = handlers::client_ip(&state, &parts);
-
-    match apply_settings(&state, &user, &ip, &form).await {
-        Ok(notice) => Ok(handlers::flash_redirect(
-            &state,
-            &user,
-            skiff_app::FlashKind::Notice,
-            notice,
-            format!("/{prefix}/settings/docker"),
-        )),
-        Err(e) => Ok(handlers::flash_redirect(
-            &state,
-            &user,
-            skiff_app::FlashKind::Error,
-            e.message(),
-            format!("/{prefix}/settings/docker"),
-        )),
-    }
 }

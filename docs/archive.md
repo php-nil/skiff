@@ -7,6 +7,5 @@
 | --- | --- |
 | [ARCH_REVIEW.md](archive/ARCH_REVIEW.md) | 六轮架构审查与 P0–P2 行动清单（行号已腐化；按轮次分 6 册） |
 | [ui/](archive/ui/) | 导航与站点运行环境的设计过程、静态预览（数据为示意） |
-| [PLUGIN_UI_SCHEMA_ASSESSMENT.md](archive/PLUGIN_UI_SCHEMA_ASSESSMENT.md) | 插件页去 iframe 评估稿（已按其推荐路线落地，现状口径见现行契约） |
 
 新文档不得放进本目录；需要留痕的过程稿在结论抽取后移入。

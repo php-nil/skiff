@@ -17,7 +17,6 @@
 | [URL_CONTRACT.md](contract/URL_CONTRACT.md) | 页面、接口、动作的路径与动词，方法与副作用（分 2 册） | 改 URL / handler / 表单动作 |
 | [MENU_CONTRACT.md](contract/MENU_CONTRACT.md) | 菜单归属、声明、渲染与持久化（分 5 册） | 加菜单项、调归属 |
 | [PLUGIN_UI_CONTRACT.md](contract/PLUGIN_UI_CONTRACT.md) | 插件信息页/功能页、`view`、iframe 与 CSP | 改插件页形态 |
-| [UI_CONTRACT.md](contract/UI_CONTRACT.md) | 标题、提示、工具栏、空态、危险确认 | 改内核页面或文案 |
 | [SITE_RUNTIME_CONTRACT.md](contract/SITE_RUNTIME_CONTRACT.md) | 站点模型、建站类型、PHP/Node 生命周期（分 5 册） | 改站点 / 运行环境 |
 | [KERNEL_FS_CONTRACT.md](contract/KERNEL_FS_CONTRACT.md) | fs 授权、操作面、回收站与配额（分 4 册） | 改文件管理 / 授权 |
 | [KERNEL_SCHEDULER_CONTRACT.md](contract/KERNEL_SCHEDULER_CONTRACT.md) | 任务模型、调度、回执与插件唤醒（分 3 册） | 改计划任务 |

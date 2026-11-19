@@ -27,7 +27,7 @@
 - 早期设计稿的 `GET /ui/v1/bootstrap`、`POST /ui/v1/session`、`x-csrf-token` 头与 `auth.csrf_expired` / `auth.cross_site` / `auth.rate_limited` / `auth.totp_*` 细分码**未采用**：当前实现复用既有 `auth.csrf_invalid` / `auth.unauthenticated` / `dependency.unavailable` 与现有中文文案，避免在登录链路上新造第二套错误码。后续如确需机器可判别 TOTP 缺省/错误，再单独提案。
 - 登录成功响应暂不返回 `permissions/acl`（当前 `/{p}/login` 成功后由服务端页面加载，壳页会话接口 `GET /ui/v1/session` 提供角色与 CSRF）；接入第一张真实业务页时再按 §5.3 补 ACL 快照。
 - **口令输入（已原生）**：budding 1.8.0 重打包起 `input-text` 透传原生 `type`（含 `password`），1.9.0 起 `autocomplete` 也同名透传（未配置时不输出属性）；登录页与设置页直接声明 `type: 'password'` / `autocomplete`，首帧即掩码，不再有渲染后改 DOM 的临时桥接。
-- 旧 askama 登录模板与 `POST /{p}/login` 表单 handler 暂保留：新页通过测试前不删，且它仍是「前端产物加载失败」时唯一可用的兜底提交路径（无 JS 客户端可直达）。
+- 登录只有两条：`GET /{p}/login` 交付登录壳、`POST /ui/v1/auth/login` 收 JSON。旧 askama 登录模板与表单 `POST /{p}/login` 已于 2026-11-19 删除，**没有服务端兜底提交路径**——前端产物加载失败时登录同样不可用（D3「不留双栈」的必然代价，回滚靠发布 tag）。
 
 ### 5.2 401 / 403
 
@@ -71,6 +71,6 @@ budding 的 `acl` 是快照，权限变化必须重新 `embed`。交接路径：
 |---|---|---|
 | 作业进度 | 作业中心 `progress` + SSE 日志 | 用现有轮询端点 + `source.autoRefresh`；SSE 暂不接 |
 | 运行环境安装进度 | `GET /runtimes/jobs` 轮询 | 直接映射为轮询 |
-| 容器日志 | 原 SSE 流 | 已改为尾部快照 + 刷新（`GET /ui/v1/containers/{id}/logs`，§5.20）；SSE 仅旧 SSR 详情页跟随 |
+| 容器日志 | 尾快照 + 刷新 | 壳页主路径为 `GET /ui/v1/containers/{id}/logs?tail=`（§5.20）；`GET /{p}/containers/{id}/logs/stream`（SSE）仍在，只作调试与超长日志跟随，不进壳页 |
 | 终端 | 票据 + WS | 已落地：`terminal` Pack 内联 + 既有 exec 票据/WS（§5.19）；WS 真连待 Linux 测试机验收 |
 | 文件上传 | 分片 `offset` 协议 | budding `file` 只支持单次 FormData POST；见 §6 |

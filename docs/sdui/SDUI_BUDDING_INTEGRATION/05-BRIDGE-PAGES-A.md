@@ -128,9 +128,9 @@
 - `GET /{p}/containers`、`/{p}/containers/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表复用 `Docker::list_containers` 与 `handlers::container_view`，`filter=error` 与旧页面同一判定（`container_abnormal`），不新增 SQL。
 - 详情复用 `resolve_container` + `inspect_container`；读权限仍是 `policy.check(ContainerInspect)`，不新增权限规则。
-- 启停/重启/删除：`POST /ui/v1/containers/{id}/{action}`，CSRF 走 `x-csrf-token` 头；策略判定、deny 审计与 `docker_cmd::container_action` 与旧 htmx 路径完全同源。
-- 新建容器：`GET /{p}/containers/new` 交付壳页原生表单（`ContainerCreate` 门禁仍在页面入口），提交走 `POST /ui/v1/containers`；参数解析复用 `containers::spec_from_form`，`validate_spec` 与 `docker_cmd::container_create` 不变。
-- 资源限制编辑：`POST /ui/v1/containers/{id}/limits`，沿用 `ContainerUpdate` 策略、`containers::limits_from_form`（空串 = 0 = 清除）与 `docker_cmd::container_update`；详情页直接给表单，不再跳旧 SSR。
+- 启停/重启/删除：`POST /ui/v1/containers/{id}/{action}`，CSRF 走 `x-csrf-token` 头；策略判定、deny 审计与 `docker_cmd::container_action` 全仓只有这一条路径（页面级动作路由已随旧 SSR 删除）。
+- 新建容器：`GET /{p}/containers/new` 由壳页回落（深链，非独立路由）渲染原生表单（`ContainerCreate` 门禁在 `/ui/v1/containers` 入口），提交走 `POST /ui/v1/containers`；字段解析走 `containers::spec_from_fields`，`validate_spec` 与 `docker_cmd::container_create` 不变。
+- 资源限制编辑：`POST /ui/v1/containers/{id}/limits`，沿用 `ContainerUpdate` 策略、`containers::limits_from_fields`（空串 = 0 = 清除）与 `docker_cmd::container_update`；详情页直接给表单。
 
 **字段表（冻结，只增不改）**
 

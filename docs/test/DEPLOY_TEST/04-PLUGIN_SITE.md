@@ -92,7 +92,7 @@ manifest 升到 `api = "1.2"` 后，路由契约变为：
 | `GET /{p}/plugins/{id}/main` | 默认功能页（`ui/main.html`） | files 200；无 L3 声明，无标签栏 |
 | `GET /{p}/plugins/{id}/<view>` | 声明的 L3 视图 | cron `list`/`new`、guard `containers`/`events`、monitor `overview`/`history` 200，标签栏 2 项；testkit `main`/`check`/`group` 200，标签栏 3 项 |
 | `GET /{p}/plugins/{id}/<未知>` | 未知视图 | 404，文案「插件 com.skiff.files 不存在视图 nope，或该视图对当前角色不可见」 |
-| `GET /{p}/m/plugin/{id}/<l2>[/<l3>]` | 菜单深链 | cron `jobs`/`jobs/list`/`jobs/new`、files、testkit `testkit[/check]`、`testkit-single` 全 200 |
+| `GET /{p}/plugins/{id}/<view>?legacy=1` | iframe 工作台（无 schema 的旧视图） | cron `jobs`/`list`/`new`、files、testkit `main`/`check`/`single` 全 200 且标签栏项数正确 |
 
 testkit 实测：`ping` / `state` / `probe` RPC 200；`interop_cron` 200（`jobs:[], ok:true`）；
 `fail` HTTP 400 且文案含 `-32602`；`fs_read /etc/passwd` 400（「内核返回 HTTP 403：路径不在
@@ -129,7 +129,8 @@ schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runti
 `site_runtimes` 种入唯一 `php-8.5`；**测试期不做旧数据迁移**，重置库后由面板重新建站。
 
 - 全新库 `PRAGMA user_version=7`，`site_runtimes` 仅 `php-8.5`（默认），`sites=0`；
-  `POST /{p}/sites/env/install` 完成环境安装后 `docker exec skiff-web-nginx nginx -t` 成功。
+  `POST /ui/v1/runtimes` 完成环境安装后 `docker exec skiff-web-nginx nginx -t` 成功
+  （当时走 `POST /{p}/sites/env/install`，该路由已于 2026-11-19 删除）。
 - 三类站（入口前缀 `/swn4nbhe`）：
   - PHP（`php.local` + `runtime_id=php-8.5`）：HTTP 与 HTTPS 均 200，正文含 `PHP Version 8.5.12`；
   - 静态（`static.local`）：自定义 `index/index.html` 返回 200；
@@ -137,9 +138,10 @@ schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runti
     `X-Upstream: 18081`，上游收到 `Host: proxy.local`。
 - 删除三个站均 303：站目录与 `conf/<域名>.conf` 消失，`nginx -t` 成功，`Host` 回落 404，
   库内 `sites=0`；`/www/sites` 为空。
-- 拒绝路径（均 HTTP 200，表单页内联告警）：重复域名「域名已存在」；`ftp://` 上游
+- 拒绝路径（当时为服务器表单页内联告警；2026-11-19 起同一校验经 `POST /ui/v1/sites` 返回 4xx JSON 信封）：重复域名「域名已存在」；`ftp://` 上游
   非 http(s)；`site_type=node|go` 只支持三类；未知 `runtime_id` 运行环境不存在。
-- 运行环境页：`/{p}/runtimes`、`/{p}/sites/env`、`/{p}/sites/env/php-8.5` 均 200（2026-11-10 起 `/sites/env*` 301 到 `/runtimes*`，见 [`URL_CONTRACT.md`](../../contract/URL_CONTRACT.md) §7）；PHP 配置保存 303，
+- 运行环境页：`/{p}/runtimes`、`/{p}/runtimes/php-8.5` 均 200
+  （`/{p}/sites/env*` 别名已于 2026-11-19 删除，直达 404，见 [`URL_CONTRACT.md`](../../contract/URL_CONTRACT.md) §7）；PHP 配置保存 303，
   `/www/php/www.conf` 写入 `memory_limit=512M`、`upload_max_filesize=128M`、`post_max_size=256M`、
   `max_execution_time=120`、`pm=ondemand`，PHPInfo 页面显示 `upload_max_filesize=128M`；
   关联站点数 1→0 正确；绑定 `php.local` 时删除运行环境被拒并列出域名。

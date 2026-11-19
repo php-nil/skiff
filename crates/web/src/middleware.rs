@@ -292,9 +292,9 @@ pub async fn load_session(
                         // JSON 命名空间只出状态码与信封，不能 303 到页面。
                         || path.starts_with("/ui/")
                         || path == format!("/{prefix}/login")
-                        || path == format!("/{prefix}/password")
-                        || path == format!("/{prefix}/logout")
-                        // 壳页设置页承载强改密表单（`?force=1`），必须可达。
+                        // 壳页设置页承载强改密入口（`?force=1`），必须可达；
+                        // 改密与登出本身走 `/ui/v1/settings/password`、
+                        // `/ui/v1/session/logout`（上面 `/ui/` 已放行）。
                         || path == format!("/{prefix}/settings");
                     if !allowed {
                         return AppError::Redirect(format!("/{prefix}/settings?force=1"))

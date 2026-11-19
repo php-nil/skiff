@@ -6,7 +6,7 @@
 
 > 状态：**设计稿；P0/P1 已落地（2026-11-10），P2 未实施**（最近核对 2026-11-13）。本文描述目标、契约与推进方式；落地范围以 §P0/P1 状态为准。
 > 前置：SDUI 框架由外部提供，其组件集、事件模型与布局能力尚未确定（见 §6）。
-> 关系：视觉与交互基准见 [UI_CONTRACT.md](../../contract/UI_CONTRACT.md)，插件页路由与 iframe 边界见 [PLUGIN_UI_CONTRACT.md](../../contract/PLUGIN_UI_CONTRACT.md)，菜单声明模型见 [MENU_CONTRACT.md](../../contract/MENU_CONTRACT.md)，分层红线见 [AGENTS.md](../../../AGENTS.md) §4.1 与 [03-architecture.md](../../sections/03-architecture.md) §3.1。本文不重复上述结论，只回答「内核要交出什么、保留什么、怎么迁」。
+> 关系：插件页路由与 iframe 边界见 [PLUGIN_UI_CONTRACT.md](../../contract/PLUGIN_UI_CONTRACT.md)，菜单声明模型见 [MENU_CONTRACT.md](../../contract/MENU_CONTRACT.md)，分层红线见 [AGENTS.md](../../../AGENTS.md) §4.1 与 [03-architecture.md](../../sections/03-architecture.md) §3.1。本文不重复上述结论，只回答「内核要交出什么、保留什么、怎么迁」。
 
 ---
 
@@ -27,21 +27,21 @@
 
 ### 1.1 观测口径
 
-以下计数为 **2026-11-12** 对 `crates/web/src`、`crates/web/templates` 与 `crates/web/static` 的静态观测（`Select-String` 正则计数，未过滤注释），用于说明耦合形态，不作为能力指标或性能数字引用。
+以下计数为 **2026-11-19**（旧 SSR 删除后的收口状态）对 `crates/web/src`、`crates/web/templates` 与 `crates/web/static` 的静态观测（正则在源码上计数，未过滤注释），用于说明耦合形态，不作为能力指标或性能数字引用。
 
 | 项 | 数量 | 说明 |
 |---|---|---|
-| Web 源码 | 30 个文件、13,862 行 | 不含模板与静态资产 |
-| 页面处理器 | 154 个 `pub async fn` | 四组写路径已拆为「解析 → 命令 → 响应」，读处理器仍多职责 |
-| 模板 | 38 个 `.html`、33 个 askama `Template` 结构体 | 其余为基础布局与可复用片段（弹窗、卡片、提示条） |
-| 表单解析 | 64 处 `parse_form`、105 个 `<form>` | 字段名即事实接口，无 schema |
-| 重定向 / flash | 87 处（其中 71 处 `flash_redirect`、16 处直接 `handlers::redirect`） | 写操作结果经会话内存 flash 传给下一次渲染 |
-| 审计调用 | Web 7 处、App 16 处 `.audit(...)` | 写审计已随 P1 命令层；Web 剩余为 panic、会话、任务与作业 |
-| 授权判定 | 17 处 `policy.check`、12 处 `require_permission`、25 处 `user.can`、2 个中间件提取器 | 写路径已统一到 `web::authz`；其余分别用于对象级、读页与按钮显隐 |
-| 查询参数 | 24 处 `Query<HashMap<String, String>>` | 每页自取，无统一分页/筛选契约 |
-| 内联脚本 | 12 个 `<script>` 块（分布在 9 个模板） | 另有 5 个独立前端脚本与 xterm |
-| 静态资产 | `skiff.css` 82,641B、`skiff.js` 81,800B、`htmx` 50,917B、`xterm` 289,441B、`files.js` 66,308B（2026-11-18 随旧 SSR 文件页删除，现为壳页 `budding/budding-boot.js`） | 由 `rust-embed` 打包 |
-| 菜单模块 | `app/menu.rs` 66,018B（2026-11-19 删除 `web/menu.rs` 兼容层，web 直接消费 `skiff_app::menu`） | 声明解析、排序、偏好写库与渲染模型仍混在一起 |
+| Web 源码 | 49 个文件、14,675 行 | 不含模板与静态资产 |
+| 处理器 | 164 个 `pub async fn` | 绝大多数是 `/ui/v1` 的 JSON 端点；写路径已拆为「解析 → 命令 → 响应」 |
+| 模板 | 2 个 `.html`、2 个 askama `Template` 结构体 | 只剩错误页与插件 iframe 工作台；壳页由 `handlers::spa` 字符串拼装 |
+| 表单解析 | 0 处 `parse_form`、0 个 `<form>` | 页面级表单提交已随旧 SSR 删除；设置类写入口收 JSON body 后转 `HashMap<String, Vec<String>>` 复用既有校验 |
+| 重定向 / flash | 0 处 `flash_redirect`（重定向+flash 的组合函数已删） | `/ui/v1` 写入口直接返回结果信封；`AppState::push_flash`/`take_flash` 仍保留，只服务设置类写入口的一次性提示 |
+| 审计调用 | Web 3 处、App 17 处 `.audit(...)` | 写审计在命令层；Web 剩余为 panic、会话、任务与作业 |
+| 授权判定 | 4 处 `policy.check`、10 处 `require_permission`、30 处 `user.can`、2 个中间件提取器 | 写路径统一到 `web::authz`；其余用于对象级、读端点与按钮显隐 |
+| 查询参数 | 15 处 `Query<HashMap<String, String>>` | 只读筛选与游标，契约见 URL 契约 §8 |
+| 内联脚本 | 3 个 `<script>` 块（分布在 2 个模板） | 无独立手写页面脚本；壳页与业务全部走 `budding/budding-boot.js` |
+| 静态资产 | `budding/*`（壳页运行时与分包）、`skiff-shell.css`、`theme-init.js`、`form-enter-submit.js`；`skiff.css`/`skiff.js` 仅插件 iframe 工作台在用；`htmx`（2026-11-19）、`files.js`（2026-11-18）、`xterm`（2026-11-19，改由 `budding-terminal` 自带）已删除 | 由 `rust-embed` 打包 |
+| 菜单模块 | `app/menu.rs`（声明解析、排序、偏好写库）；`web/menu.rs` 兼容层已于 2026-11-19 删除，web 直接消费 `skiff_app::menu` | 菜单树只在这一处产出，`/ui/v1/menu` 是唯一出口 |
 
 ### 1.2 三类归类
 
@@ -55,11 +55,11 @@
 | 资源读模型字段语义 | `app` 的 `RuntimeView`、`Job` 等 | 业务逻辑 | 内核（字段稳定、无展示语义） |
 | 页面视图模型与格式化 | `web::templates` 的 `*View`、`human_size`、`truncate`、`"—"`/「未知」占位 | 展示逻辑 | SDUI |
 | 状态到样式/文案的映射 | `state_label`、`state_class`（ok/warn/danger/muted）、`type_label` | 展示逻辑 | SDUI |
-| 模板、片段与局部刷新 | askama 模板、`/containers/rows`、`hx-request` 分支 | 展示逻辑 | SDUI |
+| 模板与页面脚本 | 只剩错误页与插件 iframe 工作台两个 askama 模板（页面级 SSR 与 htmx 已删除） | 展示逻辑 | SDUI |
 | 表单控件、字段级错误高亮 | `site_error_text` 把错误映射到字段名 | 展示逻辑 | SDUI（内核只给 `field`） |
-| 重定向、PRG、flash 提示 | `flash_redirect`、`FlashKind`（位于 `skiff-app`） | 展示逻辑 | SDUI（内核改为直接返回结果） |
+| 重定向、PRG、flash 提示 | `FlashKind` / `FlashMessage`（`skiff-app`，写入口的一次性提示） | 展示逻辑 | SDUI（内核改为直接返回结果） |
 | 导航与菜单渲染、偏好排布 | `app/menu.rs` 的 `build`/`settings_view`/`apply_action` | 展示逻辑（含少量授权） | 声明与授权留内核，渲染归 SDUI |
-| CSS、主题、静态资产、xterm 集成 | `static/`、`base.html` 内联脚本 | 展示逻辑 | SDUI |
+| CSS、主题、静态资产、xterm 集成 | `static/`、壳页 `spa::shell_html` 的产物引用 | 展示逻辑 | SDUI |
 | 入口前缀、404、状态码语义 | `router`、`entry_guard`、`AppError` | 传输契约 | 内核 |
 | 会话 Cookie、Bearer、CSRF | `middleware`、`check_csrf`、`x-csrf-token` | 传输契约 | 内核 |
 | 错误载荷形状 | `AppError`（HTML 页）与 `ApiError`（`{error:{code,message}}`） | 传输契约 | 内核（需稳定机器码） |
@@ -76,7 +76,7 @@
 | 审计事实与危险动作标记 | 合规与追溯要求；`dangerous` 由内核声明 | 提示条、确认弹窗、抽屉 | 交互形态属框架 |
 | 异步作业、进度与日志游标 | 事实源在 `jobs` 表与内存缓冲 | 页面文案排版与多语言呈现 | 文案可用 key 由前端决定落点 |
 | 稳定错误码与错误类别 | 客户端分支依赖它，不能靠 HTTP 状态猜 | 重定向、PRG、flash 语义 | 是旧 UI 的结果传递方式 |
-| 资源字段语义（类型、单位、只读、敏感、引用） | 决定数据能否被正确理解与授权 | 局部刷新片段与 htmx 分支 | 是旧渲染技术的实现细节 |
+| 资源字段语义（类型、单位、只读、敏感、引用） | 决定数据能否被正确理解与授权 | 页面级片段与布局细节 | 是旧渲染技术的实现细节 |
 | 流式通道（SSE/WS/上传下载） | 与长连接、票据、超时层强绑定 | 主题、CSS、静态资产 | 表现层资产 |
 
 ### 1.4 耦合的根因

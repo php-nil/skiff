@@ -1,24 +1,19 @@
 //! URL 形状常量：内核拼链接与 web 注册路由共用**同一份**定义。
 //!
-//! 背景：`/{prefix}/m/...` 过去是 `app/menu.rs` 里的一串 `format!` 与
-//! `web/src/lib.rs` 里的路由字符串各写一遍，靠人眼对齐；web 改路由、menu 静默失效。
-//! 这里把「段名 + 路由形状 + 拼接函数」收成一处，两侧都从这里取值。
+//! 内核页面全部由 budding 壳承载，深链统一走规范路径
+//! （`/{prefix}/plugins/<id>/<view>`、`/{prefix}/<page>`）。
 
-/// 菜单深链的路径段（`/{prefix}/m/...`）。
-pub const MENU_SEGMENT: &str = "m";
-
-/// axum 路由形状：`/{prefix}/m/{*rest}`。
+/// 拼一条插件功能页深链：`/{prefix}/plugins/{id}/{rest}`。
 ///
-/// `prefix` 是配置里的**字面值**（如 `admin`），不是路径参数——写成常量
-/// `"/{p}/m/{*rest}"` 会被 axum 当成「两段参数」（`p` + `rest`），
-/// `Path<String>` 提取时因参数个数不符直接 500。
-pub fn menu_route(prefix: &str) -> String {
-    format!("/{prefix}/{MENU_SEGMENT}/{{*rest}}")
-}
-
-/// 拼一条菜单深链：`/{prefix}/m/{rest}`。
+/// 兼容历史键：`plugin/<id>/<local>[/<l3>]` → 规范功能页；`overview` → 入口根。
 pub fn menu_href(prefix: &str, rest: &str) -> String {
-    format!("/{prefix}/{MENU_SEGMENT}/{rest}")
+    if let Some(tail) = rest.strip_prefix("plugin/") {
+        return format!("/{prefix}/plugins/{tail}");
+    }
+    if rest == "overview" {
+        return format!("/{prefix}");
+    }
+    format!("/{prefix}/{rest}")
 }
 
 /// 拼一条入口内路径：`/{prefix}/{path}`。
@@ -31,12 +26,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn route_shape_and_segment_stay_aligned() {
-        assert_eq!(menu_route("admin"), "/admin/m/{*rest}");
+    fn plugin_keys_map_to_canonical_paths() {
         assert_eq!(
-            menu_href("admin", "core/dashboard"),
-            "/admin/m/core/dashboard"
+            menu_href("admin", "plugin/com.skiff.cron/list"),
+            "/admin/plugins/com.skiff.cron/list"
         );
+        assert_eq!(
+            menu_href("admin", "plugin/com.skiff.cron/list/runs"),
+            "/admin/plugins/com.skiff.cron/list/runs"
+        );
+        assert_eq!(menu_href("admin", "overview"), "/admin");
         assert_eq!(entry_href("admin", "plugins"), "/admin/plugins");
     }
 }

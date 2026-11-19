@@ -1,10 +1,8 @@
-use skiff_pkgfmt::package::DEFAULT_LIMITS;
 use std::collections::HashMap;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
-use axum::body::Bytes;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_FRAME_OPTIONS};
 use axum::http::request::Parts;
 use axum::http::HeaderValue;
@@ -17,10 +15,9 @@ use skiff_store::PluginRecord;
 
 use crate::error::{ApiError, AppError};
 use crate::handlers;
-use crate::middleware::{check_csrf, PluginManagerUser};
+use crate::middleware::PluginManagerUser;
 use crate::state::AppState;
-use crate::templates::{PermissionRow, PluginConfirmPage, PluginView, PluginViewPage, TabView};
-use crate::util::{form_first, parse_form};
+use crate::templates::{PluginView, PluginViewPage, TabView};
 
 /// `?open=` 定位串的字符上限：够放一条深层路径，又不至于把 URL 撑爆。
 const OPEN_PATH_MAX: usize = 512;
@@ -86,10 +83,9 @@ pub async fn view(
             return Ok(resp);
         }
     }
-    // 新一代前端（budding 壳）不承载 iframe：任何直接导航都交壳页渲染
-    // 「插件功能页正在切换为原生渲染」占位。旧 SSR 工作台仅保留给显式兼容请求
-    // （`?legacy=1`，例如仍需嵌入的旧页面），面板内没有任何导航入口。
-    // 该分支**兼容保留，不设删除时间**；新功能只进随包 schema。
+    // 默认交付 budding 壳页：壳页优先读随包 schema 原生渲染。
+    // `?legacy=1` 是**没有 schema 的旧视图**（如 monitor/health、testkit/mount）的
+    // iframe 宿主入口——壳页在 schema 404 时自动加这个参数回跳，属于现役路径。
     //
     // 不做 `Sec-Fetch-Dest` 判断：真实浏览器经反向代理/安全网关后该头可能被剥离，
     // 会导致直达被误判成嵌入请求。显式参数不受代理影响。
@@ -108,55 +104,6 @@ pub async fn view(
         })?;
     render_workbench(&state, &user, &rec, wb, q.get("open").map(String::as_str)).await
 }
-
-/// 菜单深链（`/{p}/m/plugin/<id>[/<l2>[/<l3>]]`）。
-///
-/// `legacy` 是 P1 老深链：插件升级为声明式菜单后落到首个可见 L2，
-/// 避免旧收藏与旧入口失效。
-pub async fn menu_view(
-    State(state): State<Arc<AppState>>,
-    PluginManagerUser(user): PluginManagerUser,
-    Path((id, l2_raw, l3_raw)): Path<(String, Option<String>, Option<String>)>,
-    Query(q): Query<HashMap<String, String>>,
-) -> Result<Response, AppError> {
-    let rec = state
-        .db()
-        .plugin(&id)?
-        .ok_or_else(|| AppError::NotFound(format!("插件不存在: {id}")))?;
-    let wb = match l2_raw.as_deref() {
-        None => skiff_app::menu::default_plugin_view(&state, &user, &id),
-        Some(raw) => {
-            let resolved =
-                skiff_app::menu::workbench_tabs(&state, &user, &id, raw, l3_raw.as_deref());
-            if resolved.is_some() {
-                resolved
-            } else if skiff_app::menu::menu_local(&id, raw).as_deref() == Some("legacy") {
-                // 老深链降级：按 manifest 顺序尝试首个可解析的可见 L2。
-                Manifest::parse(&rec.manifest).ok().and_then(|m| {
-                    m.menu.iter().find_map(|d| {
-                        skiff_app::menu::workbench_tabs(
-                            &state,
-                            &user,
-                            &id,
-                            &d.id,
-                            l3_raw.as_deref(),
-                        )
-                    })
-                })
-            } else {
-                None
-            }
-        }
-    }
-    .ok_or_else(|| {
-        AppError::NotFound(format!(
-            "插件 {id} 的菜单不存在或当前角色不可见: {}",
-            l2_raw.as_deref().unwrap_or("")
-        ))
-    })?;
-    render_workbench(&state, &user, &rec, wb, q.get("open").map(String::as_str)).await
-}
-
 /// 工作台公共渲染：nonce 每次打开重新生成，父页面只代发带有该 nonce 的
 /// `skiff.rpc` 消息；iframe 内容按 `style-src 'self' 'unsafe-inline'`、
 /// `connect-src 'none'` 托管，拿不到面板 Cookie 也发不出网。
@@ -191,7 +138,6 @@ async fn render_workbench(
             local: t.local.clone(),
             label: t.label.clone(),
             href: t.href.clone(),
-            icon: t.icon.clone(),
             tab: t.tab.clone(),
             ui: t.ui.clone(),
             src: iframe_url(
@@ -278,124 +224,6 @@ fn sanitize_open(raw: &str) -> String {
         .take(OPEN_PATH_MAX)
         .collect()
 }
-
-/// 第一步：上传包 → 校验（结构/签名/API/能力）→ 权限确认页。
-pub async fn install(
-    State(state): State<Arc<AppState>>,
-    PluginManagerUser(user): PluginManagerUser,
-    parts: Parts,
-    mut multipart: Multipart,
-) -> Result<Response, AppError> {
-    let mut bytes: Option<(String, Bytes)> = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("上传解析失败: {e}")))?
-    {
-        let name = field.name().unwrap_or_default().to_string();
-        if name != "package" {
-            continue;
-        }
-        let filename = field.file_name().unwrap_or("package.wbpkg").to_string();
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::BadRequest(format!("读取上传内容失败: {e}")))?;
-        bytes = Some((filename, data));
-    }
-    let Some((filename, data)) = bytes else {
-        return Err(AppError::BadRequest("缺少 package 文件字段".into()));
-    };
-    if data.len() as u64 > DEFAULT_LIMITS.archive_bytes {
-        return Err(AppError::BadRequest(format!(
-            "包超过 {} 字节上限",
-            DEFAULT_LIMITS.archive_bytes
-        )));
-    }
-
-    // 存到 .incoming（root 0700），供确认页二次提交
-    let incoming = state.cfg.data_dir.join("plugins").join(".incoming");
-    std::fs::create_dir_all(&incoming).map_err(|e| AppError::Internal(e.to_string()))?;
-    let token = skiff_identity::new_token().replace(['-', '_'], "");
-    let token = token.chars().take(24).collect::<String>();
-    let path = incoming.join(format!("{token}.wbpkg"));
-    std::fs::write(&path, &data).map_err(|e| AppError::Internal(e.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-
-    let trust = verify_for_confirm(&state, &path)?;
-    let meta = &trust.meta;
-
-    // 重装/升级：按同一插件 id 找回既有授权，直接完成安装，不再逐条弹确认页。
-    // 选择集传空表示「不新增人工授权」；install_package 沿用库内 grants 并按新
-    // manifest 的声明集过滤，相对旧 manifest 新增声明的权限由它补齐（敏感档写审计）。
-    if state.db().plugin(&meta.manifest.id)?.is_some() {
-        let opts = skiff_plugin::install_options(
-            &trust,
-            Vec::new(),
-            Vec::new(),
-            state.cfg.allow_unsigned,
-            state.cfg.form,
-            state.cfg.allow_reduced_sandbox,
-            &user.user.username,
-        );
-        let ip = handlers::client_ip(&state, &parts);
-        commit_install(&state, &user, &ip, &path, &opts, &meta.manifest.id).await?;
-        return Ok(handlers::redirect(format!(
-            "/{}/plugins",
-            state.cfg.entry_prefix
-        )));
-    }
-
-    let permissions = meta
-        .manifest
-        .permission_strings()
-        .into_iter()
-        .map(|v| {
-            let (cap, verb) = v.split_once(':').unwrap_or((v.as_str(), ""));
-            PermissionRow {
-                value: v.clone(),
-                capability: cap.to_string(),
-                verb: verb.to_string(),
-            }
-        })
-        .collect();
-
-    // 对象授权 = 声明的 resource_hints + 由 `[interop].consumes` 派生的 `plugin:`。
-    // 后者必须**显式勾选**：插件间调用不能因为「装了个插件」就顺带获得调用权。
-    let mut resources = meta.manifest.resource_hints.clone();
-    resources.extend(meta.manifest.interop_resource_hints());
-    resources.sort();
-    resources.dedup();
-    let (interop_provides, interop_consumes) = interop_rows(&meta.manifest);
-
-    let page = PluginConfirmPage {
-        ctx: handlers::page_ctx(&state, &user, "plugins"),
-        token,
-        id: meta.manifest.id.clone(),
-        name: meta.manifest.name.clone(),
-        version: meta.manifest.version.clone(),
-        api: meta.manifest.api.clone(),
-        key_id: meta.key_id.clone(),
-        signed: meta.signature_verified,
-        permissions,
-        resources,
-        interop_provides,
-        interop_consumes,
-        requires: meta.manifest.requires_str().join(", "),
-        egress: if meta.manifest.network_egress.is_empty() {
-            "无（默认拒绝出网）".into()
-        } else {
-            meta.manifest.network_egress.join(", ")
-        },
-        error: format!("来源文件: {filename}"),
-    };
-    handlers::render(page)
-}
-
 pub(crate) fn verify_for_confirm(
     state: &AppState,
     path: &FsPath,
@@ -472,65 +300,6 @@ pub(crate) async fn commit_install(
         .map(|_| ())
         .map_err(|e| AppError::BadRequest(e.to_string()))
 }
-
-/// 第二步：权限确认后安装。
-pub async fn confirm(
-    State(state): State<Arc<AppState>>,
-    PluginManagerUser(user): PluginManagerUser,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let token = form_first(&form, "token");
-    if token.len() != 24 || !token.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err(AppError::BadRequest("确认令牌非法".into()));
-    }
-    let incoming = state.cfg.data_dir.join("plugins").join(".incoming");
-    let path = incoming.join(format!("{token}.wbpkg"));
-    if path.parent() != Some(incoming.as_path()) || !path.exists() {
-        return Err(AppError::BadRequest("上传文件已过期，请重新上传".into()));
-    }
-
-    let trust = verify_for_confirm(&state, &path)?;
-    let granted = form.get("grant").cloned().unwrap_or_default();
-
-    // 对象授权：manifest 声明的 resource_hints 勾选值 + 管理员手填（每行/逗号一条）。
-    // 逐条做形式校验，坏值在确认页就报错，别等到装完才在能力调用上 403。
-    let mut objects: Vec<String> = form.get("resource").cloned().unwrap_or_default();
-    for part in form_first(&form, "extra_resource")
-        .split(['\n', '\r', ',', ' ', '\t'])
-        .map(str::trim)
-    {
-        if !part.is_empty() {
-            objects.push(part.to_string());
-        }
-    }
-    objects.sort();
-    objects.dedup();
-    for o in &objects {
-        skiff_pkgfmt::manifest::validate_resource(o)
-            .map_err(|e| AppError::BadRequest(format!("对象授权 {o} 非法：{e}")))?;
-    }
-
-    let opts = skiff_plugin::install_options(
-        &trust,
-        granted.clone(),
-        objects.clone(),
-        state.cfg.allow_unsigned,
-        state.cfg.form,
-        state.cfg.allow_reduced_sandbox,
-        &user.user.username,
-    );
-
-    let ip = handlers::client_ip(&state, &parts);
-    commit_install(&state, &user, &ip, &path, &opts, &trust.meta.manifest.id).await?;
-    Ok(handlers::redirect(format!(
-        "/{}/plugins",
-        state.cfg.entry_prefix
-    )))
-}
-
 /// 启停插件的共用实现：停用先停进程，再落库并审计；返回新状态。
 pub(crate) async fn apply_toggle(
     state: &Arc<AppState>,
@@ -580,52 +349,6 @@ pub(crate) async fn apply_remove(
     );
     Ok(())
 }
-
-pub async fn toggle(
-    State(state): State<Arc<AppState>>,
-    PluginManagerUser(user): PluginManagerUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let ip = handlers::client_ip(&state, &parts);
-    apply_toggle(&state, &user, &id, &ip).await?;
-    // 信息页内操作回信息页；插件中心内操作仍回列表（`next` 只接受本站前缀）。
-    Ok(handlers::redirect(
-        safe_plugin_next(&state, form_first(&form, "next"))
-            .unwrap_or_else(|| format!("/{}/plugins", state.cfg.entry_prefix)),
-    ))
-}
-
-fn safe_plugin_next(state: &AppState, raw: String) -> Option<String> {
-    let expected = format!("/{}/plugins/", state.cfg.entry_prefix);
-    if raw.starts_with(&expected) && !skiff_model::has_parent_segment(&raw) && !raw.contains("//") {
-        Some(raw)
-    } else {
-        None
-    }
-}
-
-pub async fn remove(
-    State(state): State<Arc<AppState>>,
-    PluginManagerUser(user): PluginManagerUser,
-    Path(id): Path<String>,
-    parts: Parts,
-    body: String,
-) -> Result<Response, AppError> {
-    let form = parse_form(&body);
-    check_csrf(&state, &user, &form_first(&form, "csrf"))?;
-    let delete_data = form_first(&form, "delete_data") == "on";
-    let ip = handlers::client_ip(&state, &parts);
-    apply_remove(&state, &user, &id, delete_data, &ip).await?;
-    Ok(handlers::redirect(format!(
-        "/{}/plugins",
-        state.cfg.entry_prefix
-    )))
-}
-
 /// RPC 错误→HTTP 状态：内核面已有的状态语义原样透传，未知状态才归 400。
 ///
 /// 上游状态由 `skiff_wire::RpcFailure` 在协议层解析一次，这里只读结构化字段，
@@ -778,8 +501,8 @@ pub async fn plugin_ui(
 /// 托管插件页面 Schema：`/plugins/{id}/schema/{view}`。
 ///
 /// 权限口径与 `POST /plugins/{id}/rpc` **完全一致**（`PluginManagerUser`）：
-/// 能取到 schema 的人，才有资格让壳页代发 RPC。旧 HTML 视图没有 schema，
-/// 这里返回 404，由旧 SSR（`/m/plugin/...`）继续承载。
+/// 能取到 schema 的人，才有资格让壳页代发 RPC。没有 schema 的旧 HTML 视图
+/// 这里返回 404，壳页据此带 `?legacy=1` 回落到 iframe 工作台。
 pub async fn schema(
     State(state): State<Arc<AppState>>,
     PluginManagerUser(user): PluginManagerUser,
@@ -997,15 +720,11 @@ mod tests {
     #[test]
     fn plugin_iframe_sandbox_is_frozen() {
         const SANDBOX: &str = r#"sandbox="allow-scripts allow-modals allow-forms""#;
-        for tpl in [
-            include_str!("../../templates/plugin_view.html"),
-            include_str!("../../templates/mount_card.html"),
-        ] {
-            assert!(tpl.contains(SANDBOX), "插件 iframe 沙箱属性被改动");
-            assert!(
-                !tpl.contains("allow-same-origin"),
-                "插件 iframe 不得加 allow-same-origin"
-            );
-        }
+        let tpl = include_str!("../../templates/plugin_view.html");
+        assert!(tpl.contains(SANDBOX), "插件 iframe 沙箱属性被改动");
+        assert!(
+            !tpl.contains("allow-same-origin"),
+            "插件 iframe 不得加 allow-same-origin"
+        );
     }
 }

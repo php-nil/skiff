@@ -759,9 +759,10 @@ fn apply_registry(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
 
 fn effective_mirrors(plugin: &Plugin) -> Result<Vec<String>, String> {
     let out = plugin
-        .host_exec(
+        .host_exec_light(
             DOCKER,
             &["info", "--format", "{{json .RegistryConfig.Mirrors}}"],
+            Some(15),
         )
         .map_err(|e| e.to_string())?;
     if out.get("success").and_then(Value::as_bool) != Some(true) {

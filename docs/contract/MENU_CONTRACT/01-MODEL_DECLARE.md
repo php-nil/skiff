@@ -6,13 +6,14 @@
 
 > 状态：**契约 v1 · P1/P2 已落地**。§11/§12 记录实现差异；正文其余部分仍为设计口径。
 > 适用：内核 Web UI、插件 manifest、插件中心、菜单设置、固定页槽位。
-> 基线：`crates/pkgfmt/src/manifest.rs`、`crates/web/src/handlers/mod.rs`、`crates/web/templates/base.html`、`plugins/*/manifest.toml`。
+> 基线：`crates/pkgfmt/src/manifest.rs`、`crates/app/src/menu.rs`、`crates/web/src/handlers/ui/menu.rs`、`plugins/*/manifest.toml`。
 > 契约版本：v1 · 2026-11-03（P1 同日落地，P2 同日补记）。
 >
 > **2026-11-13 原生化**：budding 后台外壳（admin + outlet）不再用 iframe 承载插件功能页；
-> 已声明 `schema`（`api = "1.3"`）的视图由壳页原生渲染，未声明的旧视图仍走旧 SSR 工作台。
+> 已声明 `schema`（`api = "1.3"`）的视图由壳页原生渲染；未声明的旧视图走
+> `/{p}/plugins/{id}/{view}?legacy=1` 的 iframe 工作台。
 > 菜单继续下发 `plugin/*` 入口；本文的三级归属与固定 L1 仍然有效，「内核渲染 L3 标签栏 +
-> 插件内容 iframe」只对旧 SSR 页有效，新壳用页内按钮行承担 L3 入口。
+> 插件内容 iframe」只对 `?legacy=1` 工作台有效，新壳用页内按钮行承担 L3 入口。
 > 插件 UI 的交付方向改为 Schema（见 [`BUDDING_UPSTREAM_BACKLOG.md`](../../sdui/BUDDING_UPSTREAM_BACKLOG.md) T7）。
 
 ## 0. 四个结论
@@ -224,7 +225,7 @@ view = "main"
 - 信息页：`/{p}/plugins/com.skiff.example`（内核渲染身份/授权/管理，见 `PLUGIN_UI_CONTRACT.md`）。
 - 工作台：内核标签栏 `总览 · 历史采样 · 设置`，内容 iframe
   `/{p}/plugins/com.skiff.example/ui/overview.html?nonce=...&menu=plugin/com.skiff.example/panel&tab=overview`。
-- 深链：`/{p}/m/plugin/com.skiff.example/panel/overview`；规范功能页 `/{p}/plugins/com.skiff.example/overview`。
+- 深链：`/{p}/plugins/com.skiff.example/overview`（视图名直接寻址；`?legacy=1` 才是 iframe 工作台）。
 
 ### 2.5 插件卸载后的残留声明
 

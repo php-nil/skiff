@@ -23,7 +23,7 @@
 
 ## 2.2 前端
 
-`askama` + `htmx`（约 14KB gzip）+ 按需 `import()` 的 `xterm.js`（容器 exec 终端）。无 Node 构建链，第三方资源 vendored，`build.rs` 做 gzip 预压缩 + embed。
+budding 运行时（上游打包产物直接入库，`RustEmbed` 嵌入）+ 内核只提供 `/ui/v1` 数据与动作；容器终端用随包的 `budding-terminal`。`askama` 只剩两份模板：错误页与插件 iframe 工作台（壳页由 `handlers::spa` 字符串拼装，不经模板引擎）。无 Node 构建链，第三方资源 vendored，`build.rs` 做 gzip 预压缩 + embed。
 
 ## 2.3 扩展机制选型
 
