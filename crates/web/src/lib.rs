@@ -518,7 +518,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         // `/{p}/m/*` 只剩两条：`overview` 概览 SSR（插件槽位迁完即删）与 `plugin/*`
         // 插件工作台；`core/*` 旧 SSR 深链已删除并返回 404。
-        .route(skiff_model::url::MENU_ROUTE, get(handlers::menu::dispatch))
+        .route(
+            &skiff_model::url::menu_route(p),
+            get(handlers::menu::dispatch),
+        )
         // 静态资源只认带安全入口前缀的写法，根路径不再兜底，避免入口收紧后残留旁路。
         .route(&format!("/{p}/static/{{*path}}"), get(assets::static_file))
         .route(

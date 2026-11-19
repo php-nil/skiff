@@ -96,10 +96,19 @@ pub fn key_id_of_hex(public_key_hex: &str) -> Result<String> {
 }
 
 /// 供测试与发布门禁复核签名使用。
+///
+/// 注意：`message` 必须是**已带域前缀**的待验签字节（调用方传
+/// [`manifest_signing_input`]），不能再经过一次 [`skiff_sign::verify_manifest_signature`]
+/// （它会再拼一遍前缀，导致自验签永远失败）。
 pub fn verify_detached(public_key_hex: &str, message: &[u8], signature: &[u8]) -> Result<()> {
+    use ed25519_dalek::Verifier as _;
+
     let public = skiff_sign::parse_public_key(public_key_hex).map_err(|e| anyhow::anyhow!(e))?;
-    skiff_sign::verify_manifest_signature(&public, message, signature)
-        .map_err(|e| anyhow::anyhow!(e))
+    let key = VerifyingKey::from_bytes(&public).map_err(|e| anyhow::anyhow!("公钥非法：{e}"))?;
+    let signature = ed25519_dalek::Signature::from_slice(signature)
+        .map_err(|e| anyhow::anyhow!("签名长度非法：{e}"))?;
+    key.verify(message, &signature)
+        .map_err(|e| anyhow::anyhow!("Ed25519 验签失败：{e}"))
 }
 
 pub fn is_placeholder_key(key_id: &str) -> bool {

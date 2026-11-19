@@ -24,14 +24,19 @@ pub fn signing_input(manifest_bytes: &[u8]) -> Vec<u8> {
     input
 }
 
-/// 十六进制公钥 → 32 字节，并提前拒绝非法曲线点（配置写错时立刻报错）。
+/// 十六进制公钥 → 32 字节，并提前拒绝非法曲线点与**小阶点**（配置写错时立刻报错）。
 pub fn parse_public_key(raw: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(raw.trim()).map_err(|_| "公钥必须是十六进制".to_string())?;
     let bytes: [u8; 32] = bytes
         .as_slice()
         .try_into()
         .map_err(|_| "公钥必须是 32 字节（64 位十六进制）".to_string())?;
-    VerifyingKey::from_bytes(&bytes).map_err(|_| "公钥不是合法 Ed25519 点".to_string())?;
+    let key =
+        VerifyingKey::from_bytes(&bytes).map_err(|_| "公钥不是合法 Ed25519 点".to_string())?;
+    // 全 0 压缩点能通过曲线方程，但属于小阶点：接受它等于接受可被伪造的密钥。
+    if key.is_weak() {
+        return Err("公钥是小阶点".to_string());
+    }
     Ok(bytes)
 }
 

@@ -7,8 +7,14 @@
 /// 菜单深链的路径段（`/{prefix}/m/...`）。
 pub const MENU_SEGMENT: &str = "m";
 
-/// axum 路由形状：入口前缀段 + 菜单深链。
-pub const MENU_ROUTE: &str = "/{p}/m/{*rest}";
+/// axum 路由形状：`/{prefix}/m/{*rest}`。
+///
+/// `prefix` 是配置里的**字面值**（如 `admin`），不是路径参数——写成常量
+/// `"/{p}/m/{*rest}"` 会被 axum 当成「两段参数」（`p` + `rest`），
+/// `Path<String>` 提取时因参数个数不符直接 500。
+pub fn menu_route(prefix: &str) -> String {
+    format!("/{prefix}/{MENU_SEGMENT}/{{*rest}}")
+}
 
 /// 拼一条菜单深链：`/{prefix}/m/{rest}`。
 pub fn menu_href(prefix: &str, rest: &str) -> String {
@@ -26,7 +32,7 @@ mod tests {
 
     #[test]
     fn route_shape_and_segment_stay_aligned() {
-        assert!(MENU_ROUTE.contains(&format!("/{MENU_SEGMENT}/")));
+        assert_eq!(menu_route("admin"), "/admin/m/{*rest}");
         assert_eq!(
             menu_href("admin", "core/dashboard"),
             "/admin/m/core/dashboard"
