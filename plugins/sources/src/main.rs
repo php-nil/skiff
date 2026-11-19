@@ -608,21 +608,41 @@ fn index_sample(agent: &ureq::Agent, base: &str, arch: &str) -> Result<Sample, S
     Err(last)
 }
 
-/// 「应用」只写源根（不写分支、不联网）：分支由容器用**自己的** `/etc/alpine-release`
-/// 拼接，镜像同步滞后或内网只有一个分支时也不会拼错。详见 `installer_prelude()`。
-fn apply_apk(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
-    let base = common::param_str(params, "base")
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
+/// 解析 `apply.apk` 的 `base`：`None` = 清掉固定标记、恢复自动探测。
+///
+/// 空串/`auto` 必须走「清空缓存文件」而不是写入 `auto` 字符串——安装器按
+/// `# skiff-fixed` 标记判断是否固定，写任意非空内容都会被当成源根。
+fn apk_apply_target(raw: &str) -> Result<Option<String>, RpcError> {
+    let base = raw.trim().trim_end_matches('/').to_string();
+    if base.is_empty() || base.eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
     if !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err(RpcError::invalid_params(
-            "源地址必须以 http:// 或 https:// 开头",
+            "源地址必须以 http:// 或 https:// 开头（或填 auto 恢复自动探测）",
         ));
     }
     if base.contains(char::is_whitespace) {
         return Err(RpcError::invalid_params("源地址不能含空白字符"));
     }
+    Ok(Some(base))
+}
+
+/// 「应用」只写源根（不写分支、不联网）：分支由容器用**自己的** `/etc/alpine-release`
+/// 拼接，镜像同步滞后或内网只有一个分支时也不会拼错。详见 `installer_prelude()`。
+fn apply_apk(plugin: &Plugin, params: &Value) -> Result<Value, RpcError> {
+    let Some(base) = apk_apply_target(&common::param_str(params, "base"))? else {
+        // 空文件：安装器 `-s` 判空即视为无固定源，下次安装会重新实测。
+        plugin
+            .fs_host_write_text(APK_CACHE, "")
+            .map_err(common::rpc_err)?;
+        return Ok(json!({
+            "ok": true,
+            "written": APK_CACHE,
+            "base": "",
+            "note": "已恢复自动探测：新建运行环境时在容器内实测择快",
+        }));
+    };
     let body = fixed_cache_body(&base);
     plugin
         .fs_host_write_text(APK_CACHE, &body)
@@ -1015,6 +1035,24 @@ mod tests {
         assert_eq!(apk_base_of(&body), "https://mirror.example/alpine");
         assert!(body.contains(APK_FIXED_MARKER));
         assert_eq!(apk_base_of(""), "");
+    }
+
+    #[test]
+    fn apply_apk_auto_clears_instead_of_writing_auto() {
+        // 空串 / auto / AUTO 都表示「恢复自动」，必须写空文件而不是 `auto` 字符串。
+        assert_eq!(apk_apply_target("").unwrap(), None);
+        assert_eq!(apk_apply_target("auto").unwrap(), None);
+        assert_eq!(apk_apply_target(" AUTO ").unwrap(), None);
+        assert_eq!(apk_apply_target("  ").unwrap(), None);
+        // 自定义源：去尾斜杠后原样固定。
+        assert_eq!(
+            apk_apply_target("https://mirror.example/alpine/").unwrap(),
+            Some("https://mirror.example/alpine".to_string())
+        );
+        // 非 http(s) 与含空白必须拒绝，不能默默写成固定源。
+        assert!(apk_apply_target("ftp://mirror.example/alpine").is_err());
+        assert!(apk_apply_target("https://mirror.example/al pine").is_err());
+        assert_eq!(apk_base_of(""), "", "空文件 = 未固定，读取侧回到自动");
     }
 
     #[test]

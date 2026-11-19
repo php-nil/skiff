@@ -1,0 +1,260 @@
+{
+  "version": 1,
+  "data": {
+    "status": { "method": "status" }
+  },
+  "page": {
+    "type": "page",
+    "props": {
+      "title": "软件源",
+      "subtitle": "测速只代表这台机器此刻这条线路；选择会写回本机安装器/守护进程配置，新建环境时生效"
+    },
+    "body": [
+      {
+        "type": "alert",
+        "props": {
+          "type": "info",
+          "text": "{{data.status.last_hint}}"
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "软件包源（apk，PHP 等 Alpine 镜像）" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": { "text": "当前：{{data.status.apk_current_text}}" }
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.status.apk_rows}}",
+                "rowKey": "base",
+                "density": "compact",
+                "emptyText": "没有候选源",
+                "columns": [
+                  { "key": "name", "label": "名称" },
+                  { "key": "base", "label": "源根" },
+                  { "key": "speed_text", "label": "实测" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "使用", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "apply.apk",
+                              "params": { "base": "${base}" },
+                              "confirm": "固定为该 apk 源？已存在的运行环境需要重建才生效。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "apk_base",
+                    "label": "自定义源根（含协议）",
+                    "placeholder": "mirror.example.com/alpine"
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "使用自定义源", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "apply.apk",
+                              "params": { "base": "${apk_base}" },
+                              "confirm": "固定为该 apk 源？已存在的运行环境需要重建才生效。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "测速全部", "variant": "outline" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "probe.all",
+                              "params": { "kind": "apk" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "恢复自动探测", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "apply.apk",
+                              "params": { "base": "auto" },
+                              "confirm": "清除固定源，恢复安装时自动测速？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "card",
+        "props": { "title": "容器镜像源（Docker Registry）" },
+        "content": {
+          "body": [
+            {
+              "type": "text",
+              "props": { "text": "当前：{{data.status.reg_current_text}}" }
+            },
+            {
+              "type": "text",
+              "props": { "text": "当前参数：{{data.status.reg_param_text}}" }
+            },
+            {
+              "type": "table",
+              "props": {
+                "items": "{{data.status.reg_rows}}",
+                "rowKey": "base",
+                "density": "compact",
+                "emptyText": "没有候选源",
+                "columns": [
+                  { "key": "name", "label": "名称" },
+                  { "key": "base", "label": "地址" },
+                  { "key": "speed_text", "label": "实测" }
+                ],
+                "rowActions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "仅用此源", "variant": "text", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "apply.registry",
+                              "params": { "mirrors": "${base}" },
+                              "confirm": "写入 daemon.json 并 reload Docker？请先确认已保存 Docker 设置（daemon.json 必须已存在）。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "form",
+              "props": { "actionsAlign": "end" },
+              "body": [
+                {
+                  "type": "input-text",
+                  "props": {
+                    "name": "reg_mirrors",
+                    "label": "自定义镜像加速地址（逗号分隔）",
+                    "placeholder": "mirror.example.com,docker.example.com"
+                  }
+                }
+              ],
+              "content": {
+                "actions": [
+                  {
+                    "type": "button",
+                    "props": { "text": "应用自定义源", "color": "primary" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "apply.registry",
+                              "params": { "mirrors": "${reg_mirrors}" },
+                              "confirm": "写入 daemon.json 并 reload Docker？请先确认已保存 Docker 设置。"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "测速全部", "variant": "outline" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "probe.all",
+                              "params": { "kind": "registry" }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "props": { "text": "恢复直连 Hub", "variant": "text" },
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          {
+                            "type": "skiffPluginRpc",
+                            "props": {
+                              "method": "apply.registry",
+                              "params": { "mirrors": "" },
+                              "confirm": "清空 registry-mirrors 并 reload Docker？"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -44,6 +44,9 @@ label = "软件源"
 order = 30
 icon = "network"
 view = "main"
+# 原生渲染：没有 schema 时壳页会退回 ?legacy=1 iframe，而 legacy 桥没有 nonce，
+# RPC 永远收不到结果（页面停在「读取中…」）。
+schema = "main.json"
 
 [interop]
 consumes = []
