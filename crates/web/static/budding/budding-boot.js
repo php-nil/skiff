@@ -4686,6 +4686,12 @@
           '/runtimes/' + encodeURIComponent(args.id) + '/action/' + encodeURIComponent(args.op),
           {}
         ).then(function (data) {
+          // 删除后详情页已无对应实体，留在原地只会渲染「运行环境不存在」。
+          if (args.op === 'delete') {
+            toast((data && data.message) || '运行环境已删除', 'success');
+            window.location.href = prefix + '/sites/runtimes';
+            return;
+          }
           runtimeDone(data, '操作已完成');
         });
       })
