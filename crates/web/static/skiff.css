@@ -1491,17 +1491,20 @@ iframe.plugin-frame.auto-height { height: auto; }
 
 body.login-body,
 body.skiff-login-shell {
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
-  min-height: 100dvh;
-  padding: var(--sp-2) var(--sp-4);
-  margin: 0;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 100dvh !important;
+  padding: 0 var(--sp-4) !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin: 0 !important;
   font-family: var(--sans);
   color: var(--text);
   background: var(--login-bg);
   position: relative;
-  overflow-x: hidden;
+  overflow: hidden !important;
+  overflow-y: hidden !important;
 }
 
 /* 背景装饰层 */
@@ -1551,7 +1554,7 @@ html[data-theme="dark"] {
   --login-glow: rgba(95, 212, 181, .15);
 }
 
-/* 主体容器：分栏布局；两列按内容高度居中，避免右栏被拉伸成整列高 */
+/* 主体容器：分栏布局 */
 .login-layout {
   position: relative;
   z-index: 1;
@@ -1560,7 +1563,7 @@ html[data-theme="dark"] {
   max-width: 840px;
   width: 100%;
   align-items: center;
-  margin: auto;
+  flex-shrink: 0;
 }
 
 /* 左：品牌区 */
@@ -1639,39 +1642,69 @@ html[data-theme="dark"] .login-brand-col .brand-logo {
   gap: var(--sp-2) !important;
 }
 .login-form-col .bud-field,
-.login-form-col .bud-form__field {
+.login-form-col .bud-form__field,
+.login-form-col .v-field {
   margin-bottom: 0 !important;
 }
 .login-form-col .bud-field + .bud-field,
-.login-form-col .bud-form__field + .bud-form__field {
-  margin-top: var(--sp-2) !important;
+.login-form-col .bud-form__field + .bud-form__field,
+.login-form-col .v-field + .v-field {
+  margin-top: var(--sp-1) !important;
 }
 .login-form-col .bud-input,
 .login-form-col .bud-field input,
-.login-form-col .bud-field select {
-  padding: 8px 12px !important;
-  min-height: 36px !important;
+.login-form-col .bud-field select,
+.login-form-col .v-field__input,
+.login-form-col .v-text-field input {
+  padding: 6px 10px !important;
+  min-height: 32px !important;
+}
+.login-form-col .v-field,
+.login-form-col .v-text-field {
+  --v-field-input-padding: 6px 10px !important;
+  --v-field-label-margin-top: 0 !important;
+}
+.login-form-col .v-label {
+  font-size: 11px !important;
+  line-height: 1.2 !important;
 }
 .login-form-col .bud-button,
-.login-form-col button[type="submit"] {
-  padding: 10px 20px !important;
-  min-height: 40px !important;
+.login-form-col button[type="submit"],
+.login-form-col .v-btn {
+  padding: 8px 18px !important;
+  min-height: 36px !important;
   margin-top: var(--sp-1) !important;
+  font-size: var(--fs-sm) !important;
 }
 .login-form-col .bud-card__title,
 .login-form-col h2,
 .login-form-col h3 {
-  font-size: var(--fs-lg) !important;
-  margin-bottom: var(--sp-2) !important;
+  font-size: var(--fs-md) !important;
+  margin-bottom: var(--sp-1) !important;
+  margin-top: 0 !important;
 }
 .login-form-col label {
-  font-size: var(--fs-xs) !important;
-  margin-bottom: 4px !important;
+  font-size: 11px !important;
+  margin-bottom: 2px !important;
 }
 .login-form-col .bud-field__hint,
-.login-form-col .muted.small {
-  margin-top: 2px !important;
-  font-size: var(--fs-xs) !important;
+.login-form-col .muted.small,
+.login-form-col .v-messages {
+  margin-top: 0 !important;
+  font-size: 10px !important;
+  line-height: 1.2 !important;
+  padding: 0 !important;
+}
+/* Vuetify v-field inner margins */
+.login-form-col .v-field__overlay,
+.login-form-col .v-field__append-inner,
+.login-form-col .v-field__prepend-inner {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+.login-form-col .v-field__outer,
+.login-form-col .v-field__inner {
+  padding: 0 !important;
 }
 
 /* old skiff.css login-card 兼容（模板登录失败回落路径） */
