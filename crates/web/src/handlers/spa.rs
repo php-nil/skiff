@@ -24,20 +24,7 @@ use crate::util::escape_html;
 /// 可回落到壳页的页面前缀（不含入口根，根单独精确匹配）。
 /// 与 `docs/contract/URL_CONTRACT.md` §2.1 的表一一对应，增删必须同步契约与测试。
 const SHELL_PAGES: &[&str] = &[
-    "sites",
-    "containers",
-    "images",
-    "networks",
-    "volumes",
-    "compose",
-    "runtimes",
-    "files",
-    "plugins",
-    "store",
-    "settings",
-    "audit",
-    "tasks",
-    "jobs",
+    "sites", "docker", "files", "plugins", "settings", "tasks", "jobs",
 ];
 
 /// 路径是否命中壳页白名单（按路径段边界匹配）。
@@ -65,11 +52,44 @@ pub(crate) fn accepts_html(headers: &HeaderMap) -> bool {
         .any(|v| v.to_ascii_lowercase().contains("text/html"))
 }
 
+/// 站点详情 URL 的 ID 黑名单：这些 path 段是字面模式，绝不能当 slug 查 DB。
+/// 与 `buildRoutes` 里的 `path: prefix + '/sites/<literal>'` 一一对应。
+const SITE_LITERALS: &[&str] = &["new", "list", "web", "runtimes"];
+
+/// 如果 path 是 `/{p}/sites/{seg}/...` 且 seg 不是纯数字（id）也不是字面段，
+/// 把 seg 当作域名 slug 查 DB，301 重定向到 `/sites/{id}/...`。
+///
+/// 后端 API 契约（URL_CONTRACT §2.1、§2.2、§3.2）明确站点 URL 只暴露主键 id——
+/// 域名变了深链不该失效。但浏览器历史、收藏夹、壳页路由误判都可能把 slug
+/// 塞进 URL 段，这里做一层 shell-level 清洗：既保护壳页不受 slug 污染，
+/// 也让旧深链自动归一化。查不到则不重定向（让壳页自己出 404，不猜测用户意图）。
+fn slug_to_site_id_redirect(state: &Arc<AppState>, path: &str) -> Option<Response> {
+    let prefix = &state.cfg.entry_prefix;
+    let root = format!("/{prefix}/sites/");
+    let rest = path.strip_prefix(&root)?;
+    let seg = rest.split('/').next().unwrap_or_default();
+    if seg.is_empty() {
+        return None;
+    }
+    // 纯数字就是 id，字面段也不是 slug
+    if seg.parse::<i64>().is_ok() || SITE_LITERALS.contains(&seg) {
+        return None;
+    }
+    let site = state.db().site_by_domain(seg).ok().flatten()?;
+    let after = rest[seg.len()..].to_string();
+    let target = format!("/{prefix}/sites/{}{after}", site.id);
+    Some(AppError::Redirect(target).into_response())
+}
+
 /// 路由兜底：命中白名单返回壳页，否则保持原有的 404 行为。
 pub async fn fallback(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
     let path = parts.uri.path();
     if parts.method != Method::GET || !is_shell_path(&state.cfg.entry_prefix, path) {
         return AppError::NotFound("404 Not Found".into()).into_response();
+    }
+    // slug → id 清洗：在任何 shell 渲染之前做，避免壳页拿到脏 URL。
+    if let Some(redirect) = slug_to_site_id_redirect(&state, path) {
+        return redirect;
     }
     // 未认证的 GET 不论 Accept 一律回登录页：`/files` 这类有注册路由的页面本来就
     // 303，而 `/settings` 只靠回落；若在认证前先卡 Accept，会让两组前缀行为分裂。
@@ -88,6 +108,10 @@ pub async fn fallback(State(state): State<Arc<AppState>>, parts: Parts) -> Respo
 /// 文件写接口等）；这类深链同样应拿到壳页。写请求与非 HTML `Accept` 仍保持 405。
 pub async fn method_not_allowed(State(state): State<Arc<AppState>>, parts: Parts) -> Response {
     if parts.method == Method::GET && is_shell_path(&state.cfg.entry_prefix, parts.uri.path()) {
+        // slug → id 清洗：和 fallback 同一份逻辑，让所有 GET 壳页入口都归一化。
+        if let Some(redirect) = slug_to_site_id_redirect(&state, parts.uri.path()) {
+            return redirect;
+        }
         if parts.extensions.get::<CurrentUser>().is_none() {
             return login_redirect(&state, &parts);
         }
@@ -191,7 +215,7 @@ mod tests {
     fn whitelist_matches_by_segment_boundary() {
         assert!(is_shell_path("p", "/p"));
         assert!(is_shell_path("p", "/p/sites"));
-        assert!(is_shell_path("p", "/p/sites/example.com/anything"));
+        assert!(is_shell_path("p", "/p/sites/42/anything"));
         assert!(is_shell_path("p", "/p/files/a/b"));
         assert!(is_shell_path("p", "/p/jobs/1/logs/x"));
         // 前缀相同但不是整段：不得命中
@@ -203,6 +227,28 @@ mod tests {
         assert!(!is_shell_path("p", "/ui/v1/session"));
         assert!(!is_shell_path("p", "/healthz"));
         assert!(!is_shell_path("p", "/p/static/budding/budding.min.js"));
+    }
+
+    #[test]
+    fn slug_redirect_rules_are_correct() {
+        // 这些段是字面模式，绝不会被当作 slug 查 DB
+        assert!(!seg_looks_like_slug("new"));
+        assert!(!seg_looks_like_slug("list"));
+        assert!(!seg_looks_like_slug("web"));
+        assert!(!seg_looks_like_slug("runtimes"));
+        // 数字段是 id，也不重定向
+        assert!(!seg_looks_like_slug("42"));
+        assert!(!seg_looks_like_slug("0"));
+        // 典型 slug：含点或非纯数字
+        assert!(seg_looks_like_slug("a.com"));
+        assert!(seg_looks_like_slug("example.org"));
+        assert!(seg_looks_like_slug("my-site"));
+    }
+
+    /// 抽出的可测函数：只判断一个段是否像 slug（非空、非纯数字、非字面段）。
+    /// `slug_to_site_id_redirect` 先跑这个判断，进了才查 DB。
+    fn seg_looks_like_slug(seg: &str) -> bool {
+        !seg.is_empty() && seg.parse::<i64>().is_err() && !SITE_LITERALS.contains(&seg)
     }
 
     #[test]
