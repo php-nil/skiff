@@ -6,7 +6,14 @@
 
 ## 5. 当前部署
 
-> **2026-11-20 10:58 空库首装 + 官方插件安装（当前生效；HEAD `a02f1d0`）**
+> **2026-11-20 14:17 覆盖升级 schema v21→v22（当前生效；HEAD `524f880`）**
+> - 背景：fa19cd 提交 50 文件含 schema v22 迁移、站点详情 Schema 服务端化（site_page.rs）、slug→id 重定向、rewrite/limit_rate_kbps/backup interval-time 等 6 项站点详情功能。524f880 提交 1 文件修正 budding-boot.js CSS 类名（.bud-code__language → .bud-code__select+.bud-code__status）。
+> - 资产：Run `44687309424`（head `524f880`，publish 成功，amd64 12.9 MB，覆盖 v0.1.0）。Run `44685263606`（head fae19cd，publish 成功）。
+> - 部署：就地覆盖（停服务→scp skiff→start），schema **v21→v22 自动迁移**（sites 表新增 rewrite TEXT 'none' + limit_rate_kbps INTEGER 0），skiff.db WAL 模式正常。
+> - **浏览器 6 项全量复验 PASS**：① slug→id URL 重定向 ② 概览页"打开文件管理"链接 ③ 备份间隔/时间可改 ④ PHP 伪静态+nginx 流量限制 ⑤ vhost code 语言标签隐藏 ⑥ runtime type=PHP 8.5。
+> - 转发层 `.workbuddy/skiff-http-fwd.py`（NoRedirectHandler 透传 303 + 剥 CSRF 头）沿用无需改动。
+
+> **2026-11-20 10:58 空库首装 + 官方插件安装（HEAD `a02f1d0`，已过期）**
 > - 背景：测试机从干净系统还原（T1 口径，Docker 29.7.2 已装），空库全新安装（非覆盖升级）。Release run 184 四 job 全绿（构建 x86_64/aarch64/Docker/发布到 GitHub Release），publish=true，资产覆盖 v0.1.0。
 > - 资产：Release run `44574500026`（head `a02f1d0`，dispatch ref=main，publish 成功）。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,821,377 B** id=768570200，`sha256=2fd680b507163d3156aacd4aaf2ccd196b98c7c99d13d7f8a7642b848b55bd5c`。测试机 `sha256sum -c` OK。二进制 `/usr/local/bin/skiff` `b7d4556f...111`。
 > - 部署：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；daemon schema **v0→v21** 完整迁移。入口前缀 `t2mhspmy`，`initial-admin.txt` 口令 `5PvxpDNdQ8QyR9Ny`。`skiff.service` active + `skiff-http-fwd.py`（修复版，剥 Sec-Fetch-Site/Origin/Referer）0.0.0.0:18081 → 127.0.0.1:18080。

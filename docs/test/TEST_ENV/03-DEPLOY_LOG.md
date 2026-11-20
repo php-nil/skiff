@@ -13,6 +13,7 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
+| 2026-11-20 14:17 | 覆盖升级 schema v21→v22 + budding-boot.js CSS 修正 | Run `44687309424`（head `524f880`），amd64 12.9 MB；前序 Run `44685263606`（head `fae19cd`，50 files） | schema 自动迁移 v22 ✅；curl slug→id 303 ✅；**浏览器 6 项站点详情全量复验 PASS** |
 | 2026-11-20 10:58 | 空库首装（write_atomic 权限修复 + CLI 前缀分叉收口） | Run `44574500026`（head `a02f1d0`），amd64 12,821,377 B `sha256=2fd680b5…b5c` | accept.sh **48 PASS / 0 FAIL / 3 SKIP**；浏览器 9 页面 0 console error；A6e 根治 |
 | 2026-11-05 | 重置库后全新安装（schema v7） | x86_64 6,987,420 B，`sha256:25559d7ec362625cee4fb608710aa84… | 安装成功 |
 | 2026-11-07 早轮 | Docker / FTP 修复轮 | 资产 `f9a0b30`，x86_64 `sha256:87427aa6…` | DOCKER-01～08 复验通过 |
