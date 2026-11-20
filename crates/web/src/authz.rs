@@ -16,7 +16,7 @@ use skiff_model::Permission;
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::state::CurrentUser;
+use skiff_app::CurrentUser;
 
 /// 校验当前主体能否执行动作；成功返回动作声明，便于审计与后续分发。
 pub fn authorize(user: &CurrentUser, action: Action) -> Result<&'static ActionSpec, AppError> {

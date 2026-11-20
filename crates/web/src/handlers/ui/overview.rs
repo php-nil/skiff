@@ -22,11 +22,7 @@ pub async fn overview(
     let mut runtime_abnormal = 0usize;
     let mut runtime_uninstalled = 0usize;
     for r in &data.runtimes {
-        let name = if r.kind == skiff_store::KIND_PHP {
-            skiff_app::sites::runtime_container_name(&r.kind, &r.name)
-        } else {
-            format!("skiff-runtime-{}", r.id)
-        };
+        let name = skiff_app::sites::runtime_container_name_for(&r.kind, &r.name, &r.id);
         match containers.iter().find(|c| c.name == name) {
             Some(c) if c.state != "running" => runtime_abnormal += 1,
             None => runtime_uninstalled += 1,

@@ -1,6 +1,6 @@
 # budding 交互能力速查
 
-> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.1-r2`，2026-11-18 同步上游 `69e3a72`；上游未升版本号，`-rN` 只用于破缓存）。
+> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.3`，2026-11-20 同步上游 `1120d3`）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
 > 校验：文中 dialog+form、confirm+ajax+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
 

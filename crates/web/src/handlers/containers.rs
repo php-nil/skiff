@@ -17,7 +17,7 @@ use tokio::io::AsyncWriteExt;
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::{AdminUser, AuthUser};
-use crate::state::AppState;
+use skiff_app::AppState;
 fn parse_number(raw: &str, field: &str) -> Result<i64, AppError> {
     raw.trim()
         .parse::<i64>()
@@ -291,7 +291,7 @@ pub async fn exec_ticket(
 /// exec 的动词策略判定：签发票据与 WS 握手共用，避免两处各写一遍 `map_err`。
 fn check_exec_allowed(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     row: &skiff_docker::client::ContainerRow,
 ) -> Result<(), AppError> {
     state
@@ -311,7 +311,7 @@ fn check_exec_allowed(
 /// 都被拒——WS 升级本身要在真连接上测，闸门却不必。
 pub async fn authorize_exec(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     row: &skiff_docker::client::ContainerRow,
     ticket: Option<&str>,
 ) -> Result<(), AppError> {

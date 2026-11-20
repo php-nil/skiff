@@ -2,7 +2,8 @@
 //! 随静态资源一起 embed；`assets.rs` 按 `Accept-Encoding` 协商选择变体。
 //!
 //! 生成物（`*.gz`）写回静态目录并被 `.gitignore` 忽略——每次构建重生成，
-//! 不入库、不需要手工维护。
+//! 不入库、不需要手工维护。源文件消失（上游换版本）时对应的孤儿 `.gz` 一并删除：
+//! `rust_embed` 按目录嵌入，留下的孤儿会被打进二进制。
 
 use std::fs;
 use std::io::Write;
@@ -17,6 +18,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", static_dir.display());
     println!("cargo:rerun-if-changed=src/asset_rules.rs");
 
+    let mut produced: Vec<PathBuf> = Vec::new();
     for entry in walk(&static_dir) {
         // 预压缩变体不再压缩；缺跳过非文件
         if entry.extension().map(|e| e == "gz").unwrap_or(false) {
@@ -46,8 +48,27 @@ fn main() {
             continue;
         };
         let out = PathBuf::from(format!("{}.gz", entry.display()));
-        if let Err(e) = fs::write(&out, &compressed) {
-            println!("cargo:warning=写入 {} 失败: {e}", out.display());
+        match fs::write(&out, &compressed) {
+            Ok(()) => produced.push(out),
+            Err(e) => println!("cargo:warning=写入 {} 失败: {e}", out.display()),
+        }
+    }
+
+    prune_orphans(&static_dir, &produced);
+}
+
+/// 删除本轮未生成的 `.gz`：源文件删除、或源文件变成已压缩格式后，
+/// 上一轮留下的变体已无对应请求，留着只会被 embed 进二进制。
+fn prune_orphans(dir: &Path, produced: &[PathBuf]) {
+    for entry in walk(dir) {
+        if entry.extension().map(|e| e != "gz").unwrap_or(true) {
+            continue;
+        }
+        if produced.iter().any(|p| p == &entry) {
+            continue;
+        }
+        if let Err(e) = fs::remove_file(&entry) {
+            println!("cargo:warning=清理孤儿 {} 失败: {e}", entry.display());
         }
     }
 }

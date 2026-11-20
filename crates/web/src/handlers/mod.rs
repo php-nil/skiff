@@ -28,9 +28,9 @@ use axum::http::request::Parts;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 
 use crate::error::AppError;
-use crate::state::{AppState, ClientInfo, CurrentUser};
 use crate::templates::PageCtx;
 use crate::util::form_first;
+use skiff_app::{AppState, ClientInfo, CurrentUser};
 
 /// 在 tokio 阻塞线程池执行同步文件操作。
 ///

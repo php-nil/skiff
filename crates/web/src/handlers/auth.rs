@@ -6,8 +6,8 @@ use axum::response::{Html, IntoResponse, Response};
 
 use crate::error::AppError;
 use crate::handlers::{self, LOGIN_CSRF_COOKIE};
-use crate::state::AppState;
 use crate::util::{escape_html, parse_cookies};
+use skiff_app::AppState;
 use skiff_identity::{token_matches, SignedTokenError};
 
 /// 登录页 CSRF token 有效期（与 Cookie Max-Age 一致）。
@@ -140,11 +140,7 @@ pub async fn login_page(
     Query(q): Query<std::collections::HashMap<String, String>>,
     parts: Parts,
 ) -> Result<Response, AppError> {
-    if parts
-        .extensions
-        .get::<crate::state::CurrentUser>()
-        .is_some()
-    {
+    if parts.extensions.get::<skiff_app::CurrentUser>().is_some() {
         return Ok(handlers::redirect(format!("/{}", state.cfg.entry_prefix)));
     }
     let username = q

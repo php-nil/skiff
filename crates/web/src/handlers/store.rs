@@ -12,8 +12,8 @@ use skiff_model::Permission;
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::state::{AppState, CurrentUser};
 use crate::templates::UpgradeHint;
+use skiff_app::{AppState, CurrentUser};
 
 /// 商店安装的统一审计动作：成功暂存、各类拒绝都落这一条。
 const AUDIT_ACTION: &str = "store.install";

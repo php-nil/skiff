@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use crate::error::AppError;
-use crate::state::{AppState, CurrentUser};
 use crate::util::form_first;
+use skiff_app::{AppState, CurrentUser};
 /// `/ui/v1/settings/docker` 的唯一写入入口。
 ///
 /// 镜像前缀落库、镜像源写入宿主 `daemon.json`、失败审计与成功审计都在这里；

@@ -2,14 +2,14 @@
 
 use skiff_app::nginx::NginxParams;
 
-use crate::state::AppState;
+use skiff_app::AppState;
 
 /// 主配置保存：`/ui/v1/web/config` 的唯一业务入口。
 ///
 /// 校验（`nginx -t`）、原子写与 `nginx.config.save` 审计都在这里。
 pub(crate) async fn apply_main(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     ip: &str,
     content: &str,
 ) -> Result<String, String> {
@@ -52,7 +52,7 @@ pub(crate) async fn apply_main(
 /// 性能参数保存：`/ui/v1/web/params` 的唯一业务入口。
 pub(crate) async fn apply_params(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     ip: &str,
     params: &NginxParams,
 ) -> Result<String, String> {

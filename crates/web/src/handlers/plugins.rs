@@ -16,8 +16,8 @@ use skiff_store::PluginRecord;
 use crate::error::{ApiError, AppError};
 use crate::handlers;
 use crate::middleware::PluginManagerUser;
-use crate::state::AppState;
 use crate::templates::{PluginView, PluginViewPage, TabView};
+use skiff_app::AppState;
 
 /// `?open=` 定位串的字符上限：够放一条深层路径，又不至于把 URL 撑爆。
 const OPEN_PATH_MAX: usize = 512;
@@ -109,7 +109,7 @@ pub async fn view(
 /// `connect-src 'none'` 托管，拿不到面板 Cookie 也发不出网。
 async fn render_workbench(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     rec: &PluginRecord,
     wb: skiff_app::menu::WorkbenchTabs,
     open_raw: Option<&str>,
@@ -259,7 +259,7 @@ pub(crate) fn verify_for_confirm(
 /// 避免两个入口的审计字段、临时文件清理和错误话术各写一遍。
 pub(crate) async fn commit_install(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     ip: &str,
     path: &FsPath,
     opts: &skiff_plugin::InstallOptions,
@@ -303,7 +303,7 @@ pub(crate) async fn commit_install(
 /// 启停插件的共用实现：停用先停进程，再落库并审计；返回新状态。
 pub(crate) async fn apply_toggle(
     state: &Arc<AppState>,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     id: &str,
     ip: &str,
 ) -> Result<bool, AppError> {
@@ -323,7 +323,7 @@ pub(crate) async fn apply_toggle(
 /// 卸载插件的共用实现：停进程 → 命令层收尾（删包/回收任务/菜单偏好）→ 审计。
 pub(crate) async fn apply_remove(
     state: &Arc<AppState>,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     id: &str,
     delete_data: bool,
     ip: &str,

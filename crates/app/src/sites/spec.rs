@@ -115,6 +115,18 @@ pub fn runtime_container_name(kind: &str, name: &str) -> String {
     format!("skiff-{kind}-{name}")
 }
 
+/// 已登记运行环境的容器名：未接入的类型没有真实容器，用 `skiff-runtime-<id>` 占位，
+/// 与已接入类型的命名区分开，避免与 `skiff-<kind>-<name>` 撞名。
+///
+/// 读模型与概览计数共用这一处推导，两边各自拼字符串会静默漂移。
+pub fn runtime_container_name_for(kind: &str, name: &str, id: &str) -> String {
+    if runtime_catalog::is_implemented(kind) {
+        runtime_container_name(kind, name)
+    } else {
+        format!("skiff-runtime-{id}")
+    }
+}
+
 /// 进程型环境端口校验：必须落在该类型的区间内，且未被其它环境占用。
 ///
 /// 端口是**环境属性**（`site_runtimes.port`），站点侧不接受自定义端口；

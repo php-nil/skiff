@@ -528,15 +528,22 @@ mod tests {
         }
     }
 
-    /// budding 的分包文件名由 `budding-boot.js` 按 `data-budding-version` 拼接；
-    /// 主包升级但漏带分包时只会在浏览器运行时 404，这里提前锁死。
+    /// 版本常量与入库产物必须同批：主包、分包、图标任一漏带，浏览器只会拿到 404。
+    /// 分包名由 `budding-boot.js` 按 `data-budding-version` 拼接，主包与图标由 `assets.rs` 拼。
     #[test]
-    fn budding_packs_match_declared_version() {
-        for pack in ["code", "terminal"] {
-            let name = format!("budding/budding-{pack}-{BUDDING_VERSION}.min.js");
+    fn budding_artifacts_match_declared_version() {
+        let names = [
+            format!("budding/budding-{BUDDING_VERSION}.min.js"),
+            format!("budding/budding-{BUDDING_VERSION}.min.css"),
+            format!("budding/budding-code-{BUDDING_VERSION}.min.js"),
+            format!("budding/budding-terminal-{BUDDING_VERSION}.min.js"),
+            format!("budding/budding-icons-{BUDDING_ICONS_VERSION}.min.css"),
+            format!("budding/budding-icons-{BUDDING_ICONS_VERSION}.woff2"),
+        ];
+        for name in names {
             assert!(
                 Assets::get(&name).is_some(),
-                "缺少 budding 分包: {name}（检查 static/budding 与 BUDDING_VERSION）"
+                "缺少 budding 版本化产物: {name}（检查 static/budding 与 BUDDING_VERSION / BUDDING_ICONS_VERSION）"
             );
         }
     }

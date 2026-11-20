@@ -29,27 +29,12 @@ pub async fn containers(
         Some("error") => "error",
         _ => "",
     };
-    let items: Vec<ContainerItem> = rows
+    let rows: Vec<(String, ContainerItem)> = rows
         .iter()
         .filter(|c| filter.is_empty() || handlers::container_abnormal(&c.state))
-        .map(container_item)
+        .map(|c| (c.id.clone(), container_item(c)))
         .collect();
-    let total = items.len();
-    let start = match q.cursor.as_deref() {
-        Some(cursor) => items
-            .iter()
-            .position(|c| c.id == cursor)
-            .map(|i| i + 1)
-            .unwrap_or(0),
-        None => 0,
-    };
-    let end = (start + q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)).min(total);
-    let next_cursor = if end < total && end > start {
-        items.get(end - 1).map(|c| c.id.clone())
-    } else {
-        None
-    };
-    let page: Vec<ContainerItem> = items.into_iter().skip(start).take(end - start).collect();
+    let (page, next_cursor, total) = paginate(rows, clamp_limit(q.limit), q.cursor.as_deref());
     let mut resp = Json(json!({
         "data": {
             "items": page,

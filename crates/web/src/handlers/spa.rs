@@ -18,8 +18,8 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 
 use crate::error::AppError;
-use crate::state::{AppState, CurrentUser};
 use crate::util::escape_html;
+use skiff_app::{AppState, CurrentUser};
 
 /// 可回落到壳页的页面前缀（不含入口根，根单独精确匹配）。
 /// 与 `docs/contract/URL_CONTRACT.md` §2.1 的表一一对应，增删必须同步契约与测试。

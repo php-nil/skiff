@@ -17,8 +17,8 @@ use skiff_model::Scope;
 use crate::error::{ApiError, AppError};
 use crate::handlers;
 use crate::middleware::AuthUser;
-use crate::state::auth::{LoginError, LoginRequest};
-use crate::state::AppState;
+use skiff_app::auth::{LoginError, LoginRequest};
+use skiff_app::AppState;
 
 /// JSON API 的登录请求体（wire 形状）。领域形状见 `skiff_app::auth::LoginRequest`。
 #[derive(Debug, Deserialize)]

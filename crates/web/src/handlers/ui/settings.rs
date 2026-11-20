@@ -204,9 +204,8 @@ pub async fn settings_ui_update(
     parts: Parts,
     Json(body): Json<UiThemeUpdateBody>,
 ) -> Result<Response, ApiError> {
-    if !user.can(skiff_model::Permission::Admin) {
-        return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
-    }
+    // 主题保存没有独立动作 id，走按权限判定的入口（不绕过 `authz`）。
+    crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     guard::csrf(&state, &user, &parts)?;
     let saved = skiff_app::theme::save(
         &state,
@@ -417,7 +416,7 @@ pub async fn settings_totp_enable(
         .map_err(|e| ApiError(AppError::Internal(e)))?;
     state.audit_or_log(
         &user.user.username,
-        "local",
+        &handlers::client_ip(&state, &parts),
         "auth.totp.enable",
         &user.user.username,
         "ok",
@@ -435,16 +434,14 @@ pub async fn settings_totp_enable(
     Ok(resp)
 }
 
-/// `POST /ui/v1/settings/keys`：导入信任公钥（管理员），语义与 SSR 表单一致。
+/// `POST /ui/v1/settings/keys`：导入信任公钥（管理员）。
 pub async fn settings_key_import(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
     parts: Parts,
     Json(body): Json<KeyImportBody>,
 ) -> Result<Response, ApiError> {
-    if !user.can(skiff_model::Permission::Admin) {
-        return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
-    }
+    crate::authz::authorize(&user, act::SETTINGS_KEY_IMPORT).map_err(ApiError)?;
     guard::csrf(&state, &user, &parts)?;
     let public_hex = body.public_key.trim().to_lowercase();
     let label = body.label.trim().to_string();
@@ -457,7 +454,7 @@ pub async fn settings_key_import(
         .map_err(|e| ApiError(AppError::from(e)))?;
     state.audit_or_log(
         &user.user.username,
-        "local",
+        &handlers::client_ip(&state, &parts),
         "settings.key.import",
         &key_id,
         "ok",
@@ -469,16 +466,14 @@ pub async fn settings_key_import(
     .into_response())
 }
 
-/// `POST /ui/v1/settings/keys/{id}`：撤销信任公钥（管理员），语义与 SSR 表单一致。
+/// `POST /ui/v1/settings/keys/{id}`：撤销信任公钥（管理员）。
 pub async fn settings_key_remove(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
     parts: Parts,
     Path(key_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if !user.can(skiff_model::Permission::Admin) {
-        return Err(ApiError(AppError::Forbidden("需要管理员权限".into())));
-    }
+    crate::authz::authorize(&user, act::SETTINGS_KEY_REMOVE).map_err(ApiError)?;
     guard::csrf(&state, &user, &parts)?;
     state
         .db()
@@ -486,7 +481,7 @@ pub async fn settings_key_remove(
         .map_err(|e| ApiError(AppError::from(e)))?;
     state.audit_or_log(
         &user.user.username,
-        "local",
+        &handlers::client_ip(&state, &parts),
         "settings.key.remove",
         &key_id,
         "ok",

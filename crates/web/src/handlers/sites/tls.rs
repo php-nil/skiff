@@ -1,7 +1,7 @@
 //! 站点备份开关的视图：内核 `site-backup` 任务在该站点的投影。
 
-use crate::state::AppState;
 use crate::templates::SiteBackupView;
+use skiff_app::AppState;
 
 fn fmt_ts(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)

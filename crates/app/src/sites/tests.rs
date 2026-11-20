@@ -1200,6 +1200,24 @@ fn runtime_paths_and_container_names_derive_from_name_only() {
 }
 
 #[test]
+fn runtime_container_name_for_falls_back_to_placeholder() {
+    // 已接入类型（php/node/rust）用真实命名；未接入类型没有容器，用 id 占位。
+    assert_eq!(
+        runtime_container_name_for("php", "php-8.5", "php-8.5"),
+        "skiff-php-php-8.5"
+    );
+    assert_eq!(
+        runtime_container_name_for("node", "site-a", "node-a"),
+        "skiff-node-site-a"
+    );
+    assert_eq!(
+        runtime_container_name_for("unknown-kind", "x", "rt-7"),
+        "skiff-runtime-rt-7",
+        "未接入类型不得与已接入类型的命名混用"
+    );
+}
+
+#[test]
 fn install_locks_are_mutually_exclusive_per_kind_name() {
     let locks = InstallLocks::default();
     let a = locks.try_begin("php:php-8.5-a").expect("首个安装应拿到锁");

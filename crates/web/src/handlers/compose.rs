@@ -14,8 +14,8 @@ use skiff_docker::{project_of, service_of, Verb};
 
 use crate::error::AppError;
 use crate::handlers;
-use crate::state::{AppState, CurrentUser};
 use crate::templates::{ComposeProjectView, ComposeServiceView};
+use skiff_app::{AppState, CurrentUser};
 
 /// 读取容器列表并按项目归组；选中项目时附带每个服务最近 100 行日志。
 pub(crate) async fn status_of(

@@ -9,7 +9,7 @@ use axum::http::request::Parts;
 use skiff_app::actions::Action;
 
 use crate::error::ApiError;
-use crate::state::{AppState, CurrentUser};
+use skiff_app::{AppState, CurrentUser};
 
 /// 写请求先过 `x-csrf-token`。
 pub(super) fn csrf(state: &AppState, user: &CurrentUser, parts: &Parts) -> Result<(), ApiError> {

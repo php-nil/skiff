@@ -11,10 +11,10 @@ use skiff_app::sites::{site_runtime_status, SiteRuntimeStatus};
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use crate::error::AppError;
-use crate::state::sites::SiteError;
-use crate::state::AppState;
 use crate::templates::RuntimeRow;
 use crate::util::encode_uri_component;
+use skiff_app::sites::SiteError;
+use skiff_app::AppState;
 
 mod crud;
 mod runtime;
@@ -204,7 +204,7 @@ pub(crate) use crate::handlers::audit_actor as actor;
 mod tests {
     use super::crud::save_config_notice;
     use super::{map_err, runtime_site_status, state_class, state_label};
-    use crate::state::sites::SiteError;
+    use skiff_app::sites::SiteError;
     use skiff_model::ErrorCode;
 
     #[test]

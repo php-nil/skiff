@@ -50,11 +50,7 @@ impl AppState {
             std::collections::HashMap::new();
         for rt in runtimes {
             let implemented = runtime_catalog::is_implemented(&rt.kind);
-            let container_name = if implemented {
-                runtime_container_name(&rt.kind, &rt.name)
-            } else {
-                format!("skiff-runtime-{}", rt.id)
-            };
+            let container_name = runtime_container_name_for(&rt.kind, &rt.name, &rt.id);
             let container_row = rows.iter().find(|c| c.name == container_name);
             let container_exists = container_row.is_some();
             let image_id = container_row

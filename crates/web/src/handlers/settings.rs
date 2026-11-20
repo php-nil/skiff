@@ -6,9 +6,9 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
-use crate::state::{AppState, CurrentUser};
 use crate::util::form_first;
 use skiff_app::menu;
+use skiff_app::{AppState, CurrentUser};
 pub(crate) async fn apply_panel_update(
     state: &Arc<AppState>,
     user: &CurrentUser,

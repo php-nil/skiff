@@ -19,8 +19,8 @@ use skiff_app::jobs::{Job, JobStatus};
 
 use crate::error::AppError;
 use crate::middleware::AuthUser;
-use crate::state::AppState;
 use crate::templates::{JobDetailView, JobRowView};
+use skiff_app::AppState;
 
 /// SSE 每次从库里取的增量上限。
 const LOG_PAGE: i64 = 500;

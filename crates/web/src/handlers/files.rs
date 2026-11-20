@@ -27,7 +27,7 @@ use skiff_app::commands::file as file_cmd;
 use crate::error::AppError;
 use crate::handlers;
 use crate::middleware::AuthUser;
-use crate::state::AppState;
+use skiff_app::AppState;
 
 /// 上传/下载的单片字节数（与 `skiff-fs` 的单次读写上限一致）。
 /// `pub(crate)`：`/ui/v1/files` 要把同一数值告诉前端上传适配器，避免前端硬编码。
@@ -84,13 +84,13 @@ fn bad_request(message: impl Into<String>) -> JsonErr {
     )
 }
 
-fn admin(user: &crate::state::CurrentUser, action: act::Action) -> Result<(), JsonErr> {
+fn admin(user: &skiff_app::CurrentUser, action: act::Action) -> Result<(), JsonErr> {
     crate::authz::authorize(user, action)
         .map(|_| ())
         .map_err(app_err)
 }
 
-fn csrf(state: &AppState, user: &crate::state::CurrentUser, parts: &Parts) -> Result<(), JsonErr> {
+fn csrf(state: &AppState, user: &skiff_app::CurrentUser, parts: &Parts) -> Result<(), JsonErr> {
     handlers::check_csrf_header(state, user, parts).map_err(app_err)
 }
 

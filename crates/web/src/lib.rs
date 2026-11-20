@@ -16,12 +16,11 @@ pub mod middleware;
 mod templates;
 pub mod util;
 
-// 上下文住在 `skiff-app`（装配层）。这里保留 `crate::state` 这个路径别名，是为了让
-// 处理器继续写 `crate::state::AppState` 而不必逐个改 use——层归属看 `skiff-app`。
-pub use skiff_app as state;
-
+// 上下文（`AppState` / `WebConfig`）住在 `skiff-app`（装配层），这里不设路径别名：
+// 处理器直接写 `skiff_app::AppState`，层归属在调用点可见。这三项仍对外再导出，
+// 集成测试按 `skiff_web::{AppState, WebConfig}` 取用，不必多引一个 crate。
 pub use error::AppError;
-pub use state::{AppState, CurrentUser, WebConfig};
+pub use skiff_app::{AppState, CurrentUser, WebConfig};
 
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -299,7 +298,7 @@ mod tests {
             ),
             db.clone(),
         ));
-        let cfg = crate::state::WebConfig {
+        let cfg = skiff_app::WebConfig {
             data_dir: PathBuf::from("skiff-test-data"),
             web_root: PathBuf::from("skiff-test-web"),
             trash_retention_days: 30,

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::state::AppState;
 use crate::templates::{TaskRow, TaskRunRow};
+use skiff_app::AppState;
 
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
 /// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，

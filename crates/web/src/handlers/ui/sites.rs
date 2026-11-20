@@ -30,6 +30,8 @@ pub async fn sites(
         .map(|s| (s.created_at_epoch, s.db_id, site_item(s)))
         .collect();
     let total = rows.len();
+    // 站点按 `(created_at, id)` 倒序，游标是上一页末项的复合键：取第一条严格小于游标
+    // 的行作为起点（找不到即已翻完），与 `paginate` 的「等值 +1」升序语义不同，故不走它。
     let start = match list.cursor.as_deref().and_then(parse_site_cursor) {
         Some(cursor) => rows
             .iter()

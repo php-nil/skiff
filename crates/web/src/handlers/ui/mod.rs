@@ -27,11 +27,11 @@ use crate::handlers::auth::{
 };
 use crate::handlers::{self, LOGIN_CSRF_COOKIE};
 use crate::middleware::UiAuthUser;
-use crate::state::auth::{LoginError, LoginRequest};
-use crate::state::AppState;
 use skiff_app::actions as act;
+use skiff_app::auth::{LoginError, LoginRequest};
 use skiff_app::commands::runtime as runtime_cmd;
 use skiff_app::cursor::{AuditScope, CursorCodec, CursorError, FilterSet};
+use skiff_app::AppState;
 
 mod audit;
 mod auth;
@@ -63,7 +63,13 @@ const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
 
 fn page_limit(q: &ListQuery) -> usize {
-    q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+    clamp_limit(q.limit)
+}
+
+/// 分页上限口径：缺省 50，越界夹到 `1..=200`。列表查询 struct 不止一种，
+/// 取值统一走这里，避免各 handler 各写一遍 clamp。
+fn clamp_limit(limit: Option<usize>) -> usize {
+    limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
 /// 内存 keyset 分页：`rows` 已按展示顺序排列，游标为上一页末项的键。
@@ -142,8 +148,8 @@ fn parse_site_cursor(cursor: &str) -> Option<(i64, i64)> {
 }
 
 /// 站点写操作的领域错误：字段级错误在 JSON 里按 400 返回，而不是 500。
-fn site_write_err(e: crate::state::sites::SiteError) -> AppError {
-    use crate::state::sites::SiteError;
+fn site_write_err(e: skiff_app::sites::SiteError) -> AppError {
+    use skiff_app::sites::SiteError;
     match e.unfield() {
         SiteError::BadRequest(m) => AppError::BadRequest(m),
         SiteError::Conflict(m) => AppError::Conflict(m),
@@ -222,7 +228,7 @@ fn write_done(value: serde_json::Value) -> Result<Response, ApiError> {
 
 fn planned_compose(
     state: &AppState,
-    user: &crate::state::CurrentUser,
+    user: &skiff_app::CurrentUser,
     body: &ComposeSourceBody,
 ) -> Result<skiff_docker::compose::ComposeProject, ApiError> {
     if body.compose.trim().is_empty() {

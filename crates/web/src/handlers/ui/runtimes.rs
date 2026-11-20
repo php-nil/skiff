@@ -75,27 +75,7 @@ pub async fn runtimes(
             )
         })
         .collect();
-    let total = rows.len();
-    let start = match q.cursor.as_deref() {
-        Some(cursor) => rows
-            .iter()
-            .position(|(id, _)| id == cursor)
-            .map(|i| i + 1)
-            .unwrap_or(0),
-        None => 0,
-    };
-    let end = (start + page_limit(&q)).min(total);
-    let next_cursor = if end < total && end > start {
-        rows.get(end - 1).map(|(id, _)| id.clone())
-    } else {
-        None
-    };
-    let items: Vec<RuntimeItem> = rows
-        .into_iter()
-        .skip(start)
-        .take(end - start)
-        .map(|(_, item)| item)
-        .collect();
+    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
     let mut resp = Json(json!({
         "data": { "items": items, "total": total, "next_cursor": next_cursor }
     }))

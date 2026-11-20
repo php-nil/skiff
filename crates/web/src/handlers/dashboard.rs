@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
-use crate::state::AppState;
+use skiff_app::AppState;
 
 /// `GET /ui/v1/overview` 的原始数据快照。
 ///
