@@ -950,6 +950,7 @@ async fn upgrade_download_requires_admin_permission() {
         },
     );
     let token = login(&h.app, "viewer", "pw-test-123").await;
+    let csrf = h.state.csrf_token(&token);
     let resp = h
         .app
         .clone()
@@ -958,6 +959,7 @@ async fn upgrade_download_requires_admin_permission() {
                 .method("POST")
                 .uri("/ui/v1/store/upgrades/0.2.0/download")
                 .header(header::COOKIE, format!("skiff_dev_session={token}"))
+                .header("x-csrf-token", csrf.as_str())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -6027,15 +6029,21 @@ fn budding_boot_p1_confirms_and_kill_entry_present() {
 #[test]
 fn budding_boot_p2_row_actions_present() {
     let js = include_str!("../static/budding/budding-boot.js");
+    let site_page = include_str!("../src/handlers/ui/site_page.rs");
+    // JS 里注册的自定义动作（内核服务端 schema 化后，props 在 Rust 里拼装）。
     for needle in [
         "skiffSiteToggle: siteToggle",
         "skiffContainerToggle: containerToggle",
         "text: '启停'",
-        "props: { id: '${id}', domain: '${domain}', status: '${status.code}' }",
         "props: { id: '${id}', name: '${name}', status: '${state.code}' }",
     ] {
-        assert!(js.contains(needle), "P2 行内入口缺失：{needle}");
+        assert!(js.contains(needle), "P2 行内入口缺失（JS）：{needle}");
     }
+    // 站点列表已服务端 schema 化，行内启停按钮的 props 由 site_page.rs 生成。
+    assert!(
+        site_page.contains("\"props\": { \"id\": \"${id}\", \"domain\": \"${domain}\", \"status\": \"${status.code}\" }"),
+        "站点列表服务端 schema 缺失 skiffSiteToggle props"
+    );
 }
 
 /// 动作注册表键去重：`skiffDockerWrite` 曾与设置保存动作共用同名键，

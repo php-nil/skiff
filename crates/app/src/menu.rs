@@ -335,7 +335,7 @@ fn declared_tabs(
                 key: format!("{key}/{}", it.id),
                 local: it.id.clone(),
                 label: it.label.clone(),
-                href: menu_href(prefix, &format!("{key}/{}", it.id)),
+                href: menu_href(prefix, &format!("plugin/{plugin_id}/{view}")),
                 icon: icon_or_dot(it.icon.as_deref()),
                 tab: view.to_string(),
                 ui: view_file(view),
@@ -503,7 +503,6 @@ pub fn resolve_plugin_view(
             continue;
         }
         if decl.items.is_empty() {
-            let default_view = decl.view.clone();
             return Some(declared_tabs(
                 plugin_id,
                 &state.cfg.entry_prefix,
