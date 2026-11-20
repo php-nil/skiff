@@ -1507,6 +1507,27 @@ body.skiff-login-shell {
   overflow-y: hidden !important;
 }
 
+/* 登录页根元素也隐藏滚动条 */
+html:has(body.login-body),
+html:has(body.skiff-login-shell) {
+  overflow: hidden !important;
+  overflow-y: hidden !important;
+  height: 100% !important;
+}
+
+/* 主体容器：分栏布局，高度不超出视口 */
+.login-layout {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: var(--sp-4);
+  max-width: 840px;
+  width: 100%;
+  align-items: center;
+  max-height: 100dvh;
+  box-sizing: border-box;
+}
+
 /* 背景装饰层 */
 body.login-body::before,
 body.skiff-login-shell::before {
