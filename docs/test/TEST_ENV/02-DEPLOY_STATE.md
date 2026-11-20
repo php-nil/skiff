@@ -6,32 +6,35 @@
 
 ## 5. 当前部署
 
-> **2026-11-21 00:53 登录页 CSS v23 最终修复 + 上游 budding 1.8.3 同步（当前生效；HEAD `26f53ec`）**
-> - **场景**：用户反馈 v20 登录页仍有滚动条；三轮迭代（v20→v21→v22→v23）逐步紧缩 + 最终用 `body overflow: hidden !important` 根治；同步上游 budding 从 1.8.1-r2 升到 1.8.3（`C:\dev\budding\dist\embed` 主包 + icons + `dist/packs` 分包改 .mjs→.min.js）。
-> - **资产**：Release run `197`（head `26f53ec`，dispatch `ref=main` + `publish=true`，success），`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz`。测试机 curl github.com 直连。
-> - **二进制**：`/usr/local/bin/skiff` **21,125,136 B**，`sha256=bf1ce05fa711732ede991f959b46bd7cce2e31d39cfd3771d79a51e29202162d`（比 v20 大 3MB，新增 budding 1.8.3 产物）。
-> - **安装**：`install.sh` exit 0；schema v0→v22；前缀 **`nitrz26v`**；初始口令 admin / `XbQK8T2uKpfkMxuh`；`skiff.service` active。
-> - **转发层**：`skiff-http-fwd.service` active（0.0.0.0:18081 → 127.0.0.1:18080）。
-> - **登录页 CSS 修复（最终方案）**：
->   - `body.login-body/.skiff-login-shell`：加 `!important` 到所有属性；`padding: 0 var(--sp-4)`（上下 0，左右 16px）；`overflow: hidden !important` + `overflow-y: hidden !important`（**根治滚动条**）。
->   - 新增 `html:has(body.login-body)` / `html:has(body.skiff-login-shell)` 规则 `overflow: hidden !important` + `height: 100% !important`。
->   - `.login-layout`：`max-height: 100dvh` + `box-sizing: border-box`；去掉 `margin: auto`（body 已 flex 居中）。
->   - `.login-form-col`：`flex: 0 0 360px`，`padding: var(--sp-4) var(--sp-4)`（16px/16px）。
->   - 大量覆盖 budding 内部 Vuetify 组件间距：`.v-field` padding、`.v-btn` padding/min-height、`.v-label` 字号、`.v-messages` margin、`.v-field__overlay` padding 等，目标压缩表单总高。
->   - `SHELL_VERSION` 20 → 23（缓存键变化强制浏览器加载新 CSS）。
+> **2026-11-21 01:00 干净重装 v23（登录页 CSS 最终方案 + budding 1.8.3）**
+> - **场景**：按标准流程——清测试机（stop + 删 /www/skiff /etc/skiff / skiff.service / skiff-http-fwd.service）→ 下载 Release #197 资产 → 校验二进制 sha256 → install.sh → 配转发层 → 浏览器验收。
+> - **资产**：Release run `197`（head `26f53ec`，dispatch `ref=main` + `publish=true`，success）。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` 13.4 MB（GitHub download 直连，sha256 侧车超时，解包后二进制 sha256 校验确认）。
+> - **二进制**：`/usr/local/bin/skiff` **21,125,136 B**，`sha256=bf1ce05fa711732ede991f959b46bd7cce2e31d39cfd3771d79a51e29202162d`。
+> - **安装**：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；schema v0→v22；前缀 **`ewtdhtgx`**；初始口令 admin / `SGJRnUdksZfxZc8a`（写 `/root/iter/admin-pw.txt` 0600）；`skiff.service` active；healthz `{"docker":"available","status":"ok","uptime_secs":6,"version":"0.1.0"}`。
+> - **转发层**：`skiff-http-fwd.service` active（`/usr/local/bin/skiff-http-fwd.py`，Python 行 pipe，0.0.0.0:18081 → 127.0.0.1:18080，settinmeout 清理 + RestartSec=1），`/etc/systemd/system/skiff-http-fwd.service`。curl 18081/ewtdhtgx/login 返回 200 + `title="登录 · Skiff"` + `body class="skiff-login-shell"`。
+> - **登录页 CSS 修复（最终方案 · SHELL_VERSION 23）**：
+>   - `body.skiff-login-shell { overflow: hidden !important; overflow-y: hidden !important; padding-top: 0 !important; }` —— **根治滚动条**（body 不让任何垂直滚动产生）。
+>   - `html:has(body.skiff-login-shell) { overflow: hidden !important; }` —— html 根元素也锁住。
+>   - `.login-layout { max-height: 100dvh; box-sizing: border-box; }` —— 动态视口高度约束。
+>   - `.login-form-col { flex: 0 0 360px; padding: var(--sp-4) var(--sp-4); }` —— 表单卡片 360px。
+>   - `.login-form-col .v-field / .v-btn / .v-label / .v-messages` —— 大量覆盖 Vuetify 组件间距压缩表单总高。
 > - **上游 budding 1.8.3 同步**（`C:\dev\budding` package.json `1.8.3`，commit `1120d3`）：
->   - 主包：`dist/embed/budding.js` → `budding-1.8.3.min.js` 1304KB（+23KB），`budding.css` 647KB（+1KB）。
->   - Icons：`dist/embed/budding-icons-1.8.3.css` 5KB + `.woff2` 4KB（版本升 1.8.1→1.8.3）。
->   - 分包：`dist/packs/code.mjs` 88KB、`terminal.mjs` 386KB 改名为 `.min.js`。格式为 ESM `.mjs`，与旧 UMD 不同。
->   - `assets.rs` `BUDDING_VERSION="1.8.3"`、`BUDDING_ICONS_VERSION="1.8.3"`。
-> - **验收（browser_use 3/3 PASS）**：
->   - ✅ CSS href `?v=23`，body `paddingTop=0`、`overflowY=hidden`（computedStyle 验证）。
->   - ✅ **无垂直滚动条**：`htmlScrollHeight=571 === htmlClientHeight=571`（960×571 视口）。
->   - ✅ 所有表单字段 + 登录按钮完全可见。
->   - ✅ admin / XbQK8T2uKpfkMxuh 登录成功 → 概览页。
-> - **已知限制**：本机 L1 门禁因可用内存 3 MB < 1024 MB 被 cargo 闸门拒绝，未跑 fmt/clippy；编译级以 Release run `197` 四 job 全绿为准；分包从 ESM `.mjs` 改名为 `.min.js`，**运行时兼容性未全量验证**（本次只验了登录页，登录功能正常说明主包 OK）。
+>   - 主包：`budding-1.8.3.min.js` 1304KB / `.css` 647KB。
+>   - Icons：`budding-icons-1.8.3.min.css` 5KB + `.woff2` 4KB。
+>   - 分包：上游改 `.mjs`（ESM 格式），skiff 改回 `.min.js` 文件名。
+>   - `assets.rs`：`SHELL_VERSION=23`、`BUDDING_VERSION="1.8.3"`、`BUDDING_ICONS_VERSION="1.8.3"`。
+> - **验收（browser_use 4/4 PASS）**：
+>   - ✅ CSS href `skiff.css?v=23`，budding `?v=1.8.3` 正确加载（curl HTML 确认 `body class="skiff-login-shell"`）。
+>   - ✅ **无垂直滚动条**：`htmlScrollHeight=571 === htmlClientHeight=571`（960×571 视口）；当前部署概览页同样 html/body scrollHeight==clientHeight。
+>   - ✅ 所有表单字段（用户名、密码、动态码）+ 登录按钮（top:278, bottom:314）完全可见（960×571 视口）。
+>   - ✅ admin / SGJRnUdksZfxZc8a 登录成功 → 概览页（容器/网站/插件/工具菜单正常）。
+> - **curl HTML 全链验证**：`curl -s http://18081/ewtdhtgx/login` 返回 `<body class="skiff-login-shell">` + `<link rel="stylesheet" href=".../skiff.css?v=23">` + login-layout/login-form-col DOM 完整。CSS 文件确认 body 规则 `overflow: hidden !important` 已就位。
+> - **已知限制**：本机 L1 门禁因可用内存 3 MB < 1024 MB 被 cargo 闸门拒绝，未跑 fmt/clippy；编译级以 Release run `197` 四 job 全绿为准；budding 分包格式从 UMD 改 ESM `.mjs`，改名为 `.min.js` 运行时兼容性需进一步验证（本轮只验登录页，登录流程正常说明主包 OK）。
 >
-> **2026-11-20 23:34 机器还原后全新安装 + 登录页 CSS 修复（已过期；HEAD `6d98116`）**
+> **2026-11-21 00:53 磁盘覆盖 v23（已过期；HEAD `26f53ec`，前缀 nitrz26v）**
+> - 场景：v20 登录页修复不够紧，三轮迭代（v20→v21→v22→v23）逐步紧缩 + 最终 body overflow:hidden !important 根治；上游 budding 1.8.3 同步。当时用磁盘覆盖 SKIFF_EXTRA_STATIC_DIR 方式验证，未做干净重装。
+>
+> **2026-11-20 23:34 机器还原后全新安装（已过期；HEAD `6d98116`，前缀 egehgs6m）**
 > - **场景**：测试机还原为干净系统（T1：Docker 29.7.2 在位），空库全新安装后按「逐页操作 → 记录 → 修复 → 重发版 → 复验」迭代到问题收敛。
 > - **资产**：Release run `44750632405`（head `ffc0aa2`，publish 成功），`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,897,732 B** id=`772097777`，`sha256=fbb96094…6fbb`。测试机经 `api.github.com` + `Accept: application/octet-stream` 下载并 `sha256sum` 校验一致（GitHub download 直连本轮两次 SSL 重置）。
 > - **安装**：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；schema **v0→v22**；`user_version=22`、`integrity_check=ok`；前缀 **`egehgs6m`**；`skiff.service` active；转发层 `skiff-http-fwd.service`（`/root/iter/skiff-http-fwd.py`，0.0.0.0:18081 → 127.0.0.1:18080）active。

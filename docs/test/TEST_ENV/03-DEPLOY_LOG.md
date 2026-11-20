@@ -13,6 +13,7 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
+| 2026-11-21 01:00 | **干净重装 v23 最终版**（登录页 body overflow:hidden !important + budding 1.8.3 同步） | Release run `197`（head `26f53ec`），amd64 21,125,136 B `sha256=bf1ce05f…2162d`，前缀 `ewtdhtgx` | ✅ 960×571 视口 html/body scrollHeight==clientHeight 无垂直滚动条；浏览器验收 4/4 PASS；curl HTML + CSS 规则全链验证；库 v22 |
 | 2026-11-20 23:34 | **登录页 CSS 修复**（测试机还原后全新安装，`6d98116` 登录页布局收紧） | Release run `194`（head `6d98116`），amd64 18,016,272 B `sha256=948b9312…7977` | ✅ 1080px 视口下无垂直滚动条；登录成功；库 v22 |
 | 2026-11-20 22:18 | **UI 巡检第 4 轮**（删除运行环境后跳回列表） | Run `44750632405`（head `ffc0aa2`），amd64 12,897,732 B `sha256=fbb96094…6fbb` | 删除 `uitest-del` 后落在 `/sites/runtimes`，无「运行环境不存在」错误页；库 v22、8 插件保留 |
 | 2026-11-20 22:06 | **UI 巡检第 3 轮**（配置文件编辑 query 跳转整页加载） | Run `44748817699`（head `ca632b1`），amd64 12,897,514 B `sha256=6f736521…52fc` | PHP `php.ini` 编辑器渲染、内容 148 字符；审计重置仍 PASS；库 v22 |

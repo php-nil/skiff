@@ -4,7 +4,32 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-20 23:34 `6d98116`：登录页 CSS 布局收紧，浏览器验收 3/3 PASS）
+## 8. 最近一次验收结论（截至 2026-11-21 01:00 `26f53ec`：干净重装 v23，登录页最终方案，浏览器验收 4/4 PASS）
+
+**2026-11-21 01:00 干净重装 `26f53ec`：登录页 CSS v23 最终方案（body overflow:hidden !important）+ 上游 budding 1.8.3 同步**
+
+- **安装（通过，干净重装）**：清测试机（stop + 删 /www/skiff /etc/skiff / skiff.service / skiff-http-fwd.service）→ Release run `197`（head `26f53ec`，dispatch `ref=main` + `publish=true`）→ 二进制 `bf1ce05fa711732ede991f959b46bd7cce2e31d39cfd3771d79a51e29202162d`（21,125,136 B，curl GitHub download 直连 + sha256 校验）→ `install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0。库 **v22**、`integrity_check=ok`；前缀 **`ewtdhtgx`**；转发层 `skiff-http-fwd.service` active。healthz `{"docker":"available","status":"ok","version":"0.1.0"}`。
+- **登录页 CSS v23 最终方案**：
+  - `body.skiff-login-shell { overflow: hidden !important; overflow-y: hidden !important; padding-top: 0 !important; }` —— **根治滚动条**。
+  - `html:has(body.skiff-login-shell) { overflow: hidden !important; }`。
+  - `.login-layout { max-height: 100dvh; box-sizing: border-box; }`。
+  - `.login-form-col { flex: 0 0 360px; padding: var(--sp-4) var(--sp-4); }`。
+  - `.login-form-col .v-field / .v-btn / .v-label / .v-messages` 大量覆盖 Vuetify 组件间距。
+  - `SHELL_VERSION=23`（缓存键 `?v=23`）。
+- **上游 budding 1.8.3 同步**：`C:\dev\budding\package.json 1.8.3`，commit `1120d3`。主包 1304KB + CSS 647KB + icons + 分包（`.mjs` ESM 改名为 `.min.js`）。
+- **浏览器验收（browser_use 4/4 PASS）**：
+  1. ✅ CSS href `skiff.css?v=23`，budding `?v=1.8.3` 正确加载；curl HTML 确认 `body class="skiff-login-shell"` + login-layout/login-form-col DOM 完整；CSS 文件确认 body 规则 `overflow: hidden !important` 就位。
+  2. ✅ **无垂直滚动条**：`htmlScrollHeight=571 === htmlClientHeight=571`，`bodyScrollHeight=571 === bodyClientHeight=571`（960×571 视口）；当前部署概览页同样 scrollHeight==clientHeight。
+  3. ✅ 所有表单字段（用户名 top:95/bottom:127、密码 top:149/bottom:182、动态码 top:204/bottom:236）+ 登录按钮（top:278/bottom:314）完全可见；主题切换按钮（top:515/bottom:551）在视口内。
+  4. ✅ admin / SGJRnUdksZfxZc8a 登录成功 → 概览页（容器/网站/插件/工具菜单正常渲染）。
+- **已实测数字**：
+  - 二进制 sha256 `bf1ce05f…2162d`（21.1 MB）
+  - 入口前缀 `ewtdhtgx`
+  - healthz uptime 6s 时 docker=available
+  - install.sh exit 0
+  - schema v22 / integrity_check ok
+  - 转发层 curl 返回 `<title>登录 · Skiff</title>` + `body class="skiff-login-shell"`
+- **已知限制**：本机 L1 门禁因可用内存 3 MB < 1024 MB 被 cargo 闸门拒绝，未跑 fmt/clippy；编译级以 Release run `197` 四 job 全绿为准；budding 分包格式从 UMD 改 ESM `.mjs`，改名为 `.min.js` 运行时兼容性需进一步验证（本轮只验登录页，登录流程正常说明主包 OK）。
 
 **2026-11-20 23:34 全新安装 `6d98116`：登录页 CSS 修复（SHELL_VERSION 20），浏览器验收全 PASS**
 

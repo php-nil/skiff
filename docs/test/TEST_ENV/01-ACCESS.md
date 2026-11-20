@@ -19,8 +19,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18081/egehgs6m/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `egehgs6m`（2026-11-20 20:58 机器还原后全新安装生成） |
+| URL | `http://10.10.15.4:18081/ewtdhtgx/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `ewtdhtgx`（2026-11-21 01:00 干净重装生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /root/iter/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`，unit 在 `/etc/systemd/system/`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
