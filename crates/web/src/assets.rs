@@ -66,7 +66,10 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
 /// v15：UI 审计修复——登录页主题切换按钮 fixed 定位（不再被 body overflow:hidden 裁掉）；
 ///   budding 组件内 label 不受全局 flex 容器规则干扰，隐藏上游渲染的空 for 重复 label；
 ///   侧栏菜单启用纵向滚动；表格最小列宽防止过度压缩；tooltip z-index 提到顶层。
-pub const SHELL_VERSION: &str = "19";
+/// v16：登录页布局收紧——body 改 100dvh + overflow-y:auto（允许垂直滚动），flex 居中改
+///   margin:auto 溢出时自动滚；表单列 400→380、padding 收紧；品牌区间距同步收紧；
+///   正常视口（≥1080px）下无滚动条。
+pub const SHELL_VERSION: &str = "20";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

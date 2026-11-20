@@ -1492,16 +1492,16 @@ iframe.plugin-frame.auto-height { height: auto; }
 body.login-body,
 body.skiff-login-shell {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  min-height: 100vh;
-  padding: var(--sp-5);
+  min-height: 100dvh;
+  padding: var(--sp-4) var(--sp-5);
   margin: 0;
   font-family: var(--sans);
   color: var(--text);
   background: var(--login-bg);
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 /* 背景装饰层 */
@@ -1556,10 +1556,11 @@ html[data-theme="dark"] {
   position: relative;
   z-index: 1;
   display: flex;
-  gap: var(--sp-8);
-  max-width: 880px;
+  gap: var(--sp-6);
+  max-width: 860px;
   width: 100%;
   align-items: center;
+  margin: auto;
 }
 
 /* 左：品牌区 */
@@ -1568,8 +1569,8 @@ html[data-theme="dark"] {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: var(--sp-4);
-  padding-right: var(--sp-6);
+  gap: var(--sp-3);
+  padding-right: var(--sp-4);
 }
 .login-brand-col .brand-logo {
   width: 48px;
@@ -1624,12 +1625,12 @@ html[data-theme="dark"] .login-brand-col .brand-logo {
 
 /* 右：表单卡片 */
 .login-form-col {
-  flex: 0 0 400px;
+  flex: 0 0 380px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 16px;
   box-shadow: var(--shadow-pop);
-  padding: var(--sp-8) var(--sp-6);
+  padding: var(--sp-6) var(--sp-5);
 }
 
 /* old skiff.css login-card 兼容（模板登录失败回落路径） */
