@@ -110,6 +110,8 @@ struct ExecRequest {
 }
 
 impl ExecRequest {
+    /// 默认上限/默认值的便捷入口——单测友好，生产直接调 `parse_with`。
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse(body: &Value) -> Result<Self, String> {
         Self::parse_with(body, TIMEOUT_DEFAULT_SEC, TIMEOUT_MAX_SEC)
     }
