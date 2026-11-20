@@ -194,9 +194,10 @@ pub async fn store_upgrade_download(
     Path(version): Path<String>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
-    handlers::require_permission(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     guard::csrf(&state, &user, &parts)?;
     let ip = handlers::client_ip(&state, &parts);
+    // 权限检查 + 审计落在 apply_upgrade_download 内，handler 不做重复拦截
+    // （否则 deny 审计永远走不到）。
     let outcome = handlers::store::apply_upgrade_download(&state, &user, &ip, &version)
         .await
         .map_err(ApiError)?;

@@ -64,72 +64,74 @@ impl FakeKernel {
 fn handle(mut stream: UnixStream, seen: &Arc<Mutex<Vec<(String, String)>>>) -> std::io::Result<()> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
-    let (head, end) = loop {
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            return Ok(());
+    loop {
+        // 1. 读一个完整请求头
+        let (head, end) = loop {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                return Ok(()); // 客户端关闭（keep-alive 连接优雅断开）
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(v) = skiff_wire::parse_request_head(&buf)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
+            {
+                break v;
+            }
+        };
+        let mut body = buf[end..].to_vec();
+        while body.len() < head.content_length {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..n]);
         }
-        buf.extend_from_slice(&chunk[..n]);
-        if let Some(v) = skiff_wire::parse_request_head(&buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
-        {
-            break v;
-        }
-    };
-    let mut body = buf[end..].to_vec();
-    while body.len() < head.content_length {
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    seen.lock().unwrap().push((
-        head.path.clone(),
-        head.authorization.clone().unwrap_or_default(),
-    ));
+        seen.lock().unwrap().push((
+            head.path.clone(),
+            head.authorization.clone().unwrap_or_default(),
+        ));
 
-    let (status, payload): (u16, Value) = match head.path.as_str() {
-        routes::CAP_CONFIG => (200, json!({ "site_name": "示例站", "token": "s3cret" })),
-        routes::CAP_IDENTITY_SELF => (
-            200,
-            json!({ "id": "demo", "version": "1.0.0", "api": "1.0", "granted": ["fs:read"] }),
-        ),
-        routes::CAP_FS_READ => (200, json!({ "data": "hello" })),
-        routes::CAP_FS_WRITE => (200, json!({ "ok": true })),
-        routes::CAP_FS_LIST => (200, json!({ "entries": ["a.txt"] })),
-        routes::CAP_DOCKER_CALL => {
-            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            (200, json!({ "result": v }))
-        }
-        // 内核把目标插件的 RPC `result` 放在信封的 `result` 键里；SDK 负责剥壳。
-        routes::CAP_INTEROP_CALL => {
-            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            (
+        let (status, payload): (u16, Value) = match head.path.as_str() {
+            routes::CAP_CONFIG => (200, json!({ "site_name": "示例站", "token": "s3cret" })),
+            routes::CAP_IDENTITY_SELF => (
+                200,
+                json!({ "id": "demo", "version": "1.0.0", "api": "1.0", "granted": ["fs:read"] }),
+            ),
+            routes::CAP_FS_READ => (200, json!({ "data": "hello" })),
+            routes::CAP_FS_WRITE => (200, json!({ "ok": true })),
+            routes::CAP_FS_LIST => (200, json!({ "entries": ["a.txt"] })),
+            routes::CAP_DOCKER_CALL => {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                (200, json!({ "result": v }))
+            }
+            routes::CAP_INTEROP_CALL => {
+                let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                (
+                    200,
+                    json!({
+                        "plugin": v["plugin"],
+                        "method": v["method"],
+                        "result": { "ok": true, "ticket": v["params"]["name"] }
+                    }),
+                )
+            }
+            routes::CAP_INTEROP_CATALOG => (
                 200,
                 json!({
-                    "plugin": v["plugin"],
-                    "method": v["method"],
-                    "result": { "ok": true, "ticket": v["params"]["name"] }
+                    "permission": "interop:call",
+                    "interfaces": [{ "id": "com.skiff.cron", "name": "计划任务", "methods": [] }]
                 }),
-            )
-        }
-        routes::CAP_INTEROP_CATALOG => (
-            200,
-            json!({
-                "permission": "interop:call",
-                "interfaces": [{ "id": "com.skiff.cron", "name": "计划任务", "methods": [] }]
-            }),
-        ),
-        // 内核当前对 net.apply 一律 501（nftables 收口属 M4 门禁）
-        routes::CAP_NET_APPLY => (501, json!({ "error": "not implemented" })),
-        other => (404, json!({ "error": format!("no route {other}") })),
-    };
+            ),
+            routes::CAP_NET_APPLY => (501, json!({ "error": "not implemented" })),
+            other => (404, json!({ "error": format!("no route {other}") })),
+        };
 
-    let raw = serde_json::to_vec(&payload).unwrap_or_default();
-    stream.write_all(skiff_wire::build_response_head(status, raw.len()).as_bytes())?;
-    stream.write_all(&raw)?;
-    stream.flush()
+        let raw = serde_json::to_vec(&payload).unwrap_or_default();
+        stream.write_all(skiff_wire::build_response_head(status, raw.len()).as_bytes())?;
+        stream.write_all(&raw)?;
+        stream.flush()?;
+        buf.clear(); // keep-alive：清掉已消费的请求头，准备读下一个
+    }
 }
 
 fn plugin(socket: &std::path::Path) -> Plugin {

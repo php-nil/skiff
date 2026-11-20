@@ -302,8 +302,9 @@ pub fn install_package(
                             continue;
                         }
                         object_upgrade.push(h.clone());
+                        kept.push(Grant::object(h));
                     }
-                    kept.push(Grant::object(h));
+                    // is_new=false（旧 manifest 已声明但用户当初没勾）→ 跳过，不翻案。
                 }
             }
             kept

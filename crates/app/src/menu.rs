@@ -470,7 +470,9 @@ pub fn resolve_plugin_view(
     if manifest.menu.is_empty() {
         return legacy_workbench(plugin_id, &state.cfg.entry_prefix, &manifest, Some(&view));
     }
-    for decl in visible_menu(&manifest, user.role().as_str(), state.docker().available()) {
+    let visible = visible_menu(&manifest, user.role().as_str(), state.docker().available());
+    // 1. 按 view 名精确匹配（URL 直接带 view）。
+    for decl in &visible {
         if decl.items.is_empty() {
             if decl.view == view {
                 return Some(declared_tabs(
@@ -493,6 +495,34 @@ pub fn resolve_plugin_view(
                 Some(i),
             ));
         }
+    }
+    // 2. fallback：按 L2 menu id 匹配（URL 带 L2 id，如 `/plugins/{pid}/sites`）。
+    //    取其默认 view（L2 自己的 view，或第一个 L3 item）。
+    for decl in &visible {
+        if decl.id != view {
+            continue;
+        }
+        if decl.items.is_empty() {
+            let default_view = decl.view.clone();
+            return Some(declared_tabs(
+                plugin_id,
+                &state.cfg.entry_prefix,
+                decl,
+                &[],
+                None,
+            ));
+        }
+        let ordered = sorted_items(decl);
+        let default_idx = 0;
+        let default_view = item_view(ordered.first()?).to_string();
+        let _ = default_view; // declared_tabs 内部用 idx 决定高亮，view 已在 menu_local 解析
+        return Some(declared_tabs(
+            plugin_id,
+            &state.cfg.entry_prefix,
+            decl,
+            &ordered,
+            Some(default_idx),
+        ));
     }
     None
 }

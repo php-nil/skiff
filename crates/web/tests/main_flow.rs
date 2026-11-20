@@ -5854,13 +5854,18 @@ fn budding_boot_status_table_honors_caller_empty_text() {
         js.contains("emptyText: options.emptyText"),
         "resourceSchema 必须把 emptyText 透传给 listTable"
     );
+    // 站点列表已服务端化，文案在 site_page.rs 而非 JS 内联。
+    let site_page = include_str!("../src/handlers/ui/site_page.rs");
+    assert!(
+        site_page.contains("还没有站点，创建后会生成整站目录、nginx vhost 与 PHP 探针"),
+        "站点空态文案在服务端 schema"
+    );
     for text in [
         // 容器：按 Docker 可用性与筛选状态分三种。
         "'Docker 不可用，容器列表为空'",
         "'没有异常容器'",
         "'还没有容器，可在下方新建'",
-        // 站点 / 运行环境：真空列表引导创建。
-        "'还没有站点，创建后会生成整站目录、nginx vhost 与 PHP 探针'",
+        // 运行环境：真空列表引导创建。
         "'还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点'",
         // 镜像 / 网络 / 卷：真空列表与依赖未就绪两种。
         "'还没有拉取镜像，拉取后新建容器或运行环境可直接使用'",
@@ -5914,8 +5919,8 @@ fn budding_boot_buttons_navigate_explicitly() {
         "浏览器前进/后退的同 path query 变化必须有 popstate 兜底"
     );
     for needle in [
-        "props: { path: prefix + '/containers', query: {} }",
-        "props: { path: prefix + '/containers', query: { filter: 'error' } }",
+        "props: { path: prefix + '/docker/containers', query: {} }",
+        "props: { path: prefix + '/docker/containers', query: { filter: 'error' } }",
     ] {
         assert!(
             js.contains(needle),
@@ -5923,7 +5928,7 @@ fn budding_boot_buttons_navigate_explicitly() {
         );
     }
     assert!(
-        !js.contains("url: prefix + '/containers?filter=error'"),
+        !js.contains("url: prefix + '/docker/containers?filter=error'"),
         "只换 query 的跳转不能再用 navigate（只会 pushState，不会重载内容）"
     );
     assert!(
@@ -6025,7 +6030,6 @@ fn budding_boot_p2_row_actions_present() {
     for needle in [
         "skiffSiteToggle: siteToggle",
         "skiffContainerToggle: containerToggle",
-        "text: '启动/停止'",
         "text: '启停'",
         "props: { id: '${id}', domain: '${domain}', status: '${status.code}' }",
         "props: { id: '${id}', name: '${name}', status: '${state.code}' }",
@@ -6344,7 +6348,7 @@ fn budding_boot_create_dialogs_keep_deep_links() {
         "function siteNewSchema(runtimes)",
         "siteCreateFields(runtimes),\n          '创建站点',\n          siteCreateDefaults(typeQuery)",
         // 弹窗提交成功回列表刷新；独立页仍进入详情。
-        "op === 'create' && data.domain && !args.dialog",
+        "op === 'create' && data.id && !args.dialog",
         "if (args.dialog) closeTopLayer();",
         "formError(\n          args,\n          '操作失败：'",
     ] {
@@ -6576,10 +6580,20 @@ fn budding_boot_session_expiry_uses_redirect_component() {
         js.contains("function showSessionExpired()"),
         "401 必须有统一的登录失效出口"
     );
-    assert!(js.contains("type: 'redirect'"), "应使用 redirect 组件");
-    assert!(js.contains("delay: 2000"), "应带自动跳转延迟");
-    assert!(js.contains("buttonText: '立即登录'"), "应提供手动入口");
-    assert!(js.contains("/login?next="), "跳转目标应回带 next");
+    // 会话过期简化为硬跳转：立即 window.location.replace 到登录页，
+    // 不再用 budding redirect 组件（无延迟、无按钮、不重新 embed）。
+    assert!(
+        js.contains("loginUrl()"),
+        "跳转目标应构造带 next 的登录页 URL"
+    );
+    assert!(
+        js.contains("window.location.replace"),
+        "401 应硬跳转，不走 budding redirect 组件"
+    );
+    assert!(
+        js.contains("/login?next="),
+        "跳转目标应回带 next"
+    );
     // 页面骨架 + 七条 JSON 通道（读写/上传/RPC/终端）都接上，而不是只弹 toast。
     let calls = js.matches("showSessionExpired()").count();
     assert!(
@@ -6588,7 +6602,7 @@ fn budding_boot_session_expiry_uses_redirect_component() {
     );
     assert!(
         !js.contains("会话已过期，请刷新页面后重新登录。"),
-        "旧的一行错误文案应被 redirect 页面替代"
+        "旧的一行错误文案应被硬跳转替代"
     );
 }
 

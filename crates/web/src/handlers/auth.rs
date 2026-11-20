@@ -128,19 +128,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 <script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
 <script src="/{prefix}/static/form-enter-submit.js?v={shell}"></script>
 <script src="/{prefix}/static/budding/budding-login.js?v={shell}"></script>
-<script>
-(function(){{
-  var btn = document.querySelector('[data-theme-toggle]');
-  if (!btn) return;
-  btn.addEventListener('click', function(){{
-    var cur = document.documentElement.getAttribute('data-theme') || 'light';
-    var next = cur === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    try {{ localStorage.setItem('skiff.theme', next); }} catch (e) {{}}
-  }});
-  btn.setAttribute('aria-pressed', document.documentElement.getAttribute('data-theme') === 'dark' ? 'true' : 'false');
-}})();
-</script>
+<script src="/{prefix}/static/theme-toggle.js?v={shell}"></script>
 </body>
 </html>
 "#
