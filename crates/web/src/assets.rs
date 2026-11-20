@@ -24,30 +24,14 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-18 打包（commit `69e3a72`）：功能集相对 11-17 的 `39d9e1d` 有增量，
-/// **但上游未升版本号**（根 `package.json` 仍是 `1.8.1`）。版本化文件名的缓存策略是
-/// 一年 `immutable`，沿用 `1.8.1` 会让浏览器继续吃旧包，因此按仓内既有约定追加
-/// `-rN`：`1.8.1-r2`（`r1` = 11-17 的初始 1.8.1）。上游升版后回归纯语义版本。
-///
-/// 本版变化（宿主可感知）：
-/// - `admin` 壳不再自带 `border` / `border-radius` / `box-shadow`，满屏宿主无需反向覆盖；
-/// - `data` 组九处硬编码浅色改为 `--v-theme-*`，暗色主题不再需要宿主补丁；
-/// - `page` 暴露 `init` / `refresh` 触点，`link` / `image` 支持 `click`（`link` 配了
-///   `onEvent.click` 时不再走默认导航——仓内核页无此用法，已逐条核对）；
-/// - 新增 `instance.diagnose()` 与 `loadSchema()` 收编装载流程，`bundleStrict`
-///   缺省三态修复。
-///
-/// 主包 1,311,542 B / CSS 661,899 B；code Pack 89,982 B、terminal Pack 395,014 B
-/// 字节未变（仅随版本号改名），图标 78 字形字节不变。
-pub const BUDDING_VERSION: &str = "1.8.1-r2";
+/// 上游 2026-11-20 打包（commit `1120d3`）版本号升到 **1.8.3**（根 `package.json` 1.8.3）。
+/// 本次同步从 `C:\dev\budding\dist\embed` 取完整 bundle，icons 也升到 1.8.3。
+/// 分包从 `dist/packs/*.mjs` 复制并改名为 `.min.js`（ESM 模块格式，需验证 registerPack 兼容性）。
+pub const BUDDING_VERSION: &str = "1.8.3";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
-///
-/// budding 官方包自带 `Budding Icons` 子集字体（CSS 4,645 B + woff2 3,992 B，
-/// 78 个字形，含镜像 / 磁盘 / 文件夹等业务菜单语义图标），宿主不再另存完整 @mdi/font。
-/// 1.8.1 未改动字形与 woff2 字节，只随版本号重命名文件。
-/// woff2 本身已压缩，体积按原字节计，`build.rs` 不为它生成 `.gz`。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
+/// 随上游主包版本同步升到 1.8.3。
+pub const BUDDING_ICONS_VERSION: &str = "1.8.3";
 
 /// 壳页自有资产（`skiff-shell.css` / `budding-boot.js` / `form-enter-submit.js`）的缓存版本。
 ///
@@ -69,7 +53,7 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
 /// v16：登录页布局收紧——body 改 100dvh + overflow-y:auto（允许垂直滚动），flex 居中改
 ///   margin:auto 溢出时自动滚；表单列 400→380、padding 收紧；品牌区间距同步收紧；
 ///   正常视口（≥1080px）下无滚动条。
-pub const SHELL_VERSION: &str = "20";
+pub const SHELL_VERSION: &str = "21";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

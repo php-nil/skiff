@@ -1495,7 +1495,7 @@ body.skiff-login-shell {
   align-items: stretch;
   justify-content: center;
   min-height: 100dvh;
-  padding: var(--sp-4) var(--sp-5);
+  padding: var(--sp-2) var(--sp-4);
   margin: 0;
   font-family: var(--sans);
   color: var(--text);
@@ -1556,8 +1556,8 @@ html[data-theme="dark"] {
   position: relative;
   z-index: 1;
   display: flex;
-  gap: var(--sp-6);
-  max-width: 860px;
+  gap: var(--sp-4);
+  max-width: 840px;
   width: 100%;
   align-items: center;
   margin: auto;
@@ -1569,8 +1569,8 @@ html[data-theme="dark"] {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: var(--sp-3);
-  padding-right: var(--sp-4);
+  gap: var(--sp-2);
+  padding-right: var(--sp-3);
 }
 .login-brand-col .brand-logo {
   width: 48px;
@@ -1625,12 +1625,53 @@ html[data-theme="dark"] .login-brand-col .brand-logo {
 
 /* 右：表单卡片 */
 .login-form-col {
-  flex: 0 0 380px;
+  flex: 0 0 360px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 14px;
   box-shadow: var(--shadow-pop);
-  padding: var(--sp-6) var(--sp-5);
+  padding: var(--sp-4) var(--sp-4);
+}
+
+/* 登录页内 budding 组件紧缩：覆盖上游默认间距，让紧凑视口也能装下 */
+.login-form-col .bud-form,
+.login-form-col form {
+  gap: var(--sp-2) !important;
+}
+.login-form-col .bud-field,
+.login-form-col .bud-form__field {
+  margin-bottom: 0 !important;
+}
+.login-form-col .bud-field + .bud-field,
+.login-form-col .bud-form__field + .bud-form__field {
+  margin-top: var(--sp-2) !important;
+}
+.login-form-col .bud-input,
+.login-form-col .bud-field input,
+.login-form-col .bud-field select {
+  padding: 8px 12px !important;
+  min-height: 36px !important;
+}
+.login-form-col .bud-button,
+.login-form-col button[type="submit"] {
+  padding: 10px 20px !important;
+  min-height: 40px !important;
+  margin-top: var(--sp-1) !important;
+}
+.login-form-col .bud-card__title,
+.login-form-col h2,
+.login-form-col h3 {
+  font-size: var(--fs-lg) !important;
+  margin-bottom: var(--sp-2) !important;
+}
+.login-form-col label {
+  font-size: var(--fs-xs) !important;
+  margin-bottom: 4px !important;
+}
+.login-form-col .bud-field__hint,
+.login-form-col .muted.small {
+  margin-top: 2px !important;
+  font-size: var(--fs-xs) !important;
 }
 
 /* old skiff.css login-card 兼容（模板登录失败回落路径） */
