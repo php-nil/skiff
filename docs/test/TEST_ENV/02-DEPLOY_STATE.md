@@ -6,26 +6,32 @@
 
 ## 5. 当前部署
 
-> **2026-11-20 23:34 机器还原后全新安装 + 登录页 CSS 修复（当前生效；HEAD `6d98116`）**
-> - **场景**：测试机还原为干净系统（T1：Docker 29.7.2 在位），空库全新安装；修复登录页 CSS 布局——正常视口（≥1080px）下无垂直滚动条。
-> - **资产**：Release run `194`（head `6d98116`，dispatch `ref=main` + `publish=true`，success），`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` 从 GitHub Release 覆盖 `v0.1.0`，测试机 curl 直连成功（github.com:443 被本机拦，服务器网络通畅）。
-> - **二进制**：`/usr/local/bin/skiff` **18,016,272 B**，`sha256=948b9312bac2fbac7b72bb9b98e670eeb1f512b72fbf146dc9856eae96077977`。
-> - **安装**：`install.sh` exit 0；schema **v0→v22**；`user_version=22`、`integrity_check=ok`；前缀 **`fp9ji8uu`**；初始口令 admin / `R2aJJDUKJyZDGnJP`；`skiff.service` active。
-> - **转发层**：`/usr/local/bin/skiff-http-fwd.py`（NoRedirectHandler + 剥 CSRF 头），systemd unit `skiff-http-fwd.service` 0.0.0.0:18081 → 127.0.0.1:18080，active。
-> - **登录页 CSS 修复（本轮核心）**：
->   - `body.skiff-login-shell`：`min-height: 100vh` → `100dvh`（动态视口高度），`overflow: hidden` → `overflow-x: hidden`（允许垂直滚动），`padding` 从 `var(--sp-5)` 改为 `var(--sp-4) var(--sp-5)`（上下各少 4px），`align-items: center` → `stretch`（配合 margin:auto 弹性居中）。
->   - `.login-layout`：新增 `margin: auto`（flex 子元素 auto margin 吃掉剩余空间实现垂直水平居中，内容溢出时从顶部开始可滚动），`gap` 从 32px → 24px，`max-width` 880px → 860px。
->   - `.login-form-col`：`flex-basis` 400px → 380px，`padding` 从 `32px 24px` → `24px 20px`。
->   - `.login-brand-col`：`gap` 从 16px → 12px，`padding-right` 24px → 16px。
->   - `SHELL_VERSION` 19 → 20（assets.rs）。
-> - **验收（browser_use）**：
->   - ✅ 布局正确：品牌面板（`.login-brand-col`）+ 表单卡片（`.login-form-col`，380px）并排，间距 24px。
->   - ✅ 1080px 视口高度下 `scrollHeight = clientHeight = 1080px`，**无垂直滚动条**。
->   - ✅ 品牌特性列表（底部 452px < 1080px）与登录按钮（底部 406px < 1080px）完全可见，无需滚动。
->   - ✅ admin / R2aJJDUKJyZDGnJP 登录成功 → `/fp9ji8uu` 仪表盘（占位视图）。
-> - **已知限制**：本机 L1 门禁因可用内存 3 MB < 1024 MB 被 cargo 闸门拒绝（exit 3），本轮未跑 fmt/clippy；编译级以 Release run `194` 四 job 全绿为准；**未装官方插件**（本轮只验登录页，暂不追加 `allow_reduced_sandbox=true`）；install.sh 本轮自动追加了 `allow_insecure_http=true`（契约缺口已修复？）。
+> **2026-11-21 00:53 登录页 CSS v23 最终修复 + 上游 budding 1.8.3 同步（当前生效；HEAD `26f53ec`）**
+> - **场景**：用户反馈 v20 登录页仍有滚动条；三轮迭代（v20→v21→v22→v23）逐步紧缩 + 最终用 `body overflow: hidden !important` 根治；同步上游 budding 从 1.8.1-r2 升到 1.8.3（`C:\dev\budding\dist\embed` 主包 + icons + `dist/packs` 分包改 .mjs→.min.js）。
+> - **资产**：Release run `197`（head `26f53ec`，dispatch `ref=main` + `publish=true`，success），`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz`。测试机 curl github.com 直连。
+> - **二进制**：`/usr/local/bin/skiff` **21,125,136 B**，`sha256=bf1ce05fa711732ede991f959b46bd7cce2e31d39cfd3771d79a51e29202162d`（比 v20 大 3MB，新增 budding 1.8.3 产物）。
+> - **安装**：`install.sh` exit 0；schema v0→v22；前缀 **`nitrz26v`**；初始口令 admin / `XbQK8T2uKpfkMxuh`；`skiff.service` active。
+> - **转发层**：`skiff-http-fwd.service` active（0.0.0.0:18081 → 127.0.0.1:18080）。
+> - **登录页 CSS 修复（最终方案）**：
+>   - `body.login-body/.skiff-login-shell`：加 `!important` 到所有属性；`padding: 0 var(--sp-4)`（上下 0，左右 16px）；`overflow: hidden !important` + `overflow-y: hidden !important`（**根治滚动条**）。
+>   - 新增 `html:has(body.login-body)` / `html:has(body.skiff-login-shell)` 规则 `overflow: hidden !important` + `height: 100% !important`。
+>   - `.login-layout`：`max-height: 100dvh` + `box-sizing: border-box`；去掉 `margin: auto`（body 已 flex 居中）。
+>   - `.login-form-col`：`flex: 0 0 360px`，`padding: var(--sp-4) var(--sp-4)`（16px/16px）。
+>   - 大量覆盖 budding 内部 Vuetify 组件间距：`.v-field` padding、`.v-btn` padding/min-height、`.v-label` 字号、`.v-messages` margin、`.v-field__overlay` padding 等，目标压缩表单总高。
+>   - `SHELL_VERSION` 20 → 23（缓存键变化强制浏览器加载新 CSS）。
+> - **上游 budding 1.8.3 同步**（`C:\dev\budding` package.json `1.8.3`，commit `1120d3`）：
+>   - 主包：`dist/embed/budding.js` → `budding-1.8.3.min.js` 1304KB（+23KB），`budding.css` 647KB（+1KB）。
+>   - Icons：`dist/embed/budding-icons-1.8.3.css` 5KB + `.woff2` 4KB（版本升 1.8.1→1.8.3）。
+>   - 分包：`dist/packs/code.mjs` 88KB、`terminal.mjs` 386KB 改名为 `.min.js`。格式为 ESM `.mjs`，与旧 UMD 不同。
+>   - `assets.rs` `BUDDING_VERSION="1.8.3"`、`BUDDING_ICONS_VERSION="1.8.3"`。
+> - **验收（browser_use 3/3 PASS）**：
+>   - ✅ CSS href `?v=23`，body `paddingTop=0`、`overflowY=hidden`（computedStyle 验证）。
+>   - ✅ **无垂直滚动条**：`htmlScrollHeight=571 === htmlClientHeight=571`（960×571 视口）。
+>   - ✅ 所有表单字段 + 登录按钮完全可见。
+>   - ✅ admin / XbQK8T2uKpfkMxuh 登录成功 → 概览页。
+> - **已知限制**：本机 L1 门禁因可用内存 3 MB < 1024 MB 被 cargo 闸门拒绝，未跑 fmt/clippy；编译级以 Release run `197` 四 job 全绿为准；分包从 ESM `.mjs` 改名为 `.min.js`，**运行时兼容性未全量验证**（本次只验了登录页，登录功能正常说明主包 OK）。
 >
-> **2026-11-20 20:58–22:18 机器还原后全新安装 → 4 轮 UI 修复发版（已过期；HEAD `ffc0aa2`）**
+> **2026-11-20 23:34 机器还原后全新安装 + 登录页 CSS 修复（已过期；HEAD `6d98116`）**
 > - **场景**：测试机还原为干净系统（T1：Docker 29.7.2 在位），空库全新安装后按「逐页操作 → 记录 → 修复 → 重发版 → 复验」迭代到问题收敛。
 > - **资产**：Release run `44750632405`（head `ffc0aa2`，publish 成功），`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,897,732 B** id=`772097777`，`sha256=fbb96094…6fbb`。测试机经 `api.github.com` + `Accept: application/octet-stream` 下载并 `sha256sum` 校验一致（GitHub download 直连本轮两次 SSL 重置）。
 > - **安装**：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；schema **v0→v22**；`user_version=22`、`integrity_check=ok`；前缀 **`egehgs6m`**；`skiff.service` active；转发层 `skiff-http-fwd.service`（`/root/iter/skiff-http-fwd.py`，0.0.0.0:18081 → 127.0.0.1:18080）active。
