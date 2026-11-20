@@ -1761,6 +1761,7 @@
         skiffLogFilter: logFilter,
         skiffLogReload: logReload,
         skiffAuditSearch: auditSearch,
+        skiffAuditReset: auditReset,
         skiffAuditNext: auditNext,
         skiffTasksSearch: tasksSearch,
         skiffTerminalReconnect: function () {
@@ -2298,7 +2299,7 @@
                     props: {
                       url:
                         prefix +
-                        '/runtimes/' +
+                        '/sites/runtimes/' +
                         encodeURIComponent(runtimeId) +
                         '/config?file=${key}'
                     }
@@ -6222,6 +6223,12 @@
     window.location.href = auditPageUrl(String(values.q || '').trim(), '');
   }
 
+  /// 重置必须走整页跳转：在内页点 link 只会改地址栏，表单默认值与已取到的
+  /// 过滤结果都不会刷新，表现为「URL 清了、关键字和结果还在」。
+  function auditReset() {
+    window.location.href = prefix + '/settings/audit';
+  }
+
   function auditNext(args) {
     window.location.href = auditPageUrl(
       String(args.q || ''),
@@ -6270,8 +6277,9 @@
         content: {
           actions: [
             {
-              type: 'link',
-              props: { text: '重置', href: prefix + '/settings/audit' }
+              type: 'button',
+              props: { text: '重置', variant: 'text' },
+              action: { type: 'skiffAuditReset' }
             },
             {
               type: 'button',
