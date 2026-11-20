@@ -350,10 +350,8 @@ mod tests {
         );
         // 既有资源策略不变
         assert_eq!(cache_control_for("skiff.css", false), CACHE_NO_CACHE);
-        assert_eq!(
-            cache_control_for("skiff.js", false),
-            "public, max-age=86400"
-        );
+        // 非 `.min.` 的壳引导脚本同属无版本化静态，不缓存
+        assert_eq!(cache_control_for("skiff.js", false), CACHE_NO_CACHE);
         // 只有 `budding-<非空版本>` 才算版本化；名字不匹配时回落到原有规则
         assert_eq!(
             cache_control_for("budding-.min.js", false),

@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn reuses_one_connection_per_thread() {
         use std::io::{Read, Write};
-        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::os::unix::net::UnixListener;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
