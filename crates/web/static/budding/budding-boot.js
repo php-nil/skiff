@@ -1409,7 +1409,8 @@
       '--v-theme-on-background:' + pageText + ' !important;' +
       '}' +
       '.v-application{background:rgb(' + pageRgb + ') !important}' +
-      '.skiff-code-no-lang .bud-code__language{display:none!important}';
+      '.skiff-code-no-lang .bud-code__select,' +
+      '.skiff-code-no-lang .bud-code__status{display:none!important}';
   }
 
   /// 给外壳补 `bud-admin--chrome` 类。
