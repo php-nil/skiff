@@ -1645,7 +1645,7 @@ html[data-theme="dark"] .login-brand-col .brand-logo {
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: var(--shadow-pop);
-  padding: var(--sp-4);
+  padding: 0;
   overflow: hidden;
 }
 
@@ -1762,6 +1762,14 @@ html[data-theme="dark"] .login-brand-col .brand-logo {
   min-height: 0;
   display: flex !important;
   flex-direction: column !important;
+}
+
+/* bud-page-root 默认有 17px top offset，登录页场景清掉 */
+.login-form-col .bud-sdk-root,
+.login-form-col .bud-page-root {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  top: 0 !important;
 }
 
 /* old skiff.css login-card 兼容（模板登录失败回落路径） */
