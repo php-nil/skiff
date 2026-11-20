@@ -4,12 +4,20 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-19 09:40 `8f78221` 覆盖安装：PHP 建环境可选 apk 源 + 软件源插件原生页 + 架构收口回归）
+## 8. 最近一次验收结论（截至 2026-11-20 10:58 `a02f1d0` 空库首装：write_atomic 权限修复根治 + CLI 前缀分叉收口 + plugin rpc HTTP 化）
 
-> 2026-11-16 07:53 的原地重装（budding `1.8.0-r7`）是叠加复验，未另起轮次；其结论记在 [02-DEPLOY_STATE.md](02-DEPLOY_STATE.md) §5 的「验收」项。
+> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-20.md](../../changes/2026-11-20.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
 
-> 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-19.md](../../changes/2026-11-19.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+**2026-11-20 10:42–10:58 空库首装 `a02f1d0`：accept.sh 48 PASS / 0 FAIL / 3 SKIP，浏览器 9 页面 0 console error，write_atomic A6e 根治**
 
+- **安装（通过）**：Release run `44574500026`（head `a02f1d0`，publish 成功，v0.1.0 资产覆盖），包 **12,821,377 B** id=768570200，`sha256=2fd680b5…b5c`（API digest / 本地 / 测试机三方一致）；二进制 `/usr/local/bin/skiff` `b7d4556f…111`；`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；daemon schema **v0→v21** 完整迁移（7 条日志无跳过）；前缀 **`t2mhspmy`**；`initial-admin.txt` 口令 `5PvxpDNdQ8QyR9Ny`；`skiff.service` active。**临时修补**：install.sh 未自动写 `allow_reduced_sandbox=true` + `allow_insecure_http=true`（需手动追加，本轮发现契约缺口）。
+- **8 官方插件（全部验签+安装+拉起，reduced sandbox）**：`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}` 签名 key_id 一致 `ed73de3e8…cd47`；`com.skiff.guard` / `com.skiff.monitor` 巡检由内核调度器驱动（supervisor 按需拉起，`edf2a75` plugin rpc 通道改为 HTTP 后插件不再自带定时器）。
+- **accept.sh（通过，两轮复验 48 PASS / 0 FAIL / 3 SKIP）**：preflight A D0 = **35 PASS / 0 FAIL / 1 SKIP**（PF4 装后端口占正常跳过）；B 组补 `allow_insecure_http=true` 后二轮 **14 PASS / 0 FAIL / 1 SKIP**（B4 登录限流需 --with-rate-limit）。关键断言：**A6e config.toml 644 root:root ✅（`a02f1d0` write_atomic 在 rename 覆盖后显式 chown + chmod 恢复目标属性，根治）**；A6d skiff.db 600 root:skiff-plugins；A9 restart 自恢复（health 200）；A10 kill -9 后 systemd 2 s 拉起（旧 3831 → 新 3856）；A11 --help/version 不落文件；B0 首轮 SKIP 是 dev_mode 判定挡，二轮全过；B1a csrf_token len=119；B2 初始口令登录 200；B2b 错误口令 401「用户名或口令不正确」；B3c 改密成功 200；B3d initial-admin.txt 自动删除；B3e 旧会话失效 303 踢回登录页；B5 缺 CSRF 403。
+- **浏览器全量抽查（通过，9 页面 0 console error）**：修复转发层剥掉 `Sec-Fetch-Site / Origin / Referer` 后，跨端口 `10.10.15.4:18081` 访问被 Skiff dev_http 放行。登录页 → 概览（系统状态）→ 容器（空态表格+新建按钮）→ 镜像（nginx:alpine / php:8.5-fpm-alpine）→ 网络（bridge/none/host）→ 卷（空列表+创建表单）→ Compose（YAML 编辑器）→ Docker 设置（镜像加速配置）→ 插件已装（8 个）→ 文件管理（nginx/php/runtime 目录）。**每页面均无 blank、无 error/warning**。
+- **install.sh / accept.sh 契约缺口（本轮发现，待决策）**：① install.sh `--tls off` 只写 `tls_enabled=false` + `listen=127.0.0.1:18080`，但官方插件需要 `allow_reduced_sandbox=true`（沙箱降级）、accept.sh B 组需要 `allow_insecure_http=true`（dev_mode 判定）——建议 install.sh 在检测到 loopback + TLS off 时自动追加。② accept.sh `dev_mode()` 只认非注释 `allow_insecure_http = true`，不认 `tls_enabled = false`（同样"允许明文"语义）——应加 `tls_enabled = false` 分支。
+- **转发层位置（待整改）**：当前 Python 脚本 `.workbuddy/skiff-http-fwd.py`（gitignore），建议做成 deploy/ 正式资产或 systemd unit，每轮部署自动拉起。
+- **未覆盖（限制）**：FTP、防火墙、站点 SSL、TLS 形态一/二、aarch64 未复跑；站点本轮未建（`sites=0`）；accept.sh 未实现 E 组；本地 clippy 未完整跑（CI run 184 已全绿）。
+- **收尾状态**：`skiff.service` + `skiff-http-fwd.py`（PID 2490）均 active；8 插件已装；入口 `t2mhspmy`；`/root/iter/` 下保留 `skiff.tar.gz` + `accept.sh` + 两轮 accept 输出 + 转发层脚本。
 **2026-11-19 08:31–09:40 还原后全新安装 `f5267ec` + 覆盖 `8f78221`：accept.sh 27 PASS / 0 FAIL，三项需求浏览器实测通过**
 
 - **安装（通过，全新 + 升级）**：全新 `44428042366`（head `f5267ec`）→ 覆盖 `44435964314`（head `8f78221`），两次 `install.sh --no-docker --tls off --listen 127.0.0.1:18080` 均 exit 0；末次包 **13,272,804 B** `f04eafe8…dba7`（API `digest` / 本地 / 测试机三方一致）；二进制 19,179,408 B `e4284515…bfc4`；库 **v21**、`integrity_check=ok`；前缀 **`zgvvx5xz`**；配置加 `allow_reduced_sandbox=true` 后官方 8 插件全装。

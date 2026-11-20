@@ -6,27 +6,30 @@
 
 ## 5. 当前部署
 
-> **2026-11-19 23:38 就地覆盖升级 + 官方插件安装（当前生效；HEAD `44f5c9b` 前一 Release `1e456cf`）**
-> - 资产：Release run `44551456436`（head `1e456cf`，资产 id `768167669`，12,817,174 B）。本轮 HEAD `44f5c9b` 只改文档（部署记录），二进制不变。
-> - **8 个官方插件已安装并启用**（`skiff plugin install --yes` 逐个装，签名验签 OK，沙箱降级 `landlock/cgroups` 未实现）：
+> **2026-11-20 10:58 空库首装 + 官方插件安装（当前生效；HEAD `a02f1d0`）**
+> - 背景：测试机从干净系统还原（T1 口径，Docker 29.7.2 已装），空库全新安装（非覆盖升级）。Release run 184 四 job 全绿（构建 x86_64/aarch64/Docker/发布到 GitHub Release），publish=true，资产覆盖 v0.1.0。
+> - 资产：Release run `44574500026`（head `a02f1d0`，dispatch ref=main，publish 成功）。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,821,377 B** id=768570200，`sha256=2fd680b507163d3156aacd4aaf2ccd196b98c7c99d13d7f8a7642b848b55bd5c`。测试机 `sha256sum -c` OK。二进制 `/usr/local/bin/skiff` `b7d4556f...111`。
+> - 部署：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；daemon schema **v0→v21** 完整迁移。入口前缀 `t2mhspmy`，`initial-admin.txt` 口令 `5PvxpDNdQ8QyR9Ny`。`skiff.service` active + `skiff-http-fwd.py`（修复版，剥 Sec-Fetch-Site/Origin/Referer）0.0.0.0:18081 → 127.0.0.1:18080。
+> - **临时修补**：install.sh 未自动写 `allow_reduced_sandbox=true` + `allow_insecure_http=true`（无 landlock/cgroups），需手动在 config.toml `tls_enabled = false` 下追加（本轮发现的契约缺口，install.sh + accept.sh dev_mode 需同步修复）。
+> - **8 个官方插件已安装并启用**（签名验签 OK，沙箱降级 `landlock/cgroups` 未实现，supervisor 按需拉起）：
 >   | 插件 | 版本 | 能力 | grants |
 >   |---|---|---|---|
 >   | com.skiff.cron | 0.1.0 | identity, interop, scheduler | 6 |
 >   | com.skiff.files | 0.1.3 | fs, identity | 6 |
->   | com.skiff.firewall | 0.1.0 | exec, interop | 12（含 object:bin + perm:exec:run） |
->   | com.skiff.ftp | 0.1.0 | exec, ftp, interop | 22（含 interop → firewall） |
+>   | com.skiff.firewall | 0.1.0 | exec, interop | 12 |
+>   | com.skiff.ftp | 0.1.0 | exec, ftp, interop | 22 |
 >   | com.skiff.guard | 0.1.0 | docker, identity, fs | 6 |
 >   | com.skiff.monitor | 0.1.0 | fs | 4 |
 >   | com.skiff.sources | 0.1.0 | fs, exec | 7 |
 >   | com.skiff.testkit | 0.1.0 | fs, identity, interop, scheduler | 7 |
-> - 插件页（`/{p}/plugins`）展示 8 个已装插件，每个显示签名/沙箱/能力/权限；`/{p}/plugins/discover` 为 placeholder（商店目录未启用，`catalog.enabled = false`）。
-> - IPC 链路：ftp 插件 grant 中含 `object:plugin:com.skiff.firewall`（interop 调用），firewall 含 `perm:exec:run`（exec 能力面）；无沙箱降级报错，全部 `installed + enabled + 未运行`（无进程常驻——supervisor 按需拉起）。
-> - accept.sh 同前 PASS 32 / SKIP 3；Docker 无容器（干净系统）。
-> - 浏览器验收全部页面渲染：概览/容器/镜像/网络/卷/Compose/Docker 设置/插件(已安装)/文件管理/设置/任务中心。**零 console error**。
-> - Git commits（本轮迭代）：
->   - `3167770` up（插件 IPC 重构 HEAD）
->   - `b6a3e35` refactor: delete legacy SSR UI（测试机首装用）
->   - `2024b81` + `1e456cf` + `44f5c9b` 白名单误修复回滚 + 部署记录
+> - accept.sh：preflight+A+D0=35 PASS / 0 FAIL / 1 SKIP；B=14 PASS / 0 FAIL / 1 SKIP；**合计 48 PASS / 0 FAIL / 3 SKIP**。关键验证：**A6e config.toml 644 root:root ✅（`a02f1d0` write_atomic 修复根治）**；A6d skiff.db 600 root:skiff-plugins；A9 restart 自恢复；A10 kill-9 后 2s 拉起；A11 --help/version 不落文件；B 组完整认证链路（csrf_token 登录→改密→旧会话失效 303 踢回登录页）；B0 SKIP 首轮是 dev_mode 判定挡，补 allow_insecure_http=true 后二轮 B 组全过。
+> - 浏览器全量抽查：9 页面（登录页→概览→容器→镜像→网络→卷→Compose→Docker 设置→插件已装→文件管理）**全部正常渲染 + 零 console error**。转发层修复后跨端口 `Sec-Fetch-Site: cross-site` 被剥掉，Skiff 按 dev_http 放行。
+> - Git commits（本轮 5 个代码改动）：
+>   - `116c0a3` feat(cli): add plugin rpc subcommand（新增 CLI 子命令）
+>   - `edf2a75` fix(cli): plugin rpc 走 HTTP 调 daemon（避免 token 分裂，loopback bypass PluginManagerUser）
+>   - `a9697c6` fix(cli): entry_prefix fallback 读 DB（CLI-daemon 前缀分叉修复）
+>   - `e42f439` fix(bootstrap): daemon 启动时持久化 entry_prefix 到 config.toml（同上配套）
+>   - `a02f1d0` fix(atomic): write_atomic rename 后恢复原 owner/group（**根治 A6e**，本轮最关键修复）
 
 > **2026-11-19 23:18 就地覆盖安装 `1e456cf`（当前生效；SSR 全删 + 插件 IPC 优化 + 壳页白名单回滚）**
 > - 背景：测试机从干净系统（Docker 29.7.2，skiff 完全不存在）重新首装（Release run `44544002520`，head `b6a3e35`）→ 就地覆盖 `2024b81`（误加 docker-settings 壳页白名单）→ 就地覆盖 `1e456cf`（回滚白名单，恢复正确状态）。GitHub Release 资产经 `api.github.com` + `Accept: application/octet-stream` 直连下载（测试机 curl GitHub download 路径遇 SSL 重置）。
