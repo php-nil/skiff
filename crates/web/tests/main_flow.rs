@@ -6522,6 +6522,7 @@ fn budding_boot_drops_pre_r3_workarounds() {
 }
 
 /// 1.8.0-r3 的代码渲染器注册名是 `code`、文本字段是 `modelValue`；
+/// 可编辑表单字段已改用 `textarea`（避免代码编辑器提交空串），`code` 只作只读查看器；
 /// 列表必须渲染宿主给定的全部行（审计页定高内部滚动），游标才与本页末行对齐。
 #[test]
 fn budding_boot_uses_registered_code_component_and_full_rows() {
@@ -6534,29 +6535,21 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         !js.contains("props: { code:"),
         "code 组件的文本字段是 modelValue，不是 code"
     );
-    // `code` 组件有两种用法，两者都必须显式绑定，不能「裸挂」：
-    // - 只读查看器（日志 / 配置预览）：`modelValue` 传文本；
-    // - 可编辑表单字段（配置编辑器）：`name` 声明字段名，初值走表单 `initialValues`。
+    // `code` 组件只用于只读查看器（日志 / 配置预览），必须显式传 `modelValue` 绑定文本；
+    // 可编辑表单字段（配置编辑器 / 文件编辑）统一走 `textarea`，不得再裸挂 `code`。
     let mut viewers = 0;
-    let mut fields = 0;
     for (pos, _) in js.match_indices("type: 'code'") {
         let rest = &js[pos + "type: 'code'".len()..];
         let end = rest.find("type: '").unwrap_or(rest.len());
         let seg = &rest[..end];
-        if seg.contains("modelValue:") {
-            viewers += 1;
-        } else if seg.contains("name: '") {
-            fields += 1;
-        } else {
-            panic!("code 节点既没有 modelValue 也没有 name：{seg}");
-        }
+        assert!(seg.contains("modelValue:"), "code 查看器必须绑定 modelValue：{seg}");
+        assert!(
+            !seg.contains("name: '"),
+            "code 不得再作可编辑表单字段：{seg}"
+        );
+        viewers += 1;
     }
-    let code_nodes = viewers + fields;
-    assert!(code_nodes >= 7, "代码/日志查看器节点不应减少：{code_nodes}");
-    assert!(
-        viewers > 0 && fields > 0,
-        "只读查看器与可编辑字段都必须存在（viewers={viewers}, fields={fields}）"
-    );
+    assert!(viewers >= 7, "代码/日志查看器节点不应减少：{viewers}");
     // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
     assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
     assert!(
