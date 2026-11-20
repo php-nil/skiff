@@ -169,6 +169,15 @@
   min-width: 90px;
 }
 
+/* 弹窗内长表单：主操作吸底，避免小屏需滚动到底才能提交。 */
+.bud-layer-body .bud-form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding-bottom: 4px;
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+}
+
 /* Tooltip z-index：设置页 tooltip 被内容遮挡。确保 tooltip 层在最顶层。 */
 .bud-tooltip,
 .bud-tooltip__content {

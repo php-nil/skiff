@@ -2323,15 +2323,11 @@
           { type: 'skiffRuntimeFile', props: { id: runtimeId, key: data.editor.key } },
           [
             {
-              type: 'code',
+              type: 'textarea',
               props: {
                 name: 'content',
                 label: data.editor.label + '（' + data.editor.container_path + '）',
-                language: 'ini',
-                readonly: false,
-                height: 360,
-                lineNumbers: true,
-                wrap: false
+                rows: 16
               }
             }
           ],
@@ -2430,15 +2426,11 @@
           { type: 'input-text', props: { name: 'health_path', label: '健康检查路径（如 /healthz）' } },
           { type: 'input-text', props: { name: 'node_env', label: 'NODE_ENV' } },
           {
-            type: 'code',
+            type: 'textarea',
             props: {
               name: 'env',
               label: '额外环境变量（每行 KEY=VALUE）',
-              language: 'dotenv',
-              readonly: false,
-              height: 160,
-              lineNumbers: true,
-              wrap: false
+              rows: 6
             }
           }
         ],
@@ -3330,15 +3322,11 @@
                 }
               },
               {
-                type: 'code',
+                type: 'textarea',
                 props: {
                   name: 'compose',
                   label: 'docker-compose.yml',
-                  language: 'yaml',
-                  readonly: false,
-                  height: 420,
-                  lineNumbers: true,
-                  wrap: false,
+                  rows: 18,
                   required: true,
                   rules: { required: true, messages: { required: '请粘贴 compose 内容' } }
                 }
@@ -5148,22 +5136,17 @@
       { type: 'skiffWebConfig' },
       [
         {
-          type: 'code',
+          type: 'textarea',
           props: {
             name: 'content',
-            language: 'nginx',
-            readonly: false,
-            modelValue: buddySafeString(config.main_content || ''),
-            height: 420,
-            lineNumbers: true,
-            wrap: false,
-            copyable: true,
-            ariaLabel: '主配置 ' + (config.main_path || 'nginx.conf')
+            label: '主配置 ' + (config.main_path || 'nginx.conf'),
+            rows: 20
           }
         }
       ],
       '校验并重载'
     );
+    mainForm.props.initialValues = { content: buddySafeString(config.main_content || '') };
     body.push(
       writeCard('主配置', '保存前执行 nginx -t；失败会拒绝写入并保留当前配置。', mainForm)
     );
@@ -6398,7 +6381,7 @@
     var lines = [
       '标识：' + p.id + ' · 版本 ' + p.version + ' · API ' + p.api,
       '状态：' + p.status.label,
-      '签名：' + (p.signed ? '已验签' : '未验签') + ' · 沙箱：' + (p.reduced ? '降权' : '完整'),
+      '签名：' + (p.signed ? '已验签' : '未验签') + ' · 沙箱：' + (p.reduced ? '降权' : '降权（要求完整，landlock/cgroups 未实现）'),
       '宿主能力：' + (p.requires || '无'),
       '动作权限：' + (p.permissions || '无'),
       '对象授权：' + (p.grants || '无')
@@ -6958,22 +6941,18 @@
             { type: 'skiffFileWrite', props: { path: data.path } },
             [
               {
-                type: 'code',
+                type: 'textarea',
                 props: {
                   name: 'content',
                   label: '文件内容',
-                  language: languageOf(name),
-                  readonly: false,
-                  height: 480,
-                  lineNumbers: true,
-                  wrap: false,
-                  defaultValue: text,
+                  rows: 20,
                   required: true,
                   rules: { required: true, messages: { required: '内容不能为空' } }
                 }
               }
             ],
-            '保存文件'
+            '保存文件',
+            { content: text }
           )
         )
       );
@@ -7552,15 +7531,11 @@
                               }
                             },
                             {
-                              type: 'code',
+                              type: 'textarea',
                               props: {
                                 name: 'content',
                                 label: '文件内容',
-                                language: 'plaintext',
-                                readonly: false,
-                                height: 200,
-                                lineNumbers: true,
-                                wrap: false
+                                rows: 8
                               }
                             }
                           ],
@@ -7838,7 +7813,7 @@
         '状态：' + p.status.label,
         '签名状态：' + (p.signed ? '已验签' : '未验签'),
         '密钥指纹：' + (p.key_id || '未签名包'),
-        '沙箱模式：' + (p.reduced ? '降权沙箱' : '完整沙箱'),
+        '沙箱模式：' + (p.reduced ? '降权沙箱' : '降权沙箱（要求完整沙箱；本版 landlock/cgroups 未实现）'),
         '声明能力面：' + (p.requires || '无'),
         '动作权限：' + (p.permissions || '无')
       ])
