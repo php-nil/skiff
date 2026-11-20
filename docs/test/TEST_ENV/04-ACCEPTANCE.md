@@ -4,7 +4,18 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-20 22:18 `ffc0aa2`：还原后全新安装 + 4 轮 UI 修复，accept 44 PASS，20+ 页面交互复验）
+## 8. 最近一次验收结论（截至 2026-11-20 23:34 `6d98116`：登录页 CSS 布局收紧，浏览器验收 3/3 PASS）
+
+**2026-11-20 23:34 全新安装 `6d98116`：登录页 CSS 修复（SHELL_VERSION 20），浏览器验收全 PASS**
+
+- **安装（通过，T1 空库）**：Release run `194`（head `6d98116`，dispatch `ref=main` + `publish=true`），amd64 包 **18,016,272 B** `sha256=948b9312…7977`（二进制）；`install.sh` exit 0；库 **v22**、`integrity_check=ok`；前缀 **`fp9ji8uu`**；转发层 `skiff-http-fwd.service` active。
+- **登录页 CSS 修复**：body `overflow: hidden` → `overflow-x: hidden` + `margin: auto` 弹性居中；padding/gap/basis 全面收紧；`min-height: 100dvh` 替代 `100vh`；`SHELL_VERSION` 19→20。
+- **浏览器验收（browser_use）**：
+  1. ✅ 布局正确：品牌面板（456px）+ 表单卡片（380px）并排，24px gap。
+  2. ✅ **1080px 视口下无垂直滚动条**：`scrollHeight = clientHeight = 1080px`，内容总高 ~637px。
+  3. ✅ 所有元素完全可见：品牌特性列表底部 452px < 1080px，登录按钮底部 406px < 1080px。
+  4. ✅ admin / R2aJJDUKJyZDGnJP 登录成功 → `/fp9ji8uu` 仪表盘（占位视图）。
+- **已知限制**：本机 L1 门禁因可用内存 3 MB < 1024 MB 被 cargo 闸门拒绝（exit 3），编译级以 Release run 194 四 job 全绿为准；未装官方插件。
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-20.md](../../changes/2026-11-20.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
 
