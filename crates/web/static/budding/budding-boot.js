@@ -1733,6 +1733,7 @@
         skiffRuntimeNode: runtimeNodeWrite,
         skiffRuntimePort: runtimePortWrite,
         skiffRuntimeFile: runtimeFileWrite,
+        skiffRuntimeConfigEdit: runtimeConfigEdit,
         skiffRuntimeExt: runtimeExt,
         skiffRuntimePecl: runtimePecl,
         skiffRuntimeClone: runtimeClone,
@@ -2295,14 +2296,8 @@
               click: {
                 actions: [
                   {
-                    type: 'navigate',
-                    props: {
-                      url:
-                        prefix +
-                        '/sites/runtimes/' +
-                        encodeURIComponent(runtimeId) +
-                        '/config?file=${key}'
-                    }
+                    type: 'skiffRuntimeConfigEdit',
+                    props: { id: runtimeId, key: '${key}' }
                   }
                 ]
               }
@@ -4776,6 +4771,17 @@
         runtimeDone(data, '配置文件已保存');
       })
       .catch(runtimeFail);
+  }
+
+  /// 打开配置文件编辑视图。`?file=` 只是查询参数，沿用内页 navigate 会被路由
+  /// 判定为同一页而不重取 schema，URL 变了编辑器却不出现，因此这里整页跳转。
+  function runtimeConfigEdit(args) {
+    window.location.href =
+      prefix +
+      '/sites/runtimes/' +
+      encodeURIComponent(args.id) +
+      '/config?file=' +
+      encodeURIComponent(args.key);
   }
 
   function runtimeExt(args) {
