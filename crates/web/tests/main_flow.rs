@@ -6542,7 +6542,10 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         let rest = &js[pos + "type: 'code'".len()..];
         let end = rest.find("type: '").unwrap_or(rest.len());
         let seg = &rest[..end];
-        assert!(seg.contains("modelValue:"), "code 查看器必须绑定 modelValue：{seg}");
+        assert!(
+            seg.contains("modelValue:"),
+            "code 查看器必须绑定 modelValue：{seg}"
+        );
         assert!(
             !seg.contains("name: '"),
             "code 不得再作可编辑表单字段：{seg}"
