@@ -6590,10 +6590,7 @@ fn budding_boot_session_expiry_uses_redirect_component() {
         js.contains("window.location.replace"),
         "401 应硬跳转，不走 budding redirect 组件"
     );
-    assert!(
-        js.contains("/login?next="),
-        "跳转目标应回带 next"
-    );
+    assert!(js.contains("/login?next="), "跳转目标应回带 next");
     // 页面骨架 + 七条 JSON 通道（读写/上传/RPC/终端）都接上，而不是只弹 toast。
     let calls = js.matches("showSessionExpired()").count();
     assert!(

@@ -514,8 +514,6 @@ pub fn resolve_plugin_view(
         }
         let ordered = sorted_items(decl);
         let default_idx = 0;
-        let default_view = item_view(ordered.first()?).to_string();
-        let _ = default_view; // declared_tabs 内部用 idx 决定高亮，view 已在 menu_local 解析
         return Some(declared_tabs(
             plugin_id,
             &state.cfg.entry_prefix,
