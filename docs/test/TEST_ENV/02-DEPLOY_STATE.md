@@ -6,7 +6,19 @@
 
 ## 5. 当前部署
 
-> **2026-11-20 18:26 机器还原后全新安装 + 门禁修复收尾（当前生效；HEAD `9d8d7a4`）**
+> **2026-11-20 19:00 插件权限修复（当前生效；HEAD `9d8d7a4` 同资产，无新发版）**
+> - **根因**：首次批量装插件用了 `skiff plugin install *.wbpkg --resource path:/www --yes`，显式 `--resource` 覆盖了 manifest 的 `resource_hints`（monitor 声明 `path:/proc, /etc/passwd`，testkit 声明 `path:/proc`）。CLI help 明确写了"--resource 可覆盖为最小授权"，但批量命令硬塞统一 path:/www 把所有 manifest hints 干掉了——**这是操作者命令错误，不是代码 bug**。
+> - **修复现场**：全部 8 插件卸载（`--delete-data`） → 逐个用 `--yes` 重装（**去掉 `--resource`**，让 CLI 的 `resolve_yes_selection` 自动把 manifest `resource_hints` 当 object_grants）。修复后 grants：
+>   - monitor：`perm:fs:list, fs:read + object:path:/proc, object:path:/etc/passwd` ✅
+>   - testkit：`perm:fs:list, fs:read, identity:self, interop:call, scheduler:manage, scheduler:read + object:path:/proc` ✅
+>   - firewall：`perm:exec:run + object:bin:/usr/sbin/nft, iptables, apt-get, fail2ban-client, systemctl...`（11 个 bin）✅
+>   - ftp：`perm:exec:run, ftp:*, interop:call + 16 个 bin + object:plugin:com.skiff.firewall` ✅
+>   - sources：`perm:exec:run, fs:read, fs:write + object:bin:docker, systemctl + object:path:/etc/docker, /www/runtime/cache/apk` ✅
+>   - files/cron/guard：无 resource_hints 插件，仅 `perm:*`（与首轮一致）✅
+> - **浏览器复验 51/51 页面全 PASS**：完整页面清单见 04-ACCEPTANCE.md。首次巡检 46 PASS + 2 FAIL（monitor overview/process 缺 path:/proc）+ 3 BLOCKED（设置 3 子页）；修复后复验 5/5 全部 PASS——monitor overview 展示真实主机指标（CPU 0.5%、内存 459 MiB / 3.83 GiB、网卡入站 1.0 KiB/s），process 页展示 50 行真实进程列表（PID 1 `/sbin/init`）。**所有页面 console error 均为空数组**。
+> - **后续改进建议（代码层）**：CLI `resolve_yes_selection` 在显式 `--resource` 非空且 manifest 有 hints 被完全覆盖时，应输出一条警告提示用户"manifest 声明的 resource_hints 被 --resource 覆盖"，避免操作者不知情就截断权限面。当前 help 文字"--resource 可覆盖为最小授权"是准确的，但批量装插件的场景下容易踩坑。
+>
+> **2026-11-20 18:26 机器还原后全新安装 + 门禁修复收尾（已过期；HEAD `9d8d7a4`）**
 > - 背景：测试机还原为干净系统（T1 口径，Docker 29.7.2 已装），执行完整迭代闭环。HEAD `9d8d7a4` 是 `14:17 → 18:20` 期间 5 个门禁修复 commit 的总结——从 pre-existing 单测 FAIL → Clippy 剩余 default_view/CSRF/p2_row → 全部收敛到门禁全绿。
 > - 本地 L1 门禁全绿：根 workspace `fmt + clippy --all-features` exit 0；plugins workspace `fmt + clippy` exit 0。
 > - 资产：Release run `44717281516`（head `9d8d7a4`，dispatch ref=main，publish 成功）。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,895,953 B** id=771372800，`sha256=4211de8c1f73dc4644bb52270e8d96577e80aad08bd07374e003679cff4c8acd`。测试机 curl GitHub download 直连成功 + `sha256sum` 校验 OK。
