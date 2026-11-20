@@ -52,7 +52,7 @@
 
 **页面与数据**
 
-- `GET /{p}/sites`、`/{p}/sites/{domain}`、`/{p}/sites/new`、`/{p}/runtimes`、`/{p}/runtimes/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18，直达 404）。站点写操作已原生化，运行环境的安装/配置/扩展仍待后续批次。
+- `GET /{p}/sites/list`、`/{p}/sites/{domain}`、`/{p}/sites/new`、`/{p}/sites/runtimes`、`/{p}/sites/runtimes/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18，直达 404）。站点写操作已原生化，运行环境的安装/配置/扩展仍待后续批次。
 - 列表复用 `list_sites` / `list_runtimes` / `runtime_views` 与页面 `site_view` / `runtime_row` 展示模型，**没有新增 SQL**；`q` 关键字过滤与旧列表页同源（域名 / 目录 / 接入方式 / 别名）。
 - `GET /ui/v1/runtimes` 与旧运行环境页同权限：Admin（`authz::authorize_for`），viewer 返回 403（`auth.forbidden`）。
 - 站点写操作：`POST /ui/v1/sites`、`/{domain}/{action}`（start/stop）、`/{domain}/default`、`/{domain}/domains`、`/{domain}/config`、`/{domain}/ssl`、`/{domain}/backup`、`/{domain}/delete`、`/sites/batch`；全部复用 `SITE_*` 动作与 `skiff_app::commands::site`，CSRF 走 `x-csrf-token`，不新增权限来源。
@@ -115,8 +115,8 @@
 
 **渲染映射**
 
-- 站点列表：`table`（`source` 游标分页、`paging: 'cursor'`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{domain}`；`can_admin` 时提供「新建站点」与批量启停卡片。
-- 站点详情：运行环境不可用时顶部 warning `alert`；「站点信息」+「站点操作」（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用 `prompt` 要求输入域名，服务端同样校验 `confirm`；配置 textarea 预填当前内容，保存失败直接展示字段错误。
+- 站点列表：Schema 由内核生成（`GET /ui/v1/sites?with_schema=true`），前端只 fetch + embed；`table`（`source` 游标分页、`paging: 'cursor'`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{id}`；`can_admin` 时提供「新建站点」与批量启停卡片。
+- 站点详情：Schema 由内核 `crates/web/src/handlers/ui/site_page.rs` 按 `?tab=` 生成，与 `data` 同一次响应返回；前端只 fetch、对 `code` 节点做运行时转义后 embed。运行环境不可用时顶部 warning `alert`；「站点信息」+「站点操作」（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用内建 `confirm` 的 `requireText` 要求输入域名，服务端同样校验 `confirm`；配置 code 组件预填当前内容，保存失败直接展示字段错误。
 - 新建站点：`/{p}/sites/new` 隐藏路由 + 原生表单；运行环境下拉来自 `GET /ui/v1/runtimes`，无就绪实例时保持空选项并由后端拒绝。
 - 运行环境列表：`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；安装与配置仍链回旧版页面。
 - **D10 翻页**：1.8.0 的 `table` 支持游标分页（`paging: 'cursor'` + `cursorPath` + `loadMore`），与内核 `{items, next_cursor}` 直接对齐；本页与运行环境、容器、镜像/网络/卷、任务、作业列表统一改为 `source` 取数 + 底部「加载更多」，页面级只额外读一次 `?limit=1` 的元数据（`can_admin` / `docker_available`）。
@@ -125,11 +125,11 @@
 
 **页面与数据**
 
-- `GET /{p}/containers`、`/{p}/containers/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
+- `GET /{p}/docker/containers`、`/{p}/docker/containers/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表复用 `Docker::list_containers` 与 `handlers::container_view`，`filter=error` 与旧页面同一判定（`container_abnormal`），不新增 SQL。
 - 详情复用 `resolve_container` + `inspect_container`；读权限仍是 `policy.check(ContainerInspect)`，不新增权限规则。
 - 启停/重启/删除：`POST /ui/v1/containers/{id}/{action}`，CSRF 走 `x-csrf-token` 头；策略判定、deny 审计与 `docker_cmd::container_action` 全仓只有这一条路径（页面级动作路由已随旧 SSR 删除）。
-- 新建容器：`GET /{p}/containers/new` 由壳页回落（深链，非独立路由）渲染原生表单（`ContainerCreate` 门禁在 `/ui/v1/containers` 入口），提交走 `POST /ui/v1/containers`；字段解析走 `containers::spec_from_fields`，`validate_spec` 与 `docker_cmd::container_create` 不变。
+- 新建容器：`GET /{p}/docker/containers/new` 由壳页回落（深链，非独立路由）渲染原生表单（`ContainerCreate` 门禁在 `/ui/v1/containers` 入口），提交走 `POST /ui/v1/containers`；字段解析走 `containers::spec_from_fields`，`validate_spec` 与 `docker_cmd::container_create` 不变。
 - 资源限制编辑：`POST /ui/v1/containers/{id}/limits`，沿用 `ContainerUpdate` 策略、`containers::limits_from_fields`（空串 = 0 = 清除）与 `docker_cmd::container_update`；详情页直接给表单。
 
 **字段表（冻结，只增不改）**
@@ -175,14 +175,14 @@
 
 **渲染映射**
 
-- 列表：`table`（`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/containers/{id}`。`filter=error` 由 URL 查询参数并入 `source.params`。
+- 列表：`table`（`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/docker/containers/{id}`。`filter=error` 由 URL 查询参数并入 `source.params`。
 - 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
-- 新建容器：`/{p}/containers/new` 隐藏路由 + 原生 `form`，字段与旧表单同名；创建成功后跳转 `/{p}/containers/{id}`，失败展示统一错误信封文案。
+- 新建容器：`/{p}/docker/containers/new` 隐藏路由 + 原生 `form`，字段与旧表单同名；创建成功后跳转 `/{p}/docker/containers/{id}`，失败展示统一错误信封文案。
 - **D10 翻页**同 5.8：列表由表格 `source` 按 `next_cursor` 追加，底部「加载更多」。
 
 ### 5.10 镜像 / 网络 / 卷（第三批，读写）
 
-- `GET /{p}/images`、`/{p}/networks`、`/{p}/volumes` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
+- `GET /{p}/docker/images`、`/{p}/docker/networks`、`/{p}/docker/volumes` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 复用 `list_images` / `list_networks` / `list_volumes` 与旧页面的 `ResourceRow` / `NetworkRowView` 展示模型，不新增 SQL。
 - 写操作已原生化：`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`；逐项复用 `ImagePull` / `ImageRemove` / `NetworkCreate` / `NetworkRemove` / `VolumeCreate` / `VolumeRemove` 策略与 `docker_cmd` 审计。
 - 网络名/卷名的字符集判定抽到 `resources::validate_name`，旧表单与 `/ui/v1` 共用一份。
@@ -233,7 +233,7 @@
 
 ### 5.11 编排 Compose（第四批）
 
-- `GET /{p}/compose` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
+- `GET /{p}/docker/compose` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 列表复用 `compose::status_of`（容器标签归组，不持久化 compose 源文件），不新增 SQL；项目按名称排序。
 - 项目级启停/重启与 down 已提供 JSON 动作，复用现有 `compose_project_action` / `compose_down` 与逐容器权限判定、审计。
 - 编辑/校验/部署已原生化：`POST /ui/v1/compose/validate` 只解析与 `validate_specs`，不触达 Docker；`POST /ui/v1/compose/up` 校验后走 `compose_up`。源文本不持久化。

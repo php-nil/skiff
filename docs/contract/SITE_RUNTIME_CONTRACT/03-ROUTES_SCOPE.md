@@ -14,16 +14,16 @@ nginx/PHP 镜像标签归运行环境页的「镜像参数」。
 
 | 页面 | 规范 URL |
 | --- | --- |
-| 网站列表 | `/{p}/sites` |
+| 网站列表 | `/{p}/sites/list` |
 | 新建网站 | `/{p}/sites/new`（可带 `?type=runtime|static|proxy`；壳页原生表单） |
-| 站点详情 | `/{p}/sites/<域名>` |
-| 运行环境列表 | `/{p}/runtimes` |
-| 运行环境详情 | `/{p}/runtimes/<runtime-id>` |
+| 站点详情 | `/{p}/sites/<id>`（站点主键，不复用主域名） |
+| 运行环境列表 | `/{p}/sites/runtimes` |
+| 运行环境详情 | `/{p}/sites/runtimes/<runtime-id>` |
 | 运行环境标签页 | 壳页内标签：`?tab=config|logs|sites` |
 
-- 页面只有壳页：`/{p}/sites*` 与 `/{p}/runtimes*` 均为 budding 页，数据走 `/ui/v1/*`；旧深链已删除（见 `docs/contract/URL_CONTRACT/01-RULES.md` §7）。
+- 页面只有壳页：`/{p}/sites*` 均为 budding 页，数据走 `/ui/v1/*`；旧深链已删除（见 `docs/contract/URL_CONTRACT/01-RULES.md` §7）。
 
-- 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/settings/docker`），
+- 站点级设置页已移除：`image_prefix` / `registry_mirror` 归 Docker 设置（`/{p}/docker/settings`），
   `nginx_image` / `php_image` 归运行环境页的「镜像参数」。URL 规则统一见 [`URL_CONTRACT.md`](../URL_CONTRACT.md)。
 
 - `runtime-id` 只用 `[a-z0-9.-]`（如 `php-8.5`），不把镜像 tag、路径拼进 URL。

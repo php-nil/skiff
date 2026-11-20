@@ -96,6 +96,44 @@ pub fn normalize_site_aliases(domain: &str, raw: &[String]) -> Result<Vec<String
     Ok(out)
 }
 
+/// 伪静态预设：只接受白名单键，规则文本由内核生成，绝不拼接用户输入。
+pub const REWRITE_NONE: &str = "none";
+pub const REWRITE_WORDPRESS: &str = "wordpress";
+pub const REWRITE_LARAVEL: &str = "laravel";
+pub const REWRITE_THINKPHP: &str = "thinkphp";
+
+/// 校验伪静态预设并归一为稳定键。
+pub fn validate_rewrite(raw: &str) -> Result<&'static str, SiteError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | REWRITE_NONE => Ok(REWRITE_NONE),
+        REWRITE_WORDPRESS => Ok(REWRITE_WORDPRESS),
+        REWRITE_LARAVEL => Ok(REWRITE_LARAVEL),
+        REWRITE_THINKPHP => Ok(REWRITE_THINKPHP),
+        other => Err(SiteError::BadRequest(format!(
+            "未知伪静态预设：{other}（可选 none / wordpress / laravel / thinkphp）"
+        ))),
+    }
+}
+
+/// 站点级 nginx 策略：伪静态只对 PHP 站点生效，限速对所有站点生效。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VhostPolicy<'a> {
+    pub rewrite: &'a str,
+    pub limit_rate_kbps: u32,
+}
+
+impl<'a> VhostPolicy<'a> {
+    pub fn new(rewrite: &'a str, limit_rate_kbps: u32) -> Self {
+        Self {
+            rewrite,
+            limit_rate_kbps,
+        }
+    }
+}
+
+/// 限速上限 4 GiB/s：只防误填超大值，不影响正常业务。
+pub const MAX_LIMIT_RATE_KBPS: u32 = 4 * 1024 * 1024;
+
 /// 站点目录：用户只填目录名（如 `example.com`），前缀由内核自动补全。
 ///
 /// 空值表示与主域名同名；只允许单段目录名，拒绝 `/`、`..` 与空白。
@@ -223,6 +261,7 @@ pub fn render_site_vhost(
     kind: VhostKind<'_>,
     access_log: &str,
     error_log: &str,
+    policy: VhostPolicy<'_>,
     tls: Option<&VhostTls>,
 ) -> String {
     let names = if aliases.is_empty() {
@@ -239,7 +278,7 @@ pub fn render_site_vhost(
     } else {
         out.push_str("server {\n    listen 80;\n");
         out.push_str(&format!("    server_name {names};\n"));
-        push_site_body(&mut out, &kind, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log, policy);
     }
     if let Some(t) = tls {
         out.push_str("server {\n    listen 443 ssl;\n");
@@ -247,7 +286,7 @@ pub fn render_site_vhost(
         out.push_str(&format!("    ssl_certificate {};\n", t.cert));
         out.push_str(&format!("    ssl_certificate_key {};\n", t.key));
         out.push_str("    ssl_protocols TLSv1.2 TLSv1.3;\n");
-        push_site_body(&mut out, &kind, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log, policy);
     }
     out
 }
@@ -276,9 +315,18 @@ fn escape_nginx_quote(text: &str) -> String {
     out
 }
 
-fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, error_log: &str) {
+fn push_site_body(
+    out: &mut String,
+    kind: &VhostKind<'_>,
+    access_log: &str,
+    error_log: &str,
+    policy: VhostPolicy<'_>,
+) {
     out.push_str(&format!("    access_log {access_log};\n"));
     out.push_str(&format!("    error_log {error_log};\n"));
+    if policy.limit_rate_kbps > 0 {
+        out.push_str(&format!("    limit_rate {}k;\n", policy.limit_rate_kbps));
+    }
     match kind {
         VhostKind::Static { root } => {
             out.push_str(&format!("    root {root};\n"));
@@ -288,7 +336,26 @@ fn push_site_body(out: &mut String, kind: &VhostKind<'_>, access_log: &str, erro
         VhostKind::Php { root, socket } => {
             out.push_str(&format!("    root {root};\n"));
             out.push_str("    index index.php index.html;\n");
-            out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n");
+            match policy.rewrite {
+                REWRITE_WORDPRESS => out.push_str(
+                    "    location / {\n\
+                     \x20       try_files $uri $uri/ /index.php?$args;\n\
+                     \x20   }\n",
+                ),
+                REWRITE_LARAVEL => out.push_str(
+                    "    location / {\n\
+                     \x20       try_files $uri $uri/ /index.php?$query_string;\n\
+                     \x20   }\n",
+                ),
+                REWRITE_THINKPHP => out.push_str(
+                    "    location / {\n\
+                     \x20       if (!-e $request_filename) {\n\
+                     \x20           rewrite ^/(.*)$ /index.php/$1 last;\n\
+                     \x20       }\n\
+                     \x20   }\n",
+                ),
+                _ => out.push_str("    location / {\n        try_files $uri $uri/ =404;\n    }\n"),
+            }
             out.push_str(&format!(
                 "    location ~ \\.php$ {{\n\
                  \x20       include {CONTAINER_FASTCGI_PARAMS};\n\
@@ -367,6 +434,7 @@ pub fn render_default_vhost(
     kind: VhostKind<'_>,
     access_log: &str,
     error_log: &str,
+    policy: VhostPolicy<'_>,
     tls: Option<&VhostTls>,
 ) -> String {
     let mut out = format!("# Skiff 默认站点：直接访问 IP:80 时展示 {domain}。\n");
@@ -375,14 +443,14 @@ pub fn render_default_vhost(
         out.push_str("    return 301 https://$host$request_uri;\n}\n");
     } else {
         out.push_str("server {\n    listen 80 default_server;\n    server_name _;\n");
-        push_site_body(&mut out, &kind, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log, policy);
     }
     if let Some(t) = tls {
         out.push_str("server {\n    listen 443 ssl default_server;\n    server_name _;\n");
         out.push_str(&format!("    ssl_certificate {};\n", t.cert));
         out.push_str(&format!("    ssl_certificate_key {};\n", t.key));
         out.push_str("    ssl_protocols TLSv1.2 TLSv1.3;\n");
-        push_site_body(&mut out, &kind, access_log, error_log);
+        push_site_body(&mut out, &kind, access_log, error_log, policy);
     }
     out
 }
@@ -455,6 +523,7 @@ mod tests {
             },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
+            VhostPolicy::default(),
             None,
         );
         let expected = concat!(
@@ -491,6 +560,7 @@ mod tests {
             },
             "/www/sites/example.com/log/access.log",
             "/www/sites/example.com/log/error.log",
+            VhostPolicy::default(),
             Some(&tls),
         );
         let expected = concat!(
@@ -530,6 +600,47 @@ mod tests {
         assert_eq!(v, expected);
     }
 
+    /// 伪静态与限速：只渲染白名单预设，限速对所有站点类型生效。
+    #[test]
+    fn php_rewrite_and_limit_rate_are_rendered() {
+        let v = render_site_vhost(
+            "shop.example.com",
+            &[],
+            VhostKind::Php {
+                root: "/www/sites/shop.example.com/index",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
+            },
+            "/www/sites/shop.example.com/log/access.log",
+            "/www/sites/shop.example.com/log/error.log",
+            VhostPolicy::new(REWRITE_WORDPRESS, 512),
+            None,
+        );
+        assert!(v.contains("try_files $uri $uri/ /index.php?$args;"), "{v}");
+        assert!(v.contains("limit_rate 512k;"), "{v}");
+        assert!(!v.contains("try_files $uri $uri/ =404;"), "{v}");
+
+        let think = render_site_vhost(
+            "think.example.com",
+            &[],
+            VhostKind::Php {
+                root: "/www/sites/think.example.com/index",
+                socket: "/www/runtime/php/php-8.5/php-fpm.sock",
+            },
+            "/www/sites/think.example.com/log/access.log",
+            "/www/sites/think.example.com/log/error.log",
+            VhostPolicy::new(REWRITE_THINKPHP, 0),
+            None,
+        );
+        assert!(
+            think.contains("rewrite ^/(.*)$ /index.php/$1 last;"),
+            "{think}"
+        );
+        assert!(!think.contains("limit_rate"), "{think}");
+
+        assert!(validate_rewrite("WORDPRESS").is_ok());
+        assert!(validate_rewrite("custom").is_err());
+    }
+
     /// 进程型站点：上游只允许容器静态地址，且不得出现宿主回环端口。
     #[test]
     fn process_vhost_uses_container_address() {
@@ -543,6 +654,7 @@ mod tests {
             },
             "/www/sites/app.example.com/log/access.log",
             "/www/sites/app.example.com/log/error.log",
+            VhostPolicy::default(),
             None,
         );
         assert!(v.contains("proxy_pass http://172.18.16.5:9200;"), "{v}");
@@ -565,6 +677,7 @@ mod tests {
             },
             "/www/sites/app.example.com/log/access.log",
             "/www/sites/app.example.com/log/error.log",
+            VhostPolicy::default(),
             None,
         );
         assert!(v.contains("return 503 \"容器未运行\";"), "{v}");

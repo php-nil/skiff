@@ -181,6 +181,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(handlers::containers::exec_ticket),
         )
         .route(
+            &format!("/{p}/plugins/store/confirm"),
+            get(handlers::spa::root_shell),
+        )
+        .route(
             &format!("/{p}/plugins/{{id}}/schema/{{view}}"),
             get(handlers::plugins::schema),
         )

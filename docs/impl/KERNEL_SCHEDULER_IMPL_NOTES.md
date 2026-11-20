@@ -273,8 +273,8 @@ cargo clippy -p skiff-sched --all-targets --locked -- -D warnings   # 通过
 ### 8.4 站点备份与 cron 插件
 
 - 站点详情页新增 `#site-backup` 区块：开关直连内核 `site-backup` 任务
-  （默认 `0 3 * * *`，payload `{domain}`），不跳计划任务页；关闭只置 `enabled=false`，
-  运行历史保留。
+  （默认 `0 3 * * *`，payload `{domain}`），不跳计划任务页；间隔可选每天/每周一/每月 1 日，
+  执行时间为本地 `HH:MM`；关闭只置 `enabled=false`，计划与运行历史保留。
 - cron 插件删除 `tick` / `cron` 声明与自带计时器，改为纯管理 UI：
   `jobs.list/create/update/toggle/remove/run → task.*`、`targets → interop_catalog`；
   manifest `requires` 增加 `scheduler`，`[[permissions]] capability="scheduler"`

@@ -1141,7 +1141,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "网站列表",
                     "globe",
                     10,
-                    href("sites"),
+                    href("sites/list"),
                 ),
                 builtin(
                     "core/sites/env",
@@ -1149,7 +1149,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "运行环境",
                     "container",
                     20,
-                    href("runtimes"),
+                    href("sites/runtimes"),
                 ),
                 builtin(
                     "core/sites/web",
@@ -1179,7 +1179,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "容器",
                     "container",
                     10,
-                    href("containers"),
+                    href("docker/containers"),
                 ),
                 builtin(
                     "core/docker/images",
@@ -1187,7 +1187,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "镜像",
                     "image",
                     20,
-                    href("images"),
+                    href("docker/images"),
                 ),
                 builtin(
                     "core/docker/networks",
@@ -1195,7 +1195,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "网络",
                     "network",
                     30,
-                    href("networks"),
+                    href("docker/networks"),
                 ),
                 builtin(
                     "core/docker/volumes",
@@ -1203,7 +1203,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "卷",
                     "disk",
                     40,
-                    href("volumes"),
+                    href("docker/volumes"),
                 ),
                 builtin(
                     "core/docker/compose",
@@ -1211,7 +1211,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "Compose",
                     "list",
                     45,
-                    href("compose"),
+                    href("docker/compose"),
                 ),
                 builtin(
                     "core/docker/settings",
@@ -1219,7 +1219,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "设置",
                     "settings",
                     50,
-                    href("settings/docker"),
+                    href("docker/settings"),
                 ),
             ],
         },
@@ -1242,7 +1242,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "已安装",
                         "list",
                         10,
-                        href("plugins"),
+                        href("plugins/installed"),
                     ),
                     builtin(
                         "core/plugins/discover",
@@ -1269,7 +1269,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                         "商店",
                         "archive",
                         40,
-                        href("store"),
+                        href("plugins/store"),
                     ));
                 }
                 items
@@ -1360,7 +1360,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "安全设置",
                     "lock",
                     10,
-                    href("settings"),
+                    href("settings/security"),
                 ),
                 builtin(
                     "core/settings/menu",
@@ -1384,7 +1384,7 @@ fn declarations(state: &AppState, user: &CurrentUser) -> Vec<Decl> {
                     "审计日志",
                     "shield",
                     30,
-                    href("audit"),
+                    href("settings/audit"),
                     &["operator", "admin"],
                 ),
             ],
@@ -1737,11 +1737,7 @@ fn empty_state(state: &AppState, l1: &str) -> Option<MenuEmpty> {
     } else {
         (text, "discover", action)
     };
-    let href = if tab == "installed" {
-        format!("/{}/plugins", state.cfg.entry_prefix)
-    } else {
-        format!("/{}/plugins/{tab}", state.cfg.entry_prefix)
-    };
+    let href = format!("/{}/plugins/{tab}", state.cfg.entry_prefix);
     Some(MenuEmpty {
         text: text.into(),
         href,

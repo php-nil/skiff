@@ -518,6 +518,7 @@ fn php_vhost_points_fastcgi_at_runtime_socket() {
         },
         "/www/sites/example.com/log/access.log",
         "/www/sites/example.com/log/error.log",
+        VhostPolicy::default(),
         None,
     );
     assert!(v.contains("server_name example.com;"));
@@ -546,6 +547,7 @@ fn static_vhost_has_no_php_but_reads_index() {
         },
         "/www/sites/static.local/log/access.log",
         "/www/sites/static.local/log/error.log",
+        VhostPolicy::default(),
         None,
     );
     assert!(v.contains("root /www/sites/static.local/index;"));
@@ -566,6 +568,7 @@ fn proxy_vhost_forwards_and_optionally_upgrades_websocket() {
         },
         "/www/sites/proxy.local/log/access.log",
         "/www/sites/proxy.local/log/error.log",
+        VhostPolicy::default(),
         None,
     );
     assert!(ws.contains("proxy_pass http://127.0.0.1:8080;"));
@@ -586,6 +589,7 @@ fn proxy_vhost_forwards_and_optionally_upgrades_websocket() {
         },
         "/www/sites/proxy.local/log/access.log",
         "/www/sites/proxy.local/log/error.log",
+        VhostPolicy::default(),
         None,
     );
     assert!(plain.contains("proxy_pass https://api.example.com:8443/base;"));
@@ -1289,6 +1293,7 @@ fn vhost_with_tls_adds_443_ssl_server() {
         },
         "/www/sites/example.com/log/access.log",
         "/www/sites/example.com/log/error.log",
+        VhostPolicy::default(),
         Some(&tls),
     );
     assert!(v.contains("listen 80;"));
@@ -1314,6 +1319,7 @@ fn force_https_redirects_80_to_443() {
         },
         "/www/sites/example.com/log/access.log",
         "/www/sites/example.com/log/error.log",
+        VhostPolicy::default(),
         Some(&tls),
     );
     assert!(v.contains("return 301 https://$host$request_uri;"));
@@ -1335,6 +1341,7 @@ fn default_vhost_with_tls_serves_443_default_server() {
         },
         "/www/sites/demo.local/log/access.log",
         "/www/sites/demo.local/log/error.log",
+        VhostPolicy::default(),
         Some(&tls),
     );
     assert!(v.contains("listen 443 ssl default_server;"));
@@ -1351,6 +1358,7 @@ fn default_vhost_serves_index_and_fallback_is_404() {
         },
         "/www/sites/demo.local/log/access.log",
         "/www/sites/demo.local/log/error.log",
+        VhostPolicy::default(),
         None,
     );
     assert!(v.contains("listen 80 default_server;"));

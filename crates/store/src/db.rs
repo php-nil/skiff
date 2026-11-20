@@ -37,7 +37,7 @@ mod trust;
 mod users;
 
 /// 当前二进制支持的 schema 版本。迁移只向前，版本高于此值拒绝启动。
-pub const CURRENT_SCHEMA_VERSION: i64 = 21;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -141,7 +141,7 @@ impl Db {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        let steps: [(i64, &str); 21] = [
+        let steps: [(i64, &str); 22] = [
             (1, SCHEMA_V1),
             (2, SCHEMA_V2),
             (3, SCHEMA_V3),
@@ -163,6 +163,7 @@ impl Db {
             (19, SCHEMA_V19),
             (20, SCHEMA_V20),
             (21, SCHEMA_V21),
+            (22, SCHEMA_V22),
         ];
         for (to, schema) in steps {
             if version >= to {
@@ -811,6 +812,16 @@ ALTER TABLE jobs ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]';
 const SCHEMA_V21: &str = r#"
 ALTER TABLE site_runtimes ADD COLUMN container_ip TEXT;
 ALTER TABLE site_runtimes ADD COLUMN publish_port INTEGER;
+"#;
+
+/// v22：站点级 nginx 策略（伪静态预设与出口限速）。
+///
+/// `rewrite` 只存白名单键（`none` / `wordpress` / `laravel` / `thinkphp`），
+/// 具体规则由 `skiff-app` 生成，不把用户输入直接拼进 vhost；`limit_rate_kbps`
+/// 为 0 表示不限制，正数按 KB/s 渲染为 nginx `limit_rate`。
+const SCHEMA_V22: &str = r#"
+ALTER TABLE sites ADD COLUMN rewrite TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE sites ADD COLUMN limit_rate_kbps INTEGER NOT NULL DEFAULT 0;
 "#;
 
 #[cfg(test)]

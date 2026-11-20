@@ -37,14 +37,11 @@
 | 前缀 | 说明 |
 | --- | --- |
 | `/{p}` | 概览根（仅精确匹配） |
-| `/{p}/sites` | 站点 |
-| `/{p}/containers`、`/{p}/images`、`/{p}/networks`、`/{p}/volumes`、`/{p}/compose` | Docker |
-| `/{p}/runtimes` | 运行环境 |
+| `/{p}/sites` | 网站（列表 `list`、运行环境 `runtimes`、Web 服务 `web` 与站点详情同在前缀下） |
+| `/{p}/docker` | Docker（`containers`、`images`、`networks`、`volumes`、`compose`、`settings`） |
 | `/{p}/files` | 文件管理 |
-| `/{p}/plugins` | 插件（功能页由壳页按随包 schema 原生渲染；旧 iframe 仅 `?legacy=1` 兼容） |
-| `/{p}/store` | 商店 |
-| `/{p}/settings` | 设置 |
-| `/{p}/audit` | 审计 |
+| `/{p}/plugins` | 插件（`installed`、`discover`、`updates`、`store`；功能页 `/{p}/plugins/{id}`） |
+| `/{p}/settings` | 设置（`security`、`menu`、`ui`、`audit`） |
 | `/{p}/tasks` | 定时任务 |
 | `/{p}/jobs` | 任务中心 |
 
@@ -57,22 +54,23 @@
 ## 3. 资源命名
 
 - 资源段用**复数、小写、中划线**：`containers`、`runtimes`、`settings`、`store`、`tasks`、`jobs`。
+- 页面按一级菜单分组落位：网站 `/{p}/sites/*`、Docker `/{p}/docker/*`、插件 `/{p}/plugins/*`、设置 `/{p}/settings/*`；分组段只用于页面，不改变 `/ui/v1` 接口的资源路径。
 - 标识段用资源的天然主键：容器/镜像 id、站点域名、运行环境 id（`php-8.5`）、任务 id、插件 id（含 `.`）。
-- 子资源用**单数**名词：`/{p}/sites/{domain}/ssl`、`/{p}/runtimes/{id}/config`、`/{p}/files/trash`。
-- 子资源下的集合仍用复数：`/{p}/runtimes/{id}/extensions`。
+- 子资源用**单数**名词：`/{p}/sites/{id}/ssl`、`/{p}/sites/runtimes/{id}/config`、`/{p}/files/trash`。
+- 子资源下的集合仍用复数：`/{p}/sites/runtimes/{id}/extensions`。
 - 标识含 `/`、空格等字符时由路由层编码，不把多段拼进一个参数；插件 id 的 `.` 不二次编码。
 
 ## 4. 页面与页面内 JSON 的归属
 
 页面只有**一个**入口：`GET /{p}[/{白名单前缀}[/{rest}]]` 交同一个 budding 壳页（§2.1），
-**没有逐资源的页面路由**（`/{p}/sites/new`、`/{p}/containers/{id}/terminal` 之类都不是独立路由，
+**没有逐资源的页面路由**（`/{p}/sites/new`、`/{p}/docker/containers/{id}/terminal` 之类都不是独立路由，
 只是壳页回落的深链，前端路由自己认）。页面内的数据与动作统一走 `/ui/v1/{资源}`：
 
 | 页面（壳页回落） | 页面内 JSON（`/ui/v1`） |
 | --- | --- |
-| `/{p}/containers` | `GET /ui/v1/containers`、`POST /ui/v1/containers` |
-| `/{p}/sites` | `GET /ui/v1/sites`、`POST /ui/v1/sites` |
-| `/{p}/settings` | `GET /ui/v1/settings`、`POST /ui/v1/settings/panel` |
+| `/{p}/docker/containers` | `GET /ui/v1/containers`、`POST /ui/v1/containers` |
+| `/{p}/sites/list` | `GET /ui/v1/sites`、`POST /ui/v1/sites` |
+| `/{p}/settings/security` | `GET /ui/v1/settings`、`POST /ui/v1/settings/panel` |
 
 **唯一例外是文件分组**：它由内核注册真实路由（形态门禁 `fs_capability`），页面与接口共用
 `/{p}/files` 前缀，接口为 `/{p}/files/list`、`/{p}/files/write`…，**没有** `/{p}/files/api/list`
@@ -95,7 +93,7 @@
 
 - 资源**集合**：`GET /ui/v1/{资源}` 列表；`POST /ui/v1/{资源}` 创建（**不写** `/create`，集合 POST 即创建）。
 - 资源**单体**：`GET /ui/v1/{资源}/{id}` 查看；`POST /ui/v1/{资源}/{id}` 更新（路径不加 `update`；
-  子资源字段各自的写入口优先，如 `POST /ui/v1/sites/{domain}/config`）。
+  子资源字段各自的写入口优先，如 `POST /ui/v1/sites/{id}/config`）。
 - **动作型操作**：末段显式动词，参数放 JSON body 或查询串，不放进路径（通配动作见 §5.3）。
 - `delete` 与 `remove` 分工（**按资源归属**，不按语义强弱）：
   - `delete`：内核自有实体（站点、定时任务、插件）——生命周期由 Skiff 管理。
@@ -107,8 +105,8 @@
 | 动词 | 语义 | 示例 |
 | --- | --- | --- |
 | `（集合 POST）` | 新建资源 | `POST /ui/v1/sites`、`/ui/v1/runtimes`、`/ui/v1/containers`、`/ui/v1/networks`、`/ui/v1/volumes` |
-| `config` / `params` | 保存配置（资源已存在） | `POST /ui/v1/sites/{domain}/config`、`/ui/v1/web/params`、`/ui/v1/settings/panel` |
-| `delete` | 删除内核自有实体 | `POST /ui/v1/sites/{domain}/delete`、`/ui/v1/tasks/{id}/delete`、`/ui/v1/plugins/{id}/delete` |
+| `config` / `params` | 保存配置（资源已存在） | `POST /ui/v1/sites/{id}/config`、`/ui/v1/web/params`、`/ui/v1/settings/panel` |
+| `delete` | 删除内核自有实体 | `POST /ui/v1/sites/{id}/delete`、`/ui/v1/tasks/{id}/delete`、`/ui/v1/plugins/{id}/delete` |
 | `remove` | 删除 Docker 资源 / 文件入回收站 | `POST /ui/v1/images/{id}/remove`、`/ui/v1/networks/{id}/remove`、`/ui/v1/volumes/{name}/remove`、`POST /{p}/files/remove` |
 | `toggle` | 启用/停用、开关 | `POST /ui/v1/plugins/{id}/toggle`、`/ui/v1/tasks/{id}/toggle` |
 | `run` | 立即执行一次 | `POST /ui/v1/tasks/{id}/run` |
@@ -129,7 +127,7 @@
 以下四段通配由 handler 内白名单校验，新增动作必须同时改白名单与本文：
 
 - `POST /ui/v1/containers/{id}/{action}`（start/stop/restart/kill/…）
-- `POST /ui/v1/sites/{domain}/{action}`（start/stop/restart/rebuild/…）
+- `POST /ui/v1/sites/{id}/{action}`（start/stop/restart/rebuild/…）
 - `POST /ui/v1/runtimes/{id}/action/{action}`
 - `POST /ui/v1/compose/{project}/{action}`
 
@@ -143,7 +141,7 @@
 | POST | 全部写入、动作、登出 | `/ui/v1/*` 与 `/{p}/files/*` 的写操作必须带 `x-csrf-token` 头；权限按资源判定 |
 | DELETE / PUT / PATCH | **不使用** | 统一 POST + 末段动词，避免代理与表单兼容问题 |
 
-- 写操作一律 POST 到 `/ui/v1/*` 的动词端点（如 `POST /ui/v1/sites/{domain}/delete`），没有页面级表单提交。
+- 写操作一律 POST 到 `/ui/v1/*` 的动词端点（如 `POST /ui/v1/sites/{id}/delete`），没有页面级表单提交。
 - 长连接：`GET /{p}/containers/{id}/logs/stream`（SSE）、`GET /{p}/jobs/{id}/logs/stream`（SSE）、`GET /{p}/containers/{id}/exec`（WS，需先 `POST /{p}/containers/{id}/exec/ticket` 换一次性票据）。
 - 失败回执：`/ui/v1/*` 一律 JSON 信封（`{"error":{code,message}}`），不在 URL 里表达成败，也不做 PRG 跳转。
 - `/ui/v1/*` 的写操作一律 POST + CSRF；未认证引导与登录为 `GET /ui/v1/auth/login` 与 `POST /ui/v1/auth/login`（登录用签名 CSRF token + 来源判定，CSRF 放 JSON 体 `csrf` 字段）；`POST /ui/v1/session/logout`、`settings/password`、`settings/totp/setup`、`settings/totp/enable` 为认证类入口（登录态自服务，仍校验 `x-csrf-token` 与本人会话）。

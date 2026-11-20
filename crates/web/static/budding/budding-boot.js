@@ -7,8 +7,8 @@
  *
  * 链路：GET /ui/v1/session → 入口根再取 GET /ui/v1/overview 渲染只读概览；
  * 其余页面仍 embed 占位卡片。失败显示错误而不是白屏。
- * 未认证由服务端 303 到登录页（页面请求既有行为）；运行期 401（会话过期）改用
- * budding `redirect` 组件提示后跳登录页，见 `showSessionExpired`。
+ * 未认证由服务端 303 到登录页（页面请求既有行为）；运行期 401（会话过期）直接
+ * `location.replace` 硬跳登录页，见 `showSessionExpired`。
  */
 (function () {
   'use strict';
@@ -68,6 +68,54 @@
     return text
       .replace(/([^\/])\/([^\/])/g, '$1／$2')
       .replace(/^\/|\/$/gm, '／');
+  }
+
+  // 服务端下发的 Schema 也要过同一层安全转义：`code` 节点的 modelValue 若带裸 "/"，
+  // budding 表达式引擎会当成正则起始符并整棵树编译失败。前端构建器与这里共用同一规则。
+  function prepareServerSchema(node) {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) {
+      node.forEach(prepareServerSchema);
+      return node;
+    }
+    if (node.type === 'code' && node.props && typeof node.props.modelValue === 'string') {
+      node.props.modelValue = buddySafeString(node.props.modelValue);
+    }
+    if (node.type === 'button' && node.action && node.action.type === 'dialog') {
+      registerServerDialog(node);
+    }
+    Object.keys(node).forEach(function (key) {
+      prepareServerSchema(node[key]);
+    });
+    return node;
+  }
+
+  // 服务端弹窗按钮同样要进弹窗注册表：提交失败时 dialogError 按 key 重开同一张
+  // 表单并保留用户输入，行为与前端 dialogFormButton 一致。
+  function registerServerDialog(button) {
+    var layer = button.action.props || {};
+    var body = layer.body || [];
+    var form = null;
+    for (var i = 0; i < body.length; i += 1) {
+      if (body[i] && body[i].type === 'form') {
+        form = body[i];
+        break;
+      }
+    }
+    if (!form || !form.props || !form.props.api) return;
+    var submit = form.onEvent && form.onEvent.submit && form.onEvent.submit[0];
+    if (!submit || !submit.props) return;
+    var key = submit.props.dialog || newDialogKey();
+    submit.props.dialog = key;
+    var submitButton = form.content && form.content.actions && form.content.actions[0];
+    dialogRegistry[key] = {
+      title: layer.title,
+      width: layer.width,
+      url: form.props.api.url,
+      action: submit,
+      fields: form.body,
+      submitText: submitButton && submitButton.props ? submitButton.props.text : ''
+    };
   }
 
   function placeholderSchema(session) {
@@ -338,82 +386,26 @@
     }
   }
 
-  var pendingConfirms = {};
-  var confirmSeq = 0;
-
-  /// 二次确认：返回 Promise<boolean>，与内置 `confirm` 动作语义一致。
+  /// 命令式确认：直接复用 budding 运行时 `confirm`（内建图层，Esc 取消）。
   ///
-  /// 只有运行时还没挂载时才会退回原生 `window.confirm`；正常运行路径下
-  /// 一定走运行时图层。Esc 视为取消（图层本身关掉了 Esc 关闭，避免出现
-  /// 「图层已关但动作链悬着」的中间态）。
+  /// 自定义写操作在 JS 里需要 `Promise<boolean>`，而 Schema 动作链用内置
+  /// `confirm` 动作；这里只做参数映射，不再自建图层与按钮动作。
   function hostConfirm(args) {
     var title = (args && args.title) || '确认操作';
     var content =
       args && args.content !== undefined && args.content !== null ? String(args.content) : '';
     var runtime = buddingRuntime();
-    if (
-      !runtime ||
-      typeof runtime.openLayer !== 'function' ||
-      typeof runtime.deriveScope !== 'function' ||
-      typeof runtime.closeLayer !== 'function'
-    ) {
-      return Promise.resolve(window.confirm(content ? title + '\n\n' + content : title));
+    if (runtime && typeof runtime.confirm === 'function') {
+      var payload = { title: title };
+      if (content) payload.content = content;
+      if (args && args.level) payload.level = args.level;
+      else if (args && args.danger) payload.level = 'error';
+      if (args && args.confirmText) payload.confirmText = args.confirmText;
+      if (args && args.cancelText) payload.cancelText = args.cancelText;
+      if (args && args.requireText) payload.requireText = args.requireText;
+      return Promise.resolve(runtime.confirm(payload));
     }
-    return new Promise(function (resolve) {
-      var token = 'skiff-confirm-' + ++confirmSeq;
-      var entry = { layerId: '', done: false };
-      function finish(answer) {
-        if (entry.done) return;
-        entry.done = true;
-        delete pendingConfirms[token];
-        document.removeEventListener('keydown', onKey, true);
-        if (entry.layerId) runtime.closeLayer(entry.layerId);
-        resolve(answer === true);
-      }
-      function onKey(event) {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          finish(false);
-        }
-      }
-      function button(text, answer, color, variant) {
-        var props = { text: text };
-        if (variant) props.variant = variant;
-        if (color) props.color = color;
-        return {
-          type: 'button',
-          props: props,
-          onEvent: {
-            click: { actions: [{ type: 'skiffConfirmAnswer', props: { token: token, answer: answer } }] }
-          }
-        };
-      }
-      pendingConfirms[token] = { finish: finish };
-      entry.layerId = runtime.openLayer(
-        {
-          title: title,
-          preset: 'xs',
-          closeOnMask: false,
-          closeOnEsc: false,
-          showCloseButton: false,
-          body: content ? [{ type: 'text', props: { text: content } }] : [],
-          footer: [
-            button('取消', false, null, 'outlined'),
-            button('确定', true, args && args.danger ? 'danger' : 'primary', null)
-          ]
-        },
-        // openLayer 的第二参是动作上下文（内部读 `ctx.scope.derive`），不是裸 scope。
-        { scope: runtime.deriveScope({}, null) }
-      );
-      document.addEventListener('keydown', onKey, true);
-    });
-  }
-
-  /// 确认框按钮的自定义动作：关闭当前图层并把选择结果交回 `hostConfirm`。
-  function skiffConfirmAnswer(args) {
-    var pending = pendingConfirms[String((args && args.token) || '')];
-    if (!pending) return;
-    pending.finish(args && (args.answer === true || args.answer === 'true'));
+    return Promise.resolve(window.confirm(content ? title + '\n\n' + content : title));
   }
 
   // 容器启停/重启/删除/强制终止：走 /ui/v1 同策略、同审计的 JSON 端点。
@@ -456,7 +448,7 @@
             return;
           }
           toast(action === 'delete' ? '容器已删除' : '容器操作已提交', 'success');
-          if (action === 'delete') location.href = prefix + '/containers';
+          if (action === 'delete') location.href = prefix + '/docker/containers';
           else location.reload();
         })
         .catch(function (error) {
@@ -774,7 +766,7 @@
       return submitJson(path, payload)
         .then(function (data) {
           if (kind === 'container' && op === 'create' && data.id) {
-            location.href = prefix + '/containers/' + encodeURIComponent(data.id);
+            location.href = prefix + '/docker/containers/' + encodeURIComponent(data.id);
             return;
           }
           closeTopLayer();
@@ -808,6 +800,7 @@
   function siteWrite(args, ctx) {
     var values = formValues(ctx);
     var op = args.op;
+    var id = args.id;
     var domain = args.domain || '';
     var path = '';
     var payload = {};
@@ -824,27 +817,40 @@
         aliases_bulk: ''
       };
     } else if (op === 'power') {
-      path = '/sites/' + encodeURIComponent(domain) + '/' + args.action;
+      path = '/sites/' + encodeURIComponent(id) + '/' + args.action;
     } else if (op === 'default') {
-      path = '/sites/' + encodeURIComponent(domain) + '/default';
+      path = '/sites/' + encodeURIComponent(id) + '/default';
       payload = { enabled: !!args.enabled };
     } else if (op === 'domains') {
-      path = '/sites/' + encodeURIComponent(domain) + '/domains';
+      path = '/sites/' + encodeURIComponent(id) + '/domains';
       payload = { action: args.action, alias: args.alias || formText(values.alias) };
     } else if (op === 'config') {
-      path = '/sites/' + encodeURIComponent(domain) + '/config';
+      path = '/sites/' + encodeURIComponent(id) + '/config';
       payload = { content: formText(values.content) };
     } else if (op === 'ssl') {
-      path = '/sites/' + encodeURIComponent(domain) + '/ssl';
+      path = '/sites/' + encodeURIComponent(id) + '/ssl';
       payload = {
         action: args.action,
         enabled: !!args.enabled,
         cert_pem: formText(values.cert_pem),
         key_pem: formText(values.key_pem)
       };
+    } else if (op === 'policy') {
+      path = '/sites/' + encodeURIComponent(id) + '/policy';
+      payload = {
+        rewrite: formText(values.rewrite),
+        limit_rate_kbps: Number(formText(values.limit_rate_kbps) || 0)
+      };
     } else if (op === 'backup') {
-      path = '/sites/' + encodeURIComponent(domain) + '/backup';
-      payload = { enabled: !!args.enabled };
+      path = '/sites/' + encodeURIComponent(id) + '/backup';
+      payload = {
+        enabled: args.enabled === undefined ? !!values.enabled : !!args.enabled,
+        interval: formText(values.interval) || args.interval || 'daily',
+        time: formText(values.time) || args.time || '03:00'
+      };
+    } else if (op === 'delete') {
+      path = '/sites/' + encodeURIComponent(id) + '/delete';
+      payload = { confirm: domain };
     } else if (op === 'batch') {
       path = '/sites/batch';
       payload = {
@@ -858,9 +864,14 @@
     function run() {
       return submitJson(path, payload)
         .then(function (data) {
+          if (op === 'delete') {
+            toast('站点已删除', 'success');
+            location.href = prefix + '/sites/list';
+            return;
+          }
           // 独立页 `/sites/new` 仍保留「创建后进入详情」；列表弹窗则关闭并刷新列表。
-          if (op === 'create' && data.domain && !args.dialog) {
-            location.href = prefix + '/sites/' + encodeURIComponent(data.domain);
+          if (op === 'create' && data.id && !args.dialog) {
+            location.href = prefix + '/sites/' + encodeURIComponent(data.id);
             return;
           }
           if (args.dialog) closeTopLayer();
@@ -931,32 +942,9 @@
     return siteWrite({
       op: 'power',
       action: running ? 'stop' : 'start',
+      id: args.id,
       domain: args.domain
     });
-  }
-
-  /// 删除站点：弹窗表单已做域名一致性校验，这里只负责提交与跳转。
-  function siteDelete(args, ctx) {
-    var values = formValues(ctx);
-    var domain = String(args.domain || '');
-    var typed = String(values.confirm || '').trim();
-    if (typed !== domain) {
-      formError(args, '输入的域名与站点域名不一致', values);
-      return Promise.resolve();
-    }
-    return submitJson('/sites/' + encodeURIComponent(domain) + '/delete', { confirm: typed })
-      .then(function () {
-        closeTopLayer();
-        toast('站点已删除', 'success');
-        location.href = prefix + '/sites';
-      })
-      .catch(function (error) {
-        formError(
-          args,
-          '删除失败：' + (error && error.message ? error.message : String(error)),
-          values
-        );
-      });
   }
 
   /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
@@ -1004,28 +992,28 @@
   /// 页内互斥子视图（L3）不在这里登记，统一见 `SUBVIEW_TABS`。
   var BUILTIN_PAGES = {
     overview: { path: '', schema: 'skiff:overview' },
-    'core/sites/list': { path: '/sites', schema: 'skiff:sites' },
+    'core/sites/list': { path: '/sites/list', schema: 'skiff:sites' },
     'core/sites/web': { path: '/sites/web', schema: 'skiff:web' },
-    'core/sites/env': { path: '/runtimes', schema: 'skiff:runtimes' },
-    'core/docker/containers': { path: '/containers', schema: 'skiff:containers' },
-    'core/docker/images': { path: '/images', schema: 'skiff:images' },
-    'core/docker/networks': { path: '/networks', schema: 'skiff:networks' },
-    'core/docker/volumes': { path: '/volumes', schema: 'skiff:volumes' },
-    'core/docker/compose': { path: '/compose', schema: 'skiff:compose' },
-    'core/plugins/installed': { path: '/plugins', schema: 'skiff:plugins' },
+    'core/sites/env': { path: '/sites/runtimes', schema: 'skiff:runtimes' },
+    'core/docker/containers': { path: '/docker/containers', schema: 'skiff:containers' },
+    'core/docker/images': { path: '/docker/images', schema: 'skiff:images' },
+    'core/docker/networks': { path: '/docker/networks', schema: 'skiff:networks' },
+    'core/docker/volumes': { path: '/docker/volumes', schema: 'skiff:volumes' },
+    'core/docker/compose': { path: '/docker/compose', schema: 'skiff:compose' },
+    'core/plugins/installed': { path: '/plugins/installed', schema: 'skiff:plugins' },
     'core/plugins/discover': { path: '/plugins/discover', schema: 'skiff:plugins' },
     'core/plugins/updates': { path: '/plugins/updates', schema: 'skiff:plugins' },
-    'core/plugins/store': { path: '/store', schema: 'skiff:store' },
+    'core/plugins/store': { path: '/plugins/store', schema: 'skiff:store' },
     'core/tasks': { path: '/tasks', schema: 'skiff:tasks' },
     'core/jobs': { path: '/jobs', schema: 'skiff:jobs' },
     'core/files': { path: '/files', schema: 'skiff:files' },
     'core/files/trash': { path: '/files/trash', schema: 'skiff:files-trash' },
     'core/files/quotas': { path: '/files/quotas', schema: 'skiff:files-quotas' },
-    'core/settings/security': { path: '/settings', schema: 'skiff:settings' },
+    'core/settings/security': { path: '/settings/security', schema: 'skiff:settings' },
     'core/settings/menu': { path: '/settings/menu', schema: 'skiff:menu-settings' },
     'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' },
-    'core/docker/settings': { path: '/settings/docker', schema: 'skiff:docker-settings' },
-    'core/settings/audit': { path: '/audit', schema: 'skiff:audit' }
+    'core/docker/settings': { path: '/docker/settings', schema: 'skiff:docker-settings' },
+    'core/settings/audit': { path: '/settings/audit', schema: 'skiff:audit' }
   };
 
   /// 插件菜单键 → `/ui/v1/menu` 下发的视图元数据（id / 默认视图 / 视图列表）。
@@ -1156,35 +1144,35 @@
       title: '新建站点',
       hidden: true,
       schema: 'skiff:site-new',
-      meta: { activeMenu: prefix + '/sites' }
+      meta: { activeMenu: prefix + '/sites/list' }
     });
     routes.push({
-      path: prefix + '/sites/:domain',
+      path: prefix + '/sites/:id',
       title: '站点详情',
       hidden: true,
       schema: 'skiff:site-detail',
-      meta: { activeMenu: prefix + '/sites' }
+      meta: { activeMenu: prefix + '/sites/list' }
     });
     routes.push({
-      path: prefix + '/runtimes/:id',
+      path: prefix + '/sites/runtimes/:id',
       title: '运行环境详情',
       hidden: true,
       schema: 'skiff:runtime-detail',
-      meta: { activeMenu: prefix + '/runtimes' }
+      meta: { activeMenu: prefix + '/sites/runtimes' }
     });
     routes.push({
-      path: prefix + '/containers/new',
+      path: prefix + '/docker/containers/new',
       title: '新建容器',
       hidden: true,
       schema: 'skiff:container-new',
-      meta: { activeMenu: prefix + '/containers' }
+      meta: { activeMenu: prefix + '/docker/containers' }
     });
     routes.push({
-      path: prefix + '/containers/:id',
+      path: prefix + '/docker/containers/:id',
       title: '容器详情',
       hidden: true,
       schema: 'skiff:container-detail',
-      meta: { activeMenu: prefix + '/containers' }
+      meta: { activeMenu: prefix + '/docker/containers' }
     });
     routes.push({
       path: prefix + '/tasks/:id',
@@ -1201,18 +1189,18 @@
       meta: { activeMenu: prefix + '/jobs' }
     });
     routes.push({
-      path: prefix + '/containers/:id/terminal',
+      path: prefix + '/docker/containers/:id/terminal',
       title: '容器终端',
       hidden: true,
       schema: 'skiff:container-terminal',
-      meta: { activeMenu: prefix + '/containers' }
+      meta: { activeMenu: prefix + '/docker/containers' }
     });
     routes.push({
-      path: prefix + '/containers/:id/logs',
+      path: prefix + '/docker/containers/:id/logs',
       title: '容器日志',
       hidden: true,
       schema: 'skiff:container-logs',
-      meta: { activeMenu: prefix + '/containers' }
+      meta: { activeMenu: prefix + '/docker/containers' }
     });
     routes.push({
       path: prefix + '/jobs/:id/logs',
@@ -1247,35 +1235,35 @@
       title: '菜单设置',
       hidden: true,
       schema: 'skiff:menu-settings',
-      meta: { activeMenu: prefix + '/settings' }
+      meta: { activeMenu: prefix + '/settings/security' }
     });
     routes.push({
-      path: prefix + '/settings/docker',
+      path: prefix + '/docker/settings',
       title: 'Docker 设置',
       hidden: true,
       schema: 'skiff:docker-settings',
-      meta: { activeMenu: prefix + '/settings' }
+      meta: { activeMenu: prefix + '/docker/settings' }
     });
     routes.push({
       path: prefix + '/settings/ui',
       title: '界面设置',
       hidden: true,
       schema: 'skiff:ui-settings',
-      meta: { activeMenu: prefix + '/settings' }
+      meta: { activeMenu: prefix + '/settings/security' }
     });
     routes.push({
       path: prefix + '/plugins/:id',
       title: '插件详情',
       hidden: true,
       schema: 'skiff:plugin-info',
-      meta: { activeMenu: prefix + '/plugins' }
+      meta: { activeMenu: prefix + '/plugins/installed' }
     });
     routes.push({
-      path: prefix + '/store/confirm',
+      path: prefix + '/plugins/store/confirm',
       title: '安装确认',
       hidden: true,
       schema: 'skiff:store-confirm',
-      meta: { activeMenu: prefix + '/store' }
+      meta: { activeMenu: prefix + '/plugins/store' }
     });
     // 插件功能页：每个可见视图一条路由；页面结构由随包 schema 提供，
     // 壳页只做数据绑定与 RPC 转发。
@@ -1420,7 +1408,8 @@
       '--v-theme-background:' + pageRgb + ' !important;' +
       '--v-theme-on-background:' + pageText + ' !important;' +
       '}' +
-      '.v-application{background:rgb(' + pageRgb + ') !important}';
+      '.v-application{background:rgb(' + pageRgb + ') !important}' +
+      '.skiff-code-no-lang .bud-code__language{display:none!important}';
   }
 
   /// 给外壳补 `bud-admin--chrome` 类。
@@ -1473,7 +1462,7 @@
     {
       pattern: ['sites', 'web'],
       schema: 'skiff:web',
-      menu: '/sites',
+      menu: '/sites/web',
       title: 'Web 服务',
       tabs: [
         { title: '状态', segs: [] },
@@ -1483,11 +1472,11 @@
       ]
     },
     {
-      pattern: ['sites', ':domain'],
+      pattern: ['sites', ':id'],
       schema: 'skiff:site-detail',
-      menu: '/sites',
+      menu: '/sites/list',
       title: '站点详情',
-      blocked: ['new'],
+      blocked: ['new', 'list', 'runtimes', 'web'],
       tabs: [
         { title: '概览', segs: [] },
         { title: '域名', segs: ['domains'] },
@@ -1498,9 +1487,9 @@
       ]
     },
     {
-      pattern: ['runtimes', ':id'],
+      pattern: ['sites', 'runtimes', ':id'],
       schema: 'skiff:runtime-detail',
-      menu: '/runtimes',
+      menu: '/sites/runtimes',
       title: '运行环境详情',
       tabs: [
         { title: '基础信息', segs: [] },
@@ -1713,19 +1702,15 @@
       platform: {
         loadJson: loadJson,
         request: apiRequest,
-        upload: uploadFile,
-        // 不注入时 SDK 会退回原生 `window.confirm`；这里统一接到宿主图层。
-        confirm: hostConfirm
+        upload: uploadFile
       },
       actions: {
-        skiffConfirmAnswer: skiffConfirmAnswer,
         skiffContainerAction: containerAction,
         skiffContainerToggle: containerToggle,
         skiffDockerWrite: dockerWrite,
         skiffQueryNav: queryNav,
         skiffSiteWrite: siteWrite,
         skiffSiteToggle: siteToggle,
-        skiffSiteDelete: siteDelete,
         skiffTaskWrite: taskWrite,
         skiffJobWrite: jobWrite,
         skiffTrashWrite: trashWrite,
@@ -1807,11 +1792,10 @@
       });
   }
 
-  /// 登录态失效：交给 budding 的通用 `redirect` 组件整页提示后跳登录页。
+  /// 登录态失效：立即硬跳独立登录页。
   ///
-  /// 不再只抛一行错误文案：`/ui/v1/*` 的 401 与页面骨架的 401 都会走到这里。
-  /// 换一个干净的挂载点重新 embed，避免旧页面已挂载的组件、定时器继续运行
-  /// （`redirect` 自己管倒计时与跳转，宿主只负责给出目标和文案）。
+  /// 登录页不在 budding 路由表内，走前端路由会落到未知页；这里不做提示、不等待、
+  /// 不重新 embed，直接 `location.replace`，并保留当前路径作为 `next`。
   var sessionExpiredShown = false;
 
   function loginUrl() {
@@ -1822,40 +1806,7 @@
   function showSessionExpired() {
     if (sessionExpiredShown) return;
     sessionExpiredShown = true;
-    var target = loginUrl();
-    if (!window.BuddingSDK || typeof window.BuddingSDK.embed !== 'function') {
-      window.location.assign(target);
-      return;
-    }
-    var fresh = document.createElement('div');
-    fresh.id = 'skiff-root';
-    fresh.setAttribute('data-prefix', prefix);
-    fresh.setAttribute('data-api-base', apiBase);
-    fresh.setAttribute('data-budding-version', buddingVersion);
-    fresh.setAttribute('data-budding-css', cssHref);
-    mount.parentNode.replaceChild(fresh, mount);
-    mount = fresh;
-    runtimeRef = null;
-    embed(
-      {
-        type: 'page',
-        props: { title: '登录已失效' },
-        body: [
-          {
-            type: 'redirect',
-            to: target,
-            props: {
-              title: '登录状态已失效',
-              text: '当前会话已过期，需要重新登录后才能继续操作。',
-              type: 'warning',
-              delay: 2000,
-              buttonText: '立即登录'
-            }
-          }
-        ]
-      },
-      []
-    );
+    window.location.replace(loginUrl());
   }
 
 
@@ -1959,510 +1910,7 @@
     return table;
   }
 
-  // 站点列表：顶部工具条（计数 + 动作）+ 表格。
-  //
-  // 页面标题不再写「网站 · Skiff」——位置由顶部路径条表达，标题重复只会挤占首屏。
-  // 列只留互不重复的信息：`runtime_name`（php-8.5）与 `endpoint`（PHP 8.5）是同一件事，
-  // 保留前者；时间列交给表格按 `type: 'date'` 格式化，不再直接吐 RFC3339。
-  function sitesSchema(data, runtimes) {
-    var body = [];
-    var total = typeof data.total === 'number' ? data.total : 0;
-    var table = listTable(
-      [
-        { key: 'domain', label: '域名' },
-        { key: 'type_label', label: '类型', width: 110 },
-        { key: 'status', label: '状态', width: 110, text: '${status.label}' },
-        { key: 'https', label: 'HTTPS', width: 140, text: '${https.label}' },
-        { key: 'runtime_name', label: '运行环境', width: 130 },
-        { key: 'created_at', label: '创建时间', width: 120, type: 'date' }
-      ],
-      '/sites',
-      'domain',
-      null,
-      {
-        emptyText: '还没有站点，创建后会生成整站目录、nginx vhost 与 PHP 探针'
-      }
-    );
-    table.onEvent = {
-      rowClick: {
-        actions: [
-          {
-            type: 'navigate',
-            props: { url: prefix + '/sites/${domain}' }
-          }
-        ]
-      }
-    };
-    if (data.can_admin) {
-      table.props.actionsLabel = '操作';
-      table.props.rowActions = [
-        {
-          type: 'button',
-          props: { text: '详情', variant: 'text', color: 'primary', size: 'small' },
-          onEvent: {
-            click: {
-              actions: [{ type: 'navigate', props: { url: prefix + '/sites/${domain}' } }]
-            }
-          }
-        },
-        {
-          type: 'button',
-          props: { text: '启动/停止', variant: 'text', size: 'small' },
-          onEvent: {
-            click: {
-              actions: [
-                {
-                  type: 'skiffSiteToggle',
-                  props: { domain: '${domain}', status: '${status.code}' }
-                }
-              ]
-            }
-          }
-        }
-      ];
-    }
-
-    // 工具条：左侧计数，右侧动作。批量启停从常驻大表单收进弹窗，列表回到首屏。
-    var tools = [];
-    if (data.can_admin) {
-      tools.push(
-        dialogFormButton('批量启停', {
-          title: '批量启停站点',
-          width: 520,
-          url: apiBase + '/sites/batch',
-          action: { type: 'skiffSiteWrite', props: { op: 'batch' } },
-          fields: [
-            {
-              type: 'select',
-              props: {
-                name: 'action',
-                label: '操作',
-                defaultValue: 'start',
-                items: [
-                  { title: '启动', value: 'start' },
-                  { title: '停止', value: 'stop' }
-                ]
-              }
-            },
-            {
-              type: 'textarea',
-              props: {
-                name: 'domains',
-                label: '域名（每行一个）',
-                rows: 5,
-                required: true,
-                rules: { required: true, messages: { required: '请填写域名' } }
-              }
-            }
-          ],
-          submitText: '执行批量操作',
-          notice: '每行一个域名，只对已存在的站点生效；删除仍在站点详情的删除确认里。'
-        })
-      );
-      tools.push(
-        dialogFormButton('新建站点', {
-          title: '新建站点',
-          width: 640,
-          url: apiBase + '/sites',
-          action: { type: 'skiffSiteWrite', props: { op: 'create' } },
-          fields: siteCreateFields(runtimes),
-          initialValues: siteCreateDefaults(''),
-          submitText: '创建站点',
-          variant: 'flat',
-          notice:
-            '运行环境站点需选择已运行的实例；静态站点只需目录；反向代理需填目标地址。别名每行一个。'
-        })
-      );
-    }
-    body.push({
-      type: 'flex',
-      props: { gap: 12, wrap: true, align: 'center', justify: 'space-between' },
-      content: {
-        body: [
-          {
-            type: 'text',
-            props: {
-              text:
-                '共 ' + total + ' 个站点' + (data.can_admin ? '' : '（只读，写操作需管理员）'),
-              size: 'small'
-            }
-          },
-          {
-            type: 'flex',
-            props: { gap: 8, wrap: true, justify: 'end' },
-            content: { body: tools }
-          }
-        ]
-      }
-    });
-    body.push(table);
-    return {
-      type: 'page',
-      props: { title: '网站', subtitle: '站点列表；启停、删除与新建都在本页完成' },
-      body: body
-    };
-  }
-
-  /// 站点详情：按 L3 子视图（概览 / 域名 / 配置 / 证书 / 备份）分发。
-  /// 数据仍由一次 `GET /ui/v1/sites/<domain>` 取齐，切 tab 只换渲染块，
-  /// 不新增接口、不重复请求。
-  function siteDetailSchema(data, tab) {
-    var view = tab || 'overview';
-    var sections = { overview: [], domains: [], config: [], ssl: [], backup: [] };
-    var body = sections.overview;
-    // 类型 / 状态 / HTTPS / 运行环境已在顶部指标条呈现，明细里不重复。
-    var rows = [
-      ['站点目录', data.root_dir],
-      ['文档根', data.index_dir],
-      ['附加域名', data.aliases && data.aliases.length ? data.aliases.join('、') : '—'],
-      ['创建时间', data.created_at]
-    ];
-    if (data.runtime_shared_hint) rows.push(['共享提示', data.runtime_shared_hint]);
-    if (data.runtime_down && data.runtime_alert) {
-      body.push({
-        type: 'alert',
-        props: { type: 'warning', title: '运行环境不可用', text: data.runtime_alert }
-      });
-    }
-    // 顶部指标条：状态 / 类型 / HTTPS / 运行环境一眼可扫，明细与操作往下放。
-    body.push({
-      type: 'grid',
-      props: { columns: 4, gap: 12 },
-      content: {
-        body: [
-          metricCard(
-            '状态',
-            data.status.label,
-            '',
-            '站点状态',
-            data.status.code === 'running' ? 'success' : null
-          ),
-          metricCard('类型', data.type_label, '', '站点类型'),
-          metricCard('HTTPS', data.https.label, '', '证书'),
-          metricCard('运行环境', data.runtime_label || '静态', '', '接入方式')
-        ]
-      }
-    });
-    body.push({
-      type: 'card',
-      props: { title: '站点信息' },
-      content: { body: rows.map(function (row) {
-        return {
-          type: 'flex',
-          props: { gap: 12 },
-          content: {
-            body: [
-              { type: 'text', props: { text: row[0], weight: 'medium' } },
-              { type: 'text', props: { text: row[1] } }
-            ]
-          }
-        };
-      }) }
-    });
-
-    if (data.can_manage) {
-      var actions = [];
-      if (data.status.code === 'running') {
-        actions.push(siteBtn('停止站点', { op: 'power', action: 'stop', domain: data.domain }, 'warning'));
-      } else {
-        actions.push(siteBtn('启动站点', { op: 'power', action: 'start', domain: data.domain }, 'primary'));
-      }
-      actions.push(
-        siteBtn(
-          data.is_default ? '取消默认站点' : '设为默认站点',
-          { op: 'default', enabled: !data.is_default, domain: data.domain },
-          'secondary'
-        )
-      );
-      // 删除站点：输入域名才能提交，组件内校验（U1 未支持通用输入型 confirm）。
-      var siteDeleteUrl = apiBase + '/sites/' + encodeURIComponent(data.domain) + '/delete';
-      var siteDeleteKey = newDialogKey();
-      var siteDeleteFields = [
-        {
-          type: 'input-text',
-          props: {
-            name: 'confirm',
-            label: '输入域名 ' + data.domain + ' 以确认',
-            required: true,
-            rules: {
-              required: true,
-              pattern: '^' + escapeRegExp(data.domain) + '$',
-              messages: {
-                required: '请输入站点域名',
-                pattern: '输入的域名与站点域名不一致'
-              }
-            }
-          }
-        }
-      ];
-      var siteDeleteAction = {
-        type: 'skiffSiteDelete',
-        props: { domain: data.domain, dialog: siteDeleteKey }
-      };
-      dialogRegistry[siteDeleteKey] = {
-        title: '删除站点',
-        width: 520,
-        url: siteDeleteUrl,
-        action: siteDeleteAction,
-        fields: siteDeleteFields,
-        submitText: '确认删除',
-        notice: '删除后不可恢复：站点目录、配置与证书会一并移除。',
-        noticeType: 'warning'
-      };
-      actions.push({
-        type: 'button',
-        props: { text: '删除站点', color: 'danger', variant: 'text' },
-        action: {
-          type: 'dialog',
-          props: {
-            title: '删除站点',
-            width: 520,
-            body: [
-              {
-                type: 'alert',
-                props: {
-                  type: 'warning',
-                  text: '删除后不可恢复：站点目录、配置与证书会一并移除。'
-                }
-              },
-              writeForm(siteDeleteUrl, siteDeleteAction, siteDeleteFields, '确认删除')
-            ],
-            footer: [
-              {
-                type: 'button',
-                props: { text: '取消', variant: 'outlined' },
-                action: { type: 'close' }
-              }
-            ]
-          }
-        }
-      });
-      body.push({
-        type: 'card',
-        props: { title: '站点操作' },
-        content: { body: [{ type: 'flex', props: { gap: 8, wrap: true }, content: { body: actions } }] }
-      });
-    } else {
-      body.push({
-        type: 'alert',
-        props: { type: 'info', text: '写操作需要管理员权限；当前为只读视图。' }
-      });
-    }
-
-    // 访问 / 错误日志是三级菜单里的「日志」，这里不再重复给入口。
-
-    // 配置：错误时只展示提示；正常时给可编辑 textarea，保存仍走 SITE_SAVE_CONFIG。
-    if (data.config.error) {
-      sections.config.push({
-        type: 'alert',
-        props: { type: 'warning', title: '配置读取失败', text: data.config.error }
-      });
-    } else if (data.can_manage) {
-      sections.config.push(
-        writeCard(
-          'vhost 配置',
-          (data.config.path || '—') + (data.config.active ? ' · 已启用' : ' · 未启用'),
-          writeForm(
-            apiBase + '/sites/' + encodeURIComponent(data.domain) + '/config',
-            { type: 'skiffSiteWrite', props: { op: 'config', domain: data.domain } },
-            [
-              {
-                type: 'code',
-                props: {
-                  name: 'content',
-                  language: 'nginx',
-                  readonly: false,
-                  modelValue: buddySafeString(data.config.content),
-                  height: 420,
-                  lineNumbers: true,
-                  wrap: false,
-                  copyable: true,
-                  ariaLabel: 'vhost 配置内容',
-                  rules: { required: true, messages: { required: '配置内容不能为空' } }
-                }
-              }
-            ],
-            '保存配置'
-          )
-        )
-      );
-    } else {
-      sections.config.push(
-        writeCard(
-          'vhost 配置',
-          (data.config.path || '—') + '（只读）',
-          { type: 'code', props: { modelValue: buddySafeString(data.config.content), language: 'nginx' } }
-        )
-      );
-    }
-
-    // 域名：列表逐项删除 + 新增表单。
-    var domainBody = [];
-    if (!data.aliases || data.aliases.length === 0) {
-      domainBody.push(textLine('暂无附加域名。'));
-    } else {
-      data.aliases.forEach(function (alias) {
-        var line = [textLine(alias)];
-        if (data.can_manage) {
-          line.push(
-            siteBtn('删除', { op: 'domains', action: 'remove', alias: alias, domain: data.domain }, 'danger', 'text')
-          );
-        }
-        domainBody.push({
-          type: 'flex',
-          props: { gap: 8 },
-          content: { body: line }
-        });
-      });
-    }
-    if (data.can_manage) {
-      domainBody.push(
-        writeForm(
-          apiBase + '/sites/' + encodeURIComponent(data.domain) + '/domains',
-          { type: 'skiffSiteWrite', props: { op: 'domains', action: 'add', domain: data.domain } },
-          [
-            {
-              type: 'input-text',
-              props: {
-                name: 'alias',
-                label: '新增附加域名',
-                required: true,
-                rules: { required: true, messages: { required: '请输入域名' } }
-              }
-            }
-          ],
-          '添加'
-        )
-      );
-    }
-    sections.domains.push({ type: 'card', props: { title: '附加域名' }, content: { body: domainBody } });
-
-    // 证书：生成/强制/关闭/删除 + PEM 上传。
-    var sslBody = [
-      textLine(data.ssl.cert_exists ? '已检测到证书文件' : '未检测到证书文件'),
-      textLine('证书路径：' + (data.ssl.cert_path || '—')),
-      textLine('主体：' + (data.ssl.subject || '—')),
-      textLine('签发者：' + (data.ssl.issuer || '—')),
-      textLine('到期：' + (data.ssl.expires || '—'))
-    ];
-    if (data.can_manage) {
-      var sslUploadUrl = apiBase + '/sites/' + encodeURIComponent(data.domain) + '/ssl';
-      var sslUploadAction = { type: 'skiffSiteWrite', props: { op: 'ssl', action: 'upload', domain: data.domain } };
-      var sslUploadFields = [
-        {
-          type: 'textarea',
-          props: { name: 'cert_pem', label: '证书 PEM', rows: 8, placeholder: '-----BEGIN CERTIFICATE-----' }
-        },
-        {
-          type: 'textarea',
-          props: { name: 'key_pem', label: '私钥 PEM（保存为 0600）', rows: 8, placeholder: '-----BEGIN PRIVATE KEY-----' }
-        }
-      ];
-      sslBody.push({
-        type: 'flex',
-        props: { gap: 8, wrap: true },
-        content: {
-          body: [
-            siteBtn('生成自签证书', { op: 'ssl', action: 'generate', domain: data.domain }, 'primary'),
-            siteBtn(
-              data.ssl.force_https ? '关闭强制 HTTPS' : '开启强制 HTTPS',
-              { op: 'ssl', action: 'force', enabled: !data.ssl.force_https, domain: data.domain },
-              'secondary'
-            ),
-            siteBtn('关闭 HTTPS', { op: 'ssl', action: 'disable', domain: data.domain }, 'warning'),
-            siteBtn(
-              '删除证书',
-              { op: 'ssl', action: 'delete_cert', domain: data.domain },
-              'danger',
-              'text'
-            ),
-            {
-              type: 'button',
-              props: { text: '上传已有证书（PEM）', variant: 'tonal' },
-              action: {
-                type: 'dialog',
-                props: {
-                  title: '上传已有证书（PEM）',
-                  width: 620,
-                  body: [
-                    {
-                      type: 'alert',
-                      props: {
-                        type: 'info',
-                        text: '上传后将替换现有证书并自动启用 HTTPS；格式错误的 PEM 会被拒绝。'
-                      }
-                    },
-                    writeForm(sslUploadUrl, sslUploadAction, sslUploadFields, '上传并启用')
-                  ],
-                  footer: [
-                    { type: 'button', props: { text: '取消', variant: 'outlined' }, action: { type: 'close' } }
-                  ]
-                }
-              }
-            }
-          ]
-        }
-      });
-    }
-    sections.ssl.push({ type: 'card', props: { title: '证书 / HTTPS' }, content: { body: sslBody } });
-
-    // 备份开关。
-    var backupBody = [];
-    if (!data.backup.available) {
-      backupBody.push({
-        type: 'alert',
-        props: { type: 'warning', text: '内核任务服务未初始化，站点备份暂不可用。' }
-      });
-    } else {
-      backupBody.push(textLine(data.backup.enabled ? '备份已开启（每日 03:00）' : '备份未开启'));
-      backupBody.push(textLine('上次：' + (data.backup.last_text || '从未执行')));
-      backupBody.push(textLine('下次：' + (data.backup.next_text || '—')));
-      if (data.can_manage) {
-        backupBody.push(
-          siteBtn(
-            data.backup.enabled ? '关闭备份' : '开启备份',
-            { op: 'backup', enabled: !data.backup.enabled, domain: data.domain },
-            data.backup.enabled ? 'warning' : 'primary'
-          )
-        );
-      }
-    }
-    sections.backup.push({ type: 'card', props: { title: '站点备份' }, content: { body: backupBody } });
-
-    var subtitles = {
-      overview: data.can_manage ? '站点概览；写操作复用既有权限、CSRF 与审计' : '只读概览',
-      domains: '附加域名增删；新域名需自行解析到本机',
-      config: 'vhost 配置；保存前做语法校验，失败拒绝写入',
-      ssl: '证书状态、强制 HTTPS 与 PEM 上传',
-      backup: '每日 03:00 全站备份，产物在站点目录旁'
-    };
-    return {
-      type: 'page',
-      props: {
-        title: data.domain,
-        subtitle: subtitles[view] || subtitles.overview
-      },
-      body: sections[view] || sections.overview
-    };
-  }
-
-  function siteBtn(text, props, color, variant) {
-    return {
-      type: 'button',
-      props: { text: text, color: color, variant: variant || 'tonal' },
-      onEvent: {
-        click: {
-          actions: [{ type: 'skiffSiteWrite', props: props }]
-        }
-      }
-    };
-  }
-
   /// 正则字面量转义：域名里的 `.` 等不能让用户少输一部分也能通过。
-  function escapeRegExp(text) {
-    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
   /// 新建站点字段：列表弹窗与 `/sites/new` 深链页共用同一份定义。
   function siteCreateFields(runtimes) {
     var items = (runtimes || []).map(function (r) {
@@ -2638,7 +2086,7 @@
     );
     table.onEvent = {
       rowClick: {
-        actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}' } }]
+        actions: [{ type: 'navigate', props: { url: prefix + '/sites/runtimes/${id}' } }]
       }
     };
     // 行内入口：详情与日志直达（与网站列表同款）；整行点击仍是快捷方式。
@@ -2649,7 +2097,7 @@
         props: { text: '详情', variant: 'text', color: 'primary', size: 'small' },
         onEvent: {
           click: {
-            actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}' } }]
+            actions: [{ type: 'navigate', props: { url: prefix + '/sites/runtimes/${id}' } }]
           }
         }
       },
@@ -2658,7 +2106,7 @@
         props: { text: '日志', variant: 'text', size: 'small' },
         onEvent: {
           click: {
-            actions: [{ type: 'navigate', props: { url: prefix + '/runtimes/${id}/logs' } }]
+            actions: [{ type: 'navigate', props: { url: prefix + '/sites/runtimes/${id}/logs' } }]
           }
         }
       }
@@ -3135,7 +2583,7 @@
           actions: [
             {
               type: 'skiffQueryNav',
-              props: { path: prefix + '/containers', query: {} }
+              props: { path: prefix + '/docker/containers', query: {} }
             }
           ]
         }
@@ -3154,7 +2602,7 @@
           actions: [
             {
               type: 'skiffQueryNav',
-              props: { path: prefix + '/containers', query: { filter: 'error' } }
+              props: { path: prefix + '/docker/containers', query: { filter: 'error' } }
             }
           ]
         }
@@ -3211,7 +2659,7 @@
             actions: [
               {
                 type: 'navigate',
-                props: { url: prefix + '/containers/${id}' }
+                props: { url: prefix + '/docker/containers/${id}' }
               }
             ]
           }
@@ -3265,7 +2713,7 @@
         actions: [
           {
             type: 'navigate',
-            props: { url: prefix + '/containers/${id}' }
+            props: { url: prefix + '/docker/containers/${id}' }
           }
         ]
       }
@@ -3285,7 +2733,7 @@
                   actions: [
                     {
                       type: 'navigate',
-                      props: { url: prefix + '/containers/new' }
+                      props: { url: prefix + '/docker/containers/new' }
                     }
                   ]
                 }
@@ -3358,7 +2806,7 @@
       type: 'link',
       props: {
         text: '查看日志',
-        href: prefix + '/containers/' + encodeURIComponent(c.id) + '/logs'
+        href: prefix + '/docker/containers/' + encodeURIComponent(c.id) + '/logs'
       }
     });
     // 终端权限与执行票据同源（DockerExec），不与启停的 DockerOperate 混用。
@@ -3367,7 +2815,7 @@
         type: 'link',
         props: {
           text: '打开终端',
-          href: prefix + '/containers/' + encodeURIComponent(c.id) + '/terminal'
+          href: prefix + '/docker/containers/' + encodeURIComponent(c.id) + '/terminal'
         }
       });
     }
@@ -6224,7 +5672,7 @@
                 type: 'link',
                 props: {
                   text: '返回容器详情',
-                  href: prefix + '/containers/' + encodeURIComponent(containerId)
+                  href: prefix + '/docker/containers/' + encodeURIComponent(containerId)
                 }
               },
               {
@@ -6739,11 +6187,11 @@
     });
   }
 
-  function logPageUrl(part, domain, tail, keyword) {
+  function logPageUrl(id, part, tail, keyword) {
     return (
       prefix +
       '/sites/' +
-      encodeURIComponent(domain) +
+      encodeURIComponent(id) +
       '/logs?part=' +
       (part === 'error' ? 'error' : 'access') +
       '&tail=' +
@@ -6754,8 +6202,8 @@
 
   function logSwitch(args) {
     window.location.href = logPageUrl(
+      args.id,
       args.part,
-      args.domain,
       args.tail,
       String(args.q || '')
     );
@@ -6782,7 +6230,7 @@
     var params = [];
     if (keyword) params.push('q=' + encodeURIComponent(keyword));
     if (cursor) params.push('cursor=' + encodeURIComponent(cursor));
-    return prefix + '/audit' + (params.length ? '?' + params.join('&') : '');
+    return prefix + '/settings/audit' + (params.length ? '?' + params.join('&') : '');
   }
 
   function auditSearch(args, ctx) {
@@ -6839,7 +6287,7 @@
           actions: [
             {
               type: 'link',
-              props: { text: '重置', href: prefix + '/audit' }
+              props: { text: '重置', href: prefix + '/settings/audit' }
             },
             {
               type: 'button',
@@ -7555,7 +7003,7 @@
     };
   }
 
-  function siteLogsSchema(domain, part, tail, keyword, data) {
+  function siteLogsSchema(siteId, domain, part, tail, keyword, data) {
     var lines = data.lines || [];
     var body = [
       {
@@ -7567,16 +7015,18 @@
               type: 'link',
               props: {
                 text: '返回站点详情',
-                href: prefix + '/sites/' + encodeURIComponent(domain)
+                href: prefix + '/sites/' + encodeURIComponent(siteId)
               }
             },
             logSwitchButton('访问日志', {
+              id: siteId,
               domain: domain,
               part: 'access',
               tail: tail,
               q: keyword
             }),
             logSwitchButton('错误日志', {
+              id: siteId,
               domain: domain,
               part: 'error',
               tail: tail,
@@ -7596,7 +7046,7 @@
           submit: [
             {
               type: 'skiffLogFilter',
-              props: { domain: domain, part: part, tail: tail }
+              props: { id: siteId, domain: domain, part: part, tail: tail }
             }
           ]
         },
@@ -7630,9 +7080,11 @@
     } else {
       body.push({
         type: 'code',
+        className: 'skiff-code-no-lang',
         props: {
           modelValue: buddySafeString(lines.join('\n')),
           language: 'plaintext',
+          className: 'skiff-code-no-lang',
           readonly: true,
           height: 560,
           lineNumbers: true,
@@ -7797,7 +7249,7 @@
               type: 'link',
               props: {
                 text: '返回容器详情',
-                href: prefix + '/containers/' + encodeURIComponent(containerId)
+                href: prefix + '/docker/containers/' + encodeURIComponent(containerId)
               }
             },
             {
@@ -7865,7 +7317,7 @@
               type: 'link',
               props: {
                 text: '返回运行环境详情',
-                href: prefix + '/runtimes/' + encodeURIComponent(runtimeId)
+                href: prefix + '/sites/runtimes/' + encodeURIComponent(runtimeId)
               }
             },
             {
@@ -8310,7 +7762,7 @@
       props: { gap: 12 },
       content: {
         body: [
-          { type: 'link', props: { text: '已安装 (' + data.plugins.length + ')', href: prefix + '/plugins' } },
+          { type: 'link', props: { text: '已安装 (' + data.plugins.length + ')', href: prefix + '/plugins/installed' } },
           { type: 'link', props: { text: '发现', href: prefix + '/plugins/discover' } },
           { type: 'link', props: { text: '可更新', href: prefix + '/plugins/updates' } }
         ]
@@ -8440,7 +7892,7 @@
     }
     body.push({
       type: 'link',
-      props: { text: '返回插件中心', href: prefix + '/plugins' }
+      props: { text: '返回插件中心', href: prefix + '/plugins/installed' }
     });
     return {
       type: 'page',
@@ -8506,7 +7958,7 @@
             return;
           }
           location.assign(
-            (res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins'
+            (res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins/installed'
           );
         })
         .catch(function (error) {
@@ -8682,11 +8134,11 @@
         pendingInstall = res.body.data;
         pendingConfirm = res.body.data;
         if (runtime && typeof runtime.navigateTo === 'function') {
-          runtime.navigateTo({ path: prefix + '/store/confirm' });
+          runtime.navigateTo({ path: prefix + '/plugins/store/confirm' });
           return;
         }
         // 兜底：没有路由能力时退回商店页（避免二次嵌入另一个 Vue 实例）。
-        window.location.href = prefix + '/store';
+        window.location.href = prefix + '/plugins/store';
       })
       .catch(function (error) {
         toast('安装准备失败：' + (error && error.message ? error.message : String(error)), 'error');
@@ -8738,7 +8190,7 @@
             type: 'button',
             props: { text: '取消', variant: 'tonal' },
             onEvent: {
-              click: { actions: [{ type: 'navigate', props: { url: prefix + '/store' } }] }
+              click: { actions: [{ type: 'navigate', props: { url: prefix + '/plugins/store' } }] }
             }
           }
         ]
@@ -8785,7 +8237,7 @@
         pendingInstall = null;
         pendingConfirm = null;
         toast('插件已安装', 'success');
-        location.assign((res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins');
+        location.assign((res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins/installed');
       })
       .catch(function (error) {
         toast('安装失败：' + (error && error.message ? error.message : String(error)), 'error');
@@ -9038,7 +8490,7 @@
           type: 'alert',
           props: { type: 'error', title: '插件功能页加载失败', text: detail }
         },
-        { type: 'link', props: { text: '返回插件页', href: prefix + '/plugins' } }
+        { type: 'link', props: { text: '返回插件页', href: prefix + '/plugins/installed' } }
       ]
     };
   }
@@ -9221,15 +8673,11 @@
       });
     }
     if (kind === 'sites') {
-      // 列表本身由表格 `source` 游标取数；这里只读 `can_admin` 等页面级元数据。
-      // 新建弹窗需要运行环境下拉，取不到时降级为空列表，不阻塞列表本身。
-      return Promise.all([
-        fetchData('/sites?limit=1'),
-        fetchData('/runtimes?limit=200').catch(function () {
-          return { items: [] };
-        })
-      ]).then(function (res) {
-        return sitesSchema(res[0], res[1].items || []);
+      // 页面骨架由内核生成；表格自身按 `source` 走 `/ui/v1/sites` 取数，
+      // 分页请求不带 `with_schema`，不会重复生成。
+      return fetchRawJson(apiBase + '/sites?limit=1&with_schema=true').then(function (body) {
+        if (!body || !body.schema) throw new Error('站点列表未返回页面结构');
+        return prepareServerSchema(body.schema);
       });
     }
     if (kind === 'site-new') {
@@ -9242,10 +8690,13 @@
         });
     }
     if (kind === 'site-detail') {
-      // 第三段是 L3 子视图（空 = 概览）；数据一次取齐，视图只决定渲染哪块。
+      // 第三段是 L3 子视图（空 = 概览）。Schema 由内核按 tab 生成，前端只负责渲染。
       var siteTab = String(parts[2] || '').toLowerCase();
-      return fetchData('/sites/' + encodeURIComponent(parts[1])).then(function (data) {
-        return siteDetailSchema(data, siteTab);
+      var detailPath =
+        '/sites/' + encodeURIComponent(parts[1]) + (siteTab ? '?tab=' + encodeURIComponent(siteTab) : '');
+      return fetchRawJson(apiBase + detailPath).then(function (body) {
+        if (!body || !body.schema) throw new Error('站点详情未返回页面结构');
+        return prepareServerSchema(body.schema);
       });
     }
     if (kind === 'runtimes') {
@@ -9260,9 +8711,9 @@
       });
     }
     if (kind === 'runtime-detail') {
-      var runtimeId = parts[1] || '';
-      // 第三段是 L3 子视图（空 = 基础信息）；`?file=` 只在配置视图里有意义。
-      var runtimeTab = String(parts[2] || '').toLowerCase();
+      var runtimeId = parts[2] || '';
+      // 第四段是 L3 子视图（空 = 基础信息）；`?file=` 只在配置视图里有意义。
+      var runtimeTab = String(parts[3] || '').toLowerCase();
       var fileKey = new URLSearchParams(location.search).get('file') || '';
       var detailUrl =
         '/runtimes/' +
@@ -9285,7 +8736,7 @@
       return Promise.resolve(containerNewSchema());
     }
     if (kind === 'container-detail') {
-      return fetchData('/containers/' + encodeURIComponent(parts[1])).then(containerDetailSchema);
+      return fetchData('/containers/' + encodeURIComponent(parts[2])).then(containerDetailSchema);
     }
     if (kind === 'images') {
       return fetchData('/images?limit=1').then(imagesSchema);
@@ -9337,14 +8788,15 @@
       return fetchData('/files/read?path=' + encodeURIComponent(viewPath)).then(fileViewSchema);
     }
     if (kind === 'site-logs') {
-      var logDomain = parts[1] || '';
+      var logSiteId = parts[1] || '';
+      var logDomain = '';
       var logQuery = new URLSearchParams(location.search);
       var logPart = logQuery.get('part') === 'error' ? 'error' : 'access';
       var logTail = logQuery.get('tail') || '200';
       var logKeyword = logQuery.get('q') || '';
       return fetchData(
         '/sites/' +
-          encodeURIComponent(logDomain) +
+          encodeURIComponent(logSiteId) +
           '/logs?part=' +
           logPart +
           '&tail=' +
@@ -9352,7 +8804,15 @@
           '&q=' +
           encodeURIComponent(logKeyword)
       ).then(function (data) {
-        return siteLogsSchema(logDomain, logPart, logTail, logKeyword, data);
+        logDomain = data.domain || '';
+        return siteLogsSchema(
+          logSiteId,
+          logDomain,
+          logPart,
+          logTail,
+          logKeyword,
+          data
+        );
       });
     }
     if (kind === 'job-logs') {
@@ -9362,7 +8822,7 @@
       });
     }
     if (kind === 'container-logs') {
-      var logContainerId = parts[1] || '';
+      var logContainerId = parts[2] || '';
       return fetchData(
         '/containers/' + encodeURIComponent(logContainerId) + '/logs?tail=500'
       ).then(
@@ -9372,7 +8832,7 @@
         function (error) {
           return logErrorPage(
             '容器日志',
-            prefix + '/containers/' + encodeURIComponent(logContainerId),
+            prefix + '/docker/containers/' + encodeURIComponent(logContainerId),
             '返回容器详情',
             error
           );
@@ -9380,7 +8840,7 @@
       );
     }
     if (kind === 'runtime-logs') {
-      var logRuntimeId = parts[1] || '';
+      var logRuntimeId = parts[2] || '';
       return fetchData(
         '/runtimes/' + encodeURIComponent(logRuntimeId) + '/logs?tail=300'
       ).then(
@@ -9390,7 +8850,7 @@
         function (error) {
           return logErrorPage(
             '运行环境日志',
-            prefix + '/runtimes/' + encodeURIComponent(logRuntimeId),
+            prefix + '/sites/runtimes/' + encodeURIComponent(logRuntimeId),
             '返回运行环境详情',
             error
           );
@@ -9398,7 +8858,7 @@
       );
     }
     if (kind === 'container-terminal') {
-      var terminalId = parts[1] || '';
+      var terminalId = parts[2] || '';
       return loadTerminalUrl(terminalId).then(
         function (info) {
           return terminalSchema(terminalId, info);
@@ -9421,7 +8881,7 @@
                 type: 'link',
                 props: {
                   text: '返回容器详情',
-                  href: prefix + '/containers/' + encodeURIComponent(terminalId)
+                  href: prefix + '/docker/containers/' + encodeURIComponent(terminalId)
                 }
               }
             ]
@@ -9461,7 +8921,7 @@
             },
             {
               type: 'link',
-              props: { text: '返回商店', href: prefix + '/store' }
+              props: { text: '返回商店', href: prefix + '/plugins/store' }
             }
           ]
         });

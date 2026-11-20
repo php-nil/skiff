@@ -1103,6 +1103,7 @@ impl AppState {
             kind,
             &access,
             &error,
+            VhostPolicy::new(&site.rewrite, site.limit_rate_kbps),
             tls,
         ))
     }
@@ -1200,6 +1201,7 @@ impl AppState {
             kind,
             &access,
             &error,
+            VhostPolicy::new(&site.rewrite, site.limit_rate_kbps),
             tls,
         ))
     }
@@ -1560,6 +1562,94 @@ impl AppState {
             ));
         }
         self.apply_tls(domain, site.https, force).await
+    }
+
+    /// 保存站点级 nginx 策略（伪静态预设 + 出口限速）并重生成 vhost。
+    ///
+    /// 库是状态源、vhost 是投影：先落库，再写文件并校验；任一步失败都回滚库与
+    /// 文件，避免留下「库已改、线上配置未变」的不一致。
+    pub async fn set_site_policy(
+        &self,
+        domain: &str,
+        rewrite: &str,
+        limit_rate_kbps: u32,
+    ) -> Result<(), SiteError> {
+        let rewrite = validate_rewrite(rewrite)?;
+        if limit_rate_kbps > MAX_LIMIT_RATE_KBPS {
+            return Err(SiteError::BadRequest(format!(
+                "限速不能超过 {MAX_LIMIT_RATE_KBPS} KB/s"
+            )));
+        }
+        let _guard = super::nginx_write_lock().lock().await;
+        let s = self.site_settings();
+        let site = self
+            .db()
+            .site_by_domain(domain)
+            .map_err(|e| SiteError::Internal(e.to_string()))?
+            .ok_or_else(|| SiteError::BadRequest(format!("站点不存在：{domain}")))?;
+        let (old_rewrite, old_limit) = (site.rewrite.clone(), site.limit_rate_kbps);
+        if old_rewrite == rewrite && old_limit == limit_rate_kbps {
+            return Ok(());
+        }
+        let site_dir = PathBuf::from(&site.root_dir);
+        let site_conf = if site.status == "running" {
+            s.vhost_file(&site_dir, domain)
+        } else {
+            s.vhost_disabled(&site_dir, domain)
+        };
+        let default_conf = s.conf_dir.join(DEFAULT_CONF);
+        let snapshot: Vec<(PathBuf, Option<Vec<u8>>)> = [&site_conf, &default_conf]
+            .into_iter()
+            .map(|p| (p.clone(), std::fs::read(p).ok()))
+            .collect();
+        let restore = |snapshot: &[(PathBuf, Option<Vec<u8>>)]| {
+            for (p, old) in snapshot {
+                match old {
+                    Some(bytes) => {
+                        if let Err(e) = std::fs::write(p, bytes) {
+                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败");
+                        }
+                    }
+                    None => {
+                        if let Err(e) = std::fs::remove_file(p) {
+                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败（删除新增文件）");
+                        }
+                    }
+                }
+            }
+        };
+        let rollback_db = || {
+            if let Err(e) = self.db().set_site_policy(domain, &old_rewrite, old_limit) {
+                tracing::error!(domain, error = %e, "回滚站点策略失败：数据库与磁盘可能不一致");
+            }
+        };
+        self.db()
+            .set_site_policy(domain, rewrite, limit_rate_kbps)
+            .map_err(|e| SiteError::Internal(format!("写入站点策略失败：{e}")))?;
+        if let Err(e) = self.write_site_vhost(&s, domain) {
+            restore(&snapshot);
+            rollback_db();
+            return Err(e);
+        }
+        if let Err(e) = self.sync_default_conf(&s) {
+            restore(&snapshot);
+            rollback_db();
+            return Err(SiteError::Internal(format!("写入默认站点配置失败：{e}")));
+        }
+        if let Err(e) = self.validate_nginx_locked().await {
+            restore(&snapshot);
+            rollback_db();
+            return Err(e);
+        }
+        if let Err(e) = self.activate_nginx_locked().await {
+            restore(&snapshot);
+            rollback_db();
+            if let Err(re) = self.restart_nginx_locked().await {
+                tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
+            }
+            return Err(SiteError::Unavailable(e));
+        }
+        Ok(())
     }
 
     /// 改写站点 vhost + 默认站 vhost，校验 `nginx -t` 后让 nginx 生效；任一步失败回滚文件与库状态。

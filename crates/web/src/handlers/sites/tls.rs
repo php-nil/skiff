@@ -23,6 +23,8 @@ pub(crate) async fn backup_view(state: &AppState, domain: &str) -> SiteBackupVie
     SiteBackupView {
         enabled: status.enabled,
         task_id: status.task_id,
+        interval: status.interval,
+        time: status.time,
         last_text: status
             .last_at
             .map(|at| {

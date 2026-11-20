@@ -297,9 +297,9 @@ pub async fn load_session(
                         // 壳页设置页承载强改密入口（`?force=1`），必须可达；
                         // 改密与登出本身走 `/ui/v1/settings/password`、
                         // `/ui/v1/session/logout`（上面 `/ui/` 已放行）。
-                        || path == format!("/{prefix}/settings");
+                        || path == format!("/{prefix}/settings/security");
                     if !allowed {
-                        return AppError::Redirect(format!("/{prefix}/settings?force=1"))
+                        return AppError::Redirect(format!("/{prefix}/settings/security?force=1"))
                             .into_response();
                     }
                 }

@@ -78,6 +78,61 @@ pub struct SiteBackupStatus {
     pub last_at: Option<i64>,
     pub last_result: Option<String>,
     pub next_at: Option<i64>,
+    /// `daily` / `weekly` / `monthly`（无法识别时为空）。
+    pub interval: String,
+    /// 本地时间 `HH:MM`（无法识别时为空）。
+    pub time: String,
+}
+
+/// 解析 `HH:MM` 为 `(hour, minute)`；只接受 00–23 / 00–59。
+fn parse_backup_time(raw: &str) -> Result<(u32, u32), String> {
+    let (h, m) = raw
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| "执行时间必须为 HH:MM".to_string())?;
+    let hour: u32 = h.parse().map_err(|_| "执行时间必须为 HH:MM".to_string())?;
+    let minute: u32 = m.parse().map_err(|_| "执行时间必须为 HH:MM".to_string())?;
+    if hour > 23 || minute > 59 {
+        return Err("执行时间必须为 00:00–23:59".to_string());
+    }
+    Ok((hour, minute))
+}
+
+/// 站点备份计划：间隔（daily / weekly / monthly）+ 本地执行时间。
+fn site_backup_schedule(interval: &str, time: &str) -> Result<Schedule, String> {
+    let (hour, minute) = parse_backup_time(time)?;
+    let expr = match interval.trim().to_ascii_lowercase().as_str() {
+        "" | "daily" => format!("{minute} {hour} * * *"),
+        "weekly" => format!("{minute} {hour} * * 1"),
+        "monthly" => format!("{minute} {hour} 1 * *"),
+        other => {
+            return Err(format!(
+                "未知备份间隔：{other}（可选 daily / weekly / monthly）"
+            ))
+        }
+    };
+    Ok(Schedule::cron(expr))
+}
+
+/// 从 cron 表达式反解页面需要的间隔与时间；识别不了的写法留空，不冒充默认值。
+fn backup_schedule_parts(schedule: &Schedule) -> (String, String) {
+    let Schedule::Cron { expr, .. } = schedule else {
+        return (String::new(), String::new());
+    };
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+    if parts.len() != 5 {
+        return (String::new(), String::new());
+    }
+    let (Ok(minute), Ok(hour)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) else {
+        return (String::new(), String::new());
+    };
+    let interval = match (parts[2], parts[4]) {
+        ("*", "*") => "daily",
+        ("*", _) => "weekly",
+        ("1", "*") => "monthly",
+        _ => "",
+    };
+    (interval.to_string(), format!("{hour:02}:{minute:02}"))
 }
 
 mod store;
@@ -624,28 +679,38 @@ impl TaskService {
         let id = site_backup_task_id(domain);
         let sched = self.scheduler.lock().await;
         match sched.get(&id) {
-            Some(task) => SiteBackupStatus {
-                enabled: task.spec.enabled,
-                task_id: id.clone(),
-                last_at: task.last_run.as_ref().map(|l| l.at),
-                last_result: task
-                    .last_run
-                    .as_ref()
-                    .map(|l| l.result.as_str().to_string()),
-                next_at: sched.next_run_at(&id),
-            },
+            Some(task) => {
+                let (interval, time) = backup_schedule_parts(&task.spec.schedule);
+                SiteBackupStatus {
+                    enabled: task.spec.enabled,
+                    task_id: id.clone(),
+                    last_at: task.last_run.as_ref().map(|l| l.at),
+                    last_result: task
+                        .last_run
+                        .as_ref()
+                        .map(|l| l.result.as_str().to_string()),
+                    next_at: sched.next_run_at(&id),
+                    interval,
+                    time,
+                }
+            }
             None => SiteBackupStatus {
                 task_id: id,
+                interval: "daily".to_string(),
+                time: "03:00".to_string(),
                 ..Default::default()
             },
         }
     }
 
-    /// 打开/关闭某站点的 `site-backup`。开启时直接注册内核任务，不跳计划任务页。
+    /// 打开/关闭某站点的 `site-backup`，并同步间隔与执行时间。
+    /// 开启时直接注册内核任务，不跳计划任务页。
     pub async fn set_site_backup(
         &self,
         domain: &str,
         enabled: bool,
+        interval: &str,
+        time: &str,
         admin: &str,
     ) -> Result<SiteBackupStatus, String> {
         if self
@@ -656,6 +721,13 @@ impl TaskService {
         {
             return Err("站点不存在".to_string());
         }
+        let has_plan = !interval.trim().is_empty() || !time.trim().is_empty();
+        let schedule = match site_backup_schedule(interval, time) {
+            Ok(schedule) => Some(schedule),
+            Err(e) if enabled || has_plan => return Err(e),
+            // 关闭且未带计划：不改动现有计划，新任务用默认每日 03:00 占位。
+            Err(_) => None,
+        };
         let id = site_backup_task_id(domain);
         let now = self.clock.now();
         let mut sched = self.scheduler.lock().await;
@@ -663,6 +735,7 @@ impl TaskService {
             Some(task) => {
                 let mut patch = TaskPatch {
                     enabled: Some(enabled),
+                    schedule,
                     ..Default::default()
                 };
                 // 旧记录可能没带域名（早期手工注册），补一次 payload。
@@ -674,19 +747,14 @@ impl TaskService {
                     .map_err(|e| e.to_string())?;
             }
             None => {
-                if !enabled {
-                    return Ok(SiteBackupStatus {
-                        task_id: id,
-                        ..Default::default()
-                    });
-                }
                 let mut spec = TaskSpec::new(
                     id.clone(),
                     TaskKind::builtin(BUILTIN_SITE_BACKUP).map_err(|e| e.to_string())?,
                     TaskSource::Site(domain.to_string()),
-                    Schedule::cron("0 3 * * *"),
+                    schedule.unwrap_or_else(|| Schedule::cron("0 3 * * *")),
                 )
                 .map_err(|e| e.to_string())?;
+                spec.enabled = enabled;
                 spec.payload = json!({ "domain": domain });
                 // 打包走 exec 作业，任务上限即作业超时；默认 30s 容不下真实站点。
                 spec.timeout_secs = SITE_BACKUP_TIMEOUT_SECS;
@@ -2121,20 +2189,29 @@ requires = ["fs"]
         let svc = service(&dir);
 
         let on = svc
-            .set_site_backup("example.com", true, "admin")
+            .set_site_backup("example.com", true, "weekly", "04:30", "admin")
             .await
             .unwrap();
         assert!(on.enabled);
         assert_eq!(on.task_id, site_backup_task_id("example.com"));
+        assert_eq!(on.interval, "weekly");
+        assert_eq!(on.time, "04:30");
 
         let off = svc
-            .set_site_backup("example.com", false, "admin")
+            .set_site_backup("example.com", false, "weekly", "04:30", "admin")
             .await
             .unwrap();
         assert!(!off.enabled);
+        assert_eq!(off.interval, "weekly", "关闭后仍保留原计划");
 
-        let unknown = svc.set_site_backup("nope.example", true, "admin").await;
+        let unknown = svc
+            .set_site_backup("nope.example", true, "daily", "03:00", "admin")
+            .await;
         assert!(unknown.is_err());
+        assert!(svc
+            .set_site_backup("example.com", true, "hourly", "03:00", "admin")
+            .await
+            .is_err());
     }
 
     /// 站点备份走 exec 作业：**先看记录，再看产物**。
@@ -2152,7 +2229,7 @@ requires = ["fs"]
     async fn site_backup_runs_through_an_exec_job() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(&dir);
-        svc.set_site_backup("example.com", true, "admin")
+        svc.set_site_backup("example.com", true, "daily", "03:00", "admin")
             .await
             .unwrap();
         let task_id = site_backup_task_id("example.com");

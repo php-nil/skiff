@@ -69,6 +69,8 @@ Site (static / proxy)  不持有 RuntimeEnv
 | | `runtime_id` | `runtime` 站点必填；其余类型必须为空 |
 | | `proxy_target` | 仅 proxy：`http(s)://host[:port]` 上游 |
 | | `proxy_websocket` | 仅 proxy：是否升级 WebSocket |
+| | `rewrite` | 伪静态预设键：`none` / `wordpress` / `laravel` / `thinkphp`；只对 PHP 站点生效，vhost 由内核按白名单生成 |
+| | `limit_rate_kbps` | nginx `limit_rate` 出口限速（KB/s，0 = 不限制），对所有站点类型生效 |
 | | `index/ log/ ssl/ conf/` | 目录布局不变，见 §2 |
 
 - `kind` 不冗余存在站点表：站点类型为 `runtime` 时，kind/version 由 `runtime_id` join 得到；

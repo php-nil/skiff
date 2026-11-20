@@ -133,6 +133,7 @@ action_table! {
     SITE_UPDATE_DOMAINS = "site.update_domains": Site, Some(Permission::Admin), "commands::site::update_domains", false;
     SITE_SSL = "site.ssl": Site, Some(Permission::Admin), "commands::site::ssl", false;
     SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), "commands::site::backup", false;
+    SITE_SET_POLICY = "site.set_policy": Site, Some(Permission::Admin), "commands::site::set_policy", false;
 
     // ---- 运行环境（Admin：安装、克隆、扩缩、配置、扩展、探测）----
     RUNTIME_CREATE = "runtime.create": Runtime, Some(Permission::Admin), "commands::runtime::create", false;

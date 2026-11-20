@@ -172,9 +172,12 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
         port: r.port.map(|p| p.to_string()).unwrap_or_default(),
         implemented: r.implemented,
         is_default: r.is_default,
-        detail_href: format!("/{prefix}/runtimes/{}", encode_uri_component(&v.runtime.id)),
+        detail_href: format!(
+            "/{prefix}/sites/runtimes/{}",
+            encode_uri_component(&v.runtime.id)
+        ),
         docker_href: format!(
-            "/{prefix}/containers/{}",
+            "/{prefix}/docker/containers/{}",
             encode_uri_component(&v.container_name)
         ),
         job_progress: r.job.as_ref().map(|j| j.progress).unwrap_or(0),

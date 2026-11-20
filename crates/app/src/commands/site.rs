@@ -9,7 +9,8 @@ use skiff_store::Site;
 
 use super::Actor;
 use crate::sites::{
-    site_root_for, validate_domain, NewSite, SiteError, SiteField, VhostSaveOutcome,
+    site_root_for, validate_domain, validate_rewrite, NewSite, SiteError, SiteField,
+    VhostSaveOutcome,
 };
 use crate::tasks::TaskService;
 use crate::AppState;
@@ -25,6 +26,7 @@ pub const NAMES: &[&str] = &[
     "update_domains",
     "ssl",
     "backup",
+    "set_policy",
 ];
 
 /// 新建站点。`domain` / `root_dir` 是**原始输入**，规范化与路径推导在命令内完成。
@@ -391,11 +393,50 @@ pub async fn batch(state: &AppState, cmd: BatchSites) -> Result<BatchReport, Sit
     Ok(report)
 }
 
-/// 站点备份（每日 03:00 的内置任务）。
+/// 站点级 nginx 策略：伪静态预设 + 出口限速（KB/s，0 不限制）。
+#[derive(Debug, Clone)]
+pub struct SetSitePolicy {
+    pub domain: String,
+    pub rewrite: String,
+    pub limit_rate_kbps: u32,
+    pub actor: Actor,
+}
+
+pub async fn set_policy(state: &AppState, cmd: SetSitePolicy) -> Result<(), SiteError> {
+    let rewrite = validate_rewrite(&cmd.rewrite)?;
+    let result = state
+        .set_site_policy(&cmd.domain, rewrite, cmd.limit_rate_kbps)
+        .await;
+    match &result {
+        Ok(()) => state.audit_or_log(
+            &cmd.actor.username,
+            &cmd.actor.ip,
+            "sites.policy.save",
+            &cmd.domain,
+            "ok",
+            &format!("rewrite={rewrite} limit_rate={}k", cmd.limit_rate_kbps),
+        ),
+        Err(e) => state.audit_or_log(
+            &cmd.actor.username,
+            &cmd.actor.ip,
+            "sites.policy.save",
+            &cmd.domain,
+            "failed",
+            &e.to_string(),
+        ),
+    }
+    result
+}
+
+/// 站点备份（默认每日 03:00，可在站点详情调整间隔与执行时间）。
 #[derive(Debug, Clone)]
 pub struct SetSiteBackup {
     pub domain: String,
     pub enabled: bool,
+    /// `daily` / `weekly` / `monthly`；启用时有效。
+    pub interval: String,
+    /// 本地时间 `HH:MM`；启用时有效。
+    pub time: String,
     pub actor: Actor,
 }
 
@@ -406,20 +447,27 @@ pub async fn backup(
     cmd: SetSiteBackup,
 ) -> Result<(), SiteError> {
     tasks
-        .set_site_backup(&cmd.domain, cmd.enabled, &cmd.actor.username)
+        .set_site_backup(
+            &cmd.domain,
+            cmd.enabled,
+            &cmd.interval,
+            &cmd.time,
+            &cmd.actor.username,
+        )
         .await
         .map_err(SiteError::Unavailable)?;
+    let detail = if cmd.enabled {
+        format!("开启站点备份（{} {}）", cmd.interval, cmd.time)
+    } else {
+        "关闭站点备份".to_string()
+    };
     state.audit_or_log(
         &cmd.actor.username,
         &cmd.actor.ip,
         "sites.backup",
         &cmd.domain,
         "ok",
-        if cmd.enabled {
-            "开启站点备份"
-        } else {
-            "关闭站点备份"
-        },
+        &detail,
     );
     Ok(())
 }
@@ -714,6 +762,8 @@ mod tests {
             SetSiteBackup {
                 domain: "nope.local".into(),
                 enabled: true,
+                interval: "daily".into(),
+                time: "03:00".into(),
                 actor: actor(),
             },
         )

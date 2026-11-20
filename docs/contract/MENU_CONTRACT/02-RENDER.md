@@ -30,7 +30,7 @@
 | 页面 | 规范 URL | 说明 |
 |---|---|---|
 | L1 直达（概览） | `/{p}` | budding 壳页（数据走 `GET /ui/v1/overview`） |
-| 内置 L2 | `/{p}/<l2-path>` | 如 `/{p}/containers`、`/{p}/runtimes`、`/{p}/plugins/discover` |
+| 内置 L2 | `/{p}/<l2-path>` | 如 `/{p}/docker/containers`、`/{p}/sites/runtimes`、`/{p}/plugins/discover` |
 | 插件 L2 | `/{p}/plugins/<plugin-id>/<view>` | 有 schema 由壳页原生渲染；`?legacy=1` 才是 iframe 工作台 |
 | 插件 L3 | 同上 + 页内横向三级菜单 | 视图名直接寻址；iframe 工作台按视图名选中标签 |
 | 插件信息与管理 | `/{p}/plugins/<id>` | 壳页渲染，非插件页面 |

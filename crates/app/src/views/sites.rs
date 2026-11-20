@@ -41,6 +41,9 @@ pub struct SiteSummary {
     pub db_id: i64,
     pub is_default: bool,
     pub aliases: Vec<String>,
+    /// 伪静态预设键与出口限速（KB/s）；展示层直接透传。
+    pub rewrite: String,
+    pub limit_rate_kbps: u32,
     pub aliases_text: String,
     pub alias_preview: String,
     pub alias_more: usize,
@@ -178,6 +181,8 @@ pub fn summary(
         created_at_epoch: s.created_at,
         db_id: s.id,
         is_default: s.is_default,
+        rewrite: s.rewrite.clone(),
+        limit_rate_kbps: s.limit_rate_kbps,
         aliases_text: aliases.join("、"),
         alias_preview: aliases
             .iter()

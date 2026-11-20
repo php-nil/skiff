@@ -10,12 +10,18 @@ use super::*;
 ///
 /// 复用页面同一批查询与 `site_view` 展示模型，不新增 SQL；`q` 过滤与页面一致，
 /// 分页为内存 keyset（排序沿用 `list_sites` 的 `created_at DESC, id DESC`）。
+/// `with_schema=true` 时额外返回服务端 Schema（页面加载用），表格翻页不带该参数。
 pub async fn sites(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<SitesQuery>,
 ) -> Result<Response, ApiError> {
-    let read = skiff_app::views::sites::list(&state, q.q.as_deref().unwrap_or(""))
+    let list = ListQuery {
+        limit: q.limit,
+        cursor: q.cursor.clone(),
+        q: q.q.clone(),
+    };
+    let read = skiff_app::views::sites::list(&state, list.q.as_deref().unwrap_or(""))
         .await
         .map_err(|e| ApiError(AppError::from(e)))?;
     let mut rows: Vec<(i64, i64, SiteItem)> = read
@@ -24,14 +30,14 @@ pub async fn sites(
         .map(|s| (s.created_at_epoch, s.db_id, site_item(s)))
         .collect();
     let total = rows.len();
-    let start = match q.cursor.as_deref().and_then(parse_site_cursor) {
+    let start = match list.cursor.as_deref().and_then(parse_site_cursor) {
         Some(cursor) => rows
             .iter()
             .position(|(created, id, _)| (*created, *id) < cursor)
             .unwrap_or(total),
         None => 0,
     };
-    let end = (start + page_limit(&q)).min(total);
+    let end = (start + page_limit(&list)).min(total);
     let next_cursor = if end < total && end > start {
         rows.get(end - 1)
             .map(|(created, id, _)| format!("{created}:{id}"))
@@ -39,34 +45,57 @@ pub async fn sites(
         None
     };
     let items: Vec<SiteItem> = rows.drain(start..end).map(|(_, _, item)| item).collect();
-    let mut resp = Json(json!({
+    let can_admin = user.can(skiff_model::Permission::Admin);
+    let mut body = json!({
         "data": {
             "items": items,
             "total": total,
             "next_cursor": next_cursor,
-            "can_admin": user.can(skiff_model::Permission::Admin),
+            "can_admin": can_admin,
         }
-    }))
-    .into_response();
+    });
+    if q.with_schema {
+        let runtimes = if can_admin {
+            skiff_app::views::runtimes::list(&state).await
+        } else {
+            Vec::new()
+        };
+        let prefix = format!("/{}", state.cfg.entry_prefix);
+        body["schema"] = super::site_page::sites_page_schema(total, can_admin, &runtimes, &prefix);
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
 }
 
-/// `GET /ui/v1/sites/{domain}`：站点详情（只读）。
+/// 站点写操作统一按主键解析域名：页面 URL 不再把主域名当路径参数。
+fn site_domain(state: &AppState, id: i64) -> Result<String, ApiError> {
+    state
+        .db()
+        .site_by_id(id)
+        .map_err(|e| ApiError(AppError::from(e)))?
+        .map(|s| s.domain)
+        .ok_or_else(|| ApiError(AppError::NotFound(format!("站点不存在：{id}"))))
+}
+
+/// `GET /ui/v1/sites/{id}`：站点详情（只读）。
 ///
 /// 只读分支复用详情页的既有查询（站点记录、运行环境实时视图、证书信息），
-/// 配置/目录/域名等标签页的写操作留给后续批次。
+/// 响应同时带回 `tab` 对应的 SDUI Schema（服务端生成试点），前端只 fetch + embed；
+/// 配置/目录/域名等标签页的写操作仍是既有的 `skiffSiteWrite` 动作。
 pub async fn site_detail(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
+    Query(q): Query<SiteDetailQuery>,
 ) -> Result<Response, ApiError> {
     let site = state
         .db()
-        .site_by_domain(&domain)
+        .site_by_id(id)
         .map_err(|e| ApiError(AppError::from(e)))?
-        .ok_or_else(|| ApiError(AppError::NotFound(format!("站点不存在：{domain}"))))?;
+        .ok_or_else(|| ApiError(AppError::NotFound(format!("站点不存在：{id}"))))?;
+    let domain = site.domain.clone();
     let runtime_view = if site.site_type == skiff_store::TYPE_RUNTIME {
         match site.runtime_id.as_deref() {
             Some(rid) if !rid.is_empty() => state.runtime_view(rid).await.ok(),
@@ -211,6 +240,8 @@ pub async fn site_detail(
         available: state.tasks().is_some(),
         enabled: backup_view.enabled,
         task_id: backup_view.task_id,
+        interval: backup_view.interval,
+        time: backup_view.time,
         last_text: backup_view.last_text,
         next_text: backup_view.next_text,
     };
@@ -224,7 +255,10 @@ pub async fn site_detail(
         backup,
         can_manage: user.can(skiff_model::Permission::Admin),
     };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let tab = q.tab.unwrap_or_default().to_lowercase();
+    let prefix = format!("/{}", state.cfg.entry_prefix);
+    let schema = super::site_page::site_page_schema(&data, &tab, &prefix);
+    let mut resp = Json(json!({ "data": data, "schema": schema })).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -255,17 +289,18 @@ pub async fn site_create(
         .await
         .map_err(site_write_err)
         .map_err(ApiError)?;
-    write_done(json!({ "domain": result.domain, "created": true }))
+    write_done(json!({ "id": result.id, "domain": result.domain, "created": true }))
 }
 
-/// `POST /ui/v1/sites/{domain}/{action}`：启动 / 停止（`SITE_ACTION`）。
+/// `POST /ui/v1/sites/{id}/{action}`：启动 / 停止（`SITE_ACTION`）。
 pub async fn site_power(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path((domain, action)): Path<(String, String)>,
+    Path((id, action)): Path<(i64, String)>,
     parts: Parts,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_ACTION)?;
+    let domain = site_domain(&state, id)?;
     let running = match action.as_str() {
         "start" => true,
         "stop" => false,
@@ -292,11 +327,12 @@ pub async fn site_power(
 pub async fn site_set_default(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     parts: Parts,
     Json(body): Json<EnabledBody>,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_SET_DEFAULT)?;
+    let domain = site_domain(&state, id)?;
     skiff_app::commands::site::set_default(
         &state,
         skiff_app::commands::site::SetDefaultSite {
@@ -314,11 +350,12 @@ pub async fn site_set_default(
 pub async fn site_domains(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     parts: Parts,
     Json(body): Json<SiteDomainBody>,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_UPDATE_DOMAINS)?;
+    let domain = site_domain(&state, id)?;
     let op = match body.action.as_str() {
         "add" => skiff_app::commands::site::AliasOp::Add,
         "remove" => skiff_app::commands::site::AliasOp::Remove,
@@ -347,11 +384,12 @@ pub async fn site_domains(
 pub async fn site_save_config(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     parts: Parts,
     Json(body): Json<SiteConfigBody>,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_SAVE_CONFIG)?;
+    let domain = site_domain(&state, id)?;
     let outcome = skiff_app::commands::site::save_config(
         &state,
         skiff_app::commands::site::SaveSiteConfig {
@@ -373,11 +411,12 @@ pub async fn site_save_config(
 pub async fn site_ssl(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     parts: Parts,
     Json(body): Json<SiteSslBody>,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_SSL)?;
+    let domain = site_domain(&state, id)?;
     let op = match body.action.as_str() {
         "generate" => skiff_app::commands::site::SslOp::Generate,
         "upload" => skiff_app::commands::site::SslOp::Upload {
@@ -410,15 +449,16 @@ pub async fn site_ssl(
     write_done(json!({ "domain": domain, "action": body.action }))
 }
 
-/// `POST /ui/v1/sites/{domain}/backup`：站点备份开关（`SITE_SET_BACKUP`）。
+/// `POST /ui/v1/sites/{id}/backup`：站点备份开关与计划（`SITE_SET_BACKUP`）。
 pub async fn site_backup(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     parts: Parts,
-    Json(body): Json<EnabledBody>,
+    Json(body): Json<SiteBackupBody>,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_SET_BACKUP)?;
+    let domain = site_domain(&state, id)?;
     let svc = state
         .tasks()
         .ok_or_else(|| ApiError(AppError::Unavailable("内核任务服务未初始化".into())))?;
@@ -428,6 +468,8 @@ pub async fn site_backup(
         skiff_app::commands::site::SetSiteBackup {
             domain: domain.clone(),
             enabled: body.enabled,
+            interval: body.interval,
+            time: body.time,
             actor: handlers::sites::actor(&state, &user, &parts),
         },
     )
@@ -437,14 +479,40 @@ pub async fn site_backup(
     write_done(json!({ "domain": domain, "enabled": body.enabled }))
 }
 
+/// `POST /ui/v1/sites/{id}/policy`：伪静态预设 + 出口限速（`SITE_SET_POLICY`）。
+pub async fn site_policy(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<i64>,
+    parts: Parts,
+    Json(body): Json<SitePolicyBody>,
+) -> Result<Response, ApiError> {
+    guard::write(&state, &user, &parts, act::SITE_SET_POLICY)?;
+    let domain = site_domain(&state, id)?;
+    skiff_app::commands::site::set_policy(
+        &state,
+        skiff_app::commands::site::SetSitePolicy {
+            domain: domain.clone(),
+            rewrite: body.rewrite,
+            limit_rate_kbps: body.limit_rate_kbps,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .await
+    .map_err(site_write_err)
+    .map_err(ApiError)?;
+    write_done(json!({ "domain": domain, "saved": true }))
+}
+
 pub async fn site_delete(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     parts: Parts,
     Json(body): Json<SiteDeleteBody>,
 ) -> Result<Response, ApiError> {
     guard::write(&state, &user, &parts, act::SITE_DELETE)?;
+    let domain = site_domain(&state, id)?;
     if body.confirm.trim() != domain {
         return Err(ApiError(AppError::BadRequest(format!(
             "请输入站点域名 {domain} 以确认删除"
@@ -515,16 +583,17 @@ pub async fn site_batch(
     }))
 }
 
-/// `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`：日志查看器数据。
+/// `GET /ui/v1/sites/{id}/logs?part=access|error&tail=200&q=`：日志查看器数据。
 ///
 /// 与旧 SSR 页面同权限口径（登录即可读）；读取逻辑复用 `AppState::site_logs`：
 /// 只看文件尾部 2MB 窗口，时间倒序，关键字只作用于该窗口。
 pub async fn site_logs(
     State(state): State<Arc<AppState>>,
     UiAuthUser(_user): UiAuthUser,
-    Path(domain): Path<String>,
+    Path(id): Path<i64>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let domain = site_domain(&state, id)?;
     let part = match q.get("part").map(|s| s.as_str()) {
         Some("error") => "error",
         _ => "access",
@@ -561,6 +630,7 @@ pub async fn site_logs(
         .unwrap_or_default();
     Ok(Json(json!({
         "data": {
+            "id": id,
             "domain": domain,
             "part": part,
             "tail": tail,
@@ -575,13 +645,14 @@ pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ui/v1/sites", get(sites).post(site_create))
         .route("/ui/v1/sites/batch", post(site_batch))
-        .route("/ui/v1/sites/{domain}", get(site_detail))
-        .route("/ui/v1/sites/{domain}/default", post(site_set_default))
-        .route("/ui/v1/sites/{domain}/domains", post(site_domains))
-        .route("/ui/v1/sites/{domain}/config", post(site_save_config))
-        .route("/ui/v1/sites/{domain}/ssl", post(site_ssl))
-        .route("/ui/v1/sites/{domain}/backup", post(site_backup))
-        .route("/ui/v1/sites/{domain}/delete", post(site_delete))
-        .route("/ui/v1/sites/{domain}/logs", get(site_logs))
-        .route("/ui/v1/sites/{domain}/{action}", post(site_power))
+        .route("/ui/v1/sites/{id}", get(site_detail))
+        .route("/ui/v1/sites/{id}/default", post(site_set_default))
+        .route("/ui/v1/sites/{id}/domains", post(site_domains))
+        .route("/ui/v1/sites/{id}/config", post(site_save_config))
+        .route("/ui/v1/sites/{id}/policy", post(site_policy))
+        .route("/ui/v1/sites/{id}/ssl", post(site_ssl))
+        .route("/ui/v1/sites/{id}/backup", post(site_backup))
+        .route("/ui/v1/sites/{id}/delete", post(site_delete))
+        .route("/ui/v1/sites/{id}/logs", get(site_logs))
+        .route("/ui/v1/sites/{id}/{action}", post(site_power))
 }

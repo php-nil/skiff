@@ -97,7 +97,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 - 用户取消时抛 `ActionCancelled`：**中止整条动作链**，不跑 `onError`，静默。
 - `confirm` 是异步动作，后续步骤一定等用户选择后才执行；结果经 `onClose` / `closeLayer` 返回 `{ reason, value? }`，等待中的动作链不会悬挂。
 - 复杂内容用 `dialog`，不要堆在确认框正文里。
-- 宿主未注入 `platform.confirm` 时走 budding 内建确认层；纯内核装配（无 UI 入口）才回退浏览器原生 `window.confirm`。Skiff 已按 K2 注入 `hostConfirm`（`budding-boot.js`）：实例经 `__vue_app__.config.globalProperties.$budding` 取得，确认框用实例 `openLayer(schema, { scope })` 渲染，按钮由自定义动作 `skiffConfirmAnswer` 回传结果，Esc 视为取消。
+- 宿主未注入 `platform.confirm` 时走 budding 内建确认层；纯内核装配（无 UI 入口）才回退浏览器原生 `window.confirm`。Skiff 已移除自定义 `hostConfirm` 图层：Schema 动作直接用内置 `confirm`，命令式 JS 确认经 `$budding.confirm` 走同一内建图层，Esc 视为取消。
 
 删除的标准组合（确认 → 请求 → 刷新表格）：
 
@@ -308,6 +308,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 5. **查看详情**：统一用 `property` 键值栅格；旧的 `card` + `text` 组合只作为迁移期遗留，不再新增。
 6. **Vuetify 内部文案**：`embed` 接受扁平 `locale` / `theme` / `uiDefaults`，宿主可据此把 Vuetify locale 设为中文；当前壳仍保留自带主题 CSS，迁移到 `createUi({ theme })` 属宿主改造（backlog A5）。
 7. **交付前**：新 Schema 跑一次 MCP `validateSchema`；`strict: true` 作为终检。
+8. **Schema 生成位置**：站点列表与站点详情已试点由内核生成（`GET /ui/v1/sites?with_schema=true`、`GET /ui/v1/sites/{id}?tab=`），前端只 fetch、对 `code` 节点的 `modelValue` 过一遍 `buddySafeString`，并把服务端弹窗按钮补录进弹窗注册表后 embed；其它页面暂仍由 `budding-boot.js` 构建，迁移时按同一形状下发。
 
 ## 11. 与现有文档的关系
 

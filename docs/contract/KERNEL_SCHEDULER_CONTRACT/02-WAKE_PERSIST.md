@@ -76,7 +76,7 @@
 
 | kind | source | 默认 schedule | payload | 产出 | P1 |
 | --- | --- | --- | --- | --- | --- |
-| `builtin:site-backup` | `site:<domain>` | `30 3 * * *` + jitter 120s | `{keep:7, include:[index,conf,ssl]}` | `backups/sites/<domain>/<YYYYMMDD-HHmmss>/` + `manifest.json` | ✅ |
+| `builtin:site-backup` | `site:<domain>` | 默认 `0 3 * * *` + jitter 120s；间隔/时间可在站点详情调整 | `{keep:7, include:[index,conf,ssl]}` | `backups/sites/<domain>/<YYYYMMDD-HHmmss>/` + `manifest.json` | ✅ |
 | `builtin:cert-renew` | `site:<domain>` | `0 4 * * *` | `{}` | 证书续期（Let’s Encrypt） | ⛔ P2 占位 |
 | `builtin:db-vacuum` | `system` | `0 3 * * 0` | `{keep:7}` | `backups/db/skiff-<date>.db`（`VACUUM INTO`） | ✅ |
 | `builtin:audit-prune` | `system` | `0 5 * * *` | `{}` | 删除 `audit.ts < now-90d`，详情记 `deleted=<n>` | ✅ |

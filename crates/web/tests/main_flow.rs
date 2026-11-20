@@ -468,7 +468,7 @@ async fn explicit_must_change_password_still_redirects() {
         .expect("登录成功应下发会话 Cookie");
     let body = body_text(resp).await;
     let value: serde_json::Value = serde_json::from_str(&body).expect("登录响应必须是 JSON");
-    assert_eq!(value["data"]["redirect_to"], "/p/settings?force=1");
+    assert_eq!(value["data"]["redirect_to"], "/p/settings/security?force=1");
 
     // 后续页面仍被改密闸门拦下（303 回到设置页）。
     let resp = h
@@ -489,7 +489,7 @@ async fn explicit_must_change_password_still_redirects() {
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         resp.headers().get(header::LOCATION).unwrap(),
-        "/p/settings?force=1"
+        "/p/settings/security?force=1"
     );
 }
 
@@ -499,7 +499,12 @@ async fn session_survives_login_redirect_and_reaches_pages() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
     let cookie = format!("{}={token}", skiff_identity::session_cookie_name(true));
-    for path in ["/p", "/p/settings?force=1", "/p/settings", "/p/containers"] {
+    for path in [
+        "/p",
+        "/p/settings/security?force=1",
+        "/p/settings/security",
+        "/p/docker/containers",
+    ] {
         let resp = h
             .app
             .clone()
@@ -762,7 +767,7 @@ async fn unauthenticated_page_redirects_to_login() {
         .oneshot(
             Request::builder()
                 // 壳页白名单只对浏览器导航回落；未登录也应按页面惯例 303 到登录页。
-                .uri("/p/containers")
+                .uri("/p/docker/containers")
                 .header(header::ACCEPT, "text/html")
                 .body(Body::empty())
                 .unwrap(),
@@ -3445,7 +3450,7 @@ async fn shell_fallback_serves_whitelisted_deep_links() {
     let token = login(&h.app, "admin", "pw-test-123").await;
     for uri in [
         "/p/sites/example.com/open/detail",
-        "/p/containers/abc/unknown",
+        "/p/docker/containers/abc/unknown",
         "/p/files/a/b",
         "/p/plugins/demo.plugin/view/deep",
         "/p/settings/deep",
@@ -3578,7 +3583,7 @@ async fn shell_unauthenticated_get_redirects_consistently() {
 async fn shell_fallback_covers_method_not_allowed_paths() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
-    let path = "/p/containers/abc/unknown";
+    let path = "/p/docker/containers/abc/unknown";
 
     let (status, ct, body) = get_ui(&h.app, path, Some(&token), Some("text/html")).await;
     assert_eq!(status, StatusCode::OK, "白名单深链应回落壳页");
@@ -3748,13 +3753,15 @@ async fn login_page_renders_budding_shell_without_session() {
         )),
         "登录页应引用版本化 budding 产物"
     );
+    let shell = skiff_web::assets::SHELL_VERSION;
     assert!(
-        html.contains(r#"src="/p/static/budding/budding-login.js""#),
-        "登录页应加载启动脚本"
+        html.contains(&format!(
+            r#"src="/p/static/budding/budding-login.js?v={shell}""#
+        )),
+        "登录页应加载版本化启动脚本"
     );
     // 登录页不加载 `budding-boot.js`（那是壳页启动脚本），回车补丁必须单独引入，
     // 否则登录框按回车没有任何反应。
-    let shell = skiff_web::assets::SHELL_VERSION;
     assert!(
         html.contains(&format!(
             r#"src="/p/static/form-enter-submit.js?v={shell}""#
@@ -4144,25 +4151,28 @@ async fn ui_plugin_rpc_errors_are_json_with_readable_message() {
 }
 
 // ---- 站点 / 运行环境只读页（第一批）：JSON 列表 + keyset 游标 + 壳页回落 ----
-/// `/ui/v1/sites`、`/ui/v1/sites/{domain}`、`/ui/v1/runtimes` 的鉴权与冻结字段。
+/// `/ui/v1/sites`、`/ui/v1/sites/{id}`、`/ui/v1/runtimes` 的鉴权与冻结字段。
 /// 列表走 keyset 游标（D10）：`limit` 截断后返回 `next_cursor`，下一页从游标继续。
 #[tokio::test]
 async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
     let h = harness();
-    for uri in ["/ui/v1/sites", "/ui/v1/sites/demo.local", "/ui/v1/runtimes"] {
+    for uri in ["/ui/v1/sites", "/ui/v1/sites/1", "/ui/v1/runtimes"] {
         let (status, _, body) = get_ui(&h.app, uri, None, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["error"]["code"], "auth.unauthenticated", "{uri}");
     }
 
+    let mut ids = std::collections::HashMap::new();
     for domain in ["a.local", "b.local", "c.local"] {
         let root = h.data_dir.join(format!("www/sites/{domain}"));
         std::fs::create_dir_all(&root).unwrap();
-        h.state
+        let site = h
+            .state
             .db()
             .create_site(&php_site(domain, &root.display().to_string()))
             .unwrap();
+        ids.insert(domain, site.id);
     }
     let token = login(&h.app, "admin", "pw-test-123").await;
 
@@ -4175,6 +4185,7 @@ async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
     assert_eq!(data["total"], 3);
     assert_eq!(data["items"].as_array().unwrap().len(), 2);
     let first = &data["items"][0];
+    assert!(first["id"].as_i64().is_some());
     assert_eq!(first["site_type"], "runtime");
     assert_eq!(first["type_label"], "运行环境");
     assert!(first["status"]["code"].is_string());
@@ -4185,6 +4196,25 @@ async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
     assert!(created.ends_with('Z'), "{created}");
     assert!(chrono::DateTime::parse_from_rfc3339(created).is_ok());
     let cursor = data["next_cursor"].as_str().unwrap().to_string();
+    // 默认不带页面骨架；只有页面加载显式要 `with_schema=true` 时才生成。
+    assert!(v.get("schema").is_none(), "列表接口不应默认生成 Schema");
+
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/sites?limit=1&with_schema=true",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["schema"]["type"], "page");
+    assert_eq!(v["schema"]["props"]["title"], "网站");
+    assert_eq!(v["schema"]["body"][1]["type"], "table");
+    assert_eq!(v["schema"]["body"][1]["source"]["url"], "/ui/v1/sites");
+    // 管理员能看到新建/批量弹窗与行内启停。
+    assert_eq!(v["schema"]["body"][1]["props"]["rowKey"], "domain");
+    assert!(v["schema"]["body"][0]["content"]["body"][1]["content"]["body"].is_array());
 
     let second_uri = format!("/ui/v1/sites?limit=2&cursor={cursor}");
     let (status, _, body) = get_ui(&h.app, &second_uri, Some(&token), None).await;
@@ -4194,15 +4224,40 @@ async fn ui_sites_and_runtimes_lists_use_frozen_fields_and_keyset_cursor() {
     assert_eq!(data["items"].as_array().unwrap().len(), 1);
     assert!(data["next_cursor"].is_null(), "最后一页不应再给游标");
 
-    // 详情：列表字段 + 证书 + 运行环境状态，均为只读。
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites/a.local", Some(&token), None).await;
+    // 详情：列表字段 + 证书 + 运行环境状态，均为只读。深链只使用主键。
+    let detail_uri = format!("/ui/v1/sites/{}", ids["a.local"]);
+    let (status, _, body) = get_ui(&h.app, &detail_uri, Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let data = &v["data"];
     assert_eq!(data["domain"], "a.local");
+    assert_eq!(data["id"], ids["a.local"]);
     assert!(data["ssl"].is_object());
     assert!(data["runtime_alert"].is_string());
     assert!(data["runtime_down"].is_boolean());
+    // 详情响应同时带回 SDUI Schema：概览页标题用域名，正文非空。
+    assert_eq!(v["schema"]["type"], "page");
+    assert_eq!(v["schema"]["props"]["title"], "a.local");
+    assert!(!v["schema"]["body"].as_array().unwrap().is_empty());
+
+    // 子视图只换渲染块：`tab=config` 必须切到配置页。
+    let (status, _, body) = get_ui(
+        &h.app,
+        &format!("{detail_uri}?tab=config"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["schema"]["type"], "page");
+    assert!(
+        v["schema"]["props"]["subtitle"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("伪静态"),
+        "{v}"
+    );
 
     // 运行环境列表：管理员可读，字段含安装状态与任务快照。
     let (status, _, body) = get_ui(&h.app, "/ui/v1/runtimes", Some(&token), None).await;
@@ -4443,34 +4498,49 @@ async fn ui_site_writes_require_csrf_and_permission() {
     let viewer_csrf = h.state.csrf_token(&viewer);
     let root = h.data_dir.join("www/sites/x.local");
     std::fs::create_dir_all(&root).unwrap();
-    h.state
+    let site = h
+        .state
         .db()
         .create_site(&static_site("x.local", &root.display().to_string()))
         .unwrap();
+    let site_id = site.id;
 
-    let cases: Vec<(&str, serde_json::Value)> = vec![
+    let cases: Vec<(String, serde_json::Value)> = vec![
         (
-            "/ui/v1/sites",
+            "/ui/v1/sites".to_string(),
             json!({ "site_type": "static", "domain": "api.local" }),
         ),
         (
-            "/ui/v1/sites/x.local/config",
+            format!("/ui/v1/sites/{site_id}/config"),
             json!({ "content": "server {}" }),
         ),
-        ("/ui/v1/sites/x.local/start", json!({})),
-        ("/ui/v1/sites/x.local/default", json!({ "enabled": true })),
+        (format!("/ui/v1/sites/{site_id}/start"), json!({})),
         (
-            "/ui/v1/sites/x.local/domains",
+            format!("/ui/v1/sites/{site_id}/default"),
+            json!({ "enabled": true }),
+        ),
+        (
+            format!("/ui/v1/sites/{site_id}/domains"),
             json!({ "action": "add", "alias": "www.x.local" }),
         ),
-        ("/ui/v1/sites/x.local/ssl", json!({ "action": "generate" })),
-        ("/ui/v1/sites/x.local/backup", json!({ "enabled": true })),
         (
-            "/ui/v1/sites/x.local/delete",
+            format!("/ui/v1/sites/{site_id}/ssl"),
+            json!({ "action": "generate" }),
+        ),
+        (
+            format!("/ui/v1/sites/{site_id}/backup"),
+            json!({ "enabled": true, "interval": "daily", "time": "03:00" }),
+        ),
+        (
+            format!("/ui/v1/sites/{site_id}/policy"),
+            json!({ "rewrite": "none", "limit_rate_kbps": 0 }),
+        ),
+        (
+            format!("/ui/v1/sites/{site_id}/delete"),
             json!({ "confirm": "x.local" }),
         ),
         (
-            "/ui/v1/sites/batch",
+            "/ui/v1/sites/batch".to_string(),
             json!({ "action": "start", "domains": ["x.local"] }),
         ),
     ];
@@ -4506,7 +4576,7 @@ async fn ui_site_writes_require_csrf_and_permission() {
     // 字段校验先于业务执行：确认串不符、批量为空、未知子动作都必须是 400。
     let (status, _) = post_ui_json(
         &h.app,
-        "/ui/v1/sites/x.local/delete",
+        &format!("/ui/v1/sites/{site_id}/delete"),
         &admin,
         Some(&csrf),
         &json!({ "confirm": "wrong.local" }),
@@ -4527,12 +4597,15 @@ async fn ui_site_writes_require_csrf_and_permission() {
 
     for (uri, body) in [
         (
-            "/ui/v1/sites/x.local/domains",
+            format!("/ui/v1/sites/{site_id}/domains"),
             json!({ "action": "unknown", "alias": "a.local" }),
         ),
-        ("/ui/v1/sites/x.local/ssl", json!({ "action": "unknown" })),
+        (
+            format!("/ui/v1/sites/{site_id}/ssl"),
+            json!({ "action": "unknown" }),
+        ),
     ] {
-        let (status, _) = post_ui_json(&h.app, uri, &admin, Some(&csrf), &body).await;
+        let (status, _) = post_ui_json(&h.app, &uri, &admin, Some(&csrf), &body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
     }
 
@@ -4562,18 +4635,15 @@ async fn ui_site_detail_exposes_write_surface_by_role() {
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     let root = h.data_dir.join("www/sites/role.local");
     std::fs::create_dir_all(&root).unwrap();
-    h.state
+    let role_site = h
+        .state
         .db()
         .create_site(&static_site("role.local", &root.display().to_string()))
         .unwrap();
 
-    let (status, _, text) = get_ui(
-        &h.app,
-        "/ui/v1/sites/role.local",
-        Some(&admin),
-        Some("application/json"),
-    )
-    .await;
+    let detail_uri = format!("/ui/v1/sites/{}", role_site.id);
+    let (status, _, text) =
+        get_ui(&h.app, &detail_uri, Some(&admin), Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["data"]["can_manage"], true);
@@ -4587,13 +4657,8 @@ async fn ui_site_detail_exposes_write_surface_by_role() {
     );
     assert!(v["data"]["backup"].is_object());
 
-    let (status, _, text) = get_ui(
-        &h.app,
-        "/ui/v1/sites/role.local",
-        Some(&viewer),
-        Some("application/json"),
-    )
-    .await;
+    let (status, _, text) =
+        get_ui(&h.app, &detail_uri, Some(&viewer), Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["data"]["can_manage"], false);
@@ -4812,7 +4877,7 @@ async fn audit_canonical_path_serves_native_shell() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     for token in [&admin, &viewer] {
-        let (status, html) = get_html(&h.app, "/p/audit", token).await;
+        let (status, html) = get_html(&h.app, "/p/settings/audit", token).await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
@@ -4948,7 +5013,7 @@ async fn settings_canonical_path_serves_shell() {
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
     for token in [&admin, &viewer] {
-        let (status, html) = get_html(&h.app, "/p/settings", token).await;
+        let (status, html) = get_html(&h.app, "/p/settings/security", token).await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"id="skiff-root""#), "{html}");
     }
@@ -5322,15 +5387,17 @@ async fn ui_site_logs_json_lists_tail_and_filters() {
         "old-line\nkeep-abc-line\nnew-line\n",
     )
     .unwrap();
-    h.state
+    let log_site = h
+        .state
         .db()
         .create_site(&static_site("logs.local", &root.display().to_string()))
         .unwrap();
+    let log_id = log_site.id;
 
     let admin = login(&h.app, "admin", "pw-test-123").await;
     let (status, _, body) = get_ui(
         &h.app,
-        "/ui/v1/sites/logs.local/logs?tail=2",
+        &format!("/ui/v1/sites/{log_id}/logs?tail=2"),
         Some(&admin),
         None,
     )
@@ -5344,7 +5411,7 @@ async fn ui_site_logs_json_lists_tail_and_filters() {
 
     let (status, _, body) = get_ui(
         &h.app,
-        "/ui/v1/sites/logs.local/logs?q=abc",
+        &format!("/ui/v1/sites/{log_id}/logs?q=abc"),
         Some(&admin),
         None,
     )
@@ -5357,7 +5424,13 @@ async fn ui_site_logs_json_lists_tail_and_filters() {
 
     // 与旧 SSR 页面同口径：登录即可读，viewer 也能查看。
     let viewer = login(&h.app, "viewer", "pw-test-123").await;
-    let (status, _, _) = get_ui(&h.app, "/ui/v1/sites/logs.local/logs", Some(&viewer), None).await;
+    let (status, _, _) = get_ui(
+        &h.app,
+        &format!("/ui/v1/sites/{log_id}/logs"),
+        Some(&viewer),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 /// 容器终端页交 budding 壳；真正的 WS 连接需 Linux 测试机，本机不做断言。
@@ -5365,7 +5438,7 @@ async fn ui_site_logs_json_lists_tail_and_filters() {
 async fn container_terminal_page_serves_shell() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_html(&h.app, "/p/containers/abc123/terminal", &admin).await;
+    let (status, html) = get_html(&h.app, "/p/docker/containers/abc123/terminal", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
 }
@@ -5375,7 +5448,7 @@ async fn container_terminal_page_serves_shell() {
 async fn container_logs_page_and_json_keep_read_only_semantics() {
     let h = harness();
     let admin = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_html(&h.app, "/p/containers/abc123/logs", &admin).await;
+    let (status, html) = get_html(&h.app, "/p/docker/containers/abc123/logs", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
 
@@ -5643,9 +5716,12 @@ async fn store_canonical_path_serves_shell() {
         },
     );
     let token = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_html(&h.app, "/p/store", &token).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains(r#"id="skiff-root""#), "{html}");
+    // 确认页与商店同属 `/plugins` 分组；它必须命中壳页，而不是通用插件功能页路由。
+    for uri in ["/p/plugins/store", "/p/plugins/store/confirm"] {
+        let (status, html) = get_html(&h.app, uri, &token).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
+    }
 }
 
 /// 商店只读接口：未认证 401；目录未启用 404；启用后返回冻结字段与四个分区。
@@ -5862,11 +5938,9 @@ fn budding_boot_buttons_navigate_explicitly() {
 fn budding_boot_host_bridge_and_file_entries_present() {
     let js = include_str!("../static/budding/budding-boot.js");
     for needle in [
-        // K2：不注入 confirm 时 SDK 会退化回 window.confirm。
-        "confirm: hostConfirm",
-        "skiffConfirmAnswer: skiffConfirmAnswer",
+        // 确认框走 budding 内建图层，不再注入 platform.confirm 或自建按钮动作。
+        "runtime.confirm(payload)",
         "buddingRuntime()",
-        "runtime.openLayer(",
         "consumeFlashToast();",
         // 文件能力面入口（后端 /ui/v1/files/* 已补齐）。
         "skiffFileWrite: fileWrite,",
@@ -5875,17 +5949,35 @@ fn budding_boot_host_bridge_and_file_entries_present() {
         "skiffFileChown: fileChown,",
         "skiffFileArchive: fileArchive,",
         "skiffFileExtract: fileExtract,",
-        // 站点删除改为弹窗内输入域名，组件内校验。
-        "skiffSiteDelete: siteDelete,",
-        "pattern: '^' + escapeRegExp(data.domain) + '$'",
+        // 站点详情 Schema 由内核生成，前端只 fetch 并做运行时转义。
+        "prepareServerSchema(body.schema)",
         // 解压入口按文件类型显隐。
         "visibleOn: '${item.can_extract}'",
     ] {
         assert!(js.contains(needle), "宿主桥/文件入口缺失：{needle}");
     }
+    // 站点删除的确认链已随 Schema 迁到服务端（`site_page.rs`），静态守门跟着挪。
+    let site_page = include_str!("../src/handlers/ui/site_page.rs");
+    for needle in [
+        "\"requireText\": site.domain",
+        "\"op\": \"delete\", \"id\": site.id, \"domain\": site.domain",
+    ] {
+        assert!(
+            site_page.contains(needle),
+            "服务端站点 Schema 缺少删除确认链：{needle}"
+        );
+    }
+    for banned in [
+        "confirm: hostConfirm",
+        "skiffConfirmAnswer",
+        "skiffSiteDelete",
+        "siteDetailSchema",
+    ] {
+        assert!(!js.contains(banned), "确认框不应再自建图层：{banned}");
+    }
     assert!(
         !js.contains("window.prompt("),
-        "不再允许 window.prompt；输入型确认必须用 dialog + form"
+        "不再允许 window.prompt；输入型确认必须用内置 confirm.requireText"
     );
     assert!(
         !js.contains("window.alert("),
@@ -5935,7 +6027,7 @@ fn budding_boot_p2_row_actions_present() {
         "skiffContainerToggle: containerToggle",
         "text: '启动/停止'",
         "text: '启停'",
-        "props: { domain: '${domain}', status: '${status.code}' }",
+        "props: { id: '${id}', domain: '${domain}', status: '${status.code}' }",
         "props: { id: '${id}', name: '${name}', status: '${state.code}' }",
     ] {
         assert!(js.contains(needle), "P2 行内入口缺失：{needle}");
@@ -6060,7 +6152,6 @@ fn budding_boot_file_forms_send_typed_values_and_show_errors() {
         "fileChown",
         "fileArchive",
         "fileExtract",
-        "siteDelete",
     ] {
         let start = js
             .find(&format!("function {name}("))
@@ -6244,10 +6335,7 @@ fn budding_boot_ui_theme_presets_and_color_fields() {
 fn budding_boot_create_dialogs_keep_deep_links() {
     let js = include_str!("../static/budding/budding-boot.js");
     for needle in [
-        "dialogFormButton('新建站点'",
         "dialogFormButton('新建运行环境'",
-        "fields: siteCreateFields(runtimes)",
-        "initialValues: siteCreateDefaults('')",
         "fields: runtimeCreateFields(catalog)",
         "initialValues: runtimeCreateDefaults(catalog)",
         "fetchData('/runtimes?limit=200')",
@@ -6262,6 +6350,21 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     ] {
         assert!(js.contains(needle), "新建弹窗改造缺失：{needle}");
     }
+    // 站点列表的新建/批量弹窗随页面骨架迁到服务端。
+    let site_page = include_str!("../src/handlers/ui/site_page.rs");
+    for needle in [
+        "text: \"批量启停\"",
+        "text: \"新建站点\"",
+        "initial: Some(json!({ \"site_type\": \"static\" }))",
+        "fn site_create_fields(",
+        "fn dialog_button(",
+    ] {
+        assert!(
+            site_page.contains(needle),
+            "服务端站点列表弹窗缺失：{needle}"
+        );
+    }
+    assert!(!js.contains("sitesSchema"), "站点列表骨架不得再由前端拼接");
     assert!(
         !js.contains("'安装运行环境'"),
         "运行环境列表不应再保留独立安装卡片"
@@ -6594,7 +6697,7 @@ async fn plugins_canonical_paths_serve_shell() {
     let h = harness();
     seed_plugin(h.state.db(), "com.example.ui", "示例界面", "示例", true);
     let token = login(&h.app, "admin", "pw-test-123").await;
-    for uri in ["/p/plugins", "/p/plugins/com.example.ui"] {
+    for uri in ["/p/plugins/installed", "/p/plugins/com.example.ui"] {
         let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
@@ -6815,7 +6918,7 @@ async fn ui_settings_menu_and_docker_require_csrf_and_permission() {
     }
 
     for token in [&admin, &viewer] {
-        for uri in ["/p/settings/menu", "/p/settings/docker", "/p/settings/ui"] {
+        for uri in ["/p/settings/menu", "/p/docker/settings", "/p/settings/ui"] {
             let (status, html) = get_html(&h.app, uri, token).await;
             assert_eq!(status, StatusCode::OK, "{uri}");
             assert!(html.contains(r#"id="skiff-root""#), "{uri}: {html}");
@@ -7115,7 +7218,7 @@ async fn ui_runtime_writes_require_csrf_and_permission() {
     assert!(v["data"]["files"].is_array(), "{body}");
 
     // 规范详情页交 budding 壳页。
-    let (status, html) = get_html(&h.app, "/p/runtimes/php-8.5-test", &admin).await;
+    let (status, html) = get_html(&h.app, "/p/sites/runtimes/php-8.5-test", &admin).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
 
@@ -7301,7 +7404,7 @@ async fn ui_compose_keeps_auth_csrf_and_docker_unavailable_semantics() {
 async fn compose_canonical_path_serves_shell() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
-    let (status, html) = get_html(&h.app, "/p/compose", &token).await;
+    let (status, html) = get_html(&h.app, "/p/docker/compose", &token).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains(r#"id="skiff-root""#), "{html}");
 }
@@ -7311,7 +7414,11 @@ async fn compose_canonical_path_serves_shell() {
 async fn resource_canonical_paths_serve_shell() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
-    for uri in ["/p/images", "/p/networks", "/p/volumes"] {
+    for uri in [
+        "/p/docker/images",
+        "/p/docker/networks",
+        "/p/docker/volumes",
+    ] {
         let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(
@@ -7326,7 +7433,7 @@ async fn resource_canonical_paths_serve_shell() {
 async fn containers_canonical_paths_serve_shell() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
-    for uri in ["/p/containers", "/p/containers/abc"] {
+    for uri in ["/p/docker/containers", "/p/docker/containers/abc"] {
         let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(
@@ -7342,10 +7449,10 @@ async fn sites_and_runtimes_canonical_paths_serve_shell() {
     let h = harness();
     let token = login(&h.app, "admin", "pw-test-123").await;
     for uri in [
-        "/p/sites",
+        "/p/sites/list",
         "/p/sites/a.local",
-        "/p/runtimes",
-        "/p/runtimes/php-8.5",
+        "/p/sites/runtimes",
+        "/p/sites/runtimes/php-8.5",
     ] {
         let (status, html) = get_html(&h.app, uri, &token).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
@@ -7587,6 +7694,7 @@ async fn ui_v1_envelope_and_bootstrap_key_sets_are_frozen() {
 async fn ui_v1_key_response_shapes_are_frozen() {
     /// 站点列表项（`SiteItem`）：列表与详情共用，字段只增不改。
     const SITE_ITEM_KEYS: &[&str] = &[
+        "id",
         "domain",
         "root_dir",
         "index_dir",
@@ -7604,6 +7712,8 @@ async fn ui_v1_key_response_shapes_are_frozen() {
         "https",
         "is_default",
         "aliases",
+        "rewrite",
+        "limit_rate_kbps",
         "created_at",
     ];
 
@@ -7769,7 +7879,11 @@ async fn ui_v1_key_response_shapes_are_frozen() {
         "site item https",
     );
 
-    let (status, _, body) = get_ui(&h.app, "/ui/v1/sites/a.local", Some(&token), None).await;
+    let detail_uri = format!(
+        "/ui/v1/sites/{}",
+        site["id"].as_i64().expect("站点 id 必须是数字")
+    );
+    let (status, _, body) = get_ui(&h.app, &detail_uri, Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let detail = &v["data"];
@@ -7790,6 +7904,9 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     let mut got = object_keys(detail);
     got.sort();
     assert_eq!(got, actual, "site detail 字段集漂移");
+    // 详情响应顶层多一个 `schema`：只校验形状，不锁定内部节点。
+    assert_eq!(v["schema"]["type"], "page", "详情响应必须带回服务端 Schema");
+    assert_eq!(v["schema"]["props"]["title"], detail["domain"]);
     assert_key_set(
         &detail["ssl"],
         &[
@@ -7811,7 +7928,15 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     );
     assert_key_set(
         &detail["backup"],
-        &["available", "enabled", "task_id", "last_text", "next_text"],
+        &[
+            "available",
+            "enabled",
+            "task_id",
+            "interval",
+            "time",
+            "last_text",
+            "next_text",
+        ],
         "site detail backup",
     );
 

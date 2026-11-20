@@ -47,6 +47,7 @@ mod plugins;
 mod resources;
 mod runtimes;
 mod settings;
+mod site_page;
 mod sites;
 mod store;
 mod tasks;
@@ -103,6 +104,7 @@ fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
     let (status_label, _status_class) = super::sites::site_status(s);
     let (https_label, https_class) = super::sites::https_status(s.https, s.cert_ready);
     SiteItem {
+        id: s.db_id,
         domain: s.domain.clone(),
         root_dir: s.root_dir.clone(),
         index_dir: s.index_dir.clone(),
@@ -128,6 +130,8 @@ fn site_item(s: &skiff_app::views::sites::SiteSummary) -> SiteItem {
         },
         is_default: s.is_default,
         aliases: s.aliases.clone(),
+        rewrite: s.rewrite.clone(),
+        limit_rate_kbps: s.limit_rate_kbps,
         created_at: rfc3339(s.created_at_epoch),
     }
 }

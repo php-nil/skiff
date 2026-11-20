@@ -85,7 +85,7 @@ cargo test -p skiff-server
 | FS-05 | 后端+管理员 UI 已接（第二步） | 目录树配额接 `fs_quotas`，`/{p}/files/quotas` 提供设置/修改/取消/重扫；能力面无 quota 动词 |
 | TASK-06 | ☑通过（上机，2026-11-09） | `buffer.push`/`buffer.stat` 在能力面实现并有限速单测；testkit `buffer_probe`/`buffer_stat`/`buffer_push` 上机实测覆盖容量/丢弃/高水位/限速/权限，数字见 G 章「调度器补充实测」 |
 | TASK-07 | 有入口 | cron 新建任务落库为 `plugin:com.skiff.cron:<key>`、`source=plugin:<target>`，2026-11-06 实测创建/删除均 200 |
-| DOCKER-10 | 运行时入口已接（单文件） | `/$P/compose` 走 `skiff-compose` 解析 + `Docker::execute` 的 `compose.up/down`；不支持 `-f` 多文件叠加，源文件不落盘；`xtask check` 字段子集校验保留 |
+| DOCKER-10 | 运行时入口已接（单文件） | `/$P/docker/compose` 走 `skiff-compose` 解析 + `Docker::execute` 的 `compose.up/down`；不支持 `-f` 多文件叠加，源文件不落盘；`xtask check` 字段子集校验保留 |
 | DEPLOY-09 | 部分通过：qemu-user 冒烟，未实机装机 | `file`/`ldd` 显示 ARM aarch64 静态链接，`version`/`--help`/`doctor` 通过（2026-11-09 `2f63aeb`）；复现条件=arm64 Linux + systemd，装包后验启动/建站 |
 | DEPLOY-10 | 部分通过：等价镜像实测，未走真实 1Panel 商店流程 | `SKIFF_FORM=docker` 下 healthz 200、登录 303、fs/net/ftp 插件 400 拒装、容器 stop/start 303；文件管理入口已在 `607d09b` 按形态隐藏、页面/深链/API 直达 403 且文案可读 |
 | DEPLOY-11 | 因无可复现超时/断网条件阻塞 | 正常下载+摘要校验通过（c39fe7d2…）；代码核对 `tools/iter.sh::cmd_fetch` 单次 `curl --max-time 600`，无重试/结构化错误输出；复现条件=对下载域名注入超时或丢包 |

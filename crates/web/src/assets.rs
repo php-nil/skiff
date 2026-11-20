@@ -60,7 +60,10 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
 /// v7：`budding-boot.js` 内核文件管理页 schema 重写——新建目录 / 上传 / 新建文件
 /// 三个内联表单改为按钮触发 dialog 弹窗，避免列表被表单挤爆首屏。
 /// v8：运行环境页「镜像参数」card 挪到 Docker 设置页（镜像前缀 + 镜像 tag 同页维护）。
-pub const SHELL_VERSION: &str = "8";
+/// v9：页面 URL 分组（sites/docker/plugins/settings），前端路由表与页面内链接同步。
+/// v13：站点详情 Schema 改由内核生成（试点），前端只 fetch + embed。
+/// v14：站点列表 Schema 同样改由内核生成（`with_schema=true`），弹窗注册表由前端补录。
+pub const SHELL_VERSION: &str = "14";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

@@ -124,7 +124,7 @@ roles = ["admin", "operator", "viewer"]
 - 导航数据由 `crates/app/src/menu.rs::build` 产出、`crates/web/src/handlers/ui/menu.rs` 以 JSON 下发（`GET /ui/v1/menu`）；菜单 DOM 由 budding 运行时渲染，内核不再出模板。
 - 一级固定为 概览 / 网站 / Docker / 工具 / 设置（见 `docs/impl/MENU_*`）与 `/ui/v1/menu` 的实际下发顺序。
 - 插件页：详情 `/{p}/plugins/{id}` 交壳页；功能页 `/{p}/plugins/{id}/{view}` 有 schema 原生渲染，否则 `?legacy=1` 走 iframe。
-- 设置拆为 `/{p}/settings`（安全 / 菜单 / 界面 / Docker）与 `/{p}/audit`。
+- 设置拆为 `/{p}/settings/{security,menu,ui,audit}`；Docker 设置归 `/{p}/docker/settings`。
 
 ### 7.2 菜单键 → 规范 URL
 
@@ -133,26 +133,26 @@ roles = ["admin", "operator", "viewer"]
 | 菜单键 | 规范 URL | 备注 |
 |---|---|---|
 | `overview` | `/{p}` | L1 直达 |
-| `core/sites/list` | `/{p}/sites` | |
-| `core/sites/env` | `/{p}/runtimes` | |
+| `core/sites/list` | `/{p}/sites/list` | |
+| `core/sites/env` | `/{p}/sites/runtimes` | |
 | `core/sites/web` | `/{p}/sites/web` | 管理专属 |
-| `core/docker/containers` | `/{p}/containers` | 保留 `?filter=error`；详情 `/{p}/containers/{id}` |
-| `core/docker/images` | `/{p}/images` | |
-| `core/docker/networks` | `/{p}/networks` | |
-| `core/docker/volumes` | `/{p}/volumes` | |
-| `core/docker/compose` | `/{p}/compose` | |
-| `core/docker/settings` | `/{p}/settings/docker` | 页面 URL 归「设置」资源，菜单键仍是 Docker 设置 |
-| `core/plugins/installed` | `/{p}/plugins` | |
+| `core/docker/containers` | `/{p}/docker/containers` | 保留 `?filter=error`；详情 `/{p}/docker/containers/{id}` |
+| `core/docker/images` | `/{p}/docker/images` | |
+| `core/docker/networks` | `/{p}/docker/networks` | |
+| `core/docker/volumes` | `/{p}/docker/volumes` | |
+| `core/docker/compose` | `/{p}/docker/compose` | |
+| `core/docker/settings` | `/{p}/docker/settings` | 页面与菜单键同属 Docker 分组 |
+| `core/plugins/installed` | `/{p}/plugins/installed` | |
 | `core/plugins/discover` | `/{p}/plugins/discover` | |
 | `core/plugins/updates` | `/{p}/plugins/updates` | |
-| `core/plugins/store` | `/{p}/store` | 目录启用时才出现 |
+| `core/plugins/store` | `/{p}/plugins/store` | 目录启用时才出现；确认页 `/{p}/plugins/store/confirm` |
 | `core/tasks` | `/{p}/tasks` | |
 | `core/jobs` | `/{p}/jobs` | |
 | `core/files` | `/{p}/files` | 回收站 / 配额是其 L3：`/{p}/files/trash`、`/{p}/files/quotas` |
-| `core/settings/security` | `/{p}/settings` | |
+| `core/settings/security` | `/{p}/settings/security` | |
 | `core/settings/menu` | `/{p}/settings/menu` | |
 | `core/settings/ui` | `/{p}/settings/ui` | |
-| `core/settings/audit` | `/{p}/audit` | 仅 operator / admin |
+| `core/settings/audit` | `/{p}/settings/audit` | 仅 operator / admin |
 | `plugin/<id>/<l2>[/<l3>]` | `/{p}/plugins/<id>/<view>` | 有 schema 由壳页原生渲染；`?legacy=1` 才是 iframe 工作台，与 RPC 同权限（非管理者 403） |
 | 旧「应用」菜单 | 解散 | cron/monitor/guard → `工具`，files → `网站`（站点文件）；插件信息页由壳页 `/{p}/plugins/{id}` 承载 |
 

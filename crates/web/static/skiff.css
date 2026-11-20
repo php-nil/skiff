@@ -1529,7 +1529,7 @@ html[data-theme="dark"] {
   --login-glow: rgba(95, 212, 181, .15);
 }
 
-/* 主体容器：分栏布局 */
+/* 主体容器：分栏布局；两列按内容高度居中，避免右栏被拉伸成整列高 */
 .login-layout {
   position: relative;
   z-index: 1;
@@ -1537,7 +1537,7 @@ html[data-theme="dark"] {
   gap: var(--sp-8);
   max-width: 880px;
   width: 100%;
-  align-items: stretch;
+  align-items: center;
 }
 
 /* 左：品牌区 */

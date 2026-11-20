@@ -140,7 +140,7 @@ schema v7 起 `sites` 整表重建为 `site_type(runtime/static/proxy)` + `runti
   库内 `sites=0`；`/www/sites` 为空。
 - 拒绝路径（当时为服务器表单页内联告警；2026-11-19 起同一校验经 `POST /ui/v1/sites` 返回 4xx JSON 信封）：重复域名「域名已存在」；`ftp://` 上游
   非 http(s)；`site_type=node|go` 只支持三类；未知 `runtime_id` 运行环境不存在。
-- 运行环境页：`/{p}/runtimes`、`/{p}/runtimes/php-8.5` 均 200
+- 运行环境页：`/{p}/sites/runtimes`、`/{p}/sites/runtimes/php-8.5` 均 200
   （`/{p}/sites/env*` 别名已于 2026-11-19 删除，直达 404，见 [`URL_CONTRACT.md`](../../contract/URL_CONTRACT.md) §7）；PHP 配置保存 303，
   `/www/php/www.conf` 写入 `memory_limit=512M`、`upload_max_filesize=128M`、`post_max_size=256M`、
   `max_execution_time=120`、`pm=ondemand`，PHPInfo 页面显示 `upload_max_filesize=128M`；

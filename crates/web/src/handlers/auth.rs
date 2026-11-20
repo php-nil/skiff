@@ -74,7 +74,7 @@ pub(crate) fn login_redirect_target(
     must_change_password: bool,
 ) -> String {
     if must_change_password {
-        format!("/{}/settings?force=1", state.cfg.entry_prefix)
+        format!("/{}/settings/security?force=1", state.cfg.entry_prefix)
     } else if next.starts_with('/') && !next.starts_with("//") {
         next.to_string()
     } else {
@@ -101,7 +101,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 <title>登录 · Skiff</title>
 <link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <script src="/{prefix}/static/theme-init.js"></script>
-<link rel="stylesheet" href="/{prefix}/static/skiff.css">
+<link rel="stylesheet" href="/{prefix}/static/skiff.css?v={shell}">
 </head>
 <body class="skiff-login-shell">
 <div class="login-layout">
@@ -127,7 +127,7 @@ pub fn login_shell_html(prefix: &str, username: &str, next: &str) -> String {
 </button>
 <script src="/{prefix}/static/budding/budding-{ver}.min.js?v={ver}"></script>
 <script src="/{prefix}/static/form-enter-submit.js?v={shell}"></script>
-<script src="/{prefix}/static/budding/budding-login.js"></script>
+<script src="/{prefix}/static/budding/budding-login.js?v={shell}"></script>
 <script>
 (function(){{
   var btn = document.querySelector('[data-theme-toggle]');

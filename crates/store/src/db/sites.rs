@@ -35,6 +35,10 @@ pub struct Site {
     pub https: bool,
     /// 是否把 80 强制跳转到 443。
     pub force_https: bool,
+    /// 伪静态预设键（`none` / `wordpress` / `laravel` / `thinkphp`）。
+    pub rewrite: String,
+    /// 出口限速（KB/s）；0 表示不限制。
+    pub limit_rate_kbps: u32,
 }
 
 /// 新建站点的输入。字段一致性由建表 CHECK 与服务层共同保证。
@@ -50,7 +54,7 @@ pub struct NewSite {
 
 const SITE_COLS: &str = "id, domain, root_dir, site_type, runtime_id, proxy_target, \
                          proxy_websocket, status, created_at, updated_at, is_default, https, \
-                         force_https";
+                         force_https, rewrite, limit_rate_kbps";
 
 fn row_to_site(r: &Row<'_>) -> rusqlite::Result<Site> {
     Ok(Site {
@@ -67,6 +71,8 @@ fn row_to_site(r: &Row<'_>) -> rusqlite::Result<Site> {
         is_default: r.get::<_, i64>(10)? != 0,
         https: r.get::<_, i64>(11)? != 0,
         force_https: r.get::<_, i64>(12)? != 0,
+        rewrite: r.get(13)?,
+        limit_rate_kbps: r.get::<_, i64>(14)?.clamp(0, i64::from(u32::MAX)) as u32,
     })
 }
 
@@ -119,6 +125,18 @@ impl Db {
         conn.query_row(
             &format!("SELECT {SITE_COLS} FROM sites WHERE domain = ?1"),
             params![domain],
+            row_to_site,
+        )
+        .optional()
+        .map_err(StoreError::from)
+    }
+
+    /// 按站点主键读取：页面 URL 只暴露 id，域名变更不影响深链。
+    pub fn site_by_id(&self, id: i64) -> Result<Option<Site>> {
+        let conn = self.conn();
+        conn.query_row(
+            &format!("SELECT {SITE_COLS} FROM sites WHERE id = ?1"),
+            params![id],
             row_to_site,
         )
         .optional()
@@ -216,6 +234,20 @@ impl Db {
                 i64::from(force_https && https),
                 now()
             ],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(domain.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 更新伪静态预设与出口限速。调用方负责白名单校验与 vhost 重生成。
+    pub fn set_site_policy(&self, domain: &str, rewrite: &str, limit_rate_kbps: u32) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE sites SET rewrite = ?2, limit_rate_kbps = ?3, updated_at = ?4 \
+             WHERE domain = ?1",
+            params![domain, rewrite, i64::from(limit_rate_kbps), now()],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(domain.to_string()));
@@ -343,6 +375,31 @@ mod tests {
 
         assert!(db.delete_site("example.com").unwrap());
         assert!(db.list_sites().unwrap().is_empty());
+    }
+
+    #[test]
+    fn site_policy_defaults_and_updates() {
+        let db = Db::open_in_memory().unwrap();
+        let site = db
+            .create_site(&php_site("policy.local", "php-8.5"))
+            .unwrap();
+        assert_eq!(site.rewrite, "none");
+        assert_eq!(site.limit_rate_kbps, 0);
+        assert_eq!(
+            db.site_by_id(site.id).unwrap().unwrap().domain,
+            "policy.local"
+        );
+
+        db.set_site_policy("policy.local", "wordpress", 512)
+            .unwrap();
+        let site = db.site_by_id(site.id).unwrap().unwrap();
+        assert_eq!(site.rewrite, "wordpress");
+        assert_eq!(site.limit_rate_kbps, 512);
+
+        assert!(matches!(
+            db.set_site_policy("missing.local", "none", 0),
+            Err(StoreError::NotFound(_))
+        ));
     }
 
     #[test]

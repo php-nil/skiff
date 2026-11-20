@@ -266,7 +266,7 @@ tls_key  = "/etc/skiff/tls/privkey.pem"
 | 错前缀 `/xxxx/login` | **404** |
 | `curl http://10.10.15.4:18080/6gp3m9vq/login` | curl `000`（`Received HTTP/0.9 when not allowed`：收到 TLS 告警字节，**不返回页面**） |
 | `ss -ltnp` / 日志 | `0.0.0.0:18080`；`INFO HTTPS 监听中 addr=0.0.0.0:18080` |
-| cookie-jar 全流程 | GET 登录页 → `skiff_login=<csrf>; Secure`；POST → **303** `/{p}/settings?force=1` + `__Host-skiff_session=…; HttpOnly; SameSite=Strict; Secure`（CSRF 不再 403）；改密 POST → **303** `/6gp3m9vq` + 新 Secure 会话；首页 **200**（`概览 · Skiff`） |
+| cookie-jar 全流程 | GET 登录页 → `skiff_login=<csrf>; Secure`；POST → **303** `/{p}/settings/security?force=1` + `__Host-skiff_session=…; HttpOnly; SameSite=Strict; Secure`（CSRF 不再 403）；改密 POST → **303** `/6gp3m9vq` + 新 Secure 会话；首页 **200**（`概览 · Skiff`） |
 | 重启测试机 | 服务 active、`0.0.0.0:18080`、证书两文件、`initial-admin.txt`、HTTPS 200、iptables 规则全部保持 |
 | 重装 `install.sh` | 只在 `config.toml` 不存在时拷贝示例，且见 `tls_cert` 时 `ensure_insecure_http` 直接返回；实测重装前后 `config.toml` sha256 **相同**，HTTPS 200、明文仍被拒 |
 

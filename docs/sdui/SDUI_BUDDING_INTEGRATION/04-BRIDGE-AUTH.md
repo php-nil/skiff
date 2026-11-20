@@ -19,7 +19,7 @@
 - TOTP：现有实现是**单步表单**，没有第二步分支；`otp` 字段原样保留，错误文案仍为「用户名、口令或动态码不正确」，不用新建错误码。
 - 失败呈现：服务端 JSON `error.message` 由启动脚本写入 `sessionStorage` 并重载登录页，页面内 budding `alert` 展示后即清除；错误文案不写 URL（避免可构造的伪造提示），用户名保留、口令清空——与旧页 POST 后重渲染的观感一致。
 - 会话 Cookie：登录成功响应带 `{ data: { redirect_to, username, role } }` 与 `Set-Cookie`；Cookie 形态完全复用 `skiff_identity::session_cookie`（`HttpOnly; SameSite=Lax`，`Secure` 由可信代理解析后的 scheme 决定）。
-- 跳转：`redirect_to` 由内核按与表单登录同一函数计算（首登强制改密 → `/{p}/settings?force=1`；站内 `next` 深链原样；否则 `/{p}`），前端只做 `location.assign`。
+- 跳转：`redirect_to` 由内核按与表单登录同一函数计算（首登强制改密 → `/{p}/settings/security?force=1`；站内 `next` 深链原样；否则 `/{p}`），前端只做 `location.assign`。
 - 登出：`POST /ui/v1/session/logout`（会话 + CSRF 头），由内核清 Cookie。
 
 **仍待实施 / 与早期设计稿的差异**

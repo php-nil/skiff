@@ -81,6 +81,10 @@ pub struct PluginView {
 pub struct SiteBackupView {
     pub enabled: bool,
     pub task_id: String,
+    /// `daily` / `weekly` / `monthly`。
+    pub interval: String,
+    /// 本地执行时间 `HH:MM`。
+    pub time: String,
     pub last_text: String,
     pub next_text: String,
 }

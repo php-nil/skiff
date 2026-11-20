@@ -134,7 +134,7 @@ pub async fn plugin_delete(
     let mut resp = Json(json!({
         "data": {
             "id": id,
-            "redirect_to": format!("/{}/plugins", state.cfg.entry_prefix),
+            "redirect_to": format!("/{}/plugins/installed", state.cfg.entry_prefix),
         }
     }))
     .into_response();
@@ -199,7 +199,7 @@ pub async fn plugin_confirm(
     let mut resp = Json(json!({
         "data": {
             "id": id,
-            "redirect_to": format!("/{}/plugins", state.cfg.entry_prefix),
+            "redirect_to": format!("/{}/plugins/installed", state.cfg.entry_prefix),
         }
     }))
     .into_response();

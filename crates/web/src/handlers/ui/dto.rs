@@ -152,6 +152,8 @@ pub struct SiteHttps {
 /// 站点列表项（字段冻结，只增不改；与页面 `SiteView` 同源）。
 #[derive(Debug, Clone, Serialize)]
 pub struct SiteItem {
+    /// 站点主键：页面深链与详情接口只暴露它，域名变更不影响 URL。
+    pub id: i64,
     pub domain: String,
     pub root_dir: String,
     pub index_dir: String,
@@ -170,6 +172,10 @@ pub struct SiteItem {
     pub https: SiteHttps,
     pub is_default: bool,
     pub aliases: Vec<String>,
+    /// 伪静态预设键（`none` / `wordpress` / `laravel` / `thinkphp`）。
+    pub rewrite: String,
+    /// 出口限速（KB/s）；0 表示不限制。
+    pub limit_rate_kbps: u32,
     /// RFC3339 UTC 单字段（D9）。
     pub created_at: String,
 }
@@ -213,6 +219,10 @@ pub struct SiteBackupInfo {
     pub available: bool,
     pub enabled: bool,
     pub task_id: String,
+    /// 备份间隔：`daily` / `weekly` / `monthly`。
+    pub interval: String,
+    /// 本地执行时间 `HH:MM`。
+    pub time: String,
     pub last_text: String,
     pub next_text: String,
 }
@@ -229,6 +239,26 @@ pub struct SiteDetailData {
     pub config: SiteConfigInfo,
     pub backup: SiteBackupInfo,
     pub can_manage: bool,
+}
+
+/// `GET /ui/v1/sites` 的查询参数：列表参数 + 是否附带服务端 Schema。
+///
+/// `with_schema` 只在页面加载时由前端传 `true`；表格自身的游标分页不带该参数，
+/// 避免每次翻页都重建页面骨架（其中包含运行环境选项查询）。
+/// 注意这里不复用 `ListQuery` 的 `flatten`：`serde_urlencoded` 对 flatten 支持不可靠。
+#[derive(Debug, Default, Deserialize)]
+pub struct SitesQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub q: Option<String>,
+    #[serde(default)]
+    pub with_schema: bool,
+}
+
+/// `GET /ui/v1/sites/{id}` 的查询参数：L3 子视图（缺省 / 未知值按概览）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteDetailQuery {
+    pub tab: Option<String>,
 }
 
 /// `POST /ui/v1/sites` 的请求体：字段与旧新建表单同名。
@@ -252,14 +282,14 @@ pub struct SiteCreateBody {
     pub proxy_websocket: bool,
 }
 
-/// `POST /ui/v1/sites/{domain}/default`：设为 / 取消默认站点（`SITE_SET_DEFAULT`）。
+/// `POST /ui/v1/sites/{id}/default`：设为 / 取消默认站点（`SITE_SET_DEFAULT`）。
 #[derive(Debug, Default, Deserialize)]
 pub struct EnabledBody {
     #[serde(default)]
     pub enabled: bool,
 }
 
-/// `POST /ui/v1/sites/{domain}/domains`：新增 / 删除别名（`SITE_UPDATE_DOMAINS`）。
+/// `POST /ui/v1/sites/{id}/domains`：新增 / 删除别名（`SITE_UPDATE_DOMAINS`）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SiteDomainBody {
     #[serde(default)]
@@ -268,14 +298,14 @@ pub struct SiteDomainBody {
     pub alias: String,
 }
 
-/// `POST /ui/v1/sites/{domain}/config`：保存 vhost 配置（`SITE_SAVE_CONFIG`）。
+/// `POST /ui/v1/sites/{id}/config`：保存 vhost 配置（`SITE_SAVE_CONFIG`）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SiteConfigBody {
     #[serde(default)]
     pub content: String,
 }
 
-/// `POST /ui/v1/sites/{domain}/ssl`：证书生成 / 上传 / 强制跳转 / 关闭 / 删除（`SITE_SSL`）。
+/// `POST /ui/v1/sites/{id}/ssl`：证书生成 / 上传 / 强制跳转 / 关闭 / 删除（`SITE_SSL`）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SiteSslBody {
     #[serde(default)]
@@ -288,7 +318,27 @@ pub struct SiteSslBody {
     pub key_pem: String,
 }
 
-/// `POST /ui/v1/sites/{domain}/delete`：删除站点，服务端强制域名确认（`SITE_DELETE`）。
+/// `POST /ui/v1/sites/{id}/policy`：伪静态预设 + 出口限速。
+#[derive(Debug, Default, Deserialize)]
+pub struct SitePolicyBody {
+    #[serde(default)]
+    pub rewrite: String,
+    #[serde(default)]
+    pub limit_rate_kbps: u32,
+}
+
+/// `POST /ui/v1/sites/{id}/backup`：备份开关与计划。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteBackupBody {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub interval: String,
+    #[serde(default)]
+    pub time: String,
+}
+
+/// `POST /ui/v1/sites/{id}/delete`：删除站点，服务端强制域名确认（`SITE_DELETE`）。
 #[derive(Debug, Default, Deserialize)]
 pub struct SiteDeleteBody {
     #[serde(default)]

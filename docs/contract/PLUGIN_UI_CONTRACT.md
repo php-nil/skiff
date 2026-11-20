@@ -15,7 +15,7 @@
 
 | 路由 | 方法 | 渲染方 | 说明 |
 |---|---|---|---|
-| `/{p}/plugins` | GET | 内核 | 插件中心（已安装 / 发现 / 可更新） |
+| `/{p}/plugins/{installed,discover,updates}`、`/{p}/plugins/store` | GET | 内核 | 插件中心（已安装 / 发现 / 可更新 / 商店） |
 | `/{p}/plugins/{id}` | GET | 壳页 | **插件信息与管理页**：数据来自 `GET /ui/v1/plugins/{id}` |
 | `/{p}/plugins/{id}/{view}` | GET | 壳页 / 内核 | **插件功能页**：默认交壳页（有 schema 原生渲染）；`?legacy=1` 才是内核 iframe 工作台 |
 | `/{p}/plugins/{id}/schema/{view}` | GET | 内核 | 返回该视图的随包 schema JSON（`application/json`，`no-store`）；要求 `PluginManage`，与 RPC 同权限；运行期解析失败返回 400（`shape.plugin_schema`） |

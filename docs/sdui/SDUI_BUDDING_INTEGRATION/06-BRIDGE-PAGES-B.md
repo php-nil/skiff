@@ -54,7 +54,7 @@
 
 ### 5.13 审计（第六批占位 → 第十五批落地）
 
-- `GET /{p}/audit` 交付 budding 壳页，页面为原生只读审计列表；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；权限口径不变（viewer 403）。
+- `GET /{p}/settings/audit` 交付 budding 壳页，页面为原生只读审计列表；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；权限口径不变（viewer 403）。
 - 权限两处同源：页面与 `GET /ui/v1/audit` 都按 `Permission::AuditRead` 判定（viewer 403，菜单不可见），不新增权限来源。
 - 查询：`GET /ui/v1/audit?q=&limit=&cursor=`，落 `{ items, keyword, has_more, next_cursor }`。
   - 关键字非空时对 actor / ip / action / target / detail 做 ASCII 不区分大小写的子串匹配（`instr(lower(...))`，`%`/`_` 按字面量处理）。
@@ -67,13 +67,13 @@
 
 ### 5.14 设置（第七批 + 第十一批补齐）
 
-- `GET /{p}/settings` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；口令 / TOTP 写接口保留，壳页经 `/ui/v1` 调用。
+- `GET /{p}/settings/security` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）；口令 / TOTP 写接口保留，壳页经 `/ui/v1` 调用。
 - 写操作全部迁到 `/ui/v1`，复用旧链路的校验、落盘、审计与错误文案，CSRF 走 `x-csrf-token`：
   - 面板配置 `POST /ui/v1/settings/panel` → `settings::apply_panel_update`（端口 / 安全入口 / TLS）。
   - 口令 `POST /ui/v1/settings/password` → argon2 校验旧口令、写新散列、`rotate_password_session` 轮换会话（响应回传新 `csrf_token` 并重设会话 Cookie）、删除首启 `initial-admin.txt`。错误文案沿用旧页：旧口令错「当前口令不正确」、两次不一致「两次输入的新口令不一致」。
   - TOTP 两步：`POST /ui/v1/settings/totp/setup` 生成并暂存密钥（未启用态），`POST /ui/v1/settings/totp/enable` 校验动态码后启用并一次性返回 10 条备份码。错误文案沿用旧页：「动态码不正确，请确认设备时间后重试」。
   - 公钥 `POST /ui/v1/settings/keys`（导入）与 `POST /ui/v1/settings/keys/{id}`（撤销）→ `decode_public_key` + `trust_key` / `remove_trusted_key`，审计事件 `settings.key.import` / `settings.key.remove`，仅 Admin。
-- 强改密期间中间件只放行入口页 `/login`、`/settings` 与 `/static/`、`/ui/`、`/api/`；新前端失败一律按 JSON 信封回显，不 PRG。
+- 强改密期间中间件只放行入口页 `/login`、`/settings/security` 与 `/static/`、`/ui/`、`/api/`；新前端失败一律按 JSON 信封回显，不 PRG。
 - 口令框直接声明原生 `type: 'password'`（`autocomplete`：当前口令 `current-password`，新口令 `new-password`）。
 - `GET /ui/v1/settings` 返回 `panel` / `account` / `keys` / `can_admin` / `flash`；公钥仅对管理员返回，非管理员为空数组。
 
@@ -112,15 +112,15 @@
 
 **菜单设置与 Docker 设置（第二十二批）**
 
-- `GET /{p}/settings/menu`、`GET /{p}/settings/docker` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
-- 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/settings/docker`，不再以 `/m/core/...` 作为产品入口；`/{p}/docker/settings` 别名随旧 SSR 于 2026-11-19 删除（现直接 404）。
+- `GET /{p}/settings/menu`、`GET /{p}/docker/settings` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
+- 菜单导航的 href 改指向规范路径 `/{p}/settings/menu`、`/{p}/docker/settings`，不再以 `/m/core/...` 作为产品入口；旧 `/{p}/settings/docker` 随 URL 分组调整于 2026-11-20 下线（现直接 404）。
 - `GET /ui/v1/settings/menu` → `{layout, width, max_width, groups[{key,label,items[{key,label,href,hidden,pinned,pinnable,plugin,icon}]}]}`；读对登录用户开放（偏好按账号隔离）。页面用「布局按钮 + 内容宽度表单 + 分组表格」，行内「↑ / ↓ / 显隐 / 固定」，底部「恢复默认」（确认后 `action=reset`）。
 - `GET /ui/v1/settings/docker` → `{registry_mirror, image_prefix, can_admin}`；读对登录用户开放，`can_admin=false` 时页面只读提示。写操作仅 Admin，失败按 JSON 信封返回（不 PRG），成功刷新页面。
 
 **运行环境详情（第二十三批）**
 
-- `/runtimes` 列表新增「安装运行环境」表单（类型来自 `GET /ui/v1/runtimes/catalog`，版本可留空）与「镜像参数」表单（`GET|POST /ui/v1/runtimes/images`）。
-- `/runtimes/{id}` 改为真实原生页（原占位与旧版链接删除）：`GET /ui/v1/runtimes/{id}` 一次返回运行环境行、PHP 参数、Node 配置、端口、扩展清单、配置文件列表、当前选中的配置文件内容（`?file=key`）、绑定站点与 `config_mounts_stale`。
+- `/sites/runtimes` 列表新增「安装运行环境」表单（类型来自 `GET /ui/v1/runtimes/catalog`，版本可留空）与「镜像参数」表单（`GET|POST /ui/v1/runtimes/images`）。
+- `/sites/runtimes/{id}` 改为真实原生页（原占位与旧版链接删除）：`GET /ui/v1/runtimes/{id}` 一次返回运行环境行、PHP 参数、Node 配置、端口、扩展清单、配置文件列表、当前选中的配置文件内容（`?file=key`）、绑定站点与 `config_mounts_stale`。
 - 写操作：生命周期按钮（start/stop/restart/rebuild/sync/delete）走 `POST /ui/v1/runtimes/{id}/action/{action}`，有绑定站点时前端先确认；`POST .../probe` 只回显实测版本；PHP 参数、Node 配置、端口、配置文件、PECL、克隆、解绑各有独立端点，全部复用 `runtime_cmd` 与既有动作权限。
 - 扩展表行内「安装 / 卸载」调用 `POST /ui/v1/runtimes/{id}/extensions/{key}/{op}`；批量端点 `POST .../extensions/batch` 已登记，当前页面按单项操作。
 - 详情聚合仍是 Admin-only（与旧页同权限）；viewer 直接请求 403，菜单不可见。
@@ -135,7 +135,7 @@
 
 ### 5.15 商店（第八批）
 
-- `GET /{p}/store` 交付 budding 壳页；旧 SSR 商店页已删除（2026-11-18）；目录状态、四类条目与升级包入口由 `/{p}/store` 壳页读 `/ui/v1/store` 渲染。
+- `GET /{p}/plugins/store` 交付 budding 壳页；旧 SSR 商店页已删除（2026-11-18）；目录状态、四类条目与升级包入口由 `/{p}/plugins/store` 壳页读 `/ui/v1/store` 渲染。
 - `GET /ui/v1/store?refresh=1` 与旧页面共用 `store::load_view`：同一目录快照、同一可安装版本判定与升级提示。
 - 安装分两步，均复用旧链路与审计：
   1. `POST /ui/v1/store/plugins/{id}/install` → 调用 `store::prepare`（下载、摘要/大小、验签、版本与降级校验），返回权限确认数据；审计动作与旧表单一致（`store.install`）。
@@ -167,7 +167,7 @@
 
 ### 5.16 插件（第九批）
 
-- `GET /{p}/plugins`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表与信息页已随 `/{p}/m/core/*` 删除（2026-11-18）；数据走 `/ui/v1/plugins`。
+- `GET /{p}/plugins/installed`、`GET /{p}/plugins/{id}` 交付 budding 壳页；旧 SSR 列表与信息页已随 `/{p}/m/core/*` 删除（2026-11-18）；数据走 `/ui/v1/plugins`。
 - 菜单键 `core/plugins/discover`、`core/plugins/updates` 映射为原生路由 `/{p}/plugins/discover`、`/{p}/plugins/updates`，页内以「发现 / 可更新」标签呈现；页内标签链接同路径，旧 `?tab=` 继续兼容（第二十五批）。
 - **插件功能页原生化**：`api = "1.3"` 起视图可声明随包 schema（`ui/schema/<name>.json`，安装期静态校验）；`/{p}/plugins/{id}/{view}` 由壳页加载 `GET /{p}/plugins/{id}/schema/{view}` 后原生渲染，数据与写操作经 `skiffPluginRpc` 走既有 `POST /rpc`（CSRF + 权限 + 审计）。未声明 schema 的旧视图仍走旧 SSR 工作台（显式 `?legacy=1`）。功能页、schema 与 RPC 权限统一为 `PluginManage`（§4.4）。
 - 插件详情页把声明的功能页以纯文本列出，并说明原生 schema 渲染与旧 SSR 兼容关系。
@@ -210,7 +210,7 @@
 
 ### 5.19 容器终端（第十四批）
 
-- 路由：`GET /{p}/containers/{id}/terminal`（budding 隐藏路由），入口在容器详情的「打开终端」。**不使用 iframe，也不自建 xterm**。
+- 路由：`GET /{p}/docker/containers/{id}/terminal`（budding 隐藏路由），入口在容器详情的「打开终端」。**不使用 iframe，也不自建 xterm**。
 - 通道完全复用既有契约，本轮无内核改动：
   - `POST /{p}/containers/{id}/exec/ticket`（`AdminUser` + `x-csrf-token` + `Verb::Exec` 策略）签发单连票据，绑定「当前会话 + 容器」，30 秒有效、一次即废；
   - `GET /{p}/containers/{id}/exec?ticket=` 升级 WS，`Origin` 严格校验；
@@ -221,8 +221,8 @@
 
 ### 5.20 日志入口收口（第十六批）
 
-- 容器日志：`GET /{p}/containers/{id}/logs` 从旧 SSR SSE 页改为 budding 日志页（尾部快照 + 刷新，不做实时流）；SSE 流只保留在 `GET /{p}/containers/{id}/logs/stream`，供旧 SSR 详情页 `data-src` 跟随。新增 `GET /ui/v1/containers/{id}/logs?tail=`（策略同旧 SSE：`Verb::ContainerLogs` → `DockerRead`；`tail` 默认 500、上限 2000），容器详情新增「查看日志」入口，旧版链接收窄为「资源限制编辑」。
-- 运行环境日志：新增 `GET /{p}/runtimes/{id}/logs` budding 日志页与 `GET /ui/v1/runtimes/{id}/logs?tail=`（Admin，复用 `AppState::runtime_logs`）；旧详情抽屉的快照接口移到 `GET /{p}/runtimes/{id}/logs.json`（`logs_url` 已同步），让 `/logs` 可以交壳页；运行环境列表行可点进详情占位页，占位页提供「查看运行日志」与「旧版配置 / 安装 / 扩展」两个明确入口。
+- 容器日志：`GET /{p}/docker/containers/{id}/logs` 从旧 SSR SSE 页改为 budding 日志页（尾部快照 + 刷新，不做实时流）；SSE 流只保留在 `GET /{p}/containers/{id}/logs/stream`，供旧 SSR 详情页 `data-src` 跟随。新增 `GET /ui/v1/containers/{id}/logs?tail=`（策略同旧 SSE：`Verb::ContainerLogs` → `DockerRead`；`tail` 默认 500、上限 2000），容器详情新增「查看日志」入口，旧版链接收窄为「资源限制编辑」。
+- 运行环境日志：新增 `GET /{p}/sites/runtimes/{id}/logs` budding 日志页与 `GET /ui/v1/runtimes/{id}/logs?tail=`（Admin，复用 `AppState::runtime_logs`）；旧详情抽屉的快照接口移到 `GET /{p}/runtimes/{id}/logs.json`（`logs_url` 已同步），让 `/logs` 可以交壳页；运行环境列表行可点进详情占位页，占位页提供「查看运行日志」与「旧版配置 / 安装 / 扩展」两个明确入口。
 - 前端统一用 `code` 组件（`language: 'plaintext'`、固定高度、行号、可复制），刷新走整页重载；不新增 SSE/WS 契约，也不在前端造分页或流式缓冲。
 - `?legacy=1` 现状：仅插件 iframe 工作台与站点日志旧 SSR 两处保留（前者是插件嵌入兼容，后者是无 JS 兜底）；本轮未新增 legacy 分支。
 - 验证：`main_flow` 覆盖「页面交壳 + JSON 未认证 401 / 无 Docker 503 / viewer 403 / 实例不存在 400」；无头浏览器实测三个页面（容器日志错误页、运行环境日志错误页、运行环境详情占位页）均无 iframe、无脚本错误。
