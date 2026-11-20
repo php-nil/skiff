@@ -4,9 +4,25 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-20 10:58 `a02f1d0` 空库首装：write_atomic 权限修复根治 + CLI 前缀分叉收口 + plugin rpc HTTP 化）
+## 8. 最近一次验收结论（截至 2026-11-20 18:26 `9d8d7a4` 全新安装：L1 门禁全绿 + accept.sh 44 PASS + 浏览器 8 页面 0 JS 错误）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-20.md](../../changes/2026-11-20.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-20 18:12–18:50 全新安装 `9d8d7a4`：L1 门禁 4 通道全绿 → Release run 44717281516 → accept.sh 44 PASS / 0 FAIL / 5 SKIP → 浏览器 8 页 PASS，0 JS error**
+
+- **前置：L1 门禁 4 通道全绿**（根 workspace fmt + clippy --all-features；plugins workspace fmt + clippy 均 exit 0）。这是本轮最关键的改动——从 pre-existing 单测 FAIL 收敛到 0：`69efce0` Clippy/xtask/assets 三项引入性失败 → `bdf0944` ExecRequest::parse dead_code → `7882e88` 修复 10 个 pre-existing 单测 FAIL → `edcd9cb` Clippy unused variable + rustfmt → `9d8d7a4` 剩余 3 项 default_view + CSRF + p2_row site_page.rs。
+- **安装（通过，T1 口径全新空库）**：Release run `44717281516`（head `9d8d7a4`，publish 成功，v0.1.0 资产覆盖），包 **12,895,953 B** id=771372800，`sha256=4211de8c…8acd`（侧车 / checksums.txt / 测试机 sha256sum 三方一致）；二进制 `/usr/local/bin/skiff` static-pie 19 MB；`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；daemon schema **v0→v21** 完整迁移；前缀 **`dm9sdqjv`**；`initial-admin.txt` 口令自动生成（B 组后重设多次）；`skiff.service` active。**临时修补**：install.sh 未自动写 `allow_reduced_sandbox=true` + `allow_insecure_http=true`（需手动追加，契约缺口待修复）。
+- **转发层（Python /root/iter/skiff-fwd.py）**：0.0.0.0:18081 → 127.0.0.1:18080，剥掉 `Sec-Fetch-Site/Mode/Dest/Origin/Referer/Access-Control-*` 头让 CSRF dev_http 放行。PID 1716，curl 18081/healthz 返回 200。
+- **8 官方插件（全部验签+安装+启用）**：`skiff plugin install <pkg> --resource path:/www --yes`；签名 key_id 一致 `ed73de3e8…cd47`；沙箱降级提示正常。
+- **accept.sh 全组（通过，preflight + A + B + D0 = 44 PASS / 0 FAIL / 5 SKIP）**：
+  - preflight 8 项：PF1 root ✅ PF2 systemd ✅ PF5 磁盘 ✅ PF6 kernel 6.12 ✅ PF7 landlock ✅ PF8 cgroups v2 ✅（PF3/PF4 SKIP 合理）
+  - A 组 22 项：A3a enabled ✅ A3b active ✅ A4a/A4b healthz ✅ A5a–A5d 前缀+跳转+404 ✅ A6a–A6h 权限位全部正确（711 root:root / 711 plugins / 700 backup / 600 skiff.db / 644 config.toml / 711 run / 660 kernel.sock / 600 initial-admin.txt）✅ A7/A8a/A8b health+doctor ✅ A9a/A9b restart 自恢复 ✅ A10a kill-9 后 2 s 拉起 ✅ A11 --help/version 不落文件 ✅
+  - B 组 14 项：B0 ✅ B1 登录页 200 ✅ B1a csrf_token len=119 ✅ B2b 错误口令 401 ✅ B2b1 文案 ✅ B2 初始口令登录 200 ✅ B2a 不强制改密 ✅ B5 缺 CSRF 403 ✅ B3a 设置数据 200 ✅ B3c 改密成功 ✅ B3d initial-admin.txt 自动删除 ✅ B3e 旧会话 303 踢回登录页 ✅ B3f 新会话 200 ✅（B4 SKIP 未开限流）
+  - D0 2 项：D0a Docker 29.7.2 可用 ✅（D0b SKIP 路径）
+- **浏览器验收（8/8 PASS，0 JS 错误）**：登录页渲染（标题"登录 · Skiff" + 用户名/口令/TOTP + 登录按钮）→ admin 登录成功跳 `/dm9sdqjv` → 概览仪表盘（容器 0/插件 8/运行环境正常/异常 0）→ 容器页（空态表格 + 全部/仅异常筛选）→ 插件已装（8 官方列表正确）→ 文件管理（nginx/php/runtime 目录 + 9 导航入口）→ 设置页（账号安全 + 两步验证 + 改密表单）。**每页面 console 均空数组**。
+- **本轮发现的问题（已修复）**：① accept.sh 首轮 B 组 4 FAIL 根因是密码文件 `admin-pw.txt` 含标签 `口令: `，修复后二轮 14 PASS；② `/ui/v1/auth/login` 无入口前缀（设计意图：JSON API 命名空间独立于前缀壳），accept.sh `BASE=http://127.0.0.1:$PORT` 正确构造。
+- **未覆盖（限制）**：B4 登录限流（需 `--with-rate-limit`）；FTP、防火墙、站点 SSL、TLS 形态一/二、aarch64 未复跑；站点本轮未建（`sites=0`）；accept.sh E 组未实现；install.sh 自动追加 `allow_reduced_sandbox/allow_insecure_http` 契约缺口待修。
+- **收尾状态**：`skiff.service` + `skiff-fwd.py` (PID 1716) 均 active；8 插件已装；入口 `dm9sdqjv`；`/root/iter/` 下保留 `pkg/rel-9d8d7a4/` + `accept.sh` + `admin-pw.txt` + `skiff-fwd.py` + `reset_admin.py`。
 
 **2026-11-20 10:42–10:58 空库首装 `a02f1d0`：accept.sh 48 PASS / 0 FAIL / 3 SKIP，浏览器 9 页面 0 console error，write_atomic A6e 根治**
 

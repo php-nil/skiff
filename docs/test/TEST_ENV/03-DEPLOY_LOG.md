@@ -13,6 +13,7 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
+| 2026-11-20 18:26 | 机器还原后全新安装 + 5 个门禁修复 commit 收尾 | Run `44717281516`（head `9d8d7a4`），amd64 12,895,953 B `sha256=4211de8c…8acd` | accept.sh **44 PASS / 0 FAIL / 5 SKIP**；浏览器 8 页面 0 console error；8 官方插件全装；L1 门禁全绿 |
 | 2026-11-20 14:17 | 覆盖升级 schema v21→v22 + budding-boot.js CSS 修正 | Run `44687309424`（head `524f880`），amd64 12.9 MB；前序 Run `44685263606`（head `fae19cd`，50 files） | schema 自动迁移 v22 ✅；curl slug→id 303 ✅；**浏览器 6 项站点详情全量复验 PASS** |
 | 2026-11-20 10:58 | 空库首装（write_atomic 权限修复 + CLI 前缀分叉收口） | Run `44574500026`（head `a02f1d0`），amd64 12,821,377 B `sha256=2fd680b5…b5c` | accept.sh **48 PASS / 0 FAIL / 3 SKIP**；浏览器 9 页面 0 console error；A6e 根治 |
 | 2026-11-05 | 重置库后全新安装（schema v7） | x86_64 6,987,420 B，`sha256:25559d7ec362625cee4fb608710aa84… | 安装成功 |
