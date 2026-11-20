@@ -121,3 +121,51 @@
   font-size: 13px;
   line-height: 1.55;
 }
+
+/* --------------------------------------------------------------------------
+   侧栏菜单可滚动：budding 默认侧栏 overflow:hidden，子菜单项多时底部 offscreen。
+   启用纵向滚动 + 细滚动条，同时保持侧栏不被内容撑高超过视口。
+   -------------------------------------------------------------------------- */
+.bud-admin__nav,
+.bud-admin .bud-nav,
+.bud-layer .bud-nav {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+.bud-admin__nav::-webkit-scrollbar,
+.bud-admin .bud-nav::-webkit-scrollbar {
+  width: 6px;
+}
+.bud-admin__nav::-webkit-scrollbar-thumb,
+.bud-admin .bud-nav::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 3px;
+}
+
+/* 表格最小列宽防止过度压缩：Docker 容器 / 网络等表格状态列被挤到需要横向滚动。
+   让列保持合理最小宽度，同时允许表头换行。 */
+.bud-table th,
+.bud-table .bud-field__label {
+  white-space: nowrap;
+}
+.bud-table td {
+  min-width: 40px;
+  white-space: nowrap;
+}
+
+/* 站点详情页「停止站点」按钮文案修正：browser_use 审计发现运行中站点的启停按钮
+   写的是「启动/停止」而非根据状态切换。这个问题在 JS schema 侧处理，这里
+   确保操作列有足够空间。 */
+.bud-table td:last-child,
+.bud-table th:last-child {
+  min-width: 80px;
+}
+
+/* Tooltip z-index：设置页 tooltip 被内容遮挡。确保 tooltip 层在最顶层。 */
+.bud-tooltip,
+.bud-tooltip__content {
+  z-index: 9999 !important;
+  pointer-events: auto;
+}

@@ -63,7 +63,10 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.1";
 /// v9：页面 URL 分组（sites/docker/plugins/settings），前端路由表与页面内链接同步。
 /// v13：站点详情 Schema 改由内核生成（试点），前端只 fetch + embed。
 /// v14：站点列表 Schema 同样改由内核生成（`with_schema=true`），弹窗注册表由前端补录。
-pub const SHELL_VERSION: &str = "14";
+/// v15：UI 审计修复——登录页主题切换按钮 fixed 定位（不再被 body overflow:hidden 裁掉）；
+///   budding 组件内 label 不受全局 flex 容器规则干扰，隐藏上游渲染的空 for 重复 label；
+///   侧栏菜单启用纵向滚动；表格最小列宽防止过度压缩；tooltip z-index 提到顶层。
+pub const SHELL_VERSION: &str = "15";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

@@ -1088,8 +1088,30 @@ pre.logs { height: 320px; max-height: none; }
    表单 / 按钮（hover / active / focus-visible / disabled 四态齐全）
    -------------------------------------------------------------------------- */
 
+/* 全局 label 规则：只作用于 Skiff 原生表单。
+   budding 组件树内（.bud-admin / .bud-card / .bud-page / .bud-dialog）的 label 由上游样式控制，
+   不应被 flex 容器规则覆盖。 */
 label { display: flex; flex-direction: column; gap: 5px; color: var(--text-2); font-size: var(--fs-xs); font-weight: 500; }
 label .hint { margin: 0; }
+/* budding 组件内的 label：还原为 inline 文本，不继承 flex 容器 */
+.bud-admin label, .bud-card label, .bud-page label, .bud-dialog label,
+.bud-form label, .bud-field label {
+  display: revert;
+  color: revert;
+  font-size: revert;
+  font-weight: revert;
+  gap: revert;
+  flex-direction: revert;
+}
+
+/* 修复 budding input-text 渲染的重复 label：
+   上游在某些版本会同时生成一个 for="" / 无 for 的空 label 和一个正确关联 input 的 label。
+   空 for 的 label 只是冗余文本节点，隐藏它不影响可访问性（正确关联的那个仍在）。 */
+.bud-admin label[for=""], .bud-admin label:not([for]),
+.bud-card label[for=""], .bud-card label:not([for]),
+.bud-form label[for=""], .bud-form label:not([for]) {
+  display: none !important;
+}
 
 input[type=text], input[type=password], input[type=email], input[type=search], input[type=url],
 input[type=number], input[name], input:not([type]), select, textarea {
@@ -1660,12 +1682,13 @@ html[data-theme="dark"] .login-brand-col .brand-logo {
   padding: 0 !important;
 }
 
-/* 主题切换小按钮（登录页放右下角，不打扰主流程） */
+/* 主题切换小按钮（登录页放右下角，不打扰主流程；fixed 确保始终在视口内可见，
+   不受 body overflow:hidden 或内容撑高的影响） */
 .login-theme-toggle {
-  position: absolute;
+  position: fixed;
   bottom: var(--sp-5);
   right: var(--sp-5);
-  z-index: 2;
+  z-index: 1000;
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
