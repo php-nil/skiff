@@ -19,8 +19,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18081/2u3uiv85/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `2u3uiv85`（2026-11-18 19:27 机器还原后全新安装生成） |
+| URL | `http://10.10.15.4:18081/egehgs6m/login`（**当前为形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `egehgs6m`（2026-11-20 20:58 机器还原后全新安装生成） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | 明文通道（形态三，当前） | `listen=127.0.0.1:18080` + `allow_insecure_http=true` + `tls_enabled=false`（loopback dev HTTP），对外由 `skiff-http-fwd.service`（`python3 /root/iter/skiff-http-fwd.py`，`0.0.0.0:18081 → 127.0.0.1:18080`，unit 在 `/etc/systemd/system/`）TCP 转发；Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
@@ -44,7 +44,7 @@
 | 项 | 值 / 读取方式 |
 | --- | --- |
 | 管理员账号 | `admin` |
-| 当前口令 | `skiff-accept-1795001381`（2026-11-18 19:30 accept.sh B3 改密生成，按审计 `ts=1795001381` 取回；仅内网测试机） |
+| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-20 20:58 轮 accept.sh B3 改密生成；口令明文不落文档） |
 | 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（16 B，无换行），取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …` |
 | 读取方式 | SSH 登录后 `cat /root/iter/admin-pw.txt`；重置/轮换口令后必须同步更新该文件 |
 | 首登改密 | 测试期默认 `must_change_password=0`，初始口令可直接登录；强制改密流程见 [ITERATION/01-ROUND.md](../ITERATION/01-ROUND.md) §5.2.1 |
@@ -54,7 +54,7 @@
 | 项 | 值 |
 | --- | --- |
 | 连接 | `ssh -i C:\Users\note3510\.ssh\skiff-iter root@10.10.15.4`（端口 22）；ssh 客户端在 `C:\pf\Git\usr\bin\ssh.exe`（不在 PATH，需写绝对路径） |
-| 私钥 | 当前开发机 `C:\Users\note3510\.ssh\skiff-iter`（ed25519，2026-11-13 生成；指纹 `SHA256:9tEAKeYXnnSC2nUO7+jDjCilgB+Bdz+w+P+OQJ8o4Ck`） |
+| 私钥 | 当前开发机 `C:\Users\note3510\.ssh\skiff-iter`（ed25519，2026-11-13 生成；指纹 `SHA256:a77iflFQPsuDrBvneyFo9MTOhlsowtCvxlE58azsGtA`） |
 | 公钥 | `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIESI78egMhyPjNWCMhZUf4aQRAhhU6eXd3fVgADRfYaV skiff-iter@dev`（已加入测试机 `authorized_keys`） |
 | root 口令 | `1`（**内网测试机专用，仅用于验收**；不属于通用凭据口径，禁止外扩）。注意：口令无法经脚本注入——工具层把「把口令写进环境变量/脚本」判为 critical 并拒绝执行，日常一律走密钥 |
 | 前置顺序 | 公钥必须先加入 `authorized_keys`，再打基线快照；顺序反了回滚后即失联 |

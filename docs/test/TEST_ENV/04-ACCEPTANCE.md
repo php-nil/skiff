@@ -4,9 +4,25 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-20 18:26 `9d8d7a4` 全新安装：L1 门禁全绿 + accept.sh 44 PASS + 浏览器 8 页面 0 JS 错误）
+## 8. 最近一次验收结论（截至 2026-11-20 22:18 `ffc0aa2`：还原后全新安装 + 4 轮 UI 修复，accept 44 PASS，20+ 页面交互复验）
 
 > 本节只保留验收断言、实测数字与限制，是「测试机上发生了什么」的唯一来源；各轮的代码改动、根因与提交链见 [changes/2026-11-20.md](../../changes/2026-11-20.md)，用例编号与预期结果见 [TEST_MATRIX.md](../TEST_MATRIX.md)，未闭环项见 [TEST_LEDGER.md](../TEST_LEDGER.md)。
+
+**2026-11-20 20:58–22:18 全新安装 `2095d22` → UI 修复 4 轮至 `ffc0aa2`：accept.sh 44 PASS / 0 FAIL / 5 SKIP，逐页操作发现并修复 6 类交互缺陷，复验全 PASS**
+
+- **安装（通过，T1 空库）**：Release run `44739127639`（head `2095d22`）→ `44743449302`（`30c2c39`）→ `44747016695`（`6262cfa`）→ `44748817699`（`ca632b1`）→ `44750632405`（`ffc0aa2`），末轮 amd64 包 **12,897,732 B** id=`772097777` `sha256=fbb96094…6fbb`（API digest / 测试机 sha256 一致）；`install.sh --no-docker --tls off --listen 127.0.0.1:18080` 每轮 exit 0；库 **v22**、`integrity_check=ok`；前缀 **`egehgs6m`**；转发层 `skiff-http-fwd.service` active。
+- **accept.sh（通过，首轮）**：`--group all` = **44 PASS / 0 FAIL / 5 SKIP**（PF3 时钟、PF4 装后端口、A3 install-exit、B4 限流、D0b 路径）；B3 改密轮换后 `initial-admin.txt` 自动删除。
+- **巡检方法**：browser_use 分 4 组并行覆盖核心页 / Docker / 插件 / 工具设置（20+ 页面），再按主题做写操作（站点建删与 6 个子视图、运行环境安装与 6 个子视图、容器生命周期与详情、文件 mkdir/write/copy/chmod/archive/trash、网络/卷/镜像、任务与作业详情、审计筛选、界面预设、测试台 RPC）。**全程 console error 为 0**。
+- **修复的 6 类缺陷（均已上机复验）**：
+  1. `code` 组件不参与 form 值收集：新建/编辑文件落盘 **0 B**（实测 11 B 文件被清空），Compose / Web 主配置 / 运行环境配置文件同样提交空串。6 处可编辑 `code` 改 `textarea` 后，文件写入 **13 B / 18 B**、Compose 校验 **200**、`php.ini` 编辑器回填 **148 字符**。
+  2. 插件沙箱文案把实际降权运行写成「完整沙箱」；改为「降权沙箱（要求完整沙箱；本版 landlock/cgroups 未实现）」。
+  3. 运行环境新建弹窗主按钮在 960×571 视口下需滚动；`bud-form-actions` 吸底后按钮 `top=422 / bottom=458` 在视口内。
+  4. 配置文件「编辑」链接缺 `/sites` 前缀（**404**），补前缀后又因 `navigate` 同页判定不重取 schema；改整页 `window.location.href` 后编辑器正常出现。
+  5. 审计「重置」只改地址栏，关键字与过滤结果不刷新；改整页跳转后搜索框清空、列表恢复全量（首行转为 `system/sched`）。
+  6. 删除运行环境后停留在「页面加载失败：运行环境不存在」；改为删除成功跳回 `/sites/runtimes`，复验落在列表且列表为 0。
+- **附带修复（首轮资产）**：侧栏滚动选择器（真实容器 `.bud-admin__aside`）、表格横向滚动与 nowrap、登录页主题按钮 fixed、budding 内 `label` 误套全局 flex 规则、tooltip 层级（`SHELL_VERSION` 15）。
+- **未覆盖（限制）**：本地 L1 门禁因可用内存 424 MB < 1024 MB 被 cargo 闸门拒绝（exit 3），本轮只做 `node --check`，编译级/用例以 CI 四 job 全绿为准；FTP 安装/账号、防火墙 fail2ban、TLS 形态一/二、aarch64 未复跑；站点 SSL 自签已验证生成，未验证 HTTPS 访问（本轮无 Web 服务前置时已自动拉起 `skiff-web-nginx`）。
+- **收尾状态**：`skiff.service` + `skiff-http-fwd.service` active；8 插件已装；站点/运行环境/文件测试数据已删除；`/root/iter/` 保留 `accept.sh`、`admin-pw.txt`、`skiff-http-fwd.py` 与五轮安装日志。
 
 **2026-11-20 18:12–18:50 全新安装 `9d8d7a4`：L1 门禁 4 通道全绿 → Release run 44717281516 → accept.sh 44 PASS / 0 FAIL / 5 SKIP → 浏览器 8 页 PASS，0 JS error**
 

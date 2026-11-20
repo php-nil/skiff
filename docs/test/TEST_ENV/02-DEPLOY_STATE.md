@@ -6,7 +6,18 @@
 
 ## 5. 当前部署
 
-> **2026-11-20 19:00 插件权限修复（当前生效；HEAD `9d8d7a4` 同资产，无新发版）**
+> **2026-11-20 20:58–22:18 机器还原后全新安装 → 4 轮 UI 修复发版（当前生效；HEAD `ffc0aa2`）**
+> - **场景**：测试机还原为干净系统（T1：Docker 29.7.2 在位），空库全新安装后按「逐页操作 → 记录 → 修复 → 重发版 → 复验」迭代到问题收敛。
+> - **资产**：Release run `44750632405`（head `ffc0aa2`，publish 成功），`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,897,732 B** id=`772097777`，`sha256=fbb96094…6fbb`。测试机经 `api.github.com` + `Accept: application/octet-stream` 下载并 `sha256sum` 校验一致（GitHub download 直连本轮两次 SSL 重置）。
+> - **安装**：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；schema **v0→v22**；`user_version=22`、`integrity_check=ok`；前缀 **`egehgs6m`**；`skiff.service` active；转发层 `skiff-http-fwd.service`（`/root/iter/skiff-http-fwd.py`，0.0.0.0:18081 → 127.0.0.1:18080）active。
+> - **临时修补**：install.sh 仍未写 `allow_reduced_sandbox=true` + `allow_insecure_http=true`，本轮继续手动追加（契约缺口未变）。
+> - **8 官方插件**：逐个 `skiff plugin install <pkg> --yes`（不传 `--resource`，按 manifest hints 授权），全部验签/安装/启用。
+> - **accept.sh `--group all`**：**44 PASS / 0 FAIL / 5 SKIP**；B3 轮换口令后 `initial-admin.txt` 已删除，口令写 `/root/iter/admin-pw.txt`。
+> - **浏览器逐页巡检**（两轮 20+ 页面 + 深度写操作）：全程 0 console error；修复 6 类交互缺陷（见 `changes/2026-11-20.md`）——① `code` 组件不收集表单值导致文件/配置写空串；② 插件沙箱把降权写成「完整」；③ 运行环境弹窗主按钮在小屏被截断；④ 配置文件编辑入口 404 且 query 跳转不重载；⑤ 审计「重置」不刷新关键字与结果；⑥ 删除运行环境后停在「不存在」错误页。
+> - **测试数据清理**：站点/运行环境/文件测试对象均已删除，`/www` 仅保留 `log/nginx/php/runtime/sites/skiff` 核心目录；`skiff-web-nginx` 是运行环境安装时拉起的 Web 服务容器。
+> - **已知限制**：本机 L1 门禁因可用内存 424 MB < 1024 MB 被拒（exit 3），本轮只做 `node --check`；编译级与用例以 CI/Release 构建 `44750632405`（四 job 全绿）为准。
+>
+> **2026-11-20 19:00 插件权限修复（已过期；HEAD `9d8d7a4` 同资产，无新发版）**
 > - **根因**：首次批量装插件用了 `skiff plugin install *.wbpkg --resource path:/www --yes`，显式 `--resource` 覆盖了 manifest 的 `resource_hints`（monitor 声明 `path:/proc, /etc/passwd`，testkit 声明 `path:/proc`）。CLI help 明确写了"--resource 可覆盖为最小授权"，但批量命令硬塞统一 path:/www 把所有 manifest hints 干掉了——**这是操作者命令错误，不是代码 bug**。
 > - **修复现场**：全部 8 插件卸载（`--delete-data`） → 逐个用 `--yes` 重装（**去掉 `--resource`**，让 CLI 的 `resolve_yes_selection` 自动把 manifest `resource_hints` 当 object_grants）。修复后 grants：
 >   - monitor：`perm:fs:list, fs:read + object:path:/proc, object:path:/etc/passwd` ✅
@@ -119,17 +130,17 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `44717281516`（dispatch `ref=main`，head `9d8d7a4`，`publish=true`、`release_tag=v0.1.0`），success。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`9d8d7a4`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `44750632405`（dispatch `ref=main`，head `ffc0aa2`，`publish=true`、`release_tag=v0.1.0`），success。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`ffc0aa2`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,895,953 B | `4211de8c1f73dc4644bb52270e8d96577e80aad08bd07374e003679cff4c8acd` | `771372800` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `771372788` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 11,791,156 B | 见同轮 `checksums.txt` | `771372837` |
-| `skiff-server-x86_64-unknown-linux-musl` | 3,762,176 B | 见同轮 `checksums.txt` | `771372843` |
-| `skiff-server-aarch64-unknown-linux-musl` | 3,036,432 B | 见同轮 `checksums.txt` | `771372789` |
-| `checksums.txt` | 336 B | （包内） | `771372794` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,897,732 B | `fbb96094056bf5602532bbbcf0a9a647bb5c5e40620f2c38689ca4a72e8e6fbb` | `772097777` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `772097688` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 12,360,307 B | `ccad003d…b608` | `772097773` |
+| `skiff-server-x86_64-unknown-linux-musl` | 3,941,088 B | `706501ca…83c9` | `772097704` |
+| `skiff-server-aarch64-unknown-linux-musl` | 3,182,736 B | `6bc6aafa…a8003c` | `772097690` |
+| `checksums.txt` | 434 B | `342db081…bafc` | `772097705` |
 
 - **下载与核对**：测试机直接 `curl -sL https://github.com/php-nil/skiff/releases/download/v0.1.0/<asset>` 下载（3.3 MB/s 直连成功），`sha256sum -c <sidecar>` 校验 OK。开发机用代理 `http://10.66.10.22:1010` 下载到 `%TEMP%\skiff-deploy-p2\` 本地 sha256 / 侧车一致。
 - **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`；aarch64 两件本轮未实机验证。
