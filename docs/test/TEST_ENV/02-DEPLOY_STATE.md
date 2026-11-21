@@ -6,7 +6,20 @@
 
 ## 5. 当前部署
 
-> **2026-11-21 01:00 干净重装 v23（登录页 CSS 最终方案 + budding 1.8.3）**
+> **2026-11-21 10:18 干净重装 + 弹窗 schema 修复复验（HEAD `d5680b6`）**
+> - **场景**：测试机还原为干净系统（T1：Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff` / 端口空闲）→ 安装 GitHub Release 当前资产（run `202`，head `5bec69b`）→ accept.sh 全组 → 浏览器逐页巡检 → 发现 3 个页面 `CompileError` → 修复 → 重发版（run `203`，head `d5680b6`）→ 就地升级复验。
+> - **首装资产**：Release run `202`（head `5bec69b`），amd64 包 **12,913,533 B**，`sha256=3c6d40b6491de18fb8a3f6c80baada148c59ec11a80fd754417e3f68cd1cb424`（测试机 `sha256sum` 与侧车一致）。
+> - **首装**：`install.sh --no-docker --tls off --listen 0.0.0.0:18080` exit **0**（跑两次均 0，幂等）；前缀 **`88qfm2s8`**；`skiff.service` active；healthz `{"docker":"available","status":"ok","version":"0.1.0"}`；doctor 全绿。
+> - **形态**：直接明文（形态 C）`listen="0.0.0.0:18080"` + `tls_enabled=false`；Cookie 为 `skiff_dev_session`。`allow_insecure_http=true`、`allow_reduced_sandbox=true` 仍由人工追加（install.sh 契约缺口未变）。
+> - **accept.sh 全组**：`--group all --install-exit 0` = **49 PASS / 0 FAIL / 2 SKIP**（PF4 装后端口不适用、B4 未开限流）；改密后口令轮换为 `skiff-accept-1795226634`，写 `/root/iter/admin-pw.txt`（0600）。
+> - **8 官方插件**：逐个 `skiff plugin install <包> --yes`（不带 `--resource`，采用 manifest `resource_hints`），全部验签/安装/启用；monitor 授权含 `path:/proc`、`path:/etc/passwd`，firewall 11 个 bin。
+> - **浏览器巡检（31 个页面 / 3 组）**：Docker 6 页、插件列表 3 页、设置 4 页、配额、插件功能页 9 个、任务/作业/站点/运行环境/文件等全部正常，**0 console error**；首轮 `/sites/list`、`/sites/runtimes`、`/files` 三页 **FAIL**：`CompileError: 动作 … 的 body 应写在顶层 content.body`（budding 1.8.3 契约：dialog 的 body/footer 必须在动作顶层 `content`）。
+> - **修复（`d5680b6`）**：5 处前端弹窗（`dialogFormButton`、解压、文件新建目录/上传/新建文件）+ 2 处服务端弹窗（站点 SSL 上传、`dialog_button`）把 `props.body/footer` 移到 `action.content`；`SHELL_VERSION` 25→26；`main_flow` 增加 7 条源级回归断言。
+> - **升级复验资产**：Release run `203`（head `d5680b6`），amd64 包 **12,913,194 B** id `774119680`，`sha256=152e5902f3f945212d22350341646768eba78e551a15fc51ec569521047ae257`；`install.sh` exit 0，前缀保持 `88qfm2s8`，8 插件与口令全部保留。
+> - **复验（PASS）**：`/sites/list` 表格渲染 + 「新建站点」弹窗打开；`/sites/runtimes` 表格 + 「新建运行环境」弹窗打开；`/files` 渲染 + 「新建目录」弹窗创建 `verify-dir` 落盘并出现在列表（随后清理）；三页 0 console error。
+> - **已知限制**：本轮未装 Web 服务（`/sites/web` 显示 nginx 未安装）、未装 pure-ftpd/fail2ban；TLS 形态一/二、aarch64、站点详情 SSL 上传弹窗未做浏览器实测（该弹窗只有源级断言）。
+>
+> **2026-11-21 01:00 干净重装 v23（已过期；HEAD `26f53ec`，前缀 `ewtdhtgx`）**
 > - **场景**：按标准流程——清测试机（stop + 删 /www/skiff /etc/skiff / skiff.service / skiff-http-fwd.service）→ 下载 Release #197 资产 → 校验二进制 sha256 → install.sh → 配转发层 → 浏览器验收。
 > - **资产**：Release run `197`（head `26f53ec`，dispatch `ref=main` + `publish=true`，success）。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` 13.4 MB（GitHub download 直连，sha256 侧车超时，解包后二进制 sha256 校验确认）。
 > - **二进制**：`/usr/local/bin/skiff` **21,125,136 B**，`sha256=bf1ce05fa711732ede991f959b46bd7cce2e31d39cfd3771d79a51e29202162d`。
@@ -158,18 +171,18 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `44750632405`（dispatch `ref=main`，head `ffc0aa2`，`publish=true`、`release_tag=v0.1.0`），success。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`ffc0aa2`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `203`（dispatch `ref=main`，head `d5680b6`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 02:18 UTC。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`d5680b6`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,897,732 B | `fbb96094056bf5602532bbbcf0a9a647bb5c5e40620f2c38689ca4a72e8e6fbb` | `772097777` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `772097688` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 12,360,307 B | `ccad003d…b608` | `772097773` |
-| `skiff-server-x86_64-unknown-linux-musl` | 3,941,088 B | `706501ca…83c9` | `772097704` |
-| `skiff-server-aarch64-unknown-linux-musl` | 3,182,736 B | `6bc6aafa…a8003c` | `772097690` |
-| `checksums.txt` | 434 B | `342db081…bafc` | `772097705` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,913,194 B | `152e5902f3f945212d22350341646768eba78e551a15fc51ec569521047ae257` | `774119680` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `774119644` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 12,376,223 B | （本轮仅 amd64 实测） | — |
+| `skiff-server-x86_64-unknown-linux-musl` | 3,941,088 B | （本轮未下载） | `774119641` |
+| `checksums.txt` | 434 B | （本轮未下载） | — |
 
-- **下载与核对**：测试机直接 `curl -sL https://github.com/php-nil/skiff/releases/download/v0.1.0/<asset>` 下载（3.3 MB/s 直连成功），`sha256sum -c <sidecar>` 校验 OK。开发机用代理 `http://10.66.10.22:1010` 下载到 `%TEMP%\skiff-deploy-p2\` 本地 sha256 / 侧车一致。
-- **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`；aarch64 两件本轮未实机验证。
+- **下载与核对**：测试机 `curl -fL https://github.com/php-nil/skiff/releases/download/v0.1.0/<asset>` 直连成功（4.8 MB/s），侧车 `sha256sum -c` OK；包内 `checksums.txt` 复核全 OK。
+- **本轮实际部署二进制**：`/usr/local/bin/skiff` **18,053,136 B**，`sha256=6066afdacd2d7462376e53dbe7e11a4369fb393956c40e9e803b5bf4c66ee902`（升级后）。
+- **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`。
 - **Release 触发方式**：开发机无 `gh` CLI 和 `GITHUB_TOKEN` env var，用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch。
