@@ -144,19 +144,12 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
             skiff_store::Role::Admin,
             cfg.require_initial_password_change,
         )?;
-        let path = cfg.data_dir.join("initial-admin.txt");
-        let change_hint = if cfg.require_initial_password_change {
-            "首次登录后必须改密；改密成功后本文件自动删除。"
-        } else {
-            "初始口令可直接登录；建议首次登录后尽快在「设置 → 口令」修改，改密成功后本文件自动删除。"
-        };
-        let content = format!(
-            "Skiff 初始管理员\n用户名: admin\n口令: {password}\n\n{change_hint}\n生成时间: {}\n",
-            chrono::Utc::now().to_rfc3339()
-        );
-        std::fs::write(&path, content)
-            .with_context(|| format!("写入初始口令文件失败: {}", path.display()))?;
-        restrict_mode(&path, 0o600);
+        let path = write_admin_password_file(
+            &cfg.data_dir,
+            "admin",
+            &password,
+            cfg.require_initial_password_change,
+        )?;
         info!(path = %path.display(), "已生成初始管理员口令");
         first_run = Some(FirstRun {
             password_path: path,
@@ -299,12 +292,38 @@ fn random_prefix(len: usize) -> String {
 }
 
 /// 口令字符集去掉易混淆字符（0/O、1/l/I）。
-fn random_password(len: usize) -> String {
+pub(crate) fn random_password(len: usize) -> String {
     const CHARS: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut rng = rand::thread_rng();
     (0..len)
         .map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char)
         .collect()
+}
+
+/// 写 `initial-admin.txt`（0600）：首启与 `skiff admin reset-password` 共用一份格式。
+///
+/// 两处各写一遍会让解析方悄悄分家——`deploy/accept.sh` 是按 `^口令: ` 取口令的。
+/// `require_change` 只决定提示文案，真正的强制改密由 `users.must_change_password` 承载。
+pub(crate) fn write_admin_password_file(
+    data_dir: &Path,
+    username: &str,
+    password: &str,
+    require_change: bool,
+) -> Result<PathBuf> {
+    let path = data_dir.join("initial-admin.txt");
+    let change_hint = if require_change {
+        "首次登录后必须改密；改密成功后本文件自动删除。"
+    } else {
+        "初始口令可直接登录；建议首次登录后尽快在「设置 → 口令」修改，改密成功后本文件自动删除。"
+    };
+    let content = format!(
+        "Skiff 初始管理员\n用户名: {username}\n口令: {password}\n\n{change_hint}\n生成时间: {}\n",
+        chrono::Utc::now().to_rfc3339()
+    );
+    std::fs::write(&path, content)
+        .with_context(|| format!("写入初始口令文件失败: {}", path.display()))?;
+    restrict_mode(&path, 0o600);
+    Ok(path)
 }
 
 /// 自动信任发布包自带的官方公钥（`<data_dir>/official/public-key.txt`）。

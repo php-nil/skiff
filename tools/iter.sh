@@ -3,7 +3,8 @@
 #
 # 子命令：
 #   gate                     L1 门禁：fmt / clippy / test / Linux target check
-#   fetch [--run <id>]       从 GitHub Actions 取 amd64 产物到 dist/iter/x（默认取最近成功的 run）
+#   fetch [--run <id>]       从 GitHub Actions 取 amd64 产物到 dist/iter/x（默认取最近成功的 run；
+#                            下载带 3 轮重试与 ART_PROXY 代理开关）
 #   run --pkg <目录> [--group a,b] [--rate-limit]
 #                            装到测试机并出验收表：preflight → install.sh → accept.sh（计时）
 #   rollback-wait [--expect T0|T1]
@@ -17,6 +18,8 @@
 # 已知环境限制：本机与测试机都只通 api.github.com，github.com:443 被拦
 # （schannel 握手失败 / OpenSSL unexpected eof），所以 `git push` 走不通 ——
 # 本脚本**不含** dispatch 子命令：包是从已有 run 的 artifact 取的。
+# fetch 的下载也因此会随机被重置：每轮重新取签名地址重试 3 次，仍失败时用
+# ART_PROXY=http://host:port（默认沿用 GH_PROXY）走代理，详见 cmd_fetch。
 # 恢复推送能力后，iter.yml 可直接 workflow_dispatch（见 docs/ops/CI.md）。
 set -eu
 
@@ -90,10 +93,45 @@ cmd_fetch() {
     [ -n "$art" ] || { echo "[fetch] 该 run 没有 amd64 产物" >&2; exit 1; }
 
     mkdir -p dist/iter
-    url=$(gh_api "/actions/artifacts/$art/zip" -o /dev/null -w '%{redirect_url}')
-    echo "[fetch] 下载 artifact $art"
-    # 走测试机下载更快（本机到 blob 只有十几 KB/s，13 MB 要十几分钟；2026-11-03 实测）
-    $SSH "$TARGET" "mkdir -p $REMOTE_DIR && cd $REMOTE_DIR && curl -sS -L --max-time 600 -o art.zip '$url' && echo fetched"
+    # 下载地址是 GitHub 的**带签名 redirect**（几分钟过期），所以重试不能复用同一个 URL：
+    # 每轮重新取地址再下，既避开过期，也让"取不到地址"和"地址下载失败"能分开报。
+    # 本机与测试机都不通 github.com、只通 api.github.com（2026-11-08 复现被重置），
+    # 测试机出网被拦时用 ART_PROXY（默认沿用 GH_PROXY），代理地址必须测试机可达。
+    art_proxy=${ART_PROXY:-$GH_PROXY}
+    proxy_arg=""
+    if [ -n "$art_proxy" ]; then proxy_arg="-x $art_proxy"; fi
+    max_try=3
+    attempt=1
+    fetched=""
+    while [ "$attempt" -le "$max_try" ]; do
+        url=$(gh_api "/actions/artifacts/$art/zip" -o /dev/null -w '%{redirect_url}')
+        if [ -z "$url" ]; then
+            echo "[fetch] 取不到下载地址（artifact $art，可能是 run 尚未产出或已过期）" >&2
+            exit 1
+        fi
+        host=$(printf '%s' "$url" | sed -n 's#^\(https\{0,1\}://[^/]*\).*#\1#p')
+        echo "[fetch] 下载 artifact $art ← $host（第 $attempt/$max_try 次${art_proxy:+，经代理}）"
+        s=$(date +%s)
+        # --retry 只覆盖瞬时错误（连接重置/5xx），不依赖 curl 7.71 的 --retry-all-errors；
+        # 外层循环负责"重新取签名地址"这一层重试。诊断行同时给出 HTTP 码、字节数与耗时。
+        out=$($SSH "$TARGET" "mkdir -p $REMOTE_DIR && curl -sS -L $proxy_arg --max-time 600 \
+            --retry 2 --retry-delay 2 -w '%{http_code} %{size_download} %{time_total}' \
+            -o $REMOTE_DIR/art.zip '$url'") || true
+        e=$(date +%s)
+        echo "[fetch] HTTP/字节/秒: ${out:-（无输出）}（本次耗时 $((e - s))s）"
+        case "$out" in
+            200\ *) fetched=1; break ;;
+        esac
+        attempt=$((attempt + 1))
+        if [ "$attempt" -le "$max_try" ]; then sleep 3; fi
+    done
+    if [ -z "$fetched" ]; then
+        echo "[fetch] $max_try 次尝试均失败。排查顺序：" >&2
+        echo "  1) 设 ART_PROXY=http://<host>:<port> 重跑（代理需测试机可达）" >&2
+        echo "  2) 手工在测试机用 api.github.com 资产端点下载，再 unzip 到 $REMOTE_DIR/x" >&2
+        echo "  3) 确认 artifact $art 未过期（Actions artifact 默认保留 90 天）" >&2
+        exit 1
+    fi
     $SSH "$TARGET" "cd $REMOTE_DIR && rm -rf x && mkdir x && unzip -qo art.zip -d x && find x -maxdepth 2 -name skiff -o -maxdepth 2 -name 'install.sh' | sort"
     echo "[fetch] 包在测试机 $REMOTE_DIR/x 下；本地只留一份清单以避免 13 MB 跨境搬运"
 }

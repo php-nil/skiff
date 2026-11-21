@@ -65,6 +65,11 @@ pub enum Command {
     Backup {
         out: Option<PathBuf>,
     },
+    /// 重置账号口令（忘口令时的唯一恢复路径；Web 改密成功后 `initial-admin.txt` 已删）
+    AdminResetPassword {
+        user: String,
+        yes: bool,
+    },
     /// 一次性把站点文档根 `index/` 的属主对齐到统一身份（幂等）
     SitesChownIndex {
         dry_run: bool,
@@ -101,6 +106,10 @@ Skiff（轻舟）· 极简 Linux 服务器管理面板
                             缺省 docker:read（最小权限）。docker:write 蕴含 docker:read
   audit [n]                 输出最近 n 条审计（默认 20）
   backup [--out <path>]     备份数据库与插件数据（VACUUM INTO）
+  admin reset-password [--user <名>] --yes
+                            重置账号口令（默认 admin）：新口令写入
+                            initial-admin.txt 并只打印一次，该账号全部会话立即失效，
+                            下次登录强制改密。需 root（直接改写 users 表）
   sites chown-index [--dry-run]
                             把 /www/sites/<域名>/index 的属主对齐到统一站点身份
                             （默认 201000:201000；幂等，跳过符号链接，逐站审计）
@@ -128,6 +137,7 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
     let mut out: Option<PathBuf> = None;
     let mut label = "manual".to_string();
     let mut dry_run = false;
+    let mut user: Option<String> = None;
 
     while i < args.len() {
         let a = &args[i];
@@ -161,6 +171,10 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
             "--label" => {
                 i += 1;
                 label = args.get(i).ok_or("--label 缺少参数")?.clone();
+            }
+            "--user" => {
+                i += 1;
+                user = Some(args.get(i).ok_or("--user 缺少参数")?.clone());
             }
             "-h" | "--help" => return Err(HELP.into()),
             other if other.starts_with("--") => {
@@ -261,6 +275,13 @@ pub fn parse(args: Vec<String>) -> Result<Cli, String> {
             limit: positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(20),
         },
         "backup" => Command::Backup { out },
+        "admin" => match positional.get(1).map(|s| s.as_str()) {
+            Some("reset-password") => Command::AdminResetPassword {
+                user: user.unwrap_or_else(|| "admin".into()),
+                yes,
+            },
+            other => return Err(format!("未知 admin 子命令: {other:?}\n\n{HELP}")),
+        },
         "sites" => match positional.get(1).map(|s| s.as_str()) {
             Some("chown-index") => Command::SitesChownIndex { dry_run },
             other => return Err(format!("未知 sites 子命令: {other:?}\n\n{HELP}")),
@@ -368,6 +389,36 @@ mod tests {
             Command::SitesChownIndex { dry_run: true }
         ));
         assert!(parse(args(&["sites", "nope"])).is_err());
+    }
+
+    /// 重置口令是恢复路径：默认目标是 `admin`，`--user` 可换目标，`--yes` 原样带下去。
+    /// 不带 `--yes` 也要能解析——拒绝发生在命令层（那里能给出「重跑并加 --yes」的提示）。
+    #[test]
+    fn parses_admin_reset_password() {
+        let c = parse(args(&["admin", "reset-password", "--yes"])).unwrap();
+        match c.command {
+            Command::AdminResetPassword { user, yes } => {
+                assert_eq!(user, "admin", "缺省目标是 admin");
+                assert!(yes);
+            }
+            _ => panic!("wrong command"),
+        }
+
+        let c = parse(args(&["admin", "reset-password", "--user", "ops", "--yes"])).unwrap();
+        match c.command {
+            Command::AdminResetPassword { user, yes } => {
+                assert_eq!(user, "ops");
+                assert!(yes);
+            }
+            _ => panic!("wrong command"),
+        }
+
+        let c = parse(args(&["admin", "reset-password"])).unwrap();
+        assert!(matches!(
+            c.command,
+            Command::AdminResetPassword { yes: false, .. }
+        ));
+        assert!(parse(args(&["admin", "nope"])).is_err());
     }
 
     #[test]

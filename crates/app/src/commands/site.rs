@@ -1,9 +1,10 @@
-//! 站点领域命令（对应 `actions::Resource::Site` 的 9 个动作）。
+//! 站点领域命令（对应 `actions::Resource::Site` 的动作，清单见 [`NAMES`]）。
 //!
 //! 入参 DTO 只包含业务输入与 [`Actor`]；`handler` 负责表单解析、CSRF、文案与跳转，
 //! 这里负责语义校验、执行与审计。错误统一用 [`SiteError`] 表达，由传输层映射。
 
 use std::path::Path;
+use std::sync::Arc;
 
 use skiff_store::Site;
 
@@ -26,6 +27,7 @@ pub const NAMES: &[&str] = &[
     "update_domains",
     "ssl",
     "backup",
+    "restore",
     "set_policy",
 ];
 
@@ -472,11 +474,102 @@ pub async fn backup(
     Ok(())
 }
 
+/// 站点恢复的入参：哪份归档、覆盖哪个站点、用户手输的确认域名。
+#[derive(Debug, Clone)]
+pub struct RestoreSite {
+    pub domain: String,
+    /// 归档文件名（`<data>/backups/sites/<域名>/` 下的一层文件名）。
+    pub archive: String,
+    /// 用户手输的域名，必须与 `domain` 完全一致。
+    pub confirm: String,
+    pub actor: Actor,
+}
+
+/// 恢复已受理：真正的解包在后台跑，页面据此提示「去任务中心看进度」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreStarted {
+    pub domain: String,
+    pub archive: String,
+}
+
+/// 站点恢复：用某份归档覆盖站点目录。
+///
+/// `confirm` 必须是站点域名——恢复会覆盖线上文件，这不是「点一下试试」的操作；
+/// 确认口径与删除站点一致（手输域名），并且放在命令层而不是 handler，
+/// 让将来任何新入口（插件 / API）都绕不过去。
+///
+/// **同步只做校验**：站点/归档不存在这类错误立刻返回；三步 `tar` 作业（预检 →
+/// 快照 → 解包）远超 30 秒请求预算，放到后台执行，结果写审计、过程进任务中心。
+pub fn restore(
+    state: &Arc<AppState>,
+    tasks: &Arc<TaskService>,
+    cmd: RestoreSite,
+) -> Result<RestoreStarted, SiteError> {
+    if cmd.confirm.trim() != cmd.domain {
+        return Err(SiteError::BadRequest(
+            "确认域名与站点不一致：恢复会覆盖站点目录，请手输完整域名".to_string(),
+        ));
+    }
+    tasks
+        .check_restore_target(&cmd.domain, &cmd.archive)
+        .map_err(SiteError::BadRequest)?;
+
+    let state = Arc::clone(state);
+    let tasks = Arc::clone(tasks);
+    let domain = cmd.domain.clone();
+    let archive = cmd.archive.clone();
+    let started = RestoreStarted {
+        domain: domain.clone(),
+        archive: archive.clone(),
+    };
+    let actor = cmd.actor.clone();
+    tokio::spawn(async move {
+        match tasks.restore_site(&domain, &archive).await {
+            Ok(report) => {
+                // 归档里包含 `conf/` 与 `ssl/`：不重新加载，磁盘上是恢复后的配置、
+                // nginx 内存里还是恢复前的，下一次 reload（任何配置保存、巡检）才会
+                // 突然切过去——包括把「恢复时已停用的 vhost」重新停掉。所以这里必须
+                // 让 nginx 按磁盘现状生效一次。
+                let reload = state.activate_nginx_locked().await;
+                let mut detail = format!(
+                    "从 {} 恢复站点目录（恢复前快照 {}）",
+                    report.archive, report.snapshot
+                );
+                match reload {
+                    Ok(_) => detail.push_str("；nginx 已按恢复后的配置生效"),
+                    Err(e) => detail.push_str(&format!(
+                        "；nginx 重载失败：{e}（恢复已完成，但配置/证书可能尚未生效）"
+                    )),
+                }
+                state.audit_or_log(
+                    &actor.username,
+                    &actor.ip,
+                    "sites.restore",
+                    &domain,
+                    "ok",
+                    &detail,
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, domain, archive, "站点恢复失败");
+                state.audit_or_log(
+                    &actor.username,
+                    &actor.ip,
+                    "sites.restore",
+                    &domain,
+                    "fail",
+                    &e,
+                );
+            }
+        }
+    });
+    Ok(started)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::test_support::state_at;
-
     fn actor() -> Actor {
         Actor {
             username: "admin".into(),

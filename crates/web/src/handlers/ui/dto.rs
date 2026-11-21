@@ -225,6 +225,20 @@ pub struct SiteBackupInfo {
     pub time: String,
     pub last_text: String,
     pub next_text: String,
+    /// 已有归档（最近若干份，按时间倒序）；空表表示还没跑过备份。
+    pub archives: Vec<SiteArchiveItem>,
+}
+
+/// 一份站点备份归档：页面直接渲染，不需要再请求一次。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SiteArchiveItem {
+    /// 归档文件名，恢复接口原样回传。
+    pub name: String,
+    pub bytes: u64,
+    /// 人类可读大小，避免前端各写一套换算。
+    pub size_text: String,
+    /// 归档时间（本地时区）。
+    pub modified_text: String,
 }
 
 /// 站点详情响应数据（列表项字段 + 证书 + 运行环境状态 + 配置/备份 + 写权限）。
@@ -336,6 +350,17 @@ pub struct SiteBackupBody {
     pub interval: String,
     #[serde(default)]
     pub time: String,
+}
+
+/// `POST /ui/v1/sites/{id}/backups/restore`：用归档覆盖站点目录（`SITE_RESTORE`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteRestoreBody {
+    /// 归档文件名（只能是 `<data>/backups/sites/<域名>/` 下的一层文件名）。
+    #[serde(default)]
+    pub archive: String,
+    /// 用户手输的域名；命令层要求与站点完全一致。
+    #[serde(default)]
+    pub confirm: String,
 }
 
 /// `POST /ui/v1/sites/{id}/delete`：删除站点，服务端强制域名确认（`SITE_DELETE`）。

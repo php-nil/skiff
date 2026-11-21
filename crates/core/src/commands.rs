@@ -561,6 +561,88 @@ pub fn backup(cfg: &Config, out: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// 重置账号口令（`skiff admin reset-password`）。
+///
+/// 存在理由：Web 改密成功后 `initial-admin.txt` 按设计删除，机器上就再无已知口令
+/// （2026-11-17 验收实测撞上，当时只能靠「停服 → 清 `users`/`sessions` → 启服」的
+/// 运维技巧恢复）。产品必须有一条**不依赖会话**的恢复路径，否则忘口令等于重装。
+///
+/// 两个前提分工明确：root 决定「能不能改库」（数据根是 `root:root 0711`，库文件 0600），
+/// `--yes` 决定「知不知道这是破坏性操作」。口令**不接受**命令行传入——那会进 shell
+/// history 与进程列表；一律生成随机口令写入 0600 文件，只在终端打印一次。
+pub fn admin_reset_password(cfg: &Config, username: &str, yes: bool) -> Result<()> {
+    if effective_uid()? != 0 {
+        bail!("必须以 root 运行：本命令直接改写 users 表与 initial-admin.txt");
+    }
+    if !yes {
+        bail!(
+            "重置口令属破坏性操作：{username} 的全部会话会立即失效，且下次登录强制改密。\n确认后重跑并加 --yes"
+        );
+    }
+    let db = open_db(cfg)?;
+    let user = db.user_by_name(username)?.ok_or_else(|| {
+        anyhow::anyhow!("账号 {username} 不存在（实例尚未完成首启，或用户名拼错）")
+    })?;
+    if user.role != skiff_store::Role::Admin {
+        // 非管理员账号也能重置（root 身份已确认），但把角色说出来，避免误以为提权。
+        println!("注意: {username} 的角色是 {:?}，不是 admin", user.role);
+    }
+
+    let password = crate::bootstrap::random_password(16);
+    let hash = skiff_identity::hash_password(&password)
+        .map_err(|e| anyhow::anyhow!("生成口令哈希失败: {e}"))?;
+    db.reset_password(user.id, &hash)?;
+    // 旧会话必须一起作废：忘记口令的人手上可能还留着一个旧 cookie，不清理等于没重置。
+    db.revoke_all_sessions(user.id)?;
+    let path = crate::bootstrap::write_admin_password_file(
+        &cfg.data_dir,
+        &user.username,
+        &password,
+        true,
+    )?;
+    db.audit(
+        "cli",
+        "local",
+        "admin.reset_password",
+        &user.username,
+        "ok",
+        "全部会话已失效；下次登录强制改密",
+    )?;
+
+    println!("已重置账号 {} 的口令", user.username);
+    println!("  新口令    : {password}（仅本次显示）");
+    println!(
+        "  口令文件  : {}（0600，改密成功后自动删除）",
+        path.display()
+    );
+    println!("  会话      : 已全部失效，需重新登录");
+    Ok(())
+}
+
+/// 取当前进程的有效 uid。
+///
+/// 只读 `/proc/self/status` 的 `Uid:` 行：比引入 `libc` 少一条依赖边，而 Linux 一定有该
+/// 文件——本命令只对 Linux 部署形态有意义。非 Linux 直接拒绝，避免它变成「开发机上
+/// 悄悄改库」的旁路。
+#[cfg(target_os = "linux")]
+fn effective_uid() -> Result<u32> {
+    let status =
+        std::fs::read_to_string("/proc/self/status").context("读取 /proc/self/status 失败")?;
+    let uid = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        // `Uid:` 之后依次是 real / effective / saved / fs 四个值，取第二个。
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| anyhow::anyhow!("/proc/self/status 里没有可解析的 Uid 行"))?;
+    Ok(uid)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn effective_uid() -> Result<u32> {
+    bail!("admin reset-password 仅支持 Linux（部署形态）；当前平台没有 /proc/self/status")
+}
+
 /// `sites chown-index`：把每个站点 `index/` 子树的属主对齐到统一站点身份。
 ///
 /// 迁移口径（无 schema 变更）：

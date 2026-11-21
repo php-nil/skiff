@@ -32,7 +32,7 @@ pub fn site_page_schema(data: &SiteDetailData, tab: &str, prefix: &str) -> Value
         "domains" => "附加域名增删；新域名需自行解析到本机".to_string(),
         "config" => "伪静态、限速与 vhost 配置；保存前做语法校验，失败拒绝写入".to_string(),
         "ssl" => "证书状态、强制 HTTPS 与 PEM 上传".to_string(),
-        "backup" => "可调整备份间隔与执行时间，产物在站点目录旁".to_string(),
+        "backup" => "备份计划与已有归档；恢复前会自动打一份快照".to_string(),
         _ if data.can_manage => "站点概览；写操作复用既有权限、CSRF 与审计".to_string(),
         _ => "只读概览".to_string(),
     };
@@ -599,11 +599,73 @@ fn backup_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
             ));
         }
     }
-    vec![json!({
+    vec![
+        json!({
+            "type": "card",
+            "props": { "title": "站点备份" },
+            "content": { "body": body }
+        }),
+        archive_card(data),
+    ]
+}
+
+/// 归档与恢复：列出已有 `.tar`，逐个给「恢复」入口。
+///
+/// 恢复是覆盖式动作，确认框要求手输域名——与删除站点同一档；执行体在任务服务里
+/// 先预检、再打恢复前快照、最后解包，所以这里不需要再让用户选「要不要备份」。
+fn archive_card(data: &SiteDetailData) -> Value {
+    let site = &data.site;
+    let mut rows = Vec::new();
+    if data.backup.archives.is_empty() {
+        rows.push(text_line(
+            "还没有归档。开启备份计划后由调度器生成；恢复前建议先有一份较新的归档。",
+        ));
+    } else {
+        rows.push(text_line(format!(
+            "可用归档（最近 {} 份，按时间倒序）",
+            data.backup.archives.len()
+        )));
+        for archive in &data.backup.archives {
+            let mut line = vec![
+                json!({ "type": "text", "props": { "text": archive.name, "weight": "medium" } }),
+                json!({ "type": "text", "props": { "text": archive.size_text } }),
+                json!({ "type": "text", "props": { "text": archive.modified_text } }),
+            ];
+            if data.can_manage {
+                line.push(json!({
+                    "type": "button",
+                    "props": { "text": "恢复", "color": "danger", "variant": "text" },
+                    "onEvent": { "click": { "actions": [
+                        {
+                            "type": "confirm",
+                            "props": {
+                                "title": "从归档恢复",
+                                "content": format!(
+                                    "会用 {} 覆盖站点目录：同名文件被替换，归档里没有的文件保留。恢复前会自动打一份快照，过程在后台执行，进度与结果见任务中心。",
+                                    archive.name
+                                ),
+                                "level": "error",
+                                "confirmText": "确认恢复",
+                                "requireText": site.domain
+                            }
+                        },
+                        site_write_action(json!({
+                            "op": "restore",
+                            "id": site.id,
+                            "domain": site.domain,
+                            "archive": archive.name
+                        }))
+                    ] } }
+                }));
+            }
+            rows.push(flex(json!({ "gap": 12, "align": "center" }), line));
+        }
+    }
+    json!({
         "type": "card",
-        "props": { "title": "站点备份" },
-        "content": { "body": body }
-    })]
+        "props": { "title": "归档与恢复" },
+        "content": { "body": rows }
+    })
 }
 
 /// 站点列表页 Schema（服务端生成试点第二批）。

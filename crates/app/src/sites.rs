@@ -38,6 +38,7 @@ use crate::jobs as app_jobs;
 use crate::runtime_catalog;
 use crate::AppState;
 
+mod backup;
 mod crud;
 mod guard;
 mod health;
@@ -48,6 +49,7 @@ mod network;
 mod runtime;
 mod spec;
 mod vhost;
+pub use backup::*;
 pub use guard::*;
 pub use health::*;
 pub use install::{InstallLock, InstallLocks, InstallProgress, InstallStep, SiteEnvStatus};

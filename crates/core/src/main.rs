@@ -128,6 +128,11 @@ fn run() -> Result<ExitCode> {
             commands::backup(&cfg, out)?;
             Ok(ExitCode::SUCCESS)
         }
+        cli::Command::AdminResetPassword { user, yes } => {
+            let cfg = config::Config::load(config_path, dev)?;
+            commands::admin_reset_password(&cfg, &user, yes)?;
+            Ok(ExitCode::SUCCESS)
+        }
         cli::Command::SitesChownIndex { dry_run } => {
             let cfg = config::Config::load(config_path, dev)?;
             commands::sites_chown_index(&cfg, dry_run)?;

@@ -9,9 +9,10 @@
 | 现象 | 可能原因 | 处置 |
 |---|---|---|
 | 启动即退出，日志提示“非 loopback 且未配置 TLS” | 监听 `0.0.0.0` 但没配 TLS | 配 `tls_cert/tls_key`，或改 loopback + 反代 + `trusted_proxies` |
-| 启动即退出，提示 `SchemaTooNew` | 换了旧版本二进制但库已迁移 | 用备份回滚数据库（§2.6） |
+| 启动即退出，提示 `SchemaTooNew` | 换了旧版本二进制但库已迁移 | 换回同版本/更新的二进制；确需退库按 §2.11 的数据库恢复步骤（停服 → 换库 → 清 WAL → 起服） |
 | 页面 404，但服务是活着的 | 没带安全入口前缀 | 用日志里的 `/xxxxxxxx/` 前缀 |
-| 登录一直 401 | 初始口令已改、或 `initial-admin.txt` 被手动删 | 用 `skiff token create` + API，或重装并保留数据后由 admin 重置 |
+| 登录一直 401 | 初始口令已改、或 `initial-admin.txt` 被手动删 | 以 root 跑 `skiff admin reset-password --yes`：新口令写回 `initial-admin.txt` 并打印一次，旧会话全部失效，下次登录强制改密（§2.8） |
+| 站点文件被误删/改坏 | 没有归档或归档更早 | 站点详情 → 备份页签选一份归档点「恢复」（先预检、再自动打 `<时间戳>-pre-restore.tar` 快照、最后解包；归档里没有的文件保留）。见 §2.11 |
 | 容器页显示“Docker 不可用” | socket 不存在 / 权限不足 / 非 Linux | 查 `skiff doctor`；确认 unit 里 root 运行 |
 | **插件装上了，一启动就停用，插件侧报 EACCES** | 数据根/运行目录缺 other-x（被改成 0700），或 `kernel.sock` 属组不是 `skiff-plugins` | 按 §2.10 查；数据根应为 0711，socket 应为 `660 root:skiff-plugins` |
 | **插件日志报“UID 未映射到任何插件”** | 插件进程 uid 与 `sha256(id)%1000+200000` 不一致（手工 chown 过目录、或换了用户跑） | 别手工改插件目录属主；重装插件恢复 |

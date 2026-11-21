@@ -6,7 +6,7 @@
 
 ## D. 网站与运行环境
 
-> 重跑触发：改了建站表单、vhost 生成、域名/别名、站点目录、运行环境安装/启停/解绑、扩展、socket/端口、SSL、删除保护、PHP 容器身份初始化脚本或池模板、PHP 扩展安装脚本的包管理器分支。
+> 重跑触发：改了建站表单、vhost 生成、域名/别名、站点目录、运行环境安装/启停/解绑、扩展、socket/端口、SSL、站点备份与恢复、删除保护、PHP 容器身份初始化脚本或池模板、PHP 扩展安装脚本的包管理器分支。
 
 | 编号 | 检查目标 | 前置条件 | 操作步骤 | 预期结果 | 判定 | 涉及模块或代码位置 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -16,7 +16,7 @@
 | SITE-04 | 反向代理建站 | `[上机]` 上游 HTTP 服务已起（含 18081） | 新建 `matrix-proxy.local` 指向 `127.0.0.1:18081`；访问；查上游日志 | 站点 200；上游自定义响应头（如测试服务的 `X-Upstream`）原样透传；上游收到 `Host: matrix-proxy.local` | □通过 / □失败 | `crates/app/src/sites.rs`、`templates/site_new_dialog.html` |
 | SITE-05 | Rust 运行环境建站 | `[上机]` rust 运行环境已安装、镜像可拉取 | 新建 `matrix-rust.local`，类型「运行环境 / Rust」；启动运行环境；访问站点 | vhost 生成 303；容器 running；站点返回 Rust 服务响应 | □通过 / □失败 | `crates/app/src/sites.rs`、`runtime_catalog.rs` |
 | SITE-06 | 域名与别名校验 | `[上机]` 已登录 | 依次提交重复域名、非法域名、IP、通配符；再为已有站点加别名 | 重复/非法/IP/通配符被拒并给内联错误（`POST /ui/v1/sites/{id}/domains` 返回 `site.*` 错误码）；合法别名保存后同一 vhost 生效 | □通过 / □失败 | `crates/app/src/sites.rs`、`crates/web/src/handlers/ui/sites.rs`、`crates/web/static/budding/budding-boot.js` |
-| SITE-07 | 站点目录与越界保护 | `[上机]` 已建站 | **阻塞**：旧 SSR `?tab=dir` 已随 2026-11-18 清理删除，壳页尚无站点目录浏览接口（见 `TEST_LEDGER`）；恢复后用 `GET /ui/v1/files?path=<站点根>/…` 验越界 | 目录可列 `index/`；`../log`、`../ssl`、绝对路径一律 400（`fs.path_forbidden`）；`/www/sites` 为 0755，数据根 `/www/skiff` 与 `plugins` 为 0711 | □通过 / □失败 | `crates/app/src/admin_fs.rs`、`crates/web/src/handlers/ui/files.rs`、`deploy/install.sh` |
+| SITE-07 | 站点目录展示与越界保护 | `[上机]` 已建站 | 打开站点详情概览，确认「站点目录」「文档根」两行及其「打开文件管理」链接；点链接进文件管理，再手工请求 `GET /ui/v1/files?path=<站点根>/…` 试越界 | 详情页显示宿主绝对路径，链接跳到 `/{p}/files?path=<编码后的路径>` 并列出该目录（产品**不提供**站点目录浏览页签）；`../log`、`../ssl`、绝对路径越界一律 400（`fs.path_forbidden`）；`/www/sites` 为 0755，数据根 `/www/skiff` 与 `plugins` 为 0711 | □通过 / □失败 | `crates/web/src/handlers/ui/site_page.rs`（`overview_section`）、`crates/app/src/admin_fs.rs`、`crates/web/src/handlers/ui/files.rs`、`deploy/install.sh` |
 | SITE-08 | 运行环境安装/启停/重建 | `[上机]` 已登录，镜像源可用 | 安装 php-8.5；停、启、重建；每步看状态与 `docker ps` | 安装各步骤全部成功；停/启 `POST /ui/v1/runtimes/{id}/action/{action}` 返回 200 且容器状态一致；重建后站点仍 200 | □通过 / □失败 | `crates/app/src/sites.rs`、`crates/web/src/handlers/ui/runtimes.rs`、`crates/web/static/budding/budding-boot.js` |
 | SITE-09 | PHP 扩展安装/卸载 | `[上机]` php-8.5 已安装 | 在运行环境详情安装一个扩展；重建；卸载；再重建 | 安装/卸载返回 200；`php -m` 或 `phpinfo` 出现/消失对应扩展；站点不 500 | □通过 / □失败 | `crates/app/src/runtime_catalog.rs`、`crates/app/src/sites.rs`、`crates/web/src/handlers/ui/runtimes.rs` |
 | SITE-10 | 解绑与删除保护 | `[上机]` 有绑定站点的运行环境 | 运行环境详情尝试删除；先解绑一个站点再删；删除绑定过的站点 | 有绑定站点时删除被拒并列出域名；解绑后列表更新；删站不影响其他站与运行环境 | □通过 / □失败 | `crates/app/src/sites.rs`（`unbind_runtime_site`、`delete_site_runtime`） |
@@ -30,6 +30,7 @@
 | SITE-18 | 站点详情主键深链 | `[上机]` 至少 1 个站点 | 从网站列表进入详情，复制地址；再改站点附加域名后刷新详情；直接访问旧域名路径 | 地址为 `/{p}/sites/<id>`；改域名后刷新仍 200；`/{p}/sites/<旧域名>` 不再作为详情命中（按未知路由 404/壳页列表）；写接口路径同样使用 id | □通过 / □失败 | `crates/web/static/budding/budding-boot.js`、`crates/web/src/handlers/ui/sites.rs`（`site_domain`）、`crates/store/src/db/sites.rs`（`site_by_id`） |
 | SITE-19 | PHP 伪静态预设 | `[上机]` PHP 站点 + 真实 PHP 框架或 `index.php` 路由 | 在配置页签依次选 `wordpress` / `laravel` / `thinkphp` 保存；访问一个不存在的路径；再改回 `none` | 保存 200 且 vhost 出现对应 `try_files`/`rewrite`；不存在的路径交给 `index.php` 而不是 404；改回 `none` 后恢复 404；非 PHP 站点不显示伪静态选择；未知预设被接口 400 拒绝 | □通过 / □失败 | `crates/app/src/sites/vhost.rs`（`VhostPolicy`、`validate_rewrite`）、`crates/app/src/sites/crud.rs`（`set_site_policy`）、`crates/web/static/budding/budding-boot.js` |
 | SITE-20 | 站点出口限速 | `[上机]` 有可下载的静态文件（如 5MB） | 配置页签填 `limit_rate_kbps=512` 保存；用 `curl -o /dev/null` 下载并看速度；改回 0 | vhost 出现 `limit_rate 512k;`；下载速度约 512 KB/s；改回 0 后 `limit_rate` 消失、速度恢复；非数字/超大值被拒绝；保存失败时库、vhost 与站点访问保持一致 | □通过 / □失败 | `crates/app/src/sites/vhost.rs`、`crates/app/src/sites/crud.rs`、`crates/store/src/db/sites.rs`、`crates/web/static/budding/budding-boot.js` |
+| SITE-21 | 站点从归档恢复 | `[上机]` 站点已开启备份计划并至少有一份归档（或把一份 `YYYYMMDD-HHMMSS.tar` 放进 `<data>/backups/sites/<域名>/`） | 详情 → 备份页签查看归档列表；删除站点里一个文件；点某份归档的「恢复」，手输域名确认；看任务中心的校验 / 快照 / 解包三条作业；再看站点访问与目录；另试 `confirm` 不匹配、`archive=../x.tar`、损坏的归档 | 列表显示名称 / 大小 / 时间且按时间倒序；恢复受理后返回 `started=true`（不阻塞请求），三步作业依次成功；同目录多出 `<时间戳>-pre-restore.tar`，被删文件回来、归档里没有的文件保留；审计有 `sites.restore` 且 detail 注明 nginx 是否重载成功；`confirm` 不匹配 400；带 `../` 的文件名被拒；损坏归档报错且站点目录未被改动 | □通过 / □失败 | `crates/app/src/tasks.rs`（`check_restore_target` / `restore_site`）、`crates/app/src/sites/backup.rs`、`crates/app/src/commands/site.rs`（`restore`）、`crates/web/src/handlers/ui/sites.rs`（`site_restore`）、`crates/web/src/handlers/ui/site_page.rs`（`archive_card`）、`crates/web/static/budding/budding-boot.js` |
 
 最小回归命令：
 

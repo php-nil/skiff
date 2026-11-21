@@ -406,6 +406,20 @@ group_b() {
     code=$(curl -s -o /dev/null -b "$JAR" -w '%{http_code}' "$BASE/$P")
     assert_eq B3f "新会话可用（GET 首页）" "$code" "200"
 
+    # B3g：把口令改回本轮用的那一个。
+    # 验收脚本不该把机器带进「无已知口令」状态：B3c 改密后 initial-admin.txt 已被删
+    # （B3d 断言它必须删），若就此收尾，运维只剩「停服 → 清 users/sessions → 启服」
+    # 这一条路（2026-11-17 实测撞上）。改回后机器状态与验收前一致，--password 复跑仍有效。
+    # 取 CSRF 必须走会话页：此时 $JAR 已登录，GET 登录页会被 303 踢到首页、body 为空。
+    csrf4=$(curl -s -b "$JAR" "$BASE/ui/v1/session" \
+        | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p' | head -1)
+    [ -n "$csrf4" ] || { fail B3g "会话页含 csrf_token" "没抓到"; return; }
+    code=$(curl -s -o "$TMP/b3g.json" -b "$JAR" -c "$JAR" \
+        -H 'content-type: application/json' -H "x-csrf-token: $csrf4" \
+        -d "{\"old_password\":\"$NEW\",\"new_password\":\"$PW\",\"confirm_password\":\"$PW\"}" \
+        -w '%{http_code}' "$BASE/ui/v1/settings/password")
+    assert_eq B3g "口令改回（不留无已知口令的机器）" "$code" "200"
+
     if [ "$WITH_RATE_LIMIT" -eq 1 ]; then
         rm -f "$TMP/jar2"
         csrf3=$(curl -s -c "$TMP/jar2" "$BASE/ui/v1/auth/login" \

@@ -848,6 +848,10 @@
         interval: formText(values.interval) || args.interval || 'daily',
         time: formText(values.time) || args.time || '03:00'
       };
+    } else if (op === 'restore') {
+      // 恢复是覆盖式动作：服务端会先预检归档、再打恢复前快照，最后解包。
+      path = '/sites/' + encodeURIComponent(id) + '/backups/restore';
+      payload = { archive: args.archive || '', confirm: domain };
     } else if (op === 'delete') {
       path = '/sites/' + encodeURIComponent(id) + '/delete';
       payload = { confirm: domain };
@@ -864,6 +868,15 @@
     function run() {
       return submitJson(path, payload)
         .then(function (data) {
+          if (op === 'restore') {
+            // 恢复是后台任务（预检 → 快照 → 解包），不等结果，也不立刻刷新列表
+            // （此时新快照还没生成）；进度与结果在任务中心看。
+            toast(
+              (data && data.message) || '恢复已开始：进度与结果见任务中心',
+              'success'
+            );
+            return;
+          }
           if (op === 'delete') {
             toast('站点已删除', 'success');
             location.href = prefix + '/sites/list';

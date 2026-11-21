@@ -70,6 +70,26 @@ impl Db {
         Ok(())
     }
 
+    /// 管理员/运维重置口令（`skiff admin reset-password`）。
+    ///
+    /// 与 [`Self::set_password`] 只差 `must_change_password` 的取值，但这个差别是语义性的：
+    /// 自助改密是用户**自己**刚定了一个口令，标志清 0；重置是别人设的临时口令（会写进
+    /// `initial-admin.txt`，可能被同机器上的其他人看到），置 1 强制首登改密。
+    ///
+    /// 会话失效不在这里做——那是另一张表，由调用方显式调 `revoke_all_sessions`，免得仓储层
+    /// 出现隐式跨表写。
+    pub fn reset_password(&self, user_id: i64, password_hash: &str) -> Result<()> {
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE users SET password_hash = ?2, must_change_password = 1, updated_at = ?3 WHERE id = ?1",
+            params![user_id, password_hash, now()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("user {user_id}")));
+        }
+        Ok(())
+    }
+
     pub fn set_totp(&self, user_id: i64, secret: Option<&str>, enabled: bool) -> Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -136,5 +156,30 @@ mod tests {
                 .unwrap()
                 .must_change_password
         );
+    }
+
+    /// 自助改密与运维重置对 `must_change_password` 的处理必须相反：前者是用户自己刚定的
+    /// 口令（清 0），后者是别人设的临时口令（置 1，强制首登改密）。
+    #[test]
+    fn reset_password_forces_change_while_self_change_clears_it() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.create_user("admin", "h1", Role::Admin, false).unwrap();
+        db.set_password(id, "h2").unwrap();
+        assert!(
+            !db.user_by_name("admin")
+                .unwrap()
+                .unwrap()
+                .must_change_password
+        );
+
+        db.reset_password(id, "h3").unwrap();
+        let u = db.user_by_name("admin").unwrap().unwrap();
+        assert_eq!(u.password_hash, "h3");
+        assert!(u.must_change_password, "重置后必须强制首登改密");
+
+        assert!(matches!(
+            db.reset_password(9999, "h4"),
+            Err(StoreError::NotFound(_))
+        ));
     }
 }

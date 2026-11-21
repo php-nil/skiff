@@ -59,6 +59,7 @@ sh uninstall.sh --purge    # 删程序 + 数据 + 配置（需手输 YES 确认�
 | `skiff version` | 版本与架构 | 0 |
 | `skiff audit 50` | 最近 50 条审计 | 0 |
 | `skiff backup [--out <path>]` | `VACUUM INTO` + 复制插件 data，保留 3 份 | 0 |
+| `skiff admin reset-password [--user <名>] --yes` | 重置账号口令（默认 `admin`）：生成随机口令写入 `initial-admin.txt`（0600，只打印一次），该账号全部会话立即失效，下次登录强制改密。需 root；忘口令时唯一的恢复入口 | 0 / 非 0（非 root、缺 `--yes`、账号不存在） |
 | `skiff token create ci` | 建 API Token（仅创建时打印一次） | 0 |
 | `skiff plugin list` | 列出已装插件 | 0 |
 | `skiff plugin install <pkg> --yes [--grant <perm>] [--resource <obj>]` | 非交互安装；默认采用 manifest 声明的权限与 `resource_hints`（官方包「装完即可用」），显式 `--grant`/`--resource` 覆盖为最小授权 | 0 |
@@ -161,3 +162,30 @@ getent group skiff-plugins | cut -d: -f3
 # 主进程仍是 root（它要能 setuid）
 ps -o user,group,args -p $(systemctl show -p MainPID --value skiff)
 ```
+
+### 2.11 备份与恢复
+
+**站点备份**（面板计划任务，不是 CLI）
+
+- 产物：`<data_dir>/backups/sites/<域名>/<YYYYMMDD-HHMMSS>.tar`，由 `tar` 作业打包整个站点目录（`index/ log/ ssl/ conf/`）。
+- 开关与时间：站点详情 → 备份页签；默认每日 03:00。
+- 恢复：同一页签的「归档与恢复」列出最近 20 份，逐个可恢复。服务端按三步执行，**每一步失败都不会继续**：
+  1. `tar -tf` 预检 —— 归档损坏就停在这里，站点目录不动；
+  2. 打 `<YYYYMMDD-HHMMSS>-pre-restore.tar` 快照 —— 没退路就不恢复；
+  3. `tar -xf` 解包到站点根 —— 同名文件被替换，**归档里没有的文件保留**。
+- 三步都是任务中心的 `host.exec` 作业，与调度器打包共用目标 id（`builtin:site-backup:<域名>`），因此不会和你正在跑的备份撞车。
+- 归档含 `conf/` 与 `ssl/`，所以恢复成功后内核会**自动让 nginx 按磁盘配置生效一次**（reload 优先，必要时重启）；重载失败会写进审计 detail，此时手动保存一次站点配置或重启 nginx 容器即可。
+- 恢复后检查：站点访问是否正常；`sites.restore` 审计一条（含是否重载成功）；同目录出现 `-pre-restore.tar`；PHP 站点若有 opcache，等待 revalidate 周期（默认 2 秒）即会读到新文件。
+
+**数据库备份**（`skiff backup`）**没有自动恢复**，这是有意为之：运行中替换 `skiff.db` 会和活动连接、WAL 文件打架。需要回到某次备份时：
+
+```sh
+systemctl stop skiff
+cp /www/skiff/data/skiff.db /root/skiff.db.before-restore-$(date +%s)   # 先留现库
+cp <备份文件> /www/skiff/data/skiff.db
+rm -f /www/skiff/data/skiff.db-wal /www/skiff/data/skiff.db-shm        # 旧 WAL 必须清掉
+chown root:root /www/skiff/data/skiff.db && chmod 600 /www/skiff/data/skiff.db
+systemctl start skiff && skiff health
+```
+
+> schema 迁移只向前：恢复旧库后启动会跑一次迁移，恢复新库到旧二进制则直接 `SchemaTooNew` 退出——先换回同版本或更新的二进制。

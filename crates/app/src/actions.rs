@@ -139,6 +139,8 @@ action_table! {
     SITE_UPDATE_DOMAINS = "site.update_domains": Site, Some(Permission::Admin), "commands::site::update_domains", false;
     SITE_SSL = "site.ssl": Site, Some(Permission::Admin), "commands::site::ssl", false;
     SITE_SET_BACKUP = "site.set_backup": Site, Some(Permission::Admin), "commands::site::backup", false;
+    // 恢复会覆盖站点目录，与删除同档：破坏性动作必须在动作表里显式标记。
+    SITE_RESTORE = "site.restore": Site, Some(Permission::Admin), "commands::site::restore", true;
     SITE_SET_POLICY = "site.set_policy": Site, Some(Permission::Admin), "commands::site::set_policy", false;
 
     // ---- 运行环境（Admin：安装、克隆、扩缩、配置、扩展、探测）----

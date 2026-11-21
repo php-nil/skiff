@@ -1610,12 +1610,7 @@ impl TaskService {
                 Some("cancelled") => ErrorClass::Cancelled,
                 _ => ErrorClass::ExecutorFailed,
             };
-            let reason = outcome
-                .error_detail
-                .clone()
-                .filter(|d| !d.is_empty())
-                .or_else(|| outcome.stderr.lines().last().map(str::to_string))
-                .unwrap_or_else(|| format!("退出码 {}", outcome.code.unwrap_or(-1)));
+            let reason = exec_failure_reason(&outcome);
             return Err(ExecError::new(
                 class,
                 ErrorPhase::Call,
@@ -1647,6 +1642,178 @@ impl TaskService {
                 outcome.job_id
             )),
             output_bytes: bytes,
+        })
+    }
+}
+
+/// 一次内核命令作业失败原因的短描述（取作业自己的 error_detail，退到 stderr 末行）。
+fn exec_failure_reason(outcome: &crate::host::KernelExecOutcome) -> String {
+    outcome
+        .error_detail
+        .clone()
+        .filter(|d| !d.is_empty())
+        .or_else(|| outcome.stderr.lines().last().map(str::to_string))
+        .unwrap_or_else(|| format!("退出码 {}", outcome.code.unwrap_or(-1)))
+}
+
+/// 站点恢复的结果（供页面展示与审计）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteRestoreReport {
+    /// 被恢复的归档文件名。
+    pub archive: String,
+    /// 恢复前自动快照的文件名（同目录，可再恢复回来）。
+    pub snapshot: String,
+}
+
+impl TaskService {
+    /// 恢复前的快速校验：站点、站点目录、归档都要存在且可用。
+    ///
+    /// 拆出来是因为恢复放到后台跑（三步 `tar` 作业远超 30 秒请求预算），
+    /// 但「域名写错」「归档文件不存在」这类错误必须**立刻**返回给用户，
+    /// 不能等后台跑起来才在任务中心里发现。
+    pub fn check_restore_target(&self, domain: &str, archive: &str) -> Result<(), String> {
+        crate::sites::validate_archive_name(archive)?;
+        let root = self.site_root(domain)?;
+        if !root.is_dir() {
+            return Err(format!("站点目录不存在：{}", root.display()));
+        }
+        let path = crate::sites::archive_dir(&self.data_dir, domain).join(archive);
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| format!("归档不可用：{}（{e}）", path.display()))?;
+        if !meta.is_file() || meta.len() == 0 {
+            return Err(format!("归档为空或不是普通文件：{}", path.display()));
+        }
+        Ok(())
+    }
+
+    /// 站点根（相对路径按 `web_root` 解析）。备份/恢复共用同一条解析规则。
+    fn site_root(&self, domain: &str) -> Result<PathBuf, String> {
+        let site = self
+            .db
+            .site_by_domain(domain)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("站点不存在：{domain}"))?;
+        let root = PathBuf::from(&site.root_dir);
+        Ok(if root.is_absolute() {
+            root
+        } else {
+            self.web_root.join(root)
+        })
+    }
+
+    /// 用归档覆盖站点目录（`sites.restore` 的执行体）。
+    ///
+    /// 三步都是 `tar` 作业：**预检**（`-tf`，只读校验归档可解析）→ **快照**
+    /// （把当前目录打一份）→ **解包**（`-xf` 覆盖到站点根）。顺序不能换：
+    /// - 预检失败说明归档损坏，此时一个字节都不该动站点目录；
+    /// - 快照失败说明没有退路，宁可不恢复也不能让用户失去回滚能力。
+    ///
+    /// 目标 id 复用备份任务的 `builtin:site-backup:<域名>`：作业层按目标互斥，
+    /// 恢复与调度器正在跑的打包不会同时写同一个站点目录。
+    pub async fn restore_site(
+        &self,
+        domain: &str,
+        archive: &str,
+    ) -> Result<SiteRestoreReport, String> {
+        self.check_restore_target(domain, archive)?;
+        let root = self.site_root(domain)?;
+        let dir = crate::sites::archive_dir(&self.data_dir, domain);
+        let path = dir.join(archive);
+        let tar =
+            tar_binary().ok_or_else(|| "找不到 tar（已查 /usr/bin/tar、/bin/tar）".to_string())?;
+        let archive_path = path.to_string_lossy().to_string();
+        let root_path = root.to_string_lossy().to_string();
+        let target_id = site_backup_task_id(domain);
+
+        // 1. 预检：`tar -tf` 读完整份归档（只输出成员名，不落盘）。
+        let check = KernelExec {
+            title: format!("校验站点备份 {domain}"),
+            target_id: target_id.clone(),
+            origin: "site",
+            binary: tar,
+            argv: vec!["-tf".to_string(), archive_path.clone()],
+            timeout_secs: SITE_BACKUP_TIMEOUT_SECS,
+        }
+        .run(&self.db, &self.jobs)
+        .await
+        .map_err(|e| format!("提交归档校验作业失败（{domain}）：{e}"))?;
+        if !check.success {
+            return Err(format!(
+                "归档无法读取，未改动站点目录：{}（作业 {}）：{}",
+                path.display(),
+                check.job_id,
+                exec_failure_reason(&check)
+            ));
+        }
+
+        // 2. 快照：恢复是覆盖式的，先留一份当前状态，错了还能退回来。
+        let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let snapshot = crate::sites::pre_restore_name(&stamp);
+        let snapshot_path = dir.join(&snapshot).to_string_lossy().to_string();
+        let snap = KernelExec {
+            title: format!("恢复前快照 {domain}"),
+            target_id: target_id.clone(),
+            origin: "site",
+            binary: tar,
+            argv: vec![
+                "-cf".to_string(),
+                snapshot_path.clone(),
+                "-C".to_string(),
+                root_path.clone(),
+                ".".to_string(),
+            ],
+            timeout_secs: SITE_BACKUP_TIMEOUT_SECS,
+        }
+        .run(&self.db, &self.jobs)
+        .await
+        .map_err(|e| format!("提交恢复前快照作业失败（{domain}）：{e}"))?;
+        if !snap.success {
+            return Err(format!(
+                "恢复前快照失败，已放弃恢复（站点目录未改动）：{}（作业 {}）：{}",
+                root.display(),
+                snap.job_id,
+                exec_failure_reason(&snap)
+            ));
+        }
+
+        // 3. 解包：`-xf` 到站点根，覆盖同名文件；归档里没有的文件保持原样。
+        let extract = KernelExec {
+            title: format!("恢复站点 {domain}"),
+            target_id,
+            origin: "site",
+            binary: tar,
+            argv: vec![
+                "-xf".to_string(),
+                archive_path.clone(),
+                "-C".to_string(),
+                root_path.clone(),
+            ],
+            timeout_secs: SITE_BACKUP_TIMEOUT_SECS,
+        }
+        .run(&self.db, &self.jobs)
+        .await
+        .map_err(|e| format!("提交恢复作业失败（{domain}）：{e}"))?;
+        if !extract.success {
+            return Err(format!(
+                "解包失败，站点目录可能已被部分覆盖；恢复前快照在 {}（作业 {}）：{}",
+                dir.join(&snapshot).display(),
+                extract.job_id,
+                exec_failure_reason(&extract)
+            ));
+        }
+
+        tracing::info!(
+            lane = "maintenance",
+            op = "site_restore",
+            domain,
+            archive,
+            snapshot = %snapshot,
+            job = %extract.job_id,
+            "站点已从归档恢复"
+        );
+        Ok(SiteRestoreReport {
+            archive: archive.to_string(),
+            snapshot,
         })
     }
 }
@@ -2219,6 +2386,27 @@ requires = ["fs"]
             .set_site_backup("example.com", true, "hourly", "03:00", "admin")
             .await
             .is_err());
+    }
+
+    /// 恢复入口的第一道门：归档名来自请求体，必须在碰磁盘前挡住路径穿越。
+    #[tokio::test]
+    async fn restore_site_rejects_traversal_archive_and_unknown_site() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(&dir);
+
+        let traversal = svc.restore_site("example.com", "../../etc/passwd").await;
+        assert!(traversal.is_err(), "带 ../ 的归档名必须被拒");
+        assert!(traversal.unwrap_err().contains(".."));
+
+        let wrong_ext = svc.restore_site("example.com", "backup.tar.gz").await;
+        assert!(wrong_ext.is_err(), "非 .tar 归档必须被拒");
+
+        // 名称合法时下一道门是站点存在性：未知域名应在读归档前就失败。
+        let unknown = svc
+            .restore_site("no-such.example", "20261121-030000.tar")
+            .await;
+        assert!(unknown.is_err());
+        assert!(unknown.unwrap_err().contains("站点不存在"));
     }
 
     /// 站点备份走 exec 作业：**先看记录，再看产物**。

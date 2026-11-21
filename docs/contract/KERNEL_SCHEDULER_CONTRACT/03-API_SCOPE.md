@@ -87,7 +87,7 @@ trait Scheduler {
 - manifest `[[task]]`：内核在启动装配与 Web 安装/升级成功后按声明种任务；插件卸载（或 manifest 升级后不再声明）时回收 `source=plugin:<id>` 的孤儿任务。种子任务以 `created_by=system:manifest` 标记，只回收这类「内核声明种入」的任务，插件自己经 RPC 建的任务不动。
 - `monitor` 的 `samples.jsonl`：P1 保留历史文件只读展示；新采样由 `sample` 出点进内核缓冲，`execute` 批次**追加**到同一 JSONL 文件，超 480 行压缩回 240 行；不做旧 `samples.json` 数据合并。
 - `guard` 的 `state.json` events：保留；`reconcile` 任务不依赖旧 tick。
-- 站点备份：仓库内**未发现现有 `site_backup` 实现**（全仓搜索无 Rust 命中），因此无需收敛逻辑；站点页新增开关即可。
+- 站点备份：内置任务 `builtin:site-backup:<域名>`（`crates/app/src/tasks.rs`），打包走 `host.exec` 作业；站点详情页只管开关与计划。恢复（2026-11-21）同样走执行体：预检 → 恢复前快照 → 解包三步，作业目标复用同一 `builtin:site-backup:<域名>`，因此恢复与调度器打包天然互斥。
 
 ## 13. 测试矩阵与失败注入
 

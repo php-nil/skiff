@@ -81,6 +81,25 @@ fn site_domain(state: &AppState, id: i64) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError(AppError::NotFound(format!("站点不存在：{id}"))))
 }
 
+/// 站点已有归档（最近 20 份，按时间倒序）。
+///
+/// 目录读失败按「没有归档」处理：备份还没跑过是常态，不该让详情页报错。
+fn site_archives(state: &AppState, domain: &str) -> Vec<SiteArchiveItem> {
+    skiff_app::sites::list_archives(&state.cfg.data_dir, domain, 20)
+        .into_iter()
+        .map(|a| SiteArchiveItem {
+            size_text: crate::util::human_size(a.bytes as i64),
+            modified_text: crate::util::fmt_local_time(
+                (a.modified > 0).then_some(a.modified),
+                "%Y-%m-%d %H:%M",
+                "-",
+            ),
+            name: a.name,
+            bytes: a.bytes,
+        })
+        .collect()
+}
+
 /// `GET /ui/v1/sites/{id}`：站点详情（只读）。
 ///
 /// 只读分支复用详情页的既有查询（站点记录、运行环境实时视图、证书信息），
@@ -246,6 +265,7 @@ pub async fn site_detail(
         time: backup_view.time,
         last_text: backup_view.last_text,
         next_text: backup_view.next_text,
+        archives: site_archives(&state, &domain),
     };
     let data = SiteDetailData {
         site: item,
@@ -481,6 +501,43 @@ pub async fn site_backup(
     write_done(json!({ "domain": domain, "enabled": body.enabled }))
 }
 
+/// `POST /ui/v1/sites/{id}/backups/restore`：用归档覆盖站点目录（`SITE_RESTORE`）。
+///
+/// 恢复会在站点目录上原地解包（保留归档里没有的文件），执行体在任务服务里：
+/// 先预检归档、再打恢复前快照、最后解包。三步都进任务中心，接口立即返回
+/// `started=true`——长任务同步等结果会撞上 30 秒请求预算。
+pub async fn site_restore(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<i64>,
+    parts: Parts,
+    Json(body): Json<SiteRestoreBody>,
+) -> Result<Response, ApiError> {
+    guard::write(&state, &user, &parts, act::SITE_RESTORE)?;
+    let domain = site_domain(&state, id)?;
+    let svc = state
+        .tasks()
+        .ok_or_else(|| ApiError(AppError::Unavailable("内核任务服务未初始化".into())))?;
+    let started = skiff_app::commands::site::restore(
+        &state,
+        svc,
+        skiff_app::commands::site::RestoreSite {
+            domain: domain.clone(),
+            archive: body.archive,
+            confirm: body.confirm,
+            actor: handlers::sites::actor(&state, &user, &parts),
+        },
+    )
+    .map_err(AppError::from)
+    .map_err(ApiError)?;
+    write_done(json!({
+        "domain": started.domain,
+        "archive": started.archive,
+        "started": true,
+        "message": "恢复已开始：先校验归档、再打恢复前快照、最后解包；进度与结果见任务中心",
+    }))
+}
+
 /// `POST /ui/v1/sites/{id}/policy`：伪静态预设 + 出口限速（`SITE_SET_POLICY`）。
 pub async fn site_policy(
     State(state): State<Arc<AppState>>,
@@ -654,6 +711,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
         .route("/ui/v1/sites/{id}/policy", post(site_policy))
         .route("/ui/v1/sites/{id}/ssl", post(site_ssl))
         .route("/ui/v1/sites/{id}/backup", post(site_backup))
+        .route("/ui/v1/sites/{id}/backups/restore", post(site_restore))
         .route("/ui/v1/sites/{id}/delete", post(site_delete))
         .route("/ui/v1/sites/{id}/logs", get(site_logs))
         .route("/ui/v1/sites/{id}/{action}", post(site_power))

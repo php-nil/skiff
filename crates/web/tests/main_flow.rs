@@ -6029,6 +6029,28 @@ fn budding_boot_p1_confirms_and_kill_entry_present() {
     }
 }
 
+/// 站点目录入口与归档恢复：两处都容易在改版时被「顺手简化」掉。
+///
+/// - 产品不提供站点目录浏览页签，详情概览的「站点目录 / 文档根」必须带文件管理链接；
+/// - 备份页签的恢复必须走 `SITE_RESTORE` 接口，而不是前端自己调 tar。
+#[test]
+fn site_page_keeps_directory_links_and_restore_entry() {
+    let site_page = include_str!("../src/handlers/ui/site_page.rs");
+    let js = include_str!("../static/budding/budding-boot.js");
+    for needle in [
+        "files?path=",
+        "\"打开文件管理\"",
+        "\"op\": \"restore\"",
+        "\"archive\": archive.name",
+        "\"归档与恢复\"",
+    ] {
+        assert!(site_page.contains(needle), "站点详情缺入口：{needle}");
+    }
+    for needle in ["} else if (op === 'restore') {", "'/backups/restore'"] {
+        assert!(js.contains(needle), "skiffSiteWrite 缺恢复分支：{needle}");
+    }
+}
+
 /// P2 列表行内入口：站点列表不再只有详情入口，容器列表补齐启停/重启/删除。
 #[test]
 fn budding_boot_p2_row_actions_present() {
