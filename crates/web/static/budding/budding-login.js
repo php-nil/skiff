@@ -87,39 +87,39 @@
         actionsAlign: 'end',
         initialValues: { username: username, otp: '' }
       },
-      body: [
-        {
-          type: 'input-text',
-          props: {
-            name: 'username',
-            label: '用户名',
-            autocomplete: 'username',
-            required: true,
-            rules: { required: true, messages: { required: '请输入用户名' } }
-          }
-        },
-        {
-          type: 'input-text',
-          props: {
-            name: 'password',
-            label: '口令',
-            type: 'password',
-            autocomplete: 'current-password',
-            required: true,
-            rules: { required: true, messages: { required: '请输入口令' } }
-          }
-        },
-        {
-          type: 'input-text',
-          props: {
-            name: 'otp',
-            label: '动态码（启用 TOTP 后必填）',
-            hint: '未启用 TOTP 可留空',
-            autocomplete: 'one-time-code'
-          }
-        }
-      ],
       content: {
+        body: [
+          {
+            type: 'input-text',
+            props: {
+              name: 'username',
+              label: '用户名',
+              autocomplete: 'username',
+              required: true,
+              rules: { required: true, messages: { required: '请输入用户名' } }
+            }
+          },
+          {
+            type: 'input-text',
+            props: {
+              name: 'password',
+              label: '口令',
+              type: 'password',
+              autocomplete: 'current-password',
+              required: true,
+              rules: { required: true, messages: { required: '请输入口令' } }
+            }
+          },
+          {
+            type: 'input-text',
+            props: {
+              name: 'otp',
+              label: '动态码（启用 TOTP 后必填）',
+              hint: '未启用 TOTP 可留空',
+              autocomplete: 'one-time-code'
+            }
+          }
+        ],
         actions: [
           {
             type: 'button',
@@ -133,13 +133,15 @@
     return {
       type: 'page',
       props: { title: '登录 · Skiff', maxWidth: 460 },
-      body: [
-        {
-          type: 'card',
-          props: { title: '登录 · Skiff', subtitle: '轻舟 · 极简服务器管理面板' },
-          content: { body: body }
-        }
-      ]
+      content: {
+        body: [
+          {
+            type: 'card',
+            props: { title: '登录 · Skiff', subtitle: '轻舟 · 极简服务器管理面板' },
+            content: { body: body }
+          }
+        ]
+      }
     };
   }
 
