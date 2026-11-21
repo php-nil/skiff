@@ -132,7 +132,7 @@
 
     return {
       type: 'page',
-      content: { body: [form] }
+      content: { body: body }
     };
   }
 
