@@ -13,6 +13,7 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
+| 2026-11-21 23:10 | **还原后干净首装 + budding 1.8.4 同步**（`content.breadcrumbs` 移除适配、shared 组件基线瘦身、表单属性补全） | Run `44916947385`（head `a3722fb`）amd64 12,725,968 B `44d8081e…54f5`，前缀 `kfzehjpk` | ✅ accept.sh **46 PASS / 0 FAIL / 4 SKIP**；8 插件全装；43 路由 **42 PASS**（1 条为故意访问不存在环境的预期 400）、0 console error；容器终端 WS、code pack 高亮、备份恢复、口令重置均实测通过 |
 | 2026-11-21 11:45 | **登录页视觉重做 + 滚动条修复**（合成卡片、正常控件密度、取消固定高度/内层滚动） | Run `207`（head `5221b4c`）amd64 12,913,254 B `37492742…75ac`，前缀 `88qfm2s8` | ✅ 960×571 深/浅双主题真实浏览器：标题完整、三字段 + 通栏实心按钮、`#skiff-login=282px`、页面与右列 `clientHeight==scrollHeight`、无滚动条、0 console error；admin 登录正常；`abc7b0c`/`b44aac8`/`cb1b421` 三次中间构建未通过验证，未计入 |
 | 2026-11-21 10:18 | **还原后干净安装 + 弹窗 schema 修复轮**（GitHub Release 当前资产 `5bec69b` → 修复 `d5680b6` 重发版升级） | Run `202`（head `5bec69b`）amd64 12,913,533 B `3c6d40b6…b424`；Run `203`（head `d5680b6`）amd64 12,913,194 B `152e5902…e257`，前缀 `88qfm2s8` | ✅ accept.sh **49 PASS / 0 FAIL / 2 SKIP**；8 插件全装；31 页巡检发现 3 页 `CompileError`（dialog `props.body`）→ `d5680b6` 修复并升级复验 3/3 PASS（含新建目录写操作），0 console error |
 | 2026-11-21 01:00 | **干净重装 v23 最终版**（登录页 body overflow:hidden !important + budding 1.8.3 同步） | Release run `197`（head `26f53ec`），amd64 21,125,136 B `sha256=bf1ce05f…2162d`，前缀 `ewtdhtgx` | ✅ 960×571 视口 html/body scrollHeight==clientHeight 无垂直滚动条；浏览器验收 4/4 PASS；curl HTML + CSS 规则全链验证；库 v22 |

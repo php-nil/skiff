@@ -6,7 +6,19 @@
 
 ## 5. 当前部署
 
-> **2026-11-21 11:45 登录页视觉重做 + 滚动条修复（HEAD `5221b4c`，沿用本轮安装）**
+> **2026-11-21 23:10 还原后干净首装 + budding 1.8.4 同步（HEAD `a3722fb`）**
+> - 背景：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080/18081 空闲）；上游 budding 从 1.8.3（`1120d3`）更新到 1.8.4（`1121d5`），本轮先同步产物再发版验收。
+> - 上游同步（`C:\dev\budding` 根 `package.json` 1.8.4，commit `1121d5`）：主包 `budding-1.8.4.min.js` **1,020,608 B**（gzip 326,917）、`budding-1.8.4.min.css` **574,185 B**（gzip 67,505）、启动脚本 312,289 B（gzip 75,379）；icons 4,645 + 3,992 B；code pack 90,331 B、terminal pack 395,014 B。JS/CSS 较 1.8.3 分别 −23.5% / −13.3%（上游去掉整库 Vuetify barrel）。
+> - **适配点**：1.8.4 移除 `admin` 的 `content.breadcrumbs` 插槽，壳页 `shellSchema()` 由 `content.breadcrumbs: []` 改为 `props.breadcrumbs: false`（旧写法整页 `CompileError`）；`BUDDING_VERSION` / `BUDDING_ICONS_VERSION` = 1.8.4，`SHELL_VERSION` 31→32；新增源级断言 `shell_schema_disables_breadcrumbs_via_props`。
+> - 资产：Release run `44916947385`（head `a3722fb`，dispatch `ref=main` + `publish=true`），amd64 包 **12,725,968 B** id `775946390`，`sha256=44d8081e2db322d4e7a26d689a253a3e591a4e4d593e2ca7f4a20126925154f5`（测试机经 `api.github.com` 资产端点下载，侧车与包内 `checksums.txt` 双重校验一致）。CI run `44916931291` 全绿（含新增单测）。
+> - 安装：`install.sh --no-docker --tls off --listen 0.0.0.0:18080` exit 0；前缀 **`kfzehjpk`**；库 `user_version=22`、`integrity_check=ok`；`skiff.service` active；healthz `{"docker":"available","status":"ok","version":"0.1.0"}`；二进制 17,618,704 B `aea78b89…`（较上轮小 434 KB，来自 budding 瘦身）。形态 C 直连 18080，`allow_insecure_http` / `allow_reduced_sandbox` 仍人工追加（非 loopback 明文按 §6.2 不自动放行）。
+> - accept.sh `--group all --install-exit 0`：**46 PASS / 0 FAIL / 4 SKIP**（PF3 未传参考时钟、PF4 装后端口不适用、B4 未开限流、D0b 未传 `--pkg-dir`）。
+> - 8 官方插件：逐个 `skiff plugin install <包> --yes`（按 manifest `resource_hints` 授权），全部 installed + enabled；monitor 含 `path:/proc`、`path:/etc/passwd`，firewall 10 个 bin。
+> - 浏览器巡检：**43 条路由 42 PASS**，唯一 FAIL 是故意访问不存在的 `/sites/runtimes/none`（400 +「运行环境不存在」，属预期）；**0 console error**。
+> - 交互实测：登录页（960×571，无滚动条、三字段 + 通栏按钮）、新建站点/新建运行环境/新建目录/从归档恢复四个弹窗、站点详情「打开文件管理」深链、`.tar.gz` 行「解压」条件显隐、容器终端（WS 连上并回显）、代码查看器（63 个高亮 token）全部正常；code/terminal pack 均 200 加载。
+> - 台账复验：`skiff admin reset-password`（旧会话 401 → 新口令登录落在 `?force=1` → 改回已知口令）；SITE-21 从归档恢复全链路；SITE-07 目录链接与越界（实测 **403 `auth.forbidden`**，矩阵原写 400 已更正）。
+>
+> **2026-11-21 11:45 登录页视觉重做 + 滚动条修复（已过期；HEAD `5221b4c`）**
 > - 背景：用户反馈登录页「卡片右侧被裁、标题重复、字段 10px 压缩、大片空白」。根因是旧 CSS 对 budding 表单做极端压缩（label 10px、字段 28px、内层 padding 归零），页面标题与卡片标题重复，装饰层绝对定位造成 125px 水平溢出。
 > - 改动：登录页改为一张合成卡片（左深青品牌面板 + 右表单区），宽度上限 1000px；删除全部压缩规则；标题/副标题/页脚改由服务端模板承担，budding 只渲染表单本体；登录按钮通栏实心；辉光层改 `position: fixed`；主题按钮只显示一个文案；`SHELL_VERSION` 26→30。
 > - 滚动条修复：budding page 根把 `#skiff-login` 撑到 571px 并叠加固定卡片高度，导致右列出现内层滚动条。取消固定高度（卡片由内容撑开、`margin:auto` 居中）、右列改 `overflow: visible`、强制 `#skiff-login`/page 根 `height:auto`，并为 ≤660px 矮视口压缩纵向留白；仅极端矮视口才出现单条页面滚动，滚动条已做细样式。
@@ -131,18 +143,18 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `207`（dispatch `ref=main`，head `5221b4c`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 03:45 UTC。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`5221b4c`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `44916947385`（dispatch `ref=main`，head `a3722fb`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 15:09 UTC。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`a3722fb`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,913,254 B | `374927425308c05d3151fbd7fab62a44f83b8b6bb2cd6065c051653ed6c275ac` | `774328309` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | — |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,725,968 B | `44d8081e2db322d4e7a26d689a253a3e591a4e4d593e2ca7f4a20126925154f5` | `775946390` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `775946344` |
 | `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | — | （本轮仅 amd64 实测） | — |
-| `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | — |
-| `checksums.txt` | — | （本轮未下载） | — |
+| `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | `775946343` |
+| `checksums.txt` | — | （本轮未下载） | `775946346` |
 
-- **下载与核对**：GitHub `releases/download/v0.1.0/<asset>` 直连偶发 SSL EOF，本轮改用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载成功；测试机 `sha256sum -c` 与包内 `checksums.txt` 复核均 OK。
-- **本轮实际部署二进制**：`/usr/local/bin/skiff` **18,053,136 B**，`sha256=8af6592fb4549074d4c915cd1f27b486150ecfc15dcceb67ca0701e676cfdf28`。
+- **下载与核对**：本轮测试机用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 直接下载成功（单次即通），`sha256sum` 与侧车一致，包内 `checksums.txt` 复核 exit 0。
+- **本轮实际部署二进制**：`/usr/local/bin/skiff` **17,618,704 B**，`sha256=aea78b8928ce0e0c…`。
 - **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`。
 - **Release 触发方式**：开发机无 `gh` CLI 和 `GITHUB_TOKEN` env var，用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch。

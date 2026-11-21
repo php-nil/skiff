@@ -4,7 +4,22 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-21 11:45 `5221b4c`：登录页视觉重做 + 滚动条修复）
+## 8. 最近一次验收结论（截至 2026-11-21 23:10 `a3722fb`：budding 1.8.4 同步 + 干净首装全量验收）
+
+**2026-11-21 23:10 干净首装 `a3722fb`：budding 1.8.4 同步，accept.sh 46 PASS / 0 FAIL / 4 SKIP，43 路由 42 PASS**
+
+- **前置**：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080/18081 空闲，UID 201000 与 `skiff-plugins` 组未占用）。
+- **上游同步与适配**：上游 1.8.3（`1120d3`）→ 1.8.4（`1121d5`）。主包 1,020,608 B（gzip 326,917）、CSS 574,185 B（67,505）、icons 4,645 + 3,992 B、code pack 90,331 B、terminal pack 395,014 B；JS/CSS 较 1.8.3 分别 −23.5% / −13.3%。**唯一破坏点**：`admin` 的 `content.breadcrumbs` 插槽被移除，壳页改 `props.breadcrumbs: false`（旧写法整页 `CompileError`）；`SHELL_VERSION` 31→32，新增源级断言。
+- **安装（通过）**：`install.sh --no-docker --tls off --listen 0.0.0.0:18080` exit **0**；前缀 **`kfzehjpk`**；库 `user_version=22`、`integrity_check=ok`；healthz 200；二进制 17,618,704 B `aea78b89…`；资产包内 `checksums.txt` 复核 exit 0。
+- **accept.sh（通过）**：`--group all --install-exit 0` = **46 PASS / 0 FAIL / 4 SKIP**（PF3 无参考时钟、PF4 装后端口、B4 未开限流、D0b 未传 `--pkg-dir`）。关键断言：权限位 711/711/700/600/644/711/660/600 全对；restart 自恢复、kill -9 后 2 s 拉起；B 组完整 CSRF→登录→错误口令 401→改密 200→`initial-admin.txt` 删除→旧会话 303→新会话 200；D0 Docker 29.7.2。
+- **8 官方插件（通过）**：`--yes` 逐个安装，grants 采用 manifest `resource_hints`（monitor 含 `path:/proc`、`path:/etc/passwd`），全部 installed + enabled。
+- **浏览器巡检（43 路由 / 42 PASS / 0 console error）**：概览、站点列表/运行环境/Web 服务、站点详情 6 个子页、文件（含回收站/配额/查看器）、Docker 6 页、插件 3 页、设置 4 页、9 个插件功能页全部正常。唯一 FAIL 是**故意**访问 `/sites/runtimes/none`，返回 400 +「运行环境不存在」（预期）。
+- **交互实测（17/17 PASS）**：登录页 960×571 无滚动条、三字段 + 通栏按钮；新建站点 / 新建运行环境 / 新建目录 / 从归档恢复四个弹窗正常；站点详情「打开文件管理」深链列出目录；`.tar.gz` 行出现「解压」而 `.txt` 行没有（行作用域 `visibleOn` 生效）；容器终端 WS 连上并回显 `skiff-ok`；代码查看器 63 个高亮 token；code/terminal pack 均 200。
+- **台账复验（三项收敛）**：
+  - `skiff admin reset-password --yes`：旧会话 401 → 新口令登录 → `redirect_to …?force=1`（强制改密）→ 改回已知口令并复登落概览；`initial-admin.txt` 改密后删除。
+  - SITE-21 从归档恢复：3 条作业（校验/快照/解包）全成功；`<时间戳>-pre-restore.tar` 生成；被删文件回来、`keep.txt` 回到归档版本、`extra.txt` 保留；审计 `sites.restore` 注明 nginx 已生效；`confirm` 不匹配 400、`archive=../x.tar` 400、损坏归档只失败「校验」作业且站点目录未改动。
+  - SITE-07 站点目录：详情显示「站点目录 / 文档根」两行与「打开文件管理」链接（`?path=` 编码正确）；越界实测 **403 `auth.forbidden`（路径含非法片段）**，矩阵原写 400 已更正。
+- **未覆盖（限制）**：TLS 形态一/二、aarch64、镜像/网络/卷的创建与删除、PHP 运行环境安装与扩展、FTP/fail2ban 实装、真实备份计划（本轮用人工放入的归档）、≤880px 布局与浅/深主题切换后的逐页比对。
 
 **2026-11-21 11:45 登录页视觉重做 + 滚动条修复 `5221b4c`：960×571 深/浅双主题真实浏览器全 PASS**
 
