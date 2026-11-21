@@ -6,7 +6,15 @@
 
 ## 5. 当前部署
 
-> **2026-11-21 10:18 干净重装 + 弹窗 schema 修复复验（HEAD `d5680b6`）**
+> **2026-11-21 10:55 登录页视觉重做（HEAD `cb1b421`，沿用本轮安装）**
+> - 背景：用户反馈登录页「卡片右侧被裁、标题重复、字段 10px 压缩、大片空白」。根因是旧 CSS 对 budding 表单做极端压缩（label 10px、字段 28px、内层 padding 归零），页面标题与卡片标题重复，装饰层绝对定位造成 125px 水平溢出。
+> - 改动：登录页改为一张合成卡片（左深青品牌面板 + 右表单区），上限 1000×640 并随视口收缩；删除全部压缩规则；标题/副标题/页脚改由服务端模板承担，budding 只渲染表单本体；登录按钮通栏实心；辉光层改 `position: fixed` 消除横向滚动；主题按钮只显示一个文案；`SHELL_VERSION` 26→29。
+> - 资产：Release run `206`（head `cb1b421`），amd64 **12,912,834 B** id `774218701`，`sha256=27723e9d37992700411ce8dab7153c061d5c23bce956c960fe8f03efa8483fbb`（API 资产端点下载）；`install.sh` exit 0，前缀 **`88qfm2s8`**、8 插件、口令、库与配置全部保留；二进制 18,053,136 B `e2875d90…bc01`。
+> - 验证：真实浏览器 960×571 深色主题——「欢迎回来」完整可见、三字段 + 通栏实心登录按钮、无横/纵向滚动条、0 console error；`admin` 登录后概览正常。另用本地静态预览复核 `scrollWidth == innerWidth == 960`。
+> - 中间两次构建（`abc7b0c` 布局仍裁切、`b44aac8` 报 `form is not defined`）未通过浏览器验证，不计入本部署结论。
+> - 影响面：仅登录页模板与样式；已装页面、插件与数据未变化。
+>
+> **2026-11-21 10:18 干净重装 + 弹窗 schema 修复（已过期；HEAD `d5680b6`）**
 > - **场景**：测试机还原为干净系统（T1：Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff` / 端口空闲）→ 安装 GitHub Release 当前资产（run `202`，head `5bec69b`）→ accept.sh 全组 → 浏览器逐页巡检 → 发现 3 个页面 `CompileError` → 修复 → 重发版（run `203`，head `d5680b6`）→ 就地升级复验。
 > - **首装资产**：Release run `202`（head `5bec69b`），amd64 包 **12,913,533 B**，`sha256=3c6d40b6491de18fb8a3f6c80baada148c59ec11a80fd754417e3f68cd1cb424`（测试机 `sha256sum` 与侧车一致）。
 > - **首装**：`install.sh --no-docker --tls off --listen 0.0.0.0:18080` exit **0**（跑两次均 0，幂等）；前缀 **`88qfm2s8`**；`skiff.service` active；healthz `{"docker":"available","status":"ok","version":"0.1.0"}`；doctor 全绿。
@@ -118,71 +126,22 @@
 >   - `e42f439` fix(bootstrap): daemon 启动时持久化 entry_prefix 到 config.toml（同上配套）
 >   - `a02f1d0` fix(atomic): write_atomic rename 后恢复原 owner/group（**根治 A6e**，本轮最关键修复）
 
-> **2026-11-19 23:18 就地覆盖安装 `1e456cf`（当前生效；SSR 全删 + 插件 IPC 优化 + 壳页白名单回滚）**
-> - 背景：测试机从干净系统（Docker 29.7.2，skiff 完全不存在）重新首装（Release run `44544002520`，head `b6a3e35`）→ 就地覆盖 `2024b81`（误加 docker-settings 壳页白名单）→ 就地覆盖 `1e456cf`（回滚白名单，恢复正确状态）。GitHub Release 资产经 `api.github.com` + `Accept: application/octet-stream` 直连下载（测试机 curl GitHub download 路径遇 SSL 重置）。
-> - 资产：Release run `44551456436`（dispatch `ref=main`，head `1e456cf`，`publish=true`、`release_tag=v0.1.0`），success。`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **12,817,174 B** 资产 id `768167669`，sidecar sha id `768167660`。测试机 `sha256sum -c` OK。
-> - 壳页白名单：`SHELL_PAGES`（`spa.rs`）15 条——sites / containers / images / networks / volumes / compose / runtimes / files / plugins / store / settings / audit / tasks / jobs。Docker 设置菜单的 href 是 `settings/docker`（settings 子路径，settings 已在白名单），独立的 `docker-settings` 路径前端不认（budding 路由无此项）。本轮误加后立即回滚。
-> - 部署：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` exit 0；`allow_reduced_sandbox = true`（无 landlock/cgroups）加于 `config.toml`；`skiff.service` + `skiff-http-fwd.service`（Python 行 pipe，`0.0.0.0:18081 → 127.0.0.1:18080`）均 active。
-> - 入口：前缀 **`trpdbfmr`**（升级保留）；管理员 `admin` / `aSHKhyWPx6yPQ78k`；登录 URL `http://10.10.15.4:18081/trpdbfmr/login`。
-> - accept.sh：`--group preflight,a,b,d0` → **PASS 32 / FAIL 0 / SKIP 3**（SKIP：PF4 装后端口占用、B0 明文 dev Cookie 无回传、D0b `--pkg-dir`）。
-> - 浏览器验收（真实 budding 前端，无 console error）：
->   - 登录页 / Dashboard（概览统计、侧边栏 6 分组全展开）
->   - 容器页（空态表格 + 全部/仅异常 筛选 + 新建容器 按钮）
->   - 镜像页 / 网络页 / 卷页 / Compose 页
->   - Docker 设置（`/settings/docker`，从 Docker 菜单 → 设置 子项进入，H2 "Docker 设置" ✅）
->   - 插件（已安装 0 / 发现 / 可更新 三 tab）
->   - 设置 / 任务中心
-> - 本轮文档禁令：AGENTS.md §4.3 增"测试机禁止 Rust 编译"硬禁令（本轮曾误向测试机 `rustup`，已立即 `rustup self uninstall -y && rm -rf ~/.cargo ~/.rustup`）。测试机只做安装验收，编译链路统一走 GitHub Release musl 静态资产。
-> - Git commits（`b6a3e35 → 1e456cf`，三轮）：
->   - `b6a3e35` refactor: delete legacy SSR UI — routes / templates / menu deep links / htmx & xterm residuals
->   - `2024b81` fix(web): add docker-settings to SPA shell whitelist（误修复，立即回滚）
->   - `1e456cf` revert: docker-settings shell whitelist was unnecessary（菜单 href 走 settings/docker）
-
-> **2026-11-19 15:10 就地覆盖编译部署 `b1234f8`（当前生效；登录页优化 + 文件管理弹窗 + 磁盘覆盖路径）**
-> - 背景：两批改动——① 登录页视觉重写（分栏布局 / 渐变网格背景 / 品牌区 / 主题切换按钮）；② 文件管理「新建与上传」三个内联表单改为按钮触发 dialog（新建目录 / 上传文件 / 新建文件）；③ `SKIFF_EXTRA_STATIC_DIR` env var 磁盘覆盖 rust-embed 静态资源（测试机上装 Rust 工具链构建，绕开 CI Release token 问题）。CI Release workflow 需 `workflow_dispatch` 手动触发，开发机无 GitHub token，本次在测试机上用 rustup + musl-tools + 源码 tar 编译（4m25s 增量）。
-> - 编译：测试机 `rustup 1.100.0` + `x86_64-linux-musl-gcc`，源码 tar 从开发机 SCP 到 `/root/skiff-src`，`cargo build --release --target x86_64-unknown-linux-musl`，exit 0（仅 `xtask` 有 unused `anyhow` warning）。
-> - 部署：`systemctl stop skiff` → 备份旧二进制 → 新二进制 19MB 覆盖 `/usr/local/bin/skiff` → `systemctl start skiff` → healthz OK。
-> - 热更新 drop-in：`/etc/systemd/system/skiff.service.d/extra-static.conf` 加 `Environment=SKIFF_EXTRA_STATIC_DIR=/www/skiff/static-override`（`ProtectSystem=full` + `ReadWritePaths=/www` 允许访问）。以后前端改 JS/CSS 直接 SCP 到 `/www/skiff/static-override/` 对应路径即可热更新，无需重编 Rust 二进制。
-> - 浏览器验收（localhost → 代理 18081）：
->   - 登录页：分栏布局生效——左侧品牌区（Logo / Skiff·轻舟 / slogan / 三条卖点）、右侧表单卡片；背景多层渐变 + 网格纹理 + 柔光圆形装饰；右下角主题切换按钮；深浅主题切换正常。
->   - 文件管理：「操作」卡三按钮（新建目录 / 上传文件 / 新建文件）替换原「新建与上传」三内联表单，列表首屏不再被挤爆。
->   - 三 dialog 全弹：新建目录 dialog（width 480，输入框 + 取消/创建）、上传文件 dialog（width 560，文件选择器 + 关闭）、新建文件 dialog（width 640，文件名 + code 编辑器 + 取消/保存）。
->   - 磁盘覆盖：`curl -sI /static/skiff.css` 200 OK，ETag `"474d9fcf..."` 正确；curl header 安全响应头（nosniff / referrer-policy / frame-options / CSP）全部就位。
-> - Git commit（`8fcca6b..b1234f8`，三个 commit）：
->   - `ab914db` 登录页 + 文件管理弹窗主改动（5 files, +517/-117）
->   - `8fcca6b` SHELL_VERSION bump 6→7（budding-boot.js / skiff.css 缓存键）
->   - `b1234f8` SKIFF_EXTRA_STATIC_DIR 磁盘覆盖路径（4 files, +55）
-> - 测试机工具链：`rustup 1.100.0` / `cargo 1.100.0` / `rustc 1.100.0`，`rustup target add x86_64-unknown-linux-musl`，musl cross toolchain `/usr/bin/x86_64-linux-musl-gcc`（apt 装的 musl-tools）。crates.io 走 rsproxy-sparse 镜像，GitHub 不通。
-
-> **2026-11-19 09:31 就地覆盖安装 `8f78221`（当前生效；库/配置/插件/运行环境全保留）**
-> - 背景：本轮三项——新建 PHP 环境可选 apk 镜像源、软件源插件复查修复（编译错误 / `r.base` / 原生 schema）、测试机还原后重新部署。Release run `44435964314`（head `8f78221`）success（同提交 CI `44434687589` 全绿）；前一次首装为 Release run `44428042366`（head `f5267ec`），见 03-DEPLOY_LOG。
-> - 机器状态：还原后为干净系统——无旧二进制/配置/库、18080/18081 空闲、Docker 29.7.2 在位、`/etc/skiff-baseline` 不存在；按 T1 口径（Docker 已装）首装后在同机覆盖升级。
-> - 资产：`skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` **13,272,804 B** `f04eafe89684f69b3ca1dff4783738ed7938401a753ac695ac3977b51ff1dba7`（资产 id `765733618`；API `digest` / 本地 sha256 / 测试机 `sha256sum` 三方一致）。
-> - 安装：`install.sh --no-docker --tls off --listen 127.0.0.1:18080` **exit 0**（首装 + 就地覆盖各一次）。`skiff.service` 与 `skiff-http-fwd.service`（`0.0.0.0:18081 → 127.0.0.1:18080`，脚本 `/root/iter/skiff-http-fwd.py`）均 active。
-> - 二进制：`/usr/local/bin/skiff` **19,179,408 B** `e428451579aa8e198034898662683e43323114c5e52fad03a701a95e9d59bfc4`。
-> - 库：`user_version=21`、`integrity_check=ok`；users 1 / plugins **8** / sites 0 / site_runtimes 1（`php-8.5` running）。配置 `/etc/skiff/config.toml` 已加 `allow_reduced_sandbox = true`（否则官方插件全被「要求完整沙箱」拒装），sha256 `59791959b24138b17a83c473433054c2ff9eec9ed752449b4d8becfe41234129`。权限 `711 /www/skiff`、`711 plugins/`、`600 skiff.db`、`711 /run/skiff` 保持。
-> - 面板：入口前缀 **`zgvvx5xz`**；管理员 `admin` / `wGQcAXtSDKLDaxBs`（`/www/skiff/initial-admin.txt` 仍在，B 组在 TLS/prod 档跳过故未改密）。`/healthz` 18080 与 18081 均 **200**，登录页 **200**。
-> - 插件：官方 8 个包（7 官方 + testkit）全部装成；`com.skiff.sources` 同版本内容随发布包自动更新（journal：`官方插件内容已随发布包更新（同版本重装）`）。
-> - 软件源：apk 固定为 `https://mirrors.tuna.tsinghua.edu.cn/alpine`（`/www/runtime/cache/apk/.skiff-mirror` 带 `# skiff-fixed`）；容器 `/etc/apk/repositories` 为 tuna `v3.24/{main,community}`。
-> - 运行环境：`php-8.5`（`php:8.5-fpm-alpine`，PHP 8.5.12）**10 s 装完**（固定 tuna 源），容器 `skiff-php-php-8.5` running；站点本轮未建。
-> - 浏览器实测（真实资产无拦截）：概览页、运行环境新建弹窗（软件包源字段预选「清华 TUNA」）、软件源插件原生页（两表 5 行数据、`测速全部` 出真实 MB/s）均 **0 console error**。
-
 ## 6. Release 资产台账（当前资产；历史坐标见 03-DEPLOY_LOG.md）
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `203`（dispatch `ref=main`，head `d5680b6`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 02:18 UTC。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`d5680b6`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `206`（dispatch `ref=main`，head `cb1b421`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 02:55 UTC。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`cb1b421`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,913,194 B | `152e5902f3f945212d22350341646768eba78e551a15fc51ec569521047ae257` | `774119680` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `774119644` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 12,376,223 B | （本轮仅 amd64 实测） | — |
-| `skiff-server-x86_64-unknown-linux-musl` | 3,941,088 B | （本轮未下载） | `774119641` |
-| `checksums.txt` | 434 B | （本轮未下载） | — |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,912,834 B | `27723e9d37992700411ce8dab7153c061d5c23bce956c960fe8f03efa8483fbb` | `774218701` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | — |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | — | （本轮仅 amd64 实测） | — |
+| `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | — |
+| `checksums.txt` | — | （本轮未下载） | — |
 
-- **下载与核对**：测试机 `curl -fL https://github.com/php-nil/skiff/releases/download/v0.1.0/<asset>` 直连成功（4.8 MB/s），侧车 `sha256sum -c` OK；包内 `checksums.txt` 复核全 OK。
-- **本轮实际部署二进制**：`/usr/local/bin/skiff` **18,053,136 B**，`sha256=6066afdacd2d7462376e53dbe7e11a4369fb393956c40e9e803b5bf4c66ee902`（升级后）。
+- **下载与核对**：GitHub `releases/download/v0.1.0/<asset>` 直连偶发 SSL EOF，本轮改用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载成功；测试机 `sha256sum -c` 与包内 `checksums.txt` 复核均 OK。
+- **本轮实际部署二进制**：`/usr/local/bin/skiff` **18,053,136 B**，`sha256=e2875d9041cefbd51d43536b600359792cf217f29808a156eee9dd36d41abc01`。
 - **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`。
 - **Release 触发方式**：开发机无 `gh` CLI 和 `GITHUB_TOKEN` env var，用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch。
