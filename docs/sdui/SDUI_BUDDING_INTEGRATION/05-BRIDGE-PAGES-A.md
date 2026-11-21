@@ -55,7 +55,7 @@
 - `GET /{p}/sites/list`、`/{p}/sites/{domain}`、`/{p}/sites/new`、`/{p}/sites/runtimes`、`/{p}/sites/runtimes/{id}` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18，直达 404）。站点写操作已原生化，运行环境的安装/配置/扩展仍待后续批次。
 - 列表复用 `list_sites` / `list_runtimes` / `runtime_views` 与页面 `site_view` / `runtime_row` 展示模型，**没有新增 SQL**；`q` 关键字过滤与旧列表页同源（域名 / 目录 / 接入方式 / 别名）。
 - `GET /ui/v1/runtimes` 与旧运行环境页同权限：Admin（`authz::authorize_for`），viewer 返回 403（`auth.forbidden`）。
-- 站点写操作：`POST /ui/v1/sites`、`/{domain}/{action}`（start/stop）、`/{domain}/default`、`/{domain}/domains`、`/{domain}/config`、`/{domain}/ssl`、`/{domain}/backup`、`/{domain}/delete`、`/sites/batch`；全部复用 `SITE_*` 动作与 `skiff_app::commands::site`，CSRF 走 `x-csrf-token`，不新增权限来源。
+- 站点写操作（路径参数是站点**主键** `{id}`，不是域名）：`POST /ui/v1/sites`、`/{id}/{action}`（start/stop/restart/reload）、`/{id}/default`、`/{id}/domains`、`/{id}/config`、`/{id}/ssl`、`/{id}/policy`、`/{id}/backup`、`/{id}/backups/restore`、`/{id}/delete`、`/sites/batch`；全部复用 `SITE_*` 动作与 `skiff_app::commands::site`，CSRF 走 `x-csrf-token`，不新增权限来源。
 
 **字段表（冻结，只增不改）**
 
@@ -90,7 +90,7 @@
 | `runtime_down` | bool | 绑定环境未运行或 socket 缺失 |
 | `runtime_alert` | string | 不可用时的中文原因，正常为空串 |
 | `config` | object | `path` / `content` / `active` / `error`；读取失败时 `error` 非空、其余为空 |
-| `backup` | object | `available` / `enabled` / `task_id` / `last_text` / `next_text` |
+| `backup` | object | `available` / `enabled` / `task_id` / `interval` / `time` / `last_text` / `next_text` / `archives[]`（`name` / `bytes` / `size_text` / `modified_text`，按时间倒序，最多 20 份） |
 | `can_manage` | bool | 是否具备 Admin（详情页写操作入口显隐） |
 
 `GET /ui/v1/runtimes?limit=50&cursor=&q=` → 同上信封：

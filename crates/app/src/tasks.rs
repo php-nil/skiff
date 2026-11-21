@@ -1841,7 +1841,7 @@ fn db_vacuum(
             BUILTIN_DB_VACUUM,
             "创建数据库备份目录",
             Some(&dir),
-            Some("检查数据目录空间与属主权限后重试"),
+            Some("检查数据目录空间与属主权限；若目标被同名文件占用，先移走或改名"),
             e,
         )
     })?;
@@ -2478,8 +2478,6 @@ requires = ["fs"]
         let blocked = dir.path().join("backups").join("db");
         std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
         std::fs::write(&blocked, b"occupied by a file").unwrap();
-        // 用同一条件在测试侧取一次底层错误串，避免把平台相关的 errno 文案写死。
-        let cause = std::fs::create_dir_all(&blocked).unwrap_err().to_string();
 
         let record = svc
             .run_task_now(DB_VACUUM_TASK_ID, AuditActor::Admin("admin".into()))
@@ -2492,8 +2490,11 @@ requires = ["fs"]
         assert!(detail.contains(BUILTIN_DB_VACUUM), "{detail}");
         assert!(detail.contains("创建数据库备份目录失败"), "{detail}");
         assert!(detail.contains(&blocked.display().to_string()), "{detail}");
+        // 「同名文件占住」由通道识别（`ensure_dir_kernel` 拒绝末级非目录），
+        // 不再依赖 std::fs 的平台相关 errno 文案。
         assert!(detail.contains("同名文件占用"), "{detail}");
-        assert!(detail.contains(&cause), "缺少底层原因 {cause}：{detail}");
+        // 下一步也要说清，而不是让用户自己猜。
+        assert!(detail.contains("先移走或改名"), "{detail}");
     }
 
     #[tokio::test]

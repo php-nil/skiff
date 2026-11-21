@@ -1300,6 +1300,16 @@ impl AdminFs {
             missing.push(p.to_path_buf());
             cur = p.parent();
         }
+        // 末级已存在但**不是目录**（被同名普通文件占住）时，上面的循环会直接 break、
+        // 什么都不做并返回成功，调用方于是在后续写入上拿到一个语焉不详的底层错误
+        // （2026-11-21 CI 复现：`backups/db` 被文件占住 → 报「无法打开数据库」）。
+        // `create_dir_all` 的语义在这里必须显式兑现：目标存在但不是目录就是失败。
+        if path.exists() && !path.is_dir() {
+            return Err(format!(
+                "{}：目标已存在但不是目录（同名文件占用）",
+                path.display()
+            ));
+        }
         let principal = Principal::kernel(KERNEL_ACTOR);
         for dir in missing.iter().rev() {
             let ctx = OpContext::new(self.kernel_request_id("mkdir"));

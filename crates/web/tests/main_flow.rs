@@ -7993,6 +7993,7 @@ async fn ui_v1_key_response_shapes_are_frozen() {
             "time",
             "last_text",
             "next_text",
+            "archives",
         ],
         "site detail backup",
     );
