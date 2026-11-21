@@ -175,7 +175,7 @@ impl super::Fs {
                 FsError::Conflict("压缩包目标已存在，请确认覆盖或改名".into()),
             );
         }
-        if let Err(e) = self.ensure_not_protected(&dr, "写入压缩包") {
+        if let Err(e) = self.ensure_not_protected(p, &dr, "写入压缩包") {
             return self.fail_resolved(p, ctx, AuditAction::Archive, &dr, e);
         }
         if let Err(e) = self.ensure_write_allowed(p, &dr) {
@@ -304,7 +304,7 @@ impl super::Fs {
                 return self.fail_resolved(p, ctx, AuditAction::Extract, &ar, e);
             }
         };
-        if let Err(e) = self.ensure_not_protected(&dr, "解压到") {
+        if let Err(e) = self.ensure_not_protected(p, &dr, "解压到") {
             return self.fail_resolved(p, ctx, AuditAction::Extract, &dr, e);
         }
         if let Err(e) = self.ensure_write_allowed(p, &dr) {

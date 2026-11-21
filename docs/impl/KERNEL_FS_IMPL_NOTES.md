@@ -65,12 +65,13 @@ crates/fs/
 ```rust
 pub enum Subject { Admin { user: String }, Plugin { id: String } }
 
-pub struct Principal { /* subject, grants, data_root, allow_protected_write */ }
+pub struct Principal { /* subject, grants, data_root, allow_protected_write, kernel */ }
 
 impl Principal {
     pub fn admin(user: &str) -> Self;
     pub fn plugin(id: &str, grants: Vec<PathBuf>, data_root: Option<PathBuf>) -> Self;
     pub fn with_protected_write(self, allow: bool) -> Self;
+    pub fn kernel(user: &str) -> Self; // 内核通道专用：允许写内核受保护前缀
     pub fn root_of(&self, path: &Path) -> Option<&PathBuf>; // 最长匹配根
 }
 ```

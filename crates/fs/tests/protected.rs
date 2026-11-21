@@ -2,7 +2,7 @@
 
 mod support;
 
-use skiff_fs::{WriteMode, WriteRequest};
+use skiff_fs::{Principal, WriteMode, WriteRequest};
 use support::{ctx, Harness};
 
 #[test]
@@ -68,4 +68,42 @@ fn protected_prefix_blocks_delete_rename_and_overwrite() {
     // 保护区外的 /etc 仍可正常删除。
     h.fs.remove(&admin, &ctx(), &nginx_s, false).unwrap();
     assert!(!nginx.exists());
+}
+
+/// 内核自身主体（`Principal::kernel`）必须能写受保护前缀：`config.toml` 与数据根
+/// 本来就是内核维护的对象，硬拒会把「面板保存设置 / 启动期写回 entry_prefix」一起锁死。
+#[test]
+fn kernel_principal_may_write_protected_prefix() {
+    let h = Harness::with_config_at(|base| vec![base.join("etc/skiff")], |_| {});
+    let config = h.base().join("etc/skiff/config.toml");
+    h.seed(&config.to_string_lossy(), b"old");
+    let config_s = config.to_string_lossy().to_string();
+
+    let kernel = Principal::kernel("system");
+    h.fs.write(
+        &kernel,
+        &ctx(),
+        &WriteRequest {
+            path: config_s.clone(),
+            data: b"new".to_vec(),
+            mode: WriteMode::Replace,
+        },
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&config).unwrap(), b"new");
+
+    // 同一目标上的普通管理员口径不变：仍硬拒。
+    let err =
+        h.fs.write(
+            &h.admin(),
+            &ctx(),
+            &WriteRequest {
+                path: config_s,
+                data: b"pwned".to_vec(),
+                mode: WriteMode::Replace,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), "fs.protected");
+    assert_eq!(std::fs::read(&config).unwrap(), b"new");
 }

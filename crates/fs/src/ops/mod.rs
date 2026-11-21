@@ -532,11 +532,18 @@ impl Fs {
     ///
     /// 与 `ensure_write_allowed` 的站点 `log/ssl/conf` 是两套口径：这里保护的是
     /// 内核自身运行所需的配置/数据，属于「碰了就起不来」的路径。
+    ///
+    /// 唯一例外是内核自身主体（[`crate::Principal::kernel`]）：这些路径的意义是
+    /// 「面板与插件不得误改」，而内核维护自己的 `config.toml` / 数据根必须能写。
     pub(crate) fn ensure_not_protected(
         &self,
+        p: &crate::Principal,
         r: &ResolvedPath,
         action: &str,
     ) -> Result<(), FsError> {
+        if p.is_kernel() {
+            return Ok(());
+        }
         if let Some(root) = crate::path::protected_hit(&self.cfg.protected_paths, &r.path) {
             return Err(FsError::Protected(format!(
                 "内核运行配置或数据目录受保护，不能{}: {}（命中 {}）",

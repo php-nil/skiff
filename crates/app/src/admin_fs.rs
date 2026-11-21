@@ -1130,11 +1130,12 @@ impl AdminFs {
     /// 内核自身写文件（含 `/etc` 下的系统配置）：**唯一入口**，每次写一条 `fs.write` 审计。
     ///
     /// 与 Web 文件管理器共用同一个 `Fs` 实例：同一套临时文件 + rename 原子替换、
-    /// 同一张 `audit` 表、同一份路径代数。差别只在主体——`system` 不走授权根，
-    /// 但受保护路径的额外开关必须显式打开（内核要写自己的 `data/`）。
+    /// 同一张 `audit` 表、同一份路径代数。差别只在主体——[`Principal::kernel`]
+    /// 不走授权根，且允许写内核受保护前缀（数据根、运行配置、TLS 材料），
+    /// 前提是内核自己的 `config.toml` 与 `data/` 必须由它维护。
     pub fn write_kernel(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
         let ctx = OpContext::new(self.kernel_request_id("write"));
-        let principal = Principal::admin(KERNEL_ACTOR).with_protected_write(true);
+        let principal = Principal::kernel(KERNEL_ACTOR);
         let req = WriteRequest {
             path: path.to_string_lossy().to_string(),
             data: bytes.to_vec(),
@@ -1152,7 +1153,7 @@ impl AdminFs {
     /// 配置留在 trash 里既没用，又会让「删了但还在」误导排障。
     pub fn remove_kernel(&self, path: &Path) -> Result<(), String> {
         let ctx = OpContext::new(self.kernel_request_id("remove"));
-        let principal = Principal::admin(KERNEL_ACTOR).with_protected_write(true);
+        let principal = Principal::kernel(KERNEL_ACTOR);
         self.fs
             .remove(&principal, &ctx, &path.to_string_lossy(), true)
             .map(|_| ())
@@ -1174,7 +1175,7 @@ impl AdminFs {
             missing.push(p.to_path_buf());
             cur = p.parent();
         }
-        let principal = Principal::admin(KERNEL_ACTOR).with_protected_write(true);
+        let principal = Principal::kernel(KERNEL_ACTOR);
         for dir in missing.iter().rev() {
             let ctx = OpContext::new(self.kernel_request_id("mkdir"));
             match self.fs.mkdir(&principal, &ctx, &dir.to_string_lossy()) {
@@ -1327,7 +1328,7 @@ mod tests {
 
         let db = db();
         let protected = kernel_protected_paths(&data, &config, Some(&tls_key), None);
-        let admin = AdminFs::with_protected(data, web, db, 30, protected);
+        let admin = AdminFs::with_protected(data.clone(), web, db, 30, protected);
 
         // 运行配置：删除 / 改名 / 覆盖写一律 403，并带可读原因。
         let err = admin.remove("admin", config.to_str().unwrap()).unwrap_err();
@@ -1352,6 +1353,13 @@ mod tests {
             .remove("admin", tls_key.to_str().unwrap())
             .unwrap_err();
         assert_eq!(err.http_status(), 403);
+
+        // 内核自身主体（`write_kernel` / `remove_kernel`）：同一批受保护路径必须能写。
+        // 否则启动期写回 `entry_prefix` 与面板保存设置都会被自己的守卫拒掉。
+        admin.write_kernel(&config, b"data_dir = '...'\n").unwrap();
+        assert_eq!(fs::read(&config).unwrap(), b"data_dir = '...'\n");
+        admin.write_kernel(&data.join("state.json"), b"{}").unwrap();
+        assert_eq!(fs::read(data.join("state.json")).unwrap(), b"{}");
 
         // 其它 /etc 配置不受影响：允许删除（进回收站）。
         admin.remove("admin", nginx.to_str().unwrap()).unwrap();

@@ -75,7 +75,7 @@ impl super::Fs {
                 FsError::Unsupported("只支持修改普通文件与目录的权限".into()),
             );
         }
-        if let Err(e) = self.ensure_not_protected(&r, "修改权限") {
+        if let Err(e) = self.ensure_not_protected(p, &r, "修改权限") {
             return self.fail_resolved(p, ctx, AuditAction::Chmod, &r, e);
         }
         if let Err(e) = self.ensure_write_allowed(p, &r) {
@@ -142,7 +142,7 @@ impl super::Fs {
                 FsError::Unsupported("只支持修改普通文件与目录的属主".into()),
             );
         }
-        if let Err(e) = self.ensure_not_protected(&r, "修改属主") {
+        if let Err(e) = self.ensure_not_protected(p, &r, "修改属主") {
             return self.fail_resolved(p, ctx, AuditAction::Chown, &r, e);
         }
         if let Err(e) = self.ensure_write_allowed(p, &r) {

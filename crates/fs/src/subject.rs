@@ -55,6 +55,8 @@ pub struct Principal {
     grants: Vec<PathBuf>,
     data_root: Option<PathBuf>,
     allow_protected_write: bool,
+    /// 内核自身主体：允许穿越**内核受保护前缀**（数据根、运行配置、TLS 材料）。
+    kernel: bool,
 }
 
 /// 路径属于哪个 scope：插件 `data/` 还是宿主授权根。跨 scope 改名/复制一律拒绝。
@@ -72,6 +74,7 @@ impl Principal {
             grants: Vec::new(),
             data_root: None,
             allow_protected_write: false,
+            kernel: false,
         }
     }
 
@@ -97,6 +100,7 @@ impl Principal {
             grants: roots,
             data_root,
             allow_protected_write: false,
+            kernel: false,
         }
     }
 
@@ -105,6 +109,23 @@ impl Principal {
     pub fn with_protected_write(mut self, allow: bool) -> Self {
         self.allow_protected_write = allow;
         self
+    }
+
+    /// 内核自身主体：除「无授权根限制」外，还允许写**内核受保护前缀**
+    /// （数据根、运行配置、TLS 材料）。
+    ///
+    /// 只给 `AdminFs::write_kernel` / `remove_kernel` / `ensure_dir_kernel` 用：
+    /// 这些路径的保护意义是「面板与插件不得误改」，而内核维护自己的
+    /// `config.toml` 与 `data/` 恰恰必须能写；普通管理员与插件拿不到
+    /// （[`Principal::admin`] / [`Principal::plugin`] 恒为 `false`）。
+    pub fn kernel(user: impl Into<String>) -> Self {
+        Self {
+            subject: Subject::admin(user),
+            grants: Vec::new(),
+            data_root: None,
+            allow_protected_write: true,
+            kernel: true,
+        }
     }
 
     pub fn subject(&self) -> &Subject {
@@ -117,6 +138,10 @@ impl Principal {
 
     pub fn allow_protected_write(&self) -> bool {
         self.allow_protected_write
+    }
+
+    pub fn is_kernel(&self) -> bool {
+        self.kernel
     }
 
     pub fn data_root(&self) -> Option<&PathBuf> {
