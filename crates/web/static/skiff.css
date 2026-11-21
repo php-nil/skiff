@@ -1658,17 +1658,17 @@ html[data-theme="dark"] {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  padding: clamp(28px, 4vw, 48px);
+  justify-content: flex-start;
+  padding: clamp(24px, 3.2vw, 40px);
   background: var(--surface);
   overflow-y: auto;
 }
 .login-form-inner {
   width: 100%;
   max-width: 360px;
-  margin: 0 auto;
+  margin: auto 0;
 }
-.login-form-head { margin-bottom: 26px; }
+.login-form-head { margin-bottom: 20px; }
 .login-eyebrow {
   margin: 0 0 10px;
   font-size: 11px;
@@ -1691,8 +1691,8 @@ html[data-theme="dark"] {
   color: var(--muted);
 }
 .login-foot {
-  margin: 26px 0 0;
-  padding-top: 16px;
+  margin: 20px 0 0;
+  padding-top: 14px;
   border-top: 1px solid var(--line);
   font-size: 12px;
   color: var(--text-2);
@@ -1720,7 +1720,7 @@ html[data-theme="dark"] {
 .login-form-col .bud-card__title,
 .login-form-col .bud-card__head { display: none !important; }
 .login-form-col .bud-form { gap: 0; }
-.login-form-col .bud-field { margin-bottom: 14px; }
+.login-form-col .bud-field { margin-bottom: 12px; }
 .login-form-col .v-field { border-radius: 10px; }
 .login-form-col .v-field__input {
   min-height: 46px;
@@ -1747,6 +1747,16 @@ html[data-theme="dark"] {
   font-size: 14.5px;
   font-weight: 600;
   letter-spacing: .01em;
+  background: var(--accent) !important;
+  color: #fff !important;
+  box-shadow: 0 10px 22px -12px rgba(15, 118, 110, .7);
+}
+html[data-theme="dark"] .login-form-col .bud-form-actions .v-btn {
+  color: #052e2b !important;
+  box-shadow: 0 10px 22px -14px rgba(95, 212, 181, .55);
+}
+.login-form-col .bud-form-actions .v-btn:hover {
+  background: var(--accent-hover) !important;
 }
 
 /* 主题切换小按钮（登录页右下角） */
@@ -1776,6 +1786,9 @@ html[data-theme="dark"] {
   width: 14px;
   height: 14px;
 }
+.login-theme-toggle .theme-when-dark { display: none; }
+html[data-theme="dark"] .login-theme-toggle .theme-when-light { display: none; }
+html[data-theme="dark"] .login-theme-toggle .theme-when-dark { display: inline; }
 
 /* 窄屏：收起品牌面板，单栏表单 */
 @media (max-width: 880px) {
