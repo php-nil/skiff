@@ -13,7 +13,7 @@
 
 | 子文档 | 管什么 |
 | --- | --- |
-| [PLUGIN_CATALOG.md](plugin/PLUGIN_CATALOG.md) | 官方插件 6 个 + testkit、开箱即用交付线（分 3 册） |
+| [PLUGIN_CATALOG.md](plugin/PLUGIN_CATALOG.md) | 官方插件 7 个 + testkit、开箱即用交付线（分 3 册） |
 | [SKIFF_SERVER.md](plugin/SKIFF_SERVER.md) | 商店清单模型、Ed25519 签名与 `seq` 防回滚、`serve` / `api` 发布面（分 9 册） |
 | [HOST_EXEC_DESIGN.md](plugin/HOST_EXEC_DESIGN.md) | `exec` 能力面（粗授权 + 全审计 + 运行记录）——宿主命令怎么授权、怎么判、审计与运行记录各记什么；新增宿主特权功能先读 |
 | [IPC_OPTIMIZATION.md](plugin/IPC_OPTIMIZATION.md) | 插件 ↔ 内核 IPC 优化方案（UDS + HTTP/1.1 子集）——二次审查结论、鉴权快照、在途 RPC 保护、长轮询、连接复用与暂缓项 |

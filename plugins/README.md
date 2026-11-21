@@ -25,7 +25,7 @@
 ## 约定
 
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/<arch>/plugin` 收）。
-- id 用 `com.skiff.<x>`；声明菜单/槽位用 `api = "1.2"`，未迁移的老包保持 `"1.0"` / `"1.1"` 并走 `[[ui]]` 降级。版本独立 semver。
+- id 用 `com.skiff.<x>`；`[[menu]]` 要求 `api = "1.2"`、槽位 `[[mount]]` 要求 `"1.1"`、随包 schema 要求 `"1.3"`（官方插件均已 `"1.3"`），老包保持 `"1.0"` / `"1.1"` 并走 `[[ui]]` 降级。版本独立 semver。
 - 功能页文件按视图命名：`view = "main"` → `ui/main.html`，其余 `view = "<x>"` → `ui/<x>.html`；同一插件内视图名唯一。路由分工见 `docs/contract/PLUGIN_UI_CONTRACT.md`。
 - `manifest.toml` 的 `key_id` 在源码里是 **64 个 0 的占位**：发布私钥只在打包机/CI secret，
   打包时 `skiff-plugin stamp` 在临时目录回填指纹（仓库里不含任何密钥指纹）。
@@ -66,23 +66,13 @@
 ## 菜单与槽位声明（P2）
 
 一级固定六项，插件只能挂到固定一级下；二级/三级都由内核渲染，插件只负责 `ui/` 内容。
-完整规则见 `docs/contract/MENU_CONTRACT.md`。
+完整规则见 `docs/contract/MENU_CONTRACT.md`，**官方插件的菜单归属、L3 视图与槽位以
+[`MENU_CONTRACT/03-SLOTS_SECURITY.md`](../docs/contract/MENU_CONTRACT/03-SLOTS_SECURITY.md) §7.3 为唯一来源**，本文不复述。
 
-| 插件 | 二级归属 | 三级标签 | 固定页槽位 |
-| --- | --- | --- | --- |
-| guard | 工具 → 容器守护 | 容器 / 事件 | — |
-| monitor | 工具 → 主机监控 | 总览 / 历史采样 / 进程 / 网络 | `overview.health` |
-| files | 网站 → 站点文件 | 无（单视图 `main`） | — |
-| cron | 工具 → 计划任务 | 任务列表 / 新建任务 | — |
-| firewall | 工具 → 防火墙 | 防火墙规则 / fail2ban | — |
-| ftp | 工具 → FTP 管理 | 账号 / 运行状态 | — |
-| sources | 工具 → 软件源 | 无（单视图 `main`） | — |
-| testkit | 工具 → 架构测试台 | 主视图 / 检查 / 分组 + 单视图对照 | `overview.actions` |
-
-cron（完整 L2 + L3；`view` 决定 `ui/<view>.html`）：
+cron（单视图 L2，不声明 L3；`view` 决定 `ui/<view>.html`）：
 
 ```toml
-api = "1.2"
+api = "1.3"
 
 [[ui]]
 label = "计划任务"
@@ -91,7 +81,7 @@ path = "list.html"
 [[menu]]
 id = "jobs"
 parent = "tools"          # 只能是固定一级 id
-label = "计划任务"
+label = "任务编辑器"
 order = 20
 icon = "clock"
 view = "list"             # 单视图 L2：ui/list.html，不渲染 L3 标签栏

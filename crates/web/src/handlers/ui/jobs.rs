@@ -138,7 +138,7 @@ pub async fn job_retry(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "id": job.id, "retry_of": id }))
 }

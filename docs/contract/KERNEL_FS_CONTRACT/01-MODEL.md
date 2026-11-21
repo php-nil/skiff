@@ -73,7 +73,7 @@
 - 走**同一个** `Fs` 实例：同一套临时文件 + rename 原子替换、同一份路径代数、同一张 `audit` 表；
 - 主体固定 `Principal::admin("system").with_protected_write(true)`：内核要写自己的 `data/`，因此带受保护写开关——**这是 `system` 独有的**，管理员与插件都拿不到；
 - `remove_kernel` 一律 `permanent=true`：系统配置删掉就删掉，进回收站只会让「删了但还在」误导排障；
-- 业务模块**不得**直接 `std::fs::write` / `remove_file` / `rename`；`cargo run -p xtask -- check-channel` 把这条做成 CI 闸门（当前基线 140 处，只减不增）。
+- 业务模块**不得**直接 `std::fs::write` / `remove_file` / `rename`；`cargo run -p xtask -- check-channel` 把这条做成 CI 闸门（2026-11-21 基线 96 处 / 13 个文件，只减不增）。
 
 ### 2.2 为什么「插件无限制读写」不成立
 

@@ -162,21 +162,25 @@ roles = ["admin", "operator", "viewer"]
 - 插件 iframe 工作台只由显式 `?legacy=1` 打开（无随包 schema 的旧视图），正常入口始终是壳页。
 - 旧「应用」菜单不再出现；`工具` 按 §1.4 渲染；`网站` 由内核固定的三个 L2 渲染。
 
-### 7.3 6 个官方插件应声明什么
+### 7.3 官方插件应声明什么
 
-| 插件 | L1 | 插件 L2 | L3 | 固定页槽位 | 批次 |
+本表是官方插件菜单归属的**唯一来源**（`manifest.toml` 为实际取值），插件目录文档只引用不复述。
+
+| 插件 | L1 | 插件菜单（`id` / 名称） | L3 视图 | 固定页槽位 | 批次 |
 |---|---|---|---|---|---|
 | `com.skiff.files` | 网站 `sites` | `files` 站点文件 | 无（单视图 `main`） | — | B3 |
-| `com.skiff.cron` | 工具 `tools` | `cron` 任务 | 任务列表 / 执行记录 / 设置 | — | B3 |
-| `com.skiff.monitor` | 工具 `tools` | `monitor` 监控 | 总览 / 历史采样 / 进程 / 网络 | `overview.health` | B2 |
-| `com.skiff.guard` | 工具 `tools` | `guard` 守护 | 容器 / 事件 / 设置 | — | B3 |
-| `com.skiff.firewall` | 工具 `tools` | `firewall` 防火墙 | 防火墙规则 / fail2ban | — | 已上线（0.1.0，未验收） |
-| `com.skiff.ftp` | 工具 `tools` | `ftp` FTP 管理 | 账号 / 运行状态 | — | 已上线（0.1.0） |
+| `com.skiff.cron` | 工具 `tools` | `jobs` 任务编辑器 | 无（单视图 `list`；新建/编辑是页内弹窗，**不声明 L3**） | — | B3 |
+| `com.skiff.monitor` | 工具 `tools` | `monitor` 主机监控 | 总览 / 历史采样 / 进程 / 网络（`overview`/`history`/`process`/`network`） | `overview.health` | B2 |
+| `com.skiff.guard` | 工具 `tools` | `guard` 容器守护 | 容器 / 事件（`containers`/`events`） | — | B3 |
+| `com.skiff.firewall` | 工具 `tools` | `firewall` 防火墙 | 防火墙规则 / fail2ban（`rules`/`fail2ban`） | — | 已上线（0.1.0，未验收） |
+| `com.skiff.ftp` | 工具 `tools` | `ftp` FTP 管理 | 账号 / 运行状态（`accounts`/`runtime`） | — | 已上线（0.1.0） |
+| `com.skiff.sources` | 工具 `tools` | `sources` 软件源 | 无（单视图 `main`） | — | 后续新增 |
+| `com.skiff.testkit` | 工具 `tools` | `testkit` 插件架构测试台 + `testkit-single` 测试台 · 单视图 | 总览与 RPC / 能力面自检 / 菜单与槽位（`main`/`check`/`group`）；单视图 `single` 不出 L3 | `overview.actions` | 测试台 |
 
 说明：
 
 - 网站一级由内核自带（网站列表 / 运行环境 / Web 服务），原 `com.skiff.nginx` 已内核化，不再声明插件菜单。
-- files/cron/monitor/guard/ftp 全部归「工具」，不再作为一级或二级「应用」的平铺项。
+- `files` 挂「网站」（站点级文件），其余全部挂「工具」，不再作为一级或二级「应用」的平铺项。
 - L3 的 `view` 必须对应真实存在的 `ui/<view>.html`；没有对应视图就先不声明，避免假标签。
 
 ### 7.4 分批

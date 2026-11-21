@@ -39,10 +39,11 @@ skiff/
 │   ├── systemd/skiff.service + install.sh + uninstall.sh   # 主交付：宿主直装
 │   ├── Dockerfile                                  # 可选 Docker 形态
 │   └── 1panel/apps/skiff/                          # 可选：商店包（受限形态，§5.4）
-├── plugins/        # 第二个 workspace（根 Cargo.toml exclude）：common 共享库 + 6 个官方插件 + testkit 测试台
-├── docs/           # DESIGN.md（索引+一页结论）+ sections/（§1–§12 正文）
-│                   # + ARCH_REVIEW.md（架构审查）/ CI.md（流水线）/ DEPLOY_TEST.md（装机与验收）
-│                   # + PLUGIN_CATALOG.md（官方插件集）/ changes/（按日期变更记录）
+├── plugins/        # 第二个 workspace（根 Cargo.toml exclude）：common 共享库 + 7 个官方插件 + testkit 测试台
+├── docs/           # DESIGN.md（索引+一页结论）+ sections/（§1–§12 正文）+ 七个主题入口
+│                   # （contract / impl / test / ops / plugin / sdui / archive，各自 <topic>.md + 同名目录）
+│                   # + changes/（按日期变更记录）
+├── tools/          # 闸门（cargo.cmd / git.cmd）、gate.ps1、linux-check.sh、iter.sh、perf/、skiff-server/
 └── xtask/          # 工程校验：check（1Panel 变量 + Compose 子集 + 宿主通道）、verify-pkg（.wbpkg 结构/摘要/签名）
 ```
 
@@ -105,4 +106,4 @@ skiff/
 
 **最小可用版本 = 三块核心跑通**：能登录、能管容器、能装插件且崩不了内核。支撑层跟着三块成形，不单独立项。
 
-`xtask check` 固化三类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）；第三项是**宿主通道闸**：`app`/`core` 非测试代码出现 `Command::new` 即失败，内核文件写计数只减不增（2026-11-16 基线 140 处）。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。
+`xtask check` 固化三类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）；第三项是**宿主通道闸**：`app`/`core` 非测试代码出现 `Command::new` 即失败，内核文件写计数只减不增（2026-11-21 基线 96 处 / 13 个文件）。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。

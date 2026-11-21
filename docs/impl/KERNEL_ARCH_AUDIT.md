@@ -15,7 +15,7 @@
 
 | 维度 | 结论 | 关键证据 |
 | --- | --- | --- |
-| 1 模块划分 | **基本合理，三个过热文件** | `app/src/tasks.rs` 2.7k 行、`runtime_catalog.rs` 2.1k 行、`menu.rs` 2.0k 行；`sites.rs` 1.2k + `sites/` 11 文件域内拆分清晰；`store/src/db.rs` 连接+迁移+备份同文件（拆分搁置，见 §4 C6） |
+| 1 模块划分 | **基本合理，三个过热文件** | `app/src/tasks.rs` 2.5k 行、`runtime_catalog.rs` 2.0k 行、`menu.rs` 1.9k 行（2026-11-21 实测）；`sites.rs` 1.2k + `sites/` 11 文件域内拆分清晰；`store/src/db.rs` 连接+迁移+备份同文件（拆分搁置，见 §4 C6） |
 | 2 职责边界 | **主线清楚，靠命名与注释维持** | `app` 自述「不含表现层」；`/ui/v1` 行装配读 `app/src/views/*`，模板与 DTO 各自映射；`web` 不再有 `state` 别名，`skiff_app::` 出现在调用点 |
 | 3 依赖关系 | **无环、无 feature 分叉** | 依赖表与能力面分布表见 `docs/sections/08-engineering.md`、AGENTS.md；`app` 仅对 `tools/skiff-server` 有 dev-dependency（撤包原因端到端用例） |
 | 4 复用性 | **主要重复已收口** | `run_host` → `skiff_host`；权限通配 → `Grant::permits`；路径代数 → `skiff_model::path`；签名协议 → `skiff-sign`；插件生命周期 → `app/commands/plugin.rs`；列表分页 → `ui::paginate`；运行环境容器名 → `sites::runtime_container_name_for` |
@@ -47,15 +47,15 @@
 
 ## 3. 未闭环问题
 
-1. **（值得改，2026-11-19 起，进行中）内核文件写通道外仍有生产写**：当前基线 **97 处 / 14 个文件**（`xtask check-channel` 实测，只减不增）。已迁：`docker_daemon.rs`、`sites/crud.rs` 的 vhost / 默认站点 / 站点目录、`sites/runtime.rs` 的 Rust/Node 脚手架与 `entry.sh`。剩余热点：`panel_settings.rs` 写 config.toml 仍走 `atomic::write_atomic`（零 fs 审计）、`sites/crud.rs` 证书与克隆（`spawn_blocking` 内，需把 `AdminFs` 以可克隆句柄传入）、`nginx.rs` 主配置（候选文件 → test → rename，缺 rename 原语；另需注意这份是宿主 nginx 配置，不是内核文件）。修法：继续分批迁 `write_kernel`/`remove_kernel`，基线随迁随减（理由是记录，见 AGENTS.md §4.1 通道唯一）。
+1. **（值得改，2026-11-19 起，进行中）内核文件写通道外仍有生产写**：当前基线 **96 处 / 13 个文件**（`xtask check-channel` 口径，只减不增）。已迁：`docker_daemon.rs`、`sites/crud.rs` 的 vhost / 默认站点 / 站点目录、`sites/runtime.rs` 的 Rust/Node 脚手架与 `entry.sh`、`panel_settings.rs` 的 `config.toml`（经 `AdminFs::write_kernel`，含启动期写回）。剩余按两类看：**内核文件**（`catalog/` 缓存、插件/升级清单等）继续迁 `write_kernel`；**宿主 nginx/php 配置**（`sites/crud.rs` 证书与克隆、`nginx.rs` 主配置候选文件）本就应直写，但必须在命令层留业务审计（`nginx.config.save` / `nginx.params.save` 已是此口径）。`AdminFs` 目前缺 `rename_kernel`，仅在确需「候选文件 → test → rename」全链路进审计时再补，不作为默认迁移目标。
 
 ## 4. 搁置项（原因与重启条件）
 
 - **C5 `plugin → axum` 解耦**。现状：能力实现（`crates/plugin`）直接以 axum 的请求/响应类型表达结果，HTTP 形状与命令编排混在一层。不做的原因：需先定义**传输无关**的能力面返回类型，会改动所有能力方法签名与两处调用方，当前没有第二种传输或第二个消费方，纯收益无法验证。**重启条件**（任一）：① 能力面接入第二种传输（SDUI/CLI/内部 RPC）；② 出现内核之外的第二个能力消费方；③ 新增能力时因 HTTP 形状被迫在 `plugin` 里写路由判断。届时先落「能力面返回类型」设计文档，再按能力族分批迁移。
 - **C6 `store/db.rs` 拆文件**。现状：迁移、查询与事务集中一个 1.2k 行文件。不做的原因：纯组织收益（零行为变化），且该文件是每次 schema 变更的冲突热点，无 schema 变更窗口里拆会产生无法用行为验证的大 diff。**重启条件**（任一）：① 下一次 schema 变更时顺带按「迁移 / 站点 / 运行环境 / 审计 / 设置」拆；② 两个以上会话同时改该文件；③ 单文件超过当前体量 1.5 倍。拆分时保持 `Db` 对外 API 不变。
-- **C8 `tasks.rs` / `runtime_catalog.rs` / `menu.rs` 拆分正名**。现状：`tasks.rs` 2.7k 行混仓储适配/tick 装配/内置执行体/scheduler 能力面/`serde_json::Value` 视图五件事；`runtime_catalog.rs` 2.1k 行装运行环境机型/apk 源/端口分配/PHP 扩展四类且与 `catalog/` 撞名（应属 sites 域，如 `sites/runtime_catalog.rs`）；`app/menu.rs` 2.0k 行把声明解析、排序、偏好写库与渲染模型混在一起；「store」一词三义（skiff-store / `catalog/store.rs` 缓存 / `commands/store.rs` 商店用例）。不做的原因同 C6：纯移动的大 diff 无行为验证面。**重启条件**（任一）：① 下次改 tasks 内置执行体或运行环境目录时顺带拆；② 三文件任一再涨 20%；③ 「store」一词多义引发实际混淆事故。拆分方案：`tasks/builtins.rs` + 视图挪 `views/`（改结构体）、runtime_catalog 归位改名、`catalog/store.rs`→`catalog/cache.rs`。
-- **C9（2026-11-21）`crates/web/tests/main_flow.rs` 单文件 8.4k 行 / 179 个用例**。现状：登录、会话、RBAC、插件安装、`/ui/v1` 各页、DTO 冻结全在一个文件里，靠 banner 注释分区。不做的原因：纯移动的大 diff，且用例结果只能由 CI 验证，本机仅能保证编得过。**重启条件**（任一）：① 下次大改用例时顺带按主题拆 `tests/main_flow/{auth,plugins,sites,ui_dto}.rs`；② 单文件超 12k 行；③ 两个以上会话同时改该文件。
-- **C10（2026-11-21）展示文案归属未定**。现状三处：`app/src/views/*` 直接拼中文（`resources.rs` 的「内部/外部/可附加/未知」、`runtimes.rs`/`sites.rs`/`plugins.rs` 的提示串）、`web/src/labels.rs`（作业/任务/来源/目录四类枚举）、handler 内联（站点/容器/插件状态，与配色 class 绑定）。不做的原因：三种归属各有理由（预拼免二次映射、枚举集中、状态与 class 同源），统一任一方都要动 SSR+JSON 两个消费面，且没有行为收益可验证。**重启条件**（任一）：① 需要第二种语言 / 前端自渲染文案；② 同一文案两处改漏引发实际不一致；③ 接入第二个前端消费方。届时先定「文案归属规则」（建议：随视图结构一起变的留 views，纯枚举留 labels，带 class 的留 handler），写进 AGENTS 再迁。
+- **C8 `tasks.rs` / `runtime_catalog.rs` / `menu.rs` 拆分正名**。现状：`tasks.rs` 2.5k 行混仓储适配/tick 装配/内置执行体/scheduler 能力面/`serde_json::Value` 视图五件事；`runtime_catalog.rs` 2.0k 行装运行环境机型/apk 源/端口分配/PHP 扩展四类且与 `catalog/` 撞名（应属 sites 域，如 `sites/runtime_catalog.rs`）；`app/menu.rs` 1.9k 行把声明解析、排序、偏好写库与渲染模型混在一起；「store」一词三义（skiff-store / `catalog/store.rs` 缓存 / `commands/store.rs` 商店用例）。不做的原因同 C6：纯移动的大 diff 无行为验证面。**重启条件**（任一）：① 下次改 tasks 内置执行体或运行环境目录时顺带拆；② 三文件任一再涨 20%；③ 「store」一词多义引发实际混淆事故。拆分方案：`tasks/builtins.rs` + 视图挪 `views/`（改结构体）、runtime_catalog 归位改名、`catalog/store.rs`→`catalog/cache.rs`。
+- **C9（2026-11-21）`crates/web/tests/main_flow.rs` 单文件 8.0k 行 / 145 个用例（`#[test]` + `#[tokio::test]` 实测）**。现状：登录、会话、RBAC、插件安装、`/ui/v1` 各页、DTO 冻结全在一个文件里，靠 banner 注释分区。不做的原因：纯移动的大 diff，且用例结果只能由 CI 验证，本机仅能保证编得过。**重启条件**（任一）：① 下次大改用例时顺带按主题拆 `tests/main_flow/{auth,plugins,sites,ui_dto}.rs`；② 单文件超 12k 行；③ 两个以上会话同时改该文件。
+- **C10（2026-11-21，规则已定）展示文案归属**。规则已写入 `AGENTS.md` §4.1：随视图结构变化的留 `app/src/views/*`，纯枚举留 `web/src/labels.rs`，带配色 class/视图语义的留 handler。现状三处（`views/*` 预拼、`labels.rs` 四类枚举、handler 状态文案）**维持不迁移**：统一任一方都要动 SSR+JSON 两个消费面，且没有行为收益可验证。**重启条件**（任一）：① 需要第二种语言 / 前端自渲染文案；② 同一文案两处改漏引发实际不一致；③ 接入第二个前端消费方。
 
 ## 5. 未验证项
 

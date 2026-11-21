@@ -875,13 +875,14 @@ mod tests {
         )
         .unwrap();
 
-        skiff_app::panel_settings::write_config_updates(
+        skiff_app::panel_settings::write_config_updates_via(
             &path,
             &[
                 ("listen", Some("\"127.0.0.1:18443\"".into())),
                 ("entry_prefix", Some("\"abc12345\"".into())),
                 ("tls_enabled", Some("false".into())),
             ],
+            |p, b| std::fs::write(p, b).map_err(|e| e.to_string()),
         )
         .unwrap();
 

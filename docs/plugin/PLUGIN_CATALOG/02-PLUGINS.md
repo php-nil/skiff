@@ -1,20 +1,20 @@
-# 6 个官方插件的实现与前置（§4）
+# 7 个官方插件的实现与前置（§4）
 
 > 上级索引：[PLUGIN_CATALOG.md](../PLUGIN_CATALOG.md) ｜ 拆自 `docs/plugin/PLUGIN_CATALOG.md` 原 §4（2026-11-16 整理，正文未改）。
 
 ---
 
-## 4. 当前 6 个：实现与前置
+## 4. 当前 7 个：实现与前置
 
 ### 4.1 实现顺序（按落地难度，已全部落地）
 
-**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）→ 防火墙（新增 `firewall` 能力面，见 §4.9）**。
+**容器守护（零内核改动，最小）→ 主机监控（只读 fs，小）→ 文件管理（全 fs 动词 + 宿主写，最重）→ 计划任务（只调度插件接口，最小但不独立）→ FTP 管理（新增 `ftp` 能力面，见 §4.8；Nginx 站点已内核化）→ 防火墙（新增 `firewall` 能力面，见 §4.9）**。`sources`（软件源）为后续新增，不在首批选型内，菜单归属见 §4.7、实现见 [`plugins/README.md`](../../../plugins/README.md)。
 
 `guard` 排在第一位是因为它**不需要任何内核改动**：只用既有 `containers.list/inspect/restart` 与自身 `data/`，可以先把「manifest → 打包 → 装包 → RPC → UI」整条链路验穿，再往上叠能力面。
 
 `cron` 排最后不是为了难度，而是它**依赖别的插件先存在**才有被调度对象；它的内核前置是 `interop`（`[interop]` 声明 + `interop:call` + `capability/interop/call`），属内核统一契约，不在插件里各写一份。
 
-> 下面每节只写「实现口径 + 与规划的差异」；manifest 全文与 UI 说明见 [`plugins/README.md`](../../archive/ui/README.md)。
+> 下面每节只写「实现口径 + 与规划的差异」；manifest 全文与 UI 说明见 [`plugins/README.md`](../../../plugins/README.md)。
 
 ### 4.2 容器守护 `com.skiff.guard`
 
@@ -93,18 +93,7 @@ resource_hints = []                 # 「能调谁」由管理员在安装页勾
 
 ### 4.7 菜单与槽位归属（P2 已迁移）
 
-7 个官方插件与 testkit（共 8 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。完整契约见 `docs/contract/PLUGIN_UI_CONTRACT.md`，菜单部分见 `docs/contract/MENU_CONTRACT.md`。
-
-| 插件 | 一级 → 二级 | 三级标签（`view`） | 固定页槽位 |
-| --- | --- | --- | --- |
-| `com.skiff.monitor` | 工具 → 主机监控 | 总览 / 历史采样 / 进程 / 网络（`overview` / `history` / `process` / `network`） | `overview.health`（`sm`，30s 刷新） |
-| `com.skiff.files` | 网站 → 站点文件 | 无（单视图 `main`） | — |
-| `com.skiff.cron` | 工具 → 计划任务 | 任务列表 / 新建任务（`list` / `new`） | — |
-| `com.skiff.guard` | 工具 → 容器守护 | 容器 / 事件（`containers` / `events`） | — |
-| `com.skiff.testkit` | 工具 → 架构测试台 | 主视图 / 检查 / 分组（`main` / `check` / `group`，三个随包 schema）+ 单视图对照（`single`，不出三级菜单） | `overview.actions` |
-| `com.skiff.firewall` | 工具 → 防火墙 | 防火墙规则 / fail2ban（`rules` / `fail2ban`） | — |
-| `com.skiff.ftp` | 工具 → FTP 管理 | 站点账号 / 服务状态（`accounts` / `runtime`） | — |
-| `com.skiff.sources` | 工具 → 软件源 | 无（单视图 `main`） | — |
+7 个官方插件与 testkit（共 8 个包）均为 `api = "1.3"` + `[[menu]]` + `view` + 随包 schema（`ui/schema/<view>.json`）；默认由壳页原生渲染，旧 `ui/<view>.html` 只在显式 `?legacy=1` 时使用。**菜单归属、L3 视图与槽位以 [MENU_CONTRACT/03-SLOTS_SECURITY.md](../../contract/MENU_CONTRACT/03-SLOTS_SECURITY.md) §7.3 为唯一来源，本文不复述**；插件页形态见 `docs/contract/PLUGIN_UI_CONTRACT.md`。
 
 - `/{p}/plugins/<id>` 是内核信息与管理页，功能页固定 `/{p}/plugins/<id>/<view>`；老包（无 `[[menu]]`）`main` 回落 `ui/index.html`。
 - 不造「磁盘 / 执行记录 / 守护设置」等假标签：插件当前没有对应视图时不声明 L3。

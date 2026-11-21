@@ -3,7 +3,7 @@
 # 与 release.yml 的分工（docs/test/ITERATION.md §8）：
 #   - iter.yml：每轮迭代手动 dispatch，只编 musl x86_64 裸包（不带 official/），
 #     产物留 3 天，`cancel-in-progress: true`——新 dispatch 直接顶掉旧构建。
-#   - release.yml：里程碑才跑，带 5 个已签名官方插件，`cancel-in-progress: false`。
+#   - release.yml：里程碑才跑，带 8 个已签名插件包（7 个官方插件 + testkit），`cancel-in-progress: false`。
 # 不把迭代合进 release.yml 的原因：后者的 cancel-in-progress=false 是刻意防
 # 「发出半个包」的，每轮 dispatch 会累积排队并污染发布 run 历史。
 #

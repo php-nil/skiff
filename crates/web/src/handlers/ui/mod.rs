@@ -147,18 +147,6 @@ fn parse_site_cursor(cursor: &str) -> Option<(i64, i64)> {
     Some((created.parse().ok()?, id.parse().ok()?))
 }
 
-/// 站点写操作的领域错误：字段级错误在 JSON 里按 400 返回，而不是 500。
-fn site_write_err(e: skiff_app::sites::SiteError) -> AppError {
-    use skiff_app::sites::SiteError;
-    match e.unfield() {
-        SiteError::BadRequest(m) => AppError::BadRequest(m),
-        SiteError::Conflict(m) => AppError::Conflict(m),
-        SiteError::Unavailable(m) => AppError::Unavailable(m),
-        SiteError::Internal(m) => AppError::Internal(m),
-        SiteError::Field(_, inner) => AppError::BadRequest(inner.to_string()),
-    }
-}
-
 /// 容器状态中文文案；与旧页面 CSS 的 `.state.<code>` 语义一致。
 fn container_state_label(state: &str) -> &'static str {
     match state {
@@ -385,17 +373,6 @@ fn fs_api_error(e: skiff_app::admin_fs::FsErr) -> ApiError {
         504 => AppError::Timeout(message),
         _ => AppError::Internal(message),
     })
-}
-
-/// `skiff_app::sites::SiteError` → `/ui/v1` 信封。
-fn site_api_error(e: skiff_app::sites::SiteError) -> ApiError {
-    match e {
-        skiff_app::sites::SiteError::Field(_, inner) => site_api_error(*inner),
-        skiff_app::sites::SiteError::BadRequest(m) => ApiError(AppError::BadRequest(m)),
-        skiff_app::sites::SiteError::Conflict(m) => ApiError(AppError::Conflict(m)),
-        skiff_app::sites::SiteError::Unavailable(m) => ApiError(AppError::Unavailable(m)),
-        skiff_app::sites::SiteError::Internal(m) => ApiError(AppError::Internal(m)),
-    }
 }
 
 /// 插件菜单键 → (插件 id, 默认视图, 视图列表)。

@@ -61,7 +61,7 @@ pub async fn web(
     let config = state
         .nginx_config_view()
         .await
-        .map_err(|e| ApiError(handlers::sites::map_err(e)))?;
+        .map_err(|e| ApiError(e.into()))?;
     let modules = state.nginx_modules().await;
     write_done(json!({
         "status": {

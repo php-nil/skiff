@@ -10,16 +10,16 @@
 
 ## 二、仓库结构
 
-| 路径 | 类型 | 说明 |
-| --- | --- | --- |
-| `crates/` | 子项目 | 根 workspace 的 18 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`） |
-| `plugins/` | 子项目 | 第二 workspace（`exclude = ["plugins"]`）：`common`、6 个官方插件、testkit 与 `pack.sh` |
-| `xtask/` | 工具 | `check`（1Panel 变量、Compose 字段子集）与 `verify-pkg` |
-| `tools/` | 工具 | `bin/`（`cargo.cmd` / `git.cmd` 闸门）、`gate.ps1`、`linux-check.sh`、`iter.sh`、`perf/`、`skiff-server/` |
-| `deploy/` | 交付 | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包 |
-| `tests/` | 测试目录 | 全局及跨模块测试与测试产物（按需建立） |
-| `docs/` | 全局文档 | 主题式组织：`<topic>.md` 为入口、同名 `<topic>/` 存细节（contract / impl / test / ops / plugin / sdui / archive / sections / changes） |
-| `.github/workflows/` | CI | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml` |
+| 路径                   | 类型   | 说明                                                                                                                    |
+| -------------------- | ---- | --------------------------------------------------------------------------------------------------------------------- |
+| `crates/`            | 子项目  | 根 workspace 的 18 个 crate（分层与依赖方向见 `docs/sections/08-engineering.md`）                                                  |
+| `plugins/`           | 子项目  | 第二 workspace（`exclude = ["plugins"]`）：`common`、7 个官方插件、testkit 与 `pack.sh`                                            |
+| `xtask/`             | 工具   | `check`（1Panel 变量、Compose 字段子集）与 `verify-pkg`                                                                         |
+| `tools/`             | 工具   | `bin/`（`cargo.cmd` / `git.cmd` 闸门）、`gate.ps1`、`linux-check.sh`、`iter.sh`、`perf/`、`skiff-server/`                      |
+| `deploy/`            | 交付   | 安装/卸载/打包脚本、systemd unit、Dockerfile、1Panel 商店包                                                                         |
+| `tests/`             | 测试目录 | 全局及跨模块测试与测试产物（按需建立）                                                                                                   |
+| `docs/`              | 全局文档 | 主题式组织：`<topic>.md` 为入口、同名 `<topic>/` 存细节（contract / impl / test / ops / plugin / sdui / archive / sections / changes） |
+| `.github/workflows/` | CI   | `ci.yml` / `release.yml` / `audit.yml` / `iter.yml`                                                                   |
 
 > **维护规则**：新增、删除或重命名顶层目录时，**必须**同步更新上表。`target/`、`skiff-run/`、`.workbuddy/` 是本地产物/工作数据，已 gitignore，不得入库。
 
@@ -41,7 +41,8 @@
 - **边界防御**：引入跨模块调用、新增公共方法或改变数据流向，必须先理清上下游依赖并遵循既定设计。**单一来源**：插件↔内核协议只在 `skiff-wire`；TOFU 判定只在 `plugin::trust::resolve`；动词→Docker 分发只在 `Docker::execute`；角色→权限矩阵只在 `skiff_model::Permission`；路径授权代数只在 `skiff_model::path`（唯一有意例外：`skiff-fs` 的 I/O 感知解析器，见 `docs/impl/KERNEL_FS_IMPL_NOTES.md` §2.2.1）。
 - **重构与修复并重**：既有技术债导致 Bug 频发时，在合理范围内内聚修复，或标记并列入「待决策问题」。
 - **数字纪律**：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
-- **通道唯一（无例外）**：宿主机进程执行只能经 `skiff_host`（`crates/host`），内核自身的文件写只能经 `AdminFs::write_kernel` / `remove_kernel`（`crates/app/src/admin_fs.rs`）。`crates/app` / `crates/core` 的非测试代码**不得出现 `Command::new`**；新增直接 `std::fs::write`/`remove_file`/`rename` 会让 `cargo run -p xtask -- check-channel` 失败（基线只减不增）。理由不是授权而是**记录**：`exec` 进运行记录、`fs` 进审计，绕过通道的行为事后查不到——这正是用「全量记录」替代「逐功能权限设计」的前提。
+- **展示文案归属**：随视图结构变化的文案留 `crates/app/src/views/*`；纯枚举（作业/任务状态、扩展来源、目录状态）留 `crates/web/src/labels.rs`；与配色 class 或视图语义绑定的状态文案留对应 handler。三处归属各有理由，统一迁移要同时动 SSR 与 JSON 两个消费面且无行为收益，不为此单独开批次（见 `docs/impl/KERNEL_ARCH_AUDIT.md` §4 C10）。
+- **通道唯一（无例外）**：宿主机进程执行只能经 `skiff_host`（`crates/host`），内核自身的文件写只能经 `AdminFs::write_kernel` / `remove_kernel`（`crates/app/src/admin_fs.rs`）。`crates/app` / `crates/core` 的非测试代码**不得出现 `Command::new`**；新增直接 `std::fs::write`/`remove_file`/`rename` 会让 `cargo run -p xtask -- check-channel` 失败（基线只减不增）。理由不是授权而是**记录**：`exec` 进运行记录、`fs` 进审计，绕过通道的行为事后查不到——这正是用「全量记录」替代「逐功能权限设计」的前提。宿主 nginx/php 配置的直写不属于内核文件通道，但必须在命令层留业务审计。
 
 ### 4.2 工作流与决策机制
 
@@ -69,37 +70,37 @@
 
 ### 5.1 层级定义
 
-| 层级 | 路径 | 职责范围 |
-| --- | --- | --- |
-| **L1 根文档** | `AGENTS.md` | 仓库全局规则、工作流约束与文档索引；不记录子项目细节。 |
-| **L2 专项文档** | `docs/<topic>.md` + `docs/<topic>/` | 跨模块设计、契约、实现说明、交付验证；父文档是该主题的导航索引。 |
-| **L3 子项目文档** | `crates/<name>/AGENTS.md`、crate 内 `docs/` | 模块专属约定（当前均未建）；局部优先，但不得与 L1 冲突。 |
+| 层级           | 路径                                        | 职责范围                             |
+| ------------ | ----------------------------------------- | -------------------------------- |
+| **L1 根文档**   | `AGENTS.md`                               | 仓库全局规则、工作流约束与文档索引；不记录子项目细节。      |
+| **L2 专项文档**  | `docs/<topic>.md` + `docs/<topic>/`       | 跨模块设计、契约、实现说明、交付验证；父文档是该主题的导航索引。 |
+| **L3 子项目文档** | `crates/<name>/AGENTS.md`、crate 内 `docs/` | 模块专属约定（当前均未建）；局部优先，但不得与 L1 冲突。   |
 
 ### 5.2 编写与拆分硬性限制
 
 - **命名规范**：主题入口用小写短名（`docs/test.md`），目录同其名；细节文档沿用现有口径——契约/实现类大写下划线（`*_CONTRACT.md`、`*_IMPL_NOTES.md`），章节文档 `NN-<topic>.md`，变更记录 `changes/YYYY-MM-DD.md`。
 - **同题合一**：讲同一件事的多份文档归一个主题——一个入口文档 + 同名目录存细节，`docs/` 顶层不为同一主题散放多份文件。
 - **精简原则**：保持内容高密度、可执行；发现过期或冗余信息时**主动清理**。
-- **体积红线（触发即拆分）**：单份 Markdown **不得超过 30KB 且总行数不得超过 500 行**。
+- **体积红线（触发即拆分）**：单份 Markdown **不得超过 30KB 且总行数不得超过 500 行**。变更记录例外。
 - **拆分方式**：单份文档触及红线时，建立同名目录存放子文档，原文件降级为目录索引。
   - *示例*：`docs/pro-abc.md` 超限 → 新建 `docs/pro-abc/` 存放细节文档，并将 `docs/pro-abc.md` 改写为子文档导航索引。
 - **索引唯一**：全局索引只有本文「六、文档索引」，只登记到主题入口；`docs/<topic>.md` 是主题内的**局部导航**，不得充当全局索引。
 
 ## 六、文档索引
 
-| 文档名称 | 相对路径 | 说明 |
-| --- | --- | --- |
-| 总体设计 | `docs/DESIGN.md` | 定位、范围边界、设计正文地图（改设计先读） |
-| 设计正文 | `docs/sections/` | 13 个文件覆盖 §1–§12（§4 分两册）：01 需求 … 12 待实测清单 |
-| 契约 | `docs/contract.md` | 9 篇契约入口：URL / 菜单 / 插件页 / 站点运行环境 + 内核 fs·调度·FTP·防火墙·exec（改行为先读） |
-| 实现说明与审计 | `docs/impl.md` | 实际怎么做、与契约差在哪（两篇 IMPL_NOTES + 两篇审计稿） |
-| 交付与验证 | `docs/test.md` | 装机 → 迭代 → 坐标 → 用例 → 未闭环（上测试机按此顺序读） |
-| 工程环境与流水线 | `docs/ops.md` | CI workflow 与门槛命令、开发机闸门与退出码（出包 / CI 红 / 编译异常） |
-| 插件与分发 | `docs/plugin.md` | 官方插件集、商店清单与签名、`serve`/`api` 发布面 |
-| SDUI / budding | `docs/sdui.md` | 设计稿：资源 / 动作 / 迁移阶段、接入边界、上游能力台账 |
-| 历史存档 | `docs/archive.md` | 架构审查、UI 设计过程与已收口评估稿（只读，不参与路由） |
-| 插件工程 | `plugins/README.md` | 第二 workspace、插件开发 / 签名 / 打包 |
-| 变更记录目录 | `docs/changes/` | 每日详细变更记录存放目录（只查历史，不作规范） |
+| 文档名称           | 相对路径                | 说明                                                             |
+| -------------- | ------------------- | -------------------------------------------------------------- |
+| 总体设计           | `docs/DESIGN.md`    | 定位、范围边界、设计正文地图（改设计先读）                                          |
+| 设计正文           | `docs/sections/`    | 13 个文件覆盖 §1–§12（§4 分两册）：01 需求 … 12 待实测清单                       |
+| 契约             | `docs/contract.md`  | 9 篇契约入口：URL / 菜单 / 插件页 / 站点运行环境 + 内核 fs·调度·FTP·防火墙·exec（改行为先读） |
+| 实现说明与审计        | `docs/impl.md`      | 实际怎么做、与契约差在哪（两篇 IMPL_NOTES + 两篇审计稿 + 运行环境安装速度、软件源镜像）           |
+| 交付与验证          | `docs/test.md`      | 装机 → 迭代 → 坐标 → 用例 → 未闭环（上测试机按此顺序读）                             |
+| 工程环境与流水线       | `docs/ops.md`       | CI workflow 与门槛命令、开发机闸门与退出码（出包 / CI 红 / 编译异常）                  |
+| 插件与分发          | `docs/plugin.md`    | 官方插件集、商店清单与签名、`serve`/`api` 发布面                                |
+| SDUI / budding | `docs/sdui.md`      | 资源 / 动作 / 迁移阶段（P0/P1 已落地）、接入边界、上游能力台账                          |
+| 历史存档           | `docs/archive.md`   | 架构审查、UI 设计过程与已收口评估稿（只读，不参与路由）                                  |
+| 插件工程           | `plugins/README.md` | 第二 workspace、插件开发 / 签名 / 打包                                    |
+| 变更记录目录         | `docs/changes/`     | 每日详细变更记录存放目录（只查历史，不作规范）                                        |
 
 > **维护规则**：新增、删除或移动**文档**（含主题入口与目录）时，**必须**同步本表；主题内部的子文档增减只改该主题的入口文档，不必回到本表。
 
@@ -107,4 +108,4 @@
 
 - 完成实质性代码修改、重构或配置变更后，**必须**将详细变更写入 `docs/changes/YYYY-MM-DD.md`（一事一条，按日期归档；当天已存在则追加，勿覆盖历史）。
 - 涉及跨模块行为、契约或交付流程的改动，同一条记录写清「改了什么 / 为什么 / 验证方式」。
-- `docs/DESIGN.md` 只放设计正文与索引，**不设「变更记录」章节**；设计正文的结构性/结论性变化写入 `docs/changes/YYYY-MM-DD.md`，同一事实只在一处维护。
+- 不受体积红线约束。

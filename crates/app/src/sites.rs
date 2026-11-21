@@ -568,14 +568,6 @@ impl SiteError {
             _ => None,
         }
     }
-
-    /// 去掉字段包装，得到原有传输分类；用于传输层映射。
-    pub fn unfield(self) -> SiteError {
-        match self {
-            SiteError::Field(_, inner) => inner.unfield(),
-            other => other,
-        }
-    }
 }
 
 impl std::fmt::Display for SiteError {

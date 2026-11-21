@@ -8,7 +8,7 @@
 > 相关：工程结构与 `xtask` 固化校验见 [§8 工程结构](../sections/08-engineering.md)；
 > 装机步骤与真机验收用例见 [DEPLOY_TEST.md](../test/DEPLOY_TEST.md)。
 
-## 1. 三个工作流各管什么
+## 1. 四个工作流各管什么
 
 **当前是开发/测试阶段：不发新版，但交付链路必须可用。** 测试期只走手动 dispatch
 （版本沿用 0.1.0、不新建 tag、资产覆盖到同一 Release），用来真实验证「Release 安装包 →
@@ -18,6 +18,7 @@
 |---|---|---|
 | `.github/workflows/ci.yml` | push（main/master）、PR、手动；**纯文档改动不触发** | 质量门槛：格式、lint、单测、MSRV、契约校验、插件包链路、脚本、冒烟；musl 静态产物**仅手动** |
 | `.github/workflows/release.yml` | 手动 dispatch（测试期唯一入口）+ `v*` 标签推送（正式发版） | 出可交付安装包：amd64 / arm64 musl 静态包 + `.sha256` + `skiff-server-<target>` 裸二进制 + `checksums.txt`。测试期沿用 0.1.0，`publish` 勾选即把资产**覆盖到同一既有 Release**，不新建 tag |
+| `.github/workflows/iter.yml` | 手动 dispatch | 迭代包：只出 musl amd64 裸包（不带 `official/`），产物留 3 天，`cancel-in-progress: true`（新 dispatch 顶掉旧构建）；与 `release.yml` 的分工见 [ITERATION.md](../test/ITERATION.md) |
 | `.github/workflows/audit.yml` | 每周一 03:00 UTC、手动 | `cargo audit` 查 RustSec 公告 |
 
 依赖升级不走 Dependabot：`dependabot.yml` 已删（2026-10-31），minor/patch 升级人工按需
@@ -40,7 +41,7 @@
 | `test` | `cargo test --workspace --locked --no-fail-fast` | 全量单测 + 文档测试；**unix-only 用例第一次真正执行**（见 §3） |
 | `test-win` | `cargo test --workspace --locked --no-fail-fast`（windows-latest） | `cfg(not(unix))` stub 路径有人管；Windows 平台行为只在此 job 复核（开发机不跑测试，见 §6） |
 | `msrv` | `cargo check --workspace --all-targets --locked`（工具链 1.89） | `rust-version` 不说谎 |
-| `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / **宿主通道闸**（`app`·`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增，基线 140）；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
+| `verify` | `cargo run --locked -p xtask -- check` | 1Panel 变量对齐 / Compose 字段子集 / **宿主通道闸**（`app`·`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增，基线 96）；另以空参加 `xtask verify-pkg`，验证缺包时「跳过而非报错」 |
 | `server` | `cargo run --locked -p skiff-server -- check` | Skiff-server 静态产物自检：schema 合规、摘要一致、索引引用完整、`seq` 不回退（见 [SKIFF_SERVER/04-ROLLOUT.md](../plugin/SKIFF_SERVER/04-ROLLOUT.md) §10）；只在内存生成，不产出发布物 |
 | `pkg-chain` | `skiff-plugin` keygen → new → build → pack → verify；再跑 `plugins/pack.sh` 把 8 个官方插件包（7 个插件 + testkit）真打一遍 | keygen 落盘/公钥输出 + 插件包链路真签真验；**另跑两条反例**（错公钥、无公钥）必须被拒；官方插件包（发布包 `official/` 的来源）逐个验签 |
 | `plugins` | `cargo {fmt,clippy,test} --manifest-path plugins/Cargo.toml …` | 官方插件 workspace（第二 workspace，根 `--workspace` 不覆盖它）的 fmt / `-D warnings` / 单测 |

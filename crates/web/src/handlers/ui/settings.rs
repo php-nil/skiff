@@ -92,7 +92,7 @@ pub async fn settings(
 
 /// `POST /ui/v1/settings/panel`：保存监听地址 / 入口前缀 / TLS。
 ///
-/// 复用旧表单的 `apply_panel_update`（同一校验、同一落盘、同一审计），只把传输层
+/// 复用 `apply_panel_update`（同一校验、同一落盘、同一审计），只把传输层
 /// 换成 JSON；CSRF 用 `/ui/v1` 统一的 `x-csrf-token` 头。
 pub async fn settings_panel_update(
     State(state): State<Arc<AppState>>,
@@ -102,6 +102,7 @@ pub async fn settings_panel_update(
 ) -> Result<Response, ApiError> {
     guard::permission(&user, skiff_model::Permission::Admin)?;
     guard::csrf(&state, &user, &parts)?;
+    let ip = handlers::client_ip(&state, &parts);
     let mut form: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for (key, value) in [
         ("listen_addr", body.listen_addr),
@@ -113,7 +114,7 @@ pub async fn settings_panel_update(
     ] {
         form.insert(key.to_string(), vec![value]);
     }
-    let message = handlers::settings::apply_panel_update(&state, &user, &form)
+    let message = handlers::settings::apply_panel_update(&state, &user, &ip, &form)
         .await
         .map_err(|m| ApiError(AppError::BadRequest(m)))?;
     let mut resp = Json(json!({ "data": { "message": message } })).into_response();
@@ -163,7 +164,8 @@ pub async fn settings_menu_update(
     Json(body): Json<MenuUpdateBody>,
 ) -> Result<Response, ApiError> {
     guard::csrf(&state, &user, &parts)?;
-    handlers::settings::apply_menu_update(&state, &user, &body.action, &body.key)
+    let ip = handlers::client_ip(&state, &parts);
+    handlers::settings::apply_menu_update(&state, &user, &ip, &body.action, &body.key)
         .map_err(ApiError)?;
     let mut resp = Json(json!({ "data": { "message": "已保存菜单偏好" } })).into_response();
     resp.headers_mut()

@@ -227,8 +227,13 @@ pub fn toml_string(value: &str) -> String {
 /// - 值为 `None` 表示**删除**该生效行（用于把 `tls_enabled` 恢复成「自动推断」）；
 /// - 写盘前先用 TOML 解析器查语法，再用真实的 [`FileConfig`] 反序列化查语义；
 ///   任何一步失败都不落盘，原文件字节保持不变；
-/// - 先写临时文件再 rename，避免半截配置。
-pub fn write_config_updates(path: &Path, updates: &[(&str, Option<String>)]) -> Result<(), String> {
+/// - 落盘委托 `write`：生产路径传 `AdminFs::write_kernel`（临时文件 + rename + 审计），
+///   测试可传本地写实现，函数本身不直接碰文件。
+pub fn write_config_updates_via(
+    path: &Path,
+    updates: &[(&str, Option<String>)],
+    write: impl Fn(&Path, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     // 先确认每个键都能映射到真实字段：未知键直接拒绝，不猜它该去哪个段。
     let mut plan = Vec::with_capacity(updates.len());
     for (key, value) in updates {
@@ -263,9 +268,7 @@ pub fn write_config_updates(path: &Path, updates: &[(&str, Option<String>)]) -> 
         format!("生成的 config.toml 语义非法（按真实配置结构复验失败），已放弃写入: {e}")
     })?;
 
-    // 唯一临时名 + rename：并发保存设置时互不踩临时文件。
-    crate::atomic::write_atomic(path, text.as_bytes(), 0o644)
-        .map_err(|e| format!("替换 {} 失败: {e}", path.display()))?;
+    write(path, text.as_bytes()).map_err(|e| format!("替换 {} 失败: {e}", path.display()))?;
     Ok(())
 }
 
@@ -366,6 +369,13 @@ fn is_active_assignment(line: &str, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试专用：不经内核通道，直接落到临时文件，保持断言只看内容。
+    fn write_config_updates(path: &Path, updates: &[(&str, Option<String>)]) -> Result<(), String> {
+        write_config_updates_via(path, updates, |p, b| {
+            fs::write(p, b).map_err(|e| e.to_string())
+        })
+    }
 
     #[test]
     fn prefix_accepts_safe_values() {

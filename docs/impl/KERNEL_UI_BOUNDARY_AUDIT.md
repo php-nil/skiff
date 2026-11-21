@@ -15,8 +15,7 @@
 1. **（S2）RPC 错误靠字符串猜内核状态码**：`PluginError` 仅 `Rejected` 映射 400、其余 500，与 RPC 路径字符串解析出的 503 语义不对称。→ 批次 1.3。
 2. **（S2）DTO 冻结没有编译期/测试期约束**：字段冻结靠用例与文档约定。→ 批次 1.1。
 3. **（S3）schema 运行期校验失败返回 500**：应为 400/409 + 稳定错误码。→ 批次 2.1。
-4. **（S2，2026-11-19）`SiteError → AppError` 映射 4 份且口径不一**：`handlers/sites.rs::map_err`（`Field(_,inner)`→Internal）、`ui/mod.rs::site_write_err`（→BadRequest）、`ui/mod.rs::site_api_error`（递归 inner）、`jobs.rs::retry` 内联（→Internal）——同一领域错误三条 HTTP 结论。→ 批次 2.4（先定 `Field` 错误的正确语义，再在 `error.rs` 收一个 `From`）。
-5. **（S3，2026-11-19）视图层残留判定**：`store.rs::load_view` 内联「已装版本高于目录可装版本则拒绝降级」（后端同判两处）→ 待移 `skiff_app::catalog` 读模型。「文案归属」作为独立问题挂 [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) §4 C10。
+4. **（S3，2026-11-19）视图层残留判定**：`store.rs::load_view` 内联「已装版本高于目录可装版本则拒绝降级」（后端同判两处）→ 待移 `skiff_app::catalog` 读模型。「文案归属」作为独立问题挂 [KERNEL_ARCH_AUDIT.md](KERNEL_ARCH_AUDIT.md) §4 C10。
 
 ## 3. 待决策批次（需要先定契约）
 
@@ -25,8 +24,6 @@
 | 1.1 | DTO 冻结机制（golden JSON / key-set 快照 / 可选 JSON Schema） | 冻结粒度、新增字段是否必须升 `api_version` |
 | 1.3 | RPC 错误结构化（code + status） | `skiff-plugin`/`skiff-wire` 协议面变更 |
 | 2.1 | 错误码细分：schema 校验失败改 400/409 并给稳定码 | 与商店安装侧统一 |
-| 2.3 | 审计来源补全：面板/菜单设置写操作仍记 `local`（`handlers/settings.rs::apply_panel_update` / `apply_menu_update` 拿不到 `Parts`） | 把 `Parts` 传进共享入口，或改由调用方传 ip |
-| 2.4 | 错误映射收敛（未闭环 4）：`error.rs` 收 `From<SiteError>`、`jobs.rs::retry` 内联改调同一映射 | `Field` 错误的 HTTP 语义（400 vs 500） |
 
 ## 4. 未验证项
 

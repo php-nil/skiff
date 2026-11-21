@@ -16,6 +16,6 @@
 | [KERNEL_FS_IMPL_NOTES.md](impl/KERNEL_FS_IMPL_NOTES.md) | `skiff-fs` 实现差异；路径解析唯一例外见 §2.2.1 |
 | [KERNEL_SCHEDULER_IMPL_NOTES.md](impl/KERNEL_SCHEDULER_IMPL_NOTES.md) | `skiff-sched` tick 语义与回执边界 |
 | [KERNEL_UI_BOUNDARY_AUDIT.md](impl/KERNEL_UI_BOUNDARY_AUDIT.md) | SSR / `/ui/v1` handler 边界：未闭环问题与待决策批次（审计稿） |
-| [KERNEL_ARCH_AUDIT.md](impl/KERNEL_ARCH_AUDIT.md) | crate 划分与依赖方向七维结论、非问题清单、搁置项与未验证项（已收口） |
+| [KERNEL_ARCH_AUDIT.md](impl/KERNEL_ARCH_AUDIT.md) | crate 划分与依赖方向七维结论、非问题清单、未闭环问题（§3）、搁置项与未验证项 |
 | [RUNTIME_PROVISION_SPEED.md](impl/RUNTIME_PROVISION_SPEED.md) | 运行环境安装速度：实测基线、用户场景矩阵、L0–L3 分层方案与验收口径 |
 | [SOURCE_MIRRORS.md](impl/SOURCE_MIRRORS.md) | 软件包源与容器镜像源：三层数据模型、测速口径（真实数据量）、daemon.json 热重载与回滚、能力面归属 |

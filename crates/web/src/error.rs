@@ -231,6 +231,29 @@ impl From<skiff_app::menu::MenuError> for AppError {
     }
 }
 
+/// 站点领域错误 → HTTP 语义。**唯一实现**：字段错误在保留底层分类的前提下
+/// 单独提升为 `InvalidField`（400 + 字段定位），不得把 `Field(Unavailable)` 之类
+/// 误降成 400。
+impl From<skiff_app::sites::SiteError> for AppError {
+    fn from(e: skiff_app::sites::SiteError) -> Self {
+        use skiff_app::sites::SiteError as Site;
+        match e {
+            Site::Field(field, inner) => match *inner {
+                Site::BadRequest(message) => AppError::InvalidField {
+                    field: field.as_str().to_string(),
+                    message,
+                },
+                // 冲突/依赖故障/内部错误仍按原分类返回；字段定位只对 400 有意义。
+                other => other.into(),
+            },
+            Site::BadRequest(m) => AppError::BadRequest(m),
+            Site::Conflict(m) => AppError::Conflict(m),
+            Site::Unavailable(m) => AppError::Unavailable(m),
+            Site::Internal(m) => AppError::Internal(m),
+        }
+    }
+}
+
 impl From<skiff_plugin::PluginError> for AppError {
     fn from(e: skiff_plugin::PluginError) -> Self {
         match e {

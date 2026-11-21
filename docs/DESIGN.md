@@ -2,7 +2,7 @@
 
 > 版本：**v1.0（MVP 实施稿）** ｜ 产品名：**Skiff（轻舟）** ｜ 交付形态：**宿主机 systemd 直装（主）**；1Panel 商店 Docker 包为可选受限形态
 > 本方案 = **MVP 方案**，只覆盖三核心：**Web 管理服务 / Docker 管理 / 插件体系**。文件管理由内核持有管理员客户端（「工具 → 文件管理」，IO 全部经 `skiff-fs`）；防火墙、主机监控等其余宿主功能由插件层在宿主能力面（docker/identity/fs/net/ftp）实现（§1.4、§3.3）。
-> 状态：**MVP 代码已落地**（M0–M4 主体完成；`landlock` / `cgroups` / `nftables` 与 `net` 收口尚未实现）。结构为 **17 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）。架构审查 P0–P2 与第六轮复审结论见 [ARCH_REVIEW.md](archive/ARCH_REVIEW.md)（该轮基线为 14 crate；当前 17）；本地门禁命令（`fmt` / `clippy`）与 CI 口径见 [CI.md](ops/CI.md)，测试用例与实测数字见 [TEST_MATRIX.md](test/TEST_MATRIX.md)，测试机部署与验收结论见 [TEST_ENV.md](test/TEST_ENV.md)。**Linux 专属能力中，setuid 降权 / Unix socket 已在 Linux CI 跑过单测，docker.sock 与 systemd 安装已在测试机验证；landlock / cgroups / nftables 尚未实现。** 目标读者：决策者。
+> 状态：**MVP 代码已落地**（M0–M4 主体完成；`landlock` / `cgroups` / `nftables` 与 `net` 收口尚未实现）。结构为 **18 个 crate + `xtask`**（`skiff-app` 承载 `AppState`；能力面实现在 `crates/plugin`，判定规则唯一来源在 `skiff-model`）。架构审查 P0–P2 与第六轮复审结论见 [ARCH_REVIEW.md](archive/ARCH_REVIEW.md)（该轮基线为 14 crate；当前 18）；本地门禁命令（`fmt` / `clippy`）与 CI 口径见 [CI.md](ops/CI.md)，测试用例与实测数字见 [TEST_MATRIX.md](test/TEST_MATRIX.md)，测试机部署与验收结论见 [TEST_ENV.md](test/TEST_ENV.md)。**Linux 专属能力中，setuid 降权 / Unix socket 已在 Linux CI 跑过单测，docker.sock 与 systemd 安装已在测试机验证；landlock / cgroups / nftables 尚未实现。** 目标读者：决策者。
 > **文档结构**：本文件是索引与一页结论；正文按章节拆在 `docs/sections/` 下（13 个文件覆盖 §1–§12，§4 分两册）。**文件名前缀 = 章号**，章节号 `§x.y` 全局唯一、拆分不重编号，跨文件引用直接按编号跳转（见下方文档地图）。
 
 ---
@@ -42,8 +42,8 @@
 | §8 工程结构 | [sections/08-engineering.md](sections/08-engineering.md) | crates 布局、核心 ↔ 代码对照、`xtask` 两类固化校验（另有独立 `.wbpkg` 校验子命令） |
 | §9 里程碑 | [sections/09-milestones.md](sections/09-milestones.md) | M0–M5 交付物与通过标准、MVP 边界、9.1 架构核实门（原型挂里程碑） |
 | §10 风险 | [sections/10-risks.md](sections/10-risks.md) | 21 条风险（带 架构/契约/实现/运营 层级）、10.1 架构支柱级 6 条原型、10.2 契约级 5 条 |
-| §11 已拍板决策 | [sections/11-decisions.md](sections/11-decisions.md) | 10 条默认值（可推翻），不留阻塞实施的开放问题 |
-| §12 待实测清单 | [sections/12-pending-tests.md](sections/12-pending-tests.md) | 17 条实测项 + 12.1 架构层缺口 5 条，逐项挂里程碑 |
+| §11 已拍板决策 | [sections/11-decisions.md](sections/11-decisions.md) | 13 条默认值（可推翻），不留阻塞实施的开放问题 |
+| §12 待实测清单 | [sections/12-pending-tests.md](sections/12-pending-tests.md) | 18 条实测项 + 12.1 架构层缺口 5 条，逐项挂里程碑 |
 | 非章节专项文档 | [AGENTS.md](../AGENTS.md)「六、文档索引」 | 七个主题，每个是「入口文档 + 同名目录」：[contract.md](contract.md) 契约、[impl.md](impl.md) 实现说明与审计、[test.md](test.md) 交付与验证、[ops.md](ops.md) 工程环境、[plugin.md](plugin.md) 插件与分发、[sdui.md](sdui.md) SDUI、[archive.md](archive.md) 存档；**入口与状态只在根文件的文档索引维护**，本文只保留设计正文（§1–§12），不复述 |
 
 ### 按角色选读

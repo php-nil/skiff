@@ -9,7 +9,7 @@
 
 | 层 | 在哪 | 做什么 | 每轮 |
 | --- | --- | --- | --- |
-| L1 门禁 | 本机（增量） | `fmt` / `clippy` / `test` / Linux target check | 约 90 s |
+| L1 门禁 | 本机（增量） | `fmt` / `clippy`（编译级，**不含 `cargo test`**，AGENTS.md §4.3） | 约 90 s |
 | L2 单测 | GitHub `test` job | Linux 全量单测，unix-only 用例真跑 | 约 2.5 min，可与 L2′ 并行 |
 | L2′ 验收 | 测试机（全量回滚） | 装包 → 起服务 → `accept.sh` | 约 40 s |
 | L3 发布物 | `release.yml`（里程碑轮） | musl 静态包 + 官方插件签名 | 约 4 min，不每轮跑 |

@@ -158,10 +158,11 @@ fn check_channel() -> bool {
 
 /// 内核文件写的基线。**只能下调**：每迁一处到 `write_kernel` 就减一处。
 ///
-/// 2026-11-20 重定 97 处（14 个文件）：2 处增量来自 vhost policy 迁移/回滚和
-/// catalog CA PEM 落盘，均为宿主侧必须直写的 nginx/php 宿主配置而非内核文件，
-/// 基线只对内核侧收敛；之后仍需逐处迁 write_kernel。
-const FS_WRITE_BASELINE: Option<usize> = Some(97);
+/// 2026-11-21 重定 **96 处（13 个文件）**：`panel_settings` 的 `config.toml`
+/// 已改走 `AdminFs::write_kernel`（所有可写键零直写）。剩余计数按两类看：
+/// **内核文件**必须继续迁 `write_kernel`；**宿主 nginx/php 配置**本就应直写，
+/// 但必须在命令层留业务审计（如 `nginx.config.save` / `nginx.params.save`）。
+const FS_WRITE_BASELINE: Option<usize> = Some(96);
 
 /// 递归收集 `.rs` 文件。
 fn rust_files(dir: &Path) -> Vec<(PathBuf, String)> {

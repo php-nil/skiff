@@ -46,7 +46,7 @@ sh install.sh                     # 可加 --datadir / --listen / --no-docker �
 | 放示例配置 | `/etc/skiff/config.toml`（**仅当不存在时**，已有配置只读不改） |
 | 装二进制 | `/usr/local/bin/skiff`（先写临时文件再原子替换） |
 | 装插件工具 | `/usr/local/bin/skiff-plugin`（包内有就装，用于打包/验签） |
-| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（7 个 `.wbpkg` = 6 个官方插件 + testkit，另加 `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
+| 放官方插件 | 包内有 `official/` 时 `install -m 0644` 到 `/www/skiff/official/`（8 个 `.wbpkg` = 7 个官方插件 + testkit，另加 `public-key.txt`）；**不自动安装**——权限与对象授权必须逐条确认；公钥由首启自动信任 |
 | 装 unit | `/etc/systemd/system/skiff.service` + `daemon-reload` + `enable` |
 | 启动 | `systemctl restart skiff` 并验 active（20 s 不起即失败退出；`--no-start` 可跳过） |
 

@@ -11,5 +11,5 @@
 | 章节 | 文件 | 内容要点 |
 | --- | --- | --- |
 | §0–3 | [01-OVERVIEW.md](PLUGIN_CATALOG/01-OVERVIEW.md) | 一页结论、能力现状核对（选型硬约束）、竞品对照、官方插件清单 |
-| §4 | [02-PLUGINS.md](PLUGIN_CATALOG/02-PLUGINS.md) | 6 个官方插件的实现与前置（权限、能力面、站点目录、依赖） |
+| §4 | [02-PLUGINS.md](PLUGIN_CATALOG/02-PLUGINS.md) | 7 个官方插件的实现与前置（权限、能力面、站点目录、依赖） |
 | §5–7 | [03-LAYOUT_PLAN.md](PLUGIN_CATALOG/03-LAYOUT_PLAN.md) | 目录落地位置、实施顺序（含进度）、风险与未决 |

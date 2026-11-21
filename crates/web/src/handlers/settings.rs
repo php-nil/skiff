@@ -12,10 +12,12 @@ use skiff_app::{AppState, CurrentUser};
 pub(crate) async fn apply_panel_update(
     state: &Arc<AppState>,
     user: &CurrentUser,
+    client_ip: &str,
     form: &std::collections::HashMap<String, Vec<String>>,
 ) -> Result<String, String> {
     use skiff_app::panel_settings::{
-        check_port_free, toml_string, validate_entry_prefix, validate_port, write_config_updates,
+        check_port_free, toml_string, validate_entry_prefix, validate_port,
+        write_config_updates_via,
     };
 
     let addr_raw = form_first(form, "listen_addr").trim().to_string();
@@ -87,7 +89,9 @@ pub(crate) async fn apply_panel_update(
         updates.push(("tls_cert", Some(toml_string(&tls_cert))));
         updates.push(("tls_key", Some(toml_string(&tls_key))));
     }
-    write_config_updates(&state.cfg.config_path, &updates)?;
+    write_config_updates_via(&state.cfg.config_path, &updates, |p, b| {
+        state.admin_fs().write_kernel(p, b)
+    })?;
 
     // 保存即把旧前缀记为兼容别名；重启后路由层会 302，而不是直接 404 把人锁在外面。
     if prefix != state.cfg.entry_prefix {
@@ -115,7 +119,7 @@ pub(crate) async fn apply_panel_update(
 
     state.audit_or_log(
         &user.user.username,
-        "local",
+        client_ip,
         "settings.panel.update",
         &format!("listen={addr} prefix={prefix} tls={tls_mode}"),
         "ok",
@@ -177,19 +181,22 @@ pub async fn legacy_prefix_redirect(
         rest.trim_start_matches('/')
     ))
 }
-/// 菜单设置写操作：SSR 表单与 `/ui/v1/settings/menu` 共用的唯一业务入口。
+/// 菜单设置写操作的唯一业务入口（当前由 `/ui/v1/settings/menu` 调用）。
 ///
 /// 偏好校验/落盘仍在 `skiff_app::menu::apply_action`，这里只补同一条审计。
+/// `ip` 由调用方从请求 `Parts` 解析后传入：共享入口拿不到 `Parts`，
+/// 不能再用 `"local"` 占位，否则审计页会把真实来源误报成本机。
 pub(crate) fn apply_menu_update(
     state: &AppState,
     user: &CurrentUser,
+    ip: &str,
     action: &str,
     key: &str,
 ) -> Result<(), AppError> {
     menu::apply_action(state, user, action, key)?;
     state.audit_or_log(
         &user.user.username,
-        "local",
+        ip,
         "settings.menu.update",
         action,
         "ok",

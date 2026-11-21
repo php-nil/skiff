@@ -19,7 +19,7 @@
 
 ```
 plugins/
-├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/firewall/ftp/testkit
+├── Cargo.toml              # 第二 workspace：members = common/guard/monitor/files/cron/firewall/ftp/sources/testkit
 ├── Cargo.lock              # 必须入库（CI 与 pack.sh 都用 --locked）
 ├── pack.sh                 # 官方插件打包：build → stamp → pack → verify → official/
 ├── README.md               # 官方插件集约定（id、构建自检、打包、装机授权、多架构）
@@ -28,19 +28,20 @@ plugins/
 │   ├── Cargo.toml          # name = skiff-plugin-guard，[[bin]] name = "plugin"
 │   ├── manifest.toml       # key_id = 64 个 0 的占位（打包时回填）
 │   ├── src/main.rs
-│   └── ui/                 # containers.html / events.html + app.js（只经 postMessage）
+│   └── ui/                 # containers.html / events.html + 随包 schema（默认原生渲染，?legacy=1 才走 iframe）
 ├── monitor/                # com.skiff.monitor
 ├── files/                  # com.skiff.files
-├── cron/                   # com.skiff.cron（provides jobs.create/list/remove/run；consumes *）
+├── cron/                   # com.skiff.cron（调度收归内核：consumes / provides 均为空）
 ├── firewall/               # com.skiff.firewall（firewall 能力面 + provides fail2ban.*）
 ├── ftp/                    # com.skiff.ftp（consumes com.skiff.firewall:fail2ban.*，可选登录防护）
+├── sources/                # com.skiff.sources（fs + exec + 出网测速：apk 源与镜像源）
 └── testkit/                # com.skiff.testkit（架构验收：多视图/单视图/槽位/RPC/能力面）
 ```
 
 约定：
 
 - crate 名 `skiff-plugin-<x>`；包内可执行名固定 `plugin`（`skiff-plugin pack` 按 `bin/{arch}/plugin` 收）。
-- id 用 `com.skiff.<x>`；版本独立 semver；`api = "1.0"`，内核并行兼容 N-1 主版本。
+- id 用 `com.skiff.<x>`；版本独立 semver；`api` 按所用特性取最低值（`[[mount]]` 1.1 / `[[menu]]` 1.2 / 随包 schema 1.3，官方插件均已 1.3），内核并行兼容 N-1 主版本。
 - 插件 UI 只经父页面 postMessage 桥取数（`skiff.rpc` / `skiff.rpc.result`），不携带面板凭据、不发同源请求；`[[ui]].label` 直接进主界面顶栏菜单，插件间切换用面板级消息 `skiff.open`（只改地址，不授予能力）。
 - **第三方前端库必须 vendor 进 `ui/`**：插件 UI 的 CSP 是 `script-src 'self'; connect-src 'none'`，CDN 与内联脚本都加载不了（例：`plugins/files/ui/vendor/` 里的 highlight.js 11.9.0 + LICENSE）。
 - **仓库里不含任何密钥的指纹**：manifest `key_id` 是 64 个 0 的占位，打包时才用 `skiff-plugin stamp --key` 在**临时目录**回填；私钥只在 CI secret 或离线发布机。
@@ -58,7 +59,7 @@ plugins/
 ### 5.4 开箱即用的三条交付线（1/3 已落地）
 
 1. **内置官方公钥**：命中内置指纹时显示「官方」徽章并免去手动导入（权限确认仍逐条）。**当前仍是缺口**：信任库只有 TOFU，发布包只带 `official/public-key.txt`，需要管理员手动导入。
-2. **随包携带（已落地）**：发布包内有 `official/`（7 个已签名 `.wbpkg` + `public-key.txt`，含 testkit）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
+2. **随包携带（已落地）**：发布包内有 `official/`（8 个已签名 `.wbpkg` = 7 个官方插件 + testkit，另加 `public-key.txt`）；`install.sh` 复制到 `/www/skiff/official/`（0755），**不自动安装**。
 3. **面板「官方插件」列表 + 一键安装**：从本地官方源读取、离线可用、安装仍走权限确认对话框。**未做**（现在只能 `skiff plugin install` 或面板上传）。
 
 > 只把 `.wbpkg` 放 GitHub Release、让用户手动上传，不算「开箱即用」——第 3 条是下一步。
@@ -81,7 +82,7 @@ plugins/
 
 | 风险 | 说明 | 处理 |
 |---|---|---|
-| exec 白名单形同虚设 | 透传任意命令等于把容器 root 交给插件 | 命令模板 + 参数校验 + 输出/超时/并发上限 + 审计 |
+| exec 授权粒度粗 | 授 `bin:<绝对路径>` 等于把该二进制的全部能力交出去（授 `apt-get` 即等价 root） | 已做：三道判定（授权命中 / 文件本体可信 / 非包装器）+ 请求阶段审计 argv 全文 + 执行落 `host.exec` 运行记录；**不做**命令模板 DSL（决策 13，2026-11-16 否决方案 A） |
 | fs 授权越权 | 路径穿越、符号链接、TOCTOU | 已做：授权根目录粒度（`path:` grant）+ 插件侧预检 + 内核侧复验 + 目标存在时按 `canonicalize` 重判 + 越权 403 并审计；未做：全程 `O_NOFOLLOW` 持有句柄（判定与具体 IO 之间仍有窗口） |
 | 大文件传输 | 插件 UI 单帧 1MiB 且 `connect-src 'none'` | 现状：256KiB 分页够文本编辑，**没有**二进制上传/下载；需要新增受限流式传输契约（未排期） |
 | 资源预算 | 每个插件是独立进程 | 采集频率与保留点数设下限；数字待实测，不写承诺 |

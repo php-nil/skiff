@@ -15,7 +15,7 @@ use skiff_plugin::{Supervisor, SupervisorConfig};
 use crate::config::Config;
 
 pub use skiff_app::panel_settings::{
-    toml_string, write_config_updates, ENTRY_PREFIX_GRACE_SECS, KEY_ENTRY_PREFIX,
+    toml_string, write_config_updates_via, ENTRY_PREFIX_GRACE_SECS, KEY_ENTRY_PREFIX,
     KEY_ENTRY_PREFIX_PREVIOUS, KEY_ENTRY_PREFIX_PREVIOUS_UNTIL,
 };
 pub const KEY_CSRF_SECRET: &str = "security.csrf_secret";
@@ -88,9 +88,24 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     // 必须把运行时生效的值写回文件，否则 CLI 读 config 拿不到 prefix。
     // 仅当 config 里没显式设置时才写（避免覆盖用户显式值）。
     if cfg.entry_prefix.is_none() {
-        if let Err(e) = write_config_updates(
+        // 启动早期还没有 AppState，但 config.toml 属于内核文件：构造一个仅用于
+        // 这次写回的内核通道实例，保证与运行期同一套临时文件/rename/审计。
+        let kernel_fs = skiff_app::admin_fs::AdminFs::with_protected(
+            cfg.data_dir.clone(),
+            cfg.web_root.clone(),
+            Arc::clone(&db),
+            cfg.trash_retention_days,
+            skiff_app::admin_fs::kernel_protected_paths(
+                &cfg.data_dir,
+                &cfg.config_path,
+                cfg.tls_cert.as_deref(),
+                cfg.tls_key.as_deref(),
+            ),
+        );
+        if let Err(e) = write_config_updates_via(
             &cfg.config_path,
             &[("entry_prefix", Some(toml_string(&entry_prefix)))],
+            |p, b| kernel_fs.write_kernel(p, b),
         ) {
             warn!(
                 "bootstrap: 写回 entry_prefix 到 {} 失败: {e}",

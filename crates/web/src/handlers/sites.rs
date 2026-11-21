@@ -1,4 +1,4 @@
-//! 内核「网站」的跨模块共享辅助：状态文案、view model 组装、领域错误映射。
+//! 内核「网站」的跨模块共享辅助：状态文案与 view model 组装。
 //!
 //! 站点页面与服务端表单已全部迁到 budding 壳（`/ui/v1/sites/*`、`/ui/v1/runtimes/*`），
 //! 这里只留 JSON 通道仍在复用的纯函数：
@@ -10,10 +10,8 @@
 use skiff_app::sites::{site_runtime_status, SiteRuntimeStatus};
 use skiff_store::{TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
-use crate::error::AppError;
 use crate::templates::RuntimeRow;
 use crate::util::encode_uri_component;
-use skiff_app::sites::SiteError;
 use skiff_app::AppState;
 
 mod crud;
@@ -185,16 +183,6 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
         job_active,
     }
 }
-pub(crate) fn map_err(e: SiteError) -> AppError {
-    match e.unfield() {
-        SiteError::BadRequest(m) => AppError::BadRequest(m),
-        SiteError::Conflict(m) => AppError::Conflict(m),
-        SiteError::Unavailable(m) => AppError::Unavailable(m),
-        SiteError::Internal(m) => AppError::Internal(m),
-        SiteError::Field(_, inner) => AppError::Internal(inner.to_string()),
-    }
-}
-
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
 /// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
 /// 保住 `sites::crud`/`sites::runtime` 经 `use super::*` 得到的 `actor(...)`。
@@ -203,13 +191,14 @@ pub(crate) use crate::handlers::audit_actor as actor;
 #[cfg(test)]
 mod tests {
     use super::crud::save_config_notice;
-    use super::{map_err, runtime_site_status, state_class, state_label};
-    use skiff_app::sites::SiteError;
+    use super::{runtime_site_status, state_class, state_label};
+    use crate::error::AppError;
+    use skiff_app::sites::{SiteError, SiteField};
     use skiff_model::ErrorCode;
 
     #[test]
     fn domain_errors_map_to_transport_status_and_code() {
-        // 命令层只表达领域结论，HTTP 状态与稳定错误码在这一层一一对应；
+        // 命令层只表达领域结论，HTTP 状态与稳定错误码在 `From` 里一一对应；
         // 这里锁住映射，防止某天把冲突改成 400 或把依赖故障吞成 500。
         let cases = [
             (
@@ -224,13 +213,41 @@ mod tests {
                 ErrorCode::Unavailable,
             ),
             (SiteError::Internal("x".into()), 500, ErrorCode::Internal),
+            (
+                SiteError::Field(
+                    SiteField::Domain,
+                    Box::new(SiteError::BadRequest("x".into())),
+                ),
+                400,
+                ErrorCode::InvalidField,
+            ),
+            (
+                SiteError::Field(
+                    SiteField::RuntimeId,
+                    Box::new(SiteError::Unavailable("x".into())),
+                ),
+                503,
+                ErrorCode::Unavailable,
+            ),
         ];
         for (err, status, code) in cases {
-            let mapped = map_err(err);
+            let mapped = AppError::from(err);
             assert_eq!(mapped.status().as_u16(), status);
             assert_eq!(mapped.error_code(), code);
             assert_eq!(mapped.message(), "x");
         }
+
+        // 只有 400 字段错误带定位；依赖故障保留 503 且不冒充字段错误。
+        let field = AppError::from(SiteError::Field(
+            SiteField::Domain,
+            Box::new(SiteError::BadRequest("域名不合法".into())),
+        ));
+        assert_eq!(field.field(), Some("domain"));
+        let unavailable = AppError::from(SiteError::Field(
+            SiteField::RuntimeId,
+            Box::new(SiteError::Unavailable("环境未运行".into())),
+        ));
+        assert_eq!(unavailable.field(), None);
     }
 
     #[test]

@@ -111,7 +111,7 @@
 | `items[].job` | object \| null | `state` / `label` / `step` / `progress` / `error` / `active` / `failed` / `started_at` / `updated_at` |
 | `next_cursor` | string \| null | 运行环境游标为上一页末项 `id`（D10） |
 
-错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、CSRF 失败 `auth.csrf_invalid`（403）、viewer 写站点 `auth.forbidden`（403）、站点不存在 `not_found`（404）、域名/配置字段错误 `shape.invalid`（400）、域名冲突 `conflict`（409）、Web 服务未就绪或数据库不可用 `dependency.unavailable`（503）。
+错误码沿用既有信封：未认证 `auth.unauthenticated`（401）、CSRF 失败 `auth.csrf_invalid`（403）、viewer 写站点 `auth.forbidden`（403）、站点不存在 `not_found`（404）、域名/配置字段值非法 `shape.field`（400，带 `field` 定位）、形状/类型错误 `shape.invalid`（400）、域名冲突 `conflict`（409）、Web 服务未就绪或数据库不可用 `dependency.unavailable`（503）。
 
 **渲染映射**
 

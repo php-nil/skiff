@@ -103,7 +103,7 @@ pub async fn runtime_logs(
     let text = state
         .runtime_logs(&id, tail)
         .await
-        .map_err(site_api_error)?;
+        .map_err(|e| ApiError(e.into()))?;
     Ok(Json(json!({
         "data": {
             "runtime_id": id,
@@ -126,7 +126,7 @@ pub async fn runtime_detail(
     crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let read = skiff_app::views::runtimes::detail(&state, &id)
         .await
-        .map_err(handlers::sites::map_err)
+        .map_err(AppError::from)
         .map_err(ApiError)?;
     let view = read.view;
     let row = handlers::sites::runtime_row(&state, &view);
@@ -193,7 +193,7 @@ pub async fn runtime_detail(
                 "container_path": v.file.container_path,
                 "note": v.file.note,
             }),
-            Err(e) => return Err(ApiError(handlers::sites::map_err(e))),
+            Err(e) => return Err(ApiError(e.into())),
         }
     } else {
         serde_json::Value::Null
@@ -341,7 +341,7 @@ pub async fn runtime_create(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     let message = if created.started {
         format!(
@@ -405,7 +405,7 @@ pub async fn runtime_action(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     match outcome {
         runtime_cmd::RuntimeActionOutcome::NeedsConfirm { domains } => {
@@ -490,7 +490,7 @@ pub async fn runtime_config_save(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "message": "PHP 配置已保存并重载 FPM" }))
 }
@@ -517,7 +517,7 @@ pub async fn runtime_node_config_save(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     let message = match outcome {
         runtime_cmd::NodeConfigOutcome::Unchanged => "Node.js 配置未变化，无需重建",
@@ -559,7 +559,7 @@ pub async fn runtime_port_save(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({
         "message": format!("端口已改为 {}，正在重建运行环境", body.port)
@@ -585,7 +585,7 @@ pub async fn runtime_publish_save(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     let message = match body.publish_port {
         Some(p) => format!("已开启对外发布：宿主 {p} → 容器内端口，正在重建运行环境"),
@@ -613,7 +613,7 @@ pub async fn runtime_clone(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({
         "id": rt.id,
@@ -642,7 +642,7 @@ pub async fn runtime_extensions_save(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({
         "changed": changed,
@@ -677,14 +677,14 @@ pub async fn runtime_extension_change(
         "install" => {
             runtime_cmd::install_extension(&state, change)
                 .await
-                .map_err(handlers::sites::map_err)
+                .map_err(AppError::from)
                 .map_err(ApiError)?;
             write_done(json!({ "message": format!("扩展 {key} 安装任务已提交") }))
         }
         _ => {
             runtime_cmd::uninstall_extension(&state, change)
                 .await
-                .map_err(handlers::sites::map_err)
+                .map_err(AppError::from)
                 .map_err(ApiError)?;
             write_done(json!({ "message": format!("扩展 {key} 卸载任务已提交") }))
         }
@@ -724,7 +724,7 @@ pub async fn runtime_extensions_batch(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({
         "changed": changed,
@@ -760,7 +760,7 @@ pub async fn runtime_pecl_install(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "message": format!("PECL {name} 安装任务已提交") }))
 }
@@ -784,7 +784,7 @@ pub async fn runtime_config_file_save(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     let mut message = format!("{} 已保存，PHP-FPM 已重启", file.label);
     if !file.warnings.is_empty() {
@@ -841,7 +841,7 @@ pub async fn runtime_unbind_site(
         },
     )
     .await
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "message": format!("站点 {domain} 已解绑并停止") }))
 }
@@ -876,7 +876,7 @@ pub async fn runtime_images_save(
             actor: handlers::sites::actor(&state, &user, &parts),
         },
     )
-    .map_err(handlers::sites::map_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "message": "镜像参数已保存，重建 Web 服务或重装对应实例后生效" }))
 }

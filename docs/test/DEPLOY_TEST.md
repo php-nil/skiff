@@ -20,7 +20,7 @@
 | §2.5–2.10 | [03-OPERATE.md](DEPLOY_TEST/03-OPERATE.md) | 升级、回滚、卸载、常用运维命令、插件测试物准备、权限链自检 |
 | §2.11–2.14 | [04-PLUGIN_SITE.md](DEPLOY_TEST/04-PLUGIN_SITE.md) | 官方插件导入与安装、插件页多视图、vhost 语义、站点 HTTPS、镜像源落盘 |
 | §3–5 | [05-FORMS_DEV.md](DEPLOY_TEST/05-FORMS_DEV.md) | 形态 B（1Panel 商店包）、本地开发与冒烟、配置速查 |
-| §6 | [06-CASES.md](DEPLOY_TEST/06-CASES.md) | 验收测试用例（A–H 组） |
+| §6 | [06-CASES.md](DEPLOY_TEST/06-CASES.md) | 验收测试用例（A–G 组） |
 | §7–8 | [07-TROUBLESHOOT.md](DEPLOY_TEST/07-TROUBLESHOOT.md) | 故障排查、未实现 / 未验证清单（不得当事实引用） |
 
 

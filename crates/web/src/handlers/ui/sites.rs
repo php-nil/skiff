@@ -289,7 +289,7 @@ pub async fn site_create(
     };
     let result = skiff_app::commands::site::create(&state, cmd)
         .await
-        .map_err(site_write_err)
+        .map_err(AppError::from)
         .map_err(ApiError)?;
     write_done(json!({ "id": result.id, "domain": result.domain, "created": true }))
 }
@@ -321,7 +321,7 @@ pub async fn site_power(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "action": action, "running": running }))
 }
@@ -344,7 +344,7 @@ pub async fn site_set_default(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "is_default": body.enabled }))
 }
@@ -378,7 +378,7 @@ pub async fn site_domains(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "action": body.action, "alias": body.alias }))
 }
@@ -401,7 +401,7 @@ pub async fn site_save_config(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({
         "domain": domain,
@@ -446,7 +446,7 @@ pub async fn site_ssl(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "action": body.action }))
 }
@@ -476,7 +476,7 @@ pub async fn site_backup(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "enabled": body.enabled }))
 }
@@ -501,7 +501,7 @@ pub async fn site_policy(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "saved": true }))
 }
@@ -528,7 +528,7 @@ pub async fn site_delete(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     write_done(json!({ "domain": domain, "removed": true }))
 }
@@ -571,7 +571,7 @@ pub async fn site_batch(
         },
     )
     .await
-    .map_err(site_write_err)
+    .map_err(AppError::from)
     .map_err(ApiError)?;
     let failures: Vec<serde_json::Value> = report
         .failures
@@ -613,7 +613,7 @@ pub async fn site_logs(
         handlers::blocking_fs(move || st.site_logs(&domain_read, tail, &keyword_read))
             .await
             .map_err(ApiError)?
-            .map_err(site_api_error)?;
+            .map_err(|e| ApiError(e.into()))?;
     let text = if part == "error" { error } else { access };
     let lines: Vec<String> = text
         .lines()
