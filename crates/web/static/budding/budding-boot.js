@@ -1313,10 +1313,10 @@
       // 页内子视图切换改由内核三级菜单承担（见 `mountSubNav`），账号与退出登录
       // 已搬进「设置」页（见 `settingsSchema`）。`actions` 槽在 bar 关闭时不渲染，
       // 因此这里不再放任何节点，避免出现「看不见但仍在 Tab 序里」的控件。
-      props: { title: 'Skiff', brandTitle: 'Skiff', bar: false, tabsMode: 'single' },
+      props: { title: 'Skiff', brandTitle: 'Skiff', bar: false, tabsMode: 'single', breadcrumbs: false },
       content: {
         // 原生面包屑与三级菜单重复：那是「路径」，这里是「菜单」，只用后者。
-        breadcrumbs: [],
+        // 1.8.4 起 `content.breadcrumbs` 插槽已移除，关闭面包屑改走 props.breadcrumbs=false。
         body: [{ type: 'outlet' }]
       }
     };

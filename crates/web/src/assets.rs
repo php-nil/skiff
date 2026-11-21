@@ -24,14 +24,14 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-20 打包（commit `1120d3`）版本号升到 **1.8.3**（根 `package.json` 1.8.3）。
-/// 本次同步从 `C:\dev\budding\dist\embed` 取完整 bundle，icons 也升到 1.8.3。
-/// 分包从 `dist/packs/*.mjs` 复制并改名为 `.min.js`（ESM 模块格式，需验证 registerPack 兼容性）。
-pub const BUDDING_VERSION: &str = "1.8.3";
+/// 上游 2026-11-21 打包（commit `1121d5`）版本号升到 **1.8.4**（根 `package.json` 1.8.4）。
+/// 本次同步从 `C:\dev\budding\dist\embed` 取完整 bundle，icons 也升到 1.8.4。
+/// 分包从 `dist/packs/*.mjs` 复制并改名为 `.min.js`（ESM 模块格式，由 `registerPack` 动态 import 加载）。
+pub const BUDDING_VERSION: &str = "1.8.4";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
-/// 随上游主包版本同步升到 1.8.3。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.3";
+/// 随上游主包版本同步升到 1.8.4。
+pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 
 /// 壳页自有资产（`skiff-shell.css` / `budding-boot.js` / `form-enter-submit.js`）的缓存版本。
 ///
@@ -55,7 +55,9 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.3";
 ///   正常视口（≥1080px）下无滚动条。
 /// v31：站点备份页新增「归档与恢复」——`skiffSiteWrite` 增加 `op=restore`，
 ///   调 `POST /ui/v1/sites/{id}/backups/restore`。
-pub const SHELL_VERSION: &str = "31";
+/// v32：上游 budding 升 1.8.4（`content.breadcrumbs` 移除、shared 组件基线、表单属性补全），
+///   破 `?v=` 缓存使壳页与新包同批生效。
+pub const SHELL_VERSION: &str = "32";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

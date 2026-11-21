@@ -6429,6 +6429,23 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     );
 }
 
+/// 壳页 `admin` 根节点不得再写 1.8.4 已移除的 `content.breadcrumbs` 插槽。
+///
+/// 1.8.4 把它从字段与插槽表里删掉，旧写法会让整棵壳页 `CompileError`（面板打不开），
+/// 关闭面包屑只能走 `props.breadcrumbs=false`。
+#[test]
+fn shell_schema_disables_breadcrumbs_via_props() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("breadcrumbs: false"),
+        "壳页必须用 props.breadcrumbs=false 关闭面包屑"
+    );
+    assert!(
+        !js.contains("breadcrumbs: []"),
+        "content.breadcrumbs 插槽在 budding 1.8.4 已移除，写了会整页编译失败"
+    );
+}
+
 /// 安装进度只允许一个事实源：任务中心 `web.install` 作业。
 ///
 /// 内存版 `site_install_progress` 必须彻底消失，否则页面会出现两套口径。
