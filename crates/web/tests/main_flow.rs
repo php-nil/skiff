@@ -3747,6 +3747,10 @@ async fn login_page_renders_budding_shell_without_session() {
     assert_eq!(header_str(&resp, "cache-control"), "no-store");
     let html = body_text(resp).await;
     assert!(html.contains(r#"id="skiff-login""#), "{html}");
+    // 登录页的品牌面板与表单标题由服务端模板承担，budding 只渲染表单本体。
+    assert!(html.contains(r#"class="login-form-inner""#), "{html}");
+    assert!(html.contains("欢迎回来"), "{html}");
+    assert!(html.contains("login-eyebrow"), "{html}");
     assert!(html.contains(r#"data-next="/p/sites/a""#), "{html}");
     let ver = skiff_web::assets::BUDDING_VERSION;
     assert!(

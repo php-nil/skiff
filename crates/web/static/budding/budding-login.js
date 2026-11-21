@@ -132,16 +132,7 @@
 
     return {
       type: 'page',
-      props: { title: '登录 · Skiff', maxWidth: 460 },
-      content: {
-        body: [
-          {
-            type: 'card',
-            props: { title: '登录 · Skiff', subtitle: '轻舟 · 极简服务器管理面板' },
-            content: { body: body }
-          }
-        ]
-      }
+      content: { body: [form] }
     };
   }
 

@@ -53,7 +53,7 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.3";
 /// v16：登录页布局收紧——body 改 100dvh + overflow-y:auto（允许垂直滚动），flex 居中改
 ///   margin:auto 溢出时自动滚；表单列 400→380、padding 收紧；品牌区间距同步收紧；
 ///   正常视口（≥1080px）下无滚动条。
-pub const SHELL_VERSION: &str = "26";
+pub const SHELL_VERSION: &str = "27";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
