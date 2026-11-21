@@ -73,7 +73,7 @@
 - 走**同一个** `Fs` 实例：同一套临时文件 + rename 原子替换、同一份路径代数、同一张 `audit` 表；
 - 主体固定 `Principal::kernel("system")`（= 无授权根限制 + 受保护写 + **可写内核受保护前缀**）——**这是 `system` 独有的**，管理员与插件都拿不到；内核维护自己的 `config.toml` 与 `data/` 必须能写，否则面板保存设置与启动期写回 `entry_prefix` 会被自己的守卫拒掉；
 - `remove_kernel` 一律 `permanent=true`：系统配置删掉就删掉，进回收站只会让「删了但还在」误导排障；
-- 业务模块**不得**直接 `std::fs::write` / `remove_file` / `rename`；`cargo run -p xtask -- check-channel` 把这条做成 CI 闸门（2026-11-21 基线 96 处 / 13 个文件，只减不增）。
+- 业务模块**不得**直接 `std::fs::write` / `remove_file` / `rename`；`cargo run -p xtask -- check-channel` 把这条做成 CI 闸门——只放行 `xtask` 白名单 `FS_WRITE_ALLOWED` 登记的例外（当前仅 `catalog/mod.rs` 的 2 处流式下载，理由见 `docs/impl/KERNEL_ARCH_AUDIT.md` C15），新增文件或超出登记处数即失败。
 
 ### 2.2 为什么「插件无限制读写」不成立
 

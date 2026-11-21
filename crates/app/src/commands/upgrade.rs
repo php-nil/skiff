@@ -10,13 +10,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
 use skiff_plugin::install::version_gt;
-use tracing::{info, warn};
+use tracing::info;
 
+use crate::admin_fs::AdminFs;
 use crate::catalog::{CatalogService, DownloadError};
+use crate::commands::incoming;
 
 /// 当前内核版本：与 `skiff-core` 落 `AppState.version` 的来源一致（workspace 统一版本）。
 pub const KERNEL_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -33,59 +36,17 @@ pub const INCOMING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// 清理 `<data_dir>/upgrade/incoming` 下超过 `ttl` 的升级包与 `.part`
 /// （进程启动、每次下载前各调用一次）。
 ///
-/// 只删本模块命名的 `*.tar.gz` 与 `*.part`，目录里其它文件一律不碰；
-/// 每个被清掉的条目留一条带路径与年龄的日志，便于事后追查。
-pub fn cleanup_stale_incoming(data_dir: &Path, ttl: Duration) -> usize {
-    cleanup_stale_incoming_at(
+/// 只删本模块命名的 `*.tar.gz` 与 `*.part`，目录里其它文件一律不碰。
+pub fn cleanup_stale_incoming(fs: &AdminFs, data_dir: &Path, ttl: Duration) -> usize {
+    let removed = incoming::cleanup_expired(
+        fs,
         &data_dir.join(UPGRADE_DIR).join(INCOMING_DIR),
         SystemTime::now(),
         ttl,
-    )
-}
-
-/// `now` 显式传入以便单测精确控制年龄，不依赖修改 mtime。
-fn cleanup_stale_incoming_at(dir: &Path, now: SystemTime, ttl: Duration) -> usize {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if !(name.ends_with(".tar.gz") || name.ends_with(".part")) {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        // 读不到 mtime 或 mtime 在当前时间之后（时钟回拨）时保守跳过，避免误删新文件。
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        let Ok(age) = now.duration_since(modified) else {
-            continue;
-        };
-        if age < ttl {
-            continue;
-        }
-        match fs::remove_file(&path) {
-            Ok(()) => {
-                removed += 1;
-                info!(
-                    path = %path.display(),
-                    age_secs = age.as_secs(),
-                    ttl_secs = ttl.as_secs(),
-                    "已清理过期升级暂存包"
-                );
-            }
-            Err(e) => warn!(path = %path.display(), error = %e, "清理过期升级暂存包失败"),
-        }
+        &[".tar.gz", ".part"],
+    );
+    if removed > 0 {
+        info!(removed, ttl_secs = ttl.as_secs(), "已清理过期升级暂存包");
     }
     removed
 }
@@ -107,6 +68,8 @@ pub struct UpgradeDownloadRequest {
     pub arch: String,
     pub current: String,
     pub data_dir: PathBuf,
+    /// 内核文件通道：暂存清扫、损坏包丢弃与目录准备都要留痕。
+    pub admin_fs: Arc<AdminFs>,
 }
 
 /// 已下载并通过摘要校验的暂存升级包。
@@ -195,7 +158,7 @@ pub fn download(
     req: &UpgradeDownloadRequest,
 ) -> Result<StagedUpgrade, UpgradeDownloadError> {
     // 下载前先回收过期暂存：刚落的包 mtime 新，不会被 24h TTL 误删。
-    cleanup_stale_incoming(&req.data_dir, INCOMING_TTL);
+    cleanup_stale_incoming(&req.admin_fs, &req.data_dir, INCOMING_TTL);
     if !catalog.enabled() {
         return Err(UpgradeDownloadError::Disabled);
     }
@@ -246,13 +209,15 @@ pub fn download(
                     error = %e,
                     "暂存升级包校验失败，丢弃后重新下载"
                 );
-                let _ = fs::remove_file(&dest);
+                let _ = req.admin_fs.remove_kernel(&dest);
             }
         }
     }
 
     if !reused {
-        fs::create_dir_all(&dir).map_err(|e| UpgradeDownloadError::Io(e.to_string()))?;
+        req.admin_fs
+            .ensure_dir_kernel(&dir)
+            .map_err(UpgradeDownloadError::Io)?;
         catalog.download_upgrade(&package, &dest)?;
     }
 
@@ -324,6 +289,15 @@ mod tests {
             }
         }
 
+        /// 通道夹具：数据根与站点根都落在本用例的临时目录，审计写内存库。
+        fn admin(&self) -> Arc<AdminFs> {
+            Arc::new(AdminFs::with_paths(
+                self.dir.path().to_path_buf(),
+                self.dir.path().join("www"),
+                Arc::new(skiff_store::Db::open_in_memory().unwrap()),
+            ))
+        }
+
         fn service(&self) -> Arc<CatalogService> {
             CatalogService::with_transport(
                 CatalogSettings {
@@ -362,6 +336,7 @@ mod tests {
                 arch: "x86_64".into(),
                 current: "0.1.0".into(),
                 data_dir: self.dir.path().join("data"),
+                admin_fs: self.admin(),
             }
         }
 
@@ -593,18 +568,36 @@ mod tests {
         let now = SystemTime::now();
         // 刚落的包（1h）与未到 TTL（23h）都不能误删。
         assert_eq!(
-            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(3600), INCOMING_TTL),
+            incoming::cleanup_expired(
+                &fx.admin(),
+                &dir,
+                now + Duration::from_secs(3600),
+                INCOMING_TTL,
+                &[".tar.gz", ".part"],
+            ),
             0
         );
         assert_eq!(
-            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(23 * 3600), INCOMING_TTL),
+            incoming::cleanup_expired(
+                &fx.admin(),
+                &dir,
+                now + Duration::from_secs(23 * 3600),
+                INCOMING_TTL,
+                &[".tar.gz", ".part"],
+            ),
             0
         );
         assert!(pkg.is_file(), "未到 TTL 的升级包不得删除");
 
         // 25h：只删升级包与 `.part`，目录里的其它文件不动。
         assert_eq!(
-            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(25 * 3600), INCOMING_TTL),
+            incoming::cleanup_expired(
+                &fx.admin(),
+                &dir,
+                now + Duration::from_secs(25 * 3600),
+                INCOMING_TTL,
+                &[".tar.gz", ".part"],
+            ),
             2
         );
         assert!(!pkg.exists());

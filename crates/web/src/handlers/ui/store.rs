@@ -122,6 +122,7 @@ pub async fn store_install(
         allow_unsigned: state.cfg.allow_unsigned,
         allow_reduced_sandbox: state.cfg.allow_reduced_sandbox,
         data_dir: state.cfg.data_dir.clone(),
+        admin_fs: state.admin_fs_arc(),
     };
     let worker = Arc::clone(&state);
     let prepared = match handlers::blocking_fs(move || {

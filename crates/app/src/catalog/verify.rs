@@ -2,8 +2,6 @@
 //! `key_id = sha256(公钥)` 小写十六进制。域前缀、key_id 与签名输入由
 //! `skiff-sign` 唯一实现，发布工具与内核共用同一份协议。
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
 use super::model::{Manifest, SignatureFile};
 
 pub use skiff_sign::{key_id_of, parse_public_key, signing_input, SIGNING_DOMAIN};
@@ -13,6 +11,9 @@ pub use skiff_sign::{key_id_of, parse_public_key, signing_input, SIGNING_DOMAIN}
 pub const BUILTIN_PUBLIC_KEY: Option<&str> = None;
 
 /// 校验清单签名。任何一步不符都返回可读原因，调用方必须拒绝使用该清单。
+///
+/// Ed25519 验签本体在 `skiff-sign`（协议唯一来源），这里只做清单层的三项
+/// 前置一致性检查：算法名、清单 key_id 与公钥的对应、签名与清单 key_id 的对应。
 pub fn verify_manifest(
     public_key: &[u8; 32],
     manifest_bytes: &[u8],
@@ -33,11 +34,7 @@ pub fn verify_manifest(
         return Err("签名 key_id 与清单 key_id 不一致".into());
     }
     let raw = hex::decode(&sig.sig).map_err(|_| "签名必须是十六进制".to_string())?;
-    let signature = Signature::from_slice(&raw).map_err(|_| "签名必须是 64 字节".to_string())?;
-    let key =
-        VerifyingKey::from_bytes(public_key).map_err(|_| "公钥不是合法 Ed25519 点".to_string())?;
-    key.verify(&signing_input(manifest_bytes), &signature)
-        .map_err(|_| "Ed25519 验签失败".to_string())
+    skiff_sign::verify_manifest_signature(public_key, manifest_bytes, &raw)
 }
 
 #[cfg(test)]

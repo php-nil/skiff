@@ -7,7 +7,6 @@
 pub mod actions;
 pub mod admin_fs;
 mod atomic;
-pub mod attention;
 mod audit;
 pub mod auth;
 pub mod catalog;
@@ -363,7 +362,9 @@ impl AppState {
         let jobs = Arc::new(jobs::JobService::new(Arc::clone(&db)));
         jobs.prune_quietly();
         // 商店目录只读客户端：未启用时它一次网络调用都不会发生。
-        let catalog = catalog::CatalogService::new(cfg.catalog.clone(), &cfg.data_dir);
+        // 缓存落盘走同一份内核文件通道（`<data_dir>/catalog/` 是内核自己的缓存）。
+        let catalog =
+            catalog::CatalogService::new(cfg.catalog.clone(), &cfg.data_dir, Arc::clone(&admin_fs));
         // 目录刷新失败要落 `catalog.refresh` 审计；写失败只记日志，不影响拒绝语义。
         catalog.set_audit_db(Arc::clone(&db));
         Arc::new(Self {

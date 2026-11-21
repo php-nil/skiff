@@ -13,12 +13,12 @@
 //! ```
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::model::{Index, Manifest};
+use crate::admin_fs::AdminFs;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CacheMeta {
@@ -88,33 +88,35 @@ pub fn load(root: &Path, channel: &str) -> Option<CachedCatalog> {
     })
 }
 
-/// 原子写入一份成功快照。先写内容文件，最后写 `meta.json`：
+/// 写入一份成功快照。先写内容文件，最后写 `meta.json`：
 /// 中途失败时旧 `meta.json` 仍指向旧的完整文件集合，不会出现「meta 新、内容旧」。
+///
+/// 落盘经内核文件通道（`<data_dir>/catalog/` 是内核自己的缓存）：每份文件一条
+/// `fs.write` 审计，替换是同目录临时文件 + 原子 `rename`。
 pub fn save(
+    fs: &AdminFs,
     root: &Path,
     channel: &str,
     manifest_bytes: &[u8],
     signature: Option<&[u8]>,
     index_bytes: &[u8],
     meta: &CacheMeta,
-) -> io::Result<()> {
+) -> Result<(), String> {
     let dir = channel_dir(root, channel);
-    fs::create_dir_all(&dir)?;
-    fs::create_dir_all(blob_dir(root))?;
-    write_atomic(&dir.join("manifest.json"), manifest_bytes)?;
+    fs.ensure_dir_kernel(&dir)?;
+    fs.ensure_dir_kernel(&blob_dir(root))?;
+    fs.write_kernel(&dir.join("manifest.json"), manifest_bytes)?;
     match signature {
-        Some(bytes) => write_atomic(&dir.join("manifest.json.sig"), bytes)?,
+        Some(bytes) => fs.write_kernel(&dir.join("manifest.json.sig"), bytes)?,
         None => {
             // 上次是签名渠道、这次未签名：清掉旧签名，避免缓存里出现不一致的两份证据。
-            let _ = fs::remove_file(dir.join("manifest.json.sig"));
+            let sig = dir.join("manifest.json.sig");
+            if sig.exists() {
+                fs.remove_kernel(&sig)?;
+            }
         }
     }
-    write_atomic(&dir.join("index.json"), index_bytes)?;
-    let json = serde_json::to_vec_pretty(meta)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    write_atomic(&dir.join("meta.json"), &json)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    crate::atomic::write_atomic(path, bytes, 0o644)
+    fs.write_kernel(&dir.join("index.json"), index_bytes)?;
+    let json = serde_json::to_vec_pretty(meta).map_err(|e| format!("序列化缓存元信息失败：{e}"))?;
+    fs.write_kernel(&dir.join("meta.json"), &json)
 }

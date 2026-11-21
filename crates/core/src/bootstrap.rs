@@ -87,21 +87,21 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     // 持久化到 config.toml：daemon 是 prefix 的单一来源（DB），
     // 必须把运行时生效的值写回文件，否则 CLI 读 config 拿不到 prefix。
     // 仅当 config 里没显式设置时才写（避免覆盖用户显式值）。
+    // 启动早期还没有 AppState，但 config.toml 与暂存包都属于内核文件：
+    // 构造一个启动期内核通道实例，保证与运行期同一套临时文件/rename/审计。
+    let kernel_fs = skiff_app::admin_fs::AdminFs::with_protected(
+        cfg.data_dir.clone(),
+        cfg.web_root.clone(),
+        Arc::clone(&db),
+        cfg.trash_retention_days,
+        skiff_app::admin_fs::kernel_protected_paths(
+            &cfg.data_dir,
+            &cfg.config_path,
+            cfg.tls_cert.as_deref(),
+            cfg.tls_key.as_deref(),
+        ),
+    );
     if cfg.entry_prefix.is_none() {
-        // 启动早期还没有 AppState，但 config.toml 属于内核文件：构造一个仅用于
-        // 这次写回的内核通道实例，保证与运行期同一套临时文件/rename/审计。
-        let kernel_fs = skiff_app::admin_fs::AdminFs::with_protected(
-            cfg.data_dir.clone(),
-            cfg.web_root.clone(),
-            Arc::clone(&db),
-            cfg.trash_retention_days,
-            skiff_app::admin_fs::kernel_protected_paths(
-                &cfg.data_dir,
-                &cfg.config_path,
-                cfg.tls_cert.as_deref(),
-                cfg.tls_key.as_deref(),
-            ),
-        );
         if let Err(e) = write_config_updates_via(
             &cfg.config_path,
             &[("entry_prefix", Some(toml_string(&entry_prefix)))],
@@ -168,11 +168,13 @@ pub fn bootstrap(cfg: &Config) -> Result<Bootstrapped> {
     skiff_plugin::supervisor::clean_run_dirs(&cfg.data_dir);
     // 商店安装的过期暂存包（放弃权限确认页会遗留）：启动时先扫一次。
     skiff_app::commands::store::cleanup_stale_incoming(
+        &kernel_fs,
         &cfg.data_dir,
         skiff_app::commands::store::INCOMING_TTL,
     );
     // 内核升级包的过期暂存（只读段手动下载会遗留）：同一 24h 口径。
     skiff_app::commands::upgrade::cleanup_stale_incoming(
+        &kernel_fs,
         &cfg.data_dir,
         skiff_app::commands::upgrade::INCOMING_TTL,
     );

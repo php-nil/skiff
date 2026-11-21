@@ -3,17 +3,14 @@
 use std::cell::Cell;
 
 use chrono::NaiveDate;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::*;
 use crate::audit::{AuditAction, AuditActor, AuditOutcome};
 use crate::buffer::{BufferConfig, OverflowPolicy, PushOutcome, RejectReason};
 use crate::clock::ManualClock;
 use crate::error::TaskError;
-use crate::exec::{
-    Batch, ErrorClass, ErrorPhase, ExecError, ExecOutput, Executor, RunContext, RunResult,
-    SampleContext, Trigger, Verdict,
-};
+use crate::exec::{ErrorClass, ErrorPhase, ExecError, ExecOutput, RunResult, Trigger, Verdict};
 use crate::model::{
     BlockedReason, Concurrency, MissedPolicy, RetryPolicy, Schedule, TaskKind, TaskSource,
     TaskSpec, TaskState,
@@ -699,29 +696,10 @@ fn disabled_task_is_not_scheduled_and_manual_trigger_rejected() {
     assert_eq!(tick.runs.len(), 1);
 }
 
-struct CollectExecutor {
-    calls: Cell<u32>,
-}
-
-impl Executor for CollectExecutor {
-    fn sample(&mut self, _ctx: &SampleContext) -> Result<Option<Value>, ExecError> {
-        Ok(Some(json!({ "v": 7 })))
-    }
-
-    fn execute(&mut self, _ctx: &RunContext, batch: &Batch) -> Result<ExecOutput, ExecError> {
-        self.calls.set(self.calls.get() + 1);
-        Ok(ExecOutput {
-            verdict: batch.last_seq().map(|seq| Verdict::Persist {
-                persisted_upto: seq,
-            }),
-            detail: Some(format!("处理 {} 点", batch.len())),
-            output_bytes: batch.bytes(),
-        })
-    }
-}
-
+/// 调度器只认**回执**：执行体把批次消费到哪用 `Verdict` 声明，调度器据此
+/// 推进水位并清理缓冲。本用例固定这条往返契约。
 #[test]
-fn executor_trait_roundtrips_batch_and_watermark() {
+fn exec_output_roundtrips_batch_and_watermark() {
     let clock = ManualClock::new(0);
     let mut sched = scheduler(SchedulerConfig::default(), &clock);
     let mut spec = builtin("t1", "job", 60);
@@ -733,16 +711,18 @@ fn executor_trait_roundtrips_batch_and_watermark() {
     clock.set(60);
     let tick = sched.tick(&clock, &AllPluginsReady);
     let ticket = &tick.runs[0];
-    let mut executor = CollectExecutor {
-        calls: Cell::new(0),
+    let output = ExecOutput {
+        verdict: ticket.batch.last_seq().map(|seq| Verdict::Persist {
+            persisted_upto: seq,
+        }),
+        detail: Some(format!("处理 {} 点", ticket.batch.len())),
+        output_bytes: ticket.batch.bytes(),
     };
-    let output = executor.execute(&ticket.context, &ticket.batch).unwrap();
     let out = sched
         .finish(&ticket.context.run_id, Ok(output), 60)
         .unwrap();
     assert_eq!(out.record.result, RunResult::Ok);
     assert_eq!(out.record.consumed_upto, ticket.batch.last_seq());
-    assert_eq!(executor.calls.get(), 1);
     assert_eq!(sched.buffer_stat("t1").unwrap().points, 0);
 }
 

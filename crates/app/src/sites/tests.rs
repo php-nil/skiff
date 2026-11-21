@@ -1,10 +1,21 @@
 //! 站点模块的单元测试：只覆盖内核侧的编排与判定，真实容器动作由上机用例兜底。
 
 use super::*;
+use crate::admin_fs::AdminFs;
 use skiff_docker::ContainerRow;
 use skiff_store::{NewRuntime, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// 文件类用例的 `AdminFs` 夹具：数据根与站点根都落在同一个临时目录下，
+/// 让内核文件通道（审计写内存库、受保护前缀判定）与生产口径一致。
+fn test_admin(root: &Path) -> AdminFs {
+    AdminFs::with_paths(
+        root.join("data"),
+        root.join("www"),
+        Arc::new(skiff_store::Db::open_in_memory().unwrap()),
+    )
+}
 
 #[test]
 fn php_init_script_resolves_nobody_from_gid_not_family_name() {
@@ -318,7 +329,7 @@ fn clone_copy_skips_dependencies_and_keeps_sources() {
     std::fs::write(from.join("package.json"), "{}").expect("write manifest");
     std::fs::write(from.join("src/main.js"), "x").expect("write source");
     std::fs::write(from.join("node_modules/dep/index.js"), "x").expect("write dep");
-    copy_dir_skip(&from, &to, &["node_modules", "target"]).expect("copy");
+    copy_dir_skip(&test_admin(&base), &from, &to, &["node_modules", "target"]).expect("copy");
     assert!(to.join("package.json").is_file());
     assert!(to.join("src/main.js").is_file());
     assert!(!to.join("node_modules").exists());
@@ -443,17 +454,28 @@ fn local_extension_installer_is_materialized_and_kept_in_sync() {
         registry_mirror: String::new(),
     }
     .php_extension_installer();
-    write_if_changed(&path, b"# local v1\n", 0o755).unwrap();
+    let fs = test_admin(&dir);
+    fs.write_if_changed_kernel(&path, b"# local v1\n", 0o755)
+        .unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"# local v1\n");
+    // 权限位随写入给定：安装器必须可执行（漏了 chmod 会让扩展安装直接失败）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "内核通道必须按给定权限位落盘");
+    }
     // 内容一致不重复写（mtime 不变）。
     let before = std::fs::metadata(&path).unwrap().modified().unwrap();
-    write_if_changed(&path, b"# local v1\n", 0o755).unwrap();
+    fs.write_if_changed_kernel(&path, b"# local v1\n", 0o755)
+        .unwrap();
     assert_eq!(
         std::fs::metadata(&path).unwrap().modified().unwrap(),
         before
     );
     // 内容不同则原子替换。
-    write_if_changed(&path, b"# local v2\n", 0o755).unwrap();
+    fs.write_if_changed_kernel(&path, b"# local v2\n", 0o755)
+        .unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"# local v2\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1427,11 +1449,12 @@ fn log_rotation_renames_and_recreates() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("demo.access.log");
     std::fs::write(&p, "x".repeat(64)).unwrap();
-    assert!(rotate_if_large(&p, 32).unwrap());
+    let fs = test_admin(dir.path());
+    assert!(rotate_if_large(&fs, &p, 32).unwrap());
     assert_eq!(std::fs::read_to_string(&p).unwrap().len(), 0);
     let rotated = dir.path().join("demo.access.log.1");
     assert_eq!(std::fs::read_to_string(rotated).unwrap().len(), 64);
-    assert!(!rotate_if_large(&p, 32).unwrap(), "空文件不再轮转");
+    assert!(!rotate_if_large(&fs, &p, 32).unwrap(), "空文件不再轮转");
 }
 
 #[test]
@@ -1443,7 +1466,10 @@ fn rotate_logs_sweeps_only_large_log_files() {
     std::fs::write(&big, "x".repeat(64)).unwrap();
     std::fs::write(&small, "y".repeat(8)).unwrap();
     std::fs::write(&other, "z".repeat(64)).unwrap();
-    assert_eq!(rotate_logs(dir.path(), 32).unwrap(), 1);
+    assert_eq!(
+        rotate_logs(&test_admin(dir.path()), dir.path(), 32).unwrap(),
+        1
+    );
     assert_eq!(std::fs::read_to_string(&big).unwrap().len(), 0);
     assert!(big.with_extension("log.1").exists());
     assert_eq!(std::fs::read_to_string(&small).unwrap().len(), 8);
@@ -1583,7 +1609,10 @@ fn rotate_site_logs_scans_each_site_log_dir() {
     std::fs::write(a_log.join("access.log"), "x".repeat(64)).unwrap();
     std::fs::write(b_log.join("error.log"), "y".repeat(64)).unwrap();
     std::fs::write(sites.join("readme.txt"), "z".repeat(64)).unwrap();
-    assert_eq!(rotate_site_logs(&sites, 32).unwrap(), 2);
+    assert_eq!(
+        rotate_site_logs(&test_admin(dir.path()), &sites, 32).unwrap(),
+        2
+    );
 }
 
 #[test]
@@ -1919,6 +1948,7 @@ mod nginx_activation {
     #[test]
     fn cert_pair_failure_restores_previous_pair() {
         let dir = tempfile::tempdir().unwrap();
+        let fs = test_admin(dir.path());
         let cert = dir.path().join("cert.pem");
         let key = dir.path().join("key.pem");
         std::fs::write(&cert, "old-cert").unwrap();
@@ -1927,7 +1957,7 @@ mod nginx_activation {
         let missing_key = crate::atomic::sibling_temp(&key);
         std::fs::write(&tmp_cert, "new-cert").unwrap();
 
-        let failure = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
+        let failure = replace_cert_pair(&fs, &tmp_cert, &missing_key, &cert, &key).unwrap_err();
         assert!(
             matches!(failure, CertPairError::Restored(_)),
             "原本有成对文件时必须回滚成旧内容"
@@ -1942,13 +1972,14 @@ mod nginx_activation {
     #[test]
     fn cert_pair_failure_without_previous_pair_clears_both() {
         let dir = tempfile::tempdir().unwrap();
+        let fs = test_admin(dir.path());
         let cert = dir.path().join("cert.pem");
         let key = dir.path().join("key.pem");
         let tmp_cert = crate::atomic::sibling_temp(&cert);
         let missing_key = crate::atomic::sibling_temp(&key);
         std::fs::write(&tmp_cert, "new-cert").unwrap();
 
-        let failure = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
+        let failure = replace_cert_pair(&fs, &tmp_cert, &missing_key, &cert, &key).unwrap_err();
         assert!(
             failure.was_cleared(),
             "首次上传失败必须回到「无证书」，调用方据此同步 vhost/库"
@@ -1962,6 +1993,7 @@ mod nginx_activation {
     #[test]
     fn cert_pair_success_leaves_no_backup_or_temp_files() {
         let dir = tempfile::tempdir().unwrap();
+        let fs = test_admin(dir.path());
         let cert = dir.path().join("cert.pem");
         let key = dir.path().join("key.pem");
         std::fs::write(&cert, "old-cert").unwrap();
@@ -1971,7 +2003,7 @@ mod nginx_activation {
         std::fs::write(&tmp_cert, "new-cert").unwrap();
         std::fs::write(&tmp_key, "new-key").unwrap();
 
-        replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key).unwrap();
+        replace_cert_pair(&fs, &tmp_cert, &tmp_key, &cert, &key).unwrap();
 
         assert_eq!(std::fs::read_to_string(&cert).unwrap(), "new-cert");
         assert_eq!(std::fs::read_to_string(&key).unwrap(), "new-key");
@@ -2025,7 +2057,8 @@ mod nginx_activation {
         let tmp_cert = crate::atomic::sibling_temp(&cert);
         std::fs::write(&tmp_cert, "new-cert").unwrap();
         let missing_key = crate::atomic::sibling_temp(&key);
-        let failure = replace_cert_pair(&tmp_cert, &missing_key, &cert, &key).unwrap_err();
+        let failure =
+            replace_cert_pair(state.admin_fs(), &tmp_cert, &missing_key, &cert, &key).unwrap_err();
         assert!(failure.was_cleared());
 
         state.repair_no_cert_state(domain).await;

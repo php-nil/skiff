@@ -7,16 +7,18 @@
 //! 拒绝语义按原因分开（下载 / 摘要 / 验签 / 兼容性 / 吊销 / 未启用 / 缺公钥），
 //! 由调用方落审计并给出页面提示；任何一步失败都清理暂存文件，不留半装状态。
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use skiff_pkgfmt::manifest::api_compatible;
 use skiff_plugin::TrustDecision;
 use skiff_store::Db;
-use tracing::{info, warn};
+use tracing::info;
 
+use crate::admin_fs::AdminFs;
 use crate::catalog::{CatalogService, DownloadError, PluginPackage};
+use crate::commands::incoming;
 use crate::tasks::KERNEL_API;
 
 /// 暂存包最长保留时长：放弃权限确认页后由启动/准备安装前的清扫回收。
@@ -26,53 +28,16 @@ pub const INCOMING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 ///
 /// 只删单次安装的中间产物（`<token>.wbpkg` 与下载中的 `.part`），目录里其它文件
 /// 一律不碰；单个文件删除失败只留痕，不影响调用方流程。
-pub fn cleanup_stale_incoming(data_dir: &Path, ttl: Duration) -> usize {
-    let removed = cleanup_stale_incoming_at(
+pub fn cleanup_stale_incoming(fs: &AdminFs, data_dir: &Path, ttl: Duration) -> usize {
+    let removed = incoming::cleanup_expired(
+        fs,
         &data_dir.join("plugins").join(".incoming"),
         SystemTime::now(),
         ttl,
+        &[".wbpkg", ".part"],
     );
     if removed > 0 {
         info!(removed, ttl_secs = ttl.as_secs(), "已清理过期插件暂存包");
-    }
-    removed
-}
-
-/// `now` 显式传入以便单测精确控制年龄，不依赖修改 mtime。
-fn cleanup_stale_incoming_at(dir: &Path, now: SystemTime, ttl: Duration) -> usize {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let staged = matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("wbpkg" | "part")
-        );
-        if !staged {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        // 读不到 mtime 或 mtime 在当前时间之后（时钟回拨）时保守跳过，避免误删新文件。
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        let Ok(age) = now.duration_since(modified) else {
-            continue;
-        };
-        if age < ttl {
-            continue;
-        }
-        match fs::remove_file(&path) {
-            Ok(()) => removed += 1,
-            Err(e) => warn!(path = %path.display(), error = %e, "清理过期插件暂存包失败"),
-        }
     }
     removed
 }
@@ -90,6 +55,8 @@ pub struct StoreInstallRequest {
     pub allow_unsigned: bool,
     pub allow_reduced_sandbox: bool,
     pub data_dir: PathBuf,
+    /// 内核文件通道：暂存包清扫与验签失败清理都要留痕（调用方传 `AppState::admin_fs_arc`）。
+    pub admin_fs: Arc<AdminFs>,
 }
 
 /// 已暂存、等待权限确认的安装。
@@ -181,7 +148,7 @@ pub fn prepare(
     req: &StoreInstallRequest,
 ) -> Result<PreparedInstall, StoreInstallError> {
     // 放弃确认会遗留暂存包：每次准备安装前先扫一次过期文件。
-    cleanup_stale_incoming(&req.data_dir, INCOMING_TTL);
+    cleanup_stale_incoming(&req.admin_fs, &req.data_dir, INCOMING_TTL);
 
     if !catalog.enabled() {
         return Err(StoreInstallError::Disabled);
@@ -243,7 +210,7 @@ pub fn prepare(
         Ok(trust) => trust,
         Err(e) => {
             // 验签失败即删暂存：确认步骤不会再出现，文件也不能留在磁盘上。
-            let _ = fs::remove_file(&path);
+            let _ = req.admin_fs.remove_kernel(&path);
             return Err(match e {
                 skiff_plugin::TrustError::UnverifiedKey { key_id } => StoreInstallError::Signature(
                     format!("未导入该包的公钥（指纹 {key_id}）；未签名包默认拒装"),
@@ -331,6 +298,7 @@ fn new_token() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Arc;
 
     use sha2::{Digest, Sha256};
@@ -365,6 +333,15 @@ mod tests {
             }
         }
 
+        /// 通道夹具：数据根与站点根都落在本用例的临时目录，审计写本用例的内存库。
+        fn admin(&self) -> Arc<AdminFs> {
+            Arc::new(AdminFs::with_paths(
+                self.dir.path().to_path_buf(),
+                self.dir.path().join("www"),
+                Arc::new(skiff_store::Db::open_in_memory().unwrap()),
+            ))
+        }
+
         fn settings(&self) -> CatalogSettings {
             CatalogSettings {
                 enabled: true,
@@ -393,6 +370,7 @@ mod tests {
                 allow_unsigned: false,
                 allow_reduced_sandbox: true,
                 data_dir: self.dir.path().join("data"),
+                admin_fs: self.admin(),
             }
         }
 
@@ -726,14 +704,26 @@ verbs = ["list"]
         // 23 小时：未到 TTL，一个都不删。
         let now = SystemTime::now();
         assert_eq!(
-            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(23 * 3600), INCOMING_TTL),
+            incoming::cleanup_expired(
+                &fx.admin(),
+                &dir,
+                now + Duration::from_secs(23 * 3600),
+                INCOMING_TTL,
+                &[".wbpkg", ".part"],
+            ),
             0
         );
         assert!(staged.is_file());
 
         // 25 小时：只删暂存物，目录里的其它文件不动。
         assert_eq!(
-            cleanup_stale_incoming_at(&dir, now + Duration::from_secs(25 * 3600), INCOMING_TTL),
+            incoming::cleanup_expired(
+                &fx.admin(),
+                &dir,
+                now + Duration::from_secs(25 * 3600),
+                INCOMING_TTL,
+                &[".wbpkg", ".part"],
+            ),
             2
         );
         assert!(!staged.exists());

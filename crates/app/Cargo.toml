@@ -26,19 +26,16 @@ chrono = { workspace = true }
 toml = { workspace = true }
 # 商店目录（P1 只读接入）：验签与内容寻址
 skiff-sign = { workspace = true }
-ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 ureq = { workspace = true }
 webpki-roots = { workspace = true }
 rustls-pemfile = { workspace = true }
 
-# Unix syscall：write_atomic rename 后恢复原 owner/group（daemon 进程 group=skiff-plugins 会污染 config.toml 的 group）
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [dev-dependencies]
 tempfile = { workspace = true }
+# 清单验签用例：测试内临时生成 Ed25519 密钥对（生产验签走 skiff-sign）
+ed25519-dalek = { workspace = true }
 # 撤包原因端到端：用真实的 skiff-server 构建产物喂给客户端解析与视图
 skiff-server = { path = "../../tools/skiff-server" }
 # 证书链测试：进程内生成自签 CA 与服务器证书，起一个最小 TLS 服务端，不触网

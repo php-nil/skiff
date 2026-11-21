@@ -343,7 +343,7 @@ fn h_status(p: &Plugin) -> Result<Value, RpcError> {
 | `crates/pkgfmt/src/manifest.rs` | `Capability::Exec`、`bin:` 资源校验（拒绝包装器/目录）、hints→能力映射 |
 | `crates/sdk/src/lib.rs` | `host_exec`（提交+等到结束）/ `host_exec_submit` / `host_exec_status` / `host_exec_cancel` / `bin_grants` |
 | `crates/web/src/handlers/jobs.rs` | 任务中心识别 `host.exec`：类型/目标文案（插件提交与计划任务分开显示），隐藏重试 |
-| `xtask check` | 通道闸：`app`/`core` 非测试代码出现 `Command::new` 即红；内核文件写计数只减不增（基线 96 处 / 13 个文件） |
+| `xtask check` | 通道闸：`app`/`core` 非测试代码出现 `Command::new` 即红；内核文件写只允许 `FS_WRITE_ALLOWED` 白名单内的例外（当前仅 `catalog/mod.rs` 2 处流式下载），新增文件或超登记处数即红 |
 | `crates/wire`（2026-11-19） | `CAP_EXEC_RUN_LIGHT` + 路由稳定性测试 |
 | `crates/core/src/kernel/exec.rs`（2026-11-19） | `exec_run_light` handler：复用 execgrant/授权/形态判定，timeout 夹到 `[1, 30]`，每插件信号量 8（超出 429），审计 `exec.run_light`（无 job_id / exit_code / stdin）；审计入口统一收口到 `AppState::audit_or_log` |
 | `crates/sdk/src/lib.rs`（2026-11-19） | `host_exec_light(binary, argv, timeout_sec)`：一次 HTTP 返回 `{success, code, stdout, stderr, truncated}` |

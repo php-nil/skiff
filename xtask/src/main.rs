@@ -92,7 +92,8 @@ fn positional(args: &[String]) -> Vec<String> {
 /// 1. `crates/app` 与 `crates/core` 的非测试代码**不得出现 `Command::new`**：
 ///    宿主机进程的唯一入口是 `skiff_host`（超时 / 取消 / 清理只有一份）。
 /// 2. 内核自身的文件写**只能经内核文件通道**（`AdminFs::write_kernel` 等）。
-///    这条暂时是「只减不增」的计数闸：基线固定，迁移一处就下调一处。
+///    这条是**白名单闸**：只允许 [`FS_WRITE_ALLOWED`] 里的文件按登记的处数直写，
+///    其余文件出现直写、或已登记文件的处数上涨都算失败。
 ///
 /// 插件进程的 `Command::new` 不在此列（`crates/plugin/src/supervisor.rs` 拉起
 /// 插件是进程生命周期管理，不是宿主命令执行）。
@@ -119,9 +120,11 @@ fn check_channel() -> bool {
         println!("✓ 进程执行通道：app/core 无非测试的直接 Command::new");
     }
 
-    // 规则 2：内核文件写入口（只减不增）
+    // 规则 2：内核文件写入口（白名单 + 按文件计数）
     let mut writes = 0usize;
     let mut files = 0usize;
+    let mut unlisted: Vec<(String, usize)> = Vec::new();
+    let mut grown: Vec<(String, usize, usize)> = Vec::new();
     for (file, text) in rust_files(&root.join("crates/app/src")) {
         let name = file
             .file_name()
@@ -136,33 +139,76 @@ fn check_channel() -> bool {
             continue;
         }
         let hits = count_fs_writes(&before_tests(&text));
-        if hits > 0 {
-            files += 1;
-            writes += hits;
+        if hits == 0 {
+            continue;
+        }
+        files += 1;
+        writes += hits;
+        // 白名单里的路径相对 `crates/app/src`，用 `/` 分隔（Windows 上 `rel` 是反斜杠）。
+        let full = rel(&root, &file).replace('\\', "/");
+        let path = full
+            .strip_prefix("crates/app/src/")
+            .unwrap_or(&full)
+            .to_string();
+        match FS_WRITE_ALLOWED
+            .iter()
+            .find(|(allowed, _)| *allowed == path)
+        {
+            Some((_, allowed)) if hits > *allowed => grown.push((path, hits, *allowed)),
+            Some(_) => {}
+            None => unlisted.push((path, hits)),
         }
     }
-    match FS_WRITE_BASELINE {
-        Some(baseline) if writes > baseline => {
+    if !unlisted.is_empty() {
+        for (path, hits) in &unlisted {
+            println!("✗ {path}: {hits} 处直写，且不在白名单 —— 必须经内核文件通道");
+        }
+        ok = false;
+    }
+    if !grown.is_empty() {
+        for (path, hits, allowed) in &grown {
             println!(
-                "✗ 内核文件写：{files} 个文件共 {writes} 处，超过基线 {baseline} —— 新写入必须经 write_kernel"
+                "✗ {path}: {hits} 处直写，超过登记的 {allowed} 处 —— 新增写入必须经内核文件通道"
+            );
+        }
+        ok = false;
+    }
+    // 白名单里已经迁完的条目（处数下降）必须同步下调，否则闸门会悄悄放宽。
+    for (allowed, baseline) in FS_WRITE_ALLOWED {
+        let hits = count_in(&root, allowed);
+        if hits < *baseline {
+            println!(
+                "✗ {allowed}: 现 {hits} 处，登记 {baseline} 处 —— 迁移完成后必须下调白名单基线"
             );
             ok = false;
         }
-        Some(baseline) => {
-            println!("✓ 内核文件写：{files} 个文件共 {writes} 处（基线 {baseline}，只减不增）");
-        }
-        None => println!("内核文件写：{files} 个文件共 {writes} 处（未设基线）"),
+    }
+    if ok {
+        println!(
+            "✓ 内核文件写：{files} 个文件共 {writes} 处，全部在白名单内（{} 个文件）",
+            FS_WRITE_ALLOWED.len()
+        );
     }
     ok
 }
 
-/// 内核文件写的基线。**只能下调**：每迁一处到 `write_kernel` 就减一处。
+/// 统计某个已登记文件当前的直写处数（用于「迁完必须下调基线」的校验）。
+fn count_in(root: &Path, rel_path: &str) -> usize {
+    let path = root.join("crates/app/src").join(rel_path);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return 0;
+    };
+    count_fs_writes(&before_tests(&text))
+}
+
+/// 允许直写的文件与处数白名单（路径相对 `crates/app/src`，用 `/` 分隔）。
 ///
-/// 2026-11-21 重定 **96 处（13 个文件）**：`panel_settings` 的 `config.toml`
-/// 已改走 `AdminFs::write_kernel`（所有可写键零直写）。剩余计数按两类看：
-/// **内核文件**必须继续迁 `write_kernel`；**宿主 nginx/php 配置**本就应直写，
-/// 但必须在命令层留业务审计（如 `nginx.config.save` / `nginx.params.save`）。
-const FS_WRITE_BASELINE: Option<usize> = Some(96);
+/// 2026-11-21 收口后只剩一处例外：`catalog/mod.rs` 的**流式下载**。
+/// 包正文整块落盘（通道单次写上限 256 KiB、无流式接口）与发布替换
+/// （必须是一次性 `rename`，通道改名对已存在目标是先删后移）留在 `std::fs`，
+/// 其余配套动作（建目录、失败清理）已迁 `AdminFs`。两处写都在验签/核对摘要之后，
+/// 失败即整包丢弃。**新增写入不得往这里加**；通道支持流式写时再迁走并删掉此项。
+const FS_WRITE_ALLOWED: &[(&str, usize)] = &[("catalog/mod.rs", 2)];
 
 /// 递归收集 `.rs` 文件。
 fn rust_files(dir: &Path) -> Vec<(PathBuf, String)> {

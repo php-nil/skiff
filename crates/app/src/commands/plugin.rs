@@ -55,10 +55,14 @@ pub fn install(
     data_dir: &Path,
     package: &Path,
     opts: &InstallOptions,
+    kfs: &crate::admin_fs::AdminFs,
 ) -> Result<InstalledInfo, PluginCommandError> {
     let result = skiff_plugin::install_package(db, data_dir, package, opts)
         .map_err(|e| PluginCommandError::Rejected(e.to_string()));
-    let _ = std::fs::remove_file(package);
+    // 暂存包是内核自己落下的中间产物：安装结束后经内核通道删除（留一条 `fs.remove`）。
+    if package.exists() {
+        let _ = kfs.remove_kernel(package);
+    }
     result
 }
 
@@ -69,8 +73,9 @@ pub async fn install_with_tasks(
     package: &Path,
     opts: &InstallOptions,
     tasks: Option<&Arc<TaskService>>,
+    kfs: &crate::admin_fs::AdminFs,
 ) -> Result<InstalledInfo, PluginCommandError> {
-    let info = install(db, data_dir, package, opts)?;
+    let info = install(db, data_dir, package, opts, kfs)?;
     if let Some(tasks) = tasks {
         tasks.sync_manifest_tasks().await;
     }

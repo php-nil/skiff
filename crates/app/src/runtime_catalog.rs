@@ -5,7 +5,7 @@
 
 use skiff_store::{KIND_NODE, KIND_PHP, KIND_RUST};
 
-use crate::sites::{DEFAULT_PHP_IMAGE, DEFAULT_PHP_VERSION};
+use crate::sites::DEFAULT_PHP_VERSION;
 
 /// 一个可创建运行环境类型及其可选的次版本号。
 #[derive(Debug, Clone, Copy)]
@@ -83,11 +83,6 @@ pub fn version_env_key(kind: &str) -> Option<&'static str> {
         KIND_NODE => Some("NODE_VERSION"),
         _ => None,
     }
-}
-
-/// 默认 PHP 镜像名（P1 默认版本）。
-pub fn default_php_image() -> &'static str {
-    DEFAULT_PHP_IMAGE
 }
 
 // ---------------------------------------------------------------------------
@@ -273,11 +268,6 @@ pub fn port_range(kind: &str) -> Option<std::ops::RangeInclusive<u16>> {
 /// 为新的进程型环境分配端口：区间内最小的未占用端口；区间耗尽返回 None。
 pub fn allocate_port(kind: &str, used: &[u16]) -> Option<u16> {
     port_range(kind)?.into_iter().find(|p| !used.contains(p))
-}
-
-/// 为新的 Rust 环境分配端口（兼容既有调用）。
-pub fn allocate_rust_port(used: &[u16]) -> Option<u16> {
-    allocate_port(KIND_RUST, used)
 }
 
 /// 扩展来源：镜像内置 / PHP 源码内置（docker-php-ext-install）/ PECL。
@@ -1394,12 +1384,6 @@ pub fn extension_label(token: &str) -> String {
     }
 }
 
-pub fn extension_category(token: &str) -> String {
-    php_extension(token)
-        .map(|e| e.category.to_string())
-        .unwrap_or_else(|| CATEGORY_OTHER.to_string())
-}
-
 /// 接受客户端提交的扩展 token：目录项按目录顺序，PECL token 去重后追加。
 pub fn normalize_extensions(raw: &[String]) -> Vec<String> {
     let mut catalog = Vec::new();
@@ -1471,6 +1455,7 @@ pub fn disable_script(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sites::DEFAULT_PHP_IMAGE;
 
     /// 前置脚本由 `format!` 拼装，转义写错（`${{…}}` 漏转义、`%{{speed_download}}`
     /// 写成 `%{speed_download}`）编译期完全看不出来，只会在容器里炸成「apk 装不上」
@@ -1616,10 +1601,10 @@ mod tests {
 
     #[test]
     fn rust_ports_are_allocated_in_range() {
-        assert_eq!(allocate_rust_port(&[]), Some(9100));
-        assert_eq!(allocate_rust_port(&[9100, 9102]), Some(9101));
+        assert_eq!(allocate_port(KIND_RUST, &[]), Some(9100));
+        assert_eq!(allocate_port(KIND_RUST, &[9100, 9102]), Some(9101));
         let all: Vec<u16> = RUST_PORT_RANGE.collect();
-        assert_eq!(allocate_rust_port(&all), None);
+        assert_eq!(allocate_port(KIND_RUST, &all), None);
     }
 
     #[test]

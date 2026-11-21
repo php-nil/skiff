@@ -425,6 +425,16 @@ pub struct AdminFs {
     seq: AtomicU64,
 }
 
+/// 手写 `Debug`：`Fs` 内部持有锁与审计汇，整体打印没有信息量，也容易把路径
+/// 以外的内部状态带进日志；只暴露受保护前缀，够定位「为什么这个路径被拒」。
+impl std::fmt::Debug for AdminFs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminFs")
+            .field("protected", &self.protected)
+            .finish_non_exhaustive()
+    }
+}
+
 /// 计算内核受保护前缀：数据根、`plugins/`、`official/`、运行配置与 TLS 材料。
 ///
 /// 只保护「碰了会让内核起不来」的路径；`config_path` 的父目录仅在其专用目录名为
@@ -1145,6 +1155,121 @@ impl AdminFs {
             .write(&principal, &ctx, &req)
             .map(|_| ())
             .map_err(|e| format!("{}：{}", path.display(), e.message()))
+    }
+
+    /// 内核自身写文件并指定权限位。
+    ///
+    /// 脚本（0755）、私钥（0600）这类「权限就是语义」的文件不能只靠 umask：
+    /// 新建文件的默认位是 0644，漏了 chmod 会让脚手架脚本不可执行、私钥过宽。
+    /// 正文写入仍是一次原子替换；权限位单独留一条 `fs.chmod` 审计。
+    pub fn write_kernel_mode(&self, path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+        self.write_kernel(path, bytes)?;
+        self.chmod_kernel(path, mode)
+    }
+
+    /// 内核自身改权限位；非 Unix 平台没有权限位语义，视为成功。
+    ///
+    /// 开发机 Windows 也跑 `test-win` job：把「不支持」当失败会让建站、写脚本
+    /// 这类路径在 Windows 上直接报错，而它们在部署形态（Linux）才需要权限位。
+    pub fn chmod_kernel(&self, path: &Path, mode: u32) -> Result<(), String> {
+        let ctx = OpContext::new(self.kernel_request_id("chmod"));
+        match self
+            .fs
+            .chmod(
+                &Principal::kernel(KERNEL_ACTOR),
+                &ctx,
+                &path.to_string_lossy(),
+                mode,
+            )
+            .map(|_| ())
+        {
+            Ok(()) => Ok(()),
+            Err(FsError::Unsupported(_)) => Ok(()),
+            Err(e) => Err(format!("{}：{}", path.display(), e.message())),
+        }
+    }
+
+    /// 「内容一致就不写」的内核落盘。
+    ///
+    /// 站点脚手架、PHP ini、启动脚本这类文件在每次建站/切环境时都会重算一遍，
+    /// 内容没变就不该产生噪音审计，也不该刷新 mtime（mtime 会被运行环境页当作
+    /// 「何时被改过」展示）。判定用只读比较，不经过文件通道。
+    pub fn write_if_changed_kernel(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            self.ensure_dir_kernel(parent)?;
+        }
+        let unchanged = std::fs::read(path).map(|old| old == bytes).unwrap_or(false);
+        if unchanged {
+            return Ok(());
+        }
+        self.write_kernel_mode(path, bytes, mode)
+    }
+
+    /// 内核自身改名。
+    ///
+    /// 注意语义：`skiff-fs` 的改名在目标已存在时是**两段式**（先删目标再移动），
+    /// 不是 POSIX `rename` 的一次性替换。因此它适合「启用/停用配置」这类
+    /// 目标本不该存在的开关动作；证书这类「读不到就握手失败」的文件要用
+    /// [`Self::write_kernel`] 走原子替换，而不是先删后移。
+    pub fn rename_kernel(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let ctx = OpContext::new(self.kernel_request_id("rename"));
+        self.fs
+            .rename(
+                &Principal::kernel(KERNEL_ACTOR),
+                &ctx,
+                &from.to_string_lossy(),
+                &to.to_string_lossy(),
+                true,
+            )
+            .map(|_| ())
+            .map_err(|e| format!("{} → {}：{}", from.display(), to.display(), e.message()))
+    }
+
+    /// 内核自身复制单个文件（保留原权限位）。
+    ///
+    /// 用于运行环境克隆这类「把用户代码复制到新目录」的动作；目标必须不存在，
+    /// 否则报冲突——覆盖语义只在明确需要时由调用方先删。
+    pub fn copy_kernel(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let ctx = OpContext::new(self.kernel_request_id("copy"));
+        self.fs
+            .copy(
+                &Principal::kernel(KERNEL_ACTOR),
+                &ctx,
+                &from.to_string_lossy(),
+                &to.to_string_lossy(),
+                false,
+            )
+            .map(|_| ())
+            .map_err(|e| format!("{} → {}：{}", from.display(), to.display(), e.message()))
+    }
+
+    /// 内核自身删目录树（`remove_kernel` 对目录是递归删）。
+    ///
+    /// Windows 上杀软/索引服务会短暂占用刚写入的文件，`remove_dir_all` 因此报
+    /// `Directory not empty`（os error 145）；这里保留原有的有界退避重试，
+    /// 目标本来就不存在时视为成功。
+    pub fn remove_tree_kernel(&self, path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut delay = std::time::Duration::from_millis(20);
+        for attempt in 0..6 {
+            match self.remove_kernel(path) {
+                Ok(()) => return Ok(()),
+                Err(e) if attempt < 5 => {
+                    tracing::debug!(path = %path.display(), error = %e, "删除目录失败，重试");
+                    std::thread::sleep(delay);
+                    delay = delay.saturating_mul(2);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// 内核自身删文件。

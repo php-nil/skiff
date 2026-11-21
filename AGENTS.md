@@ -42,7 +42,7 @@
 - **重构与修复并重**：既有技术债导致 Bug 频发时，在合理范围内内聚修复，或标记并列入「待决策问题」。
 - **数字纪律**：未实测的数字与能力声明只标「设计目标 / 待实测」，不得当已验证事实引用。
 - **展示文案归属**：随视图结构变化的文案留 `crates/app/src/views/*`；纯枚举（作业/任务状态、扩展来源、目录状态）留 `crates/web/src/labels.rs`；与配色 class 或视图语义绑定的状态文案留对应 handler。三处归属各有理由，统一迁移要同时动 SSR 与 JSON 两个消费面且无行为收益，不为此单独开批次（见 `docs/impl/KERNEL_ARCH_AUDIT.md` §4 C10）。
-- **通道唯一（无例外）**：宿主机进程执行只能经 `skiff_host`（`crates/host`），内核自身的文件写只能经 `AdminFs::write_kernel` / `remove_kernel`（`crates/app/src/admin_fs.rs`）。`crates/app` / `crates/core` 的非测试代码**不得出现 `Command::new`**；新增直接 `std::fs::write`/`remove_file`/`rename` 会让 `cargo run -p xtask -- check-channel` 失败（基线只减不增）。理由不是授权而是**记录**：`exec` 进运行记录、`fs` 进审计，绕过通道的行为事后查不到——这正是用「全量记录」替代「逐功能权限设计」的前提。宿主 nginx/php 配置的直写不属于内核文件通道，但必须在命令层留业务审计。
+- **通道唯一（无例外）**：宿主机进程执行只能经 `skiff_host`（`crates/host`），内核自身的文件写只能经 `AdminFs::write_kernel` / `remove_kernel`（`crates/app/src/admin_fs.rs`）。`crates/app` / `crates/core` 的非测试代码**不得出现 `Command::new`**；新增直接 `std::fs::write`/`remove_file`/`rename` 会让 `cargo run -p xtask -- check-channel` 失败——该闸是**白名单制**：只有 `xtask` 里登记的例外文件可按登记处数直写（当前仅 `catalog/mod.rs` 的流式下载正文与发布替换），迁走一处必须同步下调登记。理由不是授权而是**记录**：`exec` 进运行记录、`fs` 进审计，绕过通道的行为事后查不到——这正是用「全量记录」替代「逐功能权限设计」的前提。宿主 nginx 主配置、vhost、证书、站点脚手架与商店缓存同属内核文件通道；命令层只对「为什么改」另落业务审计。
 
 ### 4.2 工作流与决策机制
 

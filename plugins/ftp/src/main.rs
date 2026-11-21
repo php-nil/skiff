@@ -17,6 +17,7 @@
 
 use serde_json::{json, Value};
 use skiff_plugin_common as common;
+use skiff_plugin_common::{SITE_GID, SITE_UID};
 use skiff_sdk::{Plugin, RpcError};
 
 // ─────────────────── FTP 常量（插件侧自管，不依赖内核 crate） ───────────────────
@@ -206,10 +207,9 @@ fn pure_pw_path(p: &Plugin) -> Result<&'static str, RpcError> {
 
 const LOGIN_PREFIX: &str = "skiff_";
 
-/// pure-pw useradd 会在 home 目录建 UID/GID 为 0/0 的文件，v1 统一用固定身份
-/// 避免每次解析站点目录 owner；skiff-model::SITE_UID / SITE_GID 的值。
-const SITE_UID: u32 = 1000;
-const SITE_GID: u32 = 1000;
+// pure-pw useradd 会在 home 目录建 UID/GID 为 0/0 的文件，v1 统一用固定身份
+// 避免每次解析站点目录 owner；取 `skiff_model::SITE_UID` / `SITE_GID`（经
+// `skiff-plugin-common` 转出），与容器内 PHP 进程保持同一身份。
 
 fn valid_account_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -346,11 +346,6 @@ fn find_site<'a>(sites_res: &'a Value, domain: &str) -> Option<&'a Value> {
         .and_then(Value::as_array)?
         .iter()
         .find(|s| s.get("domain").and_then(Value::as_str) == Some(domain))
-}
-
-/// 从站点 resolve uid/gid。
-fn resolve_identity(_site: &Value) -> Result<(u32, u32), RpcError> {
-    Ok((SITE_UID, SITE_GID))
 }
 
 /// align_tree 等价：把站点文档根及子目录 chown 成 uid:gid、归一权限。
@@ -1121,7 +1116,7 @@ fn create(plugin: &Plugin, params: Value) -> Result<Value, RpcError> {
     let site = find_site(&sites_res, domain)
         .ok_or_else(|| RpcError::internal(format!("站点不存在：{domain}")))?;
 
-    let (uid, gid) = resolve_identity(site)?;
+    let (uid, gid) = (SITE_UID, SITE_GID);
     let login = ftp_login(domain, account);
     let existing = read_accounts(plugin)?;
     if existing.iter().any(|a| a.login == login) {

@@ -10,6 +10,7 @@ use skiff_model::{is_absolute, normalize_dir, within, within_root};
 use skiff_store::{Site, TYPE_PROXY, TYPE_RUNTIME, TYPE_STATIC};
 
 use super::*;
+use crate::admin_fs::AdminFs;
 use crate::time_fmt::unix_now;
 use crate::AppState;
 
@@ -301,32 +302,60 @@ fn read_backup(path: &Path) -> Result<Option<Vec<u8>>, SiteError> {
 }
 
 /// 恢复成备份内容；原本不存在则删除当前文件。
-fn restore_backup(path: &Path, old: Option<&[u8]>, mode: u32) {
+///
+/// 备份内容是从磁盘读回来的（`read_backup`），恢复也要经内核文件通道：
+/// 证书属于内核受保护前缀里的 TLS 材料，回滚同样是「内核改写了自己的文件」。
+fn restore_backup(fs: &AdminFs, path: &Path, old: Option<&[u8]>, mode: u32) {
     match old {
         Some(bytes) => {
-            if let Err(e) = crate::atomic::write_atomic(path, bytes, mode) {
+            if let Err(e) = fs.write_kernel_mode(path, bytes, mode) {
                 tracing::error!(path = %path.display(), error = %e, "恢复证书文件失败");
             }
         }
-        None => remove_quietly(path),
+        None => remove_quietly(fs, path),
     }
 }
 
-fn remove_quietly(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::debug!(path = %path.display(), error = %e, "清理临时/新证书文件失败");
+/// 清理一个「可能不存在」的内核文件：证书临时件、回滚用的 vhost 等。
+fn remove_quietly(fs: &AdminFs, path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    if let Err(e) = fs.remove_kernel(path) {
+        tracing::debug!(path = %path.display(), error = %e, "清理文件失败");
+    }
+}
+
+/// 回滚 vhost / 默认站配置快照：原本存在的写回原内容，原本不存在则删除。
+///
+/// 「先落库、再写文件、任一步失败回滚文件」是三处调用共同的模式（站点策略、
+/// TLS 开关），回滚口径必须与写入口径同源，所以两处共用这一份实现。
+fn restore_conf_snapshot(fs: &AdminFs, snapshot: &[(PathBuf, Option<Vec<u8>>)]) {
+    for (p, old) in snapshot {
+        match old {
+            Some(bytes) => {
+                if let Err(e) = fs.write_kernel_mode(p, bytes, 0o644) {
+                    tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败");
+                }
+            }
+            None => remove_quietly(fs, p),
         }
     }
 }
 
 /// 成对替换 cert/key。**调用方必须持有 [`super::nginx_write_lock`]**：
-/// 两次 `rename` 之间不允许任何 nginx reload 插入，否则会读到
+/// 两次发布之间不允许任何 nginx reload 插入，否则会读到
 /// 「新证书 + 旧私钥」这种不配对组合（`key values mismatch`）。
 ///
-/// 替换前先把现有文件读进内存备份；任一 `rename` 失败时两个文件都回到替换前
+/// 替换前先把现有文件读进内存备份；任一步失败时两个文件都回到替换前
 /// 的内容（而不是只删掉新证书，留下 vhost 指向不存在的文件）。
+///
+/// 发布方式：把已校验的临时文件内容经内核文件通道写到正式路径（通道内部是
+/// 同目录临时文件 + 原子替换），再清掉临时件。不用通道的改名原语
+/// 是因为它对待已存在目标要先删后移（两段式），证书这种「读不到就握手
+/// 失败」的文件必须保持一次性替换。
 pub(crate) fn replace_cert_pair(
+    fs: &AdminFs,
     tmp_cert: &Path,
     tmp_key: &Path,
     cert: &Path,
@@ -335,26 +364,26 @@ pub(crate) fn replace_cert_pair(
     let cert_old = match read_backup(cert) {
         Ok(v) => v,
         Err(e) => {
-            remove_quietly(tmp_cert);
-            remove_quietly(tmp_key);
+            remove_quietly(fs, tmp_cert);
+            remove_quietly(fs, tmp_key);
             return Err(CertPairError::Restored(e));
         }
     };
     let key_old = match read_backup(key) {
         Ok(v) => v,
         Err(e) => {
-            remove_quietly(tmp_cert);
-            remove_quietly(tmp_key);
+            remove_quietly(fs, tmp_cert);
+            remove_quietly(fs, tmp_key);
             return Err(CertPairError::Restored(e));
         }
     };
     let had_pair = cert_old.is_some() && key_old.is_some();
 
-    let fail = |e: std::io::Error, what: &str| -> CertPairError {
-        restore_backup(cert, cert_old.as_deref(), 0o644);
-        restore_backup(key, key_old.as_deref(), 0o600);
-        remove_quietly(tmp_cert);
-        remove_quietly(tmp_key);
+    let fail = |e: String, what: &str| -> CertPairError {
+        restore_backup(fs, cert, cert_old.as_deref(), 0o644);
+        restore_backup(fs, key, key_old.as_deref(), 0o600);
+        remove_quietly(fs, tmp_cert);
+        remove_quietly(fs, tmp_key);
         let err = SiteError::Internal(format!("{what}失败：{e}"));
         if had_pair {
             CertPairError::Restored(err)
@@ -363,14 +392,20 @@ pub(crate) fn replace_cert_pair(
         }
     };
 
-    if let Err(e) = std::fs::rename(tmp_cert, cert) {
+    if let Err(e) = publish_cert_file(fs, tmp_cert, cert, 0o644) {
         return Err(fail(e, "保存证书"));
     }
-    if let Err(e) = std::fs::rename(tmp_key, key) {
+    if let Err(e) = publish_cert_file(fs, tmp_key, key, 0o600) {
         return Err(fail(e, "保存私钥"));
     }
-    restrict_mode(cert, 0o644);
-    restrict_mode(key, 0o600);
+    Ok(())
+}
+
+/// 把一个已校验的临时证书文件发布到正式路径并清理临时件。
+fn publish_cert_file(fs: &AdminFs, tmp: &Path, dst: &Path, mode: u32) -> Result<(), String> {
+    let bytes = std::fs::read(tmp).map_err(|e| format!("读取 {} 失败：{e}", tmp.display()))?;
+    fs.write_kernel_mode(dst, &bytes, mode)?;
+    remove_quietly(fs, tmp);
     Ok(())
 }
 
@@ -783,7 +818,7 @@ impl AppState {
                 ));
             }
         }
-        if let Err(e) = crate::nginx::ensure_nginx_main_conf(&s, self.db()) {
+        if let Err(e) = crate::nginx::ensure_nginx_main_conf(self.admin_fs(), &s, self.db()) {
             return Err(self.fail_step(
                 job_id,
                 &mut steps,
@@ -1382,7 +1417,8 @@ impl AppState {
         let site_dir = PathBuf::from(&site.root_dir);
         let aliases = self.site_aliases(domain);
         let dir = site_ssl_dir(&site_dir);
-        std::fs::create_dir_all(&dir)
+        self.admin_fs()
+            .ensure_dir_kernel(&dir)
             .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
         let cert = s.cert_file(&site_dir);
         let key = s.key_file(&site_dir);
@@ -1423,15 +1459,15 @@ impl AppState {
         .await
         .map_err(|e| SiteError::Internal(format!("生成自签证书失败：{e}")))?;
         if !out.success {
-            let _ = std::fs::remove_file(&tmp_cert);
-            let _ = std::fs::remove_file(&tmp_key);
+            remove_quietly(self.admin_fs(), &tmp_cert);
+            remove_quietly(self.admin_fs(), &tmp_key);
             return Err(SiteError::Internal(format!(
                 "生成自签证书失败：{}",
                 out.stderr.trim()
             )));
         }
         let _guard = super::nginx_write_lock().lock().await;
-        if let Err(failure) = replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key) {
+        if let Err(failure) = replace_cert_pair(self.admin_fs(), &tmp_cert, &tmp_key, &cert, &key) {
             if failure.was_cleared() {
                 self.repair_no_cert_state(domain).await;
             }
@@ -1460,7 +1496,8 @@ impl AppState {
         }
         let site_dir = PathBuf::from(&site.root_dir);
         let dir = site_ssl_dir(&site_dir);
-        std::fs::create_dir_all(&dir)
+        self.admin_fs()
+            .ensure_dir_kernel(&dir)
             .map_err(|e| SiteError::Internal(format!("创建证书目录失败：{e}")))?;
         let cert = s.cert_file(&site_dir);
         let key = s.key_file(&site_dir);
@@ -1472,29 +1509,26 @@ impl AppState {
         let (cert_text, key_text) = (cert_pem.to_string(), key_pem.to_string());
         let (write_cert, write_key) = (tmp_cert.clone(), tmp_key.clone());
         // 写盘留在阻塞池（纯 IO）；`openssl` 校验走统一执行通道，不再在阻塞池里 fork。
+        // 证书与私钥是内核受保护前缀里的 TLS 材料，写入经内核文件通道并各自留审计；
+        // 权限位随写入给定（私钥 0600），不再另调 chmod。
+        let kfs = self.admin_fs_arc();
         tokio::task::spawn_blocking(move || {
-            std::fs::write(&write_cert, cert_text)
+            kfs.write_kernel_mode(&write_cert, cert_text.as_bytes(), 0o644)
                 .map_err(|e| SiteError::Internal(format!("写入证书失败：{e}")))?;
-            std::fs::write(&write_key, key_text)
+            kfs.write_kernel_mode(&write_key, key_text.as_bytes(), 0o600)
                 .map_err(|e| SiteError::Internal(format!("写入私钥失败：{e}")))?;
-            restrict_mode(&write_cert, 0o644);
-            restrict_mode(&write_key, 0o600);
             Ok::<(), SiteError>(())
         })
         .await
         .map_err(|e| SiteError::Internal(format!("证书写入任务失败：{e}")))??;
         if let Err(e) = verify_cert_pair(&tmp_cert, &tmp_key).await {
-            if let Err(ce) = std::fs::remove_file(&tmp_cert) {
-                tracing::debug!(path = %tmp_cert.display(), error = %ce, "清理临时证书失败");
-            }
-            if let Err(ke) = std::fs::remove_file(&tmp_key) {
-                tracing::debug!(path = %tmp_key.display(), error = %ke, "清理临时私钥失败");
-            }
+            remove_quietly(self.admin_fs(), &tmp_cert);
+            remove_quietly(self.admin_fs(), &tmp_key);
             return Err(SiteError::BadRequest(e));
         }
         // 成对替换与 reload 必须在一把锁内完成：中间态对 nginx 不可见。
         let _guard = super::nginx_write_lock().lock().await;
-        if let Err(failure) = replace_cert_pair(&tmp_cert, &tmp_key, &cert, &key) {
+        if let Err(failure) = replace_cert_pair(self.admin_fs(), &tmp_cert, &tmp_key, &cert, &key) {
             if failure.was_cleared() {
                 self.repair_no_cert_state(domain).await;
             }
@@ -1526,7 +1560,8 @@ impl AppState {
             s.key_file(Path::new(&site.root_dir)),
         ] {
             if p.exists() {
-                std::fs::remove_file(&p)
+                self.admin_fs()
+                    .remove_kernel(&p)
                     .map_err(|e| SiteError::Internal(format!("删除证书文件失败：{e}")))?;
             }
         }
@@ -1541,7 +1576,7 @@ impl AppState {
                 if !is_upload_tmp {
                     continue;
                 }
-                if let Err(e) = std::fs::remove_file(entry.path()) {
+                if let Err(e) = self.admin_fs().remove_kernel(&entry.path()) {
                     tracing::debug!(path = %entry.path().display(), error = %e, "清理残留的临时证书失败");
                 }
             }
@@ -1602,22 +1637,6 @@ impl AppState {
             .into_iter()
             .map(|p| (p.clone(), std::fs::read(p).ok()))
             .collect();
-        let restore = |snapshot: &[(PathBuf, Option<Vec<u8>>)]| {
-            for (p, old) in snapshot {
-                match old {
-                    Some(bytes) => {
-                        if let Err(e) = std::fs::write(p, bytes) {
-                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败");
-                        }
-                    }
-                    None => {
-                        if let Err(e) = std::fs::remove_file(p) {
-                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败（删除新增文件）");
-                        }
-                    }
-                }
-            }
-        };
         let rollback_db = || {
             if let Err(e) = self.db().set_site_policy(domain, &old_rewrite, old_limit) {
                 tracing::error!(domain, error = %e, "回滚站点策略失败：数据库与磁盘可能不一致");
@@ -1627,22 +1646,22 @@ impl AppState {
             .set_site_policy(domain, rewrite, limit_rate_kbps)
             .map_err(|e| SiteError::Internal(format!("写入站点策略失败：{e}")))?;
         if let Err(e) = self.write_site_vhost(&s, domain) {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             rollback_db();
             return Err(e);
         }
         if let Err(e) = self.sync_default_conf(&s) {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             rollback_db();
             return Err(SiteError::Internal(format!("写入默认站点配置失败：{e}")));
         }
         if let Err(e) = self.validate_nginx_locked().await {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             rollback_db();
             return Err(e);
         }
         if let Err(e) = self.activate_nginx_locked().await {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             rollback_db();
             if let Err(re) = self.restart_nginx_locked().await {
                 tracing::error!(error = %re, "回滚后重启 nginx 失败，现网可能仍加载失败配置");
@@ -1694,35 +1713,19 @@ impl AppState {
             .into_iter()
             .map(|p| (p.clone(), std::fs::read(p).ok()))
             .collect();
-        let restore = |snapshot: &[(PathBuf, Option<Vec<u8>>)]| {
-            for (p, old) in snapshot {
-                match old {
-                    Some(bytes) => {
-                        if let Err(e) = std::fs::write(p, bytes) {
-                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败");
-                        }
-                    }
-                    None => {
-                        if let Err(e) = std::fs::remove_file(p) {
-                            tracing::error!(path = %p.display(), error = %e, "回滚站点配置失败（删除新增文件）");
-                        }
-                    }
-                }
-            }
-        };
 
         self.db()
             .set_site_tls(domain, https, force_https)
             .map_err(|e| SiteError::Internal(format!("写入 HTTPS 状态失败：{e}")))?;
         if let Err(e) = self.write_site_vhost(&s, domain) {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
                 tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
             }
             return Err(e);
         }
         if let Err(e) = self.sync_default_conf(&s) {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
                 tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
             }
@@ -1731,14 +1734,14 @@ impl AppState {
         if let Err(e) = self.validate_nginx_locked().await {
             // 校验失败时运行中的 nginx 还没加载新配置，恢复文件即可；
             // 这里**不能再重启**——若失败源于别的坏 conf，重启会让现网 nginx 起不来。
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
                 tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
             }
             return Err(e);
         }
         if let Err(e) = self.activate_nginx_locked().await {
-            restore(&snapshot);
+            restore_conf_snapshot(self.admin_fs(), &snapshot);
             if let Err(re) = self.db().set_site_tls(domain, old_https, old_force) {
                 tracing::error!(domain, error = %re, "回滚 HTTPS 状态失败：数据库与磁盘可能不一致");
             }
@@ -2031,12 +2034,14 @@ impl AppState {
             &site_ssl_dir(&root),
             &site_conf_dir(&root),
         ] {
-            std::fs::create_dir_all(dir)
+            self.admin_fs()
+                .ensure_dir_kernel(dir)
                 .map_err(|e| SiteError::Internal(format!("创建 {} 失败：{e}", dir.display())))?;
         }
         match site_type {
             TYPE_RUNTIME => {
-                std::fs::create_dir_all(site_index_dir(&root))
+                self.admin_fs()
+                    .ensure_dir_kernel(&site_index_dir(&root))
                     .map_err(|e| SiteError::Internal(format!("创建站点文档根失败：{e}")))?;
                 // 按运行环境类型给初始文件：只有 PHP 写 index.php 探针；Node.js / Rust
                 // 的代码固定在环境 `app/`，站点目录保持为空，不再写脚手架。
@@ -2045,23 +2050,27 @@ impl AppState {
                 {
                     let file = site_index_dir(&root).join(rel);
                     if let Some(parent) = file.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
+                        self.admin_fs().ensure_dir_kernel(parent).map_err(|e| {
                             SiteError::Internal(format!("创建 {} 失败：{e}", parent.display()))
                         })?;
                     }
                     if !file.exists() {
-                        std::fs::write(&file, content).map_err(|e| {
-                            SiteError::Internal(format!("写入 {} 失败：{e}", file.display()))
-                        })?;
+                        self.admin_fs()
+                            .write_kernel(&file, content.as_bytes())
+                            .map_err(|e| {
+                                SiteError::Internal(format!("写入 {} 失败：{e}", file.display()))
+                            })?;
                     }
                 }
             }
             TYPE_STATIC => {
-                std::fs::create_dir_all(site_index_dir(&root))
+                self.admin_fs()
+                    .ensure_dir_kernel(&site_index_dir(&root))
                     .map_err(|e| SiteError::Internal(format!("创建站点文档根失败：{e}")))?;
                 let index = site_index_dir(&root).join("index.html");
                 if !index.exists() {
-                    std::fs::write(&index, default_probe_html())
+                    self.admin_fs()
+                        .write_kernel(&index, default_probe_html().as_bytes())
                         .map_err(|e| SiteError::Internal(format!("写入 index.html 失败：{e}")))?;
                 }
             }
@@ -2093,9 +2102,7 @@ impl AppState {
             if let Err(e) = self.db().delete_site(&domain) {
                 tracing::error!(site = %domain, error = %e, "回滚站点行失败");
             }
-            if let Err(e) = std::fs::remove_file(conf) {
-                tracing::error!(path = %conf.display(), error = %e, "回滚站点配置文件失败");
-            }
+            remove_quietly(self.admin_fs(), conf);
         };
         if let Err(e) = self.write_default_vhost(&s) {
             rollback(&s.vhost_file(&root, &domain));
@@ -2109,7 +2116,7 @@ impl AppState {
             }
         };
         let conf = s.vhost_file(&root, &domain);
-        if let Err(e) = std::fs::write(&conf, &vhost) {
+        if let Err(e) = self.admin_fs().write_kernel(&conf, vhost.as_bytes()) {
             rollback(&conf);
             return Err(SiteError::Internal(format!("写入 vhost 失败：{e}")));
         }
@@ -2257,14 +2264,15 @@ impl AppState {
                 .await
                 .map_err(|e| SiteError::Conflict(format!("拒绝启动：站点配置未通过校验（{e}）")))?;
             if !conf.exists() && disabled.exists() {
-                std::fs::rename(&disabled, &conf)
+                self.admin_fs()
+                    .rename_kernel(&disabled, &conf)
                     .map_err(|e| SiteError::Internal(format!("启用配置失败：{e}")))?;
                 activated = true;
             }
             // 再跑一次完整的线上 include 校验：单站合法但多站 conflict 也要拦。
             if let Err(e) = self.validate_nginx().await {
                 if activated {
-                    if let Err(re) = std::fs::rename(&conf, &disabled) {
+                    if let Err(re) = self.admin_fs().rename_kernel(&conf, &disabled) {
                         tracing::error!(error = %re, "回滚站点配置重命名失败");
                     }
                 }
@@ -2274,7 +2282,7 @@ impl AppState {
             }
             if let Err(e) = self.restart_nginx().await {
                 if activated {
-                    if let Err(re) = std::fs::rename(&conf, &disabled) {
+                    if let Err(re) = self.admin_fs().rename_kernel(&conf, &disabled) {
                         tracing::error!(error = %re, "回滚站点配置重命名失败");
                     }
                     if let Err(re) = self.restart_nginx().await {
@@ -2287,7 +2295,7 @@ impl AppState {
             let env = self.site_env_status().await;
             if env.installed && env.nginx_state != "running" {
                 if activated {
-                    if let Err(re) = std::fs::rename(&conf, &disabled) {
+                    if let Err(re) = self.admin_fs().rename_kernel(&conf, &disabled) {
                         tracing::error!(error = %re, "回滚站点配置重命名失败");
                     }
                     if let Err(re) = self.restart_nginx().await {
@@ -2300,12 +2308,13 @@ impl AppState {
                 )));
             }
         } else if conf.exists() {
-            std::fs::rename(&conf, &disabled)
+            self.admin_fs()
+                .rename_kernel(&conf, &disabled)
                 .map_err(|e| SiteError::Internal(format!("停用配置失败：{e}")))?;
             // 与启动分支对称：reload 失败必须把 vhost 恢复回去，否则数据库仍记
             // running、磁盘上却已停用，之后任何一次 nginx 重启站点都会消失。
             if let Err(e) = self.restart_nginx().await {
-                if let Err(re) = std::fs::rename(&disabled, &conf) {
+                if let Err(re) = self.admin_fs().rename_kernel(&disabled, &conf) {
                     tracing::error!(error = %re, "回滚站点停用失败");
                 } else if let Err(re) = self.restart_nginx().await {
                     tracing::error!(error = %re, "回滚后重载 nginx 失败");
@@ -2371,20 +2380,28 @@ impl AppState {
 
     /// 写 `00-skiff-default.conf` 并 reload nginx。
     async fn write_default_conf(&self, s: &SiteSettings, site: &Site) -> Result<(), SiteError> {
-        std::fs::create_dir_all(&s.conf_dir)
+        let fs = self.admin_fs();
+        fs.ensure_dir_kernel(&s.conf_dir)
             .map_err(|e| SiteError::Internal(format!("创建配置目录失败：{e}")))?;
-        if !s.conf_dir.join(FALLBACK_CONF).exists() {
-            std::fs::write(s.conf_dir.join(FALLBACK_CONF), FALLBACK_VHOST)
-                .map_err(|e| SiteError::Internal(format!("写入兜底配置失败：{e}")))?;
-        }
-        if !s.conf_dir.join(SITES_INCLUDE_CONF).exists() {
-            std::fs::write(s.conf_dir.join(SITES_INCLUDE_CONF), s.sites_include_conf())
-                .map_err(|e| SiteError::Internal(format!("写入站点 include 失败：{e}")))?;
-        }
+        // 兜底站与站点 include 入口都是内核生成的投影文件：内容一致就不写，
+        // 与 `sync_default_conf` 共用同一口径（同一个 `write_if_changed_kernel`）。
+        fs.write_if_changed_kernel(
+            &s.conf_dir.join(FALLBACK_CONF),
+            FALLBACK_VHOST.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| SiteError::Internal(format!("写入兜底配置失败：{e}")))?;
+        fs.write_if_changed_kernel(
+            &s.conf_dir.join(SITES_INCLUDE_CONF),
+            s.sites_include_conf().as_bytes(),
+            0o644,
+        )
+        .map_err(|e| SiteError::Internal(format!("写入站点 include 失败：{e}")))?;
         let tls = self.site_tls(s, site);
         let content = self.render_default_vhost_for(s, site, tls.as_ref())?;
-        // 原子替换：写到一半失败时旧 conf 仍在，不会让 nginx 读到半截配置。
-        write_if_changed(&s.conf_dir.join(DEFAULT_CONF), content.as_bytes(), 0o644)
+        // 原子替换 + 内容一致不写：写到一半失败时旧 conf 仍在，不会让 nginx
+        // 读到半截配置；内容没变则不产生多余审计、也不刷 mtime。
+        fs.write_if_changed_kernel(&s.conf_dir.join(DEFAULT_CONF), content.as_bytes(), 0o644)
             .map_err(|e| SiteError::Internal(format!("写入默认站点配置失败：{e}")))?;
         self.restart_nginx().await
     }
@@ -2392,10 +2409,10 @@ impl AppState {
     /// 删除 `00-skiff-default.conf` 并 reload nginx。
     async fn remove_default_conf(&self, s: &SiteSettings) -> Result<(), SiteError> {
         let conf = s.conf_dir.join(DEFAULT_CONF);
-        match std::fs::remove_file(&conf) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(SiteError::Internal(format!("删除默认站点配置失败：{e}"))),
+        if conf.exists() {
+            self.admin_fs()
+                .remove_kernel(&conf)
+                .map_err(|e| SiteError::Internal(format!("删除默认站点配置失败：{e}")))?;
         }
         self.restart_nginx().await
     }
@@ -2459,7 +2476,8 @@ impl AppState {
         if site.is_default {
             let p = s.conf_dir.join(DEFAULT_CONF);
             if p.exists() {
-                std::fs::remove_file(&p)
+                self.admin_fs()
+                    .remove_kernel(&p)
                     .map_err(|e| SiteError::Internal(format!("删除默认站点配置失败：{e}")))?;
             }
         }
@@ -2473,7 +2491,7 @@ impl AppState {
             .unwrap_or_else(|_| s.sites_dir.clone());
         let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
         if root.exists() && root_canon != sites_root && within_root(&sites_root, &root_canon) {
-            remove_dir_all_retry(&root).map_err(|e| {
+            self.admin_fs().remove_tree_kernel(&root).map_err(|e| {
                 SiteError::Internal(format!("删除站点目录 {} 失败：{e}", root.display()))
             })?;
         }
@@ -2577,7 +2595,8 @@ impl AppState {
             ));
         }
         let dir = s.web_root.join("skiff").join("vhost-check");
-        std::fs::create_dir_all(&dir)
+        self.admin_fs()
+            .ensure_dir_kernel(&dir)
             .map_err(|e| SiteError::Internal(format!("创建校验目录失败：{e}")))?;
         let stamp = chrono::Local::now()
             .timestamp_nanos_opt()
@@ -2586,17 +2605,15 @@ impl AppState {
         let main = dir.join(format!("{domain}-{stamp}.check-main.candidate"));
         let container_candidate = s.container_path(&candidate);
         let container_main = s.container_path(&main);
-        std::fs::write(&candidate, content)
+        self.admin_fs()
+            .write_kernel(&candidate, content.as_bytes())
             .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
-        std::fs::write(&main, vhost_check_main(&container_candidate))
+        self.admin_fs()
+            .write_kernel(&main, vhost_check_main(&container_candidate).as_bytes())
             .map_err(|e| SiteError::Internal(format!("写入校验主配置失败：{e}")))?;
         let result = self.nginx_test_candidate(&container_main).await;
-        if let Err(ce) = std::fs::remove_file(&candidate) {
-            tracing::debug!(path = %candidate.display(), error = %ce, "清理 nginx -t 候选配置失败");
-        }
-        if let Err(me) = std::fs::remove_file(&main) {
-            tracing::debug!(path = %main.display(), error = %me, "清理 nginx -t 临时主配置失败");
-        }
+        remove_quietly(self.admin_fs(), &candidate);
+        remove_quietly(self.admin_fs(), &main);
         let (code, out) = result?;
         if code == 0 {
             Ok(())
@@ -2637,7 +2654,8 @@ impl AppState {
         let _guard = super::nginx_write_lock().lock().await;
         // 先写临时文件再 rename，避免半截文件被 nginx 加载；临时名进程内唯一，
         // 并发保存同一站点时不会出现「后写者删掉先写者临时文件」。
-        crate::atomic::write_atomic(&path, content.as_bytes(), 0o644)
+        self.admin_fs()
+            .write_kernel_mode(&path, content.as_bytes(), 0o644)
             .map_err(|e| SiteError::Internal(format!("替换配置失败：{e}")))?;
         if !active {
             return Ok(VhostSaveOutcome { reloaded: false });
@@ -2651,7 +2669,7 @@ impl AppState {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 let env = self.site_env_status().await;
                 if env.installed && env.nginx_state != "running" {
-                    if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
+                    if let Err(re) = self.admin_fs().write_kernel_mode(&path, &original, 0o644) {
                         tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
                     }
                     if let Err(re) = self.restart_nginx_locked().await {
@@ -2666,7 +2684,7 @@ impl AppState {
             }
             Err(e) => {
                 // 回滚文件内容，保证磁盘与正在运行的 nginx 保持一致。
-                if let Err(re) = crate::atomic::write_atomic(&path, &original, 0o644) {
+                if let Err(re) = self.admin_fs().write_kernel_mode(&path, &original, 0o644) {
                     tracing::error!(path = %path.display(), error = %re, "回滚站点配置内容失败");
                 }
                 Err(SiteError::Unavailable(format!(

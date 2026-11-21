@@ -1,6 +1,7 @@
 //! 容器 spec 与镜像安装：镜像/脚本常量、纯函数与 `AppState` 的建容器方法。
 
 use super::*;
+use crate::admin_fs::AdminFs;
 
 /// OpenResty 官方镜像，固定 digest（不复用 1Panel 的 tag）。
 pub const DEFAULT_NGINX_IMAGE: &str =
@@ -156,19 +157,34 @@ pub(crate) fn validate_process_port(
 }
 
 /// 克隆时复制 `<runtime>/app`，跳过依赖与构建产物（新环境启动时会自行安装/编译）。
-pub(crate) fn copy_runtime_app(from_home: &Path, to_home: &Path) -> Result<(), String> {
+pub(crate) fn copy_runtime_app(
+    fs: &AdminFs,
+    from_home: &Path,
+    to_home: &Path,
+) -> Result<(), String> {
     copy_dir_skip(
+        fs,
         &from_home.join("app"),
         &to_home.join("app"),
         &["node_modules", "target"],
     )
 }
 
-pub(crate) fn copy_dir_skip(src: &Path, dst: &Path, skip: &[&str]) -> Result<(), String> {
+/// 递归复制目录，逐文件经内核文件通道（保留权限位 + 每个文件一条 `fs.copy` 审计）。
+///
+/// 不用标准库整树复制：克隆运行环境是管理员动作，复制了哪些文件必须
+/// 在审计里查得到；单个文件仍是一次系统调用，没有额外往返。
+pub(crate) fn copy_dir_skip(
+    fs: &AdminFs,
+    src: &Path,
+    dst: &Path,
+    skip: &[&str],
+) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
     }
-    std::fs::create_dir_all(dst).map_err(|e| format!("创建 {} 失败：{e}", dst.display()))?;
+    fs.ensure_dir_kernel(dst)
+        .map_err(|e| format!("创建 {} 失败：{e}", dst.display()))?;
     let entries =
         std::fs::read_dir(src).map_err(|e| format!("读取 {} 失败：{e}", src.display()))?;
     for entry in entries {
@@ -186,9 +202,10 @@ pub(crate) fn copy_dir_skip(src: &Path, dst: &Path, skip: &[&str]) -> Result<(),
             .file_type()
             .map_err(|e| format!("读取 {} 类型失败：{e}", from.display()))?;
         if ft.is_dir() {
-            copy_dir_skip(&from, &to, skip)?;
+            copy_dir_skip(fs, &from, &to, skip)?;
         } else if ft.is_file() && !to.exists() {
-            std::fs::copy(&from, &to).map_err(|e| format!("复制 {} 失败：{e}", from.display()))?;
+            fs.copy_kernel(&from, &to)
+                .map_err(|e| format!("复制 {} 失败：{e}", from.display()))?;
         }
     }
     Ok(())
@@ -592,7 +609,7 @@ impl AppState {
         s: &SiteSettings,
     ) -> Result<PathBuf, String> {
         let path = s.php_extension_installer();
-        write_if_changed(
+        self.admin_fs().write_if_changed_kernel(
             &path,
             runtime_catalog::PHP_EXTENSION_INSTALLER.as_bytes(),
             0o755,
@@ -609,11 +626,12 @@ impl AppState {
         kind: &str,
         name: &str,
     ) -> Result<(), String> {
-        std::fs::create_dir_all(s.runtime_php_confd(kind, name))
-            .map_err(|e| format!("创建扩展 ini 目录失败：{e}"))?;
+        self.admin_fs()
+            .ensure_dir_kernel(&s.runtime_php_confd(kind, name))?;
         let ini = s.runtime_php_ini(kind, name);
         if !ini.exists() {
-            write_if_changed(&ini, DEFAULT_PHP_INI.as_bytes(), 0o644)?;
+            self.admin_fs()
+                .write_if_changed_kernel(&ini, DEFAULT_PHP_INI.as_bytes(), 0o644)?;
         }
         Ok(())
     }
@@ -623,10 +641,13 @@ impl AppState {
     /// 脚本只读挂载进容器，由 root 执行：按包管理器幂等建立 `skiff-web`
     /// 201000:201000，再 `exec php-fpm`；镜像自带的 `www-data` 保留不动。
     pub(crate) fn ensure_php_account_init(&self, s: &SiteSettings) -> Result<PathBuf, String> {
-        std::fs::create_dir_all(&s.data_dir)
-            .map_err(|e| format!("创建数据根 {} 失败：{e}", s.data_dir.display()))?;
+        self.admin_fs().ensure_dir_kernel(&s.data_dir)?;
         let path = s.data_dir.join(PHP_INIT_SCRIPT_NAME);
-        write_if_changed(&path, PHP_ACCOUNT_INIT_SCRIPT.as_bytes(), 0o644)?;
+        self.admin_fs().write_if_changed_kernel(
+            &path,
+            PHP_ACCOUNT_INIT_SCRIPT.as_bytes(),
+            0o644,
+        )?;
         Ok(path)
     }
 

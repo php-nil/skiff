@@ -9,6 +9,7 @@
 
 pub mod docker;
 pub mod file;
+pub mod incoming;
 pub mod job;
 pub mod plugin;
 pub mod runtime;

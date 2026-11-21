@@ -272,6 +272,7 @@ pub(crate) async fn commit_install(
         path,
         opts,
         tasks.as_ref(),
+        state.admin_fs(),
     )
     .await;
     match &result {

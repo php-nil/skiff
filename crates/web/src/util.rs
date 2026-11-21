@@ -70,6 +70,20 @@ pub fn human_size(bytes: i64) -> String {
     }
 }
 
+/// epoch 秒 → **本地时区**时间串，`fmt` 是 chrono 格式串。
+///
+/// 时间戳缺失、越界或落在夏令时**歧义区间**（本地时间有两个合法解）时返回
+/// `fallback`：宁可显示占位符，也不显示一个可能差一小时的错误时间。
+///
+/// 页面各自拼「本地时区 + 占位符」此前在三处各写一遍（作业时间、作业日志时间、
+/// 站点备份时间），格式串不同但语义一致，这里收成一处。
+pub fn fmt_local_time(ts: Option<i64>, fmt: &str, fallback: &str) -> String {
+    use chrono::TimeZone;
+    ts.and_then(|t| chrono::Local.timestamp_opt(t, 0).single())
+        .map(|t| t.format(fmt).to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +122,12 @@ mod tests {
         assert_eq!(encode_uri_component("abc-._~"), "abc-._~");
         assert_eq!(encode_uri_component("容器"), "%E5%AE%B9%E5%99%A8");
         assert_ne!(encode_uri_component("a&b"), escape_html("a&b"));
+    }
+
+    /// 缺失时间戳走占位符；合法时间戳按给定格式渲染。
+    #[test]
+    fn local_time_falls_back_when_absent() {
+        assert_eq!(fmt_local_time(None, "%Y-%m-%d", "-"), "-");
+        assert_eq!(fmt_local_time(Some(0), "%Y", "").len(), 4);
     }
 }

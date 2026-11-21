@@ -774,6 +774,7 @@ impl AppState {
             tracing::warn!(runtime = %cloned.id, error = %e, "克隆运行环境配置失败");
         }
         if let Err(e) = copy_runtime_app(
+            self.admin_fs(),
             &s.runtime_home(&src.kind, &src.name),
             &s.runtime_home(&cloned.kind, &cloned.name),
         ) {
@@ -919,11 +920,13 @@ impl AppState {
         )
         .await;
         let dir = s.runtime_home(&rt.kind, &rt.name);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
-        std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
+        let kfs = self.admin_fs();
+        kfs.ensure_dir_kernel(&dir)
+            .map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
+        kfs.ensure_dir_kernel(&s.runtime_log_dir(&rt.kind, &rt.name))
             .map_err(|e| format!("创建 PHP 日志目录失败：{e}"))?;
         // apk 包缓存挂载源必须存在（Docker 不会替我们建宿主机目录）。
-        std::fs::create_dir_all(s.system_pkg_cache_dir())
+        kfs.ensure_dir_kernel(&s.system_pkg_cache_dir())
             .map_err(|e| format!("创建依赖包缓存目录失败：{e}"))?;
         let socket_container = runtime_container_socket(&rt.kind, &rt.name);
         self.ensure_php_config_files(&s, &rt.kind, &rt.name)?;
@@ -931,15 +934,15 @@ impl AppState {
             .map_err(|e| format!("准备 PHP 容器身份初始化脚本失败：{e}"))?;
         // 标记“本实例创建时已带 php.ini / conf.d 挂载”：只有安装流程写这个标记，
         // 保存配置时补目录不写，旧实例的“编辑不生效”提示就不会被误清掉。
-        std::fs::write(
-            s.runtime_php_dir(&rt.kind, &rt.name)
+        kfs.write_kernel(
+            &s.runtime_php_dir(&rt.kind, &rt.name)
                 .join(PHP_CONFIG_SENTINEL),
-            "1\n",
+            b"1\n",
         )
         .map_err(|e| format!("写入 PHP 配置挂载标记失败：{e}"))?;
-        std::fs::write(
-            s.runtime_pool_conf(&rt.kind, &rt.name),
-            render_php_pool_with(&cfg, &socket_container),
+        kfs.write_kernel(
+            &s.runtime_pool_conf(&rt.kind, &rt.name),
+            render_php_pool_with(&cfg, &socket_container).as_bytes(),
         )
         .map_err(|e| format!("写入 PHP-FPM 配置失败：{e}"))?;
 
@@ -1176,13 +1179,14 @@ impl AppState {
             .map_err(|e| format!("Node.js 配置不合法：{e}"))?;
         let dir = s.runtime_home(&rt.kind, &rt.name);
         let app_dir = dir.join("app");
-        std::fs::create_dir_all(&app_dir).map_err(|e| format!("创建 Node 工程目录失败：{e}"))?;
-        std::fs::create_dir_all(s.runtime_log_dir(&rt.kind, &rt.name))
+        let fs = self.admin_fs();
+        fs.ensure_dir_kernel(&app_dir)
+            .map_err(|e| format!("创建 Node 工程目录失败：{e}"))?;
+        fs.ensure_dir_kernel(&s.runtime_log_dir(&rt.kind, &rt.name))
             .map_err(|e| format!("创建 Node 日志目录失败：{e}"))?;
         self.job_advance(job_id, "准备工程", 15, "写入最小 HTTP 工程（npm start）")
             .await;
         // 只在缺失时生成脚手架：`app/` 可能已经是用户自己的代码，重建不能覆盖。
-        let fs = self.admin_fs();
         let package_json = app_dir.join("package.json");
         if !package_json.exists() {
             fs.write_kernel(&package_json, node_package_manifest().as_bytes())
@@ -2377,11 +2381,12 @@ impl AppState {
             .clone()
             .unwrap_or_else(|| s.runtime_socket(&rt.kind, &rt.name).display().to_string());
         let socket_container = s.container_path(Path::new(&socket_host));
-        std::fs::create_dir_all(s.runtime_home(&rt.kind, &rt.name))
+        self.admin_fs()
+            .ensure_dir_kernel(&s.runtime_home(&rt.kind, &rt.name))
             .map_err(|e| SiteError::Internal(format!("创建运行目录失败：{e}")))?;
         let pool = s.runtime_pool_conf(&rt.kind, &rt.name);
         let original = std::fs::read(&pool).ok();
-        // 用户可见写操作统一走 skiff-fs：原子替换 + 审计，不在 app 层直接 std::fs::write。
+        // 用户可见写操作统一走 skiff-fs：原子替换 + 审计，不在 app 层直接落盘。
         self.admin_fs()
             .write(
                 actor,
@@ -2856,7 +2861,8 @@ impl AppState {
         let vhost = s.vhost_file(&site_dir, domain);
         let disabled = s.vhost_disabled(&site_dir, domain);
         if vhost.exists() {
-            std::fs::rename(&vhost, &disabled)
+            self.admin_fs()
+                .rename_kernel(&vhost, &disabled)
                 .map_err(|e| SiteError::Internal(format!("停用 vhost 失败：{e}")))?;
         }
         self.db()
@@ -2966,7 +2972,7 @@ impl AppState {
 
         let dir = s.runtime_home(&rt.kind, &rt.name);
         if dir.exists() {
-            remove_dir_all_retry(&dir).map_err(|e| {
+            self.admin_fs().remove_tree_kernel(&dir).map_err(|e| {
                 partial_delete_error(
                     &report.completed,
                     format!("删除运行环境目录 {} 失败：{e}", dir.display()),

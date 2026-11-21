@@ -251,37 +251,3 @@ impl SiteSettings {
         )
     }
 }
-
-/// 内容一致时跳过写入；内容变化或文件缺失时原子落盘并设置权限。
-pub(crate) fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {} 失败：{e}", parent.display()))?;
-    }
-    let unchanged = std::fs::read(path).map(|old| old == bytes).unwrap_or(false);
-    if !unchanged {
-        // 临时名唯一、chmod、rename 统一走 `crate::atomic`：并发写同一路径不会
-        // 互相截断，也不会两份实现各自演化。
-        crate::atomic::write_atomic(path, bytes, mode)
-            .map_err(|e| format!("替换 {} 失败：{e}", path.display()))?;
-    }
-    Ok(())
-}
-
-/// Windows 上杀软/索引服务短暂占用刚写入的文件时 `remove_dir_all` 会返回
-/// `Directory not empty`（os error 145）；用有界退避重试，最终仍失败才报错。
-pub(crate) fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {
-    let mut delay = std::time::Duration::from_millis(20);
-    for attempt in 0..6 {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(e) if attempt < 5 => {
-                tracing::debug!(path = %path.display(), error = %e, "删除站点目录失败，重试");
-                std::thread::sleep(delay);
-                delay = delay.saturating_mul(2);
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}

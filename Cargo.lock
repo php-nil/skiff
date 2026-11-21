@@ -1914,7 +1914,6 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "hex",
- "libc",
  "rcgen",
  "rustls-pemfile",
  "serde",

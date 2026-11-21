@@ -5,7 +5,8 @@
 //!
 //! - 持久化：`TaskStore`（本 crate 只给内存实现，SQLite 由 `skiff-store` 接入）；
 //! - 插件唤醒：`PluginGate`（是否安装/启用/API 兼容由 `skiff-plugin` 回答）；
-//! - 执行：`Executor`（真正的 async RPC / 内置实现在 `skiff-core` 里拼装）；
+//! - 执行：执行体的**输入输出契约**（`RunTicket` / `SampleTicket` / `ExecOutput`）；
+//!   执行体本身（调插件 RPC、await、超时）由 `skiff-app` 的任务接线负责；
 //! - 时间：`Clock`（生产用 `SystemClock`，测试用 `ManualClock`，cron 按注入时区解释）。
 //!
 //! 调度循环刻意做成**同步**的：[`Scheduler::tick`] 只产出待执行的 [`RunTicket`]，
@@ -34,8 +35,8 @@ pub use buffer::{
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use error::TaskError;
 pub use exec::{
-    Batch, ErrorClass, ErrorPhase, ExecError, ExecOutput, Executor, RunContext, RunRecord,
-    RunResult, RunTicket, SampleContext, SampleTicket, Trigger, Verdict,
+    Batch, ErrorClass, ErrorPhase, ExecError, ExecOutput, RunContext, RunRecord, RunResult,
+    RunTicket, SampleContext, SampleTicket, Trigger, Verdict,
 };
 pub use model::{
     Align, BlockedReason, Concurrency, CronTz, LastRun, LifecycleState, MissedPolicy, RetryPolicy,

@@ -5,6 +5,8 @@
 
 use std::path::Path;
 
+use crate::admin_fs::AdminFs;
+
 use super::site_log_dir;
 
 /// 单次日志读取的最大字节数：只看文件尾部这么多字节，避免大文件整读拖垮页面。
@@ -46,14 +48,15 @@ pub(crate) fn read_log(path: &Path, tail: usize, keyword: &str) -> std::io::Resu
 ///
 /// 由内核巡检（30s 一次）调用，不依赖宿主 logrotate；改名后调用方负责让
 /// nginx 重新打开日志，否则写入会继续落在 `.1` 上。
-pub fn rotate_logs(dir: &Path, max_bytes: u64) -> std::io::Result<usize> {
+pub fn rotate_logs(fs: &AdminFs, dir: &Path, max_bytes: u64) -> Result<usize, String> {
     if !dir.is_dir() {
         return Ok(0);
     }
     let mut rotated = 0;
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|e| e == "log") && rotate_if_large(&path, max_bytes)? {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("读取 {} 失败：{e}", dir.display()))?
+    {
+        let path = entry.map_err(|e| format!("读取目录项失败：{e}"))?.path();
+        if path.extension().is_some_and(|e| e == "log") && rotate_if_large(fs, &path, max_bytes)? {
             rotated += 1;
         }
     }
@@ -61,15 +64,17 @@ pub fn rotate_logs(dir: &Path, max_bytes: u64) -> std::io::Result<usize> {
 }
 
 /// 扫描 `sites/` 下一层站点，各自轮转 `log/` 目录（内核巡检用）。
-pub fn rotate_site_logs(sites_dir: &Path, max_bytes: u64) -> std::io::Result<usize> {
+pub fn rotate_site_logs(fs: &AdminFs, sites_dir: &Path, max_bytes: u64) -> Result<usize, String> {
     if !sites_dir.is_dir() {
         return Ok(0);
     }
     let mut rotated = 0;
-    for entry in std::fs::read_dir(sites_dir)? {
-        let path = entry?.path();
+    for entry in std::fs::read_dir(sites_dir)
+        .map_err(|e| format!("读取 {} 失败：{e}", sites_dir.display()))?
+    {
+        let path = entry.map_err(|e| format!("读取目录项失败：{e}"))?.path();
         if path.is_dir() {
-            rotated += rotate_logs(&site_log_dir(&path), max_bytes)?;
+            rotated += rotate_logs(fs, &site_log_dir(&path), max_bytes)?;
         }
     }
     Ok(rotated)
@@ -79,11 +84,11 @@ pub fn rotate_site_logs(sites_dir: &Path, max_bytes: u64) -> std::io::Result<usi
 ///
 /// 改名不复制数据，写放大与文件大小无关；不改 inode 语义的前提是写者重新打开
 /// 文件——nginx 由 30s 巡检在轮转后触发 `nginx -s reopen`，新文件立即接续写入。
-pub(crate) fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
+pub(crate) fn rotate_if_large(fs: &AdminFs, path: &Path, max_bytes: u64) -> Result<bool, String> {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e),
+        Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),
     };
     if meta.len() < max_bytes {
         return Ok(false);
@@ -92,11 +97,10 @@ pub(crate) fn rotate_if_large(path: &Path, max_bytes: u64) -> std::io::Result<bo
         "{}.1",
         path.extension().and_then(|e| e.to_str()).unwrap_or("log")
     ));
-    // Windows 的 rename 不能覆盖已存在目标；Unix 上是原子覆盖，先删也无害。
-    if let Err(e) = std::fs::remove_file(&rotated) {
-        tracing::debug!(path = %rotated.display(), error = %e, "清理上次轮转的日志失败");
-    }
-    std::fs::rename(path, &rotated)?;
-    std::fs::File::create(path)?;
+    // 轮转与新建都经内核文件通道：改名留 `fs.rename`，新建空文件留 `fs.write`。
+    // 通道的改名对已存在目标是先删后移（Windows 与 Unix 同一语义），正好覆盖
+    // 「上一轮 `.1` 还在」的情形，不必另删。
+    fs.rename_kernel(path, &rotated)?;
+    fs.write_kernel(path, b"")?;
     Ok(true)
 }

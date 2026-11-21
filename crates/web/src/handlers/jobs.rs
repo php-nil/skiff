@@ -28,19 +28,11 @@ const LOG_PAGE: i64 = 500;
 const TAIL_INTERVAL: Duration = Duration::from_millis(400);
 
 fn fmt_ts(ts: Option<i64>) -> String {
-    use chrono::TimeZone;
-    ts.and_then(|t| chrono::Local.timestamp_opt(t, 0).single())
-        .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "-".into())
+    crate::util::fmt_local_time(ts, "%Y-%m-%d %H:%M:%S", "-")
 }
 
 pub(crate) fn fmt_log_time(at: i64) -> String {
-    use chrono::TimeZone;
-    chrono::Local
-        .timestamp_opt(at, 0)
-        .single()
-        .map(|t| t.format("%H:%M:%S").to_string())
-        .unwrap_or_default()
+    crate::util::fmt_local_time(Some(at), "%H:%M:%S", "")
 }
 
 fn fmt_duration(ms: i64) -> String {

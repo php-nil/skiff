@@ -106,4 +106,4 @@ skiff/
 
 **最小可用版本 = 三块核心跑通**：能登录、能管容器、能装插件且崩不了内核。支撑层跟着三块成形，不单独立项。
 
-`xtask check` 固化三类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）；第三项是**宿主通道闸**：`app`/`core` 非测试代码出现 `Command::new` 即失败，内核文件写计数只减不增（2026-11-21 基线 96 处 / 13 个文件）。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。
+`xtask check` 固化三类校验：**校验可选 Docker 形态 compose 里每个 `${VAR}` 都能在版本级 data.yml 的 formFields 找到同名 envKey**；校验 compose 只包含 §6 的 MVP 字段（未支持字段直接失败）；第三项是**宿主通道闸**：`app`/`core` 非测试代码出现 `Command::new` 即失败，内核文件写只允许 `xtask` 白名单 `FS_WRITE_ALLOWED` 登记的例外（当前只有 `catalog/mod.rs` 的 2 处流式下载），新增文件或超出登记处数即失败。`.wbpkg` 的结构、哈希清单与签名输入编码由独立子命令 `xtask verify-pkg <file.wbpkg>` 校验（与内核安装路径共用同一份 `skiff_pkgfmt`）。这些是上架与安装链路最高频的失败原因，值得用代码堵住。

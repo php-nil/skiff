@@ -180,7 +180,8 @@ pub async fn apply_registry_mirror(
         });
     }
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
+        kfs.ensure_dir_kernel(dir)
+            .map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
     }
     let deadline = tokio::time::Instant::now() + MIRROR_APPLY_BUDGET;
     // 走内核文件通道（`fs`）：原子替换 + 一条 `fs.write` 审计（actor=system）。

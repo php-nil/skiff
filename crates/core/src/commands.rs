@@ -253,7 +253,27 @@ pub fn plugin_install(
         cfg.allow_reduced_sandbox,
         "cli",
     );
-    let info = match skiff_app::commands::plugin::install(&db, &cfg.data_dir, package, &opts) {
+    // CLI 没有 `AppState`：按 `bootstrap` 的同一口径临时构造一份内核通道，
+    // 让暂存包清理与运行期走同一套审计（`fs.remove`，actor=system）。
+    let kernel_fs = skiff_app::admin_fs::AdminFs::with_protected(
+        cfg.data_dir.clone(),
+        cfg.web_root.clone(),
+        std::sync::Arc::clone(&db),
+        cfg.trash_retention_days,
+        skiff_app::admin_fs::kernel_protected_paths(
+            &cfg.data_dir,
+            &cfg.config_path,
+            cfg.tls_cert.as_deref(),
+            cfg.tls_key.as_deref(),
+        ),
+    );
+    let info = match skiff_app::commands::plugin::install(
+        &db,
+        &cfg.data_dir,
+        package,
+        &opts,
+        &kernel_fs,
+    ) {
         Ok(info) => info,
         Err(e) => {
             if let Err(ae) = db.audit(

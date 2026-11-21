@@ -24,6 +24,7 @@ use skiff_plugin::install::version_gt;
 use skiff_store::Db;
 use tracing::{error, info, warn};
 
+use crate::admin_fs::AdminFs;
 use fetch::{Conditional, SharedTransport, UreqTransport};
 use model::{Index, Manifest, PluginEntry, SignatureFile, UpgradeEntry, BLOB_PREFIX};
 
@@ -312,14 +313,16 @@ pub struct CatalogService {
     fetch_budget: Duration,
     /// 失败审计出口。未装配时只记日志：目录判定不依赖数据库可用性。
     audit_db: OnceLock<Arc<Db>>,
+    /// 缓存落盘的内核文件通道（`<data_dir>/catalog/` 是内核自己维护的缓存）。
+    admin_fs: Arc<AdminFs>,
 }
 
 impl CatalogService {
     /// 生产装配：缓存根为 `<data_dir>/catalog`，传输走 ureq。
-    pub fn new(settings: CatalogSettings, data_dir: &Path) -> Arc<Self> {
+    pub fn new(settings: CatalogSettings, data_dir: &Path, admin_fs: Arc<AdminFs>) -> Arc<Self> {
         let transport: SharedTransport =
             Arc::new(UreqTransport::new(settings.timeout, &settings.extra_roots));
-        Self::build(settings, data_dir.join("catalog"), transport)
+        Self::build(settings, data_dir.join("catalog"), transport, admin_fs)
     }
 
     /// 测试装配：注入假传输层，绝不触网。
@@ -328,7 +331,21 @@ impl CatalogService {
         root: PathBuf,
         transport: SharedTransport,
     ) -> Arc<Self> {
-        Self::build(settings, root, transport)
+        let admin_fs = Self::inline_test_admin(&root);
+        Self::build(settings, root, transport, admin_fs)
+    }
+
+    /// 测试装配的文件通道：缓存根即临时目录，审计落点用内存库。
+    ///
+    /// 只在 `with_transport*`（假传输、不触网）里用：这些用例关心的是「缓存写了
+    /// 什么」，不是「审计落在哪张表」，因此不必让每个夹具自己造一份 `AdminFs`。
+    fn inline_test_admin(root: &Path) -> Arc<AdminFs> {
+        let db = Db::open_in_memory().expect("内存库");
+        Arc::new(AdminFs::with_paths(
+            root.to_path_buf(),
+            root.join("www"),
+            Arc::new(db),
+        ))
     }
 
     /// 测试装配：额外指定单次刷新的总预算（生产固定 [`FETCH_BUDGET`]）。
@@ -338,14 +355,20 @@ impl CatalogService {
         transport: SharedTransport,
         fetch_budget: Duration,
     ) -> Arc<Self> {
-        let mut svc = Self::build(settings, root, transport);
+        let admin_fs = Self::inline_test_admin(&root);
+        let mut svc = Self::build(settings, root, transport, admin_fs);
         Arc::get_mut(&mut svc)
             .expect("刚构造的 Arc 独占")
             .fetch_budget = fetch_budget;
         svc
     }
 
-    fn build(settings: CatalogSettings, root: PathBuf, transport: SharedTransport) -> Arc<Self> {
+    fn build(
+        settings: CatalogSettings,
+        root: PathBuf,
+        transport: SharedTransport,
+        admin_fs: Arc<AdminFs>,
+    ) -> Arc<Self> {
         let public_key = settings
             .public_key_hex()
             .and_then(|raw| verify::parse_public_key(raw).ok());
@@ -365,6 +388,7 @@ impl CatalogService {
             health: Mutex::new(HashMap::new()),
             fetch_budget: FETCH_BUDGET,
             audit_db: OnceLock::new(),
+            admin_fs,
         })
     }
 
@@ -639,8 +663,12 @@ impl CatalogService {
         let part = dest.with_extension("part");
         let result = self.store_blob(&url, sha, size, &part, dest);
         if result.is_err() {
-            let _ = fs::remove_file(&part);
-            let _ = fs::remove_file(dest);
+            // 失败包必须清掉：暂存目录里的残留会被下次「复用」当已下载。
+            for p in [&part, dest] {
+                if p.exists() {
+                    let _ = self.admin_fs.remove_kernel(p);
+                }
+            }
         }
         result
     }
@@ -676,8 +704,16 @@ impl CatalogService {
             )));
         }
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|e| DownloadError::Io(e.to_string()))?;
+            self.admin_fs
+                .ensure_dir_kernel(parent)
+                .map_err(DownloadError::Io)?;
         }
+        // 正文落盘与发布替换是这条链路里唯一两处不经内核文件通道的写：
+        // ① 通道单次写上限 256 KiB（`MAX_REQUEST_BYTES`），包正文可达数十 MB，
+        //    通道没有流式接口，只能整块交给 `std::fs`；
+        // ② 发布必须是一次性替换（POSIX `rename`），而通道的改名对已存在目标是
+        //    先删后移，用在「发布已校验产物」上会多出一个目标不存在的窗口。
+        // 两处都在已验签/已核对摘要之后，失败即整包丢弃，不留下半成品。
         fs::write(part, &reply.body).map_err(|e| DownloadError::Io(e.to_string()))?;
         set_private(part)?;
         fs::rename(part, dest).map_err(|e| DownloadError::Io(e.to_string()))
@@ -1010,6 +1046,7 @@ impl CatalogService {
             last_modified_index,
         };
         if let Err(e) = store::save(
+            &self.admin_fs,
             &self.root,
             channel,
             &manifest_bytes,

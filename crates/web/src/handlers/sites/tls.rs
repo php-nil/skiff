@@ -4,13 +4,7 @@ use crate::templates::SiteBackupView;
 use skiff_app::AppState;
 
 fn fmt_ts(ts: i64) -> String {
-    chrono::DateTime::from_timestamp(ts, 0)
-        .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|| "-".to_string())
+    crate::util::fmt_local_time(Some(ts), "%Y-%m-%d %H:%M", "-")
 }
 
 /// 站点备份开关的视图。任务服务未初始化（旧库/未接线）时渲染为「不可用」，

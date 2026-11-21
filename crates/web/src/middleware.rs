@@ -541,18 +541,16 @@ impl FromRequestParts<Arc<AppState>> for PluginManagerUser {
         // Loopback bypass：daemon 监听 loopback 时外部根本打不进来，
         // 本机进程 = 可信面。CLI 自调 plugin.rpc 走这条通道，
         // 避免 CLI 和 daemon 各自拉起一份插件、各自发独立 token、kernel.sock 验不上。
+        // 审计身份固定为 `local-cli`，**不采信请求头**：loopback 判定用的是
+        // peer IP（不经过可伪造的 `X-Forwarded-*`），但请求头本身由客户端任意
+        // 填写——若采信，本机任何进程都能在审计里冒充任意用户名。这里区分不了
+        // 「哪个本机进程发起的」，如实记成固定的 loopback 主体更诚实。
         let ip = crate::handlers::client_ip(state, parts);
         if ip == "127.0.0.1" || ip == "::1" {
-            let username = parts
-                .headers
-                .get("x-skiff-internal-actor")
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("cli")
-                .to_string();
             return Ok(PluginManagerUser(CurrentUser {
                 user: User {
                     id: 0,
-                    username,
+                    username: "local-cli".to_string(),
                     password_hash: String::new(),
                     role: Role::Admin,
                     totp_secret: None,

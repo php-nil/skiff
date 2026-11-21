@@ -1448,7 +1448,7 @@ fn run_builtin(
             ErrorPhase::Ensure,
             format!("{BUILTIN_SITE_BACKUP}：该任务必须经 exec 通道执行"),
         )),
-        BUILTIN_DB_VACUUM => db_vacuum(ctx, db, data_dir),
+        BUILTIN_DB_VACUUM => db_vacuum(ctx, db, web_root, data_dir, trash_retention_days),
         BUILTIN_TRASH_PRUNE => trash_prune(ctx, db, web_root, data_dir, trash_retention_days),
         BUILTIN_AUDIT_PRUNE => audit_prune(db),
         other => Err(ExecError::new(
@@ -1480,20 +1480,6 @@ fn builtin_error(
     }
     message.push_str(&format!("：{cause}"));
     ExecError::new(ErrorClass::ExecutorFailed, ErrorPhase::Call, message)
-}
-
-/// 把 `os error 17` 这类裸 errno 翻译成用户能照着做的下一步。
-fn io_hint(e: &std::io::Error) -> &'static str {
-    match e.kind() {
-        std::io::ErrorKind::AlreadyExists => "该路径已被同名文件占用，请移除或改名后重试",
-        std::io::ErrorKind::PermissionDenied => "检查数据目录的属主与写权限",
-        std::io::ErrorKind::NotFound => "检查数据目录是否存在，以及安装配置里的数据根路径",
-        _ => "检查数据目录空间、属主与挂载状态后重试",
-    }
-}
-
-fn io_builtin_error(task: &str, action: &str, target: &Path, e: &std::io::Error) -> ExecError {
-    builtin_error(task, action, Some(target), Some(io_hint(e)), e)
 }
 
 /// 打包用的 `tar`：只认绝对路径，不做 PATH 查找。
@@ -1665,12 +1651,33 @@ impl TaskService {
     }
 }
 
-fn db_vacuum(ctx: &BuiltinCtx, db: &Db, data_dir: &Path) -> Result<ExecOutput, ExecError> {
+fn db_vacuum(
+    ctx: &BuiltinCtx,
+    db: &Arc<Db>,
+    web_root: &Path,
+    data_dir: &Path,
+    trash_retention_days: u32,
+) -> Result<ExecOutput, ExecError> {
     let started = Instant::now();
     let _ = ctx;
     let dir = data_dir.join("backups").join("db");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| io_builtin_error(BUILTIN_DB_VACUUM, "创建数据库备份目录", &dir, &e))?;
+    // 与站点备份/回收站清理同口径：备份目录走内核 fs 原语（`fs.mkdir` 审计）。
+    crate::admin_fs::AdminFs::with_options(
+        data_dir.to_path_buf(),
+        web_root.to_path_buf(),
+        Arc::clone(db),
+        trash_retention_days,
+    )
+    .ensure_dir_kernel(&dir)
+    .map_err(|e| {
+        builtin_error(
+            BUILTIN_DB_VACUUM,
+            "创建数据库备份目录",
+            Some(&dir),
+            Some("检查数据目录空间与属主权限后重试"),
+            e,
+        )
+    })?;
     let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let path = dir.join(format!("skiff-{ts}.db"));
     db.backup_to(&path).map_err(|e| {

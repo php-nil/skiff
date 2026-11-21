@@ -188,9 +188,12 @@ pub fn spawn_supervisor_reaper(state: Arc<skiff_app::AppState>) {
             // 站点日志轮转由内核巡检做（改名 + 让 nginx 重开日志），不依赖宿主 logrotate。
             // 一站一目录：逐个扫描 `/www/sites/<域名>/log/`。
             let sites_dir = state.cfg.web_root.join("sites");
-            let rotated =
-                skiff_app::sites::rotate_site_logs(&sites_dir, skiff_app::sites::LOG_ROTATE_BYTES)
-                    .unwrap_or(0);
+            let rotated = skiff_app::sites::rotate_site_logs(
+                state.admin_fs(),
+                &sites_dir,
+                skiff_app::sites::LOG_ROTATE_BYTES,
+            )
+            .unwrap_or(0);
             if rotated > 0 {
                 // 改名后原 fd 仍指向 `.1`；不重开就会一直写进旧文件、新文件永远为空。
                 // 与站点的证书成对写入共用一把锁：巡检不会在 cert/key 两次 rename

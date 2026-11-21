@@ -3,7 +3,6 @@
 //! 站点页面与服务端表单已全部迁到 budding 壳（`/ui/v1/sites/*`、`/ui/v1/runtimes/*`），
 //! 这里只留 JSON 通道仍在复用的纯函数：
 //!
-//! - `crud`：配置保存文案；
 //! - `runtime`：运行环境扩展清单；
 //! - `tls`：站点备份视图。
 
@@ -14,13 +13,20 @@ use crate::templates::RuntimeRow;
 use crate::util::encode_uri_component;
 use skiff_app::AppState;
 
-mod crud;
 mod runtime;
 mod tls;
 
-pub(crate) use crud::save_config_notice;
 pub(crate) use runtime::extension_options;
 pub(crate) use tls::backup_view;
+
+/// 保存站点的成功文案：只有真正重载成功才能说「已重载」。
+pub(crate) fn save_config_notice(reloaded: bool) -> &'static str {
+    if reloaded {
+        "配置已保存、校验通过并已重载 nginx"
+    } else {
+        "配置已保存并通过校验（站点未运行，未重载）"
+    }
+}
 
 pub(crate) fn type_label(t: &str) -> &'static str {
     match t {
@@ -185,13 +191,12 @@ pub(crate) fn runtime_row(state: &AppState, v: &skiff_app::sites::RuntimeView) -
 }
 /// 命令调用主体：用户名 + 客户端 IP，只用于审计，不参与权限判定。
 /// 审计主体：唯一实现在 [`crate::handlers::audit_actor`]。此处再导出，
-/// 保住 `sites::crud`/`sites::runtime` 经 `use super::*` 得到的 `actor(...)`。
+/// 保住 `sites::runtime` 经 `use super::*` 得到的 `actor(...)`。
 pub(crate) use crate::handlers::audit_actor as actor;
 
 #[cfg(test)]
 mod tests {
-    use super::crud::save_config_notice;
-    use super::{runtime_site_status, state_class, state_label};
+    use super::{runtime_site_status, save_config_notice, state_class, state_label};
     use crate::error::AppError;
     use skiff_app::sites::{SiteError, SiteField};
     use skiff_model::ErrorCode;

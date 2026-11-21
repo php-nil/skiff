@@ -337,17 +337,6 @@ async fn verify_cert_pair(cert: &Path, key: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn restrict_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
-        tracing::debug!(path = %path.display(), error = %e, "设置权限失败");
-    }
-}
-
-#[cfg(not(unix))]
-fn restrict_mode(_path: &Path, _mode: u32) {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogKind {
     Access,

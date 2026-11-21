@@ -8,10 +8,12 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use skiff_store::Db;
 
+use crate::admin_fs::AdminFs;
 use crate::sites::{LogKind, SiteError, SiteSettings, NGINX_CONTAINER};
 use crate::AppState;
 
@@ -36,16 +38,20 @@ pub(crate) const NGINX_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// 校验失败、`nginx -t` 超时、请求被取消（future drop）都会在离开作用域时删掉
 /// 候选文件；成功路径 `rename` 后文件已不存在，`NotFound` 静默忽略。
-struct CandidateFile(PathBuf);
+struct CandidateFile {
+    path: PathBuf,
+    /// 清理经内核文件通道（候选配置也属内核自己写的文件）：离开作用域时留一条
+    /// `fs.remove`，失败只记日志，不影响调用方已经得到的校验结果。
+    fs: Arc<AdminFs>,
+}
 
 impl Drop for CandidateFile {
     fn drop(&mut self) {
-        match std::fs::remove_file(&self.0) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::debug!(path = %self.0.display(), error = %e, "清理 nginx 候选配置失败")
-            }
+        if !self.path.exists() {
+            return;
+        }
+        if let Err(e) = self.fs.remove_kernel(&self.path) {
+            tracing::debug!(path = %self.path.display(), error = %e, "清理 nginx 候选配置失败")
         }
     }
 }
@@ -206,10 +212,10 @@ pub fn render_main_nginx_conf(p: &NginxParams) -> String {
 ///
 /// 已存在时不动用户正文，只做两件事：内核生成的文件若丢失 stub 段则补回；
 /// 非内核生成的文件不碰（状态页会提示“当前主配置不是内核生成”）。
-pub fn ensure_nginx_main_conf(s: &SiteSettings, db: &Db) -> std::io::Result<()> {
-    std::fs::create_dir_all(s.global_log_dir())?;
+pub fn ensure_nginx_main_conf(fs: &AdminFs, s: &SiteSettings, db: &Db) -> Result<(), String> {
+    fs.ensure_dir_kernel(&s.global_log_dir())?;
     if let Some(parent) = s.nginx_main_conf().parent() {
-        std::fs::create_dir_all(parent)?;
+        fs.ensure_dir_kernel(parent)?;
     }
     let params = db
         .get_setting(NGINX_PARAMS_KEY)
@@ -219,13 +225,14 @@ pub fn ensure_nginx_main_conf(s: &SiteSettings, db: &Db) -> std::io::Result<()> 
         .unwrap_or_default();
     let path = s.nginx_main_conf();
     if path.is_file() {
-        let current = std::fs::read_to_string(&path)?;
+        let current = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
         if current.contains(MAIN_CONF_MARKER) && !current.contains("stub_status;") {
-            std::fs::write(&path, ensure_stub_block(&current))?;
+            fs.write_kernel(&path, ensure_stub_block(&current).as_bytes())?;
         }
         return Ok(());
     }
-    std::fs::write(&path, render_main_nginx_conf(&params))
+    fs.write_kernel(&path, render_main_nginx_conf(&params).as_bytes())
 }
 
 /// 在内核生成的主配置末尾补回 stub_status server 段。
@@ -728,10 +735,14 @@ impl AppState {
         content: &str,
     ) -> Result<Vec<String>, SiteError> {
         let candidate = s.nginx_main_conf().with_extension("conf.candidate");
-        std::fs::write(&candidate, content)
+        self.admin_fs()
+            .write_kernel(&candidate, content.as_bytes())
             .map_err(|e| SiteError::Internal(format!("写入候选配置失败：{e}")))?;
-        // 校验超时或请求取消时也会清理候选文件，不必依赖各分支手写 remove_file。
-        let _candidate = CandidateFile(candidate.clone());
+        // 校验超时或请求取消时也会清理候选文件，不必依赖各分支手写删除。
+        let _candidate = CandidateFile {
+            path: candidate.clone(),
+            fs: self.admin_fs_arc(),
+        };
         let container_candidate = s.container_path(&candidate);
         let (code, out) = self.nginx_test_candidate(&container_candidate).await?;
         if code != 0 {
@@ -753,11 +764,13 @@ impl AppState {
                 )))
             }
         };
-        std::fs::rename(&candidate, s.nginx_main_conf())
+        // 发布同样经内核通道：内容已通过 `nginx -t`，这里做一次原子替换并留审计。
+        self.admin_fs()
+            .write_kernel(&s.nginx_main_conf(), content.as_bytes())
             .map_err(|e| SiteError::Internal(format!("替换主配置失败：{e}")))?;
         if let Err(e) = self.restart_nginx().await {
             let restored = match &original {
-                Some(bytes) => match std::fs::write(s.nginx_main_conf(), bytes) {
+                Some(bytes) => match self.admin_fs().write_kernel(&s.nginx_main_conf(), bytes) {
                     Ok(()) => {
                         if let Err(re) = self.restart_nginx().await {
                             tracing::error!(error = %re, "回滚后重载 nginx 失败");
@@ -784,7 +797,7 @@ impl AppState {
         let env = self.site_env_status().await;
         if env.installed && env.nginx_state != "running" {
             let restored = match &original {
-                Some(bytes) => match std::fs::write(s.nginx_main_conf(), bytes) {
+                Some(bytes) => match self.admin_fs().write_kernel(&s.nginx_main_conf(), bytes) {
                     Ok(()) => {
                         if let Err(re) = self.restart_nginx().await {
                             tracing::error!(error = %re, "nginx 退出后回滚重启失败");
@@ -975,7 +988,7 @@ impl AppState {
 
     pub async fn nginx_config_view(&self) -> Result<NginxConfigView, SiteError> {
         let s = self.site_settings();
-        ensure_nginx_main_conf(&s, self.db())
+        ensure_nginx_main_conf(self.admin_fs(), &s, self.db())
             .map_err(|e| SiteError::Internal(format!("写入 nginx 主配置失败：{e}")))?;
         let params = self.nginx_params();
         let main_content = std::fs::read_to_string(s.nginx_main_conf()).unwrap_or_default();
@@ -1250,6 +1263,15 @@ impl AppState {
 mod tests {
     use super::*;
 
+    /// 测试用内核文件通道：候选文件清理也要走通道留审计，测试必须给一个真实实例。
+    fn test_admin(root: &Path) -> Arc<AdminFs> {
+        Arc::new(AdminFs::with_paths(
+            root.join("data"),
+            root.join("www"),
+            Arc::new(skiff_store::Db::open_in_memory().expect("内存库")),
+        ))
+    }
+
     #[test]
     fn main_conf_has_stub_status_on_loopback_only() {
         let conf = render_main_nginx_conf(&NginxParams::default());
@@ -1310,12 +1332,18 @@ mod tests {
         let path = dir.join("nginx.conf.candidate");
         std::fs::write(&path, "worker_processes auto;").expect("写候选配置");
         {
-            let _guard = CandidateFile(path.clone());
+            let _guard = CandidateFile {
+                path: path.clone(),
+                fs: test_admin(&dir),
+            };
         }
         assert!(!path.exists(), "离开作用域后候选文件应被删除");
 
         // 成功路径 rename 后文件已不存在：drop 不得 panic。
-        let _guard = CandidateFile(path.clone());
+        let _guard = CandidateFile {
+            path: path.clone(),
+            fs: test_admin(&dir),
+        };
         drop(_guard);
         std::fs::remove_dir_all(&dir).ok();
     }

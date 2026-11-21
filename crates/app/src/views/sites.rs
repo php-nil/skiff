@@ -33,9 +33,7 @@ pub struct SiteSummary {
     pub force_https: bool,
     /// 证书文件是否就绪：决定 HTTPS 展示文案（由 web 侧映射）。
     pub cert_ready: bool,
-    /// SSR 展示用时间（`%Y-%m-%d %H:%M`）。
-    pub created: String,
-    /// UI 转 RFC3339 与游标用。
+    /// 建站时间（epoch 秒）：展示层按需格式化，游标也用它。
     pub created_at_epoch: i64,
     /// UI 游标用。
     pub db_id: i64,
@@ -44,9 +42,8 @@ pub struct SiteSummary {
     /// 伪静态预设键与出口限速（KB/s）；展示层直接透传。
     pub rewrite: String,
     pub limit_rate_kbps: u32,
+    /// 别名拼成的检索串（顿号分隔）：列表按关键字过滤时用。
     pub aliases_text: String,
-    pub alias_preview: String,
-    pub alias_more: usize,
 }
 
 /// 站点列表读模型：已按关键字过滤的站点 + 构造下拉框所需的运行环境数据。
@@ -175,22 +172,12 @@ pub fn summary(
         https: s.https,
         force_https: s.force_https,
         cert_ready,
-        created: chrono::DateTime::from_timestamp(s.created_at, 0)
-            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_default(),
         created_at_epoch: s.created_at,
         db_id: s.id,
         is_default: s.is_default,
         rewrite: s.rewrite.clone(),
         limit_rate_kbps: s.limit_rate_kbps,
         aliases_text: aliases.join("、"),
-        alias_preview: aliases
-            .iter()
-            .take(2)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("、"),
-        alias_more: aliases.len().saturating_sub(2),
         aliases,
     }
 }

@@ -1,13 +1,10 @@
 //! `firewall` 能力面：宿主机 nftables/iptables 与 fail2ban 管理。
 //!
 //! 判定与命令编排在 `skiff_plugin::firewall`（能力面实现单一来源）；这里只做
-//! 三件内核侧的事：查授权、审计、用 `systemd-run` 提供一条不继承主服务沙箱的
-//! 特权执行通道。方法清单与动词见 `docs/contract/KERNEL_FIREWALL_CONTRACT.md`。
+//! 两件内核侧的事：查授权、审计。宿主命令编排已整体迁到插件侧（`plugins/firewall`
+//! 经 exec 能力面提交），本能力面对所有方法统一返回迁移提示。
+//! 方法清单与动词见 `docs/contract/KERNEL_FIREWALL_CONTRACT.md`。
 
-#[cfg(target_os = "linux")]
-use std::future::Future;
-#[cfg(target_os = "linux")]
-use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -18,8 +15,6 @@ use axum::Json;
 use serde_json::{json, Value};
 use skiff_app::AppState;
 use skiff_model::Form;
-#[cfg(target_os = "linux")]
-use skiff_plugin::firewall::{CommandOutput, FirewallHost};
 
 use skiff_plugin::capability as cap;
 
@@ -140,7 +135,7 @@ async fn dispatch(
     method: &str,
     params: &Value,
 ) -> Result<Value, skiff_plugin::firewall::FirewallError> {
-    skiff_plugin::firewall::dispatch(&KernelHost, method, params).await
+    skiff_plugin::firewall::dispatch(method, params).await
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -151,36 +146,4 @@ async fn dispatch(
     Err(skiff_plugin::firewall::FirewallError::unavailable(
         "firewall 能力面仅在 Linux 宿主机可用",
     ))
-}
-
-#[cfg(target_os = "linux")]
-struct KernelHost;
-
-#[cfg(target_os = "linux")]
-impl FirewallHost for KernelHost {
-    fn run<'a>(
-        &'a self,
-        cmd: &'a str,
-        args: &'a [String],
-        stdin: Option<&'a str>,
-        timeout_secs: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<CommandOutput, String>> + Send + 'a>> {
-        Box::pin(async move {
-            // 特权执行通道唯一实现是 `skiff_host`（ftp 与 `exec` 共用）。
-            let out = skiff_host::run(
-                skiff_host::HostSpec::privileged(cmd, args)
-                    .prefix("skiff-firewall")
-                    .description("skiff firewall host mutation")
-                    .stdin(stdin)
-                    .timeout(timeout_secs),
-            )
-            .await
-            .map_err(|e| e.message(cmd))?;
-            Ok(CommandOutput {
-                success: out.success,
-                stdout: out.stdout,
-                stderr: out.stderr,
-            })
-        })
-    }
 }

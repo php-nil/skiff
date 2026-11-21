@@ -91,6 +91,8 @@ pub async fn files_mkdir(
     .await
     .map_err(ApiError)?
     .map_err(fs_api_error)?;
+    // 站点文档根下新建的目录要归还站点身份，否则容器内 PHP 进程写不进去。
+    state.restore_site_index_owner(&created);
     Ok(Json(
         json!({ "data": { "path": created, "message": "目录已创建" } }),
     ))
@@ -114,6 +116,7 @@ pub async fn files_rename(
     }
     let fs = state.admin_fs_arc();
     let owner = user.user.username.clone();
+    let owner_path = to.clone();
     handlers::blocking_fs(move || {
         file_cmd::rename(
             &fs,
@@ -127,6 +130,8 @@ pub async fn files_rename(
     .await
     .map_err(ApiError)?
     .map_err(fs_api_error)?;
+    // 改名可能一次移动整棵子树，用递归口径归还站点身份。
+    state.restore_site_index_owner_tree(&owner_path);
     Ok(Json(json!({ "data": { "message": "已重命名" } })))
 }
 

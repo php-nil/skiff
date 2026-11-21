@@ -167,6 +167,7 @@ pub(crate) async fn apply_upgrade_download(
         arch: skiff_app::commands::upgrade::host_arch().to_string(),
         current: skiff_app::commands::upgrade::KERNEL_VERSION.to_string(),
         data_dir: state.cfg.data_dir.clone(),
+        admin_fs: state.admin_fs_arc(),
     };
     let worker = Arc::clone(state);
     let result = handlers::blocking_fs(move || {

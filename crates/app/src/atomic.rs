@@ -1,9 +1,15 @@
-//! 原子落盘：同目录唯一临时名 + rename。
+//! 原子落盘用的同目录唯一临时名。
 //!
 //! 固定临时名（`x.tmp` / `x.conf.tmp`）在并发写同一路径时会互相截断或抢先
 //! rename，表现为「替换失败：No such file or directory」或半截内容。这里统一
 //! 用 `.<文件名>.<pid>.<seq>.tmp`：同目录内 rename 仍是原子的，进程内序号保证
 //! 同名路径并发写也各有各的临时文件。
+//!
+//! 写盘本身一律走内核文件通道（`AdminFs`）：原子替换、属主/权限位保留（daemon
+//! 以 `root:skiff-plugins` 运行，直接换文件会把 `config.toml` 的 group 污染成
+//! `skiff-plugins`）都由 `skiff-fs` 的 `preserve_attrs` 负责，内核不再自己实现
+//! 一份。这里只剩「临时文件叫什么」这一个纯命名工具，供证书这类需要在通道写入
+//! 之前先落临时件的调用方使用。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,42 +25,4 @@ pub(crate) fn sibling_temp(path: &Path) -> PathBuf {
         std::process::id(),
         seq
     ))
-}
-
-/// 写临时文件后 rename 覆盖目标；`mode` 在 Unix 上设置到临时文件。
-///
-/// Unix 上会先 stat 原文件保存 owner/group，rename 后用 `lchown` 恢复——
-/// daemon 以 `root:skiff-plugins` 运行，直接 rename 会把 config.toml 的 group
-/// 从 `root` 污染成 `skiff-plugins`，导致 accept.sh A6e 判定失败。
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
-    #[cfg(unix)]
-    let saved = std::fs::metadata(path).ok().map(|m| {
-        use std::os::unix::fs::MetadataExt;
-        (m.uid(), m.gid())
-    });
-
-    let tmp = sibling_temp(path);
-    std::fs::write(&tmp, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
-    }
-    #[cfg(not(unix))]
-    let _ = mode;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-
-    #[cfg(unix)]
-    if let Some((uid, gid)) = saved {
-        let path_c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
-        unsafe {
-            // lchown：不跟随 symlink（目标 config.toml 通常是 regular file，
-            // 但用 lchown 更安全，避免万一有人 symlink 到敏感位置）。
-            libc::lchown(path_c.as_ptr(), uid, gid);
-        }
-    }
-    Ok(())
 }

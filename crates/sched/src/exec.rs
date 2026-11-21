@@ -3,7 +3,10 @@
 //! 执行是**两段式**：采样（可选）与批量执行。内核只把只读批次交出去，执行体用
 //! [`Verdict`] 声明消费到哪；没给回执等价于 `keep`（保守，不丢数据）。
 //!
-//! 真正的 async 插件 RPC 在 `skiff-core` 里用 `Executor` 包一层，本 crate 保持同步。
+//! 本 crate 只定义**执行体的输入输出契约**（`RunTicket` / `SampleTicket` /
+//! [`ExecOutput`]），不定义执行体本身：谁去调插件 RPC、怎么 await、超时怎么掐，
+//! 都由上层（`skiff-app` 的任务接线）决定，跑完把回执交回
+//! [`crate::Scheduler::finish`] 结算。这里保持同步，调度器因此不依赖 tokio。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -318,13 +321,6 @@ pub struct SampleContext {
 pub struct SampleTicket {
     pub context: SampleContext,
     pub at: i64,
-}
-
-/// 执行体接口：`sample` 产出一个采样点，`execute` 消费一批点并给回执。
-pub trait Executor {
-    fn sample(&mut self, ctx: &SampleContext) -> Result<Option<Value>, ExecError>;
-
-    fn execute(&mut self, ctx: &RunContext, batch: &Batch) -> Result<ExecOutput, ExecError>;
 }
 
 /// 一次执行历史（契约 §7.1 `task_runs` 的字段）。
