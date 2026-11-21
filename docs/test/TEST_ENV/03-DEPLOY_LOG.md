@@ -13,7 +13,7 @@
 
 | 日期 | 场景 | 版本 / 坐标 | 结论 |
 | --- | --- | --- | --- |
-| 2026-11-21 10:55 | **登录页视觉重做**（合成卡片、正常控件密度、修溢出与重复标题） | Run `206`（head `cb1b421`）amd64 12,912,834 B `27723e9d…3fbb`，前缀 `88qfm2s8` | ✅ 960×571 深色真实浏览器：标题完整、三字段 + 通栏实心按钮、无滚动条、0 console error；admin 登录正常；`abc7b0c`/`b44aac8` 两次中间构建未通过验证，未计入 |
+| 2026-11-21 11:45 | **登录页视觉重做 + 滚动条修复**（合成卡片、正常控件密度、取消固定高度/内层滚动） | Run `207`（head `5221b4c`）amd64 12,913,254 B `37492742…75ac`，前缀 `88qfm2s8` | ✅ 960×571 深/浅双主题真实浏览器：标题完整、三字段 + 通栏实心按钮、`#skiff-login=282px`、页面与右列 `clientHeight==scrollHeight`、无滚动条、0 console error；admin 登录正常；`abc7b0c`/`b44aac8`/`cb1b421` 三次中间构建未通过验证，未计入 |
 | 2026-11-21 10:18 | **还原后干净安装 + 弹窗 schema 修复轮**（GitHub Release 当前资产 `5bec69b` → 修复 `d5680b6` 重发版升级） | Run `202`（head `5bec69b`）amd64 12,913,533 B `3c6d40b6…b424`；Run `203`（head `d5680b6`）amd64 12,913,194 B `152e5902…e257`，前缀 `88qfm2s8` | ✅ accept.sh **49 PASS / 0 FAIL / 2 SKIP**；8 插件全装；31 页巡检发现 3 页 `CompileError`（dialog `props.body`）→ `d5680b6` 修复并升级复验 3/3 PASS（含新建目录写操作），0 console error |
 | 2026-11-21 01:00 | **干净重装 v23 最终版**（登录页 body overflow:hidden !important + budding 1.8.3 同步） | Release run `197`（head `26f53ec`），amd64 21,125,136 B `sha256=bf1ce05f…2162d`，前缀 `ewtdhtgx` | ✅ 960×571 视口 html/body scrollHeight==clientHeight 无垂直滚动条；浏览器验收 4/4 PASS；curl HTML + CSS 规则全链验证；库 v22 |
 | 2026-11-20 23:34 | **登录页 CSS 修复**（测试机还原后全新安装，`6d98116` 登录页布局收紧） | Release run `194`（head `6d98116`），amd64 18,016,272 B `sha256=948b9312…7977` | ✅ 1080px 视口下无垂直滚动条；登录成功；库 v22 |

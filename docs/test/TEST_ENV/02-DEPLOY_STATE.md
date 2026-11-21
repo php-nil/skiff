@@ -6,12 +6,13 @@
 
 ## 5. 当前部署
 
-> **2026-11-21 10:55 登录页视觉重做（HEAD `cb1b421`，沿用本轮安装）**
+> **2026-11-21 11:45 登录页视觉重做 + 滚动条修复（HEAD `5221b4c`，沿用本轮安装）**
 > - 背景：用户反馈登录页「卡片右侧被裁、标题重复、字段 10px 压缩、大片空白」。根因是旧 CSS 对 budding 表单做极端压缩（label 10px、字段 28px、内层 padding 归零），页面标题与卡片标题重复，装饰层绝对定位造成 125px 水平溢出。
-> - 改动：登录页改为一张合成卡片（左深青品牌面板 + 右表单区），上限 1000×640 并随视口收缩；删除全部压缩规则；标题/副标题/页脚改由服务端模板承担，budding 只渲染表单本体；登录按钮通栏实心；辉光层改 `position: fixed` 消除横向滚动；主题按钮只显示一个文案；`SHELL_VERSION` 26→29。
-> - 资产：Release run `206`（head `cb1b421`），amd64 **12,912,834 B** id `774218701`，`sha256=27723e9d37992700411ce8dab7153c061d5c23bce956c960fe8f03efa8483fbb`（API 资产端点下载）；`install.sh` exit 0，前缀 **`88qfm2s8`**、8 插件、口令、库与配置全部保留；二进制 18,053,136 B `e2875d90…bc01`。
-> - 验证：真实浏览器 960×571 深色主题——「欢迎回来」完整可见、三字段 + 通栏实心登录按钮、无横/纵向滚动条、0 console error；`admin` 登录后概览正常。另用本地静态预览复核 `scrollWidth == innerWidth == 960`。
-> - 中间两次构建（`abc7b0c` 布局仍裁切、`b44aac8` 报 `form is not defined`）未通过浏览器验证，不计入本部署结论。
+> - 改动：登录页改为一张合成卡片（左深青品牌面板 + 右表单区），宽度上限 1000px；删除全部压缩规则；标题/副标题/页脚改由服务端模板承担，budding 只渲染表单本体；登录按钮通栏实心；辉光层改 `position: fixed`；主题按钮只显示一个文案；`SHELL_VERSION` 26→30。
+> - 滚动条修复：budding page 根把 `#skiff-login` 撑到 571px 并叠加固定卡片高度，导致右列出现内层滚动条。取消固定高度（卡片由内容撑开、`margin:auto` 居中）、右列改 `overflow: visible`、强制 `#skiff-login`/page 根 `height:auto`，并为 ≤660px 矮视口压缩纵向留白；仅极端矮视口才出现单条页面滚动，滚动条已做细样式。
+> - 资产：Release run `207`（head `5221b4c`），amd64 **12,913,254 B** id `774328309`，`sha256=374927425308c05d3151fbd7fab62a44f83b8b6bb2cd6065c051653ed6c275ac`（API 资产端点下载）；`install.sh` exit 0，前缀 **`88qfm2s8`**、8 插件、口令、库与配置全部保留；二进制 18,053,136 B `8af6592f…df28`。
+> - 验证：真实浏览器 960×571 深色/浅色双主题——「欢迎回来」完整可见、三字段 + 通栏实心登录按钮、`#skiff-login=282px`、页面与右列 `clientHeight == scrollHeight`、无任何滚动条、0 console error；`admin` 登录后概览正常。
+> - 中间构建（`abc7b0c` 布局仍裁切、`b44aac8` 报 `form is not defined`、`cb1b421` 仍有内层滚动条）未通过浏览器验证，不计入本部署结论。
 > - 影响面：仅登录页模板与样式；已装页面、插件与数据未变化。
 >
 > **2026-11-21 10:18 干净重装 + 弹窗 schema 修复（已过期；HEAD `d5680b6`）**
@@ -130,18 +131,18 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `206`（dispatch `ref=main`，head `cb1b421`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 02:55 UTC。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`cb1b421`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `207`（dispatch `ref=main`，head `5221b4c`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 03:45 UTC。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`5221b4c`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,912,834 B | `27723e9d37992700411ce8dab7153c061d5c23bce956c960fe8f03efa8483fbb` | `774218701` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,913,254 B | `374927425308c05d3151fbd7fab62a44f83b8b6bb2cd6065c051653ed6c275ac` | `774328309` |
 | `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | — |
 | `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | — | （本轮仅 amd64 实测） | — |
 | `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | — |
 | `checksums.txt` | — | （本轮未下载） | — |
 
 - **下载与核对**：GitHub `releases/download/v0.1.0/<asset>` 直连偶发 SSL EOF，本轮改用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 下载成功；测试机 `sha256sum -c` 与包内 `checksums.txt` 复核均 OK。
-- **本轮实际部署二进制**：`/usr/local/bin/skiff` **18,053,136 B**，`sha256=e2875d9041cefbd51d43536b600359792cf217f29808a156eee9dd36d41abc01`。
+- **本轮实际部署二进制**：`/usr/local/bin/skiff` **18,053,136 B**，`sha256=8af6592fb4549074d4c915cd1f27b486150ecfc15dcceb67ca0701e676cfdf28`。
 - **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`。
 - **Release 触发方式**：开发机无 `gh` CLI 和 `GITHUB_TOKEN` env var，用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch。
