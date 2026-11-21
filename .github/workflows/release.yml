@@ -138,6 +138,8 @@ jobs:
           SKIP_PLUGINS: ${{ inputs.skip_plugins }}
         run: |
           set -eu
+          # 强制 clean target 避免 Rust 增量编译缓存导致静态资源不更新
+          cargo clean
           set -- --version "${{ steps.ver.outputs.version }}" \
                  --target "${{ matrix.target }}" \
                  --out dist
