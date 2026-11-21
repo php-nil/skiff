@@ -443,7 +443,9 @@ fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                         "type": "dialog",
                         "props": {
                             "title": "上传已有证书（PEM）",
-                            "width": 620,
+                            "width": 620
+                        },
+                        "content": {
                             "body": [
                                 {
                                     "type": "alert",
@@ -845,7 +847,9 @@ fn dialog_button(spec: DialogSpec<'_>) -> Value {
             "type": "dialog",
             "props": {
                 "title": spec.title,
-                "width": spec.width,
+                "width": spec.width
+            },
+            "content": {
                 "body": body,
                 "footer": [
                     {

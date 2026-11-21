@@ -6526,7 +6526,9 @@
         type: 'dialog',
         props: {
           title: options.title,
-          width: options.width || 520,
+          width: options.width || 520
+        },
+        content: {
           body: body,
           footer: [
             {
@@ -6785,7 +6787,9 @@
               type: 'dialog',
               props: {
                 title: '解压',
-                width: 520,
+                width: 520
+              },
+              content: {
                 body: [
                   { type: 'text', props: { text: '压缩包：${item.path}' } },
                   writeForm(apiBase + '/files/extract', { type: 'skiffFileExtract', props: { path: '${item.path}' } }, [
@@ -7446,7 +7450,9 @@
                     type: 'dialog',
                     props: {
                       title: '新建目录',
-                      width: 480,
+                      width: 480
+                    },
+                    content: {
                       body: [
                         {
                           type: 'form',
@@ -7489,7 +7495,9 @@
                     type: 'dialog',
                     props: {
                       title: '上传文件',
-                      width: 560,
+                      width: 560
+                    },
+                    content: {
                       body: [
                         {
                           type: 'alert',
@@ -7526,7 +7534,9 @@
                     type: 'dialog',
                     props: {
                       title: '新建文件',
-                      width: 640,
+                      width: 640
+                    },
+                    content: {
                       body: [
                         {
                           type: 'form',

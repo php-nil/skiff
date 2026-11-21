@@ -6362,6 +6362,20 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     ] {
         assert!(js.contains(needle), "新建弹窗改造缺失：{needle}");
     }
+    // budding 1.8.3 契约（upstream compiler action.ts）：dialog 的 body/footer 是动作
+    // 顶层 content 插槽，写在 props 里会整页 CompileError；这五处弹窗各代表一种来源。
+    for needle in [
+        "width: options.width || 520\n        },\n        content: {",
+        "title: '解压',\n                width: 520\n              },\n              content: {",
+        "title: '新建目录',\n                      width: 480\n                    },\n                    content: {",
+        "title: '上传文件',\n                      width: 560\n                    },\n                    content: {",
+        "title: '新建文件',\n                      width: 640\n                    },\n                    content: {",
+    ] {
+        assert!(
+            js.contains(needle),
+            "dialog 动作的 body 必须写在顶层 content（1.8.3 §18.7）：{needle}"
+        );
+    }
     // 站点列表的新建/批量弹窗随页面骨架迁到服务端。
     let site_page = include_str!("../src/handlers/ui/site_page.rs");
     for needle in [
@@ -6370,6 +6384,8 @@ fn budding_boot_create_dialogs_keep_deep_links() {
         "initial: Some(json!({ \"site_type\": \"static\" }))",
         "fn site_create_fields(",
         "fn dialog_button(",
+        "\"width\": 620\n                        },\n                        \"content\": {",
+        "\"width\": spec.width\n            },\n            \"content\": {",
     ] {
         assert!(
             site_page.contains(needle),
