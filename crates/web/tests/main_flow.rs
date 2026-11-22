@@ -6951,7 +6951,9 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         );
         viewers += 1;
     }
-    assert!(viewers >= 2, "壳脚本里的代码/日志查看器不应减少：{viewers}");
+    // 日志/配置查看器已随页面迁到服务端（`schema_kit::code_block`），壳脚本只剩
+    // 容器终端一处：数量不再随页面迁移而变，只要求「有一处且绑定 modelValue」。
+    assert!(viewers >= 1, "壳脚本至少保留终端查看器：{viewers}");
     // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断（构件层已固定）。
     assert!(kit.contains(r#""perPage": -1"#), "列表应渲染本页全部行");
     // 审计页骨架已迁到服务端：定高与场景空态文案在 audit_page.rs。
@@ -6996,10 +6998,12 @@ fn budding_boot_session_expiry_uses_redirect_component() {
         "401 应硬跳转，不走 budding redirect 组件"
     );
     assert!(js.contains("/login?next="), "跳转目标应回带 next");
-    // 页面骨架 + 七条 JSON 通道（读写/上传/RPC/终端）都接上，而不是只弹 toast。
+    // 每个 fetch 通道一处：会话引导、读数据、读裸 JSON、写通道、上传、插件 RPC、终端。
+    // 写通道原先各写一份（submitJson / postPrefixJson），合并后总数为 8；阈值跟着
+    // 实现走只会拦「通道被删掉」，不拦「多接一次」。
     let calls = js.matches("showSessionExpired()").count();
     assert!(
-        calls >= 9,
+        calls >= 8,
         "401 出口覆盖不足：showSessionExpired 出现 {calls} 次"
     );
     assert!(
@@ -8489,7 +8493,7 @@ async fn ui_v1_key_response_shapes_are_frozen() {
     assert_key_set(
         row,
         &[
-            "id", "ts", "actor", "ip", "action", "target", "result", "detail",
+            "id", "ts", "ts_label", "actor", "ip", "action", "target", "result", "detail",
         ],
         "audit item",
     );

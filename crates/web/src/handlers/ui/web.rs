@@ -64,7 +64,9 @@ pub async fn web(
         .await
         .map_err(|e| ApiError(e.into()))?;
     let modules = state.nginx_modules().await;
-    let mut data = json!({
+    // `/ui/v1/*` 的统一信封是 `{ data, ... }`：页面骨架与表格数据源都从这里取，
+    // 少一层 `data` 会让前端与既有用例同时取空（`web_schema` 拿到的就是 Null）。
+    let data = json!({
         "status": {
             "available": status.available,
             "reason": status.reason,
@@ -115,6 +117,7 @@ pub async fn web(
         },
         "can_admin": user.can(skiff_model::Permission::Admin),
     });
+    let mut body = json!({ "data": data });
     if q.with_schema {
         let loaded = q.load == "1" || q.load == "true";
         let logs = if q.view == "logs" {
@@ -158,9 +161,10 @@ pub async fn web(
             "status": q.status.as_str(),
             "q": q.q.as_str(),
         });
-        data["schema"] = super::web_page::web_schema(&data["data"], &q.view, &query, logs.as_ref());
+        // 骨架吃的是同一份 `data`（不是另取一次快照），页面与接口因此不会各说各话。
+        body["schema"] = super::web_page::web_schema(&body["data"], &q.view, &query, logs.as_ref());
     }
-    let mut resp = Json(data).into_response();
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
