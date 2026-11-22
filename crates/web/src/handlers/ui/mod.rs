@@ -52,6 +52,7 @@ mod overview_page;
 mod plugins;
 mod plugins_page;
 mod resources;
+mod routes;
 mod runtimes;
 mod runtimes_page;
 mod schema_kit;
@@ -439,6 +440,7 @@ fn plugin_menu_views(state: &AppState, key: &str) -> (String, String, Vec<MenuVi
 pub fn router() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
         .merge(auth::router())
+        .merge(routes::router())
         .merge(menu::router())
         .merge(overview::router())
         .merge(sites::router())
