@@ -6,7 +6,19 @@
 
 ## 5. 当前部署
 
-> **2026-11-22 16:09 测试机还原后干净首装 + row_button CompileError 修复（HEAD `946619d`）**
+> **2026-11-22 22:14 测试机还原后干净首装 + budding 1.8.5 同步 / 弹窗页脚提交（当前；HEAD `5fa12e2`）**
+> - 背景：测试机还原为 T1（无 skiff / 无 `/etc/skiff`，18080 空闲，Docker 29.7.2 在位）；同步上游 budding `a3a3c8d`（1.8.5），弹窗保存/重置统一放图层页脚，新建入口收敛为弹窗，并按测试矩阵完成首轮验收与修复后升级复验。
+> - **首装**：`install.sh --listen 0.0.0.0:18080 --tls off` exit 0；前缀 **`dwkaf8si`**；`skiff.service` active；healthz `{"docker":"available","status":"ok","version":"0.1.0"}`；人工追加 `allow_insecure_http` / `allow_reduced_sandbox`。
+> - **首装资产**：Release run `45028320777`（head `e3066e6`），amd64包 12,971,860 B，`sha256=38eb2d64…46096a`（测试机 GitHub download 直连 + 侧车校验一致）。
+> - **首轮验收**：`accept.sh --group all` **49 PASS / 0 FAIL / 3 SKIP**（PF4 装后端口、A6h 改密机无 initial-admin、B4 未开限流）；浏览器：概览、新建站点弹窗、防火墙「放行端口」弹窗与提交（新增 18081/tcp）、文件新建目录均通过；插件 schema 确认页脚 reset/close/submit + 注入 no-op api。
+> - **首轮修复（`5fa12e2`，SHELL_VERSION 42）**：新建目录与编排失败改走 `formError`，错误留在弹窗内并保留输入。复验同名目录返回「新建目录失败：目标已存在」，输入仍为 `ui-check-1122`，无 CompileError。
+> - **升级复验资产**：Release run `45030832428`（head `5fa12e2`），amd64包 12,971,860 B id `779283820`，`sha256=dec1254e68e0c4efe0eeea3dfff4e72a1f7a2313437cb22819fc66f57c40a42e`（侧车 id `779283769`）；就地升级 exit 0，前缀/口令/插件数据保留。
+> - **升级后 accept**：`--group all --password '…'` **49 PASS / 0 FAIL / 3 SKIP**（SKIP 同上）。
+> - **插件**：官方包目录经并发操作后仅剩 firewall 可装；已装 `com.skiff.firewall` 并实测弹窗提交。cron 包缺失（`/www/skiff/official` 无 cron 资产），未能在本轮验证 cron 弹窗，代码与 schema 断言已覆盖。
+> - **浏览器**：概览、`/sites/list` 新建站点弹窗、防火墙 rules 弹窗与提交、`/files` 新建目录成功/失败复验，全部 0 CompileError / 0 console error。
+> - **登录**：`admin`，口令取测试机 `/root/iter/admin-pw.txt`（0600）。
+>
+> **2026-11-22 16:09 测试机还原后干净首装 + row_button CompileError 修复（已过期；HEAD `946619d`）**
 > - 背景：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080 空闲）→ 安装 Release 当前资产 → accept 50 PASS → 装 8 插件 → 浏览器巡检发现容器列表页 `CompileError: action 必须包含非空字符串 type` → 修复 `schema_kit::row_button`/`action_button` 签名 → 重发版 → 重新部署 → 浏览器全绿复验。
 > - **根因**：`kit::row_button(action: Value)` 只接受单个 Value，但 11 个 handler 中约 30 处调用传了 `json!({ "actions": [...] })` 包装（无 type 字段）。budding 1.8.4 要求 action 数组每个元素必须是带 type 的动作对象。
 > - **修复**：`schema_kit::row_button` 和 `action_button` 签名从单个 `Value` 改为 `Vec<Value>`；所有调用点把 `json!({ "actions": [...] })` 直接改为传 `vec![action1, action2, ...]`；`plugins_page::plugin_actions` 卸载按钮直接传 `chain` vec。涉及 11 文件 / ~30 处改动。
@@ -153,16 +165,16 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `45000648749`（dispatch `ref=main`，head `946619d`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-22 16:06 UTC。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`946619d`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `45030832428`（dispatch `ref=main`，head `5fa12e2`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-22 14:12 UTC。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`5fa12e2`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | — | `eaaa57dfbcba691fe20cbeab4bd23a7f6f974784e89be05591a8c4fa6b063e3b` | `778348747` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | — | （侧车，内容同上摘要） | `778348709` |
-| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | — | （本轮仅 amd64 实测） | — |
-| `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | — |
-| `checksums.txt` | — | （本轮未下载） | — |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,971,860 B | `dec1254e68e0c4efe0eeea3dfff4e72a1f7a2313437cb22819fc66f57c40a42e` | `779283820` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | — | （侧车，内容同上摘要） | `779283769` |
+| `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | 12,389,197 B | （本轮仅 amd64 实测） | `779283814` |
+| `skiff-server-x86_64-unknown-linux-musl` | 3,941,088 B | （本轮未下载） | `779283766` |
+| `checksums.txt` | 434 B | （本轮未下载） | `779283773` |
 
 - **下载与核对**：本轮测试机用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 直接下载成功，`sha256sum` 与侧车一致。
 - **Release 触发方式**：开发机无 `gh` CLI 和 `GITHUB_TOKEN` env var，用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch。

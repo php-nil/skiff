@@ -19,8 +19,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| URL | `http://10.10.15.4:18080/kfzehjpk/login`（**形态三：直接明文 HTTP，仅限内网**） |
-| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `kfzehjpk`（2026-11-21 23:10 干净重装生成） |
+| URL | `http://10.10.15.4:18080/dwkaf8si/login`（**形态三：直接明文 HTTP，仅限内网**） |
+| 入口前缀 | 随机 8 位，**每次重装可能变化**；当前 `dwkaf8si`（2026-11-22 22:14 budding 1.8.5 轮升级后保持） |
 | 前缀读取 | 测试机执行 `journalctl -u skiff -n 50 --no-pager \| grep 安全入口`，或登录后查看设置页；不要沿用旧记录直接试 |
 | 明文通道（形态三，当前） | `listen="0.0.0.0:18080"` + `tls_enabled=false` + `allow_insecure_http=true`（**安装后人工追加**：install.sh 对非 loopback 不明文放行，§6.2 裸奔防护）；**无转发层**，直连 18080。Cookie 名 `skiff_dev_session`（无 `Secure`）。**仅供内网验证，勿对外暴露** |
 | 证书 | 本轮全新安装未生成 TLS 证书（`tls_enabled=false`）；历史自签证书路径与 SAN 见 §2.1，需要 TLS 时按形态一/二重新生成或回切 |
@@ -44,7 +44,7 @@
 | 项 | 值 / 读取方式 |
 | --- | --- |
 | 管理员账号 | `admin` |
-| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-21 23:16 轮 `skiff admin reset-password` 复验后改回；口令明文不落文档） |
+| 当前口令 | 见测试机 `/root/iter/admin-pw.txt`（2026-11-22 22:14 轮 `reset-password` 后改为已知口令；口令明文不落文档） |
 | 口令文件 | `/root/iter/admin-pw.txt`（`0600`）。**只存口令本身**（16 B，无换行），取自 `/www/skiff/initial-admin.txt` 第 3 行 `口令: …` |
 | 读取方式 | SSH 登录后 `cat /root/iter/admin-pw.txt`；重置/轮换口令后必须同步更新该文件 |
 | 首登改密 | 测试期默认 `must_change_password=0`，初始口令可直接登录；强制改密流程见 [ITERATION/01-ROUND.md](../ITERATION/01-ROUND.md) §5.2.1 |
