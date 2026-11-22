@@ -6121,7 +6121,8 @@ fn budding_boot_host_bridge_and_file_entries_present() {
         "skiffFileArchive: fileArchive,",
         "skiffFileExtract: fileExtract,",
         // 站点详情 Schema 由服务端 UI 端点产出，前端只 fetch 并做运行时转义。
-        "prepareServerSchema(body.schema)",
+        "function toPageSchema(",
+        "prepareServerSchema(schema)",
     ] {
         assert!(js.contains(needle), "宿主桥/文件入口缺失：{needle}");
     }
@@ -6895,23 +6896,28 @@ fn budding_boot_only_writes_registered_schema_root_keys() {
 fn budding_boot_drops_pre_r3_workarounds() {
     let js = include_str!("../static/budding/budding-boot.js");
     // T16：17 个业务语义图标全部有映射，不再只映射 clock/file/dot。
-    for name in [
-        "overview: 'mdi-view-dashboard'",
-        "globe: 'mdi-web'",
-        "docker: 'mdi-docker'",
-        "plug: 'mdi-puzzle'",
-        "tools: 'mdi-wrench'",
-        "settings: 'mdi-cog'",
-        "container: 'mdi-cube-outline'",
-        "shield: 'mdi-shield-outline'",
-        "lock: 'mdi-lock-outline'",
-        "network: 'mdi-lan'",
-        "user: 'mdi-account-outline'",
-        "activity: 'mdi-pulse'",
-        "list: 'mdi-format-list-bulleted'",
-        "archive: 'mdi-archive-outline'",
+    // 图标映射随路由表迁到服务端 `routes.rs::MENU_ICONS`，断言跟到产出端。
+    let routes_src = include_str!("../src/handlers/ui/routes.rs");
+    for (name, glyph) in [
+        ("overview", "mdi-view-dashboard"),
+        ("globe", "mdi-web"),
+        ("docker", "mdi-docker"),
+        ("plug", "mdi-puzzle"),
+        ("tools", "mdi-wrench"),
+        ("settings", "mdi-cog"),
+        ("container", "mdi-cube-outline"),
+        ("shield", "mdi-shield-outline"),
+        ("lock", "mdi-lock-outline"),
+        ("network", "mdi-lan"),
+        ("user", "mdi-account-outline"),
+        ("activity", "mdi-pulse"),
+        ("list", "mdi-format-list-bulleted"),
+        ("archive", "mdi-archive-outline"),
     ] {
-        assert!(js.contains(name), "菜单图标映射缺失：{name}");
+        assert!(
+            routes_src.contains(&format!("(\"{name}\", \"{glyph}\")")),
+            "菜单图标映射缺失：{name}: '{glyph}'"
+        );
     }
     // T13：高亮包已改名 @budding/code，旧 highlight 注册与产物不得残留。
     assert!(
