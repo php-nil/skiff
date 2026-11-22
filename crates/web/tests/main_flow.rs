@@ -2744,13 +2744,14 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
 /// 任务页筛选：关键字必须随页面骨架请求带进服务端，再由表格数据源复用。
 #[test]
 fn budding_tasks_page_keeps_keyword_filter() {
-    let js = include_str!("../static/budding/budding-boot.js");
+    // 「关键字 → 骨架请求」的拼装已收进 `routes.rs::page_source`。
+    let source = include_str!("../src/handlers/ui/routes.rs");
     assert!(
-        js.contains("'/tasks?limit=1&with_schema=true'"),
+        source.contains("api(\"/tasks?limit=1&with_schema=true\")"),
         "任务页骨架必须由服务端产出"
     );
     assert!(
-        js.contains("(tasksQ ? '&q=' + encodeURIComponent(tasksQ) : '')"),
+        source.contains("format!(\"&q={}\", enc(s.get(\"q\")))"),
         "页面骨架请求必须带上关键字，否则筛选后的骨架与数据不一致"
     );
     let page = include_str!("../src/handlers/ui/tasks_page.rs");
@@ -5974,13 +5975,15 @@ fn budding_boot_status_table_honors_caller_empty_text() {
 #[test]
 fn budding_boot_json_pages_are_wired_and_parse() {
     let js = include_str!("../static/budding/budding-boot.js");
+    // 路由表已由服务端下发：资产 URL 登记处从壳脚本换到 `handlers/ui/routes.rs`。
+    let routes_src = include_str!("../src/handlers/ui/routes.rs");
     for name in [
         "docker-images.json",
         "docker-networks.json",
         "docker-volumes.json",
     ] {
         assert!(
-            js.contains(&format!("pageAsset('{name}')")),
+            routes_src.contains(&format!("PageKind::Asset(\"{name}\")")),
             "路由必须指向 JSON 资产：{name}"
         );
     }
@@ -6092,8 +6095,10 @@ fn budding_boot_buttons_navigate_explicitly() {
         !js.contains("url: prefix + '/docker/containers?filter=error'"),
         "只换 query 的跳转不能再用 navigate（只会 pushState，不会重载内容）"
     );
+    // 计数与列表共用同一 filter 口径的拼装已收进 `routes.rs::page_source`。
+    let routes_src = include_str!("../src/handlers/ui/routes.rs");
     assert!(
-        js.contains("get('filter') === 'error' ? 'filter=error&' : ''"),
+        routes_src.contains("if s.get(\"filter\") == \"error\""),
         "容器计数必须与列表用同一 filter 口径，切换后计数才同步变化"
     );
 }
@@ -6418,13 +6423,24 @@ fn budding_boot_registers_server_dialogs_from_content_slot() {
 #[test]
 fn budding_boot_job_logs_page_comes_from_server() {
     let js = include_str!("../static/budding/budding-boot.js");
+    // 页面取数地址由服务端 `/ui/v1/page` 回答，脚本只报「当前路径」。
     assert!(
-        js.contains("'/jobs/' + encodeURIComponent(logJobId) + '/logs?with_schema=true'"),
-        "作业日志页必须取服务端骨架"
+        js.contains("function fetchPageSchema("),
+        "页面分派必须走服务端取数地址"
     );
     for banned in ["function loadJobLogs(", "function jobLogsSchema("] {
         assert!(!js.contains(banned), "作业日志构建器已迁出：{banned}");
     }
+    // 产出端：路由表登记隐藏路由，`page_source` 指到日志端点。
+    let routes = include_str!("../src/handlers/ui/routes.rs");
+    assert!(
+        routes.contains("\"/jobs/:id/logs\", \"作业日志\""),
+        "路由表必须登记作业日志隐藏路由"
+    );
+    assert!(
+        routes.contains("\"/jobs/{}/logs?with_schema=true\""),
+        "page_source 必须把作业日志指到日志端点"
+    );
     let page = include_str!("../src/handlers/ui/jobs_page.rs");
     for needle in [
         "pub fn job_logs_schema(",
@@ -6497,14 +6513,17 @@ fn budding_boot_file_forms_send_typed_values_and_show_errors() {
 #[test]
 fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
     let js = include_str!("../static/budding/budding-boot.js");
-    assert!(
-        js.contains("'core/plugins/discover': { path: '/plugins/discover'"),
-        "发现必须映射到原生插件页"
-    );
-    assert!(
-        js.contains("'core/plugins/updates': { path: '/plugins/updates'"),
-        "可更新必须映射到原生插件页"
-    );
+    // 路由映射由服务端 `/ui/v1/routes` 下发，产出端是 routes.rs 的内置页登记表。
+    let routes = include_str!("../src/handlers/ui/routes.rs");
+    for (key, path) in [
+        ("core/plugins/discover", "/plugins/discover"),
+        ("core/plugins/updates", "/plugins/updates"),
+    ] {
+        assert!(
+            routes.contains(&format!("(\"{key}\", \"{path}\", PageKind::Page)")),
+            "{key} 必须映射到原生插件页"
+        );
+    }
     // 页内标签：随插件页迁到服务端 schema，链接仍指向原生路径。
     let plugins_page = include_str!("../src/handlers/ui/plugins_page.rs");
     assert!(
@@ -6522,9 +6541,15 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
 fn budding_boot_has_ui_theme_and_web_env_entries() {
     let js = include_str!("../static/budding/budding-boot.js");
     let spa = include_str!("../src/handlers/spa.rs");
+    // 界面设置：路由登记 + 页面取数地址都在 routes.rs，脚本不再持有映射。
+    let routes = include_str!("../src/handlers/ui/routes.rs");
     assert!(
-        js.contains("'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' }"),
-        "界面设置必须映射到规范路径与 schema"
+        routes.contains("(\"core/settings/ui\", \"/settings/ui\", PageKind::Page)"),
+        "界面设置必须映射到规范路径"
+    );
+    assert!(
+        routes.contains("\"/settings/ui?with_schema=true\""),
+        "界面设置的页面取数地址必须指到 /ui/v1/settings/ui"
     );
     // 主题 CSS 由服务端出：颜色计算只有 `skiff_app::theme` 一处，前端不再重算。
     assert!(
@@ -6659,11 +6684,19 @@ fn budding_boot_ui_theme_presets_and_color_fields() {
 #[test]
 fn budding_boot_create_dialogs_keep_deep_links() {
     let js = include_str!("../static/budding/budding-boot.js");
+    // 深链页路由与独立表单都保留：路由与「页面结构去哪取」都在 `routes.rs`
+    // （`DETAIL_ROUTES` 的 `/sites/new` + `page_source` 映射到 `/ui/v1/pages/sites-new`）。
+    let routes_src = include_str!("../src/handlers/ui/routes.rs");
     for needle in [
-        // 深链页路由与独立表单都保留（骨架由 `/ui/v1/pages/sites-new` 给出）。
-        "path: prefix + '/sites/new'",
-        "schema: 'skiff:site-new'",
-        "fetchServerSchema(\n        '/pages/sites-new'",
+        "(\"/sites/new\", \"新建站点\", PageKind::Page, \"/sites/list\")",
+        "api(\"/pages/sites-new\")",
+    ] {
+        assert!(
+            routes_src.contains(needle),
+            "新建站点深链登记缺失：{needle}"
+        );
+    }
+    for needle in [
         // 弹窗提交成功回列表刷新；独立页仍进入详情。
         "op === 'create' && data.id && !args.dialog",
         "if (args.dialog) closeTopLayer();",
@@ -6963,17 +6996,22 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         "审计列表应定高并内部滚动，且带场景空态文案"
     );
     // 四个菜单图标使用 1.8.1 子集的原生字形，不再近似兜底或留空。
+    // 图标映射随路由表迁到服务端（`routes.rs`），断言跟着转过去。
+    let routes_src = include_str!("../src/handlers/ui/routes.rs");
     assert!(
-        js.contains("folder: 'mdi-folder-outline'"),
+        routes_src.contains(r#"("folder", "mdi-folder-outline")"#),
         "文件管理应使用原生字形"
     );
-    assert!(js.contains("disk: 'mdi-harddisk'"), "卷应使用原生字形");
     assert!(
-        js.contains("image: 'mdi-image-outline'"),
+        routes_src.contains(r#"("disk", "mdi-harddisk")"#),
+        "卷应使用原生字形"
+    );
+    assert!(
+        routes_src.contains(r#"("image", "mdi-image-outline")"#),
         "镜像应使用原生字形"
     );
     assert!(
-        js.contains("'hard-drive': 'mdi-harddisk'"),
+        routes_src.contains(r#"("hard-drive", "mdi-harddisk")"#),
         "配额管理应使用原生字形"
     );
 }
@@ -8815,4 +8853,100 @@ async fn ui_v1_key_response_shapes_are_frozen() {
         ],
         "files.entry",
     );
+}
+
+/// 路由表由服务端下发：菜单投影 + 详情/子视图隐藏路由，壳脚本只消费不拼装。
+///
+/// 这条用例替代原先「脚本里必须有 `buildRoutes` / `BUILTIN_PAGES`」的断言：
+/// 契约从「脚本怎么拼」变成「服务端出什么」，改实现不再需要动用例。
+#[tokio::test]
+async fn ui_routes_project_menu_with_hidden_details() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let (status, _, body) = get_ui(&h.app, "/ui/v1/routes", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("routes 必须是 JSON");
+    assert_key_set(&v["data"], &["routes", "plugins"], "GET /ui/v1/routes");
+    let routes = v["data"]["routes"].as_array().expect("routes 必须是数组");
+    // 递归收集：L2 子项挂在分组的 `children` 下，隐藏路由在顶层。
+    fn collect<'a>(routes: &'a [serde_json::Value], out: &mut Vec<&'a serde_json::Value>) {
+        for r in routes {
+            out.push(r);
+            if let Some(children) = r["children"].as_array() {
+                collect(children, out);
+            }
+        }
+    }
+    let mut all = Vec::new();
+    collect(routes, &mut all);
+    let paths: Vec<&str> = all.iter().filter_map(|r| r["path"].as_str()).collect();
+    // 菜单投影：一级分组路径带入口前缀，子项是绝对路径。
+    assert!(paths.contains(&"/p/__menu/sites"), "{paths:?}");
+    assert!(paths.contains(&"/p/sites/list"), "{paths:?}");
+    // 详情与子视图隐藏路由：地址栏直达与行内跳转都靠它们。
+    for expected in [
+        "/p/sites/:id",
+        "/p/sites/:id/logs",
+        "/p/docker/containers/:id/terminal",
+        "/p/jobs/:id/logs",
+    ] {
+        assert!(
+            paths.contains(&expected),
+            "缺少隐藏路由 {expected}: {paths:?}"
+        );
+    }
+    for r in all {
+        assert!(
+            r["title"].as_str().is_some_and(|t| !t.is_empty()),
+            "每条路由都要有标题: {r}"
+        );
+        let path = r["path"].as_str().unwrap_or_default();
+        if path.contains(":id") {
+            assert_eq!(r["hidden"], true, "参数路由不得进侧栏: {r}");
+            assert!(
+                r["meta"]["activeMenu"].as_str().is_some(),
+                "隐藏路由必须声明侧栏高亮落点: {r}"
+            );
+        }
+    }
+}
+
+/// 页面取数地址：前端只报「当前路径 + 查询串」，端点由服务端回答。
+#[tokio::test]
+async fn ui_page_answers_where_the_schema_lives() {
+    let h = harness();
+    let token = login(&h.app, "admin", "pw-test-123").await;
+    let cases = [
+        (
+            "/ui/v1/page?path=%2Fsites%2Flist",
+            "/ui/v1/sites?limit=1&with_schema=true",
+        ),
+        ("/ui/v1/page?path=", "/ui/v1/overview?with_schema=true"),
+        (
+            "/ui/v1/page?path=%2Fsites%2Fweb%2Flogs&search=type%3Derror",
+            "/ui/v1/web?view=logs&with_schema=true&load=1&kind=error&lines=200&level=all",
+        ),
+        (
+            "/ui/v1/page?path=%2Fdocker%2Fimages",
+            "/p/static/budding/pages/docker-images.json",
+        ),
+    ];
+    for (uri, expected) in cases {
+        let (status, _, body) = get_ui(&h.app, uri, Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["data"]["schema_url"], expected, "{uri}: {body}");
+    }
+    // 离不开浏览器的三种形态给标记，不给地址。
+    let (status, _, body) = get_ui(
+        &h.app,
+        "/ui/v1/page?path=%2Fdocker%2Fcontainers%2Fc1%2Fterminal",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["data"]["special"], "terminal");
+    assert!(v["data"]["schema_url"].is_null(), "{body}");
 }

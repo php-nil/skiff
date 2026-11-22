@@ -550,7 +550,7 @@ pub async fn routes(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
 ) -> Json<serde_json::Value> {
-    let prefix = state.cfg.entry_prefix.clone();
+    let prefix = mount_prefix(&state.cfg.entry_prefix);
     let menu = skiff_app::menu::build(&state, &user, "");
     let mut plugins: HashMap<String, PluginEntry> = HashMap::new();
     for group in &menu.groups {
@@ -562,7 +562,21 @@ pub async fn routes(
             }
         }
     }
-    Json(json!({ "data": { "routes": build_routes(&prefix, &menu, &plugins) } }))
+    let routes_json = build_routes(&prefix, &menu, &plugins);
+    // 插件视图清单随路由表一起下发：三级菜单按 id 找视图，与路由是同一份事实。
+    let plugin_list: Vec<serde_json::Value> = plugins
+        .values()
+        .map(|p| {
+            json!({
+                "plugin_id": p.plugin_id,
+                "default_view": p.default_view,
+                "views": &p.views,
+            })
+        })
+        .collect();
+    Json(json!({
+        "data": { "routes": routes_json, "plugins": plugin_list }
+    }))
 }
 
 // ---- 页面取数地址 ------------------------------------------------------------
@@ -701,6 +715,14 @@ fn api(path: &str) -> String {
     format!("{API}{path}")
 }
 
+/// 入口前缀的绝对形式（`/p`）。
+///
+/// 配置里的 `entry_prefix` 不带前导斜杠（存的是 `p`，挂载时才补），而路由 path
+/// 与资产 URL 都要绝对形式——单测里传的 `/p` 也是这个口径。
+fn mount_prefix(raw: &str) -> String {
+    format!("/{}", raw.trim_matches('/'))
+}
+
 /// 站点详情：`tab` 缺省即概览，未知值原样透传（端点自身按概览兜底）。
 fn site_detail(id: &str, tab: &str) -> PageSource {
     let tab = tab.to_ascii_lowercase();
@@ -775,11 +797,13 @@ fn web(view: &str, s: &Search) -> PageSource {
 /// `/plugins/store/confirm` 先于 `/plugins/:id/:view`）。
 fn page_source(prefix: &str, raw_path: &str, s: &Search) -> PageSource {
     let trimmed = raw_path.trim_matches('/');
-    let segs: Vec<&str> = if trimmed.is_empty() {
+    // 路径段先解码再回填：调用方传 `%2E` 还是 `.` 得到同一个端点地址，不会二次编码。
+    let owned: Vec<String> = if trimmed.is_empty() {
         Vec::new()
     } else {
-        trimmed.split('/').collect()
+        trimmed.split('/').map(decode_component).collect()
     };
+    let segs: Vec<&str> = owned.iter().map(String::as_str).collect();
     match segs.as_slice() {
         [] => PageSource::url(api("/overview?with_schema=true")),
 
@@ -931,7 +955,7 @@ pub async fn page(
 ) -> Json<serde_json::Value> {
     let path = q.path.unwrap_or_default();
     let search = Search::parse(q.search.as_deref().unwrap_or(""));
-    let prefix = state.cfg.entry_prefix.clone();
+    let prefix = mount_prefix(&state.cfg.entry_prefix);
     Json(json!({ "data": page_source(&prefix, &path, &search) }))
 }
 
@@ -1007,6 +1031,15 @@ mod tests {
     }
 
     #[test]
+    fn entry_prefix_is_normalized_to_absolute_form() {
+        // 配置存的是 `p`（挂载时才补斜杠），路由 path 与资产 URL 都要绝对形式，
+        // 否则下发的 `p/sites/list` 与浏览器地址栏的 `/p/sites/list` 对不上。
+        assert_eq!(mount_prefix("p"), "/p");
+        assert_eq!(mount_prefix("/p"), "/p");
+        assert_eq!(mount_prefix("/p/"), "/p");
+    }
+
+    #[test]
     fn web_page_whitelists_views_and_only_logs_carry_filters() {
         assert_eq!(
             url("/sites/web", ""),
@@ -1062,6 +1095,21 @@ mod tests {
         assert_eq!(
             url("/docker/images", ""),
             "/p/static/budding/pages/docker-images.json"
+        );
+    }
+
+    #[test]
+    fn encoded_path_segments_are_decoded_once() {
+        // 前端传的是原样 pathname（段内可能已编码）；回填端点地址时不能再编码一次。
+        assert_eq!(
+            url("/sites/a%2Eb", ""),
+            "/ui/v1/sites/a.b",
+            "%2E 应解码后原样回填"
+        );
+        assert_eq!(
+            url("/sites/demo%20site", ""),
+            "/ui/v1/sites/demo%20site",
+            "空格解码后重新编码一次"
         );
     }
 

@@ -124,12 +124,12 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 { type: 'admin', props: { title, brandTitle, bar: false }, content: { body: [{ type: 'outlet' }] } }
 ```
 
-- **菜单来源唯一**：`GET /ui/v1/menu` 直接投影 `skiff_app::menu::build` 的菜单树（L1/L2 归属、顺序、角色与能力门、用户隐藏偏好都在内核判定），前端只做「稳定键 → 已迁移路由」的映射，不另造第二套菜单语义。
-- **路由表**：菜单树在前端组装成 budding `routes`；分组节点用入口前缀下的保留段（`/{p}/__menu/<key>`）承载层级，子项使用绝对路径 `/{p}/...`。插件菜单项按 `/ui/v1/menu` 下发的 `plugin_id` / `views` 生成 `/plugins/<id>/<view>` 路由；没有 schema 的旧插件仍回落到内核深链。
+- **菜单与路由同源**：`GET /ui/v1/routes` 投影 `skiff_app::menu::build` 的菜单树（L1/L2 归属、顺序、角色与能力门、用户隐藏偏好都在内核判定），并**直接产出 budding `routes`**——路径、标题、图标、隐藏标记、侧栏高亮落点、页面来源都在服务端算好。`GET /ui/v1/menu` 仍在（菜单设置页与旧消费方用），两者同源，不另造第二套菜单语义。
+- **路由表形态**：分组节点用入口前缀下的保留段（`/{p}/__menu/<key>`）承载层级，子项使用绝对路径 `/{p}/...`；详情页与 L3 子视图是隐藏路由（`hidden: true`），参数段（`:id`）留给 budding 路由匹配。插件菜单项按 manifest 的 `plugin_id` / `views` 生成 `/plugins/<id>/<view>`；没有页面来源的旧页仍回落到内核深链（`href` + `target: _self`）。
 - **路由基址**：路由 path 已含 `/{p}` 前缀，因此**不设置 `routerBase`**；旧页面 schema 里的 `prefix + '/sites/...'` 绝对跳转可直接复用，不会出现双前缀。
-- **按地址栏定位**：每个路由的 `schema` 写成 `skiff:<kind>`，由启动脚本的 `platform.loadJson` 拦截，按当前路径段取数并复用既有页面构造器；插件视图写成 `skiff:plugin-view`，由壳页加载 schema 并完成 `{{data.*}}` / `{{query.*}}` 绑定；未适配页面返回统一占位。
+- **页面结构从哪来**：路由的 `schema` 只有三取值——`skiff:page`（问 `GET /ui/v1/page?path=&search=`，服务端回答端点 URL 或资产 URL）、静态资产 URL、`skiff:<special>`（终端 / 安装确认 / 插件视图，形态离不开浏览器）。壳脚本按标记分派，不再持有「路径 → 端点」的映射。
 - **壳层 chrome（2026-11-17 起）**：`bar: false` 关掉 budding 默认顶栏（品牌 / 页面标题 / 账号 / 退出登录），`breadcrumbs: false` 关掉整块原生面包屑（1.8.4 起 `content.breadcrumbs` 插槽已移除，只能用该 props）；页内子视图切换由内核渲染的**横向三级菜单**承担（`nav.skiff-subnav`，节点挂页面容器 `.bud-page` 内、标题之下，样式 `static/skiff-shell.css`）。它与面包屑是两件事：**是菜单就全量平铺**——当前页有子视图才出现，没有就整条不渲染，当前项用 2px 底部强调轨，不做下拉也不做路径回溯（「我在哪」由左侧菜单当前项承担）。底色取内容区表面色 `--v-theme-surface`，不跟随侧栏 chrome；吸顶时补 `is-stuck` 遮罩；重建带闸门防 MutationObserver 死循环。账号与退出登录移入「设置」页「当前账号」区块（仍走 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
-- **三级子视图登记**：核心页 L3 在 `budding-boot.js` 的 `SUBVIEW_TABS` 登记，模式支持参数段（`:domain` / `:id`），隐藏路由由登记表统一生成、不进侧栏：Web 服务 → 状态 / 配置 / 日志 / 模块（`/{p}/sites/web/{,config,logs,modules}`）；站点详情 → 概览 / 域名 / 配置 / 证书 / 备份 / 日志（`/{p}/sites/<域名>/{,domains,config,ssl,backup,logs}`）；运行环境详情 → 基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志（`/{p}/sites/runtimes/<id>/{,config,extensions,sites,manage,logs}`）。数据仍由一次父接口取齐，切子视图只换渲染块。插件多视图由 `/ui/v1/menu` 下发的 `views` 驱动（`/plugins/<id>/<view>`），页内按钮行已删除；随包 schema 缺失的旧插件视图回落到 `/{p}/plugins/{id}/{view}?legacy=1` 的 iframe 工作台。
+- **三级子视图登记**：核心页 L3 在服务端 `handlers/ui/routes.rs` 的 `SUBVIEWS` 登记（隐藏路由随路由表下发），模式支持参数段（`:id`）；壳脚本的 `SUBVIEW_TABS` 只负责**渲染**当前地址命中的横向菜单，不再决定路由。口径与路径同前：Web 服务 → 状态 / 配置 / 日志 / 模块（`/{p}/sites/web/{,config,logs,modules}`）；站点详情 → 概览 / 域名 / 配置 / 证书 / 备份 / 日志（`/{p}/sites/<域名>/{,domains,config,ssl,backup,logs}`）；运行环境详情 → 基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志（`/{p}/sites/runtimes/<id>/{,config,extensions,sites,manage,logs}`）。数据仍由一次父接口取齐，切子视图只换渲染块。插件多视图由路由表同时下发的 `plugins[].views` 驱动（`/plugins/<id>/<view>`），页内按钮行已删除；随包 schema 缺失的旧插件视图回落到 `/{p}/plugins/{id}/{view}?legacy=1` 的 iframe 工作台。
 - **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.4` 子集为 81 字形，菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）

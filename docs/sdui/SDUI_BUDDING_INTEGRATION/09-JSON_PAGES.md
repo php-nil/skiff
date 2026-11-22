@@ -42,14 +42,14 @@ crates/web/static/budding/
 
 两条链路，终点都是「壳脚本拿到 JSON 文本交给 SDK 编译」，区别只在 JSON 从哪来：
 
-- **资产路**：菜单 → `BUILTIN_PAGES` 的 `schema: pageAsset('docker-images.json')` → 路由表 → SDK 调 `platform.loadJson(url)`。
-- **服务端路**：菜单 → `BUILTIN_PAGES` 的 `schema: 'skiff:sites'` → `pageSchema(kind)` 请求 `GET /ui/v1/sites?limit=1&with_schema=true`（详情带 `?tab=`）→ 取回 `body.schema` → `prepareServerSchema()` → SDK 编译。
+- **资产路**：菜单 → 路由表里该页的 `schema` 是资产 URL → SDK 调 `platform.loadJson(url)` 直接取 JSON。
+- **服务端路**：菜单 → 路由表里该页的 `schema` 是 `skiff:page` → 壳脚本问 `GET /ui/v1/page?path=&search=`「这个地址的页面结构去哪取」→ 服务端回答端点 URL（含 `?tab=` / `?with_schema=true` 等归一口径）→ 取回 `body.schema` → `prepareServerSchema()` → SDK 编译。
 
-判据是**布局是否随请求上下文变化**：不随变用资产，随变用服务端。不要把服务端路的页面搬回资产——那等于把 `can_manage`、页签、记录字段从服务端搬回脚本。
+**路由表在服务端**（`handlers/ui/routes.rs`，`GET /ui/v1/routes`）：菜单树是路由的投影，服务端一次算出「路径 / 标题 / 图标 / 隐藏标记 / 侧栏高亮落点 / 页面来源」，壳脚本只消费。判据是**布局是否随请求上下文变化**：不随变用资产，随变用服务端。不要把服务端路的页面搬回资产——那等于把 `can_manage`、页签、记录字段从服务端搬回脚本；也不要把路径映射搬回脚本——那份表与内核菜单是同一份事实，写两遍必然漂移，且脚本那份无法在 CI 里验证。
 
 | 约束 | 口径 |
 | --- | --- |
-| 地址 | `/{入口前缀}/static/budding/pages/<name>.json`；前缀由 `pageAsset()` 拼，JSON 内不写入口段 |
+| 地址 | `/{入口前缀}/static/budding/pages/<name>.json`；前缀由服务端在路由表里拼好，JSON 内不写入口段 |
 | 缓存 | 静态路由对非 `.min.` 资源返回 `no-cache`（ETag 协商），改 JSON 刷新即生效，**不需要**升 `SHELL_VERSION` |
 | 热更 | 测试机设 `SKIFF_EXTRA_STATIC_DIR` 时磁盘同名文件覆盖入库版本，改 JSON 连重编都不用 |
 | 体积 | 单文件按页拆，不合并成大文件；`.gz` 由 `build.rs` 自动生成，不需要手工维护 |
@@ -96,7 +96,7 @@ crates/web/static/budding/
 
 | 保留 | 理由 |
 | --- | --- |
-| 启动、会话校验、菜单 → 路由表、三级子菜单、外层 chrome | 属于壳层装配，不在页面 Schema 语义内 |
+| 启动、会话校验、三级子菜单、外层 chrome | 属于壳层装配，不在页面 Schema 语义内（路由表由 `/ui/v1/routes` 下发，脚本不拼） |
 | 平台适配器 `request` / `upload` / `loadJson` | 传输层：CSRF、信封、401 跳登录、分片上传（写请求只有一个 `postJson` 通道） |
 | 宿主动作实现（`skiff*`） | JSON 只声明 `{"type":"skiffFileWrite"}`，动作体在脚本里：路径编码、流式下载、分片上传、RPC 转发等逐请求拼参数的场景无法用 `${}` 表达 |
 | 插件功能页（随包 Schema 的 `data` 声明 + RPC 转发） | 数据面是插件 RPC，不是 `/ui/v1` |
@@ -115,7 +115,7 @@ crates/web/static/budding/
 
 ## 9.6 迁移状态
 
-**全部页面已迁完**，壳脚本不含任何整页布局构建器（4.3k 行，其中路由表与动作体占主）。逐页归属：
+**全部页面已迁完**，壳脚本不含任何整页布局构建器，也不含路由表（3.4k 行，动作体占主）。逐页归属：
 
 | 页面 | 产出端 | 入口 |
 | --- | --- | --- |
@@ -145,5 +145,17 @@ crates/web/static/budding/
 | 容器终端（`skiffTerminalReconnect`） | `wsUrl` 必须由浏览器拼当前 origin + 一次性 ticket，JSON 拿不到 |
 | 商店安装确认（`skiffStoreConfirm`） | 依赖 install 响应里的一次性 confirm token，需两步串行 |
 | 插件功能页（`skiffPluginRpc` / `skiffPluginView`） | 布局来自插件包自带的 Schema，数据面是插件 RPC，不是 `/ui/v1` |
+
+前三者在路由表里各有一个 `special` 标记（`skiff:terminal` / `skiff:store-confirm` / `skiff:plugin-view`），由 `/ui/v1/page` 给出，脚本按标记分派——标记之外没有第二种「按路径判断该走哪个特例」的逻辑。
+
+路由表与页面取数地址的唯一产出端：
+
+| 内容 | 产出端 | 谁消费 |
+| --- | --- | --- |
+| 路由表（菜单投影 + 详情/子视图隐藏路由 + 插件视图清单） | `GET /ui/v1/routes` | `embed()` 的 `routes` |
+| 「当前地址的结构去哪取」 | `GET /ui/v1/page?path=&search=` | `platform.loadJson('skiff:page')` |
+| 图标语义名 → mdi 字形 | `routes.rs::MENU_ICONS` | 路由表的 `icon` 字段 |
+
+`page_source()` 是纯函数，12 条单测钉住「路径 → 端点」的映射与编码（`%2F` 只解码一次、query 值解码后再编码、未知路径不给来源）。加页面时改这一处即可，不会再出现「脚本里改了、服务端没改」。
 | 文件分片上传 | 切分、并发、进度回填都是命令式流程；表单本身已迁到资产 / 服务端 schema |
 | 安装进度 | 已改为表格 `source.autoRefresh`，脚本侧轮询代码删除 |

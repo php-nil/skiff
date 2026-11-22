@@ -9,7 +9,7 @@
 **页面与数据**
 
 - `GET /{p}` 交付 budding 壳（未认证 303 到登录页，已登录渲染概览）；SSR 概览仍保留在 `GET /{p}/m/overview` 菜单深链，直到插件概览槽位迁入 budding。
-- 壳启动脚本先取 `GET /ui/v1/session` 与 `GET /ui/v1/menu`，按菜单生成路由表后渲染 admin 外壳；地址栏路径命中路由时加载对应页面，未适配页面渲染统一占位（§2.3.1）。
+- 壳启动脚本先取 `GET /ui/v1/session` 与 `GET /ui/v1/routes`（服务端已按菜单树算好路由表），拿到 `routes` 后渲染 admin 外壳；地址栏路径命中路由时由 `GET /ui/v1/page?path=&search=` 回答页面结构去哪取，未适配页面渲染统一占位（§2.3.1）。
 - 概览的 `[[mount]]` 固定页插件槽位不再走 iframe：`health_plugin` 非空时壳页对其调 `snapshot` RPC，用卡片渲染 CPU / 内存 / 负载 / 运行时长；插件缺失、未启用或无 `PluginManage` 时渲染原因卡片（`health_reason` 或 RPC `error.message`），不整页失败、也不静默缺块（见 §4.4）。
 - 数据只复用 `dashboard::load_overview` 的既有查询（Docker 容器列表 + 插件/站点/运行环境/审计），**没有新增聚合 SQL**；本批不返回列表、不做写操作、不做图表、不做实时刷新。
 - 图表位按 D14–D16 未定，页面用 `alert` 明确占位（「D14–D16 尚未定案」），不引入任何图表库。

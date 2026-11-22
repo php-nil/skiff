@@ -48,7 +48,8 @@
 - 不允许出现 `redirect`、`html`、`layout`、`component` 字段。
 - budding 的错误对象自带 `path`（schema 路径），与 Skiff 的 `field`（业务字段码）是两回事，不得混用。
 - **文案双字段（D8）**：状态、错误码、提示、空态原因一律出 `{code,label}` 或 `{code,message}`；前端有字典用 `code`，否则回落到中文 `label`/`message`。
-- 页面标题、按钮、字段标签、帮助文字属结构文案，写在页面 Schema 里，**不进 DTO**。页面 Schema 只有两个产出端：静态资产 `static/budding/pages/*.json`，或 `/ui/v1` 端点的 `?with_schema=true`（见 `09-JSON_PAGES.md`）；不得回到壳脚本里拼。
+- 页面标题、按钮、字段标签、帮助文字属结构文案，写在页面 Schema 里，**不进 DTO**。页面 Schema 只有两个产出端：静态资产 `static/budding/pages/*.json`，或 `/ui/v1` 端点的 `?with_schema=true`（见 `09-JSON_PAGES.md`）；不得回到壳脚本里拼。哪个地址走哪个产出端同样在服务端（`GET /ui/v1/page`，见 `09-JSON_PAGES.md` §9.6），壳脚本不持路径映射。
+- 路由表（路径 → 标题/图标/隐藏标记/页面来源）由 `GET /ui/v1/routes` 下发，是菜单树（`skiff_app::menu::build`）的投影，不是第二份菜单。
 - Vuetify 内部英文（分页、表格空文案、日期控件）只能由上游 `createVuetify()` 注入 locale 解决；标注为**上游依赖，不阻塞内部推进**。
 
 ### 3.3 字段码

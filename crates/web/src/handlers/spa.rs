@@ -256,7 +256,8 @@ pub fn shell_page(state: &AppState) -> Response {
 /// - 图标字体自 1.8.0 起由 budding 官方包自带（`Budding Icons` 子集），单独版本化入库并由壳页 `<link>` 引入；
 ///   子集只覆盖组件内部图标，壳页不声明自定义菜单图标。
 /// - 初始化参数（入口前缀、API 基址）挂在挂载点上，由外部启动脚本
-///   `budding-boot.js` 读取，避免内联脚本；路由表由 `/ui/v1/menu` 下发。
+///   `budding-boot.js` 读取，避免内联脚本；路由表由 `GET /ui/v1/routes` 下发
+///   （页面取数地址由 `GET /ui/v1/page` 回答，壳脚本不再持有路径映射）。
 /// - 主题作为内联 `<style>` 下发（CSP 允许 `style-src 'unsafe-inline'`）：拿到 HTML
 ///   时配色就已生效，不会先闪一帧默认色；前端也不再重复实现亮度/对比度算法。
 pub fn shell_html(prefix: &str, theme_css: &str) -> String {

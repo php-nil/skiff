@@ -73,7 +73,11 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 ///   `postJson` 通道；顺带修掉站点日志「过滤」的参数错位（id 位传了 part）。
 ///   壳主题改为服务端在壳页内联 `<style>` 下发（`spa.rs::theme_css`），前端那份
 ///   亮度/黑白取色算法删除——颜色计算只保留 `skiff_app::theme` 一处。
-pub const SHELL_VERSION: &str = "36";
+/// v37：路由表与页面取数地址整体移到服务端——`GET /ui/v1/routes` 下发菜单投影与
+///   详情/子视图隐藏路由，`GET /ui/v1/page` 回答「当前地址的页面结构去哪取」。
+///   壳脚本删掉 `buildRoutes` / `BUILTIN_PAGES` / 图标映射与 `pageSchema` 的端点
+///   映射，`loadJson` 只剩两行分派（`skiff:page` 与服务端给出的特殊形态）。
+pub const SHELL_VERSION: &str = "37";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

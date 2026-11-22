@@ -90,14 +90,6 @@
     return node;
   }
 
-  /// 取服务端产出的页面骨架：`body.schema` 过安全转义后交给 SDK。
-  /// 数据仍由页面内的 `source` 自取，这里只负责「拿到布局」。
-  function fetchServerSchema(path) {
-    return fetchRawJson(apiBase + path).then(function (body) {
-      if (!body || !body.schema) throw new Error('服务端未返回页面结构');
-      return prepareServerSchema(body.schema);
-    });
-  }
 
   // 服务端弹窗按钮同样要进弹窗注册表：提交失败时 dialogError 按 key 重开同一张
   // 表单并保留用户输入，行为与前端 dialogFormButton 一致。
@@ -755,357 +747,11 @@
     });
   }
 
-  /// 内核内置菜单图标名 → budding 包内图标子集（`Budding Icons`）。
+  /// 路由表由服务端 `GET /ui/v1/routes` 下发（菜单投影 + 详情/子视图隐藏路由）。
   ///
-  /// 1.8.0-r7 的子集含镜像、磁盘、文件夹等业务字形，全部语义名直接映射，
-  /// 不再做近似兜底或留空。
-  var MENU_ICONS = {
-    overview: 'mdi-view-dashboard',
-    globe: 'mdi-web',
-    docker: 'mdi-docker',
-    plug: 'mdi-puzzle',
-    tools: 'mdi-wrench',
-    settings: 'mdi-cog',
-    container: 'mdi-cube-outline',
-    shield: 'mdi-shield-outline',
-    lock: 'mdi-lock-outline',
-    network: 'mdi-lan',
-    user: 'mdi-account-outline',
-    activity: 'mdi-pulse',
-    list: 'mdi-format-list-bulleted',
-    archive: 'mdi-archive-outline',
-    clock: 'mdi-clock-outline',
-    file: 'mdi-file-document',
-    dot: 'mdi-circle',
-    folder: 'mdi-folder-outline',
-    disk: 'mdi-harddisk',
-    image: 'mdi-image-outline',
-    'hard-drive': 'mdi-harddisk'
-  };
-
-  function iconFor(name) {
-    return MENU_ICONS[name] || null;
-  }
-
-  /// 未登记的语义名直接省略 icon 字段，避免导航渲染出空白图标占位。
-  function withIcon(route, name) {
-    var icon = iconFor(name);
-    if (icon) route.icon = icon;
-    return route;
-  }
-
-  /// 页面 Schema 资产地址：`static/budding/pages/<name>`。
-  ///
-  /// 已迁出的页面不再由本脚本拼装表结构——路由的 `schema` 直接给资产 URL，
-  /// SDK 经 `platform.loadJson` 取回 JSON 后自行编译。这样「页面长什么样」全部
-  /// 落在可 diff 的 JSON 里，脚本只留运行时胶水（取数、动作、主题、路由）。
-  function pageAsset(name) {
-    return prefix + '/static/budding/pages/' + name;
-  }
-
-  /// 已迁移到 budding 的菜单项：稳定键 → 路由路径（相对入口前缀）。
-  /// 未列出的键保留内核深链 `href`（插件功能页仍是内核 SSR + iframe）。
-  ///
-  /// `schema` 两种形态：JSON 资产 URL（已迁出）与 `skiff:<kind>`（仍在
-  /// `pageSchema()` 里拼装，迁移完成后逐个替换）。
-  /// 页内互斥子视图（L3）不在这里登记，统一见 `SUBVIEW_TABS`。
-  var BUILTIN_PAGES = {
-    overview: { path: '', schema: 'skiff:overview' },
-    'core/sites/list': { path: '/sites/list', schema: 'skiff:sites' },
-    'core/sites/web': { path: '/sites/web', schema: 'skiff:web' },
-    'core/sites/env': { path: '/sites/runtimes', schema: 'skiff:runtimes' },
-    'core/docker/containers': { path: '/docker/containers', schema: 'skiff:containers' },
-    'core/docker/images': { path: '/docker/images', schema: pageAsset('docker-images.json') },
-    'core/docker/networks': { path: '/docker/networks', schema: pageAsset('docker-networks.json') },
-    'core/docker/volumes': { path: '/docker/volumes', schema: pageAsset('docker-volumes.json') },
-    'core/docker/compose': { path: '/docker/compose', schema: 'skiff:compose' },
-    'core/plugins/installed': { path: '/plugins/installed', schema: 'skiff:plugins' },
-    'core/plugins/discover': { path: '/plugins/discover', schema: 'skiff:plugins' },
-    'core/plugins/updates': { path: '/plugins/updates', schema: 'skiff:plugins' },
-    'core/plugins/store': { path: '/plugins/store', schema: 'skiff:store' },
-    'core/tasks': { path: '/tasks', schema: 'skiff:tasks' },
-    'core/jobs': { path: '/jobs', schema: 'skiff:jobs' },
-    'core/files': { path: '/files', schema: 'skiff:files' },
-    'core/files/trash': { path: '/files/trash', schema: 'skiff:files-trash' },
-    'core/files/quotas': { path: '/files/quotas', schema: 'skiff:files-quotas' },
-    'core/settings/security': { path: '/settings/security', schema: 'skiff:settings' },
-    'core/settings/menu': { path: '/settings/menu', schema: 'skiff:menu-settings' },
-    'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' },
-    'core/docker/settings': { path: '/docker/settings', schema: 'skiff:docker-settings' },
-    'core/settings/audit': { path: '/settings/audit', schema: 'skiff:audit' }
-  };
-
-  /// 插件菜单键 → `/ui/v1/menu` 下发的视图元数据（id / 默认视图 / 视图列表）。
-  var pluginMeta = {};
-
-  /// 插件默认视图的地址：菜单项自身路径，也是侧栏高亮的落点。
-  function pluginViewHref(meta) {
-    return (
-      prefix +
-      '/plugins/' +
-      encodeURIComponent(meta.plugin_id) +
-      '/' +
-      encodeURIComponent(meta.default_view)
-    );
-  }
-
-  /// 一个菜单项 → 一条路由记录。命中已迁移页面时给出 budding 路径与 Schema；
-  /// 插件功能页走 `/plugins/<id>/<view>`，由壳页加载随包 schema 原生渲染。
-  function menuRoute(key, label, icon, href) {
-    if (key.indexOf('plugin/') === 0) {
-      var meta = pluginMeta[key];
-      if (!meta || !meta.plugin_id || !meta.default_view) return null;
-      return withIcon(
-        {
-          path:
-            prefix +
-            '/plugins/' +
-            encodeURIComponent(meta.plugin_id) +
-            '/' +
-            encodeURIComponent(meta.default_view),
-          title: label,
-          schema: 'skiff:plugin-view',
-          // 侧栏高亮必须落在「这个插件自己那一项」上：`/plugins` 是所有插件页的
-          // 公共前缀，指到那里会让「插件 → 已安装」跟着一起高亮。
-          meta: { activeMenu: pluginViewHref(meta) }
-        },
-        icon
-      );
-    }
-    var page = BUILTIN_PAGES[key];
-    if (page) {
-      return withIcon(
-        {
-          path: page.path ? prefix + page.path : prefix,
-          title: label,
-          schema: page.schema
-        },
-        icon
-      );
-    }
-    if (!href) return null;
-    return withIcon(
-      {
-        path: prefix + '/__menu-item/' + encodeURIComponent(key),
-        href: href,
-        target: '_self',
-        title: label
-      },
-      icon
-    );
-  }
-
-  /// 内核菜单树 → budding 路由表（菜单是路由的投影，不另造第二份菜单）。
-  function buildRoutes(menuData) {
-    var routes = [];
-    (menuData.groups || []).forEach(function (group) {
-      (group.items || []).forEach(function (item) {
-        if (item.plugin && item.plugin_id && item.views) {
-          pluginMeta[item.key] = item;
-        }
-      });
-    });
-    (menuData.groups || []).forEach(function (group, index) {
-      var order = index * 10;
-      if (!group.items || group.items.length === 0) {
-        var leaf = menuRoute(group.key, group.label, group.icon, group.href);
-        if (leaf) {
-          leaf.meta = { order: order };
-          routes.push(leaf);
-        }
-        return;
-      }
-      var children = [];
-      group.items.forEach(function (item) {
-        var child = menuRoute(item.key, item.label, item.icon, item.href);
-        if (!child) return;
-        children.push(child);
-      });
-      // 工具空态：保留内核空态文案，指向已原生渲染的插件中心。
-      if (children.length === 0 && group.empty) {
-        children.push({
-          path: prefix + '/__menu-empty/' + encodeURIComponent(group.key),
-          title: group.empty.text
-        });
-        children[0].schema = 'skiff:plugins';
-      }
-      if (children.length === 0) return;
-      // 分组本身不是地址：用入口前缀下的保留段承载菜单层级，子项用绝对路径。
-      routes.push(
-        withIcon(
-          {
-            path: prefix + '/__menu/' + encodeURIComponent(group.key),
-            title: group.label,
-            meta: { order: order },
-            children: children
-          },
-          group.icon
-        )
-      );
-    });
-    // 三级子视图：默认视图就是 L2 自身，其余各登记一条隐藏路由（不进侧栏）。
-    // 参数段（`:domain` / `:id`）原样留在路由模式里，由内核路由按实际地址匹配。
-    SUBVIEW_TABS.forEach(function (sub) {
-      var base = sub.pattern.join('/');
-      sub.tabs.slice(1).forEach(function (tab) {
-        routes.push({
-          path: prefix + '/' + base + '/' + tab.segs.join('/'),
-          title: sub.title + ' · ' + tab.title,
-          hidden: true,
-          schema: tab.schema || sub.schema,
-          meta: { activeMenu: prefix + sub.menu }
-        });
-      });
-    });
-    // 详情页：菜单不出现，但地址栏直达与列表行内跳转都走同一路由。
-    routes.push({
-      path: prefix + '/sites/new',
-      title: '新建站点',
-      hidden: true,
-      schema: 'skiff:site-new',
-      meta: { activeMenu: prefix + '/sites/list' }
-    });
-    routes.push({
-      path: prefix + '/sites/:id',
-      title: '站点详情',
-      hidden: true,
-      schema: 'skiff:site-detail',
-      meta: { activeMenu: prefix + '/sites/list' }
-    });
-    routes.push({
-      path: prefix + '/sites/runtimes/:id',
-      title: '运行环境详情',
-      hidden: true,
-      schema: 'skiff:runtime-detail',
-      meta: { activeMenu: prefix + '/sites/runtimes' }
-    });
-    routes.push({
-      path: prefix + '/docker/containers/new',
-      title: '新建容器',
-      hidden: true,
-      schema: pageAsset('docker-container-new.json'),
-      meta: { activeMenu: prefix + '/docker/containers' }
-    });
-    routes.push({
-      path: prefix + '/docker/containers/:id',
-      title: '容器详情',
-      hidden: true,
-      schema: 'skiff:container-detail',
-      meta: { activeMenu: prefix + '/docker/containers' }
-    });
-    routes.push({
-      path: prefix + '/tasks/:id',
-      title: '任务详情',
-      hidden: true,
-      schema: 'skiff:task-detail',
-      meta: { activeMenu: prefix + '/tasks' }
-    });
-    routes.push({
-      path: prefix + '/jobs/:id',
-      title: '作业详情',
-      hidden: true,
-      schema: 'skiff:job-detail',
-      meta: { activeMenu: prefix + '/jobs' }
-    });
-    routes.push({
-      path: prefix + '/docker/containers/:id/terminal',
-      title: '容器终端',
-      hidden: true,
-      schema: 'skiff:container-terminal',
-      meta: { activeMenu: prefix + '/docker/containers' }
-    });
-    routes.push({
-      path: prefix + '/docker/containers/:id/logs',
-      title: '容器日志',
-      hidden: true,
-      schema: 'skiff:container-logs',
-      meta: { activeMenu: prefix + '/docker/containers' }
-    });
-    routes.push({
-      path: prefix + '/jobs/:id/logs',
-      title: '作业日志',
-      hidden: true,
-      schema: 'skiff:job-logs',
-      meta: { activeMenu: prefix + '/jobs' }
-    });
-    routes.push({
-      path: prefix + '/files/view',
-      title: '代码查看器',
-      hidden: true,
-      schema: 'skiff:file-view',
-      meta: { activeMenu: prefix + '/files' }
-    });
-    routes.push({
-      path: prefix + '/files/trash',
-      title: '回收站',
-      hidden: true,
-      schema: 'skiff:files-trash',
-      meta: { activeMenu: prefix + '/files' }
-    });
-    routes.push({
-      path: prefix + '/files/quotas',
-      title: '配额管理',
-      hidden: true,
-      schema: 'skiff:files-quotas',
-      meta: { activeMenu: prefix + '/files' }
-    });
-    routes.push({
-      path: prefix + '/settings/menu',
-      title: '菜单设置',
-      hidden: true,
-      schema: 'skiff:menu-settings',
-      meta: { activeMenu: prefix + '/settings/security' }
-    });
-    routes.push({
-      path: prefix + '/docker/settings',
-      title: 'Docker 设置',
-      hidden: true,
-      schema: 'skiff:docker-settings',
-      meta: { activeMenu: prefix + '/docker/settings' }
-    });
-    routes.push({
-      path: prefix + '/settings/ui',
-      title: '界面设置',
-      hidden: true,
-      schema: 'skiff:ui-settings',
-      meta: { activeMenu: prefix + '/settings/security' }
-    });
-    routes.push({
-      path: prefix + '/plugins/:id',
-      title: '插件详情',
-      hidden: true,
-      schema: 'skiff:plugin-info',
-      meta: { activeMenu: prefix + '/plugins/installed' }
-    });
-    routes.push({
-      path: prefix + '/plugins/store/confirm',
-      title: '安装确认',
-      hidden: true,
-      schema: 'skiff:store-confirm',
-      meta: { activeMenu: prefix + '/plugins/store' }
-    });
-    // 插件功能页：每个可见视图一条路由；页面结构由随包 schema 提供，
-    // 壳页只做数据绑定与 RPC 转发。
-    Object.keys(pluginMeta).forEach(function (key) {
-      var meta = pluginMeta[key];
-      (meta.views || []).forEach(function (v) {
-        if (!v || !v.view || v.view === meta.default_view) return;
-        routes.push({
-          path:
-            prefix +
-            '/plugins/' +
-            encodeURIComponent(meta.plugin_id) +
-            '/' +
-            encodeURIComponent(v.view),
-          title: meta.label + ' · ' + v.label,
-          hidden: true,
-          schema: 'skiff:plugin-view',
-          meta: { activeMenu: pluginViewHref(meta) }
-        });
-      });
-    });
-    return routes;
-  }
+  /// 壳脚本不再维护「菜单键 → 路径 → 页面来源」的映射：那份表与内核菜单是同一份
+  /// 事实，写两遍就得改两处，而且脚本这一份无法在 CI 里验证。图标字形、入口前缀、
+  /// 隐藏标记、侧栏高亮落点都由服务端拼好，这里只做「取回来交给 SDK」。
 
   /// 壳页 Schema：后台骨架 + 路由出口。菜单与当前页都由内核路由表驱动。
   ///
@@ -1166,20 +812,20 @@
   // page-tabs 组件。节点挂在页面容器 `.bud-page` 内（标题之下、正文之上），底色跟随
   // 内容区而不是侧栏 chrome，样式在 `static/skiff-shell.css`。
 
-  /// 三级菜单登记表（核心页）。
+  /// 三级菜单登记表（核心页）：只负责**渲染当前地址命中的横向菜单**。
+  ///
+  /// 隐藏路由本身由服务端 `handlers/ui/routes.rs` 的 `SUBVIEWS` 生成并随
+  /// `GET /ui/v1/routes` 下发；这里的表决定「当前路径属于哪一组、组里有哪些 tab、
+  /// 哪个是当前项」，两份表描述同一组子视图，改路径以服务端为准。
   ///
   /// - `pattern`：路径段模式，`:name` 捕获一段（站点域名、运行环境 id）并回填到每个 tab；
   /// - `tabs[0]`：默认视图，附加段为空，就是 L2 自身；
-  /// - `schema`：该子视图的页面构造器名，单个 tab 可覆盖（日志走独立构造器）；
-  /// - `menu`：子视图隐藏路由的 `activeMenu`，让侧栏高亮停在 L2；
   /// - `blocked`：同前缀下不参与匹配的字面段（`/sites/new` 不是站点详情）。
   ///
-  /// 插件多视图不在这里登记：视图列表随 `/ui/v1/menu` 的 `views` 下发。
+  /// 插件多视图不在这里登记：视图列表随 `/ui/v1/routes` 的 `plugins[].views` 下发。
   var SUBVIEW_TABS = [
     {
       pattern: ['sites', 'web'],
-      schema: 'skiff:web',
-      menu: '/sites/web',
       title: 'Web 服务',
       tabs: [
         { title: '状态', segs: [] },
@@ -1190,8 +836,6 @@
     },
     {
       pattern: ['sites', ':id'],
-      schema: 'skiff:site-detail',
-      menu: '/sites/list',
       title: '站点详情',
       blocked: ['new', 'list', 'runtimes', 'web'],
       tabs: [
@@ -1200,13 +844,11 @@
         { title: '配置', segs: ['config'] },
         { title: '证书', segs: ['ssl'] },
         { title: '备份', segs: ['backup'] },
-        { title: '日志', segs: ['logs'], schema: 'skiff:site-logs' }
+        { title: '日志', segs: ['logs'] }
       ]
     },
     {
       pattern: ['sites', 'runtimes', ':id'],
-      schema: 'skiff:runtime-detail',
-      menu: '/sites/runtimes',
       title: '运行环境详情',
       tabs: [
         { title: '基础信息', segs: [] },
@@ -1214,7 +856,7 @@
         { title: '扩展', segs: ['extensions'] },
         { title: '站点', segs: ['sites'] },
         { title: '管理', segs: ['manage'] },
-        { title: '日志', segs: ['logs'], schema: 'skiff:runtime-logs' }
+        { title: '日志', segs: ['logs'] }
       ]
     }
   ];
@@ -2919,25 +2561,6 @@
   var MODE_RULE = { pattern: '^0?[0-7]{3,4}$', messages: { pattern: '请输入八进制权限，如 755' } };
 
 
-  /// 日志读取失败的统一落地页（Docker 不可用 / 权限 / 实例不存在）。
-  function logErrorPage(title, backHref, backText, error) {
-    return {
-      type: 'page',
-      props: { title: title, subtitle: '读取失败' },
-      body: [
-        {
-          type: 'alert',
-          props: {
-            type: 'error',
-            text:
-              '无法读取日志：' +
-              (error && error.message ? error.message : String(error))
-          }
-        },
-        { type: 'link', props: { text: backText, href: backHref } }
-      ]
-    };
-  }
 
 
   function pluginToggle(args) {
@@ -3249,11 +2872,12 @@
     return { type: 'page', props: { title: title, subtitle: '该功能正在适配中' }, body: body };
   }
 
-  /// 路由 Schema 加载：`skiff:<kind>` 由本脚本按当前地址栏与 `/ui/v1` 数据生成；
-  /// 其它 URL 走普通 JSON 读取（保留给将来的远程 Schema）。
-  function loadJson(url, info) {
+  /// 路由 Schema 加载：`skiff:page` 问服务端要取数地址，`skiff:<special>` 交壳体处理，
+  /// 其它 URL 走普通 JSON 读取（静态布局资产）。
+  function loadJson(url) {
+    if (url === 'skiff:page') return fetchPageSchema();
     if (typeof url === 'string' && url.indexOf('skiff:') === 0) {
-      return pageSchema(url.slice('skiff:'.length));
+      return specialSchema(url.slice('skiff:'.length));
     }
     return fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' } }).then(
       function (resp) {
@@ -3416,12 +3040,14 @@
     return out;
   }
 
+  /// 插件 id → 视图元数据（`/ui/v1/routes` 随路由表一起下发）。
+  ///
+  /// 三级菜单要按 id 找这个插件的视图清单，与路由表是同一份事实：服务端算一次
+  /// （manifest 解析），前端只存起来按 id 取。
+  var pluginMeta = {};
+
   function pluginMetaById(id) {
-    var keys = Object.keys(pluginMeta);
-    for (var i = 0; i < keys.length; i++) {
-      if (pluginMeta[keys[i]].plugin_id === id) return pluginMeta[keys[i]];
-    }
-    return null;
+    return pluginMeta[id] || null;
   }
 
   function pluginErrorPage(id, view, error) {
@@ -3590,171 +3216,58 @@
       });
   }
 
-  function pageSchema(kind) {
-    var parts = routeParts();
-    if (kind === 'overview') {
-      // 健康槽位的插件 RPC 已在服务端取好，前端只渲染。
-      return fetchServerSchema('/overview?with_schema=true');
-    }
-    if (kind === 'sites') {
-      // 页面骨架由服务端 UI 端点产出（布局随角色与站点记录变化）；
-      // 表格自身按 `source` 走 `/ui/v1/sites` 取数，分页请求不带 `with_schema`。
-      return fetchRawJson(apiBase + '/sites?limit=1&with_schema=true').then(function (body) {
-        if (!body || !body.schema) throw new Error('站点列表未返回页面结构');
-        return prepareServerSchema(body.schema);
-      });
-    }
-    if (kind === 'site-new') {
-      // 类型预选来自地址栏；运行环境下拉由服务端按当前用户可见范围给出。
-      var newType = new URLSearchParams(location.search).get('type') || '';
-      return fetchServerSchema(
-        '/pages/sites-new' + (newType ? '?type=' + encodeURIComponent(newType) : '')
-      );
-    }
-    if (kind === 'site-detail') {
-      // 第三段是 L3 子视图（空 = 概览）。Schema 由服务端按 tab 产出，前端只负责渲染。
-      var siteTab = String(parts[2] || '').toLowerCase();
-      var detailPath =
-        '/sites/' + encodeURIComponent(parts[1]) + (siteTab ? '?tab=' + encodeURIComponent(siteTab) : '');
-      return fetchRawJson(apiBase + detailPath).then(function (body) {
-        if (!body || !body.schema) throw new Error('站点详情未返回页面结构');
-        return prepareServerSchema(body.schema);
-      });
-    }
-    if (kind === 'runtimes') {
-      return fetchServerSchema('/runtimes?limit=1&with_schema=true');
-    }
-    if (kind === 'runtime-detail') {
-      var runtimeId = parts[2] || '';
-      // 第四段是 L3 子视图（空 = 概览）；`?file=` 只在配置视图里有意义。
-      var runtimeTab = String(parts[3] || '').toLowerCase() || 'overview';
-      var fileKey = new URLSearchParams(location.search).get('file') || '';
-      var detailQuery = 'tab=' + encodeURIComponent(runtimeTab) + '&with_schema=true';
-      if (fileKey) detailQuery += '&file=' + encodeURIComponent(fileKey);
-      return fetchServerSchema('/runtimes/' + encodeURIComponent(runtimeId) + '?' + detailQuery);
-    }
-    if (kind === 'containers') {
-      var containerFilter =
-        new URLSearchParams(location.search).get('filter') === 'error' ? 'filter=error&' : '';
-      // 页面骨架由服务端 UI 端点产出；表格自身按 `source` 游标分页，不带 with_schema。
-      return fetchServerSchema('/containers?' + containerFilter + 'limit=1&with_schema=true');
-    }
-    if (kind === 'container-detail') {
-      return fetchServerSchema(
-        '/containers/' + encodeURIComponent(parts[2]) + '?with_schema=true'
-      );
-    }
-    if (kind === 'compose') {
-      return fetchServerSchema('/compose?with_schema=true');
-    }
-    if (kind === 'tasks') {
-      var tasksQ = new URLSearchParams(location.search).get('q') || '';
-      return fetchServerSchema(
-        '/tasks?limit=1&with_schema=true' + (tasksQ ? '&q=' + encodeURIComponent(tasksQ) : '')
-      );
-    }
-    if (kind === 'task-detail') {
-      return fetchServerSchema('/tasks/' + encodeURIComponent(parts[1]) + '?with_schema=true');
-    }
-    if (kind === 'jobs') {
-      return fetchServerSchema('/jobs?limit=1&with_schema=true');
-    }
-    if (kind === 'job-detail') {
-      return fetchServerSchema('/jobs/' + encodeURIComponent(parts[1]) + '?with_schema=true');
-    }
-    if (kind === 'files-trash') {
-      return fetchRawJson(prefix + '/files/trash/list?with_schema=true').then(function (body) {
-        return prepareServerSchema((body || {}).schema);
-      });
-    }
-    if (kind === 'files-quotas') {
-      return fetchRawJson(prefix + '/files/quotas/list?with_schema=true').then(function (body) {
-        return prepareServerSchema((body || {}).schema);
-      });
-    }
-    if (kind === 'files') {
-      var filePath = new URLSearchParams(location.search).get('path') || '';
-      return fetchServerSchema(
-        '/files' +
-          (filePath ? '?path=' + encodeURIComponent(filePath) + '&with_schema=true' : '?with_schema=true')
-      );
-    }
-    if (kind === 'file-view') {
-      var viewPath = new URLSearchParams(location.search).get('path') || '';
-      if (!viewPath) {
-        return Promise.resolve(
-          notReadyPage('代码查看器', '缺少 path 参数。', '/files', '返回文件管理')
-        );
+  /// 当前地址相对入口前缀的路径（保留编码形式，与服务端 `/ui/v1/page` 的口径一致）。
+  function routePath() {
+    var path = location.pathname;
+    if (prefix && path.indexOf(prefix) === 0) path = path.slice(prefix.length);
+    return path || '/';
+  }
+
+  /// 页面结构去哪取，由服务端回答：壳脚本只报「当前路径 + 查询串」。
+  ///
+  /// 这样「哪个页面取哪个端点」「`?tab=` / `?path=` 怎么归一」不再散落在脚本里，
+  /// 改取数口径只动 `handlers/ui/routes.rs`，并能用单测钉住。
+  function fetchPageSchema() {
+    return fetchRawJson(
+      apiBase +
+        '/page?path=' +
+        encodeURIComponent(routePath()) +
+        '&search=' +
+        encodeURIComponent(location.search.replace(/^\?/, ''))
+    ).then(function (body) {
+      var source = (body && body.data) || {};
+      if (source.special) return specialSchema(source.special);
+      if (!source.schema_url) {
+        return notReadyPage('页面不存在', '地址栏路径没有对应的前端路由，请从左侧菜单进入。');
       }
-      return fetchServerSchema(
-        '/files/read?path=' + encodeURIComponent(viewPath) + '&with_schema=true'
-      );
-    }
-    if (kind === 'site-logs') {
-      var logSiteId = parts[1] || '';
-      var logDomain = '';
-      var logQuery = new URLSearchParams(location.search);
-      var logPart = logQuery.get('part') === 'error' ? 'error' : 'access';
-      var logTail = logQuery.get('tail') || '200';
-      var logKeyword = logQuery.get('q') || '';
-      return fetchServerSchema(
-        '/sites/' +
-          encodeURIComponent(logSiteId) +
-          '/logs?part=' +
-          logPart +
-          '&tail=' +
-          encodeURIComponent(logTail) +
-          '&q=' +
-          encodeURIComponent(logKeyword) +
-          '&with_schema=true'
-      );
-    }
-    if (kind === 'job-logs') {
-      var logJobId = parts[1] || '';
-      return fetchServerSchema(
-        '/jobs/' + encodeURIComponent(logJobId) + '/logs?with_schema=true'
-      ).catch(function (error) {
-        return logErrorPage(
-          '作业日志',
-          prefix + '/jobs/' + encodeURIComponent(logJobId),
-          '返回作业详情',
-          error
-        );
-      });
-    }
-    if (kind === 'container-logs') {
-      var logContainerId = parts[2] || '';
-      return fetchServerSchema(
-        '/containers/' + encodeURIComponent(logContainerId) + '/logs?tail=500&with_schema=true'
-      ).catch(function (error) {
-        return logErrorPage(
-          '容器日志',
-          prefix + '/docker/containers/' + encodeURIComponent(logContainerId),
-          '返回容器详情',
-          error
-        );
-      });
-    }
-    if (kind === 'runtime-logs') {
-      var logRuntimeId = parts[2] || '';
-      return fetchServerSchema(
-        '/runtimes/' + encodeURIComponent(logRuntimeId) + '/logs?tail=300&with_schema=true'
-      ).catch(
-        function (error) {
-          return logErrorPage(
-            '运行环境日志',
-            prefix + '/sites/runtimes/' + encodeURIComponent(logRuntimeId),
-            '返回运行环境详情',
-            error
-          );
-        }
-      );
-    }
-    if (kind === 'container-terminal') {
-      var terminalId = parts[2] || '';
-      return loadTerminalUrl(terminalId).then(
+      // 端点失败（Docker 不可用 / 权限 / 实例不存在）给可读落地页，而不是空白页。
+      return fetchRawJson(source.schema_url)
+        .then(toPageSchema)
+        .catch(function (error) {
+          return notReadyPage('页面加载失败', error2text(error));
+        });
+    });
+  }
+
+  /// 端点响应是 `{ data, schema }`；静态布局资产本身就是页面结构。
+  function toPageSchema(body) {
+    var schema = body && (body.schema || (body.type ? body : null));
+    if (!schema) throw new Error('服务端未返回页面结构');
+    return prepareServerSchema(schema);
+  }
+
+  /// 仍留在壳页的三种页面形态：它们的结构离不开浏览器或内存态。
+  ///
+  /// - `terminal`：ws 地址要按当前 origin 拼（反代后 scheme/host 只有浏览器知道）
+  /// - `store-confirm`：确认内容来自上一次安装请求的内存暂存
+  /// - `plugin-view`：结构随插件包 manifest 下发，壳页负责 RPC 绑定
+  function specialSchema(kind) {
+    var parts = routeParts();
+    if (kind === 'terminal') {
+      var containerId = parts[2] || '';
+      return loadTerminalUrl(containerId).then(
         function (info) {
-          return terminalSchema(terminalId, info);
+          return terminalSchema(containerId, info);
         },
         function (error) {
           return {
@@ -3763,41 +3276,19 @@
             body: [
               {
                 type: 'alert',
-                props: {
-                  type: 'error',
-                  text:
-                    '无法打开终端：' +
-                    (error && error.message ? error.message : String(error))
-                }
+                props: { type: 'error', text: '无法打开终端：' + error2text(error) }
               },
               {
                 type: 'link',
                 props: {
                   text: '返回容器详情',
-                  href: prefix + '/docker/containers/' + encodeURIComponent(terminalId)
+                  href: prefix + '/docker/containers/' + encodeURIComponent(containerId)
                 }
               }
             ]
           };
         }
       );
-    }
-    if (kind === 'plugins') {
-      var pluginTab = parts[1] === 'discover' || parts[1] === 'updates' ? parts[1] : 'installed';
-      return fetchServerSchema(
-        '/plugins?tab=' + encodeURIComponent(pluginTab) + '&with_schema=true'
-      );
-    }
-    if (kind === 'plugin-info') {
-      return fetchServerSchema('/plugins/' + encodeURIComponent(parts[1]) + '?with_schema=true');
-    }
-    if (kind === 'plugin-view') {
-      return pluginPage(parts[1] || '', parts[2] || '');
-    }
-    if (kind === 'store') {
-      var refresh =
-        new URLSearchParams(location.search).get('refresh') === '1' ? 'refresh=1&' : '';
-      return fetchServerSchema('/store?' + refresh + 'with_schema=true');
     }
     if (kind === 'store-confirm') {
       if (!pendingConfirm) {
@@ -3813,56 +3304,19 @@
                 text: '页面刷新或超时后暂存的安装信息已清空，请回到商店重新选择版本。'
               }
             },
-            {
-              type: 'link',
-              props: { text: '返回商店', href: prefix + '/plugins/store' }
-            }
+            { type: 'link', props: { text: '返回商店', href: prefix + '/plugins/store' } }
           ]
         });
       }
       return Promise.resolve(storeConfirmSchema(pendingConfirm));
     }
-    if (kind === 'web') {
-      var webQuery = new URLSearchParams(location.search);
-      var webSub = String(parts[2] || '').toLowerCase();
-      var webView =
-        webSub === 'config' || webSub === 'logs' || webSub === 'modules' ? webSub : 'status';
-      var webParams = ['view=' + webView, 'with_schema=true'];
-      if (webView === 'logs') {
-        webParams.push('load=1');
-        webParams.push('kind=' + encodeURIComponent(webQuery.get('type') || 'access'));
-        webParams.push('lines=' + encodeURIComponent(webQuery.get('lines') || '200'));
-        webParams.push('level=' + encodeURIComponent(webQuery.get('level') || 'all'));
-        if (webQuery.get('status')) {
-          webParams.push('status=' + encodeURIComponent(webQuery.get('status')));
-        }
-        if (webQuery.get('q')) {
-          webParams.push('q=' + encodeURIComponent(webQuery.get('q')));
-        }
-      }
-      return fetchServerSchema('/web?' + webParams.join('&'));
+    if (kind === 'plugin-view') {
+      return pluginPage(parts[1] || '', parts[2] || '');
     }
-    if (kind === 'settings') {
-      return fetchServerSchema('/settings?with_schema=true');
-    }
-    if (kind === 'menu-settings') {
-      return fetchServerSchema('/settings/menu?with_schema=true');
-    }
-    if (kind === 'docker-settings') {
-      return fetchServerSchema('/settings/docker?with_schema=true');
-    }
-    if (kind === 'ui-settings') {
-      return fetchServerSchema('/settings/ui?with_schema=true');
-    }
-    if (kind === 'audit') {
-      var auditParams = new URLSearchParams(location.search);
-      var auditQ = auditParams.get('q') || '';
-      var auditCursor = auditParams.get('cursor') || '';
-      var auditQuery =
-        '?limit=50&with_schema=true' +
-        (auditQ ? '&q=' + encodeURIComponent(auditQ) : '') +
-        (auditCursor ? '&cursor=' + encodeURIComponent(auditCursor) : '');
-      return fetchServerSchema('/audit' + auditQuery);
+    if (kind === 'missing-path') {
+      return Promise.resolve(
+        notReadyPage('代码查看器', '缺少 path 参数。', '/files', '返回文件管理')
+      );
     }
     return Promise.resolve(
       notReadyPage('页面不存在', '地址栏路径没有对应的前端路由，请从左侧菜单进入。')
@@ -3948,9 +3402,12 @@
           return;
         }
         sessionState = res.body.data;
-        return fetchData('/menu').then(function (menu) {
-          var routes = buildRoutes(menu);
-          embed(shellSchema(), routes);
+        // 路由表由服务端下发：壳脚本不再从菜单自己拼路由。
+        return fetchData('/routes').then(function (data) {
+          (data.plugins || []).forEach(function (meta) {
+            if (meta && meta.plugin_id) pluginMeta[meta.plugin_id] = meta;
+          });
+          embed(shellSchema(), data.routes || []);
           markShellChrome();
           mountSubNav();
         });
