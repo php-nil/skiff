@@ -365,25 +365,33 @@ fn domains_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
         }
     }
     if data.can_manage {
-        body.push(kit::form(
-            &format!("{api_sites}/domains"),
-            site_write_action(json!({
-                "op": "domains",
-                "action": "add",
-                "id": site.id,
-                "domain": site.domain
-            })),
-            vec![json!({
-                "type": "input-text",
-                "props": {
-                    "name": "alias",
-                    "label": "新增附加域名",
-                    "required": true,
-                    "rules": { "required": true, "messages": { "required": "请输入域名" } }
-                }
+        body.push(kit::flex(
+            8,
+            vec![kit::dialog_form_button(kit::DialogForm {
+                text: "新增附加域名",
+                variant: "flat",
+                title: "新增附加域名",
+                width: 520,
+                url: format!("{api_sites}/domains"),
+                submit: site_write_action(json!({
+                    "op": "domains",
+                    "action": "add",
+                    "id": site.id,
+                    "domain": site.domain
+                })),
+                fields: vec![json!({
+                    "type": "input-text",
+                    "props": {
+                        "name": "alias",
+                        "label": "附加域名",
+                        "required": true,
+                        "rules": { "required": true, "messages": { "required": "请输入域名" } }
+                    }
+                })],
+                initial: None,
+                submit_text: "添加",
+                notice: "附加域名会写入当前站点 vhost；HTTPS 证书仍按主域名配置。",
             })],
-            "添加",
-            None,
         ));
     }
     vec![json!({

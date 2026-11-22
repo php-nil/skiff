@@ -276,19 +276,23 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             )]);
             body.push(table);
         }
-        body.push(kit::detail_lines(
-            "导入信任公钥",
-            vec!["公钥为 Ed25519 的 64 位十六进制字符串，请与发布者公布值逐位核对。".to_string()],
-        ));
-        body.push(kit::form(
-            &format!("{API_BASE}/settings/keys"),
-            json!({ "type": "skiffKeyImport" }),
-            vec![
-                kit::required_input("public_key", "公钥（64 位十六进制）", "请输入公钥"),
-                kit::text_input("label", "备注（可选）"),
-            ],
-            "导入公钥",
-            None,
+        body.push(kit::flex(
+            8,
+            vec![kit::dialog_form_button(kit::DialogForm {
+                text: "导入信任公钥",
+                variant: "tonal",
+                title: "导入信任公钥",
+                width: 560,
+                url: format!("{API_BASE}/settings/keys"),
+                submit: json!({ "type": "skiffKeyImport" }),
+                fields: vec![
+                    kit::required_input("public_key", "公钥（64 位十六进制）", "请输入公钥"),
+                    kit::text_input("label", "备注（可选）"),
+                ],
+                initial: None,
+                submit_text: "导入公钥",
+                notice: "公钥为 Ed25519 的 64 位十六进制字符串，请与发布者公布值逐位核对。",
+            })],
         ));
     }
 
