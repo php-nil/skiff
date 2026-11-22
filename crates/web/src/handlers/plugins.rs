@@ -547,9 +547,15 @@ pub async fn schema(
     }
     let data = std::fs::read(&canon).map_err(|e| AppError::Internal(e.to_string()))?;
     // 安装期已校验；这里再跑一次，防止运行期文件被替换成未校验内容。
-    skiff_pkgfmt::PluginSchema::parse(&data)
+    let parsed = skiff_pkgfmt::PluginSchema::parse(&data)
         .map_err(|e| AppError::PluginSchema(format!("schema 校验失败: {e}")))?;
-    let mut resp = Response::new(axum::body::Body::from(data));
+    // 表单没有 `api` 时补内核 no-op 配置：1.8.5 图层页脚 `submit` 会走完整提交链，
+    // 缺 `api` 会多弹一条「表单未配置 api」。注入值固定 `sendOn: false`，不发请求。
+    let mut value = parsed.value().clone();
+    skiff_pkgfmt::schema::inject_form_submit_stub(&mut value);
+    let body = serde_json::to_vec(&value)
+        .map_err(|e| AppError::Internal(format!("schema 序列化失败: {e}")))?;
+    let mut resp = Response::new(axum::body::Body::from(body));
     resp.headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     resp.headers_mut()

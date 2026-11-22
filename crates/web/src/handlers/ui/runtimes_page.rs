@@ -140,34 +140,17 @@ fn create_dialog(catalog: &Value) -> Value {
         }),
     ];
     let initial = json!({ "kind": default_kind, "apk_mirror": default_mirror });
-    let form = kit::form(
-        &format!("{API_BASE}/runtimes"),
-        json!({ "type": "skiffRuntimeCreate" }),
+    kit::dialog_form_button(kit::DialogForm {
+        text: "新建运行环境",
+        variant: "flat",
+        title: "新建运行环境",
+        width: 640,
+        url: format!("{API_BASE}/runtimes"),
+        submit: json!({ "type": "skiffRuntimeCreate" }),
         fields,
-        "创建并安装",
-        Some(initial),
-    );
-    json!({
-        "type": "button",
-        "props": { "text": "新建运行环境", "variant": "flat", "color": "primary" },
-        "action": {
-            "type": "dialog",
-            "props": { "title": "新建运行环境", "width": 640 },
-            "content": {
-                "body": [
-                    kit::alert(
-                        "info",
-                        "",
-                        "PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中显示。"
-                    ),
-                    form
-                ],
-                "footer": [
-                    { "type": "button", "props": { "text": "取消", "variant": "outlined" },
-                      "action": { "type": "close" } }
-                ]
-            }
-        }
+        initial: Some(initial),
+        submit_text: "创建并安装",
+        notice: "PHP 会按所选版本拉取镜像并安装默认扩展；其余类型按目录能力登记或安装。安装进度在列表状态列与详情日志中显示。",
     })
 }
 

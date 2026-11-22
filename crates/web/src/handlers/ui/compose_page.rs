@@ -84,16 +84,20 @@ pub fn compose_schema(
                 vec![("仅校验", "validate"), ("校验并部署", "up")],
             ),
         ];
-        body.push(kit::write_card(
-            "编辑 / 校验 / 部署",
-            "compose 源文件不持久化：校验只解析，不触达 Docker；部署会创建/更新项目。",
-            kit::form(
-                &format!("{API_BASE}/compose/validate"),
-                json!({ "type": "skiffComposeEdit" }),
+        body.push(kit::flex(
+            8,
+            vec![kit::dialog_form_button(kit::DialogForm {
+                text: "新建 / 编辑编排",
+                variant: "tonal",
+                title: "新建 / 编辑编排",
+                width: 780,
+                url: format!("{API_BASE}/compose/validate"),
+                submit: json!({ "type": "skiffComposeEdit" }),
                 fields,
-                "执行",
-                None,
-            ),
+                initial: None,
+                submit_text: "执行",
+                notice: "compose 源文件不持久化：校验只解析，不触达 Docker；部署会创建/更新项目。",
+            })],
         ));
     } else {
         body.push(kit::alert(

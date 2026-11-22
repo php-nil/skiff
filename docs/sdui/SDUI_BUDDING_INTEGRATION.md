@@ -1,6 +1,6 @@
 # budding 接入规则（SDUI 前端渲染层 · 索引）
 
-> 状态：**接入规则稿（P0 定案 2026-11-12）；前端已按本规则切换**——2026-11-13 壳页原生化（不再用 iframe 承载插件功能页），当前产物 `budding-1.8.4`（2026-11-21 同步上游 `1121d5`：`content.breadcrumbs` 插槽移除、shared 组件基线瘦身、表单属性补全；`admin` 去外框、数据族配色走主题变量、`page` 的 `init`/`refresh`、`link`/`image` 点击触点、`instance.diagnose()` 为 1.8.3 起已具备能力）。
+> 状态：**接入规则稿（P0 定案 2026-11-12）；前端已按本规则切换**——2026-11-13 壳页原生化（不再用 iframe 承载插件功能页），当前产物 `budding-1.8.5`（2026-11-22 同步上游 `a3a3c8d`：图层页脚可直接 `submit` / `reset` 本层唯一表单、`confirm` 支持 `warning` / `alertdialog`、移除 `mount()` 旧入口与 `snackbar` 关闭参数、新增 `loop` 组件并移除旧 `loop` 动作；此前 1.8.4 的 `content.breadcrumbs` 移除、shared 组件瘦身与表单属性补全仍在基线内）。
 > 上游事实来源：budding 仓库只读盘点（2026-11-12）；内核现状来源：`crates/web`、`crates/plugin` 与本仓库现有契约文档。
 > 相关文档：[SDUI_HANDBOOK.md](SDUI_HANDBOOK.md)（框架无关的适配手册）、[URL_CONTRACT.md](../contract/URL_CONTRACT.md)、[MENU_CONTRACT.md](../contract/MENU_CONTRACT.md)、[PLUGIN_UI_CONTRACT.md](../contract/PLUGIN_UI_CONTRACT.md)。
 > 分工：本文只维护 budding 相关的具体事实、契约形状与缺口；框架无关的分层与迁移阶段只在 SDUI_HANDBOOK 维护，本文引用不复述。

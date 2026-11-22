@@ -179,13 +179,14 @@
 
 - 列表：骨架由 `handlers/ui/containers_page.rs` 在 `?with_schema=true` 时产出（`?filter=error` 与表格 `source.params` 同源，计数口径一致）；`table`（`id=containers-table`、`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行操作 = 详情 / 启停（`condition` 按 `state.code` 二选一）/ 重启 / 删除（`confirm` → `request` → 表格 `reload`）。「全部 / 仅异常」是同 path 换 query，走 `skiffQueryNav` + 显式 `refreshPage`。
 - 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单。强制终止（`kill`）只给卡死容器。动作成功后刷新当前页，删除后回列表。
-- 新建容器：`/{p}/docker/containers/new` 隐藏路由，布局读静态资产 `pages/docker-container-new.json`（自取数 + `skiffDockerWrite` 声明式提交），创建成功后跳转 `/{p}/docker/containers/{id}`，失败展示统一错误信封文案。
+- 新建容器：列表页「新建容器」弹窗与 `/{p}/docker/containers/new` 隐藏路由共用 `containers_page::container_create_fields()`（单一字段来源）；弹窗页脚「重置 / 取消 / 创建容器」，表单提交仍走 `skiffDockerWrite`，创建成功后跳转 `/{p}/docker/containers/{id}`。深链页骨架由 `GET /ui/v1/pages/containers-new` 产出，不再有 `docker-container-new.json` 资产。
 - **D10 翻页**同 5.8：列表由表格 `source` 按 `next_cursor` 追加，底部「加载更多」。
 
 ### 5.10 镜像 / 网络 / 卷（第三批，读写）
 
 - `GET /{p}/docker/images`、`/{p}/docker/networks`、`/{p}/docker/volumes` 交付 budding 壳页；旧 SSR 已随 `/{p}/m/core/*` 深链删除（2026-11-18）。
 - 复用 `list_images` / `list_networks` / `list_volumes` 与旧页面的 `ResourceRow` / `NetworkRowView` 展示模型，不新增 SQL。
+- 创建入口改为列表页弹窗：拉取镜像 / 创建网络 / 创建卷均为「页脚重置 + 取消 + 提交」，表单用原生 `api` 提交，`onSuccess` 里表格 `reload` + `close`；删除仍在行内 `confirm`。
 - 写操作已原生化：`POST /ui/v1/images/pull`、`POST /ui/v1/images/{id}/remove`、`POST /ui/v1/networks`、`POST /ui/v1/networks/{id}/remove`、`POST /ui/v1/volumes`、`POST /ui/v1/volumes/{name}/remove`；逐项复用 `ImagePull` / `ImageRemove` / `NetworkCreate` / `NetworkRemove` / `VolumeCreate` / `VolumeRemove` 策略与 `docker_cmd` 审计。
 - 网络名/卷名的字符集判定抽到 `resources::validate_name`，旧表单与 `/ui/v1` 共用一份。
 - 写操作的错误信封（与容器/编排一致，按状态码分流、不做文案匹配）：重名对象——Docker 回 **409**——→ **409 `domain.conflict`**，`message` 用 Docker 原文（如 `network with name x already exists`）；入参形状不合法 → 400 `shape.invalid`；Docker 不可达 → 503 `dependency.unavailable`。`DockerError` 只为 304 与 409 保留结构化变体（`NotModified` / `Conflict`），其余状态码仍按 `Api(String)` 透出。
@@ -273,5 +274,5 @@
 
 - 骨架由 `handlers/ui/compose_page.rs` 在 `?with_schema=true` 时产出；壳脚本只 fetch，不再保留 `composeSchema`。
 - 项目表格：项目 / 归属 / 服务数 / 运行中，行内按钮启动、停止、重启、清理（清理前确认，卷默认保留）。
-- `can_admin` 时追加「编辑 / 校验 / 部署」卡片：项目名（必填，不能为 `skiff` / `sites`）、compose 文本域、操作下拉（仅校验 / 校验并部署）。校验结果以弹窗展示服务顺序、网络与卷；部署后刷新列表。viewer 只看到权限提示。
+- `can_admin` 时列表上方给「新建 / 编辑编排」按钮：打开弹窗（项目名必填，不能为 `skiff` / `sites`；compose 文本域；操作下拉「仅校验 / 校验并部署」），页脚为「重置 / 取消 / 执行」。校验结果用 toast 展示服务顺序、网络与卷；部署后刷新列表。viewer 只看到权限提示。
 - 服务日志暂由旧页展示（日志查看器待 T3）。

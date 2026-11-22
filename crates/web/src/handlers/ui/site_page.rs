@@ -13,6 +13,7 @@
 
 use serde_json::{json, Value};
 
+use super::schema_kit::{self as kit};
 use super::*;
 use crate::util::encode_uri_component;
 
@@ -181,7 +182,7 @@ fn overview_actions(data: &SiteDetailData) -> Vec<Value> {
                 "props": {
                     "title": "删除站点",
                     "content": "删除后不可恢复：站点目录、配置与证书会一并移除。",
-                    "level": "error",
+                    "color": "error",
                     "confirmText": "确认删除",
                     "requireText": site.domain
                 }
@@ -244,8 +245,8 @@ fn config_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
             } else {
                 "nginx limit_rate；保存后重生成 vhost"
             },
-            write_form(
-                format!("{api_sites}/policy"),
+            kit::form(
+                &format!("{api_sites}/policy"),
                 site_write_action(json!({ "op": "policy", "id": site.id, "domain": site.domain })),
                 fields,
                 "保存策略",
@@ -309,8 +310,8 @@ fn config_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                         " · 未启用"
                     }
                 ),
-                write_form(
-                    format!("{api_sites}/config"),
+                kit::form(
+                    &format!("{api_sites}/config"),
                     site_write_action(
                         json!({ "op": "config", "id": site.id, "domain": site.domain }),
                     ),
@@ -364,8 +365,8 @@ fn domains_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
         }
     }
     if data.can_manage {
-        body.push(write_form(
-            format!("{api_sites}/domains"),
+        body.push(kit::form(
+            &format!("{api_sites}/domains"),
             site_write_action(json!({
                 "op": "domains",
                 "action": "add",
@@ -459,8 +460,8 @@ fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                                         "text": "上传后将替换现有证书并自动启用 HTTPS；格式错误的 PEM 会被拒绝。"
                                     }
                                 },
-                                write_form(
-                                    format!("{api_sites}/ssl"),
+                                kit::form_body(
+                                    &format!("{api_sites}/ssl"),
                                     upload_action,
                                     vec![
                                         json!({
@@ -482,7 +483,6 @@ fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                                             }
                                         })
                                     ],
-                                    "上传并启用",
                                     None,
                                 )
                             ],
@@ -491,6 +491,11 @@ fn ssl_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                                     "type": "button",
                                     "props": { "text": "取消", "variant": "outlined" },
                                     "action": { "type": "close" }
+                                },
+                                {
+                                    "type": "button",
+                                    "props": { "text": "上传并启用", "color": "primary" },
+                                    "action": { "type": "submit" }
                                 }
                             ]
                         }
@@ -564,8 +569,8 @@ fn backup_section(data: &SiteDetailData, api_sites: &str) -> Vec<Value> {
                 if backup.enabled { "warning" } else { "primary" },
                 None,
             ));
-            body.push(write_form(
-                format!("{api_sites}/backup"),
+            body.push(kit::form(
+                &format!("{api_sites}/backup"),
                 site_write_action(json!({
                     "op": "backup",
                     "id": site.id,
@@ -649,7 +654,7 @@ fn archive_card(data: &SiteDetailData) -> Value {
                                     "会用 {} 覆盖站点目录：同名文件被替换，归档里没有的文件保留。恢复前会自动打一份快照，过程在后台执行，进度与结果见任务中心。",
                                     archive.name
                                 ),
-                                "level": "error",
+                                "color": "error",
                                 "confirmText": "确认恢复",
                                 "requireText": site.domain
                             }
@@ -754,13 +759,13 @@ pub fn sites_page_schema(
 
     let mut tools = Vec::new();
     if can_admin {
-        tools.push(dialog_button(DialogSpec {
+        tools.push(kit::dialog_form_button(kit::DialogForm {
             text: "批量启停",
             variant: "text",
             title: "批量启停站点",
             width: 520,
             url: format!("{API_BASE}/sites/batch"),
-            action: site_write_action(json!({ "op": "batch" })),
+            submit: site_write_action(json!({ "op": "batch" })),
             fields: vec![
                 json!({
                     "type": "select",
@@ -789,13 +794,13 @@ pub fn sites_page_schema(
             submit_text: "执行批量操作",
             notice: "每行一个域名，只对已存在的站点生效；删除仍在站点详情的删除确认里。",
         }));
-        tools.push(dialog_button(DialogSpec {
+        tools.push(kit::dialog_form_button(kit::DialogForm {
             text: "新建站点",
             variant: "flat",
             title: "新建站点",
             width: 640,
             url: format!("{API_BASE}/sites"),
-            action: site_write_action(json!({ "op": "create" })),
+            submit: site_write_action(json!({ "op": "create" })),
             fields: site_create_fields(runtime_items),
             initial: Some(json!({ "site_type": "static" })),
             submit_text: "创建站点",
@@ -878,58 +883,6 @@ pub(super) fn site_create_fields(runtime_items: Vec<Value>) -> Vec<Value> {
     ]
 }
 
-struct DialogSpec<'a> {
-    text: &'a str,
-    variant: &'a str,
-    title: &'a str,
-    width: u32,
-    url: String,
-    action: Value,
-    fields: Vec<Value>,
-    initial: Option<Value>,
-    submit_text: &'a str,
-    notice: &'a str,
-}
-
-/// 弹窗表单按钮：与前端 `dialogFormButton` 同形（打开 dialog → 表单 → 自定义动作）。
-fn dialog_button(spec: DialogSpec<'_>) -> Value {
-    let mut body = Vec::new();
-    if !spec.notice.is_empty() {
-        body.push(json!({
-            "type": "alert",
-            "props": { "type": "info", "text": spec.notice }
-        }));
-    }
-    body.push(write_form(
-        spec.url,
-        spec.action,
-        spec.fields,
-        spec.submit_text,
-        spec.initial,
-    ));
-    json!({
-        "type": "button",
-        "props": { "text": spec.text, "variant": spec.variant, "color": "primary" },
-        "action": {
-            "type": "dialog",
-            "props": {
-                "title": spec.title,
-                "width": spec.width
-            },
-            "content": {
-                "body": body,
-                "footer": [
-                    {
-                        "type": "button",
-                        "props": { "text": "取消", "variant": "outlined" },
-                        "action": { "type": "close" }
-                    }
-                ]
-            }
-        }
-    })
-}
-
 fn dash(value: &str) -> &str {
     if value.is_empty() {
         "—"
@@ -975,35 +928,6 @@ fn write_card(title: &str, notice: &str, form: Value) -> Value {
         "type": "card",
         "props": { "title": title },
         "content": { "body": content }
-    })
-}
-
-fn write_form(
-    url: String,
-    submit: Value,
-    fields: Vec<Value>,
-    submit_text: &str,
-    initial_values: Option<Value>,
-) -> Value {
-    let mut props = json!({
-        "api": { "method": "POST", "url": url, "sendOn": false },
-        "actionsAlign": "end"
-    });
-    if let Some(initial_values) = initial_values {
-        props["initialValues"] = initial_values;
-    }
-    json!({
-        "type": "form",
-        "props": props,
-        "onEvent": { "submit": [submit] },
-        "body": fields,
-        "content": { "actions": [
-            {
-                "type": "button",
-                "props": { "text": submit_text, "color": "primary" },
-                "action": { "type": "submit" }
-            }
-        ] }
     })
 }
 

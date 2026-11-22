@@ -36,7 +36,6 @@ crates/web/static/budding/
     docker-images.json       页面 Schema（自取数 + 声明式交互）
     docker-networks.json
     docker-volumes.json
-    docker-container-new.json
     _file-row.json           不是页面：目录行模板，`files_page.rs` 用 include_str! 内联
 ```
 
@@ -125,7 +124,7 @@ crates/web/static/budding/
 | 页面 | 产出端 | 入口 |
 | --- | --- | --- |
 | 镜像 / 网络 / 卷 | `pages/docker-*.json` | 资产 |
-| 新建容器 | `pages/docker-container-new.json` | 资产（深链 `/docker/containers/new`） |
+| 新建容器 | `handlers/ui/containers_page.rs` | 列表弹窗 + `GET /ui/v1/pages/containers-new`（深链 `/docker/containers/new`） |
 | 容器列表 / 详情 / 日志 | `handlers/ui/containers_page.rs` | `?with_schema=true` |
 | compose | `handlers/ui/compose_page.rs` | `?with_schema=true` |
 | 运行环境列表 / 详情 / 日志 | `handlers/ui/runtimes_page.rs` | `?limit=&with_schema=true`、`?tab=&file=&with_schema=true` |

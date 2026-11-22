@@ -213,7 +213,7 @@ const DETAIL_ROUTES: &[(&str, &str, PageKind, &str)] = &[
     (
         "/docker/containers/new",
         "新建容器",
-        PageKind::Asset("docker-container-new.json"),
+        PageKind::Page,
         "/docker/containers",
     ),
     (
@@ -838,9 +838,7 @@ fn page_source(prefix: &str, raw_path: &str, s: &Search) -> PageSource {
                 "/containers?{filter}limit=1&with_schema=true"
             )))
         }
-        ["docker", "containers", "new"] => PageSource::url(format!(
-            "{prefix}/static/budding/pages/docker-container-new.json"
-        )),
+        ["docker", "containers", "new"] => PageSource::url(api("/pages/containers-new")),
         // 终端的 ws 地址必须由浏览器按当前 origin 拼，服务端给不了。
         ["docker", "containers", _, "terminal"] => PageSource::special("terminal"),
         ["docker", "containers", id, "logs"] => PageSource::url(api(&format!(

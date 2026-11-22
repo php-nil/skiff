@@ -178,28 +178,31 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
         "action": {
             "type": "dialog",
             "props": { "title": "新建目录", "width": 480 },
-            "content": { "body": [{
-                "type": "form",
-                "onEvent": { "submit": [
-                    { "type": "skiffFileMkdir", "props": { "dir": path } }
-                ] },
-                "props": {
-                    "api": { "method": "POST", "url": format!("{API_BASE}/files/mkdir"), "sendOn": false }
-                },
+            "content": {
                 "body": [{
-                    "type": "input-text",
+                    "type": "form",
+                    "onEvent": { "submit": [
+                        { "type": "skiffFileMkdir", "props": { "dir": path } }
+                    ] },
                     "props": {
-                        "name": "name",
-                        "label": "目录名（将创建在当前目录下）",
-                        "required": true,
-                        "rules": name_rule
-                    }
+                        "api": { "method": "POST", "url": format!("{API_BASE}/files/mkdir"), "sendOn": false }
+                    },
+                    "body": [{
+                        "type": "input-text",
+                        "props": {
+                            "name": "name",
+                            "label": "目录名（将创建在当前目录下）",
+                            "required": true,
+                            "rules": name_rule
+                        }
+                    }]
                 }],
-                "content": { "actions": [
+                "footer": [
+                    { "type": "button", "props": { "text": "重置", "variant": "text" }, "action": { "type": "reset" } },
                     { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "action": { "type": "close" } },
                     { "type": "button", "props": { "text": "创建", "color": "primary" }, "action": { "type": "submit" } }
-                ] }
-            }] }
+                ]
+            }
         }
     });
 
@@ -245,35 +248,38 @@ pub fn files_schema(data: &Value, can_admin: bool) -> Value {
         "action": {
             "type": "dialog",
             "props": { "title": "新建文件", "width": 640 },
-            "content": { "body": [{
-                "type": "form",
-                "onEvent": { "submit": [
-                    { "type": "skiffFileWrite", "props": { "dir": path } }
-                ] },
-                "props": {
-                    "api": { "method": "POST", "url": format!("{API_BASE}/files/write"), "sendOn": false }
-                },
-                "body": [
-                    {
-                        "type": "input-text",
-                        "props": {
-                            "name": "name",
-                            "label": "文件名（在当前目录创建或覆盖）",
-                            "required": true,
-                            "rules": {
-                                "required": true,
-                                "pattern": "^[^/\\\\]+$",
-                                "messages": { "required": "请输入文件名", "pattern": "文件名不能包含 / 或 \\" }
-                            }
-                        }
+            "content": {
+                "body": [{
+                    "type": "form",
+                    "onEvent": { "submit": [
+                        { "type": "skiffFileWrite", "props": { "dir": path } }
+                    ] },
+                    "props": {
+                        "api": { "method": "POST", "url": format!("{API_BASE}/files/write"), "sendOn": false }
                     },
-                    { "type": "textarea", "props": { "name": "content", "label": "文件内容", "rows": 8 } }
-                ],
-                "content": { "actions": [
+                    "body": [
+                        {
+                            "type": "input-text",
+                            "props": {
+                                "name": "name",
+                                "label": "文件名（在当前目录创建或覆盖）",
+                                "required": true,
+                                "rules": {
+                                    "required": true,
+                                    "pattern": "^[^/\\\\]+$",
+                                    "messages": { "required": "请输入文件名", "pattern": "文件名不能包含 / 或 \\" }
+                                }
+                            }
+                        },
+                        { "type": "textarea", "props": { "name": "content", "label": "文件内容", "rows": 8 } }
+                    ]
+                }],
+                "footer": [
+                    { "type": "button", "props": { "text": "重置", "variant": "text" }, "action": { "type": "reset" } },
                     { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "action": { "type": "close" } },
                     { "type": "button", "props": { "text": "保存", "color": "primary" }, "action": { "type": "submit" } }
-                ] }
-            }] }
+                ]
+            }
         }
     });
 

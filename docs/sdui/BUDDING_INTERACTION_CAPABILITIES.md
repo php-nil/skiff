@@ -1,6 +1,6 @@
 # budding 交互能力速查
 
-> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.4`，2026-11-21 同步上游 `1121d5`）。
+> 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.5`，2026-11-22 同步上游 `a3a3c8d`；图层页脚可直接 `submit` / `reset` 本层唯一表单）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
 > 校验：文中 dialog+form、confirm+request+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
 > 更名（2026-11-22 核对）：写请求动作 `ajax` 已由上游改名 **`request`**（提交 `1120d2`，2026-11-20），旧名无别名，写 `ajax` 运行时按「未知动作类型」拒绝；本仓自带 bundle（`budding-1.8.4.min.js`，同步 `1121d5`）与上游现行 `catalog.json` 均以 `request` 为准，`C:/dev/budding/dist/mcp/` 下的归档副本是改名前的过期产物，勿再引用。
@@ -32,7 +32,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 | 关闭 | `close` 关最近一层；`close` 可传 `layerId` 定向关闭 |
 | 交互 | 遮罩、焦点陷阱、背景隔离、滚动锁定、Esc 只关顶层由内核处理；`closeOnOutside` / `closeOnMask` / `closeOnEsc` / `showCloseButton` / `overlay` 可分别控制 |
 | 抽屉 | `placement` 缺省 `right`，左右用 `width`、上下用 `height` |
-| 表单 | 表单放在 `body`，提交按钮必须写在表单自己的 `content.actions`；`footer` 是表单兄弟节点，只放关闭或不依赖表单上下文的动作 |
+| 表单 | 表单放在 `body`。1.8.5 起 `footer` 的 `submit` / `reset` 会解析本层**唯一**的表单，保存与重置统一放页脚；0 张或多张时报错，不猜。页脚按钮仍读不到字段值，需要按值分支时把动作写进表单 `content.actions` |
 | 非阻塞 | `dialog` / `drawer` 打开后动作链立即继续；需要「等用户选完再执行」用 `confirm`，或把后续动作放进弹窗按钮 |
 
 新增 / 编辑的最小组合：
@@ -58,15 +58,12 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
         },
         "body": [
           { "type": "input-text", "props": { "name": "domain", "label": "域名", "required": true } }
-        ],
-        "content": {
-          "actions": [
-            { "type": "button", "props": { "text": "保存", "color": "primary" }, "action": { "type": "submit" } }
-          ]
-        }
+        ]
       }],
       "footer": [
-        { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "action": { "type": "close" } }
+        { "type": "button", "props": { "text": "重置", "variant": "text" }, "action": { "type": "reset" } },
+        { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "action": { "type": "close" } },
+        { "type": "button", "props": { "text": "保存", "color": "primary" }, "action": { "type": "submit" } }
       ]
     }
   }
@@ -154,7 +151,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 - 服务端字段错误用表单指令 `invoke setErrors` 回填：`args.errors` 按字段 `name` 写入，`__form__` 落表单级；值变更或提交启动时先到先清，`focus` 可聚焦首个错误。不要给字段加 `error` 入参。
 - `errorMessage` 缺省取异常 `message`，服务端错误信封的文案因此可直接透传到表单提示。
 - 字段级回填是**可选项**：不声明 `onError` 时保持上面的默认提示；需要时给表单声明稳定 `id`，并加 `onError: [{ "type": "skiffFormErrors", "props": { "form": "<id>" } }]`，壳会把最近一次失败的 `error.field` 经 `setErrors` 贴回表单并聚焦（`props.focus: false` 可关聚焦）。
-- `submit` / `reset` 只在 form 内有效；字段值实时同步，动作里可用 `${字段名}` 读取。
+- `submit` / `reset` 在表单子树内有效；1.8.5 起也可放在图层页脚，目标是本层唯一表单。字段值实时同步，动作里可用 `${字段名}` 读取。
 - 校验错误只取第一条；需要多条规则时用 `rules.pattern` 数组，每条可带独立 `message`。
 - `input-text` 的 `type`（含 `password`）与 `autocomplete` 都已原生透传，登录口令框不再需要 DOM 桥接。
 - 条件表达式异常语义（budding 1.8.0）：`visibleOn` / `hiddenOn` 求值抛错时**隐藏节点**（fail-closed），`disabledOn` 抛错时保持可用；dev 下三类条件走同一诊断入口，同一节点实例按 `path + 属性 + 表达式` 只报一次，payload 含 `id` / `path` / `type` / `region` / `attribute` / `expression` / `cause`。不提供 fail-open，也不提供运行时开关。
@@ -293,9 +290,9 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 ## 9. 容易踩的约束
 
 1. `dialog` / `drawer` 不阻塞动作链；只有 `confirm` 会等待并在取消时中止后续。
-2. 弹窗里的表单提交按钮必须在表单 `content.actions`，放在 `footer` 拿不到表单上下文。
+2. 弹窗里只有一张表单时，保存 / 重置优先放 `footer`（1.8.5 起支持）；页脚按钮拿不到字段值，需按值分支的动作仍写表单 `content.actions`。
 3. 表格 / 虚拟列表的删除、编辑成功后不会自动刷新，需要 `invoke` 对应组件的 `reload`。
-4. `confirm` 的 `requireText` 用于输入型确认；按钮文案、危险语义由 `confirmText` / `cancelText` / `level` 控制。
+4. `confirm` 的 `requireText` 用于输入型确认；按钮文案、危险语义由 `confirmText` / `cancelText` / `color`（`info` / `warning` / `error`）控制。
 5. 表单字段错误用 `invoke setErrors` 回填；`submitErrorFocus` 只负责提交失败后的焦点/滚动定位。
 6. 只读详情用 `property` 组件，不再手工拼 `card` + `flex` + `text`。
 7. 页面 Schema 交付前跑一次 MCP `validateSchema`；`strict: true` 可把未声明字段升级为错误。

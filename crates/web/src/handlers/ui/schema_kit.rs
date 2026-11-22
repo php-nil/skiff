@@ -109,6 +109,27 @@ pub fn form(
     submit_text: &str,
     initial: Option<Value>,
 ) -> Value {
+    let mut node = form_body(api_url, submit, fields, initial);
+    node["content"] = json!({
+        "actions": [
+            {
+                "type": "button",
+                "props": { "text": submit_text, "color": "primary" },
+                "action": { "type": "submit" }
+            }
+        ]
+    });
+    node
+}
+
+/// 不带自身动作区的表单：提交 / 重置按钮交给弹窗页脚（budding 1.8.5 起，
+/// 页脚的 `submit` / `reset` 解析本图层唯一表单）。
+pub fn form_body(
+    api_url: &str,
+    submit: Value,
+    fields: Vec<Value>,
+    initial: Option<Value>,
+) -> Value {
     let mut props = json!({
         "api": { "method": "POST", "url": api_url, "sendOn": false },
         "actionsAlign": "end"
@@ -120,15 +141,60 @@ pub fn form(
         "type": "form",
         "props": props,
         "onEvent": { "submit": [submit] },
-        "body": fields,
-        "content": {
-            "actions": [
-                {
-                    "type": "button",
-                    "props": { "text": submit_text, "color": "primary" },
-                    "action": { "type": "submit" }
-                }
-            ]
+        "body": fields
+    })
+}
+
+/// 弹窗表单规格：按钮统一放图层页脚（重置 / 取消 / 提交），正文可带一行说明。
+pub struct DialogForm<'a> {
+    pub text: &'a str,
+    pub variant: &'a str,
+    pub title: &'a str,
+    pub width: u32,
+    pub url: String,
+    pub submit: Value,
+    pub fields: Vec<Value>,
+    pub initial: Option<Value>,
+    pub submit_text: &'a str,
+    pub notice: &'a str,
+}
+
+/// 打开「弹窗 + 表单」的按钮。页脚按钮不需要表单上下文，滚动时吸底可见。
+///
+/// 表单自身不再带动作区：1.8.5 起图层页脚的 `submit` / `reset` 直接作用于
+/// 本层唯一表单，避免正文底部与页脚出现两排保存按钮。
+pub fn dialog_form_button(spec: DialogForm<'_>) -> Value {
+    let mut body = Vec::new();
+    if !spec.notice.is_empty() {
+        body.push(alert("info", "", spec.notice));
+    }
+    body.push(form_body(&spec.url, spec.submit, spec.fields, spec.initial));
+    json!({
+        "type": "button",
+        "props": { "text": spec.text, "variant": spec.variant, "color": "primary" },
+        "action": {
+            "type": "dialog",
+            "props": { "title": spec.title, "width": spec.width },
+            "content": {
+                "body": body,
+                "footer": [
+                    {
+                        "type": "button",
+                        "props": { "text": "重置", "variant": "text" },
+                        "action": { "type": "reset" }
+                    },
+                    {
+                        "type": "button",
+                        "props": { "text": "取消", "variant": "outlined" },
+                        "action": { "type": "close" }
+                    },
+                    {
+                        "type": "button",
+                        "props": { "text": spec.submit_text, "color": "primary" },
+                        "action": { "type": "submit" }
+                    }
+                ]
+            }
         }
     })
 }
@@ -288,4 +354,40 @@ pub fn search_form(label: &str, value: &str, base: &str, with_reset: bool) -> Va
         ],
         "content": { "actions": actions }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 弹窗表单的保存/重置必须写在图层页脚，表单正文不再重复一排按钮。
+    #[test]
+    fn dialog_form_puts_actions_in_layer_footer() {
+        let button = dialog_form_button(DialogForm {
+            text: "新建",
+            variant: "tonal",
+            title: "新建",
+            width: 560,
+            url: "/ui/v1/things".to_string(),
+            submit: json!({ "type": "skiffThingWrite" }),
+            fields: vec![required_input("name", "名称", "请输入名称")],
+            initial: None,
+            submit_text: "创建",
+            notice: "说明",
+        });
+        let footer = button["action"]["content"]["footer"]
+            .as_array()
+            .expect("dialog 必须有 footer");
+        let actions: Vec<&str> = footer
+            .iter()
+            .map(|b| b["action"]["type"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(actions, vec!["reset", "close", "submit"]);
+        let form = &button["action"]["content"]["body"][1];
+        assert_eq!(form["type"], "form");
+        assert!(
+            form.get("content").is_none(),
+            "表单正文不应再有 content.actions"
+        );
+    }
 }

@@ -144,7 +144,7 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 }
 ```
 
-- 绑定：`{{data.<path>}}` 取 `data.<name>` 的 RPC 结果，`{{query.<key>}}` 取地址栏参数；`when` 支持 `{{data.x}}` / `!{{data.x}}`。budding 的 `${row.field}` 行内插值保持原样（包括 `params` / `query` 里的嵌套值）。
+- 绑定：`{{data.<path>}}` 取 `data.<name>` 的 RPC 结果，`{{query.<key>}}` 取地址栏参数；`when` 支持 `{{data.x}}` / `!{{data.x}}`。budding 的 `${row.field}` 行内插值保持原样（包括 `params` / `query` 里的嵌套值）。弹窗表单推荐把保存 / 重置放 `content.footer`，表单本身只保留字段（见 §4.0「弹窗与页脚提交」）。
 - 数据源只声明 `method` 与 `params`；壳页统一调 `POST /{p}/plugins/{id}/rpc`（CSRF + 权限 + 审计）。`skiffPluginView` 可用 `query`（仅标量键值）做同插件只读下钻，例如 `query: { jail: "${name}" }`，壳页只把它拼到当前插件页的 query，不接受 URL。
 - 页面/槽位的 schema 文件名在 manifest 中显式声明；`api < 1.3` 的包行为不变。
 
@@ -200,7 +200,8 @@ view = "list"          # L2 默认视图（无 L3 时的唯一视图）
 - **信任等级**：schema 与内核页面不同级。安装验包期由 `skiff-pkgfmt` 静态校验，运行期 `GET /schema/{view}` 再校验一次；未通过不进入渲染。
 - **节点白名单**：`page`/`card`/`alert`/`text`/`flex`/`grid`/`table`/`form`/`input-text`/`select`/`textarea`/`checkbox`/`button`；未知类型拒装。
 - **禁外链**：任何字符串命中 `http(s)://`、协议相对 `//`、`data:`、`javascript:`、`vbscript:`、`file:`、`mailto:` 即拒；禁止 `api`/`url`/`href`/`src`/`html`/`raw`/`target` 字段。
-- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换，可带标量 `query`）与表单 `submit`。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。`skiffPluginRpc` 另接受 `inspect: true`：只调用、不刷新、不弹 toast，壳页把请求与原始响应（含 HTTP 状态与错误信封）摊在图层里——只改呈现，不放宽任何权限，探针类插件靠它验证失败分支。表单内按钮的 `skiffPluginRpc` 会合并当前表单值（空值视为未填写）；插件侧负责把数值字段从字符串归一化，内核参数校验不放宽。
+- **动作白名单**：只允许 `skiffPluginRpc`（写操作走统一 RPC 通道）、`skiffPluginView`（同一插件内视图切换，可带标量 `query`）、`submit` / `reset`（表单提交事件，或图层页脚对「本层唯一表单」）、`dialog`（呈现类，`props` 仅限上游图层参数，`content` 只允许 `body` / `footer`）与 `close`（关闭最近一层）。schema 不能直接写 URL、不能发 `fetch`、不能绕过 CSRF。`skiffPluginRpc` 另接受 `inspect: true`：只调用、不刷新、不弹 toast，壳页把请求与原始响应（含 HTTP 状态与错误信封）摊在图层里——只改呈现，不放宽任何权限，探针类插件靠它验证失败分支。表单内按钮的 `skiffPluginRpc` 会合并当前表单值（空值视为未填写）；插件侧负责把数值字段从字符串归一化，内核参数校验不放宽。
+- **弹窗与页脚提交**：`dialog` 的正文/页脚走同一套节点白名单；页脚按钮的 `submit` / `reset` 由渲染器解析为本层唯一表单，不需要插件自带脚本。插件 schema **不能声明 `api`**；内核在 `GET /schema/{view}` 校验通过后，为未声明 `api` 的 `form` 注入固定 `{ sendOn: false }` 的 no-op 提交配置，避免页脚 `submit` 额外弹「表单未配置 api」——注入发生在校验之后，URL 不由插件控制，也不会发出请求。
 - **限额**：单文件 128 KiB、节点 512、嵌套 16 层、字符串 8 KiB、数据源 8 个。
 - 组件缺失时不自造渲染，记入上游清单并给占位。
 

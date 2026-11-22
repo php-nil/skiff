@@ -78,7 +78,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 | 构建 | `pnpm build:package`；要求 Node ≥ 24 |
 | 产物 | `budding-<ver>.min.js`（IIFE）+ `budding-<ver>.min.css`，**无内容 hash** |
 | 稳定别名 | `budding.min.js` / `budding.css`，**由 `assets.rs` 路由映射，不复制第二份字节** |
-| 体积 | 入库 `1.8.4` 实测：JS 1,020,608 B；CSS 574,185 B（上游 `1121d5` 打包，产物自报 `1.8.4`；较 1.8.3 JS −23.5% / CSS −13.3%，上游去掉整库 Vuetify barrel 所致） |
+| 体积 | 入库 `1.8.5` 实测：JS 1,022,104 B；CSS 574,157 B（上游 `a3a3c8d` 打包，产物自报 `1.8.5`；相对 1.8.4 基本持平） |
 | 消费方式 | `<script src>` + 挂载点 + `BuddingSDK.embed(target, schema, opts)`；加载后不自动渲染。`opts` 支持扁平 `locale` / `theme` / `messages` / `uiDefaults`（1.9.0） |
 | CSS 加载 | 运行时按 `document.currentScript` 推导目录并插入 `<link>`，**同目录即可** |
 | 路由 | 默认 hash；history 模式需 `routerBase` |
@@ -94,7 +94,7 @@ D7 定案为**一次性切换**：所有内核页面同批交付，不存在「�
 - `RustEmbed` 在编译期把目录打进二进制，对外路径 `/{p}/static/budding/<file>`。
 - `crates/web/build.rs` 会为每个文件生成 `.gz` 变体，`assets.rs` 按 `Accept-Encoding` 协商；新增产物自动获得 gzip 能力，**不需要改部署脚本**。
 - 现有测试 `every_static_asset_has_gzip_variant` 会覆盖新文件，构建期自动校验。
-- 体积影响（`1.8.4` 实测）：budding 三件（JS/CSS/启动脚本）raw 1,907,082 B；gzip 变体由 `build.rs` 以 `Compression::best()` 生成（实测：JS 326,917 B、CSS 67,505 B、启动脚本 75,379 B，合计 469,801 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
+- 体积影响（`1.8.5` 实测）：budding 三件（JS/CSS/启动脚本）raw 1,913,359 B；gzip 变体由 `build.rs` 以 `Compression::best()` 生成（实测：JS 328,168 B、CSS 67,568 B、启动脚本 32,567 B，合计 428,303 B），与设计目标「单二进制 ≤ 14MB」的张力见 §7。
 
 ### 2.3 壳页形态
 
@@ -130,7 +130,7 @@ D13 已定案（2026-11-12）：采用 **history 路由 + 白名单前缀回落*
 - **页面结构从哪来**：路由的 `schema` 只有三取值——`skiff:page`（问 `GET /ui/v1/page?path=&search=`，服务端回答端点 URL 或资产 URL）、静态资产 URL、`skiff:<special>`（终端 / 安装确认 / 插件视图，形态离不开浏览器）。壳脚本按标记分派，不再持有「路径 → 端点」的映射。
 - **壳层 chrome（2026-11-17 起）**：`bar: false` 关掉 budding 默认顶栏（品牌 / 页面标题 / 账号 / 退出登录），`breadcrumbs: false` 关掉整块原生面包屑（1.8.4 起 `content.breadcrumbs` 插槽已移除，只能用该 props）；页内子视图切换由内核渲染的**横向三级菜单**承担（`nav.skiff-subnav`，节点挂页面容器 `.bud-page` 内、标题之下，样式 `static/skiff-shell.css`）。它与面包屑是两件事：**是菜单就全量平铺**——当前页有子视图才出现，没有就整条不渲染，当前项用 2px 底部强调轨，不做下拉也不做路径回溯（「我在哪」由左侧菜单当前项承担）。底色取内容区表面色 `--v-theme-surface`，不跟随侧栏 chrome；吸顶时补 `is-stuck` 遮罩；重建带闸门防 MutationObserver 死循环。账号与退出登录移入「设置」页「当前账号」区块（仍走 `POST /ui/v1/session/logout` 与同一 CSRF 头）；固定页插件槽位（`[[mount]]`）的 schema 渲染待槽位 API 落地，当前仍不渲染。
 - **三级子视图登记**：核心页 L3 在服务端 `handlers/ui/routes.rs` 的 `SUBVIEWS` 登记（隐藏路由随路由表下发），模式支持参数段（`:id`）；壳脚本的 `SUBVIEW_TABS` 只负责**渲染**当前地址命中的横向菜单，不再决定路由。口径与路径同前：Web 服务 → 状态 / 配置 / 日志 / 模块（`/{p}/sites/web/{,config,logs,modules}`）；站点详情 → 概览 / 域名 / 配置 / 证书 / 备份 / 日志（`/{p}/sites/<域名>/{,domains,config,ssl,backup,logs}`）；运行环境详情 → 基础信息 / 配置 / 扩展 / 站点 / 管理 / 日志（`/{p}/sites/runtimes/<id>/{,config,extensions,sites,manage,logs}`）。数据仍由一次父接口取齐，切子视图只换渲染块。插件多视图由路由表同时下发的 `plugins[].views` 驱动（`/plugins/<id>/<view>`），页内按钮行已删除；随包 schema 缺失的旧插件视图回落到 `/{p}/plugins/{id}/{view}?legacy=1` 的 iframe 工作台。
-- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.4` 子集为 81 字形，菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
+- **图标**：1.8.0 起 budding 官方包自带 `Budding Icons` 子集字体，壳页 `<link>` 引入宿主入库的版本化图标 CSS/woff2（§2.4）；`1.8.5` 子集为 82 字形，菜单语义名直接映射到 mdi 名（含 `mdi-image-outline` / `mdi-harddisk` / `mdi-folder-outline`），不再做近似兜底或留空。
 
 ### 2.4 缓存与版本（D11 定案）
 

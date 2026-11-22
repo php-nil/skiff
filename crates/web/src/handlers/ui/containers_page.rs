@@ -164,11 +164,18 @@ pub fn containers_schema(
     if can_admin {
         body.push(kit::flex(
             8,
-            vec![kit::action_button(
-                "新建容器",
-                vec![json!({ "type": "navigate", "props": { "url": "${prefix}/docker/containers/new" } })],
-                "",
-            )],
+            vec![kit::dialog_form_button(kit::DialogForm {
+                text: "新建容器",
+                variant: "tonal",
+                title: "新建容器",
+                width: 720,
+                url: format!("{API_BASE}/containers"),
+                submit: json!({ "type": "skiffDockerWrite", "props": { "op": "create" } }),
+                fields: container_create_fields(),
+                initial: None,
+                submit_text: "创建容器",
+                notice: "端口、环境变量、绑定与卷均按每行一条；网络每行一个名称。留空表示不设置。",
+            })],
         ));
     }
 
@@ -176,6 +183,48 @@ pub fn containers_schema(
         "容器",
         "启停/重启/删除在详情页操作，资源限制可在详情页编辑",
         body,
+    )
+}
+
+/// 新建容器字段：列表弹窗与 `/docker/containers/new` 深链页共用同一份定义。
+pub fn container_create_fields() -> Vec<Value> {
+    vec![
+        kit::required_input("image", "镜像（必填）", "请输入镜像"),
+        kit::text_input("name", "容器名（可选）"),
+        kit::textarea("ports", "端口映射（host:container[/udp]，每行一条）", 3),
+        kit::textarea("env", "环境变量（KEY=VALUE，每行一条）", 3),
+        kit::textarea("binds", "宿主绑定（源:目标[:ro]，每行一条）", 3),
+        kit::textarea("volumes", "命名卷（卷名:目标[:ro]，每行一条）", 3),
+        kit::text_input("restart", "重启策略（如 unless-stopped）"),
+        kit::textarea("networks", "网络（每行一个，可留空）", 3),
+        kit::text_input("cpu_shares", "CPU 份额"),
+        kit::text_input("cpu_period", "CPU 周期（μs）"),
+        kit::text_input("cpu_quota", "CPU 配额（μs）"),
+        kit::text_input("memory_limit_mb", "内存上限（MB）"),
+        kit::text_input("memory_swap_mb", "内存+交换（MB）"),
+        kit::text_input("pids_limit", "PIDs 上限"),
+    ]
+}
+
+/// 新建容器页骨架（深链 `/docker/containers/new` 的落点）。
+pub fn container_new_schema() -> Value {
+    kit::page(
+        "新建容器",
+        "提交后进入容器详情页",
+        vec![
+            kit::alert(
+                "info",
+                "",
+                "端口、环境变量、绑定与卷均按每行一条；网络每行一个名称。留空表示不设置。",
+            ),
+            kit::form(
+                &format!("{API_BASE}/containers"),
+                json!({ "type": "skiffDockerWrite", "props": { "op": "create" } }),
+                container_create_fields(),
+                "创建容器",
+                None,
+            ),
+        ],
     )
 }
 

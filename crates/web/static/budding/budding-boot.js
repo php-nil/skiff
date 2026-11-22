@@ -96,6 +96,8 @@
   //
   // 插槽位置：budding 1.8.3 起 dialog 的正文/底部在动作顶层 `content`
   // （写进 `props.body` 会整页 CompileError），故只认 `content.body`。
+  // 1.8.5 起「保存」可以写在 `content.footer`（本层唯一表单），这里只登记
+  // 原始 content，重开时原样复用，不假定按钮在表单内还是页脚。
   function registerServerDialog(button) {
     var layer = button.action.props || {};
     var slot = button.action.content || {};
@@ -113,15 +115,7 @@
     if (!submit || !submit.props) return;
     var key = submit.props.dialog || newDialogKey();
     submit.props.dialog = key;
-    var submitButton = form.content && form.content.actions && form.content.actions[0];
-    dialogRegistry[key] = {
-      title: layer.title,
-      width: layer.width,
-      url: form.props.api.url,
-      action: submit,
-      fields: form.body,
-      submitText: submitButton && submitButton.props ? submitButton.props.text : ''
-    };
+    dialogRegistry[key] = { props: layer, content: slot };
   }
 
 
@@ -1017,29 +1011,6 @@
     };
   }
 
-
-  function writeForm(url, submitAction, fields, submitText, initialValues) {
-    var props = {
-      api: { method: 'POST', url: url, sendOn: false },
-      actionsAlign: 'end'
-    };
-    if (initialValues) props.initialValues = initialValues;
-    return {
-      type: 'form',
-      props: props,
-      onEvent: { submit: [submitAction] },
-      body: fields,
-      content: {
-        actions: [
-          {
-            type: 'button',
-            props: { text: submitText, color: 'primary' },
-            action: { type: 'submit' }
-          }
-        ]
-      }
-    };
-  }
 
   // compose 项目级操作：启停/重启走逐容器分发，删除走 compose down。
   function composeAction(args) {
@@ -2346,35 +2317,37 @@
       toast('操作失败：' + text, 'error');
       return;
     }
-    var body = [
-      {
-        type: 'alert',
-        props: { type: 'error', title: '提交未完成', text: text }
+    // 复用原始 content：字段与页脚按钮（保存 / 重置 / 取消）保持与首次打开一致；
+    // 只把已填值写回 initialValues，并在正文顶部补错误摘要。
+    var content = JSON.parse(JSON.stringify(def.content || {}));
+    var body = Array.isArray(content.body) ? content.body : [];
+    for (var i = 0; i < body.length; i += 1) {
+      var node = body[i];
+      if (!node || node.type !== 'form') continue;
+      node.props = node.props || {};
+      node.props.initialValues = Object.assign(
+        {},
+        node.props.initialValues || {},
+        values || {}
+      );
+      var submit = node.onEvent && node.onEvent.submit && node.onEvent.submit[0];
+      if (submit) {
+        submit.props = submit.props || {};
+        submit.props.dialog = key;
       }
-    ];
-    // 原弹窗的 notice 可能含 `${item.*}` 行作用域占位符，重开图层时已无该作用域；
-    // 这里只保留错误摘要与用户输入，不复制会退化成字面量的提示。
-    var action = {
-      type: def.action.type,
-      props: Object.assign({}, def.action.props || {}, { dialog: key })
-    };
-    body.push(writeForm(def.url, action, def.fields, def.submitText, values || {}));
+      break;
+    }
+    body.unshift({
+      type: 'alert',
+      props: { type: 'error', title: '提交未完成', text: text }
+    });
+    var layer = Object.assign({}, def.props || {});
+    // 行作用域派生的 data 在重开时已经失效，留着只会渲染成字面量。
+    delete layer.data;
+    layer.body = body;
+    layer.footer = Array.isArray(content.footer) ? content.footer : [];
     runtime.closeLayer();
-    runtime.openLayer(
-      {
-        title: def.title,
-        width: def.width,
-        body: body,
-        footer: [
-          {
-            type: 'button',
-            props: { text: '取消', variant: 'outlined' },
-            action: { type: 'close' }
-          }
-        ]
-      },
-      { scope: runtime.deriveScope({}, null) }
-    );
+    runtime.openLayer(layer, { scope: runtime.deriveScope({}, null) });
   }
 
   /// 弹窗内错误优先就地展示；页面级表单没有 `dialog` 上下文时退回 toast。

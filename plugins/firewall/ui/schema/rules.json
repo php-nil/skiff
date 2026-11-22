@@ -52,134 +52,89 @@
         }
       },
       {
-        "type": "grid",
-        "props": { "columns": 2, "gap": 16 },
+        "type": "flex",
+        "props": { "gap": 8, "wrap": true, "justify": "end" },
         "content": {
           "body": [
             {
-              "type": "card",
-              "props": { "title": "放行端口" },
-              "content": {
-                "body": [
-                  {
-                    "type": "form",
-                    "props": { "actionsAlign": "end" },
-                    "body": [
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "port",
-                          "label": "端口",
-                          "type": "number",
-                          "placeholder": "8080"
-                        }
-                      },
-                      {
-                        "type": "select",
-                        "props": {
-                          "name": "protocol",
-                          "label": "协议",
-                          "defaultValue": "tcp",
-                          "items": [
-                            { "title": "TCP", "value": "tcp" },
-                            { "title": "UDP", "value": "udp" },
-                            { "title": "TCP + UDP", "value": "both" }
-                          ]
-                        }
-                      }
-                    ],
-                    "content": {
-                      "actions": [
-                        {
-                          "type": "button",
-                          "props": { "text": "放行", "color": "primary" },
-                          "onEvent": {
-                            "click": {
-                              "actions": [
+              "type": "button",
+              "props": { "text": "放行端口", "variant": "tonal", "color": "primary" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "dialog",
+                      "props": { "title": "放行端口", "width": 480 },
+                      "content": {
+                        "body": [
+                          {
+                            "type": "form",
+                            "props": {},
+                            "onEvent": {
+                              "submit": [
                                 {
                                   "type": "skiffPluginRpc",
                                   "props": {
                                     "method": "port.allow",
-                                    "params": {
-                                      "port": "${port}",
-                                      "protocol": "${protocol}"
-                                    }
+                                    "params": { "port": "${port}", "protocol": "${protocol}" }
                                   }
                                 }
                               ]
-                            }
+                            },
+                            "body": [
+                              {
+                                "type": "input-text",
+                                "props": {
+                                  "name": "port",
+                                  "label": "端口",
+                                  "type": "number",
+                                  "placeholder": "8080",
+                                  "required": true
+                                }
+                              },
+                              {
+                                "type": "select",
+                                "props": {
+                                  "name": "protocol",
+                                  "label": "协议",
+                                  "defaultValue": "tcp",
+                                  "items": [
+                                    { "title": "TCP", "value": "tcp" },
+                                    { "title": "UDP", "value": "udp" },
+                                    { "title": "TCP + UDP", "value": "both" }
+                                  ]
+                                }
+                              }
+                            ]
                           }
-                        }
-                      ]
+                        ],
+                        "footer": [
+                          { "type": "button", "props": { "text": "重置", "variant": "text" }, "onEvent": { "click": { "actions": [ { "type": "reset" } ] } } },
+                          { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "onEvent": { "click": { "actions": [ { "type": "close" } ] } } },
+                          { "type": "button", "props": { "text": "放行", "color": "primary" }, "onEvent": { "click": { "actions": [ { "type": "submit" } ] } } }
+                        ]
+                      }
                     }
-                  }
-                ]
+                  ]
+                }
               }
             },
             {
-              "type": "card",
-              "props": { "title": "自定义规则" },
-              "content": {
-                "body": [
-                  {
-                    "type": "form",
-                    "props": { "actionsAlign": "end" },
-                    "body": [
-                      {
-                        "type": "select",
-                        "props": {
-                          "name": "action",
-                          "label": "动作",
-                          "defaultValue": "accept",
-                          "items": [
-                            { "title": "放行", "value": "accept" },
-                            { "title": "拦截", "value": "drop" }
-                          ]
-                        }
-                      },
-                      {
-                        "type": "select",
-                        "props": {
-                          "name": "protocol",
-                          "label": "协议",
-                          "defaultValue": "tcp",
-                          "items": [
-                            { "title": "TCP", "value": "tcp" },
-                            { "title": "UDP", "value": "udp" },
-                            { "title": "全部", "value": "all" }
-                          ]
-                        }
-                      },
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "port",
-                          "label": "端口（可选）",
-                          "type": "number",
-                          "placeholder": "协议为「全部」时不要填端口"
-                        }
-                      },
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "source",
-                          "label": "来源 CIDR（可选）",
-                          "placeholder": "10.0.0.0/8"
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "props": { "text": "端口与来源至少填一个；协议为「全部」时不能指定端口。" }
-                      }
-                    ],
-                    "content": {
-                      "actions": [
-                        {
-                          "type": "button",
-                          "props": { "text": "添加规则", "color": "primary" },
-                          "onEvent": {
-                            "click": {
-                              "actions": [
+              "type": "button",
+              "props": { "text": "自定义规则", "variant": "tonal" },
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "dialog",
+                      "props": { "title": "自定义规则", "width": 560 },
+                      "content": {
+                        "body": [
+                          {
+                            "type": "form",
+                            "props": {},
+                            "onEvent": {
+                              "submit": [
                                 {
                                   "type": "skiffPluginRpc",
                                   "props": {
@@ -193,13 +148,66 @@
                                   }
                                 }
                               ]
-                            }
+                            },
+                            "body": [
+                              {
+                                "type": "select",
+                                "props": {
+                                  "name": "action",
+                                  "label": "动作",
+                                  "defaultValue": "accept",
+                                  "items": [
+                                    { "title": "放行", "value": "accept" },
+                                    { "title": "拦截", "value": "drop" }
+                                  ]
+                                }
+                              },
+                              {
+                                "type": "select",
+                                "props": {
+                                  "name": "protocol",
+                                  "label": "协议",
+                                  "defaultValue": "tcp",
+                                  "items": [
+                                    { "title": "TCP", "value": "tcp" },
+                                    { "title": "UDP", "value": "udp" },
+                                    { "title": "全部", "value": "all" }
+                                  ]
+                                }
+                              },
+                              {
+                                "type": "input-text",
+                                "props": {
+                                  "name": "port",
+                                  "label": "端口（可选）",
+                                  "type": "number",
+                                  "placeholder": "协议为「全部」时不要填端口"
+                                }
+                              },
+                              {
+                                "type": "input-text",
+                                "props": {
+                                  "name": "source",
+                                  "label": "来源 CIDR（可选）",
+                                  "placeholder": "10.0.0.0/8"
+                                }
+                              },
+                              {
+                                "type": "text",
+                                "props": { "text": "端口与来源至少填一个；协议为「全部」时不能指定端口。" }
+                              }
+                            ]
                           }
-                        }
-                      ]
+                        ],
+                        "footer": [
+                          { "type": "button", "props": { "text": "重置", "variant": "text" }, "onEvent": { "click": { "actions": [ { "type": "reset" } ] } } },
+                          { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "onEvent": { "click": { "actions": [ { "type": "close" } ] } } },
+                          { "type": "button", "props": { "text": "添加规则", "color": "primary" }, "onEvent": { "click": { "actions": [ { "type": "submit" } ] } } }
+                        ]
+                      }
                     }
-                  }
-                ]
+                  ]
+                }
               }
             }
           ]

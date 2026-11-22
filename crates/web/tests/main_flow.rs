@@ -6295,6 +6295,8 @@ fn budding_boot_a_form_writes_are_declarative() {
         "\"type\": \"request\"",
         "\"component\": \"containers-table\"",
         "\"url\": \"${prefix}/docker/containers\"",
+        "dialog_form_button",
+        "container_create_fields",
     ] {
         assert!(containers.contains(needle), "容器动作链缺失：{needle}");
     }
@@ -6446,11 +6448,8 @@ fn budding_boot_docker_actions_map_to_resource_endpoints() {
             vec!["/ui/v1/volumes", "/ui/v1/volumes/${id}/remove"],
         ),
         (
-            include_str!("../static/budding/pages/docker-container-new.json"),
-            vec![
-                "/ui/v1/containers",
-                "\"type\": \"skiffDockerWrite\", \"props\": { \"op\": \"create\" }",
-            ],
+            include_str!("../src/handlers/ui/containers_page.rs"),
+            vec!["{API_BASE}/containers", "skiffDockerWrite"],
         ),
         (
             include_str!("../src/handlers/ui/settings_page.rs"),

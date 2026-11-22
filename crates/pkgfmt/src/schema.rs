@@ -47,9 +47,40 @@ pub const NODE_TYPES: &[&str] = &[
     "button",
 ];
 
-/// 允许的动作类型。写操作只能经 `skiffPluginRpc`；`submit` 只能出现在表单里；
-/// 页内跳转只能经 `skiffPluginView`（宿主持有入口前缀与插件 id）。
-pub const ACTION_TYPES: &[&str] = &["skiffPluginRpc", "skiffPluginView", "submit"];
+/// 允许的动作类型。写操作只能经 `skiffPluginRpc`；`submit` / `reset` 只能出现在
+/// 表单提交事件或图层页脚（表单解析口径由渲染器统一处理）；页内跳转只能经
+/// `skiffPluginView`（宿主持有入口前缀与插件 id）；`dialog` / `close` 只做呈现，
+/// 不携带网络能力。
+pub const ACTION_TYPES: &[&str] = &[
+    "skiffPluginRpc",
+    "skiffPluginView",
+    "submit",
+    "reset",
+    "close",
+    "dialog",
+];
+
+/// `dialog` 动作允许的 props：与上游 `catalog.json` 的图层参数一致。
+/// 刻意不含 `api` / `url`，schema 仍然不能借弹窗发起请求。
+const DIALOG_PROPS: &[&str] = &[
+    "title",
+    "data",
+    "overlay",
+    "showCloseButton",
+    "closeOnOutside",
+    "closeOnMask",
+    "closeOnEsc",
+    "preset",
+    "width",
+    "size",
+    "height",
+];
+
+/// 校验上下文：只影响 `submit` 的允许范围。
+#[derive(Clone, Copy, Default)]
+struct Ctx {
+    layer_footer: bool,
+}
 
 /// 禁止出现的 props/节点键：它们能让 schema 自己发请求或注入原始 HTML。
 const FORBIDDEN_KEYS: &[&str] = &["api", "url", "href", "src", "html", "raw", "target"];
@@ -145,8 +176,41 @@ pub fn validate_schema(value: &Value) -> Result<()> {
 
     let page = obj.get("page").ok_or_else(|| invalid("缺少 page"))?;
     let mut budget = SCHEMA_MAX_NODES;
-    validate_node(page, 1, &mut budget)?;
+    validate_node(page, 1, &mut budget, Ctx::default())?;
     Ok(())
+}
+
+/// 渲染前补全：给未声明 `api` 的 form 注入内核 no-op 提交配置。
+///
+/// 插件 schema 禁止出现 `api`（防自带请求），但 1.8.5 起图层页脚的 `submit`
+/// 会走表单提交链，没有 `api` 时会额外弹「表单未配置 api」。这里注入的是内核
+/// 固定值 `sendOn: false`，不会发出任何请求，也不把 URL 控制权交给插件。
+pub fn inject_form_submit_stub(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        if let Some(arr) = value.as_array_mut() {
+            for item in arr {
+                inject_form_submit_stub(item);
+            }
+        }
+        return;
+    };
+    if obj.get("type").and_then(Value::as_str) == Some("form") {
+        let props = obj
+            .entry("props".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(props) = props.as_object_mut() {
+            props.entry("api".to_string()).or_insert_with(|| {
+                serde_json::json!({
+                    "method": "POST",
+                    "url": "/ui/v1/_noop",
+                    "sendOn": false
+                })
+            });
+        }
+    }
+    for child in obj.values_mut() {
+        inject_form_submit_stub(child);
+    }
 }
 
 fn validate_data_source(name: &str, decl: &Value) -> Result<()> {
@@ -184,7 +248,7 @@ fn validate_data_source(name: &str, decl: &Value) -> Result<()> {
     Ok(())
 }
 
-fn validate_node(node: &Value, depth: usize, budget: &mut usize) -> Result<()> {
+fn validate_node(node: &Value, depth: usize, budget: &mut usize, ctx: Ctx) -> Result<()> {
     if depth > SCHEMA_MAX_DEPTH {
         return Err(invalid(format!("节点嵌套超过 {SCHEMA_MAX_DEPTH} 层")));
     }
@@ -216,10 +280,10 @@ fn validate_node(node: &Value, depth: usize, budget: &mut usize) -> Result<()> {
         validate_when(s)?;
     }
     if let Some(props) = obj.get("props") {
-        validate_props(props, depth, budget)?;
+        validate_props(props, depth, budget, ctx)?;
     }
     if let Some(body) = obj.get("body") {
-        validate_nodes(body, depth + 1, budget)?;
+        validate_nodes(body, depth + 1, budget, ctx)?;
     }
     if let Some(content) = obj.get("content") {
         let c = content
@@ -231,33 +295,39 @@ fn validate_node(node: &Value, depth: usize, budget: &mut usize) -> Result<()> {
             }
         }
         if let Some(body) = c.get("body") {
-            validate_nodes(body, depth + 1, budget)?;
+            validate_nodes(body, depth + 1, budget, ctx)?;
         }
         if let Some(actions) = c.get("actions") {
-            validate_nodes(actions, depth + 1, budget)?;
+            validate_nodes(actions, depth + 1, budget, ctx)?;
         }
     }
     if let Some(events) = obj.get("onEvent") {
-        validate_events(events, ty)?;
+        validate_events(events, ty, ctx)?;
     }
     Ok(())
 }
 
-fn validate_nodes(value: &Value, depth: usize, budget: &mut usize) -> Result<()> {
+fn validate_nodes(value: &Value, depth: usize, budget: &mut usize, ctx: Ctx) -> Result<()> {
     let arr = value
         .as_array()
         .ok_or_else(|| invalid("body/content.body/content.actions 必须是数组"))?;
     for node in arr {
-        validate_node(node, depth, budget)?;
+        validate_node(node, depth, budget, ctx)?;
     }
     Ok(())
 }
 
-fn validate_props(props: &Value, depth: usize, budget: &mut usize) -> Result<()> {
-    validate_value(props, depth, budget, 0)
+fn validate_props(props: &Value, depth: usize, budget: &mut usize, ctx: Ctx) -> Result<()> {
+    validate_value(props, depth, budget, 0, ctx)
 }
 
-fn validate_value(value: &Value, depth: usize, budget: &mut usize, nest: usize) -> Result<()> {
+fn validate_value(
+    value: &Value,
+    depth: usize,
+    budget: &mut usize,
+    nest: usize,
+    ctx: Ctx,
+) -> Result<()> {
     if nest > 8 {
         return Err(invalid("props 嵌套过深"));
     }
@@ -266,7 +336,7 @@ fn validate_value(value: &Value, depth: usize, budget: &mut usize, nest: usize) 
         Value::String(s) => validate_string(s),
         Value::Array(arr) => {
             for v in arr {
-                validate_value(v, depth, budget, nest + 1)?;
+                validate_value(v, depth, budget, nest + 1, ctx)?;
             }
             Ok(())
         }
@@ -280,24 +350,24 @@ fn validate_value(value: &Value, depth: usize, budget: &mut usize, nest: usize) 
                 || map.contains_key("content")
                 || map.contains_key("onEvent");
             if looks_node {
-                return validate_node(value, depth + 1, budget);
+                return validate_node(value, depth + 1, budget, ctx);
             }
             for (k, v) in map {
                 if FORBIDDEN_KEYS.contains(&k.as_str()) {
                     return Err(invalid(format!("不允许字段 {k:?}（会绕过 RPC/注入资源）")));
                 }
                 if k == "onEvent" {
-                    validate_events(v, "")?;
+                    validate_events(v, "", ctx)?;
                     continue;
                 }
-                validate_value(v, depth, budget, nest + 1)?;
+                validate_value(v, depth, budget, nest + 1, ctx)?;
             }
             Ok(())
         }
     }
 }
 
-fn validate_events(events: &Value, node_type: &str) -> Result<()> {
+fn validate_events(events: &Value, node_type: &str, ctx: Ctx) -> Result<()> {
     let obj = events
         .as_object()
         .ok_or_else(|| invalid("onEvent 必须是对象"))?;
@@ -310,7 +380,7 @@ fn validate_events(events: &Value, node_type: &str) -> Result<()> {
         }
         let actions = action_list(spec)?;
         for action in actions {
-            validate_action(action, node_type)?;
+            validate_action(action, node_type, ctx)?;
         }
     }
     Ok(())
@@ -333,15 +403,10 @@ fn action_list(spec: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| invalid("事件缺少 actions 数组"))
 }
 
-fn validate_action(action: &Value, node_type: &str) -> Result<()> {
+fn validate_action(action: &Value, node_type: &str, ctx: Ctx) -> Result<()> {
     let obj = action
         .as_object()
         .ok_or_else(|| invalid("动作必须是对象"))?;
-    for key in obj.keys() {
-        if !matches!(key.as_str(), "type" | "props") {
-            return Err(invalid(format!("动作不允许字段 {key:?}")));
-        }
-    }
     let ty = obj
         .get("type")
         .and_then(Value::as_str)
@@ -351,8 +416,46 @@ fn validate_action(action: &Value, node_type: &str) -> Result<()> {
             "不允许的动作 {ty:?}（可选 {ACTION_TYPES:?}）"
         )));
     }
-    if ty == "submit" && node_type != "form" {
-        return Err(invalid("submit 动作只能出现在 form 的提交事件里"));
+    for key in obj.keys() {
+        if matches!(key.as_str(), "type" | "props") {
+            continue;
+        }
+        // 弹窗的内容插槽写在动作顶层（与上游 dialog 契约一致），只此一个例外。
+        if key == "content" && ty == "dialog" {
+            continue;
+        }
+        return Err(invalid(format!("动作不允许字段 {key:?}")));
+    }
+    if ty == "submit" && node_type != "form" && !ctx.layer_footer {
+        return Err(invalid("submit 动作只能出现在 form 的提交事件或图层页脚里"));
+    }
+    if ty == "dialog" {
+        let props = obj
+            .get("props")
+            .and_then(Value::as_object)
+            .ok_or_else(|| invalid("dialog 缺少 props"))?;
+        for key in props.keys() {
+            if !DIALOG_PROPS.contains(&key.as_str()) {
+                return Err(invalid(format!("dialog 不允许字段 {key:?}")));
+            }
+        }
+        if let Some(content) = obj.get("content") {
+            let c = content
+                .as_object()
+                .ok_or_else(|| invalid("dialog.content 必须是对象"))?;
+            for key in c.keys() {
+                if !matches!(key.as_str(), "body" | "footer") {
+                    return Err(invalid(format!("dialog.content 不允许字段 {key:?}")));
+                }
+            }
+            let mut budget = SCHEMA_MAX_NODES;
+            if let Some(body) = c.get("body") {
+                validate_nodes(body, 1, &mut budget, Ctx::default())?;
+            }
+            if let Some(footer) = c.get("footer") {
+                validate_nodes(footer, 1, &mut budget, Ctx { layer_footer: true })?;
+            }
+        }
     }
     if ty == "skiffPluginRpc" {
         let props = obj
@@ -416,7 +519,7 @@ fn validate_action(action: &Value, node_type: &str) -> Result<()> {
     }
     if let Some(props) = obj.get("props") {
         let mut budget = SCHEMA_MAX_NODES;
-        validate_props(props, 0, &mut budget)?;
+        validate_props(props, 0, &mut budget, ctx)?;
     }
     Ok(())
 }
@@ -647,5 +750,83 @@ mod tests {
         assert!(validate_file_name("containers").is_err());
         assert!(validate_file_name("../x.json").is_err());
         assert!(validate_file_name("Containers.json").is_err());
+    }
+
+    #[test]
+    fn accepts_dialog_with_footer_submit() {
+        let mut v = sample();
+        v["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "新建" },
+            "onEvent": { "click": { "actions": [ {
+                "type": "dialog",
+                "props": { "title": "新建", "width": 560 },
+                "content": {
+                    "body": [ {
+                        "type": "form",
+                        "onEvent": { "submit": [ {
+                            "type": "skiffPluginRpc",
+                            "props": { "method": "create", "params": { "name": "${name}" } }
+                        } ] },
+                        "props": {},
+                        "body": [ {
+                            "type": "input-text",
+                            "props": { "name": "name", "label": "名称" }
+                        } ]
+                    } ],
+                    "footer": [
+                        { "type": "button", "props": { "text": "重置" }, "action": { "type": "reset" } },
+                        { "type": "button", "props": { "text": "取消" }, "action": { "type": "close" } },
+                        { "type": "button", "props": { "text": "创建" }, "action": { "type": "submit" } }
+                    ]
+                }
+            } ] } }
+        }));
+        validate_schema(&v).unwrap();
+    }
+
+    #[test]
+    fn dialog_cannot_smuggle_urls_or_submit_outside_footer() {
+        let mut bad = sample();
+        bad["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "打开" },
+            "onEvent": { "click": { "actions": [ {
+                "type": "dialog",
+                "props": { "title": "x", "url": "/evil" },
+                "content": { "body": [] }
+            } ] } }
+        }));
+        assert!(validate_schema(&bad)
+            .unwrap_err()
+            .to_string()
+            .contains("url"));
+
+        let mut bad = sample();
+        bad["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "button",
+            "props": { "text": "提交" },
+            "onEvent": { "click": { "actions": [ { "type": "submit" } ] } }
+        }));
+        assert!(validate_schema(&bad)
+            .unwrap_err()
+            .to_string()
+            .contains("图层页脚"));
+    }
+
+    #[test]
+    fn injects_submit_stub_into_forms_only() {
+        let mut v = sample();
+        v["page"]["body"].as_array_mut().unwrap().push(json!({
+            "type": "form",
+            "props": {},
+            "body": [ { "type": "input-text", "props": { "name": "name" } } ]
+        }));
+        inject_form_submit_stub(&mut v);
+        let form = &v["page"]["body"][1];
+        assert_eq!(form["props"]["api"]["sendOn"], false);
+        assert!(v["page"]["body"][0]
+            .get("props")
+            .is_some_and(|p| p.get("api").is_none()));
     }
 }

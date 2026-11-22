@@ -34,6 +34,147 @@
                   ]
                 }
               }
+            },
+            {
+              "type": "button",
+              "props": { "text": "新建账号", "variant": "tonal", "color": "primary" },
+              "when": "{{data.status.installed}}",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "dialog",
+                      "props": { "title": "新建 FTP 账号", "width": 560 },
+                      "content": {
+                        "body": [
+                          {
+                            "type": "form",
+                            "props": {},
+                            "onEvent": {
+                              "submit": [
+                                {
+                                  "type": "skiffPluginRpc",
+                                  "props": {
+                                    "method": "create",
+                                    "params": {
+                                      "site": "${site}",
+                                      "account": "${account}",
+                                      "password": "${password}"
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "type": "select",
+                                "props": {
+                                  "name": "site",
+                                  "label": "站点",
+                                  "items": "{{data.sites.options}}"
+                                }
+                              },
+                              {
+                                "type": "input-text",
+                                "props": {
+                                  "name": "account",
+                                  "label": "账号名（1–32 位）",
+                                  "placeholder": "deploy",
+                                  "required": true
+                                }
+                              },
+                              {
+                                "type": "input-text",
+                                "props": {
+                                  "name": "password",
+                                  "label": "密码（8–128 字节）",
+                                  "type": "password",
+                                  "autocomplete": "new-password",
+                                  "required": true
+                                }
+                              },
+                              {
+                                "type": "text",
+                                "props": {
+                                  "text": "密码只在提交时经内核传给 pure-pw，不回显、不落日志；请自行核对。"
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "footer": [
+                          { "type": "button", "props": { "text": "重置", "variant": "text" }, "onEvent": { "click": { "actions": [ { "type": "reset" } ] } } },
+                          { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "onEvent": { "click": { "actions": [ { "type": "close" } ] } } },
+                          { "type": "button", "props": { "text": "创建账号", "color": "primary" }, "onEvent": { "click": { "actions": [ { "type": "submit" } ] } } }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "button",
+              "props": { "text": "重置密码", "variant": "tonal" },
+              "when": "{{data.status.installed}}",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "type": "dialog",
+                      "props": { "title": "重置 FTP 密码", "width": 480 },
+                      "content": {
+                        "body": [
+                          {
+                            "type": "form",
+                            "props": {},
+                            "onEvent": {
+                              "submit": [
+                                {
+                                  "type": "skiffPluginRpc",
+                                  "props": {
+                                    "method": "password",
+                                    "params": {
+                                      "login": "${login}",
+                                      "password": "${password}"
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "body": [
+                              {
+                                "type": "select",
+                                "props": {
+                                  "name": "login",
+                                  "label": "账号",
+                                  "defaultValue": "{{query.login}}",
+                                  "items": "{{data.accounts.login_options}}"
+                                }
+                              },
+                              {
+                                "type": "input-text",
+                                "props": {
+                                  "name": "password",
+                                  "label": "新密码（8–128 字节）",
+                                  "type": "password",
+                                  "autocomplete": "new-password",
+                                  "required": true
+                                }
+                              }
+                            ]
+                          }
+                        ],
+                        "footer": [
+                          { "type": "button", "props": { "text": "重置", "variant": "text" }, "onEvent": { "click": { "actions": [ { "type": "reset" } ] } } },
+                          { "type": "button", "props": { "text": "取消", "variant": "outlined" }, "onEvent": { "click": { "actions": [ { "type": "close" } ] } } },
+                          { "type": "button", "props": { "text": "保存密码", "color": "primary" }, "onEvent": { "click": { "actions": [ { "type": "submit" } ] } } }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
             }
           ]
         }
@@ -57,144 +198,6 @@
                 "text": "创建账号前需要先安装并启用 pure-ftpd。"
               },
               "when": "!{{data.status.installed}}"
-            }
-          ]
-        }
-      },
-      {
-        "type": "grid",
-        "props": { "columns": 2, "gap": 16 },
-        "content": {
-          "body": [
-            {
-              "type": "card",
-              "props": { "title": "新建账号" },
-              "content": {
-                "body": [
-                  {
-                    "type": "form",
-                    "props": { "actionsAlign": "end" },
-                    "body": [
-                      {
-                        "type": "select",
-                        "props": {
-                          "name": "site",
-                          "label": "站点",
-                          "items": "{{data.sites.options}}"
-                        }
-                      },
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "account",
-                          "label": "账号名（1–32 位）",
-                          "placeholder": "deploy"
-                        }
-                      },
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "password",
-                          "label": "密码（8–128 字节）",
-                          "type": "password",
-                          "autocomplete": "new-password"
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "props": {
-                          "text": "密码只在提交时经内核传给 pure-pw，不回显、不落日志；本页不再做二次确认，请自行核对。"
-                        }
-                      }
-                    ],
-                    "content": {
-                      "actions": [
-                        {
-                          "type": "button",
-                          "props": { "text": "创建账号", "color": "primary" },
-                          "onEvent": {
-                            "click": {
-                              "actions": [
-                                {
-                                  "type": "skiffPluginRpc",
-                                  "props": {
-                                    "method": "create",
-                                    "params": {
-                                      "site": "${site}",
-                                      "account": "${account}",
-                                      "password": "${password}"
-                                    }
-                                  }
-                                }
-                              ]
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "type": "card",
-              "props": { "title": "重置密码" },
-              "content": {
-                "body": [
-                  {
-                    "type": "form",
-                    "props": { "actionsAlign": "end" },
-                    "body": [
-                      {
-                        "type": "select",
-                        "props": {
-                          "name": "login",
-                          "label": "账号",
-                          "defaultValue": "{{query.login}}",
-                          "items": "{{data.accounts.login_options}}"
-                        }
-                      },
-                      {
-                        "type": "input-text",
-                        "props": {
-                          "name": "password",
-                          "label": "新密码（8–128 字节）",
-                          "type": "password",
-                          "autocomplete": "new-password"
-                        }
-                      },
-                      {
-                        "type": "text",
-                        "props": { "text": "在账号列表点「重置密码」可把账号带到这里的下拉框。" }
-                      }
-                    ],
-                    "content": {
-                      "actions": [
-                        {
-                          "type": "button",
-                          "props": { "text": "保存密码", "color": "primary" },
-                          "onEvent": {
-                            "click": {
-                              "actions": [
-                                {
-                                  "type": "skiffPluginRpc",
-                                  "props": {
-                                    "method": "password",
-                                    "params": {
-                                      "login": "${login}",
-                                      "password": "${password}"
-                                    }
-                                  }
-                                }
-                              ]
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                ]
-              }
             }
           ]
         }

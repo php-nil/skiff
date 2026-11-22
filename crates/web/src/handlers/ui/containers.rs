@@ -502,9 +502,29 @@ pub async fn container_limits_update(
     Ok(resp)
 }
 
+/// `GET /ui/v1/pages/containers-new`：新建容器页骨架（深链落点）。
+///
+/// 字段与列表「新建容器」弹窗共用 `containers_page::container_create_fields`，
+/// 权限与创建动作一致：需要 Docker 生命周期权限。
+pub async fn container_new_page(UiAuthUser(user): UiAuthUser) -> Result<Response, ApiError> {
+    if !user.can(skiff_model::Permission::DockerLifecycle) {
+        return Err(ApiError(AppError::Forbidden(
+            "需要 Docker 生命周期权限".into(),
+        )));
+    }
+    let mut resp = Json(json!({
+        "schema": super::containers_page::container_new_schema()
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
 pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ui/v1/containers", get(containers).post(container_create))
+        .route("/ui/v1/pages/containers-new", get(container_new_page))
         .route("/ui/v1/containers/{id}", get(container_detail))
         .route("/ui/v1/containers/{id}/logs", get(container_logs))
         .route(

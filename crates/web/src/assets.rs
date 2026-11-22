@@ -24,14 +24,14 @@ const CACHE_NO_CACHE: &str = "no-cache";
 /// 入库的 budding 产物版本：文件名与 `crates/web/static/budding/budding-<ver>.min.*` 一致，
 /// 壳页引用与别名映射共用这一个来源（升级时只改这里）。
 ///
-/// 上游 2026-11-21 打包（commit `1121d5`）版本号升到 **1.8.4**（根 `package.json` 1.8.4）。
-/// 本次同步从 `C:\dev\budding\dist\embed` 取完整 bundle，icons 也升到 1.8.4。
+/// 上游 2026-11-22 打包（commit `a3a3c8d`）版本号升到 **1.8.5**（根 `package.json` 1.8.5）。
+/// 本次同步从 `C:\dev\budding\dist\package` / `dist\packs` 取完整 bundle，icons 也升到 1.8.5。
 /// 分包从 `dist/packs/*.mjs` 复制并改名为 `.min.js`（ESM 模块格式，由 `registerPack` 动态 import 加载）。
-pub const BUDDING_VERSION: &str = "1.8.4";
+pub const BUDDING_VERSION: &str = "1.8.5";
 
 /// 入库的包内图标字体版本（`budding-icons-<ver>.min.css` / `.woff2`）。
-/// 随上游主包版本同步升到 1.8.4。
-pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
+/// 随上游主包版本同步升到 1.8.5。
+pub const BUDDING_ICONS_VERSION: &str = "1.8.5";
 
 /// 壳页自有资产（`skiff-shell.css` / `budding-boot.js` / `form-enter-submit.js`）的缓存版本。
 ///
@@ -79,7 +79,10 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 ///   映射，`loadJson` 只剩两行分派（`skiff:page` 与服务端给出的特殊形态）。
 /// v38：写请求动作名随上游 `1120d2` 更正（`ajax` → `request`，旧名无别名）；仅注释
 ///   同步，运行时行为不变，页面 JSON 资产的更正不走壳版本（静态 no-cache）。
-pub const SHELL_VERSION: &str = "40";
+/// v41：上游升 1.8.5（图层页脚可提交本层唯一表单、confirm 支持 warning/alertdialog、
+///   移除 `mount()` 旧入口与 `snackbar` 关闭参数）；壳侧弹窗注册表改读 `content.footer`
+///   的 `submit`，提交失败重开弹窗复用原始 `content`，不再依赖表单 `content.actions`。
+pub const SHELL_VERSION: &str = "41";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
