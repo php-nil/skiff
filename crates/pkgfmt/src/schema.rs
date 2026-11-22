@@ -775,9 +775,12 @@ mod tests {
                         } ]
                     } ],
                     "footer": [
-                        { "type": "button", "props": { "text": "重置" }, "action": { "type": "reset" } },
-                        { "type": "button", "props": { "text": "取消" }, "action": { "type": "close" } },
-                        { "type": "button", "props": { "text": "创建" }, "action": { "type": "submit" } }
+                        { "type": "button", "props": { "text": "重置" },
+                          "onEvent": { "click": { "actions": [ { "type": "reset" } ] } } },
+                        { "type": "button", "props": { "text": "取消" },
+                          "onEvent": { "click": { "actions": [ { "type": "close" } ] } } },
+                        { "type": "button", "props": { "text": "创建" },
+                          "onEvent": { "click": { "actions": [ { "type": "submit" } ] } } }
                     ]
                 }
             } ] } }
