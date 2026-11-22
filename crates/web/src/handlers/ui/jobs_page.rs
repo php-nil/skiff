@@ -1,7 +1,7 @@
 //! 作业中心与作业详情的 UI Schema（服务端产出）。
 //!
 //! 只读为主（取消/重试在详情页）：结构随 `can_cancel` / `can_retry` / 步骤与日志
-//! 内容变化，静态资产表达不了，故由服务端出 JSON。写操作仍走宿主 `skiffJobWrite`。
+//! 内容变化，静态资产表达不了，故由服务端出 JSON。取消 / 重试由声明式动作链完成。
 
 use serde_json::{json, Value};
 
@@ -241,7 +241,26 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
                 },
                 "onEvent": {
                     "click": {
-                        "actions": [{ "type": "skiffJobWrite", "props": { "op": "cancel", "id": id } }]
+                        "actions": [
+                            {
+                                "type": "confirm",
+                                "props": {
+                                    "title": "取消作业",
+                                    "content": "确认请求取消该作业？已在执行中的步骤可能仍需等待收尾。"
+                                }
+                            },
+                            {
+                                "type": "request",
+                                "props": {
+                                    "api": {
+                                        "method": "POST",
+                                        "url": format!("{}/jobs/{}/cancel", schema_kit::API_BASE, crate::util::encode_uri_component(&id))
+                                    },
+                                    "messages": { "success": "已请求取消", "error": "取消作业失败" }
+                                }
+                            },
+                            { "type": "skiffReload" }
+                        ]
                     }
                 }
             }));
@@ -252,7 +271,23 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
                 "props": { "text": "重试作业", "color": "primary" },
                 "onEvent": {
                     "click": {
-                        "actions": [{ "type": "skiffJobWrite", "props": { "op": "retry", "id": id } }]
+                        "actions": [
+                            {
+                                "type": "request",
+                                "props": {
+                                    "api": {
+                                        "method": "POST",
+                                        "url": format!("{}/jobs/{}/retry", schema_kit::API_BASE, crate::util::encode_uri_component(&id))
+                                    },
+                                    "assign": "job",
+                                    "messages": { "success": "已创建重试作业", "error": "重试失败" }
+                                }
+                            },
+                            {
+                                "type": "navigate",
+                                "props": { "url": "${prefix}/jobs/${job.data.id}" }
+                            }
+                        ]
                     }
                 }
             }));
@@ -280,7 +315,7 @@ pub fn job_detail_schema(data: &Value, prefix: &str) -> Value {
 /// 作业日志页：聚合后的只读文本 + 返回 / 刷新入口。
 ///
 /// 数据面（按 `after` 游标分批拉取、最多 10 页）在服务端完成，前端只渲染；
-/// 刷新走宿主 `skiffLogReload`（重新拉取本页 Schema）。
+/// 刷新走宿主动作 `skiffReload`（重新拉取本页 Schema）。
 pub fn job_logs_schema(
     job_id: &str,
     prefix: &str,
@@ -298,7 +333,7 @@ pub fn job_logs_schema(
                     crate::util::encode_uri_component(job_id)
                 ),
             ),
-            schema_kit::action_button("刷新", json!({ "type": "skiffLogReload" }), "text"),
+            schema_kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
         ],
     )];
     if lines.is_empty() {

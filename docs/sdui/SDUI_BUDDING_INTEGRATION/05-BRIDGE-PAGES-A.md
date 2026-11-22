@@ -177,7 +177,7 @@
 
 **渲染映射**
 
-- 列表：骨架由 `handlers/ui/containers_page.rs` 在 `?with_schema=true` 时产出（`?filter=error` 与表格 `source.params` 同源，计数口径一致）；`table`（`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行操作 = 详情 / 启停（`skiffContainerToggle`）/ 重启 / 删除（确认走宿主图层）。「全部 / 仅异常」是同 path 换 query，走 `skiffQueryNav` + 显式 `refreshPage`。
+- 列表：骨架由 `handlers/ui/containers_page.rs` 在 `?with_schema=true` 时产出（`?filter=error` 与表格 `source.params` 同源，计数口径一致）；`table`（`id=containers-table`、`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行操作 = 详情 / 启停（`condition` 按 `state.code` 二选一）/ 重启 / 删除（`confirm` → `request` → 表格 `reload`）。「全部 / 仅异常」是同 path 换 query，走 `skiffQueryNav` + 显式 `refreshPage`。
 - 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单。强制终止（`kill`）只给卡死容器。动作成功后刷新当前页，删除后回列表。
 - 新建容器：`/{p}/docker/containers/new` 隐藏路由，布局读静态资产 `pages/docker-container-new.json`（自取数 + `skiffDockerWrite` 声明式提交），创建成功后跳转 `/{p}/docker/containers/{id}`，失败展示统一错误信封文案。
 - **D10 翻页**同 5.8：列表由表格 `source` 按 `next_cursor` 追加，底部「加载更多」。

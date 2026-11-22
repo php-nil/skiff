@@ -1,6 +1,6 @@
 //! 插件中心与插件信息页的 Schema。
 
-use super::schema_kit as kit;
+use super::schema_kit::{self as kit, API_BASE};
 use serde_json::{json, Value};
 
 fn text<'a>(v: &'a Value, pointer: &str) -> &'a str {
@@ -122,33 +122,75 @@ fn plugin_card(p: &Value, can_admin: bool, include_delete: bool) -> Value {
         ),
     ];
     if can_admin {
-        body.push(kit::flex(8, plugin_actions(p, include_delete)));
+        body.push(kit::flex(8, plugin_actions(p, include_delete, false)));
     }
     json!({ "type": "card", "content": { "body": body } })
 }
 
-fn plugin_actions(p: &Value, include_delete: bool) -> Vec<Value> {
+/// 插件写操作：启停与卸载都由 `request` 声明；卸载后的落点按页面区分
+/// （列表页重取本页，详情页回到插件中心）。
+fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
     let id = text(p, "/id");
+    let enc_id = enc(id);
     let mut actions = vec![kit::action_button(
         if flag(p, "/enabled") {
             "停用插件"
         } else {
             "启用插件"
         },
-        json!({ "type": "skiffPluginToggle", "props": { "id": id } }),
+        json!({ "actions": [
+            {
+                "type": "request",
+                "props": {
+                    "api": {
+                        "method": "POST",
+                        "url": format!("{API_BASE}/plugins/{enc_id}/toggle")
+                    },
+                    "messages": { "success": "插件状态已更新", "error": "插件启停失败" }
+                }
+            },
+            { "type": "skiffReload" }
+        ] }),
         "tonal",
     )];
     if include_delete {
-        actions.push(kit::action_button(
-            "卸载（保留数据）",
-            json!({ "type": "skiffPluginDelete", "props": { "id": id, "delete_data": false } }),
-            "tonal",
-        ));
-        actions.push(kit::action_button(
-            "卸载并删除数据",
-            json!({ "type": "skiffPluginDelete", "props": { "id": id, "delete_data": true } }),
-            "",
-        ));
+        for (label, delete_data, variant) in [
+            ("卸载（保留数据）", false, "tonal"),
+            ("卸载并删除数据", true, ""),
+        ] {
+            let content = if delete_data {
+                format!("确认卸载 {id} 并删除其数据目录？此操作不可恢复。")
+            } else {
+                format!("确认卸载 {id}？数据目录会保留。")
+            };
+            let mut chain = vec![
+                json!({
+                    "type": "confirm",
+                    "props": { "title": "卸载插件", "content": content, "color": "error" }
+                }),
+                json!({
+                    "type": "request",
+                    "props": {
+                        "api": {
+                            "method": "POST",
+                            "url": format!("{API_BASE}/plugins/{enc_id}/delete"),
+                            "data": { "delete_data": delete_data }
+                        },
+                        "messages": { "success": "插件已卸载", "error": "卸载失败" }
+                    }
+                }),
+            ];
+            chain.push(if detail {
+                json!({ "type": "navigate", "props": { "url": "${prefix}/plugins/installed" } })
+            } else {
+                json!({ "type": "skiffReload" })
+            });
+            actions.push(kit::action_button(
+                label,
+                json!({ "actions": chain }),
+                variant,
+            ));
+        }
     }
     actions
 }
@@ -270,7 +312,7 @@ pub fn plugin_info_schema(data: &Value) -> Value {
     }
 
     if flag(data, "/can_admin") {
-        body.push(kit::flex(8, plugin_actions(&p, true)));
+        body.push(kit::flex(8, plugin_actions(&p, true, true)));
     }
     body.push(kit::link("返回插件中心", "${prefix}/plugins/installed"));
 

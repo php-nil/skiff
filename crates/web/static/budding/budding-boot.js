@@ -237,210 +237,6 @@
     return Promise.resolve(window.confirm(content ? title + '\n\n' + content : title));
   }
 
-  // 容器启停/重启/删除/强制终止：走 /ui/v1 同策略、同审计的 JSON 端点。
-  function containerAction(args) {
-    var id = args.id;
-    var action = args.action;
-    var name = args.name || id;
-    var guard = Promise.resolve(true);
-    if (action === 'delete') {
-      guard = hostConfirm({
-        title: '删除容器',
-        content: '确认删除容器 ' + name + '？删除后不可恢复，容器内未持久化的数据会丢失。',
-        danger: true
-      });
-    } else if (action === 'kill') {
-      guard = hostConfirm({
-        title: '强制终止容器',
-        content: 'kill 会直接终止 ' + name + ' 内的进程，不等待优雅退出，未落盘的数据可能丢失。',
-        danger: true
-      });
-    }
-    return guard.then(function (ok) {
-      if (!ok) return;
-      return fetch(apiBase + '/containers/' + encodeURIComponent(id) + '/' + action, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          Accept: 'application/json',
-          'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
-        }
-      })
-        .then(function (resp) {
-          return readJson(resp).then(function (body) {
-            return { status: resp.status, body: body };
-          });
-        })
-        .then(function (res) {
-          if (res.status !== 200) {
-            toast(errorMessage(res), 'error');
-            return;
-          }
-          toast(action === 'delete' ? '容器已删除' : '容器操作已提交', 'success');
-          if (action === 'delete') location.href = prefix + '/docker/containers';
-          else location.reload();
-        })
-        .catch(function (error) {
-          toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
-        });
-    });
-  }
-
-  /// 列表行内启停：状态来自当前行，停止/启动共用同一容器动作通道。
-  function containerToggle(args) {
-    var running = String(args.status || '') === 'running';
-    return containerAction({
-      id: args.id,
-      name: args.name,
-      action: running ? 'stop' : 'start'
-    });
-  }
-
-
-  /// 定时任务写操作：切换启停、立即运行、删除（内置任务由后端拒绝删除）。
-  function taskWrite(args) {
-    var op = args.op;
-    var guard =
-      op === 'delete'
-        ? hostConfirm({
-            title: '删除任务',
-            content: '确认删除任务 ' + (args.name || args.id) + '？',
-            danger: true
-          })
-        : Promise.resolve(true);
-    var payload = {};
-    var path = '/tasks/' + encodeURIComponent(args.id) + '/' + op;
-    if (op === 'toggle') {
-      var current = args.enabled === true || args.enabled === 'true';
-      payload = { enabled: !current };
-    }
-    return guard
-      .then(function (ok) {
-        if (!ok) return;
-        return submitJson(path, payload).then(function () {
-          toast(op === 'delete' ? '任务已删除' : '任务已更新', 'success');
-          location.reload();
-        });
-      })
-      .catch(function (error) {
-        toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
-  }
-
-  /// 作业写操作：请求取消、重试；重试成功后跳到新作业详情。
-  function jobWrite(args) {
-    var op = args.op;
-    var guard =
-      op === 'cancel'
-        ? hostConfirm({
-            title: '取消作业',
-            content: '确认请求取消该作业？已在执行中的步骤可能仍需等待收尾。'
-          })
-        : Promise.resolve(true);
-    return guard
-      .then(function (ok) {
-        if (!ok) return;
-        return submitJson('/jobs/' + encodeURIComponent(args.id) + '/' + op, {}).then(function (data) {
-          if (op === 'retry' && data.id) {
-            location.href = prefix + '/jobs/' + encodeURIComponent(data.id);
-            return;
-          }
-          toast((data && data.message) || '操作已提交', 'success');
-          location.reload();
-        });
-      })
-      .catch(function (error) {
-        toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
-  }
-
-  /// 回收站写操作：复用 `/{p}/files/trash/*`（CSRF 与动作权限由既有接口统一执行）。
-  function trashWrite(args) {
-    var op = args.op;
-    if (op === 'refresh') {
-      location.reload();
-      return Promise.resolve();
-    }
-    var base = prefix + '/files/trash/';
-    if (op === 'clear') {
-      return hostConfirm({
-        title: '清空回收站',
-        content: '将永久删除全部条目，且不会进入任何备份。确认清空？',
-        danger: true
-      }).then(function (ok) {
-        if (!ok) return;
-        return postPrefixJson(base + 'clear', {})
-          .then(function (data) {
-            var failed = (data.result && data.result.failed) || [];
-            toast(
-              failed.length
-                ? '已清理部分条目，' + failed.length + ' 项失败：' + failed.join('；')
-                : '已清空回收站',
-              failed.length ? 'warning' : 'success'
-            );
-            location.reload();
-          })
-          .catch(function (error) {
-            toast('清空失败：' + (error && error.message ? error.message : String(error)), 'error');
-          });
-      });
-    }
-    if (op === 'purge') {
-      return hostConfirm({
-        title: '彻底删除',
-        content: '确认彻底删除 ' + (args.path || '该条目') + '？不可恢复。',
-        danger: true
-      }).then(function (ok) {
-        if (!ok) return;
-        return postPrefixJson(base + 'purge', { id: args.id })
-          .then(function () {
-            toast('已彻底删除', 'success');
-            location.reload();
-          })
-          .catch(function (error) {
-            toast(
-              '彻底删除失败：' + (error && error.message ? error.message : String(error)),
-              'error'
-            );
-          });
-      });
-    }
-    if (op === 'restore') {
-      return postPrefixJson(base + 'restore', { id: args.id, overwrite: false })
-        .then(function () {
-          toast('已恢复', 'success');
-          location.reload();
-        })
-        .catch(function (error) {
-          var message = error && error.message ? error.message : String(error);
-          return hostConfirm({
-            title: '覆盖后重试',
-            content: '恢复失败：' + message + '\n\n是否覆盖现有对象后重试？',
-            danger: true
-          }).then(function (ok) {
-            if (!ok) {
-              toast('已取消恢复', 'info');
-              return;
-            }
-            return postPrefixJson(base + 'restore', { id: args.id, overwrite: true })
-              .then(function () {
-                toast('已覆盖恢复', 'success');
-                location.reload();
-              })
-              .catch(function (retryError) {
-                toast(
-                  '恢复失败：' +
-                    (retryError && retryError.message ? retryError.message : String(retryError)),
-                  'error'
-                );
-              });
-          });
-        });
-    }
-    toast('未知的回收站操作：' + op, 'error');
-    return Promise.resolve();
-  }
-
   /// 配额写操作：设置 / 重新统计 / 取消，复用既有 files JSON 接口。
   function quotaWrite(args, ctx) {
     var op = args.op;
@@ -1067,15 +863,10 @@
         upload: uploadFile
       },
       actions: {
-        skiffContainerAction: containerAction,
-        skiffContainerToggle: containerToggle,
         skiffDockerWrite: dockerWrite,
         skiffQueryNav: queryNav,
         skiffSiteWrite: siteWrite,
         skiffSiteToggle: siteToggle,
-        skiffTaskWrite: taskWrite,
-        skiffJobWrite: jobWrite,
-        skiffTrashWrite: trashWrite,
         skiffQuotaWrite: quotaWrite,
         skiffComposeAction: composeAction,
         skiffComposeEdit: composeEdit,
@@ -1121,7 +912,7 @@
         skiffFileExtract: fileExtract,
         skiffLogSwitch: logSwitch,
         skiffLogFilter: logFilter,
-        skiffLogReload: logReload,
+        skiffReload: reloadPage,
         skiffSearch: search,
         skiffTerminalReconnect: function () {
           window.location.reload();
@@ -1129,8 +920,6 @@
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
         skiffUpgradeDownload: storeUpgradeDownload,
-        skiffPluginToggle: pluginToggle,
-        skiffPluginDelete: pluginDelete,
         skiffPluginRpc: pluginRpcAction,
         skiffPluginView: pluginViewAction,
         skiffLogout: function () {
@@ -2490,7 +2279,8 @@
     );
   }
 
-  function logReload() {
+  /// 整页重取：页面骨架与数据都由服务端按当前地址重新产出。
+  function reloadPage() {
     window.location.reload();
   }
 
@@ -2562,72 +2352,6 @@
 
 
 
-
-  function pluginToggle(args) {
-    var id = args.id;
-    return fetch(apiBase + '/plugins/' + encodeURIComponent(id) + '/toggle', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
-      }
-    })
-      .then(function (resp) {
-        return readJson(resp).then(function (body) {
-          return { status: resp.status, body: body };
-        });
-      })
-      .then(function (res) {
-        if (res.status !== 200) {
-          toast(errorMessage(res), 'error');
-          return;
-        }
-        toast(res.body.data.enabled ? '插件已启用' : '插件已停用', 'success');
-        location.reload();
-      })
-      .catch(function (error) {
-        toast('操作失败：' + (error && error.message ? error.message : String(error)), 'error');
-      });
-  }
-
-  function pluginDelete(args) {
-    var id = args.id;
-    var deleteData = args.delete_data === true;
-    var text = deleteData
-      ? '确认卸载 ' + id + ' 并删除其数据目录？此操作不可恢复。'
-      : '确认卸载 ' + id + '？数据目录会保留。';
-    return hostConfirm({ title: '卸载插件', content: text, danger: true }).then(function (ok) {
-      if (!ok) return;
-      return fetch(apiBase + '/plugins/' + encodeURIComponent(id) + '/delete', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'x-csrf-token': (sessionState && sessionState.csrf_token) || ''
-        },
-        body: JSON.stringify({ delete_data: deleteData })
-      })
-        .then(function (resp) {
-          return readJson(resp).then(function (body) {
-            return { status: resp.status, body: body };
-          });
-        })
-        .then(function (res) {
-          if (res.status !== 200) {
-            toast(errorMessage(res), 'error');
-            return;
-          }
-          location.assign(
-            (res.body && res.body.data && res.body.data.redirect_to) || prefix + '/plugins/installed'
-          );
-        })
-        .catch(function (error) {
-          toast('卸载失败：' + (error && error.message ? error.message : String(error)), 'error');
-        });
-    });
-  }
 
   // 商店：目录只读快照 + 插件安装（下载验签后二次确认）。
   var pendingInstall = null;

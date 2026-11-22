@@ -132,6 +132,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 
 > 表格不会因 `request` 自动刷新；需要 `invoke` 组件的 `reload`，组件必须在 Schema 上声明 `id`。
 > 需要「输入指定文本才能删除」时，直接给 `confirm` 传 `requireText`（如 `requireText: "${record.domain}"`），不需要 `dialog` + `form` 自拼。
+> `request` 失败时：`messages.error`（或 `errorMessage`）存在则用它提示，并调用 `markFailurePrompted` 标记该错误，节点级兜底提示不再叠加。需要自定义收尾（如二次确认后重试）时，把 `request` 包进 `{ "actions": [...], "onError": [...] }` 动作组，`onError` 会接管错误；`ActionCancelled` 仍中止整条链。
 
 ## 3. 表单与校验
 
@@ -151,6 +152,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 要点：
 
 - 服务端字段错误用表单指令 `invoke setErrors` 回填：`args.errors` 按字段 `name` 写入，`__form__` 落表单级；值变更或提交启动时先到先清，`focus` 可聚焦首个错误。不要给字段加 `error` 入参。
+- `errorMessage` 缺省取异常 `message`，服务端错误信封的文案因此可直接透传到表单提示。
 - `submit` / `reset` 只在 form 内有效；字段值实时同步，动作里可用 `${字段名}` 读取。
 - 校验错误只取第一条；需要多条规则时用 `rules.pattern` 数组，每条可带独立 `message`。
 - `input-text` 的 `type`（含 `password`）与 `autocomplete` 都已原生透传，登录口令框不再需要 DOM 桥接。

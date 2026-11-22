@@ -94,7 +94,7 @@ pub fn site_logs_schema(
             kit::link("返回站点详情", format!("${{prefix}}/sites/{site_id}")),
             switch("访问日志", "access"),
             switch("错误日志", "error"),
-            kit::action_button("刷新", json!({ "type": "skiffLogReload" }), "text"),
+            kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
         ],
     )];
 

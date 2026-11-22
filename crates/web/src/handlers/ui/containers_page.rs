@@ -100,6 +100,7 @@ pub fn containers_schema(
             ..Default::default()
         },
     );
+    table["id"] = json!("containers-table");
     table["props"]["actionsLabel"] = json!("操作");
     table["props"]["rowActions"] = json!([
         kit::row_button(
@@ -107,22 +108,49 @@ pub fn containers_schema(
             json!({ "type": "navigate", "props": { "url": "${prefix}/docker/containers/${id}" } }),
             "primary"
         ),
+        // 启停按行内状态二选一：行作用域直接读 `state.code`，与后端动作白名单同源。
         kit::row_button(
             "启停",
-            json!({ "type": "skiffContainerToggle",
-                   "props": { "id": "${id}", "name": "${name}", "status": "${state.code}" } }),
+            json!({
+                "actions": [{
+                    "type": "condition",
+                    "props": {
+                        "when": "${state.code === 'running'}",
+                        "actions": [
+                            container_request("${id}", "stop", "容器已停止", "停止容器失败"),
+                            container_reload()
+                        ],
+                        "elseActions": [
+                            container_request("${id}", "start", "容器已启动", "启动容器失败"),
+                            container_reload()
+                        ]
+                    }
+                }]
+            }),
             ""
         ),
         kit::row_button(
             "重启",
-            json!({ "type": "skiffContainerAction",
-                   "props": { "id": "${id}", "name": "${name}", "action": "restart" } }),
+            json!({ "actions": [
+                container_request("${id}", "restart", "容器已重启", "重启容器失败"),
+                container_reload()
+            ] }),
             "primary"
         ),
         kit::row_button(
             "删除",
-            json!({ "type": "skiffContainerAction",
-                   "props": { "id": "${id}", "name": "${name}", "action": "delete" } }),
+            json!({ "actions": [
+                {
+                    "type": "confirm",
+                    "props": {
+                        "title": "删除容器",
+                        "content": "确认删除 ${name}？删除后不可恢复，容器内未持久化的数据会丢失。",
+                        "color": "error"
+                    }
+                },
+                container_request("${id}", "delete", "容器已删除", "删除容器失败"),
+                container_reload()
+            ] }),
             "danger"
         )
     ]);
@@ -325,12 +353,66 @@ fn limits_form(container_id: &str, data: &ContainerDetailData) -> Value {
 }
 
 fn container_op(text: &str, action: &str, c: &super::dto::ContainerItem) -> Value {
-    kit::action_button(
-        text,
-        json!({ "type": "skiffContainerAction",
-               "props": { "id": c.id, "name": c.name, "action": action } }),
-        "tonal",
-    )
+    let id = enc(&c.id);
+    let mut actions = Vec::new();
+    if action == "kill" {
+        actions.push(json!({
+            "type": "confirm",
+            "props": {
+                "title": "强制终止容器",
+                "content": format!(
+                    "kill 会直接终止 {} 内的进程，不等待优雅退出，未落盘的数据可能丢失。",
+                    c.name
+                ),
+                "color": "error"
+            }
+        }));
+    }
+    let (success, error) = match action {
+        "restart" => ("容器已重启", "重启容器失败"),
+        "stop" => ("容器已停止", "停止容器失败"),
+        "start" => ("容器已启动", "启动容器失败"),
+        "kill" => ("容器已强制终止", "强制终止失败"),
+        "delete" => ("容器已删除", "删除容器失败"),
+        _ => ("容器操作已提交", "容器操作失败"),
+    };
+    actions.push(container_request(&id, action, success, error));
+    if action == "delete" {
+        actions.push(json!({
+            "type": "navigate",
+            "props": { "url": "${prefix}/docker/containers" }
+        }));
+    } else {
+        actions.push(reload_page());
+    }
+    kit::action_button(text, json!({ "actions": actions }), "tonal")
+}
+
+/// 容器写请求：接口统一是 `POST /containers/{id}/{action}`，确认与提示由动作链声明。
+fn container_request(id: &str, action: &str, success: &str, error: &str) -> Value {
+    let mut props = json!({
+        "api": {
+            "method": "POST",
+            "url": format!("{API_BASE}/containers/{id}/{action}")
+        }
+    });
+    if !success.is_empty() {
+        props["messages"] = json!({ "success": success, "error": error });
+    }
+    json!({ "type": "request", "props": props })
+}
+
+/// 列表行删除后刷新本表格；组件 `id` 由本页表格声明，不依赖自动刷新。
+fn container_reload() -> Value {
+    json!({
+        "type": "invoke",
+        "props": { "component": "containers-table", "command": "reload" }
+    })
+}
+
+/// 详情页没有可重载的列表，写操作后整页重取（新状态由服务端重新计算）。
+fn reload_page() -> Value {
+    json!({ "type": "skiffReload" })
 }
 
 /// 容器日志：尾部快照 + 刷新，无实时跟随。
@@ -349,7 +431,7 @@ pub fn container_logs_schema(
                 "返回容器详情",
                 format!("${{prefix}}/docker/containers/{}", enc(container_id)),
             ),
-            kit::action_button("刷新", json!({ "type": "skiffLogReload" }), "text"),
+            kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
         ],
     )];
     if lines.is_empty() {

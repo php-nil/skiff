@@ -6180,18 +6180,24 @@ fn budding_boot_p1_confirms_and_kill_entry_present() {
         "容器详情缺少强制终止入口"
     );
     for needle in [
-        "title: '强制终止容器'",
-        // 站点破坏性动作确认。
+        // 站点破坏性动作确认（站点仍是宿主动作，B 形待迁）。
         "title: '停止站点'",
         "title: '关闭 HTTPS'",
         "title: '移除附加域名'",
         "title: '批量停止站点'",
-        // 设置与插件侧确认。
+        // 设置侧确认。
         "title: '撤销公钥'",
-        "title: '卸载插件'",
         "title: '恢复默认菜单'",
     ] {
         assert!(js.contains(needle), "P1 确认/入口缺失：{needle}");
+    }
+    // 容器强制终止与插件卸载已声明化，确认文案随页面迁到服务端 schema。
+    let plugins_page = include_str!("../src/handlers/ui/plugins_page.rs");
+    for (source, needle) in [
+        (containers_page, "\"title\": \"强制终止容器\""),
+        (plugins_page, "\"title\": \"卸载插件\""),
+    ] {
+        assert!(source.contains(needle), "P1 确认/入口缺失：{needle}");
     }
     // 表单就地数值校验：字段随页面迁到服务端 schema。
     for (source, needle) in [
@@ -6236,28 +6242,100 @@ fn budding_boot_p2_row_actions_present() {
     let js = include_str!("../static/budding/budding-boot.js");
     let site_page = include_str!("../src/handlers/ui/site_page.rs");
     let containers_page = include_str!("../src/handlers/ui/containers_page.rs");
-    // JS 里注册的自定义动作（内核服务端 schema 化后，props 在 Rust 里拼装）。
-    for needle in [
-        "skiffSiteToggle: siteToggle",
-        "skiffContainerToggle: containerToggle",
-    ] {
-        assert!(js.contains(needle), "P2 行内入口缺失（JS）：{needle}");
-    }
-    // 行内启停按钮的 props 由服务端页面模块生成。
+    // JS 里注册的自定义动作：站点启停仍保留（B 形待迁）。
     assert!(
-        containers_page
-            .contains("\"启停\",\n            json!({ \"type\": \"skiffContainerToggle\""),
-        "容器列表服务端 schema 缺少启停按钮"
+        js.contains("skiffSiteToggle: siteToggle"),
+        "站点行内启停入口缺失（JS）"
+    );
+    // 容器行内启停已声明化：状态分支 + 请求 + 表格刷新都在服务端 schema。
+    assert!(
+        containers_page.contains("\"when\": \"${state.code === 'running'}\""),
+        "容器列表缺少启停状态分支"
     );
     assert!(
-        containers_page
-            .contains("\"props\": { \"id\": \"${id}\", \"name\": \"${name}\", \"status\": \"${state.code}\" }"),
-        "容器列表服务端 schema 缺失 skiffContainerToggle props"
+        containers_page.contains("\"component\": \"containers-table\""),
+        "容器列表缺少表格 reload 目标"
     );
     assert!(
         site_page.contains("\"props\": { \"id\": \"${id}\", \"domain\": \"${domain}\", \"status\": \"${status.code}\" }"),
         "站点列表服务端 schema 缺失 skiffSiteToggle props"
     );
+}
+
+/// 第一批 A 形写动作已全部声明化：确认 / 请求 / 刷新（或跳转）由服务端 Schema
+/// 的动作链表达，壳脚本不再保留对应的命令式写请求。
+#[test]
+fn budding_boot_a_form_writes_are_declarative() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for banned in [
+        "function containerAction(",
+        "function containerToggle(",
+        "function taskWrite(",
+        "function jobWrite(",
+        "function trashWrite(",
+        "function pluginToggle(",
+        "function pluginDelete(",
+        "skiffContainerAction:",
+        "skiffContainerToggle:",
+        "skiffTaskWrite:",
+        "skiffJobWrite:",
+        "skiffTrashWrite:",
+        "skiffPluginToggle:",
+        "skiffPluginDelete:",
+    ] {
+        assert!(!js.contains(banned), "写动作体应已迁出脚本：{banned}");
+    }
+    // 详情页没有可重载的列表，写操作后统一整页重取。
+    assert!(js.contains("skiffReload: reloadPage"), "整页重取动作缺失");
+
+    let containers = include_str!("../src/handlers/ui/containers_page.rs");
+    for needle in [
+        "\"type\": \"condition\"",
+        "\"type\": \"confirm\"",
+        "\"type\": \"request\"",
+        "\"component\": \"containers-table\"",
+        "\"url\": \"${prefix}/docker/containers\"",
+    ] {
+        assert!(containers.contains(needle), "容器动作链缺失：{needle}");
+    }
+
+    let tasks = include_str!("../src/handlers/ui/tasks_page.rs");
+    for needle in [
+        "\"enabled\": \"${!enabled}\"",
+        "\"component\": \"tasks-table\"",
+        "\"type\": \"navigate\"",
+    ] {
+        assert!(tasks.contains(needle), "任务动作链缺失：{needle}");
+    }
+
+    let jobs = include_str!("../src/handlers/ui/jobs_page.rs");
+    for needle in [
+        "\"assign\": \"job\"",
+        "\"url\": \"${prefix}/jobs/${job.data.id}\"",
+        "\"title\": \"取消作业\"",
+    ] {
+        assert!(jobs.contains(needle), "作业动作链缺失：{needle}");
+    }
+
+    let plugins = include_str!("../src/handlers/ui/plugins_page.rs");
+    for needle in [
+        "/plugins/{enc_id}/toggle",
+        "/plugins/{enc_id}/delete",
+        "\"delete_data\": delete_data",
+    ] {
+        assert!(plugins.contains(needle), "插件动作链缺失：{needle}");
+    }
+
+    let files = include_str!("../src/handlers/ui/files_page.rs");
+    for needle in [
+        "${{prefix}}/files/trash/{op}",
+        "\"overwrite\": true",
+        "\"onError\"",
+        "\"path\": \"${root}\"",
+    ] {
+        assert!(files.contains(needle), "回收站动作链缺失：{needle}");
+    }
+    assert!(!files.contains("skiffTrashWrite"), "回收站不应再有宿主动作");
 }
 
 /// 动作注册表键去重：`skiffDockerWrite` 曾与设置保存动作共用同名键，
@@ -6446,7 +6524,7 @@ fn budding_boot_job_logs_page_comes_from_server() {
     for needle in [
         "pub fn job_logs_schema(",
         "仅加载前 10 页，可刷新继续",
-        "\"type\": \"skiffLogReload\"",
+        "\"type\": \"skiffReload\"",
     ] {
         assert!(page.contains(needle), "作业日志页缺失：{needle}");
     }

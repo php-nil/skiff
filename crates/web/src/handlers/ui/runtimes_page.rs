@@ -576,7 +576,7 @@ pub fn runtime_logs_schema(runtime_id: &str, data: &Value) -> Value {
                 "返回运行环境详情",
                 format!("${{prefix}}/sites/runtimes/{}", enc(runtime_id)),
             ),
-            kit::action_button("刷新", json!({ "type": "skiffLogReload" }), "text"),
+            kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
         ],
     )];
     if lines.is_empty() {

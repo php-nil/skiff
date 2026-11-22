@@ -1,7 +1,8 @@
 //! 定时任务页的 UI Schema（服务端产出）。
 //!
 //! 列表与详情都由服务端出 JSON：结构随 `can_admin`、任务状态与执行记录变化，
-//! 静态资产表达不了。写操作仍走宿主的 `skiffTaskWrite`，权限与审计口径不变。
+//! 静态资产表达不了。写操作由声明式动作链完成（确认 / `request` / 刷新或跳转），
+//! 权限与审计口径不变。
 
 use serde_json::{json, Value};
 
@@ -17,19 +18,41 @@ fn or_dash(text: &str) -> &str {
 }
 
 /// 行内按钮（`rowActions` 的元素是完整节点，不是描述对象）。
-fn row_button(text: &str, op: &str) -> Value {
+fn row_button(text: &str, actions: Vec<Value>) -> Value {
     json!({
         "type": "button",
         "props": { "text": text, "variant": "text", "color": "primary" },
-        "onEvent": {
-            "click": {
-                "actions": [{
-                    "type": "skiffTaskWrite",
-                    "props": { "op": op, "id": "${id}", "enabled": "${enabled}", "name": "${name}" }
-                }]
-            }
+        "onEvent": { "click": { "actions": actions } }
+    })
+}
+
+/// 任务写请求：`POST /tasks/{id}/{op}`，提示与刷新都由动作链声明。
+fn task_request(id: &str, op: &str, data: Option<Value>, success: &str, error: &str) -> Value {
+    let mut api = json!({
+        "method": "POST",
+        "url": format!("{}/tasks/{id}/{op}", super::schema_kit::API_BASE)
+    });
+    if let Some(data) = data {
+        api["data"] = data;
+    }
+    json!({
+        "type": "request",
+        "props": {
+            "api": api,
+            "messages": { "success": success, "error": error }
         }
     })
+}
+
+fn table_reload() -> Value {
+    json!({
+        "type": "invoke",
+        "props": { "component": "tasks-table", "command": "reload" }
+    })
+}
+
+fn reload_page() -> Value {
+    json!({ "type": "skiffReload" })
 }
 
 /// 任务列表页。
@@ -81,6 +104,7 @@ pub fn tasks_page_schema(can_admin: bool, keyword: &str, prefix: &str) -> Value 
             ..TableOpts::default()
         },
     );
+    table["id"] = json!("tasks-table");
     table["onEvent"] = json!({
         "rowClick": {
             "actions": [{ "type": "navigate", "props": { "url": format!("{prefix}/tasks/${{id}}") } }]
@@ -88,8 +112,32 @@ pub fn tasks_page_schema(can_admin: bool, keyword: &str, prefix: &str) -> Value 
     });
     if can_admin {
         table["props"]["rowActions"] = json!([
-            row_button("切换启停", "toggle"),
-            row_button("立即运行", "run")
+            row_button(
+                "切换启停",
+                vec![
+                    task_request(
+                        "${id}",
+                        "toggle",
+                        Some(json!({ "enabled": "${!enabled}" })),
+                        "任务已更新",
+                        "任务更新失败",
+                    ),
+                    table_reload(),
+                ]
+            ),
+            row_button(
+                "立即运行",
+                vec![
+                    task_request(
+                        "${id}",
+                        "run",
+                        Some(json!({})),
+                        "任务已触发",
+                        "任务运行失败"
+                    ),
+                    table_reload(),
+                ]
+            )
         ]);
     }
     body.push(table);
@@ -165,10 +213,16 @@ pub fn task_detail_schema(
                 },
                 "onEvent": {
                     "click": {
-                        "actions": [{
-                            "type": "skiffTaskWrite",
-                            "props": { "op": "toggle", "id": task.id, "enabled": !task.enabled }
-                        }]
+                        "actions": [
+                            task_request(
+                                &task.id,
+                                "toggle",
+                                Some(json!({ "enabled": !task.enabled })),
+                                "任务已更新",
+                                "任务更新失败",
+                            ),
+                            reload_page(),
+                        ]
                     }
                 }
             }),
@@ -177,7 +231,10 @@ pub fn task_detail_schema(
                 "props": { "text": "立即运行", "color": "primary" },
                 "onEvent": {
                     "click": {
-                        "actions": [{ "type": "skiffTaskWrite", "props": { "op": "run", "id": task.id } }]
+                        "actions": [
+                            task_request(&task.id, "run", Some(json!({})), "任务已触发", "任务运行失败"),
+                            reload_page(),
+                        ]
                     }
                 }
             }),
@@ -188,10 +245,21 @@ pub fn task_detail_schema(
                 "props": { "text": "删除任务", "color": "danger", "variant": "text" },
                 "onEvent": {
                     "click": {
-                        "actions": [{
-                            "type": "skiffTaskWrite",
-                            "props": { "op": "delete", "id": task.id, "name": task.name }
-                        }]
+                        "actions": [
+                            {
+                                "type": "confirm",
+                                "props": {
+                                    "title": "删除任务",
+                                    "content": format!("确认删除任务 {}？", task.name),
+                                    "color": "error"
+                                }
+                            },
+                            task_request(&task.id, "delete", Some(json!({})), "任务已删除", "删除任务失败"),
+                            {
+                                "type": "navigate",
+                                "props": { "url": "${prefix}/tasks" }
+                            }
+                        ]
                     }
                 }
             }));

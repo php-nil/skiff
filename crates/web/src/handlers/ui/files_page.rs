@@ -394,8 +394,23 @@ pub fn trash_schema(data: &Value) -> Value {
         kit::flex(
             8,
             vec![
-                trash_button("刷新", json!({ "op": "refresh" }), "secondary"),
-                trash_button("清空回收站", json!({ "op": "clear" }), "danger"),
+                kit::action_button("刷新", json!({ "type": "skiffReload" }), "secondary"),
+                kit::action_button(
+                    "清空回收站",
+                    json!({ "actions": [
+                        {
+                            "type": "confirm",
+                            "props": {
+                                "title": "清空回收站",
+                                "content": "将永久删除全部条目，且不会进入任何备份。确认清空？",
+                                "color": "error"
+                            }
+                        },
+                        trash_request("clear", json!({}), "已清空回收站", "清空回收站失败"),
+                        reload_page()
+                    ] }),
+                    "danger",
+                ),
             ],
         ),
     ];
@@ -441,14 +456,54 @@ pub fn trash_schema(data: &Value) -> Value {
             TableOpts::default(),
         );
         table["props"]["rowActions"] = json!([
-            trash_button(
+            kit::row_button(
                 "恢复",
-                json!({ "op": "restore", "id": "${id}", "path": "${original_path}" }),
+                json!({ "actions": [
+                    {
+                        // 恢复失败（目标已存在）时先确认覆盖，再重试一次。
+                        "actions": [
+                            trash_request(
+                                "restore",
+                                json!({ "id": "${id}", "overwrite": false }),
+                                "",
+                                ""
+                            )
+                        ],
+                        "onError": [
+                            {
+                                "type": "confirm",
+                                "props": {
+                                    "title": "恢复失败",
+                                    "content": "目标已存在或恢复失败。是否覆盖现有对象后重试？",
+                                    "color": "error"
+                                }
+                            },
+                            trash_request(
+                                "restore",
+                                json!({ "id": "${id}", "overwrite": true }),
+                                "已覆盖恢复",
+                                "恢复失败"
+                            )
+                        ]
+                    },
+                    reload_page()
+                ] }),
                 "primary"
             ),
-            trash_button(
+            kit::row_button(
                 "彻底删除",
-                json!({ "op": "purge", "id": "${id}", "path": "${original_path}" }),
+                json!({ "actions": [
+                    {
+                        "type": "confirm",
+                        "props": {
+                            "title": "彻底删除",
+                            "content": "确认彻底删除 ${path_label}？不可恢复。",
+                            "color": "error"
+                        }
+                    },
+                    trash_request("purge", json!({ "id": "${id}" }), "已彻底删除", "彻底删除失败"),
+                    reload_page()
+                ] }),
                 "danger"
             )
         ]);
@@ -529,14 +584,14 @@ pub fn quotas_schema(data: &Value) -> Value {
             TableOpts::default(),
         );
         table["props"]["rowActions"] = json!([
-            trash_button(
+            kit::row_button(
                 "重新统计",
-                json!({ "op": "scan", "path": "${root}" }),
+                json!({ "type": "skiffQuotaWrite", "props": { "op": "scan", "path": "${root}" } }),
                 "primary"
             ),
-            trash_button(
+            kit::row_button(
                 "取消配额",
-                json!({ "op": "cancel", "path": "${root}" }),
+                json!({ "type": "skiffQuotaWrite", "props": { "op": "cancel", "path": "${root}" } }),
                 "danger"
             )
         ]);
@@ -550,12 +605,25 @@ pub fn quotas_schema(data: &Value) -> Value {
     )
 }
 
-fn trash_button(text: &str, props: Value, color: &str) -> Value {
-    kit::row_button(
-        text,
-        json!({ "type": "skiffTrashWrite", "props": props }),
-        color,
-    )
+/// 回收站写请求：端点挂在入口前缀下（`${prefix}/files/trash/*`），
+/// CSRF 由平台请求适配器统一补。
+fn trash_request(op: &str, data: Value, success: &str, error: &str) -> Value {
+    let mut props = json!({
+        "api": {
+            "method": "POST",
+            "url": format!("${{prefix}}/files/trash/{op}"),
+            "data": data
+        }
+    });
+    if !success.is_empty() {
+        props["messages"] = json!({ "success": success, "error": error });
+    }
+    json!({ "type": "request", "props": props })
+}
+
+/// 回收站与配额页的数据都来自页面骨架，写操作后整页重取。
+fn reload_page() -> Value {
+    json!({ "type": "skiffReload" })
 }
 
 /// 代码块语言：只覆盖常见扩展，其余按纯文本（高亮由前端 Pack 完成）。

@@ -85,8 +85,12 @@ crates/web/static/budding/
 | 场景 | 动作链 |
 | --- | --- |
 | 删除等不可逆操作 | `confirm` → `request` → `invoke`（目标组件 `reload`） |
+| 详情页写后整页重取 | `request` → `skiffReload`（页面骨架与数据都由服务端重算） |
 | 表单提交 | `form.props.api` 自带提交，`props.successMessage` 给成功提示，`props.onSuccess` 放刷新 |
 | 校验 | 字段 `required` / `rules`；服务端字段错误走 `invoke setErrors` |
+| 请求失败提示 | `request.props.messages.error`；SDK 会调用 `markFailurePrompted`，节点级兜底提示不再叠加 |
+
+`request` 的失败提示是「本操作失败」级别的保真（服务端明细只在 `form` 的 `errorMessage` 缺省值里透出）；需要更强保真时走 `onError` 动作组。
 
 **CSRF**：壳脚本的平台请求适配器（`apiRequest`）对所有非 `GET/HEAD` 请求统一补 `x-csrf-token`。页面 JSON 不写 header，写操作才能保持声明式。
 
@@ -98,7 +102,7 @@ crates/web/static/budding/
 | --- | --- |
 | 启动、会话校验、三级子菜单、外层 chrome | 属于壳层装配，不在页面 Schema 语义内（路由表由 `/ui/v1/routes` 下发，脚本不拼） |
 | 平台适配器 `request` / `upload` / `loadJson` | 传输层：CSRF、信封、401 跳登录、分片上传（写请求只有一个 `postJson` 通道） |
-| 宿主动作实现（`skiff*`） | JSON 只声明 `{"type":"skiffFileWrite"}`，动作体在脚本里：路径编码、流式下载、分片上传、RPC 转发等逐请求拼参数的场景无法用 `${}` 表达 |
+| 宿主动作实现（`skiff*`） | A 形的「确认 → 请求 → 刷新」已全部声明化；只剩表单回填、下载、RPC 转发等逐请求拼参数或需串行状态的场景，见 §9.6 |
 | 插件功能页（随包 Schema 的 `data` 声明 + RPC 转发） | 数据面是插件 RPC，不是 `/ui/v1` |
 | 安装 / 作业轮询、终端票据换取 | 有状态的多步时序 |
 | 外壳补 `bud-admin--chrome` 类 | Vue 重渲染会抹掉手工类，只能常驻观察器 |
@@ -145,6 +149,22 @@ crates/web/static/budding/
 | 容器终端（`skiffTerminalReconnect`） | `wsUrl` 必须由浏览器拼当前 origin + 一次性 ticket，JSON 拿不到 |
 | 商店安装确认（`skiffStoreConfirm`） | 依赖 install 响应里的一次性 confirm token，需两步串行 |
 | 插件功能页（`skiffPluginRpc` / `skiffPluginView`） | 布局来自插件包自带的 Schema，数据面是插件 RPC，不是 `/ui/v1` |
+| 整页重取（`skiffReload`） | 只做 `location.reload()`，不含业务参数；供详情页写后刷新 |
+
+检查入口：`budding_boot_a_form_writes_are_declarative` 钉住第一批（容器 / 任务 / 作业 / 插件 / 回收站）已无命令式写动作体，且动作链顺序（确认 → 请求 → 刷新 / 跳转）留在服务端 schema。
+
+尚未迁出的写动作（第二批 B 形 + 设置 / 文件）：
+
+| 动作 | 归属 | 待办 |
+| --- | --- | --- |
+| `skiffSiteWrite` / `skiffSiteToggle` | 站点 | 弹窗表单 + 失败回弹窗 |
+| `skiffComposeAction` / `skiffComposeEdit` | compose | 同上 |
+| `skiffRuntime*` 系列 | 运行环境 | 同上 |
+| `skiffWebConfig` / `WebEnv` / `WebParams` | Web 服务 | 同上 |
+| `skiffSettingsSave` / `MenuWrite` / `UiThemeWrite` / `UiPreset` / `DockerSettingsWrite` / `PasswordChange` / `TotpSetup` / `TotpEnable` / `KeyImport` / `KeyRemove` / `QuotaWrite` | 设置 / 配额 | 同上 |
+| `skiffFileWrite` 系列 | 文件管理 | 同上 |
+| `skiffPluginView` / `FileOpen` / `FileDownload` | 插件 / 文件 | 先试 `download` / `navigate` 覆盖 |
+| `skiffSearch` / `QueryNav` / `LogFilter` / `LogSwitch` | 导航 | 尽量转 `navigate`，转不动的保留脚本 |
 
 前三者在路由表里各有一个 `special` 标记（`skiff:terminal` / `skiff:store-confirm` / `skiff:plugin-view`），由 `/ui/v1/page` 给出，脚本按标记分派——标记之外没有第二种「按路径判断该走哪个特例」的逻辑。
 
