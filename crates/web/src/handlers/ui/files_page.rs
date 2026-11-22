@@ -459,12 +459,32 @@ pub fn trash_schema(data: &Value) -> Value {
             kit::row_button(
                 "恢复",
                 vec![
-                    trash_request(
-                        "restore",
-                        json!({ "id": "${id}", "overwrite": false }),
-                        "已恢复",
-                        "恢复失败"
-                    ),
+                    // 动作组：先尝试 overwrite=false 恢复；失败时 onError 接管，
+                    // 弹出覆盖确认后以 overwrite=true 重试。
+                    json!({
+                        "actions": [trash_request(
+                            "restore",
+                            json!({ "id": "${id}", "overwrite": false }),
+                            "",
+                            ""
+                        )],
+                        "onError": [
+                            json!({
+                                "type": "confirm",
+                                "props": {
+                                    "title": "恢复失败",
+                                    "content": "目标已存在或恢复失败。是否覆盖现有对象后重试？",
+                                    "color": "error"
+                                }
+                            }),
+                            trash_request(
+                                "restore",
+                                json!({ "id": "${id}", "overwrite": true }),
+                                "已覆盖恢复",
+                                "恢复失败"
+                            )
+                        ]
+                    }),
                     reload_page()
                 ],
                 "primary"
