@@ -1,0 +1,686 @@
+{
+  "type": "flex",
+  "props": {
+    "gap": 10,
+    "align": "center"
+  },
+  "content": {
+    "body": [
+      {
+        "type": "button",
+        "props": {
+          "text": "${item.name_label}",
+          "variant": "text"
+        },
+        "onEvent": {
+          "click": {
+            "actions": [
+              {
+                "type": "skiffFileOpen",
+                "props": {
+                  "path": "${item.path}",
+                  "dir": "${item.dir}"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "text",
+        "props": {
+          "text": "${item.size_label}",
+          "size": "small"
+        }
+      },
+      {
+        "type": "text",
+        "props": {
+          "text": "${item.mtime_label}",
+          "size": "small"
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "下载",
+          "variant": "text"
+        },
+        "onEvent": {
+          "click": {
+            "actions": [
+              {
+                "type": "skiffFileDownload",
+                "props": {
+                  "path": "${item.path}",
+                  "dir": "${item.dir}"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "重命名",
+          "variant": "text",
+          "color": "primary"
+        },
+        "action": {
+          "type": "dialog",
+          "props": {
+            "title": "重命名",
+            "width": 520
+          },
+          "content": {
+            "body": [
+              {
+                "type": "alert",
+                "props": {
+                  "type": "info",
+                  "text": "当前路径：${item.path}"
+                }
+              },
+              {
+                "type": "form",
+                "props": {
+                  "api": {
+                    "method": "POST",
+                    "url": "/ui/v1/files/rename",
+                    "sendOn": false
+                  },
+                  "actionsAlign": "end"
+                },
+                "onEvent": {
+                  "submit": [
+                    {
+                      "type": "skiffFileRename",
+                      "props": {
+                        "path": "${item.path}",
+                        "name": "${item.name}",
+                        "dialog": "skiff-dialog-1"
+                      }
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "name",
+                      "label": "新的名称",
+                      "defaultValue": "${item.name}",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "messages": {
+                          "required": "请输入新名称"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "content": {
+                  "actions": [
+                    {
+                      "type": "button",
+                      "props": {
+                        "text": "保存名称",
+                        "color": "primary"
+                      },
+                      "action": {
+                        "type": "submit"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "footer": [
+              {
+                "type": "button",
+                "props": {
+                  "text": "取消",
+                  "variant": "outlined"
+                },
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "复制",
+          "variant": "text",
+          "color": "primary"
+        },
+        "action": {
+          "type": "dialog",
+          "props": {
+            "title": "复制到",
+            "width": 520
+          },
+          "content": {
+            "body": [
+              {
+                "type": "alert",
+                "props": {
+                  "type": "info",
+                  "text": "源路径：${item.path}"
+                }
+              },
+              {
+                "type": "form",
+                "props": {
+                  "api": {
+                    "method": "POST",
+                    "url": "/ui/v1/files/copy",
+                    "sendOn": false
+                  },
+                  "actionsAlign": "end"
+                },
+                "onEvent": {
+                  "submit": [
+                    {
+                      "type": "skiffFileCopy",
+                      "props": {
+                        "path": "${item.path}",
+                        "dialog": "skiff-dialog-2"
+                      }
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "to",
+                      "label": "目标路径（绝对路径）",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "pattern": "^/.+",
+                        "messages": {
+                          "pattern": "请输入以 / 开头的绝对路径"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "checkbox",
+                    "props": {
+                      "name": "overwrite",
+                      "label": "目标已存在时覆盖"
+                    }
+                  }
+                ],
+                "content": {
+                  "actions": [
+                    {
+                      "type": "button",
+                      "props": {
+                        "text": "开始复制",
+                        "color": "primary"
+                      },
+                      "action": {
+                        "type": "submit"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "footer": [
+              {
+                "type": "button",
+                "props": {
+                  "text": "取消",
+                  "variant": "outlined"
+                },
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "权限",
+          "variant": "text",
+          "color": "primary"
+        },
+        "action": {
+          "type": "dialog",
+          "props": {
+            "title": "修改权限",
+            "width": 520
+          },
+          "content": {
+            "body": [
+              {
+                "type": "alert",
+                "props": {
+                  "type": "info",
+                  "text": "路径：${item.path} · 当前 ${item.mode_label}"
+                }
+              },
+              {
+                "type": "form",
+                "props": {
+                  "api": {
+                    "method": "POST",
+                    "url": "/ui/v1/files/chmod",
+                    "sendOn": false
+                  },
+                  "actionsAlign": "end"
+                },
+                "onEvent": {
+                  "submit": [
+                    {
+                      "type": "skiffFileChmod",
+                      "props": {
+                        "path": "${item.path}",
+                        "dialog": "skiff-dialog-3"
+                      }
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "mode",
+                      "label": "权限位（八进制，如 755 / 0644）",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "pattern": "^0?[0-7]{3,4}$",
+                        "messages": {
+                          "pattern": "请输入八进制权限，如 755"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "content": {
+                  "actions": [
+                    {
+                      "type": "button",
+                      "props": {
+                        "text": "保存权限",
+                        "color": "primary"
+                      },
+                      "action": {
+                        "type": "submit"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "footer": [
+              {
+                "type": "button",
+                "props": {
+                  "text": "取消",
+                  "variant": "outlined"
+                },
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "属主",
+          "variant": "text",
+          "color": "primary"
+        },
+        "action": {
+          "type": "dialog",
+          "props": {
+            "title": "修改属主",
+            "width": 520
+          },
+          "content": {
+            "body": [
+              {
+                "type": "alert",
+                "props": {
+                  "type": "info",
+                  "text": "路径：${item.path} · 当前 ${item.owner_label}"
+                }
+              },
+              {
+                "type": "form",
+                "props": {
+                  "api": {
+                    "method": "POST",
+                    "url": "/ui/v1/files/chown",
+                    "sendOn": false
+                  },
+                  "actionsAlign": "end"
+                },
+                "onEvent": {
+                  "submit": [
+                    {
+                      "type": "skiffFileChown",
+                      "props": {
+                        "path": "${item.path}",
+                        "dialog": "skiff-dialog-4"
+                      }
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "uid",
+                      "label": "uid",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "pattern": "^[0-9]+$",
+                        "messages": {
+                          "pattern": "请输入非负整数"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "gid",
+                      "label": "gid",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "pattern": "^[0-9]+$",
+                        "messages": {
+                          "pattern": "请输入非负整数"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "content": {
+                  "actions": [
+                    {
+                      "type": "button",
+                      "props": {
+                        "text": "保存属主",
+                        "color": "primary"
+                      },
+                      "action": {
+                        "type": "submit"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "footer": [
+              {
+                "type": "button",
+                "props": {
+                  "text": "取消",
+                  "variant": "outlined"
+                },
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "压缩",
+          "variant": "text",
+          "color": "primary"
+        },
+        "action": {
+          "type": "dialog",
+          "props": {
+            "title": "压缩",
+            "width": 520
+          },
+          "content": {
+            "body": [
+              {
+                "type": "alert",
+                "props": {
+                  "type": "info",
+                  "text": "源路径：${item.path}"
+                }
+              },
+              {
+                "type": "form",
+                "props": {
+                  "api": {
+                    "method": "POST",
+                    "url": "/ui/v1/files/archive",
+                    "sendOn": false
+                  },
+                  "actionsAlign": "end"
+                },
+                "onEvent": {
+                  "submit": [
+                    {
+                      "type": "skiffFileArchive",
+                      "props": {
+                        "path": "${item.path}",
+                        "dialog": "skiff-dialog-5"
+                      }
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "dest",
+                      "label": "压缩包路径（绝对路径，如 /srv/www/site.tar.gz）",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "pattern": "^/.+",
+                        "messages": {
+                          "pattern": "请输入以 / 开头的绝对路径"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "select",
+                    "props": {
+                      "name": "format",
+                      "label": "格式",
+                      "defaultValue": "tar.gz",
+                      "items": [
+                        {
+                          "title": "tar.gz",
+                          "value": "tar.gz"
+                        },
+                        {
+                          "title": "zip",
+                          "value": "zip"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "checkbox",
+                    "props": {
+                      "name": "overwrite",
+                      "label": "压缩包已存在时覆盖"
+                    }
+                  }
+                ],
+                "content": {
+                  "actions": [
+                    {
+                      "type": "button",
+                      "props": {
+                        "text": "创建压缩包",
+                        "color": "primary"
+                      },
+                      "action": {
+                        "type": "submit"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "footer": [
+              {
+                "type": "button",
+                "props": {
+                  "text": "取消",
+                  "variant": "outlined"
+                },
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "解压",
+          "variant": "text"
+        },
+        "visibleOn": "${item.can_extract}",
+        "action": {
+          "type": "dialog",
+          "props": {
+            "title": "解压",
+            "width": 520
+          },
+          "content": {
+            "body": [
+              {
+                "type": "text",
+                "props": {
+                  "text": "压缩包：${item.path}"
+                }
+              },
+              {
+                "type": "form",
+                "props": {
+                  "api": {
+                    "method": "POST",
+                    "url": "/ui/v1/files/extract",
+                    "sendOn": false
+                  },
+                  "actionsAlign": "end"
+                },
+                "onEvent": {
+                  "submit": [
+                    {
+                      "type": "skiffFileExtract",
+                      "props": {
+                        "path": "${item.path}",
+                        "dialog": "skiff-dialog-6"
+                      }
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "type": "input-text",
+                    "props": {
+                      "name": "dest",
+                      "label": "解压到目录（绝对路径，目录必须已存在）",
+                      "required": true,
+                      "rules": {
+                        "required": true,
+                        "pattern": "^/.+",
+                        "messages": {
+                          "pattern": "请输入以 / 开头的绝对路径"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "checkbox",
+                    "props": {
+                      "name": "overwrite",
+                      "label": "目标已存在时覆盖"
+                    }
+                  }
+                ],
+                "content": {
+                  "actions": [
+                    {
+                      "type": "button",
+                      "props": {
+                        "text": "开始解压",
+                        "color": "primary"
+                      },
+                      "action": {
+                        "type": "submit"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "footer": [
+              {
+                "type": "button",
+                "props": {
+                  "text": "取消",
+                  "variant": "outlined"
+                },
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "type": "button",
+        "props": {
+          "text": "删除",
+          "variant": "text",
+          "color": "danger"
+        },
+        "onEvent": {
+          "click": {
+            "actions": [
+              {
+                "type": "skiffFileRemove",
+                "props": {
+                  "path": "${item.path}",
+                  "name": "${item.name}"
+                }
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

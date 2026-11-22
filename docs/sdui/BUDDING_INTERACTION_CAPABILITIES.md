@@ -308,7 +308,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 5. **查看详情**：统一用 `property` 键值栅格；旧的 `card` + `text` 组合只作为迁移期遗留，不再新增。
 6. **Vuetify 内部文案**：`embed` 接受扁平 `locale` / `theme` / `uiDefaults`，宿主可据此把 Vuetify locale 设为中文；当前壳仍保留自带主题 CSS，迁移到 `createUi({ theme })` 属宿主改造（backlog A5）。
 7. **交付前**：新 Schema 跑一次 MCP `validateSchema`；`strict: true` 作为终检。
-8. **Schema 生成位置**：站点列表与站点详情已试点由内核生成（`GET /ui/v1/sites?with_schema=true`、`GET /ui/v1/sites/{id}?tab=`），前端只 fetch、对 `code` 节点的 `modelValue` 过一遍 `buddySafeString`，并把服务端弹窗按钮补录进弹窗注册表后 embed；其它页面暂仍由 `budding-boot.js` 构建，迁移时按同一形状下发。
+8. **Schema 写在哪**：页面布局是表现层数据，**不许堆在 `budding-boot.js` 里拼**。两个合法产出端：布局不随上下文变化的落 `crates/web/static/budding/pages/*.json`（取数用 `page.source`、绑定用 `${}`、交互只用内置 `confirm` / `ajax` / `invoke`），已迁镜像 / 网络 / 卷；布局随权限、页签、记录变化的由 `crates/web` 的 UI 端点直接产 JSON（站点列表 / 详情，`?with_schema=true`），壳脚本只做 fetch。这里的「内核」指核心调用层（命令与领域服务），与 UI 无关，不要拿 §2.9 当「服务端不许产 UI JSON」的依据。约定与迁移台账见 [SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md](SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md)。
 
 ## 11. 与现有文档的关系
 

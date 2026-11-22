@@ -43,6 +43,7 @@ pub async fn audit(
         .map(|a| AuditItem {
             id: a.id,
             ts: rfc3339(a.ts),
+            ts_label: crate::util::fmt_local_time(Some(a.ts), "%Y-%m-%d %H:%M:%S", "—"),
             actor: a.actor,
             ip: a.ip,
             action: a.action,
@@ -51,14 +52,29 @@ pub async fn audit(
             detail: crate::util::truncate(&a.detail, 200),
         })
         .collect();
-    Ok(Json(json!({
+    // 页面骨架按需生成：翻页跳转不带 `with_schema`，不会重复拼结构。
+    let schema = q.with_schema.then(|| {
+        let prefix = format!("/{}", state.cfg.entry_prefix);
+        super::audit_page::audit_page_schema(
+            &items,
+            &keyword,
+            has_more,
+            next_cursor.as_deref(),
+            &prefix,
+        )
+    });
+    let mut body = json!({
         "data": {
             "items": items,
             "keyword": keyword,
             "has_more": has_more,
             "next_cursor": next_cursor,
         }
-    })))
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    Ok(Json(body))
 }
 
 pub(super) fn router() -> Router<Arc<AppState>> {

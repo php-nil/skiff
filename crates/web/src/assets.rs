@@ -45,8 +45,8 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 /// 三个内联表单改为按钮触发 dialog 弹窗，避免列表被表单挤爆首屏。
 /// v8：运行环境页「镜像参数」card 挪到 Docker 设置页（镜像前缀 + 镜像 tag 同页维护）。
 /// v9：页面 URL 分组（sites/docker/plugins/settings），前端路由表与页面内链接同步。
-/// v13：站点详情 Schema 改由内核生成（试点），前端只 fetch + embed。
-/// v14：站点列表 Schema 同样改由内核生成（`with_schema=true`），弹窗注册表由前端补录。
+/// v13：站点详情 Schema 改由服务端 UI 端点产出，前端只 fetch + embed。
+/// v14：站点列表 Schema 同样改由服务端产出（`with_schema=true`），弹窗注册表由前端补录。
 /// v15：UI 审计修复——登录页主题切换按钮 fixed 定位（不再被 body overflow:hidden 裁掉）；
 ///   budding 组件内 label 不受全局 flex 容器规则干扰，隐藏上游渲染的空 for 重复 label；
 ///   侧栏菜单启用纵向滚动；表格最小列宽防止过度压缩；tooltip z-index 提到顶层。
@@ -57,7 +57,23 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 ///   调 `POST /ui/v1/sites/{id}/backups/restore`。
 /// v32：上游 budding 升 1.8.4（`content.breadcrumbs` 移除、shared 组件基线、表单属性补全），
 ///   破 `?v=` 缓存使壳页与新包同批生效。
-pub const SHELL_VERSION: &str = "32";
+/// v33：镜像 / 网络 / 卷三页 Schema 迁出脚本，改为 `static/budding/pages/*.json`
+///   （页面 `source` 自取数、`confirm`+`ajax`+`invoke` 声明写操作）；壳脚本同时给页面根
+///   作用域注入 `prefix` / `api`，并让平台请求适配器统一补 CSRF 头。
+/// v34：任务 / 作业 / 审计三页 Schema 改由服务端 UI 端点产出（`?with_schema=true`），
+///   壳脚本删掉对应构建器，搜索跳转收敛为单一宿主动作 `skiffSearch`。
+/// v35：其余按页面归属的布局构建器全部迁出——容器 / compose / 运行环境 / 站点新建与日志 /
+///   设置四页 / 插件 / 概览 / Web 服务 / 文件管理 / 商店；壳脚本只剩运行时
+///   （路由表、平台桥、会话出口、少数需浏览器状态的写动作）。文件行模板落为
+///   `static/budding/pages/_file-row.json`，由 `files_page.rs` 用 `include_str!` 内联。
+///   作业日志的游标聚合移到 `GET /ui/v1/jobs/{id}/logs`，同时修掉该页此前
+///   把壳 HTML 当 JSON 解析（`loadJobLogs` 打错端点）导致的必然报错。
+/// v36：清掉迁出后遗留的死代码（表格 / 卡片 / 图标 / 语言映射等 14 处构建器与常量，
+///   零引用且已被服务端构件取代），`submitJson` / `postPrefixJson` 合并为单一
+///   `postJson` 通道；顺带修掉站点日志「过滤」的参数错位（id 位传了 part）。
+///   壳主题改为服务端在壳页内联 `<style>` 下发（`spa.rs::theme_css`），前端那份
+///   亮度/黑白取色算法删除——颜色计算只保留 `skiff_app::theme` 一处。
+pub const SHELL_VERSION: &str = "36";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

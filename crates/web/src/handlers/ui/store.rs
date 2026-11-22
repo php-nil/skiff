@@ -64,7 +64,8 @@ pub async fn store(
         note: view.upgrade.note,
         can_download: view.upgrade.can_download,
     };
-    let mut resp = Json(json!({
+    let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+    let mut body = json!({
         "data": {
             "state": StatusDto {
                 code: catalog_state_code(snap.state).into(),
@@ -82,8 +83,11 @@ pub async fn store(
             "sections": sections,
             "upgrade": upgrade,
         }
-    }))
-    .into_response();
+    });
+    if with_schema {
+        body["schema"] = super::store_page::store_schema(&body["data"]);
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

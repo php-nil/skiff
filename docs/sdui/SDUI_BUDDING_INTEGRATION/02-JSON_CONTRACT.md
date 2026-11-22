@@ -48,7 +48,7 @@
 - 不允许出现 `redirect`、`html`、`layout`、`component` 字段。
 - budding 的错误对象自带 `path`（schema 路径），与 Skiff 的 `field`（业务字段码）是两回事，不得混用。
 - **文案双字段（D8）**：状态、错误码、提示、空态原因一律出 `{code,label}` 或 `{code,message}`；前端有字典用 `code`，否则回落到中文 `label`/`message`。
-- 页面标题、按钮、字段标签、帮助文字属结构文案，写在前端 schema，**不进 DTO**。
+- 页面标题、按钮、字段标签、帮助文字属结构文案，写在页面 Schema 里，**不进 DTO**。页面 Schema 只有两个产出端：静态资产 `static/budding/pages/*.json`，或 `/ui/v1` 端点的 `?with_schema=true`（见 `09-JSON_PAGES.md`）；不得回到壳脚本里拼。
 - Vuetify 内部英文（分页、表格空文案、日期控件）只能由上游 `createVuetify()` 注入 locale 解决；标注为**上游依赖，不阻塞内部推进**。
 
 ### 3.3 字段码
@@ -131,7 +131,7 @@ Skiff 侧对应约束：
 
 - **服务端裁决**：`/ui/v1/settings/ui` 只接受 `#rrggbb`；任一颜色非法返回 400 且整组不落库。主色与菜单底色的对比度低于 4.5:1 时自动混色校正（`crates/app/src/theme.rs`）。
 - **下发形状**：`GET /ui/v1/session` 的 `theme` 与 `GET /ui/v1/settings/ui` 均返回 `primary` / `menu` / `page` / `menu_custom` / `menu_text` / `page_text` / `on_primary` / `adjusted`（设置页额外带 `can_admin`），字段集已纳入 §3.7.1 冻结。
-- **前端着色**：`applyShellTheme` 把颜色写进文档级 CSS 变量（`:root`、`.v-theme--light/.v-theme--dark`、`.bud-admin`），并给外壳补 `bud-admin--chrome` 类。r5 的 schema 根仍拒绝 `theme` 属性（CompileError），所以不走 `admin` 节点的 theme；补类逻辑常驻 MutationObserver，防止 Vue 重渲染抹掉手工类。
+- **着色**：壳页在 `<head>` 内联 `<style id="skiff-shell-theme">`（`crates/web/src/handlers/spa.rs::theme_css`），把 `primary` / `menu` / `page` 与已推导的 `menu_text` / `page_text` / `on_primary` 写成文档级变量（`:root`、`.v-theme--light/.v-theme--dark`、`.bud-admin`、`.v-application`）。颜色计算只有 `crates/app/src/theme.rs` 一处，前端不再重算亮度与黑白取色；壳脚本只负责补 `bud-admin--chrome` 类（r5 起 schema 根仍拒绝 `theme` 属性，CompileError），补类逻辑常驻 MutationObserver，防止 Vue 重渲染抹掉手工类。
 - **交互**：预设方案（品牌蓝 / 翡翠绿 / 深灰 / 暖橙）点击即整体提交；自定义表单使用色块 `chip` + `#rrggbb` 文本输入，不依赖颜色选择器节点（r5 未提供）。
 
 ---

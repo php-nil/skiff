@@ -34,24 +34,38 @@ use skiff_app::cursor::{AuditScope, CursorCodec, CursorError, FilterSet};
 use skiff_app::AppState;
 
 mod audit;
+mod audit_page;
 mod auth;
 mod compose;
+mod compose_page;
 mod containers;
+mod containers_page;
 mod dto;
 mod files;
+pub(crate) mod files_page;
 mod guard;
 mod jobs;
+mod jobs_page;
 mod menu;
 mod overview;
+mod overview_page;
 mod plugins;
+mod plugins_page;
 mod resources;
 mod runtimes;
+mod runtimes_page;
+mod schema_kit;
 mod settings;
+mod settings_page;
 mod site_page;
 mod sites;
+mod sites_extra_page;
 mod store;
+mod store_page;
 mod tasks;
+mod tasks_page;
 mod web;
+mod web_page;
 
 pub use dto::*;
 

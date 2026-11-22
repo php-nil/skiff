@@ -51,6 +51,7 @@ pub async fn files(
             }
         })
         .collect();
+    let can_admin = user.can(skiff_model::Permission::Admin);
     let data = FilesData {
         path: listing.path,
         parent: listing.parent,
@@ -65,9 +66,14 @@ pub async fn files(
         truncated: listing.truncated,
         max_edit_bytes: skiff_app::admin_fs::MAX_EDIT_BYTES,
         upload_chunk_bytes: handlers::files::CHUNK_BYTES,
-        can_admin: user.can(skiff_model::Permission::Admin),
+        can_admin,
     };
-    Ok(Json(json!({ "data": data })))
+    let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+    let mut body = json!({ "data": data });
+    if with_schema {
+        body["schema"] = super::files_page::files_schema(&body["data"], can_admin);
+    }
+    Ok(Json(body))
 }
 
 /// `POST /ui/v1/files/mkdir`：新建目录（管理员 + CSRF）。
@@ -185,7 +191,8 @@ pub async fn files_read(
     .await
     .map_err(ApiError)?
     .map_err(fs_api_error)?;
-    Ok(Json(json!({
+    let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+    let mut body = json!({
         "data": {
             "path": file.path,
             "text": file.text,
@@ -193,7 +200,11 @@ pub async fn files_read(
             "truncated": file.truncated,
             "max_edit_bytes": skiff_app::admin_fs::MAX_EDIT_BYTES,
         }
-    })))
+    });
+    if with_schema {
+        body["schema"] = super::files_page::file_view_schema(&body["data"]);
+    }
+    Ok(Json(body))
 }
 
 /// `POST /ui/v1/files/write`：文本写入（新建或覆盖，权限/审计在 `AdminFs`）。

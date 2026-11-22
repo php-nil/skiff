@@ -23,7 +23,7 @@ use crate::templates::{JobDetailView, JobRowView};
 use skiff_app::AppState;
 
 /// SSE 每次从库里取的增量上限。
-const LOG_PAGE: i64 = 500;
+pub(crate) const LOG_PAGE: i64 = 500;
 /// SSE 尾随间隔：服务端尾随 DB，客户端只负责追加。
 const TAIL_INTERVAL: Duration = Duration::from_millis(400);
 

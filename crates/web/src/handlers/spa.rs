@@ -21,6 +21,87 @@ use crate::error::AppError;
 use crate::util::escape_html;
 use skiff_app::{AppState, CurrentUser};
 
+/// `#rrggbb` → CSS 变量要的 `r, g, b` 三元组；非法值回落到黑，避免拼出坏 CSS。
+fn triple(hex: &str) -> String {
+    let digits = hex.trim_start_matches('#');
+    if digits.len() < 6 {
+        return "0, 0, 0".to_string();
+    }
+    let channel =
+        |range: std::ops::Range<usize>| u8::from_str_radix(&digits[range], 16).unwrap_or(0);
+    format!("{}, {}, {}", channel(0..2), channel(2..4), channel(4..6))
+}
+
+/// 壳主题 CSS：把当前主题写成文档级变量，作为壳页内联 `<style>` 下发。
+///
+/// 颜色全部取自 `skiff_app::theme::current`（已做对比度校正与前景色推导），
+/// 前端不再重算一遍亮度/黑白——两套实现迟早会漂移，而这里只有一处。
+///
+/// - `--v-theme-*` 存 `r, g, b` 三元组（与 budding 自身主题口径一致）；
+/// - `--bud-admin-chrome-*` 控制侧栏 / 顶栏 / 页签条：`.bud-admin` 自带一套
+///   `--v-theme-surface` 默认值，类选择器优先级高于 `:root`，必须在外壳元素上覆盖；
+/// - Vuetify 会在 `.v-theme--light/.v-theme--dark` 上重复声明，故一律 `!important`，
+///   保证全站（含弹层）与深浅模式读到同一套配色。
+pub fn theme_css(theme: &skiff_app::theme::Theme) -> String {
+    let primary = triple(&theme.primary);
+    let on_primary = triple(&theme.on_primary);
+    let page = triple(&theme.page);
+    let page_text = triple(&theme.page_text);
+    let menu = triple(&theme.menu);
+    let menu_text = triple(&theme.menu_text);
+    let rgba = |rgb: &str, alpha: &str| format!("rgba({rgb}, {alpha})");
+    let mut css = String::new();
+    css.push_str(&format!(
+        ":root{{--v-theme-primary:{primary} !important;\
+         --v-theme-on-primary:{on_primary} !important;\
+         --v-theme-background:{page} !important;\
+         --v-theme-on-background:{page_text} !important;}}"
+    ));
+    css.push_str(&format!(
+        ".bud-admin{{\
+         --bud-admin-primary:{primary} !important;\
+         --bud-admin-on-primary:{on_primary} !important;\
+         --bud-admin-chrome-bg:rgb({menu}) !important;\
+         --bud-admin-chrome-bg-rgb:{menu} !important;\
+         --bud-admin-chrome-on:rgb({menu_text}) !important;\
+         --bud-admin-chrome-on-rgb:{menu_text} !important;\
+         --bud-admin-chrome-text:{} !important;\
+         --bud-admin-chrome-title:{} !important;\
+         --bud-admin-chrome-secondary:{} !important;\
+         --bud-admin-chrome-muted:{} !important;\
+         --bud-admin-chrome-hover:{} !important;\
+         --bud-admin-chrome-active:{} !important;\
+         --bud-admin-chrome-active-hover:{} !important;\
+         --bud-admin-chrome-line:{} !important;\
+         --bud-admin-chrome-focus:{} !important;\
+         --bud-admin-chrome-accent:rgb({primary}) !important;\
+         --bud-admin-chrome-accent-rgb:{primary} !important;\
+         --bud-admin-chrome-accent-on:rgb({on_primary}) !important;\
+         --bud-admin-aside-bg:rgb({menu}) !important;\
+         --bud-admin-drawer-bg:rgb({menu}) !important;}}",
+        rgba(&menu_text, "0.82"),
+        rgba(&menu_text, "0.92"),
+        rgba(&menu_text, "0.68"),
+        rgba(&menu_text, "0.55"),
+        rgba(&menu_text, "0.08"),
+        rgba(&primary, "0.20"),
+        rgba(&primary, "0.28"),
+        rgba(&menu_text, "0.16"),
+        rgba(&primary, "0.55"),
+    ));
+    css.push_str(&format!(
+        ".v-theme--light,.v-theme--dark{{\
+         --v-theme-primary:{primary} !important;\
+         --v-theme-on-primary:{on_primary} !important;\
+         --v-theme-background:{page} !important;\
+         --v-theme-on-background:{page_text} !important;}}"
+    ));
+    css.push_str(&format!(
+        ".v-application{{background:rgb({page}) !important}}"
+    ));
+    css
+}
+
 /// 可回落到壳页的页面前缀（不含入口根，根单独精确匹配）。
 /// 与 `docs/contract/URL_CONTRACT.md` §2.1 的表一一对应，增删必须同步契约与测试。
 const SHELL_PAGES: &[&str] = &[
@@ -153,7 +234,8 @@ fn login_redirect(state: &AppState, parts: &Parts) -> Response {
 
 /// 已认证请求的壳页响应（供带能力面门禁的页面复用，如 `/{p}/files`）。
 pub fn shell_page(state: &AppState) -> Response {
-    let body = shell_html(&state.cfg.entry_prefix);
+    let theme = skiff_app::theme::current(state);
+    let body = shell_html(&state.cfg.entry_prefix, &theme_css(&theme));
     (
         [
             ("cache-control", "no-store"),
@@ -175,7 +257,9 @@ pub fn shell_page(state: &AppState) -> Response {
 ///   子集只覆盖组件内部图标，壳页不声明自定义菜单图标。
 /// - 初始化参数（入口前缀、API 基址）挂在挂载点上，由外部启动脚本
 ///   `budding-boot.js` 读取，避免内联脚本；路由表由 `/ui/v1/menu` 下发。
-pub fn shell_html(prefix: &str) -> String {
+/// - 主题作为内联 `<style>` 下发（CSP 允许 `style-src 'unsafe-inline'`）：拿到 HTML
+///   时配色就已生效，不会先闪一帧默认色；前端也不再重复实现亮度/对比度算法。
+pub fn shell_html(prefix: &str, theme_css: &str) -> String {
     let prefix = escape_html(prefix);
     let ver = crate::assets::BUDDING_VERSION;
     let icons = crate::assets::BUDDING_ICONS_VERSION;
@@ -190,6 +274,7 @@ pub fn shell_html(prefix: &str) -> String {
 <link rel="icon" type="image/svg+xml" href="/{prefix}/static/favicon.svg?v=1">
 <link rel="stylesheet" href="/{prefix}/static/budding/budding-icons-{icons}.min.css?v={icons}">
 <link rel="stylesheet" href="/{prefix}/static/skiff-shell.css?v={shell}">
+<style id="skiff-shell-theme">{theme_css}</style>
 </head>
 <body>
 <div id="skiff-root" data-prefix="/{prefix}" data-api-base="/ui/v1" data-router-mode="history" data-budding-version="{ver}" data-budding-css="/{prefix}/static/budding/budding-{ver}.min.css?v={ver}">
@@ -253,7 +338,7 @@ mod tests {
 
     #[test]
     fn shell_html_references_versioned_artifacts_and_placeholder() {
-        let html = shell_html("p");
+        let html = shell_html("p", "");
         assert!(html.contains("该功能正在适配中"));
         let ver = crate::assets::BUDDING_VERSION;
         assert!(html.contains(&format!(
@@ -294,5 +379,36 @@ mod tests {
         assert!(!html.contains("budding.min.js"));
         assert!(!html.contains("<script>"));
         assert!(!html.contains("dist/loader"));
+    }
+
+    /// 主题 CSS 由服务端出：颜色取自已校正的主题对象，前端不再重算亮度/对比度。
+    #[test]
+    fn theme_css_covers_shell_variables() {
+        let theme = skiff_app::theme::Theme {
+            primary: "#1867c0".into(),
+            menu: "#ffffff".into(),
+            page: "#f5f5f5".into(),
+            menu_custom: false,
+            menu_text: "#000000".into(),
+            page_text: "#000000".into(),
+            on_primary: "#ffffff".into(),
+            adjusted: false,
+        };
+        let css = theme_css(&theme);
+        assert!(css.contains("--v-theme-primary:24, 103, 192 !important"));
+        assert!(css.contains("--v-theme-on-primary:255, 255, 255 !important"));
+        assert!(css.contains("--v-theme-background:245, 245, 245 !important"));
+        assert!(css.contains("--bud-admin-chrome-bg:rgb(255, 255, 255) !important"));
+        assert!(css.contains("--bud-admin-chrome-on-rgb:0, 0, 0 !important"));
+        assert!(css.contains("--bud-admin-chrome-text:rgba(0, 0, 0, 0.82) !important"));
+        // Vuetify 在主题类上重复声明，覆盖必须同时落在 `.v-theme--*` 上。
+        assert!(css.contains(".v-theme--light,.v-theme--dark{"));
+        assert!(css.contains(".v-application{background:rgb(245, 245, 245) !important}"));
+        // 非法值不许拼出坏 CSS。
+        let broken = theme_css(&skiff_app::theme::Theme {
+            primary: "oops".into(),
+            ..theme
+        });
+        assert!(broken.contains("--v-theme-primary:0, 0, 0 !important"));
     }
 }

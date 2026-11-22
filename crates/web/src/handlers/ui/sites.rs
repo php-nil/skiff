@@ -687,7 +687,9 @@ pub async fn site_logs(
                 .to_string()
         })
         .unwrap_or_default();
-    Ok(Json(json!({
+    let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+    let tail_text = tail.to_string();
+    let mut body = json!({
         "data": {
             "id": id,
             "domain": domain,
@@ -697,12 +699,69 @@ pub async fn site_logs(
             "log_dir": log_dir,
             "lines": lines,
         }
-    })))
+    });
+    if with_schema {
+        body["schema"] = super::sites_extra_page::site_logs_schema(
+            id,
+            &domain,
+            part,
+            &tail_text,
+            keyword.as_str(),
+            &lines,
+            &log_dir,
+        );
+    }
+    Ok(Json(body))
+}
+
+/// 新建站点页的查询参数：`type` 只决定类型预选（runtime / proxy），其余落静态。
+#[derive(Debug, Default, Deserialize)]
+pub struct SiteNewQuery {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+}
+
+/// `GET /ui/v1/pages/sites-new`：新建站点页骨架。
+///
+/// 运行环境下拉按当前用户的可见范围给出：非管理员拿不到运行环境列表
+/// （与 `/runtimes` 同权限），此时只留静态/反代两类可选项，不伪造数据。
+pub async fn site_new_page(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Query(q): Query<SiteNewQuery>,
+) -> Result<Response, ApiError> {
+    let runtimes: Vec<serde_json::Value> = if user.can(skiff_model::Permission::Admin) {
+        let views = skiff_app::views::runtimes::list(&state).await;
+        views
+            .iter()
+            .filter(|v| v.is_listed())
+            .map(|v| {
+                let row = skiff_app::views::runtimes::row(v);
+                json!({
+                    "id": row.id,
+                    "name": row.name,
+                    "kind_label": row.kind_label,
+                    "version": row.version,
+                    "state_code": v.effective_state,
+                    "state_label": handlers::sites::runtime_state_text(v),
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let schema =
+        super::sites_extra_page::site_new_schema(&runtimes, q.kind.as_deref().unwrap_or(""));
+    let mut resp = Json(json!({ "schema": schema })).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
 }
 
 pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ui/v1/sites", get(sites).post(site_create))
+        .route("/ui/v1/pages/sites-new", get(site_new_page))
         .route("/ui/v1/sites/batch", post(site_batch))
         .route("/ui/v1/sites/{id}", get(site_detail))
         .route("/ui/v1/sites/{id}/default", post(site_set_default))

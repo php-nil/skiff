@@ -13,7 +13,7 @@ use super::*;
 pub async fn runtimes(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<PageListQuery>,
 ) -> Result<Response, ApiError> {
     crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let views = skiff_app::views::runtimes::list(&state).await;
@@ -75,11 +75,17 @@ pub async fn runtimes(
             )
         })
         .collect();
-    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
-    let mut resp = Json(json!({
+    let (items, next_cursor, total) = paginate(rows, clamp_limit(q.limit), q.cursor.as_deref());
+    let schema = q
+        .with_schema
+        .then(|| super::runtimes_page::runtimes_schema(&catalog_json(&state), total as i64));
+    let mut body = json!({
         "data": { "items": items, "total": total, "next_cursor": next_cursor }
-    }))
-    .into_response();
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -104,13 +110,18 @@ pub async fn runtime_logs(
         .runtime_logs(&id, tail)
         .await
         .map_err(|e| ApiError(e.into()))?;
-    Ok(Json(json!({
-        "data": {
-            "runtime_id": id,
-            "tail": tail,
-            "text": text,
-        }
-    })))
+    let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+    let data = json!({
+        "runtime_id": id,
+        "tail": tail,
+        "text": text,
+    });
+    let mut body = json!({ "data": data });
+    if with_schema {
+        body["schema"] =
+            super::runtimes_page::runtime_logs_schema(&id, &json!({ "text": text, "tail": tail }));
+    }
+    Ok(Json(body))
 }
 
 /// `GET /ui/v1/runtimes/{id}[?file=key]`：运行环境详情聚合查询（Admin）。
@@ -203,7 +214,8 @@ pub async fn runtime_detail(
     let config_mounts_stale = read.config_mounts_stale;
     // 站点网络的实际选择：网段/池划分与首选被占用的原因（页面同源，只读）。
     let net = state.site_network_info();
-    write_done(json!({
+    let mut body = json!({
+        "data": {
         "runtime": {
             "id": row.id,
             "kind": { "code": row.kind_key, "label": row.kind_label },
@@ -269,7 +281,15 @@ pub async fn runtime_detail(
         "sites": sites,
         "config_mounts_stale": config_mounts_stale,
         "can_admin": user.can(skiff_model::Permission::Admin),
-    }))
+        }
+    });
+    if q.with_schema {
+        body["schema"] = super::runtimes_page::runtime_detail_schema(&body["data"], &id, &q.tab);
+    }
+    let mut resp = Json(body).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
 }
 
 /// `GET /ui/v1/runtimes/catalog`：可安装类型与版本（与旧新建弹窗同一目录来源）。
@@ -281,6 +301,11 @@ pub async fn runtime_catalog(
     UiAuthUser(user): UiAuthUser,
 ) -> Result<Response, ApiError> {
     crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
+    write_done(catalog_json(&state))
+}
+
+/// 运行环境目录的 JSON 形状：列表页的新建弹窗与 `/runtimes/catalog` 共用一份。
+pub(super) fn catalog_json(state: &AppState) -> serde_json::Value {
     let kinds: Vec<serde_json::Value> = skiff_app::runtime_catalog::RUNTIME_KINDS
         .iter()
         .map(|k| {
@@ -305,7 +330,7 @@ pub async fn runtime_catalog(
         })
         .collect();
     let (fixed, base) = state.apk_mirror_current();
-    write_done(json!({
+    json!({
         "kinds": kinds,
         "default_php_version": skiff_app::sites::DEFAULT_PHP_VERSION,
         "apk_mirrors": mirrors,
@@ -314,7 +339,7 @@ pub async fn runtime_catalog(
             "base": base,
             "label": skiff_app::runtime_catalog::apk_mirror_label(&base),
         },
-    }))
+    })
 }
 
 /// `POST /ui/v1/runtimes`：创建/安装运行环境（同 `RUNTIME_CREATE` 与 `runtime_cmd::create`）。

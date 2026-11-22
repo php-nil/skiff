@@ -755,6 +755,7 @@ pub async fn trash_shell(
 pub async fn api_trash_list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult {
     admin(&user, act::FILE_TRASH_READ)?;
     let fs = state.admin_fs_arc();
@@ -765,11 +766,18 @@ pub async fn api_trash_list(
     .await
     .map_err(app_err)?
     {
-        Ok(items) => Ok(Json(json!({
-            "ok": true,
-            "items": items,
-            "retention_days": state.cfg.trash_retention_days,
-        }))),
+        Ok(items) => {
+            let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+            let mut body = json!({
+                "ok": true,
+                "items": items,
+                "retention_days": state.cfg.trash_retention_days,
+            });
+            if with_schema {
+                body["schema"] = super::ui::files_page::trash_schema(&body);
+            }
+            Ok(Json(body))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }
@@ -870,6 +878,7 @@ pub async fn quotas_shell(
 pub async fn api_quota_list(
     State(state): State<Arc<AppState>>,
     AuthUser(user): AuthUser,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult {
     admin(&user, act::FILE_QUOTA_READ)?;
     let fs = state.admin_fs_arc();
@@ -880,7 +889,14 @@ pub async fn api_quota_list(
     .await
     .map_err(app_err)?
     {
-        Ok(quotas) => Ok(Json(json!({ "ok": true, "quotas": quotas }))),
+        Ok(quotas) => {
+            let with_schema = q.get("with_schema").map(String::as_str) == Some("true");
+            let mut body = json!({ "ok": true, "quotas": quotas });
+            if with_schema {
+                body["schema"] = super::ui::files_page::quotas_schema(&body);
+            }
+            Ok(Json(body))
+        }
         Err(e) => Err(fs_err(e)),
     }
 }

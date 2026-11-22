@@ -47,10 +47,11 @@
 
 **渲染映射**
 
+- 页面骨架由服务端产出：`GET /ui/v1/tasks?with_schema=true`、`/tasks/{id}?with_schema=true` 由 `handlers/ui/tasks_page.rs` 拼装，作业侧对应 `handlers/ui/jobs_page.rs`；壳脚本只 fetch + `prepareServerSchema`，不再保留 `tasksSchema` / `taskDetailSchema` / `jobsSchema` / `jobDetailSchema`。
 - 任务列表：表格（任务/方式/目标/调度/下次运行/状态/最近结果），行点击进详情；`can_admin` 时行内提供「切换启停 / 立即运行」（删除放详情页，便于按内置任务显隐）。
 - 任务详情：信息、参数、最近执行表格三块 + 任务操作卡片（启停 / 立即运行 / 删除）。
 - 作业列表：表格（作业/标题/类型/目标/状态/耗时/提交人/创建时间），行点击进详情。
-- 作业详情：元数据、参数、结果、日志四条 `card`；`can_cancel` / `can_retry` 时给「请求取消 / 重试作业」，取消前确认，重试成功跳新作业详情；日志用 `code` 组件，实时流仍待 SSE 通道。
+- 作业详情：元数据、参数、结果、日志四条 `card`；`can_cancel` / `can_retry` 时给「请求取消 / 重试作业」，取消前确认，重试成功跳新作业详情；日志用 `code` 组件，实时流仍待 SSE 通道。步骤文案（状态、结束时间）由服务端格式化成 `· 名称：状态（详情） · 结束 时间`。
 
 ### 5.13 审计（第六批占位 → 第十五批落地）
 
@@ -60,8 +61,9 @@
   - 关键字非空时对 actor / ip / action / target / detail 做 ASCII 不区分大小写的子串匹配（`instr(lower(...))`，`%`/`_` 按字面量处理）。
   - 排序 `(ts DESC, id DESC)`，走既有 `idx_audit_ts(ts DESC, id DESC)`（schema v19），**未改表、未加索引**；关键字只做行内过滤。
   - 游标是 `app::cursor::CursorCodec<AuditScope>` 签名游标（HMAC，密钥复用持久化 CSRF 派生密钥，签名域 `cursor:audit:` 隔离），载荷为上一页末项 `(ts,id)` 并与筛选指纹绑定：换关键字沿用旧游标 400、篡改 400、旧版本 400。`limit` 默认 50、上限 200。
-  - 字段冻结：`id` / `ts`（RFC3339 UTC，D9）/ `actor` / `ip` / `action` / `target` / `result` / `detail`（截断 200 字符）。
+  - 字段冻结：`id` / `ts`（RFC3339 UTC，D9）/ `ts_label`（本地时间文案，服务端 `fmt_local_time`，时区不可判定时给 `—`）/ `actor` / `ip` / `action` / `target` / `result` / `detail`（截断 200 字符）。
 - 前端：关键字表单 + `table` 列表 + 「下一页（更早记录）」按钮；翻页是向更早的 keyset 前进，不提供随机跳页。
+- 页面骨架由 `handlers/ui/audit_page.rs` 在 `?with_schema=true` 时产出；壳脚本只 fetch，不再保留 `auditSchema`。搜索、重置与翻页统一走宿主动作 `skiffSearch`（读表单 `q` 或显式 `q`/`cursor`，`URLSearchParams` 编码，整页跳转）。
 - 列表渲染：`table` 固定 `perPage: -1`，把宿主给出的本页全部行渲染出来；审计页再加 `virtual` + `height: 420` 定高内部滚动。服务端游标取本页第 `limit` 条的 `(ts,id)`，与本页最后一条实际渲染行一致，不再出现「本页 50 条只显示 10 条、翻页跳过 40 条」。其余本地列表（运行环境配置/扩展、站点解绑、Compose 项目、菜单、回收站、配额、商店）同规则，不与组件默认每页 10 条错位。
 - 本地验证：`main_flow` 覆盖 viewer 403、关键字命中、翻页游标、换关键字与篡改 400；无头浏览器实测页面渲染、`?q=` 过滤与接口层游标翻页（10 条验收数据内，后翻 id 递减、换关键字 400）。
 
@@ -76,6 +78,8 @@
 - 强改密期间中间件只放行入口页 `/login`、`/settings/security` 与 `/static/`、`/ui/`、`/api/`；新前端失败一律按 JSON 信封回显，不 PRG。
 - 口令框直接声明原生 `type: 'password'`（`autocomplete`：当前口令 `current-password`，新口令 `new-password`）。
 - `GET /ui/v1/settings` 返回 `panel` / `account` / `keys` / `can_admin` / `flash`；公钥仅对管理员返回，非管理员为空数组。
+- 四页骨架（安全 / 菜单 / 界面 / Docker）都在 `handlers/ui/settings_page.rs`，各 GET 带 `?with_schema=true` 时多返回顶层 `schema`；壳脚本只 fetch，`settingsSchema` / `menuSettingsSchema` / `uiSettingsSchema` / `dockerSettingsSchema` 已删。写操作仍走宿主动作（`skiffSettingsSave` / `skiffMenuWrite` / `skiffUiThemeWrite` / `skiffUiPreset` / `skiffDockerSettingsWrite`），因为要 POST 后整页刷新。
+- TOTP 备份码是**一次性响应**（服务端不存），页面上不落库；壳侧改为提交后当场弹宿主图层展示，不经 `sessionStorage` 中转。
 
 **字段表（冻结，只增不改）**
 
@@ -132,6 +136,9 @@
 - `GET /ui/v1/web/logs?load=&kind=&lines=&level=&status=&q=&offset=`：未 `load` 时不触碰文件，返回读取范围、状态码分布、截断标记与行数据。
 - 页面拆三级子视图（2026-11-17）：`/{p}/sites/web` 状态、`/config` 配置、`/logs` 日志、`/modules` 模块，每次只渲染当前视图（详见 `01-SCOPE.md` §2.3.1「三级子视图登记」）；日志视图进入即按查询参数取数（默认访问日志 200 行），「加载日志」把筛选条件带回 `?type=&lines=&level=&status=&q=`（不再用 `?logs=1`）。
 - 写操作：`POST /ui/v1/web/config`（主配置，`nginx -t` + reload）与 `POST /ui/v1/web/params`（性能参数）；HTML 表单路径已删除，写入统一经 `nginx::apply_main` / `apply_params`，审计事件 `nginx.config.save` / `nginx.params.save` 不变。失败返回 400 并保留错误文本，不伪装成功。
+- 骨架：`GET /ui/v1/web?view=status|config|logs|modules&with_schema=true` 由 `handlers/ui/web_page.rs` 产出，壳脚本只 fetch + `prepareServerSchema`；`webSchema` / `webEnvButton` / `webStepState` / 安装轮询已删。
+- 安装进度是表格 `source.autoRefresh = 2000`，由框架轮询；离开页面或节点隐藏自动停止。原先脚本里的 `setTimeout` + `document.querySelector` 改写 DOM 的路径已移除。
+- 运维按钮（安装 / 启停 / 重启 / 重新安装 / 删除）的显隐由服务端按 `container_state` 决定，动作 `skiffWebEnv` 留在脚本（提交后整页刷新）。
 
 ### 5.15 商店（第八批）
 
@@ -141,6 +148,7 @@
   1. `POST /ui/v1/store/plugins/{id}/install` → 调用 `store::prepare`（下载、摘要/大小、验签、版本与降级校验），返回权限确认数据；审计动作与旧表单一致（`store.install`）。
   2. `POST /ui/v1/plugins/confirm` → 调用 `plugins::verify_for_confirm` + `commit_install`（同一信任判定、授权落库、暂存包清理），是安装的唯一收尾入口。
 - 进度：下载验签是单次同步请求，前端只给「正在下载并验签」占位提示，不引入 SSE/轮询。
+- 骨架：`GET /ui/v1/store?with_schema=true` 由 `handlers/ui/store_page.rs` 产出（四类分区的表格 + 升级通道），壳脚本只 fetch；`storeSchema` / `storeItemTable` 已删。安装动作留在脚本（`skiffStoreInstall` → `skiffStoreConfirm` 两步串行，第二步依赖第一步回传的一次性 token）。
 - 升级包下载（第二十五批）：`POST /ui/v1/store/upgrades/{version}/download`（Admin + `x-csrf-token`）走 `store::apply_upgrade_download`——同一目录启用/公钥判定、同一暂存与 sha256 校验、同一 `upgrade.download` 审计；成功返回 `{version,arch,channel,source,sha256,size,path,reused}`。商店页在 `upgrade.can_download` 时给出原生下载按钮，不再跳旧页。
 
 **字段表（冻结，只增不改）**
@@ -173,6 +181,7 @@
 - 插件详情页把声明的功能页以纯文本列出，并说明原生 schema 渲染与旧 SSR 兼容关系。
 - 启停 / 卸载分别复用 `plugins::apply_toggle`、`plugins::apply_remove`（停进程、审计、任务回收、菜单偏好清理语义不变）。
 - 上传安装包（发现页）与 RPC 桥仍未原生渲染，也不从新页面跳旧页；商店安装已原生可用。
+- 骨架：`GET /ui/v1/plugins?tab=&with_schema=true` 与 `/ui/v1/plugins/{id}?with_schema=true` 由 `handlers/ui/plugins_page.rs` 产出（三个页签的内容块 + 信息页卡片），壳脚本只 fetch；`pluginsSchema` / `pluginCard` / `pluginInfoSchema` 已删。启停 / 卸载 / RPC 仍是宿主动作。
 
 **字段表（冻结，只增不改）**
 
@@ -196,6 +205,9 @@
 - 列表用 `virtual-list`（`itemHeight: 52`、`height: 560`）虚拟滚动；条目操作是 budding 按钮：打开 / 下载 / 重命名 / 删除。下载仍走既有 `GET /{p}/files/download`。
 - 上传走宿主 `PlatformAdapter.upload`：前端按服务端下发的 `upload_chunk_bytes`（256 KiB）切片，逐片 POST 既有 `/{p}/files/upload?path=&offset=`（同一授权、同一审计），按字节上报进度，组件负责进度、取消与重试。**宿主必须同时注入 `platform.request`**：上游 `createPlatformAdapter` 只在提供 `request` 时保留 `upload`。
 - 终端不在本批：仍待 WS 契约与 terminal Pack（待第 4 组）。
+- 骨架：`GET /ui/v1/files?path=&with_schema=true`（目录）、`/ui/v1/files/read?path=`（查看）、`/ui/v1/files/trash`、`/ui/v1/files/quotas` 均由 `handlers/ui/files_page.rs` 产出；壳脚本只 fetch，`filesSchema` / `fileRowSchema` / `fileViewSchema` / `filesTrashSchema` / `filesQuotasSchema` 已删。
+- 目录行结构落静态资产 `static/budding/pages/_file-row.json`，由 `files_page.rs` 用 `include_str!` 内联并按条目数组展开——行内有 6 个 dialog，用 JSON 写比在 Rust 里拼更可读。该文件不是页面，不经路由加载。
+- 留在脚本的是**动作体**：`skiffFileOpen`（路径编码 + 目录/文件分流）、`skiffFileDownload`、分片上传、chmod / chown（`uid` / `gid` 必须发数字）、归档 / 解压。
 - 旧 SSR（浏览 / 回收站 / 配额）已删除（2026-11-18）；三个 L3 均为壳页，数据走 `/files/*` 与 `/ui/v1/files*`。
 - 回收站与配额已原生化（第二十一批）：`GET /{p}/files/trash`、`/{p}/files/quotas` 交付壳页，入口门禁仍是 `FILE_TRASH_READ` / `FILE_QUOTA_READ`；数据与写操作**直接复用**既有 `GET /files/trash/list`、`POST /files/trash/{restore,purge,clear}`、`GET /files/quotas/list`、`POST /files/quotas/{set,cancel,scan}`（`x-csrf-token`、审计、`commands::file` 不变），未新增 `/ui/v1` 写入口。
 - 回收站表（路径 / 大小 / 删除时间 / 剩余天数）行内「恢复 / 彻底删除」，顶部「清空回收站 / 刷新」；恢复冲突（目标已存在）二次确认 `overwrite`。配额页顶部「设置配额」表单（路径 + 容量/文件数上限，至少一项），配额表（路径 / 已用 / 上限 / 统计）行内「重新统计 / 取消配额」。`GET /ui/v1/files` 只新增 `can_admin`（只增不改），`can_admin` 时才显示两个入口。
@@ -205,7 +217,7 @@
 - 代码查看器：文件管理里点文本文件进入 `GET /{p}/files/view?path=`（budding 隐藏路由），数据来自 `GET /ui/v1/files/read?path=`（`FILE_READ`，仅 Admin）。响应 `{path,text,size,truncated,max_edit_bytes}`；渲染用 `code` 组件（1.8.0 起渲染器类型名为 `code`，旧 `code-viewer` 已不再注册；文本字段为 `modelValue`，旧 `code` 字段组件不读取；只读、行号、复制、固定高 560），语言按扩展名映射；疑似二进制（含 NUL）只提示不渲染。纯前端高亮，不引 WASM。
 - 代码 Pack：入库 `budding-code-1.8.4.min.js`（90,331 B，取自 `dist/packs/code.mjs`，自包含 ESM），启动脚本在 `embed` 前用 `BuddingSDK.registerPack('code', …?v=<ver>)` 注册；渲染器类型名同为 `code`，文本字段为 `modelValue`。未注册或加载失败时 `code` 组件退化为纯文本。CSP 仍是 `script-src 'self'`，动态 import 同源可用。
 - 站点日志：`GET /{p}/sites/{domain}/logs` 交壳页（服务端已无 SSR 日志页）。数据来自 `GET /ui/v1/sites/{domain}/logs?part=access|error&tail=200&q=`，复用 `AppState::site_logs`（尾部 2MB 窗口、最新在前），权限与旧页一致（登录即可读）。页面用 `code` 组件定高 560，`tail` 可选（上限 2000）、关键字只过滤该窗口，访问/错误日志切换与刷新都是页面级按需拉取，不建 SSE。
-- 作业日志：`GET /{p}/jobs/{id}/logs` 交 budding 日志页；脚本取正文走 `GET /ui/v1/jobs/{id}`（`logs` 字段带首屏尾巴）与 `/{p}/jobs/{id}/logs/stream`（SSE 尾随，同权限、同审计）。页面按需加载，作业详情页首屏日志用 `code` 组件，取消 / 重试走 `/ui/v1/jobs/{id}/cancel|retry`。
+- 作业日志：`GET /{p}/jobs/{id}/logs` 交 budding 日志页，页面骨架与正文都由 `GET /ui/v1/jobs/{id}/logs?with_schema=true` 给出（`JOB_LOGS`）：服务端按 `after` 游标最多聚合 10 页（每页 500 行），合成 `HH:MM:SS [stream] line` 文本后由 `jobs_page::job_logs_schema` 出 `code` 查看器，`truncated` 时在计数行提示「可刷新继续」。`/{p}/jobs/{id}/logs/stream` 的 SSE 尾随仍在（同权限、同审计），但页面按需加载，未接页内实时流。作业详情首屏日志仍用 `code` 组件，取消 / 重试走 `/ui/v1/jobs/{id}/cancel|retry`。
 - 站点详情页新增「查看访问 / 错误日志」入口；旧 SSR 日志页不再从面板导航。
 
 ### 5.19 容器终端（第十四批）

@@ -13,6 +13,7 @@ use super::*;
 pub async fn settings(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let can_admin = user.can(skiff_model::Permission::Admin);
     let security = skiff_app::views::settings::account_security(&state, user.user.id)
@@ -84,7 +85,18 @@ pub async fn settings(
         can_admin,
         flash: SettingsFlashItem { notice, error },
     };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = q.with_schema.then(|| {
+        super::settings_page::security_schema(
+            &serde_json::to_value(&data).unwrap_or_default(),
+            &user.user.username,
+            &user.user.role.to_string(),
+        )
+    });
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -127,6 +139,7 @@ pub async fn settings_panel_update(
 pub async fn settings_menu(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let groups = skiff_app::menu::settings_view(&state, &user)
         .into_iter()
@@ -150,7 +163,14 @@ pub async fn settings_menu(
         })
         .collect();
     let data = MenuSettingsData { groups };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = q.with_schema.then(|| {
+        super::settings_page::menu_schema(&serde_json::to_value(&data).unwrap_or_default())
+    });
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -177,6 +197,7 @@ pub async fn settings_menu_update(
 pub async fn settings_ui(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let theme = skiff_app::theme::current(&state);
     let data = UiThemeData {
@@ -190,7 +211,14 @@ pub async fn settings_ui(
         adjusted: theme.adjusted,
         can_admin: user.can(skiff_model::Permission::Admin),
     };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = q
+        .with_schema
+        .then(|| super::settings_page::ui_schema(&serde_json::to_value(&data).unwrap_or_default()));
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -261,6 +289,7 @@ pub async fn settings_ui_update(
 pub async fn settings_docker(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let data = DockerSettingsData {
         registry_mirror: state
@@ -275,7 +304,21 @@ pub async fn settings_docker(
             .unwrap_or_default(),
         can_admin: user.can(skiff_model::Permission::Admin),
     };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = if q.with_schema {
+        let env = state.site_env_status().await;
+        let images = json!({ "nginx_image": env.nginx_image, "php_image": env.php_image });
+        Some(super::settings_page::docker_schema(
+            &serde_json::to_value(&data).unwrap_or_default(),
+            &images,
+        ))
+    } else {
+        None
+    };
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

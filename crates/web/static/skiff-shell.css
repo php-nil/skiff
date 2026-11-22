@@ -184,3 +184,8 @@
   z-index: 9999 !important;
   pointer-events: auto;
 }
+/* 代码查看器：不指定语言时隐藏「语言选择」与状态条（原在主题内联样式里）。 */
+.skiff-code-no-lang .bud-code__select,
+.skiff-code-no-lang .bud-code__status {
+  display: none !important;
+}

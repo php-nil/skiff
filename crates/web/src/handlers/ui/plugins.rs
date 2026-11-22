@@ -10,6 +10,7 @@ use super::*;
 pub async fn plugins(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<PluginListQuery>,
 ) -> Result<Response, ApiError> {
     let mut views =
         skiff_app::views::plugins::plugin_rows(&state).map_err(|e| ApiError(AppError::from(e)))?;
@@ -27,7 +28,14 @@ pub async fn plugins(
         "allow_unsigned": state.cfg.allow_unsigned,
         "reduced_allowed": state.cfg.allow_reduced_sandbox,
     });
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = q.with_schema.then(|| {
+        super::plugins_page::plugins_schema(&data, q.tab.as_deref().unwrap_or("installed"))
+    });
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -38,6 +46,7 @@ pub async fn plugin_info(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
     Path(id): Path<String>,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let rec = state
         .db()
@@ -92,7 +101,14 @@ pub async fn plugin_info(
         allow_unsigned: state.cfg.allow_unsigned,
         reduced_allowed: state.cfg.allow_reduced_sandbox,
     };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = q.with_schema.then(|| {
+        super::plugins_page::plugin_info_schema(&serde_json::to_value(&data).unwrap_or_default())
+    });
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

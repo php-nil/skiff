@@ -7,13 +7,16 @@ use axum::Router;
 use super::*;
 
 /// `GET /ui/v1/tasks`：定时任务列表（只读）。
+///
+/// `with_schema=true` 时额外带回页面骨架（页面加载用），表格翻页不带该参数。
 pub async fn tasks(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<PageListQuery>,
 ) -> Result<Response, ApiError> {
     let svc = handlers::tasks::service(&state).map_err(ApiError)?;
-    let needle = q.q.as_deref().unwrap_or("").trim().to_lowercase();
+    let keyword = q.q.as_deref().unwrap_or("").trim().to_string();
+    let needle = keyword.to_lowercase();
     let views = svc.list_views().await;
     let rows: Vec<(String, TaskItem)> = views
         .iter()
@@ -27,16 +30,24 @@ pub async fn tasks(
         })
         .map(|t| (t.id.clone(), t))
         .collect();
-    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
-    let mut resp = Json(json!({
+    let (items, next_cursor, total) = paginate(rows, clamp_limit(q.limit), q.cursor.as_deref());
+    let can_admin = user.can(skiff_model::Permission::Admin);
+    let schema = q.with_schema.then(|| {
+        let prefix = format!("/{}", state.cfg.entry_prefix);
+        super::tasks_page::tasks_page_schema(can_admin, &keyword, &prefix)
+    });
+    let mut body = json!({
         "data": {
             "items": items,
             "total": total,
             "next_cursor": next_cursor,
-            "can_admin": user.can(skiff_model::Permission::Admin),
+            "can_admin": can_admin,
         }
-    }))
-    .into_response();
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -47,6 +58,7 @@ pub async fn task_detail(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
     Path(id): Path<String>,
+    Query(q): Query<PageListQuery>,
 ) -> Result<Response, ApiError> {
     let svc = handlers::tasks::service(&state).map_err(ApiError)?;
     let view = svc
@@ -74,15 +86,22 @@ pub async fn task_detail(
                 .collect()
         })
         .unwrap_or_default();
-    let mut resp = Json(json!({
+    let can_admin = user.can(skiff_model::Permission::Admin);
+    let schema = q
+        .with_schema
+        .then(|| super::tasks_page::task_detail_schema(&task, &payload, &runs, can_admin));
+    let mut body = json!({
         "data": {
             "task": task,
             "payload": payload,
             "runs": runs,
-            "can_admin": user.can(skiff_model::Permission::Admin),
+            "can_admin": can_admin,
         }
-    }))
-    .into_response();
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

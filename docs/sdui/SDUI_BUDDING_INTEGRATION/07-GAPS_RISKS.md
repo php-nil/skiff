@@ -30,7 +30,7 @@ F3 的降级说明：可退化为「列表 + 面包屑」导航，但会丢失�
 | G4 | 无 SSE / WS | 作业日志、容器日志、终端 | 用 `progress` + `source.autoRefresh` 轮询 | SSE / WS 通道 | 需上游改动（如需页内实时日志） |
 | G6 | 无通知中心 | 概览待办、审计提醒 | `alert` + `toast` + 菜单 `badge` | 通知中心 | 我方适配 |
 | G7 | 组件默认文案为 `.vue` 内中文字面量；Vuetify `createVuetify()` 内部英文 | 全站中文 | 1.9.0 起 `embed` 接受扁平 `locale` / `uiDefaults`，`setLocale` 可运行时切换；宿主尚未传参 | 无（宿主迁移待做，backlog A5 相关） | 已关闭（上游能力到位） |
-| G8 | 主题不切 Vuetify 暗色、不设 `--v-theme-primary` | 现有深色主题、品牌色 | 当前仍是文档级 CSS 变量注入 `--v-theme-*` / `--bud-admin-chrome-*` + `bud-admin--chrome` 类（r6 编译期仍拒绝 schema 根 `theme`） | 无（1.9.0 提供 `createUi({ theme })` / `registerTheme`；宿主迁移见 backlog A5） | 已关闭（宿主迁移待做，见 §3.7.2） |
+| G8 | 主题不切 Vuetify 暗色、不设 `--v-theme-primary` | 现有深色主题、品牌色 | 当前仍是文档级 CSS 变量 + `bud-admin--chrome` 类（r6 编译期仍拒绝 schema 根 `theme`）；变量由壳页内联 `<style>` 服务端下发，取色与校正仍只在 `crates/app/src/theme.rs` 一处 | 无（1.9.0 提供 `createUi({ theme })` / `registerTheme`；宿主迁移见 backlog A5） | 已关闭（宿主迁移待做，见 §3.7.2） |
 | G9 | `admin` / `nav-menu` / `page-tabs` 是否随包 | 三级菜单壳、页签栏 | **已解决**：发行包 `groups.admin` 已含三个组件，壳页直接使用 | 无（已具备） | 已关闭 |
 | G10 | 默认包不含 `chart` | 概览暂无图表 | 暂不需要 | 随包提供 chart | 暂不处理（D16） |
 | G11 | 句柄能力 | 切路由/切语言/切主题 | 1.9.0 起句柄带 `instance`，可直接 `setLocale` / `registerTheme`；路由仍按既有导航动作 | 无（已具备） | 已关闭 |

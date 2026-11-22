@@ -35,20 +35,34 @@ pub async fn containers(
         .map(|c| (c.id.clone(), container_item(c)))
         .collect();
     let (page, next_cursor, total) = paginate(rows, clamp_limit(q.limit), q.cursor.as_deref());
-    let mut resp = Json(json!({
+    let docker_reason = state.docker_unavailable_reason();
+    let can_admin = user.can(skiff_model::Permission::DockerLifecycle);
+    let schema = q.with_schema.then(|| {
+        super::containers_page::containers_schema(
+            filter,
+            total,
+            docker_ok,
+            &docker_reason,
+            can_admin,
+        )
+    });
+    let mut body = json!({
         "data": {
             "items": page,
             "total": total,
             "next_cursor": next_cursor,
             "filter": filter,
             "docker_available": docker_ok,
-            "docker_reason": state.docker_unavailable_reason(),
+            "docker_reason": docker_reason,
             "can_operate": user.can(skiff_model::Permission::DockerOperate),
             "can_delete": user.can(skiff_model::Permission::DockerLifecycle),
-            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
+            "can_admin": can_admin,
         }
-    }))
-    .into_response();
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -59,6 +73,7 @@ pub async fn container_detail(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
     Path(id): Path<String>,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let row = handlers::resolve_container(&state, &id)
         .await
@@ -234,7 +249,15 @@ pub async fn container_detail(
         can_delete: user.can(skiff_model::Permission::DockerLifecycle),
         docker_reason: state.docker_unavailable_reason().to_string(),
     };
-    let mut resp = Json(json!({ "data": data })).into_response();
+    let schema = q
+        .with_schema
+        .then(|| super::containers_page::container_detail_schema(&data));
+    let data = serde_json::to_value(&data).unwrap_or_default();
+    let mut body = json!({ "data": data });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -272,15 +295,22 @@ pub async fn container_logs(
         .logs(&row.id, tail)
         .await
         .map_err(|e| ApiError(AppError::Unavailable(e.to_string())))?;
-    Ok(Json(json!({
+    let schema = (q.get("with_schema").map(String::as_str) == Some("true")).then(|| {
+        super::containers_page::container_logs_schema(&row.id, &row.name, &row.state, tail, &text)
+    });
+    let mut body = json!({
         "data": {
             "id": row.id,
-            "name": row.name,
+            "name": row.name.clone(),
             "state": row.state,
             "tail": tail,
             "text": text,
         }
-    })))
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    Ok(Json(body))
 }
 
 /// `POST /ui/v1/containers/{id}/{action}`：启动/停止/重启/删除。

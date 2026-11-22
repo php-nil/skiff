@@ -25,3 +25,4 @@
 | §5.12–5.20 | [06-BRIDGE-PAGES-B.md](SDUI_BUDDING_INTEGRATION/06-BRIDGE-PAGES-B.md) | 任务与作业、审计、设置、商店、插件、文件、代码/日志查看器、容器终端、日志入口 |
 | §6–7 | [07-GAPS_RISKS.md](SDUI_BUDDING_INTEGRATION/07-GAPS_RISKS.md) | 能力缺口与建议、未决项与风险 |
 | §8 | [08-DECISIONS.md](SDUI_BUDDING_INTEGRATION/08-DECISIONS.md) | 决策记录（D1–Dn） |
+| §9 | [09-JSON_PAGES.md](SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md) | 页面 Schema 的 JSON 资产口径：布局归表现层、取数与交互声明化、壳脚本保留范围、迁移台账 |

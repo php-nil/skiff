@@ -41,17 +41,25 @@ pub async fn compose(
             logs: s.logs,
         })
         .collect();
-    let mut resp = Json(json!({
+    let docker_available = state.docker().available();
+    let can_admin = user.can(skiff_model::Permission::DockerLifecycle);
+    let schema = q.with_schema.then(|| {
+        super::compose_page::compose_schema(&projects, docker_available, &docker_error, can_admin)
+    });
+    let mut body = json!({
         "data": {
             "projects": projects,
             "services": services,
             "selected_project": selected,
-            "docker_available": state.docker().available(),
+            "docker_available": docker_available,
             "docker_reason": docker_error,
-            "can_admin": user.can(skiff_model::Permission::DockerLifecycle),
+            "can_admin": can_admin,
         }
-    }))
-    .into_response();
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)

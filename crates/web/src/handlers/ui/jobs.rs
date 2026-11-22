@@ -7,10 +7,12 @@ use axum::Router;
 use super::*;
 
 /// `GET /ui/v1/jobs`：作业列表（只读，最近 200 条）。
+///
+/// `with_schema=true` 时额外带回页面骨架（页面加载用），表格翻页不带该参数。
 pub async fn jobs(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<PageListQuery>,
 ) -> Result<Response, ApiError> {
     let rows: Vec<(String, JobItem)> = state
         .jobs()
@@ -21,16 +23,23 @@ pub async fn jobs(
             (item.id.clone(), item)
         })
         .collect();
-    let (items, next_cursor, total) = paginate(rows, page_limit(&q), q.cursor.as_deref());
-    let mut resp = Json(json!({
+    let (items, next_cursor, total) = paginate(rows, clamp_limit(q.limit), q.cursor.as_deref());
+    let schema = q.with_schema.then(|| {
+        let prefix = format!("/{}", state.cfg.entry_prefix);
+        super::jobs_page::jobs_page_schema(&prefix)
+    });
+    let mut body = json!({
         "data": {
             "items": items,
             "total": total,
             "next_cursor": next_cursor,
             "can_admin": user.can(skiff_model::Permission::Admin),
         }
-    }))
-    .into_response();
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -41,6 +50,7 @@ pub async fn job_detail(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
     Path(id): Path<String>,
+    Query(q): Query<PageListQuery>,
 ) -> Result<Response, ApiError> {
     let job = handlers::jobs::load_job(&state, &id).map_err(ApiError)?;
     let tail = state.jobs().tail(&job.id, 200);
@@ -51,7 +61,7 @@ pub async fn job_detail(
         .collect::<Vec<_>>()
         .join("\n");
     let view = handlers::jobs::detail_of(&job, cursor, log_text);
-    let mut resp = Json(json!({
+    let mut body = json!({
         "data": {
             "id": view.id,
             "title": view.title,
@@ -87,8 +97,73 @@ pub async fn job_detail(
             "logs": view.log_text,
             "can_admin": user.can(skiff_model::Permission::Admin),
         }
-    }))
-    .into_response();
+    });
+    if q.with_schema {
+        let prefix = format!("/{}", state.cfg.entry_prefix);
+        let schema = super::jobs_page::job_detail_schema(&body["data"], &prefix);
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
+}
+
+/// `GET /ui/v1/jobs/{id}/logs`：按游标聚合日志（最多 10 页）。
+///
+/// 原先由壳脚本循环 `?after=` 拼接文本再自建页面，现改为一步取回：
+/// 聚合留在服务端（与前端同样最多 10 页），前端只渲染 `body.schema`。
+pub async fn job_logs(
+    State(state): State<Arc<AppState>>,
+    UiAuthUser(user): UiAuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<JobLogsQuery>,
+) -> Result<Response, ApiError> {
+    guard::action(&user, act::JOB_LOGS)?;
+    let job = handlers::jobs::load_job(&state, &id).map_err(ApiError)?;
+    let mut after = q.after.unwrap_or(0);
+    let mut lines: Vec<String> = Vec::new();
+    let mut pages = 0;
+    let mut truncated = false;
+    while let Some(batch) = state
+        .jobs()
+        .logs_since(&job.id, after, handlers::jobs::LOG_PAGE)
+    {
+        for entry in &batch.entries {
+            lines.push(format!(
+                "{} [{}] {}",
+                handlers::jobs::fmt_log_time(entry.at),
+                entry.stream,
+                entry.line
+            ));
+        }
+        pages += 1;
+        if batch.entries.is_empty() || batch.max_seq <= after {
+            break;
+        }
+        after = batch.max_seq;
+        if pages >= 10 {
+            truncated = true;
+            break;
+        }
+    }
+    let status_label = crate::labels::job_status(job.status);
+    let schema = q.with_schema.then(|| {
+        let prefix = format!("/{}", state.cfg.entry_prefix);
+        super::jobs_page::job_logs_schema(&job.id, &prefix, &lines, status_label, truncated)
+    });
+    let mut body = json!({
+        "data": {
+            "job_id": job.id,
+            "status_label": status_label,
+            "lines": lines,
+            "truncated": truncated,
+        }
+    });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
@@ -147,6 +222,7 @@ pub(super) fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/ui/v1/jobs", get(jobs))
         .route("/ui/v1/jobs/{id}", get(job_detail))
+        .route("/ui/v1/jobs/{id}/logs", get(job_logs))
         .route("/ui/v1/jobs/{id}/cancel", post(job_cancel))
         .route("/ui/v1/jobs/{id}/retry", post(job_retry))
 }

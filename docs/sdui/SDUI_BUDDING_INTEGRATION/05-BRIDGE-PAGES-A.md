@@ -41,8 +41,9 @@
 
 **渲染映射**
 
+- 页面骨架由 `handlers/ui/overview_page.rs` 在 `?with_schema=true` 时产出（响应多一个顶层 `schema`），壳脚本只 fetch + `prepareServerSchema`，不再保留 `overviewSchema`；健康槽位的插件 RPC 已在服务端取好，前端不再转发 `snapshot`。
 - `docker.status.code != available` → 顶部 warning `alert`（标题用 `label`，正文用 `reason`）。
-- 四张计数卡片：容器 / 网站 / 插件 / 运行环境；文案由前端 schema 生成，数字来自接口。
+- 四张计数卡片：容器 / 网站 / 插件 / 运行环境；文案在服务端 schema 里，数字来自接口。
 - 健康卡片：`health_plugin` 存在时取 `snapshot`，超过阈值（`cpu_high` / `mem_high`）追加 warning `alert`；`health_plugin` 为空或取数失败时都渲染「系统状态」原因卡片（空值用 `health_reason`，失败用 RPC `error.message`），不隐藏其它卡片。
 - 「趋势图表」卡片内固定 `alert` 占位，禁止在占位里暗示已选定图表库。
 
@@ -117,8 +118,9 @@
 
 - 站点列表：Schema 由内核生成（`GET /ui/v1/sites?with_schema=true`），前端只 fetch + embed；`table`（`source` 游标分页、`paging: 'cursor'`），列 = 域名 / 类型 / 接入 / 状态 / HTTPS / 运行环境 / 创建时间；行点击 `navigate` 到 `/{p}/sites/{id}`；`can_admin` 时提供「新建站点」与批量启停卡片。
 - 站点详情：Schema 由内核 `crates/web/src/handlers/ui/site_page.rs` 按 `?tab=` 生成，与 `data` 同一次响应返回；前端只 fetch、对 `code` 节点做运行时转义后 embed。运行环境不可用时顶部 warning `alert`；「站点信息」+「站点操作」（启停/默认/删除）+「vhost 配置」+「附加域名」+「证书 / HTTPS」+「站点备份」卡片。删除用内建 `confirm` 的 `requireText` 要求输入域名，服务端同样校验 `confirm`；配置 code 组件预填当前内容，保存失败直接展示字段错误。
-- 新建站点：`/{p}/sites/new` 隐藏路由 + 原生表单；运行环境下拉来自 `GET /ui/v1/runtimes`，无就绪实例时保持空选项并由后端拒绝。
-- 运行环境列表：`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；安装与配置仍链回旧版页面。
+- 新建站点：`/{p}/sites/new` 隐藏路由；骨架由 `GET /ui/v1/pages/sites-new`（`handlers/ui/sites_extra_page.rs`）产出，`?type=` 预选站点类型。运行环境下拉在服务端按当前用户可见范围取好（非 Admin 拿不到 `/runtimes`，只留静态 / 反代两类），无就绪实例时保持空选项并由后端拒绝。
+- 运行环境列表：骨架由 `handlers/ui/runtimes_page.rs` 在 `?with_schema=true` 时产出；`table`，列 = 类型 / 实例 / 版本 / 说明 / 状态 / 站点数 / 接入；新建走页内 dialog（`skiffRuntimeCreate`），深链页保持可用。
+- 站点日志：`GET /ui/v1/sites/{id}/logs?with_schema=true`，骨架在 `sites_extra_page.rs::site_logs_schema`。
 - **D10 翻页**：1.8.0 的 `table` 支持游标分页（`paging: 'cursor'` + `cursorPath` + `loadMore`），与内核 `{items, next_cursor}` 直接对齐；本页与运行环境、容器、镜像/网络/卷、任务、作业列表统一改为 `source` 取数 + 底部「加载更多」，页面级只额外读一次 `?limit=1` 的元数据（`can_admin` / `docker_available`）。
 
 ### 5.9 容器（第二批）
@@ -175,9 +177,9 @@
 
 **渲染映射**
 
-- 列表：`table`（`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行点击 `navigate` 到 `/{p}/docker/containers/{id}`。`filter=error` 由 URL 查询参数并入 `source.params`。
-- 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单（删除前 `window.confirm`）；动作成功后刷新当前页，删除后回列表。
-- 新建容器：`/{p}/docker/containers/new` 隐藏路由 + 原生 `form`，字段与旧表单同名；创建成功后跳转 `/{p}/docker/containers/{id}`，失败展示统一错误信封文案。
+- 列表：骨架由 `handlers/ui/containers_page.rs` 在 `?with_schema=true` 时产出（`?filter=error` 与表格 `source.params` 同源，计数口径一致）；`table`（`source` 游标分页、`paging: 'cursor'`），列 = 名称 / ID / 镜像 / 状态 / 状态描述 / Compose 项目；行操作 = 详情 / 启停（`skiffContainerToggle`）/ 重启 / 删除（确认走宿主图层）。「全部 / 仅异常」是同 path 换 query，走 `skiffQueryNav` + 显式 `refreshPage`。
+- 详情：按块拆分「基本信息 / 端口 / 挂载 / 网络 / 资源限制 / 标签」六张 `card`；`can_operate` 时按状态给启动或重启+停止按钮，`can_delete` 时给删除按钮与资源限制表单。强制终止（`kill`）只给卡死容器。动作成功后刷新当前页，删除后回列表。
+- 新建容器：`/{p}/docker/containers/new` 隐藏路由，布局读静态资产 `pages/docker-container-new.json`（自取数 + `skiffDockerWrite` 声明式提交），创建成功后跳转 `/{p}/docker/containers/{id}`，失败展示统一错误信封文案。
 - **D10 翻页**同 5.8：列表由表格 `source` 按 `next_cursor` 追加，底部「加载更多」。
 
 ### 5.10 镜像 / 网络 / 卷（第三批，读写）
@@ -227,9 +229,10 @@
 
 **渲染映射**
 
+- Schema 已迁到 JSON 资产（[§9](09-JSON_PAGES.md)）：`pages/docker-images.json` / `docker-networks.json` / `docker-volumes.json`。页面 `source` 取 `?limit=1` 的元数据，表格自己按 `source` 游标分页取 `items`。
 - 三个页面共用 `table`（`source` 游标分页、`paging: 'cursor'`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
 - Docker 不可用时顶部 warning `alert`；列表底部按 `next_cursor` 显示「加载更多」。
-- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与行内「删除」（网络行按钮按 `can_remove` 显隐）；删除前 `window.confirm`，成功后刷新当前页。viewer 保持只读并提示需要管理员权限。
+- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与行内「删除」（网络行按钮另按 `can_remove` 显隐）；删除走内置 `confirm` → `ajax` → `invoke reload`，表单提交走 `form.props.api` 成功后再刷表格。viewer 保持只读并提示需要管理员权限。
 
 ### 5.11 编排 Compose（第四批）
 
@@ -268,6 +271,7 @@
 
 **渲染映射**
 
+- 骨架由 `handlers/ui/compose_page.rs` 在 `?with_schema=true` 时产出；壳脚本只 fetch，不再保留 `composeSchema`。
 - 项目表格：项目 / 归属 / 服务数 / 运行中，行内按钮启动、停止、重启、清理（清理前确认，卷默认保留）。
 - `can_admin` 时追加「编辑 / 校验 / 部署」卡片：项目名（必填，不能为 `skiff` / `sites`）、compose 文本域、操作下拉（仅校验 / 校验并部署）。校验结果以弹窗展示服务顺序、网络与卷；部署后刷新列表。viewer 只看到权限提示。
 - 服务日志暂由旧页展示（日志查看器待 T3）。

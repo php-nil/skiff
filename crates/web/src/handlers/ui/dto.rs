@@ -134,6 +134,65 @@ pub struct ListQuery {
     pub q: Option<String>,
 }
 
+/// 插件列表的页签与页面骨架开关（`tab` 只切内容块，不换路由）。
+#[derive(Debug, Default, Deserialize)]
+pub struct PluginListQuery {
+    #[serde(default)]
+    pub tab: Option<String>,
+    #[serde(default)]
+    pub with_schema: bool,
+}
+
+/// Web 服务页：子视图、日志筛选值与页面骨架开关。
+#[derive(Debug, Default, Deserialize)]
+pub struct WebPageQuery {
+    #[serde(default)]
+    pub view: String,
+    #[serde(default)]
+    pub with_schema: bool,
+    /// `1` / `true` 表示本次要读日志（与 `/web/logs` 的 `load` 同义）。
+    #[serde(default)]
+    pub load: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub lines: Option<usize>,
+}
+
+/// 单页请求只要页面骨架时的开关（详情类端点用）。
+#[derive(Debug, Default, Deserialize)]
+pub struct PageFlagQuery {
+    #[serde(default)]
+    pub with_schema: bool,
+}
+
+/// 作业日志页查询：`after` 为续读游标（缺省从头），`with_schema` 要页面骨架。
+#[derive(Debug, Default, Deserialize)]
+pub struct JobLogsQuery {
+    pub after: Option<i64>,
+    #[serde(default)]
+    pub with_schema: bool,
+}
+
+/// 需要页面骨架的列表查询（任务 / 作业）：通用分页字段 + `with_schema`。
+///
+/// 不复用 `ListQuery`：资源页与运行环境页不产页面骨架，加一个它们永远忽略的
+/// 开关只会让「这个端点会不会下发布局」变得不可判定。
+#[derive(Debug, Default, Deserialize)]
+pub struct PageListQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub q: Option<String>,
+    #[serde(default)]
+    pub with_schema: bool,
+}
+
 /// 文案与状态统一走 `{code,label}` 双字段（D8）。
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusDto {
@@ -426,6 +485,8 @@ pub struct ContainerListQuery {
     pub cursor: Option<String>,
     /// `error` 只保留异常容器（概览待办深链），其余值视为不筛选。
     pub filter: Option<String>,
+    #[serde(default)]
+    pub with_schema: bool,
 }
 
 /// 容器列表项（字段冻结，只增不改；与旧表格同一 `container_view`）。
@@ -505,6 +566,11 @@ pub struct ContainerDetailData {
 pub struct RuntimeFileQuery {
     #[serde(default)]
     pub file: String,
+    /// L3 子视图（overview / config / extensions / sites / manage）。
+    #[serde(default)]
+    pub tab: String,
+    #[serde(default)]
+    pub with_schema: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -783,6 +849,8 @@ pub struct ComposeServiceItem {
 #[derive(Debug, Default, Deserialize)]
 pub struct ComposeQuery {
     pub project: Option<String>,
+    #[serde(default)]
+    pub with_schema: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -848,18 +916,23 @@ pub struct JobItem {
 }
 
 /// 审计列表查询参数：关键字 `q`、`limit`（默认 50 / 上限 200）与签名游标。
+///
+/// `with_schema` 只在页面加载时由前端传 `true`；翻页跳转不带该参数。
 #[derive(Debug, Default, Deserialize)]
 pub struct AuditQuery {
     pub q: Option<String>,
     pub limit: Option<usize>,
     pub cursor: Option<String>,
+    #[serde(default)]
+    pub with_schema: bool,
 }
 
-/// 一条审计流水；`ts` 为 RFC3339 UTC（D9）。
+/// 一条审计流水；`ts` 为 RFC3339 UTC（D9），`ts_label` 是页面用的本地时间文案。
 #[derive(Debug, Serialize)]
 pub struct AuditItem {
     pub id: i64,
     pub ts: String,
+    pub ts_label: String,
     pub actor: String,
     pub ip: String,
     pub action: String,

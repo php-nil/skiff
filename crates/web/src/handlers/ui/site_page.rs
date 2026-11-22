@@ -1,7 +1,12 @@
-//! 站点详情页的 SDUI Schema（服务端生成试点）。
+//! 站点详情页的 UI Schema（服务端产出）。
 //!
-//! 试点范围：只把站点详情页从 `budding-boot.js` 的 `siteDetailSchema` 搬到内核，
-//! 前端只 fetch 本模块产出的 JSON 再 embed。写操作仍是既有的 `skiffSiteWrite`
+//! 定位：本模块属于 **`crates/web` 的 UI 输出端**，不是内核——它只读视图数据、
+//! 拼 JSON，业务语义仍在 `skiff_app` 的命令与视图层，本模块不感知不变量与事务。
+//! 布局留在这里的理由：结构随 `tab`、`can_manage` 与站点记录本身变化，静态资产
+//! 表达不了；这类页面由服务端产 JSON 是正当形态（见 docs/sdui/SDUI_HANDBOOK
+//! §2.9 与 SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md §9.1）。
+//!
+//! 前端只 fetch 本模块产出的 JSON 再 embed；写操作仍是既有的 `skiffSiteWrite`
 //! 动作，权限、CSRF 与审计口径不变；文件、终端、插件页继续由前端构建器拼装。
 //!
 //! 切 tab 只换渲染块，数据仍由一次 `GET /ui/v1/sites/{id}` 取齐（一并带回 schema）。
@@ -823,7 +828,7 @@ pub fn sites_page_schema(
 }
 
 /// 新建站点字段：列表弹窗与 `/sites/new` 深链页共用同一份定义。
-fn site_create_fields(runtime_items: Vec<Value>) -> Vec<Value> {
+pub(super) fn site_create_fields(runtime_items: Vec<Value>) -> Vec<Value> {
     vec![
         json!({
             "type": "select",

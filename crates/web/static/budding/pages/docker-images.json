@@ -1,0 +1,117 @@
+{
+  "type": "page",
+  "source": { "url": "/ui/v1/images", "params": { "limit": 1 } },
+  "props": {
+    "title": "镜像",
+    "subtitle": "${data && data.can_admin ? '拉取与删除走 /ui/v1' : '只读列表；写操作需要管理员权限'}"
+  },
+  "body": [
+    {
+      "type": "alert",
+      "props": {
+        "type": "warning",
+        "title": "Docker 不可用",
+        "text": "${(data && data.docker_reason) || 'Docker 守护进程当前不可达，列表为空。'}"
+      },
+      "visibleOn": "${!!data && !data.docker_available}"
+    },
+    {
+      "type": "table",
+      "id": "docker-images-table",
+      "source": { "url": "/ui/v1/images", "params": {} },
+      "props": {
+        "columns": [
+          { "key": "name", "label": "镜像" },
+          { "key": "meta", "label": "大小" },
+          { "key": "warn", "label": "提示" }
+        ],
+        "rowKey": "id",
+        "pagination": false,
+        "perPage": -1,
+        "density": "compact",
+        "paging": "cursor",
+        "cursorParam": "cursor",
+        "itemsPath": "data.items",
+        "totalPath": "data.total",
+        "cursorPath": "data.next_cursor",
+        "loadMoreText": "加载更多",
+        "emptyText": "${!(data && data.docker_available) ? 'Docker 不可用，镜像列表为空' : '还没有拉取镜像，拉取后新建容器或运行环境可直接使用'}",
+        "rowActions": [
+          {
+            "type": "button",
+            "props": { "text": "删除", "variant": "text", "color": "danger" },
+            "visibleOn": "${!!(data && data.can_admin)}",
+            "onEvent": {
+              "click": {
+                "actions": [
+                  {
+                    "type": "confirm",
+                    "props": {
+                      "title": "删除镜像",
+                      "content": "确认删除 ${name}？此操作不可撤销。"
+                    }
+                  },
+                  {
+                    "type": "ajax",
+                    "props": {
+                      "api": { "method": "POST", "url": "/ui/v1/images/${id}/remove" },
+                      "messages": { "success": "已删除" }
+                    }
+                  },
+                  {
+                    "type": "invoke",
+                    "props": { "component": "docker-images-table", "command": "reload" }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "card",
+      "props": { "title": "拉取镜像" },
+      "visibleOn": "${!!(data && data.can_admin)}",
+      "content": {
+        "body": [
+          { "type": "text", "props": { "text": "镜像名支持 tag 与仓库前缀，例如 nginx:1.27。" } },
+          {
+            "type": "form",
+            "props": {
+              "api": { "method": "POST", "url": "/ui/v1/images/pull" },
+              "actionsAlign": "end",
+              "successMessage": "已拉取",
+              "onSuccess": [
+                {
+                  "type": "invoke",
+                  "props": { "component": "docker-images-table", "command": "reload" }
+                }
+              ]
+            },
+            "body": [
+              {
+                "type": "input-text",
+                "props": {
+                  "name": "image",
+                  "label": "镜像名",
+                  "required": true,
+                  "rules": { "required": true, "messages": { "required": "请输入镜像名" } }
+                }
+              }
+            ],
+            "content": {
+              "actions": [
+                {
+                  "type": "button",
+                  "props": { "text": "拉取", "color": "primary" },
+                  "action": { "type": "submit" }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

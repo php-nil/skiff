@@ -13,6 +13,7 @@ use super::*;
 pub async fn overview(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<PageFlagQuery>,
 ) -> Result<Response, ApiError> {
     let data = crate::handlers::dashboard::load_overview(&state, user.user.id).await?;
     let containers = data.containers;
@@ -100,10 +101,50 @@ pub async fn overview(
         health_plugin,
         health_reason,
     };
-    let mut resp = Json(json!({ "data": counts })).into_response();
+    let schema = if q.with_schema {
+        let health = load_health(
+            &state,
+            counts.health_plugin.as_deref(),
+            &counts.health_reason,
+        )
+        .await;
+        Some(super::overview_page::overview_schema(
+            &serde_json::to_value(&counts).unwrap_or_default(),
+            &health,
+        ))
+    } else {
+        None
+    };
+    let mut body = json!({ "data": counts });
+    if let Some(schema) = schema {
+        body["schema"] = schema;
+    }
+    let mut resp = Json(body).into_response();
     resp.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
+}
+
+/// 主机监控槽位：直接走插件 RPC 的 supervisor 通道，失败也返回可读原因。
+///
+/// 页面以前在浏览器里调 `/plugins/{id}/rpc`；页面改由服务端产出后，同一通道在
+/// 这里发起——权限、审计与失败文案口径不变。
+async fn load_health(state: &AppState, plugin: Option<&str>, reason: &str) -> serde_json::Value {
+    let Some(id) = plugin else {
+        return json!({ "error": reason });
+    };
+    let rec = match state.db().plugin(id) {
+        Ok(Some(rec)) => rec,
+        Ok(None) => return json!({ "error": format!("插件不存在：{id}") }),
+        Err(e) => return json!({ "error": e.to_string() }),
+    };
+    match state.supervisor().call(&rec, "snapshot", json!({})).await {
+        Ok(value) => value
+            .get("sample")
+            .cloned()
+            .unwrap_or_else(|| json!({ "error": "插件没有返回采样数据" })),
+        Err(e) => json!({ "error": e.to_string() }),
+    }
 }
 
 pub(super) fn router() -> Router<Arc<AppState>> {

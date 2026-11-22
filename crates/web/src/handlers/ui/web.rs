@@ -54,6 +54,7 @@ fn fmt_duration(ms: i64) -> String {
 pub async fn web(
     State(state): State<Arc<AppState>>,
     UiAuthUser(user): UiAuthUser,
+    Query(q): Query<WebPageQuery>,
 ) -> Result<Response, ApiError> {
     crate::authz::authorize_for(&user, skiff_model::Permission::Admin).map_err(ApiError)?;
     let status = state.nginx_status().await;
@@ -63,7 +64,7 @@ pub async fn web(
         .await
         .map_err(|e| ApiError(e.into()))?;
     let modules = state.nginx_modules().await;
-    write_done(json!({
+    let mut data = json!({
         "status": {
             "available": status.available,
             "reason": status.reason,
@@ -113,7 +114,56 @@ pub async fn web(
             "modules": modules.modules,
         },
         "can_admin": user.can(skiff_model::Permission::Admin),
-    }))
+    });
+    if q.with_schema {
+        let loaded = q.load == "1" || q.load == "true";
+        let logs = if q.view == "logs" {
+            let logs = state.nginx_logs(&skiff_app::nginx::NginxLogQuery {
+                loaded,
+                kind: if q.kind == "error" {
+                    "error".into()
+                } else {
+                    "access".into()
+                },
+                keyword: q.q.clone(),
+                level: if q.level.is_empty() {
+                    "all".into()
+                } else {
+                    q.level.clone()
+                },
+                status: q.status.clone(),
+                page_lines: q.lines.unwrap_or(200),
+                offset: 0,
+            });
+            Some(json!({
+                "path": logs.path,
+                "reason": logs.reason,
+                "rows": logs.rows,
+                "scanned_text": logs.scanned_text,
+                "scanned_lines": logs.scanned_lines,
+                "file_text": logs.file_text,
+                "truncated": logs.truncated,
+                "status_counts": logs.status_counts.iter().map(|c| json!({
+                    "label": c.label,
+                    "count": c.count,
+                })).collect::<Vec<_>>(),
+            }))
+        } else {
+            None
+        };
+        let query = json!({
+            "type": if q.kind.is_empty() { "access" } else { q.kind.as_str() },
+            "lines": q.lines.unwrap_or(200).to_string(),
+            "level": if q.level.is_empty() { "all" } else { q.level.as_str() },
+            "status": q.status.as_str(),
+            "q": q.q.as_str(),
+        });
+        data["schema"] = super::web_page::web_schema(&data["data"], &q.view, &query, logs.as_ref());
+    }
+    let mut resp = Json(data).into_response();
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
 }
 
 /// `GET /ui/v1/web/install`：安装进度轮询专用。

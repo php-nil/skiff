@@ -2741,19 +2741,24 @@ fn plugin_view_falls_back_to_legacy_when_schema_missing() {
     );
 }
 
-/// budding 计划任务页必须把关键字传给 `/ui/v1/tasks?q=`，否则迁移后丢失筛选能力。
+/// 任务页筛选：关键字必须随页面骨架请求带进服务端，再由表格数据源复用。
 #[test]
 fn budding_tasks_page_keeps_keyword_filter() {
     let js = include_str!("../static/budding/budding-boot.js");
     assert!(
-        js.contains("skiffTasksSearch: tasksSearch"),
-        "任务页筛选动作必须注册到动作表"
+        js.contains("'/tasks?limit=1&with_schema=true'"),
+        "任务页骨架必须由服务端产出"
     );
     assert!(
-        js.contains("{ q: keyword }"),
-        "列表请求必须带上关键字，交给服务端过滤"
+        js.contains("(tasksQ ? '&q=' + encodeURIComponent(tasksQ) : '')"),
+        "页面骨架请求必须带上关键字，否则筛选后的骨架与数据不一致"
     );
-    assert!(js.contains("tasksPageUrl('')"), "必须有清除筛选入口");
+    let page = include_str!("../src/handlers/ui/tasks_page.rs");
+    assert!(
+        page.contains(r#"json!({ "q": keyword })"#),
+        "表格数据源必须复用同一份关键字"
+    );
+    assert!(page.contains("清除筛选"), "必须有清除筛选入口");
 }
 /// Web 服务 `/ui/v1` 读写：读聚合 Admin-only，写缺 CSRF 403、viewer 403；
 /// 管理员过门禁后走真实 nginx -t 语义（无 Docker 时失败，不伪装成功）。
@@ -5844,21 +5849,23 @@ async fn ui_store_upgrade_download_requires_csrf_and_admin() {
     assert!(text.contains("公钥"), "{text}");
 }
 
-/// 列表空态是场景语义，必须由调用方经 `statusTable` 的 `options.emptyText`
-/// 原样落到表格 props；不得再被共享层丢弃成组件默认的「暂无数据」。
+/// 列表空态是场景语义，必须原样落到表格 props；不得被共享层丢弃成组件默认的
+/// 「暂无数据」。页面骨架已全部由服务端产出，因此契约钉在 `schema_kit::table`
+/// 与各页的文案上，不再钉壳脚本（脚本里已没有表格构建器）。
 /// 各列表页的文案按 docs/contract/UI_CONTRACT.md §7 的口径（真空列表 / 筛选无结果 /
 /// 依赖未就绪）分别给出，这里逐条防回归。
+/// 镜像 / 网络 / 卷是 JSON 页面资产，文案断言读资产而不是读脚本。
 #[test]
 fn budding_boot_status_table_honors_caller_empty_text() {
-    let js = include_str!("../static/budding/budding-boot.js");
+    // 构件层：调用方给了文案就必须进 props，没给才回落到通用文案。
+    let kit = include_str!("../src/handlers/ui/schema_kit.rs");
     assert!(
-        js.contains("emptyText: options.emptyText || '暂无数据'"),
-        "statusTable 必须把调用方空态文案传给表格组件"
+        kit.contains(r#"opts.empty_text.unwrap_or_else(|| "暂无数据".to_string())"#),
+        "schema_kit::table 必须把调用方空态文案传给表格组件"
     );
-    // 资源页由 `resourceSchema` 统一渲染，options.emptyText 必须继续下传。
     assert!(
-        js.contains("emptyText: options.emptyText"),
-        "resourceSchema 必须把 emptyText 透传给 listTable"
+        kit.contains(r#""emptyText": empty_text"#),
+        "空态文案必须落到表格 props.emptyText"
     );
     // 站点列表已服务端化，文案在 site_page.rs 而非 JS 内联。
     let site_page = include_str!("../src/handlers/ui/site_page.rs");
@@ -5866,33 +5873,178 @@ fn budding_boot_status_table_honors_caller_empty_text() {
         site_page.contains("还没有站点，创建后会生成整站目录、nginx vhost 与 PHP 探针"),
         "站点空态文案在服务端 schema"
     );
-    for text in [
+    // 容器 / 运行环境 / compose / Web 的空态随页面骨架迁到服务端 schema。
+    for (source, text) in [
         // 容器：按 Docker 可用性与筛选状态分三种。
-        "'Docker 不可用，容器列表为空'",
-        "'没有异常容器'",
-        "'还没有容器，可在下方新建'",
-        // 运行环境：真空列表引导创建。
-        "'还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点'",
-        // 镜像 / 网络 / 卷：真空列表与依赖未就绪两种。
-        "'还没有拉取镜像，拉取后新建容器或运行环境可直接使用'",
-        "'Docker 不可用，镜像列表为空'",
-        "'还没有自定义网络，需要隔离或固定子网时创建'",
-        "'Docker 不可用，网络列表为空'",
-        "'还没有命名卷，创建后可在新建容器时挂载'",
-        "'Docker 不可用，卷列表为空'",
-        // compose / 计划任务 / 作业 / 任务运行记录。
-        "'还没有 compose 项目，可在下方编辑并部署'",
-        "'Docker 不可用，compose 项目列表为空'",
-        "'还没有计划任务，站点详情页可开启每日备份'",
-        "'还没有长耗时任务，安装运行环境等操作会在这里显示进度'",
-        "'还没有运行记录'",
-        // 审计 / Web 日志 / 运行环境配置与扩展。
-        "'暂无审计记录'",
-        "'本次查询没有日志行'",
-        "'没有可编辑的配置文件'",
-        "'还没有可用扩展'",
+        (
+            include_str!("../src/handlers/ui/containers_page.rs"),
+            "Docker 不可用，容器列表为空",
+        ),
+        (
+            include_str!("../src/handlers/ui/containers_page.rs"),
+            "没有异常容器",
+        ),
+        (
+            include_str!("../src/handlers/ui/containers_page.rs"),
+            "还没有容器，可在下方新建",
+        ),
+        // 运行环境：真空列表引导创建；配置 / 扩展页签各自的空态。
+        (
+            include_str!("../src/handlers/ui/runtimes_page.rs"),
+            "还没有运行环境，点击下方「新建运行环境」安装后即可绑定站点",
+        ),
+        (
+            include_str!("../src/handlers/ui/runtimes_page.rs"),
+            "没有可编辑的配置文件",
+        ),
+        (
+            include_str!("../src/handlers/ui/runtimes_page.rs"),
+            "还没有可用扩展",
+        ),
+        // compose：真空与 Docker 不可用两种。
+        (
+            include_str!("../src/handlers/ui/compose_page.rs"),
+            "还没有 compose 项目，可在下方编辑并部署",
+        ),
+        (
+            include_str!("../src/handlers/ui/compose_page.rs"),
+            "Docker 不可用，compose 项目列表为空",
+        ),
+        // Web 日志查询无结果。
+        (
+            include_str!("../src/handlers/ui/web_page.rs"),
+            "本次查询没有日志行",
+        ),
     ] {
-        assert!(js.contains(text), "列表空态文案缺失：{text}");
+        assert!(source.contains(text), "列表空态文案缺失：{text}");
+    }
+    // 任务 / 作业 / 审计的空态文案已随页面迁到服务端 schema。
+    for (source, text) in [
+        (
+            include_str!("../src/handlers/ui/tasks_page.rs"),
+            "还没有计划任务，站点详情页可开启每日备份",
+        ),
+        (
+            include_str!("../src/handlers/ui/tasks_page.rs"),
+            "还没有运行记录",
+        ),
+        (
+            include_str!("../src/handlers/ui/jobs_page.rs"),
+            "还没有长耗时任务，安装运行环境等操作会在这里显示进度",
+        ),
+        (
+            include_str!("../src/handlers/ui/audit_page.rs"),
+            "暂无审计记录",
+        ),
+    ] {
+        assert!(source.contains(text), "列表空态文案缺失：{text}");
+    }
+    // 镜像 / 网络 / 卷：真空列表与依赖未就绪两种，逐页两种都要在。
+    for (asset, texts) in [
+        (
+            include_str!("../static/budding/pages/docker-images.json"),
+            [
+                "还没有拉取镜像，拉取后新建容器或运行环境可直接使用",
+                "Docker 不可用，镜像列表为空",
+            ],
+        ),
+        (
+            include_str!("../static/budding/pages/docker-networks.json"),
+            [
+                "还没有自定义网络，需要隔离或固定子网时创建",
+                "Docker 不可用，网络列表为空",
+            ],
+        ),
+        (
+            include_str!("../static/budding/pages/docker-volumes.json"),
+            [
+                "还没有命名卷，创建后可在新建容器时挂载",
+                "Docker 不可用，卷列表为空",
+            ],
+        ),
+    ] {
+        for text in texts {
+            assert!(asset.contains(text), "JSON 页面空态文案缺失：{text}");
+        }
+    }
+}
+
+/// 页面 Schema 迁到 JSON 资产后的接线：路由给资产 URL，资产自带取数与动作。
+/// 三件事缺一环就是白屏 / 空表 / 403，所以逐项钉住。
+#[test]
+fn budding_boot_json_pages_are_wired_and_parse() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    for name in [
+        "docker-images.json",
+        "docker-networks.json",
+        "docker-volumes.json",
+    ] {
+        assert!(
+            js.contains(&format!("pageAsset('{name}')")),
+            "路由必须指向 JSON 资产：{name}"
+        );
+    }
+    // 已迁出的页面不得再留在脚本里，否则两份实现会各自漂移。
+    for kind in ["images", "networks", "volumes"] {
+        assert!(
+            !js.contains(&format!("kind === '{kind}'")),
+            "页面已迁到 JSON，脚本不应再有 kind === '{kind}' 分支"
+        );
+        assert!(
+            !js.contains(&format!("'skiff:{kind}'")),
+            "路由不应再引用 skiff:{kind}"
+        );
+    }
+    // JSON 里写 `${prefix}` / `${api}` 依赖全局 context；写请求的 CSRF 靠平台适配器补。
+    assert!(
+        js.contains("context: { prefix: prefix, api: apiBase }"),
+        "必须把入口前缀与 API 基址注入页面根作用域"
+    );
+    assert!(
+        js.contains("if (method !== 'GET' && method !== 'HEAD')"),
+        "平台请求适配器必须为写请求补 CSRF 头，否则 JSON 里的 ajax / form 一律 403"
+    );
+
+    for (name, api) in [
+        ("docker-images.json", "/ui/v1/images"),
+        ("docker-networks.json", "/ui/v1/networks"),
+        ("docker-volumes.json", "/ui/v1/volumes"),
+    ] {
+        let text = match name {
+            "docker-images.json" => include_str!("../static/budding/pages/docker-images.json"),
+            "docker-networks.json" => include_str!("../static/budding/pages/docker-networks.json"),
+            _ => include_str!("../static/budding/pages/docker-volumes.json"),
+        };
+        let page: serde_json::Value = serde_json::from_str(text).unwrap_or_else(|e| {
+            panic!("{name} 不是合法 JSON：{e}");
+        });
+        assert_eq!(page["type"], "page", "{name} 根节点必须是 page");
+        assert_eq!(
+            page["source"]["url"], api,
+            "{name} 必须由页面 source 自己取数（can_admin / docker_available 都在这个响应里）"
+        );
+        let table = page["body"]
+            .as_array()
+            .and_then(|b| b.iter().find(|n| n["type"] == "table"))
+            .unwrap_or_else(|| panic!("{name} 缺少表格节点"));
+        assert!(
+            table["id"].as_str().is_some_and(|s| !s.is_empty()),
+            "{name} 表格必须声明稳定 id——写操作成功后要靠 invoke reload 刷新"
+        );
+        assert_eq!(table["source"]["url"], api, "{name} 表格取数地址");
+        assert_eq!(
+            table["props"]["itemsPath"], "data.items",
+            "{name} 表格行路径必须对齐 /ui/v1 信封"
+        );
+        let actions = table["props"]["rowActions"][0]["onEvent"]["click"]["actions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name} 行操作缺少动作链"));
+        let types: Vec<&str> = actions.iter().filter_map(|a| a["type"].as_str()).collect();
+        assert_eq!(
+            types,
+            ["confirm", "ajax", "invoke"],
+            "{name} 删除必须走 确认 → 请求 → 刷新 三步，且只用 budding 内置动作"
+        );
     }
 }
 
@@ -5924,12 +6076,15 @@ fn budding_boot_buttons_navigate_explicitly() {
         js.contains("window.addEventListener('popstate'"),
         "浏览器前进/后退的同 path query 变化必须有 popstate 兜底"
     );
+    // 容器过滤按钮的服务端 schema：两个页内跳转都走 skiffQueryNav。
+    let containers_page = include_str!("../src/handlers/ui/containers_page.rs");
     for needle in [
-        "props: { path: prefix + '/docker/containers', query: {} }",
-        "props: { path: prefix + '/docker/containers', query: { filter: 'error' } }",
+        "{ \"type\": \"skiffQueryNav\", \"props\": { \"path\": \"${prefix}/docker/containers\", \"query\": query } }",
+        "filter_button(\"全部\", filter != \"error\", json!({}))",
+        "filter_button(\"仅异常\", filter == \"error\", json!({ \"filter\": \"error\" }))",
     ] {
         assert!(
-            js.contains(needle),
+            containers_page.contains(needle),
             "容器过滤按钮缺少 skiffQueryNav 动作：{needle}"
         );
     }
@@ -5938,7 +6093,7 @@ fn budding_boot_buttons_navigate_explicitly() {
         "只换 query 的跳转不能再用 navigate（只会 pushState，不会重载内容）"
     );
     assert!(
-        js.contains("(containerFilter ? '&filter=error' : '')"),
+        js.contains("get('filter') === 'error' ? 'filter=error&' : ''"),
         "容器计数必须与列表用同一 filter 口径，切换后计数才同步变化"
     );
 }
@@ -5960,13 +6115,17 @@ fn budding_boot_host_bridge_and_file_entries_present() {
         "skiffFileChown: fileChown,",
         "skiffFileArchive: fileArchive,",
         "skiffFileExtract: fileExtract,",
-        // 站点详情 Schema 由内核生成，前端只 fetch 并做运行时转义。
+        // 站点详情 Schema 由服务端 UI 端点产出，前端只 fetch 并做运行时转义。
         "prepareServerSchema(body.schema)",
-        // 解压入口按文件类型显隐。
-        "visibleOn: '${item.can_extract}'",
     ] {
         assert!(js.contains(needle), "宿主桥/文件入口缺失：{needle}");
     }
+    // 文件目录行模板已迁到 JSON 资产：解压入口按文件类型显隐的声明在这里。
+    let file_row = include_str!("../static/budding/pages/_file-row.json");
+    assert!(
+        file_row.contains("\"visibleOn\": \"${item.can_extract}\""),
+        "文件行模板缺少解压入口的显隐条件"
+    );
     // 站点删除的确认链已随 Schema 迁到服务端（`site_page.rs`），静态守门跟着挪。
     let site_page = include_str!("../src/handlers/ui/site_page.rs");
     for needle in [
@@ -6008,9 +6167,13 @@ fn budding_boot_host_bridge_and_file_entries_present() {
 #[test]
 fn budding_boot_p1_confirms_and_kill_entry_present() {
     let js = include_str!("../static/budding/budding-boot.js");
+    let containers_page = include_str!("../src/handlers/ui/containers_page.rs");
+    // 容器强制终止入口（后端 action_verb 白名单已支持 kill）；列表骨架在服务端。
+    assert!(
+        containers_page.contains("container_op(\"强制终止\", \"kill\", c)"),
+        "容器详情缺少强制终止入口"
+    );
     for needle in [
-        // 容器强制终止入口（后端 action_verb 白名单已支持 kill）。
-        "buttonNode('强制终止', 'kill', c)",
         "title: '强制终止容器'",
         // 站点破坏性动作确认。
         "title: '停止站点'",
@@ -6021,11 +6184,21 @@ fn budding_boot_p1_confirms_and_kill_entry_present() {
         "title: '撤销公钥'",
         "title: '卸载插件'",
         "title: '恢复默认菜单'",
-        // 表单就地数值校验。
-        "pattern: '^[0-9]{1,5}$'",
-        "pattern: '^[0-9]+$'",
     ] {
         assert!(js.contains(needle), "P1 确认/入口缺失：{needle}");
+    }
+    // 表单就地数值校验：字段随页面迁到服务端 schema。
+    for (source, needle) in [
+        (
+            include_str!("../src/handlers/ui/runtimes_page.rs"),
+            "\"pattern\": \"^[0-9]{1,5}$\"",
+        ),
+        (
+            include_str!("../src/handlers/ui/web_page.rs"),
+            "\"pattern\": \"^[0-9]+$\"",
+        ),
+    ] {
+        assert!(source.contains(needle), "表单数值校验缺失：{needle}");
     }
 }
 
@@ -6056,16 +6229,25 @@ fn site_page_keeps_directory_links_and_restore_entry() {
 fn budding_boot_p2_row_actions_present() {
     let js = include_str!("../static/budding/budding-boot.js");
     let site_page = include_str!("../src/handlers/ui/site_page.rs");
+    let containers_page = include_str!("../src/handlers/ui/containers_page.rs");
     // JS 里注册的自定义动作（内核服务端 schema 化后，props 在 Rust 里拼装）。
     for needle in [
         "skiffSiteToggle: siteToggle",
         "skiffContainerToggle: containerToggle",
-        "text: '启停'",
-        "props: { id: '${id}', name: '${name}', status: '${state.code}' }",
     ] {
         assert!(js.contains(needle), "P2 行内入口缺失（JS）：{needle}");
     }
-    // 站点列表已服务端 schema 化，行内启停按钮的 props 由 site_page.rs 生成。
+    // 行内启停按钮的 props 由服务端页面模块生成。
+    assert!(
+        containers_page
+            .contains("\"启停\",\n            json!({ \"type\": \"skiffContainerToggle\""),
+        "容器列表服务端 schema 缺少启停按钮"
+    );
+    assert!(
+        containers_page
+            .contains("\"props\": { \"id\": \"${id}\", \"name\": \"${name}\", \"status\": \"${state.code}\" }"),
+        "容器列表服务端 schema 缺失 skiffContainerToggle props"
+    );
     assert!(
         site_page.contains("\"props\": { \"id\": \"${id}\", \"domain\": \"${domain}\", \"status\": \"${status.code}\" }"),
         "站点列表服务端 schema 缺失 skiffSiteToggle props"
@@ -6138,21 +6320,125 @@ fn budding_boot_action_registry_has_no_duplicate_keys() {
 }
 
 /// 资源动作必须映射到资源接口；设置保存只能用于 `/settings/docker` 表单。
+/// 镜像 / 网络 / 卷 / 容器新建均已迁到 JSON 页面资产（声明式 `ajax`），
+/// 设置保存随设置页迁到 `settings_page.rs`——全部改读各自产出端，不再钉脚本。
 #[test]
 fn budding_boot_docker_actions_map_to_resource_endpoints() {
     let js = include_str!("../static/budding/budding-boot.js");
-    for needle in [
-        "'/images/' + encodeURIComponent(args.id) + '/remove'",
-        "'/volumes/' + encodeURIComponent(args.id) + '/remove'",
-        "'/networks/' + encodeURIComponent(args.id) + '/remove'",
-        "path = '/networks';",
-        "path = '/volumes';",
-        "path = '/containers';",
-        "{ type: 'skiffDockerWrite', props: { kind: 'image', op: 'pull' } }",
-        "{ type: 'skiffDockerWrite', props: { kind: 'container', op: 'create' } }",
-        "{ type: 'skiffDockerSettingsWrite' }",
+    assert!(
+        js.contains("path = '/containers';"),
+        "Docker 动作映射缺失：path = '/containers';"
+    );
+    for (asset, needles) in [
+        (
+            include_str!("../static/budding/pages/docker-images.json"),
+            vec!["/ui/v1/images/pull", "/ui/v1/images/${id}/remove"],
+        ),
+        (
+            include_str!("../static/budding/pages/docker-networks.json"),
+            vec!["/ui/v1/networks", "/ui/v1/networks/${id}/remove"],
+        ),
+        (
+            include_str!("../static/budding/pages/docker-volumes.json"),
+            vec!["/ui/v1/volumes", "/ui/v1/volumes/${id}/remove"],
+        ),
+        (
+            include_str!("../static/budding/pages/docker-container-new.json"),
+            vec![
+                "/ui/v1/containers",
+                "\"type\": \"skiffDockerWrite\", \"props\": { \"op\": \"create\" }",
+            ],
+        ),
+        (
+            include_str!("../src/handlers/ui/settings_page.rs"),
+            vec!["\"type\": \"skiffDockerSettingsWrite\"", "/settings/docker"],
+        ),
     ] {
-        assert!(js.contains(needle), "Docker 动作映射缺失：{needle}");
+        for needle in needles {
+            assert!(asset.contains(needle), "JSON 页面动作映射缺失：{needle}");
+        }
+    }
+}
+
+/// 服务端下发的弹窗必须能进注册表：`dialogError` 靠它重开同一张表单。
+///
+/// budding 1.8.3 起 dialog 的正文/底部在动作顶层 `content`，读 `props.body`
+/// 会永远拿不到 body、静默不注册（提交失败只能退化成一闪而过的 toast）。
+#[test]
+fn budding_boot_registers_server_dialogs_from_content_slot() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    let fn_body = js
+        .split("function registerServerDialog(button)")
+        .nth(1)
+        .and_then(|s| s.split("\n  function ").next())
+        .expect("registerServerDialog 必须存在");
+    assert!(
+        fn_body.contains("button.action.content"),
+        "服务端弹窗必须从 action.content 取插槽"
+    );
+    assert!(
+        !fn_body.contains("layer.body"),
+        "不得再从 props.body（layer.body）取 body：该位置在 1.8.3+ 是空的"
+    );
+    // 资产里每个 dialog 的提交动作都要带 dialog 键，否则失败时找不到注册项。
+    let row: serde_json::Value =
+        serde_json::from_str(include_str!("../static/budding/pages/_file-row.json")).unwrap();
+    fn walk_forms(node: &serde_json::Value, seen: &mut usize) {
+        match node {
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk_forms(i, seen)),
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(|t| t.as_str()) == Some("form") {
+                    if let Some(submit) = map
+                        .get("onEvent")
+                        .and_then(|e| e.get("submit"))
+                        .and_then(|s| s.as_array())
+                        .and_then(|s| s.first())
+                    {
+                        assert!(
+                            submit
+                                .get("props")
+                                .and_then(|p| p.get("dialog"))
+                                .is_some_and(|d| d.as_str().is_some_and(|s| !s.is_empty())),
+                            "弹窗表单的提交动作必须带 props.dialog：{submit}"
+                        );
+                        *seen += 1;
+                    }
+                }
+                map.values().for_each(|v| walk_forms(v, seen));
+            }
+            _ => {}
+        }
+    }
+    let mut forms = 0;
+    walk_forms(&row, &mut forms);
+    assert_eq!(forms, 6, "文件行模板里的弹窗表单数量变了");
+}
+
+/// 作业日志页：游标聚合与骨架都在服务端，脚本不再自建日志页。
+#[test]
+fn budding_boot_job_logs_page_comes_from_server() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("'/jobs/' + encodeURIComponent(logJobId) + '/logs?with_schema=true'"),
+        "作业日志页必须取服务端骨架"
+    );
+    for banned in ["function loadJobLogs(", "function jobLogsSchema("] {
+        assert!(!js.contains(banned), "作业日志构建器已迁出：{banned}");
+    }
+    let page = include_str!("../src/handlers/ui/jobs_page.rs");
+    for needle in [
+        "pub fn job_logs_schema(",
+        "仅加载前 10 页，可刷新继续",
+        "\"type\": \"skiffLogReload\"",
+    ] {
+        assert!(page.contains(needle), "作业日志页缺失：{needle}");
+    }
+    let handler = include_str!("../src/handlers/ui/jobs.rs");
+    for needle in [
+        ".route(\"/ui/v1/jobs/{id}/logs\", get(job_logs))",
+        "pages >= 10",
+    ] {
+        assert!(handler.contains(needle), "作业日志端点缺失：{needle}");
     }
 }
 
@@ -6219,8 +6505,10 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
         js.contains("'core/plugins/updates': { path: '/plugins/updates'"),
         "可更新必须映射到原生插件页"
     );
+    // 页内标签：随插件页迁到服务端 schema，链接仍指向原生路径。
+    let plugins_page = include_str!("../src/handlers/ui/plugins_page.rs");
     assert!(
-        js.contains("text: '发现', href: prefix + '/plugins/discover'"),
+        plugins_page.contains("kit::link(\"发现\", \"${prefix}/plugins/discover\")"),
         "页内标签应使用原生路径"
     );
     assert!(
@@ -6229,21 +6517,27 @@ fn budding_boot_keeps_plugin_tabs_and_store_upgrade_native() {
     );
 }
 /// 新增的界面设置与 Web 服务运维入口必须落在既有契约上：
-/// 主色经 session 下发到 admin.theme；Web 动作复用 `/ui/v1/runtimes/web/action/{op}`。
+/// 主色由服务端写进壳页内联 `<style>`；Web 动作复用 `/ui/v1/runtimes/web/action/{op}`。
 #[test]
 fn budding_boot_has_ui_theme_and_web_env_entries() {
     let js = include_str!("../static/budding/budding-boot.js");
+    let spa = include_str!("../src/handlers/spa.rs");
     assert!(
         js.contains("'core/settings/ui': { path: '/settings/ui', schema: 'skiff:ui-settings' }"),
         "界面设置必须映射到规范路径与 schema"
     );
+    // 主题 CSS 由服务端出：颜色计算只有 `skiff_app::theme` 一处，前端不再重算。
     assert!(
-        js.contains("applyShellTheme(sessionState.theme);"),
-        "壳主题必须由 session 下发后注入文档级 CSS 变量"
+        spa.contains("pub fn theme_css(theme: &skiff_app::theme::Theme) -> String"),
+        "壳主题必须由服务端生成 CSS（与 skiff_app::theme 同源）"
     );
     assert!(
-        js.contains("skiff-shell-theme") && js.contains("--v-theme-primary"),
-        "壳主题必须写 --v-theme-primary 等 CSS 变量"
+        spa.contains(r#"<style id="skiff-shell-theme">{theme_css}</style>"#),
+        "壳页必须内联主题样式"
+    );
+    assert!(
+        !js.contains("applyShellTheme"),
+        "前端不得再自带主题实现（亮度/对比度算法会与服务端漂移）"
     );
     assert!(
         !js.contains("schema.theme"),
@@ -6257,54 +6551,38 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
         js.contains("skiffUiThemeWrite: uiThemeWrite,"),
         "界面设置写动作必须注册"
     );
+    // Web 服务运维入口随页面迁到服务端 schema（`web_page.rs`）。
+    let web_page = include_str!("../src/handlers/ui/web_page.rs");
     for needle in [
-        "webEnvButton('安装 Web 服务', 'install', 'primary')",
-        "webEnvButton('重启', 'restart')",
-        "webEnvButton('重新安装', 'rebuild')",
-        "webEnvButton('删除容器', 'delete', 'danger')",
-        "state === 'running' ? '停止' : '启动'",
-        "state === 'running' ? 'stop' : 'start'",
+        "web_button(\"安装 Web 服务\", \"install\", \"primary\", \"flat\")",
+        "web_button(\"重启\", \"restart\", \"\", \"tonal\")",
+        "web_button(\"重新安装\", \"rebuild\", \"\", \"tonal\")",
+        "web_button(\"删除容器\", \"delete\", \"danger\", \"tonal\")",
+        "if running { \"stop\" } else { \"start\" }",
+        "{ \"type\": \"skiffWebEnv\", \"props\": { \"op\": op } }",
+        "查看任务详情",
+        "fn install_node(install: &Value)",
+    ] {
+        assert!(web_page.contains(needle), "Web 服务操作入口缺失：{needle}");
+    }
+    assert!(
+        web_page.contains(
+            "let installed = !container_state.is_empty() && container_state != \"missing\";"
+        ),
+        "未安装与已安装必须区分，避免出现无意义按钮"
+    );
+    // 安装进度改由表格 `source.autoRefresh` 轮询：壳脚本不再自己定时改 DOM。
+    assert!(
+        web_page.contains("table[\"source\"][\"autoRefresh\"] = json!(2000);"),
+        "安装步骤表必须自带轮询，否则进度停在打开那一刻"
+    );
+    // 提交动作仍在壳脚本里（要 POST + 刷新），但目标与刷新时机是契约。
+    for needle in [
         "'/runtimes/web/action/' + encodeURIComponent(op)",
         "skiffWebEnv: webEnvAction,",
     ] {
         assert!(js.contains(needle), "Web 服务操作入口缺失：{needle}");
     }
-    assert!(
-        js.contains("var installed = state !== '' && state !== 'missing';"),
-        "未安装与已安装必须区分，避免出现无意义按钮"
-    );
-    for needle in [
-        "function webInstallNode(install)",
-        "className: 'skiff-web-install'",
-        "text: webInstallText(install)",
-        "startWebInstallPolling(install)",
-        "fetchRawJson(apiBase + '/web/install')",
-        "document.querySelector('.skiff-web-install')",
-        "if (location.pathname !== target)",
-        "if (document.hidden)",
-        "schedule(2000)",
-        "schedule(5000)",
-        "if (last.running)",
-        "if (last.done) location.reload();",
-        "function webStepState(state)",
-        "'查看任务详情'",
-    ] {
-        assert!(js.contains(needle), "安装进度轮询/展示缺失：{needle}");
-    }
-    // 锚点必须是节点顶层 decorate 属性；放进 props 不会落到 DOM（装机实测 0 个元素）。
-    let node_fn = js
-        .split("function webInstallNode(install)")
-        .nth(1)
-        .and_then(|s| s.split("function webInstallText").next())
-        .expect("webInstallNode 必须存在");
-    let class_at = node_fn
-        .find("className: 'skiff-web-install'")
-        .expect("className 锚点缺失");
-    let props_at = node_fn.find("props:").expect("props 缺失");
-    assert!(
-        class_at < props_at,
-        "className 必须位于节点顶层，不能放进 props"
-    );
     // 安装/重建点击后不得先弹阻塞提示再刷新，否则旧作业结果会继续可见。
     let action = js
         .split("function webEnvAction(args)")
@@ -6325,33 +6603,42 @@ fn budding_boot_has_ui_theme_and_web_env_entries() {
 #[test]
 fn budding_boot_ui_theme_presets_and_color_fields() {
     let js = include_str!("../static/budding/budding-boot.js");
-    for name in ["'星蓝'", "'翡翠'", "'石墨'", "'暖岩'", "'玫瑰'"] {
-        assert!(js.contains(name), "预设方案缺少年份/名称：{name}");
+    // 预设与配色表单随「设置 → 界面」页迁到服务端 schema。
+    let settings_page = include_str!("../src/handlers/ui/settings_page.rs");
+    for name in ["\"星蓝\"", "\"翡翠\"", "\"石墨\"", "\"暖岩\"", "\"玫瑰\""] {
+        assert!(settings_page.contains(name), "预设方案缺少名称：{name}");
     }
     assert!(
-        js.contains("function uiPresetCard(preset)"),
+        settings_page.contains("fn preset_card("),
         "预设方案应渲染为色卡而不是纯文字按钮"
     );
     assert!(
-        js.contains("className: 'skiff-swatch'"),
+        settings_page.contains("\"className\": \"skiff-swatch\""),
         "预设色点应有描边类名（浅色在白底上可见）"
     );
-    assert!(
-        js.contains("skiffUiPreset: uiPresetApply,"),
-        "预设方案必须注册独立动作"
-    );
     for needle in [
-        "name: 'primary'",
-        "name: 'menu'",
-        "name: 'page'",
-        "name: 'menu_custom'",
-        "function uiColorRules(requiredMessage)",
-        "pattern: '^#[0-9a-fA-F]{6}$'",
-        "function dialogFormButton(text, options)",
-        "--bud-admin-chrome-bg:rgb(",
-        "--v-theme-background:",
+        "color_field(\"primary\",",
+        "color_field(\n                    \"menu\",",
+        "color_field(\"page\",",
+        "\"name\": \"menu_custom\"",
+        "let color_rules = |message: &str|",
+        "\"pattern\": \"^#[0-9a-fA-F]{6}$\"",
+    ] {
+        assert!(settings_page.contains(needle), "配色扩展缺失：{needle}");
+    }
+    // 动作注册仍在壳脚本：写操作要 POST 并整页刷新；CSS 变量由服务端注入。
+    for needle in [
+        "skiffUiPreset: uiPresetApply,",
+        "skiffUiThemeWrite: uiThemeWrite,",
     ] {
         assert!(js.contains(needle), "配色扩展缺失：{needle}");
+    }
+    let spa = include_str!("../src/handlers/spa.rs");
+    for needle in [
+        "--bud-admin-chrome-bg:rgb({menu}) !important",
+        "--v-theme-background:{page} !important",
+    ] {
+        assert!(spa.contains(needle), "壳主题变量缺失：{needle}");
     }
     assert!(
         !js.contains("color-picker") && !js.contains("input-color"),
@@ -6373,14 +6660,10 @@ fn budding_boot_ui_theme_presets_and_color_fields() {
 fn budding_boot_create_dialogs_keep_deep_links() {
     let js = include_str!("../static/budding/budding-boot.js");
     for needle in [
-        "dialogFormButton('新建运行环境'",
-        "fields: runtimeCreateFields(catalog)",
-        "initialValues: runtimeCreateDefaults(catalog)",
-        "fetchData('/runtimes?limit=200')",
-        // 深链页路由与独立表单都保留。
+        // 深链页路由与独立表单都保留（骨架由 `/ui/v1/pages/sites-new` 给出）。
         "path: prefix + '/sites/new'",
-        "function siteNewSchema(runtimes)",
-        "siteCreateFields(runtimes),\n          '创建站点',\n          siteCreateDefaults(typeQuery)",
+        "schema: 'skiff:site-new'",
+        "fetchServerSchema(\n        '/pages/sites-new'",
         // 弹窗提交成功回列表刷新；独立页仍进入详情。
         "op === 'create' && data.id && !args.dialog",
         "if (args.dialog) closeTopLayer();",
@@ -6388,20 +6671,59 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     ] {
         assert!(js.contains(needle), "新建弹窗改造缺失：{needle}");
     }
-    // budding 1.8.3 契约（upstream compiler action.ts）：dialog 的 body/footer 是动作
-    // 顶层 content 插槽，写在 props 里会整页 CompileError；这五处弹窗各代表一种来源。
+    // 运行环境新建弹窗随页面迁到服务端：按钮 → dialog → 表单字段。
+    let runtimes_page = include_str!("../src/handlers/ui/runtimes_page.rs");
     for needle in [
-        "width: options.width || 520\n        },\n        content: {",
-        "title: '解压',\n                width: 520\n              },\n              content: {",
-        "title: '新建目录',\n                      width: 480\n                    },\n                    content: {",
-        "title: '上传文件',\n                      width: 560\n                    },\n                    content: {",
-        "title: '新建文件',\n                      width: 640\n                    },\n                    content: {",
+        "\"props\": { \"text\": \"新建运行环境\", \"variant\": \"flat\", \"color\": \"primary\" }",
+        "\"props\": { \"title\": \"新建运行环境\", \"width\": 640 }",
+        "\"name\": \"kind\"",
+        "\"name\": \"version\"",
+        "\"name\": \"apk_mirror\"",
+        "let initial = json!({ \"kind\": default_kind, \"apk_mirror\": default_mirror });",
     ] {
         assert!(
-            js.contains(needle),
-            "dialog 动作的 body 必须写在顶层 content（1.8.3 §18.7）：{needle}"
+            runtimes_page.contains(needle),
+            "运行环境新建弹窗缺失：{needle}"
         );
     }
+    // budding 1.8.3 契约（upstream compiler action.ts）：dialog 的 body/footer 是动作
+    // 顶层 content 插槽，写在 props 里会整页 CompileError。文件行模板逐弹窗校验。
+    let row: serde_json::Value =
+        serde_json::from_str(include_str!("../static/budding/pages/_file-row.json")).unwrap();
+    fn walk_dialogs(node: &serde_json::Value, found: &mut usize) {
+        match node {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk_dialogs(item, found);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(|t| t.as_str()) == Some("dialog") {
+                    *found += 1;
+                    assert!(
+                        map.contains_key("content"),
+                        "dialog 动作必须在顶层写 content：{node}"
+                    );
+                    if let Some(props) = map.get("props") {
+                        assert!(
+                            props.get("body").is_none() && props.get("footer").is_none(),
+                            "dialog 的 body/footer 不能写进 props：{node}"
+                        );
+                    }
+                }
+                for value in map.values() {
+                    walk_dialogs(value, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut dialogs = 0;
+    walk_dialogs(&row, &mut dialogs);
+    assert_eq!(
+        dialogs, 6,
+        "文件行模板的弹窗数量变了，请复核 content 插槽是否仍合规"
+    );
     // 站点列表的新建/批量弹窗随页面骨架迁到服务端。
     let site_page = include_str!("../src/handlers/ui/site_page.rs");
     for needle in [
@@ -6569,8 +6891,17 @@ fn budding_boot_drops_pre_r3_workarounds() {
         "不得再引用旧 highlight 产物"
     );
     assert!(!js.contains("@budding/highlight"), "文案不得再指向旧 Pack");
-    // T10：列表走 source 游标分页，不再提示「翻页待接入」。
-    assert!(js.contains("paging = 'cursor'"), "列表应使用游标分页");
+    // T10：列表走 source 游标分页（构件在 schema_kit，资产里声明的页面直接写 JSON）。
+    let kit = include_str!("../src/handlers/ui/schema_kit.rs");
+    assert!(
+        kit.contains(r#"props.insert("paging".into(), json!("cursor"))"#),
+        "列表应使用游标分页"
+    );
+    assert!(
+        include_str!("../static/budding/pages/docker-images.json")
+            .contains(r#""source": { "url": "/ui/v1/images", "params": {} }"#),
+        "镜像列表应有 source 路径"
+    );
     assert!(js.contains("'/sites'"), "站点列表应有 source 路径");
     assert!(
         !js.contains("翻页交互待后续批次接入"),
@@ -6596,6 +6927,15 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
     );
     // `code` 组件只用于只读查看器（日志 / 配置预览），必须显式传 `modelValue` 绑定文本；
     // 可编辑表单字段（配置编辑器 / 文件编辑）统一走 `textarea`，不得再裸挂 `code`。
+    // 页面模块里的只读查看器统一由 `schema_kit::code_block` 产出（日志 / 配置预览），
+    // 契约钉在这一个构件上，避免各页各写一份后漂移。
+    let kit = include_str!("../src/handlers/ui/schema_kit.rs");
+    assert!(
+        kit.contains("pub fn code_block(text: &str, height: i64) -> Value {")
+            && kit.contains("\"modelValue\": text")
+            && kit.contains("\"readonly\": true"),
+        "只读代码块必须由 schema_kit 统一产出并绑定 modelValue"
+    );
     let mut viewers = 0;
     for (pos, _) in js.match_indices("type: 'code'") {
         let rest = &js[pos + "type: 'code'".len()..];
@@ -6611,11 +6951,13 @@ fn budding_boot_uses_registered_code_component_and_full_rows() {
         );
         viewers += 1;
     }
-    assert!(viewers >= 7, "代码/日志查看器节点不应减少：{viewers}");
-    // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断。
-    assert!(js.contains("perPage: -1"), "列表应渲染本页全部行");
+    assert!(viewers >= 2, "壳脚本里的代码/日志查看器不应减少：{viewers}");
+    // 列表行由宿主一次性给出，不得再被组件默认每页 10 条截断（构件层已固定）。
+    assert!(kit.contains(r#""perPage": -1"#), "列表应渲染本页全部行");
+    // 审计页骨架已迁到服务端：定高与场景空态文案在 audit_page.rs。
+    let audit_page = include_str!("../src/handlers/ui/audit_page.rs");
     assert!(
-        js.contains("height: 420,") && js.contains("emptyText: '暂无审计记录'"),
+        audit_page.contains("height: Some(420)") && audit_page.contains("暂无审计记录"),
         "审计列表应定高并内部滚动，且带场景空态文案"
     );
     // 四个菜单图标使用 1.8.1 子集的原生字形，不再近似兜底或留空。
