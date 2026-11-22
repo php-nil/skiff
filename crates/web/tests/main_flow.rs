@@ -6338,6 +6338,25 @@ fn budding_boot_a_form_writes_are_declarative() {
     assert!(!files.contains("skiffTrashWrite"), "回收站不应再有宿主动作");
 }
 
+/// B 形字段错误回填是可选能力：默认不声明就保持框架自身的提示；
+/// 页面显式写 `onError: [skiffFormErrors]` 时才把服务端 `error.field` 贴回表单。
+#[test]
+fn budding_boot_form_errors_bridge_is_opt_in() {
+    let js = include_str!("../static/budding/budding-boot.js");
+    assert!(
+        js.contains("function applyFormErrors("),
+        "字段错误回填动作缺失"
+    );
+    assert!(
+        js.contains("skiffFormErrors: applyFormErrors"),
+        "字段错误回填动作未注册"
+    );
+    assert!(
+        js.contains("lastApiError") && js.contains("body.error.field"),
+        "平台适配器未保留失败信封的字段名"
+    );
+}
+
 /// 动作注册表键去重：`skiffDockerWrite` 曾与设置保存动作共用同名键，
 /// 后注册的实现静默覆盖前一个，导致镜像/卷删除被劫持到 `/settings/docker`。
 #[test]

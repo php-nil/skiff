@@ -920,6 +920,7 @@
         skiffStoreInstall: storeInstall,
         skiffStoreConfirm: storeConfirm,
         skiffUpgradeDownload: storeUpgradeDownload,
+        skiffFormErrors: applyFormErrors,
         skiffPluginRpc: pluginRpcAction,
         skiffPluginView: pluginViewAction,
         skiffLogout: function () {
@@ -1843,6 +1844,9 @@
   /// budding 的平台请求适配器：内核只在提供 `request` 时才保留 `upload`
   /// （见上游 `createPlatformAdapter`），因此这里给出与默认 fetch 同语义的最小实现：
   /// 同源 Cookie、JSON 解析、非 2xx 抛错（错误文案取信封 message）。
+  // 最近一次 API 失败的信封（仅当页面显式声明 `skiffFormErrors` 时消费）。
+  var lastApiError = null;
+
   function apiRequest(req) {
     var method = (req && req.method) || 'GET';
     var headers = {};
@@ -1891,11 +1895,42 @@
           var error = new Error(message);
           error.status = resp.status;
           error.body = body;
+          lastApiError = {
+            field:
+              body && body.error && typeof body.error.field === 'string'
+                ? body.error.field
+                : '',
+            message: message,
+            status: resp.status
+          };
           throw error;
         }
         return body;
       });
     });
+  }
+
+  /// 可选的表单字段错误回填：页面在 `form.props.onError` 里声明
+  /// `{"type":"skiffFormErrors","props":{"form":"<表单 id>"}}` 时才生效。
+  /// 不声明则保持默认行为（表单自己用服务端文案提示）；没有 `field` 的失败也静默返回。
+  function applyFormErrors(args) {
+    var failure = lastApiError;
+    lastApiError = null;
+    if (!failure || !failure.field || !failure.message) return;
+    var formId = args && args.form;
+    if (!formId) return;
+    var runtime = buddingRuntime();
+    if (!runtime || typeof runtime.invokeComponent !== 'function') return;
+    var errors = {};
+    errors[failure.field] = failure.message;
+    try {
+      runtime.invokeComponent(formId, 'setErrors', {
+        errors: errors,
+        focus: !(args && args.focus === false)
+      });
+    } catch (e) {
+      // 表单已卸载（例如弹窗已关）时忽略，避免动作链因回填失败而中断。
+    }
   }
 
   /// 宿主上传适配器（budding `PlatformAdapter.upload`）：组件给 FormData，

@@ -153,6 +153,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 
 - 服务端字段错误用表单指令 `invoke setErrors` 回填：`args.errors` 按字段 `name` 写入，`__form__` 落表单级；值变更或提交启动时先到先清，`focus` 可聚焦首个错误。不要给字段加 `error` 入参。
 - `errorMessage` 缺省取异常 `message`，服务端错误信封的文案因此可直接透传到表单提示。
+- 字段级回填是**可选项**：不声明 `onError` 时保持上面的默认提示；需要时给表单声明稳定 `id`，并加 `onError: [{ "type": "skiffFormErrors", "props": { "form": "<id>" } }]`，壳会把最近一次失败的 `error.field` 经 `setErrors` 贴回表单并聚焦（`props.focus: false` 可关聚焦）。
 - `submit` / `reset` 只在 form 内有效；字段值实时同步，动作里可用 `${字段名}` 读取。
 - 校验错误只取第一条；需要多条规则时用 `rules.pattern` 数组，每条可带独立 `message`。
 - `input-text` 的 `type`（含 `password`）与 `autocomplete` 都已原生透传，登录口令框不再需要 DOM 桥接。

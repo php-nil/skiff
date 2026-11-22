@@ -79,7 +79,7 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 ///   映射，`loadJson` 只剩两行分派（`skiff:page` 与服务端给出的特殊形态）。
 /// v38：写请求动作名随上游 `1120d2` 更正（`ajax` → `request`，旧名无别名）；仅注释
 ///   同步，运行时行为不变，页面 JSON 资产的更正不走壳版本（静态 no-cache）。
-pub const SHELL_VERSION: &str = "39";
+pub const SHELL_VERSION: &str = "40";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

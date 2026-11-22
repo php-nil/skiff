@@ -88,6 +88,7 @@ crates/web/static/budding/
 | 详情页写后整页重取 | `request` → `skiffReload`（页面骨架与数据都由服务端重算） |
 | 表单提交 | `form.props.api` 自带提交，`props.successMessage` 给成功提示，`props.onSuccess` 放刷新 |
 | 校验 | 字段 `required` / `rules`；服务端字段错误走 `invoke setErrors` |
+| 表单字段错误（可选） | `form.props.onError: [{ "type": "skiffFormErrors", "props": { "form": "<表单 id>" } }]`；不声明时保持框架默认提示，声明后把服务端 `error.field` 贴回对应表单并聚焦 |
 | 请求失败提示 | `request.props.messages.error`；SDK 会调用 `markFailurePrompted`，节点级兜底提示不再叠加 |
 
 `request` 的失败提示是「本操作失败」级别的保真（服务端明细只在 `form` 的 `errorMessage` 缺省值里透出）；需要更强保真时走 `onError` 动作组。
@@ -150,6 +151,7 @@ crates/web/static/budding/
 | 商店安装确认（`skiffStoreConfirm`） | 依赖 install 响应里的一次性 confirm token，需两步串行 |
 | 插件功能页（`skiffPluginRpc` / `skiffPluginView`） | 布局来自插件包自带的 Schema，数据面是插件 RPC，不是 `/ui/v1` |
 | 整页重取（`skiffReload`） | 只做 `location.reload()`，不含业务参数；供详情页写后刷新 |
+| 表单字段回填（`skiffFormErrors`） | 可选：`onError` 明确声明才执行，把最近一次失败的 `error.field` 经 `setErrors` 贴回表单；不声明时默认提示不受影响 |
 
 检查入口：`budding_boot_a_form_writes_are_declarative` 钉住第一批（容器 / 任务 / 作业 / 插件 / 回收站）已无命令式写动作体，且动作链顺序（确认 → 请求 → 刷新 / 跳转）留在服务端 schema。
 
