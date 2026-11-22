@@ -4,9 +4,9 @@
 
 ---
 
-## 8. 最近一次验收结论（截至 2026-11-22 22:14 `5fa12e2`：budding 1.8.5 同步 + 弹窗页脚提交 + 干净首装/升级复验）
+## 8. 最近一次验收结论（截至 2026-11-22 22:47 `76412df`：budding 1.8.5 同步 + 弹窗页脚提交 + 干净首装/三轮升级复验）
 
-**2026-11-22 22:14 干净首装 `e3066e6` → 修复 `5fa12e2` 升级：accept.sh 两轮 49 PASS / 0 FAIL / 3 SKIP**
+**2026-11-22 22:47 干净首装 `e3066e6` → 修复 `5fa12e2` → 补收口 `76412df`：accept.sh 三轮 49 PASS / 0 FAIL / 3 SKIP**
 
 - **前置**：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080 空闲）。
 - **上游同步**：budding 1.8.4（`1121d5`）→ 1.8.5（`a3a3c8d`）。主包 1,022,104 B / CSS 574,157 B / icons 82 字形 / code pack 90,331 B / terminal pack 395,014 B；`BUDDING_VERSION` = `1.8.5`，`SHELL_VERSION` 41→42。
@@ -15,7 +15,8 @@
 - **插件 schema**：白名单新增 `dialog` / `reset` / `close` 与页脚 `submit`；`dialog` 仅允许上游图层参数和 `body` / `footer`；校验后为缺失 `api` 的 form 注入 `{ sendOn: false }` no-op 配置。
 - **安装（通过）**：首装 `install.sh --listen 0.0.0.0:18080 --tls off` exit 0，前缀 **`dwkaf8si`**，healthz 200；人工追加 `allow_insecure_http` / `allow_reduced_sandbox`。
 - **accept.sh（通过）**：首装与升级后均 **49 PASS / 0 FAIL / 3 SKIP**（PF4 装后端口、A6h 改密机无 initial-admin、B4 未开限流）；权限位、restart/kill-9 自恢复、CSRF→登录→改密→旧会话失效、Docker 29.7.2 全部通过。
-- **浏览器（通过）**：概览正常；`/sites/list` 新建站点弹窗底部「重置 / 取消 / 创建站点」齐全；防火墙 rules「放行端口」弹窗提交成功（新增 18081/tcp）；文件「新建目录」成功创建 `ui-check-1122`，同名再提交显示「新建目录失败：目标已存在」且输入保留；全部 0 CompileError / 0 console error。
+- **浏览器（通过）**：概览正常；`/sites/list` 新建站点弹窗底部「重置 / 取消 / 创建站点」齐全；防火墙 rules「放行端口」弹窗提交成功（新增 18081/tcp）；文件「新建目录」成功创建 `ui-check-1122`，同名再提交显示「新建目录失败：目标已存在」且输入保留；`/settings/security` 导入信任公钥弹窗底部「重置 / 取消 / 导入公钥」齐全；全部 0 CompileError / 0 console error。
+- **补收口（`76412df`）**：站点详情「新增附加域名」与设置「导入信任公钥」从内联表单改为按钮 + 弹窗，字段/校验/动作不变；最终升级后 accept 仍 49 PASS / 0 FAIL / 3 SKIP。
 - **插件 schema 实测**：`com.skiff.firewall` 的 `rules` schema 含 2 个 dialog，页脚均为 reset/close/submit，form 均注入 no-op api。
 - **未覆盖（限制）**：cron 官方包在本轮 `/www/skiff/official` 中缺失，cron 弹窗只做了源级/schema 断言；ftp/guard/monitor/sources 插件未装；TLS 形态一/二、aarch64、镜像/网络/卷实际创建、容器新建提交未做浏览器实测；测试产生的 `ui-check-1122` 目录与 18081/tcp 放行规则按要求保留。
 
