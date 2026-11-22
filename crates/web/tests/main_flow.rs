@@ -6804,8 +6804,12 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     // 运行环境新建弹窗随页面迁到服务端：按钮 → dialog → 表单字段。
     let runtimes_page = include_str!("../src/handlers/ui/runtimes_page.rs");
     for needle in [
-        "\"props\": { \"text\": \"新建运行环境\", \"variant\": \"flat\", \"color\": \"primary\" }",
-        "\"props\": { \"title\": \"新建运行环境\", \"width\": 640 }",
+        "kit::dialog_form_button(kit::DialogForm {",
+        "text: \"新建运行环境\"",
+        "variant: \"flat\"",
+        "title: \"新建运行环境\"",
+        "width: 640",
+        "submit_text: \"创建并安装\"",
         "\"name\": \"kind\"",
         "\"name\": \"version\"",
         "\"name\": \"apk_mirror\"",
