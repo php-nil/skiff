@@ -6865,9 +6865,10 @@ fn budding_boot_create_dialogs_keep_deep_links() {
         "text: \"新建站点\"",
         "initial: Some(json!({ \"site_type\": \"static\" }))",
         "fn site_create_fields(",
-        "fn dialog_button(",
-        "\"width\": 620\n                        },\n                        \"content\": {",
-        "\"width\": spec.width\n            },\n            \"content\": {",
+        "kit::dialog_form_button(kit::DialogForm {",
+        "title: \"新建站点\"",
+        "width: 640",
+        "submit_text: \"创建站点\"",
     ] {
         assert!(
             site_page.contains(needle),
