@@ -6,8 +6,18 @@
 
 ## 5. 当前部署
 
-> **2026-11-21 23:10 还原后干净首装 + budding 1.8.4 同步（HEAD `a3722fb`）**
-> - 背景：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080/18081 空闲）；上游 budding 从 1.8.3（`1120d3`）更新到 1.8.4（`1121d5`），本轮先同步产物再发版验收。
+> **2026-11-22 16:09 测试机还原后干净首装 + row_button CompileError 修复（HEAD `946619d`）**
+> - 背景：测试机还原为 T1（Docker 29.7.2 在位，无 skiff / 无 `/etc/skiff`，18080 空闲）→ 安装 Release 当前资产 → accept 50 PASS → 装 8 插件 → 浏览器巡检发现容器列表页 `CompileError: action 必须包含非空字符串 type` → 修复 `schema_kit::row_button`/`action_button` 签名 → 重发版 → 重新部署 → 浏览器全绿复验。
+> - **根因**：`kit::row_button(action: Value)` 只接受单个 Value，但 11 个 handler 中约 30 处调用传了 `json!({ "actions": [...] })` 包装（无 type 字段）。budding 1.8.4 要求 action 数组每个元素必须是带 type 的动作对象。
+> - **修复**：`schema_kit::row_button` 和 `action_button` 签名从单个 `Value` 改为 `Vec<Value>`；所有调用点把 `json!({ "actions": [...] })` 直接改为传 `vec![action1, action2, ...]`；`plugins_page::plugin_actions` 卸载按钮直接传 `chain` vec。涉及 11 文件 / ~30 处改动。
+> - 资产：Release run `45000648749`（head `946619d`，dispatch `ref=main` + `publish=true`），amd64 包 id `778348747`，`sha256=eaaa57dfbcba691fe20cbeab4bd23a7f6f974784e89be05591a8c4fa6b063e3b`（测试机经 `api.github.com` 资产端点下载 + 侧车校验一致）。
+> - CI run `44999511787`（head `946619d`）：单测（Linux）**155 passed / 0 failed**（首轮 `3390a1b` 因 `budding_boot_a_form_writes_are_declarative` 检查 `"onError"` 字符串挂掉，恢复 files_page 恢复按钮 onError 逻辑后二轮全绿）。
+> - 安装：`install.sh --no-docker --tls off --listen 0.0.0.0:18080` exit 0；前缀 **`7kcyc858`**；`skiff.service` active；healthz `{"docker":"available","status":"ok","version":"0.1.0"}`；`allow_insecure_http` / `allow_reduced_sandbox` 仍人工追加。
+> - accept.sh `--group all --install-exit 0`：**50 PASS / 0 FAIL / 2 SKIP**（PF4 装后端口不适用、B4 未开限流）。
+> - 8 官方插件：逐个 `skiff plugin install <包> --yes`（按 manifest `resource_hints` 授权），全部 installed + enabled；monitor 含 `path:/proc`、`path:/etc/passwd`，firewall 11 个 bin。
+> - **浏览器巡检全绿（7 页面 0 CompileError / 0 console error）**：`/docker/containers`、`/plugins/installed`、`/sites/list`、`/sites/runtimes`、`/files`、`/files/trash`、`/settings/security` 全部 `compileError=false`、console error 空数组；容器列表页原先的 `CompileError: rowActions[1].onEvent.click.actions[0] 必须包含非空字符串 type` 已根治。
+>
+> **2026-11-21 23:10 还原后干净首装 + budding 1.8.4 同步（已过期；HEAD `a3722fb`）**
 > - 上游同步（`C:\dev\budding` 根 `package.json` 1.8.4，commit `1121d5`）：主包 `budding-1.8.4.min.js` **1,020,608 B**（gzip 326,917）、`budding-1.8.4.min.css` **574,185 B**（gzip 67,505）、启动脚本 312,289 B（gzip 75,379）；icons 4,645 + 3,992 B；code pack 90,331 B、terminal pack 395,014 B。JS/CSS 较 1.8.3 分别 −23.5% / −13.3%（上游去掉整库 Vuetify barrel）。
 > - **适配点**：1.8.4 移除 `admin` 的 `content.breadcrumbs` 插槽，壳页 `shellSchema()` 由 `content.breadcrumbs: []` 改为 `props.breadcrumbs: false`（旧写法整页 `CompileError`）；`BUDDING_VERSION` / `BUDDING_ICONS_VERSION` = 1.8.4，`SHELL_VERSION` 31→32；新增源级断言 `shell_schema_disables_breadcrumbs_via_props`。
 > - 资产：Release run `44916947385`（head `a3722fb`，dispatch `ref=main` + `publish=true`），amd64 包 **12,725,968 B** id `775946390`，`sha256=44d8081e2db322d4e7a26d689a253a3e591a4e4d593e2ca7f4a20126925154f5`（测试机经 `api.github.com` 资产端点下载，侧车与包内 `checksums.txt` 双重校验一致）。CI run `44916931291` 全绿（含新增单测）。
@@ -143,18 +153,16 @@
 
 测试期只有 `v0.1.0` 一个 tag，**每次 dispatch 都用 `--clobber` 覆盖同一 Release 的同名资产**，因此「某轮的资产 sha」只在该轮有效；对比历史请查 [03-DEPLOY_LOG.md](03-DEPLOY_LOG.md) 的坐标表。
 
-- **当前资产来源**：Release run `44916947385`（dispatch `ref=main`，head `a3722fb`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-21 15:09 UTC。
-- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`a3722fb`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
+- **当前资产来源**：Release run `45000648749`（dispatch `ref=main`，head `946619d`，`publish=true`、`release_tag=v0.1.0`），success；资产覆盖于 2026-11-22 16:06 UTC。
+- **tag 与资产不同源**：tag `v0.1.0` 仍指向 `ef7058b2cdc622f300cdc97c4466e482d105740c`，与资产构建提交（`946619d`）不同——这是「不移动 tag + dispatch 覆盖资产」的约定结果。
 
 | 资产 | 大小 | sha256 | 资产 id |
 | --- | --- | --- | --- |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | 12,725,968 B | `44d8081e2db322d4e7a26d689a253a3e591a4e4d593e2ca7f4a20126925154f5` | `775946390` |
-| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | 111 B | （侧车，内容同上摘要） | `775946344` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz` | — | `eaaa57dfbcba691fe20cbeab4bd23a7f6f974784e89be05591a8c4fa6b063e3b` | `778348747` |
+| `skiff-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256` | — | （侧车，内容同上摘要） | `778348709` |
 | `skiff-0.1.0-aarch64-unknown-linux-musl.tar.gz` | — | （本轮仅 amd64 实测） | — |
-| `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | `775946343` |
-| `checksums.txt` | — | （本轮未下载） | `775946346` |
+| `skiff-server-x86_64-unknown-linux-musl` | — | （本轮未下载） | — |
+| `checksums.txt` | — | （本轮未下载） | — |
 
-- **下载与核对**：本轮测试机用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 直接下载成功（单次即通），`sha256sum` 与侧车一致，包内 `checksums.txt` 复核 exit 0。
-- **本轮实际部署二进制**：`/usr/local/bin/skiff` **17,618,704 B**，`sha256=aea78b8928ce0e0c…`。
-- **包内容**：`official/` 含 8 个官方插件包（`com.skiff.{cron,files,firewall,ftp,guard,monitor,sources,testkit}`）+ `public-key.txt`。
+- **下载与核对**：本轮测试机用 `api.github.com/repos/.../releases/assets/<id>` + `Accept: application/octet-stream` 直接下载成功，`sha256sum` 与侧车一致。
 - **Release 触发方式**：开发机无 `gh` CLI 和 `GITHUB_TOKEN` env var，用 git credential manager 取 token 后 `Invoke-RestMethod -Uri .../actions/workflows/release.yml/dispatches -Method Post` 直接 dispatch。
