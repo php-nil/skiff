@@ -58,7 +58,7 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 /// v32：上游 budding 升 1.8.4（`content.breadcrumbs` 移除、shared 组件基线、表单属性补全），
 ///   破 `?v=` 缓存使壳页与新包同批生效。
 /// v33：镜像 / 网络 / 卷三页 Schema 迁出脚本，改为 `static/budding/pages/*.json`
-///   （页面 `source` 自取数、`confirm`+`ajax`+`invoke` 声明写操作）；壳脚本同时给页面根
+///   （页面 `source` 自取数、`confirm`+`request`+`invoke` 声明写操作）；壳脚本同时给页面根
 ///   作用域注入 `prefix` / `api`，并让平台请求适配器统一补 CSRF 头。
 /// v34：任务 / 作业 / 审计三页 Schema 改由服务端 UI 端点产出（`?with_schema=true`），
 ///   壳脚本删掉对应构建器，搜索跳转收敛为单一宿主动作 `skiffSearch`。
@@ -77,7 +77,9 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.4";
 ///   详情/子视图隐藏路由，`GET /ui/v1/page` 回答「当前地址的页面结构去哪取」。
 ///   壳脚本删掉 `buildRoutes` / `BUILTIN_PAGES` / 图标映射与 `pageSchema` 的端点
 ///   映射，`loadJson` 只剩两行分派（`skiff:page` 与服务端给出的特殊形态）。
-pub const SHELL_VERSION: &str = "37";
+/// v38：写请求动作名随上游 `1120d2` 更正（`ajax` → `request`，旧名无别名）；仅注释
+///   同步，运行时行为不变，页面 JSON 资产的更正不走壳版本（静态 no-cache）。
+pub const SHELL_VERSION: &str = "38";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {

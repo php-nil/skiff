@@ -254,7 +254,7 @@ pub fn list_table(
 /// 关键字搜索表单：提交即整页跳转。
 ///
 /// 为什么不用 `form.props.api`：搜索改的是页面地址（换 `?q=`），不是提交一份数据。
-/// 用 `ajax` 提交会让地址栏与结果脱节，刷新后筛选丢失。动作统一走宿主的
+/// 用 `request` 提交会让地址栏与结果脱节，刷新后筛选丢失。动作统一走宿主的
 /// `skiffSearch`（读表单 `q`、按 `URLSearchParams` 编码、整页跳转）。
 pub fn search_form(label: &str, value: &str, base: &str, with_reset: bool) -> Value {
     let mut actions = Vec::new();

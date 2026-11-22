@@ -6005,7 +6005,7 @@ fn budding_boot_json_pages_are_wired_and_parse() {
     );
     assert!(
         js.contains("if (method !== 'GET' && method !== 'HEAD')"),
-        "平台请求适配器必须为写请求补 CSRF 头，否则 JSON 里的 ajax / form 一律 403"
+        "平台请求适配器必须为写请求补 CSRF 头，否则 JSON 里的 request / form 一律 403"
     );
 
     for (name, api) in [
@@ -6045,7 +6045,7 @@ fn budding_boot_json_pages_are_wired_and_parse() {
         let types: Vec<&str> = actions.iter().filter_map(|a| a["type"].as_str()).collect();
         assert_eq!(
             types,
-            ["confirm", "ajax", "invoke"],
+            ["confirm", "request", "invoke"],
             "{name} 删除必须走 确认 → 请求 → 刷新 三步，且只用 budding 内置动作"
         );
     }
@@ -6326,7 +6326,7 @@ fn budding_boot_action_registry_has_no_duplicate_keys() {
 }
 
 /// 资源动作必须映射到资源接口；设置保存只能用于 `/settings/docker` 表单。
-/// 镜像 / 网络 / 卷 / 容器新建均已迁到 JSON 页面资产（声明式 `ajax`），
+/// 镜像 / 网络 / 卷 / 容器新建均已迁到 JSON 页面资产（声明式 `request`），
 /// 设置保存随设置页迁到 `settings_page.rs`——全部改读各自产出端，不再钉脚本。
 #[test]
 fn budding_boot_docker_actions_map_to_resource_endpoints() {

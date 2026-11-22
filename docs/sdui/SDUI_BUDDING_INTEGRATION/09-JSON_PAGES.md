@@ -13,7 +13,7 @@
 | 成本 | 表现 |
 | --- | --- |
 | 不可 diff | 同一处交互散落在函数调用、三元表达式与共享 helper 里，改一列要读三个函数 |
-| 重复造能力 | budding 自带 `source` / `confirm` / `ajax` / `form.api` / `invoke`，脚本里却用 `skiff*` 动作重新实现一遍「确认 → 请求 → 刷新」 |
+| 重复造能力 | budding 自带 `source` / `confirm` / `request` / `form.api` / `invoke`，脚本里却用 `skiff*` 动作重新实现一遍「确认 → 请求 → 刷新」 |
 | 脚本膨胀 | 单文件曾达 ≈ 9 千行；按页面迁完后 4.4k 行只剩运行时 |
 
 结论：**页面布局属于表现层数据**，落在可评审的 JSON 里；脚本只留运行时。
@@ -84,7 +84,7 @@ crates/web/static/budding/
 
 | 场景 | 动作链 |
 | --- | --- |
-| 删除等不可逆操作 | `confirm` → `ajax` → `invoke`（目标组件 `reload`） |
+| 删除等不可逆操作 | `confirm` → `request` → `invoke`（目标组件 `reload`） |
 | 表单提交 | `form.props.api` 自带提交，`props.successMessage` 给成功提示，`props.onSuccess` 放刷新 |
 | 校验 | 字段 `required` / `rules`；服务端字段错误走 `invoke setErrors` |
 

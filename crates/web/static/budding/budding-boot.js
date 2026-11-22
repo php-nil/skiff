@@ -528,7 +528,7 @@
 
   /// 容器写入口：新建与资源限制。
   ///
-  /// 镜像 / 网络 / 卷的增删已改为页面 JSON 里的 `confirm` + `ajax` 声明，
+  /// 镜像 / 网络 / 卷的增删已改为页面 JSON 里的 `confirm` + `request` 声明，
   /// 不再经过这里——需要命令式拼 payload 的只剩容器这两个动作。
   function dockerWrite(args, ctx) {
     var values = formValues(ctx);
@@ -2062,7 +2062,7 @@
       for (key in req.headers) headers[key] = req.headers[key];
     }
     if (!headers.Accept) headers.Accept = 'application/json';
-    // 声明式写操作（页面 JSON 的 `ajax` 动作、表单 `api`）与命令式写共用一把 CSRF 头：
+    // 声明式写操作（页面 JSON 的 `request` 动作、表单 `api`）与命令式写共用一把 CSRF 头：
     // 内核所有写端点都校验 `x-csrf-token`，缺了直接 403。统一在这里补，Schema 不必
     // 自己拼 header——否则「用 budding 内置能力写页面」的第一步就得回退到手写动作。
     if (method !== 'GET' && method !== 'HEAD') {

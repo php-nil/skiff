@@ -52,7 +52,7 @@
                     }
                   },
                   {
-                    "type": "ajax",
+                    "type": "request",
                     "props": {
                       "api": { "method": "POST", "url": "/ui/v1/volumes/${id}/remove" },
                       "messages": { "success": "已删除" }

@@ -2,7 +2,8 @@
 
 > 来源：budding 官方产品产物实拉（2026-11-14 经 MCP `@budding/mcp-server` 0.2.0，2026-11-16 按上游 `a707369` 的 `catalog.json` / `examples.json` / `guide.json` 复核），`catalogVersion=1.8.0`、`contentHash=sha256:b7a41ab5…feaaad`（组件目录），共 58 个组件、20 个动作、320 条示例、55 篇指南；2026-11-15 上游答复（1.9.0）补充了 `confirm` 图层字段、`property` 组件、表单 `setErrors` 与 `createUi(options)` / `setLocale` / `registerTheme`；2026-11-16 补充浮层归属图层根（§1 末尾）。仓内产物版本以 `crates/web/src/assets.rs::BUDDING_VERSION` 为准（当前 `1.8.4`，2026-11-21 同步上游 `1121d5`）。
 > 分工：接入边界、版本事实与 JSON 契约只在 [SDUI_BUDDING_INTEGRATION.md](SDUI_BUDDING_INTEGRATION.md) 维护；上游缺口与宿主待补契约见 [BUDDING_UPSTREAM_BACKLOG.md](BUDDING_UPSTREAM_BACKLOG.md)；本文只做「怎么用」的摘录，不复述契约全文。
-> 校验：文中 dialog+form、confirm+ajax+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
+> 校验：文中 dialog+form、confirm+request+invoke、table 游标分页、virtual-list 四段完整 Schema 已用 MCP `validateSchema` 校验通过（`ok: true`，非 strict）。
+> 更名（2026-11-22 核对）：写请求动作 `ajax` 已由上游改名 **`request`**（提交 `1120d2`，2026-11-20），旧名无别名，写 `ajax` 运行时按「未知动作类型」拒绝；本仓自带 bundle（`budding-1.8.4.min.js`，同步 `1121d5`）与上游现行 `catalog.json` 均以 `request` 为准，`C:/dev/budding/dist/mcp/` 下的归档副本是改名前的过期产物，勿再引用。
 
 ## 0. MCP 接入方式
 
@@ -113,7 +114,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
           "props": { "title": "确认删除", "content": "删除 ${record.name} 后不可恢复。" }
         },
         {
-          "type": "ajax",
+          "type": "request",
           "props": {
             "api": { "method": "DELETE", "url": "/ui/v1/items/${record.id}" },
             "messages": { "success": "已删除" }
@@ -129,7 +130,7 @@ MCP 是上游仓库的开发期只读查询层，**不是 Skiff 的运行时依�
 }
 ```
 
-> 表格不会因 `ajax` 自动刷新；需要 `invoke` 组件的 `reload`，组件必须在 Schema 上声明 `id`。
+> 表格不会因 `request` 自动刷新；需要 `invoke` 组件的 `reload`，组件必须在 Schema 上声明 `id`。
 > 需要「输入指定文本才能删除」时，直接给 `confirm` 传 `requireText`（如 `requireText: "${record.domain}"`），不需要 `dialog` + `form` 自拼。
 
 ## 3. 表单与校验
@@ -308,7 +309,7 @@ Skiff 现状：文件查看与站点 / 作业 / 容器 / 运行环境日志均�
 5. **查看详情**：统一用 `property` 键值栅格；旧的 `card` + `text` 组合只作为迁移期遗留，不再新增。
 6. **Vuetify 内部文案**：`embed` 接受扁平 `locale` / `theme` / `uiDefaults`，宿主可据此把 Vuetify locale 设为中文；当前壳仍保留自带主题 CSS，迁移到 `createUi({ theme })` 属宿主改造（backlog A5）。
 7. **交付前**：新 Schema 跑一次 MCP `validateSchema`；`strict: true` 作为终检。
-8. **Schema 写在哪**：页面布局是表现层数据，**不许堆在 `budding-boot.js` 里拼**。两个合法产出端：布局不随上下文变化的落 `crates/web/static/budding/pages/*.json`（取数用 `page.source`、绑定用 `${}`、交互只用内置 `confirm` / `ajax` / `invoke`），已迁镜像 / 网络 / 卷；布局随权限、页签、记录变化的由 `crates/web` 的 UI 端点直接产 JSON（站点列表 / 详情，`?with_schema=true`），壳脚本只做 fetch。这里的「内核」指核心调用层（命令与领域服务），与 UI 无关，不要拿 §2.9 当「服务端不许产 UI JSON」的依据。约定与迁移台账见 [SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md](SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md)。
+8. **Schema 写在哪**：页面布局是表现层数据，**不许堆在 `budding-boot.js` 里拼**。两个合法产出端：布局不随上下文变化的落 `crates/web/static/budding/pages/*.json`（取数用 `page.source`、绑定用 `${}`、交互只用内置 `confirm` / `request` / `invoke`），已迁镜像 / 网络 / 卷；布局随权限、页签、记录变化的由 `crates/web` 的 UI 端点直接产 JSON（站点列表 / 详情，`?with_schema=true`），壳脚本只做 fetch。这里的「内核」指核心调用层（命令与领域服务），与 UI 无关，不要拿 §2.9 当「服务端不许产 UI JSON」的依据。约定与迁移台账见 [SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md](SDUI_BUDDING_INTEGRATION/09-JSON_PAGES.md)。
 
 ## 11. 与现有文档的关系
 

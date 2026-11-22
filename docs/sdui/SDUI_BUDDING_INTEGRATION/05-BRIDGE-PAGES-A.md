@@ -232,7 +232,7 @@
 - Schema 已迁到 JSON 资产（[§9](09-JSON_PAGES.md)）：`pages/docker-images.json` / `docker-networks.json` / `docker-volumes.json`。页面 `source` 取 `?limit=1` 的元数据，表格自己按 `source` 游标分页取 `items`。
 - 三个页面共用 `table`（`source` 游标分页、`paging: 'cursor'`）：镜像列 = 镜像/大小/提示；网络列 = 名称/驱动/范围/子网/网关/容器/内部外部；卷列 = 名称/驱动与挂载点/提示。
 - Docker 不可用时顶部 warning `alert`；列表底部按 `next_cursor` 显示「加载更多」。
-- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与行内「删除」（网络行按钮另按 `can_remove` 显隐）；删除走内置 `confirm` → `ajax` → `invoke reload`，表单提交走 `form.props.api` 成功后再刷表格。viewer 保持只读并提示需要管理员权限。
+- `can_admin` 为真时追加「拉取镜像 / 创建网络 / 创建卷」表单与行内「删除」（网络行按钮另按 `can_remove` 显隐）；删除走内置 `confirm` → `request` → `invoke reload`，表单提交走 `form.props.api` 成功后再刷表格。viewer 保持只读并提示需要管理员权限。
 
 ### 5.11 编排 Compose（第四批）
 
