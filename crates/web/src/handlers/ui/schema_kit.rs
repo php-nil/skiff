@@ -66,21 +66,21 @@ pub fn toolbar(left: Option<Value>, right: Vec<Value>) -> Value {
 }
 
 /// 触发宿主动作 / 内联动作链的按钮。
-pub fn action_button(text: &str, action: Value, variant: &str) -> Value {
+pub fn action_button(text: &str, actions: Vec<Value>, variant: &str) -> Value {
     let mut props = json!({ "text": text, "variant": variant });
     if variant.is_empty() {
         props = json!({ "text": text });
     }
-    json!({ "type": "button", "props": props, "onEvent": { "click": { "actions": [action] } } })
+    json!({ "type": "button", "props": props, "onEvent": { "click": { "actions": actions } } })
 }
 
 /// 行内文字按钮（表格行操作用，样式统一）。
-pub fn row_button(text: &str, action: Value, color: &str) -> Value {
+pub fn row_button(text: &str, actions: Vec<Value>, color: &str) -> Value {
     let mut props = json!({ "text": text, "variant": "text", "size": "small" });
     if !color.is_empty() {
         props["color"] = json!(color);
     }
-    json!({ "type": "button", "props": props, "onEvent": { "click": { "actions": [action] } } })
+    json!({ "type": "button", "props": props, "onEvent": { "click": { "actions": actions } } })
 }
 
 /// 卡片：标题 + 可选说明 + 正文节点。

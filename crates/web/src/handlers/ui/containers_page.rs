@@ -105,52 +105,52 @@ pub fn containers_schema(
     table["props"]["rowActions"] = json!([
         kit::row_button(
             "详情",
-            json!({ "type": "navigate", "props": { "url": "${prefix}/docker/containers/${id}" } }),
+            vec![
+                json!({ "type": "navigate", "props": { "url": "${prefix}/docker/containers/${id}" } })
+            ],
             "primary"
         ),
         // 启停按行内状态二选一：行作用域直接读 `state.code`，与后端动作白名单同源。
         kit::row_button(
             "启停",
-            json!({
-                "actions": [{
-                    "type": "condition",
-                    "props": {
-                        "when": "${state.code === 'running'}",
-                        "actions": [
-                            container_request("${id}", "stop", "容器已停止", "停止容器失败"),
-                            container_reload()
-                        ],
-                        "elseActions": [
-                            container_request("${id}", "start", "容器已启动", "启动容器失败"),
-                            container_reload()
-                        ]
-                    }
-                }]
-            }),
+            vec![json!({
+                "type": "condition",
+                "props": {
+                    "when": "${state.code === 'running'}",
+                    "actions": [
+                        container_request("${id}", "stop", "容器已停止", "停止容器失败"),
+                        container_reload()
+                    ],
+                    "elseActions": [
+                        container_request("${id}", "start", "容器已启动", "启动容器失败"),
+                        container_reload()
+                    ]
+                }
+            })],
             ""
         ),
         kit::row_button(
             "重启",
-            json!({ "actions": [
+            vec![
                 container_request("${id}", "restart", "容器已重启", "重启容器失败"),
                 container_reload()
-            ] }),
+            ],
             "primary"
         ),
         kit::row_button(
             "删除",
-            json!({ "actions": [
-                {
+            vec![
+                json!({
                     "type": "confirm",
                     "props": {
                         "title": "删除容器",
                         "content": "确认删除 ${name}？删除后不可恢复，容器内未持久化的数据会丢失。",
                         "color": "error"
                     }
-                },
+                }),
                 container_request("${id}", "delete", "容器已删除", "删除容器失败"),
                 container_reload()
-            ] }),
+            ],
             "danger"
         )
     ]);
@@ -166,7 +166,7 @@ pub fn containers_schema(
             8,
             vec![kit::action_button(
                 "新建容器",
-                json!({ "type": "navigate", "props": { "url": "${prefix}/docker/containers/new" } }),
+                vec![json!({ "type": "navigate", "props": { "url": "${prefix}/docker/containers/new" } })],
                 "",
             )],
         ));
@@ -385,7 +385,7 @@ fn container_op(text: &str, action: &str, c: &super::dto::ContainerItem) -> Valu
     } else {
         actions.push(reload_page());
     }
-    kit::action_button(text, json!({ "actions": actions }), "tonal")
+    kit::action_button(text, actions, "tonal")
 }
 
 /// 容器写请求：接口统一是 `POST /containers/{id}/{action}`，确认与提示由动作链声明。
@@ -431,7 +431,7 @@ pub fn container_logs_schema(
                 "返回容器详情",
                 format!("${{prefix}}/docker/containers/{}", enc(container_id)),
             ),
-            kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
+            kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "text"),
         ],
     )];
     if lines.is_empty() {

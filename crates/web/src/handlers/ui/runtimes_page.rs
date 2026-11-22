@@ -42,12 +42,16 @@ pub fn runtimes_schema(catalog: &Value, total: i64) -> Value {
     table["props"]["rowActions"] = json!([
         kit::row_button(
             "详情",
-            json!({ "type": "navigate", "props": { "url": "${prefix}/sites/runtimes/${id}" } }),
+            vec![
+                json!({ "type": "navigate", "props": { "url": "${prefix}/sites/runtimes/${id}" } })
+            ],
             "primary"
         ),
         kit::row_button(
             "日志",
-            json!({ "type": "navigate", "props": { "url": "${prefix}/sites/runtimes/${id}/logs" } }),
+            vec![
+                json!({ "type": "navigate", "props": { "url": "${prefix}/sites/runtimes/${id}/logs" } })
+            ],
             ""
         )
     ]);
@@ -214,7 +218,7 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
             ]),
             kit::flex(8, vec![kit::action_button(
                 "实测版本",
-                json!({ "type": "skiffRuntimeProbe", "props": { "id": runtime_id } }),
+                vec![json!({ "type": "skiffRuntimeProbe", "props": { "id": runtime_id } })],
                 "tonal"
             )])
         ] }
@@ -311,8 +315,8 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
         );
         file_table["props"]["rowActions"] = json!([kit::row_button(
             "编辑",
-            json!({ "type": "skiffRuntimeConfigEdit",
-                   "props": { "id": runtime_id, "key": "${key}" } }),
+            vec![json!({ "type": "skiffRuntimeConfigEdit",
+                   "props": { "id": runtime_id, "key": "${key}" } })],
             "primary"
         )]);
         config.push(kit::card("配置文件", vec![file_table]));
@@ -389,17 +393,17 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
         ext_table["props"]["rowActions"] = json!([
             kit::row_button(
                 "安装",
-                json!({ "type": "skiffRuntimeExt",
-                       "props": { "id": runtime_id, "key": "${key}", "op": "install" } }),
+                vec![json!({ "type": "skiffRuntimeExt",
+                       "props": { "id": runtime_id, "key": "${key}", "op": "install" } })],
                 "primary"
             ),
             kit::row_button(
                 "卸载",
-                json!({ "type": "skiffRuntimeExt",
+                vec![json!({ "type": "skiffRuntimeExt",
                        "props": {
                            "id": runtime_id, "key": "${key}", "op": "uninstall",
                            "confirm_text": "卸载扩展需要重启容器，绑定站点会短暂中断。确认卸载 ${key}？"
-                       } }),
+                       } })],
                 "danger"
             )
         ]);
@@ -519,8 +523,8 @@ pub fn runtime_detail_schema(data: &Value, runtime_id: &str, tab: &str) -> Value
         );
         site_table["props"]["rowActions"] = json!([kit::row_button(
             "解绑",
-            json!({ "type": "skiffRuntimeUnbind",
-                   "props": { "id": runtime_id, "domain": "${domain}" } }),
+            vec![json!({ "type": "skiffRuntimeUnbind",
+                   "props": { "id": runtime_id, "domain": "${domain}" } })],
             "danger"
         )]);
         sites.push(kit::card("绑定站点", vec![site_table]));
@@ -576,7 +580,7 @@ pub fn runtime_logs_schema(runtime_id: &str, data: &Value) -> Value {
                 "返回运行环境详情",
                 format!("${{prefix}}/sites/runtimes/{}", enc(runtime_id)),
             ),
-            kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
+            kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "text"),
         ],
     )];
     if lines.is_empty() {
@@ -599,8 +603,8 @@ pub fn runtime_logs_schema(runtime_id: &str, data: &Value) -> Value {
 fn runtime_op(text: &str, op: &str, runtime_id: &str, confirm: &str) -> Value {
     kit::action_button(
         text,
-        json!({ "type": "skiffRuntimeAction",
-               "props": { "id": runtime_id, "op": op, "confirm_text": confirm } }),
+        vec![json!({ "type": "skiffRuntimeAction",
+               "props": { "id": runtime_id, "op": op, "confirm_text": confirm } })],
         if op == "delete" { "text" } else { "tonal" },
     )
 }

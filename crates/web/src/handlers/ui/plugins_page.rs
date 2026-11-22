@@ -138,8 +138,8 @@ fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
         } else {
             "启用插件"
         },
-        json!({ "actions": [
-            {
+        vec![
+            json!({
                 "type": "request",
                 "props": {
                     "api": {
@@ -148,9 +148,9 @@ fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
                     },
                     "messages": { "success": "插件状态已更新", "error": "插件启停失败" }
                 }
-            },
-            { "type": "skiffReload" }
-        ] }),
+            }),
+            json!({ "type": "skiffReload" }),
+        ],
         "tonal",
     )];
     if include_delete {
@@ -185,11 +185,7 @@ fn plugin_actions(p: &Value, include_delete: bool, detail: bool) -> Vec<Value> {
             } else {
                 json!({ "type": "skiffReload" })
             });
-            actions.push(kit::action_button(
-                label,
-                json!({ "actions": chain }),
-                variant,
-            ));
+            actions.push(kit::action_button(label, chain, variant));
         }
     }
     actions

@@ -306,7 +306,7 @@ pub fn file_view_schema(data: &Value) -> Value {
             ),
             kit::action_button(
                 "下载",
-                json!({ "type": "skiffFileDownload", "props": { "path": path } }),
+                vec![json!({ "type": "skiffFileDownload", "props": { "path": path } })],
                 "text",
             ),
         ],
@@ -394,21 +394,21 @@ pub fn trash_schema(data: &Value) -> Value {
         kit::flex(
             8,
             vec![
-                kit::action_button("刷新", json!({ "type": "skiffReload" }), "secondary"),
+                kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "secondary"),
                 kit::action_button(
                     "清空回收站",
-                    json!({ "actions": [
-                        {
+                    vec![
+                        json!({
                             "type": "confirm",
                             "props": {
                                 "title": "清空回收站",
                                 "content": "将永久删除全部条目，且不会进入任何备份。确认清空？",
                                 "color": "error"
                             }
-                        },
+                        }),
                         trash_request("clear", json!({}), "已清空回收站", "清空回收站失败"),
                         reload_page()
-                    ] }),
+                    ],
                     "danger",
                 ),
             ],
@@ -458,52 +458,36 @@ pub fn trash_schema(data: &Value) -> Value {
         table["props"]["rowActions"] = json!([
             kit::row_button(
                 "恢复",
-                json!({ "actions": [
-                    {
-                        // 恢复失败（目标已存在）时先确认覆盖，再重试一次。
-                        "actions": [
-                            trash_request(
-                                "restore",
-                                json!({ "id": "${id}", "overwrite": false }),
-                                "",
-                                ""
-                            )
-                        ],
-                        "onError": [
-                            {
-                                "type": "confirm",
-                                "props": {
-                                    "title": "恢复失败",
-                                    "content": "目标已存在或恢复失败。是否覆盖现有对象后重试？",
-                                    "color": "error"
-                                }
-                            },
-                            trash_request(
-                                "restore",
-                                json!({ "id": "${id}", "overwrite": true }),
-                                "已覆盖恢复",
-                                "恢复失败"
-                            )
-                        ]
-                    },
+                vec![
+                    trash_request(
+                        "restore",
+                        json!({ "id": "${id}", "overwrite": false }),
+                        "已恢复",
+                        "恢复失败"
+                    ),
                     reload_page()
-                ] }),
+                ],
                 "primary"
             ),
             kit::row_button(
                 "彻底删除",
-                json!({ "actions": [
-                    {
+                vec![
+                    json!({
                         "type": "confirm",
                         "props": {
                             "title": "彻底删除",
                             "content": "确认彻底删除 ${path_label}？不可恢复。",
                             "color": "error"
                         }
-                    },
-                    trash_request("purge", json!({ "id": "${id}" }), "已彻底删除", "彻底删除失败"),
+                    }),
+                    trash_request(
+                        "purge",
+                        json!({ "id": "${id}" }),
+                        "已彻底删除",
+                        "彻底删除失败"
+                    ),
                     reload_page()
-                ] }),
+                ],
                 "danger"
             )
         ]);
@@ -586,12 +570,16 @@ pub fn quotas_schema(data: &Value) -> Value {
         table["props"]["rowActions"] = json!([
             kit::row_button(
                 "重新统计",
-                json!({ "type": "skiffQuotaWrite", "props": { "op": "scan", "path": "${root}" } }),
+                vec![
+                    json!({ "type": "skiffQuotaWrite", "props": { "op": "scan", "path": "${root}" } })
+                ],
                 "primary"
             ),
             kit::row_button(
                 "取消配额",
-                json!({ "type": "skiffQuotaWrite", "props": { "op": "cancel", "path": "${root}" } }),
+                vec![
+                    json!({ "type": "skiffQuotaWrite", "props": { "op": "cancel", "path": "${root}" } })
+                ],
                 "danger"
             )
         ]);

@@ -109,8 +109,8 @@ pub fn compose_schema(
 fn compose_button(text: &str, action: &str) -> Value {
     kit::action_button(
         text,
-        json!({ "type": "skiffComposeAction",
-               "props": { "project": "${name}", "action": action } }),
+        vec![json!({ "type": "skiffComposeAction",
+               "props": { "project": "${name}", "action": action } })],
         "tonal",
     )
 }

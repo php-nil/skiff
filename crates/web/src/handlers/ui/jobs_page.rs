@@ -333,7 +333,7 @@ pub fn job_logs_schema(
                     crate::util::encode_uri_component(job_id)
                 ),
             ),
-            schema_kit::action_button("刷新", json!({ "type": "skiffReload" }), "text"),
+            schema_kit::action_button("刷新", vec![json!({ "type": "skiffReload" })], "text"),
         ],
     )];
     if lines.is_empty() {

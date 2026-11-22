@@ -117,7 +117,7 @@ pub fn store_schema(data: &Value) -> Value {
                 if can_install && text(section, "/title") == "插件" {
                     table["props"]["rowActions"] = json!([kit::action_button(
                         "安装 / 升级",
-                        json!({ "type": "skiffStoreInstall" }),
+                        vec![json!({ "type": "skiffStoreInstall" })],
                         "tonal"
                     )]);
                 }
@@ -169,8 +169,8 @@ pub fn store_schema(data: &Value) -> Value {
     if flag(&upgrade, "/can_download") && !text(&upgrade, "/available").is_empty() {
         body.push(kit::action_button(
             &format!("下载升级包 {}", text(&upgrade, "/available")),
-            json!({ "type": "skiffUpgradeDownload",
-                   "props": { "version": text(&upgrade, "/available") } }),
+            vec![json!({ "type": "skiffUpgradeDownload",
+                   "props": { "version": text(&upgrade, "/available") } })],
             "tonal",
         ));
     }

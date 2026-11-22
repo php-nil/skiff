@@ -179,7 +179,7 @@ fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>) {
         if !job_id.is_empty() {
             body.push(kit::action_button(
                 "查看任务详情",
-                json!({ "type": "skiffQueryNav", "props": { "path": format!("${{prefix}}/jobs/{job_id}"), "query": {} } }),
+                vec![json!({ "type": "skiffQueryNav", "props": { "path": format!("${{prefix}}/jobs/{job_id}"), "query": {} } })],
                 "text",
             ));
         }
@@ -241,7 +241,7 @@ fn build_status(data: &Value, status: &Value, body: &mut Vec<Value>) {
         if flag(&install, "/running") {
             ops.push(kit::action_button(
                 "刷新安装进度",
-                json!({ "type": "skiffQueryNav", "props": { "path": "${prefix}/sites/web", "query": {} } }),
+                vec![json!({ "type": "skiffQueryNav", "props": { "path": "${prefix}/sites/web", "query": {} } })],
                 "tonal",
             ));
         }

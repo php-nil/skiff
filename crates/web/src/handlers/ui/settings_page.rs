@@ -163,7 +163,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             8,
             vec![kit::action_button(
                 "生成 TOTP 密钥",
-                json!({ "type": "skiffTotpSetup" }),
+                vec![json!({ "type": "skiffTotpSetup" })],
                 "tonal",
             )],
         ));
@@ -271,7 +271,7 @@ pub fn security_schema(data: &Value, username: &str, role: &str) -> Value {
             );
             table["props"]["rowActions"] = json!([kit::row_button(
                 "撤销",
-                json!({ "type": "skiffKeyRemove", "props": { "key_id": "${key_id}" } }),
+                vec![json!({ "type": "skiffKeyRemove", "props": { "key_id": "${key_id}" } })],
                 "danger"
             )]);
             body.push(table);
