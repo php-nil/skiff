@@ -1092,7 +1092,12 @@
         );
       })
       .catch(function (error) {
-        toast('校验失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          (op === 'up' ? '部署失败：' : '校验失败：') +
+            (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 
@@ -2001,7 +2006,7 @@
     var values = formValues(ctx);
     var name = String(values.name || '').trim();
     if (!validEntryName(name)) {
-      toast('目录名不能为空，也不能包含 / 或 \\', 'warning');
+      formError(args, '目录名不能为空，也不能包含 / 或 \\', values);
       return Promise.resolve();
     }
     var base = String(args.dir || '').replace(/\/+$/, '');
@@ -2011,7 +2016,11 @@
         window.location.reload();
       })
       .catch(function (error) {
-        toast('新建目录失败：' + (error && error.message ? error.message : String(error)), 'error');
+        formError(
+          args,
+          '新建目录失败：' + (error && error.message ? error.message : String(error)),
+          values
+        );
       });
   }
 

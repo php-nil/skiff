@@ -82,7 +82,8 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.5";
 /// v41：上游升 1.8.5（图层页脚可提交本层唯一表单、confirm 支持 warning/alertdialog、
 ///   移除 `mount()` 旧入口与 `snackbar` 关闭参数）；壳侧弹窗注册表改读 `content.footer`
 ///   的 `submit`，提交失败重开弹窗复用原始 `content`，不再依赖表单 `content.actions`。
-pub const SHELL_VERSION: &str = "41";
+/// v42：新建目录与编排失败改走 `formError`，错误留在弹窗内并保留输入，不再只弹 toast。
+pub const SHELL_VERSION: &str = "42";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
