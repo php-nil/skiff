@@ -2299,12 +2299,33 @@
   /// 写回表单——不再「关掉再重开一张带错误摘要的弹窗」（那会重建 DOM、丢滚动位置，
   /// 还得自己保存一份正文副本）。
   ///
-  /// 表单实例从动作上下文取（`ctx.extras.form`，表单族 provide，内核不感知）；
-  /// 取不到说明动作不在表单里（列表行按钮等），退回 toast。
+  /// 表单实例按 budding 自己的目标解析规则取（契约 §8.3.2，与它的 `setErrors`
+  /// 动作同一条），两档：
+  /// 1. `ctx.extras.form`——表单族 provide 的「最近祖先表单」，动作在表单子树里时命中；
+  /// 2. `ctx.extras['budding:layer-forms']`——所属图层的登记表。**弹窗页脚的提交按钮
+  ///    不在表单祖先链上**（页脚与正文是两棵兄弟子树），只有登记表能找到它；
+  ///    壳层的弹窗几乎都是「正文一张表单 + 页脚提交」，所以这一档才是主路径。
+  /// 取不到（列表行按钮、非图层动作）就退回 toast：宁可只弹提示，也不要静默失败。
   /// `field` 给定时写成字段错误：本地校验类失败指到具体字段，比表单级摘要更好定位。
+  var LAYER_FORMS_KEY = 'budding:layer-forms';
+
+  function formOf(ctx) {
+    var extras = (ctx && ctx.extras) || {};
+    var direct = extras.form;
+    if (direct && typeof direct.setErrors === 'function') return direct;
+    var registry = extras[LAYER_FORMS_KEY];
+    if (registry && typeof registry.list === 'function') {
+      var forms = registry.list() || [];
+      // 多张表单无法确定该回填哪一张：budding 自己会报「请用 props.form 点名」，
+      // 壳层不猜，退回 toast。
+      if (forms.length === 1) return forms[0];
+    }
+    return null;
+  }
+
   function formError(ctx, message, field) {
     var text = String(message === undefined || message === null ? '' : message);
-    var form = ctx && ctx.extras && ctx.extras.form;
+    var form = formOf(ctx);
     if (form && typeof form.setErrors === 'function') {
       var errors = {};
       errors[field || '__form__'] = text;

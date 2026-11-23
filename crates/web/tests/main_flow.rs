@@ -6596,17 +6596,27 @@ fn budding_boot_file_forms_send_typed_values_and_show_errors() {
     assert!(js.contains("'uid 与 gid 必须是非负整数'"));
 
     // 失败就地回填：写表单错误 + 聚焦首个错误字段，不再关掉重开弹窗。
+    // 表单实例按 budding 的目标解析规则两档取：表单族 provide 的祖先表单
+    // （`extras.form`）+ 所属图层的登记表（`budding:layer-forms`）。弹窗页脚的
+    // 提交按钮不在表单祖先链上，只有登记表能找到它——这一档是主路径，缺了就是
+    // 「提交失败什么也不显示」的静默失败。
+    let form_of = js
+        .split("function formOf(ctx)")
+        .nth(1)
+        .and_then(|s| s.split("\n  function ").next())
+        .expect("formOf 必须存在");
+    for needle in ["extras.form", "budding:layer-forms", "registry.list()"] {
+        assert!(
+            form_of.contains(needle),
+            "表单实例解析必须覆盖图层登记表：{needle}"
+        );
+    }
     let err = js
         .split("function formError(ctx, message, field)")
         .nth(1)
         .and_then(|s| s.split("\n  function ").next())
         .expect("formError 必须存在");
-    for needle in [
-        "ctx.extras.form",
-        "setErrors",
-        "focusFirstError",
-        "__form__",
-    ] {
+    for needle in ["formOf(ctx)", "setErrors", "focusFirstError", "__form__"] {
         assert!(err.contains(needle), "formError 必须原地回填表单：{needle}");
     }
 

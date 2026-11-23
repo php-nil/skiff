@@ -89,7 +89,10 @@ pub const BUDDING_ICONS_VERSION: &str = "1.8.6";
 ///   `confirm` 统一 `color`、`inspectLayers()`、`@budding/schema-lint`）；壳侧删掉
 ///   弹窗注册表与「失败重开弹窗」，失败改为 `setErrors` 原地回填，`args.dialog`
 ///   收敛为一个 `inLayer` 标记，`hostConfirm` 的 `level` 改为 `color`。
-pub const SHELL_VERSION: &str = "44";
+/// v45：`formError` 的表单实例改按 budding 的目标解析规则取——弹窗页脚的提交按钮
+///   不在表单祖先链上，`ctx.extras.form` 恒为空，必须再查所属图层的登记表
+///   （`budding:layer-forms`），否则弹窗提交失败既不关层也不显示原因（静默失败）。
+pub const SHELL_VERSION: &str = "45";
 
 /// 稳定别名 → 版本化真实文件名：别名不复制第二份字节，只做映射（SDUI D11）。
 fn resolve_alias(rel: &str) -> String {
