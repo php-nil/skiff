@@ -6424,9 +6424,10 @@ fn budding_boot_action_registry_has_no_duplicate_keys() {
     );
 }
 
-/// 资源动作必须映射到资源接口；设置保存只能用于 `/settings/docker` 表单。
+/// 资源动作必须映射到资源接口；设置保存只能用于 Docker 设置表单。
 /// 镜像 / 网络 / 卷 / 容器新建均已迁到 JSON 页面资产（声明式 `request`），
-/// 设置保存随设置页迁到 `settings_page.rs`——全部改读各自产出端，不再钉脚本。
+/// 表单提交改事件模式（`submitMode: "event"`）后，落点从表单 `api.url` 移到
+/// 壳脚本的宿主动作里——全部改读各自产出端，不再钉脚本。
 #[test]
 fn budding_boot_docker_actions_map_to_resource_endpoints() {
     let js = include_str!("../static/budding/budding-boot.js");
@@ -6453,13 +6454,18 @@ fn budding_boot_docker_actions_map_to_resource_endpoints() {
         ),
         (
             include_str!("../src/handlers/ui/settings_page.rs"),
-            vec!["\"type\": \"skiffDockerSettingsWrite\"", "/settings/docker"],
+            vec!["\"type\": \"skiffDockerSettingsWrite\""],
         ),
     ] {
         for needle in needles {
             assert!(asset.contains(needle), "JSON 页面动作映射缺失：{needle}");
         }
     }
+    // 表单不再自带 `api.url`，Docker 设置保存的落点只剩壳脚本这一处。
+    assert!(
+        js.contains("submitJson('/settings/docker'"),
+        "Docker 设置保存必须提交到 /settings/docker"
+    );
 }
 
 /// 服务端下发的弹窗只需给提交动作打一个 `inLayer` 标记：宿主动作据此决定成功后
@@ -6795,7 +6801,7 @@ fn budding_boot_ui_theme_presets_and_color_fields() {
         "自定义关闭时不得提交菜单底色"
     );
     assert!(
-        js.contains("formError(args, invalid + '必须是 #rrggbb 格式"),
+        js.contains("formError(ctx, invalid + '必须是 #rrggbb 格式"),
         "颜色本地校验不通过时必须在弹窗/页面显示原因"
     );
 }
@@ -6818,9 +6824,9 @@ fn budding_boot_create_dialogs_keep_deep_links() {
     }
     for needle in [
         // 弹窗提交成功回列表刷新；独立页仍进入详情。
-        "op === 'create' && data.id && !args.dialog",
-        "if (args.dialog) closeTopLayer();",
-        "formError(\n          args,\n          '操作失败：'",
+        "op === 'create' && data.id && !args.inLayer",
+        "if (args.inLayer) closeTopLayer();",
+        "formError(\n            ctx,\n            '操作失败：'",
     ] {
         assert!(js.contains(needle), "新建弹窗改造缺失：{needle}");
     }
@@ -7667,18 +7673,20 @@ async fn ui_theme_requires_admin_validates_and_persists() {
         "主题写入必须留审计"
     );
 
-    // 空串恢复缺省主色。
+    // 空串恢复缺省主色。菜单开关一并钉回缺省（「深潜」的深墨绿导航），否则会按
+    // 自动推导出的白色菜单做对比度校正，「恢复缺省」测出来的就不是缺省值了。
     let (status, text) = post_ui_json(
         &h.app,
         "/ui/v1/settings/ui",
         &admin,
         Some(&csrf),
-        &json!({ "primary": "" }),
+        &json!({ "primary": "", "menu_custom": true }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{text}");
     let (_, _, body) = get_ui(&h.app, "/ui/v1/settings/ui", Some(&admin), None).await;
-    assert!(body.contains("#17a98e"), "{body}");
+    assert!(body.contains(r##""primary":"#17a98e""##), "{body}");
+    assert!(body.contains(r##""menu":"#0c2422""##), "{body}");
 }
 
 /// 配色扩展：菜单底色随页面自动推导、自定义菜单、主色对比度校正，
